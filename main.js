@@ -1,6 +1,6 @@
-import { MODELS, DX_ALGS } from './models.js?v=1';
+import { MODELS, DX_ALGS } from './models.js?v=2';
 
-const VERSION = '1';
+const VERSION = '2';
 const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -74,10 +74,11 @@ async function powerOn() {
     gain = c.createGain(); gain.gain.value = settings.master;
     an = c.createAnalyser(); an.fftSize = 8192; an.smoothingTimeConstant = 0.75;
     n.connect(gain); gain.connect(c.destination); gain.connect(an);
-    n.port.onmessage = e => { if (e.data.t === 'stats') stats(e.data); };
+    n.port.onmessage = e => { if (e.data.t === 'stats') stats(e.data); else if (e.data.t === 'step') seqStep(e.data.s); };
     ctx = c; node = n;
     if (c.state !== 'running') await c.resume();
     sendPatch();
+    if (model.id === 'tb303') seqSend();
     if (sustain) post({ t: 'sus', v: true });
     setPowerUI(true);
     initMIDI();
@@ -88,6 +89,7 @@ async function powerOff() {
   if (!ctx) return;
   const c = ctx;
   ctx = null; node = null; an = null; gain = null;
+  if (seqRun) { seqRun = false; renderPanel(); }
   for (const n of [...down]) { down.delete(n); keyVis(n, false); }
   await c.close();
   setPowerUI(false);
@@ -125,6 +127,7 @@ function noteOff(n) {
   post({ t: 'off', n });
 }
 function panic() {
+  if (seqRun) seqToggle(false);
   for (const n of [...down]) noteOff(n);
   setSustain(false);
   post({ t: 'panic' });
@@ -155,6 +158,7 @@ function renderNav() {
 function selectModel(id) {
   if (id === model.id) return;
   for (const n of [...down]) noteOff(n);
+  if (seqRun) seqToggle(false);
   post({ t: 'panic' });
   model = MODELS.find(m => m.id === id);
   settings.model = id;
@@ -186,6 +190,7 @@ function renderPanel() {
     secs.append(se);
   });
   el.append(plate, secs);
+  if (model.id === 'tb303') secs.append(seqUI());
   $('#about-title').textContent = `${model.maker} ${model.name} (${model.year})`;
   $('#about').textContent = model.about;
   drawAlgo();
@@ -427,6 +432,104 @@ function drawAlgo() {
   }
   s += '</svg>';
   box.innerHTML = `<p class="help" style="margin:0 0 6px">Algorithm ${Math.round(vals.alg)} — carriers (filled) feed the output bus; the loop marks operator feedback.</p>` + s;
+}
+
+
+/* ------------------------------------------------- TB-303 sequencer */
+const SEQ_NOTES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B', 'C′'];
+const st = (n, o, a, sl, g = 1) => ({ n, o, a, s: sl, g });
+const SEQ_DEF = {
+  bpm: 128, swing: 0,
+  pat: [st(0, 0, 1, 0), st(0, 0, 0, 0), st(12, 0, 0, 1), st(0, 0, 0, 0), st(3, 0, 1, 0), st(0, 0, 0, 1), st(10, 0, 0, 0), st(0, 0, 0, 0, 0),
+    st(0, 0, 1, 0), st(7, 0, 0, 1), st(5, 0, 0, 0), st(3, 0, 0, 0), st(12, 0, 1, 1), st(0, 1, 0, 0), st(5, 0, 0, 0), st(6, 0, 1, 0)],
+};
+const seq = Object.assign(JSON.parse(JSON.stringify(SEQ_DEF)), store.get('synth.seq303', {}));
+let seqRun = false;
+const stepEls = [];
+function seqSend(extra) {
+  post({ t: 'seq', s: Object.assign({ pat: seq.pat, len: 16, bpm: seq.bpm, swing: seq.swing / 100 * 0.5, root: 48 }, extra || {}) });
+  store.set('synth.seq303', seq);
+}
+function seqToggle(on) {
+  seqRun = on;
+  const b = $('#seqrun'); if (b) { b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.lastChild.textContent = on ? 'Stop' : 'Run'; }
+  if (!on) for (const e of stepEls) e.classList.remove('now');
+  if (on && !node) powerOn().then(() => { seqSend({ run: true }); }).catch(() => {});
+  else seqSend({ run: on });
+}
+function seqStep(i) { stepEls.forEach((e, k) => e.classList.toggle('now', k === i)); }
+function seqRandom() {
+  const scale = [0, 0, 3, 5, 7, 7, 10, 12];
+  seq.pat = seq.pat.map(() => st(scale[(Math.random() * scale.length) | 0], Math.random() < 0.18 ? 1 : Math.random() < 0.08 ? -1 : 0,
+    Math.random() < 0.3 ? 1 : 0, Math.random() < 0.22 ? 1 : 0, Math.random() < 0.82 ? 1 : 0));
+  seq.pat[0].g = 1;
+}
+function seqUI() {
+  stepEls.length = 0;
+  const sec = h('div', 'sec seq');
+  sec.append(h('h3', null, 'Pattern Sequencer'));
+  const bar = h('div', 'seqbar');
+  const run = h('button', 'seqbtn run'); run.id = 'seqrun'; run.type = 'button';
+  run.append(h('span', 'led'), h('span', null, seqRun ? 'Stop' : 'Run'));
+  run.setAttribute('aria-pressed', seqRun ? 'true' : 'false');
+  run.onclick = () => seqToggle(!seqRun);
+  const numCtl = (label, get, set, min, max, unit) => {
+    const w = h('div', 'seqnum'); const box = h('div', 'num'); box.tabIndex = 0;
+    const upd = () => { box.textContent = get() + unit; };
+    upd();
+    box.addEventListener('pointerdown', e => {
+      e.preventDefault(); box.setPointerCapture(e.pointerId);
+      const y0 = e.clientY, v0 = get();
+      const mv = ev => { set(clamp(Math.round(v0 + (y0 - ev.clientY) / (ev.shiftKey ? 8 : 2)), min, max)); upd(); seqSend(); };
+      const up = () => { box.removeEventListener('pointermove', mv); box.removeEventListener('pointerup', up); box.removeEventListener('pointercancel', up); };
+      box.addEventListener('pointermove', mv); box.addEventListener('pointerup', up); box.addEventListener('pointercancel', up);
+    });
+    box.addEventListener('wheel', e => { e.preventDefault(); set(clamp(get() - Math.sign(e.deltaY), min, max)); upd(); seqSend(); }, { passive: false });
+    w.append(box, h('label', null, label));
+    return w;
+  };
+  const steps = h('div', 'steps');
+  const redraw = [];
+  const rnd = h('button', 'seqbtn', 'Randomise'); rnd.type = 'button'; rnd.onclick = () => { seqRandom(); redraw.forEach(f => f()); seqSend(); };
+  const clr = h('button', 'seqbtn', 'Clear'); clr.type = 'button';
+  clr.onclick = () => { seq.pat = seq.pat.map(() => st(0, 0, 0, 0, 1)); redraw.forEach(f => f()); seqSend(); };
+  const dflt = h('button', 'seqbtn', 'Demo'); dflt.type = 'button';
+  dflt.onclick = () => { seq.pat = JSON.parse(JSON.stringify(SEQ_DEF.pat)); redraw.forEach(f => f()); seqSend(); };
+  bar.append(run, numCtl('Tempo', () => seq.bpm, v => { seq.bpm = v; }, 40, 220, ''), numCtl('Swing', () => seq.swing, v => { seq.swing = v; }, 0, 50, '%'), rnd, dflt, clr,
+    h('span', 'seqhint', 'Drag a note up/down · ACC = accent · SLD = slide into next step · click the LED to make a rest'));
+  seq.pat.forEach((s, i) => {
+    const col = h('div', 'step' + (i % 4 === 0 ? ' beat' : ''));
+    const led = h('button', 'sled'); led.type = 'button'; led.title = 'Note / rest';
+    const note = h('div', 'snote'); note.tabIndex = 0;
+    const mk = (txt, key, val) => { const b = h('button', 'sbtn', txt); b.type = 'button'; b.onclick = () => { s[key] = s[key] === val ? 0 : val; draw(); seqSend(); }; return b; };
+    const up = mk('UP', 'o', 1), dn = mk('DN', 'o', -1), acc = mk('ACC', 'a', 1), sld = mk('SLD', 's', 1);
+    led.onclick = () => { s.g = s.g ? 0 : 1; draw(); seqSend(); };
+    const draw = () => {
+      note.textContent = s.g ? SEQ_NOTES[s.n] : '—';
+      col.classList.toggle('rest', !s.g);
+      up.classList.toggle('on', s.o === 1); dn.classList.toggle('on', s.o === -1);
+      acc.classList.toggle('on', !!s.a); sld.classList.toggle('on', !!s.s);
+    };
+    note.addEventListener('pointerdown', e => {
+      e.preventDefault(); note.setPointerCapture(e.pointerId);
+      const y0 = e.clientY, v0 = s.n;
+      const mv = ev => { const v = clamp(Math.round(v0 + (y0 - ev.clientY) / 9), 0, 12); if (v !== s.n) { s.n = v; s.g = 1; draw(); seqSend(); } };
+      const upf = () => { note.removeEventListener('pointermove', mv); note.removeEventListener('pointerup', upf); note.removeEventListener('pointercancel', upf); };
+      note.addEventListener('pointermove', mv); note.addEventListener('pointerup', upf); note.addEventListener('pointercancel', upf);
+    });
+    note.addEventListener('wheel', e => { e.preventDefault(); s.n = clamp(s.n - Math.sign(e.deltaY), 0, 12); s.g = 1; draw(); seqSend(); }, { passive: false });
+    note.addEventListener('keydown', e => {
+      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+      e.preventDefault(); e.stopPropagation();
+      s.n = clamp(s.n + (e.key === 'ArrowUp' ? 1 : -1), 0, 12); s.g = 1; draw(); seqSend();
+    });
+    draw(); redraw.push(draw);
+    col.append(h('span', 'snum', String(i + 1)), led, note, up, dn, acc, sld);
+    stepEls.push(col);
+    steps.append(col);
+  });
+  sec.append(bar, steps);
+  return sec;
 }
 
 /* ---------------------------------------------------------- keyboard */

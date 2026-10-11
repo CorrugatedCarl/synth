@@ -156,6 +156,33 @@ main { padding: 18px 24px 8px; max-width: 1600px; margin: 0 auto; }
 .m-tb303 .sel .opt, .m-tb303 .tog, .m-arp2600 .sel .opt, .m-arp2600 .tog, .m-tb303 .presets select, .m-tb303 .presets button, .m-arp2600 .presets select, .m-arp2600 .presets button { background: rgba(255,255,255,0.45); }
 .m-tb303 .presets select option, .m-arp2600 .presets select option { background: #eee; color: #111; }
 
+/* TB-303 sequencer */
+.sec.seq { flex: 1 1 100%; }
+.seqbar { display: flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; margin-bottom: 10px; }
+.seqbtn { display: flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.5); border: 1px solid rgba(0,0,0,0.3); border-radius: 4px; padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--ink); }
+.seqbtn:hover { border-color: var(--accent); }
+.seqbtn.run { min-width: 76px; }
+.seqbtn .led { width: 9px; height: 9px; border-radius: 50%; background: rgba(0,0,0,0.25); }
+.seqbtn.run[aria-pressed="true"] .led { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.seqnum { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+.seqnum label { font-size: 9.5px; text-transform: uppercase; color: var(--label); letter-spacing: 0.05em; }
+.seqnum .num { min-width: 52px; }
+.seqhint { font-size: 11px; color: #444; flex: 1 1 220px; }
+.steps { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 4px; }
+.step { display: flex; flex-direction: column; align-items: stretch; gap: 3px; padding: 4px 3px; border-radius: 4px; background: rgba(0,0,0,0.06); border: 1px solid transparent; }
+.step.beat { background: rgba(0,0,0,0.12); }
+.step.now { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.step .snum { font-size: 9px; text-align: center; color: #555; font-family: var(--mono); }
+.step .sled { height: 10px; border-radius: 3px; border: 1px solid rgba(0,0,0,0.35); background: #7a1d10; padding: 0; }
+.step.now .sled { background: #ff4a2a; box-shadow: 0 0 8px #ff4a2a; }
+.step.rest .sled { background: rgba(0,0,0,0.15); }
+.step .snote { font-family: var(--mono); font-weight: 700; font-size: 13px; text-align: center; padding: 6px 0; border-radius: 3px; background: #1a1a1a; color: #f2f2f2; cursor: ns-resize; touch-action: none; user-select: none; outline: none; }
+.step .snote:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.step.rest .snote { color: #666; }
+.step .sbtn { font-size: 9px; font-weight: 700; padding: 3px 0; border-radius: 3px; border: 1px solid rgba(0,0,0,0.3); background: rgba(255,255,255,0.55); color: #333; letter-spacing: 0.03em; }
+.step .sbtn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+@media (max-width: 760px) { .steps { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
+
 /* DX7 algorithm diagram */
 .algo { margin: 12px 0 4px; }
 .algo svg { max-width: 100%; height: auto; }

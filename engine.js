@@ -838,7 +838,7 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.setOS((opt && opt.processorOptions && opt.processorOptions.os) || 4);
     this.chorus = new Chorus(this.base); this.ens = new Ensemble(this.base);
     this.dcx = [0, 0]; this.dcy = [0, 0];
-    this.monoBuf = new Float64Array(128); this.Lb = new Float64Array(128); this.Rb = new Float64Array(128);
+    this.monoBuf = new Float64Array(128); this.Lb = new Float64Array(128); this.Rb = new Float64Array(128); this.act = 0;
     this.dacHold = 0; this.dacT = 0;
     this.kind = '';
     this.setPatch(DEFAULT_PATCH);
@@ -912,7 +912,8 @@ class SynthProcessor extends AudioWorkletProcessor {
         }
         break;
       case 'os': this.setOS(d.v); break;
-      case 'panic': this.allOff(true); break;
+      case 'panic': this.allOff(true); if (this.sq) this.sq.run = false; break;
+      case 'seq': this.seqMsg(d.s); break;
     }
   }
   noteOn(n, v) {
@@ -979,19 +980,94 @@ class SynthProcessor extends AudioWorkletProcessor {
     }
     this.lfoPh = ph;
   }
+  /* ---- TB-303 style step sequencer, clocked in the audio thread ---- */
+  seqMsg(s) {
+    const q = this.sq || (this.sq = { run: false, pat: [], len: 16, bpm: 120, root: 36, step: -1, pos: 0, fired: true, offed: true, tie: false, cur: -1, swing: 0 });
+    const wasRun = q.run;
+    Object.assign(q, s);
+    q.spb = this.base * 60 / Math.max(20, q.bpm) / 4;
+    if (q.run && !wasRun) { q.step = -1; q.stepLen = q.spb; q.pos = q.spb; q.tie = false; q.cur = -1; }
+    if (!q.run && wasRun) this.seqRelease();
+  }
+  seqRelease() {
+    const q = this.sq;
+    if (q && q.cur >= 0 && this.voices) for (const v of this.voices) if (v.gate) v.noteOff();
+    if (q) { q.cur = -1; q.tie = false; }
+    this.monoGate = false;
+  }
+  seqEvents() { // returns frames until the next sequencer event
+    const q = this.sq, p = this.p;
+    if (!q || !q.run || !this.voices || !this.voices.length || this.kind !== 'analog') return 1e9;
+    if (q.pos >= q.stepLen) {
+      q.pos -= q.stepLen;
+      q.step = (q.step + 1) % q.len;
+      q.fired = false; q.offed = false;
+      // swing lengthens the on-beat sixteenth and shortens the off-beat one
+      q.stepLen = q.spb * (q.step % 2 ? 1 - q.swing : 1 + q.swing);
+    }
+    const sl = q.stepLen;
+    if (!q.fired) {
+      q.fired = true;
+      const s = q.pat[q.step];
+      if (s && s.g) {
+        const n = q.root + s.n + 12 * s.o;
+        const vel = s.a ? 1 : 0.62;
+        const legato = q.tie && q.cur >= 0;
+        for (const v of this.voices) v.noteOn(n, vel, legato, legato ? this.glc(true) : 1);
+        this.monoGate = true;
+        q.cur = n; q.tie = !!s.s;
+      } else {
+        if (q.cur >= 0) for (const v of this.voices) v.noteOff();
+        q.cur = -1; q.tie = false;
+      }
+      this.port.postMessage({ t: 'step', s: q.step });
+    }
+    const gateAt = sl * 0.5;
+    if (!q.offed && q.pos >= gateAt) {
+      q.offed = true;
+      if (q.cur >= 0 && !q.tie) { for (const v of this.voices) v.noteOff(); q.cur = -1; this.monoGate = false; }
+    }
+    return (q.offed ? sl : gateAt) - q.pos;
+  }
   process(inputs, outputs) {
     const t0 = Date.now();
     const out = outputs[0], Lo = out[0], Ro = out[1] || out[0];
-    const n = Lo.length, OS = this.OS, N = n * OS, buf = this.buf, p = this.p;
-    if (this.monoBuf.length !== n) { this.monoBuf = new Float64Array(n); this.Lb = new Float64Array(n); this.Rb = new Float64Array(n); }
+    const n = Lo.length;
+    let off = 0;
+    while (off < n) {
+      let len = n - off;
+      const q = this.sq;
+      if (q && q.run) {
+        const d = this.seqEvents();
+        const dd = Math.max(4, Math.ceil(d / 4) * 4);
+        if (dd < len) len = dd;
+        len = Math.min(len, n - off);
+        if (len % 4 && off + len < n) len -= len % 4;
+        if (len <= 0) len = Math.min(4, n - off);
+      }
+      this.renderSpan(Lo, Ro, off, len);
+      if (q && q.run) q.pos += len;
+      off += len;
+    }
+    this.loadT += Date.now() - t0;
+    this.statN += n;
+    if (this.statN >= this.base * 0.25) {
+      this.port.postMessage({ t: 'stats', load: this.loadT / (this.statN / this.base * 1000), voices: this.act });
+      this.loadT = 0; this.statN = 0;
+    }
+    return true;
+  }
+  renderSpan(Lo, Ro, off, n) {
+    const OS = this.OS, N = n * OS, buf = this.buf, p = this.p;
     buf.fill(0, 0, N);
-    const nCh = N / this.CH;
+    const nCh = Math.max(1, Math.round(N / this.CH));
     if (this.lfoBuf.length < nCh) this.lfoBuf = new Float64Array(nCh);
     this.runLFO(nCh);
-    this.gdrift += (this.rnd() * 3.5 - this.gdrift) * this.gouB * 0.02;
+    this.gdrift += (this.rnd() * 3.5 - this.gdrift) * this.gouB * 0.02 * (n / 128);
     let act = 0;
     if (this.kind === 'divide') { if (this.div.list.length) this.div.render(buf, N); act = this.div.list.length; }
     else for (const v of this.voices) if (v.active) { v.render(buf, N); act++; }
+    this.act = act;
     if (p.dac) { // DX7: 12-bit floating DAC at 49.096 kHz with zero-order hold
       const per = this.fs / 49096;
       let t = this.dacT, hold = this.dacHold;
@@ -1026,17 +1102,9 @@ class SynthProcessor extends AudioWorkletProcessor {
       const aa = Math.abs(a), ab = Math.abs(b);
       if (aa > 0.8) a = Math.sign(a) * (0.8 + 0.2 * Math.tanh((aa - 0.8) / 0.2));
       if (ab > 0.8) b = Math.sign(b) * (0.8 + 0.2 * Math.tanh((ab - 0.8) / 0.2));
-      Lo[i] = a; if (Ro !== Lo) Ro[i] = b;
+      Lo[off + i] = a; if (Ro !== Lo) Ro[off + i] = b;
     }
     this.dcx[0] = x0; this.dcy[0] = y0; this.dcx[1] = x1; this.dcy[1] = y1;
-    // stats
-    this.loadT += Date.now() - t0;
-    this.statN += n;
-    if (this.statN >= this.base * 0.25) {
-      this.port.postMessage({ t: 'stats', load: this.loadT / (this.statN / this.base * 1000), voices: act });
-      this.loadT = 0; this.statN = 0;
-    }
-    return true;
   }
 }
 
