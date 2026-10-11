@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SYNTH — Circuit-Level Analog Synthesizer Emulations</title>
+<meta name="description" content="Play twelve landmark synthesizers from 1965–1983 in your browser — Moog, ARP, Yamaha, Sequential, Korg, Roland, Oberheim — modelled at the circuit level in 64-bit floating point with up to 384 kHz internal processing.">
+<meta name="theme-color" content="#0c0d0f">
+<meta property="og:title" content="SYNTH — Circuit-Level Analog Synthesizer Emulations">
+<meta property="og:description" content="Twelve classic synthesizers, modelled at the circuit level, playable in your browser.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230c0d0f'/%3E%3Cpath d='M5 21 L11 9 L11 21 L17 9 L17 21 L23 9 L23 21 L27 13' fill='none' stroke='%23f2a33a' stroke-width='2.4' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css?v=1">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 21 L11 9 L11 21 L17 9 L17 21 L23 9 L23 21 L27 13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <div>
+      <div class="logo">SYNTH</div>
+      <div class="sub">circuit-level analog emulation</div>
+    </div>
+  </div>
+  <div class="engine">
+    <button id="power" class="power" type="button" aria-pressed="false"><span class="led"></span><span class="lbl">Power</span></button>
+    <label class="field">Sample rate
+      <select id="sr">
+        <option value="0">Device</option>
+        <option value="44100">44.1 kHz</option>
+        <option value="48000">48 kHz</option>
+        <option value="88200">88.2 kHz</option>
+        <option value="96000">96 kHz</option>
+        <option value="176400">176.4 kHz</option>
+        <option value="192000">192 kHz</option>
+      </select>
+    </label>
+    <label class="field">Oversampling
+      <select id="os">
+        <option value="1">1× (off)</option>
+        <option value="2">2×</option>
+        <option value="4">4× (studio)</option>
+        <option value="8">8× (ultra)</option>
+      </select>
+    </label>
+    <label class="field range">Analog drift <input type="range" id="drift" min="0" max="10" step="0.1"></label>
+    <label class="field range">Master <input type="range" id="master" min="0" max="1" step="0.01"></label>
+    <div class="meter">
+      <span id="rate">Engine off</span>
+      <span id="cpu">Press Power or play a key</span>
+    </div>
+  </div>
+</header>
+
+<nav id="models" class="models" aria-label="Instruments"></nav>
+
+<main>
+  <section id="inst" class="inst" aria-label="Instrument panel"></section>
+
+  <section class="perf" aria-label="Keyboard">
+    <div class="kbctl">
+      <div class="grp">
+        <button id="octdn" type="button" title="Octave down (Z)">−</button>
+        <span id="octv" class="octv">Oct 0</span>
+        <button id="octup" type="button" title="Octave up (X)">+</button>
+      </div>
+      <label class="grp vel">Velocity <input type="range" id="vel" min="1" max="127" step="1"><span id="velv"></span></label>
+      <span id="midi" class="midi">MIDI: not connected</span>
+      <button id="hold" type="button" class="hold" aria-pressed="false" title="Sustain pedal (Space)"><span class="led"></span>Hold</button>
+      <button id="panic" type="button" title="All notes off (Esc)">Panic</button>
+    </div>
+    <div class="kbrow">
+      <div class="wheels">
+        <div class="wheel" id="bend" title="Pitch bend"><div class="slot"><div class="thumb"></div></div><span>Pitch</span></div>
+        <div class="wheel" id="modw" title="Modulation"><div class="slot"><div class="thumb"></div></div><span>Mod</span></div>
+      </div>
+      <div id="keys" class="keys" role="group" aria-label="Piano keyboard"></div>
+    </div>
+  </section>
+
+  <section class="console">
+    <div class="scope">
+      <canvas id="scope" aria-label="Oscilloscope"></canvas>
+      <div class="scope-ctl">
+        <button type="button" data-mode="wave" class="on">Scope</button>
+        <button type="button" data-mode="fft">Spectrum</button>
+      </div>
+    </div>
+    <div class="about">
+      <h2 id="about-title"></h2>
+      <p id="about"></p>
+      <div id="algo" class="algo" hidden></div>
+      <p class="help"><b>Play:</b> computer keys <kbd>A</kbd>–<kbd>;</kbd> (white) and <kbd>W</kbd> <kbd>E</kbd> <kbd>T</kbd> <kbd>Y</kbd> <kbd>U</kbd> <kbd>O</kbd> <kbd>P</kbd> (black), <kbd>Z</kbd>/<kbd>X</kbd> octave, <kbd>Space</kbd> sustain. Click or touch the keyboard (lower on a key = louder), or plug in a MIDI controller (Chrome, Edge, Firefox). <b>Controls:</b> drag up/down, <kbd>Shift</kbd>-drag for fine, scroll wheel, double-click to reset.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <p><b>How it works.</b> Every sound is generated in real time by a custom DSP engine running on the browser’s audio thread — no samples. Oscillators, filters, envelopes and effects are modelled from their circuits and computed in 64-bit floating point at up to 8× the output sample rate, then band-limited back down with ~100 dB Kaiser half-band filters. Instrument and company names are trademarks of their respective owners and are used only to describe the instruments being emulated; this project is not affiliated with or endorsed by them.</p>
+</footer>
+
+<div id="tip" class="tip" role="status"></div>
+<script type="module" src="main.js?v=1"></script>
+</body>
+</html>
