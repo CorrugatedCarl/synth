@@ -6,13 +6,23 @@
 <title>SYNTH — Circuit-Level Analog Synthesizer Emulations</title>
 <meta name="description" content="Play twelve landmark synthesizers from 1965–1983 in your browser — Moog, ARP, Yamaha, Sequential, Korg, Roland, Oberheim — modelled at the circuit level in 64-bit floating point with up to 384 kHz internal processing.">
 <meta name="theme-color" content="#0c0d0f">
+<link rel="canonical" href="https://synth.domlavin.com/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="SYNTH">
+<meta property="og:url" content="https://synth.domlavin.com/">
 <meta property="og:title" content="SYNTH — Circuit-Level Analog Synthesizer Emulations">
 <meta property="og:description" content="Twelve classic synthesizers, modelled at the circuit level, playable in your browser.">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="SYNTH — Circuit-Level Analog Synthesizer Emulations">
+<meta name="twitter:description" content="Twelve classic synthesizers, modelled at the circuit level, playable in your browser.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230c0d0f'/%3E%3Cpath d='M5 21 L11 9 L11 21 L17 9 L17 21 L23 9 L23 21 L27 13' fill='none' stroke='%23f2a33a' stroke-width='2.4' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=2">
+<!-- web fonts load without blocking first paint; the system-font fallbacks in style.css show until they arrive -->
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap"></noscript>
+<link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
 <header class="top">
@@ -26,7 +36,7 @@
   <div class="engine">
     <button id="power" class="power" type="button" aria-pressed="false"><span class="led"></span><span class="lbl">Power</span></button>
     <label class="field">Sample rate
-      <select id="sr">
+      <select id="sr" title="Context sample rate. Device is best: any other rate is resampled to your audio hardware's rate by the browser">
         <option value="0">Device</option>
         <option value="44100">44.1 kHz</option>
         <option value="48000">48 kHz</option>
@@ -37,7 +47,7 @@
       </select>
     </label>
     <label class="field">Oversampling
-      <select id="os">
+      <select id="os" title="Internal oversampling (capped so the internal rate stays at or below 384 kHz)">
         <option value="1">1× (off)</option>
         <option value="2">2×</option>
         <option value="4">4× (studio)</option>
@@ -53,54 +63,138 @@
   </div>
 </header>
 
-<nav id="models" class="models" aria-label="Instruments"></nav>
+<section class="studio" id="studio" aria-label="Multitrack studio">
+  <div class="transport" id="transport">
+    <div class="tgrp">
+      <button id="tStart" class="tb" type="button" title="Return to start (Home)" aria-label="Return to start"><svg viewBox="0 0 20 20"><path d="M4 4h2v12H4zM16 4v12L7 10z"/></svg></button>
+      <button id="tPlay" class="tb" type="button" title="Play / stop (Space)" aria-label="Play"><svg viewBox="0 0 20 20"><path class="i-play" d="M6 4l10 6-10 6z"/><path class="i-stop" d="M5 5h10v10H5z"/></svg></button>
+      <button id="tRec" class="tb rec" type="button" title="Record (R)" aria-label="Record" aria-pressed="false"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="5.5"/></svg></button>
+    </div>
+    <div class="tpos" title="Position (bar.beat.tick) and time"><span id="tBBT">1.1.000</span><span id="tTime">0:00.000</span></div>
+    <label class="tfield">Tempo <input id="tBpm" type="number" min="20" max="300" step="0.1"></label>
+    <label class="tfield">Time sig <span class="sig"><input id="tSigN" type="number" min="1" max="16" step="1"><span>/</span><select id="tSigD"><option>2</option><option>4</option><option>8</option><option>16</option></select></span></label>
+    <label class="tfield">Bars <input id="tBars" type="number" min="1" max="999" step="1"></label>
+    <div class="tgrp">
+      <button id="tLoop" class="tt" type="button" aria-pressed="false" title="Loop the highlighted region (drag in the ruler to set it)">Loop</button>
+      <button id="tMetro" class="tt" type="button" aria-pressed="false" title="Metronome (M)">Click</button>
+      <select id="tCount" title="Count-in before recording"><option value="0">No count-in</option><option value="1">Count-in 1 bar</option><option value="2">Count-in 2 bars</option></select>
+      <select id="tRecMode" title="Recording mode"><option value="overdub">Overdub</option><option value="replace">Replace</option></select>
+      <button id="tInQ" class="tt" type="button" aria-pressed="false" title="Quantize note starts as they are recorded (uses the quantize grid)">Input Q</button>
+    </div>
+    <div class="tgrp">
+      <button id="tUndo" class="tb sm" type="button" title="Undo (Ctrl/⌘ Z)" aria-label="Undo"><svg viewBox="0 0 20 20"><path d="M8 5L3 9.5 8 14v-3c4 0 6.5 1 8 4-.5-4.5-3-7.5-8-8z"/></svg></button>
+      <button id="tRedo" class="tb sm" type="button" title="Redo (Shift Ctrl/⌘ Z)" aria-label="Redo"><svg viewBox="0 0 20 20"><path d="M12 5l5 4.5-5 4.5v-3c-4 0-6.5 1-8 4 .5-4.5 3-7.5 8-8z"/></svg></button>
+    </div>
+    <div class="tgrp file">
+      <button id="fNew" type="button" title="New empty project">New</button>
+      <button id="fOpen" type="button" title="Open a project (.json) or import a MIDI file (.mid)">Open / Import…</button>
+      <button id="fSave" type="button" title="Download this project as a .json file">Save</button>
+      <button id="fMidi" type="button" title="Export all tracks as a Standard MIDI File">Export MIDI</button>
+      <button id="fBounce" type="button" class="hot" title="Render the song to a WAV file">Bounce WAV…</button>
+      <input type="file" id="fFile" accept=".json,.mid,.midi,application/json,audio/midi,audio/x-midi" hidden>
+    </div>
+  </div>
+  <div class="arrbar">
+    <button id="aAdd" type="button" title="Add a track using the currently shown instrument">+ Track</button>
+    <button id="aMulti" type="button" title="Give track 1 MIDI channel 1, track 2 channel 2 … so a multi-channel controller can play them all at once">Assign MIDI channels</button>
+    <span class="sep"></span>
+    <span class="rangeinfo" id="aRange">Drag across the lanes to select bars</span>
+    <button id="aCopy" type="button" title="Copy the selected bars (all tracks)">Copy</button>
+    <button id="aPaste" type="button" title="Paste bars at the playhead (merging)">Paste</button>
+    <button id="aDup" type="button" title="Duplicate the selected bars right after themselves">Duplicate</button>
+    <button id="aClear" type="button" title="Delete the notes in the selected bars">Clear</button>
+    <button id="aDel" type="button" title="Remove the selected bars and close the gap">Delete bars</button>
+    <button id="aIns" type="button" title="Insert empty bars at the start of the selection (or the playhead)">Insert bars</button>
+    <button id="aLoopSel" type="button" title="Set the loop to the selection">Loop selection</button>
+  </div>
+  <div class="arrwrap" id="arrwrap">
+    <div class="heads" id="heads"></div>
+    <div class="lanes" id="lanes"></div>
+  </div>
+</section>
 
-<main>
-  <section id="inst" class="inst" aria-label="Instrument panel"></section>
+<nav class="tabs" aria-label="Editor views">
+  <button type="button" data-tab="inst" class="on">Instrument</button>
+  <button type="button" data-tab="roll">Piano Roll</button>
+  <span class="tabtrack" id="tabTrack"></span>
+</nav>
 
-  <section class="perf" aria-label="Keyboard">
-    <div class="kbctl">
-      <div class="grp">
-        <button id="octdn" type="button" title="Octave down (Z)">−</button>
-        <span id="octv" class="octv">Oct 0</span>
-        <button id="octup" type="button" title="Octave up (X)">+</button>
+<div class="tab" id="tab-inst">
+  <nav id="models" class="models" aria-label="Instrument for the selected track"></nav>
+  <main>
+    <section id="inst" class="inst" aria-label="Instrument panel">
+      <p class="boot" id="boot">Loading the instruments… If this message stays, the page needs a current browser (Safari 14.5+, Chrome 66+, Firefox 76+) with JavaScript enabled, opened over https:// rather than as a local file.</p>
+      <noscript><p class="boot">This instrument needs JavaScript.</p></noscript>
+    </section>
+    <section class="console">
+      <div class="scope">
+        <canvas id="scope" aria-label="Oscilloscope"></canvas>
+        <div class="scope-ctl">
+          <button type="button" data-mode="wave" class="on">Scope</button>
+          <button type="button" data-mode="fft">Spectrum</button>
+        </div>
       </div>
-      <label class="grp vel">Velocity <input type="range" id="vel" min="1" max="127" step="1"><span id="velv"></span></label>
-      <span id="midi" class="midi">MIDI: not connected</span>
-      <button id="hold" type="button" class="hold" aria-pressed="false" title="Sustain pedal (Space)"><span class="led"></span>Hold</button>
-      <button id="panic" type="button" title="All notes off (Esc)">Panic</button>
-    </div>
-    <div class="kbrow">
-      <div class="wheels">
-        <div class="wheel" id="bend" title="Pitch bend"><div class="slot"><div class="thumb"></div></div><span>Pitch</span></div>
-        <div class="wheel" id="modw" title="Modulation"><div class="slot"><div class="thumb"></div></div><span>Mod</span></div>
+      <div class="about">
+        <h2 id="about-title"></h2>
+        <p id="about"></p>
+        <div id="algo" class="algo" hidden></div>
+        <p class="help"><b>Play:</b> computer keys <kbd data-code="KeyA">A</kbd>–<kbd data-code="Semicolon">;</kbd> (white) and <kbd data-code="KeyW">W</kbd> <kbd data-code="KeyE">E</kbd> <kbd data-code="KeyT">T</kbd> <kbd data-code="KeyY">Y</kbd> <kbd data-code="KeyU">U</kbd> <kbd data-code="KeyO">O</kbd> <kbd data-code="KeyP">P</kbd> (black), <kbd data-code="KeyZ">Z</kbd>/<kbd data-code="KeyX">X</kbd> octave, <kbd data-code="KeyC">C</kbd>/<kbd data-code="KeyV">V</kbd> velocity. Click or touch the keyboard (lower on a key = louder), or plug in a MIDI controller (Chrome, Edge, Firefox) — each track listens on its MIDI channel. <b>Studio:</b> <kbd>Space</kbd> play/stop, <kbd data-code="KeyR">R</kbd> record, <kbd data-code="KeyM">M</kbd> metronome, <kbd>Home</kbd> to start, <kbd>Ctrl/⌘ Z</kbd> undo. Keys go by position, so any layout works: if R, M or Q is a note key on yours, use the key where it sits on a US keyboard. <b>Controls:</b> drag up/down, <kbd>Shift</kbd>-drag for fine, scroll wheel, double-click to reset.</p>
       </div>
-      <div id="keys" class="keys" role="group" aria-label="Piano keyboard"></div>
-    </div>
-  </section>
+    </section>
+  </main>
+</div>
 
-  <section class="console">
-    <div class="scope">
-      <canvas id="scope" aria-label="Oscilloscope"></canvas>
-      <div class="scope-ctl">
-        <button type="button" data-mode="wave" class="on">Scope</button>
-        <button type="button" data-mode="fft">Spectrum</button>
-      </div>
+<div class="tab" id="tab-roll" hidden>
+  <div class="rolltools" id="rolltools"></div>
+  <div class="rollwrap" id="rollwrap"></div>
+  <p class="rollhelp">Double-click to add a note · drag to move (Shift = no snap, Alt/Option = copy) · drag edges to resize · double-click a note to delete · drag the empty grid to select · velocity lane at the bottom · drag in the ruler to set the loop. Keys: <kbd>Del</kbd> delete, arrows nudge (Shift = octave), <kbd data-code="KeyQ">Q</kbd> quantize, <kbd>Ctrl/⌘</kbd>+<kbd>A</kbd> <kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd> <kbd>D</kbd> <kbd>Z</kbd>, <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> tools.</p>
+</div>
+
+<section class="perf" aria-label="Keyboard">
+  <p id="notice" class="notice" role="status" hidden></p>
+  <div class="kbctl">
+    <div class="grp">
+      <button id="octdn" type="button" title="Octave down (Z)">−</button>
+      <span id="octv" class="octv">Oct 0</span>
+      <button id="octup" type="button" title="Octave up (X)">+</button>
     </div>
-    <div class="about">
-      <h2 id="about-title"></h2>
-      <p id="about"></p>
-      <div id="algo" class="algo" hidden></div>
-      <p class="help"><b>Play:</b> computer keys <kbd>A</kbd>–<kbd>;</kbd> (white) and <kbd>W</kbd> <kbd>E</kbd> <kbd>T</kbd> <kbd>Y</kbd> <kbd>U</kbd> <kbd>O</kbd> <kbd>P</kbd> (black), <kbd>Z</kbd>/<kbd>X</kbd> octave, <kbd>Space</kbd> sustain. Click or touch the keyboard (lower on a key = louder), or plug in a MIDI controller (Chrome, Edge, Firefox). <b>Controls:</b> drag up/down, <kbd>Shift</kbd>-drag for fine, scroll wheel, double-click to reset.</p>
+    <label class="grp vel">Velocity <input type="range" id="vel" min="1" max="127" step="1"><span id="velv"></span></label>
+    <span id="playing" class="playing"></span>
+    <button id="midi" type="button" class="midi" title="Ask the browser for access to your MIDI controllers">Enable MIDI</button>
+    <button id="hold" type="button" class="hold" aria-pressed="false" title="Sustain pedal"><span class="led"></span>Hold</button>
+    <button id="panic" type="button" title="All notes off (Esc)">Panic</button>
+    <button id="kbHide" type="button" title="Show / hide the keyboard" aria-expanded="true">▾</button>
+  </div>
+  <div class="kbrow" id="kbrow">
+    <div class="wheels">
+      <div class="wheel" id="bend" title="Pitch bend"><div class="slot"><div class="thumb"></div></div><span>Pitch</span></div>
+      <div class="wheel" id="modw" title="Modulation"><div class="slot"><div class="thumb"></div></div><span>Mod</span></div>
     </div>
-  </section>
-</main>
+    <div id="keys" class="keys" role="group" aria-label="Piano keyboard"></div>
+  </div>
+</section>
+
+<div id="modal" class="modal" hidden>
+  <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
+    <h2 id="dlgTitle">Bounce to WAV</h2>
+    <div class="dlgbody">
+      <label>Range <select id="bRange"><option value="song">Whole song</option><option value="loop">Loop region</option><option value="sel">Bar selection</option></select></label>
+      <label>Sample rate <select id="bSr"><option value="44100">44.1 kHz</option><option value="48000" selected>48 kHz</option><option value="88200">88.2 kHz</option><option value="96000">96 kHz</option></select></label>
+      <label>Format <select id="bBits"><option value="16">16-bit PCM (dithered)</option><option value="24" selected>24-bit PCM (dithered)</option><option value="32">32-bit float</option></select></label>
+      <label>Oversampling <select id="bOs"><option value="2">2×</option><option value="4">4×</option><option value="8" selected>8× (highest quality, max 384 kHz internal — not real-time)</option></select></label>
+      <label>Release tail <select id="bTail"><option value="0">None</option><option value="2" selected>2 s</option><option value="5">5 s</option></select></label>
+      <label class="chk"><input type="checkbox" id="bNorm"> Normalise peak to −0.3 dBFS</label>
+      <p class="dlgnote" id="bNote">Renders every audible track (mute/solo respected) offline — no clicks or dropouts regardless of CPU.</p>
+    </div>
+    <div class="dlgbtns"><button type="button" id="bCancel">Cancel</button><button type="button" id="bGo" class="hot">Render &amp; download</button></div>
+  </div>
+</div>
 
 <footer class="foot">
-  <p><b>How it works.</b> Every sound is generated in real time by a custom DSP engine running on the browser’s audio thread — no samples. Oscillators, filters, envelopes and effects are modelled from their circuits and computed in 64-bit floating point at up to 8× the output sample rate, then band-limited back down with ~100 dB Kaiser half-band filters. Instrument and company names are trademarks of their respective owners and are used only to describe the instruments being emulated; this project is not affiliated with or endorsed by them.</p>
+  <p><b>How it works.</b> Every sound is generated in real time by a custom DSP engine running on the browser’s audio thread — no samples. Oscillators, filters, envelopes and effects are modelled from their circuits and computed in 64-bit floating point at up to 8× the output sample rate (at most 384 kHz internally), then band-limited back down with ~100 dB Kaiser half-band filters. Instrument and company names are trademarks of their respective owners and are used only to describe the instruments being emulated; this project is not affiliated with or endorsed by them.</p>
 </footer>
 
-<div id="tip" class="tip" role="status"></div>
-<script type="module" src="main.js?v=2"></script>
+<div id="tip" class="tip" aria-hidden="true"></div>
+<script type="module" src="main.js?v=4"></script>
 </body>
 </html>

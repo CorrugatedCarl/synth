@@ -22,12 +22,21 @@ AudioWorklet DSP engine — no samples:
 
 ## Engine
 
-* 64-bit floating-point DSP at 1×/2×/4×/8× the device rate (up to 1.5 MHz internal at 192 kHz × 8),
+* 64-bit floating-point DSP at 1×/2×/4×/8× the device rate (capped at 384 kHz internal),
   decimated with cascaded Kaiser half-band FIRs (~100 dB stopband).
 * Zero-delay-feedback filters with per-sample nonlinear (tanh) linearisation; diode ladder and Sallen-Key
   solved implicitly as coupled capacitor networks.
 * PolyBLEP / PolyBLAMP oscillators, free-running phase, component tolerances, thermal drift (Ornstein–Uhlenbeck).
 * Measured aliasing on a C7 sawtooth: −41 dBc (1×), −53 dBc (2×), −76 dBc (4×), −96 dBc (8×).
 
-No build step — static files only (`index.html`, `style.css`, `main.js`, `models.js`, `engine.js`).
+## Studio
+
+* Unlimited tracks, each its own synth instance (any of the 12 models + preset), with volume, pan, mute, solo, arm and a MIDI input channel (Omni or 1–16) — play several synths at once from a multi-channel controller.
+* Sample-accurate song playback scheduled inside the audio engine; seamless loops; tempo / time signature; metronome with count-in.
+* MIDI / keyboard recording (overdub or replace, optional input quantize), including pitch bend, mod wheel, sustain and aftertouch.
+* Piano roll: draw / select / erase, snap grids incl. triplets & dotted, velocity lane, quantize (grid, strength, swing, starts/ends), transpose, velocity tools, legato, humanize, stretch, reverse, fix overlaps, split, cut/copy/paste/duplicate, undo/redo.
+* Arrangement: bar-range copy / paste / duplicate / clear / delete / insert, loop from selection.
+* Save/open projects (.json), Standard MIDI File import/export, offline WAV bounce (16/24-bit PCM or 32-bit float, up to 8× oversampling).
+
+No build step — static files only (`index.html`, `style.css`, `main.js`, `models.js`, `engine.js`, `song.js`, `roll.js`, `arrange.js`).
 To run locally serve the folder over HTTP (AudioWorklet needs a secure/localhost origin).
