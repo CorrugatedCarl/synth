@@ -1361,6 +1361,12 @@ class PatchP {
     this.fm01 = nz(o.fm01); this.fm10 = nz(o.fm10); this.polyOscPw = nz(o.polyOscPw); this.polyOscFilt = nz(o.polyOscFilt);
     this.velAmp = nz(o.velAmp); this.atPitch = nz(o.atPitch); this.dac = nz(o.dac); this.attack = nz(o.attack); this.release = nz(o.release);
     this.tone = nz(o.tone); this.alg = nz(o.alg); this.fb = nz(o.fb); this.transpose = nz(o.transpose);
+    // Serum voices and the FX rack (every model): consumed only through SerumVoice.apply / FXRack.set, which copy the
+    // scalars into fixed-shape fields. serumT / fxrT are absent from live patches whose curve tables did not change.
+    this.bpm = this.osCap = 0.5;
+    this.bpm = nz(o.bpm); this.osCap = nz(o.osCap);
+    this.serum = o.serum || null; this.serumT = o.serumT || null; this.fxr = o.fxr || null; this.fxrT = o.fxrT || null;
+    this.needs = o.needs || null;
     const os = o.osc || [];
     this.osc = [new OscP(os[0] || EMPTY), new OscP(os[1] || EMPTY), new OscP(os[2] || EMPTY)];
     this.hpf = new HpfP(o.hpf || EMPTY); this.vcf = new VcfP(o.vcf || EMPTY);
@@ -1416,14 +1422,32 @@ const WARM = [
   engine: 'divide', level: 0.31, attack: 0.011, release: 0.051, tone: 0.53, fx: { ensemble: 1 },
   reg: { bass: 1, cello: 0.9, viola: 0.8, violin: 1, trumpet: 0.7, horn: 0.6 } }]);
 let warmed = false;
+let sxHot = false; // a Serum processor of this scope has rendered its real patch (no first-use warm-up needed any more)
+
+// Serum (serum-dsp.js) and the FX rack (fx-dsp.js) are separate classic scripts loaded before this one; either may be
+// missing (failed load): a Serum track is then silent, a missing rack is bypassed. Both are looked up at use.
+const SXV = 32;                                                              // Serum voices at most (built as POLY needs them, §11.3)
+const osCapOf = base => Math.max(1, 2 ** Math.floor(Math.log2(384000 / base + 1e-9))); // internal rate ≤ 384 kHz
+function decChain(os) { // cascaded half-band decimators for one channel: os → 1
+  const d = [];
+  let s = os;
+  while (s > 1) { d.push(s === 2 ? new Halfband(127, 10) : new Halfband(35, 9)); s >>= 1; }
+  return d;
+}
 
 class SynthProcessor extends AudioWorkletProcessor {
   constructor(opt) {
     super();
     const po = (opt && opt.processorOptions) || {};
+    this.hostOS = po.hostOS || po.os || 4; // the app's oversampling (a Serum track runs at its own, §11.4)
+    this.offline = !!po.offline;           // a bounce / resample: no deadline, so no JIT warm-ups
     this.init(po.os || 4);
     // the first processor in this global scope warms the JIT up before anything is heard (once, never again)
-    if (!warmed) { warmed = true; try { this.warmUp(); } catch (err) { /* a failed warm-up only costs speed */ } this.restore(po.os || 4); }
+    if (!warmed && !this.offline) { warmed = true; try { this.warmUp(); } catch (err) { /* a failed warm-up only costs speed */ } this.restore(po.os || 4); }
+    // wavetables of an offline render (bounce, resample): given to the first node of the context only, the table
+    // store is shared by every processor of the global scope (§7.5)
+    const SD = globalThis.SerumDSP;
+    if (SD && Array.isArray(po.wts)) for (const e of po.wts) if (e && e.id) SD.storeWT(e.id, e);
     if (po.patch) this.setPatch(po.patch);
     if (po.seq) this.seqMsg(po.seq);
     if (po.song) this.songMsg(po.song);
@@ -1440,12 +1464,16 @@ class SynthProcessor extends AudioWorkletProcessor {
         this.setPatch(w);
         this.noteOn(48, 0.9); this.noteOn(67, 0.6);
         run(30);
-        if (round === 0) this.msg({ t: 'os', v: this.OS === 4 ? 2 : 4 });
+        if (round === 0) this.reqOS(this.OS === 4 ? 2 : 4);
         this.noteOff(48); this.noteOff(67);
         run(10);
         this.osPend = 0; this.osR = 1; this.osHold = 0;
       }
     }
+    // Serum voices (every warp / filter family / LFO mode, §8.4.2) and every FX rack module and mode (§8.5.2)
+    const SD = globalThis.SerumDSP;
+    if (SD) SD.warmUp(this);
+    if (this.rack) this.rack.warmUp();
   }
   // back to the freshly built state after the warm-up, resetting in place (fields that never change in normal use
   // are not reassigned, so the code compiled during the warm-up stays valid)
@@ -1454,6 +1482,11 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.bend = this.bendRaw = this.wheel = this.at = 0; this.sustain = false; this.held = []; this.stamp = 0; this.monoGate = false;
     this.lfoPh = this.lfoSH = this.lfoLast = this.gdrift = 0; this.r = 987654321; this.loadT = 0; this.statN = 0; this.ctl = 0; this.act = 0;
     this.chorus.reset(); this.ens.reset(); this.lim.reset(); this.dcx.fill(0); this.dcy.fill(0);
+    const SD = globalThis.SerumDSP;
+    if (SD && this.sx) SD.reset(this);
+    if (this.rack) this.rack.reset();
+    this.ct = null; this.pat.fill(0); this.patSeen = false; this.mon = false; this.monF = 0; this.spanF = 0;
+    this.pnN = 0; this.nfG = 1; this.nfT = 1; this.sxW = 0;
     this.setOS(os);
     this.dacHold = this.dacT = this.dacPend = 0; this.osPend = 0; this.osR = 1; this.osHold = 0; this.quietF = 0; this.frames = 0;
     this.setPatch(DEFAULT_PATCH);
@@ -1468,10 +1501,21 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.load = 0; this.loadT = 0; this.statN = 0; this.ctl = 0;
     this.smT = new Float64Array(S_N); this.smS = new Float64Array(S_N); this.smA = new Float64Array(S_N);
     this.smB = new Float64Array(S_N); this.smD = new Float64Array(S_N); this.smMv = false;
+    // Serum host fields (§8.4.1, §11.2): sx belongs to SerumDSP (attach), ct = last curve tables, pat = poly pressure
+    this.sx = null; this.ct = null; this.pat = new Float64Array(128); this.patSeen = false; this.spanF = 0;
+    this.sxUse = 1; this.sxOne = 1; this.sxDir = 0; this.sxDirOn = 0; this.sxW = 0;
+    this.mon = false; this.monF = 0; // snapshot / FX monitor subscription (smon)
+    this.pnN = 0; this.pnM = Math.max(1, Math.round(this.base * 0.005)); // panic: frames left of the output fade, its length
+    this.nfG = 1; this.nfT = 1; // Serum without the FX rack: master × bypass gain (now, target)
     this.setOS(os);
     this.chorus = new Chorus(this.base); this.ens = new Ensemble(this.base); this.lim = new Limiter(this.base);
-    this.dcx = [0, 0]; this.dcy = [0, 0];
+    this.dcx = new Float64Array(2); this.dcy = new Float64Array(2); // (typed: the field keeps one type in every processor)
     this.monoBuf = new Float64Array(128); this.Lb = new Float64Array(128); this.Rb = new Float64Array(128); this.act = 0;
+    this.dLb = new Float64Array(128); this.dRb = new Float64Array(128); this.osG = new Float64Array(128);
+    // the FX rack of this track (any model): after the built-in chorus / ensemble, before the limiter (§1, §11.5)
+    const FX = globalThis.FXDSP;
+    this.rack = null;
+    if (FX) { try { this.rack = new FX.FXRack(this.base); } catch (err) { this.rack = null; } }
     this.dacHold = 0; this.dacT = 0; this.dacPend = 0;
     this.osPend = 0; this.osR = 1; this.osHold = 0; // pending oversampling change: fade ramp, frames held at zero
     this.kind = '';
@@ -1485,9 +1529,11 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.OS = os; this.fs = this.base * os; this.CH = 4 * os;
     this.buf = new Float64Array(128 * os);
     this.tmp = [new Float64Array(64 * os), new Float64Array(32 * os), new Float64Array(16 * os)];
-    this.dec = [];
-    let s = os;
-    while (s > 1) { this.dec.push(s === 2 ? new Halfband(127, 10) : new Halfband(35, 9)); s >>= 1; }
+    this.dec = decChain(os);
+    // Serum: stereo main bus (buf = L) and the direct-out pair, each decimated by its own chain (§0.3-2, §11.2)
+    this.bufR = new Float64Array(128 * os); this.bufDL = new Float64Array(128 * os); this.bufDR = new Float64Array(128 * os);
+    this.decR = decChain(os); this.decDL = decChain(os); this.decDR = decChain(os);
+    this.bufM = new Float64Array(128 * os); // mono scratch (a DX7 Vintage-DAC fade draining under a Serum patch)
     this.lfoBuf = new Float64Array(32);
     this.fcMax = Math.min(40000, this.fs * 0.45);
     const cr = this.fs / this.CH;
@@ -1506,6 +1552,9 @@ class SynthProcessor extends AudioWorkletProcessor {
     // de-click fade (~3 ms) rendered ahead when voices are stopped hard
     this.fadeN = Math.max(1, Math.round(this.base * 0.003 / 4)) * 4 * os;
     this.tail = new Float64Array(this.fadeN); this.fadeTmp = new Float64Array(this.fadeN); this.tailN = 0; this.tailP = 0;
+    // Serum voices stopped hard fade out in stereo (plus their direct-out pair)
+    this.tailL = new Float64Array(this.fadeN); this.tailR = new Float64Array(this.fadeN);
+    this.tailDL = new Float64Array(this.fadeN); this.tailDR = new Float64Array(this.fadeN); this.tailSN = 0; this.tailSP = 0;
     // DX7 Vintage DAC: instants and samples of the 49.096 kHz stream inside one span, per-chunk counts; the fade of
     // voices stopped hard on that path is kept per DAC instant (tailD) and goes out through the stream
     const dM = Math.ceil(128 * os / 1.5) + 8, fM = Math.ceil(this.fadeN / 1.5) + 8;
@@ -1562,7 +1611,9 @@ class SynthProcessor extends AudioWorkletProcessor {
   }
   setPatch(p) {
     p = normPatch(p);
-    const old = this.p, kind = p.engine;
+    const old = this.p, kind = p.engine, was = this.kind;
+    if (p.serumT) this.ct = p.serumT; // a live patch without serumT keeps the stored curve tables (§4.1)
+    if (kind === 'serum') { this.setSerum(p, old); return; }
     const nv = kind === 'divide' ? 0 : p.mode === 'poly' ? p.poly : Math.max(1, p.unison || 1);
     const rebuild = kind !== this.kind || !this.voices || this.voices.length !== nv || old.mode !== p.mode;
     let keep = null;
@@ -1586,17 +1637,90 @@ class SynthProcessor extends AudioWorkletProcessor {
     for (const v of this.voices) if (v.note >= 0) { const nt = v.note + (v.det || 0); v.pitch += nt - v.target; v.target = nt; }
     this.recalc();
     for (const v of this.voices) v.apply(p);
+    // back from Serum, which does not feed the chorus / ensemble lines: they hold the model played before it, so they
+    // start empty instead of replaying that audio
+    if (was === 'serum') { this.chorus.reset(); this.ens.reset(); }
     this.chorus.mode = p.fx.ensemble ? 0 : p.fx.chorus | 0; this.chorus.hiss = p.fx.hiss || 0;
     this.ens.on = p.fx.ensemble | 0;
     this.bend = this.bendRaw * (p.bendRange || 2);
     this.smTargets();
     if (rebuild || !this.anyActive()) this.smSnap();
     if (!this.tailN && !this.tailDN && !this.anyActive()) { this.chorus.snap(); this.ens.snap(); }
+    if (this.rack) this.rack.set(p.fxr || null, p.fxrT);
+    if (was === 'serum') { // left Serum: no FX modulation, no curve tables, back to the app's oversampling
+      if (this.sxW) { const SD = globalThis.SerumDSP; if (SD) SD.warmEnd(this); this.sxW = 0; }
+      if (this.rack) this.rack.setMods(null);
+      this.ct = null;
+      this.reqOS(this.hostOS);
+    }
     if (keep) for (const [kn, kv] of keep) this.noteOn(kn, kv);
+  }
+  // Serum patch (§11.3): 32 voices built once on the kind change and never rebuilt (POLY and mono / poly changes
+  // only change which voices are addressed); the processor runs at Serum's own oversampling (§11.4)
+  setSerum(p, old) {
+    const SD = globalThis.SerumDSP, cp = p.serum;
+    let keep = null;
+    if (this.kind !== 'serum' || !this.voices) {
+      this.allOff(true); // fades out with the old patch before anything is torn down
+      this.p = p;
+      this.kind = 'serum';
+      this.voices = [];
+      if (SD) { // per-processor Serum state (idempotent); the voices follow below; no SerumDSP: a silent track
+        SD.attach(this);
+        this.sx.mon = this.mon ? 1 : 0;
+        // the first Serum patch of this scope: hidden voices warm the code up on it while the track is silent
+        if (!sxHot && !this.offline && SD.warmStart) { SD.warmStart(this); this.sxW = 1; }
+      }
+      this.held = []; this.monoGate = false;
+      this.chorus.mode = 0; this.ens.on = 0;
+    } else {
+      if ((old.mode === 'poly') !== (p.mode === 'poly')) { // mono <-> poly: keys still physically held are re-struck
+        if (old.mode !== 'poly') { const v0 = this.voices[0]; keep = this.held.map(n => [n, v0 ? v0.vel : 0.8]); }
+        else keep = this.voices.filter(x => x.gate && !x.sus).sort((x, y) => x.stamp - y.stamp).map(x => [x.note, x.vel]);
+        this.allOff(false);
+        this.held = []; this.monoGate = false;
+      }
+      this.p = p;
+    }
+    const vs = this.voices, nUse = p.mode === 'poly' ? Math.max(1, Math.min(SXV, Math.round(p.poly) || 1)) : 1;
+    if (nUse < this.sxUse) for (let i = nUse; i < vs.length; i++) if (vs[i].gate) { vs[i].sus = false; vs[i].noteOff(); }
+    this.sxUse = nUse;
+    this.sxOne = cp && cp.oneNote ? 1 : 0;
+    this.sxDir = cp && cp.direct ? 1 : 0;
+    // voices are built up to the highest POLY so far (at most SXV) and never rebuilt; building all 32 at once cost up
+    // to 1.5 ms of the shared audio thread. Voices above POLY are spare: never addressed, no filter delay lines.
+    if (SD) while (vs.length < nUse) vs.push(new SD.SerumVoice(this, vs.length));
+    for (let i = 0; i < vs.length; i++) { vs[i].spare = i >= nUse ? 1 : 0; vs[i].apply(p); }
+    if (this.rack) this.rack.set(p.fxr || null, p.fxrT);
+    // master volume (g.master, pow3 law) and Bypass belong to the rack's output stage (deviation 3); without fx-dsp the
+    // engine applies their base values itself
+    const fb = p.fxr && p.fxr.base, mn = fb && fb.length > 86 ? +fb[0] : 1, by = fb && fb.length > 86 ? +fb[86] : 0;
+    this.nfT = by >= 0.5 ? 0 : mn > 0 ? (mn < 1 ? mn * mn * mn : 1) : 0;
+    if (!this.tailN && !this.tailSN && !this.tailDN && !this.anyActive()) this.nfG = this.nfT; // silent: no ramp needed
+    this.bend = this.bendRaw * (p.bendRange || 2);
+    this.smTargets();
+    const os = this.sxOS(p);
+    if (os !== this.OS || this.osPend) this.reqOS(os);
+    if (keep) for (const [kn, kv] of keep) this.noteOn(kn, kv);
+  }
+  // Serum's processor oversampling (lead sign-off on deviation 9): min(Global quality, 384 kHz cap, the app's CPU cap)
+  sxOS(p) {
+    const cp = p.serum;
+    let os = cp && cp.os >= 1 ? +cp.os : 2;
+    const cap = osCapOf(this.base);
+    if (os > cap) os = cap;
+    if (p.osCap >= 1 && os > p.osCap) os = p.osCap;
+    return 2 ** Math.floor(Math.log2(os) + 1e-9);
+  }
+  reqOS(v) { // while anything sounds the change waits behind a short fade (see osFade)
+    if (v === this.OS) this.osPend = 0;
+    else if (this.tailN || this.tailDN || this.tailSN || this.anyActive()) this.osPend = v;
+    else { this.osPend = 0; this.setOS(v); }
   }
   // render what is still sounding ~3 ms ahead with a raised-cosine fade; it is mixed into the next spans
   fadeOut(vs) {
     const list = vs || this.voices || [];
+    if (this.kind === 'serum') { this.fadeSerum(list); return; }
     let any = false;
     for (const v of list) if (v.active) { any = true; break; }
     const dv = !vs && this.kind === 'divide' && this.div && this.div.list.length > 0;
@@ -1628,6 +1752,35 @@ class SynthProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < M; i++) tl[i] += tmp[i] * (0.5 + 0.5 * Math.cos(Math.PI * i / M));
     if (this.tailN < M) this.tailN = M;
   }
+  // Serum: the voices render the fade in stereo (and their direct-out pair) in pieces of at most one span; for the
+  // voices these are extra renders without a begin (§8.4.3). Uses the span buffers: only called between spans.
+  fadeSerum(list) {
+    let any = false;
+    for (const v of list) if (v.active) { any = true; break; }
+    if (!any) return;
+    const M = this.fadeN, PC = 128 * this.OS, dir = this.sxDir === 1;
+    const L = this.buf, R = this.bufR, DL = this.bufDL, DR = this.bufDR;
+    const tL = this.tailL, tR = this.tailR, tDL = this.tailDL, tDR = this.tailDR;
+    if (!this.tailSN) { tL.fill(0); tR.fill(0); tDL.fill(0); tDR.fill(0); } // a spent tail leaves its samples behind
+    else if (this.tailSP) {
+      const P = this.tailSP, E = P + this.tailSN;
+      tL.copyWithin(0, P, E); tR.copyWithin(0, P, E); tDL.copyWithin(0, P, E); tDR.copyWithin(0, P, E);
+      tL.fill(0, this.tailSN); tR.fill(0, this.tailSN); tDL.fill(0, this.tailSN); tDR.fill(0, this.tailSN);
+      this.tailSP = 0;
+    }
+    for (let o = 0; o < M; o += PC) {
+      const n = Math.min(PC, M - o);
+      L.fill(0, 0, n); R.fill(0, 0, n);
+      if (dir) { DL.fill(0, 0, n); DR.fill(0, 0, n); }
+      for (const v of list) if (v.active) { if (dir) v.render(L, R, n, DL, DR); else v.render(L, R, n); }
+      for (let i = 0; i < n; i++) {
+        const w = 0.5 + 0.5 * Math.cos(Math.PI * (o + i) / M);
+        tL[o + i] += L[i] * w; tR[o + i] += R[i] * w;
+        if (dir) { tDL[o + i] += DL[i] * w; tDR[o + i] += DR[i] * w; }
+      }
+    }
+    if (this.tailSN < M) this.tailSN = M;
+  }
   allOff(hard) {
     if (hard) this.fadeOut(null);
     if (this.voices) for (const v of this.voices) { v.noteOff(); v.sus = false; if (hard) v.kill(); }
@@ -1643,7 +1796,17 @@ class SynthProcessor extends AudioWorkletProcessor {
     switch (d.t) {
       case 'patch': this.setPatch(d.p); break;
       case 'on': this.noteOn(d.n, d.v); break;
-      case 'off': this.noteOff(d.n); break;
+      case 'off': this.noteOff(d.n, d.rv); break;
+      case 'pat': if (d.n >= 0 && d.n < 128) { this.pat[d.n | 0] = +d.v || 0; this.patSeen = true; } break; // poly pressure
+      case 'wt': { const SD = globalThis.SerumDSP; if (SD) SD.storeWT(d.id, d); break; }
+      case 'wtf': { const SD = globalThis.SerumDSP; if (SD) SD.storeWTFrame(d.id, d.frame, d.levels); break; }
+      case 'wtdel': { const SD = globalThis.SerumDSP; if (SD) SD.dropWT(d.id); break; }
+      case 'smon': // the host's snapshot / FX meter subscription: posted every ~33 ms of audio while on
+        this.mon = !!d.on; this.monF = 0;
+        if (this.sx) this.sx.mon = d.on ? 1 : 0;
+        if (this.mon) this.postMon();
+        break;
+      case 'fxph': this.port.postMessage({ t: 'fxph', v: this.rack ? this.rack.phases() : null }); break;
       case 'bend': this.bendRaw = d.v; this.bend = d.v * (this.p.bendRange || 2); break;
       case 'wheel': this.wheel = d.v; break;
       case 'at': this.at = d.v; break;
@@ -1655,19 +1818,47 @@ class SynthProcessor extends AudioWorkletProcessor {
           if (this.div) for (let n = 0; n < 128; n++) if (this.div.gate[n] === 2) this.div.gate[n] = 0;
         }
         break;
-      case 'os': // while anything sounds the change waits behind a short fade (see osFade)
-        if (d.v === this.OS) this.osPend = 0;
-        else if (this.tailN || this.tailDN || this.anyActive()) this.osPend = d.v;
-        else { this.osPend = 0; this.setOS(d.v); }
+      case 'os': // the app's oversampling; a Serum track keeps its own (§11.4)
+        this.hostOS = d.v;
+        if (this.kind !== 'serum') this.reqOS(d.v);
         break;
-      case 'panic': this.allOff(true); if (this.sq) this.sq.run = false; this.seqOn = []; break;
+      case 'panic': {
+        this.allOff(true); if (this.sq) this.sq.run = false; this.seqOn = [];
+        const SD = globalThis.SerumDSP;
+        if (SD && this.sx) SD.reset(this);
+        // the de-click fades just rendered would re-excite effects cleared now: the output (fades, chorus / ensemble,
+        // FX rack) fades out over 5 ms instead, then everything is cleared (at once when nothing can sound)
+        const quiet = !this.tailN && !this.tailDN && !this.tailSN && this.quietF > this.base * 2 && (!this.rack || this.rack.idle());
+        if (quiet) this.panicClear(); else this.pnN = this.pnM;
+        break;
+      }
       case 'seq': this.seqMsg(d.s); break;
       case 'song': this.songMsg(d); break;
       case 'transport': this.transportMsg(d); break;
     }
   }
+  panicClear() {
+    this.pnN = 0;
+    this.tailN = this.tailP = this.tailSN = this.tailSP = this.tailDN = this.tailDP = 0;
+    this.dacHold = this.dacPend = 0; this.dacLive = false;
+    this.chorus.reset(); this.chorus.snap(); this.ens.reset(); this.ens.snap();
+    if (this.rack) this.rack.reset(false);
+  }
+  panicFade(n) { // raised-cosine fade of the whole output, then panicClear
+    const Lb = this.Lb, Rb = this.Rb, M = this.pnM;
+    let k = this.pnN;
+    for (let i = 0; i < n; i++) {
+      const g = k > 0 ? 0.5 - 0.5 * Math.cos(Math.PI * k / M) : 0;
+      Lb[i] *= g; Rb[i] *= g;
+      if (k > 0) k--;
+    }
+    this.pnN = k;
+    if (k === 0) this.panicClear();
+  }
   noteOn(n, v) {
     const p = this.p;
+    if (this.rack) this.rack.trigger(); // Hyper RETRIG
+    if (this.kind === 'serum') { this.sxNoteOn(n, v); return; }
     if (!this.anyActive()) { this.smTargets(); this.smSnap(); } // nothing sounding: start at the panel values
     if (this.kind === 'divide') { this.div.noteOn(n); return; }
     if (p.mode !== 'poly') {
@@ -1691,6 +1882,32 @@ class SynthProcessor extends AudioWorkletProcessor {
     vc.stamp = ++this.stamp;
     vc.noteOn(n, v, false, this.glc(false));
   }
+  // Serum (§11.3): poly allocation over voices[0 … POLY−1]; a repeated note reuses its voice only with "one of any
+  // note number" on; mono plays voices[0] (the voice does portamento, legato and unison itself)
+  sxNoteOn(n, v) {
+    const vs = this.voices;
+    if (!vs.length) return; // SerumDSP missing: a silent track
+    if (this.sxW) { const SD = globalThis.SerumDSP; if (SD) SD.warmEnd(this); this.sxW = 0; sxHot = true; } // real notes now
+    if (this.p.mode !== 'poly') {
+      const i = this.held.indexOf(n); if (i >= 0) this.held.splice(i, 1);
+      this.held.push(n);
+      this.monoPlay(v, true);
+      return;
+    }
+    const nUse = this.sxUse < vs.length ? this.sxUse : vs.length;
+    let vc = null;
+    if (this.sxOne) for (let i = 0; i < nUse; i++) { const x = vs[i]; if (x.active && x.note === n) { vc = x; break; } }
+    if (!vc) {
+      let best = null;
+      for (let i = 0; i < nUse; i++) { const x = vs[i]; if (!x.active && (!best || x.stamp < best.stamp)) best = x; }
+      if (!best) for (let i = 0; i < nUse; i++) { const x = vs[i]; if (!x.gate && (!best || x.stamp < best.stamp)) best = x; }
+      if (!best) for (let i = 0; i < nUse; i++) { const x = vs[i]; if (x.sus && (!best || x.stamp < best.stamp)) best = x; }
+      if (!best) for (let i = 0; i < nUse; i++) { const x = vs[i]; if (!best || x.stamp < best.stamp) best = x; }
+      vc = best;
+    }
+    vc.stamp = ++this.stamp;
+    vc.noteOn(n, v, false, 1);
+  }
   monoPlay(v, fresh) {
     const p = this.p, h = this.held;
     let n;
@@ -1701,20 +1918,27 @@ class SynthProcessor extends AudioWorkletProcessor {
     const gated = this.monoGate && (!fresh || h.length > 1);
     const legato = gated && p.legato;
     const g = this.glc(gated);
-    for (const x of this.voices) x.noteOn(n, fresh ? v : x.vel, legato, g);
+    if (this.kind === 'serum') { const x = this.voices[0]; if (x) x.noteOn(n, fresh ? v : x.vel, legato, g); }
+    else for (const x of this.voices) x.noteOn(n, fresh ? v : x.vel, legato, g);
     this.monoGate = true;
   }
-  noteOff(n) {
+  // rv: release velocity (MIDI note-off, 0–1), passed to the Serum voices it releases (§11.3)
+  noteOff(n, rv) {
     const p = this.p;
     if (this.kind === 'divide') { this.div.gate[n] = this.sustain && this.div.gate[n] ? 2 : 0; return; }
+    const sx = this.kind === 'serum';
     if (p.mode !== 'poly') {
       const i = this.held.indexOf(n); if (i < 0) return;
       const wasTop = this.voices[0] && this.voices[0].note === n;
       this.held.splice(i, 1);
       if (this.held.length) { if (wasTop) this.monoPlay(this.voices[0].vel, false); }
-      else if (!this.sustain) { this.monoGate = false; for (const x of this.voices) x.noteOff(); }
+      else if (!this.sustain) {
+        this.monoGate = false;
+        if (sx) { if (this.voices.length) this.voices[0].noteOff(rv); } else for (const x of this.voices) x.noteOff();
+      }
       return;
     }
+    if (sx) { for (const x of this.voices) if (x.gate && x.note === n) { if (this.sustain) x.sus = true; else x.noteOff(rv); } return; }
     for (const x of this.voices) if (x.gate && x.note === n) { if (this.sustain) x.sus = true; else x.noteOff(); }
   }
   runLFO(nCh) {
@@ -1781,7 +2005,11 @@ class SynthProcessor extends AudioWorkletProcessor {
     const tp = this.tp;
     if (!d.play) {
       tp.pend = null;
-      if (tp.play) { tp.play = false; this.releaseSong(true); }
+      if (tp.play) {
+        tp.play = false; this.releaseSong(true); this.transportHook(false);
+        // preference "silence effect tails when transport stops" (§11.5): the rack's tails fade out over 5 ms
+        if (this.rack && this.p.fxr && this.p.fxr.silence) this.rack.reset(true);
+      }
       return;
     }
     tp.pend = { frame: d.frame, tick: d.tick, fpt: d.fpt, loop: !!d.loop, ls: d.ls || 0, le: d.le || 0, seek: d.seek !== false, end: d.end == null ? null : d.end };
@@ -1796,6 +2024,17 @@ class SynthProcessor extends AudioWorkletProcessor {
     }
   }
   tickAt(F) { const tp = this.tp; return tp.tick + (F - tp.frame) / tp.fpt; }
+  // Serum host fields (§8.4.1): the song tempo while the transport plays, else the patch's; the song position in
+  // beats at the start of the current span, or null when stopped
+  get bpm() { const tp = this.tp; return tp && tp.play ? 60 * this.base / (tp.fpt * 960) : this.p && this.p.bpm > 0 ? this.p.bpm : 120; }
+  songBeat() { const tp = this.tp; return tp && tp.play ? this.tickAt(this.spanF) / 960 : null; }
+  // play with seek (playing) / stop: Serum's host-synced state and the rack's LFO phases restart, so a song rendered
+  // from a given tick is identical live and offline (§6.16, §8.5.2)
+  transportHook(playing) {
+    const SD = globalThis.SerumDSP;
+    if (SD && this.kind === 'serum' && this.sx) SD.transport(this, playing);
+    if (playing && this.rack) this.rack.transport();
+  }
   songEvents(F) { // handles transport + song events due at frame F; returns frames to the next event
     const tp = this.tp;
     let dist = 1e9;
@@ -1803,10 +2042,12 @@ class SynthProcessor extends AudioWorkletProcessor {
       const P = tp.pend;
       if (F >= P.frame - 0.5) {
         tp.pend = null;
-        if (P.seek || !tp.play) this.releaseSong(false);
+        const start = P.seek || !tp.play;
+        if (start) this.releaseSong(false);
         tp.play = true; tp.frame = P.frame; tp.tick = P.tick; tp.fpt = P.fpt; tp.loop = P.loop; tp.ls = P.ls; tp.le = P.le; tp.end = P.end;
         tp.wrap = P.loop && P.le > P.ls && P.tick < P.le;
         this.reseek = true;
+        if (start) this.transportHook(true);
       } else dist = P.frame - F;
     }
     if (!tp.play) return dist;
@@ -1820,7 +2061,7 @@ class SynthProcessor extends AudioWorkletProcessor {
       this.releaseSong(false);
       this.reseek = true;
     }
-    if (tp.end != null && t >= tp.end) { tp.play = false; this.releaseSong(true); if (this.sq && this.sq.sync) this.seqRelease(); return dist; }
+    if (tp.end != null && t >= tp.end) { tp.play = false; this.releaseSong(true); this.transportHook(false); if (this.sq && this.sq.sync) this.seqRelease(); return dist; }
     const sn = this.sn, sc = this.sc;
     if (this.reseek) {
       let lo = 0, hi = sn.length / 4;
@@ -1943,6 +2184,7 @@ class SynthProcessor extends AudioWorkletProcessor {
     while (off < n) {
       let len = n - off;
       const F = F0 + off;
+      this.spanF = F; // songBeat() of this span (and of a transport applied at F)
       let d = this.songEvents(F);
       if (q && (q.run || q.sync)) { const d2 = this.seqEvents(F); if (d2 < d) d = d2; }
       if (d < len) { len = Math.max(4, Math.ceil(d / 4) * 4); if (len > n - off) len = n - off; }
@@ -1950,46 +2192,76 @@ class SynthProcessor extends AudioWorkletProcessor {
       if (q && q.run && !q.sync) q.pos += len;
       off += len;
     }
+    if (this.mon && (this.monF += n) >= this.base * 0.033) { this.monF = 0; this.postMon(); }
     this.loadT += Date.now() - t0;
     this.statN += n;
     if (this.statN >= this.base * 0.25) {
-      this.port.postMessage({ t: 'stats', load: this.loadT / (this.statN / this.base * 1000), voices: this.act });
+      this.port.postMessage({ t: 'stats', load: this.loadT / (this.statN / this.base * 1000), voices: this.kind === 'serum' ? this.sxVoices() : this.act, os: this.OS });
       this.loadT = 0; this.statN = 0;
     }
     return true;
+  }
+  // monitor message (§8.4.4, §11.6): Serum's snapshot (null for other models), the rack's gain reduction and phases
+  postMon() {
+    const SD = globalThis.SerumDSP, r = this.rack;
+    this.port.postMessage({ t: 'smon', s: SD && this.kind === 'serum' && this.sx ? SD.snapshot(this) : null, gr: r ? r.gr() : null, fxph: r ? r.phases() : null });
+  }
+  sxVoices() { // oscillator voices sounding (Serum's voice counter)
+    const SD = globalThis.SerumDSP, s = SD && this.sx ? SD.snapshot(this) : null;
+    return s ? s.oscVoices : 0;
   }
   // An oversampling change rebuilds the decimators (empty history) and shifts the group delay, so it is made at
   // silence: the voice mix fades out (~4 ms raised cosine), the switch happens at zero, the output stays muted
   // while the new decimators fill (~1.7 ms), then fades back in. Applied before the chorus / ensemble, so their
   // delay lines never hold the gap.
-  osFade(x, n) {
-    const st = 1 / (this.base * 0.004);
+  osFade(n, a, b, c, d) { // channels b, c, d optional (Serum: L, R and the direct-out pair share one ramp)
+    const st = 1 / (this.base * 0.004), g = this.osG;
     let r = this.osR, h = this.osHold;
     for (let i = 0; i < n; i++) {
       if (this.osPend) { r -= st; if (r < 0) r = 0; }
       else if (h > 0) { h--; r = 0; }
       else { r += st; if (r > 1) r = 1; }
-      x[i] *= r * r * (3 - 2 * r);
+      g[i] = r * r * (3 - 2 * r);
     }
     this.osR = r; this.osHold = h;
+    for (let i = 0; i < n; i++) a[i] *= g[i];
+    if (b) for (let i = 0; i < n; i++) b[i] *= g[i];
+    if (c) for (let i = 0; i < n; i++) c[i] *= g[i];
+    if (d) for (let i = 0; i < n; i++) d[i] *= g[i];
+  }
+  decim(dec, src, dst, n) { // OS-rate channel → base rate through its own half-band chain
+    let s = src, len = n * this.OS;
+    for (let k = 0; k < dec.length; k++) {
+      const d = k === dec.length - 1 ? dst : this.tmp[k];
+      dec[k].process(s, d, len >> 1);
+      s = d; len >>= 1;
+    }
+    if (dec.length === 0) for (let i = 0; i < n; i++) dst[i] = src[i];
   }
   renderSpan(Lo, Ro, off, n) {
     if (this.osPend && this.osR === 0) { this.setOS(this.osPend); this.osPend = 0; this.osHold = Math.ceil(this.base * 0.0017); }
     const OS = this.OS, N = n * OS, buf = this.buf, p = this.p;
     this.ctl += n / 4; // control ticks (rate independent), also counted while skipping: idle voices' EGs keep time
     // silent instrument: once every voice and effect tail has died away, skip the DSP entirely
-    const any = this.tailN > 0 || this.tailDN > 0 || this.anyActive();
+    const any = this.tailN > 0 || this.tailDN > 0 || this.tailSN > 0 || this.pnN > 0 || this.sxW > 0 || this.anyActive();
     if (any) this.quietF = 0;
-    else if ((this.quietF += n) > this.base * 2) {
+    else if ((this.quietF += n) > this.base * 2 && (!this.rack || this.rack.idle())) {
       for (let i = 0; i < n; i++) { Lo[off + i] = 0; if (Ro !== Lo) Ro[off + i] = 0; }
       this.act = 0;
+      if (this.kind === 'serum') { const SD = globalThis.SerumDSP; if (SD && this.sx) SD.idle(this, n); } // LFOs, clocks, smoothers keep time
       return;
     }
+    if (this.kind === 'serum') { this.renderSerum(Lo, Ro, off, n); return; }
     buf.fill(0, 0, N);
     if (this.tailN) { // de-click fade of voices that were stopped hard
       const k = Math.min(N, this.tailN), tl = this.tail, P = this.tailP;
       for (let i = 0; i < k; i++) buf[i] += tl[P + i];
       this.tailP += k; this.tailN -= k; if (!this.tailN) this.tailP = 0;
+    }
+    if (this.tailSN) { // Serum voices stopped hard by a model switch: their stereo fade, folded to mono
+      const k = Math.min(N, this.tailSN), P = this.tailSP, tL = this.tailL, tR = this.tailR, tDL = this.tailDL, tDR = this.tailDR;
+      for (let i = 0; i < k; i++) buf[i] += 0.5 * (tL[P + i] + tR[P + i] + tDL[P + i] + tDR[P + i]);
+      this.tailSP += k; this.tailSN -= k; if (!this.tailSN) this.tailSP = 0;
     }
     const nCh = Math.max(1, Math.round(N / this.CH));
     if (this.lfoBuf.length < nCh) this.lfoBuf = new Float64Array(nCh);
@@ -2025,11 +2297,74 @@ class SynthProcessor extends AudioWorkletProcessor {
     }
     if (this.dec.length === 0) for (let i = 0; i < n; i++) this.monoBuf[i] = buf[i];
     const mono = this.monoBuf, Lb = this.Lb, Rb = this.Rb;
-    if (this.osPend || this.osR < 1) this.osFade(mono, n);
+    if (this.osPend || this.osR < 1) this.osFade(n, mono);
     for (let i = 0; i < n; i++) Lb[i] = Rb[i] = mono[i];
     this.chorus.process(mono, Lb, Rb, n);
     this.ens.process(mono, Lb, Rb, n);
-    // output stage: DC block, stereo-linked peak limiter, final safety clip
+    if (this.rack) this.rack.process(Lb, Rb, n); // the track's FX rack (bypass-cheap when every module is off)
+    if (this.pnN) this.panicFade(n);
+    this.outStage(Lo, Ro, off, n);
+  }
+  // Serum span (§11.2): voices in stereo at the OS rate (+ the direct-out pair) → FX modulation → decimation of each
+  // channel → oversampling fade → FX rack (adds the direct pair, master, bypass) → DC block / limiter
+  renderSerum(Lo, Ro, off, n) {
+    const SD = globalThis.SerumDSP, N = n * this.OS, dir = this.sxDir === 1;
+    const L = this.buf, R = this.bufR, DL = this.bufDL, DR = this.bufDR;
+    L.fill(0, 0, N); R.fill(0, 0, N);
+    if (dir) {
+      DL.fill(0, 0, N); DR.fill(0, 0, N);
+      if (!this.sxDirOn) { for (const c of [this.decDL, this.decDR]) for (const h of c) h.buf.fill(0); } // no stale history
+    }
+    this.sxDirOn = dir ? 1 : 0;
+    if (this.tailN) { // the previous model's voices stopped hard (model switch)
+      const k = Math.min(N, this.tailN), tl = this.tail, P = this.tailP;
+      for (let i = 0; i < k; i++) { L[i] += tl[P + i]; R[i] += tl[P + i]; }
+      this.tailP += k; this.tailN -= k; if (!this.tailN) this.tailP = 0;
+    }
+    if (this.tailSN) { // de-click fade of Serum voices that were stopped hard
+      const k = Math.min(N, this.tailSN), P = this.tailSP, tL = this.tailL, tR = this.tailR, tDL = this.tailDL, tDR = this.tailDR;
+      if (dir) for (let i = 0; i < k; i++) { L[i] += tL[P + i]; R[i] += tR[P + i]; DL[i] += tDL[P + i]; DR[i] += tDR[P + i]; }
+      else for (let i = 0; i < k; i++) { L[i] += tL[P + i] + tDL[P + i]; R[i] += tR[P + i] + tDR[P + i]; }
+      this.tailSP += k; this.tailSN -= k; if (!this.tailSN) this.tailSP = 0;
+    }
+    if (this.tailDN) { // a DX7 left mid-fade with its Vintage DAC on (model switch): the stream drains as in renderSpan
+      const M = this.bufM;
+      M.fill(0, 0, N);
+      this.renderDac(M, N, this.fs / 49096, false);
+      for (let i = 0; i < N; i++) { L[i] += M[i]; R[i] += M[i]; }
+      if (!this.tailDN) this.dacLive = false;
+    }
+    let act = 0;
+    const vs = this.voices;
+    if (SD && vs.length) {
+      SD.begin(this, N);
+      for (let i = 0; i < vs.length; i++) {
+        const v = vs[i];
+        if (!v.active) continue;
+        if (dir) v.render(L, R, N, DL, DR); else v.render(L, R, N);
+        act++;
+      }
+      if (this.sxW && SD.warmTick(this, N) === 0) { this.sxW = 0; sxHot = true; }
+      if (this.rack) this.rack.setMods(SD.fxMods(this));
+    }
+    this.act = act;
+    const Lb = this.Lb, Rb = this.Rb, dLb = this.dLb, dRb = this.dRb;
+    this.decim(this.dec, L, Lb, n); this.decim(this.decR, R, Rb, n);
+    if (dir) { this.decim(this.decDL, DL, dLb, n); this.decim(this.decDR, DR, dRb, n); }
+    if (this.osPend || this.osR < 1) this.osFade(n, Lb, Rb, dir ? dLb : null, dir ? dRb : null);
+    if (this.rack) this.rack.process(Lb, Rb, n, dir ? dLb : undefined, dir ? dRb : undefined);
+    else { // no fx-dsp: the direct pair, master and Bypass (base values, ramped across the span)
+      if (dir) for (let i = 0; i < n; i++) { Lb[i] += dLb[i]; Rb[i] += dRb[i]; }
+      const g0 = this.nfG, dg = (this.nfT - g0) / n;
+      for (let i = 0; i < n; i++) { const g = g0 + dg * (i + 1); Lb[i] *= g; Rb[i] *= g; }
+      this.nfG = this.nfT;
+    }
+    if (this.pnN) this.panicFade(n);
+    this.outStage(Lo, Ro, off, n);
+  }
+  // output stage: DC block, stereo-linked peak limiter, final safety clip
+  outStage(Lo, Ro, off, n) {
+    const Lb = this.Lb, Rb = this.Rb;
     const Rdc = 1 - TAU * 4 / this.base;
     let x0 = this.dcx[0], y0 = this.dcy[0], x1 = this.dcx[1], y1 = this.dcy[1];
     for (let i = 0; i < n; i++) {

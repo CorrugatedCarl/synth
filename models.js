@@ -3,7 +3,9 @@
  * mapping from panel controls to the engine's circuit parameters.
  * Dial values are stored in panel units (mostly 0–10, like the hardware);
  * `conv` turns a dial position into a physical quantity.
+ * Models with `custom` (Serum) bring their own panel and state ({ s } from serum-core.js) instead of sections.
  */
+import { defaultSerum, compileSerum, FACTORY_PRESETS } from './serum-core.js?v=5';
 
 const lg = Math.log2;
 const ex = (v, lo, hi) => lo * Math.pow(hi / lo, v / 10);
@@ -687,7 +689,30 @@ export const DX_ALGS = [
   [[], [1, 2, 3, 4, 5, 6], [6, 6]],
 ];
 
-export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7];
+/* ================================================================ 2014 */
+// Wavetable synth with its own panel (serum-ui.js) and voice engine (serum-dsp.js). The state lives at vals.s
+// (serum-core.js defaultSerum); map() compiles it for the engine (SPEC-serum §4.1, §11.7).
+const serum = {
+  id: 'serum', name: 'Serum', model: 'Wavetable Synthesizer', maker: 'Xfer Records', year: 2014, custom: true,
+  tag: 'Poly · 2 wavetable oscillators · sub · noise · 96 filter types · 8 LFOs · 32-slot matrix · 10 FX',
+  about: 'The software wavetable synth that shaped a decade of electronic production: two wavetable oscillators whose frames can be warped in real time, with a modulation workflow you drive by dragging sources onto controls. Rebuilt here from its documented behaviour — 2 × 256-frame oscillators with 23 warp modes and up to 16-voice unison, sub and noise oscillators, 96 filter types, 3 envelopes, 8 drawable LFOs, a 32-slot matrix, a full wavetable editor and a 10-module effects rack. Every wavetable, noise source and preset here is original.',
+  theme: { ctl: 'knob', knob: 'serum', panel: '#0f1216', face: '#161b21', ink: '#dfe6ee', label: '#7f8b98', accent: '#4fb3ff' },
+  sections: [],
+  // new tracks and Init: defaults with the GLOBAL preferences applied (default oversampling, author, 3D view, §2.1)
+  defaults(prefs) {
+    const s = defaultSerum();
+    if (prefs) {
+      if (prefs.defOs === 1 || prefs.defOs === 2 || prefs.defOs === 4) s.global.os = prefs.defOs;
+      if (typeof prefs.author === 'string') s.author = prefs.author.slice(0, 64);
+      if (prefs.view3d) s.ui.view3d = [1, 1];
+    }
+    return { s };
+  },
+  map(P, v, G) { return compileSerum(v && v.s, { bpm: G.bpm, smooth: G.smooth }); },
+  presets: FACTORY_PRESETS,
+};
+
+export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum];
 for (const m of MODELS) {
   m.controls = [];
   for (const s of m.sections) for (const c of s.c) m.controls.push(c);

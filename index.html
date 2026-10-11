@@ -22,7 +22,8 @@
 <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" media="print" onload="this.media='all'">
 <noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap"></noscript>
-<link rel="stylesheet" href="style.css?v=4">
+<link rel="stylesheet" href="style.css?v=5">
+<link rel="modulepreload" href="serum-core.js?v=5">
 </head>
 <body>
 <header class="top">
@@ -116,6 +117,7 @@
 <nav class="tabs" aria-label="Editor views">
   <button type="button" data-tab="inst" class="on">Instrument</button>
   <button type="button" data-tab="roll">Piano Roll</button>
+  <button type="button" data-tab="fx" title="The selected track’s effects rack (every instrument has one)">FX</button>
   <span class="tabtrack" id="tabTrack"></span>
 </nav>
 
@@ -142,6 +144,11 @@
       </div>
     </section>
   </main>
+</div>
+
+<div class="tab" id="tab-fx" hidden>
+  <div class="fxbar"><span id="fxtitle">FX rack</span><span class="fxhint">Effects run after the instrument, before the output limiter. Switch modules on from the list, drag ≡ to reorder them; a module’s power button bypasses it.</span></div>
+  <section id="fxrack" class="fxtab" aria-label="Effects rack"></section>
 </div>
 
 <div class="tab" id="tab-roll" hidden>
@@ -195,6 +202,6 @@
 </footer>
 
 <div id="tip" class="tip" aria-hidden="true"></div>
-<script type="module" src="main.js?v=4"></script>
+<script type="module" src="main.js?v=5"></script>
 </body>
 </html>

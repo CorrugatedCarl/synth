@@ -264,6 +264,18 @@ body.recording .transport { border-color: #6b2a1c; }
 .tabtrack { margin-left: auto; padding: 0 4px 8px; font-size: 12px; color: var(--mute); font-family: var(--mono); }
 #tab-inst .models { border-bottom: 0; }
 #tab-roll { max-width: 1600px; margin: 0 auto; padding: 12px 24px 0; }
+/* FX tab: the selected track's rack (fx-ui.js styles its own .fxr-root) */
+#tab-fx { max-width: 1600px; margin: 0 auto; padding: 12px 24px 18px; }
+.fxbar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; margin-bottom: 10px; }
+#fxtitle { font-weight: 700; font-size: 14px; }
+.fxhint { font-size: 12px; color: var(--mute); }
+.fxtab { min-height: 240px; border-radius: 10px; background: #0f1216; border: 1px solid var(--line); overflow: hidden; }
+.fxtab > .boot { padding: 18px; }
+/* custom panels (Serum): the panel draws its own surface */
+.inst.custom { padding: 0; background: #0f1216; overflow: hidden; }
+.inst.custom .sxhost { min-height: 320px; }
+.inst.custom .sxhost > .boot { padding: 18px 22px; color: #7f8b98; }
+.head .hpname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--mute); padding: 2px 6px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg2); line-height: 1.6; }
 .rolltools { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; margin-bottom: 10px; font-size: 12px; }
 .rgrp { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 4px 6px; border: 1px solid var(--line); border-radius: 7px; background: #101114; }
 .rlab { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mute); margin: 0 2px; }
@@ -348,7 +360,7 @@ main { padding-top: 0; }
   .console { grid-template-columns: 1fr; }
   .top { padding: 10px 16px; position: static; }
   .perf { padding: 8px 10px calc(10px + env(safe-area-inset-bottom)); }
-  .studio, #tab-roll { padding-left: 12px; padding-right: 12px; }
+  .studio, #tab-roll, #tab-fx { padding-left: 12px; padding-right: 12px; }
   .tabs { padding: 0 12px; }
   .heads { width: 230px; }
   .head .hpreset, .head .hpan, .head .hb[title="Duplicate track"] { display: none; }

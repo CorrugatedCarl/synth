@@ -19,6 +19,7 @@ AudioWorklet DSP engine — no samples:
 | 1981 | Roland Jupiter-8 | cross-mod, sync, IR3109 12/24 dB OTA cascade, HPF |
 | 1982 | Roland Juno-60 | DCO + sub, IR3109, MN3009 BBD chorus I / II / I+II with hiss |
 | 1983 | Yamaha DX7 | 6-operator PM, all 32 algorithms, 4-rate/4-level EGs, 12-bit floating DAC emulation |
+| 2014 | Serum-style wavetable synth | 2 wavetable oscillators (23 warps, 16-voice unison), sub, noise, 96 filter types, 3 envelopes, 8 drawable LFOs, 32-slot drag-and-drop matrix, wavetable editor, original wavetables / noises and 47 factory presets (bass, lead, pad, pluck, keys, chord, arp, sequence, drum, FX) |
 
 ## Engine
 
@@ -31,7 +32,8 @@ AudioWorklet DSP engine — no samples:
 
 ## Studio
 
-* Unlimited tracks, each its own synth instance (any of the 12 models + preset), with volume, pan, mute, solo, arm and a MIDI input channel (Omni or 1–16) — play several synths at once from a multi-channel controller.
+* Unlimited tracks, each its own synth instance (any of the 13 models + preset), with volume, pan, mute, solo, arm and a MIDI input channel (Omni or 1–16) — play several synths at once from a multi-channel controller.
+* Every track has a 10-module effects rack (FX tab: Hyper/Dimension, distortion, flanger, phaser, chorus, delay, compressor, reverb, EQ, filter), reorderable, saved with the project, with factory effect chains (Wide Chorus, Dub Delay, Hall Verb, Plate Room, OTT Squash, Lo-Fi, Hyper Wide, Jet Phaser, Grit Drive) and a user chain library.
 * Sample-accurate song playback scheduled inside the audio engine; seamless loops; tempo / time signature; metronome with count-in.
 * MIDI / keyboard recording (overdub or replace, optional input quantize), including pitch bend, mod wheel, sustain and aftertouch.
 * Piano roll: draw / select / erase, snap grids incl. triplets & dotted, velocity lane, quantize (grid, strength, swing, starts/ends), transpose, velocity tools, legato, humanize, stretch, reverse, fix overlaps, split, cut/copy/paste/duplicate, undo/redo.
