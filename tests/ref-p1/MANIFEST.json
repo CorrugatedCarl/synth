@@ -1,0 +1,48 @@
+{
+  "note": "Frozen Phase-1 code (SPEC-serum2 §0.5 M0, §15.1). Verbatim copies of the files at tag serum-p1; only models.js has its ?v= import suffix rewritten to the sibling path. Never edit: the golden suite verifies these hashes.",
+  "tag": "serum-p1",
+  "commit": "0c99f288b1b980b1ed0a87b1bbbe07061860ce5d",
+  "files": {
+    "serum-core.js": {
+      "sha256": "be4ccfe464bffc6a894a5ddea009f78116a6244177ea7981f1bdb49bf31b2590",
+      "source": "be4ccfe464bffc6a894a5ddea009f78116a6244177ea7981f1bdb49bf31b2590",
+      "rewritten": false
+    },
+    "wt.js": {
+      "sha256": "f0f64a85a511b4637975874aac807cf507561439a31c67e30752701e8282e123",
+      "source": "f0f64a85a511b4637975874aac807cf507561439a31c67e30752701e8282e123",
+      "rewritten": false
+    },
+    "serum-dsp.js": {
+      "sha256": "7a8ff804e13ac8088d32d14d584741f75fe8da02d0e6e20bfc6ea9b3e0fcf83b",
+      "source": "7a8ff804e13ac8088d32d14d584741f75fe8da02d0e6e20bfc6ea9b3e0fcf83b",
+      "rewritten": false
+    },
+    "fx-dsp.js": {
+      "sha256": "e0864ff9d9f2d0bef28690bc0a134f9d18d47f4219818c533cf19c843fe96971",
+      "source": "e0864ff9d9f2d0bef28690bc0a134f9d18d47f4219818c533cf19c843fe96971",
+      "rewritten": false
+    },
+    "engine.js": {
+      "sha256": "d4daf271998e24adb24b3671d0d1c205abac7c92f46c8676bddd4e66bf306377",
+      "source": "d4daf271998e24adb24b3671d0d1c205abac7c92f46c8676bddd4e66bf306377",
+      "rewritten": false
+    },
+    "models.js": {
+      "sha256": "93be430250fc6a3788b614ec3cc09f3aee0cde89de0f53b6b803cf0a42d58ef6",
+      "source": "547a131a7bb2116e832ff070d9b6f4fdf348fb3eb9f6ddf6111be756cb03e45f",
+      "rewritten": true
+    }
+  },
+  "data": {
+    "project-p1.json": {
+      "sha256": "fbb86ed4177de3a9e5b457f94f15e845a0d93c8fb6b7f7063211002e8b9a75a6",
+      "note": "A Phase-1 project file (main.js projectFile layout: 7 tracks — 2 Serum incl. an embedded user wavetable, Minimoog, synced TB-303, Juno-60, DX7, Solina — with FX racks, notes and CCs), built with the frozen modules and song.js at serum-p1. §15.1 item 6."
+    }
+  },
+  "notes": [
+    "RULINGS2 bug fix 1 (transport note-drop, Phase-1 engine defect, all models): the frozen engine.js handles a transport start / play-with-seek and a loop wrap at the first 4-frame span boundary at or after its frame (a wrap often one span later, its frame being reached through rounded tick arithmetic) and re-seeks the song from that later position, so it drops the song notes exactly at the play / seek tick when the transport frame is not a multiple of 4 and the loop-start notes at such wraps. The current engine.js re-seeks from the anchor tick when the anchor lies at most one span (4 frames) before the frame handling it, and plays those notes there. The frozen files are NOT edited: they keep the defect as the reference.",
+    "Golden material (tests/golden-harness.mjs script): its renders stay unaffected by the fix and bit-identical — transport start frames are multiples of 4 and the loop starts on a tick without song events (ls 3880, le 4840; until RULINGS2 it was 3840–4800, whose loop-start notes the reference dropped at the wrap at every rate).",
+    "Expected-different golden cases: golden-harness.mjs TRANSPORT_CASES, tested in golden-classic.test.mjs ('transport note-drop fix (expected different): …'): play at an unaligned frame, play with seek at an unaligned frame, loop wraps at 44.1 kHz / 120 BPM (unaligned wrap frames) and at 48 kHz / 90 BPM (rounded wrap positions). Each proves that every reference note-on happens in the current engine at the same frame, that the extra note-ons are exactly the notes at the start / seek / loop-start tick (≤ 4 frames after the anchor; loops: at every wrap), that the audio is bit-identical up to the first restored note, and (unaligned start) that the reference equals the current engine rendering the song without the dropped notes."
+  ]
+}

@@ -1,4 +1,4 @@
-import { barTicks, beatTicks, snapTick, songEnd } from './song.js?v=5';
+import { barTicks, beatTicks, snapTick, songEnd } from './song.js?v=6';
 
 // Arrangement overview: ruler + one lane per track, drawn on a single hi-DPI canvas.
 const RULER = 24, PADY = 6, MAX_AREA = 16e6; // backing-store area cap (iOS Safari limit)

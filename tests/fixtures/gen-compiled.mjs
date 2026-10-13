@@ -1,17 +1,25 @@
-// Regenerates the compiled-default fixtures from serum-core.js (spec §0.5 M1):
-//   cp-default.json  = compileSerum(defaultSerum()).serum      (CP, §4.1)
-//   ct-default.json  = compileSerum(defaultSerum()).serumT     (CT, §4.1)
-//   fxp-default.json = compileFx(defaultFx())                  (FXP, §4.2; no ctx: master 1, not bypassed)
-//   fxt-default.json = compileFxT(defaultFx())                 (FXT, §4.2; linear X-Shaper tables)
-// Run: node tests/fixtures/gen-compiled.mjs   (tests/serum-core.test.mjs fails when these drift from serum-core)
+// Regenerates the compiled-default fixtures (SPEC-serum §0.5 M1, SPEC-serum2 §4.1):
+//   cp-default.json   = Phase-1 compileSerum(defaultSerum()).serum   (CP v1, from the frozen tests/ref-p1/serum-core.js)
+//   ct-default.json   = Phase-1 compileSerum(defaultSerum()).serumT  (CT v1, idem) — the v1 fixtures stay byte-stable for
+//                       the tests of DSP code that still reads the v1 formats
+//   cp2-default.json  = compileSerum(defaultSerum()).serum                (CP v2, §4.1)
+//   ct2-default.json  = assembleCT(compileSerum(defaultSerum()).serumT)   (CT v2, the full layout assembled from its parts)
+//   fxp-default.json  = compileFx(defaultFxV1())                (FXP v2 of the Phase-1 default rack, fx-core; no ctx: master 1,
+//                       not bypassed; owner F1)
+//   fxt-default.json  = compileFxT(defaultFxV1())               (FXT, fx-core; linear X-Shaper tables; owner F1)
+// Run: node tests/fixtures/gen-compiled.mjs   (tests/serum-core.test.mjs fails when these drift from the modules)
 import { writeFileSync } from 'node:fs';
-import { defaultSerum, compileSerum, defaultFx, compileFx, compileFxT } from '../../serum-core.js';
+import * as P1 from '../ref-p1/serum-core.js';
+import { defaultSerum, compileSerum, assembleCT } from '../../serum-core.js?v=6';
+import { defaultFxV1, compileFx, compileFxT } from '../../fx-core.js?v=6';
 import { stringify } from './load.mjs';
 
 const out = (f, o) => writeFileSync(new URL('./' + f, import.meta.url), stringify(o));
-const patch = compileSerum(defaultSerum());
-out('cp-default.json', patch.serum);
-out('ct-default.json', patch.serumT);
-out('fxp-default.json', compileFx(defaultFx()));
-out('fxt-default.json', compileFxT(defaultFx()));
-console.log('wrote cp-default.json ct-default.json fxp-default.json fxt-default.json');
+const p1 = P1.compileSerum(P1.defaultSerum()), p2 = compileSerum(defaultSerum());
+out('cp-default.json', p1.serum);
+out('ct-default.json', p1.serumT);
+out('cp2-default.json', p2.serum);
+out('ct2-default.json', assembleCT(p2.serumT));
+out('fxp-default.json', compileFx(defaultFxV1()));
+out('fxt-default.json', compileFxT(defaultFxV1()));
+console.log('wrote cp-default.json ct-default.json cp2-default.json ct2-default.json fxp-default.json fxt-default.json');

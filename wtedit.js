@@ -9,14 +9,38 @@
 // host.wt.saveNew and repoints only this oscillator), an editor-local undo history (64 snapshots, ≤ 64 MB), live
 // updates (host.wt.update ≤ 30 Hz with the changed frame indices; spectral-morph tables: full update debounced
 // 150 ms), file import (menu, drop zones, thumbnail drop = replace frame), exports, formulas and every wt.js operation.
-import * as wk from './wk.js?v=5';
-import * as wt from './wt.js?v=5';
+//
+// Phase 2 (SPEC-serum2 §13.13b, §11.13; inv B11): `osc` 0–2 (OSC C); menus ALL (was PROCESS; "from Other Osc" items
+// take a submenu OSC A/B/C ≠ this one, loaded on demand) and REMOVE (was ADD/REMOVE: removal items only, + "Reduce to ▸
+// N frames"; Insert is the + frame button, Init All moved to the TABLE menu);
+// SORT ▸ Randomize; draw tool Mirror; frame COPY / PASTE (contiguous selection, a clipboard shared by every editor of
+// the page; paste inserts after the current frame, ≤ 256; Cmd/Ctrl-C / -V on the frame strip); FFT ▸ Repeat Bin Group;
+// Shift-Cmd/Ctrl-click (touch: the Shift + Alt latches; menu: the FFT context menu's "Nudge Phase Right" on the phase
+// row) on a phase bar nudges its phase by 1/64; IMPORT ▸ Frequency Estimation… (wt.estimatePeriod → split-size field,
+// in the file's samples) and Switch OSC Type ▸ Sample/Granular/Spectral (one audio file through host.smp.import; a
+// single-sample id sets the oscillator's type and `smp` and resets its sample ops, then the editor closes); stereo
+// files import their left channel into OSC A/C and the right one into OSC B (channelFor); EXPORT ▸ All as 16-/32-bit
+// WAV, Single-Cycle Waves (ZIP), 8-bit .256, Selection; TABLE ▸ Save Table… / Rename / Init All (the name field's menu,
+// also on a right-click of the name while it is not being edited; the name is tinted while the table is an automatic
+// " *" copy); a Shift/Alt modifier bar in touch mode (wk.touchMode, or the first touch inside the editor).
+import * as wk from './wk.js?v=6';
+import * as wt from './wt.js?v=6';
 
 const FRAME = 2048, MAXF = 256;
 const STORE_KEY = 'synth.sx.wte', FORMULA_KEY = 'synth.sx.formulas';
 const UNDO_MAX = 64, UNDO_BYTES = 64 * 1024 * 1024;
 const TW = 44; // thumbnail width (px)
-const MENUS = [['Single', 'SINGLE'], ['Process', 'PROCESS'], ['Morph', 'MORPH'], ['Add/Remove', 'ADD/REMOVE'], ['Sort', 'SORT']];
+const MENUS = [['Single', 'SINGLE'], ['Process', 'ALL'], ['Morph', 'MORPH'], ['Add/Remove', 'REMOVE'], ['Sort', 'SORT']];
+const OSC_NAMES = ['OSC A', 'OSC B', 'OSC C'];
+const REDUCE_TO = [2, 4, 8, 16, 32, 64, 128];
+const SWITCH_TYPES = [['sample', 'Sample'], ['gran', 'Granular'], ['spec', 'Spectral']];
+const WAV_ACCEPT = '.wav,.wave,audio/wav,audio/x-wav';
+// Switch OSC Type takes one single-sample audio file (an SFZ or ZIP would import a multisample, which `osc.smp` cannot hold)
+const SAMPLE_ACCEPT = '.wav,.wave,.aif,.aiff,.aifc,.flac,.mp3,.ogg,.oga,.m4a,.aac,audio/*';
+const REMOVE_SKIP = new Set(['add.insert', 'add.initAll']); // REMOVE holds removal items only (§13.13b)
+// The frame clipboard (COPY / PASTE): page-wide, so frames copied in one oscillator's editor paste into another's.
+// Frames are immutable (wt.js convention), so the clipboard shares them.
+const CLIP = { frames: [] };
 const PROCESS_BREAKS = new Set(['all.half', 'all.setSpectra', 'all.blurBinsSpectra', 'all.removeLowSpectra']);
 const IMPORT_ITEMS = [
   ['zeroSnap', 'Import: normal (dynamic pitch zero-snap)…'], ['pitchFollow', 'Import: normal (dynamic pitch follow)…'],
@@ -30,6 +54,7 @@ const TOOL_ICONS = { // 16×16 original glyphs
   halfValley: 'M2 5C3 15 13 15 14 5', halfPeak: 'M2 11C3 1 13 1 14 11', curveUp: 'M2 13C4 4 8 3 14 3', curveDown: 'M2 3C8 3 12 4 14 13',
   interpLin: 'M2 11L14 5M2 11h.1M14 5h.1', interpCurve: 'M2 11C7 11 9 5 14 5M2 11h.1M14 5h.1', nudge: 'M8 2V14M5 5L8 2L11 5M5 11L8 14L11 11',
   noise: 'M1 9L3 5L4 11L6 3L8 12L9 6L11 10L12 4L13 9L15 7',
+  mirror: 'M1 8C2 3 5 2 7 5M9 11C11 14 14 13 15 8M8 1V3M8 7V9M8 13V15',
 };
 const DEF_COL = { bg: '#0f1216', panel: '#161b21', panel2: '#1c232b', line: '#2a333d', ink: '#dfe6ee', mute: '#7f8b98', accent: '#4fb3ff',
   graph: '#59c2ff', warn: '#ff6a4a', on: '#6fe3a1', cur: '#ffd84a' };
@@ -99,6 +124,30 @@ export function classifyFiles(files) {
   return out;
 }
 
+// Phase 2: the channel a stereo file imports into oscillator `osc` (§13.13b: L → OSC A or C, R → OSC B).
+export function channelFor(osc, nch) { return osc === 1 && nch > 1 ? 1 : 0; }
+
+// Phase 2: the oscillators a "from Other Osc" operation can read — every other oscillator of the state (A/B/C) with
+// its table id; `ok` = it plays a wavetable (type 'wt', or no type: a v1 state).
+export function otherOscs(s, osc) {
+  const list = s && Array.isArray(s.osc) ? s.osc : [], out = [];
+  for (let o = 0; o < Math.min(3, list.length); o++) {
+    if (o === osc) continue;
+    const x = list[o] || {};
+    out.push({ osc: o, label: OSC_NAMES[o], id: x.wt ? String(x.wt) : '', ok: !!x.wt && (x.type == null || x.type === 'wt') });
+  }
+  return out;
+}
+
+// Phase 2: the frames COPY puts on the clipboard (the contiguous selection [a, b], clamped).
+export function copyRange(table, sel) {
+  const R = table && table.frames ? table.frames.length : 0;
+  if (!R) return [];
+  let a = clamp(Math.round(+(sel && sel[0]) || 0), 0, R - 1), b = clamp(Math.round(+(sel && sel[1] != null ? sel[1] : a) || 0), 0, R - 1);
+  if (a > b) { const t = a; a = b; b = t; }
+  return table.frames.slice(a, b + 1);
+}
+
 export function loadFormulas(storage) {
   let v = null;
   try { v = storage && storage.get ? storage.get(FORMULA_KEY, null) : null; } catch (err) { v = null; }
@@ -151,7 +200,9 @@ const CSS = `
 .wte-sep { width: 1px; align-self: stretch; margin: 2px 3px; background: var(--sx-line, #2a333d); }
 .wte-name { flex: 1 1 140px; min-width: 80px; max-width: 320px; min-height: 26px; padding: 3px 6px; color: var(--sx-ink, #dfe6ee); background: var(--sx-panel, #161b21); border: 1px solid var(--sx-line, #2a333d); border-radius: 4px; font: inherit; }
 .wte-grow { flex: 1 1 auto; }
+.wte-name.wte-tint { color: var(--sx-accent, #4fb3ff); border-color: var(--sx-accent, #4fb3ff); }
 .wte-x { font-size: 13px; padding: 3px 9px; }
+.wte-root:not(.wte-touch) .wte-mk { display: none; }
 .wte-fft { display: flex; gap: 6px; flex: 0 0 auto; height: clamp(110px, 24vh, 210px); }
 .wte-cv { position: absolute; left: 0; top: 0; display: block; width: 100%; height: 100%; border-radius: 4px; background: var(--sx-panel, #161b21); touch-action: none; cursor: crosshair; }
 .wte-fftw, .wte-cvw { position: relative; flex: 1 1 0; min-width: 0; min-height: 0; }
@@ -175,7 +226,7 @@ const CSS = `
 .wte-msg { flex: 1 1 100%; min-height: 15px; color: var(--sx-mute, #7f8b98); font: 500 11px/1.3 var(--mono, ui-monospace, monospace); }
 .wte-msg.wte-err { color: var(--sx-warn, #ff6a4a); }
 .wte-foot { display: flex; align-items: stretch; gap: 6px; flex: 0 0 auto; height: 66px; }
-.wte-fctl { display: grid; grid-template-columns: repeat(3, auto); align-content: center; gap: 3px; }
+.wte-fctl { display: grid; grid-template-columns: repeat(4, auto); align-content: center; gap: 3px; }
 .wte-fnum { width: 64px; min-height: 26px; color: var(--sx-ink, #dfe6ee); background: var(--sx-panel, #161b21); border: 1px solid var(--sx-line, #2a333d); border-radius: 4px; font: 500 12px var(--mono, ui-monospace, monospace); text-align: center; }
 .wte-fcount { align-self: center; color: var(--sx-mute, #7f8b98); font: 500 11px var(--mono, ui-monospace, monospace); }
 .wte-strip { position: relative; flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; border-radius: 4px; background: var(--sx-panel, #161b21); }
@@ -215,7 +266,7 @@ export class WTEditor {
     const o = opts || {};
     this.root = root;
     this.host = o.host || {};
-    this.osc = o.osc ? 1 : 0;
+    this.osc = clamp(Math.round(+o.osc || 0), 0, 2);
     this.onClose = typeof o.onClose === 'function' ? o.onClose : null;
     this.isOpen = false;
     this.closed = false;
@@ -225,7 +276,7 @@ export class WTEditor {
     this.cow = null; // pending saveNew
     this.cowPre = null; // the table an import replaced while that saveNew was pending (it belongs to that copy)
     this.freshName = null; // name for the next copy-on-write (imports keep the file name)
-    this.other = null; // the other oscillator's table (Process ops)
+    this.others = new Map(); // osc index → { id, table }: other oscillators' tables ("from Other Osc" ops), on demand
     this.cur = 0; this.sel = [0, 0]; this.anchor = 0;
     this.tool = 'flat'; this.grid = 0;
     this.prefs = { binZoom: 512, waveZoom: 1, split: '' };
@@ -242,6 +293,8 @@ export class WTEditor {
     this.seedN = (Date.now() >>> 0) || 1;
     this.lastSel = -1;
     this.tips = [];
+    this.namePress = null; // right-button press on the name field: whether it was focused already (null: none)
+    this.ctxNudge = false; // a Shift-Ctrl-click just nudged a phase (the macOS context menu that follows is swallowed)
   }
 
   /* ------------------------------------------------------------ lifecycle */
@@ -275,7 +328,6 @@ export class WTEditor {
         this.nameIn.value = this.table.name;
         this.invalidate();
       });
-    this.loadOther();
     try { this.rootEl.focus({ preventScroll: true }); } catch (err) { /* not focusable yet */ }
   }
 
@@ -292,6 +344,7 @@ export class WTEditor {
     this.tips.length = 0;
     if (this.grid$ && this.grid$.destroy) this.grid$.destroy();
     if (this.live$ && this.live$.destroy) this.live$.destroy();
+    if (this.mbar && this.mbar.destroy) this.mbar.destroy();
     if (this.rootEl) this.rootEl.remove();
     if (this.fileInp) this.fileInp.remove();
     this.isOpen = false;
@@ -317,12 +370,21 @@ export class WTEditor {
     try { if (this.host.storage && this.host.storage.set) this.host.storage.set(STORE_KEY, { binZoom: this.prefs.binZoom, waveZoom: this.prefs.waveZoom, split: this.prefs.split }); } catch (err) { /* storage full */ }
   }
 
-  async loadOther() {
-    const s = this.state(), o = s && s.osc && s.osc[1 - this.osc], W = this.host.wt;
-    if (!o || !o.wt || !W || !W.get) return null;
-    try { this.other = (await W.get(o.wt)) || wt.factoryTable(o.wt); } catch (err) { this.other = wt.factoryTable(o.wt); }
-    return this.other;
+  // The table oscillator `o` plays (cached by id for this session), or null.
+  async loadOther(o) {
+    const s = this.state(), x = s && s.osc && s.osc[o], W = this.host.wt;
+    if (!x || !x.wt || o === this.osc) return null;
+    const id = String(x.wt), c = this.others.get(o);
+    if (c && c.id === id) return c.table;
+    let t = null;
+    try { t = W && W.get ? await W.get(id) : null; } catch (err) { t = null; }
+    if (!t || !Array.isArray(t.frames) || !t.frames.length) t = wt.factoryTable(id);
+    if (t) this.others.set(o, { id, table: t });
+    return t;
   }
+  // Touch modifier latches (wk.modifierBar; all off without a bar) and their release at a gesture's end.
+  latches() { const M = wk.modifierBar && wk.modifierBar.mods; return M ? M({}) : { fine: false, alt: false, shift: false }; }
+  consumeLatches() { const C = wk.modifierBar && wk.modifierBar.consume; if (C) C(); }
 
   /* ------------------------------------------------------------ DOM */
   h(tag, cls, text) {
@@ -356,7 +418,7 @@ export class WTEditor {
     const h = (t, c, x) => this.h(t, c, x);
     const root = this.rootEl = h('div', 'wte-root');
     root.setAttribute('role', 'group');
-    root.setAttribute('aria-label', 'Wavetable editor, ' + (this.osc ? 'OSC B' : 'OSC A'));
+    root.setAttribute('aria-label', 'Wavetable editor, ' + OSC_NAMES[this.osc]);
     root.tabIndex = -1;
 
     // toolbar
@@ -371,8 +433,33 @@ export class WTEditor {
     this.nameIn.maxLength = 64;
     this.nameIn.addEventListener('change', () => this.rename(this.nameIn.value));
     this.nameIn.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); this.nameIn.blur(); } });
+    // Right-click (macOS: Ctrl-click) on the (tinted) name: the table menu; while the name is being edited: the browser's
+    // own. Browsers focus a text field on the right-button press, before `contextmenu`, so the press records whether
+    // the field was focused already and, when it was not, keeps it unfocused. (Touch: the TABLE ▾ button.)
+    this.nameIn.addEventListener('mousedown', e => {
+      if (!(e.button === 2 || (e.button === 0 && e.ctrlKey))) { this.namePress = null; return; }
+      this.namePress = this.doc.activeElement === this.nameIn;
+      if (!this.namePress) e.preventDefault();
+    });
+    this.nameIn.addEventListener('contextmenu', e => {
+      const editing = this.namePress != null ? this.namePress : this.doc.activeElement === this.nameIn; // no press: the menu key
+      this.namePress = null;
+      if (!this.table || editing) return;
+      e.preventDefault(); // focus returns to the TABLE button (the field would turn the next right-click into the browser's)
+      wk.contextMenu(e.clientX, e.clientY, this.tableMenu(), { anchor: this.tableBtn });
+    });
+    const tm = this.tableBtn = this.menuBtn('TABLE', () => this.tableMenu(), 'Table menu: save, rename, init');
     const x = this.btn('✕', 'wte-x', () => this.close(), 'Close wavetable editor');
-    bar.append(this.undoB, this.redoB, h('span', 'wte-sep'), this.nameIn, h('span', 'wte-grow'), x);
+    bar.append(this.undoB, this.redoB, h('span', 'wte-sep'), this.nameIn, tm, h('span', 'wte-grow'));
+    // touch mode (§13.1: coarse pointer or any touch seen; serum-ui's own bar is under this overlay): Shift (multi-select)
+    // and Alt (+ Shift: phase nudge); the bar is built always and shown while the root has `wte-touch`
+    if (typeof wk.modifierBar === 'function') {
+      try { this.mbar = wk.modifierBar({ keys: ['shift', 'alt'] }); this.mbar.el.classList.add('wte-mk'); bar.append(this.mbar.el); } catch (err) { this.mbar = null; }
+    }
+    let touch = false;
+    try { touch = typeof wk.touchMode === 'function' ? wk.touchMode() : !!(this.win.matchMedia && this.win.matchMedia('(pointer: coarse)').matches); } catch (err) { touch = false; }
+    root.classList.toggle('wte-touch', touch);
+    bar.append(x);
 
     // FFT area
     const fft = h('div', 'wte-fft'), fw = h('div', 'wte-fftw');
@@ -486,11 +573,13 @@ export class WTEditor {
     this.fnum.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); this.fnum.blur(); } });
     this.fcount = h('span', 'wte-fcount');
     const prev = this.btn('◀', '', () => this.step(-1), 'Previous frame'), next = this.btn('▶', '', () => this.step(1), 'Next frame');
-    fc.append(this.minusB, this.plusB, h('span'), prev, this.fnum, next, h('span'), this.fcount);
+    this.copyB = this.btn('COPY', '', () => this.copyFrames(), 'Copy the selected frames');
+    this.pasteB = this.btn('PASTE', '', () => this.pasteFrames(), 'Paste frames after the current frame');
+    fc.append(this.minusB, this.plusB, this.copyB, this.pasteB, prev, this.fnum, next, this.fcount);
     this.strip = h('div', 'wte-strip');
     this.strip.tabIndex = 0;
     this.strip.setAttribute('role', 'group');
-    this.strip.setAttribute('aria-label', 'Frames: arrows select, Shift extends, Alt moves, Delete removes; drag to reorder, drop audio to replace a frame');
+    this.strip.setAttribute('aria-label', 'Frames: arrows select, Shift extends, Alt moves, Delete removes, Cmd/Ctrl-C copies, Cmd/Ctrl-V pastes; drag to reorder, drop audio to replace a frame');
     this.sp = h('div', 'wte-sp');
     this.thCv = h('canvas', 'wte-thc');
     this.thCv.setAttribute('aria-hidden', 'true');
@@ -521,6 +610,7 @@ export class WTEditor {
   wire() {
     const R = this.rootEl, win = this.win;
     this.on(R, 'keydown', e => this.onKey(e));
+    this.on(R, 'pointerdown', e => { if (e.pointerType === 'touch' && !R.classList.contains('wte-touch')) R.classList.add('wte-touch'); }, true);
     // waveform
     this.on(this.waveCv, 'pointerdown', e => this.waveDown(e));
     this.on(this.waveCv, 'pointermove', e => this.waveMove(e));
@@ -638,7 +728,7 @@ export class WTEditor {
     this.sync([k]);
   }
   beginGesture() { if (this.table) this.undo.push(this.table); }
-  endGesture() { this.g = null; this.specFor = null; this.invalidate(); }
+  endGesture() { this.g = null; this.specFor = null; this.consumeLatches(); this.invalidate(); }
   rename(name) {
     name = String(name || '').trim().slice(0, 64);
     if (!this.table || !name || name === this.table.name) { this.nameIn.value = this.table ? this.table.name : ''; return; }
@@ -703,7 +793,9 @@ export class WTEditor {
     const name = this.freshName || (/ \*$/.test(base) ? base : base + ' *');
     this.freshName = null;
     this.table = Object.assign({}, this.table, { name, factory: 0 });
+    this.nameHistory(name);
     if (this.nameIn) this.nameIn.value = name;
+    this.invalidate('ui'); // the name tint
     const snap = this.table;
     this.cow = Promise.resolve()
       .then(() => W.saveNew(snap, name))
@@ -735,27 +827,43 @@ export class WTEditor {
       });
   }
 
+  // Every undo/redo snapshot takes the name of the table they now belong to (a new copy or a saved table), so that an
+  // undo after a copy-on-write or Save Table never renames the stored table back to the source's name.
+  nameHistory(name) {
+    const fix = list => { for (let i = 0; i < list.length; i++) if (list[i].name !== name) list[i] = Object.assign({}, list[i], { name }); };
+    fix(this.undo.u); fix(this.undo.r);
+  }
+
   /* ------------------------------------------------------------ operations */
   seed() { this.seedN = (Math.imul(this.seedN ^ (this.seedN >>> 15), 0x2C1B3C6D) + 0x9E3779B9) >>> 0; return this.seedN || 1; }
-  opCtx(extra) { return Object.assign({ cur: this.cur, sel: this.sel.slice(), grid: this.grid, other: this.other, seed: this.seed(), to: this.table.frames.length, n: 2 }, extra || {}); }
+  opCtx(extra) { return Object.assign({ cur: this.cur, sel: this.sel.slice(), grid: this.grid, other: null, clip: CLIP.frames, seed: this.seed(), to: this.table.frames.length, n: 2 }, extra || {}); }
+  // extra.otherOsc (0–2): the oscillator a "from Other Osc" op reads (default: the first other one playing a wavetable).
   async runOp(id, extra) {
     if (!this.table) return;
     const op = wt.OPS[id];
     if (!op) return;
     if (op.host) { if (id === 'single.toNoise') await this.sendToNoise(); return; }
-    if (op.needsOther) await this.loadOther();
-    if (this.closed) return;
-    const ctx = this.opCtx(extra);
-    if (!wt.opEnabled(this.table, id, ctx)) { this.setMsg(op.label + ': not available for this table'); return; }
+    let other = null;
+    if (op.needsOther) {
+      const cand = otherOscs(this.state(), this.osc).filter(c => c.ok), o = extra && extra.otherOsc != null ? +extra.otherOsc : cand.length ? cand[0].osc : -1;
+      other = o >= 0 ? await this.loadOther(o) : null;
+    }
+    if (this.closed || !this.table) return;
+    const ctx = this.opCtx(Object.assign({}, extra || {}, { other }));
+    if (!wt.opEnabled(this.table, id, ctx)) {
+      this.setMsg(id === 'add.paste' && ctx.clip.length ? 'The table is full (256 frames)' : id === 'add.paste' ? 'Nothing to paste — COPY frames first' : op.label + ': not available for this table');
+      return;
+    }
+    const R0 = this.table.frames.length;
     let next;
     try { next = wt.applyOp(this.table, id, ctx); } catch (err) { this.setMsg(op.label + ' failed: ' + err.message, true); return; }
     const frames = id.startsWith('single.') ? [ctx.cur] : null;
     this.commit(next, { frames });
-    this.afterOp(id, ctx);
-    this.setMsg('');
+    this.afterOp(id, ctx, R0);
+    this.setMsg(id === 'add.paste' ? this.pasteMsg(this.table.frames.length - R0, ctx.clip.length) : '');
   }
-  // Where the current frame lands after an operation that changes the frame list.
-  afterOp(id, ctx) {
+  // Where the current frame lands after an operation that changes the frame list (R0 = the frame count before).
+  afterOp(id, ctx, R0) {
     const R = this.table.frames.length, a = Math.min(ctx.sel[0], ctx.sel[1]), b = Math.max(ctx.sel[0], ctx.sel[1]);
     let c = null;
     switch (id) {
@@ -763,6 +871,16 @@ export class WTEditor {
       case 'add.removeSel': c = a; break;
       case 'add.removeToSel': case 'add.removeOthers': c = ctx.cur - a; break;
       case 'add.reduce': c = Math.floor(ctx.cur / ctx.n); break;
+      case 'add.reduceTo': if (R0 > R && R > 1) c = Math.round(ctx.cur * (R - 1) / (R0 - 1)); break;
+      case 'add.paste': { // the pasted frames: current = the first, selected = all of them
+        const n = R - (R0 || R);
+        if (n <= 0) return;
+        this.setCur(ctx.cur + 1);
+        this.sel = [ctx.cur + 1, ctx.cur + n];
+        this.anchor = ctx.cur + 1;
+        this.invalidate();
+        return;
+      }
       case 'all.half': c = 2 * ctx.cur; break;
       case 'all.double': c = Math.floor(ctx.cur / 2); break;
       case 'add.initAll': c = 0; break;
@@ -796,17 +914,75 @@ export class WTEditor {
     }
   }
 
+  /* ------------------------------------------------------------ frame clipboard (COPY / PASTE) */
+  copyFrames() {
+    if (!this.table) return;
+    CLIP.frames = copyRange(this.table, this.sel);
+    const n = CLIP.frames.length, [a] = this.sel;
+    this.setMsg('Copied ' + (n > 1 ? n + ' frames (' + (a + 1) + '–' + (a + n) + ')' : 'frame ' + (a + 1)));
+    this.syncUi();
+  }
+  pasteFrames() { if (this.table && !this.g) return this.runOp('add.paste'); return Promise.resolve(); }
+  pasteMsg(n, m) { return n <= 0 ? '' : 'Pasted ' + n + (n > 1 ? ' frames' : ' frame') + (n < m ? ' of ' + m + ' (256 frames at most)' : ''); }
+
+  /* ------------------------------------------------------------ table menu (the name field's menu) */
+  tableMenu() {
+    return [
+      { label: 'Save Table…', action: () => this.saveTable(), disabled: !(this.host.wt && this.host.wt.saveNew) },
+      { label: 'Rename', action: () => { try { this.nameIn.focus(); this.nameIn.select(); } catch (err) { /* not focusable */ } } },
+      { sep: true },
+      { label: wt.OPS['add.initAll'].label, action: () => this.runOp('add.initAll') },
+    ];
+  }
+  // Save Table…: stores the working table as a new user table under the chosen name and points the oscillator at it
+  // (later edits go there) — the copy-on-write path with an explicit name; an earlier " *" copy stays in the store.
+  async saveTable() {
+    const W = this.host.wt;
+    if (!this.table || !W || !W.saveNew) return;
+    const def = String(this.table.name || 'Wavetable').replace(/ \*$/, ''), ask = this.win && this.win.prompt;
+    const name = String((ask ? ask.call(this.win, 'Save wavetable as', def) : def) || '').trim().slice(0, 64);
+    if (!name) return;
+    for (let i = 0; this.cow && i < 4; i++) await this.cow; // a pending copy-on-write finishes first (it never rejects)
+    if (this.closed || !this.table || this.cow) return;
+    this.flush(); // pending live updates belong to the previous copy
+    this.owned = false;
+    this.freshName = name;
+    this.copyOnWrite();
+    const p = this.cow;
+    if (!p) return;
+    await p;
+    if (!this.owned) return; // failed (copyOnWrite reported it)
+    if (!this.closed) this.setMsg('Saved “' + name + '”');
+    this.notify('Wavetable saved: “' + name + '”');
+  }
+  reduceToAsk() {
+    const R = this.table ? this.table.frames.length : 0, ask = this.win && this.win.prompt;
+    if (R < 3 || !ask) return;
+    const v = parseInt(ask.call(this.win, 'Reduce to how many frames? (2–' + (R - 1) + ')', String(Math.max(2, R >> 1))), 10);
+    if (Number.isFinite(v) && v >= 2 && v < R) this.runOp('add.reduceTo', { n: v });
+  }
+
   opsMenu(menu) {
     const t = this.table, ctx = this.opCtx(), items = [];
     for (const op of Object.values(wt.OPS)) {
-      if (op.menu !== menu) continue;
+      if (op.menu !== menu || (menu === 'Add/Remove' && REMOVE_SKIP.has(op.id))) continue;
       if (menu === 'Process' && PROCESS_BREAKS.has(op.id)) items.push({ sep: true });
+      if (op.id === 'add.reduceTo') {
+        const R = t.frames.length;
+        items.push({ label: 'Reduce to', disabled: R < 3, sub: REDUCE_TO.filter(n => n < R).map(n => ({ label: n + ' frames', action: () => this.runOp(op.id, { n }) }))
+          .concat([{ sep: true }, { label: 'Other…', action: () => this.reduceToAsk() }]) });
+        continue;
+      }
       if (op.sub) {
         items.push({ label: op.label, disabled: t.frames.length < 2, sub: Array.from({ length: 15 }, (_, i) => i + 2).map(n => ({ label: 'Keep every ' + ordinal(n) + ' frame', action: () => this.runOp(op.id, { n }) })) });
         continue;
       }
+      if (op.needsOther) { // ▸ OSC A / B / C (the others)
+        const cands = otherOscs(this.state(), this.osc);
+        items.push({ label: op.label, disabled: !cands.some(c => c.ok), sub: cands.map(c => ({ label: c.label, disabled: !c.ok, action: () => this.runOp(op.id, { otherOsc: c.osc }) })) });
+        continue;
+      }
       const it = { label: op.label, action: () => this.runOp(op.id), disabled: !wt.opEnabled(t, op.id, ctx) };
-      if (op.needsOther) it.disabled = !this.other;
       if (menu === 'Morph') {
         const m = { 'morph.crossfade': 1, 'morph.spectral': 2, 'morph.spectralZeroFund': 3, 'morph.spectralZeroAll': 4, 'morph.remove': 0 }[op.id];
         if (op.id === 'morph.remove') it.disabled = !t.morph;
@@ -879,15 +1055,20 @@ export class WTEditor {
 
   /* ------------------------------------------------------------ import / export */
   importMenu() {
-    return IMPORT_ITEMS.map(it => (it ? { label: it[1], action: () => this.pickFiles(it[0]) } : { sep: true }));
+    const smp = this.host.smp, can = !!(smp && typeof smp.import === 'function');
+    return IMPORT_ITEMS.map(it => (it ? { label: it[1], action: () => this.pickFiles(it[0]) } : { sep: true })).concat([
+      { sep: true },
+      { label: 'Frequency Estimation…', action: () => this.pickFiles('freqEst') },
+      { label: 'Switch OSC Type', disabled: !can, sub: SWITCH_TYPES.map(([type, label]) => ({ label: label + '…', action: () => this.pickFiles('switch:' + type) })) },
+    ]);
   }
   pickFiles(mode) {
     if (this.fileInp) this.fileInp.remove(); // a previous dialog may have been cancelled
     const inp = this.fileInp = this.h('input');
     inp.type = 'file';
-    inp.multiple = mode === 'singles';
-    inp.accept = mode === 'image' ? '.png,image/png' : '.wav,.wave,audio/wav,audio/x-wav,.txt,.png,image/png';
-    if (mode !== 'image' && mode !== 'singles') inp.multiple = true; // a .txt override may accompany the WAV
+    const sw = /^switch:/.test(mode);
+    inp.accept = mode === 'image' ? '.png,image/png' : mode === 'freqEst' ? WAV_ACCEPT : sw ? SAMPLE_ACCEPT : WAV_ACCEPT + ',.txt,.png,image/png';
+    inp.multiple = mode === 'singles' || (mode !== 'image' && mode !== 'freqEst' && !sw); // a .txt override may accompany the WAV
     inp.style.display = 'none';
     inp.addEventListener('change', () => {
       const files = Array.prototype.slice.call(inp.files || []);
@@ -907,15 +1088,36 @@ export class WTEditor {
     const im = g.getImageData(0, 0, c.width, c.height);
     return { width: im.width, height: im.height, data: im.data, name: file.name };
   }
-  // mode: an import mode (§8.2.5), 'singles', 'image' or 'replace' (thumbnail drop at frame `target`).
+  // A stereo file's channel for this oscillator (L → A/C, R → B) as a one-channel view of the decoded file.
+  chan(wav) { const c = channelFor(this.osc, wav.ch.length); return c ? Object.assign({}, wav, { ch: [wav.ch[c]] }) : wav; }
+  // mode: an import mode (§8.2.5), 'singles', 'image', 'replace' (thumbnail drop at frame `target`), 'freqEst'
+  // (Frequency Estimation) or 'switch:sample' | 'switch:gran' | 'switch:spec' (Switch OSC Type).
   async importFiles(files, mode, target) {
     if (!this.table) return;
+    if (/^switch:/.test(String(mode))) { await this.switchType(String(mode).slice(7), files); return; }
     const cls = classifyFiles(files);
     try {
+      if (mode === 'freqEst') {
+        const f = cls.wavs[0];
+        if (!f) { this.setMsg('Frequency estimation: choose a WAV file', true); return; }
+        const wav = wt.readWav(await f.arrayBuffer()), P = wt.estimatePeriod(wav);
+        if (this.closed) return;
+        if (!P) { // a split size held from an earlier file would silently cut the next import: cleared
+          const held = fieldInfo(this.fxIn.value).kind === 'split';
+          if (held) { this.fxIn.value = ''; this.fieldChanged(); }
+          this.setMsg('Frequency estimation: no pitch detected in “' + fileBase(f.name) + '”' + (held ? ' — split size cleared' : ''), true);
+          return;
+        }
+        const v = Math.round(P * 100) / 100; // the period in the file's own samples (what its import splits by)
+        this.fxIn.value = String(v);
+        this.fieldChanged();
+        this.setMsg(wt.splitMsg(v, wav.sr) + ' — estimated from “' + fileBase(f.name) + '”' + (wav.sr && wav.sr !== 44100 ? ' (' + wav.sr + ' Hz)' : ''));
+        return;
+      }
       if (mode === 'replace') {
         const f = cls.wavs[0];
         if (!f) { this.setMsg('Drop a WAV file on a thumbnail to replace that frame', true); return; }
-        const wav = wt.readWav(await f.arrayBuffer());
+        const wav = this.chan(wt.readWav(await f.arrayBuffer()));
         if (this.closed) return;
         const k = clamp(target | 0, 0, this.table.frames.length - 1), split = wt.parseSplitSize(this.fxIn.value);
         this.commit(wt.replaceFrame(this.table, k, wav, split ? { size: split } : undefined), { frames: [k] });
@@ -930,7 +1132,7 @@ export class WTEditor {
         table.name = fileBase(cls.pngs[0].name);
       } else if (cls.wavs.length && (mode === 'singles' || cls.wavs.length > 1)) {
         const wavs = [];
-        for (const f of cls.wavs.slice(0, MAXF)) wavs.push(wt.readWav(await f.arrayBuffer()));
+        for (const f of cls.wavs.slice(0, MAXF)) wavs.push(this.chan(wt.readWav(await f.arrayBuffer())));
         table = wt.importSingles(wavs, fileBase(cls.wavs[0].name));
         msg = wavs.length + ' single cycles imported';
       } else if (cls.wavs.length) {
@@ -938,9 +1140,11 @@ export class WTEditor {
         const txt = cls.txts.length ? wt.parseTxtOverride(await readText(cls.txts[0])) : null;
         const fftMode = /^fft/.test(mode), split = fftMode ? null : wt.parseSplitSize(this.fxIn.value);
         if (mode === 'manual' && !split && !wav.clm) { this.setMsg('Type a split size (1–9999 samples or a note name such as A3) into the formula field first', true); return; }
-        table = wt.tableFromWav(wav, { mode: mode === 'manual' ? 'manual' : mode || 'pitchAvg', size: split || undefined, channel: this.osc === 1 && wav.ch.length > 1 ? 1 : 0, txt, name: fileBase(f.name) });
+        const channel = channelFor(this.osc, wav.ch.length);
+        table = wt.tableFromWav(wav, { mode: mode === 'manual' ? 'manual' : mode || 'pitchAvg', size: split || undefined, channel, txt, name: fileBase(f.name) });
         if (table.importSize && !split) { this.fxIn.value = String(Math.round(table.importSize * 100) / 100); this.fieldChanged(); }
         msg = table.importMsg || '';
+        if (wav.ch.length > 1) msg = (msg ? msg + ' · ' : '') + (channel ? 'right' : 'left') + ' channel';
       } else { this.setMsg('Nothing to import — drop WAV, PNG or TXT files', true); return; }
       if (this.closed) return;
       this.importTable(table, msg);
@@ -961,15 +1165,48 @@ export class WTEditor {
     this.sync(null);
     this.setMsg(msg || 'Imported “' + next.name + '” (' + next.frames.length + ' frame' + (next.frames.length > 1 ? 's' : '') + ')');
   }
+  // Switch OSC Type ▸ (inv B11): the file becomes a sample asset (host.smp.import, §9.3) played by this oscillator as
+  // Sample / Granular / Spectral (type + `smp` in one state edit); the editor then closes (no wavetable to edit).
+  async switchType(type, files) {
+    const smp = this.host.smp, T = SWITCH_TYPES.find(t => t[0] === type);
+    if (!T) return;
+    if (!smp || typeof smp.import !== 'function') { this.setMsg('Sample import is not available', true); return; }
+    const list = Array.prototype.slice.call(files || [], 0, 1); // one file: the oscillator plays one sample
+    if (!list.length) return;
+    const nm = fileBase(list[0].name);
+    if (/\.(sfz|zip)$/i.test(String(list[0].name || ''))) { this.setMsg('Switch OSC Type takes one audio file — load SFZ / ZIP multisamples into a Multisample oscillator', true); return; }
+    this.setMsg('Importing “' + nm + '” as a ' + T[1] + ' oscillator…');
+    let id = null;
+    try { id = await smp.import(list, { kind: 'sample', osc: this.osc }); } catch (err) {
+      if (!this.closed) this.setMsg('Import failed: ' + (err && err.message || err), true);
+      return;
+    }
+    if (!id) { if (!this.closed) this.setMsg('Nothing imported', true); return; }
+    const osc = this.osc, sid = String(id);
+    if (!/^f?smp:/.test(sid)) { // §2.2.5: osc.smp holds a sample id (a multisample id would be dropped: a silent oscillator)
+      const t = '“' + nm + '” is not a single sample — load multisamples into a Multisample oscillator';
+      if (this.closed) this.notify(t); else this.setMsg(t, true);
+      return;
+    }
+    this.flush();
+    this.edit(s => { // as the panel's own sample loads: the previous sample's trim / reverse / normalize / fades do not carry over
+      const x = s && s.osc && s.osc[osc];
+      if (!x) return;
+      x.type = type; x.smp = sid;
+      if (x.smpo && typeof x.smpo === 'object') x.smpo.ops = { fade: 0, norm: 0, rev: 0, trim: null };
+    }, { label: 'Switch OSC Type' });
+    this.notify(OSC_NAMES[osc] + ': ' + T[1] + ' “' + nm + '”');
+    this.close();
+  }
   exportMenu() {
     const [a, b] = this.sel, base = String(this.table.name || '').replace(/ \*$/, '').replace(/[\\/:*?"<>|]+/g, '_').trim() || 'Wavetable';
     const wav = (bits, frames, suffix) => () => this.download(new Blob([wt.tableToWav(this.table, { bits, frames })], { type: 'audio/wav' }), base + suffix + '.wav');
     return [
-      { label: 'Export All as Wav (32-bit float)', action: wav(32, null, '') },
-      { label: 'Export All 16-bit', action: wav(16, null, ' (16-bit)') },
-      { label: 'Export Selection (frames ' + (a + 1) + (b > a ? '–' + (b + 1) : '') + ')', action: () => wav(32, Array.from({ length: this.sel[1] - this.sel[0] + 1 }, (_, i) => this.sel[0] + i), ' (frames ' + (this.sel[0] + 1) + '-' + (this.sel[1] + 1) + ')')() },
-      { label: 'Export All 8-bit (.256)', action: () => this.download(new Blob([wt.tableTo256(this.table)], { type: 'application/octet-stream' }), base + '.256') },
+      { label: 'Export All as 16-bit WAV', action: wav(16, null, ' (16-bit)') },
+      { label: 'Export All as 32-bit WAV', action: wav(32, null, '') },
       { label: 'Export All as Single-Cycle Waves (.zip)', action: () => this.download(new Blob([zipStore(wt.tableToSingles(this.table).map(s => ({ name: s.name, data: s.buffer })))], { type: 'application/zip' }), base + ' (single cycles).zip') },
+      { label: 'Export All as 8-bit (.256)', action: () => this.download(new Blob([wt.tableTo256(this.table)], { type: 'application/octet-stream' }), base + '.256') },
+      { label: 'Export Selection (frames ' + (a + 1) + (b > a ? '–' + (b + 1) : '') + ')', action: () => wav(32, Array.from({ length: this.sel[1] - this.sel[0] + 1 }, (_, i) => this.sel[0] + i), ' (frames ' + (this.sel[0] + 1) + '-' + (this.sel[1] + 1) + ')')() },
     ];
   }
   download(blob, name) {
@@ -1020,6 +1257,8 @@ export class WTEditor {
     } else if (k === 'Home' || k === 'End') { e.preventDefault(); this.setCur(k === 'Home' ? 0 : R - 1); }
     else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); this.runOp(this.sel[1] > this.sel[0] ? 'add.removeSel' : 'add.remove'); }
     else if (k === 'Insert') { e.preventDefault(); this.runOp('add.insert'); }
+    else if ((e.metaKey || e.ctrlKey) && !e.altKey && (k === 'c' || k === 'C')) { e.preventDefault(); this.copyFrames(); }
+    else if ((e.metaKey || e.ctrlKey) && !e.altKey && (k === 'v' || k === 'V')) { e.preventDefault(); this.pasteFrames(); }
   }
 
   /* ------------------------------------------------------------ pointer: waveform */
@@ -1055,7 +1294,7 @@ export class WTEditor {
     if (tool === 'sine') f = wt.drawTool(g.base, 'sine', { x1: p.x, y1: clamp(p.y - g.start.y, -1, 1), grid: G });
     else if (tool === 'nudge' || tool === 'noise') f = wt.drawTool(g.base, tool, { x1: p.x, y0: g.start.y, y1: p.y, cell: g.cell, seed: g.seed, grid: G });
     else if (G > 0) for (const cell of cells()) f = wt.drawTool(f, tool, { x1: p.x, y1: p.y, cell, grid: G });
-    else if (tool === 'flat') f = wt.drawTool(f, 'flat', { x0: g.last.x, y0: g.last.y, x1: p.x, y1: p.y, grid: 0 });
+    else if (tool === 'flat' || tool === 'mirror') f = wt.drawTool(f, tool, { x0: g.last.x, y0: g.last.y, x1: p.x, y1: p.y, grid: 0 });
     else f = wt.drawTool(g.base, tool, { x0: g.start.x, x1: p.x, y1: p.y, grid: 0 });
     g.last = p;
     this.setFrame(g.frame, f);
@@ -1113,10 +1352,18 @@ export class WTEditor {
     return this.spec;
   }
   fftDown(e) {
+    this.ctxNudge = false;
     if (!this.table || e.button !== 0 || this.g) return;
     e.preventDefault();
+    const hit = this.fftHit(e), L = this.latches();
+    if (hit.row === 'ph' && ((e.shiftKey && (e.metaKey || e.ctrlKey)) || (L.shift && L.alt))) { // nudge this phase right
+      this.nudge(hit.k);
+      this.ctxNudge = !!e.ctrlKey; // macOS: a Ctrl-click also opens the context menu, which fftMenu then swallows
+      this.consumeLatches();
+      return;
+    }
     this.capture(this.fftCv, e);
-    const S = this.spectrum(), hit = this.fftHit(e);
+    const S = this.spectrum();
     this.beginGesture();
     this.g = { kind: 'fft', id: e.pointerId, frame: this.cur, row: hit.row, spec: { mag: Float64Array.from(S.mag), ph: Float64Array.from(S.ph), dc: S.dc }, lastK: hit.k, lastV: hit.v, range: this.magRange, thr: wt.emptyThreshold(S.mag) };
     this.fftPaint(hit.k, hit.v, e.shiftKey);
@@ -1149,12 +1396,27 @@ export class WTEditor {
     this.specFor = f;
     this.setFrame(g.frame, f);
   }
+  nudge(k) { // phase of harmonic k + 1/64 (Shift-Cmd/Ctrl-click, the touch latches, the phase row's menu item)
+    const S0 = this.spectrum();
+    if (S0.mag[k - 1] >= wt.emptyThreshold(S0.mag)) { this.fftOp('ph', 'nudgePhase', k); this.setMsg('Harmonic ' + k + ': phase ' + Math.round(this.spectrum().ph[k - 1] * 100) + '%'); }
+    else this.setMsg('Harmonic ' + k + ' is empty: no phase to nudge');
+  }
   fftMenu(e) {
     e.preventDefault();
     if (!this.table) return;
     const hit = this.fftHit(e), k = hit.k, row = hit.row;
+    if (row === 'ph' && e.shiftKey && (e.ctrlKey || e.metaKey)) { // the nudge gesture, not the menu
+      if (!this.ctxNudge && !this.g) this.nudge(k); // where Ctrl-click arrives as a right-button press only (no pointerdown nudge)
+      this.ctxNudge = false;
+      return;
+    }
+    this.ctxNudge = false;
     const lab = l => l.replace(/\bX\b/, String(k));
     const items = wt.FFT_OPS.map(o => ({ label: lab(o.label), action: () => this.fftOp(row, o.id, k) }));
+    if (row === 'ph') { // §13.1: the menu equivalent of Shift-Cmd/Ctrl-click
+      const S0 = this.spectrum();
+      items.push({ sep: true }, { label: 'Nudge Phase Right (harmonic ' + k + ')', disabled: !(S0.mag[k - 1] >= wt.emptyThreshold(S0.mag)), action: () => this.nudge(k) });
+    }
     items.push({ sep: true },
       { label: 'Snap vertical draw to quarters', checked: !!this.snapQuarter, action: () => { this.snapQuarter = this.snapQuarter ? 0 : 1; } },
       { label: 'Scale Freq Values by Bin Index', checked: !!this.scaleByBin, action: () => { this.scaleByBin = this.scaleByBin ? 0 : 1; } });
@@ -1163,7 +1425,12 @@ export class WTEditor {
   fftOp(row, id, k) {
     const S = this.spectrum(), next = wt.fftOp(S, row, id, { bin: k, seed: this.seed() });
     const frames = this.table.frames.slice();
-    frames[this.cur] = wt.fromSpectrum(next.mag, next.ph, next.dc);
+    let f = wt.fromSpectrum(next.mag, next.ph, next.dc);
+    if (id === 'repeatGroup') { // the repeated bins line up into a spike (+30…57 dB): back to max(1, the frame's peak)
+      const lim = Math.max(1, peakAbs(frames[this.cur])), p = peakAbs(f);
+      if (p > lim) { const g = lim / p; f = f.map(v => v * g); }
+    }
+    frames[this.cur] = f;
     this.commit({ name: this.table.name, frames, morph: this.table.morph, factory: 0 }, { frames: [this.cur] });
   }
 
@@ -1180,7 +1447,8 @@ export class WTEditor {
     if (!this.table || e.button !== 0 || this.g) return;
     const k = this.thumbAt(e.clientX);
     this.strip.focus({ preventScroll: true });
-    if (e.shiftKey) {
+    if (e.shiftKey || this.latches().shift) { // Shift (touch: the Shift latch) extends the selection
+      this.consumeLatches();
       this.cur = k;
       this.sel = [Math.min(this.anchor, k), Math.max(this.anchor, k)];
       this.invalidate();
@@ -1230,12 +1498,15 @@ export class WTEditor {
     this.redoB.disabled = !this.undo.canRedo;
     this.minusB.disabled = R < 2;
     this.plusB.disabled = !t || R >= MAXF;
+    this.copyB.disabled = !t;
+    this.pasteB.disabled = !t || R >= MAXF || !CLIP.frames.length;
     if (this.doc.activeElement !== this.fnum) this.fnum.value = t ? String(this.cur + 1) : '';
     this.fcount.textContent = t ? '/ ' + R + (t.morph ? ' · ' + ['', 'xfade', 'spectral', 'spec 0-fund', 'spec 0-all'][t.morph] : '') : '';
     this.scrollIn.disabled = this.prefs.waveZoom <= 1;
     if (this.grid$ && this.grid$.update) this.grid$.update();
     if (this.live$ && this.live$.update) this.live$.update();
     if (t && this.doc.activeElement !== this.nameIn) this.nameIn.value = t.name;
+    this.nameIn.classList.toggle('wte-tint', !!t && / \*$/.test(t.name)); // an automatic copy, never saved by name
     if (t) this.sp.style.width = Math.max(R * TW, 1) + 'px';
   }
   invalidate(...parts) {
@@ -1380,6 +1651,7 @@ export class WTEditor {
   }
 }
 
+function peakAbs(f) { let p = 0; for (let i = 0; i < f.length; i++) { const v = Math.abs(f[i]); if (v > p) p = v; } return p; }
 function nameOfId(id) { return String(id || '').replace(/^(factory|sub|user|nzuser|noise):/, '') || 'Wavetable'; }
 function readText(f) {
   if (f && typeof f.text === 'function') return f.text();

@@ -5,14 +5,35 @@
  * and in node vm contexts (tests). The whole file is one IIFE that publishes `globalThis.SerumDSP`; it can be
  * evaluated again in the same scope (the wavetable Map survives), and a failure inside leaves SerumDSP = null
  * without throwing. Contract: SPEC-serum.md §8.4 (exports), §3 (constants), §5 (modulation), §6 (voice
- * behaviour), §7 (wavetable data).
+ * behaviour), §7 (wavetable data); SPEC-serum2 §11.10 (v2 exports), §4.1 (CP v2 / CT v2), §0.3 (script list).
+ *
+ * Phase 2 (SPEC-serum2; M1a: the D1+D2 joint edit, M2: the complete v2 voice): VER 2, reads CP v2 (voice vector by vi,
+ * 429 slots; 62 sources; 64 rows; FX rows by FX-context index). The modulation code (envelopes, LFOs, chaos, macros,
+ * base smoothing, the matrix in the voice/mono/FX contexts) lives in sx-mod.js (`SxMod`, read lazily in attach and the
+ * SerumVoice constructor; missing ⇒ Serum voices are silent, one warning per scope). Each SerumVoice holds
+ * `this.mod = new SxMod.ModV(this)`; `eff`, `src` and `eV` are aliases of the ModV's arrays. The CT arrives either as
+ * CT v2 parts (`{key, parts}`, §4.1: merged allocation-free into a preallocated full CT, `mergeCT`) or as a full CT
+ * object (tests, warmUp).
+ * The v2 voice (§1, §6): OSC A/B/C of every type — Wavetable here (Phase-1 reader, Smooth Interpolation, both WARPS2
+ * slots through the SxWarp block kernels, PD Self per sample), Sample/Multisample (SxSample), Granular (SxGran) and
+ * Spectral (SxSpec) through the common oscillator contract (§11.8: the voice fills an OscCtx per chunk); pitch modes
+ * Semitones/Harmonics/Ratio/Step, Hz offset, tuning table, S2 bend ranges, MPE per-note bend (§6.3); the phase-memory
+ * menu and Phase Legato (§6.4); warp sources, availability and the render-order/cycle rule (§6.6.6); keyboard mapping
+ * with fold/warp (§6.2); S2 sub (6 shapes, n² level, phase, Contiguous) and colour noises (§6.11); the mixer (§6.12:
+ * per-channel routes Filter/Main/Direct/None, filter balance, switch ramps, ENV toggles, Bus 1/2 sends; outputs main,
+ * direct, bus 1, bus 2 per CP.outMask); Filter 1 and Filter 2 (types 0–107: SFilter delegates 96–107 to SxFilt2
+ * families allocated only in apply/prealloc), routed into each other or out, Clean Mode, PZ SVF corners, key track
+ * per mode (§6.13); Voice Control offsets (pan, detune, cutoff; §6.2/§6.16); the lifetime rules incl. the 2 ms grain
+ * fade (§6.19); snapshot v2 (§6.20); `allocate` with the Voice Steal Priority (§12.3). S1 mode (§6.21) keeps the
+ * Phase-1 code path for its seven items; every Phase-2 term is skipped at its neutral value (§0.7).
  *
  * Layout of this file:
- *   constants (destinations, sources, families, unison tables, ladders) · fast math · curves · table store ·
- *   SFilter (all 96 types, 19 families) · per-processor state (attach/begin/idle/transport/reset/fxMods/
- *   snapshot) · SerumVoice · renderWarp · warmUp · exports.
+ *   constants (destinations, voice vector v2, sources, families, unison tables, WARPS2 domains) · fast math · curves ·
+ *   table store · SFilter (108 types) · CT store (mergeCT) · per-processor state (attach/begin/idle/transport/
+ *   reset/fxMods/snapshot/allocate) · mixer helpers · Phase-1 warps · SerumVoice (note-on, pitch, oscillator setup,
+ *   wavetable reader, type oscillators, mixer, filters, sub, noises) · renderWarp · warmUp · exports.
  *
- * Hot paths (SerumVoice.render, SFilter.tick/process, begin) never allocate: every buffer is created in a
+ * Hot paths (SerumVoice.render, SFilter.tick/process, begin, mergeCT) never allocate: every buffer is created in a
  * constructor, in attach/apply/setType/prealloc/storeWT, or once at load (module scratch, shared by every voice
  * of the scope — processors run one after another on the audio thread).
  *
@@ -39,10 +60,14 @@
  *    velo.porta (§5.3). CP.veloPorta / CP.notePorta come from serum-core (§2.2).
  *  - CP/serum versions: a CP whose major version (floor(ver)) differs from VER is silent (§4.3).
  *  - reset(proc) keeps sx.mon (the host's smon subscription, §11.5 sets it only on the message); every other field
- *    returns to its attach state. A voice whose processor was reset (or warmed up) re-syncs the CP at its next
- *    noteOn/render, so notes between a panic and the next begin are not lost.
- *  - transport(proc, true) also clears lastPitch, memPh, recent and the per-voice part of monoSrc (bookkeeping a
- *    fresh offline render does not have), so a song rendered from a tick is identical live and offline (§6.16).
+ *    returns to its attach state (the merged CT store is a cache of proc.ct and is kept; the multisample round-robin
+ *    counters SxSample keeps in sx.msRR are zeroed). A voice whose processor was reset (or warmed up) re-syncs the CP
+ *    at its next noteOn/render, so notes between a panic and the next begin are not lost.
+ *  - transport(proc, true) also clears lastPitch, memPh, recent, the per-voice part of monoSrc, vcN (SxMod) and the
+ *    round-robin counters sx.msRR (bookkeeping a fresh offline render does not have), so a song rendered from a tick is
+ *    identical live and offline (§6.16, §7.8). Both warm-ups restore proc.vcN and sx.msRR after their hidden notes.
+ *  - mergeCT(proc, serumT) takes a `{key, parts}` object holding any subset of the CT v2 parts (the engine wraps a
+ *    single `{t: 'ct', part}` that way); invalid parts are ignored (one warning per part name).
  *  - renderWarp without opts.mod uses m = 0 with the mode active (AM → x·(1 − w/2), RM → x·(1 − w)), as §8.4.2
  *    states; the voice treats a switched-off modulator as "identical to Off" (§3.3).
  *  - SFilter: SVF damping k = √2 − r·sat(bp), r = √2·0.99·res (small-signal Q = 0.7071/(1 − 0.99·res)) with a
@@ -52,6 +77,65 @@
  *    with 8·var·BP(2·cutoff, Q 2) fed back, output halved; German LP = linear ZDF ladder with a 4·tanh(y/4)
  *    feedback limit; first-order EQ shelves put their midpoint gain at the cutoff; every family output passes a
  *    safety limiter above |8| (bounded by 12) and a non-finite state resets the filter.
+ *  - (M2) Keyboard fold (§6.2) when no octave transpose fits the range: of the two transposes next to the range (one
+ *    above hi, one below lo) the nearer one picks its bound (ties: the bound on the side of the played key).
+ *  - (M2) Granular X|Y with Y → Level / Warp / Warp 2 (§3.9, the targets SxGran leaves to the voice): the Y mode acts on
+ *    the eff n of the oscillator's LEVEL / WARP / WARP 2 before the unison spread; Spectral applies its Y itself.
+ *  - (M2) S2 filter key track without a tracking oscillator: the played key, tuned when a tuning table is loaded.
+ *  - (M2) Lifetime with grains still sounding (§6.19): the voice keeps rendering for ⌈2 ms / chunk⌉ chunks while its
+ *    channel gains ramp linearly to 0, then ends (the grains go back to the processor count). (review 4) Rule (b) always
+ *    ends with that fade: its ENV-off channels play unattenuated until then (a hard cut would click).
+ *  - (M2) warmUp (§11.10) runs the Phase-1 synthetic patch, then 20 ms of a complete S2 CP: OSC C with both WARPS2 slots
+ *    swept over every wavetable mode (0–57), Filter 1/2 swept over the 108 types (LFO 1 at ≈ 66 Hz), Sample +
+ *    Multisample oscillators on two tiny synthetic assets (stored in SxBase for the run, dropped afterwards), colour
+ *    noise, S2 sub, F1 → F2, Direct, buses, MPE, tuning, VC and the LFO types (≈ 1.3 × the Phase-1 warmUp; budget 1.5×).
+ *  - (review 3) Colour noise (§6.11.2): white is −12 dBFS RMS in the audible band (generated at the OS rate, audio
+ *    outputs × √OS: the decimator keeps 1/OS of its power); streams a/b are seeded from two r2 draws through fmix32 with
+ *    different salts (unrelated at every lag). Geiger clicks ±(0.5 + 0.5u) take the sign and u from two separate draws.
+ *    (review 4) Every colour is −12 dBFS RMS: Geiger through one gain per rate calibrated at 40 clicks/s (PITCH 0), so
+ *    the click size stays independent of PITCH (the RMS follows the click rate; peaks reach ≈ +15 dBFS at LEVEL 1, the
+ *    crest factor of sparse 0.15 ms clicks); brown's integrator is rate-independent (leak 0.002·base/fs, input gain
+ *    0.0414·√(base/fs): §6.11.2's recipe at OS 1, the same corner and spectrum at every OS); the raw noise (warp Noise
+ *    modulator, `noise` source) keeps the per-sample calibration at every OS (white's √OS only on the audio outputs).
+ *  - (review 3/4) Filter memory (§6.13.1, §14.2): SxFilt2's delay families (Diffusor, Comb 2: 20 Hz floor, their own
+ *    sizing) borrow their SFilter's pool (sized by the largest reachable family, not the sum). Types 0–95 keep the
+ *    Phase-1 line sizes (8 Hz cutoff clamp) in both filters and the FX Filter (§3.5 "unchanged", §6.21 item 8).
+ *    DEVIATION (ARCH2 rule 1 over §14.2, for the lead): the Phase-1 delay families exceed "both filters ≤ 2 MB at base
+ *    192 kHz" — the FDN bank (82) takes 1.06 MiB per filter at fs 192 kHz and 2.13 MiB at fs 384 kHz (base 192 kHz,
+ *    OS 2), so both filters on it (or both types modulated over a range that reaches it) take 4.26–4.28 MiB per voice
+ *    there, in S1 and S2 mode alike (S1-mode Filter 1 on 82 + Filter 2 on the Diffusor: 3.10 MiB); 2.13–2.16 MiB at fs
+ *    192 kHz, 1.06 MiB at base 48 kHz, OS 2. The new types alone stay ≤ 1.94 MiB for both filters at fs 384 kHz.
+ *    Meeting the budget would need a 20 Hz floor on the Phase-1 types (their tuning below 20 Hz would change).
+ *  - (review 3) Lifetime rule (b) (§6.19): an envelope is idle once its release has finished (stage 0), whatever End
+ *    level it holds (inv B13); SxMod's envsIdle decides (a bypassed ENV 4 takes no part).
+ *  - (review 3) Per-chunk gains ramp across the chunk from the previous chunk's value, like the Phase-1 gains: filter
+ *    levels, filter balance shares, bus send gains and the filter-to-filter feed level (unchanged values take the
+ *    plain path, so §0.7 neutral patches stay bit-identical).
+ *  - (review 3) The Filter-k warp buffers (§6.6.7) are rewritten in every chunk while any WARPS2 slot can exist (zeros
+ *    while filter k is off), so a slot switched to Filter k reads the previous chunk; audio taps (§5.3) come from the
+ *    CP rows (sx.srcU, not SxMod's private srcUsed) and a switched-off oscillator neither renders for its tap nor reads
+ *    other than 0. Keys a .kbm leaves unmapped (CP.tune NaN) get no voice (allocate → null) and noteOn ignores them.
+ *  - (review 3) Lazy warm-ups (§11.10): an apply that selects Granular queues GRAN_JOB through SxBase.warmAdd (live
+ *    processors only; key 'sx-gran:<asset id>'). warmTick runs one lazy step in every state (waiting for tables,
+ *    rendering, after giving up) and returns hidden spans + lazy jobs left. (review 4) GRAN_JOB is bounded (§14.1 row q):
+ *    two hidden voices of its own (two reach the processor grain cap, as real chords do), made, applied and started in
+ *    separate steps, then one voice per step (alternating) rendering 1 chunk in the first steps and 2 afterwards; it
+ *    runs after the first-use hidden voices (which leave Granular oscillators silent) and once the Granular assets are
+ *    stored (waits up to HW_WAIT steps); the first-use hidden voices also wait for the Sample, Multisample (with its zone
+ *    samples) and Spectral assets. Hidden voices never write the channel meters (sx.pk).
+ *  - (review 4) SFilter (§6.13.1): prealloc(true) covers 0–107; setType of a type that is not modulated (no prealloc(true))
+ *    makes its SxFilt2 object (an apply path by the Phase-1 contract, as the Phase-1 families allocate their lines); a
+ *    modulated type missing from the preallocated range passes unfiltered and is allocated by the next prealloc call.
+ *  - (M4 performance; every item leaves the output bit for bit as it was) the one-frame wavetable read is written out in
+ *    renderWT (whether V8 inlined the plain1 call, and so boxed its six doubles, depended on the inlining budget the other
+ *    paths left: row a ran 1.1–1.7× Phase 1); per oscillator a "unison gains all 0" flag (gz) spares a switched-off
+ *    oscillator its 16-slot scan, its output clearing and (lazy oscPitch) its pitch; SFilter flushes only the states its
+ *    family can hold (flushFam) and set() skips the flush while the state is as process() left it (cln); a filter input
+ *    whose switch is off and settled adds nothing to u (addSrc). Warm-ups: GRAN_JOB's second hidden voice runs time-
+ *    compressed (SxGran wq) and is retriggered, the first-use hidden voices retrigger their first note a quarter in (a
+ *    note's first chunk then runs with type feedback in place — the hidden voices' own first chunks ran before V8 had
+ *    allocated it) and a Spectral patch plays them HW_SPANS_SPEC spans (its frame code reached optimised code only then):
+ *    the paths a real chord meets later in a note, which V8 deoptimised mid-chord (4–6 ms quanta), are warm.
  */
 (function () {
   'use strict';
@@ -65,11 +149,12 @@
     // constructors, and the allocation-free tests (§10.1) replace them on the context to catch hot-path allocation.
     const exp = Math.exp, tan = Math.tan, sqrt = Math.sqrt, floor = Math.floor, ceil = Math.ceil, round = Math.round,
       sin = Math.sin, cos = Math.cos, log = Math.log, mlog2 = Math.log2, pow = Math.pow, PI = Math.PI,
-      SQRT2 = Math.SQRT2, LN10 = Math.LN10;
+      SQRT2 = Math.SQRT2, LN10 = Math.LN10, imul = Math.imul;
 
-    const VER = 1;
+    const VER = 2;
     const NS = 148, NF = 100, ND = 248, NSRC = 34, MAXCH = 32, TAP_N = 1024, NTYPES = 96, MAX_PTS = 480;
-    const CURVE_K = 10, ENV_K = 10, PORTA_K = 6;
+    const NSV = 429, NSRC2 = 62, NROW = 64, MAXFX = 8 + 48 * 24, N_LFO = 10, N_ENV = 4, N_OSC = 3;   // CP v2 shapes (§4.1)
+    const CURVE_K = 10;
     const MIDI0 = 440 * pow(2, -69 / 12);                   // 8.175798915643707 Hz (MIDI note 0)
     const MIDI128 = 440 * pow(2, 59 / 12);                  // 13289.75 Hz (MIDI note 128)
     const MIP_HARM = [1023, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1];
@@ -157,13 +242,11 @@
       N_PHASE = DIDX.N_PHASE, S_LEVEL = DIDX.S_LEVEL, S_PAN = DIDX.S_PAN;
     const F_CUTOFF = DIDX.F_CUTOFF, F_RES = DIDX.F_RES, F_DRIVE = DIDX.F_DRIVE, F_VAR = DIDX.F_VAR, F_MIX = DIDX.F_MIX,
       F_PAN = DIDX.F_PAN;
-    const E1_ATT = DIDX.E1_ATT, L1_RATE = DIDX.L1_RATE, C1_RATE = DIDX.C1_RATE, G_PORTA = DIDX.G_PORTA,
-      G_CURVE = DIDX.G_CURVE, G_TUNE = DIDX.G_TUNE, G_AMP = DIDX.G_AMP, G_BENDUP = DIDX.G_BENDUP, G_BENDDN = DIDX.G_BENDDN,
-      BUS1 = DIDX.BUS1;
+    const E1_ATT = DIDX.E1_ATT, L1_RATE = DIDX.L1_RATE, C1_RATE = DIDX.C1_RATE, G_TUNE = DIDX.G_TUNE, G_AMP = DIDX.G_AMP,
+      G_BENDUP = DIDX.G_BENDUP, G_BENDDN = DIDX.G_BENDDN, BUS1 = DIDX.BUS1;
     const A_ON = DIDX.A_ON, N_ON = DIDX.N_ON, S_ON = DIDX.S_ON, F_ON = DIDX.F_ON, F_ROUTEA = DIDX.F_ROUTEA,
       A_TRACK = DIDX.A_TRACK, A_WARPMODE = DIDX.A_WARPMODE, S_SHAPE = DIDX.S_SHAPE, S_OCT = DIDX.S_OCT,
-      F_TYPE = DIDX.F_TYPE, E1_CA = DIDX.E1_CA, C1_BPM = DIDX.C1_BPM, G_WHEEL = DIDX.G_WHEEL, G_BEND = DIDX.G_BEND;
-    const FX_BASE = NS;                                         // FX dest idx − FX_BASE = fx idx
+      F_TYPE = DIDX.F_TYPE, E1_CA = DIDX.E1_CA, G_WHEEL = DIDX.G_WHEEL;
 
     /* ------------------------------------------------------------ sources (§3.12) */
     const SRC_IDS = ['', 'wheel', 'env1', 'env2', 'env3', 'lfo1', 'lfo2', 'lfo3', 'lfo4', 'lfo5', 'lfo6', 'lfo7', 'lfo8',
@@ -175,10 +258,9 @@
     const SIDX = Object.freeze(sidx);
     const SRC_POL = new Uint8Array(NSRC);                      // 1 = bipolar native range [−1, 1]
     SRC_POL[SIDX.CHAOS1] = 1; SRC_POL[SIDX.CHAOS2] = 1; SRC_POL[SIDX.NOISE] = 1; SRC_POL[SIDX.BEND] = 1; SRC_POL[SIDX.MPEX] = 1;
-    const S_WHEEL = SIDX.WHEEL, S_ENV1 = SIDX.ENV1, S_LFO1 = SIDX.LFO1, S_VELO = SIDX.VELO, S_NOTE = SIDX.NOTE,
-      S_AT = SIDX.AT, S_PAT = SIDX.PAT, S_CHAOS1 = SIDX.CHAOS1, S_NOISE = SIDX.NOISE, S_RAND1 = SIDX.RAND1,
-      S_RAND2 = SIDX.RAND2, S_ALT1 = SIDX.ALT1, S_ALT2 = SIDX.ALT2, S_MACRO1 = SIDX.MACRO1, S_BEND = SIDX.BEND,
-      S_MPEX = SIDX.MPEX, S_RELVEL = SIDX.RELVEL, S_FIXED = SIDX.FIXED;
+    // (the voice reads S_BEND; the rest name the warm-up rows — the source vector itself is SxMod's)
+    const S_WHEEL = SIDX.WHEEL, S_ENV1 = SIDX.ENV1, S_LFO1 = SIDX.LFO1, S_VELO = SIDX.VELO, S_CHAOS1 = SIDX.CHAOS1,
+      S_NOISE = SIDX.NOISE, S_RAND1 = SIDX.RAND1, S_MACRO1 = SIDX.MACRO1, S_BEND = SIDX.BEND, S_FIXED = SIDX.FIXED;
 
     /* ------------------------------------------------------------ sub shapes, filter families (§3.4, §3.6) */
     const SUB_IDS = Object.freeze(['sub:Sine', 'sub:RoundRect', 'sub:Saw', 'sub:Square', 'sub:Pulse']);
@@ -196,6 +278,20 @@
     const F_LADDER = 0, F_SVF = 1, F_DUAL = 2, F_MORPH = 3, F_COMB = 4, F_FLANGE = 5, F_PHASER = 6, F_FPHS = 7, F_EQ = 8,
       F_RING = 9, F_SNH = 10, F_BANK = 11, F_FRENCH = 12, F_GERMAN = 13, F_ADDBASS = 14, F_FORMANT = 15, F_BREJECT = 16,
       F_DISTCOMB = 17, F_SCREAM = 18;
+    // Serum 2 types 96–107 (SPEC-serum2 §3.5): one pseudo-family F_NEW inside SFilter, delegated to SxFilt2 objects
+    const NT2 = 108, NT_NEW = NT2 - NTYPES, F_NEW = 19;
+    const CLEAN_IN = pow(10, -24 / 20), CLEAN_OUT = pow(10, 24 / 20);
+    let warnedF2 = false, warnedF2pre = false;
+    function warnF2() {
+      if (warnedF2) return;
+      warnedF2 = true;
+      if (typeof console !== 'undefined') console.warn('serum-dsp: SxFilt2 unavailable, filter types 96–107 pass audio unfiltered');
+    }
+    function warnF2pre(t) {
+      if (warnedF2pre) return;
+      warnedF2pre = true;
+      if (typeof console !== 'undefined') console.warn('serum-dsp: filter type', t, 'was not preallocated (passes unfiltered until the next apply)');
+    }
 
     /* ------------------------------------------------------------ unison tables (§3.8) */
     // layouts: uniShape[mode·256 + (N−1)·16 + i], uniStack[stack·256 + (N−1)·16 + i], uniCenter[(N−1)·16 + i]
@@ -232,6 +328,80 @@
     const U_SHAPE = UNI.uniShape, U_STACK = UNI.uniStack, U_CENTER = UNI.uniCenter;
     const UT = new Float64Array(256);                          // detune slot t_i at [(N−1)·16 + i]
     for (let N = 1; N <= 16; N++) for (let i = 0; i < N; i++) UT[(N - 1) * 16 + i] = N > 1 ? 2 * i / (N - 1) - 1 : 0;
+
+    /* ------------------------------------------------------------ voice vector v2 (SPEC-serum2 §3.11.1, §3.11.2) */
+    // Destination ids by vi (0–428): the Phase-1 synth rows (vi = idx < 148), then the SYN2 rows in builder order (vi =
+    // idx − 100); the three scope-M rows (g.direct, g.bus1v, g.bus2v) keep their slots 403–405 unused (''). Embedded copy
+    // of the normative builder (integration-tested against SxBase.DIDS2 / serum-core); only the indices are needed here.
+    const VIDS = DIDS.slice(0, NS);
+    const OSC_ROWS = ['level', 'pan', 'oct', 'semi', 'fine', 'crs', 'uni', 'det', 'blend', 'phase', 'rand', 'wt', 'warp', 'uniw',
+      'uniwarp', 'uniwt', 'stack'];
+    const O2_ROWS = ['w1', 'w2', 'warp2', 'wvar1', 'wvar2', 'uniwarp2', 'ratio', 'hz', 'sstart', 'send', 'lstart', 'lend', 'xfade',
+      'scan', 'scanrev', 'pos', 'slice', 'gy', 'dens', 'glen', 'wamt', 'wskew', 'roff', 'rdir', 'rpitch', 'rlen', 'rpan', 'rlvl',
+      'rwamt', 'rwskew', 'rwarp', 'rwarp2', 'grev', 'flo', 'fhi', 'cut', 'smix', 'mdly', 'matt', 'mhold', 'mdec', 'msus', 'mrel',
+      'mvel', 'mrand', 'timbre', 'ustart', 'uspan', 'fbal', 'bus1', 'bus2'];
+    for (const r of OSC_ROWS) VIDS.push('c.' + r);
+    VIDS.push('c.on', 'c.track');
+    for (const k of ['a', 'b', 'c']) for (const r of O2_ROWS) VIDS.push(k + '.' + r);
+    for (const r of ['shp', 'crs', 'phase', 'track', 'fbal', 'bus1', 'bus2']) VIDS.push('s.' + r);
+    for (const r of ['stereo', 'color', 'fbal', 'bus1', 'bus2']) VIDS.push('n.' + r);
+    for (const r of ['type2', 'level', 'routeC', 'x', 'y', 'bus1', 'bus2']) VIDS.push('f.' + r);
+    for (const r of ['on', 'type', 'cutoff', 'res', 'drive', 'var', 'mix', 'pan', 'level', 'routeA', 'routeB', 'routeC', 'routeN',
+      'routeS', 'x', 'y', 'bus1', 'bus2']) VIDS.push('f2.' + r);
+    for (const r of ['att', 'hold', 'dec', 'sus', 'rel', 'ca', 'cd', 'cr']) VIDS.push('e4.' + r);
+    for (const e of [2, 3, 4]) VIDS.push('e' + e + '.start', 'e' + e + '.end');
+    for (const l of [9, 10]) for (const r of ['rate', 'rise', 'delay', 'smooth']) VIDS.push('l' + l + '.' + r);
+    for (let l = 1; l <= 10; l++) VIDS.push('l' + l + '.phase');
+    for (let m = 1; m <= 8; m++) VIDS.push('m' + m);
+    for (const r of ['pan', 'det', 'cut', 'env', 'escale', 'lscale']) VIDS.push('vc.' + r);
+    VIDS.push('', '', '');                                    // g.direct, g.bus1v, g.bus2v: FX context only
+    for (const r of ['on', 'rate', 'shift', 'range', 'offset', 'repeats', 'gate', 'chance', 'rrate', 'vdecay', 'vtarget', 'trans',
+      'wtrans', 'wrange']) VIDS.push('arp.' + r);
+    for (const r of ['on', 'trans', 'rate', 'offset']) VIDS.push('clip.' + r);
+    VIDS.push('a.lenrate', 'b.lenrate', 'c.lenrate', 'g.bu2', 'g.bd2');
+    if (VIDS.length !== NSV) throw new Error('voice vector has ' + VIDS.length + ' slots');
+    const vidx = {};
+    for (let i = 0; i < NSV; i++) if (VIDS[i] !== '') vidx[constName(VIDS[i])] = i;
+    const VIDX = Object.freeze(vidx);
+    const VI = (id) => { const v = VIDX[constName(id)]; if (!(v >= 0)) throw new Error('no vi for ' + id); return v; };
+    // per-oscillator blocks: the 17 Phase-1 rows (D_* offsets), on/track switches, the 51-row O2 block (K_* offsets)
+    const OKB = Int32Array.from([0, 17, VI('c.level')]);
+    const OON = Int32Array.from([VI('a.on'), VI('b.on'), VI('c.on')]);
+    const OTRK = Int32Array.from([VI('a.track'), VI('b.track'), VI('c.track')]);
+    const O2B = Int32Array.from([VI('a.w1'), VI('b.w1'), VI('c.w1')]);
+    const K_W1 = 0, K_W2 = 1, K_WARP2 = 2, K_WVAR1 = 3, K_WVAR2 = 4, K_UNIWARP2 = 5, K_RATIO = 6, K_HZ = 7, K_GY = 17,
+      K_FBAL = 48, K_BUS1 = 49;
+    // channels A, B, C, Noise, Sub (CP route/envOn/map order; F1, F2 follow at 5, 6 in route/envOn)
+    const C_ON = OON[2];
+    const F_TYPE2 = VI('f.type2'), F_LEVEL = VI('f.level'), F_X = VI('f.x'), F_BUS1 = VI('f.bus1');
+    const F2_ON = VI('f2.on'), F2_TYPE = VI('f2.type'), F2_CUTOFF = VI('f2.cutoff'), F2_RES = VI('f2.res'), F2_DRIVE = VI('f2.drive'),
+      F2_VAR = VI('f2.var'), F2_MIX = VI('f2.mix'), F2_PAN = VI('f2.pan'), F2_LEVEL = VI('f2.level'), F2_X = VI('f2.x'),
+      F2_BUS1 = VI('f2.bus1');
+    const S_SHP = VI('s.shp'), S_CRS = VI('s.crs'), S_PHASE = VI('s.phase'), S_TRACK = VI('s.track');
+    const N_STEREO = VI('n.stereo'), N_COLOR = VI('n.color');
+    const G_BU2 = VI('g.bu2'), G_BD2 = VI('g.bd2');
+    const F1SW = Int32Array.from([VI('f.routeA'), VI('f.routeB'), VI('f.routeC'), VI('f.routeN'), VI('f.routeS')]);
+    const F2SW = Int32Array.from([VI('f2.routeA'), VI('f2.routeB'), VI('f2.routeC'), VI('f2.routeN'), VI('f2.routeS')]);
+    const FBAL = Int32Array.from([O2B[0] + K_FBAL, O2B[1] + K_FBAL, O2B[2] + K_FBAL, VI('n.fbal'), VI('s.fbal')]);
+    const BUS1V = Int32Array.from([O2B[0] + K_BUS1, O2B[1] + K_BUS1, O2B[2] + K_BUS1, VI('n.bus1'), VI('s.bus1'), F_BUS1, F2_BUS1]);
+    // sources v2 (§3.10): audio taps written by the voice (§11.6)
+    const S_OSCA = 52, S_SUB = 55, S_FILT1 = 56;
+    // WARPS2 (§3.4.1): domain and modulator source per mode (same list as serum-core / SxBase / SxWarp, integration-tested)
+    const N_WARP2 = 82, WD_F = 1, WD_P = 2, WD_O = 3, WD_S = 4;
+    const MS_O1 = 1, MS_O2 = 2, MS_NOISE = 3, MS_SUB = 4, MS_F1 = 5, MS_F2 = 6;
+    const WDOM2 = new Uint8Array(N_WARP2), WSRC2 = new Uint8Array(N_WARP2);
+    for (let m = 1; m < N_WARP2; m++) {
+      WDOM2[m] = m >= 58 ? WD_S : m >= 46 ? WD_O : m >= 39 ? WD_P : m >= 33 ? WD_F : m >= 16 ? WD_O : m === 9 ? WD_O : WD_P;
+      if (m >= 33 && m <= 57) { const j = m <= 44 ? (m - 33) % 6 : (m - 46) % 6; WSRC2[m] = m === 45 ? 0 : 1 + j; }
+    }
+    WSRC2[71] = MS_O1; WSRC2[72] = MS_O2; WSRC2[73] = MS_NOISE; WSRC2[74] = MS_O1; WSRC2[75] = MS_O2; WSRC2[76] = MS_NOISE;
+    const W_ODDEVEN = 16, W_PDSELF = 45;
+    // S1_TO_S2_WARP (§2.6.4): Phase-1 warp index → [WARPS2 index, Var] (non-wavetable oscillators of A/B in S1 mode)
+    const S1W_MODE = Uint8Array.from([0, 1, 1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 39, 46, 52, 41, 42]);
+    const S1W_VAR = Float64Array.from([0, 0, 0.5, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    // o1/o2 = first/second other oscillator in A, B, C order (§3.4.2)
+    const OTH = Int32Array.from([1, 2, 0, 2, 0, 1]);
+    const SUB_IDS2 = Object.freeze(['sub:Sine', 'sub:RoundRect', 'sub:Triangle', 'sub:Saw', 'sub:Square', 'sub:Pulse']);
 
     /* ------------------------------------------------------------ fast math (§0.2 tolerances) */
     // tanh(x)/x, the secant gain of tanh: [7/6] Padé approximant of tanh, then 1/|x| where it reaches 1.
@@ -325,13 +495,6 @@
       const j = b + 3 * lo, dx = P[j + 3] - P[j];
       if (dx <= 1e-9) return P[j + 4];
       return P[j + 1] + (P[j + 4] - P[j + 1]) * bend((x - P[j]) / dx, CURVE_K * P[j + 2]);
-    }
-    // curve table (129 or 1025 entries over [0, 1]) read with linear interpolation
-    function tabAt(T, b, n, x) {
-      if (!(x > 0)) return T[b];
-      if (x >= 1) return T[b + n];
-      const p = x * n, i = p | 0;
-      return T[b + i] + (p - i) * (T[b + i + 1] - T[b + i]);
     }
 
     // 4-point cubic Hermite (Catmull-Rom) read with wrap (§6.5)
@@ -459,26 +622,28 @@
     const MORPH_R = Int8Array.from([0, 2, 1, 0, 3, 1, 0, 4, 1, 2, 3, 4]);       // L/B/H, L/P/H, L/N/H, B/P/N
     const fVar = (v) => MIDI0 * pow(2, FVAR_L2 * v);
     const prew = (fc, fs) => tan(PI * fc / fs);
-    // pool size (floats) needed by a family at rate fs
+    // pool size (floats) needed by a family at rate fs: the Phase-1 sizing for the 8 Hz cutoff clamp (types 0–95 are
+    // unchanged in every filter, SPEC-serum2 §3.5; the 20 Hz delay floor of §6.13.1 belongs to SxFilt2's Diffusor and
+    // Comb 2 only, which size their own needs)
     function lineLen(fs, m) { return ceil(fs * m / 8) + 8; }
+    function bankLen(fs, j) { return ceil(fs / (8 * BANK_M[j])) + 8; }
     function bankNeed(fs, sub) {
       let n = 0;
-      if (sub === 0) for (let j = 0; j < 6; j++) n += ceil(fs / (8 * BANK_M[j])) + 8;
+      if (sub === 0) for (let j = 0; j < 6; j++) n += bankLen(fs, j);
       else if (sub === 1) for (let j = 0; j < 6; j++) n += lineLen(fs, AP_M[j]);
       else for (let j = 0; j < 4; j++) n += lineLen(fs, FDN_M[j]);
       return 2 * n;
     }
-    function poolNeed(fam, fs) {
+    // (the bank subtypes have different layouts: the pool is sized for the subtype in use, or for every subtype a
+    // modulated type can reach, so the FDN bank's 1.1 MB at 192 kHz is only taken by a filter that can play it, §14.2)
+    function poolNeed(fam, fs, sub = -1) {
       if (fam === F_COMB || fam === F_FLANGE || fam === F_FPHS || fam === F_DISTCOMB) return 2 * lineLen(fs, 1);
       if (fam === F_BANK) {
+        if (sub >= 0 && sub <= 2) return bankNeed(fs, sub);
         const a = bankNeed(fs, 0), b = bankNeed(fs, 1), c = bankNeed(fs, 2);
         return a > b ? (a > c ? a : c) : (b > c ? b : c);
       }
       return 0;
-    }
-    function poolMax(fs) {
-      const a = poolNeed(F_COMB, fs), b = poolNeed(F_BANK, fs);
-      return a > b ? a : b;
     }
 
     class SFilter {
@@ -486,6 +651,9 @@
         this.fs = fs > 0 ? +fs : 48000;
         this.type = 1; this.fam = F_LADDER; this.sub = 1; this.all = 0; this.aLo = 0; this.aHi = NTYPES - 1; this.aNeed = 0; this.aFs = -1;
         this.aL = 1000; this.aR = 1000;                        // last set() cutoffs (unclamped, for setRate)
+        // (M4) 1 while the state is as the flush at the end of process() left it (only process — and tick called directly,
+        // filterImpulse — change it): set() then skips its flush, which would change nothing (the flush is idempotent)
+        this.cln = 0;
         this.fcL = -1; this.fcR = -1; this.res = 0; this.drive = -1; this.vr = 0;
         this.dg = 1;
         // ladder families
@@ -505,56 +673,162 @@
         this.lb = new Int32Array(16); this.ln = new Int32Array(16); this.lw = new Int32Array(16); this.lc = new Int32Array(16);
         this.nl = 0;
         this.yl = 0; this.yr = 0;
+        // Serum 2 "New" types 96–107 (SPEC-serum2 §6.13.1): SxFilt2 family objects, created only on apply paths — need,
+        // prealloc, setRate, and setType while the type is not modulated (the Phase-1 contract: setType runs on the render
+        // path only for modulated types, which prealloc'ated in apply); nx = the object of the current type (null: not
+        // allocated, audio passes unfiltered; miss = that type, allocated by the next prealloc). Their delay lines
+        // (Diffusor, Comb 2) borrow this filter's pool (SxFilt2 make(…, pool)): one family runs at a time, so the pool is
+        // sized by the largest family reachable, never by the sum (§14.2)
+        this.f2o = null; this.nx = null; this.F2 = null; this.miss = -1;
+        this.px = 0; this.py = 0; this.pz = null; this.pzOff = 0;  // PZ SVF X/Y and corner data (setXY / setPZ)
+        this.cl = 0;                                           // Clean Mode (§6.13.3)
         this.set(1000, 1000, 0, 0, 0);
       }
       setRate(fs) {
         if (fs > 0 && +fs !== this.fs) {
           this.fs = +fs;
-          if (this.pool.length > 0) { this.ensure(this.fam); this.layout(); }
+          // one pool for the new rate (the Phase-1 lines of the current or every reachable family, the SxFilt2 objects'
+          // lines), then the SxFilt2 objects at the new rate: borrowers made again on the pool, the others re-rated
+          const o = this.f2o;
+          let n2 = 0;
+          if (o !== null) for (let j = 0; j < NT_NEW; j++) if (o[j] !== null) { const q = this.f2Need(NTYPES + j); if (q > n2) n2 = q; }
+          this.grow(n2, false);
+          if (this.pool.length > 0) { this.ensure(this.fam, this.sub, false); this.layout(); }
+          if (o !== null) {
+            for (let j = 0; j < NT_NEW; j++) {
+              if (o[j] === null) continue;
+              if (this.f2Need(NTYPES + j) > 0) this.remake(j); else o[j].setRate(this.fs);
+            }
+          }
         }
         this.fcL = -1; this.fcR = -1;                          // force recomputation (clamp and prewarp depend on fs)
         this.set(this.aL, this.aR, this.res, this.drive, this.vr);
       }
+      // the SxFilt2 object of type t ≥ 96 (allocation: apply / prealloc paths only); false when SxFilt2 is missing
+      need(t) {
+        t = round(+t);
+        if (!(t >= NTYPES && t < NT2)) return false;
+        if (this.f2o !== null && this.f2o[t - NTYPES] !== null) return true;
+        const F2 = this.F2 || globalThis.SxFilt2;
+        if (!F2 || typeof F2.make !== 'function') { warnF2(); return false; }
+        this.F2 = F2;
+        if (this.f2o === null) this.f2o = new Array(NT_NEW).fill(null);
+        this.grow(this.f2Need(t), true);                         // the pool holds this family's lines as well
+        const o = this.make2(t);
+        if (!o) return false;
+        this.f2o[t - NTYPES] = o;
+        if (this.type === t) { this.nx = o; o.reset(); }
+        if (this.miss === t) this.miss = -1;
+        return true;
+      }
+      // Float32 line samples the SxFilt2 object of type t uses at this rate (0: no lines, or no SxFilt2.need)
+      f2Need(t) {
+        const F2 = this.F2;
+        return F2 !== null && typeof F2.need === 'function' ? F2.need(t, this.fs) | 0 : 0;
+      }
+      // a SxFilt2 object of type t with the current controls, on this filter's pool when it has lines (apply paths)
+      make2(t) {
+        const q = this.f2Need(t);
+        const o = this.F2.make(t, this.fs, q > 0 && this.pool.length >= q && this.pool !== EMPTY32 ? this.pool : null);
+        if (!o) return null;
+        o.set(this.aL, this.aR, this.res, this.drive, this.vr);
+        o.setXY(this.px, this.py);
+        if (this.pz !== null) o.setPZ(this.pz, this.pzOff);
+        return o;
+      }
+      // the object of new type NTYPES + j made again on the current pool (after the pool was replaced; state restarts)
+      remake(j) {
+        const o = this.make2(NTYPES + j);
+        if (!o) return;
+        const cur = this.f2o[j] === this.nx;
+        this.f2o[j] = o;
+        if (cur) { this.nx = o; o.reset(); }
+      }
+      // the pool grows to n samples (apply paths): the Phase-1 lines restart empty and, with re, the SxFilt2 objects that
+      // borrowed the old pool are made again on the new one
+      grow(n, re) {
+        if (!(n > this.pool.length)) return;
+        this.pool = new Float32Array(n);
+        this.lc.fill(0);
+        const o = this.f2o;
+        if (re && o !== null) for (let j = 0; j < NT_NEW; j++) if (o[j] !== null && this.f2Need(NTYPES + j) > 0) this.remake(j);
+      }
+      // PZ SVF position and corners (once per chunk; other types ignore them)
+      setXY(x, y) {
+        this.px = x; this.py = y;
+        if (this.nx !== null) this.nx.setXY(x, y);
+      }
+      setPZ(c, off = 0) {
+        this.pz = c; this.pzOff = off;
+        if (this.nx !== null) this.nx.setPZ(c, off);
+      }
+      setClean(on) { this.cl = on ? 1 : 0; }
       setType(t) {
-        t = t > 0 ? (t < NTYPES - 1 ? round(t) : NTYPES - 1) : 0;
+        t = t > 0 ? (t < NT2 - 1 ? round(t) : NT2 - 1) : 0;
         if (t === this.type) return;
+        if (t >= NTYPES) {                                     // Serum 2 "New" family (SxFilt2)
+          // a type that is not modulated (no prealloc(true)) is set on an apply path (Phase-1 contract, §8.4.5): its object
+          // is made here, as the Phase-1 families allocate their lines; a modulated type never allocates (render path)
+          let o = this.f2o !== null ? this.f2o[t - NTYPES] : null;
+          if (o === null && this.all === 0 && this.need(t)) o = this.f2o[t - NTYPES];
+          this.type = t; this.fam = F_NEW; this.sub = t - NTYPES; this.nx = o;
+          if (o !== null) {                                    // (reset last: the family starts fresh, its next set jumps)
+            o.set(this.aL, this.aR, this.res, this.drive, this.vr);
+            o.setXY(this.px, this.py);
+            if (this.pz !== null) o.setPZ(this.pz, this.pzOff);
+            o.reset();
+          } else if (this.all !== 0 && this.miss !== t) { this.miss = t; warnF2pre(t); }
+          return;
+        }
         const fam = FILTER_FAM_OF[t];
         const change = fam !== this.fam || fam === F_BANK;     // bank subtypes use different line layouts
-        this.type = t; this.fam = fam; this.sub = t - FAM_FIRST[fam];
+        this.type = t; this.fam = fam; this.sub = t - FAM_FIRST[fam]; this.nx = null;
         if (change) {                                          // switching family resets it; same family keeps state
-          this.ensure(fam);
+          this.ensure(fam, this.sub);
           this.layout();
           this.st.fill(0); this.ld.fill(0);
         }
         this.coef();
       }
-      // all: the type is modulated — the pool covers every family of the types lo…hi it can reach (default: all)
-      prealloc(all, lo = 0, hi = NTYPES - 1) {
+      // all: the type is modulated — the pool covers every family of the types lo…hi it can reach (default 0–107, §6.13.1:
+      // the SxFilt2 objects of every reachable new type are created too; callers limited to 0–95 pass hi = 95). Any call
+      // (an apply path) also allocates a new type a modulated setType found missing (`miss`, §6.13.1)
+      prealloc(all, lo = 0, hi = NT2 - 1) {
         this.all = all ? 1 : 0;
-        this.aLo = lo > 0 ? (lo < NTYPES ? lo | 0 : NTYPES - 1) : 0;
-        this.aHi = hi > this.aLo ? (hi < NTYPES ? hi | 0 : NTYPES - 1) : this.aLo;
+        this.aLo = lo > 0 ? (lo < NT2 ? lo | 0 : NT2 - 1) : 0;
+        this.aHi = hi > this.aLo ? (hi < NT2 ? hi | 0 : NT2 - 1) : this.aLo;
         this.aFs = -1;
         if (this.all) {
-          const had = this.pool.length;
-          this.ensure(this.fam);
-          if (this.pool.length !== had) this.layout();
+          if (this.F2 === null && this.aHi >= NTYPES) {
+            const F2 = globalThis.SxFilt2;
+            if (F2 && typeof F2.make === 'function') this.F2 = F2;
+          }
+          const had = this.pool;
+          this.ensure(this.fam, this.sub);                       // one pool for every reachable family, new ones included
+          if (this.pool !== had) this.layout();
+          for (let t = this.aLo > NTYPES ? this.aLo : NTYPES; t <= this.aHi; t++) this.need(t);
         }
+        if (this.miss >= NTYPES) this.need(this.miss);
       }
-      // grow-only pool: enough for this family (or for every family of the reachable types after prealloc(true))
-      ensure(fam) {
-        let need = poolNeed(fam, this.fs);
+      // grow-only pool: enough for this family and subtype (or for every type reachable after prealloc(true), the
+      // SxFilt2 delay families of types 96–107 included — they borrow the pool)
+      ensure(fam, sub = -1, re = true) {
+        let need = poolNeed(fam, this.fs, sub);
+        if (this.type >= NTYPES) { const q = this.f2Need(this.type); if (q > need) need = q; }   // the playing new type's lines
         if (this.all) {
           if (this.aFs !== this.fs) {
             let m = 0;
-            for (let t = this.aLo; t <= this.aHi; t++) { const q = poolNeed(FILTER_FAM_OF[t], this.fs); if (q > m) m = q; }
+            for (let t = this.aLo; t <= this.aHi; t++) {
+              let q;
+              if (t < NTYPES) { const fm = FILTER_FAM_OF[t]; q = poolNeed(fm, this.fs, t - FAM_FIRST[fm]); }
+              else q = this.f2Need(t);
+              if (q > m) m = q;
+            }
             this.aNeed = m; this.aFs = this.fs;
           }
           if (this.aNeed > need) need = this.aNeed;
         }
-        if (need > this.pool.length) {
-          this.pool = new Float32Array(need);
-          this.lc.fill(0);
-        }
+        this.grow(need, re);
       }
       layout() {
         const fs = this.fs, fam = this.fam, lb = this.lb, ln = this.ln;
@@ -566,7 +840,7 @@
           const sub = this.sub, nj = sub === 2 ? 4 : 6;
           for (let ch = 0; ch < 2; ch++) {
             for (let j = 0; j < nj; j++) {
-              const L = sub === 0 ? ceil(fs / (8 * BANK_M[j])) + 8 : lineLen(fs, sub === 1 ? AP_M[j] : FDN_M[j]);
+              const L = sub === 0 ? bankLen(fs, j) : lineLen(fs, sub === 1 ? AP_M[j] : FDN_M[j]);
               lb[nl] = off; ln[nl] = L; off += L; nl++;
             }
           }
@@ -586,8 +860,9 @@
         if (fcL === this.fcL && fcR === this.fcR && res === this.res && drive === this.drive && vr === this.vr) return;
         if (drive !== this.drive) this.dg = exp(LN10 * 0.8 * sqrt(drive));   // 10^(16·√d/20)
         this.fcL = fcL; this.fcR = fcR; this.res = res; this.drive = drive; this.vr = vr;
+        if (this.fam === F_NEW) { if (this.nx !== null) this.nx.set(fcL, fcR, res, drive, vr); return; }
         this.coef();
-        this.flush();
+        if (this.cln === 0) this.flushFam();                     // (M4: the family's states only, as process; cln)
       }
       // coefficients of the current family for both channels
       coef() {
@@ -733,6 +1008,7 @@
       }
       tick(xl, xr) {
         let a, b;
+        if (this.cl !== 0) { xl *= CLEAN_IN; xr *= CLEAN_IN; }
         switch (this.fam) {
           case F_LADDER: a = this.fLad(0, xl); b = this.fLad(1, xr); break;
           case F_SVF: a = this.fSvf(0, xl); b = this.fSvf(1, xr); break;
@@ -751,14 +1027,22 @@
           case F_FORMANT: a = this.fFormant(0, xl); b = this.fFormant(1, xr); break;
           case F_BREJECT: a = this.fBrej(0, xl); b = this.fBrej(1, xr); break;
           case F_DISTCOMB: a = this.fDistComb(0, xl); b = this.fDistComb(1, xr); break;
+          case F_NEW: {
+            const o = this.nx;
+            if (o !== null) { o.tick(xl, xr); a = o.yl; b = o.yr; } else { a = xl; b = xr; }
+            break;
+          }
           default: a = this.fScream(0, xl); b = this.fScream(1, xr); break;
         }
+        if (this.cl !== 0) { a *= CLEAN_OUT; b *= CLEAN_OUT; }
         this.yl = a <= 8 && a >= -8 ? a : lim(a);
         this.yr = b <= 8 && b >= -8 ? b : lim(b);
       }
       process(L, R, off, n) {
         const end = off + n;
         const sub = this.sub;
+        if (this.cl !== 0) { this.pClean(L, R, off, end); return; }
+        if (this.fam === F_NEW) { this.pNew(L, R, off, end); return; }
         if (this.fam === F_LADDER) { if (n > 0) this.pLad(L, R, off, end); }
         else if (this.fam === F_SVF && (sub === 1 || sub === 5 || sub === 8 || sub === 10 || sub === 12)) { if (n > 0) this.pSvf(L, R, off, end, sub); }
         else {
@@ -767,7 +1051,35 @@
             L[i] = this.yl; R[i] = this.yr;
           }
         }
-        this.flush();
+        this.flushFam();
+        this.cln = 1;
+      }
+      // Serum 2 families: the SxFilt2 object processes the block (missing object: unfiltered)
+      pNew(L, R, off, end) {
+        const o = this.nx;
+        if (o !== null) {
+          if (end > off) {
+            o.process(L, R, off, end - off);
+            for (let i = off; i < end; i++) {
+              const a = L[i], b = R[i];
+              if (!(a <= 8 && a >= -8)) L[i] = lim(a);
+              if (!(b <= 8 && b >= -8)) R[i] = lim(b);
+            }
+          }
+        }
+        if (end > off) { this.yl = L[end - 1]; this.yr = R[end - 1]; }
+      }
+      // Clean Mode (§6.13.3): input −24 dB, output +24 dB around the family
+      pClean(L, R, off, end) {
+        for (let i = off; i < end; i++) { L[i] *= CLEAN_IN; R[i] *= CLEAN_IN; }
+        this.cl = 0;
+        this.process(L, R, off, end - off);
+        this.cl = 1;
+        for (let i = off; i < end; i++) {
+          const a = L[i] * CLEAN_OUT, b = R[i] * CLEAN_OUT;
+          L[i] = a <= 8 && a >= -8 ? a : lim(a); R[i] = b <= 8 && b >= -8 ? b : lim(b);
+        }
+        if (end > off) { this.yl = L[end - 1]; this.yr = R[end - 1]; }
       }
       // Low / High / Band / Peak / Notch 12 (one SVF stage) the same way: tick → fSvf → svf inlined, bit for bit
       pSvf(L, R, off, end, sub) {
@@ -828,6 +1140,7 @@
       }
       reset() {
         this.ld.fill(0); this.st.fill(0); this.lc.fill(0);
+        if (this.nx !== null) this.nx.reset();
         this.yl = 0; this.yr = 0;
       }
       // denormal flush of every feedback state; a non-finite or runaway state resets the filter
@@ -839,6 +1152,42 @@
           if (v < 1e-30 && v > -1e-30) s[i] = 0;
           else if (!(v < 1e9 && v > -1e9)) bad = 1;
         }
+        for (let i = 0; i < 2 * LD; i++) {
+          const v = l[i];
+          if (v < 1e-30 && v > -1e-30) l[i] = 0;
+          else if (!(v < 1e9 && v > -1e9)) bad = 1;
+        }
+        if (bad) this.reset();
+      }
+      // (M4) flush() of the states the current family can hold: ld is written by the ladder families only (MG Low, German,
+      // French; zeroed on every change between the Phase-1 families and by reset), st by every family but MG Low, and the
+      // SVF family only st[0 … 6] of each channel — checking a state that holds 0 changes nothing, so this equals flush()
+      // (twice per chunk and voice: set, process)
+      flushFam() {
+        const fam = this.fam;
+        if (fam === F_LADDER) this.flushLd();
+        else if (fam === F_SVF) this.flushSt(7);                // (fSvf / pSvf: st[0 … 6] of each channel)
+        else if (fam === F_GERMAN || fam === F_FRENCH || fam === F_NEW) this.flush();   // (New: setType keeps ld)
+        else this.flushSt(ST);
+      }
+      // flush() of st[0 … m) of each channel
+      flushSt(m) {
+        const s = this.st;
+        let bad = 0;
+        for (let c = 0; c < 2 * ST; c += ST) {
+          for (let i = c; i < c + m; i++) {
+            const v = s[i];
+            if (v < 1e-30 && v > -1e-30) s[i] = 0;
+            else if (!(v < 1e9 && v > -1e9)) bad = 1;
+          }
+        }
+        if (bad) this.reset();
+      }
+      // flush for the MG Low ladder (pLad keeps its whole state in ld; st stays zero for that family): the same result as
+      // flush() with a third of the checks (once per chunk and voice, the default filter)
+      flushLd() {
+        const l = this.ld;
+        let bad = 0;
         for (let i = 0; i < 2 * LD; i++) {
           const v = l[i];
           if (v < 1e-30 && v > -1e-30) l[i] = 0;
@@ -1171,7 +1520,15 @@
     }
 
     // left-channel response of a fresh SFilter to a 0.01-amplitude impulse, divided by 0.01 (UI displays)
-    function filterImpulse(type, fc, res, drive, vr, fs, len = 4096) {
+    // (x, y, pz: PZ SVF position and corners, §6.13.4, passed through to SxFilt2.impulse for the types ≥ 96)
+    function filterImpulse(type, fc, res, drive, vr, fs, len = 4096, x = 0, y = 0, pz = null) {
+      if (round(+type) >= NTYPES) {                            // Serum 2 types: SxFilt2 (unit impulse without it)
+        const F2 = globalThis.SxFilt2, t = round(+type) < NT2 ? round(+type) : NT2 - 1;
+        if (F2 && typeof F2.impulse === 'function') return F2.impulse(t, fc, res, drive, vr, fs > 0 ? +fs : 48000, len > 0 ? len | 0 : 0, x, y, pz);
+        const u = new Float64Array(len > 0 ? len | 0 : 0);
+        if (u.length) u[0] = 1;
+        return u;
+      }
       const f = new SFilter(fs), out = new Float64Array(len > 0 ? len | 0 : 0);
       f.setType(type);
       f.set(fc, fc, res, drive, vr);
@@ -1183,456 +1540,335 @@
       return out;
     }
 
-    /* ------------------------------------------------------------ built-in default CT (§4.1) */
-    const DEF_CT = (() => {
-      const lfoTab = new Float32Array(8 * 1025), lfoPtsOff = new Uint16Array(9), lfoPts = new Float64Array(8 * 9);
-      const tri = Float64Array.from([0, 0, 0, 0.5, 1, 0, 1, 0, 0]);
-      for (let l = 0; l < 8; l++) {
-        lfoPtsOff[l] = 3 * l;
-        lfoPts.set(tri, 9 * l);
-        for (let j = 0; j <= 1024; j++) lfoTab[l * 1025 + j] = evalPts(tri, 0, 3, j / 1024);
+    /* ------------------------------------------------------------ CT v2 store (§4.1): defaults, part merging */
+    const LFO_N = 1024, REMAP_N = 2048, CURVE_N = 128, CRV_N = 128, SPEC_FILT_N = 512;
+    const CT_PTS = N_LFO * MAX_PTS;                            // packed LFO points of a merged CT (≤ 480 per LFO)
+    const TRI = Float64Array.from([0, 0, 0, 0.5, 1, 0, 1, 0, 0]), TRI_PM = new Uint8Array(6);
+    // identity remap of every oscillator (renderWarp without opts.remap; the voices before any CT) and identity curve
+    const DEF_REMAP = new Float32Array(N_OSC * (REMAP_N + 1));
+    for (let o = 0; o < N_OSC; o++) for (let j = 0; j <= REMAP_N; j++) DEF_REMAP[o * (REMAP_N + 1) + j] = j / REMAP_N;
+    const DEF_TAB = new Float32Array(CURVE_N + 1);
+    for (let j = 0; j <= CURVE_N; j++) DEF_TAB[j] = j / CURVE_N;
+    // a full CT v2 (§4.1 layout; one per processor, allocated in attach) holding the built-in defaults
+    function makeCT() {
+      const ct = { key: '', lfoTab: new Float32Array(N_LFO * (LFO_N + 1)), lfoPtsOff: new Uint16Array(N_LFO + 1),
+        lfoPts: new Float64Array(3 * CT_PTS), lfoPm: new Uint8Array(2 * CT_PTS), lfoPmAny: new Uint8Array(N_LFO),
+        lfoStart: new Float64Array(N_LFO), lfoLoop: new Float64Array(N_LFO).fill(-1),
+        pathX: new Float32Array(N_LFO * (LFO_N + 1)), pathY: new Float32Array(N_LFO * (LFO_N + 1)),
+        remap: DEF_REMAP.slice(), veloTab: DEF_TAB.slice(), noteTab: DEF_TAB.slice(),
+        crv: new Float32Array(NROW * (CRV_N + 1)), specFilt: new Float32Array(N_OSC * (SPEC_FILT_N + 1)).fill(1) };
+      for (let l = 0; l < N_LFO; l++) {
+        ct.lfoPtsOff[l] = 3 * l;
+        ct.lfoPts.set(TRI, 9 * l);
+        for (let j = 0; j <= LFO_N; j++) ct.lfoTab[l * (LFO_N + 1) + j] = evalPts(TRI, 0, 3, j / LFO_N);
       }
-      lfoPtsOff[8] = 24;
-      const remap = new Float32Array(2 * 2049);
-      for (let o = 0; o < 2; o++) for (let j = 0; j <= 2048; j++) remap[o * 2049 + j] = j / 2048;
-      const veloTab = new Float32Array(129), noteTab = new Float32Array(129);
-      for (let j = 0; j <= 128; j++) { veloTab[j] = j / 128; noteTab[j] = j / 128; }
-      const lfoLoop = new Float64Array(8).fill(-1);
-      return Object.freeze({ key: '', lfoTab, lfoPtsOff, lfoPts, lfoPm: new Uint8Array(48), lfoPmAny: new Uint8Array(8),
-        lfoStart: new Float64Array(8), lfoLoop, remap, veloTab, noteTab });
-    })();
+      ct.lfoPtsOff[N_LFO] = 3 * N_LFO;
+      for (let r = 0; r < NROW; r++) ct.crv.set(DEF_TAB, r * (CRV_N + 1));
+      return ct;
+    }
+    const partNames = (p, n) => Object.freeze(Array.from({ length: n }, (_, i) => p + i));
+    const PN_LFO = partNames('lfo', N_LFO), PN_PATH = partNames('path', N_LFO), PN_REMAP = partNames('remap', N_OSC),
+      PN_CRV = partNames('crv', NROW), PN_SPEC = partNames('spec', N_OSC);
+    const isTA = (a, tag, n) => a !== null && typeof a === 'object' && ArrayBuffer.isView(a) && a[Symbol.toStringTag] === tag &&
+      a.length === n;
+    const warnedParts = new Set();
+    function badPart(name) {
+      if (warnedParts.has(name)) return;
+      warnedParts.add(name);
+      if (typeof console !== 'undefined') console.warn('serum-dsp: invalid CT part', name);
+    }
+    // merge the parts of t = {key, parts: {name: part}} (any subset, §4.1) into the processor's full CT; a part whose key
+    // equals the merged one is skipped. Returns whether anything changed (then sx.ctGen counts up). Allocation-free.
+    function mergeCT(proc, t) {
+      const sx = proc.sx || attach(proc);
+      const P = t !== null && typeof t === 'object' ? t.parts : null;
+      if (P === null || typeof P !== 'object') return false;
+      const C = sx.CT, K = sx.ctK;
+      let ch = 0, lfo = 0;
+      for (let l = 0; l < N_LFO; l++) {
+        const q = P[PN_LFO[l]];
+        if (q && q.key !== K.lfo[l]) {
+          const n = q.n, st = +q.start, lp = +q.loop;
+          if (Number.isInteger(n) && n >= 1 && n <= MAX_PTS && isTA(q.tab, 'Float32Array', LFO_N + 1) &&
+            isTA(q.pts, 'Float64Array', 3 * n) && isTA(q.pm, 'Uint8Array', 2 * n) && st >= 0 && st <= 1 && lp >= -1 && lp <= 1) {
+            K.lfo[l] = q.key; sx.ctQ[l] = q; lfo = 1;
+            C.lfoTab.set(q.tab, l * (LFO_N + 1));
+            C.lfoPmAny[l] = q.pmAny ? 1 : 0; C.lfoStart[l] = st; C.lfoLoop[l] = lp;
+          } else badPart(PN_LFO[l]);
+        }
+        const w = P[PN_PATH[l]];
+        if (w && w.key !== K.path[l]) {
+          if (isTA(w.x, 'Float32Array', LFO_N + 1) && isTA(w.y, 'Float32Array', LFO_N + 1)) {
+            K.path[l] = w.key; C.pathX.set(w.x, l * (LFO_N + 1)); C.pathY.set(w.y, l * (LFO_N + 1)); ch = 1;
+          } else badPart(PN_PATH[l]);
+        }
+      }
+      if (lfo) {                                               // repack the point lists in LFO order
+        let off = 0;
+        for (let l = 0; l < N_LFO; l++) {
+          const q = sx.ctQ[l];
+          C.lfoPtsOff[l] = off;
+          if (q !== null) { C.lfoPts.set(q.pts, 3 * off); C.lfoPm.set(q.pm, 2 * off); off += q.n; }
+          else { C.lfoPts.set(TRI, 3 * off); C.lfoPm.set(TRI_PM, 2 * off); off += 3; }
+        }
+        C.lfoPtsOff[N_LFO] = off;
+        ch = 1;
+      }
+      for (let o = 0; o < N_OSC; o++) {
+        const r = P[PN_REMAP[o]];
+        if (r && r.key !== K.remap[o]) {
+          if (isTA(r.tab, 'Float32Array', REMAP_N + 1)) { K.remap[o] = r.key; C.remap.set(r.tab, o * (REMAP_N + 1)); ch = 1; }
+          else badPart(PN_REMAP[o]);
+        }
+        const s = P[PN_SPEC[o]];
+        if (s && s.key !== K.spec[o]) {
+          if (isTA(s.tab, 'Float32Array', SPEC_FILT_N + 1)) { K.spec[o] = s.key; C.specFilt.set(s.tab, o * (SPEC_FILT_N + 1)); ch = 1; }
+          else badPart(PN_SPEC[o]);
+        }
+      }
+      const vq = P.velo, nq = P.note;
+      if (vq && vq.key !== K.velo) {
+        if (isTA(vq.tab, 'Float32Array', CURVE_N + 1)) { K.velo = vq.key; C.veloTab.set(vq.tab); ch = 1; } else badPart('velo');
+      }
+      if (nq && nq.key !== K.note) {
+        if (isTA(nq.tab, 'Float32Array', CURVE_N + 1)) { K.note = nq.key; C.noteTab.set(nq.tab); ch = 1; } else badPart('note');
+      }
+      for (let r = 0; r < NROW; r++) {
+        const c = P[PN_CRV[r]];
+        if (c && c.key !== K.crv[r]) {
+          if (isTA(c.tab, 'Float32Array', CRV_N + 1)) { K.crv[r] = c.key; C.crv.set(c.tab, r * (CRV_N + 1)); ch = 1; }
+          else badPart(PN_CRV[r]);
+        }
+      }
+      if (typeof t.key === 'string' && t.key !== C.key) { C.key = t.key; ch = 1; }
+      if (ch) sx.ctGen++;
+      return ch === 1;
+    }
 
-    /* ------------------------------------------------------------ shared helpers of the modulation system */
-    // one matrix row (§5.2) from the source vector src into off[mDst − ob]
-    function evalRow(sx, r, src, off, ob) {
-      const si = sx.mSrc[r], bi = SRC_POL[si];
-      let s = src[si];
-      const k = sx.mK[r];
-      if (k !== 0) {
-        if (bi === 0) s = (1 - exp(-k * s)) * sx.mKd[r];
-        else {
-          const a = s < 0 ? -s : s, b = (1 - exp(-k * a)) * sx.mKd[r];
-          s = s < 0 ? -b : b;
-        }
-      }
-      let x = sx.mBi[r] ? (bi ? 0.5 * s : s - 0.5) : s;
-      const ai = sx.mAux[r];
-      if (ai !== 0) {
-        let a = src[ai];
-        if (SRC_POL[ai]) a = (a + 1) * 0.5;
-        a = a > 0 ? (a < 1 ? a : 1) : 0;
-        x *= sx.mInv[r] ? 1 - a : a;
-      }
-      off[sx.mDst[r] - ob] += sx.mAmt[r] * x;
-    }
-    // point-modulated LFO graph l (§5.7) evaluated at phase ph with bus values from the eff vector E: evalPts on the
-    // modified point list, computing a modified x/y only for the points the binary search and the segment touch
-    // (O(log n); x' of a point depends only on its unmodified neighbours, so this equals evalPts on the full list)
-    let pmY0 = 0;
-    function pmX(P, M, off, n, j, E) {
-      const b = 3 * (off + j), mx = M[2 * (off + j)];
-      let x = P[b];
-      if (mx > 0 && mx <= 16 && j > 0 && j < n - 1) {
-        const xl = P[b - 3], xr = P[b + 3];
-        x += 2 * E[BUS1 + mx - 1] - 1;
-        x = x > xl ? (x < xr ? x : xr) : xl;
-      }
-      return x;
-    }
-    function pmY(P, M, off, j, E) {
-      const my = M[2 * (off + j) + 1];
-      let y = P[3 * (off + j) + 1];
-      if (my > 0 && my <= 16) {
-        y += 2 * E[BUS1 + my - 1] - 1;
-        y = y > 0 ? (y < 1 ? y : 1) : 0;
-      }
-      return y;
-    }
-    function pmEval(sx, l, x, E) {
-      const off = sx.lfoPtsOff[l];
-      let n = sx.lfoPtsOff[l + 1] - off;
-      if (n > MAX_PTS) n = MAX_PTS;
-      if (n < 1) { pmY0 = 0; return 0; }
-      const P = sx.lfoPts, M = sx.lfoPm, last = n - 1;
-      pmY0 = pmY(P, M, off, 0, E);
-      if (x <= 0 || x < P[3 * off]) return pmY0;                // first and last x are never modulated
-      if (x >= 1 || P[3 * (off + last)] <= x) return pmY(P, M, off, last, E);
-      let lo = 0, hi = last;
-      while (hi - lo > 1) {
-        const mid = (lo + hi) >> 1;
-        if (pmX(P, M, off, n, mid, E) <= x) lo = mid; else hi = mid;
-      }
-      const x0 = pmX(P, M, off, n, lo, E), dx = pmX(P, M, off, n, lo + 1, E) - x0;
-      if (dx <= 1e-9) return pmY(P, M, off, lo + 1, E);
-      const y0 = pmY(P, M, off, lo, E);
-      return y0 + (pmY(P, M, off, lo + 1, E) - y0) * bend((x - x0) / dx, CURVE_K * P[3 * (off + lo) + 2]);
-    }
-    // chaos generators: Rössler (k 0) / Lorenz (k 1) state at S[j..j+2], RK2 (midpoint) with sub-steps ≤ 0.02
-    const CHAOS_T0 = Float64Array.from([6.07, 0.75]);
-    function chaosInt(S, j, k, h) {
-      if (!(h > 0)) return;
-      let x = S[j], y = S[j + 1], z = S[j + 2];
-      const n = h > 0.02 ? ceil(h / 0.02) : 1, dt = h / n;
-      for (let i = 0; i < n; i++) {
-        if (k === 0) {
-          const xm = x + 0.5 * dt * (-y - z), ym = y + 0.5 * dt * (x + 0.2 * y), zm = z + 0.5 * dt * (0.2 + z * (x - 5.7));
-          x += dt * (-ym - zm); y += dt * (xm + 0.2 * ym); z += dt * (0.2 + zm * (xm - 5.7));
-        } else {
-          const xm = x + 0.5 * dt * 10 * (y - x), ym = y + 0.5 * dt * (x * (28 - z) - y), zm = z + 0.5 * dt * (x * y - 2.6666666666666665 * z);
-          x += dt * 10 * (ym - xm); y += dt * (xm * (28 - zm) - ym); z += dt * (xm * ym - 2.6666666666666665 * zm);
-        }
-      }
-      if (!(x === x && y === y && z === z) || x > 1e6 || x < -1e6) { x = 1; y = 1; z = 1; }
-      S[j] = x; S[j + 1] = y; S[j + 2] = z;
-    }
-    function chaosOut(S, j, k) {
-      const v = k ? S[j] / 20 : S[j] / 12;
-      return v > -1 ? (v < 1 ? v : 1) : -1;
-    }
-    // BPM snap (§6.13): nearest straight ladder entry 128·2^(−i) beats, i = 0…14, in log distance
-    function snapRate(rate, bpm) {
-      const beats = bpm / 60 / rate;
-      let i = round(mlog2(128 / beats));
-      i = i > 0 ? (i < 14 ? i : 14) : 0;
-      return bpm / 60 / (128 * pow(2, -i));
-    }
     function xorshift(s) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return s >>> 0; }
+    // key n is left unmapped by the loaded tuning (CP.tune[n] = NaN, §6.18; sx.tuned set)
+    function unmapped(sx, n) { const k = n | 0, t = k >= 0 && k <= 127 ? sx.tune[k] : 0; return t !== t; }
 
-    /* ------------------------------------------------------------ per-processor state (§8.4.2, §5) */
+    /* ------------------------------------------------------------ per-processor state (§8.4.2; modulation in SxMod) */
     const SEED = 0x2545F491;                                   // processor PRNG seed (constant: renders are reproducible)
+    let warnedMod = false;
     function makeSnap() {
       return {
-        eff: new Float32Array(ND), lfoPh: new Float32Array(8), lfoOut: new Float32Array(8), env: new Float32Array(3),
-        envStage: new Uint8Array(3), envT: new Float32Array(3), wtPos: new Float32Array(2), noisePos: 0, notes: 0,
-        oscVoices: 0, maxVoices: 0, memNow: new Float32Array(32), filtTap: new Float32Array(TAP_N), tapRate: 0,
+        eff: new Float32Array(NSV + MAXFX), lfoPh: new Float32Array(N_LFO), lfoOut: new Float32Array(N_LFO),
+        lfoY: new Float32Array(N_LFO), env: new Float32Array(N_ENV), envStage: new Uint8Array(N_ENV), envT: new Float32Array(N_ENV),
+        wtPos: new Float32Array(N_OSC), noisePos: 0, notes: 0, oscVoices: 0, maxVoices: 0, memNow: new Float32Array(16 * N_OSC),
+        filtTap: new Float32Array(2 * TAP_N), tapRate: 0,
+        // SPEC-serum2 §6.20 additions
+        smpPos: new Float32Array(4 * N_OSC), grains: new Uint16Array(N_OSC), specCap: 0, mix: new Float32Array(11).fill(-120),
+        mOut: new Float32Array(NROW), zone: new Int16Array(N_OSC).fill(-1), seq: new Float64Array(16),
       };
     }
     function attach(proc) {
       if (proc.sx) return proc.sx;
       const sx = {
-        span: 0, nCh: 0, CH: 0, OS: 0, base: 0, fs: 0, ok: 0, mon: 0, dtC: 0, kF: 0, kM: 0, kSm: -1, dBeat: 0,
-        // copies of the current CP (§4.1)
-        cp: null, bT: new Float64Array(NS), mN: 0, mSrc: new Int8Array(32), mDst: new Int16Array(32), mAmt: new Float64Array(32),
-        mBi: new Uint8Array(32), mK: new Float64Array(32), mKd: new Float64Array(32), mAux: new Int8Array(32),
-        mInv: new Uint8Array(32), mCtx: new Uint8Array(32), mOn: new Uint8Array(32), fxN: 0,
-        srcUsed: new Uint8Array(NSRC), modded: new Uint8Array(NS), modList: new Int16Array(NS), modN: 0,
-        wtA: '', wtB: '', noiseId: '', uniMode: new Uint8Array(2), uniRange: new Float64Array(2), memSet: new Float64Array(32),
-        subDirect: 0, noiseOneshot: 0, noiseKey: 0, noiseDirect: 0, filKey: 0, direct: 0,
-        lfoMode: new Uint8Array(8), lfoBpm: new Uint8Array(8), lfoAnchor: new Uint8Array(8), lfoLad: new Float64Array(8 * 43),
-        lfoLadN: new Uint8Array(8), chaosMono: new Uint8Array(2), chaosSh: new Uint8Array(2), macroT: new Float64Array(4),
-        cMono: 0, cLegato: 0, cPoly: 8, cAlways: 0, cScaled: 0, a4: 440, smooth: 1, veloPorta: 0, notePorta: 0,
-        // current CT (§4.1)
-        ct: null, ctWarn: '', lfoTab: DEF_CT.lfoTab, lfoPtsOff: DEF_CT.lfoPtsOff, lfoPts: DEF_CT.lfoPts, lfoPm: DEF_CT.lfoPm,
-        lfoPmAny: DEF_CT.lfoPmAny, lfoStart: DEF_CT.lfoStart, lfoLoop: DEF_CT.lfoLoop, remap: DEF_CT.remap,
-        veloTab: DEF_CT.veloTab, noteTab: DEF_CT.noteTab,
-        // base smoothing (§5.4)
-        smS: new Float64Array(NS), smB: new Float64Array(NS), baseA: new Float64Array(NS), baseD: new Float64Array(NS),
-        mov: new Int16Array(NS), movN: 0,
-        // global sources [src·32 + c], beat clock, performance smoothers
-        g: new Float64Array(NSRC * MAXCH), beatC: new Float64Array(MAXCH), beatClk: 0, bpm: 120,
-        wheelS: 0, atS: 0, bendS: 0, macS: new Float64Array(4),
-        // mono context (§5.5)
-        monoSrc: new Float64Array(NSRC), monoOff: new Float64Array(NS), monoEff: new Float64Array(NS),
-        // Off-mode LFOs and mono chaos
-        oPh: new Float64Array(8), oSm: new Float64Array(8), oInit: new Uint8Array(8), oK: new Float64Array(8),
-        oKs: new Float64Array(8), oY0: new Float64Array(8), mch: new Float64Array(6), mchOut: new Float64Array(2), mchHold: new Float64Array(2),
-        mchTim: new Float64Array(2),
-        fxOff: new Float64Array(NF),
-        tap: new Float64Array(TAP_N), tapW: 0,
-        memPh: new Float64Array(2), recent: null, lastPitch: -1, alt: 0, seed: SEED, rng: SEED,
+        span: 0, nCh: 0, ok: 0, mon: 0, M: null, mod: null, g: null,
+        // copies of the current CP v2 (§4.1) read by the voices (the modulation copies live in sx.mod, SxMod)
+        cp: null, bT: new Float64Array(NSV), s1: 0, use: 0, outMask: 1, wt: ['', '', ''], noiseId: '', noiseColor: -1,
+        oType: new Uint8Array(N_OSC), phMem: new Uint8Array(N_OSC), phLeg: new Uint8Array(N_OSC), smoothWT: new Uint8Array(N_OSC),
+        pMode: new Uint8Array(N_OSC), pSrc: new Int8Array(N_OSC), bendTrack: new Uint8Array(N_OSC), uniMode: new Uint8Array(N_OSC),
+        uniRange: new Float64Array(N_OSC), fmType: new Uint8Array(2 * N_OSC), memSet: new Float64Array(16 * N_OSC),
+        xyOn: new Uint8Array(N_OSC), xyY: new Uint8Array(N_OSC), xyMode: new Uint8Array(N_OSC),
+        mapLo: new Uint8Array(6), mapHi: new Uint8Array(6), mapVLo: new Uint8Array(6), mapVHi: new Uint8Array(6),
+        mapFold: new Uint8Array(6), mapWarp: new Uint8Array(6), mapFull: new Uint8Array(6),
+        route: new Uint8Array(7), envOn: new Uint8Array(7), fKey: new Uint8Array(2), fClean: new Uint8Array(2), pz: new Float64Array(24),
+        subContig: 0, noiseOneshot: 0, noiseKey: 0, tuned: 0, tune: new Float64Array(128), sclN: 0, sclPer: 0,
+        sclSteps: new Float64Array(128), mpeOn: 0, mpeBend: 48, vcOn: 0, vcSel: new Uint8Array(5), uniMax: 16,
+        cMono: 0, cLegato: 0, cPoly: 8, a4: 440, steal: 0, anyDir: 0, anyBus: 0,
+        srcU: new Uint8Array(NSRC2),                           // sources read by the matrix rows (audio taps, §5.3; from the CP)
+        // CT store: the last proc.ct merged (parts, or a full CT object), the full CT, its generation, the LFO parts in
+        // use, the merged part keys
+        ctIn: null, ctFull: null, CT: makeCT(), ctGen: 0, ctQ: new Array(N_LFO).fill(null),
+        ctK: { lfo: new Array(N_LFO).fill(''), path: new Array(N_LFO).fill(''), remap: new Array(N_OSC).fill(''),
+          crv: new Array(NROW).fill(''), spec: new Array(N_OSC).fill(''), velo: '', note: '' },
+        remap: DEF_REMAP,
+        tap: new Float64Array(TAP_N), tapW: 0, tap2: new Float64Array(TAP_N), tapW2: 0,
+        memPh: new Float64Array(N_OSC), subPh: 0, alt: 0, seed: SEED, rng: SEED,
+        grains: 0, pk: new Float64Array(11),                  // processor grain count (SxGran, §6.9.2); mix-meter peaks
         snap: makeSnap(),
         // first-use warm-up on the real patch (warmStart): hidden voices, spans left, tables wait, saved bookkeeping
-        hw: null, hwL: null, hwR: null, hwN: 0, hwOn: 0, hwWait: 0, hwFs: 0,
-        hwRec: null, hwLP: -1, hwMem: new Float64Array(2), hwAlt: 0, hwRng: 0,
+        hw: null, hwL: null, hwR: null, hwN: 0, hwT: 0, hwOn: 0, hwWait: 0, hwFs: 0,
+        hwRec: null, hwLP: -1, hwMem: new Float64Array(N_OSC), hwSub: 0, hwAlt: 0, hwRng: 0, hwVc: 0, hwRR: null, hwRRok: 0, hwMs: null,
+        // the Granular lazy warm-up (GRAN_JOB): hidden voice, scratch, step, chunks left, asset wait, patch and rate it
+        // runs on, bookkeeping saved, a complete run done
+        gw: null, gwL: null, gwR: null, gwSt: 0, gwN: 0, gwWait: 0, gwCp: null, gwFs: 0, gwSaved: 0, gwOk: 0, gwRt: 0,
+        hwSt: 0,                                              // hidden-voice start step (1 apply, 2 note-on, 3 rendering)
+        // fields the type scripts own (SxGran, SxSpec, SxSample: created there when absent), declared here so the first
+        // Granular / Spectral / Multisample note does not change the map of sx (V8: code depending on it deoptimised)
+        granLast: null, granStarve: 0, granQ: null, specPool: null, msRR: null,
       };
       proc.sx = sx;
       initSx(sx, proc);
+      // modulation (SxMod, script 4 of the §0.3 list; it needs SxBase): resolved here once per processor
+      const M = globalThis.SxMod;
+      if (M && M.attach(sx, proc)) { sx.M = M; sx.g = sx.mod.g; }   // sx.g: the global source table (§11.6), SxMod's
+      else {
+        sx.mod = null;
+        if (!warnedMod) { warnedMod = true; if (typeof console !== 'undefined') console.warn('serum-dsp: SxMod unavailable, Serum voices are silent'); }
+      }
       return sx;
     }
-    function seedMonoChaos(sx) {
-      let r = xorshift(sx.seed ^ 0x51ED27);
-      for (let i = 0; i < 6; i++) { r = xorshift(r); sx.mch[i] = 1 + (r / 2147483648 - 1); }
-      for (let k = 0; k < 2; k++) { sx.mchOut[k] = chaosOut(sx.mch, 3 * k, k); sx.mchHold[k] = sx.mchOut[k]; sx.mchTim[k] = 0; }
-    }
-    // the attach state (also restored by reset; sx.mon, the host's monitor subscription, is kept)
+    // the attach state (also restored by reset; sx.mon, the host's monitor subscription, and the CT store are kept)
     function initSx(sx, proc) {
-      sx.span = 0; sx.nCh = 0; sx.CH = 0; sx.OS = 0; sx.base = 0; sx.fs = 0; sx.ok = 0; sx.dtC = 0; sx.kF = 0; sx.kM = 0;
-      sx.kSm = -1; sx.dBeat = 0;
-      sx.cp = null; sx.bT.fill(0); sx.mN = 0; sx.mSrc.fill(0); sx.mDst.fill(0); sx.mAmt.fill(0); sx.mBi.fill(0); sx.mK.fill(0);
-      sx.mKd.fill(0); sx.mAux.fill(0); sx.mInv.fill(0); sx.mCtx.fill(0); sx.mOn.fill(0); sx.fxN = 0;
-      sx.srcUsed.fill(0); sx.modded.fill(0); sx.modList.fill(0); sx.modN = 0;
-      sx.wtA = ''; sx.wtB = ''; sx.noiseId = ''; sx.uniMode.fill(0); sx.uniRange.fill(0); sx.memSet.fill(0);
-      sx.subDirect = 0; sx.noiseOneshot = 0; sx.noiseKey = 0; sx.noiseDirect = 0; sx.filKey = 0; sx.direct = 0;
-      sx.lfoMode.fill(2); sx.lfoBpm.fill(0); sx.lfoAnchor.fill(0); sx.lfoLad.fill(0); sx.lfoLadN.fill(1);
-      sx.chaosMono.fill(0); sx.chaosSh.fill(0); sx.macroT.fill(0);
-      sx.cMono = 0; sx.cLegato = 0; sx.cPoly = 8; sx.cAlways = 0; sx.cScaled = 0; sx.a4 = 440; sx.smooth = 1;
-      sx.veloPorta = 0; sx.notePorta = 0;
-      sx.ct = null; sx.ctWarn = '';
-      sx.lfoTab = DEF_CT.lfoTab; sx.lfoPtsOff = DEF_CT.lfoPtsOff; sx.lfoPts = DEF_CT.lfoPts; sx.lfoPm = DEF_CT.lfoPm;
-      sx.lfoPmAny = DEF_CT.lfoPmAny; sx.lfoStart = DEF_CT.lfoStart; sx.lfoLoop = DEF_CT.lfoLoop; sx.remap = DEF_CT.remap;
-      sx.veloTab = DEF_CT.veloTab; sx.noteTab = DEF_CT.noteTab;
-      sx.smS.fill(0); sx.smB.fill(0); sx.baseA.fill(0); sx.baseD.fill(0); sx.mov.fill(0); sx.movN = 0;
-      sx.g.fill(0); sx.g.fill(1, S_FIXED * MAXCH, S_FIXED * MAXCH + MAXCH);
-      sx.beatC.fill(0); sx.beatClk = 0; sx.bpm = 120;
-      sx.wheelS = 0; sx.atS = 0; sx.bendS = 0; sx.macS.fill(0);
-      sx.monoSrc.fill(0); sx.monoSrc[S_FIXED] = 1; sx.monoOff.fill(0); sx.monoEff.fill(0);
-      sx.oPh.fill(0); sx.oSm.fill(0); sx.oInit.fill(0); sx.oK.fill(0); sx.oKs.fill(-1);
-      for (let l = 0; l < 8; l++) sx.oY0[l] = DEF_CT.lfoTab[l * 1025];
-      seedMonoChaos(sx);
-      sx.fxOff.fill(0);
-      sx.tap.fill(0); sx.tapW = 0;
-      sx.memPh.fill(0); sx.recent = null; sx.lastPitch = -1; sx.alt = 0; sx.seed = SEED; sx.rng = SEED;
-      sx.hw = null; sx.hwL = null; sx.hwR = null; sx.hwN = 0; sx.hwOn = 0; sx.hwWait = 0;   // a reset ends a warm-up
+      sx.span = 0; sx.nCh = 0; sx.ok = 0;
+      sx.cp = null; sx.bT.fill(0); sx.s1 = 0; sx.use = 0; sx.outMask = 1;
+      sx.wt[0] = ''; sx.wt[1] = ''; sx.wt[2] = ''; sx.noiseId = ''; sx.noiseColor = -1;
+      sx.oType.fill(0); sx.phMem.fill(0); sx.phLeg.fill(0); sx.smoothWT.fill(0); sx.pMode.fill(0); sx.pSrc.fill(-1);
+      sx.bendTrack.fill(1); sx.uniMode.fill(0); sx.uniRange.fill(0); sx.fmType.fill(0); sx.memSet.fill(0);
+      sx.xyOn.fill(0); sx.xyY.fill(0); sx.xyMode.fill(0);
+      sx.mapLo.fill(0); sx.mapHi.fill(127); sx.mapVLo.fill(1); sx.mapVHi.fill(127); sx.mapFold.fill(0); sx.mapWarp.fill(0);
+      sx.mapFull.fill(1);
+      sx.route.fill(1); sx.envOn.fill(1); sx.fKey.fill(0); sx.fClean.fill(0); sx.pz.fill(0); sx.srcU.fill(0);
+      sx.subContig = 0; sx.noiseOneshot = 0; sx.noiseKey = 0;
+      sx.tuned = 0; for (let k = 0; k < 128; k++) sx.tune[k] = k;
+      sx.sclN = 0; sx.sclPer = 0; sx.sclSteps.fill(0); sx.mpeOn = 0; sx.mpeBend = 48; sx.vcOn = 0; sx.vcSel.fill(1); sx.uniMax = 16;
+      sx.cMono = 0; sx.cLegato = 0; sx.cPoly = 8; sx.a4 = 440; sx.steal = 0; sx.anyDir = 0; sx.anyBus = 0;
+      sx.remap = DEF_REMAP;
+      sx.tap.fill(0); sx.tapW = 0; sx.tap2.fill(0); sx.tapW2 = 0;
+      sx.memPh.fill(0); sx.subPh = 0; sx.alt = 0; sx.seed = SEED; sx.rng = SEED;
+      sx.grains = 0; sx.pk.fill(0);
+      if (sx.msRR) sx.msRR.fill(0);                           // multisample round robins (SxSample's counters in sx, §6.8)
+      sx.hw = null; sx.hwL = null; sx.hwR = null; sx.hwN = 0; sx.hwOn = 0; sx.hwWait = 0; sx.hwSt = 0;   // a reset ends the warm-ups
+      sx.gw = null; sx.gwL = null; sx.gwR = null; sx.gwSt = 0; sx.gwN = 0; sx.gwCp = null; sx.gwSaved = 0; sx.gwRt = 0;
       const s = sx.snap;
-      s.eff.fill(0); s.lfoPh.fill(0); s.lfoOut.fill(0); s.env.fill(0); s.envStage.fill(0); s.envT.fill(0); s.wtPos.fill(0);
-      s.noisePos = 0; s.notes = 0; s.oscVoices = 0; s.maxVoices = 0; s.memNow.fill(0); s.filtTap.fill(0); s.tapRate = 0;
-      rates(sx, proc);
+      s.eff.fill(0); s.lfoPh.fill(0); s.lfoOut.fill(0); s.lfoY.fill(0); s.env.fill(0); s.envStage.fill(0); s.envT.fill(0);
+      s.wtPos.fill(0); s.noisePos = 0; s.notes = 0; s.oscVoices = 0; s.maxVoices = 0; s.memNow.fill(0); s.filtTap.fill(0);
+      s.tapRate = 0; s.smpPos.fill(0); s.grains.fill(0); s.specCap = 0; s.mix.fill(-120); s.mOut.fill(0); s.zone.fill(-1);
+      s.seq.fill(0);
+      if (sx.M) sx.M.reset(sx, proc);
     }
-    // per-chunk coefficients (chunk = 4 base frames)
-    function rates(sx, proc) {
-      const base = proc.base > 0 ? +proc.base : 48000, fs = proc.fs > 0 ? +proc.fs : base, CH = proc.CH > 0 ? proc.CH | 0 : 8;
-      sx.CH = CH; sx.base = base; sx.fs = fs; sx.OS = proc.OS > 0 ? proc.OS | 0 : 1;
-      sx.dtC = CH / fs;
-      sx.kF = 1 - exp(-4 / (base * 0.0015));
-      sx.kM = 1 - exp(-4 / (base * 0.006 * sx.smooth));
-      sx.kSm = sx.smooth;
-      sx.oKs.fill(-1);
-    }
-    function snapBase(sx) {
-      const bT = sx.bT;
-      sx.smS.set(bT); sx.smB.set(bT); sx.baseA.set(bT); sx.baseD.fill(0);
-      for (let i = 0; i < NS; i++) sx.mov[i] = i;
-      sx.movN = NS;
-      sx.macS.set(sx.macroT);
-      for (let i = 0; i < NS; i++) sx.monoEff[i] = bT[i];
-    }
-    // a CP this script understands: same major version (§4.3; minor bumps only append DESTS/SOURCES, whose indices
-    // syncCP ignores)
+    // a CP this script understands: same major version (§2.6.5; minor bumps only append)
     function cpOk(cp) { return !!cp && floor(+cp.ver) === VER; }
-    // copy the scalars and tables of a new CP into sx (once per CP object)
+    // CP field readers: a missing or short field reads as the v1-equivalent default (hand-built CPs of tests and warmUp)
+    const u8At = (a, i, d) => (a && a.length > i ? a[i] | 0 : d);
+    const fAt = (a, i, d) => { const v = a && a.length > i ? +a[i] : d; return v === v ? v : d; };
+    // copy the scalars and tables of a new CP into sx (once per CP object), then the modulation fields (SxMod)
     function syncCP(proc, sx, cp) {
       if (sx.cp === cp) return;
-      const first = sx.cp === null;
       sx.cp = cp; sx.ok = 1;
       const b = cp.base, bT = sx.bT;
-      for (let i = 0; i < NS; i++) { const v = b ? +b[i] : 0; bT[i] = v > 0 ? (v < 1 ? v : 1) : 0; }
-      let mN = cp.mN | 0;
-      mN = mN > 0 ? (mN < 32 ? mN : 32) : 0;
-      sx.mN = mN;
-      sx.modded.fill(0); sx.srcUsed.fill(0);
-      let fxN = 0;
-      for (let r = 0; r < mN; r++) {
-        const si = cp.mSrc[r] | 0, di = cp.mDst[r] | 0, ai = cp.mAux ? cp.mAux[r] | 0 : 0, ctx = cp.mCtx[r] | 0;
-        let amt = +cp.mAmt[r];
-        if (!(si > 0 && si < NSRC && di >= 0 && di < ND && ai >= 0 && ai < NSRC && amt === amt)) amt = 0;
-        sx.mSrc[r] = si > 0 && si < NSRC ? si : S_FIXED; sx.mDst[r] = di >= 0 && di < ND ? di : 0; sx.mAmt[r] = amt;
-        sx.mBi[r] = cp.mBi[r] ? 1 : 0;
-        let k = +cp.mK[r];
-        if (!(k >= 1e-4 || k <= -1e-4)) k = 0;
-        sx.mK[r] = k; sx.mKd[r] = k !== 0 ? 1 / (1 - exp(-k)) : 0;
-        sx.mAux[r] = ai >= 0 && ai < NSRC ? ai : 0; sx.mInv[r] = cp.mInv && cp.mInv[r] ? 1 : 0;
-        sx.mCtx[r] = di < NS ? ctx & 3 : 4; sx.mOn[r] = cp.mOn && cp.mOn[r] ? 1 : 0;
-        if (di < NS && (ctx & 1)) sx.modded[di] = 1;
-        if (di >= NS) fxN++;
-        sx.srcUsed[sx.mSrc[r]] = 1;
-        if (ai > 0) sx.srcUsed[ai] = 1;
-      }
-      sx.fxN = fxN;
-      let mn = 0;
-      for (let i = 0; i < NS; i++) if (sx.modded[i]) sx.modList[mn++] = i;
-      sx.modN = mn;
-      sx.wtA = cp.wt && typeof cp.wt[0] === 'string' ? cp.wt[0] : '';
-      sx.wtB = cp.wt && typeof cp.wt[1] === 'string' ? cp.wt[1] : '';
-      sx.noiseId = typeof cp.noiseId === 'string' ? cp.noiseId : '';
-      for (let o = 0; o < 2; o++) {
-        const m = cp.uniMode ? cp.uniMode[o] | 0 : 0, R = cp.uniRange ? +cp.uniRange[o] : 2;
+      for (let i = 0; i < NSV; i++) { const v = b && b.length > i ? +b[i] : 0; bT[i] = v > 0 ? (v < 1 ? v : 1) : 0; }
+      sx.s1 = cp.s1 ? 1 : 0;
+      sx.use = cp.use | 0;
+      sx.outMask = cp.outMask !== undefined ? cp.outMask | 0 : 1;
+      for (let o = 0; o < N_OSC; o++) {
+        sx.wt[o] = cp.wt && typeof cp.wt[o] === 'string' ? cp.wt[o] : '';
+        const t = u8At(cp.oType, o, 0);
+        sx.oType[o] = t >= 0 && t <= 4 ? t : 0;
+        const pm = u8At(cp.phMem, o, 0);
+        sx.phMem[o] = pm >= 0 && pm <= 2 ? pm : 0;
+        sx.phLeg[o] = u8At(cp.phLeg, o, 0) ? 1 : 0;
+        sx.smoothWT[o] = u8At(cp.smoothWT, o, 0) ? 1 : 0;
+        const md = u8At(cp.pMode, o, 0);
+        sx.pMode[o] = md >= 0 && md <= 3 ? md : 0;
+        const ps = cp.pSrc && cp.pSrc.length > o ? cp.pSrc[o] | 0 : -1;
+        sx.pSrc[o] = ps >= 0 && ps <= 2 && ps !== o ? ps : -1;
+        sx.bendTrack[o] = u8At(cp.bendTrack, o, 1) ? 1 : 0;
+        const m = u8At(cp.uniMode, o, 0), R = fAt(cp.uniRange, o, 2);
         sx.uniMode[o] = m >= 0 && m <= 4 ? m : 0;
         sx.uniRange[o] = R > 0 ? (R < 48 ? R : 48) : 0;
+        for (let k = 0; k < 2; k++) { const f = u8At(cp.fmType, 2 * o + k, 0); sx.fmType[2 * o + k] = f >= 0 && f <= 2 ? f : 0; }
+        // Granular X|Y (§3.9): the Y targets Level, Warp, Warp 2 are applied by the voice (the rest inside SxGran/SxSpec)
+        const xy = u8At(cp.xyOn, o, 0) !== 0 && sx.oType[o] === 3, yt = u8At(cp.xyY, o, 0), ym = u8At(cp.xyMode, o, 0);
+        sx.xyOn[o] = xy && yt >= 1 && yt <= 3 ? 1 : 0; sx.xyY[o] = yt; sx.xyMode[o] = ym >= 0 && ym <= 2 ? ym : 0;
       }
-      for (let i = 0; i < 32; i++) { const v = cp.memSet ? +cp.memSet[i] : 0; sx.memSet[i] = v > 0 ? v - floor(v) : 0; }
-      sx.subDirect = cp.subDirect ? 1 : 0; sx.noiseOneshot = cp.noiseOneshot ? 1 : 0; sx.noiseKey = cp.noiseKey ? 1 : 0;
-      sx.noiseDirect = cp.noiseDirect ? 1 : 0; sx.filKey = cp.filKey ? 1 : 0; sx.direct = cp.direct ? 1 : 0;
-      for (let l = 0; l < 8; l++) {
-        const m = cp.lfoMode ? cp.lfoMode[l] | 0 : 2;
-        sx.lfoMode[l] = m >= 0 && m <= 2 ? m : 2;
-        sx.lfoBpm[l] = cp.lfoBpm && cp.lfoBpm[l] ? 1 : 0;
-        sx.lfoAnchor[l] = cp.lfoAnchor && cp.lfoAnchor[l] ? 1 : 0;
-        let L = cp.lfoLadN ? cp.lfoLadN[l] | 0 : 15;
-        L = L >= 1 ? (L <= 43 ? L : 43) : 1;
-        sx.lfoLadN[l] = L;
-        for (let j = 0; j < 43; j++) { const v = cp.lfoLad ? +cp.lfoLad[l * 43 + j] : 0; sx.lfoLad[l * 43 + j] = v > 0 ? v : 0; }
+      for (let i = 0; i < 16 * N_OSC; i++) { const v = fAt(cp.memSet, i, 0); sx.memSet[i] = v > 0 ? v - floor(v) : 0; }
+      sx.noiseId = typeof cp.noiseId === 'string' ? cp.noiseId : '';
+      const nc = cp.noiseColor !== undefined ? cp.noiseColor | 0 : -1;
+      sx.noiseColor = nc >= 0 && nc <= 3 ? nc : -1;
+      sx.noiseOneshot = cp.noiseOneshot ? 1 : 0; sx.noiseKey = cp.noiseKey ? 1 : 0; sx.subContig = cp.subContig ? 1 : 0;
+      // keyboard mapping (channels A, B, C, Noise, Sub, ARP); full-range channels always play (§6.2)
+      for (let c = 0; c < 6; c++) {
+        const lo = u8At(cp.mapLo, c, 0), hi = u8At(cp.mapHi, c, 127), vl = u8At(cp.mapVLo, c, 1), vh = u8At(cp.mapVHi, c, 127);
+        sx.mapLo[c] = lo; sx.mapHi[c] = hi; sx.mapVLo[c] = vl; sx.mapVHi[c] = vh;
+        sx.mapFold[c] = u8At(cp.mapFold, c, 0) ? 1 : 0; sx.mapWarp[c] = u8At(cp.mapWarp, c, 0) ? 1 : 0;
+        sx.mapFull[c] = lo <= 0 && hi >= 127 && vl <= 1 && vh >= 127 ? 1 : 0;
       }
-      for (let k = 0; k < 2; k++) {
-        sx.chaosMono[k] = cp.chaosMono && cp.chaosMono[k] ? 1 : 0;
-        sx.chaosSh[k] = cp.chaosSh && cp.chaosSh[k] ? 1 : 0;
+      // routes (CP.route: A, B, C, Noise, Sub, F1, F2; 0 Filter · 1 Main · 2 Direct · 3 None) and ENV toggles; without a
+      // route field the Phase-1 routing (sources into Filter 1, Filter 1 to Main)
+      for (let k = 0; k < 7; k++) {
+        const r = u8At(cp.route, k, k < 5 ? 0 : 1);
+        sx.route[k] = r >= 0 && r <= 3 ? r : 1;
+        sx.envOn[k] = u8At(cp.envOn, k, 1) ? 1 : 0;
       }
-      for (let m = 0; m < 4; m++) sx.macroT[m] = clamp01(cp.macro ? +cp.macro[m] : 0);
+      if (sx.route[5] === 0 && sx.route[6] === 0) sx.route[6] = 1;   // both filters into each other: F2 → Main (§1)
+      sx.anyDir = 0;
+      for (let k = 0; k < 7; k++) if (sx.route[k] === 2) sx.anyDir = 1;
+      // bus sends (CP.use & 64, or a send base > 0 in a hand-built CP)
+      sx.anyBus = (sx.use & 64) !== 0 ? 1 : 0;
+      for (let c = 0; c < 7 && sx.anyBus === 0; c++) if (bT[BUS1V[c]] > 0 || bT[BUS1V[c] + 1] > 0) sx.anyBus = 1;
+      for (let k = 0; k < 2; k++) { sx.fKey[k] = u8At(cp.fKey, k, 0) ? 1 : 0; sx.fClean[k] = u8At(cp.fClean, k, 0) ? 1 : 0; }
+      for (let j = 0; j < 24; j++) sx.pz[j] = fAt(cp.pz, j, PZ_DEF[j % 12]);
+      // tuning (§6.18), Step mode scale (§6.3.3), MPE (§6.17), Voice Control channel selection (§6.2), quality caps (§14.3)
+      sx.tuned = (sx.use & 512) !== 0 && cp.tune && cp.tune.length >= 128 ? 1 : 0;
+      for (let k = 0; k < 128; k++) sx.tune[k] = sx.tuned ? +cp.tune[k] : k;
+      const sn = cp.sclN | 0;
+      sx.sclN = sn > 0 && sn <= 128 && cp.sclSteps && cp.sclSteps.length >= sn ? sn : 0;
+      sx.sclPer = +cp.sclPer || 0;
+      for (let k = 0; k < 128; k++) sx.sclSteps[k] = fAt(cp.sclSteps, k, 0);
+      sx.mpeOn = (sx.use & 256) !== 0 && cp.mpeOn ? 1 : 0;
+      sx.mpeBend = cp.mpeBend > 0 ? +cp.mpeBend : 48;
+      sx.vcOn = (sx.use & 1024) !== 0 ? 1 : 0;
+      for (let c = 0; c < 5; c++) sx.vcSel[c] = u8At(cp.vcSel, c, 1) ? 1 : 0;
+      const um = cp.qr && cp.qr.length >= 1 ? round(+cp.qr[0]) : 16;
+      sx.uniMax = um >= 1 && um <= 16 ? um : 16;
       sx.cMono = cp.mono ? 1 : 0; sx.cLegato = cp.legato ? 1 : 0; sx.cPoly = cp.poly > 0 ? cp.poly | 0 : 8;
-      sx.cAlways = cp.always ? 1 : 0; sx.cScaled = cp.scaled ? 1 : 0;
       sx.a4 = cp.a4 > 0 ? +cp.a4 : 440;
-      const sm = cp.smooth > 0 ? +cp.smooth : 1;
-      sx.smooth = sm < 0.01 ? 0.01 : sm > 8 ? 8 : sm;
-      sx.veloPorta = cp.veloPorta ? 1 : 0; sx.notePorta = cp.notePorta ? 1 : 0;   // optional CP fields (§2.2 velo/note.porta)
-      if (sx.kSm !== sx.smooth) rates(sx, proc);
-      let sounding = false;
-      const vs = proc.voices;
-      if (vs && vs.length) for (let k = 0; k < vs.length; k++) if (vs[k] && vs[k].active) { sounding = true; break; }
-      if (first || !sounding) snapBase(sx);
+      // the sources the rows read (source and aux of rows 0 … mN − 1): which audio taps the voices write (§5.3) — derived
+      // from the CP here (SxMod's own copy is private to it, §11.6)
+      const su = sx.srcU;
+      su.fill(0);
+      let mN = cp.mN | 0;
+      mN = mN > 0 ? (mN < NROW ? mN : NROW) : 0;
+      for (let r = 0; r < mN; r++) {
+        const si = cp.mSrc && cp.mSrc.length > r ? cp.mSrc[r] | 0 : 0, ai = cp.mAux && cp.mAux.length > r ? cp.mAux[r] | 0 : 0;
+        if (si > 0 && si < NSRC2) su[si] = 1;
+        if (ai > 0 && ai < NSRC2) su[ai] = 1;
+      }
+      const st = cp.steal | 0;
+      sx.steal = st >= 0 && st <= 4 ? st : 0;
+      sx.M.sync(proc, sx, cp);
     }
+    const PZ_DEF = Float64Array.from([1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1]);
+    // the CT of proc.ct: CT v2 parts (merged into sx.CT), a full CT object, or the built-in defaults. A full CT is handed
+    // to SxMod as it is; its spectral filter curves (read by SxSpec from sx.CT.specFilt) are copied into the merged store
+    // once per object (flat 1 without them), and the part keys are cleared so that a later parts CT merges again
+    const SPEC_ALL = N_OSC * (SPEC_FILT_N + 1);
     function syncCT(proc, sx) {
-      const pc = proc.ct;
-      const ct = pc && pc.lfoTab && pc.lfoPtsOff && pc.lfoPts && pc.remap && pc.veloTab && pc.noteTab ? pc : DEF_CT;
-      if (sx.ct !== ct) {
-        sx.ct = ct;
-        sx.lfoTab = ct.lfoTab; sx.lfoPtsOff = ct.lfoPtsOff; sx.lfoPts = ct.lfoPts;
-        sx.lfoPm = ct.lfoPm || DEF_CT.lfoPm; sx.lfoPmAny = ct.lfoPmAny || DEF_CT.lfoPmAny;
-        sx.lfoStart = ct.lfoStart || DEF_CT.lfoStart; sx.lfoLoop = ct.lfoLoop || DEF_CT.lfoLoop;
-        sx.remap = ct.remap; sx.veloTab = ct.veloTab; sx.noteTab = ct.noteTab;
-        for (let l = 0; l < 8; l++) sx.oY0[l] = ct.lfoTab[l * 1025];
-      }
-      const cp = sx.cp;
-      if (cp && ct !== DEF_CT && typeof cp.ctKey === 'string' && cp.ctKey !== ct.key && sx.ctWarn !== cp.ctKey) {
-        sx.ctWarn = cp.ctKey;
-        if (typeof console !== 'undefined') console.warn('serum-dsp: CP ctKey', cp.ctKey, 'differs from the stored CT', ct.key);
-      }
-    }
-    // base smoothing once per span of nb base frames (§5.4): two cascaded one-poles, stepped laws jump
-    function smoothSpan(sx, nb) {
-      const k = 1 - exp(-nb / (sx.base * 0.006 * sx.smooth));
-      const bT = sx.bT, s1 = sx.smS, s2 = sx.smB, bA = sx.baseA, bD = sx.baseD, mov = sx.mov, cont = LAW_TAB.cont;
-      let n = 0;
-      for (let i = 0; i < NS; i++) {
-        const t = bT[i], old = s2[i];
-        if (old === t && s1[i] === t) { bA[i] = t; bD[i] = 0; continue; }
-        if (cont[i] === 0) { s1[i] = t; s2[i] = t; bA[i] = t; bD[i] = 0; mov[n++] = i; continue; }
-        let a = s1[i] + (t - s1[i]) * k, b = old + (a - old) * k;
-        const e = t - b;
-        if (e < 1e-9 && e > -1e-9) { a = t; b = t; }
-        s1[i] = a; s2[i] = b; bA[i] = old; bD[i] = b - old; mov[n++] = i;
-      }
-      sx.movN = n;
-    }
-    // Off-mode LFO l at chunk c (raw value through SMOOTH into g), then its phase advance
-    function offLfo(sx, l, c) {
-      const E = sx.monoEff, kb = L1_RATE + 4 * l, dt = sx.dtC;
-      const n = E[kb];
-      let beats = 0, ph;
-      if (sx.lfoBpm[l]) beats = sx.lfoLad[l * 43 + round(n * (sx.lfoLadN[l] - 1))];
-      if (beats > 0 && sx.lfoAnchor[l]) {
-        const x = sx.lfoStart[l] + sx.beatC[c] / beats;
-        ph = x - floor(x);
-      } else ph = sx.oPh[l];
-      sx.oPh[l] = ph;
-      let y;                                                   // y0 (first point, modulated) for the voices' delay/rise
-      if (sx.lfoPmAny[l]) { y = pmEval(sx, l, ph, E); sx.oY0[l] = pmY0; }
-      else { y = tabAt(sx.lfoTab, l * 1025, 1024, ph); sx.oY0[l] = sx.lfoTab[l * 1025]; }
-      const sm = E[kb + 3];
-      if (!sx.oInit[l] || !(sm > 0)) { sx.oSm[l] = y; sx.oInit[l] = 1; }
-      else {
-        if (sm !== sx.oKs[l]) { sx.oKs[l] = sm; sx.oK[l] = 1 - exp(-dt / (0.5 * sm * sm * sm)); }
-        sx.oSm[l] += (y - sx.oSm[l]) * sx.oK[l];
-      }
-      sx.g[(S_LFO1 + l) * MAXCH + c] = sx.oSm[l];
-      if (!(beats > 0 && sx.lfoAnchor[l])) {
-        const inc = sx.lfoBpm[l] ? (beats > 0 ? dt * sx.bpm / 60 / beats : 0) : dt * 100 * n * n * n * n;
-        let p = ph + inc;
-        p -= floor(p);
-        sx.oPh[l] = p;
-      }
-    }
-    // an Off-mode LFO that no row reads and no monitor shows: only its phase moves, by the same steps as offLfo (so
-    // it is exactly where an evaluated one would be once a row reads it; its smoothing then restarts at its value).
-    // Eight free LFOs evaluated per chunk made an idle Serum track cost ~20x an idle track of the other models.
-    function offSkip(sx, l, nCh) {
-      const E = sx.monoEff, kb = L1_RATE + 4 * l, dt = sx.dtC, n = E[kb];
-      let beats = 0;
-      if (sx.lfoBpm[l]) beats = sx.lfoLad[l * 43 + round(n * (sx.lfoLadN[l] - 1))];
-      if (beats > 0 && sx.lfoAnchor[l]) {
-        const x = sx.lfoStart[l] + sx.beatC[nCh - 1] / beats;
-        sx.oPh[l] = x - floor(x);
-      } else {
-        const inc = sx.lfoBpm[l] ? (beats > 0 ? dt * sx.bpm / 60 / beats : 0) : dt * 100 * n * n * n * n;
-        let p = sx.oPh[l];
-        for (let c = 0; c < nCh; c++) { p += inc; p -= floor(p); }
-        sx.oPh[l] = p;
-      }
-      sx.oInit[l] = 0;
-    }
-    // mono chaos k at chunk c: current output into g, then advance (§6.13)
-    function monoChaos(sx, k, c) {
-      sx.g[(S_CHAOS1 + k) * MAXCH + c] = sx.chaosSh[k] ? sx.mchHold[k] : sx.mchOut[k];
-      const E = sx.monoEff, n = E[C1_RATE + k];
-      let rate = 1000 * n * n * n * n * n;
-      if (E[C1_BPM + k] >= 0.5 && rate > 0) rate = snapRate(rate, sx.bpm);
-      if (rate > 0) {
-        chaosInt(sx.mch, 3 * k, k, rate * CHAOS_T0[k] * sx.dtC);
-        sx.mchOut[k] = chaosOut(sx.mch, 3 * k, k);
-        if (sx.chaosSh[k]) {
-          const per = 1 / rate;
-          sx.mchTim[k] += sx.dtC;
-          if (sx.mchTim[k] >= per) { sx.mchTim[k] -= per * floor(sx.mchTim[k] / per); sx.mchHold[k] = sx.mchOut[k]; }
+      const M = sx.M, pc = proc.ct;
+      let ct = null;
+      if (pc !== null && typeof pc === 'object' && pc.parts) {
+        if (pc !== sx.ctIn) { sx.ctIn = pc; mergeCT(proc, pc); }
+        sx.ctFull = null;
+        ct = sx.CT;
+      } else if (pc && pc.lfoTab && pc.lfoPtsOff && pc.lfoPts && pc.remap && pc.veloTab && pc.noteTab) {
+        ct = pc;
+        if (pc !== sx.ctFull) {
+          sx.ctFull = pc; sx.ctIn = null;
+          const sf = pc.specFilt;
+          if (isTA(sf, 'Float32Array', SPEC_ALL)) sx.CT.specFilt.set(sf); else sx.CT.specFilt.fill(1);
+          for (let o = 0; o < N_OSC; o++) sx.ctK.spec[o] = '';
+          sx.ctGen++;
         }
       }
+      sx.remap = ct !== null && ct.remap ? ct.remap : DEF_REMAP;
+      M.syncCT(proc, sx, ct !== null ? ct : M.DEF_CT, sx.ctGen);
     }
-    // begin without the span count: smoothing, mono context, per-chunk global sources (§5.5 order)
+    // begin without the span count: CP/CT sync, then the modulation span (SxMod.begin, §5.5 order)
     function core(proc, sx, N) {
       const CH = proc.CH | 0;
       let nCh = CH > 0 ? (N / CH) | 0 : 1;
       nCh = nCh > 1 ? (nCh < MAXCH ? nCh : MAXCH) : 1;
       sx.nCh = nCh;
-      const p = proc.p, cp = p && p.serum;
-      if (!cpOk(cp)) { sx.ok = 0; return; }
+      const p = proc.p, cp = p && p.serum, M = sx.M;
+      if (M === null || !cpOk(cp)) { sx.ok = 0; return; }
       syncCP(proc, sx, cp);
       syncCT(proc, sx);
-      if (CH !== sx.CH || +proc.base !== sx.base || +proc.fs !== sx.fs || sx.kSm !== sx.smooth) rates(sx, proc);
-      sx.bpm = proc.bpm > 0 ? +proc.bpm : 120;
-      // (1) base smoothing for this span
-      smoothSpan(sx, nCh * 4);
-      // (2) mono context from the previous span's monoSrc
-      const mo = sx.monoOff, me = sx.monoEff, bA = sx.baseA, bD = sx.baseD;
-      mo.fill(0);
-      for (let r = 0; r < sx.mN; r++) if (sx.mCtx[r] & 2) evalRow(sx, r, sx.monoSrc, mo, 0);
-      for (let i = 0; i < NS; i++) { const v = bA[i] + bD[i] + mo[i]; me[i] = v > 0 ? (v < 1 ? v : 1) : 0; }
-      // (3) per chunk: performance smoothers, wheel/bend with their G destinations, Off LFOs, mono chaos
-      const g = sx.g, kF = sx.kF, kM = sx.kM;
-      const sb = typeof proc.songBeat === 'function' ? proc.songBeat() : null;
-      const beat0 = typeof sb === 'number' && sb === sb ? sb : sx.beatClk;
-      const dB = sx.dtC * sx.bpm / 60;
-      sx.dBeat = dB;
-      const wh = +proc.wheel || 0, at = +proc.at || 0, bn = +proc.bendRaw || 0;
-      let lfoSkip = 0;                                          // Off LFOs nothing reads: phase only (offSkip)
-      if (sx.mon === 0) for (let l = 0; l < 8; l++) if (sx.lfoMode[l] === 2 && sx.srcUsed[S_LFO1 + l] === 0) lfoSkip |= 1 << l;
-      for (let c = 0; c < nCh; c++) {
-        sx.beatC[c] = beat0 + c * dB;
-        sx.wheelS += (wh - sx.wheelS) * kF;
-        sx.atS += (at - sx.atS) * kF;
-        sx.bendS += (bn - sx.bendS) * kF;
-        g[S_WHEEL * MAXCH + c] = clamp01(sx.wheelS + mo[G_WHEEL]);
-        g[S_AT * MAXCH + c] = sx.atS;
-        g[S_BEND * MAXCH + c] = 2 * clamp01((sx.bendS + 1) * 0.5 + mo[G_BEND]) - 1;
-        for (let m = 0; m < 4; m++) {
-          sx.macS[m] += (sx.macroT[m] - sx.macS[m]) * kM;
-          g[(S_MACRO1 + m) * MAXCH + c] = sx.macS[m];
-        }
-        g[S_FIXED * MAXCH + c] = 1;
-        for (let l = 0; l < 8; l++) if (sx.lfoMode[l] === 2 && (lfoSkip & (1 << l)) === 0) offLfo(sx, l, c);
-        if (sx.chaosMono[0]) monoChaos(sx, 0, c);
-        if (sx.chaosMono[1]) monoChaos(sx, 1, c);
-      }
-      if (lfoSkip !== 0) for (let l = 0; l < 8; l++) if ((lfoSkip & (1 << l)) !== 0) offSkip(sx, l, nCh);
-      sx.beatClk = beat0 + nCh * dB;
-      if (sx.wheelS < 1e-30 && sx.wheelS > -1e-30) sx.wheelS = 0;                // denormal flush (§0.2)
-      if (sx.atS < 1e-30 && sx.atS > -1e-30) sx.atS = 0;
-      if (sx.bendS < 1e-30 && sx.bendS > -1e-30) sx.bendS = 0;
-      for (let m = 0; m < 4; m++) if (sx.macS[m] < 1e-30 && sx.macS[m] > -1e-30) sx.macS[m] = 0;
-      for (let l = 0; l < 8; l++) if (sx.oSm[l] < 1e-30 && sx.oSm[l] > -1e-30) sx.oSm[l] = 0;
-      // (4) global sources of the last chunk into monoSrc (read by the next mono context and by fxMods)
-      const last = nCh - 1, ms = sx.monoSrc;
-      ms[S_WHEEL] = g[S_WHEEL * MAXCH + last]; ms[S_AT] = g[S_AT * MAXCH + last]; ms[S_BEND] = g[S_BEND * MAXCH + last];
-      for (let m = 0; m < 4; m++) ms[S_MACRO1 + m] = g[(S_MACRO1 + m) * MAXCH + last];
-      ms[S_FIXED] = 1;
-      for (let l = 0; l < 8; l++) if (sx.lfoMode[l] === 2) ms[S_LFO1 + l] = g[(S_LFO1 + l) * MAXCH + last];
-      for (let k = 0; k < 2; k++) if (sx.chaosMono[k]) ms[S_CHAOS1 + k] = g[(S_CHAOS1 + k) * MAXCH + last];
+      M.begin(proc, sx, nCh);
     }
     function begin(proc, N) {
       const sx = proc.sx || attach(proc);
@@ -1651,87 +1887,243 @@
     function transport(proc, playing) {
       const sx = attach(proc);
       if (!playing) return;
-      for (let l = 0; l < 8; l++) { sx.oPh[l] = sx.lfoStart[l]; sx.oInit[l] = 0; }
-      const sb = typeof proc.songBeat === 'function' ? proc.songBeat() : null;
-      if (typeof sb === 'number' && sb === sb) sx.beatClk = sb;
-      seedMonoChaos(sx);
+      if (sx.M !== null) sx.M.transport(proc, sx, playing);
       sx.alt = 0; sx.rng = sx.seed;
-      // bookkeeping a fresh (offline) processor does not have: portamento start, Mem phases, the recent voice and the
-      // mono source vector (back to its attach state; the next begin rewrites the global sources)
-      sx.lastPitch = -1; sx.memPh.fill(0); sx.recent = null;
-      sx.monoSrc.fill(0); sx.monoSrc[S_FIXED] = 1;
+      // bookkeeping a fresh (offline) processor does not have: Mem phases, the contiguous sub phase, the multisample
+      // round-robin counters SxSample keeps in sx (§6.8, §7.8; the rest — vcN, recent, … — is SxMod's)
+      sx.memPh.fill(0); sx.subPh = 0;
+      if (sx.msRR) sx.msRR.fill(0);
     }
     function reset(proc) {
       const sx = proc.sx;
       if (!sx) return;
       initSx(sx, proc);
     }
+    const FX0 = new Float64Array(MAXFX);                      // FX offsets without SxMod (all 0)
     function fxMods(proc) {
-      const sx = proc.sx || attach(proc), o = sx.fxOff;
-      o.fill(0);
-      if (sx.fxN === 0 || !sx.ok) return o;
-      for (let r = 0; r < sx.mN; r++) if (sx.mCtx[r] & 4) evalRow(sx, r, sx.monoSrc, o, FX_BASE);
-      return o;
+      const sx = proc.sx || attach(proc);
+      return sx.M !== null ? sx.M.fxMods(proc, sx) : FX0;
+    }
+    // the pitch (MIDI float, gliding, tuned) of the most recent voice, else the last one played, else 60 (FX key tracking,
+    // §12.5)
+    function recentPitch(proc) {
+      const sx = proc.sx, m = sx ? sx.mod : null;
+      if (!m) return 60;
+      const v = m.recent;
+      if (v !== null && v.mod !== null) return v.mod.nP;
+      return m.lastPitch >= 0 ? m.lastPitch : 60;
+    }
+    // Voice allocation helper for the engine (§12.3): the voice for note n among voices[0 … nUse−1] — same (n, ch) reuse
+    // when oneNote, else (1) inactive, (2) not gated, (3) sustain-held (lowest stamp each), (4) gated by CP.steal: Newest →
+    // lowest stamp · Oldest → highest stamp · Highest → lowest note · Lowest → highest note · Velocity → lowest velocity
+    // (ties: lowest stamp). Pure selection (no state change); null without voices.
+    function allocate(proc, n, ch = 0, nUse = -1) {
+      const vs = proc.voices;
+      if (!vs || !vs.length) return null;
+      const sx = proc.sx || attach(proc), cp = sx.cp || (proc.p && proc.p.serum) || null;
+      // a key the tuning's .kbm leaves unmapped (CP.tune[n] NaN, use & 512) gets no voice: the note-on is ignored (§6.18)
+      if (cp && (cp.use & 512) !== 0 && cp.tune && cp.tune.length >= 128) {
+        const k = n | 0, t = k >= 0 && k <= 127 ? +cp.tune[k] : 0;
+        if (t !== t) return null;
+      }
+      let U = nUse >= 1 ? nUse | 0 : vs.length;
+      if (U > vs.length) U = vs.length;
+      if (cp && cp.oneNote) {
+        for (let i = 0; i < U; i++) { const x = vs[i]; if (x.active && x.note === n && (x.ch | 0) === (ch | 0)) return x; }
+      }
+      let best = null;
+      for (let i = 0; i < U; i++) { const x = vs[i]; if (!x.active && (!best || x.stamp < best.stamp)) best = x; }
+      if (best) return best;
+      for (let i = 0; i < U; i++) { const x = vs[i]; if (!x.gate && (!best || x.stamp < best.stamp)) best = x; }
+      if (best) return best;
+      for (let i = 0; i < U; i++) { const x = vs[i]; if (x.sus && (!best || x.stamp < best.stamp)) best = x; }
+      if (best) return best;
+      const st = cp ? cp.steal | 0 : 0;
+      for (let i = 0; i < U; i++) {
+        const x = vs[i];
+        if (!best) { best = x; continue; }
+        let d;
+        if (st === 1) d = x.stamp - best.stamp;                 // Oldest: steal the newest (highest stamp)
+        else if (st === 2) d = best.note - x.note;              // Highest: steal the lowest note
+        else if (st === 3) d = x.note - best.note;              // Lowest: steal the highest note
+        else if (st === 4) d = best.vel - x.vel;                // Velocity: steal the lowest velocity
+        else d = best.stamp - x.stamp;                          // Newest: steal the oldest (lowest stamp)
+        if (d > 0 || (d === 0 && x.stamp < best.stamp)) best = x;
+      }
+      return best;
     }
     function snapshot(proc) {
       const sx = proc.sx;
       if (!sx) return null;
-      const s = sx.snap, eff = s.eff, v = sx.recent, p = proc.p, fxp = p && p.fxr;
-      if (v && v.played) for (let i = 0; i < NS; i++) eff[i] = v.eff[i];
-      else for (let i = 0; i < NS; i++) eff[i] = sx.bT[i];
-      const fb = fxp && fxp.base;
-      for (let k = 0; k < NF; k++) {
-        const x = (fb ? +fb[k] : 0) + sx.fxOff[k];
-        eff[NS + k] = x > 0 ? (x < 1 ? x : 1) : 0;
-      }
-      for (let l = 0; l < 8; l++) {
-        s.lfoPh[l] = sx.lfoMode[l] === 2 || !v ? sx.oPh[l] : v.lPh[l];
-        s.lfoOut[l] = v ? v.lVal[l] : sx.oSm[l];
-      }
+      const s = sx.snap, m = sx.mod, v = m ? m.recent : null;
+      if (m) sx.M.snap(proc, sx, s);
       if (v) {
-        for (let e = 0; e < 3; e++) { s.env[e] = v.eV[e]; s.envStage[e] = v.eSt[e]; s.envT[e] = v.eT[e]; }
-        s.wtPos[0] = v.wPos[0]; s.wtPos[1] = v.wPos[1];
-        s.noisePos = v.nLen0 > 0 ? v.nPos / v.nLen0 : 0;
-        for (let o = 0; o < 2; o++) {
+        for (let o = 0; o < N_OSC; o++) {
+          s.wtPos[o] = v.wPos[o];
           const N = v.uN[o], p0 = v.uPh[o * 16];
           for (let i = 0; i < 16; i++) {
             let d = i < N ? v.uPh[o * 16 + i] - p0 : 0;
             d -= floor(d);
             s.memNow[o * 16 + i] = d;
           }
+          const x = v.ox[o];
+          if (x !== null && x.sel === 1) {
+            s.smpPos[4 * o] = +x.mPos || 0; s.smpPos[4 * o + 1] = +x.mS || 0; s.smpPos[4 * o + 2] = +x.mLS || 0;
+            s.smpPos[4 * o + 3] = +x.mLE || 0;
+            s.zone[o] = x.zone !== undefined ? x.zone | 0 : -1;
+          } else { s.smpPos.fill(0, 4 * o, 4 * o + 4); s.zone[o] = -1; }
         }
+        s.noisePos = v.nLen0 > 0 ? v.nPos / v.nLen0 : 0;
       } else {
-        s.env.fill(0); s.envStage.fill(0); s.envT.fill(0); s.wtPos.fill(0); s.noisePos = 0; s.memNow.fill(0);
+        s.wtPos.fill(0); s.noisePos = 0; s.memNow.fill(0); s.smpPos.fill(0); s.zone.fill(-1);
       }
       let notes = 0, osc = 0;
+      s.grains.fill(0);
       const vs = proc.voices;
       if (vs) {
         for (let k = 0; k < vs.length; k++) {
           const w = vs[k];
           if (!w) continue;
           if (w.gate) notes++;
-          if (w.active && w.uN) osc += (w.onA ? w.uN[0] : 0) + (w.onB ? w.uN[1] : 0) + w.onS + w.onN;
+          if (w.active && w.uN) {
+            osc += (w.onA ? w.uN[0] : 0) + (w.onB ? w.uN[1] : 0) + (w.onC ? w.uN[2] : 0) + w.onS + w.onN;
+            if (w.ox) for (let o = 0; o < N_OSC; o++) { const x = w.ox[o]; if (x !== null) { const g = x.grains() | 0; s.grains[o] += g; osc += g; } }
+          }
         }
       }
       s.notes = notes; s.oscVoices = osc;
       const bT = sx.bT;
       s.maxVoices = sx.ok ? (sx.cMono ? 1 : sx.cPoly) * (16 * (bT[A_ON] >= 0.5 ? 1 : 0) + 16 * (bT[A_ON + 1] >= 0.5 ? 1 : 0) +
-        (bT[S_ON] >= 0.5 ? 1 : 0) + (bT[N_ON] >= 0.5 ? 1 : 0)) : 0;
-      for (let j = 0; j < TAP_N; j++) s.filtTap[j] = sx.tap[(sx.tapW + j) & (TAP_N - 1)];
+        ((sx.use & 1) && bT[C_ON] >= 0.5 ? 16 : 0) + (bT[S_ON] >= 0.5 ? 1 : 0) + (bT[N_ON] >= 0.5 ? 1 : 0)) : 0;
+      for (let j = 0; j < TAP_N; j++) {
+        s.filtTap[j] = sx.tap[(sx.tapW + j) & (TAP_N - 1)];
+        s.filtTap[TAP_N + j] = sx.tap2[(sx.tapW2 + j) & (TAP_N - 1)];
+      }
       s.tapRate = +proc.fs || 0;
+      const SP = globalThis.SxSpec;
+      s.specCap = SP && typeof SP.capOf === 'function' ? (SP.capOf(sx) ? 1 : 0) : 0;
+      // channel peaks of the last span(s) in dBFS (A, B, C, N, S, F1, F2; the rack adds Bus 1/2, Main, Direct)
+      for (let c = 0; c < 7; c++) { const p = sx.pk[c]; s.mix[c] = p > 1e-6 ? 20 * Math.log10(p) : -120; sx.pk[c] = 0; }
+      const sq = proc.sxSeq;
+      if (sq && typeof sq.snapshot === 'function') sq.snapshot(s.seq);
       return s;
     }
 
     /* ------------------------------------------------------------ module scratch (one chunk, ≤ 32 samples) */
     const AL = new Float64Array(MAXCH), AR = new Float64Array(MAXCH), BL = new Float64Array(MAXCH), BR = new Float64Array(MAXCH);
+    const CL = new Float64Array(MAXCH), CR = new Float64Array(MAXCH);
     const NL = new Float64Array(MAXCH), NR = new Float64Array(MAXCH), SL = new Float64Array(MAXCH), SR = new Float64Array(MAXCH);
-    const NRAW = new Float64Array(MAXCH), SRAW = new Float64Array(MAXCH), ZERO = new Float64Array(MAXCH);
-    const RAW0 = new Float64Array(16 * MAXCH), RAW1 = new Float64Array(16 * MAXCH);
+    const NRAW = new Float64Array(MAXCH), SRAW = new Float64Array(MAXCH), ZERO = new Float64Array(16 * MAXCH);
+    const RAW0 = new Float64Array(16 * MAXCH), RAW1 = new Float64Array(16 * MAXCH), RAW2 = new Float64Array(16 * MAXCH);
+    // sample-major copies of the raw unison outputs ([s·N + i]) for the SxWarp kernels (§11.7 modulator layout)
+    const MT0 = new Float64Array(16 * MAXCH), MT1 = new Float64Array(16 * MAXCH), MT2 = new Float64Array(16 * MAXCH);
     const PHB = new Float64Array(MAXCH), WIN = new Float64Array(MAXCH), YB = new Float64Array(MAXCH), YB2 = new Float64Array(MAXCH);
-    const FINL = new Float64Array(MAXCH), FINR = new Float64Array(MAXCH), WETL = new Float64Array(MAXCH), WETR = new Float64Array(MAXCH);
-    const DRYL = new Float64Array(MAXCH), DRYR = new Float64Array(MAXCH);
+    // WARPS2 path: increments, unwarped phases, the Odd/Even phases and read, the Sync window; per-unison-voice amounts,
+    // frequencies
+    const INC = new Float64Array(MAXCH), PHU = new Float64Array(MAXCH), PHC = new Float64Array(MAXCH), X2B = new Float64Array(MAXCH);
+    const X2C = new Float64Array(MAXCH), WN = new Float64Array(MAXCH);
+    const WA1 = new Float64Array(16), WA2 = new Float64Array(16), FI = new Float64Array(16);
+    // mixer: filter inputs u_k and source sums (bypass v_k = S_k − u_k), wet signals, filter outputs (post mix, pre level)
+    const U1L = new Float64Array(MAXCH), U1R = new Float64Array(MAXCH), S1L = new Float64Array(MAXCH), S1R = new Float64Array(MAXCH);
+    const U2L = new Float64Array(MAXCH), U2R = new Float64Array(MAXCH), S2L = new Float64Array(MAXCH), S2R = new Float64Array(MAXCH);
+    const W1L = new Float64Array(MAXCH), W1R = new Float64Array(MAXCH), W2L = new Float64Array(MAXCH), W2R = new Float64Array(MAXCH);
+    const Y1L = new Float64Array(MAXCH), Y1R = new Float64Array(MAXCH), Y2L = new Float64Array(MAXCH), Y2R = new Float64Array(MAXCH);
+    // output groups: main, direct, bus 1, bus 2 × (ENV 1 on, ENV 1 off) — [L, R] pairs at 2·g, 2·g + 1
+    const GB = [];
+    for (let g = 0; g < 16; g++) GB.push(new Float64Array(MAXCH));
+    const GU = new Uint8Array(8);
+    const XLS = [AL, BL, CL, NL, SL], XRS = [AR, BR, CR, NR, SR], RAWS = [RAW0, RAW1, RAW2], MTS = [MT0, MT1, MT2];
+    const CHX = Int32Array.from([0, 1, 3, 4, 2]);             // u/v summation order: A, B, Noise, Sub, C (§6.12)
+    const DIRX = Int32Array.from([4, 3, 0, 1, 2]);            // Direct summation order: Sub, Noise, A, B, C (§6.12)
     const MAXPH = 1 - pow(2, -24);
     const FC_L2 = mlog2(22050 / MIDI0);
+    // colour noise calibration (§6.11.2): −12 dBFS RMS from uniform white in [−1, 1) (analytic variances). White is
+    // generated at the voice rate fs = OS·base and the engine's decimator keeps only the band ≤ base/2, so its audio
+    // outputs get × √OS: −12 dBFS RMS in the audible band at every Quality; its raw samples (NRAW, the `noise` source)
+    // stay at K_WHITE, independent of the Quality (pink and brown hold most of their power far below base/2: within
+    // 1 dB at OS 1/2/4 without a correction; brown's integrator is rate-independent)
+    const K_WHITE = 0.4350714922217474, K_PINK = 0.11 * 1.2957116107223994, K_BROWN = 3.5 * 0.1898038343596395;
+    const K_GEIGER = pow(10, -12 / 20);                       // Geiger: −12 dBFS RMS at 40 clicks/s (per-rate gain kG)
+    // colour-noise stream seeds (§6.11.2): two r2 draws, each through its own murmur3 finaliser salt, so streams a and b
+    // (and the voice's later r2 draws) are unrelated points of the xorshift cycle — consecutive xorshift states would
+    // make b[k] = a[k + 1] (STEREO without effect)
+    function fmix32(h) {
+      h ^= h >>> 16; h = imul(h, 0x85EBCA6B); h ^= h >>> 13; h = imul(h, 0xC2B2AE35); h ^= h >>> 16;
+      return h >>> 0;
+    }
+    // pitch modes (§3.3)
+    const PM_HARM = 1, PM_RATIO = 2, PM_STEP = 3;
+    // X|Y modulation of a target's eff n by y (§3.9 XY_MODES: 0 Add n + 2y − 1, 1 Replace y, 2 Scale n·y; clamped)
+    function xyApply(mode, n, y) {
+      const v = mode === 1 ? y : mode === 2 ? n * y : n + 2 * y - 1;
+      return v > 0 ? (v < 1 ? v : 1) : 0;
+    }
+    // keyboard fold (§6.2): n shifted by octaves into [lo, hi]; no octave fits ⇒ the bound nearer to the octave
+    // transposes of n on either side of the range (IMPL reading of "the nearer bound"; ties: the bound n is beyond)
+    function foldInto(n, lo, hi) {
+      if (n >= lo && n <= hi) return n;
+      // fewest octaves toward the range; when that transpose overshoots, a = the transpose above hi, b = the one below lo
+      let a, b;
+      if (n < lo) { a = n + 12 * ceil((lo - n) / 12); if (a <= hi) return a; b = a - 12; }
+      else { b = n - 12 * ceil((n - hi) / 12); if (b >= lo) return b; a = b + 12; }
+      const dA = a - hi, dB = lo - b;
+      return dA < dB || (dA === dB && n > hi) ? hi : lo;
+    }
+    // Step pitch mode (§6.3.3): degree d → semitones
+    function sclSemis(sx, d) {
+      const n = sx.sclN, q = floor(d / n), r = d - q * n;
+      return q * sx.sclPer + sx.sclSteps[r];
+    }
+    // source x (scaled by g unless g = 1) through a linear switch ramp r0 → r0 + n·dr into u, and into the source sum S
+    // (§6.12: u_k += s_k·G_k·x; the bypass is v_k = S_k − u_k, the Phase-1 arithmetic form)
+    // (M4) a switch that is off and stays off this chunk (r0 = dr = 0) adds 0·x to u: u is never −0 (it starts at +0 and a
+    // sum that cancels is +0), so u + (±0) = u — only the source sum is updated
+    function addSrc(XL, XR, g, r0, dr, UL, UR, SLs, SRs, CH) {
+      let r = r0;
+      if (r0 === 0 && dr === 0) {
+        if (g === 1) for (let s = 0; s < CH; s++) { SLs[s] += XL[s]; SRs[s] += XR[s]; }
+        else for (let s = 0; s < CH; s++) { SLs[s] += g * XL[s]; SRs[s] += g * XR[s]; }
+        return;
+      }
+      if (g === 1) {
+        for (let s = 0; s < CH; s++) { r += dr; const xl = XL[s], xr = XR[s]; UL[s] += r * xl; UR[s] += r * xr; SLs[s] += xl; SRs[s] += xr; }
+      } else {
+        for (let s = 0; s < CH; s++) { r += dr; const xl = g * XL[s], xr = g * XR[s]; UL[s] += r * xl; UR[s] += r * xr; SLs[s] += xl; SRs[s] += xr; }
+      }
+    }
+    // addSrc with the share g ramped per sample from g0 by dg (filter balance, filter-to-filter level); dg = 0 is addSrc
+    function addSrcR(XL, XR, g0, dg, r0, dr, UL, UR, SLs, SRs, CH) {
+      if (dg === 0) { addSrc(XL, XR, g0, r0, dr, UL, UR, SLs, SRs, CH); return; }
+      let r = r0, g = g0;
+      for (let s = 0; s < CH; s++) { r += dr; g += dg; const xl = g * XL[s], xr = g * XR[s]; UL[s] += r * xl; UR[s] += r * xr; SLs[s] += xl; SRs[s] += xr; }
+    }
+    // addG with the gain ramped per sample from g0 by d (the Phase-1 ramp form: the last sample reaches g0 + CH·d); d = 0
+    // is addG with g0
+    function addGR(DL, DR, XL, XR, g0, d, first, CH) {
+      if (d === 0) { addG(DL, DR, XL, XR, g0, first, CH); return; }
+      let g = g0;
+      if (first) for (let s = 0; s < CH; s++) { g += d; DL[s] = g * XL[s]; DR[s] = g * XR[s]; }
+      else for (let s = 0; s < CH; s++) { g += d; DL[s] += g * XL[s]; DR[s] += g * XR[s]; }
+    }
+    // dst (+)= g·src (first: assignment)
+    function addG(DL, DR, XL, XR, g, first, CH) {
+      if (first) {
+        if (g === 1) for (let s = 0; s < CH; s++) { DL[s] = XL[s]; DR[s] = XR[s]; }
+        else for (let s = 0; s < CH; s++) { DL[s] = g * XL[s]; DR[s] = g * XR[s]; }
+      } else if (g === 1) for (let s = 0; s < CH; s++) { DL[s] += XL[s]; DR[s] += XR[s]; }
+      else for (let s = 0; s < CH; s++) { DL[s] += g * XL[s]; DR[s] += g * XR[s]; }
+    }
+    function zero4(a, b, c, d, CH) { for (let s = 0; s < CH; s++) { a[s] = 0; b[s] = 0; c[s] = 0; d[s] = 0; } }
+    // out[o0 + s] += x[s]·amp_s with the linear gain ramp amp0 → amp0 + CH·d (the Phase-1 per-sample ramp)
+    function addAmp(OL, OR, o0, XL, XR, amp0, d, CH) {
+      let a = amp0;
+      for (let s = 0; s < CH; s++) { a += d; OL[o0 + s] += XL[s] * a; OR[o0 + s] += XR[s] * a; }
+    }
+    function peak2(XL, XR, CH) {
+      let p = 0;
+      for (let s = 0; s < CH; s++) { const a = XL[s] < 0 ? -XL[s] : XL[s], b = XR[s] < 0 ? -XR[s] : XR[s]; if (a > p) p = a; if (b > p) p = b; }
+      return p;
+    }
 
     /* ------------------------------------------------------------ warps (§3.3) */
     // warped read phase of mode m (≠ 0, 2/3 use the sync phase, 11/19/20 return φ) for parameter K, amount w,
@@ -1843,20 +2235,9 @@
       }
       return l;
     }
-    // fused plain reads (warp Off / neutral): one frame, or two frames blended with t ramping by dt per sample
+    // fused plain reads (warp Off / neutral): two frames blended with t ramping by dt per sample (the one-frame read is
+    // written out in renderWT)
     const FA = new Float64Array(9);
-    function plain1(d, b, m, len, ph, inc, OL, OR, gl, gr, dgl, dgr, CH) {
-      for (let s = 0; s < CH; s++) {
-        const x = ph * len, i = x | 0, f = x - i;
-        const xm = d[b + ((i - 1) & m)], x0 = d[b + (i & m)], x1 = d[b + ((i + 1) & m)], x2 = d[b + ((i + 2) & m)];
-        const y = (((0.5 * (x2 - xm) + 1.5 * (x0 - x1)) * f + (xm - 2.5 * x0 + 2 * x1 - 0.5 * x2)) * f + 0.5 * (x1 - xm)) * f + x0;
-        gl += dgl; gr += dgr;
-        OL[s] += gl * y; OR[s] += gr * y;
-        ph += inc;
-        if (ph >= 1) ph -= 1; else if (ph < 0) ph += 1;
-      }
-      return ph;
-    }
     function plain2(d, ba, bb, m, len, OL, OR, CH) {        // doubles in FA (see plainB1)
       let ph = FA[0], gl = FA[2], gr = FA[3], t = FA[7];
       const inc = FA[1], dgl = FA[4], dgr = FA[5], dt = FA[8];
@@ -1921,12 +2302,12 @@
       }
       FA[0] = ph;
     }
-    // read pass of the general path: Y[s] = table at PHB[s] (two frames blended when two; t, dt in FA[7], FA[8])
-    function readPass(d, ba, bb, m, len, two, Y, CH) {
+    // read pass of the general path: Y[s] = table at P[s] (two frames blended when two; t, dt in FA[7], FA[8])
+    function readPass(d, ba, bb, m, len, two, Y, CH, P) {
       let t = FA[7];
       const dt = FA[8];
       for (let s = 0; s < CH; s++) {
-        const x = PHB[s] * len, i = x | 0, f = x - i;
+        const x = P[s] * len, i = x | 0, f = x - i;
         let y = hermAt(d, ba, m, i, f);
         if (two) { t += dt; y += t * (hermAt(d, bb, m, i, f) - y); }
         Y[s] = y;
@@ -1934,17 +2315,68 @@
     }
     // one level of the general path (t0, dt in FA[7], FA[8]); xa ≥ 0 (interpolating table whose frame pair changed):
     // the old pair (xa, xa + 1) at xt = FA[6] crossfades into the new one over the chunk
-    function readLv(d, len, fa, fb, two, xa, Y, CH) {
+    function readLv(d, len, fa, fb, two, xa, Y, CH, P) {
       const m = len - 1;
-      readPass(d, fa * len, fb * len, m, len, two, Y, CH);
+      readPass(d, fa * len, fb * len, m, len, two, Y, CH, P);
       if (xa < 0) return;
       const ba = xa * len, bb = ba + len, iC = 1 / CH, xt = FA[6];
       for (let s = 0; s < CH; s++) {
-        const x = PHB[s] * len, i = x | 0, f = x - i;
+        const x = P[s] * len, i = x | 0, f = x - i;
         let y = hermAt(d, ba, m, i, f);
         if (xt !== 0) y += xt * (hermAt(d, bb, m, i, f) - y);
         Y[s] = y + (Y[s] - y) * ((s + 1) * iC);
       }
+    }
+    // the general-path read of one unison voice at the phases P (§6.5, §7.4): level ℓ plus the one-chunk level crossfade
+    // (lvOld, twoLv) or the selBlend pair (lvX, wX); FA[6…8] = xt, t0, dt; Y2 = scratch
+    function readFull(P, Y, Y2, lvD, lvLen, hb, lv, lvOld, twoLv, lvX, wX, fa, fb, two, xa, CH) {
+      readLv(lvD[hb + lv], lvLen[hb + lv], fa, fb, two, xa, Y, CH, P);
+      if (twoLv) {
+        readLv(lvD[hb + lvOld], lvLen[hb + lvOld], fa, fb, two, xa, Y2, CH, P);
+        const iC = 1 / CH;
+        for (let s = 0; s < CH; s++) { const a = (s + 1) * iC; Y[s] = Y2[s] + (Y[s] - Y2[s]) * a; }
+      } else if (lvX >= 0) {
+        readLv(lvD[hb + lvX], lvLen[hb + lvX], fa, fb, two, xa, Y2, CH, P);
+        for (let s = 0; s < CH; s++) Y[s] = Y2[s] + (Y[s] - Y2[s]) * wX;
+      }
+    }
+    // PD (Self) read of one unison voice: per sample φ_r = frac(P[s] + I·y₁), Y[s] = x(φ_r), y₁ = Y[s]; level ℓ with the
+    // partner level l2 (weight w2 of ℓ; w2 < 0: the one-chunk crossfade (s + 1)/CH), frames fa/fb blended by t (FA[7],
+    // FA[8]); xa ≥ 0 (interpolating table whose frame pair changed): the old pair (xa, xa + 1) at xt = FA[6] crossfades
+    // into the new one over the chunk at every level, as readLv; P[s] ← φ_r (the Odd/Even second read follows it);
+    // returns y₁ (the crossfaded read)
+    function readSelf(P, Y, y1, I, lvD, lvLen, hb, lv, l2, w2, fa, fb, two, xa, CH) {
+      let t = FA[7];
+      const dt = FA[8], xt = FA[6], d = lvD[hb + lv], len = lvLen[hb + lv], m = len - 1, ba = fa * len, bb = fb * len, iC = 1 / CH;
+      const dd = l2 >= 0 ? lvD[hb + l2] : d, len2 = l2 >= 0 ? lvLen[hb + l2] : len, m2 = len2 - 1, ba2 = fa * len2, bb2 = fb * len2;
+      const xo = xa >= 0 ? xa : 0, xb = xo * len, xb2 = xo * len2;
+      for (let s = 0; s < CH; s++) {
+        let q = P[s] + I * y1;
+        q -= floor(q);
+        P[s] = q;
+        let x = q * len, i = x | 0, f = x - i;
+        let y = hermAt(d, ba, m, i, f);
+        if (two) { t += dt; y += t * (hermAt(d, bb, m, i, f) - y); }
+        const a = (s + 1) * iC;
+        if (xa >= 0) {
+          let o = hermAt(d, xb, m, i, f);
+          if (xt !== 0) o += xt * (hermAt(d, xb + len, m, i, f) - o);
+          y = o + (y - o) * a;
+        }
+        if (l2 >= 0) {
+          x = q * len2; i = x | 0; f = x - i;
+          let z = hermAt(dd, ba2, m2, i, f);
+          if (two) z += t * (hermAt(dd, bb2, m2, i, f) - z);
+          if (xa >= 0) {
+            let o = hermAt(dd, xb2, m2, i, f);
+            if (xt !== 0) o += xt * (hermAt(dd, xb2 + len2, m2, i, f) - o);
+            z = o + (z - o) * a;
+          }
+          y = z + (y - z) * (w2 >= 0 ? w2 : a);
+        }
+        Y[s] = y; y1 = y;
+      }
+      return y1;
     }
     // noise sample j of a level (looping inside [ls, le) when lp), 0 outside
     function nzAt(A, j, ls, le, len, lp) {
@@ -1958,77 +2390,121 @@
       return (((0.5 * (x2 - xm) + 1.5 * (x0 - x1)) * f + (xm - 2.5 * x0 + 2 * x1 - 0.5 * x2)) * f + 0.5 * (x1 - xm)) * f + x0;
     }
 
-    /* ------------------------------------------------------------ SerumVoice (§8.4.3, §6) */
-    let warnedVer = false;
+    /* ------------------------------------------------------------ SerumVoice (§8.4.3, §6; SPEC-serum2 §6, §11.10) */
+    let warnedVer = false, warnedWarp = false;
+    const warnedType = new Uint8Array(4);                       // per script of TYPE_SCRIPT (sx-sample, sx-gran, sx-spec)
+    const TYPE_GLOBAL = ['', 'SxSample', 'SxSample', 'SxGran', 'SxSpec'];
+    const TYPE_CLASS = ['', 'MultiOsc', 'SampleOsc', 'GranOsc', 'SpecOsc'];
+    const TYPE_SCRIPT = [0, 1, 1, 2, 3];
+    // the oscillator context of the common oscillator contract (§11.8), owned and filled per chunk by the voice
+    function makeCtx(o) {
+      const F = () => new Float64Array(16), B = () => new Float64Array(MAXCH);
+      return { o, N: 1, f: F(), gl: F(), gr: F(), dgl: F(), dgr: F(), pan: F(), t: F(), w1: F(), w2: F(),
+        mode1: 0, mode2: 0, var1: 0, var2: 0, fm1: 0, fm2: 0, mod1: ZERO, mod2: ZERO, modStride1: 0, modStride2: 0,
+        eff: null, cp: null, sx: null, gate: 0, fresh: 0, CH: 8, fs: 96000, base: 48000, bpm: 120, keyRef: 60, rootShift: 0,
+        key: 60, vel: 1,                                       // [+] the channel's played key (fold incl.) and velocity
+        wbuf: { inc: B(), ph: B(), ph2: B(), win: B(), x: B(), x2: B() } };
+    }
     class SerumVoice {
       constructor(proc, i) {
         this.proc = proc; this.i = i | 0;
+        // note: a double field from the start (V8): a note number that arrives boxed (a typed-array or double-array read,
+        // the sequencer) would otherwise generalise the field at the first real note — a new map for every voice and a
+        // deoptimisation of the whole voice path in that quantum (the hidden warm-up notes are small integers)
+        this.note = -0.5; this.vel = 0.5;
         this.active = false; this.gate = false; this.note = -1; this.stamp = 0; this.sus = false; this.vel = 0;
-        this.ok = 0; this.relvel = 0.5; this.played = 0;
+        this.ok = 0; this.played = 0;
         this.r = ((0x9E3779B9 * (this.i + 7)) >>> 0) || 1;   // voice PRNG state (xorshift32)
-        attach(proc);
+        this.r2 = this.r;                                      // second stream (SPEC-serum2 §6.2): Phase-2 draws only
+        const sx = attach(proc);
         this.fs = proc.fs > 0 ? +proc.fs : 96000; this.CH = proc.CH > 0 ? proc.CH | 0 : 8;
         this.base = proc.base > 0 ? +proc.base : 48000;
         this.dt = this.CH / this.fs; this.flim = this.fs - (0.45 * this.base < 20000 ? 0.45 * this.base : 20000);
         this.xf = this.flim < 40000 ? 1 : 0;                 // level blending where the dropped octave is audible (§7.4)
         this.m0 = 1; this.margin();
         this.span = -1; this.fresh = 0; this.spare = 0;
-        this.filt = new SFilter(this.fs);
-        // modulation
-        this.eff = new Float64Array(NS); this.off = new Float64Array(NS); this.src = new Float64Array(NSRC);
-        this.src[S_FIXED] = 1;
-        this.md = new Uint8Array(NS); this.mdCp = null;           // modded mask of the CP this voice last evaluated
-        this.eOn = new Float64Array(3);                          // envelope values before a note-on restart (§6.1)
-        // envelopes (stage 0 idle, 1 A, 2 H, 3 D, 4 S, 5 R)
-        this.eSt = new Int32Array(3); this.eQ = new Float64Array(3); this.eV = new Float64Array(3); this.eV0 = new Float64Array(3);
-        this.eVR = new Float64Array(3); this.eT = new Float64Array(3);
-        // LFOs
-        this.lPh = new Float64Array(8); this.lSm = new Float64Array(8); this.lVal = new Float64Array(8); this.lB0 = new Float64Array(8);
-        this.lDone = new Uint8Array(8); this.lK = new Float64Array(8); this.lKs = new Float64Array(8).fill(-1); this.ly0 = 0;
-        this.tau = 0;
-        // chaos (per voice)
-        this.ch = new Float64Array(6); this.cOut = new Float64Array(2); this.cHold = new Float64Array(2); this.cTim = new Float64Array(2);
-        // note-on values
-        this.vVelo = 0; this.vNote = 0; this.vR1 = 0; this.vR2 = 0; this.vAlt = 0; this.patS = 0;
-        // pitch / portamento
-        this.nP = 60; this.gS = 60; this.gTg = 60; this.gQ = 1;
+        this.hid = 0;                                          // hidden warm-up voice: 1 first-use (warmTick), 2 GRAN_JOB
+        this.gq = null;                                        // GRAN_JOB's light grain caps for the voice's first chunks
+        this.filt = new SFilter(this.fs); this.filt2 = null;  // Filter 2: allocated by the first apply with CP.use & 2
+        // modulation (SxMod.ModV: envelopes, LFOs, chaos, sources, matrix, portamento); eff, src and eV are its arrays
+        this.mod = sx.M !== null ? new sx.M.ModV(this) : null;
+        const mv = this.mod;
+        this.eff = mv !== null ? mv.eff : new Float64Array(NSV); this.src = mv !== null ? mv.src : new Float64Array(NSRC2);
+        this.eV = mv !== null ? mv.eV : new Float64Array(N_ENV);
+        // note context: MPE channel, generated-note expression, keyboard gates and fold offsets (A, B, C, Noise, Sub),
+        // Voice Control offsets (from the ModV)
+        this.ch = 0; this.ex = null; this.kg = new Uint8Array(5).fill(1); this.dk = new Float64Array(5);
+        this.vcP = 0; this.vcD = 0; this.vcC = 0;
         // oscillators: [o·16 + i] per unison voice
-        this.uN = new Int32Array(2); this.uNx = new Int32Array(2); this.uPh = new Float64Array(32); this.uLv = new Int32Array(32).fill(-1);
-        this.uFa = new Int32Array(32).fill(-1); this.uFp = new Float64Array(32); this.uGL = new Float64Array(32);
-        this.uGR = new Float64Array(32); this.uRnd = new Float64Array(32); this.uRat = new Float64Array(32).fill(1);
-        this.uPL = new Float64Array(32).fill(1); this.uPR = new Float64Array(32).fill(1); this.uEl = new Float64Array(32);
-        this.uH = new Float64Array(32).fill(-1); this.uLx = new Int32Array(32).fill(-1); this.uWx = new Float64Array(32).fill(1);
-        this.oOff = new Float64Array(2); this.wPos = new Float64Array(2);
-        this.cDet = new Float64Array(2).fill(-1); this.cStk = new Int32Array(2).fill(-1); this.cN = new Int32Array(2);
-        this.cMode = new Int32Array(2).fill(-1); this.cR = new Float64Array(2).fill(-1); this.cW = new Float64Array(2).fill(-1);
-        this.cWN = new Int32Array(2); this.cBl = new Float64Array(2).fill(-1); this.cBN = new Int32Array(2);
-        this.gC = new Float64Array(2).fill(1); this.gSd = new Float64Array(2).fill(1); this.comp = new Float64Array(2).fill(1);
-        this.cPan = new Float64Array(2).fill(-9); this.bl = new Float64Array(2).fill(1); this.br = new Float64Array(2).fill(1);
-        this.onA = 0; this.onB = 0; this.onS = 0; this.onN = 0;
+        this.uN = new Int32Array(N_OSC); this.uNx = new Int32Array(N_OSC); this.uPh = new Float64Array(48);
+        this.uHi = Int32Array.from([16, 16, 16]);              // fillCtx: unison slots whose gains may be non-zero (≤ 16)
+        this.uLv = new Int32Array(48).fill(-1); this.uFa = new Int32Array(48).fill(-1); this.uFp = new Float64Array(48);
+        this.uGL = new Float64Array(48); this.uGR = new Float64Array(48); this.uRnd = new Float64Array(48);
+        // (M4) per oscillator: 0 once a scan found every unison gain of it 0 and no render wrote one since (a switched-off
+        // oscillator then skips its 16-slot scan every chunk); 1 = may be non-zero
+        this.gz = new Uint8Array(3).fill(1);
+        this.uRat = new Float64Array(48).fill(1); this.uPL = new Float64Array(48).fill(1); this.uPR = new Float64Array(48).fill(1);
+        this.uEl = new Float64Array(48); this.uH = new Float64Array(48).fill(-1); this.uLx = new Int32Array(48).fill(-1);
+        this.uWx = new Float64Array(48).fill(1);
+        this.oOff = new Float64Array(N_OSC); this.wPos = new Float64Array(N_OSC); this.memK = new Uint8Array(N_OSC);
+        this.cDet = new Float64Array(N_OSC).fill(-1); this.cStk = new Int32Array(N_OSC).fill(-1); this.cN = new Int32Array(N_OSC);
+        this.cMode = new Int32Array(N_OSC).fill(-1); this.cR = new Float64Array(N_OSC).fill(-1); this.cW = new Float64Array(N_OSC).fill(-1);
+        this.cWN = new Int32Array(N_OSC); this.cBl = new Float64Array(N_OSC).fill(-1); this.cBN = new Int32Array(N_OSC);
+        this.gC = new Float64Array(N_OSC).fill(1); this.gSd = new Float64Array(N_OSC).fill(1); this.comp = new Float64Array(N_OSC).fill(1);
+        this.cPan = new Float64Array(N_OSC).fill(-9); this.bl = new Float64Array(N_OSC).fill(1); this.br = new Float64Array(N_OSC).fill(1);
+        this.onA = 0; this.onB = 0; this.onC = 0; this.onS = 0; this.onN = 0;
+        // per chunk: pitch terms, base pitch / frequency / Hz offset per oscillator, warp modes, modulators, render order
+        this.pBend = 0; this.pTune = 0; this.pMpe = 0; this.pDet = 0; this.pOk = 0;
+        this.cP = new Float64Array(N_OSC); this.fB = new Float64Array(N_OSC); this.cHz = new Float64Array(N_OSC);
+        this.oOn = new Uint8Array(N_OSC); this.oAv = new Uint8Array(N_OSC); this.oCap = new Uint8Array(N_OSC);
+        this.mtx = new Uint8Array(N_OSC); this.dep = new Uint8Array(N_OSC); this.lg = new Uint8Array(N_OSC);
+        this.md = new Uint8Array(2 * N_OSC); this.lvar = new Float64Array(N_OSC).fill(-1);
+        this.mA = [ZERO, ZERO, ZERO, ZERO, ZERO, ZERO]; this.mS = new Int32Array(2 * N_OSC);
+        this.ord = new Int32Array(N_OSC); this.ordN = 0; this.act = new Uint8Array(5); this.fpUse = 0;
+        // WARPS2 slots (SxWarp.Slots per oscillator, apply), oscillator type objects (SxSample/SxGran/SxSpec, apply) and
+        // their contexts
+        this.W = null; this.wsl = [null, null, null];
+        this.ox = [null, null, null]; this.oxs = new Array(4 * N_OSC).fill(null); this.ctx = [null, null, null];
         // wavetables
-        this.wId0 = ''; this.wId1 = ''; this.wEp = new Float64Array(2).fill(-1); this.wOk = new Uint8Array(2);
-        this.wF = new Int32Array(2).fill(1); this.wI = new Uint8Array(2);
-        this.lvD = new Array(22).fill(EMPTY32); this.lvLen = new Int32Array(22).fill(4); this.lvHarm = new Float64Array(22).fill(1);
+        this.wId = ['', '', '']; this.wEp = new Float64Array(N_OSC).fill(-1); this.wOk = new Uint8Array(N_OSC);
+        this.wF = new Int32Array(N_OSC).fill(1); this.wI = new Uint8Array(N_OSC);
+        this.lvD = new Array(11 * N_OSC).fill(EMPTY32); this.lvLen = new Int32Array(11 * N_OSC).fill(4);
+        this.lvHarm = new Float64Array(11 * N_OSC).fill(1);
         // blended frames (bcGet): two cached levels per oscillator, and the last position asked for per oscillator
-        this.bcF = [new Float32Array(2048), new Float32Array(2048), new Float32Array(2048), new Float32Array(2048)];
-        this.bcD = new Array(4).fill(EMPTY32); this.bcE = new Float64Array(4).fill(-1); this.bcA = new Int32Array(4).fill(-1);
-        this.bcB = new Int32Array(4).fill(-1); this.bcT = new Float64Array(4).fill(-1); this.bcR = new Uint8Array(2);
-        this.skD = new Array(2).fill(EMPTY32); this.skE = new Float64Array(2).fill(-1); this.skA = new Int32Array(2).fill(-1);
-        this.skB = new Int32Array(2).fill(-1); this.skT = new Float64Array(2).fill(-1); this.skC = new Float64Array(2).fill(-1);
+        this.bcF = []; for (let k = 0; k < 2 * N_OSC; k++) this.bcF.push(new Float32Array(2048));
+        this.bcD = new Array(2 * N_OSC).fill(EMPTY32); this.bcE = new Float64Array(2 * N_OSC).fill(-1);
+        this.bcA = new Int32Array(2 * N_OSC).fill(-1); this.bcB = new Int32Array(2 * N_OSC).fill(-1);
+        this.bcT = new Float64Array(2 * N_OSC).fill(-1); this.bcR = new Uint8Array(N_OSC);
+        this.skD = new Array(N_OSC).fill(EMPTY32); this.skE = new Float64Array(N_OSC).fill(-1); this.skA = new Int32Array(N_OSC).fill(-1);
+        this.skB = new Int32Array(N_OSC).fill(-1); this.skT = new Float64Array(N_OSC).fill(-1); this.skC = new Float64Array(N_OSC).fill(-1);
         this.chk = 0;
         // sub
-        this.sPh = 0; this.sLv = -1; this.sGL = 0; this.sGR = 0; this.sShape = -1; this.sEp = -1; this.sOk = 0;
+        this.sPh = 0; this.sLv = -1; this.sGL = 0; this.sGR = 0; this.sShape = -1; this.sSet = -1; this.sEp = -1; this.sOk = 0;
         this.sD = new Array(11).fill(EMPTY32); this.sLen = new Int32Array(11).fill(4); this.sHarm = new Float64Array(11).fill(1);
         this.sPan = -9; this.sCl = 1; this.sCr = 1;
-        // noise
+        // noise (sample) and colour noise generators (streams a, b; per stream pink b0…b6, brown y, Geiger envelope;
+        // tilt one-pole state per channel)
         this.nPos = 0; this.nOffP = 0; this.nLv = -1; this.nGL = 0; this.nGR = 0; this.nId = ''; this.nEp = -1; this.nOk = 0;
         this.nLevels = 0; this.nLvL = new Array(6).fill(EMPTY32); this.nLvR = new Array(6).fill(EMPTY32);
         this.nLen = new Int32Array(6); this.nLs = new Float64Array(6); this.nLe = new Float64Array(6);
         this.nRate = 48000; this.nRoot = 60; this.nLen0 = 0; this.nDone = 0; this.nLast = 0; this.nPan = -9; this.nCl = 1; this.nCr = 1;
-        // mixer ramps
-        this.gAmp = 0; this.rg = new Float64Array(4); this.mixP = 1; this.fIdle = 1;
+        this.ca = 1; this.cb = 1; this.cs = new Float64Array(20); this.ct = new Float64Array(2);
+        // mixer: switch ramps per channel (Filter 1, Filter 2), filter-to-filter ramps, mixes, ENV 1 on/off group gains
+        this.gAmp = 0; this.gAmpN = 0; this.rg1 = new Float64Array(5); this.rg2 = new Float64Array(5); this.rgF = new Float64Array(2);
+        // previous chunk's targets of the per-chunk gains ramped across the next chunk: filter balance shares (per channel,
+        // F1 / F2), filter levels, bus send gains (channel·2 + bus), filter-to-filter feed levels (by receiving filter)
+        this.hb1 = new Float64Array(5); this.hb2 = new Float64Array(5); this.lvP = new Float64Array(2);
+        this.sgP = new Float64Array(14); this.fdP = new Float64Array(2);
+        this.mixP = 1; this.mixP2 = 1; this.fIdle = 1; this.fIdle2 = 1; this.noEnv = 0; this.fo = 0; this.fu = new Uint8Array(4);
+        // Filter-sourced warp modulation (§6.6.7): mono filter outputs (post mix, pre level) of the previous chunk
+        this.fp1 = new Float64Array(MAXCH); this.fp2 = new Float64Array(MAXCH); this.fpZ = 3;   // fpZ bit k: fp(k+1) holds zeros
+        this.fadeK = 0; this.fadeN = 0;                          // lifetime grain fade (§6.19): chunks in all / left
+        // outputs of the current render call
+        this.oL = null; this.oR = null; this.oDL = null; this.oDR = null; this.oB1L = null; this.oB1R = null;
+        this.oB2L = null; this.oB2R = null;
       }
       rnd() { this.r = xorshift(this.r) || 1; return this.r / 4294967296; }
+      rnd2() { this.r2 = xorshift(this.r2) || 1; return this.r2 / 4294967296; }
       // level-0 margin m0 (file header): as large as level 1 still reaches the audible band limit, at most 1.4
       margin() {
         const band = 0.45 * this.base < 20000 ? 0.45 * this.base : 20000, m = this.flim / (2 * band);
@@ -2036,51 +2512,118 @@
       }
 
       apply(p) {
+        this.uHi.fill(16);                                       // (a type change may leave gains in any unison slot)
         const proc = this.proc, sx = attach(proc), cp = p && p.serum;
-        const ok = cpOk(cp) ? 1 : 0;
-        if (cp && !ok && !warnedVer) {
+        const vok = cpOk(cp), ok = vok && this.mod !== null ? 1 : 0;
+        if (cp && !vok && !warnedVer) {
           warnedVer = true;
           if (typeof console !== 'undefined') console.warn('serum-dsp: CP version', cp.ver, 'not understood (expects', VER + ')');
         }
         this.ok = ok;
         const fs = proc.fs > 0 ? +proc.fs : this.fs, CH = proc.CH > 0 ? proc.CH | 0 : this.CH, base = proc.base > 0 ? +proc.base : this.base;
+        let rch = false;
         if (fs !== this.fs || CH !== this.CH || base !== this.base) {
           this.fs = fs; this.CH = CH; this.base = base;
-          this.lKs.fill(-1);
+          rch = true;
         }
         this.dt = this.CH / this.fs;
+        if (this.mod !== null) this.mod.setDt(this.dt, rch);
         this.flim = this.fs - (0.45 * this.base < 20000 ? 0.45 * this.base : 20000);
         this.xf = this.flim < 40000 ? 1 : 0;
         this.margin();
         this.uH.fill(-1);                                         // level selection depends on fs/flim/xf/m0
         this.filt.setRate(this.fs);
+        if (this.filt2 !== null) this.filt2.setRate(this.fs);
         this.cDet.fill(-1);
         if (!ok) return;
         syncCP(proc, sx, cp);
         syncCT(proc, sx);
+        const use = sx.use;
+        // WARPS2 slots and oscillator type objects (allocation happens here, never on the render path)
+        if (this.W === null) {
+          const W = globalThis.SxWarp;
+          if (W && typeof W.Slots === 'function' && typeof W.chunk === 'function') {
+            this.W = W;
+            for (let o = 0; o < N_OSC; o++) this.wsl[o] = new W.Slots(16);
+          } else if (!warnedWarp) { warnedWarp = true; if (typeof console !== 'undefined') console.warn('serum-dsp: SxWarp unavailable, Serum 2 warp slots act as Off'); }
+        }
+        for (let o = 0; o < N_OSC; o++) {
+          const t = sx.oType[o];
+          const skip = t === 3 && this.hid === 1;                // first-use hidden voices: Granular is GRAN_JOB's (§11.10)
+          if (t !== 0 && !skip && this.oxs[4 * o + t - 1] === null) {
+            const G = globalThis[TYPE_GLOBAL[t]], C = G ? G[TYPE_CLASS[t]] : null;
+            if (typeof C === 'function') this.oxs[4 * o + t - 1] = new C(this, o);
+            else if (warnedType[TYPE_SCRIPT[t]] === 0) {          // one warning per missing script and scope (§0.3)
+              warnedType[TYPE_SCRIPT[t]] = 1;
+              if (typeof console !== 'undefined') console.warn('serum-dsp:', TYPE_GLOBAL[t], 'unavailable, those oscillators are silent');
+            }
+          }
+          // the Granular lazy warm-up (§11.10), queued once per live processor and asset id (SxBase dedupes by key)
+          if (t === 3 && this.hid === 0 && !proc.offline && sx.gwOk === 0) {
+            const B = globalThis.SxBase, id = cp.smp && typeof cp.smp[o] === 'string' ? cp.smp[o] : '';
+            if (B && typeof B.warmAdd === 'function' && B.warmAdd(proc, 'sx-gran:' + id, GRAN_JOB)) sx.gwWait = HW_WAIT;
+          }
+          for (let k = 0; k < 4; k++) { const x = this.oxs[4 * o + k]; if (x !== null) x.apply(cp, o, k === 2 ? this.gq : null); }
+          const x = t !== 0 && !skip ? this.oxs[4 * o + t - 1] : null;
+          if (x !== this.ox[o] && this.ox[o] !== null && this.active) this.ox[o].kill();
+          this.ox[o] = x;
+          if (x !== null && this.ctx[o] === null) this.ctx[o] = makeCtx(o);
+        }
+        if ((use & 2) !== 0 && this.filt2 === null) this.filt2 = new SFilter(this.fs);
         // a spare voice (engine-owned flag: above POLY, never addressed, §11.3) keeps its filter type and gets no delay
         // lines until POLY reaches it (a delay family costs up to 1.1 MB per voice); a modulated type preallocates only
         // the families its matrix rows can reach (base ± the sum of their amounts)
         if (this.spare === 1 && !this.active) return;
-        const bt = round(95 * clamp01(sx.bT[F_TYPE]));
-        if (cp.modded && cp.modded[F_TYPE]) {
+        if (sx.s1) this.prepFilter(sx, cp, this.filt, F_TYPE, NTYPES - 1);
+        else this.prepFilter(sx, cp, this.filt, F_TYPE2, NT2 - 1);
+        if (this.filt2 !== null) this.prepFilter(sx, cp, this.filt2, F2_TYPE, NT2 - 1);
+      }
+      prepFilter(sx, cp, f, vi, top) {
+        const bt = round(top * clamp01(sx.bT[vi]));
+        if (cp.modded && cp.modded[vi]) {
+          const md = sx.mod;
           let a = 0;
-          for (let r = 0; r < sx.mN; r++) if (sx.mDst[r] === F_TYPE) { const m = sx.mAmt[r]; a += m < 0 ? -m : m; }
-          const b = sx.bT[F_TYPE];
-          this.filt.prealloc(true, floor(95 * clamp01(b - a)), ceil(95 * clamp01(b + a)));
-        } else this.filt.prealloc(false);
-        if (!this.active) this.filt.setType(bt);
-        else this.filt.ensure(FILTER_FAM_OF[bt]);
+          for (let r = 0; r < md.mN; r++) if (md.mDst[r] === vi && md.mCtx[r] !== 4) { const m = md.mAmt[r]; a += m < 0 ? -m : m; }
+          const b = sx.bT[vi];
+          f.prealloc(true, floor(top * clamp01(b - a)), ceil(top * clamp01(b + a)));
+        } else f.prealloc(false);
+        if (bt >= NTYPES) f.need(bt);
+        if (!this.active) f.setType(bt);
+        else if (bt < NTYPES) f.ensure(FILTER_FAM_OF[bt], bt - FAM_FIRST[FILTER_FAM_OF[bt]]);
       }
 
-      noteOn(n, vel01, legato, glc) {
+      // keyboard mapping (§6.2): per channel A, B, C, Noise, Sub — in range: plays at n; out of the key range with fold:
+      // plays folded (dk = folded key − n); otherwise silent for this note (gate 0, still rendered as a warp source)
+      keymap(sx, n, vel01) {
+        const v = round(127 * vel01), kg = this.kg, dk = this.dk;
+        for (let c = 0; c < 5; c++) {
+          kg[c] = 1; dk[c] = 0;
+          if (sx.mapFull[c] === 1) continue;
+          const lo = sx.mapLo[c], hi = sx.mapHi[c], inV = v >= sx.mapVLo[c] && v <= sx.mapVHi[c];
+          if (inV && n >= lo && n <= hi) continue;
+          if (inV && sx.mapFold[c] === 1) { dk[c] = foldInto(n, lo, hi) - n; continue; }
+          kg[c] = 0;
+        }
+      }
+      // Voice Control per-note offsets (§6.2), computed by the ModV at note-on: vcOn, vc = [panO, detO (cents), cutO, envS]
+      readVC(sx) {
+        const mv = this.mod, v = mv.vc;
+        if (sx.vcOn === 0 || !mv.vcOn || !v) { this.vcP = 0; this.vcD = 0; this.vcC = 0; return; }
+        this.vcP = +v[0] || 0; this.vcD = +v[1] || 0; this.vcC = +v[2] || 0;
+      }
+
+      noteOn(n, vel01, legato, glc, ch = 0, ex = null) {
         const proc = this.proc, sx = attach(proc);
         n = +n;
         vel01 = vel01 > 0 ? (vel01 < 1 ? +vel01 : 1) : 0;
         const wasActive = this.active;
+        if (!this.ok || !this.sync(sx)) {
+          this.note = n; this.vel = vel01; this.sus = false; this.fadeK = 0; this.fadeN = 0;
+          this.active = false; this.gate = false; return;
+        }
+        if (sx.tuned !== 0 && unmapped(sx, n)) return;          // a key the .kbm leaves unmapped: ignored (§6.18)
         this.note = n; this.vel = vel01;
-        this.gate = true; this.sus = false;
-        if (!this.ok || !this.sync(sx)) { this.active = false; this.gate = false; return; }
+        this.gate = true; this.sus = false; this.fadeK = 0; this.fadeN = 0;
         legato = !!legato && wasActive;
         const vs = proc.voices;
         // poly legato reference R and overlap
@@ -2088,130 +2631,81 @@
         if (vs && vs.length) {
           for (let k = 0; k < vs.length; k++) {
             const w = vs[k];
-            if (!w || w === this || !w.gate || !w.active || w.eSt === undefined) continue;
+            if (!w || w === this || !w.gate || !w.active || !w.mod) continue;
             other = true;
             if (!R || w.stamp > R.stamp) R = w;
           }
         }
         const polyLeg = !legato && sx.cLegato === 1 && sx.cMono === 0 && R !== null;
         if (!polyLeg) R = null;
-        // processor flip-flop, voice PRNG, note-on draws
+        // processor flip-flop, voice PRNG streams (r: the Phase-1 draws in Phase-1 order; r2: Phase-2 draws, §6.2)
         sx.alt = sx.alt ? 0 : 1;
         if (!legato) {
           sx.rng = xorshift(sx.rng) || 1;
-          this.r = xorshift(sx.rng ^ (0x9E3779B9 * (this.i + 1))) || 1;
-          this.vR1 = this.rnd(); this.vR2 = this.rnd(); this.vAlt = sx.alt;
-          this.relvel = 0.5;
+          const seed = sx.rng ^ (0x9E3779B9 * (this.i + 1));
+          this.r = xorshift(seed) || 1;
+          this.r2 = xorshift((seed ^ 0x85EBCA6B) >>> 0) || 1;
         }
-        this.vNote = tabAt(sx.noteTab, 0, 128, n / 127);            // also on legato notes (the new key, §5.3)
-        if (!legato || sx.veloPorta) this.vVelo = tabAt(sx.veloTab, 0, 128, vel01);
-        // modulation vector of a fresh voice starts at the current bases; a sounding one drops removed rows first
-        const eff = this.eff, bA = sx.baseA, bD = sx.baseD;
-        if (!wasActive) {
-          const md = sx.modded, vm = this.md;
-          for (let i = 0; i < NS; i++) { eff[i] = bA[i] + bD[i]; vm[i] = md[i]; }
-          this.mdCp = sx.cp;
-        } else this.unmod(sx, 1);
-        // portamento (§6.1)
-        const lastPitch = sx.lastPitch;
-        const pt = 8 * pow(eff[G_PORTA], 5);
-        const overlap = legato || (sx.cMono === 1 && proc.held && proc.held.length > 1) || (sx.cMono === 0 && other);
-        let start = n;
-        if (pt > 0 && (sx.cAlways === 1 || overlap)) start = R ? R.nP : lastPitch >= 0 ? (legato ? this.nP : lastPitch) : n;
-        this.gS = start; this.gTg = n; this.gQ = start === n ? 1 : 0; this.nP = start;
-        if (legato) { this.setRecent(sx); return; }
-        // envelopes (the note-on evaluation sees their values before the restart: 0 fresh, current level on a steal,
-        // R's level under poly legato)
-        for (let e = 0; e < 3; e++) this.eOn[e] = R ? R.eV[e] : (wasActive ? this.eV[e] : 0);
-        for (let e = 0; e < 3; e++) {
-          if (R) {
-            this.eSt[e] = R.eSt[e]; this.eQ[e] = R.eQ[e]; this.eV[e] = R.eV[e]; this.eV0[e] = R.eV0[e]; this.eVR[e] = R.eVR[e];
-            this.eT[e] = R.eT[e];
-          } else {
-            const v0 = wasActive ? this.eV[e] : 0;
-            this.eSt[e] = 1; this.eQ[e] = 0; this.eT[e] = 0; this.eV[e] = v0; this.eV0[e] = v0;
-          }
-          this.envTick(e, 0);
+        this.ch = ch > 0 && ch <= 16 ? ch | 0 : 0;
+        this.ex = ex !== undefined ? ex : null;
+        this.keymap(sx, n, vel01);
+        if (!wasActive) {                                        // audio-tap sources of a fresh voice read 0 (§5.3)
+          const src = this.src;
+          for (let k = S_OSCA; k <= S_FILT1 + 1; k++) src[k] = 0;
+          this.fp1.fill(0); this.fp2.fill(0); this.fpZ = 3;
         }
-        // LFOs (Trig/Env restart at lfoStart; poly legato copies R's phase and elapsed time)
-        this.tau = R ? R.tau : 0;
-        for (let l = 0; l < 8; l++) {
-          if (sx.lfoMode[l] === 2) continue;
-          if (R) { this.lPh[l] = R.lPh[l]; this.lB0[l] = R.lB0[l]; this.lDone[l] = R.lDone[l]; }
-          else { this.lPh[l] = sx.lfoStart[l]; this.lB0[l] = sx.beatClk; this.lDone[l] = 0; }
-        }
-        // chaos per voice
-        for (let k = 0; k < 2; k++) {
-          for (let j = 0; j < 3; j++) this.ch[3 * k + j] = 1 + (2 * this.rnd() - 1);
-          this.cOut[k] = chaosOut(this.ch, 3 * k, k); this.cHold[k] = this.cOut[k]; this.cTim[k] = 0;
-        }
-        // note-on evaluation (§6.1) of the mOn rows
-        const src = this.src, gc = (sx.nCh > 0 ? sx.nCh : 1) - 1, g = sx.g;
-        src[S_WHEEL] = g[S_WHEEL * MAXCH + gc]; src[S_AT] = g[S_AT * MAXCH + gc]; src[S_BEND] = g[S_BEND * MAXCH + gc];
-        for (let m = 0; m < 4; m++) src[S_MACRO1 + m] = g[(S_MACRO1 + m) * MAXCH + gc];
-        src[S_FIXED] = 1;
-        for (let e = 0; e < 3; e++) src[S_ENV1 + e] = this.eOn[e];
-        for (let l = 0; l < 8; l++) {
-          const kb = L1_RATE + 4 * l, tsc = sx.lfoBpm[l] ? 120 / sx.bpm : 1;
-          const dr = 4 * (eff[kb + 2] + eff[kb + 1]) * tsc;
-          let v;
-          if (sx.lfoMode[l] === 2) v = dr > 0 ? sx.oY0[l] : g[(S_LFO1 + l) * MAXCH + gc];
-          else if (R) v = R.lVal[l];
-          else {
-            const y = this.lfoRaw(l, this.lPh[l]);
-            v = dr > 0 ? this.ly0 : y;
-          }
-          this.lSm[l] = v; this.lVal[l] = v; src[S_LFO1 + l] = v;
-        }
-        src[S_VELO] = this.vVelo; src[S_NOTE] = this.vNote;
-        src[S_PAT] = proc.patSeen && n >= 0 && n < 128 && proc.pat ? +proc.pat[n] || 0 : src[S_AT];
-        this.patS = src[S_PAT];
-        for (let k = 0; k < 2; k++) {
-          src[S_CHAOS1 + k] = sx.chaosMono[k] ? g[(S_CHAOS1 + k) * MAXCH + gc] : (sx.chaosSh[k] ? this.cHold[k] : this.cOut[k]);
-        }
-        src[S_NOISE] = 0; src[S_RAND1] = this.vR1; src[S_RAND2] = this.vR2; src[S_ALT1] = this.vAlt; src[S_ALT2] = 1 - this.vAlt;
-        src[S_MPEX] = 0; src[S_MPEX + 1] = 0; src[S_MPEX + 2] = 0; src[S_RELVEL] = 0.5;
-        const off = this.off;
-        for (let r = 0; r < sx.mN; r++) if (sx.mOn[r]) off[sx.mDst[r]] = 0;
-        for (let r = 0; r < sx.mN; r++) if (sx.mOn[r]) evalRow(sx, r, src, off, 0);
-        for (let r = 0; r < sx.mN; r++) {
-          if (!sx.mOn[r]) continue;
-          const d = sx.mDst[r], v = bA[d] + bD[d] + off[d];
-          eff[d] = v > 0 ? (v < 1 ? v : 1) : 0;
-        }
-        // unison counts, random detunes
-        const resetPh = !wasActive || (sx.cLegato === 1 && sx.cMono === 0);
-        for (let o = 0; o < 2; o++) {
-          const kB = o * 17, oldN = wasActive ? this.uN[o] : 0;
+        // modulation (SxMod): note-on draws rand1/rand2, VELO/NOTE, eff, portamento, envelopes, LFOs, chaos draws,
+        // the note-on evaluation of the mOn rows; recent voice
+        this.mod.noteOn(n, vel01, legato, R !== null ? R.mod : null, this.ch, this.ex, other);
+        this.readVC(sx);
+        if (legato) { this.typeNoteOn(sx, false, true); return; }
+        // unison counts, random detunes, start phases (§6.4) — OSC A, B on the Phase-1 stream r in Phase-1 order, OSC C
+        // on r2
+        const eff = this.eff, use = sx.use, s1 = sx.s1;
+        const pLegMode = sx.cLegato === 1 && sx.cMono === 0, resetG = !wasActive || pLegMode;
+        for (let o = 0; o < N_OSC; o++) {
+          if (o === 2 && (use & 1) === 0) { this.uN[2] = 0; this.uNx[2] = 0; continue; }
+          const c2 = o === 2, kB = OKB[o], b16 = o * 16, oldN = wasActive ? this.uN[o] : 0;
           let oldX = wasActive ? this.uNx[o] : 0;                    // unison voices still fading from an earlier steal
           if (oldX < oldN) oldX = oldN;
-          const N = round(1 + 15 * eff[kB + D_UNI]);
+          let N = round(1 + 15 * eff[kB + D_UNI]);
+          if (N > sx.uniMax) N = sx.uniMax;
           this.uN[o] = N;
           this.uNx[o] = oldX > N ? oldX : 0;                           // dropped unison voices fade out over one chunk
-          for (let i = 0; i < 16; i++) this.uRnd[o * 16 + i] = 2 * this.rnd() - 1;
+          if (c2) for (let i = 0; i < 16; i++) this.uRnd[b16 + i] = 2 * this.rnd2() - 1;
+          else for (let i = 0; i < 16; i++) this.uRnd[b16 + i] = 2 * this.rnd() - 1;
           this.cDet[o] = -1;
+          // Phase Legato (§6.4) inverts the reset rule: a steal resets, poly legato keeps the phases running
+          const resetPh = sx.phLeg[o] ? !wasActive || !pLegMode : resetG;
           for (let i = resetPh ? 0 : oldN; i < 16; i++) {
-            const idx = o * 16 + i;
+            const idx = b16 + i;
             if (!wasActive || (i >= oldN && (i < N || i >= oldX))) {
               this.uGL[idx] = 0; this.uGR[idx] = 0; this.uLv[idx] = -1; this.uFa[idx] = -1;
             }
           }
-          // start phases (§6.4): every unison voice on reset, only the new ones otherwise (steal, mono overlap)
+          // start phases: every unison voice on reset, only the new ones otherwise (steal, mono overlap). S1 mode, A/B:
+          // the Phase-1 knob-end rule; otherwise the phase-memory menu (§6.4)
           const ph = eff[kB + D_PHASE], rd = eff[kB + D_RAND];
-          const mem = sx.bT[kB + D_PHASE] >= 0.9995, trig = sx.bT[kB + D_RAND] >= 0.9995;
-          const offs = mem ? 0 : (ph < 0.99999 ? ph : 0.99999);
+          let mem, trig;
+          if (s1 && !c2) { mem = sx.bT[kB + D_PHASE] >= 0.9995; trig = sx.bT[kB + D_RAND] >= 0.9995; this.memK[o] = mem ? 1 : 0; }
+          else { const pm = sx.phMem[o]; mem = pm !== 0; trig = pm === 2; this.memK[o] = 0; }
+          const offs = this.memK[o] === 1 ? 0 : (ph < 0.99999 ? ph : 0.99999);
           for (let i = resetPh ? 0 : oldN; i < N; i++) {
             let st;
-            if (!mem) st = rd * this.rnd();
+            if (!mem) st = rd * (c2 ? this.rnd2() : this.rnd());
             else if (!trig) { st = sx.memPh[o] + sx.memSet[o * 16 + i]; st -= floor(st); }
             else st = sx.memSet[o * 16 + i];
             let p = st + offs;
             p -= floor(p);
-            this.uPh[o * 16 + i] = p;
+            this.uPh[b16 + i] = p;
           }
           if (resetPh) this.oOff[o] = offs;
         }
-        if (resetPh) this.sPh = 0;
+        // sub start phase (§6.11.1): s.phase, or the processor's last sub phase (Contiguous)
+        if (resetG) {
+          if (sx.subContig) this.sPh = sx.subPh;
+          else { const q = eff[S_PHASE]; this.sPh = q > 0 ? (q < 1 ? q : 0) : 0; }
+        }
         // noise read position (§6.8)
         this.resolveNoise(sx);
         const nph = eff[N_PHASE], nrd = eff[N_RAND];
@@ -2225,17 +2719,39 @@
         this.nPos = np;
         this.nOffP = nph * this.nLen0;
         this.nLv = -1; this.nLast = 0;
-        // fresh voice: filter cleared, ramps start at their targets, ENV1×AMP from 0
+        // colour noise streams (§6.11.2), seeded from r2
+        if (sx.noiseColor >= 0) {
+          this.rnd2(); this.ca = fmix32((this.r2 ^ 0x68E31DA4) >>> 0) || 1;
+          this.rnd2(); this.cb = fmix32((this.r2 ^ 0xB5297A4D) >>> 0) || 1;
+        }
+        // fresh voice: filters cleared, ramps start at their targets, ENV1×AMP from 0
         if (!wasActive) {
           this.filt.reset(); this.fIdle = 0;
-          this.gAmp = 0; this.sLv = -1;
+          if (this.filt2 !== null) { this.filt2.reset(); this.fIdle2 = 0; }
+          this.gAmp = 0; this.gAmpN = 0; this.sLv = -1; this.noEnv = 0;
+          this.cs.fill(0); this.ct.fill(0);
+          for (let o = 0; o < N_OSC; o++) if (this.wsl[o] !== null) this.wsl[o].reset();
           this.fresh = 1;
         }
+        this.typeNoteOn(sx, !wasActive, false);
         this.active = true; this.played = 1;
-        this.setRecent(sx);
       }
-      setRecent(sx) {
-        sx.recent = this;
+      // note-on of the Sample/Multisample/Granular/Spectral oscillators: their context with the note-on values first
+      typeNoteOn(sx, fresh, legato) {
+        let any = 0;
+        for (let o = 0; o < N_OSC; o++) if (this.ox[o] !== null) any = 1;
+        if (!any) return;
+        const eff = this.eff;
+        this.pitchGlobals(sx);
+        this.oscSetup(sx, eff[A_ON] >= 0.5 ? 1 : 0, eff[A_ON + 1] >= 0.5 ? 1 : 0, (sx.use & 1) !== 0 && eff[C_ON] >= 0.5 ? 1 : 0,
+          eff[N_ON] >= 0.5 ? 1 : 0, eff[S_ON] >= 0.5 ? 1 : 0);
+        this.oscPitch(sx);
+        for (let o = 0; o < N_OSC; o++) {
+          const x = this.ox[o];
+          if (x === null) continue;
+          this.fillCtx(sx, o, 0);
+          x.noteOn(this.ctx[o], fresh, legato);
+        }
       }
       // re-sync the processor's CP when reset/warmUp cleared sx (§6.16): notes before the next begin still sound
       sync(sx) {
@@ -2246,323 +2762,289 @@
         syncCT(this.proc, sx);
         return sx.ok;
       }
-      // destinations whose last voice-context row disappeared since this voice last evaluated the matrix (row removed,
-      // bypassed, amount 0, re-targeted) return to their base (§5.1); once per CP change
-      unmod(sx, fr) {
-        if (this.mdCp === sx.cp) return;
-        this.mdCp = sx.cp;
-        const md = sx.modded, vm = this.md, eff = this.eff, bA = sx.baseA, bD = sx.baseD;
-        for (let i = 0; i < NS; i++) {
-          if (vm[i] !== 0 && md[i] === 0) eff[i] = bA[i] + bD[i] * fr;
-          vm[i] = md[i];
-        }
-      }
       noteOff(rv) {
         this.gate = false;
-        this.relvel = rv === undefined || rv === null || !(rv >= 0) ? 0.5 : (rv < 1 ? +rv : 1);
-        for (let e = 0; e < 3; e++) {
-          if (this.eSt[e] !== 0 && this.eSt[e] !== 5) { this.eVR[e] = this.eV[e]; this.eSt[e] = 5; this.eQ[e] = 0; this.eT[e] = 0; }
-        }
+        if (this.mod !== null) this.mod.noteOff(rv);
+        for (let o = 0; o < N_OSC; o++) { const x = this.ox[o]; if (x !== null) x.noteOff(); }
       }
       kill() {
-        this.active = false; this.gate = false; this.sus = false;
+        this.active = false; this.gate = false; this.sus = false; this.fadeK = 0; this.fadeN = 0;
         this.filt.reset();
-        this.eSt.fill(0); this.eQ.fill(0); this.eV.fill(0); this.eT.fill(0);
-        this.gAmp = 0; this.uGL.fill(0); this.uGR.fill(0); this.sGL = 0; this.sGR = 0; this.nGL = 0; this.nGR = 0;
+        if (this.filt2 !== null) this.filt2.reset();
+        if (this.mod !== null) this.mod.kill();
+        this.gAmp = 0; this.gAmpN = 0; this.uGL.fill(0); this.uGR.fill(0); this.sGL = 0; this.sGR = 0; this.nGL = 0; this.nGR = 0;
         this.uLv.fill(-1); this.uFa.fill(-1); this.sLv = -1; this.nLv = -1; this.uNx.fill(0);
+        for (let o = 0; o < N_OSC; o++) { const x = this.ox[o]; if (x !== null) x.kill(); }
+      }
+      // the voice ends (lifetime rule, §6.19): envelopes idle, the type oscillators return their streams/grains
+      end() {
+        this.active = false;
+        this.mod.stop();
+        for (let o = 0; o < N_OSC; o++) { const x = this.ox[o]; if (x !== null) x.kill(); }
+      }
+      // every envelope has finished its release (stage 0, whatever End level it holds — inv B13 "terminates after the
+      // longest release of any of the envelopes"): lifetime rule (b) of §6.19 (SxMod's envsIdle, which also leaves out a
+      // bypassed ENV 4; the fallback reads the documented ModV stages)
+      envIdle() {
+        const mv = this.mod;
+        if (typeof mv.envsIdle === 'function') return mv.envsIdle();
+        const st = mv.eSt;
+        for (let e = 0; e < N_ENV; e++) if (st[e] !== 0) return false;
+        return true;
       }
 
-      render(bufL, bufR, N, dirL, dirR) {
+      // render(O, N) (SPEC-serum2 §11.10: O = {L, R, dL, dR, b1L, b1R, b2L, b2R}, OS-rate arrays, outputs selected by
+      // CP.outMask) or the Phase-1 signature render(bufL, bufR, N, dirL, dirR) (direct → dirL/dirR or main, buses → main)
+      render(a, b, c, d, e) {
         if (!this.active || !this.ok) return;
         const sx = this.proc.sx;
         if (!sx || !this.sync(sx)) return;
+        let N;
+        if (a !== null && typeof a === 'object' && typeof a.length !== 'number') {
+          N = b;
+          const m = sx.outMask, dOk = (m & 2) !== 0 && !!a.dL && !!a.dR;
+          const b1 = (m & 4) !== 0 && !!a.b1L && !!a.b1R, b2 = (m & 8) !== 0 && !!a.b2L && !!a.b2R;
+          this.oL = a.L; this.oR = a.R;
+          this.oDL = dOk ? a.dL : a.L; this.oDR = dOk ? a.dR : a.R;
+          this.oB1L = b1 ? a.b1L : a.L; this.oB1R = b1 ? a.b1R : a.R; this.oB2L = b2 ? a.b2L : a.L; this.oB2R = b2 ? a.b2R : a.R;
+        } else {
+          N = c;
+          const dir = d !== undefined && d !== null && e !== undefined && e !== null && (sx.outMask & 2) !== 0;
+          this.oL = a; this.oR = b; this.oDL = dir ? d : a; this.oDR = dir ? e : b;
+          this.oB1L = a; this.oB1R = b; this.oB2L = a; this.oB2R = b;
+        }
         const CH = this.CH;
         let nCh = (N / CH) | 0;
         if (nCh > MAXCH) nCh = MAXCH;
         const extra = sx.span === 0 || this.span === sx.span;
         this.span = sx.span;
         const sN = sx.nCh > 0 ? sx.nCh : 1;
-        const dir = dirL !== undefined && dirL !== null && dirR !== undefined && dirR !== null && sx.direct === 1;
-        for (let c = 0; c < nCh; c++) {
-          const gc = extra ? sN - 1 : (c < sN ? c : sN - 1);
-          const fr = extra ? 1 : (c + 1) / sN;
-          if (!this.chunk(bufL, bufR, dir ? dirL : bufL, dir ? dirR : bufR, c * CH, gc, fr)) break;
+        for (let k = 0; k < nCh; k++) {
+          const gc = extra ? sN - 1 : (k < sN ? k : sN - 1);
+          const fr = extra ? 1 : (k + 1) / sN;
+          if (!this.chunk(k * CH, gc, fr)) break;
         }
-        if (sx.recent === this) {
-          const ms = sx.monoSrc, s = this.src;
-          for (let k = 0; k < NSRC; k++) ms[k] = s[k];
-          sx.lastPitch = this.nP;
-          for (let o = 0; o < 2; o++) { let p = this.uPh[o * 16] - this.oOff[o]; p -= floor(p); sx.memPh[o] = p; }
+        if (sx.mod.recent === this) {
+          this.mod.post();                                       // sources → monoSrc, portamento start (SxMod)
+          for (let o = 0; o < N_OSC; o++) { let p = this.uPh[o * 16] - this.oOff[o]; p -= floor(p); sx.memPh[o] = p; }
+          sx.subPh = this.sPh;
         }
       }
 
-      // one chunk (§5.6); returns false once the voice became inactive
-      chunk(bufL, bufR, dirL, dirR, o0, gc, fr) {
-        const sx = this.proc.sx, eff = this.eff;
+      // one chunk (SPEC-serum2 §6.1): steps 1–3 in SxMod, rendering here; returns false once the voice became inactive
+      chunk(o0, gc, fr) {
+        const sx = this.proc.sx, mv = this.mod;
         this.chk++;
-        if (!this.gate && this.eV[0] <= 1e-5 && this.gAmp <= 1e-5 && this.fresh === 0) {
-          this.active = false;
-          for (let e = 0; e < 3; e++) { this.eSt[e] = 0; this.eV[e] = 0; }
-          return false;
+        if (this.fadeK > 0) {                                    // the 2 ms end fade (§6.19) is over
+          if (this.fadeN <= 0) { this.fadeK = 0; this.end(); return false; }
+        } else if (!this.gate && this.fresh === 0 &&
+          (this.noEnv === 0 ? this.eV[0] <= 1e-5 && this.gAmp <= 1e-5 : this.envIdle())) {
+          // rule (a) with no grain sounding ends at once (every channel is already silent); grains still sounding, and
+          // rule (b) (ENV-off channels play at full level until now), end with a 2 ms fade of every group gain (§6.19)
+          if (this.noEnv === 0 && !this.grainsLive()) { this.end(); return false; }
+          const K = ceil(0.002 * this.fs / this.CH);
+          this.fadeK = K > 1 ? K : 1; this.fadeN = this.fadeK;
         }
-        const mv = sx.mov, mvN = sx.movN, bA = sx.baseA, bD = sx.baseD, md = sx.modded;
-        this.unmod(sx, fr);
-        for (let j = 0; j < mvN; j++) { const i = mv[j]; if (md[i] === 0) eff[i] = bA[i] + bD[i] * fr; }
-        this.sources(sx, gc);
-        if (sx.mN > 0) this.matrix(sx, fr);
-        this.renderChunk(sx, bufL, bufR, dirL, dirR, o0);
-        this.advance(sx, gc);
+        mv.follow(fr);
+        mv.sources(gc);
+        mv.matrix(fr);
+        this.renderChunk(sx, o0);
+        mv.advance(gc);
         this.fresh = 0;
+        if (this.fadeK > 0) this.fadeN--;
         return true;
       }
-
-      sources(sx, gc) {
-        const s = this.src, g = sx.g, used = sx.srcUsed, proc = this.proc;
-        s[S_WHEEL] = g[S_WHEEL * MAXCH + gc]; s[S_AT] = g[S_AT * MAXCH + gc]; s[S_BEND] = g[S_BEND * MAXCH + gc];
-        s[S_MACRO1] = g[S_MACRO1 * MAXCH + gc]; s[S_MACRO1 + 1] = g[(S_MACRO1 + 1) * MAXCH + gc];
-        s[S_MACRO1 + 2] = g[(S_MACRO1 + 2) * MAXCH + gc]; s[S_MACRO1 + 3] = g[(S_MACRO1 + 3) * MAXCH + gc];
-        s[S_FIXED] = 1;
-        s[S_ENV1] = this.eV[0]; s[S_ENV1 + 1] = this.eV[1]; s[S_ENV1 + 2] = this.eV[2];
-        const mon = sx.mon && sx.recent === this;
-        for (let l = 0; l < 8; l++) if (used[S_LFO1 + l] || mon) s[S_LFO1 + l] = this.lfoVal(sx, l, gc);
-        s[S_VELO] = this.vVelo;
-        s[S_NOTE] = sx.notePorta ? tabAt(sx.noteTab, 0, 128, this.nP / 127) : this.vNote;
-        if (proc.patSeen) {
-          const n = this.note, t = n >= 0 && n < 128 && proc.pat ? +proc.pat[n] || 0 : 0;
-          this.patS += (t - this.patS) * sx.kF;
-          if (this.patS < 1e-30) this.patS = 0;
-          s[S_PAT] = this.patS;
-        } else { this.patS = s[S_AT]; s[S_PAT] = s[S_AT]; }
-        for (let k = 0; k < 2; k++) {
-          s[S_CHAOS1 + k] = sx.chaosMono[k] ? g[(S_CHAOS1 + k) * MAXCH + gc] : (sx.chaosSh[k] ? this.cHold[k] : this.cOut[k]);
-        }
-        s[S_NOISE] = this.onN ? this.nLast : 0;
-        s[S_RAND1] = this.vR1; s[S_RAND2] = this.vR2; s[S_ALT1] = this.vAlt; s[S_ALT2] = 1 - this.vAlt;
-        s[S_RELVEL] = this.relvel;
-      }
-      // LFO l source value at the chunk start (§6.12)
-      lfoVal(sx, l, gc) {
-        const eff = this.eff, kb = L1_RATE + 4 * l, tsc = sx.lfoBpm[l] ? 120 / sx.bpm : 1;
-        const dly = 4 * eff[kb + 2] * tsc, rise = 4 * eff[kb + 1] * tsc, t = this.tau;
-        if (sx.lfoMode[l] === 2) {
-          const y = sx.g[(S_LFO1 + l) * MAXCH + gc], y0 = sx.oY0[l];
-          const v = t < dly ? y0 : (rise > 0 && t < dly + rise ? y0 + (y - y0) * ((t - dly) / rise) : y);
-          this.lVal[l] = v;
-          return v;
-        }
-        const y = this.lfoRaw(l, this.lPh[l]), y0 = this.ly0;
-        const v = t < dly ? y0 : (rise > 0 && t < dly + rise ? y0 + (y - y0) * ((t - dly) / rise) : y);
-        const sm = eff[kb + 3];
-        if (sm > 0) {
-          if (sm !== this.lKs[l]) { this.lKs[l] = sm; this.lK[l] = 1 - exp(-this.dt / (0.5 * sm * sm * sm)); }
-          this.lSm[l] += (v - this.lSm[l]) * this.lK[l];
-          if (this.lSm[l] < 1e-30 && this.lSm[l] > -1e-30) this.lSm[l] = 0;
-        } else this.lSm[l] = v;
-        this.lVal[l] = this.lSm[l];
-        return this.lSm[l];
-      }
-      lfoRaw(l, ph) {
-        const sx = this.proc.sx;
-        if (sx.lfoPmAny[l]) { const y = pmEval(sx, l, ph, this.eff); this.ly0 = pmY0; return y; }
-        const T = sx.lfoTab, b = l * 1025;
-        this.ly0 = T[b];
-        return tabAt(T, b, 1024, ph);
-      }
-      matrix(sx, fr) {
-        const off = this.off, eff = this.eff, ml = sx.modList, mn = sx.modN, src = this.src;
-        for (let j = 0; j < mn; j++) off[ml[j]] = 0;
-        const N = sx.mN, ctx = sx.mCtx;
-        for (let r = 0; r < N; r++) if (ctx[r] & 1) evalRow(sx, r, src, off, 0);
-        const bA = sx.baseA, bD = sx.baseD;
-        for (let j = 0; j < mn; j++) {
-          const i = ml[j], v = bA[i] + bD[i] * fr + off[i];
-          eff[i] = v > 0 ? (v < 1 ? v : 1) : 0;
-        }
-      }
-      // step 1 of the next chunk: envelopes, LFO phases, chaos and portamento with this chunk's eff values
-      advance(sx, gc) {
-        const dt = this.dt, eff = this.eff;
-        this.envTick(0, dt); this.envTick(1, dt); this.envTick(2, dt);
-        for (let l = 0; l < 8; l++) if (sx.lfoMode[l] !== 2) this.lfoAdv(sx, l, dt, gc);
-        this.tau += dt;
-        for (let k = 0; k < 2; k++) if (!sx.chaosMono[k] && sx.srcUsed[S_CHAOS1 + k]) this.chaosAdv(sx, k, dt);
-        if (this.gQ < 1) {
-          let T = 8 * pow(eff[G_PORTA], 5);
-          if (sx.cScaled) { const d = this.gTg - this.gS; T *= (d < 0 ? -d : d) / 12; }
-          this.gQ = T > 0 ? this.gQ + dt / T : 1;
-          if (this.gQ > 1) this.gQ = 1;
-          const c = 2 * eff[G_CURVE] - 1;
-          this.nP = this.gS + (this.gTg - this.gS) * (this.gQ >= 1 ? 1 : bend(this.gQ, PORTA_K * c));
-        } else this.nP = this.gTg;
-      }
-      envTick(e, dt) {
-        const eff = this.eff, b = E1_ATT + 5 * e, cb = E1_CA + 3 * e;
-        const na = eff[b], nh = eff[b + 1], nd = eff[b + 2], ns = eff[b + 3], nr = eff[b + 4];
-        const A = 32 * na * na * na * na * na, H = 32 * nh * nh * nh * nh * nh, Dt = 32 * nd * nd * nd * nd * nd;
-        const Rt = 32 * nr * nr * nr * nr * nr, S = e === 0 ? ns * ns : ns;
-        let st = this.eSt[e], q = this.eQ[e], v = this.eV[e], t = this.eT[e], rem = dt;
-        for (let guard = 0; guard < 8; guard++) {
-          if (st === 1) {
-            if (A <= 0) { st = 2; q = 0; t = 0; v = 1; continue; }
-            const nq = q + rem / A;
-            if (nq < 1) {
-              q = nq; t += rem; rem = 0;
-              const v0 = this.eV0[e];
-              v = v0 + (1 - v0) * bend(q, ENV_K * (2 * eff[cb] - 1));
-              break;
-            }
-            rem -= (1 - q) * A; st = 2; q = 0; t = 0; v = 1; continue;
-          }
-          if (st === 2) {
-            if (H <= 0) { st = 3; q = 0; t = 0; v = 1; continue; }
-            const nq = q + rem / H;
-            if (nq < 1) { q = nq; t += rem; rem = 0; v = 1; break; }
-            rem -= (1 - q) * H; st = 3; q = 0; t = 0; v = 1; continue;
-          }
-          if (st === 3) {
-            if (Dt <= 0) { st = 4; q = 0; t = 0; v = S; continue; }
-            const nq = q + rem / Dt;
-            if (nq < 1) { q = nq; t += rem; rem = 0; v = 1 + (S - 1) * bend(q, ENV_K * (2 * eff[cb + 1] - 1)); break; }
-            rem -= (1 - q) * Dt; st = 4; q = 0; t = 0; v = S; continue;
-          }
-          if (st === 4) { v = S; t += rem; rem = 0; break; }
-          if (st === 5) {
-            if (Rt <= 0) { st = 0; q = 0; t = 0; v = 0; break; }
-            const nq = q + rem / Rt;
-            if (nq < 1) { q = nq; t += rem; rem = 0; v = this.eVR[e] * (1 - bend(q, ENV_K * (2 * eff[cb + 2] - 1))); break; }
-            st = 0; q = 0; t = 0; v = 0; break;
-          }
-          v = 0; break;
-        }
-        this.eSt[e] = st; this.eQ[e] = q; this.eV[e] = v; this.eT[e] = t;
-      }
-      lfoAdv(sx, l, dt, gc) {
-        const n = this.eff[L1_RATE + 4 * l];
-        let beats = 0, inc;
-        if (sx.lfoBpm[l]) {
-          beats = sx.lfoLad[l * 43 + round(n * (sx.lfoLadN[l] - 1))];
-          inc = beats > 0 ? dt * sx.bpm / 60 / beats : 0;
-        } else inc = dt * 100 * n * n * n * n;
-        let ph = this.lPh[l];
-        if (sx.lfoMode[l] === 0) {
-          if (beats > 0 && sx.lfoAnchor[l]) {
-            const x = sx.lfoStart[l] + (sx.beatC[gc] + sx.dBeat - this.lB0[l]) / beats;
-            ph = x - floor(x);
-          } else { ph += inc; ph -= floor(ph); }
-        } else if (!this.lDone[l]) {
-          const lp = sx.lfoLoop[l], loop = lp >= 0 && lp < 1;
-          if (beats > 0 && sx.lfoAnchor[l] && (this.gate || !loop)) {
-            // Env + BPM + Anchor (§6.12): unwrapped position since the trigger, held at 1 or wrapped into the loop while
-            // gated; a released looping LFO accumulates from its phase to the end (below)
-            const x = sx.lfoStart[l] + (sx.beatC[gc] + sx.dBeat - this.lB0[l]) / beats;
-            if (x < 1) ph = x > 0 ? x : 0;
-            else if (loop) { const L = 1 - lp; ph = lp + (x - 1) % L; }
-            else { ph = 1; this.lDone[l] = 1; }
-          } else {
-            ph += inc;
-            if (ph >= 1) {
-              if (loop && this.gate) { const L = 1 - lp; ph = lp + (ph - 1) % L; }
-              else { ph = 1; this.lDone[l] = 1; }
-            }
-          }
-        }
-        this.lPh[l] = ph;
-      }
-      chaosAdv(sx, k, dt) {
-        const n = this.eff[C1_RATE + k];
-        let rate = 1000 * n * n * n * n * n;
-        if (this.eff[C1_BPM + k] >= 0.5 && rate > 0) rate = snapRate(rate, sx.bpm);
-        if (!(rate > 0)) return;
-        chaosInt(this.ch, 3 * k, k, rate * CHAOS_T0[k] * dt);
-        this.cOut[k] = chaosOut(this.ch, 3 * k, k);
-        if (sx.chaosSh[k]) {
-          const per = 1 / rate;
-          this.cTim[k] += dt;
-          if (this.cTim[k] >= per) { this.cTim[k] -= per * floor(this.cTim[k] / per); this.cHold[k] = this.cOut[k]; }
-        }
+      grainsLive() {
+        for (let o = 0; o < N_OSC; o++) { const x = this.ox[o]; if (x !== null && x.grains() > 0) return true; }
+        return false;
       }
 
-      /* ---- rendering (§1, §6.3–§6.11) ---- */
-      renderChunk(sx, bufL, bufR, dirL, dirR, o0) {
-        const eff = this.eff, src = this.src, CH = this.CH, fresh = this.fresh;
-        const onA = eff[A_ON] >= 0.5 ? 1 : 0, onB = eff[A_ON + 1] >= 0.5 ? 1 : 0;
-        const onN = eff[N_ON] >= 0.5 ? 1 : 0, onS = eff[S_ON] >= 0.5 ? 1 : 0, fOn = eff[F_ON] >= 0.5 ? 1 : 0;
-        this.onA = onA; this.onB = onB; this.onN = onN; this.onS = onS;
-        const bnd = src[S_BEND], bu = round(48 * eff[G_BENDUP] - 24), bd = round(48 * eff[G_BENDDN] - 24);
-        const bendSt = bnd >= 0 ? bnd * bu : -bnd * bd;
-        const tune = 128 * eff[G_TUNE] - 64;
-        // sub and noise first (they are FM modulators)
-        const sAct = onS || this.sGL !== 0 || this.sGR !== 0 ? this.renderSub(sx, onS, bendSt, tune) : 0;
-        if (!sAct) for (let s = 0; s < CH; s++) { SL[s] = 0; SR[s] = 0; SRAW[s] = 0; }
-        const nAct = onN || this.nGL !== 0 || this.nGR !== 0 ? this.renderNoise(sx, onN, bendSt) : 0;
-        if (!nAct) { for (let s = 0; s < CH; s++) { NL[s] = 0; NR[s] = 0; NRAW[s] = 0; } this.nLast = 0; }
-        // oscillators: the FM/AM/RM modulator is rendered first (single direction, §3.3)
-        let wmA = round(22 * eff[A_WARPMODE]), wmB = round(22 * eff[A_WARPMODE + 1]);
-        if (wmA >= 18 && wmA <= 20 && wmB >= 18 && wmB <= 20) wmB = 0;
-        const bFromA = wmB >= 18 && wmB <= 20 && onA === 1, aFromB = wmA >= 18 && wmA <= 20 && onB === 1;
-        if (bFromA) {
-          this.renderOsc(sx, 0, 1, wmA, AL, AR, onA, onB, onN, onS, bendSt, tune);
-          this.renderOsc(sx, 1, 0, wmB, BL, BR, onB, onA, onN, onS, bendSt, tune);
+      /* ---- pitch (§6.3) ---- */
+      // per-chunk terms shared by every channel: bend (S1 ranges g.bendup/benddn, else g.bu2/bd2), master tune, the MPE
+      // per-note bend, the Voice Control detune
+      pitchGlobals(sx) {
+        const eff = this.eff, bnd = this.src[S_BEND];
+        let bu, bd;
+        if (sx.s1) { bu = round(48 * eff[G_BENDUP] - 24); bd = round(48 * eff[G_BENDDN] - 24); }
+        else { bu = round(48 * eff[G_BU2]); bd = round(48 * eff[G_BD2]) - 48; }
+        this.pBend = bnd >= 0 ? bnd * bu : -bnd * bd;
+        this.pTune = 128 * eff[G_TUNE] - 64;
+        const ms = sx.mpeOn !== 0 ? this.mod.mpeSt : 0;          // SxMod: smoothed member-channel bend × CP.mpeBend
+        this.pMpe = ms > 0 || ms < 0 ? ms : 0;
+        this.pDet = sx.vcOn !== 0 ? this.vcD / 100 : 0;
+      }
+      // note' of channel c with its pitch tracking on (§6.3.1): the gliding pitch (SxMod's nP, already tuned when
+      // CP.use & 512, §11.6), plus the channel's fold offset (tuned: tune[n + dk] − tune[n])
+      noteOf(sx, c) {
+        const nP = this.mod.nP, d = this.dk[c];
+        if (d === 0) return nP;
+        if (sx.tuned === 0) return nP + d;
+        const n = this.note | 0, k = n + d, T = sx.tune;
+        let a = T[n >= 0 ? (n <= 127 ? n : 127) : 0], b = T[k >= 0 ? (k <= 127 ? k : 127) : 0];
+        if (a !== a) a = n;
+        if (b !== b) b = k;
+        return nP + (b - a);
+      }
+      // base pitch (without unison terms) and frequency of every oscillator in its pitch mode (§6.3.3); ratio oscillators
+      // after their source (normalisation keeps the chains acyclic)
+      // (M4) lazy (renderChunk, after oscSetup): an oscillator that renders nothing this chunk — switched off (or outside its
+      // key range), not a tap, its unison gains all 0 (gz) — and is no ratio oscillator's source keeps last chunk's pitch:
+      // only renderWT / fillCtx read it, and neither runs for it this chunk
+      oscPitch(sx, lazy) {
+        const nO = (sx.use & 1) !== 0 ? 3 : 2;
+        this.pOk = 0;
+        let left = 0, src = 0;
+        if (lazy) for (let o = 0; o < nO; o++) if (sx.pMode[o] === PM_RATIO) { const q = sx.pSrc[o]; if (q >= 0 && q < nO) src |= 1 << q; }
+        for (let o = 0; o < nO; o++) {
+          if (sx.pMode[o] === PM_RATIO && sx.pSrc[o] >= 0 && sx.pSrc[o] < nO) left |= 1 << o;
+          else if (lazy && (src & (1 << o)) === 0 && (this.oOn[o] & this.kg[o]) === 0 && this.oCap[o] === 0 && this.gz[o] === 0) continue;
+          else this.oscP(sx, o);
+        }
+        for (let pass = 0; pass < 2 && left !== 0; pass++) {
+          for (let o = 0; o < nO; o++) if ((left & (1 << o)) !== 0 && (left & (1 << sx.pSrc[o])) === 0) { this.oscP(sx, o); left &= ~(1 << o); }
+        }
+        for (let o = 0; o < nO; o++) if ((left & (1 << o)) !== 0) this.oscP(sx, o);
+      }
+      oscP(sx, o) {
+        const eff = this.eff, kB = OKB[o], t = sx.oType[o], trk = eff[OTRK[o]] >= 0.5;
+        const nt = trk ? this.noteOf(sx, o) : (t === 0 ? 0 : 60);
+        const bt = trk || t <= 1 || sx.bendTrack[o] === 1;      // tracking off: Sample/Granular/Spectral bend per bendTrack
+        const bendSt = bt ? this.pBend : 0, mpeSt = bt ? this.pMpe : 0, tune = this.pTune, mode = sx.pMode[o];
+        let p;
+        if (mode === PM_RATIO) {
+          const s = sx.pSrc[o];
+          let ps;
+          if (s >= 0 && (this.pOk & (1 << s)) !== 0) ps = this.cP[s];
+          else { ps = nt + bendSt + tune; if (mpeSt !== 0) ps += mpeSt; }
+          p = ps + (96 * eff[O2B[o] + K_RATIO] - 48) + (2 * eff[kB + D_FINE] - 1) + (128 * eff[kB + D_CRS] - 64);
         } else {
-          this.renderOsc(sx, 1, aFromB ? 1 : 0, wmB, BL, BR, onB, onA, onN, onS, bendSt, tune);
-          this.renderOsc(sx, 0, 0, wmA, AL, AR, onA, onB, onN, onS, bendSt, tune);
-        }
-        // routing (§1): switch gains ramped over the chunk; DIRECT sources never enter the filter
-        const sDir = sx.subDirect, nDir = sx.noiseDirect, rg = this.rg;
-        const tA = fOn & (eff[F_ROUTEA] >= 0.5 ? 1 : 0), tB = fOn & (eff[F_ROUTEA + 1] >= 0.5 ? 1 : 0);
-        const tN = nDir ? 0 : fOn & (eff[F_ROUTEA + 2] >= 0.5 ? 1 : 0), tS = sDir ? 0 : fOn & (eff[F_ROUTEA + 3] >= 0.5 ? 1 : 0);
-        let fType = round(95 * eff[F_TYPE]);
-        fType = fType > 0 ? (fType < 95 ? fType : 95) : 0;
-        const mixT = fType === 80 ? 1 : eff[F_MIX];
-        if (fresh) { rg[0] = tA; rg[1] = tB; rg[2] = tN; rg[3] = tS; this.mixP = mixT; }
-        let r0 = rg[0], r1 = rg[1], r2 = rg[2], r3 = rg[3];
-        const iC = 1 / CH, d0 = (tA - r0) * iC, d1 = (tB - r1) * iC, d2 = (tN - r2) * iC, d3 = (tS - r3) * iC;
-        const useF = (tA | tB | tN | tS) !== 0 || r0 !== 0 || r1 !== 0 || r2 !== 0 || r3 !== 0;
-        rg[0] = tA; rg[1] = tB; rg[2] = tN; rg[3] = tS;
-        const ns = nDir ? 0 : 1, ss = sDir ? 0 : 1;
-        for (let s = 0; s < CH; s++) {
-          r0 += d0; r1 += d1; r2 += d2; r3 += d3;
-          const aL = AL[s], aR = AR[s], bL = BL[s], bR = BR[s], nL = ns * NL[s], nR = ns * NR[s], sL = ss * SL[s], sR = ss * SR[s];
-          const fl = r0 * aL + r1 * bL + r2 * nL + r3 * sL, fr = r0 * aR + r1 * bR + r2 * nR + r3 * sR;
-          FINL[s] = fl; FINR[s] = fr;
-          DRYL[s] = aL + bL + nL + sL - fl; DRYR[s] = aR + bR + nR + sR - fr;
-        }
-        let mix = this.mixP;
-        const dMix = (mixT - mix) * iC;
-        this.mixP = mixT;
-        if (useF) {
-          const filt = this.filt;
-          if (this.fIdle) { filt.reset(); this.fIdle = 0; }
-          if (fType !== filt.type) filt.setType(fType);
-          let fc = MIDI0 * exp2(FC_L2 * eff[F_CUTOFF]);
-          if (sx.filKey) fc *= exp2((this.nP - 60) / 12);
-          const sp = exp2((0.5 - eff[F_PAN]) * 3);
-          filt.set(fc * sp, fc / sp, eff[F_RES], eff[F_DRIVE], eff[F_VAR]);
-          for (let s = 0; s < CH; s++) { WETL[s] = FINL[s]; WETR[s] = FINR[s]; }
-          filt.process(WETL, WETR, 0, CH);
-          if (sx.mon && sx.recent === this) {
-            let w = sx.tapW;
-            const tap = sx.tap;
-            for (let s = 0; s < CH; s++) { tap[w] = 0.5 * (WETL[s] + WETR[s]); w = (w + 1) & (TAP_N - 1); }
-            sx.tapW = w;
+          const oct = round(8 * eff[kB + D_OCT] - 4), semi = round(24 * eff[kB + D_SEMI] - 12);
+          if (mode === PM_HARM) {
+            const h = semi >= 0 ? 12 * mlog2(semi + 1) : -12 * mlog2(1 - semi);
+            p = nt + 12 * oct + h + (2 * eff[kB + D_FINE] - 1) + (128 * eff[kB + D_CRS] - 64) + bendSt + tune;
+          } else if (mode === PM_STEP && sx.sclN > 0) {
+            p = nt + sclSemis(sx, oct * sx.sclN + semi) + (2 * eff[kB + D_FINE] - 1) + (128 * eff[kB + D_CRS] - 64) + bendSt + tune;
+          } else {                                               // Semitones: the Phase-1 arithmetic
+            p = nt + 12 * oct + semi + (2 * eff[kB + D_FINE] - 1) + (128 * eff[kB + D_CRS] - 64) + bendSt + tune;
           }
-        } else this.fIdle = 1;
-        // ENV 1 × AMP after the filter (ramped); direct sources to the direct bus
-        const ga = eff[G_AMP], ampT = this.eV[0] * ga * ga;
-        let amp = this.gAmp;
-        const dAmp = (ampT - amp) * iC;
-        this.gAmp = ampT;
-        const dirOn = (sDir && sAct) || (nDir && nAct);
-        for (let s = 0; s < CH; s++) {
-          mix += dMix; amp += dAmp;
-          let oL = DRYL[s], oR = DRYR[s];
-          if (useF) { oL += FINL[s] + mix * (WETL[s] - FINL[s]); oR += FINR[s] + mix * (WETR[s] - FINR[s]); }
-          bufL[o0 + s] += oL * amp; bufR[o0 + s] += oR * amp;
-          if (dirOn) {
-            dirL[o0 + s] += ((sDir ? SL[s] : 0) + (nDir ? NL[s] : 0)) * amp;
-            dirR[o0 + s] += ((sDir ? SR[s] : 0) + (nDir ? NR[s] : 0)) * amp;
+          if (mpeSt !== 0) p += mpeSt;
+        }
+        this.cP[o] = p; this.pOk |= 1 << o;
+        const det = sx.vcSel[o] !== 0 ? this.pDet : 0;
+        this.fB[o] = sx.a4 * exp2(((det !== 0 ? p + det : p) - 69) / 12);
+        const hz = eff[O2B[o] + K_HZ];
+        this.cHz[o] = hz === 0.5 ? 0 : 100 * hz - 50;
+      }
+
+      /* ---- oscillator setup per chunk: warp modes, modulators, render order (§6.6.6) ---- */
+      oscSetup(sx, onA, onB, onC, onN, onS) {
+        const eff = this.eff, s1 = sx.s1, use = sx.use, kg = this.kg, on = this.oOn, av = this.oAv, md = this.md, lg = this.lg;
+        const dep = this.dep, nO = (use & 1) !== 0 ? 3 : 2;
+        on[0] = onA; on[1] = onB; on[2] = onC;
+        const su = sx.srcU;
+        for (let o = 0; o < N_OSC; o++) {
+          av[o] = on[o] !== 0 && (kg[o] !== 0 || sx.mapWarp[o] !== 0) ? 1 : 0;   // usable as a warp modulator
+          dep[o] = 0; this.mtx[o] = 0; this.lvar[o] = -1;
+          this.oCap[o] = su[S_OSCA + o] !== 0 && on[o] !== 0 ? 1 : 0;   // audio-tap source (§5.3) of a switched-on oscillator
+          const b = O2B[o];
+          let m1 = 0, m2 = 0;
+          lg[o] = 0;
+          if (o < 2 && s1) { const w = round(22 * eff[A_WARPMODE + o]); lg[o] = w > 0 ? (w < 22 ? w : 22) : 0; }
+          else m1 = round(81 * eff[b + K_W1]);
+          if ((use & 4) !== 0) m2 = round(81 * eff[b + K_W2]);
+          m1 = m1 > 0 ? (m1 < 81 ? m1 : 81) : 0; m2 = m2 > 0 ? (m2 < 81 ? m2 : 81) : 0;
+          if (sx.oType[o] !== 4) { if (m1 >= 58) m1 = 0; if (m2 >= 58) m2 = 0; }   // spectral warps: Spectral only (§3.4.2)
+          md[2 * o] = m1; md[2 * o + 1] = m2;
+        }
+        // Phase-1 single-direction rule of the legacy FM/AM/RM pair (S1 mode)
+        if (lg[0] >= 18 && lg[0] <= 20 && lg[1] >= 18 && lg[1] <= 20) lg[1] = 0;
+        // legacy slot 1 of a non-wavetable A/B (S1 mode): S1_TO_S2_WARP onto WARPS2
+        for (let o = 0; o < 2; o++) {
+          if (lg[o] !== 0 && this.ox[o] !== null && sx.oType[o] !== 0) { md[2 * o] = S1W_MODE[lg[o]]; this.lvar[o] = S1W_VAR[lg[o]]; lg[o] = 0; }
+        }
+        // modulators: availability, edges target ← source in slot order (A1, A2, B1, B2, C1, C2); an edge that would close
+        // a cycle turns its slot Off for this chunk
+        const f1 = eff[F_ON] >= 0.5, f2 = this.filt2 !== null && eff[F2_ON] >= 0.5;
+        let fpu = 0;
+        for (let o = 0; o < nO; o++) {
+          for (let k = 0; k < 2; k++) {
+            let srcO = -1, legacy = 0;
+            const j = 2 * o + k;
+            this.mA[j] = ZERO; this.mS[j] = 0;
+            if (k === 0 && lg[o] !== 0) {
+              if (lg[o] >= 18 && lg[o] <= 20) { srcO = 1 - o; legacy = 1; } else continue;
+            } else {
+              const m = md[j];
+              if (m === 0) continue;
+              const ms = WSRC2[m];
+              if (ms === MS_O1 || ms === MS_O2) srcO = OTH[2 * o + ms - 1];
+              else if (ms === MS_NOISE) { if (onN) { this.mA[j] = NRAW; this.mS[j] = 1; } else md[j] = 0; continue; }
+              else if (ms === MS_SUB) { if (onS) { this.mA[j] = SRAW; this.mS[j] = 1; } else md[j] = 0; continue; }
+              else if (ms === MS_F1) { if (f1) { this.mA[j] = this.fp1; this.mS[j] = 1; fpu |= 1; } else md[j] = 0; continue; }
+              else if (ms === MS_F2) { if (f2) { this.mA[j] = this.fp2; this.mS[j] = 1; fpu |= 2; } else md[j] = 0; continue; }
+              else continue;
+            }
+            if (srcO >= nO || av[srcO] === 0 || this.reach(srcO, o)) { if (!legacy) md[j] = 0; else if (srcO < nO && av[srcO] !== 0) lg[o] = 0; continue; }
+            dep[o] |= 1 << srcO; this.oCap[srcO] = 1;
+            if (!legacy) { this.mtx[srcO] = 1; this.mA[j] = MTS[srcO]; this.mS[j] = this.uN[srcO] > 0 ? this.uN[srcO] : 1; }
           }
         }
+        this.fpUse = fpu;
+        // render order: topological over the accepted edges, ties A, B, C
+        let placed = 0, n = 0;
+        for (let pass = 0; pass < nO; pass++) {
+          for (let o = 0; o < nO; o++) {
+            if ((placed & (1 << o)) !== 0 || (dep[o] & ~placed) !== 0) continue;
+            this.ord[n++] = o; placed |= 1 << o;
+            break;
+          }
+        }
+        this.ordN = n;
+      }
+      // does oscillator a (transitively) depend on oscillator b?
+      reach(a, b) {
+        const dep = this.dep;
+        let seen = 0, front = dep[a];
+        while (front !== 0) {
+          if ((front & (1 << b)) !== 0) return true;
+          seen |= front;
+          let nx = 0;
+          for (let o = 0; o < N_OSC; o++) if ((front & (1 << o)) !== 0) nx |= dep[o];
+          front = nx & ~seen;
+        }
+        return a === b;
+      }
+      // raw unison outputs of oscillator o, sample-major (the SxWarp modulator layout [s·N + i])
+      toMT(o) {
+        const N = this.uN[o] > 0 ? this.uN[o] : 1, CH = this.CH, RAW = RAWS[o], MT = MTS[o];
+        for (let i = 0; i < N; i++) { const b = i * MAXCH; for (let s = 0; s < CH; s++) MT[s * N + i] = RAW[b + s]; }
+      }
+
+      /* ---- rendering (§1, §6) ---- */
+      renderChunk(sx, o0) {
+        const eff = this.eff, CH = this.CH, use = sx.use, kg = this.kg, act = this.act;
+        const onA = eff[A_ON] >= 0.5 ? 1 : 0, onB = eff[A_ON + 1] >= 0.5 ? 1 : 0, onC = (use & 1) !== 0 && eff[C_ON] >= 0.5 ? 1 : 0;
+        const onN = eff[N_ON] >= 0.5 ? 1 : 0, onS = eff[S_ON] >= 0.5 ? 1 : 0;
+        this.onA = onA; this.onB = onB; this.onC = onC; this.onN = onN; this.onS = onS;
+        this.pitchGlobals(sx);
+        // sub and noise first (they are warp modulators)
+        const sAct = onS || this.sGL !== 0 || this.sGR !== 0 ? this.renderSub(sx, onS & kg[4]) : 0;
+        if (!sAct) for (let s = 0; s < CH; s++) { SL[s] = 0; SR[s] = 0; SRAW[s] = 0; }
+        const nAct = onN || this.nGL !== 0 || this.nGR !== 0
+          ? (sx.noiseColor >= 0 ? this.renderColor(sx, onN & kg[3]) : this.renderNoise(sx, onN & kg[3])) : 0;
+        if (!nAct) { for (let s = 0; s < CH; s++) { NL[s] = 0; NR[s] = 0; NRAW[s] = 0; } this.nLast = 0; }
+        act[3] = nAct; act[4] = sAct;
+        // oscillators: modes, modulators and order (§6.6.6), pitches (§6.3), rendered in order
+        this.oscSetup(sx, onA, onB, onC, onN, onS);
+        this.oscPitch(sx, 1);
+        act[0] = 0; act[1] = 0; act[2] = 0;
+        for (let k = 0; k < this.ordN; k++) {
+          const o = this.ord[k];
+          act[o] = this.ox[o] === null ? this.renderWT(sx, o, XLS[o], XRS[o]) : this.renderType(sx, o, XLS[o], XRS[o]);
+          if (act[o] === 0 && this.oCap[o] !== 0) RAWS[o].fill(0, 0, 16 * MAXCH);
+          if (this.mtx[o] !== 0) this.toMT(o);
+        }
+        this.mixOut(sx, o0);
       }
 
       // Blend of frames fa, fb at t of one level (data d, length len), cached: plain1 on it equals plain2's two reads
@@ -2586,9 +3068,9 @@
         return null;
       }
       resolveWT(sx, o) {
-        const id = o ? sx.wtB : sx.wtA;
-        if (id === (o ? this.wId1 : this.wId0) && this.wEp[o] === epoch) return;
-        if (o) this.wId1 = id; else this.wId0 = id;
+        const id = sx.wt[o];
+        if (id === this.wId[o] && this.wEp[o] === epoch) return;
+        this.wId[o] = id;
         this.wEp[o] = epoch;
         const e = tables.get(id);
         for (let i = 0; i < 16; i++) { this.uLv[o * 16 + i] = -1; this.uFa[o * 16 + i] = -1; }
@@ -2602,25 +3084,10 @@
           this.lvHarm[o * 11 + l] = lv.harm > 0 ? +lv.harm : MIP_HARM[l];
         }
       }
-      // one oscillator's unison sum into OL/OR (§6.3–§6.7); cap = capture raw outputs (it modulates the other osc)
-      renderOsc(sx, o, cap, wm, OL, OR, on, onO, onN, onS, bendSt, tune) {
-        const eff = this.eff, CH = this.CH, kB = o * 17, N = this.uN[o], b16 = o * 16, fresh = this.fresh;
-        for (let s = 0; s < CH; s++) { OL[s] = 0; OR[s] = 0; }
-        if (!on && !cap) {
-          let any = 0;
-          for (let i = 0; i < 16; i++) if (this.uGL[b16 + i] !== 0 || this.uGR[b16 + i] !== 0) { any = 1; break; }
-          if (!any) return 0;
-        }
-        this.resolveWT(sx, o);
-        const ok = this.wOk[o];
-        // pitch (§6.3)
-        const nO = eff[A_TRACK + o] >= 0.5 ? this.nP : 0;
-        const P0 = nO + 12 * round(8 * eff[kB + D_OCT] - 4) + round(24 * eff[kB + D_SEMI] - 12) + (2 * eff[kB + D_FINE] - 1) +
-          (128 * eff[kB + D_CRS] - 64) + bendSt + tune;
-        const fB = sx.a4 * exp2((P0 - 69) / 12);
-        // unison ratios, pans, blend gains (cached until their inputs change)
+      // unison ratios, pans, blend gains and the oscillator pan (cached until their inputs change; Phase-1 formulas)
+      uniCache(sx, o, N) {
+        const eff = this.eff, kB = OKB[o], b16 = o * 16, ub = (N - 1) * 16;
         const dn = eff[kB + D_DET], det = dn * dn, stack = round(8 * eff[kB + D_STACK]), mode = sx.uniMode[o], R = sx.uniRange[o];
-        const ub = (N - 1) * 16;
         if (det !== this.cDet[o] || stack !== this.cStk[o] || N !== this.cN[o] || mode !== this.cMode[o] || R !== this.cR[o]) {
           this.cDet[o] = det; this.cStk[o] = stack; this.cN[o] = N; this.cMode[o] = mode; this.cR[o] = R;
           const sb = (stack >= 0 && stack <= 8 ? stack : 0) * 256 + ub;
@@ -2648,36 +3115,87 @@
           }
           this.gC[o] = gc; this.gSd[o] = gs; this.comp[o] = comp;
         }
-        const pan = 2 * eff[kB + D_PAN] - 1;
+        let pan = 2 * eff[kB + D_PAN] - 1;
+        if (sx.vcOn !== 0 && sx.vcSel[o] !== 0 && this.vcP !== 0) { pan += this.vcP; pan = pan > -1 ? (pan < 1 ? pan : 1) : -1; }
         if (pan !== this.cPan[o]) {
           this.cPan[o] = pan;
           this.bl[o] = panG(pan, 0); this.br[o] = panG(pan, 1);
         }
+      }
+      // WARPS2 slot amounts per unison voice (§6.6.8) and the unison frequencies; SxWarp.chunk for both slots
+      warpChunk(sx, o, NX, ub, ubX, N, fB, hz) {
+        const eff = this.eff, kB = OKB[o], b = O2B[o], sl = this.wsl[o], W = this.W, m1 = this.md[2 * o], m2 = this.md[2 * o + 1];
+        const uw = (2 * eff[kB + D_UNIWARP] - 1) * 0.5, uw2 = (2 * eff[b + K_UNIWARP2] - 1) * 0.5, w1 = eff[kB + D_WARP];
+        const w2 = eff[b + K_WARP2], fs = this.fs, fmax = 0.45 * fs, b16 = o * 16;
+        for (let i = 0; i < NX; i++) {                           // (SxWarp.chunk reads the first NX values only)
+          const t = i < N ? UT[ub + i] : UT[ubX + i];
+          let a = w1 + t * uw, c = w2 + t * uw2;
+          WA1[i] = a > 0 ? (a < 1 ? a : 1) : 0; WA2[i] = c > 0 ? (c < 1 ? c : 1) : 0;
+          let f = fB * this.uRat[b16 + i];
+          if (hz !== 0) f += hz;
+          FI[i] = f < fmax ? (f > 0.01 ? f : 0.01) : fmax;
+        }
+        const v1 = this.lvar[o] >= 0 ? this.lvar[o] : eff[b + K_WVAR1];
+        const e1 = W.chunk(sl, 0, m1, WA1, v1, sx.fmType[2 * o], FI, fs, NX);
+        const e2 = W.chunk(sl, 1, m2, WA2, eff[b + K_WVAR2], sx.fmType[2 * o + 1], FI, fs, NX);
+        return (e1 !== 0 ? 1 : 0) | (e2 !== 0 ? 2 : 0);
+      }
+      // one wavetable oscillator's unison sum into OL/OR (§6.3–§6.7, §6.6); RAW capture when it is a modulator or tap
+      renderWT(sx, o, OL, OR) {
+        const eff = this.eff, CH = this.CH, kB = OKB[o], N = this.uN[o], b16 = o * 16, fresh = this.fresh;
+        const on = this.oOn[o] & this.kg[o], cap = this.oCap[o];
+        // (an oscillator that renders nothing returns 0 without clearing OL / OR: its act is 0 and nothing reads them, M4)
+        if (N < 1) return 0;
+        if (!on && !cap) {
+          if (this.gz[o] === 0) return 0;
+          let any = 0;
+          for (let i = 0; i < 16; i++) if (this.uGL[b16 + i] !== 0 || this.uGR[b16 + i] !== 0) { any = 1; break; }
+          if (!any) { this.gz[o] = 0; return 0; }
+        }
+        this.gz[o] = 1;
+        for (let s = 0; s < CH; s++) { OL[s] = 0; OR[s] = 0; }
+        this.resolveWT(sx, o);
+        const ok = this.wOk[o];
+        const fB = this.fB[o], hz = this.cHz[o];
+        const ub = (N - 1) * 16;
+        this.uniCache(sx, o, N);
         const lev = eff[kB + D_LEVEL], gain = on ? lev * lev * this.comp[o] : 0;
         const gL0 = gain * this.bl[o], gR0 = gain * this.br[o], gcn = this.gC[o], gsd = this.gSd[o];
-        // warp, position, modulator
+        // warp, position, modulator (legacy slot 1: S1 mode, Phase-1 code path)
         const wEff = eff[kB + D_WARP], uw = (2 * eff[kB + D_UNIWARP] - 1) * 0.5, uwt = (2 * eff[kB + D_UNIWT] - 1) * 0.5;
         const pos = eff[kB + D_WT];
+        const wm = this.lg[o];
         let MOD = ZERO, mN = 1, mStr = 0, mAvail = 0;
-        if (wm >= 18 && wm <= 20) { if (onO) { MOD = o ? RAW0 : RAW1; mN = this.uN[1 - o]; mStr = MAXCH; mAvail = 1; } }
-        else if (wm === 21) { if (onN) { MOD = NRAW; mAvail = 1; } }
-        else if (wm === 22) { if (onS) { MOD = SRAW; mAvail = 1; } }
+        if (wm >= 18 && wm <= 20) { const q = 1 - o; if ((this.dep[o] & (1 << q)) !== 0) { MOD = RAWS[q]; mN = this.uN[q]; mStr = MAXCH; mAvail = 1; } }
+        else if (wm === 21) { if (this.onN) { MOD = NRAW; mAvail = 1; } }
+        else if (wm === 22) { if (this.onS) { MOD = SRAW; mAvail = 1; } }
         if (mN < 1) mN = 1;
-        // phase offset (PHASE knob, §6.4), spread over the chunk
-        const mem = sx.bT[kB + D_PHASE] >= 0.9995, pk = eff[kB + D_PHASE];
+        // phase offset (PHASE knob, §6.4), spread over the chunk (S1 knob-end Mem: no offset)
+        const mem = sx.s1 !== 0 && o < 2 && sx.bT[kB + D_PHASE] >= 0.9995, pk = eff[kB + D_PHASE];
         const nOff = mem ? 0 : (pk < 0.99999 ? pk : 0.99999), dOff = (nOff - this.oOff[o]) / CH;
         this.oOff[o] = nOff;
-        const fs = this.fs, fmax = 0.45 * fs, flim = this.flim, F = this.wF[o], interp = this.wI[o];
-        const REM = sx.remap, rb = o * 2049, RAW = o ? RAW1 : RAW0, hb = o * 11, iC = 1 / CH, m0 = this.m0;
+        const fs = this.fs, fmax = 0.45 * fs, flim = this.flim, F = this.wF[o];
+        const interp = this.wI[o] !== 0 || (sx.smoothWT[o] !== 0 && F > 1) ? 1 : 0;   // Smooth Interpolation (§6.5)
+        const REM = o < 2 || sx.remap.length >= N_OSC * 2049 ? sx.remap : DEF_REMAP, rb = o * 2049, RAW = RAWS[o];
+        const hb = o * 11, iC = 1 / CH, m0 = this.m0;
         // unison voices dropped by a steal (uNx > N) fade out over this chunk with their old layout (§6.1, no click)
         const NX = this.uNx[o] > N ? this.uNx[o] : N, ubX = (NX - 1) * 16;
         this.uNx[o] = 0;
+        // WARPS2 slots of this chunk (SxWarp, §6.6): which slots act, their per-voice coefficients
+        const m1 = this.md[2 * o], m2 = this.md[2 * o + 1], sl = this.wsl[o];
+        let es = 0;
+        if ((m1 !== 0 || m2 !== 0) && sl !== null) es = this.warpChunk(sx, o, NX, ub, ubX, N, fB, hz);
+        const U = sl !== null ? sl.maxUni : 16, d1 = (es & 1) !== 0 ? WDOM2[m1] : 0, d2 = (es & 2) !== 0 ? WDOM2[m2] : 0;
+        const b2 = O2B[o], var1 = this.lvar[o] >= 0 ? this.lvar[o] : eff[b2 + K_WVAR1], var2 = eff[b2 + K_WVAR2];
+        const fm1 = sx.fmType[2 * o], fm2 = sx.fmType[2 * o + 1];
+        const M1 = this.mA[2 * o], ms1 = this.mS[2 * o], M2 = this.mA[2 * o + 1], ms2 = this.mS[2 * o + 1], W = this.W;
         const uRat = this.uRat, uPL = this.uPL, uPR = this.uPR, uGL = this.uGL, uGR = this.uGR, uPh = this.uPh, uLv = this.uLv;
         const uH = this.uH, uLx = this.uLx, uWx = this.uWx, uFa = this.uFa, uFp = this.uFp, lvD = this.lvD, lvLen = this.lvLen;
         const lvHarm = this.lvHarm, xf = this.xf;
         for (let i = 0; i < NX; i++) {
           const idx = b16 + i, live = i < N, t = live ? UT[ub + i] : UT[ubX + i];
           let f = fB * uRat[idx];
+          if (hz !== 0) f += hz;
           f = f < fmax ? (f > 0.01 ? f : 0.01) : fmax;
           const inc = f / fs + dOff;
           // gains (ramped from the previous chunk)
@@ -2688,11 +3206,16 @@
           uGL[idx] = GLt; uGR[idx] = GRt;
           let ph = uPh[idx];
           if (!ok) { ph += inc * CH; ph -= floor(ph); uPh[idx] = ph; continue; }
-          // warp (§3.3, §6.7)
+          // legacy warp (§3.3, §6.7)
           let w = wEff + t * uw;
           w = w > 0 ? (w < 1 ? w : 1) : 0;
           const m = wm === 0 ? 0 : warpSetup(wm, w, mAvail);
-          const K = wK, sp = m === 0 ? 1 : wSp;
+          const K = wK;
+          let sp = m === 0 ? 1 : wSp;
+          // WARPS2 slots acting on this unison voice
+          const a1 = d1 !== 0 && sl.em[i] !== 0, a2 = d2 !== 0 && sl.em[U + i] !== 0;
+          if (a1) sp *= sl.sp[i];
+          if (a2) sp *= sl.sp[U + i];
           // mip level (§7.4) with hysteresis; a change crossfades over the chunk. The selection depends only on H
           // (and the previous level): an unchanged H keeps the previous result.
           const lvOld = uLv[idx], H = flim / (f * sp);
@@ -2729,16 +3252,73 @@
           }
           const two = fa !== fb && (t0 !== 0 || t1 !== 0) && !(t0 === 1 && t1 === 1);
           const d = lvD[hb + lv], len = lvLen[hb + lv], msk = len - 1, dt = (t1 - t0) * iC;
-          if (m === 0 && !twoLv && !cap && xa < 0) {
+          if (a1 || a2) {
+            // WARPS2 path (§6.6.1): F stage → accumulator → P stages → read (+ Odd/Even) → windows → O stages
+            if (d1 === WD_F || d2 === WD_F) {
+              for (let s = 0; s < CH; s++) INC[s] = inc;
+              if (a1 && d1 === WD_F) W.incBlockA(sl, 0, i, m1, fm1, WA1, i, M1, ms1, INC, INC, CH);
+              if (a2 && d2 === WD_F) W.incBlockA(sl, 1, i, m2, fm2, WA2, i, M2, ms2, INC, INC, CH);
+              for (let s = 0; s < CH; s++) { PHU[s] = ph; ph += INC[s]; if (ph >= 1 || ph < 0) ph -= floor(ph); }
+            } else {
+              for (let s = 0; s < CH; s++) { PHU[s] = ph; ph += inc; if (ph >= 1) ph -= 1; else if (ph < 0) ph += 1; }
+            }
+            const hw = (a1 && sl.hw[0] !== 0) || (a2 && sl.hw[1] !== 0);
+            if (hw) for (let s = 0; s < CH; s++) WN[s] = 1;
+            const hasWin = m === 2 || m === 3 || m === 11 || m === 19 || m === 20;
+            if (m !== 0) {
+              const mo = mStr ? (i % mN) * mStr : 0;
+              for (let s = 0; s < CH; s++) {
+                const mv = MOD[mo + s], q = PHU[s];
+                PHB[s] = warpPh(m, q, K, w, REM, rb, mv);
+                if (hasWin) WIN[s] = winF(m, q, w, mv);
+              }
+            } else if (a1 && d1 === WD_P && m1 !== W_PDSELF) W.phaseBlockA(sl, 0, i, m1, WA1, i, var1, REM, rb, M1, ms1, PHU, PHB, WN, CH);
+            else for (let s = 0; s < CH; s++) PHB[s] = PHU[s];
+            // (PD (Self) is not passed to phaseBlock on the wavetable path: the read loop applies it per sample, §11.7)
+            if (a2 && d2 === WD_P && m2 !== W_PDSELF) W.phaseBlockA(sl, 1, i, m2, WA2, i, var2, REM, rb, M2, ms2, PHB, PHB, WN, CH);
+            FA[6] = xt; FA[7] = t0; FA[8] = dt;
+            // PD (Self) (§6.6.4; SxWarp: the kernels leave it to the read loop): φ_r = frac(φ₂ + I·y₁), y₁ = the read
+            const I = (a1 ? sl.pdI[i] : 0) + (a2 ? sl.pdI[U + i] : 0);
+            if (I !== 0) sl.y1[i] = readSelf(PHB, YB, sl.y1[i], I, lvD, lvLen, hb, lv, twoLv ? lvOld : lvX, twoLv ? -1 : wX, fa, fb, two, xa, CH);
+            else readFull(PHB, YB, YB2, lvD, lvLen, hb, lv, lvOld, twoLv, lvX, wX, fa, fb, two, xa, CH);
+            const oe = (a1 && m1 === W_ODDEVEN) || (a2 && m2 === W_ODDEVEN);
+            if (oe) {
+              for (let s = 0; s < CH; s++) { let q = PHB[s] + 0.5; if (q >= 1) q -= 1; PHC[s] = q; }
+              readFull(PHC, X2B, X2C, lvD, lvLen, hb, lv, lvOld, twoLv, lvX, wX, fa, fb, two, xa, CH);
+            }
+            // stage 5: windows (legacy slot 1, Sync Var) on the read samples, then the O slots
+            if (hasWin) for (let s = 0; s < CH; s++) { YB[s] *= WIN[s]; X2B[s] *= WIN[s]; }
+            if (hw) for (let s = 0; s < CH; s++) { YB[s] *= WN[s]; X2B[s] *= WN[s]; }
+            if (a1 && d1 === WD_O) W.outBlockA(sl, 0, i, m1, WA1, i, var1, M1, ms1, YB, oe ? X2B : null, PHU, CH);
+            if (a2 && d2 === WD_O) W.outBlockA(sl, 1, i, m2, WA2, i, var2, M2, ms2, YB, oe ? X2B : null, PHU, CH);
+            for (let s = 0; s < CH; s++) {
+              const y = YB[s];
+              if (cap) RAW[i * MAXCH + s] = y;
+              gl += dgl; gr += dgr;
+              OL[s] += gl * y; OR[s] += gr * y;
+            }
+          } else if (m === 0 && !twoLv && !cap && xa < 0) {
             const fs1 = (t1 >= 1 ? fb : fa);
             if (lvX < 0) {
               const bc = two && dt === 0 ? this.bcGet(o, d, fa, fb, t0, len) : null;   // a static position: cached blend
-              if (bc !== null) ph = plain1(bc, 0, msk, len, ph, inc, OL, OR, gl, gr, dgl, dgr, CH);
-              else if (two) {
+              if (two && bc === null) {
                 FA[0] = ph; FA[1] = inc; FA[2] = gl; FA[3] = gr; FA[4] = dgl; FA[5] = dgr; FA[7] = t0; FA[8] = dt;
                 plain2(d, fa * len, fb * len, msk, len, OL, OR, CH);
                 ph = FA[0];
-              } else ph = plain1(d, fs1 * len, msk, len, ph, inc, OL, OR, gl, gr, dgl, dgr, CH);
+              } else {
+                // plain1 written out here (M4: the most common read of all — whether V8 inlined the call depended on the
+                // inlining budget the other paths of this function left; out of line it cost row a ≈ 25 % over Phase 1)
+                const D = bc !== null ? bc : d, b = bc !== null ? 0 : fs1 * len;
+                for (let s = 0; s < CH; s++) {
+                  const x = ph * len, j = x | 0, f = x - j;
+                  const xm = D[b + ((j - 1) & msk)], x0 = D[b + (j & msk)], x1 = D[b + ((j + 1) & msk)], x2 = D[b + ((j + 2) & msk)];
+                  const y = (((0.5 * (x2 - xm) + 1.5 * (x0 - x1)) * f + (xm - 2.5 * x0 + 2 * x1 - 0.5 * x2)) * f + 0.5 * (x1 - xm)) * f + x0;
+                  gl += dgl; gr += dgr;
+                  OL[s] += gl * y; OR[s] += gr * y;
+                  ph += inc;
+                  if (ph >= 1) ph -= 1; else if (ph < 0) ph += 1;
+                }
+              }
             } else {
               const d2 = lvD[hb + lvX], len2 = lvLen[hb + lvX];
               FA[0] = ph; FA[1] = inc; FA[2] = gl; FA[3] = gr; FA[4] = dgl; FA[5] = dgr; FA[6] = wX; FA[7] = t0; FA[8] = dt;
@@ -2761,12 +3341,12 @@
               }
             }
             FA[6] = xt; FA[7] = t0; FA[8] = dt;
-            readLv(d, len, fa, fb, two, xa, YB, CH);
+            readLv(d, len, fa, fb, two, xa, YB, CH, PHB);
             if (twoLv) {
-              readLv(lvD[hb + lvOld], lvLen[hb + lvOld], fa, fb, two, xa, YB2, CH);
+              readLv(lvD[hb + lvOld], lvLen[hb + lvOld], fa, fb, two, xa, YB2, CH, PHB);
               for (let s = 0; s < CH; s++) { const a = (s + 1) * iC; YB[s] = YB2[s] + (YB[s] - YB2[s]) * a; }
             } else if (lvX >= 0) {
-              readLv(lvD[hb + lvX], lvLen[hb + lvX], fa, fb, two, xa, YB2, CH);
+              readLv(lvD[hb + lvX], lvLen[hb + lvX], fa, fb, two, xa, YB2, CH, PHB);
               for (let s = 0; s < CH; s++) YB[s] = YB2[s] + (YB[s] - YB2[s]) * wX;
             }
             for (let s = 0; s < CH; s++) {
@@ -2782,11 +3362,323 @@
         if (cap && !ok) RAW.fill(0, 0, NX * MAXCH);
         return 1;
       }
+      // the oscillator context (§11.8) of oscillator o: unison frequencies, gain ramps (gains = 1: note-on), pans, slots,
+      // warp modes and amounts, modulators, note values
+      fillCtx(sx, o, gains) {
+        const ctx = this.ctx[o], eff = this.eff, kB = OKB[o], b16 = o * 16, b = O2B[o];
+        let N = this.uN[o];
+        if (N < 1) N = 1;
+        const ub = (N - 1) * 16, fs = this.fs, fmax = 0.45 * fs, fB = this.fB[o], hz = this.cHz[o];
+        this.uniCache(sx, o, N);
+        ctx.o = o; ctx.N = N;
+        const uw = (2 * eff[kB + D_UNIWARP] - 1) * 0.5, uw2 = (2 * eff[b + K_UNIWARP2] - 1) * 0.5;
+        let w1 = eff[kB + D_WARP], w2 = eff[b + K_WARP2], lev = eff[kB + D_LEVEL];
+        if (sx.xyOn[o] !== 0) {                                  // Granular X|Y → Level / Warp / Warp 2 (§3.9 XY_MODES)
+          const yt = sx.xyY[o], y = eff[b + K_GY];
+          if (yt === 1) lev = xyApply(sx.xyMode[o], lev, y);
+          else if (yt === 2) w1 = xyApply(sx.xyMode[o], w1, y);
+          else w2 = xyApply(sx.xyMode[o], w2, y);
+        }
+        for (let i = 0; i < N; i++) {
+          const t = UT[ub + i];
+          let f = fB * this.uRat[b16 + i];
+          if (hz !== 0) f += hz;
+          ctx.f[i] = f < fmax ? (f > 0.01 ? f : 0.01) : fmax;
+          ctx.t[i] = t; ctx.pan[i] = t * eff[kB + D_UNIW];
+          const a = w1 + t * uw, c = w2 + t * uw2;
+          ctx.w1[i] = a > 0 ? (a < 1 ? a : 1) : 0; ctx.w2[i] = c > 0 ? (c < 1 ? c : 1) : 0;
+        }
+        if (gains) {
+          const on = this.oOn[o] & this.kg[o], gain = on ? lev * lev * this.comp[o] : 0;
+          const gL0 = gain * this.bl[o], gR0 = gain * this.br[o], gcn = this.gC[o], gsd = this.gSd[o], iC = 1 / this.CH;
+          const fresh = this.fresh;
+          // slots ≥ N ramp their gains to 0 over one chunk; beyond uHi (no slot ≥ N held a gain or a ramp last chunk)
+          // they and their ctx entries are already 0 — the loop stops there (M4: 16 slots per oscillator per chunk)
+          let M = this.uHi[o], tail = 0;
+          if (M < N) M = N;
+          this.gz[o] = 1;
+          for (let i = 0; i < M; i++) {
+            const idx = b16 + i, live = i < N;
+            const gi = N <= 2 || U_CENTER[ub + i] ? gcn : gsd;
+            const GLt = live ? gL0 * gi * this.uPL[idx] : 0, GRt = live ? gR0 * gi * this.uPR[idx] : 0;
+            const gl = fresh ? GLt : this.uGL[idx], gr = fresh ? GRt : this.uGR[idx];
+            this.uGL[idx] = GLt; this.uGR[idx] = GRt;
+            ctx.gl[i] = gl; ctx.gr[i] = gr; ctx.dgl[i] = (GLt - gl) * iC; ctx.dgr[i] = (GRt - gr) * iC;
+            if (!live && (gl !== 0 || gr !== 0)) tail = 1;
+          }
+          this.uHi[o] = tail !== 0 ? M : N;
+        }
+        ctx.mode1 = this.md[2 * o]; ctx.mode2 = this.md[2 * o + 1];
+        ctx.var1 = this.lvar[o] >= 0 ? this.lvar[o] : eff[b + K_WVAR1]; ctx.var2 = eff[b + K_WVAR2];
+        ctx.fm1 = sx.fmType[2 * o]; ctx.fm2 = sx.fmType[2 * o + 1];
+        ctx.mod1 = this.mA[2 * o]; ctx.mod2 = this.mA[2 * o + 1]; ctx.modStride1 = this.mS[2 * o]; ctx.modStride2 = this.mS[2 * o + 1];
+        ctx.eff = eff; ctx.cp = sx.cp; ctx.sx = sx; ctx.gate = this.gate ? 1 : 0; ctx.fresh = this.fresh; ctx.CH = this.CH;
+        ctx.fs = this.fs; ctx.base = this.base; ctx.bpm = this.proc.bpm > 0 ? +this.proc.bpm : 120;
+        ctx.keyRef = eff[OTRK[o]] >= 0.5 ? this.noteOf(sx, o) : 60; ctx.rootShift = 0;
+        ctx.key = this.note + this.dk[o]; ctx.vel = this.vel;
+      }
+      // a Sample / Multisample / Granular / Spectral oscillator (§11.8): its context, then its render (overwrites OL/OR)
+      renderType(sx, o, OL, OR) {
+        const x = this.ox[o], CH = this.CH, b16 = o * 16;
+        const on = this.oOn[o] & this.kg[o], cap = this.oCap[o];
+        if (!on && !cap) {
+          let any = this.gz[o];
+          if (any !== 0) {
+            any = 0;
+            for (let i = 0; i < 16; i++) if (this.uGL[b16 + i] !== 0 || this.uGR[b16 + i] !== 0) { any = 1; break; }
+            if (!any) this.gz[o] = 0;
+          }
+          if (!any) return 0;                                    // (act 0: OL / OR are not read)
+        }
+        this.uNx[o] = 0;
+        this.fillCtx(sx, o, 1);
+        x.render(this.ctx[o], OL, OR, cap ? RAWS[o] : null);
+        return 1;
+      }
 
-      resolveSub(shape) {
-        if (shape === this.sShape && this.sEp === epoch) return;
-        this.sShape = shape; this.sEp = epoch;
-        const e = tables.get(SUB_IDS[shape]);
+      /* ---- mixer, filters, channel gains (§1, §6.12, §6.13) ---- */
+      mixOut(sx, o0) {
+        const eff = this.eff, CH = this.CH, iC = 1 / CH, fresh = this.fresh, act = this.act, RT = sx.route, E = sx.envOn;
+        const f1On = eff[F_ON] >= 0.5 ? 1 : 0, f2On = this.filt2 !== null && eff[F2_ON] >= 0.5 ? 1 : 0;
+        const rg1 = this.rg1, rg2 = this.rg2, hb1 = this.hb1, hb2 = this.hb2, nX = (sx.use & 1) !== 0 ? 5 : 4;
+        // (a) filter-routed sources: switch-gated, ramped inputs u_k and the source sums S_k (v_k = S_k − u_k), in the
+        // order A, B, Noise, Sub, C; the F1 share s1 = (1 − b)/2, the F2 share s2 = (1 + b)/2 of the balance b
+        let u1 = 0, u2 = 0, useF1 = 0, useF2 = 0;
+        for (let j = 0; j < nX; j++) {
+          const c = CHX[j], toF = RT[c] === 0;
+          const t1 = toF && f1On && eff[F1SW[c]] >= 0.5 ? 1 : 0, t2 = toF && f2On && eff[F2SW[c]] >= 0.5 ? 1 : 0;
+          const r1 = fresh ? t1 : rg1[c], r2 = fresh ? t2 : rg2[c];
+          rg1[c] = t1; rg2[c] = t2;
+          if (t1 !== 0 || r1 !== 0) useF1 = 1;
+          if (t2 !== 0 || r2 !== 0) useF2 = 1;
+          // the balance shares are ramped from the previous chunk's (bal 0: exactly 1 / 0, the Phase-1 path)
+          const bal = eff[FBAL[c]], h1 = bal === 0 ? 1 : 1 - bal, h2 = bal === 0 ? 0 : bal;
+          const q1 = fresh ? h1 : hb1[c], q2 = fresh ? h2 : hb2[c];
+          hb1[c] = h1; hb2[c] = h2;
+          if (!toF || act[c] === 0) continue;
+          if (h1 !== 0 || q1 !== 0) {
+            if (u1 === 0) { zero4(U1L, U1R, S1L, S1R, CH); u1 = 1; }
+            addSrcR(XLS[c], XRS[c], q1, (h1 - q1) * iC, r1, (t1 - r1) * iC, U1L, U1R, S1L, S1R, CH);
+          }
+          if (h2 !== 0 || q2 !== 0) {
+            if (u2 === 0) { zero4(U2L, U2R, S2L, S2R, CH); u2 = 1; }
+            addSrcR(XLS[c], XRS[c], q2, (h2 - q2) * iC, r2, (t2 - r2) * iC, U2L, U2R, S2L, S2R, CH);
+          }
+        }
+        // (b) the filters in the §1 order (F2 first when it feeds F1 and F1 does not feed F2)
+        this.fo = 0;                                             // bit k: filter k+1 produced an output this chunk
+        const fu = this.fu;                                      // [u1 content, u2 content, F1 runs, F2 runs]
+        fu[0] = u1; fu[1] = u2; fu[2] = useF1; fu[3] = useF2;
+        if (RT[6] === 0 && RT[5] !== 0) { this.filter2(sx); this.filter1(sx); }
+        else { this.filter1(sx); this.filter2(sx); }
+        // (c) output groups: Main (A, B, C, Noise, Sub, F1, F2), Direct (Sub, Noise, A, B, C, F1, F2), bus sends; group
+        // g = 2·{main 0, direct 1, bus1 2, bus2 3} + (ENV toggle off ? 1 : 0)
+        GU[0] = 0; GU[1] = 0; GU[2] = 0; GU[3] = 0; GU[4] = 0; GU[5] = 0; GU[6] = 0; GU[7] = 0;   // (M4: not fill(), a call per chunk)
+        for (let c = 0; c < 5; c++) {                            // channel order A, B, C, Noise, Sub (act: rendered)
+          if (act[c] === 0 || RT[c] !== 1) continue;
+          const g = E[c] ? 0 : 1;
+          addG(GB[2 * g], GB[2 * g + 1], XLS[c], XRS[c], 1, GU[g] === 0, CH); GU[g] = 1;
+        }
+        // filter levels L_k, ramped from the previous chunk's (n 0.5: exactly 1, the Phase-1 path)
+        const fo = this.fo, L1 = eff[F_LEVEL] === 0.5 ? 1 : 4 * eff[F_LEVEL] * eff[F_LEVEL];
+        const L2 = eff[F2_LEVEL] === 0.5 ? 1 : 4 * eff[F2_LEVEL] * eff[F2_LEVEL];
+        const lvP = this.lvP, P1 = fresh ? L1 : lvP[0], P2 = fresh ? L2 : lvP[1], dL1 = (L1 - P1) * iC, dL2 = (L2 - P2) * iC;
+        lvP[0] = L1; lvP[1] = L2;
+        if ((fo & 1) !== 0 && RT[5] === 1) { const g = E[5] ? 0 : 1; addGR(GB[2 * g], GB[2 * g + 1], Y1L, Y1R, P1, dL1, GU[g] === 0, CH); GU[g] = 1; }
+        if ((fo & 2) !== 0 && RT[6] === 1) { const g = E[6] ? 0 : 1; addGR(GB[2 * g], GB[2 * g + 1], Y2L, Y2R, P2, dL2, GU[g] === 0, CH); GU[g] = 1; }
+        if (sx.anyDir !== 0) {
+          for (let j = 0; j < 5; j++) {
+            const c = DIRX[j];
+            if (act[c] === 0 || RT[c] !== 2) continue;
+            const g = E[c] ? 2 : 3;
+            addG(GB[2 * g], GB[2 * g + 1], XLS[c], XRS[c], 1, GU[g] === 0, CH); GU[g] = 1;
+          }
+          if ((fo & 1) !== 0 && RT[5] === 2) { const g = E[5] ? 2 : 3; addGR(GB[2 * g], GB[2 * g + 1], Y1L, Y1R, P1, dL1, GU[g] === 0, CH); GU[g] = 1; }
+          if ((fo & 2) !== 0 && RT[6] === 2) { const g = E[6] ? 2 : 3; addGR(GB[2 * g], GB[2 * g + 1], Y2L, Y2R, P2, dL2, GU[g] === 0, CH); GU[g] = 1; }
+        }
+        if (sx.anyBus !== 0) {                                   // bus sends: post level/pan, (n)² of the send knob
+          const sgP = this.sgP;                                  // (each send gain ramped from the previous chunk's)
+          for (let c = 0; c < 7; c++) {
+            let XL, XR, gl = 1, grp, has;
+            if (c < 5) { has = act[c] !== 0; XL = XLS[c]; XR = XRS[c]; grp = RT[c] === 0 ? 1 : E[c]; }
+            else if (c === 5) { has = (fo & 1) !== 0; XL = Y1L; XR = Y1R; gl = L1; grp = RT[5] === 0 ? 1 : E[5]; }
+            else { has = (fo & 2) !== 0; XL = Y2L; XR = Y2R; gl = L2; grp = RT[6] === 0 ? 1 : E[6]; }
+            for (let k = 0; k < 2; k++) {
+              const n = eff[BUS1V[c] + k], T = n > 0 ? gl * n * n : 0, j = 2 * c + k, P = fresh ? T : sgP[j];
+              sgP[j] = T;
+              if (!has || (T === 0 && P === 0)) continue;
+              const g = 4 + 2 * k + (grp ? 0 : 1);
+              addGR(GB[2 * g], GB[2 * g + 1], XL, XR, P, (T - P) * iC, GU[g] === 0, CH); GU[g] = 1;
+            }
+          }
+        }
+        // (d) channel gains: AMP·ENV 1 (toggle on) / AMP (off), ramped per sample from the previous chunk's targets
+        const ga = eff[G_AMP], fd = this.fadeK > 0 ? (this.fadeN - 1) / this.fadeK : 1;
+        const ampT = this.eV[0] * ga * ga * fd, amp = this.gAmp, dAmp = (ampT - amp) * iC;
+        this.gAmp = ampT;
+        const ampNT = ga * ga * fd, ampN = this.gAmpN, dAmpN = (ampNT - ampN) * iC;
+        this.gAmpN = ampNT;
+        this.noEnv = GU[1] | GU[3] | GU[5] | GU[7];
+        const OL = this.oL, OR = this.oR;
+        if (GU[0]) addAmp(OL, OR, o0, GB[0], GB[1], amp, dAmp, CH);
+        if (GU[1]) addAmp(OL, OR, o0, GB[2], GB[3], ampN, dAmpN, CH);
+        if (GU[2]) addAmp(this.oDL, this.oDR, o0, GB[4], GB[5], amp, dAmp, CH);
+        if (GU[3]) addAmp(this.oDL, this.oDR, o0, GB[6], GB[7], ampN, dAmpN, CH);
+        if (GU[4]) addAmp(this.oB1L, this.oB1R, o0, GB[8], GB[9], amp, dAmp, CH);
+        if (GU[5]) addAmp(this.oB1L, this.oB1R, o0, GB[10], GB[11], ampN, dAmpN, CH);
+        if (GU[6]) addAmp(this.oB2L, this.oB2R, o0, GB[12], GB[13], amp, dAmp, CH);
+        if (GU[7]) addAmp(this.oB2L, this.oB2R, o0, GB[14], GB[15], ampN, dAmpN, CH);
+        // (e) taps: filter outputs for Filter-sourced warps (§6.6.7), audio-tap sources (§5.3), channel meters (§6.20)
+        // (fPrev of §6.6.7 is kept current in every chunk, whether or not a slot reads it now: a slot that selects
+        // Filter k later, or filter k switched back on, reads the previous chunk, never an old one; zeros while off)
+        // (no WARPS2 slot can exist in S1 mode without OSC C and slot 2, use & 5: the buffers then just hold zeros)
+        {
+          const p1 = this.fp1, p2 = this.fp2, any = sx.s1 === 0 || (sx.use & 5) !== 0;
+          if (any && (fo & 1) !== 0 && f1On !== 0) { for (let s = 0; s < CH; s++) p1[s] = 0.5 * (Y1L[s] + Y1R[s]); this.fpZ &= 2; }
+          else if ((this.fpZ & 1) === 0) { p1.fill(0); this.fpZ |= 1; }
+          if (any && (fo & 2) !== 0 && f2On !== 0) { for (let s = 0; s < CH; s++) p2[s] = 0.5 * (Y2L[s] + Y2R[s]); this.fpZ &= 1; }
+          else if ((this.fpZ & 2) === 0) { p2.fill(0); this.fpZ |= 2; }
+        }
+        const su = sx.srcU;
+        {
+          const src = this.src, l = CH - 1, on = this.oOn;
+          for (let o = 0; o < N_OSC; o++) {
+            if (su[S_OSCA + o] === 0) continue;
+            const N = this.uN[o] > 0 ? this.uN[o] : 1, RAW = RAWS[o];
+            let m = 0;                                           // a switched-off oscillator reads 0, like the sub
+            if (act[o] !== 0 && on[o] !== 0) { for (let i = 0; i < N; i++) m += RAW[i * MAXCH + l]; m /= N; }
+            src[S_OSCA + o] = m;
+          }
+          if (su[S_SUB] !== 0) src[S_SUB] = SRAW[l];
+          if (su[S_FILT1] !== 0) src[S_FILT1] = (fo & 1) !== 0 ? 0.5 * (Y1L[l] + Y1R[l]) : 0;
+          if (su[S_FILT1 + 1] !== 0) src[S_FILT1 + 1] = (fo & 2) !== 0 ? 0.5 * (Y2L[l] + Y2R[l]) : 0;
+        }
+        if (sx.mon !== 0 && this.hid === 0) {                  // (hidden warm-up voices never reach the meters)
+          const pk = sx.pk;
+          for (let c = 0; c < 5; c++) if (act[c] !== 0) { const p = peak2(XLS[c], XRS[c], CH); if (p > pk[c]) pk[c] = p; }
+          if ((fo & 1) !== 0) { const p = L1 * peak2(Y1L, Y1R, CH); if (p > pk[5]) pk[5] = p; }
+          if ((fo & 2) !== 0) { const p = L2 * peak2(Y2L, Y2R, CH); if (p > pk[6]) pk[6] = p; }
+        }
+      }
+      // cutoff n of filter k with the Voice Control offset (§6.13.2), key tracking (§6.13.6), pan split
+      fcOf(sx, cutN, k) {
+        let n = cutN;
+        if (sx.vcOn !== 0 && this.vcC !== 0) { n += this.vcC; n = n > 0 ? (n < 1 ? n : 1) : 0; }
+        let fc = MIDI0 * exp2(FC_L2 * n);
+        if (sx.fKey[k] !== 0) {
+          let ref;
+          if (sx.s1 !== 0) ref = this.mod.nP;                       // S1: the gliding voice pitch (Phase 1)
+          else {                                                  // S2: note' of the first tracking, sounding oscillator
+            ref = this.note;                                      // (none: the played key, tuned, without glide)
+            if (sx.tuned !== 0) { const n = ref | 0, k = sx.tune[n >= 0 ? (n <= 127 ? n : 127) : 0]; if (k === k) ref = k; }
+            const eff = this.eff, on = this.oOn;
+            for (let o = 0; o < N_OSC; o++) if (on[o] !== 0 && eff[OTRK[o]] >= 0.5) { ref = this.noteOf(sx, o); break; }
+          }
+          fc *= exp2((ref - 60) / 12);
+        }
+        return fc;
+      }
+      // Filter 1: inputs u1 (+ Filter 2 when it feeds Filter 1), output Y1 = v1 + (u1 + mix·(F(u1) − u1)) (post mix, pre
+      // level; the Phase-1 arithmetic form), routed by mixOut; into Filter 2 when routed there
+      filter1(sx) {
+        const eff = this.eff, CH = this.CH, iC = 1 / CH, filt = this.filt, u1 = this.fu[0], useF = this.fu[2];
+        let fType;
+        if (sx.s1) { fType = round(95 * eff[F_TYPE]); fType = fType > 0 ? (fType < 95 ? fType : 95) : 0; }
+        else { fType = round(107 * eff[F_TYPE2]); fType = fType > 0 ? (fType < 107 ? fType : 107) : 0; }
+        const mixT = fType === 80 ? 1 : eff[F_MIX];
+        if (this.fresh) this.mixP = mixT;
+        let mix = this.mixP;
+        const dMix = (mixT - mix) * iC;
+        this.mixP = mixT;
+        if (u1 === 0 && !useF) { this.fIdle = 1; return; }
+        if (u1 === 0) zero4(U1L, U1R, S1L, S1R, CH);
+        if (useF) {
+          if (this.fIdle) { filt.reset(); this.fIdle = 0; }
+          if (fType !== filt.type) filt.setType(fType);
+          const fc = this.fcOf(sx, eff[F_CUTOFF], 0);
+          const sp = exp2((0.5 - eff[F_PAN]) * 3);
+          filt.set(fc * sp, fc / sp, eff[F_RES], eff[F_DRIVE], eff[F_VAR]);
+          if (fType === 103) { filt.setXY(eff[F_X], eff[F_X + 1]); filt.setPZ(sx.pz, 0); }
+          filt.setClean(sx.fClean[0]);
+          for (let s = 0; s < CH; s++) { W1L[s] = U1L[s]; W1R[s] = U1R[s]; }
+          filt.process(W1L, W1R, 0, CH);
+          if (sx.mon && sx.mod.recent === this) {
+            let w = sx.tapW;
+            const tap = sx.tap;
+            for (let s = 0; s < CH; s++) { tap[w] = 0.5 * (W1L[s] + W1R[s]); w = (w + 1) & (TAP_N - 1); }
+            sx.tapW = w;
+          }
+          for (let s = 0; s < CH; s++) {
+            mix += dMix;
+            const ul = U1L[s], ur = U1R[s];
+            Y1L[s] = (S1L[s] - ul) + (ul + mix * (W1L[s] - ul)); Y1R[s] = (S1R[s] - ur) + (ur + mix * (W1R[s] - ur));
+          }
+        } else {
+          this.fIdle = 1;
+          for (let s = 0; s < CH; s++) { Y1L[s] = S1L[s] - U1L[s]; Y1R[s] = S1R[s] - U1R[s]; }
+        }
+        this.fo |= 1;
+        if (sx.route[5] === 0) this.feed(sx, 1, Y1L, Y1R, eff[F_LEVEL]);
+      }
+      filter2(sx) {
+        const eff = this.eff, CH = this.CH, iC = 1 / CH, filt = this.filt2, u2 = this.fu[1];
+        let useF = this.fu[3];
+        let fType = round(107 * eff[F2_TYPE]);
+        fType = fType > 0 ? (fType < 107 ? fType : 107) : 0;
+        const mixT = fType === 80 ? 1 : eff[F2_MIX];
+        if (this.fresh) this.mixP2 = mixT;
+        let mix = this.mixP2;
+        const dMix = (mixT - mix) * iC;
+        this.mixP2 = mixT;
+        if ((u2 === 0 && !useF) || filt === null) { this.fIdle2 = 1; if (u2 === 0) return; useF = 0; }
+        if (u2 === 0) zero4(U2L, U2R, S2L, S2R, CH);
+        if (useF) {
+          if (this.fIdle2) { filt.reset(); this.fIdle2 = 0; }
+          if (fType !== filt.type) filt.setType(fType);
+          const fc = this.fcOf(sx, eff[F2_CUTOFF], 1);
+          const sp = exp2((0.5 - eff[F2_PAN]) * 3);
+          filt.set(fc * sp, fc / sp, eff[F2_RES], eff[F2_DRIVE], eff[F2_VAR]);
+          if (fType === 103) { filt.setXY(eff[F2_X], eff[F2_X + 1]); filt.setPZ(sx.pz, 12); }
+          filt.setClean(sx.fClean[1]);
+          for (let s = 0; s < CH; s++) { W2L[s] = U2L[s]; W2R[s] = U2R[s]; }
+          filt.process(W2L, W2R, 0, CH);
+          if (sx.mon && sx.mod.recent === this) {
+            let w = sx.tapW2;
+            const tap = sx.tap2;
+            for (let s = 0; s < CH; s++) { tap[w] = 0.5 * (W2L[s] + W2R[s]); w = (w + 1) & (TAP_N - 1); }
+            sx.tapW2 = w;
+          }
+          for (let s = 0; s < CH; s++) {
+            mix += dMix;
+            const ul = U2L[s], ur = U2R[s];
+            Y2L[s] = (S2L[s] - ul) + (ul + mix * (W2L[s] - ul)); Y2R[s] = (S2R[s] - ur) + (ur + mix * (W2R[s] - ur));
+          }
+        } else {
+          this.fIdle2 = 1;
+          for (let s = 0; s < CH; s++) { Y2L[s] = S2L[s] - U2L[s]; Y2R[s] = S2R[s] - U2R[s]; }
+        }
+        this.fo |= 2;
+        if (sx.route[6] === 0) this.feed(sx, 0, Y2L, Y2R, eff[F2_LEVEL]);
+      }
+      // filter output (× its level) into the other filter k: its input (ramped by that filter's on state) and source sum
+      feed(sx, k, YL, YR, lvN) {
+        const CH = this.CH, iC = 1 / CH, g = lvN === 0.5 ? 1 : 4 * lvN * lvN, g0 = this.fresh ? g : this.fdP[k];
+        this.fdP[k] = g;                                         // (the level ramped from the previous chunk's)
+        const on = k === 0 ? this.eff[F_ON] >= 0.5 : this.filt2 !== null && this.eff[F2_ON] >= 0.5, t = on ? 1 : 0;
+        const r0 = this.fresh ? t : this.rgF[k];
+        this.rgF[k] = t;
+        const UL = k === 0 ? U1L : U2L, UR = k === 0 ? U1R : U2R, SLs = k === 0 ? S1L : S2L, SRs = k === 0 ? S1R : S2R;
+        // (the other filter runs after this one; its input arrays start here when no source feeds it)
+        const fu = this.fu;
+        if (fu[k] === 0) { zero4(UL, UR, SLs, SRs, CH); fu[k] = 1; }
+        if (t !== 0 || r0 !== 0) fu[2 + k] = 1;
+        addSrcR(YL, YR, g0, (g - g0) * iC, r0, (t - r0) * iC, UL, UR, SLs, SRs, CH);
+      }
+
+      resolveSub(shape, set) {
+        if (shape === this.sShape && set === this.sSet && this.sEp === epoch) return;
+        this.sShape = shape; this.sSet = set; this.sEp = epoch;
+        const e = tables.get(set ? SUB_IDS2[shape] : SUB_IDS[shape]);
         if (!e || e.kind !== 'wt' || !e.levels) { this.sOk = 0; return; }
         this.sOk = 1;
         for (let l = 0; l < 11; l++) {
@@ -2794,29 +3686,36 @@
           this.sD[l] = lv.data; this.sLen[l] = lv.len; this.sHarm[l] = lv.harm > 0 ? +lv.harm : MIP_HARM[l];
         }
       }
-      // SUB (§6.3, §6.6): mono, linear level, equal-power pan; raw output in SRAW
-      renderSub(sx, on, bendSt, tune) {
-        const eff = this.eff, CH = this.CH, iC = 1 / CH;
-        let shape = round(4 * eff[S_SHAPE]);
-        shape = shape > 0 ? (shape < 4 ? shape : 4) : 0;
-        this.resolveSub(shape);
-        const pan = 2 * eff[S_PAN] - 1;
+      // SUB (§6.3, §6.6, §6.11.1): mono, level n (S1) / n² (S2), equal-power pan; raw output in SRAW
+      renderSub(sx, on) {
+        const eff = this.eff, CH = this.CH, iC = 1 / CH, s1 = sx.s1;
+        let shape;
+        if (s1) { shape = round(4 * eff[S_SHAPE]); shape = shape > 0 ? (shape < 4 ? shape : 4) : 0; }
+        else { shape = round(5 * eff[S_SHP]); shape = shape > 0 ? (shape < 5 ? shape : 5) : 0; }
+        this.resolveSub(shape, s1 ? 0 : 1);
+        let pan = 2 * eff[S_PAN] - 1;
+        if (sx.vcOn !== 0 && sx.vcSel[4] !== 0 && this.vcP !== 0) { pan += this.vcP; pan = pan > -1 ? (pan < 1 ? pan : 1) : -1; }
         if (pan !== this.sPan) { this.sPan = pan; this.sCl = panG(pan, 0); this.sCr = panG(pan, 1); }
-        const g = on ? eff[S_LEVEL] : 0, GLt = g * this.sCl, GRt = g * this.sCr;
+        const lv = eff[S_LEVEL], g = on ? (s1 ? lv : lv * lv) : 0, GLt = g * this.sCl, GRt = g * this.sCr;
         let gl = this.fresh ? GLt : this.sGL, gr = this.fresh ? GRt : this.sGR;
         const dgl = (GLt - gl) * iC, dgr = (GRt - gr) * iC;
         this.sGL = GLt; this.sGR = GRt;
         if (!this.sOk) return 0;
-        const P = this.nP + 12 * round(8 * eff[S_OCT] - 4) + bendSt + tune;
+        const nt = eff[S_TRACK] >= 0.5 ? this.noteOf(sx, 4) : 0;
+        let P = nt + 12 * round(8 * eff[S_OCT] - 4);
+        if (!s1) { const c = eff[S_CRS]; if (c !== 0.5) P += 128 * c - 64; }
+        P = P + this.pBend + this.pTune;
+        if (this.pMpe !== 0) P += this.pMpe;
+        if (this.pDet !== 0 && sx.vcSel[4] !== 0) P += this.pDet;
         let f = sx.a4 * exp2((P - 69) / 12);
         const fmax = 0.45 * this.fs;
         f = f < fmax ? (f > 0.01 ? f : 0.01) : fmax;
         const inc = f / this.fs, lvOld = this.sLv;
-        let lv, two, wX = 1, l2 = lvOld;
-        if (this.xf) { lv = selBlend(this.flim / f, this.sHarm, 0); two = bLvB >= 0; l2 = bLvB; wX = bW; }
-        else { lv = selLevel(lvOld, this.flim / f, this.sHarm, 0, this.m0); two = lvOld >= 0 && lvOld !== lv; }
-        this.sLv = lv;
-        const d = this.sD[lv], len = this.sLen[lv], m = len - 1;
+        let lv2, two, wX = 1, l2 = lvOld;
+        if (this.xf) { lv2 = selBlend(this.flim / f, this.sHarm, 0); two = bLvB >= 0; l2 = bLvB; wX = bW; }
+        else { lv2 = selLevel(lvOld, this.flim / f, this.sHarm, 0, this.m0); two = lvOld >= 0 && lvOld !== lv2; }
+        this.sLv = lv2;
+        const d = this.sD[lv2], len = this.sLen[lv2], m = len - 1;
         const d2 = two ? this.sD[l2] : d, len2 = two ? this.sLen[l2] : len, m2 = len2 - 1, xfd = this.xf;
         let ph = this.sPh;
         for (let s = 0; s < CH; s++) {
@@ -2833,10 +3732,10 @@
         return 1;
       }
       resolveNoise(sx) {
-        const id = sx.noiseId;
+        const id = sx.noiseColor >= 0 ? '' : sx.noiseId;
         if (id === this.nId && this.nEp === epoch) return;
         this.nId = id; this.nEp = epoch;
-        const e = tables.get(id);
+        const e = id !== '' ? tables.get(id) : undefined;
         if (!e || e.kind !== 'noise' || !e.levels) { this.nOk = 0; this.nLen0 = 0; return; }
         this.nOk = 1;
         this.nRate = +e.rate; this.nRoot = e.root !== undefined ? +e.root : 60;
@@ -2854,19 +3753,28 @@
         this.nLen0 = this.nLen[0];
         this.nLv = -1;
       }
+      noisePan(sx) {
+        let pan = 2 * this.eff[N_PAN] - 1;
+        if (sx.vcOn !== 0 && sx.vcSel[3] !== 0 && this.vcP !== 0) { pan += this.vcP; pan = pan > -1 ? (pan < 1 ? pan : 1) : -1; }
+        if (pan !== this.nPan) { this.nPan = pan; this.nCl = panG(pan, 0); this.nCr = panG(pan, 1); }
+      }
       // NOISE (§6.8): stereo sample player, level chosen by the read increment; raw mono average in NRAW
-      renderNoise(sx, on, bendSt) {
+      renderNoise(sx, on) {
         const eff = this.eff, CH = this.CH, iC = 1 / CH;
         this.resolveNoise(sx);
-        const pan = 2 * eff[N_PAN] - 1;
-        if (pan !== this.nPan) { this.nPan = pan; this.nCl = panG(pan, 0); this.nCr = panG(pan, 1); }
+        this.noisePan(sx);
         const lev = eff[N_LEVEL], g = on ? lev * lev : 0, GLt = g * this.nCl, GRt = g * this.nCr;
         let gl = this.fresh ? GLt : this.nGL, gr = this.fresh ? GRt : this.nGR;
         const dgl = (GLt - gl) * iC, dgr = (GRt - gr) * iC;
         this.nGL = GLt; this.nGR = GRt;
         if (!this.nOk) return 0;
         const key = sx.noiseKey, pst = npitch(eff[N_PITCH]);
-        const semis = key ? round(pst) + (this.nP - this.nRoot) + (2 * eff[N_FINE] - 1) + bendSt : pst;
+        let semis = pst;
+        if (key) {
+          semis = round(pst) + (this.noteOf(sx, 3) - this.nRoot) + (2 * eff[N_FINE] - 1) + this.pBend;
+          if (this.pMpe !== 0) semis += this.pMpe;
+        }
+        if (this.pDet !== 0 && sx.vcSel[3] !== 0) semis += this.pDet;
         const inc0 = this.nRate / this.fs * exp2(semis / 12);
         let lv = 0, r = inc0;
         while (r > 1 && lv < this.nLevels - 1) { r *= 0.5; lv++; }
@@ -2903,13 +3811,94 @@
         this.nLast = NRAW[CH - 1];
         return 1;
       }
+      // colour noises (§6.11.2): two white streams a, b (xorshift, seeded from r2 at note-on through fmix32); Pink
+      // (Kellet's refined filter), Brown (leaky integrator, rate-independent: leak and input gain scaled by base/fs, so
+      // the literal recipe at OS 1 and the same corner and spectrum at every OS), Geiger (Poisson clicks at
+      // 40·2^(PITCH/12)/s, τ 0.15 ms, each ±(0.5 + 0.5u) with the sign and u from two further draws of the stream);
+      // STEREO decorrelation, FILTER tilt (one-pole LP above / HP below the centre). Levels: −12 dBFS RMS in the audible
+      // band at every OS (white × √OS on the audio outputs only); Geiger × one gain per rate that puts 40 clicks/s
+      // (PITCH 0) at −12 dBFS RMS, so the click size does not depend on PITCH (the RMS follows the click rate). The raw
+      // mono NRAW (Noise modulator of the warps, the `noise` source) keeps the per-sample calibration: OS-independent
+      renderColor(sx, on) {
+        const eff = this.eff, CH = this.CH, iC = 1 / CH, kind = sx.noiseColor, cs = this.cs, ct = this.ct;
+        this.noisePan(sx);
+        const lev = eff[N_LEVEL], g = on ? lev * lev : 0, GLt = g * this.nCl, GRt = g * this.nCr;
+        let gl = this.fresh ? GLt : this.nGL, gr = this.fresh ? GRt : this.nGR;
+        const dgl = (GLt - gl) * iC, dgr = (GRt - gr) * iC;
+        this.nGL = GLt; this.nGR = GRt;
+        const st = eff[N_STEREO], c = 2 * eff[N_COLOR] - 1, fs = this.fs;
+        const wa = 1 - st, nrm = st === 0 ? 1 : 1 / sqrt(wa * wa + st * st);
+        let tc = 0, hp = 0;
+        if (c > 0) { let fc = 20000 * exp2(-9 * c); if (fc > 0.45 * fs) fc = 0.45 * fs; tc = 1 - exp(-2 * PI * fc / fs); }
+        else if (c < 0) { let fc = 20 * exp2(-9 * c); if (fc > 0.45 * fs) fc = 0.45 * fs; tc = 1 - exp(-2 * PI * fc / fs); hp = 1; }
+        let pg = 0, dec = 0, kG = 1;
+        if (kind === 3) {
+          pg = 40 * exp2(npitch(eff[N_PITCH]) / 12) / fs; dec = exp(-1 / (0.00015 * fs));
+          kG = K_GEIGER / sqrt(40 / fs * (7 / 12) / (1 - dec * dec));   // E[(0.5 + 0.5u)²] = 7/12
+        }
+        const r = this.base / fs, bc = 1 - 0.002 * r, bg = 0.0414 * sqrt(r), ow = kind === 0 ? sqrt(fs / this.base) : 1;
+        let ra = this.ca, rb = this.cb, t0 = ct[0], t1 = ct[1];
+        for (let s = 0; s < CH; s++) {
+          let a, b = 0;
+          ra = xorshift(ra) || 1;
+          const wA = ra / 2147483648 - 1;
+          if (kind === 0) a = wA * K_WHITE;
+          else if (kind === 1) a = this.pink(cs, 0, wA);
+          else if (kind === 2) { const y = bc * cs[7] + bg * wA; cs[7] = y; a = K_BROWN * y; }
+          else {
+            let e = cs[8] * dec;
+            if (ra / 4294967296 < pg) {
+              ra = xorshift(ra) || 1; const sg = ra < 2147483648 ? -1 : 1;
+              ra = xorshift(ra) || 1; e += sg * (0.5 + 0.5 * (ra / 4294967296));
+            }
+            cs[8] = e; a = kG * e;
+          }
+          if (st !== 0) {
+            rb = xorshift(rb) || 1;
+            const wB = rb / 2147483648 - 1;
+            if (kind === 0) b = wB * K_WHITE;
+            else if (kind === 1) b = this.pink(cs, 10, wB);
+            else if (kind === 2) { const y = bc * cs[17] + bg * wB; cs[17] = y; b = K_BROWN * y; }
+            else {
+              let e = cs[18] * dec;
+              if (rb / 4294967296 < pg) {
+                rb = xorshift(rb) || 1; const sg = rb < 2147483648 ? -1 : 1;
+                rb = xorshift(rb) || 1; e += sg * (0.5 + 0.5 * (rb / 4294967296));
+              }
+              cs[18] = e; b = kG * e;
+            }
+          }
+          let yl = a, yr = st === 0 ? a : (wa * a + st * b) * nrm;
+          if (tc !== 0) {
+            t0 += (yl - t0) * tc; t1 += (yr - t1) * tc;
+            if (hp) { yl -= t0; yr -= t1; } else { yl = t0; yr = t1; }
+          }
+          NRAW[s] = 0.5 * (yl + yr);
+          gl += dgl; gr += dgr;
+          NL[s] = gl * ow * yl; NR[s] = gr * ow * yr;
+        }
+        for (let j = 0; j < 20; j++) { const v = cs[j]; if (v < 1e-30 && v > -1e-30) cs[j] = 0; }
+        if (t0 < 1e-30 && t0 > -1e-30) t0 = 0;
+        if (t1 < 1e-30 && t1 > -1e-30) t1 = 0;
+        this.ca = ra; this.cb = rb; ct[0] = t0; ct[1] = t1;
+        this.nLast = NRAW[CH - 1];
+        return 1;
+      }
+      // Paul Kellet's refined pink filter on white w, state cs[o … o+6], × the −12 dBFS RMS calibration
+      pink(cs, o, w) {
+        const b0 = 0.99886 * cs[o] + w * 0.0555179, b1 = 0.99332 * cs[o + 1] + w * 0.0750759, b2 = 0.96900 * cs[o + 2] + w * 0.1538520;
+        const b3 = 0.86650 * cs[o + 3] + w * 0.3104856, b4 = 0.55000 * cs[o + 4] + w * 0.5329522, b5 = -0.7616 * cs[o + 5] - w * 0.0168980;
+        const y = b0 + b1 + b2 + b3 + b4 + b5 + cs[o + 6] + w * 0.5362;
+        cs[o] = b0; cs[o + 1] = b1; cs[o + 2] = b2; cs[o + 3] = b3; cs[o + 4] = b4; cs[o + 5] = b5; cs[o + 6] = w * 0.115926;
+        return y * K_PINK;
+      }
     }
 
     /* ------------------------------------------------------------ renderWarp (§8.4.2) */
     // one cycle of frame (Float32Array 2048) through warp mode at amount amt, Hermite reads of level 0
     function renderWarp(frame, mode, amt, opts) {
       const over = opts && opts.over > 1 ? opts.over | 0 : 1, n = 2048 * over, out = new Float32Array(n);
-      const R = opts && opts.remap && opts.remap.length >= 2049 ? opts.remap : DEF_CT.remap;
+      const R = opts && opts.remap && opts.remap.length >= 2049 ? opts.remap : DEF_REMAP;
       const mod = opts && opts.mod && opts.mod.length >= 2048 ? opts.mod : null;
       let w = +amt;
       w = w > 0 ? (w < 1 ? w : 1) : 0;
@@ -2931,7 +3920,8 @@
     function warmUp(proc) {
       const sx = attach(proc);
       const saveP = proc.p, saveCt = proc.ct, saveV = proc.voices;
-      const tmp = [];
+      const saveVc = proc.vcN;                                 // the Voice Control step counter (SxMod, §6.2) of the processor
+      const tmp = [], tmpA = [];
       const store = (id, e) => { if (!tables.has(id) && storeWT(id, e)) tmp.push(id); };
       try {
         // synthetic tables: 64-frame crossfade table, 4-frame discrete table, sub shapes if missing, 2-level noise
@@ -2950,12 +3940,13 @@
           levels: [{ len: 4096, loopStart: 0, loopEnd: 4096, L: nz(4096), R: nz(4096) },
             { len: 2048, loopStart: 0, loopEnd: 2048, L: nz(2048), R: nz(2048) }] });
         // CT: LFO 1 rising saw (sweeps every filter type and warp mode), LFO 2 env with a loop, LFO 3 point-modulated
-        const ct = { key: '__warm', lfoTab: new Float32Array(8 * 1025), lfoPtsOff: new Uint16Array(9),
-          lfoPts: new Float64Array(3 * 30), lfoPm: new Uint8Array(2 * 30), lfoPmAny: new Uint8Array(8),
-          lfoStart: new Float64Array(8), lfoLoop: new Float64Array(8).fill(-1), remap: DEF_CT.remap,
-          veloTab: DEF_CT.veloTab, noteTab: DEF_CT.noteTab };
+        // (a full CT v2 object, §4.1 layout)
+        const ct = { key: '__warm', lfoTab: new Float32Array(N_LFO * 1025), lfoPtsOff: new Uint16Array(N_LFO + 1),
+          lfoPts: new Float64Array(3 * 30), lfoPm: new Uint8Array(2 * 30), lfoPmAny: new Uint8Array(N_LFO),
+          lfoStart: new Float64Array(N_LFO), lfoLoop: new Float64Array(N_LFO).fill(-1), remap: DEF_REMAP,
+          veloTab: DEF_TAB, noteTab: DEF_TAB };
         let po = 0;
-        for (let l = 0; l < 8; l++) {
+        for (let l = 0; l < N_LFO; l++) {
           const pts = l === 0 ? [0, 0, 0, 1, 1, 0] : [0, 0, 0, 0.5, 1, 0.3, 1, 0, 0];
           const np = pts.length / 3;
           ct.lfoPtsOff[l] = po;
@@ -2964,10 +3955,10 @@
           for (let j = 0; j <= 1024; j++) ct.lfoTab[l * 1025 + j] = evalPts(ct.lfoPts, po, np, j / 1024);
           po += np;
         }
-        ct.lfoPtsOff[8] = po;
+        ct.lfoPtsOff[N_LFO] = po;
         ct.lfoLoop[1] = 0.5;
-        // CP
-        const base = new Float64Array(NS);
+        // CP v2 (§4.1 shapes; the S1 subset is exercised)
+        const base = new Float64Array(NSV);
         for (let i = 0; i < NS; i++) {
           const law = DLAW[i], lo = DLO[i], hi = DHI[i];
           base[i] = law === EXP || law === POW2 || law === POW3 || law === POW4 || law === POW5 ? 0.5 : (lo < 0 ? -lo / (hi - lo) : 0);
@@ -2991,26 +3982,28 @@
           [S_LFO1, F_TYPE, 1, 0, 0, 0, 1, 0], [S_LFO1, A_WARPMODE, 1, 0, 0, 0, 1, 0], [S_LFO1 + 1, D_WT, 0.8, 0, 0.3, 0, 1, 0],
           [S_LFO1 + 2, F_CUTOFF, 0.2, 1, 0, S_VELO, 1, 0], [S_FIXED, BUS1, 0.4, 0, 0, 0, 3, 0], [S_CHAOS1, F_RES, 0.2, 1, 0, 0, 1, 0],
           [S_CHAOS1 + 1, 17 + D_WT, 0.3, 1, 0, 0, 1, 0], [S_VELO, D_UNI, 1, 0, 0, 0, 1, 1], [S_NOISE, N_PITCH, 0.4, 1, 0, 0, 1, 0],
-          [S_LFO1 + 3, L1_RATE, 0.2, 1, -0.5, S_MACRO1, 3, 0], [S_ENV1 + 1, FX_BASE + 79, 0.3, 0, 0, 0, 4, 0],
+          [S_LFO1 + 3, L1_RATE, 0.2, 1, -0.5, S_MACRO1, 3, 0], [S_ENV1 + 1, -1 - (8 + 79), 0.3, 0, 0, 0, 4, 0],
           [S_LFO1 + 4, D_PHASE, 0.2, 1, 0, 0, 1, 1], [S_RAND1, 17 + D_RAND, 0.5, 0, 0, 0, 1, 1], [S_WHEEL, G_WHEEL, 0.1, 0, 0, 0, 2, 0],
         ];
-        const nr = rows.length, mSrc = new Int8Array(32), mDst = new Int16Array(32), mAmt = new Float64Array(32), mBi = new Uint8Array(32);
-        const mK = new Float64Array(32), mAux = new Int8Array(32), mInv = new Uint8Array(32), mCtx = new Uint8Array(32), mOn = new Uint8Array(32);
-        const srcUsed = new Uint8Array(NSRC), modded = new Uint8Array(NS);
+        const nr = rows.length, mSrc = new Int8Array(NROW), mDst = new Int16Array(NROW), mAmt = new Float64Array(NROW);
+        const mBi = new Uint8Array(NROW), mK = new Float64Array(NROW), mAux = new Int8Array(NROW), mInv = new Uint8Array(NROW);
+        const mCtx = new Uint8Array(NROW), mOn = new Uint8Array(NROW);
+        const srcUsed = new Uint8Array(NSRC2), modded = new Uint8Array(NSV);
         for (let q = 0; q < nr; q++) {
           const w = rows[q];
           mSrc[q] = w[0]; mDst[q] = w[1]; mAmt[q] = w[2]; mBi[q] = w[3]; mK[q] = 6 * w[4]; mAux[q] = w[5]; mCtx[q] = w[6]; mOn[q] = w[7];
-          srcUsed[w[0]] = 1; if (w[5]) srcUsed[w[5]] = 1; if (w[1] < NS) modded[w[1]] = 1;
+          srcUsed[w[0]] = 1; if (w[5]) srcUsed[w[5]] = 1; if (w[1] >= 0 && (w[6] & 1)) modded[w[1]] = 1;
         }
-        const lfoLad = new Float64Array(8 * 43);
-        for (let l = 0; l < 8; l++) for (let j = 0; j < 15; j++) lfoLad[l * 43 + j] = 128 * pow(2, -j);
-        const cp = { ver: VER, NS, NSRC, base, mN: nr, mSrc, mDst, mAmt, mBi, mK, mAux, mInv, mCtx, mOn, srcUsed, modded,
-          wt: ['__warm', '__warmD'], uniMode: Uint8Array.from([0, 4]), uniRange: Float64Array.from([2, 3]),
-          memSet: new Float64Array(32), subDirect: 1, noiseOneshot: 0, noiseKey: 1, noiseDirect: 0, filKey: 1, noiseId: '__warmN',
-          direct: 1, lfoMode: Uint8Array.from([0, 1, 2, 2, 0, 0, 0, 0]), lfoBpm: Uint8Array.from([0, 1, 1, 0, 0, 0, 0, 0]),
-          lfoAnchor: Uint8Array.from([0, 1, 1, 0, 0, 0, 0, 0]), lfoLad, lfoLadN: new Uint8Array(8).fill(15),
-          chaosMono: Uint8Array.from([0, 1]), chaosSh: Uint8Array.from([1, 0]), macro: new Float64Array(4).fill(0.5),
-          mono: 0, legato: 0, poly: 8, always: 0, scaled: 0, oneNote: 1, os: 2, a4: 440, smooth: 1, ctKey: '__warm' };
+        const lfoLad = new Float64Array(N_LFO * 43);
+        for (let l = 0; l < N_LFO; l++) for (let j = 0; j < 15; j++) lfoLad[l * 43 + j] = 128 * pow(2, -j);
+        const cp = { ver: VER, NSV, NSRC: NSRC2, NROW, base, mN: nr, mSrc, mDst, mAmt, mBi, mK, mAux, mInv, mCtx, mOn, srcUsed,
+          modded, wt: ['__warm', '__warmD', ''], uniMode: Uint8Array.from([0, 4, 0]), uniRange: Float64Array.from([2, 3, 2]),
+          memSet: new Float64Array(16 * N_OSC), route: Uint8Array.from([0, 0, 1, 0, 2, 1, 1]), fKey: Uint8Array.from([1, 0]),
+          noiseOneshot: 0, noiseKey: 1, noiseId: '__warmN', noiseColor: -1, outMask: 3,
+          lfoMode: Uint8Array.from([0, 1, 2, 2, 0, 0, 0, 0, 2, 2]), lfoBpm: Uint8Array.from([0, 1, 1, 0, 0, 0, 0, 0, 0, 0]),
+          lfoAnchor: Uint8Array.from([0, 1, 1, 0, 0, 0, 0, 0, 0, 0]), lfoLad, lfoLadN: new Uint8Array(N_LFO).fill(15),
+          chaosMono: Uint8Array.from([0, 1]), chaosSh: Uint8Array.from([1, 0]), macro: new Float64Array(8).fill(0.5),
+          mono: 0, legato: 0, poly: 8, always: 0, scaled: 0, oneNote: 1, os: 2, a4: 440, s1: 1, smooth: 1, ctKey: '__warm' };
         proc.p = { serum: cp, fxr: null };
         proc.ct = ct;
         const v1 = new SerumVoice(proc, 30), v2 = new SerumVoice(proc, 31);
@@ -3028,11 +4021,117 @@
         }
         v1.kill(); v2.kill();
         v1.render(L, Rr, N, DL, DR);
+        // Serum 2 code (SPEC-serum2 §11.10, light engines only): OSC C with both WARPS2 slots swept over every mode
+        // (block kernels of every domain, PD Self), Filter 1/2 swept over the 108 types (SxFilt2 families), Sample and
+        // Multisample oscillators on tiny synthetic assets, colour noise, the S2 sub, F1 → F2, Direct, buses, LFO types
+        const B = globalThis.SxBase;
+        for (let k = 0; k < SUB_IDS2.length; k++) store(SUB_IDS2[k], mk(1, 0, 0.5));
+        if (B && typeof B.storeAsset === 'function' && typeof B.dropAsset === 'function') {
+          const len = 4096, Ls = new Float32Array(len);
+          for (let i = 0; i < len; i++) Ls[i] = 0.5 * sin(2 * PI * 8 * i / len);
+          const smp = { id: '__warmS', v: 1, kind: 'smp', bytes: 4 * len, rate: 48000, ch: 1, len, root: 60, loop: { start: 0, end: len }, peak: 0.5,
+            levels: [{ len, L: Ls, R: null }, { len: len >> 1, L: Ls.subarray(0, len >> 1), R: null }] };
+          const multi = { id: '__warmM', v: 1, kind: 'multi', bytes: 0, zones: [{ lo: 0, hi: 127, vlo: 0, vhi: 127, root: 60, tune: 0, gain: 0, pan: 0,
+            smp: '__warmS', mode: 'loop', ls: 0, le: len, off: 0, env: [0, 0.001, 0, 0.1, 0.8, 0.05], rr: [1, 1], vt: 1 }] };
+          if (!B.getAsset('__warmS') && B.storeAsset('__warmS', smp)) tmpA.push('__warmS');
+          if (!B.getAsset('__warmM') && B.storeAsset('__warmM', multi)) tmpA.push('__warmM');
+        }
+        const cp2 = warmCP2(cp, base);
+        proc.p = { serum: cp2, fxr: null };
+        v1.apply(proc.p); v2.apply(proc.p);
+        v1.noteOn(57, 0.9, false, 1, 2); v2.noteOn(64, 0.5, false, 1);
+        const spans2 = ceil(0.02 * (proc.base > 0 ? proc.base : 48000) / 128);   // (LFO 1 at ≈ 66 Hz: > 1 sweep)
+        for (let k = 0; k < spans2; k++) {
+          if (k === (spans2 >> 1)) { v2.noteOff(0.3); v1.noteOn(60, 1, false, 1, 2); }
+          begin(proc, N);
+          v1.render(proc.sxOut || WARM_O, N); v2.render(L, Rr, N, DL, DR);
+          fxMods(proc); snapshot(proc);
+        }
+        v1.kill(); v2.kill();
       } finally {
         proc.p = saveP; proc.ct = saveCt; proc.voices = saveV;
         for (let k = 0; k < tmp.length; k++) dropWT(tmp[k]);
-        reset(proc);
+        const B = globalThis.SxBase;
+        if (B) for (let k = 0; k < tmpA.length; k++) B.dropAsset(tmpA[k]);
+        reset(proc);                                           // (also clears the round-robin counters, sx.msRR)
+        if (typeof saveVc === 'number') proc.vcN = saveVc;     // the hidden note-ons advanced it (VC patch)
+        // (M4) the Spectral tables and FFT of this rate, built here rather than in the first Spectral 'patch' message
+        const SP = globalThis.SxSpec;
+        if (SP && typeof SP.prep === 'function') { try { SP.prep(proc.base); } catch (err) { /* only costs the first patch */ } }
       }
+    }
+    // OS-rate output object of the warm-up renders (§11.10 signature render(O, N)); 4 × 128 frames covers OS ≤ 4
+    const WARM_O = { L: new Float64Array(512), R: new Float64Array(512), dL: new Float64Array(512), dR: new Float64Array(512),
+      b1L: new Float64Array(512), b1R: new Float64Array(512), b2L: new Float64Array(512), b2R: new Float64Array(512) };
+    // a complete CP v2 (every §4.1 field, SPEC-serum2) for the Serum 2 part of warmUp, built on the S1 warm CP c1
+    function warmCP2(c1, b1) {
+      const U8 = (n, v = 0) => new Uint8Array(n).fill(v), F64 = (n, v = 0) => new Float64Array(n).fill(v);
+      const cp = Object.assign({}, c1);
+      for (const k of ['oType', 'phMem', 'phLeg', 'smoothWT', 'pMode', 'uniMode', 'spawn', 'sLoop', 'sRel', 'sLink', 'sExit', 'sLoopGr', 'sScanKey',
+        'sScanLock', 'sLenOn', 'sSlMode', 'sSlEnd', 'sSlOne', 'sSlRoot', 'sWin', 'sDens', 'sDensJump', 'sGlen', 'sPhLock', 'sTrans', 'sSmooth',
+        'sPostWarp', 'sNorm', 'sRev', 'xyOn', 'xyY', 'xyMode', 'msOver', 'msDlyBpm']) cp[k] = U8(N_OSC);
+      cp.bendTrack = U8(N_OSC, 1); cp.sDensLadN = U8(N_OSC, 1); cp.sGlenLadN = U8(N_OSC, 1);
+      cp.pSrc = new Int8Array(N_OSC).fill(-1); cp.uniRange = F64(N_OSC, 2); cp.sScanR = F64(N_OSC, 2); cp.fmType = U8(2 * N_OSC);
+      cp.sMaxGr = new Uint16Array(N_OSC).fill(256); cp.sSlN = new Uint16Array(N_OSC);
+      cp.sSlPos = F64(3 * 258); for (let o = 0; o < N_OSC; o++) cp.sSlPos[o * 258 + 1] = 1;
+      cp.sDensLad = F64(81, 1); cp.sGlenLad = F64(81, 1); cp.memSet = F64(16 * N_OSC);
+      cp.lenLad = Float64Array.from([0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 128]);
+      for (const k of ['mapLo', 'mapFold', 'mapWarp']) cp[k] = U8(6);
+      cp.mapHi = U8(6, 127); cp.mapVLo = U8(6, 1); cp.mapVHi = U8(6, 127);
+      cp.wt = ['__warm', '__warmD', '__warm']; cp.smp = ['__warmS', '', '']; cp.spec = ['', '', '']; cp.multi = ['', '__warmM', ''];
+      cp.route = Uint8Array.from([0, 0, 0, 2, 0, 0, 1]); cp.envOn = Uint8Array.from([1, 1, 1, 0, 1, 1, 1]);
+      cp.fKey = Uint8Array.from([1, 1]); cp.fClean = Uint8Array.from([0, 1]); cp.pz = Float64Array.from([...PZ_DEF, ...PZ_DEF]);
+      cp.subContig = 1; cp.noiseColor = 1; cp.noiseId = '';
+      cp.envBpm = U8(N_ENV); cp.envLegInv = U8(N_ENV); cp.envStealRe = U8(N_ENV);
+      cp.envLad = Float64Array.from([0, 1 / 128, 1 / 64, 1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32, 64, 128]);
+      cp.lfoMode = Uint8Array.from([0, 1, 2, 0, 1, 2, 0, 0, 0, 0]); cp.lfoMono = Uint8Array.from([0, 0, 1, 0, 1, 0, 0, 0, 0, 0]);
+      cp.lfoType = Uint8Array.from([0, 1, 2, 3, 4, 0, 0, 0, 0, 0]); cp.lfoDir = Uint8Array.from([0, 1, 2, 0, 0, 0, 0, 0, 0, 0]);
+      cp.lfoX10 = U8(N_LFO); cp.lfoSwing = U8(N_LFO); cp.mpeMac = new Int8Array(8).fill(-1);
+      cp.vcLen = 2; cp.vcLMode = 0; cp.vcRates = Float64Array.from([1 / 4, 1 / 3, 1 / 2, 2 / 3, 3 / 4, 1, 4 / 3, 3 / 2, 2, 3, 4]);
+      cp.vcSteps = F64(48); cp.vcSteps[0] = 0.2; cp.vcSteps[7] = 0.3; cp.vcSel = U8(5, 1);
+      cp.tune = F64(128); for (let k = 0; k < 128; k++) cp.tune[k] = k + 0.01;
+      cp.sclN = 0; cp.sclPer = 0; cp.sclSteps = F64(128); cp.mpeOn = 1; cp.mpeBend = 48; cp.mpeBendX = 0; cp.mpeWheelY = 0;
+      cp.outMask = 15; cp.fxKey = ''; cp.NFX = 8; cp.qr = Float64Array.from([16, 256, 1, 32, 512]);
+      cp.steal = 0; cp.veloPorta = 0; cp.notePorta = 0; cp.s1 = 0;
+      cp.use = 1 | 2 | 4 | 8 | 64 | 128 | 256 | 512 | 1024 | 2048;
+      cp.oType[0] = 2; cp.oType[1] = 1; cp.pMode[2] = 1; cp.phMem[2] = 1; cp.fmType[4] = 1; cp.fmType[5] = 2;
+      // matrix: the S1 rows plus LFO 1 sweeping OSC C's two warp modes and both filter types over their whole range
+      const base = Float64Array.from(b1), M = 64;
+      const rows = [[S_LFO1, OKB[2] + D_WT, 0.5], [S_LFO1, O2B[2] + K_W1, 1], [S_LFO1, O2B[2] + K_W2, 1], [S_LFO1, F_TYPE2, 1], [S_LFO1, F2_TYPE, 1],
+        [S_LFO1 + 1, O2B[2] + K_WARP2, 0.5], [S_LFO1 + 2, F2_CUTOFF, 0.3]];
+      const mN0 = c1.mN;
+      for (const k of ['mSrc', 'mAux', 'mCrv']) cp[k] = new Int8Array(M);
+      cp.mDst = new Int16Array(M);
+      for (const k of ['mAmt', 'mK', 'mAK', 'mRise', 'mFall']) cp[k] = new Float64Array(M);
+      for (const k of ['mBi', 'mInv', 'mCtx', 'mOn', 'mRd', 'mAlias']) cp[k] = new Uint8Array(M);
+      cp.mCrv.fill(-1);
+      for (let q = 0; q < mN0; q++) {
+        cp.mSrc[q] = c1.mSrc[q]; cp.mDst[q] = c1.mDst[q]; cp.mAmt[q] = c1.mAmt[q]; cp.mBi[q] = c1.mBi[q]; cp.mK[q] = c1.mK[q];
+        cp.mAux[q] = c1.mAux[q]; cp.mInv[q] = c1.mInv[q]; cp.mCtx[q] = c1.mCtx[q]; cp.mOn[q] = c1.mOn[q];
+      }
+      cp.mRise[1] = 0.05; cp.mFall[1] = 0.1;
+      cp.modded = Uint8Array.from(c1.modded); cp.srcUsed = Uint8Array.from(c1.srcUsed); cp.srcBi = U8(NSRC2);
+      for (let j = 0; j < rows.length; j++) {
+        const q = mN0 + j, r = rows[j];
+        cp.mSrc[q] = r[0]; cp.mDst[q] = r[1]; cp.mAmt[q] = r[2]; cp.mCtx[q] = 1; cp.modded[r[1]] = 1; cp.srcUsed[r[0]] = 1;
+      }
+      cp.mN = mN0 + rows.length;
+      for (const vi of [C_ON, F2_ON, F1SW[2]]) base[vi] = 1;
+      const kc = OKB[2];
+      base[kc + D_LEVEL] = 0.5; base[kc + D_UNI] = 3 / 15; base[kc + D_DET] = 0.4; base[kc + D_WARP] = 0.5; base[kc + D_SEMI] = 13 / 24;
+      base[OTRK[2]] = 1; base[O2B[2] + K_WARP2] = 0.4; base[O2B[2] + K_WVAR1] = 0.5; base[O2B[2] + K_RATIO] = 0.5; base[O2B[2] + K_HZ] = 0.5;
+      base[O2B[2] + K_UNIWARP2] = 0.5; base[O2B[2] + K_FBAL] = 0.5; base[O2B[2] + K_BUS1] = 0.5;
+      for (let o = 0; o < 2; o++) { base[O2B[o] + K_RATIO] = 0.5; base[O2B[o] + K_HZ] = 0.5; base[O2B[o] + K_UNIWARP2] = 0.5; base[O2B[o] + 9] = 1; base[O2B[o] + 11] = 1; base[O2B[o] + 13] = 0.75; }
+      base[S_CRS] = 0.55; base[S_TRACK] = 1; base[S_SHP] = 0.4; base[N_STEREO] = 0.7; base[N_COLOR] = 0.6;
+      base[F_TYPE2] = 1 / 107; base[F_LEVEL] = 0.5; base[F2_CUTOFF] = 0.6; base[F2_RES] = 0.3; base[F2_MIX] = 1; base[F2_PAN] = 0.5; base[F2_LEVEL] = 0.5;
+      base[F2_TYPE] = 100 / 107; base[F2_X] = 0.3; base[F2_X + 1] = 0.6; base[F2_BUS1 + 1] = 0.5;
+      for (let c = 0; c < 5; c++) base[F2SW[c]] = 1;
+      base[G_BU2] = 2 / 48; base[G_BD2] = 46 / 48; base[VI('vc.escale')] = 0.5; base[VI('vc.lscale')] = 0.5;
+      // LFO 1 (the sweep of OSC C's warp modes and both filter types) at 100·0.9⁴ ≈ 66 Hz: the 20 ms of the Serum 2 part
+      // visit every filter type 0–107 and every WARPS2 mode a wavetable oscillator can take (0–57)
+      base[L1_RATE] = 0.9;
+      cp.base = base;
+      return cp;
     }
 
     /* ------------------------------------------------------------ first-use warm-up on the real patch (§11.5) */
@@ -3040,60 +4139,295 @@
     // code (V8: dependent prototype chain / field type changes) and the first chord ran unoptimised (2-3x its steady
     // cost for several quanta — a dropout on slower machines). Warming up with the real patch shape instead costs ~50 %
     // more CPU for good (generic code), so the host plays the processor's own patch on two hidden voices into scratch
-    // buffers, one span per warmTick while the track is silent, once the patch's tables are stored (gives up after
-    // HW_WAIT spans). The note bookkeeping the hidden voices touch (recent voice, portamento start, alternation, random
-    // sequence, phase memory) is restored at the end, so the track itself is unchanged. reset() ends it.
-    const HW_SPANS = 80, HW_WAIT = 800;
+    // buffers, one span per warmTick while the track is silent, once the patch's tables and assets are stored (gives up
+    // after HW_WAIT spans). The note bookkeeping the hidden voices touch (recent voice, portamento start, alternation,
+    // random sequence, phase memory, the Voice Control step counter proc.vcN, the multisample round-robin counters
+    // sx.msRR) is restored at the end, so the track itself is unchanged; they write no channel meter. reset() ends it.
+    // Lazy warm-ups (§11.10): jobs queued through SxBase.warmAdd the first time an apply selects a heavy engine (SxSpec
+    // queues its FFT job itself; a Granular oscillator queues GRAN_JOB here) run one step per warmTick in every state of
+    // the hidden-voice warm-up (waiting, rendering, after it ended or gave up); warmTick returns hidden spans left + lazy
+    // jobs left, so 0 means nothing is queued. The hidden voices leave Granular oscillators silent: GRAN_JOB warms them
+    // up in bounded steps (§14.1 row q: every lazy warmTick ≤ 1 ms), after the hidden voices.
+    // (M4) HW_SPANS_SPEC: a patch with a Spectral oscillator plays its hidden voices longer — its frame code (one build per
+    // hop) had not reached optimised code after 80 spans in V8, so a first chord 0.5 s after the preset change ran it
+    // unoptimised for ≈ 40 ms (2–6× the steady quantum); the spans are cheap (two Spectral voices ≈ 0.03 of real time)
+    const HW_SPANS = 80, HW_SPANS_SPEC = 240, HW_WAIT = 800, HW_COLD = 6;
+    // GRAN_JOB: GW_CH chunks per hidden voice, at most GW_K chunks per warmTick; the first GW_C0 chunks of each voice one
+    // per step with light grain caps (GW_Q0 / GW_Q1, the CP.qr layout): the code is cold there
+    const GW_CH = 320, GW_K = 2, GW_C0 = 8, GW_Q0 = Float64Array.from([16, 18, 1, 32, 512]);
+    // (M4) the first voice's light caps allow 18 grains per oscillator (more than one batch of 16: the grain loop's later
+    // batches), the second voice starts under a processor cap of 6 grains (GW_Q1): it is refused and starves (the cap
+    // branches) — paths a first real chord otherwise met cold (V8 deoptimised the whole render there)
+    const GW_Q1 = Float64Array.from([16, 8, 1, 32, 6]);
     function warmStart(proc) {
       const sx = attach(proc);
       if (sx.hwN !== 0) return;
-      sx.hwN = HW_SPANS; sx.hwOn = 0; sx.hwWait = HW_WAIT;
+      sx.hwT = hwSpans(proc); sx.hwN = sx.hwT; sx.hwOn = 0; sx.hwWait = HW_WAIT;
     }
-    function hwReady(sx) {
-      if (!sx.ok) return false;
-      const bT = sx.bT;
-      if (bT[A_ON] >= 0.5 && !tables.has(sx.wtA)) return false;
-      if (bT[A_ON + 1] >= 0.5 && !tables.has(sx.wtB)) return false;
-      if (bT[N_ON] >= 0.5 && !tables.has(sx.noiseId)) return false;
+    // the hidden spans of the processor's patch: HW_SPANS_SPEC when an oscillator that plays is Spectral (read from the
+    // CP, as warmKey: the processor state may not be synced to it yet)
+    function hwSpans(proc) {
+      const cp = proc && proc.p ? proc.p.serum : null;
+      if (!cpOk(cp) || !cp.base || cp.base.length < NSV) return HW_SPANS;
+      const b = cp.base, use = cp.use | 0, ot = cp.oType;
+      for (let o = 0; o < N_OSC; o++) {
+        const on = (o < 2 || (use & 1) !== 0) && b[OON[o]] >= 0.5;
+        if (on && ot && ot.length > o && (ot[o] | 0) === 4) return HW_SPANS_SPEC;
+      }
+      return HW_SPANS;
+    }
+    // an oscillator that plays (on; OSC C only with CP.use & 1)
+    function oscOn(sx, o) { return (o < 2 || (sx.use & 1) !== 0) && sx.bT[OON[o]] >= 0.5; }
+    // the asset of oscillator o of type t is stored (§4.5: Multisample cp.multi with every zone sample, Sample/Granular
+    // cp.smp, Spectral cp.spec; '' = none selected, nothing to wait for; no SxBase: those oscillators are silent anyway)
+    function assetReady(cp, t, o) {
+      const B = globalThis.SxBase;
+      if (!B || typeof B.getAsset !== 'function' || !cp) return true;
+      const ids = t === 1 ? cp.multi : t === 4 ? cp.spec : cp.smp, id = ids && typeof ids[o] === 'string' ? ids[o] : '';
+      if (id === '') return true;
+      const e = B.getAsset(id);
+      if (!e) return false;
+      if (t === 1 && Array.isArray(e.zones)) {
+        for (let z = 0; z < e.zones.length; z++) {
+          const zs = e.zones[z] ? e.zones[z].smp : '';
+          if (typeof zs === 'string' && zs !== '' && !B.getAsset(zs)) return false;
+        }
+      }
       return true;
     }
+    // the hidden voices can start: wavetables and assets of every oscillator that plays (Granular excepted: GRAN_JOB waits
+    // for its own asset) and the sample noise's table are stored
+    function hwReady(sx) {
+      if (!sx.ok) return false;
+      for (let o = 0; o < N_OSC; o++) {
+        if (!oscOn(sx, o)) continue;
+        const t = sx.oType[o];
+        if (t === 0) { if (!tables.has(sx.wt[o])) return false; }
+        else if (t !== 3 && !assetReady(sx.cp, t, o)) return false;
+      }
+      if (sx.bT[N_ON] >= 0.5 && sx.noiseColor < 0 && !tables.has(sx.noiseId)) return false;
+      return true;
+    }
+    // the note bookkeeping hidden note-ons touch, saved before them and restored after (both warm-ups, one at a time)
+    function hwSave(proc, sx) {
+      sx.hwRec = sx.mod.recent; sx.hwLP = sx.mod.lastPitch; sx.hwMem.set(sx.memPh); sx.hwSub = sx.subPh;
+      sx.hwAlt = sx.alt; sx.hwRng = sx.rng;
+      sx.hwVc = typeof proc.vcN === 'number' ? proc.vcN : -1;
+      const rr = sx.msRR;
+      if (rr) {
+        if (sx.hwRR === null || sx.hwRR.length !== rr.length) sx.hwRR = new Uint32Array(rr.length);
+        sx.hwRR.set(rr); sx.hwRRok = 1;
+      } else sx.hwRRok = 0;
+    }
+    function hwRestore(proc, sx) {
+      sx.mod.recent = sx.hwRec; sx.mod.lastPitch = sx.hwLP; sx.memPh.set(sx.hwMem); sx.subPh = sx.hwSub;
+      sx.alt = sx.hwAlt; sx.rng = sx.hwRng;
+      if (sx.hwVc >= 0) proc.vcN = sx.hwVc;
+      const rr = sx.msRR;
+      if (rr) { if (sx.hwRRok === 1 && sx.hwRR !== null && sx.hwRR.length === rr.length) rr.set(sx.hwRR); else rr.fill(0); }
+      sx.hwRec = null; sx.hwRRok = 0;
+    }
+    // lazy jobs queued (no step)
+    function lazyN(proc) { const W = proc.sxWarm; return W && W.q ? W.q.length - W.h : 0; }
+    // one step of the head lazy job (SxBase.warmTick, ≤ 1 ms) → lazy jobs left
+    function lazyTick(proc) {
+      const B = globalThis.SxBase;
+      return B && typeof B.warmTick === 'function' && proc.sxWarm ? B.warmTick(proc) | 0 : 0;
+    }
+    // the Granular lazy warm-up (§11.10; queued by SerumVoice.apply, live processors only, once per processor and asset
+    // id): two hidden voices (hid 2, notes 60 and 67, as the first-use warm-up: two voices reach the processor grain cap)
+    // play the current patch, one bounded step per warmTick (§14.1 row q): the voices are made, applied and started in
+    // separate steps; then each step renders one voice, alternating — one chunk with light grain caps in the first steps
+    // (cold code), then (after one re-apply step per voice with the patch's own caps) GW_K chunks — GW_CH chunks per
+    // voice, the second note released half-way. It waits for the first-use hidden
+    // voices and (up to HW_WAIT steps) for the Granular assets; it is dropped while a voice of the track sounds (real
+    // notes run that code; warmEnd ends it) and when the patch no longer plays Granular; a patch or rate change restarts
+    // it. One complete run per processor is enough (the code is warm for any sample): later jobs then end at once.
+    function granOn(sx) {
+      for (let o = 0; o < N_OSC; o++) if (sx.oType[o] === 3 && oscOn(sx, o)) return true;
+      return false;
+    }
+    function granReady(sx) {
+      for (let o = 0; o < N_OSC; o++) if (sx.oType[o] === 3 && oscOn(sx, o) && !assetReady(sx.cp, 3, o)) return false;
+      return true;
+    }
+    function GRAN_JOB(proc) {
+      const sx = proc.sx;
+      if (!sx || proc.offline || sx.gwOk === 1 || sx.mod === null) { if (sx) gwEnd(proc); return false; }
+      const vs = proc.voices;
+      if (vs) for (let k = 0; k < vs.length; k++) if (vs[k] && vs[k].active) { gwEnd(proc); return false; }
+      if (sx.hwN !== 0) return true;                          // after the first-use hidden voices
+      const cp = proc.p && proc.p.serum;
+      if (sx.gwSt !== 0 && (cp !== sx.gwCp || +proc.fs !== sx.gwFs)) gwEnd(proc);   // patch or rate changed: restart
+      const st = sx.gwSt, g = sx.gw;
+      switch (st) {
+        case 0:
+          if (!sx.ok || !cpOk(cp) || !granOn(sx)) return false;
+          if (!granReady(sx)) return --sx.gwWait > 0;         // waiting for the Granular asset
+          sx.gw = [new SerumVoice(proc, 0), null];
+          sx.gw[0].hid = 2; sx.gw[0].gq = GW_Q0;
+          sx.gwL = new Float64Array(GW_K * MAXCH); sx.gwR = new Float64Array(GW_K * MAXCH);
+          sx.gwCp = cp; sx.gwFs = +proc.fs;
+          break;
+        case 1: g[0].apply(proc.p); break;
+        case 2: g[1] = new SerumVoice(proc, 1); g[1].hid = 2; g[1].gq = GW_Q1; break;
+        case 3: g[1].apply(proc.p); gwQ(g[1]); break;
+        case 4:
+          if (!g[0].ok || !g[1].ok || !(g[0].CH > 0 && g[0].CH <= MAXCH)) { gwEnd(proc); return false; }
+          hwSave(proc, sx); sx.gwSaved = 1;
+          g[0].noteOn(60, 0.8, false, 1);
+          sx.mod.recent = sx.hwRec;                              // never the panel's voice (snapshot, filter tap)
+          break;
+        case 5:
+          g[1].noteOn(67, 0.6, false, 1);
+          sx.mod.recent = sx.hwRec;
+          sx.gwN = 2 * GW_CH;
+          break;
+        default: {
+          const k = sx.gwN & 1, done = GW_CH - (sx.gwN >> 1), c = done < GW_C0 ? 1 : GW_K;
+          if (c > 1 && g[k].gq !== null) { g[k].gq = null; g[k].apply(proc.p); return true; }   // the patch's caps
+          const L = sx.gwL, R = sx.gwR, n = c * g[0].CH;
+          for (let i = 0; i < n; i++) { L[i] = 0; R[i] = 0; }
+          if (k === 1 && done === GW_CH >> 1) g[1].noteOff(0.5);   // the release path as well
+          if (k === 1 && done === GW_CH >> 2) { g[1].noteOn(67, 0.6, false, 1); sx.mod.recent = sx.hwRec; }   // (M4) a retrigger: the grains' fade-out
+          hidRender(sx, g[k], hwOut(L, R), n);
+          sx.gwN--;
+          if (sx.gwN > 0 && (g[0].active || g[1].active)) return true;
+          gwEnd(proc);
+          sx.gwOk = 1;
+          return false;
+        }
+      }
+      sx.gwSt = st + 1;
+      return true;
+    }
+    // (M4) the second hidden voice's Granular oscillators run time-compressed (SxGran's wq: grains of a few ms, stream
+    // playheads crossing their region in a fraction of the job) — the paths a real note meets only after seconds (grains
+    // ending, spawns into the room they leave, reads crossing the region ends, playhead ends and loop wraps; a retrigger
+    // at 1/4: the grains' fade-out) are warm early; the first voice plays the patch as it is (the paths of a chord's
+    // first quanta, and enough grains to have the code optimised); the two alternate step by step
+    function gwQ(v) { for (let o = 0; o < N_OSC; o++) { const x = v.oxs[4 * o + 2]; if (x !== null) x.wq = 1; } }
+    // ends the Granular job's hidden notes (grains back to the processor, bookkeeping restored); the job restarts from
+    // its first step if it runs again
+    function gwEnd(proc) {
+      const sx = proc.sx;
+      if (!sx) return;
+      if (sx.gw !== null) for (let k = 0; k < 2; k++) { const v = sx.gw[k]; if (v !== null && v.active) v.kill(); }
+      if (sx.gwSaved === 1) { hwRestore(proc, sx); sx.gwSaved = 0; }
+      sx.gw = null; sx.gwL = null; sx.gwR = null; sx.gwSt = 0; sx.gwN = 0; sx.gwCp = null; sx.gwRt = 0;
+    }
+    // The hidden voices start over three quanta (§14.1 row q: no quantum carries the whole start — construction, apply,
+    // note-on and the first span cost 4–6 ms together; a lazy step runs with the cheap apply / note-on steps, none with
+    // the construction), and the first HW_COLD spans render one chunk of one voice each (the code is cold: interpreted,
+    // a Spectral note's first frames), then both voices whole spans.
     function warmTick(proc, N) {
       const sx = proc.sx;
-      if (!sx || sx.hwN === 0) return 0;
+      if (!sx) return 0;
+      if (sx.hwN === 0) { const j = lazyTick(proc); return sx.hwN + j; }
       if (sx.hwOn === 0) {
-        if (!hwReady(sx)) { if (--sx.hwWait <= 0) sx.hwN = 0; return sx.hwN; }
-        sx.hwRec = sx.recent; sx.hwLP = sx.lastPitch; sx.hwMem[0] = sx.memPh[0]; sx.hwMem[1] = sx.memPh[1];
-        sx.hwAlt = sx.alt; sx.hwRng = sx.rng;
+        if (!hwReady(sx)) {
+          if (--sx.hwWait <= 0) sx.hwN = 0;                    // gives up on the hidden voices; lazy jobs still run
+          const j = lazyTick(proc);
+          return sx.hwN + j;
+        }
+        gwEnd(proc);                                           // (one hidden note at a time: a Granular job restarts later)
+        hwSave(proc, sx);
         const a = new SerumVoice(proc, 0), b = new SerumVoice(proc, 1);
+        a.hid = 1; b.hid = 1;
         sx.hw = [a, b]; sx.hwL = new Float64Array(MAXCH * 32); sx.hwR = new Float64Array(MAXCH * 32);
-        a.apply(proc.p); b.apply(proc.p);
-        a.noteOn(60, 0.8, false, 1); b.noteOn(67, 0.6, false, 1);
-        sx.recent = sx.hwRec;                                    // never the panel's voice (snapshot, filter tap)
-        sx.hwOn = 1; sx.hwFs = +proc.fs;
+        sx.hwOn = 1; sx.hwSt = 1; sx.hwFs = +proc.fs;
+        return sx.hwN + lazyN(proc);
       }
-      if (+proc.fs !== sx.hwFs || !(N > 0 && N <= MAXCH * 32)) { warmEnd(proc); return 0; }
-      const L = sx.hwL, R = sx.hwR, hw = sx.hw;
+      // (apply and note-on are cheap steps: a lazy step — e.g. the Spectral FFT warm-up — runs before the first span)
+      if (sx.hwSt === 1) { sx.hw[0].apply(proc.p); sx.hw[1].apply(proc.p); sx.hwSt = 2; return sx.hwN + lazyTick(proc); }
+      if (sx.hwSt === 2) {
+        sx.hw[0].noteOn(60, 0.8, false, 1); sx.hw[1].noteOn(67, 0.6, false, 1);
+        sx.mod.recent = sx.hwRec;                                // never the panel's voice (snapshot, filter tap)
+        sx.hwSt = 3;
+        return sx.hwN + lazyTick(proc);
+      }
+      if (+proc.fs !== sx.hwFs || !(N > 0 && N <= MAXCH * 32)) { warmEnd(proc); const j = lazyTick(proc); return sx.hwN + j; }
+      const L = sx.hwL, R = sx.hwR, hw = sx.hw, O = hwOut(L, R);
       for (let i = 0; i < N; i++) { L[i] = 0; R[i] = 0; }
-      if (sx.hwN === HW_SPANS >> 1) hw[1].noteOff(0.5);             // the release path as well
-      hw[0].render(L, R, N); hw[1].render(L, R, N);
+      if (sx.hwN === sx.hwT >> 1) hw[1].noteOff(0.5);               // the release path as well
+      // (M4) a retrigger of the first voice a quarter in: a note's first chunk (entry resolution, stream / grain starts,
+      // slices) runs again with the code's type feedback in place — the hidden voices' own first chunks ran before V8 had
+      // allocated it, so the first real chord met those paths cold in optimised code and deoptimised it
+      if (sx.hwN === sx.hwT - (sx.hwT >> 2)) { hw[0].noteOn(60, 0.8, false, 1); sx.mod.recent = sx.hwRec; }
+      const cold = sx.hwT - sx.hwN;                                    // spans rendered so far
+      if (cold < HW_COLD) {
+        // the first spans of cold code (interpreted, a Spectral note's first frames): one chunk of one voice per span
+        const v = hw[cold & 1], c = v.CH > 0 && v.CH <= N ? v.CH : N;
+        hidRender(sx, v, O, c);
+        sx.hwN--;
+        return sx.hwN + lazyN(proc);
+      }
+      hidRender(sx, hw[0], O, N); hidRender(sx, hw[1], O, N);
       if (--sx.hwN === 0) warmEnd(proc);
-      return sx.hwN;
+      const j = lazyTick(proc);
+      return sx.hwN + j;
     }
+    // the shape of the processor's patch the hidden voices warm up (§11.10): S1/S2 mode, per oscillator that plays its type
+    // and warp modes, the filter types, noise / sub — '' without a usable CP. The engine re-arms warmStart when a patch's
+    // shape differs from the one it last warmed (a preset change while the track is silent: the code the new shape runs
+    // is JIT-cold, its first chord would be rendered unoptimised)
+    function warmKey(proc) {
+      const cp = proc && proc.p ? proc.p.serum : null;
+      if (!cpOk(cp) || !cp.base || cp.base.length < NSV) return '';
+      const b = cp.base, use = cp.use | 0, s1 = cp.s1 ? 1 : 0, ot = cp.oType;
+      let k = s1 ? 'S1' : 'S2';
+      for (let o = 0; o < N_OSC; o++) {
+        const on = (o < 2 || (use & 1) !== 0) && b[OON[o]] >= 0.5;
+        if (!on) { k += '|-'; continue; }
+        const w = O2B[o], t = ot && ot.length > o ? ot[o] | 0 : 0;
+        k += '|' + t + ':' + (o < 2 && s1 ? round(22 * b[A_WARPMODE + o]) : round(81 * b[w + K_W1])) + ':' + ((use & 4) !== 0 ? round(81 * b[w + K_W2]) : 0);
+      }
+      k += '|f' + (b[F_ON] >= 0.5 ? (s1 ? round(95 * b[F_TYPE]) : round(107 * b[F_TYPE2])) : -1);
+      k += ':' + ((use & 2) !== 0 && b[F2_ON] >= 0.5 ? round(107 * b[F2_TYPE]) : -1);
+      k += '|' + (b[N_ON] >= 0.5 ? 1 : 0) + (b[S_ON] >= 0.5 ? 1 : 0);
+      return k;
+    }
+    // the hidden voices render through the engine's call form render(O, N) with an output object of the engine's shape
+    // (§12.2 sxOut: L, R, dL, dR, b1L, b1R, b2L, b2R, in that order: the same map), every pair on the scratch buffers —
+    // warmed up with render(L, R, N) instead, the first real chord met a new map in render() and deoptimised (V8)
+    let HWO = null;
+    function hwOut(L, R) {
+      if (HWO === null || HWO.L !== L || HWO.R !== R) HWO = { L, R, dL: L, dR: R, b1L: L, b1R: R, b2L: L, b2R: R };
+      return HWO;
+    }
+    // one hidden span as the recent voice, as the first real chord's recent voice renders (its `recent === this` branch:
+    // SxMod post(), phase memory — never run by the warm-up before, it deoptimised render at the first chord, V8); the
+    // processor's mono sources and last pitch (read by every span's begin / fxMods / recentPitch) are restored right
+    // after, the phase memory with the rest of the bookkeeping at the end (hwRestore)
+    function hidRender(sx, v, O, N) {
+      const m = sx.mod, ms = m.monoSrc, rec = m.recent, lp = m.lastPitch;
+      if (sx.hwMs === null || sx.hwMs.length !== ms.length) sx.hwMs = new Float64Array(ms.length);
+      sx.hwMs.set(ms);
+      m.recent = v;
+      v.render(O, N);
+      recentPitch(v.proc);                                     // (the engine reads it every span: its recent-voice path)
+      m.recent = rec; ms.set(sx.hwMs); m.lastPitch = lp;
+    }
+    // ends both warm-ups (the host calls it at the first real note, and when the track leaves Serum)
     function warmEnd(proc) {
       const sx = proc.sx;
       if (!sx) return;
       if (sx.hwOn === 1) {
-        sx.recent = sx.hwRec; sx.lastPitch = sx.hwLP; sx.memPh[0] = sx.hwMem[0]; sx.memPh[1] = sx.hwMem[1];
-        sx.alt = sx.hwAlt; sx.rng = sx.hwRng;
+        // the hidden voices give back what they hold (spectral streams, grains), then the bookkeeping is restored
+        if (sx.hw !== null) for (let k = 0; k < sx.hw.length; k++) sx.hw[k].kill();
+        hwRestore(proc, sx);
       }
-      sx.hw = null; sx.hwL = null; sx.hwR = null; sx.hwN = 0; sx.hwOn = 0; sx.hwRec = null;
+      sx.hw = null; sx.hwL = null; sx.hwR = null; sx.hwN = 0; sx.hwOn = 0; sx.hwSt = 0; sx.hwRec = null; sx.hwRRok = 0;
+      gwEnd(proc);
     }
 
     globalThis.SerumDSP = Object.freeze({
       VER, DIDX, FIDX, SIDX, LAW_TAB, SRC_POL, SUB_IDS, FILTER_FAMILY, FILTER_FAM_OF, UNI, tables,
+      VIDX, SUB_IDS2,
       get epoch() { return epoch; },
       storeWT, storeWTFrame, dropWT,
-      attach, reset, idle, transport, begin, fxMods, snapshot, warmUp, warmStart, warmTick, warmEnd,
+      attach, reset, idle, transport, begin, fxMods, snapshot, mergeCT, recentPitch, warmUp, warmStart, warmTick, warmEnd, warmKey,
+      allocate,
       SerumVoice, SFilter, bend, evalPts, renderWarp, filterImpulse,
     });
   } catch (err) {

@@ -13,6 +13,7 @@ export class FXRackUI {
     made.push(this);
   }
   refresh() { this.n++; }
+  ctlExtras(id) { return typeof this.extras === 'function' ? this.extras(id) : []; }
   scrollTo() {}
   destroy() { this.dead = true; this.el.remove(); }
 }

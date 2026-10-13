@@ -1,29 +1,42 @@
-// serum-core unit tests (spec §10.2). Run: node --test tests/serum-core.test.mjs
+// serum-core unit tests (Phase-1 spec §10.2, updated to the v2 contracts of SPEC-serum2 §15.2 with the equivalent v1-prefix
+// checks; owner C1). Run: node --test tests/serum-core.test.mjs
+import './v8-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, copyFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import * as C from '../serum-core.js';
+import * as C from '../serum-core.js?v=6';
+import * as P1 from './ref-p1/serum-core.js';
 import { loadFixture } from './fixtures/load.mjs';
 
 const {
   DESTS, DEST_INDEX, NS, NF, ND, SOURCES, SRC_INDEX, SRC_MENU, NSRC, FILTERS, WARPS, UNI_STACKS, UNI_MODES, DIST_MODES,
   MODFX_LADDER, DLY_LADDER, CMP_RATIO_DETENTS, LFO_LADDER, DIDX, FIDX, SIDX, SUB_IDS, MATRIX_ONLY, MODULE_FIELDS,
-  lawValue, lawNorm, fmtParam, parseParam, defaultSerum, normalizeSerum, compileSerum, defaultFx, normalizeFx, compileFx, compileFxT,
+  lawValue, lawNorm, fmtParam, parseParam, defaultSerum, normalizeSerum, compileSerum, compileFx, compileFxT,
   fxModded, lfoLadder, bend, evalPts, renderPts, uniTables, detuneShape, stackSemis, semitoneAmount, midiValue,
-  isCenter, destLabel, varLabel, FACTORY_PRESETS, FACTORY_CHAINS,
+  isCenter, destLabel, varLabel, FACTORY_PRESETS,
   addMod, modsFor, removeMods, setModAmount, toggleModBypass, toggleModPolarity, reassignSource, veloToAmp, vibratoAssign,
-  initLfos, copyLfo, linkedBuses, newBus, pruneBuses, clearPointMods, warpChoice, lfoUsed, applyPreset, applyPresetFx,
-  destBase, copyModule,
+  initLfos, copyLfo, linkedBuses, newBus, pruneBuses, clearPointMods, warpChoice, lfoUsed, applyPreset,
+  destBase, copyModule, NV1, NF1, NS2, NSV, vi, idxOfVi, isFxId, migrate1, setS1, assembleCT, FACTORY_PRESETS_V1, GIDX,
 } = C;
+// The Phase-1 tests of this file exercise the v1 FX functions (still exported under their …V1 names); since RULINGS2 F1
+// the entry points defaultFx / normalizeFx / applyPresetFx / FACTORY_CHAINS are the v2 ones (tested below and in
+// tests/fx-core.test.mjs)
+const { defaultFxV1: defaultFx, normalizeFxV1: normalizeFx, applyPresetFxV1: applyPresetFx, FACTORY_CHAINS_V1: FACTORY_CHAINS } = C;
 
 const json = f => JSON.parse(readFileSync(new URL('./fixtures/' + f, import.meta.url), 'utf8'));
 const close = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg || ''} expected ${b} ± ${tol}, got ${a}`);
 const db = g => 20 * Math.log10(g);
 const STEPPED = new Set(['int', 'enum', 'bool']);
-const row = o => Object.assign({ src: '', amt: 0, dst: '', bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1 }, o);
+const row = o => Object.assign({ src: '', amt: 0, dst: '', bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 }, o);
+const rowV1 = o => Object.assign({ src: '', amt: 0, dst: '', bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1 }, o);
+const clone = x => JSON.parse(JSON.stringify(x));
+// the Phase-1 default state (v1 JSON) and its migrated v2 form (S1 Compatibility Mode)
+const defaultV1 = () => clone(FACTORY_PRESETS_V1[0].v.s);
+const S1 = () => migrate1(defaultV1());
+const ctOf = P => assembleCT(P.serumT);
 const withRows = (rows, mut) => {
   const s = defaultSerum();
   rows.forEach((r, i) => { s.matrix[i] = row(r); });
@@ -33,40 +46,79 @@ const withRows = (rows, mut) => {
 
 /* ------------------------------------------------------------ 1. destinations */
 
-test('1 DESTS: counts, ids, index, fixture equality, grid-exact stepped defaults', () => {
-  assert.equal(ND, 248);
+test('1 DESTS: counts, ids, index, fixture equality (v1 prefix, dests2.json, FX_ROWS_V1), grid-exact stepped defaults', () => {
+  assert.equal(ND, 529);
   assert.equal(NS, 148);
-  assert.equal(NF, 100);
-  assert.equal(DESTS.length, 248);
-  assert.equal(new Set(DESTS.map(d => d.id)).size, 248);
+  assert.equal(NF, 100, 'Phase-1 name of the v1 FX block length');
+  assert.deepEqual([NV1, NF1, NS2, NSV], [248, 100, 281, 429]);
+  assert.equal(DESTS.length, 529);
+  assert.equal(new Set(DESTS.map(d => d.id)).size, 529);
   DESTS.forEach((d, i) => assert.equal(DEST_INDEX[d.id], i));
+  const keys = ['id', 'label', 'law', 'lo', 'hi', 'fmt', 'scope', 'ctr', 'group'];
+  // v1 prefix: rows 0–247 equal the Phase-1 fixture (indices, ids, laws and defaults never change, §3.11)
   const fx = json('dests.json');
-  assert.equal(fx.NS, NS);
-  assert.equal(fx.NF, NF);
-  assert.equal(fx.ND, ND);
-  assert.equal(fx.DESTS.length, ND);
+  assert.deepEqual([fx.NS, fx.NF, fx.ND, fx.DESTS.length], [NS, NF1, NV1, NV1]);
   fx.DESTS.forEach((f, i) => {
     const d = DESTS[i];
-    for (const k of ['id', 'label', 'law', 'lo', 'hi', 'fmt', 'scope', 'ctr', 'group']) assert.equal(d[k], f[k], `${f.id}.${k}`);
+    for (const k of keys) assert.equal(d[k], f[k], `${f.id}.${k}`);
     close(d.def, f.def, 1e-12, f.id + '.def');
     assert.deepEqual(Object.keys(d).sort(), ['ctr', 'def', 'fmt', 'group', 'hi', 'id', 'label', 'law', 'lo', 'scope']);
   });
+  assert.deepEqual(DESTS.slice(0, NV1), P1.DESTS, 'the Phase-1 table is the exact prefix');
+  // the full v2 table equals dests2.json (generated by gen2.mjs from the §3.11.2 builder)
+  const f2 = json('dests2.json');
+  assert.deepEqual([f2.NS, f2.NV1, f2.NF1, f2.NS2, f2.ND, f2.NSV], [NS, NV1, NF1, NS2, ND, NSV]);
+  f2.DESTS.forEach((f, i) => { for (const k of keys.concat(['def'])) assert.equal(DESTS[i][k], f[k], `${f.id}.${k}`); });
+  // rows 148–247 are generated from fx-core's FX_ROWS_V1
+  assert.equal(C.FX_ROWS_V1.length, 100);
+  assert.deepEqual(DESTS.slice(NS, NV1), C.FX_ROWS_V1);
   for (const d of DESTS) {
     if (!STEPPED.has(d.law)) continue;
     const m = d.hi - d.lo, k = Math.round(d.def * m);
     assert.equal(d.def, k / m, d.id + ' default on grid');
   }
-  // spot rows of the §3.13 table
+  // spot rows of the Phase-1 §3.13 table and of SPEC-serum2 §3.11.2
   assert.deepEqual({ ...DESTS[42] }, { id: 'f.cutoff', label: 'Filter Cutoff', law: 'exp', lo: C.MIDI0, hi: 22050, def: 0.5, fmt: 'hz', scope: 'V', ctr: 0, group: 'Filter' });
   assert.equal(DESTS[134].def, 1 / 95);
   assert.equal(DESTS[101].def, 13 / 24);
   assert.equal(DESTS[148].id, 'g.master');
   assert.equal(DESTS[234].id, 'g.bypass');
   assert.equal(DESTS[247].id, 'fx.fil.type');
+  const at = { 248: 'c.level', 264: 'c.stack', 265: 'c.on', 266: 'c.track', 267: 'a.w1', 317: 'a.bus2', 318: 'b.w1', 369: 'c.w1', 419: 'c.bus2',
+    420: 's.shp', 427: 'n.stereo', 432: 'f.type2', 439: 'f2.on', 457: 'e4.att', 465: 'e2.start', 471: 'l9.rate', 479: 'l1.phase', 489: 'm1',
+    497: 'vc.pan', 503: 'g.direct', 505: 'g.bus2v', 506: 'arp.on', 519: 'arp.wrange', 520: 'clip.on', 523: 'clip.offset', 524: 'a.lenrate',
+    526: 'c.lenrate', 527: 'g.bu2', 528: 'g.bd2' };
+  for (const k of Object.keys(at)) assert.equal(DESTS[k].id, at[k], 'idx ' + k);
+  assert.deepEqual({ ...DESTS[DEST_INDEX['a.ratio']] }, { id: 'a.ratio', label: 'Osc A Ratio', law: 'exp', lo: 0.0625, hi: 16, def: 0.5, fmt: 'ratio2', scope: 'V', ctr: 0, group: 'Osc A' });
+  assert.equal(DESTS[DEST_INDEX['g.bd2']].def, 46 / 48);
+  assert.equal(DESTS[DEST_INDEX['a.lenrate']].def, 5 / 14);
+  assert.equal(DESTS[DEST_INDEX['f.type2']].def, 1 / 107);
   assert.equal(C.MIDI0, 8.175798915643707);
 });
 
-test('1b DIDX / FIDX / SIDX naming and spot values (§3.13)', () => {
+test('1c vi / idxOfVi / isFxId (§3.11.1)', () => {
+  for (let i = 0; i < ND; i++) {
+    const v = vi(i), d = DESTS[i];
+    if (i < NS) assert.equal(v, i);
+    else if (i < NV1) assert.equal(v, -1, d.id + ' (v1 FX row)');
+    else if (d.scope === 'M') assert.equal(v, -1, d.id + ' (scope M)');
+    else assert.equal(v, i - 100, d.id);
+    assert.equal(vi(d.id), v);
+    if (v >= 0) assert.equal(idxOfVi(v), i);
+  }
+  assert.deepEqual(['g.direct', 'g.bus1v', 'g.bus2v'].map(vi), [-1, -1, -1]);
+  assert.deepEqual([403, 404, 405].map(idxOfVi), [-1, -1, -1], 'base slots of the scope-M rows stay unused');
+  assert.deepEqual([vi('nope'), vi(-1), vi(529), vi(1.5), idxOfVi(429), idxOfVi(-1), idxOfVi(2.5)], [-1, -1, -1, -1, -1, -1, -1]);
+  assert.equal(vi('c.level'), 148);
+  assert.equal(vi('g.bd2'), 428);
+  let n = 0;
+  for (let v = 0; v < NSV; v++) if (idxOfVi(v) >= 0) { n++; assert.equal(vi(idxOfVi(v)), v); }
+  assert.equal(n, NSV - 3);
+  for (const id of ['g.master', 'g.bypass', 'fx.dly.mix', 'fx.dim.size', 'fx.hyper.dsize', 'fx.conv2.size']) assert.equal(isFxId(id), true, id);
+  for (const id of ['g.direct', 'g.bus1v', 'f.cutoff', 'a.w1', 'fxx', '', null, 5, 'bus3']) assert.equal(isFxId(id), false, String(id));
+});
+
+test('1b DIDX / FIDX / SIDX / GIDX naming and spot values (§3.13, §3.11.1)', () => {
   const D = { A_LEVEL: 0, B_LEVEL: 17, N_LEVEL: 34, S_LEVEL: 40, F_CUTOFF: 42, E1_ATT: 48, L1_RATE: 63, C1_RATE: 95, G_PORTA: 97, G_TUNE: 99,
     G_AMP: 100, G_BENDUP: 101, BUS1: 103, A_ON: 119, N_ON: 121, S_ON: 122, F_ON: 123, F_ROUTEA: 124, A_TRACK: 128, A_WARPMODE: 130,
     S_SHAPE: 132, S_OCT: 133, F_TYPE: 134, E1_CA: 135, C1_BPM: 144, G_WHEEL: 146, G_BEND: 147 };
@@ -74,46 +126,73 @@ test('1b DIDX / FIDX / SIDX naming and spot values (§3.13)', () => {
   assert.equal(DIDX.E1_ATT + 5 * 2, DIDX.E3_ATT);
   assert.equal(DIDX.L1_RATE + 4 * 7, DIDX.L8_RATE);
   assert.equal(DIDX.E1_CA + 3 * 2, DIDX.E3_CA);
-  assert.equal(Object.keys(DIDX).length, NS);
+  // v2: DIDX maps constant names to vi; every destination with a voice slot has one, FX and scope-M rows none
+  assert.equal(Object.keys(DIDX).length, NSV - 3);
+  for (const [k, v] of [['C_LEVEL', 148], ['A_W1', 167], ['F2_ON', 339], ['C_ON', 165], ['C_TRACK', 166], ['M1', 389], ['ARP_ON', 406], ['G_BD2', 428]]) assert.equal(DIDX[k], v, k);
+  for (const k of ['G_MASTER', 'G_BYPASS', 'G_DIRECT', 'G_BUS1V', 'DLY_MIX']) assert.equal(DIDX[k], undefined, k);
+  for (const k of Object.keys(DIDX)) assert.equal(vi(DIDX[k]) === DIDX[k] || idxOfVi(DIDX[k]) >= 0, true, k);
   const F = { G_MASTER: 0, HYPER_ON: 1, G_BYPASS: 86, HYPER_RETRIG: 87, DIST_MODE: 88, FIL_TYPE: 99, DLY_TIMEL: 43 };
   for (const k of Object.keys(F)) assert.equal(FIDX[k], F[k], k);
-  assert.equal(Object.keys(FIDX).length, NF);
+  assert.equal(Object.keys(FIDX).length, NF1);
+  assert.deepEqual({ ...GIDX }, { MASTER: 0, BYPASS: 1, DIRECT: 2, BUS1V: 3, BUS2V: 4 });
   const S = { WHEEL: 1, ENV1: 2, LFO1: 5, VELO: 13, NOTE: 14, AT: 15, PAT: 16, CHAOS1: 17, NOISE: 19, RAND1: 20, ALT1: 22, MACRO1: 24,
-    BEND: 28, MPEX: 29, RELVEL: 32, FIXED: 33 };
+    BEND: 28, MPEX: 29, RELVEL: 32, FIXED: 33, ENV4: 34, LFO9: 35, LFO10: 36, LFO1Y: 37, LFO10Y: 46, MACRO5: 47, MACRO8: 50, RANDD: 51,
+    OSCA: 52, OSCC: 54, SUB: 55, FILT1: 56, FILT2: 57, ACTV: 58, VIDX: 59, VMOD1: 60, VMOD2: 61 };
   for (const k of Object.keys(S)) assert.equal(SIDX[k], S[k], k);
-  assert.equal(Object.keys(SIDX).length, 33);
+  assert.equal(Object.keys(SIDX).length, 61);
   assert.deepEqual([...MATRIX_ONLY].slice(0, 5), ['g.tune', 'g.amp', 'g.wheel', 'g.bend', 'g.bypass']);
   assert.equal(MATRIX_ONLY.length, 21);
+  assert.deepEqual([...C.VIRTUAL], ['m1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'arp.rate', 'arp.shift', 'arp.range', 'arp.offset', 'arp.repeats',
+    'arp.gate', 'arp.chance', 'arp.rrate', 'arp.vdecay', 'arp.vtarget', 'arp.trans', 'arp.wtrans', 'arp.wrange', 'clip.trans', 'clip.rate', 'clip.offset']);
+  assert.equal(C.NOTE_ON_DESTS.length, 8 + 4 + 21);
+  for (const id of ['a.uni', 'n.rand', 'c.uni', 'c.phase', 'c.rand', 's.phase', 'a.sstart', 'b.slice', 'c.mvel', 'a.mrand', 'b.timbre', 'c.ustart', 'a.uspan']) assert.ok(C.NOTE_ON_DESTS.includes(id), id);
+  assert.deepEqual({ ...C.DEF2 }, { 'f.routeB': 1, 'f.routeN': 1, 'f.routeS': 1 });
+  assert.deepEqual({ ...C.RENAME1 }, { 'fx.dim.size': 'fx.hyper.dsize', 'fx.dim.mix': 'fx.hyper.dmix', 'fx.dim.level': 'fx.hyper.dlevel' });
 });
 
 /* ------------------------------------------------------------ 2. sources */
 
-test('2 SOURCES (§3.12) and SRC_MENU', () => {
-  assert.equal(SOURCES.length, 34);
-  assert.equal(NSRC, 34);
+test('2 SOURCES (§3.10) v1 prefix, sources2.json, SRC_MENU / SRC_MENU2', () => {
+  assert.equal(SOURCES.length, 62);
+  assert.equal(NSRC, 62);
   const exp = ['', 'wheel', 'env1', 'env2', 'env3', 'lfo1', 'lfo2', 'lfo3', 'lfo4', 'lfo5', 'lfo6', 'lfo7', 'lfo8', 'velo', 'note', 'at', 'pat',
     'chaos1', 'chaos2', 'noise', 'rand1', 'rand2', 'alt1', 'alt2', 'macro1', 'macro2', 'macro3', 'macro4', 'bend', 'mpex', 'mpey', 'mpez', 'relvel', 'fixed'];
-  assert.deepEqual(SOURCES.map(s => s.id), exp);
+  assert.deepEqual(SOURCES.slice(0, 34).map(s => s.id), exp, 'Phase-1 indices unchanged');
+  assert.deepEqual(SOURCES.slice(0, 34), P1.SOURCES);
+  const exp2 = ['env4', 'lfo9', 'lfo10', ...Array.from({ length: 10 }, (_, l) => `lfo${l + 1}y`), 'macro5', 'macro6', 'macro7', 'macro8', 'randd',
+    'osca', 'oscb', 'oscc', 'sub', 'filt1', 'filt2', 'actv', 'vidx', 'vmod1', 'vmod2'];
+  assert.deepEqual(SOURCES.slice(34).map(s => s.id), exp2);
+  assert.deepEqual(clone(SOURCES), json('sources2.json').SOURCES, 'sources2.json');
+  assert.equal(json('sources2.json').NSRC, 62);
   SOURCES.forEach((s, i) => assert.equal(SRC_INDEX[s.id], i));
   const bi = SOURCES.filter(s => s.pol === 'bi').map(s => s.id);
-  assert.deepEqual(bi, ['chaos1', 'chaos2', 'noise', 'bend', 'mpex']);
+  assert.deepEqual(bi, ['chaos1', 'chaos2', 'noise', 'bend', 'mpex', 'osca', 'oscb', 'oscc', 'sub', 'filt1', 'filt2', 'vmod1', 'vmod2']);
   assert.deepEqual(SOURCES.filter(s => s.tile).map(s => s.id).sort(),
-    ['env1', 'env2', 'env3', 'lfo1', 'lfo2', 'lfo3', 'lfo4', 'lfo5', 'lfo6', 'lfo7', 'lfo8', 'macro1', 'macro2', 'macro3', 'macro4', 'note', 'velo', 'wheel']);
+    ['env1', 'env2', 'env3', 'env4', 'lfo1', 'lfo10', 'lfo2', 'lfo3', 'lfo4', 'lfo5', 'lfo6', 'lfo7', 'lfo8', 'lfo9', 'macro1', 'macro2', 'macro3',
+      'macro4', 'macro5', 'macro6', 'macro7', 'macro8', 'note', 'velo', 'wheel']);
   assert.equal(SOURCES[16].label, 'Poly AT');
   assert.equal(SOURCES[32].label, 'Rel. Velo');
+  assert.equal(SOURCES[51].label, 'Note-On Rand (Discrete)');
   assert.equal(SOURCES[5].scope, 'V/G');
+  assert.equal(SOURCES[58].scope, 'G');
   assert.equal(SRC_MENU.length, 33);
   assert.deepEqual([...SRC_MENU].sort(), exp.slice(1).sort());
   assert.deepEqual(SRC_MENU.slice(0, 3), ['env1', 'env2', 'env3']);
   assert.equal(SRC_MENU[SRC_MENU.length - 1], 'fixed');
+  const M2 = C.SRC_MENU2;
+  assert.equal(M2.length, 61);
+  assert.deepEqual([...M2].sort(), SOURCES.slice(1).map(s => s.id).sort(), 'every source once');
+  assert.deepEqual(M2.slice(0, 5), ['env1', 'env2', 'env3', 'env4', 'lfo1']);
+  assert.deepEqual(M2.slice(-3), ['fixed', 'chaos1', 'chaos2'], 'chaos sources listed last (S1)');
+  assert.ok(M2.indexOf('lfo10y') < M2.indexOf('velo') && M2.indexOf('randd') === M2.indexOf('rand2') + 1);
 });
 
 /* ------------------------------------------------------------ 3. enumerations */
 
 test('3 FILTERS equal the fixture; enumerations and ladders (§3.3–3.11)', () => {
   const fx = json('filters.json').FILTERS;
-  assert.equal(FILTERS.length, 96);
-  assert.equal(fx.length, 96);
+  assert.equal(FILTERS.length, 108);
+  assert.equal(fx.length, 96, 'types 0–95 unchanged');
   fx.forEach((f, i) => {
     assert.deepEqual({ ...FILTERS[i] }, { id: f.id, name: f.name, cat: f.cat, varLabel: f.varLabel, family: f.family }, f.id);
   });
@@ -121,9 +200,19 @@ test('3 FILTERS equal the fixture; enumerations and ladders (§3.3–3.11)', () 
     assert.ok(C.FILTER_CATS.includes(f.cat));
     assert.ok(C.FILTER_FAMILY.includes(f.family));
   }
-  assert.equal(C.FILTER_FAMILY.length, 19);
+  assert.equal(C.FILTER_FAMILY.length, 28);
+  assert.deepEqual(C.FILTER_FAMILY.slice(19), ['wasp', 'djm', 'diffusor', 'ladder2', 'dirty', 'pzsvf', 'comb2', 'expmm', 'k35']);
+  assert.deepEqual([...C.FILTER_CATS], ['Normal', 'Multi', 'Flanges', 'Misc', 'New']);
+  // §3.5 the "New" category, types 96–107
+  assert.deepEqual(FILTERS.slice(96).map(f => [f.id, f.name, f.cat, f.varLabel, f.family]), [
+    ['wsp', 'Wsp', 'New', 'MORPH', 'wasp'], ['djm', 'DJ Mixer', 'New', '', 'djm'], ['diffusor', 'Diffusor', 'New', 'STAGES', 'diffusor'],
+    ['mg_ladder', 'MG Ladder', 'New', 'SMOOTH', 'ladder2'], ['acid_ladder', 'Acid Ladder', 'New', 'SMOOTH', 'ladder2'],
+    ['ems_ladder', 'EMS Ladder', 'New', 'SMOOTH', 'ladder2'], ['mg_dirty', 'MG Dirty', 'New', 'PAIN', 'dirty'], ['pz_svf', 'PZ SVF', 'New', 'SMOOTH', 'pzsvf'],
+    ['comb2', 'Comb 2', 'New', 'FRQ2', 'comb2'], ['exp_mm', 'Exp MM', 'New', 'MIX', 'expmm'], ['exp_bpf', 'Exp BPF', 'New', '', 'expmm'], ['k35', 'K35', 'New', '', 'k35']]);
+  assert.equal(new Set(FILTERS.map(f => f.id)).size, 108);
   assert.equal(varLabel(0), 'FAT');
   assert.equal(varLabel(76), '');
+  assert.equal(varLabel(98), 'STAGES');
   assert.equal(varLabel(500), '');
   assert.equal(WARPS.length, 23);
   assert.deepEqual(WARPS.slice(18, 21).map(w => w.nameB), ['FM (from A)', 'AM (from A)', 'RM (from A)']);
@@ -158,6 +247,48 @@ test('3 FILTERS equal the fixture; enumerations and ladders (§3.3–3.11)', () 
   assert.deepEqual(C.FORMANTS[2][4], [430, 1170, 3260]);
   assert.equal(C.LAWS.length, 12);
   assert.equal(C.LAW.npitch, 11);
+  // Serum 2 warp list (§3.4): 82 modes, o1/o2 labels per oscillator, availability, the v1 → v2 map
+  const W2 = C.WARPS2;
+  assert.equal(W2.length, 82);
+  assert.equal(new Set(W2.map(w => w.id)).size, 82);
+  assert.deepEqual([W2[0].id, W2[1].id, W2[16].id, W2[17].id, W2[19].id, W2[32].id, W2[33].id, W2[38].id, W2[39].id, W2[45].id, W2[46].id, W2[52].id,
+    W2[57].id, W2[58].id, W2[69].id, W2[71].id, W2[76].id, W2[77].id, W2[81].id],
+  ['off', 'sync', 'oddeven', 'lpf', 'd_tube', 'd_softsat', 'fm_o1', 'fm_f2', 'pd_o1', 'pd_self', 'am_o1', 'rm_o1', 'rm_f2', 's_comb', 's_shep',
+    's_voc_o1', 's_mask_noise', 's_mirror', 's_twist']);
+  assert.deepEqual([...W2[33].nameO], ['FM (B)', 'FM (A)', 'FM (A)']);
+  assert.deepEqual([...W2[34].nameO], ['FM (C)', 'FM (C)', 'FM (B)']);
+  assert.deepEqual([...W2[40].nameO], ['PD (C)', 'PD (C)', 'PD (B)']);
+  assert.deepEqual([...W2[72].nameO], ['Vocode (C)', 'Vocode (C)', 'Vocode (B)']);
+  assert.deepEqual([...W2[35].nameO], ['FM (Noise)', 'FM (Noise)', 'FM (Noise)']);
+  assert.equal(W2[33].name, 'FM (B)');
+  assert.deepEqual(W2.map(w => w.dom).join(''), '' + 'P'.repeat(8) + 'OP' + 'PPPP' + 'P' + 'OOO' + 'O'.repeat(14) + 'F'.repeat(6) + 'P'.repeat(7) + 'O'.repeat(12) + 'S'.repeat(24));
+  assert.deepEqual([...C.WARP_AVAIL], W2.map((_, i) => (i < 58 ? 'all' : 'Sp')));
+  assert.equal(C.S1_TO_S2_WARP.length, 23);
+  assert.deepEqual(C.S1_TO_S2_WARP.map(([w, v]) => W2[w].id + ':' + v), ['off:0', 'sync:0', 'sync:0.5', 'sync:1', 'bend_p:0', 'bend_n:0', 'bend_pn:0',
+    'pwm:0', 'asym_p:0', 'asym_n:0', 'asym_pn:0', 'flip:0', 'mirror:0', 'remap1:0', 'remap2:0', 'remap3:0', 'remap4:0', 'quantize:0', 'pd_o1:0',
+    'am_o1:0', 'rm_o1:0', 'pd_noise:0', 'pd_sub:0']);
+  // sub shapes, colour noises (§3.6)
+  assert.deepEqual([...C.SUB_IDS2], ['sub:Sine', 'sub:RoundRect', 'sub:Triangle', 'sub:Saw', 'sub:Square', 'sub:Pulse']);
+  assert.deepEqual([...C.S1_TO_S2_SUB].map(k => C.SUB_IDS2[k]), [...SUB_IDS], 'every v1 shape keeps its table');
+  assert.deepEqual(C.COLOR_NOISES.map(n => n.id), ['color:White', 'color:Pink', 'color:Brown', 'color:Geiger']);
+  // every enumeration of §3 (lengths)
+  const LEN = { OSC_TYPES: 5, PITCH_MODES: 4, PHASE_MEM: 3, ROUTES_SRC: 4, ROUTES_FILT: 4, ROUTES_BUS: 3, STEAL: 5, MPE_XYZ: 4, FM_TYPES: 3,
+    UNI_SPAWN: 4, GRAIN_WINDOWS: 10, LOOP_MODES: 5, SCAN_RANGES: 3, FADE_MS: 9, SLICE_MODES: 3, DENS_MODES: 3, GLEN_MODES: 3, XY_Y_GRAN: 18,
+    XY_Y_SPEC: 8, XY_MODES: 3, ENV_LADDER: 16, LFO_MODES2: 3, LFO_TYPES: 5, LFO_DIRS: 3, LFO_TOOLS: 4, TUN_KINDS: 3, VC_RATES: 11, SUB_SHAPES2: 6,
+    COLOR_NOISES: 4, A4_RANGE: 2 };
+  for (const k of Object.keys(LEN)) assert.equal(C[k].length, LEN[k], k);
+  assert.deepEqual(C.OSC_TYPES.map(e => e.id), ['wt', 'multi', 'sample', 'gran', 'spec']);
+  assert.deepEqual(C.PITCH_MODES.map(e => e.id), ['semi', 'harm', 'ratio', 'step']);
+  assert.deepEqual(C.PHASE_MEM.map(e => e.id), ['all', 'contig', 'voice']);
+  assert.deepEqual(C.LFO_MODES2.map(e => e.id), ['retrig', 'env', 'free']);
+  assert.deepEqual(C.LFO_TYPES.map(e => e.id), ['normal', 'path', 'lorenz', 'rossler', 'sh']);
+  assert.deepEqual(C.ENV_LADDER.map(e => e.beats), [0, 1 / 128, 1 / 64, 1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32, 64, 128]);
+  assert.deepEqual([...C.VC_RATES], [1 / 4, 1 / 3, 1 / 2, 2 / 3, 3 / 4, 1, 4 / 3, 3 / 2, 2, 3, 4]);
+  assert.deepEqual([C.N_OSC, C.N_MATRIX, C.N_LFO, C.N_ENV, C.N_MACRO, C.CRV_N, C.MPE_BEND_DEF], [3, 64, 10, 4, 8, 128, 48]);
+  assert.equal(C.SLEW_T(1), 4);
+  assert.equal(C.SLEW_T(0.5), 0.5);
+  assert.deepEqual(clone(C.PZ_DEFAULT), [[1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 0, 1]]);
+  assert.deepEqual(clone(C.PATH_DEFAULT), [[0.5, 1, 0], [1, 0.5, 0], [0.5, 0, 0], [0, 0.5, 0], [0.5, 1, 0]]);
 });
 
 test('3b every exported constant is deep-frozen', () => {
@@ -172,9 +303,9 @@ test('3b every exported constant is deep-frozen', () => {
   assert.equal(C.MAX_PTS, 480);
   assert.equal(C.CURVE_K, 10);
   assert.equal(C.MC_K, 6);
-  assert.equal(C.VERSION, 1);
-  assert.equal(C.CP_VER, 1);
-  assert.equal(C.FXP_VER, 1);
+  assert.equal(C.VERSION, 2);
+  assert.equal(C.CP_VER, 2);
+  assert.equal(C.FXP_VER, 2, 'FXP v2 (F1, §2.6.5)');
 });
 
 /* ------------------------------------------------------------ 4. laws */
@@ -338,11 +469,16 @@ test('5b fmtParam: every format, switch-dependent formats, robustness', () => {
   assert.equal(fmtParam('fx.dist.lbh', 0.8), 'HP 80');
   // var: percentage, or EQ gain for eq-family types
   assert.equal(fmtParam('f.var', 0.3), '30%');
-  const eq = defaultSerum();
+  const eq = S1();
   eq.p['f.type'] = 73 / 95;
   assert.equal(fmtParam('f.var', 1, { s: eq }), '+24.0 dB');
   assert.equal(fmtParam('f.var', 0.5, { s: eq }), '0.0 dB');
   assert.equal(fmtParam('f.var', 0, { s: eq }), '-96.0 dB');
+  assert.equal(fmtParam('f.var', 1, { s: setS1(eq, 0) }), '100%', 'S2 mode: Filter 1 type is f.type2');
+  const eq2 = defaultSerum();
+  eq2.p['f.type2'] = 73 / 107;
+  eq2.p['f2.type'] = 74 / 107;
+  assert.deepEqual([fmtParam('f.var', 1, { s: eq2 }), fmtParam('f2.var', 0, { s: eq2 }), fmtParam('f2.var', 0.3)], ['+24.0 dB', '-96.0 dB', '30%']);
   const fxe = defaultFx();
   fxe.p['fx.fil.type'] = 71 / 95;
   assert.equal(fmtParam('fx.fil.var', 0.25, { fx: fxe }), '-12.0 dB');
@@ -402,11 +538,17 @@ test('5c labels and centre flags', () => {
   assert.equal(isCenter('nope'), false);
   assert.equal(destLabel('f.cutoff'), 'Filter Cutoff');
   assert.equal(destLabel('f.var'), 'FAT');
-  const s = defaultSerum();
+  const s = S1();
   s.p['f.type'] = 18 / 95;
   assert.equal(destLabel('f.var', s), 'FREQ');
   s.p['f.type'] = 76 / 95;
   assert.equal(destLabel('f.var', s), 'Filter Var');
+  const s2 = defaultSerum();
+  s2.p['f.type2'] = 98 / 107;
+  s2.p['f2.type'] = 18 / 107;
+  assert.deepEqual([destLabel('f.var', s2), destLabel('f2.var', s2), destLabel('f2.var'), destLabel('a.w1'), destLabel('g.bd2')],
+    ['STAGES', 'FREQ', 'FAT', 'Osc A Warp 1 Mode', 'Pitch Bend Down']);
+  assert.deepEqual([isCenter('a.fbal'), isCenter('a.ratio'), isCenter('arp.shift')], [true, false, true]);
   const fx = defaultFx();
   fx.p['fx.fil.type'] = 86 / 95;
   assert.equal(destLabel('fx.fil.var', null, fx), 'FORMNT');
@@ -416,6 +558,86 @@ test('5c labels and centre flags', () => {
   assert.equal(destLabel('fx.rev.t', null, fx), 'PRE DELAY');
   assert.equal(destLabel('fx.rev.on', null, fx), 'Reverb Enable');
   assert.equal(destLabel('zzz'), 'zzz');
+});
+
+test('5d Phase-2 formats (§3.2, §15.2 spot values) and their typed entry', () => {
+  const F = fmtParam, P = parseParam;
+  assert.equal(F('a.ratio', 0.5), '×1.000');
+  assert.equal(F('a.fbal', 0), 'F1');
+  assert.equal(F('a.fbal', 1), 'F2');
+  assert.equal(F('a.fbal', 0.5), 'F1 50 / F2 50');
+  assert.equal(F('s.fbal', 0.7), 'F1 30 / F2 70');
+  assert.equal(F('arp.repeats', 0), '∞');
+  assert.equal(F('arp.repeats', 1), '16');
+  assert.equal(F('a.scan', 0.75), '100%');
+  assert.equal(F('a.scan', 0.25), '-100%');
+  const sc = defaultSerum();
+  sc.osc[1].smpo.scanRange = 2;
+  assert.equal(F('b.scan', 0.75, { s: sc }), '400%');
+  const fr = defaultSerum();
+  assert.equal(F('a.dens', 0.6, { s: fr }), '22.0 Hz', 'Free density');
+  fr.osc[0].smpo.dens.mode = 2;
+  assert.equal(F('a.dens', 0.5, { s: fr }), '33 grains');
+  fr.osc[0].smpo.dens.mode = 1;
+  assert.equal(F('a.dens', 0, { s: fr }), '4 bar');
+  fr.osc[0].smpo.glen.mode = 2;
+  assert.deepEqual([F('a.glen', 0, { s: fr }), F('a.glen', 1, { s: fr }), F('a.glen', 0.5)], ['1%', '800%', '100 ms']);
+  // SEM in Harmonics / Step mode (semi 0 → ×1, 1 → ×2, −1 → ÷2)
+  const hm = defaultSerum();
+  hm.osc[0].pitch.mode = 'harm';
+  hm.osc[2].pitch.mode = 'step';
+  assert.deepEqual([12 / 24, 13 / 24, 11 / 24, 0].map(n => F('a.semi', n, { s: hm })), ['×1', '×2', '÷2', '÷13']);
+  assert.deepEqual([F('c.semi', 0.75, { s: hm }), F('b.semi', 0.75, { s: hm })], ['6 steps', '+6 st']);
+  assert.deepEqual([P('a.semi', '×3', { s: hm }), P('a.semi', '÷2', { s: hm }), P('a.semi', 'x1', { s: hm }), P('c.semi', '-4 steps', { s: hm })], [14 / 24, 11 / 24, 12 / 24, 8 / 24]);
+  // a bare number is read in the unit shown (RULINGS typed entry): ×h; semitone indices need their unit
+  assert.deepEqual(['3', '1', '+2', '0', '-2', '2.5', '7 st', '-1 st'].map(x => P('a.semi', x, { s: hm })), [14 / 24, 12 / 24, 13 / 24, null, null, null, 19 / 24, 11 / 24]);
+  assert.equal(F('a.semi', P('a.semi', '3', { s: hm }), { s: hm }), '×3');
+  assert.equal(F('e2.start', 0), '-inf dB');
+  assert.equal(F('e4.end', 1), '0.0 dB');
+  assert.equal(F('vc.lscale', 0.5), '100%');
+  assert.equal(F('vc.escale', 1), '400%');
+  const vr = defaultSerum();
+  vr.vc.lmode = 1;
+  assert.deepEqual([F('vc.lscale', 0.5, { s: vr }), F('vc.lscale', lawNorm('vc.lscale', 1.45), { s: vr }), F('vc.lscale', 0, { s: vr })], ['1', '3/2', '1/4']);
+  assert.equal(P('vc.lscale', '4/3', { s: vr }), lawNorm('vc.lscale', 4 / 3));
+  assert.equal(F('a.lenrate', 5 / 14), '1 bar');
+  assert.equal(P('a.lenrate', '1.5 bar'), 6 / 14);
+  assert.equal(F('a.hz', 0.75), '+25.00 Hz');
+  assert.equal(P('a.hz', '-10 Hz'), 0.4);
+  assert.equal(F('c.timbre', 0.25), '-32.0 st');
+  assert.equal(F('b.slice', 0), 'Slice 1');
+  assert.equal(P('b.slice', 'slice 12'), 11 / 255);
+  assert.equal(F('a.sstart', 0.123), '12.3%');
+  assert.equal(F('a.sstart', 0.5, { smpLen: [2, 0, 0] }), '1.00 s');
+  close(P('a.sstart', '250 ms', { smpLen: [2, 0, 0] }), 0.125, 1e-12);
+  assert.equal(F('arp.rate', 0.75), '1/16');
+  const ar = defaultSerum();
+  ar.arp.slots[0].bpm = 0;
+  assert.equal(F('arp.rate', 0.5, { s: ar }), '5.00 Hz');
+  assert.equal(F('arp.rrate', 0.4), '1 bar');
+  assert.equal(F('clip.rate', 0.5), '×1');
+  assert.equal(P('clip.rate', 'x3/2'), 0.7);
+  assert.equal(F('s.shp', 0.4), 'Triangle');
+  assert.equal(F('f.type2', 96 / 107), 'Wsp');
+  assert.equal(F('f2.type', 1), 'K35');
+  assert.deepEqual([F('a.w1', 33 / 81), F('b.w1', 33 / 81), F('c.w1', 34 / 81), F('c.w2', 75 / 81)], ['FM (B)', 'FM (A)', 'FM (B)', 'Mask (B)']);
+  assert.deepEqual([P('b.w1', 'fm (a)'), P('c.w1', 'FM (B)'), P('a.w1', 'fm (a)'), P('a.w1', 'pd_self')], [33 / 81, 34 / 81, null, 45 / 81]);
+  assert.deepEqual([P('a.ratio', 'x1.5'), P('a.ratio', '3:2'), P('a.ratio', '×2')].map(n => lawValue('a.ratio', n)).map(v => +v.toFixed(9)), [1.5, 1.5, 2]);
+  assert.deepEqual([P('a.fbal', 'F1'), P('a.fbal', 'f2'), P('a.fbal', 'F1 30 / F2 70'), P('a.fbal', 'F2 25')], [0, 1, 0.7, 0.25]);
+  assert.deepEqual([P('arp.repeats', '∞'), P('arp.repeats', 'inf'), P('arp.repeats', '4')], [0, 0, 4 / 16]);
+  assert.equal(P('a.scan', '50%'), 0.625);
+  // the knob-end "Mem" text is S1 behaviour on OSC A/B only (§6.4, §6.21 item 6)
+  assert.deepEqual([F('a.phase', 1), F('a.phase', 1, { s: S1() }), F('a.phase', 1, { s: defaultSerum() }), F('c.phase', 1), F('s.phase', 0.5)],
+    ['Mem', 'Mem', '360°', '360°', '180°']);
+  assert.deepEqual([P('a.phase', 'mem', { s: defaultSerum() }), P('a.phase', '360', { s: defaultSerum() }), P('a.phase', '360', { s: S1() })], [null, 1, 0.9994]);
+  // dynamic FX destinations without an FX state (fx-core v2 pending): never throw, unknown
+  for (const id of ['fx.bode.shift', 'fx.dly2.mix', 'fx.x.y']) {
+    assert.equal(F(id, 0.3), '0.3');
+    assert.equal(P(id, '1'), null);
+    assert.equal(lawValue(id, 0.3), 0.3);
+    assert.equal(destLabel(id), id);
+    assert.equal(isCenter(id), false);
+  }
 });
 
 /* ------------------------------------------------------------ 6. typed entry */
@@ -456,7 +678,18 @@ function fmtContexts() {
   f2.rev.type = 0;
   const s3 = defaultSerum();
   s3.lfo.forEach((L, i) => { L.dot = i & 1; L.trip = (i >> 1) & 1; });
-  return [undefined, { s: defaultSerum(), fx: defaultFx() }, { s: s2, fx: f2, bpm: 97 }, { s: s3, fx: defaultFx(), bpm: 140, frames: [6, 64], interp: [0, 1] }];
+  // v2 switch states: S1 mode, pitch modes, granular density / length modes and ladders, SCAN range, VC rate mode,
+  // a Hz arp slot, ×10 LFO rates, known sample lengths
+  const s4 = setS1(defaultSerum(), 1);
+  s4.osc[0].pitch.mode = 'harm'; s4.osc[1].pitch.mode = 'step';
+  Object.assign(s4.osc[0].smpo.dens, { mode: 1, dot: 1 }); Object.assign(s4.osc[1].smpo.dens, { mode: 2 });
+  Object.assign(s4.osc[0].smpo.glen, { mode: 2 }); Object.assign(s4.osc[1].smpo.glen, { mode: 1, trip: 1 });
+  s4.osc[2].smpo.scanRange = 2;
+  s4.vc.lmode = 1;
+  s4.arp.slots[0].bpm = 0;
+  s4.lfo.forEach((L, i) => { L.bpm = i & 1; L.x10 = 1; });
+  return [undefined, { s: defaultSerum(), fx: defaultFx() }, { s: s2, fx: f2, bpm: 97 }, { s: s3, fx: defaultFx(), bpm: 140, frames: [6, 64], interp: [0, 1] },
+    { s: s4, fx: f2, bpm: 133, smpLen: [2.5, 0.08, 0], frames: [6, 64, 9], interp: [1, 0, 0] }];
 }
 
 test('6b parseParam reads back every fmtParam output (all destinations, formats and switch states)', () => {
@@ -472,7 +705,7 @@ test('6b parseParam reads back every fmtParam output (all destinations, formats 
       }
     }
   }
-  assert.equal(n0, 4 * 248 * 60);
+  assert.equal(n0, 5 * ND * 60);
 });
 
 test('6c parseParam: units, conversions, labels, switches', () => {
@@ -575,7 +808,7 @@ test('6c parseParam: units, conversions, labels, switches', () => {
   assert.equal(P('fx.dly.level', '-inf dB'), 0);
   // filter Var: percent, or EQ gain for eq types
   close(P('f.var', '30'), 0.3, 1e-12);
-  const eq = defaultSerum();
+  const eq = S1();
   eq.p['f.type'] = 73 / 95;
   assert.equal(P('f.var', '+12 dB', { s: eq }), 0.75);
   assert.equal(P('f.var', '-inf', { s: eq }), 0);
@@ -758,8 +991,9 @@ const sharesObjects = (a, b) => {
   return shared;
 };
 
+// a messy v1 state (Phase-1 JSON): normalizeSerum repairs it as v1 (normalizeV1) and migrates it (§2.6.1)
 function messyState() {
-  const s = defaultSerum();
+  const s = defaultV1();
   s.v = 0;
   s.author = 'x'.repeat(100);
   s.p['a.level'] = 5;
@@ -784,14 +1018,15 @@ function messyState() {
   s.osc[0].remap = [[0.5, 0.5, 0]];
   s.osc[1].memSet = [1.25, -0.25, 'x'];
   s.osc[1].wt = 42;
-  s.matrix = s.matrix.concat(Array.from({ length: 8 }, () => row({ src: 'env1', dst: 'a.level', amt: 1 })));
-  s.matrix[0] = row({ src: 'lfo1', dst: 'f.cutoff', amt: 2, curve: -3, out: 7 });
-  s.matrix[1] = row({ src: 'warble', dst: 'f.cutoff', amt: 0.5 });
-  s.matrix[2] = row({ src: 'env2', dst: 'nowhere', amt: 0.5 });
-  s.matrix[3] = row({ src: 'env2', dst: 'f.res', amt: 0.5, aux: 'zzz' });
+  s.matrix = s.matrix.concat(Array.from({ length: 8 }, () => rowV1({ src: 'env1', dst: 'a.level', amt: 1 })));
+  s.matrix[0] = rowV1({ src: 'lfo1', dst: 'f.cutoff', amt: 2, curve: -3, out: 7 });
+  s.matrix[1] = rowV1({ src: 'warble', dst: 'f.cutoff', amt: 0.5 });
+  s.matrix[2] = rowV1({ src: 'env2', dst: 'nowhere', amt: 0.5 });
+  s.matrix[3] = rowV1({ src: 'env2', dst: 'f.res', amt: 0.5, aux: 'zzz' });
   s.matrix[4] = 'not a row';
-  s.midi = { 7: 'f.cutoff', '07': 'f.res', 120: 'a.level', 1: 'macro2', 2: 'macro9', 3: 'unknown.id', 4: 'fx.dly.mix', x: 'a.level' };
-  s.locks = { p: ['a.level', 'a.level', 'nope', 'fx.rev.mix'], mod: ['filter', 'oscA', 'bogus', 'oscA'], misc: { poly: true, os: 'x' } };
+  s.matrix[5] = rowV1({ src: 'env4', dst: 'f.res', amt: 0.5 });           // a v2 source is unknown to a v1 state
+  s.midi = { 7: 'f.cutoff', '07': 'f.res', 120: 'a.level', 1: 'macro2', 2: 'macro9', 3: 'unknown.id', 4: 'fx.dly.mix', x: 'a.level', 5: 'macro6' };
+  s.locks = { p: ['a.level', 'a.level', 'nope', 'fx.rev.mix'], mod: ['filter', 'oscA', 'bogus', 'oscA', 'oscC'], misc: { poly: true, os: 'x' } };
   s.global = { os: 8, a4: 445.04, uniRange: [60, 0.123], uniMode: [9, -1] };
   s.voicing.poly = 99;
   s.ui = { page: 'nope', env: 7, mod: 'zzz', view3d: [1], wtSel: [300, -1], filtView: 9, extra: 1 };
@@ -800,31 +1035,28 @@ function messyState() {
   return s;
 }
 
-test('9 normalizeSerum: defaults, idempotence, JSON round trip, size', () => {
+test('9 normalizeSerum: defaults, versions, idempotence, JSON round trip, size', () => {
   const d = defaultSerum();
-  for (const x of [{}, null, undefined, 'x', 42, [], { v: 99 }]) assert.deepEqual(normalizeSerum(x), d, String(x));
+  for (const x of [null, undefined, 'x', 42, [], true]) assert.deepEqual(normalizeSerum(x), d, String(x) + ': no state → defaultSerum()');
+  for (const x of [{}, { v: 1 }, { v: 0 }, { v: '2' }, { p: {} }]) assert.deepEqual(normalizeSerum(x), S1(), JSON.stringify(x) + ': v1 input is migrated');
+  for (const x of [{ v: 2 }, { v: 99 }, { v: 2.5, junk: 1 }]) assert.deepEqual(normalizeSerum(x), d, JSON.stringify(x) + ': v ≥ 2, best effort');
   assert.deepEqual(normalizeSerum(d), d);
+  assert.equal(normalizeSerum(d) === d, false);
+  assert.deepEqual(normalizeSerum(S1()), S1(), 'a migrated state is a v2 state');
   const n1 = normalizeSerum(messyState());
   assert.deepEqual(normalizeSerum(n1), n1, 'idempotent');
   assert.deepEqual(JSON.parse(JSON.stringify(n1)), n1, 'JSON round trip');
   assert.deepEqual(JSON.parse(JSON.stringify(d)), d);
-  assert.ok(JSON.stringify(d).length < 24 * 1024, 'default < 24 KB');
-  assert.equal(Object.keys(d.p).length, 150);
-  // worst case: every graph at MAX_PTS points with full-precision coordinates and bus links
-  const w = defaultSerum(), big = (bus) => Array.from({ length: 700 }, (_, i) => [i / 699 + 1e-7, Math.sin(i) * 0.5 + 0.5, Math.cos(i) * 0.99, bus ? 16 : 0, bus ? 15 : 0]);
-  w.lfo.forEach(L => { L.pts = big(true); });
-  w.osc.forEach(o => { o.remap = big(false); });
-  w.velo.pts = big(false);
-  w.note.pts = big(false);
-  w.matrix = w.matrix.map((_, i) => row({ src: 'macro4', dst: DESTS[200 + (i % 40)].id, amt: -0.123456789, curve: 0.987654321, aux: 'chaos2' }));
-  w.notes = 'n'.repeat(5000);
+  assert.ok(JSON.stringify(d).length < 48 * 1024, 'typical < 48 KB (§2.7)');
+  assert.equal(Object.keys(d.p).length, 148 + 2 + (281 - 24), 'stored ids: v1 synth, g.master, g.bypass, non-virtual SYN2');
+  for (const id of C.VIRTUAL) assert.equal(d.p[id], undefined, id + ' is virtual');
   // tiny negative phases: x − floor(x) rounds to exactly 1 there; [0, 1) and idempotence must still hold
   const tn = defaultSerum();
   tn.osc[0].memSet[0] = -1e-20;
   tn.osc[1].memSet[5] = -Number.MIN_VALUE;
-  tn.osc[1].memSet[6] = -1;
+  tn.osc[2].memSet[6] = -1;
   const tnn = normalizeSerum(tn);
-  assert.deepEqual([tnn.osc[0].memSet[0], tnn.osc[1].memSet[5], tnn.osc[1].memSet[6]], [0, 0, 0]);
+  assert.deepEqual([tnn.osc[0].memSet[0], tnn.osc[1].memSet[5], tnn.osc[2].memSet[6]], [0, 0, 0]);
   assert.deepEqual(normalizeSerum(tnn), tnn);
   assert.equal(compileSerum(tn).serum.memSet[0], 0);
   const fn = defaultFx();
@@ -833,18 +1065,38 @@ test('9 normalizeSerum: defaults, idempotence, JSON round trip, size', () => {
   assert.deepEqual(fnn.phase, [0, 0, 0.9999999999999999, 0.75]);
   assert.ok(fnn.phase.every(x => x >= 0 && x < 1));
   assert.deepEqual(normalizeFx(fnn), fnn);
-  assert.ok([...compileFx(fn).phase].every(x => x >= 0 && x < 1));
+  assert.ok([...C.compileFxV1(fn).phase].every(x => x >= 0 && x < 1));
+  assert.ok([...compileFx(fn).iPh].every(x => x >= 0 && x < 1), 'FXP v2 instance phases');
+  // worst case (§2.7): every graph at MAX_PTS points with full-precision coordinates and bus links, LFO paths at 480
+  // points, 64 rows with 64-point curves, full clip banks (4096 notes) and arp patterns: < 512 KB
+  const w = defaultSerum(), big = (n, bus) => Array.from({ length: n }, (_, i) => [i / (n - 1) + 1e-7, Math.sin(i) * 0.5 + 0.5, Math.cos(i) * 0.99, bus ? 16 : 0, bus ? 15 : 0]);
+  w.lfo.forEach(L => { L.pts = big(700, true); L.path = big(700, false); });
+  w.osc.forEach(o => { o.remap = big(700, false); o.spec.filt.pts = big(200, false); });
+  w.velo.pts = big(700, false);
+  w.note.pts = big(700, false);
+  w.matrix = w.matrix.map((_, i) => row({ src: 'macro4', dst: DESTS[200 + (i % 40)].id, amt: -0.123456789, curve: 0.987654321, aux: 'chaos2', crv: big(80, false) }));
+  w.notes = 'n'.repeat(5000);
+  const ng = normalizeSerum(w), sizeG = JSON.stringify(ng).length;
+  assert.ok(ng.lfo.every(L => L.pts.length === 480 && L.path.length === 480));
+  assert.ok(ng.matrix.every(r => r.crv.length === 64));
+  assert.ok(sizeG < 512 * 1024, 'every graph at its maximum: ' + sizeG + ' bytes');
+  // + full clip banks: §2.7 states < 512 KB for this case, which 5-decimal graphs plus seq-core's full clip banks cannot
+  // meet (≈ 0.66 MB measured: graphs ≈ 480 KB, clip banks ≈ 187 KB). Documented deviation awaiting a lead ruling on §2.7
+  // (coarser rounding would change v1 graph values, i.e. the golden renders); the bound checked here is 768 KB
+  w.clip.clips.forEach(c => { c.len = 1024; c.notes = Array.from({ length: 2000 }, (_, i) => [i / 2.123456, 0.25, 36 + i % 60, 1 + i % 127, i & 1, 0.123456, 0.654321, 0.5]); });
   const nw = normalizeSerum(w), size = JSON.stringify(nw).length;
-  assert.ok(nw.lfo.every(L => L.pts.length === 480));
-  assert.ok(size < 256 * 1024, 'worst case ' + size + ' bytes');
+  assert.equal(nw.clip.clips.reduce((a, c) => a + c.notes.length, 0), 4096, 'notes ≤ 4096 per bank');
+  assert.ok(nw.clip.clips.every(c => c.notes.length <= 1024));
+  assert.ok(size < 768 * 1024, 'worst case ' + size + ' bytes');
   assert.deepEqual(normalizeSerum(nw), nw);
 });
 
-test('9b normalizeSerum: clamps, snaps, placeholders, warp rule, points, matrix, midi, locks, ui', () => {
+test('9b normalizeSerum of a messy v1 state: v1 repair (Phase 1) then the exact migration', () => {
   const src = deepFreeze(messyState());
   const n = normalizeSerum(src);           // input deep-frozen: any mutation would throw
   assert.equal(sharesObjects(n, src), false, 'no shared objects with the input');
-  assert.equal(n.v, 1);
+  assert.equal(n.v, 2);
+  assert.equal(n.global.s1, 1, 'migrated states are in S1 Compatibility Mode');
   assert.equal(n.author.length, 64);
   assert.equal(n.p['a.level'], 1);
   assert.equal(n.p['b.level'], 0);
@@ -852,11 +1104,13 @@ test('9b normalizeSerum: clamps, snaps, placeholders, warp rule, points, matrix,
   assert.equal(n.p['a.pan'], 0.5);
   assert.equal(n.p['a.semi'], 0.5);
   assert.equal(n.p['f.type'], 48 / 95);
+  assert.equal(n.p['f.type2'], 48 / 107, 'S2 counterpart of the filter type');
   assert.equal(n.p.bus3, 0.5);
   assert.equal(n.p['g.wheel'], 0);
   assert.equal(n.p['g.bend'], 0.5);
   assert.equal(n.p['a.warpMode'], 18 / 22);
   assert.equal(n.p['b.warpMode'], 0);
+  assert.deepEqual([n.p['a.w1'], n.p['a.wvar1'], n.p['b.w1']], [39 / 81, 0, 0], 'FM (from B) → PD (o1)');
   assert.equal(n.p['fx.dly.mix'], undefined);
   assert.equal(n.p.bogus, undefined);
   for (const k of Object.keys(n.p)) {
@@ -864,7 +1118,7 @@ test('9b normalizeSerum: clamps, snaps, placeholders, warp rule, points, matrix,
     if (STEPPED.has(DESTS[i].law)) { const m = DESTS[i].hi - DESTS[i].lo; assert.equal(n.p[k], Math.round(n.p[k] * m) / m, k); }
   }
   // B's FM is kept when A is not FM/AM/RM, and 21/22 never conflict
-  const w = defaultSerum();
+  const w = defaultV1();
   w.p['a.warpMode'] = 21 / 22;
   w.p['b.warpMode'] = 18 / 22;
   assert.equal(normalizeSerum(w).p['b.warpMode'], 18 / 22);
@@ -876,119 +1130,339 @@ test('9b normalizeSerum: clamps, snaps, placeholders, warp rule, points, matrix,
   assert.deepEqual(n.lfo[1].pts[1], [0.00167, 0.14286, 0, 1, 3]);
   assert.equal(n.lfo[1].loop, 479);
   assert.equal(n.lfo[1].start, 0);
-  assert.deepEqual(n.lfo[2], defaultSerum().lfo[2]);
-  assert.equal(n.lfo[3].mode, 'off');
+  assert.deepEqual(n.lfo[2], S1().lfo[2]);
+  assert.deepEqual([n.lfo[3].mode, n.lfo[3].mono], ['free', 1], 'an unknown v1 mode is v1 Off: FREE + MONO');
   assert.deepEqual(n.osc[0].remap, [[0, 0.5, 0], [1, 0.5, 0]]);
   assert.deepEqual(n.osc[1].memSet.slice(0, 3), [0.25, 0.75, C.MEMSET_DEFAULT_B[2]]);
   assert.equal(n.osc[1].memSet.length, 16);
   assert.equal(n.osc[1].wt, 'factory:Default');
   for (const L of n.lfo) for (const p of L.pts) for (const v of p.slice(0, 3)) assert.equal(Math.round(v * 1e5) / 1e5, v);
-  const mono = defaultSerum();
+  const mono = defaultV1();
   mono.velo.pts = [[0.2, 0.3, 0, 5, 5], [0.8, 0.7, 0]];
   assert.deepEqual(normalizeSerum(mono).velo.pts, [[0, 0.3, 0], [1, 0.7, 0]], 'no bus links outside LFO graphs; ends forced');
-  // matrix: padded/truncated to 32, unknown ids clear the row, values clamped
-  assert.equal(n.matrix.length, 32);
+  // matrix: 32 v1 slots (unknown ids clear the row, values clamped) + 32 empty v2 slots
+  assert.equal(n.matrix.length, 64);
   assert.deepEqual(n.matrix[0], row({ src: 'lfo1', dst: 'f.cutoff', amt: 1, curve: -1, out: 1 }));
-  for (const r of [1, 2, 3, 4]) assert.deepEqual(n.matrix[r], row({}), 'row ' + r);
-  assert.deepEqual(normalizeSerum({ matrix: [row({ src: 'env1', dst: 'a.level', amt: 0.5 })] }).matrix.length, 32);
-  // midi: canonical cc 0–119, DEST ids or macro1–4
+  for (const r of [1, 2, 3, 4, 5]) assert.deepEqual(n.matrix[r], row({}), 'row ' + r);
+  assert.deepEqual(n.matrix.slice(32), Array.from({ length: 32 }, () => row({})), 'slots 32–63 empty');
+  assert.deepEqual(normalizeSerum({ matrix: [rowV1({ src: 'env1', dst: 'a.level', amt: 0.5 })] }).matrix.length, 64);
+  // midi: canonical cc 0–119, DEST ids or macro1–4 (v1)
   assert.deepEqual(n.midi, { 1: 'macro2', 4: 'fx.dly.mix', 7: 'f.cutoff' });
-  // locks
-  assert.deepEqual(n.locks, { p: ['a.level', 'fx.rev.mix'], mod: ['oscA', 'filter'], misc: { poly: 1, os: 0, tuning: 0 } });
-  // global, voicing, ui, macros, grid
-  assert.deepEqual(n.global, { os: 4, a4: 445, uniRange: [48, 0.12], uniMode: [4, 0] });
+  // locks (v1 module names), no unlocked controls
+  assert.deepEqual(n.locks, { p: ['a.level', 'fx.rev.mix'], mod: ['oscA', 'filter'], unp: [], misc: { poly: 1, os: 0, tuning: 0 } });
+  // global, voicing, unison (moved into the oscillators), ui, macros, grid
+  assert.deepEqual(n.global, { os: 4, a4: 445, s1: 1, nosmooth: 0, mpe: { on: 0, bend: 48, xyz: 0 }, tun: { name: '', kind: 'none', scl: '', kbm: '', tab: null } });
+  assert.deepEqual([n.osc[0].uni, n.osc[1].uni, n.osc[2].uni], [{ range: 48, mode: 4, spawn: 0 }, { range: 0.12, mode: 0, spawn: 0 }, { range: 2, mode: 0, spawn: 0 }]);
   for (const [x, want] of [[1, 1], [2, 2], [4, 4], [3, 4], [1.2, 1], [0, 1], ['2', 2]]) assert.equal(normalizeSerum({ global: { os: x } }).global.os, want, 'os ' + x);
   assert.equal(n.voicing.poly, 32);
-  assert.deepEqual(n.ui, { page: 'osc', env: 2, mod: 'lfo1', envLock: 1, envZoom: 1, view3d: [1, 0], wtSel: [255, 0], filtView: 2 });
+  assert.equal(n.voicing.steal, 0);
+  assert.deepEqual(n.ui, Object.assign(defaultSerum().ui, { page: 'osc', env: 2, mod: 'lfo1', envLock: 1, envZoom: 1, view3d: [1, 0, 0], wtSel: [255, 0, 0], filtView: [1, 0] }));
   assert.equal(n.macros[1].name.length, 24);
+  assert.deepEqual(n.macros.slice(4).map(m => m.name), ['Macro 5', 'Macro 6', 'Macro 7', 'Macro 8']);
   assert.deepEqual(n.lfoGrid, { x: 1, y: 64 });
+});
+
+test('9c normalizeSerum v2: constraints of §2.2.5, Round-1 keys, ids by kind, structured fields', () => {
+  const s = defaultSerum();
+  s.filter[0].route = 0; s.filter[1].route = 0;                        // F1 → F2 and F2 → F1 at once
+  s.osc[0].pitch = { mode: 'ratio', src: 'A' };                          // own oscillator
+  s.osc[1].pitch = { mode: 'ratio', src: 'C' };
+  s.osc[2].pitch = { mode: 'ratio', src: 'B' };                          // B → C → B: the later one (C) falls back
+  s.osc[0].map = { k: [100, 20], v: [127, 0], fold: 2, warp: true };
+  s.osc[1].smpo = { slice: { marks: [0.5, 0.25, 0.5, 0, 1, 1.2, -3, 'x', 0.123456789], mode: 7, root: 300 }, lenIdx: 9, ops: { trim: [0.6, 0.2], fade: 3 } };
+  s.osc[2].smpo = { ops: { trim: [0.1, 0.9], fade: 99, norm: 1, rev: 1 }, dens: { max: 0, jump: 0 }, scanRange: 9 };
+  s.osc[0].smp = 'fsmp:Drum Loop'; s.osc[1].smp = 'noise:Pink'; s.osc[2].smp = 'user:abc';
+  s.osc[0].multi = 'fmsmp:Piano'; s.osc[1].multi = 'smp:x';
+  s.osc[0].spec = { filt: { kind: 'wt', wt: 'fsmp:x', pts: [[0.5, 2, 0]], grid: 99 } };
+  s.osc[1].type = 'granular'; s.osc[2].type = 'spec';
+  s.noise.src = 'color:Pink';
+  s.sub.direct = 1;
+  s.matrix[0] = row({ src: 'lfo1y', dst: 'm3', amt: 0.5, rise: 0.4, fall: 0.9, slink: 1, crv: [[0.2, 0.4, 0], [0.9, 0.1, 0]] });
+  s.matrix[1] = row({ src: 'randd', dst: 'fx.bode.shift', amt: -0.5, acurve: 3, crv: 'x' });
+  s.matrix[2] = row({ src: 'env4', dst: 'fx.Bad id.x', amt: 0.5 });
+  s.matrix[3] = row({ src: 'vmod1', dst: 'arp.rate', amt: 0.5, aux: 'actv' });
+  s.p['m3'] = 0.7; s.p['arp.rate'] = 0.1; s.p['arp.on'] = 1;
+  s.locks = { p: ['a.level', 'fx.rev1.mix', 'g.direct'], mod: ['oscA', 'lfo10', 'matrix', 'bogus'], unp: ['a.level', 'a.semi', 'l10.rate', 'f.cutoff', 'nope'], misc: { tuning: 1 } };
+  s.global = { a4: 470.04, s1: 'x', nosmooth: 1, mpe: { on: 1, bend: 200, xyz: 9, ybi: 1, bendX: 1 }, tun: { kind: 'scl', name: 'q'.repeat(80), tab: Array.from({ length: 128 }, (_, k) => (k === 5 ? null : k + 0.5)) } };
+  s.kbd = { trans: 30, key: 12, scale: 99, swing: -3, div: 5, arpMap: { k: [60, 10], v: [0, 200] } };
+  s.vc = { len: 12, steps: [[2, -2, 0.5]], sel: [0, 1], lmode: 3 };
+  s.tags = ['a', 'a', 'b'.repeat(40), 7, ...Array.from({ length: 20 }, (_, i) => 't' + i)];
+  s.lfo[9] = { mode: 'trig', type: 'path', dir: 'pp', x10: 1, path: [[0.2, 0.3, 0], [2, -1, 3], 'x'], pts: [[0, 0.5, 0]] };
+  s.lfo[8] = { mode: 'off', mono: 0 };
+  s.ui = { page: 'mix', filtView: 2, clipZoom: [0, 1000], view3d: [1, 1, 1, 1] };
+  const n = normalizeSerum(s);
+  assert.deepEqual(normalizeSerum(n), n, 'idempotent');
+  assert.deepEqual([n.filter[0].route, n.filter[1].route], [0, 1], 'routing loop: F2 → Main');
+  assert.deepEqual(n.osc.map(o => o.pitch.src), ['note', 'C', 'note']);
+  assert.deepEqual(n.osc[0].map, { k: [20, 100], v: [1, 127], fold: 1, warp: 1 });
+  const o1 = n.osc[1].smpo;
+  assert.deepEqual(o1.slice.marks, [0.12346, 0.25, 0.5]);
+  assert.deepEqual([o1.slice.mode, o1.slice.root, o1.lenIdx, o1.ops.trim, o1.ops.fade], [2, 127, undefined, null, 3]);
+  assert.equal(n.p['b.lenrate'], 9 / 14, 'Round-1 lenIdx → k.lenrate');
+  assert.equal(n.p['a.lenrate'], 5 / 14);
+  assert.deepEqual(n.osc[2].smpo.ops, { fade: 8, norm: 1, rev: 1, trim: [0.1, 0.9] });
+  assert.deepEqual([n.osc[2].smpo.dens.max, n.osc[2].smpo.dens.jump, n.osc[2].smpo.scanRange], [1, 0, 2]);
+  assert.deepEqual(n.osc.map(o => o.smp), ['fsmp:Drum Loop', '', 'user:abc']);
+  assert.deepEqual(n.osc.map(o => o.multi), ['fmsmp:Piano', '', '']);
+  assert.deepEqual(n.osc[0].spec.filt, { kind: 'wt', pts: [[0, 1, 0], [1, 1, 0]], wt: '', grid: 64 });
+  assert.deepEqual(n.osc.map(o => o.type), ['wt', 'wt', 'spec']);
+  assert.equal(n.noise.src, 'color:Pink');
+  assert.equal(n.sub.direct, 0, 'v1 legacy flag forced to 0 in v2');
+  assert.deepEqual(n.matrix[0], row({ src: 'lfo1y', dst: 'm3', amt: 0.5, rise: 0.4, fall: 0.4, slink: 1, crv: [[0, 0.4, 0], [1, 0.1, 0]] }), 'slink ⇒ fall = rise');
+  assert.deepEqual(n.matrix[1], row({ src: 'randd', dst: 'fx.bode.shift', amt: -0.5, acurve: 1 }), 'dynamic FX ids are kept');
+  assert.deepEqual(n.matrix[2], row({}));
+  assert.equal(n.matrix[3].dst, 'arp.rate');
+  assert.equal(n.p['m3'], undefined, 'virtual destinations are not stored');
+  assert.equal(n.p['arp.rate'], undefined);
+  assert.equal(n.p['arp.on'], 1);
+  assert.deepEqual(n.locks, { p: ['a.level', 'fx.rev1.mix', 'g.direct'], mod: ['oscA', 'lfo10', 'matrix'], unp: ['a.semi', 'l10.rate'], misc: { poly: 0, os: 0, tuning: 1 } });
+  assert.deepEqual(n.global.mpe, { on: 1, bend: 96, xyz: 3 }, 'Round-1 ybi / bendX removed');
+  assert.deepEqual([n.global.a4, n.global.s1, n.global.nosmooth], [470, 0, 1]);
+  assert.equal(n.global.tun.name.length, 64);
+  assert.equal(n.global.tun.tab[5], null);
+  assert.equal(n.global.tun.tab[6], 6.5);
+  assert.deepEqual(n.kbd, { trans: 24, key: 11, scale: 41, swing: -1, div: 2, arpMap: { k: [10, 60], v: [1, 127], fold: 0 } });
+  assert.deepEqual([n.vc.len, n.vc.steps[0], n.vc.sel, n.vc.lmode], [8, [1, -1, 0.5, 0, 0, 0], [0, 1, 1, 1, 1], 1]);
+  assert.equal(n.tags.length, 16);
+  assert.deepEqual(n.tags.slice(0, 3), ['a', 'b'.repeat(24), 't0']);
+  assert.deepEqual([n.lfo[9].mode, n.lfo[9].type, n.lfo[9].dir, n.lfo[9].x10], ['retrig', 'path', 'pp', 1]);
+  assert.deepEqual(n.lfo[9].path, [[0.2, 0.3, 0], [1, 0, 1]]);
+  assert.deepEqual(n.lfo[9].pts, [[0, 0.5, 0], [1, 0.5, 0]]);
+  assert.deepEqual([n.lfo[8].mode, n.lfo[8].mono], ['free', 1], 'v1 "off" on input');
+  assert.deepEqual([n.ui.page, n.ui.filtView, n.ui.clipZoom, n.ui.view3d], ['mix', [1, 0], [1, 64], [1, 1, 1]]);
+  // arp / clip schemas (§2.4, provisional until seq-core): bounds and grids
+  const a = defaultSerum();
+  Object.assign(a.arp, { sel: 40, quant: -1, midiOut: 7, trigOct: 99 });
+  a.arp.slots[3] = { shape: 99, n: { rate: 2, shift: 0.51, rrate: 0.33 }, pat: { len: 8, ev: [[0, 1, 2, 300, 1], [9, 1, 1, 64, 0], [1, 0, 1, 64, 0], [2, 1, 0, 64, 0], [3.5, 0.5, -40, 1, 1]] } };
+  a.clip.clips[0] = { len: 5000, start: 2000, off: 1, notes: [[4, 1, 200, 0, 1, 2, -1, 0.5], [1, 1, 60, 100]] };
+  const na = normalizeSerum(a);
+  assert.deepEqual([na.arp.sel, na.arp.quant, na.arp.midiOut, na.arp.trigOct], [11, 0, 2, 11]);
+  const sl = na.arp.slots[3];
+  assert.deepEqual([sl.shape, sl.n.rate, sl.n.shift, sl.n.rrate, sl.n.hz], [17, 1, 0.5, 0.4, 0.5]);
+  assert.deepEqual(sl.pat.ev, [[0, 1, 2, 127, 1], [3.5, 0.5, -32, 1, 1]]);
+  const cl = na.clip.clips[0];
+  assert.deepEqual([cl.len, cl.start, cl.off], [1024, 1023, 1023]);
+  assert.deepEqual(cl.notes, [[1, 1, 60, 100, 0, 0.5, 0.5, 0], [4, 1, 127, 1, 1, 1, 0, 0.5]]);
+  assert.deepEqual(normalizeSerum(na), na);
+});
+
+test('9d migrate1 (§2.6.2): the migration table field by field, RENAME1, setS1', () => {
+  const v1 = defaultV1();
+  Object.assign(v1.p, { 'a.warpMode': 2 / 22, 'b.warpMode': 19 / 22, 's.shape': 2 / 4, 'f.type': 60 / 95, 'g.bendup': 48 / 48, 'g.benddn': 0,
+    'a.phase': 1, 'a.rand': 1, 'b.phase': 0.9995, 'b.rand': 0.5, 'f.routeB': 0, 'n.on': 1, 's.on': 1 });
+  v1.osc[0].wt = 'user:t1';
+  v1.sub.direct = 1;
+  v1.noise = { src: 'nzuser:z', oneshot: 1, keytrack: 1, direct: 0 };
+  v1.filter.keytrack = 1;
+  v1.lfo[0].mode = 'trig'; v1.lfo[1].mode = 'env'; v1.lfo[2].mode = 'off';
+  v1.lfo[0].pts = [[0, 0, 0], [0.5, 1, 0.2, 2, 0], [1, 0, 0]];
+  v1.matrix[0] = rowV1({ src: 'lfo1', dst: 'fx.dim.size', amt: 0.5 });
+  v1.matrix[31] = rowV1({ src: 'macro4', dst: 'fx.dly.mix', amt: -0.25, aux: 'velo', inv: 1 });
+  v1.midi = { 3: 'fx.dim.mix', 4: 'f.cutoff', 5: 'macro3' };
+  v1.locks = { p: ['fx.dim.level', 'a.level'], mod: ['sub', 'oscB'], misc: { poly: 1, os: 0, tuning: 1 } };
+  v1.global = { os: 1, a4: 431, uniRange: [7, 13], uniMode: [3, 1] };
+  v1.ui = { page: 'matrix', env: 1, mod: 'macro2', envLock: 0, envZoom: 3, view3d: [0, 1], wtSel: [3, 4], filtView: 1 };
+  v1.voicing.mono = 1;
+  const m = migrate1(clone(v1)), n1 = P1.normalizeSerum(clone(v1));
+  assert.deepEqual(normalizeSerum(clone(v1)), m, 'normalizeSerum(v1) = migrate1(v1)');
+  assert.deepEqual(normalizeSerum(m), m, 'stable');
+  // p: every v1 key unchanged
+  for (const k of Object.keys(n1.p)) assert.equal(m.p[k], n1.p[k], k);
+  // SYN2 ids at their destination defaults (no DEF2), except the S2 counterparts and the balances
+  for (const i of DESTS.map((d, i) => i).filter(i => i >= NV1 && !C.VIRTUAL.includes(DESTS[i].id))) {
+    const id = DESTS[i].id;
+    if (['a.w1', 'a.wvar1', 'b.w1', 'b.wvar1', 's.shp', 'f.type2', 'g.bu2', 'g.bd2'].includes(id)) continue;
+    assert.equal(m.p[id], DESTS[i].def, id);
+  }
+  assert.deepEqual([m.p['a.w1'], m.p['a.wvar1'], m.p['b.w1'], m.p['b.wvar1']], [1 / 81, 0.5, 46 / 81, 0], 'Sync 1/2 Win. → Sync var ½; AM (from A) → AM (o1)');
+  assert.equal(m.p['s.shp'], 3 / 5, 'Saw → S2 index 3');
+  assert.equal(m.p['f.type2'], 60 / 107);
+  assert.deepEqual([m.p['g.bu2'], m.p['g.bd2']], [24 / 48, 24 / 48], 'bends clamped into the S2 ranges');
+  assert.deepEqual([m.p['a.fbal'], m.p['b.fbal'], m.p['s.fbal'], m.p['n.fbal']], [0, 0, 0, 0]);
+  assert.equal(m.p['f.routeB'], 0, 'v1 switches unchanged (DEF2 applies to new states only)');
+  // oscillators
+  assert.deepEqual([m.osc[0].wt, m.osc[0].type, m.osc[0].route, m.osc[0].env, m.osc[0].uni, m.osc[0].phMem], ['user:t1', 'wt', 0, 1, { range: 7, mode: 3, spawn: 0 }, 'voice']);
+  assert.deepEqual([m.osc[1].route, m.osc[1].uni, m.osc[1].phMem], [0, { range: 13, mode: 1, spawn: 0 }, 'contig']);
+  assert.deepEqual(m.osc[0].remap, n1.osc[0].remap);
+  assert.deepEqual(m.osc[1].memSet, n1.osc[1].memSet);
+  assert.deepEqual([m.osc[2].route, m.osc[2].wt, m.p['c.on']], [0, 'factory:Default', 0]);
+  // sub / noise / filters / envelopes
+  assert.deepEqual(m.sub, { direct: 0, route: 2, env: 1, contig: 0, map: { k: [0, 127], v: [1, 127], fold: 0, warp: 0 } });
+  assert.deepEqual([m.noise.src, m.noise.oneshot, m.noise.keytrack, m.noise.route, m.noise.env, m.noise.direct], ['nzuser:z', 1, 1, 0, 1, 0]);
+  assert.deepEqual(m.filter[0], { keytrack: 1, clean: 0, route: 1, env: 1, pz: clone(C.PZ_DEFAULT) });
+  assert.deepEqual(m.filter[1], defaultSerum().filter[1]);
+  assert.deepEqual(m.env, defaultSerum().env);
+  // LFOs 8 → 10
+  assert.deepEqual(m.lfo.slice(0, 3).map(L => [L.mode, L.mono]), [['retrig', 0], ['env', 0], ['free', 1]]);
+  assert.deepEqual(m.lfo[0].pts, [[0, 0, 0], [0.5, 1, 0.2, 2, 0], [1, 0, 0]]);
+  for (const L of m.lfo) assert.deepEqual([L.type, L.dir, L.x10, L.swing, L.path], ['normal', 'fwd', 0, 0, clone(C.PATH_DEFAULT)]);
+  assert.deepEqual(m.lfo.slice(8).map(L => [L.mode, L.mono]), [['free', 1], ['free', 1]]);
+  // macros, matrix (RENAME1), voicing, global, midi, locks, ui, new modules
+  assert.deepEqual(m.macros.map(x => x.name), ['Macro 1', 'Macro 2', 'Macro 3', 'Macro 4', 'Macro 5', 'Macro 6', 'Macro 7', 'Macro 8']);
+  assert.deepEqual(m.matrix[0], row({ src: 'lfo1', dst: 'fx.hyper.dsize', amt: 0.5 }));
+  assert.deepEqual(m.matrix[31], row({ src: 'macro4', dst: 'fx.dly.mix', amt: -0.25, aux: 'velo', inv: 1 }));
+  n1.matrix.forEach((r, k) => { for (const f of ['src', 'amt', 'bi', 'curve', 'aux', 'inv', 'byp', 'out']) assert.equal(m.matrix[k][f], r[f]); });
+  assert.equal(m.voicing.steal, 0);
+  assert.equal(m.voicing.mono, 1);
+  assert.deepEqual(m.global, { os: 1, a4: 431, s1: 1, nosmooth: 0, mpe: { on: 0, bend: 48, xyz: 0 }, tun: { name: '', kind: 'none', scl: '', kbm: '', tab: null } });
+  assert.deepEqual(m.midi, { 3: 'fx.hyper.dmix', 4: 'f.cutoff', 5: 'macro3' });
+  assert.deepEqual(m.locks, { p: ['fx.hyper.dlevel', 'a.level'], mod: ['oscB', 'sub'], unp: [], misc: { poly: 1, os: 0, tuning: 1 } });
+  assert.deepEqual(m.ui, Object.assign(defaultSerum().ui, { page: 'matrix', env: 1, mod: 'macro2', envLock: 0, envZoom: 3, view3d: [0, 1, 0], wtSel: [3, 4, 0], filtView: [2, 0] }));
+  for (const k of ['arp', 'clip', 'kbd', 'vc', 'tags']) assert.deepEqual(m[k], defaultSerum()[k], k);
+  // Phase-1 factory presets migrate losslessly (golden §15.1 item 5)
+  for (const pr of FACTORY_PRESETS_V1) {
+    const mm = migrate1(pr.v.s);
+    assert.deepEqual(normalizeSerum(mm), mm, pr.name);
+    pr.v.s.matrix.forEach((r, k) => assert.equal(mm.matrix[k].dst, C.RENAME1[r.dst] || r.dst));
+  }
+  // setS1: only the flag changes, both ways (§2.6.4)
+  const off = setS1(m, 0), back = setS1(off, 1);
+  assert.deepEqual(back, m);
+  assert.deepEqual({ ...off, global: 0 }, { ...m, global: 0 });
+  assert.deepEqual({ ...off.global, s1: 1 }, m.global);
+  assert.equal(off.global.s1, 0);
+  assert.equal(setS1(defaultSerum(), true).global.s1, 1);
 });
 
 /* ------------------------------------------------------------ 10–12. compileSerum */
 
-const CP_SHAPE = {
-  base: [Float64Array, 148], mSrc: [Int8Array, 32], mDst: [Int16Array, 32], mAmt: [Float64Array, 32], mBi: [Uint8Array, 32],
-  mK: [Float64Array, 32], mAux: [Int8Array, 32], mInv: [Uint8Array, 32], mCtx: [Uint8Array, 32], mOn: [Uint8Array, 32],
-  srcUsed: [Uint8Array, 34], modded: [Uint8Array, 148], uniMode: [Uint8Array, 2], uniRange: [Float64Array, 2], memSet: [Float64Array, 32],
-  lfoMode: [Uint8Array, 8], lfoBpm: [Uint8Array, 8], lfoAnchor: [Uint8Array, 8], lfoLad: [Float64Array, 344], lfoLadN: [Uint8Array, 8],
-  chaosMono: [Uint8Array, 2], chaosSh: [Uint8Array, 2], macro: [Float64Array, 4],
-};
-const CP_NUM = ['ver', 'NS', 'NSRC', 'mN', 'subDirect', 'noiseOneshot', 'noiseKey', 'noiseDirect', 'filKey', 'direct', 'mono', 'legato',
-  'poly', 'always', 'scaled', 'oneNote', 'os', 'a4', 'smooth',
-  'veloPorta', 'notePorta'];   // not in the §4.1 table: carry §2.2 velo.porta / note.porta to the DSP (§5.3, §6.1)
-const CT_SHAPE = {
-  lfoTab: [Float32Array, 8 * 1025], lfoPtsOff: [Uint16Array, 9], lfoPmAny: [Uint8Array, 8], lfoStart: [Float64Array, 8],
-  lfoLoop: [Float64Array, 8], remap: [Float32Array, 2 * 2049], veloTab: [Float32Array, 129], noteTab: [Float32Array, 129],
-};
+const U8 = Uint8Array, I8 = Int8Array, F64 = Float64Array, F32 = Float32Array, U16 = Uint16Array;
+const CP_SHAPE = (() => {
+  const t = {
+    base: [F64, 429], mSrc: [I8, 64], mAux: [I8, 64], mDst: [Int16Array, 64], mAmt: [F64, 64], mK: [F64, 64], mAK: [F64, 64], mBi: [U8, 64],
+    mInv: [U8, 64], mCtx: [U8, 64], mOn: [U8, 64], mCrv: [I8, 64], mRise: [F64, 64], mFall: [F64, 64], mRd: [U8, 64], mAlias: [U8, 64], mSlot: [U8, 64],
+    srcUsed: [U8, 62], srcBi: [U8, 62], modded: [U8, 429], pSrc: [I8, 3], uniRange: [F64, 3], fmType: [U8, 6], memSet: [F64, 48],
+    sScanR: [F64, 3], lenLad: [F64, 15], sMaxGr: [U16, 3], sSlN: [U16, 3], sSlPos: [F64, 3 * 258], sDensLad: [F64, 3 * 27], sGlenLad: [F64, 3 * 27],
+    sDensLadN: [U8, 3], sGlenLadN: [U8, 3], route: [U8, 7], envOn: [U8, 7], fKey: [U8, 2], fClean: [U8, 2], pz: [F64, 24], envBpm: [U8, 4],
+    envLegInv: [U8, 4], envStealRe: [U8, 4], envLad: [F64, 16], lfoLad: [F64, 430], chaosMono: [U8, 2], chaosSh: [U8, 2], macro: [F64, 8],
+    mpeMac: [I8, 8], vcRates: [F64, 11], vcSteps: [F64, 48], vcSel: [U8, 5], tune: [F64, 128], sclSteps: [F64, 128], qr: [F64, 5],
+  };
+  for (const k of ['oType', 'phMem', 'phLeg', 'smoothWT', 'pMode', 'bendTrack', 'uniMode', 'spawn', 'sLoop', 'sRel', 'sLink', 'sExit', 'sLoopGr',
+    'sScanKey', 'sScanLock', 'sLenOn', 'sSlMode', 'sSlEnd', 'sSlOne', 'sSlRoot', 'sWin', 'sDens', 'sDensJump', 'sGlen', 'sPhLock', 'sTrans', 'sSmooth',
+    'sPostWarp', 'sNorm', 'sRev', 'xyOn', 'xyY', 'xyMode', 'msOver', 'msDlyBpm']) t[k] = [U8, 3];
+  for (const k of ['mapLo', 'mapHi', 'mapVLo', 'mapVHi', 'mapFold', 'mapWarp']) t[k] = [U8, 6];
+  for (const k of ['lfoMode', 'lfoMono', 'lfoType', 'lfoDir', 'lfoBpm', 'lfoAnchor', 'lfoX10', 'lfoSwing', 'lfoLadN']) t[k] = [U8, 10];
+  return t;
+})();
+const CP_NUM = ['ver', 'NSV', 'NSRC', 'NROW', 'use', 'mN', 'subContig', 'noiseOneshot', 'noiseKey', 'noiseColor', 'mono', 'legato', 'poly', 'always',
+  'scaled', 'oneNote', 'steal', 'veloPorta', 'notePorta', 'vcLen', 'vcLMode', 'os', 'a4', 's1', 'smooth', 'sclN', 'sclPer', 'mpeOn', 'mpeBend',
+  'mpeBendX', 'mpeWheelY', 'outMask', 'NFX'];
+// appended to the §4.1 table in M2 review: mSlot (the matrix slot of each compacted row, then the idle slots: a permutation
+// of 0–63) and cpKey (content key of the CP without ctKey)
+const CP_STR = ['noiseId', 'fxKey', 'ctKey', 'cpKey'], CP_ARR3 = ['wt', 'smp', 'spec', 'multi'];
+// CT v2 parts (§4.1): name → [field, type, length] (pts / pm lengths follow the LFO's point count)
+const PART_SHAPE = name => (/^lfo\d/.test(name) ? [['tab', F32, 1025]] : /^path/.test(name) ? [['x', F32, 1025], ['y', F32, 1025]]
+  : /^remap/.test(name) ? [['tab', F32, 2049]] : /^spec/.test(name) ? [['tab', F32, 513]] : [['tab', F32, 129]]);
 
-test('10 compileSerum(defaultSerum()): fields, types, CT, memoisation', () => {
-  const s = defaultSerum(), P = compileSerum(s), CP = P.serum, CT = P.serumT;
-  assert.deepEqual({ ...P, serum: 0, serumT: 0 }, {
+test('10 compileSerum(defaultSerum()): every CP v2 field with its type and length, CT parts, memoisation', () => {
+  const s = defaultSerum(), P = compileSerum(s), CP = P.serum, T = P.serumT;
+  assert.deepEqual({ ...P, serum: 0, serumT: 0, seq: 0, seqT: 0 }, {
     engine: 'serum', mode: 'poly', poly: 8, prio: 'last', legato: false, glide: 0, glideLegato: false, unison: 1, unisonDetune: 0,
-    drift: 0, bendRange: 2, level: 1, bpm: 120, needs: ['factory:Default'], serum: 0, serumT: 0,
+    drift: 0, bendRange: 2, level: 1, bpm: 120, needs: ['factory:Default Shapes'], serum: 0, serumT: 0, seq: 0, seqT: 0,
   });
-  for (const [k, [T, len]] of Object.entries(CP_SHAPE)) {
-    assert.ok(CP[k] instanceof T, k + ' type');
+  // SQP (§4.4): seq-core's compileSeq of the same state, with this compiler's "possibly on" rule; inactive by default
+  const Q = C.compileSeq(s);
+  assert.deepEqual([P.seq, P.seqT], [Q.seq, Q.seqT]);
+  assert.equal(P.seqT, Q.seqT, 'memoised by content (the same seqT object)');
+  assert.deepEqual([P.seq.ver, P.seq.active, CP.use & 8192], [1, 0, 0]);
+  const on = defaultSerum();
+  on.matrix[0] = row({ src: 'lfo1', dst: 'arp.on', amt: 1 });
+  const Pon = compileSerum(on);
+  assert.deepEqual([Pon.seq.active, Pon.serum.use & 8192], [1, 8192], 'a row targeting arp.on: the sequencer is possibly on');
+  for (const [k, [Ty, len]] of Object.entries(CP_SHAPE)) {
+    assert.ok(CP[k] instanceof Ty, k + ' type');
     assert.equal(CP[k].length, len, k + ' length');
   }
   for (const k of CP_NUM) assert.equal(typeof CP[k], 'number', k);
-  assert.deepEqual(Object.keys(CP).sort(), Object.keys(CP_SHAPE).concat(CP_NUM, ['wt', 'noiseId', 'ctKey']).sort());
-  assert.deepEqual(CP.wt, ['factory:Default', 'factory:Default']);
-  assert.equal(CP.noiseId, 'noise:White');
-  assert.equal(CP.ver, 1);
-  assert.equal(CP.NS, 148);
-  assert.equal(CP.NSRC, 34);
-  assert.equal(CP.mN, 0);
-  assert.equal(CP.direct, 0);
-  assert.equal(CP.os, 2);
-  assert.equal(CP.a4, 440);
-  assert.equal(CP.smooth, 1);
-  assert.deepEqual([CP.veloPorta, CP.notePorta], [0, 0]);
-  for (let i = 0; i < NS; i++) assert.equal(CP.base[i], s.p[DESTS[i].id]);
-  assert.deepEqual([...CP.lfoMode], [2, 2, 2, 2, 2, 2, 2, 2]);
-  assert.deepEqual([...CP.lfoLadN], [15, 15, 15, 15, 15, 15, 15, 15]);
+  for (const k of CP_STR) assert.equal(typeof CP[k], 'string', k);
+  for (const k of CP_ARR3) assert.ok(Array.isArray(CP[k]) && CP[k].length === 3 && CP[k].every(x => typeof x === 'string'), k);
+  assert.deepEqual(Object.keys(CP).sort(), Object.keys(CP_SHAPE).concat(CP_NUM, CP_STR, CP_ARR3).sort(), 'exactly the §4.1 fields');
+  assert.deepEqual([CP.ver, CP.NSV, CP.NSRC, CP.NROW, CP.use, CP.mN, CP.s1, CP.outMask, CP.fxKey, CP.NFX], [2, 429, 62, 64, 0, 0, 0, 1, '', 8]);
+  assert.deepEqual([CP.wt, CP.smp, CP.spec, CP.multi], [['factory:Default Shapes', 'factory:Default Shapes', 'factory:Default Shapes'], ['', '', ''], ['', '', ''], ['', '', '']]);
+  assert.deepEqual([CP.noiseId, CP.noiseColor, CP.os, CP.a4, CP.smooth, CP.steal, CP.vcLen, CP.mpeOn, CP.mpeBend], ['noise:White', -1, 2, 440, 1, 0, 1, 0, 48]);
+  for (let i = 0; i < ND; i++) {
+    const v = vi(i);
+    if (v < 0) continue;
+    assert.equal(CP.base[v], C.VIRTUAL.includes(DESTS[i].id) ? 0 : s.p[DESTS[i].id], DESTS[i].id);
+  }
+  assert.deepEqual([CP.base[403], CP.base[404], CP.base[405]], [0, 0, 0], 'scope-M slots stay 0');
+  assert.deepEqual([...CP.lfoMode], new Array(10).fill(0), 'RETRIG');
+  assert.deepEqual([...CP.lfoLadN], new Array(10).fill(15));
   assert.equal(CP.lfoLad[7], 1);
   assert.equal(CP.lfoLad[15], 0);
   assert.deepEqual([...CP.memSet.slice(0, 16)], [...C.MEMSET_DEFAULT_A]);
-  // CT
-  for (const [k, [T, len]] of Object.entries(CT_SHAPE)) {
-    assert.ok(CT[k] instanceof T, k + ' type');
-    assert.equal(CT[k].length, len, k + ' length');
+  assert.deepEqual([...CP.memSet.slice(32)], [...C.MEMSET_DEFAULT_C]);
+  assert.deepEqual([...CP.route], [0, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual([...CP.envOn], [1, 1, 1, 1, 1, 1, 1]);
+  assert.deepEqual([...CP.mapLo, ...CP.mapHi, ...CP.mapVLo, ...CP.mapVHi], [0, 0, 0, 0, 0, 0, 127, 127, 127, 127, 127, 127, 1, 1, 1, 1, 1, 1, 127, 127, 127, 127, 127, 127]);
+  assert.deepEqual([...CP.pSrc], [-1, -1, -1]);
+  assert.deepEqual([...CP.bendTrack, ...CP.sDensJump, ...CP.sSlRoot], [1, 1, 1, 1, 1, 1, 36, 36, 36]);
+  assert.deepEqual([...CP.sScanR, ...CP.sMaxGr, ...CP.sSlN, ...CP.sDensLadN], [2, 2, 2, 256, 256, 256, 1, 1, 1, 11, 11, 11]);
+  assert.deepEqual([...CP.sSlPos.slice(0, 3), ...CP.sSlPos.slice(258, 260)], [0, 1, 0, 0, 1]);
+  assert.deepEqual([...CP.lenLad], [0.25, 0.5, 1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 64, 128]);
+  assert.deepEqual([...CP.envLad], C.ENV_LADDER.map(e => e.beats));
+  assert.deepEqual([...CP.pz.slice(0, 12)], [1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1]);
+  assert.deepEqual([...CP.vcRates], [...C.VC_RATES]);
+  assert.deepEqual([...CP.vcSel], [1, 1, 1, 1, 1]);
+  assert.deepEqual([...CP.mpeMac], new Array(8).fill(-1));
+  assert.deepEqual([...CP.tune], Array.from({ length: 128 }, (_, k) => k), 'identity without tuning');
+  assert.deepEqual([CP.sclN, CP.sclPer, ...CP.qr], [0, 0, 16, 256, 1, 32, 512]);
+  assert.deepEqual([...CP.srcBi].map((b, i) => (b ? SOURCES[i].id : '')).filter(Boolean), SOURCES.filter(x => x.pol === 'bi').map(x => x.id));
+  // CT parts
+  assert.deepEqual(Object.keys(T).sort(), ['key', 'parts']);
+  assert.deepEqual(Object.keys(T.parts), [...C.CT_PART_NAMES]);
+  assert.equal(C.CT_PART_NAMES.length, 10 + 10 + 3 + 2 + 64 + 3);
+  for (const name of C.CT_PART_NAMES) {
+    const q = T.parts[name];
+    assert.match(q.key, /^([0-9a-f]{8}|none|ident)$/, name);
+    for (const [f, Ty, len] of PART_SHAPE(name)) { assert.ok(q[f] instanceof Ty, name + '.' + f); assert.equal(q[f].length, len, name + '.' + f); }
   }
-  assert.ok(CT.lfoPts instanceof Float64Array && CT.lfoPts.length === 3 * 24);
-  assert.ok(CT.lfoPm instanceof Uint8Array && CT.lfoPm.length === 2 * 24);
-  assert.equal(typeof CT.key, 'string');
-  assert.match(CT.key, /^[0-9a-f]{8}$/);
-  for (let l = 0; l < 8; l++) {
-    assert.equal(CT.lfoTab[l * 1025], 0);
-    assert.equal(CT.lfoTab[l * 1025 + 512], 1);
-    assert.equal(CT.lfoTab[l * 1025 + 1024], 0);
-    assert.equal(CT.lfoPtsOff[l], 3 * l);
-    assert.equal(CT.lfoStart[l], 0);
-    assert.equal(CT.lfoLoop[l], -1);
+  assert.match(T.key, /^[0-9a-f]{8}$/);
+  for (let l = 0; l < 10; l++) {
+    const q = T.parts['lfo' + l];
+    assert.deepEqual([q.tab[0], q.tab[512], q.tab[1024], q.n, q.start, q.loop, q.pmAny], [0, 1, 0, 3, 0, -1, 0]);
+    assert.deepEqual([...q.pts], [0, 0, 0, 0.5, 1, 0, 1, 0, 0]);
+    assert.ok(q.pm instanceof U8 && q.pm.length === 6);
+    assert.ok(T.parts['path' + l].x.every(v => v === 0), 'Normal LFOs carry no path');
   }
-  assert.equal(CT.veloTab[64], 0.5);
-  assert.equal(CT.noteTab[128], 1);
-  assert.equal(CT.remap[2049 + 1024], 0.5);
-  assert.equal(CP.ctKey, CT.key);
-  // memoisation by content
+  assert.equal(T.parts.velo.tab[64], 0.5);
+  assert.equal(T.parts.note.tab[128], 1);
+  assert.equal(T.parts.remap1.tab[1024], 0.5);
+  assert.deepEqual([T.parts.crv5.tab[0], T.parts.crv5.tab[64], T.parts.crv5.tab[128]], [0, 0.5, 1], 'identity curve');
+  assert.ok(T.parts.spec2.tab.every(v => v === 1), 'flat spectral filter');
+  assert.equal(CP.ctKey, T.key);
+  // the assembled full CT (§4.1 layout)
+  const ct = assembleCT(T);
+  for (const [k, Ty, len] of [['lfoTab', F32, 10 * 1025], ['lfoPtsOff', U16, 11], ['lfoPts', F64, 3 * 30], ['lfoPm', U8, 2 * 30], ['lfoPmAny', U8, 10],
+    ['lfoStart', F64, 10], ['lfoLoop', F64, 10], ['pathX', F32, 10 * 1025], ['pathY', F32, 10 * 1025], ['remap', F32, 3 * 2049], ['veloTab', F32, 129],
+    ['noteTab', F32, 129], ['crv', F32, 64 * 129], ['specFilt', F32, 3 * 513]]) {
+    assert.ok(ct[k] instanceof Ty && ct[k].length === len, k);
+  }
+  assert.deepEqual([...ct.lfoPtsOff], [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30]);
+  assert.equal(ct.key, T.key);
+  assert.deepEqual(clone(Object.assign({}, ct)), clone(loadFixture('ct2-default.json')));
+  // memoisation by content (whole CT and per part)
   const P2 = compileSerum(defaultSerum());
-  assert.equal(P2.serumT.key, CT.key);
-  assert.equal(P2.serumT, CT, 'equal curves → same CT object');
+  assert.equal(P2.serumT, T, 'equal curves → same CT object');
   const s3 = defaultSerum();
   s3.p['f.cutoff'] = 0.3;
   s3.matrix[0] = row({ src: 'env2', dst: 'f.cutoff', amt: 0.5 });
-  const P3 = compileSerum(s3);
-  assert.equal(P3.serumT, CT, 'only s.p / matrix changed → CT reused');
+  assert.equal(compileSerum(s3).serumT, T, 'only s.p / matrix changed → CT reused');
   const s4 = defaultSerum();
   s4.lfo[5].pts[1][0] = 0.4;
-  const P4 = compileSerum(s4);
-  assert.notEqual(P4.serumT.key, CT.key, 'moved point → new key');
-  assert.notEqual(P4.serumT, CT);
+  const T4 = compileSerum(s4).serumT;
+  assert.notEqual(T4.key, T.key, 'moved point → new key');
+  assert.notEqual(T4.parts.lfo5, T.parts.lfo5);
+  for (const name of C.CT_PART_NAMES) if (name !== 'lfo5') assert.equal(T4.parts[name], T.parts[name], name + ' part reused');
   const s5 = defaultSerum();
   s5.lfo[2].start = 1;
-  assert.notEqual(compileSerum(s5).serumT.key, CT.key, 'start index is part of the key');
-  assert.equal(compileSerum(s5).serumT.lfoStart[2], 0.5);
+  assert.notEqual(compileSerum(s5).serumT.key, T.key, 'start index is part of the key');
+  assert.equal(compileSerum(s5).serumT.parts.lfo2.start, 0.5);
+  const s6 = defaultSerum();
+  s6.matrix[7] = row({ src: 'env2', dst: 'a.level', amt: 0.5, crv: [[0, 1, 0], [1, 0, 0]] });
+  const T6 = compileSerum(s6).serumT;
+  assert.deepEqual([T6.parts.crv7.tab[0], T6.parts.crv7.tab[128]], [1, 0]);
+  assert.equal(T6.parts.crv6, T.parts.crv6);
   // compileSerum does not touch its input
   const frozen = deepFreeze(defaultSerum());
   compileSerum(frozen, { bpm: 90, smooth: 2 });
@@ -1002,70 +1476,151 @@ test('10 compileSerum(defaultSerum()): fields, types, CT, memoisation', () => {
   sp.velo.porta = 0;
   sp.note.porta = 1;
   assert.deepEqual([compileSerum(sp).serum.veloPorta, compileSerum(sp).serum.notePorta], [0, 1]);
-  assert.equal(compileSerum(sp).serumT, CT);
+  assert.equal(compileSerum(sp).serumT, T);
   // ctx scalars are clamped: tempo 20–999 (non-positive / missing → 120), smoothing scale 0.01–8 (§4.1, §9.7)
   for (const [ctx, bpm, smooth] of [[{ bpm: 0, smooth: 0 }, 120, 0.01], [{ bpm: -5, smooth: -5 }, 120, 0.01], [{ bpm: 5, smooth: 50 }, 20, 8],
     [{ bpm: 5000, smooth: NaN }, 999, 1], [{ bpm: Infinity, smooth: '2' }, 120, 1], [{ bpm: 133.5, smooth: 0.5 }, 133.5, 0.5], [null, 120, 1]]) {
     const Q = compileSerum(defaultSerum(), ctx);
     assert.deepEqual([Q.bpm, Q.serum.smooth], [bpm, smooth], JSON.stringify(ctx));
   }
+  // Disable Smoothing, the MPE preferences and the quality caps come through ctx / state (§4.1, §5.4)
+  const ns = defaultSerum();
+  ns.global.nosmooth = 1;
+  assert.equal(compileSerum(ns, { smooth: 3 }).serum.smooth, 0.01);
+  const pm = compileSerum(defaultSerum(), { mpeBendX: 1, mpeYBi: true, qr: { uniMax: 4, grainsMax: 999, specHopMul: 2, specStreams: 0, grainsProc: 300.4 } }).serum;
+  assert.deepEqual([pm.mpeBendX, pm.srcBi[SRC_INDEX.mpey], pm.srcBi[SRC_INDEX.mpez], ...pm.qr], [1, 1, 0, 4, 256, 2, 1, 300]);
+  assert.deepEqual([...compileSerum(defaultSerum(), { qr: [1, 16, 4, 64, 64] }).serum.qr], [1, 16, 4, 64, 64]);
+  assert.deepEqual(clone(Object.assign({}, CP)), clone(loadFixture('cp2-default.json')));
 });
 
-test('10b compileSerum: structured switches, voicing, LFO data and point links', () => {
+test('10b compileSerum: per-oscillator data, routing, filters, envelopes, LFOs, voicing, MPE, tuning, Voice Control', () => {
   const s = defaultSerum();
-  s.voicing = { mono: 1, legato: 1, poly: 5, always: 1, scaled: 1, oneNote: 0 };
-  s.global = { os: 4, a4: 432.5, uniRange: [12.5, 0], uniMode: [2, 4] };
-  s.lfo[1] = Object.assign(s.lfo[1], { mode: 'env', bpm: 0, dot: 1, trip: 1, anchor: 0, loop: 1,
+  s.voicing = { mono: 1, legato: 1, poly: 5, always: 1, scaled: 1, oneNote: 0, steal: 3 };
+  Object.assign(s.global, { os: 4, a4: 432.5 });
+  s.osc[0].uni = { range: 12.5, mode: 2, spawn: 3 };
+  s.osc[1].uni = { range: 0, mode: 4, spawn: 1 };
+  Object.assign(s.osc[2], { type: 'gran', phMem: 'voice', phLegato: 1, smoothWT: 1, bendTrack: 0, fm: [2, 1], route: 2, env: 0, pitch: { mode: 'ratio', src: 'A' },
+    map: { k: [10, 20], v: [5, 6], fold: 1, warp: 1 }, xy: { on: 1, y: 7, yMode: 2 }, msmo: { override: 1, dlyBpm: 1 } });
+  Object.assign(s.osc[2].smpo, { loop: 3, rel: 1, link: 1, exitRel: 1, loopGrains: 1, scanKey: 1, scanLock: 1, lenBpm: 1, scanRange: 1, win: 9,
+    phaseLock: 1, transients: 1, slice: { mode: 2, thr: 0.5, marks: [0.25, 0.5], toEnd: 1, single: 1, root: 48, sync: 0 },
+    dens: { mode: 1, trip: 1, dot: 1, jump: 0, max: 64 }, glen: { mode: 2, trip: 0, dot: 1 }, ops: { fade: 2, norm: 1, rev: 1, trim: null } });
+  Object.assign(s.osc[2].spec, { smooth: 1, postWarp: 1 });
+  s.osc[1].pitch.mode = 'harm';
+  s.lfo[1] = Object.assign(s.lfo[1], { mode: 'env', mono: 1, type: 'sh', dir: 'pp', bpm: 0, dot: 1, trip: 1, anchor: 0, x10: 1, swing: 1, loop: 1,
     pts: [[0, 0, 0], [0.25, 1, 0.5, 0, 3], [0.75, 0.2, 0, 2, 0], [1, 0, 0]] });
-  s.lfo[0].mode = 'trig';
+  s.lfo[0].mode = 'free';
+  s.lfo[9].type = 'path';
+  s.env[3] = { bpm: 1, legInv: 1, stealRe: 1 };
   s.chaos[1] = { mono: 1, sh: 1 };
   s.macros[2].v = 0.4;
-  s.noise = { src: 'noise:Pink', oneshot: 1, keytrack: 1, direct: 1 };
-  s.filter.keytrack = 1;
-  const n = normalizeSerum(s), P = compileSerum(n), CP = P.serum, CT = P.serumT;
+  s.macros[7].v = 0.9;
+  s.noise = Object.assign(s.noise, { src: 'color:Brown', oneshot: 1, keytrack: 1, route: 3, env: 0 });
+  s.sub = Object.assign(s.sub, { contig: 1, route: 0 });
+  s.filter[0] = Object.assign(s.filter[0], { keytrack: 1, route: 0, pz: [[0.5, 0, 0], [0, 1, 0], [0, 0, 1], [1, 0, -1]] });
+  s.filter[1] = Object.assign(s.filter[1], { clean: 1, route: 2, env: 0 });
+  s.global.mpe = { on: 1, bend: 24, xyz: 1 };
+  s.p['c.on'] = 1;
+  s.global.tun = { name: 'x', kind: 'tun', scl: '', kbm: '', tab: Array.from({ length: 128 }, (_, k) => (k === 3 ? null : k + 0.25)) };
+  s.vc = { name: 'V', len: 3, steps: Array.from({ length: 8 }, (_, j) => [j / 10, 0, 0, 0, 0, -j / 10]), sel: [1, 0, 1, 0, 1], lmode: 1 };
+  const n = normalizeSerum(s), P = compileSerum(n), CP = P.serum, T = P.serumT;
   assert.equal(P.mode, 'mono');
   assert.equal(P.poly, 1);
   assert.equal(P.legato, true);
-  assert.deepEqual([CP.mono, CP.legato, CP.poly, CP.always, CP.scaled, CP.oneNote], [1, 1, 5, 1, 1, 0]);
-  assert.deepEqual([CP.os, CP.a4, [...CP.uniRange], [...CP.uniMode]], [4, 432.5, [12.5, 0], [2, 4]]);
-  assert.deepEqual([...CP.lfoMode.slice(0, 3)], [0, 1, 2]);
-  assert.deepEqual([CP.lfoBpm[1], CP.lfoAnchor[1], CP.lfoLadN[1]], [0, 0, 43]);
+  assert.deepEqual([CP.mono, CP.legato, CP.poly, CP.always, CP.scaled, CP.oneNote, CP.steal], [1, 1, 5, 1, 1, 0, 3]);
+  assert.deepEqual([CP.os, CP.a4, [...CP.uniRange], [...CP.uniMode], [...CP.spawn]], [4, 432.5, [12.5, 0, 2], [2, 4, 0], [3, 1, 0]]);
+  assert.deepEqual([[...CP.oType], [...CP.phMem], [...CP.phLeg], [...CP.smoothWT], [...CP.pMode], [...CP.pSrc], [...CP.bendTrack], [...CP.fmType]],
+    [[0, 0, 3], [0, 0, 2], [0, 0, 1], [0, 0, 1], [0, 1, 2], [-1, -1, 0], [1, 1, 0], [0, 0, 0, 0, 2, 1]]);
+  assert.deepEqual([CP.mapLo[2], CP.mapHi[2], CP.mapVLo[2], CP.mapVHi[2], CP.mapFold[2], CP.mapWarp[2]], [10, 20, 5, 6, 1, 1]);
+  const o = k => CP[k][2];
+  assert.deepEqual(['sLoop', 'sRel', 'sLink', 'sExit', 'sLoopGr', 'sScanKey', 'sScanLock', 'sLenOn', 'sSlMode', 'sSlEnd', 'sSlOne', 'sSlRoot', 'sWin',
+    'sDens', 'sDensJump', 'sGlen', 'sPhLock', 'sTrans', 'sSmooth', 'sPostWarp', 'sNorm', 'sRev', 'xyOn', 'xyY', 'xyMode', 'msOver', 'msDlyBpm'].map(o),
+  [3, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 48, 9, 1, 0, 2, 1, 1, 1, 1, 1, 1, 1, 7, 2, 1, 1], 'Manual X|Y compiles slicing off');
+  assert.deepEqual([CP.sScanR[2], CP.sMaxGr[2], CP.sSlN[2], ...CP.sSlPos.slice(516, 520), CP.sDensLadN[2], CP.sGlenLadN[2]], [4, 64, 3, 0, 0.25, 0.5, 1, 27, 19]);
+  assert.deepEqual([CP.sDensLad[54], CP.sDensLad[55], CP.sDensLad[80]], [24, 16, 1 / 64], 'gridLadder(dot, trip): 4 bar. … 1/256');
+  assert.deepEqual([[...CP.route], [...CP.envOn]], [[0, 1, 2, 3, 0, 0, 2], [1, 1, 0, 0, 1, 1, 0]]);
+  assert.deepEqual([[...CP.fKey], [...CP.fClean], [...CP.pz.slice(0, 12)]], [[1, 0], [0, 1], [0.5, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, -1]]);
+  assert.deepEqual([CP.subContig, CP.noiseOneshot, CP.noiseKey, CP.noiseColor, CP.noiseId], [1, 1, 1, 2, '']);
+  assert.deepEqual([[...CP.envBpm], [...CP.envLegInv], [...CP.envStealRe]], [[0, 0, 0, 1], [0, 0, 0, 1], [0, 0, 0, 1]]);
+  assert.deepEqual([...CP.lfoMode.slice(0, 3)], [2, 1, 0]);
+  assert.deepEqual([CP.lfoMono[1], CP.lfoType[1], CP.lfoDir[1], CP.lfoBpm[1], CP.lfoAnchor[1], CP.lfoX10[1], CP.lfoSwing[1], CP.lfoLadN[1], CP.lfoType[9]],
+    [1, 4, 2, 0, 0, 1, 1, 43, 1]);
   const lad = lfoLadder(1, 1);
   for (let j = 0; j < 43; j++) assert.equal(CP.lfoLad[43 + j], lad[j].beats);
   assert.deepEqual([...CP.chaosMono, ...CP.chaosSh], [0, 1, 0, 1]);
-  assert.equal(CP.macro[2], 0.4);
-  assert.deepEqual([CP.noiseOneshot, CP.noiseKey, CP.noiseDirect, CP.filKey, CP.noiseId], [1, 1, 1, 1, 'noise:Pink']);
-  assert.equal(CP.direct, 0, 'noise direct but noise off and untargeted');
-  assert.equal(CT.lfoPtsOff[1], 3);
-  assert.equal(CT.lfoPtsOff[2], 7);
-  assert.equal(CT.lfoPtsOff[8], 3 * 7 + 4);
-  assert.deepEqual([...CT.lfoPts.slice(12, 18)], [0.25, 1, 0.5, 0.75, 0.2, 0]);
-  assert.deepEqual([...CT.lfoPm.slice(6, 12)], [0, 0, 0, 3, 2, 0]);
-  assert.deepEqual([...CT.lfoPmAny], [0, 1, 0, 0, 0, 0, 0, 0]);
-  assert.equal(CT.lfoLoop[1], 0.25);
-  close(CT.lfoTab[1025 + 128], evalPts(n.lfo[1].pts, 0.125), 1e-7);
+  assert.deepEqual([CP.macro[2], CP.macro[7], CP.base[vi('m3')], CP.base[vi('m8')]], [0.4, 0.9, 0.4, 0.9], 'virtual macro bases');
+  assert.deepEqual([CP.mpeOn, CP.mpeBend, CP.mpeWheelY, ...CP.mpeMac.slice(0, 4)], [1, 24, 0, 0, 1, 2, -1]);
+  assert.ok(Number.isNaN(CP.tune[3]) && CP.tune[4] === 4.25, 'unmapped keys are NaN');
+  assert.deepEqual([CP.vcLen, CP.vcLMode, CP.vcSteps[6], CP.vcSteps[11], ...CP.vcSel], [3, 1, 0.1, -0.1, 1, 0, 1, 0, 1]);
+  assert.equal(CP.use, 1 + 16 + 128 + 256 + 512 + 1024 + 8192, 'OSC C, Granular, Direct, MPE, tuning, Voice Control, sequencer (map) bits');
+  n.p['c.on'] = 0;
+  assert.equal(compileSerum(n).serum.use, 128 + 256 + 512 + 1024 + 8192, 'OSC C off: its type and route do not count (A → F1 → F2 → Direct does)');
+  assert.equal(CP.outMask, 3);
+  const ct = assembleCT(T);
+  assert.equal(ct.lfoPtsOff[1], 3);
+  assert.equal(ct.lfoPtsOff[2], 7);
+  assert.equal(ct.lfoPtsOff[10], 3 * 9 + 4);
+  assert.deepEqual([...ct.lfoPts.slice(12, 18)], [0.25, 1, 0.5, 0.75, 0.2, 0]);
+  assert.deepEqual([...ct.lfoPm.slice(6, 12)], [0, 0, 0, 3, 2, 0]);
+  assert.deepEqual([...ct.lfoPmAny], [0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+  assert.equal(ct.lfoLoop[1], 0.25);
+  close(ct.lfoTab[1025 + 128], evalPts(n.lfo[1].pts, 0.125), 1e-7);
+  // Path LFO: the default diamond resampled at equal arc length (start at the top, a quarter of the way at the right corner)
+  close(ct.pathX[9 * 1025], 0.5, 1e-7); close(ct.pathY[9 * 1025], 1, 1e-7);
+  close(ct.pathX[9 * 1025 + 256], 1, 1e-6); close(ct.pathY[9 * 1025 + 256], 0.5, 1e-6);
+  close(ct.pathX[9 * 1025 + 512], 0.5, 1e-6); close(ct.pathY[9 * 1025 + 512], 0, 1e-6);
+  close(ct.pathX[9 * 1025 + 1024], 0.5, 1e-6); close(ct.pathY[9 * 1025 + 1024], 1, 1e-6);
 });
 
-test('11 needs and direct', () => {
-  const base = { 'factory:Default': 1 };
-  assert.deepEqual(compileSerum(defaultSerum()).needs, Object.keys(base));
+test('11 needs (§4.1) per oscillator type, sub tables per mode, noise; direct and bus outputs', () => {
+  assert.deepEqual(compileSerum(defaultSerum()).needs, ['factory:Default Shapes']);
   const b = withRows([{ src: 'macro1', dst: 'b.on', amt: 1 }], s => { s.osc[1].wt = 'factory:Saw to Square'; });
-  assert.deepEqual(compileSerum(b).needs, ['factory:Default', 'factory:Saw to Square']);
-  const sh = withRows([{ src: 'lfo1', dst: 's.shape', amt: 0.5 }], s => { s.p['s.on'] = 1; s.p['s.shape'] = 0.5; });
-  assert.deepEqual(compileSerum(sh).needs, ['factory:Default', ...SUB_IDS]);
-  const sub = withRows([], s => { s.p['s.on'] = 1; s.p['s.shape'] = 0.5; s.sub.direct = 1; });
-  assert.deepEqual(compileSerum(sub).needs, ['factory:Default', 'sub:Saw']);
-  assert.equal(compileSerum(sub).serum.direct, 1);
+  assert.deepEqual(compileSerum(b).needs, ['factory:Default Shapes', 'factory:Saw to Square']);
+  // sub: S1 mode reads the v1 shape list, S2 mode SUB_IDS2; targeting the shape (either field: rows are aliased) needs all
+  const sh1 = migrate1(Object.assign(defaultV1(), { p: Object.assign(defaultV1().p, { 's.on': 1, 's.shape': 0.5 }) }));
+  assert.deepEqual(compileSerum(sh1).needs, ['factory:Default', 'sub:Saw']);
+  sh1.matrix[0] = row({ src: 'lfo1', dst: 's.shp', amt: 0.5 });
+  assert.deepEqual(compileSerum(sh1).needs, ['factory:Default', ...SUB_IDS]);
+  const sh2 = withRows([], s => { s.p['s.on'] = 1; s.p['s.shp'] = 0.4; });
+  assert.deepEqual(compileSerum(sh2).needs, ['factory:Default Shapes', 'sub:Triangle']);
+  sh2.matrix[0] = row({ src: 'lfo1', dst: 's.shape', amt: 0.5 });
+  assert.deepEqual(compileSerum(sh2).needs, ['factory:Default Shapes', ...C.SUB_IDS2]);
+  const sub = withRows([], s => { s.p['s.on'] = 1; s.sub.route = 2; });
+  assert.deepEqual([compileSerum(sub).needs, compileSerum(sub).serum.outMask & 2], [['factory:Default Shapes', 'sub:Sine'], 2]);
   const subOff = withRows([], s => { s.p['s.shape'] = 0.5; s.p['a.on'] = 0; });
   assert.deepEqual(compileSerum(subOff).needs, []);
-  const nz = withRows([{ src: 'env2', dst: 'n.on', amt: 1 }], s => { s.noise.direct = 1; s.noise.src = 'noise:Rain'; });
-  assert.deepEqual(compileSerum(nz).needs, ['factory:Default', 'noise:Rain']);
-  assert.equal(compileSerum(nz).serum.direct, 1);
+  const nz = withRows([{ src: 'env2', dst: 'n.on', amt: 1 }], s => { s.noise.route = 2; s.noise.src = 'noise:Rain'; });
+  assert.deepEqual(compileSerum(nz).needs, ['factory:Default Shapes', 'noise:Rain']);
+  assert.equal(compileSerum(nz).serum.outMask & 2, 2);
+  const col = withRows([], s => { s.p['n.on'] = 1; s.noise.src = 'color:Geiger'; });
+  assert.deepEqual([compileSerum(col).needs, compileSerum(col).serum.noiseColor, compileSerum(col).serum.noiseId], [['factory:Default Shapes'], 3, ''], 'colour noise needs nothing');
   const byp = withRows([{ src: 'env2', dst: 'n.on', amt: 1, byp: 1 }]);
-  assert.deepEqual(compileSerum(byp).needs, ['factory:Default'], 'bypassed row does not make noise possibly on');
+  assert.deepEqual(compileSerum(byp).needs, ['factory:Default Shapes'], 'bypassed row does not make noise possibly on');
+  // sample types: playback entry ids (with ~opsKey for trim / fade), wavetables as samples, spectral analyses, multisamples
+  const t = defaultSerum();
+  t.p['b.on'] = 1; t.p['c.on'] = 1;
+  Object.assign(t.osc[0], { type: 'sample', smp: 'smp:abc' });
+  Object.assign(t.osc[1], { type: 'spec', smp: 'factory:Basic Shapes' });
+  t.osc[1].smpo.ops.rev = 1;
+  Object.assign(t.osc[2], { type: 'multi', multi: 'fmsmp:Juno Strings' });
+  const k = C.opsKey({ trim: [0.1, 0.9], fade: 2 });
+  assert.match(k, /^[0-9a-f]{8}$/);
+  assert.equal(C.opsKey({ trim: null, fade: 0, norm: 1, rev: 1 }), '', 'norm / rev never change the entry');
+  assert.notEqual(C.opsKey({ trim: [0.1, 0.9] }), k);
+  const T1 = compileSerum(t);
+  assert.deepEqual(T1.needs, ['smp:abc', 'spec:wtsmp:factory:Basic Shapes~r', 'fmsmp:Juno Strings']);
+  assert.deepEqual([T1.serum.wt, T1.serum.smp, T1.serum.spec, T1.serum.multi], [['', '', ''], ['smp:abc', '', ''], ['', 'spec:wtsmp:factory:Basic Shapes~r', ''], ['', '', 'fmsmp:Juno Strings']]);
+  assert.equal(T1.serum.use & (1 | 8 | 32), 1 | 8 | 32);
+  t.osc[0].smpo.ops = { trim: [0.1, 0.9], fade: 2, norm: 0, rev: 0 };
+  t.osc[0].type = 'gran';
+  assert.deepEqual(compileSerum(t).needs[0], 'smp:abc~' + k);
+  assert.deepEqual(C.oscUses(t, 0), { wt: '', smp: 'smp:abc~' + k, spec: '', multi: '' });
+  assert.deepEqual([C.oscTypeOf(t, 0), C.oscTypeOf(t, 2), C.oscTypeOf(null, 0)], ['gran', 'multi', 'wt']);
+  // bus sends (any channel, base > 0 or targeted) set the bus outputs and the bus bit
+  const bus = withRows([{ src: 'env2', dst: 'f2.bus2', amt: 0.5 }], s => { s.p['c.bus1'] = 0.3; });
+  assert.deepEqual([compileSerum(bus).serum.outMask, compileSerum(bus).serum.use & 64], [1 | 4 | 8, 64]);
 });
 
-test('12 matrix compile', () => {
+test('12 matrix compile (§4.1, §5.2): vi destinations, FX-context rows, contexts, curves, slew, randd, aliasing', () => {
   const s = withRows([
     { src: 'lfo1', dst: 'a.level', amt: 0.5, byp: 1 },
     { src: '', dst: 'a.level', amt: 0.5 },
@@ -1081,39 +1636,68 @@ test('12 matrix compile', () => {
     { src: 'rand1', dst: 'a.uni', amt: 1 },
     { src: 'rand2', dst: 'n.rand', amt: 1 },
     { src: 'alt1', dst: 'bus4', amt: 1 },
+    { src: 'randd', dst: 'c.level', amt: 0.3, acurve: -0.5, rise: 0.5, fall: 1, crv: [[0, 0, 0], [1, 0.5, 0]] },
+    { src: 'env4', dst: 'g.direct', amt: 0.2 },
+    { src: 'lfo9', dst: 'm2', amt: 0.4, aux: 'randd' },
+    { src: 'vidx', dst: 'arp.gate', amt: 0.1 },
   ]);
   const CP = compileSerum(s).serum;
-  assert.equal(CP.mN, 9);
-  assert.deepEqual([...CP.mSrc.slice(0, 9)], ['lfo2', 'env3', 'macro1', 'velo', 'note', 'fixed', 'rand1', 'rand2', 'alt1'].map(x => SRC_INDEX[x]));
-  assert.deepEqual([...CP.mDst.slice(0, 9)], ['f.cutoff', 'e1.att', 'l3.rate', 'g.wheel', 'fx.dly.mix', 'g.master', 'a.uni', 'n.rand', 'bus4'].map(x => DEST_INDEX[x]));
+  assert.equal(CP.mN, 12, 'the dynamic FX row is inactive without an FX layout (§4.1)');
+  assert.deepEqual([CP.fxKey, CP.NFX], ['', 8]);
+  assert.deepEqual([...CP.mSrc.slice(0, 12)], ['lfo2', 'env3', 'macro1', 'velo', 'fixed', 'rand1', 'rand2', 'alt1', 'randd', 'env4', 'lfo9', 'vidx'].map(x => SRC_INDEX[x]));
+  assert.deepEqual([...CP.mDst.slice(0, 12)], [vi('f.cutoff'), vi('e1.att'), vi('l3.rate'), vi('g.wheel'), -1 - GIDX.MASTER, vi('a.uni'), vi('n.rand'),
+    vi('bus4'), vi('c.level'), -1 - GIDX.DIRECT, vi('m2'), vi('arp.gate')]);
   assert.equal(CP.mAmt[0], -0.4);
   assert.equal(CP.mBi[0], 1);
   assert.equal(CP.mK[0], 1.5);
   assert.equal(CP.mAux[0], SRC_INDEX.chaos1);
   assert.equal(CP.mInv[0], 1);
-  assert.equal(CP.mAmt[5], -1);
-  assert.deepEqual([...CP.mCtx.slice(0, 9)], [1, 1, 3, 2, 4, 4, 1, 1, 3]);
-  assert.deepEqual([...CP.mOn.slice(0, 9)], [0, 0, 0, 0, 0, 0, 1, 1, 0]);
-  assert.deepEqual([...CP.mSrc.slice(9)], new Array(23).fill(0));
-  const used = new Set(['lfo2', 'chaos1', 'env3', 'macro1', 'velo', 'note', 'fixed', 'rand1', 'rand2', 'alt1'].map(x => SRC_INDEX[x]));
+  assert.equal(CP.mAmt[4], -1);
+  assert.deepEqual([...CP.mCtx.slice(0, 12)], [1, 1, 3, 2, 4, 1, 1, 3, 1, 4, 2, 2]);
+  assert.deepEqual([...CP.mOn.slice(0, 12)], [0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0]);
+  assert.deepEqual([CP.mCrv[8], CP.mRise[8], CP.mFall[8], CP.mAK[8], CP.mRd[8], CP.mRd[10], CP.mRd[0]], [14, 0.5, 4, -3, 1, 1, 0]);
+  assert.deepEqual([...CP.mCrv.slice(0, 8)], new Array(8).fill(-1));
+  assert.deepEqual([...CP.mSrc.slice(12)], new Array(52).fill(0));
+  assert.equal(CP.use & 4096, 4096, 'a curved / slewed row');
+  assert.equal(CP.use & 2048, 2048, 'ENV 4 / LFO 9 used');
+  assert.equal(CP.use & 1024, 1024, 'Voice Index read');
+  const used = new Set(['lfo2', 'chaos1', 'env3', 'macro1', 'velo', 'fixed', 'rand1', 'rand2', 'alt1', 'randd', 'env4', 'lfo9', 'vidx'].map(x => SRC_INDEX[x]));
   for (let i = 0; i < NSRC; i++) assert.equal(CP.srcUsed[i], used.has(i) ? 1 : 0, 'srcUsed ' + SOURCES[i].id);
-  const md = new Set(['f.cutoff', 'e1.att', 'l3.rate', 'g.wheel', 'a.uni', 'n.rand', 'bus4'].map(x => DEST_INDEX[x]));
-  for (let i = 0; i < NS; i++) assert.equal(CP.modded[i], md.has(i) ? 1 : 0, 'modded ' + DESTS[i].id);
-  // mOn exactly for the eight note-on destinations
-  const on = ['a.uni', 'b.uni', 'a.phase', 'b.phase', 'a.rand', 'b.rand', 'n.phase', 'n.rand'];
-  const s2 = withRows(on.concat(['a.level', 'n.level', 'a.wt', 'b.det']).map(dst => ({ src: 'env1', dst, amt: 0.5 })));
-  assert.deepEqual([...compileSerum(s2).serum.mOn.slice(0, 12)], [1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0]);
-  // scopes → contexts for every destination
-  const want = { V: 1, 'V*': 1, 'V*M': 3, G: 2, M: 4 };
-  for (let k = 0; k < ND; k += 32) {
-    const rows = DESTS.slice(k, k + 32).map(d => ({ src: 'fixed', dst: d.id, amt: 0.1 }));
+  const md = new Set(['f.cutoff', 'e1.att', 'l3.rate', 'a.uni', 'n.rand', 'bus4', 'c.level'].map(x => vi(x)));
+  for (let v = 0; v < NSV; v++) assert.equal(CP.modded[v], md.has(v) ? 1 : 0, 'modded (voice context) ' + v);
+  // mOn exactly for the note-on destinations
+  const on = [...C.NOTE_ON_DESTS].slice(0, 30);
+  const s2 = withRows(on.concat(['a.level', 'n.level', 'a.wt', 'c.det']).map(dst => ({ src: 'env1', dst, amt: 0.5 })));
+  assert.deepEqual([...compileSerum(s2).serum.mOn.slice(0, 34)], [...new Array(30).fill(1), 0, 0, 0, 0]);
+  // scopes → contexts for every destination with a voice slot or an FX-context index
+  const want = { V: 1, 'V*': 1, 'V*M': 3, G: 2, M: 4 }, ids = DESTS.filter(d => vi(d.id) >= 0 || ['g.master', 'g.bypass', 'g.direct', 'g.bus1v', 'g.bus2v'].includes(d.id));
+  for (let k = 0; k < ids.length; k += 64) {
+    const rows = ids.slice(k, k + 64).map(d => ({ src: 'fixed', dst: d.id, amt: 0.1 }));
     const cp = compileSerum(withRows(rows)).serum;
-    rows.forEach((r, j) => assert.equal(cp.mCtx[j], want[DESTS[k + j].scope], r.dst));
+    assert.equal(cp.mN, rows.length);
+    rows.forEach((r, j) => assert.equal(cp.mCtx[j], want[DESTS[DEST_INDEX[r.dst]].scope], r.dst));
   }
-  // fxModded
+  // fxModded (Phase-1 API, v1 FX rows; v2 ids of renamed rows count for their v1 row)
   const fm = fxModded(s);
   assert.ok(fm instanceof Uint8Array && fm.length === 100);
   assert.deepEqual([...fm].map((v, k) => (v ? k : -1)).filter(k => k >= 0), [0, DEST_INDEX['fx.dly.mix'] - NS]);
+  const r1 = withRows([{ src: 'lfo1', dst: 'fx.hyper.dsize', amt: 0.5 }]);
+  assert.deepEqual([...fxModded(r1)].map((v, k) => (v ? k : -1)).filter(k => k >= 0), [DEST_INDEX['fx.dim.size'] - NS]);
+  // S1 pairs (§2.6.4): a row on the other mode's field compiles against the active field, rescaled, marked mAlias
+  const al = S1();
+  al.matrix[0] = row({ src: 'lfo1', dst: 'a.w1', amt: 0.2 });
+  al.matrix[1] = row({ src: 'lfo1', dst: 'a.warpMode', amt: 0.2 });
+  al.matrix[2] = row({ src: 'lfo1', dst: 'g.bu2', amt: 0.5 });
+  al.matrix[3] = row({ src: 'lfo1', dst: 'c.w1', amt: 0.5 });
+  const A1 = compileSerum(al).serum, A2 = compileSerum(setS1(al, 0)).serum;
+  assert.deepEqual([...A1.mDst.slice(0, 4)], ['a.warpMode', 'a.warpMode', 'g.bendup', 'c.w1'].map(vi));
+  assert.deepEqual([...A1.mAlias.slice(0, 4)], [1, 0, 1, 0]);
+  close(A1.mAmt[0], 0.2 * 81 / 22, 1e-12);
+  assert.deepEqual([A1.mAmt[1], A1.mAmt[2]], [0.2, 0.5]);
+  assert.deepEqual([...A2.mDst.slice(0, 4)], ['a.w1', 'a.w1', 'g.bu2', 'c.w1'].map(vi));
+  assert.deepEqual([...A2.mAlias.slice(0, 4)], [0, 1, 0, 0]);
+  close(A2.mAmt[1], 0.2 * 22 / 81, 1e-12);
+  assert.deepEqual([A1.s1, A2.s1, A1.use & 16384, A2.use & 16384], [1, 0, 16384, 0]);
 });
 
 /* ------------------------------------------------------------ 13–15. ladders, curves, unison */
@@ -1235,16 +1819,20 @@ test('16a addMod: drag-and-drop defaults (§5.8), FX bases, bool dests, slots, f
   assert.deepEqual([s.matrix[r4].amt, s.matrix[r4].bi], [-1, 1]);
   const r5 = addMod(s, fx, 'note', 'a.pan', { bi: 0 });
   assert.deepEqual([s.matrix[r5].bi, s.matrix[r5].amt], [0, 0.5], 'forced unipolar on a centred dest: 1 − 0.5');
-  assert.equal(addMod(s, fx, 'note', 'f.cutoff', { slot: 31 }), 31);
-  assert.equal(s.matrix[31].src, 'note');
-  assert.equal(addMod(s, fx, 'note', 'f.cutoff', { slot: 32 }), -1);
+  assert.equal(addMod(s, fx, 'note', 'f.cutoff', { slot: 63 }), 63);
+  assert.equal(s.matrix[63].src, 'note');
+  assert.equal(addMod(s, fx, 'note', 'f.cutoff', { slot: 64 }), -1);
+  // v2 destinations and sources: OSC C, virtual macros (base = the macro value), S2 sources
+  s.macros[4].v = 0.9;
+  const r6 = addMod(s, fx, 'lfo10y', 'm5'), r7 = addMod(s, fx, 'randd', 'c.fbal');
+  assert.deepEqual([s.matrix[r6].amt, s.matrix[r7].bi, s.matrix[r7].amt], [0.09999999999999998, 1, 0.5]);
   // first slot with src === '' (a row with only a destination counts as free)
   s.matrix[4] = row({ dst: 'f.res', amt: 0.4 });
   assert.equal(addMod(s, fx, 'wheel', 'f.mix'), 4);
   // bad ids, full matrix
   for (const [a, b] of [['', 'f.cutoff'], ['nope', 'f.cutoff'], ['lfo1', ''], ['lfo1', 'nope']]) assert.equal(addMod(s, fx, a, b), -1);
   const full = defaultSerum();
-  fill(full, 32);
+  fill(full, 64);
   const before = JSON.stringify(full);
   assert.equal(addMod(full, fx, 'lfo1', 'f.cutoff'), -1);
   assert.equal(JSON.stringify(full), before, 'full matrix: no-op');
@@ -1268,7 +1856,8 @@ test('16b modsFor / removeMods / setModAmount / toggles / reassignSource', () =>
   assert.equal(s.matrix[2].amt, 1);
   assert.equal(setModAmount(s, 2, -0.25), true);
   assert.equal(s.matrix[2].amt, -0.25);
-  assert.equal(setModAmount(s, 40, 0.5), false);
+  assert.equal(setModAmount(s, 40, 0.5), true, '64 slots');
+  assert.equal(setModAmount(s, 64, 0.5), false);
   assert.equal(setModAmount(s, 2, NaN), false);
   assert.equal(toggleModBypass(s, 5), true);
   assert.equal(s.matrix[5].byp, 0);
@@ -1291,7 +1880,7 @@ test('16b modsFor / removeMods / setModAmount / toggles / reassignSource', () =>
 
 // eff n of one destination under §5.2 with constant source values (compiled rows)
 function evalDest(s, dst, src) {
-  const CP = compileSerum(s).serum, di = DEST_INDEX[dst];
+  const CP = compileSerum(s).serum, di = vi(dst);
   let off = 0;
   for (let r = 0; r < CP.mN; r++) {
     if (CP.mDst[r] !== di) continue;
@@ -1318,7 +1907,7 @@ test('16c veloToAmp and vibratoAssign', () => {
   assert.equal(s.matrix.filter(r => r.dst === 'g.amp').length, 1);
   for (const v of [0, 0.3, 1]) close(evalDest(s, 'g.amp', { fixed: 1, velo: v }), v, 1e-12, 'eff amp n = velocity');
   const full = defaultSerum();
-  fill(full, 32);
+  fill(full, 64);
   assert.equal(veloToAmp(full), -1);
   // vibrato: first LFO used by no row (src or aux, bypassed included)
   const v = defaultSerum();
@@ -1329,7 +1918,7 @@ test('16c veloToAmp and vibratoAssign', () => {
   assert.equal(slot, 3);
   assert.deepEqual(v.matrix[3], row({ src: 'lfo3', amt: 0.008, dst: 'g.tune', bi: 1, aux: 'wheel' }));
   const L = v.lfo[2];
-  assert.deepEqual([L.mode, L.bpm, L.loop, L.start], ['trig', 0, -1, 0]);
+  assert.deepEqual([L.mode, L.bpm, L.loop, L.start], ['retrig', 0, -1, 0]);
   assert.equal(v.p['l3.rate'], 0.48);
   close(lawValue('l3.rate', 0.48), 5.3, 0.01, '≈ 5.3 Hz');
   assert.equal(evalPts(L.pts, 0), evalPts(L.pts, 1), 'tied ends');
@@ -1344,19 +1933,27 @@ test('16c veloToAmp and vibratoAssign', () => {
   assert.equal(v.matrix[4].src, 'lfo5');
   // no unused LFO / no free slot → −1, nothing changed
   const u = defaultSerum();
-  for (let l = 0; l < 8; l++) u.matrix[l] = row({ src: 'lfo' + (l + 1), dst: 'f.res', amt: 0.1 });
+  for (let l = 0; l < 10; l++) u.matrix[l] = row({ src: 'lfo' + (l + 1) + (l === 9 ? 'y' : ''), dst: 'f.res', amt: 0.1 });
   const ub = JSON.stringify(u);
   assert.equal(vibratoAssign(u), -1);
   assert.equal(JSON.stringify(u), ub);
   const f = defaultSerum();
-  fill(f, 32);
+  fill(f, 64);
   const fb = JSON.stringify(f);
   assert.equal(vibratoAssign(f), -1);
+  // an LFO set up but not routed yet (mode changed) is not "unused"; a migrated free-running v1 LFO is
+  const g = defaultSerum();
+  g.lfo[0].mode = 'env';
+  assert.equal(vibratoAssign(g), 0);
+  assert.equal(g.matrix[0].src, 'lfo2');
+  const m1 = S1();
+  assert.equal(vibratoAssign(m1), 0);
+  assert.equal(m1.matrix[0].src, 'lfo1');
   assert.equal(JSON.stringify(f), fb);
   // the chosen LFO starts fresh: its old bus links go (rows of buses no point links any more are pruned, inv A13,
   // other bus rows stay), Delay / Rise / Smooth and the switches return to their defaults
   const w = defaultSerum();
-  w.lfo[0] = { mode: 'env', bpm: 1, dot: 1, trip: 1, anchor: 0, pts: [[0, 0, 0], [0.4, 1, 0, 2, 3], [1, 0, 0]], loop: 1, start: 1 };
+  w.lfo[0] = Object.assign(defaultSerum().lfo[0], { bpm: 1, dot: 1, trip: 1, anchor: 0, type: 'sh', pts: [[0, 0, 0], [0.4, 1, 0, 2, 3], [1, 0, 0]], loop: 1, start: 1 });
   w.lfo[1].pts = [[0, 0, 0], [0.5, 1, 0, 0, 2], [1, 0, 0]];
   Object.assign(w.p, { 'l1.delay': 0.5, 'l1.rise': 0.4, 'l1.smooth': 0.3 });
   w.matrix[0] = row({ src: 'env2', dst: 'bus3', amt: 0.5, bi: 1 });
@@ -1368,8 +1965,8 @@ test('16c veloToAmp and vibratoAssign', () => {
   assert.equal(w.matrix[1].dst, 'bus2', 'bus 2 is still linked by LFO 2');
   assert.equal(w.matrix[2].dst, 'bus7', 'a bus the LFO never linked keeps its row');
   assert.deepEqual([...linkedBuses(w).keys()], [2]);
-  assert.deepEqual(w.lfo[0], Object.assign(defaultSerum().lfo[0], { mode: 'trig', bpm: 0, pts: w.lfo[0].pts }));
-  assert.deepEqual(['rate', 'delay', 'rise', 'smooth'].map(k => w.p['l1.' + k]), [0.48, 0, 0, 0]);
+  assert.deepEqual(w.lfo[0], Object.assign(defaultSerum().lfo[0], { mode: 'retrig', bpm: 0, pts: w.lfo[0].pts }));
+  assert.deepEqual(['rate', 'delay', 'rise', 'smooth', 'phase'].map(k => w.p['l1.' + k]), [0.48, 0, 0, 0, 0]);
   assert.deepEqual(normalizeSerum(w), w);
 });
 
@@ -1463,17 +2060,19 @@ test('16e LFO buses: linkedBuses / newBus / pruneBuses / clearPointMods', () => 
 
 test('16f initLfos and copyLfo', () => {
   const s = defaultSerum();
-  s.lfo[0] = { mode: 'env', bpm: 0, dot: 1, trip: 1, anchor: 0, pts: [[0, 0.1, 0.5], [0.4, 0.9, 0, 2, 3], [1, 0.1, 0]], loop: 1, start: 1 };
-  Object.assign(s.p, { 'l1.rate': 0.3, 'l1.rise': 0.2, 'l1.delay': 0.1, 'l1.smooth': 0.6 });
-  // copyLfo: everything incl. bus links and the four knobs, deep
-  assert.equal(copyLfo(s, 0, 5), true);
-  assert.deepEqual(s.lfo[5], s.lfo[0]);
-  assert.notEqual(s.lfo[5].pts, s.lfo[0].pts);
-  assert.notEqual(s.lfo[5].pts[1], s.lfo[0].pts[1]);
-  assert.deepEqual(['rate', 'rise', 'delay', 'smooth'].map(k => s.p['l6.' + k]), [0.3, 0.2, 0.1, 0.6]);
-  s.lfo[5].pts[1][1] = 0.2;
+  s.lfo[0] = Object.assign(defaultSerum().lfo[0], { mode: 'env', mono: 1, type: 'path', dir: 'rev', bpm: 0, dot: 1, trip: 1, anchor: 0, x10: 1,
+    pts: [[0, 0.1, 0.5], [0.4, 0.9, 0, 2, 3], [1, 0.1, 0]], path: [[0, 0, 0], [1, 1, 0.5]], loop: 1, start: 1 });
+  Object.assign(s.p, { 'l1.rate': 0.3, 'l1.rise': 0.2, 'l1.delay': 0.1, 'l1.smooth': 0.6, 'l1.phase': 0.25 });
+  // copyLfo: everything incl. bus links, the path and the five knobs, deep
+  assert.equal(copyLfo(s, 0, 9), true);
+  assert.deepEqual(s.lfo[9], s.lfo[0]);
+  assert.notEqual(s.lfo[9].pts, s.lfo[0].pts);
+  assert.notEqual(s.lfo[9].pts[1], s.lfo[0].pts[1]);
+  assert.deepEqual(['rate', 'rise', 'delay', 'smooth', 'phase'].map(k => s.p['l10.' + k]), [0.3, 0.2, 0.1, 0.6, 0.25]);
+  s.lfo[9].pts[1][1] = 0.2;
   assert.equal(s.lfo[0].pts[1][1], 0.9);
-  for (const [a, b] of [[0, 0], [0, 8], [-1, 2], [1.5, 2]]) assert.equal(copyLfo(s, a, b), false);
+  assert.equal(copyLfo(s, 0, 5), true);
+  for (const [a, b] of [[0, 0], [0, 10], [-1, 2], [1.5, 2]]) assert.equal(copyLfo(s, a, b), false);
   assert.deepEqual(normalizeSerum(s), s);
   // copying over an LFO whose points linked a bus nothing else links prunes that bus's rows (inv A13)
   const c = defaultSerum();
@@ -1494,12 +2093,14 @@ test('16f initLfos and copyLfo', () => {
   s.matrix[3] = row({ src: 'env3', dst: 'l1.rate', amt: 0.5 });
   s.matrix[4] = row({ src: 'macro1', dst: 'a.level', amt: 0.5 });
   s.matrix[5] = row({ src: 'macro2', dst: 'bus12', amt: 0.5 });
-  assert.equal(initLfos(s), 3);
+  s.matrix[6] = row({ src: 'lfo10y', dst: 'f.res', amt: 0.5 });
+  assert.equal(initLfos(s), 4);
+  assert.deepEqual(s.matrix[6], row({}), 'LFO Y outputs are LFO sources too');
   assert.equal(s.matrix[5].dst, 'bus12', 'a bus no point linked before the reset keeps its row');
   s.matrix[5] = row({});
   const d = defaultSerum();
   assert.deepEqual(s.lfo, d.lfo);
-  for (let l = 1; l <= 8; l++) for (const k of ['rate', 'rise', 'delay', 'smooth']) assert.equal(s.p[`l${l}.${k}`], d.p[`l${l}.${k}`]);
+  for (let l = 1; l <= 10; l++) for (const k of ['rate', 'rise', 'delay', 'smooth', 'phase']) assert.equal(s.p[`l${l}.${k}`], d.p[`l${l}.${k}`]);
   assert.deepEqual(s.matrix.slice(0, 3), [row({}), row({}), row({})]);
   assert.equal(s.matrix[3].dst, 'l1.rate', 'rows targeting LFO knobs stay');
   assert.equal(s.matrix[4].src, 'macro1');
@@ -1508,29 +2109,38 @@ test('16f initLfos and copyLfo', () => {
 
 // A state whose module fields all differ from `other` (k = 0 / 1 give two distinct valid values)
 function moduleState(k) {
-  const s = defaultSerum();
+  const s = defaultSerum(), d = defaultSerum();
   for (const m of Object.keys(MODULE_FIELDS)) {
     for (const id of MODULE_FIELDS[m].p) {
-      const d = DESTS[DEST_INDEX[id]], x = 0.3 + 0.2 * k;
-      s.p[id] = STEPPED.has(d.law) ? Math.round(x * (d.hi - d.lo)) / (d.hi - d.lo) : x;
+      const D = DESTS[DEST_INDEX[id]], x = 0.3 + 0.2 * k;
+      s.p[id] = STEPPED.has(D.law) ? Math.round(x * (D.hi - D.lo)) / (D.hi - D.lo) : x;
     }
   }
-  s.osc = [0, 1].map(o => ({ wt: `user:k${k}o${o}`, remap: [[0, 0.1 * k, 0], [0.5, 0.3, 0.2 * k], [1, 1, 0]], memSet: Array(16).fill(0.1 + 0.3 * k + 0.01 * o) }));
-  s.global.uniRange = [3 + k, 5 + k];
-  s.global.uniMode = [1 + k, 2 + k];
-  s.noise = { src: `nzuser:k${k}`, oneshot: k, keytrack: 1 - k, direct: k };
-  s.sub = { direct: k };
-  s.filter = { keytrack: k };
+  s.osc = [0, 1, 2].map(o => Object.assign(d.osc[o], { wt: `user:k${k}o${o}`, remap: [[0, 0.1 * k, 0], [0.5, 0.3, 0.2 * k], [1, 1, 0]],
+    memSet: Array(16).fill(0.1 + 0.3 * k + 0.01 * o), uni: { range: 3 + k + o, mode: 1 + k, spawn: k }, route: k ? 2 : 1, phMem: k ? 'voice' : 'all',
+    pitch: { mode: k ? 'harm' : 'semi', src: 'note' } }));
+  Object.assign(s.noise, { src: `nzuser:k${k}`, oneshot: k, keytrack: 1 - k, route: k + 1 });
+  Object.assign(s.sub, { route: k ? 2 : 0, contig: k });
+  s.filter = [0, 1].map(() => Object.assign(d.filter[0], { keytrack: k, clean: 1 - k, route: k ? 2 : 1 }));
+  s.env = s.env.map(() => ({ bpm: k, legInv: 1 - k, stealRe: k }));
+  s.lfo = s.lfo.map(() => Object.assign(defaultSerum().lfo[0], { mode: k ? 'env' : 'free', bpm: k, pts: [[0, 0.1 * k, 0], [0.5, 1 - 0.1 * k, 0], [1, 0, 0]] }));
+  s.velo = { pts: [[0, 0.1 * k, 0], [1, 1, 0]], porta: k };
+  s.note = { pts: [[0, 0.2 * k, 0], [1, 1, 0]], porta: 1 - k };
+  s.arp.bank = 'A' + k;
+  s.clip.bank = 'C' + k;
+  s.vc.name = 'V' + k;
+  s.matrix[0] = row({ src: 'env2', dst: 'a.level', amt: 0.1 + 0.2 * k });
   return normalizeSerum(s);
 }
 
-test('16g applyPreset: parameter, module and misc locks; midi; no shared objects', () => {
+test('16g applyPreset: parameter, module (v2 modules, Lock Matrix, unlocked controls) and misc locks; midi; no shared objects', () => {
   const cur = moduleState(0), pre = moduleState(1);
-  Object.assign(cur.p, { 'f.cutoff': 0.21, 'g.master': 0.4, 'e2.att': 0.33 });
-  Object.assign(pre.p, { 'f.cutoff': 0.77, 'g.master': 0.9, 'e2.att': 0.66 });
+  Object.assign(cur.p, { 'g.master': 0.4, 'g.tune': 0.21 });
+  Object.assign(pre.p, { 'g.master': 0.9, 'g.tune': 0.77 });
   cur.voicing.poly = 3;
   cur.global.os = 4;
   cur.global.a4 = 432;
+  cur.global.tun = { name: 'c', kind: 'tun', scl: '', kbm: '', tab: Array.from({ length: 128 }, (_, n) => n + 0.1) };
   pre.voicing.poly = 16;
   pre.global.os = 1;
   pre.global.a4 = 445;
@@ -1549,12 +2159,12 @@ test('16g applyPreset: parameter, module and misc locks; midi; no shared objects
   r0.lfo[0].pts[1][1] = 0.4;
   r0.osc[0].remap[0][1] = 0.6;
   r0.matrix[0].amt = 1;
-  r0.global.uniRange[0] = 9;
+  r0.osc[0].uni.range = 9;
   assert.deepEqual(preset.v.s, pre, 'frozen preset intact');
   // parameter locks (synth ids, g.master; FX ids are applyPresetFx's)
-  cur.locks.p = ['f.cutoff', 'g.master', 'fx.rev.mix'];
+  cur.locks.p = ['g.tune', 'g.master', 'fx.rev.mix'];
   const r1 = applyPreset(cur, preset);
-  assert.deepEqual([r1.p['f.cutoff'], r1.p['g.master'], r1.p['e2.att']], [0.21, 0.4, 0.66]);
+  assert.deepEqual([r1.p['g.tune'], r1.p['g.master'], r1.p['f.cutoff']], [0.21, 0.4, pre.p['f.cutoff']]);
   assert.equal(r1.p['fx.rev.mix'], undefined);
   assert.deepEqual(r1.locks, cur.locks);
   cur.locks.p = [];
@@ -1571,10 +2181,16 @@ test('16g applyPreset: parameter, module and misc locks; midi; no shared objects
         if (typeof get(r) === 'object') assert.notEqual(get(r), get(cur), 'deep copy');
       }
     }
-    assert.equal(r.p['e2.att'], 0.66);
+    assert.equal(r.p['g.tune'], 0.77);
   }
-  cur.locks.mod = [];
-  // misc locks
+  // controls unlocked inside a locked module take the preset's value (locks.unp); an explicit parameter lock wins
+  cur.locks.mod = ['oscA', 'filter2'];
+  cur.locks.unp = ['a.semi', 'f2.cutoff', 'a.level'];
+  cur.locks.p = ['a.level'];
+  const ru = applyPreset(normalizeSerum(cur), preset);
+  assert.deepEqual([ru.p['a.semi'], ru.p['f2.cutoff'], ru.p['a.fine'], ru.p['f2.res'], ru.p['a.level']], [pre.p['a.semi'], pre.p['f2.cutoff'], cur.p['a.fine'], cur.p['f2.res'], cur.p['a.level']]);
+  cur.locks.mod = []; cur.locks.unp = []; cur.locks.p = [];
+  // misc locks: POLY, quality, tuning (A4 and the tuning table)
   for (const [k, path, cv, pv] of [['poly', ['voicing', 'poly'], 3, 16], ['os', ['global', 'os'], 4, 1], ['tuning', ['global', 'a4'], 432, 445]]) {
     cur.locks.misc = { poly: 0, os: 0, tuning: 0, [k]: 1 };
     const r = applyPreset(cur, preset);
@@ -1582,11 +2198,14 @@ test('16g applyPreset: parameter, module and misc locks; midi; no shared objects
     for (const [k2, p2, , pv2] of [['poly', ['voicing', 'poly'], 3, 16], ['os', ['global', 'os'], 4, 1], ['tuning', ['global', 'a4'], 432, 445]]) {
       if (k2 !== k) assert.equal(r[p2[0]][p2[1]], pv2, `${k} lock leaves ${k2}`);
     }
+    assert.deepEqual(r.global.tun, k === 'tuning' ? cur.global.tun : pre.global.tun);
     assert.equal(pv, applyPreset({ ...cur, locks: { p: [], mod: [], misc: {} } }, preset)[path[0]][path[1]]);
   }
   cur.locks.misc = { poly: 0, os: 0, tuning: 0 };
-  // midi: a non-empty preset map wins, an empty one keeps the current map
+  // midi: a non-empty preset map wins (default, "Load MIDI Map from Presets"), an empty one keeps the current map; 0 keeps it
   assert.deepEqual(applyPreset(cur, preset).midi, { 7: 'g.master' });
+  assert.deepEqual(applyPreset(cur, preset, { midiFromPreset: 1 }).midi, { 7: 'g.master' });
+  assert.deepEqual(applyPreset(cur, preset, { midiFromPreset: 0 }).midi, { 1: 'f.cutoff' });
   const pe = deepFreeze({ name: 'E', cat: 'Init', v: { s: { ...pre, midi: {} } }, fx: null });
   assert.deepEqual(applyPreset(cur, pe).midi, { 1: 'f.cutoff' });
   // warp single direction re-applied (keeps A)
@@ -1597,12 +2216,12 @@ test('16g applyPreset: parameter, module and misc locks; midi; no shared objects
   pw.p['a.warpMode'] = 18 / 22;
   const rw = applyPreset(cw, { v: { s: pw } });
   assert.deepEqual([rw.p['a.warpMode'], rw.p['b.warpMode']], [18 / 22, 0]);
-  // factory Init (deep-frozen), garbage presets
-  const ri = applyPreset(cur, FACTORY_PRESETS[0]);
-  assert.deepEqual({ ...ri, ui: 0, locks: 0, midi: 0 }, { ...defaultSerum(), ui: 0, locks: 0, midi: 0 });
+  // factory Init (deep-frozen, a migrated Phase-1 preset), garbage presets
+  const ri = applyPreset(cur, FACTORY_PRESETS.find(p => p.cat === 'Init'));
+  assert.deepEqual({ ...ri, ui: 0, locks: 0, midi: 0 }, { ...S1(), ui: 0, locks: 0, midi: 0 });
   assert.deepEqual(applyPreset(cur, null).p, defaultSerum().p);
   assert.deepEqual(applyPreset(null, preset).p, normalizeSerum(pre).p);
-  for (const r of [r0, r1, ri]) assert.deepEqual(normalizeSerum(r), r, 'result normalized');
+  for (const r of [r0, r1, ri, ru]) assert.deepEqual(normalizeSerum(r), r, 'result normalized');
 });
 
 test('16h applyPresetFx: Lock FX Rack, locked FX ids, ui and lock from the current rack', () => {
@@ -1652,27 +2271,36 @@ test('16i destBase and copyModule (extras)', () => {
   const s = defaultSerum(), fx = defaultFx();
   s.p['f.cutoff'] = 0.3;
   s.p['g.master'] = 0.6;
+  s.p['c.level'] = 0.2;
+  s.macros[2].v = 0.45;
   fx.p['fx.rev.mix'] = 0.8;
+  fx.p['fx.dim.size'] = 0.7;
   assert.equal(destBase(s, fx, 'f.cutoff'), 0.3);
   assert.equal(destBase(s, fx, 'g.master'), 0.6);
+  assert.equal(destBase(s, fx, 'c.level'), 0.2);
+  assert.equal(destBase(s, fx, 'm3'), 0.45, 'virtual macro destination: the macro value');
   assert.equal(destBase(s, fx, 'fx.rev.mix'), 0.8);
+  assert.equal(destBase(s, fx, 'fx.hyper.dsize'), 0.7, 'renamed v1 rows read their v1 value from a v1 rack');
   assert.equal(destBase(s, null, 'fx.rev.mix'), DESTS[DEST_INDEX['fx.rev.mix']].def);
   assert.equal(destBase(null, null, 'f.res'), 0.1);
   assert.equal(destBase(s, fx, 'nope'), 0);
+  assert.equal(destBase(s, fx, 'fx.bode.shift'), 0, 'unresolved dynamic id');
   // module Copy / Paste / Init
   const a = moduleState(0), b = moduleState(1);
   assert.equal(copyModule(b, a, 'filter'), true);
   for (const id of MODULE_FIELDS.filter.p) assert.equal(b.p[id], a.p[id]);
-  assert.deepEqual(b.filter, a.filter);
-  assert.notEqual(b.filter, a.filter);
+  assert.deepEqual(b.filter[0], a.filter[0]);
+  assert.notEqual(b.filter[0], a.filter[0]);
   assert.notEqual(b.p['a.level'], a.p['a.level'], 'other modules untouched');
+  assert.notDeepEqual(b.filter[1], a.filter[1], 'Filter 2 untouched');
   assert.equal(copyModule(b, defaultSerum(), 'oscA'), true);
-  assert.deepEqual(b.osc[0], defaultSerum().osc[0], 'Init OSC A');
-  assert.deepEqual([b.global.uniRange[0], b.global.uniMode[0], b.global.uniRange[1]], [2, 0, 6]);
+  assert.deepEqual(b.osc[0], defaultSerum().osc[0], 'Init OSC A (incl. its unison settings)');
+  for (const m of ['env3', 'lfo10', 'vc', 'arp', 'matrix', 'filter2', 'velo']) assert.equal(copyModule(b, a, m), true, m);
+  assert.deepEqual([b.env[2], b.lfo[9], b.vc, b.arp, b.matrix, b.filter[1], b.velo], [a.env[2], a.lfo[9], a.vc, a.arp, a.matrix, a.filter[1], a.velo]);
   assert.equal(copyModule(b, a, 'constructor'), false);
   assert.equal(copyModule(b, a, 'lfo'), false);
   assert.deepEqual(normalizeSerum(b), b);
-  // Paste OSC A onto OSC B (and back): a.* → b.*, osc[0] → osc[1], uniRange / uniMode [0] → [1]
+  // Paste between oscillators: a.* ↔ b.* ↔ c.* by suffix, the whole osc object
   const x = moduleState(0), y = moduleState(1);
   x.p['a.semi'] = 1;
   assert.equal(copyModule(y, x, 'oscB', 'oscA'), true);
@@ -1680,14 +2308,18 @@ test('16i destBase and copyModule (extras)', () => {
   assert.equal(y.p['b.semi'], 1);
   assert.deepEqual(y.osc[1], x.osc[0]);
   assert.notEqual(y.osc[1], x.osc[0]);
-  assert.deepEqual([y.global.uniRange[1], y.global.uniMode[1]], [x.global.uniRange[0], x.global.uniMode[0]]);
   assert.deepEqual(y.osc[0], moduleState(1).osc[0], 'OSC A of the target untouched');
   assert.equal(y.p['a.semi'], moduleState(1).p['a.semi']);
   const z = moduleState(1);
   assert.equal(copyModule(z, x, 'oscA', 'oscB'), true);
   assert.deepEqual(z.osc[0], x.osc[1]);
   for (const id of MODULE_FIELDS.oscB.p) assert.equal(z.p['a.' + id.slice(2)], x.p[id], id);
-  for (const [m, f] of [['oscA', 'filter'], ['noise', 'sub'], ['oscB', 'lfo']]) assert.equal(copyModule(z, x, m, f), false, m + ' ← ' + f);
+  x.osc[0].pitch = { mode: 'ratio', src: 'C' };
+  assert.equal(copyModule(z, x, 'oscC', 'oscA'), true);
+  for (const id of MODULE_FIELDS.oscC.p) if ('a' + id.slice(1) in x.p) assert.equal(z.p[id], x.p['a' + id.slice(1)], id);
+  assert.deepEqual(z.osc[2].pitch, { mode: 'ratio', src: 'note' }, 'a ratio source equal to the target becomes note');
+  assert.deepEqual(z.osc[2].uni, x.osc[0].uni);
+  for (const [m, f] of [['oscA', 'filter'], ['noise', 'sub'], ['oscB', 'lfo1'], ['env1', 'lfo1']]) assert.equal(copyModule(z, x, m, f), false, m + ' ← ' + f);
   // the pasted oscillator wins the warp single-direction rule (inv A5), like warpChoice
   const w1 = defaultSerum(), w2 = defaultSerum();
   w1.p['a.warpMode'] = 19 / 22;            // AM (from B)
@@ -1706,13 +2338,15 @@ test('16i destBase and copyModule (extras)', () => {
 /* ------------------------------------------------------------ hardening */
 
 test('hardening: compilers never throw and repair non-normalized input', () => {
-  const ref = compileSerum(defaultSerum());
-  for (const x of [null, undefined, {}, 'x', 7, [], { v: 1 }, { ...defaultSerum(), lfo: 'x' }, { ...defaultSerum(), matrix: [] }]) {
+  const ref = compileSerum(defaultSerum()), ref1 = compileSerum(S1());
+  for (const x of [null, undefined, 'x', 7, [], { v: 2 }, { ...defaultSerum(), lfo: 'x' }, { ...defaultSerum(), matrix: [] }, { ...defaultSerum(), osc: [1] },
+    { ...defaultSerum(), filter: {} }, { ...defaultSerum(), arp: null }, { ...defaultSerum(), global: { s1: 0 } }]) {
     const P = compileSerum(x);
     assert.equal(P.engine, 'serum');
     assert.deepEqual(P.serum.base, ref.serum.base, String(x));
     assert.equal(P.serumT.key, ref.serumT.key);
   }
+  for (const x of [{}, { v: 1 }]) assert.deepEqual(compileSerum(x).serum.base, ref1.serum.base, 'v1 input compiles migrated');
   const bad = defaultSerum();
   bad.lfo[3].pts = [[0, 0, 0], [0.5, NaN, 0], [1, 0, 0]];
   bad.p['a.level'] = 7;
@@ -1720,7 +2354,7 @@ test('hardening: compilers never throw and repair non-normalized input', () => {
   bad.global.os = 3;
   bad.matrix[0] = row({ src: 'env2', dst: 'f.cutoff', amt: 5, out: 3 });
   const P = compileSerum(bad);
-  assert.ok(P.serumT.lfoTab.every(Number.isFinite));
+  assert.ok(ctOf(P).lfoTab.every(Number.isFinite));
   assert.equal(P.serumT.key, compileSerum(normalizeSerum(bad)).serumT.key);
   assert.equal(P.serum.base[0], 1);
   assert.equal(P.poly, 8);
@@ -1732,14 +2366,22 @@ test('hardening: compilers never throw and repair non-normalized input', () => {
   ids.p['b.on'] = 1;
   ids.p['n.on'] = 1;
   const I = compileSerum(ids);
-  assert.deepEqual([I.serum.wt[1], I.serum.noiseId, I.needs], ['factory:Default', 'noise:White', ['factory:Default', 'noise:White']], 'table ids repaired');
+  assert.deepEqual([I.serum.wt[1], I.serum.noiseId, I.needs], ['factory:Default Shapes', 'noise:White', ['factory:Default Shapes', 'noise:White']], 'table ids repaired');
   const tricky = defaultSerum();
   tricky.osc[0].memSet[3] = 'x';
   tricky.macros[1].v = 9;
-  tricky.global.uniRange = [99, -1];
+  tricky.osc[0].uni.range = 99;
+  tricky.osc[1].uni.range = -1;
+  tricky.osc[2].smpo.slice.marks = [0.5, 'x', 2];
   const T = compileSerum(tricky).serum;
-  assert.deepEqual([T.memSet[3], T.macro[1], T.uniRange[0], T.uniRange[1]], [0, 1, 48, 0]);
-  // FX
+  assert.deepEqual([T.memSet[3], T.macro[1], T.uniRange[0], T.uniRange[1], T.sSlN[2]], [0, 1, 48, 0, 2]);
+  // FX: the v1 compilers (Phase-1 FXP v1 / FXT v1 expectations); compileFx / compileFxT are FXP v2 (F1, §4.3, tests/fx-core.test.mjs)
+  for (const x of [null, undefined, {}, 'x', { ...defaultFx(), order: ['dist', 'dist'] }, { ...defaultFx(), phase: [1] }]) {
+    const F2 = C.compileFx(x);
+    assert.equal(F2.ver, 2);
+    assert.equal(C.compileFxT(x).key, F2.xsKey);
+  }
+  const compileFx = C.compileFxV1, compileFxT = C.compileFxTV1;
   const fref = compileFx(defaultFx());
   for (const x of [null, undefined, {}, 'x', { ...defaultFx(), order: ['dist', 'dist'] }, { ...defaultFx(), phase: [1] }]) {
     const F = compileFx(x);
@@ -1779,13 +2421,15 @@ test('hardening: malformed curves never reach the tables or the shared curve cac
   };
   const ref = compileSerum(defaultSerum());
   for (const [name, pts] of Object.entries(flaws)) {
-    for (const where of ['lfo', 'remap', 'velo']) {
+    for (const where of ['lfo', 'remap', 'velo', 'crv', 'spec', 'path']) {
       const s = defaultSerum();
-      if (where === 'lfo') s.lfo[2].pts = pts; else if (where === 'remap') s.osc[1].remap = pts; else s.velo.pts = pts;
+      if (where === 'lfo') s.lfo[2].pts = pts; else if (where === 'remap') s.osc[2].remap = pts; else if (where === 'velo') s.velo.pts = pts;
+      else if (where === 'crv') s.matrix[40].crv = pts; else if (where === 'spec') s.osc[1].spec.filt.pts = pts;
+      else { s.lfo[7].type = 'path'; s.lfo[7].path = pts.map(p => p.slice(0, 3)); }
       const P = compileSerum(s), N = compileSerum(normalizeSerum(s));
-      assert.ok(finite(P.serumT), `${name} in ${where}: finite tables`);
+      assert.ok(finite(ctOf(P)), `${name} in ${where}: finite tables`);
       assert.equal(P.serumT, N.serumT, `${name} in ${where}: the repaired tables are the normalized state's`);
-      assert.ok(finite(N.serumT));
+      assert.ok(finite(ctOf(N)));
       assert.deepEqual([...P.serum.base], [...ref.serum.base]);
     }
     const f = defaultFx();
@@ -1800,8 +2444,8 @@ test('hardening: malformed curves never reach the tables or the shared curve cac
   s1.lfo[2].pts = [[0, 0.2, 'oops'], [1, 1, 0]];
   const T1 = compileSerum(s1).serumT, T2 = compileSerum(normalizeSerum(s1)).serumT;
   assert.equal(T1, T2);
-  assert.ok(T2.lfoTab.every(Number.isFinite));
-  close(T2.lfoTab[2 * 1025 + 512], 0.6, 1e-7);
+  assert.ok(T2.parts.lfo2.tab.every(Number.isFinite));
+  close(T2.parts.lfo2.tab[512], 0.6, 1e-7);
   // LFO start / loop must index a point: otherwise the CT would be cached under another state's key
   for (const [start, loop] of [[1.5, -1], ['1', -1], [-1, -1], [5, -1], [0, 2.5], [0, -2], [0, 9], [0, null]]) {
     const s = defaultSerum();
@@ -1809,18 +2453,18 @@ test('hardening: malformed curves never reach the tables or the shared curve cac
     s.lfo[4].loop = loop;
     const P = compileSerum(s), N = normalizeSerum(s);
     assert.equal(P.serumT, compileSerum(N).serumT, `start ${start} loop ${loop}`);
-    assert.equal(P.serumT.lfoStart[4], N.lfo[4].pts[N.lfo[4].start][0]);
+    assert.equal(P.serumT.parts.lfo4.start, N.lfo[4].pts[N.lfo[4].start][0]);
   }
   const ok = defaultSerum();
   ok.lfo[1].start = 1;
   ok.lfo[1].loop = 2;
-  assert.equal(compileSerum(ok).serumT.lfoLoop[1], 1);
+  assert.equal(compileSerum(ok).serumT.parts.lfo1.loop, 1);
   // normalized curves (graph.js output) are never re-normalized: c and links are accepted as they are
   const g = defaultSerum();
   g.lfo[0].pts = [[0, 0, -1, 0, 4], [0.5, 1, 1, 16, 0], [0.5, 0.3, 0.25], [1, 0, 0, 0, 2]];
   const G = compileSerum(g);
   assert.equal(G.serumT, compileSerum(normalizeSerum(g)).serumT);
-  assert.deepEqual([...G.serumT.lfoPm.slice(0, 8)], [0, 4, 16, 0, 0, 0, 0, 2]);
+  assert.deepEqual([...G.serumT.parts.lfo0.pm], [0, 4, 16, 0, 0, 0, 0, 2]);
 });
 
 test('hardening: normalizeSerum table ids, curve helper guards', () => {
@@ -1829,13 +2473,13 @@ test('hardening: normalizeSerum table ids, curve helper guards', () => {
   s.osc[1].wt = 'user:abc';
   s.noise.src = 'factory:Default';
   let n = normalizeSerum(s);
-  assert.deepEqual([n.osc[0].wt, n.osc[1].wt, n.noise.src], ['factory:Default', 'user:abc', 'noise:White']);
+  assert.deepEqual([n.osc[0].wt, n.osc[1].wt, n.noise.src], ['factory:Default Shapes', 'user:abc', 'noise:White']);
   s.osc[0].wt = 'factory:';
   s.noise.src = 'nzuser:9b1c';
   n = normalizeSerum(s);
-  assert.deepEqual([n.osc[0].wt, n.noise.src], ['factory:Default', 'nzuser:9b1c']);
+  assert.deepEqual([n.osc[0].wt, n.noise.src], ['factory:Default Shapes', 'nzuser:9b1c']);
   s.osc[0].wt = 'user:' + 'x'.repeat(300);
-  assert.equal(normalizeSerum(s).osc[0].wt, 'factory:Default');
+  assert.equal(normalizeSerum(s).osc[0].wt, 'factory:Default Shapes');
   const huge = defaultSerum();
   huge.lfo[0].pts = new Array(200000).fill([0.5, 0.5, 0]);
   assert.equal(normalizeSerum(huge).lfo[0].pts.length, 480);
@@ -1848,12 +2492,15 @@ test('hardening: normalizeSerum table ids, curve helper guards', () => {
 /* ------------------------------------------------------------ 17. FX */
 
 test('17 defaultFx / normalizeFx / compileFx / compileFxT', () => {
+  // the Phase-1 FXP v1 / FXT v1 expectations run against the v1 compilers; compileFx / compileFxT are FXP v2 (F1, §4.3)
+  assert.deepEqual([C.compileFx(defaultFx()).ver, C.compileFxT(defaultFx()).key], [2, C.compileFx(defaultFx()).xsKey]);
+  const compileFx = C.compileFxV1, compileFxT = C.compileFxTV1;
   const fx = defaultFx();
   assert.deepEqual(normalizeFx(fx), fx);
   for (const x of [null, undefined, 'x', 3, [], {}]) assert.deepEqual(normalizeFx(x), fx);
   const ids = Object.keys(fx.p);
   assert.equal(ids.length, 98);
-  assert.deepEqual(ids, DESTS.slice(NS).map(d => d.id).filter(id => id !== 'g.master' && id !== 'g.bypass'));
+  assert.deepEqual(ids, DESTS.slice(NS, NV1).map(d => d.id).filter(id => id !== 'g.master' && id !== 'g.bypass'));
   for (const id of ids) assert.equal(fx.p[id], DESTS[DEST_INDEX[id]].def);
   assert.deepEqual(Object.keys(fx.ui.lvl), ['hyper', 'dim', 'dist', 'flg', 'phs', 'cho', 'dly', 'cmp', 'rev', 'fil']);
   const P = compileFx(fx);
@@ -1922,14 +2569,16 @@ test('17 defaultFx / normalizeFx / compileFx / compileFxT', () => {
 
 /* ------------------------------------------------------------ 18. performance */
 
-test('18 compileSerum of a dense patch ≤ 2 ms mean (CT memoised)', () => {
+test('18 compileSerum of a dense v2 patch ≤ 4 ms mean (64 rows with curves, 10 LFOs at 480 points; CT memoised)', () => {
   const s = defaultSerum();
-  const pts = (bus) => Array.from({ length: 480 }, (_, i) => [i / 479, (Math.sin(i * 0.37) + 1) / 2, ((i % 9) - 4) / 4, bus ? (i % 17) : 0, bus ? ((i * 5) % 17) : 0]);
-  s.lfo.forEach((L, l) => { L.pts = pts(true); L.mode = ['trig', 'env', 'off'][l % 3]; L.dot = l & 1; L.trip = (l >> 1) & 1; });
-  s.osc.forEach(o => { o.remap = pts(false); });
+  const pts = (bus, n = 480) => Array.from({ length: n }, (_, i) => [i / (n - 1), (Math.sin(i * 0.37) + 1) / 2, ((i % 9) - 4) / 4, bus ? (i % 17) : 0, bus ? ((i * 5) % 17) : 0]);
+  s.lfo.forEach((L, l) => { L.pts = pts(true); L.mode = ['retrig', 'env', 'free'][l % 3]; L.dot = l & 1; L.trip = (l >> 1) & 1; L.type = l % 4 ? 'normal' : 'path'; L.path = pts(false); });
+  s.osc.forEach(o => { o.remap = pts(false); o.spec.filt.pts = pts(false, 128); });
   s.velo.pts = pts(false);
   s.note.pts = pts(false);
-  s.matrix = s.matrix.map((_, i) => row({ src: SRC_MENU[i], dst: DESTS[(i * 7) % ND].id, amt: 0.3, bi: i & 1, curve: 0.2, aux: i % 3 ? 'macro1' : '' }));
+  const dsts = DESTS.filter(d => vi(d.id) >= 0);
+  s.matrix = s.matrix.map((_, i) => row({ src: C.SRC_MENU2[i % 61], dst: dsts[(i * 7) % dsts.length].id, amt: 0.3, bi: i & 1, curve: 0.2,
+    aux: i % 3 ? 'macro1' : '', crv: pts(false, 64), rise: 0.1, fall: 0.2 }));
   const n = normalizeSerum(s);
   const first = compileSerum(n);
   for (let r = 0; r < 20; r++) { n.p['f.cutoff'] = r / 20; compileSerum(n); }
@@ -1937,18 +2586,39 @@ test('18 compileSerum of a dense patch ≤ 2 ms mean (CT memoised)', () => {
   for (let r = 0; r < 200; r++) { n.p['f.cutoff'] = r / 200; compileSerum(n); }
   const mean = (performance.now() - t0) / 200;
   assert.equal(compileSerum(n).serumT, first.serumT);
-  assert.ok(mean <= 2, 'mean ' + mean.toFixed(3) + ' ms');
-  console.log(`# compileSerum dense patch: ${mean.toFixed(3)} ms mean`);
+  assert.equal(first.serum.mN, 64);
+  assert.ok(mean <= 4, 'mean ' + mean.toFixed(3) + ' ms');
+  const td = performance.now();
+  for (let r = 0; r < 200; r++) { const d = defaultSerum(); d.p['f.cutoff'] = r / 200; compileSerum(d); }
+  const typical = (performance.now() - td) / 200;
+  assert.ok(typical <= 2, 'typical ' + typical.toFixed(3) + ' ms');
+  console.log(`# compileSerum: dense ${mean.toFixed(3)} ms, typical (incl. defaultSerum) ${typical.toFixed(3)} ms mean`);
 });
 
 /* ------------------------------------------------------------ fixtures */
 
-test('fixtures: compiled defaults equal serum-core output', () => {
-  const P = compileSerum(defaultSerum());
-  assert.deepEqual(loadFixture('cp-default.json'), P.serum);
-  assert.deepEqual(loadFixture('ct-default.json'), P.serumT);
+test('fixtures: compiled defaults equal the modules output (v1 fixtures: the frozen Phase-1 core)', () => {
+  const P = compileSerum(defaultSerum()), Q = P1.compileSerum(P1.defaultSerum());
+  assert.deepEqual(loadFixture('cp2-default.json'), P.serum);
+  assert.deepEqual(loadFixture('ct2-default.json'), assembleCT(P.serumT));
+  assert.deepEqual(loadFixture('cp-default.json'), Q.serum);
+  assert.deepEqual(loadFixture('ct-default.json'), Q.serumT);
   assert.deepEqual(loadFixture('fxp-default.json'), compileFx(defaultFx()));
   assert.deepEqual(loadFixture('fxt-default.json'), compileFxT(defaultFx()));
+});
+
+test('fixtures: gen2.mjs reproduces dests2.json and sources2.json byte for byte', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'serum-gen2-'));
+  try {
+    for (const f of ['gen2.mjs', 'dests.json']) copyFileSync(new URL('./fixtures/' + f, import.meta.url), join(dir, f));
+    const r = spawnSync(process.execPath, [join(dir, 'gen2.mjs')], { encoding: 'utf8' });
+    assert.equal(r.status, 0, r.stderr);
+    for (const f of ['dests2.json', 'sources2.json']) {
+      assert.equal(readFileSync(join(dir, f), 'utf8'), readFileSync(new URL('./fixtures/' + f, import.meta.url), 'utf8'), f);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('fixtures: gen.mjs reproduces dests.json and filters.json byte for byte', () => {
@@ -1967,37 +2637,61 @@ test('fixtures: gen.mjs reproduces dests.json and filters.json byte for byte', (
 
 /* ------------------------------------------------------------ module fields, factory presets */
 
-test('MODULE_FIELDS and FACTORY_PRESETS', async () => {
-  assert.deepEqual(Object.keys(MODULE_FIELDS), ['oscA', 'oscB', 'noise', 'sub', 'filter']);
-  for (const id of ['a.on', 'a.warpMode', 'a.track', 'a.stack', 'a.uniwt', 'a.level']) assert.ok(MODULE_FIELDS.oscA.p.includes(id), id);
-  assert.equal(MODULE_FIELDS.oscA.p.length, 20);
-  assert.deepEqual([...MODULE_FIELDS.sub.p], ['s.level', 's.pan', 's.on', 's.shape', 's.oct']);
-  for (const id of ['f.on', 'f.type', 'f.routeA', 'f.routeS', 'f.cutoff', 'f.mix']) assert.ok(MODULE_FIELDS.filter.p.includes(id), id);
-  assert.ok(MODULE_FIELDS.noise.p.includes('n.on'));
-  assert.deepEqual(MODULE_FIELDS.oscB.paths, [['osc', 1], ['global', 'uniRange', 1], ['global', 'uniMode', 1]]);
-  assert.ok(FACTORY_PRESETS.length >= 24, 'at least 24 factory presets (§0.5 M3)');
-  const init = FACTORY_PRESETS[0];
+test('MODULE_FIELDS (v2) and FACTORY_PRESETS (migrated Phase-1 presets; FACTORY_PRESETS_V1 unchanged)', async () => {
+  const mods = ['oscA', 'oscB', 'oscC', 'noise', 'sub', 'filter', 'filter2', 'env1', 'env2', 'env3', 'env4', ...Array.from({ length: 10 }, (_, l) => 'lfo' + (l + 1)),
+    'velo', 'note', 'arp', 'clip', 'vc', 'matrix'];
+  assert.deepEqual(Object.keys(MODULE_FIELDS), mods);
+  for (const id of ['a.on', 'a.warpMode', 'a.track', 'a.stack', 'a.uniwt', 'a.level', 'a.w1', 'a.sstart', 'a.dens', 'a.flo', 'a.mdly', 'a.fbal', 'a.lenrate']) assert.ok(MODULE_FIELDS.oscA.p.includes(id), id);
+  assert.equal(MODULE_FIELDS.oscA.p.length, 20 + 51 + 1);
+  assert.equal(MODULE_FIELDS.oscC.p.length, 19 + 51 + 1);
+  assert.deepEqual([...MODULE_FIELDS.sub.p], ['s.level', 's.pan', 's.on', 's.shape', 's.oct', 's.shp', 's.crs', 's.phase', 's.track', 's.fbal', 's.bus1', 's.bus2']);
+  for (const id of ['f.on', 'f.type', 'f.routeA', 'f.routeS', 'f.cutoff', 'f.mix', 'f.type2', 'f.level', 'f.routeC']) assert.ok(MODULE_FIELDS.filter.p.includes(id), id);
+  assert.equal(MODULE_FIELDS.filter2.p.length, 18);
+  assert.ok(MODULE_FIELDS.noise.p.includes('n.on') && MODULE_FIELDS.noise.p.includes('n.stereo'));
+  assert.deepEqual([...MODULE_FIELDS.env2.p], ['e2.att', 'e2.hold', 'e2.dec', 'e2.sus', 'e2.rel', 'e2.ca', 'e2.cd', 'e2.cr', 'e2.start', 'e2.end']);
+  assert.deepEqual([...MODULE_FIELDS.lfo10.p], ['l10.rate', 'l10.rise', 'l10.delay', 'l10.smooth', 'l10.phase']);
+  assert.deepEqual([...MODULE_FIELDS.arp.p], ['arp.on'], 'virtual destinations are not module fields');
+  assert.deepEqual([...MODULE_FIELDS.clip.p], ['clip.on']);
+  assert.equal(MODULE_FIELDS.vc.p.length, 6);
+  assert.deepEqual(MODULE_FIELDS.oscB.paths, [['osc', 1]]);
+  assert.deepEqual(MODULE_FIELDS.filter2.paths, [['filter', 1]]);
+  assert.deepEqual(MODULE_FIELDS.matrix.paths, [['matrix']]);
+  const all = Object.values(MODULE_FIELDS).flatMap(m => m.p);
+  assert.equal(new Set(all).size, all.length, 'no destination in two modules');
+  // FACTORY_PRESETS_V1: the Phase-1 objects, frozen; FACTORY_PRESETS (v2): new presets (M3) then the migrated Phase-1 presets
+  assert.equal(FACTORY_PRESETS_V1.length, 48);
+  assert.deepEqual(FACTORY_PRESETS_V1, P1.FACTORY_PRESETS, 'identical to the frozen Phase-1 presets');
+  assert.ok(FACTORY_PRESETS.length >= 48);
+  const v1names = FACTORY_PRESETS_V1.map(p => p.name), n2 = FACTORY_PRESETS.length - 48;
+  assert.deepEqual(FACTORY_PRESETS.slice(n2).map(p => p.name), v1names, 'the migrated Phase-1 presets come last');
+  assert.equal(FACTORY_PRESETS.slice(0, n2).filter(p => v1names.includes(p.name)).length, 0, 'v2 names disjoint from the Phase-1 names (B28)');
+  const init = FACTORY_PRESETS[n2];
   assert.deepEqual([init.name, init.cat], ['Init', 'Init']);
-  assert.deepEqual(normalizeSerum(init.v.s), defaultSerum());
-  assert.equal(normalizeSerum(init.v.s).p === init.v.s.p, false);
+  assert.deepEqual(init.v.s, S1(), 'the Phase-1 Init migrates to the S1-mode default');
   // §10.2.19 (M3): every category has at least three presets (Init only the one); names are unique; each preset is
   // normalised, compiles, references factory content only (a fresh install plays it) and is frozen
-  const CATS = ['Init', 'Bass', 'Lead', 'Pad', 'Pluck', 'Keys', 'Chord', 'Arp', 'Seq', 'Drum', 'FX'];
+  const CATS = ['Init', 'Bass', 'Lead', 'Pad', 'Pluck', 'Keys', 'Chord', 'Arp', 'Seq', 'Drum', 'FX', 'Texture', 'Sequence'];
   const cats = new Set(FACTORY_PRESETS.map(p => p.cat));
-  for (const c of CATS) assert.ok(cats.has(c), c);
   for (const c of cats) assert.ok(CATS.includes(c), 'known category ' + c);
   assert.equal(FACTORY_PRESETS.filter(p => p.cat === 'Init').length, 1);
   for (const c of cats) if (c !== 'Init') assert.ok(FACTORY_PRESETS.filter(p => p.cat === c).length >= 3, c + ': at least 3');
   assert.equal(new Set(FACTORY_PRESETS.map(p => p.name)).size, FACTORY_PRESETS.length);
-  for (const pr of FACTORY_PRESETS) {
+  for (const [k, pr] of FACTORY_PRESETS.entries()) {
     assert.ok(Object.isFrozen(pr) && Object.isFrozen(pr.v.s.p), pr.name + ' frozen');
     assert.deepEqual(Object.keys(pr).sort(), ['cat', 'fx', 'name', 'v'], pr.name + ' preset shape (§0.3.12)');
     assert.deepEqual(normalizeSerum(pr.v.s), pr.v.s, pr.name + ' normalised');
-    assert.deepEqual(normalizeFx(pr.fx), pr.fx, pr.name + ' fx normalised');
-    for (const id of [pr.v.s.osc[0].wt, pr.v.s.osc[1].wt]) assert.match(id, /^factory:/, pr.name);
-    assert.match(pr.v.s.noise.src, /^noise:/, pr.name);
-    const cp = compileSerum(normalizeSerum(pr.v.s));
-    assert.ok(cp.needs.every(id => /^(factory|noise|sub):/.test(id)), pr.name + ' needs');
+    assert.deepEqual(C.normalizeFx(pr.fx, pr.v.s), pr.fx, pr.name + ' fx normalised (v2)');
+    assert.equal(pr.fx.v, 2, pr.name + ' fx v2 (RULINGS2 F1)');
+    if (k >= n2) {
+      const v1 = FACTORY_PRESETS_V1[k - n2];
+      assert.deepEqual(pr.v.s, migrate1(v1.v.s), pr.name + ' = migrate1 of the Phase-1 preset');
+      assert.equal(pr.v.s.global.s1, 1);
+      assert.deepEqual(pr.fx, C.normalizeFx(v1.fx, pr.v.s), pr.name + ' fx = the migrated Phase-1 rack');
+    }
+    for (const id of pr.v.s.osc.map(o => o.wt)) assert.match(id, /^factory:/, pr.name);
+    assert.match(pr.v.s.noise.src, /^(noise|color):/, pr.name);
+    const cp = compileSerum(pr.v.s);
+    assert.ok(cp.needs.every(id => /^(factory|noise|sub|fsmp|fmsmp|spec|wtsmp):/.test(id)), pr.name + ' needs');
     assert.ok(cp.serum.base.every(Number.isFinite), pr.name + ' finite CP');
     if (pr.cat === 'Init') continue;
     assert.ok(pr.v.s.notes.length > 20 && pr.v.s.notes.length <= 2000, pr.name + ' has notes');
@@ -2012,10 +2706,40 @@ test('MODULE_FIELDS and FACTORY_PRESETS', async () => {
     assert.ok(fxp.base.every(Number.isFinite), pr.name + ' finite FXP');
     assert.ok(pr.v.s.p['g.master'] > 0 && pr.v.s.p['g.master'] <= 1, pr.name + ' master');
   }
-  // the table and noise ids exist in wt.js (a typo would leave an oscillator silent)
-  const W = await import('../wt.js');
+  // the table and noise ids exist in wt.js, the factory sample / multisample ids in smpgen's catalogues (a typo would leave
+  // an oscillator silent); sample-like needs: `spec:` analyses and `wtsmp:` tables played as samples of those
+  const W = await import('../wt.js?v=6'), G = await import('../smpgen.js?v=6');
   const known = new Set([...W.FACTORY_TABLES.map(t => t.id), ...W.SUB_TABLES, ...W.NOISES.map(n => n.id)]);
-  for (const pr of FACTORY_PRESETS) for (const id of compileSerum(pr.v.s).needs) assert.ok(known.has(id), pr.name + ': ' + id);
+  const base = id => id.replace(/^spec:/, '').replace(/^wtsmp:/, '');
+  for (const pr of FACTORY_PRESETS) for (const id of compileSerum(pr.v.s).needs) assert.ok(known.has(base(id)) || G.byId(base(id)), pr.name + ': ' + id);
+});
+
+test('M1a move (§11.2): the FX constants and v1 FX functions re-exported from fx-core equal the Phase-1 serum-core ones', () => {
+  for (const k of ['MODFX_LADDER', 'DLY_LADDER', 'FX_MODULES', 'FX_ORDER_DEFAULT', 'DIST_MODES', 'DIST_FILTER', 'DLY_MODES', 'REV_TYPES', 'REV_LABELS',
+    'EQ_TYPES_L', 'EQ_TYPES_H', 'CMP_RATIO_DETENTS', 'eqGainDb']) {
+    if (typeof P1[k] === 'function') for (const v of [0, 0.1, 0.5, 0.77, 1]) assert.equal(C[k](v), P1[k](v), k);
+    else assert.deepEqual(C[k], P1[k], k);
+  }
+  assert.deepEqual(C.FACTORY_CHAINS_V1, P1.FACTORY_CHAINS, 'FACTORY_CHAINS_V1');
+  for (const k of ['defaultFxV1', 'normalizeFxV1', 'compileFxV1', 'compileFxTV1', 'applyPresetFxV1']) assert.equal(typeof C[k], 'function', k);
+  assert.deepEqual([P1.FXP_VER, C.FXP_VER], [1, 2], 'FXP_VER: v1 in Phase 1, v2 after F1 (§2.6.5)');
+  assert.deepEqual(defaultFx(), P1.defaultFx());
+  const R = prng(11);
+  for (let t = 0; t < 60; t++) {
+    const fx = P1.defaultFx();
+    for (const k of Object.keys(fx.p)) if (R() < 0.3) fx.p[k] = R() * 1.4 - 0.2;
+    if (R() < 0.3) fx.order = fx.order.slice().reverse();
+    fx.dist.xb = [[0, R(), R() - 0.5], [R(), R(), 0], [1, R(), 0]];
+    fx.rev.type = R() < 0.5 ? 0 : 1;
+    const md = new Uint8Array(100).map(() => (R() < 0.1 ? 1 : 0)), ctx = { bpm: 90 + t, master: R(), bypass: R(), modded: md, seed: t & 1, smooth: 2 * R(), silence: t & 2 };
+    assert.deepEqual(normalizeFx(fx), P1.normalizeFx(fx));
+    assert.deepEqual(C.compileFxV1(fx, ctx), P1.compileFx(fx, ctx));
+    assert.deepEqual(C.compileFxTV1(fx), P1.compileFxT(fx));
+    assert.deepEqual(C.applyPresetFxV1(fx, P1.defaultFx(), ['fx.dly.mix']), P1.applyPresetFx(fx, P1.defaultFx(), ['fx.dly.mix']));
+  }
+  // laws.js and fx-core.js are reachable through serum-core (re-exports, §11.1)
+  for (const k of ['LAWS', 'lawValue', 'fmtCore', 'parseCore', 'bend', 'evalPts', 'renderPts', 'CURVE_K', 'FX_ROWS_V1', 'RENAME1']) assert.ok(k in C, k);
+  assert.equal(C.lawValue('f.cutoff', 0.5), P1.lawValue('f.cutoff', 0.5), 'serum-core keeps its id-based lawValue');
 });
 
 test('FACTORY_CHAINS: shared chain-library format, normalised racks without ui / lock, frozen', () => {
@@ -2041,4 +2765,1402 @@ test('FACTORY_CHAINS: shared chain-library format, normalised racks without ui /
   const ott = L.find(c => c.name === 'OTT Squash').fx;
   assert.equal(ott.p['fx.cmp.on'], 1);
   assert.equal(ott.p['fx.cmp.mb'], 1);
+});
+
+/* ------------------------------------------------------------ M1b: the remaining §11.1 exports, tuning in the CP */
+
+const W2 = id => C.WARPS2.findIndex(w => w.id === id);
+const S1state = () => migrate1(defaultV1());
+
+test('19 tuning (§11.4, §6.18): re-exported by serum-core; CP.tune from global.tun.tab, Step data from global.tun.scl', async () => {
+  const T = await import('../tuning.js?v=6');
+  for (const k of ['parseScl', 'parseKbm', 'parseTun', 'tableFrom', 'stepTable', 'describe']) assert.equal(C[k], T[k], k);
+  const P0 = compileSerum(defaultSerum()).serum;
+  assert.deepEqual([P0.sclN, P0.sclPer, P0.use & 512], [0, 0, 0]);
+  assert.ok(P0.sclSteps instanceof Float64Array && P0.sclSteps.length === 128 && P0.sclSteps.every(v => v === 0));
+  assert.deepEqual(Array.from(P0.tune), Array.from({ length: 128 }, (_, k) => k));
+  const scl = ['19 equal divisions', '19', ...Array.from({ length: 19 }, (_, k) => (1200 * (k + 1) / 19).toFixed(9))].join('\n');
+  const kbm = '19\n0\n127\n60\n69\n440\n19\n0\n1\n2\n3\n4\nx\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n16\n17\n18\n';
+  const tab = T.tableFrom({ scl, kbm });
+  const s = defaultSerum();
+  s.global.tun = { name: '19-EDO', kind: 'scl', scl, kbm, tab: Array.from(tab, v => (Number.isNaN(v) ? null : v)) };
+  const n = normalizeSerum(s);
+  assert.equal(n.global.tun.tab[65], null, 'unmapped key stored as null');
+  assert.deepEqual(normalizeSerum(JSON.parse(JSON.stringify(n))), n, 'JSON round trip, idempotent');
+  // kind 'scl': the texts are the source of truth — a stale or missing tab is rebuilt from them
+  const st = clone(n);
+  st.global.tun.tab = null;
+  assert.deepEqual(normalizeSerum(st).global.tun, n.global.tun);
+  st.global.tun.tab = new Array(128).fill(60);
+  assert.deepEqual(normalizeSerum(st).global.tun, n.global.tun);
+  // an unparsable .scl keeps its stored tab; a tuned kind without a table becomes 'none'; 'none' has no table
+  st.global.tun = { name: 'x', kind: 'scl', scl: 'bad', kbm: '', tab: new Array(128).fill(61) };
+  assert.deepEqual(normalizeSerum(st).global.tun.tab, new Array(128).fill(61));
+  st.global.tun = { name: 'x', kind: 'tun', scl: '', kbm: '', tab: null };
+  assert.equal(normalizeSerum(st).global.tun.kind, 'none');
+  st.global.tun = { name: 'x', kind: 'none', scl: '', kbm: '', tab: new Array(128).fill(61) };
+  assert.equal(normalizeSerum(st).global.tun.tab, null);
+  const P = compileSerum(n).serum;
+  assert.equal(P.sclN, 19);
+  close(P.sclPer, 12, 1e-9);
+  for (let k = 0; k < 19; k++) close(P.sclSteps[k], 12 * k / 19, 1e-9, 'degree ' + k);
+  assert.ok(P.use & 512, 'tuning loaded');
+  for (let k = 0; k < 128; k++) if (k !== 65) assert.equal(P.tune[k], tab[k], 'key ' + k);
+  assert.ok(Number.isNaN(P.tune[65]), 'unmapped key → NaN');
+  const P2 = compileSerum(n).serum;
+  assert.deepEqual(P2.sclSteps, P.sclSteps);
+  assert.notEqual(P2.sclSteps, P.sclSteps, 'every CP gets its own sclSteps');
+  // a .tun tuning has no Step data; a migrated v1 state compiles as before
+  n.global.tun.kind = 'tun';
+  assert.equal(compileSerum(n).serum.sclN, 0);
+  const v1 = compileSerum(S1state()).serum;
+  assert.deepEqual([v1.sclN, v1.sclPer, v1.use & 512], [0, 0, 0]);
+});
+
+test('20 warpChoice2: slot modes, the oscillator-cycle rule (most recent choice wins), S1 slot 1 of A/B (§6.6.6, §11.1)', () => {
+  const s = defaultSerum();
+  assert.deepEqual(C.warpChoice2(s, 0, 0, W2('fm_o1')), []);
+  assert.equal(s.p['a.w1'], W2('fm_o1') / 81, 'A WARP 1 = FM (B)');
+  assert.deepEqual(C.warpChoice2(s, 1, 1, W2('fm_o1')), [{ o: 0, slot: 0 }], 'B WARP 2 = FM (A) closes A ↔ B: A’s slot goes Off');
+  assert.deepEqual([s.p['a.w1'], s.p['b.w2']], [0, W2('fm_o1') / 81]);
+  // a 3-cycle C ← A ← B ← C: the slot of the oscillator reading C on the cycle (B) goes Off
+  const t = defaultSerum();
+  C.warpChoice2(t, 0, 1, W2('pd_o1'));                 // A ← B
+  C.warpChoice2(t, 1, 0, W2('am_o2'));                 // B ← C
+  assert.deepEqual(C.warpChoice2(t, 2, 0, W2('rm_o1')), [{ o: 1, slot: 0 }]);   // C ← A
+  assert.deepEqual([t.p['a.w2'], t.p['b.w1'], t.p['c.w1']], [W2('pd_o1') / 81, 0, W2('rm_o1') / 81]);
+  assert.deepEqual(C.warpChoice2(t, 1, 0, W2('fm_noise')), [], 'noise / sub / filter / self modulators never conflict');
+  // spectral modes act as Off on other oscillator types (no edge); on a Spectral oscillator they count
+  const u = defaultSerum();
+  C.warpChoice2(u, 0, 0, W2('s_voc_o1'));
+  assert.deepEqual(C.warpChoice2(u, 1, 0, W2('fm_o1')), []);
+  assert.equal(u.p['a.w1'], W2('s_voc_o1') / 81);
+  u.osc[0].type = 'spec';
+  C.warpChoice2(u, 0, 0, W2('s_voc_o1'));
+  assert.equal(u.p['b.w1'], 0, 'B ← A was the conflicting slot');
+  // S1 mode: slot 1 of A/B is the v1 field (WARPS index, Phase-1 single-direction rule), still part of the cycle rule
+  const m = S1state();
+  assert.deepEqual(C.warpChoice2(m, 0, 0, 18), []);
+  assert.equal(m.p['a.warpMode'], 18 / 22);
+  assert.equal(m.p['a.w1'], 0, 'the S2 field is not written (the panel calls syncS1)');
+  assert.deepEqual(C.warpChoice2(m, 1, 0, 19), []);
+  assert.deepEqual([m.p['a.warpMode'], m.p['b.warpMode']], [0, 19 / 22], 'Phase-1 rule');
+  assert.deepEqual(C.warpChoice2(m, 0, 1, W2('fm_o1')), [{ o: 1, slot: 0 }], 'A WARP 2 ← B closes the loop with B’s legacy AM (from A)');
+  assert.equal(m.p['b.warpMode'], 0);
+  // arguments
+  for (const a of [[3, 0, 1], [0, 2, 1], [0, 0, NaN], [-1, 0, 1]]) assert.deepEqual(C.warpChoice2(defaultSerum(), ...a), [], JSON.stringify(a));
+  assert.deepEqual(C.warpChoice2(null, 0, 0, 1), []);
+  const c = defaultSerum();
+  C.warpChoice2(c, 2, 1, 99.4);
+  assert.equal(c.p['c.w2'], 1, 'clamped to the list');
+});
+
+test('21 swapWarps: modes, amounts, Vars, unison spreads, FM types and rows; S1 slot 1 of A/B through S1_TO_S2_WARP', () => {
+  const s = defaultSerum();
+  Object.assign(s.p, { 'a.w1': W2('sync') / 81, 'a.wvar1': 0.25, 'a.warp': 0.3, 'a.uniwarp': 0.7, 'a.w2': W2('lpf') / 81, 'a.wvar2': 0, 'a.warp2': 0.6, 'a.uniwarp2': 0.5 });
+  s.osc[0].fm = [2, 1];
+  s.matrix[0] = row({ src: 'lfo1', dst: 'a.warp', amt: 0.2 });
+  s.matrix[1] = row({ src: 'lfo2', dst: 'a.wvar2', amt: 0.3 });
+  s.matrix[2] = row({ src: 'lfo3', dst: 'a.w1', amt: 0.1 });
+  s.matrix[3] = row({ src: 'lfo4', dst: 'b.warp', amt: 0.1 });
+  const before = clone(s);
+  assert.equal(C.swapWarps(s, 0), true);
+  assert.deepEqual([s.p['a.w1'], s.p['a.wvar1'], s.p['a.warp'], s.p['a.uniwarp']], [W2('lpf') / 81, 0, 0.6, 0.5]);
+  assert.deepEqual([s.p['a.w2'], s.p['a.wvar2'], s.p['a.warp2'], s.p['a.uniwarp2']], [W2('sync') / 81, 0.25, 0.3, 0.7]);
+  assert.deepEqual(s.osc[0].fm, [1, 2]);
+  assert.deepEqual(s.matrix.slice(0, 4).map(r => r.dst), ['a.warp2', 'a.wvar1', 'a.w2', 'b.warp']);
+  assert.equal(C.swapWarps(s, 0), true);
+  assert.deepEqual(s, before, 'swapping twice restores the state');
+  assert.deepEqual(normalizeSerum(s), s);
+  // S1 mode: A's slot 1 is a.warpMode (Sync Window), slot 2 Bend +
+  const m = S1state();
+  m.p['a.warpMode'] = 3 / 22;
+  m.p['a.w2'] = W2('bend_p') / 81;
+  m.matrix[0] = rowV1({ src: 'lfo1', dst: 'a.warpMode', amt: 0.5 });
+  m.matrix[0] = Object.assign(row(), m.matrix[0]);
+  assert.equal(C.swapWarps(m, 0), true);
+  assert.deepEqual([m.p['a.warpMode'], m.p['a.w1'], m.p['a.wvar1'], m.p['a.w2'], m.p['a.wvar2']], [4 / 22, W2('bend_p') / 81, 0, 1 / 81, 1]);
+  assert.equal(m.matrix[0].dst, 'a.w2');
+  close(m.matrix[0].amt, 0.5 * 22 / 81, 1e-15, 'same number of steps');
+  assert.deepEqual(C.syncS1(m, null), [], 'the pair stays consistent');
+  const k = S1state();
+  k.p['a.w2'] = W2('lpf') / 81;                       // no v1 rendition
+  const kb = clone(k);
+  assert.equal(C.swapWarps(k, 0), false);
+  assert.deepEqual(k, kb, 'unchanged');
+  assert.equal(C.swapWarps(defaultSerum(), 3), false);
+  assert.equal(C.swapWarps(null, 0), false);
+});
+
+test('22 syncS1: forward and inverse maps of every S1 pair, non-invertible values, phase memory (§2.6.4)', () => {
+  const s = S1state();
+  assert.deepEqual(C.syncS1(s, null), [], 'a migrated state is consistent');
+  s.p['a.warpMode'] = 2 / 22;                          // Sync 1/2 Win.: the only inexact warp entry (Sync with Var ½)
+  assert.deepEqual(C.syncS1(s, 'a.warpMode'), ['aWarp'], 'an approximate rendition is reported');
+  assert.deepEqual([s.p['a.w1'], s.p['a.wvar1']], [1 / 81, 0.5]);
+  s.p['a.wvar1'] = 0.5;                                // S2 edit inside the image: the v1 field stays Sync 1/2 Win.
+  assert.deepEqual(C.syncS1(s, 'a.wvar1'), ['aWarp']);
+  assert.equal(s.p['a.warpMode'], 2 / 22);
+  s.p['a.wvar1'] = 1;                                  // S2 edit: Sync with Var 1 = Sync Window
+  assert.deepEqual(C.syncS1(s, 'a.wvar1'), []);
+  assert.equal(s.p['a.warpMode'], 3 / 22);
+  s.p['a.wvar1'] = 0.3;                                // not in the image
+  assert.deepEqual(C.syncS1(s, 'a.wvar1'), ['aWarp']);
+  assert.equal(s.p['a.warpMode'], 3 / 22, 'v1 field unchanged');
+  s.p['b.w1'] = W2('lpf') / 81;
+  assert.deepEqual(C.syncS1(s, 'b.w1'), ['aWarp', 'bWarp']);
+  s.p['b.w1'] = W2('pd_o1') / 81;                      // = v1 18 (FM from A)
+  C.syncS1(s, 'b.w1');
+  assert.equal(s.p['b.warpMode'], 18 / 22);
+  // sub shape: Triangle has no v1 rendition
+  s.p['s.shp'] = 2 / 5;
+  assert.ok(C.syncS1(s, 's.shp').includes('subShape'));
+  assert.equal(s.p['s.shape'], 0);
+  s.p['s.shp'] = 3 / 5;
+  C.syncS1(s, 's.shp');
+  assert.equal(s.p['s.shape'], 2 / 4, 'Saw');
+  s.p['s.shape'] = 4 / 4;
+  C.syncS1(s, 's.shape');
+  assert.equal(s.p['s.shp'], 5 / 5, 'Pulse');
+  // filter type: identity up to 95
+  s.p['f.type'] = 7 / 95;
+  C.syncS1(s, 'f.type');
+  assert.equal(s.p['f.type2'], 7 / 107);
+  s.p['f.type2'] = 100 / 107;
+  assert.ok(C.syncS1(s, 'f.type2').includes('f1Type'));
+  assert.equal(s.p['f.type'], 7 / 95);
+  s.p['f.type2'] = 40 / 107;
+  C.syncS1(s, 'f.type2');
+  assert.equal(s.p['f.type'], 40 / 95);
+  // bends: clamps forward (a v1 bend outside the S2 range is reported: the renditions differ), inverse within ±24
+  s.p['g.bendup'] = (-5 + 24) / 48;
+  assert.ok(C.syncS1(s, 'g.bendup').includes('bendUp'), 'Bend Up −5 st plays 0 st in S2 mode');
+  assert.equal(s.p['g.bu2'], 0);
+  s.p['g.benddn'] = (7 + 24) / 48;
+  assert.deepEqual(C.syncS1(s, 'g.benddn').filter(id => /^bend/.test(id)), ['bendUp', 'bendDown']);
+  assert.equal(s.p['g.bd2'], 1);
+  s.p['g.benddn'] = 0.25;
+  C.syncS1(s, 'g.benddn');
+  assert.deepEqual(C.syncS1(s, 'g.bu2').filter(id => /^bend/.test(id)), [], 'an S2 edit (0 st) is in the image: the v1 field follows');
+  assert.equal(s.p['g.bendup'], 24 / 48);
+  s.p['g.bu2'] = 30 / 48;
+  assert.ok(C.syncS1(s, 'g.bu2').includes('bendUp'));
+  s.p['g.bu2'] = 12 / 48;
+  C.syncS1(s, 'g.bu2');
+  assert.equal(s.p['g.bendup'], 36 / 48);
+  s.p['g.bd2'] = (-30 + 48) / 48;
+  assert.ok(C.syncS1(s, 'g.bd2').includes('bendDown'));
+  s.p['g.bd2'] = (-12 + 48) / 48;
+  C.syncS1(s, 'g.bd2');
+  assert.equal(s.p['g.benddn'], 0.25);
+  // phase memory: the knob-end rule in S1 mode only; phMem edits never move the knobs
+  s.p['a.rand'] = 0;
+  s.p['a.phase'] = 1;
+  C.syncS1(s, 'a.phase');
+  assert.equal(s.osc[0].phMem, 'contig');
+  s.p['a.rand'] = 1;
+  C.syncS1(s, 'a.rand');
+  assert.equal(s.osc[0].phMem, 'voice');
+  s.osc[0].phMem = 'all';
+  assert.ok(C.syncS1(s, 'a.phMem').includes('aPhaseMem'));
+  assert.deepEqual([s.p['a.phase'], s.p['a.rand']], [1, 1]);
+  const t = setS1(S1state(), 0);
+  t.p['b.phase'] = 1;
+  C.syncS1(t, 'b.phase');
+  assert.equal(t.osc[1].phMem, 'all', 'S2 mode: PHASE is a plain knob');
+  assert.deepEqual(C.syncS1(null, 'a.w1'), []);
+  assert.deepEqual(C.syncS1(S1state(), 'nope'), []);
+});
+
+test('23 chaosToLfo (deviation 22): rows re-pointed, Rössler / Lorenz, rate (Hz ×10, BPM ladder), MONO; no free LFO ⇒ unchanged', () => {
+  assert.deepEqual(lfoLadder(false, false), LFO_LADDER, 'chaos and LFO BPM rates share the straight ladder');
+  const s = S1state();
+  s.matrix[0] = row({ src: 'chaos1', dst: 'a.wt', amt: 0.3 });
+  s.matrix[1] = row({ src: 'lfo1', dst: 'f.cutoff', amt: 0.2 });
+  s.matrix[2] = row({ src: 'env2', dst: 'a.warp', amt: 0.4, aux: 'chaos2' });
+  s.p['c1.rate'] = lawNorm('c1.rate', 250);
+  s.p['c1.bpm'] = 0;
+  s.p['c2.bpm'] = 1;
+  s.p['c2.rate'] = 0.4;
+  s.chaos[0] = { mono: 1, sh: 1 };
+  // the free LFOs' own knobs and switches (they shape any type, the chaos ones too) go back to neutral
+  Object.assign(s.lfo[2], { dir: 'pp', swing: 1, anchor: 1 });
+  Object.assign(s.p, { 'l3.delay': 0.4, 'l3.rise': 0.3, 'l3.smooth': 0.6, 'l3.phase': 0.25 });
+  const before = clone(s), r = C.chaosToLfo(s);
+  assert.deepEqual(s, before, 'the input is not modified');
+  assert.deepEqual([r.matrix[0].src, r.matrix[1].src, r.matrix[2].aux], ['lfo2', 'lfo1', 'lfo3']);
+  assert.deepEqual([r.lfo[1].type, r.lfo[1].mono, r.lfo[1].mode, r.lfo[1].bpm, r.lfo[1].x10], ['rossler', 1, 'free', 0, 1]);
+  close(lawValue('l2.rate', r.p['l2.rate']) * 10, 250, 0.5, 'Hz rate through the ×10 switch');
+  assert.deepEqual([r.lfo[2].type, r.lfo[2].mono, r.lfo[2].mode, r.lfo[2].bpm, r.lfo[2].dot, r.lfo[2].trip], ['lorenz', 0, 'retrig', 1, 0, 0]);
+  assert.deepEqual([r.lfo[2].dir, r.lfo[2].swing, r.lfo[2].anchor], ['fwd', 0, 0]);
+  for (const k of ['delay', 'rise', 'smooth', 'phase']) assert.equal(r.p['l3.' + k], DESTS.find(d => d.id === 'l3.' + k).def, 'l3.' + k + ' default');
+  // BPM: the chaos rate is a Hz-law value snapped to the ladder at the tempo (its display); the LFO gets that entry
+  const lab = (st, id, bpm) => C.fmtParam(id, st.p[id], { s: st, bpm });
+  assert.equal(lab(s, 'c2.rate', 120), '1/16');
+  assert.equal(lab(r, 'l3.rate', 120), '1/16', 'the converted LFO plays the chaos source\'s ladder entry');
+  const r90 = C.chaosToLfo(s, 90);
+  assert.equal(lab(s, 'c2.rate', 90), '1/32');
+  assert.equal(lab(r90, 'l3.rate', 90), '1/32', 'the entry depends on the tempo');
+  for (const n of [0.2, 0.2512, 0.5, 0.6, 0.8, 1]) {
+    const t = clone(s);
+    t.p['c2.rate'] = n;
+    for (const bpm of [70, 120, 174]) assert.equal(lab(C.chaosToLfo(t, bpm), 'l3.rate', bpm), lab(t, 'c2.rate', bpm), `c2.rate ${n} at ${bpm} BPM`);
+  }
+  const z = clone(s);
+  z.p['c2.rate'] = 0;
+  const rz = C.chaosToLfo(z);
+  assert.deepEqual([rz.lfo[2].bpm, rz.p['l3.rate']], [0, 0], 'a frozen (0 Hz) BPM chaos becomes a 0 Hz LFO');
+  assert.deepEqual(normalizeSerum(r), r);
+  const u = S1state();
+  for (let l = 0; l < 10; l++) u.matrix[l] = row({ src: 'lfo' + (l + 1), dst: 'a.level', amt: 0.01 });
+  u.matrix[10] = row({ src: 'chaos1', dst: 'a.pan', amt: 0.2 });
+  assert.deepEqual(C.chaosToLfo(u), normalizeSerum(u), 'no free LFO: nothing changes');
+  assert.deepEqual(C.chaosToLfo(defaultSerum()), defaultSerum(), 'no chaos rows');
+});
+
+test('24 applyMacros (§5.8): offsets at the macro values into the bases (curves, polarity, S1 aliases, FX v1/v2), macro rows deleted', () => {
+  const s = defaultSerum();
+  s.macros[0].v = 0.5;
+  s.macros[1].v = 1;
+  const rows = [
+    { src: 'macro1', dst: 'f.cutoff', amt: 0.4 }, { src: 'macro1', dst: 'f.cutoff', amt: 0.2, bi: 1 }, { src: 'macro2', dst: 'a.level', amt: -0.5 },
+    { src: 'macro2', dst: 'a.semi', amt: 0.3 }, { src: 'macro1', dst: 'm2', amt: 0.5 }, { src: 'env1', dst: 'a.pan', amt: 0.4, aux: 'macro3' },
+    { src: 'lfo1', dst: 'a.wt', amt: 0.3 }, { src: 'macro1', dst: 'b.level', amt: 1, crv: [[0, 0, 0], [0.5, 0.2, 0], [1, 1, 0]] },
+    { src: 'macro1', dst: 'b.pan', amt: 0.5, curve: 0.5 }, { src: 'macro2', dst: 'g.master', amt: -0.2 }, { src: 'macro1', dst: 'fx.dly.mix', amt: 0.4 },
+    { src: 'macro2', dst: 'c.level', amt: 0.5, byp: 1 }, { src: 'macro1', dst: 'fx.hyper.dsize', amt: 0.2 },
+  ];
+  rows.forEach((r, i) => { s.matrix[i] = row(r); });
+  const fx = defaultFx(), base = clone(s);
+  assert.equal(C.applyMacros(s, fx), 12, 'every row with a macro source or aux (the bypassed one too)');
+  close(s.p['f.cutoff'], 0.5 + 0.2, 1e-15);
+  close(s.p['a.level'], 0.75 - 0.5, 1e-15);
+  assert.equal(s.p['a.semi'], 19 / 24, 'stepped: grid-snapped');
+  close(s.p['b.level'], 0.75 + 0.2, 1e-12, 'editable curve');
+  const k = C.MC_K * 0.5;
+  close(s.p['b.pan'], 0.5 + 0.5 * (1 - Math.exp(-k * 0.5)) / (1 - Math.exp(-k)), 1e-12, 'curve bend');
+  close(s.p['g.master'], base.p['g.master'] - 0.2, 1e-15);
+  close(fx.p['fx.dly.mix'], defaultFx().p['fx.dly.mix'] + 0.2, 1e-15, 'v1 FX state');
+  close(fx.p['fx.dim.size'], defaultFx().p['fx.dim.size'] + 0.1, 1e-15, 'renamed id written under its v1 id');
+  assert.equal(s.p['c.level'], base.p['c.level'], 'bypassed row: no offset');
+  assert.equal(s.macros[1].v, 1, 'virtual destination m2 untouched');
+  assert.equal(s.p['a.pan'], base.p['a.pan'], 'aux rows give no offset');
+  assert.deepEqual(s.matrix.filter(r => r.src).map(r => r.src + '>' + r.dst), ['lfo1>a.wt']);
+  // v2 FX state; S1 alias (a row on a.w1 acts on a.warpMode in S1 mode)
+  const fx2 = C.normalizeFx2({ v: 2, racks: [{ mods: [{ id: 'dly', type: 'dly', v: 2 }] }, { mods: [] }, { mods: [] }] });
+  const m = S1state();
+  m.macros[1].v = 1;
+  m.matrix[0] = row({ src: 'macro2', dst: 'fx.dly.feed', amt: 0.2 });
+  m.matrix[1] = row({ src: 'macro2', dst: 'a.w1', amt: 0.1 });
+  assert.equal(C.applyMacros(m, fx2), 2);
+  close(fx2.racks[0].mods[0].p.feed, 0.4 + 0.2, 1e-15);
+  assert.equal(m.p['a.warpMode'], 8 / 22);
+  assert.equal(m.p['a.w1'], C.S1_TO_S2_WARP[8][0] / 81, 'the S2 counterpart follows through the forward map (§2.6.4)');
+  assert.deepEqual(C.syncS1(m, ''), [], 'pairs consistent');
+  // S1 pairs stay consistent (§2.6.4) in both modes: a row on f.type2 bakes into f.type (S1 mode, alias) and f.type2
+  // follows; in S2 mode a row on f.type (alias) bakes into f.type2 and f.type follows through the inverse map (≤ 95)
+  const t1 = S1state();
+  t1.macros[0].v = 1;
+  t1.matrix[0] = row({ src: 'macro1', dst: 'f.type2', amt: 0.2 });
+  t1.matrix[1] = row({ src: 'macro1', dst: 's.shp', amt: 0.2 });
+  C.applyMacros(t1, null);
+  assert.ok(t1.p['f.type'] !== S1state().p['f.type'], 'the active (v1) field moved');
+  assert.equal(t1.p['f.type2'], Math.round(95 * t1.p['f.type']) / 107);
+  assert.deepEqual(C.syncS1(t1, ''), []);
+  const t2 = C.setS1(S1state(), 0);
+  t2.macros[0].v = 1;
+  t2.matrix[0] = row({ src: 'macro1', dst: 'f.type', amt: 0.2 });
+  t2.matrix[1] = row({ src: 'macro1', dst: 'g.bu2', amt: 0.25 });
+  C.applyMacros(t2, null);
+  assert.equal(Math.round(107 * t2.p['f.type2']) <= 95, true);
+  assert.equal(t2.p['f.type'], Math.round(107 * t2.p['f.type2']) / 95, 'inverse map');
+  assert.deepEqual(C.syncS1(t2, ''), []);
+  // a counterpart value without an S1 rendition leaves the v1 field (the GLOBAL page reports it)
+  const t3 = C.setS1(S1state(), 0);
+  t3.macros[0].v = 1;
+  t3.matrix[0] = row({ src: 'macro1', dst: 'f.type2', amt: 1 });
+  const ft = t3.p['f.type'];
+  C.applyMacros(t3, null);
+  assert.deepEqual([t3.p['f.type2'], t3.p['f.type'], C.syncS1(t3, '')], [1, ft, ['f1Type']]);
+  assert.equal(C.applyMacros(null, null), 0);
+  // rows the compiler treats as inactive (Convolve shaping parameters, deviation 20; missing instances) are deleted
+  // without being applied: the action keeps the sound
+  const fc = C.normalizeFx2({ v: 2, racks: [{ mods: [{ id: 'cv', type: 'conv', v: 2 }] }, { mods: [] }, { mods: [] }] });
+  const u = defaultSerum();
+  u.macros[0].v = 1;
+  u.matrix[0] = row({ src: 'macro1', dst: 'fx.cv.size', amt: 0.5 });
+  u.matrix[1] = row({ src: 'macro1', dst: 'fx.cv.mix', amt: -0.25 });
+  u.matrix[2] = row({ src: 'macro1', dst: 'fx.gone.mix', amt: 0.5 });
+  const size0 = destBase(u, fc, 'fx.cv.size'), mix0 = destBase(u, fc, 'fx.cv.mix');
+  assert.deepEqual([C.rowInfo(u, fc, 0).active, C.rowInfo(u, fc, 1).active, C.rowInfo(u, fc, 2).active], [false, true, false]);
+  assert.equal(C.applyMacros(u, fc), 3);
+  assert.equal(destBase(u, fc, 'fx.cv.size'), size0, 'nomod row: no offset');
+  close(destBase(u, fc, 'fx.cv.mix'), mix0 - 0.25, 1e-15);
+  assert.deepEqual(u.matrix.filter(r => r.src), []);
+});
+
+test('25 swapMacros, initMods, sortMatrix (§5.6, §5.8)', () => {
+  const s = defaultSerum();
+  s.macros[0] = { name: 'Cut', v: 0.2 };
+  s.macros[2] = { name: 'Res', v: 0.7 };
+  s.matrix[0] = row({ src: 'macro1', dst: 'f.cutoff', amt: 0.3 });
+  s.matrix[1] = row({ src: 'env2', dst: 'f.res', amt: 0.3, aux: 'macro3' });
+  s.matrix[2] = row({ src: 'macro3', dst: 'm1', amt: 0.3 });
+  s.midi = { 10: 'macro1', 11: 'm3', 12: 'f.res' };
+  s.locks.p = ['m1', 'f.res'];
+  s.clip.clips[0].lanes.m1 = [[0, 0.5, 0], [1, 0.5, 0]];
+  assert.equal(C.swapMacros(s, 0, 'macro3'), true);
+  assert.deepEqual(s.macros.slice(0, 3), [{ name: 'Res', v: 0.7 }, { name: 'Macro 2', v: 0 }, { name: 'Cut', v: 0.2 }]);
+  assert.deepEqual(s.matrix.slice(0, 3).map(r => [r.src, r.aux, r.dst]), [['macro3', '', 'f.cutoff'], ['env2', 'macro1', 'f.res'], ['macro1', '', 'm3']]);
+  assert.deepEqual(s.midi, { 10: 'macro3', 11: 'm1', 12: 'f.res' });
+  assert.deepEqual(s.locks.p, ['m3', 'f.res']);
+  assert.deepEqual([s.clip.clips[0].lanes.m1, s.clip.clips[0].lanes.m3], [null, [[0, 0.5, 0], [1, 0.5, 0]]]);
+  assert.deepEqual(normalizeSerum(s), s);
+  for (const a of [[0, 0], [8, 1], ['m9', 0], ['x', 1]]) assert.equal(C.swapMacros(defaultSerum(), ...a), false, JSON.stringify(a));
+  // Init Modulations
+  const t = defaultSerum();
+  t.matrix[3] = row({ src: 'lfo1', dst: 'a.wt', amt: 0.3 });
+  t.matrix[9] = row({ src: 'lfo2', dst: 'bus2', amt: 0.3 });
+  t.matrix[20] = row({ dst: 'a.pan' });
+  t.lfo[0].pts = [[0, 0, 0], [0.5, 1, 0, 2, 0], [1, 0, 0]];
+  assert.equal(C.initMods(t), 3);
+  assert.deepEqual(t.matrix, defaultSerum().matrix);
+  assert.deepEqual(t.lfo[0].pts, [[0, 0, 0], [0.5, 1, 0], [1, 0, 0]]);
+  // Sort by Source / Destination: stable, empty rows last
+  const u = defaultSerum();
+  const R = [{ src: 'lfo2', dst: 'a.level' }, null, { src: 'env1', dst: 'f.cutoff' }, { src: 'macro1', dst: 'fx.dly.mix' }, { src: 'env1', dst: 'a.wt' },
+    { src: 'velo', dst: 'l1.rate' }, { src: 'env1', dst: 'c.level' }];
+  R.forEach((r, i) => { if (r) u.matrix[i] = row(Object.assign({ amt: 0.1 * (i + 1) }, r)); });
+  const v = clone(u);
+  assert.equal(C.sortMatrix(u, 'src'), true);
+  assert.deepEqual(u.matrix.slice(0, 7).map(r => r.src + '>' + r.dst),
+    ['env1>f.cutoff', 'env1>a.wt', 'env1>c.level', 'lfo2>a.level', 'velo>l1.rate', 'macro1>fx.dly.mix', '>']);
+  assert.equal(C.sortMatrix(v, 'dst'), true);
+  assert.deepEqual(v.matrix.slice(0, 7).map(r => r.src + '>' + r.dst),
+    ['lfo2>a.level', 'env1>a.wt', 'env1>c.level', 'env1>f.cutoff', 'velo>l1.rate', 'macro1>fx.dly.mix', '>']);
+  assert.equal(v.matrix[0].amt, 0.1, 'rows move whole');
+  assert.equal(C.sortMatrix(v, 'amount'), false);
+});
+
+test('26 destMenu / srcMenu (§11.1, §3.10): groups, matrix-only, type groups, S1 group, FX instances', () => {
+  const ids = M => M.flatMap(g => g.items.map(i => i.id));
+  const s = defaultSerum(), M0 = C.destMenu(s, null, {});
+  assert.deepEqual(M0.slice(0, 3).map(g => g.group), ['Osc A', 'Osc B', 'Osc C']);
+  assert.ok(M0.every(g => g.items.length && g.items.every(i => i.label === destLabel(i.id, s, null))));
+  const all = ids(M0);
+  assert.equal(new Set(all).size, all.length, 'no duplicates');
+  for (const id of ['a.level', 'c.w2', 'f2.cutoff', 'g.direct', 'e4.att', 'l10.rate', 'm1', 'vc.pan', 'arp.rate', 'clip.trans', 'g.master', 'g.bu2']) assert.ok(all.includes(id), id);
+  for (const id of ['g.tune', 'bus1', 'g.bypass', 'a.warpMode', 'f.type', 'c1.rate', 'a.sstart', 'a.dens', 'fx.dly.mix']) assert.ok(!all.includes(id), id);
+  const Mm = ids(C.destMenu(s, null, { matrix: true }));
+  for (const id of C.MATRIX_ONLY) assert.ok(Mm.includes(id), id);
+  s.osc[0].type = 'gran';
+  const G = C.destMenu(s, null, {}).map(g => g.group);
+  assert.ok(G.includes('Osc A Sample') && G.includes('Osc A Granular') && !G.includes('Osc A Spectral') && !G.includes('Osc B Sample'));
+  s.matrix[0] = row({ src: 'lfo1', dst: 'b.flo', amt: 0.1 });
+  assert.ok(C.destMenu(s, null, {}).some(g => g.group === 'Osc B Spectral'), 'a group in use is listed');
+  // S1 legacy destinations: S1 mode, or in use
+  const S1g = C.destMenu(S1state(), null, {}).find(g => g.group === 'S1');
+  assert.deepEqual(S1g.items.map(i => i.id).sort(), ['a.warpMode', 'b.warpMode', 'c1.bpm', 'c1.rate', 'c2.bpm', 'c2.rate', 'f.type', 'g.benddn', 'g.bendup', 's.shape']);
+  s.matrix[1] = row({ src: 'lfo1', dst: 'f.type', amt: 0.1 });
+  assert.ok(C.destMenu(s, null, {}).some(g => g.group === 'S1'));
+  // FX instances (v2 and v1 states through fxLayout); nomod parameters omitted
+  const fx2 = C.normalizeFx2({ v: 2, racks: [{ mods: [{ id: 'dly', type: 'dly', v: 2 }, { id: 'conv', type: 'conv', v: 2 }] }, { mods: [{ id: 'dist', type: 'dist', v: 2 }] }, { mods: [] }] });
+  const F = C.destMenu(defaultSerum(), fx2, {}).filter(g => /^FX /.test(g.group));
+  assert.deepEqual(F.map(g => g.group), ['FX Delay', 'FX Convolve', 'FX Distortion (Bus 1)']);
+  assert.ok(F[0].items.some(i => i.id === 'fx.dly.feed' && i.label === 'Delay ' + C.FXP_TAB.dly[2].find(r => r.pid === 'feed').label));
+  assert.deepEqual(F[1].items.map(i => i.id.split('.')[2]), ['on', 'pre', 'prebpm', 'prelad', 'irgain', 'mix', 'level']);
+  const F1 = C.destMenu(defaultSerum(), defaultFx(), {}).filter(g => /^FX /.test(g.group));
+  assert.equal(F1.length, 10, 'the ten v1 modules');
+  assert.ok(ids(F1).includes('fx.hyper.dsize'));
+  // sources
+  const S0 = C.srcMenu(defaultSerum());
+  assert.deepEqual(S0.map(g => g.group), ['Envelopes', 'LFOs', 'Performance', 'Random', 'Macros', 'Audio', 'Voice', 'Fixed']);
+  const sids = ids(S0);
+  assert.deepEqual(sids, C.SRC_MENU2.filter(id => !/^lfo\d+y$/.test(id) && !/^chaos/.test(id)));
+  const p = defaultSerum();
+  p.lfo[2].type = 'path';
+  p.macros[1].name = 'Wobble';
+  p.matrix[0] = row({ src: 'lfo5y', dst: 'a.wt', amt: 0.1 });
+  const S2 = C.srcMenu(p), lfos = S2.find(g => g.group === 'LFOs').items.map(i => i.id);
+  assert.deepEqual(lfos.slice(10), ['lfo3y', 'lfo5y']);
+  assert.equal(S2.find(g => g.group === 'Macros').items[1].label, 'Wobble');
+  assert.deepEqual(C.srcMenu(S1state()).find(g => g.group === 'S1').items.map(i => i.id), ['chaos1', 'chaos2']);
+  assert.ok(C.srcMenu(null).length > 0 && C.destMenu(null, null).length > 0, 'robust without a state');
+});
+
+test('27 copyModule v2 pairs (filter ↔ filter2, env ↔ env, lfo ↔ lfo, osc with cycles / S1) and Copy (w/mods)', () => {
+  // Filter → Filter 2: suffix ids, f.type2 → f2.type, structured data, route-loop repair on the target
+  const s = defaultSerum();
+  Object.assign(s.p, { 'f.cutoff': 0.3, 'f.type2': 50 / 107, 'f.routeC': 0, 'f.level': 0.8 });
+  s.filter[0] = { keytrack: 1, clean: 1, route: 0, env: 0, pz: [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0.5, 0.5, 0.5]] };
+  s.filter[1].route = 0;
+  assert.equal(copyModule(s, s, 'filter2', 'filter'), true);
+  assert.deepEqual([s.p['f2.cutoff'], s.p['f2.type'], s.p['f2.routeC'], s.p['f2.level']], [0.3, 50 / 107, 0, 0.8]);
+  assert.deepEqual(s.filter[1], Object.assign({}, s.filter[0], { route: 1 }), 'F2 → F1 with F1 → F2 would loop: target to Main');
+  // Filter 2 → Filter 1 in S1 mode also sets the v1 type when ≤ 95
+  const m = S1state();
+  m.p['f2.type'] = 40 / 107;
+  copyModule(m, m, 'filter', 'filter2');
+  assert.deepEqual([m.p['f.type2'], m.p['f.type']], [40 / 107, 40 / 95]);
+  m.p['f2.type'] = 100 / 107;
+  copyModule(m, m, 'filter', 'filter2');
+  assert.deepEqual([m.p['f.type2'], m.p['f.type']], [100 / 107, 40 / 95]);
+  // envelopes: laws converted (ENV 1 sustain is pow2), Start/End dropped into ENV 1 and 0 from ENV 1
+  const e = defaultSerum();
+  Object.assign(e.p, { 'e2.sus': 0.5, 'e2.start': 0.3, 'e2.end': 0.4, 'e2.att': 0.2, 'e3.start': 0.6 });
+  e.env[1] = { bpm: 1, legInv: 1, stealRe: 0 };
+  copyModule(e, e, 'env1', 'env2');
+  close(e.p['e1.sus'], Math.SQRT1_2, 1e-12);
+  assert.deepEqual([e.p['e1.att'], e.env[0]], [0.2, { bpm: 1, legInv: 1, stealRe: 0 }]);
+  copyModule(e, e, 'env3', 'env1');
+  assert.deepEqual([e.p['e3.start'], e.p['e3.end'], e.p['e3.att']], [0, 0, 0.2]);
+  close(e.p['e3.sus'], 0.5, 1e-12, 'pow2 → lin');
+  // LFOs: PHASE copied; buses only the overwritten points linked are pruned (copyLfo semantics)
+  const l = defaultSerum();
+  l.p['l1.phase'] = 0.25;
+  l.lfo[1].pts = [[0, 0, 0], [0.5, 1, 0, 3, 0], [1, 0, 0]];
+  l.matrix[0] = row({ src: 'lfo4', dst: 'bus3', amt: 0.5 });
+  copyModule(l, l, 'lfo2', 'lfo1');
+  assert.equal(l.p['l2.phase'], 0.25);
+  assert.deepEqual(l.lfo[1], l.lfo[0]);
+  assert.equal(l.matrix[0].src, '', 'bus 3 lost its only link');
+  // oscillators: C → A in S1 mode syncs the v1 slot-1 field; the pasted oscillator wins the cycle rule
+  const c = S1state();
+  c.p['c.w1'] = W2('bend_p') / 81;
+  copyModule(c, c, 'oscA', 'oscC');
+  assert.deepEqual([c.p['a.w1'], c.p['a.warpMode']], [W2('bend_p') / 81, 4 / 22]);
+  const x = defaultSerum(), y = defaultSerum();
+  x.p['a.w1'] = W2('fm_o1') / 81;                     // A ← B
+  y.p['b.w2'] = W2('am_o1') / 81;                     // B ← A
+  copyModule(y, x, 'oscA');
+  assert.deepEqual([y.p['a.w1'], y.p['b.w2']], [W2('fm_o1') / 81, 0]);
+  // Copy (w/mods): the source's rows on the module replace the target's, re-targeted by suffix
+  const w = defaultSerum();
+  w.matrix[0] = row({ src: 'lfo1', dst: 'a.level', amt: 0.1 });
+  w.matrix[1] = row({ src: 'env2', dst: 'a.wt', amt: 0.2 });
+  w.matrix[2] = row({ src: 'lfo2', dst: 'b.level', amt: 0.3 });
+  w.matrix[3] = row({ src: 'lfo3', dst: 'f.cutoff', amt: 0.4 });
+  assert.equal(copyModule(w, w, 'oscB', 'oscA', { mods: true }), true);
+  assert.deepEqual(w.matrix.filter(r => r.src).map(r => r.src + '>' + r.dst + ':' + r.amt),
+    ['lfo1>a.level:0.1', 'env2>a.wt:0.2', 'lfo1>b.level:0.1', 'lfo3>f.cutoff:0.4', 'env2>b.wt:0.2']);
+  const z = defaultSerum();
+  z.matrix[0] = row({ src: 'macro1', dst: 'arp.rate', amt: 0.5 });
+  const t = defaultSerum();
+  copyModule(t, z, 'arp', null, { mods: 1 });
+  assert.deepEqual([t.matrix[0].src, t.matrix[0].dst], ['macro1', 'arp.rate'], 'virtual destinations belong to their module');
+  copyModule(t, z, 'oscC', 'oscA', { mods: 1 });
+  assert.equal(t.matrix[0].dst, 'arp.rate', 'rows of other modules stay');
+  for (const [a, b] of [['filter', 'env1'], ['env1', 'lfo1'], ['noise', 'sub'], ['vc', 'arp'], ['filter2', 'oscA'], ['velo', 'note']]) {
+    assert.equal(copyModule(defaultSerum(), defaultSerum(), a, b), false, a + ' ← ' + b);
+  }
+});
+
+test('28 swapModules and initModule (inv B2)', () => {
+  const s = defaultSerum();
+  Object.assign(s.p, { 'a.level': 0.2, 'b.level': 0.9 });
+  s.osc[0].wt = 'user:t1';
+  s.matrix[0] = row({ src: 'lfo1', dst: 'a.level', amt: 0.1 });
+  s.matrix[1] = row({ src: 'lfo2', dst: 'b.wt', amt: 0.2 });
+  s.matrix[2] = row({ src: 'env2', dst: 'f.cutoff', amt: 0.3 });
+  const A = clone(s.osc[0]), B = clone(s.osc[1]);
+  assert.equal(C.swapModules(s, 'oscA', 'oscB'), true);
+  assert.deepEqual([s.p['a.level'], s.p['b.level'], s.osc[0], s.osc[1]], [0.9, 0.2, B, A]);
+  assert.deepEqual(s.matrix.slice(0, 3).map(r => r.dst), ['b.level', 'a.wt', 'f.cutoff']);
+  assert.equal(C.swapModules(s, 'oscA', 'oscB'), true);
+  assert.deepEqual(s.matrix.slice(0, 3).map(r => r.dst), ['a.level', 'b.wt', 'f.cutoff']);
+  // ENV 1 ↔ ENV 2: rows without a counterpart are cleared; LFO swaps keep the bus links with their points
+  const e = defaultSerum();
+  Object.assign(e.p, { 'e1.att': 0.1, 'e2.att': 0.4, 'e2.start': 0.3 });
+  e.matrix[0] = row({ src: 'lfo1', dst: 'e2.start', amt: 0.1 });
+  e.matrix[1] = row({ src: 'lfo1', dst: 'e1.att', amt: 0.2 });
+  C.swapModules(e, 'env1', 'env2');
+  assert.deepEqual([e.p['e1.att'], e.p['e2.att'], e.p['e2.start']], [0.4, 0.1, 0]);
+  assert.deepEqual([e.matrix[0].src, e.matrix[1].dst], ['', 'e2.att']);
+  const l = defaultSerum();
+  l.lfo[0].pts = [[0, 0, 0], [0.5, 1, 0, 3, 0], [1, 0, 0]];
+  l.matrix[0] = row({ src: 'env2', dst: 'bus3', amt: 0.5 });
+  l.matrix[1] = row({ src: 'env2', dst: 'l1.rate', amt: 0.5 });
+  C.swapModules(l, 'lfo1', 'lfo2');
+  assert.deepEqual(l.lfo[1].pts, [[0, 0, 0], [0.5, 1, 0, 3, 0], [1, 0, 0]]);
+  assert.deepEqual([l.matrix[0].dst, l.matrix[1].dst], ['bus3', 'l2.rate']);
+  const f = defaultSerum();
+  f.p['f.type2'] = 30 / 107;
+  f.p['f2.type'] = 60 / 107;
+  C.swapModules(f, 'filter', 'filter2');
+  assert.deepEqual([f.p['f.type2'], f.p['f2.type']], [60 / 107, 30 / 107]);
+  for (const [a, b] of [['oscA', 'filter'], ['oscA', 'oscA'], ['vc', 'vc'], ['env1', 'nope']]) assert.equal(C.swapModules(defaultSerum(), a, b), false);
+  // Init Module: settings to default, rows targeting the module deleted, rows from it kept, locks unchanged
+  const i = moduleState(1);
+  i.matrix[0] = row({ src: 'lfo1', dst: 'f.cutoff', amt: 0.2 });
+  i.matrix[1] = row({ src: 'env2', dst: 'l1.rate', amt: 0.2 });
+  i.matrix[2] = row({ src: 'env2', dst: 'a.level', amt: 0.2 });
+  i.matrix[3] = row({ src: 'macro1', dst: 'arp.rate', amt: 0.2 });
+  i.lfo[0].pts = [[0, 0, 0], [0.5, 1, 0, 5, 0], [1, 0, 0]];
+  i.matrix[4] = row({ src: 'env2', dst: 'bus5', amt: 0.2 });
+  i.locks.mod = ['oscA'];
+  const d = defaultSerum();
+  assert.equal(C.initModule(i, 'lfo1'), true);
+  assert.deepEqual(i.lfo[0], d.lfo[0]);
+  for (const id of MODULE_FIELDS.lfo1.p) assert.equal(i.p[id], d.p[id], id);
+  assert.deepEqual(i.matrix.slice(0, 5).map(r => r.src + '>' + r.dst), ['lfo1>f.cutoff', '>', 'env2>a.level', 'macro1>arp.rate', '>'], 'bus 5 lost its link');
+  C.initModule(i, 'oscA');
+  assert.deepEqual([i.osc[0], i.p['a.level'], i.matrix[2].src], [d.osc[0], d.p['a.level'], '']);
+  C.initModule(i, 'arp');
+  assert.equal(i.matrix[3].src, '');
+  assert.deepEqual(i.locks.mod, ['oscA']);
+  assert.equal(C.initModule(i, 'bogus'), false);
+  assert.deepEqual(normalizeSerum(i), i);
+});
+
+test('29 initPreset (§11.1): preference fields, every lock cleared, page kept, default FX without rack locks', () => {
+  const cur = defaultSerum();
+  cur.locks = { p: ['a.level'], mod: ['oscA'], unp: ['a.pan'], misc: { poly: 1, os: 1, tuning: 1 } };
+  cur.ui.page = 'matrix';
+  cur.global.os = 1;
+  const r = C.initPreset(cur, { defOs: 4, author: 'Me', view3d: 1, mpeDefault: 1 });
+  assert.deepEqual(Object.keys(r).sort(), ['fx', 's']);
+  assert.deepEqual([r.s.global.os, r.s.author, r.s.ui.view3d, r.s.global.mpe.on, r.s.ui.page], [4, 'Me', [1, 1, 1], 1, 'matrix']);
+  assert.deepEqual(r.s.locks, { p: [], mod: [], unp: [], misc: { poly: 0, os: 0, tuning: 0 } });
+  assert.deepEqual(normalizeSerum(r.s), r.s);
+  assert.deepEqual(r.fx, C.defaultFx2(), 'the v2 default rack, no rack lock (RULINGS2 F1)');
+  const q = C.initPreset(null, {});
+  assert.deepEqual(q.s, defaultSerum());
+  assert.equal(C.initPreset(cur, { defOs: 3 }).s.global.os, 2, 'invalid preference ignored');
+});
+
+test('30 hybridize (inv B25): deterministic per seed, genes from one parent each, rows follow their gene, favour ½', () => {
+  const parents = [0, 1, 2, 3].map(k => {
+    const s = moduleState(k % 2);
+    s.voicing.poly = k + 1;
+    s.macros[0].name = 'P' + k;
+    s.global.mpe.bend = 10 + k;
+    s.p['f.cutoff'] = 0.1 + 0.2 * k;
+    s.matrix[0] = row({ src: 'lfo1', dst: 'f.cutoff', amt: 0.01 * (k + 1) });
+    s.matrix[1] = row({ src: 'env2', dst: 'a.level', amt: 0.02 * (k + 1) });
+    return { name: 'P' + k, cat: 'Test', v: { s }, fx: Object.assign(defaultFx(), { lock: 0, tag: k }) };
+  });
+  const h = C.hybridize(parents, { seed: 7 });
+  assert.deepEqual(C.hybridize(parents, { seed: 7 }), h, 'deterministic');
+  assert.deepEqual(normalizeSerum(h.s), h.s, 'normalised');
+  const pOf = st => parents.findIndex(P => P.v.s.voicing.poly === st.voicing.poly);
+  assert.ok(pOf(h.s) >= 0);
+  const fp = parents.findIndex(P => P.v.s.p['f.cutoff'] === h.s.p['f.cutoff']);
+  assert.ok(fp >= 0, 'Filter from one parent');
+  assert.deepEqual(h.s.matrix.filter(r => r.dst === 'f.cutoff').map(r => r.amt), [0.01 * (fp + 1)], 'the Filter row follows the Filter gene');
+  assert.ok([0, 1, 2, 3].includes(h.fx.tag), 'FX state taken whole');
+  let differs = 0;
+  for (let seed = 1; seed < 6; seed++) if (JSON.stringify(C.hybridize(parents, { seed })) !== JSON.stringify(h)) differs++;
+  assert.ok(differs >= 4, 'other seeds give other hybrids');
+  // favour: the favoured parent supplies about half of the genes
+  const count = [0, 0, 0, 0], countF = [0, 0, 0, 0];
+  for (let seed = 0; seed < 400; seed++) {
+    count[pOf(C.hybridize(parents, { seed }).s)]++;
+    countF[pOf(C.hybridize(parents, { seed, favor: 2 }).s)]++;
+  }
+  for (const c of count) assert.ok(c > 60 && c < 140, 'uniform ' + count);
+  assert.ok(countF[2] > 160 && countF[2] < 240, 'favoured ' + countF);
+  assert.deepEqual(C.hybridize([], { seed: 1 }).s, defaultSerum());
+  assert.deepEqual(C.hybridize([parents[1]], { seed: 3 }).s, normalizeSerum(parents[1].v.s), 'one parent: itself');
+});
+
+test('31 assetNeeds and fxModded2 (§9.8, §11.1)', () => {
+  const s = defaultSerum();
+  s.osc[0].smp = 'smp:abc';
+  s.osc[1].multi = 'fmsmp:Piano';
+  s.osc[1].smp = 'smp:abc';
+  s.osc[2].smp = 'factory:Default';
+  s.osc[2].multi = 'msmp:x';
+  assert.deepEqual(C.assetNeeds(s), ['smp:abc', 'fmsmp:Piano', 'msmp:x']);
+  assert.deepEqual(C.assetNeeds(null), []);
+  // tableNeeds: every user table / noise the state references (OSC C, tables played as samples, spectral filter tables)
+  const t = defaultSerum();
+  assert.deepEqual(C.tableNeeds(t), []);
+  t.osc[2].wt = 'user:c';                              // OSC C (off: still referenced)
+  t.osc[0].type = 'smp';
+  t.osc[0].smp = 'user:smpTable';                      // a user table played as a sample
+  t.osc[1].wt = 'user:c';
+  t.osc[1].smp = 'smp:notATable';
+  t.osc[2].spec.filt.wt = 'user:filt';
+  t.noise.src = 'nzuser:n1';
+  assert.deepEqual(C.tableNeeds(normalizeSerum(t)), ['user:smpTable', 'user:c', 'user:filt', 'nzuser:n1']);
+  assert.deepEqual([C.tableNeeds(null), C.tableNeeds({ osc: [null, { wt: 5 }] })], [[], []]);
+  const fx = C.normalizeFx2({ v: 2, racks: [{ mods: [{ id: 'dly', type: 'dly', v: 2 }, { id: 'conv', type: 'conv', v: 2 }] }, { mods: [{ id: 'dist', type: 'dist', v: 2 }] }, { mods: [] }] });
+  const L = C.fxLayout(fx), off = (id, pid) => { const e = L.inst.find(x => x.id === id); return 8 + e.off + C.FXP_TAB[e.type][e.v].findIndex(r => r.pid === pid); };
+  const rows = [{ src: 'lfo1', dst: 'fx.dly.mix' }, { src: 'lfo1', dst: 'fx.conv.size' }, { src: 'lfo1', dst: 'fx.conv.mix' }, { src: 'env1', dst: 'g.master' },
+    { src: 'env1', dst: 'g.bus1v' }, { src: 'lfo1', dst: 'fx.nope.mix' }, { src: 'lfo1', dst: 'fx.dist.drive', byp: 1 }, { src: 'lfo1', dst: 'a.level' }];
+  rows.forEach((r, i) => { s.matrix[i] = row(Object.assign({ amt: 0.3 }, r)); });
+  const md = C.fxModded2(s, fx);
+  assert.ok(md instanceof Uint8Array && md.length === 8 + L.NP);
+  const on = [];
+  md.forEach((v, k) => { if (v) on.push(k); });
+  assert.deepEqual(on, [0, 3, off('dly', 'mix'), off('conv', 'mix')].sort((a, b) => a - b));
+  const P = compileSerum(s, { fx }).serum, neg = [];
+  for (let r = 0; r < P.mN; r++) if (P.mDst[r] < 0) neg.push(-1 - P.mDst[r]);
+  assert.deepEqual(neg.sort((a, b) => a - b), on, 'the FX-context targets of the compiled matrix');
+  assert.equal(C.fxModded2(s, null).length, 8);
+  assert.deepEqual(Array.from(C.fxModded2(s, null)), [1, 0, 0, 1, 0, 0, 0, 0]);
+  assert.equal(C.fxModded2(null, fx).length, 8 + L.NP);
+});
+
+test('32 §11.1 re-exports: every export of laws.js, fx-core.js, seq-core.js and tuning.js is reachable, identical, through serum-core', async () => {
+  const mods = { laws: await import('../laws.js?v=6'), fx: await import('../fx-core.js?v=6'), seq: await import('../seq-core.js?v=6'), tuning: await import('../tuning.js?v=6') };
+  const LOCAL = ['lawValue', 'lawNorm'];          // serum-core's id-based versions shadow the laws.js ones (Phase-1 signatures)
+  const seen = new Map();
+  for (const [name, M] of Object.entries(mods)) {
+    for (const k of Object.keys(M)) {
+      assert.ok(!seen.has(k), `${k} exported by both ${seen.get(k)} and ${name} (an ambiguous star export would be dropped)`);
+      seen.set(k, name);
+      assert.ok(k in C, `${name}.${k} reachable`);
+      if (LOCAL.indexOf(k) < 0) assert.equal(C[k], M[k], `${name}.${k} identical`);
+    }
+  }
+  // the §3.15 lists the UI reads through serum-core (U4: SCALES etc.)
+  for (const k of ['ARP_SHAPES', 'RANGE_SHAPES', 'ARP_PMODES', 'STEP_MODES', 'WRAP_MODES', 'CLIP_MODES', 'KB_SPAN', 'CLIP_TRIG', 'MIDI_OUT', 'ARP_LADDER',
+    'GRID_LADDER', 'TIME_LADDER', 'RRATE_LADDER', 'CLIP_RATES', 'LAUNCH_QUANT', 'LEN_LADDER', 'SCALES', 'compileSeq', 'defaultArp', 'normalizeClip']) assert.ok(k in C, k);
+  // the arp / clip / kbd schemas of a v2 state are seq-core's
+  const s = defaultSerum();
+  assert.deepEqual([s.arp, s.clip, s.kbd], [C.defaultArp(), C.defaultClip(), C.defaultKbd()]);
+  s.kbd.swing = 3;
+  s.arp.slots[0].pat.strum = [[5, 0.2], [1, 0.5]];
+  const n = normalizeSerum(s);
+  assert.deepEqual([n.arp, n.clip, n.kbd], [C.normalizeArp(s.arp), C.normalizeClip(s.clip), C.normalizeKbd(s.kbd)]);
+  assert.equal(n.kbd.swing, 1, 'Round-1 swing clamped');
+});
+
+/* ------------------------------------------------------------ 33–40. M2: compile details and the helpers of the v2 UI actions */
+
+// a v2 FX state with instances {id, type} in rack 0 (normalised by fx-core: table defaults)
+const fx2 = (...ids) => { const f = C.defaultFx2(); for (const [id, type] of ids) f.racks[0].mods.push({ id, type }); return C.normalizeFx2(f); };
+
+test('33 compileSerum: filter channels of off filters (bypass through their route, §1/§6.12), F2 channel bit, ctx.ultra', () => {
+  // F1 off, A routed to Filter (default), F1 routed Direct: the bypass sum leaves through the Direct pair
+  const a = withRows([], s => { s.filter[0].route = 2; });
+  assert.deepEqual([a.p['f.on'], a.osc[0].route], [0, 0]);
+  assert.deepEqual([compileSerum(a).serum.outMask & 2, compileSerum(a).serum.use & 128], [2, 128]);
+  // a channel without a share for F1 (balance fully at F2) does not feed it; F2's channel is fed but F2 is off: use bit 2
+  // (Filter 2 possibly on, §4.1) stays clear — its bypass sum needs no Filter 2 instance
+  const b = withRows([], s => { s.filter[0].route = 2; s.p['a.fbal'] = 1; });
+  assert.deepEqual([compileSerum(b).serum.outMask & 2, compileSerum(b).serum.use & 2], [0, 0]);
+  b.filter[1].route = 2;
+  assert.deepEqual([compileSerum(b).serum.outMask & 2, compileSerum(b).serum.use & (2 | 128)], [2, 128], 'F2 (off) → Direct');
+  // a balance row makes both shares possible; the source must be possibly on
+  const c = withRows([{ src: 'lfo1', dst: 'a.fbal', amt: 0.5 }], s => { s.filter[1].route = 2; });
+  assert.deepEqual([compileSerum(c).serum.use & (2 | 128), compileSerum(c).serum.outMask & 2], [128, 2]);
+  c.p['a.on'] = 0;
+  assert.deepEqual([compileSerum(c).serum.use & (2 | 128), compileSerum(c).serum.outMask], [0, 1]);
+  // filter → filter (§1: route = other filter adds y_k to u_other with no gating): an off filter fed only by the other one
+  // still passes it through its bypass and route
+  const d = withRows([], s => { s.p['f.on'] = 1; s.filter[0].route = 0; s.filter[1].route = 2; });       // F1 → F2 (off) → Direct
+  assert.deepEqual([[...compileSerum(d).serum.route], compileSerum(d).serum.outMask, compileSerum(d).serum.use & (2 | 128)],
+    [[0, 1, 1, 1, 1, 0, 2], 3, 128]);
+  const e = withRows([], s => { s.p['f2.on'] = 1; s.p['a.fbal'] = 1; s.filter[1].route = 0; s.filter[0].route = 2; });   // A → F2 → F1 (off) → Direct
+  assert.deepEqual([compileSerum(e).serum.outMask, compileSerum(e).serum.use & (2 | 128)], [3, 2 | 128]);
+  const f = withRows([], s => { s.filter[0].route = 0; s.filter[1].route = 2; });                       // A → F1 (off) → F2 (off) → Direct
+  assert.deepEqual([f.p['f.on'], f.p['f2.on'], compileSerum(f).serum.outMask, compileSerum(f).serum.use & (2 | 128)], [0, 0, 3, 128]);
+  f.p['a.on'] = 0;
+  assert.deepEqual([compileSerum(f).serum.outMask, compileSerum(f).serum.use], [1, 0], 'nothing feeds F1: neither channel is used');
+
+  // the default state and a migrated v1 state: F2 channel unused, no Direct pair
+  assert.deepEqual([compileSerum(defaultSerum()).serum.use, compileSerum(S1()).serum.use], [0, 16384]);
+  // a routed-to-Main filter channel needs nothing extra; F2 on sets bit 2 alone
+  assert.equal(compileSerum(withRows([], s => { s.p['f2.on'] = 1; })).serum.use, 2);
+  // ctx.ultra (bounces with "Use Ultra quality when rendering"): CP.os = 4
+  assert.deepEqual([compileSerum(defaultSerum(), { ultra: 1 }).serum.os, compileSerum(defaultSerum(), { ultra: 0 }).serum.os], [4, 2]);
+});
+
+test('34 setDestBase / destBase for every kind of destination (synth, macro, virtual arp/clip, dynamic FX, v1 FX)', () => {
+  const s = defaultSerum(), fx = fx2(['dly', 'dly']), id = 'dly';
+  assert.equal(C.setDestBase(s, fx, 'a.semi', 0.52), 0.5, 'stepped laws are grid-snapped');
+  assert.equal(C.setDestBase(s, fx, 'f.cutoff', 1.7), 1);
+  assert.equal(s.p['f.cutoff'], 1);
+  assert.equal(C.setDestBase(s, fx, 'm3', 0.25), 0.25);
+  assert.deepEqual([s.macros[2].v, destBase(s, fx, 'm3')], [0.25, 0.25]);
+  // virtual sequencer destinations: the selected slot / clip (EDIT ALL: every one)
+  s.arp.sel = 3;
+  assert.equal(destBase(s, fx, 'arp.rate'), s.arp.slots[3].n.rate);
+  assert.equal(C.setDestBase(s, fx, 'arp.rate', 0.4), 0.4);
+  assert.deepEqual([s.arp.slots[3].n.rate, s.arp.slots[0].n.rate, destBase(s, fx, 'arp.rate')], [0.4, 0.75, 0.4]);
+  C.setDestBase(s, fx, 'arp.gate', 0.2, { all: true });
+  assert.ok(s.arp.slots.every(x => x.n.gate === 0.2));
+  s.clip.sel = 2;
+  C.setDestBase(s, fx, 'clip.trans', 31 / 48);
+  assert.deepEqual([s.clip.clips[2].n.trans, s.clip.clips[1].n.trans, destBase(s, fx, 'clip.trans')], [31 / 48, 0.5, 31 / 48]);
+  // dynamic FX parameters (v2 FX state) and v1 FX states
+  assert.equal(C.setDestBase(s, fx, 'fx.' + id + '.mix', 0.3), 0.3);
+  assert.deepEqual([destBase(s, fx, 'fx.' + id + '.mix'), fx.racks[0].mods[0].p.mix], [0.3, 0.3]);
+  assert.equal(C.setDestBase(s, fx, 'fx.dly.mode', 0.6), 0.5, 'FX stepped laws snapped too');
+  const v1fx = P1.defaultFx();
+  assert.equal(C.setDestBase(s, v1fx, 'fx.dly.mix', 0.6), 0.6);
+  assert.equal(v1fx.p['fx.dly.mix'], 0.6);
+  assert.equal(C.setDestBase(s, v1fx, 'fx.hyper.dsize', 0.2), 0.2, 'RENAME1 ids of a v1 FX state');
+  assert.equal(v1fx.p['fx.dim.size'], 0.2);
+  for (const bad of [['nope', 0.5], ['a.semi', NaN], ['fx.zz.mix', 0.5], ['arp.nope', 0.5]]) assert.equal(C.setDestBase(s, fx, bad[0], bad[1]), null, bad[0]);
+  // placeholders that normalisation always resets have no base to write (the compiler would read a stale value)
+  const pl = clone(s.p);
+  for (const id of ['bus3', 'bus16', 'g.wheel', 'g.bend']) assert.equal(C.setDestBase(s, fx, id, 0.79), null, id);
+  assert.deepEqual(s.p, pl);
+  // MIDI learn contract (§3.11.3, I2 / I): a learned CC goes through midiValue(dest, cc, fx) + setDestBase — virtual
+  // arp / clip ids reach the selected slot, macros their value, dynamic FX ids their instance on its own grid (B26)
+  const fd = fx2(['dist', 'dist']);
+  fd.racks[0].mods[0].v = 2;
+  const cc = (dest, v) => C.setDestBase(s, fd, dest, C.midiValue(dest, v, fd));
+  s.arp.sel = 5;
+  cc('arp.rate', 20);
+  assert.deepEqual([s.arp.slots[5].n.rate, s.arp.slots[3].n.rate], [20 / 127, 0.4]);
+  cc('clip.offset', 127);
+  assert.equal(s.clip.clips[2].n.offset, 1);
+  cc('m7', 64);
+  assert.equal(s.macros[6].v, 64 / 127);
+  assert.equal(cc('fx.dist.mode', 127), 1);
+  cc('fx.dist.mode', 8);
+  assert.equal(fd.racks[0].mods[0].p.mode, Math.round(17 * 8 / 127) / 17, 'S2 Distortion: the 18-mode grid');
+  // the normalised MIDI map keeps learnable targets, drops placeholders
+  const mm = defaultSerum();
+  mm.midi = { 1: 'arp.rate', 2: 'bus3', 3: 'g.wheel', 4: 'fx.dist.mode', 5: 'macro6', 6: 'm2', 7: 'g.bend' };
+  assert.deepEqual(normalizeSerum(mm).midi, { 1: 'arp.rate', 4: 'fx.dist.mode', 5: 'macro6', 6: 'm2' });
+});
+
+test('35 setEnvBpm / setMsDelayBpm (§6.14, §6.8): units switch to the nearest ENV_LADDER entry and back; fmtParam shows ladder labels', () => {
+  const s = defaultSerum();
+  Object.assign(s.p, { 'e2.att': lawNorm('e2.att', 0.5), 'e2.hold': 0, 'e2.dec': lawNorm('e2.dec', 1.9), 'e2.rel': lawNorm('e2.rel', 40) });
+  assert.equal(C.setEnvBpm(s, 1, 1, 120), true);
+  const lab = id => C.ENV_LADDER[Math.round(s.p[id] * 15)].label;
+  // 120 BPM: 0.5 s = 1 beat (1/4); 0 s → 0; 1.9 s = 3.8 beats → 1 bar (4); the release (32 s cap) = 64 beats → 16 bar
+  assert.deepEqual(['e2.att', 'e2.hold', 'e2.dec', 'e2.rel'].map(lab), ['1/4', '0', '1 bar', '16 bar']);
+  assert.ok(['e2.att', 'e2.hold', 'e2.dec', 'e2.rel'].every(id => Number.isInteger(Math.round(s.p[id] * 15)) && Math.abs(s.p[id] * 15 - Math.round(s.p[id] * 15)) < 1e-12));
+  assert.deepEqual([s.env[1].bpm, fmtParam('e2.att', s.p['e2.att'], { s }), fmtParam('e1.att', s.p['e2.att'], { s })], [1, '1/4', fmtParam('e1.att', s.p['e2.att'])]);
+  assert.equal(parseParam('e2.dec', '1/8', { s }), C.ENV_LADDER.findIndex(e => e.label === '1/8') / 15);
+  // and back at another tempo: 1 beat at 60 BPM = 1 s
+  C.setEnvBpm(s, 1, 0, 60);
+  close(lawValue('e2.att', s.p['e2.att']), 1, 1e-9);
+  assert.equal(s.env[1].bpm, 0);
+  close(lawValue('e2.rel', s.p['e2.rel']), 32, 1e-9, '64 beats at 60 BPM = 64 s, capped at 32 s');
+  // no change when the unit is already set; bad arguments
+  const before = clone(s.p);
+  C.setEnvBpm(s, 1, 0, 60);
+  assert.deepEqual(s.p, before);
+  assert.deepEqual([C.setEnvBpm(s, 4, 1), C.setEnvBpm(null, 0, 1), C.setEnvBpm(s, 0.5, 1)], [false, false, false]);
+  // multisample delay
+  s.p['b.mdly'] = lawNorm('b.mdly', 0.25);
+  assert.equal(C.setMsDelayBpm(s, 1, 1, 120), true);
+  assert.deepEqual([s.osc[1].msmo.dlyBpm, fmtParam('b.mdly', s.p['b.mdly'], { s })], [1, '1/8']);
+  assert.equal(C.setMsDelayBpm(s, 3, 1), false);
+});
+
+test('36 filter routing switches: filterFeeds / toggleFilterRoute (§13.3)', () => {
+  const s = defaultSerum();
+  // default: A → Filter (balance F1), A>Filter on; B routed Main; F2 switches on but no share
+  assert.deepEqual(['A', 'B', 'C', 'N', 'S'].map(ch => C.filterFeeds(s, 0, ch)), [true, false, false, false, false]);
+  assert.equal(C.filterFeeds(s, 1, 'A'), false, 'balance fully at Filter 1');
+  // routed with a share: toggles the switch
+  assert.equal(C.toggleFilterRoute(s, 0, 'A'), false);
+  assert.equal(s.p['f.routeA'], 0);
+  assert.equal(C.toggleFilterRoute(s, 0, 0), true);
+  // off-route (Main): routed to Filter with the balance at this filter, switch on
+  assert.equal(C.toggleFilterRoute(s, 1, 'B'), true);
+  assert.deepEqual([s.osc[1].route, s.p['b.fbal'], s.p['f2.routeB']], [0, 1, 1]);
+  assert.equal(C.filterFeeds(s, 0, 'B'), false);
+  // routed to Filter but no share for this one: only the switch toggles (§13.3) — the balance and the other filter's feed
+  // stay, the switch stays unlit; two taps restore the state (and the compiled patch) exactly
+  const f0 = clone(s.p['f.routeB']);
+  assert.equal(C.toggleFilterRoute(s, 0, 'B'), false);
+  assert.deepEqual([s.p['b.fbal'], s.p['f.routeB'], C.filterFeeds(s, 1, 'B')], [1, f0 >= 0.5 ? 0 : 1, true]);
+  assert.equal(C.toggleFilterRoute(s, 0, 'B'), false);
+  assert.deepEqual([s.p['b.fbal'], s.p['f.routeB'], C.filterFeeds(s, 1, 'B')], [1, f0, true]);
+  // with a centred balance both switches toggle on their own
+  s.p['b.fbal'] = 0.5;
+  assert.equal(C.toggleFilterRoute(s, 1, 'B'), false);
+  assert.deepEqual([s.p['b.fbal'], C.filterFeeds(s, 0, 'B'), C.filterFeeds(s, 1, 'B')], [0.5, s.p['f.routeB'] >= 0.5, false]);
+  // the default state with both filters on (A → Filter, balance F1): taps on Filter 2's A never touch Filter 1's feed
+  const d = defaultSerum();
+  d.p['f2.on'] = 1;
+  const d0 = clone(d), k0 = compileSerum(d0).serum.cpKey;
+  assert.equal(C.toggleFilterRoute(d, 1, 'A'), false);
+  assert.deepEqual([C.filterFeeds(d, 0, 'A'), C.filterFeeds(d, 1, 'A'), d.p['a.fbal']], [true, false, 0]);
+  C.toggleFilterRoute(d, 1, 'A');
+  assert.deepEqual(d, d0, 'on-tap then off-tap restores the state');
+  assert.equal(compileSerum(d).serum.cpKey, k0);
+  // noise / sub objects; bad arguments
+  assert.equal(C.toggleFilterRoute(s, 1, 'n'), true);
+  assert.deepEqual([s.noise.route, s.p['n.fbal'], s.p['f2.routeN']], [0, 1, 1]);
+  s.p['s.fbal'] = 0.5;
+  s.sub.route = 0;
+  assert.deepEqual([C.filterFeeds(s, 0, 'S'), C.filterFeeds(s, 1, 'S')], [true, true], 'a centred balance feeds both');
+  assert.deepEqual([C.filterFeeds(s, 2, 'A'), C.toggleFilterRoute(s, 0, 'X'), C.filterFeeds(null, 0, 'A')], [false, false, false]);
+});
+
+test('37 locks: moduleOf / lockState / setLock / setModuleLock (inv B2) and applyPreset with locks of virtual destinations', () => {
+  assert.deepEqual(['a.semi', 'c.dens', 'f2.res', 'e4.att', 'l10.phase', 'vc.pan', 'arp.on', 'g.tune', 'fx.dly.mix', 'm1', 'arp.rate', 'clip.trans'].map(C.moduleOf),
+    ['oscA', 'oscC', 'filter2', 'env4', 'lfo10', 'vc', 'arp', '', '', '', 'arp', 'clip'], 'the virtual Arp / Clip controls belong to their module (§11.1)');
+  const s = defaultSerum();
+  assert.equal(C.lockState(s, 'a.semi'), '');
+  C.setLock(s, 'g.tune', true);
+  assert.deepEqual([C.lockState(s, 'g.tune'), s.locks.p], ['param', ['g.tune']]);
+  C.setModuleLock(s, 'oscA', true);
+  assert.deepEqual([C.lockState(s, 'a.semi'), s.locks.mod], ['module', ['oscA']]);
+  C.setLock(s, 'a.semi', false);
+  assert.deepEqual([C.lockState(s, 'a.semi'), s.locks.unp], ['unlocked', ['a.semi']]);
+  assert.deepEqual(normalizeSerum(s).locks.unp, ['a.semi'], 'kept by normalisation');
+  C.setLock(s, 'a.semi', true);
+  assert.deepEqual([C.lockState(s, 'a.semi'), s.locks.unp], ['module', []]);
+  C.setLock(s, 'a.fine', false);
+  C.setModuleLock(s, 'oscA', false);
+  assert.deepEqual([s.locks.mod, s.locks.unp, C.lockState(s, 'a.fine')], [[], [], '']);
+  C.setLock(s, 'g.tune', false);
+  assert.deepEqual(s.locks.p, []);
+  assert.deepEqual([C.setLock(s, 'nope', true), C.setModuleLock(s, 'nope', true)], [false, false]);
+  // module locks are kept in MODULE_FIELDS order (as normalizeSerum writes them): the same lock set gives the same JSON
+  const o1 = defaultSerum(), o2 = defaultSerum();
+  for (const m of ['lfo3', 'filter2', 'oscA', 'vc']) C.setModuleLock(o1, m, true);
+  for (const m of ['vc', 'oscA', 'lfo3', 'filter2', 'oscA']) C.setModuleLock(o2, m, true);
+  assert.deepEqual(o1.locks.mod, o2.locks.mod);
+  assert.deepEqual(o1.locks.mod, normalizeSerum(o1).locks.mod);
+  assert.deepEqual(o1.locks.mod, Object.keys(MODULE_FIELDS).filter(m => ['lfo3', 'filter2', 'oscA', 'vc'].includes(m)));
+  // Lock Matrix through setModuleLock, kept by applyPreset (§5.8)
+  C.setModuleLock(s, 'matrix', true);
+  s.matrix[0] = row({ src: 'lfo1', dst: 'a.level', amt: 0.5 });
+  const pre = { v: { s: withRows([{ src: 'env2', dst: 'f.cutoff', amt: 0.3 }]) } };
+  assert.equal(applyPreset(s, pre).matrix[0].dst, 'a.level');
+  // virtual destinations: a locked macro keeps its value; locked arp.* / clip.* keep every slot's base
+  const cur = defaultSerum();
+  cur.macros[1].v = 0.7;
+  cur.arp.slots.forEach((x, j) => { x.n.rate = j / 20; });
+  cur.clip.clips[4].n.trans = 0.25;
+  ['m2', 'arp.rate', 'clip.trans'].forEach(id => C.setLock(cur, id, true));
+  const ps = defaultSerum();
+  ps.macros[1].v = 0.1;
+  ps.arp.slots[3].n.rate = 0.9;
+  ps.arp.slots[3].n.gate = 0.9;
+  const r = applyPreset(cur, { v: { s: ps } });
+  assert.deepEqual([r.macros[1].v, r.arp.slots.map(x => x.n.rate), r.arp.slots[3].n.gate, r.clip.clips[4].n.trans],
+    [0.7, cur.arp.slots.map(x => x.n.rate), 0.9, 0.25]);
+  // inside a locked Arp / Clip module the virtual controls are locked too, and can be unlocked one by one (§13.3, inv B2)
+  const k = defaultSerum();
+  k.arp.slots.forEach((x, j) => { x.n.rate = j / 20; x.n.gate = 0.1; });
+  C.setModuleLock(k, 'arp', true);
+  assert.deepEqual([C.lockState(k, 'arp.rate'), C.lockState(k, 'arp.on'), C.lockState(k, 'clip.trans')], ['module', 'module', '']);
+  C.setLock(k, 'arp.rate', false);
+  assert.deepEqual([C.lockState(k, 'arp.rate'), k.locks.unp, k.locks.p], ['unlocked', ['arp.rate'], []]);
+  assert.deepEqual(normalizeSerum(k).locks.unp, ['arp.rate'], 'kept by normalisation (⊆ the locked modules\' controls)');
+  const kp = defaultSerum();
+  kp.arp.slots.forEach((x, j) => { x.n.rate = 0.5 + j / 40; x.n.gate = 0.9; });
+  const rk = applyPreset(k, { v: { s: kp } });
+  assert.deepEqual([rk.arp.slots.map(x => x.n.rate), rk.arp.slots.map(x => x.n.gate)], [kp.arp.slots.map(x => x.n.rate), k.arp.slots.map(x => x.n.gate)],
+    'the unlocked control takes the preset\'s values, the rest of the module stays');
+  assert.deepEqual(normalizeSerum(rk), rk);
+  C.setModuleLock(k, 'arp', false);
+  assert.deepEqual([k.locks.unp, C.lockState(k, 'arp.rate')], [[], '']);
+  // outside a locked module a virtual control takes a parameter lock
+  C.setLock(k, 'clip.trans', true);
+  assert.deepEqual([C.lockState(k, 'clip.trans'), k.locks.p], ['param', ['clip.trans']]);
+});
+
+test('38 pitchChoice (ratio-source cycles: most recent choice wins), moveMod, rowCurvePts, rowInfo', () => {
+  const s = defaultSerum();
+  assert.deepEqual(C.pitchChoice(s, 1, 'ratio', 'A'), []);
+  assert.deepEqual(C.pitchChoice(s, 0, 'ratio', 'B'), [1], 'A → B closes A → B → A: B falls back to note');
+  assert.deepEqual([s.osc[0].pitch, s.osc[1].pitch], [{ mode: 'ratio', src: 'B' }, { mode: 'ratio', src: 'note' }]);
+  C.pitchChoice(s, 1, null, 'C');
+  C.pitchChoice(s, 2, 'ratio', 'A');
+  assert.deepEqual(C.pitchChoice(s, 0, null, 'B'), [], 'A → B → C → A: … set before');
+  const t = defaultSerum();
+  C.pitchChoice(t, 1, 'ratio', 'C');
+  C.pitchChoice(t, 2, 'ratio', 'A');
+  assert.deepEqual(C.pitchChoice(t, 0, 'ratio', 'B'), [2], 'three-oscillator cycle: C (reads A) falls back');
+  assert.deepEqual(C.pitchChoice(t, 0, 'harm', 'A'), []);
+  assert.deepEqual(t.osc[0].pitch, { mode: 'harm', src: 'note' }, 'own source → note');
+  assert.deepEqual([C.pitchChoice(t, 0, 'nope'), C.pitchChoice(t, 3, 'semi'), C.pitchChoice(t, 0, 'semi', 'D')], [[], [], []]);
+  assert.deepEqual(normalizeSerum(s).osc.map(O => O.pitch), s.osc.map(O => O.pitch), 'the result is normalised already');
+  // moveMod
+  const m = withRows([{ src: 'lfo1', dst: 'a.level', amt: 0.1 }, { src: 'lfo2', dst: 'a.level', amt: 0.2 }, { src: 'lfo3', dst: 'a.level', amt: 0.3 }]);
+  assert.equal(C.moveMod(m, 0, 2), true);
+  assert.deepEqual(m.matrix.slice(0, 3).map(w => w.src), ['lfo2', 'lfo3', 'lfo1']);
+  C.moveMod(m, 2, 0);
+  assert.deepEqual([m.matrix.slice(0, 3).map(w => w.src), m.matrix.length], [['lfo1', 'lfo2', 'lfo3'], 64]);
+  assert.deepEqual([C.moveMod(m, 0, 64), C.moveMod(m, -1, 0)], [false, false]);
+  // rowCurvePts: the editable curve equal to the Phase-1 bend (unipolar and bipolar sources)
+  const cv = withRows([{ src: 'env2', dst: 'a.level', amt: 1, curve: 0.5 }, { src: 'lfo1', dst: 'a.level', amt: 1, curve: -0.5 },
+    { src: 'chaos1', dst: 'a.level', amt: 1, curve: 0.5 }, { src: 'env2', dst: 'a.level', amt: 1, crv: [[0, 1, 0], [1, 0, 0]] }]);
+  assert.deepEqual(C.rowCurvePts(cv, 0), [[0, 0, 0.3], [1, 1, 0]]);
+  assert.deepEqual(C.rowCurvePts(cv, 3), [[0, 1, 0], [1, 0, 0]]);
+  assert.notEqual(C.rowCurvePts(cv, 3), cv.matrix[3].crv, 'a copy');
+  const k = C.MC_K * 0.5, ph1 = (s0, bi) => (bi ? Math.sign(s0) * bend(Math.abs(s0), k) : bend(s0, k));
+  for (let j = 0; j <= 20; j++) {
+    const u = j / 20, P0 = C.rowCurvePts(cv, 0), P2 = C.rowCurvePts(cv, 2);
+    close(evalPts(P0, u), ph1(u, false), 1e-5, 'uni u=' + u);
+    close(2 * evalPts(P2, u) - 1, ph1(2 * u - 1, true), 1e-5, 'bi u=' + u);
+  }
+  assert.equal(C.rowCurvePts(cv, 64), null);
+  // rowInfo: active / alias / nomod / missing
+  const fx = fx2(['conv', 'conv'], ['dly', 'dly']), cid = 'conv', did = 'dly';
+  const ri = withRows([{ src: 'lfo1', dst: 'a.level', amt: 0.5 }, { src: 'lfo1', dst: 'a.warpMode', amt: 0.5 }, { src: 'lfo1', dst: `fx.${cid}.size`, amt: 0.5 },
+    { src: 'lfo1', dst: `fx.${did}.mix`, amt: 0.5 }, { src: 'lfo1', dst: 'fx.gone.mix', amt: 0.5 }, { src: 'lfo1', dst: 'a.level', amt: 0.5, byp: 1 },
+    { src: 'lfo1', dst: 'g.direct', amt: 0.5 }]);
+  const info = [0, 1, 2, 3, 4, 5, 6].map(k2 => C.rowInfo(ri, fx, k2));
+  assert.deepEqual(info.map(x => [x.active, x.alias, x.nomod, x.missing].map(Number).join('')),
+    ['1000', '1100', '0010', '1000', '0001', '0000', '1000']);
+  assert.equal(compileSerum(ri, { fx }).serum.mN, info.filter(x => x.active).length, 'active = compiled');
+  assert.equal(C.rowInfo(setS1(ri, 1), fx, 1).alias, false, 'S1 mode: the v1 field is the active one');
+  assert.deepEqual(C.rowInfo(ri, null, 3), { active: false, alias: false, nomod: false, missing: true });
+});
+
+test('39 loadTuning / clearTuning / tuningInfo (§6.18, GLOBAL > TUNING) and the compiled table', () => {
+  const scl = ['! test', 'Pythagorean-ish', '5', '9/8', '81/64', '3/2', '27/16', '2/1'].join('\n');
+  const s = defaultSerum();
+  assert.deepEqual(C.tuningInfo(s), { name: '', kind: 'none', step: false, text: '12-TET (A4 = 440 Hz)' });
+  assert.deepEqual(C.loadTuning(s, { scl, name: 'pyth.scl' }), { name: 'pyth.scl', kind: 'scl' });
+  assert.deepEqual(normalizeSerum(clone(s)).global.tun, s.global.tun, 'a loaded record is normalised');
+  const P = compileSerum(s).serum;
+  assert.deepEqual([P.use & 512, P.sclN], [512, 5]);
+  close(P.tune[69], 69, 1e-12, 'key 69 at 440 Hz');
+  close(P.tune[60], 69 - 12 - 12 * Math.log2(27 / 16), 1e-9, 'key 60 = degree 0, 69 = degree 9 (one period + degree 4)');
+  close(P.tune[61], 69 - 12 - 12 * Math.log2(27 / 16) + 12 * Math.log2(9 / 8), 1e-9);
+  const info = C.tuningInfo(s);
+  assert.deepEqual([info.kind, info.step, info.name], ['scl', true, 'pyth.scl']);
+  assert.match(info.text, /^Microtuning: 128 keys/);
+  // errors leave the state unchanged; a .kbm alone maps the loaded scale; .tun has no Step data
+  const before = clone(s.global.tun);
+  assert.ok(C.loadTuning(s, { scl: 'x' }).error);
+  assert.deepEqual(s.global.tun, before);
+  C.loadTuning(s, { kbm: '0\n0\n127\n60\n69\n432\n0\n' });
+  assert.deepEqual([s.global.tun.scl, s.global.tun.kind, s.global.tun.name], [scl, 'scl', 'pyth.scl']);
+  close(compileSerum(s).serum.tune[69], 69 + 12 * Math.log2(432 / 440), 1e-9);
+  C.loadTuning(s, { tun: '[Tuning]\nnote 69 = 6900\n' });
+  assert.deepEqual([s.global.tun.kind, C.tuningInfo(s).step, compileSerum(s).serum.sclN], ['tun', false, 0]);
+  assert.equal(C.clearTuning(s), true);
+  assert.deepEqual([s.global.tun, compileSerum(s).serum.use & 512], [{ name: '', kind: 'none', scl: '', kbm: '', tab: null }, 0]);
+  assert.deepEqual([C.loadTuning(null, { scl }).error, C.clearTuning(null)], ['no state', false]);
+  // the tuning lock keeps a4 and the tuning across preset loads (§11.1 applyPreset (3))
+  C.loadTuning(s, { scl });
+  s.global.a4 = 432;
+  s.locks.misc.tuning = 1;
+  const r = applyPreset(s, { v: { s: defaultSerum() } });
+  assert.deepEqual([r.global.a4, r.global.tun], [432, s.global.tun]);
+});
+
+test('40 Voice Control and spectral filter presets (§10.8, §10.9), S1 pair labels', () => {
+  assert.deepEqual(C.FACTORY_VC.map(p => p.name), ['Init', 'Analog Drift', 'Stereo Spread', 'Round Robin Pan', 'Cutoff Walk', 'Mod Sequence']);
+  assert.ok(Object.isFrozen(C.FACTORY_VC[0].vc.steps[0]));
+  for (const p of C.FACTORY_VC) {
+    const s = defaultSerum();
+    assert.equal(C.applyVcPreset(s, p), true);
+    assert.deepEqual(normalizeSerum(clone(s)).vc, s.vc, p.name + ' normalised');
+    assert.deepEqual(C.vcPresetOf(s), clone(p), p.name + ' round trip');
+  }
+  const s = defaultSerum();
+  C.applyVcPreset(s, C.FACTORY_VC[4]);
+  assert.deepEqual([s.vc.len, s.vc.steps.map(x => x[2])], [8, [-0.4, -0.28571, -0.17143, -0.05714, 0.05714, 0.17143, 0.28571, 0.4]]);
+  C.applyVcPreset(s, C.FACTORY_VC[1]);
+  assert.deepEqual([s.p['vc.pan'], s.p['vc.det'], s.vc.len, compileSerum(s).serum.use & 1024], [0.15, 0.08, 1, 1024]);
+  C.applyVcPreset(s, C.FACTORY_VC[0]);
+  assert.equal(compileSerum(s).serum.use & 1024, 0, 'Init: Voice Control inactive');
+  assert.deepEqual(C.vcPresetOf(s, 'Mine').name, 'Mine');
+  assert.deepEqual([C.applyVcPreset(s, null), C.applyVcPreset(null, C.FACTORY_VC[0])], [false, false]);
+  // spectral filter presets: normalised curves of ≤ 128 points
+  assert.deepEqual(C.FACTORY_SPEC_FILTERS.map(p => p.name), ['Flat', 'Low Pass', 'High Pass', 'Band', 'Comb 8', 'Vowel A', 'Teeth', 'Stairs', 'Tilt Down']);
+  for (const p of C.FACTORY_SPEC_FILTERS) {
+    const t = defaultSerum();
+    t.osc[0].spec.filt.pts = clone(p.pts);
+    assert.deepEqual(normalizeSerum(t).osc[0].spec.filt.pts, p.pts, p.name);
+    assert.ok(p.pts.length >= 2 && p.pts.length <= 128);
+  }
+  const lp = C.FACTORY_SPEC_FILTERS[1].pts;
+  assert.deepEqual([evalPts(lp, 0.5), evalPts(lp, 0.8)], [1, 0]);
+  const comb = C.FACTORY_SPEC_FILTERS[4].pts;
+  assert.deepEqual([evalPts(comb, 0), evalPts(comb, 1 / 16), evalPts(comb, 1 / 8)], [0, 1, 0]);
+  close(evalPts(C.FACTORY_SPEC_FILTERS[5].pts, Math.log(730 / 20) / Math.log(1000)), 1, 1e-3, 'Vowel A first formant');
+  // S1 pairs carry labels for the GLOBAL page's "S1 rendition differs: …"
+  assert.deepEqual(C.S1_PAIRS.map(p => p.label), ['Osc A Warp', 'Osc B Warp', 'Sub Shape', 'Filter 1 Type', 'Bend Up', 'Bend Down', 'Osc A Phase Memory', 'Osc B Phase Memory']);
+});
+
+test('41 B26 (§3.11.1): with a v2 FX state every fx.* id resolves through fxDest — laws, formats, labels, sibling switches, midiValue, addMod', () => {
+  const fx = fx2(['dist', 'dist'], ['fil', 'fil'], ['dly', 'dly'], ['rev', 'rev'], ['conv', 'conv']);
+  const f = C.defaultFx2();
+  f.racks[0].mods.push({ id: 'fil2', type: 'fil', v: 1 }, { id: 'dly2', type: 'dly', v: 1 }, { id: 'rev2', type: 'rev', v: 1, sub: { type: 0 } }, { id: 'cmp', type: 'cmp', v: 2 });
+  const fxb = C.normalizeFx2(f), s = defaultSerum();
+  // S2 variants: 18 distortion modes, 108 filter types (the static v1 rows have 16 / 96)
+  assert.deepEqual([lawValue('fx.dist.mode', 1, fx), lawValue('fx.dist.mode', 1), fmtParam('fx.dist.mode', 1, { fx })], [17, 15, 'Soft Sat.']);
+  assert.deepEqual([lawValue('fx.fil.type', 100 / 107, fx), fmtParam('fx.fil.type', 100 / 107, { fx }), parseParam('fx.fil.type', 'K35', { fx })], [100, 'Acid Ladder', 1]);
+  assert.equal(lawNorm('fx.fil.type', 100, fx), 100 / 107);
+  // labels: instance label + parameter label; Var follows the instance's type; S1 reverb slots follow its sub.type
+  fx.racks[0].mods[1].p.type = 98 / 107;
+  assert.deepEqual([destLabel('fx.fil.var', s, fx), destLabel('fx.dist.drive', s, fx), destLabel('fx.gone.mix', s, fx)], ['Filter STAGES', 'Distortion Drive', 'fx.gone.mix']);
+  fxb.racks[0].mods[0].p.type = 18 / 95;
+  assert.deepEqual([destLabel('fx.fil2.var', s, fxb), destLabel('fx.rev2.t', s, fxb), destLabel('fx.rev2.c', s, fxb), destLabel('fx.rev.size', s, fx)],
+    ['Filter FREQ', 'Reverb PRE DELAY', 'Reverb DAMP', 'Reverb Size'], 'instance labels number instances of a type in list order');
+  assert.equal(fmtParam('fx.rev2.t', 0.12, { fx: fxb }), '24 ms', 'Plate pre-delay');
+  // switches of the same instance: the delay's BPM, the compressor's ratio (Limit)
+  fxb.racks[0].mods[1].p.bpm = 0;
+  fx.racks[0].mods[2].p.bpm = 1;
+  assert.match(fmtParam('fx.dly2.timeL', 0.5, { fx: fxb }), / ms$/);
+  fxb.racks[0].mods[1].p.bpm = 1;
+  assert.doesNotMatch(fmtParam('fx.dly2.timeL', 0.5, { fx: fxb }), / ms$/);
+  fxb.racks[0].mods[3].p.ratio = 1;
+  assert.equal(fmtParam('fx.cmp.att', 0.3, { fx: fxb }), '0.90 ms', 'Limit: look-ahead');
+  // midiValue: grid-exact through the dynamic row; addMod refuses the Convolve shaping parameters (deviation 20)
+  assert.deepEqual([C.midiValue('fx.dist.mode', 64, fx), C.midiValue('fx.dist.mix', 64, fx), C.midiValue('fx.dist.mode', 64)], [9 / 17, 64 / 127, 8 / 15]);
+  assert.equal(addMod(s, fx, 'lfo1', 'fx.conv.size'), -1);
+  assert.equal(addMod(s, fx, 'lfo1', 'fx.conv.mix'), 0);
+  assert.equal(isCenter('fx.conv.tone', fx), true);
+  // without an FX state (or a v1 one) the static rows serve (Phase-1 behaviour)
+  assert.deepEqual([fmtParam('fx.dist.mode', 1), destLabel('fx.fil.type')], ['Tape Sat.', 'FX Filter Type']);
+});
+
+test('42 trimSample / clearSampleOps (§9.4.2): trim through the current trim and reverse, markers in processed coordinates', () => {
+  const s = defaultSerum();
+  Object.assign(s.osc[1], { type: 'sample', smp: 'smp:x' });
+  Object.assign(s.p, { 'b.sstart': 0.2, 'b.send': 0.7, 'b.lstart': 0.3, 'b.lend': 0.6, 'b.pos': 0.1 });
+  s.osc[1].smpo.slice.marks = [0.1, 0.25, 0.5, 0.69];
+  assert.equal(C.trimSample(s, 1), true);
+  assert.deepEqual(s.osc[1].smpo.ops.trim, [0.2, 0.7]);
+  const v = id => Math.round(s.p[id] * 1e9) / 1e9;
+  assert.deepEqual(['b.sstart', 'b.send', 'b.lstart', 'b.lend', 'b.pos'].map(v), [0, 1, 0.2, 0.8, 0.2], 'Sample POSITION: a read offset, same audio length');
+  assert.deepEqual(s.osc[1].smpo.slice.marks, [0.1, 0.6, 0.98], 'marks outside the region dropped');
+  assert.equal(C.trimSample(s, 1), false, 'already the whole sample');
+  assert.deepEqual(normalizeSerum(clone(s)).osc[1].smpo, s.osc[1].smpo, 'normalised');
+  // trim again on a reversed sample: the processed region [0.5, 1] is the record's [0.2, 0.45]
+  s.osc[1].smpo.ops.rev = 1;
+  s.p['b.sstart'] = 1; s.p['b.send'] = 0.5;
+  assert.equal(C.trimSample(s, 1), true);
+  assert.deepEqual([s.osc[1].smpo.ops.trim, v('b.sstart'), v('b.send')], [[0.2, 0.45], 1, 0], 'the region keeps its (backward) direction');
+  // Reload: ops cleared, markers back in record coordinates — a reversed region plays backwards (start after end)
+  assert.equal(C.clearSampleOps(s, 1), true);
+  assert.deepEqual([s.osc[1].smpo.ops, v('b.sstart'), v('b.send')], [{ fade: 0, norm: 0, rev: 0, trim: null }, 0.2, 0.45]);
+  // compiled playback entry follows the ops (§9.1 '~opsKey')
+  s.p['b.on'] = 1;
+  C.trimSample(s, 1);
+  assert.equal(compileSerum(s).serum.smp[1], 'smp:x~' + C.opsKey(s.osc[1].smpo.ops));
+  assert.deepEqual([C.trimSample(s, 5), C.clearSampleOps(null, 0), C.trimSample(withRows([], x => { x.p['a.sstart'] = 0.5; x.p['a.send'] = 0.5; }), 0)], [false, false, false]);
+  // Granular / Spectral with Manual X|Y: k.pos is the X point of the sample, mapped like the markers
+  for (const type of ['gran', 'spec']) {
+    const g = defaultSerum();
+    Object.assign(g.osc[0], { type, smp: 'smp:y' });
+    g.osc[0].xy.on = 1;
+    Object.assign(g.p, { 'a.sstart': 0.5, 'a.send': 0.9, 'a.pos': 0.6 });
+    assert.equal(C.trimSample(g, 0), true);
+    close(g.p['a.pos'], 0.25, 1e-12, type + ': X keeps pointing at record position 0.6');
+    C.clearSampleOps(g, 0);
+    close(g.p['a.pos'], 0.6, 1e-12, type + ': back in record coordinates');
+    g.osc[0].xy.on = 0;                                // scanning: an offset again
+    g.p['a.pos'] = 0.1;
+    C.trimSample(g, 0);
+    close(g.p['a.pos'], 0.25, 1e-12);
+  }
+});
+
+/* ------------------------------------------------------------ 43–46. M2 review fixes */
+
+test('43 CP.mSlot (§6.2 randd draws, slew states and snapshot.mOut per matrix slot) and CP.cpKey', () => {
+  // slot 0 bypassed, slot 2 randd → f.cutoff: the compacted row 0 comes from slot 2; the idle slots follow in slot order
+  const s = withRows([{ src: 'lfo1', dst: 'a.level', amt: 0.5, byp: 1 }, {}, { src: 'randd', dst: 'f.cutoff', amt: 1 }]);
+  const A = compileSerum(s).serum;
+  assert.equal(A.mN, 1);
+  assert.deepEqual([...A.mSlot.slice(0, 4)], [2, 0, 1, 3]);
+  assert.deepEqual([...A.mSlot].sort((a, b) => a - b), Array.from({ length: 64 }, (_, k) => k), 'a permutation of 0–63');
+  // un-bypassing slot 0 moves the randd row to compacted index 1; its slot stays 2
+  s.matrix[0].byp = 0;
+  const B = compileSerum(s).serum;
+  assert.deepEqual([B.mN, B.mSlot[0], B.mSlot[1], B.mSrc[1], B.mRd[1]], [2, 0, 2, C.SRC_INDEX.randd, 1]);
+  // rows that do not resolve (FX instance gone, virtual targets of scope M) are idle slots
+  const f = withRows([{ src: 'lfo1', dst: 'fx.gone.mix', amt: 0.5 }, { src: 'lfo2', dst: 'a.level', amt: 0.5 }]);
+  const F = compileSerum(f, { fx: fx2(['dly', 'dly']) }).serum;
+  assert.deepEqual([F.mN, F.mSlot[0], F.mSlot[1]], [1, 1, 0]);
+  // cpKey: a content key without ctKey — graph edits change ctKey (and CT parts) only; any CP field changes cpKey
+  const k0 = compileSerum(defaultSerum()).serum, g = defaultSerum();
+  g.lfo[0].pts[1] = [0.4, 0.8, 0.3];
+  g.matrix[3] = row({ src: 'env2', dst: 'a.pan', amt: 0.2, crv: [[0, 0, 0], [1, 0.5, 0]] });
+  const k1 = compileSerum(g).serum;
+  g.matrix[3].crv = [[0, 0.2, 0], [1, 0.9, 0]];
+  const k2 = compileSerum(g).serum;
+  assert.notEqual(k1.cpKey, k0.cpKey, 'a new row');
+  assert.deepEqual([k2.cpKey === k1.cpKey, k2.ctKey === k1.ctKey], [true, false], 'a curve drag: same cpKey, new ctKey');
+  assert.match(k0.cpKey, /^[0-9a-f]{8}$/);
+  assert.equal(compileSerum(defaultSerum()).serum.cpKey, k0.cpKey, 'deterministic');
+  for (const mut of [x => { x.p['f.cutoff'] = 0.3; }, x => { x.osc[0].wt = 'user:x'; }, x => { x.global.os = 4; }, x => { x.macros[0].v = 0.5; }]) {
+    const x = defaultSerum();
+    mut(x);
+    assert.notEqual(compileSerum(x).serum.cpKey, k0.cpKey);
+  }
+});
+
+test('44 §2.2.5 after applyPreset / copyModule / swapModules: no ratio-source cycle, no F1 ↔ F2 loop; S1 filter pair kept', () => {
+  // applyPreset: a locked oscillator / filter from cur meets the preset's other modules — the normalisation rules apply, so the
+  // result is the state a reload gives (normalizeSerum(r) = r)
+  const cur = defaultSerum();
+  cur.osc[0].pitch = { mode: 'ratio', src: 'B' };
+  cur.locks.mod = ['oscA'];
+  const pre = defaultSerum();
+  pre.osc[1].pitch = { mode: 'ratio', src: 'A' };
+  const r = applyPreset(cur, { v: { s: pre } });
+  assert.deepEqual([r.osc[0].pitch, r.osc[1].pitch], [{ mode: 'ratio', src: 'B' }, { mode: 'ratio', src: 'note' }], 'the later oscillator falls back');
+  assert.deepEqual(normalizeSerum(r), r);
+  assert.deepEqual([...compileSerum(r).serum.pSrc], [1, -1, -1]);
+  const cf = defaultSerum();
+  cf.filter[0].route = 0;
+  cf.locks.mod = ['filter'];
+  const pf = defaultSerum();
+  pf.filter[1].route = 0;
+  const rf = applyPreset(cf, { v: { s: pf } });
+  assert.deepEqual([rf.filter[0].route, rf.filter[1].route], [0, 1], 'F1 ↔ F2: F2 → Main');
+  assert.deepEqual(normalizeSerum(rf), rf);
+  // copyModule: OSC C (ratio ← A) pasted into B while A reads B — the target is the most recent choice: A falls back
+  const s = defaultSerum();
+  s.osc[0].pitch = { mode: 'ratio', src: 'B' };
+  s.osc[2].pitch = { mode: 'ratio', src: 'A' };
+  assert.equal(copyModule(s, s, 'oscB', 'oscC'), true);
+  assert.deepEqual([s.osc[0].pitch.src, s.osc[1].pitch], ['note', { mode: 'ratio', src: 'A' }]);
+  assert.deepEqual(normalizeSerum(s), s);
+  // swapModules(B, C) with A ← B and C ← A: B gets C ← A (cycle A ↔ B through the copy into B: A falls back)
+  const w = defaultSerum();
+  w.osc[0].pitch = { mode: 'ratio', src: 'B' };
+  w.osc[2].pitch = { mode: 'ratio', src: 'A' };
+  assert.equal(C.swapModules(w, 'oscB', 'oscC'), true);
+  assert.deepEqual(w.osc.map(o => o.pitch.src), ['note', 'A', 'note']);
+  assert.deepEqual(normalizeSerum(w), w);
+  // Filter 2 → Filter 1 in S2 mode: f.type follows f.type2 through the inverse map (§2.6.4); a type > 95 leaves it
+  const m = C.setS1(S1state(), 0);
+  m.p['f2.type'] = 50 / 107;
+  assert.equal(copyModule(m, m, 'filter', 'filter2'), true);
+  assert.deepEqual([m.p['f.type2'], m.p['f.type'], C.syncS1(m, '')], [50 / 107, 50 / 95, []]);
+  m.p['f2.type'] = 100 / 107;
+  const ft = m.p['f.type'];
+  copyModule(m, m, 'filter', 'filter2');
+  assert.deepEqual([m.p['f.type2'], m.p['f.type'], C.syncS1(m, '')], [100 / 107, ft, ['f1Type']]);
+  // swap in S2 mode keeps the pair as well
+  const q = C.setS1(S1state(), 0);
+  q.p['f2.type'] = 40 / 107;
+  C.swapModules(q, 'filter', 'filter2');
+  assert.deepEqual([q.p['f.type2'], q.p['f.type'], C.syncS1(q, '')], [40 / 107, 40 / 95, []]);
+});
+
+test('45 noise.src colour ids (§2.2.2, §3.6), identity tuning tables (§0.7 use & 512), Sort by Destination with FX instances (§5.8)', () => {
+  // only the four colour ids; anything else under color: is the default sample noise (never a sample request)
+  for (const [src, want] of [['color:Pink', 'color:Pink'], ['color:Foo', 'noise:White'], ['color:', 'noise:White'], ['color:white', 'noise:White']]) {
+    const n = normalizeSerum(Object.assign(defaultSerum(), { noise: Object.assign(defaultSerum().noise, { src }) }));
+    assert.equal(n.noise.src, want, src);
+  }
+  const raw = defaultSerum();
+  raw.p['n.on'] = 1;
+  raw.noise.src = 'color:Foo';
+  const P = compileSerum(raw);
+  assert.deepEqual([P.serum.noiseId, P.serum.noiseColor, P.needs.includes('color:Foo')], ['noise:White', -1, false], 'repaired before compiling');
+  // tuning: an exact identity table (12-TET .scl, Clear Mapping) is the neutral term: use & 512 = 0; anything else sets it
+  const t = defaultSerum();
+  C.loadTuning(t, { scl: C.TET12_SCL });
+  assert.deepEqual([t.global.tun.kind, compileSerum(t).serum.use & 512], ['scl', 0]);
+  assert.deepEqual([...compileSerum(t).serum.tune], Array.from({ length: 128 }, (_, k) => k));
+  C.loadTuning(t, { kbm: ['0', '0', '127', '60', '69', '432.0', '0'].join('\n') });
+  assert.equal(compileSerum(t).serum.use & 512, 512, 'A4 = 432 Hz mapping');
+  C.loadTuning(t, { kbm: null });
+  assert.equal(compileSerum(t).serum.use & 512, 0, 'Clear Mapping: 12-TET again');
+  t.global.tun = { name: 'x', kind: 'tun', scl: '', kbm: '', tab: Array.from({ length: 128 }, (_, k) => (k === 5 ? null : k)) };
+  assert.equal(compileSerum(normalizeSerum(t)).serum.use & 512, 512, 'an unmapped key differs from the identity');
+  // Sort by Destination: FX rows in the destination menu's order (instance order, then parameter order) with the FX state
+  const fx = fx2(['rev', 'rev'], ['eq', 'eq'], ['dist', 'dist']);
+  const order = C.destMenu(defaultSerum(), fx, {}).filter(g => /^FX /.test(g.group)).flatMap(g => g.items.map(i => i.id));
+  const ids = ['fx.dist.drive', 'fx.eq.on', 'fx.rev.size', 'fx.gone.mix', 'f.cutoff', 'fx.rev.on', 'fx.dist.on'];
+  const u = defaultSerum();
+  ids.forEach((dst, i) => { u.matrix[i] = row({ src: 'lfo1', dst, amt: 0.1 }); });
+  const v = clone(u);
+  assert.equal(C.sortMatrix(u, 'dst', fx), true);
+  const fxRows = u.matrix.slice(1, 6).map(r => r.dst);
+  assert.deepEqual(fxRows, ['fx.rev.on', 'fx.rev.size', 'fx.eq.on', 'fx.dist.on', 'fx.dist.drive']);
+  assert.deepEqual(fxRows, order.filter(id => ids.includes(id)), 'menu order');
+  assert.deepEqual([u.matrix[0].dst, u.matrix[6].dst], ['f.cutoff', 'fx.gone.mix'], 'synth rows first; a missing instance after the FX rows');
+  C.sortMatrix(v, 'dst');
+  assert.deepEqual(v.matrix.slice(0, 7).map(r => r.dst), ['f.cutoff', 'fx.dist.drive', 'fx.dist.on', 'fx.eq.on', 'fx.gone.mix', 'fx.rev.on', 'fx.rev.size'],
+    'without an FX state: by id');
+});
+
+test('46 applyPreset / hybridize across S1 flags (§2.6.4, §11.1): locked pairs keep their sound in the loaded mode, S2 mode when there is no S1 rendition', () => {
+  const played = (s, id) => {                      // the rendition a state plays: {f1 type, A warp [mode, var], sub shape, bend up}
+    const S1m = s.global.s1 === 1, P = s.p;
+    if (id === 'f1') return S1m ? Math.round(95 * P['f.type']) : Math.round(107 * P['f.type2']);
+    if (id === 'aw') return S1m ? C.S1_TO_S2_WARP[Math.round(22 * P['a.warpMode'])] : [Math.round(81 * P['a.w1']), P['a.wvar1']];
+    if (id === 'sub') return S1m ? C.S1_TO_S2_SUB[Math.round(4 * P['s.shape'])] : Math.round(5 * P['s.shp']);
+    return S1m ? lawValue('g.bendup', P['g.bendup']) : lawValue('g.bu2', P['g.bu2']);
+  };
+  // the preset: an S1 (migrated) state whose S2 counterparts are stale (saved after edits in S1 mode)
+  const pre = S1state();
+  Object.assign(pre.p, { 'f.type': 20 / 95, 'a.warpMode': 5 / 22, 's.shape': 1 / 4, 'g.bendup': 31 / 48 });
+  Object.assign(pre.p, { 'f.type2': 60 / 107, 'a.w1': 30 / 81, 'a.wvar1': 0.25, 's.shp': 2 / 5, 'g.bu2': 40 / 48 });
+  const P = { v: { s: pre } };
+  const s2cur = () => C.setS1(S1state(), 0);
+  // (1) an S2-only filter type in a locked Filter 1: the preset loads in S2 mode, its own pairs as their S2 renditions
+  const c1 = s2cur();
+  c1.p['f.type2'] = 100 / 107;
+  c1.locks.mod = ['filter'];
+  const r1 = applyPreset(c1, P);
+  assert.equal(r1.global.s1, 0, 'no S1 rendition of the locked filter type: S2 mode');
+  assert.deepEqual([played(r1, 'f1'), played(r1, 'aw'), played(r1, 'sub'), played(r1, 'bu')], [100, played(pre, 'aw'), played(pre, 'sub'), played(pre, 'bu')]);
+  assert.deepEqual(normalizeSerum(r1), r1);
+  // (2) a locked filter type with an S1 rendition: the preset keeps S1 mode, f.type takes the inverse map
+  const c2 = s2cur();
+  c2.p['f.type2'] = 30 / 107;
+  c2.locks.mod = ['filter'];
+  const r2 = applyPreset(c2, P);
+  assert.deepEqual([r2.global.s1, played(r2, 'f1'), played(r2, 'aw'), r2.p['f.type']], [1, 30, played(pre, 'aw'), 30 / 95]);
+  // without the lock, the preset's own filter
+  const c2u = s2cur();
+  c2u.p['f.type2'] = 30 / 107;
+  assert.deepEqual([applyPreset(c2u, P).global.s1, played(applyPreset(c2u, P), 'f1')], [1, 20]);
+  // (3) an S1 state with a locked Sub loads an S2 preset: the forward map into s.shp
+  const c3 = S1state();
+  c3.p['s.shape'] = 2 / 4;
+  c3.p['s.shp'] = 0;                               // stale counterpart
+  c3.locks.mod = ['sub'];
+  const p3 = C.setS1(S1state(), 0);
+  p3.p['s.shp'] = 2 / 5;                           // Triangle
+  const r3 = applyPreset(c3, { v: { s: p3 } });
+  assert.deepEqual([r3.global.s1, played(r3, 'sub'), played(c3, 'sub')], [0, 3, 3]);
+  // (4) a control unlocked inside the locked module (locks.unp) takes the preset's rendition
+  const c4 = s2cur();
+  c4.p['f.type2'] = 100 / 107;
+  c4.locks.mod = ['filter'];
+  c4.locks.unp = ['f.type2'];
+  const r4 = applyPreset(c4, P);
+  assert.deepEqual([r4.global.s1, played(r4, 'f1')], [1, 20]);
+  // (5) parameter locks on one side of a pair: Sync with Var ½ (v1 Sync 1/2 Win.) and a bend beyond the v1 range
+  const c5 = s2cur();
+  Object.assign(c5.p, { 'a.w1': 1 / 81, 'a.wvar1': 0.5 });
+  c5.locks.p = ['a.w1'];
+  const r5 = applyPreset(c5, P);
+  assert.deepEqual([r5.global.s1, r5.p['a.warpMode']], [1, 2 / 22]);
+  const c6 = s2cur();
+  c6.p['g.bu2'] = 36 / 48;
+  c6.locks.p = ['g.bu2'];
+  const r6 = applyPreset(c6, P);
+  assert.deepEqual([r6.global.s1, played(r6, 'bu'), played(r6, 'f1')], [0, 36, 20]);
+  // (6) phase memory follows the oscillator's module lock: S1 mode only when the knob ends give the menu's choice
+  const c7 = s2cur();
+  c7.locks.mod = ['oscA'];
+  c7.p['a.phase'] = 0.3;
+  c7.osc[0].phMem = 'contig';
+  assert.equal(applyPreset(c7, P).global.s1, 0, 'Contiguous with PHASE at 108°: no S1 rendition');
+  c7.osc[0].phMem = 'all';
+  assert.equal(applyPreset(c7, P).global.s1, 1);
+  const c8 = S1state();
+  c8.locks.mod = ['oscA'];
+  Object.assign(c8.p, { 'a.phase': 1, 'a.rand': 1 });
+  assert.equal(applyPreset(c8, { v: { s: C.setS1(S1state(), 0) } }).osc[0].phMem, 'voice', 'S1 MemTrig → Per Voice');
+  // same flags: nothing is rewritten (Phase-1 rules)
+  const c9 = s2cur();
+  c9.p['f.type2'] = 100 / 107;
+  c9.locks.mod = ['filter'];
+  const p9 = C.setS1(S1state(), 0);
+  const r9 = applyPreset(c9, { v: { s: p9 } });
+  assert.deepEqual([r9.global.s1, played(r9, 'f1'), r9.p['f.type']], [0, 100, c9.p['f.type']]);
+  // hybridize: each pair plays as the parent of its module (S2 mode when one has no S1 rendition)
+  const A = s2cur();
+  Object.assign(A.p, { 'f.type2': 100 / 107, 'f.cutoff': 0.11, 's.shp': 2 / 5, 's.level': 0.21, 'a.w1': 40 / 81, 'a.level': 0.31 });
+  const B = S1state();
+  Object.assign(B.p, { 'f.type': 7 / 95, 'f.cutoff': 0.12, 's.shape': 3 / 4, 's.level': 0.22, 'a.warpMode': 9 / 22, 'a.level': 0.32 });
+  const parents = [{ v: { s: A } }, { v: { s: B } }];
+  let both = 0;
+  for (let seed = 0; seed < 40; seed++) {
+    const h = C.hybridize(parents, { seed }).s;
+    const of = (id, x) => (h.p[id] === A.p[id] ? A : h.p[id] === B.p[id] ? B : assert.fail(x));
+    assert.equal(played(h, 'f1'), played(of('f.cutoff', 'filter'), 'f1'), 'seed ' + seed + ' filter');
+    assert.equal(played(h, 'sub'), played(of('s.level', 'sub'), 'sub'), 'seed ' + seed + ' sub');
+    assert.deepEqual(played(h, 'aw'), played(of('a.level', 'oscA'), 'aw'), 'seed ' + seed + ' osc A warp');
+    if (of('f.cutoff') === A) assert.equal(h.global.s1, 0);
+    if (of('f.cutoff') !== of('s.level')) both++;
+  }
+  assert.ok(both > 0, 'genes from both parents');
+});
+
+test('47 dynamic FX ids resolve through a per-state cache that follows in-place edits (= fx-core fxDest / instLabel on a fresh copy)', () => {
+  const fx = fx2(['dly', 'dly'], ['rev', 'rev'], ['dist', 'dist'], ['sp', 'split2']), s = defaultSerum();
+  const inst = (id, type) => C.normalizeFx2({ v: 2, racks: [{ mods: [{ id, type }] }, { mods: [] }, { mods: [] }] }).racks[0].mods[0];
+  const seen = new Set();
+  const check = msg => {
+    const f = clone(fx);                               // a new object: resolved without any cached state
+    for (const e of C.fxLayout(f).inst) for (const r of C.FXP_TAB[e.type][e.v]) seen.add('fx.' + e.id + '.' + r.pid);
+    for (const id of seen) {
+      const d = C.fxDest(id, f);
+      assert.equal(destBase(s, fx, id), d ? (Number.isFinite(d.inst.p[d.pid]) ? d.inst.p[d.pid] : d.row.def) : destBase(s, null, id), msg + ' destBase ' + id);
+      assert.equal(destLabel(id, s, fx), destLabel(id, s, f), msg + ' label ' + id);
+      assert.equal(fmtParam(id, 0.3, { s, fx }), fmtParam(id, 0.3, { s, fx: f }), msg + ' fmt ' + id);
+      assert.equal(lawValue(id, 0.6, fx), lawValue(id, 0.6, f), msg + ' law ' + id);
+    }
+    for (const e of C.fxLayout(f).inst) {
+      const id = 'fx.' + e.id + '.' + C.FXP_TAB[e.type][e.v][0].pid;
+      assert.equal(destLabel(id, s, fx).indexOf(C.instLabel(f, e.id) + ' '), 0, msg + ' instLabel ' + id);
+    }
+    assert.deepEqual(C.destMenu(s, fx, {}), C.destMenu(s, f, {}), msg + ' destMenu');
+  };
+  check('initial');
+  fx.racks[0].mods[0].p.mix = 0.77;                    // in-place parameter edit
+  assert.equal(destBase(s, fx, 'fx.dly.mix'), 0.77);
+  C.setDestBase(s, fx, 'fx.rev.mix', 0.21);
+  check('parameter edits');
+  fx.racks[1].mods.push(inst('cho', 'cho'));           // structural edits: add, move to another rack, variant, replace
+  check('added on Bus 1');
+  fx.racks[1].mods.unshift(fx.racks[0].mods.pop());   // the splitter: same processing order, another rack (labels)
+  check('same order, other rack');
+  fx.racks[0].mods.push(fx.racks[1].mods.shift());
+  fx.racks[2].mods.push(fx.racks[0].mods.splice(0, 1)[0]);
+  check('moved to Bus 2');
+  fx.racks[0].mods[1].v = 1;
+  check('variant');
+  fx.racks[0].mods[0] = clone(fx.racks[0].mods[0]);
+  fx.racks[0].mods[0].p.mix = 0.11;
+  check('replaced instance object');
+  fx.racks[0].mods[2].br[1].push(inst('eq', 'eq'));     // into a splitter branch
+  check('branch');
+  fx.racks[0].mods.splice(1, 1);
+  check('removed');
+  fx.racks[0].mods.push(clone(fx.racks[0].mods[0]));   // a duplicate id: fx-core answers from its repaired copy
+  check('repaired state');
+  fx.racks[0].mods.pop();
+  fx.racks[0].mods[0].id = 'rv';                       // renamed instance
+  check('renamed');
+  // v1 FX states and no FX state are unaffected
+  const v1 = P1.defaultFx();
+  assert.deepEqual([destBase(s, v1, 'fx.dly.mix'), destLabel('fx.dly.mix', s, v1), destBase(s, null, 'fx.dly.mix')],
+    [v1.p['fx.dly.mix'], P1.destLabel('fx.dly.mix', s, v1), C.DESTS.find(d => d.id === 'fx.dly.mix').def]);
+});
+
+test('destBase / setDestBase: arp.rate addresses n.hz in HZ mode, n.rate in BPM mode, per slot with {all} (RULINGS2 C1/U1)', () => {
+  const s = C.normalizeSerum(C.defaultSerum()), fx = C.defaultFx2();
+  s.arp.sel = 3; s.arp.slots[3].bpm = 0; s.arp.slots[3].n.hz = 0.2;
+  assert.equal(C.destBase(s, fx, 'arp.rate'), 0.2);
+  assert.equal(C.setDestBase(s, fx, 'arp.rate', 0.7), 0.7);
+  assert.equal(s.arp.slots[3].n.hz, 0.7);
+  assert.equal(s.arp.slots[3].n.rate, C.ARP_N.rate);
+  delete s.arp.slots[3].n.hz;
+  assert.equal(C.destBase(s, fx, 'arp.rate'), C.ARP_N.hz, 'missing n.hz: its default');
+  s.arp.slots[3].n.hz = 0.5; s.arp.slots[7].bpm = 0;
+  C.setDestBase(s, fx, 'arp.rate', 0.9, { all: true });
+  assert.equal(s.arp.slots[7].n.hz, 0.9);
+  assert.equal(s.arp.slots[7].n.rate, C.ARP_N.rate);
+  assert.equal(s.arp.slots[0].n.rate, 0.9);
+  // the compiled sequencer reads what was written (seqT.arp row: [4] n.rate, [5] n.hz)
+  const row = C.compileSeq(s).seqT.parts['arp' + 3].row;
+  assert.equal(row[5], 0.9);
+  // a locked arp.rate keeps both bases through a preset load
+  const pre = C.normalizeSerum(C.defaultSerum());
+  s.locks.p.push('arp.rate');
+  const r = C.applyPreset(s, { name: 'x', cat: 'User', v: { s: pre }, fx: C.defaultFx2() });
+  assert.equal(r.arp.slots[3].n.hz, 0.9);
+  assert.equal(r.arp.slots[0].n.rate, 0.9);
+});
+
+test('RULINGS2 F1: FX state v2 everywhere — the entry points defaultFx / normalizeFx / applyPresetFx / FACTORY_CHAINS are v2', () => {
+  assert.equal(C.defaultFx, C.defaultFx2);
+  assert.equal(C.FACTORY_CHAINS, C.FACTORY_CHAINS2);
+  assert.equal(C.FACTORY_CHAINS.v, 2);
+  const s = normalizeSerum(defaultSerum());
+  s.matrix[0] = { ...s.matrix[0], src: 'lfo1', dst: 'fx.dly.mix', amt: 0.5 };
+  const v1 = defaultFx();                                        // (the v1 default rack)
+  const m = C.normalizeFx(v1, s);
+  assert.equal(m.v, 2);
+  assert.deepEqual(m, C.migrateFx1(normalizeFx(v1), s));
+  assert.deepEqual(m.racks[0].mods.map(I => [I.id, I.v]), [['dly', 1]], 'S1 instances; a module the rows address is kept');
+  assert.deepEqual(C.normalizeFx(m, s), m, 'idempotent');
+  const r = C.applyPresetFx(m, v1, s);
+  assert.equal(r.v, 2);
+  for (const p of FACTORY_PRESETS) assert.equal(p.fx.v, 2, p.name);
+  const init = C.initPreset(s, {});
+  assert.equal(init.fx.v, 2);
+  assert.ok(init.fx.racks.every(R => R.lock === 0));
 });

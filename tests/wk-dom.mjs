@@ -189,6 +189,7 @@ export const byAttr = (root, k, v) => all(root).filter(n => n.getAttribute && n.
 
 // A fresh document installed as globalThis.document (also resets the rAF queue).
 const rafQ = [];
+let rafT = 0;
 export function fresh() {
   const d = new Doc();
   globalThis.document = d;
@@ -196,16 +197,21 @@ export function fresh() {
   rafQ.length = 0;
   return d;
 }
-// Manual animation frames: install() makes requestAnimationFrame queue callbacks; flush(n) runs n rounds.
+// Manual animation frames: install() makes requestAnimationFrame queue callbacks; flush(n, t0?) runs n rounds with
+// timestamps t0, t0 + 40, … — without t0 an internal clock continues 40 ms per round (monotonic, as real frames).
 export const raf = {
   install() {
     let id = 0;
+    rafT = 0;
     globalThis.requestAnimationFrame = fn => { rafQ.push({ fn, id: ++id }); return id; };
     globalThis.cancelAnimationFrame = i => { const k = rafQ.findIndex(x => x.id === i); if (k >= 0) rafQ.splice(k, 1); };
   },
   uninstall() { delete globalThis.requestAnimationFrame; delete globalThis.cancelAnimationFrame; rafQ.length = 0; },
-  flush(rounds = 1, t0 = 0) {
-    for (let r = 0; r < rounds; r++) { const q = rafQ.splice(0); for (const x of q) x.fn(t0 + r * 40); }
+  flush(rounds = 1, t0) {
+    for (let r = 0; r < rounds; r++) {
+      const t = t0 != null ? t0 + r * 40 : (rafT += 40), q = rafQ.splice(0);
+      for (const x of q) x.fn(t);
+    }
   },
   get pending() { return rafQ.length; },
 };

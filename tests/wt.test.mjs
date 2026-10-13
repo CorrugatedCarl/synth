@@ -1,4 +1,5 @@
 // wt.js unit tests (spec §10.3 items 1–12). Run: node --test tests/wt.test.mjs
+import './v8-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as W from '../wt.js';
@@ -171,9 +172,9 @@ test('3b aliasing, dense sweep at the level-0 boundary: worst case stays at the 
 /* ---------------------------------------------------------------- 4. factory tables */
 
 test('4 factory and sub tables: counts, finite, peak ≤ 1.0001, deterministic, expansion, entries', () => {
-  assert.equal(FACTORY_TABLES.length, 27);
-  assert.equal(new Set(FACTORY_TABLES.map(t => t.id)).size, 27);
-  assert.deepEqual([...SUB_TABLES], ['sub:Sine', 'sub:RoundRect', 'sub:Saw', 'sub:Square', 'sub:Pulse']);
+  assert.equal(FACTORY_TABLES.length, 27 + 6, 'Phase 1 + §10.5');
+  assert.equal(new Set(FACTORY_TABLES.map(t => t.id)).size, 33);
+  assert.deepEqual([...SUB_TABLES], ['sub:Sine', 'sub:RoundRect', 'sub:Saw', 'sub:Square', 'sub:Pulse', 'sub:Triangle']);
   const all = FACTORY_TABLES.map(d => [d.id, d.frames, d.morph]).concat(SUB_TABLES.map(id => [id, 1, 0]));
   for (const [id, R, morph] of all) {
     const t = factoryTable(id), g = generateTable(id);
@@ -640,7 +641,7 @@ test('8 ops: every OPS id on 1-, 7- and 256-frame tables; specific semantics', (
       assert.ok(out && Array.isArray(out.frames) && out.frames.length >= 1 && out.frames.length <= 256, `${id} on ${R}`);
       assert.ok(out.frames.every(f => f.length === FRAME && f.every(Number.isFinite)), `${id} on ${R}: finite`);
       assert.equal(out.factory, 0);
-      assert.ok(OPS[id].label && (OPS[id].menu || id === 'add.move'));
+      assert.ok(OPS[id].label && (OPS[id].menu || id === 'add.move' || id === 'add.paste'));
       assert.equal(typeof opEnabled(t, id, ctx), 'boolean');
     }
     assert.equal(t.frames.length, R, 'input untouched');
@@ -776,7 +777,7 @@ test('10 fftOp: clearHF / clearLF / randLow / phase-row clear and the rest', () 
   const gp = fftOp(S, 'mag', 'gaps', { seed: 2 }), cleared = gp.mag.filter(v => v === 0).length;
   assert.ok(cleared > 400 && cleared < 650);
   assert.equal(fftOp(S, 'mag', 'randAll', { seed: 9 }).mag.every(v => v >= 0 && v < 1), true);
-  assert.equal(FFT_OPS.length, 13);
+  assert.equal(FFT_OPS.length, 14);
   for (const o of FFT_OPS) for (const row of ['mag', 'ph']) fftOp(S, row, o.id, { bin: 7, seed: 1 });
   // a magnitude written into an empty bin starts at sine phase (rounding-noise phases never leak into new harmonics)
   const Ssin = toSpectrum(factoryTable('factory:Sine').frames[0]);
@@ -972,7 +973,7 @@ test('12 embedding round trip, frameToPoints, ptsToFrame, draw tools, uuid', () 
   const tab = Float32Array.from({ length: 1025 }, (_, i) => 0.5 + 0.5 * Math.sin(TAU * i / 1024));
   assert.ok(maxDiff(ptsToFrame(tab), sineFrame(1)) < 1e-3);
   // draw tools
-  assert.equal(DRAW_TOOLS.length, 12);
+  assert.equal(DRAW_TOOLS.length, 13);
   const zero = new Float32Array(FRAME);
   const flat = drawTool(zero, 'flat', { x1: 0.3, y1: 0.5, grid: 4 });
   assert.ok(flat.subarray(512, 1024).every(v => v === 0.5) && flat[511] === 0 && flat[1024] === 0);
@@ -1004,4 +1005,201 @@ test('12 embedding round trip, frameToPoints, ptsToFrame, draw tools, uuid', () 
   assert.ok(span[700] > 0.5 && span[100] === 0 && span[1500] === 0);
   assert.throws(() => drawTool(zero, 'nope', { x1: 0 }));
   assert.match(uuid(), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+});
+
+/* ---------------------------------------------------------------- 13–15. Phase 2 (SPEC-serum2 §11.13, §10.5, §9.4.3; inv B11) */
+
+const ampOf = f => toSpectrum(f).mag.map(m => m * m); // editor units: mag = √A_k
+const frac1 = x => x - Math.floor(x);
+
+test('13 Phase 2 content: Phase-1 tables first and unchanged, the six §10.5 tables, sub:Triangle', async () => {
+  const P1 = await import('./ref-p1/wt.js');
+  assert.deepEqual(FACTORY_TABLES.slice(0, 27), P1.FACTORY_TABLES.slice(), 'Phase-1 catalogue is the prefix');
+  assert.deepEqual(SUB_TABLES.slice(0, 5), P1.SUB_TABLES.slice());
+  for (const id of [...P1.FACTORY_TABLES.map(t => t.id), ...P1.SUB_TABLES]) {
+    const a = factoryTable(id), b = P1.factoryTable(id);
+    a.frames.forEach((f, i) => assert.deepEqual(f, b.frames[i], `${id} frame ${i} bit-identical`));
+  }
+  assert.deepEqual(FACTORY_TABLES.slice(27).map(t => [t.id, t.cat, t.frames, t.morph]), [
+    ['factory:Default Shapes', 'Basic', 9, 0], ['factory:Spectral Saw', 'Digital', 64, 2], ['factory:Vocal Sweep 2', 'Vocal', 32, 1],
+    ['factory:Hollow PWM', 'Analog', 64, 1], ['factory:Metallic FM', 'FM', 64, 1], ['factory:Stepped Partials', 'Digital', 16, 0]]);
+  // Default Shapes: saw (= the Phase-1 Default), sine, triangle, square, pulse 25 %, pulse 12.5 %, half-sine, sine-saw, square-sine
+  const ds = factoryTable('factory:Default Shapes').frames, bs = factoryTable('factory:Basic Shapes').frames;
+  assert.deepEqual(ds[0], factoryTable('factory:Default').frames[0]);
+  for (const [d, b] of [[1, 0], [2, 1], [3, 3], [4, 4], [5, 5]]) assert.deepEqual(ds[d], bs[b], `Default Shapes ${d}`);
+  const N = FRAME, ph = i => i / N, sawT = p => 1 - 2 * p;
+  const refs = {
+    6: i => Math.max(0, Math.sin(TAU * ph(i))) - 1 / Math.PI,
+    7: i => Math.sin(TAU * ph(i)) + 0.5 * sawT(ph(i)),
+    8: i => Math.sin(TAU * ph(i)) + 0.5 * (ph(i) < 0.5 ? 1 : -1),
+  };
+  for (const k of [6, 7, 8]) {
+    assert.ok(corr(ds[k], Float64Array.from({ length: N }, (_, i) => refs[k](i))) > 0.999, `Default Shapes ${k}`);
+    close(peak(ds[k]), 1, 1e-6);
+  }
+  assert.ok(Math.abs(ds[6].reduce((a, b) => a + b, 0)) / N < 1e-6, 'half-sine: DC removed');
+  // Spectral Saw: saw harmonics × 1 + 3·exp(−((k − 2 − 1.2f)/4)²): A_k·k peaks at the formant
+  const ss = factoryTable('factory:Spectral Saw');
+  for (const f of [0, 10, 31, 63]) {
+    const a = ampOf(ss.frames[f]);
+    let b = 0;
+    for (let k = 0; k < 1023; k++) if (a[k] * (k + 1) > a[b] * (b + 1)) b = k;
+    assert.ok(Math.abs(b + 1 - (2 + 1.2 * f)) <= 1, `Spectral Saw frame ${f}: peak at harmonic ${b + 1}`);
+    close(a[200] * 201 / (a[0] * 1), (1 + 3 * Math.exp(-(((201 - 2 - 1.2 * f) / 4) ** 2))) / (1 + 3 * Math.exp(-(((1 - 2 - 1.2 * f) / 4) ** 2))), 1e-3, 'envelope');
+  }
+  assert.equal(expandTable(ss).length, 256 * FRAME);
+  // Vocal Sweep 2 (110 Hz series, table III a → u): F1 of a (1030 Hz) at frame 0, of u (430 Hz) at frame 31
+  const vs = factoryTable('factory:Vocal Sweep 2').frames, top = f => { const a = ampOf(f); let b = 0; for (let k = 1; k < 181; k++) if (a[k] > a[b]) b = k; return b + 1; };
+  assert.ok([9, 10].includes(top(vs[0])), 'a: ' + top(vs[0]));
+  assert.equal(top(vs[31]), 4, 'u');
+  assert.ok(ampOf(vs[0])[190] < 1e-9, 'harmonics above 181 (≈ 20 kHz) are empty');
+  // Hollow PWM: duty 50 % (no even harmonics) → 5 % with even harmonics × 0.3^(f/63)
+  const hp = factoryTable('factory:Hollow PWM').frames, a0 = ampOf(hp[0]), a63 = ampOf(hp[63]);
+  assert.ok(a0[1] < 1e-9 * a0[0] && a0[3] < 1e-9 * a0[0] && a0[2] > 0.3 * a0[0]);
+  const pul = k => Math.abs(Math.sin(Math.PI * k * 0.05)) / k;
+  close(a63[1] / a63[0], 0.3 * pul(2) / pul(1), 1e-4, 'even harmonic 2 attenuated');
+  close(a63[2] / a63[0], pul(3) / pul(1), 1e-4, 'odd harmonic 3 kept');
+  // Metallic FM: a sine at frame 0, rich at frame 63, no DC
+  const mf = factoryTable('factory:Metallic FM').frames, m0 = ampOf(mf[0]), m63 = ampOf(mf[63]);
+  for (let k = 1; k < 64; k++) assert.ok(m0[k] < 1e-6 * m0[0], 'frame 0 is a sine');
+  assert.ok(m63.slice(0, 16).filter(v => v > 0.1 * Math.max(...m63)).length >= 6, 'frame 63 is rich');
+  assert.ok(Math.abs(toSpectrum(mf[63]).dc) < 1e-6);
+  // Stepped Partials: harmonics {1, f + 2, 2f + 3} at equal amplitude, nothing else
+  const sp = factoryTable('factory:Stepped Partials').frames;
+  for (const f of [0, 7, 15]) {
+    const a = ampOf(sp[f]), set = new Set([1, f + 2, 2 * f + 3]);
+    for (let k = 1; k <= 1023; k++) {
+      if (set.has(k)) close(a[k - 1] / a[0], 1, 1e-5, `Stepped Partials ${f} harmonic ${k}`);
+      else assert.ok(a[k - 1] < 1e-6 * a[0], `Stepped Partials ${f}: harmonic ${k} empty`);
+    }
+  }
+  // sub:Triangle = −(1 − 4·|frac(φ + 0.25) − 0.5|), band-limited: 0 at the start, falls to −1 at ¼, +1 at ¾, odd harmonics
+  const tri = factoryTable('sub:Triangle').frames[0];
+  assert.ok(corr(tri, Float64Array.from({ length: N }, (_, i) => -(1 - 4 * Math.abs(frac1(i / N + 0.25) - 0.5)))) > 0.99999);
+  close(tri[0], 0, 1e-6); close(tri[512], -1, 1e-3); close(tri[1536], 1, 1e-3);
+  const ta = ampOf(tri);
+  for (let k = 2; k <= 64; k += 2) assert.ok(ta[k - 1] < 1e-9, 'even harmonic ' + k);
+  const te = makeEntry('sub:Triangle', factoryTable('sub:Triangle'));
+  assert.deepEqual([te.frames, te.interp], [1, 0]);
+});
+
+test('14 Phase 2 noiseLevels(…, maxLevels): default = Phase 1 bit for bit, up to 8 levels, never below 64 samples', async () => {
+  const P1 = await import('./ref-p1/wt.js');
+  const r = mulberry32(9), x = Float32Array.from({ length: 48000 }, () => r() * 2 - 1), y = Float32Array.from({ length: 48000 }, () => r() * 2 - 1);
+  for (const [len, whole, R] of [[48000, false, null], [48000, true, y], [45001, true, null], [3000, true, y], [3001, false, y]]) {
+    const a = noiseLevels(x, R, len, 0, len, whole), b = P1.noiseLevels(x, R, len, 0, len, whole);
+    assert.equal(a.length, b.length);
+    a.forEach((l, i) => {
+      assert.deepEqual([l.len, l.loopStart, l.loopEnd], [b[i].len, b[i].loopStart, b[i].loopEnd]);
+      assert.deepEqual(l.L, b[i].L); assert.deepEqual(l.R, b[i].R);
+    });
+  }
+  const l8 = noiseLevels(x, y, 48000, 0, 48000, false, 8);
+  assert.deepEqual(l8.map(l => l.len), [48000, 24000, 12000, 6000, 3000, 1500, 750, 375]);
+  const d6 = noiseLevels(x, y, 48000, 0, 48000, false);
+  d6.forEach((l, i) => { assert.deepEqual(l8[i].L, l.L); assert.deepEqual(l8[i].R, l.R); });
+  assert.equal(noiseLevels(x, null, 48000, 0, 48000, false, 2).length, 2);
+  assert.equal(noiseLevels(x, null, 48000, 0, 48000, false, 1).length, 1);
+  assert.equal(noiseLevels(x, null, 48000, 0, 48000, false, 0).length, 6, 'not positive → the Phase-1 count');
+  assert.equal(noiseLevels(x, null, 48000, 0, 48000, false, 99).length, 8, 'at most 8');
+  assert.equal(noiseLevels(x, null, 100, 0, 100, false, 8).length, 1, 'the next level would be shorter than 64');
+  assert.deepEqual(noiseLevels(x, null, 1000, 0, 1000, true, 3).map(l => l.len), [1000, 500, 250], 'whole-loop (exact) path');
+  assert.deepEqual(noiseLevels(x, null, 1000, 0, 1000, true).map(l => l.len), [1000, 500, 250, 125]);
+  // whole-length loops with maxLevels step by exactly 2× at every level (§9.4.3; the sample engines read level ℓ at
+  // p·2^−ℓ): ⌈len/2^ℓ⌉ samples, sample m = the band-limited loop at level-0 position m·2^ℓ — also when 2^ℓ does not
+  // divide len (both the exact FFT path below 8192 samples and the half-band cascade above); levels whose step divides
+  // len are the Phase-1 ones, and calls without maxLevels stay Phase 1 bit for bit (above)
+  for (const len of [601, 4097, 6000, 8193, 12345, 48001]) {
+    const f = t => Math.sin(TAU * t / len + 0.3) + 0.5 * Math.cos(TAU * 3 * t / len) + 0.25 * Math.sin(TAU * 5 * t / len);
+    const s = Float32Array.from({ length: len }, (_, i) => f(i)), lv = noiseLevels(s, s, len, 0, len, true, 8);
+    lv.forEach((l, i) => {
+      assert.deepEqual([l.len, l.loopStart, l.loopEnd], [Math.ceil(len / 2 ** i), 0, Math.ceil(len / 2 ** i)], len + ' level ' + i);
+      for (let m = 0; m < l.len; m++) close(l.L[m], f(m * 2 ** i), 2e-5, len + ' level ' + i + ' sample ' + m);
+      assert.deepEqual(l.R, l.L);
+    });
+    const p1 = noiseLevels(s, null, len, 0, len, true);
+    for (let i = 0; i < Math.min(lv.length, p1.length) && len % 2 ** i === 0; i++) assert.deepEqual(lv[i].L, p1[i].L, len + ' exact level ' + i);
+  }
+  const n2 = 3 * 8192 + 1, w2 = Float32Array.from({ length: n2 }, (_, i) => Math.sin(TAU * i / n2)), l2 = noiseLevels(w2, null, n2, 0, n2, true, 8);
+  assert.deepEqual(l2.map(l => l.len), [24577, 12289, 6145, 3073, 1537, 769, 385, 193]);
+});
+
+test('15 Phase 2 editor operations: mirror, Reduce to, paste, Randomize, Repeat Bin Group, phase nudge, estimatePeriod', () => {
+  // draw tool `mirror`: the Flat Line stroke plus y[2047 − i] = −y[i]
+  assert.deepEqual(DRAW_TOOLS.at(-1), { id: 'mirror', label: 'Mirror' });
+  const base = randFrame(8);
+  const mc = drawTool(base, 'mirror', { x1: 0.1, y1: 0.5, grid: 4 });
+  assert.ok(mc.subarray(0, 512).every(v => v === 0.5) && mc.subarray(1536).every(v => v === -0.5));
+  assert.deepEqual(mc.subarray(512, 1536), base.subarray(512, 1536));
+  const ms = drawTool(base, 'mirror', { x0: 0.1, y0: 0.2, x1: 0.3, y1: 0.8, grid: 0 }), fl = drawTool(base, 'flat', { x0: 0.1, y0: 0.2, x1: 0.3, y1: 0.8, grid: 0 });
+  const a0 = Math.round(0.1 * 2047), b0 = Math.round(0.3 * 2047);
+  for (let i = a0; i <= b0; i++) { assert.equal(ms[i], fl[i]); assert.equal(ms[2047 - i], -ms[i]); }
+  assert.equal(ms[1000], base[1000]);
+  const cross = drawTool(base, 'mirror', { x0: 0.4, y0: -1, x1: 0.6, y1: 1, grid: 0 }), lo = Math.round(0.4 * 2047), hi = Math.round(0.6 * 2047);
+  for (let i = lo; i <= hi; i++) assert.equal(cross[2047 - i], -cross[i], 'antisymmetric across the centre');
+  const flc = drawTool(base, 'flat', { x0: 0.4, y0: -1, x1: 0.6, y1: 1, grid: 0 });
+  for (let i = lo; i < 1024; i++) assert.equal(cross[i], flc[i], 'the left half defines the crossing');
+  // add.reduceTo: n evenly spaced frames round(j·(R − 1)/(n − 1)), ends kept; ≤ n frames unchanged
+  assert.deepEqual(ids(applyOp(seq(7), 'add.reduceTo', { n: 4 })), [0, 2, 4, 6]);
+  assert.deepEqual(ids(applyOp(seq(256), 'add.reduceTo', { n: 5 })), [0, 64, 128, 191, 255]);
+  assert.deepEqual(ids(applyOp(seq(3), 'add.reduceTo', { n: 4 })), [0, 1, 2]);
+  assert.deepEqual(ids(applyOp(seq(7), 'add.reduceTo', { n: 1 })), [0, 6], 'n ≥ 2');
+  assert.equal(applyOp(seq(256), 'add.reduceTo', { n: 128 }).frames.length, 128);
+  assert.deepEqual({ menu: OPS['add.reduceTo'].menu, sub: OPS['add.reduceTo'].sub }, { menu: 'Add/Remove', sub: true });
+  assert.equal(opEnabled(seq(1), 'add.reduceTo', {}), false);
+  // add.paste: the clipboard after the current frame, ≤ 256 frames in all
+  const A = new Float32Array(FRAME).fill(0.5), B = new Float32Array(FRAME).fill(0.7);
+  const pt = applyOp(seq(5), 'add.paste', { cur: 1, clip: [A, B] });
+  assert.deepEqual(ids(pt), [0, 1, 500, 700, 2, 3, 4]);
+  assert.notEqual(pt.frames[2], A, 'pasted frames are copies');
+  assert.equal(applyOp(seq(255), 'add.paste', { cur: 0, clip: [A, B, A] }).frames.length, 256);
+  assert.deepEqual(ids(applyOp(seq(256), 'add.paste', { cur: 0, clip: [A] })).length, 256);
+  assert.deepEqual(ids(applyOp(seq(3), 'add.paste', { cur: 0 })), [0, 1, 2]);
+  const odd = applyOp(seq(1), 'add.paste', { cur: 0, clip: [Float32Array.from([NaN, 0.25, Infinity])] }).frames[1];
+  assert.equal(odd.length, FRAME); assert.deepEqual([odd[0], odd[1], odd[2], odd[3]], [0, 0.25, 0, 0]);
+  assert.equal(OPS['add.paste'].menu, null);
+  assert.deepEqual([opEnabled(seq(3), 'add.paste', { clip: [A] }), opEnabled(seq(3), 'add.paste', { clip: [] }), opEnabled(seq(256), 'add.paste', { clip: [A] })], [true, false, false]);
+  assert.equal(OPS['sort.random'].label, 'Randomize');
+  // FFT: Repeat Bin Group (bins 1…bin repeated up to 1023) and the phase nudge (+1/64, wrapping)
+  const S = toSpectrum(factoryTable('factory:Default').frames[0]);
+  assert.equal(FFT_OPS.at(-1).id, 'repeatGroup');
+  const rg = fftOp(S, 'mag', 'repeatGroup', { bin: 3 });
+  for (let k = 1; k <= 1023; k++) assert.equal(rg.mag[k - 1], S.mag[(k - 1) % 3], 'bin ' + k);
+  assert.equal(rg.mag[1023], S.mag[1023], 'bin 1024 untouched');
+  assert.deepEqual(rg.ph, S.ph);
+  const pp = { mag: S.mag, ph: Float64Array.from({ length: 1024 }, (_, k) => (k % 7) / 7), dc: 0 }, rp = fftOp(pp, 'ph', 'repeatGroup', { bin: 5 });
+  for (let k = 6; k <= 1023; k++) assert.equal(rp.ph[k - 1], pp.ph[(k - 1) % 5]);
+  const sp1 = fftOp(Object.assign({}, S, { ph: Float64Array.from(S.ph).fill(0.99, 4, 5) }), 'ph', 'nudgePhase', { bin: 5 });
+  close(sp1.ph[4], 0.99 + 1 / 64 - 1, 1e-12, 'wraps');
+  const sp2 = fftOp(S, 'mag', 'nudgePhase', { bin: 2 });
+  close(sp2.ph[1], frac1(S.ph[1] + 1 / 64), 1e-12);
+  assert.deepEqual(sp2.mag, S.mag);
+  for (let k = 0; k < 1024; k++) if (k !== 1) assert.equal(sp2.ph[k], S.ph[k]);
+  assert.ok(!FFT_OPS.some(o => o.id === 'nudgePhase'), 'not in FFT_OPS (the editor adds it to the phase row only)');
+  // estimatePeriod: YIN on the first channel (FREQUENCY ESTIMATION), periods up to the split field's 9999 samples
+  const sr = 44100, saw = Float32Array.from({ length: sr / 2 }, (_, i) => 0.7 * (1 - 2 * ((i * 220 / sr) % 1)));
+  close(W.estimatePeriod({ sr, ch: [saw] }), sr / 220, 0.5);
+  const blSaw = (P, n, noise = 0) => { const r = mulberry32(P | 0); return Float32Array.from({ length: n }, (_, i) => { let s = 0; for (let k = 1; k < Math.min(30, P / 2); k++) s += Math.sin(TAU * k * i / P) / k; return 0.5 * s + noise * (r() - 0.5); }); };
+  for (const P of [1020, 1022, 1030, 1070.4, 1100, 2400, 6996, 7000, 9999]) { // 1022…1100 used to stick at the lag limit
+    const n = Math.max(88200, Math.ceil(P * 4));
+    close(W.estimatePeriod({ sr, ch: [blSaw(P, n)] }), P, P * 1e-4, 'band-limited saw P ' + P);
+    close(W.estimatePeriod({ sr, ch: [Float32Array.from({ length: n }, (_, i) => 0.7 * Math.sin(TAU * i / P))] }), P, P * 1e-4, 'sine P ' + P);
+  }
+  close(W.estimatePeriod({ sr, ch: [blSaw(3000, 30 * 44100, 0.2)] }), 3000, 1.5, 'a 30 s noisy file (bounded analysis)');
+  for (const [P, k] of [[600, 2], [600, 3], [256, 2], [2048, 2], [1100, 2], [7000, 2], [9999, 2]]) { // a few naive cycles
+    const x2 = Float32Array.from({ length: P * k }, (_, i) => 1 - 2 * ((i / P) % 1));
+    assert.equal(W.estimatePeriod({ sr, ch: [x2] }), P, k + ' cycles of ' + P + ' (exactly periodic: an integer)');
+  }
+  assert.equal(W.estimatePeriod({ sr, ch: [Float32Array.from({ length: 600 }, (_, i) => 1 - 2 * i / 600)] }), null, 'one cycle: no repetition');
+  for (const P of [10500, 14000]) assert.equal(W.estimatePeriod({ sr, ch: [Float32Array.from({ length: P * 4 }, (_, i) => Math.sin(TAU * i / P))] }), null, 'beyond 9999: none (never a value pinned at a lag limit)');
+  const r = mulberry32(3), nz = Float32Array.from({ length: sr / 2 }, () => r() - 0.5);
+  close(W.estimatePeriod({ sr, ch: [saw, nz] }), sr / 220, 0.5, 'the first channel');
+  assert.equal(W.estimatePeriod({ sr, ch: [new Float32Array(20000)] }), null, 'silence');
+  assert.equal(W.estimatePeriod({ sr, ch: [new Float32Array(50).fill(0.5)] }), null, 'too short');
+  assert.equal(W.estimatePeriod({ sr, ch: [] }), null);
+  assert.equal(W.estimatePeriod(null), null);
+  // splitMsg: the pitch at the file's rate (default 44.1 kHz, Phase 1)
+  assert.equal(W.splitMsg(200), 'split at: 200 samples (220.50 Hz, A3 + 4 cents)');
+  assert.equal(W.splitMsg(218.18, 48000), 'split at: 218.18 samples (220.00 Hz, A3 + 0 cents)');
+  assert.match(W.splitMsg(436.36, 96000), /\(220\.00 Hz, A3/);
 });

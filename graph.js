@@ -1,11 +1,19 @@
-// graph.js — shared curve editors (SPEC-serum §8.6, §9.3, inv A6/A12/A13/A14/A20.4.2).
-//   CurveEditor  — LFO graphs (loop/start markers, point modulation, tied ends), Remap, X-Shaper and VELO/NOTE curves
-//   EnvEditor    — ENV 1–3 A-H-D-S-R display with draggable corners and curve handles
-//   pts          — pure point helpers (node-testable; every result satisfies §2.3)
+// graph.js — shared curve editors (SPEC-serum §8.6, §9.3, inv A6/A12/A13/A14/A20.4.2; SPEC-serum2 §11.14, §13).
+//   CurveEditor  — LFO graphs (loop/start markers, point modulation, tied ends, drawing tools), Remap, X-Shaper,
+//                  VELO/NOTE curves, matrix editable curves (kind 'mcurve': RISE / FALL / link / Init) and the
+//                  spectral filter (kind 'spec': log-frequency axis, GRID field, presets menu)
+//   EnvEditor    — ENV 1–4 A-H-D-S-R display with draggable corners and curve handles, Start/End levels (ENV 2–4),
+//                  beat grid and BPM-unit time steps
+//   PathEditor   — 2-D LFO paths (Path-type LFOs): points anywhere, closed/open, curvature handles
+//   PZEditor     — PZ SVF corners (4 mini-editors) around an X/Y pad
+//   lfoEditorLarge — the LFO Editor overlay (full-size editor + drawing tools)
+//   pts          — pure point helpers (node-testable; every result satisfies §2.3), `pts.path` for 2-D paths
 //   shapeLib     — the shared JSON shape library (`synth.sx.shapes`) behind the editors' Load / Save Shape menus
 // Browser ES module: nothing touches document / window at module top level, so node can import it (§0.1, §10.6).
-import { contextMenu, injectStyles, menuSource, theme, fitCanvas, frame, reducedMotion, saveFile, pickFile, ask } from './wk.js?v=5';
-import { evalPts, bend, CURVE_K, ENV_K, MAX_PTS, N_BUS } from './serum-core.js?v=5';
+import { contextMenu, injectStyles, menuSource, theme, fitCanvas, ticker, saveFile, pickFile, ask,
+  numBox, toggle, seg, slider, xyPad, modifierBar, zoomPan } from './wk.js?v=6';
+import { evalPts, bend, CURVE_K, ENV_K, MAX_PTS, N_BUS, MAX_CRV_PTS, MAX_SPEC_PTS, PATH_DEFAULT, PZ_DEFAULT, LFO_TOOLS,
+  SLEW_T, fmtTime, parseCore } from './serum-core.js?v=6';
 
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 const fin = x => typeof x === 'number' && isFinite(x);
@@ -15,14 +23,17 @@ const D = () => globalThis.document || null;
 const isMac = () => { const n = globalThis.navigator; return !!n && /Mac|iPhone|iPad|iPod/.test(n.platform || ''); };
 const modKey = e => (isMac() ? e.metaKey : e.ctrlKey); // Cmd on macOS, Ctrl elsewhere
 const DIAG = [[0, 0, 0], [1, 1, 0]];
+const maxOf = o => (o && o.max >= 2 ? Math.min(MAX_PTS, Math.floor(o.max)) : MAX_PTS); // point limit (kinds: §2.3, §2.2.4)
+const mods = e => modifierBar.mods(e); // event keys or the touch modifier latches (§13.1)
 
 /* ================================================================ pts — pure helpers */
 
 // Valid point list (§2.3): numeric points only, clamped, sorted by x (stable), ≤ MAX_PTS, first x = 0, last x = 1,
 // x/y/c rounded to 5 decimals, bus links mx/my ints 0–16 (first/last mx = 0, omitted when both 0). Mirrors
-// serum-core's normalisation, so normalize(normalizeSerum output) is the identity. opts.links = false drops links.
+// serum-core's normalisation, so normalize(normalizeSerum output) is the identity. opts.links = false drops links;
+// opts.max = point limit (default MAX_PTS; matrix curves MAX_CRV_PTS, spectral filters MAX_SPEC_PTS).
 function normalize(p, opts) {
-  const links = !opts || opts.links !== false;
+  const links = !opts || opts.links !== false, max = maxOf(opts);
   if (!Array.isArray(p)) return DIAG.map(q => q.slice());
   let out = [];
   for (const raw of p) {
@@ -33,7 +44,7 @@ function normalize(p, opts) {
   }
   if (!out.length) return DIAG.map(q => q.slice());
   out.sort((a, b) => a[0] - b[0]);
-  if (out.length > MAX_PTS) out = out.slice(0, MAX_PTS);
+  if (out.length > max) out = out.slice(0, max);
   if (out.length === 1) out.push([1, out[0][1], 0]);
   const first = out[0], last = out[out.length - 1];
   first[0] = 0;
@@ -57,10 +68,10 @@ function splitC(c, u) { c = c || 0; u = clamp(u, 0, 1); return [r5(c * u), r5(c 
 // Insert a point at (x, y) after every point with a smaller or equal x (never before the first or after the last
 // point). The segment it splits is divided exactly (splitC): with y on the curve (keyboard '+') the shape is
 // unchanged; with another y (double-click) the left piece keeps the old shape's character. opts.map receives
-// old → new indices, opts.index the new point's index (−1 when the list is full).
+// old → new indices, opts.index the new point's index (−1 when the list is full: opts.max, default MAX_PTS).
 function insert(p, x, y, opts) {
   const a = normalize(p);
-  if (a.length >= MAX_PTS) { fillMap(opts, a.length, i => i); if (opts) opts.index = -1; return a; }
+  if (a.length >= maxOf(opts)) { fillMap(opts, a.length, i => i); if (opts) opts.index = -1; return a; }
   x = r5(clamp(+x || 0, 0, 1));
   y = r5(clamp(+y || 0, 0, 1));
   let i = 1;
@@ -165,8 +176,8 @@ function segAt(a, x) {
 // Step-draw (Shift-click/drag): every grid cell (1/gridX wide, gridX ≤ 0 → 16 cells) touched by [x0, x1] is
 // replaced by the segment shape ('step' | 'rampUp' | 'rampDown' | 'curve') at level y; the curve outside keeps its
 // values exactly (segments cut at the cell edges are split with splitC; vertical steps join the cells to it).
-// opts = { tie, map } (map: old → new index, −1 for replaced points). A result longer than MAX_PTS leaves the
-// points unchanged.
+// opts = { tie, map, max } (map: old → new index, −1 for replaced points). A result longer than opts.max (default
+// MAX_PTS) leaves the points unchanged.
 function stepDraw(p, x0, x1, y, gridX, shape, opts) {
   const a = normalize(p), n = a.length, o = opts || {}, G = gridX > 0 ? Math.round(gridX) : 16, sh = shapeId(shape);
   const lo = clamp(Math.min(+x0 || 0, +x1 || 0), 0, 1), hi = clamp(Math.max(+x0 || 0, +x1 || 0), 0, 1);
@@ -192,7 +203,7 @@ function stepDraw(p, x0, x1, y, gridX, shape, opts) {
     out.push(e);
   }
   out = out.filter((e, i) => !(e.src < 0 && i > 0 && i < out.length - 1 && out[i - 1].q[0] === e.q[0] && out[i + 1].q[0] === e.q[0]));
-  if (out.length > MAX_PTS) { fillMap(o, n, i => i); return a; }
+  if (out.length > maxOf(o)) { fillMap(o, n, i => i); return a; }
   const res = out.map(e => e.q);
   res[0][0] = 0;
   res[res.length - 1][0] = 1;
@@ -273,7 +284,177 @@ const SHAPES = Object.freeze([
   ['Sidechain', [[0, 1, 0], [0.03, 0, 0.55], [0.5, 1, 0], [1, 1, 0]]],
 ].map(([name, p]) => Object.freeze({ name, pts: Object.freeze(normalize(p).map(q => Object.freeze(q))) })));
 
-export const pts = Object.freeze({ insert, remove, move, moveMany, setCurve, stepDraw, flipH, flipV, normalize, handle, SHAPES, SEG_SHAPES });
+/* ---------------------------------------------------------------- kinds: limits and axes */
+// Point limits per editor kind (§2.3 Phase 1; matrix editable curves §2.3, spectral filter curves §2.2.4).
+const KIND_MAX = Object.freeze({ lfo: MAX_PTS, remap: MAX_PTS, xshape: MAX_PTS, curve: MAX_PTS, mcurve: MAX_CRV_PTS, spec: MAX_SPEC_PTS, path: MAX_PTS });
+// Spectral filter axis (kind 'spec', §2.2.4): x = log-frequency 20 Hz … 20 kHz.
+const hzOfX = x => 20 * Math.pow(1000, clamp(fin(+x) ? +x : 0, 0, 1));
+const xOfHz = f => (f > 0 ? clamp(Math.log(f / 20) / Math.log(1000), 0, 1) : 0);
+
+/* ---------------------------------------------------------------- pts.path — 2-D LFO paths */
+// Paths (Path-type LFOs, §2.2.2, §6.15.3): 2–MAX_PTS points [x, y, c] in drawing order (not sorted), x / y ∈ [0,1],
+// c ∈ [−1,1] = curvature of the segment to the next point — x runs linearly, y is bent (serum-core's resampling:
+// y = a.y + (b.y − a.y)·bend(t, CURVE_K·c)). A path is closed when it has ≥ 3 points and its last point equals its
+// first (x and y); every op keeps that closing copy in sync with the first point (it is never a separate target).
+// Results are new arrays rounded to 5 decimals (serum-core normPath is the identity on them).
+function pathNorm(p, opts) {
+  const max = maxOf(opts);
+  if (!Array.isArray(p)) return PATH_DEFAULT.map(q => q.slice());
+  const out = [];
+  for (const raw of p) {
+    if (out.length >= max) break;
+    if (!Array.isArray(raw) || !fin(raw[0]) || !fin(raw[1])) continue;
+    out.push([r5(clamp(raw[0], 0, 1)), r5(clamp(raw[1], 0, 1)), fin(raw[2]) ? r5(clamp(raw[2], -1, 1)) : 0]);
+  }
+  return out.length >= 2 ? out : PATH_DEFAULT.map(q => q.slice());
+}
+function pathClosed(p) {
+  const n = Array.isArray(p) ? p.length : 0;
+  return n >= 3 && Array.isArray(p[0]) && Array.isArray(p[n - 1]) && p[0][0] === p[n - 1][0] && p[0][1] === p[n - 1][1];
+}
+// Point of segment i at parameter t ∈ [0,1] (and the segment's own curvature).
+function pathAt(p, i, t) {
+  const a = p[i], b = p[i + 1] || a, k = CURVE_K * (a[2] || 0);
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * bend(t, k)];
+}
+// Curve handle of segment i (its point at t = ½) or null for a zero-length segment.
+function pathHandle(p, i) {
+  const a = p[i], b = p[i + 1];
+  if (!a || !b || (Math.abs(b[0] - a[0]) < 1e-9 && Math.abs(b[1] - a[1]) < 1e-9)) return null;
+  return pathAt(p, i, 0.5);
+}
+// Nearest point of the drawn path to (x, y): { i (segment), t, d (distance) }; sx / sy scale the axes (pixel space).
+function pathNearest(p, x, y, sx, sy) {
+  const kx = sx > 0 ? sx : 1, ky = sy > 0 ? sy : 1, N = 24;
+  let best = { i: -1, t: 0, d: Infinity };
+  for (let i = 0; i < p.length - 1; i++) {
+    for (let j = 0; j <= N; j++) {
+      const q = pathAt(p, i, j / N), d = Math.hypot((q[0] - x) * kx, (q[1] - y) * ky);
+      if (d < best.d) best = { i, t: j / N, d };
+    }
+  }
+  return best;
+}
+// Runs fn on the distinct points (closing copy removed) and re-closes the result; idx maps through `alias`.
+function pathOpen(a) { return pathClosed(a) ? a.slice(0, -1) : a; }
+// An open path never closes as a side effect of an edit (closing is setClosed's job): when an insert, remove or move
+// lands its last point exactly on its first, the last point is nudged by 1e-5 in x (the 5-decimal grid) inwards —
+// otherwise the point would turn into a hidden closing copy and Open Path would delete it.
+function keepOpen(a, was) {
+  if (was || !pathClosed(a)) return a;
+  const q = a[a.length - 1];
+  q[0] = r5(q[0] < 1 ? q[0] + 1e-5 : q[0] - 1e-5);
+  return a;
+}
+function pathReclose(body, closed) {
+  if (!closed) return body;
+  const f = body[0];
+  return body.concat([[f[0], f[1], 0]]);
+}
+// Insert a point at (x, y): opts.at = segment index (the point goes between at and at + 1; opts.t = the split
+// parameter, default from x), else — unless opts.append — the segment nearest to (x, y) when it lies within
+// opts.near (content units, default 0.04), else appended (open: after the last point; closed: before the closing
+// copy). The split segment's curvature is divided exactly (splitC); with opts.onCurve the point is placed on the
+// curve at t (the drawn path is unchanged). opts.map: old → new index; opts.index: the new point (−1 when full).
+function pathInsert(p, x, y, opts) {
+  const a = pathNorm(p), n = a.length, o = opts || {}, closed = pathClosed(a);
+  if (n >= maxOf(o)) { fillMap(o, n, i => i); o.index = -1; return a; }
+  x = r5(clamp(fin(+x) ? +x : 0, 0, 1));
+  y = r5(clamp(fin(+y) ? +y : 0, 0, 1));
+  let seg = Number.isInteger(o.at) && o.at >= 0 && o.at < n - 1 ? o.at : -1, t = 0.5;
+  if (seg < 0 && !o.append) {
+    const near = pathNearest(a, x, y);
+    if (near.i >= 0 && near.d <= (o.near > 0 ? o.near : 0.04)) { seg = near.i; t = near.t; }
+  } else if (seg >= 0) {
+    const A = a[seg], B = a[seg + 1], dx = B[0] - A[0];
+    t = fin(o.t) ? clamp(o.t, 0, 1) : Math.abs(dx) > 1e-9 ? clamp((x - A[0]) / dx, 0, 1) : 0.5;
+  }
+  let at, c = 0;
+  if (seg >= 0) {
+    const s = splitC(a[seg][2], t);
+    a[seg][2] = s[0];
+    c = s[1];
+    at = seg + 1;
+    if (o.onCurve) { const q = pathAt(pathNorm(p), seg, t); x = r5(q[0]); y = r5(q[1]); }
+  } else if (closed) {
+    const s = splitC(a[n - 2][2], 0.5);
+    a[n - 2][2] = s[0];
+    c = s[1];
+    at = n - 1;
+  } else at = n;
+  a.splice(at, 0, [x, y, c]);
+  fillMap(o, n, j => (j < at ? j : j + 1));
+  o.index = at;
+  return keepOpen(a, closed);
+}
+// Remove points (a closed path's closing copy stands for its first point). At least two distinct points remain
+// (the call is ignored otherwise). opts.map: old → new index (−1 removed).
+function pathRemove(p, idxs, opts) {
+  const a = pathNorm(p), n = a.length, closed = pathClosed(a), body = pathOpen(a), m = body.length, del = new Set();
+  for (const i of idxs || []) if (Number.isInteger(i) && i >= 0 && i < n) del.add(closed && i === n - 1 ? 0 : i);
+  if (!del.size || m - del.size < 2) { fillMap(opts, n, i => i); return a; }
+  const out = [], map = [];
+  for (let i = 0; i < m; i++) { if (del.has(i)) map.push(-1); else { map.push(out.length); out.push(body[i]); } }
+  const res = pathReclose(out, closed);
+  if (closed) map.push(map[0] >= 0 ? res.length - 1 : -1);
+  fillMap(opts, n, i => map[i]);
+  return keepOpen(res, closed);
+}
+// Move point i to (x, y) (clamped to the square; opts = { snap, grid: {x, y} }). Closed: the first point and its
+// closing copy move together.
+function pathMove(p, i, x, y, opts) {
+  const a = pathNorm(p), n = a.length, o = opts || {}, closed = pathClosed(a);
+  if (!Number.isInteger(i) || i < 0 || i >= n) return a;
+  if (o.snap && o.grid) { x = snapTo(+x, o.grid.x | 0); y = snapTo(+y, o.grid.y | 0); }
+  const q = a[i];
+  if (fin(+x)) q[0] = r5(clamp(+x, 0, 1));
+  if (fin(+y)) q[1] = r5(clamp(+y, 0, 1));
+  if (closed && (i === 0 || i === n - 1)) { const r = a[i === 0 ? n - 1 : 0]; r[0] = q[0]; r[1] = q[1]; }
+  return keepOpen(a, closed);
+}
+// Rigid move of the points idxs by (dx, dy), clamped so that every moved point stays inside the square.
+function pathMoveMany(p, idxs, dx, dy) {
+  const a = pathNorm(p), n = a.length, closed = pathClosed(a), sel = new Set();
+  for (const i of idxs || []) if (Number.isInteger(i) && i >= 0 && i < n) { sel.add(i); if (closed && (i === 0 || i === n - 1)) { sel.add(0); sel.add(n - 1); } }
+  if (!sel.size) return a;
+  dx = fin(+dx) ? +dx : 0;
+  dy = fin(+dy) ? +dy : 0;
+  for (const i of sel) { dx = clamp(dx, -a[i][0], 1 - a[i][0]); dy = clamp(dy, -a[i][1], 1 - a[i][1]); }
+  for (const i of sel) { a[i][0] = r5(clamp(a[i][0] + dx, 0, 1)); a[i][1] = r5(clamp(a[i][1] + dy, 0, 1)); }
+  return keepOpen(a, closed);
+}
+function pathSetCurve(p, i, c) {
+  const a = pathNorm(p);
+  if (Number.isInteger(i) && i >= 0 && i < a.length - 1 && fin(+c)) a[i][2] = r5(clamp(+c, -1, 1));
+  return a;
+}
+// Close (append a copy of the first point; the new closing segment is straight) or open (drop the closing copy).
+function pathSetClosed(p, on, opts) {
+  const a = pathNorm(p), closed = pathClosed(a);
+  if (!!on === closed) return a;
+  if (!on) return a.slice(0, -1);
+  if (a.length >= maxOf(opts) || a.length < 2) return a;
+  a[a.length - 1][2] = 0;
+  return pathReclose(a, true);
+}
+// Reverse the drawing direction; the drawn path is unchanged (segment curvature negated: bend(1 − s, k) = 1 − bend(s, −k)).
+function pathReverse(p) {
+  const a = pathNorm(p), n = a.length, out = [];
+  for (let i = n - 1; i >= 0; i--) out.push([a[i][0], a[i][1], i > 0 ? r5(-(a[i - 1][2] || 0)) : 0]);
+  return out;
+}
+// Mirror: 'h' x → 1 − x, 'v' y → 1 − y (curvatures unchanged: x is linear, y keeps its bend).
+function pathFlip(p, dir) {
+  const a = pathNorm(p);
+  for (const q of a) { if (dir === 'v') q[1] = r5(1 - q[1]); else q[0] = r5(1 - q[0]); }
+  return a;
+}
+const path = Object.freeze({ normalize: pathNorm, isClosed: pathClosed, at: pathAt, handle: pathHandle, nearest: pathNearest,
+  insert: pathInsert, remove: pathRemove, move: pathMove, moveMany: pathMoveMany, setCurve: pathSetCurve,
+  setClosed: pathSetClosed, reverse: pathReverse, flip: pathFlip, DEFAULT: PATH_DEFAULT });
+
+export const pts = Object.freeze({ insert, remove, move, moveMany, setCurve, stepDraw, flipH, flipV, normalize, handle, SHAPES, SEG_SHAPES,
+  path, MAX: KIND_MAX, hzOfX, xOfHz });
 
 /* ---------------------------------------------------------------- shape library */
 // The shared library `synth.sx.shapes` = [{ name, pts }] through host.storage ({ get(k, def), set(k, v) }), in the
@@ -326,21 +507,10 @@ function liveRegion() {
   s.setAttribute('aria-live', 'polite');
   return s;
 }
-// rAF loop while the element is connected; draws only while it is rendered and the page visible (reduced motion: 10 fps).
-function animator(el, fn) {
-  let stop = null, last = 0, running = false;
-  const tick = t => {
-    stop = null;
-    if (!running || !el.isConnected) { running = false; return; }
-    const d = D(), hidden = (d && d.visibilityState === 'hidden') || (typeof el.getClientRects === 'function' && el.getClientRects().length === 0);
-    if (!hidden && (!reducedMotion() || t - last >= 100)) { last = t; fn(); }
-    stop = frame(tick);
-  };
-  return {
-    start() { if (running) return; running = true; stop = frame(tick); },
-    stop() { running = false; if (stop) stop(); stop = null; },
-  };
-}
+// Playhead loop while the element is connected (wk.ticker: ≤ 30 fps, 10 fps with reduced motion, not while hidden).
+function animator(el, fn) { return ticker(el, () => fn()); }
+// Touch hit radii (§13.1: 44 px targets): points, curve handles and curves 22 px; mouse 8 / 6 px.
+const R_PT = touch => (touch ? 22 : 8), R_HD = touch => (touch ? 22 : 6);
 // The canvases fill the editor's padding box (position: absolute; 100 % inside a 1 px border-box frame), so bitmaps
 // are sized from clientWidth / clientHeight and pointer positions are measured from the padding-box origin.
 // `hgt` = the nominal (border-box) height, used when layout has not happened yet.
@@ -352,6 +522,9 @@ function boxOrigin(el) {
   const r = el.getBoundingClientRect();
   return { left: r.left + (el.clientLeft || 0), top: r.top + (el.clientTop || 0) };
 }
+// §13.1: hidden pages are not painted — an editor that is detached or not rendered (on a display: none page) skips
+// drawing; its ResizeObserver fires when the page is shown again (0 × 0 → its size) and redraws it.
+const unrendered = el => !el.isConnected || (typeof el.getClientRects === 'function' && el.getClientRects().length === 0);
 function observeSize(el, fn) {
   const RO = globalThis.ResizeObserver;
   if (typeof RO !== 'function') return () => {};
@@ -360,14 +533,73 @@ function observeSize(el, fn) {
   return () => ro.disconnect();
 }
 const fmt3 = v => (Math.round(v * 1000) / 1000).toFixed(3);
+// Zoomable editors (o.zoom, §13.1: pinch zoom and two-finger pan on the LFO editor): the visible window of the unit
+// square in wk.zoomPan's form { x0, x1, y0, y1 } (fractions, y from the top); FULL = no zoom.
+const FULL = Object.freeze({ x0: 0, x1: 1, y0: 0, y1: 1 });
+const ZOOM_MIN = 1 / 128; // smallest visible span
+const isFull = v => v.x0 === 0 && v.x1 === 1 && v.y0 === 0 && v.y1 === 1;
+// spans a rounding error below ZOOM_MIN (zoomPan's clamped x0 + span − x0) are valid: a pinch held at the maximum
+// zoom must not flip back to the full view
+function viewOf(v) {
+  const n = (x, d) => (fin(x) ? clamp(x, 0, 1) : d), MIN = ZOOM_MIN * (1 - 1e-9);
+  const q = v || FULL, a = { x0: n(q.x0, 0), x1: n(q.x1, 1), y0: n(q.y0, 0), y1: n(q.y1, 1) };
+  if (!(a.x1 - a.x0 >= MIN)) { a.x0 = 0; a.x1 = 1; }
+  if (!(a.y1 - a.y0 >= MIN)) { a.y0 = 0; a.y1 = 1; }
+  return a;
+}
+// Hooks an editor (CurveEditor / PathEditor: fields root, view, offs, g; methods abort(), draw(), size()) to
+// wk.zoomPan: a second finger cancels the one-finger gesture in progress and pinches / pans; Ctrl-wheel zooms at the
+// pointer. The view maps onto the plot (the padding box inset by PAD), so that is the rect zoomPan anchors to.
+function attachZoom(ed, mode) {
+  ed.view = FULL;
+  if (!mode) return;
+  const axis = mode === 'x' || mode === 'y' ? mode : 'xy';
+  const rect = () => { const r = boxOrigin(ed.root), s = ed.size(); return { left: r.left + PAD, top: r.top + PAD, width: Math.max(1, s.w - 2 * PAD), height: Math.max(1, s.h - 2 * PAD) }; };
+  ed.zp = zoomPan(ed.root, { axis, min: ZOOM_MIN, rect, get: () => ed.view, set: (v, ph) => { if (ph === 'start') ed.abort(); ed.setView(v); } });
+  ed.offs.push(() => ed.zp.destroy());
+}
+// The zoom badge (top right of the plot) and the clip of a zoomed plot.
+function zoomBadge(ctx, v, s, T) {
+  const f = Math.max(1 / (v.x1 - v.x0), 1 / (v.y1 - v.y0));
+  if (!ctx.fillText) return;
+  ctx.save();
+  ctx.font = '600 9px ' + T.mono; ctx.fillStyle = T.mute; ctx.textAlign = 'right';
+  ctx.fillText('\u00d7' + (f < 10 ? f.toFixed(1) : Math.round(f)), s.w - PAD - 2, PAD + 9);
+  ctx.restore();
+}
+
+// Typed RISE / FALL (kind 'mcurve'): the shared time parser over the SLEW_T law (4·n³ s = pow3 over 0…4 s): '1 s',
+// '250 ms', '1/16' (at 120 BPM), a bare number in the unit the field shows; 'off' = 0. → n ∈ [0,1] or null.
+function slewParse(text, base) {
+  const t = String(text).trim();
+  if (/^off$/i.test(t)) return 0;
+  return parseCore('time', t, { law: 'pow3', lo: 0, hi: 4, base });
+}
 
 /* ================================================================ CurveEditor */
+// Options (Phase 1): { kind: 'lfo' | 'remap' | 'xshape' | 'curve', get, set(pts, phase), grid?, label?, height?,
+// readOnly?, bipolar?, playhead?, shapes?, and for kind 'lfo' loop / setLoop / start / setStart / pointMenu /
+// removePointMods / fromWavetable }. Phase 2 (SPEC-serum2 §11.14):
+//   tool?: () => 'point' | 'flat' | 'rampUp' | 'rampDown' (LFO_TOOLS; any kind) — with a drawing tool a press on the
+//          background draws that shape per grid cell (as Shift-draw with Step / Ramp Up / Ramp Down); 'point' (default)
+//          keeps the point gestures. setTool(t) is the same for editors without the option.
+//   kind 'mcurve' (matrix Editable Curve, ≤ MAX_CRV_PTS points, identity reference): a bar under the graph with RISE /
+//          FALL fields, the SmoothLink toggle and Init — slew: { get: () => ({ rise, fall, slink }), set: (patch,
+//          phase) } (patch ⊆ { rise, fall, slink }; with the link on an edit of either field writes both, switching it
+//          on copies RISE to FALL), fmtSlew?: n → text (default SLEW_T time), parseSlew?: text → n | null (typed
+//          entry; default: seconds / ms / beat divisions, bare numbers in the shown unit, 'off'), init?: () => void
+//          (default: set(DIAG)).
+//   kind 'spec' (spectral filter, ≤ MAX_SPEC_PTS points, x = log-frequency 20 Hz … 20 kHz, y = gain): frequency
+//          labels, a bar with the GRID field (gridField: { get: () => 0–64, set: (g, phase) }, also the snap grid
+//          when o.grid is absent) and a Presets button (presets: () => contextMenu items).
 export class CurveEditor {
   constructor(container, o) {
     injectStyles();
     this.o = o || {};
-    this.kind = ['lfo', 'remap', 'xshape', 'curve'].includes(this.o.kind) ? this.o.kind : 'curve';
+    this.kind = ['lfo', 'remap', 'xshape', 'curve', 'mcurve', 'spec'].includes(this.o.kind) ? this.o.kind : 'curve';
     this.lfo = this.kind === 'lfo';
+    this.max = KIND_MAX[this.kind];
+    this.toolSel = 'point';
     this.height = this.o.height > 0 ? this.o.height : 160;
     this.sel = new Set();
     this.act = -1;
@@ -382,7 +614,7 @@ export class CurveEditor {
     root.tabIndex = 0;
     root.setAttribute('role', 'group');
     root.setAttribute('aria-roledescription', 'curve editor');
-    root.setAttribute('aria-label', this.o.label || { lfo: 'LFO shape', remap: 'Remap curve', xshape: 'X-Shaper curve', curve: 'Curve' }[this.kind]);
+    root.setAttribute('aria-label', this.o.label || { lfo: 'LFO shape', remap: 'Remap curve', xshape: 'X-Shaper curve', curve: 'Curve', mcurve: 'Matrix curve', spec: 'Spectral filter' }[this.kind]);
     root.style.height = this.height + 'px';
     this.cv = mkCanvas('gx-cv');
     this.ov = mkCanvas('gx-ov');
@@ -403,14 +635,26 @@ export class CurveEditor {
     on(root, 'focus', () => this.draw());
     on(root, 'blur', () => this.draw());
     this.offs.push(menuSource(root, { keys: false }), observeSize(root, () => this.draw()));
+    attachZoom(this, this.o.zoom);
     this.anim = animator(root, () => this.drawOverlay());
     if (this.o.playhead) this.anim.start();
+    this.bar = null;
+    this.parts = [];
+    if (this.kind === 'mcurve' || this.kind === 'spec') this.buildBar(container);
     this.draw();
   }
 
   /* data */
   get pts() { const p = this.o.get ? this.o.get() : null; return Array.isArray(p) && p.length >= 2 ? p : DIAG; }
-  grid() { const g = this.o.grid ? this.o.grid() : null; return { x: g && g.x > 0 ? g.x | 0 : 0, y: g && g.y > 0 ? g.y | 0 : 0 }; }
+  grid() {
+    let g = this.o.grid ? this.o.grid() : null;
+    if (!this.o.grid && this.o.gridField) { const n = +this.o.gridField.get(); g = { x: n, y: n }; }
+    return { x: g && g.x > 0 ? g.x | 0 : 0, y: g && g.y > 0 ? g.y | 0 : 0 };
+  }
+  // drawing tool (§13.13): 'point' (point gestures) or the segment shape a background press draws
+  tool() { const t = this.o.tool ? this.o.tool() : this.toolSel; return LFO_TOOLS.includes(t) ? t : 'point'; }
+  setTool(t) { this.toolSel = LFO_TOOLS.includes(t) ? t : 'point'; }
+  toolShape() { return { flat: 'step', rampUp: 'rampUp', rampDown: 'rampDown' }[this.tool()] || null; }
   loopIdx() { return this.lfo && this.o.loop ? this.o.loop() : -1; }
   startIdx() { return this.lfo && this.o.start ? this.o.start() : 0; }
   emit(p, phase) { if (this.o.set) this.o.set(p, phase); }
@@ -431,17 +675,37 @@ export class CurveEditor {
   }
   tie() { return this.lfo; }
 
-  /* geometry (CSS px inside the canvas) */
+  /* geometry (CSS px inside the canvas; the zoom window `view` maps the unit square onto the plot) */
   size() { return boxSize(this.root, 40, this.height); }
-  X(x, s) { return PAD + x * (s.w - 2 * PAD); }
-  Y(y, s) { return PAD + (1 - y) * (s.h - 2 * PAD); }
+  X(x, s) { const v = this.view; return PAD + (x - v.x0) / (v.x1 - v.x0) * (s.w - 2 * PAD); }
+  Y(y, s) { const v = this.view; return PAD + ((1 - y) - v.y0) / (v.y1 - v.y0) * (s.h - 2 * PAD); }
   pos(e) {
-    const r = boxOrigin(this.root), s = this.size();
+    const r = boxOrigin(this.root), s = this.size(), v = this.view;
     const px = e.clientX - r.left, py = e.clientY - r.top;
-    return { px, py, x: (px - PAD) / (s.w - 2 * PAD), y: 1 - (py - PAD) / (s.h - 2 * PAD), s };
+    return { px, py, x: v.x0 + (px - PAD) / (s.w - 2 * PAD) * (v.x1 - v.x0), y: 1 - (v.y0 + (py - PAD) / (s.h - 2 * PAD) * (v.y1 - v.y0)), s };
+  }
+  /* zoom (o.zoom: true | 'x' | 'y' | 'xy'): pinch / two-finger pan, Ctrl-wheel; menu Reset Zoom, key 0 */
+  zoomed() { return !isFull(this.view); }
+  setView(v) { this.view = viewOf(v); this.draw(); }
+  resetView() { this.setView(FULL); }
+  abort() { // a second finger: the one-finger gesture is undone and ends
+    const g = this.g;
+    this.lastTap = null;
+    if (!g) return;
+    if (g.started) this.emit(g.orig, 'move');
+    if (g.mode === 'marquee') this.sel = new Set(g.keep);
+    if (g.mode === 'draw') { // a drawing tool's press already drew: its index remapping is undone with the points
+      this.sel = new Set(g.sel0);
+      this.act = g.act0;
+      if (this.lfo) {
+        if (this.o.setLoop && this.loopIdx() !== g.loop0) this.o.setLoop(g.loop0);
+        if (this.o.setStart && this.startIdx() !== g.start0) this.o.setStart(g.start0);
+      }
+    }
+    this.finish();
   }
   hitPoint(p, P, touch) {
-    const R = touch ? 14 : 8;
+    const R = R_PT(touch);
     let best = -1, bd = R * R + 1e-9;
     for (let i = 0; i < p.length; i++) {
       const dx = this.X(p[i][0], P.s) - P.px, dy = this.Y(p[i][1], P.s) - P.py, d = dx * dx + dy * dy;
@@ -456,7 +720,7 @@ export class CurveEditor {
   }
   hitHandle(p, P, touch) {
     if (this.o.readOnly) return -1;
-    const R = touch ? 12 : 6;
+    const R = R_HD(touch);
     let best = -1, bd = R * R + 1e-9;
     for (let i = 0; i < p.length - 1; i++) {
       const hh = handle(p, i);
@@ -470,24 +734,25 @@ export class CurveEditor {
   /* pointer gestures */
   down(e) {
     this.lastType = e.pointerType || 'mouse';
-    if (e.button !== 0 || this.g) return;
+    if (e.button !== 0 || this.g || (this.zp && this.zp.active())) return;
     if (e.ctrlKey && !e.metaKey && isMac()) return; // macOS Ctrl-click = context menu
     this.root.focus({ preventScroll: true });
     if (this.o.readOnly) return;
-    const P = this.pos(e), p = this.pts, touch = this.lastType === 'touch', mod = modKey(e);
+    const P = this.pos(e), p = this.pts, touch = this.lastType === 'touch', mod = modKey(e), M = mods(e), ts = this.toolShape();
     const hit = this.hitPoint(p, P, touch), hh = hit < 0 ? this.hitHandle(p, P, touch) : -1;
-    const base = { id: e.pointerId, orig: normalize(p), started: false, P0: P, moved: false, touch };
+    const base = { id: e.pointerId, orig: normalize(p), started: false, P0: P, moved: false, touch,
+      sel0: new Set(this.sel), act0: this.act, loop0: this.loopIdx(), start0: this.startIdx() };
     if (hit >= 0) {
-      if (e.shiftKey && mod) { if (this.lfo && this.o.setLoop) this.o.setLoop(hit); this.act = hit; this.refresh(); return; }
-      if (e.shiftKey) { if (this.sel.has(hit)) this.sel.delete(hit); else this.sel.add(hit); this.act = hit; this.announce(); this.draw(); return; }
+      if (M.shift && mod) { if (this.lfo && this.o.setLoop) this.o.setLoop(hit); this.act = hit; modifierBar.consume(); this.refresh(); return; }
+      if (M.shift) { if (this.sel.has(hit)) this.sel.delete(hit); else this.sel.add(hit); this.act = hit; modifierBar.consume(); this.announce(); this.draw(); return; }
       if (!this.sel.has(hit)) this.sel = new Set([hit]);
       this.act = hit;
       const q = p[hit];
       this.g = Object.assign(base, { mode: mod && this.sel.size > 1 ? 'rainbow' : 'move', i: hit, gx: q[0] - P.x, gy: q[1] - P.y, idxs: [...this.sel].sort((a, b) => a - b) });
     } else if (hh >= 0) {
-      this.g = Object.assign(base, { mode: 'curve', i: hh, all: e.altKey });
-    } else if (e.shiftKey) {
-      this.g = Object.assign(base, { mode: 'draw', lastX: P.x });
+      this.g = Object.assign(base, { mode: 'curve', i: hh, all: M.alt });
+    } else if (M.shift || ts) { // Shift-draw with the menu's segment shape, or a drawing tool's shape
+      this.g = Object.assign(base, { mode: 'draw', lastX: P.x, shape: ts || this.shape });
       this.paint(P, P.x);
     } else {
       this.g = Object.assign(base, { mode: 'marquee', add: mod, keep: mod ? new Set(this.sel) : new Set(), rect: null });
@@ -520,12 +785,12 @@ export class CurveEditor {
     if (g.mode === 'move' || g.mode === 'rainbow') {
       const lead = g.orig[g.i];
       let tx = P.x + g.gx, ty = P.y + g.gy;
-      if (e.altKey) { tx = snapTo(tx, grid.x); ty = snapTo(ty, grid.y); }
+      if (mods(e).alt) { tx = snapTo(tx, grid.x); ty = snapTo(ty, grid.y); }
       if (g.idxs.length <= 1) { this.change(move(g.orig, g.i, tx, ty, { tie })); return; }
       const ws = g.mode === 'rainbow' ? g.idxs.map(j => 1 / (1 + Math.abs(g.orig[j][0] - lead[0]) * 8)) : null;
       this.change(moveMany(g.orig, g.idxs, tx - lead[0], ty - lead[1], { weights: ws, tie, lead: g.i }));
     } else if (g.mode === 'curve') {
-      const dc = (g.P0.py - P.py) / 100 * (e.shiftKey ? 0.1 : 1);
+      const dc = (g.P0.py - P.py) / 100 * (mods(e).fine ? 0.1 : 1);
       let p = g.orig;
       const segs = g.all ? p.map((q, j) => j).slice(0, -1) : [g.i];
       for (const j of segs) {
@@ -550,7 +815,7 @@ export class CurveEditor {
     let y = clamp(P.y, 0, 1);
     if (grid.y) y = snapTo(y, grid.y);
     const map = [];
-    const p = stepDraw(this.pts, clamp(fromX, 0, 1), clamp(P.x, 0, 1), y, grid.x || 16, this.shape, { tie: this.tie(), map });
+    const p = stepDraw(this.pts, clamp(fromX, 0, 1), clamp(P.x, 0, 1), y, grid.x || 16, g.shape || this.shape, { tie: this.tie(), map, max: this.max });
     if (!g.started) { g.started = true; this.emit(g.orig, 'start'); }
     this.emit(p, 'move');
     this.remapIdx(map);
@@ -575,6 +840,7 @@ export class CurveEditor {
     this.g = null;
     try { this.root.releasePointerCapture(g.id); } catch (err) { /* released */ }
     if (g.started) this.emit(normalize(this.pts), 'end');
+    modifierBar.consume();
     this.announce();
     this.draw();
   }
@@ -590,7 +856,7 @@ export class CurveEditor {
     if (hh >= 0) { this.commit(setCurve(p, hh, 0)); return; }
     const grid = this.grid();
     const x = grid.x ? snapTo(clamp(P.x, 0, 1), grid.x) : clamp(P.x, 0, 1), y = grid.y ? snapTo(clamp(P.y, 0, 1), grid.y) : clamp(P.y, 0, 1);
-    const o = { map: [] }, q = insert(p, x, y, o);
+    const o = { map: [], max: this.max }, q = insert(p, x, y, o);
     if (o.index < 0) { this.say('Point limit reached'); return; }
     this.commit(q, o.map);
     this.sel = new Set([o.index]);
@@ -619,6 +885,7 @@ export class CurveEditor {
   /* context menu */
   ctx(e) {
     e.preventDefault();
+    if (this.zp && this.zp.active()) return; // never in the middle of a pinch
     if (this.g) this.finish();
     const P = this.pos(e), p = this.pts, hit = this.hitPoint(p, P, this.lastType === 'touch');
     if (hit >= 0 && !this.sel.has(hit)) { this.sel = new Set([hit]); this.act = hit; }
@@ -658,6 +925,7 @@ export class CurveEditor {
         { label: 'Modulate Y', disabled: !sy, sub: sy || undefined },
         { label: 'Remove Point Modulations', disabled: ro || !o.removePointMods || !linked.length, action: () => { o.removePointMods(linked); this.refresh(); } });
     }
+    if (this.zp) items.push({ sep: true }, { label: 'Reset Zoom', disabled: !this.zoomed(), action: () => this.resetView() });
     const S = o.shapes || null;
     items.push({ sep: true },
       { label: 'Load Shape', disabled: ro, sub: this.shapeItems() },
@@ -672,16 +940,20 @@ export class CurveEditor {
     const S = this.o.shapes || null;
     let user = [];
     try { user = S && S.list ? (S.list() || []).filter(s => s && !s.factory && Array.isArray(s.pts)) : []; } catch (err) { user = []; }
-    const items = SHAPES.map(s => ({ label: s.name, action: () => this.loadShape(s.pts) }));
-    if (user.length) items.push({ sep: true }, ...user.map(s => ({ label: s.name, action: () => this.loadShape(s.pts) })));
+    // a shape with more points than this kind allows (mcurve 64, spec 128) is shown disabled: loading it would cut it
+    const item = s => { const ok = this.fits(s.pts); return { label: ok ? s.name : s.name + ' (over ' + this.max + ' points)', disabled: !ok, action: () => this.loadShape(s.pts) }; };
+    const items = SHAPES.map(item);
+    if (user.length) items.push({ sep: true }, ...user.map(item));
     if (S && (S.importFile || S.exportFile || S.del)) items.push({ sep: true });
     if (S && S.del && user.length) items.push({ label: 'Delete Shape', sub: user.map(s => ({ label: s.name, action: () => { S.del(s.name); } })) });
     if (S && S.importFile) items.push({ label: 'Import Library…', action: () => this.importLib() });
     if (S && S.exportFile) items.push({ label: 'Export Library…', action: () => S.exportFile() });
     return items;
   }
+  fits(src) { return normalize(src, { links: false }).length <= this.max; }
   loadShape(src) {
     const p = normalize(src, { links: false });
+    if (p.length > this.max) { this.say('Shape has more than ' + this.max + ' points'); return; }
     const cur = this.pts;
     if (this.lfo && this.o.removePointMods) {
       const linked = cur.map((q, i) => (q[3] || q[4] ? i : -1)).filter(i => i >= 0);
@@ -730,6 +1002,7 @@ export class CurveEditor {
     }
     if (k === 'Home' || k === 'End') { e.preventDefault(); this.act = k === 'Home' ? 0 : n - 1; this.sel = new Set([this.act]); this.announce(); this.draw(); return; }
     if ((k === 'a' || k === 'A') && modKey(e)) { e.preventDefault(); this.sel = new Set(p.map((q, i) => i)); this.draw(); return; }
+    if (k === '0' && this.zoomed()) { e.preventDefault(); this.resetView(); return; }
     if (k === 'Escape') { if (this.sel.size) { e.preventDefault(); this.sel.clear(); this.draw(); } return; }
     if (ro) return;
     const grid = this.grid(), fine = e.shiftKey;
@@ -748,7 +1021,7 @@ export class CurveEditor {
     if (k === '+' || k === '=') {
       e.preventDefault();
       const i = this.act >= 0 && this.act < n - 1 ? this.act : Math.max(0, Math.floor((n - 1) / 2));
-      const x = (p[i][0] + p[i + 1][0]) / 2, o = { map: [] }, q = insert(p, x, evalPts(p, x), o);
+      const x = (p[i][0] + p[i + 1][0]) / 2, o = { map: [], max: this.max }, q = insert(p, x, evalPts(p, x), o);
       if (o.index < 0) { this.say('Point limit reached'); return; }
       this.commit(q, o.map);
       this.act = o.index;
@@ -778,17 +1051,19 @@ export class CurveEditor {
     this.sel = new Set([...this.sel].filter(i => i < n));
     if (this.act >= n) this.act = n - 1;
     if (this.o.playhead) this.anim.start();
+    if (this.parts && this.parts.length) this.refreshBar();
     this.draw();
   }
   draw() {
-    if (!this.root.isConnected) return;
+    if (unrendered(this.root)) return;
     const s = this.size(), ctx = fitCanvas(this.cv, s.w, s.h);
     if (!ctx) return;
     const T = this.T = theme(this.root), p = this.pts, n = p.length, grid = this.grid(), ro = !!this.o.readOnly;
-    const X = x => this.X(x, s), Y = y => this.Y(y, s);
+    const X = x => this.X(x, s), Y = y => this.Y(y, s), v = this.view, zoomed = !isFull(v), zx = v.x1 - v.x0;
     ctx.clearRect(0, 0, s.w, s.h);
     ctx.fillStyle = T.bg;
     ctx.fillRect(0, 0, s.w, s.h);
+    if (zoomed) { ctx.save(); ctx.beginPath(); ctx.rect(PAD - 6, PAD - 6, s.w - 2 * PAD + 12, s.h - 2 * PAD + 12); ctx.clip(); }
     // grid
     ctx.lineWidth = 1;
     ctx.strokeStyle = T.line;
@@ -798,7 +1073,18 @@ export class CurveEditor {
     if (gy <= 128) for (let i = 0; i <= gy; i++) { const y = Math.round(Y(i / gy)) + 0.5; ctx.moveTo(PAD, y); ctx.lineTo(s.w - PAD, y); }
     ctx.stroke();
     if (this.o.bipolar) { ctx.strokeStyle = T.mute; ctx.beginPath(); ctx.moveTo(PAD, Y(0.5)); ctx.lineTo(s.w - PAD, Y(0.5)); ctx.stroke(); }
-    if (this.kind === 'remap' || this.kind === 'curve' || this.kind === 'xshape') { // identity reference
+    if (this.kind === 'spec') { // log-frequency decades (20 Hz … 20 kHz)
+      ctx.save();
+      ctx.strokeStyle = T.mute; ctx.globalAlpha = 0.5; ctx.fillStyle = T.mute;
+      ctx.font = '500 8px ' + T.mono;
+      for (const [f, t] of [[100, '100'], [1000, '1k'], [10000, '10k']]) {
+        const x = Math.round(X(xOfHz(f))) + 0.5;
+        ctx.beginPath(); ctx.moveTo(x, PAD); ctx.lineTo(x, s.h - PAD); ctx.stroke();
+        if (ctx.fillText) ctx.fillText(t, x + 2, s.h - PAD - 2);
+      }
+      ctx.restore();
+    }
+    if (this.kind === 'remap' || this.kind === 'curve' || this.kind === 'xshape' || this.kind === 'mcurve') { // identity reference
       ctx.save();
       if (ctx.setLineDash) ctx.setLineDash([3, 3]);
       ctx.strokeStyle = T.line;
@@ -817,8 +1103,13 @@ export class CurveEditor {
       for (let i = 0; i < n - 1; i++) {
         const a = p[i], b = p[i + 1], dx = b[0] - a[0], k = CURVE_K * (a[2] || 0);
         if (dx <= 1e-9 || Math.abs(k) < 1e-4 || a[1] === b[1]) { ctx.lineTo(X(b[0]), Y(b[1])); continue; }
-        const m = Math.max(2, Math.ceil(dx * (s.w - 2 * PAD) / 3));
-        for (let j = 1; j <= m; j++) { const t = j / m; ctx.lineTo(X(a[0] + dx * t), Y(a[1] + (b[1] - a[1]) * bend(t, k))); }
+        // zoomed: the steps cover the visible part of the segment only (straight lines to its ends outside)
+        const t0 = zoomed ? clamp((v.x0 - a[0]) / dx, 0, 1) : 0, t1 = zoomed ? clamp((v.x1 - a[0]) / dx, 0, 1) : 1;
+        const at = t => ctx.lineTo(X(a[0] + dx * t), Y(a[1] + (b[1] - a[1]) * bend(t, k)));
+        if (t0 > 0) at(t0);
+        const m = Math.max(2, Math.ceil((t1 - t0) * dx * (s.w - 2 * PAD) / zx / 3));
+        for (let j = 1; j <= m; j++) at(t0 + (t1 - t0) * (j / m));
+        if (t1 < 1) at(1);
       }
     };
     const base = this.o.bipolar ? Y(0.5) : Y(0);
@@ -860,6 +1151,7 @@ export class CurveEditor {
       ctx.strokeRect(X(x0), Y(y1), X(x1) - X(x0), Y(y0) - Y(y1));
       ctx.restore();
     }
+    if (zoomed) { ctx.restore(); zoomBadge(ctx, v, s, T); }
     this.drawOverlay(true);
   }
   marker(ctx, x, s, col, txt) {
@@ -875,7 +1167,7 @@ export class CurveEditor {
     ctx.restore();
   }
   drawOverlay(force) {
-    if (!this.root.isConnected) return;
+    if (unrendered(this.root)) return;
     const ph = this.o.playhead ? this.o.playhead() : null, v = ph == null || !isFinite(ph) ? null : clamp(ph, 0, 1);
     if (!force && v === this.ph) return;
     this.ph = v;
@@ -884,25 +1176,109 @@ export class CurveEditor {
     ctx.clearRect(0, 0, s.w, s.h);
     if (v == null) return;
     const T = this.T || theme(this.root), x = this.X(v, s), y = this.Y(evalPts(this.pts, v), s);
+    if (x < PAD - 1 || x > s.w - PAD + 1) return; // outside the zoom window
     ctx.globalAlpha = 0.55; ctx.strokeStyle = T.ink; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(x, PAD); ctx.lineTo(x, s.h - PAD); ctx.stroke();
     ctx.globalAlpha = 1;
     ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fillStyle = T.on; ctx.fill();
   }
+  /* the kind bar (mcurve: RISE / FALL / link / Init; spec: GRID / Presets) */
+  buildBar(container) {
+    const d = D(), o = this.o, bar = this.bar = d.createElement('div');
+    bar.className = 'gx-bar gx-bar-' + this.kind;
+    const add = w => { this.parts.push(w); bar.appendChild(w.el); return w; };
+    if (this.kind === 'mcurve') {
+      const fs = o.fmtSlew || (n => (n > 0 ? fmtTime(SLEW_T(n)) : 'Off'));
+      const ps = k => o.parseSlew || (t => slewParse(t, this.slew()[k]));
+      add(numBox({ label: 'RISE', get: () => this.slew().rise, set: (n, ph) => this.setSlew('rise', n, ph), def: 0, steps: 1000, fmt: fs, parse: ps('rise'), disabled: () => !!o.readOnly || !o.slew }));
+      add(numBox({ label: 'FALL', get: () => this.slew().fall, set: (n, ph) => this.setSlew('fall', n, ph), def: 0, steps: 1000, fmt: fs, parse: ps('fall'), disabled: () => !!o.readOnly || !o.slew }));
+      add(toggle({ label: 'Link rise and fall', text: 'LINK', kind: 'btn', get: () => this.slew().slink, set: v => this.setLink(v), disabled: () => !!o.readOnly || !o.slew }));
+      const init = d.createElement('button');
+      init.type = 'button';
+      init.className = 'gx-btn';
+      init.textContent = 'INIT';
+      init.setAttribute('aria-label', 'Init curve');
+      init.addEventListener('click', () => this.initCurve());
+      bar.appendChild(init);
+      this.initBtn = init;
+    } else {
+      const gf = o.gridField;
+      add(numBox({ label: 'GRID', get: () => (gf ? clamp(+gf.get() || 0, 0, 64) / 64 : 0), set: (n, ph) => { if (gf) gf.set(Math.round(n * 64), ph); this.draw(); },
+        def: 8 / 64, steps: 64, fmt: n => String(Math.round(n * 64)), disabled: () => !gf }));
+      const pre = d.createElement('button');
+      pre.type = 'button';
+      pre.className = 'gx-btn';
+      pre.textContent = 'PRESETS \u25be';
+      pre.setAttribute('aria-haspopup', 'menu');
+      pre.addEventListener('click', () => {
+        const items = o.presets ? o.presets() || [] : [];
+        const r = pre.getBoundingClientRect();
+        contextMenu(r.left, r.bottom + 2, items.length ? items : [{ label: 'No presets', disabled: true }], { anchor: pre });
+      });
+      bar.appendChild(pre);
+      this.presetBtn = pre;
+    }
+    if (container) container.appendChild(bar);
+  }
+  slew() {
+    const v = this.o.slew && this.o.slew.get ? this.o.slew.get() || {} : {};
+    const u = x => (fin(+x) ? clamp(+x, 0, 1) : 0);
+    return { rise: u(v.rise), fall: u(v.fall), slink: v.slink ? 1 : 0 };
+  }
+  // RISE / FALL edits: with SmoothLink on, either field writes both (fall = rise, §2.3)
+  setSlew(which, n, ph) {
+    const S = this.o.slew;
+    if (!S || !S.set || this.o.readOnly) return;
+    const v = r5(clamp(fin(+n) ? +n : 0, 0, 1)), patch = {};
+    if (this.slew().slink) { patch.rise = v; patch.fall = v; } else patch[which] = v;
+    S.set(patch, ph || 'set');
+    this.refreshBar();
+  }
+  setLink(on) {
+    const S = this.o.slew;
+    if (!S || !S.set || this.o.readOnly) return;
+    const c = this.slew();
+    S.set(on ? { slink: 1, fall: c.rise } : { slink: 0 }, 'set');
+    this.refreshBar();
+  }
+  initCurve() {
+    if (this.o.readOnly) return;
+    this.sel.clear();
+    this.act = -1;
+    if (this.o.init) this.o.init(); else this.emit(DIAG.map(q => q.slice()), 'set');
+    this.refresh();
+  }
+  refreshBar() { for (const w of this.parts) w.update(); }
   destroy() {
     if (this.g) this.finish();
     this.anim.stop();
     for (const f of this.offs) f();
     this.offs = [];
+    for (const w of this.parts) w.destroy();
+    this.parts = [];
+    if (this.bar) { this.bar.remove(); this.bar = null; }
     this.root.remove();
   }
 }
 
 /* ================================================================ EnvEditor */
 // Corner targets: 0 attack end (a), 1 hold end (h), 2 decay end (d, s), 3 sustain end (s), 4 release end (r);
-// curve handles: 5 attack (ca), 6 decay (cd), 7 release (cr). Corners of zero-length stages stack on one spot: the
-// first move decides (left → the earlier corner, right → the earliest stacked corner, Alt + right → the later one).
-const ENV_NAMES = ['Attack', 'Hold', 'Decay', 'Sustain', 'Release', 'Attack curve', 'Decay curve', 'Release curve'];
+// curve handles: 5 attack (ca), 6 decay (cd), 7 release (cr); with o.startEnd (ENV 2–4, §6.14): 8 Start level (st,
+// at the attack's start) and 9 End level (en, at the release's end; on the release corner a vertical first move
+// takes the End level, a horizontal one the release time). Corners of zero-length stages stack on one spot: the first
+// move decides (left → the earlier corner, right → the earliest stacked corner, Alt + right → the later one).
+// Options: { env: () => { a, h, d, s, r (seconds), ca, cd, cr, st?, en? (n ∈ [0,1]) }, set: (patch, phase), ghosts?,
+// lock?, zoom?, playhead?, label?, height? } and (Phase 2) menu?: (x, y) => void (the graph menu, inv B15 / §13.13:
+// opened by a right-click or touch long-press off the curve handles and by ContextMenu / Shift+F10 on the editor),
+// startEnd?: bool | () => bool, fmtLevel?: n → text (Start /
+// End readout; default dB of the linear level, 0 = −inf), grid?: () => ({ beats: 0 | 1, spb: seconds per beat }) —
+// beats: grid lines at beat subdivisions and dragged times snap to them within 6 px (ui.envGrid, §6.14), steps?: () =>
+// [seconds] | null — BPM units: times are restricted to these values (ENV_LADDER at the current tempo; drags and
+// keys move between entries).
+const ENV_NAMES = ['Attack', 'Hold', 'Decay', 'Sustain', 'Release', 'Attack curve', 'Decay curve', 'Release curve', 'Start level', 'End level'];
+const BEAT_STEPS = [1 / 64, 1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16, 32, 64, 128];
+const fmtBeats = b => (b < 1 ? '1/' + Math.round(1 / b) : String(b));
+const fmtLvl = n => (n <= 1e-6 ? '-inf dB' : (20 * Math.log10(n)).toFixed(1) + ' dB');
 const T_MAX = 32;
 const fmtT = t => (t < 1 ? (t * 1000).toFixed(t < 0.01 ? 2 : t < 0.1 ? 1 : 0) + ' ms' : t.toFixed(t < 10 ? 2 : 1) + ' s');
 export class EnvEditor {
@@ -930,15 +1306,22 @@ export class EnvEditor {
     const on = (t, type, fn) => { t.addEventListener(type, fn); this.offs.push(() => t.removeEventListener(type, fn)); };
     on(root, 'pointerdown', e => this.down(e));
     on(root, 'pointermove', e => this.moveEv(e));
-    on(root, 'pointerup', e => { if (this.g && e.pointerId === this.g.id) this.finish(); });
+    on(root, 'pointerup', e => { if (this.g && e.pointerId === this.g.id) { const g = this.g; this.finish(); this.tap(e, g); } });
     on(root, 'pointercancel', e => { if (this.g && e.pointerId === this.g.id) this.finish(); });
     on(root, 'lostpointercapture', e => { if (this.g && e.pointerId === this.g.id) this.finish(); });
-    on(root, 'dblclick', e => { const t = this.hit(this.pos(e)); if (t >= 5) this.resetCurve(t); });
-    on(root, 'contextmenu', e => { const t = this.hit(this.pos(e)); if (t >= 5) { e.preventDefault(); this.resetCurve(t); } });
+    on(root, 'dblclick', e => { if (this.lastType === 'touch') return; const t = this.hit(this.pos(e)); if (t >= 5) this.resetCurve(t); });
+    // right-click / long-press: on a curve handle or a Start / End handle it resets that (to 0.5 / 0 = −inf dB),
+    // elsewhere it opens the graph menu (o.menu, inv B15: Legato Inverted, Grid ▸, Voice Steal Retrigger, Lock Module)
+    on(root, 'contextmenu', e => {
+      if (this.g) this.finish();
+      const t = this.hit(this.pos(e), this.lastType === 'touch');
+      if (t >= 5) { e.preventDefault(); this.resetCurve(t); return; }
+      if (this.o.menu) { e.preventDefault(); this.o.menu(e.clientX, e.clientY); }
+    });
     on(root, 'keydown', e => this.key(e));
     on(root, 'focus', () => this.draw());
     on(root, 'blur', () => this.draw());
-    this.offs.push(observeSize(root, () => this.draw()));
+    this.offs.push(menuSource(root, { keys: false }), observeSize(root, () => this.draw()));
     this.anim = animator(root, () => this.drawOverlay());
     if (this.o.playhead) this.anim.start();
     this.draw();
@@ -946,7 +1329,24 @@ export class EnvEditor {
   env(e) {
     const v = e || (this.o.env ? this.o.env() : null) || {};
     const t = x => (fin(x) ? clamp(x, 0, T_MAX) : 0), u = (x, d) => (fin(x) ? clamp(x, 0, 1) : d);
-    return { a: t(v.a), h: t(v.h), d: t(v.d), s: u(v.s, 1), r: t(v.r), ca: u(v.ca, 0.5), cd: u(v.cd, 0.5), cr: u(v.cr, 0.5) };
+    return { a: t(v.a), h: t(v.h), d: t(v.d), s: u(v.s, 1), r: t(v.r), ca: u(v.ca, 0.5), cd: u(v.cd, 0.5), cr: u(v.cr, 0.5), st: u(v.st, 0), en: u(v.en, 0) };
+  }
+  se() { const f = this.o.startEnd; return !!(typeof f === 'function' ? f() : f); }
+  // the beat grid (seconds per grid step at the drawing scale) or null
+  beatGrid(sc) {
+    const g = this.o.grid ? this.o.grid() : null;
+    if (!g || !g.beats || !(g.spb > 0)) return null;
+    const b = BEAT_STEPS.find(v => v * g.spb * sc.px >= 48) || BEAT_STEPS[BEAT_STEPS.length - 1];
+    return { beats: b, sec: b * g.spb };
+  }
+  timeSteps() { const v = this.o.steps ? this.o.steps() : null; return Array.isArray(v) && v.length ? v.filter(fin).sort((a, b) => a - b) : null; }
+  // dragged time → BPM-unit entry (nearest), or the beat grid within 6 px, else unchanged
+  quant(t, sc) {
+    const st = this.timeSteps();
+    if (st) { let best = st[0]; for (const v of st) if (Math.abs(v - t) < Math.abs(best - t)) best = v; return clamp(best, 0, T_MAX); }
+    const bg = this.beatGrid(sc);
+    if (bg) { const q = Math.round(t / bg.sec) * bg.sec; if (Math.abs(q - t) * sc.px <= 6) return clamp(q, 0, T_MAX); }
+    return t;
   }
   size() { return boxSize(this.root, 60, this.height); }
   // time scale (px per second) and the sustain plateau width; frozen while dragging
@@ -961,15 +1361,17 @@ export class EnvEditor {
     const x0 = PAD, xA = x0 + e.a * sc.px, xH = xA + e.h * sc.px, xD = xH + e.d * sc.px, xS = xD + sc.SW, xR = xS + e.r * sc.px;
     const top = PAD, bot = sc.bottom, Y = v => top + (1 - v) * (bot - top);
     const kA = ENV_K * (2 * e.ca - 1), kD = ENV_K * (2 * e.cd - 1), kR = ENV_K * (2 * e.cr - 1);
+    const st = e.st || 0, en = e.en || 0;
     return {
       x0, xA, xH, xD, xS, xR, Y, kA, kD, kR,
-      corners: [[xA, Y(1)], [xH, Y(1)], [xD, Y(e.s)], [xS, Y(e.s)], [xR, Y(0)]],
-      handles: [[(x0 + xA) / 2, Y(bend(0.5, kA))], [(xH + xD) / 2, Y(1 + (e.s - 1) * bend(0.5, kD))], [(xS + xR) / 2, Y(e.s * (1 - bend(0.5, kR)))]],
+      corners: [[xA, Y(1)], [xH, Y(1)], [xD, Y(e.s)], [xS, Y(e.s)], [xR, Y(en)]],
+      handles: [[(x0 + xA) / 2, Y(st + (1 - st) * bend(0.5, kA))], [(xH + xD) / 2, Y(1 + (e.s - 1) * bend(0.5, kD))], [(xS + xR) / 2, Y(en + (e.s - en) * (1 - bend(0.5, kR)))]],
+      se: [[x0, Y(st)], [xR, Y(en)]],
     };
   }
   pos(e) { const r = boxOrigin(this.root); return { px: e.clientX - r.left, py: e.clientY - r.top }; }
   hit(P, touch) {
-    const s = this.size(), e = this.env(), G = this.geo(s, e, this.scale(s, e)), R = touch ? 14 : 8;
+    const s = this.size(), e = this.env(), G = this.geo(s, e, this.scale(s, e)), R = R_PT(touch);
     const pts = G.corners.concat(G.handles), wid = [G.xA - G.x0, G.xD - G.xH, G.xR - G.xS];
     let best = -1, bd = R * R + 1e-9;
     // later corners first on ties (zero-length stages stack up; moveEv re-targets on the first move); the curve
@@ -979,18 +1381,28 @@ export class EnvEditor {
       const dx = pts[i][0] - P.px, dy = pts[i][1] - P.py, d = dx * dx + dy * dy;
       if (d < bd) { bd = d; best = i; }
     }
+    if (this.se()) G.se.forEach((q, j) => { // Start / End levels: lower priority than the corners on ties
+      const dx = q[0] - P.px, dy = q[1] - P.py, d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; best = 8 + j; }
+    });
     return best;
+  }
+  near(P, t, touch) { // is target t (8 / 9) within reach of P?
+    const s = this.size(), e = this.env(), G = this.geo(s, e, this.scale(s, e)), R = R_PT(touch), q = G.se[t - 8];
+    return !!q && Math.hypot(q[0] - P.px, q[1] - P.py) <= R;
   }
   emit(patch, phase) { if (this.o.set) this.o.set(patch, phase); }
   down(e) {
+    this.lastType = e.pointerType || 'mouse';
     if (e.button !== 0 || this.g) return;
     this.root.focus({ preventScroll: true });
     const P = this.pos(e), t = this.hit(P, e.pointerType === 'touch');
-    if (t < 0) return;
+    if (t < 0) { this.lastTap = null; return; }
     e.preventDefault();
     const s = this.size(), env = this.env(), sc = this.scale(s, env);
     this.act = t;
-    this.g = { id: e.pointerId, t, P0: P, env, sc, started: false, c0: this.geo(s, env, sc).corners };
+    this.g = { id: e.pointerId, t, P0: P, env, sc, started: false, c0: this.geo(s, env, sc).corners,
+      endNear: t === 4 && this.se() && this.near(P, 9, e.pointerType === 'touch') };
     try { this.root.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
     this.draw();
   }
@@ -1002,8 +1414,9 @@ export class EnvEditor {
     }
     if (e.pointerId !== g.id) return;
     if (e.pointerType === 'mouse' && !(e.buttons & 1)) { this.finish(); return; }
-    const P = this.pos(e), f = e.shiftKey ? 0.1 : 1, E = g.env;
+    const P = this.pos(e), M = mods(e), f = M.fine ? 0.1 : 1, E = g.env;
     const dt = (P.px - g.P0.px) * f / g.sc.px, dv = (g.P0.py - P.py) * f / Math.max(1, g.sc.bottom - PAD);
+    if (!g.started && g.endNear && Math.abs(P.py - g.P0.py) > Math.abs(P.px - g.P0.px)) { g.t = 9; this.act = 9; } // End level
     if (!g.started && dt !== 0 && g.t <= 2) {
       // Stacked zero-length stages (hit() prefers the later corner on ties). Dragging left grabs the earlier corner
       // (the later stage cannot shrink); dragging right grabs the earliest corner stacked on the same spot, so the
@@ -1011,10 +1424,10 @@ export class EnvEditor {
       // HOLD / DECAY out of the stack; the knobs and Tab + arrows reach them too).
       const len = [E.a, E.h, E.d], c = g.c0;
       if (dt < 0) while (g.t > 0 && len[g.t] <= 0) g.t--;
-      else if (!e.altKey) while (g.t > 0 && len[g.t] <= 0 && c && Math.abs(c[g.t - 1][1] - c[g.t][1]) < 0.5) g.t--;
+      else if (!M.alt) while (g.t > 0 && len[g.t] <= 0 && c && Math.abs(c[g.t - 1][1] - c[g.t][1]) < 0.5) g.t--;
       this.act = g.t;
     }
-    const tm = x => clamp(x, 0, T_MAX);
+    const tm = x => this.quant(clamp(x, 0, T_MAX), g.sc);
     let patch;
     switch (g.t) {
       case 0: patch = { a: tm(E.a + dt) }; break;
@@ -1022,6 +1435,8 @@ export class EnvEditor {
       case 2: patch = { d: tm(E.d + dt), s: clamp(E.s + dv, 0, 1) }; break;
       case 3: patch = { s: clamp(E.s + dv, 0, 1) }; break;
       case 4: patch = { r: tm(E.r + dt) }; break;
+      case 8: patch = { st: clamp(E.st + dv, 0, 1) }; break;
+      case 9: patch = { en: clamp(E.en + dv, 0, 1) }; break;
       default: {
         const dc = (g.P0.py - P.py) * f / 150;
         patch = g.t === 5 ? { ca: clamp(E.ca + dc, 0, 1) } : g.t === 6 ? { cd: clamp(E.cd - dc, 0, 1) } : { cr: clamp(E.cr - dc, 0, 1) };
@@ -1038,26 +1453,50 @@ export class EnvEditor {
     this.g = null;
     try { this.root.releasePointerCapture(g.id); } catch (err) { /* released */ }
     if (g.started) {
-      const E = this.env(), keys = [['a'], ['h'], ['d', 's'], ['s'], ['r'], ['ca'], ['cd'], ['cr']][g.t], patch = {};
+      const E = this.env(), keys = [['a'], ['h'], ['d', 's'], ['s'], ['r'], ['ca'], ['cd'], ['cr'], ['st'], ['en']][g.t], patch = {};
       for (const k of keys) patch[k] = E[k];
       this.emit(patch, 'end');
     }
+    modifierBar.consume();
     this.announce();
     this.draw();
   }
-  resetCurve(t) { this.emit(t === 5 ? { ca: 0.5 } : t === 6 ? { cd: 0.5 } : { cr: 0.5 }, 'set'); this.draw(); }
+  resetCurve(t) {
+    this.emit(t === 5 ? { ca: 0.5 } : t === 6 ? { cd: 0.5 } : t === 7 ? { cr: 0.5 } : t === 8 ? { st: 0 } : { en: 0 }, 'set');
+    this.draw();
+  }
+  // touch: a double-tap on a curve handle or a Start / End handle resets it (the mouse double-click)
+  tap(e, g) {
+    if (e.pointerType !== 'touch' || g.started) { this.lastTap = null; return; }
+    const P = this.pos(e), L = this.lastTap;
+    if (L && L.t0 === g.t && e.timeStamp - L.t < 350 && Math.hypot(P.px - L.px, P.py - L.py) < 24) {
+      this.lastTap = null;
+      if (g.t >= 5) this.resetCurve(g.t);
+    } else this.lastTap = { t: e.timeStamp, px: P.px, py: P.py, t0: g.t };
+  }
   key(e) {
     if (e.target !== this.root) return;
     const k = e.key;
+    if ((k === 'ContextMenu' || (k === 'F10' && e.shiftKey)) && this.o.menu) {
+      e.preventDefault();
+      const r = boxOrigin(this.root), s = this.size();
+      this.o.menu(r.left + s.w / 2, r.top + s.h / 2);
+      return;
+    }
     if (k === 'Tab') {
       const j = this.act + (e.shiftKey ? -1 : 1);
-      if ((e.shiftKey && this.act < 0) || j < 0 || j > 7) { this.act = -1; this.draw(); return; }
+      if ((e.shiftKey && this.act < 0) || j < 0 || j > (this.se() ? 9 : 7)) { this.act = -1; this.draw(); return; }
       e.preventDefault(); this.act = j; this.announce(); this.draw(); return;
     }
     if (this.act < 0 || !/^Arrow/.test(k)) return;
     e.preventDefault();
     const E = this.env(), up = k === 'ArrowUp' || k === 'ArrowRight' ? 1 : -1, vert = k === 'ArrowUp' || k === 'ArrowDown';
-    const tStep = x => tmStep(x, up, e.shiftKey), sv = (e.shiftKey ? 0.001 : 0.01) * up, cv = (e.shiftKey ? 0.005 : 0.02) * up;
+    const ts = this.timeSteps(), sv = (e.shiftKey ? 0.001 : 0.01) * up, cv = (e.shiftKey ? 0.005 : 0.02) * up;
+    const tStep = ts ? x => { // BPM units: the next / previous entry
+      if (up > 0) { for (const v of ts) if (v > x + 1e-9) return clamp(v, 0, T_MAX); return clamp(ts[ts.length - 1], 0, T_MAX); }
+      for (let i = ts.length - 1; i >= 0; i--) if (ts[i] < x - 1e-9) return clamp(ts[i], 0, T_MAX);
+      return clamp(ts[0], 0, T_MAX);
+    } : x => tmStep(x, up, e.shiftKey);
     let patch = null;
     switch (this.act) {
       case 0: patch = { a: tStep(E.a) }; break;
@@ -1067,6 +1506,8 @@ export class EnvEditor {
       case 4: patch = { r: tStep(E.r) }; break;
       case 5: patch = { ca: clamp(E.ca + cv, 0, 1) }; break;
       case 6: patch = { cd: clamp(E.cd - cv, 0, 1) }; break;
+      case 8: patch = { st: clamp(E.st + sv, 0, 1) }; break;
+      case 9: patch = { en: clamp(E.en + sv, 0, 1) }; break;
       default: patch = { cr: clamp(E.cr - cv, 0, 1) };
     }
     this.emit(patch, 'set');
@@ -1075,8 +1516,9 @@ export class EnvEditor {
   }
   announce() {
     if (this.act < 0) return;
-    const E = this.env(), v = [E.a, E.h, E.d, E.s, E.r, E.ca, E.cd, E.cr][this.act];
-    const txt = ENV_NAMES[this.act] + ': ' + (this.act === 3 || this.act >= 5 ? Math.round(v * 100) + '%' : fmtT(v));
+    const E = this.env(), v = [E.a, E.h, E.d, E.s, E.r, E.ca, E.cd, E.cr, E.st, E.en][this.act];
+    const txt = ENV_NAMES[this.act] + ': ' + (this.act >= 8 ? String((this.o.fmtLevel || fmtLvl)(v))
+      : this.act === 3 || this.act >= 5 ? Math.round(v * 100) + '%' : fmtT(v));
     if (this.sr.textContent !== txt) this.sr.textContent = txt;
   }
   refresh() { if (this.o.playhead) this.anim.start(); this.draw(); }
@@ -1085,16 +1527,17 @@ export class EnvEditor {
       const m = Math.max(1, Math.ceil((x1 - x0) / 3));
       for (let j = 1; j <= m; j++) ctx.lineTo(x0 + (x1 - x0) * j / m, Y(f(j / m)));
     };
-    ctx.moveTo(G.x0, Y(0));
-    seg(G.x0, G.xA, q => bend(q, G.kA));
+    const st = E.st || 0, en = E.en || 0; // Start / End levels (§6.14; 0 = the Phase-1 shape)
+    ctx.moveTo(G.x0, Y(st));
+    seg(G.x0, G.xA, q => st + (1 - st) * bend(q, G.kA));
     ctx.lineTo(G.xH, Y(1));
     seg(G.xH, G.xD, q => 1 + (E.s - 1) * bend(q, G.kD));
     ctx.lineTo(G.xS, Y(E.s));
-    seg(G.xS, G.xR, q => E.s * (1 - bend(q, G.kR)));
+    seg(G.xS, G.xR, q => en + (E.s - en) * (1 - bend(q, G.kR)));
     return sc;
   }
   draw() {
-    if (!this.root.isConnected) return;
+    if (unrendered(this.root)) return;
     const s = this.size(), ctx = fitCanvas(this.cv, s.w, s.h);
     if (!ctx) return;
     const T = this.T = theme(this.root), E = this.env(), sc = this.scale(s, E), G = this.geo(s, E, sc);
@@ -1108,9 +1551,10 @@ export class EnvEditor {
     ctx.beginPath();
     for (let i = 0; i < 4; i++) { const y = Math.round(G.Y(i / 4)) + 0.5; ctx.moveTo(PAD, y); ctx.lineTo(s.w - PAD, y); }
     ctx.stroke();
-    const tick = (x, t) => { ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, PAD); ctx.lineTo(Math.round(x) + 0.5, sc.bottom); ctx.stroke(); if (ctx.fillText) ctx.fillText(fmtT(t), x + 2, s.h - 3); };
-    for (let t = st, x = G.x0 + st * sc.px; x < G.xD - 4 && t < 1e3; t += st, x = G.x0 + t * sc.px) tick(x, t);
-    for (let t = st, x = G.xS + st * sc.px; x < s.w - PAD - 4 && t < 1e3; t += st, x = G.xS + t * sc.px) tick(x, t);
+    const bg = this.beatGrid(sc), gs = bg ? bg.sec : st, lbl = bg ? t => fmtBeats(Math.round(t / bg.sec) * bg.beats) : fmtT;
+    const tick = (x, t) => { ctx.beginPath(); ctx.moveTo(Math.round(x) + 0.5, PAD); ctx.lineTo(Math.round(x) + 0.5, sc.bottom); ctx.stroke(); if (ctx.fillText) ctx.fillText(lbl(t), x + 2, s.h - 3); };
+    for (let t = gs, x = G.x0 + gs * sc.px; x < G.xD - 4 && t < 1e3; t += gs, x = G.x0 + t * sc.px) tick(x, t);
+    for (let t = gs, x = G.xS + gs * sc.px; x < s.w - PAD - 4 && t < 1e3; t += gs, x = G.xS + t * sc.px) tick(x, t);
     // ghosts (other envelopes in use)
     const ghosts = this.o.ghosts ? this.o.ghosts() || [] : [];
     for (const gh of ghosts) {
@@ -1141,10 +1585,16 @@ export class EnvEditor {
       ctx.fillStyle = T.bg; ctx.fill(); ctx.lineWidth = 1.5; ctx.strokeStyle = hot ? T.accent : T.mute; ctx.stroke();
       if (focused && this.act === i) { ctx.beginPath(); ctx.arc(c[0], c[1], 7, 0, Math.PI * 2); ctx.strokeStyle = T.accent; ctx.stroke(); }
     });
+    if (this.se()) G.se.forEach((c, j) => { // Start / End level handles (squares)
+      const i = 8 + j, hot = this.hover === i || (this.g && this.g.t === i);
+      ctx.fillStyle = hot ? T.accent : T.on;
+      ctx.fillRect(c[0] - (hot ? 4.5 : 3.5), c[1] - (hot ? 4.5 : 3.5), hot ? 9 : 7, hot ? 9 : 7);
+      if (focused && this.act === i) { ctx.lineWidth = 1.5; ctx.strokeStyle = T.accent; ctx.strokeRect(c[0] - 7, c[1] - 7, 14, 14); }
+    });
     this.drawOverlay(true);
   }
   drawOverlay(force) {
-    if (!this.root.isConnected) return;
+    if (unrendered(this.root)) return;
     const ph = this.o.playhead ? this.o.playhead() : null, key = ph && ph.stage ? ph.stage + ':' + (+ph.t).toFixed(4) : '';
     if (!force && key === this.lastPh) return;
     this.lastPh = key;
@@ -1155,11 +1605,11 @@ export class EnvEditor {
     const E = this.env(), sc = this.scale(s, E), G = this.geo(s, E, sc), t = Math.max(0, +ph.t || 0);
     let x, v;
     switch (ph.stage) {
-      case 1: x = G.x0 + Math.min(t, E.a) * sc.px; v = E.a > 0 ? bend(Math.min(1, t / E.a), G.kA) : 1; break;
+      case 1: x = G.x0 + Math.min(t, E.a) * sc.px; v = E.a > 0 ? E.st + (1 - E.st) * bend(Math.min(1, t / E.a), G.kA) : 1; break;
       case 2: x = G.xA + Math.min(t, E.h) * sc.px; v = 1; break;
       case 3: x = G.xH + Math.min(t, E.d) * sc.px; v = 1 + (E.s - 1) * (E.d > 0 ? bend(Math.min(1, t / E.d), G.kD) : 1); break;
       case 4: x = (G.xD + G.xS) / 2; v = E.s; break;
-      case 5: x = G.xS + Math.min(t, E.r) * sc.px; v = E.s * (1 - (E.r > 0 ? bend(Math.min(1, t / E.r), G.kR) : 1)); break;
+      case 5: x = G.xS + Math.min(t, E.r) * sc.px; v = E.en + (E.s - E.en) * (1 - (E.r > 0 ? bend(Math.min(1, t / E.r), G.kR) : 1)); break;
       default: return;
     }
     const T = this.T || theme(this.root);
@@ -1179,4 +1629,570 @@ function tmStep(x, dir, fine) {
   const f = fine ? 1.01 : 1.1, minStep = fine ? 0.0001 : 0.001;
   const y = dir > 0 ? Math.max(x * f, x + minStep) : Math.min(x / f, x - minStep);
   return clamp(y, 0, T_MAX);
+}
+
+/* ================================================================ PathEditor */
+// 2-D LFO path editor (Path-type LFOs, inv B16, §6.15.3): points anywhere, drawn in order; closed / open toggle;
+// curvature handles (y bent per segment, as serum-core resamples it). o = { get: () => path, set: (path, phase),
+// grid?: () => { x, y }, label?, height = 160, readOnly?, playhead?: () => [x, y] | null (the live output dot) }.
+// Gestures: drag a point (Alt / Alt latch: snap to the grid; a closed path's first point carries its closing copy);
+// Shift-click toggles the selection (a selected group moves rigidly); drag on the background = marquee (Cmd/Ctrl
+// adds); drag a handle vertically = curvature (Alt: every segment; Shift fine); double-click (double-tap) a point
+// removes it, on the curve inserts a point there (exact split), elsewhere appends one (closed: before the closing
+// copy). Keys: Tab cycles points, arrows move (grid step, Shift fine), + inserts after the active point, − / Delete
+// remove, Home / End, Cmd/Ctrl-A, Escape. Context menu: Close / Open Path, Reverse Direction, Delete Selected,
+// Flip Horizontal / Vertical, Init Path.
+export class PathEditor {
+  constructor(container, o) {
+    injectStyles();
+    this.o = o || {};
+    this.height = this.o.height > 0 ? this.o.height : 160;
+    this.sel = new Set();
+    this.act = -1;
+    this.g = null;
+    this.hover = null;
+    this.lastTap = null;
+    this.ph = null;
+    const d = D(), root = this.root = d.createElement('div');
+    root.className = 'gx-root gx-path' + (this.o.readOnly ? ' gx-ro' : '');
+    root.tabIndex = 0;
+    root.setAttribute('role', 'group');
+    root.setAttribute('aria-roledescription', 'path editor');
+    root.setAttribute('aria-label', this.o.label || 'LFO path');
+    root.style.height = this.height + 'px';
+    this.cv = mkCanvas('gx-cv');
+    this.ov = mkCanvas('gx-ov');
+    this.sr = liveRegion();
+    root.append(this.cv, this.ov, this.sr);
+    if (container) container.appendChild(root);
+    this.offs = [];
+    const on = (t, type, fn) => { t.addEventListener(type, fn); this.offs.push(() => t.removeEventListener(type, fn)); };
+    on(root, 'pointerdown', e => this.down(e));
+    on(root, 'pointermove', e => this.moveEv(e));
+    on(root, 'pointerup', e => this.up(e));
+    on(root, 'pointercancel', e => { if (this.g && e.pointerId === this.g.id) this.finish(); });
+    on(root, 'lostpointercapture', e => { if (this.g && e.pointerId === this.g.id) this.finish(); });
+    on(root, 'pointerleave', () => { if (!this.g && this.hover) { this.hover = null; this.draw(); } });
+    on(root, 'dblclick', e => { if (this.lastType !== 'touch') this.dbl(this.pos(e)); });
+    on(root, 'contextmenu', e => this.ctx(e));
+    on(root, 'keydown', e => this.key(e));
+    on(root, 'focus', () => this.draw());
+    on(root, 'blur', () => this.draw());
+    this.offs.push(menuSource(root, { keys: false }), observeSize(root, () => this.draw()));
+    attachZoom(this, this.o.zoom);
+    this.anim = animator(root, () => this.drawOverlay());
+    if (this.o.playhead) this.anim.start();
+    this.draw();
+  }
+
+  /* data */
+  get path() { const p = this.o.get ? this.o.get() : null; return Array.isArray(p) && p.length >= 2 ? p : PATH_DEFAULT; }
+  closed() { return pathClosed(this.path); }
+  grid() { const g = this.o.grid ? this.o.grid() : null; return { x: g && g.x > 0 ? g.x | 0 : 0, y: g && g.y > 0 ? g.y | 0 : 0 }; }
+  count() { const p = this.path; return pathClosed(p) ? p.length - 1 : p.length; } // distinct points
+  emit(p, phase) { if (this.o.set) this.o.set(p, phase); }
+  remapIdx(map) {
+    const m = i => (i >= 0 && i < map.length ? map[i] : -1);
+    this.sel = new Set([...this.sel].map(m).filter(i => i >= 0));
+    this.act = m(this.act);
+  }
+  commit(p, map) { this.emit(p, 'set'); if (map) this.remapIdx(map); this.refresh(); }
+
+  /* geometry (the zoom window `view` as CurveEditor) */
+  size() { return boxSize(this.root, 40, this.height); }
+  X(x, s) { const v = this.view; return PAD + (x - v.x0) / (v.x1 - v.x0) * (s.w - 2 * PAD); }
+  Y(y, s) { const v = this.view; return PAD + ((1 - y) - v.y0) / (v.y1 - v.y0) * (s.h - 2 * PAD); }
+  pos(e) {
+    const r = boxOrigin(this.root), s = this.size(), v = this.view, px = e.clientX - r.left, py = e.clientY - r.top;
+    return { px, py, x: v.x0 + (px - PAD) / (s.w - 2 * PAD) * (v.x1 - v.x0), y: 1 - (v.y0 + (py - PAD) / (s.h - 2 * PAD) * (v.y1 - v.y0)), s };
+  }
+  zoomed() { return !isFull(this.view); }
+  setView(v) { this.view = viewOf(v); this.draw(); }
+  resetView() { this.setView(FULL); }
+  abort() {
+    const g = this.g;
+    this.lastTap = null;
+    if (!g) return;
+    if (g.started) this.emit(g.orig, 'move');
+    if (g.mode === 'marquee') this.sel = new Set(g.keep);
+    this.finish();
+  }
+  hitPoint(p, P, touch) {
+    const R = R_PT(touch), n = pathClosed(p) ? p.length - 1 : p.length;
+    let best = -1, bd = R * R + 1e-9;
+    for (let i = 0; i < n; i++) {
+      const dx = this.X(p[i][0], P.s) - P.px, dy = this.Y(p[i][1], P.s) - P.py, d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  }
+  hitHandle(p, P, touch) {
+    if (this.o.readOnly) return -1;
+    const R = R_HD(touch);
+    let best = -1, bd = R * R + 1e-9;
+    for (let i = 0; i < p.length - 1; i++) {
+      const hh = pathHandle(p, i);
+      if (!hh) continue;
+      const dx = this.X(hh[0], P.s) - P.px, dy = this.Y(hh[1], P.s) - P.py, d = dx * dx + dy * dy;
+      if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+  }
+  hitCurve(p, P, touch) { // { i, t } of the curve within reach, else null
+    const s = P.s, v = this.view, w = (s.w - 2 * PAD) / (v.x1 - v.x0), hh = (s.h - 2 * PAD) / (v.y1 - v.y0), nr = pathNearest(p, P.x, P.y, w, hh);
+    return nr.i >= 0 && nr.d <= R_HD(touch) ? nr : null;
+  }
+
+  /* pointer gestures */
+  down(e) {
+    this.lastType = e.pointerType || 'mouse';
+    if (e.button !== 0 || this.g || (this.zp && this.zp.active())) return;
+    if (e.ctrlKey && !e.metaKey && isMac()) return;
+    this.root.focus({ preventScroll: true });
+    if (this.o.readOnly) return;
+    const P = this.pos(e), p = this.path, touch = this.lastType === 'touch', mod = modKey(e), M = mods(e);
+    const hit = this.hitPoint(p, P, touch), hh = hit < 0 ? this.hitHandle(p, P, touch) : -1;
+    const base = { id: e.pointerId, orig: pathNorm(p), started: false, P0: P, moved: false, touch };
+    if (hit >= 0) {
+      if (M.shift) { if (this.sel.has(hit)) this.sel.delete(hit); else this.sel.add(hit); this.act = hit; modifierBar.consume(); this.announce(); this.draw(); return; }
+      if (!this.sel.has(hit)) this.sel = new Set([hit]);
+      this.act = hit;
+      const q = p[hit];
+      this.g = Object.assign(base, { mode: 'move', i: hit, gx: q[0] - P.x, gy: q[1] - P.y, idxs: [...this.sel].sort((a, b) => a - b) });
+    } else if (hh >= 0) {
+      this.g = Object.assign(base, { mode: 'curve', i: hh, all: M.alt });
+    } else {
+      this.g = Object.assign(base, { mode: 'marquee', add: mod, keep: mod ? new Set(this.sel) : new Set(), rect: null });
+    }
+    e.preventDefault();
+    try { this.root.setPointerCapture(e.pointerId); } catch (err) { /* pointer gone */ }
+    this.draw();
+  }
+  change(p) {
+    if (!this.g.started) { this.g.started = true; this.emit(this.g.orig, 'start'); }
+    this.emit(p, 'move');
+    this.draw();
+  }
+  moveEv(e) {
+    const g = this.g;
+    if (!g) {
+      if (e.pointerType === 'mouse' && !this.o.readOnly) {
+        const P = this.pos(e), p = this.path, i = this.hitPoint(p, P, false), j = i < 0 ? this.hitHandle(p, P, false) : -1;
+        const hv = i >= 0 ? 'p' + i : j >= 0 ? 'h' + j : null;
+        if (hv !== this.hover) { this.hover = hv; this.root.style.cursor = hv ? (hv[0] === 'h' ? 'ns-resize' : 'grab') : ''; this.draw(); }
+      }
+      return;
+    }
+    if (e.pointerId !== g.id) return;
+    if (e.pointerType === 'mouse' && !(e.buttons & 1)) { this.finish(); return; }
+    const P = this.pos(e), M = mods(e);
+    if (Math.hypot(P.px - g.P0.px, P.py - g.P0.py) > 3) g.moved = true;
+    if (!g.moved) return;
+    const grid = this.grid();
+    if (g.mode === 'move') {
+      const lead = g.orig[g.i];
+      let tx = P.x + g.gx, ty = P.y + g.gy;
+      if (M.alt) { tx = snapTo(tx, grid.x); ty = snapTo(ty, grid.y); }
+      if (g.idxs.length <= 1) this.change(pathMove(g.orig, g.i, tx, ty));
+      else this.change(pathMoveMany(g.orig, g.idxs, tx - lead[0], ty - lead[1]));
+    } else if (g.mode === 'curve') {
+      const dc = (g.P0.py - P.py) / 100 * (M.fine ? 0.1 : 1);
+      let p = g.orig;
+      const segs = g.all ? p.map((q, j) => j).slice(0, -1) : [g.i];
+      for (const j of segs) {
+        const a = g.orig[j], b = g.orig[j + 1], dir = b[1] < a[1] ? -1 : 1;
+        p = pathSetCurve(p, j, (a[2] || 0) + dc * dir);
+      }
+      this.change(p);
+    } else if (g.mode === 'marquee') {
+      const x0 = Math.min(g.P0.x, P.x), x1 = Math.max(g.P0.x, P.x), y0 = Math.min(g.P0.y, P.y), y1 = Math.max(g.P0.y, P.y);
+      g.rect = [x0, y0, x1, y1];
+      const sel = new Set(g.keep), p = this.path, n = this.count();
+      for (let i = 0; i < n; i++) { const q = p[i]; if (q[0] >= x0 && q[0] <= x1 && q[1] >= y0 && q[1] <= y1) sel.add(i); }
+      this.sel = sel;
+      this.draw();
+    }
+  }
+  up(e) {
+    const g = this.g;
+    if (!g || e.pointerId !== g.id) return;
+    const P = this.pos(e);
+    this.finish();
+    if (g.mode === 'marquee' && !g.moved && !g.add) { this.sel.clear(); this.act = -1; this.draw(); }
+    if (g.touch && !g.moved) {
+      const t = e.timeStamp, L = this.lastTap;
+      if (L && t - L.t < 350 && Math.hypot(P.px - L.px, P.py - L.py) < 24) { this.lastTap = null; this.dbl(P); }
+      else this.lastTap = { t, px: P.px, py: P.py };
+    }
+  }
+  finish() {
+    const g = this.g;
+    if (!g) return;
+    this.g = null;
+    try { this.root.releasePointerCapture(g.id); } catch (err) { /* released */ }
+    if (g.started) this.emit(pathNorm(this.path), 'end');
+    modifierBar.consume();
+    this.announce();
+    this.draw();
+  }
+  dbl(P) {
+    if (this.o.readOnly) return;
+    const p = this.path, touch = this.lastType === 'touch', hit = this.hitPoint(p, P, touch);
+    if (hit >= 0) { this.removeIdx([hit]); return; }
+    const hh = this.hitHandle(p, P, touch);
+    if (hh >= 0) { this.commit(pathSetCurve(p, hh, 0)); return; }
+    const grid = this.grid(), c = this.hitCurve(p, P, touch);
+    const x = grid.x ? snapTo(clamp(P.x, 0, 1), grid.x) : clamp(P.x, 0, 1), y = grid.y ? snapTo(clamp(P.y, 0, 1), grid.y) : clamp(P.y, 0, 1);
+    const o = c ? { map: [], at: c.i, t: c.t, onCurve: true } : { map: [], append: true }, q = pathInsert(p, x, y, o);
+    if (o.index < 0) { this.say('Point limit reached'); return; }
+    this.commit(q, o.map);
+    this.sel = new Set([o.index]);
+    this.act = o.index;
+    this.announce();
+    this.draw();
+  }
+  removeIdx(idxs) {
+    const map = [], p = pathRemove(this.path, idxs, { map });
+    if (p.length === this.path.length) { this.say('A path keeps at least two points'); return; }
+    this.sel.clear();
+    this.act = clamp(this.act >= 0 && map[this.act] >= 0 ? map[this.act] : Math.min(...idxs) - 1, -1, p.length - 1);
+    this.emit(p, 'set');
+    this.refresh();
+  }
+
+  /* context menu */
+  ctx(e) {
+    e.preventDefault();
+    if (this.zp && this.zp.active()) return; // never in the middle of a pinch
+    if (this.g) this.finish();
+    const P = this.pos(e), p = this.path, hit = this.hitPoint(p, P, this.lastType === 'touch');
+    if (hit >= 0 && !this.sel.has(hit)) { this.sel = new Set([hit]); this.act = hit; }
+    this.draw();
+    contextMenu(e.clientX, e.clientY, this.menuItems(), { anchor: this.root });
+  }
+  menuItems() {
+    const ro = !!this.o.readOnly, p = this.path, closed = pathClosed(p), n = this.count();
+    const del = [...this.sel].filter(i => i < n);
+    return [
+      { label: closed ? 'Open Path' : 'Close Path', disabled: ro || (!closed && p.length >= MAX_PTS), action: () => this.setClosed(!closed) },
+      { label: 'Reverse Direction', disabled: ro, action: () => this.commit(pathReverse(this.path)) },
+      { label: 'Delete Selected', disabled: ro || !del.length || n - del.length < 2, action: () => this.removeIdx(del) },
+      { sep: true },
+      { label: 'Flip Horizontal', disabled: ro, action: () => this.commit(pathFlip(this.path, 'h')) },
+      { label: 'Flip Vertical', disabled: ro, action: () => this.commit(pathFlip(this.path, 'v')) },
+      { sep: true },
+      { label: 'Init Path', disabled: ro, action: () => { this.sel.clear(); this.act = -1; this.commit(PATH_DEFAULT.map(q => q.slice())); } },
+    ].concat(this.zp ? [{ sep: true }, { label: 'Reset Zoom', disabled: !this.zoomed(), action: () => this.resetView() }] : []);
+  }
+  setClosed(on) {
+    if (this.o.readOnly) return;
+    const p = pathSetClosed(this.path, on);
+    this.commit(p);
+  }
+
+  /* keyboard */
+  key(e) {
+    if (e.target !== this.root) return;
+    const p = this.path, n = this.count(), k = e.key, ro = !!this.o.readOnly;
+    if (k === 'ContextMenu' || (k === 'F10' && e.shiftKey)) {
+      e.preventDefault();
+      const r = boxOrigin(this.root), s = this.size(), q = p[this.act];
+      contextMenu(q ? r.left + this.X(q[0], s) : r.left + s.w / 2, q ? r.top + this.Y(q[1], s) : r.top + s.h / 2, this.menuItems(), { anchor: this.root });
+      return;
+    }
+    if (k === 'Tab') {
+      const j = this.act + (e.shiftKey ? -1 : 1);
+      if ((e.shiftKey && this.act < 0) || j < 0 || j >= n) { this.act = -1; this.draw(); return; }
+      e.preventDefault();
+      this.act = j;
+      this.sel = new Set([j]);
+      this.announce();
+      this.draw();
+      return;
+    }
+    if (k === 'Home' || k === 'End') { e.preventDefault(); this.act = k === 'Home' ? 0 : n - 1; this.sel = new Set([this.act]); this.announce(); this.draw(); return; }
+    if ((k === 'a' || k === 'A') && modKey(e)) { e.preventDefault(); this.sel = new Set(Array.from({ length: n }, (_, i) => i)); this.draw(); return; }
+    if (k === '0' && this.zoomed()) { e.preventDefault(); this.resetView(); return; }
+    if (k === 'Escape') { if (this.sel.size) { e.preventDefault(); this.sel.clear(); this.draw(); } return; }
+    if (ro) return;
+    const grid = this.grid(), fine = e.shiftKey;
+    const sx = fine ? 0.001 : grid.x ? 1 / grid.x : 0.01, sy = fine ? 0.001 : grid.y ? 1 / grid.y : 0.01;
+    let dx = 0, dy = 0;
+    if (k === 'ArrowLeft') dx = -sx; else if (k === 'ArrowRight') dx = sx; else if (k === 'ArrowUp') dy = sy; else if (k === 'ArrowDown') dy = -sy;
+    if (dx || dy) {
+      e.preventDefault();
+      if (this.act < 0) { this.act = 0; this.sel = new Set([0]); }
+      const idxs = this.sel.has(this.act) && this.sel.size > 1 ? [...this.sel] : [this.act];
+      const q = idxs.length > 1 ? pathMoveMany(p, idxs, dx, dy) : pathMove(p, this.act, p[this.act][0] + dx, p[this.act][1] + dy);
+      this.commit(q);
+      this.announce();
+      return;
+    }
+    if (k === '+' || k === '=') {
+      e.preventDefault();
+      const i = this.act >= 0 && this.act < p.length - 1 ? this.act : 0, m = pathAt(p, i, 0.5);
+      const o = { map: [], at: i, t: 0.5, onCurve: true }, q = pathInsert(p, m[0], m[1], o);
+      if (o.index < 0) { this.say('Point limit reached'); return; }
+      this.commit(q, o.map);
+      this.act = o.index;
+      this.sel = new Set([o.index]);
+      this.announce();
+      this.draw();
+      return;
+    }
+    if (k === '-' || k === '_' || k === 'Delete' || k === 'Backspace') {
+      const idxs = this.sel.size ? [...this.sel] : this.act >= 0 ? [this.act] : [];
+      if (!idxs.length) return;
+      e.preventDefault();
+      this.removeIdx(idxs);
+      this.announce();
+    }
+  }
+  say(t) { if (this.sr.textContent !== t) this.sr.textContent = t; }
+  announce() {
+    const p = this.path, q = p[this.act];
+    if (!q) return;
+    this.say(`Point ${this.act + 1} of ${this.count()}: x ${fmt3(q[0])}, y ${fmt3(q[1])}` + (this.closed() ? ', closed path' : ''));
+  }
+
+  /* drawing */
+  refresh() {
+    const n = this.count();
+    this.sel = new Set([...this.sel].filter(i => i < n));
+    if (this.act >= n) this.act = n - 1;
+    if (this.o.playhead) this.anim.start();
+    this.draw();
+  }
+  draw() {
+    if (unrendered(this.root)) return;
+    const s = this.size(), ctx = fitCanvas(this.cv, s.w, s.h);
+    if (!ctx) return;
+    const T = this.T = theme(this.root), p = this.path, n = p.length, grid = this.grid(), ro = !!this.o.readOnly;
+    const X = x => this.X(x, s), Y = y => this.Y(y, s), zoomed = this.zoomed();
+    ctx.clearRect(0, 0, s.w, s.h);
+    ctx.fillStyle = T.bg;
+    ctx.fillRect(0, 0, s.w, s.h);
+    if (zoomed) { ctx.save(); ctx.beginPath(); ctx.rect(PAD - 6, PAD - 6, s.w - 2 * PAD + 12, s.h - 2 * PAD + 12); ctx.clip(); }
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = T.line;
+    ctx.beginPath();
+    const gx = grid.x || 4, gy = grid.y || 4;
+    if (gx <= 128) for (let i = 0; i <= gx; i++) { const x = Math.round(X(i / gx)) + 0.5; ctx.moveTo(x, PAD); ctx.lineTo(x, s.h - PAD); }
+    if (gy <= 128) for (let i = 0; i <= gy; i++) { const y = Math.round(Y(i / gy)) + 0.5; ctx.moveTo(PAD, y); ctx.lineTo(s.w - PAD, y); }
+    ctx.stroke();
+    // the path
+    ctx.beginPath();
+    ctx.moveTo(X(p[0][0]), Y(p[0][1]));
+    for (let i = 0; i < n - 1; i++) {
+      const a = p[i], b = p[i + 1], k = CURVE_K * (a[2] || 0);
+      if (Math.abs(k) < 1e-4 || a[1] === b[1]) { ctx.lineTo(X(b[0]), Y(b[1])); continue; }
+      const m = Math.min(1024, Math.max(4, Math.ceil(Math.hypot(X(b[0]) - X(a[0]), Y(b[1]) - Y(a[1])) / 3)));
+      for (let j = 1; j <= m; j++) { const q = pathAt(p, i, j / m); ctx.lineTo(X(q[0]), Y(q[1])); }
+    }
+    if (pathClosed(p)) { ctx.globalAlpha = 0.16; ctx.fillStyle = T.graph; ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.lineWidth = 2; ctx.strokeStyle = T.graph; ctx.lineJoin = 'round'; ctx.stroke();
+    // direction: a small arrow at the middle of the first segment
+    const h0 = pathHandle(p, 0);
+    if (h0) {
+      const q1 = pathAt(p, 0, 0.55), ang = Math.atan2(Y(q1[1]) - Y(h0[1]), X(q1[0]) - X(h0[0])), ax = X(h0[0]), ay = Y(h0[1]);
+      ctx.beginPath();
+      ctx.moveTo(ax + 7 * Math.cos(ang), ay + 7 * Math.sin(ang));
+      ctx.lineTo(ax + 7 * Math.cos(ang + 2.5), ay + 7 * Math.sin(ang + 2.5));
+      ctx.lineTo(ax + 7 * Math.cos(ang - 2.5), ay + 7 * Math.sin(ang - 2.5));
+      ctx.closePath();
+      ctx.fillStyle = T.mute; ctx.fill();
+    }
+    if (!ro) {
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < n - 1; i++) {
+        const hh = pathHandle(p, i);
+        if (!hh || i === 0) continue; // segment 0 shows the direction arrow; its handle is still a target
+        const hot = this.hover === 'h' + i || (this.g && this.g.mode === 'curve' && (this.g.all || this.g.i === i));
+        ctx.beginPath(); ctx.arc(X(hh[0]), Y(hh[1]), hot ? 4 : 3, 0, Math.PI * 2);
+        ctx.fillStyle = T.bg; ctx.fill();
+        ctx.strokeStyle = hot ? T.accent : T.mute; ctx.stroke();
+      }
+    }
+    const focused = D() && D().activeElement === this.root, cnt = this.count();
+    for (let i = 0; i < cnt; i++) {
+      const q = p[i], x = X(q[0]), y = Y(q[1]), sel = this.sel.has(i), hot = this.hover === 'p' + i;
+      ctx.beginPath(); ctx.arc(x, y, sel || hot ? 5 : 4, 0, Math.PI * 2);
+      ctx.fillStyle = sel ? T.accent : i === 0 ? T.on : T.ink; ctx.fill();
+      if (focused && i === this.act) { ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.lineWidth = 1.5; ctx.strokeStyle = T.accent; ctx.stroke(); }
+    }
+    const g = this.g;
+    if (g && g.mode === 'marquee' && g.rect) {
+      const [x0, y0, x1, y1] = g.rect;
+      ctx.save();
+      if (ctx.setLineDash) ctx.setLineDash([4, 3]);
+      ctx.strokeStyle = T.accent; ctx.lineWidth = 1;
+      ctx.strokeRect(X(x0), Y(y1), X(x1) - X(x0), Y(y0) - Y(y1));
+      ctx.restore();
+    }
+    if (zoomed) { ctx.restore(); zoomBadge(ctx, this.view, s, T); }
+    this.drawOverlay(true);
+  }
+  drawOverlay(force) {
+    if (unrendered(this.root)) return;
+    const ph = this.o.playhead ? this.o.playhead() : null;
+    const v = Array.isArray(ph) && fin(ph[0]) && fin(ph[1]) ? [clamp(ph[0], 0, 1), clamp(ph[1], 0, 1)] : null, key = v ? v[0].toFixed(4) + ':' + v[1].toFixed(4) : '';
+    if (!force && key === this.ph) return;
+    this.ph = key;
+    const s = this.size(), ctx = fitCanvas(this.ov, s.w, s.h);
+    if (!ctx) return;
+    ctx.clearRect(0, 0, s.w, s.h);
+    if (!v) return;
+    const T = this.T || theme(this.root);
+    ctx.beginPath(); ctx.arc(this.X(v[0], s), this.Y(v[1], s), 4, 0, Math.PI * 2); ctx.fillStyle = T.on; ctx.fill();
+  }
+  destroy() {
+    if (this.g) this.finish();
+    this.anim.stop();
+    for (const f of this.offs) f();
+    this.offs = [];
+    this.root.remove();
+  }
+}
+
+/* ================================================================ PZEditor */
+// PZ SVF editor (§6.13.4, inv B12): four corner mini-editors — TL, TR, BL, BR, each the LP / BP / HP gains ∈ [−1, 1]
+// as three bipolar vertical sliders — around an X/Y pad (wk.xyPad, Y = 0 at the top so the corners sit where their
+// weight is 1) bound to the filter's X / Y destinations. o = { get: () => pz (4 × [lp, bp, hp]), set: (pz, phase),
+// x?: { dest, get, set, def, fmt }, y?: { … } (the pad is omitted without them), label?, size? (pad px), readOnly? }.
+// A slider edit replaces the whole pz (rounded to 5 decimals); double-click / Cmd-click resets a gain to PZ_DEFAULT.
+// PZEditor.mix(pz, X, Y) → [cl, cb, ch] = TL·(1−X)(1−Y) + TR·X(1−Y) + BL·(1−X)Y + BR·XY (the DSP's blend; pure).
+const PZ_CORNERS = ['TL', 'TR', 'BL', 'BR'], PZ_BANDS = ['LP', 'BP', 'HP'];
+function pzNorm(pz) {
+  const a = Array.isArray(pz) ? pz : [];
+  return PZ_DEFAULT.map((c, k) => { const q = Array.isArray(a[k]) ? a[k] : []; return c.map((v, j) => (fin(q[j]) ? r5(clamp(q[j], -1, 1)) : v)); });
+}
+export class PZEditor {
+  constructor(container, o) {
+    injectStyles();
+    this.o = o || {};
+    const d = D(), root = this.root = d.createElement('div');
+    root.className = 'gx-pz' + (this.o.readOnly ? ' gx-ro' : '');
+    root.setAttribute('role', 'group');
+    root.setAttribute('aria-label', this.o.label || 'PZ SVF');
+    this.parts = [];
+    const ro = () => !!this.o.readOnly;
+    PZ_CORNERS.forEach((name, c) => {
+      const box = d.createElement('div');
+      box.className = 'gx-pzc gx-pz-' + name.toLowerCase();
+      box.setAttribute('role', 'group');
+      box.setAttribute('aria-label', 'Corner ' + name);
+      const lab = d.createElement('span');
+      lab.className = 'gx-pzl';
+      lab.textContent = name;
+      lab.setAttribute('aria-hidden', 'true');
+      box.appendChild(lab);
+      PZ_BANDS.forEach((band, j) => {
+        const w = slider({
+          orient: 'v', bipolar: true, label: band, def: (PZ_DEFAULT[c][j] + 1) / 2,
+          get: () => (this.pz()[c][j] + 1) / 2,
+          set: (n, ph) => this.setGain(c, j, 2 * n - 1, ph),
+          fmt: n => (2 * n - 1).toFixed(2),
+          parse: t => { const v = parseFloat(String(t).replace(',', '.').replace('−', '-')); return isFinite(v) ? (clamp(v, -1, 1) + 1) / 2 : null; },
+          disabled: ro,
+        });
+        this.parts.push(w);
+        box.appendChild(w.el);
+      });
+      root.appendChild(box);
+    });
+    if (this.o.x && this.o.y) {
+      const pad = xyPad({ x: this.o.x, y: this.o.y, yDown: true, size: this.o.size > 0 ? this.o.size : 96, disabled: ro, label: '' });
+      pad.el.classList.add('gx-pzxy');
+      this.parts.push(pad);
+      this.pad = pad;
+      root.appendChild(pad.el);
+    }
+    if (container) container.appendChild(root);
+  }
+  pz() { return pzNorm(this.o.get ? this.o.get() : null); }
+  setGain(c, j, v, ph) {
+    if (this.o.readOnly || !this.o.set) return;
+    const p = this.pz();
+    p[c][j] = r5(clamp(fin(+v) ? +v : 0, -1, 1));
+    this.o.set(p, ph || 'set');
+  }
+  refresh() { for (const w of this.parts) w.update(); }
+  destroy() { for (const w of this.parts) w.destroy(); this.parts = []; this.root.remove(); }
+  static mix(pz, X, Y) {
+    const p = pzNorm(pz), x = clamp(fin(+X) ? +X : 0, 0, 1), y = clamp(fin(+Y) ? +Y : 0, 0, 1);
+    const w = [(1 - x) * (1 - y), x * (1 - y), (1 - x) * y, x * y];
+    return [0, 1, 2].map(j => w[0] * p[0][j] + w[1] * p[1][j] + w[2] * p[2][j] + w[3] * p[3][j]);
+  }
+}
+
+/* ================================================================ lfoEditorLarge */
+// lfoEditorLarge(container, o): the LFO Editor overlay (§13.13, inv B16) — the same editor at full size plus the
+// drawing tools Point / Flat / Ramp Up / Ramp Down (LFO_TOOLS). o = the editor's options (a CurveEditor of kind 'lfo',
+// or with path: true a PathEditor for Path-type LFOs) plus { title?, tool?: { get: () => tool, set: tool => void }
+// (shared with the panel's own tool buttons; default: local state), height? (default 60 % of the window, ≥ 240 px),
+// zoom? (default true: pinch zoom, two-finger pan, Ctrl-wheel; menu Reset Zoom, key 0), onClose?: () => void }.
+// role=dialog (aria-modal); Escape (unless the editor used it) and ✕ close; full screen below
+// 1100 px (CSS); focus moves into the editor and returns on close. Returns { el, editor, setTool(t), refresh(),
+// close() (runs onClose once), destroy() (removes without it) } — or null without a document.
+export function lfoEditorLarge(container, o) {
+  o = o || {};
+  const d = D();
+  if (!d) return null;
+  injectStyles();
+  const prevFocus = d.activeElement, host = container || d.body;
+  const el = d.createElement('div');
+  el.className = 'gx-overlay';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-modal', 'true');
+  el.setAttribute('aria-label', o.title || 'LFO Editor');
+  el.tabIndex = -1;
+  const head = d.createElement('div'), title = d.createElement('span'), body = d.createElement('div'), x = d.createElement('button');
+  head.className = 'gx-ovh';
+  title.className = 'gx-ovt';
+  title.textContent = o.title || 'LFO Editor';
+  body.className = 'gx-ovb';
+  x.type = 'button';
+  x.className = 'gx-btn gx-ovx';
+  x.textContent = '✕';
+  x.setAttribute('aria-label', 'Close');
+  head.appendChild(title);
+  let local = 'point', toolSeg = null, closed = false;
+  const tool = () => { const t = o.tool && o.tool.get ? o.tool.get() : local; return LFO_TOOLS.includes(t) ? t : 'point'; };
+  const setTool = t => {
+    const v = LFO_TOOLS.includes(t) ? t : 'point';
+    if (o.tool && o.tool.set) o.tool.set(v); else local = v;
+    if (toolSeg) toolSeg.update();
+  };
+  if (!o.path) {
+    toolSeg = seg({ label: 'Tool', items: ['Point', 'Flat', 'Ramp Up', 'Ramp Down'], get: () => LFO_TOOLS.indexOf(tool()), set: i => setTool(LFO_TOOLS[i]) });
+    toolSeg.el.classList.add('gx-tools');
+    head.appendChild(toolSeg.el);
+  }
+  head.appendChild(x);
+  el.append(head, body);
+  host.appendChild(el);
+  const win = d.defaultView || globalThis;
+  const height = o.height > 0 ? o.height : Math.max(240, Math.round((win.innerHeight || 800) * 0.6));
+  const opts = Object.assign({}, o, { height });
+  delete opts.tool;
+  if (opts.zoom == null) opts.zoom = true; // pinch zoom / two-finger pan (§13.1); o.zoom = false turns it off
+  const editor = o.path ? new PathEditor(body, opts) : new CurveEditor(body, Object.assign(opts, { kind: o.kind || 'lfo', tool }));
+  function finish(run) {
+    if (closed) return;
+    closed = true;
+    editor.destroy();
+    if (toolSeg) toolSeg.destroy();
+    el.remove();
+    if (prevFocus && prevFocus.focus && prevFocus !== d.body && prevFocus.isConnected) prevFocus.focus({ preventScroll: true });
+    if (run && o.onClose) o.onClose();
+  }
+  x.addEventListener('click', () => finish(true));
+  el.addEventListener('keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); finish(true); } });
+  editor.root.focus({ preventScroll: true });
+  return {
+    el, editor, setTool,
+    refresh() { if (!closed) { editor.refresh(); if (toolSeg) toolSeg.update(); } },
+    close: () => finish(true),
+    destroy: () => finish(false),
+  };
 }

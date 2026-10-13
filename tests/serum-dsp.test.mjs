@@ -1,20 +1,35 @@
-// serum-dsp.js unit tests (owner E3). Run: node --test tests/
+// serum-dsp.js unit tests (owner E3; Phase 2: D1). Run: node --test tests/
 // Covers SPEC-serum §10.4 items 1–29: script shape and loading, constants vs tests/fixtures (§3), table store, curves,
 // SFilter (all 96 types) and filterImpulse, then voices (pitch, unison, warps, phase, envelopes, LFOs, chaos, noise,
 // matrix, note-on evaluation, performance destinations), hooks, snapshot, warm-up, allocation-free hot paths and CPU,
 // plus regressions from the reviews (matrix edits while notes sound, reset/warmUp re-sync, transport bookkeeping, WT
 // frame-pair crossfades, unison steals, Env-mode anchored LFOs, point-modulation equivalence, low-note aliasing).
 //
-// Imports only serum-dsp.js (through node:vm, as the spec's loadDSP) and tests/fixtures/* (E1, M1): the compiled
-// default CP/CT (cp-default.json, ct-default.json) and dests.json/filters.json. Wavetables are built here (§7.3).
+// Imports only the classic DSP scripts (through node:vm, as the spec's loadDSP) and tests/fixtures/* (E1, M1; C1): the
+// compiled default CP/CT (cp-default.json, cp2-default.json, ct2-default.json) and dests.json / dests2.json /
+// sources2.json / filters.json. Wavetables are built here (§7.3).
+//
+// Phase 2, M1a (SPEC-serum2 §0.5 step 2): serum-dsp reads CP v2 (VER 2) and needs sx-base.js + sx-mod.js (§0.3 scripts
+// 1 and 4, loaded before it, as in every AudioWorkletGlobalScope). The Phase-1 expectations are unchanged: every test CP is
+// the CP v2 a migrated v1 state compiles to (cpV2: the v1 fixture's values in the v2 shapes, S1 mode), FX rows address
+// FX-context indices (a stand-in layout: g.master 0, g.bypass 1, v1 FX row k at 8 + k − 1), the CT is a full CT v2 (or
+// delivered as parts, mergeCT). Modulation state lives in sx.mod / voice.mod (SxMod, §11.6).
+import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadFixture } from './fixtures/load.mjs';
+import * as core from '../serum-core.js?v=6';
+import { dspScope, source as dspSource, noAlloc as noAlloc2 } from './dsp-scope.mjs';
+import * as GH from './golden-harness.mjs';
+import * as CPU from './cpu-gate.mjs';
+import v8 from 'node:v8';
 
 const SRC = readFileSync(new URL('../serum-dsp.js', import.meta.url), 'utf8');
+const BASE_SRC = readFileSync(new URL('../sx-base.js', import.meta.url), 'utf8');
+const MOD_SRC = readFileSync(new URL('../sx-mod.js', import.meta.url), 'utf8');
 const FX_PATH = fileURLToPath(new URL('../fx-dsp.js', import.meta.url));
 
 function fixture(name) {
@@ -29,7 +44,10 @@ function mkConsole() {
   const rec = (level) => (...a) => msgs.push({ level, text: a.map(String).join(' ') });
   return { log: rec('log'), info: rec('info'), warn: rec('warn'), error: rec('error'), msgs };
 }
-function loadDSP(ctx = vm.createContext({ console: mkConsole() })) {
+// sx-base.js, sx-mod.js, serum-dsp.js in §0.3 order (base: false / mod: false leave that script out)
+function loadDSP(ctx = vm.createContext({ console: mkConsole() }), { base = true, mod = true } = {}) {
+  if (base) vm.runInContext(BASE_SRC, ctx, { filename: 'sx-base.js' });
+  if (mod) vm.runInContext(MOD_SRC, ctx, { filename: 'sx-mod.js' });
   vm.runInContext(SRC, ctx, { filename: 'serum-dsp.js' });
   return { ctx, SerumDSP: ctx.SerumDSP };
 }
@@ -70,11 +88,11 @@ test('loads in a bare vm context and exports the §8.4.2 API with final signatur
   assert.ok(S, 'SerumDSP published');
   assert.ok(Object.isFrozen(S));
   const added = Object.getOwnPropertyNames(vm.runInContext('globalThis', ctx)).filter((k) => !before.has(k));
-  assert.deepEqual(added, ['SerumDSP'], 'nothing but SerumDSP leaks into the global scope');
-  assert.equal(S.VER, 1);
+  assert.deepEqual(added, ['SxBase', 'SxMod', 'SerumDSP'], 'nothing but the three globals leaks into the global scope');
+  assert.equal(S.VER, 2);
   assert.equal(typeof S.epoch, 'number');
   const fns = { storeWT: 2, storeWTFrame: 3, dropWT: 1, attach: 1, reset: 1, idle: 2, transport: 2, begin: 2, fxMods: 1,
-    snapshot: 1, warmUp: 1, bend: 2, evalPts: 4, renderWarp: 4, filterImpulse: 6, SerumVoice: 2, SFilter: 1 };
+    snapshot: 1, mergeCT: 2, recentPitch: 1, warmUp: 1, bend: 2, evalPts: 4, renderWarp: 4, filterImpulse: 6, SerumVoice: 2, SFilter: 1 };
   for (const [k, n] of Object.entries(fns)) {
     assert.equal(typeof S[k], 'function', k);
     assert.equal(S[k].length, n, k + ' arity');
@@ -460,7 +478,7 @@ test('SFilter API semantics: stereo, tick ≡ process, ranges, reset, setType, s
   e.tick(0, 0);
   assert.equal(e.yl, 0, 'ladder → svf → ladder starts from a cleared state');
   // setType clamps and rounds
-  e.setType(200); assert.equal(e.type, 95);
+  e.setType(200); assert.equal(e.type, 107);                 // SPEC-serum2 §11.10: SFilter covers types 0–107
   e.setType(-3); assert.equal(e.type, 0);
   e.setType(1.4); assert.equal(e.type, 1);
   // setRate keeps the cutoff in Hz
@@ -563,36 +581,71 @@ test('SFilter cost (informative): 8 stereo MG Low 24 voices, 1 s at 96 kHz', () 
 
 /* ================================================================== M2: voices, modulation, filters, hooks (§10.4) */
 
-// ---- fixtures and builders (tests import only serum-dsp.js and tests/fixtures/*) ----
-const DESTS = DESTS_FX.DESTS;
+// ---- fixtures and builders (tests import only the DSP scripts and tests/fixtures/*) ----
+const DESTS = DESTS_FX.DESTS;                             // the v1 table (idx 0–247): for its synth rows idx = vi (§3.11.1)
 const DI = {};
 DESTS.forEach((d, i) => { DI[d.id] = i; });
 const SRC_IDS = ['', 'wheel', 'env1', 'env2', 'env3', 'lfo1', 'lfo2', 'lfo3', 'lfo4', 'lfo5', 'lfo6', 'lfo7', 'lfo8', 'velo',
   'note', 'at', 'pat', 'chaos1', 'chaos2', 'noise', 'rand1', 'rand2', 'alt1', 'alt2', 'macro1', 'macro2', 'macro3',
-  'macro4', 'bend', 'mpex', 'mpey', 'mpez', 'relvel', 'fixed'];
+  'macro4', 'bend', 'mpex', 'mpey', 'mpez', 'relvel', 'fixed'];   // the Phase-1 sources (indices unchanged in v2, §3.10)
 const SI = {};
 SRC_IDS.forEach((id, i) => { if (id) SI[id] = i; });
 const CTX_OF = { V: 1, 'V*': 1, 'V*M': 3, G: 2, M: 4 };
 const ON_DESTS = ['a.uni', 'b.uni', 'a.phase', 'b.phase', 'a.rand', 'b.rand', 'n.phase', 'n.rand'];
 const BI_SRC = new Set(['chaos1', 'chaos2', 'noise', 'bend', 'mpex']);
+const NSV = 429, NSRC2 = 62, MAXFX = 8 + 48 * 24, N_LFO = 10;
+// FX-context index (§4.2) of a v1 FX destination in the stand-in layout of these tests: g.master 0, g.bypass 1, the v1
+// FX parameter rows in their v1 order from index 8 (row idx 149 + j → 8 + j)
+const fxk = (id) => (id === 'g.master' ? 0 : id === 'g.bypass' ? 1 : 8 + DI[id] - 149);
 
-// matrix row in CP layout (§4.1): rows = [{src, dst, amt, bi, curve, aux, inv, out}]
+// matrix row in CP v2 layout (§4.1): rows = [{src, dst, amt, bi, curve, aux, inv, out}]; mDst = vi or −1 − FX-ctx index
 function addRow(cp, { src, dst, amt = 1, bi = 0, curve = 0, aux = '', inv = 0, out = 1 }) {
-  const r = cp.mN++, si = SI[src], di = DI[dst], ai = aux ? SI[aux] : 0;
+  const r = cp.mN++, si = SI[src], di = DI[dst], ai = aux ? SI[aux] : 0, fx = di >= 148;
   assert.ok(si && di !== undefined && ai !== undefined, 'row ' + src + ' → ' + dst);
-  cp.mSrc[r] = si; cp.mDst[r] = di; cp.mAmt[r] = amt * out; cp.mBi[r] = bi; cp.mK[r] = 6 * curve; cp.mAux[r] = ai;
-  cp.mInv[r] = inv; cp.mCtx[r] = CTX_OF[DESTS[di].scope]; cp.mOn[r] = ON_DESTS.includes(dst) ? 1 : 0;
+  cp.mSrc[r] = si; cp.mDst[r] = fx ? -1 - fxk(dst) : di; cp.mAmt[r] = amt * out; cp.mBi[r] = bi; cp.mK[r] = 6 * curve;
+  cp.mCrv[r] = -1; cp.mAK[r] = 0; cp.mRise[r] = 0; cp.mFall[r] = 0; cp.mRd[r] = 0;   // CP v2 row fields at their v1 values
+  cp.mAux[r] = ai; cp.mInv[r] = inv; cp.mCtx[r] = fx ? 4 : CTX_OF[DESTS[di].scope]; cp.mOn[r] = ON_DESTS.includes(dst) ? 1 : 0;
   cp.srcUsed[si] = 1;
   if (ai) cp.srcUsed[ai] = 1;
-  if (di < 148) cp.modded[di] = 1;
+  if (!fx && (cp.mCtx[r] & 1)) cp.modded[di] = 1;
 }
-// CP = compiled default (fixture) with base values p {id: n}, matrix rows and extra CP fields
+// the CP v2 a migrated v1 state compiles to (§2.6.2, §4.1), from a CP v1: its values in the v2 shapes, S1 mode
+const CP1 = loadFixture('cp-default.json');
+function cpV2(c1 = CP1) {
+  const c = loadFixture('cp2-default.json');
+  c.base.set(c1.base.subarray(0, 148));
+  c.wt = [c1.wt[0], c1.wt[1], c.wt[2]];
+  c.uniMode.set(c1.uniMode.subarray(0, 2)); c.uniRange.set(c1.uniRange.subarray(0, 2)); c.memSet.set(c1.memSet.subarray(0, 32));
+  c.route.set([0, 0, 1, c1.noiseDirect ? 2 : 0, c1.subDirect ? 2 : 0, 1, 1]);
+  c.fKey[0] = c1.filKey ? 1 : 0; c.outMask = c1.direct ? 3 : 1;
+  c.noiseOneshot = c1.noiseOneshot; c.noiseKey = c1.noiseKey; c.noiseId = c1.noiseId; c.noiseColor = -1;
+  c.lfoMode.fill(2); c.lfoMode.set(c1.lfoMode); c.lfoBpm.set(c1.lfoBpm); c.lfoAnchor.set(c1.lfoAnchor);
+  for (let l = 0; l < N_LFO; l++) c.lfoMono[l] = c.lfoMode[l] === 2 ? 1 : 0;   // migration: v1 'off' = FREE + MONO (§2.6.2)
+  c.lfoLad.set(c1.lfoLad); c.lfoLadN.set(c1.lfoLadN);
+  c.chaosMono.set(c1.chaosMono); c.chaosSh.set(c1.chaosSh); c.macro.fill(0); c.macro.set(c1.macro);
+  for (const k of ['mono', 'legato', 'poly', 'always', 'scaled', 'oneNote', 'veloPorta', 'notePorta', 'os', 'a4', 'smooth']) c[k] = c1[k];
+  c.s1 = 1; c.ctKey = c1.ctKey;
+  return c;
+}
+// extra CP fields; the Phase-1 names map onto CP v2 (subDirect / noiseDirect → route, direct → outMask, filKey → fKey)
+function setExtra(cp, extra) {
+  for (const [k, v] of Object.entries(extra)) {
+    if (k === 'subDirect') cp.route[4] = v ? 2 : 0;
+    else if (k === 'noiseDirect') cp.route[3] = v ? 2 : 0;
+    else if (k === 'direct') cp.outMask = v ? 3 : 1;
+    else if (k === 'filKey') cp.fKey[0] = v ? 1 : 0;
+    else if (k === 'wt') cp.wt = [v[0], v[1], v.length > 2 ? v[2] : cp.wt[2]];
+    else if (ArrayBuffer.isView(v) && ArrayBuffer.isView(cp[k]) && v.length < cp[k].length) cp[k].set(v);
+    else cp[k] = v;
+  }
+  return cp;
+}
+// CP = compiled default with base values p {id: n}, matrix rows and extra CP fields
 function mkCP(p = {}, rows = [], extra = {}) {
-  const cp = loadFixture('cp-default.json');
+  const cp = cpV2();
   for (const [id, n] of Object.entries(p)) { assert.ok(DI[id] < 148, id); cp.base[DI[id]] = n; }
   for (const r of rows) addRow(cp, r);
-  Object.assign(cp, extra);
-  return cp;
+  return setExtra(cp, extra);
 }
 const grid = (id, v) => { const d = DESTS[DI[id]]; return (v - d.lo) / (d.hi - d.lo); };   // stepped-law n
 // §4.4 reference curves
@@ -608,19 +661,19 @@ function evalPtsRef(pts, x) {
   if (dx <= 1e-9) return pts[j + 1][1];
   return pts[j][1] + (pts[j + 1][1] - pts[j][1]) * bendRef((x - pts[j][0]) / dx, 10 * (pts[j][2] || 0));
 }
-// CT = default (fixture) with LFO graphs replaced: lfos = {l: {pts: [[x, y, c, mx?, my?]], start?, loop?}}
+// CT = default full CT v2 (fixture) with LFO graphs replaced: lfos = {l: {pts: [[x, y, c, mx?, my?]], start?, loop?}}
 let ctSeq = 0;
 function mkCT(lfos = {}, cp = null) {
-  const ct = loadFixture('ct-default.json');
+  const ct = loadFixture('ct2-default.json');
   const graphs = [];
-  for (let l = 0; l < 8; l++) {
+  for (let l = 0; l < N_LFO; l++) {
     const o = ct.lfoPtsOff[l], n = ct.lfoPtsOff[l + 1] - o, pts = [];
     for (let j = 0; j < n; j++) pts.push([ct.lfoPts[3 * (o + j)], ct.lfoPts[3 * (o + j) + 1], ct.lfoPts[3 * (o + j) + 2], 0, 0]);
     graphs.push(lfos[l] ? { start: 0, loop: -1, ...lfos[l] } : { pts, start: 0, loop: -1 });
   }
   const tot = graphs.reduce((a, g) => a + g.pts.length, 0);
-  ct.lfoPts = new Float64Array(3 * tot); ct.lfoPm = new Uint8Array(2 * tot); ct.lfoPtsOff = new Uint16Array(9);
-  ct.lfoPmAny = new Uint8Array(8); ct.lfoStart = new Float64Array(8); ct.lfoLoop = new Float64Array(8);
+  ct.lfoPts = new Float64Array(3 * tot); ct.lfoPm = new Uint8Array(2 * tot); ct.lfoPtsOff = new Uint16Array(N_LFO + 1);
+  ct.lfoPmAny = new Uint8Array(N_LFO); ct.lfoStart = new Float64Array(N_LFO); ct.lfoLoop = new Float64Array(N_LFO);
   let o = 0;
   graphs.forEach((g, l) => {
     ct.lfoPtsOff[l] = o;
@@ -634,10 +687,35 @@ function mkCT(lfos = {}, cp = null) {
     ct.lfoLoop[l] = g.loop >= 0 ? g.pts[g.loop][0] : -1;
     o += g.pts.length;
   });
-  ct.lfoPtsOff[8] = o;
+  ct.lfoPtsOff[N_LFO] = o;
   ct.key = 'test' + (++ctSeq);
   if (cp) cp.ctKey = ct.key;
   return ct;
+}
+// an FXP whose base is in FX-context order (§4.2) in the stand-in layout of fxk, from the v1 FXP fixture
+function fxpV2(f1) {
+  const base = new Float64Array(8 + 99);
+  base[0] = f1.base[0]; base[1] = f1.base[86];
+  for (let j = 1; j < 100; j++) base[8 + j - 1] = f1.base[j];
+  return Object.assign({}, f1, { base });
+}
+// a full CT v2 as CT v2 parts (§4.1 serumT = {key, parts}); part keys = name + '#' + the CT key unless keyOf says otherwise
+function ctParts(ct, keyOf = (name) => name + '#' + ct.key) {
+  const parts = {}, L = 1025;
+  for (let l = 0; l < N_LFO; l++) {
+    const o = ct.lfoPtsOff[l], n = ct.lfoPtsOff[l + 1] - o;
+    parts['lfo' + l] = { key: keyOf('lfo' + l), n, tab: ct.lfoTab.slice(l * L, (l + 1) * L), pts: ct.lfoPts.slice(3 * o, 3 * (o + n)),
+      pm: ct.lfoPm.slice(2 * o, 2 * (o + n)), pmAny: ct.lfoPmAny[l], start: ct.lfoStart[l], loop: ct.lfoLoop[l] };
+    parts['path' + l] = { key: keyOf('path' + l), x: ct.pathX.slice(l * L, (l + 1) * L), y: ct.pathY.slice(l * L, (l + 1) * L) };
+  }
+  for (let o = 0; o < 3; o++) {
+    parts['remap' + o] = { key: keyOf('remap' + o), tab: ct.remap.slice(o * 2049, (o + 1) * 2049) };
+    parts['spec' + o] = { key: keyOf('spec' + o), tab: ct.specFilt.slice(o * 513, (o + 1) * 513) };
+  }
+  parts.velo = { key: keyOf('velo'), tab: ct.veloTab.slice() };
+  parts.note = { key: keyOf('note'), tab: ct.noteTab.slice() };
+  for (let r = 0; r < 64; r++) parts['crv' + r] = { key: keyOf('crv' + r), tab: ct.crv.slice(r * 129, (r + 1) * 129) };
+  return { key: ct.key, parts };
 }
 
 // ---- FFT and wavetable entries (§7.3 mip levels) ----
@@ -983,7 +1061,7 @@ test('memory: a voice without delay memory ≤ 256 KB at 192 kHz; delay families
     let n = 0;
     const walk = (o, key) => {
       if (!o || typeof o !== 'object' || seen.has(o)) return;
-      if (['proc', 'lvD', 'sD', 'nLvL', 'nLvR'].includes(key)) return;   // host / shared wavetable data
+      if (['proc', 'lvD', 'sD', 'nLvL', 'nLvR', 'm'].includes(key)) return;   // host / shared wavetable data / the processor's sx.mod
       seen.add(o);
       if (ArrayBuffer.isView(o)) { if (!bufs.has(o.buffer)) { bufs.add(o.buffer); n += o.buffer.byteLength; } return; }
       for (const k of Object.keys(o)) walk(o[k], k);
@@ -1437,7 +1515,7 @@ test('portamento: mono overlap glide 0.25 s linear (125 ms → 66 ± 0.3 st), sc
     proc.held = [from, to];
     v.noteOn(to, 1, false, 1);
     const pts = [];
-    run(S, proc, [v], spansOf(0.6), { each: (s) => pts.push([s * 128 / 48000, v.nP]) });
+    run(S, proc, [v], spansOf(0.6), { each: (s) => pts.push([s * 128 / 48000, v.mod.nP]) });
     return (t) => { const e = pts.find((q) => q[0] >= t - 1e-9); return e ? e[1] : NaN; };
   };
   const g = glide({}, {}, 60, 72);
@@ -1453,13 +1531,15 @@ test('portamento: mono overlap glide 0.25 s linear (125 ms → 66 ± 0.3 st), sc
   v.noteOff(); proc.held = [];
   run(S, proc, [v], 40);
   proc.held = [67]; v.noteOn(67, 1, false, 1);
-  assert.equal(v.nP, 67);
+  assert.equal(v.mod.nP, 67);
+  assert.equal(S.recentPitch(proc), 67, 'recentPitch = the recent voice\'s pitch');
+  assert.equal(S.recentPitch({}), 60);
   // always: glides from the last pitch even without overlap
   const al = setup({ cp: mkCP({ 'g.porta': 0.5 }, [], { mono: 1, always: 1 }) });
   al.proc.held = [60]; al.vs[0].noteOn(60, 1, false, 1); run(al.S, al.proc, al.vs, 4); al.vs[0].noteOff(); al.proc.held = [];
   run(al.S, al.proc, al.vs, 4);
   al.proc.held = [72]; al.vs[0].noteOn(72, 1, false, 1);
-  assert.equal(al.vs[0].nP, 60);
+  assert.equal(al.vs[0].mod.nP, 60);
   // pitch tracking off: no glide on that oscillator, MIDI 0
   const tr = setup({ cp: mkCP({ 'g.porta': 0.5, 'a.track': 0 }, [], { mono: 1 }), tables: { 'factory:Default': SINE } });
   tr.proc.held = [60, 72]; tr.vs[0].noteOn(60, 1, false, 1); tr.vs[0].noteOn(72, 1, true, 1);
@@ -1516,7 +1596,7 @@ test('tables: missing id → silence; storeWTFrame changes the next chunk; dropW
 
 const lfoCP = (l, mode, p = {}, rows = [], extra = {}) => {      // LFO l in mode, BPM off (Hz rate law)
   const cp = mkCP(p, rows, extra);
-  cp.lfoMode[l] = mode; cp.lfoBpm[l] = 0; cp.lfoAnchor[l] = 0;
+  cp.lfoMode[l] = mode; cp.lfoMono[l] = mode === 2 ? 1 : 0; cp.lfoBpm[l] = 0; cp.lfoAnchor[l] = 0;
   return cp;
 };
 const sameArr = (a, b, msg) => {
@@ -1547,7 +1627,7 @@ test('LFO point modulation: a bus row raises a linked point (Trig, voice context
       run(S, proc, [v], 3);
       const want = withRow ? 1 : 0.2;
       assert.ok(Math.abs(S.snapshot(proc).lfoOut[0] - want) < 1e-6, `mode ${mode} row ${withRow}: ${S.snapshot(proc).lfoOut[0]}`);
-      if (mode === 2) assert.ok(Math.abs(proc.sx.g[5 * 32] - want) < 1e-6, 'Off LFO global value uses the mono bus');
+      if (mode === 2) assert.ok(Math.abs(proc.sx.mod.g[5 * 32] - want) < 1e-6, 'Off LFO global value uses the mono bus');
     }
   }
   // X link: the point's x moves (between its neighbours) with the bus value
@@ -1556,7 +1636,7 @@ test('LFO point modulation: a bus row raises a linked point (Trig, voice context
   const { S, proc, vs: [v] } = setup({ cp, ct });
   proc.sx.mon = 1;
   v.noteOn(60, 1, false, 1);
-  v.lPh[0] = 0.3;                                           // bus2 = 2·0.3 − 1 = −0.4 → peak at x 0.1: y(0.3) = 1 − 0.2/0.9
+  v.mod.lPh[0] = 0.3;                                           // bus2 = 2·0.3 − 1 = −0.4 → peak at x 0.1: y(0.3) = 1 − 0.2/0.9
   run(S, proc, [v], 1);
   assert.ok(Math.abs(S.snapshot(proc).lfoOut[0] - (1 - 0.2 / 0.9)) < 1e-6);
 });
@@ -1570,11 +1650,11 @@ test('LFOs: BPM ladder period, Off + Anchor follows the song beat, Env hold/loop
     proc.sx.mon = 1;
     v.noteOn(60, 1, false, 1);
     const wraps = [];
-    let last = v.lPh[0], t = 0;
+    let last = v.mod.lPh[0], t = 0;
     const N = 128 * proc.OS, b = new Float64Array(N);
     for (let s = 0; s < spansOf(2.2); s++) {
       S.begin(proc, N);
-      for (let c = 0; c < 32; c++) { v.render(b, b, proc.CH); t += 4 / 48000; if (v.lPh[0] < last) wraps.push(t); last = v.lPh[0]; }
+      for (let c = 0; c < 32; c++) { v.render(b, b, proc.CH); t += 4 / 48000; if (v.mod.lPh[0] < last) wraps.push(t); last = v.mod.lPh[0]; }
     }
     const per = (wraps[wraps.length - 1] - wraps[0]) / (wraps.length - 1);
     assert.ok(Math.abs(per - 0.5) <= 4 / 48000, 'period ' + per);
@@ -1591,12 +1671,12 @@ test('LFOs: BPM ladder period, Off + Anchor follows the song beat, Env hold/loop
       S.begin(proc, 256);
       const c = proc.sx.nCh - 1, b = beat + c * (proc.CH / proc.fs) * 2;
       const want = (0.25 + b) % 1;
-      assert.ok(Math.abs(proc.sx.oPh[0] - want) < 1e-9, `beat ${beat}: ${proc.sx.oPh[0]} vs ${want}`);
+      assert.ok(Math.abs(proc.sx.mod.oPh[0] - want) < 1e-9, `beat ${beat}: ${proc.sx.mod.oPh[0]} vs ${want}`);
     }
     proc.songBeat = () => null;                             // stopped: the processor beat clock carries on
-    const b0 = proc.sx.beatClk;
+    const b0 = proc.sx.mod.beatClk;
     S.begin(proc, 256);
-    assert.ok(Math.abs(proc.sx.beatClk - (b0 + 32 * (proc.CH / proc.fs) * 2)) < 1e-9);
+    assert.ok(Math.abs(proc.sx.mod.beatClk - (b0 + 32 * (proc.CH / proc.fs) * 2)) < 1e-9);
   }
   // Env mode: one pass, holds y(1); with a loop point: loops while gated, runs out after note-off
   {
@@ -1606,7 +1686,7 @@ test('LFOs: BPM ladder period, Off + Anchor follows the song beat, Env hold/loop
     proc.sx.mon = 1;
     v.noteOn(60, 1, false, 1);
     run(S, proc, [v], spansOf(0.5));
-    assert.equal(v.lPh[0], 1);
+    assert.equal(v.mod.lPh[0], 1);
     assert.ok(Math.abs(S.snapshot(proc).lfoOut[0] - 0.3) < 1e-6, 'holds y(1)');
     const cp2 = lfoCP(0, 1, { 'l1.rate': 0.6 });
     const ct2 = mkCT({ 0: { pts: [[0, 0, 0], [0.5, 1, 0], [1, 0.3, 0]], loop: 1 } }, cp2);
@@ -1614,11 +1694,11 @@ test('LFOs: BPM ladder period, Off + Anchor follows the song beat, Env hold/loop
     q.proc.sx.mon = 1;
     q.vs[0].noteOn(60, 1, false, 1);
     let minPh = 1;
-    run(q.S, q.proc, q.vs, spansOf(1), { each: (s) => { if (s > spansOf(0.3)) minPh = Math.min(minPh, q.vs[0].lPh[0]); } });
-    assert.ok(minPh >= 0.5 && q.vs[0].lPh[0] < 1, 'loops between the loop point and the end while gated');
+    run(q.S, q.proc, q.vs, spansOf(1), { each: (s) => { if (s > spansOf(0.3)) minPh = Math.min(minPh, q.vs[0].mod.lPh[0]); } });
+    assert.ok(minPh >= 0.5 && q.vs[0].mod.lPh[0] < 1, 'loops between the loop point and the end while gated');
     q.vs[0].noteOff();
     run(q.S, q.proc, q.vs, spansOf(0.3));
-    assert.equal(q.vs[0].lPh[0], 1, 'runs out after note-off');
+    assert.equal(q.vs[0].mod.lPh[0], 1, 'runs out after note-off');
   }
   // delay 0.1 s then rise 0.2 s; smooth τ = 0.5·smooth³; rate 0 holds
   {
@@ -1634,7 +1714,7 @@ test('LFOs: BPM ladder period, Off + Anchor follows the song beat, Env hold/loop
       const want = tt < 0.1 ? 0.2 : tt < 0.3 ? 0.2 + 0.8 * (tt - 0.1) / 0.2 : 1;
       assert.ok(Math.abs(y - want) < 1e-9 + 0.8 * 4 / 48000 / 0.2, `delay/rise at ${tt.toFixed(4)}: ${y} vs ${want}`);
     }
-    assert.equal(v.lPh[0], 0.5, 'rate 0 holds the phase');
+    assert.equal(v.mod.lPh[0], 0.5, 'rate 0 holds the phase');
     const sm = 0.6, tau = 0.5 * sm ** 3;
     const cps = lfoCP(0, 0, { 'l1.rate': 0, 'l1.delay': 0.1 / 4, 'l1.smooth': sm }, [{ src: 'lfo1', dst: 'f.res', amt: 0.1 }]);
     const cts = mkCT({ 0: { pts: [[0, 0, 0], [0.001, 1, 0], [0.5, 1, 0], [1, 1, 0]], start: 2 } }, cps);
@@ -1658,7 +1738,7 @@ test('envelopes: linear attack at curve 0.5, decay curve, curve rows, sustain la
     const tr = [];
     const N = 128 * proc.OS, b = new Float64Array(N);
     let t = 0;
-    for (let s = 0; s < spansOf(sec); s++) { S.begin(proc, N); for (let c = 0; c < 32; c++) { tr.push([t, v.eV[0], v.eSt[0], v.eT[0], v.eV[1]]); v.render(b, b, proc.CH); t += 4 / 48000; } }
+    for (let s = 0; s < spansOf(sec); s++) { S.begin(proc, N); for (let c = 0; c < 32; c++) { tr.push([t, v.eV[0], v.mod.eSt[0], v.mod.eT[0], v.eV[1]]); v.render(b, b, proc.CH); t += 4 / 48000; } }
     return { tr, v, S, proc };
   };
   const at = (tr, t, k = 1) => tr.reduce((a, r) => (Math.abs(r[0] - t) < Math.abs(a[0] - t) ? r : a))[k];
@@ -1679,7 +1759,7 @@ test('envelopes: linear attack at curve 0.5, decay curve, curve rows, sustain la
   assert.ok(Math.abs(at(s.tr, 0.5, 4) - 0.5) < 1e-9, 'ENV 2 sustain linear');
   // release from the current level along the release curve
   s.v.noteOff();
-  assert.equal(s.v.eSt[0], 5);
+  assert.equal(s.v.mod.eSt[0], 5);
   const r = run(s.S, s.proc, [s.v], 1);
   assert.ok(s.v.eV[0] < 0.25 && s.v.eV[0] > 0, 'releasing from 0.25');
   assert.ok(r.L.every(Number.isFinite));
@@ -1695,8 +1775,8 @@ test('chaos: bounded at the maximum rate, deterministic, BPM snaps the S&H perio
     const out = [];
     for (let s = 0; s < spansOf(60); s++) {
       S.begin(proc, 128);
-      if (s % 50 === 0) out.push(proc.sx.g[17 * 32 + 5], proc.sx.g[18 * 32 + 9]);
-      for (let c = 0; c < 32; c++) { const a = proc.sx.g[17 * 32 + c], b = proc.sx.g[18 * 32 + c]; if (!(Math.abs(a) <= 1 && Math.abs(b) <= 1)) assert.fail('chaos out of range'); }
+      if (s % 50 === 0) out.push(proc.sx.mod.g[17 * 32 + 5], proc.sx.mod.g[18 * 32 + 9]);
+      for (let c = 0; c < 32; c++) { const a = proc.sx.mod.g[17 * 32 + c], b = proc.sx.mod.g[18 * 32 + c]; if (!(Math.abs(a) <= 1 && Math.abs(b) <= 1)) assert.fail('chaos out of range'); }
     }
     return out;
   };
@@ -1718,7 +1798,7 @@ test('chaos: bounded at the maximum rate, deterministic, BPM snaps the S&H perio
   let prev = null, t = 0;
   for (let s = 0; s < spansOf(3); s++) {
     q.S.begin(q.proc, 128);
-    for (let c = 0; c < 32; c++) { const y = q.proc.sx.g[17 * 32 + c]; if (prev !== null && y !== prev) changes.push(t); prev = y; t += 4 / 48000; }
+    for (let c = 0; c < 32; c++) { const y = q.proc.sx.mod.g[17 * 32 + c]; if (prev !== null && y !== prev) changes.push(t); prev = y; t += 4 / 48000; }
   }
   const gaps = changes.slice(1).map((x, i) => x - changes[i]);
   assert.ok(gaps.length >= 4 && gaps.every((g) => Math.abs(g - 0.5) <= 4 / 48000 + 1e-9), 'S&H every 0.5 s: ' + gaps);
@@ -1775,27 +1855,27 @@ test('noise: keytrack doubles the rate per octave, PITCH law, one-shot end → z
 /* ------------------------------------------------------------------ fxMods, snapshot (§5.5, §8.4.4, §10.4.15) */
 
 test('fxMods: Env1 → fx.fil.cutoff while the recent voice sounds; snapshot eff follows LFO → cutoff; no sx → null (§10.4.15)', () => {
-  const fxp = loadFixture('fxp-default.json');
+  const fxp = fxpV2(loadFixture('fxp-default.json')), K = fxk('fx.fil.cutoff');
   const cp = mkCP({ 'e1.att': 0, 'e1.rel': 0.3 }, [{ src: 'env1', dst: 'fx.fil.cutoff', amt: 0.5 }, { src: 'lfo1', dst: 'f.cutoff', amt: 0.3 }]);
   const { S, proc, vs: [v] } = setup({ cp, fxp });
   assert.equal(S.snapshot({}), null);
   const o0 = S.fxMods(proc);
-  assert.equal(o0.length, 100);
+  assert.equal(o0.length, MAXFX);
   v.noteOn(60, 1, false, 1);
   const effs = [];
   run(S, proc, [v], 40, { each: (s) => { if (s > 1) effs.push(S.snapshot(proc).eff[42]); } });
   const off = S.fxMods(proc);
   assert.equal(off, o0, 'reused array');
-  assert.ok(Math.abs(off[79] - 0.5) < 1e-9, 'Env1 (sustain 1) × 0.5 at fx idx 79: ' + off[79]);
-  assert.ok(off.every((x, k) => k === 79 || x === 0));
+  assert.ok(Math.abs(off[K] - 0.5) < 1e-9, `Env1 (sustain 1) × 0.5 at FX-ctx index ${K}: ` + off[K]);
+  assert.ok(off.every((x, k) => k === K || x === 0));
   const sn = S.snapshot(proc);
-  assert.ok(Math.abs(sn.eff[148 + 79] - Math.min(1, fxp.base[79] + 0.5)) < 1e-6, 'snapshot FX eff = base + offset');
+  assert.ok(Math.abs(sn.eff[NSV + K] - Math.min(1, fxp.base[K] + 0.5)) < 1e-6, 'snapshot FX eff = base + offset (FX-ctx order after the 429 vi)');
   assert.ok(Math.max(...effs) - Math.min(...effs) > 0.1, 'eff[42] follows the LFO');
   v.noteOff();
   run(S, proc, [v], 60);
-  assert.ok(Math.abs(S.fxMods(proc)[79]) < 1e-4, 'back to 0 after the release');
+  assert.ok(Math.abs(S.fxMods(proc)[K]) < 1e-4, 'back to 0 after the release');
   // snapshot shape and counters
-  assert.equal(sn.envStage.length, 3);
+  assert.equal(sn.envStage.length, 4);
   assert.equal(sn.tapRate, proc.fs);
   assert.ok(sn.maxVoices === 8 * 16 && sn.oscVoices >= 0);
 });
@@ -1834,16 +1914,17 @@ test('hooks: transport makes renders repeatable; idle advances like rendering; r
   const mk = () => setup({ cp: mkCP({}, [{ src: 'chaos1', dst: 'l1.rate', amt: 0.1 }], { chaosMono: Uint8Array.from([1, 0]) }), n: 0 });
   const A = mk(), B = mk();
   for (let s = 0; s < 300; s++) { A.S.begin(A.proc, 256); B.S.idle(B.proc, 128); }
-  for (let l = 0; l < 8; l++) assert.ok(Math.abs(A.proc.sx.oPh[l] - B.proc.sx.oPh[l]) < 1e-9);
-  assert.ok(Math.abs(A.proc.sx.beatClk - B.proc.sx.beatClk) < 1e-9);
-  assert.deepEqual(Array.from(A.proc.sx.mch), Array.from(B.proc.sx.mch));
+  for (let l = 0; l < 8; l++) assert.ok(Math.abs(A.proc.sx.mod.oPh[l] - B.proc.sx.mod.oPh[l]) < 1e-9);
+  assert.ok(Math.abs(A.proc.sx.mod.beatClk - B.proc.sx.mod.beatClk) < 1e-9);
+  assert.deepEqual(Array.from(A.proc.sx.mod.mch), Array.from(B.proc.sx.mod.mch));
   // reset restores every sx field to its attach state (the host's monitor flag survives)
   proc.sx.mon = 1;
   S.reset(proc);
   const fresh = S.attach(makeProc());
+  const noFn = (x) => JSON.parse(JSON.stringify(x, (key, v) => (typeof v === 'function' ? undefined : ArrayBuffer.isView(v) ? Array.from(v) : v)));
   for (const k of Object.keys(fresh)) {
     if (k === 'snap' || k === 'mon') continue;
-    assert.deepEqual(proc.sx[k], fresh[k], 'reset restores ' + k);
+    assert.deepEqual(k === 'mod' ? noFn(proc.sx[k]) : proc.sx[k], k === 'mod' ? noFn(fresh[k]) : fresh[k], 'reset restores ' + k);
   }
   assert.equal(proc.sx.mon, 1);
 });
@@ -1851,7 +1932,7 @@ test('hooks: transport makes renders repeatable; idle advances like rendering; r
 /* ------------------------------------------------------------------ performance destinations, note-on, voices (§10.4.24–28) */
 
 test('performance destinations: Fixed → g.wheel / g.bend add to the host values in the mono context (§10.4.24)', () => {
-  const at = (proc, src) => proc.sx.g[src * 32 + proc.sx.nCh - 1];
+  const at = (proc, src) => proc.sx.mod.g[src * 32 + proc.sx.nCh - 1];
   const { S, proc } = setup({ cp: mkCP({}, [{ src: 'fixed', dst: 'g.wheel', amt: 0.5 }, { src: 'fixed', dst: 'g.bend', amt: 0.25 }]), n: 0 });
   proc.wheel = 0.3; proc.bendRaw = 0;
   for (let s = 0; s < 20; s++) S.begin(proc, 256);
@@ -1896,11 +1977,11 @@ test('poly legato copies the gated voice\'s envelope; poly AT; release velocity 
     run(S, proc, [a, b], 30);
     b.stamp = 2; b.noteOn(64, 1, false, 1);
     if (legato) {
-      assert.equal(b.eSt[0], a.eSt[0]);
+      assert.equal(b.mod.eSt[0], a.mod.eSt[0]);
       assert.ok(Math.abs(b.eV[0] - a.eV[0]) < 1e-12 && b.eV[0] > 0.3, 'starts at the gated voice\'s level');
     } else {
       assert.equal(b.eV[0], 0);
-      assert.equal(b.eSt[0], 1);
+      assert.equal(b.mod.eSt[0], 1);
     }
   }
   // poly AT: channel AT until poly pressure arrives, then per note
@@ -1939,14 +2020,15 @@ test('attach / begin / fxMods / snapshot: shapes, idempotence, span bookkeeping,
   const sx = S.attach(proc);
   assert.equal(proc.sx, sx);
   assert.equal(S.attach(proc), sx, 'idempotent');
-  const g = sx.g;
+  const g = sx.mod.g;
   S.attach(proc);
-  assert.equal(sx.g, g, 'no reallocation');
-  assert.equal(g.length, 34 * 32);
-  for (const [k, n] of [['monoSrc', 34], ['monoOff', 148], ['monoEff', 148], ['tap', 1024], ['fxOff', 100]]) assert.equal(sx[k].length, n, k);
+  assert.equal(sx.mod.g, g, 'no reallocation');
+  assert.equal(g.length, NSRC2 * 32);
+  for (const [k, n] of [['monoSrc', NSRC2], ['monoOff', NSV], ['monoEff', NSV], ['fxOff', MAXFX], ['beatC', 32], ['macro', 8]]) assert.equal(sx.mod[k].length, n, k);
+  assert.equal(sx.tap.length, 1024);
   const off = S.fxMods(proc);
   assert.equal(off[Symbol.toStringTag], 'Float64Array');
-  assert.equal(off.length, 100);
+  assert.equal(off.length, MAXFX);
   assert.equal(S.fxMods(proc), off, 'reused');
   assert.ok(off.every((v) => v === 0));
   S.begin(proc, 256);
@@ -1954,19 +2036,19 @@ test('attach / begin / fxMods / snapshot: shapes, idempotence, span bookkeeping,
   S.begin(proc, 16);
   assert.equal(sx.span, 2); assert.equal(sx.nCh, 2);
   // a patch: snapshot shows the bases until a note plays; FX eff = FXP base (+ offsets) clamped
-  const cp = mkCP({ 'f.cutoff': 0.25 }), fxp = loadFixture('fxp-default.json');
+  const cp = mkCP({ 'f.cutoff': 0.25 }), fxp = fxpV2(loadFixture('fxp-default.json'));
   proc.p = { serum: cp, fxr: fxp };
   S.begin(proc, 256);
   const snap = S.snapshot(proc);
   assert.equal(S.snapshot(proc), snap, 'reused object');
-  const lens = { eff: 248, lfoPh: 8, lfoOut: 8, env: 3, envStage: 3, envT: 3, wtPos: 2, memNow: 32, filtTap: 1024 };
+  const lens = { eff: NSV + MAXFX, lfoPh: 10, lfoOut: 10, lfoY: 10, env: 4, envStage: 4, envT: 4, wtPos: 3, memNow: 48, filtTap: 2048 };
   for (const [k, n] of Object.entries(lens)) assert.equal(snap[k].length, n, k);
   for (const k of ['noisePos', 'notes', 'oscVoices', 'maxVoices', 'tapRate']) assert.equal(typeof snap[k], 'number', k);
   assert.equal(snap.eff[42], 0.25);
-  for (let k = 0; k < 100; k++) assert.equal(snap.eff[148 + k], Math.fround(fxp.base[k]));
+  for (let k = 0; k < MAXFX; k++) assert.equal(snap.eff[NSV + k], Math.fround(k < fxp.base.length ? fxp.base[k] : 0));
   assert.equal(snap.maxVoices, 8 * 16, 'poly 8 × (16 · A on)');
   // a CP with another major version: begin is bookkeeping only, voices stay silent
-  proc.p = { serum: { ...cp, ver: 2 }, fxr: null };
+  proc.p = { serum: { ...cp, ver: 3 }, fxr: null };
   S.begin(proc, 256);
   assert.equal(sx.ok, 0);
   assert.ok(S.fxMods(proc).every((v) => v === 0));
@@ -1982,7 +2064,7 @@ test('SerumVoice: engine fields, reserved names, version guard (warn once, silen
   for (const k of ['det', 'pitch', 'target', 'glc']) assert.equal(Object.prototype.hasOwnProperty.call(v, k), false, k);
   v.noteOn(60, 0.8, false, 1);
   assert.deepEqual([v.active, v.gate, v.note, v.vel], [true, true, 60, 0.8]);
-  assert.equal(proc.sx.recent, v);
+  assert.equal(proc.sx.mod.recent, v);
   for (const k of ['det', 'pitch', 'target', 'glc']) assert.equal(Object.prototype.hasOwnProperty.call(v, k), false, k);
   const L = new Float64Array(256).fill(0.5), R = new Float64Array(256).fill(-0.5);
   S.begin(proc, 256);
@@ -1995,15 +2077,15 @@ test('SerumVoice: engine fields, reserved names, version guard (warn once, silen
   for (let i = 0; i < 256; i++) { assert.equal(L[i], 0.5 + l2[i]); assert.equal(R[i], -0.5 + r2[i]); }
   assert.ok(maxAbs(l2) > 0.01);
   v.noteOff(0.2);
-  assert.equal(v.gate, false); assert.equal(v.relvel, 0.2);
+  assert.equal(v.gate, false); assert.equal(v.mod.relvel, 0.2);
   v.noteOn(61, 1, false, 1); v.noteOff();
-  assert.equal(v.relvel, 0.5);
+  assert.equal(v.mod.relvel, 0.5);
   v.kill();
   assert.equal(v.active, false);
   // another major version: warn once, stay silent/inactive
   const x = new S.SerumVoice(proc, 4);
-  x.apply({ serum: { ...mkCP(), ver: 2 } });
-  x.apply({ serum: { ...mkCP(), ver: 2 } });
+  x.apply({ serum: { ...mkCP(), ver: 1 } });
+  x.apply({ serum: { ...mkCP(), ver: 3 } });
   x.noteOn(60, 1, false, 1);
   assert.equal(x.active, false);
   assert.equal(con.msgs.filter((m) => m.level === 'warn' && m.text.includes('CP version')).length, 1);
@@ -2151,9 +2233,12 @@ test('warmUp leaves no state: no __warm table, later output bit-identical to a p
 
 /* ------------------------------------------------------------------ CPU budgets (§8.4.3, §10.4.17) */
 
-test('CPU budgets (a), (b), (c) at OS 2 (outside node:vm; fail only beyond 3×), OS 1 and 4 informative (§10.4.17)', () => {
+test('CPU budgets (a), (b), (c) at OS 2 (outside node:vm; fail only beyond 3×), OS 1 and 4 informative (§10.4.17)', async () => {
+  const calib = CPU.T_REF_CALIB > 0 ? await CPU.calibRowB() : null;
   // evaluated in this realm (no vm global interceptor), as in the AudioWorkletGlobalScope
-  const had = globalThis.SerumDSP;
+  const had = [globalThis.SxBase, globalThis.SxMod, globalThis.SerumDSP];
+  vm.runInThisContext(BASE_SRC, { filename: 'sx-base.js' });
+  vm.runInThisContext(MOD_SRC, { filename: 'sx-mod.js' });
   vm.runInThisContext(SRC, { filename: 'serum-dsp.js' });
   const S = globalThis.SerumDSP;
   try {
@@ -2166,7 +2251,7 @@ test('CPU budgets (a), (b), (c) at OS 2 (outside node:vm; fail only beyond 3×),
         { wt: scen === 'a' ? ['cpu:1', 'cpu:1'] : ['cpu:256', 'cpu:256'] });
       if (scen === 'b') {
         cp.base[D.A_WARPMODE] = 4 / 22; cp.base[D.B_WARPMODE] = 4 / 22; cp.base[D.A_WARP] = 0.5; cp.base[D.B_WARP] = 0.5;
-        cp.lfoMode[0] = 0; cp.lfoBpm[0] = 0; cp.base[D.L1_RATE] = Math.pow(2 / 100, 0.25);
+        cp.lfoMode[0] = 0; cp.lfoMono[0] = 0; cp.lfoBpm[0] = 0; cp.base[D.L1_RATE] = Math.pow(2 / 100, 0.25);
         addRow(cp, { src: 'lfo1', dst: 'a.wt' }); addRow(cp, { src: 'lfo1', dst: 'b.wt' });
       }
       proc.p = { serum: cp, fxr: null }; proc.ct = null;
@@ -2190,14 +2275,34 @@ test('CPU budgets (a), (b), (c) at OS 2 (outside node:vm; fail only beyond 3×),
       res[OS + sc] = [ms, bm];
       console.log(`  CPU (${sc}) OS ${OS}: ${ms.toFixed(1)} ms per second of audio; begin + fxMods ${bm.toFixed(2)} ms`);
     }
+    // the gated OS 2 rows: calibrated (× t_ref(calib) / t(calib), the calibration timed right before and after each run)
+    // and re-measured (≤ 5 attempts) while over the bound (tests/cpu-gate.mjs; RULINGS2 Performance)
+    const tc = () => { const t0 = performance.now(); calib(); return performance.now() - t0; };
+    for (const [sc, target] of [['a', 400], ['b', 900]]) {
+      for (let attempt = 0; attempt < 5 && !(res['2' + sc][0] <= 3 * target); attempt++) {
+        const c0 = calib ? tc() : 0, [ms] = bench(2, sc), c1 = calib ? tc() : 0;
+        const v = calib ? ms * CPU.T_REF_CALIB / ((c0 + c1) / 2) : ms;
+        if (v < res['2' + sc][0]) res['2' + sc][0] = v;
+      }
+    }
     assert.ok(res['2a'][0] <= 3 * 400, '(a) ' + res['2a'][0].toFixed(0) + ' ms (target 400)');
     assert.ok(res['2b'][0] <= 3 * 900, '(b) ' + res['2b'][0].toFixed(0) + ' ms (target 900)');
     assert.ok(res['2a'][1] <= 3 * 0.02 * res['2a'][0], '(c) ' + res['2a'][1].toFixed(2) + ' ms (target 2 % of (a))');
-    // 1x quality (and the CPU safeguard's OS cap) must save CPU: OS 1 cheaper than OS 2 (measured ≈ 0.7×)
-    console.log(`  CPU OS 1 / OS 2: (a) ${(res['1a'][0] / res['2a'][0]).toFixed(2)}, (b) ${(res['1b'][0] / res['2b'][0]).toFixed(2)}`);
-    assert.ok(res['1a'][0] < res['2a'][0] && res['1b'][0] < res['2b'][0], 'OS 1 costs less than OS 2');
+    // 1x quality (and the CPU safeguard's OS cap) must save CPU: OS 1 cheaper than OS 2 (measured ≈ 0.7×). The test
+    // files run in parallel, so the ratio is the median of 3 back-to-back pairs in alternating order (a load stretch
+    // slows both members of a pair)
+    const ratio = (sc) => {
+      const q = [res['1' + sc][0] / res['2' + sc][0]];
+      for (let k = 0; k < 2; k++) {
+        if (k & 1) { const a = bench(1, sc)[0], b = bench(2, sc)[0]; q.push(a / b); } else { const b = bench(2, sc)[0], a = bench(1, sc)[0]; q.push(a / b); }
+      }
+      return q.sort((x, y) => x - y)[1];
+    };
+    const ra = ratio('a'), rb = ratio('b');
+    console.log(`  CPU OS 1 / OS 2 (median of 3 pairs): (a) ${ra.toFixed(2)}, (b) ${rb.toFixed(2)}`);
+    assert.ok(ra < 1 && rb < 1, 'OS 1 costs less than OS 2');
   } finally {
-    globalThis.SerumDSP = had;
+    [globalThis.SxBase, globalThis.SxMod, globalThis.SerumDSP] = had;
   }
 });
 
@@ -2254,10 +2359,10 @@ test('reset / warmUp between notes: a note-on before the next begin re-syncs the
   assert.equal(v.active, true, 'after warmUp');
   assert.ok(maxAbs(run(S, proc, [v], 10).L) > 0.3);
   // a minor version bump is understood (§4.3); another major is refused and leaves the voice free (gate false)
-  const m = setup({ cp: { ...mkCP(), ver: 1.1 } });
+  const m = setup({ cp: { ...mkCP(), ver: 2.1 } });
   m.vs[0].noteOn(60, 1, false, 1);
-  assert.ok(maxAbs(run(m.S, m.proc, m.vs, 10).L) > 0.3, 'CP ver 1.1 plays');
-  const x = setup({ cp: { ...mkCP(), ver: 2 } });
+  assert.ok(maxAbs(run(m.S, m.proc, m.vs, 10).L) > 0.3, 'CP ver 2.1 plays');
+  const x = setup({ cp: { ...mkCP(), ver: 3 } });
   x.vs[0].noteOn(60, 1, false, 1);
   assert.deepEqual([x.vs[0].active, x.vs[0].gate], [false, false]);
   assert.equal(x.S.snapshot(x.proc).notes, 0);
@@ -2315,7 +2420,7 @@ test('point-modulated LFOs: per-chunk evaluation equals evalPts on the modified 
     for (let s = 0; s < 20; s++) {
       S.begin(proc, N);
       for (let c = 0; c < 32; c++) {
-        const ph = v.lPh[0];
+        const ph = v.mod.lPh[0];
         v.render(b, b, proc.CH);
         assert.equal(v.src[5], S.evalPts(P, 0, n, ph), `rep ${rep} phase ${ph}`);
       }
@@ -2329,19 +2434,19 @@ test('Env-mode LFO with BPM + Anchor follows lfoStart + Δbeat/beats and re-lock
   const ct = mkCT({ 0: { pts: [[0, 0, 0], [1, 1, 0]] } }, cp);
   const { S, proc, vs: [v] } = setup({ cp, ct });
   run(S, proc, [v], 3);
-  const b0 = proc.sx.beatClk;
+  const b0 = proc.sx.mod.beatClk;
   v.noteOn(60, 1, false, 1);
   run(S, proc, [v], spansOf(0.2));
-  assert.ok(Math.abs(v.lPh[0] - (proc.sx.beatClk - b0) / 2) < 1e-9, '2 beats per cycle');
+  assert.ok(Math.abs(v.mod.lPh[0] - (proc.sx.mod.beatClk - b0) / 2) < 1e-9, '2 beats per cycle');
   const cp2 = lfoCP(0, 1, { 'l1.rate': 6 / 14 }, [{ src: 'lfo1', dst: 'f.res', amt: 0.1 }, { src: 'fixed', dst: 'l1.rate', amt: 1 / 14 }]);
   setLfo(cp2, 0, { bpm: 1, anchor: 1 });
   cp2.ctKey = cp.ctKey;
   proc.p = { serum: cp2, fxr: null };
   v.apply(proc.p);
   run(S, proc, [v], spansOf(0.1));
-  assert.ok(Math.abs(v.lPh[0] - (proc.sx.beatClk - b0) / 1) < 1e-9, 'jumps to the anchored position of the new rate');
+  assert.ok(Math.abs(v.mod.lPh[0] - (proc.sx.mod.beatClk - b0) / 1) < 1e-9, 'jumps to the anchored position of the new rate');
   run(S, proc, [v], spansOf(0.6));
-  assert.equal(v.lPh[0], 1, 'holds at the end');
+  assert.equal(v.mod.lPh[0], 1, 'holds at the end');
 });
 
 test('interpolating tables crossfade a frame-pair jump over one chunk (stepped WT position, §5.6, §6.5)', () => {
@@ -2349,7 +2454,7 @@ test('interpolating tables crossfade a frame-pair jump over one chunk (stepped W
   const frames = [sine, sine.map((x) => 0.2 * x), sine.map((x) => -x)];
   const worst = (interp) => {
     const cp = mkCP({ 'l1.rate': Math.pow(2 / 100, 0.25) }, [{ src: 'lfo1', dst: 'a.wt', amt: 1 }], { wt: ['t', 't'] });
-    cp.lfoMode[0] = 0; cp.lfoBpm[0] = 0;
+    cp.lfoMode[0] = 0; cp.lfoMono[0] = 0; cp.lfoBpm[0] = 0;
     const ct = mkCT({ 0: { pts: [[0, 0, 0], [0.5, 0, 0], [0.5, 1, 0], [1, 1, 0]] } }, cp);
     const { S, proc, vs: [v] } = setup({ cp, ct, tables: { t: entryFromFrames(frames, interp) } });
     v.noteOn(45, 1, false, 1);
@@ -2406,7 +2511,7 @@ test('transport play-with-seek clears lastPitch, Mem phases and the mono source 
       S.transport(proc, true);
       const fx = [];
       vs[1].stamp = 2; vs[1].noteOn(64, 1, false, 1);
-      const L = run(S, proc, vs, 40, { each: () => fx.push(proc.sx.fxOff[79]) }).L;
+      const L = run(S, proc, vs, 40, { each: () => fx.push(proc.sx.mod.fxOff[fxk('fx.fil.cutoff')]) }).L;
       return [L, Float64Array.from(fx)];
     };
     const [a, fa] = render(true), [b, fb] = render(false);
@@ -2436,8 +2541,8 @@ test('fuzz: random patches, rows, LFO graphs, rates and span sizes render finite
       uniMode: Uint8Array.from([Math.floor(5 * r()), Math.floor(5 * r())]), uniRange: Float64Array.from([48 * r(), 48 * r()]),
       chaosMono: Uint8Array.from([r() < 0.5, r() < 0.5]), chaosSh: Uint8Array.from([r() < 0.5, r() < 0.5]), mono: r() < 0.3 ? 1 : 0,
       legato: r() < 0.5 ? 1 : 0, noiseKey: r() < 0.5 ? 1 : 0, noiseOneshot: r() < 0.3 ? 1 : 0, subDirect: r() < 0.5 ? 1 : 0, filKey: r() < 0.5 ? 1 : 0 });
-    for (let l = 0; l < 8; l++) { cp.lfoMode[l] = Math.floor(3 * r()); cp.lfoBpm[l] = r() < 0.5 ? 1 : 0; cp.lfoAnchor[l] = r() < 0.5 ? 1 : 0; }
-    cp.direct = cp.subDirect;
+    for (let l = 0; l < 8; l++) { cp.lfoMode[l] = Math.floor(3 * r()); cp.lfoMono[l] = cp.lfoMode[l] === 2 ? 1 : 0; cp.lfoBpm[l] = r() < 0.5 ? 1 : 0; cp.lfoAnchor[l] = r() < 0.5 ? 1 : 0; }
+    cp.outMask = cp.route[4] === 2 ? 3 : 1;
     const lfos = {};
     for (let l = 0; l < 8; l++) {
       const n = 2 + Math.floor(r() * 8), pts = [[0, r(), 2 * r() - 1]];
@@ -2530,7 +2635,7 @@ test('an Off LFO nothing reads keeps exactly the phase of an evaluated one (only
     const cp = lfoCP(2, 2, { 'l3.rate': 0.43 }, used ? [{ src: 'lfo3', dst: 'a.pan', amt: 0.1 }] : []);
     const { S, proc } = setup({ cp, n: 0 });
     for (let s = 0; s < 300; s++) S.begin(proc, 256);
-    ph.push(proc.sx.oPh[2]);
+    ph.push(proc.sx.mod.oPh[2]);
   }
   assert.ok(Object.is(ph[0], ph[1]) && ph[0] > 0, ph.join(' vs '));
 });
@@ -2560,16 +2665,1571 @@ test('first-use warm-up (warmStart / warmTick / warmEnd): waits for the tables, 
   S.begin(proc, N);
   assert.ok(S.warmTick(proc, N) > 0 && proc.sx.hw === null, 'waiting for its table');
   assert.equal(S.storeWT('factory:Default', SAW), true);
-  const rec0 = proc.sx.recent, lp0 = proc.sx.lastPitch, alt0 = proc.sx.alt, rng0 = proc.sx.rng;
+  const rec0 = proc.sx.mod.recent, lp0 = proc.sx.mod.lastPitch, alt0 = proc.sx.alt, rng0 = proc.sx.rng;
   let left = 1;
   for (let k = 0; k < 200 && left > 0; k++) { S.begin(proc, N); left = S.warmTick(proc, N); if (k === 0) assert.equal(proc.sx.hw.length, 2); }
   assert.equal(left, 0, 'finished');
   assert.equal(proc.sx.hw, null);
-  assert.ok(proc.sx.recent === rec0 && proc.sx.lastPitch === lp0 && proc.sx.alt === alt0 && proc.sx.rng === rng0, 'bookkeeping restored');
+  assert.ok(proc.sx.mod.recent === rec0 && proc.sx.mod.lastPitch === lp0 && proc.sx.alt === alt0 && proc.sx.rng === rng0, 'bookkeeping restored');
   assert.ok(proc.voices.length === 1 && !v.active, 'the processor’s voices untouched');
   // a reset ends a warm-up under way
   S.warmStart(proc); S.begin(proc, N); S.warmTick(proc, N);
   assert.ok(proc.sx.hw !== null);
   S.reset(proc);
   assert.ok(proc.sx.hw === null && S.warmTick(proc, N) === 0);
+});
+
+/* ------------------------------------------------------------------ CT v2 parts (SPEC-serum2 §4.1, §11.10 mergeCT) */
+
+// content key of a CT part (FNV-1a over the bytes of its typed arrays and its scalars), as serum-core keys parts by content
+function partKey(name, ...xs) {
+  let h = 0x811C9DC5;
+  const byte = (b) => { h ^= b; h = Math.imul(h, 0x01000193) >>> 0; };
+  for (const x of xs) {
+    if (ArrayBuffer.isView(x)) { const u = new Uint8Array(x.buffer, x.byteOffset, x.byteLength); for (let i = 0; i < u.length; i++) byte(u[i]); }
+    else for (const c of String(x)) byte(c.charCodeAt(0) & 255);
+  }
+  return name + ':' + h.toString(16);
+}
+const contentParts = (ct) => {
+  const t = ctParts(ct);
+  for (const [name, q] of Object.entries(t.parts)) q.key = partKey(name, ...Object.keys(q).filter((k) => k !== 'key').map((k) => q[k]));
+  return t;
+};
+
+test('mergeCT: CT v2 parts render as the full CT; only changed parts merge; LFO points repack; invalid parts ignored once', () => {
+  const rows = [{ src: 'lfo1', dst: 'f.cutoff', amt: 0.4, bi: 1 }, { src: 'lfo2', dst: 'a.fine', amt: 0.3, bi: 1 }, { src: 'lfo3', dst: 'a.wt', amt: 0.5 },
+    { src: 'fixed', dst: 'bus1', amt: 0.3 }];
+  const mk = () => { const c = mkCP({ 'f.on': 1, 'a.uni': grid('a.uni', 3), 'l1.rate': 0.5, 'l2.rate': 0.55, 'l3.rate': 0.45 }, rows); c.lfoMode.set([0, 1, 2]); c.lfoBpm.fill(0); return c; };
+  const g1 = { 0: { pts: [[0, 0, 0], [0.3, 1, 0.4], [1, 0, 0]] }, 1: { pts: [[0, 0, 0], [0.5, 1, 0, 1, 0], [1, 0.2, 0]], loop: 1 },
+    2: { pts: [[0, 0.2, 0], [0.6, 0.7, 0, 0, 1], [1, 0.9, 0]], start: 1 } };
+  // LFO 2 gains two points (LFO 3's points move in the packed list) and the velocity curve changes
+  const g2 = { ...g1, 1: { pts: [[0, 0, 0], [0.2, 0.6, 0], [0.5, 1, 0, 1, 0], [0.8, 0.1, 0], [1, 0.2, 0]], loop: 2 } };
+  const cp1 = mk(), ct1 = mkCT(g1, cp1), cp2 = mk(), ct2 = mkCT(g2, cp2);
+  for (let j = 0; j <= 128; j++) ct2.veloTab[j] = Math.sqrt(j / 128);
+  const tables = { 'factory:Default': SAW };
+  const play = (first, second, chk) => {
+    const { S, proc, vs } = setup({ cp: cp1, ct: first, n: 2, tables });
+    vs[0].noteOn(48, 0.6, false, 1);
+    const a = run(S, proc, vs, 20).L;
+    proc.p = { serum: cp2, fxr: null }; proc.ct = second;
+    for (const v of vs) v.apply(proc.p);
+    vs[1].noteOn(55, 0.6, false, 1);
+    const b = run(S, proc, vs, 20).L;
+    if (chk) chk(S, proc);
+    return Float64Array.from([...a, ...b]);
+  };
+  const ref = play(ct1, ct2);
+  const p1 = contentParts(ct1), p2 = contentParts(ct2);
+  const changed = Object.keys(p2.parts).filter((k) => p2.parts[k].key !== p1.parts[k].key).sort();
+  assert.deepEqual(changed, ['lfo1', 'velo'], 'only LFO 2 and the velocity curve differ');
+  // all parts, then the whole second set (unchanged parts are skipped by key)
+  sameArr(play(p1, p2), ref, 'parts ≡ full CT');
+  // the second CT delivered as only its changed parts (§4.1 sendPatch)
+  const delta = { key: p2.key, parts: { lfo1: p2.parts.lfo1, velo: p2.parts.velo } };
+  sameArr(play(p1, delta, (S, proc) => {
+    const C = proc.sx.CT;
+    assert.equal(C.key, ct2.key);
+    assert.deepEqual(Array.from(C.lfoPtsOff), Array.from(ct2.lfoPtsOff), 'packed offsets');
+    assert.deepEqual(Array.from(C.lfoPts.subarray(0, 3 * ct2.lfoPtsOff[10])), Array.from(ct2.lfoPts), 'packed points');
+    assert.deepEqual(Array.from(C.lfoPm.subarray(0, 2 * ct2.lfoPtsOff[10])), Array.from(ct2.lfoPm), 'packed point links');
+    for (const k of ['lfoTab', 'lfoPmAny', 'lfoStart', 'lfoLoop', 'veloTab', 'noteTab', 'remap', 'crv', 'specFilt', 'pathX']) {
+      assert.deepEqual(Array.from(C[k]), Array.from(ct2[k]), k);
+    }
+    const gen = proc.sx.ctGen;
+    assert.equal(S.mergeCT(proc, delta), false, 'nothing new');
+    assert.equal(proc.sx.ctGen, gen);
+  }), ref, 'changed parts only ≡ full CT');
+  // invalid parts: ignored, one warning per part name; valid parts of the same object still merge
+  const con = mkConsole();
+  const { S, proc } = setup({ ctx: vm.createContext({ console: con }) });
+  const bad = { key: 'k', parts: { lfo0: { key: 'x', n: 3, tab: new Float32Array(10), pts: new Float64Array(9), pm: new Uint8Array(6) },
+    velo: { key: 'v', tab: new Float64Array(129) }, note: { key: 'n2', tab: Float32Array.from({ length: 129 }, (_, j) => 1 - j / 128) } } };
+  assert.equal(S.mergeCT(proc, bad), true, 'the note curve merged');
+  assert.equal(proc.sx.CT.noteTab[0], 1);
+  assert.equal(S.mergeCT(proc, bad), false);
+  assert.equal(con.msgs.filter((m) => m.level === 'warn' && m.text.includes('invalid CT part')).length, 2, 'lfo0 and velo, once each');
+  assert.equal(S.mergeCT(proc, null), false);
+  assert.equal(S.mergeCT(proc, { key: 'k' }), false);
+});
+
+/* ================================================================== Phase 2, M2: the v2 voice (SPEC-serum2 §15.9) */
+// The v2 voice through the whole §0.3 script list (tests/dsp-scope.mjs), with CPs compiled by serum-core from v2 states
+// (S2 mode unless stated). Destination values are normalised n; enum/int laws through the helpers below.
+const W2 = (id) => { const i = core.WARPS2.findIndex((w) => w.id === id); assert.ok(i >= 0, id); return i; };
+const nEnum = (k, top) => k / top;                          // enum / int law n of index k (lo 0, hi top)
+const nUni = (N) => (N - 1) / 15;
+const nTime = (t) => Math.pow(t / 32, 0.2);                 // pow5 law 0–32 s (envelope times)
+const TRI_SUB = entryFromFrames([frame((p) => 1 - 4 * Math.abs(((p + 0.25) % 1) - 0.5))]);
+const TABLES2 = { 'factory:Default': SAW, ...SUBS, 'sub:Triangle': TRI_SUB };
+// a normalised v2 state: deterministic start phases (RAND 0, PHASE 0) and an instant ENV 1 unless p overrides them; the
+// oscillators read the single-frame test tables stored under 'factory:Default' (the v2 default is 'factory:Default Shapes')
+function st2(p = {}, edit = null) {
+  const s = core.defaultSerum();
+  for (const O of s.osc) O.wt = 'factory:Default';
+  Object.assign(s.p, { 'a.rand': 0, 'a.phase': 0, 'b.rand': 0, 'b.phase': 0, 'c.rand': 0, 'c.phase': 0, 'e1.att': 0 }, p);
+  if (edit) edit(s);
+  return core.normalizeSerum(s);
+}
+function setup2({ s = st2(), patch = null, base = 48000, OS = 2, n = 1, tables = TABLES2, assets = {}, cpEdit = null, scope = null } = {}) {
+  const sc = scope || dspScope();
+  const S = sc.global('SerumDSP'), B = sc.global('SxBase');
+  for (const [id, e] of Object.entries(tables)) assert.equal(S.storeWT(id, e), true, id);
+  for (const [id, e] of Object.entries(assets)) assert.equal(B.storeAsset(id, e), true, id);
+  const P = patch || core.compileSerum(s, {});
+  const cp = P.serum;
+  if (cpEdit) cpEdit(cp);
+  const proc = makeProc(base, OS);
+  proc.mpe = new Float64Array(17 * 4); proc.vcN = 0;
+  proc.p = { serum: cp, fxr: null };
+  proc.ct = P.serumT;
+  const vs = [];
+  for (let i = 0; i < n; i++) vs.push(new S.SerumVoice(proc, i));
+  proc.voices = vs;
+  for (const v of vs) v.apply(proc.p);
+  return { sc, S, B, proc, vs, cp, VI: S.VIDX };
+}
+const OUTS = ['L', 'R', 'dL', 'dR', 'b1L', 'b1R', 'b2L', 'b2R'];
+// spans of 128 base frames through render(O, N) (outs: the §11.10 output object) or the Phase-1 signature
+function run2(S, proc, vs, spans, { each, outs = false } = {}) {
+  const N = 128 * proc.OS, res = { N }, O = {};
+  for (const k of OUTS) { res[k] = new Float64Array(spans * N); O[k] = new Float64Array(N); }
+  for (let sp = 0; sp < spans; sp++) {
+    if (each) each(sp);
+    for (const k of OUTS) O[k].fill(0);
+    S.begin(proc, N);
+    for (const v of vs) if (v.active) { if (outs) v.render(O, N); else v.render(O.L, O.R, N); }
+    S.fxMods(proc);
+    for (const k of OUTS) res[k].set(O[k], sp * N);
+  }
+  return res;
+}
+// one note, `spans` spans; returns the run2 result (and the setup)
+function play2(opts, note = 57, spans = 30, { vel = 1, outs = false, each, off = -1 } = {}) {
+  const u = setup2(opts);
+  u.vs[0].noteOn(note, vel, false, 1);
+  const r = run2(u.S, u.proc, u.vs, spans, { outs, each: (sp) => { if (sp === off) u.vs[0].noteOff(0.5); if (each) each(sp, u); } });
+  return Object.assign(r, { u });
+}
+const rms = (x, a = 0, b = x.length) => { let e = 0; for (let i = a; i < b; i++) e += x[i] * x[i]; return Math.sqrt(e / Math.max(1, b - a)); };
+const maxDiff = (a, b) => { let m = 0; for (let i = 0; i < a.length; i++) m = Math.max(m, Math.abs(a[i] - b[i])); return m; };
+
+/* ------------------------------------------------------------------ oscillators (§6.3–§6.6) */
+
+test('M2: OSC C renders exactly as OSC A for identical settings; OSC C draws from r2 (A/B start phases unchanged with C on)', () => {
+  const osc = (k) => ({ [k + '.on']: 1, [k + '.uni']: nUni(4), [k + '.det']: 0.4, [k + '.w1']: nEnum(W2('bend_p'), 81), [k + '.warp']: 0.4,
+    [k + '.semi']: nEnum(15, 24), [k + '.pan']: 0.3 });
+  const a = play2({ s: st2(osc('a')) }), c = play2({ s: st2({ 'a.on': 0, ...osc('c') }, (s) => { s.osc[2].route = 0; }) });
+  assert.ok(maxAbs(a.L) > 0.1, 'audible');
+  sameArr(c.L, a.L, 'C ≡ A (L)'); sameArr(c.R, a.R, 'C ≡ A (R)');
+  assert.equal(c.u.cp.use & 1, 1, 'OSC C possibly on (use bit 1)');
+  // OSC A with random start phases: identical with OSC C off (use bit clear) and on at level 0 (r2 draws only)
+  const pA = { 'a.rand': 1, 'a.uni': nUni(5), 'a.det': 0.3, 'b.on': 1, 'b.rand': 1, 'b.uni': nUni(3) };
+  const off = play2({ s: st2(pA) }), on = play2({ s: st2({ ...pA, 'c.on': 1, 'c.level': 0, 'c.rand': 1, 'c.uni': nUni(7) }) });
+  assert.equal(off.u.cp.use & 1, 0);
+  sameArr(on.L, off.L, 'A/B unchanged by OSC C (L)'); sameArr(on.R, off.R, 'A/B unchanged by OSC C (R)');
+});
+
+test('M2: oscillator render order and the warp-source cycle rule (§6.6.6)', () => {
+  // A ← B (FM o1 of A = B) accepted; B ← A (FM o1 of B = A) closes a cycle: B's slot acts as Off; order B, A
+  let u = setup2({ s: st2({ 'b.on': 1, 'a.w1': nEnum(W2('fm_o1'), 81), 'a.warp': 0.3, 'b.w1': nEnum(W2('fm_o1'), 81), 'b.warp': 0.3 }) });
+  u.vs[0].noteOn(57, 1, false, 1);
+  run2(u.S, u.proc, u.vs, 2);
+  let v = u.vs[0];
+  assert.equal(v.ordN, 2);
+  assert.deepEqual([v.ord[0], v.ord[1]], [1, 0], 'B renders first');
+  assert.equal(v.md[0], W2('fm_o1'), 'A slot 1 stays FM');
+  assert.equal(v.md[2], 0, 'B slot 1 rejected (cycle)');
+  // A ← C (FM o2 of A), B ← C (AM o2 of B, slot 2), C ← A (FM o1 of C) rejected; order C, A, B (ties A, B, C)
+  u = setup2({ s: st2({ 'b.on': 1, 'c.on': 1, 'a.w1': nEnum(W2('fm_o2'), 81), 'a.warp': 0.3, 'b.w2': nEnum(W2('am_o2'), 81),
+    'b.warp2': 0.5, 'c.w1': nEnum(W2('fm_o1'), 81), 'c.warp': 0.2 }) });
+  assert.equal(u.cp.use & 5, 5, 'OSC C and a warp slot 2 in use');
+  u.vs[0].noteOn(57, 1, false, 1);
+  run2(u.S, u.proc, u.vs, 2);
+  v = u.vs[0];
+  assert.deepEqual([v.ordN, v.ord[0], v.ord[1], v.ord[2]], [3, 2, 0, 1]);
+  assert.deepEqual([v.md[0], v.md[3], v.md[4]], [W2('fm_o2'), W2('am_o2'), 0]);
+  // a modulator that is off is unavailable: its slot acts as Off (identical to w1 = Off)
+  const fmOff = play2({ s: st2({ 'a.w1': nEnum(W2('fm_o1'), 81), 'a.warp': 0.6 }) }), plain = play2({ s: st2({}) });
+  sameArr(fmOff.L, plain.L, 'FM from an off oscillator ≡ Off');
+});
+
+/* ------------------------------------------------------------------ mixer and routing (§1, §6.12) */
+
+const T_MG24 = 3, T_LOW12 = 5, T_HIGH12 = 9;
+const FILT = (k, type, cut = 0.35, extra = {}) => ({ [k + '.on']: 1, [(k === 'f' ? 'f.type2' : 'f2.type')]: type / 107, [k + '.cutoff']: cut,
+  [k + '.res']: 0, ...extra });
+test('M2: routes Main / None / Direct, filter switches, filter balance, F1 ↔ F2 series, ENV toggles (§6.12)', () => {
+  const p0 = { 'a.uni': nUni(3), 'a.det': 0.3, ...FILT('f', T_MG24) };
+  const route = (r) => (s) => { s.osc[0].route = r; };
+  const filtered = play2({ s: st2(p0) }), dry = play2({ s: st2({ ...p0, 'f.on': 0 }) });
+  assert.ok(rms(filtered.L) < 0.7 * rms(dry.L), 'Filter 1 acts on A (route Filter)');
+  sameArr(play2({ s: st2(p0, route(1)) }).L, dry.L, 'route Main bypasses the filter');
+  sameArr(play2({ s: st2({ ...p0, 'f.routeA': 0 }) }).L, dry.L, 'A>Filter off: around the filter');
+  const none = play2({ s: st2(p0, route(3)) });
+  assert.equal(maxAbs(none.L) + maxAbs(none.R), 0, 'route None: silent');
+  const dir = play2({ s: st2(p0, route(2)) }, 57, 30, { outs: true });
+  assert.equal(dir.u.cp.outMask & 2, 2, 'outMask: direct pair');
+  assert.equal(maxAbs(dir.L), 0, 'nothing on main');
+  sameArr(dir.dL, dry.L, 'Direct carries the unfiltered A'); sameArr(dir.dR, dry.R, 'Direct R');
+  // the Phase-1 signature folds direct into main when no direct buffers are given
+  sameArr(play2({ s: st2(p0, route(2)) }).L, dry.L, 'render(L, R, N): direct → main');
+  // balance: all to Filter 2 ≡ the same filter as Filter 1; the other filter receives nothing
+  const viaF1 = play2({ s: st2({ ...p0, ...FILT('f2', T_HIGH12, 0.8) }, (s) => { s.p['f2.routeA'] = 0; }) });
+  const viaF2 = play2({ s: st2({ ...p0, ...FILT('f', T_HIGH12, 0.8), ...FILT('f2', T_MG24), 'a.fbal': 1 }) });
+  sameArr(viaF2.L, viaF1.L, 'fbal +1: A only through Filter 2'); sameArr(viaF2.R, viaF1.R, 'fbal +1 (R)');
+  sameArr(play2({ s: st2({ ...p0, ...FILT('f2', T_HIGH12, 0.8) }) }).L, filtered.L, 'fbal −1 (n 0): Filter 2 gets nothing');
+  // balance 0 (n 0.5) with two identical linear filters ≡ one filter (½ + ½)
+  const lin = { 'a.uni': nUni(3), 'a.det': 0.3, ...FILT('f', T_LOW12, 0.4) };
+  const one = play2({ s: st2(lin) }), half = play2({ s: st2({ ...lin, ...FILT('f2', T_LOW12, 0.4), 'a.fbal': 0.5 }) });
+  assert.ok(maxDiff(half.L, one.L) < 1e-9 * maxAbs(one.L), 'balance centre: ½ F1 + ½ F2 ≡ F1');
+  // series: F1 → F2 (types P, Q) ≡ F2 → F1 with the types swapped, the source entering the first filter of the chain
+  const P = FILT('f', T_LOW12, 0.45), Q = FILT('f2', T_HIGH12, 0.7);      // LP ≈ 290 Hz, then HP ≈ 2 kHz
+  const ser12 = play2({ s: st2({ 'a.uni': nUni(3), 'a.det': 0.3, ...P, ...Q }, (s) => { s.filter[0].route = 0; }) });
+  const ser21 = play2({ s: st2({ 'a.uni': nUni(3), 'a.det': 0.3, ...FILT('f', T_HIGH12, 0.7), ...FILT('f2', T_LOW12, 0.45), 'a.fbal': 1 },
+    (s) => { s.filter[1].route = 0; }) });
+  sameArr(ser21.L, ser12.L, 'F1 → F2 ≡ F2 → F1 swapped');
+  assert.ok(rms(ser12.L) < 0.5 * rms(play2({ s: st2({ 'a.uni': nUni(3), 'a.det': 0.3, ...P }) }).L), 'the band-pass chain removes energy');
+  // F1 → F2 with Filter 2 off: Filter 2 passes its input around (≡ F1 → Main)
+  const ser0 = play2({ s: st2({ 'a.uni': nUni(3), 'a.det': 0.3, ...P, ...Q, 'f2.on': 0 }, (s) => { s.filter[0].route = 0; }) });
+  sameArr(ser0.L, play2({ s: st2({ 'a.uni': nUni(3), 'a.det': 0.3, ...P }) }).L, 'F1 → (F2 off) ≡ F1 → Main');
+  // filter levels: (2n)², 0 dB at n 0.5
+  const lv = play2({ s: st2({ ...lin, 'f.level': 0.25 }) });
+  assert.ok(maxDiff(lv.L.map((x) => 4 * x), one.L) < 1e-12, 'f.level n 0.25 → ×1/4');
+});
+
+test('M2: bus sends (post level/pan, (n)², their ENV group) and the ENV toggle with the lifetime rule (b) (§6.12, §6.19)', () => {
+  const p = { 'a.uni': nUni(2), 'a.det': 0.2, 'a.pan': 0.3, 'a.bus1': 1, 'a.bus2': 0.5, 'e1.rel': 0.3 };
+  const r = play2({ s: st2(p, (s) => { s.osc[0].route = 1; }) }, 57, 60, { outs: true, off: 30 });
+  assert.equal(r.u.cp.outMask, 1 | 4 | 8, 'outMask: main + both buses');
+  sameArr(r.b1L, r.L, 'bus 1 at n 1 = the main signal'); sameArr(r.b1R, r.R, 'bus 1 R');
+  assert.ok(maxDiff(r.b2L.map((x) => 4 * x), r.L) < 1e-12, 'bus 2 at n 0.5 = ¼');
+  // a source routed to a filter sends with ENV on; the filter output sends too (its level applied)
+  const f = play2({ s: st2({ ...p, ...FILT('f', T_LOW12, 0.5), 'f.bus1': 1, 'f.level': 0.25 }) }, 57, 30, { outs: true });
+  assert.ok(rms(f.b1L) > 0, 'bus 1 gets A and Filter 1');
+  // Phase-1 signature: the buses fold into main
+  const fold = play2({ s: st2(p, (s) => { s.osc[0].route = 1; }) }, 57, 30);
+  assert.ok(maxDiff(fold.L, r.L.subarray(0, fold.L.length).map((x) => x * 2.25)) < 1e-12, 'render(L, R, N): main + bus 1 + bus 2');
+  // ENV toggle off: A at AMP level through the release, then the voice ends when every envelope is idle
+  const q = { 'a.uni': nUni(1), 'e1.rel': nTime(0.02), 'e2.rel': nTime(0.3) };
+  const envOff = play2({ s: st2(q, (s) => { s.osc[0].route = 1; s.osc[0].env = 0; }) }, 57, 160, { off: 19 });
+  const envOn = play2({ s: st2(q, (s) => { s.osc[0].route = 1; }) }, 57, 160, { off: 19 });
+  const N = envOn.N, at = (x, t) => rms(x, Math.round(t * 48000 / 128) * N, Math.round(t * 48000 / 128) * N + N);
+  assert.ok(at(envOn.L, 0.15) < 1e-3 * at(envOn.L, 0.04), 'ENV on: released');
+  assert.ok(Math.abs(at(envOff.L, 0.15) / at(envOff.L, 0.04) - 1) < 0.05, 'ENV off: steady through the ENV 1 release');
+  assert.ok(at(envOff.L, 0.3) > 0.5 * at(envOff.L, 0.04), 'ENV off: still sounding while ENV 2 releases');
+  assert.ok(at(envOff.L, 0.4) === 0, 'ENV off: the voice ends after the longest release (ENV 2, 0.3 s)');
+  assert.equal(envOff.u.vs[0].active, false);
+});
+
+/* ------------------------------------------------------------------ filters (§6.13) */
+
+test('M2: Clean Mode (−24 dB in, +24 dB out), types 96–107 through SxFilt2, PZ SVF corners, missing SxFilt2 (§6.13)', () => {
+  const sc = dspScope(), S = sc.global('SerumDSP'), fs = 96000;
+  const sig = Float64Array.from({ length: 4096 }, (_, i) => 0.6 * Math.sin(2 * Math.PI * 300 * i / fs) + 0.3 * Math.sin(2 * Math.PI * 2100 * i / fs));
+  const proc1 = (type, clean, drive = 0, res = 0, sc = 1) => {
+    const f = new S.SFilter(fs);
+    if (type >= 96) f.prealloc(true, type, type);
+    f.setType(type); f.set(800, 800, res, drive, 0.3); f.setClean(clean);
+    const L = sig.map((x) => x * sc), R = sig.map((x) => x * sc);
+    for (let o = 0; o < L.length; o += 32) f.process(L, R, o, 32);
+    return L.map((x) => x / sc);
+  };
+  // a linear type is unchanged by Clean Mode (the two gains cancel); a driven ladder is cleaner
+  assert.ok(maxDiff(proc1(T_LOW12, 1), proc1(T_LOW12, 0)) < 1e-9, 'linear SVF: Clean ≡ normal');
+  const lin = proc1(T_MG24, 0, 0, 0, 1e-4), hot = proc1(T_MG24, 0, 1, 0), cl = proc1(T_MG24, 1, 1, 0);   // lin: small-signal
+  const g = Math.pow(10, 0.8);                              // drive 1: input gain 10^(16/20)
+  const err = (x) => rms(x.map((v, i) => v - g * lin[i]).subarray(2048));
+  assert.ok(err(cl) < 0.05 * err(hot), `Clean Mode keeps the driven ladder linear (${err(cl)} vs ${err(hot)})`);
+  // every new type runs through its SxFilt2 family inside SFilter, finite and not a pass-through
+  for (let t = 96; t < 108; t++) {
+    const y = proc1(t, 0, 0.3, 0.4);
+    assert.ok(y.every(Number.isFinite), 'type ' + t + ' finite');
+    assert.ok(maxDiff(y, sig) > 1e-3, 'type ' + t + ' filters');
+  }
+  // PZ SVF (103): the corners select LP / BP / HP (X, Y = 0, 0 → TL = LP by default)
+  const pz = (x, y) => { const f = new S.SFilter(fs); f.prealloc(true, 103, 103); f.setType(103); f.set(1000, 1000, 0, 0, 0);
+    f.setPZ(Float64Array.from(core.PZ_DEFAULT.flat()), 0); f.setXY(x, y);
+    const L = Float64Array.from(sig), R = Float64Array.from(sig); for (let o = 0; o < L.length; o += 32) f.process(L, R, o, 32); return L; };
+  const lp = pz(0, 0), hp = pz(0, 1);
+  const band = (x, f) => mag(x.subarray(2048), f, fs);
+  assert.ok(band(lp, 300) > 3 * band(lp, 2100) * 2, 'TL corner: low-pass');
+  assert.ok(band(hp, 2100) > band(hp, 300), 'BL corner: high-pass');
+  // without SxFilt2 the new types pass audio unfiltered (gain 1), once warned
+  const sc0 = dspScope({ overrides: { 'sx-filt2.js': null } }), S0 = sc0.global('SerumDSP');
+  const f0 = new S0.SFilter(fs);
+  f0.prealloc(true, 96, 107); f0.setType(100); f0.set(800, 800, 0.5, 0.5, 0.5);
+  const L = Float64Array.from(sig), R = Float64Array.from(sig);
+  f0.process(L, R, 0, 4096);
+  sameArr(L, sig, 'unfiltered without SxFilt2');
+  assert.equal(sc0.logs.filter((m) => m.level === 'warn' && /SxFilt2 unavailable/.test(m.text)).length, 1);
+});
+
+test('M2: Filter 2 is independent; voices preallocate the new types their rows reach; key track in S1 and S2 mode (§6.13)', () => {
+  // f2.type modulated by an LFO across the new types: preallocated in apply, nothing allocates while rendering
+  const s = st2({ ...FILT('f', T_LOW12), ...FILT('f2', 100), 'l1.rate': 0.6 }, (st) => {
+    st.matrix[0] = { ...st.matrix[0], src: 'lfo1', dst: 'f2.type', amt: 0.1 };
+  });
+  const u = setup2({ s });
+  const f2 = u.vs[0].filt2;
+  assert.ok(f2 && f2.f2o, 'Filter 2 allocated, new families prepared');
+  for (let t = 100; t <= 107; t++) assert.ok(f2.f2o[t - 96] !== null, 'type ' + t + ' preallocated');
+  u.vs[0].noteOn(48, 1, false, 1);
+  const r = run2(u.S, u.proc, u.vs, 60);
+  assert.ok(r.L.every(Number.isFinite) && maxAbs(r.L) > 0.01);
+  assert.equal(u.vs[0].filt.type, T_LOW12, 'Filter 1 keeps its type');
+  // key tracking: S2 mode follows note′ of the first sounding, tracking oscillator (fold included); S1 the gliding pitch
+  const kt = (p, edit, note) => {
+    const w = setup2({ s: st2({ ...FILT('f', T_LOW12), ...p }, (st) => { st.filter[0].keytrack = 1; if (edit) edit(st); }) });
+    w.vs[0].noteOn(note, 1, false, 1);
+    run2(w.S, w.proc, w.vs, 2);
+    const fc0 = 8.175798915643707 * Math.pow(2, Math.log2(22050 / 8.175798915643707) * 0.5);
+    return Math.log2(w.vs[0].fcOf(w.proc.sx, 0.5, 0) / fc0) * 12;
+  };
+  { const k = kt({}, null, 72); assert.ok(Math.abs(k - 12) < 1e-6, 'note 72 → +12 st: ' + k); }
+  assert.ok(Math.abs(kt({ 'a.track': 0, 'b.on': 1 }, (st) => { st.osc[1].map = { k: [60, 71], v: [1, 127], fold: 1, warp: 0 }; }, 48)) < 1e-6,
+    'A untracked: B folded 48 → 60');
+  assert.ok(Math.abs(kt({ 'a.track': 0 }, null, 50) + 10) < 1e-6, 'no tracking oscillator: the played key');
+  assert.ok(Math.abs(kt({ 'a.track': 0 }, (st) => { st.global.s1 = 1; }, 50) + 10) < 1e-6, 'S1 mode: the voice pitch');
+});
+
+/* ------------------------------------------------------------------ pitch (§6.3), tuning (§6.18), MPE (§6.17) */
+
+const TSINE = { ...TABLES2, 'factory:Default': SINE };
+// frequency of the voice output (pure tone) after 50 ms
+function freq2(s, note = 57, { cpEdit, each, ch = 0, spans = 40 } = {}) {
+  const u = setup2({ s, tables: TSINE, cpEdit });
+  u.vs[0].noteOn(note, 1, false, 1, ch);
+  const r = run2(u.S, u.proc, u.vs, spans, { each: each ? (sp) => each(sp, u) : undefined });
+  return zcFreq(r.L, u.proc.fs, Math.round(u.proc.fs * 0.05));
+}
+const st = (f, ref) => 12 * Math.log2(f / ref);
+const F57 = 220;
+
+test('M2: pitch modes — harmonics, ratio (from another oscillator, with its bend), step (19-EDO scale), Hz offset (§6.3.3)', () => {
+  const harm = (k) => st(freq2(st2({ 'a.semi': (k + 12) / 24 }, (s) => { s.osc[0].pitch.mode = 'harm'; }), k < 0 ? 81 : 57), k < 0 ? 880 : F57);
+  for (const [k, e] of [[0, 0], [1, 12], [2, 19.0196], [-1, -12], [12, 44.4053], [-12, -44.4053]]) {
+    assert.ok(Math.abs(harm(k) - e) < 0.002, `harmonics SEM ${k}: ${harm(k)} st (expected ${e})`);
+  }
+  // B in ratio mode from A (A at +7 st): ×1.5; A's pitch bend reaches B through its source pitch
+  const nRatio = (r) => (Math.log2(r) + 4) / 8;
+  const ratio = (edit = null, opts = {}) => st(freq2(st2({ 'a.level': 0, 'a.semi': 19 / 24, 'b.on': 1, 'b.ratio': nRatio(1.5), 'b.rand': 0 }, (s) => {
+    s.osc[1].pitch = { mode: 'ratio', src: 'A' }; if (edit) edit(s);
+  }), 57, opts), F57);
+  assert.ok(Math.abs(ratio() - (7 + 12 * Math.log2(1.5))) < 0.002, 'ratio ×1.5 of A');
+  assert.ok(Math.abs(ratio(null, { each: (sp, u) => { u.proc.bendRaw = 1; } }) - (9 + 12 * Math.log2(1.5))) < 0.01, 'A bend +2 reaches B');
+  assert.ok(Math.abs(ratio((s) => { s.osc[1].pitch.src = 'note'; }) - 12 * Math.log2(1.5)) < 0.002, 'ratio of the note');
+  // step mode with a 19-EDO scale: SEM ±k = k steps of 12/19 st, OCT = one period
+  const edo = (cp) => { cp.sclN = 19; cp.sclPer = 12; for (let k = 0; k < 19; k++) cp.sclSteps[k] = 12 * k / 19; };
+  const step = (semi, oct) => st(freq2(st2({ 'a.semi': (semi + 12) / 24, 'a.oct': (oct + 4) / 8 }, (s) => { s.osc[0].pitch.mode = 'step'; }),
+    57, { cpEdit: edo }), F57);
+  assert.ok(Math.abs(step(1, 0) - 12 / 19) < 0.002, 'one step');
+  assert.ok(Math.abs(step(-3, 1) - (12 - 36 / 19)) < 0.002, 'oct +1, −3 steps');
+  assert.ok(Math.abs(step(5, 0) - st(freq2(st2({ 'a.semi': 17 / 24 })), F57)) > 1, 'not semitones');
+  // Hz offset: +10 Hz on every unison voice
+  assert.ok(Math.abs(freq2(st2({ 'a.hz': 0.6 })) - (F57 + 10)) < 0.01, 'Hz +10');
+});
+
+test('M2: S2 bend ranges (g.bu2/g.bd2) vs S1 mode (g.bendup/g.benddn); tuning table; MPE per-voice bend and Expr X (§6.3.2, §6.17, §6.18)', () => {
+  const bend = (b, p, s1 = 0) => st(freq2(st2({ 'g.bu2': 12 / 48, 'g.bd2': (48 - 7) / 48, ...p }, (s) => { s.global.s1 = s1; }), 57,
+    { each: (sp, u) => { u.proc.bendRaw = b; } }), F57);
+  assert.ok(Math.abs(bend(1) - 12) < 0.01, 'S2: bend up 12 (g.bu2)');
+  assert.ok(Math.abs(bend(-1) + 7) < 0.01, 'S2: bend down −7 (g.bd2)');
+  assert.ok(Math.abs(bend(1, {}, 1) - 2) < 0.01, 'S1 mode: g.bendup (+2)');
+  // tuning: a table a quarter tone sharp everywhere; untuned without the use bit
+  const tun = (cp) => { cp.use |= 512; for (let k = 0; k < 128; k++) cp.tune[k] = k + 0.5; };
+  assert.ok(Math.abs(st(freq2(st2(), 57, { cpEdit: tun }), F57) - 0.5) < 0.002, 'tuned +50 ct');
+  assert.ok(Math.abs(st(freq2(st2(), 57, { cpEdit: (cp) => { for (let k = 0; k < 128; k++) cp.tune[k] = k + 0.5; } }), F57)) < 0.002,
+    'no use bit: the table is ignored');
+  // MPE: member channel bend × CP.mpeBend per voice; the master channel and other channels do not move it
+  const mpe = (cp) => { cp.use |= 256; cp.mpeOn = 1; cp.mpeBend = 48; };
+  const u = setup2({ s: st2(), tables: TSINE, cpEdit: mpe, n: 2 });
+  u.proc.mpe[2 * 4] = 0.25;                                 // channel 2: +12 st
+  u.vs[0].noteOn(57, 1, false, 1, 2); u.vs[1].noteOn(57, 1, false, 1, 3);
+  run2(u.S, u.proc, u.vs, 20);
+  const fA = u.vs[0].fB[0], fB = u.vs[1].fB[0];
+  assert.ok(Math.abs(st(fA, fB) - 12) < 1e-3, 'voice on channel 2 bends +12, channel 3 unchanged: ' + st(fA, fB));
+  assert.ok(Math.abs(st(fB, F57)) < 1e-6);
+  // XYZ → Macros 1–3 per voice (global.mpe.xyz 1): macro 1 = (x + 1)/2, macro 2 = Y, macro 3 = Z of the voice's channel
+  const xyz = setup2({ s: st2({}, (st) => { st.global.mpe = { on: 1, bend: 48, xyz: 1 }; }), n: 2 });
+  assert.equal(xyz.cp.use & 256, 256);
+  const E = [[2, 0.5, 0.3, 0.8], [3, -1, 0.9, 0.1]];
+  for (const [ch, x, y, z] of E) { xyz.proc.mpe[ch * 4 + 3] = x; xyz.proc.mpe[ch * 4 + 1] = y; xyz.proc.mpe[ch * 4 + 2] = z; }
+  xyz.vs[0].noteOn(57, 1, false, 1, 2); xyz.vs[1].noteOn(60, 1, false, 1, 3);
+  run2(xyz.S, xyz.proc, xyz.vs, 20);
+  E.forEach(([ch, x, y, z], k) => {
+    const m = xyz.vs[k].src;
+    assert.ok(Math.abs(m[24] - (x + 1) / 2) < 1e-3 && Math.abs(m[25] - y) < 1e-3 && Math.abs(m[26] - z) < 1e-3,
+      `channel ${ch}: macros ${m[24]}, ${m[25]}, ${m[26]}`);
+  });
+  // Expr X = CC10 (proc.mpe[ch·4 + 3], −1 … +1) on a member channel; ignored on channel 1; CP.mpeBendX takes the bend
+  const S_MPEX = 29;
+  for (const [x, ch, bx, want] of [[-1, 2, 0, -1], [0, 2, 0, 0], [1, 2, 0, 1], [1, 1, 0, 0], [1, 2, 1, 0.25]]) {
+    const w = setup2({ s: st2(), cpEdit: (cp) => { mpe(cp); cp.mpeBendX = bx; } });
+    w.proc.mpe[ch * 4 + 3] = x; w.proc.mpe[ch * 4] = 0.25;
+    w.vs[0].noteOn(57, 1, false, 1, ch);
+    run2(w.S, w.proc, w.vs, 20);
+    assert.ok(Math.abs(w.vs[0].src[S_MPEX] - want) < 1e-3, `mpex (x ${x}, ch ${ch}, bendX ${bx}) = ${w.vs[0].src[S_MPEX]}`);
+  }
+});
+
+/* ------------------------------------------------------------------ note-on: phases (§6.4), keyboard map (§6.2), VC (§6.16) */
+
+test('M2: phase memory — S1 knob-end rule for A/B vs the S2 menu (all / contig / voice); Phase Legato (§6.4, §6.21 item 6)', () => {
+  const ph0 = (p, edit, notes = 1) => {
+    const u = setup2({ s: st2(p, edit) });
+    const out = [];
+    for (let k = 0; k < notes; k++) {
+      u.vs[0].noteOn(57 + k, 1, false, 1);
+      out.push(Array.from(u.vs[0].uPh.subarray(0, 4)).concat(Array.from(u.vs[0].uPh.subarray(32, 34))));
+      run2(u.S, u.proc, u.vs, 3);
+      u.vs[0].noteOff(0); run2(u.S, u.proc, u.vs, 20);
+    }
+    return { out, u };
+  };
+  const ms = core.defaultSerum().osc[0].memSet;
+  // S2 'all': PHASE offset + RAND·u, no knob-end rule at PHASE 360° / RAND 100 %
+  let r = ph0({ 'a.phase': 0.25, 'a.uni': nUni(4) });
+  assert.deepEqual(r.out[0].slice(0, 4), [0.25, 0.25, 0.25, 0.25]);
+  r = ph0({ 'a.phase': 1, 'a.rand': 1, 'a.uni': nUni(2) }, null, 2);
+  assert.notDeepEqual(r.out[0].slice(0, 2), r.out[1].slice(0, 2), 'S2: random each note at the knob ends');
+  // 'voice' (Phase-1 MemTrig): memSet + PHASE every note
+  r = ph0({ 'a.phase': 0.1, 'a.uni': nUni(4) }, (s) => { s.osc[0].phMem = 'voice'; }, 2);
+  for (const o of r.out) o.slice(0, 4).forEach((x, i) => assert.ok(Math.abs(x - ((ms[i] + 0.1) % 1)) < 1e-12, 'voice ' + i));
+  // 'contig' (Phase-1 Mem): the second note continues the processor's phase memory (+ memSet)
+  r = ph0({ 'a.uni': nUni(2) }, (s) => { s.osc[0].phMem = 'contig'; }, 2);
+  assert.ok(Math.abs(((r.out[1][1] - r.out[1][0]) % 1 + 1) % 1 - ((ms[1] - ms[0]) % 1 + 1) % 1) < 1e-9, 'relative phases = memSet');
+  assert.ok(Math.abs(r.out[1][0] - r.out[0][0]) > 1e-3, 'continues (not restarted)');
+  // S1 mode: PHASE ≥ 0.9995 is Mem, + RAND ≥ 0.9995 MemTrig (A/B); phMem of A/B ignored; OSC C uses its menu
+  r = ph0({ 'a.phase': 1, 'a.rand': 1, 'a.uni': nUni(3), 'c.on': 1, 'c.phase': 0.2 }, (s) => { s.global.s1 = 1; s.osc[0].phMem = 'all'; s.osc[2].phMem = 'voice'; }, 2);
+  r.out.forEach((o) => o.slice(0, 3).forEach((x, i) => assert.ok(Math.abs(x - ms[i]) < 1e-12, 'S1 MemTrig at the knob ends')));
+  const msC = core.defaultSerum().osc[2].memSet;
+  r.out.forEach((o) => assert.ok(Math.abs(o[4] - ((msC[0] + 0.2) % 1)) < 1e-12, 'OSC C: its phMem (voice) in S1 mode'));
+  r = ph0({ 'a.phase': 1, 'a.rand': 0, 'a.uni': nUni(2) }, (s) => { s.global.s1 = 1; }, 2);
+  assert.ok(Math.abs(r.out[1][0] - r.out[0][0]) > 1e-3 && Math.abs(((r.out[1][1] - r.out[1][0]) % 1 + 1) % 1 - ((ms[1] - ms[0]) % 1 + 1) % 1) < 1e-9,
+    'S1 Mem (PHASE at the end): continues with the memSet spread');
+  // Phase Legato inverts the steal rule: a steal (note-on on a sounding voice) resets the phases
+  const steal = (pl) => {
+    const u = setup2({ s: st2({ 'a.phase': 0.25 }, (s) => { s.osc[0].phLegato = pl; }) });
+    u.vs[0].noteOn(57, 1, false, 1); run2(u.S, u.proc, u.vs, 3);
+    const before = u.vs[0].uPh[0];
+    u.vs[0].noteOn(60, 1, false, 1);
+    return [before, u.vs[0].uPh[0]];
+  };
+  const [b0, a0] = steal(0), [, a1] = steal(1);
+  assert.equal(a0, b0, 'Phase-1 rule: a steal keeps the phase running');
+  assert.equal(a1, 0.25, 'Phase Legato: a steal restarts at PHASE');
+});
+
+test('M2: keyboard mapping — key/velocity ranges, fold, warp-only modulators (§6.2 inv B21)', () => {
+  const map = (k, v = [1, 127], fold = 0, warp = 0) => ({ k, v, fold, warp });
+  // out of range: silent; fold: plays the folded key
+  const silent = play2({ s: st2({}, (s) => { s.osc[0].map = map([60, 72]); }), tables: TSINE }, 48);
+  assert.equal(maxAbs(silent.L), 0, 'A outside its key range is silent');
+  const f = freq2(st2({}, (s) => { s.osc[0].map = map([60, 72], [1, 127], 1); }), 45);
+  assert.ok(Math.abs(st(f, 440)) < 0.01, 'note 45 folds two octaves up to 69: ' + f);
+  const fold = (lo, hi, n) => 69 + st(freq2(st2({}, (s) => { s.osc[0].map = map([lo, hi], [1, 127], 1); }), n), 440);
+  assert.ok(Math.abs(fold(60, 64, 57) - 60) < 0.01, 'no octave fits (57 or 69): the nearer bound 60');
+  assert.ok(Math.abs(fold(60, 61, 50) - 61) < 0.01, 'no octave fits (50 or 62): the nearer bound 61');
+  assert.ok(Math.abs(fold(60, 61, 75) - 61) < 0.01, '75 → 63 or 51: 61');
+  assert.ok(Math.abs(fold(48, 72, 100) - 64) < 0.01, '100 folds down to 64');
+  const vel = play2({ s: st2({}, (s) => { s.osc[0].map = map([0, 127], [100, 127]); }) }, 57, 10, { vel: 0.5 });
+  assert.equal(maxAbs(vel.L), 0, 'velocity 64 outside 100–127');
+  // B frequency-modulated by A: A out of range stops modulating unless its map has warp set
+  const fm = { 'b.on': 1, 'a.level': 0, 'b.w1': nEnum(W2('fm_o1'), 81), 'b.warp': 0.5 };
+  const plainB = play2({ s: st2({ 'b.on': 1, 'a.level': 0 }) }, 48);
+  const noWarp = play2({ s: st2(fm, (s) => { s.osc[0].map = map([60, 72]); }) }, 48);
+  const warp = play2({ s: st2(fm, (s) => { s.osc[0].map = map([60, 72], [1, 127], 0, 1); }) }, 48);
+  sameArr(noWarp.L, plainB.L, 'unavailable modulator: the slot acts as Off');
+  assert.ok(maxDiff(warp.L, plainB.L) > 0.05, 'map.warp keeps A as a modulator');
+  assert.equal(maxDiff(play2({ s: st2(fm) }, 48).L, warp.L), 0, 'in range ≡ warp-only modulator');
+});
+
+test('M2: Voice Control per-note offsets — pan, detune, cutoff (§6.2, §6.16); selection per channel', () => {
+  const vc = (steps, sel = [1, 1, 1, 1, 1]) => (s) => { s.vc.steps[0] = steps; s.vc.sel = sel; };
+  const r = play2({ s: st2({}, vc([1, 0, 0, 0, 0, 0])) });
+  assert.equal(r.u.cp.use & 1024, 1024);
+  assert.ok(maxAbs(r.L) < 1e-12 && maxAbs(r.R) > 0.1, 'pan +1: hard right');
+  const r2 = play2({ s: st2({}, vc([1, 0, 0, 0, 0, 0], [0, 1, 1, 1, 1])) });
+  assert.ok(Math.abs(maxAbs(r2.L) - maxAbs(r2.R)) < 1e-9, 'A not selected: centred');
+  assert.ok(Math.abs(st(freq2(st2({}, vc([0, 0.5, 0, 0, 0, 0]))), F57) - 0.5) < 0.002, 'detune +50 ct');
+  const u = setup2({ s: st2({ ...FILT('f', T_LOW12) }, vc([0, 0, 0.4, 0, 0, 0])) });
+  u.vs[0].noteOn(57, 1, false, 1);
+  run2(u.S, u.proc, u.vs, 2);
+  const fc = (n) => 8.175798915643707 * Math.pow(2, Math.log2(22050 / 8.175798915643707) * n);
+  assert.ok(Math.abs(u.vs[0].fcOf(u.proc.sx, 0.3, 0) / fc(0.5) - 1) < 1e-6, 'cutoff n + 0.5·0.4');
+});
+
+/* ------------------------------------------------------------------ sub and noise (§6.11) */
+
+test('M2: sub — S2 shapes (Triangle), level law n² (S1: n), start phase, Contiguous (§6.11.1)', () => {
+  const sub = (p, edit, note = 57, spans = 20) => play2({ s: st2({ 'a.on': 0, 's.on': 1, 's.level': 0.5, ...p }, (s) => { s.sub.route = 1; if (edit) edit(s); }) }, note, spans);
+  const s2 = sub({}), s1 = sub({}, (s) => { s.global.s1 = 1; });
+  assert.ok(Math.abs(maxAbs(s2.L) / maxAbs(s1.L) - 0.5) < 1e-3, 'S2 level n² = ¼ vs S1 n = ½');
+  // shapes: s.shp selects SUB_IDS2 (index 2 = Triangle, absent from the S1 list)
+  const tri = sub({ 's.shp': 2 / 5 }), sine = sub({ 's.shp': 0 });
+  const crest = (x) => maxAbs(x, 4800) / rms(x, 4800);
+  assert.ok(Math.abs(crest(tri.L) - Math.sqrt(3)) < 0.05, 'triangle crest √3: ' + crest(tri.L));
+  assert.ok(Math.abs(crest(sine.L) - Math.SQRT2) < 0.02, 'sine crest √2');
+  // start phase s.phase/360 (sine table −sin: φ 0.25 starts at the trough); then Contiguous continues the last phase
+  const ph = sub({ 's.phase': 0.25 }, null, 57, 1);
+  assert.ok(Math.abs(ph.L[0] - (-1 * 0.25 / ph.u.proc.CH)) < 1e-4, 'φ 0.25 of −sin (level ¼, first sample of the ENV 1 ramp): ' + ph.L[0]);
+  const u = setup2({ s: st2({ 'a.on': 0, 's.on': 1 }, (s) => { s.sub.route = 1; s.sub.contig = 1; }) });
+  u.vs[0].noteOn(57, 1, false, 1); run2(u.S, u.proc, u.vs, 7);
+  u.vs[0].noteOff(0); run2(u.S, u.proc, u.vs, 10);
+  assert.equal(u.vs[0].active, false);
+  const last = u.proc.sx.subPh;
+  assert.ok(last > 0 && last < 1);
+  u.vs[0].noteOn(60, 1, false, 1);
+  assert.equal(u.vs[0].sPh, last, 'Contiguous: the new note starts at the last sub phase of the processor');
+});
+
+test('M2: colour noises — in-band level at OS 1/2/4, pink/brown slopes, Geiger rate/symmetry, STEREO correlation (lags −4…4), FILTER tilt corners (§6.11.2)', () => {
+  const OSn = 2, fs = 96000;
+  // Geiger's gain at rate f: 40 clicks/s of ±(0.5 + 0.5u) (E[a²] = 7/12) decaying by dec per sample at −12 dBFS RMS
+  const kG = (f) => { const dec = Math.exp(-1 / (0.00015 * f)); return Math.pow(10, -12 / 20) / Math.sqrt(40 / f * (7 / 12) / (1 - dec * dec)); };
+  const noise = (src, p = {}, secs = 1.2) => play2({ s: st2({ 'a.on': 0, 'n.on': 1, 'n.level': 1, ...p }, (s) => { s.noise.src = src; s.noise.route = 1; }) },
+    57, spansOf(secs));
+  // averaged power spectrum (Hann, 8192) of x from 0.1 s; mean power density in [f0, f1]
+  const psd = (x) => {
+    const N = 8192, acc = new Float64Array(N / 2), w = Float64Array.from({ length: N }, (_, n) => 0.5 - 0.5 * Math.cos(2 * Math.PI * n / N));
+    let k = 0;
+    for (let o = Math.round(0.1 * fs); o + N <= x.length; o += N / 2, k++) {
+      const re = new Float64Array(N), im = new Float64Array(N);
+      for (let i = 0; i < N; i++) re[i] = x[o + i] * w[i];
+      fft(re, im, false);
+      for (let b = 0; b < N / 2; b++) acc[b] += re[b] * re[b] + im[b] * im[b];
+    }
+    return (f0, f1) => { let e = 0, n = 0; for (let b = Math.round(f0 * N / fs); b <= Math.round(f1 * N / fs); b++) { e += acc[b]; n++; } return e / n / k; };
+  };
+  const slope = (x, fa, fb) => { const P = psd(x); return 10 * Math.log10(P(fb / 1.2, fb * 1.2) / P(fa / 1.2, fa * 1.2)) / Math.log2(fb / fa); };
+  const white = noise('color:White', { 'n.stereo': 0 });
+  assert.ok(Math.abs(slope(white.L, 400, 6400)) < 0.5, 'white flat');
+  // level: −12 dBFS RMS in the band the engine's decimator keeps (≤ base/2 = 24 kHz) at every Quality — white is
+  // generated at the OS rate (K_WHITE·√OS), pink and brown hold their power far below 24 kHz
+  const inband = (x, fsx) => {                                // (the last 1.37 s at every OS: brown's slow swings average out alike)
+    const N = 65536 * Math.round(fsx / 48000), re = new Float64Array(N), im = new Float64Array(N);
+    for (let i = 0; i < N; i++) re[i] = x[x.length - N + i];
+    fft(re, im, false);
+    let e = 0;
+    for (let k = 1; k <= Math.floor(24000 * N / fsx); k++) e += 2 * (re[k] * re[k] + im[k] * im[k]);
+    return 10 * Math.log10(e / N / N);
+  };
+  for (const [src, tol] of [['color:White', 0.3], ['color:Pink', 1.5], ['color:Brown', 1.5]]) {
+    const row = [];
+    for (const OS of [1, 2, 4]) {
+      const r = play2({ s: st2({ 'a.on': 0, 'n.on': 1, 'n.level': 1, 'n.stereo': 0 }, (s) => { s.noise.src = src; s.noise.route = 1; }), OS }, 57, 600);
+      const l = inband(r.L, 48000 * OS);
+      row.push(l.toFixed(2));
+      assert.ok(Math.abs(l + 12) <= tol, src + ' in-band level at OS ' + OS + ': ' + l.toFixed(2) + ' dBFS');
+    }
+    console.log(`  ${src} in-band (≤ 24 kHz) RMS at OS 1/2/4: ${row.join(' / ')} dBFS`);
+  }
+  const pink = noise('color:Pink', { 'n.stereo': 0 }), brown = noise('color:Brown', { 'n.stereo': 0 });
+  assert.ok(Math.abs(slope(pink.L, 200, 3200) + 3) <= 1, 'pink −3 dB/oct: ' + slope(pink.L, 200, 3200).toFixed(2));
+  assert.ok(Math.abs(slope(brown.L, 300, 4800) + 6) <= 1.5, 'brown −6 dB/oct: ' + slope(brown.L, 300, 4800).toFixed(2));
+  for (const [x, name] of [[pink, 'pink'], [brown, 'brown']]) {
+    const l = 20 * Math.log10(rms(x.L, 9600));
+    assert.ok(Math.abs(l + 12) < 1.5, name + ' level ' + l.toFixed(2));
+  }
+  // Geiger: Poisson clicks at 40/s (n.pitch 0 st), each click × kG (§6.11.2: −12 dBFS RMS at 40/s)
+  const g = noise('color:Geiger', { 'n.stereo': 0 }, 2.1);
+  let clicks = 0;
+  for (let i = 9600; i < g.L.length; i++) if (Math.abs(g.L[i] - g.L[i - 1]) > 0.35 * kG(fs)) clicks++;
+  assert.ok(clicks > 50 && clicks < 115, 'Geiger ≈ 80 clicks in 2 s: ' + clicks);
+  // Geiger level: −12 dBFS RMS at 40 clicks/s at every Quality (4 s ≈ 160 clicks: ±0.4 dB of Poisson spread), and the RMS
+  // follows the click rate (PITCH +24 st: 160/s → −6 dBFS) with the click size unchanged
+  {
+    const row = [];
+    for (const OS of [1, 2, 4]) {
+      const r = play2({ s: st2({ 'a.on': 0, 'n.on': 1, 'n.level': 1, 'n.stereo': 0 }, (st) => { st.noise.src = 'color:Geiger'; st.noise.route = 1; }), OS }, 57, spansOf(4.1));
+      const l = 20 * Math.log10(rms(r.L, Math.round(0.1 * 48000 * OS)));
+      row.push(l.toFixed(2));
+      assert.ok(Math.abs(l + 12) <= 1.5, 'Geiger RMS at OS ' + OS + ': ' + l.toFixed(2) + ' dBFS');
+    }
+    const hi = noise('color:Geiger', { 'n.stereo': 0, 'n.pitch': 0.75 }, 2.1), lh = 20 * Math.log10(rms(hi.L, 9600));
+    console.log(`  Geiger RMS at 40 clicks/s, OS 1/2/4: ${row.join(' / ')} dBFS; at 160/s (PITCH +24 st): ${lh.toFixed(2)} dBFS`);
+    assert.ok(Math.abs(lh + 12 - 10 * Math.log10(4)) <= 1, 'Geiger RMS follows the click rate: ' + lh.toFixed(2));
+  }
+  // Geiger clicks ±(0.5 + 0.5u): sign and size drawn separately — symmetric sizes, balanced signs, no DC
+  {
+    const G = play2({ s: st2({ 'a.on': 0, 'n.on': 1, 'n.level': 1, 'n.stereo': 0, 'n.pitch': 0.9 }, (s) => { s.noise.src = 'color:Geiger'; s.noise.route = 1; }), OS: 1 },
+      57, spansOf(4));
+    const x = G.L.map((v) => v / kG(48000));                // (in click units: the size §6.11.2 gives)
+    let np = 0, nn = 0, sp = 0, sn = 0, mx = 0, dc = 0;
+    for (let i = 0; i < x.length; i++) dc += x[i];
+    dc /= x.length;
+    for (let i = 1; i < x.length; i++) {
+      const d = x[i] - x[i - 1];
+      if (d > 0.2) { np++; sp += d; } else if (d < -0.2) { nn++; sn -= d; }
+      mx = Math.max(mx, Math.abs(d));
+    }
+    console.log(`  Geiger (n.pitch 0.9, 4 s): +${np} clicks avg ${(sp / np).toFixed(3)}, −${nn} avg ${(sn / nn).toFixed(3)}, DC ${dc.toExponential(2)}`);
+    assert.ok(np > 400 && nn > 400 && Math.abs(np - nn) < 0.15 * (np + nn), 'signs balanced: ' + np + ' / ' + nn);
+    assert.ok(Math.abs(sp / np - 0.75) < 0.05 && Math.abs(sn / nn - 0.75) < 0.05, 'sizes 0.5…1 in both directions: ' + (sp / np).toFixed(3) + ' / ' + (sn / nn).toFixed(3));
+    assert.ok(mx < 1.2, 'no click above 1 (bar overlaps): ' + mx.toFixed(3));
+    assert.ok(Math.abs(dc) < 5e-3, 'no DC: ' + dc.toExponential(2));
+  }
+  // STEREO: correlation 1 at 0, ≈ 0 at 1, 1/√2 at 0.5
+  const corr = (r) => { let a = 0, b = 0, c = 0; for (let i = 9600; i < r.L.length; i++) { a += r.L[i] * r.R[i]; b += r.L[i] * r.L[i]; c += r.R[i] * r.R[i]; } return a / Math.sqrt(b * c); };
+  assert.ok(corr(white) > 0.999999, 'STEREO 0: mono');
+  assert.ok(Math.abs(corr(noise('color:White', { 'n.stereo': 1 }))) < 0.05, 'STEREO 1: decorrelated');
+  // the two streams are unrelated at every lag (not one stream shifted by a sample): corr(L[k], R[k + lag]), lag −4…4
+  for (const [src, tol] of [['color:White', 0.05], ['color:Pink', 0.3], ['color:Brown', 0.3]]) {
+    const r = noise(src, { 'n.stereo': 1 }, 2.5), L = r.L, R = r.R, cs = [];
+    for (let lag = -4; lag <= 4; lag++) {
+      let a = 0, b = 0, c = 0;
+      for (let i = 9600; i < L.length - 4; i++) { const y = R[i + lag]; a += L[i] * y; b += L[i] * L[i]; c += y * y; }
+      cs.push(a / Math.sqrt(b * c));
+    }
+    assert.ok(cs.every((x) => Math.abs(x) < tol), src + ' STEREO 1, lags −4…4: ' + cs.map((x) => x.toFixed(3)).join(' '));
+  }
+  assert.ok(Math.abs(corr(noise('color:White', { 'n.stereo': 0.5 })) - Math.SQRT1_2) < 0.05, 'STEREO ½: 1/√2');
+  // FILTER: c = +½ → one-pole LP at 20000·2^−4.5 Hz, c = −½ → HP at 20·2^4.5 Hz (−3 dB there)
+  const lp = psd(noise('color:White', { 'n.stereo': 0, 'n.color': 0.75 }).L), fLp = 20000 * Math.pow(2, -4.5);
+  assert.ok(Math.abs(10 * Math.log10(lp(fLp * 0.95, fLp * 1.05) / lp(40, 80)) + 3) < 1, 'LP corner −3 dB');
+  const hp = psd(noise('color:White', { 'n.stereo': 0, 'n.color': 0.25 }).L), fHp = 20 * Math.pow(2, 4.5);
+  assert.ok(Math.abs(10 * Math.log10(hp(fHp * 0.95, fHp * 1.05) / hp(8000, 12000)) + 3) < 1, 'HP corner −3 dB');
+  void OSn;
+});
+
+test('M2: colour noises do not depend on the Quality — band levels at OS 1/2/4 within ±1 dB (brown included); the raw noise (warp Noise modulator, `noise` source) has the same RMS at every OS (§6.11.2)', () => {
+  // Welch power per band (Hann, 4096·OS points: the same 11.7 Hz resolution at every OS; p_k = 2|X_k|²/(N·Σw²), Σ p_k = mean x²)
+  const bands = (x, OS) => {
+    const N = 4096 * OS, f = 48000 * OS, w = Float64Array.from({ length: N }, (_, n) => 0.5 - 0.5 * Math.cos(2 * Math.PI * n / N));
+    let w2 = 0;
+    for (let n = 0; n < N; n++) w2 += w[n] * w[n];
+    const acc = new Float64Array(N / 2);
+    let k = 0;
+    for (let o = Math.round(0.2 * f); o + N <= x.length; o += N / 2, k++) {
+      const re = new Float64Array(N), im = new Float64Array(N);
+      for (let i = 0; i < N; i++) re[i] = x[o + i] * w[i];
+      fft(re, im, false);
+      for (let b = 1; b < N / 2; b++) acc[b] += 2 * (re[b] * re[b] + im[b] * im[b]) / (N * w2);
+    }
+    const band = (f0, f1) => { let e = 0; for (let b = Math.ceil(f0 * N / f); b <= Math.floor(f1 * N / f); b++) e += acc[b]; return 10 * Math.log10(e / k); };
+    return [band(100, 1000), band(1000, 5000), band(5000, 20000)];
+  };
+  for (const src of ['color:White', 'color:Pink', 'color:Brown']) {
+    const rows = [];
+    for (const OS of [1, 2, 4]) {
+      const r = play2({ s: st2({ 'a.on': 0, 'n.on': 1, 'n.level': 1, 'n.stereo': 0 }, (st) => { st.noise.src = src; st.noise.route = 1; }), OS }, 57, spansOf(3));
+      rows.push(bands(r.L, OS));
+    }
+    console.log(`  ${src} band levels 0.1–1 / 1–5 / 5–20 kHz at OS 1, 2, 4: ` + rows.map((b) => b.map((x) => x.toFixed(2)).join(' / ')).join(' | ') + ' dB');
+    for (let j = 0; j < 3; j++) {
+      for (let q = 1; q < 3; q++) assert.ok(Math.abs(rows[q][j] - rows[0][j]) <= 1, src + ' band ' + j + ' at OS ' + (1 << q) + ': ' + rows[q][j].toFixed(2) + ' vs OS 1 ' + rows[0][j].toFixed(2));
+    }
+  }
+  // the raw noise: the voice's nLast (the `noise` matrix source, §5.3) per span, and the raw buffer the Noise warp
+  // modulator reads; white at K_WHITE (−12 dBFS RMS per sample) at every OS, not × √OS
+  for (const src of ['color:White', 'color:Pink', 'color:Brown']) {
+    const row = [];
+    for (const OS of [1, 2, 4]) {
+      const u = setup2({ s: st2({ 'n.on': 1, 'n.level': 1, 'n.stereo': 0 }, (st) => { st.noise.src = src; st.noise.route = 1; }), OS });
+      const v = u.vs[0];
+      v.noteOn(57, 1, false, 1);
+      let e = 0, n = 0;
+      run2(u.S, u.proc, u.vs, 800, { each: (sp) => { if (sp > 20) { e += v.nLast * v.nLast; n++; } } });
+      row.push(20 * Math.log10(Math.sqrt(e / n)));
+    }
+    console.log(`  ${src} raw noise (nLast) RMS at OS 1/2/4: ${row.map((x) => x.toFixed(2)).join(' / ')} dBFS`);
+    for (let q = 0; q < 3; q++) assert.ok(Math.abs(row[q] + 12) <= (src === 'color:White' ? 0.6 : 1.5), src + ' raw noise at OS ' + (1 << q) + ': ' + row[q].toFixed(2));
+    assert.ok(Math.abs(row[2] - row[0]) <= (src === 'color:White' ? 0.6 : 1.5), src + ' raw noise OS 4 vs OS 1');
+  }
+});
+
+/* ------------------------------------------------------------------ oscillator types through the voice (§11.8) */
+
+// a 1 s mono sine at 375 Hz (period 128 frames) at 48 kHz: root 69 + 12·log2(375/440); levels 0–2
+const ROOT375 = 69 + 12 * Math.log2(375 / 440);
+function sineSmp(id, len = 48000) {
+  const levels = [];
+  for (let l = 0, n = len; l < 3; l++, n = Math.floor(n / 2)) levels.push({ len: n, L: Float32Array.from({ length: n }, (_, i) => 0.5 * Math.sin(2 * Math.PI * 375 * (i << l) / 48000)), R: null });
+  return { id, v: 1, kind: 'smp', bytes: 0, rate: 48000, ch: 1, len, root: ROOT375, loop: { start: 0, end: len }, peak: 0.5, levels };
+}
+// a spectral analysis of a steady 937.5 Hz sine (bin 40 of N 2048, hop 512: the phase advance is a multiple of 2π)
+function sineSpec(id, frames = 64) {
+  const N = 2048, nb = N / 2 + 1, mag = new Float32Array(frames * nb), ph = new Float32Array(frames * nb);
+  for (let f = 0; f < frames; f++) mag[f * nb + 40] = 0.5;
+  return { id, v: 1, kind: 'spec', bytes: 0, rate: 48000, ch: 1, len: frames * 512, N, hop: 512, frames, mag, ph, trans: new Uint8Array(frames), peak: 0.5 };
+}
+test('M2: Sample / Granular / Spectral oscillators through the voice: pitch from ctx.f, missing asset ⇒ silence then sound, X|Y Level, streams back at the end (§11.8)', () => {
+  const smp = (p = {}, edit = null) => st2(p, (s) => { s.osc[0].type = 'sample'; s.osc[0].smp = 'smp:sine'; s.osc[0].smpo.loop = 1; s.osc[0].route = 1; if (edit) edit(s); });
+  // pitch: note 69 plays the 375 Hz sample at 440 Hz; OSC C (sample) as well
+  const u = setup2({ s: smp(), assets: { 'smp:sine': sineSmp('smp:sine') } });
+  assert.equal(u.cp.oType[0], 2);
+  u.vs[0].noteOn(69, 1, false, 1);
+  let r = run2(u.S, u.proc, u.vs, 40);
+  assert.ok(Math.abs(st(zcFreq(r.L, u.proc.fs, 4800), 440)) < 0.01, 'Sample: 440 Hz at note 69');
+  assert.ok(u.vs[0].ox[0] !== null && u.vs[0].ox[0].sel === 1);
+  // Multisample: one looping zone on the same sample (root ROOT375) — 440 Hz at note 69
+  const ms = setup2({ s: st2({ 'a.on': 0, 'b.on': 1, 'b.rand': 0 }, (s) => { s.osc[1].type = 'multi'; s.osc[1].multi = 'msmp:one'; }),
+    assets: { 'smp:sine': sineSmp('smp:sine'), 'msmp:one': { id: 'msmp:one', v: 1, kind: 'multi', bytes: 0, zones: [{ lo: 0, hi: 127, vlo: 0, vhi: 127,
+      root: ROOT375, tune: 0, gain: 0, pan: 0, smp: 'smp:sine', mode: 'loop', ls: 0, le: 48000, off: 0, env: null, rr: [1, 1], vt: 1 }] } } });
+  assert.equal(ms.cp.oType[1], 1);
+  ms.vs[0].noteOn(69, 1, false, 1);
+  r = run2(ms.S, ms.proc, ms.vs, 40);
+  assert.ok(Math.abs(st(zcFreq(r.L, ms.proc.fs, 4800), 440)) < 0.01, 'Multisample: 440 Hz at note 69');
+  // missing asset: silent; it arrives mid-note and sounds within a chunk
+  const w = setup2({ s: smp() });
+  w.vs[0].noteOn(69, 1, false, 1);
+  r = run2(w.S, w.proc, w.vs, 10);
+  assert.equal(maxAbs(r.L), 0, 'missing entry: silence');
+  assert.equal(w.B.storeAsset('smp:sine', sineSmp('smp:sine')), true);
+  r = run2(w.S, w.proc, w.vs, 4);
+  assert.ok(maxAbs(r.L, 0, 2 * r.N) > 0.01, 'audible right after it arrives');
+  // Granular: X|Y Y → Level (Replace) applied by the voice: level² scales the output
+  const gran = (y) => {
+    const g = setup2({ s: st2({ 'a.gy': y, 'a.dens': 0.8 }, (s) => { s.osc[0].type = 'gran'; s.osc[0].smp = 'smp:sine'; s.osc[0].route = 1;
+      s.osc[0].xy = { on: 1, y: 1, yMode: 1 }; }), assets: { 'smp:sine': sineSmp('smp:sine') } });
+    g.vs[0].noteOn(60, 1, false, 1);
+    return run2(g.S, g.proc, g.vs, 60).L;
+  };
+  const g1 = gran(1), gh = gran(0.5);
+  assert.ok(rms(g1) > 0.01, 'granular sounds');
+  assert.ok(Math.abs(rms(gh) / rms(g1) - 0.25) < 1e-6, 'X|Y Level (Replace) y ½ → level ½ → ¼: ' + rms(gh) / rms(g1));
+  // Spectral: renders, and the voice gives its streams back when it ends (§6.19)
+  const sp = setup2({ s: st2({ 'e1.rel': nTime(0.01) }, (s) => { s.osc[0].type = 'spec'; s.osc[0].smp = 'smp:sine'; s.osc[0].route = 1; }),
+    assets: { 'spec:smp:sine': sineSpec('spec:smp:sine') } });
+  assert.equal(sp.cp.oType[0], 4);
+  sp.vs[0].noteOn(60, 1, false, 1);
+  r = run2(sp.S, sp.proc, sp.vs, 60);
+  assert.ok(r.L.every(Number.isFinite) && rms(r.L, r.L.length / 2) > 0.005, 'Spectral sounds');
+  const pool = sp.sc.global('SxSpec').poolOf(sp.proc.sx);
+  const held = () => sp.vs[0].ox[0].nS;
+  assert.ok(pool && held() >= 1, 'streams held while sounding');
+  sp.vs[0].noteOff(0);
+  run2(sp.S, sp.proc, sp.vs, 30);
+  assert.equal(sp.vs[0].active, false);
+  assert.equal(held(), 0, 'streams returned when the voice ended');
+});
+
+/* ------------------------------------------------------------------ neutral terms (§0.7, serum-dsp rows) */
+
+// serum-dsp.js with the code of a term removed (each edit must match exactly once, so a refactor fails here loudly)
+function withoutTerm(edits) {
+  let src = dspSource('serum-dsp.js');
+  for (const [a, b] of edits) {
+    assert.equal(src.split(a).length - 1, 1, 'transform target found exactly once: ' + a);
+    src = src.replace(a, b);
+  }
+  return dspScope({ overrides: { 'serum-dsp.js': src } });
+}
+// the patch rendered by the real code and by the code without the term: bit-identical on every output
+// (ch: the notes' MPE member channel; differ: the positive control — the term is NOT neutral in this patch, so removing its
+// code must change the output: the setup reaches the term and the identity check above can fail)
+function neutralSame(name, s, edits, { notes = [[57, 1], [64, 0.7]], spans = 40, cpEdit = null, each = null, tables = TABLES2, ch = 0, differ = false } = {}) {
+  const go = (scope) => {
+    const u = setup2({ s, scope, n: notes.length, cpEdit, tables });
+    notes.forEach(([k, v], i) => u.vs[i].noteOn(k, v, false, 1, ch));
+    return run2(u.S, u.proc, u.vs, spans, { outs: true, each: each ? (sp) => each(sp, u) : undefined });
+  };
+  const a = go(null), b = go(withoutTerm(edits));
+  assert.ok(maxAbs(a.L) + maxAbs(a.dL) > 1e-3, name + ': audible');
+  if (differ) { assert.ok(OUTS.some((k) => maxDiff(a[k], b[k]) > 1e-6), name + ': the term changes this patch (positive control)'); return; }
+  for (const k of OUTS) sameArr(a[k], b[k], name + ' (' + k + ')');
+}
+test('M2 §0.7: pitch terms at neutral — s.crs, k.hz, k.ratio / harmonics / step modes (mode semi), VC detune, MPE, tuning', () => {
+  const s = st2({ 's.on': 1, 'b.on': 1, 'c.on': 1, 'a.uni': nUni(3), 'a.det': 0.3, 'n.on': 1, 'g.bu2': 0.25 }, (st) => { st.noise.src = 'color:Pink'; });
+  const each = (sp, u) => { u.proc.bendRaw = sp > 10 ? 0.5 : 0; };
+  neutralSame('s.crs n 0.5', s, [['if (!s1) { const c = eff[S_CRS]; if (c !== 0.5) P += 128 * c - 64; }', '']], { each });
+  neutralSame('k.hz n 0.5', s, [['this.cHz[o] = hz === 0.5 ? 0 : 100 * hz - 50;', 'this.cHz[o] = 0;']], { each });
+  neutralSame('pitch mode semi', s, [['if (mode === PM_RATIO) {', 'if (false) {'], ['if (mode === PM_HARM) {', 'if (false) {'],
+    ['} else if (mode === PM_STEP && sx.sclN > 0) {', '} else if (false) {']], { each });
+  neutralSame('VC inactive (use & 1024 = 0)', s, [['this.pDet = sx.vcOn !== 0 ? this.vcD / 100 : 0;', 'this.pDet = 0;'],
+    ['if (sx.vcOn !== 0 && sx.vcSel[o] !== 0 && this.vcP !== 0) { pan += this.vcP; pan = pan > -1 ? (pan < 1 ? pan : 1) : -1; }', ''],
+    ['if (sx.vcOn !== 0 && this.vcC !== 0) { n += this.vcC; n = n > 0 ? (n < 1 ? n : 1) : 0; }', '']], { each });
+  // notes on member channel 2 with a per-note bend (proc.mpe[2·4] = 0.3): MPE off ⇒ the term's code removed renders the
+  // same; the same notes with MPE on (use & 256, mpeOn) ⇒ removing the term changes the pitch (positive control)
+  const mpeEach = (sp, u) => { each(sp, u); u.proc.mpe[8] = 0.3; };
+  const noMpe = [['const ms = sx.mpeOn !== 0 ? this.mod.mpeSt : 0;', 'const ms = 0;']];
+  neutralSame('MPE off (use & 256 = 0)', s, noMpe, { each: mpeEach, ch: 2, cpEdit: (cp) => { assert.equal(cp.use & 256, 0); assert.equal(cp.mpeOn, 0); } });
+  neutralSame('MPE on (positive control)', s, noMpe, { each: mpeEach, ch: 2, differ: true, cpEdit: (cp) => { cp.use |= 256; cp.mpeOn = 1; } });
+  neutralSame('tuning off (use & 512 = 0)', st2({ ...FILT('f', T_LOW12), 'a.track': 0, 'b.on': 1 }, (st) => { st.filter[0].keytrack = 1; st.osc[1].map.k = [70, 80]; st.osc[1].map.fold = 1; }),
+    [['if (sx.tuned === 0) return nP + d;', 'return nP + d;'],
+      ['if (sx.tuned !== 0) { const n = ref | 0, k = sx.tune[n >= 0 ? (n <= 127 ? n : 127) : 0]; if (k === k) ref = k; }', '']],
+    { cpEdit: (cp) => { for (let k = 0; k < 128; k++) cp.tune[k] = k + 0.25; } });
+});
+test('M2 §0.7: mixer terms at neutral — f.level/f2.level n 0.5, bus sends n 0, filter balance n 0 (F2 sum skipped); use bits 1, 2, 4', () => {
+  const s = st2({ ...FILT('f', T_MG24), ...FILT('f2', T_HIGH12, 0.6), 'b.on': 1, 's.on': 1, 'n.on': 1, 'a.uni': nUni(2) },
+    (st) => { st.filter[0].route = 0; st.osc[1].route = 0; st.sub.route = 0; st.noise.route = 2; });
+  neutralSame('filter levels n 0.5', s, [['L1 = eff[F_LEVEL] === 0.5 ? 1 : 4 * eff[F_LEVEL] * eff[F_LEVEL];', 'L1 = 1;'],
+    ['const L2 = eff[F2_LEVEL] === 0.5 ? 1 : 4 * eff[F2_LEVEL] * eff[F2_LEVEL];', 'const L2 = 1;'],
+    ['g = lvN === 0.5 ? 1 : 4 * lvN * lvN, g0', 'g = 1, g0']]);
+  neutralSame('bus sends n 0', s, [['if (sx.anyBus !== 0) {', 'if (false) {']]);
+  neutralSame('filter balance n 0', s, [['const bal = eff[FBAL[c]], h1 = bal === 0 ? 1 : 1 - bal, h2 = bal === 0 ? 0 : bal;', 'const h1 = 1, h2 = 0;']]);
+  // a use bit set with its feature off changes nothing (cheap bypass): OSC C, Filter 2, warp slot 2
+  const base = st2({ ...FILT('f', T_MG24), 'b.on': 1, 'a.w1': nEnum(W2('sync'), 81), 'a.warp': 0.4 });
+  const play = (cpEdit) => { const u = setup2({ s: base, cpEdit, n: 2 }); u.vs[0].noteOn(57, 1, false, 1); u.vs[1].noteOn(62, 0.6, false, 1); return run2(u.S, u.proc, u.vs, 40, { outs: true }); };
+  const ref = play(null);
+  for (const bit of [1, 2, 4]) {
+    const r = play((cp) => { cp.use |= bit; });
+    for (const k of OUTS) sameArr(r[k], ref[k], 'use bit ' + bit + ' (' + k + ')');
+  }
+  // S1 mode ignores the phase-memory menu of A/B
+  const s1 = (pm) => st2({ 'a.rand': 1, 'a.uni': nUni(3), 'b.on': 1, 'b.rand': 1 }, (st) => { st.global.s1 = 1; st.osc[0].phMem = pm; st.osc[1].phMem = pm; });
+  const pa = play2({ s: s1('all') }, 57, 30), pv = play2({ s: s1('voice') }, 57, 30);
+  sameArr(pv.L, pa.L, 'S1: phMem of A/B ignored');
+});
+
+/* ------------------------------------------------------------------ busy v2 patches: snapshot v2, allocation-free */
+
+// every voice feature at once: 3 oscillators (WT with both warp slots, Sample, WT with PD Self), FM/AM cross-modulation,
+// colour noise, S2 sub, F1 → F2 (PZ SVF, modulated type), Direct, buses, ENV toggles, tuning, MPE, VC, a fold map
+function busyState() {
+  return st2({ 'a.uni': nUni(5), 'a.det': 0.4, 'a.w1': nEnum(W2('fm_o2'), 81), 'a.warp': 0.3, 'a.w2': nEnum(W2('d_tube'), 81), 'a.warp2': 0.5,
+    'b.on': 1, 'b.uni': nUni(3), 'b.w1': nEnum(W2('sync'), 81), 'b.warp': 0.4, 'b.w2': nEnum(W2('am_o1'), 81), 'b.warp2': 0.3, 'b.bus1': 0.7,
+    'c.on': 1, 'c.uni': nUni(2), 'c.w1': nEnum(W2('pd_self'), 81), 'c.warp': 0.5, 'c.w2': nEnum(W2('lpf'), 81), 'c.warp2': 0.4, 'c.fbal': 0.5,
+    'n.on': 1, 'n.level': 0.3, 'n.stereo': 0.6, 'n.color': 0.7, 's.on': 1, 's.shp': 2 / 5, 's.crs': 0.6,
+    ...FILT('f', T_MG24, 0.5, { 'f.res': 0.4, 'f.bus2': 0.5 }), ...FILT('f2', 103, 0.6, { 'f2.x': 0.3, 'f2.y': 0.6 }),
+    'l1.rate': 0.5, 'l2.rate': 0.6, 'a.hz': 0.55, 'e2.rel': nTime(0.2) },
+  (s) => {
+    s.osc[1].type = 'sample'; s.osc[1].smp = 'smp:sine'; s.osc[1].smpo.loop = 1; s.osc[1].route = 2;
+    s.osc[2].pitch = { mode: 'harm', src: 'note' }; s.osc[2].map = { k: [50, 70], v: [1, 127], fold: 1, warp: 0 };
+    s.noise.src = 'color:Pink'; s.noise.route = 1; s.noise.env = 0; s.sub.route = 0; s.filter[0].route = 0; s.filter[1].clean = 1;
+    s.vc.steps[0] = [0.3, 0.2, 0.1, 0, 0, 0]; s.vc.len = 1; s.global.mpe = { on: 1, bend: 48, xyz: 1 };
+    s.matrix[0] = { ...s.matrix[0], src: 'lfo1', dst: 'f2.type', amt: 0.05 };
+    s.matrix[1] = { ...s.matrix[1], src: 'lfo2', dst: 'a.warp2', amt: 0.4 };
+    s.matrix[2] = { ...s.matrix[2], src: 'env2', dst: 'c.ratio', amt: 0.2 };
+  });
+}
+const busyTune = (cp) => { cp.use |= 512; for (let k = 0; k < 128; k++) cp.tune[k] = k + 0.1 * Math.sin(k); };
+
+test('M2: snapshot v2 shapes (§6.20) and its taps (Filter 2 tap, channel meters, sample positions)', () => {
+  const u = setup2({ s: busyState(), cpEdit: busyTune, n: 3, assets: { 'smp:sine': sineSmp('smp:sine') } });
+  u.proc.sx.mon = 1;
+  u.vs[0].noteOn(57, 1, false, 1, 2); u.vs[1].noteOn(64, 0.6, false, 1, 3); u.vs[2].noteOn(40, 0.8, false, 1);
+  run2(u.S, u.proc, u.vs, 20, { outs: true });
+  const sn = u.S.snapshot(u.proc);
+  const shape = { eff: ['Float32Array', 429 + 8 + 48 * 24], lfoPh: ['Float32Array', 10], lfoOut: ['Float32Array', 10], lfoY: ['Float32Array', 10],
+    env: ['Float32Array', 4], envStage: ['Uint8Array', 4], envT: ['Float32Array', 4], wtPos: ['Float32Array', 3], smpPos: ['Float32Array', 12],
+    grains: ['Uint16Array', 3], memNow: ['Float32Array', 48], filtTap: ['Float32Array', 2048], mix: ['Float32Array', 11], mOut: ['Float32Array', 64],
+    zone: ['Int16Array', 3], seq: ['Float64Array', 16] };
+  for (const [k, [tag, n]] of Object.entries(shape)) {
+    assert.equal(sn[k] && sn[k][Symbol.toStringTag], tag, k); assert.equal(sn[k].length, n, k + ' length');
+  }
+  for (const k of ['specCap', 'oscVoices', 'maxVoices', 'notes', 'tapRate']) assert.equal(typeof sn[k], 'number', k);
+  assert.equal(sn.notes, 3);
+  assert.equal(sn.maxVoices, 8 * (16 + 16 + 16 + 1 + 1), 'POLY × (A + B + C + sub + noise)');
+  assert.ok(sn.oscVoices >= 5 + 3 + 2, 'unison voices counted');
+  assert.ok(sn.filtTap.subarray(1024).some((x) => x !== 0), 'Filter 2 tap');
+  for (let c = 0; c < 7; c++) assert.ok(sn.mix[c] > -120 && sn.mix[c] < 20, 'meter ' + c + ': ' + sn.mix[c]);
+  assert.ok(sn.smpPos[4] > 0 && sn.smpPos[4] <= 1, 'OSC B (sample) playhead: ' + sn.smpPos[4]);
+  assert.equal(u.S.snapshot(u.proc), sn, 'one reused object');
+});
+
+test('M2: allocation-free — a busy v2 patch (every voice feature) and Granular/Spectral voices through begin / render / fxMods / snapshot', () => {
+  for (const variant of ['busy', 'gran+spec']) {
+    const s = variant === 'busy' ? busyState()
+      : st2({ 'b.on': 1, 'b.uni': nUni(2), 'a.dens': 0.9, 'a.uni': nUni(2), ...FILT('f', 100, 0.5) }, (st) => {
+        st.osc[0].type = 'gran'; st.osc[0].smp = 'smp:sine'; st.osc[1].type = 'spec'; st.osc[1].smp = 'smp:sine';
+        st.osc[0].xy = { on: 1, y: 2, yMode: 0 };
+      });
+    const u = setup2({ s, cpEdit: variant === 'busy' ? busyTune : null, n: 3,
+      assets: { 'smp:sine': sineSmp('smp:sine'), 'spec:smp:sine': sineSpec('spec:smp:sine') } });
+    u.proc.sx.mon = 1;
+    const N = 128 * u.proc.OS, O = {};
+    for (const k of OUTS) O[k] = new Float64Array(N);
+    const span = () => { u.S.begin(u.proc, N); for (const v of u.vs) if (v.active) v.render(O, N); u.S.fxMods(u.proc); u.S.snapshot(u.proc); };
+    u.vs[0].noteOn(57, 1, false, 1, 2); u.vs[1].noteOn(64, 0.6, false, 1, 3);
+    for (let k = 0; k < 8; k++) span();
+    noAlloc2(u.sc, () => {
+      for (let sp = 0; sp < spansOf(0.6); sp++) {
+        if (sp === 30) u.vs[1].noteOff(0.4);
+        if (sp === 60) u.vs[2].noteOn(45, 0.9, false, 1);
+        if (sp === 90) u.vs[0].noteOn(59, 0.3, false, 1, 2);    // steal
+        for (const k of OUTS) O[k].fill(0);
+        span();
+        for (const k of OUTS) for (let i = 0; i < N; i++) if (!Number.isFinite(O[k][i])) throw new Error(variant + ': not finite ' + k + ' at span ' + sp);
+      }
+    });
+  }
+});
+
+/* ------------------------------------------------------------------ warm-up and CPU (§11.10, §14.1 rows d, i, q) */
+
+// §14.1 node gate: a row's load × k ≤ 1.5 × its target, k = t_ref(calib) / t(calib), calib = row b through tests/ref-p1
+// (golden harness, the whole ref-p1 engine) measured in the same run; t_ref(calib) from tests/bench.json (without it k = 1,
+// uncalibrated). Through tests/cpu-gate.mjs (pairs in alternating order, median of the per-pair ratios, up to 5 attempts
+// while over the gate; RULINGS2 Performance): { load, k, raw, calib, attempt }
+const T_REF_CALIB = CPU.T_REF_CALIB, calibRowB = CPU.calibRowB;
+const gateLoad = (calib, fn, target) => CPU.gateLoad(fn, target);
+
+test('M2: warmUp exercises the Serum 2 code, leaves no table, asset or counter behind, and costs ≤ 1.5 × the Phase-1 warmUp (§14.1 row q)', () => {
+  const mkP = () => makeProc(48000, 2);
+  const refSrc = readFileSync(new URL('ref-p1/serum-dsp.js', import.meta.url), 'utf8');
+  // each run in a fresh scope (a cold JIT, as in a new AudioWorkletGlobalScope); only the warmUp call is timed
+  const timeRef = () => {
+    const c = vm.createContext(vm.constants && vm.constants.DONT_CONTEXTIFY !== undefined ? vm.constants.DONT_CONTEXTIFY : {});
+    c.console = mkConsole();
+    vm.runInContext(refSrc, c, { filename: 'ref-p1/serum-dsp.js' });
+    const proc = mkP(), t0 = performance.now(); c.SerumDSP.warmUp(proc); return performance.now() - t0;
+  };
+  const timeCur = (chk) => {
+    const sc = dspScope({ fast: true }), S = sc.global('SerumDSP'), B = sc.global('SxBase'), proc = mkP();
+    proc.vcN = 0;
+    const t0 = performance.now(); S.warmUp(proc); const t = performance.now() - t0;
+    if (chk) {
+      assert.deepEqual([...S.tables.keys()], [], 'no warm-up table left');
+      assert.equal(B.getAsset('__warmS'), null); assert.equal(B.getAsset('__warmM'), null);
+      assert.deepEqual(sc.logs.filter((m) => m.level !== 'log'), [], 'no warnings');
+      assert.equal(proc.vcN, 0, 'the Voice Control step counter is back at 0 (the warm-up CP plays VC notes)');
+      assert.ok(!proc.sx.msRR || proc.sx.msRR.every((x) => x === 0), 'no round-robin counter advanced');
+    }
+    return t;
+  };
+  timeCur(true);
+  // medians of 5 interleaved runs (per-pair ratios, alternating order), measured again while above the gate (up to 5
+  // attempts: a real regression exceeds it every time); fails above 1.5× (row q). A cold-JIT measurement: it runs with
+  // the browsers' normal tiering (Sparkplug on, which tests/v8-guard.mjs switches off for the rest of the process)
+  const med = (x) => x.slice().sort((p, q) => p - q)[x.length >> 1];
+  let r = null;
+  v8.setFlagsFromString('--sparkplug');
+  try {
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      const a = [], b = [], q = [];
+      for (let k = 0; k < 5; k++) {
+        let x, y;
+        if (k & 1) { y = timeCur(false); x = timeRef(); } else { x = timeRef(); y = timeCur(false); }
+        a.push(x); b.push(y); q.push(y / x);
+      }
+      const res = { a: med(a), b: med(b), ratio: med(q), attempts: attempt };
+      if (!r || res.ratio < r.ratio) r = res;
+      if (r.ratio <= 1.5) break;
+    }
+  } finally { v8.setFlagsFromString('--no-sparkplug'); }
+  console.log(`  warmUp: Phase 1 ${r.a.toFixed(1)} ms, v2 ${r.b.toFixed(1)} ms (${r.ratio.toFixed(2)}×, budget 1.5×, attempt ${r.attempts})`);
+  assert.ok(r.ratio <= 1.5, 'warmUp ' + r.ratio.toFixed(2) + '× Phase 1 (row q: ≤ 1.5×)');
+});
+
+test('M2: CPU rows d (3 WT oscillators × unison 7, two warp slots, F1 → F2) and i (64 rows: 20 editable curves, 10 slews) — §14.1 node gate (× k, ≤ 1.5 × target)', async () => {
+  const calib = await calibRowB();
+  const sc = dspScope({ fast: true });
+  const bench = (s, notes = 8) => {
+    const u = setup2({ s, n: notes, scope: sc });
+    u.vs.forEach((v, i) => v.noteOn(48 + 3 * i, 0.8, false, 1));
+    const N = 128 * u.proc.OS, L = new Float64Array(N), R = new Float64Array(N), spans = 48000 / 128;
+    const go = () => { for (let k = 0; k < spans; k++) { u.S.begin(u.proc, N); for (const v of u.vs) v.render(L, R, N); u.S.fxMods(u.proc); } };
+    go();
+    return { go, u };
+  };
+  const osc = (k) => ({ [k + '.on']: 1, [k + '.uni']: nUni(7), [k + '.det']: 0.4, [k + '.w1']: nEnum(W2('bend_p'), 81), [k + '.warp']: 0.5,
+    [k + '.w2']: nEnum(W2('d_tube'), 81), [k + '.warp2']: 0.3 });
+  const d = bench(st2({ ...osc('a'), ...osc('b'), ...osc('c'), ...FILT('f', T_MG24, 0.6), ...FILT('f2', T_LOW12, 0.7), 'l1.rate': 0.5, 'l2.rate': 0.6 },
+    (s) => {
+      s.osc[1].route = 0; s.osc[2].route = 0; s.filter[0].route = 0;
+      for (const [j, src, dst, amt] of [[0, 'lfo1', 'a.wt', 0.3], [1, 'lfo2', 'f.cutoff', 0.2], [2, 'env2', 'b.warp', 0.3], [3, 'lfo1', 'c.fine', 0.1]]) {
+        s.matrix[j] = { ...s.matrix[j], src, dst, amt };
+      }
+    }));
+  const srcs = ['lfo1', 'lfo2', 'lfo3', 'env2', 'env3', 'velo', 'note', 'rand1', 'macro1', 'chaos1'];
+  const dsts = ['a.fine', 'a.pan', 'a.wt', 'f.cutoff', 'f.res', 'n.level', 's.level', 'b.fine', 'b.pan', 'a.warp', 'a.blend', 'l1.rate', 'l2.rate',
+    'g.amp', 'e1.sus', 'c.fine', 'f2.cutoff', 'a.det', 'b.det', 'c.pan', 'b.wt', 'c.wt', 'f.drive', 'f2.res'];
+  const i = bench(st2({ 'a.on': 0 }, (s) => {
+    for (let j = 0; j < 64; j++) {
+      s.matrix[j] = { ...s.matrix[j], src: srcs[j % srcs.length], dst: dsts[j % dsts.length], amt: 0.1 + 0.01 * (j % 7), bi: j & 1 };
+      if (j < 20) s.matrix[j].crv = [[0, 0, 0], [0.4, 0.7, 0.3], [1, 1, -0.2]];        // editable curves (CP.mCrv)
+      if (j >= 20 && j < 30) { s.matrix[j].rise = 0.05; s.matrix[j].fall = 0.1; }
+    }
+  }));
+  const cpI = i.u.cp;
+  assert.ok((cpI.use & 4096) !== 0 && cpI.mCrv.filter((x) => x >= 0).length === 20, 'row (i): 20 rows with editable curves');
+  const rd = await gateLoad(calib, d.go, 0.8), ri = await gateLoad(calib, i.go, 0.1);
+  const how = T_REF_CALIB > 0 ? `k = ${rd.k.toFixed(3)} (t_ref(calib) ${T_REF_CALIB} ms, t(calib) ${rd.calib.toFixed(1)} ms)`
+    : `uncalibrated: tests/bench.json has no t_ref(calib) (t(calib) here ${rd.calib.toFixed(1)} ms)`;
+  console.log(`  CPU (d) ${rd.load.toFixed(3)} (node target 0.8, gate 1.2), (i) ${ri.load.toFixed(3)} (target 0.1, gate 0.15) — OS 2; ${how}`);
+  assert.ok(rd.load <= 1.5 * 0.8, '(d) ' + rd.load.toFixed(3) + ' > 1.5 × 0.8');
+  assert.ok(ri.load <= 1.5 * 0.1, '(i) ' + ri.load.toFixed(3) + ' > 1.5 × 0.1');
+});
+
+test('M2: lifetime rule (b) with live grains: a 2 ms fade, then the voice ends and returns its grains (§6.19)', () => {
+  const u = setup2({ s: st2({ 'a.dens': 0.7, 'a.glen': 0.6, 'e1.rel': nTime(0.01), 'e2.rel': nTime(0.01), 'e3.rel': nTime(0.01), 'e4.rel': nTime(0.01) },
+    (s) => { s.osc[0].type = 'gran'; s.osc[0].smp = 'smp:sine'; s.osc[0].route = 1; s.osc[0].env = 0; }),
+  assets: { 'smp:sine': sineSmp('smp:sine') } });
+  const v = u.vs[0];
+  v.noteOn(60, 1, false, 1);
+  let r = run2(u.S, u.proc, u.vs, 40);
+  assert.ok(v.ox[0].grains() > 0 && rms(r.L, r.L.length - r.N) > 1e-3, 'grains sound: ' + v.ox[0].grains() + ' ' + rms(r.L, r.L.length - r.N));
+  v.noteOff(0);
+  r = run2(u.S, u.proc, u.vs, 20);
+  assert.equal(v.active, false, 'ended');
+  assert.equal(v.ox[0].grains(), 0, 'grains returned');
+  assert.equal(u.proc.sx.grains | 0, 0, 'processor grain count back to 0');
+  // the end of the output: a linear fade over ≈ 2 ms, no step
+  let last = r.L.length - 1;
+  while (last > 0 && r.L[last] === 0) last--;
+  const fs = u.proc.fs, K = Math.ceil(0.002 * fs / u.proc.CH) * u.proc.CH;
+  assert.ok(maxAbs(r.L, last - 8, last + 1) < 0.1 * maxAbs(r.L, last - 2 * K, last - K), 'faded out');
+  assert.ok(maxAbs(r.L, last - K - 16, last - K) > 1e-3, 'still sounding before the fade');
+});
+
+test('M2: allocate — inactive, released, sustained, then the Voice Steal Priority (Newest/Oldest/Highest/Lowest/Velocity); One Note reuse (§12.3)', () => {
+  const sc = dspScope(), S = sc.global('SerumDSP');
+  const proc = makeProc();
+  const pick = (steal, vs, n = 70, extra = {}) => {
+    proc.voices = vs; proc.sx = null;
+    proc.p = { serum: Object.assign(loadFixture('cp2-default.json'), { steal, oneNote: 0 }, extra) };
+    const v = S.allocate(proc, n, 0);
+    return v ? vs.indexOf(v) : -1;
+  };
+  const V = (note, vel, stamp, o = {}) => ({ active: true, gate: true, sus: false, note, vel, stamp, ch: 0, ...o });
+  const gated = () => [V(60, 0.5, 3), V(72, 0.9, 1), V(48, 0.2, 4), V(67, 0.7, 2)];
+  assert.equal(pick(0, gated()), 1, 'Newest: steal the oldest note (lowest stamp)');
+  assert.equal(pick(1, gated()), 2, 'Oldest: steal the newest (highest stamp)');
+  assert.equal(pick(2, gated()), 2, 'Highest: steal the lowest note');
+  assert.equal(pick(3, gated()), 1, 'Lowest: steal the highest note');
+  assert.equal(pick(4, gated()), 2, 'Velocity: steal the lowest velocity');
+  const vs = gated(); vs[3].active = false;
+  assert.equal(pick(2, vs), 3, 'an inactive voice first');
+  const vs2 = gated(); vs2[0].gate = false; vs2[2].sus = true;
+  assert.equal(pick(4, vs2), 0, 'then a released one');
+  const vs3 = gated(); vs3[0].sus = true;
+  assert.equal(pick(4, vs3), 0, 'then a sustained one');
+  assert.equal(pick(0, gated(), 67, { oneNote: 1 }), 3, 'One Note: the voice already playing the key');
+  assert.equal(S.allocate({ voices: [] }, 60), null);
+});
+
+test('M2: the wavetable voice path of both WARPS2 slots equals SxWarp.renderWarp2 (P, O and PD Self modes, slot pairs) (§6.6.1, §6.6.9)', () => {
+  // a band-limited frame (8 harmonics: mip levels 0–2 identical), 46.875 Hz at 96 kHz = exactly one 2048-sample cycle
+  const fr = frame((p) => { let y = 0; for (let k = 1; k <= 8; k++) y += Math.sin(2 * Math.PI * k * p + k) / k; return 0.4 * y; });
+  const tbl = { ...TABLES2, 'factory:Default': entryFromFrames([fr]) };
+  const f0 = 46.875, n30 = 440 * Math.pow(2, (30 - 69) / 12), hzN = (f0 - n30 + 50) / 100;
+  const W = dspScope().global('SxWarp');
+  const cases = [
+    [['bend_p', 0.5]], [['pd_self', 0.6]], [['oddeven', 0.2]], [['d_tube', 0.7]], [['sync', 0.4, 0.5]], [['mirror', 0.3]],
+    [['asym_n', 0.4], ['flip', 0.6]], [['pwm', 0.3], ['pd_self', 0.4]], [['quantize', 0.5], ['oddeven', 0.8]], [['sync', 0.3, 1], ['lpf', 0.4]],
+  ];
+  for (const slots of cases) {
+    const p = { 'a.level': 1, 'a.hz': hzN, 'a.w1': nEnum(W2(slots[0][0]), 81), 'a.warp': slots[0][1], 'a.wvar1': slots[0][2] || 0 };
+    if (slots[1]) Object.assign(p, { 'a.w2': nEnum(W2(slots[1][0]), 81), 'a.warp2': slots[1][1], 'a.wvar2': slots[1][2] || 0 });
+    // a distortion slot: renderWarp2 removes its DC exactly, the voice runs the 5 Hz blocker (RULINGS2 D3) — compared
+    // here with the voice's blocker off and the cycle's mean removed (sx-warp.test.mjs covers the blocker)
+    const dist = slots.some(([id]) => W.META.dist[W2(id)] >= 0);
+    const r = play2({ s: st2(p, (s) => { s.osc[0].route = 1; }), tables: tbl }, 30, 82,
+      { each: (sp, u) => { if (sp === 0 && dist) for (const S of u.vs[0].wsl) if (S) S.dcOn = 0; } });
+    // the Float32 data of the mip level the voice reads (PD Self is a feedback map: its orbit depends on the table's rounding)
+    const lvData = tbl['factory:Default'].levels[r.u.vs[0].uLv[0]].data;
+    assert.equal(lvData.length, 2048);
+    const ref = W.renderWarp2(lvData, slots.map(([id, w, v]) => ({ mode: W2(id), w, v: v || 0, fm: 0 })), { over: 1, hz: f0 });
+    const c = 9 * 2048;                                         // the 10th cycle (stateful modes: steady state)
+    let err = 0, mu = 0;
+    if (dist) for (let j = 0; j < 2048; j++) mu += r.L[c + j] / 2048;
+    for (let j = 0; j < 2048; j++) err = Math.max(err, Math.abs(r.L[c + j] - mu - ref[j]));
+    assert.ok(err < 1e-4, slots.map((x) => x[0]).join(' + ') + ': max |voice − renderWarp2| = ' + err);
+  }
+});
+
+test('M2: memory — a v2 wavetable voice ≤ 384 KB at 192 kHz; filters: the new types ≤ 1 MiB per filter at fs 384 kHz, types 0–95 at their Phase-1 sizes (8 Hz), the reported deviation measured (§14.2, §6.13.1)', () => {
+  const bytesOf = (root) => {
+    const seen = new Set(), bufs = new Set();
+    let n = 0;
+    const walk = (o, key) => {
+      if (!o || typeof o !== 'object' || seen.has(o)) return;
+      if (['proc', 'lvD', 'sD', 'nLvL', 'nLvR', 'm', 'sx', 'cp', 'eff', 'v', 'e', 'B', 'F2', 'W', 'sb'].includes(key)) return;   // host / shared data
+      seen.add(o);
+      if (ArrayBuffer.isView(o)) { if (!bufs.has(o.buffer)) { bufs.add(o.buffer); n += o.buffer.byteLength; } return; }
+      for (const k of Object.keys(o)) walk(o[k], k);
+    };
+    walk(root, '');
+    return n;
+  };
+  const MiB = (b) => (b / 1048576).toFixed(3) + ' MiB';
+  const s = st2({ 'b.on': 1, 'c.on': 1, 'a.w1': nEnum(W2('sync'), 81), 'a.w2': nEnum(W2('lpf'), 81), 'a.warp2': 0.3, ...FILT('f', T_MG24), ...FILT('f2', T_LOW12) });
+  const u = setup2({ s, base: 48000, OS: 4 });
+  const v = u.vs[0];
+  assert.ok(v.filt2 !== null && v.wsl[2] !== null);
+  const KB = bytesOf(v) / 1024;
+  console.log(`  v2 voice: ${KB.toFixed(1)} KB at fs 192 kHz (no delay family)`);
+  assert.ok(KB <= 384, KB.toFixed(1) + ' KB');
+  // Phase-1 line sizes for types 0–95 (§3.5 "unchanged"): ⌈fs·m/8⌉ + 8 per line, as tests/ref-p1 — in every SFilter
+  const phase1Len = (fs) => Math.ceil(fs / 8) + 8;
+  for (const fs of [192000, 384000]) {
+    let worst = 0, at = -1, worstNew = 0, atNew = -1;
+    for (let t = 0; t < 108; t++) {
+      const f = new u.S.SFilter(fs);
+      f.setType(t);
+      const b = bytesOf(f);
+      if (t < 96 && b > worst) { worst = b; at = t; }
+      if (t >= 96 && b > worstNew) { worstNew = b; atNew = t; }
+      if (t === 39) assert.equal(f.ln[0], phase1Len(fs), 'comb line at the Phase-1 size');
+    }
+    console.log(`  fs ${fs / 1000} kHz, one filter: worst new type (${atNew}) ${MiB(worstNew)}; worst type 0–95 (${at}) ${MiB(worst)}`);
+    assert.ok(worstNew <= 1048576, 'fs ' + fs + ': new type ' + atNew + ' ≤ 1 MiB per filter: ' + MiB(worstNew));
+    if (fs === 192000) assert.ok(worst <= 2 * 1048576, 'Phase-1 budget (one filter ≤ 2 MB at fs 192 kHz): ' + MiB(worst));
+    // both filters modulated over 0–107: everything preallocated, type changes allocate nothing
+    const m = setup2({ s: st2({ ...FILT('f', T_MG24), ...FILT('f2', T_LOW12), 'f.type2': 0.5, 'f2.type': 0.5 }, (st) => {
+      st.matrix[0] = { ...st.matrix[0], src: 'lfo1', dst: 'f.type2', amt: 1, bi: 1 };
+      st.matrix[1] = { ...st.matrix[1], src: 'lfo2', dst: 'f2.type', amt: 1, bi: 1 };
+    }), base: fs / 2, OS: 2 }).vs[0];
+    assert.ok(m.filt.all === 1 && m.filt.aLo === 0 && m.filt.aHi === 107 && m.filt2.aHi === 107, 'every type preallocated');
+    const full = bytesOf(m.filt) + bytesOf(m.filt2);
+    for (let t = 0; t < 108; t++) { m.filt.setType(t); m.filt2.setType(107 - t); }
+    assert.equal(bytesOf(m.filt) + bytesOf(m.filt2), full, 'type changes over 0–107 allocate nothing');
+    console.log(`  fs ${fs / 1000} kHz: both filters modulated over 0–107 ${MiB(full)}`);
+    assert.ok(full <= 2 * worst + 2 * 65536, 'modulated: the Phase-1 pools plus the small new-family objects: ' + MiB(full));
+  }
+  // Reported deviation (ARCH2 rule 1 over §14.2): the Phase-1 delay families keep their line sizes in both filters, in S1
+  // and S2 mode, so at base 192 kHz (fs 384 kHz) the FDN bank (82) takes 2.13 MiB per filter: S1-mode Filter 1 on 82 with
+  // Filter 2 on the Diffusor ≈ 3.1 MiB, both filters on 82 ≈ 4.26 MiB per voice (at base 48 kHz, OS 2: a quarter)
+  const dev = (s1, t1, t2) => {
+    const st = st2({ 'f.on': 1, 'f.type': t1 / 95, 'f.type2': t1 / 107, ...FILT('f2', t2) }, (x) => { x.global.s1 = s1; });
+    const w = setup2({ s: st, base: 192000, OS: 2 }).vs[0];
+    assert.ok(w.filt2 !== null && w.filt.type === t1 && w.filt2.type === t2);
+    return bytesOf(w.filt) + bytesOf(w.filt2);
+  };
+  const d1 = dev(1, 82, 98), d2 = dev(1, 82, 82), d3 = dev(0, 82, 82);
+  console.log(`  (deviation) fs 384 kHz: S1 mode F1 82 + F2 98 ${MiB(d1)}; S1 mode F1 82 + F2 82 ${MiB(d2)}; S2 mode both 82 ${MiB(d3)}`);
+  assert.ok(d1 > 3 * 1048576 && d1 < 3.2 * 1048576, 'S1 mode F1 FDN + F2 Diffusor ≈ 3.1 MiB: ' + MiB(d1));
+  assert.ok(d2 === d3 && d3 > 4.2 * 1048576 && d3 < 4.3 * 1048576, 'both filters on the FDN bank ≈ 4.26 MiB, in either mode: ' + MiB(d3));
+});
+
+test('M2: types 0–95 tune below 20 Hz in both voice filters and in either mode, as in Phase 1 — no delay floor of their own (§3.5, §6.21 item 8)', () => {
+  // a comb (39) and the FDN bank (82) at ≈ 10 Hz, res 0.8: Filter 1 in S2 mode renders exactly as in S1 mode, and its
+  // delay lines (and Filter 2's) have the Phase-1 sizes of the FX Filter's SFilter
+  const cut = Math.log2(10 / 8.175798915643707) / Math.log2(22050 / 8.175798915643707);
+  for (const t of [39, 82]) {
+    const p = { 'f.on': 1, 'f.type': t / 95, 'f.type2': t / 107, 'f.cutoff': cut, 'f.res': 0.8, 'f.mix': 1 };
+    const a = play2({ s: st2(p, (x) => { x.global.s1 = 1; }), OS: 2 }, 45, 120), b = play2({ s: st2(p), OS: 2 }, 45, 120);
+    assert.ok(a.u.vs[0].filt.type === t && b.u.vs[0].filt.type === t);
+    assert.ok(maxDiff(a.L, b.L) <= 1e-9 && rms(a.L) > 1e-3, 'type ' + t + ': S2-mode Filter 1 ≡ S1 mode, ' + maxDiff(a.L, b.L));
+    const f2 = setup2({ s: st2({ ...FILT('f2', t, cut) }), base: 96000, OS: 2 }).vs[0].filt2, ref = new b.u.S.SFilter(192000);
+    ref.setType(t);
+    assert.deepEqual([...f2.ln.slice(0, f2.nl)], [...ref.ln.slice(0, ref.nl)], 'type ' + t + ': Filter 2 lines at the Phase-1 sizes');
+  }
+});
+
+test('M2: SFilter types 96–107 through the FX Filter call sequences — prealloc(true) covers 0–107 (then setType never allocates), an unmodulated setType makes its family, a modulated miss is allocated by the next prealloc; the output equals the SxFilt2 family (§6.13.1, §11.7)', () => {
+  const sc = dspScope(), S = sc.global('SerumDSP'), fs = 48000;
+  const imp = (f) => { const L = new Float64Array(256), R = new Float64Array(256); L[0] = 0.01; R[0] = 0.01; f.process(L, R, 0, 256); return L.map((x) => x / 0.01); };
+  for (let t = 96; t < 108; t++) {
+    const ref = S.filterImpulse(t, 800, 0.3, 0, 0.5, fs, 256);               // a fresh SxFilt2 family object (§11.7)
+    assert.ok(ref.some((x, i) => i > 0 && Math.abs(x) > 1e-6), 'type ' + t + ' filters');
+    // FX Filter S2 with a modulated type: prealloc(true) in apply, setType on the render path
+    const a = new S.SFilter(fs);
+    a.prealloc(true);
+    assert.ok(a.aHi === 107 && a.f2o !== null && a.f2o[t - 96] !== null, 'prealloc(true) covers type ' + t);
+    noAlloc2(sc, () => { a.setType(t); a.set(800, 800, 0.3, 0, 0.5); });
+    sameArr(imp(a), ref, 'modulated type ' + t);
+    // FX Filter S2 with a fixed type: setType alone (an apply path)
+    const b = new S.SFilter(fs);
+    b.setType(t); b.set(800, 800, 0.3, 0, 0.5);
+    assert.ok(b.nx !== null && b.miss === -1);
+    sameArr(imp(b), ref, 'fixed type ' + t);
+  }
+  assert.deepEqual(sc.logs.filter((m) => m.level !== 'log'), [], 'no warning');
+  // a modulated range that misses a type (prealloc(true, lo, hi), as the voice computes it): unfiltered with one
+  // warning, allocated by the next prealloc (the next apply)
+  const c = new S.SFilter(fs);
+  c.prealloc(true, 0, 95);
+  noAlloc2(sc, () => c.setType(100));
+  assert.ok(c.nx === null && c.miss === 100);
+  assert.equal(sc.logs.filter((m) => m.level === 'warn').length, 1);
+  c.prealloc(true, 0, 95);
+  assert.ok(c.nx !== null && c.miss === -1, 'allocated by the next prealloc');
+  c.set(800, 800, 0.3, 0, 0.5); c.reset();
+  sameArr(imp(c), S.filterImpulse(100, 800, 0.3, 0, 0.5, fs, 256), 'then filters');
+  // the S1 variant (types 0–95) keeps its Phase-1 memory by passing hi = 95
+  const d = new S.SFilter(fs);
+  d.prealloc(true, 0, 95);
+  assert.equal(d.f2o, null, 'no SxFilt2 object for 0–95');
+});
+
+/* ------------------------------------------------------------------ review round 3 (D1): processor state, taps, levels */
+
+// OSC A: a 3-way round-robin multisample (zone gains 0 / −6 / −12 dB); Voice Control with 4 steps (vmod1 = 0.2·(step + 1))
+const RR3 = () => {
+  const z = (k, g) => ({ lo: 0, hi: 127, vlo: 0, vhi: 127, root: ROOT375, tune: 0, gain: g, pan: 0, smp: 'smp:sine', mode: 'loop', ls: 0, le: 48000,
+    off: 0, env: null, rr: [3, k], vt: 1 });
+  return { 'smp:sine': sineSmp('smp:sine'), 'msmp:rr3': { id: 'msmp:rr3', v: 1, kind: 'multi', bytes: 0, zones: [z(1, 0), z(2, -6), z(3, -12)] } };
+};
+const rrVc = () => st2({}, (s) => {
+  s.osc[0].type = 'multi'; s.osc[0].multi = 'msmp:rr3'; s.osc[0].route = 1;
+  s.vc.len = 4; for (let j = 0; j < 4; j++) s.vc.steps[j] = [0, 0, 0, 0, 0.2 * (j + 1), 0];
+});
+// the Voice Control step and the round-robin zone of the next note (voice 0, killed afterwards)
+const nextNote = (u) => {
+  u.vs[0].noteOn(60, 1, false, 1);
+  run2(u.S, u.proc, u.vs, 2);
+  const r = { vc: u.vs[0].mod.vK, zone: u.vs[0].ox[0].zone };
+  u.vs[0].kill();
+  return r;
+};
+
+test('M2: warm-ups leave the Voice Control step counter and the round-robin counters as they were (§15.9, §6.2, §6.8)', () => {
+  // constructor warmUp on the processor, then the real patch: the first note plays VC step 0 and round-robin zone 0
+  const a = setup2({ s: rrVc(), assets: RR3() });
+  assert.ok((a.cp.use & 1024) !== 0 && a.proc.vcN === 0, 'a Voice Control patch');
+  a.S.warmUp(a.proc);
+  assert.equal(a.proc.vcN, 0, 'warmUp: proc.vcN restored');
+  assert.deepEqual(nextNote(a), { vc: 0, zone: 0 }, 'warmUp: first note');
+  assert.deepEqual(nextNote(a), { vc: 1, zone: 1 }, 'warmUp: second note');
+  // first-use warm-up (two hidden voices on the real patch): the same after it ended
+  const b = setup2({ s: rrVc(), assets: RR3() }), N = 128 * b.proc.OS;
+  b.S.begin(b.proc, N);
+  b.S.warmStart(b.proc);
+  let left = 1, k = 0;
+  for (; k < 200 && left > 0; k++) { b.S.begin(b.proc, N); left = b.S.warmTick(b.proc, N); if (k === 0) assert.equal(b.proc.sx.hw.length, 2); }
+  assert.equal(left, 0, 'finished');
+  assert.equal(b.proc.vcN, 0, 'first-use warm-up: proc.vcN restored');
+  assert.ok(b.proc.sx.msRR.every((x) => x === 0), 'first-use warm-up: round-robin counters restored');
+  assert.deepEqual(nextNote(b), { vc: 0, zone: 0 }, 'first-use warm-up: first note');
+  // ended early by a real note (warmEnd) while the hidden voices hold advanced counters
+  const c = setup2({ s: rrVc(), assets: RR3() });
+  nextNote(c);
+  c.S.begin(c.proc, N); c.S.warmStart(c.proc);
+  for (let j = 0; j < 3; j++) { c.S.begin(c.proc, N); c.S.warmTick(c.proc, N); }   // (made, applied, started: one step each)
+  assert.ok(c.proc.sx.hw !== null && c.proc.vcN === 3, 'hidden note-ons advanced the counter');
+  c.S.warmEnd(c.proc);
+  assert.equal(c.proc.vcN, 1);
+  assert.deepEqual(nextNote(c), { vc: 1, zone: 1 }, 'warmEnd: the next real note continues the sequence');
+});
+
+test('M2: transport(true) and reset() clear the multisample round-robin counters — a song from a tick plays the zones of a fresh (offline) processor (§7.8, §6.8)', () => {
+  const fresh = setup2({ s: rrVc(), assets: RR3() }), live = setup2({ s: rrVc(), assets: RR3() });
+  nextNote(live); nextNote(live);                            // earlier live notes
+  live.S.transport(live.proc, true);
+  const seq = (u) => [0, 1, 2, 3].map(() => nextNote(u));
+  assert.deepEqual(seq(live), seq(fresh), 'live after transport(true) ≡ fresh');
+  nextNote(live);
+  assert.ok(live.proc.sx.msRR.some((x) => x !== 0));
+  live.S.reset(live.proc);
+  assert.ok(live.proc.sx.msRR.every((x) => x === 0), 'reset: counters back to their attach state');
+});
+
+test('M2: lifetime rule (b) — an ENV-off channel ends once every envelope has finished its release, whatever End level ENV 2 holds (§6.19, inv B13)', () => {
+  for (const end of [0, 0.5]) {
+    const u = setup2({ s: st2({ 'e2.end': end, 'e1.rel': nTime(0.05), 'e2.rel': nTime(0.05), 'e3.rel': nTime(0.05), 'f.on': 0 },
+      (st) => { st.osc[0].route = 1; st.osc[0].env = 0; }) });
+    const v = u.vs[0];
+    v.noteOn(60, 1, false, 1);
+    let r = run2(u.S, u.proc, u.vs, 20);
+    assert.ok(maxAbs(r.L) > 0.1);
+    v.noteOff(0.5);
+    r = run2(u.S, u.proc, u.vs, spansOf(0.02));
+    assert.equal(v.active, true, 'e2.end ' + end + ': still releasing');
+    r = run2(u.S, u.proc, u.vs, spansOf(0.5));
+    assert.equal(v.active, false, 'e2.end ' + end + ': ended after the releases');
+    assert.equal(maxAbs(r.L, r.L.length - r.N), 0, 'silent');
+  }
+});
+
+test('M2: lifetime rule (b) ends with the 2 ms fade — an ENV-off wavetable channel is not cut at full level (§6.19)', () => {
+  const u = setup2({ s: st2({ 'e1.rel': nTime(0.05), 'e2.rel': nTime(0.05), 'e3.rel': nTime(0.05), 'e4.rel': nTime(0.05), 'f.on': 0 },
+    (st) => { st.osc[0].route = 1; st.osc[0].env = 0; }) });
+  const v = u.vs[0], CH = u.proc.CH;
+  v.noteOn(57, 1, false, 1);
+  let endAt = -1;
+  const r = run2(u.S, u.proc, u.vs, 120, { each: (sp) => { if (sp === 20) v.noteOff(0.5); if (endAt < 0 && sp > 20 && !v.active) endAt = sp; } });
+  assert.ok(endAt > 0, 'ended');
+  let last = -1;
+  for (let i = r.L.length - 1; i >= 0; i--) if (r.L[i] !== 0) { last = i; break; }
+  const K = Math.ceil(0.002 * u.proc.fs / CH), peak = maxAbs(r.L, last - 4 * K * CH, last - K * CH);
+  assert.ok(peak > 0.3, 'full level until the fade: ' + peak.toFixed(3));
+  assert.ok(maxAbs(r.L, last - CH, last + 1) < 0.05 * peak, 'the last chunk fades to 0: ' + maxAbs(r.L, last - CH, last + 1).toFixed(4));
+  // the K fade chunks ramp the gain linearly to 0 (chunk j of the fade at most (K − j)/K of the level before it)
+  const c0 = Math.floor(last / CH) - K + 1;
+  for (let j = 0; j < K; j++) {
+    const m = maxAbs(r.L, (c0 + j) * CH, (c0 + j + 1) * CH);
+    assert.ok(m <= peak * (K - j) / K + 1e-9, 'fade chunk ' + j + ': ' + m.toFixed(4) + ' vs ' + (peak * (K - j) / K).toFixed(4));
+  }
+});
+
+test('M2: PD (Self) crossfades a frame-pair jump over one chunk, as the other wavetable reads do (stepped WT position, §6.5, §6.6.4)', () => {
+  // 64 interpolating frames: a sine (0–31) then an inverted sine (32–63); a stepped LFO moves WT POS across that edge
+  const fr = [];
+  for (let f = 0; f < 64; f++) fr.push(frame((p) => (f < 32 ? 1 : -1) * Math.sin(2 * Math.PI * p)));
+  const T = entryFromFrames(fr, 1), steps = {};
+  for (const [label, w1, warp] of [['none', 0, 0], ['bend_p', W2('bend_p'), 0.3], ['pd_self', W2('pd_self'), 0.05]]) {
+    const s = st2({ 'a.wt': 0.2, 'a.w1': nEnum(w1, 81), 'a.warp': warp, 'l1.rate': 0.5 }, (st) => {
+      st.osc[0].route = 1;
+      st.lfo[0].pts = [[0, 0, 0], [0.5, 0, 0], [0.5001, 1, 0], [1, 1, 0]]; st.lfo[0].bpm = 0; st.lfo[0].mode = 'free';
+      st.matrix[0] = { ...st.matrix[0], src: 'lfo1', dst: 'a.wt', amt: 0.6, bi: 0 };
+    });
+    const u = setup2({ s, tables: { 'test:jump': T, ...SUBS }, cpEdit: (cp) => { cp.wt[0] = 'test:jump'; } });
+    u.vs[0].noteOn(45, 1, false, 1);
+    const r = run2(u.S, u.proc, u.vs, 200);
+    steps[label] = [maxStep(r.L, 2000, r.L.length), maxStep(r.L, 2000, 6000)];
+  }
+  console.log('  max sample step at the frame-pair jump (typical): ' + Object.entries(steps).map(([k, [a, b]]) => `${k} ${a.toFixed(4)} (${b.toFixed(4)})`).join(', '));
+  assert.ok(steps.none[0] > 10 * steps.none[1], 'the jump happens');
+  assert.ok(steps.pd_self[0] <= 1.5 * steps.none[0], 'PD (Self) crossfades like the plain read: ' + steps.pd_self[0].toFixed(4) + ' vs ' + steps.none[0].toFixed(4));
+});
+
+test('M2: keys a .kbm leaves unmapped (CP.tune NaN) are ignored: allocate gives no voice, noteOn leaves the voice as it was (§6.18)', () => {
+  const u = setup2({ n: 2, cpEdit: (cp) => { cp.use |= 512; for (let k = 0; k < 128; k++) cp.tune[k] = k === 61 ? NaN : k; } });
+  assert.equal(u.S.allocate(u.proc, 61), null, 'no voice for key 61');
+  assert.ok(u.S.allocate(u.proc, 60) !== null);
+  u.vs[0].noteOn(61, 1, false, 1);
+  assert.ok(!u.vs[0].active && !u.vs[0].gate, 'unmapped key: no note');
+  let r = run2(u.S, u.proc, u.vs, 5);
+  assert.equal(maxAbs(r.L), 0, 'silence');
+  u.vs[0].noteOn(60, 1, false, 1);
+  r = run2(u.S, u.proc, u.vs, 5);
+  assert.ok(maxAbs(r.L) > 0.05, 'mapped key sounds');
+  u.vs[0].noteOn(61, 1, false, 1);                           // a steal by an unmapped key: ignored, the voice keeps its note
+  assert.ok(u.vs[0].active && u.vs[0].gate && u.vs[0].note === 60);
+  // without the tuning bit the table is not used (every key plays)
+  const w = setup2({ cpEdit: (cp) => { for (let k = 0; k < 128; k++) cp.tune[k] = k === 61 ? NaN : k; } });
+  w.vs[0].noteOn(61, 1, false, 1);
+  assert.equal(w.vs[0].active, true);
+});
+
+// (M4 performance, SxMod advance) S2 mode: a per-voice LFO no row reads is not advanced on the voices other than the
+// most recent one; the chunks it owes are replayed op for op when a row starts reading it — bit-identical to a voice on
+// which it ran all along (here kept running by a row into the switched-off OSC B)
+test('M4: a skipped per-voice LFO (S2, not the monitor voice, read by no row) pays its owed chunks exactly when a row starts reading it mid-note', () => {
+  const rowB = (s) => { s.matrix[0] = { ...s.matrix[0], src: 'lfo3', dst: 'b.level', amt: 0.5 }; };
+  const rowA = (s) => { s.matrix[1] = { ...s.matrix[1], src: 'lfo3', dst: 'a.pan', amt: 0.8 }; };
+  const sKeep = st2({ 'l3.rate': 0.55 }, rowB), sSkip = st2({ 'l3.rate': 0.55 });
+  const sAfter = st2({ 'l3.rate': 0.55 }, (s) => { rowB(s); rowA(s); });
+  assert.equal(sKeep.p['b.on'], 0, 'OSC B off: its level row is inaudible');
+  const go = (s0) => {
+    const u = setup2({ s: s0, n: 2 });
+    u.vs[0].noteOn(57, 0.9, false, 1); u.vs[1].noteOn(64, 0.8, false, 1);   // voice 1 is the most recent
+    let owed = -1;
+    const r = run2(u.S, u.proc, u.vs, 70, { each: (sp) => {
+      if (sp !== 40) return;
+      owed = u.vs[0].mod.lSk[2];
+      const P = core.compileSerum(sAfter, {});
+      u.proc.p = { serum: P.serum, fxr: null }; u.proc.ct = P.serumT;
+      for (const v of u.vs) v.apply(u.proc.p);
+    } });
+    return { r, owed };
+  };
+  const keep = go(sKeep), skip = go(sSkip);
+  assert.equal(keep.owed, 0, 'read by a row: never skipped');
+  assert.ok(skip.owed > 30, 'skipped on the older voice: ' + skip.owed + ' chunks owed');
+  const N = keep.r.N, a = 41 * N;
+  assert.ok(rms(keep.r.L, a) > 1e-3, 'audible');
+  for (let i = a; i < keep.r.L.length; i++) {
+    if (keep.r.L[i] !== skip.r.L[i] || keep.r.R[i] !== skip.r.R[i]) assert.fail('sample ' + i + ': ' + keep.r.L[i] + ' vs ' + skip.r.L[i]);
+  }
+});
+
+test('M2: lazy warm-ups (§11.10) — a Granular oscillator queues its bounded job once per live processor and asset (never offline); it runs after the first-use hidden voices, waits for its asset, plays two hidden notes and leaves the track as it was; warmTick returns 0 only when nothing is left', () => {
+  const gran = (id = 'smp:sine') => st2({ 'a.dens': 0.6 }, (s) => { s.osc[0].type = 'gran'; s.osc[0].smp = id; s.osc[0].route = 1; });
+  const u = setup2({ s: gran(), assets: { 'smp:sine': sineSmp('smp:sine') } }), N = 128 * u.proc.OS, sx = u.proc.sx;
+  const W = u.proc.sxWarm;
+  assert.ok(W && W.keys['sx-gran:smp:sine'] === 1 && W.q.length - W.h === 1, 'queued');
+  u.vs[0].apply(u.proc.p);
+  assert.equal(W.q.length - W.h, 1, 'once per processor and asset');
+  sx.mon = 1;
+  // the first-use hidden voices run first; they leave the Granular oscillator silent (no grains) and the job waits
+  u.S.begin(u.proc, N); u.S.warmStart(u.proc);
+  // the hidden voices start over three steps (made, applied, started; §14.1 row q), the job waiting behind them
+  for (let j = 0; j < 3; j++) { u.S.begin(u.proc, N); assert.equal(u.S.warmTick(u.proc, N), 80 + 1, 'start step ' + j); assert.equal(sx.hwSt, j + 1); }
+  assert.equal(sx.gw, null, 'the Granular job waits for the hidden voices');
+  u.S.begin(u.proc, N);
+  assert.equal(u.S.warmTick(u.proc, N), 79 + 1, '79 hidden spans left + the waiting Granular job');
+  assert.ok(sx.hw !== null && sx.hw[0].ox[0] === null && sx.hw[0].hid === 1 && sx.grains === 0, 'no Granular in the first-use hidden voices');
+  let left = 1, k = 0;
+  for (; k < 100 && sx.hwN > 0; k++) { u.S.begin(u.proc, N); left = u.S.warmTick(u.proc, N); }
+  assert.ok(sx.hwN === 0 && left === 1 && sx.gw !== null && sx.gw[1] === null && sx.gwSt === 1, 'hidden voices done; the job made its first voice in the same tick');
+  // the job: the voices are made, applied and started in separate steps, then one voice renders per step
+  const rec0 = sx.mod.recent, lp0 = sx.mod.lastPitch, alt0 = sx.alt, rng0 = sx.rng;
+  let gr = 0, steps = 0, made = -1, two = -1;
+  for (left = 1; steps < 3000 && left > 0; steps++) {
+    u.S.begin(u.proc, N); left = u.S.warmTick(u.proc, N);
+    const g = sx.gw;
+    if (g !== null && made < 0) made = steps;
+    if (g !== null && g[1] !== null && two < 0) two = steps;
+    if (g !== null) { assert.ok(g[0].hid === 2 && sx.mod.recent === rec0, 'hidden, never the recent voice'); gr = Math.max(gr, sx.grains); }
+  }
+  assert.ok(left === 0 && sx.gwOk === 1 && sx.gw === null, 'finished: ' + steps + ' steps');
+  assert.ok(made === 0 && two === 1, 'apply, then the second voice, in separate steps');
+  assert.ok(steps > 600 && steps < 700, 'two voices × 320 chunks, one voice per step: ' + steps);
+  assert.ok(gr > 0, 'grains played: ' + gr);
+  assert.equal(sx.grains | 0, 0, 'grains returned');
+  assert.ok(sx.mod.recent === rec0 && sx.mod.lastPitch === lp0 && sx.alt === alt0 && sx.rng === rng0, 'bookkeeping restored');
+  assert.ok(sx.pk.every((x) => x === 0), 'hidden voices write no channel meter');
+  assert.ok(u.vs.every((v) => !v.active), 'the processor’s voices untouched');
+  // after a complete run another Granular sample queues nothing (the code is warm for any sample)
+  const P2 = core.compileSerum(gran('smp:other'), {});
+  u.proc.p = { serum: P2.serum, fxr: null }; u.proc.ct = P2.serumT;
+  u.vs[0].apply(u.proc.p);
+  assert.ok(W.keys['sx-gran:smp:other'] === undefined, 'not queued again');
+  u.S.begin(u.proc, N);
+  assert.equal(u.S.warmTick(u.proc, N), 0, 'nothing more to warm');
+  // offline processors never queue
+  const off = setup2({ s: st2() });
+  off.proc.offline = true;
+  const P = core.compileSerum(gran(), {});
+  off.proc.p = { serum: P.serum, fxr: null }; off.proc.ct = P.serumT;
+  off.vs[0].apply(off.proc.p);
+  assert.equal(off.proc.sxWarm, undefined, 'offline: no warm-up');
+  // the Granular asset arrives after the patch: the job waits for it (it is not used up), then plays
+  const m = setup2({ s: gran('smp:late') }), ms = m.proc.sx;
+  for (let j = 0; j < 20; j++) { m.S.begin(m.proc, N); assert.equal(m.S.warmTick(m.proc, N), 1, 'waiting for the asset'); }
+  assert.ok(ms.gw === null && ms.gwOk === 0);
+  assert.equal(m.B.storeAsset('smp:late', sineSmp('smp:late')), true);
+  let mg = 0;
+  for (left = 1, k = 0; k < 3000 && left > 0; k++) { m.S.begin(m.proc, N); left = m.S.warmTick(m.proc, N); mg = Math.max(mg, ms.grains); }
+  assert.ok(left === 0 && ms.gwOk === 1 && mg > 0, 'played once the asset was stored');
+  // ... and gives up after HW_WAIT steps when it never arrives
+  const z = setup2({ s: gran('smp:never') });
+  let zk = 0;
+  for (left = 1; zk < 2000 && left > 0; zk++) { z.S.begin(z.proc, N); left = z.S.warmTick(z.proc, N); }
+  assert.ok(left === 0 && zk === 800 && z.proc.sx.gwOk === 0, 'gave up after 800 steps: ' + zk);
+  // a real note ends the job: warmEnd (the host, at the note) gives the grains back and restores the bookkeeping
+  const r = setup2({ s: gran(), assets: { 'smp:sine': sineSmp('smp:sine') } }), rs = r.proc.sx;
+  for (k = 0; k < 40; k++) { r.S.begin(r.proc, N); r.S.warmTick(r.proc, N); }
+  assert.ok(rs.gw !== null && rs.grains > 0, 'mid-job');
+  const rr0 = rs.rng;
+  r.S.warmEnd(r.proc);
+  assert.ok(rs.gw === null && rs.grains === 0 && rs.rng !== rr0, 'ended, grains back, the random sequence restored');
+  r.vs[0].noteOn(60, 1, false, 1);
+  r.S.begin(r.proc, N);
+  assert.equal(r.S.warmTick(r.proc, N), 0, 'a sounding voice drops the job');
+  // a job queued while the hidden voices wait for their wavetable: one step per tick; when they give up the job goes on
+  const w = setup2({ s: st2(), tables: {} });
+  let steps2 = 0;
+  assert.equal(w.B.warmAdd(w.proc, 'test', () => ++steps2 < 3), true);
+  w.S.begin(w.proc, N); w.S.warmStart(w.proc);
+  assert.equal(w.S.warmTick(w.proc, N), 80 + 1, 'waiting: 80 hidden spans + 1 job');
+  assert.equal(steps2, 1, 'the lazy job ran while waiting');
+  w.proc.sx.hwWait = 1;
+  assert.equal(w.S.warmTick(w.proc, N), 1, 'given up: the job is still queued');
+  assert.equal(steps2, 2);
+  assert.equal(w.S.warmTick(w.proc, N), 0, 'nothing left');
+  assert.equal(steps2, 3);
+});
+
+test('M2: the first-use hidden voices wait for the Sample, Multisample (with zone samples) and Spectral assets, not only the wavetables (§11.10, §4.5)', () => {
+  const N = 256;
+  const cases = [
+    ['sample', (s) => { s.osc[0].type = 'sample'; s.osc[0].smp = 'smp:a'; }, { 'smp:a': sineSmp('smp:a') }],
+    ['multi', (s) => { s.osc[0].type = 'multi'; s.osc[0].multi = 'msmp:rr3'; }, RR3()],
+    ['spectral', (s) => { s.osc[0].type = 'spec'; s.osc[0].smp = 'smp:a'; }, { 'spec:smp:a': sineSpec('spec:smp:a') }],
+  ];
+  for (const [name, edit, assets] of cases) {
+    const u = setup2({ s: st2({}, (s) => { edit(s); s.osc[0].route = 1; }) }), sx = u.proc.sx;
+    u.S.begin(u.proc, N); u.S.warmStart(u.proc);
+    for (let k = 0; k < 5; k++) { u.S.begin(u.proc, N); u.S.warmTick(u.proc, N); }
+    // (M4: a patch with a Spectral oscillator plays its hidden voices 240 spans, every other 80)
+    assert.ok(sx.hw === null && sx.hwN === (name === 'spectral' ? 240 : 80) && sx.hwN === sx.hwT, name + ': waiting for its asset');
+    const ids = Object.keys(assets);
+    // a multisample waits for its zone samples as well
+    for (let j = ids.length - 1; j >= 0; j--) {
+      assert.equal(u.B.storeAsset(ids[j], assets[ids[j]]), true);
+      u.S.begin(u.proc, N); u.S.warmTick(u.proc, N);
+      assert.equal(sx.hw !== null, j === 0, name + ': started once every asset is stored (' + ids[j] + ')');
+    }
+  }
+});
+
+test('M2: the Granular lazy warm-up is bounded — p95 and max warmTick ≤ 1 ms (× k) for a dense Granular patch at OS 1, 2, 4 (§14.1 row q)', async () => {
+  // tests/cpu-gate.mjs stepTimes: the deterministic job runs from a fresh state up to 5 times and each step keeps its
+  // minimum (a scheduling burst or GC pause does not hit the same step on every run), × k (bench.json calibration)
+  const smp = sineSmp('smp:sine', 96000);
+  for (const OS of [1, 2, 4]) {
+    let n = 0;
+    const run = () => {
+      const s = st2({ 'a.dens': 1, 'a.glen': 0.9, 'a.uni': nUni(7), 'a.w1': nEnum(W2('bend_p'), 81), 'a.warp': 0.5 },
+        (x) => { x.osc[0].type = 'gran'; x.osc[0].smp = 'smp:sine'; x.osc[0].route = 1; });
+      const u = setup2({ s, OS, n: 2, assets: { 'smp:sine': smp }, scope: dspScope({ fast: true }) }), N = 128 * OS;
+      u.S.warmUp(Object.assign(makeProc(48000, OS), { vcN: 0, mpe: new Float64Array(68) }));   // the engine's constructor warm-up first
+      const t = [];
+      let left = 1, gr = 0;
+      for (let j = 0; j < 3000 && left > 0; j++) {
+        u.S.begin(u.proc, N);
+        const t0 = performance.now(); left = u.S.warmTick(u.proc, N); t.push(performance.now() - t0);
+        gr = Math.max(gr, u.proc.sx.grains);
+      }
+      assert.ok(left === 0 && u.proc.sx.gwOk === 1 && gr >= 256, 'the job ran with full grains: ' + gr);
+      assert.ok(n === 0 || t.length === n, 'the same steps on every run');
+      n = t.length;
+      return t;
+    };
+    const ok = t => t[Math.floor(0.95 * t.length)] <= 1 && t[t.length - 1] <= 1;
+    const r = await CPU.stepTimes(run, { tries: 5, min: 2, ok });
+    const p95 = r.t[Math.floor(0.95 * r.t.length)], max = r.t[r.t.length - 1];
+    console.log(`  OS ${OS}: ${r.t.length} steps, p95 ${p95.toFixed(3)} ms, max ${max.toFixed(3)} ms (k ${r.k.toFixed(3)}, per-step minimum of ${r.runs} runs)`);
+    assert.ok(p95 <= 1 && max <= 1, 'OS ' + OS + ': p95 ' + p95.toFixed(3) + ' / max ' + max.toFixed(3) + ' ms');
+  }
+});
+
+test('M2: audio taps (§5.3) — read from the CP rows (not SxMod internals); a switched-off oscillator reads 0 and is not rendered for its tap', () => {
+  assert.ok(!/\.mod\.srcUsed/.test(SRC), 'serum-dsp keeps to the §11.6 sx.mod fields');
+  const OSCB = core.SOURCES.findIndex((x) => x.id === 'oscb');
+  const tap = (bOn) => {
+    const u = setup2({ s: st2({ 'b.on': bOn }, (s) => { s.matrix[0] = { ...s.matrix[0], src: 'oscb', dst: 'a.fine', amt: 0.1 }; }) });
+    u.vs[0].noteOn(57, 1, false, 1);
+    let m = 0;
+    run2(u.S, u.proc, u.vs, 20, { each: () => { m = Math.max(m, Math.abs(u.vs[0].src[OSCB])); } });
+    return { m, cap: u.vs[0].oCap[1] };
+  };
+  const on = tap(1), off = tap(0);
+  assert.ok(on.m > 0.5 && on.cap === 1, 'B on: the tap follows the oscillator ' + on.m);
+  assert.ok(off.m === 0 && off.cap === 0, 'B off: 0, not rendered');
+});
+
+test('M2: Filter-sourced warp buffers (§6.6.7) are the previous chunk’s filter output in every chunk, zeros while the filter is off', () => {
+  const mk = (mode, fOn = 1) => st2({ 'a.w1': mode ? nEnum(W2(mode), 81) : 0, 'a.warp': 0.5, ...FILT('f', T_LOW12, 0.5), 'f.on': fOn, 'e1.sus': 1 },
+    (st) => { st.osc[0].route = 0; });
+  const u = setup2({ s: mk('am_f1') }), v = u.vs[0];
+  v.noteOn(57, 1, false, 1);
+  run2(u.S, u.proc, u.vs, 10);
+  const old = Float64Array.from(v.fp1);
+  const PB = core.compileSerum(mk(''), {}), PA = core.compileSerum(mk('am_f1'), {}), P0 = core.compileSerum(mk('', 0), {});
+  u.proc.p = { serum: PB.serum, fxr: null }; v.apply(u.proc.p);
+  let prev = Float64Array.from(v.fp1), changed = 0;
+  run2(u.S, u.proc, u.vs, 30, { each: (sp) => {
+    if (sp === 15) v.noteOn(64, 1, true, 1);
+    if (sp > 0 && v.fp1.some((x, i) => x !== prev[i])) changed++;
+    prev = Float64Array.from(v.fp1);
+  } });
+  assert.ok(changed >= 28, 'kept current while no slot reads it: ' + changed + ' of 29 spans');
+  u.proc.p = { serum: PA.serum, fxr: null }; v.apply(u.proc.p);
+  assert.ok(v.fp1.some((x, i) => x !== old[i]) && v.fp1.some((x) => x !== 0), 're-selected: not the buffer of 30 spans ago');
+  u.proc.p = { serum: P0.serum, fxr: null }; v.apply(u.proc.p);
+  run2(u.S, u.proc, u.vs, 1);
+  assert.ok(v.fp1.every((x) => x === 0), 'filter off: zeros');
+});
+
+test('M2: filter level, filter balance and bus sends ramp across the chunk — no chunk-rate zipper (§6.12)', () => {
+  // 110 Hz sine (OS 1, chunk 4 samples), an LFO at ≈ 13 Hz on the gain: the 6–20 kHz band stays far below the fundamental
+  const hf = (dst, out, p = {}, edit = null) => {
+    const s = st2({ 'a.level': 0.75, 'f.on': 0, 'l1.rate': 0.6, 'e1.sus': 1, ...p }, (st) => {
+      st.lfo[0].bpm = 0; st.lfo[0].mode = 'free'; st.lfo[0].pts = [[0, 0, 0], [0.5, 1, 0], [1, 0, 0]];
+      st.matrix[0] = { ...st.matrix[0], src: 'lfo1', dst, amt: 0.4 };
+      if (edit) edit(st);
+    });
+    const u = setup2({ s, OS: 1, tables: TSINE });
+    u.vs[0].noteOn(45, 1, false, 1);
+    const r = run2(u.S, u.proc, u.vs, 400, { outs: true }), x = r[out], N = 32768, re = new Float64Array(N), im = new Float64Array(N);
+    for (let i = 0; i < N; i++) { const a = 2 * Math.PI * i / (N - 1); re[i] = x[x.length - N + i] * (0.35875 - 0.48829 * Math.cos(a) + 0.14128 * Math.cos(2 * a) - 0.01168 * Math.cos(3 * a)); }
+    fft(re, im, false);
+    const band = (f0, f1) => { let e = 0; for (let k = Math.round(f0 * N / 48000); k <= Math.round(f1 * N / 48000); k++) e += re[k] * re[k] + im[k] * im[k]; return e; };
+    return 10 * Math.log10(band(6000, 20000) / band(100, 120));
+  };
+  const lv = hf('f.level', 'L'), amp = hf('a.level', 'L');
+  const bal = hf('a.fbal', 'L', { 'f2.on': 1, 'f2.type': T_LOW12 / 107, 'f2.cutoff': 1 }, (st) => { st.filter[1].route = 3; });
+  const bus = hf('a.bus1', 'b1L', { 'a.bus1': 0.5 });
+  console.log(`  6–20 kHz re fundamental: f.level ${lv.toFixed(1)}, a.fbal ${bal.toFixed(1)}, a.bus1 ${bus.toFixed(1)}, a.level (reference) ${amp.toFixed(1)} dB`);
+  for (const [n, x] of [['f.level', lv], ['a.fbal', bal], ['a.bus1', bus]]) assert.ok(x < -85, n + ': ' + x.toFixed(1) + ' dB');
+});
+
+test('M2: a full CT object hands its spectral filter curves to SxSpec (sx.CT.specFilt); a CT v2 parts object merges again afterwards (§4.1)', () => {
+  const u = setup2(), P = core.compileSerum(st2(), {});
+  const full = core.assembleCT(P.serumT);
+  full.specFilt = new Float32Array(3 * 513).fill(0.25);
+  u.proc.ct = full; u.S.begin(u.proc, 256);
+  assert.ok(u.proc.sx.CT.specFilt.every((x) => x === 0.25), 'full CT curves');
+  const bare = core.assembleCT(P.serumT);
+  delete bare.specFilt;
+  u.proc.ct = bare; u.S.begin(u.proc, 256);
+  assert.ok(u.proc.sx.CT.specFilt.every((x) => x === 1), 'full CT without curves: flat');
+  u.proc.ct = P.serumT; u.S.begin(u.proc, 256);
+  for (let o = 0; o < 3; o++) sameArr(u.proc.sx.CT.specFilt.subarray(o * 513, o * 513 + 513), P.serumT.parts['spec' + o].tab, 'parts merged again: spec' + o);
+});
+
+test('M2: one console.warn per missing oscillator-type script (§0.3)', () => {
+  const sc = dspScope({ overrides: { 'sx-sample.js': null, 'sx-gran.js': null } });
+  const s = st2({ 'b.on': 1, 'c.on': 1 }, (st) => { st.osc[0].type = 'sample'; st.osc[1].type = 'multi'; st.osc[2].type = 'gran'; });
+  const u = setup2({ s, scope: sc, n: 2 });
+  u.vs[0].apply(u.proc.p);
+  const w = sc.logs.filter((m) => m.level === 'warn' && /unavailable, those oscillators are silent/.test(m.text)).map((m) => m.text);
+  assert.equal(w.length, 2, w.join(' | '));
+  assert.ok(w.some((t) => t.includes('SxSample')) && w.some((t) => t.includes('SxGran')));
 });

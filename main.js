@@ -1,19 +1,30 @@
-import { MODELS, DX_ALGS } from './models.js?v=5';
-import * as S from './song.js?v=5';
-import { PianoRoll } from './roll.js?v=5';
-import { Arrangement } from './arrange.js?v=5';
-import * as core from './serum-core.js?v=5';
+import { MODELS, DX_ALGS, patchFor, groupSong } from './models.js?v=6';
+import * as S from './song.js?v=6';
+import { PianoRoll } from './roll.js?v=6';
+import { Arrangement } from './arrange.js?v=6';
+import * as core from './serum-core.js?v=6';
+import { openAppStore } from './appstore.js?v=6';
+import { createAssetManager, portPoster, userIdsOf, userAssetIds, idKind, TEXT as ATEXT } from './assets.js?v=6';
+import { createMidi, targets as midiTargets, noteCh, noteMsg } from './midi.js?v=6';
 
-const VERSION = '5';
+const VERSION = '6';
 const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
-const store = {
-  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
-  raw(k) { try { return localStorage.getItem(k); } catch { return null; } },
-  setRaw(k, v) { try { localStorage.setItem(k, v); } catch { /* storage full or unavailable */ } },
-};
+// App storage (appstore.js, SPEC-serum2 §12.6, lead sign-off on §0.8 item 7): the IndexedDB database `synth-app` (key /
+// value store + the project autosave as one record per track), migrated once from the Phase-1 localStorage keys, which
+// stay as the read-only fallback; without a working IndexedDB the Phase-1 localStorage store. The interface is the
+// Phase-1 one (synchronous get / set on a cache). Every failed write — a quota error in particular — shows a notice
+// (notices raised before the page is up wait for boot).
+let booted = false;
+const early = [];
+function storeError(e) {
+  const txt = e && e.notice ? e.notice : e && e.fallback ? 'Storage problem — the app keeps working on this browser’s local storage' : '';
+  if (!txt) return;
+  const ms = e.stale || e.restored ? 20000 : 8000; // working on an older copy: shown longer
+  if (booted) notice(txt, ms); else early.push([txt, ms]);
+}
+const store = await openAppStore({ onError: storeError });
 const modelById = id => MODELS.find(m => m.id === id) || MODELS[1];
 
 const settings = Object.assign({ sr: 0, os: 4, drift: 5, master: 0.8, model: 'minimoog', vel: 100 }, store.get('synth.settings', {}));
@@ -24,13 +35,15 @@ const ui = new Map();
 /* ---------------------------------------------- Serum preferences (§9.7) */
 // App-wide, stored by the Serum panel (serum-ui.js normPrefs) under synth.sx.prefs; read here for the patches of every
 // track (smoothing scale, silence tails), new Serum tracks (oversampling, author, 3D view) and the mod wheel → WT pos.
-const SX_PREFS = { tooltips: 1, dblClick: 'type', wheel: 1, view3d: 0, wheelWt: 0, limitDrop: 1, silenceTails: 1, defOs: 2, author: '', askPreset: 0, smooth: 1 };
+// SPEC-serum2 §13.10 adds mpeDefault, mpeBendX, mpeYBi, midiFromPreset and ultra (serum-ui PREFS_DEFAULT / normPrefs).
+const SX_PREFS = { tooltips: 1, dblClick: 'type', wheel: 1, view3d: 0, wheelWt: 0, limitDrop: 1, silenceTails: 1, defOs: 2, author: '', askPreset: 0, smooth: 1,
+  mpeDefault: 0, mpeBendX: 0, mpeYBi: 0, midiFromPreset: 1, ultra: 0 };
 function readPrefs() {
   const o = store.get('synth.sx.prefs', null), p = Object.assign({}, SX_PREFS, o && typeof o === 'object' ? o : {});
   p.smooth = Number.isFinite(+p.smooth) ? clamp(+p.smooth, 0.01, 8) : 1;
   p.defOs = p.defOs === 1 || p.defOs === 4 ? p.defOs : 2;
   p.author = typeof p.author === 'string' ? p.author.slice(0, 64) : '';
-  for (const k of ['view3d', 'wheelWt', 'silenceTails', 'askPreset']) p[k] = p[k] ? 1 : 0;
+  for (const k of ['view3d', 'wheelWt', 'silenceTails', 'askPreset', 'mpeDefault', 'mpeBendX', 'mpeYBi', 'midiFromPreset', 'ultra']) p[k] = p[k] ? 1 : 0;
   return p;
 }
 let prefs = readPrefs();
@@ -40,11 +53,35 @@ function defaults(m) {
   if (m.defaults) return m.defaults(prefs); // custom panel (Serum): { s } with the preferences applied
   const v = {}; for (const c of m.controls) v[c.id] = c.def; return v;
 }
-// new sounds: a model's last-used panel values; a Serum track starts from Init with the preferences (§2.1)
-function loadVals(m) { return m.custom ? defaults(m) : Object.assign(defaults(m), store.get('synth.v.' + m.id, {})); }
+// new sounds: a model's last-used panel values; a Serum track starts from the user's default preset (Save as Default
+// Preset, synth.sx.default, §13.12) or Init with the preferences (§2.1)
+function sxDefault() { const d = store.get('synth.sx.default', null); return d && d.v && d.v.s && typeof d.v.s === 'object' ? d : null; }
+function loadVals(m) {
+  if (m.custom) { const d = sxDefault(); return d ? { s: core.normalizeSerum(clone(d.v.s)) } : defaults(m); }
+  return Object.assign(defaults(m), store.get('synth.v.' + m.id, {}));
+}
 const isSx = t => !!t && t.model === 'serum';
-// every track owns an FX rack state (any model; kept when the model changes, §2.5)
-function fxOf(t) { if (!t.fx || typeof t.fx !== 'object' || !t.fx.p) t.fx = core.defaultFx(); return t.fx; }
+// Every track owns an FX rack state (any model; kept when the model changes, §2.5). FX state v2 everywhere (RULINGS2 F1):
+// a track holds a v2 state (three racks of instances, §2.5); a v1 state reaching a track — an old project or autosave, a
+// preset, a chain, the default preset — is migrated where it enters (fx-core normalizeFx = migrateFx1 for v1 input: S1-variant
+// instances that render bit-identically to the Phase-1 rack, §2.6.3), with the track's Serum state as refs so the instances
+// its rows / locks / MIDI map address are kept. fxOf() migrates anything that is still v1 (an object with `p`) the same way.
+const isV2Fx = fx => !!fx && typeof fx === 'object' && fx.v >= 2 && Array.isArray(fx.racks);
+const fxOk = fx => !!fx && typeof fx === 'object' && (isV2Fx(fx) || (!!fx.p && typeof fx.p === 'object'));
+function fxOf(t) {
+  if (isV2Fx(t.fx)) return t.fx;
+  t.fx = fxOk(t.fx) ? fxLoad(t.fx, isSx(t) && t.vals ? t.vals.s : undefined) : core.defaultFx2();
+  return t.fx;
+}
+// the rack of a new track: a Serum track's from the default preset when it has one (migrated with its Serum state)
+function newFx(m) { const d = m && m.custom ? sxDefault() : null; return d && fxOk(d.fx) ? fxLoad(clone(d.fx), d.v.s) : core.defaultFx2(); }
+// the base value n of FX destination `id` (static g.* ids live in the Serum state) in a track's FX state: the instance's
+// parameter (§3.16.4 fxDest; v1 ids of Hyper's Dimension rows resolve through RENAME1) — MIDI-learned controllers (midi.js writeCC)
+function fxSet(t, id, n) {
+  const fx = fxOf(t);
+  const d = core.fxDest(id, fx);
+  if (d && d.inst && d.inst.p && typeof d.inst.p === 'object') d.inst.p[d.pid] = n;
+}
 const clone = x => JSON.parse(JSON.stringify(x));
 function fmt(c, v) { return c.fmt ? c.fmt(v) : c.t === 'k' ? (+v).toFixed(1) : String(v); }
 function toPos(c, v) { return (v - c.min) / (c.max - c.min); }
@@ -56,6 +93,9 @@ function fromPos(c, p) {
 
 // song.deserialize validates the core schema; carry over the extras this UI keeps (303 patterns, FX racks, view
 // prefs). Serum states and FX racks are normalised here (they enter from outside: autosave, files, §11.8).
+function fxLoad(fx, refs) {
+  try { return core.normalizeFx(fx, refs); } catch (err) { console.warn('FX rack unreadable: the default rack', err); return core.defaultFx2(); }
+}
 function loadProject(json) {
   const p = S.deserialize(json);
   const o = typeof json === 'string' ? JSON.parse(json) : json;
@@ -64,20 +104,24 @@ function loadProject(json) {
   for (const t of p.tracks) {
     const r = byId.get(t.id);
     if (r && r.seq && Array.isArray(r.seq.pat)) t.seq = r.seq;
-    t.fx = r && r.fx && typeof r.fx === 'object' ? core.normalizeFx(r.fx) : core.defaultFx();
+    // SPEC-serum2 §12.6: Serum states through normalizeSerum (v1 → v2 migration, §2.6), FX states through §2.6.3's
+    // normalizeFx — a v1 rack (any model) is migrated, migrateFx1(normalizeFxV1(fx), refs), with the track's Serum state
+    // as refs (the instances its rows / locks / MIDI map address are kept); the migrated rack renders bit-identically
+    // (golden shard 4) and the project is saved with v2 racks (§15.1 item 6)
     if (isSx(t)) t.vals = { s: core.normalizeSerum(t.vals && t.vals.s) };
+    t.fx = r && r.fx && typeof r.fx === 'object' ? fxLoad(r.fx, isSx(t) ? t.vals.s : undefined) : core.defaultFx2();
   }
   return p;
 }
 function freshProject(m) {
   const p = S.newProject({ model: m.id, vals: loadVals(m), name: 'Untitled', trackName: m.name + ' 1' });
-  for (const t of p.tracks) { t.fx = core.defaultFx(); seedPend.add(t.id); }
+  for (const t of p.tracks) { t.fx = newFx(m); seedPend.add(t.id); }
   return p;
 }
 const seedPend = new Set(); // tracks whose next patch re-seeds the FX rack's LFO phases (§4.2: loads, track creation)
 let project;
 {
-  const raw = store.raw('synth.project');
+  const raw = store.loadProject();
   try { project = raw ? loadProject(raw) : null; } catch { project = null; }
   if (!project) {
     const fromHash = MODELS.find(m => '#' + m.id === location.hash);
@@ -98,34 +142,46 @@ function bind() {
 bind();
 
 let saveT = 0;
-function save() {
+// now: the page is going away (pagehide / beforeunload / hidden) — the IndexedDB store starts its transaction in this task
+// (appstore saveNow), as Phase 1 wrote localStorage synchronously here
+function save(now) {
   clearTimeout(saveT); saveT = 0;
   store.set('synth.settings', settings);
   if (!model.custom) store.set('synth.v.' + model.id, vals);
-  store.setRaw('synth.project', S.serialize(project)); // never carries embedded wavetables (only saved files do, §7.10)
+  // = song.serialize; never carries embedded wavetables (only saved files do, §7.10)
+  if (now === true) store.saveNow(project); else store.saveProject(project);
 }
 function persist() { clearTimeout(saveT); saveT = setTimeout(save, 400); }
-function flush() { if (saveT) save(); } // write a pending save now (before the current model/track changes, or the page goes away)
+function flush() { if (saveT) save(); } // write a pending save now (before the current model/track changes)
+const saveNow = () => save(true);
 
 /* --------------------------------------------------------- patching */
-// offline: a bounce / resample (Serum's oversampling is not capped by the live CPU safeguard there)
+// offline: a bounce / resample / render (Serum's oversampling and the quality steps of the CPU safeguard do not apply;
+// "Use Ultra quality when rendering" does, §13.10). patchFor (models.js, SPEC-serum2 §12.7) builds the track's whole
+// patch (model map with the FX state, the quality caps and the app preferences; FX rack); only the live-session fields
+// are added here: the rack re-seed, the oversampling cap and Q4's POLY cap (§14.3).
 function buildPatch(tr, sr, offline = false) {
-  const m = modelById(tr.model), v = tr.vals, P = {};
-  for (const c of m.controls) P[c.id] = c.conv ? c.conv(v[c.id]) : v[c.id];
-  const bpm = project.bpm;
-  const patch = m.map(P, v, { drift: settings.drift / 10, hiss: 1, sr: sr || (ctx ? ctx.sampleRate : 48000), bpm, smooth: prefs.smooth });
-  // the track's FX rack (every model, §4.2); Serum's master volume and Bypass are applied by the rack's output stage
-  const s = m.custom && v.s ? v.s : null, fx = fxOf(tr);
-  patch.fxr = core.compileFx(fx, {
-    bpm, master: s ? s.p['g.master'] : undefined, bypass: s ? s.p['g.bypass'] : undefined, modded: s ? core.fxModded(s) : null,
-    seed: seedPend.has(tr.id), smooth: prefs.smooth, silence: prefs.silenceTails,
+  const m = modelById(tr.model), s = m.custom && tr.vals.s ? tr.vals.s : null;
+  const patch = patchFor(m, tr.vals, fxOf(tr), {
+    sr: sr || (ctx ? ctx.sampleRate : 48000), bpm: project.bpm, drift: settings.drift / 10, hiss: 1,
+    // offline: no quality caps (the CP defaults; the touch-device stream / grain pools differ by ≈ 1 MB and a render has no
+    // deadline); live: the device defaults and the safeguard's step
+    qr: offline ? null : qrOf(qrStep), prefs: offline || !prefs.ultra ? prefs : Object.assign({}, prefs, { ultra: 0 }), seed: seedPend.has(tr.id),
   });
-  patch.fxrT = core.compileFxT(fx);
-  patch.bpm = bpm;
-  if (s) patch.osCap = offline ? 0 : sxCap;
-  if (s && !offline && sxUni < 16 && patch.serum && patch.serum.base) { // the safeguard's unison limit (compiled copy only)
-    const b = patch.serum.base = Float64Array.from(patch.serum.base);
-    for (const id of ['a.uni', 'b.uni']) { const i = core.DEST_INDEX[id], n = core.lawNorm(id, sxUni); if (b[i] > n) b[i] = n; }
+  if (s) {
+    patch.osCap = offline ? 0 : sxCap;
+    if (!offline) capQ4(patch);
+  }
+  return patch;
+}
+// §14.3 Q4 (live Serum patches): POLY ≤ 8 — the engine's voice count and CP.poly (the Active Voices source's scale and
+// the snapshot's maxVoices), so the step changes nothing but the number of voices; voices above are released. Q6 (IMPL,
+// M4 performance; see qrOf): POLY ≤ 4
+function capQ4(patch) {
+  const cap = qrStep >= 6 ? 4 : qrStep >= 4 ? 8 : 0;
+  if (cap > 0 && patch.mode === 'poly' && patch.poly > cap) {
+    patch.poly = cap;
+    if (patch.serum && patch.serum.poly > cap) patch.serum = Object.assign({}, patch.serum, { poly: cap });
   }
   return patch;
 }
@@ -134,17 +190,85 @@ function queuePatch(tr = trk()) {
   if (!patchQ.size) requestAnimationFrame(() => { for (const t of patchQ) if (project.tracks.includes(t)) sendPatch(t); patchQ.clear(); });
   patchQ.add(tr);
 }
-// The curve tables (serumT, fxrT) travel only when their content changed since the last patch this node received
-// (keys per node, reset when the node is recreated); Serum's wavetables are posted before the patch needs them.
+// The curve tables travel only when their content changed since the last patch this node received (keys per node,
+// reset when the node is recreated): Serum's CT v2 and the sequencer's seqT by part (SPEC-serum2 §4.1, §4.4 — only the
+// parts whose key changed, so an LFO, curve or clip-note drag re-sends one part, not the whole table), the FX rack's FXT
+// whole. When nothing but tables changed, only the parts are posted ({t: 'ct'} / {t: 'sqt'}, §12.4: an LFO drag frame
+// posts a few KB instead of the ≈ 25 KB patch).
+function partDelta(keys, T) { // T {key, parts} → {key, parts} with the parts this node has not received, or null
+  const parts = {};
+  let any = false;
+  for (const k of Object.keys(T.parts)) {
+    const q = T.parts[k];
+    if (keys.get(k) !== q.key) { keys.set(k, q.key); parts[k] = q; any = true; }
+  }
+  return any ? { key: T.key, parts } : null;
+}
+function ctDelta(N, serumT) {
+  const d = partDelta(N.ctParts, serumT);
+  if (!d && N.ctKey === serumT.key) return null;
+  N.ctKey = serumT.key;
+  return d || { key: serumT.key, parts: {} };
+}
+// deep equality of two compiled patches without their tables (typed arrays element-wise; CP.ctKey and SQP.key — the
+// keys of the tables they were compiled with — ignored)
+const SKIP_TOP = new Set(['serumT', 'seqT', 'fxrT']);
+function sameVal(a, b, skip) {
+  if (a === b) return true;
+  if (typeof a === 'number' && typeof b === 'number') return a !== a && b !== b;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (ArrayBuffer.isView(a) || ArrayBuffer.isView(b)) {
+    if (!ArrayBuffer.isView(a) || !ArrayBuffer.isView(b) || a.constructor !== b.constructor || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i] && !(a[i] !== a[i] && b[i] !== b[i])) return false;
+    return true;
+  }
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const keep = k => !skip || !skip.has(k), ka = Object.keys(a).filter(keep), kb = Object.keys(b).filter(keep);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+    if (!sameVal(a[k], b[k], k === 'serum' ? SKIP_CP : k === 'seq' ? SKIP_SQ : null)) return false;
+  }
+  return true;
+}
+const SKIP_CP = new Set(['ctKey']), SKIP_SQ = new Set(['key']);
 function sendPatch(tr = trk()) {
   const N = nodes.get(tr.id);
   if (!N) return;
   const p = buildPatch(tr);
   seedPend.delete(tr.id);
-  if (N.engine !== p.engine) { N.engine = p.engine; N.ctKey = ''; } // the engine drops its curve tables when the model changes
-  if (p.serumT) { if (N.ctKey === p.serumT.key) delete p.serumT; else N.ctKey = p.serumT.key; }
+  // §9.5: the assets the patch can play (Serum needs ∪ FX needs) are posted before it; a patch that replaces a posted
+  // variant of an asset (trim / fade, Convolve shaping) waits for the new variant, so the old one keeps playing
+  if (!p.needs || !p.needs.length) { tables.release(tr.id); N.waitP = null; postPatch(N, p); return; }
+  const at = { trackId: tr.id, s: isSx(tr) ? tr.vals.s : null, fx: fxOf(tr), convMax: p.fxr && p.fxr.convMax };
+  const done = tables.ensure(p.needs, at);
+  if (tables.ready(p.needs)) { N.waitP = null; postPatch(N, p); return; }
+  N.waitP = p; // a newer patch of the track replaces a waiting one
+  done.then(() => { if (N.waitP === p && nodes.get(tr.id) === N) { N.waitP = null; postPatch(N, p); } });
+}
+// the part keys of a node that starts with every table part of `patch` (processorOptions) and this patch (N: the node
+// record, filled in)
+function partCache(N, patch) {
+  Object.assign(N, { engine: patch.engine, ctKey: '', ctParts: new Map(), sqParts: new Map(), xsKey: patch.fxrT ? patch.fxrT.key : '', last: null });
+  if (patch.serumT) ctDelta(N, patch.serumT);
+  if (patch.seqT) partDelta(N.sqParts, patch.seqT);
+  N.last = Object.assign({}, patch); delete N.last.serumT; delete N.last.seqT; delete N.last.fxrT;
+  return N;
+}
+function postPatch(N, p) {
+  if (N.engine !== p.engine) { N.engine = p.engine; N.ctKey = ''; N.ctParts.clear(); N.sqParts.clear(); N.last = null; } // the engine drops its tables when the model changes
+  let ct = null, sq = null;
+  if (p.serumT) { ct = ctDelta(N, p.serumT); if (ct) p.serumT = ct; else delete p.serumT; }
+  if (p.seqT) { sq = partDelta(N.sqParts, p.seqT); if (sq) p.seqT = sq; else delete p.seqT; }
   if (p.fxrT) { if (N.xsKey === p.fxrT.key) delete p.fxrT; else N.xsKey = p.fxrT.key; }
-  if (p.needs) tables.ensure(tr, p.needs); else tables.drop(tr.id); // no longer Serum: its tables may be freed
+  if (N.last && !p.fxrT && sameVal(p, N.last, SKIP_TOP)) { // only tables changed
+    if (ct && Object.keys(ct.parts).length) N.node.port.postMessage({ t: 'ct', key: ct.key, parts: ct.parts });
+    if (sq) N.node.port.postMessage({ t: 'sqt', parts: sq.parts });
+    return;
+  }
+  const last = Object.assign({}, p);
+  delete last.serumT; delete last.seqT; delete last.fxrT;
+  N.last = last;
   N.node.port.postMessage({ t: 'patch', p });
 }
 function queueAll() { for (const t of project.tracks) queuePatch(t); }
@@ -166,17 +290,48 @@ const osCap = sr => Math.max(1, 2 ** Math.floor(Math.log2(MAX_INTERNAL / sr + 1e
 const osFor = sr => Math.min(settings.os, osCap(sr));
 // A Serum track runs at its own Global quality (1/2/4×) instead of the app setting, capped like every track at 384 kHz
 // and by sxCap, the CPU safeguard's cap for Serum tracks (lead sign-off on SPEC-serum deviation 9). Session only.
-// Halving Serum's oversampling recovers only a quarter of its cost, so once sxCap is 1 the safeguard limits the
-// unison voices per oscillator (sxUni 16 → 8 → 4; the saved sounds keep theirs). Both lift when a quality is chosen.
-let sxCap = 8, sxUni = 16;
+// Halving Serum's oversampling recovers only a quarter of its cost, so once sxCap is 1 the safeguard takes the quality
+// steps of SPEC-serum2 §14.3 (qrStep 1–4, + the IMPL steps 5–6, below; the Phase-1 unison cap is Q2's qr.uniMax, applied by the DSP to A, B
+// and C). Choosing a Quality (GLOBAL page, the app's oversampling) or reloading lifts every step. Offline renders use
+// neither; they render at Ultra (4×) with the preference "Use Ultra quality when rendering" (§12.6).
+let sxCap = 8, qrStep = 0;
+// device class of the §14.2 budgets (touch: pointer coarse, or a touch seen) — passed to every budget holder
+let touchDev = (() => { try { return matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints || 0) > 0; } catch { return false; } })();
+// §14.3 quality caps at step k: CP.qr [uniMax, grainsMax, specHopMul, specStreams, grainsProc] (+ FXP.convMax). Q5 and Q6
+// are IMPL additions (M4 performance): after Q4 a dense Sample / Granular patch (8 voices × 3 oscillators × unison 16,
+// warps per grain) still measured 0.32 / 0.45 at OS 1 on an M4 Max — beyond real time on a 1.5–3× slower iPad, with no
+// step left; Q5 (unison ≤ 2, 32 / 64 grains, 2 spectral streams) brings it to 0.21 / 0.29, Q6 (POLY ≤ 4) to 0.10 / 0.21
+function qrOf(k) {
+  const q = { uniMax: 16, grainsMax: 256, specHopMul: 1, specStreams: touchDev ? 16 : 32, grainsProc: touchDev ? 256 : 512, convMax: 10 };
+  if (k >= 1) { q.grainsMax = 128; q.grainsProc = 256; q.specHopMul = 2; }        // Q1
+  if (k >= 2) { q.uniMax = 4; q.grainsMax = 64; q.grainsProc = 128; q.specStreams = 8; } // Q2
+  if (k >= 3) { q.convMax = 2; q.specStreams = 4; }                               // Q3 (Q4: POLY ≤ 8, buildPatch)
+  if (k >= 5) { q.uniMax = 2; q.grainsMax = 32; q.grainsProc = 64; q.specStreams = 2; }  // Q5 (Q6: POLY ≤ 4, buildPatch)
+  return q;
+}
+const QR_STEPS = 6;
+const QR_NOTICE = ['', 'fewer grains and spectral frames', 'unison ≤ 4 voices, fewer grains and spectral streams',
+  'Convolve tails ≤ 2 s, fewer spectral streams', 'polyphony ≤ 8 voices', 'unison ≤ 2 voices, fewer grains and spectral streams',
+  'polyphony ≤ 4 voices'];
 const sxQuality = tr => { const o = tr.vals && tr.vals.s && tr.vals.s.global ? tr.vals.s.global.os : 2; return o === 1 || o === 4 ? o : 2; };
-const sxOSFor = (tr, sr, offline = false) => Math.min(sxQuality(tr), osCap(sr), offline ? 8 : sxCap);
+const sxOSFor = (tr, sr, offline = false) => Math.min(offline && prefs.ultra ? 4 : sxQuality(tr), osCap(sr), offline ? 8 : sxCap);
+// lifts every CPU-safeguard step (a Quality chosen on the GLOBAL page or the app's oversampling)
+function liftCaps() {
+  hotT = 0;
+  if (sxCap < 8 || qrStep > 0) { sxCap = 8; qrStep = 0; for (const t of project.tracks) if (isSx(t)) queuePatch(t); }
+  if (ctx) rateText();
+}
 const trackOS = (tr, sr) => (isSx(tr) ? sxOSFor(tr, sr) : osFor(sr));
-// DSP scripts (classic scripts, one global scope per context) load before the engine; a missing or broken one only
-// silences Serum tracks / bypasses the FX racks (§11.1)
-const DSP_URLS = ['serum-dsp.js?v=' + VERSION, 'fx-dsp.js?v=' + VERSION];
+// DSP scripts (classic scripts, one global scope per context; SPEC-serum2 §0.3, §12.1) load before the engine, all
+// requested at once (none reads another's global at load, so their evaluation order does not matter); a missing or
+// broken one only degrades its feature (Serum tracks silent, FX racks bypassed, …). The same list, in this order, is
+// injected on the main thread (wk.loadDSP) for the panels' displays.
+const DSP_FILES = ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
+  'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js'];
+const DSP_URLS = DSP_FILES.map(f => f + '?v=' + VERSION);
 async function addModules(c) {
-  for (const u of DSP_URLS) { try { await c.audioWorklet.addModule(u); } catch (err) { console.warn('DSP script not loaded: ' + u + ' (' + (err && err.message) + ')'); } }
+  const res = await Promise.allSettled(DSP_URLS.map(u => c.audioWorklet.addModule(u)));
+  res.forEach((r, i) => { if (r.status === 'rejected') console.warn('DSP script not loaded: ' + DSP_URLS[i] + ' (' + (r.reason && r.reason.message) + ')'); });
   await c.audioWorklet.addModule('engine.js?v=' + VERSION);
 }
 const kHz = x => (x / 1000).toFixed(1).replace(/\.0$/, '');
@@ -265,6 +420,7 @@ function powerOff() {
   const c = ctx || pendCtx;
   if (!c) return Promise.resolve();
   if (T.playing) stop();
+  previewStop(); previewEnd(); // (the kept preview node belongs to this context)
   ctx = null; pendCtx = null; powering = null; an = null; master = null; metroBus = null;
   nodes.clear();
   seqRun.clear(); if (model.id === 'tb303') renderPanel();
@@ -280,13 +436,13 @@ function makeNode(tr) {
   seedPend.delete(tr.id);
   const node = new AudioWorkletNode(ctx, 'synth-engine', {
     numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
-    processorOptions: { os: trackOS(tr, sr), hostOS: osFor(sr), patch, song: songData(tr), seq: tr.model === 'tb303' ? seqPayload(tr) : null },
+    processorOptions: { os: trackOS(tr, sr), hostOS: osFor(sr), patch, song: songData(tr), seq: tr.model === 'tb303' ? seqPayload(tr) : null,
+      trackId: tr.id }, // the MIDI OUT registry of the worklet scope (SPEC-serum2 §7.9)
   });
   const gain = ctx.createGain(), pan = ctx.createStereoPanner(), a = ctx.createAnalyser();
   a.fftSize = 512;
   node.connect(gain); gain.connect(pan); pan.connect(master); pan.connect(a);
-  const N = { node, gain, pan, an: a, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0,
-    engine: patch.engine, ctKey: patch.serumT ? patch.serumT.key : '', xsKey: patch.fxrT ? patch.fxrT.key : '', fxph: null, phWait: [] };
+  const N = partCache({ node, gain, pan, an: a, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: null, phWait: [], waitP: null }, patch);
   const id = tr.id;
   node.port.onmessage = e => {
     const d = e.data, t = project.tracks.find(x => x.id === id) || tr;
@@ -294,16 +450,24 @@ function makeNode(tr) {
     else if (d.t === 'step' && t.id === project.selTrack && (seqRun.has(t.id) || (T.playing && seqOf(t).sync))) seqStep(d.s);
     else if (d.t === 'smon') { if (d.fxph) N.fxph = d.fxph; monitors.deliver(id, d); }
     else if (d.t === 'fxph') { if (d.v) N.fxph = d.v; for (const f of N.phWait.splice(0)) f(d.v); }
+    else if (d.t === 'fxover' && Array.isArray(d.ids)) { // §8.5: the rack's 32 MB cap left these instances bypassed
+      const fx = fxOf(t), names = d.ids.map(x => (isV2Fx(fx) && core.instLabel(fx, x)) || x);
+      notice(`FX memory limit reached — ${names.join(', ')} bypassed (track “${t.name}”)`, 8000);
+    }
   };
   if (T.playing && T.a) node.port.postMessage(Object.assign({ t: 'transport', play: true, seek: true }, T.a));
-  if (patch.needs) tables.ensure(tr, patch.needs, node);
+  if (patch.needs) tables.ensure(patch.needs, { trackId: tr.id, node, s: isSx(tr) ? tr.vals.s : null, fx: fxOf(tr), convMax: patch.fxr && patch.fxr.convMax });
   if (monitors.wanted(id)) { node.port.postMessage({ t: 'smon', on: true }); monitors.on.set(id, true); }
   return N;
 }
 function syncNodes() {
   if (!ctx) return;
   const ids = new Set(project.tracks.map(t => t.id));
-  for (const [id, N] of nodes) if (!ids.has(id)) { N.node.port.postMessage({ t: 'panic' }); N.pan.disconnect(); N.node.disconnect(); nodes.delete(id); tables.drop(id); }
+  for (const [id, N] of nodes) {
+    if (ids.has(id)) continue;
+    N.node.port.postMessage({ t: 'panic' }); N.node.port.postMessage({ t: 'bye' }); // bye: leave the MIDI OUT registry (§7.9)
+    N.pan.disconnect(); N.node.disconnect(); nodes.delete(id); tables.release(id);
+  }
   for (const t of project.tracks) if (!nodes.has(t.id)) nodes.set(t.id, makeNode(t));
   mix();
 }
@@ -322,10 +486,22 @@ function mix() {
 function postTo(tr, m) { const N = tr && nodes.get(tr.id); if (N) N.node.port.postMessage(m); }
 function postAll(m) { for (const N of nodes.values()) N.node.port.postMessage(m); }
 /* status: the Power LED shows a context that is actually running; a suspended/interrupted one asks for a tap */
-let noticeT = 0, sticky = '', pauseT = 0;
-function showNotice(txt) { const el = $('#notice'); el.textContent = txt; el.hidden = !txt; }
-function notice(txt, ms) { clearTimeout(noticeT); noticeT = 0; showNotice(txt); if (ms) noticeT = setTimeout(() => { noticeT = 0; showNotice(sticky); }, ms); }
-function stickyNotice(txt) { sticky = txt; if (!noticeT) showNotice(txt); }
+// The notice line: a timed message (notice), else the sticky one (audio problems), else the factory generation progress
+// (genProgress, §9.7). The progress text alone carries the tap-to-cancel action.
+let noticeT = 0, sticky = '', pauseT = 0, genTxt = '';
+const noticeActs = new Map(); // notice text → its tap action (attached only while that text shows)
+function showNotice(txt) {
+  const el = $('#notice');
+  el.textContent = txt; el.hidden = !txt;
+  if (txt && txt === genTxt) { el.dataset.gen = '1'; el.onclick = genCancel; return; }
+  if (el.dataset.gen) delete el.dataset.gen;
+  const act = txt ? noticeActs.get(txt) : null;
+  el.onclick = act || null;
+  if (act) el.dataset.act = '1'; else if (el.dataset.act) delete el.dataset.act;
+}
+const idleNotice = () => sticky || genTxt;
+function notice(txt, ms) { clearTimeout(noticeT); noticeT = 0; showNotice(txt); if (ms) noticeT = setTimeout(() => { noticeT = 0; showNotice(idleNotice()); }, ms); }
+function stickyNotice(txt) { sticky = txt; if (!noticeT) showNotice(idleNotice()); }
 function powerUI() {
   const c = ctx || pendCtx, run = !!c && c.state === 'running', cpu = $('#cpu');
   $('#power').setAttribute('aria-pressed', run ? 'true' : 'false');
@@ -349,7 +525,7 @@ function rateText() {
   // Serum tracks run at their own oversampling (Global quality, CPU cap)
   const sx = [...new Set(project.tracks.filter(isSx).map(t => sxOSFor(t, sr)))].sort((a, b) => a - b);
   const capped = project.tracks.some(t => isSx(t) && sxOSFor(t, sr) < Math.min(sxQuality(t), osCap(sr)));
-  if (sx.length) s += ` · Serum ${sx.map(x => kHz(sr * x)).join('/')} kHz${capped ? ' (CPU cap)' : ''}${sxUni < 16 ? ` · unison ≤ ${sxUni} (CPU cap)` : ''}`;
+  if (sx.length) s += ` · Serum ${sx.map(x => kHz(sr * x)).join('/')} kHz${capped ? ' (CPU cap)' : ''}${qrStep ? ` · quality step Q${qrStep} (CPU cap)` : ''}`;
   $('#rate').textContent = s;
 }
 // Option labels: rates other than the device's are resampled by the browser; OS above the 384 kHz cap is reduced
@@ -377,14 +553,14 @@ function statsText() {
   el.classList.toggle('warn', pct > 75);
   if (pct > 75) el.textContent += ' — lower oversampling';
   // safeguard: summed load above 85% for 2 s (all tracks share one audio thread) -> drop oversampling one step
-  if (load > 0.85 && (maxOS() > 1 || uniLever())) { if (!hotT) hotT = now; else if (now - hotT > (load > 1 ? 1000 : 2000)) lowerOS(); }
+  if (load > 0.85 && (maxOS() > 1 || qrLever())) { if (!hotT) hotT = now; else if (now - hotT > (load > 1 ? 1000 : 2000)) lowerOS(); }
   else hotT = 0;
 }
 // highest oversampling in use: the app setting (tracks of the other models) and Serum tracks (their own)
 function plainOS() { return project.tracks.some(t => !isSx(t)) ? osFor(ctx.sampleRate) : 0; }
 function sxMaxOS() { let m = 0; for (const t of project.tracks) if (isSx(t)) m = Math.max(m, sxOSFor(t, ctx.sampleRate)); return m; }
 function maxOS() { return Math.max(plainOS(), sxMaxOS()); }
-const uniLever = () => sxUni > 4 && project.tracks.some(isSx);
+const qrLever = () => qrStep < QR_STEPS && project.tracks.some(isSx);
 // one step down for the group carrying more of the load (the per-node loads the processors report): the app setting
 // for the other models (persisted, as the select shows it), or the Serum tracks' caps (session only): their
 // oversampling first (never above a track's own quality, §11.4 sign-off), at 1× their unison voices; the other group
@@ -394,7 +570,7 @@ function lowerOS() {
   const po = plainOS(), so = sxMaxOS();
   let lp = 0, ls = 0;
   for (const t of project.tracks) { const N = nodes.get(t.id); if (N) { if (isSx(t)) ls += N.load; else lp += N.load; } }
-  const sxFirst = ls >= lp && (so > 1 || uniLever());
+  const sxFirst = ls >= lp && (so > 1 || qrLever());
   if (!sxFirst && po > 1) {
     const v = po / 2;
     settings.os = v; $('#os').value = String(v); persist();
@@ -405,11 +581,11 @@ function lowerOS() {
     for (const t of project.tracks) if (isSx(t)) queuePatch(t);
     rateText();
     notice(`DSP load stayed above 85% — Serum oversampling capped at ${sxCap}× to avoid dropouts`, 9000);
-  } else if (uniLever()) {
-    sxUni /= 2;
+  } else if (qrLever()) { // §14.3: Q1 … Q4 (+ Q5, Q6) after the oversampling cap, one per step, each named in a notice
+    qrStep++;
     for (const t of project.tracks) if (isSx(t)) queuePatch(t);
     rateText();
-    notice(`DSP load stayed above 85% — Serum unison limited to ${sxUni} voices per oscillator to avoid dropouts`, 9000);
+    notice(`DSP load stayed above 85% — Serum quality step Q${qrStep}: ${QR_NOTICE[qrStep]} to avoid dropouts`, 9000);
   }
 }
 
@@ -632,24 +808,23 @@ function replaceSweep(t) { // replace mode: wipe what the playhead passes on arm
 }
 
 /* ------------------------------------------------- live input routing */
-const held = new Map(); // `${src}:${n}` -> [track ids]
-function targets(src) { // src 0 = on-screen/computer keyboard; 1..16 = MIDI channel
-  const sel = project.selTrack;
-  if (!src) return project.tracks.filter(t => t.id === sel || t.arm);
-  const r = project.tracks.filter(t => t.ch === src || (t.ch === 0 && (t.id === sel || t.arm)));
-  return r.length ? r : project.tracks.filter(t => t.id === sel);
-}
+// SPEC-serum2 §12.6: the targets of an input are midi.js's (Phase-1 rule + the MPE zone: a track whose Serum state has
+// MPE on receives every channel of its input); notes of MPE tracks carry their channel ({t: 'on', n, v, ch}).
+const held = new Map(); // `${src}:${n}` -> [[track id, ch]] (ch: midi.js noteCh of the note-on; its note-off carries it)
+function targets(src) { return midiTargets(project.tracks, project.selTrack, src); } // src 0 = on-screen/computer keyboard; 1..16 = MIDI channel
 function noteOn(n, v, src = 0, ts = performance.now()) {
   if (n < 0 || n > 127) return;
   const key = src + ':' + n;
   if (held.has(key)) noteOff(n, src, ts);
   const trs = targets(src);
-  held.set(key, trs.map(t => t.id));
+  const chs = trs.map(t => noteCh(t, src));
+  held.set(key, trs.map((t, i) => [t.id, chs[i]]));
   keyVis(n, true);
-  const send = () => { for (const t of trs) postTo(t, { t: 'on', n, v }); };
+  const send = () => { trs.forEach((t, i) => postTo(t, noteMsg(t, { t: 'on', n, v }, src, chs[i]))); };
   if (!ctx) { powerOn().then(() => { if (held.has(key)) send(); }).catch(() => {}); }
   else { wake(); send(); } // queued while suspended; plays once the context runs
   if (T.rec) for (const t of trs) if (t.arm) recStart(t, key, n, v, ts);
+  for (const t of trs) inputNote(t, 1, n, v, ts, false);
   playingUI(trs);
 }
 // rv: release velocity of a MIDI note-off (0–1; Serum's Release Velocity source), absent for other note-offs
@@ -657,20 +832,49 @@ function noteOff(n, src = 0, ts = performance.now(), rv) {
   const key = src + ':' + n, ids = held.get(key);
   if (!ids) return;
   held.delete(key);
-  for (const id of ids) {
+  for (const [id, ch] of ids) {
     const t = project.tracks.find(x => x.id === id);
     if (!t) continue;
-    postTo(t, rv == null ? { t: 'off', n } : { t: 'off', n, rv });
+    postTo(t, noteMsg(t, rv == null ? { t: 'off', n } : { t: 'off', n, rv }, src, ch));
     recEnd(t, key, ts);
+    inputNote(t, 0, n, 0, ts, false);
   }
   if (![...held.keys()].some(k => k.endsWith(':' + n))) keyVis(n, false);
 }
-function ctl(kind, v, src = 0, ts = performance.now()) {
-  const trs = targets(src);
+function heldNotes(src) { const p = src + ':'; return [...held.keys()].filter(k => k.startsWith(p)).map(k => +k.slice(p.length)); }
+// trs: the tracks (default: the input's targets); midi.js passes the non-MPE targets of an MPE expression
+function ctl(kind, v, src = 0, ts = performance.now(), trs = targets(src)) {
   const m = kind === 'bend' ? { t: 'bend', v } : kind === 'wheel' ? { t: 'wheel', v } : kind === 'sus' ? { t: 'sus', v: !!v } : { t: 'at', v };
   for (const t of trs) postTo(t, m);
   recCC(trs, kind, kind === 'sus' ? (v ? 1 : 0) : v, ts);
   if (kind === 'wheel') wheelToWt(v);
+}
+// Live input of a track, beyond the engine: the panel's input listener (host.onInput — clip recording, key lights; never
+// the panel's own auditions) and the last input note group of a Serum track (render-last, §12.6 / §13.2.5: a group
+// starts at a note-on while no input note of the track is held and ends at its last note-off; ≤ 16 notes
+// {n, vel, on, off} in seconds from the group's first note-on; auditions count)
+const inputSubs = new Map(); // track id → fn(on, n, vel 1–127, t ms)
+const lastIn = new Map();    // track id → { t0, held: Map(n → note | null), notes: [{n, vel, on, off}] }
+const GROUP_MAX = 16;
+// The group follows the physical keys (§12.6): every held key is in `held` (null once the group stores no more notes), so
+// the group ends at the last note-off however many notes it has; at most GROUP_MAX notes are stored
+function inputNote(t, on, n, v, ts, audition) {
+  if (!audition) { const f = inputSubs.get(t.id); if (f) { try { f(on ? 1 : 0, n, on ? Math.max(1, Math.round(v * 127)) : 0, ts); } catch (err) { console.warn(err); } } }
+  if (!isSx(t)) return;
+  let g = lastIn.get(t.id);
+  if (on) {
+    if (!g || g.held.size === 0) { g = { t0: ts, held: new Map(), notes: [] }; lastIn.set(t.id, g); }
+    const old = g.held.get(n);
+    if (old && old.off < 0) old.off = Math.max(old.on, (ts - g.t0) / 1000);
+    if (g.notes.length >= GROUP_MAX) { g.held.set(n, null); return; }
+    const x = { n, vel: v, on: Math.max(0, (ts - g.t0) / 1000), off: -1 };
+    g.notes.push(x); g.held.set(n, x);
+  } else if (g) {
+    if (!g.held.has(n)) return;
+    const x = g.held.get(n);
+    g.held.delete(n);
+    if (x) x.off = Math.max(x.on, (ts - g.t0) / 1000);
+  }
 }
 function panic() {
   for (const t of project.tracks) seqToggle(t, false); // not quiet: the Run button and step lights must show it stopped
@@ -1036,7 +1240,7 @@ function presetUI() {
 // models start as before and a failure there leaves them working. The DSP scripts also run on the main thread for the
 // panel's displays (wk.loadDSP).
 const hostStore = { get: (k, d) => store.get(k, d), set: (k, v) => store.set(k, v) };
-let uiLoad = null, wtLoad = null, wtStoreLoad = null, WT = null;
+let uiLoad = null;
 function uiMods() {
   if (!uiLoad) {
     uiLoad = Promise.all([import('./serum-ui.js?v=' + VERSION), import('./fx-ui.js?v=' + VERSION), import('./wk.js?v=' + VERSION), wtMod()])
@@ -1047,255 +1251,50 @@ function uiMods() {
 }
 // the widget preferences (§9.7: tooltips, double-click, mouse wheel) hold for every panel, the FX tab's rack included
 function kitPrefs(wk) { if (wk && wk.setPrefs) wk.setPrefs({ tooltips: prefs.tooltips, dblClick: prefs.dblClick, wheel: prefs.wheel }); }
-function wtMod() {
-  if (!wtLoad) {
-    wtLoad = import('./wt.js?v=' + VERSION).then(m => { WT = m; return m; });
-    wtLoad.catch(() => { wtLoad = null; });
+
+// Assets in the worklet (SPEC-serum2 §9.5, §11.12): the asset manager of assets.js (owner S1) generalises the Phase-1
+// wavetable manager to samples, multisamples, spectral analyses and impulse responses: each id is built off the main
+// thread and posted once per AudioContext before the patches that need it, reference-counted over every track's
+// patch.needs, freed when unreferenced. Its Phase-1 surface (ensure, entries, list, rows, embed, restore, update …) and
+// the panel hosts host.wt / host.smp are used below. Factory content is generated on demand with a progress notice
+// (lead sign-off on §0.8 item 9).
+const tables = createAssetManager({
+  ctxOf: () => ctx,
+  post: portPoster(nodes),
+  tracks: () => project.tracks,
+  edit: (t, fn, o) => sxEdit(t, fn, o),
+  editFx: (t, fn, o) => fxEdit(t, fn, o),
+  defaultState: () => core.defaultSerum(),
+  refresh: () => sxRefresh(),
+  notify: txt => notice(txt, 5000),
+  progress: genProgress,
+  touch: touchDev,
+  zoneOf: o => zoneOf(o),
+});
+const wtHost = tables.host.wt, smpHost = tables.host.smp;
+const wtMod = () => tables.wtMod();
+// factory generation progress (§9.7): "Generating factory sounds… n %" with a cancel action while it runs
+// in the notice line's idle slot (below timed notices and the sticky audio message, which it never clears); the tap-to-
+// cancel action is attached only while the line shows the progress text (showNotice)
+let genT = 0;
+function genCancel() { smpHost.cancel(); genProgress(null); }
+function genProgress(p) {
+  clearTimeout(genT); genT = 0;
+  if (!p) {
+    if (!genTxt) return;
+    const was = genTxt;
+    genTxt = '';
+    if (!noticeT && $('#notice').textContent === was) showNotice(sticky);
+    return;
   }
-  return wtLoad;
+  const pct = p.total > 0 ? Math.round(100 * p.done / p.total) : 0;
+  genTxt = `${ATEXT.generating} ${pct} %${p.name ? ' (' + p.name + ')' : ''} — tap to cancel`;
+  if (!noticeT && !sticky) showNotice(genTxt);
+  genT = setTimeout(() => genProgress(null), 60000); // a stalled generation does not keep the notice forever
 }
-// user wavetables and noises (IndexedDB; an in-memory store when it is unavailable, e.g. private windows)
-function wtStore() {
-  if (!wtStoreLoad) wtStoreLoad = import('./wtstore.js?v=' + VERSION).then(m => m.openStore().catch(() => m.memoryStore()));
-  return wtStoreLoad;
-}
-const isUserId = id => typeof id === 'string' && /^(user|nzuser):/.test(id);
-const levelBufs = e => [...new Set(e.kind === 'noise' ? e.levels.flatMap(l => (l.R ? [l.L.buffer, l.R.buffer] : [l.L.buffer])) : e.levels.map(l => l.data.buffer))];
-const KEEP_BYTES = 32 * 1048576; // unreferenced tables kept posted in the worklet (at most this much, at most 10 s)
-
-// Wavetables in the worklet (§7.5, §11.8): each id is posted once per AudioContext (entries built off the main
-// thread in wtwork.js when module workers work, else here), re-posted after edits ({t:'wtf'} per frame or a whole
-// entry), and freed ({t:'wtdel'}) after 10 s without any track needing it — at once, oldest first, while the tables
-// nobody needs hold more than KEEP_BYTES (a 256-frame table is 9 MB: browsing the menus must not pile them up).
-const tables = {
-  ctx: null, sent: new Set(), pend: new Map(), unref: new Map(), needs: new Map(), user: new Map(), rows: [], gcT: 0,
-  bytes: new Map(), worker: null, wbad: false, wq: new Map(), wn: 0, saveT: new Map(),
-  node(tr, fallback) { // a port of the current context to post through
-    const N = (tr && nodes.get(tr.id)) || null;
-    if (N) return N.node;
-    if (fallback) return fallback;
-    for (const x of nodes.values()) return x.node;
-    return null;
-  },
-  ensure(tr, needs, node) {
-    if (tr) this.needs.set(tr.id, needs);
-    if (!ctx) return;
-    if (this.ctx !== ctx) { this.ctx = ctx; this.sent.clear(); this.pend.clear(); this.unref.clear(); this.bytes.clear(); }
-    for (const id of needs) {
-      if (this.sent.has(id) || this.pend.has(id)) continue;
-      this.pend.set(id, this.push(id, tr, node));
-    }
-    this.gcSoon();
-  },
-  push(id, tr, node) { // build and post the whole entry to the current context
-    const c = ctx;
-    return this.entry(id).then(e => {
-      if (this.pend.get(id)) this.pend.delete(id);
-      if (!e || !ctx || c !== ctx || this.ctx !== ctx) return;
-      const port = this.node(tr, node);
-      if (!port) return;
-      const bufs = levelBufs(e);
-      this.bytes.set(id, bufs.reduce((a, b) => a + b.byteLength, 0)); // (transferred: counted before posting)
-      port.port.postMessage(Object.assign({ t: 'wt' }, e), bufs);
-      this.sent.add(id);
-      this.trim(id);
-    }, err => { this.pend.delete(id); console.warn('wavetable ' + id + ' could not be built', err); });
-  },
-  async entry(id) {
-    if (!isUserId(id)) return this.build({ id });
-    const src = await this.source(id);
-    if (!src) return null;
-    return src.frames ? this.build({ id, table: { frames: src.frames, morph: src.morph | 0 } }) : this.build({ id, rec: src });
-  },
-  entries(ids) { return Promise.all(ids.map(id => this.entry(id).catch(() => null))).then(l => l.filter(Boolean)); },
-  build(req) {
-    if (!this.wbad && typeof Worker === 'function') {
-      try {
-        if (!this.worker) {
-          const w = new Worker('wtwork.js?v=' + VERSION, { type: 'module' });
-          w.onmessage = e => { const d = e.data, q = this.wq.get(d.q); if (!q) return; this.wq.delete(d.q); if (d.err) q.rej(new Error(d.err)); else q.res(d.entry); };
-          w.onerror = e => { if (e && e.preventDefault) e.preventDefault(); this.workerFail(); };
-          this.worker = w;
-        }
-        return new Promise((res, rej) => { const q = ++this.wn; this.wq.set(q, { res, rej, req }); this.worker.postMessage(Object.assign({ q }, req)); });
-      } catch (err) { this.workerFail(); }
-    }
-    return this.buildHere(req);
-  },
-  workerFail() { // no module workers (or the script failed): build on the main thread from now on
-    this.wbad = true;
-    if (this.worker) { try { this.worker.terminate(); } catch { /* gone */ } }
-    this.worker = null;
-    for (const q of this.wq.values()) this.buildHere(q.req).then(q.res, q.rej);
-    this.wq.clear();
-  },
-  async buildHere({ id, table, rec }) {
-    const W = await wtMod();
-    if (table) return W.makeEntry(id, table);
-    if (rec) return W.noiseEntry(Object.assign({}, rec, { id }));
-    if (id.startsWith('noise:')) return W.makeNoise(id);
-    const t = W.factoryTable(id);
-    return t ? W.makeEntry(id, t) : null;
-  },
-  async source(id) { // user table (Table) or user noise (record), cached
-    if (this.user.has(id)) return this.user.get(id);
-    const x = await (await wtStore()).get(id);
-    if (x) this.user.set(id, x);
-    return x;
-  },
-  gcSoon() { if (!this.gcT) this.gcT = setTimeout(() => { this.gcT = 0; this.gc(); }, 2500); },
-  drop(trackId) { if (this.needs.delete(trackId)) this.gcSoon(); }, // a track left Serum or was deleted
-  used() {
-    const used = new Set();
-    for (const t of project.tracks) if (isSx(t)) for (const id of this.needs.get(t.id) || []) used.add(id);
-    return used;
-  },
-  free(id) {
-    const port = this.node(null);
-    if (port) port.port.postMessage({ t: 'wtdel', id });
-    this.sent.delete(id); this.unref.delete(id); this.bytes.delete(id);
-  },
-  gc() {
-    if (!ctx || this.ctx !== ctx) return;
-    const used = this.used(), now = performance.now();
-    let wait = false;
-    for (const id of [...this.sent]) {
-      if (used.has(id)) { this.unref.delete(id); continue; }
-      const t0 = this.unref.get(id);
-      if (t0 == null) { this.unref.set(id, now); wait = true; } else if (now - t0 >= 10000) this.free(id);
-      else wait = true;
-    }
-    if (wait) this.gcSoon();
-  },
-  trim(keep) { // over the budget: free the tables unreferenced longest (posting order breaks ties); keep = just posted
-    if (!ctx || this.ctx !== ctx) return;
-    const used = this.used(), idle = [], now = performance.now();
-    let tot = 0;
-    for (const id of this.sent) if (!used.has(id) && id !== keep) { idle.push(id); tot += this.bytes.get(id) || 0; }
-    if (tot <= KEEP_BYTES) return;
-    const since = id => { const t = this.unref.get(id); return t == null ? now : t; };
-    idle.sort((a, b) => since(a) - since(b));
-    for (const id of idle) {
-      if (tot <= KEEP_BYTES) break;
-      tot -= this.bytes.get(id) || 0;
-      this.free(id);
-    }
-  },
-  // live edits from the WT editor: the changed frames ({t:'wtf'}), else the whole table; stored after 0.5 s of quiet
-  update(id, table, o) {
-    this.user.set(id, table);
-    clearTimeout(this.saveT.get(id));
-    this.saveT.set(id, setTimeout(() => { this.saveT.delete(id); wtStore().then(st => st.put(table, { id, name: table.name })).then(() => this.list(), err => console.warn('wavetable not stored', err)); }, 500));
-    if (!ctx || this.ctx !== ctx) return;
-    const frames = o && Array.isArray(o.frames) ? o.frames : null, R = table.frames.length;
-    if (frames && frames.length && this.sent.has(id) && !this.pend.has(id) && WT && !(table.morph >= 2 && R > 1 && R < 256)) {
-      const port = this.node(null);
-      if (!port) return;
-      for (const f of frames) {
-        if (!(f >= 0 && f < R)) continue;
-        const levels = WT.buildMipFrame(table.frames[f]);
-        port.port.postMessage({ t: 'wtf', id, frame: f, levels }, levels.map(l => l.data.buffer));
-      }
-    } else if (this.sent.has(id) || this.pend.has(id) || [...this.needs.values()].some(n => n.includes(id))) {
-      const prev = this.pend.get(id) || Promise.resolve();
-      this.pend.set(id, prev.then(() => this.push(id, null, null))); // in order after a build already under way
-    }
-  },
-  async list() { // user rows for the menus
-    try { this.rows = await (await wtStore()).list(); } catch (err) { this.rows = []; }
-    sxRefresh();
-    return this.rows;
-  },
-  // project / preset files (§7.10): { id: encodeEmbedded(record) } for the user tables they reference
-  async embed(ids) {
-    const W = await wtMod(), out = {};
-    for (const id of ids) {
-      const x = await this.source(id).catch(() => null);
-      if (!x) continue;
-      let rec = x;
-      if (x.frames) { // Table → record (Float32 frames, little-endian like wtstore)
-        const data = new Float32Array(x.frames.length * W.FRAME);
-        x.frames.forEach((f, i) => data.set(f.subarray ? f.subarray(0, W.FRAME) : f, i * W.FRAME));
-        rec = { id, kind: 'wt', name: x.name || 'Wavetable', frames: x.frames.length, morph: x.morph | 0, data: data.buffer };
-      }
-      out[id] = W.encodeEmbedded(Object.assign({}, rec, { id }));
-    }
-    return out;
-  },
-  async restore(wts) {
-    if (!wts || typeof wts !== 'object') return;
-    const W = await wtMod(), st = await wtStore();
-    for (const id of Object.keys(wts)) {
-      if (!/^(user|nzuser):[\w.-]{1,80}$/.test(id) || !wts[id] || typeof wts[id] !== 'object') continue;
-      try {
-        if (await st.get(id)) continue; // already here (an identical id)
-        const rec = W.decodeEmbedded(wts[id]);
-        await st.put(Object.assign(rec, { id }), { id, name: typeof rec.name === 'string' ? rec.name : undefined });
-      } catch (err) { console.warn('embedded wavetable ' + id + ' skipped', err); }
-    }
-    await this.list();
-  },
-};
-function userIdsOf(s) { return [s.osc[0].wt, s.osc[1].wt, s.noise.src].filter(isUserId); }
-
-// host.wt of the Serum panel and its WT editor (§8.8)
-const wtHost = {
-  list: () => (WT ? WT.FACTORY_TABLES.map(t => ({ id: t.id, name: t.name, cat: t.cat, user: false })) : [])
-    .concat(tables.rows.filter(r => r.kind === 'wt').map(r => ({ id: r.id, name: r.name, cat: 'User', user: true }))),
-  get: id => { // factory / user tables (Table); user noises: the stored record (L, R, rate, loop: the panel's overview)
-    if (!isUserId(id)) return wtMod().then(W => W.factoryTable(id));
-    const noise = /^nzuser:/.test(id);
-    return tables.source(id).then(x => (x && (noise ? x.L : x.frames) ? x : null));
-  },
-  saveNew: async (table, name) => {
-    const st = await wtStore(), nm = String(name || table.name || 'Wavetable').slice(0, 64);
-    const t = Object.assign({}, table, { name: nm, factory: 0 });
-    const id = await st.put(t, { name: nm });
-    t.id = id; tables.user.set(id, t);
-    if (ctx) tables.ensure(null, [id]);
-    tables.list();
-    return id;
-  },
-  update: (id, table, o) => tables.update(id, table, o),
-  rename: async (id, name) => {
-    const st = await wtStore(), nm = String(name || '').slice(0, 64);
-    await st.rename(id, nm);
-    const x = tables.user.get(id);
-    if (x) tables.user.set(id, Object.assign({}, x, { name: nm }));
-    await tables.list();
-  },
-  noises: () => (WT ? WT.NOISES.map(n => ({ id: n.id, name: n.name, cat: n.cat, user: false, oneshot: n.oneshot })) : [])
-    .concat(tables.rows.filter(r => r.kind === 'noise').map(r => ({ id: r.id, name: r.name, cat: 'User', user: true, oneshot: r.oneshot ? 1 : 0 }))),
-  saveNoise: async (entry, name) => {
-    const st = await wtStore(), nm = String(name || entry.name || 'Noise').slice(0, 64);
-    const id = await st.put(entry, { name: nm });
-    tables.user.delete(id);
-    if (ctx) tables.ensure(null, [id]);
-    tables.list();
-    return id;
-  },
-  // the tracks of this project whose Serum state uses a user table / noise (the panel names them before a delete)
-  users: id => project.tracks.filter(t => isSx(t) && t.vals && t.vals.s && userIdsOf(t.vals.s).includes(id)).map(t => t.name),
-  // deletes a user table / noise from this browser's store; every sound of the project that used it switches to the
-  // default source (a missing table would play silence), and the worklet copy goes once no track needs it
-  del: async id => {
-    if (!isUserId(id)) return false;
-    clearTimeout(tables.saveT.get(id)); tables.saveT.delete(id); // a pending editor save must not bring it back
-    await (await wtStore()).del(id);
-    tables.user.delete(id);
-    const d = core.defaultSerum();
-    for (const t of project.tracks) {
-      if (!isSx(t) || !t.vals || !t.vals.s || !userIdsOf(t.vals.s).includes(id)) continue;
-      sxEdit(t, s => {
-        for (let k = 0; k < 2; k++) if (s.osc[k].wt === id) s.osc[k].wt = d.osc[k].wt;
-        if (s.noise.src === id) { s.noise.src = d.noise.src; s.noise.oneshot = d.noise.oneshot; }
-      }, { label: 'Delete wavetable' });
-    }
-    tables.gcSoon();
-    await tables.list();
-    return true;
-  },
-};
+// the user assets (wavetables, noises; samples, multisamples, IRs) a track references (project / preset files, §9.8)
+const userTables = s => (s ? userIdsOf(s) : []);
+const userSmps = (s, fx) => userAssetIds(s || null, fx || null);
 
 // snapshot / FX meter subscriptions (smon, §11.6): the Serum panel while the Instrument tab shows it, the FX tab
 const monitors = {
@@ -1315,10 +1314,29 @@ const monitors = {
     }
   },
   deliver(id, d) {
-    if (sxPanel.ui && sxPanel.trackId === id) sxPanel.ui.setSnapshot(d);
-    if (fxTab.trackId === id) fxTab.gr = d.gr || null;
+    if (sxPanel.ui && sxPanel.trackId === id) { sxPanel.ui.setSnapshot(d); zoneWarm(id, d.s); }
+    if (fxTab.trackId === id) { fxTab.gr = d.gr || null; fxTab.ftap = d.ftap || null; }
   },
 };
+// "Switch to Single Sample" (host.smp.saveFrom → zoneOf): the zone sample the panel's recent voice plays, from the
+// snapshot's zone index and the multisample's record (read once per multisample, cached)
+const msRecs = new Map();
+function zoneWarm(id, sn) {
+  const t = project.tracks.find(x => x.id === id);
+  if (!sn || !sn.zone || !isSx(t)) return;
+  for (let o = 0; o < 3; o++) {
+    const O = t.vals.s.osc[o], m = O && O.type === 'multi' ? O.multi : '';
+    if (!m || sn.zone[o] < 0 || msRecs.has(m)) continue;
+    msRecs.set(m, null);
+    Promise.resolve(smpHost.record(m)).then(r => msRecs.set(m, r || null), () => msRecs.delete(m));
+  }
+}
+function zoneOf(o) {
+  const t = project.tracks.find(x => x.id === sxPanel.trackId), sn = sxPanel.ui && sxPanel.ui.snap;
+  if (!isSx(t) || !sn || !sn.zone || !(o >= 0 && o < 3)) return null;
+  const O = t.vals.s.osc[o], r = O && O.multi ? msRecs.get(O.multi) : null, z = sn.zone[o];
+  return r && Array.isArray(r.zones) && z >= 0 && z < r.zones.length && r.zones[z] ? r.zones[z].smp || null : null;
+}
 
 // FX rack edits (any track, either view): the host compiles and sends unless the edit is UI-only; seed = the edit
 // loaded a chain / module preset (§4.2). Not in the undo history (knob-tweak policy, §11.8).
@@ -1347,23 +1365,31 @@ function sxRefresh() { // repaint the mounted panel and rack (outside edits: MID
   if (sxRefT) return;
   sxRefT = requestAnimationFrame(() => { sxRefT = 0; if (sxPanel.ui) sxPanel.ui.refresh(); if (fxTab.ui) fxTab.ui.refresh(); });
 }
+// app preferences changed (the panel stores them): every Serum track is recompiled — the MPE preferences, smoothing
+// and Ultra reach compileSerum (§12.6, §13.10) — and the rack preferences (smoothing, silence tails) reach every track
 function prefsChanged() {
   const old = prefs;
   prefs = readPrefs();
-  if (old.smooth !== prefs.smooth || old.silenceTails !== prefs.silenceTails) queueAll();
+  const all = old.smooth !== prefs.smooth || old.silenceTails !== prefs.silenceTails;
+  for (const t of project.tracks) if (all || isSx(t)) queuePatch(t);
   if (uiLoad) uiLoad.then(M => kitPrefs(M.wk), () => {});
 }
-// the latest LFO phases of a track's rack → fx.phase (saved with presets and projects; no re-seed, §11.8)
-function setPhases(t, v) {
-  const ph = fxOf(t).phase;
-  for (let k = 0; k < 4; k++) { const x = v ? +v[k] : NaN; if (Number.isFinite(x)) ph[k] = x - Math.floor(x); }
-}
+// the latest LFO phases of a track's rack (FXRack.phases(): fxLayout order, NaN = no LFO) → the FX state (v2 inst.ph by
+// instance, v1 fx.phase; fx-core storePhases): saved with presets and projects, no re-seed (§8.1, §11.8)
+function setPhases(t, v) { if (v) core.storePhases(fxOf(t), v); }
 const MODFX = ['fx.hyper.on', 'fx.flg.on', 'fx.phs.on', 'fx.cho.on'];
+const PH_TYPES = new Set(['hyper', 'flg', 'phs', 'cho', 'bode']);
+function hasLfoFx(fx) { // a rack whose phases are worth reading back (an enabled module with an LFO)
+  if (!isV2Fx(fx)) return MODFX.some(id => fx.p[id] >= 0.5);
+  return core.fxLayout(fx).inst.length > 0 && fx.racks.some(r => r && Array.isArray(r.mods) && r.mods.some(function on(I) {
+    return !!I && ((PH_TYPES.has(I.type) && !!I.p && I.p.on >= 0.5) || (Array.isArray(I.br) && I.br.some(b => Array.isArray(b) && b.some(on))));
+  }));
+}
 function syncPhases() {
   const jobs = [];
   for (const t of project.tracks) {
     const N = nodes.get(t.id), fx = fxOf(t);
-    if (!N || !MODFX.some(id => fx.p[id] >= 0.5)) continue;
+    if (!N || !hasLfoFx(fx)) continue;
     if (monitors.on.get(t.id) && N.fxph) { setPhases(t, N.fxph); continue; }
     jobs.push(new Promise(res => {
       const tm = setTimeout(res, 300);
@@ -1373,23 +1399,44 @@ function syncPhases() {
   }
   return Promise.all(jobs);
 }
-// the Save download: the project plus the user wavetables its Serum tracks reference (§7.10)
+// the Save download: the project plus the user wavetables and user samples / multisamples / IRs its tracks reference
+// (§7.10, SPEC-serum2 §9.8: Convolve IRs of any track; never in the autosave)
 async function projectFile() {
   await syncPhases();
-  const ids = new Set();
-  for (const t of project.tracks) if (isSx(t) && t.vals.s) for (const id of userIdsOf(t.vals.s)) ids.add(id);
+  const ids = new Set(), sm = new Set();
+  for (const t of project.tracks) {
+    const s = isSx(t) && t.vals.s ? t.vals.s : null;
+    for (const id of userTables(s)) ids.add(id);
+    for (const id of userSmps(s, fxOf(t))) sm.add(id);
+  }
   const o = JSON.parse(S.serialize(project));
   if (ids.size) o.wts = await tables.embed([...ids]);
+  if (sm.size) o.smps = await tables.embedSmps([...sm]);
   persist();
   return JSON.stringify(o);
 }
+// embedded assets of a project / preset / pack file go into the stores (identical ids skipped), never into the state
+async function restoreEmbedded(o) {
+  if (!o || typeof o !== 'object') return;
+  if (o.wts) { await tables.restore(o.wts); delete o.wts; }
+  if (o.smps) { await tables.restoreSmps(o.smps); delete o.smps; }
+}
 
-/* Serum presets (§9.10, §11.8): factory (serum-core) + user presets in localStorage synth.user.serum */
+/* Serum presets (§9.10, §11.8; SPEC-serum2 §13.11): factory (serum-core FACTORY_PRESETS v2: the new presets, then the
+   migrated Phase-1 ones) + user presets (synth.user.serum in the app store; ratings / tags / comments in the preset's
+   `meta`). Files: one preset ({type: 'synth.serum.preset', …, wts, smps}) or a pack ({type: 'synth.serum.pack', v: 1,
+   name, presets, wts, smps}, also as pack.json inside a ZIP, §9.8); user assets are always embedded (deviation 14). */
 const SXM = MODELS.find(m => m.id === 'serum');
 const sxUser = () => { const l = store.get('synth.user.serum', []); return Array.isArray(l) ? l.filter(p => p && typeof p.name === 'string' && p.v && p.v.s) : []; };
 const sxKeys = new Map(); // track id → key of the preset it was loaded from
 function sxPresetList() {
-  const row = (p, user) => ({ key: (user ? 'u:' : 'f:') + p.name, name: p.name, cat: p.cat || (user ? 'User' : ''), author: (p.v.s && p.v.s.author) || '', user });
+  const row = (p, user) => {
+    const s = p.v.s || {}, m = p.meta && typeof p.meta === 'object' ? p.meta : {};
+    const r = { key: (user ? 'u:' : 'f:') + p.name, name: p.name, cat: p.cat || (user ? 'User' : ''), author: s.author || '', user };
+    if (Array.isArray(s.tags)) r.tags = s.tags.slice();
+    if (user) { if (m.stars !== undefined) r.stars = m.stars; if (Array.isArray(m.tags)) r.tags = m.tags.slice(); if (typeof m.comments === 'string') r.comments = m.comments; }
+    return r;
+  };
   return SXM.presets.map(p => row(p, false)).concat(sxUser().map(p => row(p, true)));
 }
 function sxPreset(key) {
@@ -1404,13 +1451,15 @@ function sxCurrent(t) {
   if (!t.preset) return null;
   return sxPreset('u:' + t.preset) ? 'u:' + t.preset : sxPreset('f:' + t.preset) ? 'f:' + t.preset : null;
 }
-// applyPreset / applyPresetFx build new states (never Object.assign of preset objects: factory presets are frozen)
+// applyPreset / applyPresetFx build new states (never Object.assign of preset objects: factory presets are frozen). FX: the
+// v2 rule (a v1 preset rack migrates with the new Serum state as refs; locked racks kept, the incoming Serum state's rows
+// follow renamed instances, locked parameters keep their values, §11.2)
 function sxLoad(t, key) {
   const p = sxPreset(key);
   if (!p || !isSx(t)) return false;
-  const s = core.applyPreset(t.vals.s, p);
-  const locked = s.locks.p.filter(id => core.DEST_INDEX[id] >= core.NS);
-  t.fx = core.applyPresetFx(fxOf(t), p.fx, locked);
+  const s = core.applyPreset(t.vals.s, p, { midiFromPreset: prefs.midiFromPreset });
+  const cur = fxOf(t), pfx = p.fx && typeof p.fx === 'object' ? p.fx : null;
+  t.fx = core.applyPresetFx(cur, pfx || core.defaultFx2(), s);
   t.vals.s = s;
   t.preset = p.name; sxKeys.set(t.id, key); sxDirty.delete(t.id);
   seedPend.add(t.id);
@@ -1419,15 +1468,17 @@ function sxLoad(t, key) {
   if (ctx) rateText();
   return true;
 }
+function sxSaveUser(up) { store.set('synth.user.serum', up); }
 function sxSave(t, name, cat) {
   name = String(name || '').trim().slice(0, 64);
   if (!name || !isSx(t)) return null;
   const N = nodes.get(t.id);
   if (N && N.fxph) setPhases(t, N.fxph); // the rack's current LFO phases (phase memory)
-  const entry = { name, cat: String(cat || 'User').trim().slice(0, 32) || 'User', v: { s: clone(t.vals.s) }, fx: clone(fxOf(t)) };
   const up = sxUser(), i = up.findIndex(p => p.name === name);
+  const entry = { name, cat: String(cat || 'User').trim().slice(0, 32) || 'User', v: { s: clone(t.vals.s) }, fx: clone(fxOf(t)) };
+  if (i >= 0 && up[i].meta) entry.meta = up[i].meta; // overwriting keeps its rating / tags / comments
   if (i >= 0) up[i] = entry; else up.push(entry);
-  store.set('synth.user.serum', up);
+  sxSaveUser(up);
   t.preset = name; sxKeys.set(t.id, 'u:' + name); sxDirty.delete(t.id);
   renderHeads(); persist();
   if (N && !monitors.on.get(t.id)) { // monitoring off: ask the rack for its phases and complete the stored preset
@@ -1435,37 +1486,87 @@ function sxSave(t, name, cat) {
       if (!v) return;
       setPhases(t, v);
       const l = sxUser(), e = l.find(p => p.name === name);
-      if (e && e.fx) { e.fx.phase = fxOf(t).phase.slice(); store.set('synth.user.serum', l); }
+      if (e) { e.fx = clone(fxOf(t)); sxSaveUser(l); }
       persist();
     });
     N.node.port.postMessage({ t: 'fxph' });
   }
   return 'u:' + name;
 }
+// user presets: rename / move / ratings (the browser's menu, §13.11)
+function sxUserEdit(key, fn) {
+  const up = sxUser(), e = up.find(p => 'u:' + p.name === key);
+  if (!e) return null;
+  const r = fn(e, up);
+  sxSaveUser(up);
+  return r;
+}
+function sxRename(key, name) {
+  name = String(name || '').trim().slice(0, 64);
+  if (!name || sxPreset('u:' + name)) return null;
+  const k = sxUserEdit(key, e => { e.name = name; return 'u:' + name; });
+  if (!k) return null;
+  for (const [tid, x] of sxKeys) if (x === key) { sxKeys.set(tid, k); const t = project.tracks.find(y => y.id === tid); if (t) t.preset = name; }
+  renderHeads(); persist();
+  return k;
+}
+// the embedded assets of a set of presets (user tables and samples their states and racks reference)
+async function presetAssets(list) {
+  const ids = new Set(), sm = new Set();
+  for (const p of list) {
+    const s = core.normalizeSerum(clone(p.v.s));
+    for (const id of userTables(s)) ids.add(id);
+    for (const id of userSmps(s, p.fx || null)) sm.add(id);
+  }
+  const o = {};
+  if (ids.size) o.wts = await tables.embed([...ids]);
+  if (sm.size) o.smps = await tables.embedSmps([...sm]);
+  return o;
+}
 async function sxExport(key) {
   const p = sxPreset(key);
   if (!p) return;
-  const o = Object.assign({ type: 'synth.serum.preset' }, clone(p)), ids = userIdsOf(core.normalizeSerum(p.v.s));
-  if (ids.length) o.wts = await tables.embed(ids);
+  const o = Object.assign({ type: 'synth.serum.preset' }, clone(p), await presetAssets([p]));
   download(new Blob([JSON.stringify(o)], { type: 'application/json' }), slug(p.name) + '.serum.json');
 }
+async function sxExportPack(keys) {
+  const list = (Array.isArray(keys) ? keys : []).map(sxPreset).filter(Boolean);
+  if (!list.length) return;
+  const name = list.length === 1 ? list[0].name : 'Preset Pack';
+  const o = Object.assign({ type: 'synth.serum.pack', v: 1, name, presets: list.map(clone) }, await presetAssets(list));
+  download(new Blob([JSON.stringify(o)], { type: 'application/json' }), slug(name) + '.serum-pack.json');
+}
+// a preset / pack file (JSON, or a ZIP holding pack.json) → its object
+async function presetFileObject(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (bytes[0] === 0x50 && bytes[1] === 0x4b) { // PK: a ZIP
+    const { smp } = await tables.smpMods();
+    const inflate = typeof DecompressionStream === 'function' ? async b => new Uint8Array(await new Response(new Blob([b]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer()) : null;
+    const e = smp.zipEntries(bytes, inflate).find(x => /(^|\/)pack\.json$/i.test(x.name));
+    if (!e) throw new Error('no pack.json in that ZIP');
+    return JSON.parse(new TextDecoder().decode(await e.data()));
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
 async function sxImport(file) {
-  const o = JSON.parse(await file.text());
+  const o = await presetFileObject(file);
   const list = Array.isArray(o) ? o : o && Array.isArray(o.presets) ? o.presets : [o];
   const up = sxUser();
   let key = null;
   for (const p of list) {
     if (!p || typeof p !== 'object' || !p.v || !p.v.s) continue;
-    if (p.wts) await tables.restore(p.wts);
+    await restoreEmbedded(p);
     const base = String(p.name || 'Imported').trim().slice(0, 64) || 'Imported';
     let name = base, k = 2;
     while (up.some(x => x.name === name)) name = base.slice(0, 58) + ' ' + k++;
-    up.push({ name, cat: String(p.cat || 'User').slice(0, 32), v: { s: core.normalizeSerum(p.v.s) }, fx: core.normalizeFx(p.fx || core.defaultFx()) });
+    const s = core.normalizeSerum(p.v.s), e = { name, cat: String(p.cat || 'User').slice(0, 32), v: { s }, fx: core.normalizeFx(p.fx || core.defaultFx2(), s) };
+    if (p.meta && typeof p.meta === 'object') e.meta = clone(p.meta);
+    up.push(e);
     key = 'u:' + name;
   }
-  if (o && o.wts && !Array.isArray(o)) await tables.restore(o.wts);
+  if (o && !Array.isArray(o)) await restoreEmbedded(o);
   if (!key) return null;
-  store.set('synth.user.serum', up);
+  sxSaveUser(up);
   return key;
 }
 // MIDI program change n → the n-th entry of the browser's current filtered, sorted list (§9.10, §11.8)
@@ -1484,104 +1585,283 @@ function programChange(trs, n) {
   }, () => {});
 }
 
-/* MIDI Learn (§11.8): the next controller 0–119 is stored in s.midi; learned controllers write their destinations */
-// A pending learn ends with the next controller, or is cancelled: Esc, a timeout (15 s, 30 s while MIDI still needs
-// enabling), another learn, or the panel going away (track change, model change, another project)
-let learn = null; // { id: track id, dest, res, t: timeout }
-function midiLearn(id, dest) {
-  cancelLearn(false);
-  if (!midiInit) notice('MIDI Learn: enable MIDI (the MIDI button by the keyboard), then move a controller — Esc cancels', 6000);
-  else notice('MIDI Learn: move a controller — Esc cancels', 6000);
-  return new Promise(res => { learn = { id, dest, res, t: setTimeout(() => cancelLearn(true), midiInit ? 15000 : 30000) }; });
-}
-function cancelLearn(say) {
-  const L = learn;
-  if (!L) return false;
-  learn = null; clearTimeout(L.t);
-  L.res(null);
-  if (say) notice('MIDI Learn cancelled', 3000);
-  return true;
-}
-function learnCC(cc) {
-  const L = learn;
-  learn = null; clearTimeout(L.t);
-  const t = project.tracks.find(x => x.id === L.id);
-  if (t && isSx(t)) {
-    const m = t.vals.s.midi;
-    for (const k of Object.keys(m)) if (m[k] === L.dest) delete m[k];
-    m[String(cc)] = L.dest;
-    sxDirty.add(t.id); persist();
-  }
-  L.res(t ? cc : null);
-}
-function midiForget(t, dest) {
-  if (!isSx(t)) return;
-  const m = t.vals.s.midi;
-  for (const k of Object.keys(m)) if (m[k] === dest) delete m[k];
-  sxDirty.add(t.id); persist(); sxRefresh();
-}
-function midiMapCC(trs, cc, v) {
-  for (const t of trs) {
-    if (!isSx(t)) continue;
-    const s = t.vals.s, dest = s.midi && s.midi[String(cc)];
-    if (!dest) continue;
-    const n = core.midiValue(dest, v), mac = /^macro([1-4])$/.exec(dest);
-    if (mac) s.macros[+mac[1] - 1].v = n;
-    else if (core.DEST_INDEX[dest] >= core.NS && dest !== 'g.master' && dest !== 'g.bypass') fxOf(t).p[dest] = n;
-    else s.p[dest] = n;
-    sxDirty.add(t.id);
-    queuePatch(t); persist(); sxRefresh();
-  }
-}
+/* MIDI (SPEC-serum2 §12.6, B19): Web MIDI input, MPE zone routing and MIDI Learn live in midi.js (role I2); main.js is
+   its host and keeps the live input routing shared with the on-screen and computer keyboards (held notes, recording,
+   power, the wheels). Learned controllers write their destinations (FX destinations through fxSet); MIDI Learn stores the
+   next controller 0–119 in s.midi. */
+const midi = createMidi({
+  targets: src => targets(src),
+  noteOn: (n, v, src, ts) => noteOn(n, v, src, ts),
+  noteOff: (n, src, ts, rv) => noteOff(n, src, ts, rv),
+  ctl: (kind, v, src, ts, trs) => ctl(kind, v, src, ts, trs || targets(src)),
+  post: (t, m) => postTo(t, m),
+  heldNotes: src => heldNotes(src),
+  programChange: (trs, n) => programChange(trs, n),
+  modUI: v => { if (setModUI) setModUI(v, false); },
+  bendUI: v => { if (setBendUI) setBendUI(v, false); },
+  track: id => project.tracks.find(x => x.id === id),
+  isSx: t => isSx(t),
+  fxSet: (t, id, n) => fxSet(t, id, n),
+  changed: (t, patch, refresh) => { sxDirty.add(t.id); if (patch) queuePatch(t); persist(); if (refresh) sxRefresh(); },
+  notice: (txt, ms) => notice(txt, ms),
+  button: () => $('#midi'),
+});
+const midiLearn = (id, dest) => midi.learn(id, dest);
+const cancelLearn = say => midi.cancelLearn(say);
+const midiForget = (t, dest) => midi.forget(t, dest);
 // preference "Mod wheel → WT Pos": while a WT editor is open the wheel scrubs its oscillator's WT POS (§9.9)
 let wtEdit = null; // { id: track id, osc } of the open WT editor
 function wheelToWt(v) {
   if (!prefs.wheelWt || !wtEdit) return;
   const t = project.tracks.find(x => x.id === wtEdit.id);
   if (!t || !isSx(t)) return;
-  t.vals.s.p[(wtEdit.osc ? 'b' : 'a') + '.wt'] = clamp(+v || 0, 0, 1);
+  t.vals.s.p[['a', 'b', 'c'][wtEdit.osc] + '.wt'] = clamp(+v || 0, 0, 1);
   sxDirty.add(t.id);
   queuePatch(t); persist(); sxRefresh();
 }
 
-// Resample to OSC A / B / A+B (§9.8): note 60, velocity 127, one bar at the song tempo through the patch and its FX
-// rack, offline at 44.1 kHz; the release tail ends once the output stays below −90 dBFS for 50 ms (at most 2 s)
+/* ------------------------------------------------ offline renders (bounce, resample, render-last; §9.6) */
+// One OfflineAudioContext at rate sr with the §0.3 scripts and one engine node per item {tr, patch, os, song,
+// transport, seq?, gain?, pan?}: the assets every patch needs are built for sr (IRs at that rate, factory content
+// generated or awaited) and given to the first node (wavetables as `wts`, §9 entries as `smps`); every node carries its
+// track id, so MIDI OUT between the rendered tracks works as live (§7.9). at = {s, fx} for patches of states that are
+// not the project's tracks (render-last of a preset, …).
+async function renderOffline(sr, frames, items, at) {
+  if (!window.OfflineAudioContext) throw new Error('offline rendering is not available in this browser');
+  const oc = new OfflineAudioContext({ numberOfChannels: 2, length: Math.max(128, Math.ceil(frames)), sampleRate: sr });
+  await addModules(oc);
+  const ids = new Set();
+  for (const x of items) for (const id of x.patch.needs || []) ids.add(id);
+  const ents = ids.size ? await tables.entries([...ids], sr, at) : [];
+  const wts = ents.filter(e => idKind(e.id) === 'wt'), smps = ents.filter(e => idKind(e.id) !== 'wt');
+  const bus = oc.createGain(); bus.connect(oc.destination);
+  items.forEach((x, n) => {
+    const node = new AudioWorkletNode(oc, 'synth-engine', {
+      numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
+      processorOptions: { os: x.os, hostOS: x.hostOS || x.os, offline: true, patch: x.patch, wts: n === 0 && wts.length ? wts : null,
+        smps: n === 0 && smps.length ? smps : null, song: x.song, transport: x.transport, seq: x.seq || null, trackId: x.tr ? x.tr.id : '' },
+    });
+    const g = oc.createGain(), pn = oc.createStereoPanner();
+    g.gain.value = x.gain === undefined ? 1 : x.gain; pn.pan.value = x.pan || 0;
+    node.connect(g); g.connect(pn); pn.connect(bus);
+  });
+  return oc.startRendering();
+}
+// the frame after which the output stays below thr for hold frames (searched from `from`), else the end
+function tailEnd(chs, from, thr, hold, max) {
+  const L = chs[0], R = chs[1], end = Math.min(L.length, max);
+  let q = 0;
+  for (let i = Math.max(0, from); i < end; i++) {
+    if (Math.abs(L[i]) < thr && Math.abs(R[i]) < thr) { if (++q >= hold) return i + 1; } else q = 0;
+  }
+  return end;
+}
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const noteName = n => NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1); // the app's naming: C4 = MIDI 60
+
+// Resample to (§9.8, SPEC-serum2 §12.6 B25; target 'A' | 'B' | 'C' | 'AB' | 'sel'): note 60, velocity 127, one bar at
+// the song tempo through the patch and its FX rack, offline at 44.1 kHz (the Phase-1 recipe); the release tail ends once
+// the output stays below −90 dBFS for 50 ms (at most 2 s). The render is imported into the chosen oscillator (AB: L → A,
+// R → B) as its type takes it: a Wavetable oscillator gets a wavetable (the Phase-1 recipe); a Sample, Granular or
+// Spectral oscillator gets a user sample (§9.1 `smp:` origin "resample"; root 60, folder Renders) and keeps its type and
+// sample options (only the trim of the previous sample is dropped); a Multisample oscillator becomes a Sample oscillator.
 async function resampleTo(t, target) {
   if (!isSx(t)) return;
-  if (!window.OfflineAudioContext) throw new Error('offline rendering is not available in this browser');
   const W = await wtMod(), sr = 44100, s = t.vals.s, bt = S.barTicks(project), fpt = sr * 60 / (project.bpm * S.PPQ);
-  const gate = Math.round(bt * fpt), oc = new OfflineAudioContext({ numberOfChannels: 2, length: gate + 2 * sr, sampleRate: sr });
-  await addModules(oc);
-  const patch = buildPatch(t, sr, true), wts = await tables.entries(patch.needs || []);
-  const node = new AudioWorkletNode(oc, 'synth-engine', {
-    numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
-    processorOptions: { os: sxOSFor(t, sr, true), hostOS: osCap(sr), offline: true, patch, wts, song: { notes: [0, bt, 60, 127], cc: [] }, transport: { play: true, frame: 0, tick: 0, fpt, loop: false } },
-  });
-  node.connect(oc.destination);
-  const buf = await oc.startRendering();
-  let L = buf.getChannelData(0), R = buf.getChannelData(1);
-  const thr = Math.pow(10, -90 / 20), hold = Math.round(0.05 * sr);
-  let end = L.length, q = 0;
-  for (let i = gate; i < L.length; i++) {
-    if (Math.abs(L[i]) < thr && Math.abs(R[i]) < thr) { if (++q >= hold) { end = i + 1; break; } } else q = 0;
-  }
-  L = L.slice(0, end); R = R.slice(0, end);
+  const gate = Math.round(bt * fpt), patch = buildPatch(t, sr, true);
+  const buf = await renderOffline(sr, gate + 2 * sr, [{ tr: null, patch, os: sxOSFor(t, sr, true), hostOS: osCap(sr),
+    song: { notes: [0, bt, 60, 127], cc: [] }, transport: { play: true, frame: 0, tick: 0, fpt, loop: false } }], { s, fx: fxOf(t) });
+  const chs = [buf.getChannelData(0), buf.getChannelData(1)];
+  const end = tailEnd(chs, gate, Math.pow(10, -90 / 20), Math.round(0.05 * sr), chs[0].length);
+  const L = chs[0].slice(0, end), R = chs[1].slice(0, end);
   const size = String(Math.round(sr / ((s.global.a4 || 440) * Math.pow(2, -9 / 12))));
   const make = x => { const tb = W.tableFromWav({ sr, ch: [x] }, { mode: 'manual', size }); if (tb.frames.length > 256) tb.frames = tb.frames.filter((f, i) => i % Math.ceil(tb.frames.length / 256) === 0).slice(0, 256); return tb; };
-  const n = 1 + tables.rows.filter(r => /^Resample \d+/.test(r.name)).length;
-  if (target === 'AB') {
-    const a = await wtHost.saveNew(make(L), `Resample ${n} L`), b = await wtHost.saveNew(make(R), `Resample ${n} R`);
-    sxEdit(t, st => { st.osc[0].wt = a; st.osc[1].wt = b; }, { label: 'Resample' });
-  } else {
-    const m = new Float32Array(L.length);
-    for (let i = 0; i < m.length; i++) m[i] = 0.5 * (L[i] + R[i]);
-    const id = await wtHost.saveNew(make(m), `Resample ${n}`);
-    sxEdit(t, st => { st.osc[target === 'B' ? 1 : 0].wt = id; }, { label: 'Resample' });
+  const named = rows => (Array.isArray(rows) ? rows : []).filter(r => r && /^Resample \d+/.test(r.name)).length;
+  const n = 1 + named(tables.rows) + named(tables.smpRows);
+  const isSmp = o => ['sample', 'gran', 'spec', 'multi'].includes(s.osc[o] && s.osc[o].type);
+  // one oscillator's import: [o, kind, id] — a wavetable (wt) or a user sample (smp) of the channel(s) given
+  const save = async (o, chans, name) => {
+    if (isSmp(o)) {
+      const id = await tables.saveRecord({ kind: 'smp', name, rate: sr, ch: chans.length, len: chans[0].length, L: chans[0], R: chans[1] || null, root: 60, loop: null },
+        { name, folder: 'Renders', odf: true });
+      return [o, 'smp', id];
+    }
+    let m = chans[0];
+    if (chans.length > 1) { m = new Float32Array(chans[0].length); for (let i = 0; i < m.length; i++) m[i] = 0.5 * (chans[0][i] + chans[1][i]); }
+    return [o, 'wt', await wtHost.saveNew(make(m), name)];
+  };
+  const toOsc = (st, [o, kind, id]) => {
+    const O = st.osc[o];
+    if (kind === 'smp') {
+      if (O.type === 'multi') O.type = 'sample';
+      O.smp = id;
+      if (O.smpo && O.smpo.ops && typeof O.smpo.ops === 'object') O.smpo.ops.trim = null; // frames of the previous sample
+    } else { if (O.type && O.type !== 'wt') O.type = 'wt'; O.wt = id; }
+  };
+  let done;
+  if (target === 'AB') done = [await save(0, [L], `Resample ${n} L`), await save(1, [R], `Resample ${n} R`)];
+  else {
+    const o = target === 'B' ? 1 : target === 'C' ? 2 : target === 'A' ? 0 : s.ui && s.ui.osc >= 0 && s.ui.osc < 3 ? s.ui.osc | 0 : 0;
+    done = [await save(o, [L, R], `Resample ${n}`)];
   }
+  sxEdit(t, st => { for (const d of done) toOsc(st, d); }, { label: 'Resample' });
   sxRefresh();
 }
 
-// the Serum panel's host (§8.8, RULINGS host additions); bound to a track id, reading the live project each call
+// Render last note (§13.2.5, deviation 21): the track's last input note group replayed offline (live context rate) as
+// song notes from tick 0 through the current patch, FX rack and assets, the sequencer included — the same path as a
+// bounce of those notes. Ends once the output stays below −80 dBFS for 50 ms after the last note-off (≤ 10 s later).
+// The 24-bit WAV is downloaded and stored as a user sample in the Renders folder; the result is handed back for the
+// header's drag-export. shift: the current preset as JSON (+ its user assets) instead.
+async function renderLast(t, o) {
+  if (!isSx(t)) throw new Error('Rendering needs a Serum track');
+  const s = t.vals.s, fx = fxOf(t), name = (t.preset || 'Init').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Init';
+  if (o && o.shift) {
+    const pre = Object.assign({ type: 'synth.serum.preset', name, v: { s: clone(s) }, fx: clone(fx) }, await presetAssets([{ v: { s }, fx }]));
+    download(new Blob([JSON.stringify(pre)], { type: 'application/json' }), slug(name) + '.serum.json');
+    return null;
+  }
+  const g = lastIn.get(t.id);
+  if (!g || !g.notes.length) throw new Error('Play a note first');
+  const now = (performance.now() - g.t0) / 1000;
+  const group = g.notes.map(x => ({ n: x.n, vel: x.vel, on: x.on, off: x.off >= 0 ? x.off : Math.max(x.on, now) }));
+  const sr = ctx ? ctx.sampleRate : settings.sr || devRate || 48000, bpm = project.bpm;
+  const song = groupSong(group, bpm), last = Math.max(...group.map(x => x.off)), fpt = sr * 60 / (bpm * S.PPQ);
+  const patch = buildPatch(t, sr, true);
+  const buf = await renderOffline(sr, (last + 10.05) * sr, [{ tr: t, patch, os: sxOSFor(t, sr, true), hostOS: osCap(sr), song,
+    transport: { play: true, frame: 0, tick: 0, fpt, loop: false } }], { s, fx });
+  const chs = [buf.getChannelData(0), buf.getChannelData(1)];
+  const end = tailEnd(chs, Math.round(last * sr), Math.pow(10, -80 / 20), Math.round(0.05 * sr), Math.round((last + 10) * sr));
+  const L = chs[0].slice(0, end), R = chs[1].slice(0, end), low = Math.min(...group.map(x => x.n));
+  const file = `${name} ${noteName(low)}.wav`, blob = new Blob([S.encodeWAV([L, R], sr, 24)], { type: 'audio/wav' });
+  download(blob, file);
+  tables.saveRecord({ kind: 'smp', name: file.replace(/\.wav$/, ''), rate: sr, ch: 2, len: L.length, L, R, root: low, loop: null },
+    { name: file.replace(/\.wav$/, ''), folder: 'Renders', odf: true }).catch(err => console.warn('render not stored', err));
+  return { name: file, blob };
+}
+
+// Preset preview (§12.6, B25): one dedicated node at a time in the live context (no assets in processorOptions: the
+// preset's needs go through the asset manager as track 'preview'; no track id, so its MIDI OUT goes nowhere, §7.9),
+// playing the preset's preview clip (s.clip.preview) or a fallback clip (seq-core FALLBACK_CLIPS: chord, bass line, lead
+// phrase — by category) for at most 4 s. A finished preview's node is kept for PV_KEEP and plays the next preview (a
+// browser auto-previews preset after preset: a processor built per preview costs the audio thread ≈ 1–3 ms each time);
+// then {t: 'bye'} ends its processor (it fades out and stops processing, §7.9) and it is disconnected. Its patches go
+// through the track nodes' part-keyed delivery (postPatch, §4.1): a macro drag posts what changed, once per frame.
+const PV_KEEP = 8000;
+const pv = { node: null, gain: null, N: null, t: 0, keep: 0, raf: 0, key: null, s: null, fx: null };
+function previewEnd() { // the kept node goes: bye (its processor fades out and ends), then disconnected
+  clearTimeout(pv.keep); pv.keep = 0;
+  const node = pv.node, g = pv.gain;
+  pv.node = null; pv.gain = null; pv.N = null;
+  if (!node) return;
+  try { node.port.postMessage({ t: 'bye' }); } catch { /* gone */ }
+  setTimeout(() => { try { node.disconnect(); if (g) g.disconnect(); } catch { /* gone */ } }, 80);
+}
+function previewStop() {
+  clearTimeout(pv.t); pv.t = 0;
+  if (pv.raf) { cancelAnimationFrame(pv.raf); pv.raf = 0; }
+  pv.key = null; pv.s = null; pv.fx = null;
+  if (pv.node) { // silent at once (panic: 5 ms output fade; the gain also closes over the output stage's DC-blocker
+    // decay), kept for the next preview
+    try { pv.node.port.postMessage({ t: 'panic' }); pv.node.port.postMessage({ t: 'transport', play: false }); } catch { /* gone */ }
+    if (pv.gain && ctx) pv.gain.gain.setTargetAtTime(0, ctx.currentTime, 0.01);
+    clearTimeout(pv.keep); pv.keep = setTimeout(previewEnd, PV_KEEP);
+  }
+  tables.release('preview');
+}
+function previewNotes(p, s, clip) {
+  if (Array.isArray(clip) && clip.length) return clip.map(x => (Array.isArray(x) ? { t: x[0] * S.PPQ / 4, d: x[1] * S.PPQ / 4, n: x[2], v: x[3] } : x));
+  const C = s.clip && Array.isArray(s.clip.clips) ? s.clip.clips : [], k = s.clip ? s.clip.preview : -1;
+  const own = k >= 0 && C[k] && Array.isArray(C[k].notes) && C[k].notes.length ? C[k] : null;
+  const cat = String(p.cat || '') + ' ' + String(p.name || ''), fb = core.FALLBACK_CLIPS[/bass/i.test(cat) ? 1 : /lead|pluck|arp|seq|key/i.test(cat) ? 2 : 0];
+  return core.clipTrackNotes(own || fb, 0);
+}
+function previewPatch() {
+  const patch = patchFor(SXM, { s: pv.s }, pv.fx, { sr: ctx.sampleRate, bpm: project.bpm, drift: settings.drift / 10, hiss: 1, qr: qrOf(qrStep),
+    prefs: Object.assign({}, prefs, { ultra: 0 }) });
+  patch.osCap = sxCap;
+  return capQ4(patch);
+}
+function preview(key, clip) {
+  previewStop();
+  if (key === null || key === undefined) return;
+  const p = sxPreset(key);
+  if (!p) return;
+  const go = () => {
+    if (!ctx) return;
+    pv.key = key; pv.s = core.normalizeSerum(clone(p.v.s)); pv.fx = core.normalizeFx(clone(p.fx || core.defaultFx2()), pv.s);
+    const sr = ctx.sampleRate, patch = previewPatch(), fpt = sr * 60 / (project.bpm * S.PPQ);
+    const notes = previewNotes(p, pv.s, clip).filter(x => x.t < 4 * sr / fpt), flat = [];
+    for (const x of notes.sort((a, b) => a.t - b.t)) flat.push(x.t, x.d, x.n, clamp(x.v, 1, 127));
+    const F = Math.round((ctx.currentTime + 0.05 + (ctx.baseLatency || 0)) * sr);
+    const song = { notes: flat, cc: [] }, transport = { play: true, frame: F, tick: 0, fpt, loop: false }, needs = patch.needs;
+    if (pv.node && pv.node.context !== ctx) previewEnd(); // kept from another (closed) context
+    let node = pv.node;
+    if (node) { // the kept node: the new patch (changed parts only), then the clip from F (≥ 50 ms ahead: the gain is open by then)
+      clearTimeout(pv.keep); pv.keep = 0;
+      if (pv.gain) { pv.gain.gain.cancelScheduledValues(ctx.currentTime); pv.gain.gain.setTargetAtTime(1, ctx.currentTime, 0.005); }
+      postPatch(pv.N, patch);
+      node.port.postMessage(Object.assign({ t: 'song' }, song));
+      node.port.postMessage(Object.assign({ t: 'transport' }, transport));
+    } else {
+      node = new AudioWorkletNode(ctx, 'synth-engine', {
+        numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
+        processorOptions: { os: Math.min(sxQuality({ vals: { s: pv.s } }), osCap(sr), sxCap), hostOS: osFor(sr), patch, song, transport },
+      });
+      const g = ctx.createGain();
+      node.connect(g); g.connect(master);
+      pv.node = node; pv.gain = g; pv.N = partCache({ node }, patch);
+    }
+    if (needs && needs.length) tables.ensure(needs, { trackId: 'preview', node, s: pv.s, fx: pv.fx, convMax: patch.fxr && patch.fxr.convMax });
+    pv.t = setTimeout(() => { if (pv.key === key && pv.node === node) previewStop(); }, 4000);
+  };
+  if (ctx) go(); else powerOn().then(go, () => {});
+}
+// the preset browser's macro strip while a preview plays: the preview node plays with these macro values (§13.11)
+function previewMacros(v) {
+  if (!pv.node || !pv.s || !Array.isArray(v)) return;
+  for (let k = 0; k < v.length && k < pv.s.macros.length; k++) if (Number.isFinite(+v[k])) pv.s.macros[k].v = clamp(+v[k], 0, 1);
+  if (!pv.raf) pv.raf = requestAnimationFrame(() => { pv.raf = 0; if (pv.node && pv.s) postPatch(pv.N, previewPatch()); });
+}
+
+// CLIP slot "Copy to Track ▸" (§7.5.6): the clip's notes (ticks relative to the paste point) at the song playhead, one
+// project-history step
+function clipToTrack(trackId, notes) {
+  const tr = project.tracks.find(x => x.id === trackId);
+  if (!tr || !Array.isArray(notes) || !notes.length) return;
+  const at = Math.max(0, Math.round(curTick()));
+  edit('Copy clip to track', () => {
+    for (const x of notes) {
+      if (!x || !(x.n >= 0 && x.n <= 127)) continue;
+      tr.notes.push({ id: S.newId(), t: Math.max(0, Math.round(at + (+x.t || 0))), d: Math.max(1, Math.round(+x.d || 1)), n: x.n | 0, v: clamp(Math.round(+x.v || 100), 1, 127) });
+    }
+  }, [tr]);
+  notice(`Copied ${notes.length} note${notes.length === 1 ? '' : 's'} to “${tr.name}”`, 3000);
+}
+// TUN FILE ▸ Load .scl/.kbm/.tun… (§13.10): a file picker; the texts through tuning.js (tuningState keeps a loaded
+// .scl when only a .kbm comes, §11.4) → {name, kind, scl, kbm, tab} | {error} | null (cancelled)
+function tuningFile(cur) {
+  return new Promise(res => {
+    const inp = h('input');
+    inp.type = 'file'; inp.multiple = true; inp.accept = '.scl,.kbm,.tun,text/plain';
+    inp.onchange = async () => {
+      const fs = [...(inp.files || [])];
+      if (!fs.length) { res(null); return; }
+      const files = {};
+      for (const f of fs.slice(0, 3)) {
+        if (f.size > 16384) { res({ error: f.name + ' is too large' }); return; }
+        const ext = (/\.(scl|kbm|tun)$/i.exec(f.name) || [])[1];
+        if (ext) files[ext.toLowerCase()] = await f.text();
+        if (ext && !files.name) files.name = f.name.replace(/\.(scl|kbm|tun)$/i, '');
+      }
+      res(core.tuningState(files, cur || null));
+    };
+    inp.click();
+  });
+}
+
+// the Serum panel's host (§8.8, RULINGS host additions, SPEC-serum2 §11.15); bound to a track id, reading the live
+// project each call
 function sxHost(t0) {
   const id = t0.id, T = () => project.tracks.find(x => x.id === id) || t0;
   return {
@@ -1589,44 +1869,72 @@ function sxHost(t0) {
     edit: (fn, o) => sxEdit(T(), fn, o),
     fx: () => fxOf(T()),
     editFx: (fn, o) => fxEdit(T(), fn, o),
+    v2Fx: true, // the FX state may become a v2 state in place (fx-ui / sx-ui-mix conversion, §2.6.3)
     bpm: () => project.bpm,
     sampleRate: () => (ctx ? ctx.sampleRate : settings.sr || devRate || 48000),
     wt: wtHost,
+    smp: smpHost,
     audition: {
-      on: (n, v) => { if (!ctx) powerOn().catch(() => {}); postTo(T(), { t: 'on', n, v }); },
-      off: n => postTo(T(), { t: 'off', n }),
+      on: (n, v) => { if (!ctx) powerOn().catch(() => {}); postTo(T(), { t: 'on', n, v }); inputNote(T(), 1, n, v, performance.now(), true); },
+      off: n => { postTo(T(), { t: 'off', n }); inputNote(T(), 0, n, 0, performance.now(), true); },
     },
     monitor: on => monitors.set(id, on),
+    fxTap: inst => postTo({ id }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }),   // (the FX page's Delay overlay)
     presets: {
       list: sxPresetList,
+      get: key => sxPreset(key),
       load: key => { sxLoad(T(), key); },
       save: ({ name, cat }) => sxSave(T(), name, cat),
       del: key => {
         if (typeof key !== 'string' || !key.startsWith('u:')) return;
-        store.set('synth.user.serum', sxUser().filter(p => 'u:' + p.name !== key));
+        sxSaveUser(sxUser().filter(p => 'u:' + p.name !== key));
         for (const [tid, k] of sxKeys) if (k === key) sxKeys.delete(tid);
       },
+      rename: (key, name) => sxRename(key, name),
+      move: (key, cat) => { sxUserEdit(key, e => { e.cat = String(cat || 'User').trim().slice(0, 32) || 'User'; }); },
+      setMeta: (key, m) => { sxUserEdit(key, e => { e.meta = Object.assign({}, e.meta && typeof e.meta === 'object' ? e.meta : {}, m || {}); }); },
       exportFile: key => { sxExport(key).catch(err => notice('Export failed: ' + err.message, 4000)); },
+      exportPack: keys => { sxExportPack(keys).catch(err => notice('Export failed: ' + err.message, 4000)); },
       importFile: file => sxImport(file),
       current: () => sxCurrent(T()),
     },
     midiLearn: dest => midiLearn(id, dest),
     midiForget: dest => midiForget(T(), dest),
     resample: target => resampleTo(T(), target),
+    renderLast: o => renderLast(T(), o || {}),
+    preview: (key, clip) => preview(key, clip),
+    previewMacros: v => previewMacros(v),
+    tracks: () => project.tracks.filter(x => x.id !== id).map(x => ({ id: x.id, name: x.name, model: x.model })),
+    seqCmd: (cmd, arg) => postTo(T(), { t: 'seqcmd', cmd, arg }),
+    onInput: fn => { if (typeof fn === 'function') inputSubs.set(id, fn); else inputSubs.delete(id); },
+    clipToTrack: (trackId, notes) => clipToTrack(trackId, notes),
+    download: (name, blob) => download(blob, name),
+    tuningFile: () => tuningFile(T().vals.s.global.tun),
+    metronome: on => { project.metronome.on = !!on; transportUI(); persist(); },
+    latency: () => (ctx ? (ctx.baseLatency || 0) + (ctx.outputLatency || 0) : 0),
+    qualityChosen: () => liftCaps(),
     storage: hostStore,
     notify: txt => notice(txt, 3500),
-    editorOpen: o => { wtEdit = o === 0 || o === 1 ? { id, osc: o } : null; },
+    editorOpen: o => { wtEdit = o === 0 || o === 1 || o === 2 ? { id, osc: o } : null; },
     prefsChanged,
   };
 }
-// the FX tab's rack host: any track's fx (Serum's parameter locks hold, §9.6)
+// the FX tab's rack host: any track's fx (Serum's parameter locks hold, §9.6); Serum tracks show the three racks
 function fxHost(t0) {
   const id = t0.id, T = () => project.tracks.find(x => x.id === id) || t0;
   return {
     fx: () => fxOf(T()),
     editFx: (fn, o) => fxEdit(T(), fn, o),
+    v2Fx: true,
+    racks: () => (isSx(T()) ? 3 : 1),
+    irs: smpHost,
+    state: () => (isSx(T()) ? T().vals.s : null),
+    edit: (fn, o) => { if (isSx(T())) sxEdit(T(), fn, o); },
     bpm: () => project.bpm,
     gr: () => (fxTab.trackId === id ? fxTab.gr : null),
+    // the rack's monitor tap (§13.5 Delay spectrum overlay): instance id ('' off) → the node; the latest 1024 frames
+    tap: () => (fxTab.trackId === id ? fxTab.ftap || null : null),
+    setTap: inst => postTo({ id }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }),
     locked: dest => { const t = T(); return isSx(t) && !!t.vals.s && t.vals.s.locks.p.includes(dest); },
     storage: hostStore,
     notify: txt => notice(txt, 3500),
@@ -1660,7 +1968,8 @@ function renderCustom(el) {
   el.append(box);
   sxPanel.box = box;
   const gen = sxPanel.gen;
-  if (!WT) tables.list(); // user tables for the menus
+  if (!tables.WT) tables.list(); // user tables for the menus
+  tables.smpMods().catch(() => {}); // sample catalogues and the stored user samples for the menus
   uiMods().then(M => {
     if (gen !== sxPanel.gen) return;
     box.innerHTML = '';
@@ -1676,11 +1985,11 @@ function renderCustom(el) {
   }, err => { if (gen === sxPanel.gen) { box.innerHTML = ''; box.append(h('p', 'boot', 'The panel could not be loaded (' + err.message + '). Reload the page to try again.')); } });
 }
 // the FX tab (every track): the rack UI bound to track.fx
-const fxTab = { ui: null, trackId: null, fx: null, gr: null, gen: 0 };
+const fxTab = { ui: null, trackId: null, fx: null, gr: null, ftap: null, gen: 0 };
 function dropFxTab() {
   fxTab.gen++;
   const u = fxTab.ui;
-  fxTab.ui = null; fxTab.trackId = null; fxTab.fx = null; fxTab.gr = null;
+  fxTab.ui = null; fxTab.trackId = null; fxTab.fx = null; fxTab.gr = null; fxTab.ftap = null;
   if (u) { try { u.destroy(); } catch (err) { console.warn(err); } }
   monitors.sync();
 }
@@ -1698,7 +2007,7 @@ function renderFxTab() {
     box.innerHTML = '';
     try {
       fxTab.trackId = t.id; fxTab.fx = fxOf(t);
-      fxTab.ui = new M.fxui.FXRackUI(box, fxHost(t), { embedded: false, dsp: globalThis.FXDSP || null });
+      fxTab.ui = new M.fxui.FXRackUI(box, fxHost(t), { embedded: false, dsp: globalThis.FXDSP || null, racks: isSx(t) ? 3 : 1, v2Fx: true });
     } catch (err) {
       console.error(err);
       fxTab.ui = null; fxTab.trackId = null;
@@ -1981,7 +2290,7 @@ function renderHeads() {
 function addTrack(m = model, vals0 = null) {
   hist.record(project);
   const t = S.newTrack(project, { model: m.id, vals: vals0 ? JSON.parse(JSON.stringify(vals0)) : loadVals(m), name: `${m.name} ${project.tracks.length + 1}` });
-  t.fx = core.defaultFx(); seedPend.add(t.id);
+  t.fx = newFx(m); seedPend.add(t.id);
   project.tracks.push(t);
   syncNodes();
   selectTrack(t.id);
@@ -2005,7 +2314,7 @@ function deleteTrack(t) {
   hist.record(project);
   const i = project.tracks.indexOf(t);
   project.tracks.splice(i, 1);
-  seqRun.delete(t.id);
+  seqRun.delete(t.id); inputSubs.delete(t.id); lastIn.delete(t.id);
   if (project.selTrack === t.id) { project.selTrack = project.tracks[Math.max(0, i - 1)].id; bind(); renderNav(); renderViews(); roll && roll.setTrack(); }
   syncNodes();
   renderHeads(); persist(); updateUndoUI();
@@ -2252,8 +2561,8 @@ function initTransport() {
       else {
         let o;
         try { o = JSON.parse(await f.text()); } catch { throw new Error('Not a valid project file'); }
-        // embedded user wavetables (§7.10) go into the wavetable store, never into the project itself
-        if (o && typeof o === 'object' && o.wts) { await tables.restore(o.wts); delete o.wts; }
+        // embedded user wavetables and samples (§7.10, SPEC-serum2 §9.8) go into their stores, never into the project
+        await restoreEmbedded(o);
         const p = loadProject(o); hist.record(project); if (T.playing) stop(); applyRestore(p);
       }
     } catch (err) { alert('Could not open that file: ' + err.message); }
@@ -2278,7 +2587,7 @@ function importMidiFile(bytes, fname) {
   const m = model;
   for (const it of r.tracks) {
     const t = S.newTrack(project, { model: m.id, vals: loadVals(m), name: it.name || `${m.name} ${project.tracks.length + 1}` });
-    t.fx = core.defaultFx(); seedPend.add(t.id);
+    t.fx = newFx(m); seedPend.add(t.id);
     t.notes = it.notes.map(n => ({ id: S.newId(), t: n.t, d: n.d, n: n.n, v: n.v }));
     t.cc = it.cc.slice(); t.ch = 0;
     project.tracks.push(t);
@@ -2298,6 +2607,39 @@ function openBounce() {
   $('#bGo').disabled = false;
   $('#modal').hidden = false;
 }
+// The track ids a compiled patch sends MIDI OUT to (§7.9: arp / clip pane with MIDI OUT ≠ Off and a target; seq.outIds)
+function midiOutIds(p) {
+  const q = p && p.seq;
+  if (!q || !q.active || !Array.isArray(q.outIds)) return [];
+  const ids = [];
+  for (const G of [q.arpG, q.clipG]) {
+    const id = G && G[1] > 0 && G[6] >= 0 ? q.outIds[G[6]] : null;
+    if (typeof id === 'string' && id && !ids.includes(id)) ids.push(id);
+  }
+  return ids;
+}
+// The tracks a bounce renders, in project order, with their offline patches and mix gains: every audible track with notes
+// (or a synced 303), plus the MIDI OUT graph as it plays live (§7.9) — every audible target of a source with notes,
+// even with no notes of its own, and every source with notes whose target is audible, a muted or soloed-out one at gain
+// 0 (live, its node keeps running at gain 0 and drives the target)
+function bounceSet(sr) {
+  const P = new Map(), patchOf = tr => { if (!P.has(tr)) P.set(tr, buildPatch(tr, sr, true)); return P.get(tr); };
+  const want = new Map();
+  for (const tr of project.tracks) {
+    const synced = tr.model === 'tb303' && tr.seq && tr.seq.sync;
+    if (audible(tr) && (tr.notes.length || synced)) want.set(tr, tr.vol);
+  }
+  for (const tr of project.tracks) {
+    if (!isSx(tr) || !tr.notes.length) continue;
+    for (const id of midiOutIds(patchOf(tr))) {
+      const tg = project.tracks.find(x => x.id === id);
+      if (!tg || tg === tr || !audible(tg)) continue;
+      if (!want.has(tg)) want.set(tg, tg.vol);
+      if (!want.has(tr)) want.set(tr, 0);
+    }
+  }
+  return project.tracks.filter(tr => want.has(tr)).map(tr => ({ tr, patch: patchOf(tr), gain: want.get(tr) }));
+}
 async function bounce() {
   const rsel = $('#bRange').value, sr = +$('#bSr').value, bits = +$('#bBits').value, tail = +$('#bTail').value, norm = $('#bNorm').checked;
   const os = Math.min(+$('#bOs').value, osCap(sr)); // same 384 kHz internal cap as live playback
@@ -2309,36 +2651,17 @@ async function bounce() {
   const t0 = performance.now();
   note.textContent = `Rendering ${secs.toFixed(1)} s at ${kHz(sr)} kHz × ${os} (${kHz(sr * os)} kHz internal)…`;
   try {
-    const oc = new OfflineAudioContext({ numberOfChannels: 2, length: Math.ceil(secs * sr), sampleRate: sr });
-    await addModules(oc);
-    const bus = oc.createGain(); bus.connect(oc.destination);
     const f = sr * 60 / (project.bpm * S.PPQ);
-    const plan = [];
-    for (const tr of project.tracks) {
-      if (!audible(tr)) continue;
+    const items = [];
+    for (const { tr, patch, gain } of bounceSet(sr)) {
       const synced = tr.model === 'tb303' && tr.seq && tr.seq.sync;
-      if (!tr.notes.length && !synced) continue;
-      plan.push({ tr, synced, patch: buildPatch(tr, sr, true) });
+      // a Serum track renders at its own quality (Ultra with "Use Ultra quality when rendering") regardless of the
+      // dialog (§11.4, SPEC-serum2 §12.6); every node carries its track id: MIDI OUT between the bounced tracks (§7.9)
+      items.push({ tr, patch, os: isSx(tr) ? sxOSFor(tr, sr, true) : os, hostOS: os, song: songData(tr, start, end),
+        transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, seq: synced ? seqPayload(tr, { run: false }) : null, gain, pan: tr.pan });
     }
-    // every wavetable the rendered tracks need, given to the first node (the table store is shared, §7.5)
-    const ids = new Set();
-    for (const x of plan) for (const id of x.patch.needs || []) ids.add(id);
-    const wts = ids.size ? await tables.entries([...ids]) : null;
-    let n = 0;
-    for (const { tr, synced, patch } of plan) {
-      const node = new AudioWorkletNode(oc, 'synth-engine', {
-        numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
-        // a Serum track renders at its own quality regardless of the dialog (§11.4)
-        processorOptions: { os: isSx(tr) ? sxOSFor(tr, sr, true) : os, hostOS: os, offline: true, patch, wts: n === 0 ? wts : null, song: songData(tr, start, end),
-          transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, seq: synced ? seqPayload(tr, { run: false }) : null },
-      });
-      const g = oc.createGain(), p = oc.createStereoPanner();
-      g.gain.value = tr.vol; p.pan.value = tr.pan;
-      node.connect(g); g.connect(p); p.connect(bus);
-      n++;
-    }
-    if (!n) { note.textContent = 'No audible tracks with notes in that range.'; go.disabled = false; return; }
-    const buf = await oc.startRendering();
+    if (!items.length) { note.textContent = 'No audible tracks with notes in that range.'; go.disabled = false; return; }
+    const buf = await renderOffline(sr, Math.ceil(secs * sr), items);
     const chs = [buf.getChannelData(0), buf.getChannelData(1)];
     let peak = 0;
     for (const c of chs) for (let i = 0; i < c.length; i++) { const a = Math.abs(c[i]); if (a > peak) peak = a; }
@@ -2574,63 +2897,6 @@ function wheel(id, spring, onChange) {
 }
 let setBendUI, setModUI;
 
-/* -------------------------------------------------------------- MIDI */
-// Web MIDI is only requested from the 'Enable MIDI' button (a permission prompt — in Firefox an add-on install dialog —
-// should never be a side effect of Power); it connects by itself only when permission was already granted.
-let midiInit = false;
-async function initMIDI() {
-  const b = $('#midi');
-  if (!navigator.requestMIDIAccess) { b.textContent = 'MIDI: not supported in this browser'; b.disabled = true; b.classList.add('unsup'); return; }
-  if (midiInit) return;
-  midiInit = true;
-  b.textContent = 'MIDI: connecting…';
-  try {
-    const m = await navigator.requestMIDIAccess();
-    const hook = () => {
-      const names = [];
-      for (const inp of m.inputs.values()) { inp.onmidimessage = onMIDI; names.push(inp.name); }
-      b.textContent = names.length ? 'MIDI: ' + names.join(', ') : 'MIDI: no devices';
-      b.title = names.length ? 'Connected MIDI inputs' : 'Plug in a MIDI controller — it is picked up automatically';
-    };
-    hook(); m.onstatechange = hook;
-  } catch {
-    midiInit = false; // allow another try
-    b.textContent = 'MIDI blocked — click to retry';
-    b.title = 'If no prompt appears, allow MIDI for this site in the browser’s site settings';
-  }
-}
-function initMIDIButton() {
-  const b = $('#midi');
-  if (!navigator.requestMIDIAccess) { initMIDI(); return; }
-  b.onclick = () => initMIDI();
-  try {
-    if (navigator.permissions && navigator.permissions.query) {
-      navigator.permissions.query({ name: 'midi' }).then(s => {
-        if (s.state === 'granted') initMIDI();
-        s.onchange = () => { if (s.state === 'granted') initMIDI(); };
-      }).catch(() => {});
-    }
-  } catch { /* 'midi' permission name unsupported */ }
-}
-function onMIDI(e) {
-  const [st0, d1, d2] = e.data, cmd = st0 & 0xf0, ch = (st0 & 0x0f) + 1, ts = e.timeStamp;
-  if (cmd === 0x90 && d2 > 0) noteOn(d1, d2 / 127, ch, ts);
-  else if (cmd === 0x80) noteOff(d1, ch, ts, d2 / 127); // release velocity (Serum's Release Velocity source)
-  else if (cmd === 0x90 && d2 === 0) noteOff(d1, ch, ts);
-  else if (cmd === 0xa0) { for (const t of targets(ch)) postTo(t, { t: 'pat', n: d1, v: d2 / 127 }); } // poly aftertouch
-  else if (cmd === 0xb0) {
-    if (d1 < 120 && learn) learnCC(d1); // Serum MIDI Learn takes the next controller 0–119 (§11.8)
-    if (d1 === 1) { ctl('wheel', d2 / 127, ch, ts); setModUI(d2 / 127, false); }
-    else if (d1 === 64) { ctl('sus', d2 >= 64 ? 1 : 0, ch, ts); }
-    else if (d1 === 120 || d1 === 123) { for (const k of [...held.keys()]) if (k.startsWith(ch + ':')) noteOff(+k.split(':')[1], ch, ts); }
-    if (d1 < 120) midiMapCC(targets(ch), d1, d2); // learned controllers of the targeted Serum tracks
-  } else if (cmd === 0xe0) {
-    const v = ((d2 << 7) | d1) / 8192 - 1;
-    ctl('bend', v, ch, ts); setBendUI((v + 1) / 2, false);
-  } else if (cmd === 0xd0) ctl('at', d1 / 127, ch, ts);
-  else if (cmd === 0xc0) programChange(targets(ch), d1);
-}
-
 /* ------------------------------------------------------------- scope */
 let scopeMode = 'wave';
 const td = new Float32Array(8192), fd = new Float32Array(4096);
@@ -2724,7 +2990,12 @@ function boot() {
   };
   // every gesture tries to (re)start a suspended context while it still counts as user activation (touch: on release)
   for (const t of ['pointerdown', 'pointerup', 'touchend', 'keydown', 'click']) window.addEventListener(t, wake, { capture: true, passive: true });
-  document.addEventListener('visibilitychange', () => { if (document.hidden) { releaseKeys(); flush(); } else wake(); monitors.sync(); });
+  // hidden: iOS may never send pagehide after this, so an IndexedDB save starts now (an unchanged project writes no
+  // record); localStorage: a pending save is written (Phase 1)
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { releaseKeys(); if (store.mode !== 'ls' || saveT) saveNow(); } else wake();
+    monitors.sync();
+  });
   window.addEventListener('scroll', () => { pageScrollT = performance.now(); }, { capture: true, passive: true });
   const sr = $('#sr'), os = $('#os'), drift = $('#drift'), mst = $('#master'), vel = $('#vel');
   if (![...os.options].some(o => +o.value === settings.os)) settings.os = 4;
@@ -2734,8 +3005,8 @@ function boot() {
   // new context created synchronously in the handler, so it is still inside the user's gesture
   sr.onchange = () => { settings.sr = +sr.value; persist(); rateLabels(); if (ctx || pendCtx) { powerOff(); powerOn().catch(() => {}); } };
   os.onchange = () => {
-    settings.os = +os.value; persist(); hotT = 0;
-    if (sxCap < 8 || sxUni < 16) { sxCap = 8; sxUni = 16; for (const t of project.tracks) if (isSx(t)) queuePatch(t); } // a quality choice lifts the CPU caps
+    settings.os = +os.value; persist();
+    liftCaps(); // a quality choice lifts the CPU caps
     if (ctx) postAll({ t: 'os', v: osFor(ctx.sampleRate) }); // (Serum tracks keep their own, §11.4)
     rateText(); rateLabels();
   };
@@ -2760,11 +3031,37 @@ function boot() {
   let rw;
   window.addEventListener('resize', () => { clearTimeout(rw); rw = setTimeout(() => { buildKeys(); roll.resize(); arr.resize(); }, 120); });
   window.addEventListener('hashchange', () => { const m = MODELS.find(x => '#' + x.id === location.hash); if (m) setTrackModel(trk(), m.id); });
-  window.addEventListener('pagehide', save);
-  window.addEventListener('beforeunload', save);
-  initMIDIButton();
+  window.addEventListener('pagehide', saveNow);
+  window.addEventListener('beforeunload', saveNow);
+  midi.wire();
   const why = audioProblem(); if (why) audioFail(why);
   powerUI();
+  booted = true;
+  for (const [txt, ms] of early.splice(0)) notice(txt, ms); // storage notices raised while the page was starting
+  recoveredNotice();
   requestAnimationFrame(frame);
+}
+// §12.6 storage: a project autosaved by a session that could not open the database (it ran on the older localStorage copy)
+// was kept separately by this run's re-sync (appstore '#rec:'): offered as a project file to download (open it with
+// File › Open to continue from it)
+function recoveredNotice() {
+  const inf = store.info(), txt = inf.conflicts.includes('synth.project') && store.recovered ? store.recovered('synth.project') : null;
+  if (!txt) return;
+  let ok = false;
+  try { ok = !!S.deserialize(txt); } catch { ok = false; }
+  if (!ok) return;
+  const msg = 'A project saved while the stored data could not be opened was kept separately — tap to download it';
+  noticeActs.set(msg, () => { download(new Blob([txt], { type: 'application/json' }), 'recovered-project.synth.json'); noticeActs.delete(msg); notice('', 0); });
+  notice(msg, 30000);
+}
+// Test hook: the node simulation of the page (tests/main-sim.mjs) sets globalThis.__synthTest before importing this module
+// and reaches the hosts and a few internals through it. A browser never sets it; nothing here depends on it.
+if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
+  globalThis.__synthTest.api = {
+    project: () => project, nodes, tables, store, prefs: () => prefs, sxHost, fxHost, buildPatch, sendPatch, queuePatch, prefsChanged,
+    powerOn, noteOn, noteOff, renderLast, resampleTo, preview, previewStop, previewEnd, clipToTrack, lastIn, inputSubs, liftCaps, lowerOS,
+    caps: () => ({ sxCap, qrStep }), setTrackModel, addTrack, selectTrack, save, flush, sxLoad, sxSave, sxPreset, midi, renderOffline,
+    songData, sxOSFor, pv, bounceSet, genProgress, notice, stickyNotice, deleteTrack, capQ4, ctx: () => ctx,
+  };
 }
 boot();

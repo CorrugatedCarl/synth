@@ -1,56 +1,49 @@
-// Factory content through the real DSP (SPEC-serum §0.5 M3, §10.2.19): every FACTORY_PRESETS entry is rendered by
-// engine.js in a node:vm worklet scope (serum-dsp.js → fx-dsp.js → engine.js, as tests/integration.test.mjs does) with a
+// Factory content through the real DSP (SPEC-serum §0.5 M3, §10.2.19): every migrated Phase-1 FACTORY_PRESETS entry is rendered by
+// engine.js in a node:vm worklet scope (the SPEC-serum2 §0.3 script list, then engine.js: tests/dsp-scope.mjs) with a
 // typical phrase of its category at velocity 0.8 and 2x oversampling; the level is read before the output stage's
 // DC blocker / limiter. Every FACTORY_CHAINS rack is rendered on a plain model and on a Serum chord. Run:
 //   node --test 'tests/*.test.mjs'
+import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import vm from 'node:vm';
-import { readFileSync } from 'node:fs';
-import * as core from '../serum-core.js?v=5';
-import * as W from '../wt.js?v=5';
-import { MODELS } from '../models.js?v=5';
+import * as core from '../serum-core.js?v=6';
+import * as W from '../wt.js?v=6';
+import { MODELS, patchFor } from '../models.js?v=6';
+import { dspScope } from './dsp-scope.mjs';
+import * as A from '../assets.js?v=6';
+import * as wtstore from '../wtstore.js?v=6';
+import * as smpstore from '../smpstore.js?v=6';
 
-const ROOT = new URL('../', import.meta.url);
-const SRC = f => readFileSync(new URL(f, ROOT), 'utf8');
-const SR = 48000, BPM = 120, SERUM = MODELS.find(m => m.id === 'serum');
+const SR = 48000, BPM = 120;
 
 function scope() {
-  let Proc = null;
-  const sb = { console: { log() {}, warn() {}, error() {}, info() {} }, sampleRate: SR, currentFrame: 0 };
-  sb.AudioWorkletProcessor = class { constructor() { this.port = { postMessage() {}, onmessage: null }; } };
-  sb.registerProcessor = (name, c) => { Proc = c; };
-  const ctx = vm.createContext(sb);
-  for (const f of ['serum-dsp.js', 'fx-dsp.js', 'engine.js']) vm.runInContext(SRC(f), ctx, { filename: f });
-  return { ctx, mk: po => new Proc({ processorOptions: po || {} }) };
+  const D = dspScope({ sampleRate: SR, engine: true, console: { log() {}, warn() {}, error() {}, info() {}, debug() {} } });
+  return { ctx: D.ctx, mk: po => new D.Proc({ processorOptions: po || {} }) };
 }
 const ENT = new Map();
+const isWt = id => id.startsWith('noise:') || !!W.factoryTable(id);           // wavetables, sub tables, noises ({t: 'wt'})
 const entryOf = id => {
   if (!ENT.has(id)) ENT.set(id, id.startsWith('noise:') ? W.makeNoise(id) : W.makeEntry(id, W.factoryTable(id)));
   return ENT.get(id);
 };
-// the patch main.js sends for a Serum track: compileSerum + the track's FX rack (seeded, as after a preset load) + tempo
-function serumPatch(s, fx) {
-  const p = SERUM.map({}, { s }, { bpm: BPM, smooth: 1 });
-  p.fxr = core.compileFx(fx, { bpm: BPM, master: s.p['g.master'], bypass: s.p['g.bypass'], modded: core.fxModded(s), seed: true });
-  p.fxrT = core.compileFxT(fx);
-  p.bpm = BPM;
-  return p;
-}
+// sample-like assets of a patch (§4.5: factory IRs of Convolve instances, …) built as a bounce builds them (assets.js
+// entries(ids, rate, {s, fx}): generated on demand, prepared for the rate), posted as {t: 'smp', …entry}
+const AM = A.createAssetManager({ ctxOf: () => null, post: () => false, tracks: () => [], worker: () => null,
+  stores: { wt: () => wtstore.memoryStore(), smp: () => smpstore.memoryStore() }, wt: () => Promise.resolve(W), persist: () => Promise.resolve(true) });
+const assetsOf = (pt, s, fx) => { const ids = (pt.needs || []).filter(id => !isWt(id)); return ids.length ? AM.entries(ids, SR, { s, fx }) : Promise.resolve([]); };
+// the patch main.js sends for a track (models.js patchFor: model map with the track's FX state + its rack, seeded as
+// after a preset load, + tempo)
+const serumPatch = (s, fx) => patchFor('serum', { s }, fx, { sr: SR, bpm: BPM, seed: true });
 function plainPatch(id, fx) {
-  const m = MODELS.find(x => x.id === id), v = {}, P = {};
+  const m = MODELS.find(x => x.id === id), v = {};
   for (const c of m.controls) v[c.id] = c.def;
-  for (const c of m.controls) P[c.id] = c.conv ? c.conv(v[c.id]) : v[c.id];
-  const p = m.map(P, v, { drift: 0, hiss: 0, sr: SR, bpm: BPM, smooth: 1 });
-  p.fxr = core.compileFx(fx, { bpm: BPM, seed: true });
-  p.fxrT = core.compileFxT(fx);
-  p.bpm = BPM;
-  return p;
+  return patchFor(m, v, fx, { sr: SR, bpm: BPM, seed: true });
 }
 // events [t (s), on, note]; returns the output and the pre-limiter signal (post rack, master and bypass)
-function render(S, pt, ev, secs) {
+function render(S, pt, ev, secs, smps) {
   const p = S.mk({ os: 2 });
-  for (const id of pt.needs || []) p.msg(Object.assign({ t: 'wt' }, entryOf(id)));
+  for (const id of pt.needs || []) if (isWt(id)) p.msg(Object.assign({ t: 'wt' }, entryOf(id)));
+  for (const e of smps || []) p.msg(Object.assign({ t: 'smp' }, e));
   p.msg({ t: 'patch', p: pt });
   const n = Math.ceil(secs * SR / 128) * 128, L = new Float32Array(n), R = new Float32Array(n), PL = new Float64Array(n), PR = new Float64Array(n);
   const a = new Float32Array(128), b = new Float32Array(128), out = p.outStage;
@@ -92,7 +85,10 @@ function phrase(cat, mono) {
 
 test('M3: every factory preset peaks between −9 and −3 dBFS on its category phrase (velocity 0.8, 2x), finite, no DC', () => {
   const S = scope();
-  for (const pr of core.FACTORY_PRESETS) {
+  // the migrated Phase-1 presets (S1 mode); the Serum 2 presets render with their assets in tests/presets2.test.mjs
+  const list = core.FACTORY_PRESETS.filter(p => p.v.s.global.s1 === 1);
+  assert.equal(list.length, core.FACTORY_PRESETS_V1.length);
+  for (const pr of list) {
     if (pr.cat === 'Init') continue;
     const s = core.applyPreset(core.defaultSerum(), pr), fx = core.applyPresetFx(core.defaultFx(), pr.fx, []);
     const [ev, secs] = phrase(pr.cat, s.voicing.mono);
@@ -113,21 +109,24 @@ test('M3: every factory preset peaks between −9 and −3 dBFS on its category 
   }
 });
 
-test('M3: factory effect chains on a plain model and a Serum chord — finite, level within reach of the dry signal, tails decay', () => {
+test('M3: factory effect chains on a plain model and a Serum chord — finite, level within reach of the dry signal, tails decay', async () => {
   const S = scope(), line = [], chord = [];
   [48, 51, 55, 58, 60, 58, 55, 51].forEach((n, i) => { line.push([i * 0.25, 1, n], [i * 0.25 + 0.2, 0, n]); });
   for (const n of [48, 55, 60, 64]) chord.push([0, 1, n], [2, 0, n]);
   const s = core.normalizeSerum(core.defaultSerum());
   const srcs = [[fx => plainPatch('juno60', fx), line], [fx => serumPatch(s, fx), chord]];
   const dry = srcs.map(([mk, ev]) => render(S, mk(core.defaultFx()), ev, 7));
+  assert.ok(core.FACTORY_CHAINS.chains.some(c => c.fx.racks[0].mods.some(I => I.type === 'conv')), 'a chain with a factory IR (Convolve)');
   for (const c of core.FACTORY_CHAINS.chains) {
     const fx = core.applyPresetFx(core.defaultFx(), c.fx, []);
-    srcs.forEach(([mk, ev], i) => {
-      const o = render(S, mk(fx), ev, 7), d = dry[i];
+    for (const [i, [mk, ev]] of srcs.entries()) {
+      const pt = mk(fx), smps = await assetsOf(pt, i ? s : null, fx);
+      assert.equal(smps.length, (pt.needs || []).filter(id => !isWt(id)).length, c.name + ': every asset built');
+      const o = render(S, pt, ev, 7, smps), d = dry[i];
       assert.ok(o.PL.every(Number.isFinite) && o.PR.every(Number.isFinite), c.name + ' finite');
       const dp = dB(Math.max(peak(o.PL), peak(o.PR))) - dB(Math.max(peak(d.PL), peak(d.PR)));
       assert.ok(dp > -12 && dp < 9, `${c.name} on source ${i}: peak ${dp.toFixed(1)} dB re dry`);
       assert.ok(dB(peak(o.PL, o.PL.length - SR / 2)) < -40, `${c.name} on source ${i}: tail decays`);
-    });
+    }
   }
 });

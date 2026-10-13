@@ -1,5 +1,6 @@
 // wtstore.js unit tests (spec §10.3 item 13, §10.6 import check). Run: node --test tests/wtstore.test.mjs
 // The IndexedDB backend is exercised against a minimal in-file fake (node has no IndexedDB).
+import './v8-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { memoryStore, openStore } from '../wtstore.js';

@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Serum 2 CPU bench</title>
+<!--
+  SPEC-serum2 §14.1 iPad gate (owner I): runs the benchmark scenarios d–m of tests/bench-scenarios.mjs in this browser
+  (Safari on an iPad Pro for the M2 / M4 records) through the real engine and DSP scripts, evaluated on this page's main
+  thread with AudioWorklet stand-ins — the same code the worklet runs, timed with performance.now(). Load = fraction of
+  real time for 1 s of audio (median of 5 runs, base 48 kHz, oversampling 2); Worst = the slowest 128-frame quantum of
+  those runs as a fraction of its real time (> 1 = a missed deadline; coarse where the browser rounds performance.now()).
+  Rows q1 / q2 (live preset switch, §11.10): the slowest quantum of the first chord on the new preset. Every row must
+  measure ≤ 0.6 on an iPad Pro (hard ceiling); the iPad column is the target. Copy the JSON at the end into
+  tests/bench.json ("ipad").
+  Serve the repository root over http(s) and open /tests/bench.html (file:// cannot load modules).
+-->
+<style>
+  :root { color-scheme: light dark; --bg: #f6f7f9; --ink: #16191d; --mute: #5d6672; --line: #d8dde3; --bad: #c0392b; --ok: #1e7f4f; --warn: #b7791f; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0f1216; --ink: #dfe6ee; --mute: #8b96a3; --line: #2a333d; --bad: #ff6a4a; --ok: #6fe3a1; --warn: #f7c948; } }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, sans-serif; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p { color: var(--mute); margin: 0 0 12px; max-width: 70ch; }
+  button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; min-height: 44px; }
+  table { border-collapse: collapse; margin: 12px 0; width: 100%; max-width: 900px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .bad { color: var(--bad); font-weight: 600; } .ok { color: var(--ok); } .warn { color: var(--warn); }
+  pre { background: rgba(127, 127, 127, 0.12); padding: 8px; border-radius: 8px; overflow-x: auto; max-width: 900px; }
+</style>
+<script>
+  // AudioWorkletGlobalScope stand-ins for the classic scripts below (one "scope": this page)
+  globalThis.sampleRate = 48000;
+  globalThis.currentFrame = 0;
+  globalThis.AudioWorkletProcessor = class AudioWorkletProcessor { constructor() { this.port = { postMessage() {}, onmessage: null }; } };
+  globalThis.registerProcessor = (name, cls) => { globalThis.BenchProc = cls; };
+</script>
+<!-- SPEC-serum2 §0.3 script list in table order, then engine.js -->
+<script src="../sx-base.js?v=6"></script>
+<script src="../sx-filt2.js?v=6"></script>
+<script src="../sx-warp.js?v=6"></script>
+<script src="../sx-mod.js?v=6"></script>
+<script src="../sx-sample.js?v=6"></script>
+<script src="../sx-gran.js?v=6"></script>
+<script src="../sx-spec.js?v=6"></script>
+<script src="../sx-seq.js?v=6"></script>
+<script src="../serum-dsp.js?v=6"></script>
+<script src="../fx-mods2.js?v=6"></script>
+<script src="../fx-dsp.js?v=6"></script>
+<script src="../engine.js?v=6"></script>
+</head>
+<body>
+<h1>Serum 2 CPU bench (§14.1 rows d–m)</h1>
+<p>Each row renders 1 s of audio five times through the engine (median). Targets: the iPad column; hard ceiling 0.6 on an iPad Pro. Keep the screen awake and the device on power while it runs (≈ 1–2 min).</p>
+<button id="run" type="button">Run</button> <span id="status"></span>
+<table><thead><tr><th>Row</th><th>Scenario</th><th class="n">Load</th><th class="n">Worst</th><th class="n">iPad target</th><th class="n">node target</th></tr></thead><tbody id="rows"></tbody></table>
+<pre id="json" hidden></pre>
+<script type="module">
+  import { scenarios, measure } from './bench-scenarios.mjs';
+  const $ = id => document.getElementById(id);
+  const env = {
+    mk: po => new globalThis.BenchProc({ processorOptions: po }),
+    advance: n => { globalThis.currentFrame += n; },
+    FXDSP: globalThis.FXDSP, SxBase: globalThis.SxBase, now: () => performance.now(),
+  };
+  const list = scenarios(), tb = $('rows');
+  for (const s of list) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${s.id}</td><td>${s.label}</td><td class="n" id="l-${s.id}">—</td><td class="n" id="w-${s.id}">—</td><td class="n">${s.ipad}</td><td class="n">${s.node}</td>`;
+    tb.appendChild(tr);
+  }
+  const missing = ['SxBase', 'SxMod', 'SerumDSP', 'FXDSP', 'BenchProc'].filter(g => !globalThis[g]);
+  if (missing.length) $('status').textContent = 'Scripts missing: ' + missing.join(', ');
+  const pause = () => new Promise(r => setTimeout(r, 30));
+  $('run').onclick = async () => {
+    $('run').disabled = true;
+    const out = {}, worst = {};
+    for (const s of list) {
+      $('status').textContent = 'Running ' + s.id + '…';
+      await pause();
+      const cell = $('l-' + s.id);
+      try {
+        const r = measure(s, env, { runs: 5, seconds: 1 });
+        out[s.id] = +r.load.toFixed(4);
+        cell.textContent = r.load.toFixed(3);
+        cell.className = 'n ' + (r.load > 0.6 ? 'bad' : r.load > s.ipad ? 'warn' : 'ok');
+        if (r.worst !== undefined && s.kind !== 'switch') {
+          const wc = $('w-' + s.id), w = r.worst;
+          worst[s.id] = +w.toFixed(3);
+          wc.textContent = w.toFixed(2);
+          wc.className = 'n ' + (w > 1 ? 'bad' : w > 0.6 ? 'warn' : 'ok');
+        }
+      } catch (err) {
+        cell.textContent = 'error'; cell.className = 'n bad'; cell.title = String(err && err.stack || err);
+        console.error(s.id, err);
+      }
+    }
+    const rec = { ua: navigator.userAgent, date: new Date().toISOString().slice(0, 10), rows: out, worst };
+    $('json').hidden = false;
+    $('json').textContent = JSON.stringify(rec, null, 1);
+    $('status').textContent = 'Done — rows over 0.6 are marked red, over the iPad target amber.';
+    $('run').disabled = false;
+  };
+</script>
+</body>
+</html>

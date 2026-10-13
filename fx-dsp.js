@@ -1,12 +1,44 @@
 /*
- * fx-dsp.js — Serum-style FX rack DSP (classic script, no imports/exports). Owner E4.
+ * fx-dsp.js — Serum-style FX rack DSP (classic script #11 of the SPEC-serum2 §0.3 list, no imports/exports). Owner F1
+ * (Phase 1: E4).
  *
  * Evaluated in the AudioWorkletGlobalScope (addModule), on the main thread (<script> injected by wk.loadDSP) and in
  * node vm contexts (tests). The whole file is one IIFE that publishes `globalThis.FXDSP`; it can be evaluated again in
  * the same scope, and a failure inside leaves FXDSP = null without throwing. `globalThis.SerumDSP` (SFilter for the
- * Filter module, filterImpulse) is read lazily inside functions, never at load.
- * Contract: SPEC-serum.md §8.5 (exports, FXRack, module recipes, shapers), §4.2 (FXP / FXT), §5.4–§5.5 (FX smoothing
- * and modulation), §6.15 (master / bypass output stage), §3.10–§3.13 (ladders, enumerations, FX destinations).
+ * Filter module, filterImpulse) is read lazily inside functions, never at load; the S1 code never reads `SxBase`.
+ * Contract: SPEC-serum2 §4.2 (FX-context layout), §4.3 (FXP v2 / FXT v2), §8.1 (rack engine), §11.11 (exports), §1
+ * (buses, output stage), on top of SPEC-serum.md §8.5 (module recipes, shapers), §5.4–§5.5 (FX smoothing and
+ * modulation), §6.15 (master / bypass output stage).
+ *
+ * v2 (F1, M1a step 3): FXRack reads FXP v2 (VER 2). One Unit per FXP instance, kept by instance id across set() calls
+ * while its type and variant match (state, phases and buffers survive edits of other instances); a removed instance that
+ * still sounds fades out (5 ms) at its old place in the chain, then is dropped. Parameters are addressed in the
+ * FX-context layout: [0] g.master [1] g.bypass [2] g.direct [3] g.bus1v [4] g.bus2v, [8 + off + p] parameter p of the
+ * instance (setMods takes the same vector; with a key argument a stale layout is ignored). Racks: MAIN (rack 0) on L/R,
+ * BUS 1 / BUS 2 on their inputs (process b1*, b2*), each × its level and routed to Main / Direct / the other bus in
+ * dependency order; rack bypass crossfades (5 ms). S1 variants (v = 1) are the Phase-1 modules with their v1 tables and
+ * exactly the Phase-1 arithmetic per instance (they never read SxBase). A rack of S1 instances in Phase-1 module order
+ * renders bit-identically to the Phase-1 FXRack (§8.1, §15.1): every neutral v2 term (direct / bus levels at 0 dB, no
+ * bus, no rack bypass) is skipped, never computed (§0.7). phases() → Float64Array(48) and gr() → Float32Array(4·48) are
+ * indexed by FXP instance (fxLayout order).
+ * M2 (F1): the S2 variants of the changed modules (§8.2: Distortion modes 0–17 through SxBase's shapers with Key Track and
+ * Overdrive staged by FXMods2.Overdrive, Phaser POLES / DEPTH 2, Chorus HPF, Delay HQ with Float32 lines, Compressor
+ * crossovers / BELOW / band gains, EQ level, Filter types 0–107 / Key Track / Clean Mode), the S2 Reverb unit (§8.3:
+ * pre-delay, LOW / HIGH CUT, Plate / Hall here, Vintage / Nitrous / Basin as FXMods2 tanks in one shared pool, type changes
+ * ducked), the FXMods2 modules (Bode, Convolve, Utility) and the splitters (SplitMod: an FXMods2 band builder, the branch
+ * chains run on the bands, Σ × LEVEL); every S2 variant at its S1-equivalent setting renders bit-identically to the S1
+ * instance (Compressor: within its crossover rounding). Kinds that cannot run in this scope (§0.3 failure column: S2
+ * variants without SxBase, the FXMods2 types without FXMods2, Convolve without its IR entry, an S2 reverb type without its
+ * tank) pass their input. The per-track memory cap (§8.5): set() leaves an instance whose allocation would take the
+ * rack's bytes() above 32 MB unallocated and bypassed and lists its id in `over` (the host shows the notice); set-time
+ * growth of allocated units (Convolve tail FDL, S2 Reverb pool, splitter alignment lines) is checked too (Convolve:
+ * keeps its FDL and is bypassed until it fits; Reverb: the unprepared TYPE is not installed); an instance refused once
+ * is not allocated again until the rack has room for the size it measured. Convolve's adopted IR spectra are assets and
+ * are not counted; its tail FDL is sized from the stored entry (nothing for a missing one) — at set() or at assets(),
+ * the host hook called after SxBase.storeAsset / dropAsset (§9.5 'smp' / 'smpdel'). Splitters crossfade a branch
+ * bypass over 5 ms and align their branches' latencies (Distortion, Limit look-ahead); `latency` includes Limit-mode
+ * compressors in MAIN splitter branches. distCurve(mode 0–17, drive, xsA, xsB, n, stages) and
+ * splitResponse(type, f1, f2, freqs, fs) are the §11.11 display helpers.
  *
  * Implementation notes (IMPL choices within the spec):
  * - Parameters: per process() call ("span", ≤ 128 frames) the base n is smoothed by a one-pole (τ = 10 ms × smooth)
@@ -73,7 +105,7 @@
     const DB = 20 / LN10;                                      // 20·log10(x) = DB·ln(x)
     const IDB = LN10 / 20;                                     // 10^(g/20) = exp(IDB·g)
 
-    const VER = 1, NF = 100, NMOD = 10, BLK = 16, SPAN = 128, NXS = 1025;
+    const VER = 2, NF = 100, NMOD = 10, BLK = 16, SPAN = 128, NXS = 1025;   // VER = FXP major (§2.6.5); NF = v1 FX rows
     const MIDI0 = 440 * Math.pow(2, -69 / 12), MIDI128 = 440 * Math.pow(2, 59 / 12);
 
     /* ------------------------------------------------------------ FX destinations (§3.13 FX segment, fx idx order) */
@@ -149,10 +181,10 @@
       3, 8 / 3, 2, 1.5, 4 / 3, 1, 0.75, 2 / 3, 0.5, 0.375, 1 / 3, 0.25, 0.1875, 1 / 6, 0.125]);
     const DLY_BEATS = Float64Array.from([1 / 128, 1 / 64, 1 / 32, 1 / 16, 1 / 8, 1 / 4, 1 / 2, 1, 2, 4, 8, 16]);
 
-    // §3.1 laws (same expressions as serum-core lawValue)
-    function lawV(k, n) {
-      const lo = FLO[k], hi = FHI[k];
-      switch (FLAW[k]) {
+    // §3.1 laws (same expressions as serum-core lawValue): lawU(law code, lo, hi, n); lawV(k, n) of v1 fx idx k
+    function lawV(k, n) { return lawU(FLAW[k], FLO[k], FHI[k], n); }
+    function lawU(law, lo, hi, n) {
+      switch (law) {
         case LIN: return lo + (hi - lo) * n;
         case INT: return round(lo + (hi - lo) * n);
         case ENUM: return round(hi * n);
@@ -179,6 +211,12 @@
       }
       const n2 = n * n;
       return 20 * n2 * n2;
+    }
+
+    // delay time (s) of a time (ms) / BPM-ladder (DLY_LADDER index) pair, clamped to [0, cap]
+    function dlyTimeS(ms, bpmOn, lad, bpm, cap) {
+      const s = bpmOn >= 0.5 ? DLY_BEATS[lad > 0 ? (lad < 11 ? round(lad) : 11) : 0] * 60 / (bpm > 0 ? bpm : 120) : 0.001 * ms;
+      return s > 0 ? (s < cap ? s : cap) : 0;
     }
 
     /* ------------------------------------------------------------ shared DSP helpers */
@@ -275,9 +313,9 @@
       }
       c[o] = b0 / a0; c[o + 1] = b1 / a0; c[o + 2] = b2 / a0; c[o + 3] = a1 / a0; c[o + 4] = a2 / a0;
     }
-    function eqCoefs(v, fs, c) {                               // v = engine values in fx idx order
-      eqBand(v[97], 0, v[72], v[73], v[74], fs, c, 0);
-      eqBand(v[98], 1, v[75], v[76], v[77], fs, c, 5);
+    function eqCoefs(v, fs, c) {                               // v = engine values of the EQ S1 table (local order)
+      eqBand(v[7], 0, v[1], v[2], v[3], fs, c, 0);
+      eqBand(v[8], 1, v[4], v[5], v[6], fs, c, 5);
     }
     // The module runs the same transfer functions as TPT SVFs (Simper's trapezoidal SVF: identical bilinear mapping
     // with prewarp at w0, so |H| equals the RBJ biquad exactly) because SVFs stay well-behaved under fast coefficient
@@ -464,15 +502,15 @@
       }
       vd(j) { return (1.5 + 2.2 * j + 3 * this.det * (0.5 + 0.5 * sin(TAU * this.ph[j]))) * this.fs / 1000; }
       upd(R) {
-        const ev = R.ev, n = R.en[2];
+        const ev = R.ev, n = R.en[1];
         this.rate = n > 0 ? 0.1 + 6 * n * n : 0;              // RATE 0 freezes the voices (phase memory, inv A20.1)
-        this.det = ev[3];
-        const N = ev[4], g = N > 0 ? 1 / sqrt(N) : 0;
+        this.det = ev[2];
+        const N = ev[3], g = N > 0 ? 1 / sqrt(N) : 0;
         for (let j = 0; j < 7; j++) this.g1[j] = j < N ? g : 0;
-        this.mx1 = ev[5]; this.lv1 = ev[6];
-        const k = (0.3 + 1.7 * ev[7]) * this.fs / 1000;
+        this.mx1 = ev[4]; this.lv1 = ev[5];
+        const k = (0.3 + 1.7 * ev[6]) * this.fs / 1000;
         for (let q = 0; q < 4; q++) this.t1[q] = k * DIM_MS[q];
-        this.dm1 = ev[8]; this.dl1 = ev[9];
+        this.dm1 = ev[7]; this.dl1 = ev[8];
       }
       snap() {
         for (let j = 0; j < 7; j++) { this.g0[j] = this.g1[j]; this.d0[j] = this.vd(j); }
@@ -574,16 +612,16 @@
       seed() { this.acc = 1e9; }                               // Downsample: the next sample starts a hold (re-seed point)
       upd(R) {
         const ev = R.ev, fs = this.fs;
-        const mode = ev[88];
-        this.mode = mode; this.filt = ev[89];
+        const mode = ev[7];
+        this.mode = mode; this.filt = ev[8];
         this.S.xa = R.xsA; this.S.xb = R.xsB;
-        this.S.set(mode, ev[11]);
+        this.S.set(mode, ev[1]);
         this.asym = mode === 0 || mode === 3 || mode === 9 || mode === 10 || mode === 12 || mode === 14 ? 1 : 0;
-        this.k = 1 / ev[14];
+        this.k = 1 / ev[4];
         const c = R.cf;
-        svfC(ev[13], this.k, fs, c, 0);
+        svfC(ev[3], this.k, fs, c, 0);
         this.a1 = c[0]; this.a2 = c[1]; this.a3 = c[2];
-        const l = ev[12];
+        const l = ev[2];
         if (l <= 0.5) { this.wl = 1 - 2 * l; this.wb = 2 * l; this.wh = 0; } else { this.wl = 0; this.wb = 2 - 2 * l; this.wh = 2 * l - 1; }
       }
       run(R, L, Rc, o, m) {
@@ -669,8 +707,8 @@
       reset() { if (this.lL) { this.lL.fill(0); this.lR.fill(0); } this.w = 0; this.ir = 1; }
       upd(R) {
         const ev = R.ev, en = R.en;
-        this.rate = MODFX_HZ(en[18], en[90] >= 0.5, R.bpm);
-        this.depth = ev[19]; this.fb = 0.95 * ev[20]; this.off = ev[21] / 360;
+        this.rate = MODFX_HZ(en[1], en[7] >= 0.5, R.bpm);
+        this.depth = ev[2]; this.fb = 0.95 * ev[3]; this.off = ev[4] / 360;
       }
       dly(ph) { return (0.25 + 15.75 * this.depth * (0.5 - 0.5 * cos(TAU * ph))) * this.fs / 1000; }
       snap() { this.d0L = this.dly(this.ph); this.d0R = this.dly(this.ph + this.off); }
@@ -707,8 +745,8 @@
       reset() { this.s.fill(0); }
       upd(R) {
         const ev = R.ev, en = R.en;
-        this.rate = MODFX_HZ(en[25], en[91] >= 0.5, R.bpm);
-        this.depth = ev[26]; this.freq = ev[27]; this.fb = 0.95 * ev[28]; this.off = ev[29] / 360;
+        this.rate = MODFX_HZ(en[1], en[8] >= 0.5, R.bpm);
+        this.depth = ev[2]; this.freq = ev[3]; this.fb = 0.95 * ev[4]; this.off = ev[5] / 360;
       }
       coef(ph) {
         const fs = this.fs, hi = 0.45 * fs;
@@ -755,14 +793,15 @@
         this.d0 = new Float64Array(4); this.d1 = new Float64Array(4); this.lp = new Float64Array(4); this.c = new Float64Array(3);
         this.rate = 0; this.t1 = 5; this.t2 = 0; this.dep = 26; this.fb = 0.095; this.mono = 0;
         this.ir = 1; this.ist = 1 / (0.005 * fs);
+        this.hp = 0;                                           // S2 HPF: the wet 2-pole filter is a high-pass (S1: always 0)
       }
       alloc() { this.cap = ceil(0.0465 * this.fs) + 8; this.buf = new Float32Array(4 * this.cap); }
       reset() { if (this.buf) this.buf.fill(0); this.w = 0; this.lp.fill(0); this.ir = 1; }
       upd(R) {
         const ev = R.ev, en = R.en;
-        this.rate = MODFX_HZ(en[33], en[92] >= 0.5, R.bpm);
-        this.t1 = ev[34]; this.t2 = ev[35]; this.dep = ev[36]; this.fb = ev[37]; this.mono = R.choMono;
-        svfC(ev[38], SQRT2, this.fs, this.c, 0);
+        this.rate = MODFX_HZ(en[1], en[9] >= 0.5, R.bpm);
+        this.t1 = ev[2]; this.t2 = ev[3]; this.dep = ev[4]; this.fb = ev[5]; this.mono = R.choMono;
+        svfC(ev[6], SQRT2, this.fs, this.c, 0);
       }
       tap(t, ph) {
         const th = this.mono === 1 ? CHO_TH_MONO[t] : CHO_TH[t];
@@ -773,7 +812,7 @@
       snap() { for (let t = 0; t < 4; t++) this.d0[t] = this.tap(t, this.ph); }
       seed(p) { this.ph = p; this.snap(); }
       run(R, L, Rc, o, m) {
-        const cap = this.cap, buf = this.buf, fb = this.fb, c = this.c, a1 = c[0], a2 = c[1], a3 = c[2];
+        const cap = this.cap, buf = this.buf, fb = this.fb, c = this.c, a1 = c[0], a2 = c[1], a3 = c[2], hp = this.hp;
         const p = frac(this.ph + this.rate * m / this.fs);
         this.ph = p;
         const d0 = this.d0, d1 = this.d1;
@@ -791,9 +830,9 @@
             const x = X[i], xi = x * ir;
             const ya = rdH(buf, oa, cap, w, da + dda * k), yb = rdH(buf, ob, cap, w, db + ddb * k);
             buf[oa + w] = sat(xi + fb * ya); buf[ob + w] = sat(xi + fb * yb);
-            const v3 = 0.5 * (ya + yb) - s2, v1 = a1 * s1 + a2 * v3, v2 = s2 + a2 * s1 + a3 * v3;
+            const yw = 0.5 * (ya + yb), v3 = yw - s2, v1 = a1 * s1 + a2 * v3, v2 = s2 + a2 * s1 + a3 * v3;
             s1 = 2 * v1 - s1; s2 = 2 * v2 - s2;
-            X[i] = v2;
+            X[i] = hp === 1 ? yw - SQRT2 * v1 - v2 : v2;
             w = w + 1 === cap ? 0 : w + 1;
           }
           this.lp[ta] = s1; this.lp[ta + 1] = s2;
@@ -832,13 +871,13 @@
         return t > 3 ? (t < hi ? t : hi) : 3;
       }
       upd(R) {
-        const ev = R.ev, en = R.en, bpm = R.bpm > 0 ? R.bpm : 120, sync = en[93] >= 0.5;
-        this.tL = this.time(en, ev, 43, 45, sync, bpm);
-        this.tR = en[94] >= 0.5 ? this.tL : this.time(en, ev, 44, 46, sync, bpm);
-        this.fb = ev[42]; this.mode = ev[95];
-        const bw = ev[48];
+        const ev = R.ev, en = R.en, bpm = R.bpm > 0 ? R.bpm : 120, sync = en[10] >= 0.5;
+        this.tL = this.time(en, ev, 2, 4, sync, bpm);
+        this.tR = en[11] >= 0.5 ? this.tL : this.time(en, ev, 3, 5, sync, bpm);
+        this.fb = ev[1]; this.mode = ev[12];
+        const bw = ev[7];
         this.flat = bw >= DLY_FLAT ? 1 : 0;
-        if (this.flat === 0) dlySvf(ev[47], bw, this.fi, this.c);
+        if (this.flat === 0) dlySvf(ev[6], bw, this.fi, this.c);
       }
       snap() { this.dL = this.tL; this.dR = this.tR; }
       // longest gap (base samples) between a write and the echo it produces: idle() must wait for it (§10.5.12)
@@ -960,6 +999,7 @@
         this.aA = 1; this.rR = 0; this.aR = 1; this.mk = 1;
         this.mode = 0; this.pm = 0; this.cx = 1; this.cst = 1 / (0.005 * fs);   // 0 single band, 1 Limit, 2 Multiband
         this.ent = 0;                                          // a mode entered: its gain smoother starts at its target
+        this.slopeB = 0.75; this.bgL = 1; this.bgM = 1; this.bgH = 1;   // S2: BELOW slope, band gains (S1: RATIO's slope, 1)
       }
       alloc() {
         const n = ceil(0.01 * this.fs) + 4;
@@ -973,17 +1013,17 @@
       }
       upd(R) {
         const ev = R.ev, en = R.en, fs = this.fs;
-        this.thr = ev[52]; this.thrDb = DB * log(this.thr);
-        const r = ev[53];
-        this.limit = r >= 1e6 ? 1 : 0; this.slope = 1 - 1 / r;
-        const att = ev[54] > 0.1 ? ev[54] : 0.1, rel = ev[55] > 0.1 ? ev[55] : 0.1;
+        this.thr = ev[1]; this.thrDb = DB * log(this.thr);
+        const r = ev[2];
+        this.limit = r >= 1e6 ? 1 : 0; this.slope = 1 - 1 / r; this.slopeB = this.slope;
+        const att = ev[3] > 0.1 ? ev[3] : 0.1, rel = ev[4] > 0.1 ? ev[4] : 0.1;
         this.aA = 1 - exp(-1000 / (att * fs)); this.rR = exp(-1000 / (rel * fs)); this.aR = 1 - this.rR;
-        this.mk = ev[56];
-        this.mb = en[96] >= 0.5 ? 1 : 0;
-        const n = en[54], La = round(10 * n * n * fs / 1000);
+        this.mk = ev[5];
+        this.mb = en[11] >= 0.5 ? 1 : 0;
+        const n = en[3], La = round(10 * n * n * fs / 1000);
         this.La = La < this.cap - 2 ? La : this.cap - 2 > 0 ? this.cap - 2 : 0;
         for (let b = 0; b < 3; b++) {
-          const g = ev[57 + b], T = this.thrDb + (g > 1e-6 ? DB * log(g) : -120);
+          const g = ev[6 + b], T = this.thrDb + (g > 1e-6 ? DB * log(g) : -120);
           this.T[b] = T > -120 ? T : -120;
         }
         const M = this.mb === 1 ? 2 : this.limit === 1 ? 1 : 0;
@@ -1018,7 +1058,8 @@
       }
       run(R, L, Rc, o, m) {
         const la = this.la, cap = this.cap, La = this.La, dqT = this.dqT, dqV = this.dqV, dqC = this.dqC, thr = this.thr;
-        const thrDb = this.thrDb, slope = this.slope, rR = this.rR, aA = this.aA, aR = this.aR, mk = this.mk;
+        const thrDb = this.thrDb, slope = this.slope, rR = this.rR, aA = this.aA, aR = this.aR, mk = this.mk, slopeB = this.slopeB;
+        const bgL = this.bgL, bgM = this.bgM, bgH = this.bgH;
         const T = this.T, T0 = T[0], T1 = T[1], T2 = T[2], DL = R.dyL, DR = R.dyR, bp = this.bp, bg = this.bg;
         this.split(L, o, m, 0); this.split(Rc, o, m, 1);
         const d = this.bd, bLo = d[0], bMd = d[1], bHi = d[2], bAp = d[3], cLo = d[4], cMd = d[5], cHi = d[6], cAp = d[7];
@@ -1070,11 +1111,11 @@
           pa = hiL < 0 ? -hiL : hiL; pb = hiR < 0 ? -hiR : hiR;
           p2 *= rR; if (pa > p2) p2 = pa; if (pb > p2) p2 = pb;
           if (uM) {
-            g = mbCurve(p0, T0, slope);
+            g = mbCurve(p0, T0, slope, slopeB);
             if (g > g0 && eM === 0) { g0 += (g - g0) * aA; if (p0 > 1e-4) { const c = (g < 0 ? g : 0) - MB_UP; if (g0 < c) g0 = c; } } else g0 = g;
-            g = mbCurve(p1, T1, slope);
+            g = mbCurve(p1, T1, slope, slopeB);
             if (g > g1 && eM === 0) { g1 += (g - g1) * aA; if (p1 > 1e-4) { const c = (g < 0 ? g : 0) - MB_UP; if (g1 < c) g1 = c; } } else g1 = g;
-            g = mbCurve(p2, T2, slope);
+            g = mbCurve(p2, T2, slope, slopeB);
             if (g > g2 && eM === 0) { g2 += (g - g2) * aA; if (p2 > 1e-4) { const c = (g < 0 ? g : 0) - MB_UP; if (g2 < c) g2 = c; } } else g2 = g;
           }
           eS = 0; eM = 0;
@@ -1083,7 +1124,7 @@
           if (uS) { const gn = gs > 0 ? exp(-IDB * gs) : 1; sL = xl * gn; sR = xr * gn; }
           if (uL) { lL = yl * lg; lR = yr * lg; }
           if (uM) {
-            const e0 = g0 === 0 ? 1 : exp(-IDB * g0), e1 = g1 === 0 ? 1 : exp(-IDB * g1), e2 = g2 === 0 ? 1 : exp(-IDB * g2);
+            const e0 = (g0 === 0 ? 1 : exp(-IDB * g0)) * bgL, e1 = (g1 === 0 ? 1 : exp(-IDB * g1)) * bgM, e2 = (g2 === 0 ? 1 : exp(-IDB * g2)) * bgH;
             mL = loL * e0 + mdL * e1 + hiL * e2; mR = loR * e0 + mdR * e1 + hiR * e2;
           }
           let oL = M === 0 ? sL : M === 1 ? lL : mL, oR = M === 0 ? sR : M === 1 ? lR : mR;
@@ -1100,10 +1141,10 @@
         this.w = w; this.front = front; this.cnt = cnt; this.tc = tc; this.lg = lg; this.pk = pk; this.gs = gs; this.cx = cx;
         bp[0] = p0; bp[1] = p1; bp[2] = p2; bg[0] = g0; bg[1] = g1; bg[2] = g2;
       }
-      meter(gr) {
-        if (this.mode === 2) { gr[0] = 0; gr[1] = this.bg[0]; gr[2] = this.bg[1]; gr[3] = this.bg[2]; return; }
-        gr[0] = this.mode === 1 ? (this.lg < 1 ? -DB * log(this.lg > 1e-12 ? this.lg : 1e-12) : 0) : this.gs;
-        gr[1] = 0; gr[2] = 0; gr[3] = 0;
+      meter(gr, o) {                                         // gain reduction (dB) into gr[o … o + 3]
+        if (this.mode === 2) { gr[o] = 0; gr[o + 1] = this.bg[0]; gr[o + 2] = this.bg[1]; gr[o + 3] = this.bg[2]; return; }
+        gr[o] = this.mode === 1 ? (this.lg < 1 ? -DB * log(this.lg > 1e-12 ? this.lg : 1e-12) : 0) : this.gs;
+        gr[o + 1] = 0; gr[o + 2] = 0; gr[o + 3] = 0;
       }
       flush() {
         flushArr(this.xs);
@@ -1111,13 +1152,14 @@
         for (let b = 0; b < 3; b++) if (this.bp[b] < 1e-30) this.bp[b] = 0;
       }
     }
-    // multiband static curve: GR in dB (> 0 reduction, < 0 boost ≤ 24 dB) for peak level p (linear)
-    function mbCurve(p, T, slope) {
+    // multiband static curve: GR in dB (> 0 reduction, < 0 boost ≤ 24 dB) for peak level p (linear); slopeB = the slope
+    // below T − 24 dB (Phase 1: RATIO's; S2: BELOW's)
+    function mbCurve(p, T, slope, slopeB) {
       if (p <= 1e-4) return 0;                                 // below −80 dBFS: unchanged
       const lv = DB * log(p);
       if (lv > T) return (lv - T) * slope;
       const Tl = T - 24;
-      if (lv < Tl) { const g = -(Tl - lv) * slope; return g > -24 ? g : -24; }
+      if (lv < Tl) { const g = -(Tl - lv) * slopeB; return g > -24 ? g : -24; }
       return 0;
     }
 
@@ -1179,8 +1221,8 @@
         if (this.type === 1) for (let q = 0; q < 8; q++) this.dl[q] = this.hallD(q, 0);
       }
       upd(R) {
-        const ev = R.ev, fs = this.fs, size = ev[63], t = ev[64], c = ev[66], hc = ev[67];
-        svfC(20 * pow(50, ev[65]), SQRT2, fs, this.hc, 0);
+        const ev = R.ev, fs = this.fs, size = ev[1], t = ev[2], c = ev[4], hc = ev[5];
+        svfC(20 * pow(50, ev[3]), SQRT2, fs, this.hc, 0);
         if (this.type === 0) {
           const fi = this.fi, hi = 0.45 * fi;
           this.sc1 = (0.5 + size) * fi / PL_FS;
@@ -1192,7 +1234,7 @@
           f = 20000 * pow(0.03, c);
           f = f < hi ? f : hi;
           this.dmK = 1 - exp(-TAU * f / fi);
-          this.decay = 0.2 + 0.78 * size; this.width = ev[68];
+          this.decay = 0.2 + 0.78 * size; this.width = ev[6];
         } else {
           const sc = (0.4 + 1.6 * size) * fs / 48000, hi = 0.45 * fs;
           this.sc1 = sc;
@@ -1202,7 +1244,7 @@
           let f = 20000 * pow(0.05, hc);
           f = f < hi ? f : hi;
           this.lpK = 1 - exp(-TAU * f / fs);
-          this.srate = 0.05 + 3 * c * c; this.sdep = 12 * ev[68] * fs / 48000;
+          this.srate = 0.05 + 3 * c * c; this.sdep = 12 * ev[6] * fs / 48000;
         }
       }
       hallD(q, sph) { return HL_LEN[q] * this.sc1 + this.sdep * (0.5 + 0.5 * sin(TAU * (sph + 0.125 * q))); }
@@ -1352,8 +1394,8 @@
       reset() { this.s.fill(0); }
       upd(R) {
         const ev = R.ev, fs = this.fs, c = this.c;
-        eqSvf(ev[97], 0, ev[72], ev[73], ev[74], fs, c, 0);
-        eqSvf(ev[98], 1, ev[75], ev[76], ev[77], fs, c, 6);
+        eqSvf(ev[7], 0, ev[1], ev[2], ev[3], fs, c, 0);
+        eqSvf(ev[8], 1, ev[4], ev[5], ev[6], fs, c, 6);
       }
       run(R, L, Rc, o, m) {
         const c = this.c, s = this.s;
@@ -1377,9 +1419,9 @@
       reset() { if (this.sf) this.sf.reset(); }
       upd(R) {
         if (!this.sf) return;
-        const ev = R.ev, fc = ev[79], sh = (0.5 - ev[83]) * 3;
-        this.setType(ev[99]);
-        this.sf.set(fc * pow(2, sh), fc * pow(2, -sh), ev[80], ev[81], ev[82]);
+        const ev = R.ev, fc = ev[1], sh = (0.5 - ev[5]) * 3;
+        this.setType(ev[8]);
+        this.sf.set(fc * pow(2, sh), fc * pow(2, -sh), ev[2], ev[3], ev[4]);
       }
       run(R, L, Rc, o, m) {
         const fL = this.fL, fR = this.fR;
@@ -1389,189 +1431,1143 @@
       }
     }
 
-    /* ------------------------------------------------------------ FXRack (§8.5.2) */
-    let warnedVer = false;
-    // A re-seed (fxp.seed, transport()) or a Plate ↔ Hall change while a module's lines hold audible signal is applied at
-    // the bottom of a 2.5 ms duck of that module (output → its input), which then fades back in over 5 ms; with nothing
-    // audible (output < 1e-6 for SEEDQ s of zero input) it is applied at once, so renders after a silent history are
-    // bit-identical to a fresh rack's (§10.7f).
+    /* ------------------------------------------------------------ S2 variants of the changed modules (SPEC-serum2 §8.2, §8.3) */
+    // Parameter positions are those of fx-core FXP_TAB[type][2] (the S1 table followed by the S2 rows, §3.16.2).
+
+    // Distortion S2: modes 0–17 through SxBase (Shaper / shapeS: modes 0–15 bit-identical to the Phase-1 copy above, 17 Soft
+    // Sat.), 16 Overdrive staged by FXMods2.Overdrive at the 2× shaper rate (identity without FXMods2: the stage passes),
+    // Key Track (`kt`: FREQ × the setNote key factor), the Phase-1 filter / half-band / DC-blocker / power-glide machinery
+    class Dist2 extends Dist {
+      constructor(fs, B, M2) {
+        super(fs);
+        this.S = new B.Shaper(); this.ss = B.shapeS;
+        this.od = M2 && typeof M2.Overdrive === 'function' ? new M2.Overdrive(2 * fs) : null;
+        this.N = 4;
+      }
+      reset() { super.reset(); if (this.od) this.od.reset(); }
+      upd(R) {
+        const ev = R.ev, fs = this.fs, mode = ev[7];
+        this.mode = mode; this.filt = ev[8];
+        this.S.xa = R.xsA; this.S.xb = R.xsB;
+        this.S.set(mode, ev[1]);
+        this.asym = mode === 0 || mode === 3 || mode === 9 || mode === 10 || mode === 12 || mode === 14 ? 1 : 0;
+        this.k = 1 / ev[4];
+        const c = R.cf, F = R.en[9] >= 0.5 ? ev[3] * R.keyF : ev[3];
+        svfC(F, this.k, fs, c, 0);
+        this.a1 = c[0]; this.a2 = c[1]; this.a3 = c[2];
+        const l = ev[2];
+        if (l <= 0.5) { this.wl = 1 - 2 * l; this.wb = 2 * l; this.wh = 0; } else { this.wl = 0; this.wb = 2 - 2 * l; this.wh = 2 * l - 1; }
+        this.N = ev[10];
+        if (this.od) this.od.set(ev[1], this.N);
+      }
+      run(R, L, Rc, o, m) {
+        const S = this.S, ss = this.ss, od = this.od, xh = this.xh, eh = this.eh, oh = this.oh, rh = this.rh, sv = this.sv, dc = this.dc, sb = this.sb;
+        const filt = this.filt, mode = this.mode, asym = this.asym, k = this.k, a1 = this.a1, a2 = this.a2, a3 = this.a3;
+        const wl = this.wl, wb = this.wb, wh = this.wh, dcR = this.dcR, hpA = this.hpA, lpK = this.lpK, hold = S.a;
+        const h0 = HB[0], h1 = HB[1], h2 = HB[2], h3 = HB[3], h4 = HB[4], h5 = HB[5], h6 = HB[6], h7 = HB[7];
+        const p0 = this.p, acc0 = this.acc, need = this.need, vdir = this.vdir, v0 = this.v, gst = this.gst;
+        let pe = p0, acc = acc0;
+        for (let c = 0; c < 2; c++) {
+          const X = c === 0 ? L : Rc, DY = c === 0 ? R.dyL : R.dyR, DV = c === 0 ? R.dvL : R.dvR, b = c << 5;
+          let p = p0, ic1 = sv[2 * c], ic2 = sv[2 * c + 1], dx = dc[2 * c], dy = dc[2 * c + 1], hd = this.hd[c];
+          let hx = sb[3 * c], hy = sb[3 * c + 1], ly = sb[3 * c + 2];
+          acc = acc0;
+          for (let j = 0; j < m; j++) {
+            const i = o + j;
+            let x = X[i];
+            p = (p + 15) & 15;
+            const q = b + p;
+            rh[q] = x; rh[q + 16] = x;
+            DY[j] = rh[q + DIST_LAT];
+            if (need === 1) {
+              let vj = vdir > 0 ? v0 + j * gst : vdir < 0 ? v0 - j * gst : v0;
+              vj = vj > DIST_LAT ? DIST_LAT : vj < 0 ? 0 : vj;
+              const di = vj | 0, f = vj - di;
+              let a = rh[q + di];
+              if (f > 0) a += f * (rh[q + di + 1] - a);
+              DV[j] = a;
+            }
+            if (filt === 1) {
+              const v3 = x - ic2, v1 = a1 * ic1 + a2 * v3, v2 = ic2 + a2 * ic1 + a3 * v3;
+              ic1 = 2 * v1 - ic1; ic2 = 2 * v2 - ic2;
+              x = wl * v2 + wb * k * v1 + wh * (x - k * v1 - v2);
+            }
+            xh[q] = x; xh[q + 16] = x;
+            const we = 2 * (h0 * (xh[q] + xh[q + 15]) + h1 * (xh[q + 1] + xh[q + 14]) + h2 * (xh[q + 2] + xh[q + 13])
+              + h3 * (xh[q + 3] + xh[q + 12]) + h4 * (xh[q + 4] + xh[q + 11]) + h5 * (xh[q + 5] + xh[q + 10])
+              + h6 * (xh[q + 6] + xh[q + 9]) + h7 * (xh[q + 7] + xh[q + 8]));
+            const wo = xh[q + 7];
+            let ve, vo;
+            if (mode === 14) {
+              hy = hpA * (hy + we - hx); hx = we; ly += lpK * (ss(S, hy) - ly); ve = ly;
+              hy = hpA * (hy + wo - hx); hx = wo; ly += lpK * (ss(S, hy) - ly); vo = ly;
+            } else if (mode === 16) {                             // Overdrive: the even 2× sample precedes the odd one
+              if (od !== null) { ve = od.tick(c, we); vo = od.tick(c, wo); } else { ve = we; vo = wo; }
+            } else {
+              ve = ss(S, we); vo = ss(S, wo);
+            }
+            eh[q] = ve; eh[q + 16] = ve; oh[q] = vo; oh[q + 16] = vo;
+            let y = h0 * (eh[q] + eh[q + 15]) + h1 * (eh[q + 1] + eh[q + 14]) + h2 * (eh[q + 2] + eh[q + 13])
+              + h3 * (eh[q + 3] + eh[q + 12]) + h4 * (eh[q + 4] + eh[q + 11]) + h5 * (eh[q + 5] + eh[q + 10])
+              + h6 * (eh[q + 6] + eh[q + 9]) + h7 * (eh[q + 7] + eh[q + 8]) + 0.5 * oh[q + 8];
+            if (mode === 8) {
+              acc += 1;
+              if (acc >= hold) { acc -= hold; if (acc >= hold) acc = 0; hd = y; }
+              y = 0.5 * hd;
+            }
+            if (filt === 2) {
+              const v3 = y - ic2, v1 = a1 * ic1 + a2 * v3, v2 = ic2 + a2 * ic1 + a3 * v3;
+              ic1 = 2 * v1 - ic1; ic2 = 2 * v2 - ic2;
+              y = wl * v2 + wb * k * v1 + wh * (y - k * v1 - v2);
+            }
+            const yd = y - dx + dcR * dy;
+            dx = y; dy = yd;
+            X[i] = asym === 1 ? yd : y;
+          }
+          sv[2 * c] = ic1; sv[2 * c + 1] = ic2; dc[2 * c] = dx; dc[2 * c + 1] = dy; this.hd[c] = hd;
+          sb[3 * c] = hx; sb[3 * c + 1] = hy; sb[3 * c + 2] = ly;
+          pe = p;
+        }
+        this.p = pe; this.acc = acc; this.v0 = v0;
+        if (vdir !== 0) { const v = vdir > 0 ? v0 + m * gst : v0 - m * gst; this.v = v > DIST_LAT ? DIST_LAT : v < 0 ? 0 : v; }
+      }
+      flush() { super.flush(); if (this.od) this.od.flush(); }
+    }
+
+    // Phaser S2: POLES P first-order allpasses per channel (1–18), corners f_j = f_sweep·2^(depth2·(2j/(P − 1) − 1)) (P = 1:
+    // f_sweep), the Phase-1 zero-delay feedback solved for any P (chain = A·u + B with A = Π a_j, B_j = a_j·B_{j−1} + s_j).
+    // P = 6 with DEPTH 2 at 0 over the block runs the Phase-1 arithmetic exactly (A = (a²)³, Horner B)
+    const PH_MAX = 18;
+    class Phaser2 {
+      constructor(fs) {
+        this.fs = fs; this.s = new Float64Array(2 * PH_MAX);
+        this.a0 = new Float64Array(2 * PH_MAX); this.a1 = new Float64Array(2 * PH_MAX); this.da = new Float64Array(PH_MAX);
+        this.ak = new Float64Array(PH_MAX);
+        this.ph = 0; this.rate = 0; this.depth = 0.5; this.freq = 600; this.fb = 0; this.off = 0.5; this.P = 4; this.d2 = 0; this.d20 = 0;
+      }
+      reset() { this.s.fill(0); }
+      upd(R) {
+        const ev = R.ev, en = R.en;
+        this.rate = MODFX_HZ(en[1], en[8] >= 0.5, R.bpm);
+        this.depth = ev[2]; this.freq = ev[3]; this.fb = 0.95 * ev[4]; this.off = ev[5] / 360;
+        let P = ev[9];
+        P = P > 1 ? (P < PH_MAX ? P : PH_MAX) : 1;
+        if (P > this.P) for (let c = 0; c < 2; c++) for (let j = this.P; j < P; j++) this.s[PH_MAX * c + j] = 0;
+        this.P = P; this.d2 = ev[10];
+      }
+      // the P coefficients for LFO phase ph into a[o …]
+      coefs(ph, a, o) {
+        const fs = this.fs, hi = 0.45 * fs, P = this.P, d2 = this.d2;
+        const f0 = this.freq * pow(2, this.depth * 4 * (0.5 - 0.5 * cos(TAU * ph)) - 2 * this.depth);
+        for (let j = 0; j < P; j++) {
+          let f = d2 === 0 || P === 1 ? f0 : f0 * pow(2, d2 * (2 * j / (P - 1) - 1));
+          f = f > 5 ? (f < hi ? f : hi) : 5;
+          const t = tan(PI * f / fs);
+          a[o + j] = (t - 1) / (t + 1);
+          if (d2 === 0 || P === 1) { for (let q = j + 1; q < P; q++) a[o + q] = a[o + j]; break; }
+        }
+      }
+      snap() { this.coefs(this.ph, this.a0, 0); this.coefs(this.ph + this.off, this.a0, PH_MAX); this.d20 = this.d2; }
+      seed(p) { this.ph = p; this.snap(); }
+      run(R, L, Rc, o, m) {
+        const p = frac(this.ph + this.rate * m / this.fs);
+        this.ph = p;
+        const a0 = this.a0, a1 = this.a1, s = this.s, fb = this.fb, P = this.P, da = this.da, ak = this.ak;
+        this.coefs(p, a1, 0); this.coefs(p + this.off, a1, PH_MAX);
+        const uni = this.d2 === 0 && this.d20 === 0;
+        for (let c = 0; c < 2; c++) {
+          const X = c === 0 ? L : Rc, b = PH_MAX * c;
+          if (uni && P === 6) {                                    // the Phase-1 arithmetic
+            const a00 = a0[b], dd = (a1[b] - a00) / m;
+            let s0 = s[b], s1 = s[b + 1], s2 = s[b + 2], s3 = s[b + 3], s4 = s[b + 4], s5 = s[b + 5];
+            for (let j = 0; j < m; j++) {
+              const i = o + j, x = X[i], a = a00 + dd * (j + 1);
+              const a2 = a * a, A = a2 * a2 * a2, B = ((((s0 * a + s1) * a + s2) * a + s3) * a + s4) * a + s5;
+              let u = x + fb * (A * x + B) / (1 - fb * A), t;
+              if (u > 4 || u < -4) u = sat(u);
+              t = a * u + s0; s0 = u - a * t; u = t;
+              t = a * u + s1; s1 = u - a * t; u = t;
+              t = a * u + s2; s2 = u - a * t; u = t;
+              t = a * u + s3; s3 = u - a * t; u = t;
+              t = a * u + s4; s4 = u - a * t; u = t;
+              t = a * u + s5; s5 = u - a * t; u = t;
+              X[i] = 0.5 * (x + u);
+            }
+            s[b] = s0; s[b + 1] = s1; s[b + 2] = s2; s[b + 3] = s3; s[b + 4] = s4; s[b + 5] = s5;
+            continue;
+          }
+          for (let q = 0; q < P; q++) da[q] = (a1[b + q] - a0[b + q]) / m;
+          for (let j = 0; j < m; j++) {
+            const i = o + j, x = X[i];
+            let A = 1, B = 0;
+            for (let q = 0; q < P; q++) { const a = a0[b + q] + da[q] * (j + 1); ak[q] = a; A *= a; B = a * B + s[b + q]; }
+            let u = x + fb * (A * x + B) / (1 - fb * A);
+            if (u > 4 || u < -4) u = sat(u);
+            for (let q = 0; q < P; q++) { const a = ak[q], t = a * u + s[b + q]; s[b + q] = u - a * t; u = t; }
+            X[i] = 0.5 * (x + u);
+          }
+        }
+        for (let q = 0; q < 2 * PH_MAX; q++) a0[q] = a1[q];
+        this.d20 = this.d2;
+      }
+      flush() { flushArr(this.s); }
+    }
+
+    // Chorus S2: HPF (`hp`): the wet 2-pole filter is a high-pass at the LPF frequency (the Phase-1 class with its hp flag)
+    class Chorus2 extends Chorus {
+      upd(R) { super.upd(R); this.hp = R.en[10] >= 0.5 ? 1 : 0; }
+    }
+
+    // Delay S2: High Quality (`hq`, default on): the lines always run at the full rate (Float32, 2 s: ≤ 3.1 MB at 192 kHz);
+    // off: the Phase-1 half-rate lines above 96 kHz. An hq change above 96 kHz is a topology change (ducked, lines cleared).
+    // (The flag is `hqOn`: the Phase-1 class uses `hq` for its half-rate interpolator ring position.)
+    class Delay2 extends Delay {
+      constructor(fs) { super(fs); this.hqOn = 1; this.hqT = 1; this.topo = 0; this.mode2(1); }
+      mode2(h) {
+        this.hqOn = h; this.dec = this.fs > 96000 && h === 0 ? 2 : 1; this.fi = this.fs / this.dec;
+        this.sl = 1 / (0.02 * this.fi); this.ist = 1 / (0.005 * this.fi);
+        if (this.lL) this.cap = ceil(2 * this.fi) + 8;
+      }
+      alloc() {
+        const n = ceil(2 * this.fs) + 8;
+        this.lL = new Float32Array(n); this.lR = new Float32Array(n); this.cap = ceil(2 * this.fi) + 8;
+      }
+      upd(R) {
+        const h = R.en[13] >= 0.5 ? 1 : 0;
+        if (this.fs <= 96000) this.hqOn = h;                    // the same full-rate lines either way
+        else if (h !== this.hqOn) { this.hqT = h; this.topo = 1; }
+        else if (this.topo === 1) this.topo = 0;               // switched back before the pending change was applied
+        super.upd(R);
+      }
+      applyTopo() { this.mode2(this.hqT); this.reset(); this.topo = 0; }
+    }
+
+    // Compressor S2: crossovers at X-LOW / X-HIGH (X-HIGH ≥ 1.2·X-LOW at runtime; coefficients per block), the upward
+    // ratio below threshold from BELOW, band output gains (dB) after each band's gain computer; the rest is Phase 1
+    class Comp2 extends Comp {
+      constructor(fs) { super(fs); this.xlo = XO1; this.xhi = XO2; }
+      upd(R) {
+        super.upd(R);
+        const ev = R.ev, fs = this.fs;
+        let lo = ev[12], hi = ev[13];
+        if (hi < 1.2 * lo) hi = 1.2 * lo;
+        if (lo !== this.xlo) { this.xlo = lo; svfC(lo, SQRT2, fs, this.xc, 0); }
+        if (hi !== this.xhi) { this.xhi = hi; svfC(hi, SQRT2, fs, this.xc, 3); }
+        const rb = ev[14];
+        this.slopeB = 1 - 1 / rb;
+        this.bgL = exp(IDB * ev[15]); this.bgM = exp(IDB * ev[16]); this.bgH = exp(IDB * ev[17]);
+      }
+    }
+
+    // Equalizer S2: LEVEL (2n)² after the bands (ramped per block; skipped at 0 dB)
+    class EQ2 extends EQ {
+      constructor(fs) { super(fs); this.l0 = 1; this.l1 = 1; }
+      upd(R) { super.upd(R); this.l1 = R.ev[9]; }
+      snap() { this.l0 = this.l1; }
+      run(R, L, Rc, o, m) {
+        super.run(R, L, Rc, o, m);
+        const l0 = this.l0, l1 = this.l1, dl = (l1 - l0) / m;
+        this.l0 = l1;
+        if (l0 === 1 && l1 === 1) return;
+        for (let j = 0; j < m; j++) { const i = o + j, g = l0 + dl * (j + 1); L[i] *= g; Rc[i] *= g; }
+      }
+    }
+
+    // Filter S2: types 0–107 (SerumDSP.SFilter v2), Key Track (`kt`: CUTOFF × key factor), Clean Mode (§6.13.3: input
+    // × 10^(−24/20), output × 10^(24/20) around the family)
+    const CL_IN = Math.pow(10, -24 / 20), CL_OUT = Math.pow(10, 24 / 20);
+    class Filt2 extends Filt {
+      constructor(fs) { super(fs); this.cln = 0; }
+      upd(R) {
+        if (!this.sf) return;
+        const ev = R.ev, fc = R.en[9] >= 0.5 ? ev[1] * R.keyF : ev[1], sh = (0.5 - ev[5]) * 3;
+        this.setType(ev[8]);
+        this.sf.set(fc * pow(2, sh), fc * pow(2, -sh), ev[2], ev[3], ev[4]);
+        this.cln = R.en[10] >= 0.5 ? 1 : 0;
+      }
+      run(R, L, Rc, o, m) {
+        const fL = this.fL, fR = this.fR;
+        if (this.cln === 1) {
+          for (let j = 0; j < m; j++) { fL[j] = L[o + j] * CL_IN; fR[j] = Rc[o + j] * CL_IN; }
+          this.sf.process(fL, fR, 0, m);
+          for (let j = 0; j < m; j++) { L[o + j] = fL[j] * CL_OUT; Rc[o + j] = fR[j] * CL_OUT; }
+          return;
+        }
+        for (let j = 0; j < m; j++) { fL[j] = L[o + j]; fR[j] = Rc[o + j]; }
+        this.sf.process(fL, fR, 0, m);
+        for (let j = 0; j < m; j++) { L[o + j] = fL[j]; Rc[o + j] = fR[j]; }
+      }
+    }
+
+    // Reverb S2 (§8.3): one unit for the five types. Common stages: pre-delay (mono, 2.5 s, half rate above 96 kHz, slewed),
+    // output HP 20·50^locut Hz (Plate / Hall: the Phase-1 output HP of their engine) and LP 20000·0.05^hicut Hz (2-pole
+    // TPT, every type). Plate / Hall run the Phase-1 Reverb engine with the S2 parameter mapping (Plate: input bandwidth
+    // 0.9995, lengths × (0.2 + 1.3·size) (IMPL: the diffusers' ringing stays below the 0.2 s of SIZE 0; the Phase-1
+    // 0.5 + size gives 0.3 s), tank decay from the RT60(size) law over the Dattorro loop (measured T30 within ±11 % of
+    // the law for every size), wet × 2; Hall: T60 = 0.8 + 11.2·decay, SPIN rate
+    // 0.05 + 3·spinr², depth 12·spind samples at 48 kHz, lengths × (0.4 + 1.6·size), in-loop LP at HIGH CUT as Phase 1);
+    // Vintage / Nitrous / Basin are FXMods2 tanks. All types share one Float32 pool (only one type runs; a type change is
+    // a topology change: ducked, the new type starts empty). The pool covers the installed type, or every type when the
+    // type parameter is modulated (FXP filTypeAll); a modulated type that reaches a type without pool keeps the current one
+    const PL_LOOP = 672 + 4453 + 1800 + 3720 + 908 + 4217 + 2656 + 3163;   // Dattorro loop length (samples at PL_FS)
+    const RV_PRE = 2.5;
+    let warnedRev = false;
+    class Rev2 {
+      constructor(fs, M2) {
+        this.fs = fs; this.rv = new Reverb(fs);
+        this.tk = [null, null, null, null, null];
+        if (M2) {
+          if (typeof M2.RevVintage === 'function') this.tk[2] = new M2.RevVintage(fs);
+          if (typeof M2.RevNitrous === 'function') { this.tk[3] = new M2.RevNitrous(fs); this.tk[3].auto = 0; }
+          if (typeof M2.RevBasin === 'function') this.tk[4] = new M2.RevBasin(fs);
+        }
+        this.nd = new Float64Array(5);
+        this.nd[0] = this.rv.layout(0, 0); this.nd[1] = this.rv.layout(1, 0);
+        for (let t = 2; t < 5; t++) this.nd[t] = this.tk[t] ? this.tk[t].need() : Infinity;
+        this.pool = null; this.type = -1; this.want = 0; this.topo = 0;
+        this.nw = 0;                                           // Nitrous MODE the controls select (installed with the tank)
+        this.pdec = fs > 96000 ? 2 : 1; this.pfl = fs / this.pdec;
+        this.pl = null; this.pcap = 0; this.pw = 0; this.pc = 0; this.pa = 0;
+        this.pd = 0; this.pt = 0; this.psl = 1 / (0.02 * fs);
+        this.hc = new Float64Array(3); this.lc = new Float64Array(3); this.hs = new Float64Array(4); this.ls = new Float64Array(4);
+        svfC(20, SQRT2, fs, this.hc, 0); svfC(20000, SQRT2, fs, this.lc, 0);
+        this.wet = 2; this.ir = 1; this.ist = 1 / (0.005 * fs);
+      }
+      // floats the pool needs for the types in `mask` (and the installed one)
+      poolNeed(mask) {
+        let need = this.type >= 0 ? this.nd[this.type] : 0;
+        for (let t = 0; t < 5; t++) if ((mask >> t) & 1 && this.nd[t] !== Infinity && this.nd[t] > need) need = this.nd[t];
+        return need;
+      }
+      // bytes prep(mask) would add (the rack checks them against the per-track cap before it grows the pool)
+      prepNeed(mask) { const need = this.poolNeed(mask), have = this.pool ? this.pool.length : 0; return need > have ? 4 * (need - have) : 0; }
+      // the pool covers the types in `mask` (and the installed one); grows only, the running content is kept
+      prep(mask) {
+        const need = this.poolNeed(mask);
+        if (this.pool && this.pool.length >= need) return;
+        const p = new Float32Array(need);
+        if (this.pool) p.set(this.pool);
+        this.pool = p; this.rv.pool = p;
+        if (this.type >= 2) this.tk[this.type].buf = p;
+      }
+      ok(t) { return t >= 0 && t < 5 && this.nd[t] !== Infinity && this.pool !== null && this.pool.length >= this.nd[t]; }
+      alloc(type) {
+        this.pcap = ceil(RV_PRE * this.pfl) + 8; this.pl = new Float32Array(this.pcap);
+        this.prep(1 << type);
+        this.want = type; this.applyTopo();
+      }
+      install(t) {
+        if (t <= 1) { this.rv.pool = this.pool; this.rv.apply(t); } else { if (t === 3) this.tk[3].nmode = this.nw; this.tk[t].bind(this.pool); }
+        this.type = t;
+      }
+      applyTopo() { if (this.ok(this.want)) this.install(this.want); this.topo = 0; this.hs.fill(0); this.ls.fill(0); }
+      reset() {
+        if (this.pl) this.pl.fill(0);
+        this.pw = 0; this.pc = 0; this.pa = 0; this.pd = this.pt; this.hs.fill(0); this.ls.fill(0); this.ir = 1;
+        const t = this.type;
+        if (t >= 0) { if (t <= 1) this.rv.reset(); else this.tk[t].reset(); }
+      }
+      seed() { this.rv.seed(); for (let t = 2; t < 5; t++) if (this.tk[t]) this.tk[t].seed(0); }
+      upd(R) {
+        const ev = R.ev, fs = this.fs;
+        let t = ev[1], nm = ev[20];
+        t = t > 0 ? (t < 4 ? t : 4) : 0;
+        this.nw = nm > 0 ? (nm < 4 ? round(nm) : 4) : 0;
+        // a topology change (another TYPE; Nitrous: another MODE — its eight lines would sweep thousands of samples
+        // within one block) is requested here and applied ducked by the rack; back at the running topology before the
+        // duck's bottom, the request is withdrawn (else the stale `want` would be installed and nothing re-requests)
+        if (t !== this.type) {
+          if (this.ok(t)) { this.want = t; this.topo = 1; } else if (!warnedRev) { warnedRev = true; if (typeof console !== 'undefined') console.warn('fx-dsp: S2 reverb type', t, 'not prepared; the current type keeps running'); }
+        } else if (t === 3 && this.tk[3] !== null && this.nw !== this.tk[3].nmode) { this.want = 3; this.topo = 1; }
+        else if (this.topo === 1) { this.topo = 0; this.want = t; }
+        this.pt = dlyTimeS(ev[3], ev[4], ev[5], R.bpm, RV_PRE) * fs;
+        const hpF = 20 * pow(50, ev[6]);
+        svfC(hpF, SQRT2, fs, this.hc, 0);
+        svfC(20000 * pow(0.05, ev[7]), SQRT2, fs, this.lc, 0);
+        const V = this.rv, size = ev[2];
+        if (this.type === 0) {
+          const fi = V.fi, hi = 0.45 * fi;
+          V.sc1 = (0.2 + 1.3 * size) * fi / PL_FS; V.pd1 = 1; V.bwK = 0.9995;
+          let f = 20000 * pow(0.03, ev[8]);
+          f = f < hi ? f : hi;
+          V.dmK = 1 - exp(-TAU * f / fi);
+          const rt = size < 0.1 ? 0.2 + 2 * size : 0.4 * pow(30, (size - 0.1) / 0.55 < 1 ? (size - 0.1) / 0.55 : 1);
+          V.decay = pow(10, -3 * PL_LOOP * (0.2 + 1.3 * size) / (PL_FS * 4 * rt));
+          V.width = ev[9];
+          svfC(hpF, SQRT2, fs, V.hc, 0);
+          this.wet = 2;
+        } else if (this.type === 1) {
+          const decay = ev[10], sc = (0.4 + 1.6 * size) * fs / 48000, hi = 0.45 * fs;
+          V.sc1 = sc;
+          V.inf = decay >= 0.999 ? 1 : 0;
+          const T60 = 0.8 + 11.2 * decay;
+          for (let q = 0; q < 8; q++) V.g[q] = V.inf === 1 ? 1 : exp(-3 * LN10 * HL_LEN[q] * sc / (T60 * fs));
+          let f = 20000 * pow(0.05, ev[7]);
+          f = f < hi ? f : hi;
+          V.lpK = 1 - exp(-TAU * f / fs);
+          const sr = ev[11];
+          V.srate = 0.05 + 3 * sr * sr; V.sdep = 12 * ev[12] * fs / 48000;
+          svfC(hpF, SQRT2, fs, V.hc, 0);
+          this.wet = 1;
+        } else if (this.type >= 2) { this.tk[this.type].upd(R); this.wet = 1; }
+      }
+      snap() {
+        this.pd = this.pt;
+        if (this.type >= 0 && this.type <= 1) this.rv.snap(); else if (this.type >= 2) this.tk[this.type].snap();
+      }
+      run(R, L, Rc, o, m) {
+        const t = this.type;
+        if (t < 0) { for (let j = 0; j < m; j++) { L[o + j] = 0; Rc[o + j] = 0; } return; }
+        // pre-delay (mono)
+        const pl = this.pl, pcap = this.pcap, dec = this.pdec, pt = this.pt, psl = this.psl, ist = this.ist;
+        let pd = this.pd, pw = this.pw, pc = this.pc, pa = this.pa, ir = this.ir;
+        for (let j = 0; j < m; j++) {
+          const i = o + j;
+          if (ir < 1) { ir += ist; if (ir > 1) ir = 1; }
+          const x = 0.5 * (L[i] + Rc[i]) * ir;
+          if (pd !== pt) {
+            let st = (pt - pd) * psl;
+            st = st > 1 ? 1 : st < -1 ? -1 : st;
+            pd += st;
+            if (pt - pd < 1e-6 && pd - pt < 1e-6) pd = pt;
+          }
+          let y = x;
+          if (dec === 1) {
+            pl[pw] = x;
+            if (pd > 0) y = rdE(pl, 0, pcap, pw, pd);
+            pw = pw + 1 === pcap ? 0 : pw + 1;
+          } else {
+            if (pd > 0) { const de = pd < 4 ? 4 : pd; y = rdE(pl, 0, pcap, pw, (de + 0.5 - pc) * 0.5); }
+            pa += x;
+            if (++pc === 2) { pl[pw] = 0.5 * pa; pw = pw + 1 === pcap ? 0 : pw + 1; pc = 0; pa = 0; }
+          }
+          L[i] = y; Rc[i] = y;
+        }
+        this.pd = pd; this.pw = pw; this.pc = pc; this.pa = pa; this.ir = ir;
+        // the tank (Plate / Hall include the output HP)
+        if (t === 0) this.rv.runPlate(L, Rc, o, m);
+        else if (t === 1) this.rv.runHall(L, Rc, o, m);
+        else {
+          this.tk[t].run(R, L, Rc, o, m);
+          const hc = this.hc, a1 = hc[0], a2 = hc[1], a3 = hc[2], h = this.hs;
+          for (let j = 0; j < m; j++) {
+            const i = o + j;
+            let lp = svfT(h, 0, L[i], a1, a2, a3);
+            L[i] = L[i] - SQRT2 * SVO.bp - lp;
+            lp = svfT(h, 2, Rc[i], a1, a2, a3);
+            Rc[i] = Rc[i] - SQRT2 * SVO.bp - lp;
+          }
+        }
+        // output LP (+ the Plate's +6 dB)
+        const lc = this.lc, b1 = lc[0], b2 = lc[1], b3 = lc[2], s = this.ls, w = this.wet;
+        for (let j = 0; j < m; j++) { const i = o + j; L[i] = w * svfT(s, 0, L[i], b1, b2, b3); Rc[i] = w * svfT(s, 2, Rc[i], b1, b2, b3); }
+      }
+      flush() {
+        flushArr(this.hs); flushArr(this.ls);
+        if (this.type >= 0 && this.type <= 1) this.rv.flush(); else if (this.type >= 2) this.tk[this.type].flush();
+      }
+      tail() { return this.pt; }
+    }
+
+    // Splitter unit (§8.4): the band builder (FXMods2 XoverLH / XoverLMH / MS), the band buffers and the splitter's own
+    // input copy (the rack's block scratch is reused by the branch instances); LEVEL ramped per block on the branch sum.
+    // Branch bypass crossfades over 5 ms (bx: 0 the branch runs … 1 its band passes; kL / kR: the band during a fade).
+    // Latency alignment (IMPL): a branch holding latency (Distortion's 15 samples while it runs, a Limit-mode
+    // compressor's look-ahead) would shift its band against the others and break the allpass sum, so every band is
+    // delayed to the branch with the most latency (lines cl, allocated in set() once a branch can hold latency; the
+    // delays glide at the Distortion enable-glide rate, so they follow its 0 ↔ 15-sample glide)
+    class SplitMod {
+      constructor(fs, t, M2) {
+        this.fs = fs; this.t = t; this.nb = t === 14 ? 3 : 2;
+        this.xo = t === 13 ? new M2.XoverLH(fs) : t === 14 ? new M2.XoverLMH(fs) : new M2.MS(fs);
+        this.bL = [new Float64Array(BLK), new Float64Array(BLK), new Float64Array(BLK)];
+        this.bR = [new Float64Array(BLK), new Float64Array(BLK), new Float64Array(BLK)];
+        this.iL = new Float64Array(BLK); this.iR = new Float64Array(BLK);
+        this.l0 = 1; this.l1 = 1;
+        this.bx = new Float64Array(3);
+        this.kL = [new Float64Array(BLK), new Float64Array(BLK), new Float64Array(BLK)];
+        this.kR = [new Float64Array(BLK), new Float64Array(BLK), new Float64Array(BLK)];
+        this.cl = null; this.lcap = 0; this.lw = 0;
+        this.lt = new Float64Array(3); this.dd = new Float64Array(3); this.dt = new Float64Array(3);
+        this.gr = DIST_LAT / (0.005 * fs);
+      }
+      // alignment lines for latency differences up to n samples (set-time, grow only); bytes they would add
+      linesNeed(n) { return n > this.lcap ? 48 * (n - this.lcap) + (this.cl === null ? 192 : 0) : 0; }
+      lines(n) {
+        if (n <= this.lcap) return;
+        this.cl = new Float64Array(6 * (n + 4)); this.lcap = n; this.lw = 0; this.dd.fill(0);
+      }
+      reset() { this.xo.reset(); if (this.cl !== null) this.cl.fill(0); this.dd.fill(0); this.lw = 0; }
+      upd(R) {
+        const ev = R.ev;
+        if (this.t === 13) this.xo.set(ev[1]); else if (this.t === 14) this.xo.set(ev[1], ev[2]);
+        this.l1 = ev[R.n - 1];
+      }
+      snap() { this.l0 = this.l1; }
+      flush() { this.xo.flush(); }
+    }
+
+    /* ------------------------------------------------------------ FX v2 instance graph (SPEC-serum2 §4.2, §4.3, §8.1) */
+    // FXTYPES of fx-core (§3.16.1) in S2 type-id order (FXP iType) and the v1 module (MOD_IDS index) of each type that has
+    // an S1 variant (−1: none)
+    const TYPES = Object.freeze(['dist', 'flg', 'phs', 'cho', 'dly', 'cmp', 'rev', 'eq', 'fil', 'hyper', 'bode', 'conv', 'util',
+      'split2', 'split3', 'splitms']);
+    const NTYPES = TYPES.length;
+    const T_ = TYPES.reduce((o, t, i) => { o[t] = i; return o; }, {});
+    const MOD_OF_TYPE = Int8Array.from(TYPES, (t) => MOD_IDS.indexOf(t));
+    // S1 parameter tables (fx-core FXP_TAB[type][1]): S1K[m][p] = v1 fx idx of parameter p of module m (the Phase-1 rows of
+    // the module in fx idx order; Hyper owns the Dimension rows). Laws, ranges and continuity come from that v1 row, so an
+    // S1 instance evaluates exactly the Phase-1 values. LOC[k] = position of v1 fx idx k in its table.
+    const S1K = [], LOC = new Int16Array(NF).fill(-1);
+    for (let m = 0; m < NMOD; m++) {
+      const a = [];
+      for (let k = 0; k < NF; k++) if (MOD_OF[k] === m) { LOC[k] = a.length; a.push(k); }
+      S1K.push(Int16Array.from(a));
+    }
+    const S1_IDX = Object.freeze(TYPES.reduce((o, t, i) => {
+      if (MOD_OF_TYPE[i] >= 0) o[t] = Object.freeze(Array.from(S1K[MOD_OF_TYPE[i]]));
+      return o;
+    }, {}));
+    // Parameter tables of every (type, variant) as rows [pid, law code, lo, hi, def] (§3.16.2, embedded identically with
+    // fx-core FXP_TAB; tests/fx-dsp.test.mjs compares them): ROWS[type][v]. S1 rows come from the v1 FX rows above.
+    const RENAME_DIM = { 'fx.dim.size': 'dsize', 'fx.dim.mix': 'dmix', 'fx.dim.level': 'dlevel' };
+    const pidOf = (id) => (RENAME_DIM[id] !== undefined ? RENAME_DIM[id] : id.slice(id.lastIndexOf('.') + 1));
+    const s1Rows = (m) => Array.from(S1K[m], (k) => [pidOf(FX_IDS[k]), FX_LAW[k], FX_LO[k], FX_HI[k], FX_DEF[k]]);
+    const R2 = (pid, law, lo, hi, def) => [pid, law, lo, hi, def];
+    const ON2 = () => R2('on', BOOL, 0, 1, 1), LVL2 = () => R2('level', POW2, 0, 4, 0.5), MIX2 = (d) => R2('mix', LIN, 0, 1, d);
+    const PCT2 = (p, d) => R2(p, LIN, 0, 1, d), BOOL2 = (p, d) => R2(p, BOOL, 0, 1, d), LAD2 = (p) => R2(p, ENUM, 0, 11, 7 / 11);
+    function s2Of(m, swap, extra) {
+      return s1Rows(m).map((r) => (r[0] === 'on' ? [r[0], r[1], r[2], r[3], 1] : swap[r[0]] !== undefined ? swap[r[0]] : r)).concat(extra);
+    }
+    const ROWS = TYPES.map(() => [null, null, null]);
+    for (let t = 0; t < NTYPES; t++) if (MOD_OF_TYPE[t] >= 0) ROWS[t][1] = s1Rows(MOD_OF_TYPE[t]);
+    ROWS[T_.dist][2] = s2Of(1, { mode: R2('mode', ENUM, 0, 17, 0) }, [BOOL2('kt', 0), R2('stages', INT, 1, 16, 3 / 15)]);
+    ROWS[T_.phs][2] = s2Of(3, {}, [R2('poles', INT, 1, 18, 3 / 17), PCT2('depth2', 0)]);
+    ROWS[T_.cho][2] = s2Of(4, {}, [BOOL2('hp', 0)]);
+    ROWS[T_.dly][2] = s2Of(5, {}, [BOOL2('hq', 1)]);
+    ROWS[T_.cmp][2] = s2Of(6, {}, [R2('xlo', EXP, 20, 1000, 0.4751), R2('xhi', EXP, 500, 16000, 0.4644), R2('below', RATIO, 1, 32, 0),
+      R2('gL', LIN, -24, 24, 0.5), R2('gM', LIN, -24, 24, 0.5), R2('gH', LIN, -24, 24, 0.5)]);
+    ROWS[T_.rev][2] = [ON2(), R2('type', ENUM, 0, 4, 0), PCT2('size', 0.5), R2('pre', POW3, 0, 2500, 0), BOOL2('prebpm', 0),
+      LAD2('prelad'), PCT2('locut', 0), PCT2('hicut', 0.3), PCT2('damp', 0.5), PCT2('width', 1), PCT2('decay', 0.3),
+      PCT2('spinr', 0.25), PCT2('spind', 0.2), PCT2('ersize', 0.5), PCT2('diffa', 0.7), PCT2('diffb', 0.5), PCT2('chr', 0.2),
+      PCT2('chd', 0.2), PCT2('feed', 0.6), PCT2('diff', 0.7), R2('nmode', ENUM, 0, 4, 0), MIX2(0.3), LVL2()];
+    ROWS[T_.eq][2] = s2Of(8, {}, [LVL2()]);
+    ROWS[T_.fil][2] = s2Of(9, { type: R2('type', ENUM, 0, 107, 0) }, [BOOL2('kt', 0), BOOL2('clean', 0)]);
+    ROWS[T_.bode][2] = [ON2(), BOOL2('mono', 0), R2('shift', LIN, -1, 1, 0.5), R2('range', EXP, 0.1, 5000, 0.6384),
+      R2('dir', LIN, -1, 1, 1), PCT2('width', 1), R2('delay', POW2, 0, 2000, 0), BOOL2('bpm', 0), LAD2('dlad'), PCT2('feed', 0),
+      R2('bal', LIN, -1, 1, 0.5), PCT2('blur', 0), BOOL2('retrig', 0), MIX2(1), LVL2()];
+    ROWS[T_.conv][2] = [ON2(), R2('size', EXP, 0.1, 10, 0.5), R2('tone', LIN, -1, 1, 0.5), BOOL2('minph', 0), R2('pre', POW2, 0, 1000, 0),
+      BOOL2('prebpm', 0), LAD2('prelad'), PCT2('att', 0), PCT2('dec', 1), PCT2('damp', 0), R2('irgain', LIN, -48, 12, 0.5), MIX2(0.5), LVL2()];
+    ROWS[T_.util][2] = [ON2(), BOOL2('invL', 0), BOOL2('invR', 0), R2('lpf', EXP, 50, 20000, 1), R2('hpf', EXP, 1, 400, 0),
+      BOOL2('mbass', 0), R2('mfreq', EXP, 20, 400, 0.5021), R2('width', LIN, 0, 8, 0.125), R2('pan', LIN, -1, 1, 0.5), MIX2(1), LVL2()];
+    ROWS[T_.split2][2] = [ON2(), R2('freq', EXP, 30, 5800, 0.4374), LVL2()];
+    ROWS[T_.split3][2] = [ON2(), R2('freq1', EXP, 30, 5800, 0.3604), R2('freq2', EXP, 30, 5800, 0.7978), LVL2()];
+    ROWS[T_.splitms][2] = [ON2(), LVL2()];
+    const LAW_NAMES = ['lin', 'int', 'enum', 'bool', 'exp', 'pow2', 'pow3', 'pow4', 'pow5', 'rpow3', 'ratio'];
+    // exported view: TAB[type id][v] = frozen [{pid, law (laws.js name), lo, hi, def}]
+    const TAB = Object.freeze(TYPES.reduce((o, t, i) => {
+      const e = {};
+      for (const v of [1, 2]) {
+        if (ROWS[i][v]) e[v] = Object.freeze(ROWS[i][v].map((r) => Object.freeze({ pid: r[0], law: LAW_NAMES[r[1]], lo: r[2], hi: r[3], def: r[4] })));
+      }
+      o[t] = Object.freeze(e);
+      return o;
+    }, {}));
+    // mix kind by type: 0 the module produces its final output (EQ, Hyper additive, splitters), 1 sin² law, 2 linear
+    const MIXK_T = Uint8Array.from([1, 1, 1, 1, 1, 1, 1, 0, 2, 0, 1, 1, 2, 0, 0, 0]);
+    // FX-context globals (§4.2): [0] g.master (pow3, the v1 row 0) · [1] g.bypass (bool, v1 row 86) · [2] g.direct ·
+    // [3] g.bus1v · [4] g.bus2v (pow2 0–4, n 0.5 = 0 dB); [5…7] unused
+    const NG = 5, G_CONT = Uint8Array.from([1, 0, 1, 1, 1]), G_DEF = Float64Array.from([1, 0, 0.5, 0.5, 0.5]);
+    function lawG(g, n) { return g === 0 ? lawV(0, n) : g === 1 ? lawV(86, n) : 0 + 4 * n * n; }
+    const MAXI = 48;                                           // instances per track (phases(), gr() slots)
+    const TAP_N = 1024;                                        // monitor tap length (setTap / tapOut; a power of two)
+    const CAP_BYTES = 32 * 1024 * 1024;                        // §8.5 per-track FX memory cap (Convolve spectra excluded)
+    // module kinds (Unit.k): 0–9 the S1 variants (= the v1 module index), 10 Distortion S2, 11 Phaser S2, 12 Chorus S2,
+    // 13 Delay S2, 14 Compressor S2, 15 Reverb S2, 16 EQ S2, 17 Filter S2, 18 Bode, 19 Convolve, 20 Utility, 21 splitters
+    const K_S2 = { dist: 10, phs: 11, cho: 12, dly: 13, cmp: 14, rev: 15, eq: 16, fil: 17, bode: 18, conv: 19, util: 20, split2: 21,
+      split3: 21, splitms: 21 };
+    const K2 = Int8Array.from(TYPES, (t) => (K_S2[t] === undefined ? -1 : K_S2[t]));
+    const POS_RETRIG_BODE = ROWS[T_.bode][2].findIndex((r) => r[0] === 'retrig');
+
+    // One FX instance: its parameter state (base smoothing, offsets, eff n / values of its table, §5.4 Phase 1), its
+    // module object and its enable / mix state. Modules read their parameters through it (`R.ev[p]`, `R.en[p]` in table
+    // order, `R.xsA`, `R.bpm`, `R.keyF`, `R.choMono`, `R.irId`, `R.convMax`) and the rack's block scratch through the same
+    // fields as on the Phase-1 rack. Laws per parameter (law, lo, hi, cont): S1 instances take them from the v1 rows, so
+    // they evaluate exactly the Phase-1 values.
+    class Unit {
+      constructor(R, id, t, v, k, rows) {
+        const n = rows.length;
+        this.id = id; this.t = t; this.v = v; this.k = k; this.n = n;
+        this.law = Uint8Array.from(rows, (r) => r[1]); this.lo = Float64Array.from(rows, (r) => r[2]);
+        this.hi = Float64Array.from(rows, (r) => r[3]); this.cont = Uint8Array.from(rows, (r) => isCont(r[1]));
+        this.tgt = new Float64Array(n); this.bs = new Float64Array(n); this.md = new Float64Array(n); this.mdT = new Float64Array(n);
+        this.eS = new Float64Array(n); this.eD = new Float64Array(n); this.en = new Float64Array(n); this.ev = new Float64Array(n);
+        for (let p = 0; p < n; p++) this.tgt[p] = rows[p][4];
+        if (n > 0) this.tgt[0] = 0;
+        this.mk = MIXK_T[t]; this.mi = rows.findIndex((r) => r[0] === 'mix'); this.li = rows.findIndex((r) => r[0] === 'level');
+        this.mod = null;
+        // graph: FXP index (−1: removed, fading out), rack, parameter offset; keep / gone: set() bookkeeping
+        this.idx = -1; this.rack = 0; this.off = 0; this.keep = 0; this.gone = 0;
+        // st: 0 off, 1 on (fading in while xf < 1), 2 fading out, 3 ducking for the actions in pend (1 re-seed, 2 topology)
+        this.st = 0; this.xf = 0; this.pend = 0; this.dirty = 1; this.has = 0; this.byp = 0; this.mv = 0;
+        this.gD0 = 0; this.gW0 = 0; this.gD1 = 0; this.gW1 = 0;
+        this.seedPh = 0; this.revType = 1; this.choMono = 0; this.bpm = R.bpm; this.keyF = R.keyF;
+        this.irId = ''; this.convMax = 10;                     // Convolve: shaped-IR entry id (FXP iIr), tail cap (FXP convMax)
+        this.br = null; this.bb = null;                        // splitters: branch chains, branch bypasses
+        this.mem = 0; this.over = 0;                           // bytes of the module's buffers; left unallocated by the cap
+        this.need = 0;                                         // bytes measured when the cap refused it (no retry without room)
+        this.xsA = null; this.xsB = null;
+        if (k === 1 || k === 10) { this.xsA = new Float32Array(NXS); this.xsB = new Float32Array(NXS); this.xsA.set(LINXS); this.xsB.set(LINXS); }
+        this.cf = R.cf; this.dyL = R.dyL; this.dyR = R.dyR; this.dvL = R.dvL; this.dvR = R.dvR; this.wL = R.wL; this.wR = R.wR;
+      }
+    }
+    // bytes of the typed arrays reachable from a module (set() only): modules with bytes() report themselves
+    function modBytes(x, seen, depth) {
+      if (!x || typeof x !== 'object' || depth > 4) return 0;
+      if (ArrayBuffer.isView(x)) { if (seen.has(x.buffer)) return 0; seen.add(x.buffer); return x.buffer.byteLength; }
+      if (seen.has(x)) return 0;
+      seen.add(x);
+      if (typeof x.bytes === 'function') return x.bytes();
+      let n = 0;
+      const ks = Object.keys(x);
+      for (let i = 0; i < ks.length; i++) n += modBytes(x[ks[i]], seen, depth + 1);
+      return n;
+    }
+
+    // FXP v2 of the ten S1 modules in v1 module order (warm-up): W_OFF[m] = parameter offset of module m, AT[k] = FX-context
+    // index of v1 fx idx k
+    const W_OFF = new Int32Array(NMOD), AT = new Int32Array(NF);
+    let W_NP = 0;
+    for (let m = 0; m < NMOD; m++) { W_OFF[m] = W_NP; W_NP += S1K[m].length; }
+    for (let k = 0; k < NF; k++) AT[k] = k === 0 ? 0 : k === 86 ? 1 : 8 + W_OFF[MOD_OF[k]] + LOC[k];
+    function s1Fxp() {
+      const NFX = 8 + W_NP, base = new Float64Array(NFX), nI = NMOD;
+      base[0] = 1; base[2] = 0.5; base[3] = 0.5; base[4] = 0.5;
+      for (let k = 1; k < NF; k++) if (k !== 86) base[AT[k]] = FX_DEF[k];
+      return {
+        ver: VER, NFX, NP: W_NP, key: '', base, nI,
+        iType: Uint8Array.from(MOD_IDS, (m) => TYPES.indexOf(m)), iVar: new Uint8Array(nI).fill(1), iRack: new Uint8Array(nI),
+        iBr: new Uint8Array(nI), iN: Uint8Array.from(S1K, (a) => a.length), iByp: new Uint8Array(nI), iAlloc: new Uint8Array(nI).fill(1),
+        iPar: new Int16Array(nI).fill(-1), iOff: Int32Array.from(W_OFF), iBB: new Uint8Array(3 * nI), iPh: new Float64Array(nI),
+        iId: MOD_IDS.slice(), iRev: new Uint8Array(nI).fill(1), iCho: new Uint8Array(nI), iIr: MOD_IDS.map(() => ''),
+        rByp: new Uint8Array(3), rRoute: new Uint8Array(3), needs: [], filTypeAll: new Uint8Array(nI),
+        seed: 0, any: 1, bpm: 120, smooth: 1, silence: 1, convMax: 10, xsKey: '',
+      };
+    }
+    // FXP v2 with one instance of every S2-variant type except Convolve (warm-up): [type, parent, branch] in processing
+    // order; returns the FXP and the parameter offset of every instance
+    const W2 = [['dist', -1, 0], ['phs', -1, 0], ['cho', -1, 0], ['dly', -1, 0], ['cmp', -1, 0], ['rev', -1, 0], ['eq', -1, 0],
+      ['fil', -1, 0], ['bode', -1, 0], ['util', -1, 0], ['split2', -1, 0], ['util', 10, 0], ['eq', 10, 1], ['split3', -1, 0],
+      ['splitms', -1, 0]];
+    function s2Fxp() {
+      const nI = W2.length, off = new Int32Array(nI);
+      let NP = 0;
+      for (let i = 0; i < nI; i++) { off[i] = NP; NP += ROWS[T_[W2[i][0]]][2].length; }
+      const base = new Float64Array(8 + NP);
+      base[0] = 1; base[2] = 0.5; base[3] = 0.5; base[4] = 0.5;
+      for (let i = 0; i < nI; i++) { const rows = ROWS[T_[W2[i][0]]][2]; for (let p = 0; p < rows.length; p++) base[8 + off[i] + p] = rows[p][4]; }
+      return {
+        fxp: {
+          ver: VER, NFX: 8 + NP, NP, key: 'w2', base, nI,
+          iType: Uint8Array.from(W2, (w) => T_[w[0]]), iVar: new Uint8Array(nI).fill(2), iRack: new Uint8Array(nI),
+          iBr: Uint8Array.from(W2, (w) => w[2]), iN: Uint8Array.from(W2, (w) => ROWS[T_[w[0]]][2].length), iByp: new Uint8Array(nI),
+          iAlloc: new Uint8Array(nI).fill(1), iPar: Int16Array.from(W2, (w) => w[1]), iOff: off, iBB: new Uint8Array(3 * nI),
+          iPh: new Float64Array(nI), iId: W2.map((w, i) => 'w' + i), iRev: new Uint8Array(nI), iCho: new Uint8Array(nI),
+          iIr: W2.map(() => ''), rByp: new Uint8Array(3), rRoute: new Uint8Array(3), needs: [],
+          filTypeAll: Uint8Array.from(W2, (w) => (w[0] === 'rev' ? 1 : 0)),
+          seed: 0, any: 1, bpm: 120, smooth: 1, silence: 1, convMax: 10, xsKey: '',
+        },
+        off,
+      };
+    }
+
+    /* ------------------------------------------------------------ FXRack (§8.1; Phase-1 machinery per instance) */
+    let warnedVer = false, warnedFxp = false;
+    // A re-seed (fxp.seed, transport()) or a topology change (Plate ↔ Hall, S2 reverb type, S2 Delay HQ above 96 kHz)
+    // while a module's lines hold audible signal is applied at the bottom of a 2.5 ms duck of that module (output → its
+    // input), which then fades back in over 5 ms; with nothing audible (output < 1e-6 for SEEDQ s of zero input) it is
+    // applied at once, so renders after a silent history are bit-identical to a fresh rack's (§10.7f).
     const SEEDQ = 0.25;
     const QBIG = 1e15;                                         // quietT after a clear: the lines hold nothing at all
+    const isNum = (x) => typeof x === 'number' && x === x && x !== Infinity && x !== -Infinity;
+    const isList = (a, n) => !!a && typeof a === 'object' && typeof a.length === 'number' && a.length >= n;
     class FXRack {
       constructor(base) {
         const fs = base > 0 && base < 1e7 ? +base : 48000;
         this.fs = fs;
-        this.tgt = new Float64Array(NF); this.bs = new Float64Array(NF); this.md = new Float64Array(NF); this.mdT = new Float64Array(NF);
-        this.eS = new Float64Array(NF); this.eD = new Float64Array(NF); this.en = new Float64Array(NF); this.ev = new Float64Array(NF);
-        this.dirty = new Uint8Array(NMOD + 1);
-        this.ord = new Uint8Array(NMOD); this.byp = new Uint8Array(NMOD); this.has = new Uint8Array(NMOD);
-        // st: 0 off, 1 on (fading in while xf < 1), 2 fading out, 3 ducking for the actions in pend (1 re-seed, 2 topology)
-        this.st = new Uint8Array(NMOD); this.xf = new Float64Array(NMOD); this.pend = new Uint8Array(NMOD);
-        this.gD0 = new Float64Array(NMOD); this.gW0 = new Float64Array(NMOD); this.gD1 = new Float64Array(NMOD); this.gW1 = new Float64Array(NMOD);
+        this.bpm = 120; this.smooth = 1; this.silence = 1;
+        // block scratch shared by every instance (modules run one at a time)
         this.inL = new Float64Array(BLK); this.inR = new Float64Array(BLK); this.dyL = new Float64Array(BLK); this.dyR = new Float64Array(BLK);
         this.dvL = new Float64Array(BLK); this.dvR = new Float64Array(BLK);
         this.wL = new Float64Array(BLK); this.wR = new Float64Array(BLK); this.cf = new Float64Array(8);
-        this.xsA = new Float32Array(NXS); this.xsB = new Float32Array(NXS);
-        this.xsA.set(LINXS); this.xsB.set(LINXS);
-        this.seedPh = new Float64Array(4); this.phOut = new Float64Array(4); this.grOut = new Float32Array(4);
-        this.mHy = new Hyper(fs); this.mDi = new Dist(fs); this.mFl = new Flanger(fs); this.mPh = new Phaser(fs); this.mCh = new Chorus(fs);
-        this.mDl = new Delay(fs); this.mCp = new Comp(fs); this.mRv = new Reverb(fs); this.mEq = new EQ(fs); this.mFi = new Filt(fs);
-        this.bpm = 120; this.smooth = 1; this.silence = 1; this.revType = 1; this.choMono = 0;
+        // bus inputs, the bus → Direct block, a rack's input during its bypass crossfade
+        this.xL1 = new Float64Array(BLK); this.xR1 = new Float64Array(BLK); this.xL2 = new Float64Array(BLK); this.xR2 = new Float64Array(BLK);
+        this.xdL = new Float64Array(BLK); this.xdR = new Float64Array(BLK); this.raL = new Float64Array(BLK); this.raR = new Float64Array(BLK);
+        // FX-context globals: target, smoothed base, offsets (current / target), eff n start / delta, eff n, value
+        this.gt = Float64Array.from(G_DEF); this.gb = new Float64Array(NG); this.gm = new Float64Array(NG); this.gmT = new Float64Array(NG);
+        this.gS = new Float64Array(NG); this.gD = new Float64Array(NG); this.gn = new Float64Array(NG); this.gv = new Float64Array(NG);
+        this.gdirty = 1;
+        // the graph: units in FXP order (then the ones fading out), the chain of each rack (processing order)
+        this.U = []; this.C0 = []; this.C1 = []; this.C2 = []; this.byId = new Map(); this.gc = 0;
+        this.nI = 0; this.NFX = 8; this.key = '';
+        this.rByp = new Uint8Array(3); this.rRoute = new Uint8Array(3); this.rx = new Float64Array(3);
+        this.phOut = new Float64Array(MAXI).fill(NaN); this.grOut = new Float32Array(4 * MAXI);
+        // monitor tap (§13.5 Delay spectrum overlay, IMPL: the post-module mono signal of one instance): id, its unit,
+        // ring and write index, the chronological copy tapOut() returns
+        this.tapId = ''; this.tapU = null; this.tapB = new Float32Array(TAP_N); this.tapW = 0; this.tapO = new Float32Array(TAP_N);
         // fresh: 1 never given a real FXP, 2 reset() with no audio processed since → the next set() snaps like a first call
         this.fresh = 1; this.calm = 1; this.nAct = 0; this.quietT = QBIG; this.inZero = 0; this.qmax = 0;
         this.gm0 = 1; this.gm1 = 1; this.gate = 1; this.gT = 1; this.rf = 1; this.rfT = 1; this.fstep = 1 / (0.005 * fs);
+        this.gd0 = 1; this.gd1 = 1; this.gb0 = new Float64Array(3).fill(1); this.gb1 = new Float64Array(3).fill(1); this.xd = 0;
+        // setNote: key-tracking pitch and factor 2^((pitch − 60)/12); note a double field from the start (V8: the first
+        // fractional pitch must not change the rack's map and deoptimise the rack code in that quantum)
+        this.note = 60.5; this.note = 60; this.keyF = 1;
         this.latency = 0;
-        for (let m = 0; m < NMOD; m++) this.ord[m] = m;
-        for (let k = 0; k < NF; k++) this.tgt[k] = FX_DEF[k];
-        for (let m = 0; m < NMOD; m++) this.tgt[ON[m]] = 0;
-        this.tgt[0] = 1; this.tgt[86] = 0;
+        this.B = null; this.M2 = null;                         // SxBase / FXMods2, resolved in set() (§0.3 lazy references)
+        this.nConv = 0;                                        // Convolve instances (polled once per process call)
+        this.over = [];                                        // ids left unallocated (bypassed) by the 32 MB cap (§8.5)
         this.snap();
       }
 
       /* ---------------- configuration (allocation allowed) */
       set(fxp, fxt) {
-        if (fxt && typeof fxt === 'object' && okXS(fxt.xsA) && okXS(fxt.xsB)) {
-          const a = fxt.xsA, b = fxt.xsB, A = this.xsA, B = this.xsB;
-          for (let j = 0; j < NXS; j++) { const x = +a[j], y = +b[j]; A[j] = x === x ? x : j / 1024; B[j] = y === y ? y : j / 1024; }
-        }
         let ok = !!fxp && typeof fxp === 'object' && !!fxp.base && (ArrayBuffer.isView(fxp.base) || Array.isArray(fxp.base)) &&
-          fxp.base.length >= NF;
+          fxp.base.length >= 8;
         if (ok && fxp.ver !== VER) {
           if (!warnedVer) { warnedVer = true; if (typeof console !== 'undefined') console.warn('fx-dsp: FXP version', fxp.ver, 'not understood (expects', VER + '); rack bypassed'); }
           ok = false;
         }
-        const tgt = this.tgt;
-        if (!ok) {                                             // null: every module off, master 1, not bypassed
-          for (let m = 0; m < NMOD; m++) tgt[ON[m]] = 0;
-          tgt[0] = 1; tgt[86] = 0;
+        if (ok && !okGraph(fxp)) {
+          if (!warnedFxp) { warnedFxp = true; if (typeof console !== 'undefined') console.warn('fx-dsp: malformed FXP instance arrays; rack bypassed'); }
+          ok = false;
+        }
+        const gt = this.gt, U = this.U;
+        if (!ok) {                                             // null: every instance off, master 1, not bypassed, 0 dB
+          for (let i = 0; i < U.length; i++) if (U[i].n > 0) U[i].tgt[0] = 0;
+          for (let g = 0; g < NG; g++) gt[g] = G_DEF[g];
         } else {
           const b = fxp.base;
-          for (let k = 0; k < NF; k++) { const v = +b[k]; if (v === v) tgt[k] = clamp01(v); }
-          const o = fxp.order;
-          let okO = !!o && typeof o === 'object' && o.length === NMOD, mask = 0;
-          if (okO) {
-            for (let k = 0; k < NMOD; k++) {
-              const v = o[k];
-              if (!(v >= 0 && v < NMOD && v === (v | 0)) || (mask & (1 << v))) { okO = false; break; }
-              mask |= 1 << v;
-            }
-          }
-          for (let k = 0; k < NMOD; k++) this.ord[k] = okO ? o[k] : k;
-          const by = fxp.byp;
-          for (let m = 0; m < NMOD; m++) this.byp[m] = by && by[m] ? 1 : 0;
+          for (let g = 0; g < NG; g++) { const v = +b[g]; if (v === v) gt[g] = clamp01(v); }
           if (fxp.bpm > 0 && fxp.bpm < 10000) this.bpm = +fxp.bpm;
           if (fxp.smooth >= 0 && fxp.smooth < 100) this.smooth = +fxp.smooth;
           if (fxp.silence === 0 || fxp.silence === 1) this.silence = fxp.silence;
-          this.choMono = fxp.choMono ? 1 : 0;
-          const ph = fxp.phase;
-          if (ph && typeof ph === 'object' && ph.length >= 4) for (let k = 0; k < 4; k++) { const v = +ph[k]; if (v === v && v !== Infinity && v !== -Infinity) this.seedPh[k] = frac(v); }
-          this.revType = fxp.revType === 0 ? 0 : 1;
-          const al = fxp.alloc;
-          for (let m = 0; m < NMOD; m++) if ((al && al[m]) || this.has[m]) this.allocMod(m);
-          if (this.has[7] === 1 && this.mRv.type !== this.revType) this.revSwitch();
-          if (this.has[9] === 1) {
-            if (fxp.filTypeAll) this.mFi.prealloc();
-            else this.mFi.setType(round(95 * clamp01(tgt[99] + this.mdT[99])));
-          }
+          this.B = globalThis.SxBase || null;
+          this.M2 = globalThis.FXMods2 || null;
+          this.graph(fxp);
         }
-        for (let m = 0; m <= NMOD; m++) this.dirty[m] = 1;
+        if (fxt && typeof fxt === 'object' && Array.isArray(fxt.xs)) this.setXS(fxt.xs);
+        const V = this.U;
+        for (let i = 0; i < V.length; i++) V[i].dirty = 1;
+        this.gdirty = 1;
         if (this.fresh !== 0) { this.snap(); this.seed(1); if (ok) this.fresh = 0; } else if (ok && fxp.seed) this.seed(0);
         this.calm = 0;
       }
-      allocMod(m) {
-        if (this.has[m] === 1) return;
-        switch (m) {
-          case 0: this.mHy.alloc(); break;
-          case 2: this.mFl.alloc(); break;
-          case 4: this.mCh.alloc(); break;
-          case 5: this.mDl.alloc(); break;
-          case 6: this.mCp.alloc(); break;
-          case 7: this.mRv.alloc(this.revType); break;
-          case 9: this.mFi.alloc(); if (!this.mFi.sf) return; break;
-          default: break;                                        // Distortion, Phaser, EQ own no buffers
+      // module kind of an FXP (type, variant), −1 when it cannot run here (the instance passes its input): S2 variants need
+      // SxBase, the FXMods2 types need FXMods2 (§0.3 failure column)
+      kindOf(t, v) {
+        if (!(t >= 0 && t < NTYPES)) return -1;
+        if (v === 1) return MOD_OF_TYPE[t];
+        if (v !== 2 || this.B === null) return -1;
+        const k = K2[t], M2 = this.M2;
+        if (k < 18) return k;
+        if (M2 === null) return -1;
+        if (k === 18) return typeof M2.Bode === 'function' ? 18 : -1;
+        if (k === 19) return typeof M2.Convolve === 'function' && typeof this.B.FFT === 'function' ? 19 : -1;
+        if (k === 20) return typeof M2.Utility === 'function' ? 20 : -1;
+        return typeof M2.XoverLH === 'function' && typeof M2.XoverLMH === 'function' && typeof M2.MS === 'function' ? 21 : -1;
+      }
+      newMod(u) {
+        const fs = this.fs, B = this.B, M2 = this.M2;
+        switch (u.k) {
+          case 0: return new Hyper(fs); case 1: return new Dist(fs); case 2: return new Flanger(fs); case 3: return new Phaser(fs);
+          case 4: return new Chorus(fs); case 5: return new Delay(fs); case 6: return new Comp(fs); case 7: return new Reverb(fs);
+          case 8: return new EQ(fs); case 9: return new Filt(fs);
+          case 10: return new Dist2(fs, B, M2); case 11: return new Phaser2(fs); case 12: return new Chorus2(fs);
+          case 13: return new Delay2(fs); case 14: return new Comp2(fs); case 15: return new Rev2(fs, M2); case 16: return new EQ2(fs);
+          case 17: return new Filt2(fs);
+          case 18: return new M2.Bode(fs); case 19: return new M2.Convolve(fs); case 20: return new M2.Utility(fs);
+          case 21: return new SplitMod(fs, u.t, M2);
+          default: return null;
         }
-        this.has[m] = 1;
+      }
+      // S2 reverb type selected by the unit's eff n (base + offset)
+      revT(u) { const n = clamp01(u.tgt[1] + u.mdT[1]); return round(4 * n); }
+      // the instance graph of an FXP: units are kept by instance id with their state when the type and variant match,
+      // new ones are created, removed ones that still sound fade out (5 ms) at their place in their chain (rack or
+      // splitter branch), then are dropped. Pass 1 builds the graph, pass 2 allocates under the per-track cap (§8.5)
+      graph(P) {
+        const nI = P.nI, b = P.base, NFX = b.length, old = this.U, prev = new Map(), U = [], C = [[], [], []], byId = new Map();
+        const at = [];
+        for (let i = 0; i < old.length; i++) {
+          const u = old[i];
+          u.keep = 0;
+          if (!prev.has(u.id) || prev.get(u.id).gone === 1) prev.set(u.id, u);
+        }
+        const oldC = [this.C0, this.C1, this.C2], oldBr = [];
+        for (let i = 0; i < old.length; i++) { const u = old[i]; if (u.k === 21 && u.br) oldBr.push(u, u.br); }
+        // pass 1
+        for (let i = 0; i < nI; i++) {
+          at.push(null);
+          const t = P.iType[i], v = P.iVar[i], par = P.iPar[i], off = P.iOff[i], n = P.iN[i], id = String(P.iId[i]);
+          const k = this.kindOf(t, v), rows = k >= 0 ? ROWS[t][v] : null;
+          if (k < 0 || rows === null || rows.length !== n || !(off >= 0) || 8 + off + n > NFX) continue;
+          let pu = null;
+          if (par >= 0) {                                      // a branch instance of a running splitter (no splitter inside)
+            pu = par < i ? at[par] : null;
+            if (pu === null || pu.k !== 21 || k === 21) continue;
+          }
+          let u = prev.get(id), fresh = false;
+          if (u === undefined || u.k !== k || u.t !== t || u.keep === 1) {
+            u = new Unit(this, id, t, v, k, rows);
+            u.mod = this.newMod(u);
+            fresh = true;
+          }
+          u.keep = 1; u.gone = 0; u.idx = i; u.off = off;
+          const r = P.iRack[i];
+          u.rack = r === 1 || r === 2 ? r : 0;
+          for (let p = 0; p < n; p++) { const x = +b[8 + off + p]; if (x === x) u.tgt[p] = clamp01(x); }
+          u.byp = P.iByp[i] ? 1 : 0;
+          const ph = +P.iPh[i];
+          if (isNum(ph)) u.seedPh = frac(ph);
+          u.revType = P.iRev[i] === 0 ? 0 : 1;
+          u.choMono = P.iCho[i] ? 1 : 0;
+          u.bpm = this.bpm; u.keyF = this.keyF;
+          if (k === 19) { const s = P.iIr[i]; u.irId = typeof s === 'string' ? s : ''; u.convMax = P.convMax > 0 ? +P.convMax : 10; }
+          if (k >= 18 && k <= 20 && !u.mod.set(u)) { u.keep = 0; continue; }
+          if (k === 21) {
+            u.br = [[], [], []];
+            if (u.bb === null) u.bb = new Uint8Array(3);
+            for (let q = 0; q < 3; q++) u.bb[q] = P.iBB[3 * i + q] ? 1 : 0;
+            if (fresh) for (let q = 0; q < 3; q++) u.mod.bx[q] = u.bb[q];
+          }
+          u.fresh = fresh ? 1 : 0;
+          U.push(u); byId.set(id, u); at[i] = u;
+          if (pu !== null) { const q = P.iBr[i]; pu.br[q < pu.mod.nb ? q : 0].push(u); } else C[u.rack].push(u);
+        }
+        // removed units that still sound: fade out after the nearest unit that preceded them in the same chain
+        if (this.fresh === 0) {
+          for (let r = 0; r < 3; r++) this.fadeIns(oldC[r], C[r], U);
+          for (let q = 0; q < oldBr.length; q += 2) {
+            const su = oldBr[q], obr = oldBr[q + 1];
+            if (su.keep === 1 && su.br !== obr) { for (let c = 0; c < 3; c++) this.fadeIns(obr[c], su.br[c], U); continue; }
+            // a removed splitter fades out with its old branches (minus instances that live on elsewhere)
+            for (let c = 0; c < 3; c++) su.br[c] = obr[c].filter((x) => x.keep === 0 && x.st !== 0);
+          }
+        }
+        // pass 2: allocation (FXP order) under the per-track memory cap (§8.5). New allocations and the set-time growth
+        // of allocated units (Convolve tail FDL, S2 Reverb pool, splitter alignment lines) are checked against
+        // CAP_BYTES: a new instance that does not fit stays unallocated and bypassed; a unit whose growth does not fit
+        // keeps its size (Convolve: bypassed until it fits; Reverb: the unprepared TYPE is not installed); both are
+        // listed in `over` (host notice). An instance refused once is not allocated again (no allocate-measure-discard
+        // per set()) until the rack's total leaves room for the size it measured
+        const seen = new Set();
+        let mem = 0;
+        for (let i = 0; i < old.length; i++) { const u = old[i]; if (u.keep === 0 && u.st !== 0 && u.has === 1) mem += u.mem; }
+        for (let i = 0; i < U.length; i++) { const u = U[i]; if (u.has === 1) mem += u.mem; }
+        this.over = [];
+        for (let i = 0; i < nI; i++) {
+          const u = at[i];
+          if (u === null) continue;
+          const k = u.k;
+          if ((P.iAlloc[i] || u.has === 1) && u.has === 0) {
+            if (u.over === 1 && u.need > 0 && mem + u.need > CAP_BYTES) this.over.push(u.id);
+            else {
+              this.allocMod(u);
+              if (u.has === 1) {
+                if (k === 15) u.mod.prep(P.filTypeAll[i] ? 31 : 1 << this.revT(u));
+                if (k === 21) u.mod.lines(this.alignCap(u));
+                seen.clear();
+                u.mem = modBytes(u.mod, seen, 0);
+                if (mem + u.mem > CAP_BYTES) {                 // over the cap: unallocated and bypassed (host notice)
+                  u.need = u.mem;
+                  u.mod = this.newMod(u);
+                  if (k >= 18 && k <= 20) u.mod.set(u);
+                  if (k === 21) for (let q = 0; q < 3; q++) u.mod.bx[q] = u.bb[q];
+                  u.has = 0; u.mem = 0; u.over = 1;
+                  this.over.push(u.id);
+                } else { mem += u.mem; u.over = 0; u.need = 0; }
+              }
+            }
+          } else if (u.has === 1) {
+            if (k === 19) mem = this.fitConv(u, mem);
+            else if (k === 15) {
+              const mask = P.filTypeAll[i] ? 31 : 1 << this.revT(u), d = u.mod.prepNeed(mask);
+              if (d > 0) { if (mem + d <= CAP_BYTES) { u.mod.prep(mask); mem += d; u.mem += d; } else this.over.push(u.id); }
+            } else if (k === 21) {
+              const n = this.alignCap(u), d = u.mod.linesNeed(n);
+              if (d > 0) { if (mem + d <= CAP_BYTES) { u.mod.lines(n); mem += d; u.mem += d; } else this.over.push(u.id); }
+            }
+          }
+          if (k === 7 && u.has === 1 && u.mod.type !== u.revType) {
+            const pl = u.mod.pool ? u.mod.pool.length : 0;          // (S1 Plate ↔ Hall: Phase-1 behaviour, the growth is counted)
+            this.revSwitch(u);
+            const d = 4 * ((u.mod.pool ? u.mod.pool.length : 0) - pl);
+            if (d > 0) { u.mem += d; mem += d; }
+          }
+          if ((k === 9 || k === 17) && u.has === 1) {
+            const a0 = u.mod.all, t0 = u.mod.type;
+            if (P.filTypeAll[i]) u.mod.prealloc();
+            else u.mod.setType(round((k === 9 ? 95 : 107) * clamp01(u.tgt[8] + u.mdT[8])));
+            if (u.mod.all !== a0 || u.mod.type !== t0) { seen.clear(); const nb = modBytes(u.mod, seen, 0); mem += nb - u.mem; u.mem = nb; }
+          }
+          if (u.fresh === 1 && this.fresh === 0) this.unitInit(u);
+          u.fresh = 0;
+        }
+        let nc = 0;
+        for (let i = 0; i < U.length; i++) if (U[i].k === 19) nc++;
+        this.nConv = nc;
+        const key = typeof P.key === 'string' ? P.key : '';
+        if (key !== this.key || nI !== this.nI) this.grOut.fill(0);   // instance indices moved
+        this.U = U; this.C0 = C[0]; this.C1 = C[1]; this.C2 = C[2]; this.byId = byId; this.gc = 0;
+        this.tapU = this.tapId !== '' ? byId.get(this.tapId) || null : null;
+        this.nI = nI; this.NFX = NFX; this.key = key;
+        for (let k = 0; k < 3; k++) {
+          this.rByp[k] = P.rByp[k] ? 1 : 0;
+          const r = P.rRoute[k];
+          this.rRoute[k] = k > 0 && (r === 1 || r === 2) ? r : 0;
+        }
+        if (this.rRoute[1] === 2 && this.rRoute[2] === 2) this.rRoute[2] = 0;
+      }
+      // a kept Convolve's tail FDL to its want() under the cap (set-time): shrinking always, growth when it fits, else the
+      // instance keeps its FDL and is bypassed (`capped`) and listed in `over` → the rack's new total
+      fitConv(u, mem) {
+        const M = u.mod, d = M.fdlDelta();
+        if (d === 0 || d < 0 || mem + d <= CAP_BYTES) {
+          if (d !== 0) { M.size(); u.mem += d; mem += d; }
+          M.capped = 0;
+          return mem;
+        }
+        M.capped = 1;
+        this.over.push(u.id);
+        return mem;
+      }
+      // host hook (§9.5): the engine calls it after SxBase.storeAsset / dropAsset ('smp' / 'smpdel' messages; a
+      // configuration call like set(), never from process()). Every Convolve instance adopts its arrived entry (or
+      // notices a dropped one) and its tail FDL is sized to the stored entry under the per-track cap, so an IR that
+      // arrives after the patch plays its whole tail at once (allocation allowed here; process() only adopts)
+      assets() {
+        if (this.nConv === 0) return;
+        const U = this.U;
+        let mem = 0;
+        for (let i = 0; i < U.length; i++) if (U[i].has === 1) mem += U[i].mem;
+        for (let i = 0; i < U.length; i++) {
+          const u = U[i];
+          if (u.k !== 19 || u.has !== 1 || u.gone === 1) continue;
+          const j = this.over.indexOf(u.id);
+          if (j >= 0) this.over.splice(j, 1);
+          u.mod.poll(); u.mod.want();
+          mem = this.fitConv(u, mem);
+          if (u.st === 0 && u.mod.ready === 0) u.mod.release();
+        }
+        this.calm = 0;
+      }
+      // removed units of an old chain that still sound go into the new chain after their nearest kept predecessor
+      fadeIns(oc, nc, U) {
+        let at = 0;
+        for (let q = 0; q < oc.length; q++) {
+          const u = oc[q];
+          if (u.keep === 1) { const ix = nc.indexOf(u); if (ix >= 0) at = ix + 1; continue; }
+          if (u.st === 0) continue;
+          u.gone = 1; u.idx = -1; u.keep = 1;
+          nc.splice(at, 0, u); U.push(u); at++;
+        }
+      }
+      // a unit created while the rack runs: parameters at their targets, LFO phase / hold restarted, enabled through the
+      // state machine (5 ms fade-in)
+      unitInit(u) {
+        for (let p = 0; p < u.n; p++) {
+          u.bs[p] = u.tgt[p]; u.md[p] = u.mdT[p];
+          const n = clamp01(u.tgt[p] + u.mdT[p]);
+          u.en[p] = n; u.ev[p] = lawU(u.law[p], u.lo[p], u.hi[p], n);
+        }
+        u.st = 0; u.xf = 0; u.dirty = 1;
+        this.mixUpd(u); u.gD0 = u.gD1; u.gW0 = u.gW1;
+        const k = u.k;
+        if (k === 1 || k === 10) u.mod.seed(); else if (k === 0 || (k >= 2 && k <= 4) || k === 11 || k === 12 || k === 18) this.modSeed(u);
+      }
+      setXS(xs) {                                              // FXT v2: X-Shaper tables per Distortion instance id
+        for (let j = 0; j < xs.length; j++) {
+          const e = xs[j];
+          if (!e || typeof e !== 'object') continue;
+          const u = this.byId.get(String(e.id));
+          if (u === undefined || (u.k !== 1 && u.k !== 10) || !okXS(e.xsA) || !okXS(e.xsB)) continue;
+          const a = e.xsA, c = e.xsB, A = u.xsA, B = u.xsB;
+          for (let i = 0; i < NXS; i++) { const x = +a[i], y = +c[i]; A[i] = x === x ? x : i / 1024; B[i] = y === y ? y : i / 1024; }
+        }
+      }
+      allocMod(u) {
+        if (u.has === 1) return;
+        switch (u.k) {
+          case 0: u.mod.alloc(); break;
+          case 2: u.mod.alloc(); break;
+          case 4: u.mod.alloc(); break;
+          case 5: u.mod.alloc(); break;
+          case 6: u.mod.alloc(); break;
+          case 7: u.mod.alloc(u.revType); break;
+          case 9: u.mod.alloc(); if (!u.mod.sf) return; break;
+          case 12: u.mod.alloc(); break;
+          case 13: u.mod.alloc(); break;
+          case 14: u.mod.alloc(); break;
+          case 15: u.mod.alloc(this.revT(u)); break;
+          case 17: u.mod.alloc(); if (!u.mod.sf) return; break;
+          case 18: case 19: case 20: u.mod.alloc(); if (u.mod.has !== 1) return; break;
+          default: break;                                        // Distortion, Phaser, EQ, splitters own no lines
+        }
+        u.has = 1;
       }
       // Plate ↔ Hall: the pool grows here; a sounding reverb ducks and the new (empty) topology fades in
-      revSwitch() {
-        this.mRv.ensure(this.revType);
-        if (this.st[7] !== 0 && this.quietT < SEEDQ * this.fs) { this.pend[7] |= 2; if (this.st[7] === 1) this.st[7] = 3; } else this.revApply();
+      revSwitch(u) {
+        u.mod.ensure(u.revType);
+        if (u.st !== 0 && this.quietT < SEEDQ * this.fs) { u.pend |= 2; if (u.st === 1) u.st = 3; } else this.revApply(u);
       }
-      revApply() {
-        const V = this.mRv;
-        if (V.type === this.revType) return;
-        V.apply(this.revType);
-        if (this.st[7] !== 0) { V.upd(this); V.snap(); V.ir = 0; }
+      revApply(u) {
+        const V = u.mod;
+        if (V.type === u.revType) return;
+        V.apply(u.revType);
+        if (u.st !== 0) { V.upd(u); V.snap(); V.ir = 0; }
       }
-      setMods(off) {
-        const T = this.mdT;
+      // a module asked for a topology change in upd() (S2 reverb type, S2 Delay HQ): ducked while it sounds, else at once
+      topoReq(u) {
+        if ((u.pend & 2) !== 0) return;
+        if (u.st !== 0 && this.quietT < SEEDQ * this.fs) { u.pend |= 2; if (u.st === 1) u.st = 3; } else this.topoApply(u);
+      }
+      topoApply(u) {
+        if (u.k === 7) { this.revApply(u); return; }
+        if (u.mod.topo !== 1) return;
+        u.mod.applyTopo();
+        if (u.st !== 0) { this.modUpd(u); this.modSnap(u); u.mod.ir = 0; }
+        if (u.mod.topo === 1) u.dirty = 1;                      // the controls moved on during the duck: the next block re-requests
+      }
+      // modulation offsets in FX-context layout (§4.2; SerumDSP.fxMods); `key` (optional) = the FX layout key the matrix
+      // was compiled against: a different key (stale layout) or a short vector means no modulation
+      setMods(off, key) {
+        const use = !!off && typeof off === 'object' && off.length >= this.NFX && (typeof key !== 'string' || key === this.key);
+        const gT = this.gmT, U = this.U;
         let ch = 0;
-        if (off && typeof off === 'object' && off.length >= NF) {
-          for (let k = 0; k < NF; k++) {
-            let v = +off[k];
-            v = v > -2 ? (v < 2 ? v : 2) : v < 0 ? -2 : 0;      // NaN → 0
-            if (v !== T[k]) { T[k] = v; ch = 1; }
+        for (let g = 0; g < NG; g++) {
+          let v = use ? +off[g] : 0;
+          v = v > -2 ? (v < 2 ? v : 2) : v < 0 ? -2 : 0;        // NaN → 0
+          if (v !== gT[g]) { gT[g] = v; ch = 1; }
+        }
+        for (let i = 0; i < U.length; i++) {
+          const u = U[i], T = u.mdT, o = 8 + u.off, live = use && u.gone === 0;
+          for (let p = 0; p < u.n; p++) {
+            let v = live ? +off[o + p] : 0;
+            v = v > -2 ? (v < 2 ? v : 2) : v < 0 ? -2 : 0;
+            if (v !== T[p]) { T[p] = v; ch = 1; }
           }
-        } else {
-          for (let k = 0; k < NF; k++) if (T[k] !== 0) { T[k] = 0; ch = 1; }
         }
         if (ch === 1) this.calm = 0;
       }
-      trigger() {                                              // note-on: Hyper RETRIG (immediate; ends a pending re-seed duck)
-        const n = this.tgt[87] + this.mdT[87];
-        if (n >= 0.5) {
-          this.mHy.seed(this.seedPh[0]);
-          if ((this.pend[0] & 1) !== 0) { this.pend[0] = 0; if (this.st[0] === 3) this.st[0] = 1; }
+      // key-tracking pitch (§8.1; engine, once per span: Serum's recent gliding pitch, other models the last note-on,
+      // none 60): the Key Track rows of the S2 Distortion / Filter variants read the factor 2^((pitch − 60)/12)
+      setNote(pitch) {
+        const p = isNum(pitch) ? +pitch : 60;
+        if (p === this.note) return;
+        this.note = p; this.keyF = pow(2, (p - 60) / 12);
+        const U = this.U;
+        for (let i = 0; i < U.length; i++) { const u = U[i]; u.keyF = this.keyF; if (u.k === 10 || u.k === 17) u.dirty = 1; }
+      }
+      // note-on: Hyper RETRIG and Bode RETRIG (immediate; ends a pending re-seed duck)
+      trigger() {
+        const U = this.U;
+        for (let i = 0; i < U.length; i++) {
+          const u = U[i];
+          if (u.k === 0) { if (u.tgt[9] + u.mdT[9] < 0.5) continue; } else if (u.k === 18) {
+            if (u.tgt[POS_RETRIG_BODE] + u.mdT[POS_RETRIG_BODE] < 0.5) continue;
+          } else continue;
+          u.mod.seed(u.seedPh);
+          if ((u.pend & 1) !== 0) { u.pend &= 2; if (u.st === 3 && u.pend === 0) u.st = 1; }
         }
       }
       transport() { this.seed(0); }
       // re-seed the LFO phases from seedPh; force (or nothing audible in the lines): at once, together with the other
       // free-running phases and counters (reverb modulation, half-rate grids, the FX filter's S&H / ring phases)
       seed(force) {
-        const quiet = force === 1 || this.quietT >= SEEDQ * this.fs;
-        this.seedMod(0, quiet); this.seedMod(2, quiet); this.seedMod(3, quiet); this.seedMod(4, quiet);
-        this.mDi.seed();
-        if (quiet) {
-          this.mRv.seed(); this.mDl.hph = 0;
-          if (this.has[9] === 1 && force !== 1) this.mFi.reset();
+        const quiet = force === 1 || this.quietT >= SEEDQ * this.fs, U = this.U;
+        for (let i = 0; i < U.length; i++) {
+          const u = U[i];
+          switch (u.k) {
+            case 0: case 2: case 3: case 4: case 11: case 12: case 18: this.seedMod(u, quiet); break;
+            case 1: case 10: u.mod.seed(); break;
+            case 5: case 13: if (quiet) u.mod.hph = 0; break;
+            case 7: case 15: if (quiet) u.mod.seed(); break;
+            case 9: case 17: if (quiet && u.has === 1 && force !== 1) u.mod.reset(); break;
+            default: break;
+          }
         }
       }
-      seedMod(k, quiet) {
-        if (quiet || this.st[k] === 0) { this.pend[k] &= 2; this.modSeed(k); return; }
-        this.pend[k] |= 1;
-        if (this.st[k] === 1) this.st[k] = 3;
+      seedMod(u, quiet) {
+        if (quiet || u.st === 0) { u.pend &= 2; this.modSeed(u); return; }
+        u.pend |= 1;
+        if (u.st === 1) u.st = 3;
       }
-      modSeed(k) {
-        const P = this.seedPh;
-        switch (k) {
-          case 0: this.mHy.seed(P[0]); break; case 2: this.mFl.seed(P[1]); break;
-          case 3: this.mPh.seed(P[2]); break; default: this.mCh.seed(P[3]); break;
-        }
-      }
+      modSeed(u) { u.mod.seed(u.seedPh); }
       // at the bottom of a duck: a re-seed restarts the module (its feedback lines hold signal written along the old
       // LFO trajectory, which would come out after one delay), then fades its line inputs in like an enable
-      doPend(k) {
-        const a = this.pend[k];
-        this.pend[k] = 0;
-        if ((a & 2) !== 0) this.revApply();
-        if ((a & 1) !== 0) { this.modReset(k); this.modIntro(k); this.modSeed(k); }
+      doPend(u) {
+        const a = u.pend;
+        u.pend = 0;
+        if ((a & 2) !== 0) this.topoApply(u);
+        if ((a & 1) !== 0) { this.modReset(u); this.modIntro(u); this.modSeed(u); }
       }
       flushPend() {
-        for (let k = 0; k < NMOD; k++) if (this.pend[k] !== 0) { this.doPend(k); if (this.st[k] === 3) this.st[k] = 1; }
+        const U = this.U;
+        for (let i = 0; i < U.length; i++) { const u = U[i]; if (u.pend !== 0) { this.doPend(u); if (u.st === 3) u.st = 1; } }
       }
-      phases() {                                               // a re-seed waiting for its duck reports the new phase
-        const o = this.phOut, P = this.seedPh, pd = this.pend;
-        o[0] = (pd[0] & 1) !== 0 ? P[0] : this.mHy.ph[0]; o[1] = (pd[2] & 1) !== 0 ? P[1] : this.mFl.ph;
-        o[2] = (pd[3] & 1) !== 0 ? P[2] : this.mPh.ph; o[3] = (pd[4] & 1) !== 0 ? P[3] : this.mCh.ph;
+      // LFO phase of FXP instance i (Hyper, Flanger L, Phaser L, Chorus, Bode shifter; NaN without one); a re-seed waiting
+      // for its duck reports the new phase
+      phases() {
+        const o = this.phOut, U = this.U;
+        o.fill(NaN);
+        for (let i = 0; i < U.length; i++) {
+          const u = U[i], j = u.idx;
+          if (j < 0 || j >= MAXI) continue;
+          const sp = (u.pend & 1) !== 0;
+          switch (u.k) {
+            case 0: o[j] = sp ? u.seedPh : u.mod.ph[0]; break;
+            case 2: case 3: case 4: case 11: case 12: case 18: o[j] = sp ? u.seedPh : u.mod.ph; break;
+            default: break;
+          }
+        }
         return o;
       }
-      gr() { return this.grOut; }
-      // nothing can sound for zero input: no module enabled, or all enabled modules quiet for 1 s plus the longest gap
+      gr() { return this.grOut; }                             // [4·i … 4·i + 3]: compressor gain reduction of FXP instance i
+      // [+] monitor tap (§13.5 Delay: the filter display's realtime spectrum overlay, IMPL: post-delay mono tap): the last
+      // TAP_N frames of instance id's output, (L + R)/2 after the module (its mix, enable fade; nothing while it does not
+      // run). '' switches it off. tapOut() → Float32Array(TAP_N), oldest first (one reused array), or null when off
+      setTap(id) {
+        const k = typeof id === 'string' ? id : '';
+        if (k === this.tapId) return;
+        this.tapId = k; this.tapU = k !== '' ? this.byId.get(k) || null : null;
+        this.tapB.fill(0); this.tapW = 0;
+      }
+      tapOut() {
+        if (this.tapId === '') return null;
+        const B = this.tapB, O = this.tapO, w = this.tapW;
+        for (let j = 0; j < TAP_N; j++) O[j] = B[(w + j) & (TAP_N - 1)];
+        return O;
+      }
+      tapPush(L, R, o, m) {
+        const B = this.tapB;
+        let w = this.tapW;
+        for (let j = 0; j < m; j++) { B[w] = 0.5 * (L[o + j] + R[o + j]); w = (w + 1) & (TAP_N - 1); }
+        this.tapW = w;
+      }
+      // nothing can sound for zero input: no instance enabled, or all enabled ones quiet for 1 s plus the longest gap
       // between a delay write and its echo; never while a soft-reset fade is pending (process() renders it)
       idle() {
         if (this.rf !== 1 || this.rfT !== 1) return false;
         if (this.calm === 1 || this.nAct === 0) return true;
-        return this.quietT >= this.fs + (this.st[5] !== 0 ? this.mDl.tail() : 0);
+        const U = this.U;
+        let tail = 0;
+        for (let i = 0; i < U.length; i++) {
+          const u = U[i], k = u.k;
+          if (u.st === 0 || (k !== 5 && k !== 13 && k !== 15 && k !== 18 && k !== 19)) continue;
+          const t = u.mod.tail();
+          if (t > tail) tail = t;
+        }
+        return this.quietT >= this.fs + tail;
       }
       // soft: audible tails fade out over 5 ms, then everything is cleared and the output fades back in; with nothing
       // audible the states are cleared at once and the parameters keep gliding. Hard (panic, restore): cleared and
@@ -1585,193 +2581,485 @@
         if (this.fresh === 0) this.fresh = 2;
       }
       wipe() {
-        for (let m = 0; m < NMOD; m++) if (this.has[m] === 1) this.modReset(m);
-        this.flushPend(); this.grOut.fill(0); this.seed(1);
+        const U = this.U;
+        for (let i = 0; i < U.length; i++) if (U[i].has === 1) this.modReset(U[i]);
+        this.flushPend(); this.dropGone(); this.grOut.fill(0); this.seed(1);
         this.quietT = QBIG; this.calm = 0;
       }
       clear() {
-        for (let m = 0; m < NMOD; m++) if (this.has[m] === 1) this.modReset(m);
+        const U = this.U;
+        for (let i = 0; i < U.length; i++) if (U[i].has === 1) this.modReset(U[i]);
         this.quietT = QBIG; this.qmax = 0; this.rf = 1; this.rfT = 1;    // (qmax: this span counts from the clear on)
         this.grOut.fill(0);
         this.snap(); this.seed(1);
         this.calm = 0;
       }
+      // removed units stop at once (snap, clear) / once silent (post)
+      dropGone() {
+        const U = this.U;
+        for (let i = 0; i < U.length; i++) if (U[i].gone === 1) { U[i].st = 0; U[i].xf = 0; this.gc = 1; }
+        this.collect();
+      }
+      collect() {                                              // in place (no allocation): drop gone units with st 0
+        if (this.gc === 0) return;
+        this.gc = 0;
+        const L = [this.U, this.C0, this.C1, this.C2];
+        for (let a = 0; a < 4; a++) this.compact(L[a]);
+        const U = this.U;
+        for (let i = 0; i < U.length; i++) { const u = U[i]; if (u.k === 21) for (let c = 0; c < 3; c++) this.compact(u.br[c]); }
+      }
+      compact(A) {
+        let w = 0;
+        for (let r = 0; r < A.length; r++) { const u = A[r]; if (u.gone === 1 && u.st === 0) continue; A[w++] = u; }
+        A.length = w;
+      }
+      // whether unit u can run now (Convolve: an IR is adopted; Reverb S2: its type exists here)
+      rdy(u) {
+        const k = u.k;
+        if (k === 19) return u.mod.ready === 1 && u.mod.capped === 0;
+        if (k === 15) { const t = round(4 * u.en[1]); return u.mod.nd[t > 4 ? 4 : t] !== Infinity; }
+        return true;
+      }
       // snap every smoother to its target (first set, reset)
       snap() {
         this.flushPend();
-        const tgt = this.tgt, en = this.en, ev = this.ev;
-        for (let k = 0; k < NF; k++) {
-          this.bs[k] = tgt[k]; this.md[k] = this.mdT[k];
-          const n = clamp01(tgt[k] + this.mdT[k]);
-          en[k] = n; ev[k] = lawV(k, n);
+        this.dropGone();
+        const gt = this.gt, gmT = this.gmT;
+        for (let g = 0; g < NG; g++) {
+          this.gb[g] = gt[g]; this.gm[g] = gmT[g];
+          const n = clamp01(gt[g] + gmT[g]);
+          this.gn[g] = n; this.gv[g] = lawG(g, n);
         }
+        const U = this.U;
         let act = 0;
-        for (let m = 0; m < NMOD; m++) {
-          const on = en[ON[m]] >= 0.5 && this.byp[m] === 0 && this.has[m] === 1;
-          this.st[m] = on ? 1 : 0; this.xf[m] = on ? 1 : 0;
-          if (on) { this.modUpd(m); this.modSnap(m); act++; this.dirty[m] = 0; } else this.dirty[m] = 1;
-          this.mixUpd(m); this.gD0[m] = this.gD1[m]; this.gW0[m] = this.gW1[m];
+        for (let i = 0; i < U.length; i++) {
+          const u = U[i], tgt = u.tgt, mdT = u.mdT, law = u.law, lo = u.lo, hi = u.hi;
+          for (let p = 0; p < u.n; p++) {
+            u.bs[p] = tgt[p]; u.md[p] = mdT[p];
+            const n = clamp01(tgt[p] + mdT[p]);
+            u.en[p] = n; u.ev[p] = lawU(law[p], lo[p], hi[p], n);
+          }
+          const on = u.en[0] >= 0.5 && u.byp === 0 && u.has === 1 && this.rdy(u);
+          u.st = on ? 1 : 0; u.xf = on ? 1 : 0;
+          if (on) {
+            this.modUpd(u);
+            if (u.mod.topo === 1) { u.mod.applyTopo(); this.modUpd(u); }
+            this.modSnap(u); act++; u.dirty = 0;
+          } else u.dirty = 1;
+          this.mixUpd(u); u.gD0 = u.gD1; u.gW0 = u.gW1;
+          if (u.k === 1 || u.k === 10) u.mod.v = u.st !== 0 ? DIST_LAT : 0;
+          if (u.k === 21) for (let c = 0; c < 3; c++) u.mod.bx[c] = u.bb[c];
         }
         this.nAct = act;
-        this.mDi.v = this.st[1] !== 0 ? DIST_LAT : 0;
-        this.gm0 = this.gm1 = ev[0]; this.gT = en[86] >= 0.5 ? 0 : 1; this.gate = this.gT; this.dirty[NMOD] = 0;
-        this.latency = this.st[6] !== 0 && this.mCp.mode === 1 ? this.mCp.La : 0;
+        const gv = this.gv;
+        this.gm0 = this.gm1 = gv[0]; this.gT = this.gn[1] >= 0.5 ? 0 : 1; this.gate = this.gT; this.gdirty = 0;
+        this.gd0 = this.gd1 = gv[2];
+        this.gb0[1] = this.gb1[1] = gv[3]; this.gb0[2] = this.gb1[2] = gv[4];
+        for (let k = 0; k < 3; k++) this.rx[k] = this.rByp[k];
+        this.latency = this.lat();
+      }
+      // look-ahead of the Limit-mode compressors on the main path (MAIN rack, incl. the branches of its splitters)
+      lat() {
+        const C = this.C0;
+        let a = 0;
+        for (let q = 0; q < C.length; q++) {
+          const u = C[q], k = u.k;
+          if (u.st === 0) continue;
+          if (k === 6 || k === 14) { if (u.mod.mode === 1 && u.mod.La > a) a = u.mod.La; continue; }
+          if (k !== 21) continue;
+          for (let c = 0; c < u.mod.nb; c++) {
+            if (u.bb[c] !== 0 && u.mod.bx[c] === 1) continue;
+            const ch = u.br[c];
+            for (let j = 0; j < ch.length; j++) {
+              const x = ch[j];
+              if ((x.k === 6 || x.k === 14) && x.st !== 0 && x.mod.mode === 1 && x.mod.La > a) a = x.mod.La;
+            }
+          }
+        }
+        return a;
       }
 
       /* ---------------- per-module dispatch (monomorphic call sites) */
-      modUpd(m) {
-        switch (m) {
-          case 0: this.mHy.upd(this); break; case 1: this.mDi.upd(this); break; case 2: this.mFl.upd(this); break;
-          case 3: this.mPh.upd(this); break; case 4: this.mCh.upd(this); break; case 5: this.mDl.upd(this); break;
-          case 6: this.mCp.upd(this); break; case 7: this.mRv.upd(this); break; case 8: this.mEq.upd(this); break;
-          default: this.mFi.upd(this); break;
+      modUpd(u) {
+        switch (u.k) {
+          case 0: u.mod.upd(u); break; case 1: u.mod.upd(u); break; case 2: u.mod.upd(u); break;
+          case 3: u.mod.upd(u); break; case 4: u.mod.upd(u); break; case 5: u.mod.upd(u); break;
+          case 6: u.mod.upd(u); break; case 7: u.mod.upd(u); break; case 8: u.mod.upd(u); break;
+          case 9: u.mod.upd(u); break; case 10: u.mod.upd(u); break; case 11: u.mod.upd(u); break;
+          case 12: u.mod.upd(u); break; case 13: u.mod.upd(u); break; case 14: u.mod.upd(u); break;
+          case 15: u.mod.upd(u); break; case 16: u.mod.upd(u); break; case 17: u.mod.upd(u); break;
+          case 18: u.mod.upd(u); break; case 19: u.mod.upd(u); break; case 20: u.mod.upd(u); break;
+          default: u.mod.upd(u); break;
         }
       }
-      modSnap(m) {
-        switch (m) {
-          case 0: this.mHy.snap(); break; case 2: this.mFl.snap(); break; case 3: this.mPh.snap(); break;
-          case 4: this.mCh.snap(); break; case 5: this.mDl.snap(); break; case 6: this.mCp.snap(); break;
-          case 7: this.mRv.snap(); break;
+      modSnap(u) {
+        switch (u.k) {
+          case 0: u.mod.snap(); break; case 2: u.mod.snap(); break; case 3: u.mod.snap(); break;
+          case 4: u.mod.snap(); break; case 5: u.mod.snap(); break; case 6: u.mod.snap(); break;
+          case 7: u.mod.snap(); break; case 11: u.mod.snap(); break; case 12: u.mod.snap(); break;
+          case 13: u.mod.snap(); break; case 14: u.mod.snap(); break; case 15: u.mod.snap(); break;
+          case 16: u.mod.snap(); break; case 18: u.mod.snap(); break; case 19: u.mod.snap(); break;
+          case 20: u.mod.snap(); break; case 21: u.mod.snap(); break;
           default: break;
         }
       }
-      modReset(m) {
-        switch (m) {
-          case 0: this.mHy.reset(); break; case 1: this.mDi.reset(); break; case 2: this.mFl.reset(); break;
-          case 3: this.mPh.reset(); break; case 4: this.mCh.reset(); break; case 5: this.mDl.reset(); break;
-          case 6: this.mCp.reset(); break; case 7: this.mRv.reset(); break; case 8: this.mEq.reset(); break;
-          default: this.mFi.reset(); break;
+      modReset(u) {
+        switch (u.k) {
+          case 0: u.mod.reset(); break; case 1: u.mod.reset(); break; case 2: u.mod.reset(); break;
+          case 3: u.mod.reset(); break; case 4: u.mod.reset(); break; case 5: u.mod.reset(); break;
+          case 6: u.mod.reset(); break; case 7: u.mod.reset(); break; case 8: u.mod.reset(); break;
+          case 9: u.mod.reset(); break; case 10: u.mod.reset(); break; case 11: u.mod.reset(); break;
+          case 12: u.mod.reset(); break; case 13: u.mod.reset(); break; case 14: u.mod.reset(); break;
+          case 15: u.mod.reset(); break; case 16: u.mod.reset(); break; case 17: u.mod.reset(); break;
+          case 18: u.mod.reset(); break; case 19: u.mod.reset(); break; case 20: u.mod.reset(); break;
+          default: u.mod.reset(); break;
         }
       }
       // after an enable during audio: fade the delay-line inputs in (5 ms); the look-ahead line starts filled with the
       // first input sample (no run of zeros, no jump when the real input arrives at the read position)
-      modIntro(m) {
-        switch (m) {
-          case 0: this.mHy.ir = 0; break; case 2: this.mFl.ir = 0; break; case 4: this.mCh.ir = 0; break;
-          case 5: this.mDl.ir = 0; break; case 6: this.mCp.pre = 1; break; case 7: this.mRv.ir = 0; break;
+      modIntro(u) {
+        switch (u.k) {
+          case 0: case 2: case 4: case 5: case 7: case 12: case 13: case 15: case 18: case 19: u.mod.ir = 0; break;
+          case 6: case 14: u.mod.pre = 1; break;
           default: break;
         }
       }
-      modFlush(m) {
-        switch (m) {
-          case 1: this.mDi.flush(); break; case 3: this.mPh.flush(); break; case 4: this.mCh.flush(); break;
-          case 5: this.mDl.flush(); break; case 6: this.mCp.flush(); break; case 7: this.mRv.flush(); break;
-          case 8: this.mEq.flush(); break;
-          default: break;                                        // Hyper / Flanger: feed-forward or line-only state
+      modFlush(u) {
+        switch (u.k) {
+          case 1: u.mod.flush(); break; case 3: u.mod.flush(); break; case 4: u.mod.flush(); break;
+          case 5: u.mod.flush(); break; case 6: u.mod.flush(); break; case 7: u.mod.flush(); break;
+          case 8: u.mod.flush(); break; case 10: u.mod.flush(); break; case 11: u.mod.flush(); break;
+          case 12: u.mod.flush(); break; case 13: u.mod.flush(); break; case 14: u.mod.flush(); break;
+          case 15: u.mod.flush(); break; case 16: u.mod.flush(); break; case 18: u.mod.flush(); break;
+          case 19: u.mod.flush(); break; case 20: u.mod.flush(); break; case 21: u.mod.flush(); break;
+          default: break;                                        // Hyper / Flanger / Filter: feed-forward or line-only state
         }
       }
-      mixUpd(m) {
-        const mk = MIXK[m];
+      mixUpd(u) {
+        const mk = u.mk;
         if (mk === 0) return;
-        const mx = this.ev[MIXI[m]], lv = this.ev[LVLI[m]];
-        if (mk === 2) { this.gD1[m] = (1 - mx) * lv; this.gW1[m] = mx * lv; return; }
+        const mx = u.ev[u.mi], lv = u.ev[u.li];
+        if (mk === 2) { u.gD1 = (1 - mx) * lv; u.gW1 = mx * lv; return; }
         const s = sin(HPI * mx);
-        this.gD1[m] = (1 - mx * mx) * lv; this.gW1[m] = s * s * lv;
+        u.gD1 = (1 - mx * mx) * lv; u.gW1 = s * s * lv;
       }
 
       /* ---------------- audio */
-      process(L, R, n, dL, dR) {
+      // L/R: main input (in place → output); dL/dR: direct input (added × g.direct before master); b1*/b2*: bus inputs
+      process(L, R, n, dL, dR, b1L, b1R, b2L, b2R) {
         if (this.fresh === 2) this.fresh = 0;                // audio after a reset(): later edits glide again
-        if (this.calm === 1 && !dL) return;                  // bypass-cheap: O(1), L/R untouched
+        if (this.calm === 1 && !dL && !b1L && !b2L && (this.nConv === 0 || !this.wake())) return;   // bypass-cheap: O(1)
         n = n | 0;
-        for (let o = 0; o < n; o += SPAN) this.span(L, R, o, n - o < SPAN ? n - o : SPAN, dL, dR);
+        for (let o = 0; o < n; o += SPAN) this.span(L, R, o, n - o < SPAN ? n - o : SPAN, dL, dR, b1L, b1R, b2L, b2R);
       }
-      span(L, R, o, n, dL, dR) {
+      // a calm rack polls its Convolve instances: one that is enabled and has just received its IR wakes the rack
+      wake() {
+        const U = this.U;
+        let w = false;
+        for (let i = 0; i < U.length; i++) {
+          const u = U[i];
+          if (u.k !== 19 || u.has !== 1) continue;
+          if (u.mod.poll(1) && u.st === 0 && u.tgt[0] + u.mdT[0] >= 0.5 && u.byp === 0) w = true;
+        }
+        if (w) this.calm = 0;
+        return w;
+      }
+      span(L, R, o, n, dL, dR, b1L, b1R, b2L, b2R) {
         // §5.4: base one-pole (τ = 10 ms × smooth) per call, mods reached linearly across the call
         const tau = 0.01 * this.smooth * this.fs, a = tau > 0 ? 1 - exp(-n / tau) : 1;
-        const tgt = this.tgt, bs = this.bs, md = this.md, mdT = this.mdT, eS = this.eS, eD = this.eD;
-        let mv = 0;
-        for (let k = 0; k < NF; k++) {
-          const b0 = bs[k], t = tgt[k];
-          let b1 = t;
-          if (FCONT[k] === 1 && b0 !== t) {
-            b1 = b0 + (t - b0) * a;
-            if (b1 - t < 1e-10 && t - b1 < 1e-10) b1 = t;
+        let mvG = 0;
+        {
+          const tgt = this.gt, bs = this.gb, md = this.gm, mdT = this.gmT, eS = this.gS, eD = this.gD;
+          for (let g = 0; g < NG; g++) {
+            const b0 = bs[g], t = tgt[g], c = G_CONT[g];
+            let b1 = t;
+            if (c === 1 && b0 !== t) {
+              b1 = b0 + (t - b0) * a;
+              if (b1 - t < 1e-10 && t - b1 < 1e-10) b1 = t;
+            }
+            bs[g] = b1;
+            const s = (c === 1 ? b0 : b1) + md[g], e = b1 + mdT[g];
+            md[g] = mdT[g];
+            eS[g] = s; eD[g] = e - s;
+            if (e !== s) mvG = 1;
           }
-          bs[k] = b1;
-          const s = (FCONT[k] === 1 ? b0 : b1) + md[k], e = b1 + mdT[k];
-          md[k] = mdT[k];
-          eS[k] = s; eD[k] = e - s;
-          if (e !== s) mv = 1;
+        }
+        const U = this.U, nu = U.length;
+        for (let i = 0; i < nu; i++) {
+          const u = U[i], cont = u.cont, tgt = u.tgt, bs = u.bs, md = u.md, mdT = u.mdT, eS = u.eS, eD = u.eD;
+          let mv = 0;
+          for (let p = 0; p < u.n; p++) {
+            const b0 = bs[p], t = tgt[p], c = cont[p];
+            let b1 = t;
+            if (c === 1 && b0 !== t) {
+              b1 = b0 + (t - b0) * a;
+              if (b1 - t < 1e-10 && t - b1 < 1e-10) b1 = t;
+            }
+            bs[p] = b1;
+            const s = (c === 1 ? b0 : b1) + md[p], e = b1 + mdT[p];
+            md[p] = mdT[p];
+            eS[p] = s; eD[p] = e - s;
+            if (e !== s) mv = 1;
+          }
+          u.mv = mv;
+          if (u.k === 19 && u.has === 1) u.mod.poll(1);          // Convolve: adopt an arrived IR (one epoch compare)
         }
         let z = 1;
         for (let i = o, end = o + n; i < end; i++) if (L[i] !== 0 || R[i] !== 0) { z = 0; break; }
+        if (z === 1 && b1L) for (let i = o, end = o + n; i < end; i++) if (b1L[i] !== 0 || (b1R && b1R[i] !== 0)) { z = 0; break; }
+        if (z === 1 && b2L) for (let i = o, end = o + n; i < end; i++) if (b2L[i] !== 0 || (b2R && b2R[i] !== 0)) { z = 0; break; }
         this.inZero = z; this.qmax = 0;
-        const ord = this.ord, st = this.st;
+        const bus = b1L || b2L || this.C1.length > 0 || this.C2.length > 0;
         for (let b = 0; b < n; b += BLK) {
-          const m = n - b < BLK ? n - b : BLK, oo = o + b;
-          if (b === 0 || mv === 1) this.params((b + m) / n);
+          const m = n - b < BLK ? n - b : BLK, oo = o + b, t = (b + m) / n;
+          if (b === 0 || mvG === 1) this.paramsG(t);
+          for (let i = 0; i < nu; i++) { const u = U[i]; if (b === 0 || u.mv === 1) this.params(u, t); }
           this.states();
-          for (let q = 0; q < NMOD; q++) { const k = ord[q]; if (st[k] !== 0) this.runMod(k, L, R, oo, m); }
+          this.xd = 0;
+          if (bus) this.buses(L, R, oo, m, b1L, b1R, b2L, b2R);
+          this.rackRun(0, this.C0, L, R, oo, m);
           this.out(L, R, oo, m, dL, dR);
         }
         this.post(n);
       }
       // eff n at block position t ∈ (0, 1] of the call; law values recomputed only where n changed
-      params(t) {
-        const eS = this.eS, eD = this.eD, en = this.en, ev = this.ev, dirty = this.dirty;
-        for (let k = 0; k < NF; k++) {
-          let n = eS[k] + eD[k] * t;
+      paramsG(t) {
+        const eS = this.gS, eD = this.gD, en = this.gn, ev = this.gv;
+        for (let g = 0; g < NG; g++) {
+          let n = eS[g] + eD[g] * t;
           n = n > 0 ? (n < 1 ? n : 1) : 0;
-          if (n !== en[k]) { en[k] = n; ev[k] = lawV(k, n); dirty[MOD_OF[k]] = 1; }
+          if (n !== en[g]) { en[g] = n; ev[g] = lawG(g, n); this.gdirty = 1; }
         }
       }
-      // module enable state machine (st, see the constructor) and coefficient updates
+      params(u, t) {
+        const eS = u.eS, eD = u.eD, en = u.en, ev = u.ev, law = u.law, lo = u.lo, hi = u.hi;
+        for (let p = 0; p < u.n; p++) {
+          let n = eS[p] + eD[p] * t;
+          n = n > 0 ? (n < 1 ? n : 1) : 0;
+          if (n !== en[p]) { en[p] = n; ev[p] = lawU(law[p], lo[p], hi[p], n); u.dirty = 1; }
+        }
+      }
+      // instance enable state machine (st, see Unit) and coefficient updates
       states() {
-        const en = this.en, st = this.st, dirty = this.dirty;
-        for (let m = 0; m < NMOD; m++) {
-          const on = en[ON[m]] >= 0.5 && this.byp[m] === 0 && this.has[m] === 1, s = st[m];
+        const U = this.U;
+        for (let i = 0; i < U.length; i++) {
+          const u = U[i], on = u.en[0] >= 0.5 && u.byp === 0 && u.has === 1 && u.gone === 0 && this.rdy(u), s = u.st;
           if (on) {
             if (s === 0) {                                       // 0 → 1: reset, fresh coefficients, fade in
-              this.modReset(m); this.modIntro(m); this.modUpd(m); this.modSnap(m); this.mixUpd(m);
-              this.gD0[m] = this.gD1[m]; this.gW0[m] = this.gW1[m];
-              st[m] = 1; this.xf[m] = 0; dirty[m] = 0;
-              if (m === 1) this.mDi.v = 0;
+              this.modReset(u); this.modIntro(u); this.modUpd(u);
+              if (u.mod.topo === 1) { u.mod.applyTopo(); this.modIntro(u); this.modUpd(u); }
+              this.modSnap(u); this.mixUpd(u);
+              u.gD0 = u.gD1; u.gW0 = u.gW1;
+              u.st = 1; u.xf = 0; u.dirty = 0;
+              if (u.k === 1 || u.k === 10) u.mod.v = 0;
               continue;
             }
-            if (s === 2) st[m] = this.pend[m] !== 0 ? 3 : 1;
-          } else if (s === 1 || s === 3) st[m] = 2;
-          if (st[m] !== 0 && dirty[m] === 1) { this.modUpd(m); this.mixUpd(m); dirty[m] = 0; }
+            if (s === 2) u.st = u.pend !== 0 ? 3 : 1;
+          } else if (s === 1 || s === 3) u.st = 2;
+          if (u.st !== 0 && u.dirty === 1) {
+            this.modUpd(u); this.mixUpd(u); u.dirty = 0;
+            if (u.mod.topo === 1) this.topoReq(u);
+          }
         }
-        if (dirty[NMOD] === 1) { this.gm1 = this.ev[0]; this.gT = en[86] >= 0.5 ? 0 : 1; dirty[NMOD] = 0; }
-        this.latency = st[6] !== 0 && this.mCp.mode === 1 ? this.mCp.La : 0;
+        if (this.gdirty === 1) {
+          const gv = this.gv;
+          this.gm1 = gv[0]; this.gT = this.gn[1] >= 0.5 ? 0 : 1; this.gd1 = gv[2]; this.gb1[1] = gv[3]; this.gb1[2] = gv[4];
+          this.gdirty = 0;
+        }
+        this.latency = this.lat();
       }
-      runMod(k, L, R, o, m) {
+      // a rack's chain over [o, o + m) of X/Y; rack bypass: the input passes (5 ms crossfade), units frozen when fully bypassed
+      rackRun(k, C, X, Y, o, m) {
+        const T = this.rByp[k];
+        let x = this.rx[k];
+        if (x === 0 && T === 0) {
+          for (let q = 0; q < C.length; q++) { const u = C[q]; if (u.st !== 0) this.runMod(u, X, Y, o, m); }
+          return;
+        }
+        if (x === 1 && T === 1) return;
+        const aL = this.raL, aR = this.raR, st = T === 1 ? this.fstep : -this.fstep;
+        for (let j = 0; j < m; j++) { aL[j] = X[o + j]; aR[j] = Y[o + j]; }
+        for (let q = 0; q < C.length; q++) { const u = C[q]; if (u.st !== 0) this.runMod(u, X, Y, o, m); }
+        for (let j = 0; j < m; j++) {
+          x += st;
+          x = x > 1 ? 1 : x < 0 ? 0 : x;
+          const i = o + j;
+          X[i] += x * (aL[j] - X[i]); Y[i] += x * (aR[j] - Y[i]);
+        }
+        this.rx[k] = x;
+      }
+      // §1 buses for block [oo, oo + m): inputs, racks in dependency order, level g.busKv (n 0.5 = 0 dB is skipped), routing
+      // into the main input (L/R), the direct block or the other bus
+      // A bus without input, without a running unit and not fed by the other bus is silent: skipped (its level ramp
+      // is kept current)
+      buses(L, R, oo, m, b1L, b1R, b2L, b2R) {
+        const X1 = this.xL1, Y1 = this.xR1, X2 = this.xL2, Y2 = this.xR2, r2 = this.rRoute[2] === 2;
+        let a1 = b1L || this.running(this.C1) ? 1 : 0, a2 = b2L || this.running(this.C2) ? 1 : 0;
+        if (r2 && a2 === 1) a1 = 1;
+        if (!r2 && this.rRoute[1] === 2 && a1 === 1) a2 = 1;
+        if (a1 === 1) for (let j = 0; j < m; j++) { const i = oo + j; X1[j] = b1L ? b1L[i] : 0; Y1[j] = b1R ? b1R[i] : 0; }
+        if (a2 === 1) for (let j = 0; j < m; j++) { const i = oo + j; X2[j] = b2L ? b2L[i] : 0; Y2[j] = b2R ? b2R[i] : 0; }
+        if (r2) { this.bus(2, a2, L, R, oo, m); this.bus(1, a1, L, R, oo, m); } else { this.bus(1, a1, L, R, oo, m); this.bus(2, a2, L, R, oo, m); }
+      }
+      running(C) { for (let q = 0; q < C.length; q++) if (C[q].st !== 0) return true; return false; }
+      bus(k, live, L, R, oo, m) {
+        if (live === 0) { this.gb0[k] = this.gb1[k]; return; }
+        const X = k === 1 ? this.xL1 : this.xL2, Y = k === 1 ? this.xR1 : this.xR2;
+        this.rackRun(k, k === 1 ? this.C1 : this.C2, X, Y, 0, m);
+        const g0 = this.gb0[k], g1 = this.gb1[k];
+        this.gb0[k] = g1;
+        if (g0 !== 1 || g1 !== 1) {
+          const dg = (g1 - g0) / m;
+          for (let j = 0; j < m; j++) { const g = g0 + dg * (j + 1); X[j] *= g; Y[j] *= g; }
+        }
+        const r = this.rRoute[k];
+        if (r === 0) {
+          for (let j = 0; j < m; j++) { L[oo + j] += X[j]; R[oo + j] += Y[j]; }
+        } else if (r === 1) {
+          const dl = this.xdL, dr = this.xdR;
+          if (this.xd === 0) { for (let j = 0; j < m; j++) { dl[j] = X[j]; dr[j] = Y[j]; } this.xd = 1; }
+          else for (let j = 0; j < m; j++) { dl[j] += X[j]; dr[j] += Y[j]; }
+        } else {
+          const tl = k === 1 ? this.xL2 : this.xL1, tr = k === 1 ? this.xR2 : this.xR1;
+          for (let j = 0; j < m; j++) { tl[j] += X[j]; tr[j] += Y[j]; }
+        }
+      }
+      runMod(u, L, R, o, m) {
+        const k = u.k;
+        if (k === 21) { this.runSplit(u, L, R, o, m); return; }
         const inL = this.inL, inR = this.inR;
         for (let j = 0; j < m; j++) { inL[j] = L[o + j]; inR[j] = R[o + j]; }
         let dd = 0;
         switch (k) {
-          case 0: this.mHy.run(this, L, R, o, m); break;
-          case 1: {
-            const D = this.mDi, s = this.st[1], x = this.xf[1];
+          case 0: u.mod.run(u, L, R, o, m); break;
+          case 1: case 10: {
+            const D = u.mod, s = u.st, x = u.xf;
             D.need = s !== 1 || x < 1 ? 1 : 0; D.vdir = s === 1 ? 1 : x === 0 ? -1 : 0;
-            D.run(this, L, R, o, m); dd = 1; break;
+            if (k === 1) D.run(u, L, R, o, m); else D.run(u, L, R, o, m);
+            dd = 1; break;
           }
-          case 2: this.mFl.run(this, L, R, o, m); break;
-          case 3: this.mPh.run(this, L, R, o, m); break;
-          case 4: this.mCh.run(this, L, R, o, m); break;
-          case 5: this.mDl.run(this, L, R, o, m); break;
-          case 6: this.mCp.run(this, L, R, o, m); dd = 1; break;
-          case 7: this.mRv.run(this, L, R, o, m); break;
-          case 8: this.mEq.run(this, L, R, o, m); break;
-          default: this.mFi.run(this, L, R, o, m); break;
+          case 2: u.mod.run(u, L, R, o, m); break;
+          case 3: u.mod.run(u, L, R, o, m); break;
+          case 4: u.mod.run(u, L, R, o, m); break;
+          case 5: u.mod.run(u, L, R, o, m); break;
+          case 6: u.mod.run(u, L, R, o, m); dd = 1; break;
+          case 7: u.mod.run(u, L, R, o, m); break;
+          case 8: u.mod.run(u, L, R, o, m); break;
+          case 9: u.mod.run(u, L, R, o, m); break;
+          case 11: u.mod.run(u, L, R, o, m); break;
+          case 12: u.mod.run(u, L, R, o, m); break;
+          case 13: u.mod.run(u, L, R, o, m); break;
+          case 14: u.mod.run(u, L, R, o, m); dd = 1; break;
+          case 15: u.mod.run(u, L, R, o, m); break;
+          case 16: u.mod.run(u, L, R, o, m); break;
+          case 17: u.mod.run(u, L, R, o, m); break;
+          case 18: u.mod.run(u, L, R, o, m); break;
+          case 19: u.mod.run(u, L, R, o, m); break;
+          default: u.mod.run(u, L, R, o, m); break;
         }
-        if (MIXK[k] !== 0) this.mix(k, L, R, o, m, dd === 1 ? this.dyL : inL, dd === 1 ? this.dyR : inR);
-        if (this.st[k] >= 2 || this.xf[k] < 1) { if (k === 1) this.xfadeD(L, R, o, m); else this.xfade(k, L, R, o, m); }
-        if (this.inZero === 1) {
-          let q = this.qmax;
-          for (let j = 0; j < m; j++) {
-            const a = L[o + j], b = R[o + j];
-            if (a > q) q = a; else if (-a > q) q = -a;
-            if (b > q) q = b; else if (-b > q) q = -b;
-          }
-          this.qmax = q;
-        }
+        if (u.mk !== 0) this.mix(u, L, R, o, m, dd === 1 ? this.dyL : inL, dd === 1 ? this.dyR : inR);
+        if (u.st >= 2 || u.xf < 1) { if (k === 1 || k === 10) this.xfadeD(u, L, R, o, m); else this.xfade(u, L, R, o, m, inL, inR); }
+        if (this.inZero === 1) this.track(L, R, o, m);
+        if (u === this.tapU) this.tapPush(L, R, o, m);
       }
-      // MIX law (inv A20.2) out = dry·(1 − m²)·lvl + wet·sin²(πm/2)·lvl (Filter: linear), ramped per sample
-      mix(k, L, R, o, m, DL, DR) {
-        const d0 = this.gD0[k], w0 = this.gW0[k], d1 = this.gD1[k], w1 = this.gW1[k];
-        this.gD0[k] = d1; this.gW0[k] = w1;
+      // a splitter: bands → each branch's chain (a bypassed branch passes its band) → Σ × LEVEL; the splitter's own
+      // enable crossfade uses its own input copy (the branch instances reuse the rack's block scratch)
+      runSplit(u, L, R, o, m) {
+        const S = u.mod, iL = S.iL, iR = S.iR, bL = S.bL, bR = S.bR, nb = S.nb, bx = S.bx;
+        for (let j = 0; j < m; j++) { iL[j] = L[o + j]; iR[j] = R[o + j]; }
+        S.xo.split(L, R, o, m, bL[0], bR[0], bL[1], bR[1], bL[2], bR[2]);
+        for (let c = 0; c < nb; c++) {
+          const T = u.bb[c] !== 0 ? 1 : 0;
+          let x = bx[c];
+          if (x === 1 && T === 1) continue;                      // bypassed branch: its band passes (units frozen)
+          const ch = u.br[c], X = bL[c], Y = bR[c];
+          if (x === 0 && T === 0) {
+            for (let q = 0; q < ch.length; q++) { const y = ch[q]; if (y.st !== 0) this.runMod(y, X, Y, 0, m); }
+            continue;
+          }
+          // branch bypass fading (5 ms): the chain runs, its band is mixed back in
+          const kl = S.kL[c], kr = S.kR[c], st = T === 1 ? this.fstep : -this.fstep;
+          for (let j = 0; j < m; j++) { kl[j] = X[j]; kr[j] = Y[j]; }
+          for (let q = 0; q < ch.length; q++) { const y = ch[q]; if (y.st !== 0) this.runMod(y, X, Y, 0, m); }
+          for (let j = 0; j < m; j++) {
+            x += st;
+            x = x > 1 ? 1 : x < 0 ? 0 : x;
+            X[j] += x * (kl[j] - X[j]); Y[j] += x * (kr[j] - Y[j]);
+          }
+          bx[c] = x;
+        }
+        if (S.cl !== null) this.align(u, m);
+        const l0 = S.l0, l1 = S.l1, dl = (l1 - l0) / m, x0 = bL[0], y0 = bR[0], x1 = bL[1], y1 = bR[1], x2 = bL[2], y2 = bR[2];
+        S.l0 = l1;
+        for (let j = 0; j < m; j++) {
+          const g = l0 + dl * (j + 1);
+          let sl = x0[j] + x1[j], sr = y0[j] + y1[j];
+          if (nb === 3) { sl += x2[j]; sr += y2[j]; }
+          L[o + j] = g * sl; R[o + j] = g * sr;
+        }
+        if (u.st >= 2 || u.xf < 1) this.xfade(u, L, R, o, m, iL, iR);
+        if (this.inZero === 1) this.track(L, R, o, m);
+      }
+      // splitter latency alignment over the block (see SplitMod): each band is delayed by (the largest branch latency −
+      // its own branch's), the delays gliding at S.gr samples per sample; the lines are written every block
+      align(u, m) {
+        const S = u.mod, nb = S.nb, lt = S.lt, dt = S.dt, dd = S.dd, br = u.br, bx = S.bx, lc = S.lcap;
+        let mx = 0;
+        for (let c = 0; c < nb; c++) {
+          let a = 0;
+          if (u.bb[c] === 0 || bx[c] < 1) {
+            const ch = br[c];
+            for (let q = 0; q < ch.length; q++) {
+              const x = ch[q], k = x.k;
+              if (x.st === 0) continue;
+              if (k === 1 || k === 10) a += x.mod.v; else if ((k === 6 || k === 14) && x.mod.mode === 1) a += x.mod.La;
+            }
+          }
+          lt[c] = a;
+          if (a > mx) mx = a;
+        }
+        for (let c = 0; c < nb; c++) { const t = mx - lt[c]; dt[c] = t < lc ? t : lc; }
+        const cap = lc + 4, P = S.cl, gr = S.gr, bL = S.bL, bR = S.bR;
+        let w = S.lw;
+        for (let j = 0; j < m; j++) {
+          for (let c = 0; c < nb; c++) {
+            const oL = 2 * c * cap, oR = oL + cap, X = bL[c], Y = bR[c];
+            P[oL + w] = X[j]; P[oR + w] = Y[j];
+            let d = dd[c];
+            const t = dt[c];
+            if (d !== t) { d = d < t ? (d + gr > t ? t : d + gr) : (d - gr < t ? t : d - gr); dd[c] = d; }
+            if (d > 0) { X[j] = rdE(P, oL, cap, w, d); Y[j] = rdE(P, oR, cap, w, d); }
+          }
+          w = w + 1 === cap ? 0 : w + 1;
+        }
+        S.lw = w;
+      }
+      // alignment-line capacity a splitter's branches can need: the largest branch total of maximum latencies
+      // (Distortion DIST_LAT, compressor look-ahead ≤ 10 ms)
+      alignCap(u) {
+        let n = 0;
+        const la = ceil(0.01 * this.fs) + 2;
+        for (let c = 0; c < u.mod.nb; c++) {
+          let a = 0;
+          const ch = u.br[c];
+          for (let q = 0; q < ch.length; q++) { const k = ch[q].k; if (k === 1 || k === 10) a += DIST_LAT; else if (k === 6 || k === 14) a += la; }
+          if (a > n) n = a;
+        }
+        return n;
+      }
+      track(L, R, o, m) {                                       // peak of a module output during zero input (quietT)
+        let q = this.qmax;
+        for (let j = 0; j < m; j++) {
+          const a = L[o + j], b = R[o + j];
+          if (a > q) q = a; else if (-a > q) q = -a;
+          if (b > q) q = b; else if (-b > q) q = -b;
+        }
+        this.qmax = q;
+      }
+      // MIX law (inv A20.2) out = dry·(1 − m²)·lvl + wet·sin²(πm/2)·lvl (Filter, Utility: linear), ramped per sample
+      mix(u, L, R, o, m, DL, DR) {
+        const d0 = u.gD0, w0 = u.gW0, d1 = u.gD1, w1 = u.gW1;
+        u.gD0 = d1; u.gW0 = w1;
         if (d0 === 0 && d1 === 0 && w0 === 1 && w1 === 1) return;
         const dd = (d1 - d0) / m, dw = (w1 - w0) / m;
         for (let j = 0; j < m; j++) {
@@ -1780,39 +3068,49 @@
         }
       }
       // 5 ms enable / disable crossfade with the module input; st 3: 2.5 ms duck, pending actions at the bottom, fade in
-      xfade(k, L, R, o, m) {
-        const inL = this.inL, inR = this.inR, s = this.st[k], step = s === 1 ? this.fstep : s === 3 ? -2 * this.fstep : -this.fstep;
-        let x = this.xf[k];
+      xfade(u, L, R, o, m, inL, inR) {
+        const s = u.st, step = s === 1 ? this.fstep : s === 3 ? -2 * this.fstep : -this.fstep;
+        let x = u.xf;
         for (let j = 0; j < m; j++) {
           x += step;
           x = x > 1 ? 1 : x < 0 ? 0 : x;
           const i = o + j;
           L[i] = inL[j] + x * (L[i] - inL[j]); R[i] = inR[j] + x * (R[i] - inR[j]);
         }
-        this.xf[k] = x;
+        u.xf = x;
         if (x === 0 && s >= 2) {
-          if (this.pend[k] !== 0) this.doPend(k);
-          this.st[k] = s === 2 ? 0 : 1;                          // stopped (cleared at the next enable) / fade back in
+          if (u.pend !== 0) this.doPend(u);
+          u.st = s === 2 ? 0 : 1;                                // stopped (cleared at the next enable) / fade back in
         }
       }
       // Distortion (DIST_LAT samples of latency, wet and dry): while the module's output weight is 0 the bypassed signal
       // glides between no delay and the latency (5 ms, ≈ 1 semitone), so the 5 ms crossfade itself is between
       // time-aligned signals (no comb notch mid-fade) and both ends are continuous
-      xfadeD(L, R, o, m) {
-        const D = this.mDi, dvL = this.dvL, dvR = this.dvR, s = this.st[1], fst = this.fstep;
+      xfadeD(u, L, R, o, m) {
+        const D = u.mod, dvL = this.dvL, dvR = this.dvR, s = u.st, fst = this.fstep;
         const v0 = D.v0, gst = D.gst, vdir = D.vdir;
-        let x = this.xf[1];
+        let x = u.xf;
         for (let j = 0; j < m; j++) {
           if (s === 1) { if (x < 1 && (vdir <= 0 || v0 + j * gst >= DIST_LAT)) { x += fst; if (x > 1) x = 1; } } else if (x > 0 && vdir === 0) { x -= fst; if (x < 0) x = 0; }
           const i = o + j, a = dvL[j], b = dvR[j];
           L[i] = a + x * (L[i] - a); R[i] = b + x * (R[i] - b);
         }
-        this.xf[1] = x;
-        if (s === 2 && x === 0 && D.v === 0) this.st[1] = 0;
+        u.xf = x;
+        if (s === 2 && x === 0 && D.v === 0) u.st = 0;
       }
-      // output stage: + direct bus, × master (ramped), × bypass gate (5 ms), × soft-reset fade
+      // output stage: + direct (× g.direct, skipped at 0 dB), × master (ramped), × bypass gate (5 ms), × soft-reset fade
       out(L, R, o, m, dL, dR) {
-        if (dL && dR) for (let j = 0; j < m; j++) { const i = o + j; L[i] += dL[i]; R[i] += dR[i]; }
+        const e0 = this.gd0, e1 = this.gd1;
+        this.gd0 = e1;
+        if (dL && dR) {
+          if (e0 === 1 && e1 === 1) for (let j = 0; j < m; j++) { const i = o + j; L[i] += dL[i]; R[i] += dR[i]; }
+          else { const de = (e1 - e0) / m; for (let j = 0; j < m; j++) { const i = o + j, g = e0 + de * (j + 1); L[i] += dL[i] * g; R[i] += dR[i] * g; } }
+        }
+        if (this.xd === 1) {
+          const xl = this.xdL, xr = this.xdR;
+          if (e0 === 1 && e1 === 1) for (let j = 0; j < m; j++) { L[o + j] += xl[j]; R[o + j] += xr[j]; }
+          else { const de = (e1 - e0) / m; for (let j = 0; j < m; j++) { const g = e0 + de * (j + 1); L[o + j] += xl[j] * g; R[o + j] += xr[j] * g; } }
+        }
         const g0 = this.gm0, g1 = this.gm1, gT = this.gT, rfT = this.rfT;
         this.gm0 = g1;
         let gate = this.gate, rf = this.rf;
@@ -1832,47 +3130,54 @@
         if (rf === 0 && rfT === 0) { this.clear(); this.rf = 0; this.rfT = 1; }   // soft reset: clear, then fade back in
       }
       post(n) {
+        const U = this.U, gr = this.grOut;
         let act = 0;
-        for (let m = 0; m < NMOD; m++) if (this.st[m] !== 0) { act++; this.modFlush(m); }
+        for (let i = 0; i < U.length; i++) {
+          const u = U[i];
+          if (u.st !== 0) { act++; this.modFlush(u); } else {
+            if (u.gone === 1) this.gc = 1;
+            if (u.k === 19 && u.has === 1 && u.mod.ready === 0) u.mod.release();   // a dropped IR: let go of its buffers
+          }
+          if ((u.k === 6 || u.k === 14) && u.idx >= 0 && u.idx < MAXI) {
+            const o = 4 * u.idx;
+            if (u.st !== 0) u.mod.meter(gr, o); else if (gr[o] !== 0 || gr[o + 1] !== 0 || gr[o + 2] !== 0 || gr[o + 3] !== 0) { gr[o] = 0; gr[o + 1] = 0; gr[o + 2] = 0; gr[o + 3] = 0; }
+          }
+        }
+        if (this.gc === 1) this.collect();
         this.nAct = act;
         if (act > 0 && this.inZero === 1 && this.qmax < 1e-6) this.quietT += n; else this.quietT = 0;
-        const gr = this.grOut;
-        if (this.st[6] !== 0) this.mCp.meter(gr); else if (gr[0] !== 0 || gr[1] !== 0 || gr[2] !== 0 || gr[3] !== 0) gr.fill(0);
         const g = this.gm1;
         this.calm = act === 0 && this.gate === 1 && this.gT === 1 && this.rf === 1 && this.rfT === 1 &&
-          g - 1 < 1e-9 && 1 - g < 1e-9 && this.bs[0] === this.tgt[0] ? 1 : 0;
+          g - 1 < 1e-9 && 1 - g < 1e-9 && this.gb[0] === this.gt[0] ? 1 : 0;
       }
 
       /* ---------------- JIT warm-up and test hooks */
       warmUp() {
         const t = new FXRack(this.fs), N = SPAN, L = new Float64Array(N), R = new Float64Array(N);
-        const dL = new Float64Array(N), dR = new Float64Array(N), base = new Float64Array(NF), mods = new Float64Array(NF);
-        for (let k = 0; k < NF; k++) base[k] = FX_DEF[k];
-        for (let m = 0; m < NMOD; m++) base[ON[m]] = 1;
-        base[0] = 0.83; base[FIDX.DIM_MIX] = 0.53; base[FIDX.DLY_Q] = 0.63; base[FIDX.DLY_TIMEL] = 0.31; base[FIDX.REV_T] = 0.37;
-        const ord = new Uint8Array(NMOD), all = new Uint8Array(NMOD);
-        for (let m = 0; m < NMOD; m++) { ord[m] = m; all[m] = 1; }
-        const fxp = { ver: VER, NF, base, order: ord, byp: new Uint8Array(NMOD), revType: 0, choMono: 0, alloc: all, filTypeAll: 1,
-          phase: Float64Array.from([0.1, 0.2, 0.3, 0.4]), seed: 1, any: 1, bpm: 120, smooth: 1, silence: 1, xsKey: '' };
+        const dL = new Float64Array(N), dR = new Float64Array(N), fxp = s1Fxp(), base = fxp.base, mods = new Float64Array(fxp.NFX);
+        for (let m = 0; m < NMOD; m++) base[8 + W_OFF[m]] = 1;
+        base[0] = 0.83; base[AT[FIDX.DIM_MIX]] = 0.53; base[AT[FIDX.DLY_Q]] = 0.63; base[AT[FIDX.DLY_TIMEL]] = 0.31; base[AT[FIDX.REV_T]] = 0.37;
+        fxp.filTypeAll[9] = 1;
+        fxp.iPh[0] = 0.1; fxp.iPh[2] = 0.2; fxp.iPh[3] = 0.3; fxp.iPh[4] = 0.4;
         let r = 0x2545F491;
         for (let round = 0; round < 2; round++) {
           for (let c = 0; c < 16; c++) {
             // every module, mode and switch: compressor single band / Limit / multiband (c = 3, 11 Limit; 4–7, 12–15 MB)
-            base[FIDX.DIST_MODE] = c / 15; base[FIDX.DIST_FILT] = (c % 3) / 2; base[FIDX.DLY_MODE] = (c % 3) / 2;
-            base[FIDX.DLY_BPM] = c & 1; base[FIDX.DLY_LINK] = (c >> 1) & 1; base[FIDX.EQ_TYPEL] = (c % 3) / 2;
-            base[FIDX.EQ_TYPEH] = ((c + 1) % 3) / 2; base[FIDX.CMP_MB] = (c >> 2) & 1;
-            base[FIDX.FLG_BPM] = c & 1; base[FIDX.PHS_BPM] = (c >> 1) & 1; base[FIDX.CHO_BPM] = (c >> 2) & 1;
-            base[FIDX.HYPER_RETRIG] = c & 1; base[FIDX.FIL_TYPE] = (c * 6 + round) / 95;
-            base[FIDX.DIST_ON] = c === 9 ? 0 : 1;                // Distortion disable / enable glides
-            fxp.revType = c & 1; fxp.choMono = (c >> 2) & 1; fxp.seed = c === 0 || c === 6 ? 1 : 0;
+            base[AT[FIDX.DIST_MODE]] = c / 15; base[AT[FIDX.DIST_FILT]] = (c % 3) / 2; base[AT[FIDX.DLY_MODE]] = (c % 3) / 2;
+            base[AT[FIDX.DLY_BPM]] = c & 1; base[AT[FIDX.DLY_LINK]] = (c >> 1) & 1; base[AT[FIDX.EQ_TYPEL]] = (c % 3) / 2;
+            base[AT[FIDX.EQ_TYPEH]] = ((c + 1) % 3) / 2; base[AT[FIDX.CMP_MB]] = (c >> 2) & 1;
+            base[AT[FIDX.FLG_BPM]] = c & 1; base[AT[FIDX.PHS_BPM]] = (c >> 1) & 1; base[AT[FIDX.CHO_BPM]] = (c >> 2) & 1;
+            base[AT[FIDX.HYPER_RETRIG]] = c & 1; base[AT[FIDX.FIL_TYPE]] = (c * 6 + round) / 95;
+            base[AT[FIDX.DIST_ON]] = c === 9 ? 0 : 1;            // Distortion disable / enable glides
+            fxp.iRev[7] = c & 1; fxp.iCho[4] = (c >> 2) & 1; fxp.seed = c === 0 || c === 6 ? 1 : 0;
             t.set(fxp, null);
             for (let s = 0; s < 3; s++) {
               for (let i = 0; i < N; i++) {
                 r ^= r << 13; r ^= r >>> 17; r ^= r << 5;
                 L[i] = ((r >>> 0) / 4294967296 - 0.5) * 0.9; R[i] = L[i] * 0.7; dL[i] = L[i] * 0.1; dR[i] = dL[i];
               }
-              mods[FIDX.FIL_CUTOFF] = 0.07 * s; mods[FIDX.DIST_DRIVE] = 0.11 * s; mods[FIDX.REV_SIZE] = 0.05 * s;
-              mods[FIDX.CMP_RATIO] = c % 4 === 3 ? 0.3 : 0;      // a modulated RATIO reaches Limit within the call (base glides)
+              mods[AT[FIDX.FIL_CUTOFF]] = 0.07 * s; mods[AT[FIDX.DIST_DRIVE]] = 0.11 * s; mods[AT[FIDX.REV_SIZE]] = 0.05 * s;
+              mods[AT[FIDX.CMP_RATIO]] = c % 4 === 3 ? 0.3 : 0;  // a modulated RATIO reaches Limit within the call (base glides)
               t.setMods(mods);
               t.trigger();
               if (c === 11 && s === 1) t.transport();            // re-seed ducks
@@ -1883,49 +3188,132 @@
         }
         t.setMods(null); t.reset(true);
         for (let s = 0; s < 4; s++) t.process(L, R, N);
+        // buses and routing: instances on BUS 1 / BUS 2, every route, rack bypass fades, direct and bus levels
+        const bL = new Float64Array(N), bR = new Float64Array(N);
+        for (let c = 0; c < 4; c++) {
+          for (let i = 0; i < NMOD; i++) fxp.iRack[i] = i % 3;
+          fxp.rRoute[1] = c % 3; fxp.rRoute[2] = c & 1; fxp.rByp[c % 3] = c & 1; base[2] = 0.3 + 0.1 * c; base[3] = 0.4; base[4] = 0.6;
+          fxp.key = 'w' + c; fxp.seed = 0;
+          t.set(fxp, null);
+          for (let s = 0; s < 2; s++) {
+            for (let i = 0; i < N; i++) { r ^= r << 13; r ^= r >>> 17; r ^= r << 5; bL[i] = ((r >>> 0) / 4294967296 - 0.5) * 0.5; bR[i] = -bL[i]; L[i] = bL[i]; R[i] = bR[i]; }
+            t.process(L, R, N, dL, dR, bL, bR, s === 1 ? undefined : bR, s === 1 ? undefined : bL);
+          }
+        }
+        // the S2 variants and the FXMods2 modules (when SxBase / FXMods2 are loaded): every mode switch once, one process
+        // call per configuration (the §14.1 row q budget: the whole warmUp ≤ 1.5 × Phase 1)
+        if (globalThis.SxBase && globalThis.FXMods2) {
+          const W = s2Fxp(), P = W.fxp, B2 = P.base, o = W.off, rv = 5, at = (i, pid) => 8 + o[i] + ROWS[P.iType[i]][2].findIndex((x) => x[0] === pid);
+          for (let c = 0; c < 5; c++) {
+            B2[at(0, 'mode')] = c === 0 ? 16 / 17 : c === 1 ? 1 : c / 17; B2[at(0, 'kt')] = c & 1; B2[at(1, 'poles')] = c & 1 ? 5 / 17 : 9 / 17;
+            B2[at(1, 'depth2')] = 0.2 * (c & 1); B2[at(2, 'hp')] = c & 1; B2[at(4, 'mb')] = c & 1; B2[at(rv, 'type')] = (c % 5) / 4;
+            B2[at(7, 'clean')] = c & 1; B2[at(8, 'delay')] = 0.2; B2[at(8, 'feed')] = 0.4; B2[at(8, 'blur')] = 0.3 * (c & 1);
+            B2[at(9, 'mbass')] = c & 1; B2[at(9, 'width')] = 0.2; P.key = 'w2' + c; P.seed = c === 2 ? 1 : 0;
+            t.set(P, null);
+            for (let i = 0; i < 64; i++) { r ^= r << 13; r ^= r >>> 17; r ^= r << 5; L[i] = ((r >>> 0) / 4294967296 - 0.5) * 0.8; R[i] = -0.5 * L[i]; }
+            t.trigger();
+            t.process(L, R, 64);
+          }
+        }
         t.transport(); t.reset();
         this.reset();
       }
-      // test hook: bytes held in typed arrays reachable from the rack (module buffers, the FX filter's SFilter)
+      // test hook: bytes held in typed arrays reachable from the rack and its instances (module buffers, the FX filter's
+      // SFilter); the shared constant tables are not counted
       bytes() {
-        const seen = new Set();
+        const seen = new Set(), skip = { U: 1, C0: 1, C1: 1, C2: 1, byId: 1, B: 1, M2: 1 };
+        for (let m = 0; m < NMOD; m++) seen.add(S1K[m].buffer);
+        seen.add(LINXS.buffer);
         let n = 0;
         const add = (x, depth) => {
-          if (!x || typeof x !== 'object' || depth > 3) return;
+          if (!x || typeof x !== 'object' || depth > 4) return;
           if (ArrayBuffer.isView(x)) { if (!seen.has(x.buffer)) { seen.add(x.buffer); n += x.buffer.byteLength; } return; }
           if (seen.has(x)) return;
           seen.add(x);
-          for (const k of Object.keys(x)) add(x[k], depth + 1);
+          if (depth > 0 && typeof x.bytes === 'function') { n += x.bytes(); return; }
+          for (const k of Object.keys(x)) if (depth > 0 || skip[k] !== 1) add(x[k], depth + 1);
         };
         add(this, 0);
+        for (let i = 0; i < this.U.length; i++) add(this.U[i], 0);
         return n;
       }
     }
+    // structural check of the instance arrays of an FXP v2 (lengths ≥ nI, offsets inside base)
+    function okGraph(P) {
+      const nI = P.nI;
+      if (!(nI >= 0 && nI <= MAXI && nI === (nI | 0))) return false;
+      for (const k of ['iType', 'iVar', 'iRack', 'iBr', 'iN', 'iByp', 'iAlloc', 'iPar', 'iOff', 'iPh', 'iId', 'iRev', 'iCho', 'iIr', 'filTypeAll']) {
+        if (!isList(P[k], nI)) return false;
+      }
+      return isList(P.iBB, 3 * nI) && isList(P.rByp, 3) && isList(P.rRoute, 3);
+    }
 
-    /* ------------------------------------------------------------ main-thread helpers (§8.5.1) */
-    // static transfer y(x) for x = −1…1 (Downsample: y = 0.5x)
-    function distCurve(mode, drive, xsA, xsB, n = 257) {
+    /* ------------------------------------------------------------ main-thread helpers (§8.5.1; SPEC-serum2 §11.11) */
+    // static transfer y(x) for x = −1…1 (Downsample: y = 0.5x). Modes 0–15: the Phase-1 shapers (S1 copy). Modes 16
+    // Overdrive and 17 Soft Sat. are the S2 curves (SxBase.shape when loaded, else the §8.2 formulas): Overdrive is the
+    // static chain of `stages` (1–16, default 4) stages without their low-passes, w₁ = shape(16, x, d), w_j = shape(16,
+    // w_{j−1}, log10(2/0.9)) — the module's response at low frequencies
+    const OD_D1 = Math.log10(2 / 0.9), OD_K = 1 / tanh(1.8);
+    function sh16(x, d) { return 0.9 * (tanh(1.8 * 0.5 * pow(10, d) * x) * OD_K); }
+    function sh17(x, d) { const u = 0.5 * pow(10, 0.6 * d) * x; return u < 1 && u > -1 ? 1.5 * u - 0.5 * u * u * u : u > 0 ? 1 : -1; }
+    function distCurve(mode, drive, xsA, xsB, n = 257, stages = 4) {
+      const md = round(+mode);
       n = n > 1 ? n | 0 : 2;
-      const S = new Shaper(), out = new Float64Array(n);
+      const out = new Float64Array(n);
+      if (md === 16 || md === 17) {
+        const B = globalThis.SxBase, sh = B && typeof B.shape === 'function' ? B.shape : null, d = clamp01(+drive);
+        let N = round(+stages);
+        N = N > 1 ? (N < 16 ? N : 16) : 1;
+        for (let i = 0; i < n; i++) {
+          const x = -1 + 2 * i / (n - 1);
+          if (md === 17) { out[i] = sh ? sh(17, x, d) : sh17(x, d); continue; }
+          let w = sh ? sh(16, x, d) : sh16(x, d);
+          for (let j = 1; j < N; j++) w = sh ? sh(16, w, OD_D1) : sh16(w, OD_D1);
+          out[i] = w;
+        }
+        return out;
+      }
+      const S = new Shaper();
       S.xa = okXS(xsA) ? xsA : LINXS; S.xb = okXS(xsB) ? xsB : LINXS;
       S.set(+mode, drive);
       for (let i = 0; i < n; i++) { const x = -1 + 2 * i / (n - 1); out[i] = S.mode === 8 ? 0.5 * x : shape(S, x); }
       return out;
     }
-    // magnitude (dB) of the 2-band EQ at freqs; effN = eff n vector (snapshot eff of 248, or 100 in fx idx order),
-    // else fxp.base, else the defaults
-    function eqResponse(fxp, effN, freqs, fs) {
-      const n = freqs && freqs.length > 0 ? freqs.length | 0 : 0, out = new Float64Array(n);
+    // magnitude (dB) of the EQ bands of FXP instance `inst` at freqs (§11.11 eqResponse(fxp, instIndex, effN, freqs, fs)).
+    // effN: eff n source — the FX-context vector (base + offsets, index 8 + off + p), or a Serum snapshot `eff`
+    // (NSV + MAXFX = 1589 entries, the FX context from 429 on); absent: fxp.base; no FXP / EQ instance: the defaults.
+    // inst < 0 or not an EQ: the first EQ instance of fxp. The Phase-1 call form eqResponse(fxp, effN, freqs, fs) is
+    // accepted (fx-ui's display: effN = fxp.base, the first EQ instance).
+    const SNAP_EFF = 429 + 8 + 48 * 24, SNAP_FX = 429;
+    function eqResponse(fxp, inst, effN, freqs, fs) {
+      if (typeof inst !== 'number') { fs = freqs; freqs = effN; effN = inst; inst = -1; }
+      const n = freqs && freqs.length > 0 ? freqs.length | 0 : 0, out = new Float64Array(n), K = S1K[8];
       fs = fs > 0 ? +fs : 48000;
-      let src = null, off = 0;
-      if (effN && effN.length >= 248) { src = effN; off = 148; } else if (effN && effN.length >= NF) src = effN;
-      else if (fxp && fxp.base && fxp.base.length >= NF) src = fxp.base;
-      const v = new Float64Array(NF), c = new Float64Array(10);
-      for (let k = 72; k <= 98; k++) v[k] = lawV(k, clamp01(src ? +src[off + k] : FX_DEF[k]));
+      let at = -1;
+      if (fxp && typeof fxp === 'object' && fxp.ver === VER && fxp.base && isList(fxp.iType, fxp.nI) && isList(fxp.iOff, fxp.nI)) {
+        const eq = TYPES.indexOf('eq');
+        if (inst >= 0 && inst < fxp.nI && fxp.iType[inst] === eq) at = inst;
+        for (let i = 0; i < fxp.nI && at < 0; i++) if (fxp.iType[i] === eq) at = i;
+      }
+      let src = null, o = 0;
+      if (at >= 0) {
+        o = 8 + fxp.iOff[at];
+        const nP = fxp.iVar && fxp.iVar[at] === 2 ? K.length + 1 : K.length;
+        if (effN && effN.length === SNAP_EFF) { src = effN; o += SNAP_FX; } else if (effN && effN.length >= o + nP) src = effN;
+        else if (fxp.base.length >= o + nP) src = fxp.base;
+      }
+      const v = new Float64Array(K.length), c = new Float64Array(10);
+      for (let p = 0; p < K.length; p++) v[p] = lawV(K[p], clamp01(src ? +src[o + p] : FX_DEF[K[p]]));
       eqCoefs(v, fs, c);
+      // S2 variant: + LEVEL (2n)² after the bands
+      let lv = 0;
+      if (at >= 0 && fxp.iVar && fxp.iVar[at] === 2) {
+        const nl = clamp01(src ? +src[o + K.length] : 0.5), g = 4 * nl * nl;
+        lv = g > 1e-15 ? DB * log(g) : -300;
+      }
       for (let i = 0; i < n; i++) {
         const w = TAU * freqs[i] / fs;
-        out[i] = 0.5 * DB * log(bqMag2(c, 0, w) * bqMag2(c, 5, w));
+        out[i] = 0.5 * DB * log(bqMag2(c, 0, w) * bqMag2(c, 5, w)) + lv;
       }
       return out;
     }
@@ -1943,6 +3331,38 @@
       }
       return out;
     }
+    // dB response of each splitter branch's band at freqs (§11.11): type = FXP type id (13 Splitter L/H, 14 L/M/H, 15 M/S)
+    // or its id string; f1, f2 = crossovers in Hz (L/H: f1 only; clamped to [10 Hz, 0.45·fs]; L/M/H keeps f2 ≥ 1.2·f1 as
+    // the module does). LR4 = two cascaded 2-pole Butterworth TPT sections (bilinear, prewarped at the crossover):
+    // |LP| = 1/(1 + Ω⁴), |HP| = Ω⁴/(1 + Ω⁴), Ω = tan(πf/fs)/tan(πfc/fs). L/M/H: low = LP(f1) (its freq2 allpass keeps the
+    // magnitude), mid = HP(f1)·LP(f2), high = HP(f1)·HP(f2). M/S: both branches flat (0 dB). Floor −300 dB.
+    // → [Float64Array(freqs.length) per branch], or null for another type
+    function splitResponse(type, f1, f2, freqs, fs) {
+      const t = typeof type === 'string' ? TYPES.indexOf(type) : +type;
+      const nb = t === 13 || t === 15 ? 2 : t === 14 ? 3 : 0;
+      if (nb === 0) return null;
+      const n = freqs && freqs.length > 0 ? freqs.length | 0 : 0, out = [];
+      for (let b = 0; b < nb; b++) out.push(new Float64Array(n));
+      if (t === 15) return out;
+      fs = fs > 0 ? +fs : 48000;
+      const hi = 0.45 * fs, ny = 0.5 * fs, cl = (f) => (f > 10 ? (f < hi ? f : hi) : 10);
+      const a = cl(+f1);
+      let c = cl(+f2);
+      if (c < 1.2 * a) c = cl(1.2 * a);
+      const ta = tan(PI * a / fs), tc = tan(PI * c / fs);
+      const dB = (g) => DB * log(g > 1e-15 ? g : 1e-15);
+      for (let i = 0; i < n; i++) {
+        const f = +freqs[i], w = tan(PI * (f > 0 ? (f < ny ? f : ny) : 0) / fs);
+        let A = w / ta;
+        A *= A; A *= A;
+        const lpA = 1 / (1 + A), hpA = A / (1 + A);
+        if (t === 13) { out[0][i] = dB(lpA); out[1][i] = dB(hpA); continue; }
+        let Cc = w / tc;
+        Cc *= Cc; Cc *= Cc;
+        out[0][i] = dB(lpA); out[1][i] = dB(hpA / (1 + Cc)); out[2][i] = dB(hpA * Cc / (1 + Cc));
+      }
+      return out;
+    }
     // re-export of SerumDSP.filterImpulse, resolved at call time (null without SerumDSP)
     function filterImpulse(type, fc, res, drive, vr, fs, len) {
       const S = globalThis.SerumDSP;
@@ -1950,7 +3370,8 @@
     }
 
     globalThis.FXDSP = Object.freeze({
-      VER, FIDX, LAW_TAB_FX, FXRack, distCurve, eqResponse, delayFilterResponse, MODFX_HZ, filterImpulse,
+      VER, FIDX, LAW_TAB_FX, TYPES, S1_IDX, TAB, FXRack, distCurve, eqResponse, delayFilterResponse, splitResponse, MODFX_HZ,
+      filterImpulse,
     });
   } catch (err) {
     globalThis.FXDSP = null;                                   // a load failure never throws out of the script

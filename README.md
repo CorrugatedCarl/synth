@@ -19,7 +19,7 @@ AudioWorklet DSP engine — no samples:
 | 1981 | Roland Jupiter-8 | cross-mod, sync, IR3109 12/24 dB OTA cascade, HPF |
 | 1982 | Roland Juno-60 | DCO + sub, IR3109, MN3009 BBD chorus I / II / I+II with hiss |
 | 1983 | Yamaha DX7 | 6-operator PM, all 32 algorithms, 4-rate/4-level EGs, 12-bit floating DAC emulation |
-| 2014 | Serum-style wavetable synth | 2 wavetable oscillators (23 warps, 16-voice unison), sub, noise, 96 filter types, 3 envelopes, 8 drawable LFOs, 32-slot drag-and-drop matrix, wavetable editor, original wavetables / noises and 47 factory presets (bass, lead, pad, pluck, keys, chord, arp, sequence, drum, FX) |
+| 2014 | Serum-style wavetable synth | 3 oscillators (wavetable, multisample, sample, granular, spectral; 2 warp slots each incl. FM / PD / AM / RM, 16-voice unison), sub, colour noise, 2 filters (108 types), mixer with direct out and 2 FX buses, 4 envelopes, 10 LFOs, 64-slot drag-and-drop matrix with curves and slew, arpeggiator and clip player, MPE, microtuning (.scl / .kbm / .tun), wavetable editor; every wavetable, sample, impulse response and preset original (factory samples generated on the device) |
 
 ## Engine
 
@@ -33,12 +33,18 @@ AudioWorklet DSP engine — no samples:
 ## Studio
 
 * Unlimited tracks, each its own synth instance (any of the 13 models + preset), with volume, pan, mute, solo, arm and a MIDI input channel (Omni or 1–16) — play several synths at once from a multi-channel controller.
-* Every track has a 10-module effects rack (FX tab: Hyper/Dimension, distortion, flanger, phaser, chorus, delay, compressor, reverb, EQ, filter), reorderable, saved with the project, with factory effect chains (Wide Chorus, Dub Delay, Hall Verb, Plate Room, OTT Squash, Lo-Fi, Hyper Wide, Jet Phaser, Grit Drive) and a user chain library.
+* Every track has an effects rack (FX tab) of 13 module types — Hyper/Dimension, distortion, flanger, phaser, chorus, delay, compressor, reverb (Plate, Hall, Vintage, Nitrous, Basin), EQ, filter, frequency shifter, convolution, utility — plus band / mid-side splitters, any order and several of a type; Serum tracks add two bus racks. Factory effect chains and racks, user chain library, saved with the project.
 * Sample-accurate song playback scheduled inside the audio engine; seamless loops; tempo / time signature; metronome with count-in.
 * MIDI / keyboard recording (overdub or replace, optional input quantize), including pitch bend, mod wheel, sustain and aftertouch.
 * Piano roll: draw / select / erase, snap grids incl. triplets & dotted, velocity lane, quantize (grid, strength, swing, starts/ends), transpose, velocity tools, legato, humanize, stretch, reverse, fix overlaps, split, cut/copy/paste/duplicate, undo/redo.
 * Arrangement: bar-range copy / paste / duplicate / clear / delete / insert, loop from selection.
 * Save/open projects (.json), Standard MIDI File import/export, offline WAV bounce (16/24-bit PCM or 32-bit float, up to 8× oversampling).
 
-No build step — static files only (`index.html`, `style.css`, `main.js`, `models.js`, `engine.js`, `song.js`, `roll.js`, `arrange.js`).
-To run locally serve the folder over HTTP (AudioWorklet needs a secure/localhost origin).
+* Projects autosave in the browser (IndexedDB, with the older localStorage data kept as a fallback); imported samples and
+  wavetables live in the browser's storage and are embedded in saved project and preset files.
+
+No build step — static files only: the page (`index.html`, `style.css`, `main.js`, `song.js`, `roll.js`, `arrange.js`),
+ES modules (`models.js`, `serum-core.js` and its siblings, the panels), and the AudioWorklet scripts (`sx-*.js`,
+`serum-dsp.js`, `fx-mods2.js`, `fx-dsp.js`, then `engine.js`). To run locally serve the folder over HTTP (AudioWorklet
+needs a secure/localhost origin). Tests: `node --test 'tests/*.test.mjs'` (node ≥ 20); CPU bench in a browser:
+`tests/bench.html`.

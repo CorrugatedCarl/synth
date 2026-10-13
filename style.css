@@ -320,6 +320,10 @@ body.recording .transport { border-color: #6b2a1c; }
 .kbctl button.midi:disabled { cursor: default; border-color: transparent; background: transparent; }
 .notice { margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; background: #2a1712; border: 1px solid #6b2a1c; color: #ffb59a; font-size: 12px; line-height: 1.4; }
 .notice[hidden] { display: none; }
+.notice[data-gen], .notice[data-act] { cursor: pointer; background: #12202a; border-color: #1f4a66; color: #9fd6ff; } /* factory generation progress (tap cancels), notices with an action */
+/* Serum channel colours (SPEC-serum2 §13.1): page-level copies of the panel's tokens, for the track header and notices */
+:root { --sx-osc-a: #4fb3ff; --sx-osc-b: #6fe3a1; --sx-osc-c: #f7c948; --sx-sub: #a78bfa; --sx-noise: #94a3b8; --sx-f1: #ff8a5b;
+  --sx-f2: #ff5b8a; --sx-bus1: #c084fc; --sx-bus2: #f472b6; --sx-arp: #b07cff; --sx-clip: #3ddc84; }
 .hold { display: flex; align-items: center; gap: 6px; }
 .kbrow { display: flex; gap: 10px; }
 .wheels { display: flex; gap: 8px; }

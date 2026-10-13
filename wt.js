@@ -18,6 +18,15 @@
 //   · Seam crossfades are skipped for sources that are seamless by construction (Velvet on a loop-periodic grid, Mains
 //     Hum = whole hum cycles + white hiss); Air Vent's periodic hum is added after its noise crossfade.
 //   · Spectral Process ops that recombine magnitudes and phases scale the result back to max(1, previous peak).
+//
+// Phase 2 (SPEC-serum2 §11.13, §10.5, §9.4.3; inv B11) — appended only, every Phase-1 table, noise and sub entry stays
+// bit-identical: SUB_TABLES + `sub:Triangle`; FACTORY_TABLES + the six §10.5 tables; noiseLevels(…, maxLevels) (7th
+// argument, default 6 = Phase 1, at most 8; with it, whole-length loops step by exactly 2× per level); draw tool
+// `mirror`; ops `add.reduceTo` and `add.paste` (frame PASTE, menu-less like `add.move`); FFT ops `repeatGroup` (menu)
+// and `nudgePhase` (Shift-Cmd/Ctrl-click; not in FFT_OPS — the editor offers it on the phase row's menu);
+// estimatePeriod(wav) (periods up to 9999 samples); splitMsg(N, sr). IMPL choices where §10.5 leaves details open: Vocal Sweep 2 interpolates the formant
+// frequencies linearly in Hz between the five vowels (frame f at vowel position 4f/31); Metallic FM removes DC with the
+// band limit; Default Shapes' half-sine is the half-wave rectified sine max(0, sin).
 
 /* ================================================================== constants */
 
@@ -452,6 +461,7 @@ function normPeak(a) { const p = peakOf(a); return p > 0 ? scaled(a, 1 / p) : Fl
 const FORMANT_I = [[730, 1090, 2440], [530, 1840, 2480], [270, 2290, 3010], [570, 840, 2410], [300, 870, 2240]];
 const FORMANT_II = [[850, 1220, 2810], [610, 2330, 2990], [310, 2790, 3310], [590, 920, 2710], [370, 950, 2670]];
 const FORMANT_G = [1, 0.7, 0.5];
+const FORMANT_III = [[1030, 1370, 3170], [690, 2610, 3570], [370, 3200, 3730], [680, 1060, 3180], [430, 1170, 3260]]; // serum-core FORMANTS[2]
 
 // Additive frame: coef(k) → [cosine amplitude, sine amplitude] for k = 1…H, peak-normalised.
 function additive(coef, H = 1023, norm = true) {
@@ -496,6 +506,27 @@ function vowelFrame(table, vowel) {
     return a;
   }, null, 181);
 }
+
+// Phase 2 (§10.5): formants F = [F1, F2, F3] (Hz) on a 110 Hz harmonic series, as vowelFrame.
+function formantFrame(F) {
+  return harmonics(k => {
+    const fk = k * 110;
+    if (fk > 20000) return 0;
+    let a = 0;
+    for (let j = 0; j < 3; j++) { const d = (fk - F[j]) / (F[j] / 8); a += FORMANT_G[j] / (1 + d * d); }
+    return a;
+  }, null, 181);
+}
+// half-wave rectified sine max(0, sin) without its DC 1/π: ½ sin θ − (2/π) Σ_{k even} cos kθ / (k² − 1)
+const halfSineC = k => (k === 1 ? [0, 0.5] : k & 1 ? null : [-2 / (Math.PI * (k * k - 1)), 0]);
+// Default Shapes (§10.5): saw (= the Phase-1 Default frame), sine, triangle, square, pulse 25 %, pulse 12.5 %, half-sine,
+// sine-saw (sin + 0.5·saw), square-sine (0.5·square + sin); every frame peak-normalised
+const DEFAULT_SHAPES = [
+  () => additive(sawC), () => additive(k => (k === 1 ? [0, 1] : null), 1), () => additive(triC), () => additive(sqrC),
+  () => additive(pulseC(0.25)), () => additive(pulseC(0.125)), () => additive(halfSineC),
+  () => additive(k => [0, (k === 1 ? 1 : 0) + 1 / (Math.PI * k)]),
+  () => additive(k => (k & 1 ? [0, (k === 1 ? 1 : 0) + 2 / (Math.PI * k)] : null)),
+];
 
 const FRAMES = n => Array.from({ length: n }, (_, f) => f);
 const FACTORY_DEF = [
@@ -544,6 +575,22 @@ const FACTORY_DEF = [
     const H = 64 + 6 * f;
     return additive(k => (k <= H ? [rnd() * 2 - 1, rnd() * 2 - 1] : null), H);
   }],
+  // ---- Phase 2 (§10.5), appended: the Phase-1 ids and their order stay
+  ['Default Shapes', 'Basic', 9, 0, f => DEFAULT_SHAPES[f]()],
+  ['Spectral Saw', 'Digital', 64, 2, f => additive(k => {
+    const d = (k - 2 - 1.2 * f) / 4;
+    return [0, 2 / (Math.PI * k) * (1 + 3 * Math.exp(-d * d))];
+  })],
+  ['Vocal Sweep 2', 'Vocal', 32, 1, f => { // a → e → i → o → u (table III), linear in Hz between neighbouring vowels
+    const u = 4 * f / 31, i0 = Math.min(3, Math.floor(u)), t = u - i0, A = FORMANT_III[i0], B = FORMANT_III[i0 + 1];
+    return formantFrame([0, 1, 2].map(j => A[j] + (B[j] - A[j]) * t));
+  }],
+  ['Hollow PWM', 'Analog', 64, 1, f => {
+    const P = pulseC(0.5 - 0.45 * f / 63), g = Math.pow(0.3, f / 63);
+    return additive(k => { const c = P(k); return k & 1 ? c : [c[0] * g, c[1] * g]; });
+  }],
+  ['Metallic FM', 'FM', 64, 1, f => { const I = 6 * f / 63; return timeDomain(p => Math.sin(TAU * p + I * Math.sin(TAU * 3.5 * p)), true); }],
+  ['Stepped Partials', 'Digital', 16, 0, f => additive(k => (k === 1 || k === f + 2 || k === 2 * f + 3 ? [0, 1] : null), 2 * f + 3)],
 ];
 
 function factoryShared(name, rnd) {
@@ -558,6 +605,8 @@ const SUB_DEF = [
   ['Saw', () => additive(k => [0, (k & 1 ? -2 : 2) / (Math.PI * k)])],
   ['Square', () => additive(k => (k & 1 ? [0, -4 / (Math.PI * k)] : null))],
   ['Pulse', () => additive(k => { const c = pulseC(0.25)(k); return [-2 / 3 * c[0], -2 / 3 * c[1]]; })],
+  // Phase 2 (§3.6 SUB_SHAPES2, appended): x(φ) = −(1 − 4·|frac(φ + 0.25) − 0.5|), the negated triangle (starts at 0, falls)
+  ['Triangle', () => additive(k => { const c = triC(k); return c ? [0, -c[1]] : null; })],
 ];
 
 export const FACTORY_TABLES = Object.freeze(FACTORY_DEF.map(([name, cat, frames, morph]) =>
@@ -1035,17 +1084,28 @@ function halfDown(x, len, circ) {
   }
   return y;
 }
-function exactLevels(chs, len) { // single-cycle loop: exact FFT band-limit per level
+// exact2 (Phase 2, a maxLevels call): a level ℓ whose step 2^ℓ does not divide len holds ⌈len/2^ℓ⌉ samples of the
+// band-limited loop at level-0 positions m·2^ℓ (every level steps by exactly 2×, as the sample engines read it,
+// §9.4.3); levels with an exact step are the Phase-1 ones.
+function exactLevels(chs, len, maxL, exact2) { // single-cycle loop: exact FFT band-limit per level
   const specs = chs.map(x => (x ? rfft(Float64Array.from(x)) : null)), out = [];
-  for (let l = 0; l < 6; l++) {
-    const n = l === 0 ? len : Math.round(len / Math.pow(2, l));
+  for (let l = 0; l < maxL; l++) {
+    const step = Math.pow(2, l), off = exact2 && len % step !== 0;
+    const n = l === 0 ? len : off ? Math.ceil(len / step) : Math.round(len / step);
     if (l > 0 && n < 64) break;
     const lv = { len: n, loopStart: 0, loopEnd: n, L: null, R: null };
     chs.forEach((x, c) => {
       if (!x) return;
       let data;
       if (l === 0) data = Float32Array.from(x);
-      else {
+      else if (off) { // harmonics below the level's Nyquist (len/2^(ℓ+1) per loop), sampled every 2^ℓ level-0 samples
+        const S = specs[c], H = Math.ceil(len / (2 * step)) - 1, nb = (len >> 1) + 1;
+        const re = new Float64Array(nb), im = new Float64Array(nb);
+        for (let k = 0; k <= H; k++) { re[k] = S.re[k]; im[k] = S.im[k]; }
+        const full = irfft(re, im, len);
+        data = new Float32Array(n);
+        for (let m = 0; m < n; m++) data[m] = full[m * step];
+      } else {
         const S = specs[c], H = Math.ceil(n / 2) - 1, s = n / len;
         const re = new Float64Array((n >> 1) + 1), im = new Float64Array((n >> 1) + 1);
         for (let k = 0; k <= H; k++) { re[k] = S.re[k] * s; im[k] = S.im[k] * s; }
@@ -1054,6 +1114,30 @@ function exactLevels(chs, len) { // single-cycle loop: exact FFT band-limit per 
       if (c === 0) lv.L = data; else lv.R = data;
     });
     out.push(lv);
+  }
+  return out;
+}
+// Phase 2 whole-loop levels above a level x of odd length N (one exact period; §9.4.3): level j (1…J above x) holds
+// ⌈N/2^j⌉ samples at positions m·2^j of x's periodic continuation — the Phase-1 half-band cascade run over that
+// continuation with margins wide enough that no output sees an edge, so every level steps by exactly 2×.
+function wholeCascade(x, N, J) {
+  const M = new Array(J + 1);
+  M[J] = 0;
+  for (let j = J - 1; j >= 0; j--) M[j] = 2 * M[j + 1] + 32;
+  let prev = new Float32Array(N + 2 * M[0]);
+  for (let i = 0; i < prev.length; i++) { let k = (i - M[0]) % N; if (k < 0) k += N; prev[i] = x[k]; }
+  const out = [], c0 = HB[31];
+  for (let j = 1, nj = N; j <= J; j++) {
+    nj = Math.ceil(nj / 2);
+    const Mj = M[j], Mp = M[j - 1], cur = new Float32Array(nj + 2 * Mj);
+    for (let i = 0; i < cur.length; i++) {
+      const c = 2 * (i - Mj) + Mp;
+      let acc = c0 * prev[c];
+      for (let k = 1; k <= 31; k += 2) acc += HB[31 + k] * (prev[c - k] + prev[c + k]);
+      cur[i] = acc;
+    }
+    out.push(cur.slice(Mj, Mj + nj));
+    prev = cur;
   }
   return out;
 }
@@ -1066,18 +1150,29 @@ function finiteCopy(x, len) { // Float32 copy of the first len samples, non-fini
 
 // §7.9 level builder. L/R: level-0 samples (R may be null), loop points in samples, loopsWhole = the source loops over
 // its whole length (circular filtering, any length); otherwise linear (zero-padded) filtering, so a one-shot's attack
-// never wraps onto its end. Non-finite samples are replaced by 0.
-export function noiseLevels(L, R, len, loopStart, loopEnd, loopsWhole) {
+// never wraps onto its end. Non-finite samples are replaced by 0. maxLevels (Phase 2, §9.4.3/§11.13): the number of
+// levels at most (1–8; absent / not positive = 6, the Phase-1 count); levels also stop before one would be shorter
+// than 64 samples. With maxLevels, a whole-length loop's level ℓ always holds ⌈len/2^ℓ⌉ samples at level-0 positions
+// m·2^ℓ (exactly 2× per level, also for loop lengths not divisible by 2^ℓ); without it, Phase 1 bit for bit.
+export function noiseLevels(L, R, len, loopStart, loopEnd, loopsWhole, maxLevels) {
   len = len | 0;
+  const p2 = maxLevels > 0, maxL = p2 ? Math.min(8, Math.floor(maxLevels)) || 1 : 6;
   const ls0 = clamp(Math.round(fin(loopStart)), 0, Math.max(0, len - 1)), le0 = clamp(Math.round(fin(loopEnd) || len), ls0 + 1, len);
   const L0 = finiteCopy(L, len), R0 = R ? finiteCopy(R, len) : null;
-  if (loopsWhole && len < 8192) return exactLevels([L0, R0], len);
+  if (loopsWhole && len < 8192) return exactLevels([L0, R0], len, maxL, p2);
   const out = [{ len, loopStart: ls0, loopEnd: le0, L: L0, R: R0 }];
   const dec = (x, n, circ) => (circ && (n & 1) ? halfDownOdd(x, n) : halfDown(x, n, circ));
-  while (out.length < 6) {
+  while (out.length < maxL) {
     const p = out[out.length - 1];
     if ((p.len >> 1) < 64) break;
     const circ = !!loopsWhole;
+    if (circ && p2 && (p.len & 1)) { // Phase 2: an odd loop length → exact 2× steps over its periodic continuation
+      let J = 0;
+      for (let k = p.len; out.length + J < maxL && (k >> 1) >= 64; k = Math.ceil(k / 2)) J++;
+      const lv = wholeCascade(p.L, p.len, J), rv = p.R ? wholeCascade(p.R, p.len, J) : null;
+      lv.forEach((d, j) => out.push({ len: d.length, loopStart: 0, loopEnd: d.length, L: d, R: rv ? rv[j] : null }));
+      break;
+    }
     const nl = dec(p.L, p.len, circ), nr = p.R ? dec(p.R, p.len, circ) : null, n = nl.length;
     let ls = Math.round(p.loopStart / 2), le = Math.min(n, Math.round(p.loopEnd / 2));
     if (ls >= le) ls = Math.max(0, le - 1);
@@ -1171,8 +1266,9 @@ export function parseSplitSize(text) {
   return v >= 1 && v <= 9999 ? v : null;
 }
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-export function splitMsg(N) {
-  const hz = 44100 / N, m = 69 + 12 * Math.log2(hz / 440), r = Math.round(m), ct = Math.round((m - r) * 100);
+// sr (Phase 2, FREQUENCY ESTIMATION): the rate the N samples are counted at (default 44100 Hz, Phase 1).
+export function splitMsg(N, sr) {
+  const hz = (sr > 0 ? +sr : 44100) / N, m = 69 + 12 * Math.log2(hz / 440), r = Math.round(m), ct = Math.round((m - r) * 100);
   return `split at: ${+(+N).toFixed(2)} samples (${hz.toFixed(2)} Hz, ${NOTE_NAMES[((r % 12) + 12) % 12]}${Math.floor(r / 12) - 1} ${ct >= 0 ? '+' : '-'} ${Math.abs(ct)} cents)`;
 }
 
@@ -1428,6 +1524,136 @@ export function tableFromWav(wav, opts = {}) {
   }
   if (!segs.length) segs.push([0, Math.min(x.length, Pm(0))]);
   return done(normSame(pickEven(segs).map(([s, P]) => cycleAt(x, s, P))), 0);
+}
+
+// FREQUENCY ESTIMATION (§11.13, inv B11): the period (samples of the file, fractional) of the first channel, or null
+// when no period of 2–9999 samples (the split-size field's range) is found: silence, noise, a single cycle, < 64
+// samples. YIN (difference function through an FFT cross-correlation, cumulative-mean normalisation, threshold 0.15;
+// the deepest point within 20 % above the first dip, followed to its bottom; an exactly periodic dip — d = 0 at an
+// integer lag — is that integer):
+//   (A) full rate, ≤ 48 evenly spaced windows of 2048 samples, lags < 1024 (the pitchAvg analysis' range);
+//   (B) only when A is voiced in fewer than half of its windows and longer periods fit the file, lags up to 10 032:
+//       files ≤ 32 768 samples at full rate (≤ 4 windows of up to 10 240 samples; two cycles are enough); longer files
+//       decimated by 8 (three Phase-1 half-band stages, ≤ 24 windows of 1280, away from the file's ends), each coarse
+//       period refined at full rate (raw difference-function minimum within ±20 lags, parabolic interpolation).
+// A dip still falling at a pass's lag limit is unvoiced, never a period. The pass voiced in the larger share of its
+// windows gives the median (ties: A). Every buffer is allocated once per call; the work is bounded whatever the
+// file's length.
+const EST_THR = 0.15, EST_MAXP = 9999, EST_EXACT = 1e-9;
+function yinWindow(x, pos, W, T, B) { // → the period at x[pos…] (fractional lags) or 0 (unvoiced)
+  const N = B.N, ar = B.ar, ai = B.ai, br = B.br, bi = B.bi, dn = B.dn;
+  let e0 = 0;
+  for (let j = 0; j < W; j++) { const v = x[pos + j]; e0 += v * v; }
+  if (!(e0 >= 1e-9 * W)) return 0;
+  for (let j = 0; j < N; j++) { ar[j] = j < W ? x[pos + j] : 0; br[j] = j < W + T ? x[pos + j] : 0; ai[j] = 0; bi[j] = 0; }
+  fftCore(ar, ai, false); fftCore(br, bi, false);
+  for (let k = 0; k < N; k++) { const r = ar[k] * br[k] + ai[k] * bi[k], i = ar[k] * bi[k] - ai[k] * br[k]; ar[k] = r; ai[k] = i; }
+  fftCore(ar, ai, true);
+  let et = e0, run = 0;
+  dn[0] = 1;
+  for (let t = 1; t < T; t++) { // d(t) = Σ (x[j] − x[j + t])² over the window = e0 + e_t − 2 r(t)
+    const a = x[pos + t - 1], b = x[pos + t + W - 1];
+    et += b * b - a * a;
+    const d = Math.max(0, e0 + et - 2 * ar[t]);
+    run += d;
+    dn[t] = run > 0 ? d * t / run : 1;
+  }
+  let tau = -1;
+  for (let t = 2; t < T - 2; t++) {
+    if (dn[t] < EST_THR) {
+      tau = t;
+      for (let u = t + 1, e = Math.min(T - 2, Math.floor(t * 1.2)); u <= e; u++) if (dn[u] < dn[tau]) tau = u;
+      while (tau < T - 2 && dn[tau + 1] < dn[tau]) tau++;
+      break;
+    }
+  }
+  if (tau < 0 || tau >= T - 2) return 0; // nothing below the threshold, or a dip that runs into the lag limit
+  return vertex(dn[tau - 1], dn[tau], dn[tau + 1], tau);
+}
+function vertex(a, b, c, t) { // parabolic interpolation of a minimum b at t (exactly periodic: t itself)
+  if (b <= EST_EXACT * Math.max(a, c)) return t;
+  const den = a - 2 * b + c;
+  return t + (Math.abs(den) > 1e-12 ? clamp(0.5 * (a - c) / den, -1, 1) : 0);
+}
+function dec8(x, n, s, L, B) { // B.z[i] = x decimated by 8 at position s + 8i (i < L); zero outside [0, n)
+  const y1 = B.y1, y2 = B.y2, z = B.z, c0 = HB[31], n1 = 4 * L + 183, n2 = 2 * L + 61;
+  for (let i = 0; i < n1; i++) { // y1[i] ↔ x position s + 2(i − 93)
+    const c = s + 2 * (i - 93);
+    let acc = c >= 0 && c < n ? c0 * x[c] : 0;
+    for (let k = 1; k <= 31; k += 2) {
+      const p = c - k, q = c + k;
+      acc += HB[31 + k] * ((p >= 0 && p < n ? x[p] : 0) + (q >= 0 && q < n ? x[q] : 0));
+    }
+    y1[i] = acc;
+  }
+  for (let j = 0; j < n2; j++) { // y2[j] ↔ x position s + 4(j − 31)
+    const c = 2 * j + 31;
+    let acc = c0 * y1[c];
+    for (let k = 1; k <= 31; k += 2) acc += HB[31 + k] * (y1[c - k] + y1[c + k]);
+    y2[j] = acc;
+  }
+  for (let i = 0; i < L; i++) { // z[i] ↔ x position s + 8i
+    const c = 2 * i + 31;
+    let acc = c0 * y2[c];
+    for (let k = 1; k <= 31; k += 2) acc += HB[31 + k] * (y2[c - k] + y2[c + k]);
+    z[i] = acc;
+  }
+}
+function refinePeriod(x, n, s, P, Wmax, dd) { // full-rate refinement of a coarse period P at x[s…]; 0 = rejected
+  const lo = Math.max(2, Math.floor(P) - 20), hi = Math.ceil(P) + 20, W = Math.min(Wmax, n - s - hi - 1);
+  if (W < 16) return P;
+  let best = lo;
+  for (let t = lo; t <= hi; t++) {
+    let d = 0;
+    for (let j = s, e = s + W; j < e; j++) { const v = x[j] - x[j + t]; d += v * v; }
+    dd[t - lo] = d;
+    if (d < dd[best - lo]) best = t;
+  }
+  if (best === lo || best === hi) return 0; // the coarse estimate was off by more than the search range
+  return vertex(dd[best - lo - 1], dd[best - lo], dd[best - lo + 1], best);
+}
+function estDims(m, Wd, Td) { // [window, lags] for m samples: the defaults, or a window of about half the signal
+  if (m >= Wd + Td) return [Wd, Td];
+  const W = Math.max(16, (m >> 1) - 4);
+  return [W, Math.min(Td, m - W)];
+}
+function estSpots(span, K, hop) { // ≤ K evenly spaced window starts in [0, span], at least `hop` apart
+  if (span < 0) return [];
+  const k = Math.min(K, Math.floor(span / hop) + 1), out = [];
+  for (let i = 0; i < k; i++) out.push(k > 1 ? Math.round(i * span / (k - 1)) : 0);
+  return out;
+}
+export function estimatePeriod(wav) {
+  const x = wav && wav.ch && wav.ch[0], n = x ? x.length : 0;
+  if (n < 64) return null;
+  const [WA, TA] = estDims(n, 2048, 1024), short = n <= 32768, D = 8, m = Math.floor(n / D);
+  const runB = n - WA > TA && m >= 16; // pass A's lag range was capped: longer periods fit the file
+  const [WB, TB] = short ? estDims(n, 10240, 10032) : estDims(m, 1280, 1254), LB = WB + TB;
+  let N = 1;
+  while (N < Math.max(WA + TA, runB ? LB : 0)) N <<= 1;
+  const B = { N, ar: new Float64Array(N), ai: new Float64Array(N), br: new Float64Array(N), bi: new Float64Array(N), dn: new Float64Array(Math.max(TA, TB)) };
+  const sA = estSpots(n - WA - TA, 48, 512), vA = [];
+  for (const p of sA) { const P = yinWindow(x, p, WA, TA, B); if (P > 0) vA.push(P); }
+  const fA = sA.length ? vA.length / sA.length : 0;
+  if (fA >= 0.5 || !runB) return vA.length ? median(vA) : null;
+  const vB = [];
+  let nB = 0;
+  if (short) {
+    for (const p of estSpots(n - LB, 4, 2048)) { nB++; const P = yinWindow(x, p, WB, TB, B); if (P > 0 && P <= EST_MAXP) vB.push(P); }
+  } else {
+    B.y1 = new Float64Array(4 * LB + 183); B.y2 = new Float64Array(2 * LB + 61); B.z = new Float64Array(LB);
+    const dd = new Float64Array(64), mg = m - LB >= 56 ? 28 : 0; // margin: no window sees the zeros beyond the ends
+    for (const p of estSpots(m - LB - 2 * mg, 24, 64)) {
+      nB++;
+      dec8(x, n, D * (p + mg), LB, B);
+      const Pc = yinWindow(B.z, 0, WB, TB, B);
+      if (!(Pc > 0)) continue;
+      const P = refinePeriod(x, n, D * (p + mg), D * Pc, D * WB, dd);
+      if (P > 0 && P <= EST_MAXP) vB.push(P);
+    }
+  }
+  const fB = nB ? vB.length / nB : 0;
+  return vB.length && fB > fA ? median(vB) : vA.length ? median(vA) : null;
 }
 
 export function tableToWav(table, o = {}) {
@@ -2062,6 +2288,23 @@ const OP_DEF = [
   ['add.removeFromSel', 'Add/Remove', 'Remove: selected→end', (t, c) => { const [, b] = selRange(c, t.frames.length); return keepIdx(t, i => i <= b); }],
   ['add.removeOthers', 'Add/Remove', 'Remove: All (except selected)', (t, c) => { const [a, b] = selRange(c, t.frames.length); return keepIdx(t, i => i >= a && i <= b); }],
   ['add.reduce', 'Add/Remove', 'Reduce', (t, c) => { const n = clamp(c.n | 0, 2, 16); return keepIdx(t, i => i % n === 0); }, { sub: true }],
+  // Phase 2 (inv B11 "Reduce to"): keep n evenly spaced frames round(j·(R − 1)/(n − 1)), j = 0…n − 1 (first and last
+  // kept); n = ctx.n ∈ 2–256; a table of ≤ n frames is unchanged
+  ['add.reduceTo', 'Add/Remove', 'Reduce to', (t, c) => {
+    const R = t.frames.length, n = clamp(c.n | 0, 2, MAX_FRAMES);
+    if (R <= n) return mk(t, t.frames);
+    return mk(t, FRAMES(n).map(j => t.frames[Math.round(j * (R - 1) / (n - 1))]));
+  }, { sub: true, needsMany: true }],
+  // Phase 2 (frame PASTE, §13.13b): ctx.clip (frames copied by COPY, a contiguous range) inserted after the current
+  // frame; at most as many as fit into 256. No menu entry (the editor's PASTE button / Cmd-V).
+  ['add.paste', null, 'Paste frames', (t, c) => {
+    const R = t.frames.length, cur = idx(c.cur, R), clip = Array.isArray(c.clip) ? c.clip : [];
+    const n = Math.min(clip.length, MAX_FRAMES - R);
+    if (n <= 0) return mk(t, t.frames);
+    const fr = t.frames.slice();
+    fr.splice(cur + 1, 0, ...clip.slice(0, n).map(f => cleanFrame(Float32Array.from(f && f.length === FRAME ? f : fitLen(f || [])))));
+    return mk(t, fr);
+  }],
   ['add.move', null, 'Move frames', (t, c) => {
     const R = t.frames.length, [a, b] = selRange(c, R), to = clamp(Math.round(+c.to || 0), 0, R);
     if (to >= a && to <= b + 1) return mk(t, t.frames);
@@ -2075,7 +2318,7 @@ const OP_DEF = [
   ['sort.numSpect', 'Sort', 'Num w/ Spect', t => sortBy(t, sortKeys.numSpect)],
   ['sort.highSpect', 'Sort', 'Highest w/ Spect', t => sortBy(t, sortKeys.highSpect)],
   ['sort.fund', 'Sort', 'Fundamental amt.', t => sortBy(t, sortKeys.fund)],
-  ['sort.random', 'Sort', 'Sort Random', (t, c) => {
+  ['sort.random', 'Sort', 'Randomize', (t, c) => {
     const fr = t.frames.slice(), r = mulberry32((c.seed >>> 0) || 1);
     for (let i = fr.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)), x = fr[i]; fr[i] = fr[j]; fr[j] = x; }
     return mk(t, fr);
@@ -2095,6 +2338,7 @@ export function opEnabled(table, id, ctx = {}) {
   if (o.needsMorph) return R > 1 && R < MAX_FRAMES;
   if (o.needsMany) return R > 1;
   if (id === 'add.insert') return R < MAX_FRAMES;
+  if (id === 'add.paste') return R < MAX_FRAMES && Array.isArray(ctx.clip) && ctx.clip.length > 0;
   return true;
 }
 
@@ -2110,6 +2354,7 @@ export const DRAW_TOOLS = Object.freeze([
   ['flat', 'Flat Line'], ['slopeUp', 'Slope Up'], ['slopeDown', 'Slope Down'], ['sine', 'Sine'], ['halfValley', 'Half sine (valley)'],
   ['halfPeak', 'Half sine (peak)'], ['curveUp', 'Curve up (¼ sine)'], ['curveDown', 'Curve down (¼ sine)'], ['interpLin', 'Interpolate linear'],
   ['interpCurve', 'Interpolate curved'], ['nudge', 'Nudge'], ['noise', 'Noise'],
+  ['mirror', 'Mirror'], // Phase 2 (inv B11): the Flat Line stroke plus its point mirror about the frame centre
 ].map(([id, label]) => Object.freeze({ id, label })));
 
 // Sample range [i0, i1) of the grid cell containing x (grid > 0).
@@ -2120,7 +2365,8 @@ export function cellOf(x, grid) {
 
 // ctx = { x0, y0 (previous / drag-start pointer), x1, y1 (pointer), grid, cell?, seed? } — x ∈ [0,1], y ∈ [−1,1].
 // grid > 0: the tool acts on the cell under the pointer; grid 0: `flat` draws a line from (x0,y0) to (x1,y1),
-// the shaped tools act on the dragged span [x0, x1].
+// the shaped tools act on the dragged span [x0, x1]. `mirror` draws as `flat`, then writes y[2047 − i] = −y[i] for
+// every drawn sample i (where the stroke covers both i and 2047 − i, the left half i < 1024 defines both).
 export function drawTool(frame, tool, c = {}) {
   const out = Float32Array.from(frame), g = c.grid | 0;
   const x1 = clamp(fin(c.x1), 0, 1), x0 = clamp(c.x0 == null ? x1 : fin(c.x0), 0, 1);
@@ -2132,13 +2378,23 @@ export function drawTool(frame, tool, c = {}) {
   const n = i1 - i0, u = i => (n > 1 ? (i - i0) / (n - 1) : 0);
   const fill = fn => { for (let i = i0; i < i1; i++) out[i] = fn(u(i), i); };
   switch (tool) {
-    case 'flat':
+    case 'flat': case 'mirror': {
+      let lo = i0, hi = i1 - 1;
       if (g > 0 || Array.isArray(c.cell)) fill(() => y1);
       else {
-        const a = Math.round(x0 * (FRAME - 1)), b = Math.round(x1 * (FRAME - 1)), lo = Math.min(a, b), hi = Math.max(a, b);
+        const a = Math.round(x0 * (FRAME - 1)), b = Math.round(x1 * (FRAME - 1));
+        lo = Math.min(a, b); hi = Math.max(a, b);
         for (let i = lo; i <= hi; i++) out[i] = hi === lo ? y1 : a <= b ? y0 + (y1 - y0) * (i - a) / (b - a) : y1 + (y0 - y1) * (i - b) / (a - b);
       }
+      if (tool === 'mirror') {
+        for (let i = lo; i <= hi; i++) {
+          const j = FRAME - 1 - i;
+          if (j >= lo && j <= hi && i >= FRAME >> 1) continue;
+          out[j] = -out[i];
+        }
+      }
       break;
+    }
     case 'slopeUp': fill(t => -y1 + 2 * y1 * t); break;
     case 'slopeDown': fill(t => y1 - 2 * y1 * t); break;
     case 'sine': { const h = g > 0 ? g : 1; for (let i = 0; i < FRAME; i++) out[i] = frame[i] + y1 * Math.sin(TAU * h * i / FRAME); break; }
@@ -2171,8 +2427,13 @@ export const FFT_OPS = Object.freeze([
   ['randLow', 'Randomize Low X bins'], ['randLowHalf', 'Randomize Low X bins (with half)'], ['randAll', 'Randomize All'],
   ['gaps', 'Create random series gaps'], ['fade', 'Progressive Fade'], ['octUp', 'Shift Octave Up'], ['octDown', 'Shift Octave Down'],
   ['odd', 'Draw Odd Harmonics Only'], ['even', 'Draw Even Harmonics Only'],
+  ['repeatGroup', 'Repeat Bin Group (Start to Cursor Pos)'], // Phase 2 (inv B11)
 ].map(([id, label]) => Object.freeze({ id, label })));
 
+// c = { bin (the bin under the pointer, 1-based), seed }. Phase 2: `repeatGroup` copies the row's bins 1…bin
+// periodically up to bin 1023 (v[k] = v[(k − 1) mod bin + 1]; unscaled — the editor scales the frame back to its peak);
+// `nudgePhase` (not in FFT_OPS: Shift-Cmd/Ctrl-click on a phase bar, or the editor's phase-row menu item) adds 1/64 to
+// that bin's phase (wrapping), whatever `row` says.
 export function fftOp(spec, row, id, c = {}) {
   const mag = Float64Array.from(spec.mag), ph = Float64Array.from(spec.ph), isPh = row === 'ph';
   const v = isPh ? ph : mag, clr = isPh ? 0.5 : 0, n = v.length, bin = clamp(Math.round(+c.bin || 1), 1, n);
@@ -2194,6 +2455,8 @@ export function fftOp(spec, row, id, c = {}) {
     case 'octDown': { const o = new Float64Array(n).fill(clr); for (let k = 1; 2 * k <= n; k++) o[k - 1] = v[2 * k - 1]; v.set(o); break; }
     case 'odd': for (let k = 2; k <= n; k += 2) v[k - 1] = clr; break;
     case 'even': for (let k = 1; k <= n; k += 2) v[k - 1] = clr; break;
+    case 'repeatGroup': for (let k = bin + 1; k <= Math.min(1023, n); k++) v[k - 1] = v[(k - 1) % bin]; break;
+    case 'nudgePhase': ph[bin - 1] = frac(ph[bin - 1] + 1 / 64); break;
     default: throw new Error('Unknown FFT operation: ' + id);
   }
   if (!isPh) { // a magnitude written into an empty bin starts at sine phase (as q-formulas do)

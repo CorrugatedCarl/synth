@@ -1,5 +1,6 @@
 // wtedit.js tests: pure helpers plus a headless run of the editor on a minimal fake DOM (spec §8.9, §9.9, §10.6).
 // Run: node --test tests/wtedit.test.mjs
+import './v8-guard.mjs';
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -254,9 +255,15 @@ test('WTEditor headless: load, ops, copy-on-write, live updates, drawing, formul
     assert.equal(one(root, 'wte-name').value, 'Basic Shapes');
     assert.equal(one(root, 'wte-fnum').value, '3');
     const tools = all(root).filter(n => n.classList.contains('wte-tool'));
-    assert.equal(tools.length, 12);
+    assert.equal(tools.length, 13);
     assert.equal(tools[0].getAttribute('aria-checked'), 'true');
-    for (const m of ['SINGLE', 'PROCESS', 'MORPH', 'ADD/REMOVE', 'SORT', 'IMPORT', 'EXPORT']) assert.ok(byLabel(root, 'wte-btn', m + ' ▾'), m);
+    for (const m of ['SINGLE', 'ALL', 'MORPH', 'REMOVE', 'SORT', 'IMPORT', 'EXPORT', 'TABLE']) assert.ok(byLabel(root, 'wte-btn', m + ' ▾'), m);
+    // the touch modifier bar is always built; hidden (CSS) until touch mode — no coarse pointer, no touch seen yet
+    const mk = one(root, 'wte-mk');
+    assert.ok(mk && mk.classList.contains('wk-mkeys'));
+    assert.deepEqual(all(mk).filter(n => n.getAttribute && n.getAttribute('data-mod')).map(n => n.getAttribute('data-mod')), ['shift', 'alt']);
+    assert.equal(ed.rootEl.classList.contains('wte-touch'), false);
+    assert.match(doc.getElementById('wte-css').textContent, /\.wte-root:not\(\.wte-touch\) \.wte-mk \{ display: none; \}/);
     const [fftCv, waveCv] = all(root).filter(n => n.localName === 'canvas' && n.classList.contains('wte-cv'));
     place(fftCv, 0, 0, 512, 160); place(waveCv, 0, 200, 1024, 206); place(ed.strip, 0, 500, 300, 60);
     ed.invalidate();
@@ -410,9 +417,9 @@ test('WTEditor headless: load, ops, copy-on-write, live updates, drawing, formul
     const clicks = [];
     const origCreate = doc.createElement.bind(doc);
     doc.createElement = t => { const e = origCreate(t); if (t === 'a') e.click = () => clicks.push(e.download); return e; };
-    openMenu(ed, 'EXPORT'); pick(doc, 'Export All as Wav (32-bit float)');
+    openMenu(ed, 'EXPORT'); pick(doc, 'Export All as 32-bit WAV');
     openMenu(ed, 'EXPORT'); pick(doc, 'Export All as Single-Cycle Waves (.zip)');
-    openMenu(ed, 'EXPORT'); pick(doc, 'Export All 8-bit (.256)');
+    openMenu(ed, 'EXPORT'); pick(doc, 'Export All as 8-bit (.256)');
     doc.createElement = origCreate;
     assert.deepEqual(clicks, ['Basic Shapes.wav', 'Basic Shapes (single cycles).zip', 'Basic Shapes.256']);
     const back = W.readWav(await urls[0].arrayBuffer());
@@ -629,6 +636,403 @@ test('WTEditor headless: pointercancel, undo and frame changes mid-stroke, toolt
       assert.equal(ed.id, log.saveNew[1].id);
       ed.close();
     }
+  } finally {
+    mock.timers.reset();
+    delete globalThis.document;
+    delete globalThis.MouseEvent;
+  }
+});
+
+/* ================================================================== Phase 2 (SPEC-serum2 §13.13b, §11.13; inv B11) */
+
+const wk5 = await import('../wk.js?v=6'); // the instance wtedit imports (its touch modifier latches)
+const { channelFor, otherOscs, copyRange } = E;
+const menuLabels = doc => all(doc.body).filter(n => n.classList && n.classList.contains('wk-cl')).map(n => n.textContent);
+const menuItem = (doc, label) => all(doc.body).find(n => n.classList && n.classList.contains('wk-ci') && one(n, 'wk-cl') && one(n, 'wk-cl').textContent === label) || null;
+const closeMenus = doc => fire(doc.body, 'pointerdown');
+const specOf = f => W.toSpectrum(f);
+const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg || ''} expected ${b} ± ${tol}, got ${a}`);
+
+test('Phase 2 pure helpers: channelFor (L → A/C, R → B), otherOscs, copyRange', () => {
+  assert.deepEqual([0, 1, 2].map(o => channelFor(o, 2)), [0, 1, 0]);
+  assert.deepEqual([0, 1, 2].map(o => channelFor(o, 1)), [0, 0, 0]);
+  const s = { osc: [{ wt: 'factory:Sine' }, { wt: 'user:x', type: 'sample' }, { wt: 'factory:Square', type: 'wt' }] };
+  assert.deepEqual(otherOscs(s, 0), [{ osc: 1, label: 'OSC B', id: 'user:x', ok: false }, { osc: 2, label: 'OSC C', id: 'factory:Square', ok: true }]);
+  assert.deepEqual(otherOscs(s, 2).map(c => [c.label, c.ok]), [['OSC A', true], ['OSC B', false]]);
+  assert.deepEqual(otherOscs({ osc: [{ wt: 'a' }, { wt: 'b' }] }, 1).map(c => c.label), ['OSC A'], 'a v1 state has two oscillators');
+  assert.deepEqual(otherOscs(null, 0), []);
+  const t = { frames: [0, 1, 2, 3, 4].map(i => new Float32Array(FRAME).fill(i)) };
+  assert.deepEqual(copyRange(t, [3, 1]).map(f => f[0]), [1, 2, 3]);
+  assert.equal(copyRange(t, [2, 2])[0], t.frames[2], 'frames are shared (immutable)');
+  assert.deepEqual(copyRange(t, [-5, 99]).map(f => f[0]), [0, 1, 2, 3, 4]);
+  assert.deepEqual(copyRange({ frames: [] }, [0, 0]), []);
+});
+
+test('WTEditor headless, Phase 2: OSC C, ALL ▸ other osc, REMOVE ▸ Reduce to, Randomize, Mirror, COPY/PASTE, FFT repeat + phase nudge, Frequency Estimation, stereo channels, EXPORT, TABLE, Switch OSC Type', async () => {
+  const peakOf = f => f.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+  const doc = new Doc();
+  globalThis.document = doc;
+  globalThis.MouseEvent = Ev;
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 });
+  try {
+    const { host, S, log, store } = makeHost();
+    S.osc.push({ wt: 'factory:Default Shapes', type: 'wt' });
+    S.osc[1].type = 'sample'; // OSC B plays a sample: no table to read
+    S.ui.wtSel = [2, 0, 1];
+    const imports = [];
+    let nextId = 'smp:abc';
+    host.smp = { import: async (files, o) => { imports.push({ n: files.length, name: files[0].name, o }); return nextId; } };
+    const root = doc.createElement('div');
+    doc.body.appendChild(root);
+    let closed = 0;
+    const ed = new WTEditor(root, { host, osc: 2, onClose: () => { closed++; } });
+    ed.open();
+    await settle();
+    assert.equal(root.firstChild.getAttribute('aria-label'), 'Wavetable editor, OSC C');
+    assert.equal(ed.table.frames.length, 9, 'Default Shapes');
+    assert.equal(ed.cur, 1, 'ui.wtSel[2]');
+    for (const m of ['SINGLE', 'ALL', 'MORPH', 'REMOVE', 'SORT', 'IMPORT', 'EXPORT', 'TABLE']) assert.ok(byLabel(root, 'wte-btn', m + ' ▾'), m);
+    assert.equal(byLabel(root, 'wte-btn', 'PROCESS ▾'), null);
+    assert.equal(byLabel(root, 'wte-btn', 'ADD/REMOVE ▾'), null);
+    const [fftCv, waveCv] = all(root).filter(n => n.localName === 'canvas' && n.classList.contains('wte-cv'));
+    place(fftCv, 0, 0, 512, 160); place(waveCv, 0, 200, 1024, 206); place(ed.strip, 0, 500, 300, 60);
+    ed.setZoom(1);
+    const orig = ed.table.frames.slice();
+
+    // ALL ▸ Set Spectra from Other Osc ▸ OSC A (OSC B is a sample oscillator: disabled); the table is read on demand
+    openMenu(ed, 'ALL');
+    assert.ok(menuLabels(doc).includes('Remove Low Spectra (grid size)') && menuLabels(doc).includes('Shift Horizontal to Zero Crossing'));
+    pick(doc, 'Set Spectra from Other Osc');
+    assert.equal(menuItem(doc, 'OSC B').getAttribute('aria-disabled'), 'true');
+    assert.equal(menuItem(doc, 'OSC C'), null, 'never this oscillator');
+    pick(doc, 'OSC A');
+    await settle(10);
+    const s0 = specOf(ed.table.frames[0]); // frame 0 (saw) takes Basic Shapes frame 0's spectrum (a sine)
+    assert.ok(s0.mag[0] > 0.5 && s0.mag[2] < 1e-3 * s0.mag[0], 'saw → only the fundamental');
+    await settle();
+    assert.equal(log.saveNew.length, 1, 'copy-on-write');
+    assert.equal(S.osc[2].wt, log.saveNew[0].id);
+    assert.equal(S.osc[0].wt, 'factory:Basic Shapes');
+    ed.doUndo();
+    assert.equal(ed.table.frames[0], orig[0]);
+
+    // REMOVE ▸ Reduce to ▸ 4 frames: frames 0, 3, 5, 8 (evenly spaced, ends kept); the current frame follows
+    ed.setCur(4);
+    openMenu(ed, 'REMOVE');
+    const rl = menuLabels(doc); // removal items only: Insert is the + button, Init All is in the TABLE menu
+    assert.deepEqual(rl, ['Remove current index', 'Remove: multiselection', 'Remove: beginning→selected', 'Remove: selected→end', 'Remove: All (except selected)', 'Reduce', 'Reduce to']);
+    pick(doc, 'Reduce to');
+    assert.deepEqual(menuLabels(doc).slice(-4), ['2 frames', '4 frames', '8 frames', 'Other…']);
+    pick(doc, '4 frames');
+    await settle();
+    assert.deepEqual(ed.table.frames, [orig[0], orig[3], orig[5], orig[8]]);
+    assert.equal(ed.cur, 2);
+    ed.doUndo();
+    // SORT ▸ Randomize: a permutation
+    openMenu(ed, 'SORT');
+    pick(doc, 'Randomize');
+    await settle();
+    assert.equal(ed.table.frames.length, 9);
+    assert.deepEqual(new Set(ed.table.frames), new Set(orig));
+    ed.doUndo();
+    assert.deepEqual(ed.table.frames, orig);
+
+    // Mirror draw tool: the cell under the pointer and its point mirror about the frame centre
+    const tools = all(root).filter(n => n.classList.contains('wte-tool'));
+    assert.equal(tools.length, 13);
+    const mirror = tools.find(b => b.dataset.tool === 'mirror');
+    assert.equal(mirror.getAttribute('aria-label'), 'Mirror');
+    mirror.click();
+    assert.equal(ed.tool, 'mirror');
+    ed.setCur(3);
+    ed.setGrid(4);
+    ptr(waveCv, 'pointerdown', 100, 210);
+    ptr(waveCv, 'pointerup', 100, 210);
+    const mf = ed.table.frames[3];
+    assert.ok(mf[10] > 0.9 && mf[10] === mf[500], 'cell 0 filled');
+    for (const i of [0, 10, 511]) assert.equal(mf[FRAME - 1 - i], -mf[i], 'mirrored sample ' + i);
+    assert.equal(mf[1000], orig[3][1000], 'cells 1–2 untouched');
+    ed.setGrid(0);
+    ed.setTool('flat');
+
+    // COPY / PASTE: the selection 0–2 pasted after the current frame (Cmd/Ctrl-V on the strip pastes again)
+    ed.setCur(0);
+    fire(ed.strip, 'keydown', { key: 'ArrowRight', shiftKey: true });
+    fire(ed.strip, 'keydown', { key: 'ArrowRight', shiftKey: true });
+    assert.deepEqual(ed.sel, [0, 2]);
+    const copyB = byLabel(root, 'wte-btn', 'COPY'), pasteB = byLabel(root, 'wte-btn', 'PASTE');
+    copyB.click();
+    assert.match(one(root, 'wte-msg').textContent, /^Copied 3 frames/);
+    assert.equal(pasteB.disabled, false);
+    const pre = ed.table.frames.slice();
+    await ed.pasteFrames();
+    assert.equal(ed.table.frames.length, 12);
+    for (let i = 0; i < 3; i++) assert.deepEqual(ed.table.frames[3 + i], pre[i]);
+    assert.equal(ed.table.frames[6], pre[3]);
+    assert.equal(ed.cur, 3); assert.deepEqual(ed.sel, [3, 5]);
+    assert.equal(one(root, 'wte-msg').textContent, 'Pasted 3 frames');
+    fire(ed.strip, 'keydown', { key: 'v', ctrlKey: true });
+    await settle();
+    assert.equal(ed.table.frames.length, 15);
+    assert.deepEqual(ed.sel, [4, 6]);
+    fire(ed.strip, 'keydown', { key: 'c', metaKey: true }); // copies the frames pasted last (5–7)
+    assert.match(one(root, 'wte-msg').textContent, /^Copied 3 frames \(5–7\)/);
+
+    // FFT ▸ Repeat Bin Group (start to the bin under the pointer), on the current frame; the repeated (sine-phase) bins
+    // would line up into a +47 dB spike: the frame is scaled back to max(1, its previous peak)
+    ed.setCur(0);
+    const pk0 = peakOf(ed.table.frames[0]);
+    fire(fftCv, 'contextmenu', { clientX: 2.5, clientY: 20 }); // harmonic 3, magnitude row
+    assert.equal(menuItem(doc, 'Nudge Phase Right (harmonic 3)'), null, 'the magnitude row has no phase nudge');
+    pick(doc, 'Repeat Bin Group (Start to Cursor Pos)');
+    const rs = specOf(ed.table.frames[0]);
+    for (const k of [4, 5, 6, 100, 101, 102]) assert.ok(Math.abs(rs.mag[k - 1] - rs.mag[(k - 1) % 3]) < 1e-4 * rs.mag[0], 'harmonic ' + k);
+    assert.ok(Math.abs(peakOf(ed.table.frames[0]) - Math.max(1, pk0)) < 1e-6, 'peak ' + peakOf(ed.table.frames[0]));
+    const unguarded = W.fftOp(specOf(orig[0]), 'mag', 'repeatGroup', { bin: 3 });
+    assert.ok(peakOf(W.fromSpectrum(unguarded.mag, unguarded.ph, unguarded.dc)) > 100, 'wt.fftOp itself is unscaled');
+    // Shift-Cmd/Ctrl-click on a phase bar nudges it right by 1/64; touch: the Shift + Alt latches
+    const ph0 = specOf(ed.table.frames[0]).ph[0], frac = x => x - Math.floor(x);
+    ptr(fftCv, 'pointerdown', 0.5, 140, { shiftKey: true, metaKey: true });
+    assert.equal(ed.g, null, 'no drawing gesture');
+    near(specOf(ed.table.frames[0]).ph[0], frac(ph0 + 1 / 64), 1e-4);
+    const mb = wk5.modifierBar({ keys: ['shift', 'alt'] });
+    for (const b of all(mb.el).filter(n => n.localName === 'button')) b.click();
+    assert.deepEqual(mb.state(), { fine: 0, alt: 1, shift: 1 });
+    ptr(fftCv, 'pointerdown', 0.5, 140, { pointerType: 'touch' });
+    near(specOf(ed.table.frames[0]).ph[0], frac(ph0 + 2 / 64), 1e-4);
+    assert.deepEqual(mb.state(), { fine: 0, alt: 0, shift: 0 }, 'latches released after the nudge');
+    mb.destroy();
+    assert.ok(ed.rootEl.classList.contains('wte-touch'), 'a touch inside the editor shows its modifier bar');
+    // the menu equivalent (§13.1): the phase row's context menu
+    fire(fftCv, 'contextmenu', { clientX: 0.5, clientY: 140 });
+    assert.ok(menuLabels(doc).includes('Phases · harmonic 1'));
+    pick(doc, 'Nudge Phase Right (harmonic 1)');
+    near(specOf(ed.table.frames[0]).ph[0], frac(ph0 + 3 / 64), 1e-4);
+    // macOS Shift-Ctrl-click: pointerdown nudges, the context menu that follows is swallowed (no menu, no second nudge)
+    ptr(fftCv, 'pointerdown', 0.5, 140, { shiftKey: true, ctrlKey: true });
+    const cx = fire(fftCv, 'contextmenu', { clientX: 0.5, clientY: 140, shiftKey: true, ctrlKey: true });
+    assert.ok(cx.defaultPrevented);
+    assert.equal(menuLabels(doc).length, 0, 'no menu');
+    near(specOf(ed.table.frames[0]).ph[0], frac(ph0 + 4 / 64), 1e-4);
+    // where Ctrl-click arrives as a right-button press (no nudging pointerdown), the context menu event nudges
+    ptr(fftCv, 'pointerdown', 0.5, 140, { button: 2, shiftKey: true, ctrlKey: true });
+    fire(fftCv, 'contextmenu', { clientX: 0.5, clientY: 140, shiftKey: true, ctrlKey: true });
+    assert.equal(menuLabels(doc).length, 0);
+    near(specOf(ed.table.frames[0]).ph[0], frac(ph0 + 5 / 64), 1e-4);
+    ed.setCur(1); // Default Shapes frame 1: a sine
+    const before = ed.table.frames[1];
+    ptr(fftCv, 'pointerdown', 9.5, 140, { shiftKey: true, ctrlKey: true }); // harmonic 10 of a sine: empty
+    assert.equal(ed.table.frames[1], before);
+    assert.match(one(root, 'wte-msg').textContent, /Harmonic 10 is empty/);
+
+    // IMPORT ▸ Frequency Estimation… (period → split-size field) and Switch OSC Type ▸ Sample/Granular/Spectral
+    openMenu(ed, 'IMPORT');
+    assert.ok(menuLabels(doc).includes('Frequency Estimation…'));
+    pick(doc, 'Switch OSC Type');
+    assert.deepEqual(menuLabels(doc).slice(-3), ['Sample…', 'Granular…', 'Spectral…']);
+    closeMenus(doc);
+    const sr = 44100, saw = Float32Array.from({ length: sr / 2 }, (_, i) => 0.7 * (1 - 2 * ((i * 220 / sr) % 1)));
+    await ed.importFiles([{ name: 'Lead.wav', arrayBuffer: async () => W.writeWav({ sr, ch: [saw], bits: 16 }) }], 'freqEst');
+    const fx = one(root, 'wte-fx');
+    assert.ok(Math.abs(parseFloat(fx.value) - 200.45) < 0.5, fx.value);
+    assert.match(one(root, 'wte-msg').textContent, /^split at: 200\.\d+ samples .*Lead/);
+    // the period is in the file's own samples (what its import splits by); the pitch shown is at the file's rate
+    const e1 = Float32Array.from({ length: 96000 }, (_, i) => 0.7 * Math.sin(2 * Math.PI * i * 41.2 / 48000)); // E1, P = 1165.05
+    await ed.importFiles([{ name: 'Bass E1.wav', arrayBuffer: async () => W.writeWav({ sr: 48000, ch: [e1], bits: 16 }) }], 'freqEst');
+    near(parseFloat(fx.value), 48000 / 41.2, 0.05, 'field');
+    assert.match(one(root, 'wte-msg').textContent, /^split at: 1165\.0\d samples \(41\.20 Hz, E1 [+-] 0 cents\) — estimated from “Bass E1” \(48000 Hz\)$/);
+    await ed.importFiles([{ name: 'Quiet.wav', arrayBuffer: async () => W.writeWav({ sr, ch: [new Float32Array(9000)], bits: 16 }) }], 'freqEst');
+    assert.match(one(root, 'wte-msg').textContent, /no pitch detected in “Quiet” — split size cleared$/);
+    assert.equal(fx.value, '', 'the previous file\'s split size is not kept for the next import');
+    assert.equal(ed.prefs.split, '');
+    fx.value = 'sin(pi*x)'; // a formula in the field stays
+    fire(fx, 'input');
+    await ed.importFiles([{ name: 'Quiet.wav', arrayBuffer: async () => W.writeWav({ sr, ch: [new Float32Array(9000)], bits: 16 }) }], 'freqEst');
+    assert.equal(fx.value, 'sin(pi*x)');
+    assert.match(one(root, 'wte-msg').textContent, /no pitch detected in “Quiet”$/);
+    fx.value = '';
+    fire(fx, 'input');
+
+    // stereo files: OSC C imports the left channel (raw 2048 frames; thumbnail drop likewise)
+    const L = new Float32Array(2 * FRAME).fill(0.25), R = new Float32Array(2 * FRAME).fill(0.5);
+    await ed.importFiles([{ name: 'Stereo.wav', arrayBuffer: async () => W.writeWav({ sr, ch: [L, R], bits: 32, float: true }) }], 'pitchAvg');
+    assert.equal(ed.table.frames.length, 2);
+    assert.equal(ed.table.frames[0][7], 0.25);
+    assert.match(one(root, 'wte-msg').textContent, /left channel/);
+    const s1 = Float32Array.from({ length: FRAME }, (_, i) => Math.sin(2 * Math.PI * i / FRAME)), s3 = Float32Array.from({ length: FRAME }, (_, i) => Math.sin(6 * Math.PI * i / FRAME));
+    await ed.importFiles([{ name: 'st.wav', arrayBuffer: async () => W.writeWav({ sr, ch: [s1, s3], bits: 32, float: true }) }], 'replace', 1);
+    assert.deepEqual(ed.table.frames[1], s1);
+    await settle();
+
+    // EXPORT: All as 16-bit / 32-bit WAV, Single-Cycle Waves (ZIP), 8-bit .256, Selection
+    openMenu(ed, 'EXPORT');
+    assert.deepEqual(menuLabels(doc), ['Export All as 16-bit WAV', 'Export All as 32-bit WAV', 'Export All as Single-Cycle Waves (.zip)', 'Export All as 8-bit (.256)', 'Export Selection (frames 2)']);
+    const urls = [], clicks = [];
+    doc.defaultView.URL = { createObjectURL: b => { urls.push(b); return 'blob:' + urls.length; }, revokeObjectURL() {} };
+    const origCreate = doc.createElement.bind(doc);
+    doc.createElement = t => { const e = origCreate(t); if (t === 'a') e.click = () => clicks.push(e.download); return e; };
+    pick(doc, 'Export All as 16-bit WAV');
+    doc.createElement = origCreate;
+    assert.deepEqual(clicks, ['Stereo (16-bit).wav']);
+    const w16 = W.readWav(await urls[0].arrayBuffer());
+    assert.equal(w16.bits, 16);
+    assert.equal(w16.ch[0].length, 2 * FRAME);
+
+    // TABLE ▸ Save Table… (a new named user table, the oscillator repointed) and Rename (focuses the name field)
+    doc.defaultView.prompt = (msg, def) => (/Save/.test(msg) && def === 'Stereo' ? 'Bright Table' : null);
+    openMenu(ed, 'TABLE');
+    assert.deepEqual(menuLabels(doc), ['Save Table…', 'Rename', 'Init All']);
+    pick(doc, 'Save Table…');
+    await settle(20);
+    assert.equal(log.saveNew.at(-1).name, 'Bright Table');
+    assert.equal(S.osc[2].wt, log.saveNew.at(-1).id);
+    assert.equal(ed.id, S.osc[2].wt);
+    assert.equal(ed.table.name, 'Bright Table');
+    assert.equal(one(root, 'wte-name').value, 'Bright Table');
+    assert.equal((await store.get(S.osc[2].wt)).frames.length, 2);
+    assert.match(one(root, 'wte-msg').textContent, /Saved “Bright Table”/);
+    await ed.runOp('single.flipV'); // later edits go to the saved table (no new copy)
+    mock.timers.tick(40);
+    assert.equal(log.update.at(-1).id, S.osc[2].wt);
+    openMenu(ed, 'TABLE');
+    pick(doc, 'Rename');
+    assert.equal(doc.activeElement, one(root, 'wte-name'));
+
+    // Switch OSC Type: the dialog takes one single-sample audio file (no SFZ / ZIP, no multiple selection)
+    ed.pickFiles('switch:sample');
+    assert.equal(ed.fileInp.multiple, false);
+    assert.ok(!/sfz|zip/.test(ed.fileInp.accept) && /\.wav/.test(ed.fileInp.accept) && /\.flac/.test(ed.fileInp.accept), ed.fileInp.accept);
+    ed.fileInp.remove();
+    ed.fileInp = null;
+    // an SFZ (or ZIP) chosen anyway is refused before importing; a multisample id from the host is refused too (osc.smp
+    // cannot hold one: §2.2.5) — the oscillator and the editor stay as they are
+    S.osc[2].smpo = { ops: { fade: 3, norm: 1, rev: 1, trim: [0.5, 0.6] }, slice: { mode: 2, marks: [0.25] } };
+    const nEdits = log.edits.length;
+    await ed.importFiles([{ name: 'Piano.sfz' }], 'switch:sample');
+    assert.equal(imports.length, 0);
+    assert.match(one(root, 'wte-msg').textContent, /Multisample oscillator/);
+    nextId = 'msmp:1234';
+    await ed.importFiles([{ name: 'Odd.wav', arrayBuffer: async () => new ArrayBuffer(8) }], 'switch:sample');
+    assert.equal(imports.length, 1);
+    assert.match(one(root, 'wte-msg').textContent, /“Odd” is not a single sample/);
+    assert.deepEqual([S.osc[2].type, S.osc[2].smp, log.edits.length, ed.closed], ['wt', undefined, nEdits, false]);
+    // Switch OSC Type ▸ Granular…: host.smp.import (the first file only), then type + smp in one state edit with the
+    // sample ops reset (as the panel's own loads: no trim / reverse / fades carried over), and the editor closes
+    nextId = 'smp:abc';
+    const nSave = log.saveNew.length;
+    await ed.importFiles([{ name: 'Pad Loop.wav', arrayBuffer: async () => new ArrayBuffer(8) }, { name: 'Other.wav' }], 'switch:gran');
+    assert.deepEqual(imports.at(-1), { n: 1, name: 'Pad Loop.wav', o: { kind: 'sample', osc: 2 } });
+    assert.equal(S.osc[2].type, 'gran');
+    assert.equal(S.osc[2].smp, 'smp:abc');
+    assert.deepEqual(S.osc[2].smpo.ops, { fade: 0, norm: 0, rev: 0, trim: null });
+    assert.deepEqual(S.osc[2].smpo.slice, { mode: 2, marks: [0.25] }, 'slice marks are the panel\'s (unchanged)');
+    assert.equal(log.edits.at(-1).label, 'Switch OSC Type');
+    assert.equal(closed, 1);
+    assert.ok(ed.closed);
+    assert.equal(log.saveNew.length, nSave);
+
+    // another oscillator's editor (OSC B, no host.smp): pastes the page-wide clipboard, imports the right channel
+    delete host.smp;
+    const root2 = doc.createElement('div');
+    doc.body.appendChild(root2);
+    const ed2 = new WTEditor(root2, { host, osc: 1 });
+    ed2.open();
+    await settle();
+    assert.equal(root2.firstChild.getAttribute('aria-label'), 'Wavetable editor, OSC B');
+    assert.equal(ed2.table.frames.length, 1, 'factory:Sine');
+    assert.equal(byLabel(root2, 'wte-btn', 'PASTE').disabled, false);
+    await ed2.pasteFrames();
+    assert.equal(ed2.table.frames.length, 4);
+    openMenu(ed2, 'IMPORT');
+    assert.equal(menuItem(doc, 'Switch OSC Type').getAttribute('aria-disabled'), 'true');
+    closeMenus(doc);
+    openMenu(ed2, 'ALL');
+    pick(doc, 'Subtract Spectra from other Osc');
+    assert.deepEqual(menuLabels(doc).slice(-2), ['OSC A', 'OSC C']);
+    assert.equal(menuItem(doc, 'OSC C').getAttribute('aria-disabled'), 'true', 'OSC C is granular now');
+    closeMenus(doc);
+    await ed2.importFiles([{ name: 'Stereo.wav', arrayBuffer: async () => W.writeWav({ sr, ch: [L, R], bits: 32, float: true }) }], 'pitchAvg');
+    assert.equal(ed2.table.frames[0][7], 0.5, 'OSC B imports the right channel');
+    assert.match(one(root2, 'wte-msg').textContent, /right channel/);
+    ed2.close();
+  } finally {
+    mock.timers.reset();
+    delete globalThis.document;
+    delete globalThis.MouseEvent;
+  }
+});
+
+test('WTEditor headless, Phase 2: the name is tinted while the table is an automatic copy; right-click on it opens the table menu', async () => {
+  const doc = new Doc();
+  globalThis.document = doc;
+  globalThis.MouseEvent = Ev;
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 });
+  try {
+    const { ed, root, log, store } = await openEd(doc);
+    // a right-button press as browsers do it: mousedown focuses the field unless prevented, then `contextmenu`
+    const rightClick = (el, o = {}) => {
+      const md = fire(el, 'mousedown', Object.assign({ button: 2 }, o));
+      if (!md.defaultPrevented) el.focus();
+      return fire(el, 'contextmenu', Object.assign({ button: 2, clientX: 50, clientY: 10 }, o));
+    };
+    const name = one(root, 'wte-name');
+    assert.equal(name.classList.contains('wte-tint'), false);
+    await ed.runOp('single.flipV');
+    await settle();
+    assert.equal(ed.table.name, 'Basic Shapes *');
+    assert.ok(name.classList.contains('wte-tint'), 'unsaved copy');
+    // undo keeps the copy's name (in the editor and in the store): only the frames go back
+    const copyId = ed.id;
+    ed.doUndo();
+    mock.timers.tick(40);
+    assert.equal(ed.table.name, 'Basic Shapes *');
+    assert.ok(name.classList.contains('wte-tint'));
+    assert.equal((await store.get(copyId)).name, 'Basic Shapes *');
+    ed.doRedo();
+    mock.timers.tick(40);
+    const ev = rightClick(name);
+    assert.ok(ev.defaultPrevented);
+    assert.notEqual(doc.activeElement, name, 'the press did not focus the field');
+    assert.deepEqual(menuLabels(doc), ['Save Table…', 'Rename', 'Init All']);
+    doc.defaultView.prompt = () => 'Keeper';
+    pick(doc, 'Save Table…');
+    await settle(20);
+    assert.equal(log.saveNew.at(-1).name, 'Keeper');
+    assert.equal(name.classList.contains('wte-tint'), false, 'saved by name');
+    assert.equal(doc.activeElement, ed.tableBtn, 'focus returns to the TABLE button, not the name field');
+    // Save Table… then undo: the saved table keeps its name (the undo snapshots carry it)
+    const keepId = ed.id;
+    ed.doUndo();
+    mock.timers.tick(40);
+    assert.equal(log.update.at(-1).id, keepId);
+    assert.equal(ed.table.name, 'Keeper');
+    assert.equal((await store.get(keepId)).name, 'Keeper');
+    assert.equal(name.value, 'Keeper');
+    ed.doRedo();
+    mock.timers.tick(40);
+    assert.equal((await store.get(keepId)).name, 'Keeper');
+    // macOS Ctrl-click on the unfocused field: the table menu as well
+    const cc = rightClick(name, { button: 0, ctrlKey: true });
+    assert.ok(cc.defaultPrevented);
+    assert.ok(menuLabels(doc).includes('Rename'));
+    closeMenus(doc);
+    name.focus(); // while the name is being edited: the browser's own menu
+    assert.equal(rightClick(name).defaultPrevented, false);
+    assert.equal(menuLabels(doc).length, 0);
+    // TABLE ▸ Init All (moved from the Phase-1 ADD/REMOVE menu)
+    openMenu(ed, 'TABLE');
+    pick(doc, 'Init All');
+    assert.equal(ed.table.frames.length, 1);
+    assert.equal(ed.table.name, 'Keeper');
+    // touch mode seen earlier on the page (wk.touchMode): a new editor shows its modifier bar from the start
+    assert.equal(wk5.touchMode(), true);
+    const root2 = doc.createElement('div');
+    doc.body.appendChild(root2);
+    const ed2 = new WTEditor(root2, { host: ed.host, osc: 1 });
+    ed2.open();
+    assert.ok(ed2.rootEl.classList.contains('wte-touch'));
+    ed2.close();
+    ed.close();
   } finally {
     mock.timers.reset();
     delete globalThis.document;

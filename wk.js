@@ -6,6 +6,11 @@
 // plus shared infrastructure for graph.js / fx-ui.js / serum-ui.js: menuSource, fireContext, theme, fitCanvas, frame,
 // wheelGate, saveFile, pickFile, ask. The injected CSS covers the widgets, the FX rack (.fxr-*) and the curve editors (.gx-*).
 // `steps` and `detents` may be numbers/arrays or functions (re-read at every gesture, e.g. a BPM-synced RATE knob).
+// Phase 2 (SPEC-serum2 §11.14, §13.1): fader, meter, xyPad, rangeBar, pianoKeys, stepGrid, iconSeg, modifierBar,
+// dragSource, longPress, zoomPan. Their pure maths hang off the widget functions (no extra exports): meter.pos,
+// fader.nAt, rangeBar.drag / .norm / .parse, pianoKeys.layout / .hit / .velocity / .noteName, stepGrid.valueAt,
+// zoomPan.zoom / .pan, modifierBar.mods / .consume (the touch modifier latches every gesture reads), tooltip.textOf
+// (a touch status line's text) and loadDSP.URLS (the §0.3 list, the default).
 //
 // Conventions shared by every widget:
 //   · values are normalised n ∈ [0,1] unless the widget says otherwise (menu items carry their own `v`);
@@ -55,6 +60,40 @@ function setDis(el, dis) {
   if (dis) attr(el, 'aria-disabled', 'true'); else if (el.hasAttribute('aria-disabled')) el.removeAttribute('aria-disabled');
 }
 function takeOver(close) { if (active && active !== close) active(false); active = close; }
+
+/* ---------------------------------------------------- modifier latches */
+// Touch modifier latches (§13.1, modifierBar): 0 off · 1 latched (applies to the next gesture; released by
+// consumeLatches() when that gesture ends) · 2 locked (double-tap; stays until tapped off). One set per page, shared
+// by every bar and widget. Without a modifier bar every latch stays 0 and gestures read the event's own keys only.
+const LATCH = { fine: 0, alt: 0, shift: 0 };
+const latchSubs = new Set();
+function latchChanged() { for (const f of [...latchSubs]) { try { f(); } catch (err) { console.error(err); } } }
+// Effective modifiers of a gesture: the event's keys or a latch (Fine = the Shift-drag fine adjustment).
+function modsOf(e) {
+  const sh = !!(e && e.shiftKey);
+  return { fine: sh || LATCH.fine > 0, alt: !!(e && e.altKey) || LATCH.alt > 0, shift: sh || LATCH.shift > 0 };
+}
+function consumeLatches() {
+  let ch = false;
+  for (const k in LATCH) if (LATCH[k] === 1) { LATCH[k] = 0; ch = true; }
+  if (ch) latchChanged();
+}
+const inBar = t => { for (let n = t; n; n = n.parentNode) if (n.classList && n.classList.contains('wk-mkeys')) return true; return false; };
+
+/* ---------------------------------------------------------- touch mode */
+// §13.1: touch rules apply under `@media (pointer: coarse)` or once any touch pointer has been seen on the page
+// (an iPad with a trackpad reports a fine pointer): the first touch adds `wk-touch` to <html>, whose CSS copies the
+// coarse-pointer block. touchMode() → true in either case (widgets and panels choose touch layouts with it).
+let touchSeen = false;
+export function touchMode() {
+  if (touchSeen) return true;
+  try { const m = globalThis.matchMedia; return !!(m && m('(pointer: coarse)').matches); } catch (err) { return false; }
+}
+function markTouch(d) {
+  touchSeen = true;
+  const r = d && d.documentElement;
+  if (r && r.classList && !r.classList.contains('wk-touch')) r.classList.add('wk-touch');
+}
 
 /* ------------------------------------------------------------------ prefs */
 export function setPrefs(p) {
@@ -161,8 +200,10 @@ function fireCtx(el, x, y) { // no x/y = from the keyboard (menu opens with its 
   synthT.set(el, ev.timeStamp);
   el.dispatchEvent(ev);
 }
-// Touch long-press (500 ms, ≤ 8 px travel) → contextmenu at the touch point; `fire` runs first.
-function longPress(el, e, fire) {
+// Touch long-press (500 ms, ≤ 8 px travel) → contextmenu at the touch point; `fire` runs first. Exported (§11.14):
+// call it from a pointerdown handler with that event; it returns null for non-touch pointers, else { move(ev), cancel() }
+// to feed from pointermove and to call on pointerup / pointercancel.
+export function longPress(el, e, fire) {
   if (e.pointerType !== 'touch') return null;
   const x = e.clientX, y = e.clientY, t0 = e.timeStamp;
   let id = setTimeout(() => {
@@ -299,7 +340,8 @@ export function knob(o) {
     g.x = e.clientX; g.y = e.clientY;
     if (g.lp) g.lp.move(e);
     if (Math.abs(e.clientX - g.x0) + Math.abs(e.clientY - g.y0) > 6) g.moved = true;
-    if (e.shiftKey) d *= 0.1;
+    const fine = e.shiftKey || LATCH.fine > 0; // Shift or the Fine latch (touch modifier bar)
+    if (fine) d *= 0.1;
     const steps = g.steps;
     let n;
     if (steps) { // 1 step per 8 px
@@ -307,7 +349,7 @@ export function knob(o) {
       n = (g.p >= g.k0 ? Math.floor(g.p + 1e-9) : Math.ceil(g.p - 1e-9)) / steps;
     } else { // 200 px = full range
       g.p = clamp(g.p + d / 200, 0, 1);
-      n = detent(g.p, e.shiftKey);
+      n = detent(g.p, fine);
     }
     if (n !== g.n) { g.n = n; o.set(n, 'move'); update(); }
   });
@@ -338,6 +380,7 @@ export function knob(o) {
     el.classList.remove('wk-drag');
     o.set(G.n, 'end');
     update();
+    consumeLatches();
     return G;
   }
   el.addEventListener('pointerup', e => {
@@ -396,6 +439,8 @@ export function knob(o) {
     inp.setAttribute('aria-label', lab.textContent + ' value');
     inp.setAttribute('autocomplete', 'off');
     inp.setAttribute('spellcheck', 'false');
+    inp.setAttribute('inputmode', inputModeOf(o, fmt));
+    inp.setAttribute('enterkeyhint', 'done');
     el.classList.add('wk-editing');
     el.appendChild(inp);
     let done = false;
@@ -749,14 +794,25 @@ export function toggle(o) {
 }
 
 /* ----------------------------------------------------- typed entry (shared) */
+// Virtual keyboard of a typed entry (§13.1: double-tap = typed entry with inputmode="decimal"). o.inputMode (value or
+// function) wins; otherwise 'decimal' when the display at both ends of the range starts with a digit, else 'text'
+// (signed, named or note values: the iOS decimal pad has no minus sign, no space and no letters). rangeBar and
+// stepGrid default to 'text' (ranges need a separator, steps a sign). Recorded as a deviation from §13.1's letter.
+function inputModeOf(o, fmt) {
+  const m = o && call(o.inputMode);
+  if (m) return String(m);
+  try { return /^\d/.test(String(fmt(0)).trim()) && /^\d/.test(String(fmt(1)).trim()) ? 'decimal' : 'text'; } catch (err) { return 'text'; }
+}
 // Inline text entry over a widget: Enter / blur commit, Escape cancels. commit(text) → false flashes `wk-bad`.
-function typeIn(host, el, label, text, commit, onEnd) {
+function typeIn(host, el, label, text, commit, onEnd, mode) {
   const inp = h('input', 'wk-in');
   inp.type = 'text';
   inp.value = text;
   inp.setAttribute('aria-label', label + ' value');
   inp.setAttribute('autocomplete', 'off');
   inp.setAttribute('spellcheck', 'false');
+  inp.setAttribute('inputmode', mode || 'text');
+  inp.setAttribute('enterkeyhint', 'done');
   el.classList.add('wk-editing');
   host.appendChild(inp);
   let done = false;
@@ -868,7 +924,7 @@ export function numBox(o) {
     if (g.lp) g.lp.move(e);
     if (Math.abs(e.clientX - g.x0) + Math.abs(e.clientY - g.y0) > 6) g.moved = true;
     const lim = kLims(g.st);
-    g.p = clamp(g.p + (g.y - e.clientY) * (e.shiftKey ? 0.25 : 1) / g.px, lim[0], lim[1]);
+    g.p = clamp(g.p + (g.y - e.clientY) * (e.shiftKey || LATCH.fine > 0 ? 0.25 : 1) / g.px, lim[0], lim[1]);
     g.y = e.clientY;
     const k = g.p >= g.k0 ? Math.floor(g.p + 1e-9) : Math.ceil(g.p - 1e-9);
     if (k !== g.k) { g.k = k; o.set(k / g.st + 0, 'move'); update(); }
@@ -882,6 +938,7 @@ export function numBox(o) {
     el.classList.remove('wk-drag');
     o.set(G.k / G.st + 0, 'end');
     update();
+    consumeLatches();
     return G;
   }
   el.addEventListener('pointerup', e => {
@@ -932,7 +989,7 @@ export function numBox(o) {
       if (v == null || !isFinite(v)) return false;
       put(num01(v) * st, 'set');
       return true;
-    }, () => { ti = null; });
+    }, () => { ti = null; }, inputModeOf(o, fmt));
   }
   function destroy() { if (g) finish(); if (ti) ti.cancel(); hideTip(el); el.remove(); el.wk = null; }
   update();
@@ -942,9 +999,30 @@ export function numBox(o) {
 /* ----------------------------------------------------------------- seg */
 // { dest?, label?, items: [labels] | () => [labels], get: () => idx, set: (idx, 'set') => void, disabled? } —
 // segmented switch with radio semantics (one tab stop; arrows move and select; Home / End).
-export function seg(o) {
+export function seg(o) { return segCore(o, false); }
+// iconSeg(o): a seg whose items are icons (SUB shapes, granular window shapes, …): o.items = [{ icon, label }] (or a
+// function returning them); `icon` = SVG path data drawn in a 16 × 16 box (stroked with currentColor) or a short text
+// glyph; `label` is the button's accessible name and tooltip. Behaviour as seg (radio group, one tab stop, mod bar).
+export function iconSeg(o) { return segCore(o, true); }
+function iconBtn(it) {
+  const b = h('button', 'wk-sb wk-isb');
+  if (/^[Mm]\s*[-+.\d]/.test(it.icon)) {
+    const svg = sv('svg', { class: 'wk-ico', viewBox: '0 0 16 16', 'aria-hidden': 'true', focusable: 'false' });
+    svg.append(sv('path', { d: it.icon }));
+    b.append(svg);
+  } else {
+    const gl = h('span', 'wk-iglyph', it.icon);
+    gl.setAttribute('aria-hidden', 'true');
+    b.append(gl);
+  }
+  b.setAttribute('aria-label', it.label);
+  tooltip(b, () => it.label);
+  return b;
+}
+// seg and iconSeg: `icons` = items are { icon, label } objects drawn as icons (label → aria-label and tooltip).
+function segCore(o, icons) {
   ensureCSS(D());
-  const el = h('div', 'wk-seg');
+  const el = h('div', 'wk-seg' + (icons ? ' wk-iseg' : ''));
   el.setAttribute('role', 'radiogroup');
   const lab = h('span', 'wk-lab'), row = h('div', 'wk-segs');
   el.append(lab, row);
@@ -954,12 +1032,14 @@ export function seg(o) {
   let btns = [], key = null, dis = false, lp = null, noClick = false, mod = null;
 
   function build() {
-    const items = (call(o.items) || []).map(String), k = items.join('\u0001');
+    const raw = call(o.items) || [];
+    const items = icons ? raw.map(it => ({ label: String(it && it.label != null ? it.label : ''), icon: String(it && it.icon != null ? it.icon : '') })) : raw.map(String);
+    const k = icons ? items.map(it => it.label + '\u0002' + it.icon).join('\u0001') : items.join('\u0001');
     if (k === key) return;
     key = k;
-    for (const b of btns) b.remove();
+    for (const b of btns) { hideTip(b); b.remove(); }
     btns = items.map((t, i) => {
-      const b = h('button', 'wk-sb', t);
+      const b = icons ? iconBtn(t) : h('button', 'wk-sb', t);
       b.type = 'button';
       b.setAttribute('role', 'radio');
       ctxGuard(b);
@@ -1012,7 +1092,7 @@ export function seg(o) {
   // base n = selected index over the grid (the items enumerate the dest's values in order)
   function setMod(m) { mod = m || null; const i = idx(); el.classList.toggle('wk-modded', bar(mod, i >= 0 && btns.length > 1 ? i / (btns.length - 1) : null) > 0); }
   function focus() { const i = idx(); const b = btns[i >= 0 ? i : 0]; if (b) b.focus({ preventScroll: true }); }
-  function destroy() { if (lp) lp.cancel(); hideTip(el); el.remove(); el.wk = null; }
+  function destroy() { if (lp) lp.cancel(); hideTip(el); for (const b of btns) hideTip(b); el.remove(); el.wk = null; }
   update();
   return W;
 }
@@ -1022,7 +1102,9 @@ export function seg(o) {
 // (callers map n to their own range, e.g. matrix amount = 2n − 1). Grab the thumb for a relative drag; pressing
 // elsewhere on the track jumps there first. Full track length = full range, Shift ×0.1; wheel / keys / typed
 // entry / reset like the knob.
-export function slider(o) {
+export function slider(o) { return sliderCore(o).W; }
+// The slider machinery, returning its parts for the widgets built on it (fader).
+function sliderCore(o) {
   ensureCSS(D());
   const vert = o.orient === 'v';
   const el = h('div', 'wk-sl ' + (vert ? 'wk-v' : 'wk-h'));
@@ -1107,7 +1189,7 @@ export function slider(o) {
     if (Math.abs(e.clientX - g.x0) + Math.abs(e.clientY - g.y0) > 6) g.moved = true;
     const d = vert ? g.y - e.clientY : e.clientX - g.x;
     g.x = e.clientX; g.y = e.clientY;
-    g.p = clamp(g.p + d / g.len * (e.shiftKey ? 0.1 : 1), 0, 1);
+    g.p = clamp(g.p + d / g.len * (e.shiftKey || LATCH.fine > 0 ? 0.1 : 1), 0, 1);
     const n = snap(g.p, stepsOf());
     if (n !== g.n) { g.n = n; o.set(n, 'move'); update(); }
   });
@@ -1120,6 +1202,7 @@ export function slider(o) {
     el.classList.remove('wk-drag');
     o.set(G.n, 'end');
     update();
+    consumeLatches();
     return G;
   }
   el.addEventListener('pointerup', e => {
@@ -1171,30 +1254,1154 @@ export function slider(o) {
       if (v == null || !isFinite(v)) return false;
       put(clamp(v, 0, 1), 'set');
       return true;
-    }, () => { ti = null; });
+    }, () => { ti = null; }, inputModeOf(o, fmt));
   }
   function destroy() { if (g) finish(); if (ti) ti.cancel(); hideTip(el); el.remove(); el.wk = null; }
   update();
+  return { W, el, trk, lab, out };
+}
+
+/* =============================================== Phase-2 widgets (§11.14) */
+
+/* --------------------------------------------------------------- meter */
+// meter(o): peak meter in dBFS (mixer strips, header output; §13.4, snapshot `mix`). o = { ch: 1 | 2, floor: −60,
+// top: 6, orient: 'v' | 'h', hold: 1000 (ms peak hold), label? }. W.set(db, db2?, t?) — one value per channel in dBFS
+// (−Infinity / NaN = silence; a mono value feeds both channels; t = ms timestamp for the hold, default
+// performance.now()); W.reset() clears levels and holds; W.levels() → the last values. The lit part is the channel's
+// gradient (green, yellow from −6 dB, red from 0 dB) uncovered from the bottom; a peak-hold line; `wk-clip` while the
+// held peak is above 0 dB. The hold expires `hold` ms after the peak even when set() is not called again (callers may
+// skip repeated values). meter.pos(db, floor, top) → [0,1]: the shared scale (linear in dB; ≤ floor → 0, ≥ top → 1).
+function meterPos(db, floor, top) {
+  const f = isFinite(floor) ? +floor : -60, t = isFinite(top) && +top > f ? +top : f + 66;
+  if (!(db > f)) return 0; // NaN, −Infinity, ≤ floor
+  return db >= t ? 1 : (db - f) / (t - f);
+}
+const nowMs = () => { const p = globalThis.performance; return p && typeof p.now === 'function' ? p.now() : Date.now(); };
+export function meter(o) {
+  o = o || {};
+  ensureCSS(D());
+  const ch = o.ch === 2 ? 2 : 1, vert = o.orient !== 'h';
+  const floor = isFinite(o.floor) ? +o.floor : -60, top = isFinite(o.top) && +o.top > floor ? +o.top : 6;
+  const hold = o.hold >= 0 ? +o.hold : 1000;
+  const el = h('div', 'wk-meter ' + (vert ? 'wk-mv' : 'wk-mh'));
+  el.setAttribute('role', 'meter');
+  el.setAttribute('aria-label', o.label || 'Level');
+  el.setAttribute('aria-valuemin', String(floor));
+  el.setAttribute('aria-valuemax', String(top));
+  el.style.setProperty('--wk-m6', (meterPos(-6, floor, top) * 100).toFixed(2) + '%');
+  el.style.setProperty('--wk-m0', (meterPos(0, floor, top) * 100).toFixed(2) + '%');
+  const SZ = vert ? 'height' : 'width', POS = vert ? 'bottom' : 'left';
+  const chans = [];
+  for (let c = 0; c < ch; c++) {
+    const b = h('div', 'wk-mch'), cov = h('div', 'wk-mcov'), pk = h('div', 'wk-mpk');
+    b.append(cov, pk);
+    el.append(b);
+    chans.push({ b, cov, pk, db: -Infinity, peak: -Infinity, pt: -1e9, t: -1e9 });
+  }
+  const W = { el, set, reset, levels: () => chans.map(c => c.db), destroy };
+  el.wk = W;
+  let timer = 0, fresh = false; // fresh: a new peak since the timer was armed
+  function paint(c) {
+    c.cov.style[SZ] = ((1 - meterPos(c.db, floor, top)) * 100).toFixed(2) + '%';
+    const pp = meterPos(c.peak, floor, top);
+    c.pk.style[POS] = (pp * 100).toFixed(2) + '%';
+    c.pk.style.display = pp > 0 ? '' : 'none';
+    c.b.classList.toggle('wk-clip', c.peak > 0);
+  }
+  // The hold also expires without further set() calls (callers skip repeated values, and silence is a constant
+  // level): a timer `hold` ms after the latest new peak drops every held peak to its current level and clears the
+  // clip state. While set() keeps coming, set() expires each channel's hold itself.
+  function arm() {
+    if (timer) clearTimeout(timer);
+    fresh = false;
+    timer = setTimeout(expire, hold + 4);
+    if (timer && typeof timer.unref === 'function') timer.unref(); // node: never keeps the process alive
+  }
+  function expire() {
+    timer = 0;
+    for (const c of chans) if (c.peak > c.db) { c.peak = c.db; c.pt = c.t; paint(c); }
+  }
+  function set(a, b, t) {
+    const T = t != null && isFinite(t) ? +t : nowMs();
+    let held = false;
+    chans.forEach((c, i) => {
+      const raw = i === 1 && b != null ? b : a, v = typeof raw === 'number' && !isNaN(raw) ? raw : -Infinity;
+      c.db = v;
+      c.t = T;
+      if (v >= c.peak || T - c.pt > hold) { c.peak = v; c.pt = T; fresh = true; }
+      if (c.peak > v) held = true;
+      paint(c);
+    });
+    if (held && (fresh || !timer)) arm();
+    const v0 = chans[0].db;
+    attr(el, 'aria-valuenow', isFinite(v0) ? Math.round(clamp(v0, floor, top)) : floor);
+  }
+  function reset() {
+    if (timer) { clearTimeout(timer); timer = 0; }
+    fresh = false;
+    for (const c of chans) { c.db = c.peak = -Infinity; c.pt = c.t = -1e9; paint(c); }
+    attr(el, 'aria-valuenow', floor);
+  }
+  function destroy() { if (timer) { clearTimeout(timer); timer = 0; } el.remove(); el.wk = null; }
+  reset();
   return W;
 }
+meter.pos = meterPos;
+
+/* --------------------------------------------------------------- fader */
+// fader(o): vertical fader with a dB scale and an optional peak meter (MIX page strips: `k.level`, `f.level`,
+// `g.bus1v`, `g.master`, …; §13.4). A vertical slider (its gestures, keys, typed entry, `data-dest` and mod bar) plus
+// o.db(n) → dB (the destination's law; −Infinity allowed) for the scale and the default text, o.ticks (dB marks,
+// default +6 0 −6 −12 −24 −48, only those inside the law's range) and o.meter (true or meter options) → W.meter(db,
+// db2?, t?). fader.nAt(db, v) → the n where a monotonic (non-decreasing) law reaches v dB (bisection; 0 / 1 outside).
+const FADER_TICKS = Object.freeze([6, 0, -6, -12, -24, -48]);
+function faderNAt(dbFn, v) {
+  if (typeof dbFn !== 'function' || isNaN(v)) return 0;
+  if (!(v > dbFn(0))) return 0;
+  if (v >= dbFn(1)) return 1;
+  let a = 0, b = 1;
+  for (let i = 0; i < 48; i++) { const m = (a + b) / 2; if (dbFn(m) < v) a = m; else b = m; }
+  return (a + b) / 2;
+}
+const fmtDb = v => (!(v > -144) ? '-inf' : (v > 0.05 ? '+' : '') + (Math.abs(v) < 0.05 ? '0.0' : v.toFixed(1))) + ' dB';
+export function fader(o) {
+  const dbFn = typeof o.db === 'function' ? o.db : null;
+  const core = sliderCore(Object.assign({}, o, { orient: 'v', fmt: o.fmt || (dbFn ? n => fmtDb(dbFn(n)) : undefined) }));
+  const { W, el, trk } = core;
+  el.classList.add('wk-fader');
+  const row = h('div', 'wk-frow'), scale = h('div', 'wk-fsc');
+  scale.setAttribute('aria-hidden', 'true');
+  el.insertBefore(row, trk);
+  row.append(scale, trk);
+  if (dbFn) {
+    const lo = dbFn(0), hi = dbFn(1);
+    for (const v of (Array.isArray(o.ticks) ? o.ticks : FADER_TICKS)) {
+      if (!(v >= lo && v <= hi) && !(v === -Infinity && lo === -Infinity)) continue;
+      const tk = h('span', 'wk-ftk', v === -Infinity ? '-inf' : (v > 0 ? '+' : '') + v);
+      tk.style.bottom = (faderNAt(dbFn, v) * 100).toFixed(2) + '%';
+      scale.append(tk);
+    }
+  }
+  let m = null;
+  if (o.meter) {
+    m = meter(Object.assign({ ch: 1, label: (call(o.label) || 'Level') + ' meter' }, o.meter === true ? {} : o.meter));
+    row.append(m.el);
+  }
+  W.meter = (a, b, t) => { if (m) m.set(a, b, t); };
+  const destroy0 = W.destroy;
+  W.destroy = () => { if (m) m.destroy(); destroy0(); };
+  return W;
+}
+fader.nAt = faderNAt;
+
+/* --------------------------------------------------------------- xyPad */
+// xyPad(o): square pad with a dot bound to two values (Granular / Spectral manual X|Y, PZ SVF X/Y; §13.3).
+// o = { label?, x: { dest?, label?, get, set, def, fmt? }, y: { … }, yDown? (Y = 0 at the top: PZ corners), disabled?,
+// size? (px, default 96) }; values n ∈ [0,1], each axis gets its own set(n, phase). A press jumps the dot to the
+// pointer and drags it (Shift / Fine latch: relative ×0.1 from the current position); Cmd/Ctrl-click resets both.
+// Keys on the dot: ←→ X, ↑↓ Y by 0.01 (Shift 0.001), PageUp/PageDown Y ±0.1, Home/End X 0/1, Delete resets, ContextMenu.
+// The X rail (under the pad) and the Y rail (left) carry the two `data-dest` (drop targets, knob menus) and the
+// setMod({ x, y }) bars (each rail's own `wk.setMod(m)` sets its axis alone); the dot carries `data-xy` plus
+// `data-dest-x` / `data-dest-y` (a source dropped on it offers Modulate X / Modulate Y — handled by the kit).
+// Knob menus (§13.3): a contextmenu on the pad or the dot — right-click, touch long-press, ContextMenu / Shift+F10 on
+// the dot — is forwarded to the rails: with both destinations a chooser (X axis / Y axis) dispatches a `contextmenu` on
+// the chosen rail, with one it goes straight to that rail, with none it is left alone. The rails are long-press /
+// ContextMenu sources themselves (menuSource); focusing one (a closing knob menu returns focus there) focuses the dot.
+export function xyPad(o) {
+  ensureCSS(D());
+  const X = o.x || {}, Y = o.y || {}, down = !!o.yDown;
+  const el = h('div', 'wk-xy');
+  el.setAttribute('role', 'group');
+  el.setAttribute('aria-roledescription', 'X/Y pad');
+  const lab = h('span', 'wk-lab'), grid = h('div', 'wk-xyg'), pad = h('div', 'wk-xyp'), dot = h('div', 'wk-xyd');
+  const rx = h('div', 'wk-xyr wk-xyrx'), ry = h('div', 'wk-xyr wk-xyry'), out = h('span', 'wk-num');
+  dot.tabIndex = 0;
+  dot.setAttribute('role', 'slider');
+  dot.setAttribute('data-xy', '1');
+  dot.setAttribute('aria-valuemin', '0');
+  dot.setAttribute('aria-valuemax', '100');
+  pad.append(dot);
+  grid.append(ry, pad, rx);
+  el.append(lab, grid, out);
+  if (o.size > 0) el.style.setProperty('--wk-xy', Math.round(o.size) + 'px');
+  const barX = modBar(rx), barY = modBar(ry, true);
+  const W = { el, update, setMod, focus, reset, destroy };
+  el.wk = W;
+  // Each rail is a destination element of its own (`data-dest` + `wk`), so a panel that paints halos by scanning
+  // [data-dest] elements (el.wk.setMod) reaches one axis: rail.wk.setMod(m) = setMod({ …current, [axis]: m }).
+  const axisMod = k => m => setMod(Object.assign({}, mod || {}, { [k]: m || null }));
+  rx.wk = { el: rx, axis: 'x', pad: W, update, focus, setMod: axisMod('x') };
+  ry.wk = { el: ry, axis: 'y', pad: W, update, focus, setMod: axisMod('y') };
+  ctxGuard(dot);
+  const railOffs = [rx, ry].map(r => { r.tabIndex = -1; r.addEventListener('focus', () => focus()); return menuSource(r); });
+  let dis = false, g = null, mod = null, text = null;
+  const gx = () => num01(X.get ? X.get() : 0), gy = () => num01(Y.get ? Y.get() : 0);
+  const fx = n => String(X.fmt ? X.fmt(n) : Math.round(n * 100) + '%'), fy = n => String(Y.fmt ? Y.fmt(n) : Math.round(n * 100) + '%');
+  const LX = () => String(call(X.label) || 'X'), LY = () => String(call(Y.label) || 'Y');
+
+  function update() {
+    const L = String(call(o.label) || '');
+    if (lab.textContent !== L) lab.textContent = L;
+    lab.style.display = L ? '' : 'none';
+    attr(el, 'aria-label', L || 'X/Y pad');
+    const dx = call(X.dest), dy = call(Y.dest);
+    setDest(rx, dx); setDest(ry, dy);
+    if (dx) attr(dot, 'data-dest-x', dx); else if (dot.hasAttribute('data-dest-x')) dot.removeAttribute('data-dest-x');
+    if (dy) attr(dot, 'data-dest-y', dy); else if (dot.hasAttribute('data-dest-y')) dot.removeAttribute('data-dest-y');
+    dis = !!(o.disabled && o.disabled());
+    setDis(el, dis);
+    const x = gx(), y = gy();
+    dot.style.left = (x * 100).toFixed(2) + '%';
+    dot.style.top = ((down ? y : 1 - y) * 100).toFixed(2) + '%';
+    const t = LX() + ' ' + fx(x) + ', ' + LY() + ' ' + fy(y);
+    if (t !== text) { text = t; out.textContent = t; attr(dot, 'aria-valuetext', t); }
+    attr(dot, 'aria-valuenow', Math.round(x * 1000) / 10);
+    attr(dot, 'aria-label', L ? L + ' ' + LX() + '/' + LY() : LX() + '/' + LY());
+    if (mod) setMod(mod);
+  }
+  function setMod(m) {
+    mod = m || null;
+    const a = barX(mod && mod.x || null, gx()), b = barY(mod && mod.y || null, gy());
+    el.classList.toggle('wk-modded', a + b > 0);
+  }
+  function focus() { dot.focus({ preventScroll: true }); }
+  function put(x, y, ph) {
+    x = num01(x); y = num01(y);
+    const cx = gx(), cy = gy();
+    if (ph !== 'set' || x !== cx) X.set(x, ph);
+    if (ph !== 'set' || y !== cy) Y.set(y, ph);
+    update();
+  }
+  function reset() {
+    if (dis) return;
+    const a = call(X.def), b = call(Y.def);
+    put(a != null ? +a : gx(), b != null ? +b : gy(), 'set');
+  }
+  function posOf(e) {
+    const r = pad.getBoundingClientRect(), w = Math.max(1, r.width), hh = Math.max(1, r.height);
+    const fy0 = (e.clientY - r.top) / hh;
+    return { x: (e.clientX - r.left) / w, y: down ? fy0 : 1 - fy0, w, h: hh };
+  }
+  pad.addEventListener('pointerdown', e => {
+    if (e.button !== 0 || g || dis) return;
+    if (e.ctrlKey && isMac()) return;
+    e.preventDefault();
+    focus();
+    if (e.metaKey || e.ctrlKey) { reset(); return; }
+    const p = posOf(e);
+    g = { id: e.pointerId, px: e.clientX, py: e.clientY, x: gx(), y: gy(), w: p.w, h: p.h, lp: null };
+    try { pad.setPointerCapture(e.pointerId); } catch (err) { /* pointer gone */ }
+    el.classList.add('wk-drag');
+    X.set(g.x, 'start'); Y.set(g.y, 'start');
+    if (!modsOf(e).fine) { // jump
+      const nx = num01(p.x), ny = num01(p.y);
+      if (nx !== g.x) X.set(nx, 'move');
+      if (ny !== g.y) Y.set(ny, 'move');
+      g.x = nx; g.y = ny;
+      update();
+    }
+    g.lp = longPress(dot, e, finish);
+  });
+  pad.addEventListener('pointermove', e => {
+    if (!g || e.pointerId !== g.id) return;
+    if (e.pointerType === 'mouse' && !(e.buttons & 1)) { finish(); return; }
+    if (g.lp) g.lp.move(e);
+    const f = modsOf(e).fine ? 0.1 : 1, sy = down ? 1 : -1;
+    const nx = clamp(g.x + (e.clientX - g.px) / g.w * f, 0, 1), ny = clamp(g.y + sy * (e.clientY - g.py) / g.h * f, 0, 1);
+    g.px = e.clientX; g.py = e.clientY;
+    if (nx !== g.x) { g.x = nx; X.set(nx, 'move'); }
+    if (ny !== g.y) { g.y = ny; Y.set(ny, 'move'); }
+    update();
+  });
+  function finish() {
+    if (!g) return;
+    const G = g;
+    g = null;
+    if (G.lp) G.lp.cancel();
+    try { pad.releasePointerCapture(G.id); } catch (err) { /* released */ }
+    el.classList.remove('wk-drag');
+    X.set(G.x, 'end'); Y.set(G.y, 'end');
+    update();
+    consumeLatches();
+  }
+  pad.addEventListener('pointerup', e => { if (g && e.pointerId === g.id) finish(); });
+  pad.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(); });
+  pad.addEventListener('lostpointercapture', e => { if (g && e.pointerId === g.id) finish(); });
+  pad.addEventListener('contextmenu', e => {
+    if (g) finish();
+    const hx = rx.hasAttribute('data-dest'), hy = ry.hasAttribute('data-dest');
+    if (!hx && !hy) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const kb = lastInput === 'key', x = kb ? undefined : e.clientX, y = kb ? undefined : e.clientY; // keyboard: menus focus their first item
+    if (!(hx && hy)) { fireCtx(hx ? rx : ry, x, y); return; }
+    const nm = (L, a) => (L === a ? a + ' axis' : L + ' (' + a + ')');
+    contextMenu(e.clientX, e.clientY, [
+      { label: nm(LX(), 'X'), action: () => fireCtx(rx, x, y) },
+      { label: nm(LY(), 'Y'), action: () => fireCtx(ry, x, y) },
+    ], { anchor: dot });
+  });
+  dot.addEventListener('keydown', e => {
+    if (ctxKey(e)) { e.preventDefault(); fireCtx(dot); return; }
+    if (dis) return;
+    const k = e.key, s = e.shiftKey ? 0.001 : 0.01, x = gx(), y = gy(), up = down ? -1 : 1;
+    let nx = x, ny = y;
+    if (k === 'ArrowRight') nx = x + s; else if (k === 'ArrowLeft') nx = x - s;
+    else if (k === 'ArrowUp') ny = y + s * up; else if (k === 'ArrowDown') ny = y - s * up;
+    else if (k === 'PageUp') ny = y + 0.1 * up; else if (k === 'PageDown') ny = y - 0.1 * up;
+    else if (k === 'Home') nx = 0; else if (k === 'End') nx = 1;
+    else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); reset(); return; }
+    else return;
+    e.preventDefault();
+    put(nx, ny, 'set');
+  });
+  function destroy() { if (g) finish(); for (const f of railOffs) f(); hideTip(dot); el.remove(); el.wk = rx.wk = ry.wk = null; }
+  update();
+  return W;
+}
+
+/* ------------------------------------------------------------ rangeBar */
+// rangeBar(o): two-handle integer range (OSC MAPPING key 0–127 / velocity 1–127 rows, §13.9). o = { label?, min = 0,
+// max = 127, get: () => [lo, hi], set: ([lo, hi], phase), fmt?: v → text (e.g. note names), parse?: text → [lo, hi] |
+// null, disabled? }. Values are cells: [lo, hi] covers lo … hi inclusive. Drag a handle (an edge: 6 px reach, touch
+// 22 px, inwards at most a quarter of the range so a narrow range keeps a body) or the body (moves both, width kept;
+// Alt / the Alt latch drags the body from anywhere); a press outside the body moves the nearer edge there and drags
+// it. Double-click / double-tap /
+// Enter on a handle = typed entry ("C1–G7", "1–127", one value = both ends). Keys on a handle: ←→ ±1 (Shift ±12),
+// Alt+←→ moves the whole range, Home / End; setMod(m) draws the usual underline bar. Pure maths: rangeBar.norm(r,
+// min, max) (integers, swapped when reversed, clamped: min ≤ lo ≤ hi ≤ max), rangeBar.drag(r, part 'lo' | 'hi' |
+// 'body', dv, min, max) and rangeBar.parse(text, min, max, fmt?) → [lo, hi] | null.
+function rbLims(min, max) {
+  const a = Math.round(isFinite(+min) ? +min : 0), b = Math.round(isFinite(+max) ? +max : 127);
+  return a <= b ? [a, b] : [b, a];
+}
+function rbNorm(r, min, max) {
+  const [mn, mx] = rbLims(min, max), arr = Array.isArray(r) ? r : [];
+  let a = Math.round(+arr[0]), b = Math.round(+arr[1]);
+  if (!isFinite(a)) a = mn;
+  if (!isFinite(b)) b = mx;
+  if (a > b) { const t = a; a = b; b = t; }
+  return [clamp(a, mn, mx), clamp(b, mn, mx)];
+}
+function rbDrag(r, part, dv, min, max) {
+  const [mn, mx] = rbLims(min, max), [lo, hi] = rbNorm(r, mn, mx), d = Math.round(+dv || 0);
+  if (part === 'lo') return [clamp(lo + d, mn, hi), hi];
+  if (part === 'hi') return [lo, clamp(hi + d, lo, mx)];
+  const w = hi - lo, a = clamp(lo + d, mn, mx - w);
+  return [a, a + w];
+}
+const dashNorm = t => String(t).replace(/[−]/g, '-');
+function rbParse(text, min, max, fmt) {
+  const [mn, mx] = rbLims(min, max), s = dashNorm(text).trim();
+  if (!s) return null;
+  const val = x => {
+    const q = x.trim().toLowerCase();
+    if (!q) return null;
+    if (typeof fmt === 'function') for (let v = mn; v <= mx; v++) if (dashNorm(fmt(v)).trim().toLowerCase() === q) return v;
+    return /^[+-]?\d+$/.test(q) ? parseInt(q, 10) : null;
+  };
+  const two = (a, b) => { const u = val(a), v = val(b); return u == null || v == null ? null : rbNorm([u, v], mn, mx); };
+  const parts = s.split(/\s*(?:–|—|\.\.|\bto\b)\s*/i);
+  if (parts.length === 2) return two(parts[0], parts[1]);
+  if (parts.length !== 1) return null;
+  const one = val(s);
+  if (one != null) return rbNorm([one, one], mn, mx);
+  for (let i = 1; i < s.length - 1; i++) if (s[i] === '-') { const r = two(s.slice(0, i), s.slice(i + 1)); if (r) return r; }
+  const ws = s.split(/\s+/);
+  return ws.length === 2 ? two(ws[0], ws[1]) : null;
+}
+export function rangeBar(o) {
+  ensureCSS(D());
+  const lims = () => rbLims(call(o.min != null ? o.min : 0), call(o.max != null ? o.max : 127));
+  const el = h('div', 'wk-rb');
+  el.setAttribute('role', 'group');
+  const lab = h('span', 'wk-lab'), trk = h('div', 'wk-rbt'), body = h('div', 'wk-rbb'), out = h('span', 'wk-rbv');
+  const hLo = h('div', 'wk-rbh wk-rblo'), hHi = h('div', 'wk-rbh wk-rbhi');
+  for (const [hd, t] of [[hLo, 'start'], [hHi, 'end']]) {
+    hd.tabIndex = 0;
+    hd.setAttribute('role', 'slider');
+    hd.setAttribute('data-part', t === 'start' ? 'lo' : 'hi');
+    ctxGuard(hd);
+  }
+  trk.append(body, hLo, hHi);
+  el.append(lab, trk, out);
+  const bar = modBar(trk);
+  const W = { el, update, setMod, focus, edit, destroy };
+  el.wk = W;
+  let dis = false, g = null, ti = null, lastTap = null, text = null, lastType = 'mouse', mod = null;
+  const fmt = v => String(o.fmt ? o.fmt(v) : v);
+  const cur = () => { const [mn, mx] = lims(); return rbNorm(o.get ? o.get() : [mn, mx], mn, mx); };
+
+  function update() {
+    const L = String(call(o.label) || ''), [mn, mx] = lims(), [lo, hi] = cur(), N = mx - mn + 1;
+    if (lab.textContent !== L) lab.textContent = L;
+    lab.style.display = L ? '' : 'none';
+    attr(el, 'aria-label', L || 'Range');
+    dis = !!(o.disabled && o.disabled());
+    setDis(el, dis);
+    const a = (lo - mn) / N, b = (hi - mn + 1) / N;
+    body.style.left = (a * 100).toFixed(3) + '%';
+    body.style.width = ((b - a) * 100).toFixed(3) + '%';
+    hLo.style.left = (a * 100).toFixed(3) + '%';
+    hHi.style.left = (b * 100).toFixed(3) + '%';
+    for (const [hd, v, nm, l0, l1] of [[hLo, lo, 'start', mn, hi], [hHi, hi, 'end', lo, mx]]) {
+      attr(hd, 'aria-valuemin', l0); attr(hd, 'aria-valuemax', l1); attr(hd, 'aria-valuenow', v);
+      attr(hd, 'aria-valuetext', fmt(v));
+      attr(hd, 'aria-label', (L ? L + ' ' : '') + nm);
+    }
+    const t = lo === hi ? fmt(lo) : fmt(lo) + '–' + fmt(hi);
+    if (t !== text) { text = t; out.textContent = t; }
+    if (mod) setMod(mod);
+  }
+  function setMod(m) { mod = m || null; el.classList.toggle('wk-modded', bar(mod, null) > 0); } // underline bar (n over the track)
+  function focus(part) { (part === 'hi' ? hHi : hLo).focus({ preventScroll: true }); }
+  function put(r, ph) {
+    const [mn, mx] = lims(), v = rbNorm(r, mn, mx), c = cur();
+    if (ph === 'set' && v[0] === c[0] && v[1] === c[1]) { update(); return; }
+    o.set(v, ph);
+    update();
+  }
+  function geo() { // track rect and the width of one cell
+    const r = trk.getBoundingClientRect(), [mn, mx] = lims();
+    return { r, cell: Math.max(1e-6, r.width) / (mx - mn + 1), mn, mx };
+  }
+  trk.addEventListener('pointerdown', e => {
+    if ((ti && e.target === ti.inp) || e.button !== 0 || g || dis) return;
+    lastType = e.pointerType || 'mouse';
+    if (e.ctrlKey && isMac()) return;
+    e.preventDefault();
+    const G = geo(), [lo, hi] = cur(), touch = e.pointerType === 'touch', R = touch ? 22 : 6;
+    const xLo = G.r.left + (lo - G.mn) * G.cell, xHi = G.r.left + (hi - G.mn + 1) * G.cell, x = e.clientX;
+    const v = clamp(G.mn + Math.floor((x - G.r.left) / G.cell), G.mn, G.mx);
+    let part, r0 = [lo, hi];
+    const dLo = Math.abs(x - xLo), dHi = Math.abs(x - xHi), inside = x > xLo && x < xHi;
+    // edges reach R px outwards but at most a quarter of the range inwards, so a narrow range keeps a body to drag;
+    // Alt (or the Alt latch) drags the body from anywhere
+    const Ri = inside ? Math.min(R, (xHi - xLo) / 4) : R;
+    if (modsOf(e).alt) part = 'body';
+    else if (dLo <= Ri || dHi <= Ri) part = dLo < dHi || (dLo === dHi && x < xLo) ? 'lo' : 'hi';
+    else if (inside) part = 'body';
+    else if (x <= xLo) { part = 'lo'; r0 = [v, hi]; }
+    else { part = 'hi'; r0 = [lo, v]; }
+    (part === 'hi' ? hHi : hLo).focus({ preventScroll: true });
+    g = { id: e.pointerId, x0: x, y0: e.clientY, part, r0, r: r0, cell: G.cell, mn: G.mn, mx: G.mx, moved: false, touch, lp: null };
+    try { trk.setPointerCapture(e.pointerId); } catch (err) { /* pointer gone */ }
+    el.classList.add('wk-drag');
+    o.set(cur(), 'start');
+    if (r0[0] !== lo || r0[1] !== hi) { o.set(r0, 'move'); update(); }
+    g.lp = longPress(part === 'hi' ? hHi : hLo, e, finish);
+  });
+  trk.addEventListener('pointermove', e => {
+    if (!g || e.pointerId !== g.id) return;
+    if (e.pointerType === 'mouse' && !(e.buttons & 1)) { finish(); return; }
+    if (g.lp) g.lp.move(e);
+    if (Math.abs(e.clientX - g.x0) + Math.abs(e.clientY - g.y0) > 6) g.moved = true;
+    const r = rbDrag(g.r0, g.part, (e.clientX - g.x0) / g.cell, g.mn, g.mx);
+    if (r[0] !== g.r[0] || r[1] !== g.r[1]) { g.r = r; o.set(r, 'move'); update(); }
+  });
+  function finish() {
+    if (!g) return null;
+    const G = g;
+    g = null;
+    if (G.lp) G.lp.cancel();
+    try { trk.releasePointerCapture(G.id); } catch (err) { /* released */ }
+    el.classList.remove('wk-drag');
+    o.set(G.r, 'end');
+    update();
+    consumeLatches();
+    return G;
+  }
+  trk.addEventListener('pointerup', e => {
+    if (!g || e.pointerId !== g.id) return;
+    const G = finish();
+    if (!G.touch || G.moved) { lastTap = null; return; }
+    if (lastTap && e.timeStamp - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 24) { lastTap = null; edit(); }
+    else lastTap = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+  });
+  trk.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(); });
+  trk.addEventListener('lostpointercapture', e => { if (g && e.pointerId === g.id) finish(); });
+  trk.addEventListener('contextmenu', () => { if (g) { lastTap = null; finish(); } });
+  trk.addEventListener('dblclick', e => {
+    if (dis || (ti && e.target === ti.inp) || lastType === 'touch') return;
+    e.preventDefault();
+    edit();
+  });
+  const onKey = part => e => {
+    if (ctxKey(e)) { e.preventDefault(); fireCtx(part === 'hi' ? hHi : hLo); return; }
+    if (dis) return;
+    const k = e.key, [mn, mx] = lims(), r = cur(), big = e.shiftKey ? 12 : 1;
+    let to = null;
+    if (k === 'ArrowRight' || k === 'ArrowUp') to = rbDrag(r, e.altKey ? 'body' : part, big, mn, mx);
+    else if (k === 'ArrowLeft' || k === 'ArrowDown') to = rbDrag(r, e.altKey ? 'body' : part, -big, mn, mx);
+    else if (k === 'PageUp' || k === 'PageDown') to = rbDrag(r, part, k === 'PageUp' ? 12 : -12, mn, mx);
+    else if (k === 'Home') to = part === 'lo' ? [mn, r[1]] : [r[0], r[0]];
+    else if (k === 'End') to = part === 'lo' ? [r[1], r[1]] : [r[0], mx];
+    else if (k === 'Enter') { e.preventDefault(); edit(); return; }
+    if (!to) return;
+    e.preventDefault();
+    put(to, 'set');
+  };
+  hLo.addEventListener('keydown', onKey('lo'));
+  hHi.addEventListener('keydown', onKey('hi'));
+  function edit() {
+    if (ti || dis) return;
+    ti = typeIn(el, hLo, String(call(o.label) || 'Range'), out.textContent, t => {
+      const [mn, mx] = lims(), v = o.parse ? o.parse(t) : rbParse(t, mn, mx, o.fmt);
+      if (!v) return false;
+      put(v, 'set');
+      return true;
+    }, () => { ti = null; }, String(call(o.inputMode) || 'text'));
+  }
+  function destroy() { if (g) finish(); if (ti) ti.cancel(); el.remove(); el.wk = null; }
+  update();
+  return W;
+}
+rangeBar.norm = rbNorm;
+rangeBar.drag = rbDrag;
+rangeBar.parse = rbParse;
+
+/* ----------------------------------------------------------- pianoKeys */
+// pianoKeys(o): multi-touch on-screen keyboard (keyboard panel, ARP / CLIP keyboards, OSC MAPPING; §13.9).
+// o = { lo = 48, hi = 84 (MIDI notes, widened to whole white keys), on: (note, vel) => void, off: (note) => void,
+// vel?: 'y' (default: velocity from the vertical touch position) | 1–127 (fixed), held?: () => iterable (notes shown
+// pressed: played / sounding), lit?: () => iterable (generated by the arp / clip player: second colour), scale?: () =>
+// { key: −1 | 0–11, steps: [semitones] } | null (keys outside the scale shaded, the root marked), labels?: true (C
+// names, C4 = 60) | (note) → text, color?: CSS colour of pressed keys (ARP purple, CLIP green; CSS `--wk-pc`),
+// litColor?: CSS colour of lit keys (CSS `--wk-pc2`; default `color`, without either the --sx-arp token), glide?:
+// false (no sliding between keys: a pointer keeps the key it pressed — slot keyboards), label?, disabled?,
+// fit?: true | { center = 60 (or a function), min = 2, max = 7, keyW = 24 } — the range follows the element's width
+// (§13.9: 2–7 octaves by width; whole octaves C … C around `center`; a ResizeObserver re-fits, W.fit() on demand) }.
+// Every pointer plays its own note (glissando: sliding to another key releases the old note first); notes are
+// reference-counted over the pointers, so on(n) is called when the first pointer takes n and off(n) when the last one
+// leaves it (two fingers on one key, a slide over a held key); a lost or cancelled pointer releases its note;
+// W.release() releases every note (blur, page switch). W = { el, update,
+// setRange(lo, hi), fit(), range() → [lo, hi], notes(), release(), destroy }. Pure maths: pianoKeys.layout(lo, hi) →
+// { lo, hi, white, keys: [{ note, black, x, w }] } in white-key units; pianoKeys.hit(layout, u, v) → note (u in
+// white-key units, v = fraction of the height from the top; black keys cover the top 62 %); pianoKeys.velocity(y, h) →
+// 1–127 (top of the key soft, front edge loud); pianoKeys.noteName(note) → 'C4' style name; pianoKeys.fitRange(width,
+// fit) → [lo, hi] (octaves = clamp(floor(width / (7·keyW)), min, max), lo = the C nearest to center − 6·octaves).
+const BLACK = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const PK_BLACK_H = 0.62, PK_BLACK_W = 0.6;
+const pkName = n => NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1);
+function pkLayout(lo, hi) {
+  let a = clamp(Math.round(+lo || 0), 0, 127), b = clamp(Math.round(isFinite(+hi) ? +hi : 127), 0, 127);
+  if (a > b) { const t = a; a = b; b = t; }
+  if (BLACK[a % 12]) a--; // widened to white keys (0 and 127 are white)
+  if (BLACK[b % 12]) b++;
+  const keys = [];
+  let wi = 0;
+  for (let n = a; n <= b; n++) {
+    if (BLACK[n % 12]) keys.push({ note: n, black: true, x: wi - PK_BLACK_W / 2, w: PK_BLACK_W });
+    else keys.push({ note: n, black: false, x: wi++, w: 1 });
+  }
+  return { lo: a, hi: b, white: wi, keys };
+}
+function pkHit(L, u, v) {
+  if (!L || !L.keys.length || !(u >= 0 && u < L.white)) return -1;
+  if (v < PK_BLACK_H) for (const k of L.keys) if (k.black && u >= k.x && u < k.x + k.w) return k.note;
+  const wi = Math.floor(u);
+  for (const k of L.keys) if (!k.black && k.x === wi) return k.note;
+  return -1;
+}
+const pkVel = (y, hgt) => clamp(Math.round(1 + 126 * clamp((+y || 0) / Math.max(1e-9, +hgt || 1), 0, 1)), 1, 127);
+function pkFit(width, f) {
+  const q = f && typeof f === 'object' ? f : {}, kw = q.keyW > 0 ? +q.keyW : 24;
+  const mn = clamp(Math.round(q.min > 0 ? +q.min : 2), 1, 10), mx = clamp(Math.round(q.max > 0 ? +q.max : 7), mn, 10);
+  const oct = clamp(Math.floor((+width || 0) / (7 * kw)), mn, mx), c0 = +call(q.center), c = isFinite(c0) ? c0 : 60;
+  const lo = clamp(12 * Math.round((c - 6 * oct) / 12), 0, 120 - 12 * oct);
+  return [lo, lo + 12 * oct];
+}
+export function pianoKeys(o) {
+  ensureCSS(D());
+  const el = h('div', 'wk-piano');
+  el.setAttribute('role', 'group');
+  el.setAttribute('aria-roledescription', 'keyboard');
+  if (o.color) el.style.setProperty('--wk-pc', String(o.color));
+  if (o.litColor || o.color) el.style.setProperty('--wk-pc2', String(o.litColor || o.color));
+  const W = { el, update, setRange, fit, range: () => [L.lo, L.hi], notes, release, destroy };
+  el.wk = W;
+  let L = null, nodes = new Map(), dis = false, ro = null;
+  const ptrs = new Map(); // pointerId → note
+  const cnt = new Map(); // note → pointers holding it
+  function setRange(lo, hi) {
+    L = pkLayout(lo, hi);
+    for (const n of nodes.values()) n.remove();
+    nodes = new Map();
+    const lbl = o.labels === true ? pkName : typeof o.labels === 'function' ? o.labels : null;
+    for (const k of L.keys) {
+      const e = h('div', 'wk-pk ' + (k.black ? 'wk-pb' : 'wk-pw'));
+      e.setAttribute('data-note', String(k.note));
+      e.style.left = (k.x / L.white * 100).toFixed(3) + '%';
+      e.style.width = (k.w / L.white * 100).toFixed(3) + '%';
+      if (lbl && !k.black && k.note % 12 === 0) { const t = h('span', 'wk-pl', String(lbl(k.note))); t.setAttribute('aria-hidden', 'true'); e.append(t); }
+      el.append(e);
+      nodes.set(k.note, e);
+    }
+    attr(el, 'aria-label', (call(o.label) || 'Keyboard') + ' ' + pkName(L.lo) + '–' + pkName(L.hi));
+    update();
+  }
+  function update() {
+    dis = !!(o.disabled && o.disabled());
+    setDis(el, dis);
+    const held = new Set(o.held ? o.held() || [] : []), lit = new Set(o.lit ? o.lit() || [] : []);
+    for (const n of ptrs.values()) held.add(n);
+    const sc = o.scale ? o.scale() : null, inKey = sc && sc.key >= 0 && Array.isArray(sc.steps) ? new Set(sc.steps.map(s => ((s % 12) + 12) % 12)) : null;
+    for (const [n, e] of nodes) {
+      e.classList.toggle('wk-held', held.has(n));
+      e.classList.toggle('wk-lit', lit.has(n) && !held.has(n));
+      const rel = inKey ? (((n - sc.key) % 12) + 12) % 12 : 0;
+      e.classList.toggle('wk-out', !!inKey && !inKey.has(rel));
+      e.classList.toggle('wk-root', !!inKey && rel === 0);
+    }
+  }
+  function notes() { return [...new Set(ptrs.values())]; }
+  function at(e) { // note and velocity under a pointer
+    const r = el.getBoundingClientRect(), wd = Math.max(1, r.width), hg = Math.max(1, r.height);
+    const u = (e.clientX - r.left) / wd * L.white, v = (e.clientY - r.top) / hg;
+    const n = pkHit(L, u, v);
+    if (n < 0) return null;
+    const k = L.keys.find(q => q.note === n), fixed = +call(o.vel);
+    const vel = fixed >= 1 && fixed <= 127 ? Math.round(fixed) : pkVel(e.clientY - r.top, k.black ? hg * PK_BLACK_H : hg);
+    return { n, vel };
+  }
+  const noteOn = (n, vel) => { const c = cnt.get(n) || 0; cnt.set(n, c + 1); if (!c && o.on) o.on(n, vel); };
+  const noteOff = n => {
+    const c = cnt.get(n) || 0;
+    if (c > 1) { cnt.set(n, c - 1); return; }
+    cnt.delete(n);
+    if (c && o.off) o.off(n);
+  };
+  function lift(id) {
+    if (!ptrs.has(id)) return;
+    const n = ptrs.get(id);
+    ptrs.delete(id);
+    noteOff(n);
+    update();
+  }
+  function release() { for (const id of [...ptrs.keys()]) lift(id); }
+  el.addEventListener('pointerdown', e => {
+    if (dis || ptrs.has(e.pointerId) || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    const hit = at(e);
+    if (!hit) return;
+    e.preventDefault();
+    try { el.setPointerCapture(e.pointerId); } catch (err) { /* pointer gone */ }
+    ptrs.set(e.pointerId, hit.n);
+    noteOn(hit.n, hit.vel);
+    update();
+  });
+  el.addEventListener('pointermove', e => {
+    if (!ptrs.has(e.pointerId)) return;
+    if (e.pointerType === 'mouse' && !(e.buttons & 1)) { lift(e.pointerId); return; }
+    if (o.glide === false) return;
+    const hit = at(e), n0 = ptrs.get(e.pointerId);
+    if (!hit || hit.n === n0) return;
+    ptrs.set(e.pointerId, hit.n);
+    noteOff(n0);
+    noteOn(hit.n, hit.vel);
+    update();
+  });
+  for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) el.addEventListener(t, e => lift(e.pointerId));
+  el.addEventListener('contextmenu', e => { e.preventDefault(); }); // a long press plays, never opens a menu
+  // o.fit: the range follows the width (no-op before layout: a zero width keeps the current range)
+  function fit() {
+    if (!o.fit) return;
+    const wd = el.clientWidth || el.getBoundingClientRect().width;
+    if (!(wd > 0)) return;
+    const [lo, hi] = pkFit(wd, o.fit);
+    if (!L || lo !== L.lo || hi !== L.hi) setRange(lo, hi);
+  }
+  function destroy() { release(); if (ro) { ro.disconnect(); ro = null; } el.remove(); el.wk = null; }
+  setRange(o.lo != null ? o.lo : 48, o.hi != null ? o.hi : 84);
+  if (o.fit) {
+    const RO = globalThis.ResizeObserver;
+    if (typeof RO === 'function') { ro = new RO(() => fit()); ro.observe(el); }
+    fit();
+  }
+  return W;
+}
+pianoKeys.layout = pkLayout;
+pianoKeys.hit = pkHit;
+pianoKeys.velocity = pkVel;
+pianoKeys.noteName = pkName;
+pianoKeys.fitRange = pkFit;
+
+/* ------------------------------------------------------------ stepGrid */
+// stepGrid(o): bipolar step cells (Voice Control SEQ rows Pan, Detune, Cutoff, Env, Mod 1, Mod 2; §13.10, inv B20).
+// o = { rows: [label] | () => [label], steps = 8, len?: () => active steps (later cells dimmed, still editable),
+// get: (r, j) → v ∈ [−1,1], set: (r, j, v, phase), fmt?: (r, v) → text, label?, disabled? }. A press sets the cell
+// from the pointer height (top +1, centre 0, bottom −1; Shift / Fine latch: relative ×0.1) and dragging across the row
+// paints every cell passed (each touched cell gets its own start … end phases). One tab stop (the active cell, roving): ←→ step,
+// PageUp/PageDown row, ↑↓ ±0.05 (Shift ±0.01), Home/End, Delete = 0, Enter / double-click / double-tap = typed entry
+// (percent: "-50" = −0.5). stepGrid.valueAt(y, h) → v (pure; 2 decimals).
+const sgVal = (y, hgt) => { const v = Math.round(clamp(1 - 2 * (+y || 0) / Math.max(1e-9, +hgt || 1), -1, 1) * 100) / 100; return v + 0; };
+export function stepGrid(o) {
+  ensureCSS(D());
+  const el = h('div', 'wk-sg');
+  el.setAttribute('role', 'grid');
+  const W = { el, update, focus, destroy };
+  el.wk = W;
+  let cells = [], heads = [], key = null, act = [0, 0], dis = false, g = null, ti = null, lastTap = null, NS = 8, lastType = 'mouse';
+  const rowsOf = () => (call(o.rows) || []).map(String);
+  const val = (r, j) => { const v = +o.get(r, j); return isFinite(v) ? clamp(v, -1, 1) : 0; };
+  const fmt = (r, v) => String(o.fmt ? o.fmt(r, v) : Math.round(v * 100) + '%');
+  function build() {
+    const rows = rowsOf(), n = Math.max(1, Math.round(call(o.steps) || 8)), k = rows.join('\u0001') + '|' + n;
+    if (k === key) return;
+    key = k;
+    NS = n;
+    for (const c of cells.flat()) c.el.remove();
+    for (const hd of heads) hd.remove();
+    el.style.setProperty('--wk-sgn', String(n));
+    heads = [];
+    cells = rows.map((t, r) => {
+      const hd = h('span', 'wk-sgl', t);
+      el.append(hd);
+      heads.push(hd);
+      return Array.from({ length: n }, (_, j) => {
+        const c = h('div', 'wk-sgc'), f = h('div', 'wk-sgf');
+        c.append(f);
+        c.setAttribute('role', 'slider');
+        c.setAttribute('data-r', String(r));
+        c.setAttribute('data-j', String(j));
+        c.setAttribute('aria-valuemin', '-100');
+        c.setAttribute('aria-valuemax', '100');
+        c.tabIndex = -1;
+        el.append(c);
+        return { el: c, f };
+      });
+    });
+    if (act[0] >= rows.length) act = [0, 0];
+    if (act[1] >= n) act[1] = 0;
+  }
+  function update() {
+    build();
+    dis = !!(o.disabled && o.disabled());
+    setDis(el, dis);
+    attr(el, 'aria-label', String(call(o.label) || 'Steps'));
+    const len = o.len ? clamp(Math.round(o.len()), 0, NS) : NS, rows = rowsOf();
+    cells.forEach((row, r) => row.forEach((c, j) => {
+      const v = val(r, j);
+      c.f.style.top = ((v >= 0 ? 0.5 - v / 2 : 0.5) * 100).toFixed(2) + '%';
+      c.f.style.height = (Math.abs(v) / 2 * 100).toFixed(2) + '%';
+      c.el.classList.toggle('wk-off', j >= len);
+      c.el.classList.toggle('wk-neg', v < 0);
+      attr(c.el, 'aria-valuenow', Math.round(v * 100));
+      attr(c.el, 'aria-valuetext', fmt(r, v));
+      attr(c.el, 'aria-label', rows[r] + ' step ' + (j + 1));
+      c.el.tabIndex = r === act[0] && j === act[1] ? 0 : -1;
+    }));
+  }
+  function cellAt(t) { for (let n = t; n && n !== el; n = n.parentNode) if (n.getAttribute && n.hasAttribute('data-j')) return [+n.getAttribute('data-r'), +n.getAttribute('data-j')]; return null; }
+  function focus() { const c = cells[act[0]] && cells[act[0]][act[1]]; if (c) c.el.focus({ preventScroll: true }); }
+  function setAct(r, j, f) { act = [r, j]; update(); if (f) focus(); }
+  function put(r, j, v, ph) { v = Math.round(clamp(v, -1, 1) * 100) / 100 + 0; o.set(r, j, v, ph); }
+  el.addEventListener('pointerdown', e => {
+    if ((ti && e.target === ti.inp) || e.button !== 0 || g || dis) return;
+    lastType = e.pointerType || 'mouse';
+    const rc = cellAt(e.target);
+    if (!rc) return;
+    e.preventDefault();
+    const [r, j] = rc, cr = cells[r][j].el.getBoundingClientRect(), fine = modsOf(e).fine;
+    setAct(r, j, true);
+    g = { id: e.pointerId, r, j, v: val(r, j), y: e.clientY, x0: e.clientX, y0: e.clientY, fine, moved: false, touch: e.pointerType === 'touch', done: new Map() };
+    try { el.setPointerCapture(e.pointerId); } catch (err) { /* pointer gone */ }
+    el.classList.add('wk-drag');
+    o.set(r, j, g.v, 'start');
+    if (!fine) { g.v = sgVal(e.clientY - cr.top, cr.height); put(r, j, g.v, 'move'); }
+    g.done.set(j, g.v);
+    update();
+  });
+  el.addEventListener('pointermove', e => {
+    if (!g || e.pointerId !== g.id) return;
+    if (e.pointerType === 'mouse' && !(e.buttons & 1)) { finish(); return; }
+    if (Math.abs(e.clientX - g.x0) + Math.abs(e.clientY - g.y0) > 6) g.moved = true;
+    const row = cells[g.r];
+    let j = g.j;
+    for (let k = 0; k < row.length; k++) { const q = row[k].el.getBoundingClientRect(); if (e.clientX >= q.left && e.clientX < q.right) { j = k; break; } }
+    if (j !== g.j) { // painting: every cell passed since the last event (a fast swipe skips some) takes a value
+      const j0 = g.j, y0 = g.y, dir = j > j0 ? 1 : -1;
+      for (let k = j0 + dir; k !== j; k += dir) { // cells in between: the pointer height interpolated across the jump
+        const q = row[k].el.getBoundingClientRect(), y = y0 + (e.clientY - y0) * (k - j0) / (j - j0);
+        const vk = g.fine ? g.v : sgVal(y - q.top, q.height);
+        if (!g.done.has(k)) o.set(g.r, k, val(g.r, k), 'start');
+        put(g.r, k, vk, 'move');
+        g.done.set(k, Math.round(clamp(vk, -1, 1) * 100) / 100 + 0);
+      }
+      g.j = j;
+      act = [g.r, j];
+      if (!g.done.has(j)) o.set(g.r, j, val(g.r, j), 'start');
+    }
+    const cr = row[j].el.getBoundingClientRect();
+    const v = g.fine ? clamp(g.v + (g.y - e.clientY) / Math.max(1, cr.height) * 0.2, -1, 1) : sgVal(e.clientY - cr.top, cr.height);
+    g.y = e.clientY;
+    g.v = v;
+    put(g.r, j, v, 'move');
+    g.done.set(j, Math.round(v * 100) / 100 + 0);
+    update();
+  });
+  function finish() {
+    if (!g) return null;
+    const G = g;
+    g = null;
+    try { el.releasePointerCapture(G.id); } catch (err) { /* released */ }
+    el.classList.remove('wk-drag');
+    for (const [j, v] of G.done) o.set(G.r, j, v, 'end');
+    update();
+    consumeLatches();
+    return G;
+  }
+  el.addEventListener('pointerup', e => {
+    if (!g || e.pointerId !== g.id) return;
+    const G = finish();
+    if (!G.touch || G.moved) { lastTap = null; return; }
+    if (lastTap && e.timeStamp - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 24) { lastTap = null; edit(); }
+    else lastTap = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+  });
+  el.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(); });
+  el.addEventListener('lostpointercapture', e => { if (g && e.pointerId === g.id) finish(); });
+  el.addEventListener('dblclick', e => { if (!dis && cellAt(e.target) && lastType !== 'touch' && !(ti && e.target === ti.inp)) { e.preventDefault(); edit(); } });
+  el.addEventListener('keydown', e => {
+    const rc = cellAt(e.target);
+    if (!rc || dis) return;
+    const [r, j] = rc, k = e.key, nr = cells.length;
+    if (ctxKey(e)) { e.preventDefault(); fireCtx(cells[r][j].el); return; }
+    let to = null, v = null;
+    if (k === 'ArrowRight') to = [r, Math.min(NS - 1, j + 1)];
+    else if (k === 'ArrowLeft') to = [r, Math.max(0, j - 1)];
+    else if (k === 'PageDown') to = [Math.min(nr - 1, r + 1), j];
+    else if (k === 'PageUp') to = [Math.max(0, r - 1), j];
+    else if (k === 'Home') to = [r, 0];
+    else if (k === 'End') to = [r, NS - 1];
+    else if (k === 'ArrowUp') v = val(r, j) + (e.shiftKey ? 0.01 : 0.05);
+    else if (k === 'ArrowDown') v = val(r, j) - (e.shiftKey ? 0.01 : 0.05);
+    else if (k === 'Delete' || k === 'Backspace') v = 0;
+    else if (k === 'Enter') { e.preventDefault(); edit(); return; }
+    else return;
+    e.preventDefault();
+    if (to) { setAct(to[0], to[1], true); return; }
+    put(r, j, v, 'set');
+    update();
+  });
+  function edit() {
+    if (ti || dis) return;
+    const [r, j] = act, c = cells[r] && cells[r][j];
+    if (!c) return;
+    ti = typeIn(c.el, c.el, (rowsOf()[r] || 'Step') + ' ' + (j + 1), String(Math.round(val(r, j) * 100)), t => {
+      const m = /^\s*([+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+))\s*%?\s*$/.exec(dashNorm(t));
+      if (!m) return false;
+      put(r, j, parseFloat(m[1].replace(',', '.')) / 100, 'set');
+      update();
+      return true;
+    }, () => { ti = null; }, String(call(o.inputMode) || 'text'));
+  }
+  function destroy() { if (g) finish(); if (ti) ti.cancel(); el.remove(); el.wk = null; }
+  update();
+  return W;
+}
+stepGrid.valueAt = sgVal;
+
+/* --------------------------------------------------------- modifierBar */
+// modifierBar(o): the touch modifier latches (header on touch devices, §13.1): Fine (= Shift-drag), Alt (copy module,
+// modulation depth, snap), Shift (multi-select, step draw). Tap = latched for the next gesture (released when that
+// gesture ends), double-tap = locked (until tapped again), a tap on a latched / locked key releases it. The latches
+// are page-wide (every bar shows the same state). o = { keys?: ['fine', 'alt', 'shift'], labels?: { fine, alt, shift },
+// onChange?: state => void }. W = { el, update, state() → { fine, alt, shift } (0 off · 1 latched · 2 locked), clear(),
+// destroy }. modifierBar.mods(e) → { fine, alt, shift } booleans (the event's own keys or a latch) — every gesture
+// reads it; modifierBar.consume() releases the latched (not locked) keys — every gesture end calls it.
+export function modifierBar(o) {
+  o = o || {};
+  ensureCSS(D());
+  const LBL = Object.assign({ fine: 'Fine', alt: 'Alt', shift: 'Shift' }, o.labels || {});
+  const keys = (Array.isArray(o.keys) ? o.keys : ['fine', 'alt', 'shift']).filter(k => k in LATCH);
+  const el = h('div', 'wk-mkeys');
+  el.setAttribute('role', 'toolbar');
+  el.setAttribute('aria-label', 'Modifiers');
+  const last = {}, btns = {};
+  for (const k of keys) {
+    const b = h('button', 'wk-tog wk-btn wk-mk', LBL[k]);
+    b.type = 'button';
+    b.setAttribute('data-mod', k);
+    b.addEventListener('click', e => {
+      const t = e.timeStamp, st = LATCH[k];
+      LATCH[k] = st === 1 && last[k] != null && t - last[k] < 350 ? 2 : st ? 0 : 1;
+      last[k] = t;
+      latchChanged();
+    });
+    el.append(b);
+    btns[k] = b;
+  }
+  const state = () => ({ fine: LATCH.fine, alt: LATCH.alt, shift: LATCH.shift });
+  let sig = '';
+  function update() {
+    for (const k of keys) {
+      const b = btns[k], st = LATCH[k];
+      b.classList.toggle('wk-on', st > 0);
+      b.classList.toggle('wk-lock', st === 2);
+      attr(b, 'aria-pressed', st > 0 ? 'true' : 'false');
+      attr(b, 'aria-label', LBL[k] + (st === 2 ? ' (locked)' : st === 1 ? ' (next gesture)' : ''));
+    }
+    const s = JSON.stringify(state());
+    if (s !== sig) { sig = s; if (o.onChange) o.onChange(state()); }
+  }
+  function clear() { let ch = false; for (const k in LATCH) if (LATCH[k]) { LATCH[k] = 0; ch = true; } if (ch) latchChanged(); }
+  latchSubs.add(update);
+  function destroy() { latchSubs.delete(update); el.remove(); el.wk = null; }
+  const W = { el, update, state, clear, destroy };
+  el.wk = W;
+  sig = JSON.stringify(state());
+  update();
+  return W;
+}
+modifierBar.mods = modsOf;
+modifierBar.consume = consumeLatches;
+
+/* ---------------------------------------------------------- dragSource */
+// dragSource(el, payload): the drag gesture of tiles, module labels and handles (drag-to-modulate, module copy / swap;
+// §13.1). Mouse / pen: the drag starts after `slop` (4) px of travel. Touch: a `hold` (250 ms) without moving more than
+// 8 px arms it (class wk-armed; page scrolling is blocked from then on) and the next move starts it — a quicker swipe
+// stays a scroll, and a still hold of 500 ms still opens the long-press menu (a contextmenu before the drag starts
+// abandons it). payload = { data (value or () => value), begin?(info), move?(info), drop?(info), cancel?(info), hold?,
+// slop? }; info = { data, x, y, alt, shift, fine (the event keys or modifier latches at the press or the start),
+// pointerType, target (the element under the pointer: document.elementFromPoint — a drag ghost needs
+// pointer-events: none) }. The click that ends a drag is swallowed; Escape cancels; the latches are consumed when a
+// drag ends. Returns { active() → bool, cancel(), destroy() }.
+export function dragSource(el, payload) {
+  const P = payload || {};
+  const hold = P.hold >= 0 ? +P.hold : 250, slop = P.slop > 0 ? +P.slop : 4;
+  let g = null, keyOff = null, clickOff = null;
+  const under = (x, y) => { const d = D(); try { return d && typeof d.elementFromPoint === 'function' ? d.elementFromPoint(x, y) : null; } catch (err) { return null; } };
+  const info = (G, x, y) => ({ data: call(P.data), x, y, alt: G.m.alt, shift: G.m.shift, fine: G.m.fine, pointerType: G.type, target: under(x, y) });
+  const cb = (k, i) => { if (typeof P[k] === 'function') P[k](i); };
+  function start(e) {
+    const m = modsOf(e);
+    g.m = { alt: g.m.alt || m.alt, shift: g.m.shift || m.shift, fine: g.m.fine || m.fine };
+    g.on = true;
+    el.classList.remove('wk-armed');
+    el.classList.add('wk-dragging');
+    try { el.setPointerCapture(g.id); } catch (err) { /* pointer gone */ }
+    const d = D();
+    if (d) keyOff = listen(d, 'keydown', ev => { if (ev.key === 'Escape' && g && g.on) { ev.preventDefault(); ev.stopPropagation(); end(null, true); } }, true);
+    cb('begin', info(g, e.clientX, e.clientY));
+  }
+  function end(e, cancelled) {
+    const G = g;
+    if (!G) return;
+    g = null;
+    if (G.timer) clearTimeout(G.timer);
+    if (keyOff) { keyOff(); keyOff = null; }
+    try { el.releasePointerCapture(G.id); } catch (err) { /* released */ }
+    el.classList.remove('wk-armed', 'wk-dragging');
+    if (!G.on) return;
+    const i = info(G, e ? e.clientX : G.x, e ? e.clientY : G.y);
+    if (cancelled) cb('cancel', i);
+    else { if (e) eatClick(e.timeStamp); cb('drop', i); }
+    consumeLatches();
+  }
+  // The click that follows the drop is swallowed in the document's capture phase (before any listener of el, whatever
+  // the order they were added in); the one-shot listener goes with the next click anywhere.
+  function eatClick(t0) {
+    const d = D();
+    if (!d) return;
+    if (clickOff) clickOff();
+    const off = listen(d, 'click', ev => {
+      off();
+      if (clickOff === off) clickOff = null;
+      if (ev.timeStamp >= t0 && ev.timeStamp - t0 < 600 && ev.target && el.contains(ev.target)) { ev.preventDefault(); ev.stopImmediatePropagation(); }
+    }, true);
+    clickOff = off;
+  }
+  const offs = [
+    listen(el, 'pointerdown', e => {
+      if (e.button !== 0 || g) return;
+      const t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
+      const touch = e.pointerType === 'touch';
+      g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, type: e.pointerType || 'mouse', on: false, armed: !touch, timer: 0, m: modsOf(e) };
+      if (touch) g.timer = setTimeout(() => { if (g && !g.on) { g.timer = 0; g.armed = true; el.classList.add('wk-armed'); } }, hold);
+    }),
+    listen(el, 'pointermove', e => {
+      if (!g || e.pointerId !== g.id) return;
+      g.x = e.clientX; g.y = e.clientY;
+      if (!g.on) {
+        const d = Math.hypot(e.clientX - g.x0, e.clientY - g.y0);
+        if (!g.armed) { if (d > 8) { clearTimeout(g.timer); g = null; } return; } // moved before the hold: a scroll
+        if (d <= slop && g.type !== 'touch') return;
+        start(e);
+      }
+      cb('move', info(g, e.clientX, e.clientY));
+    }),
+    listen(el, 'pointerup', e => { if (g && e.pointerId === g.id) end(e, false); }),
+    listen(el, 'pointercancel', e => { if (g && e.pointerId === g.id) end(e, true); }),
+    // only el's own capture counts: start() takes it from the touched child (a tile's label span holds the implicit
+    // touch capture), and the browser then fires a bubbling lostpointercapture at that child
+    listen(el, 'lostpointercapture', e => { if (g && g.on && e.pointerId === g.id && e.target === el) end(e, true); }),
+    listen(el, 'contextmenu', () => { if (g && !g.on) { clearTimeout(g.timer); el.classList.remove('wk-armed'); g = null; } }),
+    listen(el, 'touchmove', e => { if (g && g.armed && g.type === 'touch' && e.cancelable) e.preventDefault(); }, { passive: false }),
+  ];
+  return {
+    active: () => !!(g && g.on),
+    cancel: () => end(null, true),
+    destroy() { if (g) end(null, true); for (const f of offs) f(); if (clickOff) { clickOff(); clickOff = null; } },
+  };
+}
+
+/* ------------------------------------------------------------- zoomPan */
+// zoomPan(el, o): pinch zoom and two-finger pan for canvases (sample displays, spectrograms, the piano roll, the arp
+// graph, the LFO editor; §13.1), plus trackpad pinch / Ctrl-Cmd-wheel zoom at the pointer and Shift-wheel /
+// horizontal-wheel pan (the latter only with the mouse-wheel preference on). o = { axis: 'x' | 'y' | 'xy' (default
+// 'x'), get: () => view, set: (view, phase), min = 0.001 (smallest span), max = 1 (largest span), wheel = true,
+// rect?: () => { left, top, width, height } — the client rect the view is drawn into (default el's box; an editor
+// whose plot is inset passes the plot, so the content under the fingers stays under them) }; view = { x0, x1, y0, y1 }:
+// the visible window as fractions of the content (y from the top). Touches that go down on el are tracked through
+// the document (capture phase), so a finger lifted outside el (an editor released its capture when the pinch began)
+// is still forgotten, and a primary touch (no other touch on the screen) drops any stale one. While two touches are
+// down it consumes their moves (the canvas's own one-finger gesture sees none) and active() is true. Returns
+// { active(), destroy() }. Pure maths: zoomPan.zoom(view, f, cx, cy, o) — zoom by f (> 1 = in) keeping the content
+// under viewport fraction (cx, cy) in place; zoomPan.pan(view, dx, dy, o) — move the window by dx / dy viewport
+// fractions (positive = later content); both clamp to the content and return a new view.
+function zpView(v) {
+  const q = v || {}, n = (x, d) => (typeof x === 'number' && isFinite(x) ? x : d);
+  let x0 = clamp(n(q.x0, 0), 0, 1), x1 = clamp(n(q.x1, 1), 0, 1), y0 = clamp(n(q.y0, 0), 0, 1), y1 = clamp(n(q.y1, 1), 0, 1);
+  if (x1 <= x0) { x0 = 0; x1 = 1; }
+  if (y1 <= y0) { y0 = 0; y1 = 1; }
+  return { x0, x1, y0, y1 };
+}
+function zpLims(o) {
+  const mn = o && o.min > 0 ? Math.min(1, +o.min) : 0.001, mx = o && o.max > 0 ? Math.min(1, +o.max) : 1;
+  return [mn, Math.max(mn, mx)];
+}
+function zpAxis(a0, a1, f, c, mn, mx) {
+  const span = a1 - a0, s = clamp(span / f, mn, mx), p = a0 + c * span, n0 = clamp(p - c * s, 0, 1 - s);
+  return [n0, n0 + s];
+}
+function zpZoom(view, f, cx, cy, o) {
+  const v = zpView(view), ax = (o && o.axis) || 'x', [mn, mx] = zpLims(o);
+  if (!(f > 0) || !isFinite(f)) return v;
+  if (ax !== 'y') [v.x0, v.x1] = zpAxis(v.x0, v.x1, f, clamp(+cx || 0, 0, 1), mn, mx);
+  if (ax !== 'x') [v.y0, v.y1] = zpAxis(v.y0, v.y1, f, clamp(+cy || 0, 0, 1), mn, mx);
+  return v;
+}
+function zpPan(view, dx, dy, o) {
+  const v = zpView(view), ax = (o && o.axis) || 'x';
+  if (ax !== 'y' && dx) { const s = v.x1 - v.x0, a = clamp(v.x0 + dx * s, 0, 1 - s); v.x0 = a; v.x1 = a + s; }
+  if (ax !== 'x' && dy) { const s = v.y1 - v.y0, a = clamp(v.y0 + dy * s, 0, 1 - s); v.y0 = a; v.y1 = a + s; }
+  return v;
+}
+export function zoomPan(el, o) {
+  o = o || {};
+  const ax = o.axis === 'y' || o.axis === 'xy' ? o.axis : 'x', O = { axis: ax, min: o.min, max: o.max };
+  const pts = new Map();
+  let G = null, cur = null, docOff = null;
+  const get = () => zpView(o.get ? o.get() : null);
+  const rectOf = () => { const r = o.rect ? o.rect() : null; return r && isFinite(r.left) && isFinite(r.top) ? r : el.getBoundingClientRect(); };
+  function begin() {
+    const [a, b] = [...pts.values()], r = rectOf();
+    G = { r, v0: get(), ax: Math.abs(a.x - b.x), ay: Math.abs(a.y - b.y), d: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+    cur = G.v0;
+    if (o.set) o.set(G.v0, 'start');
+  }
+  function track() {
+    const [a, b] = [...pts.values()], R = G.r, w = Math.max(1, R.width), hh = Math.max(1, R.height);
+    const d = Math.hypot(a.x - b.x, a.y - b.y), dxa = Math.abs(a.x - b.x), dya = Math.abs(a.y - b.y);
+    let f = G.d > 1 ? d / G.d : 1;
+    if (ax === 'x' && G.ax > 24) f = dxa / G.ax; // pinch along the axis when the fingers are spread along it
+    else if (ax === 'y' && G.ay > 24) f = dya / G.ay;
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const c0x = (G.mx - R.left) / w, c0y = (G.my - R.top) / hh, c1x = (mx - R.left) / w, c1y = (my - R.top) / hh;
+    const z = zpZoom(G.v0, f > 0.01 ? f : 0.01, c0x, c0y, O);
+    cur = zpPan(z, c0x - c1x, c0y - c1y, O);
+    if (o.set) o.set(cur, 'move');
+  }
+  function end() { if (G) { G = null; if (o.set) o.set(cur, 'end'); consumeLatches(); } }
+  function lift(id) {
+    if (!pts.has(id)) return;
+    pts.delete(id);
+    if (pts.size < 2) end();
+    if (!pts.size && docOff) docOff();
+  }
+  // tracked touches are followed through the document while any is down (their pointerup may land outside el)
+  function onMove(e) {
+    if (!pts.has(e.pointerId)) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (!G) return;
+    e.stopImmediatePropagation();
+    if (e.cancelable) e.preventDefault();
+    if (pts.size >= 2) track();
+  }
+  const onUp = e => lift(e.pointerId);
+  function watch() {
+    if (docOff) return;
+    const d = el.ownerDocument || D();
+    if (!d) return;
+    const offs2 = [listen(d, 'pointermove', onMove, true), listen(d, 'pointerup', onUp, true), listen(d, 'pointercancel', onUp, true)];
+    docOff = () => { for (const f of offs2) f(); docOff = null; };
+  }
+  const offs = [
+    listen(el, 'pointerdown', e => {
+      if (e.pointerType !== 'touch') return;
+      if (e.isPrimary === true && pts.size) { pts.clear(); end(); } // no other touch is down: forget stale ones
+      pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      watch();
+      if (pts.size === 2 && !G) begin();
+    }, true),
+    listen(el, 'wheel', e => {
+      if (o.wheel === false) return;
+      const r = rectOf(), w = Math.max(1, r.width), hh = Math.max(1, r.height);
+      const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
+      if (e.ctrlKey || e.metaKey) { // trackpad pinch arrives as Ctrl-wheel
+        e.preventDefault();
+        const f = Math.exp(-(e.deltaY || 0) * k * 0.002);
+        cur = zpZoom(get(), f, (e.clientX - r.left) / w, (e.clientY - r.top) / hh, O);
+        if (o.set) o.set(cur, 'set');
+      } else if (prefs.wheel && (e.shiftKey || Math.abs(e.deltaX || 0) > Math.abs(e.deltaY || 0))) {
+        const px = (e.deltaX || (e.shiftKey ? e.deltaY : 0) || 0) * k;
+        if (!px) return;
+        e.preventDefault();
+        cur = ax === 'y' ? zpPan(get(), 0, px / hh, O) : zpPan(get(), px / w, 0, O);
+        if (o.set) o.set(cur, 'set');
+      }
+    }, { passive: false }),
+  ];
+  return {
+    active: () => !!G,
+    destroy() { for (const f of offs) f(); if (docOff) docOff(); pts.clear(); G = null; },
+  };
+}
+zoomPan.zoom = zpZoom;
+zoomPan.pan = zpPan;
 
 /* ------------------------------------------- shared browser infrastructure */
 // Dispatch the kit's `contextmenu` on `el` (no x/y = keyboard origin: the menu focuses its first item).
 export function fireContext(el, x, y) { fireCtx(el, x, y); }
 // Makes a custom element a context-menu source like the widgets: ContextMenu / Shift+F10 (unless keys = false)
-// and a 500 ms touch long-press dispatch one `contextmenu`. Returns a remover.
+// and a 500 ms touch long-press dispatch one `contextmenu`. A long-press needs a single finger: a second touch on el
+// (a pinch, whose moves wk.zoomPan consumes before they reach el) cancels it, and a non-primary touch or one that
+// lands while another is down on el arms none; a primary touch (no other touch on the screen) forgets touches whose
+// pointerup landed elsewhere. Returns a remover.
 export function menuSource(el, opts) {
   const keys = !opts || opts.keys !== false;
   ctxGuard(el);
   let lp = null;
+  const down = new Set(); // touch pointers down on el
+  const stop = () => { if (lp) lp.cancel(); lp = null; };
+  const up = e => { down.delete(e.pointerId); stop(); };
   const offs = [
     listen(el, 'keydown', e => { if (keys && e.target === el && ctxKey(e)) { e.preventDefault(); fireCtx(el); } }),
-    listen(el, 'pointerdown', e => { if (lp) lp.cancel(); lp = longPress(el, e, null); }),
+    listen(el, 'pointerdown', e => {
+      stop();
+      if (e.pointerType === 'touch') {
+        if (e.isPrimary === true) down.clear();
+        down.add(e.pointerId);
+        if (e.isPrimary === false || down.size > 1) return; // multi-touch: no long-press
+      }
+      lp = longPress(el, e, null);
+    }),
     listen(el, 'pointermove', e => { if (lp) lp.move(e); }),
-    listen(el, 'pointerup', () => { if (lp) lp.cancel(); lp = null; }),
-    listen(el, 'pointercancel', () => { if (lp) lp.cancel(); lp = null; }),
+    listen(el, 'pointerup', up),
+    listen(el, 'pointercancel', up),
   ];
-  return () => { for (const f of offs) f(); if (lp) lp.cancel(); };
+  return () => { for (const f of offs) f(); stop(); down.clear(); };
 }
 // Theme tokens (§9.1) as resolved on `el` (custom properties), with the spec defaults as fallbacks.
 const TOKENS = { bg: ['--sx-bg', '#0f1216'], panel: ['--sx-panel', '#161b21'], panel2: ['--sx-panel2', '#1c232b'], line: ['--sx-line', '#2a333d'],
@@ -1212,9 +2419,9 @@ export function theme(el) {
   }
   return out;
 }
-// Size a canvas for its CSS box at the device pixel ratio; returns the 2D context in CSS px (or null).
+// Size a canvas for its CSS box at the device pixel ratio, capped at 2 (§13.1); returns the 2D context in CSS px (or null).
 export function fitCanvas(cv, w, hgt) {
-  const d = D(), win = d && d.defaultView || globalThis, dpr = Math.min(3, Math.max(1, +win.devicePixelRatio || 1));
+  const d = D(), win = d && d.defaultView || globalThis, dpr = Math.min(2, Math.max(1, +win.devicePixelRatio || 1));
   const Wd = Math.max(1, Math.round(w * dpr)), Hd = Math.max(1, Math.round(hgt * dpr));
   if (cv.width !== Wd) cv.width = Wd;
   if (cv.height !== Hd) cv.height = Hd;
@@ -1232,6 +2439,35 @@ export function frame(fn) {
 }
 export function reducedMotion() {
   try { const m = globalThis.matchMedia; return !!(m && m('(prefers-reduced-motion: reduce)').matches); } catch (err) { return false; }
+}
+// ticker(el, fn, o): the display loop of an animated canvas (§13.1: ≤ 30 fps, 10 fps with prefers-reduced-motion, hidden
+// pages are not painted). fn(t) runs on animation frames at most o.fps (default 30, ≤ 60) times per second; frames
+// are skipped while the document is hidden or el is not rendered (display: none, a hidden page), and the loop ends
+// by itself once el leaves the document. Returns { start(), stop(), running() → bool }; start() is idempotent.
+export function ticker(el, fn, o) {
+  const fps = o && o.fps > 0 ? Math.min(60, +o.fps) : 30;
+  let cancel = null, last = -1e9, on = false, iv = 1000 / fps;
+  // The frame-rate gate comes first (4 ms slack: every 2nd frame at 60 Hz, every 4th at 120 Hz for 30 fps); only a
+  // frame that passes it reads prefers-reduced-motion (which may lengthen the interval) and the element's visibility
+  // (getClientRects can force a layout). A hidden frame counts as a frame, so a hidden page is probed at the frame rate.
+  const tick = t => {
+    cancel = null;
+    if (!on || !el || !el.isConnected) { on = false; return; }
+    if (t - last >= iv - 4) {
+      iv = reducedMotion() ? 100 : 1000 / fps;
+      if (t - last >= iv - 4) {
+        last = t;
+        const d = D(), hidden = (d && d.visibilityState === 'hidden') || (typeof el.getClientRects === 'function' && el.getClientRects().length === 0);
+        if (!hidden) { try { fn(t); } catch (err) { console.error(err); } }
+      }
+    }
+    if (on) cancel = frame(tick);
+  };
+  return {
+    start() { if (on) return; on = true; cancel = frame(tick); },
+    stop() { on = false; if (cancel) cancel(); cancel = null; },
+    running: () => on,
+  };
 }
 // Text file download (JSON exports).
 export function saveFile(name, text, type) {
@@ -1441,6 +2677,16 @@ export function tooltip(el, textFn) {
   }
   return { update: () => refreshTip(el), hide: () => hideTip(el), destroy() { tips.delete(el); hideTip(el); } };
 }
+// tooltip.textOf(el) → the text of the nearest tooltip registered on el or an ancestor ('' when none or empty): touch
+// has no hover, so a panel shows it in its status line while the control is touched (§13.1).
+tooltip.textOf = el => {
+  for (let n = el; n; n = n.parentNode) {
+    const fn = tips.get(n);
+    if (!fn) continue;
+    try { const t = fn(); return t ? String(t) : ''; } catch (err) { return ''; }
+  }
+  return '';
+};
 function showTip(el) {
   const d = D(), fn = tips.get(el);
   if (!d || !fn || !prefs.tooltips || !el.parentNode) return;
@@ -1474,14 +2720,25 @@ function hideTip(el) {
 function refreshTip(el) { if (tipOwner === el && tipEl && tipEl.classList.contains('wk-show')) showTip(el); }
 
 /* ------------------------------------------------------------ DSP loader */
-// Injects each classic DSP script once per document (keyed by path, so 'serum-dsp.js?v=5' and 'serum-dsp.js'
+// Injects each classic DSP script once per document (keyed by path, so 'serum-dsp.js?v=6' and 'serum-dsp.js'
 // are the same script), in order (async = false). Resolves when every script has loaded, failed or timed out;
-// never rejects. A missing, broken or failed script yields null for its global.
-const DSP_GLOBALS = { 'serum-dsp.js': 'SerumDSP', 'fx-dsp.js': 'FXDSP' };
+// never rejects. A missing, broken or failed script yields null for its global. DSP_GLOBALS = the SPEC-serum2 §0.3
+// list (files 1–11, table order) → their globals: a script whose global is already defined (a static <script> or
+// an earlier evaluation) is not injected again; the result carries every global of the list (null when missing).
+// The app passes main.js DSP_URLS (the full §0.3 list) before any panel asks, so the panels' default calls find every
+// script loaded. loadDSP.URLS = files 1–11 in table order (frozen) = the default list (§0.3). The 20 s give-up timer
+// does not keep a node process alive (unref where the host has it).
+const DSP_GLOBALS = { 'sx-base.js': 'SxBase', 'sx-filt2.js': 'SxFilt2', 'sx-warp.js': 'SxWarp', 'sx-mod.js': 'SxMod',
+  'sx-sample.js': 'SxSample', 'sx-gran.js': 'SxGran', 'sx-spec.js': 'SxSpec', 'sx-seq.js': 'SxSeq', 'serum-dsp.js': 'SerumDSP',
+  'fx-mods2.js': 'FXMods2', 'fx-dsp.js': 'FXDSP' };
 const dspLoads = new WeakMap(); // document → Map(path → Promise)
-export function loadDSP(urls = ['serum-dsp.js', 'fx-dsp.js']) {
+export function loadDSP(urls = loadDSP.URLS) {
   const d = D();
-  const result = () => ({ SerumDSP: globalThis.SerumDSP || null, FXDSP: globalThis.FXDSP || null });
+  const result = () => {
+    const r = {};
+    for (const f in DSP_GLOBALS) r[DSP_GLOBALS[f]] = globalThis[DSP_GLOBALS[f]] || null;
+    return r;
+  };
   if (!d || typeof d.createElement !== 'function') return Promise.resolve(result());
   let m = dspLoads.get(d);
   if (!m) { m = new Map(); dspLoads.set(d, m); }
@@ -1494,6 +2751,7 @@ export function loadDSP(urls = ['serum-dsp.js', 'fx-dsp.js']) {
   }
   return Promise.all(ps).then(result, result);
 }
+loadDSP.URLS = Object.freeze(Object.keys(DSP_GLOBALS));
 function scriptPath(d, u) {
   try { return new URL(String(u), d.baseURI || 'http://localhost/').pathname; } catch (err) { return String(u).split(/[?#]/)[0]; }
 }
@@ -1513,6 +2771,7 @@ function inject(d, url, g) {
       s.addEventListener('load', () => fin(true));
       s.addEventListener('error', () => fin(false));
       t = setTimeout(() => fin(false), 20000);
+      if (t && typeof t.unref === 'function') t.unref();
       s.async = false;
       s.src = url;
       (d.head || d.documentElement || d.body).appendChild(s);
@@ -1525,6 +2784,45 @@ function inject(d, url, g) {
 }
 
 /* ------------------------------------------------------------------ CSS */
+// Touch rules (§13.1: targets ≥ 44 px, knobs `md` hit size minimum): emitted under `@media (pointer: coarse)` and
+// again under `.wk-touch` (set on <html> by the first touch, see touchMode). Small buttons keep their visual size and
+// get a transparent ::before that extends their hit box vertically to 44 px (layouts do not grow); the round power /
+// FX LED buttons (32 px) get a 44 × 44 hit square (6 px into the gaps beside them); stand-alone targets (editor
+// buttons, modifier keys, X/Y dot, step-cell height) grow to 44 px; a range-bar edge takes track presses within 22 px
+// (inwards at most a quarter of the range) and the graph editors' points and curve handles 22 px (graph.js R_PT /
+// R_HD). Narrower by design (a deviation recorded for the §13.14 QA record): menu ◀ ▶ arrows 28 px wide (the list
+// itself is a 44 px target), the knob depth handle (an Alt / modifier-bar Alt drag on the knob does the same), the
+// X/Y pad rails (their knob menus open from the 44 px dot), step-grid cells ≥ 18 px wide (paint-drag, typed entry).
+const HIT44 = "content: ''; position: absolute; left: 0; right: 0; top: min(0px, calc(50% - 22px)); bottom: min(0px, calc(50% - 22px));";
+const TOUCH = [
+  ['.wk-sb, .wk-nbv, .wk-mbtn, .wk-arr, .wk-tog, .fxr-more, .fxr-pre, .fxr-xs, .fxr-x', 'min-height: 32px;'],
+  ['.wk-sb::before, .wk-nbv::before, .wk-mbtn::before, .wk-arr::before, .wk-tog::before, .wk-rbt::before, .wk-sl.wk-h::before', HIT44],
+  ['.wk-arr', 'width: 28px;'],
+  ['.wk-tog', 'min-width: 32px;'],
+  ['.wk-power', 'width: 32px; height: 32px;'],
+  ['.wk-power::before, .fxr-led::before', 'left: min(0px, calc(50% - 22px)); right: min(0px, calc(50% - 22px));'],
+  ['.wk-knob', 'min-width: 44px;'],
+  ['.wk-dh', 'width: 14px; height: 14px;'],
+  ['.wk-opt, .wk-ci', 'min-height: 44px; display: flex; align-items: center;'],
+  ['.wk-h .wk-slt', 'height: 14px;'],
+  ['.wk-fader .wk-slk', 'height: 20px; margin-bottom: -10px;'],
+  ['.wk-xyd', 'width: 22px; height: 22px; margin: -11px 0 0 -11px;'],
+  ['.wk-xyd::before', "content: ''; position: absolute; left: -11px; top: -11px; right: -11px; bottom: -11px; border-radius: 50%;"],
+  ['.wk-rbt', 'height: 32px;'],
+  ['.wk-rbh', 'width: 28px; margin-left: -14px;'],
+  ['.wk-rbh::after', 'left: 13px;'],
+  ['.wk-sgc', 'height: 44px;'],
+  ['.wk-mk', 'min-width: 44px; min-height: 44px;'],
+  ['.gx-btn', 'min-height: 44px; min-width: 44px;'],
+  ['.fxr-tile', 'min-height: 40px;'],
+  ['.fxr-led', 'width: 32px; min-width: 32px; min-height: 32px;'],
+  ['.fxr-grip', 'width: 32px; padding: 10px 0;'],
+];
+function touchCSS() {
+  const pre = sel => sel.split(',').map(x => '.wk-touch ' + x.trim()).join(', ');
+  return '@media (pointer: coarse) {\n' + TOUCH.map(([sel, b]) => '  ' + sel + ' { ' + b + ' }').join('\n') + '\n}\n'
+    + TOUCH.map(([sel, b]) => pre(sel) + ' { ' + b + ' }').join('\n') + '\n';
+}
 const CSS = `
 .wk-knob, .wk-menu, .wk-tog, .wk-pop, .wk-ctx, .wk-tip { box-sizing: border-box; }
 .wk-knob { position: relative; display: inline-flex; flex-direction: column; align-items: center; min-width: 32px; padding: 2px 1px; border-radius: 6px; color: var(--sx-ink, #dfe6ee); font: 600 9px/1.2 var(--ui, system-ui, sans-serif); letter-spacing: 0.05em; text-transform: uppercase; cursor: ns-resize; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; outline: none; }
@@ -1691,23 +2989,87 @@ const CSS = `
   .fxr-tname { max-width: 120px; }
   .fxr-rack { max-height: none; }
 }
-@media (pointer: coarse) {
-  .wk-sb, .wk-nbv, .fxr-more, .fxr-pre, .fxr-xs, .fxr-x { min-height: 32px; }
-  .wk-h .wk-slt { height: 14px; }
-  .fxr-tile { min-height: 40px; }
-  .fxr-led { width: 32px; min-width: 32px; min-height: 32px; }
-  .fxr-grip { width: 32px; padding: 10px 0; }
-}
 @media (prefers-reduced-motion: reduce) { .fxr-flash { animation: none; } }
-@media (pointer: coarse) {
-  .wk-mbtn, .wk-arr, .wk-tog { min-height: 32px; }
-  .wk-arr { width: 28px; }
-  .wk-tog { min-width: 32px; }
-  .wk-power { width: 32px; height: 32px; }
-  .wk-opt, .wk-ci { padding-top: 8px; padding-bottom: 8px; }
-}
 @media (prefers-reduced-motion: reduce) { .wk-tip { transition: none; } }
-`;
+.wk-meter, .wk-xy, .wk-rb, .wk-piano, .wk-sg, .wk-mkeys { box-sizing: border-box; }
+.wk-meter { position: relative; display: inline-flex; gap: 1px; flex: 0 0 auto; }
+.wk-mv { flex-direction: row; min-height: 64px; } .wk-mh { flex-direction: column; min-width: 64px; }
+.wk-mch { position: relative; flex: 1 1 auto; overflow: hidden; border-radius: 2px; background: linear-gradient(to top, var(--sx-on, #6fe3a1) 0, var(--sx-on, #6fe3a1) var(--wk-m6, 82%), #f7c948 var(--wk-m6, 82%), #f7c948 var(--wk-m0, 91%), var(--sx-warn, #ff6a4a) var(--wk-m0, 91%)); }
+.wk-mh .wk-mch { background: linear-gradient(to right, var(--sx-on, #6fe3a1) 0, var(--sx-on, #6fe3a1) var(--wk-m6, 82%), #f7c948 var(--wk-m6, 82%), #f7c948 var(--wk-m0, 91%), var(--sx-warn, #ff6a4a) var(--wk-m0, 91%)); }
+.wk-mv .wk-mch { width: 5px; } .wk-mh .wk-mch { height: 5px; }
+.wk-mcov { position: absolute; background: var(--sx-bg, #0f1216); box-shadow: inset 0 0 0 1px var(--sx-line, #2a333d); }
+.wk-mv .wk-mcov { left: 0; right: 0; top: 0; height: 100%; } .wk-mh .wk-mcov { top: 0; bottom: 0; right: 0; width: 100%; }
+.wk-mpk { position: absolute; background: var(--sx-ink, #dfe6ee); }
+.wk-mv .wk-mpk { left: 0; right: 0; height: 1px; } .wk-mh .wk-mpk { top: 0; bottom: 0; width: 1px; }
+.wk-mch.wk-clip { box-shadow: 0 0 0 1px var(--sx-warn, #ff6a4a); }
+.wk-fader { gap: 4px; }
+.wk-frow { position: relative; display: flex; align-items: stretch; gap: 4px; flex: 1 1 auto; min-height: 96px; }
+.wk-fader .wk-slt { width: 8px; min-height: 96px; }
+.wk-fader .wk-slk { left: -8px; right: -8px; height: 12px; margin-bottom: -6px; border: 1px solid var(--sx-bg, #0f1216); border-radius: 3px; }
+.wk-fsc { position: relative; width: 24px; color: var(--sx-mute, #7f8b98); font: 500 8px/1 var(--mono, ui-monospace, monospace); letter-spacing: 0; text-transform: none; }
+.wk-ftk { position: absolute; right: 0; transform: translateY(50%); white-space: nowrap; }
+.wk-ftk::after { content: ''; display: inline-block; width: 3px; height: 1px; margin-left: 2px; vertical-align: middle; background: var(--sx-line, #2a333d); }
+.wk-xy { position: relative; display: inline-flex; flex-direction: column; align-items: center; gap: 3px; color: var(--sx-ink, #dfe6ee); font: 600 9px/1.2 var(--ui, system-ui, sans-serif); letter-spacing: 0.05em; text-transform: uppercase; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.wk-xy > .wk-lab { color: var(--sx-mute, #7f8b98); }
+.wk-xyg { display: grid; grid-template-columns: 6px var(--wk-xy, 96px); grid-template-rows: var(--wk-xy, 96px) 6px; gap: 3px; }
+.wk-xyp { position: relative; grid-column: 2; grid-row: 1; background-color: var(--sx-bg, #0f1216); background-image: linear-gradient(var(--sx-line, #2a333d) 1px, transparent 1px), linear-gradient(90deg, var(--sx-line, #2a333d) 1px, transparent 1px); background-size: 25% 25%; border: 1px solid var(--sx-line, #2a333d); border-radius: 4px; cursor: crosshair; touch-action: none; }
+.wk-xyry { grid-column: 1; grid-row: 1; } .wk-xyrx { grid-column: 2; grid-row: 2; }
+.wk-xyr { position: relative; background: var(--sx-panel2, #1c232b); border-radius: 2px; }
+.wk-xyr > .wk-modbar { top: 0; bottom: 0; height: auto; } .wk-xyr > .wk-vbar { left: 0; right: 0; width: auto; }
+.wk-xyd { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; background: var(--sx-accent, #4fb3ff); border-radius: 50%; box-shadow: 0 0 0 2px var(--sx-bg, #0f1216); outline: none; }
+.wk-xyd:focus-visible { box-shadow: 0 0 0 2px var(--sx-bg, #0f1216), 0 0 0 4px var(--sx-accent, #4fb3ff); }
+.wk-xy.wk-drag .wk-xyd { background: var(--sx-ink, #dfe6ee); }
+.wk-xy.wk-dis, .wk-rb.wk-dis, .wk-piano.wk-dis, .wk-sg.wk-dis { opacity: 0.4; }
+.wk-rb { position: relative; display: inline-flex; flex-direction: column; gap: 2px; min-width: 120px; color: var(--sx-ink, #dfe6ee); font: 600 9px/1.2 var(--ui, system-ui, sans-serif); letter-spacing: 0.05em; text-transform: uppercase; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.wk-rb > .wk-lab { color: var(--sx-mute, #7f8b98); }
+.wk-rbt { position: relative; height: 18px; background: var(--sx-bg, #0f1216); border: 1px solid var(--sx-line, #2a333d); border-radius: 3px; cursor: pointer; touch-action: none; }
+.wk-rbb { position: absolute; top: 0; bottom: 0; background: rgba(79, 179, 255, 0.3); cursor: grab; }
+.wk-rbh { position: absolute; top: -3px; bottom: -3px; width: 10px; margin-left: -5px; cursor: ew-resize; outline: none; }
+.wk-rbh::after { content: ''; position: absolute; left: 4px; top: 0; bottom: 0; width: 2px; background: var(--sx-accent, #4fb3ff); border-radius: 1px; }
+.wk-rbh:focus-visible::after { box-shadow: 0 0 0 2px var(--sx-accent, #4fb3ff); }
+.wk-rbv { color: var(--sx-ink, #dfe6ee); font: 500 10px/1.2 var(--mono, ui-monospace, monospace); letter-spacing: 0; text-transform: none; }
+.wk-rb .wk-in { bottom: auto; top: 50%; transform: translate(-50%, -50%); }
+.wk-piano { position: relative; height: var(--wk-ph, 72px); min-width: 96px; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.wk-pk { position: absolute; top: 0; box-sizing: border-box; border: 1px solid #0b0e12; border-top: 0; border-radius: 0 0 3px 3px; }
+.wk-pw { height: 100%; background: #e7ecf2; } .wk-pb { z-index: 1; height: 62%; background: #1b2128; }
+.wk-pw.wk-out { background: #b6bfc9; } .wk-pb.wk-out { background: #0b0e12; }
+.wk-pk.wk-root { box-shadow: inset 0 -4px 0 var(--wk-pc, var(--sx-accent, #4fb3ff)); }
+.wk-pk.wk-lit { background: var(--wk-pc2, var(--sx-arp, #b07cff)); }
+.wk-pk.wk-held { background: var(--wk-pc, var(--sx-accent, #4fb3ff)); }
+.wk-pl { position: absolute; left: 0; right: 0; bottom: 3px; color: #50606f; font: 600 8px/1 var(--ui, system-ui, sans-serif); text-align: center; pointer-events: none; }
+.wk-sg { display: grid; grid-template-columns: auto repeat(var(--wk-sgn, 8), minmax(18px, 1fr)); gap: 2px; align-items: center; color: var(--sx-ink, #dfe6ee); font: 600 9px/1.2 var(--ui, system-ui, sans-serif); letter-spacing: 0.05em; text-transform: uppercase; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.wk-sgl { padding-right: 4px; color: var(--sx-mute, #7f8b98); white-space: nowrap; }
+.wk-sgc { position: relative; height: 28px; background: var(--sx-bg, #0f1216); border: 1px solid var(--sx-line, #2a333d); border-radius: 2px; cursor: ns-resize; outline: none; }
+.wk-sgc::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--sx-line, #2a333d); }
+.wk-sgf { position: absolute; left: 1px; right: 1px; background: var(--sx-graph, #59c2ff); }
+.wk-sgc.wk-neg .wk-sgf { background: var(--sx-neg, #ffb347); }
+.wk-sgc.wk-off { opacity: 0.35; }
+.wk-sgc:focus-visible { box-shadow: 0 0 0 2px var(--sx-accent, #4fb3ff); }
+.wk-sgc .wk-in { bottom: auto; top: 50%; width: 52px; transform: translate(-50%, -50%); }
+.wk-isb { display: inline-flex; align-items: center; justify-content: center; padding: 2px 5px; }
+.wk-ico { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.wk-iglyph { font-size: 12px; line-height: 1; }
+.wk-mkeys { display: inline-flex; gap: 3px; }
+.wk-mk.wk-lock { box-shadow: 0 0 0 2px var(--sx-on, #6fe3a1); }
+.wk-armed { box-shadow: 0 0 0 2px var(--sx-accent, #4fb3ff); }
+.wk-menu, .wk-seg, .wk-tog, .wk-mkeys, .wk-pop, .wk-ctx, .wk-rb, .wk-xy, .gx-bar, .gx-btn, .gx-overlay, .gx-pz { touch-action: manipulation; }
+.wk-sb, .wk-mbtn, .wk-arr, .gx-btn { position: relative; }
+.wk-dragging { opacity: 0.6; }
+.gx-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 10px; padding: 6px 0 0; }
+.gx-btn { min-height: 24px; margin: 0; padding: 2px 8px; color: var(--sx-mute, #7f8b98); background: var(--sx-panel2, #1c232b); border: 1px solid var(--sx-line, #2a333d); border-radius: 4px; font: 600 10px/1 var(--ui, system-ui, sans-serif); letter-spacing: 0.05em; cursor: pointer; }
+.gx-btn:hover { color: var(--sx-ink, #dfe6ee); border-color: var(--sx-mute, #7f8b98); }
+.gx-btn:focus-visible { outline: 2px solid var(--sx-accent, #4fb3ff); outline-offset: 1px; }
+.gx-pz { display: grid; grid-template-columns: auto auto auto; grid-template-areas: "tl xy tr" "bl xy br"; gap: 6px 10px; align-items: center; justify-items: center; color: var(--sx-ink, #dfe6ee); }
+.gx-pz-tl { grid-area: tl; } .gx-pz-tr { grid-area: tr; } .gx-pz-bl { grid-area: bl; } .gx-pz-br { grid-area: br; } .gx-pzxy { grid-area: xy; }
+.gx-pzc { position: relative; display: flex; gap: 2px; padding: 12px 4px 4px; border: 1px solid var(--sx-line, #2a333d); border-radius: 5px; }
+.gx-pzc .wk-v .wk-slt { min-height: 44px; flex-basis: 44px; }
+.gx-pzl { position: absolute; left: 4px; top: 2px; color: var(--sx-mute, #7f8b98); font: 700 8px/1 var(--ui, system-ui, sans-serif); letter-spacing: 0.08em; }
+.gx-overlay { position: fixed; z-index: 900; left: 4vw; right: 4vw; top: 6vh; display: flex; flex-direction: column; gap: 8px; max-height: 88vh; padding: 10px; overflow: auto; color: var(--sx-ink, #dfe6ee); background: var(--sx-panel, #161b21); border: 1px solid var(--sx-line, #2a333d); border-radius: 8px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.6); outline: none; overscroll-behavior: contain; }
+.gx-ovh { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 14px; }
+.gx-ovt { flex: 1 1 auto; font: 700 11px/1.2 var(--ui, system-ui, sans-serif); letter-spacing: 0.12em; text-transform: uppercase; }
+.gx-ovb { flex: 1 1 auto; min-height: 0; }
+@media (max-width: 1099px) { .gx-overlay { left: 0; right: 0; top: 0; bottom: 0; max-height: none; border-radius: 0; } }
+` + touchCSS();
 const styled = new WeakSet();
 export function injectStyles(doc = globalThis.document) {
   if (!doc) return null;
@@ -1718,10 +3080,15 @@ export function injectStyles(doc = globalThis.document) {
     s.textContent = CSS;
     (doc.head || doc.documentElement).appendChild(s);
   }
-  if (!styled.has(doc)) { // input-modality tracking (keyboard vs pointer), once per document
+  if (!styled.has(doc)) { // input-modality tracking (keyboard vs pointer, touch seen), once per document
     styled.add(doc);
     doc.addEventListener('keydown', () => { lastInput = 'key'; }, true);
-    doc.addEventListener('pointerdown', () => { lastInput = 'pointer'; }, true);
+    doc.addEventListener('pointerdown', e => { lastInput = 'pointer'; if (e.pointerType === 'touch' && !touchSeen) markTouch(doc); }, true);
+    if (touchSeen) markTouch(doc);
+    // A modifier latch applies to the next gesture only (§13.1): a click anywhere outside the modifier bars releases
+    // the latched (not locked) keys once its own listeners have read them (taps on plain buttons, menu items, …;
+    // drag gestures release them when they end).
+    doc.addEventListener('click', e => { if (!inBar(e.target)) queueMicrotask(consumeLatches); });
   }
   return s;
 }

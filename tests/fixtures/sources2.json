@@ -1,0 +1,439 @@
+{
+ "NSRC": 62,
+ "SOURCES": [
+  {
+   "id": "",
+   "label": "(none)",
+   "pol": "",
+   "scope": "",
+   "tile": 0
+  },
+  {
+   "id": "wheel",
+   "label": "Mod Wheel",
+   "pol": "uni",
+   "scope": "G",
+   "tile": 1
+  },
+  {
+   "id": "env1",
+   "label": "Env 1",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 1
+  },
+  {
+   "id": "env2",
+   "label": "Env 2",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 1
+  },
+  {
+   "id": "env3",
+   "label": "Env 3",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 1
+  },
+  {
+   "id": "lfo1",
+   "label": "LFO 1",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 1
+  },
+  {
+   "id": "lfo2",
+   "label": "LFO 2",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 1
+  },
+  {
+   "id": "lfo3",
+   "label": "LFO 3",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 1
+  },
+  {
+   "id": "lfo4",
+   "label": "LFO 4",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 1
+  },
+  {
+   "id": "lfo5",
+   "label": "LFO 5",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 1
+  },
+  {
+   "id": "lfo6",
+   "label": "LFO 6",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 1
+  },
+  {
+   "id": "lfo7",
+   "label": "LFO 7",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 1
+  },
+  {
+   "id": "lfo8",
+   "label": "LFO 8",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 1
+  },
+  {
+   "id": "velo",
+   "label": "Velocity",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 1
+  },
+  {
+   "id": "note",
+   "label": "Note",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 1
+  },
+  {
+   "id": "at",
+   "label": "Aftertouch",
+   "pol": "uni",
+   "scope": "G",
+   "tile": 0
+  },
+  {
+   "id": "pat",
+   "label": "Poly AT",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "chaos1",
+   "label": "Chaos 1",
+   "pol": "bi",
+   "scope": "V/G",
+   "tile": 0
+  },
+  {
+   "id": "chaos2",
+   "label": "Chaos 2",
+   "pol": "bi",
+   "scope": "V/G",
+   "tile": 0
+  },
+  {
+   "id": "noise",
+   "label": "Noise Osc",
+   "pol": "bi",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "rand1",
+   "label": "NoteOn Rand 1",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "rand2",
+   "label": "NoteOn Rand 2",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "alt1",
+   "label": "NoteOn Alt",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "alt2",
+   "label": "NoteOn Alt 2",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "macro1",
+   "label": "Macro 1",
+   "pol": "uni",
+   "scope": "G",
+   "tile": 1
+  },
+  {
+   "id": "macro2",
+   "label": "Macro 2",
+   "pol": "uni",
+   "scope": "G",
+   "tile": 1
+  },
+  {
+   "id": "macro3",
+   "label": "Macro 3",
+   "pol": "uni",
+   "scope": "G",
+   "tile": 1
+  },
+  {
+   "id": "macro4",
+   "label": "Macro 4",
+   "pol": "uni",
+   "scope": "G",
+   "tile": 1
+  },
+  {
+   "id": "bend",
+   "label": "Pitch Bend",
+   "pol": "bi",
+   "scope": "G",
+   "tile": 0
+  },
+  {
+   "id": "mpex",
+   "label": "MPE X",
+   "pol": "bi",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "mpey",
+   "label": "MPE Y",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "mpez",
+   "label": "MPE Z",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "relvel",
+   "label": "Rel. Velo",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "fixed",
+   "label": "Fixed",
+   "pol": "uni",
+   "scope": "G",
+   "tile": 0
+  },
+  {
+   "id": "env4",
+   "label": "Env 4",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 1
+  },
+  {
+   "id": "lfo9",
+   "label": "LFO 9",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 1
+  },
+  {
+   "id": "lfo10",
+   "label": "LFO 10",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 1
+  },
+  {
+   "id": "lfo1y",
+   "label": "LFO 1 Y",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 0
+  },
+  {
+   "id": "lfo2y",
+   "label": "LFO 2 Y",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 0
+  },
+  {
+   "id": "lfo3y",
+   "label": "LFO 3 Y",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 0
+  },
+  {
+   "id": "lfo4y",
+   "label": "LFO 4 Y",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 0
+  },
+  {
+   "id": "lfo5y",
+   "label": "LFO 5 Y",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 0
+  },
+  {
+   "id": "lfo6y",
+   "label": "LFO 6 Y",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 0
+  },
+  {
+   "id": "lfo7y",
+   "label": "LFO 7 Y",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 0
+  },
+  {
+   "id": "lfo8y",
+   "label": "LFO 8 Y",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 0
+  },
+  {
+   "id": "lfo9y",
+   "label": "LFO 9 Y",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 0
+  },
+  {
+   "id": "lfo10y",
+   "label": "LFO 10 Y",
+   "pol": "uni",
+   "scope": "V/G",
+   "tile": 0
+  },
+  {
+   "id": "macro5",
+   "label": "Macro 5",
+   "pol": "uni",
+   "scope": "G",
+   "tile": 1
+  },
+  {
+   "id": "macro6",
+   "label": "Macro 6",
+   "pol": "uni",
+   "scope": "G",
+   "tile": 1
+  },
+  {
+   "id": "macro7",
+   "label": "Macro 7",
+   "pol": "uni",
+   "scope": "G",
+   "tile": 1
+  },
+  {
+   "id": "macro8",
+   "label": "Macro 8",
+   "pol": "uni",
+   "scope": "G",
+   "tile": 1
+  },
+  {
+   "id": "randd",
+   "label": "Note-On Rand (Discrete)",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "osca",
+   "label": "OSC A",
+   "pol": "bi",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "oscb",
+   "label": "OSC B",
+   "pol": "bi",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "oscc",
+   "label": "OSC C",
+   "pol": "bi",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "sub",
+   "label": "SUB",
+   "pol": "bi",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "filt1",
+   "label": "Filter 1",
+   "pol": "bi",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "filt2",
+   "label": "Filter 2",
+   "pol": "bi",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "actv",
+   "label": "Active Voices",
+   "pol": "uni",
+   "scope": "G",
+   "tile": 0
+  },
+  {
+   "id": "vidx",
+   "label": "Voice Index",
+   "pol": "uni",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "vmod1",
+   "label": "Voice Mod 1",
+   "pol": "bi",
+   "scope": "V",
+   "tile": 0
+  },
+  {
+   "id": "vmod2",
+   "label": "Voice Mod 2",
+   "pol": "bi",
+   "scope": "V",
+   "tile": 0
+  }
+ ]
+}

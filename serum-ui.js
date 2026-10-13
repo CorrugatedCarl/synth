@@ -1,62 +1,89 @@
-// serum-ui.js — the Serum-style instrument panel (SPEC-serum §8.8, §9): SerumUI with the OSC / FX / MATRIX /
-// GLOBAL pages, the header (tabs, preset area, main menu, voice counter, MASTER), drag-and-drop modulation with
-// halos and live dots, the knob right-click menus, the matrix, locks, MIDI-learn hooks, the wavetable / noise /
-// filter displays, the WT editor overlay, and PresetBrowser (§9.10).
+// serum-ui.js — the Serum-style instrument panel, v2 shell (SPEC-serum2 §13, §11.14; Phase 1: SPEC-serum §8.8, §9).
+// SerumUI: header (render-last wave icon, logo, tabs OSC · MIX · FX · MATRIX · ARP · CLIP · GLOBAL, preset area with
+// ARTIST / DESC, panel Undo / Redo, main menu, touch modifier bar, voice counter, MASTER knob + output meter), the seven
+// pages, the keyboard panel at the bottom of every page, drag-and-drop modulation with halos and live dots, the knob
+// right-click menus (module menus, Aux Source, Edit Custom Curve, Unlock Control), the 64-row matrix, locks, MIDI-learn
+// hooks, the WT editor overlay and the LFO Editor overlay; PresetBrowser v2 (preview, ratings, tags, Hybridize, packs).
+// The sub-panels live in their own modules and are bound through the kit made by makeKit (§11.14): sx-ui-osc (OSC A–C,
+// SUB, NOISE, FILTER 1/2; U2), sx-ui-mix (MIX page; U3, loaded on demand), fx-ui (FX page; U3), sx-ui-seq (ARP, CLIP,
+// keyboard; U4). serum-ui owns the page shell, the modulation area (tiles, MACROS 1–8, ENV 1–4, LFO 1–10 / VELO /
+// NOTE, VOICING), the MATRIX and GLOBAL pages and the preset browser.
 //
 // Browser ES module. Nothing touches document / window / localStorage / navigator at module top level, so node
 // can import it for the pure-helper tests (§0.1, §10.6). Sibling modules are imported as namespaces: a helper
 // missing from a sibling degrades one feature (with a notice) instead of failing the whole panel at link time.
 //
-// Pure helpers (node-tested, tests/serum-ui.test.mjs): haloArcs, knobMenuItems, dropRow, busMenuItems,
-// lfoTileCount, sortPresets, filterPresets, browserList, stepPreset, captureDue, plus clipModule / pasteModule /
-// initModule, linkPoints, parseGrid, parseAmount, normPrefs, presetCats, memTrigSet, tileDests, modTipLines.
+// Pure helpers (node-tested, tests/serum-ui.test.mjs): haloArcs, knobMenuItems, moduleMenuItems, dropRow,
+// busMenuItems, lfoTileCount, sortPresets, filterPresets, browserList, stepPreset, presetTags, withMeta, hybridPick,
+// captureDue, undoStack, clipModule / pasteModule / initModule (→ serum-core copyModule / initModule), linkPoints,
+// parseGrid, parseAmount, normPrefs, normBrowser, presetCats, memTrigSet, tileDests, modTipLines, s1Diff,
+// rowAlias, rowBad, destModule, virtGet / virtSet; and makeKit, the binding kit of the sub-panels (§11.14).
 //
 // Edits: every state change goes through host.edit / host.editFx (fn mutates the live state in place). UI-only
 // changes (s.ui.*, page, editor selection) pass { ui: true }. Continuous gestures send phase start → move… → end
-// with a stable label. Preset-like loads (Init Preset, effect chains) also pass { seed: true } (hosts may ignore).
+// with a stable label. Preset-like loads (Init Preset, effect chains, Hybridize) also pass { seed: true }. Every
+// non-UI gesture ends with a panel undo snapshot (§13.2.4; undoStack(100), 600 ms coalescing, ≤ 16 MB).
 //
 // Optional host members used when present (all degrade gracefully; for the integrator):
-//   host.wt.rename(id, name)   — renames a user table (§9.3 Rename button); without it the rename is a full
-//                                host.wt.update of the table under its new name (wtstore.put stores table.name)
-//   host.wt.del(id)            — deletes a user table / noise from the store (OSC / NOISE Delete buttons); the host
-//                                switches every sound of the project that used it to the default source
-//   host.wt.users(id)          — names of the tracks using it (named in the delete confirmation)
-//   host.sampleRate            — number or () => number: GLOBAL's "Running at 96 kHz" (§9.7) before the first
-//                                snapshot arrives (afterwards the snapshot's tapRate = the processor's own rate)
-//   host.editorOpen(o | null)  — the WT editor opened / closed (for the "Mod wheel → WT Pos" preference, §9.9);
-//                                the same information is the public field ui.editorOsc (0 | 1 | null)
-//   host.prefsChanged(prefs)   — a preference changed (smooth / silenceTails / defOs / author / wheelWt, §9.7);
-//                                every change is also written with host.storage.set('synth.sx.prefs', prefs)
-// The "Default WT view" preference applies to Init Preset and to a sound that is still the untouched default
-// when the panel mounts (new tracks; §11 withPrefs sets only global.os and author).
-// Storage keys: synth.sx.prefs, synth.sx.browser, synth.sx.shapes (via graph.shapeLib), synth.fxchains; the
-// WT editor's synth.sx.wte.split (held import split size) is honoured by wavetable drops on the displays.
+//   host.wt.rename / del / users, host.sampleRate, host.editorOpen(o | null), host.prefsChanged(prefs) — Phase 1
+//   host.smp, host.tracks, host.seqCmd, host.onInput, host.preview, host.renderLast, host.clipToTrack, host.download,
+//   host.tuningFile, host.renderWarp, host.resample — §11.15 (passed to the sub-panels through kit.host)
+//   host.presets.get(key) → the preset object {name, cat, v: {s}, fx} (Hybridize; factory keys 'f:<name>' fall back
+//                                to serum-core FACTORY_PRESETS)
+//   host.presets.setMeta(key, {stars, tags, comments}) — ratings / tags of user presets stored in the preset object
+//                                (without it every rating lives in synth.sx.meta)
+//   host.presets.rename(key, name) / move(key, cat) / exportPack(keys) — browser menu items (shown disabled without them)
+//   host.presets.save({name, cat, overwrite}) — Alt-click on Save passes overwrite: true (no dialog)
+//   host.previewMacros(n[8])  — the preset browser's MACROS 1–8 while a preview plays (§13.11 "macros adjustable during
+//                                preview"): the preview node replays with these macro values (without it the strip is
+//                                shown disabled)
+//   host.renderLast(…) resolving to {name, blob} or {name, url} — the header render kept for the wave icon's desktop
+//                                drag (DownloadURL, deviation 21); without it a drag renders and downloads like a click
+//   host.qualityChosen(os)   — GLOBAL > QUALITY chosen (also the selected one again): reset the CPU safeguard's steps (§14.3)
+//   host.smp.usage()          — {bytes, budget} (or a promise of it): the GLOBAL page's project asset meter (§14.2)
+//   (presets.get / setMeta / rename / move / exportPack, previewMacros, qualityChosen, smp.usage and the renderLast
+//   result are not in the §11.15 contract yet: raised with the integrator for a spec amendment)
+// Storage keys: synth.sx.prefs, synth.sx.browser (incl. autoPreview), synth.sx.meta (ratings / tags / comments of
+// factory presets), synth.sx.default (Save as Default Preset), synth.sx.vc (user Voice Control presets),
+// synth.sx.shapes (via graph.shapeLib), synth.fxchains.
 // MIDI program change: index browserList(host.presets.list(), storage[BROWSER_KEY]) (§9.10, §11.8).
-import * as core from './serum-core.js?v=5';
-import * as wt from './wt.js?v=5';
-import * as wk from './wk.js?v=5';
-import * as gx from './graph.js?v=5';
-import * as fxui from './fx-ui.js?v=5';
-import * as wte from './wtedit.js?v=5';
+import * as core from './serum-core.js?v=6';
+import * as wt from './wt.js?v=6';
+import * as wk from './wk.js?v=6';
+import * as gx from './graph.js?v=6';
+import * as fxui from './fx-ui.js?v=6';
+import * as wte from './wtedit.js?v=6';
+import * as osc from './sx-ui-osc.js?v=6';
+import * as seq from './sx-ui-seq.js?v=6';
 
 /* ================================================================ constants and small helpers */
 
-const { DESTS, DEST_INDEX, NS, SOURCES, SRC_INDEX, SRC_MENU, FILTERS, FILTER_CATS, WARPS, SUB_SHAPES, UNI_STACKS,
-  UNI_MODES, MODULE_FIELDS, MC_K } = core;
+const { DESTS, DEST_INDEX, SOURCES, SRC_INDEX, SRC_MENU, UNI_STACKS, UNI_MODES, MODULE_FIELDS, MC_K } = core;
 
 export const PREFS_KEY = 'synth.sx.prefs';
 export const BROWSER_KEY = 'synth.sx.browser';
+export const META_KEY = 'synth.sx.meta';
+export const DEFAULT_KEY = 'synth.sx.default';
+export const VC_KEY = 'synth.sx.vc';
 const SHAPES_KEY = 'synth.sx.shapes';
 const CHAINS_KEY = 'synth.fxchains';
-const PAGES = ['osc', 'fx', 'matrix', 'global'];
-const PAGE_LABEL = { osc: 'OSC', fx: 'FX', matrix: 'MATRIX', global: 'GLOBAL' };
-const MOD_NOUN = { oscA: 'OSC', oscB: 'OSC', noise: 'Noise', sub: 'Sub', filter: 'Filter' };
-const ENV_KEYS = ['att', 'hold', 'dec', 'sus', 'rel'];
-const ENV_ED = { a: 'att', h: 'hold', d: 'dec', s: 'sus', r: 'rel', ca: 'ca', cd: 'cd', cr: 'cr' };
+export const PAGES = Object.freeze(['osc', 'mix', 'fx', 'matrix', 'arp', 'clip', 'global']);
+const PAGE_LABEL = { osc: 'OSC', mix: 'MIX', fx: 'FX', matrix: 'MATRIX', arp: 'ARP', clip: 'CLIP', global: 'GLOBAL' };
+const N_MX = core.N_MATRIX || 64, N_LFO = core.N_LFO || 10, N_ENV = core.N_ENV || 4, N_MAC = core.N_MACRO || 8, N_OSC = 3;
+const OSC_L = ['A', 'B', 'C'], OSC_P = ['a', 'b', 'c'], OSC_MOD = ['oscA', 'oscB', 'oscC'];
+const ENV_ED = { a: 'att', h: 'hold', d: 'dec', s: 'sus', r: 'rel', ca: 'ca', cd: 'cd', cr: 'cr', st: 'start', en: 'end' };
 const LFO_KNOBS = [['rate', 'RATE'], ['rise', 'RISE'], ['delay', 'DELAY'], ['smooth', 'SMOOTH']];
-const I_MASTER = DEST_INDEX['g.master'], I_BYPASS = DEST_INDEX['g.bypass'];
+const LFO_MODES = ['free', 'retrig', 'env'];   // MODE seg FREE / RETRIG / ENVELOPE (§13.13)
+const LFO_TYPES = (core.LFO_TYPES || ['normal', 'path', 'lorenz', 'rossler', 'sh']).map(t => (typeof t === 'string' ? t : t.id));
+const LFO_TYPE_LABEL = { normal: 'Normal', path: 'Path', lorenz: 'Chaos: Lorenz', rossler: 'Chaos: Rossler', sh: 'S&H' };
+const LFO_DIRS = ['fwd', 'rev', 'pp'], LFO_DIR_LABEL = ['Forward', 'Reverse', 'Ping Pong'];
+const LFO_TOOL_IDS = ['point', 'flat', 'rampUp', 'rampDown'], LFO_TOOL_LABEL = ['Point', 'Flat', 'Ramp Up', 'Ramp Down'];
+const STEAL_LABEL = ['Newest', 'Oldest', 'Highest', 'Lowest', 'Velocity'];
+const MPE_XYZ_LABEL = ['Off', 'XYZ → Macro 1, 2, 3', 'YZ → Macro 1, 2', 'Y → Mod Wheel'];
+const QUALITY = [[1, 'Draft'], [2, 'High'], [4, 'Ultra']];
 const C = { bg: '#0f1216', panel: '#161b21', line: '#2a333d', ink: '#dfe6ee', mute: '#7f8b98', accent: '#4fb3ff',
   neg: '#ffb347', on: '#6fe3a1', warn: '#ff6a4a', graph: '#59c2ff', cur: '#ffd84a', grey: '#55606c' };
+const BUILD = 'Serum v2 panel · state v' + (core.VERSION || 2) + ' · CP v' + (core.CP_VER || 2);
 
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const clamp01 = x => (x > 0 ? (x < 1 ? x : 1) : 0);
@@ -67,51 +94,178 @@ const arr = x => (Array.isArray(x) ? x : []);
 const clone = v => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 const frac = x => x - Math.floor(x);
 const sgn = v => (v > 0 ? '+' : '');
-const isFxIdx = i => i >= NS && i !== I_MASTER && i !== I_BYPASS;
+const own = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+// an FX parameter (base in the FX state): FX ids other than g.master / g.bypass (their base is in s.p). SPEC-serum2
+// §3.11.1: FX-ness is never derived from the static index (the SYN2 ids follow the FX block); isFxId is the only FX test.
+const isFxPar = id => core.isFxId(id) && id !== 'g.master' && id !== 'g.bypass';
+// the instances of a v2 FX state (racks in order, list order, a splitter's branches after it): fn(inst)
+function fxWalk(fx, fn) {
+  for (const R of arr(isObj(fx) ? fx.racks : null)) for (const I of arr(isObj(R) ? R.mods : null)) {
+    if (!isObj(I)) continue;
+    fn(I);
+    for (const B of arr(I.br)) for (const c of arr(B)) if (isObj(c)) fn(c);
+  }
+}
 const destOf = id => { const i = DEST_INDEX[id]; return i === undefined ? null : DESTS[i]; };
+// the row of a destination id: static rows by id, dynamic FX ids (fx.<inst>.<pid>) through fx-core's fxDest
+function rowOfDest(id, fx) {
+  const d = destOf(id);
+  if (d) return d;
+  if (typeof id !== 'string' || !/^fx\./.test(id) || typeof core.fxDest !== 'function') return null;
+  let r = null;
+  try { r = core.fxDest(id, fx); } catch (err) { r = null; }
+  return r && r.row ? Object.assign({ id }, r.row, { nomod: !!r.nomod }) : null;
+}
+// index of a destination in the snapshot's eff (§6.20): vi for voice destinations, NSV + FX-context index (§4.2) for
+// g.master / g.bypass and FX parameters (dynamic ids through fxDest); −1 when the snapshot has no value for it
+function effIdx(id, fx) {
+  const v = core.vi(id);
+  if (v >= 0) return v;
+  if (id === 'g.master') return core.NSV + core.GIDX.MASTER;
+  if (id === 'g.bypass') return core.NSV + core.GIDX.BYPASS;
+  if (isFxPar(id) && typeof core.fxDest === 'function') {
+    let d = null;
+    try { d = core.fxDest(id, fx); } catch (err) { d = null; }
+    if (d && fin(d.flat)) return core.NSV + 8 + d.flat;
+  }
+  return -1;
+}
+// the S1 / S2 paired fields (§2.6.4): an edit of either side is followed by core.syncS1 (C1)
+const PAIRED = new Set(arr(core.S1_PAIRS).flatMap(q => arr(q.v1).concat(arr(q.s2))));
+// panel undo steps that re-seed the FX rack's LFO phases when undone / redone (the preset-like loads that seeded, §4.2)
+const SEED_LABEL = /^(Load preset|Init Preset|Hybridize|Load Effect Chain|Load .+ Preset|Reset Rack)$/;
+// lock edits through serum-core setLock / setModuleLock (§2.2.5 rules), with the plain array edit as a fallback
+function setLockOf(s, id, on) {
+  if (typeof core.setLock === 'function') return core.setLock(s, id, on);
+  const L = s.locks, m = destModule(id);
+  if (m && arr(L.mod).includes(m)) {
+    if (!Array.isArray(L.unp)) L.unp = [];
+    if (on) toggleIn(L.unp, id, false); else { toggleIn(L.p, id, false); toggleIn(L.unp, id, true); }
+  } else toggleIn(L.p, id, on);
+  return true;
+}
+function setModuleLockOf(s, m, on) {
+  if (typeof core.setModuleLock === 'function') return core.setModuleLock(s, m, on);
+  toggleIn(s.locks.mod, m, on);
+  if (!on && Array.isArray(s.locks.unp)) s.locks.unp = s.locks.unp.filter(id => destModule(id) !== m);
+  return true;
+}
+// the FX instance layout of an FX state (fx-core fxLayout key; the rack topology), '' when unknown
+function fxLayoutKey(fx) {
+  if (!isObj(fx) || typeof core.fxLayout !== 'function') return '';
+  try { const L = core.fxLayout(fx); return L && typeof L.key === 'string' ? L.key : ''; } catch (err) { return ''; }
+}
+const syncS1 = (s, id) => { if (PAIRED.has(id) && typeof core.syncS1 === 'function') core.syncS1(s, id); };
+const ALIAS = { 'a.warpMode': 'a.w1', 'b.warpMode': 'b.w1', 's.shape': 's.shp', 'f.type': 'f.type2', 'g.bendup': 'g.bu2', 'g.benddn': 'g.bd2' };
+const ALIAS_S2 = Object.keys(ALIAS).reduce((o, k) => { o[ALIAS[k]] = k; return o; }, {});
+const PAIR_LABEL = { aWarp: 'OSC A warp', bWarp: 'OSC B warp', subShape: 'sub shape', f1Type: 'filter 1 type', bendUp: 'bend up',
+  bendDown: 'bend down', aPhaseMem: 'OSC A phase memory', bPhaseMem: 'OSC B phase memory' };
 const gridOf = d => (!d ? 0 : d.law === 'int' ? d.hi - d.lo : d.law === 'enum' ? d.hi : d.law === 'bool' ? 1 : 0);
 const stepsOf = d => (d && (d.law === 'int' || d.law === 'enum') ? gridOf(d) : 0);
 const srcPol = id => { const i = SRC_INDEX[id]; return i ? SOURCES[i].pol : 'uni'; };
-const lfoNum = id => { const m = /^lfo([1-8])$/.exec(id || ''); return m ? +m[1] : 0; };
-const envNum = id => { const m = /^env([1-3])$/.exec(id || ''); return m ? +m[1] : 0; };
+const lfoNum = id => { const m = /^lfo([1-9]|10)$/.exec(id || ''); return m ? +m[1] : 0; };
+const envNum = id => { const m = /^env([1-4])$/.exec(id || ''); return m ? +m[1] : 0; };
+const macNum = id => { const m = /^macro([1-8])$/.exec(id || ''); return m ? +m[1] : 0; };
+const EDIT_SRC = /^(lfo([1-9]|10)|velo|note)$/;
 const rowActive = r => !!(r && r.src && r.dst && !r.byp && r.amt !== 0 && r.out !== 0);
-const emptyRow = () => ({ src: '', amt: 0, dst: '', bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1 });
-const nameOfId = id => String(id || '').replace(/^[a-z]+:/, '') || '—';
-const NOISE_OV = new Map();   // factory noise id → min/max overview (Float32Array(512)), shared by every SerumUI
+const emptyRow = () => ({ src: '', amt: 0, dst: '', bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1,
+  acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 });   // v2 row (§2.3)
 const warnOnce = (() => { const seen = new Set(); return (k, ...a) => { if (!seen.has(k)) { seen.add(k); console.warn(...a); } }; })();
+const nowMs = () => { const p = globalThis.performance; return p && typeof p.now === 'function' ? p.now() : Date.now(); };
+const s1On = s => !!(s && s.global && s.global.s1);
+const s0Os = s => (s && s.global ? s.global.os : undefined);
+
+// module of every destination (MODULE_FIELDS v2: locks, copy / paste / init, Unlock Control)
+const DEST_MOD = new Map();
+for (const m of Object.keys(MODULE_FIELDS || {})) for (const id of arr(MODULE_FIELDS[m].p)) if (!DEST_MOD.has(id)) DEST_MOD.set(id, m);
+export function destModule(id) { return DEST_MOD.get(id) || null; }
+// module kinds: copy / paste / swap across the members of a kind (§11.1 allowed pairs), every other module with itself
+const modKind = m => (/^osc[ABC]$/.test(m) ? 'osc' : m === 'filter' || m === 'filter2' ? 'filter' : /^env[1-4]$/.test(m) ? 'env'
+  : /^lfo([1-9]|10)$/.test(m) ? 'lfo' : m);
+const KIND_MEMBERS = {
+  osc: OSC_MOD, filter: ['filter', 'filter2'], env: ['env1', 'env2', 'env3', 'env4'],
+  lfo: Array.from({ length: N_LFO }, (_, l) => 'lfo' + (l + 1)),
+};
+// module label → its audio-rate modulation source (§3.10: dragging a module label onto a control = that audio source)
+const MOD_AUDIO_SRC = { oscA: 'osca', oscB: 'oscb', oscC: 'oscc', sub: 'sub', noise: 'noise', filter: 'filt1', filter2: 'filt2' };
+const audioSrcOf = m => (own(MOD_AUDIO_SRC, m) && SRC_INDEX[MOD_AUDIO_SRC[m]] !== undefined ? MOD_AUDIO_SRC[m] : null);
+// drop kinds an audio source can land on (hitTest): a control, a matrix source cell, an X|Y dot, an LFO point
+const AUDIO_DROPS = new Set(['dest', 'msrc', 'xy', 'point']);
+const MOD_TITLE = m => {
+  if (/^osc[ABC]$/.test(m)) return 'OSC ' + m.slice(3);
+  if (m === 'filter') return 'Filter 1';
+  if (m === 'filter2') return 'Filter 2';
+  if (/^env\d/.test(m)) return 'Env ' + m.slice(3);
+  if (/^lfo\d/.test(m)) return 'LFO ' + m.slice(3);
+  return { noise: 'Noise', sub: 'Sub', velo: 'Velocity', note: 'Note', arp: 'Arp', clip: 'Clip', vc: 'Voice Control', matrix: 'Matrix' }[m] || m;
+};
 
 // normalised n snapped to the grid of a stepped law (exactly k/(hi−lo), as normalizeSerum stores it)
-function snapN(id, n) {
-  const m = gridOf(destOf(id));
+function snapN(id, n, fx) {
+  const m = gridOf(destOf(id) || rowOfDest(id, fx));
   return m ? Math.round(clamp01(n) * m) / m : clamp01(n);
 }
-// base n of a DEST: synth ids (and g.master / g.bypass) from s.p, FX ids from fx.p, else the default (§5.8)
+// Virtual destinations (§3.11.3): their bases live outside s.p — macros m1…m8 in s.macros[k].v, arp.* in the selected
+// arp slot's n (s.arp.slots[sel].n), clip.* in the selected clip's n. virtGet → n (or undefined: not virtual / missing);
+// virtSet writes n (EDIT ALL: every slot / clip) and returns true when id was virtual. arp.rate is the slot's n.rate in BPM
+// mode and n.hz in HZ mode (slot.bpm = 0, §2.4.1 — what the sequencer reads, §4.4; serum-core destBase / setDestBase
+// map it the same way, RULINGS2 C1/U1), per slot.
+const VIRT_RE = /^(m([1-8])|arp\.(\w+)|clip\.(\w+))$/;
+const virtKey = (it, k, arpId) => (arpId && k === 'rate' && isObj(it) && (typeof it.bpm === 'boolean' ? !it.bpm : fin(it.bpm) && it.bpm < 0.5) ? 'hz' : k);
+export function virtGet(s, id) {
+  const m = VIRT_RE.exec(id || '');
+  if (!m || !isObj(s) || !destOf(id) || id === 'arp.on' || id === 'clip.on') return undefined;
+  if (m[2]) { const M = arr(s.macros)[+m[2] - 1]; return isObj(M) && fin(M.v) ? clamp01(M.v) : undefined; }
+  const A = m[3] ? s.arp : s.clip, list = m[3] ? arr(A && A.slots) : arr(A && A.clips);
+  const it = isObj(A) ? list[A.sel | 0] : null, k = virtKey(it, m[3] || m[4], !!m[3]);
+  return isObj(it) && isObj(it.n) && fin(it.n[k]) ? clamp01(it.n[k]) : undefined;
+}
+export function virtSet(s, id, n) {
+  const m = VIRT_RE.exec(id || '');
+  if (!m || !isObj(s) || !destOf(id) || id === 'arp.on' || id === 'clip.on') return false;
+  if (m[2]) { const M = arr(s.macros)[+m[2] - 1]; if (isObj(M)) M.v = clamp01(n); return true; }
+  const A = m[3] ? s.arp : s.clip, list = m[3] ? arr(A && A.slots) : arr(A && A.clips), k = m[3] || m[4];
+  if (!isObj(A)) return true;
+  const sel = A.sel | 0;
+  list.forEach((it, j) => { if (isObj(it) && isObj(it.n) && (j === sel || A.editAll)) it.n[virtKey(it, k, !!m[3])] = clamp01(n); });
+  return true;
+}
+// base n of a destination: virtual ids (above), synth ids (and g.master / g.bypass) from s.p, FX ids (static v1 and
+// dynamic v2) from the FX state, else the default (§5.8)
 function baseN(s, fx, id) {
+  const v = virtGet(s, id);
+  if (v !== undefined) return v;
   if (typeof core.destBase === 'function') return core.destBase(s, fx, id);
   const i = DEST_INDEX[id];
   if (i === undefined) return 0;
-  const src = isFxIdx(i) ? fx : s, v = src && src.p ? src.p[id] : undefined;
-  return fin(v) ? clamp01(v) : DESTS[i].def;
+  const src = isFxPar(id) ? fx : s, x = src && src.p ? src.p[id] : undefined;
+  return fin(x) ? clamp01(x) : DESTS[i].def;
 }
 function rowsOf(s) { return s && Array.isArray(s.matrix) ? s.matrix : []; }
 
 // Display label of a source; macros show their user names
 export function srcLabel(s, id) {
-  const m = /^macro([1-4])$/.exec(id || '');
-  if (m && s && s.macros && s.macros[m[1] - 1] && s.macros[m[1] - 1].name) return s.macros[m[1] - 1].name;
+  const m = macNum(id);
+  if (m && s && s.macros && s.macros[m - 1] && s.macros[m - 1].name) return s.macros[m - 1].name;
   const i = SRC_INDEX[id];
-  return i ? SOURCES[i].label : '—';
+  return i !== undefined ? SOURCES[i].label : '—';
+}
+// grouped source menu entries [{group, items: [{id, label}]}] (serum-core srcMenu, §3.10; flat SRC_MENU fallback)
+function srcGroups(s) {
+  if (typeof core.srcMenu === 'function') { try { return core.srcMenu(s); } catch (err) { warnOnce('srcMenu', err); } }
+  return [{ group: 'Sources', items: SRC_MENU.map(id => ({ id, label: srcLabel(s, id) })) }];
 }
 
-/* ================================================================ pure helpers (§8.8, node-tested) */
+/* ================================================================ pure helpers (§8.8, §11.14; node-tested) */
 
-// Halo arcs of every active row on control `destId` (§5.8): normalised, clamped, from ≤ to.
-// unipolar row + unipolar source [base, base + a]; unipolar row + bipolar source [base − |a|, base + |a|];
-// bipolar row [base − |a|/2, base + |a|/2]; a = amt·out. kind: 'sel' (row source = selSrc), 'neg' (a < 0),
-// 'other'. Aux sources are ignored (the arc shows the maximum reach). Each arc carries its matrix slot.
+// Halo arcs of every active row on control `destId` (§5.8): normalised, clamped, from ≤ to. Static and dynamic FX
+// ids (fx.<inst>.<pid>, bases through destBase). unipolar row + unipolar source [base, base + a]; unipolar row +
+// bipolar source [base − |a|, base + |a|]; bipolar row [base − |a|/2, base + |a|/2]; a = amt·out. kind: 'sel' (row
+// source = selSrc), 'neg' (a < 0), 'other'. Aux sources are ignored (the arc shows the maximum reach). Each arc
+// carries its matrix slot.
 export function haloArcs(s, fx, destId, selSrc) {
   const out = [];
-  if (DEST_INDEX[destId] === undefined) return out;
+  if (!rowOfDest(destId, fx)) return out;
   const base = baseN(s, fx, destId), M = rowsOf(s);
   for (let slot = 0; slot < M.length; slot++) {
     const r = M[slot];
@@ -132,6 +286,16 @@ function modRows(s, dst) {
   for (let slot = 0; slot < M.length; slot++) { const r = M[slot]; if (r && r.dst === dst && r.src) out.push({ slot, row: r }); }
   return out;
 }
+// the row the per-control actions address (Alt-drag depth, Aux Source, Edit Custom Curve): the selected source's row
+// on dst, else `recent` (when it still targets dst), else the last row; −1 without rows
+export function actionSlot(s, dst, recent) {
+  const rows = modRows(s, dst);
+  if (!rows.length) return -1;
+  const sel = rows.find(r => r.row.src === (s.ui && s.ui.mod));
+  if (sel) return sel.slot;
+  if (recent !== undefined && rows.some(r => r.slot === recent)) return recent;
+  return rows[rows.length - 1].slot;
+}
 // lowest CC whose MIDI-learn target is id, or null
 export function ccFor(s, id) {
   let best = null;
@@ -140,31 +304,51 @@ export function ccFor(s, id) {
   return best;
 }
 
-// Knob right-click menu (§9.4), exact order: [module items · sep] · Bypass Modulator: <src> (per row) · Remove
-// Modulator: <src> (per row) · Remove All Modulators · sep · Reset Control · Enter Value… · [New MemTrig phase
-// set] · sep · Mod Source ▸ · sep · MIDI Learn | MIDI Re-learn (CC n), Remove MIDI CC n · Lock | Unlock.
-// Items without rows are omitted (never shown disabled). caps = { midi, module: 'oscA'…, paste }.
-// Returns [{label, kind, slot?, checked?, sub?}]; separators are { label: '', kind: 'sep' }.
+// Module menu items (§13.3 module menus, inv B2): Lock Module · Init Module · Copy · Copy (w/mods) · Paste (when the
+// clipboard fits: caps.paste) · Swap with ▸ (the other members of the module's kind). Returns [{label, kind, …}].
+export function moduleMenuItems(s, m, caps) {
+  const c = caps || {}, out = [];
+  if (!MODULE_FIELDS[m]) return out;
+  const locked = !!(s && s.locks && arr(s.locks.mod).includes(m));
+  out.push({ label: 'Lock Module', kind: 'lockModule', checked: locked });
+  out.push({ label: 'Init Module', kind: 'init' });
+  out.push({ label: 'Copy', kind: 'copy' });
+  out.push({ label: 'Copy (w/mods)', kind: 'copyMods' });
+  if (c.paste) out.push({ label: 'Paste', kind: 'paste' });
+  const others = arr(KIND_MEMBERS[modKind(m)]).filter(x => x !== m && MODULE_FIELDS[x]);
+  if (others.length) out.push({ label: 'Swap with', kind: 'swap', sub: others.map(x => ({ label: MOD_TITLE(x), kind: 'swapWith', m: x })) });
+  return out;
+}
+
+// Knob right-click menu (§9.4, §13.6, §13.3), exact order: [module items · sep] · Bypass Modulator: <src> (per row) ·
+// Remove Modulator: <src> (per row) · Remove All Modulators · Aux Source ▸ · Edit Custom Curve · sep · Reset Control ·
+// Enter Value… · [New MemTrig phase set] · sep · Mod Source ▸ · sep · MIDI Learn | MIDI Re-learn (CC n), Remove MIDI
+// CC n · Lock | Unlock (inside a locked module instead: Unlock Control | Lock Control, locks.unp). Items without rows are
+// omitted (never shown disabled). caps = { midi, module: 'oscA'…, paste, recent }. Aux Source / Edit Custom Curve
+// address actionSlot(s, destId, caps.recent). Returns [{label, kind, slot?, checked?, sub?}]; separators are
+// { label: '', kind: 'sep' }; Mod Source / Aux Source subs are grouped ([{label: group, sub: [{label, kind, src}]}]).
 export function knobMenuItems(s, fx, destId, caps) {
   const c = caps || {}, out = [];
   const sep = () => { if (out.length && out[out.length - 1].kind !== 'sep') out.push({ label: '', kind: 'sep' }); };
-  if (c.module && MOD_NOUN[c.module]) {
-    const noun = MOD_NOUN[c.module], locked = !!(s && s.locks && arr(s.locks.mod).includes(c.module));
-    out.push({ label: 'Lock Module', kind: 'lockModule', checked: locked });
-    out.push({ label: 'Copy ' + noun, kind: 'copy' });
-    if (c.paste) out.push({ label: 'Paste ' + noun, kind: 'paste' });
-    out.push({ label: 'Init ' + noun, kind: 'init' });
-    sep();
-  }
+  if (c.module && MODULE_FIELDS[c.module]) { out.push(...moduleMenuItems(s, c.module, c)); sep(); }
   const rows = modRows(s, destId);
   for (const { slot, row } of rows) out.push({ label: 'Bypass Modulator: ' + srcLabel(s, row.src), kind: 'bypass', slot, checked: !!row.byp });
   for (const { slot, row } of rows) out.push({ label: 'Remove Modulator: ' + srcLabel(s, row.src), kind: 'remove', slot });
-  if (rows.length) { out.push({ label: 'Remove All Modulators', kind: 'removeAll' }); sep(); }
+  if (rows.length) {
+    out.push({ label: 'Remove All Modulators', kind: 'removeAll' });
+    const slot = actionSlot(s, destId, c.recent), cur = s.matrix[slot].aux || '';
+    const sub = [{ label: 'None', kind: 'aux', src: '', checked: !cur }].concat(srcGroups(s).map(g => ({ label: g.group,
+      sub: g.items.map(x => ({ label: x.label, kind: 'aux', src: x.id, checked: x.id === cur })) })));
+    out.push({ label: 'Aux Source', kind: 'auxSrc', slot, sub });
+    out.push({ label: 'Edit Custom Curve', kind: 'curve', slot });
+    sep();
+  }
   out.push({ label: 'Reset Control', kind: 'reset' });
   out.push({ label: 'Enter Value…', kind: 'enter' });
-  if (destId === 'a.phase' || destId === 'b.phase') out.push({ label: 'New MemTrig phase set', kind: 'memtrig' });
+  if (/^[abc]\.phase$/.test(destId)) out.push({ label: 'New MemTrig phase set', kind: 'memtrig' });
   sep();
-  out.push({ label: 'Mod Source', kind: 'modsrc', sub: SRC_MENU.map(id => ({ label: srcLabel(s, id), kind: 'src', src: id })) });
+  out.push({ label: 'Mod Source', kind: 'modsrc', sub: srcGroups(s).map(g => ({ label: g.group,
+    sub: g.items.map(x => ({ label: x.label, kind: 'src', src: x.id })) })) });
   sep();
   if (c.midi) {
     const cc = ccFor(s, destId);
@@ -174,16 +358,21 @@ export function knobMenuItems(s, fx, destId, caps) {
       out.push({ label: 'Remove MIDI CC ' + cc, kind: 'midiForget', cc });
     }
   }
-  const locked = !!(s && s.locks && arr(s.locks.p).includes(destId));
-  out.push({ label: locked ? 'Unlock' : 'Lock', kind: locked ? 'unlock' : 'lock' });
+  const L = s && s.locks ? s.locks : {}, locked = arr(L.p).includes(destId), dm = destModule(destId);
+  if (dm && arr(L.mod).includes(dm)) {
+    // inside a locked module one item (serum-core lockState / setLock): Unlock Control for a control locked by the
+    // module or by its own parameter lock, Lock Control for a control unlocked inside it (locks.unp)
+    const un = arr(L.unp).includes(destId) && !locked;
+    out.push({ label: un ? 'Lock Control' : 'Unlock Control', kind: un ? 'lockCtl' : 'unlockCtl' });
+  } else out.push({ label: locked ? 'Unlock' : 'Lock', kind: locked ? 'unlock' : 'lock' });
   return out;
 }
 
-// Drag-and-drop row (§5.8, wraps addMod; mutates s): {slot, row} or null when the matrix is full / ids invalid.
-// opts.limit = the "Limit mod depth on drop" preference (default on).
+// Drag-and-drop row (§5.8, wraps addMod; mutates s): {slot, row} or null when the matrix is full (64 rows) / ids
+// invalid. opts.limit = the "Limit mod depth on drop" preference (default on).
 export function dropRow(s, fx, src, dst, opts) {
   const limit = opts && 'limit' in opts ? !!opts.limit : true;
-  const slot = core.addMod(s, fx, src, dst, { limit });
+  const slot = core.addMod(s, fx, src, dst, { limit });   // the lowest row without a source (64 rows)
   return slot >= 0 ? { slot, row: s.matrix[slot] } : null;
 }
 
@@ -240,37 +429,19 @@ export function groupItems(items, order) {
   return arr(items).map((it, i) => [it, i]).sort((a, b) => key(a[0]) - key(b[0]) || a[1] - b[1]).map(x => x[0]);
 }
 // A sound nobody has edited yet: the default state apart from the view (ui) and the fields new tracks take from
-// the preferences (global.os, author; §11 withPrefs). Used to apply the "Default WT view" preference to new tracks.
+// the preferences (global.os, author, global.mpe.on; §11 withPrefs). Used to apply the "Default WT view" preference.
 export function isPristine(s) {
   if (!isObj(s) || typeof core.normalizeSerum !== 'function') return false;
-  const strip = x => { const c = core.normalizeSerum(x); delete c.ui; c.global.os = 0; c.author = ''; return JSON.stringify(c); };
+  const strip = x => {
+    const c = core.normalizeSerum(x);
+    delete c.ui; c.global.os = 0; c.author = '';
+    if (c.global.mpe) c.global.mpe.on = 0;
+    return JSON.stringify(c);
+  };
   try { return strip(s) === strip(core.defaultSerum()); } catch (err) { return false; }
 }
-// Layers of the 3D wavetable view (§9.3, §7.1), back to front: [{ z (0–1), slot (display slot of F), frame (real
-// frame index | −1), real }]. Raw tables (F = R) show up to `max` evenly spaced frames, all real. Morph tables
-// (F = 256 slots over R real frames) always include the real frames (up to `max` of them, at their slot
-// round(k·(F−1)/(R−1))) and fill up to `max` layers with interpolated slots between them.
-export function layers3d(F, R, max) {
-  const M = max > 0 ? max : 40, out = [];
-  if (!(F > 1)) return [{ z: 0, slot: 0, frame: 0, real: true }];
-  if (!(R > 1) || F === R) {
-    const n = Math.min(F, M);
-    for (let c = 0; c < n; c++) { const k = Math.round(c * (F - 1) / (n - 1)); out.push({ z: k / (F - 1), slot: k, frame: R === F ? k : -1, real: R === F }); }
-  } else {
-    const nr = Math.min(R, M), taken = new Set();
-    for (let c = 0; c < nr; c++) {
-      const k = Math.round(c * (R - 1) / (nr - 1)), slot = Math.round(k * (F - 1) / (R - 1));
-      taken.add(slot);
-      out.push({ z: slot / (F - 1), slot, frame: k, real: true });
-    }
-    const ni = M - nr;
-    for (let c = 1; c <= ni; c++) {
-      const slot = Math.round(c * (F - 1) / (ni + 1));
-      if (!taken.has(slot)) { taken.add(slot); out.push({ z: slot / (F - 1), slot, frame: -1, real: false }); }
-    }
-  }
-  return out.sort((a, b) => b.z - a.z);
-}
+// Layers of the 3D wavetable view (§9.3, §7.1) — sx-ui-osc's (the display moved there in M1a); kept as a serum-ui export
+export function layers3d(F, R, max) { return osc.layers3d(F, R, max); }
 // bus numbers (1–16) linked by the X or Y of any point of a graph
 export function ptsBuses(pts) {
   const out = [];
@@ -285,11 +456,12 @@ function pruneLost(s, buses) {
   if (buses && buses.length && typeof core.pruneBuses === 'function') core.pruneBuses(s, buses);
 }
 
-// LFO tiles shown (§9.3): min(8, max(4, highest LFO number used by any row as source or aux + 1))
+// LFO tiles shown (§9.3, §13.13, inv B16): min(10, max(6, highest LFO number used by any row as source or aux + 1)) —
+// LFO 1–6 always, LFO 7–10 appear one by one once the LFO before them is used
 export function lfoTileCount(s) {
   let hi = 0;
   for (const r of rowsOf(s)) if (r) hi = Math.max(hi, lfoNum(r.src), lfoNum(r.aux));
-  return Math.min(8, Math.max(4, hi + 1));
+  return Math.min(N_LFO, Math.max(6, hi + 1));
 }
 
 // destinations of the rows whose source is src (slot order, as ids; rows without a destination skipped)
@@ -305,15 +477,20 @@ export function modTipLines(s, destId) {
     + (row.bi ? '<->' : '->') + (row.byp ? ' (bypassed)' : ''));
 }
 
-// Phase capture (§6.4): oscillators o whose base PHASE is Mem in `next` while RAND went from < 0.9995 (prev) to
-// ≥ 0.9995 (next) with notes sounding. prev/next = states or plain s.p maps.
+// Phase capture (§6.4, §6.21 item 6): the oscillators (A, B, C) whose unison start phases are captured (memSet ← the
+// recent voice's relative phases, snapshot.memNow) by the change prev → next while notes sound:
+//   S1 mode, OSC A / B: the Phase-1 knob-end rule — base PHASE at Mem (≥ 0.9995) while RAND crosses 0.9995 upwards;
+//   S2 mode (every oscillator) and OSC C in both modes: no knob-end rule; phMem switching to 'voice' (Per Voice).
+// prev / next = states ({p, osc[i].phMem, global.s1}), or plain s.p maps (then only the S1 knob-end rule of A / B).
 export function captureDue(prev, next, notes) {
   const out = [];
   if (!(notes > 0)) return out;
-  const P = x => (x && isObj(x.p) ? x.p : x || {});
-  const a = P(prev), b = P(next);
-  ['a', 'b'].forEach((k, o) => {
-    if (b[k + '.phase'] >= 0.9995 && a[k + '.rand'] < 0.9995 && b[k + '.rand'] >= 0.9995) out.push(o);
+  const st = x => (x && isObj(x.p) ? x : null), P = x => (st(x) ? x.p : x || {});
+  const a = P(prev), b = P(next), A = st(prev), B = st(next), s1 = B ? s1On(B) : true;
+  const mem = (x, o) => (x && Array.isArray(x.osc) && isObj(x.osc[o]) ? x.osc[o].phMem : undefined);
+  OSC_P.forEach((k, o) => {
+    if (o < 2 && s1) { if (b[k + '.phase'] >= 0.9995 && a[k + '.rand'] < 0.9995 && b[k + '.rand'] >= 0.9995) out.push(o); }
+    else if (A && B && mem(B, o) === 'voice' && mem(A, o) !== 'voice') out.push(o);
   });
   return out;
 }
@@ -332,45 +509,23 @@ function mulberry32(a) {
   };
 }
 
-// Module clipboard (title / power menus, §9.3). OSC data pastes across A ↔ B (fields matched by suffix:
-// 'a.level' ↔ 'b.level'; osc[i], uniRange[i], uniMode[i]); other modules paste onto themselves only.
-const modKind = m => (m === 'oscA' || m === 'oscB' ? 'osc' : m);
-const suffixOf = id => id.slice(id.indexOf('.') + 1);
-function getPath(o, path) { let v = o; for (const k of path) { if (v === null || typeof v !== 'object') return undefined; v = v[k]; } return v; }
-function setPath(o, path, v) {
-  let t = o;
-  for (let j = 0; j < path.length - 1; j++) {
-    if (!t[path[j]] || typeof t[path[j]] !== 'object') t[path[j]] = typeof path[j + 1] === 'number' ? [] : {};
-    t = t[path[j]];
-  }
-  t[path[path.length - 1]] = v;
+// Module clipboard (module menus, §13.3, inv B2): a deep copy of the state the module was copied from, its module name
+// and the "with mods" flag; pasting goes through serum-core copyModule (allowed pairs §11.1: any two oscillators,
+// Filter ↔ Filter 2, any two envelopes, any two LFOs, every module with itself).
+export function clipModule(s, m, mods) {
+  if (!MODULE_FIELDS[m] || !isObj(s)) return null;
+  return { kind: modKind(m), m, s: clone(s), mods: !!mods };
 }
-export function clipModule(s, m) {
-  const F = MODULE_FIELDS[m];
-  if (!F || !s) return null;
-  const p = {};
-  for (const id of F.p) if (s.p && fin(s.p[id])) p[suffixOf(id)] = s.p[id];
-  return { kind: modKind(m), p, paths: F.paths.map(path => clone(getPath(s, path))) };
-}
-// In place; returns false when the clipboard does not fit module m. Re-applies the warp single-direction rule
-// with the pasted oscillator as the most recent choice.
+// In place; false when the clipboard does not fit module m (copyModule refuses the pair)
 export function pasteModule(s, m, clip) {
-  const F = MODULE_FIELDS[m];
-  if (!F || !clip || clip.kind !== modKind(m)) return false;
-  for (const id of F.p) { const v = clip.p[suffixOf(id)]; if (fin(v)) s.p[id] = v; }
-  F.paths.forEach((path, j) => { if (clip.paths[j] !== undefined) setPath(s, path, clone(clip.paths[j])); });
-  if (clip.kind === 'osc') {
-    const o = m === 'oscB' ? 1 : 0, id = o ? 'b.warpMode' : 'a.warpMode';
-    if (typeof core.warpChoice === 'function') core.warpChoice(s, o, Math.round(22 * s.p[id]));
-  }
-  return true;
+  if (!MODULE_FIELDS[m] || !clip || !isObj(clip.s) || clip.kind !== modKind(m) || typeof core.copyModule !== 'function') return false;
+  return core.copyModule(s, clip.s, m, clip.m, { mods: !!clip.mods });
 }
-// In place: module m back to defaultSerum()'s fields
+// In place: module m back to defaultSerum()'s fields, its modulations removed (serum-core initModule)
 export function initModule(s, m) {
   if (!MODULE_FIELDS[m]) return false;
-  const d = core.defaultSerum();
-  if (typeof core.copyModule === 'function') return core.copyModule(s, d, m);
-  return pasteModule(s, m, clipModule(d, m));
+  if (typeof core.initModule === 'function') return core.initModule(s, m);
+  return typeof core.copyModule === 'function' ? core.copyModule(s, core.defaultSerum(), m) : false;
 }
 
 // LFO GRID text box: 'x' or 'x,y' (1–64) → {x, y} | null
@@ -384,28 +539,95 @@ export function parseGrid(text) {
 // Matrix AMOUNT typing (§9.5): '35', '-35 %', '0,5%' → amount ∈ [−1, 1]; '12st' / '-7 st' on semitone-linear
 // destinations → semitoneAmount(dst, st, bi); anything else → null
 export function parseAmount(text, dst, bi) {
-  const t = String(text).trim().replace(',', '.');
+  const t = String(text).trim().replace(',', '.').replace('−', '-');
   let m = /^([+-]?(?:\d+\.?\d*|\.\d+))\s*(?:st|semi|semis|semitones?)$/i.exec(t);
   if (m) return typeof core.semitoneAmount === 'function' ? core.semitoneAmount(dst, +m[1], bi) : null;
   m = /^([+-]?(?:\d+\.?\d*|\.\d+))\s*%?$/.exec(t);
   return m ? clamp(+m[1] / 100, -1, 1) : null;
 }
 
-// Preferences (§9.7), stored with host.storage under PREFS_KEY; app-wide, never in presets
-export const PREFS_DEFAULT = Object.freeze({ tooltips: 1, dblClick: 'type', wheel: 1, view3d: 0, wheelWt: 0, limitDrop: 1,
-  silenceTails: 1, defOs: 2, author: '', askPreset: 0, smooth: 1 });
+// Preferences (§9.7, §13.10), stored with host.storage under PREFS_KEY; app-wide, never in presets. Phase-1 set plus
+// helpTips (help tooltips), keys (keyboard shortcuts), mpeDefault (MPE enabled by default), mpeBendX (MPE pitch bend
+// also maps to Expr X), mpeYBi (MPE Expr Y bi-directional), midiFromPreset (Load MIDI Map from Presets, default on =
+// Phase 1), ultra (Use Ultra quality when rendering).
+export const PREFS_DEFAULT = Object.freeze({ tooltips: 1, helpTips: 1, dblClick: 'type', wheel: 1, keys: 1, view3d: 0, wheelWt: 0,
+  limitDrop: 1, silenceTails: 1, defOs: 2, author: '', askPreset: 0, smooth: 1, mpeDefault: 0, mpeBendX: 0, mpeYBi: 0,
+  midiFromPreset: 1, ultra: 0 });
 export function normPrefs(p) {
   const o = isObj(p) ? p : {};
   const b = k => (o[k] === undefined || o[k] === null ? PREFS_DEFAULT[k] : o[k] ? 1 : 0);
   return {
-    tooltips: b('tooltips'), dblClick: o.dblClick === 'reset' ? 'reset' : 'type', wheel: b('wheel'), view3d: b('view3d'),
-    wheelWt: b('wheelWt'), limitDrop: b('limitDrop'), silenceTails: b('silenceTails'),
+    tooltips: b('tooltips'), helpTips: b('helpTips'), dblClick: o.dblClick === 'reset' ? 'reset' : 'type', wheel: b('wheel'),
+    keys: b('keys'), view3d: b('view3d'), wheelWt: b('wheelWt'), limitDrop: b('limitDrop'), silenceTails: b('silenceTails'),
     defOs: o.defOs === 1 || o.defOs === 4 ? o.defOs : 2, author: typeof o.author === 'string' ? o.author.slice(0, 64) : '',
     askPreset: b('askPreset'), smooth: fin(o.smooth) ? clamp(Math.round(o.smooth * 100) / 100, 0.01, 8) : 1,
+    mpeDefault: b('mpeDefault'), mpeBendX: b('mpeBendX'), mpeYBi: b('mpeYBi'), midiFromPreset: b('midiFromPreset'), ultra: b('ultra'),
   };
 }
 
-/* ---------------------------------------------------------------- presets (§9.10) */
+// Panel undo / redo (§13.2.4, deviation 16): a stack of state snapshots (strings) with the current one on top.
+// push(snap, label, t) after every edit gesture: an identical snapshot is ignored; the same label within `coalesceMs`
+// (600) of the previous push replaces the top entry (one step); otherwise a new entry (the redo branch is dropped).
+// At most `limit` undo steps (+ the base) and `maxBytes` (16 MB, 2 bytes per character) — the oldest go first.
+// base(snap) restarts the stack; undo() / redo() return the snapshot to restore (null at either end); top() is the
+// current position's snapshot, retop(snap) replaces it without a new step.
+export function undoStack(limit, opts) {
+  const o = opts || {}, max = limit > 0 ? Math.floor(limit) : 100;
+  const maxBytes = o.maxBytes > 0 ? o.maxBytes : 16 * 1024 * 1024, win = o.coalesceMs >= 0 ? o.coalesceMs : 600;
+  let st = [], pos = -1, bytes = 0;
+  const sz = x => 2 * x.length;
+  const trim = () => {
+    while (st.length > max + 1 || (bytes > maxBytes && st.length > 1)) { bytes -= sz(st[0].snap); st.shift(); pos--; }
+    if (pos < 0) pos = st.length ? 0 : -1;
+  };
+  const U = {
+    base(snap) { st = []; bytes = 0; pos = -1; if (typeof snap === 'string') { st.push({ snap, label: '', t: -1e15 }); bytes = sz(snap); pos = 0; } },
+    push(snap, label, t) {
+      if (typeof snap !== 'string') return false;
+      const T = fin(t) ? t : nowMs(), L = label || '';
+      if (pos >= 0 && st[pos].snap === snap) return false;
+      while (st.length > pos + 1) bytes -= sz(st.pop().snap);
+      const top = st[pos];
+      if (top && pos > 0 && top.label === L && T - top.t <= win) { bytes += sz(snap) - sz(top.snap); top.snap = snap; top.t = T; }
+      else { st.push({ snap, label: L, t: T }); bytes += sz(snap); pos = st.length - 1; }
+      trim();
+      return true;
+    },
+    undo() { if (pos <= 0) return null; pos--; st[pos].t = -1e15; return st[pos].snap; },
+    redo() { if (pos >= st.length - 1) return null; pos++; st[pos].t = -1e15; return st[pos].snap; },
+    canUndo: () => pos > 0, canRedo: () => pos >= 0 && pos < st.length - 1,
+    label: () => (pos > 0 ? st[pos].label : ''), redoLabel: () => (pos >= 0 && pos < st.length - 1 ? st[pos + 1].label : ''),
+    top: () => (pos >= 0 ? st[pos].snap : null),
+    // the current position's snapshot replaced in place (no step; view-only changes outside s.ui / fx.ui)
+    retop(snap) { if (pos < 0 || typeof snap !== 'string') return false; bytes += sz(snap) - sz(st[pos].snap); st[pos].snap = snap; trim(); return true; },
+    clear() { st = []; pos = -1; bytes = 0; },
+    size: () => st.length, steps: () => Math.max(0, pos), bytes: () => bytes,
+  };
+  return U;
+}
+
+// "S1 rendition differs" (§2.6.4, §13.10): labels of the S1 pairs whose v1 and S2 renditions differ (serum-core syncS1
+// with a non-pair id writes nothing and returns the differing pairs)
+export function s1Diff(s) {
+  if (!isObj(s) || typeof core.syncS1 !== 'function') return [];
+  const lab = id => { const q = arr(core.S1_PAIRS).find(x => x && x.id === id); return (q && q.label) || PAIR_LABEL[id] || id; };
+  try { return arr(core.syncS1(s, '')).map(lab); } catch (err) { return []; }
+}
+// A matrix row aimed at the other mode's field of an S1 pair (shown with "≈", compiled with amt × range ratio, §2.6.4)
+export function rowAlias(s, row) {
+  if (!row || !row.dst) return false;
+  return s1On(s) ? own(ALIAS_S2, row.dst) : own(ALIAS, row.dst);
+}
+// A matrix row whose destination does not resolve (deleted FX instance, unknown id) or is not modulatable (Convolve
+// shaping parameters, deviation 20) — shown red (§13.6)
+export function rowBad(fx, row) {
+  if (!row || !row.dst) return false;
+  if (destOf(row.dst) && !/^fx\./.test(row.dst)) return false;
+  const r = rowOfDest(row.dst, fx);
+  return !r || !!r.nomod;
+}
+
+/* ---------------------------------------------------------------- presets (§9.10, §13.11) */
 
 const COLL = typeof Intl !== 'undefined' && Intl.Collator ? new Intl.Collator('en', { numeric: true, sensitivity: 'base' }) : null;
 const cmpStr = (a, b) => {
@@ -414,29 +636,60 @@ const cmpStr = (a, b) => {
   const p = x.toLowerCase(), q = y.toLowerCase();
   return p < q ? -1 : p > q ? 1 : 0;
 };
-const SORT_COLS = ['name', 'cat', 'author'];
-export const BROWSER_DEFAULT = Object.freeze({ sort: 'name', sort2: 'cat', dir: 1, cat: '', q: '' });
+const SORT_COLS = ['name', 'cat', 'author', 'stars'];
+const PREVIEW_MS = 4000;   // host.preview plays a preset's preview for at most 4 s (§12.6)
+const STAR_FILTERS = ['', 'any', 'none', 1, 2, 3, 4, 5];
+export const BROWSER_DEFAULT = Object.freeze({ sort: 'name', sort2: 'cat', dir: 1, cat: '', q: '', tab: 'cats', tags: [], tagMode: 'all',
+  excl: [], stars: '', autoPreview: 0 });
+const tagList = x => arr(x).filter(t => typeof t === 'string' && t.trim()).map(t => t.trim().slice(0, 24)).filter((t, i, a) => a.indexOf(t) === i).slice(0, 32);
 export function normBrowser(b) {
   const o = isObj(b) ? b : {};
   return {
     sort: SORT_COLS.includes(o.sort) ? o.sort : 'name', sort2: SORT_COLS.includes(o.sort2) ? o.sort2 : 'cat',
     dir: o.dir === -1 || o.dir === 'desc' ? -1 : 1, cat: typeof o.cat === 'string' ? o.cat : '', q: typeof o.q === 'string' ? o.q : '',
+    tab: o.tab === 'tags' ? 'tags' : 'cats', tags: tagList(o.tags), tagMode: o.tagMode === 'any' ? 'any' : 'all', excl: tagList(o.excl),
+    stars: STAR_FILTERS.includes(o.stars) ? o.stars : '', autoPreview: o.autoPreview ? 1 : 0,
   };
 }
+// List rows with their metadata: stars / tags / comments of the row itself (user presets) overlaid by meta[key]
+// (synth.sx.meta: {key: {stars, tags?, comments?}}) — new objects, the inputs untouched
+export function withMeta(list, meta) {
+  const M = isObj(meta) ? meta : {};
+  return arr(list).map(p => {
+    const m = p && isObj(M[p.key]) ? M[p.key] : null, q = Object.assign({}, p);
+    if (m) for (const k of ['stars', 'tags', 'comments']) if (m[k] !== undefined) q[k] = m[k];
+    q.stars = fin(q.stars) ? clamp(Math.round(q.stars), 0, 5) : 0;
+    q.tags = tagList(q.tags);
+    return q;
+  });
+}
 // Sorted copy: primary column `sort` in direction `dir` (1 | −1 | 'asc' | 'desc'); ties fall back to the
-// previously clicked column `sort2`, then Name, then key (stable).
+// previously clicked column `sort2`, then Name, then key (stable). 'stars' sorts numerically.
 export function sortPresets(list, opts) {
   const o = opts || {}, k1 = SORT_COLS.includes(o.sort) ? o.sort : 'name', k2 = SORT_COLS.includes(o.sort2) ? o.sort2 : null;
   const dir = o.dir === -1 || o.dir === 'desc' ? -1 : 1;
-  return arr(list).map((p, i) => ({ p, i })).sort((a, b) => (cmpStr(a.p[k1], b.p[k1]) * dir)
-    || (k2 && k2 !== k1 ? cmpStr(a.p[k2], b.p[k2]) : 0) || cmpStr(a.p.name, b.p.name)
+  const cmp = (k, a, b) => (k === 'stars' ? (a.stars || 0) - (b.stars || 0) : cmpStr(a[k], b[k]));
+  return arr(list).map((p, i) => ({ p, i })).sort((a, b) => (cmp(k1, a.p, b.p) * dir)
+    || (k2 && k2 !== k1 ? cmp(k2, a.p, b.p) : 0) || cmpStr(a.p.name, b.p.name)
     || cmpStr(a.p.key, b.p.key) || a.i - b.i).map(x => x.p);
 }
-// Category filter ('' = All) and search (name / author substring, case-insensitive)
+// Filters (§13.11): category ('' = All), search (name / author substring, case-insensitive), tags (all | any of
+// o.tags; o.excl excluded), ratings (o.stars: '' off · 'any' rated · 'none' unrated · 1–5 exact)
 export function filterPresets(list, opts) {
   const o = opts || {}, cat = o.cat || '', q = String(o.q || '').trim().toLowerCase();
-  return arr(list).filter(p => (!cat || p.cat === cat)
-    && (!q || String(p.name || '').toLowerCase().includes(q) || String(p.author || '').toLowerCase().includes(q)));
+  const tags = tagList(o.tags), excl = tagList(o.excl), any = o.tagMode === 'any', st = o.stars;
+  return arr(list).filter(p => {
+    if (!p || (cat && p.cat !== cat)) return false;
+    if (q && !String(p.name || '').toLowerCase().includes(q) && !String(p.author || '').toLowerCase().includes(q)) return false;
+    const pt = arr(p.tags);
+    if (tags.length && !(any ? tags.some(t => pt.includes(t)) : tags.every(t => pt.includes(t)))) return false;
+    if (excl.length && excl.some(t => pt.includes(t))) return false;
+    const n = fin(p.stars) ? p.stars : 0;
+    if (st === 'any' && !(n > 0)) return false;
+    if (st === 'none' && n > 0) return false;
+    if (fin(st) && n !== st) return false;
+    return true;
+  });
 }
 // The browser's list (filtered, then sorted) — also what MIDI program change indexes (§9.10, §11.8)
 export function browserList(list, st) { const b = normBrowser(st); return sortPresets(filterPresets(list, b), b); }
@@ -444,6 +697,12 @@ export function browserList(list, st) { const b = normBrowser(st); return sortPr
 export function presetCats(list) {
   const set = new Set();
   for (const p of arr(list)) if (p && p.cat) set.add(p.cat);
+  return Array.from(set).sort(cmpStr);
+}
+// Tags present, alphabetical
+export function presetTags(list) {
+  const set = new Set();
+  for (const p of arr(list)) for (const t of tagList(p && p.tags)) set.add(t);
   return Array.from(set).sort(cmpStr);
 }
 // ◀ ▶ (§9.10): previous / next key of `list` (already sorted) within category `cat` (null/undefined = whole
@@ -455,75 +714,104 @@ export function stepPreset(list, key, dir, cat) {
   if (i < 0) return (d > 0 ? L[0] : L[L.length - 1]).key;
   return L[(i + d + L.length) % L.length].key;
 }
-
-/* ---------------------------------------------------------------- display maths */
-
-// In-place iterative radix-2 FFT (displays only; n power of two)
-function fft(re, im) {
-  const n = re.length;
-  for (let i = 1, j = 0; i < n; i++) {
-    let bit = n >> 1;
-    for (; j & bit; bit >>= 1) j ^= bit;
-    j ^= bit;
-    if (i < j) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
-  }
-  for (let len = 2; len <= n; len <<= 1) {
-    const a = -2 * Math.PI / len, wr = Math.cos(a), wi = Math.sin(a);
-    for (let i = 0; i < n; i += len) {
-      let cr = 1, ci = 0;
-      for (let k = 0; k < len / 2; k++) {
-        const p = i + k, q = p + len / 2, tr = re[q] * cr - im[q] * ci, ti = re[q] * ci + im[q] * cr;
-        re[q] = re[p] - tr; im[q] = im[p] - ti; re[p] += tr; im[p] += ti;
-        const t = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = t;
-      }
-    }
-  }
+// Hybridize parents (§13.11, inv B25): up to n (4) distinct keys of `list` drawn with mulberry32(seed); with `favor`
+// (a key of the list) that key comes first (index 0 = the favoured parent of serum-core hybridize). Deterministic.
+export function hybridPick(list, seed, n, favor) {
+  const L = arr(list).map(p => p && p.key).filter(k => k !== undefined && k !== null);
+  const N = Math.min(n > 0 ? n : 4, L.length), r = mulberry32(seed >>> 0), out = [];
+  if (favor !== undefined && favor !== null && L.includes(favor)) out.push(favor);
+  const pool = L.filter(k => !out.includes(k));
+  while (out.length < N && pool.length) out.push(pool.splice(Math.floor(r() * pool.length), 1)[0]);
+  return out;
 }
-// log-frequency axis of the filter display = the cutoff law (x = n of f.cutoff: 8.18 Hz … 22.05 kHz)
-const F_LO = core.MIDI0 || 8.175798915643707, F_HI = 22050;
-const fOfX = u => F_LO * Math.pow(F_HI / F_LO, u);
 
-/* ================================================================ CSS (§9.1, §9.2; tokens on .sx-root) */
+/* ================================================================ CSS (§9.1, §9.2, §13.1, §13.2; tokens on .sx-root) */
 
 const CSS = `
 .sx-root { container: sx / inline-size; position: relative; box-sizing: border-box; min-width: 0;
   --sx-bg: #0f1216; --sx-panel: #161b21; --sx-panel2: #1c232b; --sx-line: #2a333d; --sx-ink: #dfe6ee; --sx-mute: #7f8b98;
   --sx-accent: #4fb3ff; --sx-neg: #ffb347; --sx-on: #6fe3a1; --sx-warn: #ff6a4a; --sx-graph: #59c2ff;
+  --sx-osc-a: #4fb3ff; --sx-osc-b: #6fe3a1; --sx-osc-c: #f7c948; --sx-sub: #a78bfa; --sx-noise: #94a3b8; --sx-f1: #ff8a5b;
+  --sx-f2: #ff5b8a; --sx-bus1: #c084fc; --sx-bus2: #f472b6; --sx-arp: #b07cff; --sx-clip: #3ddc84;
   padding: 8px; color: var(--sx-ink); background: var(--sx-bg); border-radius: 10px; font: 500 12px/1.3 var(--ui, system-ui, sans-serif);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 20px 50px -24px rgba(0, 0, 0, 0.8); }
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6), 0 20px 50px -24px rgba(0, 0, 0, 0.8); touch-action: manipulation; }
 .sx-root *, .pb-root * { box-sizing: border-box; }
 .sx-root button { font: inherit; color: inherit; }
 .sx-hidden { display: none !important; }
-.sx-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 2px 4px 8px; border-bottom: 1px solid var(--sx-line); }
+.sx-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 2px 4px 8px; border-bottom: 1px solid var(--sx-line); }
 .sx-logo { flex: 0 0 auto; width: 30px; height: 30px; color: var(--sx-accent); }
-.sx-tabs { display: flex; gap: 2px; padding: 2px; background: var(--sx-panel); border: 1px solid var(--sx-line); border-radius: 7px; }
-.sx-tab { min-height: 26px; padding: 3px 10px; color: var(--sx-mute); background: none; border: 0; border-radius: 5px; font-weight: 700; font-size: 11px; letter-spacing: 0.08em; cursor: pointer; }
+.sx-wave { color: var(--sx-graph); opacity: 0.55; }
+.sx-head:hover .sx-wave, .sx-wave:focus-visible, .sx-touch .sx-wave { opacity: 1; }
+.sx-tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 2px; background: var(--sx-panel); border: 1px solid var(--sx-line); border-radius: 7px; }
+.sx-tab { min-height: 26px; padding: 3px 9px; color: var(--sx-mute); background: none; border: 0; border-radius: 5px; font-weight: 700; font-size: 11px; letter-spacing: 0.08em; cursor: pointer; }
 .sx-tab:hover { color: var(--sx-ink); }
 .sx-tab[aria-selected="true"] { color: var(--sx-bg); background: var(--sx-accent); }
+.sx-tab[data-page="arp"][aria-selected="true"] { background: var(--sx-arp); }
+.sx-tab[data-page="clip"][aria-selected="true"] { background: var(--sx-clip); }
 .sx-tab:focus-visible, .sx-hbtn:focus-visible, .sx-tile:focus-visible, .sx-tname:focus-visible, .sx-btn:focus-visible { outline: 2px solid var(--sx-accent); outline-offset: 1px; }
-.sx-preset { flex: 1 1 280px; display: flex; align-items: center; gap: 3px; min-width: 0; }
+.sx-preset { flex: 1 1 260px; display: flex; align-items: center; gap: 3px; min-width: 0; }
 .sx-hbtn, .sx-btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 26px; min-width: 26px; padding: 2px 8px; color: var(--sx-ink); background: var(--sx-panel2); border: 1px solid var(--sx-line); border-radius: 5px; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .sx-hbtn:hover, .sx-btn:hover { border-color: var(--sx-mute); }
+.sx-hbtn:disabled, .sx-btn:disabled { opacity: 0.4; cursor: default; }
 .sx-hbtn svg, .sx-btn svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.sx-hbtn.sx-on, .sx-btn.sx-on { color: var(--sx-accent); border-color: var(--sx-accent); }
 .sx-pname { flex: 1 1 auto; min-width: 0; justify-content: flex-start; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
 .sx-pname .sx-pcat { color: var(--sx-mute); font-weight: 500; margin-right: 6px; }
 .sx-dirty::after { content: ' *'; color: var(--sx-neg); }
+.sx-undo { display: inline-flex; gap: 2px; }
+.sx-mkeys { display: none; }
+.sx-touch .sx-mkeys { display: inline-flex; }
 .sx-vc { min-width: 64px; color: var(--sx-mute); font: 500 11px/1 var(--mono, ui-monospace, monospace); text-align: right; }
 .sx-vc b { color: var(--sx-ink); font-weight: 600; }
-.sx-master { margin-left: auto; display: flex; align-items: center; }
+.sx-master { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.sx-master .wk-meter { width: 10px; height: 40px; }
+.sx-status { min-height: 0; padding: 0 6px; color: var(--sx-mute); font: 500 11px/1.6 var(--mono, ui-monospace, monospace); white-space: pre-line; }
+.sx-status:empty { display: none; }
 .sx-pages { position: relative; min-width: 0; }
 .sx-page { display: grid; gap: 8px; padding-top: 8px; min-width: 0; }
 .sx-row { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
-@container sx (min-width: 900px) { .sx-rowA, .sx-rowC { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@container sx (min-width: 1280px) {
-  .sx-rowA { grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.2fr) minmax(0, 1.2fr) minmax(0, 1fr); }
-  .sx-rowC { grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.2fr) minmax(0, 1.5fr) minmax(0, 0.8fr); }
-}
 .sx-col { display: grid; gap: 8px; align-content: start; min-width: 0; }
+/* OSC row A: [SUB over NOISE] [OSC A] [OSC B] [OSC C] [FILTER 1 over FILTER 2] (§13.2 breakpoints) */
+.sx-colO { display: grid; gap: 8px; align-content: start; min-width: 0; }
+.sx-ptabs { display: flex; gap: 2px; padding: 2px; background: var(--sx-panel); border: 1px solid var(--sx-line); border-radius: 7px; }
+.sx-ptab { flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 2px 8px; color: var(--sx-mute); background: none; border: 0; border-radius: 5px; font-weight: 700; font-size: 11px; letter-spacing: 0.08em; cursor: pointer; }
+.sx-ptab[aria-selected="true"] { color: var(--sx-ink); background: var(--sx-panel2); box-shadow: inset 0 -2px 0 var(--sx-dot, var(--sx-accent)); }
+.sx-ptab .sx-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--sx-dot, var(--sx-accent)); opacity: 0.35; }
+.sx-ptab.sx-pon .sx-dot { opacity: 1; box-shadow: 0 0 6px var(--sx-dot, var(--sx-accent)); }
+.sx-opan[data-o="0"], .sx-ptab[data-o="0"] { --sx-dot: var(--sx-osc-a); }
+.sx-opan[data-o="1"], .sx-ptab[data-o="1"] { --sx-dot: var(--sx-osc-b); }
+.sx-opan[data-o="2"], .sx-ptab[data-o="2"] { --sx-dot: var(--sx-osc-c); }
+.sx-fpan[data-f="0"], .sx-ptab[data-f="0"] { --sx-dot: var(--sx-f1); }
+.sx-fpan[data-f="1"], .sx-ptab[data-f="1"] { --sx-dot: var(--sx-f2); }
+.sx-opan, .sx-fpan { border-top: 2px solid var(--sx-dot, var(--sx-line)); }
+.sx-opan.sx-osel { box-shadow: 0 0 0 1px var(--sx-dot, var(--sx-accent)); }
+/* one oscillator / one filter at a time only below the widths that show them all: the hide rules (specificity 0,4,0)
+   live inside max-width queries, so no wide-layout rule has to out-rank them (container queries add no specificity) */
+@container sx (max-width: 1099px) {
+  .sx-colO[data-tab="0"] > .sx-opan:not([data-o="0"]), .sx-colO[data-tab="1"] > .sx-opan:not([data-o="1"]), .sx-colO[data-tab="2"] > .sx-opan:not([data-o="2"]) { display: none; }
+}
+@container sx (max-width: 1365px) {
+  .sx-colF[data-tab="0"] > .sx-fpan:not([data-f="0"]), .sx-colF[data-tab="1"] > .sx-fpan:not([data-f="1"]) { display: none; }
+}
+@container sx (min-width: 768px) {
+  .sx-rowA { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.5fr) minmax(0, 1fr); }
+  .sx-rowC { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container sx (min-width: 1100px) {
+  .sx-rowA { grid-template-columns: minmax(0, 0.75fr) minmax(0, 3.6fr) minmax(0, 1fr); }
+  .sx-rowC { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.2fr) minmax(0, 1.5fr) minmax(0, 0.8fr); }
+  .sx-colO { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .sx-colO > .sx-ptabs { display: none; }
+  .sx-root .sx-colO .wk-md, .sx-root .sx-colO .wk-lg { --wk-d: 30px; }
+}
+@container sx (min-width: 1366px) {
+  .sx-colF > .sx-ptabs { display: none; }
+  .sx-root .sx-colO .wk-md, .sx-root .sx-colO .wk-lg { --wk-d: revert; }
+}
 .sx-panel { position: relative; min-width: 0; padding: 6px 8px 8px; background: var(--sx-panel); border: 1px solid var(--sx-line); border-radius: 8px; }
 .sx-ptitle { display: flex; align-items: center; gap: 6px; min-height: 26px; margin-bottom: 4px; }
-.sx-tname { color: var(--sx-ink); font-weight: 800; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; cursor: context-menu; user-select: none; -webkit-user-select: none; border-radius: 3px; }
-.sx-ptitle .sx-grow { flex: 1 1 auto; min-width: 0; }
+.sx-tname { color: var(--sx-ink); font-weight: 800; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; cursor: context-menu; user-select: none; -webkit-user-select: none; border-radius: 3px; touch-action: none; }
+.sx-ptitle .sx-grow, .sx-grow { flex: 1 1 auto; min-width: 0; }
 .sx-ptitle .wk-menu > .wk-lab { display: none !important; }
 .sx-lockmark { display: none; width: 12px; height: 12px; color: var(--sx-neg); }
 .sx-locked > .sx-ptitle .sx-lockmark { display: inline-block; }
@@ -542,24 +830,31 @@ const CSS = `
 .sx-route .wk-tog { min-width: 24px; padding: 2px 5px; }
 .sx-locked-ctl { position: relative; }
 .sx-locked-ctl::after { content: ''; position: absolute; right: 0; top: 0; width: 6px; height: 6px; border-radius: 1px; background: var(--sx-neg); box-shadow: 0 0 0 1px var(--sx-bg); pointer-events: none; }
-.sx-tiles { display: flex; gap: 4px; overflow-x: auto; padding: 2px 0 4px; scrollbar-width: thin; }
-.sx-tile { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 3px 10px; color: var(--sx-mute); background: var(--sx-panel); border: 1px solid var(--sx-line); border-radius: 6px; font-weight: 700; font-size: 11px; letter-spacing: 0.06em; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.sx-tiles { display: flex; gap: 4px; overflow-x: auto; padding: 2px 0 4px; scrollbar-width: thin; touch-action: pan-x; scroll-snap-type: x proximity; }
+.sx-tile { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 3px 10px; color: var(--sx-mute); background: var(--sx-panel); border: 1px solid var(--sx-line); border-radius: 6px; font-weight: 700; font-size: 11px; letter-spacing: 0.06em; cursor: grab; user-select: none; -webkit-user-select: none; scroll-snap-align: start; }
 .sx-tile:hover { color: var(--sx-ink); }
 .sx-tile[aria-pressed="true"] { color: var(--sx-ink); border-color: var(--sx-accent); box-shadow: 0 0 0 1px var(--sx-accent) inset; }
+.sx-tile.wk-armed { border-color: var(--sx-neg); }
 .sx-tile .sx-badge { min-width: 16px; padding: 1px 4px; color: var(--sx-bg); background: var(--sx-mute); border-radius: 8px; font: 700 9px/1.2 var(--mono, ui-monospace, monospace); text-align: center; }
 .sx-tile[aria-pressed="true"] .sx-badge { background: var(--sx-accent); }
 .sx-tile .sx-badge:empty { display: none; }
+.sx-tile.sx-mtile { max-width: 128px; text-transform: none; letter-spacing: 0; font-weight: 600; }
+.sx-tile.sx-mtile .sx-tl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sx-ghost { position: fixed; z-index: 1100; left: 0; top: 0; padding: 3px 8px; color: var(--sx-bg, #0f1216); background: var(--sx-accent, #4fb3ff); border-radius: 5px; font: 700 11px/1.2 var(--ui, system-ui, sans-serif); pointer-events: none; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); }
 .sx-dragging, .sx-dragging * { cursor: grabbing !important; }
 .sx-dragging.sx-candrop, .sx-dragging.sx-candrop * { cursor: copy !important; }
 .sx-droptgt { outline: 2px solid var(--sx-accent) !important; outline-offset: 2px; border-radius: 6px; }
-.sx-macros { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+.sx-macros { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
 .sx-macro { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px; background: var(--sx-panel2); border: 1px solid var(--sx-line); border-radius: 6px; min-width: 0; }
 .sx-macro .sx-tile { width: 100%; justify-content: center; min-height: 24px; padding: 2px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; font-weight: 600; }
 .sx-macro input { width: 100%; padding: 2px 4px; color: var(--sx-ink); background: var(--sx-bg); border: 1px solid var(--sx-accent); border-radius: 4px; font: 600 11px var(--ui, system-ui, sans-serif); }
+.sx-macro .wk-knob { --wk-d: 30px; }
 .sx-edbox { position: relative; min-height: 120px; }
 .sx-edhead { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-bottom: 4px; }
-.sx-edhead .sx-ttl { font-weight: 800; font-size: 11px; letter-spacing: 0.1em; }
+.sx-edhead .sx-ttl, .sx-ttl { font-weight: 800; font-size: 11px; letter-spacing: 0.1em; }
+.sx-etabs { display: inline-flex; gap: 2px; }
+.sx-etabs button { min-height: 24px; padding: 2px 7px; color: var(--sx-mute); background: var(--sx-panel2); border: 1px solid var(--sx-line); border-radius: 4px; font: 700 10px var(--ui, system-ui, sans-serif); cursor: pointer; }
+.sx-etabs button[aria-selected="true"] { color: var(--sx-bg); background: var(--sx-accent); border-color: var(--sx-accent); }
 .sx-zoom { width: 90px; accent-color: var(--sx-accent); }
 .sx-grid { width: 52px; padding: 3px 5px; color: var(--sx-ink); background: var(--sx-panel2); border: 1px solid var(--sx-line); border-radius: 4px; font: 500 11px var(--mono, ui-monospace, monospace); text-align: center; }
 .sx-grid.sx-bad { border-color: var(--sx-warn); }
@@ -571,35 +866,55 @@ const CSS = `
 .sx-nf input { width: 64px; padding: 3px 4px; color: var(--sx-ink); background: var(--sx-bg); border: 1px solid var(--sx-accent); border-radius: 4px; font: 600 11px var(--mono, ui-monospace, monospace); text-align: center; }
 .sx-amber .wk-num, .sx-amber .sx-nfv, .sx-amber .wk-nbv { color: var(--sx-neg) !important; }
 .sx-txt { color: var(--sx-mute); font-size: 11px; }
-.sx-pop { position: absolute; z-index: 40; width: min(420px, calc(100% - 16px)); padding: 8px; background: var(--sx-panel); border: 1px solid var(--sx-accent); border-radius: 8px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6); }
+.sx-note { color: var(--sx-neg); font-size: 11px; }
+.sx-pop { position: absolute; z-index: 40; width: min(440px, calc(100% - 16px)); max-height: calc(100% - 16px); overflow: auto; padding: 8px; background: var(--sx-panel); border: 1px solid var(--sx-accent); border-radius: 8px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6); }
 .sx-ov { position: absolute; inset: 0; z-index: 60; display: flex; flex-direction: column; background: rgba(9, 11, 14, 0.97); border-radius: 10px; overflow: auto; }
+/* overlays fill the screen below 1100 px (§13.2): at least one viewport tall, scrolled to the top of the screen when opened */
+@container sx (max-width: 1099px) {
+  .sx-ov { border-radius: 0; min-height: 100vh; min-height: 100dvh; }
+  .sx-pop { left: 8px !important; width: calc(100% - 16px); }   /* small panes (routing, window …) span the panel */
+  /* editor popovers (curve editors, PZ, OSC MAPPING …) are full-screen sheets like the overlays (§13.2 Overlays) */
+  .sx-pop.sx-pop-ed { inset: 0; left: 0 !important; top: 0 !important; width: auto; max-height: none; min-height: 100vh; min-height: 100dvh; z-index: 60; border: 0; border-radius: 0; box-shadow: none; }
+}
 .sx-dlg-ov { align-items: center; justify-content: center; padding: 16px; background: rgba(9, 11, 14, 0.8); }
-.sx-dlg { width: min(420px, 100%); max-height: 100%; overflow: auto; padding: 14px; background: var(--sx-panel); border: 1px solid var(--sx-line); border-radius: 10px; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6); }
+.sx-dlg { width: min(440px, 100%); max-height: 100%; overflow: auto; padding: 14px; background: var(--sx-panel); border: 1px solid var(--sx-line); border-radius: 10px; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6); }
 .sx-dlg h3 { margin: 0 0 10px; font-size: 13px; letter-spacing: 0.04em; }
 .sx-dlg label { display: grid; gap: 3px; margin-bottom: 10px; color: var(--sx-mute); font-size: 11px; }
-.sx-dlg input, .sx-dlg textarea, .sx-gl input[type="text"], .sx-gl textarea { width: 100%; padding: 6px 8px; color: var(--sx-ink); background: var(--sx-bg); border: 1px solid var(--sx-line); border-radius: 5px; font: 500 12px var(--ui, system-ui, sans-serif); }
+.sx-dlg input, .sx-dlg textarea, .sx-gl input[type="text"], .sx-gl textarea, .pb-meta input, .pb-meta textarea { width: 100%; padding: 6px 8px; color: var(--sx-ink); background: var(--sx-bg); border: 1px solid var(--sx-line); border-radius: 5px; font: 500 12px var(--ui, system-ui, sans-serif); }
 .sx-dlg textarea, .sx-gl textarea { min-height: 90px; resize: vertical; }
 .sx-dlg input:focus, .sx-dlg textarea:focus, .sx-gl input:focus, .sx-gl textarea:focus { outline: none; border-color: var(--sx-accent); }
 .sx-dlg p { margin: 0 0 10px; color: var(--sx-mute); line-height: 1.5; }
 .sx-dbtns { display: flex; justify-content: flex-end; gap: 6px; }
 .sx-btn.sx-pri { color: var(--sx-bg); background: var(--sx-accent); border-color: var(--sx-accent); font-weight: 700; }
 .sx-wte { flex: 1 1 auto; min-height: 0; }
+.sx-fxbox, .sx-mixbox, .sx-seqbox { min-width: 0; }
+.sx-placeholder { padding: 16px; color: var(--sx-mute); text-align: center; border: 1px dashed var(--sx-line); border-radius: 8px; }
+.sx-pagebar { display: flex; align-items: center; gap: 6px; }
+/* keyboard panel under every page (its own styles: sx-ui-seq) */
+.sx-foot { margin-top: 8px; min-width: 0; }
+/* MATRIX (§13.6): 64 rows */
 .sx-mxhead { display: flex; align-items: center; gap: 8px; }
-.sx-mxhead .sx-grow { flex: 1 1 auto; }
-.sx-mx { display: grid; gap: 3px; max-height: 560px; overflow: auto; padding-right: 2px; }
+.sx-mx { display: grid; gap: 3px; max-height: 620px; overflow: auto; padding-right: 2px; }
+.sx-mxexp .sx-mx { max-height: none; }
 .sx-mrow, .sx-mhd { display: grid; align-items: center; gap: 4px; min-width: 0;
-  grid-template-columns: 22px minmax(0, 1.1fr) 40px minmax(90px, 1.3fr) minmax(0, 1.5fr) 44px minmax(0, 1.1fr) 62px 30px minmax(70px, 0.9fr) 28px;
-  grid-template-areas: 'n src crv amt dst typ aux mode byp out more'; }
+  grid-template-columns: 18px 22px minmax(0, 1.1fr) var(--sx-crvw, 38px) minmax(84px, 1.3fr) 32px minmax(0, 1.5fr) 36px minmax(0, 1fr) 34px var(--sx-crvw, 38px) minmax(64px, 0.8fr) 26px 24px;
+  grid-template-areas: 'h n src crv amt pol dst mo aux inv acrv out byp x'; }
 .sx-mhd { position: sticky; top: 0; z-index: 1; padding: 2px 0 4px; color: var(--sx-mute); background: var(--sx-panel); font-size: 9px; font-weight: 700; letter-spacing: 0.08em; }
 .sx-mrow { padding: 2px 3px; background: var(--sx-panel2); border: 1px solid transparent; border-radius: 5px; }
-.sx-mrow.sx-dim > :not(.sx-mn):not(.sx-mmore) { opacity: 0.45; }
+.sx-mrow.sx-dim > :not(.sx-mn):not(.sx-mh):not(.sx-mx-x) { opacity: 0.45; }
+.sx-mrow.sx-bad { border-color: var(--sx-warn); }
+.sx-mrow.sx-bad .sx-mdst .wk-mbtn { color: var(--sx-warn); }
+.sx-mrow.sx-dropline { box-shadow: 0 -2px 0 var(--sx-cur, #ffd84a); }
 .sx-mrow > * { min-width: 0; }
 .sx-mrow .wk-menu { width: 100%; }
 .sx-mrow .wk-menu > .wk-lab, .sx-mrow .wk-sl > .wk-lab, .sx-mbyp .wk-tl { display: none !important; }
 .sx-mrow .wk-sl { flex: 1 1 auto; min-width: 0; }
+.sx-mh { grid-area: h; display: inline-flex; align-items: center; justify-content: center; min-height: 22px; color: var(--sx-mute); background: none; border: 0; cursor: grab; touch-action: none; font-size: 12px; }
 .sx-mn { grid-area: n; color: var(--sx-mute); font: 600 10px var(--mono, ui-monospace, monospace); text-align: right; }
-.sx-msrc { grid-area: src; } .sx-mcrv { grid-area: crv; } .sx-mamt { grid-area: amt; } .sx-mdst { grid-area: dst; } .sx-mtyp { grid-area: typ; }
-.sx-maux { grid-area: aux; } .sx-mmode { grid-area: mode; } .sx-mbyp { grid-area: byp; } .sx-mout { grid-area: out; } .sx-mmore { grid-area: more; }
+.sx-msrc { grid-area: src; } .sx-mcrv { grid-area: crv; } .sx-mamt { grid-area: amt; } .sx-mpol { grid-area: pol; } .sx-mdst { grid-area: dst; position: relative; }
+.sx-mo { grid-area: mo; } .sx-maux { grid-area: aux; } .sx-minv { grid-area: inv; } .sx-macrv { grid-area: acrv; } .sx-mout { grid-area: out; }
+.sx-mbyp { grid-area: byp; } .sx-mx-x { grid-area: x; }
+.sx-alias { position: absolute; right: 18px; top: 50%; transform: translateY(-50%); color: var(--sx-neg); font-weight: 800; pointer-events: none; }
 .sx-mamt, .sx-mout { display: flex; align-items: center; gap: 3px; }
 .sx-mamt > :first-child, .sx-mout > :first-child { flex: 1 1 auto; min-width: 0; }
 .sx-mval { min-width: 38px; padding: 1px 2px; color: var(--sx-ink); font: 600 10px var(--mono, ui-monospace, monospace); text-align: right; cursor: text; border-radius: 3px; }
@@ -607,35 +922,50 @@ const CSS = `
 .sx-mval input { width: 52px; padding: 1px 3px; color: var(--sx-ink); background: var(--sx-bg); border: 1px solid var(--sx-accent); border-radius: 3px; font: 600 10px var(--mono, ui-monospace, monospace); }
 .sx-crv { display: block; width: 36px; height: 22px; background: var(--sx-bg); border: 1px solid var(--sx-line); border-radius: 4px; cursor: ns-resize; touch-action: none; }
 .sx-crv path { fill: none; stroke: var(--sx-graph); stroke-width: 1.6; }
+.sx-crv.sx-edc path { stroke: var(--sx-cur, #ffd84a); }
+.sx-crv.sx-grey path { stroke: var(--sx-mute); }
 .sx-crv:focus-visible { outline: 2px solid var(--sx-accent); }
+.sx-mout-g { display: block; width: 34px; height: 18px; background: var(--sx-bg); border: 1px solid var(--sx-line); border-radius: 3px; position: relative; overflow: hidden; }
+.sx-mout-g i { position: absolute; top: 2px; bottom: 2px; background: var(--sx-graph); border-radius: 1px; }
 .sx-mrow .sx-btn { width: 100%; min-height: 24px; padding: 1px 4px; font: 600 10px var(--mono, ui-monospace, monospace); }
 .sx-mrow .sx-btn.sx-on { color: var(--sx-accent); border-color: var(--sx-accent); }
 .sx-mslot.sx-droptgt { outline-offset: 0; }
 @container sx (max-width: 899px) {
   .sx-mhd { display: none; }
-  .sx-mrow { grid-template-columns: 22px minmax(0, 1fr) 40px minmax(0, 1fr) 28px;
-    grid-template-areas: 'n src crv dst more' 'byp amt typ aux mode' 'byp out out out out'; padding: 5px; }
+  .sx-mrow { grid-template-columns: 18px 22px minmax(0, 1fr) var(--sx-crvw, 38px) 32px minmax(0, 1fr) 24px;
+    grid-template-areas: 'h n src crv pol dst x' 'byp amt amt amt mo aux aux' 'byp out out acrv inv aux aux'; padding: 5px; }
   .sx-mn { align-self: start; }
   .sx-root .wk-md, .sx-root .wk-lg { --wk-d: 28px; }
 }
-.sx-gl { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); }
+/* GLOBAL (§13.10) */
+.sx-gl { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
 .sx-gl .sx-panel { display: grid; gap: 8px; align-content: start; }
 .sx-pref { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; padding: 3px 0; border-bottom: 1px solid rgba(42, 51, 61, 0.5); }
 .sx-pref > span { color: var(--sx-mute); font-size: 11px; }
 .sx-pref .wk-tog { text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 11px; background: none; border-color: transparent; padding-left: 0; }
+.sx-pref .wk-tog.wk-dis { opacity: 0.5; }
 .sx-seg { display: inline-flex; border: 1px solid var(--sx-line); border-radius: 5px; overflow: hidden; }
 .sx-seg button { min-height: 24px; padding: 2px 8px; color: var(--sx-mute); background: var(--sx-panel2); border: 0; border-right: 1px solid var(--sx-line); font-size: 11px; cursor: pointer; }
 .sx-seg button:last-child { border-right: 0; }
 .sx-seg button[aria-checked="true"] { color: var(--sx-bg); background: var(--sx-accent); }
+.sx-seg button:disabled { opacity: 0.5; cursor: default; }
 .sx-rate { color: var(--sx-mute); font: 500 11px var(--mono, ui-monospace, monospace); }
+.sx-tagbox { display: flex; flex-wrap: wrap; gap: 4px; }
+.sx-chip { display: inline-flex; align-items: center; gap: 4px; min-height: 22px; padding: 1px 8px; color: var(--sx-ink); background: var(--sx-panel2); border: 1px solid var(--sx-line); border-radius: 11px; font-size: 11px; cursor: pointer; }
+.sx-chip[aria-pressed="true"] { color: var(--sx-bg); background: var(--sx-accent); border-color: var(--sx-accent); }
+.sx-chip.sx-excl { color: var(--sx-warn); border-color: var(--sx-warn); text-decoration: line-through; }
+.sx-vcgrid .wk-sg { width: 100%; }
 .sx-notice { position: absolute; left: 50%; bottom: 10px; z-index: 70; max-width: 80%; padding: 6px 12px; color: var(--sx-bg); background: var(--sx-ink); border-radius: 6px; font-weight: 600; transform: translateX(-50%); pointer-events: none; }
+/* preset browser v2 (§13.11) */
 .pb-root { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 320px; padding: 12px; }
 .pb-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .pb-bar .wk-menu { min-width: 150px; }
 .pb-q { flex: 1 1 160px; min-width: 0; padding: 5px 8px; color: var(--sx-ink, #dfe6ee); background: var(--sx-bg, #0f1216); border: 1px solid var(--sx-line, #2a333d); border-radius: 5px; font: inherit; }
 .pb-q:focus { outline: none; border-color: var(--sx-accent, #4fb3ff); }
-.pb-tbl { flex: 1 1 auto; min-height: 0; overflow: auto; border: 1px solid var(--sx-line, #2a333d); border-radius: 6px; }
-.pb-hd, .pb-row { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) 30px; align-items: center; gap: 6px; padding: 0 6px; }
+.pb-main { flex: 1 1 auto; min-height: 0; display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); }
+@container sx (min-width: 900px) { .pb-main { grid-template-columns: minmax(0, 1fr) 260px; } }
+.pb-tbl { min-height: 0; overflow: auto; border: 1px solid var(--sx-line, #2a333d); border-radius: 6px; }
+.pb-hd, .pb-row { display: grid; grid-template-columns: 30px minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) 84px 30px; align-items: center; gap: 6px; padding: 0 6px; }
 .pb-hd { position: sticky; top: 0; z-index: 1; background: var(--sx-panel, #161b21); border-bottom: 1px solid var(--sx-line, #2a333d); }
 .pb-hd button { padding: 6px 2px; color: var(--sx-mute, #7f8b98); background: none; border: 0; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-align: left; text-transform: uppercase; cursor: pointer; }
 .pb-hd button[aria-sort="ascending"]::after { content: ' ▲'; } .pb-hd button[aria-sort="descending"]::after { content: ' ▼'; }
@@ -646,12 +976,42 @@ const CSS = `
 .pb-row:hover { background: var(--sx-panel2, #1c232b); }
 .pb-row[aria-selected="true"] { background: rgba(79, 179, 255, 0.18); box-shadow: inset 2px 0 0 var(--sx-accent, #4fb3ff); }
 .pb-row .pb-u { margin-left: 6px; padding: 0 4px; color: var(--sx-bg, #0f1216); background: var(--sx-on, #6fe3a1); border-radius: 3px; font-size: 9px; font-weight: 800; }
-.pb-row .pb-more { padding: 2px; color: var(--sx-mute, #7f8b98); background: none; border: 0; cursor: pointer; }
+.pb-row .pb-more, .pb-play { padding: 2px; color: var(--sx-mute, #7f8b98); background: none; border: 0; cursor: pointer; }
+.pb-play.sx-on { color: var(--sx-on, #6fe3a1); }
+.pb-stars { display: inline-flex; gap: 1px; }
+.pb-stars button { padding: 0 1px; color: var(--sx-line, #2a333d); background: none; border: 0; font-size: 13px; line-height: 1; cursor: pointer; }
+.pb-stars button.sx-on { color: var(--sx-cur, #ffd84a); }
 .pb-empty { padding: 20px; color: var(--sx-mute, #7f8b98); text-align: center; }
+.pb-meta { display: grid; gap: 6px; align-content: start; min-height: 0; overflow: auto; padding: 8px; background: var(--sx-panel, #161b21); border: 1px solid var(--sx-line, #2a333d); border-radius: 6px; }
+.pb-meta label { display: grid; gap: 2px; color: var(--sx-mute, #7f8b98); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+.pb-meta .pb-v { color: var(--sx-ink, #dfe6ee); font-size: 12px; text-transform: none; letter-spacing: 0; }
+.pb-macros { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 4px 8px; background: var(--sx-panel, #161b21); border: 1px solid var(--sx-line, #2a333d); border-radius: 6px; }
+.pb-macros .wk-knob { --wk-d: 28px; }
+.pb-tabs { display: inline-flex; gap: 2px; }
+.pb-tabs button { min-height: 26px; padding: 2px 10px; color: var(--sx-mute, #7f8b98); background: var(--sx-panel2, #1c232b); border: 1px solid var(--sx-line, #2a333d); border-radius: 5px; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; cursor: pointer; }
+.pb-tabs button[aria-selected="true"] { color: var(--sx-bg, #0f1216); background: var(--sx-accent, #4fb3ff); border-color: var(--sx-accent, #4fb3ff); }
+/* touch first-class (§13.1): ≥ 44 px targets, no double-tap zoom, no hover-only information */
 @media (pointer: coarse) {
-  .sx-tab, .sx-hbtn, .sx-btn, .sx-tile, .sx-nfv { min-height: 32px; }
-  .pb-row { min-height: 36px; }
+  .sx-tab, .sx-hbtn, .sx-btn, .sx-tile, .sx-nfv, .sx-ptab, .sx-chip { min-height: 44px; }
+  .sx-etabs button, .sx-seg button, .pb-tabs button { min-height: 44px; min-width: 44px; }
+  .pb-row { min-height: 44px; }
+  .pb-stars button { min-width: 36px; min-height: 44px; font-size: 18px; }
+  .pb-hd, .pb-row { grid-template-columns: 44px minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) 184px 44px; }
+  .pb-play, .pb-row .pb-more { min-width: 44px; min-height: 44px; }
+  .sx-root { --sx-crvw: 46px; }
+  .sx-crv { width: 44px; height: 44px; }
 }
+.sx-touch .sx-tab, .sx-touch .sx-hbtn, .sx-touch .sx-btn, .sx-touch .sx-tile, .sx-touch .sx-nfv, .sx-touch .sx-ptab, .sx-touch .sx-chip { min-height: 44px; }
+.sx-touch .sx-hbtn, .sx-touch .sx-btn { min-width: 44px; }
+/* the remaining small targets of §13.1 (≥ 44 px): ENV tabs, every seg button, browser tabs, stars, play / more, CRV cells */
+.sx-touch .sx-etabs button, .sx-touch .sx-seg button, .sx-touch .pb-tabs button { min-height: 44px; min-width: 44px; }
+.sx-touch .pb-row { min-height: 44px; }
+.sx-touch .pb-stars button { min-width: 36px; min-height: 44px; font-size: 18px; padding: 0 3px; }
+.sx-touch .pb-hd, .sx-touch .pb-row { grid-template-columns: 44px minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) 184px 44px; }
+.sx-touch .pb-play, .sx-touch .pb-row .pb-more { min-width: 44px; min-height: 44px; }
+.sx-touch.sx-root { --sx-crvw: 46px; }
+.sx-touch .sx-crv { width: 44px; height: 44px; }
+.sx-touch .sx-mh { min-width: 32px; }
 @media (prefers-reduced-motion: reduce) { .sx-root *, .pb-root * { transition: none !important; } }
 `;
 
@@ -687,6 +1047,14 @@ const ICONS = {
   info: ['M8 2a6 6 0 1 1 0 12a6 6 0 1 1 0-12', 'M8 7v4.5', 'M8 4.8v.01'],
   menu: ['M2.5 4.5h11', 'M2.5 8h11', 'M2.5 11.5h11'],
   trash: ['M2.5 4.5h11', 'M6 4.5V2.5h4v2', 'M4 4.5l.8 9h6.4l.8-9', 'M6.8 7v4', 'M9.2 7v4'],
+  wave: ['M1.5 8h1.5', 'M3 8c1-5 2-5 3 0s2 5 3 0 2-5 3 0', 'M12 8h2.5'],
+  undo: ['M5.5 4L2.5 7l3 3', 'M2.5 7h7a3.5 3.5 0 0 1 0 7H7'],
+  redo: ['M10.5 4l3 3-3 3', 'M13.5 7h-7a3.5 3.5 0 0 0 0 7H9'],
+  play: ['M5 3.5l7 4.5-7 4.5z'],
+  stop: ['M4.5 4.5h7v7h-7z'],
+  close: ['M4 4l8 8', 'M12 4l-8 8'],
+  grip: ['M6 4h.01', 'M10 4h.01', 'M6 8h.01', 'M10 8h.01', 'M6 12h.01', 'M10 12h.01'],
+  dice: ['M3 3h10v10H3z', 'M6 6h.01', 'M10 10h.01', 'M8 8h.01'],
 };
 function icon(doc, name) {
   const s = svgEl(doc, 'svg', { viewBox: '0 0 16 16', 'aria-hidden': 'true', focusable: 'false' });
@@ -756,6 +1124,13 @@ function pickFile(doc, accept) {
   });
 }
 const fileText = f => (f && f.text ? f.text() : Promise.resolve(''));
+// an overlay opened in a narrow panel (< 1100 px, §13.2) is brought to the top of the screen: it is full screen there
+function fullScreenOverlay(root, ov) {
+  try {
+    const r = root && root.getBoundingClientRect ? root.getBoundingClientRect() : null;
+    if (r && r.width > 0 && r.width < 1100 && typeof ov.scrollIntoView === 'function') ov.scrollIntoView({ block: 'start' });
+  } catch (err) { /* layout unavailable */ }
+}
 // window.confirm must be called as a method (a detached call throws "Illegal invocation" in browsers)
 function askConfirm(doc, msg) {
   const w = (doc && doc.defaultView) || globalThis;
@@ -813,9 +1188,15 @@ function numField(doc, o) {
     el.classList.toggle('wk-modded', list.length > 0);
   }
   function put(v, ph) { v = q(v); if (ph === 'set' && v === o.get()) return; o.set(v, ph); update(); }
+  let tap = null;   // touch: the previous tap {t, x, y} — a second tap within 350 ms and 12 px = typed entry (§13.1)
   val.addEventListener('pointerdown', e => {
     if (dis || e.button !== 0 || inp || g) return;
     e.preventDefault();
+    if (e.pointerType === 'touch') {
+      const T = tap;
+      tap = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+      if (T && e.timeStamp - T.t < 350 && Math.hypot(e.clientX - T.x, e.clientY - T.y) < 12) { tap = null; edit(); return; }
+    }
     val.focus();
     g = { id: e.pointerId, x: e.clientX, y: e.clientY, v0: o.get(), acc: 0, last: o.get() };
     try { val.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
@@ -886,6 +1267,7 @@ function numField(doc, o) {
     if (inp || dis) return;
     inp = mk(doc, 'input');
     inp.type = 'text';
+    inp.setAttribute('inputmode', 'decimal');   // the numeric keypad on touch devices (§13.1)
     inp.value = val.textContent;
     inp.setAttribute('aria-label', (o.label || 'value') + ' value');
     val.style.display = 'none';
@@ -917,12 +1299,14 @@ function numField(doc, o) {
 
 /* ---------------------------------------------------------------- segField */
 // Radio group for structured enums: { label, items: [labels], get: () => idx, set: idx, disabled? }
+// segmented radio switch (o.items labels, get() → index, set(i)); o.always: set runs on every click, also on the item
+// already selected (GLOBAL > QUALITY: choosing a quality resets the CPU-safeguard steps, §14.3)
 function segField(doc, o) {
   const el = mk(doc, 'div', 'sx-seg');
   el.setAttribute('role', 'radiogroup');
   if (o.label) el.setAttribute('aria-label', o.label);
   const bs = o.items.map((t, i) => {
-    const b = btn(doc, '', t, null, () => { if (o.get() !== i) o.set(i); update(); });
+    const b = btn(doc, '', t, null, () => { if (o.always || o.get() !== i) o.set(i); update(); });
     b.setAttribute('role', 'radio');
     b.addEventListener('keydown', e => {
       const d = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0;
@@ -987,6 +1371,7 @@ function hSlider(doc, o) {
   return W;
 }
 
+
 /* ================================================================ SerumUI */
 
 let CLIP = null;          // module clipboard, shared by every panel (copy on one track, paste on another)
@@ -998,6 +1383,91 @@ const toggleIn = (list, v, want) => {
 };
 const focusable = el => (el && (el.matches && el.matches('button, [tabindex]') ? el
   : el.querySelector && el.querySelector('button, [tabindex]'))) || el;
+const mkPage = el => ({ el: el || null, binds: [], canvases: [], editors: [], lives: [] });
+// the MIX page module (U3), loaded on demand: the page degrades to a notice while it is missing
+const loadMix = () => import('./sx-ui-mix.js?v=6');
+// wk.contextMenu items from knobMenuItems-style groups ({label, sub}) with an action per leaf
+const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label, sub: subMenu(it.sub, act) }
+  : Object.assign({ label: it.label, action: () => act(it) }, it.checked !== undefined ? { checked: it.checked } : {})));
+
+/* ---------------------------------------------------------------- binding kit (SPEC-serum2 §11.14, B19) */
+// The U1 / U2–U4 boundary: the sub-panels (sx-ui-osc, sx-ui-mix, sx-ui-seq) receive this object, never the SerumUI or
+// the main.js host's edit path; everything that touches modulation, undo or locks goes through it.
+// Normative members (§11.14):
+//   host                      the main.js host (host.wt, host.smp, host.tracks, host.seqCmd, host.storage …)
+//   s() / fx() / snap()       the live Serum state, FX state, last engine snapshot (msg.s, §6.20) or null
+//   knob(id, o)               wk knob bound to destination id: data-dest, halo, drag-to-modulate drop target, knob
+//                             menu, MIDI learn, locks, typed entry, tooltip. o: { label, size, labelFn, disabled,
+//                             detents, bipolarFn }. Virtual destinations (macros m1…m8, arp.*, clip.*) read and write
+//                             their bases where the state keeps them (virtGet / virtSet)
+//   menu(id, items, o) / toggle(id, o) / seg(id, o)   the same bindings for enum / bool destinations (o.label; toggle
+//                             o.kind 'led' | 'btn' | 'power', o.module; seg o.items = labels of the steps)
+//   dropTarget(el, id)        any element as a modulation drop target and knob-menu host of destination id (right-click;
+//                             touch: a 500 ms long-press, iPad Safari sends no contextmenu); returns el
+//   edit(fn, o) / editFx(fn, o)   state edits (fn mutates the live state) through the panel's dirty state, undo,
+//                             repaint and host.edit / host.editFx; o = label string or { label, phase, ui }
+//   notify(text), prefs()     notices; the panel preferences (§9.7, §13.10)
+// Panel-shell members (U1):
+//   doc                       the panel's document
+//   num(id, o)                destination number box (o.label, o.disabled, o.cls)
+//   bind(w) / custom(fn)      repaint w.update() / fn() with the panel (registered on the page being built)
+//   canvas(cls, key, draw)    a display canvas of the page: drawn when key() changes, sized to its box → { el }
+//   panel(title, module, powerId, cls, o)   the module panel shell (power, module menu, lock mark) → { el, head,
+//                             body, name }; o.items() = extra module-menu items appended after the module items
+//                             ([{label, checked?, disabled?, action?, sub?} | {sep: true}], e.g. ✓ Enable Pitch
+//                             Tracking, Edit Note Ranges…); the label is a drag handle onto another module of the same
+//                             kind (plain = swap incl. mods, Alt = copy, Shift-Alt = copy with mods)
+//   live(fn)                  fn(shown) on every repaint and snapshot frame (live status, e.g. the unison voice warning;
+//                             playheads; clip recording). shown = the page fn was built on is on screen: hidden pages
+//                             are not painted (§13.1), so DOM work should be skipped when it is false — functional work
+//                             (e.g. a recording that goes on while another page is shown) keeps running
+//   getN(id) / setN(id, n, phase)   base n of a destination / set it (snapped; FX ids through editFx; S1 pairs synced)
+//   dragging(id)              whether the control of id is in a drag gesture (last setN phase 'start' / 'move')
+//   queue() / dead()          request a repaint (asynchronous data arrived) / the panel was destroyed
+//   paintSeq() / snapSeq()    counters of repaints / snapshots (per-repaint caches, redraw on every snapshot)
+//   prompt(title, label, value, ok)   text dialog; ok(text) returns false to keep it open
+//   popover(key, anchor, title, make, sig)   anchored editor popover (see SerumUI.popover)
+//   shapes()                  the LFO shape library (graph editors' shape menus)
+//   openWtEditor(o)           the WT editor overlay for oscillator o
+//   wt                        the wt.js helpers (tables, WAV / PNG import, noises), injected for sx-ui-osc (§0.2)
+// tests/serum-ui-stubs/kit.js mirrors every member (export / member parity test in tests/serum-ui.test.mjs).
+export function makeKit(ui) {
+  const opt = o => (typeof o === 'string' ? { label: o } : Object.assign({}, o));
+  return Object.freeze({
+    host: ui.host,
+    s: () => ui.s(),
+    fx: () => ui.fx(),
+    snap: () => ui.snap,
+    knob: (id, o) => { const O = opt(o); return ui.dKnob(id, O.label || '', O); },
+    menu: (id, items, o) => { const O = opt(o); return ui.dMenu(id, O.label || '', items, O); },
+    toggle: (id, o) => { const O = opt(o); return ui.dToggle(id, O.label || '', O.kind, O); },
+    seg: (id, o) => ui.dSeg(id, opt(o)),
+    dropTarget: (el, id) => { if (el && el.setAttribute && typeof id === 'string') { el.setAttribute('data-dest', id); ui.touchMenu(el); } return el; },
+    edit: (fn, o) => ui.edit(fn, opt(o)),
+    editFx: (fn, o) => ui.editFx(fn, opt(o)),
+    notify: text => ui.notify(text),
+    prefs: () => ui.prefs,
+    doc: ui.d,
+    num: (id, o) => { const O = opt(o); return ui.dNum(id, O.label || '', O); },
+    bind: w => ui.bind(w),
+    custom: fn => ui.custom(fn),
+    canvas: (cls, key, draw, extra) => ui.canvas(cls, key, draw, extra),
+    panel: (title, module, powerId, cls, o) => ui.panel(title, module, powerId, cls, o),
+    live: fn => { (ui.bp || ui.headPage).lives.push(fn); return fn; },
+    getN: id => ui.getN(id),
+    setN: (id, n, ph) => ui.setN(id, n, ph),
+    dragging: id => ui.held.has(id),
+    queue: () => { ui.fc = null; ui.queue(); },
+    dead: () => ui.dead,
+    paintSeq: () => ui.paintSeq || 0,
+    snapSeq: () => ui.snapSeq || 0,
+    prompt: (title, label, value, ok) => ui.promptText(title, label, value, ok),
+    popover: (key, anchor, title, make, sig) => ui.popover(key, anchor, title, make, sig),
+    shapes: () => ui.shapeLib(),
+    openWtEditor: o => ui.openWtEditor(o),
+    wt,
+  });
+}
 
 export class SerumUI {
   constructor(root, host) {
@@ -1009,7 +1479,8 @@ export class SerumUI {
     this.dead = false;
     this.pages = {};
     this.head = null;
-    this.headPage = { binds: [], canvases: [], editors: [] };
+    this.headPage = mkPage();
+    this.footPage = mkPage();         // the keyboard panel under every page (§13.2)
     this.bp = null;                   // page being built (widget factories register into it)
     this.page = '';
     this.snap = null;
@@ -1017,57 +1488,84 @@ export class SerumUI {
     this.dirty = false;
     this.nameOverride = null;
     this.recentSlot = new Map();
-    this.tables = new Map();          // table id → { state: 'loading' | 'ok' | 'missing', info }
-    this.noiseOv = new Map();         // noise id → { min, max } overview (Float32Array) | null
     this.offs = [];
     this.queued = false;
     this.ticking = false;
     this.modEls = [];
     this.edSel = 'lfo1';
     this.edDirty = true;
-    this.phaseDrag = [false, false];
+    this.held = new Set();            // destinations whose control is being dragged (last setN phase start / move)
+    this.gest = new Set();            // destinations whose drag gesture has changed the value (its end is an undo step)
+    this.noteGroup = 0;               // note groups seen in the snapshots (notes 0 → > 0), for the header render cache
+    this.editSeq = 0;                 // state edits made through the panel (the header render cache's patch version)
+    this.lastRender = null;           // the last header render handed back by host.renderLast (drag-export, §13.2.5)
+    this.plist = null;                // host.presets.list() cache (syncPreset)
     this.drag = null;
     this.overlay = null;
     this.rack = null;
+    this.mixer = null;
+    this.seqPages = {};
+    this.macPane = { arp: false, clip: false };
+    this.mxExp = false;
     this.capPrev = null;
-    this.capArm = [false, false];     // a.rand / b.rand edited here since the last capture check (§6.4)
+    this.capArm = [false, false, false];   // RAND (S1) / phMem (S2) of A / B / C edited here since the last capture check (§6.4)
     this.eatClick = null;             // { el, t }: the click that ends a Shift+Alt / Alt-drag gesture on el
     this.lfoGest = null;              // buses the LFO points linked when the current graph drag started
-    this.editorOsc = null;            // oscillator whose WT editor is open (0 | 1 | null), for the host (§9.9)
+    this.lfoTool = 'point';           // LFO drawing tool (§13.13; view state)
+    this.lfoSnap = false;             // PHASE ✓ Snap to Grid (§6.15.2; view state)
+    this.editorOsc = null;            // oscillator whose WT editor is open (0 | 1 | 2 | null), for the host (§9.9)
     this.fc = null;
     this.edSig = new WeakMap();       // graph editor → () => signature of what it draws
     this.edKey = new WeakMap();
     this.snapT = -1e9;
+    this.undo = undoStack(100);       // panel undo / redo (§13.2.4)
+    this.undoPend = null;             // label of the edit gesture whose snapshot is taken at the next paint
+    this.restoring = false;
+    this.touch = false;
+    this.kit = makeKit(this);         // the binding kit of the sub-panels (§11.14)
+    this.oscd = osc.oscData(this.kit);   // their wavetable / noise data (table cache, imports, conversions)
     this.prefs = normPrefs(this.store('get', PREFS_KEY, null));
     if (wk.setPrefs) wk.setPrefs({ tooltips: this.prefs.tooltips, dblClick: this.prefs.dblClick, wheel: this.prefs.wheel });
     if (wk.injectStyles) wk.injectStyles(this.d);
     injectSxStyles(this.d);
     const s = this.s();
-    if (s && s.ui && /^(lfo[1-8]|velo|note)$/.test(s.ui.mod)) this.edSel = s.ui.mod;
+    if (s && s.ui && EDIT_SRC.test(s.ui.mod)) this.edSel = s.ui.mod;
     this.el = mk(this.d, 'div', 'sx-root');
     this.el.id = this.uid;
     root.appendChild(this.el);
+    this.detectTouch();
     const RO = this.d.defaultView && this.d.defaultView.ResizeObserver || globalThis.ResizeObserver;
     this.ro = RO ? new RO(() => { for (const P of this.allPages()) for (const cv of P.canvases) cv.sized = false; this.queue(); }) : null;
     this.buildHead();
+    this.statusEl = mk(this.d, 'div', 'sx-status');
+    this.statusEl.setAttribute('role', 'status');
+    this.statusEl.setAttribute('aria-live', 'polite');
+    this.el.appendChild(this.statusEl);
     this.pageBox = mk(this.d, 'div', 'sx-pages');
     this.el.appendChild(this.pageBox);
+    this.buildFoot();
     this.installModLayer();
     this.browser = new PresetBrowser(this.el, this.host, {
       notify: t => this.notify(t),
       confirmLoad: () => this.confirmChange(),
       modified: () => this.dirty || !!this.nameOverride,
-      onLoad: () => { this.dirty = false; this.nameOverride = null; this.edDirty = true; this.refresh(); },
+      onLoad: () => { this.dirty = false; this.nameOverride = null; this.edDirty = true; this.oscd.forget(); this.markUndo('Load preset'); this.refresh(); },
+      changed: () => { this.plist = null; this.syncPreset(); this.queue(); },   // the list changed (delete, rename, import, ratings)
+      current: () => this.lastKey,   // the current key as the panel knows it (syncPreset), not re-read per browser action
+      hybrid: (keys, favor) => this.hybridize(keys, favor),
+      storage: this.host.storage,
     });
     // "Default WT view" (§9.7) for new tracks: the host creates them with withPrefs (os / author only), so a
     // sound that is still the untouched default opens in 3D when the preference says so (a view-only edit)
-    if (this.prefs.view3d && s && s.ui && arr(s.ui.view3d).every(v => !v) && isPristine(s)) this.uiEdit(st => { st.ui.view3d = [1, 1]; });
+    if (this.prefs.view3d && s && s.ui && arr(s.ui.view3d).every(v => !v) && isPristine(s)) this.uiEdit(st => { st.ui.view3d = arr(st.ui.view3d).map(() => 1); });
+    this.syncPreset();
     this.showPage(s && s.ui && PAGES.includes(s.ui.page) ? s.ui.page : 'osc');
+    this.undo.base(this.snapStr());
     if (this.host.monitor) this.host.monitor(true);
     if (this.d.addEventListener) {
       this.offs.push(on(this.d, 'visibilitychange', () => { if (this.host.monitor && !this.dead) this.host.monitor(!this.d.hidden); }));
     }
-    if (!globalThis.SerumDSP && wk.loadDSP) wk.loadDSP().then(() => { if (!this.dead) { this.fc = null; this.queue(); } });
+    if (!globalThis.SerumDSP && wk.loadDSP) wk.loadDSP().then(() => { if (!this.dead) { this.fc = null; this.queue(); } }, () => {});
   }
 
   /* ---------------------------------------------------------------- state access */
@@ -1085,21 +1583,52 @@ export class SerumUI {
   }
   getN(id) { return baseN(this.s(), this.fx(), id); }
   setN(id, n, ph) {
-    const d = destOf(id);
+    const fx = this.fx(), d = destOf(id) || rowOfDest(id, fx);
     if (!d) return;
-    const v = snapN(id, n), phase = ph || 'set', label = d.label;
+    const phase = ph || 'set', label = d.label || id, cur = this.getN(id);
+    let v = snapN(id, n, fx);
+    // LFO PHASE ✓ Snap to Grid (§6.15.2, §13.13): the base phase in multiples of 360/lfoGrid.x degrees while dragging
+    // only — typed, reset, wheel and keyboard values ('set') and a press without a move keep their value
+    if (this.lfoSnap && (phase === 'move' || (phase === 'end' && v !== cur)) && /^l([1-9]|10)\.phase$/.test(id)) {
+      const g = this.s() && this.s().lfoGrid, x = g && g.x >= 1 ? Math.round(g.x) : 1;
+      v = Math.round(clamp01(v) * x) / x;
+    }
+    // a value the control already has (a press, a click or a long-press without a move; a reset at the default) is no
+    // edit: no host edit (compile + patch), no '*' on the preset name, no undo step. A gesture whose moves changed the
+    // value still ends with its undo step. (Not for arp.* / clip.*: with EDIT ALL the value goes to every slot.)
+    if (fin(cur) && v === cur && !/^(arp|clip)\./.test(id)) {
+      if (phase === 'start') { this.gest.delete(id); this.held.add(id); }
+      else if (phase !== 'move') {
+        this.held.delete(id);
+        if (phase === 'end' && this.gest.delete(id)) this.markUndo(label, 'end');
+      }
+      return;
+    }
+    if (phase === 'start' || phase === 'move') this.gest.add(id); else this.gest.delete(id);
     if (id === 'a.warpMode' || id === 'b.warpMode') {
       const o = id === 'b.warpMode' ? 1 : 0;
-      this.edit(s => { if (core.warpChoice) core.warpChoice(s, o, Math.round(v * 22)); else s.p[id] = v; }, { label, phase });
-    } else if (isFxIdx(DEST_INDEX[id])) this.editFx(fx => { fx.p[id] = v; }, { label, phase });
-    else this.edit(s => { s.p[id] = v; }, { label, phase });
-    if (id === 'a.phase' || id === 'b.phase') this.phaseDrag[id === 'b.phase' ? 1 : 0] = phase === 'start' || phase === 'move';
-    if (id === 'a.rand' || id === 'b.rand') this.capArm[id === 'b.rand' ? 1 : 0] = true;   // phase capture (§6.4)
+      this.edit(s => { if (core.warpChoice) core.warpChoice(s, o, Math.round(v * 22)); else s.p[id] = v; syncS1(s, id); }, { label, phase });
+    } else if (isFxPar(id)) this.editFx(f => this.fxSet(f, id, v), { label, phase });
+    else if (VIRT_RE.test(id) && id !== 'arp.on' && id !== 'clip.on') this.edit(s => { virtSet(s, id, v); }, { label, phase });
+    else this.edit(s => { s.p[id] = v; syncS1(s, id); }, { label, phase });
+    if (phase === 'start' || phase === 'move') this.held.add(id); else this.held.delete(id);
+    const o = OSC_P.findIndex(k => id === k + '.rand');
+    if (o >= 0) this.capArm[o] = true;   // phase capture, S1 knob-end rule (§6.4)
+  }
+  // base n of an FX parameter into the FX state: v1 states keep fx.p; v2 instances through fxDest (§3.16.4)
+  fxSet(f, id, v) {
+    if (f && isObj(f.p) && (DEST_INDEX[id] !== undefined || !f.racks)) { f.p[id] = v; return; }
+    let r = null;
+    try { r = typeof core.fxDest === 'function' ? core.fxDest(id, f) : null; } catch (err) { r = null; }
+    if (r && r.inst && isObj(r.inst.p)) r.inst.p[r.pid] = v;
   }
   edit(fn, opts) {
     const o = Object.assign({ label: 'Edit' }, opts);
+    const pre = o.ui || o.seed || this.restoring || o.phase === 'move' ? null : this.phMemOf();   // phase capture arming (S2)
     if (this.host.edit) this.host.edit(fn, o);
-    if (!o.ui) this.dirty = true;
+    if (pre) this.armPhMem(pre);
+    if (!o.ui) { this.dirty = true; this.editSeq++; this.markUndo(o.label, o.phase); }
+    else if (!this.restoring) { this.uiRebase = true; this.queue(); }   // view edits that touch state outside s.ui (EDIT ALL …)
     this.rackDirty = true;
     this.fc = null;
     this.queue();
@@ -1107,7 +1636,8 @@ export class SerumUI {
   editFx(fn, opts, fromRack) {
     const o = Object.assign({ label: 'Edit FX' }, opts);
     if (this.host.editFx) this.host.editFx(fn, o); else { this.notify('FX editing is not available'); return; }
-    if (!o.ui) this.dirty = true;
+    if (!o.ui) { this.dirty = true; this.editSeq++; this.markUndo(o.label, o.phase); }
+    else if (!this.restoring) { this.uiRebase = true; this.queue(); }   // view edits inside the instances (MIX / LEVEL label …)
     if (!fromRack) this.rackDirty = true;
     this.fc = null;
     this.queue();
@@ -1130,8 +1660,8 @@ export class SerumUI {
   fmt(id, n) { return core.fmtParam(id, n, this.fctx()); }
   fctx() {
     if (this.fc) return this.fc;
-    const s = this.s(), i0 = this.tinfo(0), i1 = this.tinfo(1);
-    this.fc = { s, fx: this.fx(), bpm: this.bpm(), frames: [i0.F, i1.F], interp: [i0.interp, i1.interp], eff: this.snap ? this.snap.eff : undefined };
+    const s = this.s(), inf = [0, 1, 2].map(o => this.oscd.tinfo(o));
+    this.fc = { s, fx: this.fx(), bpm: this.bpm(), frames: inf.map(i => i.F), interp: inf.map(i => i.interp), eff: this.snap ? this.snap.eff : undefined };
     return this.fc;
   }
   parse(id, text) {
@@ -1143,6 +1673,154 @@ export class SerumUI {
     return m[2] ? clamp01(+m[1] / 100) : core.lawNorm(id, +m[1]);
   }
 
+  /* ---------------------------------------------------------------- panel undo / redo (§13.2.4) */
+  // the snapshot {s, fx} without the view state (ui), so a restore keeps the page, selections and zoom
+  snapStr() {
+    const s = this.s(), fx = this.fx();
+    if (!s) return null;
+    try { return JSON.stringify({ s: Object.assign({}, s, { ui: undefined }), fx: fx ? Object.assign({}, fx, { ui: undefined }) : null }); } catch (err) { return null; }
+  }
+  // an edit gesture ended (phase end / set): its snapshot is taken at the next paint (several edits of one action → one
+  // step); start / move phases wait for the end
+  markUndo(label, phase) {
+    if (this.restoring || phase === 'start' || phase === 'move') return;
+    this.undoPend = label || 'Edit';
+    this.queue();
+  }
+  flushUndo() {
+    if (this.dead) return;
+    if (!this.undoPend) {
+      // view-only edits ({ui: true}) that changed state outside s.ui / fx.ui (EDIT ALL, record mode, an FX instance's
+      // MIX / LEVEL label …) are folded into the current undo position: no step of their own, and syncOutside does not
+      // mistake them for an outside change
+      if (this.uiRebase) { this.uiRebase = false; const snap = this.snapStr(); if (snap && snap !== this.undo.top()) this.undo.retop(snap); }
+      return;
+    }
+    const label = this.undoPend, snap = this.snapStr();
+    this.undoPend = null;
+    this.uiRebase = false;
+    if (snap) this.undo.push(snap, label);
+  }
+  // The state was changed outside the panel (main.js: MIDI program change, MIDI CC, the app's project undo; refresh()
+  // is how the host tells the panel): the preset key is read again (header, Init override, dirty state) and a state
+  // that differs from the panel's undo position becomes an undo step of its own — 'Load preset' when the key changed —
+  // so the next panel undo steps back over that change instead of restoring what was there before it (§13.2.4).
+  // The panel's own pending edit (undoPend) is captured by its flush instead.
+  syncOutside() {
+    if (this.dead || this.restoring) return;
+    const loaded = this.syncPreset();
+    if (this.undoPend) return;
+    this.uiRebase = false;
+    const snap = this.snapStr();
+    if (snap && snap !== this.undo.top()) this.undo.push(snap, loaded ? 'Load preset' : 'External change');
+  }
+  // the current preset key (host.presets.current) → this.lastKey; true when it changed. The key is read here
+  // (refresh, the panel's own preset actions) and the list by presetList, both cached, never read per paint: main.js
+  // parses its whole user-preset store on each list() / current() call. A key change ends the Init override and the
+  // dirty state.
+  syncPreset() {
+    const pr = this.host.presets;
+    let key = null;
+    try { key = pr && pr.current ? pr.current() : null; } catch (err) { key = null; }
+    if (key === undefined) key = null;
+    const changed = this.lastKey !== undefined && key !== this.lastKey;
+    if (changed) { this.dirty = false; this.nameOverride = null; }
+    this.lastKey = key;
+    this.plistChecked = false;
+    return changed;
+  }
+  // the preset list changed (save, import, the browser's delete / rename / move / ratings): read it again when needed
+  presetsChanged() {
+    this.plist = null;
+    if (this.browser) this.browser.invalidate();
+  }
+  undoRedo(redo) {
+    this.flushUndo();
+    this.syncOutside();
+    // the step being undone / redone: a preset-like load re-seeds the FX rack's LFO phases like the load did (§4.2);
+    // any other step restores without a re-seed (a re-seed ducks every sounding modulated FX module and restarts its
+    // LFOs), unless the restored FX state has another instance layout
+    const lab = redo ? this.undo.redoLabel() : this.undo.label();
+    const snap = redo ? this.undo.redo() : this.undo.undo();
+    if (!snap) { this.notify(redo ? 'Nothing to redo' : 'Nothing to undo'); return false; }
+    let o = null;
+    try { o = JSON.parse(snap); } catch (err) { o = null; }
+    if (!o || !isObj(o.s)) return false;
+    const fx = this.fx(), now = this.snapStr(), cur = now ? JSON.parse(now) : null;
+    const sameS = !!cur && JSON.stringify(cur.s) === JSON.stringify(o.s);
+    const sameFx = !o.fx || !fx || (!!cur && JSON.stringify(cur.fx) === JSON.stringify(o.fx));
+    const seed = SEED_LABEL.test(lab || '') || (!sameFx && fxLayoutKey(fx) !== fxLayoutKey(o.fx));
+    const opt = seed ? { label: 'Undo', seed: true } : { label: 'Undo' };
+    this.restoring = true;
+    try {
+      if (!sameS) this.edit(s => { const ui = s.ui; this.replaceState(s, clone(o.s)); s.ui = ui; }, opt);
+      if (!sameFx) this.editFx(f => { const ui = f.ui; this.replaceState(f, clone(o.fx)); if (ui !== undefined) f.ui = ui; }, opt);
+      this.dirty = true;
+      this.oscd.forget();
+      this.refresh();
+      if (this.rack && this.rack.refresh) this.rack.refresh();
+    } finally { this.restoring = false; }
+    return true;
+  }
+
+  /* ---------------------------------------------------------------- touch (§13.1) */
+  detectTouch() {
+    const w = this.d.defaultView || globalThis;
+    let coarse = false;
+    try { coarse = !!(w.matchMedia && w.matchMedia('(pointer: coarse)').matches); } catch (err) { coarse = false; }
+    this.setTouch(coarse);
+    this.offs.push(on(this.el, 'pointerdown', e => {
+      if (e.pointerType === 'touch') { this.setTouch(true); this.touchTip(e.target); }
+    }, true));
+    this.offs.push(on(this.el, 'pointerup', e => { if (e.pointerType === 'touch') this.touchTipEnd(); }, true));
+    this.offs.push(on(this.el, 'pointercancel', e => { if (e.pointerType === 'touch') this.touchTipEnd(); }, true));
+  }
+  setTouch(t) {
+    if (this.touch === !!t && this.el.classList.contains('sx-touch') === !!t) return;
+    this.touch = !!t;
+    this.el.classList.toggle('sx-touch', this.touch);
+    if (this.waveBtn) this.waveBtn.draggable = !this.touch;
+  }
+  // touch has no hover: the tooltip of the touched control shows in the status line under the header (§13.1)
+  touchTip(t) {
+    const host = closest(t, '[data-dest]'), tile = closest(t, '[data-src]');
+    let text = '';
+    if (host && this.el.contains(host)) text = this.tipText(host.getAttribute('data-dest'));
+    else if (tile && this.el.contains(tile)) text = this.tileTip(tile.getAttribute('data-src'));
+    if (!text) return;
+    clearTimeout(this.tipT);
+    this.tipFor = host || tile;
+    this.statusEl.textContent = text;
+  }
+  touchTipEnd() {
+    if (!this.tipFor) return;
+    const el = this.tipFor;
+    clearTimeout(this.tipT);
+    this.tipT = setTimeout(() => {
+      if (this.tipFor !== el || this.dead) return;
+      this.tipFor = null;
+      this.statusEl.textContent = '';
+    }, 1500);
+  }
+  // while touching a control, its value line follows the drag
+  updateTouchTip() {
+    const el = this.tipFor;
+    if (!el || !el.getAttribute) return;
+    const id = el.getAttribute('data-dest'), t = id ? this.tipText(id) : '';
+    if (t && this.statusEl.textContent !== t) this.statusEl.textContent = t;
+  }
+
+  // "Help tooltips" preference (§13.10): off — the help texts (title attributes) of the panel, its popovers and
+  // overlays move to data-help (no native tooltip; the accessible names stay in aria-label); on — they come back.
+  // Run after every full paint while off (bound widgets may write their titles again) and when the preference changes.
+  applyHelp() {
+    const r = this.el;
+    if (!r || !r.querySelectorAll) return;
+    if (this.prefs.helpTips) {
+      for (const e of qsa(r, '[data-help]')) { e.setAttribute('title', e.getAttribute('data-help')); e.removeAttribute('data-help'); }
+    } else for (const e of qsa(r, '[title]')) { e.setAttribute('data-help', e.getAttribute('title')); e.removeAttribute('title'); }
+  }
+
   /* ---------------------------------------------------------------- widget factories */
   bind(w) { (this.bp || this.headPage).binds.push(w); return w; }
   decorate(w, idf, focusEl) {
@@ -1150,13 +1828,14 @@ export class SerumUI {
     if (wk.tooltip && el) wk.tooltip(el, () => this.tipText(idf()));
     return w;
   }
+  dRow(id) { return destOf(id) || rowOfDest(id, this.fx()) || DESTS[0]; }
   dKnob(id, label, opt) {
-    const O = opt || {}, idf = fnOf(id), d0 = destOf(idf());
+    const O = opt || {}, idf = fnOf(id), d0 = this.dRow(idf());
     const o = {
       dest: idf, label,
       get: () => this.getN(idf()),
       set: (n, ph) => this.setN(idf(), n, ph),
-      def: () => destOf(idf()).def,
+      def: () => this.dRow(idf()).def,
       fmt: n => this.fmt(idf(), n),
       parse: t => this.parse(idf(), t),
       steps: stepsOf(d0), size: O.size || 'md', bipolar: d0.ctr === 1,
@@ -1194,7 +1873,7 @@ export class SerumUI {
     return this.bind(this.decorate(w, idf, w.el.querySelector ? w.el.querySelector('.wk-mbtn') : null));
   }
   dNum(id, label, opt) {
-    const O = opt || {}, idf = fnOf(id), d = destOf(idf());
+    const O = opt || {}, idf = fnOf(id), d = this.dRow(idf());
     let w;
     if (typeof wk.numBox === 'function') {
       w = wk.numBox({ dest: idf, label, get: () => this.getN(idf()), set: (n, ph) => this.setN(idf(), n, ph), def: d.def,
@@ -1206,6 +1885,15 @@ export class SerumUI {
     }
     if (O.cls) w.el.classList.add(O.cls);
     return this.bind(this.decorate(w, idf, w.el.querySelector ? w.el.querySelector('.sx-nfv, [tabindex]') : null));
+  }
+  // segmented switch bound to an enum / int / bool destination: one button per step (labels O.items, else the
+  // formatted values)
+  dSeg(id, opt) {
+    const O = opt || {}, idf = fnOf(id), grid = () => gridOf(this.dRow(idf()));
+    const labels = () => Array.from({ length: grid() + 1 }, (_, k) => this.fmt(idf(), k / grid()));
+    const w = wk.seg({ dest: idf, label: O.label || '', items: O.items || labels, disabled: O.disabled,
+      get: () => Math.round(this.getN(idf()) * grid()), set: i => this.setN(idf(), grid() ? i / grid() : 0, 'set') });
+    return this.bind(this.decorate(w, idf));
   }
   pKnob(o) { return this.bind(wk.knob(Object.assign({ size: 'md' }, o))); }
   pToggle(o) { return this.bind(wk.toggle(Object.assign({ kind: 'led' }, o))); }
@@ -1220,18 +1908,23 @@ export class SerumUI {
     const d = destOf(id), hi = gridOf(d);
     return labels.map((label, k) => ({ v: k / hi, label, group: groups ? groups[k] : undefined }));
   }
+  row(...els) { const r = mk(this.d, 'div', 'sx-krow'); r.append(...els.filter(Boolean)); return r; }
 
   /* ---------------------------------------------------------------- tooltips */
   tipText(id) {
-    const s = this.s();
-    if (!s || !destOf(id)) return '';
-    const lines = [core.destLabel(id, s, this.fx()) + ': ' + this.fmt(id, this.getN(id))];
+    const s = this.s(), fx = this.fx();
+    if (!s || !rowOfDest(id, fx)) return '';
+    let lab = id;
+    try { lab = core.destLabel(id, s, fx); } catch (err) { lab = id; }
+    const lines = [lab + ': ' + this.fmt(id, this.getN(id))];
+    const r = rowOfDest(id, fx);
+    if (r && r.nomod) lines.push('reshapes the IR — not modulatable');
     return lines.concat(modTipLines(s, id)).join('\n');
   }
   tileTip(src) {
-    const s = this.s(), ds = tileDests(s, src);
-    return srcLabel(s, src) + (ds.length ? '\n' + ds.map(id => '→ ' + core.destLabel(id, s, this.fx())).join('\n')
-      : '\nDrag onto a control to modulate it');
+    const s = this.s(), ds = tileDests(s, src), fx = this.fx();
+    const lab = id => { try { return core.destLabel(id, s, fx); } catch (err) { return id; } };
+    return srcLabel(s, src) + (ds.length ? '\n' + ds.map(id => '→ ' + lab(id)).join('\n') : '\nDrag onto a control to modulate it');
   }
 
   /* ---------------------------------------------------------------- refresh / snapshot */
@@ -1242,25 +1935,28 @@ export class SerumUI {
   }
   refresh() {
     if (this.dead) return;
+    this.syncOutside();
     this.fc = null;
     this.edDirty = true;
     this.paint(true);
     if (this.page === 'fx' && this.rack && this.rack.refresh) this.rack.refresh();
   }
-  allPages() { return [this.headPage].concat(PAGES.map(p => this.pages[p]).filter(Boolean)); }
+  allPages() { return [this.headPage, this.footPage].concat(PAGES.map(p => this.pages[p]).filter(Boolean)); }
+  shownPages() { const P = this.pages[this.page]; return [this.headPage].concat(P ? [P] : [], [this.footPage]); }
   paint(full) {
     const s = this.s();
     if (!s || this.dead) return;
     this.fc = null;
     this.paintSeq = (this.paintSeq || 0) + 1;
-    const P = this.pages[this.page];
-    for (const w of this.headPage.binds) w.update();
-    if (P) for (const w of P.binds) w.update();
+    const shown = this.shownPages();
+    for (const P of shown) for (const w of P.binds) w.update();
     if (full || this.edDirty) {   // graph editors redraw when their inputs changed (signature) or on demand
       const force = this.edDirty;
       this.edDirty = false;
-      const eds = P ? P.editors.slice() : [];
+      const eds = [];
+      for (const P of shown) eds.push(...P.editors);
       if (this.pop && this.pop.ed) eds.push(this.pop.ed);
+      if (this.big && this.big.ed) eds.push(this.big.ed);
       for (const ed of eds) {
         if (!ed || !ed.refresh) continue;
         const f = this.edSig.get(ed), k = f ? f() : null;
@@ -1268,15 +1964,20 @@ export class SerumUI {
       }
     }
     if (full && this.rackDirty && this.page === 'fx' && this.rack && this.rack.refresh) { this.rackDirty = false; this.rack.refresh(); }
-    if (full) this.scanMods();
+    if (full) { this.scanMods(); if (!this.prefs.helpTips) this.applyHelp(); }
     this.paintMods(full);
     this.paintCanvases();
     this.updateVoices();
     this.checkCapture();
+    this.updateTouchTip();
+    this.flushUndo();
   }
   setSnapshot(msg) {
     this.smon = msg || null;
     this.snap = msg && msg.s ? msg.s : null;
+    const nn = this.snap && this.snap.notes > 0 ? 1 : 0;
+    if (nn && !this.snapNotes) this.noteGroup++;   // a new note group starts (the header render cache is stale)
+    this.snapNotes = nn;
     this.snapSeq = (this.snapSeq || 0) + 1;
     if (this.ticking || this.dead) return;
     const now = Date.now();
@@ -1293,17 +1994,25 @@ export class SerumUI {
     });
   }
   scanMods() {
-    const roots = [this.head], P = this.pages[this.page];
+    const roots = [this.head, this.footEl], P = this.pages[this.page];
     if (P) roots.push(P.el);
-    const s = this.s(), locked = new Set(s && s.locks ? arr(s.locks.p) : []);
+    if (this.pop && this.pop.box) roots.push(this.pop.box);
+    const s = this.s(), fx = this.fx(), L = s && s.locks ? s.locks : {}, locked = new Set(arr(L.p));
+    const lockedMod = new Set(arr(L.mod)), unp = new Set(arr(L.unp));
+    // eff indices depend on the FX layout only (fxDest walks the rack): memoised per layout key
+    let lk = '';
+    try { lk = fx && typeof core.fxLayout === 'function' ? core.fxLayout(fx).key : ''; } catch (err) { lk = ''; }
+    if (lk !== this.effKey || !this.effMemo) { this.effKey = lk; this.effMemo = new Map(); }
+    const M = this.effMemo, ei = id => { if (!M.has(id)) M.set(id, effIdx(id, fx)); return M.get(id); };
     this.modEls = [];
     for (const r of roots) {
+      if (!r) continue;
       for (const el of qsa(r, '[data-dest]')) {
-        if (!el.wk || typeof el.wk.setMod !== 'function') continue;
         const id = el.getAttribute('data-dest');
-        if (DEST_INDEX[id] === undefined) continue;
-        el.classList.toggle('sx-locked-ctl', locked.has(id));
-        this.modEls.push({ el, id, i: DEST_INDEX[id], arcs: null, had: true });
+        const dm = destModule(id), inLocked = !!(dm && lockedMod.has(dm) && !unp.has(id));
+        el.classList.toggle('sx-locked-ctl', locked.has(id) || inLocked);
+        if (!el.wk || typeof el.wk.setMod !== 'function' || !rowOfDest(id, fx)) continue;
+        this.modEls.push({ el, id, i: ei(id), arcs: null, had: true });
       }
     }
   }
@@ -1312,37 +2021,67 @@ export class SerumUI {
     for (const m of this.modEls) {
       if (full || !m.arcs) m.arcs = haloArcs(s, fx, m.id, sel);
       if (!m.arcs.length) { if (m.had) { m.el.wk.setMod(null); m.had = false; } continue; }
-      m.el.wk.setMod({ arcs: m.arcs, live: eff && fin(eff[m.i]) ? eff[m.i] : null });
+      m.el.wk.setMod({ arcs: m.arcs, live: eff && m.i >= 0 && fin(eff[m.i]) ? eff[m.i] : null });
       m.had = true;
     }
   }
   updateVoices() {
-    if (!this.vcEl) return;
-    const s = this.s(), sn = this.snap;
-    const on = id => (s.p[id] >= 0.5 ? 1 : 0), poly = s.voicing && s.voicing.mono ? 1 : (s.voicing ? s.voicing.poly : 8);
-    const x = sn ? sn.oscVoices | 0 : 0, y = sn ? sn.maxVoices | 0 : poly * (16 * on('a.on') + 16 * on('b.on') + on('s.on') + on('n.on'));
-    const t = x + ' / ' + y;
-    if (this.vcText !== t) {
-      this.vcText = t;
-      this.vcEl.textContent = '';
-      this.vcEl.append(mk(this.d, 'b', '', String(x)), ' / ' + y);
-      this.vcEl.setAttribute('aria-label', 'Voices ' + x + ' of ' + y);
+    if (this.vcEl) {
+      const s = this.s(), sn = this.snap;
+      const on = id => (this.getN(id) >= 0.5 ? 1 : 0), poly = s.voicing && s.voicing.mono ? 1 : (s.voicing ? s.voicing.poly : 8);
+      const x = sn ? sn.oscVoices | 0 : 0;
+      const y = sn ? sn.maxVoices | 0 : poly * (16 * (on('a.on') + on('b.on') + on('c.on')) + on('s.on') + on('n.on'));
+      const t = x + ' / ' + y;
+      if (this.vcText !== t) {
+        this.vcText = t;
+        this.vcEl.textContent = '';
+        this.vcEl.append(mk(this.d, 'b', '', String(x)), ' / ' + y);
+        this.vcEl.setAttribute('aria-label', 'Voices ' + x + ' of ' + y);
+      }
     }
-    const hot = !!(sn && sn.oscVoices > 128);
-    for (const el of this.uniEls || []) el.classList.toggle('sx-amber', hot);
+    // output meter: the Main channel peak of the snapshot (mix[9], dBFS over the last span, §6.20)
+    if (this.meter) {
+      const mx = this.snap && this.snap.mix, v = mx && mx.length > 9 && fin(mx[9]) ? mx[9] : -Infinity;
+      if (v !== this.meterV) { this.meterV = v; this.meter.set(v); }
+    }
+    // live callbacks (kit.live) of every page, told whether their page is on screen (§13.1: hidden pages are not painted;
+    // a callback may still carry functional work, e.g. the CLIP page's recording)
+    const shown = this.shownPages();
+    for (const P of this.allPages()) { const on = shown.includes(P); for (const f of P.lives) f(on); }
+    if (this.pop && this.popPage) for (const f of this.popPage.lives) f(true);
   }
-  // phase capture (§6.4): base RAND of an oscillator in Mem crossing 0.9995 upwards while notes sound. Only the
-  // user's own RAND edits on this panel count (capArm, set by setN): a state replaced by a preset load, a program
-  // change or the host's undo can cross the threshold too, and must keep the memSet it brings.
+  // the phase-memory menus of the oscillators and their memSet arrays (before an edit; armPhMem compares after it)
+  phMemOf() {
+    const s = this.s();
+    return s && Array.isArray(s.osc) ? s.osc.map(O => (isObj(O) ? { O, mem: O.phMem, set: O.memSet } : null)) : null;
+  }
+  // an edit of this panel (or a sub-panel through the kit) switched an oscillator's phase memory to Per Voice and left
+  // its memSet alone (a paste / swap / init brings its own): armed for the S2 capture of checkCapture (§6.4)
+  armPhMem(pre) {
+    const s = this.s();
+    if (!pre || !s || !Array.isArray(s.osc)) return;
+    pre.forEach((q, o) => {
+      const O = s.osc[o];
+      if (q && o < N_OSC && O === q.O && O.phMem === 'voice' && q.mem !== 'voice' && O.memSet === q.set) this.capArm[o] = true;
+    });
+  }
+  // phase capture (§6.4, captureDue): S1 mode, OSC A / B — base RAND crossing 0.9995 upwards while PHASE is Mem; S2
+  // mode and OSC C — phase memory switched to Per Voice; both while notes sound. Only the user's own edits on this panel
+  // count (capArm, set by setN for RAND and by edit for phMem): a state replaced by a preset load, a program change or
+  // an undo can make the same change, and must keep the memSet it brings. The capture edit lands in the same panel
+  // undo step as the edit that triggered it (one flush per paint).
   checkCapture() {
-    const s = this.s(), p = s.p, cur = { 'a.phase': p['a.phase'], 'a.rand': p['a.rand'], 'b.phase': p['b.phase'], 'b.rand': p['b.rand'] };
+    const s = this.s(), p = s.p, cur = { p: {}, osc: arr(s.osc).map(O => ({ phMem: isObj(O) ? O.phMem : undefined })), global: { s1: s1On(s) ? 1 : 0 } };
+    for (const k of OSC_P) { cur.p[k + '.phase'] = p[k + '.phase']; cur.p[k + '.rand'] = p[k + '.rand']; }
     const arm = this.capArm, due = captureDue(this.capPrev, cur, this.snap ? this.snap.notes : 0).filter(o => arm[o]);
     this.capPrev = cur;
-    arm[0] = arm[1] = false;
+    arm.fill(false);
     const mem = this.snap && this.snap.memNow;
-    if (!due.length || !mem || mem.length < 32) return;
+    if (!due.length || !mem) return;
+    const ok = due.filter(o => mem.length >= (o + 1) * 16);
+    if (!ok.length) return;
     this.edit(st => {
-      for (const o of due) st.osc[o].memSet = Array.from({ length: 16 }, (_, i) => Math.round(frac(mem[o * 16 + i]) * 1e6) / 1e6 % 1);
+      for (const o of ok) st.osc[o].memSet = Array.from({ length: 16 }, (_, i) => Math.round(frac(mem[o * 16 + i]) * 1e6) / 1e6 % 1);
     }, { label: 'Capture phases' });
     this.notify('Captured unison phases');
   }
@@ -1357,16 +2096,24 @@ export class SerumUI {
   }
   paintCanvases() {
     const P = this.pages[this.page];
-    if (!P) return;
-    for (const cv of P.canvases) this.paintCanvas(cv);
+    if (P) for (const cv of P.canvases) this.paintCanvas(cv);
+    for (const cv of this.footPage.canvases) this.paintCanvas(cv);
   }
   paintCanvas(cv) {
     if (!cv.sized) {
-      const r = cv.el.getBoundingClientRect(), dpr = (this.d.defaultView && this.d.defaultView.devicePixelRatio) || 1;
+      // device-pixel ratio capped at 2 (§13.1)
+      const r = cv.el.getBoundingClientRect(), dpr = Math.min(2, (this.d.defaultView && this.d.defaultView.devicePixelRatio) || 1);
+      cv.sized = true;
+      // a canvas in a hidden subtree (display: none — another oscillator type's view, a panel of a narrow layout) is
+      // neither drawn nor measured again until it is shown: the ResizeObserver (its box leaves 0 × 0) or showPage
+      // clear `sized` (§13.1 hidden content is not painted; displays redraw only on change)
+      cv.hid = !(r.width > 0 && r.height > 0);
+      if (cv.hid) { if (!this.ro) cv.sized = false; return; }   // no ResizeObserver: measured on every paint instead
       const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
       if (cv.el.width !== w || cv.el.height !== h) { cv.el.width = w; cv.el.height = h; }
-      cv.w = w; cv.h = h; cv.dpr = dpr; cv.sized = r.width > 0; cv.last = null;
+      cv.w = w; cv.h = h; cv.dpr = dpr; cv.last = null;
     }
+    if (cv.hid) return;
     let k;
     try { k = cv.key(); } catch (err) { k = Math.random(); }
     if (k === cv.last) return;
@@ -1380,12 +2127,39 @@ export class SerumUI {
     } catch (err) { warnOnce('draw' + cv.el.className, 'serum-ui: display draw failed', err); }
   }
 
-  /* ---------------------------------------------------------------- header (§9.2) */
+  /* ---------------------------------------------------------------- header (§13.2) */
   buildHead() {
     const d = this.d, H = mk(d, 'div', 'sx-head');
     this.head = H;
     this.bp = this.headPage;
-    H.appendChild(logo(d));
+    // wave icon: render the last played note group (§13.2.5); Shift: download the preset; Alt: the Renders folder
+    const wave = btn(d, 'sx-hbtn sx-wave', icon(d, 'wave'), 'Render the last played notes to a WAV file (Shift: download the preset; Alt: open Renders)', e => {
+      // the click that ends a drag acted on in dragstart (below) renders nothing more
+      if (Date.now() - this.waveDragT < 1000) { this.waveDragT = -1e9; return; }
+      this.renderLast(e);
+    });
+    // drag-export (§13.2.5, deviation 21): a desktop drag hands the most recent render of the current note group and
+    // patch to the drop target through the DownloadURL drag type (Chromium: into a DAW or a folder); while there is
+    // none (nothing rendered yet, a newer note group, an edit since), or with Shift / Alt, the drag acts as a click.
+    // Touch devices keep the plain button (long-press = menus).
+    wave.draggable = !this.touch;
+    wave.addEventListener('dragstart', e => {
+      const m = wk.modifierBar && wk.modifierBar.mods ? wk.modifierBar.mods(e) : { alt: !!e.altKey, shift: !!e.shiftKey };
+      const R = this.lastRender, dt = e.dataTransfer;
+      if (R && !m.alt && !m.shift && R.notes === this.noteGroup && R.edits === this.editSeq && dt && typeof dt.setData === 'function') {
+        try {
+          dt.setData('DownloadURL', R.type + ':' + R.name + ':' + R.url);
+          dt.setData('text/uri-list', R.url);
+          dt.effectAllowed = 'copy';
+          return;
+        } catch (err) { /* no DownloadURL support: a click */ }
+      }
+      e.preventDefault();
+      this.waveDragT = Date.now();
+      this.renderLast(e);
+    });
+    this.waveBtn = wave;
+    this.waveDragT = -1e9;
     const tabs = mk(d, 'div', 'sx-tabs');
     tabs.setAttribute('role', 'tablist');
     tabs.setAttribute('aria-label', 'Synth pages');
@@ -1393,6 +2167,7 @@ export class SerumUI {
     PAGES.forEach((p, i) => {
       const b = btn(d, 'sx-tab', PAGE_LABEL[p], null, () => this.setPage(p));
       b.setAttribute('role', 'tab');
+      b.setAttribute('data-page', p);
       b.id = this.uid + '-tab-' + p;
       b.setAttribute('aria-controls', this.uid + '-page-' + p);
       b.addEventListener('keydown', e => {
@@ -1407,15 +2182,14 @@ export class SerumUI {
       this.tabBtns[p] = b;
     });
     const pa = mk(d, 'div', 'sx-preset');
-    const save = btn(d, 'sx-hbtn', icon(d, 'save'), 'Save preset', () => this.savePresetDialog());
+    const save = btn(d, 'sx-hbtn', icon(d, 'save'), 'Save preset (Alt-click: overwrite)', e => this.savePresetUI(e));
     const prev = btn(d, 'sx-hbtn', '◀', 'Previous preset in category', () => this.stepPresetUI(-1));
     const name = btn(d, 'sx-hbtn sx-pname', '', 'Browse presets', () => this.browser.open());
     const next = btn(d, 'sx-hbtn', '▶', 'Next preset in category', () => this.stepPresetUI(1));
-    pa.append(save, prev, name, next);
+    const info = btn(d, 'sx-hbtn', icon(d, 'info'), 'Artist, description and tags', () => this.authorDialog());
+    pa.append(save, prev, name, next, info);
     this.custom(() => {
-      // a preset loaded from outside (program change, host undo) ends the Init override and the dirty state
-      const pr = this.host.presets, key = pr && pr.current ? pr.current() : null;
-      if (key !== this.lastKey) { if (this.lastKey !== undefined) { this.dirty = false; this.nameOverride = null; } this.lastKey = key; }
+      // the key and the list are cached (syncPreset: refresh() and the panel's own preset actions), not read per paint
       const cur = this.currentPreset(), nm = cur ? cur.name : this.nameOverride || 'Init';
       const t = (cur && cur.cat ? cur.cat + ' · ' : '') + nm + (this.dirty ? ' *' : '');
       if (name.textContent !== t) {
@@ -1425,14 +2199,35 @@ export class SerumUI {
         name.setAttribute('aria-label', 'Preset ' + nm + (this.dirty ? ' (edited)' : '') + ', browse presets');
       }
     });
+    // panel undo / redo (§13.2.4)
+    const ur = mk(d, 'div', 'sx-undo');
+    const ub = btn(d, 'sx-hbtn', icon(d, 'undo'), 'Undo (Cmd/Ctrl-Z)', () => this.undoRedo(false));
+    const rb = btn(d, 'sx-hbtn', icon(d, 'redo'), 'Redo (Shift-Cmd/Ctrl-Z)', () => this.undoRedo(true));
+    ur.append(ub, rb);
+    this.custom(() => {
+      ub.disabled = !this.undo.canUndo() && !this.undoPend;
+      rb.disabled = !this.undo.canRedo();
+      const ul = this.undo.label(), rl = this.undo.redoLabel();
+      ub.title = 'Undo' + (ul ? ' ' + ul : '') + ' (Cmd/Ctrl-Z)';
+      rb.title = 'Redo' + (rl ? ' ' + rl : '') + ' (Shift-Cmd/Ctrl-Z)';
+    });
     const menuB = btn(d, 'sx-hbtn', 'Menu', 'Main menu', () => this.mainMenu(menuB));
     menuB.setAttribute('aria-haspopup', 'menu');
-    const info = btn(d, 'sx-hbtn', icon(d, 'info'), 'Author and notes', () => this.authorDialog());
+    // touch modifier latches (wk.modifierBar; shown on touch devices, §13.1)
+    let mkeys = null;
+    if (typeof wk.modifierBar === 'function') {
+      try { mkeys = wk.modifierBar({}); mkeys.el.classList.add('sx-mkeys'); this.mkeys = mkeys; } catch (err) { mkeys = null; }
+    }
     this.vcEl = mk(d, 'span', 'sx-vc');
-    this.vcEl.title = 'Oscillator voices sounding / maximum';
+    this.vcEl.title = 'Oscillator voices sounding (grains included) / maximum';
     const master = mk(d, 'div', 'sx-master');
     master.appendChild(this.dKnob('g.master', 'MASTER', { size: 'sm' }).el);
-    H.append(tabs, pa, menuB, info, this.vcEl, master);
+    if (typeof wk.meter === 'function') {
+      try { this.meter = wk.meter({ ch: 1, label: 'Output', floor: -60, top: 6 }); master.appendChild(this.meter.el); } catch (err) { this.meter = null; }
+    }
+    H.append(wave, logo(d), tabs, pa, ur, menuB);
+    if (mkeys) H.appendChild(mkeys.el);
+    H.append(this.vcEl, master);
     this.el.appendChild(H);
     this.bp = null;
   }
@@ -1449,13 +2244,20 @@ export class SerumUI {
       el.id = this.uid + '-page-' + p;
       el.setAttribute('role', 'tabpanel');
       el.setAttribute('aria-labelledby', this.uid + '-tab-' + p);
-      const P = { el, binds: [], canvases: [], editors: [] };
+      const P = mkPage(el);
       this.pages[p] = P;
       this.pageBox.appendChild(el);
       this.bp = P;
       try {
-        if (p === 'osc') this.buildOsc(el); else if (p === 'fx') this.buildFx(el);
-        else if (p === 'matrix') this.buildMatrix(el); else this.buildGlobal(el);
+        if (p === 'osc') this.buildOsc(el);
+        else if (p === 'mix') this.buildMix(el);
+        else if (p === 'fx') this.buildFx(el);
+        else if (p === 'matrix') this.buildMatrix(el);
+        else if (p === 'arp' || p === 'clip') this.buildSeq(el, p);
+        else this.buildGlobal(el);
+      } catch (err) {
+        console.error('serum-ui: page ' + p, err);
+        el.appendChild(mk(this.d, 'p', 'sx-placeholder', 'This page could not be built (' + (err && err.message) + ')'));
       } finally { this.bp = null; }
     }
     for (const k of PAGES) {
@@ -1469,30 +2271,70 @@ export class SerumUI {
     this.paint(true);
     if (p === 'fx' && this.rack && this.rack.refresh) this.rack.refresh();
   }
+  // the keyboard panel under every page (§13.9; sx-ui-seq KeyboardPanel), collapsible to a 40 px strip
+  buildFoot() {
+    this.footEl = mk(this.d, 'div', 'sx-foot');
+    this.el.appendChild(this.footEl);
+    this.footPage.el = this.footEl;
+    if (typeof seq.KeyboardPanel !== 'function') return;
+    this.bp = this.footPage;
+    try { this.kbd = new seq.KeyboardPanel(this.footEl, this.kit); } catch (err) { console.error('serum-ui: keyboard panel', err); this.kbd = null; } finally { this.bp = null; }
+  }
 
-  /* ---------------------------------------------------------------- presets in the header (§9.10) */
-  presetList() { const pr = this.host.presets; return pr && pr.list ? arr(pr.list()) : []; }
+  /* ---------------------------------------------------------------- presets in the header (§9.10, §13.11) */
+  // host.presets.list(), cached until presetsChanged (save, import, the browser's changes)
+  presetList() {
+    if (!this.plist) { const pr = this.host.presets; this.plist = pr && pr.list ? arr(pr.list()) : []; }
+    return this.plist;
+  }
+  // the current preset's row; a key missing from the cached list (a preset saved or imported outside the panel) reads
+  // the list again, once per syncPreset
   currentPreset() {
-    const pr = this.host.presets;
-    if (this.nameOverride || !pr || !pr.current) return null;
-    const k = pr.current();
-    return k === null || k === undefined ? null : this.presetList().find(p => p.key === k) || null;
+    const k = this.lastKey;
+    if (this.nameOverride || k === null || k === undefined) return null;
+    let r = this.presetList().find(p => p.key === k) || null;
+    if (!r && !this.plistChecked) { this.plistChecked = true; this.plist = null; r = this.presetList().find(p => p.key === k) || null; }
+    return r;
   }
   confirmChange() {
     if (!this.prefs.askPreset || !this.dirty) return true;
     const cur = this.currentPreset(), nm = cur ? cur.name : this.nameOverride || 'Init';
     return askConfirm(this.d, 'Discard changes to “' + nm + '”?');
   }
-  stepPresetUI(dir) {
+  loadPreset(key) {
     const pr = this.host.presets;
-    if (!pr || !pr.load) return;
-    const list = sortPresets(this.presetList(), this.browser.state()), cur = this.currentPreset();
-    const key = stepPreset(list, cur ? cur.key : null, dir, cur ? cur.cat : null);
-    if (key === null || (cur && key === cur.key) || !this.confirmChange()) return;
+    if (!pr || !pr.load || key === null || key === undefined) return false;
     pr.load(key);
     this.dirty = false;
     this.nameOverride = null;
+    this.oscd.forget();
+    this.markUndo('Load preset');
     this.refresh();
+    return true;
+  }
+  stepPresetUI(dir) {
+    const pr = this.host.presets;
+    if (!pr || !pr.load) return;
+    const list = sortPresets(this.browser.rows(), this.browser.state()), cur = this.currentPreset();
+    const key = stepPreset(list, cur ? cur.key : null, dir, cur ? cur.cat : null);
+    if (key === null || (cur && key === cur.key) || !this.confirmChange()) return;
+    this.loadPreset(key);
+  }
+  // Save (Alt-click / Alt latch: overwrite the current user preset silently, §13.11)
+  savePresetUI(e) {
+    const alt = !!(e && (e.altKey || (wk.modifierBar && wk.modifierBar.mods && wk.modifierBar.mods(e).alt)));
+    const pr = this.host.presets, cur = this.currentPreset();
+    if (alt && pr && pr.save && cur && cur.user) {
+      if (wk.modifierBar && wk.modifierBar.consume) wk.modifierBar.consume();
+      pr.save({ name: cur.name, cat: cur.cat || 'User', overwrite: true });
+      this.dirty = false;
+      this.nameOverride = null;
+      this.notify('Saved “' + cur.name + '”');
+      this.presetsChanged();
+      this.refresh();
+      return;
+    }
+    this.savePresetDialog();
   }
   savePresetDialog() {
     const pr = this.host.presets;
@@ -1517,30 +2359,173 @@ export class SerumUI {
         pr.save({ name, cat: catI.value.trim() || 'User' });
         this.dirty = false;
         this.nameOverride = null;
+        this.presetsChanged();
         this.refresh();
         return true;
       } },
     ]);
   }
+  revertPreset() {
+    const pr = this.host.presets, k = pr && pr.current ? pr.current() : null;
+    if (k === null || k === undefined || !pr.load) { this.notify('Nothing to revert to'); return; }
+    if (!this.confirmChange()) return;
+    this.loadPreset(k);
+    this.notify('Reverted to the saved preset');
+  }
+  // ARTIST / DESC (§13.2 header, §13.11): author, description (notes) and tags of the sound
   authorDialog() {
     const d = this.d, s = this.s(), body = mk(d, 'div');
-    const a = mk(d, 'input'), n = mk(d, 'textarea');
+    const a = mk(d, 'input'), n = mk(d, 'textarea'), t = mk(d, 'input');
     a.type = 'text'; a.maxLength = 64; a.value = s.author || '';
     n.maxLength = 2000; n.value = s.notes || '';
-    const l1 = mk(d, 'label', '', 'Author'), l2 = mk(d, 'label', '', 'Notes');
-    l1.appendChild(a); l2.appendChild(n);
-    body.append(l1, l2);
+    t.type = 'text'; t.maxLength = 400; t.value = arr(s.tags).join(', ');
+    const l1 = mk(d, 'label', '', 'Artist'), l2 = mk(d, 'label', '', 'Description'), l3 = mk(d, 'label', '', 'Tags (comma separated)');
+    l1.appendChild(a); l2.appendChild(n); l3.appendChild(t);
+    body.append(l1, l2, l3);
     this.dialog('Preset Info', body, [
       { label: 'Cancel' },
       { label: 'Done', primary: true, action: () => {
-        const au = a.value.slice(0, 64), no = n.value.slice(0, 2000), st = this.s();
-        if (au !== st.author || no !== st.notes) this.edit(x => { x.author = au; x.notes = no; }, { label: 'Preset info' });
+        const au = a.value.slice(0, 64), no = n.value.slice(0, 2000), tg = tagList(t.value.split(',')).slice(0, 16), st = this.s();
+        if (au !== st.author || no !== st.notes || JSON.stringify(tg) !== JSON.stringify(arr(st.tags))) {
+          this.edit(x => { x.author = au; x.notes = no; x.tags = tg; }, { label: 'Preset info' });
+        }
         return true;
       } },
     ]);
   }
+  // Hybridize (§13.11, inv B25): the parents' preset objects → serum-core hybridize → applied like a preset load (locks
+  // hold); the sound is named "Hybrid" until saved
+  hybridize(keys, favor) {
+    if (!this.need('hybridize')) return false;
+    const pr = this.host.presets, get = k => {
+      if (pr && typeof pr.get === 'function') { try { const p = pr.get(k); if (p) return p; } catch (err) { /* host */ } }
+      const m = /^f:(.*)$/.exec(String(k));
+      return m ? arr(core.FACTORY_PRESETS).find(p => p && p.name === m[1]) || null : null;
+    };
+    // keys[0] is the favoured preset (hybridPick). A preset the host cannot hand over (a user preset without
+    // host.presets.get) is skipped with a notice — and when it is the favoured one, Hybridize Favoring refuses rather
+    // than favouring another parent; favor = the favoured parent's index among the resolved ones.
+    const want = arr(keys), got = want.map(k => ({ k, p: get(k) })).filter(x => x.p), parents = got.map(x => x.p);
+    const skipped = want.length - parents.length;
+    let fav;
+    if (favor) {
+      fav = got.findIndex(x => x.k === want[0]);
+      if (fav < 0) { this.notify('Hybridize: the selected preset cannot be read here'); return false; }
+    }
+    if (parents.length < 2) { this.notify('Hybridize needs at least two presets' + (skipped ? ' (' + skipped + ' could not be read)' : '')); return false; }
+    if (!this.confirmChange()) return false;
+    const seed = (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
+    let res = null;
+    try { res = core.hybridize(parents, { seed, favor: favor ? fav : undefined }); } catch (err) { console.error(err); res = null; }
+    if (!res || !res.s) { this.notify('Hybridize failed'); return false; }
+    const next = core.applyPreset(this.s(), { name: 'Hybrid', v: { s: res.s }, fx: res.fx }, { midiFromPreset: this.prefs.midiFromPreset });
+    // FX (v2 rule, §11.2): applyPresetFx with the new Serum state — its rows follow renamed instances (rewritten in place
+    // before the state is applied), locked racks and locked parameters keep theirs
+    let nf = null;
+    if (this.fx() && res.fx && core.applyPresetFx) { try { nf = core.applyPresetFx(this.fx(), res.fx, next); } catch (err) { nf = null; } }
+    this.edit(s => { const ui = s.ui; this.replaceState(s, next); s.ui = ui; }, { label: 'Hybridize', seed: true });
+    if (nf) this.editFx(f => { const fui = f.ui; this.replaceState(f, nf); if (fui !== undefined) f.ui = fui; }, { label: 'Hybridize', seed: true });
+    this.nameOverride = 'Hybrid';
+    this.dirty = true;
+    this.oscd.forget();
+    this.refresh();
+    this.notify('Hybrid of ' + parents.map(p => p.name).join(', ') + (skipped ? ' (' + skipped + ' preset' + (skipped > 1 ? 's' : '') + ' could not be read)' : ''));
+    return true;
+  }
+
+  /* ---------------------------------------------------------------- render last note (§13.2.5) */
+  renderLast(e) {
+    const m = wk.modifierBar && wk.modifierBar.mods ? wk.modifierBar.mods(e) : { alt: !!(e && e.altKey), shift: !!(e && e.shiftKey) };
+    if (wk.modifierBar && wk.modifierBar.consume) wk.modifierBar.consume();
+    if (m.alt) { this.rendersMenu(e && e.currentTarget); return; }
+    if (typeof this.host.renderLast !== 'function') { this.notify('Rendering is not available'); return; }
+    if (!m.shift) this.notify('Rendering…');
+    // a render the host hands back ({name, blob} or {name, url}; optional — §11.15 only promises the download) is kept
+    // for the drag-export of the same note group and patch (deviation 21)
+    const notes = this.noteGroup, edits = this.editSeq;
+    Promise.resolve(this.host.renderLast({ shift: !!m.shift })).then(r => { if (!m.shift && !this.dead) this.keepRender(r, notes, edits); },
+      err => this.notify((err && err.message) || 'Play a note first'));
+  }
+  keepRender(r, notes, edits) {
+    if (!isObj(r) || typeof r.name !== 'string') return;
+    const U = (this.d.defaultView && this.d.defaultView.URL) || globalThis.URL;
+    let url = typeof r.url === 'string' ? r.url : null, own = false;
+    if (!url && r.blob && U && typeof U.createObjectURL === 'function') { try { url = U.createObjectURL(r.blob); own = true; } catch (err) { url = null; } }
+    if (!url) return;
+    this.dropRender();
+    const name = /\.wav$/i.test(r.name) ? r.name : r.name + '.wav';
+    this.lastRender = { name: name.replace(/:/g, ' '), url, own, type: (r.blob && r.blob.type) || 'audio/wav', notes, edits };
+  }
+  dropRender() {
+    const R = this.lastRender, U = (this.d.defaultView && this.d.defaultView.URL) || globalThis.URL;
+    this.lastRender = null;
+    if (R && R.own && U && typeof U.revokeObjectURL === 'function') { try { U.revokeObjectURL(R.url); } catch (err) { /* revoked */ } }
+  }
+  // Alt-click on the wave icon: the Renders folder of the sample store → load into the selected oscillator as a Sample
+  rendersMenu(anchor) {
+    const S = this.host.smp, o = this.selOsc();
+    const list = S && typeof S.list === 'function' ? arr(S.list('sample')).filter(x => x && x.folder === 'Renders') : [];
+    const items = list.length ? list.map(x => ({ label: x.name, action: () => this.edit(s => {
+      const O = s.osc[o];
+      if (!['sample', 'gran', 'spec'].includes(O.type)) O.type = 'sample';
+      O.smp = x.id;
+    }, { label: 'Load render' }) })) : [{ label: '(no renders yet)', disabled: true }];
+    const r = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : { left: 0, bottom: 0 };
+    wk.contextMenu(r.left, r.bottom + 2, [{ label: 'Renders → OSC ' + OSC_L[o], disabled: true }, { sep: true }].concat(items), { anchor });
+  }
+  selOsc() { const s = this.s(), o = s && s.ui ? s.ui.osc | 0 : 0; return o >= 0 && o < N_OSC ? o : 0; }
 
   /* ---------------------------------------------------------------- dialogs / overlays */
+  // Anchored popover holding one editor (remap curves, matrix curves, OSC MAPPING …): make(box) builds the editor into
+  // the box and returns it (refresh / destroy); sig() = a signature of what it draws (repaint on change). Opening the
+  // popover of the same key again closes it; Escape, ✕ or a press outside close it. Returns { o: key, ed, close } | null.
+  popover(key, anchor, title, make, sig) {
+    if (this.pop) { const same = this.pop.o === key; this.pop.close(); if (same) return null; }
+    const d = this.d, box = mk(d, 'div', 'sx-pop');
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', title);
+    const hd = mk(d, 'div', 'sx-edhead');
+    hd.append(mk(d, 'span', 'sx-ttl', String(title).toUpperCase()), mk(d, 'span', 'sx-grow'));
+    const x = btn(d, 'sx-hbtn', '✕', 'Close', () => P.close());
+    hd.appendChild(x);
+    const eb = mk(d, 'div', 'sx-edbox');
+    box.append(hd, eb);
+    const er = this.el.getBoundingClientRect(), ar = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : er;
+    box.style.left = Math.max(8, Math.min(ar.left - er.left, er.width - 456)) + 'px';
+    box.style.top = (ar.bottom - er.top + 4) + 'px';
+    this.el.appendChild(box);
+    const prevBp = this.bp;
+    this.bp = this.popPage = mkPage(box);
+    let ed;
+    try { ed = make(eb); } finally { this.bp = prevBp; }
+    // an editor (a class instance: CurveEditor, PZEditor, OscMapEditor …) rather than a plain pane object: full screen
+    // below 1100 px (CSS .sx-pop-ed, §13.2 Overlays)
+    const isEd = !!ed && typeof ed === 'object' && Object.getPrototypeOf(ed) !== Object.prototype;
+    if (isEd) box.classList.add('sx-pop-ed');
+    const binds = this.popPage.binds;
+    const offs = [
+      on(this.d, 'pointerdown', e => { if (!box.contains(e.target) && !(anchor && anchor.contains && anchor.contains(e.target)) && !closest(e.target, '.wk-ctx, .wk-pop')) P.close(); }, true),
+      on(box, 'keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); P.close(); if (anchor && anchor.focus) anchor.focus(); } }),
+    ];
+    if (ed && sig) this.edSig.set(ed, sig);
+    // widgets bound inside the popover repaint with it (a custom bind on the editor's refresh)
+    const ed2 = binds.length ? { refresh: () => { for (const w of binds) w.update(); if (ed && ed.refresh) ed.refresh(); }, destroy: () => { if (ed && ed.destroy) ed.destroy(); } } : ed;
+    if (ed2 !== ed && sig) this.edSig.set(ed2, sig);
+    const P = { o: key, ed: ed2, inner: ed, box, close: () => {
+      offs.forEach(f => f());
+      if (ed2 && ed2.destroy) ed2.destroy();
+      if (ed) { this.edSig.delete(ed); this.edKey.delete(ed); }
+      if (ed2) { this.edSig.delete(ed2); this.edKey.delete(ed2); }
+      box.remove();
+      if (this.pop === P) this.pop = null;
+    } };
+    this.pop = P;
+    x.focus();
+    this.scanMods();
+    if (isEd) fullScreenOverlay(this.el, box);
+    else if (this.el.getBoundingClientRect().width < 1100 && typeof box.scrollIntoView === 'function') { try { box.scrollIntoView({ block: 'nearest' }); } catch (err) { /* no layout */ } }
+    return P;
+  }
   // Full-panel overlay (role=dialog, Escape closes, focus restored). Returns { el, close }.
   overlayOpen(cls, label, onClose) {
     if (this.overlay) this.overlay.close();
@@ -1561,6 +2546,7 @@ export class SerumUI {
     ov.addEventListener('keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); O.close(); } });
     this.el.appendChild(ov);
     this.overlay = O;
+    fullScreenOverlay(this.el, ov);
     return O;
   }
   dialog(title, body, buttons) {
@@ -1593,10 +2579,17 @@ export class SerumUI {
     this.dialog(title, body, [{ label: 'Cancel' }, { label: 'OK', primary: true, action: () => ok(i.value) }]);
     if (i.select) i.select();
   }
+  confirmDlg(title, text, ok) {
+    const body = mk(this.d, 'div');
+    body.appendChild(mk(this.d, 'p', '', text));
+    this.dialog(title, body, [{ label: 'Cancel' }, { label: 'OK', primary: true, action: () => { ok(); return true; } }]);
+  }
   enterValue(id, el) {
     const w = el && el.wk;
     if (w && typeof w.edit === 'function') { if (w.focus) w.focus(); w.edit(); return; }
-    this.promptText('Enter Value', core.destLabel(id, this.s(), this.fx()), this.fmt(id, this.getN(id)), t => {
+    let lab = id;
+    try { lab = core.destLabel(id, this.s(), this.fx()); } catch (err) { lab = id; }
+    this.promptText('Enter Value', lab, this.fmt(id, this.getN(id)), t => {
       const n = this.parse(id, t);
       if (n === null || !fin(n)) { this.notify('Could not read “' + t + '”'); return false; }
       this.setN(id, n, 'set');
@@ -1604,12 +2597,49 @@ export class SerumUI {
     });
   }
 
-  /* ---------------------------------------------------------------- mod layer (§9.4) */
+  /* ---------------------------------------------------------------- mod layer (§9.4, §13.6) */
+  // touch long-press (500 ms, §13.1) on a plain kit.dropTarget element → a contextmenu event at the touch point, so the
+  // element's own menu or the panel's knob menu (onCtx) opens as on a right-click; wk widgets have their own long-press
+  touchMenu(el) {
+    if (!el || el.wk || !el.addEventListener) return;
+    if (!this.lpEls) this.lpEls = new WeakSet();
+    if (this.lpEls.has(el)) return;
+    this.lpEls.add(el);
+    longPress(el, (x, y) => {
+      const w = this.d.defaultView, E = (w && w.MouseEvent) || globalThis.MouseEvent || globalThis.Event;
+      if (typeof E !== 'function' || this.dead) return;
+      el.dispatchEvent(new E('contextmenu', { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 2 }));
+    });
+  }
   installModLayer() {
     const el = this.el;
     this.offs.push(on(el, 'contextmenu', e => this.onCtx(e)));
     this.offs.push(on(el, 'pointerdown', e => this.onCapDown(e), true));
     this.offs.push(on(el, 'click', e => this.onCapClick(e), true));
+    this.offs.push(on(el, 'keydown', e => this.onKey(e)));
+  }
+  // hardware keys (§13.1): Cmd/Ctrl-Z / Shift-Cmd/Ctrl-Z (panel undo / redo), Alt/Option-F (expand FX / matrix)
+  onKey(e) {
+    if (!this.prefs.keys || e.defaultPrevented) return;
+    const t = e.target, tag = t && t.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable) || closest(t, '.sx-ov')) return;
+    const mod = e.metaKey || e.ctrlKey, k = String(e.key || '').toLowerCase();
+    if (mod && !e.altKey && (k === 'z' || k === 'y')) {
+      e.preventDefault();
+      this.undoRedo(k === 'y' || e.shiftKey);
+    } else if (e.altKey && !mod && (k === 'f' || e.code === 'KeyF')) {
+      e.preventDefault();
+      this.toggleExpand();
+    }
+  }
+  toggleExpand() {
+    if (this.page === 'fx' && this.rack) {
+      if (typeof this.rack.toggleExpand === 'function') this.rack.toggleExpand();
+      else if (typeof this.rack.expand === 'function') this.rack.expand();
+    } else if (this.page === 'matrix') {
+      this.mxExp = !this.mxExp;
+      if (this.pages.matrix) this.pages.matrix.el.classList.toggle('sx-mxexp', this.mxExp);
+    }
   }
   onCtx(e) {
     const t = e.target, host = closest(t, '[data-dest]');
@@ -1618,52 +2648,121 @@ export class SerumUI {
     this.destMenu(host.getAttribute('data-dest'), e.clientX, e.clientY, host);
   }
   destMenu(id, x, y, el) {
-    if (DEST_INDEX[id] === undefined) return;
+    const fx = this.fx();
+    if (!rowOfDest(id, fx)) return;
     const s = this.s(), module = el && el.getAttribute ? el.getAttribute('data-module') : null;
     const caps = { midi: typeof this.host.midiLearn === 'function', module: module || undefined,
-      paste: !!(module && CLIP && CLIP.kind === modKind(module)) };
-    const items = knobMenuItems(s, this.fx(), id, caps);
-    wk.contextMenu(x, y, this.menuActions(items, id, el, module), { anchor: focusable(el) });
+      paste: !!(module && CLIP && CLIP.kind === modKind(module)), recent: this.recentSlot.get(id) };
+    const items = knobMenuItems(s, fx, id, caps).filter(it => !(VIRT_RE.test(id) && (it.kind === 'lock' || it.kind === 'unlock')));
+    const extra = this.extraKnobItems(id);
+    const acts = this.menuActions(items, id, el, module);
+    wk.contextMenu(x, y, extra.length ? extra.concat([{ sep: true }], acts) : acts, { anchor: focusable(el) });
   }
-  moduleMenu(m, x, y, anchor) {
-    const items = knobMenuItems(this.s(), this.fx(), '', { module: m, paste: !!(CLIP && CLIP.kind === modKind(m)) });
-    const k = items.findIndex(it => it.kind === 'sep');
-    wk.contextMenu(x, y, this.menuActions(items.slice(0, k < 0 ? items.length : k), '', anchor, m), { anchor });
+  // Reset Control's value: the destination default; arp.rate in HZ mode: the n.hz default (its base there, virtGet)
+  resetDef(id) {
+    if (id === 'arp.rate') {
+      const A = this.s().arp, sl = A && arr(A.slots)[A.sel | 0];
+      if (virtKey(sl, 'rate', true) === 'hz') return core.ARP_N && fin(core.ARP_N.hz) ? core.ARP_N.hz : 0.5;
+    }
+    return (rowOfDest(id, this.fx()) || {}).def || 0;
   }
-  menuActions(items, id, el, module) {
-    const noun = MOD_NOUN[module] || '';
+  // knob-specific items in front of the knob menu (§13.13): LFO RATE ✓ Swing (BPM) / ✓ 10x (Hz); LFO PHASE ✓ Snap to Grid;
+  // Voice Control SCALING LFO: By Percentage · By Rate (vc.lmode, §13.10); FX controls: the rack's ctlExtras (§13.5)
+  extraKnobItems(id) {
+    // FX controls: the rack's control-specific items (fx-ui ctlExtras: Compressor RATIO ▸ Limiter Latency Comp, Bode SHIFT
+    // ▸ ✓ Retrig, §13.5 — the rack runs with mod: true, so this menu is theirs; RULINGS2 U3)
+    if (isFxPar(id)) return this.rack && typeof this.rack.ctlExtras === 'function' ? arr(this.rack.ctlExtras(id)) : [];
+    if (id === 'vc.lscale') {
+      const lm = !!(this.s().vc && this.s().vc.lmode), set = v => this.edit(s => { s.vc.lmode = v; }, { label: 'LFO scaling mode' });
+      return [{ label: 'By Percentage', checked: !lm, action: () => set(0) }, { label: 'By Rate', checked: lm, action: () => set(1) }];
+    }
+    const m = /^l([1-9]|10)\.(rate|phase)$/.exec(id || '');
+    if (!m) return [];
+    const l = +m[1] - 1, L = this.s().lfo[l];
+    if (!L) return [];
+    if (m[2] === 'phase') return [{ label: 'Snap to Grid', checked: this.lfoSnap, action: () => { this.lfoSnap = !this.lfoSnap; } }];
+    return L.bpm ? [{ label: 'Swing', checked: !!L.swing, action: () => this.edit(s => { s.lfo[l].swing = s.lfo[l].swing ? 0 : 1; }, { label: 'LFO swing' }) }]
+      : [{ label: '10x', checked: !!L.x10, action: () => this.edit(s => { s.lfo[l].x10 = s.lfo[l].x10 ? 0 : 1; }, { label: 'LFO 10x' }) }];
+  }
+  moduleMenu(m, x, y, anchor, extra) {
+    const items = moduleMenuItems(this.s(), m, { paste: !!(CLIP && CLIP.kind === modKind(m)) });
+    let acts = this.menuActions(items, '', anchor, m);
+    const more = typeof extra === 'function' ? arr(extra()) : [];
+    if (more.length) acts = acts.concat([{ sep: true }], more);
+    wk.contextMenu(x, y, acts, { anchor });
+  }
+  menuActions(items, id, el, module, midiId) {
+    const noun = MOD_TITLE(module), mid = midiId || id;
     return items.map(it => {
       if (it.kind === 'sep') return { sep: true };
       const a = { label: it.label };
       if (it.checked !== undefined) a.checked = it.checked;
       switch (it.kind) {
-        case 'lockModule': a.action = () => this.edit(s => toggleIn(s.locks.mod, module), { label: 'Lock Module' }); break;
-        case 'copy': a.action = () => { CLIP = clipModule(this.s(), module); this.notify(noun + ' copied'); }; break;
-        case 'paste': a.action = () => this.edit(s => pasteModule(s, module, CLIP), { label: 'Paste ' + noun }); break;
-        case 'init': a.action = () => this.edit(s => initModule(s, module), { label: 'Init ' + noun }); break;
+        case 'lockModule': a.action = () => this.lockModuleUI(module); break;
+        case 'copy': case 'copyMods':
+          a.action = () => { CLIP = clipModule(this.s(), module, it.kind === 'copyMods'); this.notify(noun + ' copied' + (it.kind === 'copyMods' ? ' with modulations' : '')); }; break;
+        case 'paste': a.action = () => this.pasteModuleUI(module); break;
+        case 'init': a.action = () => { this.edit(s => initModule(s, module), { label: 'Init ' + noun }); this.edDirty = true; this.oscd.forget(); }; break;
+        case 'swap': a.sub = it.sub.map(x => ({ label: x.label, action: () => this.swapModuleUI(module, x.m) })); break;
         case 'bypass': a.action = () => this.edit(s => core.toggleModBypass(s, it.slot), { label: 'Bypass Modulator' }); break;
         case 'remove': a.action = () => this.edit(s => { s.matrix[it.slot] = emptyRow(); }, { label: 'Remove Modulator' }); break;
         case 'removeAll': a.action = () => this.edit(s => core.removeMods(s, id), { label: 'Remove All Modulators' }); break;
-        case 'reset': a.action = () => this.setN(id, destOf(id).def, 'set'); break;
+        case 'auxSrc': a.sub = subMenu(it.sub, x => this.edit(s => { s.matrix[it.slot].aux = x.src; }, { label: 'Aux source' })); break;
+        case 'curve': a.action = () => this.openCurve(it.slot, el); break;
+        case 'reset': a.action = () => this.setN(id, this.resetDef(id), 'set'); break;
         case 'enter': a.action = () => this.enterValue(id, el); break;
         case 'memtrig': a.action = () => {
-          const o = id === 'b.phase' ? 1 : 0, set = memTrigSet(Date.now());
+          const o = OSC_P.indexOf(id.charAt(0)), set = memTrigSet(Date.now());
           this.edit(s => { s.osc[o].memSet = set; }, { label: 'New MemTrig phase set' });
         }; break;
-        case 'modsrc': a.sub = it.sub.map(x => ({ label: x.label, action: () => this.addModUI(x.src, id) })); break;
-        case 'midiLearn': a.action = () => this.midiLearn(id); break;
-        case 'midiForget': a.action = () => this.midiForget(id); break;
-        case 'lock': case 'unlock': a.action = () => this.edit(s => toggleIn(s.locks.p, id, it.kind === 'lock'), { label: it.label }); break;
+        case 'modsrc': a.sub = subMenu(it.sub, x => this.addModUI(x.src, id)); break;
+        case 'midiLearn': a.action = () => this.midiLearn(mid); break;
+        case 'midiForget': a.action = () => this.midiForget(mid); break;
+        // serum-core setLock (§2.2.5): inside a locked module Unlock Control also drops a parameter lock (an explicit
+        // lock would win) and Lock Control lets the module lock apply again; elsewhere Lock / Unlock = locks.p
+        case 'lock': case 'unlock': case 'lockCtl': case 'unlockCtl':
+          a.action = () => this.edit(s => setLockOf(s, id, it.kind === 'lock' || it.kind === 'lockCtl'), { label: it.label }); break;
         default: break;
       }
       return a;
     });
   }
+  // Lock Module / Lock Matrix (serum-core setModuleLock: unlocking also drops the module's per-control unlocks)
+  lockModuleUI(m) {
+    const on = !arr(this.s().locks.mod).includes(m);
+    this.edit(s => setModuleLockOf(s, m, on), { label: m === 'matrix' ? 'Lock Matrix' : 'Lock Module' });
+  }
+  pasteModuleUI(m) {
+    let ok = false;
+    this.edit(s => { ok = pasteModule(s, m, CLIP); }, { label: 'Paste ' + MOD_TITLE(m) });
+    if (!ok) this.notify('The clipboard does not fit ' + MOD_TITLE(m));
+    this.edDirty = true;
+    this.oscd.forget();
+  }
+  swapModuleUI(a, b) {
+    if (!this.need('swapModules')) return;
+    let ok = false;
+    this.edit(s => { ok = core.swapModules(s, a, b); }, { label: 'Swap ' + MOD_TITLE(a) + ' / ' + MOD_TITLE(b) });
+    if (!ok) this.notify('These modules cannot be swapped');
+    this.edDirty = true;
+    this.oscd.forget();
+  }
+  // module label dragged onto another module's label (§13.3, inv B2): plain = swap incl. mods; Alt = copy; Shift-Alt =
+  // copy with mods (the dragged module is the source)
+  moduleDrop(from, to, alt, shift) {
+    if (from === to || modKind(from) !== modKind(to)) return;
+    if (!alt) { this.swapModuleUI(from, to); return; }
+    let ok = false;
+    this.edit(s => { ok = core.copyModule(s, clone(s), to, from, { mods: !!shift }); }, { label: 'Copy ' + MOD_TITLE(from) + ' → ' + MOD_TITLE(to) });
+    if (!ok) this.notify('These modules cannot be copied onto each other');
+    this.edDirty = true;
+    this.oscd.forget();
+  }
   applySel(s, src) {
     s.ui.mod = src;
     const e = envNum(src);
     if (e) s.ui.env = e - 1;
-    if (/^(lfo[1-8]|velo|note)$/.test(src)) this.edSel = src;
+    if (EDIT_SRC.test(src)) this.edSel = src;
     this.edDirty = true;
   }
   selectSrc(src) { this.uiEdit(s => this.applySel(s, src)); }
@@ -1671,7 +2770,7 @@ export class SerumUI {
     let res = null;
     this.edit(s => { res = dropRow(s, this.fx(), src, dst, { limit: this.prefs.limitDrop }); if (res) this.applySel(s, src); },
       { label: 'Add Modulation' });
-    if (!res) this.notify('Matrix full (32 slots)'); else this.recentSlot.set(dst, res.slot);
+    if (!res) this.notify('Matrix full (' + N_MX + ' slots)'); else this.recentSlot.set(dst, res.slot);
     return res;
   }
   midiLearn(id) {
@@ -1682,7 +2781,9 @@ export class SerumUI {
       if (this.dead) return;
       if (cc !== null && cc !== undefined) {
         this.dirty = true;   // the MIDI map is saved with the preset (applyPreset)
-        this.notify('CC ' + cc + ' → ' + (/^macro/.test(id) ? srcLabel(this.s(), id) : core.destLabel(id, this.s(), this.fx())));
+        let lab = id;
+        try { lab = macNum(id) ? srcLabel(this.s(), id) : core.destLabel(id, this.s(), this.fx()); } catch (err) { lab = id; }
+        this.notify('CC ' + cc + ' → ' + lab);
       }
       this.queue();
     }, () => {});
@@ -1691,16 +2792,25 @@ export class SerumUI {
     if (typeof this.host.midiForget === 'function') { this.host.midiForget(id); this.dirty = true; this.queue(); return; }
     this.edit(s => { for (const k of Object.keys(s.midi)) if (s.midi[k] === id) delete s.midi[k]; }, { label: 'Remove MIDI CC' });
   }
-  // Shift+Enter on a tile (§9.4 keyboard parity): destination picker grouped like the matrix menu
-  modulatePicker(src, anchor) {
+  // destination items of the grouped menus (matrix DESTINATION, Shift+Enter picker): serum-core destMenu (§11.1; FX
+  // instances by rack), else the static table without the static FX rows
+  destGroups() {
+    const s = this.s(), fx = this.fx();
+    if (typeof core.destMenu === 'function') { try { return core.destMenu(s, fx, { matrix: true }); } catch (err) { warnOnce('destMenu', err); } }
     const groups = new Map();
     for (const d of DESTS) {
-      if (core.MATRIX_ONLY && core.MATRIX_ONLY.includes(d.id)) continue;
+      if (isFxPar(d.id) && !(fx && isObj(fx.p))) continue;
       if (!groups.has(d.group)) groups.set(d.group, []);
-      groups.get(d.group).push({ label: core.destLabel(d.id, this.s(), this.fx()), action: () => this.addModUI(src, d.id) });
+      groups.get(d.group).push({ id: d.id, label: core.destLabel(d.id, s, fx) });
     }
+    return Array.from(groups, ([group, items]) => ({ group, items }));
+  }
+  // Shift+Enter on a tile (§9.4 keyboard parity): destination picker grouped like the matrix menu
+  modulatePicker(src, anchor) {
     const r = anchor.getBoundingClientRect();
-    wk.contextMenu(r.left, r.bottom, Array.from(groups, ([g, sub]) => ({ label: g, sub })), { anchor });
+    const MO = core.MATRIX_ONLY || [];
+    wk.contextMenu(r.left, r.bottom, this.destGroups().map(g => ({ label: g.group,
+      sub: g.items.filter(x => !MO.includes(x.id)).map(x => ({ label: x.label, action: () => this.addModUI(src, x.id) })) })).filter(g => g.sub.length), { anchor });
   }
 
   // Alt-drag / depth handle (§9.4): edits the row of the selected source on this control, else the most recently
@@ -1708,27 +2818,22 @@ export class SerumUI {
   onCapDown(e) {
     if (e.button !== 0) return;
     const t = e.target, dh = closest(t, '.wk-dh');
-    if (!dh && !e.altKey) return;
+    const lat = wk.modifierBar && wk.modifierBar.mods ? wk.modifierBar.mods(e) : { alt: e.altKey, shift: e.shiftKey };
+    const alt = !!(e.altKey || lat.alt), shift = !!(e.shiftKey || lat.shift);
+    if (!dh && !alt) return;
     const host = closest(t, '[data-dest]');
-    if (!host || !this.el.contains(host) || closest(t, '.sx-ov')) return;
+    if (!host || !this.el.contains(host) || closest(t, '.sx-ov') || closest(t, '.sx-mrow')) return;
     const id = host.getAttribute('data-dest'), slot = this.depthSlot(id);
     if (slot < 0) return;
     e.stopPropagation();
     e.preventDefault();
+    if (!e.altKey && lat.alt && wk.modifierBar.consume) wk.modifierBar.consume();
     // the click that follows this gesture must not reach the control (toggle flip, menu popup, seg select)
     this.eatClick = { el: host, t: Date.now() };
-    if (e.altKey && e.shiftKey) { this.edit(s => core.toggleModPolarity(s, slot), { label: 'Mod polarity' }); return; }
+    if (alt && shift) { this.edit(s => core.toggleModPolarity(s, slot), { label: 'Mod polarity' }); return; }
     this.startDepth(e, id, slot);
   }
-  depthSlot(id) {
-    const s = this.s(), rows = modRows(s, id);
-    if (!rows.length) return -1;
-    const sel = rows.find(r => r.row.src === s.ui.mod);
-    if (sel) return sel.slot;
-    const rec = this.recentSlot.get(id);
-    if (rec !== undefined && rows.some(r => r.slot === rec)) return rec;
-    return rows[rows.length - 1].slot;
-  }
+  depthSlot(id) { return actionSlot(this.s(), id, this.recentSlot.get(id)); }
   startDepth(e, id, slot) {
     const el = this.el, row = this.s().matrix[slot], D = { id: e.pointerId, x: e.clientX, y: e.clientY, a0: row.amt, acc: 0, a: row.amt };
     const ghost = mk(this.d, 'div', 'sx-ghost');
@@ -1759,7 +2864,7 @@ export class SerumUI {
     };
     const offs = [on(el, 'pointermove', move), on(el, 'pointerup', up), on(el, 'pointercancel', up)];
   }
-  // Alt-click on a matrix SOURCE menu (reassign every row with that source) or on the AUX MODE cell (bypass)
+  // Alt-click on a matrix SOURCE menu (reassign every row with that source) or on the INV cell (bypass)
   onCapClick(e) {
     const E = this.eatClick;
     if (E) {
@@ -1775,9 +2880,9 @@ export class SerumUI {
     if (what === 'mode') { this.edit(st => core.toggleModBypass(st, slot), { label: 'Bypass Modulator' }); return; }
     if (!row || !row.src) return;
     const r = cell.getBoundingClientRect(), from = row.src;
-    wk.contextMenu(r.left, r.bottom, SRC_MENU.filter(id => id !== from).map(id => ({
-      label: srcLabel(s, id), action: () => this.edit(st => core.reassignSource(st, from, id), { label: 'Reassign source' }),
-    })), { anchor: focusable(cell) });
+    wk.contextMenu(r.left, r.bottom, srcGroups(s).map(g => ({ label: g.group, sub: g.items.filter(x => x.id !== from).map(x => ({
+      label: x.label, action: () => this.edit(st => core.reassignSource(st, from, x.id), { label: 'Reassign source' }),
+    })) })).filter(g => g.sub.length), { anchor: focusable(cell) });
   }
 
   /* ---------------------------------------------------------------- source tiles and drag-and-drop */
@@ -1788,6 +2893,7 @@ export class SerumUI {
     b.append(lab, badge);
     b.setAttribute('data-src', src);
     if (lfoNum(src)) b.setAttribute('data-lfotile', String(lfoNum(src)));
+    if (macNum(src)) b.setAttribute('data-mactile', String(macNum(src)));
     if (wk.tooltip) wk.tooltip(b, () => this.tileTip(src));
     this.custom(() => {
       const s = this.s(), n = tileDests(s, src).length, L = labelFn();
@@ -1798,11 +2904,49 @@ export class SerumUI {
       b.setAttribute('aria-label', L + (n ? ', ' + n + ' destination' + (n > 1 ? 's' : '') : '') + '. Drag onto a control; Shift+Enter to pick a destination');
     });
     this.tileDrag(b, src);
-    b.addEventListener('keydown', e => { if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); this.modulatePicker(src, b); } });
+    b.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); this.modulatePicker(src, b); }
+      else if (e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) { e.preventDefault(); const r = b.getBoundingClientRect(); this.srcMenu(src, r.left, r.bottom + 2, b); }
+    });
+    // right-click / long-press (a still hold abandons the armed drag, wk.dragSource): the source's destinations (inv B15)
+    b.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); this.srcMenu(src, e.clientX, e.clientY, b); });
+    this.touchMenu(b);
     return b;
   }
+  // a modulation source's destinations (inv B15: right-click on an ENV / LFO / VELO tab or tile): Bypass All
+  // Destinations (✓ while every row of the source is bypassed; toggles them all) · Remove All Destinations — one undo step
+  // each; disabled while the source modulates nothing
+  srcDestItems(src) {
+    const mine = rowsOf(this.s()).filter(r => r && r.src === src && r.dst), all = mine.length > 0 && mine.every(r => r.byp);
+    return [
+      { label: 'Bypass All Destinations', checked: all, disabled: !mine.length,
+        action: () => this.edit(s => { for (const r of rowsOf(s)) if (r && r.src === src && r.dst) r.byp = all ? 0 : 1; }, { label: 'Bypass All Destinations' }) },
+      { label: 'Remove All Destinations', disabled: !mine.length,
+        action: () => this.edit(s => { const M = rowsOf(s); for (let i = 0; i < M.length; i++) if (M[i] && M[i].src === src) M[i] = emptyRow(); }, { label: 'Remove All Destinations' }) },
+    ];
+  }
+  srcMenu(src, x, y, anchor) { wk.contextMenu(x, y, this.srcDestItems(src), { anchor: focusable(anchor) }); }
+  // Tile drag (§5.8): wk.dragSource where available (touch: a 250 ms hold arms the drag so a swipe scrolls, §13.1;
+  // mouse: 4 px slop; Escape cancels; the click that ends a drag is swallowed); else the Phase-1 pointer gesture
   tileDrag(b, src) {
-    let g = null, eat = 0;   // eat = time of the pointerup that ended a drag: its click is swallowed
+    b.addEventListener('click', e => {
+      if (e.defaultPrevented) return;
+      if (e.target && e.target.tagName === 'INPUT') return;
+      if (this.tileEat && this.tileEat.el === b && Date.now() - this.tileEat.t < 1000) { this.tileEat = null; e.preventDefault(); return; }
+      this.selectSrc(src);
+    });
+    if (typeof wk.dragSource === 'function') {
+      const ds = wk.dragSource(b, {
+        data: src,
+        begin: i => this.dragBegin(src, !!i.alt),
+        move: i => this.dragMove(i.x, i.y),
+        drop: i => { this.tileEat = { el: b, t: Date.now() }; this.dragDone(this.hitTest(i.x, i.y), i.x, i.y); },
+        cancel: () => this.dragDone(null),
+      });
+      this.offs.push(() => ds.destroy());
+      return;
+    }
+    let g = null;
     b.addEventListener('pointerdown', e => {
       if (e.button !== 0 || g) return;
       if (e.target && e.target.tagName === 'INPUT') return;
@@ -1825,20 +2969,14 @@ export class SerumUI {
       try { b.releasePointerCapture(G.id); } catch (err) { /* released */ }
       if (!G.on) return;
       if (e.type === 'pointercancel') { this.dragDone(null); return; }   // no click follows a cancelled pointer
-      eat = Date.now();
+      this.tileEat = { el: b, t: Date.now() };
       this.dragDone(this.hitTest(e.clientX, e.clientY), e.clientX, e.clientY);
     };
     b.addEventListener('pointerup', up);
     b.addEventListener('pointercancel', up);
-    b.addEventListener('click', e => {
-      const ate = eat && Date.now() - eat < 1000;
-      eat = 0;
-      if (ate) { e.preventDefault(); return; }
-      if (e.target && e.target.tagName === 'INPUT') return;
-      this.selectSrc(src);
-    });
   }
   dragBegin(src, alt) {
+    if (this.drag) this.dragDone(null);
     const g = mk(this.d, 'div', 'sx-ghost', (alt ? 'Alt · ' : '') + srcLabel(this.s(), src));
     this.d.body.appendChild(g);
     this.el.classList.add('sx-dragging');
@@ -1864,34 +3002,52 @@ export class SerumUI {
     this.el.classList.remove('sx-dragging', 'sx-candrop');
     if (hit) this.doDrop(hit, D.src, x, y);
   }
-  hitTest(x, y) {
+  // the drop target under (x, y) for source `src` (default: the tile drag's), Alt per the gesture
+  hitTest(x, y, src, alt) {
     const D = this.drag, d = this.d;
-    if (!D) return null;
+    if (src === undefined) { if (!D) return null; src = D.src; alt = D.alt; }
     const t = typeof d.elementFromPoint === 'function' ? d.elementFromPoint(x, y) : null;
     if (!t || !this.el.contains(t) || closest(t, '.sx-ov')) return null;
-    const l = lfoNum(D.src);
+    const l = lfoNum(src), mc = macNum(src);
     const ms = closest(t, '[data-msrc]');
     if (ms) return { kind: 'msrc', el: ms, slot: +ms.getAttribute('data-slot'), field: ms.getAttribute('data-msrc') };
-    if (l && D.alt) {
+    if (l && alt) {
       const lt = closest(t, '[data-lfotile]');
       if (lt) { const to = +lt.getAttribute('data-lfotile'); return to !== l ? { kind: 'copyLfo', el: lt, to: to - 1 } : null; }
       const od = closest(t, '[data-oscdisp]');
       if (od) return { kind: 'lfoWt', el: od, o: +od.getAttribute('data-oscdisp') };
     }
+    // a macro tile dropped on another macro's label swaps the two macros (§5.6, inv B17)
+    if (mc) { const mt = closest(t, '[data-mactile]'); if (mt) { const to = +mt.getAttribute('data-mactile'); return to !== mc ? { kind: 'swapMacro', el: mt, to } : null; } }
     const pt = this.lfoPointAt(x, y);
     if (pt) return pt;
+    // the Granular / Spectral X|Y dot (and wk.xyPad dots): data-xy with data-dest-x / data-dest-y → "Modulate X /
+    // Modulate Y" (§13.3); a dot with one usable axis acts as that plain destination
+    const xy = closest(t, '[data-xy]');
+    if (xy) {
+      const ok = id => { const r = id ? rowOfDest(id, this.fx()) : null; return !!r && !r.nomod && !(mc && id === 'm' + mc); };
+      const X = xy.getAttribute('data-dest-x') || xy.getAttribute('data-dest'), Y = xy.getAttribute('data-dest-y');
+      if (ok(X) && ok(Y)) return { kind: 'xy', el: xy, x: X, y: Y };
+      if (ok(X) || ok(Y)) return { kind: 'dest', el: xy, id: ok(X) ? X : Y };
+    }
     const dd = closest(t, '[data-dest]');
-    if (dd && DEST_INDEX[dd.getAttribute('data-dest')] !== undefined) return { kind: 'dest', el: dd, id: dd.getAttribute('data-dest') };
+    if (dd && rowOfDest(dd.getAttribute('data-dest'), this.fx())) {
+      const id = dd.getAttribute('data-dest'), r = rowOfDest(id, this.fx());
+      if (r.nomod || (mc && id === 'm' + mc)) return null;   // Convolve shaping (deviation 20); a macro on itself
+      return { kind: 'dest', el: dd, id };
+    }
     if (l) { const np = closest(t, '[data-noisepanel]'); if (np) return { kind: 'lfoNoise', el: np }; }
     return null;
   }
-  // nearest LFO graph point within 8 px of (x, y) while an LFO is shown in the editor
+  // nearest LFO graph point within 8 px of (x, y) while an LFO is shown in the editor of the current page
   lfoPointAt(x, y) {
-    const box = this.lfoBox, l = lfoNum(this.edSel) - 1;
-    if (!box || l < 0 || this.page !== 'osc' || !box.isConnected) return null;
+    const P = this.pages[this.page], box = P && P.lfoBox, l = lfoNum(this.edSel) - 1;
+    if (!box || l < 0 || !box.isConnected) return null;
+    const L = this.s().lfo[l];
+    if (!L || (L.type && L.type !== 'normal')) return null;   // Path / Chaos / S&H ignore point links (§5.7)
     const r = box.getBoundingClientRect();
     if (x < r.left - 8 || x > r.right + 8 || y < r.top - 8 || y > r.bottom + 8 || r.width < 2) return null;
-    const pts = this.s().lfo[l].pts, ed = this.lfoEd;
+    const pts = L.pts, ed = P.lfoEd;
     if (ed && typeof ed.pos === 'function' && typeof ed.hitPoint === 'function') {   // the editor's own geometry (padding)
       const i = ed.hitPoint(pts, ed.pos({ clientX: x, clientY: y }), false);
       return i >= 0 ? { kind: 'point', el: box, lfo: l, idx: i } : null;
@@ -1907,15 +3063,20 @@ export class SerumUI {
     const l = lfoNum(src) - 1;
     switch (hit.kind) {
       case 'dest': this.addModUI(src, hit.id); break;
+      case 'xy': wk.contextMenu(x, y, [
+        { label: 'Modulate X', action: () => this.addModUI(src, hit.x) },
+        { label: 'Modulate Y', action: () => this.addModUI(src, hit.y) },
+      ], { anchor: hit.el }); break;
       case 'msrc': this.edit(s => { s.matrix[hit.slot][hit.field] = src; }, { label: 'Matrix source' }); break;
       case 'point': {
         const n = this.s().lfo[hit.lfo].pts.length, items = [];
         if (hit.idx > 0 && hit.idx < n - 1) items.push({ label: 'X', action: () => this.linkNew(hit.lfo, [hit.idx], 'x', src) });
         items.push({ label: 'Y', action: () => this.linkNew(hit.lfo, [hit.idx], 'y', src) });
-        wk.contextMenu(x, y, items, { anchor: this.lfoBox });
+        wk.contextMenu(x, y, items, { anchor: hit.el });
         break;
       }
       case 'copyLfo': this.edit(s => core.copyLfo(s, l, hit.to), { label: 'Copy LFO' }); this.edDirty = true; break;
+      case 'swapMacro': if (this.need('swapMacros')) this.edit(s => core.swapMacros(s, macNum(src) - 1, hit.to - 1), { label: 'Swap macros' }); break;
       case 'lfoWt': this.lfoToWavetable(l, hit.o); break;
       case 'lfoNoise': this.lfoToNoise(l); break;
       default: break;
@@ -1924,60 +3085,121 @@ export class SerumUI {
   linkNew(lfo, idxs, axis, src) {
     const s = this.s(), k = core.newBus ? core.newBus(s) : 0;
     if (!k) { this.notify('All 16 LFO buses in use'); return; }
-    if (!rowsOf(s).some(r => !r.src)) { this.notify('Matrix full (32 slots)'); return; }
+    if (!rowsOf(s).slice(0, N_MX).some(r => !r.src)) { this.notify('Matrix full (' + N_MX + ' slots)'); return; }
     this.edit(st => linkPoints(st, this.fx(), lfo, idxs, axis, k, src), { label: 'Modulate point' });
     this.edDirty = true;
   }
 
-  /* ---------------------------------------------------------------- main menu (§9.8) */
+  /* ---------------------------------------------------------------- main menu (§13.12) */
   mainMenu(anchor) {
-    const fx = this.fx(), r = anchor.getBoundingClientRect();
+    const fx = this.fx(), s = this.s(), r = anchor.getBoundingClientRect(), o = this.selOsc(), mpe = s.global.mpe || {};
+    const mpeEdit = (fn, label) => this.edit(st => { if (!isObj(st.global.mpe)) st.global.mpe = { on: 0, bend: 48, xyz: 0 }; fn(st.global.mpe); }, { label });
+    const xyz = k => ({ label: 'MPE: ' + MPE_XYZ_LABEL[k], checked: mpe.xyz === k, action: () => mpeEdit(m => { m.xyz = m.xyz === k ? 0 : k; }, 'MPE mapping') });
+    const fxLocked = fx ? (Array.isArray(fx.racks) ? fx.racks.length > 0 && fx.racks.every(R => R && R.lock) : !!fx.lock) : false;
+    const warpOk = this.oscd && typeof this.oscd.canRenderWarp === 'function' ? this.oscd.canRenderWarp(o) : true;
     wk.contextMenu(r.left, r.bottom + 2, [
+      { label: 'About', action: () => this.about() },
+      { sep: true },
       { label: 'Init Preset', action: () => this.initPreset() },
-      { label: 'Init All LFOs', action: () => { if (this.need('initLfos')) { this.edit(s => core.initLfos(s), { label: 'Init All LFOs' }); this.edDirty = true; } } },
+      { label: 'Init LFOs + LFO Mods', action: () => { if (this.need('initLfos')) { this.edit(st => core.initLfos(st), { label: 'Init LFOs' }); this.edDirty = true; } } },
+      { label: 'Init Modulations', action: () => this.confirmDlg('Init Modulations', 'Remove every modulation row and LFO point link?', () => {
+        if (this.need('initMods')) { this.edit(st => core.initMods(st), { label: 'Init Modulations' }); this.edDirty = true; }
+      }) },
+      { label: 'Load Preset…', action: () => this.loadPresetFile() },
+      { label: 'Revert to Saved', action: () => this.revertPreset() },
+      { label: 'Save as Default Preset', action: () => this.saveDefault() },
+      { label: 'Import Preset Pack…', action: () => this.browser.importFile() },
       { sep: true },
-      { label: 'Render OSC A Warp', action: () => this.renderOscWarp(0) },
-      { label: 'Render OSC B Warp', action: () => this.renderOscWarp(1) },
-      { label: 'Resample to OSC A', action: () => this.resample('A') },
-      { label: 'Resample to OSC B', action: () => this.resample('B') },
-      { label: 'Resample to A+B (Stereo)', action: () => this.resample('AB') },
+      { label: 'Render OSC ' + OSC_L[o] + ' Warp', disabled: !warpOk, action: () => this.renderOscWarp(o) },
+      { label: 'Resample to', sub: [
+        { label: 'Selected Osc (OSC ' + OSC_L[o] + ')', action: () => this.resample(OSC_L[o]) },
+        { label: 'A and B (Stereo)', action: () => this.resample('AB') },
+      ] },
       { sep: true },
-      { label: 'Lock FX Rack', checked: !!(fx && fx.lock), action: () => this.editFx(f => { f.lock = f.lock ? 0 : 1; }, { label: 'Lock FX Rack' }) },
+      { label: 'Load Tuning…', action: () => this.loadTuning() },
+      { label: 'MPE Enabled', checked: !!mpe.on, action: () => mpeEdit(m => { m.on = m.on ? 0 : 1; }, 'MPE') },
+      xyz(1), xyz(2), xyz(3),
+      { label: 'MPE Bend Range', sub: [12, 24, 48, 96].map(b => ({ label: b + ' semitones', checked: mpe.bend === b, action: () => mpeEdit(m => { m.bend = b; }, 'MPE bend range') }))
+        .concat([{ label: 'Other…', action: () => this.promptText('MPE Bend Range', 'Semitones (1–96)', String(mpe.bend || 48), t => {
+          const v = Math.round(parseFloat(String(t).replace(',', '.')));
+          if (!(v >= 1 && v <= 96)) return false;
+          mpeEdit(m => { m.bend = v; }, 'MPE bend range');
+          return true;
+        }) }]) },
+      { sep: true },
+      { label: 'Lock FX Rack', checked: fxLocked, action: () => this.editFx(f => {
+        if (Array.isArray(f.racks)) { const v = fxLocked ? 0 : 1; for (const R of f.racks) if (R) R.lock = v; } else f.lock = f.lock ? 0 : 1;
+      }, { label: 'Lock FX Rack' }) },
       { label: 'Load Effect Chain…', sub: this.chainMenu() },
       { label: 'Save Effect Chain…', action: () => this.saveChainDialog() },
       { sep: true },
       { label: 'Velo->Amp', action: () => this.veloAmp() },
       { label: 'Vibrato quick-assign', action: () => this.vibrato() },
-      { sep: true },
-      { label: 'About', action: () => this.about() },
     ], { anchor });
   }
   replaceState(target, src) {
     for (const k of Object.keys(target)) delete target[k];
     Object.assign(target, src);
   }
+  // Init Preset (§13.12, §11.1 initPreset): everything incl. every lock and FX bus lock reset; the page stays
   initPreset() {
-    if (!this.need('applyPreset') || !this.confirmChange()) return;
-    const init = core.defaultSerum();
-    init.global.os = this.prefs.defOs;
-    init.author = this.prefs.author;
-    const next = core.applyPreset(this.s(), { name: 'Init', cat: 'Init', v: { s: init }, fx: core.defaultFx() });
-    if (this.prefs.view3d) next.ui.view3d = [1, 1];
-    this.edit(s => this.replaceState(s, next), { label: 'Init Preset', seed: true });
-    if (this.fx() && core.applyPresetFx) {
-      const locked = arr(next.locks.p).filter(id => isFxIdx(DEST_INDEX[id]));
-      const nf = core.applyPresetFx(this.fx(), core.defaultFx(), locked);
-      this.editFx(f => this.replaceState(f, nf), { label: 'Init Preset', seed: true });
+    if (!this.confirmChange()) return;
+    let next = null, nfx = null;
+    if (typeof core.initPreset === 'function') {
+      const r = core.initPreset(this.s(), this.prefs);
+      next = r.s; nfx = r.fx;
+    } else if (this.need('applyPreset')) {
+      const init = core.defaultSerum();
+      init.global.os = this.prefs.defOs;
+      init.author = this.prefs.author;
+      next = core.applyPreset(this.s(), { name: 'Init', cat: 'Init', v: { s: init }, fx: core.defaultFx() });
+      nfx = core.defaultFx();
     }
+    if (!next) return;
+    // the new state's ui is initPreset's (Default waveform view preference, default editors and selections); only the
+    // page stays (core.initPreset keeps it already; the fallback path copies it)
+    const page = this.s().ui && this.s().ui.page;
+    if (isObj(next.ui) && PAGES.includes(page)) next.ui.page = page;
+    this.edit(s => { this.replaceState(s, next); }, { label: 'Init Preset', seed: true });
+    if (this.fx() && nfx) this.editFx(f => { const fui = f.ui; this.replaceState(f, nfx); if (fui !== undefined) f.ui = fui; }, { label: 'Init Preset', seed: true });
     this.dirty = false;
     this.nameOverride = 'Init';
+    this.oscd.forget();
     this.refresh();
   }
+  loadPresetFile() {
+    const pr = this.host.presets;
+    if (!pr || !pr.importFile) { this.notify('Preset import is not available'); return Promise.resolve(); }
+    return pickFile(this.d, '.json,application/json').then(f => (f ? pr.importFile(f) : null)).then(k => {
+      if (k === null || k === undefined) return;
+      this.presetsChanged();
+      if (this.confirmChange()) this.loadPreset(k);
+    }, err => { console.warn(err); this.notify('Could not load that file'); });
+  }
+  // Save as Default Preset (synth.sx.default): new Serum tracks start from it (main.js)
+  saveDefault() {
+    const s = clone(this.s()), fx = this.fx() ? clone(this.fx()) : null;
+    if (!s) return;
+    delete s.ui;
+    this.store('set', DEFAULT_KEY, { name: 'Default', v: { s }, fx });
+    this.notify('Saved as the default preset for new tracks');
+  }
+  loadTuning() {
+    const f = this.host.tuningFile;
+    if (typeof f !== 'function') { this.notify('Tuning files are not available'); return Promise.resolve(); }
+    return Promise.resolve(f()).then(t => {
+      if (!t || this.dead) return;
+      if (t.error) { this.notify('Could not read that tuning file: ' + t.error); return; }
+      this.edit(s => { s.global.tun = { name: String(t.name || '').slice(0, 64), kind: t.kind || 'scl', scl: t.scl || '', kbm: t.kbm || '', tab: t.tab ? Array.from(t.tab) : null }; }, { label: 'Load Tuning' });
+      this.notify('Tuning: ' + (t.name || 'loaded'));
+    }, err => { console.warn(err); this.notify('Could not load that tuning file'); });
+  }
+  clearTuning() { this.edit(s => { s.global.tun = { name: '', kind: 'none', scl: '', kbm: '', tab: null }; }, { label: 'Clear Tuning' }); }
   veloAmp() {
     if (!this.need('veloToAmp')) return;
     let slot = -1;
     this.edit(s => { slot = core.veloToAmp(s); }, { label: 'Velo->Amp' });
-    if (slot < 0) this.notify('Matrix full (32 slots)');
+    if (slot < 0) this.notify('Matrix full (' + N_MX + ' slots)');
   }
   vibrato() {
     if (!this.need('vibratoAssign')) return;
@@ -1990,42 +3212,74 @@ export class SerumUI {
     if (typeof this.host.resample !== 'function') { this.notify('Resampling is not available'); return; }
     this.notify('Resampling…');
     // the host selects the resampled table on the oscillator(s): an edit of the sound (§8.8 dirty)
-    Promise.resolve(this.host.resample(target)).then(() => { if (!this.dead) { this.dirty = true; this.tables.clear(); this.refresh(); } },
+    Promise.resolve(this.host.resample(target)).then(() => { if (!this.dead) { this.dirty = true; this.oscd.forget(); this.markUndo('Resample'); this.refresh(); } },
       err => { console.error(err); this.notify('Resample failed'); });
   }
   about() {
     const body = mk(this.d, 'div');
-    body.appendChild(mk(this.d, 'p', '', 'Wavetable synthesizer modelled on the Serum 1 workflow: two wavetable oscillators with 23 warp modes and unison, sub and noise oscillators, 96 filter types, 3 envelopes, 8 drawable LFOs, a 32-slot modulation matrix and a 10-module effect rack.'));
-    body.appendChild(mk(this.d, 'p', '', 'All artwork, wavetables, noises and presets are original. Not affiliated with Xfer Records.'));
+    body.appendChild(mk(this.d, 'p', '', 'Wavetable synthesizer modelled on the Serum workflow: three oscillators (wavetable, multisample, sample, granular, spectral) with two warp slots and unison, sub and noise oscillators, two filters, a mixer with two FX buses, 4 envelopes, 10 LFOs, a 64-slot modulation matrix, an arpeggiator, a clip player and a modular effect rack.'));
+    body.appendChild(mk(this.d, 'p', '', 'All artwork, wavetables, samples, noises and presets are original. Not affiliated with Xfer Records.'));
+    body.appendChild(mk(this.d, 'p', 'sx-rate', BUILD));
     this.dialog('About', body, [{ label: 'Close', primary: true }]);
   }
-  /* effect chains (§9.6): synth.fxchains = [{name, fx}] (fx without ui / lock) + JSON file export / import */
-  chains() { return arr(this.store('get', CHAINS_KEY, [])).filter(c => c && typeof c.name === 'string' && isObj(c.fx)); }
+  /* effect chains (§9.6, §11.2): synth.fxchains = [{name, fx}] (fx = a v2 state without ui, racks unlocked; v1 entries
+   * written by older versions are read through fx-core migrateChains1) + JSON file export / import. FX state v2
+   * everywhere (RULINGS2 F1): the same rules as the rack's chain menu (fx-ui). A v1 chain (a v1 entry written by an older
+   * version, a Phase-1 factory chain: fx-core factoryChainFx) is loaded as it is and migrates in loadChain with the Serum
+   * state as refs: the modules the track's rows, locks and MIDI map address stay, as in Phase 1. Saving and importing keep
+   * the other entries as stored */
+  rawChains() {
+    const raw = this.store('get', CHAINS_KEY, []), L = Array.isArray(raw) ? raw : isObj(raw) ? arr(raw.chains) : [];
+    return L.filter(c => c && typeof c.name === 'string' && c.name && isObj(c.fx));
+  }
+  chains() {
+    const ok = this.rawChains();
+    if (typeof core.migrateChains1 !== 'function') return ok;
+    try { return arr(core.migrateChains1(ok).chains); } catch (err) { console.warn('effect chains unreadable', err); return []; }
+  }
   chainMenu() {
-    // Factory ▸ = serum-core FACTORY_CHAINS (read-only, never stored), then the user's library
-    const fac = core.FACTORY_CHAINS ? core.FACTORY_CHAINS.chains : [];
-    const head = fac.length ? [{ label: 'Factory', sub: fac.map(c => ({ label: c.name, action: () => this.loadChain(c.fx, c.name) })) }, { sep: true }] : [];
-    const list = this.chains().map(c => ({ label: c.name, action: () => this.loadChain(c.fx, c.name) }));
+    // Factory ▸ = fx-core FACTORY_CHAINS (v2: the Phase-1 chains migrated + the Serum 2 ones; read-only, never stored; the
+    // Phase-1 ones load from their v1 states), then the user's library (entries as stored)
+    const fac = core.FACTORY_CHAINS ? arr(core.FACTORY_CHAINS.chains) : [];
+    const facFx = c => (typeof core.factoryChainFx === 'function' ? core.factoryChainFx(c) || c.fx : c.fx);
+    const head = fac.length ? [{ label: 'Factory', sub: fac.map(c => ({ label: c.name, action: () => this.loadChain(facFx(c), c.name) })) }, { sep: true }] : [];
+    const list = this.rawChains().map(c => ({ label: c.name, action: () => this.loadChain(c.fx, c.name) }));
     if (!list.length) list.push({ label: '(no saved chains)', disabled: true });
     return head.concat(list, [{ sep: true }, { label: 'Import from File…', action: () => this.importChains() },
-      { label: 'Export All to File…', action: () => download(this.d, 'effect-chains.json', JSON.stringify({ type: 'synth.fxchains', v: 1, chains: this.chains() }, null, 1)) }]);
+      { label: 'Export All to File…', action: () => download(this.d, 'effect-chains.json', JSON.stringify({ type: 'synth.fxchains', v: 2, chains: this.chains() }, null, 1)) }]);
   }
-  // Same rules as the rack's chain menu (fx-ui): stored chains are normalised copies without ui / lock, sorted by
-  // name; loading replaces everything but ui / lock, keeps the values of locked FX parameters and compiles with
-  // seed (§9.6); import accepts a library file ({ chains: [{ name, fx }] }, merged by name) or a single chain
-  // ({ name, fx } as the rack's Export Effect Chain… writes it, or a bare fx state: loaded).
-  chainCopy(fx) { const c = core.normalizeFx ? core.normalizeFx(fx) : clone(fx); delete c.ui; delete c.lock; return c; }
+  // Stored chains are normalised v2 copies without ui, racks unlocked, sorted by name; loading replaces every rack (its
+  // instances, bypass, routing) keeping ui, each rack's lock flag and the values of locked FX parameters whose instance
+  // (same id and type) the chain brings back, and compiles with seed (§9.6); the Serum state's rows, locks and MIDI
+  // entries addressing an instance the chain does not bring back go (fx-core removeInstance, as the rack's loadChain).
+  // Import accepts a library file ({ chains: [{ name, fx }] }, merged by name) or a single chain ({ name, fx } as the
+  // rack's Export Effect Chain… writes it, or a bare fx state: loaded).
+  chainCopy(fx) {
+    if (typeof core.migrateChains1 === 'function') { const c = arr(core.migrateChains1([{ name: 'x', fx }]).chains)[0]; if (c) return c.fx; }
+    const c = core.normalizeFx ? core.normalizeFx(fx) : clone(fx); delete c.ui; delete c.lock; return c;
+  }
   storeChains(list) { this.store('set', CHAINS_KEY, list.slice().sort((a, b) => a.name.localeCompare(b.name))); }
   loadChain(fx, name) {
-    if (!core.normalizeFx) return;
-    const n = core.normalizeFx(fx), locked = arr(this.s().locks.p).filter(id => isFxIdx(DEST_INDEX[id]));
+    if (!core.normalizeFx || !this.fx()) return;
+    // a v1 chain migrates with the Serum state as refs (§2.6.3): instances its rows, locks and MIDI entries address stay
+    const n = core.normalizeFx(clone(fx), this.s()), cur = this.fx(), locked = arr(this.s().locks.p).filter(isFxPar), keep = [];
+    const fd = (id, f) => (typeof core.fxDest === 'function' ? core.fxDest(id, f) : null);
+    for (const id of locked) { const d = fd(id, cur); if (d && d.inst && isObj(d.inst.p)) keep.push([id, d.inst.type, d.inst.p[d.pid]]); }
+    const inc = new Map();
+    fxWalk(n, I => { inc.set(I.id, I.type); });
+    const gone = [];
+    fxWalk(cur, I => { if (inc.get(I.id) !== I.type) gone.push(I.id); });
+    if (gone.length && typeof core.removeInstance === 'function') {
+      const f0 = clone(cur);
+      this.edit(st => { for (const id of gone) core.removeInstance(f0, id, st); }, { label: 'Load Effect Chain' });
+    }
     this.editFx(f => {
-      const keep = {};
-      for (const id of locked) if (f.p && fin(f.p[id])) keep[id] = f.p[id];
-      const ui = f.ui, lock = f.lock;
+      const ui = f.ui, locks = arr(f.racks).map(R => (isObj(R) && R.lock ? 1 : 0));
       this.replaceState(f, n);
-      Object.assign(f.p, keep);
-      f.ui = ui; f.lock = lock;
+      if (Array.isArray(f.racks)) f.racks.forEach((R, k) => { if (isObj(R)) R.lock = locks[k] || 0; });
+      for (const [id, type, v] of keep) { const d = fd(id, f); if (d && d.inst && d.inst.type === type && fin(v)) d.inst.p[d.pid] = v; }
+      if (ui !== undefined) f.ui = ui;
+      if (isObj(f.ui) && f.ui.sel && !inc.has(f.ui.sel)) f.ui.sel = '';
     }, { label: 'Load Effect Chain', seed: true });
     if (this.rack && this.rack.refresh) this.rack.refresh();
     if (name) this.notify('Loaded effect chain “' + name + '”');
@@ -2034,7 +3288,7 @@ export class SerumUI {
     this.promptText('Save Effect Chain', 'Name', 'Chain ' + (this.chains().length + 1), t => {
       const name = String(t).trim().slice(0, 48);
       if (!name || !this.fx()) return false;
-      this.storeChains(this.chains().filter(c => c.name !== name).concat([{ name, fx: this.chainCopy(this.fx()) }]));
+      this.storeChains(this.rawChains().filter(c => c.name !== name).concat([{ name, fx: this.chainCopy(this.fx()) }]));
       this.notify('Saved effect chain “' + name + '”');
       return true;
     });
@@ -2046,35 +3300,97 @@ export class SerumUI {
   importChainText(t, fileName) {
     const j = JSON.parse(t);
     if (j && Array.isArray(j.chains)) {
-      const add = j.chains.filter(c => c && typeof c.name === 'string' && c.name.trim() && isObj(c.fx) && isObj(c.fx.p));
+      const add = j.chains.filter(c => c && typeof c.name === 'string' && c.name.trim() && isObj(c.fx) && (isObj(c.fx.p) || Array.isArray(c.fx.racks)));
       if (!add.length) { this.notify('No effect chains in that file'); return 0; }
-      const m = new Map(this.chains().map(c => [c.name, c]));
+      const m = new Map(this.rawChains().map(c => [c.name, c]));
       for (const c of add) { const nm = c.name.trim().slice(0, 48); m.set(nm, { name: nm, fx: this.chainCopy(c.fx) }); }
       this.storeChains(Array.from(m.values()));
       this.notify('Imported ' + add.length + ' effect chain' + (add.length > 1 ? 's' : ''));
       return add.length;
     }
     const fx = j && isObj(j.fx) ? j.fx : j;
-    if (!isObj(fx) || !isObj(fx.p)) { this.notify('No effect chains in that file'); return 0; }
+    if (!isObj(fx) || !(isObj(fx.p) || Array.isArray(fx.racks))) { this.notify('No effect chains in that file'); return 0; }
     this.loadChain(fx, (j && typeof j.name === 'string' && j.name) || String(fileName || 'Effect chain').replace(/(\.fxchain)?\.json$/i, ''));
     return 1;
   }
 
 
-  /* ================================================================ OSC page (§9.3) */
+  /* ================================================================ OSC page (§13.2, §13.3) */
+  // row A: [SUB over NOISE] [OSC A] [OSC B] [OSC C] [FILTER 1 over FILTER 2] — the panels of sx-ui-osc (U2), bound
+  // through the kit (§11.14). Narrow layouts (container widths, §13.2): below 1100 px one oscillator at a time (tabs
+  // A · B · C with colour dots and power LEDs, s.ui.oscTab), below 1366 px one filter at a time (s.ui.filtTab).
+  // Pressing an oscillator panel selects it (s.ui.osc: the Render OSC Warp / Resample target, §13.3.1).
   buildOsc(el) {
-    const d = this.d;
-    const rowA = mk(d, 'div', 'sx-row sx-rowA'), col = mk(d, 'div', 'sx-col');
-    col.append(this.noisePanel(), this.subPanel());
-    rowA.append(col, this.oscPanel(0), this.oscPanel(1), this.filterPanel());
-    const rowC = mk(d, 'div', 'sx-row sx-rowC');
-    rowC.append(this.macrosPanel(), this.envPanel(), this.lfoPanel(), this.voicingPanel());
-    el.append(rowA, this.tileStrip(), rowC);
+    const d = this.d, K = this.kit;
+    const rowA = mk(d, 'div', 'sx-row sx-rowA'), colSN = mk(d, 'div', 'sx-col sx-colSN');
+    const colO = mk(d, 'div', 'sx-colO'), colF = mk(d, 'div', 'sx-col sx-colF');
+    rowA.append(colSN, colO, colF);
+    this.oscPanels = [];
+    const mount = (f, box) => { try { const p = f(); this.oscPanels.push(p); return p; } catch (err) { console.error('serum-ui: oscillator panel', err); box.appendChild(mk(d, 'p', 'sx-placeholder', 'Panel unavailable')); return null; } };
+    mount(() => new osc.SubPanel(colSN, K), colSN);
+    mount(() => new osc.NoisePanel(colSN, K), colSN);
+    colO.appendChild(this.panelTabs('osc'));
+    for (let o = 0; o < N_OSC; o++) {
+      const p = mount(() => new osc.OscPanel(colO, K, o), colO);
+      if (!p || !p.el) continue;
+      p.el.classList.add('sx-opan');
+      p.el.setAttribute('data-o', String(o));
+      p.el.addEventListener('pointerdown', () => { if (this.selOsc() !== o) this.uiEdit(s => { s.ui.osc = o; s.ui.oscTab = o; }); }, true);
+    }
+    colF.appendChild(this.panelTabs('filt'));
+    for (let k = 0; k < 2; k++) {
+      const p = mount(() => new osc.FilterPanel(colF, K, k), colF);
+      if (!p || !p.el) continue;
+      p.el.classList.add('sx-fpan');
+      p.el.setAttribute('data-f', String(k));
+    }
+    this.custom(() => {
+      const u = this.s().ui, ot = String(clamp(u.oscTab | 0, 0, 2)), ft = String(clamp(u.filtTab | 0, 0, 1)), so = this.selOsc();
+      if (colO.getAttribute('data-tab') !== ot) colO.setAttribute('data-tab', ot);
+      if (colF.getAttribute('data-tab') !== ft) colF.setAttribute('data-tab', ft);
+      for (const p of this.oscPanels) if (p && p.el && p.el.hasAttribute('data-o')) p.el.classList.toggle('sx-osel', +p.el.getAttribute('data-o') === so);
+    });
+    el.append(rowA, this.tileStrip(), this.rowC());
   }
-  // panel shell: power toggle (module power = DEST + module menu), title (module menu on right-click /
-  // long-press / Enter), lock mark; greys out while off
-  panel(title, module, powerId, cls) {
-    const d = this.d, el = mk(d, 'section', 'sx-panel' + (cls ? ' ' + cls : ''));
+  // oscillator / filter tab pair of the narrow layouts: colour dot + power LED (lit = module on)
+  panelTabs(kind) {
+    const d = this.d, bar = mk(d, 'div', 'sx-ptabs');
+    bar.setAttribute('role', 'tablist');
+    bar.setAttribute('aria-label', kind === 'osc' ? 'Oscillator' : 'Filter');
+    const n = kind === 'osc' ? N_OSC : 2, bs = [];
+    for (let k = 0; k < n; k++) {
+      const label = kind === 'osc' ? 'OSC ' + OSC_L[k] : 'FILTER ' + (k + 1), power = kind === 'osc' ? OSC_P[k] + '.on' : k ? 'f2.on' : 'f.on';
+      const b = btn(d, 'sx-ptab', '', label, () => this.uiEdit(s => {
+        if (kind === 'osc') { s.ui.oscTab = k; s.ui.osc = k; } else s.ui.filtTab = k;
+      }));
+      b.setAttribute('role', 'tab');
+      b.setAttribute(kind === 'osc' ? 'data-o' : 'data-f', String(k));
+      const dot = mk(d, 'span', 'sx-dot');
+      dot.setAttribute('aria-hidden', 'true');
+      b.append(dot, mk(d, 'span', '', kind === 'osc' ? OSC_L[k] : String(k + 1)));
+      bs.push({ b, power });
+      bar.appendChild(b);
+    }
+    this.custom(() => {
+      const u = this.s().ui, sel = kind === 'osc' ? u.oscTab | 0 : u.filtTab | 0;
+      bs.forEach(({ b, power }, k) => {
+        b.setAttribute('aria-selected', k === sel ? 'true' : 'false');
+        b.classList.toggle('sx-pon', destOf(power) ? this.getN(power) >= 0.5 : false);
+      });
+    });
+    return bar;
+  }
+  // row C: [MACROS 1–8] [ENV 1–4] [LFO / VELO / NOTE] [VOICING] (OSC and MIX pages, §13.2)
+  rowC() {
+    const r = mk(this.d, 'div', 'sx-row sx-rowC');
+    r.append(this.macrosPanel(), this.envPanel(), this.lfoPanel(), this.voicingPanel());
+    return r;
+  }
+  // panel shell: power toggle (module power = DEST + module menu), title (module menu on right-click / long-press /
+  // Enter; drag onto another module's title: swap / Alt copy / Shift-Alt copy with mods), lock mark; greys out while off.
+  // o.items() = extra module-menu items (sub-panels, §11.14)
+  panel(title, module, powerId, cls, o) {
+    const d = this.d, O = o || {}, el = mk(d, 'section', 'sx-panel' + (cls ? ' ' + cls : ''));
     el.setAttribute('aria-label', title);
     const head = mk(d, 'div', 'sx-ptitle'), body = mk(d, 'div', 'sx-pbody');
     if (powerId) head.appendChild(this.dToggle(powerId, title + ' on', 'power', { module }).el);
@@ -2083,14 +3399,16 @@ export class SerumUI {
       name.tabIndex = 0;
       name.setAttribute('role', 'button');
       name.setAttribute('aria-haspopup', 'menu');
-      name.setAttribute('aria-label', title + ' module menu (lock, copy, paste, init)');
-      const open = (x, y) => this.moduleMenu(module, x, y, name);
+      name.setAttribute('aria-label', title + ' module menu (lock, init, copy, paste, swap)');
+      name.setAttribute('data-modlabel', module);
+      const open = (x, y) => this.moduleMenu(module, x, y, name, O.items);
       const below = () => { const r = name.getBoundingClientRect(); open(r.left, r.bottom + 2); };
       name.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); open(e.clientX, e.clientY); });
       name.addEventListener('keydown', e => {
         if (e.key === 'Enter' || e.key === ' ' || e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) { e.preventDefault(); below(); }
       });
       longPress(name, open);
+      if (KIND_MEMBERS[modKind(module)] || audioSrcOf(module)) this.moduleDrag(name, module);
     }
     const lock = icon(d, 'lock');
     lock.setAttribute('class', 'sx-lockmark');
@@ -2104,425 +3422,78 @@ export class SerumUI {
     }
     return { el, head, body, name };
   }
-  row(...els) { const r = mk(this.d, 'div', 'sx-krow'); r.append(...els.filter(Boolean)); return r; }
-
-  /* ---------------------------------------------------------------- OSC A / B */
-  oscPanel(o) {
-    const d = this.d, P = o ? 'b' : 'a', T = o ? 'OSC B' : 'OSC A';
-    const { el, head, body } = this.panel(T, o ? 'oscB' : 'oscA', P + '.on');
-    const wtm = this.bind(wk.menu({ label: T + ' wavetable', items: () => this.wtItems(o), get: () => this.s().osc[o].wt, arrows: true, stepGroup: true,
-      set: v => this.edit(s => { s.osc[o].wt = v; }, { label: 'Wavetable' }) }));
-    wtm.el.classList.add('sx-grow');
-    const ren = btn(d, 'sx-hbtn', 'Rename', 'Rename user wavetable', () => this.renameTable(o));
-    this.custom(() => ren.classList.toggle('sx-hidden', !this.canRename(this.s().osc[o].wt)));
-    const del = btn(d, 'sx-hbtn', icon(d, 'trash'), 'Delete user wavetable', () => this.deleteUser(false, o));
-    this.custom(() => del.classList.toggle('sx-hidden', !this.canDelete(this.s().osc[o].wt, false)));
-    const edb = btn(d, 'sx-hbtn', icon(d, 'zoom'), 'Open wavetable editor (' + T + ')', () => this.openWtEditor(o));
-    head.append(wtm.el, ren, del, edb);
-    const cv = this.canvas('sx-tall', () => this.oscKey(o), (g, w, h, dpr) => this.drawOsc(g, w, h, dpr, o));
-    cv.el.setAttribute('data-oscdisp', String(o));
-    cv.el.tabIndex = 0;
-    cv.el.setAttribute('role', 'button');
-    cv.el.setAttribute('aria-label', T + ' wavetable display: click to switch 2D / 3D; drop a WAV or PNG to import');
-    const flip = () => this.uiEdit(s => { s.ui.view3d[o] = s.ui.view3d[o] ? 0 : 1; });
-    cv.el.addEventListener('click', flip);
-    cv.el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); flip(); } });
-    this.fileDrop(cv.el, files => this.importTableFiles(o, files));
-    const uni = this.dNum(P + '.uni', 'UNISON');
-    this.uniEls = (this.uniEls || []).concat(uni.el);
-    const warpBip = () => [6, 10, 12].includes(Math.round(22 * this.getN(P + '.warpMode')));
-    const warp = this.dMenu(P + '.warpMode', 'WARP MODE', () => WARPS.map((w, k) => ({ v: k / 22, label: o ? w.nameB : w.name })));
-    const pen = btn(d, 'sx-hbtn', icon(d, 'edit'), 'Edit remap curve (' + T + ')', () => this.remapPopover(o, pen));
-    this.custom(() => { const m = Math.round(22 * this.getN(P + '.warpMode')); pen.classList.toggle('sx-hidden', !(m >= 13 && m <= 16)); });
-    body.append(cv.el,
-      this.row(uni.el, this.dKnob(P + '.det', 'DETUNE', { size: 'sm' }).el, this.dKnob(P + '.blend', 'BLEND', { size: 'sm' }).el,
-        this.dKnob(P + '.phase', 'PHASE', { size: 'sm' }).el, this.dKnob(P + '.rand', 'RAND', { size: 'sm' }).el),
-      this.row(this.dKnob(P + '.oct', 'OCT', { size: 'sm' }).el, this.dKnob(P + '.semi', 'SEM', { size: 'sm' }).el,
-        this.dKnob(P + '.fine', 'FIN', { size: 'sm' }).el, this.dKnob(P + '.crs', 'CRS', { size: 'sm' }).el,
-        this.dKnob(P + '.wt', 'WT POS').el),
-      this.row(warp.el, pen),
-      this.row(this.dKnob(P + '.warp', 'WARP', { bipolarFn: warpBip }).el, this.dKnob(P + '.pan', 'PAN', { size: 'sm' }).el,
-        this.dKnob(P + '.level', 'LEVEL').el));
-    return el;
-  }
-  wtList() {
-    if (this.wtListT !== this.paintSeq || !this.wtListC) {
-      const w = this.host.wt, L = w && w.list ? arr(w.list()) : [];
-      this.wtListC = L.filter(t => !t.user).concat(L.filter(t => t.user));
-      this.wtListT = this.paintSeq;
-    }
-    return this.wtListC;
-  }
-  wtItems(o) {
-    const list = this.wtList(), cur = this.s().osc[o].wt;
-    const items = list.map(t => ({ v: t.id, label: t.name || nameOfId(t.id), group: t.user ? 'User' : t.cat || 'Factory' }));
-    if (!items.some(it => it.v === cur)) items.push({ v: cur, label: nameOfId(cur), group: 'Current' });
-    // categories in catalogue order (first appearance), then User, then the unlisted current table (§9.3)
-    const cats = items.map(it => it.group).filter(g => g !== 'User' && g !== 'Current');
-    return groupItems(items, cats.concat(['User', 'Current']));
-  }
-  renameTable(o) {
-    const id = this.s().osc[o].wt, it = this.wtList().find(t => t.id === id);
-    this.promptText('Rename Wavetable', 'Name', it ? it.name : nameOfId(id), t => {
-      const name = String(t).trim().slice(0, 48);
-      if (!name) return false;
-      const W = this.host.wt;
-      // host.wt.rename when the host has it; otherwise a full host.wt.update of the table under its new name
-      // (§8.8 update persists the table, and wtstore.put stores table.name)
-      const job = typeof W.rename === 'function' ? Promise.resolve(W.rename(id, name))
-        : Promise.resolve(W.get(id)).then(tb => { if (tb) return W.update(id, Object.assign({}, tb, { name }), {}); throw new Error('table missing'); });
-      job.then(() => { this.tables.delete(id); this.wtListC = null; this.queue(); },
-        err => { console.warn('serum-ui: rename', err); this.notify('Could not rename the wavetable'); });
-      return true;
-    });
-  }
-  canRename(id) {
-    const W = this.host.wt;
-    return /^user:/.test(id || '') && !!W && (typeof W.rename === 'function' || (typeof W.get === 'function' && typeof W.update === 'function'));
-  }
-  // Delete (OSC A / B, NOISE): the selected user table / noise leaves the store after a confirmation that names the
-  // other tracks using it; the host switches every sound that used it to the default source
-  canDelete(id, noise) {
-    const W = this.host.wt;
-    return (noise ? /^nzuser:/ : /^user:/).test(id || '') && !!W && typeof W.del === 'function';
-  }
-  deleteUser(noise, o) {
-    const W = this.host.wt, s = this.s(), id = noise ? s.noise.src : s.osc[o].wt;
-    if (!this.canDelete(id, noise)) return;
-    const it = (noise ? this.noiseList() : this.wtList()).find(t => t.id === id), nm = it && it.name ? it.name : nameOfId(id);
-    const kind = noise ? 'noise' : 'wavetable', users = typeof W.users === 'function' ? arr(W.users(id)) : [];
-    const also = users.length > 1 ? ' The tracks using it (' + users.join(', ') + ') switch to the default ' + kind + '.' : '';
-    if (!askConfirm(this.d, 'Delete the user ' + kind + ' “' + nm + '” from this browser? This cannot be undone.' + also)) return;
-    Promise.resolve(W.del(id)).then(() => {
-      if (this.dead) return;
-      this.tables.delete(id); this.noiseOv.delete(id); this.wtListC = null; this.nzListC = null;
-      this.notify('Deleted “' + nm + '”');
-      this.queue();
-    }, err => { console.warn('serum-ui: delete', err); if (!this.dead) this.notify('Could not delete “' + nm + '”'); });
-  }
-  // table cache: host.wt.get(id) → { table, R, morph, F (display frames), interp, exp }
-  tableEntry(id) {
-    let e = this.tables.get(id);
-    if (e) return e;
-    e = { state: 'loading', info: null };
-    this.tables.set(id, e);
-    const w = this.host.wt;
-    if (!w || typeof w.get !== 'function') { e.state = 'missing'; return e; }
-    Promise.resolve().then(() => w.get(id)).then(t => {
-      if (this.tables.get(id) !== e) return;
-      if (!t || !Array.isArray(t.frames) || !t.frames.length) e.state = 'missing';
-      else {
-        const R = t.frames.length, morph = t.morph | 0;
-        e.info = { table: t, R, morph, F: morph && R > 1 ? 256 : R, interp: morph && R > 1 ? 1 : 0, exp: null };
-        if (morph && R >= 256) e.info.F = R;
-        e.state = 'ok';
-      }
-      this.fc = null;
-      this.queue();
-    }, () => { e.state = 'missing'; this.queue(); });
-    return e;
-  }
-  tinfo(o) {
-    const s = this.s(), e = s && s.osc ? this.tableEntry(s.osc[o].wt) : null;
-    return e && e.info ? e.info : { F: 256, interp: 1 };
-  }
-  // the frame heard at normalised position n (discrete / crossfade / spectral expansion, §7.1, §6.5)
-  frameAt(info, n) {
-    const t = info.table, R = info.R, u = clamp01(n);
-    if (R === 1) return t.frames[0];
-    if (!info.morph) return t.frames[Math.min(R - 1, Math.floor(u * R))];
-    let A, B, f;
-    if (info.morph === 1 || typeof wt.expandTable !== 'function' || R >= 256) {
-      const x = u * (R - 1), i = Math.min(R - 2, Math.floor(x));
-      A = t.frames[i]; B = t.frames[i + 1]; f = x - i;
-    } else {
-      if (!info.exp) info.exp = wt.expandTable(t);
-      const x = u * 255, i = Math.min(254, Math.floor(x));
-      A = info.exp.subarray(i * 2048, i * 2048 + 2048); B = info.exp.subarray((i + 1) * 2048, (i + 2) * 2048); f = x - i;
-    }
-    if (!this.fbuf) this.fbuf = new Float32Array(2048);
-    const out = this.fbuf;
-    for (let j = 0; j < 2048; j++) out[j] = A[j] + (B[j] - A[j]) * f;
-    return out;
-  }
-  slotFrame(info, k) {   // display slot k of info.F
-    if (info.F === info.R) return info.table.frames[k];
-    return this.frameAt(info, info.F > 1 ? k / (info.F - 1) : 0).slice();
-  }
-  liveN(id) {
-    const sn = this.snap, i = DEST_INDEX[id];
-    return sn && sn.notes > 0 && sn.eff && fin(sn.eff[i]) ? sn.eff[i] : this.getN(id);
-  }
-  livePos(o) {
-    const sn = this.snap;
-    return sn && sn.notes > 0 && sn.wtPos && fin(sn.wtPos[o]) ? sn.wtPos[o] : this.getN((o ? 'b' : 'a') + '.wt');
-  }
-  remapTab(o) {
-    const pts = this.s().osc[o].remap, k = JSON.stringify(pts);
-    this.rmap = this.rmap || [{}, {}];
-    if (this.rmap[o].k !== k) this.rmap[o] = { k, tab: core.renderPts(pts, 2048) };
-    return this.rmap[o].tab;
-  }
-  oscKey(o) {
-    const s = this.s(), P = o ? 'b' : 'a', e = this.tableEntry(s.osc[o].wt), mode = Math.round(22 * this.getN(P + '.warpMode'));
-    return [s.osc[o].wt, e.state, s.ui.view3d[o], this.livePos(o).toFixed(4), mode, this.liveN(P + '.warp').toFixed(4),
-      this.getN(P + '.uni'), this.getN(P + '.det').toFixed(3), s.global.uniMode[o], this.getN(P + '.on'),
-      this.phaseDrag[o] ? this.getN(P + '.phase').toFixed(3) : '', mode >= 13 && mode <= 16 ? JSON.stringify(s.osc[o].remap) : '',
-      this.dsp() ? 1 : 0].join('|');
-  }
-  drawOsc(g, w, h, dpr, o) {
-    const s = this.s(), P = o ? 'b' : 'a', e = this.tableEntry(s.osc[o].wt);
-    g.strokeStyle = C.line; g.lineWidth = dpr;
-    g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
-    g.font = Math.round(10 * dpr) + 'px ui-monospace, monospace';
-    if (e.state !== 'ok') {
-      g.fillStyle = C.mute;
-      g.fillText(e.state === 'loading' ? 'Loading…' : 'Wavetable not found: ' + nameOfId(s.osc[o].wt), 8 * dpr, 16 * dpr);
-      return;
-    }
-    const info = e.info, pos = this.livePos(o);
-    const cur = info.interp ? Math.round(pos * (info.F - 1)) : Math.min(info.F - 1, Math.floor(pos * info.F));
-    if (s.ui.view3d[o]) this.draw3d(g, w, h, dpr, info, cur);
-    else {
-      let fr = this.frameAt(info, pos);
-      const mode = Math.round(22 * this.getN(P + '.warpMode')), D = this.dsp();
-      if (mode > 0 && mode < 18 && D && typeof D.renderWarp === 'function') {
-        try { fr = D.renderWarp(fr, mode, this.liveN(P + '.warp'), { over: 1, remap: this.remapTab(o) }); } catch (err) { warnOnce('rw', 'serum-ui: renderWarp failed', err); }
-      }
-      const n = fr.length, amp = h * 0.42;
-      g.beginPath();
-      for (let x = 0; x <= w; x++) { const y = h / 2 - fr[Math.min(n - 1, Math.floor(x / w * n))] * amp; if (x) g.lineTo(x, y); else g.moveTo(x, y); }
-      g.strokeStyle = C.graph; g.lineWidth = 1.6 * dpr; g.stroke();
-      g.lineTo(w, h / 2); g.lineTo(0, h / 2); g.closePath();
-      g.fillStyle = 'rgba(89, 194, 255, 0.10)'; g.fill();
-      if (this.phaseDrag[o]) {
-        const x = Math.min(0.99999, this.getN(P + '.phase')) * w;
-        g.strokeStyle = C.cur; g.lineWidth = 1.5 * dpr;
-        g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
-      }
-    }
-    this.drawStalks(g, w, h, dpr, o);
-    g.fillStyle = C.mute;
-    g.fillText((cur + 1) + ' / ' + info.F, 6 * dpr, h - 6 * dpr);
-  }
-  draw3d(g, w, h, dpr, info, cur) {
-    const F = info.F, R = info.R || F, dx = w * 0.26, dy = h * 0.4, fw = w * 0.72, amp = h * 0.2;
-    const line = (fr, z, col, lw) => {
-      const x0 = z * dx, y0 = h * 0.7 - z * dy, n = fr.length, steps = Math.max(32, Math.round(fw / (2 * dpr)));
-      g.beginPath();
-      for (let j = 0; j <= steps; j++) {
-        const x = x0 + j / steps * fw, y = y0 - fr[Math.min(n - 1, Math.floor(j / steps * n))] * amp;
-        if (j) g.lineTo(x, y); else g.moveTo(x, y);
-      }
-      g.strokeStyle = col; g.lineWidth = lw; g.stroke();
+  // module label as a drag handle (§13.3, inv B2): dropped on another label of the same kind = swap (Alt: copy, Shift-Alt:
+  // copy with mods); the labels of OSC A/B/C, SUB, NOISE and FILTER 1/2 dropped on a control (or a matrix source cell,
+  // an X|Y dot, an LFO point) = that module's audio-rate source (§3.10 drag tiles, inv B18)
+  moduleDrag(name, module) {
+    if (typeof wk.dragSource !== 'function') return;
+    const asrc = audioSrcOf(module), same = !!KIND_MEMBERS[modKind(module)];
+    let ghost = null, over = null;
+    const find = i => {
+      const t = closest(i.target, '[data-modlabel]'), m = t ? t.getAttribute('data-modlabel') : null;
+      if (m && same && m !== module && modKind(m) === modKind(module)) return { kind: 'module', el: t, m };
+      if (!asrc || (t && m === module)) return null;
+      const h = this.hitTest(i.x, i.y, asrc, false);
+      return h && AUDIO_DROPS.has(h.kind) ? h : null;
     };
-    for (const L of layers3d(F, R)) {   // back to front; real frames green, interpolated slots grey (§9.3)
-      const fr = L.real && F !== R ? info.table.frames[L.frame] : this.slotFrame(info, L.slot);
-      line(fr, L.z, L.real ? 'rgba(111, 227, 161, 0.55)' : 'rgba(127, 139, 152, 0.35)', dpr);
-    }
-    line(this.slotFrame(info, cur), F > 1 ? cur / (F - 1) : 0, C.cur, 1.8 * dpr);
-  }
-  drawStalks(g, w, h, dpr, o) {   // unison detune "stalks" (inv A3)
-    const s = this.s(), P = o ? 'b' : 'a', N = Math.round(core.lawValue(P + '.uni', this.getN(P + '.uni')));
-    if (N < 2) return;
-    const det = core.lawValue(P + '.det', this.getN(P + '.det')), mode = s.global.uniMode[o];
-    g.strokeStyle = 'rgba(79, 179, 255, 0.85)'; g.lineWidth = 1.5 * dpr;
-    for (let i = 0; i < N; i++) {
-      const t = 2 * i / (N - 1) - 1, v = mode === 4 ? t : core.detuneShape(mode, t), x = w / 2 + v * Math.max(det, 0.02) * w * 0.44;
-      g.beginPath(); g.moveTo(x, h - 2 * dpr); g.lineTo(x, h - (i === (N - 1) / 2 ? 14 : 9) * dpr); g.stroke();
-    }
-  }
-  remapPopover(o, anchor) {
-    if (this.pop) { const same = this.pop.o === o; this.pop.close(); if (same) return; }
-    const Ed = gx.CurveEditor;
-    if (typeof Ed !== 'function') { this.notify('Curve editor not available'); return; }
-    const d = this.d, box = mk(d, 'div', 'sx-pop'), T = (o ? 'OSC B' : 'OSC A') + ' remap';
-    box.setAttribute('role', 'dialog');
-    box.setAttribute('aria-label', T);
-    const hd = mk(d, 'div', 'sx-edhead');
-    hd.append(mk(d, 'span', 'sx-ttl', T.toUpperCase()), mk(d, 'span', 'sx-grow'));
-    const x = btn(d, 'sx-hbtn', '✕', 'Close', () => P.close());
-    hd.appendChild(x);
-    const eb = mk(d, 'div', 'sx-edbox');
-    box.append(hd, eb);
-    const er = this.el.getBoundingClientRect(), ar = anchor.getBoundingClientRect();
-    box.style.left = Math.max(8, Math.min(ar.left - er.left, er.width - 436)) + 'px';
-    box.style.top = (ar.bottom - er.top + 4) + 'px';
-    this.el.appendChild(box);
-    const ed = new Ed(eb, {
-      get: () => this.s().osc[o].remap,
-      set: (pts, ph) => this.edit(s => { s.osc[o].remap = pts; }, { label: T, phase: ph }),
-      grid: () => { const g = this.s().lfoGrid; return { x: g.x, y: g.y }; },
-      kind: 'remap', shapes: this.shapeLib(), height: 150,
+    const label = (i, h) => (h && h.kind !== 'module' ? 'Modulate · ' + srcLabel(this.s(), asrc)
+      : (i.alt ? (i.shift ? 'Copy w/mods · ' : 'Copy · ') : 'Swap · ') + MOD_TITLE(module));
+    const clear = () => { if (ghost) { ghost.remove(); ghost = null; } if (over) { over.classList.remove('sx-droptgt'); over = null; } };
+    const ds = wk.dragSource(name, {
+      data: module,
+      begin: i => { ghost = mk(this.d, 'div', 'sx-ghost', label(i, null)); this.d.body.appendChild(ghost); },
+      move: i => {
+        const h = find(i), t = h ? h.el : null;
+        if (ghost) { ghost.style.transform = 'translate(' + (i.x + 12) + 'px,' + (i.y + 10) + 'px)'; const L = label(i, h); if (ghost.textContent !== L) ghost.textContent = L; }
+        if (t !== over) { if (over) over.classList.remove('sx-droptgt'); over = t; if (t) t.classList.add('sx-droptgt'); }
+      },
+      drop: i => {
+        const h = find(i);
+        clear();
+        if (!h) return;
+        if (h.kind === 'module') this.moduleDrop(module, h.m, !!i.alt, !!i.shift);
+        else this.doDrop(h, asrc, i.x, i.y);
+      },
+      cancel: clear,
     });
-    const offs = [
-      on(this.d, 'pointerdown', e => { if (!box.contains(e.target) && !anchor.contains(e.target) && !closest(e.target, '.wk-ctx')) P.close(); }, true),
-      on(box, 'keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); P.close(); anchor.focus(); } }),
-    ];
-    this.edSig.set(ed, () => JSON.stringify([this.s().osc[o].remap, this.s().lfoGrid]));
-    const P = { o, ed, close: () => {
-      offs.forEach(f => f());
-      if (ed.destroy) ed.destroy();
-      this.edSig.delete(ed); this.edKey.delete(ed);
-      box.remove();
-      if (this.pop === P) this.pop = null;
-    } };
-    this.pop = P;
-    x.focus();
+    this.offs.push(() => ds.destroy());
   }
 
-  /* ---------------------------------------------------------------- files: wavetables / noises */
-  fileDrop(el, fn) {
-    const has = e => !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0);
-    el.addEventListener('dragover', e => { if (has(e)) { e.preventDefault(); el.classList.add('sx-dropok'); } });
-    el.addEventListener('dragleave', () => el.classList.remove('sx-dropok'));
-    el.addEventListener('drop', e => {
-      el.classList.remove('sx-dropok');
-      const fl = e.dataTransfer && e.dataTransfer.files;
-      if (!fl || !fl.length) return;
-      e.preventDefault();
-      fn(Array.prototype.slice.call(fl));
-    });
+  /* ---------------------------------------------------------------- OSC-side actions (sx-ui-osc, §11.14) */
+  // serum-ui's own entry points into the oscillator data: drops on the displays (doDrop), the main menu and the LFO
+  // shape menus. An LFO dropped on a non-wavetable oscillator also switches it to a wavetable one: sx-ui-osc does that in
+  // the same edit as the new table, once the table is saved (§13.13, inv B16: one undo step; a failed save leaves the
+  // oscillator as it was).
+  lfoToWavetable(l, o) {
+    let r;
+    try { r = this.oscd.lfoToWavetable(l, o); } catch (err) { r = Promise.reject(err); }
+    return Promise.resolve(r).catch(err => { console.warn('serum-ui: LFO to wavetable', err); if (!this.dead) this.notify('LFO → wavetable failed' + (err && err.message ? ': ' + err.message : '')); });
   }
-  splitSize() {   // the WT editor's held import split size (§9.9), when it persists one in synth.sx.wte
-    const st = this.store('get', 'synth.sx.wte', null), v = st && st.split;
-    if (v === undefined || v === null || v === '') return null;
-    return typeof wt.parseSplitSize === 'function' ? wt.parseSplitSize(String(v)) : null;
+  lfoToNoise(l) {
+    let r;
+    try { r = this.oscd.lfoToNoise(l); } catch (err) { r = Promise.reject(err); }
+    return Promise.resolve(r).catch(err => { console.warn('serum-ui: LFO to noise', err); if (!this.dead) this.notify('LFO → noise failed' + (err && err.message ? ': ' + err.message : '')); });
   }
-  async decodeImage(file) {
-    const w = this.d.defaultView || globalThis, bmp = await w.createImageBitmap(file);
-    const c = mk(this.d, 'canvas');
-    c.width = bmp.width; c.height = bmp.height;
-    const g = c.getContext('2d');
-    g.drawImage(bmp, 0, 0);
-    const im = g.getImageData(0, 0, c.width, c.height);
-    return { width: im.width, height: im.height, data: im.data };
-  }
-  async importTableFiles(o, files) {
-    const f = files[0], W = this.host.wt;
-    if (!f || !W || !W.saveNew) return;
-    try {
-      let table;
-      if (/\.png$/i.test(f.name) || f.type === 'image/png') {
-        if (typeof wt.importImage !== 'function') throw new Error('PNG import unavailable');
-        table = wt.importImage(await this.decodeImage(f));
-      } else {
-        if (typeof wt.readWav !== 'function' || typeof wt.tableFromWav !== 'function') throw new Error('WAV import unavailable');
-        // clm chunk → its frames; whole multiple of 2048 → raw frames; else the held split size (manual) or Pitch Avg
-        const wav = wt.readWav(await f.arrayBuffer()), split = this.splitSize();
-        const opts = { mode: 'auto', name: (f.name || '').replace(/\.[^.]+$/, ''), channel: o === 1 && wav.ch && wav.ch.length > 1 ? 1 : 0 };
-        if (split) opts.size = split;
-        table = wt.tableFromWav(wav, opts);
-      }
-      const name = (f.name || 'Imported').replace(/\.[^.]+$/, '').slice(0, 48) || 'Imported';
-      table.name = name;
-      const id = await W.saveNew(table, name);
-      if (this.dead || !id) return;
-      this.wtListC = null;
-      this.edit(s => { s.osc[o].wt = id; }, { label: 'Import wavetable' });
-      this.notify(table.importMsg || 'Imported “' + name + '”');
-    } catch (err) {
-      console.warn('serum-ui: import', err);
-      this.notify('Import failed: ' + (err && err.message ? err.message : err));
-    }
-  }
-  async importNoiseFiles(files) {
-    const f = files[0], W = this.host.wt;
-    if (!f || !W || !W.saveNoise) return;
-    try {
-      if (typeof wt.readWav !== 'function') throw new Error('WAV import unavailable');
-      const wav = wt.readWav(await f.arrayBuffer()), L = wav.ch[0], R = wav.ch.length > 1 ? wav.ch[1] : null;
-      const name = (f.name || 'Noise').replace(/\.[^.]+$/, '').slice(0, 48) || 'Noise';
-      const lp = wav.loop && wav.loop.end > wav.loop.start ? wav.loop : null;
-      // source default (§9.3): a file with a smpl loop loops, any other file plays once
-      const oneshot = lp ? 0 : 1;
-      const rec = { kind: 'noise', name, rate: wav.sr, ch: R ? 2 : 1, root: 60, len: L.length, loopStart: lp ? lp.start : 0, loopEnd: lp ? lp.end : L.length, oneshot, L, R };
-      const id = await W.saveNoise(rec, name);
-      if (this.dead || !id) return;
-      this.edit(s => { s.noise.src = id; s.noise.oneshot = oneshot; s.p['n.on'] = 1; }, { label: 'Import noise' });
-      this.notify('Imported noise “' + name + '”');
-    } catch (err) {
-      console.warn('serum-ui: noise import', err);
-      this.notify('Import failed: ' + (err && err.message ? err.message : err));
-    }
-  }
-  // Alt-drag an LFO tile onto an oscillator display: one cycle of the LFO as a 1-frame user table (inv A13)
-  async lfoToWavetable(l, o) {
-    const W = this.host.wt;
-    if (typeof wt.ptsToFrame !== 'function' || !W || !W.saveNew) { this.notify('LFO → wavetable is not available'); return; }
-    const frame = wt.ptsToFrame(core.renderPts(this.s().lfo[l].pts, 1024)), name = 'LFO ' + (l + 1);
-    const id = await W.saveNew({ name, frames: [frame], morph: 0, factory: 0 }, name);
-    if (this.dead || !id) return;
-    this.wtListC = null;
-    this.edit(s => { s.osc[o].wt = id; }, { label: 'LFO to wavetable' });
-  }
-  // drag an LFO tile onto the NOISE panel: the LFO cycle as a keytrack-ready user noise (inv A8)
-  async lfoToNoise(l) {
-    const W = this.host.wt;
-    if (typeof wt.lfoToNoise !== 'function' || !W || !W.saveNoise) { this.notify('LFO → noise is not available'); return; }
-    const name = 'LFO ' + (l + 1), entry = wt.lfoToNoise(core.renderPts(this.s().lfo[l].pts, 1024), name);
-    if (entry && typeof entry === 'object') entry.oneshot = 0;
-    const id = await W.saveNoise(entry, name);
-    if (this.dead || !id) return;
-    // a looping single cycle tuned to the root (§7.9): looped, key-tracked (choosing a source sets oneshot, §9.3)
-    this.edit(s => { s.noise.src = id; s.noise.oneshot = 0; s.noise.keytrack = 1; s.p['n.on'] = 1; }, { label: 'LFO to noise' });
-  }
-  // Wavetable to LFO Shape (§9.3): the oscillator's frame at its base WT POS → ≤ 64 points
+  renderOscWarp(o) { return this.oscd.renderOscWarp(o); }
+  // Wavetable to LFO Shape (§9.3): the oscillator's frame at its base WT POS → ≤ 64 points into the edited LFO
   wtToLfo(o) {
-    const e = this.tableEntry(this.s().osc[o].wt), l = Math.max(0, lfoNum(this.edSel) - 1);
-    if (!e.info) { this.notify('Wavetable not loaded yet'); return; }
-    if (typeof wt.frameToPoints !== 'function') { this.notify('Wavetable to LFO Shape is not available'); return; }
-    const pts = wt.frameToPoints(this.frameAt(e.info, this.getN((o ? 'b' : 'a') + '.wt')).slice(), 64);
+    const l = Math.max(0, lfoNum(this.edSel) - 1), pts = this.oscd.lfoShape(o);
+    if (!pts) return;
     this.edit(s => { const cut = ptsBuses(s.lfo[l].pts); s.lfo[l].pts = pts; s.lfo[l].loop = -1; s.lfo[l].start = 0; pruneLost(s, cut); }, { label: 'Wavetable to LFO Shape' });
     this.edDirty = true;
   }
-  // Render OSC Warp (§9.8): 256 frames, frame f = base frame through the base warp mode at amount f/255
-  async renderOscWarp(o) {
-    const D = this.dsp(), W = this.host.wt, s = this.s(), P = o ? 'b' : 'a', mode = Math.round(22 * this.getN(P + '.warpMode'));
-    if (!D || typeof D.renderWarp !== 'function' || typeof wt.bandlimit !== 'function' || !W || !W.saveNew) { this.notify('Render OSC Warp is not available'); return; }
-    if (!mode) { this.notify('Choose a warp mode first'); return; }
-    const e = this.tableEntry(s.osc[o].wt);
-    if (!e.info) { this.notify('Wavetable not loaded yet'); return; }
-    const frame = this.frameAt(e.info, this.getN(P + '.wt')).slice();
-    let mod;
-    if (mode >= 18 && mode <= 20) {
-      const e2 = this.tableEntry(s.osc[1 - o].wt);
-      if (!e2.info) { this.notify('The other oscillator’s wavetable is not loaded yet'); return; }
-      mod = this.frameAt(e2.info, this.getN((o ? 'a' : 'b') + '.wt')).slice();
-    } else if (mode === 22) {
-      const sub = typeof wt.factoryTable === 'function' ? wt.factoryTable(core.SUB_IDS[Math.round(core.lawValue('s.shape', this.getN('s.shape')))]) : null;
-      mod = sub && sub.frames ? sub.frames[0] : new Float32Array(2048);
-    } else if (mode === 21) {
-      const r = mulberry32(0x5EED);
-      mod = new Float32Array(2048);
-      for (let i = 0; i < 2048; i++) mod[i] = 2 * r() - 1;
-    }
-    this.notify('Rendering warp…');
-    const remap = this.remapTab(o), frames = [];
-    for (let f = 0; f < 256; f++) {
-      frames.push(wt.bandlimit(D.renderWarp(frame, mode, f / 255, { over: 4, remap, mod }), 4));
-      if ((f & 15) === 15) await new Promise(r => setTimeout(r, 0)); // short slices: the page stays responsive
-      if (this.dead) return;
-    }
-    const name = (e.info.table.name || nameOfId(s.osc[o].wt)) + ' warp';
-    const id = await W.saveNew({ name, frames, morph: 0, factory: 0 }, name);
-    if (this.dead || !id) return;
-    this.wtListC = null;
-    this.edit(st => { st.osc[o].wt = id; st.p[P + '.warpMode'] = 0; }, { label: 'Render OSC Warp' });
-    this.notify('Rendered “' + name + '”');
-  }
+  // the WT editor overlay of oscillator o (§9.9; the OSC panel's edit button, kit.openWtEditor)
   openWtEditor(o) {
     const W = wte.WTEditor;
     if (typeof W !== 'function') { this.notify('Wavetable editor not available'); return; }
     if (this.pop) this.pop.close();
-    const O = this.overlayOpen('sx-wte-ov', 'Wavetable editor, ' + (o ? 'OSC B' : 'OSC A'), () => {
+    const O = this.overlayOpen('sx-wte-ov', 'Wavetable editor, OSC ' + (OSC_L[o] || 'A'), () => {
       const ed = this.wtEd;
       this.wtEd = null;
       if (ed && ed.close) { try { ed.close(); } catch (err) { /* closed */ } }
       this.editorOsc = null;
       if (typeof this.host.editorOpen === 'function') this.host.editorOpen(null);
-      this.tables.clear();
-      this.wtListC = null;
+      this.oscd.forget();
       if (!this.dead) this.refresh();
     });
     const box = mk(this.d, 'div', 'sx-wte');
@@ -2547,282 +3518,19 @@ export class SerumUI {
     });
   }
 
-  /* ---------------------------------------------------------------- SUB */
-  subPanel() {
-    const d = this.d, { el, head, body } = this.panel('SUB', 'sub', 's.on');
-    const shape = this.dMenu('s.shape', 'Sub shape', () => this.enumItems('s.shape', SUB_SHAPES.map(x => x.name)));
-    shape.el.classList.add('sx-grow');
-    const ico = mk(d, 'span', 'sx-ico'), sv = svgEl(d, 'svg', { viewBox: '0 0 32 16', 'aria-hidden': 'true' }), path = svgEl(d, 'path', { d: '' });
-    sv.appendChild(path); ico.appendChild(sv);
-    const SH = [p => -Math.sin(2 * Math.PI * p), p => -Math.tanh(4 * Math.sin(2 * Math.PI * p)) / Math.tanh(4), p => 1 - 2 * frac(p + 0.5),
-      p => (p < 0.5 ? -1 : 1), p => (p < 0.25 ? -1 : 1 / 3)];
-    let last = -1;
-    this.custom(() => {
-      const k = Math.round(core.lawValue('s.shape', this.getN('s.shape')));
-      if (k === last || !SH[k]) return;
-      last = k;
-      let dd = '';
-      for (let j = 0; j <= 64; j++) dd += (j ? 'L' : 'M') + (j / 2).toFixed(2) + ' ' + (8 - 6 * SH[k](j / 64)).toFixed(2);
-      path.setAttribute('d', dd);
-    });
-    head.append(shape.el, ico);
-    const dir = this.pToggle({ label: 'DIRECT', kind: 'btn', get: () => this.s().sub.direct,
-      set: v => this.edit(s => { s.sub.direct = v ? 1 : 0; }, { label: 'Sub direct out' }) });
-    dir.el.title = 'Direct out: bypass the filter and the FX rack';
-    body.append(this.row(this.dNum('s.oct', 'OCTAVE').el, dir.el, this.dKnob('s.pan', 'PAN', { size: 'sm' }).el, this.dKnob('s.level', 'LEVEL').el));
-    return el;
-  }
-
-  /* ---------------------------------------------------------------- NOISE */
-  noiseList() {
-    if (this.nzListT !== this.paintSeq || !this.nzListC) {
-      const w = this.host.wt, L = w && w.noises ? arr(w.noises()) : [];
-      this.nzListC = L.filter(t => !t.user).concat(L.filter(t => t.user));
-      this.nzListT = this.paintSeq;
-    }
-    return this.nzListC;
-  }
-  noisePanel() {
-    const d = this.d, { el, head, body } = this.panel('NOISE', 'noise', 'n.on');
-    el.setAttribute('data-noisepanel', '1');
-    const nm = this.bind(wk.menu({ label: 'Noise source', arrows: true, stepGroup: true, get: () => this.s().noise.src,
-      items: () => {
-        const cur = this.s().noise.src, items = this.noiseList().map(t => ({ v: t.id, label: t.name || nameOfId(t.id), group: t.user ? 'User' : t.cat || 'Noise' }));
-        if (!items.some(it => it.v === cur)) items.push({ v: cur, label: nameOfId(cur), group: 'Current' });
-        return groupItems(items, items.map(it => it.group).filter(g => g !== 'User' && g !== 'Current').concat(['User', 'Current']));
-      },
-      set: v => {
-        const it = this.noiseList().find(t => t.id === v);
-        this.edit(s => { s.noise.src = v; if (it && it.oneshot !== undefined) s.noise.oneshot = it.oneshot ? 1 : 0; }, { label: 'Noise source' });
-      } }));
-    nm.el.classList.add('sx-grow');
-    const del = btn(d, 'sx-hbtn', icon(d, 'trash'), 'Delete user noise', () => this.deleteUser(true));
-    this.custom(() => del.classList.toggle('sx-hidden', !this.canDelete(this.s().noise.src, true)));
-    head.append(nm.el, del);
-    const cv = this.canvas('sx-short', () => this.noiseKey(), (g, w, h, dpr) => this.drawNoise(g, w, h, dpr));
-    cv.el.setAttribute('role', 'img');
-    cv.el.setAttribute('aria-label', 'Noise overview; drop a WAV file to import a noise');
-    this.fileDrop(cv.el, files => this.importNoiseFiles(files));
-    const tg = (label, k, title) => {
-      const w = this.pToggle({ label, kind: 'btn', get: () => this.s().noise[k], set: v => this.edit(s => { s.noise[k] = v ? 1 : 0; }, { label: 'Noise ' + label.toLowerCase() }) });
-      w.el.title = title;
-      return w.el;
-    };
-    body.append(cv.el,
-      this.row(tg('ONE SHOT', 'oneshot', 'One-shot (off = loop)'), tg('KEY', 'keytrack', 'Keytrack: pitch follows the note'),
-        tg('DIRECT', 'direct', 'Direct out: bypass the filter and the FX rack')),
-      this.row(this.dKnob('n.phase', 'PHASE', { size: 'sm' }).el, this.dKnob('n.rand', 'RAND', { size: 'sm' }).el,
-        this.dKnob('n.pitch', 'PITCH', { size: 'sm' }).el, this.dKnob('n.pan', 'PAN', { size: 'sm' }).el, this.dKnob('n.level', 'LEVEL').el));
-    return el;
-  }
-  noiseOverview(id) {
-    if (this.noiseOv.has(id)) return this.noiseOv.get(id);
-    this.noiseOv.set(id, null);
-    const build = L => {
-      if (!L || !L.length) return;
-      const n = 256, mm = new Float32Array(2 * n), per = L.length / n;
-      for (let c = 0; c < n; c++) {
-        let lo = 0, hi = 0;
-        for (let i = Math.floor(c * per), e = Math.min(L.length, Math.floor((c + 1) * per) + 1); i < e; i++) { const v = L[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
-        mm[2 * c] = lo; mm[2 * c + 1] = hi;
-      }
-      this.noiseOv.set(id, mm);
-      this.queue();
-    };
-    const pick = r => {
-      if (!r) return null;
-      if (r.levels && r.levels[0]) return r.levels[0].L;
-      if (r.L) return ArrayBuffer.isView(r.L) ? r.L : r.L instanceof ArrayBuffer ? new Float32Array(r.L) : null;
-      return null;
-    };
-    // factory sources: generated once per page (deterministic content, shared by every SerumUI) with
-    // wt.generateNoise (source only: no mip levels, no copies), when the browser is idle and only if the id is
-    // still the selected source (arrowing through the menu does not generate every noise on the way)
-    const factory = /^noise:/.test(id);
-    if (factory && NOISE_OV.has(id)) { this.noiseOv.set(id, NOISE_OV.get(id)); return NOISE_OV.get(id); }
-    const run = () => {
-      if (this.dead) return;
-      if (factory && this.s().noise.src !== id) { this.noiseOv.delete(id); return; }
-      try {
-        const gen = typeof wt.generateNoise === 'function' ? wt.generateNoise : typeof wt.makeNoise === 'function' ? wt.makeNoise : null;
-        if (factory && gen) {
-          build(pick(gen(id)));
-          if (this.noiseOv.get(id)) NOISE_OV.set(id, this.noiseOv.get(id));
-          return;
-        }
-      } catch (err) { warnOnce('nz' + id, 'serum-ui: noise overview', err); }
-      const w = this.host.wt;
-      if (w && w.get) Promise.resolve(w.get(id)).then(r => build(pick(r)), () => {});
-    };
-    const win = this.d.defaultView, ric = win && win.requestIdleCallback;
-    if (factory && typeof ric === 'function') ric.call(win, run, { timeout: 300 }); else setTimeout(run, factory ? 120 : 0);
-    return null;
-  }
-  noiseKey() {
-    const s = this.s(), sn = this.snap, ov = this.noiseOverview(s.noise.src);
-    return [s.noise.src, ov ? 1 : 0, sn && sn.notes > 0 && fin(sn.noisePos) ? sn.noisePos.toFixed(3) : '', this.getN('n.on')].join('|');
-  }
-  drawNoise(g, w, h, dpr) {
-    const s = this.s(), mm = this.noiseOverview(s.noise.src), sn = this.snap;
-    g.fillStyle = C.mute;
-    if (!mm) { g.font = Math.round(10 * dpr) + 'px ui-monospace, monospace'; g.fillText(nameOfId(s.noise.src), 6 * dpr, h / 2 + 4 * dpr); return; }
-    g.fillStyle = 'rgba(89, 194, 255, 0.7)';
-    const n = mm.length / 2;
-    for (let x = 0; x < w; x++) {
-      const c = Math.min(n - 1, Math.floor(x / w * n)), lo = mm[2 * c], hi = mm[2 * c + 1];
-      g.fillRect(x, h / 2 - hi * h * 0.45, 1, Math.max(1, (hi - lo) * h * 0.45));
-    }
-    if (sn && sn.notes > 0 && fin(sn.noisePos)) {
-      g.fillStyle = C.cur;
-      g.fillRect(Math.round(clamp01(sn.noisePos) * (w - 1)), 0, Math.max(1, dpr), h);
-    }
-  }
-
-  /* ---------------------------------------------------------------- FILTER */
-  filterItems() { return FILTERS.map((f, k) => ({ v: k / 95, label: f.name, group: f.cat })); }
-  filterPanel() {
-    const d = this.d, { el, head, body } = this.panel('FILTER', 'filter', 'f.on');
-    const type = this.dMenu('f.type', 'Filter type', () => this.filterItems());
-    type.el.classList.add('sx-grow');
-    head.appendChild(type.el);
-    const cv = this.canvas('sx-tall', () => this.filtKey(), (g, w, h, dpr) => this.drawFilter(g, w, h, dpr));
-    const c = cv.el;
-    c.tabIndex = 0;
-    c.setAttribute('role', 'button');
-    c.setAttribute('aria-label', 'Filter display: click cycles magnitude, phase and spectrum; drag sets cutoff (x) and resonance (y)');
-    let g = null;
-    const at = e => { const r = c.getBoundingClientRect(); return [clamp01((e.clientX - r.left) / Math.max(1, r.width)), clamp01(1 - (e.clientY - r.top) / Math.max(1, r.height))]; };
-    const put = (e, ph) => { const [u, v] = at(e); this.edit(s => { s.p['f.cutoff'] = u; s.p['f.res'] = v; }, { label: 'Filter cutoff / res', phase: ph }); };
-    c.addEventListener('pointerdown', e => {
-      if (e.button !== 0) return;
-      g = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
-      try { c.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
-    });
-    c.addEventListener('pointermove', e => {
-      if (!g || e.pointerId !== g.id) return;
-      if (!g.moved && Math.hypot(e.clientX - g.x, e.clientY - g.y) > 3) { g.moved = true; put(e, 'start'); }
-      if (g.moved) put(e, 'move');
-    });
-    const up = e => {
-      if (!g || e.pointerId !== g.id) return;
-      const G = g;
-      g = null;
-      if (G.moved) put(e, 'end');
-      else if (e.type === 'pointerup') this.uiEdit(s => { s.ui.filtView = (s.ui.filtView + 1) % 3; });
-    };
-    c.addEventListener('pointerup', up);
-    c.addEventListener('pointercancel', up);
-    c.addEventListener('keydown', e => {
-      const k = e.key;
-      if (k === 'Enter' || k === ' ') { e.preventDefault(); this.uiEdit(s => { s.ui.filtView = (s.ui.filtView + 1) % 3; }); }
-      else if (k === 'ArrowLeft' || k === 'ArrowRight') { e.preventDefault(); this.setN('f.cutoff', this.getN('f.cutoff') + (k === 'ArrowRight' ? 0.01 : -0.01), 'set'); }
-      else if (k === 'ArrowUp' || k === 'ArrowDown') { e.preventDefault(); this.setN('f.res', this.getN('f.res') + (k === 'ArrowUp' ? 0.01 : -0.01), 'set'); }
-    });
-    const route = mk(d, 'div', 'sx-route');
-    route.setAttribute('role', 'group');
-    route.setAttribute('aria-label', 'Filter routing');
-    for (const k of ['A', 'B', 'N', 'S']) route.appendChild(this.dToggle('f.route' + k, k, 'btn').el);
-    const key = this.pToggle({ label: 'KEY', kind: 'btn', get: () => this.s().filter.keytrack, set: v => this.edit(s => { s.filter.keytrack = v ? 1 : 0; }, { label: 'Filter key track' }) });
-    key.el.title = 'Key track: cutoff follows the note';
-    const typeN = () => Math.round(95 * this.getN('f.type'));
-    body.append(c, this.row(route, key.el),
-      this.row(this.dKnob('f.cutoff', 'CUTOFF', { size: 'lg' }).el, this.dKnob('f.res', 'RES').el, this.dKnob('f.pan', 'PAN', { size: 'sm' }).el),
-      this.row(this.dKnob('f.drive', 'DRIVE', { size: 'sm' }).el,
-        this.dKnob('f.var', 'VAR', { size: 'sm', labelFn: () => core.varLabel(typeN()) || 'VAR', disabled: () => !core.varLabel(typeN()) }).el,
-        this.dKnob('f.mix', 'MIX', { size: 'sm', disabled: () => Math.round(95 * this.liveN('f.type')) === 80 }).el));
-    return el;
-  }
-  filtKey() {
-    const s = this.s(), v = s.ui.filtView;
-    if (v === 2) return 'spec|' + (this.snapSeq || 0) + '|' + (this.snap && this.snap.notes > 0 ? 1 : 0);
-    return [v, Math.round(95 * this.liveN('f.type')), this.liveN('f.cutoff').toFixed(4), this.liveN('f.res').toFixed(3),
-      this.liveN('f.drive').toFixed(3), this.liveN('f.var').toFixed(3), this.getN('f.on'), this.dsp() ? 1 : 0].join('|');
-  }
-  drawFilter(g, w, h, dpr) {
-    const s = this.s(), view = s.ui.filtView, type = Math.round(95 * this.liveN('f.type')), D = this.dsp();
-    g.font = Math.round(9 * dpr) + 'px ui-monospace, monospace';
-    g.strokeStyle = 'rgba(42, 51, 61, 0.9)'; g.lineWidth = dpr; g.fillStyle = C.mute;
-    for (const f of [100, 1000, 10000]) {
-      const x = Math.log(f / F_LO) / Math.log(F_HI / F_LO) * w;
-      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
-      g.fillText(f >= 1000 ? f / 1000 + 'k' : String(f), x + 2 * dpr, h - 3 * dpr);
-    }
-    const label = ['MAG', 'PHASE', 'SPECTRUM'][view] || '';
-    g.fillText(label, w - g.measureText(label).width - 4 * dpr, 10 * dpr);
-    if (view === 2) { this.drawSpectrum(g, w, h, dpr); return; }
-    if (type >= 76 && type <= 79) { this.drawFilterIcon(g, w, h, dpr, type); return; }
-    if (!D || typeof D.filterImpulse !== 'function') { g.fillText('Filter display needs the DSP script', 6 * dpr, 14 * dpr); return; }
-    const fc = core.lawValue('f.cutoff', this.liveN('f.cutoff'));
-    let ir;
-    try { ir = D.filterImpulse(type, fc, this.liveN('f.res'), this.liveN('f.drive'), this.liveN('f.var'), 48000, 4096); } catch (err) { warnOnce('fi', 'serum-ui: filterImpulse', err); return; }
-    const N = ir.length, re = new Float64Array(N), im = new Float64Array(N);
-    for (let i = 0; i < N; i++) re[i] = fin(ir[i]) ? ir[i] : 0;
-    fft(re, im);
-    const binHz = 48000 / N, y0 = h * 0.5;
-    g.beginPath();
-    for (let x = 0; x <= w; x++) {
-      const b = clamp(fOfX(x / w) / binHz, 0, N / 2 - 1), i = Math.floor(b), f = b - i, j = Math.min(N / 2, i + 1);
-      let y;
-      if (view === 1) {
-        const ph = Math.atan2(im[i] + (im[j] - im[i]) * f, re[i] + (re[j] - re[i]) * f);
-        y = y0 - ph / Math.PI * h * 0.42;
-      } else {
-        const m = Math.hypot(re[i], im[i]) * (1 - f) + Math.hypot(re[j], im[j]) * f, db = 20 * Math.log10(Math.max(1e-6, m));
-        y = h * (24 - clamp(db, -60, 30)) / 72;
-      }
-      if (x) g.lineTo(x, y); else g.moveTo(x, y);
-    }
-    g.strokeStyle = this.getN('f.on') >= 0.5 ? C.graph : C.mute; g.lineWidth = 1.6 * dpr; g.stroke();
-    if (view === 0) {
-      g.lineTo(w, h); g.lineTo(0, h); g.closePath();
-      g.fillStyle = 'rgba(89, 194, 255, 0.09)'; g.fill();
-      g.strokeStyle = 'rgba(223, 230, 238, 0.25)';
-      g.beginPath(); g.moveTo(0, h * 24 / 72); g.lineTo(w, h * 24 / 72); g.stroke();
-    }
-    const cx = this.liveN('f.cutoff') * w;
-    g.fillStyle = C.cur; g.fillRect(cx - dpr, h - 5 * dpr, 2 * dpr, 5 * dpr);
-  }
-  drawFilterIcon(g, w, h, dpr, type) {   // Ring Mod / S&H types: symbolic display (inv A11.1)
-    g.strokeStyle = C.graph; g.lineWidth = 1.6 * dpr;
-    g.beginPath();
-    for (let x = 0; x <= w; x++) {
-      const p = x / w;
-      let y;
-      if (type <= 77) y = Math.sin(2 * Math.PI * 3 * p) * Math.sin(2 * Math.PI * 23 * p) * (type === 77 ? Math.cos(2 * Math.PI * 1.5 * p) : 1);
-      else { const q = Math.floor(p * 14) / 14; y = Math.sin(2 * Math.PI * 2 * q); if (type === 79) y = Math.sin(2 * Math.PI * 2 * p) - y; }
-      const yy = h / 2 - y * h * 0.35;
-      if (x) g.lineTo(x, yy); else g.moveTo(x, yy);
-    }
-    g.stroke();
-    g.fillStyle = C.mute;
-    g.fillText(FILTERS[type].name, 6 * dpr, 12 * dpr);
-  }
-  drawSpectrum(g, w, h, dpr) {
-    const sn = this.snap, tap = sn && sn.filtTap;
-    let any = false;
-    if (tap) for (let i = 0; i < tap.length; i += 7) if (tap[i] !== 0) { any = true; break; }
-    if (!sn || !sn.notes || !tap || !any) { g.fillStyle = C.mute; g.fillText('no signal', w / 2 - 22 * dpr, h / 2); return; }
-    const N = 1024, re = new Float64Array(N), im = new Float64Array(N), rate = sn.tapRate > 0 ? sn.tapRate : 48000;
-    for (let i = 0; i < N; i++) re[i] = (tap[i] || 0) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (N - 1)));
-    fft(re, im);
-    g.beginPath();
-    for (let x = 0; x <= w; x++) {
-      const b = clamp(fOfX(x / w) / (rate / N), 0, N / 2 - 1), i = Math.floor(b), j = Math.min(N / 2, i + 1), f = b - i;
-      const m = (Math.hypot(re[i], im[i]) * (1 - f) + Math.hypot(re[j], im[j]) * f) / (N / 4);
-      const db = 20 * Math.log10(Math.max(1e-7, m)), y = h * (6 - clamp(db, -96, 6)) / 102;
-      if (x) g.lineTo(x, y); else g.moveTo(x, y);
-    }
-    g.strokeStyle = C.on; g.lineWidth = 1.4 * dpr; g.stroke();
-  }
-
-  /* ---------------------------------------------------------------- tile strip (row B) */
+  /* ---------------------------------------------------------------- tile strip (row B, §13.13) */
   tileStrip() {
     const d = this.d, el = mk(d, 'div', 'sx-tiles'), lfo = [];
     el.setAttribute('role', 'toolbar');
     el.setAttribute('aria-label', 'Modulation sources (drag onto a control)');
-    for (let e = 1; e <= 3; e++) el.appendChild(this.makeTile('env' + e, () => 'ENV ' + e));
-    for (let l = 1; l <= 8; l++) { const t = this.makeTile('lfo' + l, () => 'LFO ' + l); lfo.push(t); el.appendChild(t); }
+    for (let e = 1; e <= N_ENV; e++) el.appendChild(this.makeTile('env' + e, () => 'ENV ' + e));
+    for (let l = 1; l <= N_LFO; l++) { const t = this.makeTile('lfo' + l, () => 'LFO ' + l); lfo.push(t); el.appendChild(t); }
     el.append(this.makeTile('velo', () => 'VELO'), this.makeTile('note', () => 'NOTE'), this.makeTile('wheel', () => 'WHEEL'));
+    // Macro tiles 1–8 (labels = the macro names; §13.13, §3.10): drag onto a control, the matrix or another macro tile
+    // (swap) — on every page with the strip, the MATRIX page included
+    for (let m = 1; m <= N_MAC; m++) {
+      el.appendChild(this.makeTile('macro' + m, () => { const M = this.s().macros[m - 1]; return (M && M.name) || 'Macro ' + m; }, 'sx-mtile'));
+    }
     this.custom(() => {
       const s = this.s(), n = Math.max(lfoTileCount(s), lfoNum(s.ui.mod), lfoNum(this.edSel));
       lfo.forEach((t, l) => t.classList.toggle('sx-hidden', l + 1 > n));
@@ -2830,18 +3538,18 @@ export class SerumUI {
     return el;
   }
 
-  /* ---------------------------------------------------------------- MACROS (inv A15) */
+  /* ---------------------------------------------------------------- MACROS 1–8 (inv B17) */
+  // knob = destination m1…m8 (a macro tile dropped on it adds macroA → mB; its base is s.macros[k].v), tile = source
+  // (drag; dropped on another macro's label swaps the two macros); the knob menu adds Rename… and the Phase-1 MIDI
+  // learn target `macroN`
   macrosPanel() {
     const d = this.d, { el, body } = this.panel('MACROS'), grid = mk(d, 'div', 'sx-macros');
-    for (let m = 0; m < 4; m++) {
-      const box = mk(d, 'div', 'sx-macro'), id = 'macro' + (m + 1);
-      const name = () => this.s().macros[m].name || 'Macro ' + (m + 1);
-      const ko = { get: () => this.s().macros[m].v, def: 0, fmt: n => Math.round(n * 100) + '%', size: 'md',
-        set: (n, ph) => this.edit(s => { s.macros[m].v = clamp01(n); }, { label: 'Macro ' + (m + 1), phase: ph }) };
-      Object.defineProperty(ko, 'label', { get: name, enumerable: true });
-      const k = this.pKnob(ko);
-      k.el.querySelector('.wk-lab').style.display = 'none';
-      if (wk.tooltip) wk.tooltip(k.el, () => name() + ': ' + Math.round(this.s().macros[m].v * 100) + '%');
+    for (let m = 0; m < N_MAC; m++) {
+      const box = mk(d, 'div', 'sx-macro'), id = 'macro' + (m + 1), did = 'm' + (m + 1);
+      const name = () => (this.s().macros[m] && this.s().macros[m].name) || 'Macro ' + (m + 1);
+      const k = this.dKnob(did, '', { size: 'md', labelFn: name });
+      const lab = k.el.querySelector ? k.el.querySelector('.wk-lab') : null;
+      if (lab) lab.style.display = 'none';
       k.el.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); this.macroMenu(m, e.clientX, e.clientY, k); });
       const tile = this.makeTile(id, name);
       tile.addEventListener('dblclick', e => { e.preventDefault(); this.renameMacro(m, box, tile); });
@@ -2853,21 +3561,15 @@ export class SerumUI {
     return el;
   }
   macroMenu(m, x, y, k) {
-    const id = 'macro' + (m + 1), s = this.s(), cc = ccFor(s, id), items = [
-      { label: 'Reset Control', action: () => this.edit(st => { st.macros[m].v = 0; }, { label: 'Macro ' + (m + 1) }) },
-      { label: 'Enter Value…', action: () => { k.focus(); if (k.edit) k.edit(); } },
-      { label: 'Rename…', action: () => this.promptText('Rename Macro', 'Name', s.macros[m].name, t => {
-        const v = String(t).trim().slice(0, 24) || 'Macro ' + (m + 1);
-        this.edit(st => { st.macros[m].name = v; }, { label: 'Rename macro' });
-        return true;
-      }) },
-    ];
-    if (typeof this.host.midiLearn === 'function') {
-      items.push({ sep: true });
-      if (cc === null) items.push({ label: 'MIDI Learn', action: () => this.midiLearn(id) });
-      else items.push({ label: 'MIDI Re-learn (CC ' + cc + ')', action: () => this.midiLearn(id) }, { label: 'Remove MIDI CC ' + cc, action: () => this.midiForget(id) });
-    }
-    wk.contextMenu(x, y, items, { anchor: k.el });
+    const did = 'm' + (m + 1), id = 'macro' + (m + 1), s = this.s();
+    const items = knobMenuItems(s, this.fx(), did, { midi: typeof this.host.midiLearn === 'function', recent: this.recentSlot.get(did) })
+      .filter(it => it.kind !== 'lock' && it.kind !== 'unlock');
+    const acts = [{ label: 'Rename…', action: () => this.promptText('Rename Macro', 'Name', s.macros[m].name, t => {
+      const v = String(t).trim().slice(0, 24) || 'Macro ' + (m + 1);
+      this.edit(st => { st.macros[m].name = v; }, { label: 'Rename macro' });
+      return true;
+    }) }, { sep: true }].concat(this.menuActions(items, did, k.el, null, id));
+    wk.contextMenu(x, y, acts, { anchor: k.el });
   }
   renameMacro(m, box, tile) {
     const d = this.d, i = mk(d, 'input');
@@ -2891,11 +3593,27 @@ export class SerumUI {
     if (i.select) i.select();
   }
 
-  /* ---------------------------------------------------------------- ENV editor (inv A12) */
+  /* ---------------------------------------------------------------- ENV 1–4 editor (inv B15, §13.13) */
   envPanel() {
-    const d = this.d, { el, head, body, name } = this.panel('ENV 1');
-    const E = () => this.s().ui.env | 0, id = k => () => 'e' + (E() + 1) + '.' + k;
-    this.custom(() => { const t = 'ENV ' + (E() + 1); if (name.textContent !== t) name.textContent = t; });
+    const d = this.d, { el, head, body, name } = this.panel('ENV');
+    const E = () => clamp(this.s().ui.env | 0, 0, N_ENV - 1), id = k => () => 'e' + (E() + 1) + '.' + k;
+    name.textContent = 'ENV';
+    const tabs = mk(d, 'div', 'sx-etabs');
+    tabs.setAttribute('role', 'tablist');
+    tabs.setAttribute('aria-label', 'Envelope');
+    const tb = [];
+    for (let e = 0; e < N_ENV; e++) {
+      const b = btn(d, '', String(e + 1), 'ENV ' + (e + 1), () => this.selectSrc('env' + (e + 1)));
+      b.setAttribute('role', 'tab');
+      // right-click / long-press: Bypass / Remove All Destinations of this envelope (inv B15)
+      b.addEventListener('contextmenu', ev => { ev.preventDefault(); ev.stopPropagation(); this.srcMenu('env' + (e + 1), ev.clientX, ev.clientY, b); });
+      this.touchMenu(b);
+      tb.push(b);
+      tabs.appendChild(b);
+    }
+    this.custom(() => { const k = E(); tb.forEach((b, e) => b.setAttribute('aria-selected', e === k ? 'true' : 'false')); });
+    const bpm = this.pToggle({ label: 'BPM', kind: 'btn', get: () => (this.s().env[E()] || {}).bpm ? 1 : 0, set: v => this.setEnvBpm(E(), v) });
+    bpm.el.title = 'Time units: milliseconds or beats (BPM)';
     const lock = this.pToggle({ label: 'LOCK', kind: 'btn', get: () => this.s().ui.envLock, set: v => this.uiEdit(s => { s.ui.envLock = v ? 1 : 0; }) });
     lock.el.title = 'Lock: fit the whole envelope';
     const zoom = mk(d, 'input', 'sx-zoom');
@@ -2904,34 +3622,87 @@ export class SerumUI {
     const zOf = u => 0.01 * Math.pow(6400, u), uOf = z => Math.log(clamp(z, 0.01, 64) / 0.01) / Math.log(6400);
     zoom.addEventListener('input', () => this.uiEdit(s => { s.ui.envZoom = Math.round(zOf(+zoom.value) * 1000) / 1000; }));
     this.custom(() => { const s = this.s(); zoom.disabled = !!s.ui.envLock; if (d.activeElement !== zoom) zoom.value = String(uOf(s.ui.envZoom)); });
-    head.append(mk(d, 'span', 'sx-grow'), lock.el, zoom);
+    const more = btn(d, 'sx-hbtn', icon(d, 'more'), 'Envelope menu', () => this.envMenu(E(), more));
+    more.setAttribute('aria-haspopup', 'menu');
+    head.append(tabs, mk(d, 'span', 'sx-grow'), bpm.el, lock.el, zoom, more);
     const box = mk(d, 'div', 'sx-edbox');
     body.appendChild(box);
     if (typeof gx.EnvEditor === 'function') {
       const ed = new gx.EnvEditor(box, {
         env: () => this.envVals(E()),
         set: (patch, ph) => this.setEnv(E(), patch, ph),
-        ghosts: () => [0, 1, 2].filter(k => k !== E() && (k === 0 || this.srcUsed('env' + (k + 1)))).map(k => this.envVals(k)),
+        ghosts: () => [0, 1, 2, 3].filter(k => k !== E() && (k === 0 || this.srcUsed('env' + (k + 1)))).map(k => this.envVals(k)),
         lock: () => !!this.s().ui.envLock,
         zoom: () => this.s().ui.envZoom,
+        startEnd: () => E() > 0,
+        grid: () => ({ beats: this.s().ui.envGrid ? 1 : 0, spb: 60 / this.bpm() }),
+        steps: () => ((this.s().env[E()] || {}).bpm ? this.envLadderSec() : null),
         playhead: () => { const sn = this.snap, k = E(); return sn && sn.envStage && sn.envStage[k] ? { stage: sn.envStage[k], t: sn.envT ? sn.envT[k] : 0 } : null; },
       });
       this.bp.editors.push(ed);
-      this.edSig.set(ed, () => { const s = this.s(); return JSON.stringify([E(), this.envVals(0), this.envVals(1), this.envVals(2), s.ui.envLock, s.ui.envZoom, this.srcUsed('env2'), this.srcUsed('env3')]); });
+      this.edSig.set(ed, () => {
+        const s = this.s();
+        return JSON.stringify([E(), [0, 1, 2, 3].map(k => this.envVals(k)), s.ui.envLock, s.ui.envZoom, s.ui.envGrid, arr(s.env).map(x => x && x.bpm), this.bpm(),
+          this.srcUsed('env2'), this.srcUsed('env3'), this.srcUsed('env4')]);
+      });
     } else box.appendChild(mk(d, 'p', 'sx-txt', 'Envelope editor unavailable'));
     body.appendChild(this.row(this.dKnob(id('att'), 'ATTACK', { size: 'sm' }).el, this.dKnob(id('hold'), 'HOLD', { size: 'sm' }).el,
       this.dKnob(id('dec'), 'DECAY', { size: 'sm' }).el, this.dKnob(id('sus'), 'SUSTAIN', { size: 'sm' }).el,
       this.dKnob(id('rel'), 'RELEASE', { size: 'sm' }).el));
-    // the curve handles are destinations too (§3.13): small knobs give them data-dest (lock, MIDI learn, drops)
+    // the curve handles are destinations too (§3.13): small knobs give them data-dest (lock, MIDI learn, drops);
+    // ENV 2–4 add the Start / End levels (§6.14)
+    const se = k => () => 'e' + Math.max(2, E() + 1) + '.' + k;
+    const st = this.dKnob(se('start'), 'START', { size: 'sm' }), en = this.dKnob(se('end'), 'END', { size: 'sm' });
+    this.custom(() => { const on1 = E() === 0; st.el.classList.toggle('sx-hidden', on1); en.el.classList.toggle('sx-hidden', on1); });
     const cur = this.row(this.dKnob(id('ca'), 'A CURVE', { size: 'sm' }).el, this.dKnob(id('cd'), 'D CURVE', { size: 'sm' }).el,
-      this.dKnob(id('cr'), 'R CURVE', { size: 'sm' }).el);
+      this.dKnob(id('cr'), 'R CURVE', { size: 'sm' }).el, st.el, en.el);
     cur.classList.add('sx-envcurves');
     body.appendChild(cur);
     return el;
   }
+  envMenu(k, anchor) {
+    const s = this.s(), E = s.env[k] || {}, r = anchor.getBoundingClientRect(), m = 'env' + (k + 1);
+    const sw = (label, key) => ({ label, checked: !!E[key], action: () => this.edit(st => { st.env[k][key] = st.env[k][key] ? 0 : 1; }, { label: 'Env ' + (k + 1) + ' ' + label }) });
+    wk.contextMenu(r.left, r.bottom + 2, [
+      sw('Legato Inverted', 'legInv'),
+      { label: 'Grid', sub: [{ label: 'Time', checked: !s.ui.envGrid, action: () => this.uiEdit(st => { st.ui.envGrid = 0; }) },
+        { label: 'Beats', checked: !!s.ui.envGrid, action: () => this.uiEdit(st => { st.ui.envGrid = 1; }) }] },
+      sw('Voice Steal Retrigger', 'stealRe'),
+      { sep: true },
+      { label: 'Lock Module', checked: arr(s.locks.mod).includes(m), action: () => this.lockModuleUI(m) },
+    ], { anchor });
+  }
+  // ENV_LADDER at the current tempo (seconds), for the BPM-unit editor steps (§6.14)
+  envLadderSec() {
+    const spb = 60 / this.bpm();
+    return arr(core.ENV_LADDER).map(e => (isObj(e) ? e.beats : +e) * spb).filter(fin);
+  }
+  // seconds of an envelope time destination: BPM units read the ladder (ENV_LADDER[round(n·15)] beats at the tempo)
+  envSec(k, key) {
+    const id = 'e' + (k + 1) + '.' + key, n = this.getN(id), E = this.s().env[k] || {};
+    if (E.bpm && (key === 'att' || key === 'hold' || key === 'dec' || key === 'rel')) {
+      const L = this.envLadderSec();
+      return L.length ? L[clamp(Math.round(n * (L.length - 1)), 0, L.length - 1)] : 0;
+    }
+    return core.lawValue(id, n);
+  }
   envVals(k) {
-    const P = 'e' + (k + 1) + '.', v = x => core.lawValue(P + x, this.getN(P + x));
-    return { a: v('att'), h: v('hold'), d: v('dec'), s: v('sus'), r: v('rel'), ca: this.getN(P + 'ca'), cd: this.getN(P + 'cd'), cr: this.getN(P + 'cr') };
+    const P = 'e' + (k + 1) + '.', g = x => this.getN(P + x);
+    const v = { a: this.envSec(k, 'att'), h: this.envSec(k, 'hold'), d: this.envSec(k, 'dec'), s: core.lawValue(P + 'sus', g('sus')),
+      r: this.envSec(k, 'rel'), ca: g('ca'), cd: g('cd'), cr: g('cr') };
+    if (k > 0 && destOf(P + 'start')) { v.st = g('start'); v.en = g('end'); }
+    return v;
+  }
+  // n of a time in seconds: BPM units → the nearest ladder entry (log distance), else the time law
+  envN(k, key, sec) {
+    const id = 'e' + (k + 1) + '.' + key, E = this.s().env[k] || {};
+    if (E.bpm && (key === 'att' || key === 'hold' || key === 'dec' || key === 'rel')) {
+      const L = this.envLadderSec();
+      let best = 0, bd = Infinity;
+      L.forEach((t, i) => { const dd = sec > 0 && t > 0 ? Math.abs(Math.log(t / sec)) : Math.abs(t - sec) * 1e3; if (dd < bd) { bd = dd; best = i; } });
+      return L.length > 1 ? best / (L.length - 1) : 0;
+    }
+    return core.lawNorm(id, sec);
   }
   setEnv(k, patch, ph) {
     const P = 'e' + (k + 1) + '.';
@@ -2940,25 +3711,66 @@ export class SerumUI {
         const f = ENV_ED[key], v = patch[key];
         if (!f || !fin(v)) continue;
         const id = P + f;
-        s.p[id] = snapN(id, f === 'ca' || f === 'cd' || f === 'cr' ? clamp01(v) : core.lawNorm(id, v));
+        if (!destOf(id)) continue;
+        const n = f === 'ca' || f === 'cd' || f === 'cr' || f === 'start' || f === 'end' ? clamp01(v) : f === 'sus' ? core.lawNorm(id, v) : this.envN(k, f, v);
+        s.p[id] = snapN(id, n);
       }
     }, { label: 'Env ' + (k + 1), phase: ph || 'set' });
   }
+  // MS ↔ BPM units: the times convert to the nearest entry at the current tempo (§6.14, inv B15)
+  setEnvBpm(k, on) {
+    const keys = ['att', 'hold', 'dec', 'rel'], secs = keys.map(x => this.envSec(k, x));
+    this.edit(s => {
+      s.env[k].bpm = on ? 1 : 0;
+      keys.forEach((x, i) => { const id = 'e' + (k + 1) + '.' + x; s.p[id] = snapN(id, this.envN(k, x, secs[i])); });
+    }, { label: 'Env ' + (k + 1) + ' units' });
+  }
   srcUsed(src) { return rowsOf(this.s()).some(r => r && (r.src === src || r.aux === src)); }
 
-  /* ---------------------------------------------------------------- LFO / VELO / NOTE editor (inv A13, A14) */
+  /* ---------------------------------------------------------------- LFO 1–10 / VELO / NOTE editor (inv B16, §13.13) */
   lfoIdx() { const l = lfoNum(this.edSel); if (l) this.lastLfo = l - 1; return this.lastLfo || 0; }
   lfoPanel() {
-    const d = this.d, { el, head, body, name } = this.panel('LFO 1'), L = () => this.lfoIdx(), lf = () => this.s().lfo[L()];
-    const isCurve = () => this.edSel === 'velo' || this.edSel === 'note';
-    this.custom(() => { const t = isCurve() ? this.edSel.toUpperCase() : 'LFO ' + (L() + 1); if (name.textContent !== t) name.textContent = t; });
+    const d = this.d, P = this.bp, { el, head, body, name } = this.panel('LFO 1'), L = () => this.lfoIdx(), lf = () => this.s().lfo[L()];
+    const isCurve = () => this.edSel === 'velo' || this.edSel === 'note', isPath = () => !isCurve() && lf().type === 'path';
+    // the title is the module menu of the module shown (LFO n / VELO / NOTE; inv B16, B17): Lock Module, Init Module,
+    // Copy, Copy (w/mods), Paste, Swap with ▸ — right-click, long-press or Enter; Copy / Paste between LFOs are the
+    // menu equivalent of the LFO tiles' Alt-drag (§13.1)
+    const modOf = () => (isCurve() ? this.edSel : 'lfo' + (L() + 1));
+    name.tabIndex = 0;
+    name.setAttribute('role', 'button');
+    name.setAttribute('aria-haspopup', 'menu');
+    const openMenu = (x, y) => this.moduleMenu(modOf(), x, y, name, () => this.srcDestItems(modOf()));
+    name.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); openMenu(e.clientX, e.clientY); });
+    name.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)) {
+        e.preventDefault();
+        const r = name.getBoundingClientRect();
+        openMenu(r.left, r.bottom + 2);
+      }
+    });
+    longPress(name, openMenu);
+    this.custom(() => {
+      const t = isCurve() ? this.edSel.toUpperCase() : 'LFO ' + (L() + 1);
+      if (name.textContent !== t) name.textContent = t;
+      const al = t + ' module menu (lock, init, copy, paste' + (isCurve() ? ')' : ', swap)');
+      if (name.getAttribute('aria-label') !== al) name.setAttribute('aria-label', al);
+      el.classList.toggle('sx-locked', arr(this.s().locks.mod).includes(modOf()));
+    });
+    const lfoEd = (fn, label) => this.edit(s => fn(s.lfo[L()]), { label: 'LFO ' + (L() + 1) + ' ' + label });
     // LFO controls
-    const lfoHead = mk(d, 'div', 'sx-edhead'), lfoArea = mk(d, 'div', 'sx-pbody');
-    const mode = this.pSeg({ label: 'LFO mode', items: ['TRIG', 'ENV', 'OFF'], get: () => ['trig', 'env', 'off'].indexOf(lf().mode),
-      set: i => this.edit(s => { s.lfo[L()].mode = ['trig', 'env', 'off'][i]; }, { label: 'LFO mode' }) });
-    const sw = (label, k, dis) => this.pToggle({ label, kind: 'btn', get: () => lf()[k], disabled: dis,
-      set: v => this.edit(s => { s.lfo[L()][k] = v ? 1 : 0; }, { label: 'LFO ' + label.toLowerCase() }) }).el;
+    const lfoHead = mk(d, 'div', 'sx-edhead'), lfoHead2 = mk(d, 'div', 'sx-edhead'), lfoArea = mk(d, 'div', 'sx-pbody');
+    const type = this.bind(wk.menu({ label: 'TYPE', arrows: true, items: () => LFO_TYPES.map(t => ({ v: t, label: LFO_TYPE_LABEL[t] || t })),
+      get: () => lf().type || 'normal', set: v => { lfoEd(o => { o.type = v; }, 'type'); this.edDirty = true; } }));
+    const mode = this.pSeg({ label: 'LFO mode', items: ['FREE', 'RETRIG', 'ENV'], get: () => Math.max(0, LFO_MODES.indexOf(lf().mode)),
+      set: i => lfoEd(o => { o.mode = LFO_MODES[i]; }, 'mode') });
+    const sw = (label, k, dis, title) => {
+      const w = this.pToggle({ label, kind: 'btn', get: () => lf()[k], disabled: dis, set: v => lfoEd(o => { o[k] = v ? 1 : 0; }, label.toLowerCase()) });
+      if (title) w.el.title = title;
+      return w.el;
+    };
     const noBpm = () => !lf().bpm;
+    const dir = this.bind(wk.menu({ label: 'DIRECTION', arrows: true, items: () => LFO_DIRS.map((x, i) => ({ v: x, label: LFO_DIR_LABEL[i] })),
+      get: () => lf().dir || 'fwd', set: v => lfoEd(o => { o.dir = v; }, 'direction') }));
     const grid = mk(d, 'input', 'sx-grid');
     grid.type = 'text';
     grid.setAttribute('aria-label', 'LFO grid: x or x,y (1–64)');
@@ -2972,47 +3784,37 @@ export class SerumUI {
     grid.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
     this.custom(() => { if (d.activeElement !== grid) { const g = this.s().lfoGrid; grid.value = g.x === g.y ? String(g.x) : g.x + ',' + g.y; grid.classList.remove('sx-bad'); } });
     const folder = btn(d, 'sx-hbtn', icon(d, 'folder'), 'LFO shapes', () => this.lfoFolderMenu(folder));
-    lfoHead.append(mode.el, sw('BPM', 'bpm'), sw('DOT', 'dot', noBpm), sw('TRIP', 'trip', noBpm), sw('ANCHOR', 'anchor', noBpm), grid, folder);
-    const box = mk(d, 'div', 'sx-edbox');
-    this.lfoBox = box;
-    lfoArea.append(lfoHead, box);
+    const big = btn(d, 'sx-hbtn', icon(d, 'zoom'), 'LFO Editor (large)', () => this.openLfoEditor());
+    const tools = this.pSeg({ label: 'Drawing tool', items: LFO_TOOL_LABEL, get: () => Math.max(0, LFO_TOOL_IDS.indexOf(this.lfoTool)),
+      disabled: isPath, set: i => this.setLfoTool(LFO_TOOL_IDS[i]) });
+    lfoHead.append(type.el, mode.el, sw('MONO', 'mono', null, 'MONO: one LFO for every voice'), dir.el);
+    lfoHead2.append(sw('BPM', 'bpm'), sw('DOT', 'dot', noBpm), sw('TRIP', 'trip', noBpm), sw('HOST', 'anchor', null, 'HOST: follow the song position'),
+      grid, tools.el, folder, big);
+    const box = mk(d, 'div', 'sx-edbox'), pbox = mk(d, 'div', 'sx-edbox');
+    P.lfoBox = box;
+    lfoArea.append(lfoHead, lfoHead2, box, pbox);
     if (typeof gx.CurveEditor === 'function') {
-      const ed = new gx.CurveEditor(box, {
-        get: () => lf().pts,
-        set: (pts, ph) => this.edit(s => {
-          // buses the points held before this edit (and at the start of a drag): those no point links any
-          // more lose their rows once the gesture ends; other bus rows are never touched (inv A13)
-          const o = s.lfo[L()], had = ptsBuses(o.pts);
-          if (ph === 'start') this.lfoGest = had;
-          else if (ph === 'move' && this.lfoGest) { for (const b of had) if (!this.lfoGest.includes(b)) this.lfoGest.push(b); }
-          o.pts = pts;
-          if (o.loop >= pts.length) o.loop = pts.length - 1;
-          if (o.start >= pts.length) o.start = 0;
-          if (ph !== 'move' && ph !== 'start') {
-            const cut = had.concat((this.lfoGest || []).filter(b => !had.includes(b)));
-            this.lfoGest = null;
-            pruneLost(s, cut);
-          }
-        }, { label: 'LFO ' + (L() + 1) + ' shape', phase: ph || 'set' }),
-        grid: () => { const g = this.s().lfoGrid; return { x: g.x, y: g.y }; },
-        kind: 'lfo',
-        loop: () => lf().loop, setLoop: i => this.edit(s => { s.lfo[L()].loop = i; }, { label: 'LFO loop point' }),
-        start: () => lf().start, setStart: i => this.edit(s => { s.lfo[L()].start = i; }, { label: 'LFO start point' }),
-        playhead: () => (this.snap && this.snap.lfoPh && fin(this.snap.lfoPh[L()]) ? this.snap.lfoPh[L()] : null),
-        pointMenu: (idxs, axis) => busMenuItems(this.s(), L(), idxs, axis).map(it => ({ label: it.label, checked: it.checked,
-          action: () => (it.label === 'New bus' ? this.linkNew(L(), idxs, axis, this.s().ui.mod)
-            : this.edit(s => linkPoints(s, this.fx(), L(), idxs, axis, it.bus, null), { label: 'Modulate point' })) })),
-        removePointMods: idxs => this.edit(s => core.clearPointMods(s, L(), idxs), { label: 'Remove Point Modulations' }),
-        fromWavetable: () => [{ label: 'From OSC A', action: () => this.wtToLfo(0) }, { label: 'From OSC B', action: () => this.wtToLfo(1) }],
-        shapes: this.shapeLib(),
-        bipolar: false, readOnly: false, height: 160,
-      });
-      this.lfoEd = ed;
+      const ed = new gx.CurveEditor(box, this.lfoEditorOpts(L, 160));
+      P.lfoEd = ed;
+      if (typeof ed.setTool === 'function') ed.setTool(this.lfoTool);
       this.bp.editors.push(ed);
-      this.edSig.set(ed, () => { const o = lf(), g = this.s().lfoGrid; return JSON.stringify([L(), o.pts, o.loop, o.start, o.mode, g.x, g.y]); });
+      this.edSig.set(ed, () => { const o = lf(), g = this.s().lfoGrid; return JSON.stringify([L(), o.pts, o.loop, o.start, o.mode, o.type, g.x, g.y, this.lfoTool]); });
     } else box.appendChild(mk(d, 'p', 'sx-txt', 'LFO editor unavailable'));
+    if (typeof gx.PathEditor === 'function') {
+      const ped = new gx.PathEditor(pbox, {
+        get: () => lf().path,
+        set: (path, ph) => this.edit(s => { s.lfo[L()].path = path; }, { label: 'LFO ' + (L() + 1) + ' path', phase: ph || 'set' }),
+        grid: () => { const g = this.s().lfoGrid; return { x: g.x, y: g.y }; },
+        height: 160,
+        playhead: () => { const sn = this.snap, l = L(); return sn && sn.lfoOut && sn.lfoY && fin(sn.lfoOut[l]) ? [sn.lfoOut[l], sn.lfoY[l]] : null; },
+      });
+      this.bp.editors.push(ped);
+      this.edSig.set(ped, () => JSON.stringify([L(), lf().path, this.s().lfoGrid]));
+    }
     const lid = k => () => 'l' + (L() + 1) + '.' + k;
-    lfoArea.appendChild(this.row(...LFO_KNOBS.map(([k, t]) => this.dKnob(lid(k), t, { size: 'sm' }).el)));
+    const knobs = LFO_KNOBS.map(([k, t]) => this.dKnob(lid(k), t, { size: 'sm' }).el);
+    if (destOf('l1.phase')) knobs.push(this.dKnob(lid('phase'), 'PHASE', { size: 'sm' }).el);
+    lfoArea.appendChild(this.row(...knobs));
     // VELO / NOTE curve
     const curveArea = mk(d, 'div', 'sx-pbody'), cb = mk(d, 'div', 'sx-edbox'), cv = () => (this.edSel === 'note' ? 'note' : 'velo');
     if (typeof gx.CurveEditor === 'function') {
@@ -3030,14 +3832,76 @@ export class SerumUI {
     curveArea.append(cb, this.row(follow.el));
     let shown = null;
     this.custom(() => {
-      const c = isCurve();
+      const c = isCurve(), pth = isPath();
       lfoArea.classList.toggle('sx-hidden', c);
       curveArea.classList.toggle('sx-hidden', !c);
-      const k = c ? this.edSel : 'lfo' + L();
+      box.classList.toggle('sx-hidden', pth);
+      pbox.classList.toggle('sx-hidden', !pth);
+      const k = c ? this.edSel : 'lfo' + L() + (pth ? 'p' : '');
       if (k !== shown) { shown = k; this.edDirty = true; }
     });
     body.append(lfoArea, curveArea);
+    void head;
     return el;
+  }
+  // the options of an LFO graph editor (panel editor and the LFO Editor overlay share them)
+  lfoEditorOpts(L, height) {
+    const lf = () => this.s().lfo[L()];
+    return {
+      get: () => lf().pts,
+      set: (pts, ph) => this.edit(s => {
+        // buses the points held before this edit (and at the start of a drag): those no point links any
+        // more lose their rows once the gesture ends; other bus rows are never touched (inv A13)
+        const o = s.lfo[L()], had = ptsBuses(o.pts);
+        if (ph === 'start') this.lfoGest = had;
+        else if (ph === 'move' && this.lfoGest) { for (const b of had) if (!this.lfoGest.includes(b)) this.lfoGest.push(b); }
+        o.pts = pts;
+        if (o.loop >= pts.length) o.loop = pts.length - 1;
+        if (o.start >= pts.length) o.start = 0;
+        if (ph !== 'move' && ph !== 'start') {
+          const cut = had.concat((this.lfoGest || []).filter(b => !had.includes(b)));
+          this.lfoGest = null;
+          pruneLost(s, cut);
+        }
+      }, { label: 'LFO ' + (L() + 1) + ' shape', phase: ph || 'set' }),
+      grid: () => { const g = this.s().lfoGrid; return { x: g.x, y: g.y }; },
+      kind: 'lfo',
+      tool: () => this.lfoTool,
+      loop: () => lf().loop, setLoop: i => this.edit(s => { s.lfo[L()].loop = i; }, { label: 'LFO loop point' }),
+      start: () => lf().start, setStart: i => this.edit(s => { s.lfo[L()].start = i; }, { label: 'LFO start point' }),
+      playhead: () => (this.snap && this.snap.lfoPh && fin(this.snap.lfoPh[L()]) ? this.snap.lfoPh[L()] : null),
+      pointMenu: (idxs, axis) => busMenuItems(this.s(), L(), idxs, axis).map(it => ({ label: it.label, checked: it.checked,
+        action: () => (it.label === 'New bus' ? this.linkNew(L(), idxs, axis, this.s().ui.mod)
+          : this.edit(s => linkPoints(s, this.fx(), L(), idxs, axis, it.bus, null), { label: 'Modulate point' })) })),
+      removePointMods: idxs => this.edit(s => core.clearPointMods(s, L(), idxs), { label: 'Remove Point Modulations' }),
+      fromWavetable: () => OSC_L.map((x, o) => ({ label: 'From OSC ' + x, action: () => this.wtToLfo(o) })),
+      shapes: this.shapeLib(),
+      bipolar: false, readOnly: false, height,
+    };
+  }
+  setLfoTool(t) {
+    this.lfoTool = LFO_TOOL_IDS.includes(t) ? t : 'point';
+    for (const P of this.allPages()) if (P.lfoEd && typeof P.lfoEd.setTool === 'function') P.lfoEd.setTool(this.lfoTool);
+    if (this.big && typeof this.big.setTool === 'function') this.big.setTool(this.lfoTool);
+    this.queue();
+  }
+  // the LFO Editor overlay (§13.13): the same editor at full size with the drawing tools; Path-type LFOs use PathEditor
+  openLfoEditor() {
+    if (typeof gx.lfoEditorLarge !== 'function') { this.notify('LFO Editor not available'); return null; }
+    if (this.big) this.big.close();
+    const l = this.lfoIdx(), L = () => l, lf = this.s().lfo[l], path = lf && lf.type === 'path';
+    const o = path ? {
+      path: true, get: () => this.s().lfo[l].path, set: (p, ph) => this.edit(s => { s.lfo[l].path = p; }, { label: 'LFO ' + (l + 1) + ' path', phase: ph || 'set' }),
+      grid: () => { const g = this.s().lfoGrid; return { x: g.x, y: g.y }; },
+    } : this.lfoEditorOpts(L);
+    o.title = 'LFO ' + (l + 1) + ' Editor';
+    o.tool = { get: () => this.lfoTool, set: t => this.setLfoTool(t) };
+    o.onClose = () => { this.big = null; };
+    const B = gx.lfoEditorLarge(this.el, o);
+    if (!B) return null;
+    this.big = { ed: B.editor, setTool: B.setTool, close: () => B.close() };
+    this.edSig.set(B.editor, () => JSON.stringify([l, this.s().lfo[l].pts, this.s().lfo[l].path, this.s().lfoGrid, this.lfoTool]));
+    return B;
   }
   lfoFolderMenu(anchor) {
     const lib = this.shapeLib(), L = this.lfoIdx(), r = anchor.getBoundingClientRect();
@@ -3064,7 +3928,7 @@ export class SerumUI {
       { label: 'Import Library…', action: () => pickFile(this.d, '.json,application/json').then(f => f && lib.importFile(f)).then(n => { if (n) this.notify('Imported ' + n + ' shape' + (n > 1 ? 's' : '')); }, () => this.notify('Could not read that file')) },
       { label: 'Export Library…', action: () => lib.exportFile() },
       { sep: true },
-      { label: 'Wavetable to LFO Shape', sub: [{ label: 'From OSC A', action: () => this.wtToLfo(0) }, { label: 'From OSC B', action: () => this.wtToLfo(1) }] });
+      { label: 'Wavetable to LFO Shape', sub: OSC_L.map((x, o) => ({ label: 'From OSC ' + x, action: () => this.wtToLfo(o) })) });
     wk.contextMenu(r.left, r.bottom + 2, items, { anchor });
   }
   // shape library (deviation 10: JSON, no .shp): factory pts.SHAPES + synth.sx.shapes [{name, pts}]
@@ -3098,7 +3962,7 @@ export class SerumUI {
     return this.shapes;
   }
 
-  /* ---------------------------------------------------------------- VOICING (inv A17) */
+  /* ---------------------------------------------------------------- VOICING (inv A17, B19; §13.13) */
   voicingPanel() {
     const d = this.d, { el, body } = this.panel('VOICING'), v = () => this.s().voicing;
     const tg = (label, k, title) => {
@@ -3111,24 +3975,54 @@ export class SerumUI {
     const polyMenu = (x, y) => {
       const s = this.s();
       wk.contextMenu(x, y, [
+        { label: 'Limit Same Note Poly to 1', checked: !!s.voicing.oneNote, action: () => this.edit(st => { st.voicing.oneNote = st.voicing.oneNote ? 0 : 1; }, { label: 'One voice per note' }) },
+        { label: 'Voice Steal Priority', sub: STEAL_LABEL.map((t, i) => ({ label: t, checked: (s.voicing.steal | 0) === i,
+          action: () => this.edit(st => { st.voicing.steal = i; }, { label: 'Voice steal priority' }) })) },
+        { sep: true },
         { label: 'Lock Polyphony', checked: !!s.locks.misc.poly, action: () => this.edit(st => { st.locks.misc.poly = st.locks.misc.poly ? 0 : 1; }, { label: 'Lock Polyphony' }) },
-        { label: 'Limit polyphony to one of any note number', checked: !!s.voicing.oneNote, action: () => this.edit(st => { st.voicing.oneNote = st.voicing.oneNote ? 0 : 1; }, { label: 'One voice per note' }) },
       ], { anchor: poly.el.querySelector('.sx-nfv') });
     };
     poly.el.addEventListener('contextmenu', e => { e.preventDefault(); e.stopPropagation(); polyMenu(e.clientX, e.clientY); });
     longPress(poly.el, polyMenu);
     this.custom(() => poly.el.classList.toggle('sx-locked-ctl', !!this.s().locks.misc.poly));
+    // BEND UP / DOWN: g.bu2 / g.bd2 (0…48 / −48…0), in S1 mode the v1 g.bendup / g.benddn (±24), kept in sync by syncS1
+    const bends = [];
+    const bend = (s2, v1, label) => {
+      const a = destOf(s2) ? this.dNum(s2, label) : null, b = this.dNum(v1, label);
+      if (a) bends.push([a.el, false]);
+      bends.push([b.el, true]);
+      return [a && a.el, b.el];
+    };
+    const bu = bend('g.bu2', 'g.bendup', 'BEND UP'), bd = bend('g.bd2', 'g.benddn', 'BEND DOWN');
+    this.custom(() => { const s1 = s1On(this.s()) || !destOf('g.bu2'); for (const [e, isV1] of bends) e.classList.toggle('sx-hidden', isV1 !== s1); });
     const vc = mk(d, 'span', 'sx-rate');
     this.custom(() => { const t = this.vcText ? this.vcText + ' voices' : ''; if (vc.textContent !== t) vc.textContent = t; });
     body.append(this.row(tg('MONO', 'mono'), tg('LEGATO', 'legato', 'Legato (with Mono off: poly legato)'), poly.el),
       this.row(this.dKnob('g.porta', 'PORTA').el, this.dKnob('g.curve', 'CURVE', { size: 'sm' }).el),
       this.row(tg('ALWAYS', 'always', 'Glide even without overlapping notes'), tg('SCALED', 'scaled', 'Glide time scales with the interval (1 octave = PORTA)')),
+      this.row(...bu.filter(Boolean), ...bd.filter(Boolean)),
       this.row(vc));
     return el;
   }
 
+  /* ================================================================ MIX page (§13.4; sx-ui-mix MixerPage, U3) */
+  buildMix(el) {
+    const d = this.d, box = mk(d, 'div', 'sx-mixbox'), P = this.bp;
+    box.appendChild(mk(d, 'p', 'sx-placeholder', 'Loading the mixer…'));
+    el.append(box, this.tileStrip(), this.rowC());
+    const fail = msg => { if (!this.dead) { box.textContent = ''; box.appendChild(mk(d, 'p', 'sx-placeholder', msg)); } };
+    this.mixReady = loadMix().then(M => {
+      if (this.dead) return;
+      if (!M || typeof M.MixerPage !== 'function') { fail('Mixer unavailable'); return; }
+      box.textContent = '';
+      const prev = this.bp;
+      this.bp = P;
+      try { this.mixer = new M.MixerPage(box, this.kit); } catch (err) { console.error('serum-ui: mixer', err); fail('The mixer could not be shown'); } finally { this.bp = prev; }
+      if (this.page === 'mix') { this.edDirty = true; this.paint(true); }
+    }, err => { warnOnce('mix', 'serum-ui: sx-ui-mix.js not available', err); fail('Mixer unavailable'); });
+  }
 
-  /* ================================================================ FX page (§9.6) */
+  /* ================================================================ FX page (§13.5; fx-ui FXRackUI v2, U3) */
   buildFx(el) {
     const d = this.d, box = mk(d, 'div', 'sx-fxbox'), R = fxui.FXRackUI;
     if (typeof R === 'function') {
@@ -3137,63 +4031,114 @@ export class SerumUI {
         editFx: (fn, o) => this.editFx(fn, o, true),
         bpm: () => this.bpm(),
         gr: () => (this.smon && this.smon.gr ? this.smon.gr : null),
+        tap: () => (this.smon && this.smon.ftap ? this.smon.ftap : null),   // the rack's monitor tap (§13.5 Delay overlay)
+        setTap: inst => { if (typeof this.host.fxTap === 'function') this.host.fxTap(inst); },
         locked: id => arr(this.s().locks.p).includes(id),
         storage: this.host.storage,
         notify: t => this.notify(t),
         tip: id => this.tipText(id) || null, // FX knob tooltips with Serum's modulator lines (RULINGS host additions)
+        racks: () => 3,                      // MAIN · BUS 1 · BUS 2 (§11.15)
+        irs: this.host.smp || null,          // Convolve impulse responses
+        s: () => this.s(),                   // rows / locks of the Serum state (instance removal, §11.2)
+        edit: (fn, o) => this.edit(fn, o),
       };
-      this.rack = new R(box, adapter, { embedded: true, dsp: globalThis.FXDSP || null });
-    } else box.appendChild(mk(d, 'p', 'sx-txt', 'FX rack unavailable'));
-    const mac = mk(d, 'div', 'sx-row sx-rowC');
-    mac.appendChild(this.macrosPanel());
-    el.append(box, this.tileStrip(), mac);
+      try { this.rack = new R(box, adapter, { embedded: true, dsp: globalThis.FXDSP || null, racks: 3, mod: true }); }
+      catch (err) { console.error('serum-ui: FX rack', err); box.appendChild(mk(d, 'p', 'sx-placeholder', 'FX rack unavailable')); }
+    } else box.appendChild(mk(d, 'p', 'sx-placeholder', 'FX rack unavailable'));
+    el.append(box, this.tileStrip(), this.rowC());
   }
 
-  /* ================================================================ MATRIX page (§9.5) */
+  /* ================================================================ ARP / CLIP pages (§13.7, §13.8; sx-ui-seq, U4) */
+  buildSeq(el, kind) {
+    const d = this.d, bar = mk(d, 'div', 'sx-pagebar'), box = mk(d, 'div', 'sx-seqbox');
+    const C = kind === 'arp' ? seq.ArpPage : seq.ClipPage;
+    if (typeof C === 'function') {
+      try { this.seqPages[kind] = new C(box, this.kit); } catch (err) { console.error('serum-ui: ' + kind, err); box.appendChild(mk(d, 'p', 'sx-placeholder', 'Page unavailable')); }
+    } else box.appendChild(mk(d, 'p', 'sx-placeholder', 'Page unavailable'));
+    // macros pane toggle (§13.2: own lower layout; the macros pane shows on demand) — unless the page brings its own
+    // (the CLIP page's macro knobs write their clip lanes while recording, §13.8)
+    const own = box.querySelector && box.querySelector('[data-sec="macros"]');
+    if (own) { el.append(box); return; }
+    const mac = this.macrosPanel();
+    const tg = this.pToggle({ label: 'MACROS', kind: 'btn', get: () => (this.macPane[kind] ? 1 : 0),
+      set: v => { this.macPane[kind] = !!v; this.queue(); } });
+    tg.el.title = 'Show the macros pane';
+    this.custom(() => mac.classList.toggle('sx-hidden', !this.macPane[kind]));
+    bar.append(mk(d, 'span', 'sx-grow'), tg.el);
+    el.append(bar, box, mac);
+  }
+
+
+  /* ================================================================ MATRIX page (§13.6, inv B18): 64 rows */
   buildMatrix(el) {
-    const d = this.d, { el: pan, head, body } = this.panel('MATRIX');
-    const mb = btn(d, 'sx-hbtn', icon(d, 'more'), 'Matrix menu', () => {
-      const r = mb.getBoundingClientRect();
-      wk.contextMenu(r.left, r.bottom + 2, [
-        { label: 'Velo->Amp', action: () => this.veloAmp() },
-        { label: 'Vibrato quick-assign', action: () => this.vibrato() },
-        { sep: true },
-        { label: 'Clear All Modulations', action: () => this.edit(s => { s.matrix = s.matrix.map(emptyRow); }, { label: 'Clear All Modulations' }) },
-      ], { anchor: mb });
-    });
+    const d = this.d, { el: pan, head, body } = this.panel('MATRIX', 'matrix');
+    const mb = btn(d, 'sx-hbtn', icon(d, 'more'), 'Matrix menu', () => this.matrixMenu(mb));
     mb.setAttribute('aria-haspopup', 'menu');
-    head.append(mk(d, 'span', 'sx-grow'), mb);
+    const exp = this.pToggle({ label: 'EXPAND', kind: 'btn', get: () => (this.mxExp ? 1 : 0), set: () => this.toggleExpand() });
+    exp.el.title = 'Expand the matrix (Alt/Option-F)';
+    head.append(mk(d, 'span', 'sx-grow'), exp.el, mb);
     const hd = mk(d, 'div', 'sx-mhd');
     hd.setAttribute('aria-hidden', 'true');
-    for (const t of ['#', 'SOURCE', 'CURVE', 'AMOUNT', 'DESTINATION', 'TYPE', 'AUX SOURCE', 'AUX MODE', 'BYP', 'OUTPUT', '']) hd.appendChild(mk(d, 'span', '', t));
+    for (const t of ['', '#', 'SOURCE', 'CRV', 'AMOUNT', 'POL', 'DESTINATION', 'OUT', 'AUX SOURCE', 'INV', 'CRV', 'OUTPUT', 'BYP', '']) hd.appendChild(mk(d, 'span', '', t));
     const list = mk(d, 'div', 'sx-mx');
     list.setAttribute('role', 'list');
-    list.setAttribute('aria-label', 'Modulation matrix, 32 slots');
-    for (let slot = 0; slot < 32; slot++) list.appendChild(this.matrixRow(slot));
+    list.setAttribute('aria-label', 'Modulation matrix, ' + N_MX + ' slots');
+    for (let slot = 0; slot < N_MX; slot++) list.appendChild(this.matrixRow(slot));
+    this.mxList = list;
     body.append(hd, list);
     el.append(pan, this.tileStrip());
   }
+  matrixMenu(anchor) {
+    const r = anchor.getBoundingClientRect(), s = this.s(), locked = arr(s.locks.mod).includes('matrix');
+    wk.contextMenu(r.left, r.bottom + 2, [
+      { label: 'Sort by Source', action: () => { if (this.need('sortMatrix')) this.edit(st => core.sortMatrix(st, 'src'), { label: 'Sort matrix' }); } },
+      // destination-menu order: FX rows follow the rack / instance order of the track's FX state (§5.8)
+      { label: 'Sort by Destination', action: () => { if (this.need('sortMatrix')) { const fx = this.fx(); this.edit(st => core.sortMatrix(st, 'dst', fx), { label: 'Sort matrix' }); } } },
+      { label: 'Lock Matrix', checked: locked, action: () => this.lockModuleUI('matrix') },
+      { sep: true },
+      { label: 'Create Vibrato', action: () => this.vibrato() },
+      { label: 'Create Velo->Amp', action: () => this.veloAmp() },
+      { sep: true },
+      { label: 'Apply and Delete Macros', action: () => this.confirmDlg('Apply and Delete Macros', 'Add every macro modulation at the macros\' current values to the controls, then delete the macro rows?', () => {
+        if (!this.need('applyMacros')) return;
+        const fx = this.fx();
+        let n = 0;
+        this.edit(st => { n = core.applyMacros(st, fx); }, { label: 'Apply and Delete Macros' });
+        if (fx) this.editFx(() => {}, { label: 'Apply and Delete Macros' });   // the FX bases applyMacros wrote
+        this.notify(n ? 'Applied ' + n + ' macro row' + (n > 1 ? 's' : '') : 'No macro rows');
+      }) },
+      { label: 'Init Modulations', action: () => this.confirmDlg('Init Modulations', 'Remove every modulation row and LFO point link?', () => {
+        if (this.need('initMods')) { this.edit(st => core.initMods(st), { label: 'Init Modulations' }); this.edDirty = true; }
+      }) },
+    ], { anchor });
+  }
   destItems() {
     if (this.dstT !== this.paintSeq || !this.dstC) {
-      const s = this.s(), fx = this.fx();
-      this.dstC = groupItems([{ v: '', label: '—', group: '' }].concat(DESTS.map(x => ({ v: x.id, label: core.destLabel(x.id, s, fx), group: x.group }))));
+      const items = [{ v: '', label: '—', group: '' }];
+      for (const g of this.destGroups()) for (const x of g.items) items.push({ v: x.id, label: x.label, group: g.group });
+      this.dstC = items;
       this.dstT = this.paintSeq;
     }
     return this.dstC;
   }
   srcItems() {
     if (this.srcT !== this.paintSeq || !this.srcC) {
-      const s = this.s();
-      this.srcC = [{ v: '', label: '—' }].concat(SRC_MENU.map(id => ({ v: id, label: srcLabel(s, id) })));
+      const items = [{ v: '', label: '—', group: '' }];
+      for (const g of srcGroups(this.s())) for (const x of g.items) items.push({ v: x.id, label: x.label, group: g.group });
+      this.srcC = items;
       this.srcT = this.paintSeq;
     }
     return this.srcC;
   }
+  // one row (§13.6): handle (drag = reorder; click = row menu) · # · SOURCE · CRV · AMOUNT · POL · DESTINATION (≈ for
+  // aliased S1-pair rows; red for deleted FX instances / not modulatable) · OUT (live mAmt·x, snapshot.mOut) · AUX
+  // SOURCE · INV · aux CRV · OUTPUT · bypass · remove
   matrixRow(slot) {
     const d = this.d, R = () => this.s().matrix[slot];
     const row = mk(d, 'div', 'sx-mrow');
     row.setAttribute('role', 'listitem');
     row.setAttribute('aria-label', 'Slot ' + (slot + 1));
+    row.setAttribute('data-mslot', String(slot));
     const mmenu = (label, field) => {
       const w = this.bind(wk.menu({ label, items: () => (field === 'dst' ? this.destItems() : this.srcItems()), get: () => R()[field], arrows: false,
         set: v => this.edit(s => { s.matrix[slot][field] = v; }, { label: 'Matrix ' + label.toLowerCase() }) }));
@@ -3209,7 +4154,7 @@ export class SerumUI {
     const amt = this.slider({ label: 'Amount', get: () => (R().amt + 1) / 2, def: 0.5, bipolar: true, orient: 'h', fmt: n => pct(2 * n - 1),
       parse: t => { const a = parseAmount(t, R().dst, R().bi); return a === null ? null : (a + 1) / 2; },
       set: (n, ph) => this.edit(s => core.setModAmount(s, slot, Math.round((2 * n - 1) * 1e4) / 1e4), { label: 'Matrix amount', phase: ph || 'set' }) });
-    if (wk.tooltip) wk.tooltip(amt.el, () => 'Amount ' + pct(R().amt) + ' (type a percentage, or 12st on pitch destinations)');
+    if (wk.tooltip) wk.tooltip(amt.el, () => 'Amount ' + pct(R().amt) + ' (type a percentage, or 12st on pitch destinations; Cmd/Ctrl-click resets)');
     const native = typeof wk.slider === 'function';   // wk.slider shows its value and takes typed entry itself
     const amtV = native ? null : this.valBox(() => pct(R().amt), t => parseAmount(t, R().dst, R().bi),
       a => this.edit(s => core.setModAmount(s, slot, a), { label: 'Matrix amount' }), 'Amount: percent, or semitones (12st) on pitch destinations');
@@ -3218,23 +4163,73 @@ export class SerumUI {
       set: (n, ph) => this.edit(s => { s.matrix[slot].out = Math.round(clamp01(n) * 1e4) / 1e4; }, { label: 'Matrix output', phase: ph || 'set' }) });
     const outV = native ? null : this.valBox(() => Math.round(R().out * 100) + '%', t => { const m = /^\s*(\d+(?:[.,]\d+)?)\s*%?\s*$/.exec(String(t)); return m ? clamp01(parseFloat(m[1].replace(',', '.')) / 100) : null; },
       v => this.edit(s => { s.matrix[slot].out = v; }, { label: 'Matrix output' }), 'Output (percent)');
-    const typ = this.mBtn(() => (R().bi ? '<->' : '->'), () => this.edit(s => { const r = s.matrix[slot]; r.bi = r.bi ? 0 : 1; }, { label: 'Matrix type' }),
-      () => 'Type: ' + (R().bi ? 'bipolar' : 'unipolar'));
-    const mode = this.mBtn(() => (R().inv ? '(inv)' : 'Default'), () => this.edit(s => { const r = s.matrix[slot]; r.inv = r.inv ? 0 : 1; }, { label: 'Aux mode' }),
-      () => 'Aux mode ' + (R().inv ? '(inv)' : 'Default') + '; Alt-click toggles bypass');
+    const pol = this.mBtn(() => (R().bi ? '↔' : '→'), () => this.edit(s => { const r = s.matrix[slot]; r.bi = r.bi ? 0 : 1; }, { label: 'Matrix polarity' }),
+      () => 'Polarity: ' + (R().bi ? 'bipolar' : 'unipolar'));
+    const inv = this.mBtn(() => (R().inv ? 'INV' : 'inv'), () => this.edit(s => { const r = s.matrix[slot]; r.inv = r.inv ? 0 : 1; }, { label: 'Aux invert' }),
+      () => 'Aux invert ' + (R().inv ? 'on' : 'off') + '; Alt-click toggles bypass');
+    this.custom(() => inv.classList.toggle('sx-on', !!R().inv));
     const byp = this.pToggle({ label: 'Bypass', kind: 'led', get: () => R().byp, set: v => this.edit(s => { s.matrix[slot].byp = v ? 1 : 0; }, { label: 'Matrix bypass' }) });
-    const more = btn(d, 'sx-hbtn', icon(d, 'more'), 'Slot ' + (slot + 1) + ' menu', () => this.rowMenu(slot, more));
+    const del = btn(d, 'sx-hbtn', icon(d, 'close'), 'Remove slot ' + (slot + 1), () => this.edit(s => { s.matrix[slot] = emptyRow(); }, { label: 'Remove modulation' }));
+    const handle = btn(d, 'sx-mh', icon(d, 'grip'), 'Slot ' + (slot + 1) + ': drag to reorder, click for the row menu', () => this.rowMenu(slot, handle));
+    this.rowDrag(handle, slot);
     const ac = mk(d, 'div', 'sx-mamt'), oc = mk(d, 'div', 'sx-mout');
     ac.append(amt.el); oc.append(out.el);
     if (amtV) ac.appendChild(amtV);
     if (outV) oc.appendChild(outV);
-    row.append(mk(d, 'span', 'sx-mn', String(slot + 1)),
+    const dst = cell('sx-mdst', mmenu('Destination', 'dst')), alias = mk(d, 'span', 'sx-alias', '≈');
+    alias.title = 'Aliased: this row targets the other mode\'s field of an S1 pair (compiled against the active field)';
+    dst.appendChild(alias);
+    // OUT: the row's live output of the recent voice (snapshot.mOut, §6.20)
+    const og = mk(d, 'span', 'sx-mout-g'), ob = mk(d, 'i');
+    og.appendChild(ob);
+    og.setAttribute('role', 'img');
+    og.setAttribute('aria-label', 'Live output');
+    const live = () => {
+      const mo = this.snap && this.snap.mOut, v = mo && mo.length > slot && fin(mo[slot]) ? clamp(mo[slot], -1, 1) : 0;
+      const k = Math.round(v * 100);
+      if (og.lastK === k) return;
+      og.lastK = k;
+      ob.style.left = (50 + Math.min(0, k) / 2) + '%';
+      ob.style.width = (Math.abs(k) / 2) + '%';
+    };
+    (this.bp || this.headPage).lives.push(on => { if (on) live(); });   // no DOM writes while the MATRIX page is hidden
+    row.append(handle, mk(d, 'span', 'sx-mn', String(slot + 1)),
       cell('sx-msrc sx-mslot', mmenu('Source', 'src'), { 'data-msrc': 'src', 'data-slot': slot, 'data-malt': 'src' }),
-      cell('sx-mcrv', this.curveCell(slot)), ac, cell('sx-mdst', mmenu('Destination', 'dst')), cell('sx-mtyp', typ),
+      cell('sx-mcrv', this.curveCell(slot, 'curve')), ac, cell('sx-mpol', pol), dst, cell('sx-mo', og),
       cell('sx-maux sx-mslot', mmenu('Aux source', 'aux'), { 'data-msrc': 'aux', 'data-slot': slot }),
-      cell('sx-mmode', mode, { 'data-malt': 'mode', 'data-slot': slot }), cell('sx-mbyp', byp.el), oc, cell('sx-mmore', more));
-    this.custom(() => row.classList.toggle('sx-dim', !rowActive(R())));
+      cell('sx-minv', inv, { 'data-malt': 'mode', 'data-slot': slot }), cell('sx-macrv', this.curveCell(slot, 'acurve')),
+      oc, cell('sx-mbyp', byp.el), cell('sx-mx-x', del));
+    this.custom(() => {
+      const r = R(), s = this.s();
+      row.classList.toggle('sx-dim', !rowActive(r));
+      row.classList.toggle('sx-bad', rowBad(this.fx(), r));
+      alias.classList.toggle('sx-hidden', !rowAlias(s, r));
+      del.classList.toggle('sx-hidden', !r.src && !r.dst);
+      live();
+    });
     return row;
+  }
+  // drag the handle onto another row: the row moves there (the rows between shift by one, §13.6)
+  rowDrag(handle, slot) {
+    if (typeof wk.dragSource !== 'function') return;
+    let line = null;
+    const target = i => { const t = closest(i.target, '[data-mslot]'); return t && this.mxList && this.mxList.contains(t) ? t : null; };
+    const clear = () => { if (line) { line.classList.remove('sx-dropline'); line = null; } };
+    const ds = wk.dragSource(handle, {
+      data: slot,
+      move: i => { const t = target(i); if (t !== line) { clear(); line = t; if (t) t.classList.add('sx-dropline'); } },
+      drop: i => {
+        const t = target(i);
+        clear();
+        if (!t) return;
+        const to = +t.getAttribute('data-mslot');
+        if (to === slot) return;
+        if (i.alt) { this.edit(s => { s.matrix[to] = clone(s.matrix[slot]); }, { label: 'Copy modulation' }); return; }
+        this.edit(s => { const M = s.matrix, r = M.splice(slot, 1)[0]; M.splice(to, 0, r); }, { label: 'Move modulation' });
+      },
+      cancel: clear,
+    });
+    this.offs.push(() => ds.destroy());
   }
   mBtn(text, click, title) {
     const b = btn(this.d, 'sx-btn', '', null, click);
@@ -3280,57 +4275,89 @@ export class SerumUI {
     v.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); edit(); } });
     return v;
   }
-  // CURVE column: thumbnail of bend(·, MC_K·curve); drag vertically (200 px = −1…+1), double-click resets
-  curveCell(slot) {
-    const d = this.d, sv = svgEl(d, 'svg', { class: 'sx-crv', viewBox: '0 0 36 22', tabindex: '0', role: 'slider',
-      'aria-label': 'Curve', 'aria-valuemin': '-100', 'aria-valuemax': '100' });
+  // CRV / aux CRV columns: thumbnail of the curve (bend(·, MC_K·c), or the Editable Curve of the row); drag vertically
+  // (200 px = −1…+1; on an editable curve the drag is off), double-click / double-tap opens the editor (CRV) or resets
+  // (aux CRV); grey while the row is bypassed
+  curveCell(slot, field) {
+    const d = this.d, aux = field === 'acurve', sv = svgEl(d, 'svg', { class: 'sx-crv', viewBox: '0 0 36 22', tabindex: '0', role: 'slider',
+      'aria-label': aux ? 'Aux curve' : 'Curve', 'aria-valuemin': '-100', 'aria-valuemax': '100' });
     const path = svgEl(d, 'path', { d: '' });
     sv.appendChild(path);
     const R = () => this.s().matrix[slot];
     let last = null, g = null;
     this.custom(() => {
-      const c = R().curve;
-      if (c === last) return;
-      last = c;
+      const r = R(), c = r[field] || 0, crv = !aux && Array.isArray(r.crv) && r.crv.length >= 2 ? r.crv : null;
+      const k = (crv ? JSON.stringify(crv) : c) + '|' + (r.byp ? 1 : 0);
+      if (k === last) return;
+      last = k;
       let dd = '';
-      for (let j = 0; j <= 18; j++) { const t = j / 18; dd += (j ? 'L' : 'M') + (2 + 32 * t).toFixed(2) + ' ' + (20 - 18 * core.bend(t, MC_K * c)).toFixed(2); }
+      for (let j = 0; j <= 18; j++) {
+        const t = j / 18, y = crv && typeof core.evalPts === 'function' ? core.evalPts(crv, t) : core.bend(t, MC_K * c);
+        dd += (j ? 'L' : 'M') + (2 + 32 * t).toFixed(2) + ' ' + (20 - 18 * clamp01(y)).toFixed(2);
+      }
       path.setAttribute('d', dd);
       sv.setAttribute('aria-valuenow', String(Math.round(c * 100)));
+      sv.classList.toggle('sx-edc', !!crv);
+      sv.classList.toggle('sx-grey', !!r.byp);
     });
-    const put = (c, ph) => this.edit(s => { s.matrix[slot].curve = Math.round(clamp(c, -1, 1) * 1e4) / 1e4; }, { label: 'Matrix curve', phase: ph });
+    const put = (c, ph) => this.edit(s => { s.matrix[slot][field] = Math.round(clamp(c, -1, 1) * 1e4) / 1e4; }, { label: aux ? 'Aux curve' : 'Matrix curve', phase: ph });
     sv.addEventListener('pointerdown', e => {
       if (e.button !== 0) return;
+      if (!aux && Array.isArray(R().crv)) return;
       e.preventDefault();
-      g = { id: e.pointerId, y: e.clientY, c0: R().curve, acc: 0 };
+      g = { id: e.pointerId, y: e.clientY, c0: R()[field] || 0, acc: 0, moved: false };
       try { sv.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
-      put(g.c0, 'start');
     });
     sv.addEventListener('pointermove', e => {
       if (!g || e.pointerId !== g.id) return;
       g.acc += (g.y - e.clientY) * (e.shiftKey ? 0.1 : 1) / 100;
       g.y = e.clientY;
-      put(g.c0 + g.acc, 'move');
+      if (!g.moved && Math.abs(g.acc) > 0.02) { g.moved = true; put(g.c0, 'start'); }
+      if (g.moved) put(g.c0 + g.acc, 'move');
     });
-    const up = e => { if (!g || e.pointerId !== g.id) return; const G = g; g = null; put(G.c0 + G.acc, 'end'); };
+    const up = e => { if (!g || e.pointerId !== g.id) return; const G = g; g = null; if (G.moved) put(G.c0 + G.acc, 'end'); };
     sv.addEventListener('pointerup', up);
     sv.addEventListener('pointercancel', up);
-    sv.addEventListener('dblclick', e => { e.preventDefault(); put(0, 'set'); });
+    sv.addEventListener('dblclick', e => { e.preventDefault(); if (aux) put(0, 'set'); else this.openCurve(slot, sv); });
     sv.addEventListener('keydown', e => {
-      const k = e.key, c = R().curve;
+      const k = e.key, c = R()[field] || 0;
       if (k === 'ArrowUp' || k === 'ArrowRight') { e.preventDefault(); put(c + (e.shiftKey ? 0.01 : 0.05), 'set'); }
       else if (k === 'ArrowDown' || k === 'ArrowLeft') { e.preventDefault(); put(c - (e.shiftKey ? 0.01 : 0.05), 'set'); }
       else if (k === 'Delete' || k === 'Backspace' || k === 'Home') { e.preventDefault(); put(0, 'set'); }
+      else if (k === 'Enter' && !aux) { e.preventDefault(); this.openCurve(slot, sv); }
     });
     return sv;
+  }
+  // Editable Curve (§13.6; graph CurveEditor kind 'mcurve' with RISE / FALL and SmoothLink) of a row, in a popover
+  openCurve(slot, anchor) {
+    if (typeof gx.CurveEditor !== 'function') { this.notify('Curve editor not available'); return null; }
+    const R = () => this.s().matrix[slot], c0 = R().curve || 0;
+    const init = () => { const pts = []; for (let j = 0; j <= 4; j++) { const t = j / 4; pts.push([t, Math.round(core.bend(t, MC_K * c0) * 1e5) / 1e5, 0]); } return pts; };
+    return this.popover('crv' + slot, anchor || this.el, 'Slot ' + (slot + 1) + ' curve', box => new gx.CurveEditor(box, {
+      kind: 'mcurve', height: 160,
+      get: () => (Array.isArray(R().crv) && R().crv.length >= 2 ? R().crv : init()),
+      set: (pts, ph) => this.edit(s => { s.matrix[slot].crv = pts; }, { label: 'Matrix curve', phase: ph || 'set' }),
+      slew: {
+        get: () => ({ rise: R().rise || 0, fall: R().fall || 0, slink: R().slink || 0 }),
+        set: (p, ph) => this.edit(s => {
+          const r = s.matrix[slot];
+          for (const k of ['rise', 'fall', 'slink']) if (p && p[k] !== undefined) r[k] = k === 'slink' ? (p[k] ? 1 : 0) : clamp01(p[k]);
+          if (r.slink) r.fall = r.rise;
+        }, { label: 'Matrix slew', phase: ph || 'set' }),
+      },
+      init: () => this.edit(s => { s.matrix[slot].crv = null; }, { label: 'Init curve' }),
+      grid: () => { const g = this.s().lfoGrid; return { x: g.x, y: g.y }; },
+    }), () => JSON.stringify([R().crv, R().rise, R().fall, R().slink, R().curve]));
   }
   rowMenu(slot, anchor) {
     const r = anchor.getBoundingClientRect(), s = this.s();
     const swap = (a, b) => this.edit(st => { const t = st.matrix[a]; st.matrix[a] = st.matrix[b]; st.matrix[b] = t; }, { label: 'Move modulation' });
     const items = [
+      { label: 'Edit Custom Curve', action: () => this.openCurve(slot, anchor) },
       { label: 'Clear', action: () => this.edit(st => { st.matrix[slot] = emptyRow(); }, { label: 'Clear modulation' }) },
       { label: 'Duplicate', action: () => {
         const free = this.s().matrix.findIndex(x => !x.src);
-        if (free < 0) { this.notify('Matrix full (32 slots)'); return; }
+        if (free < 0) { this.notify('Matrix full (' + N_MX + ' slots)'); return; }
         this.edit(st => { st.matrix[free] = clone(st.matrix[slot]); }, { label: 'Duplicate modulation' });
       } },
     ];
@@ -3339,71 +4366,235 @@ export class SerumUI {
     wk.contextMenu(r.left, r.bottom + 2, items, { anchor });
   }
 
-  /* ================================================================ GLOBAL page (§9.7) */
+
+  /* ================================================================ GLOBAL page (§13.10, inv B24, B20) */
   buildGlobal(el) {
-    const d = this.d, grid = mk(d, 'div', 'sx-gl'), s0 = () => this.s();
-    // OSCILLATORS
-    const p1 = this.panel('OSCILLATORS');
-    const os = this.pSeg({ label: 'Oversampling', items: ['1x', '2x', '4x'], get: () => [1, 2, 4].indexOf(s0().global.os),
-      set: i => this.edit(s => { s.global.os = [1, 2, 4][i]; }, { label: 'Oversampling' }) });
-    const osLock = this.pToggle({ label: 'LOCK', kind: 'btn', get: () => s0().locks.misc.os,
-      set: v => this.edit(s => { s.locks.misc.os = v ? 1 : 0; }, { label: 'Lock oversampling' }) });
-    osLock.el.title = 'Keep this oversampling when presets load';
+    const grid = mk(this.d, 'div', 'sx-gl');
+    grid.append(this.qualityPanel(), this.tuningPanel(), this.mpePanel(), this.vcPanel());
+    for (let o = 0; o < N_OSC; o++) grid.appendChild(this.unisonPanel(o));
+    grid.append(this.chaosPanel(), this.prefsPanel(), this.infoPanel());
+    el.appendChild(grid);
+  }
+  // QUALITY: Draft / High / Ultra (global.os 1 / 2 / 4) + lock, effective rate; ✓ S1 Compatibility Mode (setS1,
+  // reversible, §2.6.4) with the "S1 rendition differs" note; ✓ Disable Smoothing
+  qualityPanel() {
+    const d = this.d, p = this.panel('QUALITY'), s0 = () => this.s();
+    // choosing a quality — also the one already selected — resets the CPU safeguard's quality-reduction steps
+    // (§14.3; host.qualityChosen, optional: the integrator clears the session's qr steps)
+    const q = this.pSeg({ label: 'Quality', items: QUALITY.map(x => x[1]), get: () => Math.max(0, QUALITY.findIndex(x => x[0] === s0().global.os)),
+      always: true, set: i => this.chooseQuality(QUALITY[i][0]) });
+    const lock = this.pToggle({ label: 'LOCK', kind: 'btn', get: () => s0().locks.misc.os,
+      set: v => this.edit(s => { s.locks.misc.os = v ? 1 : 0; }, { label: 'Lock quality' }) });
+    lock.el.title = 'Keep this quality when presets load';
     const rate = mk(d, 'span', 'sx-rate');
     this.custom(() => { const t = this.osText(); if (rate.textContent !== t) rate.textContent = t; });
-    p1.body.append(this.row(this.dToggle('a.track', 'PITCH TRACK A', 'btn').el, this.dToggle('b.track', 'PITCH TRACK B', 'btn').el),
-      this.row(this.dKnob('n.fine', 'NOISE FINE', { size: 'sm' }).el),
-      this.row(mk(d, 'span', 'sx-txt', 'OVERSAMPLING'), os.el, osLock.el), this.row(rate));
-    grid.appendChild(p1.el);
-    // UNISON A / B
-    for (const o of [0, 1]) {
-      const P = o ? 'b' : 'a', p = this.panel('UNISON ' + (o ? 'B' : 'A'));
-      const range = this.pNum({ label: 'RANGE', min: 0, max: 48, step: 0.01, def: 2, px: 240, get: () => s0().global.uniRange[o],
-        fmt: v => v.toFixed(2) + ' st', parse: t => { const m = /^\s*(\d+(?:[.,]\d+)?)/.exec(String(t)); return m ? parseFloat(m[1].replace(',', '.')) : null; },
-        set: (v, ph) => this.edit(s => { s.global.uniRange[o] = v; }, { label: 'Unison range ' + (o ? 'B' : 'A'), phase: ph }) });
-      const tun = this.bind(wk.menu({ label: 'TUNING', items: () => UNI_MODES.map((m, i) => ({ v: i, label: m })), get: () => s0().global.uniMode[o],
-        set: v => this.edit(s => { s.global.uniMode[o] = v; }, { label: 'Unison tuning ' + (o ? 'B' : 'A') }) }));
-      p.body.append(this.row(range.el, this.dKnob(P + '.uniw', 'WIDTH', { size: 'sm' }).el, this.dKnob(P + '.uniwarp', 'WARP', { size: 'sm' }).el,
-        this.dKnob(P + '.uniwt', 'WT POS', { size: 'sm' }).el),
-      this.row(this.dMenu(P + '.stack', 'STACK', () => this.enumItems(P + '.stack', UNI_STACKS)).el, tun.el));
-      grid.appendChild(p.el);
-    }
-    // CHAOS 1 / 2
+    // project asset meter (§14.2): the project's referenced user + factory assets against this device's worklet budget,
+    // from host.smp.usage() (optional: {bytes, budget} or a promise of it; read at most once a second); hidden without it
+    const assets = mk(d, 'span', 'sx-rate sx-assets'), assetsRow = this.row(assets);
+    assets.setAttribute('role', 'status');
+    let usageT = -1e9, usageTxt = '';
+    const mb = b => (b / 1048576).toFixed(b < 104857600 ? 1 : 0) + ' MB';
+    const usageText = u => (isObj(u) && fin(u.bytes) ? 'Assets: ' + mb(u.bytes) + (fin(u.budget) && u.budget > 0 ? ' of ' + mb(u.budget) : '') : '');
+    this.custom(() => {
+      const S = this.host.smp, f = S && typeof S.usage === 'function' ? S.usage : null;
+      if (f && nowMs() - usageT >= 1000) {
+        usageT = nowMs();
+        let u = null;
+        try { u = f.call(S); } catch (err) { u = null; }
+        if (u && typeof u.then === 'function') u.then(v => { usageTxt = usageText(v); if (!this.dead) this.queue(); }, () => {});
+        else usageTxt = usageText(u);
+      }
+      const t = f ? usageTxt : '';
+      if (assets.textContent !== t) assets.textContent = t;
+      assetsRow.classList.toggle('sx-hidden', !t);
+    });
+    const s1 = this.pToggle({ label: 'S1 Compatibility Mode', kind: 'led', get: () => (s1On(s0()) ? 1 : 0), set: v => this.setS1(v) });
+    s1.el.title = 'Serum 1 renditions: OSC A/B warp slot 1 uses the 23 legacy warps, the sub its 5 shapes and level law, Filter 1 its 96 types and the gliding key-track reference, Hz LFOs ignore HOST, PHASE/RAND knob ends set the phase memory, and the bend ranges are ±24. Every other feature works in both modes. Switching back restores the S1 sound exactly.';
+    const diff = mk(d, 'p', 'sx-note');
+    this.custom(() => {
+      const L = s1Diff(s0()), t = L.length ? 'S1 rendition differs: ' + L.join(', ') : '';
+      if (diff.textContent !== t) diff.textContent = t;
+      diff.classList.toggle('sx-hidden', !t);
+    });
+    const ns = this.pToggle({ label: 'Disable Smoothing', kind: 'led', get: () => s0().global.nosmooth,
+      set: v => this.edit(s => { s.global.nosmooth = v ? 1 : 0; }, { label: 'Disable smoothing' }) });
+    p.body.append(this.row(mk(d, 'span', 'sx-txt', 'QUALITY'), q.el, lock.el), this.row(rate), assetsRow, this.prefLine(s1.el), diff, this.prefLine(ns.el));
+    return p.el;
+  }
+  chooseQuality(os) {
+    if (s0Os(this.s()) !== os) this.edit(s => { s.global.os = os; }, { label: 'Quality' });
+    if (typeof this.host.qualityChosen === 'function') { try { this.host.qualityChosen(os); } catch (err) { console.warn(err); } }
+  }
+  setS1(on) {
+    const want = on ? 1 : 0;
+    if (s1On(this.s()) === !!want) return;
+    // only global.s1 changes (setS1 returns such a state); every other field stays, so switching back is exact
+    this.edit(s => { s.global.s1 = want; }, { label: 'S1 Compatibility Mode' });
+    this.notify(want ? 'S1 Compatibility Mode on' : 'S1 Compatibility Mode off');
+  }
+  // TUNING: concert pitch A4 (400–480 Hz) + lock (A4 and the tuning file across preset loads); TUN FILE menu;
+  // MTS-ESP disabled (deviation 1)
+  tuningPanel() {
+    const d = this.d, p = this.panel('TUNING'), s0 = () => this.s();
+    const R = core.A4_RANGE || [400, 480];
+    const a4 = this.pNum({ label: 'A4 (Hz)', min: R[0], max: R[1], step: 0.1, def: 440, px: 400, get: () => s0().global.a4, fmt: v => v.toFixed(1),
+      set: (v, ph) => this.edit(s => { s.global.a4 = v; }, { label: 'A4 reference', phase: ph }) });
+    const lock = this.pToggle({ label: 'LOCK', kind: 'btn', get: () => s0().locks.misc.tuning,
+      set: v => this.edit(s => { s.locks.misc.tuning = v ? 1 : 0; }, { label: 'Lock tuning' }) });
+    lock.el.title = 'Keep the concert pitch and the tuning file when presets load';
+    const tun = btn(d, 'sx-hbtn sx-grow', '', 'Tuning file', () => {
+      const r = tun.getBoundingClientRect(), t = s0().global.tun || {};
+      wk.contextMenu(r.left, r.bottom + 2, [
+        { label: 'Load .scl / .kbm / .tun…', action: () => this.loadTuning() },
+        { label: 'Clear Tuning', disabled: !t.kind || t.kind === 'none', action: () => this.clearTuning() },
+      ], { anchor: tun });
+    });
+    tun.setAttribute('aria-haspopup', 'menu');
+    this.custom(() => {
+      const t = s0().global.tun || {}, txt = 'TUN FILE: ' + (t.kind && t.kind !== 'none' ? t.name || t.kind : '12-TET (none)');
+      if (tun.textContent !== txt) tun.textContent = txt;
+    });
+    const mts = this.pToggle({ label: 'MTS-ESP', kind: 'led', get: () => 0, set: () => {}, disabled: () => true });
+    mts.el.title = 'Not available in the browser';
+    p.body.append(this.row(a4.el, lock.el), this.row(tun), this.prefLine(mts.el, 'Not available in the browser'));
+    return p.el;
+  }
+  // MPE: enabled, bend range (1–96, default 48), XYZ→Macro 1,2,3 / YZ→Macro 1,2 / Y→Mod Wheel (radio + off)
+  mpePanel() {
+    const d = this.d, p = this.panel('MPE'), m0 = () => this.s().global.mpe || { on: 0, bend: 48, xyz: 0 };
+    const mEdit = (fn, label) => this.edit(s => { if (!isObj(s.global.mpe)) s.global.mpe = { on: 0, bend: 48, xyz: 0 }; fn(s.global.mpe); }, { label });
+    const onT = this.pToggle({ label: 'MPE Enabled', kind: 'led', get: () => (m0().on ? 1 : 0), set: v => mEdit(m => { m.on = v ? 1 : 0; }, 'MPE') });
+    const bend = this.pNum({ label: 'BEND RANGE', min: 1, max: 96, step: 1, def: core.MPE_BEND_DEF || 48, px: 300, get: () => m0().bend || 48,
+      fmt: v => v + ' st', set: (v, ph) => mEdit(m => { m.bend = v; }, 'MPE bend range'), parse: t => { const v = parseFloat(String(t).replace(',', '.')); return fin(v) ? v : null; } });
+    const xyz = this.pSeg({ label: 'MPE expression mapping', items: ['Off', 'XYZ→M1,2,3', 'YZ→M1,2', 'Y→Wheel'], get: () => clamp(m0().xyz | 0, 0, 3),
+      set: i => mEdit(m => { m.xyz = i; }, 'MPE mapping') });
+    p.body.append(this.prefLine(onT.el), this.row(bend.el), this.row(xyz.el));
+    return p.el;
+  }
+  // VOICE CONTROL (inv B20, §2.2.6): preset menu, osc selection A B C N S, sequence length, step rows, RANDOM, SCALING
+  vcPanel() {
+    const d = this.d, p = this.panel('VOICE CONTROL', MODULE_FIELDS.vc ? 'vc' : null), v0 = () => this.s().vc;
+    const pre = btn(d, 'sx-hbtn sx-grow', '', 'Voice Control presets', () => this.vcMenu(pre));
+    pre.setAttribute('aria-haspopup', 'menu');
+    this.custom(() => { const t = 'PRESET: ' + (v0().name || 'Init'); if (pre.textContent !== t) pre.textContent = t; });
+    const sel = mk(d, 'div', 'sx-route');
+    ['A', 'B', 'C', 'N', 'S'].forEach((x, i) => {
+      const w = this.pToggle({ label: x, kind: 'btn', get: () => (arr(v0().sel)[i] ? 1 : 0),
+        set: on1 => this.edit(s => { s.vc.sel[i] = on1 ? 1 : 0; }, { label: 'Voice Control oscillators' }) });
+      w.el.title = ['OSC A', 'OSC B', 'OSC C', 'Noise', 'Sub'][i];
+      sel.appendChild(w.el);
+    });
+    const len = this.pNum({ label: 'LENGTH', min: 1, max: 8, step: 1, def: 1, px: 120, get: () => v0().len || 1,
+      set: (v, ph) => this.edit(s => { s.vc.len = v; }, { label: 'Voice Control length', phase: ph }) });
+    const rows = ['Pan', 'Detune', 'Cutoff', 'Env', 'Mod 1', 'Mod 2'], box = mk(d, 'div', 'sx-vcgrid');
+    if (typeof wk.stepGrid === 'function') {
+      const g = this.bind(wk.stepGrid({ label: 'Voice Control steps', rows, steps: 8, len: () => v0().len || 1,
+        get: (r, j) => { const st = arr(v0().steps)[j]; return st && fin(st[r]) ? st[r] : 0; },
+        set: (r, j, v, ph) => this.edit(s => { s.vc.steps[j][r] = Math.round(clamp(v, -1, 1) * 100) / 100; }, { label: 'Voice Control step', phase: ph || 'set' }),
+        fmt: (r, v) => Math.round(v * 100) + '%' }));
+      box.appendChild(g.el);
+    } else box.appendChild(mk(d, 'p', 'sx-txt', 'Step editor unavailable'));
+    const kn = (id, label) => (destOf(id) ? this.dKnob(id, label, { size: 'sm' }).el : null);
+    const lscale = kn('vc.lscale', 'LFO');   // knob menu: By Percentage · By Rate first (extraKnobItems)
+    p.body.append(this.row(pre), this.row(mk(d, 'span', 'sx-txt', 'OSC'), sel, len.el), box,
+      this.row(mk(d, 'span', 'sx-txt', 'RANDOM'), kn('vc.pan', 'PAN'), kn('vc.det', 'DETUNE'), kn('vc.cut', 'CUTOFF'), kn('vc.env', 'ENVS')),
+      this.row(mk(d, 'span', 'sx-txt', 'SCALING'), kn('vc.escale', 'ENV'), lscale));
+    return p.el;
+  }
+  vcPresets() { return arr(this.store('get', VC_KEY, [])).filter(x => x && typeof x.name === 'string' && isObj(x.vc)); }
+  // Voice Control presets (§10.9 FACTORY_VC {name, vc, p}; user presets in synth.sx.vc): a preset is the vc state plus the
+  // bases of the Voice Control destinations (RANDOM, SCALING: vc.* in s.p); ids a preset leaves out take their defaults
+  vcMenu(anchor) {
+    const r = anchor.getBoundingClientRect(), fac = arr(core.FACTORY_VC), user = this.vcPresets();
+    const ids = DESTS.filter(d => /^vc\./.test(d.id)).map(d => d.id);
+    const load = (x, name) => this.edit(s => {
+      const vc = isObj(x.vc) ? x.vc : x;
+      s.vc = Object.assign({}, s.vc, clone(vc), { name: String(name || vc.name || 'Preset').slice(0, 24) });
+      if (isObj(x.p)) for (const id of ids) s.p[id] = fin(x.p[id]) ? clamp01(x.p[id]) : DESTS[DEST_INDEX[id]].def;
+      if (typeof core.normalizeSerum === 'function') { const n = core.normalizeSerum(s); s.vc = n.vc; }
+    }, { label: 'Voice Control preset' });
+    const init = () => { const d0 = core.defaultSerum(); return { vc: d0.vc, p: Object.fromEntries(ids.map(id => [id, d0.p[id]])) }; };
+    const items = [];
+    if (fac.length) items.push({ label: 'Factory', sub: fac.map(x => ({ label: x.name, action: () => load(x, x.name) })) });
+    items.push({ label: 'User', sub: user.length ? user.map(x => ({ label: x.name, action: () => load(x, x.name) })) : [{ label: '(none)', disabled: true }] });
+    items.push({ label: 'Init', action: () => load(init(), 'Init') });
+    items.push({ sep: true }, { label: 'Save…', action: () => this.promptText('Save Voice Control Preset', 'Name', this.s().vc.name || 'VC ' + (user.length + 1), t => {
+      const name = String(t).trim().slice(0, 24);
+      if (!name) return false;
+      const s = this.s(), vc = clone(s.vc);
+      vc.name = name;
+      const pv = Object.fromEntries(ids.map(id => [id, this.getN(id)]));
+      this.store('set', VC_KEY, user.filter(x => x.name !== name).concat([{ name, vc, p: pv }]));
+      this.edit(st => { st.vc.name = name; }, { label: 'Voice Control preset' });
+      this.notify('Saved Voice Control preset “' + name + '”');
+      return true;
+    }) });
+    if (user.length) items.push({ label: 'Delete', sub: user.map(x => ({ label: x.name, action: () => this.store('set', VC_KEY, user.filter(y => y.name !== x.name)) })) });
+    wk.contextMenu(r.left, r.bottom + 2, items, { anchor });
+  }
+  // UNISON A / B / C: the gear popover's contents for every oscillator (§13.10)
+  unisonPanel(o) {
+    const d = this.d, P = OSC_P[o], p = this.panel('UNISON ' + OSC_L[o]), s0 = () => this.s();
+    const range = this.pNum({ label: 'RANGE', min: 0, max: 48, step: 0.01, def: 2, px: 240, get: () => s0().osc[o].uni.range,
+      fmt: v => v.toFixed(2) + ' st', parse: t => { const m = /^\s*(\d+(?:[.,]\d+)?)/.exec(String(t)); return m ? parseFloat(m[1].replace(',', '.')) : null; },
+      set: (v, ph) => this.edit(s => { s.osc[o].uni.range = v; }, { label: 'Unison range ' + OSC_L[o], phase: ph }) });
+    const tun = this.bind(wk.menu({ label: 'MODE', items: () => UNI_MODES.map((m, i) => ({ v: i, label: typeof m === 'string' ? m : m.name || String(m) })),
+      get: () => s0().osc[o].uni.mode, set: v => this.edit(s => { s.osc[o].uni.mode = v; }, { label: 'Unison mode ' + OSC_L[o] }) }));
+    const kn = (id, label) => (destOf(id) ? this.dKnob(id, label, { size: 'sm' }).el : null);
+    p.body.append(this.row(range.el, kn(P + '.uniw', 'WIDTH'), kn(P + '.uniwarp', 'WARP'), kn(P + '.uniwarp2', 'WARP 2'), kn(P + '.uniwt', 'WT POS')),
+      this.row(this.dMenu(P + '.stack', 'STACK', () => this.enumItems(P + '.stack', UNI_STACKS.map(x => (typeof x === 'string' ? x : x.name || String(x))))).el, tun.el));
+    return p.el;
+  }
+  // CHAOS (S1): shown in S1 mode or while a row reads a chaos source; Convert to Chaos LFOs (deviation 22)
+  chaosPanel() {
+    const d = this.d, p = this.panel('CHAOS (S1)'), s0 = () => this.s();
+    const used = () => rowsOf(s0()).some(r => r && (/^chaos[12]$/.test(r.src) || /^chaos[12]$/.test(r.aux)));
     for (const c of [0, 1]) {
-      const P = 'c' + (c + 1), p = this.panel('CHAOS ' + (c + 1));
+      const P = 'c' + (c + 1);
       const sw = (label, k) => this.pToggle({ label, kind: 'btn', get: () => s0().chaos[c][k],
         set: v => this.edit(s => { s.chaos[c][k] = v ? 1 : 0; }, { label: 'Chaos ' + (c + 1) + ' ' + label.toLowerCase() }) }).el;
-      p.body.append(this.row(this.dKnob(P + '.rate', 'RATE').el, this.dToggle(P + '.bpm', 'BPM', 'btn').el, sw('MONO', 'mono'), sw('S&H', 'sh')));
-      grid.appendChild(p.el);
+      p.body.appendChild(this.row(mk(d, 'span', 'sx-txt', 'CHAOS ' + (c + 1)), this.dKnob(P + '.rate', 'RATE', { size: 'sm' }).el,
+        this.dToggle(P + '.bpm', 'BPM', 'btn').el, sw('MONO', 'mono'), sw('S&H', 'sh')));
     }
-    // TUNING & BEND
-    const p4 = this.panel('TUNING & BEND');
-    const a4 = this.pNum({ label: 'A4 (Hz)', min: 430, max: 450, step: 0.1, def: 440, get: () => s0().global.a4, fmt: v => v.toFixed(1),
-      set: (v, ph) => this.edit(s => { s.global.a4 = v; }, { label: 'A4 reference', phase: ph }) });
-    const a4Lock = this.pToggle({ label: 'LOCK', kind: 'btn', get: () => s0().locks.misc.tuning,
-      set: v => this.edit(s => { s.locks.misc.tuning = v ? 1 : 0; }, { label: 'Lock tuning' }) });
-    a4Lock.el.title = 'Keep this A4 when presets load';
-    p4.body.append(this.row(a4.el, a4Lock.el), this.row(this.dNum('g.bendup', 'BEND UP').el, this.dNum('g.benddn', 'BEND DOWN').el));
-    grid.appendChild(p4.el);
-    // PREFERENCES
-    grid.appendChild(this.prefsPanel());
-    // INFO
-    const p6 = this.panel('INFO');
-    const au = mk(d, 'input'), no = mk(d, 'textarea');
+    const conv = btn(d, 'sx-btn', 'Convert to Chaos LFOs', 'Move the chaos sources to free LFOs of the Chaos types (approximate)', () => this.confirmDlg('Convert to Chaos LFOs',
+      'Each chaos source moves to a free LFO set to Chaos: Rossler (Chaos 1) or Chaos: Lorenz (Chaos 2). The output scaling differs slightly; S&H settings are dropped.', () => {
+        if (!this.need('chaosToLfo')) return;
+        const next = core.chaosToLfo(this.s(), this.bpm());   // BPM-synced chaos rates map at the project tempo
+        this.edit(s => { const ui = s.ui; this.replaceState(s, next); s.ui = ui; }, { label: 'Convert to Chaos LFOs' });
+        this.edDirty = true;
+      }));
+    this.custom(() => { p.el.classList.toggle('sx-hidden', !s1On(s0()) && !used()); conv.disabled = !used(); });
+    p.body.appendChild(this.row(conv));
+    return p.el;
+  }
+  // INFO / VERSION: author, notes, tags editor, build text
+  infoPanel() {
+    const d = this.d, p = this.panel('INFO'), s0 = () => this.s();
+    const au = mk(d, 'input'), no = mk(d, 'textarea'), tg = mk(d, 'input');
     au.type = 'text'; au.maxLength = 64;
     no.maxLength = 2000;
-    const la = mk(d, 'label', 'sx-txt', 'Author'), ln = mk(d, 'label', 'sx-txt', 'Notes');
-    la.appendChild(au); ln.appendChild(no);
+    tg.type = 'text'; tg.maxLength = 400;
+    tg.placeholder = 'tag, tag…';
+    const la = mk(d, 'label', 'sx-txt', 'Author'), ln = mk(d, 'label', 'sx-txt', 'Notes'), lt = mk(d, 'label', 'sx-txt', 'Tags');
+    la.appendChild(au); ln.appendChild(no); lt.appendChild(tg);
     au.addEventListener('change', () => this.edit(s => { s.author = au.value.slice(0, 64); }, { label: 'Author' }));
     no.addEventListener('change', () => this.edit(s => { s.notes = no.value.slice(0, 2000); }, { label: 'Notes' }));
+    tg.addEventListener('change', () => this.edit(s => { s.tags = tagList(tg.value.split(',')).slice(0, 16); }, { label: 'Tags' }));
     this.custom(() => {
       const s = s0();
       if (d.activeElement !== au && au.value !== s.author) au.value = s.author || '';
       if (d.activeElement !== no && no.value !== s.notes) no.value = s.notes || '';
+      const t = arr(s.tags).join(', ');
+      if (d.activeElement !== tg && tg.value !== t) tg.value = t;
     });
-    p6.body.append(la, ln);
-    grid.appendChild(p6.el);
-    el.appendChild(grid);
+    p.body.append(la, ln, lt, mk(d, 'p', 'sx-rate', BUILD));
+    return p.el;
+  }
+  prefLine(ctl, note) {
+    const r = mk(this.d, 'div', 'sx-pref');
+    r.appendChild(ctl);
+    if (note) r.appendChild(mk(this.d, 'span', '', note));
+    return r;
   }
   // effective internal rate (§9.7, deviation 9): the processor's own rate from the snapshot (tapRate = proc.fs,
   // which already includes the device-rate cap and the CPU safeguard), else host.sampleRate (optional) × the cap
@@ -3421,6 +4612,7 @@ export class SerumUI {
     this.prefs = normPrefs(p);
     this.store('set', PREFS_KEY, this.prefs);
     if (wk.setPrefs && (k === 'tooltips' || k === 'dblClick' || k === 'wheel')) wk.setPrefs({ [k]: this.prefs[k] });
+    if (k === 'helpTips') this.applyHelp();
     if (typeof this.host.prefsChanged === 'function') this.host.prefsChanged(Object.assign({}, this.prefs));
     this.queue();
   }
@@ -3434,17 +4626,32 @@ export class SerumUI {
     author.setAttribute('aria-label', 'Default author name');
     author.addEventListener('change', () => this.setPref('author', author.value));
     this.custom(() => { if (d.activeElement !== author) author.value = P().author; });
-    const smooth = this.pNum({ label: '', aria: 'Smoothing scale', min: 1, max: 800, step: 1, def: 100, px: 400, get: () => Math.round(P().smooth * 100),
-      fmt: v => v + '%', set: (v, ph) => { if (ph !== 'start') this.setPref('smooth', v / 100); } });
+    // a drag shows its value locally and commits once at the end (setPref writes the storage and host.prefsChanged
+    // recompiles every track when the smoothing scale changes)
+    let smoothDrag = null;
+    const smooth = this.pNum({ label: '', aria: 'Smoothing scale', min: 1, max: 800, step: 1, def: 100, px: 400,
+      get: () => (smoothDrag !== null ? smoothDrag : Math.round(P().smooth * 100)), fmt: v => v + '%',
+      set: (v, ph) => {
+        if (ph === 'start' || ph === 'move') { smoothDrag = v; this.queue(); return; }
+        smoothDrag = null;
+        if (Math.round(P().smooth * 100) !== v) this.setPref('smooth', v / 100);
+      } });
     p.body.append(
-      opt('Show tooltips', 'tooltips'),
+      opt('Help tooltips', 'helpTips'),
+      opt('Param value tooltips', 'tooltips'),
       line('Double-click', seg('Double-click', ['Type value', 'Reset'], () => (P().dblClick === 'reset' ? 1 : 0), i => this.setPref('dblClick', i ? 'reset' : 'type'))),
       opt('Mouse wheel adjusts controls', 'wheel'),
-      line('Default WT view', seg('Default WT view', ['2D', '3D'], () => P().view3d, i => this.setPref('view3d', i))),
-      opt('Mod wheel → WT Pos while editor open', 'wheelWt'),
+      opt('Keyboard shortcuts', 'keys'),
+      line('Default waveform view', seg('Default WT view', ['2D', '3D'], () => P().view3d, i => this.setPref('view3d', i))),
+      opt('MPE enabled by default', 'mpeDefault'),
+      opt('MPE Pitch Bend (also) maps to Expr X', 'mpeBendX'),
+      opt('MPE Expr Y acts bi-directional', 'mpeYBi'),
       opt('Limit mod depth on drop', 'limitDrop'),
+      opt('Mod wheel → WT Pos while editor open', 'wheelWt'),
       opt('Silence effect tails when transport stops', 'silenceTails'),
-      line('Default oversampling', seg('Default oversampling', ['1x', '2x', '4x'], () => [1, 2, 4].indexOf(P().defOs), i => this.setPref('defOs', [1, 2, 4][i]))),
+      opt('Load MIDI Map from Presets', 'midiFromPreset'),
+      opt('Use Ultra quality when rendering', 'ultra'),
+      line('Default quality', seg('Default quality', QUALITY.map(x => x[1]), () => Math.max(0, QUALITY.findIndex(x => x[0] === P().defOs)), i => this.setPref('defOs', QUALITY[i][0]))),
       line('Default author name', author),
       opt('Ask before preset change when edited', 'askPreset'),
       line('Smoothing scale', smooth.el));
@@ -3457,27 +4664,46 @@ export class SerumUI {
     this.dead = true;
     if (this.drag) this.dragDone(null);
     if (this.pop) this.pop.close();
+    if (this.big) { try { this.big.close(); } catch (err) { /* closed */ } this.big = null; }
     if (this.browser) this.browser.close();
     if (this.overlay) this.overlay.close();
     if (this.wtEd && this.wtEd.close) { try { this.wtEd.close(); } catch (err) { /* already closed */ } }
     for (const P of this.allPages()) for (const ed of P.editors) if (ed && ed.destroy) { try { ed.destroy(); } catch (err) { /* gone */ } }
-    if (this.rack && this.rack.destroy) this.rack.destroy();
+    for (const x of [this.rack, this.mixer, this.kbd, this.seqPages.arp, this.seqPages.clip].concat(this.oscPanels || [])) {
+      if (x && typeof x.destroy === 'function') { try { x.destroy(); } catch (err) { /* gone */ } }
+    }
+    if (this.mkeys && this.mkeys.destroy) this.mkeys.destroy();
+    if (this.meter && this.meter.destroy) this.meter.destroy();
     if (this.ro) this.ro.disconnect();
     for (const f of this.offs) f();
     this.offs = [];
     clearTimeout(this.noticeT);
+    clearTimeout(this.tipT);
+    this.dropRender();
     if (this.host.monitor) this.host.monitor(false);
     this.el.remove();
   }
 }
 
-/* ================================================================ PresetBrowser (§9.10) */
+/* ================================================================ PresetBrowser v2 (§9.10, §13.11, inv B25) */
 // new PresetBrowser(container, host, { confirmLoad?: () => bool, modified?: () => bool, onLoad?: key => void,
-//   notify?: text => void }); modified() = the sound differs from the current preset (choosing it again reloads it)
-// Full-panel overlay (role=dialog) over `container`: category filter, search, Name / Category / Author columns
-// (click sorts; again flips; ties → previously clicked column, then Name), user rows marked, ↑/↓ browse-to-
-// audition, Enter / double-click load and close, Escape closes, Delete removes a user preset (confirm), row menu
-// (Delete, Export…), Import…. State { sort, sort2, dir, cat, q } persists in host.storage BROWSER_KEY.
+//   notify?: text => void, hybrid?: (keys, favor) => bool, storage?, changed?: () => void, current?: () => key });
+// modified() = the sound differs from the current preset (choosing it again reloads it); changed() = the browser
+// changed the host's list (delete, rename, move, import, metadata); current() = the current key as the owner keeps it
+// (else host.presets.current(), cached). Full-panel overlay (role=dialog) over `container`:
+//   bar: CATEGORIES | TAGS tabs (category menu, or tag chips with All / Any; Alt-click / long-press excludes a tag),
+//        search, ratings filter (all · rated · unrated · exact stars), ✓ auto-preview, menu ⋯, Import…, ✕
+//   table: ▶ preview · Name · Category · Author · Rating (1–5 stars) · ⋯ (click a column sorts; again flips; ties →
+//        previously clicked column, then Name); user rows marked
+//   metadata pane: artist, category, description, comments, date, tags, New tag
+//   preview macros: while a preview plays, MACROS 1–8 of the previewed preset (knobs; host.previewMacros(n[8]))
+//   keys: ↑/↓ browse-to-audition (with auto-preview: move and preview instead), → preview, ← stop, Enter / double-click
+//        load and close, Escape closes, Delete / Shift-Backspace delete a user preset (confirm), 7 Load Random Preset,
+//        8 Hybridize, 9 Hybridize Favoring Selected Preset, ContextMenu row menu, Cmd/Ctrl-F focuses the search field
+//        (inv B25: search by name, scoped by the category / tag filters)
+// State { sort, sort2, dir, cat, q, tab, tags, tagMode, excl, stars, autoPreview } persists in host.storage
+// BROWSER_KEY; ratings / tags / comments of factory presets in META_KEY (user presets through presets.setMeta when the
+// host offers it).
 export class PresetBrowser {
   constructor(container, host, opts) {
     this.box = container;
@@ -3487,15 +4713,58 @@ export class PresetBrowser {
     this.st = normBrowser(this.load());
     this.ov = null;
     this.sel = null;
+    this.playing = null;
+    this.pmac = null;     // macros 1–8 of the preview ({v: n[8], names: [8]}), adjustable while it plays (§13.11)
+    this.cache = null;    // {all, rows}: the host's list and the rows with their metadata (read once per open, data())
+    this.curC = undefined;   // host.presets.current() cache (without opts.current)
+    this.pvT = 0;         // the preview's end timer (host.preview plays ≤ 4 s, §12.6)
   }
-  load() { const s = this.host.storage; try { return s && s.get ? s.get(BROWSER_KEY, null) : null; } catch (err) { return null; } }
-  persist() { const s = this.host.storage; try { if (s && s.set) s.set(BROWSER_KEY, Object.assign({}, this.st)); } catch (err) { /* storage unavailable */ } }
+  stor() { return this.o.storage || this.host.storage; }
+  load() { const s = this.stor(); try { return s && s.get ? s.get(BROWSER_KEY, null) : null; } catch (err) { return null; } }
+  persist() { const s = this.stor(); try { if (s && s.set) s.set(BROWSER_KEY, Object.assign({}, this.st, { tags: this.st.tags.slice(), excl: this.st.excl.slice() })); } catch (err) { /* storage unavailable */ } }
+  meta() { const s = this.stor(); try { const m = s && s.get ? s.get(META_KEY, null) : null; return isObj(m) ? m : {}; } catch (err) { return {}; } }
+  saveMeta(m) { const s = this.stor(); try { if (s && s.set) s.set(META_KEY, m); } catch (err) { /* storage unavailable */ } }
   state() { return Object.assign({}, this.st); }
-  all() { const p = this.host.presets; return p && p.list ? arr(p.list()) : []; }
-  list() { return browserList(this.all(), this.st); }
-  current() { const p = this.host.presets; const k = p && p.current ? p.current() : null; return k === undefined ? null : k; }
+  // The host's list and the rows with their metadata are read once and cached — per open and after the browser's or
+  // the panel's own changes (save, delete, rename, move, import, ratings / tags / comments): main.js re-parses
+  // its user-preset store on every list() / current() call. Each row's tags are one set used everywhere (TAGS chips,
+  // the filter, the details pane): meta tags (synth.sx.meta / the user preset's own) over the row's tags (the host's
+  // list rows may carry the preset state's browser tags s.tags, §2.2.1), else — factory presets — serum-core's
+  // FACTORY_PRESETS state tags. (presets.get is not called per row: one call may parse the host's whole store.)
+  data() {
+    if (this.cache) return this.cache;
+    const p = this.host.presets, all = p && p.list ? arr(p.list()) : [];
+    const base = all.map(r => (r && r.tags === undefined ? Object.assign({}, r, { tags: this.stateTags(r.key) }) : r));
+    this.cache = { all, rows: withMeta(base, this.meta()) };
+    return this.cache;
+  }
+  invalidate() { this.cache = null; this.curC = undefined; }
+  // the preset object of key (host.presets.get; factory keys 'f:<name>' fall back to serum-core FACTORY_PRESETS)
+  presetObj(key) {
+    const pr = this.host.presets;
+    let o = null;
+    if (pr && typeof pr.get === 'function') { try { o = pr.get(key); } catch (err) { o = null; } }
+    if (!o) { const m = /^f:(.*)$/.exec(String(key)); o = m ? arr(core.FACTORY_PRESETS).find(q => q && q.name === m[1]) || null : null; }
+    return isObj(o) ? o : null;
+  }
+  stateTags(key) {
+    const m = /^f:(.*)$/.exec(String(key)), o = m ? arr(core.FACTORY_PRESETS).find(q => q && q.name === m[1]) : null;
+    return o && o.v && o.v.s ? tagList(o.v.s.tags) : [];
+  }
+  all() { return this.data().all; }
+  rows() { return this.data().rows; }
+  list() { return browserList(this.rows(), this.st); }
+  // the current key: the panel's (opts.current, kept by its refresh), else host.presets.current() cached until a load
+  current() {
+    if (typeof this.o.current === 'function') { const k = this.o.current(); return k === undefined ? null : k; }
+    if (this.curC === undefined) { const p = this.host.presets; const k = p && p.current ? p.current() : null; this.curC = k === undefined ? null : k; }
+    return this.curC;
+  }
+  // the host's list changed through the browser: re-read it and tell the panel (header name, ◀ ▶)
+  changed() { this.invalidate(); if (this.o.changed) this.o.changed(); }
   isOpen() { return !!this.ov; }
   notify(t) { if (this.o.notify) this.o.notify(t); else if (this.host.notify) this.host.notify(t); }
+  set(patch) { Object.assign(this.st, patch); this.st = normBrowser(this.st); this.persist(); this.render(); }
   sortBy(col) {
     if (col === this.st.sort) this.st.dir = -this.st.dir;
     else { this.st.sort2 = this.st.sort; this.st.sort = col; this.st.dir = 1; }
@@ -3509,36 +4778,160 @@ export class PresetBrowser {
     if (!p || !p.load || key === null || key === undefined) return false;
     const load = key !== this.current() || !!(this.o.modified && this.o.modified());
     if (load && this.o.confirmLoad && !this.o.confirmLoad()) return false;
-    if (load) { p.load(key); if (this.o.onLoad) this.o.onLoad(key); }
+    if (load) { this.stopPreview(); p.load(key); this.curC = undefined; if (this.o.onLoad) this.o.onLoad(key); }
     this.sel = key;
-    if (close) this.close(); else this.render();
+    if (close) this.close(); else this.renderSel();
     return true;
+  }
+  /* preview (§13.11, §12.6): host.preview(key) plays the preset's preview clip on its own node; null stops */
+  preview(key) {
+    const f = this.host.preview;
+    if (typeof f !== 'function') { this.notify('Preview is not available'); return false; }
+    if (key === null || key === undefined) { this.stopPreview(); return false; }
+    try { f(key); } catch (err) { console.warn(err); return false; }
+    this.playing = key;
+    this.pmac = this.macrosOf(key);
+    // §12.6: the host plays the preview for at most PREVIEW_MS and then disconnects it (no completion callback in
+    // §11.15): the play state, the stop icon and the macro strip end with it
+    clearTimeout(this.pvT);
+    this.pvT = setTimeout(() => { this.pvT = 0; if (this.playing === key) { this.playing = null; this.pmac = null; if (this.ov) this.renderSel(); } }, PREVIEW_MS);
+    this.renderSel();
+    return true;
+  }
+  stopPreview() {
+    clearTimeout(this.pvT);
+    this.pvT = 0;
+    if (this.playing === null) return;
+    this.playing = null;
+    this.pmac = null;
+    if (typeof this.host.preview === 'function') { try { this.host.preview(null); } catch (err) { /* host */ } }
+    if (this.ov) this.renderSel();
+  }
+  // the previewed preset's macro values and names (host.presets.get; factory keys 'f:<name>' fall back to serum-core)
+  macrosOf(key) {
+    const o = this.presetObj(key);
+    const M = o && o.v && o.v.s ? arr(o.v.s.macros) : [];
+    return { v: Array.from({ length: N_MAC }, (_, k) => (isObj(M[k]) && fin(M[k].v) ? clamp01(M[k].v) : 0)),
+      names: Array.from({ length: N_MAC }, (_, k) => (isObj(M[k]) && typeof M[k].name === 'string' && M[k].name) || 'Macro ' + (k + 1)) };
+  }
+  // a macro knob of the preview strip moved: the preview node plays with the new macro values (host.previewMacros,
+  // optional: v = n[8]); the browsed preset itself is never changed
+  setPreviewMacro(k, n) {
+    if (!this.pmac || !(k >= 0 && k < N_MAC)) return;
+    this.pmac.v[k] = clamp01(n);
+    const f = this.host.previewMacros;
+    if (typeof f === 'function') { try { f(this.pmac.v.slice()); } catch (err) { console.warn(err); } }
+  }
+  /* ratings / tags / comments */
+  setMetaOf(key, patch) {
+    const p = this.host.presets, row = this.all().find(x => x.key === key);
+    if (!row) return;
+    if (row.user && p && typeof p.setMeta === 'function') p.setMeta(key, patch);
+    else {
+      const m = this.meta(), cur = isObj(m[key]) ? m[key] : {};
+      m[key] = Object.assign({}, cur, patch);
+      this.saveMeta(m);
+    }
+    this.changed();
+    this.render();
+  }
+  setStars(key, n) {
+    const row = this.rows().find(x => x.key === key);
+    if (!row) return;
+    const v = row.stars === n ? 0 : clamp(Math.round(n), 0, 5);
+    this.setMetaOf(key, { stars: v });
+  }
+  toggleTag(t, exclude) {
+    const st = this.st, inc = st.tags.slice(), ex = st.excl.slice();
+    if (exclude) { toggleIn(ex, t); toggleIn(inc, t, false); } else { toggleIn(inc, t); toggleIn(ex, t, false); }
+    this.set({ tags: inc, excl: ex });
+  }
+  /* menu actions */
+  randomKey(seed) {
+    const L = this.list();
+    if (!L.length) return null;
+    const r = mulberry32((fin(seed) ? seed : Date.now()) >>> 0);
+    let k = L[Math.floor(r() * L.length)].key;
+    if (k === this.current() && L.length > 1) k = L[(L.findIndex(x => x.key === k) + 1) % L.length].key;
+    return k;
+  }
+  loadRandom() { const k = this.randomKey(); if (k !== null) this.loadKey(k, false); }
+  hybridize(favor) {
+    const L = this.list();
+    if (L.length < 2) { this.notify('Hybridize needs at least two presets in the list'); return false; }
+    if (favor && !L.some(x => x.key === this.sel)) { this.notify('Select a preset to favour'); return false; }
+    const keys = hybridPick(L, (Date.now() ^ 0x5bd1e995) >>> 0, 4, favor ? this.sel : undefined);
+    const ok = this.o.hybrid ? this.o.hybrid(keys, !!favor) : false;
+    this.renderSel();
+    return ok;
   }
   del(key) {
     const p = this.host.presets, it = this.all().find(x => x.key === key);
     if (!p || !p.del || !it || !it.user) return;
     if (!askConfirm(this.d, 'Delete preset “' + it.name + '”?')) return;
     const L = this.list(), i = L.findIndex(x => x.key === key);
+    if (this.playing === key) this.stopPreview();
     p.del(key);
+    this.changed();
     const L2 = this.list();
     this.sel = L2.length ? L2[Math.min(Math.max(0, i), L2.length - 1)].key : null;
     this.render();
   }
   importFile() {
     const p = this.host.presets;
-    if (!p || !p.importFile) { this.notify('Preset import is not available'); return; }
-    pickFile(this.d, '.json,application/json').then(f => (f ? p.importFile(f) : null)).then(k => {
+    if (!p || !p.importFile) { this.notify('Preset import is not available'); return Promise.resolve(); }
+    return pickFile(this.d, '.json,application/json').then(f => (f ? p.importFile(f) : null)).then(k => {
       if (k === null || k === undefined) return;
       this.sel = k;
+      this.changed();
       this.render();
-      this.notify('Preset imported');
+      this.notify('Preset(s) imported');
     }, err => { console.warn(err); this.notify('Could not import that file'); });
+  }
+  exportPack() {
+    const p = this.host.presets, keys = this.list().map(x => x.key);
+    if (!p || typeof p.exportPack !== 'function') { this.notify('Pack export is not available'); return; }
+    if (!keys.length) { this.notify('No presets in the list'); return; }
+    p.exportPack(keys);
+  }
+  renameUI(key) {
+    const p = this.host.presets, it = this.all().find(x => x.key === key);
+    if (!it || !p || typeof p.rename !== 'function') return;
+    const nm = typeof wk.ask === 'function' ? wk.ask('Rename preset', it.name) : null;
+    if (nm && nm.trim() && nm.trim() !== it.name) { const k = p.rename(key, nm.trim().slice(0, 64)); if (k) this.sel = k; this.changed(); this.render(); }
+  }
+  moveUI(key) {
+    const p = this.host.presets, it = this.all().find(x => x.key === key);
+    if (!it || !p || typeof p.move !== 'function') return;
+    const c = typeof wk.ask === 'function' ? wk.ask('Move to category', it.cat || 'User') : null;
+    if (c && c.trim()) { p.move(key, c.trim().slice(0, 32)); this.changed(); this.render(); }
+  }
+  menuItems() {
+    const p = this.host.presets || {}, it = this.all().find(x => x.key === this.sel), user = !!(it && it.user);
+    const items = [
+      { label: 'Load Random Preset (7)', action: () => this.loadRandom() },
+      { label: 'Hybridize (8)', disabled: !this.o.hybrid, action: () => this.hybridize(false) },
+      { label: 'Hybridize Favoring Selected Preset (9)', disabled: !this.o.hybrid || !it, action: () => this.hybridize(true) },
+    ];
+    // §13.11 items whose host member is missing (presets.rename / move / exportPack: optional host members) are shown
+    // disabled, so the gap is visible instead of the item silently missing
+    const can = k => typeof p[k] === 'function';
+    items.push({ sep: true },
+      { label: 'Rename…', disabled: !user || !can('rename'), action: () => this.renameUI(this.sel) },
+      { label: 'Move to Category…', disabled: !user || !can('move'), action: () => this.moveUI(this.sel) },
+      { label: 'Delete (Shift-Backspace)', disabled: !user || !p.del, action: () => this.del(this.sel) },
+      { sep: true },
+      { label: 'Create and Export a Pack…', disabled: !can('exportPack'), action: () => this.exportPack() },
+      { label: 'Import Pack…', action: () => this.importFile() });
+    return items;
   }
   rowMenu(key, x, y, anchor) {
     const p = this.host.presets, it = this.all().find(q => q.key === key);
     if (!it) return;
-    const items = [{ label: 'Load', action: () => this.loadKey(key, true) }];
+    const items = [{ label: 'Load', action: () => this.loadKey(key, true) }, { label: this.playing === key ? 'Stop Preview' : 'Preview', action: () => (this.playing === key ? this.stopPreview() : this.preview(key)) }];
     if (p && p.exportFile) items.push({ label: 'Export…', action: () => p.exportFile(key) });
+    if (it.user && p && typeof p.rename === 'function') items.push({ label: 'Rename…', action: () => this.renameUI(key) });
+    if (it.user && p && typeof p.move === 'function') items.push({ label: 'Move to Category…', action: () => this.moveUI(key) });
     if (it.user && p && p.del) items.push({ sep: true }, { label: 'Delete', action: () => this.del(key) });
     wk.contextMenu(x, y, items, { anchor });
   }
@@ -3548,9 +4941,21 @@ export class PresetBrowser {
     ov.setAttribute('role', 'dialog');
     ov.setAttribute('aria-modal', 'true');
     ov.setAttribute('aria-label', 'Preset browser');
-    const root = mk(d, 'div', 'pb-root'), bar = mk(d, 'div', 'pb-bar');
+    const root = mk(d, 'div', 'pb-root'), bar = mk(d, 'div', 'pb-bar'), bar2 = mk(d, 'div', 'pb-bar');
+    // CATEGORIES | TAGS
+    const tabs = mk(d, 'div', 'pb-tabs');
+    tabs.setAttribute('role', 'tablist');
+    const tabB = {};
+    for (const [k, t] of [['cats', 'CATEGORIES'], ['tags', 'TAGS']]) {
+      const b = btn(d, '', t, null, () => this.set({ tab: k }));
+      b.setAttribute('role', 'tab');
+      tabB[k] = b;
+      tabs.appendChild(b);
+    }
     const cat = wk.menu({ label: '', arrows: true, items: () => [{ v: '', label: 'All categories' }].concat(presetCats(this.all()).map(c => ({ v: c, label: c }))),
-      get: () => this.st.cat, set: v => { this.st.cat = v; this.persist(); this.render(); } });
+      get: () => this.st.cat, set: v => this.set({ cat: v }) });
+    const tagBox = mk(d, 'div', 'sx-tagbox');
+    const tagMode = segField(d, { label: 'Tag match', items: ['All', 'Any'], get: () => (this.st.tagMode === 'any' ? 1 : 0), set: i => this.set({ tagMode: i ? 'any' : 'all' }) });
     const q = mk(d, 'input', 'pb-q');
     q.type = 'search';
     q.placeholder = 'Search name or author';
@@ -3558,12 +4963,20 @@ export class PresetBrowser {
     q.value = this.st.q;
     q.addEventListener('input', () => { this.st.q = q.value; this.persist(); this.render(); });
     q.addEventListener('keydown', e => { if (e.key === 'ArrowDown') { e.preventDefault(); this.focusList(); } });
-    const imp = btn(d, 'sx-btn', 'Import…', 'Import a preset file', () => this.importFile());
+    const stars = wk.menu({ label: '', arrows: false, items: () => [{ v: '', label: 'All ratings' }, { v: 'any', label: 'Rated' }, { v: 'none', label: 'Unrated' }]
+      .concat([1, 2, 3, 4, 5].map(n => ({ v: n, label: '★'.repeat(n) }))), get: () => this.st.stars, set: v => this.set({ stars: v }) });
+    const auto = wk.toggle({ label: 'Auto-preview', kind: 'btn', get: () => this.st.autoPreview, set: v => this.set({ autoPreview: v ? 1 : 0 }) });
+    const more = btn(d, 'sx-btn', icon(d, 'more'), 'Browser menu', () => { const r = more.getBoundingClientRect(); wk.contextMenu(r.left, r.bottom + 2, this.menuItems(), { anchor: more }); });
+    more.setAttribute('aria-haspopup', 'menu');
+    const imp = btn(d, 'sx-btn', 'Import…', 'Import a preset file or pack', () => this.importFile());
     const x = btn(d, 'sx-btn', '✕', 'Close preset browser', () => this.close());
-    bar.append(cat.el, q, imp, x);
+    bar.append(tabs, cat.el, tagMode.el, q, stars.el, auto.el, more, imp, x);
+    bar2.appendChild(tagBox);
+    const main = mk(d, 'div', 'pb-main');
     const tbl = mk(d, 'div', 'pb-tbl'), hd = mk(d, 'div', 'pb-hd'), list = mk(d, 'div', 'pb-list');
     const cols = {};
-    for (const [k, t] of [['name', 'Name'], ['cat', 'Category'], ['author', 'Author']]) {
+    hd.appendChild(mk(d, 'span'));
+    for (const [k, t] of [['name', 'Name'], ['cat', 'Category'], ['author', 'Author'], ['stars', 'Rating']]) {
       const b = btn(d, '', t, null, () => this.sortBy(k));
       b.setAttribute('aria-label', 'Sort by ' + t);
       cols[k] = b;
@@ -3575,73 +4988,203 @@ export class PresetBrowser {
     list.setAttribute('aria-label', 'Presets');
     list.addEventListener('keydown', e => this.key(e));
     tbl.append(hd, list);
-    root.append(bar, tbl);
+    const metaEl = mk(d, 'div', 'pb-meta');
+    metaEl.setAttribute('aria-label', 'Preset details');
+    main.append(tbl, metaEl);
+    // macros 1–8 of the preview, adjustable while it plays (§13.11)
+    const macBar = mk(d, 'div', 'pb-macros'), macs = [];
+    macBar.setAttribute('role', 'group');
+    macBar.setAttribute('aria-label', 'Preview macros');
+    const canMac = typeof this.host.previewMacros === 'function';
+    macBar.appendChild(mk(d, 'span', 'sx-txt', canMac ? 'PREVIEW MACROS' : 'PREVIEW MACROS (not available)'));
+    for (let k = 0; k < N_MAC; k++) {
+      const w = wk.knob({ size: 'sm', label: () => (this.pmac ? this.pmac.names[k] : 'Macro ' + (k + 1)),
+        get: () => (this.pmac ? this.pmac.v[k] : 0), set: n => this.setPreviewMacro(k, n), def: 0,
+        fmt: n => Math.round(n * 100) + '%', disabled: () => !canMac || !this.pmac });
+      macs.push(w);
+      macBar.appendChild(w.el);
+    }
+    root.append(bar, bar2, macBar, main);
     ov.appendChild(root);
-    ov.addEventListener('keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); this.close(); } });
+    ov.addEventListener('keydown', e => {
+      if (e.defaultPrevented) return;
+      if (e.key === 'Escape') { e.preventDefault(); this.close(); }
+      // Cmd/Ctrl-F: the browser's search field, not the page's find (inv B25)
+      else if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === 'f' || e.key === 'F')) { e.preventDefault(); q.focus(); if (q.select) q.select(); }
+    });
     const prev = d.activeElement;
-    this.ov = { el: ov, list, cols, cat, prev };
+    this.ov = { el: ov, list, cols, cat, prev, tabB, tagBox, tagMode, stars, auto, metaEl, bar2, macBar, macs, q };
+    this.invalidate();
     this.sel = this.current();
     this.box.appendChild(ov);
     this.render();
+    fullScreenOverlay(this.box, ov);
     this.focusList();
   }
   close() {
     const O = this.ov;
     if (!O) return;
     this.ov = null;
-    if (O.cat && O.cat.destroy) O.cat.destroy();
+    this.stopPreview();
+    for (const w of [O.cat, O.stars, O.auto].concat(O.macs)) if (w && w.destroy) w.destroy();
     O.el.remove();
     if (O.prev && O.prev.focus && O.prev.isConnected !== false) O.prev.focus();
   }
   focusList() { if (this.ov) this.ov.list.focus(); }
   key(e) {
-    const L = this.list(), i = L.findIndex(p => p.key === this.sel), k = e.key;
+    const L = this.shown || this.list(), i = L.findIndex(p => p.key === this.sel), k = e.key;
     if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'Home' || k === 'End' || k === 'PageDown' || k === 'PageUp') {
       e.preventDefault();
       if (!L.length) return;
       const j = k === 'Home' ? 0 : k === 'End' ? L.length - 1 : clamp((i < 0 ? (k === 'ArrowUp' ? L.length : -1) : i)
         + (k === 'ArrowDown' ? 1 : k === 'ArrowUp' ? -1 : k === 'PageDown' ? 10 : -10), 0, L.length - 1);
-      this.loadKey(L[j].key, false);   // browse-to-audition
-    } else if (k === 'Enter') { e.preventDefault(); if (i >= 0) this.loadKey(L[i].key, true); }
-    else if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); if (i >= 0) this.del(L[i].key); }
+      if (this.st.autoPreview) { this.sel = L[j].key; this.preview(L[j].key); }   // move and preview (§13.11)
+      else this.loadKey(L[j].key, false);   // browse-to-audition (Phase 1)
+    } else if (k === 'ArrowRight') { e.preventDefault(); if (i >= 0) this.preview(L[i].key); }
+    else if (k === 'ArrowLeft') { e.preventDefault(); this.stopPreview(); }
+    else if (k === 'Enter') { e.preventDefault(); if (i >= 0) this.loadKey(L[i].key, true); }
+    else if (k === 'Delete' || (k === 'Backspace' && e.shiftKey)) { e.preventDefault(); if (i >= 0) this.del(L[i].key); }
+    else if (k === '7' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); this.loadRandom(); }
+    else if (k === '8' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); this.hybridize(false); }
+    else if (k === '9' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); this.hybridize(true); }
     else if (k === 'ContextMenu' || (k === 'F10' && e.shiftKey)) {
       e.preventDefault();
       const row = i >= 0 && this.ov ? this.ov.rows[L[i].key] : null;
       if (row) { const r = row.getBoundingClientRect(); this.rowMenu(L[i].key, r.left + 20, r.bottom, row); }
     }
   }
+  // full rebuild (filter, sort, tab, metadata or list changes); selection and preview changes go through renderSel
   render() {
     const O = this.ov;
     if (!O) return;
-    const d = this.d, L = this.list(), cur = this.current();
-    O.cat.update();
+    const d = this.d, all = this.rows(), L = browserList(all, this.st), tagsView = this.st.tab === 'tags';
+    this.shown = L;
+    O.cat.update(); O.stars.update(); O.auto.update(); O.tagMode.update();
+    for (const k of ['cats', 'tags']) O.tabB[k].setAttribute('aria-selected', this.st.tab === k ? 'true' : 'false');
+    O.cat.el.classList.toggle('sx-hidden', tagsView);
+    O.tagMode.el.classList.toggle('sx-hidden', !tagsView);
+    O.bar2.classList.toggle('sx-hidden', !tagsView);
+    // tag chips: click includes, Alt-click / long-press excludes
+    O.tagBox.textContent = '';
+    if (tagsView) {
+      const tags = presetTags(all);
+      if (!tags.length) O.tagBox.appendChild(mk(d, 'span', 'sx-txt', 'No tags yet: add them in the details pane'));
+      for (const t of tags) {
+        const c = btn(d, 'sx-chip', t, null, e => this.toggleTag(t, !!(e && e.altKey)));
+        c.setAttribute('aria-pressed', this.st.tags.includes(t) ? 'true' : 'false');
+        c.classList.toggle('sx-excl', this.st.excl.includes(t));
+        c.title = 'Click: show presets with this tag; Alt-click / long-press: hide them';
+        longPress(c, () => this.toggleTag(t, true));
+        O.tagBox.appendChild(c);
+      }
+    }
     for (const k of SORT_COLS) O.cols[k].setAttribute('aria-sort', this.st.sort === k ? (this.st.dir > 0 ? 'ascending' : 'descending') : 'none');
     O.list.textContent = '';
     O.rows = {};
-    if (!L.length) { O.list.appendChild(mk(d, 'div', 'pb-empty', 'No presets match')); O.list.removeAttribute('aria-activedescendant'); return; }
-    let selEl = null;
-    L.forEach((p, i) => {
+    O.paint = { sel: undefined, cur: undefined, play: undefined, meta: undefined };
+    if (!L.length) O.list.appendChild(mk(d, 'div', 'pb-empty', 'No presets match'));
+    L.forEach(p => {
       const r = mk(d, 'div', 'pb-row');
       r.id = 'pb-' + (++UID);
       r.setAttribute('role', 'option');
-      const isSel = p.key === this.sel;
-      r.setAttribute('aria-selected', isSel ? 'true' : 'false');
-      if (p.key === cur) r.setAttribute('aria-current', 'true');
-      const nm = mk(d, 'span', '', p.name || '(unnamed)');
+      r.setAttribute('aria-selected', 'false');
+      const play = btn(d, 'pb-play', icon(d, 'play'), 'Preview ' + (p.name || 'preset'), e => {
+        e.stopPropagation();
+        this.sel = p.key;
+        if (this.playing === p.key) this.stopPreview(); else this.preview(p.key);
+      });
+      play.tabIndex = -1;
+      const nm = mk(d, 'span', 'pb-name', p.name || '(unnamed)');
       if (p.user) { const u = mk(d, 'span', 'pb-u', 'USER'); u.setAttribute('aria-label', 'user preset'); nm.appendChild(u); }
+      const st = mk(d, 'span', 'pb-stars');
+      st.setAttribute('role', 'group');
+      st.setAttribute('aria-label', 'Rating ' + (p.stars || 0) + ' of 5');
+      for (let k = 1; k <= 5; k++) {
+        const b = btn(d, k <= p.stars ? 'sx-on' : '', '★', k + ' star' + (k > 1 ? 's' : ''), e => { e.stopPropagation(); this.setStars(p.key, k); });
+        b.tabIndex = -1;
+        st.appendChild(b);
+      }
       const more = btn(d, 'pb-more', icon(d, 'more'), 'Preset menu', e => { e.stopPropagation(); const b = more.getBoundingClientRect(); this.rowMenu(p.key, b.left, b.bottom, more); });
       more.tabIndex = -1;
-      r.append(nm, mk(d, 'span', '', p.cat || ''), mk(d, 'span', '', p.author || ''), more);
-      r.addEventListener('click', () => { this.loadKey(p.key, false); this.focusList(); });
+      r.append(play, nm, mk(d, 'span', '', p.cat || ''), mk(d, 'span', '', p.author || ''), st, more);
+      let lpT = -1e9;   // the click that ends a touch long-press (row menu) does not also load the preset
+      r.addEventListener('click', () => { if (Date.now() - lpT < 800) return; this.loadKey(p.key, false); this.focusList(); });
       r.addEventListener('dblclick', () => this.loadKey(p.key, true));
       r.addEventListener('contextmenu', e => { e.preventDefault(); this.rowMenu(p.key, e.clientX, e.clientY, r); });
+      longPress(r, (x, y) => { lpT = Date.now(); this.rowMenu(p.key, x, y, r); });   // touch: no contextmenu event on iPad Safari
       O.list.appendChild(r);
       O.rows[p.key] = r;
-      if (isSel) selEl = r;
+      r.pbPlay = play;
+      r.pbName = p.name || 'preset';
     });
+    this.renderSel(true);
+  }
+  // selection, current preset, preview state (row attributes, play icons, the macro strip) and the details pane —
+  // only the rows whose state changed are touched (§13.11 auditioning with the arrow keys stays cheap)
+  renderSel(scroll) {
+    const O = this.ov;
+    if (!O || !O.rows) return;
+    const P = O.paint, cur = this.current(), keys = new Set([P.sel, P.cur, P.play, this.sel, cur, this.playing]);
+    for (const k of keys) {
+      const r = k === undefined || k === null ? null : O.rows[k];
+      if (!r) continue;
+      r.setAttribute('aria-selected', k === this.sel ? 'true' : 'false');
+      if (k === cur) r.setAttribute('aria-current', 'true'); else r.removeAttribute('aria-current');
+      const pl = k === this.playing, b = r.pbPlay;
+      if (b && b.pbOn !== pl) {
+        b.pbOn = pl;
+        b.classList.toggle('sx-on', pl);
+        b.textContent = '';
+        b.appendChild(icon(this.d, pl ? 'stop' : 'play'));
+        const t = (pl ? 'Stop preview of ' : 'Preview ') + r.pbName;
+        b.setAttribute('aria-label', t);
+        b.title = t;
+      }
+    }
+    const selEl = this.sel !== null && this.sel !== undefined ? O.rows[this.sel] || null : null;
     if (selEl) {
       O.list.setAttribute('aria-activedescendant', selEl.id);
-      if (selEl.scrollIntoView) selEl.scrollIntoView({ block: 'nearest' });
+      if ((scroll || P.sel !== this.sel) && selEl.scrollIntoView) selEl.scrollIntoView({ block: 'nearest' });
     } else O.list.removeAttribute('aria-activedescendant');
+    O.macBar.classList.toggle('sx-hidden', this.playing === null);
+    if (P.play !== this.playing || this.playing !== null) for (const w of O.macs) w.update();
+    if (P.meta !== this.sel || scroll) this.renderMeta(this.rows().find(p => p.key === this.sel) || null);
+    O.paint = { sel: this.sel, cur, play: this.playing, meta: this.sel };
+  }
+  // metadata pane: artist, category, description, comments, date, tags (+ New tag)
+  renderMeta(p) {
+    const O = this.ov, d = this.d, el = O.metaEl;
+    el.textContent = '';
+    if (!p) { el.appendChild(mk(d, 'p', 'sx-txt', 'Select a preset to see its details')); return; }
+    const full = this.presetObj(p.key), s = full && full.v && full.v.s ? full.v.s : null;
+    const field = (label, value) => { const l = mk(d, 'label', '', label); l.appendChild(mk(d, 'span', 'pb-v', value || '—')); el.appendChild(l); };
+    field('Name', p.name);
+    field('Artist', p.author || (s && s.author));
+    field('Category', p.cat);
+    field('Description', (s && s.notes) || p.desc || '');
+    if (full && full.date) field('Date', String(full.date).slice(0, 10));
+    const cl = mk(d, 'label', '', 'Comments'), ct = mk(d, 'textarea');
+    ct.value = p.comments || '';
+    ct.maxLength = 1000;
+    ct.setAttribute('aria-label', 'Comments');
+    ct.addEventListener('change', () => this.setMetaOf(p.key, { comments: ct.value.slice(0, 1000) }));
+    cl.appendChild(ct);
+    el.appendChild(cl);
+    // the row's one tag set (data(): metadata tags over the preset state's tags) — the same set the TAGS tab offers
+    // and filters by; removing or adding writes the whole set to the metadata, which then overrides the state's tags
+    const tl = mk(d, 'label', '', 'Tags'), box = mk(d, 'div', 'sx-tagbox'), tags = tagList(p.tags);
+    for (const t of tags) {
+      const c = btn(d, 'sx-chip', t + ' ✕', 'Remove tag ' + t, () => this.setMetaOf(p.key, { tags: tags.filter(x => x !== t) }));
+      box.appendChild(c);
+    }
+    const nt = mk(d, 'input');
+    nt.type = 'text'; nt.maxLength = 24; nt.placeholder = 'New tag';
+    nt.setAttribute('aria-label', 'New tag');
+    nt.addEventListener('keydown', e => {
+      e.stopPropagation();
+      if (e.key === 'Enter') { e.preventDefault(); const t = nt.value.trim(); if (t) this.setMetaOf(p.key, { tags: tagList(tags.concat([t])) }); }
+    });
+    tl.append(box, nt);
+    el.appendChild(tl);
   }
 }
