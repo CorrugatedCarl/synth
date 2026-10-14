@@ -28,8 +28,8 @@ import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { loadFixture } from './fixtures/load.mjs';
 import { dspScope, noAlloc } from './dsp-scope.mjs';
-import { lawNorm } from '../laws.js?v=6';
-import * as C from '../fx-core.js?v=6';
+import { lawNorm } from '../laws.js?v=7';
+import * as C from '../fx-core.js?v=7';
 import * as CPU from './cpu-gate.mjs';
 
 const SERUM_SRC = readFileSync(new URL('../serum-dsp.js', import.meta.url), 'utf8');
@@ -1757,7 +1757,7 @@ function edcT60(y, fs = FS) {
   return 3 * (b - a) / fs;
 }
 async function irStore(B, id, L, R, rate = FS) {
-  const SMP = await import('../smp.js?v=6');
+  const SMP = await import('../smp.js?v=7');
   assert.equal(B.storeAsset(id, Object.assign({ id, v: 1, kind: 'ir', bytes: 0 }, SMP.irPartition(L, R, rate))), true);
 }
 
@@ -2050,7 +2050,7 @@ test('M2 §10.5.17: process() allocates nothing with every S2 variant and new mo
   md[tp('rv', 'type')] = 1; md[tp('f', 'type')] = 1;
   const fxp = C.compileFx(st, { rate: FS, modded: md, bus1v: 0.4, bus2v: 0.6 }), r = new F.FXRack(FS);
   r.set(fxp, C.compileFxT(st));
-  const h = noise(20000, 5, 0.05), e = (await import('../smp.js?v=6')).irPartition(h, h, FS);
+  const h = noise(20000, 5, 0.05), e = (await import('../smp.js?v=7')).irPartition(h, h, FS);
   const n = 128, a = () => new Float64Array(n), [L, R, dL, dR, b1L, b1R, b2L, b2R] = [a(), a(), a(), a(), a(), a(), a(), a()], mods = new Float64Array(fxp.NFX);
   const g = rng(4);
   const fill = () => { for (const q of [L, R, dL, dR, b1L, b1R, b2L, b2R]) for (let i = 0; i < n; i++) q[i] = 0.4 * (2 * g() - 1); };

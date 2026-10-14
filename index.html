@@ -6,6 +6,14 @@
 <title>SYNTH — Circuit-Level Analog Synthesizer Emulations</title>
 <meta name="description" content="Play twelve landmark synthesizers from 1965–1983 in your browser — Moog, ARP, Yamaha, Sequential, Korg, Roland, Oberheim — modelled at the circuit level in 64-bit floating point with up to 384 kHz internal processing.">
 <meta name="theme-color" content="#0c0d0f">
+<!-- the installed app (manifest.webmanifest, pwa.js, sw.js): Add to Home Screen opens it full screen like an app -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SYNTH">
+<meta name="application-name" content="SYNTH">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon-180.png">
 <link rel="canonical" href="https://synth.domlavin.com/">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="SYNTH">
@@ -16,21 +24,23 @@
 <meta name="twitter:title" content="SYNTH — Circuit-Level Analog Synthesizer Emulations">
 <meta name="twitter:description" content="Twelve classic synthesizers, modelled at the circuit level, playable in your browser.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230c0d0f'/%3E%3Cpath d='M5 21 L11 9 L11 21 L17 9 L17 21 L23 9 L23 21 L27 13' fill='none' stroke='%23f2a33a' stroke-width='2.4' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<!-- web fonts load without blocking first paint; the system-font fallbacks in style.css show until they arrive -->
-<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" media="print" onload="this.media='all'">
-<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap"></noscript>
-<link rel="stylesheet" href="style.css?v=6">
-<link rel="modulepreload" href="serum-core.js?v=6">
-<link rel="modulepreload" href="laws.js?v=6">
-<link rel="modulepreload" href="fx-core.js?v=6">
-<link rel="modulepreload" href="seq-core.js?v=6">
-<link rel="modulepreload" href="tuning.js?v=6">
-<link rel="modulepreload" href="appstore.js?v=6">
-<link rel="modulepreload" href="assets.js?v=6">
-<link rel="modulepreload" href="midi.js?v=6">
+<!-- web fonts load without blocking first paint; the system-font fallbacks in style.css show until they arrive (and
+     offline before the service worker has cached them). CORS requests (crossorigin), so the worker can check and keep them. -->
+<link rel="preload" as="style" crossorigin href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" crossorigin href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" crossorigin href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap"></noscript>
+<link rel="stylesheet" href="style.css?v=7">
+<link rel="modulepreload" href="serum-core.js?v=7">
+<link rel="modulepreload" href="laws.js?v=7">
+<link rel="modulepreload" href="fx-core.js?v=7">
+<link rel="modulepreload" href="seq-core.js?v=7">
+<link rel="modulepreload" href="tuning.js?v=7">
+<link rel="modulepreload" href="appstore.js?v=7">
+<link rel="modulepreload" href="assets.js?v=7">
+<link rel="modulepreload" href="midi.js?v=7">
 </head>
 <body>
 <header class="top">
@@ -67,6 +77,10 @@
     <div class="meter">
       <span id="rate">Engine off</span>
       <span id="cpu">Press Power or play a key</span>
+    </div>
+    <div class="appctl">
+      <button id="install" type="button" class="appbtn" hidden title="Install SYNTH as an app: it opens full screen from its icon and works offline"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9.5M6 8.5l4 4 4-4M4 16h12"/></svg><span>Install app</span></button>
+      <button id="fullscreen" type="button" class="appbtn ico" hidden aria-pressed="false" aria-label="Full screen" title="Full screen"><svg viewBox="0 0 20 20" aria-hidden="true"><path class="i-enter" d="M3 8V3h5M12 3h5v5M17 12v5h-5M8 17H3v-5"/><path class="i-exit" d="M8 3v5H3M17 8h-5V3M12 17v-5h5M3 12h5v5"/></svg></button>
     </div>
   </div>
 </header>
@@ -147,7 +161,7 @@
         <h2 id="about-title"></h2>
         <p id="about"></p>
         <div id="algo" class="algo" hidden></div>
-        <p class="help"><b>Play:</b> computer keys <kbd data-code="KeyA">A</kbd>–<kbd data-code="Semicolon">;</kbd> (white) and <kbd data-code="KeyW">W</kbd> <kbd data-code="KeyE">E</kbd> <kbd data-code="KeyT">T</kbd> <kbd data-code="KeyY">Y</kbd> <kbd data-code="KeyU">U</kbd> <kbd data-code="KeyO">O</kbd> <kbd data-code="KeyP">P</kbd> (black), <kbd data-code="KeyZ">Z</kbd>/<kbd data-code="KeyX">X</kbd> octave, <kbd data-code="KeyC">C</kbd>/<kbd data-code="KeyV">V</kbd> velocity. Click or touch the keyboard (lower on a key = louder), or plug in a MIDI controller (Chrome, Edge, Firefox) — each track listens on its MIDI channel. <b>Studio:</b> <kbd>Space</kbd> play/stop, <kbd data-code="KeyR">R</kbd> record, <kbd data-code="KeyM">M</kbd> metronome, <kbd>Home</kbd> to start, <kbd>Ctrl/⌘ Z</kbd> undo. Keys go by position, so any layout works: if R, M or Q is a note key on yours, use the key where it sits on a US keyboard. <b>Controls:</b> drag up/down, <kbd>Shift</kbd>-drag for fine, scroll wheel, double-click to reset.</p>
+        <p class="help"><b>Play:</b> computer keys <kbd data-code="KeyA">A</kbd>–<kbd data-code="Semicolon">;</kbd> (white) and <kbd data-code="KeyW">W</kbd> <kbd data-code="KeyE">E</kbd> <kbd data-code="KeyT">T</kbd> <kbd data-code="KeyY">Y</kbd> <kbd data-code="KeyU">U</kbd> <kbd data-code="KeyO">O</kbd> <kbd data-code="KeyP">P</kbd> (black), <kbd data-code="KeyZ">Z</kbd>/<kbd data-code="KeyX">X</kbd> octave, <kbd data-code="KeyC">C</kbd>/<kbd data-code="KeyV">V</kbd> velocity. Click or touch the keyboard (lower on a key = louder); drag the tab on its top edge to make the keys taller or shorter, <b>Key size</b> for more or fewer keys, <b>Hide keys</b> to fold it down to its controls. Or plug in a MIDI controller (Chrome, Edge, Firefox) — each track listens on its MIDI channel. <b>Studio:</b> <kbd>Space</kbd> play/stop, <kbd data-code="KeyR">R</kbd> record, <kbd data-code="KeyM">M</kbd> metronome, <kbd>Home</kbd> to start, <kbd>Ctrl/⌘ Z</kbd> undo. Keys go by position, so any layout works: if R, M or Q is a note key on yours, use the key where it sits on a US keyboard. <b>Controls:</b> drag up/down, <kbd>Shift</kbd>-drag for fine, scroll wheel, double-click to reset. <b>App:</b> the full-screen button (top right, where the browser has one) hides the browser’s bars; <b>Install app</b> (on iPad / iPhone: Share → Add to Home Screen) puts SYNTH on your home screen or dock — it then opens full screen like an app and works offline after its first launch. On iPad the installed app is the better full screen: the browser’s keeps its own controls and may stop fast playing with a warning. On iPad and iPhone the installed app keeps its own projects, separate from the browser’s: Save a project in one (the app saves through the share sheet: Save to Files) and Open it in the other to move it across.</p>
       </div>
     </section>
   </main>
@@ -164,7 +178,8 @@
   <p class="rollhelp">Double-click to add a note · drag to move (Shift = no snap, Alt/Option = copy) · drag edges to resize · double-click a note to delete · drag the empty grid to select · velocity lane at the bottom · drag in the ruler to set the loop. Keys: <kbd>Del</kbd> delete, arrows nudge (Shift = octave), <kbd data-code="KeyQ">Q</kbd> quantize, <kbd>Ctrl/⌘</kbd>+<kbd>A</kbd> <kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd> <kbd>D</kbd> <kbd>Z</kbd>, <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> tools.</p>
 </div>
 
-<section class="perf" aria-label="Keyboard">
+<section class="perf" id="perf" aria-label="Keyboard">
+  <div id="kbGrip" class="kbgrip" role="slider" tabindex="0" aria-label="Keyboard height" aria-orientation="vertical" aria-valuemin="70" aria-valuemax="360" aria-valuenow="170" aria-controls="kbrow" title="Drag up / down to resize the keyboard · double-click (double-tap) to reset"></div>
   <p id="notice" class="notice" role="status" hidden></p>
   <div class="kbctl">
     <div class="grp">
@@ -173,11 +188,12 @@
       <button id="octup" type="button" title="Octave up (X)">+</button>
     </div>
     <label class="grp vel">Velocity <input type="range" id="vel" min="1" max="127" step="1"><span id="velv"></span></label>
+    <label class="grp kbsize" title="Width of the keys: narrower shows more of them · double-click (double-tap) to fit the screen again"><span class="lbl">Key size</span> <input type="range" id="kbw" min="16" max="96" step="1"></label>
     <span id="playing" class="playing"></span>
     <button id="midi" type="button" class="midi" title="Ask the browser for access to your MIDI controllers">Enable MIDI</button>
     <button id="hold" type="button" class="hold" aria-pressed="false" title="Sustain pedal"><span class="led"></span>Hold</button>
     <button id="panic" type="button" title="All notes off (Esc)">Panic</button>
-    <button id="kbHide" type="button" title="Show / hide the keyboard" aria-expanded="true">▾</button>
+    <button id="kbHide" type="button" class="kbhide" title="Hide the on-screen keyboard (the controls stay)" aria-expanded="true" aria-controls="kbrow"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg><span>Hide keys</span></button>
   </div>
   <div class="kbrow" id="kbrow">
     <div class="wheels">
@@ -204,11 +220,26 @@
   </div>
 </div>
 
+<div id="installSheet" class="modal" hidden>
+  <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="insTitle">
+    <h2 id="insTitle">Install SYNTH</h2>
+    <ol class="insteps" id="insSteps"></ol>
+    <p class="dlgnote" id="insNote"></p>
+    <div class="dlgbtns"><button type="button" id="insClose" class="hot">Done</button></div>
+  </div>
+</div>
+
+<div id="update" class="toast" role="status" hidden>
+  <span id="updateMsg">Update available</span>
+  <button type="button" id="updateGo" class="hot">Reload</button>
+  <button type="button" id="updateX" class="tx" aria-label="Later" title="Later: the update is used the next time SYNTH opens">×</button>
+</div>
+
 <footer class="foot">
   <p><b>How it works.</b> Every sound is generated in real time by a custom DSP engine running on the browser’s audio thread — no samples. Oscillators, filters, envelopes and effects are modelled from their circuits and computed in 64-bit floating point at up to 8× the output sample rate (at most 384 kHz internally), then band-limited back down with ~100 dB Kaiser half-band filters. Instrument and company names are trademarks of their respective owners and are used only to describe the instruments being emulated; this project is not affiliated with or endorsed by them.</p>
 </footer>
 
 <div id="tip" class="tip" aria-hidden="true"></div>
-<script type="module" src="main.js?v=6"></script>
+<script type="module" src="main.js?v=7"></script>
 </body>
 </html>

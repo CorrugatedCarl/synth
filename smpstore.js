@@ -22,7 +22,7 @@
 // shape as the records above) and `spec:<playback id>@<SPEC_VER>` (spectral analyses {N, hop, frames, mag, ph, trans}).
 // Quota errors (IndexedDB QuotaExceededError, or the memory store's `quota` option): the operation rejects with
 // Error('Storage full — remove unused samples') carrying `quota: true`; nothing is half-written.
-import { uuid } from './wt.js?v=6';
+import { uuid } from './wt.js?v=7';
 
 const DB_NAME = 'synth-smp', DB_VER = 1, ASSETS = 'assets', CACHE = 'cache', WEEK = 7 * 86400000;
 /** Default IndexedDB cache budget (§9.7; touch devices pass 256 MB, §14.2). */

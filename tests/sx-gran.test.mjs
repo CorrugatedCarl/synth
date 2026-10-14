@@ -9,8 +9,8 @@
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as core from '../serum-core.js?v=6';
-import * as smp from '../smp.js?v=6';
+import * as core from '../serum-core.js?v=7';
+import * as smp from '../smp.js?v=7';
 import { dspScope, source, ALLOC_NAMES } from './dsp-scope.mjs';
 import * as CPU from './cpu-gate.mjs';
 

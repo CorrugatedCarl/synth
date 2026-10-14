@@ -11,13 +11,17 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--ui); -webkit-font-smoothing: antialiased; }
-body { min-height: 100vh; overflow-x: hidden; }
+body { min-height: 100vh; overflow-x: hidden; padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+/* viewport-fit=cover: in the installed app (black-translucent status bar) the page runs under the status bar and the home
+   indicator — the header, the keyboard panel, dialogs and full-screen layers keep their content inside the safe area
+   (a scrolled-to element stops below the status bar); a browser tab's insets are 0 */
+html { scroll-padding-top: env(safe-area-inset-top); }
 button, select, input { font: inherit; color: inherit; }
 button { cursor: pointer; }
 kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--bg2); }
 
 /* ---------------------------------------------------------- top bar */
-.top { display: flex; align-items: center; justify-content: space-between; gap: 16px 24px; flex-wrap: wrap; padding: 14px 24px; border-bottom: 1px solid var(--line); background: linear-gradient(#111215, #0c0d0f); position: sticky; top: 0; z-index: 20; }
+.top { display: flex; align-items: center; justify-content: space-between; gap: 16px 24px; flex-wrap: wrap; padding: calc(14px + env(safe-area-inset-top)) 24px 14px; border-bottom: 1px solid var(--line); background: linear-gradient(#111215, #0c0d0f); position: sticky; top: 0; z-index: 20; }
 .brand { display: flex; align-items: center; gap: 12px; }
 .brand .mark { width: 34px; height: 34px; color: var(--hot); }
 .logo { font-weight: 800; letter-spacing: 0.32em; font-size: 18px; }
@@ -34,6 +38,18 @@ kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px
 .meter #rate { color: var(--text); }
 .meter .warn { color: #ff6a4a; }
 .boot { margin: 0; font-size: 13px; color: var(--label); line-height: 1.5; }
+/* Install app / Full screen (pwa.js shows the ones this browser offers; none in the installed app) */
+.appctl { display: flex; align-items: center; gap: 8px; }
+.appbtn { display: flex; align-items: center; justify-content: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg2); font-size: 12px; font-weight: 600; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
+.appbtn[hidden] { display: none; }
+.appbtn:hover { border-color: #3a3c42; }
+.appbtn:focus-visible { outline: 2px solid var(--hot); outline-offset: 1px; }
+.appbtn svg { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.appbtn.ico { width: 34px; padding: 0; }
+#install { color: var(--hot); border-color: #5a4320; background: #1d1810; }
+#fullscreen .i-exit, #fullscreen[aria-pressed="true"] .i-enter { display: none; }
+#fullscreen[aria-pressed="true"] .i-exit { display: inline; }
+#fullscreen[aria-pressed="true"] { color: var(--hot); border-color: #5a4320; }
 
 /* ---------------------------------------------------------- model nav */
 .models { display: flex; gap: 8px; padding: 14px 24px; overflow-x: auto; scrollbar-width: thin; border-bottom: 1px solid var(--line); }
@@ -291,7 +307,7 @@ body.recording .transport { border-color: #6b2a1c; }
 .seqbtn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
 .seqbtn:disabled { opacity: 0.45; cursor: default; }
 
-.modal { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,0.6); display: grid; place-items: center; padding: 16px; }
+.modal { position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,0.6); display: grid; place-items: center; padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); overflow: auto; }
 .modal[hidden] { display: none; }
 .dlg { width: min(460px, 100%); background: #15161a; border: 1px solid #2a2c32; border-radius: 12px; padding: 18px 20px; box-shadow: 0 30px 80px rgba(0,0,0,0.7); }
 .dlg h2 { margin: 0 0 12px; font-size: 17px; }
@@ -303,11 +319,39 @@ body.recording .transport { border-color: #6b2a1c; }
 .dlgbtns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .dlgbtns button { background: var(--bg2); border: 1px solid var(--line); border-radius: 7px; padding: 7px 14px; font-weight: 600; }
 .dlgbtns button:disabled { opacity: 0.5; }
+/* the Add to Home Screen sheet (pwa.js installSteps) */
+.insteps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 10px; font-size: 14px; line-height: 1.5; color: #d9d6cf; }
+.insteps b { color: var(--text); }
+.insico { width: 18px; height: 18px; margin: 0 3px -4px 2px; fill: none; stroke: var(--hot); stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+#installSheet .dlgnote { min-height: 0; margin-top: 14px; }
+/* "Update available — Reload": small, at the top, never in the way of the keys */
+.toast { position: fixed; z-index: 70; top: calc(10px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; max-width: calc(100vw - 24px); padding: 6px 6px 6px 14px; border-radius: 10px; background: #1b1c20; border: 1px solid #5a4320; box-shadow: 0 12px 32px rgba(0,0,0,0.6); font-size: 13px; white-space: nowrap; }
+.toast[hidden] { display: none; }
+.toast span { overflow: hidden; text-overflow: ellipsis; }
+.toast button { background: var(--bg2); border: 1px solid var(--line); border-radius: 7px; padding: 6px 12px; font-weight: 600; min-height: 32px; }
+.toast button.tx { padding: 6px 10px; color: var(--mute); }
+.toast button:disabled { opacity: 0.5; }
 
 /* ---------------------------------------------------------- performance */
-.perf { position: sticky; bottom: 0; z-index: 15; max-width: 1600px; margin: 18px auto 0; background: #101114; border: 1px solid var(--line); border-radius: 12px 12px 0 0; padding: 8px 12px 12px; box-shadow: 0 -14px 30px rgba(0,0,0,0.55); }
+.perf { position: sticky; bottom: 0; z-index: 15; max-width: 1600px; margin: 18px auto 0; background: #101114; border: 1px solid var(--line); border-radius: 12px 12px 0 0; padding: 12px 12px calc(12px + env(safe-area-inset-bottom)); box-shadow: 0 -14px 30px rgba(0,0,0,0.55); }
 .kbrow[hidden] { display: none; }
-#kbHide { width: 30px; padding: 5px 0; }
+/* minimised: the toolbar stays, the keys and the height grip go */
+.perf.min { padding-top: 7px; padding-bottom: calc(7px + env(safe-area-inset-bottom)); }
+.perf.min .kbgrip, .perf.min .kbsize { display: none; }
+/* height grip: a tab on the panel's top edge (32 px tall touch target, half above the panel) */
+.kbgrip { position: absolute; top: -20px; left: 50%; width: 88px; height: 32px; margin-left: -44px; z-index: 1; touch-action: none; cursor: ns-resize; outline: none; -webkit-tap-highlight-color: transparent; user-select: none; -webkit-user-select: none; }
+.kbgrip::before { content: ''; position: absolute; left: 16px; right: 16px; top: 6px; height: 15px; background: #101114; border: 1px solid var(--line); border-bottom: 0; border-radius: 9px 9px 0 0; box-shadow: 0 -4px 8px -2px rgba(0,0,0,0.4); }
+.kbgrip::after { content: ''; position: absolute; left: 50%; top: 11px; width: 26px; height: 3px; margin-left: -13px; border-top: 2px solid #55575e; border-bottom: 2px solid #55575e; }
+.kbgrip.drag::after, .kbgrip:focus-visible::after { border-color: var(--hot); }
+.kbgrip:focus-visible::before { border-color: var(--hot); }
+@media (hover: hover) { .kbgrip:hover::after { border-color: #8d8b86; } .kbgrip.drag::after { border-color: var(--hot); } }
+.kbctl button.kbhide { display: flex; align-items: center; gap: 5px; padding: 5px 10px 5px 8px; white-space: nowrap; }
+.kbhide svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; transition: transform 0.15s; }
+.perf.min .kbhide { color: var(--hot); border-color: #5a4320; }
+.perf.min .kbhide svg { transform: rotate(180deg); }
+.kbsize input { width: 100px; accent-color: var(--hot); touch-action: manipulation; }
+@media (max-width: 1100px) { .perf .midi.unsup { display: none; } } /* (a disabled "not supported" note would wrap the toolbar) */
+@media (pointer: coarse) { .kbsize input { height: 32px; } .kbctl button { min-height: 32px; } } /* touch targets */
 .kbctl { display: flex; align-items: center; gap: 8px 16px; flex-wrap: wrap; font-size: 12px; color: var(--mute); }
 .kbrow { margin-top: 8px; }
 .kbctl .grp { display: flex; align-items: center; gap: 6px; }
@@ -316,7 +360,8 @@ body.recording .transport { border-color: #6b2a1c; }
 .octv { font-family: var(--mono); min-width: 52px; text-align: center; color: var(--text); }
 .vel input { width: 100px; accent-color: var(--hot); }
 #velv { font-family: var(--mono); width: 26px; color: var(--text); }
-.kbctl button.midi { font-family: var(--mono); font-size: 11px; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 340px; margin-right: auto; color: var(--mute); }
+.kbctl button.midi { font-family: var(--mono); font-size: 11px; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 340px; color: var(--mute); }
+.kbctl .hold { margin-left: auto; } /* Hold, Panic, Hide keys to the right (also with the MIDI button hidden) */
 .kbctl button.midi:disabled { cursor: default; border-color: transparent; background: transparent; }
 .notice { margin: 0 0 8px; padding: 6px 10px; border-radius: 6px; background: #2a1712; border: 1px solid #6b2a1c; color: #ffb59a; font-size: 12px; line-height: 1.4; }
 .notice[hidden] { display: none; }
@@ -328,9 +373,9 @@ body.recording .transport { border-color: #6b2a1c; }
 .kbrow { display: flex; gap: 10px; }
 .wheels { display: flex; gap: 8px; }
 .wheel { display: flex; flex-direction: column; align-items: center; gap: 6px; font-size: 10px; color: var(--mute); text-transform: uppercase; letter-spacing: 0.08em; }
-.wheel .slot { width: 30px; flex: 1; min-height: 120px; background: #050506; border-radius: 6px; position: relative; touch-action: none; cursor: ns-resize; box-shadow: inset 0 2px 6px #000; overflow: hidden; }
+.wheel .slot { width: 30px; flex: 1; min-height: 40px; background: #050506; border-radius: 6px; position: relative; touch-action: none; cursor: ns-resize; box-shadow: inset 0 2px 6px #000; overflow: hidden; }
 .wheel .thumb { position: absolute; left: 3px; right: 3px; height: 26px; border-radius: 4px; background: repeating-linear-gradient(0deg, #2a2b2f 0 2px, #1b1c1f 2px 4px); border: 1px solid #3a3b40; }
-.keys { position: relative; flex: 1; height: 170px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.keys { position: relative; flex: 1; height: var(--kbh, 170px); touch-action: none; user-select: none; -webkit-user-select: none; }
 .key { position: absolute; top: 0; border-radius: 0 0 5px 5px; }
 .key.w { height: 100%; background: linear-gradient(#f4f2ec, #e4e1d8); border: 1px solid #9c988e; box-shadow: inset 0 -6px 0 #d2cec3; z-index: 1; }
 .key.b { height: 62%; background: linear-gradient(#2a2a2c, #101012); border: 1px solid #000; box-shadow: inset 0 -5px 0 #000, 0 3px 4px rgba(0,0,0,0.5); z-index: 2; border-radius: 0 0 3px 3px; }
@@ -340,6 +385,7 @@ body.recording .transport { border-color: #6b2a1c; }
 .key .nm { position: absolute; bottom: 12px; left: 0; right: 0; text-align: center; font-size: 10px; color: #8a867d; font-family: var(--mono); pointer-events: none; }
 .key .kb { position: absolute; top: 8px; left: 0; right: 0; text-align: center; font-size: 9px; color: #a8a49a; font-family: var(--mono); pointer-events: none; text-transform: uppercase; }
 .key.b .kb { color: #6f6c66; }
+.perf.short .wheel span { display: none; } /* short keys: the wheels keep their whole height */
 
 /* ---------------------------------------------------------- console */
 .console { display: grid; grid-template-columns: minmax(280px, 1.2fr) 1fr; gap: 18px; margin-top: 18px; }
@@ -359,21 +405,31 @@ main { padding-top: 0; }
 
 .tip { position: fixed; pointer-events: none; z-index: 50; background: #000; color: #fff; font-family: var(--mono); font-size: 11.5px; padding: 4px 8px; border-radius: 5px; border: 1px solid #333; white-space: nowrap; opacity: 0; transform: translate(-50%, -100%); transition: opacity 0.08s; }
 .tip.show { opacity: 1; }
+/* full-screen layers of the panels below 1100 px (wk.js .gx-overlay, sx-ui-seq.js .sx-seqov): clear of the status bar */
+@media (max-width: 1099px) {
+  body .gx-overlay { padding-top: max(10px, env(safe-area-inset-top)); padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  body .sx-seqov { padding-top: max(8px, env(safe-area-inset-top)); padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+}
 
 @media (max-width: 900px) {
   .console { grid-template-columns: 1fr; }
-  .top { padding: 10px 16px; position: static; }
-  .perf { padding: 8px 10px calc(10px + env(safe-area-inset-bottom)); }
+  .top { padding: calc(10px + env(safe-area-inset-top)) 16px 10px; position: static; }
+  /* the header scrolls away here: in the installed app (black-translucent status bar) a backdrop under the status bar
+     keeps the scrolled page from showing beneath the clock (0 px high in a browser tab) */
+  body::before { content: ''; position: fixed; top: 0; left: 0; right: 0; height: env(safe-area-inset-top); background: var(--bg); z-index: 1001; pointer-events: none; }
+  .perf { padding: 12px 10px calc(10px + env(safe-area-inset-bottom)); }
+  .perf.min { padding-top: 7px; padding-bottom: calc(7px + env(safe-area-inset-bottom)); }
+  .perf.min .kbctl { margin-bottom: 0; }
+  .kbsize input { width: 84px; }
   .studio, #tab-roll, #tab-fx { padding-left: 12px; padding-right: 12px; }
   .tabs { padding: 0 12px; }
   .heads { width: 230px; }
   .head .hpreset, .head .hpan, .head .hb[title="Duplicate track"] { display: none; }
   .tgrp.file { margin-left: 0; }
-  .perf .vel, .perf .midi.unsup { display: none; }
+  .perf .vel { display: none; }
   .kbctl button.midi { max-width: 140px; }
   .kbctl { margin-bottom: 6px; gap: 8px; }
-  .keys { height: 128px; }
-  .wheel .slot { min-height: 100px; }
+  .keys { height: var(--kbh, 128px); }
   .models { padding: 10px 16px; }
   main { padding: 14px 16px 8px; }
   .inst { padding: 14px 14px 16px; }
@@ -390,4 +446,12 @@ main { padding-top: 0; }
   .field.range input { width: 84px; }
   .wheel .slot { width: 22px; }
   .sec { flex: 1 1 100%; }
+  /* the toolbar in one row on a phone: Key size takes the room left, Hide keys is an icon (both keep their names) */
+  .kbctl { gap: 6px; }
+  .octv { min-width: 44px; }
+  .perf .playing:empty { display: none; }
+  .kbsize { flex: 1 1 56px; min-width: 0; max-width: 150px; }
+  .kbsize input { width: 100%; min-width: 0; }
+  .kbsize .lbl, .kbhide span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .kbctl button.kbhide { padding: 5px 9px; }
 }

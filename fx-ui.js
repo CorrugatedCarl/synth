@@ -54,9 +54,9 @@
 // rack?) and the Phase-1 helpers moveModule, ladderLabel, moduleTitle, modulePresetPayload / applyModulePreset (v1 module
 // presets), svfDb, impulseDb. Nothing touches the DOM at module top level.
 import { knob, numBox, menu, toggle, seg, slider, contextMenu, tooltip, injectStyles, loadDSP, menuSource, theme, fitCanvas, frame,
-  saveFile, pickFile, ask, wheelGate, dragSource, modifierBar, ticker } from './wk.js?v=6';
-import { CurveEditor, shapeLib } from './graph.js?v=6';
-import * as core from './serum-core.js?v=6';
+  saveFile, pickFile, ask, wheelGate, dragSource, modifierBar, ticker } from './wk.js?v=7';
+import { CurveEditor, shapeLib } from './graph.js?v=7';
+import * as core from './serum-core.js?v=7';
 
 const { DESTS, DEST_INDEX, FX_MODULES, FX_ORDER_DEFAULT, MODFX_LADDER, DLY_LADDER, DIST_MODES, DLY_MODES, REV_LABELS,
   EQ_TYPES_L, EQ_TYPES_H, CMP_RATIO_DETENTS, FILTERS, fmtParam, lawValue, lawNorm, varLabel } = core;
@@ -901,8 +901,11 @@ export class FXRackUI {
       e.stopPropagation();
       contextMenu(e.clientX, e.clientY, this.instMenu(id, true), { anchor: name });
     });
+    // touch: the grip is touch-action: none (nothing scrolls under it), so the drag starts on the first few px of
+    // travel in any direction — no 250 ms hold (wk.dragSource scrollAxis 'none'), as the Serum panel's tiles
     const drag = dragSource(grip, {
       data: id,
+      scrollAxis: 'none',
       begin: () => { this.drag = { id, gap: -1 }; t.classList.add('fxr-dragging'); },
       move: info => this.dragMove(info),
       drop: info => this.dragDrop(info),

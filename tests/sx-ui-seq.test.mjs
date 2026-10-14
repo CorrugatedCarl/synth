@@ -10,11 +10,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 // imported before any DOM exists: no document / window access at module top level
-const seq = await import('../sx-ui-seq.js?v=6');
-const core = await import('../serum-core.js?v=6');
+const seq = await import('../sx-ui-seq.js?v=7');
+const core = await import('../serum-core.js?v=7');
 const { makeKit, stubOf } = await import('./serum-ui-stubs/kit.js');
 const dom = await import('./wk-dom.mjs');
-const wk = await import('../wk.js?v=6');
+const wk = await import('../wk.js?v=7');
 
 const fresh = () => core.normalizeSerum(core.defaultSerum());
 const MAJOR = [0, 2, 4, 5, 7, 9, 11];

@@ -110,9 +110,9 @@
 // at use: the serum-ui unit tests map graph.js to a stub).
 //
 // Browser ES module: nothing touches document / window / storage at module top level (node imports it for tests).
-import * as core from './serum-core.js?v=6';
-import * as wk from './wk.js?v=6';
-import * as gx from './graph.js?v=6';
+import * as core from './serum-core.js?v=7';
+import * as wk from './wk.js?v=7';
+import * as gx from './graph.js?v=7';
 
 /* ================================================================ small helpers */
 

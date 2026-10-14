@@ -645,7 +645,7 @@ test('WTEditor headless: pointercancel, undo and frame changes mid-stroke, toolt
 
 /* ================================================================== Phase 2 (SPEC-serum2 §13.13b, §11.13; inv B11) */
 
-const wk5 = await import('../wk.js?v=6'); // the instance wtedit imports (its touch modifier latches)
+const wk5 = await import('../wk.js?v=7'); // the instance wtedit imports (its touch modifier latches)
 const { channelFor, otherOscs, copyRange } = E;
 const menuLabels = doc => all(doc.body).filter(n => n.classList && n.classList.contains('wk-cl')).map(n => n.textContent);
 const menuItem = (doc, label) => all(doc.body).find(n => n.classList && n.classList.contains('wk-ci') && one(n, 'wk-cl') && one(n, 'wk-cl').textContent === label) || null;

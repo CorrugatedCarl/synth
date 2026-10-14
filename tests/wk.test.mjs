@@ -944,9 +944,9 @@ test('loadDSP: once per document and path, ordered, never rejects, null for fail
   try {
     delete globalThis.SerumDSP; delete globalThis.FXDSP;
     const d = fresh();
-    const p1 = wk.loadDSP(['serum-dsp.js?v=6', 'fx-dsp.js?v=6']);
+    const p1 = wk.loadDSP(['serum-dsp.js?v=7', 'fx-dsp.js?v=7']);
     assert.equal(d.scripts.length, 2);
-    assert.deepEqual(d.scripts.map(s => [s.src, s.async, s.parentNode === d.head]), [['serum-dsp.js?v=6', false, true], ['fx-dsp.js?v=6', false, true]]);
+    assert.deepEqual(d.scripts.map(s => [s.src, s.async, s.parentNode === d.head]), [['serum-dsp.js?v=7', false, true], ['fx-dsp.js?v=7', false, true]]);
     const p2 = wk.loadDSP(['serum-dsp.js', 'fx-dsp.js']); // same paths without the cache-buster: no new scripts
     const p3 = wk.loadDSP(['./serum-dsp.js?v=9']);
     assert.equal(d.scripts.length, 2);
@@ -958,9 +958,9 @@ test('loadDSP: once per document and path, ordered, never rejects, null for fail
     assert.deepEqual(two(await p1), { SerumDSP: S, FXDSP: null });
     assert.deepEqual(two(await p2), { SerumDSP: S, FXDSP: null });
     assert.equal(warned.length, 1);
-    assert.match(warned[0], /fx-dsp\.js\?v=6/);
+    assert.match(warned[0], /fx-dsp\.js\?v=7/);
     // the document remembers: later calls inject nothing and resolve at once
-    assert.deepEqual(two(await wk.loadDSP(['fx-dsp.js?v=6'])), { SerumDSP: S, FXDSP: null });
+    assert.deepEqual(two(await wk.loadDSP(['fx-dsp.js?v=7'])), { SerumDSP: S, FXDSP: null });
     assert.equal(d.scripts.length, 2);
     // already-present globals (static <script> tags): no injection
     const d2 = fresh();
@@ -1969,7 +1969,9 @@ test('dragSource: mouse slop, begin / move / drop, swallowed click, Escape, latc
     assert.ok(tile.classList.contains('wk-armed'));
     const tm = fire(tile, 'touchmove');
     assert.ok(tm.defaultPrevented); // armed: no page scroll
-    ptr(tile, 'pointermove', 11, 12, { pointerType: 'touch' });
+    ptr(tile, 'pointermove', 11, 12, { pointerType: 'touch' }); // jitter (≤ 6 px from the armed point) starts nothing
+    assert.deepEqual(log, []);
+    ptr(tile, 'pointermove', 11, 19, { pointerType: 'touch' });
     assert.deepEqual(log[0], ['begin', 'lfo1', false, 'touch']);
     ptr(tile, 'pointerup', 50, 50, { pointerType: 'touch' });
     assert.deepEqual(log.at(-1), ['drop', 50, 50, true, false]);
@@ -2248,7 +2250,7 @@ test('loadDSP(): the default list is files 1–11 in table order (§0.3); define
     assert.equal(timers.length, d.scripts.length);
     assert.ok(timers.every(t => typeof t.hasRef !== 'function' || t.hasRef() === false), 'unref: a pending load keeps no node process alive');
     // a panel's default call after main.js loaded DSP_URLS (versioned paths): nothing new
-    const again = wk.loadDSP(wk.loadDSP.URLS.map(u => u + '?v=6'));
+    const again = wk.loadDSP(wk.loadDSP.URLS.map(u => u + '?v=7'));
     assert.equal(d.scripts.length, 10);
     const vals = {};
     d.scripts.forEach((s, i) => { const g = G[wk.loadDSP.URLS.indexOf(s.src)]; vals[g] = Object.freeze({ id: g }); globalThis[g] = vals[g]; fire(s, i % 2 ? 'load' : 'error', { bubbles: false }); });
@@ -2515,6 +2517,268 @@ test('dragSource: a lostpointercapture bubbling from a child (the implicit touch
     T(lab, 'pointermove', 30, 10);
     T(b, 'lostpointercapture', 30, 10);
     assert.deepEqual(log, ['begin', 'move', 'cancel']);
+  } finally { mock.timers.reset(); }
+});
+
+// iPad Safari event order for one finger: pointerdown, touchstart, then per move pointermove + touchmove; when Safari
+// starts a native pan it sends pointercancel (and no longer lets a touchmove be cancelled).
+function touchRig(o = {}) {
+  const d = fresh();
+  const strip = d.createElement('div'), tile = d.createElement('button'), lab = d.createElement('span'), target = d.createElement('div');
+  tile.append(lab); strip.append(tile); d.body.append(strip, target);
+  d.elementFromPoint = () => target;
+  const log = [];
+  let menus = 0;
+  const src = wk.dragSource(tile, Object.assign({
+    data: 'lfo2',
+    begin: i => log.push(['begin', i.pointerType, i.x, i.y]),
+    move: i => log.push(['move', i.x, i.y, i.target === target]),
+    drop: i => log.push(['drop', i.x, i.y, i.target === target]),
+    cancel: () => log.push(['cancel']),
+  }, o));
+  tile.addEventListener('contextmenu', () => menus++); // the tile's own menu listener (added after the drag source)
+  const P = (type, x, y, x2 = {}) => ptr(lab, type, x, y, Object.assign({ pointerType: 'touch', pointerId: 9 }, x2));
+  // a touchmove at the touched node (the label span), one finger unless `n` says otherwise
+  const TM = (x, y, n = 1) => fire(lab, 'touchmove', { touches: Array.from({ length: n }, (_, k) => ({ clientX: x + k * 40, clientY: y })) });
+  const move = (x, y) => { P('pointermove', x, y); return TM(x, y); }; // Safari: the pointermove, then its touchmove
+  return { d, tile, lab, target, log, src, P, TM, move, menus: () => menus };
+}
+
+test('dragSource scrollAxis x (iPad tile strip): an up / down finger drags at once, a sideways one is left to the native scroll', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const { tile, log, src, P, TM, move } = touchRig({ scrollAxis: 'x' });
+    // mainly vertical past 6 px: the drag starts at once (no hold), every touchmove from then on is cancelled
+    P('pointerdown', 100, 100); fire(tile, 'touchstart');
+    assert.equal(move(101, 104).defaultPrevented, false); // undecided (≤ 6 px): the browser may still scroll
+    assert.deepEqual(log, []);
+    assert.equal(move(103, 110).defaultPrevented, true);
+    assert.deepEqual(log, [['begin', 'touch', 103, 110], ['move', 103, 110, true]]);
+    assert.ok(src.active() && tile.classList.contains('wk-dragging') && !tile.classList.contains('wk-armed'));
+    assert.equal(tile._cap, 9); // el holds the pointer capture (moves outside the tile still come here)
+    assert.equal(move(400, 30).defaultPrevented, true); // any direction once dragging: no page / strip scroll
+    P('pointerup', 400, 30);
+    assert.deepEqual(log.slice(2), [['move', 400, 30, true], ['drop', 400, 30, true]]);
+    let clicks = 0;
+    tile.addEventListener('click', () => clicks++);
+    tile.click(); // the click that ends the drag is swallowed
+    assert.equal(clicks, 0);
+    mock.timers.tick(1000); // the hold timer went with the start
+    assert.ok(!tile.classList.contains('wk-armed') && !src.active());
+    assert.equal(TM(400, 30).defaultPrevented, false);
+    // mainly sideways: the strip's own scroll — abandoned, nothing cancelled; Safari's pointercancel when it pans is no cancel
+    log.length = 0;
+    P('pointerdown', 100, 100);
+    assert.equal(move(109, 103).defaultPrevented, false);
+    P('pointercancel', 109, 103);
+    mock.timers.tick(300);
+    assert.ok(!tile.classList.contains('wk-armed'));
+    assert.equal(move(109, 180).defaultPrevented, false);
+    assert.deepEqual(log, []);
+    // a pointercancel from a system gesture mid-drag still cancels it
+    P('pointerdown', 100, 100);
+    move(100, 108);
+    P('pointercancel', 100, 108);
+    assert.deepEqual(log.map(l => l[0]), ['begin', 'move', 'cancel']);
+    assert.ok(!src.active() && !tile.classList.contains('wk-dragging'));
+    // a touchmove ahead of its pointermove decides too (it is cancelled; the pointermove starts the drag)
+    log.length = 0;
+    P('pointerdown', 100, 100);
+    assert.equal(TM(102, 109).defaultPrevented, true);
+    assert.deepEqual(log, []);
+    P('pointermove', 102, 109);
+    assert.equal(log[0][0], 'begin');
+    P('pointerup', 102, 109);
+    // a sideways touchmove ahead of its pointermove is not cancelled; two fingers decide nothing
+    P('pointerdown', 100, 100);
+    assert.equal(TM(110, 101).defaultPrevented, false);
+    assert.equal(TM(100, 120, 2).defaultPrevented, false);
+    P('pointerup', 100, 100);
+    // mouse and pen: unchanged — 4 px of travel in any direction
+    log.length = 0;
+    ptr(tile, 'pointerdown', 100, 100);
+    ptr(tile, 'pointermove', 103, 100);
+    assert.deepEqual(log, []);
+    ptr(tile, 'pointermove', 105, 100);
+    assert.deepEqual(log[0], ['begin', 'mouse', 105, 100]);
+    ptr(tile, 'pointerup', 105, 100);
+    ptr(tile, 'pointerdown', 100, 100, { pointerType: 'pen' });
+    ptr(tile, 'pointermove', 100, 95, { pointerType: 'pen' });
+    assert.deepEqual(log.at(-2), ['begin', 'pen', 100, 95]);
+    ptr(tile, 'pointerup', 100, 95, { pointerType: 'pen' });
+    src.destroy();
+    assert.equal(tile.listenerCount('touchmove'), 0);
+  } finally { mock.timers.reset(); }
+});
+
+test('dragSource touch: a hold then any direction drags; a still hold (jitter) opens the long-press menu; a menu during the drag is swallowed', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const { tile, log, src, P, move, menus } = touchRig({ scrollAxis: 'x' });
+    // hold 250 ms (still), then sideways — along the strip's scroll axis — still drags
+    P('pointerdown', 100, 100);
+    mock.timers.tick(250);
+    assert.ok(tile.classList.contains('wk-armed'));
+    assert.equal(move(103, 101).defaultPrevented, true); // armed: no scroll from here on
+    assert.deepEqual(log, []); // ≤ 6 px from where it was armed: jitter
+    move(115, 101);
+    assert.deepEqual(log[0], ['begin', 'touch', 115, 101]);
+    P('pointerup', 115, 101);
+    assert.deepEqual(log.at(-1), ['drop', 115, 101, true]);
+    // a still hold with jitter until the 500 ms long-press: no drag, the menu opens, later moves do nothing
+    log.length = 0;
+    P('pointerdown', 100, 100);
+    mock.timers.tick(250);
+    move(102, 101); move(101, 103);
+    mock.timers.tick(250);
+    const cm = fire(tile, 'contextmenu', { clientX: 101, clientY: 103 }); // the long-press (serum-ui touchMenu)
+    assert.equal(cm.defaultPrevented, false);
+    assert.equal(menus(), 1);
+    assert.ok(!tile.classList.contains('wk-armed'));
+    assert.equal(move(100, 200).defaultPrevented, false);
+    P('pointerup', 100, 200);
+    assert.deepEqual(log, []);
+    // a drag started within the long-press's 8 px: its late contextmenu is swallowed, the drag goes on
+    P('pointerdown', 100, 100);
+    move(100, 107);
+    assert.ok(src.active());
+    const late = fire(tile, 'contextmenu', { clientX: 100, clientY: 107 });
+    assert.ok(late.defaultPrevented);
+    assert.equal(menus(), 1);
+    move(100, 300);
+    P('pointerup', 100, 300);
+    assert.deepEqual(log.map(l => l[0]), ['begin', 'move', 'move', 'drop']);
+    src.destroy();
+  } finally { mock.timers.reset(); }
+});
+
+test('dragSource scrollAxis: y (a vertical page) drags sideways at once, none drags any way, a function is read at each press; touchSlop; no axis = hold', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    let ax = 'y';
+    const { log, src, P, move } = touchRig({ scrollAxis: () => ax });
+    P('pointerdown', 100, 100);
+    assert.equal(move(102, 108).defaultPrevented, false); // vertical: the page scrolls
+    P('pointercancel', 102, 108);
+    P('pointerdown', 100, 100);
+    assert.equal(move(108, 102).defaultPrevented, true); // sideways: ours
+    P('pointerup', 108, 102);
+    assert.deepEqual(log.map(l => l[0]), ['begin', 'move', 'drop']);
+    ax = 'none';
+    for (const [x, y] of [[100, 93], [93, 100], [105, 105]]) {
+      log.length = 0;
+      P('pointerdown', 100, 100);
+      move(x, y);
+      P('pointerup', x, y);
+      assert.deepEqual(log.map(l => l[0]), ['begin', 'move', 'drop'], x + ',' + y);
+    }
+    // an unknown value, or a function that throws: the hold-only gesture (> 8 px before the hold = a scroll)
+    for (const bad of ['z', () => { throw new Error('x'); }]) {
+      ax = bad;
+      const { log: L, P: P2, move: m2 } = touchRig({ scrollAxis: typeof bad === 'function' ? bad : () => ax });
+      P2('pointerdown', 100, 100);
+      assert.equal(m2(100, 107).defaultPrevented, false);
+      m2(100, 110);
+      mock.timers.tick(300);
+      m2(100, 140);
+      P2('pointerup', 100, 140);
+      assert.deepEqual(L, []);
+    }
+    src.destroy();
+    // touchSlop widens the decision distance
+    const r = touchRig({ scrollAxis: 'x', touchSlop: 12 });
+    r.P('pointerdown', 100, 100);
+    r.move(100, 110);
+    assert.deepEqual(r.log, []);
+    r.move(100, 113);
+    assert.equal(r.log[0][0], 'begin');
+    r.P('pointerup', 100, 113);
+  } finally { mock.timers.reset(); }
+});
+
+test('dragSource touch: one finger — a non-primary touch starts nothing; a second pointer down or a two-touch touchmove abandons a pending gesture (hold or axis); a started drag goes on', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const { d, tile, log, src, P, TM, move } = touchRig({ scrollAxis: 'x' });
+    const other = d.createElement('div');
+    d.body.append(other);
+    const P2 = (type, n, x, y) => ptr(n, type, x, y, { pointerType: 'touch', pointerId: 10, isPrimary: false });
+    // a second finger elsewhere, then the first moves down: no drag, its moves are left to the browser (a pinch / scroll)
+    P('pointerdown', 100, 100, { isPrimary: true });
+    assert.equal(d.listenerCount('pointerdown'), 1); // watched while pending
+    P2('pointerdown', other, 300, 100);
+    assert.equal(d.listenerCount('pointerdown'), 0);
+    assert.equal(move(100, 112).defaultPrevented, false);
+    assert.equal(TM(100, 130, 2).defaultPrevented, false);
+    mock.timers.tick(300);
+    assert.ok(!tile.classList.contains('wk-armed'));
+    P2('pointerup', other, 300, 100);
+    P('pointerup', 100, 130);
+    assert.deepEqual(log, []);
+    // a non-primary touch on el itself starts nothing
+    P('pointerdown', 100, 100, { pointerId: 11, isPrimary: false });
+    move(100, 120);
+    P('pointermove', 100, 120, { pointerId: 11 });
+    P('pointerup', 100, 120, { pointerId: 11 });
+    assert.deepEqual(log, []);
+    assert.equal(d.listenerCount('pointerdown'), 0);
+    // armed by the hold, then a two-touch touchmove (a second finger landed off the page's view of el): abandoned
+    P('pointerdown', 100, 100, { isPrimary: true });
+    mock.timers.tick(260);
+    assert.ok(tile.classList.contains('wk-armed'));
+    assert.equal(TM(100, 104, 2).defaultPrevented, false);
+    assert.ok(!tile.classList.contains('wk-armed'));
+    assert.equal(move(100, 140).defaultPrevented, false);
+    P('pointerup', 100, 140);
+    assert.deepEqual(log, []);
+    assert.equal(d.listenerCount('pointerdown'), 0);
+    // a started drag ignores a second finger and still drops
+    P('pointerdown', 100, 100, { isPrimary: true });
+    move(100, 110);
+    assert.ok(src.active());
+    assert.equal(d.listenerCount('pointerdown'), 0); // no longer watched once started
+    P2('pointerdown', other, 300, 100);
+    assert.equal(TM(100, 130, 2).defaultPrevented, true);
+    move(100, 140);
+    P2('pointerup', other, 300, 100);
+    P('pointerup', 100, 140);
+    assert.deepEqual(log.map(l => l[0]), ['begin', 'move', 'move', 'drop']);
+    // mouse: no document watch, a touch elsewhere does not end a mouse drag
+    log.length = 0;
+    ptr(tile, 'pointerdown', 100, 100);
+    assert.equal(d.listenerCount('pointerdown'), 0);
+    ptr(tile, 'pointermove', 110, 100);
+    P2('pointerdown', other, 300, 100);
+    ptr(tile, 'pointerup', 110, 100);
+    assert.deepEqual(log.map(l => l[0]), ['begin', 'move', 'drop']);
+    src.destroy();
+  } finally { mock.timers.reset(); }
+});
+
+test('dragSource info: quick (a touch drag started without the hold) and t (the event time)', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const seen = [];
+    const rec = k => i => seen.push([k, i.pointerType, i.quick, i.t]);
+    const { P, move } = touchRig({ scrollAxis: 'x', begin: rec('begin'), move: rec('move'), drop: rec('drop'), cancel: rec('cancel') });
+    P('pointerdown', 100, 100, { timeStamp: 5000 });
+    P('pointermove', 100, 110, { timeStamp: 5016 });
+    P('pointerup', 100, 110, { timeStamp: 5200 });
+    assert.deepEqual(seen, [['begin', 'touch', true, 5016], ['move', 'touch', true, 5016], ['drop', 'touch', true, 5200]]);
+    seen.length = 0;
+    P('pointerdown', 100, 100, { timeStamp: 6000 });
+    mock.timers.tick(260);
+    move(100, 110);
+    P('pointercancel', 100, 110, { timeStamp: 6400 });
+    assert.deepEqual(seen.map(s => s.slice(0, 3)), [['begin', 'touch', false], ['move', 'touch', false], ['cancel', 'touch', false]]);
+    assert.equal(seen[2][3], 6400);
+    seen.length = 0;
+    const r = touchRig({ begin: rec('begin') });
+    ptr(r.tile, 'pointerdown', 100, 100);
+    ptr(r.tile, 'pointermove', 110, 100, { timeStamp: 0 }); // no event time: performance.now()
+    assert.equal(seen[0][2], false);
+    assert.ok(seen[0][3] > 0);
+    ptr(r.tile, 'pointerup', 110, 100);
   } finally { mock.timers.reset(); }
 });
 

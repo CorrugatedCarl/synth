@@ -47,14 +47,14 @@
 // factory presets), synth.sx.default (Save as Default Preset), synth.sx.vc (user Voice Control presets),
 // synth.sx.shapes (via graph.shapeLib), synth.fxchains.
 // MIDI program change: index browserList(host.presets.list(), storage[BROWSER_KEY]) (§9.10, §11.8).
-import * as core from './serum-core.js?v=6';
-import * as wt from './wt.js?v=6';
-import * as wk from './wk.js?v=6';
-import * as gx from './graph.js?v=6';
-import * as fxui from './fx-ui.js?v=6';
-import * as wte from './wtedit.js?v=6';
-import * as osc from './sx-ui-osc.js?v=6';
-import * as seq from './sx-ui-seq.js?v=6';
+import * as core from './serum-core.js?v=7';
+import * as wt from './wt.js?v=7';
+import * as wk from './wk.js?v=7';
+import * as gx from './graph.js?v=7';
+import * as fxui from './fx-ui.js?v=7';
+import * as wte from './wtedit.js?v=7';
+import * as osc from './sx-ui-osc.js?v=7';
+import * as seq from './sx-ui-seq.js?v=7';
 
 /* ================================================================ constants and small helpers */
 
@@ -810,7 +810,7 @@ const CSS = `
 }
 .sx-panel { position: relative; min-width: 0; padding: 6px 8px 8px; background: var(--sx-panel); border: 1px solid var(--sx-line); border-radius: 8px; }
 .sx-ptitle { display: flex; align-items: center; gap: 6px; min-height: 26px; margin-bottom: 4px; }
-.sx-tname { color: var(--sx-ink); font-weight: 800; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; cursor: context-menu; user-select: none; -webkit-user-select: none; border-radius: 3px; touch-action: none; }
+.sx-tname { color: var(--sx-ink); font-weight: 800; font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; cursor: context-menu; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; border-radius: 3px; touch-action: none; }
 .sx-ptitle .sx-grow, .sx-grow { flex: 1 1 auto; min-width: 0; }
 .sx-ptitle .wk-menu > .wk-lab { display: none !important; }
 .sx-lockmark { display: none; width: 12px; height: 12px; color: var(--sx-neg); }
@@ -831,7 +831,7 @@ const CSS = `
 .sx-locked-ctl { position: relative; }
 .sx-locked-ctl::after { content: ''; position: absolute; right: 0; top: 0; width: 6px; height: 6px; border-radius: 1px; background: var(--sx-neg); box-shadow: 0 0 0 1px var(--sx-bg); pointer-events: none; }
 .sx-tiles { display: flex; gap: 4px; overflow-x: auto; padding: 2px 0 4px; scrollbar-width: thin; touch-action: pan-x; scroll-snap-type: x proximity; }
-.sx-tile { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 3px 10px; color: var(--sx-mute); background: var(--sx-panel); border: 1px solid var(--sx-line); border-radius: 6px; font-weight: 700; font-size: 11px; letter-spacing: 0.06em; cursor: grab; user-select: none; -webkit-user-select: none; scroll-snap-align: start; }
+.sx-tile { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 3px 10px; color: var(--sx-mute); background: var(--sx-panel); border: 1px solid var(--sx-line); border-radius: 6px; font-weight: 700; font-size: 11px; letter-spacing: 0.06em; cursor: grab; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; scroll-snap-align: start; }
 .sx-tile:hover { color: var(--sx-ink); }
 .sx-tile[aria-pressed="true"] { color: var(--sx-ink); border-color: var(--sx-accent); box-shadow: 0 0 0 1px var(--sx-accent) inset; }
 .sx-tile.wk-armed { border-color: var(--sx-neg); }
@@ -841,12 +841,13 @@ const CSS = `
 .sx-tile.sx-mtile { max-width: 128px; text-transform: none; letter-spacing: 0; font-weight: 600; }
 .sx-tile.sx-mtile .sx-tl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sx-ghost { position: fixed; z-index: 1100; left: 0; top: 0; padding: 3px 8px; color: var(--sx-bg, #0f1216); background: var(--sx-accent, #4fb3ff); border-radius: 5px; font: 700 11px/1.2 var(--ui, system-ui, sans-serif); pointer-events: none; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); }
+.sx-ghost.sx-ghost-touch { max-width: min(360px, calc(100vw - 16px)); padding: 6px 10px; font-size: 13px; text-align: center; overflow-wrap: anywhere; }
 .sx-dragging, .sx-dragging * { cursor: grabbing !important; }
 .sx-dragging.sx-candrop, .sx-dragging.sx-candrop * { cursor: copy !important; }
 .sx-droptgt { outline: 2px solid var(--sx-accent) !important; outline-offset: 2px; border-radius: 6px; }
 .sx-macros { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
 .sx-macro { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px; background: var(--sx-panel2); border: 1px solid var(--sx-line); border-radius: 6px; min-width: 0; }
-.sx-macro .sx-tile { width: 100%; justify-content: center; min-height: 24px; padding: 2px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; font-weight: 600; }
+.sx-macro .sx-tile { width: 100%; justify-content: center; min-height: 24px; padding: 2px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; font-weight: 600; touch-action: pan-y; touch-action: pan-y pinch-zoom; }
 .sx-macro input { width: 100%; padding: 2px 4px; color: var(--sx-ink); background: var(--sx-bg); border: 1px solid var(--sx-accent); border-radius: 4px; font: 600 11px var(--ui, system-ui, sans-serif); }
 .sx-macro .wk-knob { --wk-d: 30px; }
 .sx-edbox { position: relative; min-height: 120px; }
@@ -1086,7 +1087,8 @@ function rafOf(doc) {
   return r ? f => r.call(w || globalThis, f) : f => setTimeout(f, 16);
 }
 // Touch long-press (500 ms, ≤ 8 px) on a plain element → fn(x, y); skipped when the browser already fired its
-// own contextmenu for that press (Android).
+// own contextmenu for that press (Android) and while el is being dragged (wk.dragSource's wk-dragging: a touch drag can
+// start within the 8 px).
 function longPress(el, fn) {
   let t = 0, x = 0, y = 0, t0 = 0, ctxT = -1;
   el.addEventListener('contextmenu', e => { ctxT = e.timeStamp; });
@@ -1094,11 +1096,36 @@ function longPress(el, fn) {
     if (e.pointerType !== 'touch') return;
     x = e.clientX; y = e.clientY; t0 = e.timeStamp;
     clearTimeout(t);
-    t = setTimeout(() => { t = 0; if (ctxT < t0) fn(x, y); }, 500);
+    t = setTimeout(() => { t = 0; if (ctxT < t0 && !(el.classList && el.classList.contains('wk-dragging'))) fn(x, y); }, 500);
   });
   el.addEventListener('pointermove', e => { if (t && Math.hypot(e.clientX - x, e.clientY - y) > 8) { clearTimeout(t); t = 0; } });
   for (const k of ['pointerup', 'pointercancel']) el.addEventListener(k, () => { clearTimeout(t); t = 0; });
 }
+// Set a drag ghost's text and position it (position: fixed at 0, 0) for a pointer at (x, y): mouse / pen beside the
+// pointer; touch centred over the finger with its bottom edge 40 px above it, kept 8 px inside the viewport's sides and
+// top, so neither the finger nor the hand hides it and a long "source → target" stays whole at the screen edges
+// (§13.1). The box is measured after the text is set, and only when the text changes (one layout read per label).
+const GHOST_LIFT = 40, GHOST_EDGE = 8;
+function ghostAt(g, x, y, touch, text) {
+  if (text != null && g.textContent !== text) g.textContent = text;
+  if (!touch) { g.style.transform = 'translate(' + (x + 12) + 'px,' + (y + 10) + 'px)'; return; }
+  const T = g.textContent;
+  if (!g._sz || g._sz.t !== T) {
+    let r = null;
+    try { r = g.getBoundingClientRect(); } catch (err) { r = null; }
+    g._sz = { t: T, w: r && r.width > 0 ? r.width : 0, h: r && r.height > 0 ? r.height : 0 };
+  }
+  const { w, h } = g._sz, win = g.ownerDocument && g.ownerDocument.defaultView, vw = win && win.innerWidth > 0 ? win.innerWidth : 0;
+  let left = Math.round(x - w / 2);
+  if (vw) left = Math.min(left, Math.round(vw - w - GHOST_EDGE));
+  left = Math.max(GHOST_EDGE, left);
+  const top = Math.max(GHOST_EDGE, Math.round(y - GHOST_LIFT - h));
+  g.style.transform = 'translate(' + left + 'px,' + top + 'px)';
+}
+// a quick touch drag (wk.dragSource info.quick: started without the hold) drops only once the finger has rested on its
+// target this long — a flick that merely ends over a control (a habitual page-scroll swipe from the tile strip) is a cancel
+const SETTLE_MS = 100;
+const sameHit = (a, b) => (a && b ? a.el === b.el && a.kind === b.kind && a.idx === b.idx && a.lfo === b.lfo : a === b);
 function download(doc, name, text) {
   try {
     const U = globalThis.URL, B = globalThis.Blob;
@@ -1385,7 +1412,7 @@ const focusable = el => (el && (el.matches && el.matches('button, [tabindex]') ?
   : el.querySelector && el.querySelector('button, [tabindex]'))) || el;
 const mkPage = el => ({ el: el || null, binds: [], canvases: [], editors: [], lives: [] });
 // the MIX page module (U3), loaded on demand: the page degrades to a notice while it is missing
-const loadMix = () => import('./sx-ui-mix.js?v=6');
+const loadMix = () => import('./sx-ui-mix.js?v=7');
 // wk.contextMenu items from knobMenuItems-style groups ({label, sub}) with an action per leaf
 const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label, sub: subMenu(it.sub, act) }
   : Object.assign({ label: it.label, action: () => act(it) }, it.checked !== undefined ? { checked: it.checked } : {})));
@@ -2926,8 +2953,13 @@ export class SerumUI {
     ];
   }
   srcMenu(src, x, y, anchor) { wk.contextMenu(x, y, this.srcDestItems(src), { anchor: focusable(anchor) }); }
-  // Tile drag (§5.8): wk.dragSource where available (touch: a 250 ms hold arms the drag so a swipe scrolls, §13.1;
-  // mouse: 4 px slop; Escape cancels; the click that ends a drag is swallowed); else the Phase-1 pointer gesture
+  // Tile drag (§5.8): wk.dragSource where available (mouse / pen: 4 px slop; Escape cancels; the click that ends a drag
+  // is swallowed); else the Phase-1 pointer gesture. Touch (§13.1) is axis-aware: the tile strip scrolls natively only
+  // sideways (touch-action: pan-x), so a finger moving mainly up / down drags at once and a sideways swipe scrolls the
+  // strip; a tile elsewhere (the MACROS panel; touch-action: pan-y) drags sideways and lets a vertical swipe scroll the
+  // page. A 250 ms hold then drags in any direction; a still 500 ms hold opens the source menu. A drag started without the
+  // hold drops only on a target the finger rested on (SETTLE_MS; a flick is a cancel). One finger only (wk.dragSource),
+  // and a drag that another one replaced (dragBegin) neither moves nor drops here.
   tileDrag(b, src) {
     b.addEventListener('click', e => {
       if (e.defaultPrevented) return;
@@ -2936,12 +2968,21 @@ export class SerumUI {
       this.selectSrc(src);
     });
     if (typeof wk.dragSource === 'function') {
+      let mine = null;   // this tile's drag (this.drag while it lasts)
       const ds = wk.dragSource(b, {
         data: src,
-        begin: i => this.dragBegin(src, !!i.alt),
-        move: i => this.dragMove(i.x, i.y),
-        drop: i => { this.tileEat = { el: b, t: Date.now() }; this.dragDone(this.hitTest(i.x, i.y), i.x, i.y); },
-        cancel: () => this.dragDone(null),
+        scrollAxis: () => (closest(b, '.sx-tiles') ? 'x' : 'y'),
+        begin: i => { this.dragBegin(src, !!i.alt, i.pointerType, !!i.quick); mine = this.drag; },
+        move: i => { if (mine && this.drag === mine) this.dragMove(i.x, i.y, i.t); },
+        drop: i => {
+          const D = mine;
+          mine = null;
+          this.tileEat = { el: b, t: Date.now() };
+          if (!D || this.drag !== D) return;
+          const hit = this.hitTest(i.x, i.y);
+          this.dragDone(hit && this.settled(hit, i.t) ? hit : null, i.x, i.y);
+        },
+        cancel: () => { const D = mine; mine = null; if (D && this.drag === D) this.dragDone(null); },
       });
       this.offs.push(() => ds.destroy());
       return;
@@ -2975,22 +3016,54 @@ export class SerumUI {
     b.addEventListener('pointerup', up);
     b.addEventListener('pointercancel', up);
   }
-  dragBegin(src, alt) {
+  // the drag ghost (touch: larger, above the finger, naming the target under it — the finger hides that target);
+  // quick: a touch drag started without the hold (its drop needs a settled target, settled())
+  dragBegin(src, alt, type, quick) {
     if (this.drag) this.dragDone(null);
-    const g = mk(this.d, 'div', 'sx-ghost', (alt ? 'Alt · ' : '') + srcLabel(this.s(), src));
+    const touch = type === 'touch', label = (alt ? 'Alt · ' : '') + srcLabel(this.s(), src);
+    const g = mk(this.d, 'div', 'sx-ghost' + (touch ? ' sx-ghost-touch' : ''), label);
     this.d.body.appendChild(g);
     this.el.classList.add('sx-dragging');
-    this.drag = { src, alt, ghost: g, hit: null, off: on(this.d, 'keydown', e => { if (e.key === 'Escape') { e.preventDefault(); this.dragDone(null); } }, true) };
+    this.drag = { src, alt, touch, quick: touch && !!quick, label, ghost: g, hit: null, at: 0,
+      off: on(this.d, 'keydown', e => { if (e.key === 'Escape') { e.preventDefault(); this.dragDone(null); } }, true) };
   }
-  dragMove(x, y) {
+  // t: the event time (wk.dragSource info.t) — when the target under the pointer last changed (settled())
+  dragMove(x, y, t) {
     const D = this.drag;
     if (!D) return;
-    D.ghost.style.transform = 'translate(' + (x + 12) + 'px,' + (y + 10) + 'px)';
     const hit = this.hitTest(x, y), el = hit ? hit.el : null;
+    if (!sameHit(D.hit, hit)) D.at = +t || 0;
+    let L;
+    if (D.touch) { const n = hit ? this.hitName(hit) : ''; L = D.label + (n ? (hit.kind === 'swapMacro' ? ' ⇄ ' : ' → ') + n : ''); }
+    ghostAt(D.ghost, x, y, D.touch, L);
     if (D.hit && D.hit.el !== el) D.hit.el.classList.remove('sx-droptgt');
     if (el) el.classList.add('sx-droptgt');
     this.el.classList.toggle('sx-candrop', !!hit);
     D.hit = hit;
+  }
+  // a quick touch drag's drop target counts once the finger has rested on it SETTLE_MS (by event time t)
+  settled(hit, t) {
+    const D = this.drag;
+    if (!D || !D.quick) return true;
+    return sameHit(D.hit, hit) && +t - D.at >= SETTLE_MS;
+  }
+  // a drop target's name for the touch ghost (the finger hides the target and its highlight); '' = none
+  hitName(h) {
+    const s = this.s();
+    try {
+      switch (h.kind) {
+        case 'dest': return core.destLabel(h.id, s, this.fx());
+        case 'xy': return 'X | Y';
+        case 'msrc': return 'Slot ' + (h.slot + 1) + (h.field === 'aux' ? ' aux source' : ' source');
+        case 'point': return 'LFO ' + (h.lfo + 1) + ' point';
+        case 'copyLfo': return 'copy to LFO ' + (h.to + 1);
+        case 'swapMacro': return srcLabel(s, 'macro' + h.to);
+        case 'lfoWt': return 'OSC ' + (OSC_L[h.o] || '?') + ' wavetable';
+        case 'lfoNoise': return 'Noise';
+        case 'module': return MOD_TITLE(h.m);
+        default: return '';
+      }
+    } catch (err) { return ''; }
   }
   dragDone(hit, x, y) {
     const D = this.drag;
@@ -3441,10 +3514,10 @@ export class SerumUI {
     const clear = () => { if (ghost) { ghost.remove(); ghost = null; } if (over) { over.classList.remove('sx-droptgt'); over = null; } };
     const ds = wk.dragSource(name, {
       data: module,
-      begin: i => { ghost = mk(this.d, 'div', 'sx-ghost', label(i, null)); this.d.body.appendChild(ghost); },
+      begin: i => { ghost = mk(this.d, 'div', 'sx-ghost' + (i.pointerType === 'touch' ? ' sx-ghost-touch' : ''), label(i, null)); this.d.body.appendChild(ghost); },
       move: i => {
-        const h = find(i), t = h ? h.el : null;
-        if (ghost) { ghost.style.transform = 'translate(' + (i.x + 12) + 'px,' + (i.y + 10) + 'px)'; const L = label(i, h); if (ghost.textContent !== L) ghost.textContent = L; }
+        const h = find(i), t = h ? h.el : null, touch = i.pointerType === 'touch', n = touch && h ? this.hitName(h) : '';
+        if (ghost) ghostAt(ghost, i.x, i.y, touch, label(i, h) + (n ? ' → ' + n : ''));
         if (t !== over) { if (over) over.classList.remove('sx-droptgt'); over = t; if (t) t.classList.add('sx-droptgt'); }
       },
       drop: i => {
@@ -4209,7 +4282,9 @@ export class SerumUI {
     });
     return row;
   }
-  // drag the handle onto another row: the row moves there (the rows between shift by one, §13.6)
+  // drag the handle onto another row: the row moves there (the rows between shift by one, §13.6). A finger keeps the
+  // 250 ms hold (wk.dragSource without scrollAxis): the handles line the scrolling matrix list, so a swipe over them
+  // reorders nothing
   rowDrag(handle, slot) {
     if (typeof wk.dragSource !== 'function') return;
     let line = null;

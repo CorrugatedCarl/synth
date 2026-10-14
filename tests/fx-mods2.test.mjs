@@ -12,9 +12,9 @@ import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { dspScope, source } from './dsp-scope.mjs';
-import { lawValue, lawNorm } from '../laws.js?v=6';
-import * as C from '../fx-core.js?v=6';
-import * as SMP from '../smp.js?v=6';
+import { lawValue, lawNorm } from '../laws.js?v=7';
+import * as C from '../fx-core.js?v=7';
+import * as SMP from '../smp.js?v=7';
 
 const FS = 48000;
 const arr = a => Array.from(a);                         // vm-realm arrays → plain arrays of this realm

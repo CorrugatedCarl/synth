@@ -21,7 +21,7 @@ import vm from 'node:vm';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadFixture } from './fixtures/load.mjs';
-import * as core from '../serum-core.js?v=6';
+import * as core from '../serum-core.js?v=7';
 import { dspScope, source as dspSource, noAlloc as noAlloc2 } from './dsp-scope.mjs';
 import * as GH from './golden-harness.mjs';
 import * as CPU from './cpu-gate.mjs';

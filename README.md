@@ -43,8 +43,33 @@ AudioWorklet DSP engine — no samples:
 * Projects autosave in the browser (IndexedDB, with the older localStorage data kept as a fallback); imported samples and
   wavetables live in the browser's storage and are embedded in saved project and preset files.
 
+## App
+
+* **Full screen** button in the header (where the browser offers element full screen — not iPhone Safari). On iPad the
+  installed app is the better full screen: the browser's keeps its own controls and may stop fast playing with a warning.
+* **Install app**: Chrome / Edge / Android / desktop through the browser's install prompt; iPad / iPhone (Safari, Chrome
+  or any other browser there) through Share → Add to Home Screen, explained in a sheet for the browser in use. The
+  installed app opens full screen from its icon (`manifest.webmanifest`, black-translucent status bar, safe-area aware)
+  and works offline after its first launch. On iPad / iPhone it keeps its own projects, separate from the browser's —
+  Save a project in one and Open it in the other to move it across; there Save, Export MIDI and Bounce WAV hand the file
+  to the share sheet (Save to Files).
+* Offline: `sw.js` precaches every file the page requests at the current `?v=` (modules, stylesheet, AudioWorklet
+  scripts, Workers) into a cache of that build, serves them cache-first, the page network-first (an error page never
+  replaces the cached app), Google Fonts stale-while-revalidate (kept at install; system fonts offline). Updates wait: a
+  small **Update available — Reload** toast (put off with ×, it comes back an hour later); Reload saves the project, then
+  the new version takes over. Nothing reloads by itself.
+
 No build step — static files only: the page (`index.html`, `style.css`, `main.js`, `song.js`, `roll.js`, `arrange.js`),
-ES modules (`models.js`, `serum-core.js` and its siblings, the panels), and the AudioWorklet scripts (`sx-*.js`,
-`serum-dsp.js`, `fx-mods2.js`, `fx-dsp.js`, then `engine.js`). To run locally serve the folder over HTTP (AudioWorklet
-needs a secure/localhost origin). Tests: `node --test 'tests/*.test.mjs'` (node ≥ 20); CPU bench in a browser:
-`tests/bench.html`.
+ES modules (`models.js`, `serum-core.js` and its siblings, the panels, `pwa.js`), the AudioWorklet scripts (`sx-*.js`,
+`serum-dsp.js`, `fx-mods2.js`, `fx-dsp.js`, then `engine.js`) and the service worker (`sw.js`). To run locally serve the
+folder over HTTP (AudioWorklet needs a secure/localhost origin; on localhost the service worker fetches `?v=` files
+network-first, so edits show without a version bump). Tests: `node --test 'tests/*.test.mjs'` (node ≥ 20); CPU bench in
+a browser: `tests/bench.html`.
+
+Releasing: bump `VERSION` in `main.js` and `assets.js` and every `?v=` (imports, `index.html`, tests) together —
+`tests/lint.test.mjs` checks they agree — then `node tools/precache.mjs --write` refreshes the service worker's list,
+version and `BUILD` (a hash of the precached files; `tests/pwa.test.mjs` checks the list against what the page requests
+and fails on a stale `BUILD`, so run it after any change to a site file). The installed app's cache is per build: a
+change shipped without the version bump still reaches it (through the update toast), but browsers without the service
+worker keep the old `?v=` files for up to 10 minutes — so bump for every release. Icons: `node tools/make-icons.mjs` (no
+dependencies) redraws `icons/*.png` from the site's mark.

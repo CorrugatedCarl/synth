@@ -10,8 +10,8 @@ import { readFileSync } from 'node:fs';
 
 // Imported before any DOM exists (§0.1, §10.6).
 const F = await import('../fx-ui.js');
-const wk = await import('../wk.js?v=6'); // the instance fx-ui.js imports (versioned specifier)
-const core = await import('../serum-core.js?v=6');
+const wk = await import('../wk.js?v=7'); // the instance fx-ui.js imports (versioned specifier)
+const core = await import('../serum-core.js?v=7');
 const { FXRackUI, moveModule, ladderLabel, moduleTitle, modulePresetPayload, applyModulePreset, svfDb, impulseDb, listRows, addMenuItems, moveTarget } = F;
 import { all, byCls, one, byAttr, fresh, fire, ptr, key, place, raf, advance } from './wk-dom.mjs';
 
@@ -558,6 +558,47 @@ test('FXRackUI: list drag reorders (yellow line), drops into branches, Alt-drag 
   key(nm, 'ArrowUp', { altKey: true });
   assert.deepEqual(st.fx.racks[0].mods.map(I => I.id), ['dist', 'dist2', 'split2']);
   assert.equal(d.activeElement, rowOf(rack, 'dist2').name);
+  rack.destroy();
+});
+
+test('FXRackUI: touch list drag — the ≡ grip (touch-action: none) drags on its first px of travel, any direction, with no hold; one finger only', () => {
+  const { rack, st, root } = mkRack({ fx: fx2([inst('dist', 'dist'), inst('dly', 'dly'), inst('rev', 'rev')]) });
+  rack.rowEls.forEach((r, i) => place(r.el, 0, i * 30, 170, 28));
+  place(rack.list, 0, 0, 170, 400);
+  const ins = one(root, 'fxr-ins'), order = () => st.fx.racks[0].mods.map(I => I.id);
+  const T = (n, type, x, y, o) => ptr(n, type, x, y, Object.assign({ pointerType: 'touch', pointerId: 7, isPrimary: true }, o));
+  const mv = (n, x, y) => { T(n, 'pointermove', x, y); return fire(n, 'touchmove', { touches: [{ clientX: x, clientY: y }] }); };
+  // dist (row 0) pressed and moved at once — no 250 ms wait: within the 6 px touch slop nothing starts, past it the drag runs
+  let grip = rowOf(rack, 'dist').grip;
+  T(grip, 'pointerdown', 160, 15);
+  assert.equal(mv(grip, 160, 19).defaultPrevented, false);
+  assert.equal(ins.hidden, true, 'undecided inside the touch slop');
+  assert.equal(mv(grip, 160, 40).defaultPrevented, true, 'a drag: the touchmove is cancelled (no page scroll, no pointercancel)');
+  assert.equal(ins.hidden, false, 'the insertion line shows');
+  mv(grip, 160, 75);
+  T(grip, 'pointerup', 160, 75);
+  fire(grip, 'click');
+  assert.equal(ins.hidden, true);
+  assert.deepEqual(order(), ['dly', 'rev', 'dist'], 'dropped below rev');
+  assert.deepEqual(st.edits.at(-1), { label: 'Move FX Module', phase: 'set' });
+  // sideways travel starts it too (nothing scrolls under the grip)
+  rack.rowEls.forEach((r, i) => place(r.el, 0, i * 30, 170, 28));
+  grip = rowOf(rack, 'rev').grip;
+  T(grip, 'pointerdown', 160, 45);
+  mv(grip, 150, 46);
+  assert.equal(ins.hidden, false);
+  mv(grip, 150, 2);
+  T(grip, 'pointerup', 150, 2);
+  assert.deepEqual(order(), ['rev', 'dly', 'dist']);
+  // a second finger before the travel (a pinch): no drag
+  rack.rowEls.forEach((r, i) => place(r.el, 0, i * 30, 170, 28));
+  grip = rowOf(rack, 'dist').grip;
+  T(grip, 'pointerdown', 160, 75);
+  fire(grip, 'touchmove', { touches: [{ clientX: 160, clientY: 76 }, { clientX: 100, clientY: 200 }] });
+  mv(grip, 160, 10);
+  T(grip, 'pointerup', 160, 10);
+  assert.equal(ins.hidden, true);
+  assert.deepEqual(order(), ['rev', 'dly', 'dist'], 'unchanged');
   rack.destroy();
 });
 

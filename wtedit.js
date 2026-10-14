@@ -23,8 +23,8 @@
 // WAV, Single-Cycle Waves (ZIP), 8-bit .256, Selection; TABLE ▸ Save Table… / Rename / Init All (the name field's menu,
 // also on a right-click of the name while it is not being edited; the name is tinted while the table is an automatic
 // " *" copy); a Shift/Alt modifier bar in touch mode (wk.touchMode, or the first touch inside the editor).
-import * as wk from './wk.js?v=6';
-import * as wt from './wt.js?v=6';
+import * as wk from './wk.js?v=7';
+import * as wt from './wt.js?v=7';
 
 const FRAME = 2048, MAXF = 256;
 const STORE_KEY = 'synth.sx.wte', FORMULA_KEY = 'synth.sx.formulas';

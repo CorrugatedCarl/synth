@@ -57,6 +57,29 @@ for (const f of MODULES) {
   });
 }
 
+// §0.4 for the tests and the installed app: the tests import the site's modules with the same ?v=N as the modules under
+// test (else a second instance of wk.js, serum-core.js … with its own state), and index.html and the service worker
+// (sw.js: its precache and cache name) carry that N too — one bump of main.js VERSION reaches everything
+test('§0.4: the tests\' versioned imports, index.html and sw.js carry ?v=' + N, () => {
+  const bad = [];
+  const walk = dir => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const u = new URL(e.name + (e.isDirectory() ? '/' : ''), dir);
+      if (e.isDirectory()) { if (e.name !== 'ref-p1') walk(u); continue; }
+      if (!/\.(mjs|js)$/.test(e.name)) continue;
+      for (const [spec] of specifiers(readFileSync(u, 'utf8')).filter(([sp]) => /\?v=\d/.test(sp))) {
+        if (!spec.endsWith('?v=' + N)) bad.push(u.pathname.split('/tests/')[1] + ': ' + spec);
+      }
+    }
+  };
+  walk(new URL('./', import.meta.url));
+  assert.deepEqual(bad, []);
+  const html = read(ROOT, 'index.html'), sw = read(ROOT, 'sw.js');
+  assert.deepEqual([...new Set([...html.matchAll(/\?v=(\d+)/g)].map(m => m[1]))], [N], 'index.html');
+  assert.equal((/const VERSION = '(\d+)'/.exec(sw) || [])[1], N, 'sw.js VERSION');
+  assert.equal((/const VERSION = '(\d+)'/.exec(read(ROOT, 'assets.js')) || [])[1], N, 'assets.js VERSION');
+});
+
 // every test file imports tests/v8-guard.mjs first (the node 24 / V8 crash guard of the parallel suite)
 test('tests: every test file imports ./v8-guard.mjs as its first import', () => {
   const T = new URL('./', import.meta.url);

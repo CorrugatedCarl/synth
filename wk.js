@@ -2159,41 +2159,81 @@ modifierBar.consume = consumeLatches;
 /* ---------------------------------------------------------- dragSource */
 // dragSource(el, payload): the drag gesture of tiles, module labels and handles (drag-to-modulate, module copy / swap;
 // §13.1). Mouse / pen: the drag starts after `slop` (4) px of travel. Touch: a `hold` (250 ms) without moving more than
-// 8 px arms it (class wk-armed; page scrolling is blocked from then on) and the next move starts it — a quicker swipe
-// stays a scroll, and a still hold of 500 ms still opens the long-press menu (a contextmenu before the drag starts
-// abandons it). payload = { data (value or () => value), begin?(info), move?(info), drop?(info), cancel?(info), hold?,
-// slop? }; info = { data, x, y, alt, shift, fine (the event keys or modifier latches at the press or the start),
-// pointerType, target (the element under the pointer: document.elementFromPoint — a drag ghost needs
-// pointer-events: none) }. The click that ends a drag is swallowed; Escape cancels; the latches are consumed when a
-// drag ends. Returns { active() → bool, cancel(), destroy() }.
+// 8 px arms it (class wk-armed; page scrolling is blocked from then on) and `touchSlop` (6) px of travel from there, in
+// any direction, starts it — a quicker swipe stays a scroll, finger jitter during a still hold starts nothing, and a still
+// hold of 500 ms still opens the long-press menu (a contextmenu before the drag starts abandons it; one during the drag,
+// from a long-press timer that outlived the start, is swallowed). payload.scrollAxis ('x' | 'y' | 'none', or a function
+// returning one, read at each touch press) makes the touch start axis-aware: the axis el's container scrolls natively
+// (its touch-action: pan-x / pan-y). A touch whose first `touchSlop` px run mainly ACROSS that axis starts the drag at
+// once, no hold; mainly ALONG it, it is left to the browser as a scroll (abandoned); 'none' (nothing scrolls under el,
+// e.g. touch-action: none) starts it on the first `touchSlop` px in any direction. Such a drag is `quick` in its info: it
+// may be a flick (a habitual page-scroll swipe), so a consumer can ask the finger to settle on a target before its drop
+// counts. Touch needs one finger: a non-primary touch starts nothing, and another pointer going down anywhere (watched
+// in the document's capture phase) or a touchmove with two touches abandons a gesture that has not started — a pinch or
+// two-finger scroll is never taken for a drag. Once a touch drag is decided, el's own non-passive touchmove listener
+// (registered before any touch begins, as iOS Safari requires; touch events stay aimed at the touched node) cancels
+// every move, so the page does not scroll and Safari does not pointercancel the gesture; the decision is also taken from
+// a touchmove that arrives before its pointermove. payload = { data (value or () => value), begin?(info), move?(info),
+// drop?(info), cancel?(info), hold?, slop?, touchSlop?, scrollAxis? }; info = { data, x, y, alt, shift, fine (the event
+// keys or modifier latches at the press or the start), pointerType, quick (a touch drag started without the hold), t
+// (the event's timeStamp; performance.now() without one), target (the element under the pointer:
+// document.elementFromPoint — a drag ghost needs pointer-events: none) }. The click that ends a drag is swallowed;
+// Escape cancels; the latches are consumed when a drag ends. Returns { active() → bool, cancel(), destroy() }.
 export function dragSource(el, payload) {
   const P = payload || {};
-  const hold = P.hold >= 0 ? +P.hold : 250, slop = P.slop > 0 ? +P.slop : 4;
+  const hold = P.hold >= 0 ? +P.hold : 250, slop = P.slop > 0 ? +P.slop : 4, tslop = P.touchSlop > 0 ? +P.touchSlop : 6;
   let g = null, keyOff = null, clickOff = null;
   const under = (x, y) => { const d = D(); try { return d && typeof d.elementFromPoint === 'function' ? d.elementFromPoint(x, y) : null; } catch (err) { return null; } };
-  const info = (G, x, y) => ({ data: call(P.data), x, y, alt: G.m.alt, shift: G.m.shift, fine: G.m.fine, pointerType: G.type, target: under(x, y) });
+  const tOf = e => (e && typeof e.timeStamp === 'number' && e.timeStamp > 0 ? e.timeStamp : nowMs());
+  const info = (G, x, y, e) => ({ data: call(P.data), x, y, alt: G.m.alt, shift: G.m.shift, fine: G.m.fine, pointerType: G.type,
+    quick: !!G.quick, t: tOf(e), target: under(x, y) });
   const cb = (k, i) => { if (typeof P[k] === 'function') P[k](i); };
+  const axisOf = () => {
+    let a = P.scrollAxis;
+    if (typeof a === 'function') { try { a = a(); } catch (err) { a = null; } }
+    return a === 'x' || a === 'y' || a === 'none' ? a : null;
+  };
+  // A pending touch at (x, y): 'drag', 'scroll' (the browser's: abandoned) or null (undecided yet).
+  function verdict(G, x, y) {
+    if (G.armed) return Math.hypot(x - G.ax, y - G.ay) > tslop ? 'drag' : null;
+    const dx = Math.abs(x - G.x0), dy = Math.abs(y - G.y0), d = Math.hypot(dx, dy);
+    if (!G.axis) return d > 8 ? 'scroll' : null; // moved before the hold: a scroll
+    if (d <= tslop) return null;
+    if (G.axis === 'none') return 'drag';
+    return (G.axis === 'x' ? dy > dx : dx > dy) ? 'drag' : 'scroll';
+  }
+  const unwatch = G => { if (G && G.docOff) { G.docOff(); G.docOff = null; } };
+  function abandon() { // a pending (not started) gesture
+    if (g.timer) clearTimeout(g.timer);
+    unwatch(g);
+    el.classList.remove('wk-armed');
+    g = null;
+  }
   function start(e) {
     const m = modsOf(e);
     g.m = { alt: g.m.alt || m.alt, shift: g.m.shift || m.shift, fine: g.m.fine || m.fine };
     g.on = true;
+    g.quick = g.type === 'touch' && !g.armed;
+    unwatch(g);
+    if (g.timer) { clearTimeout(g.timer); g.timer = 0; }
     el.classList.remove('wk-armed');
     el.classList.add('wk-dragging');
     try { el.setPointerCapture(g.id); } catch (err) { /* pointer gone */ }
     const d = D();
     if (d) keyOff = listen(d, 'keydown', ev => { if (ev.key === 'Escape' && g && g.on) { ev.preventDefault(); ev.stopPropagation(); end(null, true); } }, true);
-    cb('begin', info(g, e.clientX, e.clientY));
+    cb('begin', info(g, e.clientX, e.clientY, e));
   }
   function end(e, cancelled) {
     const G = g;
     if (!G) return;
     g = null;
     if (G.timer) clearTimeout(G.timer);
+    unwatch(G);
     if (keyOff) { keyOff(); keyOff = null; }
     try { el.releasePointerCapture(G.id); } catch (err) { /* released */ }
     el.classList.remove('wk-armed', 'wk-dragging');
     if (!G.on) return;
-    const i = info(G, e ? e.clientX : G.x, e ? e.clientY : G.y);
+    const i = info(G, e ? e.clientX : G.x, e ? e.clientY : G.y, e);
     if (cancelled) cb('cancel', i);
     else { if (e) eatClick(e.timeStamp); cb('drop', i); }
     consumeLatches();
@@ -2211,33 +2251,56 @@ export function dragSource(el, payload) {
     }, true);
     clickOff = off;
   }
+  // a touchmove's verdict (one finger only; the pointermove of the same move decides as well)
+  const touchVerdict = e => {
+    const T = e.touches;
+    if (!T || T.length !== 1 || !T[0]) return null;
+    return verdict(g, +T[0].clientX || 0, +T[0].clientY || 0);
+  };
   const offs = [
     listen(el, 'pointerdown', e => {
       if (e.button !== 0 || g) return;
       const t = e.target;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
       const touch = e.pointerType === 'touch';
-      g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, type: e.pointerType || 'mouse', on: false, armed: !touch, timer: 0, m: modsOf(e) };
-      if (touch) g.timer = setTimeout(() => { if (g && !g.on) { g.timer = 0; g.armed = true; el.classList.add('wk-armed'); } }, hold);
+      if (touch && e.isPrimary === false) return; // a second finger (a pinch, a two-finger scroll): never a drag
+      g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, ax: e.clientX, ay: e.clientY, type: e.pointerType || 'mouse',
+        on: false, armed: !touch, quick: false, timer: 0, docOff: null, m: modsOf(e), axis: touch ? axisOf() : null };
+      if (!touch) return;
+      g.timer = setTimeout(() => { if (g && !g.on) { g.timer = 0; g.armed = true; g.ax = g.x; g.ay = g.y; el.classList.add('wk-armed'); } }, hold);
+      // another pointer down anywhere before the drag starts (a second finger off el): abandoned
+      const d = el.ownerDocument || D();
+      if (d) g.docOff = listen(d, 'pointerdown', ev => { if (g && !g.on && ev.pointerId !== g.id) abandon(); }, true);
     }),
     listen(el, 'pointermove', e => {
       if (!g || e.pointerId !== g.id) return;
       g.x = e.clientX; g.y = e.clientY;
       if (!g.on) {
-        const d = Math.hypot(e.clientX - g.x0, e.clientY - g.y0);
-        if (!g.armed) { if (d > 8) { clearTimeout(g.timer); g = null; } return; } // moved before the hold: a scroll
-        if (d <= slop && g.type !== 'touch') return;
+        if (g.type === 'touch') {
+          const v = verdict(g, e.clientX, e.clientY);
+          if (v === 'scroll') { abandon(); return; }
+          if (v !== 'drag') return;
+        } else if (Math.hypot(e.clientX - g.x0, e.clientY - g.y0) <= slop) return;
         start(e);
       }
-      cb('move', info(g, e.clientX, e.clientY));
+      cb('move', info(g, e.clientX, e.clientY, e));
     }),
     listen(el, 'pointerup', e => { if (g && e.pointerId === g.id) end(e, false); }),
     listen(el, 'pointercancel', e => { if (g && e.pointerId === g.id) end(e, true); }),
     // only el's own capture counts: start() takes it from the touched child (a tile's label span holds the implicit
     // touch capture), and the browser then fires a bubbling lostpointercapture at that child
     listen(el, 'lostpointercapture', e => { if (g && g.on && e.pointerId === g.id && e.target === el) end(e, true); }),
-    listen(el, 'contextmenu', () => { if (g && !g.on) { clearTimeout(g.timer); el.classList.remove('wk-armed'); g = null; } }),
-    listen(el, 'touchmove', e => { if (g && g.armed && g.type === 'touch' && e.cancelable) e.preventDefault(); }, { passive: false }),
+    listen(el, 'contextmenu', e => {
+      if (!g) return;
+      if (g.on) { e.preventDefault(); e.stopImmediatePropagation(); return; } // a long-press that outlived the start
+      abandon();
+    }),
+    listen(el, 'touchmove', e => {
+      if (!g) return;
+      if (!g.on && g.type === 'touch' && e.touches && e.touches.length > 1) { abandon(); return; } // two fingers: theirs
+      if (!e.cancelable) return;
+      if (g.on || (g.type === 'touch' && (g.armed || touchVerdict(e) === 'drag'))) e.preventDefault();
+    }, { passive: false }),
   ];
   return {
     active: () => !!(g && g.on),
@@ -2720,7 +2783,7 @@ function hideTip(el) {
 function refreshTip(el) { if (tipOwner === el && tipEl && tipEl.classList.contains('wk-show')) showTip(el); }
 
 /* ------------------------------------------------------------ DSP loader */
-// Injects each classic DSP script once per document (keyed by path, so 'serum-dsp.js?v=6' and 'serum-dsp.js'
+// Injects each classic DSP script once per document (keyed by path, so 'serum-dsp.js?v=7' and 'serum-dsp.js'
 // are the same script), in order (async = false). Resolves when every script has loaded, failed or timed out;
 // never rejects. A missing, broken or failed script yields null for its global. DSP_GLOBALS = the SPEC-serum2 §0.3
 // list (files 1–11, table order) → their globals: a script whose global is already defined (a static <script> or
@@ -3052,6 +3115,7 @@ const CSS = `
 .wk-mkeys { display: inline-flex; gap: 3px; }
 .wk-mk.wk-lock { box-shadow: 0 0 0 2px var(--sx-on, #6fe3a1); }
 .wk-armed { box-shadow: 0 0 0 2px var(--sx-accent, #4fb3ff); }
+.wk-armed, .wk-dragging { user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .wk-menu, .wk-seg, .wk-tog, .wk-mkeys, .wk-pop, .wk-ctx, .wk-rb, .wk-xy, .gx-bar, .gx-btn, .gx-overlay, .gx-pz { touch-action: manipulation; }
 .wk-sb, .wk-mbtn, .wk-arr, .gx-btn { position: relative; }
 .wk-dragging { opacity: 0.6; }

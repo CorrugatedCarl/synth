@@ -7,7 +7,7 @@
 //   (data-oscdisp on the oscillator display, data-noisepanel on NOISE); made = every panel built
 //   oscData(kit): { tinfo, forget, lfoToWavetable, lfoToNoise, renderOscWarp, lfoShape, canRenderWarp } recording
 //   calls = [[name, …args]]
-import * as core from '../../serum-core.js?v=6';
+import * as core from '../../serum-core.js?v=7';
 
 export * from '../../sx-ui-osc.js?real';
 export const __stub = true;

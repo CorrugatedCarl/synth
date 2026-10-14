@@ -7,7 +7,12 @@
 //    (gain / stereo-panner / destination graph mixed),
 //  - storage: a fake localStorage and, optionally, the fake IndexedDB of tests/fakes.mjs (appstore `synth-app`);
 //    no Workers (the asset manager builds on the main thread), no BroadcastChannel,
-//  - controllable requestAnimationFrame (sim.raf() runs the queued callbacks) and unref'd timers (the test process exits).
+//  - controllable requestAnimationFrame (sim.raf() runs the queued callbacks) and unref'd timers (the test process exits),
+//  - the browser around the page (pwa.js): o.ua / o.platform / o.touch (navigator), o.display ('standalone' |
+//    'fullscreen': the display-mode media queries that match), o.navStandalone (iOS navigator.standalone), o.fs (the
+//    Fullscreen API on document.documentElement: 'std' | 'webkit'; none by default), o.sw (a navigator.serviceWorker
+//    fake), o.location (merged into location: protocol, hostname, …; location.reload() counts sim.reloads),
+//    navigator.storage (persisted() / persist() calls in sim.persist).
 // main.js publishes its hosts and a few internals on globalThis.__synthTest.api (its test hook) for the tests.
 //   const sim = await bootMain({ hash: '#serum', idb: fakeIDB(), ls: fakeStorage({...}) });
 //   await sim.power(); sim.raf(); sim.run(48000); sim.key('KeyA', true) …
@@ -150,7 +155,7 @@ function panMix(L, R, pan, g, oL, oR, n) {
 /* ------------------------------------------------------------------ boot */
 let boots = 0;
 export async function bootMain(o = {}) {
-  const dom = makeDom(), sim = { dom, live: [], offline: [], rafQ: [], logs: [], posted: [] };
+  const dom = makeDom(), sim = { dom, live: [], offline: [], rafQ: [], logs: [], posted: [], reloads: 0, persist: [] };
   // the page's initially hidden elements (index.html `hidden` attributes)
   for (const m of readFileSync(new URL('index.html', ROOT), 'utf8').matchAll(/<\w+\s[^>]*>/g)) {
     const id = /\bid="([^"]+)"/.exec(m[0]);
@@ -224,8 +229,10 @@ export async function bootMain(o = {}) {
   const G = globalThis;
   Object.assign(G, {
     document: dom.document, window: G, localStorage: ls, AudioContext, OfflineAudioContext, AudioWorkletNode,
-    location: { hash: o.hash || '', search: '' }, history: { replaceState() {} }, isSecureContext: true,
-    matchMedia: () => ({ matches: !!o.touch, addEventListener() {}, removeEventListener() {} }),
+    location: Object.assign({ hash: o.hash || '', search: '', protocol: 'http:', hostname: 'sim.test', href: 'http://sim.test/', reload() { sim.reloads++; } }, o.location || {}),
+    history: { replaceState() {} }, isSecureContext: true,
+    // display-mode queries match o.display only; every other query (pointer: coarse, …) matches on a touch device
+    matchMedia: q => ({ matches: /display-mode/.test(q) ? !!o.display && q.includes(o.display) : !!o.touch, addEventListener() {}, removeEventListener() {} }),
     requestAnimationFrame: f => { sim.rafQ.push(f); return sim.rafQ.length; }, cancelAnimationFrame: () => {},
     alert: m => sim.logs.push('alert: ' + m), confirm: () => true, prompt: () => null,
     addEventListener: (type, fn) => { (dom.winL[type] || (dom.winL[type] = [])).push(fn); }, removeEventListener() {},
@@ -234,9 +241,24 @@ export async function bootMain(o = {}) {
   G.indexedDB = o.idb || undefined;
   G.BroadcastChannel = undefined;
   G.Worker = undefined;
-  Object.defineProperty(G, 'navigator', { value: { userAgent: 'node-sim', platform: 'node', maxTouchPoints: o.touch ? 5 : 0, storage: { persist: () => Promise.resolve(true) } }, configurable: true, writable: true });
+  const storage = { persisted: () => { sim.persist.push('persisted'); return Promise.resolve(false); }, persist: () => { sim.persist.push('persist'); return Promise.resolve(true); } };
+  const nav = { userAgent: o.ua || 'node-sim', platform: o.platform || 'node', maxTouchPoints: o.touch ? 5 : 0, storage };
+  if (o.navStandalone !== undefined) nav.standalone = o.navStandalone;
+  if (o.sw) nav.serviceWorker = o.sw;
+  Object.defineProperty(G, 'navigator', { value: nav, configurable: true, writable: true });
+  // the Fullscreen API (pwa.js): none unless o.fs; entering / leaving fires (webkit)fullscreenchange on the document
+  const D = dom.document, root = D.documentElement, pre = o.fs === 'webkit' ? 'webkit' : '';
+  const fsChange = () => { for (const f of dom.docL[pre ? 'webkitfullscreenchange' : 'fullscreenchange'] || []) f({ type: 'fullscreenchange' }); };
+  Object.assign(D, { readyState: 'complete', fullscreenEnabled: o.fs === 'std', fullscreenElement: null, webkitFullscreenEnabled: o.fs === 'webkit', webkitFullscreenElement: null,
+    exitFullscreen: undefined, webkitExitFullscreen: undefined });
+  Object.assign(root, { requestFullscreen: undefined, webkitRequestFullscreen: undefined });
+  if (o.fs) {
+    const el = pre ? 'webkitFullscreenElement' : 'fullscreenElement';
+    root[pre ? 'webkitRequestFullscreen' : 'requestFullscreen'] = function (opt) { sim.fsCalls = (sim.fsCalls || []).concat([['enter', opt]]); D[el] = root; fsChange(); return pre ? undefined : Promise.resolve(); };
+    D[pre ? 'webkitExitFullscreen' : 'exitFullscreen'] = function () { sim.fsCalls = (sim.fsCalls || []).concat([['exit']]); D[el] = null; fsChange(); return pre ? undefined : Promise.resolve(); };
+  }
   G.__synthTest = {};
-  const url = new URL('main.js?v=6&sim=' + (++boots), ROOT).href;
+  const url = new URL('main.js?v=7&sim=' + (++boots), ROOT).href;
   await import(url);
   const api = G.__synthTest.api;
   if (!api) throw new Error('main.js did not publish its test hook');
@@ -279,6 +301,8 @@ export async function bootMain(o = {}) {
     },
     // lets promise chains and 0-ms timers settle
     async settle(ms = 5) { await new Promise(r => realTimeout(r, ms)); },
+    // a window event (beforeinstallprompt, appinstalled, load …) to the page's listeners
+    win(type, extra) { const e = Object.assign({ type, preventDefault() { e.defaultPrevented = true; }, defaultPrevented: false }, extra || {}); for (const f of dom.winL[type] || []) f(e); return e; },
   });
   return sim;
 }

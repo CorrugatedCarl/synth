@@ -11,7 +11,7 @@
 // `get` returns a Table for wavetables (frames sliced from the buffer) and the record itself for noise (level 0;
 // wt.noiseEntry builds the playable entry). `put` accepts a Table, a noise record, a noise entry (level 0 is stored),
 // a frameToNoise result or a stored/decoded record.
-import { FRAME, uuid } from './wt.js?v=6';
+import { FRAME, uuid } from './wt.js?v=7';
 
 const DB_NAME = 'synth-wt', DB_VER = 1, STORE = 'tables', WEEK = 7 * 86400000;
 const LE = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;

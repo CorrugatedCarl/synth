@@ -1,13 +1,14 @@
-import { MODELS, DX_ALGS, patchFor, groupSong } from './models.js?v=6';
-import * as S from './song.js?v=6';
-import { PianoRoll } from './roll.js?v=6';
-import { Arrangement } from './arrange.js?v=6';
-import * as core from './serum-core.js?v=6';
-import { openAppStore } from './appstore.js?v=6';
-import { createAssetManager, portPoster, userIdsOf, userAssetIds, idKind, TEXT as ATEXT } from './assets.js?v=6';
-import { createMidi, targets as midiTargets, noteCh, noteMsg } from './midi.js?v=6';
+import { MODELS, DX_ALGS, patchFor, groupSong } from './models.js?v=7';
+import * as S from './song.js?v=7';
+import { PianoRoll } from './roll.js?v=7';
+import { Arrangement } from './arrange.js?v=7';
+import * as core from './serum-core.js?v=7';
+import { openAppStore } from './appstore.js?v=7';
+import { createAssetManager, portPoster, userIdsOf, userAssetIds, idKind, TEXT as ATEXT } from './assets.js?v=7';
+import { createMidi, targets as midiTargets, noteCh, noteMsg } from './midi.js?v=7';
+import { initApp } from './pwa.js?v=7';
 
-const VERSION = '6';
+const VERSION = '7';
 const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -330,9 +331,21 @@ const DSP_FILES = ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-s
   'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js'];
 const DSP_URLS = DSP_FILES.map(f => f + '?v=' + VERSION);
 async function addModules(c) {
-  const res = await Promise.allSettled(DSP_URLS.map(u => c.audioWorklet.addModule(u)));
+  const res = await Promise.allSettled(DSP_URLS.map(u => addModule(c, u)));
   res.forEach((r, i) => { if (r.status === 'rejected') console.warn('DSP script not loaded: ' + DSP_URLS[i] + ' (' + (r.reason && r.reason.message) + ')'); });
-  await c.audioWorklet.addModule('engine.js?v=' + VERSION);
+  await addModule(c, 'engine.js?v=' + VERSION);
+}
+// A worklet script the browser could not fetch — offline, in a browser that does not hand worklet requests to the service
+// worker (sw.js) — is fetched by the page, which the worker answers from its cache, and added from a blob: URL (the same
+// script: the DSP scripts and engine.js are classic scripts without imports). Any other failure stands.
+async function addModule(c, url) {
+  try { await c.audioWorklet.addModule(url); } catch (err) {
+    let text = null;
+    try { const r = await fetch(url); if (r.ok) text = await r.text(); } catch { /* not cached either */ }
+    if (text == null || typeof Blob !== 'function' || typeof URL.createObjectURL !== 'function') throw err;
+    const b = URL.createObjectURL(new Blob([text], { type: 'text/javascript' }));
+    try { await c.audioWorklet.addModule(b); } finally { URL.revokeObjectURL(b); }
+  }
 }
 const kHz = x => (x / 1000).toFixed(1).replace(/\.0$/, '');
 let pendCtx = null, failMsg = '', silentEl = null, devRate = +store.get('synth.devsr', 0) || 0;
@@ -2569,14 +2582,47 @@ function initTransport() {
   };
   $('#fBounce').onclick = () => openBounce();
   $('#bCancel').onclick = () => { $('#modal').hidden = true; };
-  $('#bGo').onclick = () => bounce();
+  bounceButton();
   $('#modal').addEventListener('pointerdown', e => { if (e.target.id === 'modal') $('#modal').hidden = true; });
 }
 function slug(s) { return (s || 'untitled').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-').toLowerCase() || 'untitled'; }
-function download(blob, name) {
+// The files the page hands over (Save, Export MIDI, Bounce WAV, presets, wavetables…). The iPad / iPhone home-screen app
+// may not download a blob: link (iPadOS has ignored it there, or shown the file with no way back): there the share sheet
+// takes the file (Save to Files, AirDrop…). Sharing needs a fresh tap: a file that is ready later (a bounce, a slow save)
+// is offered to tap through `later(go)` (the caller's own control), else on the notice line.
+function download(blob, name, later) {
+  const file = shareable(blob, name);
+  if (file) shareFile(file, later, false); else saveLink(blob, name);
+}
+function saveLink(blob, name) {
   const url = URL.createObjectURL(blob), a = h('a');
   a.href = url; a.download = name; document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+function shareable(blob, name) {
+  const nav = navigator;
+  if (!app || !app.platform.ios || nav.standalone !== true || typeof nav.share !== 'function' || typeof nav.canShare !== 'function' || typeof File !== 'function') return null;
+  try { const f = new File([blob], name, { type: blob.type || 'application/octet-stream' }); return nav.canShare({ files: [f] }) ? f : null; } catch { return null; }
+}
+function shareFile(file, later, again) {
+  const offer = () => {
+    const go = () => shareFile(file, null, true);
+    if (typeof later === 'function') { later(go); return; }
+    const msg = file.name + ' is ready — tap here to save or share it';
+    noticeActs.set(msg, () => { noticeActs.delete(msg); notice('', 0); go(); });
+    notice(msg, 60000);
+  };
+  const ua = navigator.userActivation;
+  if (!again && ua && ua.isActive === false) { offer(); return; } // the tap that asked for it has expired
+  let p;
+  try { p = navigator.share({ files: [file] }); } catch (err) { p = Promise.reject(err); }
+  Promise.resolve(p).catch(err => {
+    const why = err && err.name;
+    if (why === 'AbortError') return; // the user closed the sheet
+    if (why === 'NotAllowedError' && !again) { offer(); return; }
+    console.warn('SYNTH: sharing ' + file.name + ' (' + (err && err.message) + ') — downloading it instead');
+    saveLink(file, file.name);
+  });
 }
 function importMidiFile(bytes, fname) {
   const r = S.importMIDI(bytes);
@@ -2600,7 +2646,10 @@ function importMidiFile(bytes, fname) {
 }
 
 /* ------------------------------------------------------------ bounce */
+// the dialog's main button: Render & download (Save WAV… while a rendered file waits for a tap to be shared)
+function bounceButton() { const go = $('#bGo'); go.textContent = 'Render & download'; go.onclick = () => bounce(); }
 function openBounce() {
+  bounceButton();
   $('#bRange').value = range ? 'sel' : project.loop.on ? 'loop' : 'song';
   $('#bRange').querySelector('[value=sel]').disabled = !range;
   $('#bNote').textContent = 'Renders every audible track (mute/solo respected) offline — no clicks or dropouts regardless of CPU.';
@@ -2668,8 +2717,14 @@ async function bounce() {
     const target = norm ? Math.pow(10, -0.3 / 20) : peak > 0.999 ? 0.999 : peak;
     if (peak > 0 && (norm || peak > 0.999)) { const k = target / peak; for (const c of chs) for (let i = 0; i < c.length; i++) c[i] *= k; }
     const wav = S.encodeWAV(chs, sr, bits);
-    download(new Blob([wav], { type: 'audio/wav' }), `${slug(project.name)}-${sr / 1000}k-${bits}${bits === 32 ? 'f' : 'bit'}.wav`);
-    note.textContent = `Done: ${secs.toFixed(1)} s rendered in ${((performance.now() - t0) / 1000).toFixed(1)} s · peak ${(20 * Math.log10(Math.max(1e-9, peak))).toFixed(1)} dBFS${peak > 0.999 && !norm ? ' (scaled to avoid clipping)' : ''}.`;
+    const done = `Done: ${secs.toFixed(1)} s rendered in ${((performance.now() - t0) / 1000).toFixed(1)} s · peak ${(20 * Math.log10(Math.max(1e-9, peak))).toFixed(1)} dBFS${peak > 0.999 && !norm ? ' (scaled to avoid clipping)' : ''}.`;
+    note.textContent = done;
+    // (the home-screen app on iPad / iPhone shares the file, which needs a fresh tap after a render: Save WAV… here)
+    download(new Blob([wav], { type: 'audio/wav' }), `${slug(project.name)}-${sr / 1000}k-${bits}${bits === 32 ? 'f' : 'bit'}.wav`, share => {
+      note.textContent = done + ' Tap Save WAV… to keep the file.';
+      go.textContent = 'Save WAV…';
+      go.onclick = () => { bounceButton(); share(); };
+    });
   } catch (err) {
     note.textContent = 'Render failed: ' + err.message;
   }
@@ -2710,31 +2765,96 @@ let kbFoc = null; // the element that last got focus from the keyboard (Tab, sho
 const kbFocus = t => !!t && t === kbFoc;
 const isBlack = n => [1, 3, 6, 8, 10].includes(n % 12);
 const keyEls = new Map();
-let kbLo = 48;
+// The on-screen keyboard's view (synth.kbSize {h, kw}, px, 0 = the default for the screen; synth.kbHidden): the key height
+// (the grip on the panel's top edge; the panel never takes more than 60 % of the window) and the white-key width (the Key
+// size slider; 0 fits 2–5 whole octaves to the width, the Phase-1 look)
+const KB_H = [70, 360], KB_W = [16, 96];
+const kbSize = (() => {
+  const o = store.get('synth.kbSize', null), n = (v, [a, b]) => (Number.isFinite(+v) && +v > 0 ? clamp(Math.round(+v), a, b) : 0);
+  return o && typeof o === 'object' ? { h: n(o.h, KB_H), kw: n(o.kw, KB_W) } : { h: 0, kw: 0 };
+})();
+const kbSave = () => store.set('synth.kbSize', { h: kbSize.h, kw: kbSize.kw });
+// The keys shown at a width of W px: kw = 0 fits whole octaves (2–5), else as many whole white keys of kw px as fit (at
+// least an octave, C to C; at most the 75 of MIDI 0–127). The range starts on a C at or below the computer keys' octave
+// (60 + 12·octave) — further below the more octaves fit — and fills upwards (downwards once it reaches G9).
+function kbRange(W, kw, oct) {
+  const nW = kw > 0 ? clamp(Math.floor(W / kw), 8, 75) : (W < 430 ? 2 : W < 700 ? 3 : W < 1050 ? 4 : 5) * 7 + 1;
+  let lo = clamp(60 + 12 * oct - 12 * Math.floor((Math.floor((nW - 1) / 7) - 1) / 2), 0, 120), hi = lo, c = 1;
+  while (c < nW && hi < 127) { hi++; if (!isBlack(hi)) c++; }
+  while (c < nW && lo > 0) { lo--; if (!isBlack(lo)) c++; }
+  return { lo, hi, nW: c };
+}
+let kbLo = 48, kbHi = 96, kbW = 0, kbPx = 0; // the range shown, the width it was laid out for and its white-key width (px)
+// (Re)builds the keys. Notes held on them are kept: the pointers are captured by #keys (not by a key) and remember their
+// note, so a rebuild under a finger (octave, key size, resize) still releases it, and held notes stay lit.
 function buildKeys() {
   const el = $('#keys');
   el.innerHTML = ''; keyEls.clear();
-  const w = el.clientWidth || window.innerWidth;
-  const octs = w < 430 ? 2 : w < 700 ? 3 : w < 1050 ? 4 : 5;
-  kbLo = clamp(60 + 12 * octave - 12 * Math.floor((octs - 1) / 2), 0, 108);
-  const hi = Math.min(127, kbLo + octs * 12);
-  let nW = 0; for (let n = kbLo; n <= hi; n++) if (!isBlack(n)) nW++;
-  const ww = 100 / nW, bw = ww * 0.62;
+  const w = el.clientWidth || window.innerWidth, R = kbRange(w, kbSize.kw, octave);
+  kbLo = R.lo; kbHi = R.hi; kbW = w; kbPx = w / R.nW;
+  const ww = 100 / R.nW, bw = ww * 0.62;
   let wi = 0;
   const comp = 60 + 12 * octave;
   const lit = new Set([...held.keys()].map(k => +k.split(':')[1]));
-  for (let n = kbLo; n <= hi; n++) {
+  for (let n = R.lo; n <= R.hi; n++) {
     const k = h('div', 'key ' + (isBlack(n) ? 'b' : 'w'));
     k.dataset.n = n;
     if (isBlack(n)) { k.style.left = `calc(${wi * ww - bw / 2}% )`; k.style.width = bw + '%'; }
-    else { k.style.left = wi * ww + '%'; k.style.width = `calc(${ww}% + 1px)`; wi++; if (n % 12 === 0) k.append(h('span', 'nm', 'C' + (n / 12 - 1))); }
+    else { k.style.left = wi * ww + '%'; k.style.width = `calc(${ww}% + 1px)`; wi++; if (n % 12 === 0 && (kbPx >= 17 || !kbSize.kw)) k.append(h('span', 'nm', 'C' + (n / 12 - 1))); }
     const kc = KEYLAB[n - comp];
-    if (kc && w > 600) k.append(h('span', 'kb', keyLab[kc]));
+    if (kc && w > 600 && kbPx >= 22) k.append(h('span', 'kb', keyLab[kc])); // (labels only where they fit)
     if (lit.has(n)) k.classList.add('down');
     keyEls.set(n, k);
     el.append(k);
   }
   $('#octv').textContent = 'Oct ' + (octave > 0 ? '+' : '') + octave;
+  // the slider spans the widths that differ at this width: from the widest that still shows all 75 keys to the narrowest
+  // that shows one octave (8 white keys); a saved width outside them is kept, the slider just shows its end
+  const s = $('#kbw');
+  s.min = String(Math.max(KB_W[0], Math.floor(w / 75))); s.max = String(clamp(Math.floor(w / 9) + 1, KB_W[0] + 8, KB_W[1]));
+  s.value = String(kbSize.kw || clamp(Math.round(kbPx), KB_W[0], KB_W[1]));
+  s.setAttribute('aria-valuetext', `${R.nW} white keys, ${noteName(R.lo)} to ${noteName(R.hi)}${kbSize.kw ? '' : ' (fitted to the screen)'}`);
+}
+function setKeyWidth(px, save = true) {
+  kbSize.kw = px > 0 ? clamp(Math.round(px), KB_W[0], KB_W[1]) : 0;
+  buildKeys();
+  if (save) kbSave();
+}
+let kbH = 170; // the key height in use (px)
+const kbDefH = () => (window.innerWidth <= 900 ? 128 : 170); // = style.css .keys
+// the panel's height besides the keys (toolbar, padding; not a passing notice), measured while the keys are shown
+function kbChrome() {
+  const p = $('#perf'), nt = $('#notice'), d = p.offsetHeight - $('#keys').offsetHeight - (nt.hidden ? 0 : nt.offsetHeight + 8);
+  return !$('#kbrow').hidden && d > 0 ? d : 64;
+}
+const kbMaxH = (chrome = kbChrome()) => clamp(Math.floor(0.6 * (window.innerHeight || 800) - chrome), KB_H[0], KB_H[1]);
+// (a chosen height is shown within 70 px … 60 % of the window; the default is the Phase-1 height whatever the window)
+function applyKbHeight(chrome = kbChrome()) {
+  const max = kbMaxH(chrome), g = $('#kbGrip'), p = $('#perf');
+  kbH = kbSize.h ? clamp(kbSize.h, KB_H[0], max) : kbDefH();
+  p.style.setProperty('--kbh', kbH + 'px');
+  p.classList.toggle('short', kbH < 100); // the wheels drop their labels
+  g.setAttribute('aria-valuenow', String(kbH)); g.setAttribute('aria-valuemax', String(Math.max(max, kbH)));
+  g.setAttribute('aria-valuetext', `${kbH} pixels${kbSize.h ? '' : ' (default)'}`);
+}
+// px: the key height (0 = the default for the screen), within 70 px … 60 % of the window. Asking for that limit or more
+// while the keys already reach it keeps the height chosen before (was; a drag's: at its start), so one chosen in a taller
+// window comes back when there is room again.
+function setKbHeight(px, save = true, chrome = kbChrome(), was = kbSize.h) {
+  const max = kbMaxH(chrome), p = Math.round(px), shown = was ? Math.min(was, max) : kbDefH();
+  kbSize.h = !(px > 0) ? 0 : p < max ? Math.max(KB_H[0], p) : p >= shown && shown >= max ? was : max;
+  applyKbHeight(chrome);
+  if (save) kbSave();
+}
+function setKbHidden(on, save = true) {
+  const b = $('#kbHide');
+  if (on) releasePtrs(); // fingers on the keys as they go: their notes end now
+  $('#kbrow').hidden = on; $('#perf').classList.toggle('min', on);
+  b.setAttribute('aria-expanded', on ? 'false' : 'true');
+  b.querySelector('span').textContent = on ? 'Show keys' : 'Hide keys';
+  b.title = on ? 'Show the on-screen keyboard' : 'Hide the on-screen keyboard (the controls stay)';
+  if (save) store.set('synth.kbHidden', on);
+  if (!on) { applyKbHeight(); buildKeys(); } // laid out for the width they now have
 }
 function keyVis(n, on) { const k = keyEls.get(n); if (k) k.classList.toggle('down', on); }
 function keyAt(x, y) {
@@ -2747,7 +2867,77 @@ function velAt(y, n) {
   const r = k.getBoundingClientRect();
   return clamp(0.3 + 0.75 * (y - r.top) / r.height, 0.05, 1);
 }
-const ptrs = new Map();
+const ptrs = new Map(); // pointer id -> the note it holds on the keys (null: between keys)
+function releasePtrs() {
+  const el = $('#keys');
+  for (const [id, n] of [...ptrs]) {
+    ptrs.delete(id);
+    try { el.releasePointerCapture(id); } catch { /* already released */ }
+    if (n != null && ![...ptrs.values()].includes(n)) noteOff(n);
+  }
+}
+// fn on a double-click (the mouse: its own dblclick) or a double tap (touch, pen: touch browsers need not send dblclick, so
+// theirs is ignored): two taps < 450 ms and 16 px apart, each a press of < 350 ms that moved < 4 px and changed nothing (the
+// element's value kept, still(): e.g. no drag), so quick nudges of a control are not a reset
+function onDouble(el, fn, still = () => true) {
+  let down = null, tap = null, type = 'mouse';
+  el.addEventListener('dblclick', () => { if (type === 'mouse') fn(); });
+  el.addEventListener('pointerdown', e => {
+    type = e.pointerType || 'mouse';
+    down = e.button > 0 || type === 'mouse' ? null : { t: e.timeStamp, x: e.clientX, y: e.clientY, v: el.value };
+  });
+  el.addEventListener('pointerup', e => {
+    const d = down; down = null;
+    if (!d || e.timeStamp - d.t > 350 || Math.hypot(e.clientX - d.x, e.clientY - d.y) >= 4 || el.value !== d.v || !still()) { tap = null; return; }
+    if (tap && d.t - tap.t < 450 && Math.hypot(d.x - tap.x, d.y - tap.y) < 16) { tap = null; fn(); } else tap = { t: e.timeStamp, x: d.x, y: d.y };
+  });
+}
+// the keyboard's view controls: Hide / Show keys, the height grip (drag; arrows, Page Up / Down, Home / End when focused;
+// double-click / double-tap or Enter / Delete / Backspace resets) and the Key size slider (double-click / double-tap or
+// Delete / Backspace: fitted to the screen again)
+function initKbView() {
+  const grip = $('#kbGrip'), kw = $('#kbw');
+  $('#kbHide').onclick = () => setKbHidden(!$('#kbrow').hidden);
+  const hid = !!store.get('synth.kbHidden', false);
+  setKbHidden(hid, false); // (shown: sized and laid out for the width)
+  if (hid) applyKbHeight();
+  noMenu(grip);
+  let moved = false; // (the last press of the grip dragged it: not a tap)
+  grip.addEventListener('pointerdown', e => {
+    if (e.button > 0) return;
+    e.preventDefault(); // (a mouse press does not focus it: the arrow keys stay the page's)
+    const y0 = e.clientY, h0 = kbH, was = kbSize.h, chrome = kbChrome();
+    moved = false;
+    grip.classList.add('drag');
+    track(grip, e, ev => {
+      if (!moved && Math.abs(ev.clientY - y0) < 3) return; // a tap (or the first of a double tap) leaves it alone
+      moved = true;
+      setKbHeight(Math.max(KB_H[0], h0 + y0 - ev.clientY), false, chrome, was); // up = taller
+    }, () => { grip.classList.remove('drag'); if (moved) kbSave(); });
+  });
+  onDouble(grip, () => setKbHeight(0), () => !moved);
+  grip.addEventListener('keydown', e => {
+    const k = e.key, st = e.shiftKey ? 1 : 10;
+    const d = { ArrowUp: st, ArrowRight: st, ArrowDown: -st, ArrowLeft: -st, PageUp: 40, PageDown: -40 }[k];
+    if (d) setKbHeight(kbH + d); else if (k === 'Home') setKbHeight(KB_H[0]); else if (k === 'End') setKbHeight(KB_H[1]);
+    else if (k === 'Enter' || k === 'Delete' || k === 'Backspace') setKbHeight(0); else return;
+    e.preventDefault(); e.stopPropagation(); // (not the page's arrow / Home / Delete keys)
+  });
+  kw.addEventListener('input', () => setKeyWidth(+kw.value || KB_W[0], false));
+  kw.addEventListener('change', kbSave);
+  onDouble(kw, () => setKeyWidth(0));
+  kw.addEventListener('keydown', e => { // (the arrows, Page Up / Down, Home / End are the slider's own)
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+    e.preventDefault(); e.stopPropagation(); // (not the page's Delete: the piano roll's selected notes stay)
+    setKeyWidth(0);
+  });
+  if (typeof ResizeObserver === 'function') { // the keys' own width can change without a window resize (a scrollbar)
+    let q = 0;
+    new ResizeObserver(() => {
+      if (!q) q = requestAnimationFrame(() => { q = 0; const w = $('#keys').clientWidth; if (w && w !== kbW) buildKeys(); });
+    }).observe($('#keys'));
+  }
+}
 function initKeys() {
   const el = $('#keys');
   el.addEventListener('pointerdown', e => {
@@ -2781,12 +2971,13 @@ function initKeys() {
     const inRoll = !$('#tab-roll').hidden && lastArea === 'roll';
     if (k === 'escape') { // works whatever has focus
       if (!$('#modal').hidden) { $('#modal').hidden = true; return; }
+      if (app && app.sheetOpen()) { app.closeSheet(); return; }
       if (cancelLearn(true)) return; // a pending MIDI Learn, not a panic
       if (textEntry(t) || (t && t.tagName === 'SELECT')) t.blur();
       if (inRoll && roll.getSelection().length) roll.selectNone(); else panic();
       return;
     }
-    if (textEntry(t) || !$('#modal').hidden) return; // only real text entry keeps the keys
+    if (textEntry(t) || !$('#modal').hidden || (app && app.sheetOpen())) return; // only real text entry keeps the keys
     const mod = e.metaKey || e.ctrlKey;
     if (mod) {
       if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
@@ -2967,6 +3158,7 @@ function frame() {
 }
 
 /* -------------------------------------------------------------- boot */
+let app = null; // pwa.js initApp's controller
 function boot() {
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   defs.setAttribute('width', 0); defs.setAttribute('height', 0); defs.style.position = 'absolute';
@@ -3017,23 +3209,21 @@ function boot() {
   $('#octup').onclick = () => setOctave(octave + 1);
   $('#panic').onclick = panic;
   $('#hold').onclick = () => setSustain(!sustain);
-  $('#kbHide').onclick = () => {
-    const row = $('#kbrow'), hide = !row.hidden;
-    row.hidden = hide; $('#kbHide').textContent = hide ? '▴' : '▾'; $('#kbHide').setAttribute('aria-expanded', hide ? 'false' : 'true');
-    store.set('synth.kbHidden', hide);
-  };
-  if (store.get('synth.kbHidden', false)) $('#kbHide').click();
+  initKbView();
   setBendUI = wheel('bend', true, v => ctl('bend', v * 2 - 1, 0));
   setModUI = wheel('modw', false, v => ctl('wheel', v, 0));
   for (const b of document.querySelectorAll('.scope-ctl button')) {
     b.onclick = () => { scopeMode = b.dataset.mode; for (const x of document.querySelectorAll('.scope-ctl button')) x.classList.toggle('on', x === b); };
   }
   let rw;
-  window.addEventListener('resize', () => { clearTimeout(rw); rw = setTimeout(() => { buildKeys(); roll.resize(); arr.resize(); }, 120); });
+  window.addEventListener('resize', () => { clearTimeout(rw); rw = setTimeout(() => { applyKbHeight(); buildKeys(); roll.resize(); arr.resize(); }, 120); });
   window.addEventListener('hashchange', () => { const m = MODELS.find(x => '#' + x.id === location.hash); if (m) setTrackModel(trk(), m.id); });
   window.addEventListener('pagehide', saveNow);
   window.addEventListener('beforeunload', saveNow);
   midi.wire();
+  // the installed app (pwa.js): Full screen / Install app buttons, offline service worker, update toast — an update
+  // reloads only when the user asks, after the project is saved
+  app = initApp({ version: VERSION, notice, beforeReload: async () => { releaseKeys(); save(); await store.flush(); } });
   const why = audioProblem(); if (why) audioFail(why);
   powerUI();
   booted = true;
@@ -3062,6 +3252,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
     powerOn, noteOn, noteOff, renderLast, resampleTo, preview, previewStop, previewEnd, clipToTrack, lastIn, inputSubs, liftCaps, lowerOS,
     caps: () => ({ sxCap, qrStep }), setTrackModel, addTrack, selectTrack, save, flush, sxLoad, sxSave, sxPreset, midi, renderOffline,
     songData, sxOSFor, pv, bounceSet, genProgress, notice, stickyNotice, deleteTrack, capQ4, ctx: () => ctx,
+    held, kbRange, kbMaxH, app: () => app, kb: () => ({ h: kbH, kw: kbSize.kw, hSet: kbSize.h, lo: kbLo, hi: kbHi, w: kbW, px: kbPx, notes: [...keyEls.keys()], ptrs: new Map(ptrs) }),
   };
 }
 boot();

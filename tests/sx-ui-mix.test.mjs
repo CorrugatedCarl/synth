@@ -13,8 +13,8 @@ if (typeof nodeModule.registerHooks === 'function') {
 } else nodeModule.register('./serum-ui.hooks.mjs', import.meta.url);
 
 // imported before any DOM exists: no document / window access at module top level
-const mix = await import('../sx-ui-mix.js?v=6');
-const core = await import('../serum-core.js?v=6');
+const mix = await import('../sx-ui-mix.js?v=7');
+const core = await import('../serum-core.js?v=7');
 const { makeKit, stubOf } = await import('./serum-ui-stubs/kit.js');
 const dom = await import('./wk-dom.mjs');
 const { all, byCls, one, byAttr, fire, ptr, place } = dom;

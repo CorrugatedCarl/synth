@@ -32,8 +32,8 @@
 // `irshape` of the same IR (4 most recent), so dragging a shaping knob does not re-run §9.4.7; shaped IRs per (id,
 // rate, convMax, shape) (2 most recent), so `irview` of the shape just built does not shape again; records above
 // 48 kHz resampled once per record (2 most recent), so their trim / fade variants only trim (§9.4.3).
-import * as smp from './smp.js?v=6';
-import * as gen from './smpgen.js?v=6';
+import * as smp from './smp.js?v=7';
+import * as gen from './smpgen.js?v=7';
 
 export const OPS = Object.freeze(['resample', 'odf', 'entry', 'spec', 'ir', 'irshape', 'wtsmp', 'multi', 'gen', 'loop', 'spectrogram', 'irview', 'farm']);
 

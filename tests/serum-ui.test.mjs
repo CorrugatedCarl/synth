@@ -53,7 +53,7 @@ const oscStub = await import('../sx-ui-osc.js');
 const seqStub = await import('../sx-ui-seq.js');
 const mixStub = await import('../sx-ui-mix.js');
 const kitStub = await import('./serum-ui-stubs/kit.js');
-const wkm = await import('../wk.js?v=6');   // the instance serum-ui uses (same specifier: shared modifier latches)
+const wkm = await import('../wk.js?v=7');   // the instance serum-ui uses (same specifier: shared modifier latches)
 
 const near = (a, b, tol = 1e-9) => assert.ok(Math.abs(a - b) <= tol, `${a} != ${b}`);
 const fresh = () => core.normalizeSerum(core.defaultSerum());
@@ -1063,6 +1063,211 @@ test('SerumUI: tile drag-and-drop onto a control, the matrix, an LFO point, macr
   u.edit(st => { st.lfo[0].type = 'path'; });
   await flush(doc);
   assert.equal(u.lfoPointAt(99, 203), null);
+  u.destroy();
+});
+
+// iPad Safari, one finger: pointerdown, then per move pointermove + touchmove (at the touched node); Safari sends
+// pointercancel when it starts a native pan (and a touchmove it may still cancel only before that). Event times: the
+// fake Ev stamps NOW++; wait(ms) is a finger resting.
+test('SerumUI: touch tile drag (iPad Safari) — strip tiles drag up / down at once, sideways scrolls; a quick drop needs a settled target; ghost above the finger, on screen, naming the target; hold + any way; long-press menu; MACROS tiles; one finger; row handle keeps the hold', async (t) => {
+  const { doc, u, s } = await mount();
+  const el = u.el, strip = u.pages.osc.el.querySelector('.sx-tiles'), res = byDest(el, 'f.res'), m3 = byDest(u.pages.osc.el, 'm3');
+  const tileIn = (root, src) => root.querySelectorAll('[data-src="' + src + '"]')[0];
+  const T = (n, type, x, y, o = {}) => ptr(n, type, x, y, Object.assign({ pointerType: 'touch', pointerId: 4, button: 0, isPrimary: true }, o));
+  const mv = (n, x, y, o) => { T(n, 'pointermove', x, y, o); return fire(n, 'touchmove', { touches: [{ clientX: x, clientY: y }] }); };
+  const wait = ms => { NOW += ms; };
+  const ghost = () => doc.body.querySelector('.sx-ghost');
+  const rows = () => s().matrix.filter(r => r.src).map(r => r.src + '→' + r.dst);
+  const resName = core.destLabel('f.res', s(), u.fx());
+  doc.pointAt = () => res;
+  // a strip tile moved mainly down: the drag starts at once (no hold); the ghost sits above the finger and names the control
+  const lfo2 = tileIn(strip, 'lfo2'), env2 = tileIn(strip, 'env2');
+  T(lfo2, 'pointerdown', 100, 100);
+  assert.equal(mv(lfo2, 101, 104).defaultPrevented, false);                   // undecided: the browser may still scroll
+  assert.equal(ghost(), null);
+  assert.equal(mv(lfo2, 102, 110).defaultPrevented, true);                    // ours: no page scroll, no pointercancel
+  assert.ok(ghost().classList.contains('sx-ghost-touch'));
+  assert.equal(ghost().textContent, 'LFO 2 → ' + resName);
+  assert.equal(ghost().style.transform, 'translate(82px,50px)');               // centred (40 × 20 box), bottom edge 40 px above
+  assert.ok(res.classList.contains('sx-droptgt'));
+  doc.pointAt = () => null;
+  mv(lfo2, 300, 20);
+  assert.equal(ghost().textContent, 'LFO 2');
+  assert.equal(ghost().style.transform, 'translate(280px,8px)');               // kept 8 px inside the top
+  // a long label at the screen's sides stays whole: measured once its text is set (1440 px viewport)
+  ghost()._rect = { left: 0, top: 0, width: 180, height: 30 };
+  doc.pointAt = () => res;
+  mv(lfo2, 1430, 110);
+  assert.equal(ghost().style.transform, 'translate(1252px,40px)');
+  mv(lfo2, 10, 110);
+  assert.equal(ghost().style.transform, 'translate(8px,40px)');
+  // lifted at once (a flick that ends over a control): no drop
+  T(lfo2, 'pointerup', 10, 110);
+  fire(lfo2, 'click');
+  await flush(doc);
+  assert.equal(ghost(), null);
+  assert.ok(!res.classList.contains('sx-droptgt'));
+  assert.deepEqual(rows(), []);
+  // rested on a control, then flicked onto another and lifted: no drop either
+  T(lfo2, 'pointerdown', 100, 100);
+  mv(lfo2, 102, 110);
+  wait(150);
+  doc.pointAt = () => m3;
+  mv(lfo2, 102, 160);
+  T(lfo2, 'pointerup', 102, 160);
+  assert.deepEqual(rows(), []);
+  // rested ≥ 100 ms on the control: the drop counts
+  doc.pointAt = () => res;
+  T(lfo2, 'pointerdown', 100, 100);
+  mv(lfo2, 102, 110);
+  wait(120);
+  T(lfo2, 'pointerup', 102, 110);
+  fire(lfo2, 'click');
+  await flush(doc);
+  assert.equal(ghost(), null);
+  assert.deepEqual(rows(), ['lfo2→f.res']);
+  // a sideways swipe on the strip is its native scroll: nothing cancelled, Safari's pointercancel ends it quietly
+  T(env2, 'pointerdown', 100, 100);
+  assert.equal(mv(env2, 110, 102).defaultPrevented, false);
+  T(env2, 'pointercancel', 110, 102);
+  assert.equal(ghost(), null);
+  assert.deepEqual(rows(), ['lfo2→f.res']);
+  // one finger: a second touch (elsewhere, or on another tile) before the drag starts abandons it; a pinch is no drag
+  T(env2, 'pointerdown', 100, 100);
+  T(doc.body, 'pointerdown', 400, 300, { pointerId: 5, isPrimary: false });
+  assert.equal(mv(env2, 100, 120).defaultPrevented, false);
+  assert.equal(ghost(), null);
+  T(doc.body, 'pointerup', 400, 300, { pointerId: 5, isPrimary: false });
+  T(env2, 'pointerup', 100, 120);
+  T(lfo2, 'pointerdown', 100, 100);
+  T(env2, 'pointerdown', 140, 100, { pointerId: 5, isPrimary: false });
+  mv(lfo2, 100, 120); mv(env2, 140, 120, { pointerId: 5, isPrimary: false });
+  assert.equal(ghost(), null);
+  T(env2, 'pointerup', 140, 120, { pointerId: 5, isPrimary: false });
+  T(lfo2, 'pointerup', 100, 120);
+  T(env2, 'pointerdown', 100, 100);
+  assert.equal(fire(env2, 'touchmove', { touches: [{ clientX: 100, clientY: 112 }, { clientX: 300, clientY: 88 }] }).defaultPrevented, false);
+  mv(env2, 100, 112);
+  assert.equal(ghost(), null);
+  T(env2, 'pointerup', 100, 112);
+  assert.deepEqual(rows(), ['lfo2→f.res']);
+  // a drag another pointer replaced (a mouse drag, then a finger on another tile) neither moves nor drops for the first
+  ptr(lfo2, 'pointerdown', 100, 100);
+  ptr(lfo2, 'pointermove', 110, 100);
+  assert.equal(ghost().textContent, 'LFO 2');
+  doc.pointAt = () => m3;
+  T(env2, 'pointerdown', 100, 100);
+  mv(env2, 100, 120);
+  assert.equal(ghost().textContent, ui.srcLabel(s(), 'env2') + ' → ' + core.destLabel('m3', s(), u.fx()));
+  ptr(lfo2, 'pointermove', 120, 100);
+  ptr(lfo2, 'pointerup', 120, 100);
+  assert.ok(ghost() && m3.classList.contains('sx-droptgt'));                 // the finger's drag goes on
+  assert.deepEqual(rows(), ['lfo2→f.res']);
+  wait(120);
+  T(env2, 'pointerup', 100, 120);
+  assert.deepEqual(rows(), ['lfo2→f.res', 'env2→m3']);
+  doc.pointAt = () => res;
+  // a MACROS-panel tile (the page scrolls vertically, touch-action: pan-y): sideways drags at once, vertical scrolls
+  const mac = u.pages.osc.el.querySelectorAll('[data-mactile="2"]').find(n => !strip.contains(n));
+  T(mac, 'pointerdown', 100, 100);
+  assert.equal(mv(mac, 101, 110).defaultPrevented, false);
+  T(mac, 'pointercancel', 101, 110);
+  assert.equal(ghost(), null);
+  doc.pointAt = () => tileIn(strip, 'macro3');                                 // on another macro: a swap, named
+  T(mac, 'pointerdown', 100, 100);
+  assert.equal(mv(mac, 110, 101).defaultPrevented, true);
+  assert.equal(ghost().textContent, ui.srcLabel(s(), 'macro2') + ' ⇄ ' + ui.srcLabel(s(), 'macro3'));
+  doc.pointAt = () => m3;
+  mv(mac, 112, 101);
+  wait(120);
+  T(mac, 'pointerup', 112, 101);
+  assert.deepEqual(rows(), ['lfo2→f.res', 'env2→m3', 'macro2→m3']);
+  doc.pointAt = () => res;
+  // the touch ghost names every drop kind (the finger hides the target)
+  assert.deepEqual([{ kind: 'msrc', slot: 4, field: 'src' }, { kind: 'msrc', slot: 0, field: 'aux' }, { kind: 'point', lfo: 1, idx: 2 },
+    { kind: 'copyLfo', to: 2 }, { kind: 'lfoWt', o: 1 }, { kind: 'lfoNoise' }, { kind: 'module', m: 'filter2' }, { kind: 'xy' }].map(h => u.hitName(h)),
+  ['Slot 5 source', 'Slot 1 aux source', 'LFO 2 point', 'copy to LFO 3', 'OSC B wavetable', 'Noise', 'Filter 2', 'X | Y']);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    // hold 250 ms, then sideways (the strip's own axis) still drags; jitter after the hold starts nothing; no settle needed
+    T(env2, 'pointerdown', 100, 100);
+    t.mock.timers.tick(260);
+    assert.ok(env2.classList.contains('wk-armed'));
+    assert.equal(mv(env2, 103, 101).defaultPrevented, true);
+    assert.equal(ghost(), null);
+    mv(env2, 130, 101);
+    assert.ok(ghost());
+    T(env2, 'pointerup', 130, 101);
+    assert.deepEqual(rows(), ['lfo2→f.res', 'env2→m3', 'macro2→m3', 'env2→f.res']);
+    // a still long-press (with jitter) opens the source menu, no drag
+    const n0 = ctxMenus(doc).length;
+    T(lfo2, 'pointerdown', 100, 100);
+    t.mock.timers.tick(250);
+    mv(lfo2, 101, 102);
+    t.mock.timers.tick(260);
+    assert.equal(ctxMenus(doc).length, n0 + 1);
+    assert.deepEqual(menuLabels(ctxMenus(doc).at(-1)), ['Bypass All Destinations', 'Remove All Destinations']);
+    assert.ok(!lfo2.classList.contains('wk-armed'));
+    mv(lfo2, 101, 200);
+    T(lfo2, 'pointerup', 101, 200);
+    assert.equal(ghost(), null);
+    fire(ctxMenus(doc).at(-1), 'keydown', { key: 'Escape' });
+    assert.equal(ctxMenus(doc).length, n0);
+    // a drag that starts inside the long-press's 8 px: the long-press opens no menu under the dragging finger
+    const n1 = ctxMenus(doc).length;
+    doc.pointAt = () => null;
+    T(lfo2, 'pointerdown', 100, 100);
+    mv(lfo2, 100, 107);
+    assert.ok(ghost());
+    t.mock.timers.tick(600);
+    assert.equal(ctxMenus(doc).length, n1);
+    assert.ok(ghost());
+    T(lfo2, 'pointerup', 100, 107);
+    assert.equal(ghost(), null);
+    // module labels keep the hold (touch-action: none, a long-press menu); their ghost goes above the finger, naming the target
+    const oscA = el.querySelectorAll('[data-modlabel]').find(n => n.getAttribute('data-modlabel') === 'oscA');
+    doc.pointAt = () => res;
+    T(oscA, 'pointerdown', 100, 100);
+    mv(oscA, 100, 130);
+    assert.equal(ghost(), null);
+    T(oscA, 'pointerup', 100, 130);
+    T(oscA, 'pointerdown', 100, 100);
+    t.mock.timers.tick(300);
+    mv(oscA, 100, 130);
+    assert.ok(ghost().classList.contains('sx-ghost-touch'));
+    assert.equal(ghost().textContent, 'Modulate · ' + ui.srcLabel(s(), 'osca') + ' → ' + resName);
+    assert.equal(ghost().style.transform, 'translate(80px,70px)');
+    T(oscA, 'pointercancel', 100, 130);
+    assert.equal(ghost(), null);
+  } finally { t.mock.timers.reset(); }
+  u.edit(st => { st.matrix[10] = row({ src: 'velo', amt: 0.2, dst: 'a.pan' }); });
+  u.setPage('matrix');
+  await flush(doc);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    // the MATRIX row handle keeps the hold: a swipe over the grips (the list scrolls) reorders nothing
+    const mrows = () => u.pages.matrix.el.querySelectorAll('.sx-mrow'), h = mrows()[10].querySelector('.sx-mh');
+    doc.pointAt = () => mrows()[1].querySelector('.sx-mn');
+    T(h, 'pointerdown', 5, 5);
+    assert.equal(mv(h, 5, 16).defaultPrevented, false);
+    T(h, 'pointerup', 5, 16);
+    assert.ok(!mrows()[1].classList.contains('sx-dropline'));
+    assert.equal(s().matrix[10].src, 'velo');
+    T(h, 'pointerdown', 5, 5);
+    t.mock.timers.tick(260);
+    assert.equal(mv(h, 5, 12).defaultPrevented, true);
+    assert.ok(mrows()[1].classList.contains('sx-dropline'));
+    T(h, 'pointerup', 5, 12);
+    assert.equal(s().matrix[1].src, 'velo');
+  } finally { t.mock.timers.reset(); }
+  // CSS: no iOS callout on the tiles / labels; MACROS tiles pan the page vertically (and pinch-zoom where supported);
+  // the touch ghost wraps within the screen
+  const R = cssRules();
+  assert.match(R.find(r => r.sel === '.sx-tile').body, /-webkit-touch-callout:\s*none/);
+  assert.match(R.find(r => r.sel === '.sx-tname').body, /-webkit-touch-callout:\s*none/);
+  assert.match(R.find(r => r.sel === '.sx-macro .sx-tile').body, /touch-action:\s*pan-y;\s*touch-action:\s*pan-y pinch-zoom/);
+  assert.match(R.find(r => r.sel === '.sx-tiles').body, /touch-action:\s*pan-x/);
+  assert.match(R.find(r => r.sel === '.sx-ghost.sx-ghost-touch').body, /max-width:\s*min\(360px, calc\(100vw - 16px\)\)/);
   u.destroy();
 });
 

@@ -71,9 +71,9 @@
 // view edits (smpo UI fields, §2.2.3): no undo step.
 //
 // Browser ES module: nothing touches document / window / storage at module top level (node imports it for tests).
-import * as core from './serum-core.js?v=6';
-import * as wk from './wk.js?v=6';
-import * as gx from './graph.js?v=6';
+import * as core from './serum-core.js?v=7';
+import * as wk from './wk.js?v=7';
+import * as gx from './graph.js?v=7';
 
 /* ================================================================ constants and small helpers */
 
