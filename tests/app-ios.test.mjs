@@ -218,11 +218,10 @@ test('iPad home-screen app: Export MIDI, Save and Bounce WAV hand their file to 
   }
 });
 
-test('iPad: no interface size of the app\'s own (ruling Z1: the page\'s pinch-zoom is the browser\'s) — the stored size of build 8 dropped once at boot, the viewport meta never written, no html[data-uiz], no test hook for it', async () => {
+test('iPad: no interface size of the app\'s own (ruling Z1: the page\'s pinch-zoom is the browser\'s) — build 8\'s stored size is main\'s key, left alone by the canvas build (SPEC-canvas §5.6: it never touches main\'s storage), the viewport meta never written, no html[data-uiz], no test hook for it', async () => {
   const s = await page();
-  assert.equal(LS.getItem('synth-ui.scale'), null, 'the old key removed');
-  assert.ok(LS.writes.includes('-synth-ui.scale'), LS.writes.join());
-  assert.equal(LS.writes.filter(k => /synth-ui\.scale/.test(k)).length, 1, 'once');
+  assert.equal(LS.getItem('synth-ui.scale'), '1.25', 'main\'s key left alone (the canvas build shares localhost with main)');
+  assert.equal(LS.writes.filter(k => /synth-ui\.scale/.test(k)).length, 0, 'never written nor removed: ' + LS.writes.join());
   assert.equal(s.$('meta[name="viewport"]').getAttribute('content'), null);
   assert.equal(s.dom.document.documentElement.hasAttribute('data-uiz'), false);
   assert.equal(s.api.uiz, undefined);

@@ -1,0 +1,1067 @@
+// cv-world.js — the canvas camera over a DOM world (SPEC-canvas §2.11, §4; contract: docs/canvas/IMPL-1b.md §4.1).
+// Owner: WORLD lane. One CSS transform on one layer (#world): nothing reflows, the page's own zoom stays the browser's.
+// Rules: plain ES module, no DOM / window access at module top level (node imports it: tests, tests/main-sim.mjs);
+// every runtime path survives main-sim's DOM stub (no ResizeObserver, visualViewport, getComputedStyle, PointerEvent;
+// querySelector() returning inert elements): optional browser APIs are guarded, the nodes it makes are kept by reference.
+//
+// Coordinates (IMPL-1b §3): client px = e.clientX/Y (layout viewport); local px = client − the viewport's rect origin
+// (cached: measured on resize, never per frame); world px = canvas units before zoom. Camera { tx, ty, k }:
+// local = world·k + t, world = (local − t) / k; #world carries transform: translate(tx px, ty px) scale(k) with
+// transform-origin 0 0, and the CSS variable --ik = 1/k (written at zoom end only: hit areas, cable strokes).
+//
+// Frames: the camera is written once per animation frame (the gesture.js hooks write at once: they already run in its
+// frame); a burst of moves — a gesture, a glide, an animation, wheel events up to 150 ms apart, a drag's edge pan — emits
+// movestart once (kit popups close: wk.closeTransient), camera per written frame and cameraend at its end. During a
+// burst there are no layout reads and no mounting: #world gets will-change only then ([data-cv-busy]); at its end the
+// translation rounds to device px, a zoom re-rasters (--ik, wk.setCanvasScale + rescaleCanvases) and planMount runs —
+// item views change in ≤ SLICE_MS slices, nearest the centre first, cards before bodies (so a pinch across CARD_K
+// never thrashes: the level of detail follows only at its end).
+import * as wk from './wk.js?v=9';
+
+/** Smallest / largest camera zoom. */
+export const K_MIN = 0.25, K_MAX = 2;
+/** Below CARD_K modules render as cards; at or above EDIT_K a selected module is in edit state. */
+export const CARD_K = 0.5, EDIT_K = 0.9;
+/** Snap grid (world px). */
+export const GRID = 8;
+/** Culling margin around the viewport (screen px, converted with k), mount slice budget (ms per frame). */
+export const CULL_MARGIN = 256, SLICE_MS = 12;
+/** A touch landing while the camera glides, or within MOMENTUM_GUARD_MS after it stops, only stops the glide. */
+export const MOMENTUM_GUARD_MS = 120;
+/** The knob wheel veto window after a camera move (ms). */
+export const WHEEL_VETO_MS = 300;
+/** Mounted-body DOM budget of the selected track (elements; SPEC §9.3). */
+export const BUDGET_EL = 9000;
+/** The pinch engages once the finger spread changed this much (physical px; as gesture.js PINCH_PX). */
+export const PINCH_PX = 6;
+/** Toolbar zoom steps (⊖ / ⊕ go to the next one). */
+export const ZOOM_STEPS = Object.freeze([0.25, 1 / 3, 0.5, 2 / 3, 0.75, 1, 1.25, 1.5, 2]);
+/** The camera pinch-mode pref (appstore; stored as synthc.cv.pinch). */
+export const PINCH_PREF = 'synth.cv.pinch';
+
+// momentum: px/ms to start (0.12 = 120 px/s), cap, stop; decay time constant (ms: a gentle glide); camera animation (ms);
+// a wheel / hook burst ends this long after its last event; taps: slop per pointer type, double-tap window and distance
+const GLIDE_MIN = 0.12, GLIDE_MAX = 4, GLIDE_STOP = 0.02, GLIDE_TAU = 300, ANIM_MS = 220, IDLE_MS = 150, STALE_MS = 3000;
+const TAP_PX = { touch: 8, pen: 4, mouse: 4 }, DTAP_MS = 320, DTAP_PX = 24, REVEAL_PAD = 16, FIT_PAD = 48;
+
+/**
+ * @typedef {{tx: number, ty: number, k: number}} Camera  local = world·k + t
+ * @typedef {{x: number, y: number, w: number, h: number}} Rect  world px unless stated
+ * @typedef {{x: number, y: number}} Pt
+ * @typedef {'body' | 'card'} View
+ * @typedef {'zoom' | 'cull' | 'budget' | 'switch'} Why  why an item is shown as a card (or 'switch': first paint)
+ * @typedef {{
+ *   id: string,
+ *   el: HTMLElement,
+ *   rect: () => Rect,
+ *   cull: 'hide' | 'unmount',
+ *   cost?: number,
+ *   view: (v: View, why?: Why) => void,
+ *   nudge?: (dx: number, dy: number) => void,
+ *   setPos?: (x: number, y: number) => void,
+ *   onMove?: (x: number, y: number, phase: 'start' | 'move' | 'end' | 'cancel') => void,
+ * }} Item  a world item (cv-module Module implements it): `el` is absolutely positioned in #world by its owner;
+ *   view('body') mounts / shows its body, view('card') unmounts ('unmount') or hides ('hide') it. The world calls
+ *   view() — sliced, ≤ SLICE_MS per frame, nearest the viewport centre first — and never touches the body itself.
+ *   The canvas arrow keys move the selected item by nudge(dx, dy) when it has one, else setPos + onMove 'start' / 'end'
+ *   (one undo step: the owner's onMove records it).
+ * @typedef {{cx: number, cy: number}} At  a two-finger session's base midpoint, client px
+ * @typedef {{
+ *   el: HTMLElement, viewport: HTMLElement, overlay: HTMLElement,
+ *   readonly cam: Camera, readonly k: number, readonly native: boolean, readonly movedAt: number,
+ *   readonly selected: string | null, readonly edit: string | null, readonly pinchMode: 'canvas' | 'page',
+ *   readonly lod: View, readonly busy: boolean,
+ *   setCamera: (cam: Camera, o?: {animate?: boolean}) => void,
+ *   panBy: (dx: number, dy: number) => void,
+ *   zoomAt: (f: number, clientX: number, clientY: number, o?: {animate?: boolean}) => void,
+ *   fit: (o?: {ids?: string[], animate?: boolean, kMax?: number}) => void,
+ *   focusItem: (id: string, o?: {k?: number, animate?: boolean, edit?: boolean}) => void,
+ *   reveal: (target: Element | {left: number, top: number, right: number, bottom: number}) => void,
+ *   toWorld: (clientX: number, clientY: number) => Pt,
+ *   toClient: (wx: number, wy: number) => Pt,
+ *   band: () => {left: number, top: number, right: number, bottom: number},
+ *   add: (item: Item) => () => void,
+ *   remove: (id: string) => void,
+ *   update: (id?: string) => void,
+ *   clear: () => void,
+ *   ids: () => string[],
+ *   viewOf: (id: string) => View | null,
+ *   select: (id: string | null) => void,
+ *   dragPointer: (p: {x: number, y: number, pointerType: string} | null) => void,
+ *   ghost: (g: {x: number, y: number, w: number, h: number, dx?: number, dy?: number, snap?: boolean, label?: string} | null) => Rect | null,
+ *   setActive: (on: boolean) => void,
+ *   setPinchMode: (m: 'canvas' | 'page') => void,
+ *   resize: () => void,
+ *   hooks: {pan: (sx: number, sy: number, at: At) => boolean, zoom: (f: number, cx: number, cy: number, at: At) => boolean},
+ *   wheelVeto: () => boolean,
+ *   escape: () => boolean,
+ *   key: (e: KeyboardEvent) => boolean,
+ *   on: (type: 'camera' | 'movestart' | 'cameraend' | 'lod' | 'native' | 'select' | 'edit', fn: (d: any) => void) => () => void,
+ *   destroy: () => void,
+ * }} World
+ */
+
+/* ---------------------------------------------------------------- pure camera maths (node-tested) */
+/** k clamped to [K_MIN, K_MAX] (NaN → 1). @param {number} k @returns {number} */
+export function clampK(k) { k = +k; if (k !== k) return 1; return k < K_MIN ? K_MIN : k > K_MAX ? K_MAX : k; }
+/** Viewport-local px → world px. @param {Camera} cam @param {number} lx @param {number} ly @returns {Pt} */
+export function toWorld(cam, lx, ly) { return { x: (lx - cam.tx) / cam.k, y: (ly - cam.ty) / cam.k }; }
+/** World px → viewport-local px. @param {Camera} cam @param {number} wx @param {number} wy @returns {Pt} */
+export function toLocal(cam, wx, wy) { return { x: wx * cam.k + cam.tx, y: wy * cam.k + cam.ty }; }
+/** Zoom by f about local point (lx, ly): k' = clampK(k·f), t' = c − (c − t)·k'/k (the point stays put).
+ * @param {Camera} cam @param {number} f @param {number} lx @param {number} ly @returns {Camera} */
+export function zoomAbout(cam, f, lx, ly) {
+  const k = clampK(cam.k * (f > 0 && isFinite(f) ? f : 1)), r = k / cam.k;
+  return { tx: lx - (lx - cam.tx) * r, ty: ly - (ly - cam.ty) * r, k };
+}
+/** Pan by a finger delta (content follows the finger: t += d). @param {Camera} cam @param {number} dx @param {number} dy @returns {Camera} */
+export function panCam(cam, dx, dy) { return { tx: cam.tx + (+dx || 0), ty: cam.ty + (+dy || 0), k: cam.k }; }
+/** The camera that shows every rect inside a vw × vh local box with `pad` px around, k ≤ kMax (default 1), centred.
+ * @param {Rect[]} rects @param {number} vw @param {number} vh @param {{pad?: number, kMax?: number}} [o] @returns {Camera} */
+export function fitCam(rects, vw, vh, o) {
+  const pad = o && o.pad != null ? Math.max(0, +o.pad || 0) : FIT_PAD, kMax = o && o.kMax > 0 ? +o.kMax : 1;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const r of rects || []) {
+    if (!r || !isFinite(r.x) || !isFinite(r.y)) continue;
+    x0 = Math.min(x0, r.x); y0 = Math.min(y0, r.y);
+    x1 = Math.max(x1, r.x + Math.max(0, +r.w || 0)); y1 = Math.max(y1, r.y + Math.max(0, +r.h || 0));
+  }
+  if (!(x1 >= x0)) return { tx: pad, ty: pad, k: clampK(Math.min(1, kMax)) };
+  const k = clampK(Math.min(kMax, Math.max(1, vw - 2 * pad) / Math.max(1, x1 - x0), Math.max(1, vh - 2 * pad) / Math.max(1, y1 - y0)));
+  return { tx: vw / 2 - (x0 + x1) / 2 * k, ty: vh / 2 - (y0 + y1) / 2 * k, k };
+}
+/** The world rect visible in a vw × vh viewport, grown by `margin` screen px. @returns {Rect} */
+export function visibleRect(cam, vw, vh, margin) {
+  const m = +margin || 0;
+  return { x: (-m - cam.tx) / cam.k, y: (-m - cam.ty) / cam.k, w: (vw + 2 * m) / cam.k, h: (vh + 2 * m) / cam.k };
+}
+/** Do two world rects overlap? @param {Rect} a @param {Rect} b @returns {boolean} */
+export function intersects(a, b) { return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h; }
+/** The dot grid of #viewport: CSS background-size (px) and position (px) for a dot centred in each tile, so the dots
+ * land on world multiples of g (default 4·GRID); the tile doubles until it is ≥ 16 screen px (no dust when zoomed out).
+ * @returns {{size: number, x: number, y: number}} */
+export function gridBg(cam, g) {
+  let size = (g > 0 ? +g : 4 * GRID) * cam.k;
+  while (size < 16) size *= 2;
+  const m = v => { const r = v % size; return r < 0 ? r + size : r; };
+  return { size, x: m(cam.tx - size / 2), y: m(cam.ty - size / 2) };
+}
+/** v snapped to the grid g (default GRID). @returns {number} */
+export function snap(v, g) { const s = g > 0 ? +g : GRID, r = Math.round(v / s) * s; return r === 0 ? 0 : r; }
+/** Level of detail for zoom k: 'card' below CARD_K, else 'body'; while `pinching` the previous one is kept (pinch-defer).
+ * @param {number} k @param {View} prev @param {boolean} pinching @returns {View} */
+export function lodOf(k, prev, pinching) {
+  if (pinching && (prev === 'body' || prev === 'card')) return prev;
+  return k < CARD_K ? 'card' : 'body';
+}
+/** Which items show their bodies: in view (+margin), k ≥ CARD_K, nearest the centre first, until the DOM budget (the
+ * nearest one always mounts; past the first one over budget every farther one stays a card).
+ * @param {{id: string, rect: Rect, cost?: number}[]} items @param {Camera} cam @param {number} vw @param {number} vh
+ * @param {{margin?: number, budget?: number, lod?: View}} [o]
+ * @returns {{body: string[], card: string[], why: Object<string, Why>}} body: mount order */
+export function planMount(items, cam, vw, vh, o) {
+  o = o || {};
+  const margin = o.margin != null ? +o.margin : CULL_MARGIN, budget = o.budget != null ? +o.budget : BUDGET_EL;
+  const lod = o.lod === 'card' || o.lod === 'body' ? o.lod : lodOf(cam.k, 'body', false);
+  const body = [], card = [], why = {}, near = [];
+  const vis = visibleRect(cam, vw, vh, margin), cx = (vw / 2 - cam.tx) / cam.k, cy = (vh / 2 - cam.ty) / cam.k;
+  for (const it of items || []) {
+    if (!it) continue;
+    const r = it.rect;
+    if (lod === 'card') { card.push(it.id); why[it.id] = 'zoom'; continue; }
+    if (!r || !intersects(r, vis)) { card.push(it.id); why[it.id] = 'cull'; continue; }
+    const dx = Math.max(r.x - cx, 0, cx - r.x - r.w), dy = Math.max(r.y - cy, 0, cy - r.y - r.h);
+    near.push({ id: it.id, cost: it.cost > 0 ? +it.cost : 0, d: Math.hypot(dx, dy), e: Math.hypot(r.x + r.w / 2 - cx, r.y + r.h / 2 - cy) });
+  }
+  near.sort((a, b) => a.d - b.d || a.e - b.e);
+  let used = 0, full = false;
+  for (const n of near) {
+    if (!full && (!body.length || used + n.cost <= budget)) { used += n.cost; body.push(n.id); continue; }
+    full = true; card.push(n.id); why[n.id] = 'budget';
+  }
+  return { body, card, why };
+}
+
+/* ---------------------------------------------------------------- the world */
+/**
+ * Creates the camera on #viewport over #world. Installs: one-finger / mouse pan on empty canvas and known module
+ * backgrounds (o.isBackground), momentum + its guard (capture pointerdown on the viewport), the late-finger pinch upgrade,
+ * wheel / Ctrl-wheel / Safari gesture* zoom, the native-zoom hand-over (visualViewport.scale > 1 → [data-cv-native],
+ * hooks return false), focus reveal, culling / cards / sliced mounting, selection and edit state ([data-cv-edit]),
+ * edge auto-pan for drags (dragPointer) and the drop outline (ghost) in #overlay, the floating toolbar in o.toolbar.
+ * @param {HTMLElement} viewport  #viewport
+ * @param {{
+ *   world: HTMLElement, overlay: HTMLElement, toolbar?: HTMLElement, layer?: HTMLElement,
+ *   isBackground?: (el: Element) => boolean,
+ *   onTidy?: () => void,
+ *   store?: {get: (k: string, d: any) => any, set: (k: string, v: any) => void},
+ *   env?: {win?: any, doc?: any, raf?: (f: Function) => any, caf?: (id: any) => void, now?: () => number,
+ *     setTimeout?: (f: Function, ms: number) => any, clearTimeout?: (id: any) => void},
+ * }} o
+ * @returns {World}
+ */
+export function createWorld(viewport, o) {
+  o = o || {};
+  if (!viewport || !o.world) throw new Error('cv-world: no #viewport / #world');
+  const env = o.env || {}, W = o.world, OV = o.overlay || null, store = o.store || null;
+  const win = env.win || (typeof window !== 'undefined' ? window : globalThis);
+  const doc = env.doc || win.document || globalThis.document || null;
+  const now = typeof env.now === 'function' ? env.now : () => { const p = win.performance || globalThis.performance; return p && typeof p.now === 'function' ? p.now() : Date.now(); };
+  const later = typeof env.setTimeout === 'function' ? env.setTimeout : (f, ms) => { const id = setTimeout(f, ms); if (id && typeof id.unref === 'function') id.unref(); return id; };
+  const unlater = typeof env.clearTimeout === 'function' ? env.clearTimeout : id => clearTimeout(id);
+  const raf = typeof env.raf === 'function' ? env.raf : f => (typeof win.requestAnimationFrame === 'function' ? win.requestAnimationFrame(f) : later(() => f(now()), 16));
+  const caf = typeof env.caf === 'function' ? env.caf : id => { if (typeof win.cancelAnimationFrame === 'function') win.cancelAnimationFrame(id); else unlater(id); };
+  const isBg = el => { try { return typeof o.isBackground === 'function' && !!el && !!o.isBackground(el); } catch (err) { return false; } };
+  const reduced = () => { try { const m = win.matchMedia; return typeof m === 'function' && !!m.call(win, '(prefers-reduced-motion: reduce)').matches; } catch (err) { return false; } };
+  const dpr = () => Math.max(1, +win.devicePixelRatio || 1);
+  const attr = (el, k, on) => { if (!el) return; try { if (on === false || on == null) { if (el.hasAttribute(k)) el.removeAttribute(k); } else el.setAttribute(k, on === true ? '' : String(on)); } catch (err) { /* inert */ } };
+  const copy = c => ({ tx: c.tx, ty: c.ty, k: c.k });
+
+  /* ---- state */
+  let cam = { tx: 0, ty: 0, k: 1 }, shown = null, ikK = 1;
+  let vp = { left: 0, top: 0, width: 0, height: 0 }, ovO = { left: 0, top: 0 }; // cached rects (resize)
+  let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9;
+  let lod = 'body', sel = null, editId = null, editSup = false, focusBack = null;
+  let pin = null; // a bar double-tap's edit state { id, k }: it holds at the focus zoom even below EDIT_K (a large module's fit)
+  let fid = 0, planDirty = false, queue = [], estMs = 0; // the frame, the plan, item views waiting for a slice
+  let B = null; // the live burst: { hook, until, band, timer, last }
+  let G = null; // the world's own pointer gesture (pan / pinch)
+  let glide = null, glideEnd = -1e9, anim = null, edge = null, gh = null, gs = null; // gs: Safari gesture scale
+  let touches = 0, pressT = -1e9, lastTap = null, outside = null, bandC = null, pctShown = '', clickUntil = -1e9;
+  const items = new Map(); // id → { item, view, why }
+  const subs = new Map();
+  const offs = [];
+  const listen = (t, type, fn, opt) => { if (!t || typeof t.addEventListener !== 'function') return; t.addEventListener(type, fn, opt); offs.push(() => t.removeEventListener(type, fn, opt)); };
+  function emit(type, d) {
+    const s = subs.get(type);
+    if (s) for (const f of [...s]) { try { f(d); } catch (err) { console.error(err); } }
+  }
+
+  /* ---- measuring (never per frame) */
+  function rectOf(el) { try { const r = el.getBoundingClientRect(); return { left: +r.left || 0, top: +r.top || 0, width: +r.width || 0, height: +r.height || 0 }; } catch (err) { return { left: 0, top: 0, width: 0, height: 0 }; } }
+  function resize() {
+    vp = rectOf(viewport);
+    ovO = OV ? rectOf(OV) : { left: vp.left, top: vp.top };
+    bandC = null;
+    schedulePlan();
+  }
+  // the canvas's visible client rect: the viewport ∩ wk.visibleBand (visual viewport less trays, rails, the keyboard)
+  function band() {
+    const r = { left: vp.left, top: vp.top, right: vp.left + vp.width, bottom: vp.top + vp.height };
+    let b = null;
+    try { b = wk.visibleBand(doc); } catch (err) { b = null; }
+    if (!b || !(b.right > b.left) || !(b.bottom > b.top)) return r;
+    const o2 = { left: Math.max(r.left, b.left), top: Math.max(r.top, b.top), right: Math.min(r.right, b.right), bottom: Math.min(r.bottom, b.bottom) };
+    return o2.right > o2.left && o2.bottom > o2.top ? o2 : r;
+  }
+  // the band during a gesture: measured once per burst (or every 250 ms between bursts)
+  function bandNow() {
+    if (B && B.band) return B.band;
+    const t = now();
+    if (!bandC || t - bandC.t > 250) bandC = { t, b: band() };
+    if (B) B.band = bandC.b;
+    return bandC.b;
+  }
+  const bandBox = b => ({ x: b.left - vp.left, y: b.top - vp.top, w: b.right - b.left, h: b.bottom - b.top }); // local
+
+  /* ---- writing the camera (once per frame) */
+  function write() {
+    if (shown && shown.tx === cam.tx && shown.ty === cam.ty && shown.k === cam.k) return false;
+    shown = copy(cam);
+    W.style.transform = 'translate(' + cam.tx + 'px, ' + cam.ty + 'px) scale(' + cam.k + ')';
+    const g = gridBg(cam);
+    viewport.style.backgroundSize = g.size + 'px ' + g.size + 'px';
+    viewport.style.backgroundPosition = g.x + 'px ' + g.y + 'px';
+    if (gh && gh.g) placeGhost();
+    const pct = Math.round(cam.k * 100) + '%';
+    if (pct !== pctShown && TB.pct) { pctShown = pct; TB.pct.textContent = pct; TB.pct.setAttribute('aria-label', 'Zoom ' + pct + ' — reset to 100 %'); }
+    emit('camera', copy(cam));
+    return true;
+  }
+  function request() { if (!fid && !destroyed) fid = raf(tick); }
+  function tick() {
+    fid = 0;
+    if (destroyed) return;
+    const T = now();
+    if (glide) stepGlide(T);
+    if (anim) stepAnim(T);
+    if (edge) stepEdge(T);
+    write();
+    if (!B && active) {
+      if (planDirty) plan();
+      if (queue.length) slices();
+    }
+    if (glide || anim || (edge && edge.v) || (!B && active && queue.length)) request();
+  }
+
+  /* ---- bursts: movestart … cameraend */
+  function moved(timed, hook) {
+    movedAt = now();
+    if (!B) {
+      B = { hook: false, until: 0, band: null, timer: 0, last: movedAt };
+      attr(viewport, 'data-cv-busy', true);
+      try { wk.closeTransient(); } catch (err) { /* kit absent */ }
+      emit('movestart', { cam: copy(cam) });
+    }
+    B.last = movedAt;
+    if (hook) B.hook = true;
+    if (timed) { B.until = movedAt + IDLE_MS; arm(IDLE_MS); }
+  }
+  function arm(ms) { if (!B) return; unlater(B.timer); B.timer = later(settle, ms + 1); }
+  function settle() { // ends the burst once nothing moves the camera any more
+    if (!B) return;
+    unlater(B.timer); B.timer = 0;
+    if (G || glide || anim || (edge && edge.v)) return; // (each ends with settle())
+    const t = now();
+    if (B.hook && touches > 0 && t - B.last < STALE_MS) { arm(IDLE_MS); return; } // fingers still on the glass
+    if (t < B.until) { arm(B.until - t); return; }
+    endBurst();
+  }
+  function endBurst() {
+    if (!B) return;
+    unlater(B.timer);
+    B = null;
+    const d = dpr();
+    cam = { tx: Math.round(cam.tx * d) / d, ty: Math.round(cam.ty * d) / d, k: cam.k }; // crisp at rest
+    write();
+    attr(viewport, 'data-cv-busy', false);
+    const zoomed = Math.abs(cam.k - ikK) > 1e-9;
+    if (zoomed) {
+      ikK = cam.k;
+      try { W.style.setProperty('--ik', String(1 / cam.k)); } catch (err) { /* inert */ }
+      try { wk.setCanvasScale(cam.k); wk.rescaleCanvases(W); } catch (err) { console.error(err); }
+    }
+    emit('cameraend', { cam: copy(cam), zoomed });
+    computeEdit();
+    schedulePlan();
+  }
+  function stopMotion() { glide = null; anim = null; }
+
+  /* ---- camera changes */
+  function jump(c) { // at once: one written frame, the burst ends now unless a gesture runs
+    stopMotion();
+    cam = { tx: +c.tx || 0, ty: +c.ty || 0, k: clampK(c.k) };
+    moved(false);
+    B.until = 0;
+    write();
+    settle();
+  }
+  function animateTo(c1, ax, ay) { // ≈ ANIM_MS ease-out; k geometric, the anchor's world point linear (no drift)
+    c1 = { tx: +c1.tx || 0, ty: +c1.ty || 0, k: clampK(c1.k) };
+    if (reduced()) { jump(c1); return; }
+    glide = null;
+    const c0 = copy(cam), x = ax != null ? ax : vp.width / 2, y = ay != null ? ay : vp.height / 2;
+    anim = { c0, c1, w0: toWorld(c0, x, y), w1: toWorld(c1, x, y), x, y, t0: now() };
+    moved(false);
+    request();
+  }
+  function stepAnim(T) {
+    const a = anim, u = Math.min(1, Math.max(0, (T - a.t0) / ANIM_MS)), e = 1 - Math.pow(1 - u, 3);
+    if (u >= 1) cam = copy(a.c1);
+    else {
+      const k = a.c0.k * Math.pow(a.c1.k / a.c0.k, e), wx = a.w0.x + (a.w1.x - a.w0.x) * e, wy = a.w0.y + (a.w1.y - a.w0.y) * e;
+      cam = { tx: a.x - wx * k, ty: a.y - wy * k, k };
+    }
+    moved(false);
+    if (u >= 1) { anim = null; write(); settle(); }
+  }
+  function setCamera(c, opt) {
+    if (!c) return;
+    if (opt && opt.animate) animateTo(c); else jump(c);
+  }
+  function panBy(dx, dy) {
+    if (!dx && !dy) return;
+    cam = panCam(cam, dx, dy);
+    moved(true);
+    request();
+  }
+  function zoomAt(f, clientX, clientY, opt) {
+    const lx = clientX - vp.left, ly = clientY - vp.top;
+    if (opt && opt.animate) animateTo(zoomAbout(anim ? anim.c1 : cam, f, lx, ly), lx, ly);
+    else { stopMotion(); cam = zoomAbout(cam, f, lx, ly); moved(true); request(); }
+  }
+  function zoomTo(k, opt) { // about the band's centre (toolbar, '1')
+    const b = bandNow(), cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2, base = anim ? anim.c1 : cam;
+    zoomAt(clampK(k) / base.k, cx, cy, opt);
+  }
+  function stepZoom(dir) {
+    const k = (anim ? anim.c1 : cam).k, e = 1e-3;
+    const next = dir > 0 ? ZOOM_STEPS.find(s => s > k + e) : [...ZOOM_STEPS].reverse().find(s => s < k - e);
+    zoomTo(next != null ? next : dir > 0 ? K_MAX : K_MIN, { animate: true });
+  }
+  function rectsOf(ids) {
+    const out = [];
+    for (const [id, r] of items) if (!ids || ids.includes(id)) { try { out.push(r.item.rect()); } catch (err) { /* gone */ } }
+    return out;
+  }
+  // the band a fit or a focus frames into: less the floating toolbar's strip at its foot (a fit never lands under it)
+  function frameBand() {
+    const b = Object.assign({}, bandNow());
+    const tb = TB.bar && o.toolbar ? rectOf(o.toolbar) : null;
+    if (tb && tb.height > 0 && tb.top < b.bottom && tb.top + tb.height > b.bottom - 120 && tb.left < b.right && tb.left + tb.width > b.left) {
+      b.bottom = Math.max(b.top + 120, tb.top - 8 + FIT_PAD / 2);
+    }
+    return b;
+  }
+  function fitCamera(ids, kMax) {
+    const bx = bandBox(frameBand()), rs = rectsOf(ids);
+    let c = fitCam(rs, bx.w, bx.h, { pad: FIT_PAD, kMax: kMax > 0 ? kMax : 1 });
+    // just short of the card level: bodies at CARD_K when the layout still fits with a thinner margin (12 px)
+    if (c.k < CARD_K && (!(kMax > 0) || kMax >= CARD_K)) { const d = fitCam(rs, bx.w, bx.h, { pad: 12, kMax: CARD_K }); if (d.k >= CARD_K) c = d; }
+    return { tx: c.tx + bx.x, ty: c.ty + bx.y, k: c.k };
+  }
+  function fit(opt) {
+    opt = opt || {};
+    if (!items.size) return;
+    focusBack = null;
+    const c = fitCamera(opt.ids || null, opt.kMax);
+    if (opt.animate === false) jump(c); else animateTo(c);
+  }
+  function focusItem(id, opt) {
+    opt = opt || {};
+    const rec = items.get(id);
+    if (!rec) return;
+    const k = clampK(opt.k > 0 ? opt.k : 1), edit = opt.edit !== false, animate = opt.animate !== false;
+    // a second double-tap on the same module goes back to the camera before the first
+    if (focusBack && focusBack.id === id && edit && near(cam, focusBack.to)) {
+      const back = focusBack.from;
+      focusBack = null; pin = null;
+      setCamera(back, { animate });
+      return;
+    }
+    let r;
+    try { r = rec.item.rect(); } catch (err) { return; }
+    const bx = bandBox(frameBand());
+    let c;
+    if (r.w * k > bx.w - 2 * FIT_PAD || r.h * k > bx.h - 2 * FIT_PAD) {
+      c = fitCamera([id], k); // larger than the band at k
+      // a fit that would only show its card (a 1300 px Serum in an iPad's canvas: ≈ 0.3) frames its width instead, top
+      // aligned (left aligned when still wider), never below CARD_K: a double-tap is for editing
+      if (c.k < CARD_K && k >= CARD_K) {
+        const kw = Math.max(CARD_K, Math.min(k, (bx.w - 2 * FIT_PAD) / Math.max(1, r.w)));
+        c = { tx: r.w * kw <= bx.w - 2 * FIT_PAD ? bx.x + bx.w / 2 - (r.x + r.w / 2) * kw : bx.x + FIT_PAD - r.x * kw, ty: bx.y + FIT_PAD - r.y * kw, k: kw };
+      }
+    } else c = { tx: bx.x + bx.w / 2 - (r.x + r.w / 2) * k, ty: bx.y + bx.h / 2 - (r.y + r.h / 2) * k, k };
+    focusBack = edit ? { id, from: copy(anim ? anim.c1 : cam), to: c } : null;
+    select(id);
+    editSup = !edit;
+    pin = edit ? { id, k: c.k } : null;
+    setCamera(c, { animate });
+    computeEdit();
+  }
+  const near = (a, b) => Math.abs(a.k - b.k) < 1e-3 && Math.abs(a.tx - b.tx) < 2 && Math.abs(a.ty - b.ty) < 2;
+  function reveal(t) {
+    let r = null;
+    try { r = t && typeof t.getBoundingClientRect === 'function' ? t.getBoundingClientRect() : t; } catch (err) { r = null; }
+    if (!r || !isFinite(r.left) || !isFinite(r.top)) return;
+    const right = r.right != null ? r.right : r.left + (r.width || 0), bottom = r.bottom != null ? r.bottom : r.top + (r.height || 0);
+    const b = band(), L = b.left + REVEAL_PAD, R = b.right - REVEAL_PAD, T = b.top + REVEAL_PAD, Bo = b.bottom - REVEAL_PAD;
+    const dx = right - r.left > R - L || r.left < L ? L - r.left : right > R ? R - right : 0;
+    const dy = bottom - r.top > Bo - T || r.top < T ? T - r.top : bottom > Bo ? Bo - bottom : 0;
+    if (Math.abs(dx) >= 1 || Math.abs(dy) >= 1) setCamera(panCam(anim ? anim.c1 : cam, dx, dy), { animate: true });
+  }
+
+  /* ---- items, the plan and its slices */
+  function add(item) {
+    if (!item || item.id == null) throw new Error('cv-world.add: an item needs an id');
+    const id = String(item.id);
+    if (items.has(id)) remove(id);
+    const rec = { item, view: 'card', why: 'switch' };
+    items.set(id, rec);
+    try { item.view('card', 'switch'); } catch (err) { console.error(err); } // cards first (a track switch), bodies in slices
+    if (sel === id) attr(item.el, 'data-cv-sel', true);
+    if (editId === id) attr(item.el, 'data-cv-edit', true);
+    schedulePlan();
+    return () => { if (items.get(id) === rec) remove(id); };
+  }
+  function remove(id) {
+    id = String(id);
+    const rec = items.get(id);
+    if (!rec) return;
+    items.delete(id);
+    queue = queue.filter(q => q.id !== id);
+    attr(rec.item.el, 'data-cv-sel', false); attr(rec.item.el, 'data-cv-edit', false);
+    if (sel === id) { sel = null; emit('select', { id: null }); }
+    if (editId === id) { editId = null; emit('edit', { id: null }); }
+  }
+  function clear() { for (const id of [...items.keys()]) remove(id); queue = []; focusBack = null; editSup = false; pin = null; }
+  function schedulePlan() { planDirty = true; request(); }
+  function plan() {
+    planDirty = false;
+    if (!(vp.width > 0) || !(vp.height > 0)) return;
+    const L = lodOf(cam.k, lod, false);
+    if (L !== lod) { lod = L; attr(viewport, 'data-cv-lod', lod); emit('lod', { lod }); }
+    const list = [];
+    for (const [id, r] of items) { let rect = null; try { rect = r.item.rect(); } catch (err) { rect = null; } list.push({ id, rect, cost: r.item.cost }); }
+    const p = planMount(list, cam, vp.width, vp.height, { lod });
+    const want = id => items.get(id);
+    queue = [];
+    for (const id of p.card) { const r = want(id); if (r && (r.view !== 'card' || r.why !== p.why[id])) queue.push({ id, v: 'card', why: p.why[id] }); }
+    for (const id of p.body) { const r = want(id); if (r && r.view !== 'body') queue.push({ id, v: 'body' }); }
+  }
+  // item views, ≤ SLICE_MS per frame (the next one only when the slowest so far still fits)
+  function slices() {
+    const t0 = now();
+    let n = 0;
+    while (queue.length) {
+      if (n && now() - t0 + estMs > SLICE_MS) break;
+      const q = queue.shift(), r = items.get(q.id);
+      if (!r || (r.view === q.v && (q.v === 'body' || r.why === q.why))) continue;
+      r.view = q.v; r.why = q.v === 'card' ? q.why : null;
+      const s = now();
+      try { r.item.view(q.v, q.why); } catch (err) { console.error(err); }
+      estMs = Math.max(estMs * 0.8, now() - s);
+      n++;
+    }
+  }
+  function update(id) { if (id == null || items.has(String(id))) schedulePlan(); }
+
+  /* ---- selection and edit state */
+  function select(id) {
+    id = id == null ? null : String(id);
+    if (id !== null && !items.has(id)) id = null;
+    editSup = false;
+    if (id !== sel) {
+      if (sel && items.has(sel)) attr(items.get(sel).item.el, 'data-cv-sel', false);
+      sel = id;
+      if (sel) attr(items.get(sel).item.el, 'data-cv-sel', true);
+      emit('select', { id: sel });
+    }
+    computeEdit();
+  }
+  function computeEdit() { // edit state: selected, not left (tap outside / Escape), and k ≥ EDIT_K (or ≥ a double-tap's fit)
+    if (pin && (pin.id !== sel || editSup || (anim ? anim.c1 : cam).k < pin.k - 0.02)) pin = null; // (zoomed out past it: over)
+    const kOk = cam.k >= EDIT_K - 1e-9 || (!!pin && pin.id === sel);
+    const e = sel && !editSup && items.has(sel) && kOk ? sel : null;
+    if (e === editId) return;
+    if (editId && items.has(editId)) attr(items.get(editId).item.el, 'data-cv-edit', false);
+    editId = e;
+    if (e) attr(items.get(e).item.el, 'data-cv-edit', true);
+    emit('edit', { id: editId });
+  }
+  const modOf = t => { // the world item the node lies in (its [data-cv-mod] root), or null
+    for (let n = t; n && n !== viewport && typeof n.getAttribute === 'function'; n = n.parentNode) {
+      const id = n.getAttribute('data-cv-mod');
+      if (id != null) return items.has(id) ? id : null;
+    }
+    return null;
+  };
+  const inside = (el, t) => { for (let n = t; n; n = n.parentNode) if (n === el) return true; return false; };
+
+  /* ---- the world's own pointer gestures */
+  const take = e => { if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); if (e.cancelable !== false && typeof e.preventDefault === 'function') e.preventDefault(); };
+  const capture = (id, on) => { try { if (on) viewport.setPointerCapture(id); else viewport.releasePointerCapture(id); } catch (err) { /* pointer gone */ } };
+  const vvScale = () => { const v = win.visualViewport; return v && +v.scale > 0 ? +v.scale : 1; };
+  function startPan(e, mid, guard) { // guard: a press the momentum guard took (its tap is no tap, its click no click)
+    glide = null;
+    if (anim) { anim = null; settle(); } // a press stops an animation where it is
+    const x = e.clientX, y = e.clientY, t = now();
+    G = { kind: 'pan', id: e.pointerId, type: e.pointerType || 'mouse', mid: !!mid, x, y, px: x, py: y, x0: x, y0: y, t0: t,
+      moved: false, s: [[x, y, t]], tgt: e.target, noGlide: false, guard: !!guard };
+    capture(e.pointerId, true);
+  }
+  function panMove(e) {
+    const x = e.clientX, y = e.clientY;
+    G.px = x; G.py = y;
+    if (!G.moved) {
+      if (Math.hypot(x - G.x0, y - G.y0) <= (TAP_PX[G.type] || 4)) return;
+      G.moved = true; // the travel since the press follows at once
+    }
+    const t = now();
+    cam = panCam(cam, x - G.x, y - G.y);
+    G.x = x; G.y = y;
+    G.s.push([x, y, t]);
+    while (G.s.length > 2 && t - G.s[0][2] > 100) G.s.shift();
+    moved(false);
+    request();
+  }
+  function toPinch(e) { // the late finger (or the guard's): the pan becomes a pinch with the same rebase maths
+    const a = { id: G.id, x: G.px, y: G.py }, b = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    G = { kind: 'pinch', type: 'touch', a, b, base: null, last: null, zoomOn: false, moved: true };
+    G.base = G.last = pframe();
+    capture(b.id, true);
+  }
+  function pframe() { const { a, b } = G; return { cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2, d: Math.hypot(a.x - b.x, a.y - b.y) }; }
+  function pinchMove(e) {
+    const p = e.pointerId === G.a.id ? G.a : e.pointerId === G.b.id ? G.b : null;
+    if (!p) return;
+    p.x = e.clientX; p.y = e.clientY;
+    const f = pframe(), L = G.last;
+    G.last = f;
+    cam = panCam(cam, f.cx - L.cx, f.cy - L.cy);
+    if (G.zoomOn) { if (L.d > 0 && f.d > 0) cam = zoomAbout(cam, f.d / L.d, f.cx - vp.left, f.cy - vp.top); }
+    else if (Math.abs(f.d - G.base.d) > PINCH_PX / vvScale()) G.zoomOn = true; // from here f starts at 1: no jump
+    moved(false);
+    request();
+  }
+  function pinchLift(id) { // one finger up: the other pans on (no glide)
+    const left = id === G.a.id ? G.b : id === G.b.id ? G.a : null;
+    if (!left) return;
+    capture(id, false);
+    clickUntil = now() + 350; // (the lifted finger's click is the pinch's)
+    G = { kind: 'pan', id: left.id, type: 'touch', mid: false, x: left.x, y: left.y, px: left.x, py: left.y, x0: left.x, y0: left.y,
+      t0: now(), moved: true, s: [], tgt: null, noGlide: true };
+  }
+  function endGesture(glideToo) { // the pan ends where it is (a two-finger cancel, Escape, native, hidden)
+    if (!G) return;
+    const g = G;
+    G = null;
+    if (g.moved) clickUntil = now() + 350;
+    if (g.kind === 'pinch') { capture(g.a.id, false); capture(g.b.id, false); } else capture(g.id, false);
+    if (glideToo) glide = null;
+    settle();
+  }
+  function velocity(g) {
+    const s = g.s, t = now();
+    if (s.length < 2) return null;
+    const a = s[0], b = s[s.length - 1], dt = b[2] - a[2];
+    if (t - b[2] > 60 || dt < 8) return null; // the finger stopped before it lifted
+    let vx = (b[0] - a[0]) / dt, vy = (b[1] - a[1]) / dt;
+    const v = Math.hypot(vx, vy);
+    if (v < GLIDE_MIN) return null;
+    if (v > GLIDE_MAX) { vx *= GLIDE_MAX / v; vy *= GLIDE_MAX / v; }
+    return { vx, vy };
+  }
+  function stepGlide(T) {
+    const dt = Math.min(50, Math.max(0, T - glide.t));
+    glide.t = T;
+    if (!dt) return;
+    cam = panCam(cam, glide.vx * dt, glide.vy * dt);
+    moved(false);
+    const d = Math.exp(-dt / GLIDE_TAU);
+    glide.vx *= d; glide.vy *= d;
+    if (Math.hypot(glide.vx, glide.vy) < GLIDE_STOP) { glide = null; glideEnd = T; write(); settle(); }
+  }
+  function tap(g, e) {
+    if (g.mid) return;
+    const t = g.tgt, T = now();
+    if (t === viewport || t === W) {
+      if (lastTap && T - lastTap.t <= DTAP_MS && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) <= DTAP_PX) { lastTap = null; fit({ animate: true }); return; }
+      lastTap = { t: T, x: e.clientX, y: e.clientY };
+      select(null);
+      return;
+    }
+    lastTap = null;
+    const id = modOf(t);
+    if (id) select(id);
+  }
+  function focusVp() { try { if (doc && doc.activeElement !== viewport && typeof viewport.focus === 'function') viewport.focus({ preventScroll: true }); } catch (err) { /* inert */ } }
+  // capture phase on the viewport (after gesture.js's window listeners): the momentum guard, the late finger, and a tap
+  // outside the module in edit state
+  function onDownCap(e) {
+    pressT = now();
+    if (!active) return;
+    const ed = editId && items.get(editId);
+    outside = ed && !inside(ed.item.el, e.target) ? { id: e.pointerId, x: e.clientX, y: e.clientY } : null;
+    if (native) return;
+    if (G && (e.pointerType === 'touch' ? e.isPrimary === true : G.type !== 'touch')) endGesture(true); // a stale pan (its lift was lost)
+    if (G && e.pointerType === 'touch' && G.type === 'touch') { // a further touch while the world's touch pan runs
+      take(e);
+      if (pinchMode !== 'canvas') { endGesture(true); clickUntil = now() + 350; return; } // 'Zoom page': the pan stops, the browser's pinch has both (no click)
+      if (G.kind === 'pan' && e.pointerId !== G.id) toPinch(e);
+      return;
+    }
+    if (glide || now() - glideEnd < MOMENTUM_GUARD_MS) { // the iOS scroll-view rule: this touch only stops the glide
+      take(e);
+      glide = null; glideEnd = -1e9;
+      if (!G) startPan(e, false, true);
+      return;
+    }
+  }
+  function onDown(e) {
+    if (!active || native || G) return;
+    const t = e.target, mid = e.button === 1;
+    if (e.button !== 0 && !mid) return;
+    const empty = t === viewport || t === W;
+    if (!mid && !empty && !isBg(t)) return; // controls keep their own pointerdown: only the press target is tested
+    startPan(e, mid);
+    if (mid || e.pointerType !== 'touch') e.preventDefault(); // no text selection, no middle-button autoscroll
+    if (empty) focusVp(); // the canvas keys
+  }
+  function onMove(e) {
+    if (!G) return;
+    if (G.type === 'mouse' && e.pointerId === G.id && e.buttons === 0) { endGesture(true); return; } // released unseen
+    if (G.kind === 'pinch') pinchMove(e);
+    else if (e.pointerId === G.id) panMove(e);
+  }
+  function onUpCap(e) {
+    const o2 = outside;
+    if (o2 && o2.id === e.pointerId) {
+      outside = null;
+      if (Math.hypot(e.clientX - o2.x, e.clientY - o2.y) <= 10 && editId) { editSup = true; computeEdit(); }
+    }
+  }
+  function onUp(e) {
+    if (!G) return;
+    if (G.kind === 'pinch') { pinchLift(e.pointerId); return; }
+    if (e.pointerId !== G.id) return;
+    const g = G;
+    G = null;
+    capture(g.id, false);
+    if (!g.moved) { if (g.guard) clickUntil = now() + 350; else tap(g, e); settle(); return; }
+    clickUntil = now() + 350;
+    const v = g.type === 'touch' && !g.noGlide && !reduced() ? velocity(g) : null;
+    if (v) { glide = { vx: v.vx, vy: v.vy, t: now() }; request(); return; }
+    settle();
+  }
+  function onCancel(e) { // the two-finger layer's flagged cancel: the camera stays (never rolled back), no glide
+    if (!G) return;
+    if (G.kind === 'pinch') { if (e.pointerId === G.a.id || e.pointerId === G.b.id) endGesture(true); return; }
+    if (e.pointerId === G.id) endGesture(true);
+  }
+  function onClickCap(e) { // the click that ends a pan (a mouse drag) or a pinch is the gesture's, not a control's
+    if (G || now() < clickUntil) { clickUntil = -1e9; take(e); }
+  }
+
+  /* ---- wheel, trackpad, Safari gesture events */
+  const OVER = /^(auto|scroll|overlay)$/;
+  function scrollerTakes(t, dx, dy) { // an overflow scroller between the target and the viewport that can go that way
+    const cs = n => { try { return typeof win.getComputedStyle === 'function' ? win.getComputedStyle(n) : null; } catch (err) { return null; } };
+    for (let n = t; n && n !== viewport && n !== W && n.nodeType === 1; n = n.parentNode) {
+      const s = cs(n);
+      if (!s) return false;
+      if (dy && OVER.test(String(s.overflowY || '')) && (+n.scrollHeight || 0) > (+n.clientHeight || 0) + 1) {
+        const p = +n.scrollTop || 0, max = n.scrollHeight - n.clientHeight;
+        if (dy < 0 ? p > 0.5 : p < max - 0.5) return true;
+      }
+      if (dx && OVER.test(String(s.overflowX || '')) && (+n.scrollWidth || 0) > (+n.clientWidth || 0) + 1) {
+        const p = +n.scrollLeft || 0, max = n.scrollWidth - n.clientWidth;
+        if (dx < 0 ? p > 0.5 : p < max - 0.5) return true;
+      }
+    }
+    return false;
+  }
+  const wheelMul = e => (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? Math.max(100, vp.height || 400) : 1);
+  // an own zone (a zoomPan editor: its Ctrl-wheel zooms itself) in a world module — hovered, as today (SPEC §4.1 table;
+  // the touch rule's edit state is for two fingers only: a hovered wheel is never a camera pinch that landed on a graph)
+  const editorZone = t => {
+    for (let n = t; n && n !== viewport && typeof n.getAttribute === 'function'; n = n.parentNode) {
+      if (n.getAttribute('data-gesture') === 'own') return !!modOf(n);
+    }
+    return false;
+  };
+  // capture phase: a trackpad pinch (Chrome, Firefox) or Ctrl/⌘-wheel zooms the camera at the pointer before any knob
+  // under it could take it as a turn (a pinch is never a knob's); a hovered editor keeps its own zoom — except while the
+  // camera's own zoom runs (the veto: a graph that slid under the pointer, or a pause in the pinch, keeps it the camera's)
+  function onWheelCap(e) {
+    if (!active || native || e.defaultPrevented || !(e.ctrlKey || e.metaKey) || (editorZone(e.target) && !wheelVeto())) return;
+    e.preventDefault();
+    if (typeof e.stopPropagation === 'function') e.stopPropagation();
+    const f = Math.exp(-(e.deltaY || 0) * wheelMul(e) * 0.002);
+    glide = null; anim = null;
+    cam = zoomAbout(cam, f, e.clientX - vp.left, e.clientY - vp.top);
+    moved(true); request();
+  }
+  function onWheel(e) { // bubble phase: what no knob, editor or scroller took pans the camera
+    if (!active || native || e.defaultPrevented || e.ctrlKey || e.metaKey) return;
+    const m = wheelMul(e);
+    let dx = (e.deltaX || 0) * m, dy = (e.deltaY || 0) * m;
+    if (e.shiftKey && !dx) { dx = dy; dy = 0; }
+    if (!dx && !dy) return;
+    if (now() - movedAt > WHEEL_VETO_MS && scrollerTakes(e.target, dx, dy)) return; // (not one sliding under a moving camera)
+    e.preventDefault();
+    glide = null; anim = null;
+    cam = panCam(cam, -dx, -dy);
+    moved(true); request();
+  }
+  function onGesture(e) { // Safari's trackpad pinch; on a touch screen the two-finger layer's hooks do it (touches down)
+    if (!active || native || touches > 0) { gs = null; return; }
+    if (e.type === 'gesturestart') { e.preventDefault(); gs = +e.scale || 1; return; }
+    if (gs == null) return;
+    e.preventDefault();
+    if (e.type === 'gestureend') { gs = null; return; }
+    const s = +e.scale || 1, f = s / gs;
+    gs = s;
+    if (f === 1 || !isFinite(f)) return;
+    const x = isFinite(e.clientX) ? e.clientX : vp.left + vp.width / 2, y = isFinite(e.clientY) ? e.clientY : vp.top + vp.height / 2;
+    glide = null; anim = null;
+    cam = zoomAbout(cam, f, x - vp.left, y - vp.top);
+    moved(true); request();
+  }
+
+  /* ---- the two-finger layer's hooks (gesture.js) */
+  function claims(at) {
+    if (!active || native || destroyed || !at || !isFinite(at.cx) || !isFinite(at.cy)) return false;
+    const b = bandNow();
+    return at.cx >= b.left && at.cx <= b.right && at.cy >= b.top && at.cy <= b.bottom;
+  }
+  const hooks = {
+    pan(sx, sy, at) { // 'Zoom page' (SPEC §4.3): two fingers are the browser's — the canvas pans with one finger only
+      if (pinchMode !== 'canvas' || !claims(at)) return false;
+      if (!sx && !sy) return true;
+      stopMotion();
+      cam = panCam(cam, -sx, -sy);
+      moved(true, true); write();
+      return true;
+    },
+    zoom(f, cx, cy, at) {
+      if (pinchMode !== 'canvas' || !claims(at)) return false;
+      if (f === 1 || !(f > 0) || !isFinite(f)) return true;
+      stopMotion();
+      cam = zoomAbout(cam, f, cx - vp.left, cy - vp.top);
+      moved(true, true); write();
+      return true;
+    },
+  };
+
+  /* ---- native page zoom: hand everything back (SPEC §4.3) */
+  function checkNative() {
+    const on = vvScale() > 1.001;
+    bandC = null;
+    if (on === native) return;
+    native = on;
+    attr(viewport, 'data-cv-native', on);
+    if (on) { endGesture(true); stopMotion(); settle(); }
+    if (TB.chip) TB.chip.hidden = !on;
+    emit('native', { on });
+  }
+
+  /* ---- drags: edge auto-pan and the drop outline */
+  function dragPointer(p) {
+    if (!p) { if (edge) { edge = null; settle(); } return; }
+    if (!edge) { edge = { p, st: {}, last: -1, v: false, bt: -1e9, b: null }; }
+    edge.p = { x: +p.x || 0, y: +p.y || 0, pointerType: p.pointerType || 'mouse' };
+    const t = now();
+    if (!edge.v && t - edge.bt > 100) { edge.b = band(); edge.bt = t; } // (trays close as a drag leaves them)
+    // every position counts for arming (as dragSource's asPlan per move), not only the ones a frame samples: the drag's
+    // start point and a quick move into a zone before the next frame
+    wk.edgePan2(edge.b || bandNow(), { x: edge.p.x, y: edge.p.y, pointerType: edge.p.pointerType, t }, edge.st);
+    request();
+  }
+  function stepEdge(T) {
+    const v = wk.edgePan2(edge.b || bandNow(), { x: edge.p.x, y: edge.p.y, pointerType: edge.p.pointerType, t: T }, edge.st);
+    const was = edge.v, dt = edge.last < 0 ? 0 : Math.min(50, T - edge.last);
+    edge.v = edge.st.t0 >= 0; // an edge asks (its ramp runs: the first frame's speed is 0)
+    edge.last = edge.v ? T : -1;
+    if ((v.vx || v.vy) && dt > 0) { cam = panCam(cam, -v.vx * dt / 1000, -v.vy * dt / 1000); moved(false); }
+    if (was && !edge.v) settle();
+  }
+  function ghost(g) {
+    if (!g) { if (gh) { gh.g = null; gh.rect = null; gh.el.hidden = true; } return null; }
+    if (!OV || !doc) return null;
+    if (!gh) {
+      const el = doc.createElement('div'), lab = doc.createElement('span');
+      el.className = 'cv-ghost'; lab.className = 'cv-ghost-label';
+      el.setAttribute('aria-hidden', 'true');
+      el.append(lab);
+      OV.append(el);
+      gh = { el, lab, g: null, rect: null, text: null };
+    }
+    gh.g = g; gh.el.hidden = false;
+    return placeGhost();
+  }
+  function placeGhost() {
+    const g = gh.g, w = Math.max(0, +g.w || 0), h = Math.max(0, +g.h || 0);
+    const p = toWorld(cam, g.x - vp.left, g.y - vp.top);
+    let x = p.x - (g.dx != null ? +g.dx : w / 2), y = p.y - (g.dy != null ? +g.dy : h / 2);
+    if (g.snap !== false) { x = snap(x); y = snap(y); }
+    const l = toLocal(cam, x, y), s = gh.el.style;
+    s.transform = 'translate(' + (l.x + vp.left - ovO.left) + 'px, ' + (l.y + vp.top - ovO.top) + 'px)';
+    s.width = w * cam.k + 'px'; s.height = h * cam.k + 'px';
+    const text = g.label || '';
+    if (text !== gh.text) { gh.text = text; gh.lab.textContent = text; }
+    if (text) { // the label stays in the visible part of the box (a true-size outline may be taller than the canvas)
+      const b = bandNow(), ox = l.x + vp.left, oy = l.y + vp.top;
+      const dx = Math.max(0, Math.min(b.left - ox, w * cam.k - 180)), dy = Math.max(0, Math.min(b.top - oy, h * cam.k - 36));
+      gh.lab.style.transform = dx || dy ? 'translate(' + Math.round(dx) + 'px, ' + Math.round(dy) + 'px)' : '';
+    }
+    gh.rect = { x, y, w, h };
+    return { x, y, w, h };
+  }
+
+  /* ---- keys */
+  const formCtl = t => !!t && (/^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName || '') || t.isContentEditable === true);
+  function canvasFocus(t) { // the viewport itself, a module root or something in its top bar (not a form control)
+    if (!t || formCtl(t)) return false;
+    if (t === viewport) return true;
+    for (let n = t; n && n !== viewport && typeof n.getAttribute === 'function'; n = n.parentNode) {
+      if (n.getAttribute('data-cv-bar') != null) return true;
+      if (n.getAttribute('data-cv-mod') != null) return n === t;
+    }
+    return false;
+  }
+  function nudge(id, dx, dy) {
+    const r = items.get(id), it = r && r.item;
+    if (!it) return false;
+    if (typeof it.nudge === 'function') it.nudge(dx, dy);
+    else if (typeof it.onMove === 'function') {
+      const q = it.rect(), x = snap(q.x) + dx, y = snap(q.y) + dy;
+      if (typeof it.setPos === 'function') it.setPos(x, y);
+      it.onMove(x, y, 'start'); it.onMove(x, y, 'end');
+    } else return false;
+    update(id);
+    return true;
+  }
+  function key(e) {
+    if (!active || !e || e.defaultPrevented || e.altKey) return false;
+    if (!canvasFocus(doc && doc.activeElement)) return false;
+    const k = String(e.key || ''), mod = e.metaKey || e.ctrlKey;
+    if (mod) { // ⌘/Ctrl-A: select all (one selection in 1b: nothing more to select; the page's text is not the canvas's)
+      if (k.toLowerCase() === 'a' && !e.shiftKey) { e.preventDefault(); return true; }
+      return false;
+    }
+    if (k === '0') { e.preventDefault(); fit({ animate: true }); return true; }
+    if (k === '1') { e.preventDefault(); zoomTo(1, { animate: true }); return true; }
+    const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k];
+    if (d && sel) {
+      const s = GRID * (e.shiftKey ? 4 : 1);
+      if (!nudge(sel, d[0] * s, d[1] * s)) return false;
+      e.preventDefault();
+      return true;
+    }
+    return false;
+  }
+  function escape() {
+    if (G) { endGesture(true); return true; }
+    if (editId) { editSup = true; computeEdit(); return true; }
+    if (sel) { select(null); return true; }
+    return false;
+  }
+
+  /* ---- the floating toolbar (#cvToolbar): ⊖ 100% ⊕ · fit · tidy · ∿ (later) · the native-zoom chip */
+  const TB = {};
+  const ICON = {
+    out: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10h10"/></svg>',
+    in: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10h10M10 5v10"/></svg>',
+    fit: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 7.5v-4h4M12.5 3.5h4v4M16.5 12.5v4h-4M7.5 16.5h-4v-4"/><rect x="7" y="7.5" width="6" height="5" rx="1"/></svg>',
+    tidy: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="5" width="5" height="10" rx="1"/><rect x="9.5" y="5" width="3.5" height="7" rx="1"/><rect x="15" y="5" width="2.5" height="5" rx="0.8"/></svg>',
+    mods: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10c2-5 4-5 5 0s3 5 5 0 4-5 5 0"/></svg>',
+    tools: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.2 12.2 17 17M6 8.5h5M8.5 6v5"/></svg>',
+  };
+  function buildToolbar(host) {
+    if (!host || !doc) return;
+    const mk = (tag, cls, text) => { const n = doc.createElement(tag); if (cls) n.className = cls; if (text) n.textContent = text; return n; };
+    const btn = (name, label, icon, fn) => {
+      const b = mk('button', 'cv-tb-btn');
+      b.type = 'button';
+      b.setAttribute('data-cv-tb', name);
+      b.setAttribute('aria-label', label);
+      b.title = label;
+      if (icon) b.innerHTML = icon;
+      if (fn) listen(b, 'click', e => { e.preventDefault(); fn(); });
+      return b;
+    };
+    const bar = mk('div', 'cv-tb');
+    bar.setAttribute('role', 'toolbar');
+    bar.setAttribute('aria-label', 'Canvas');
+    const fold = btn('tools', 'Canvas tools', ICON.tools, () => { const on = !bar.hasAttribute('data-open'); attr(bar, 'data-open', on); fold.setAttribute('aria-expanded', String(on)); });
+    fold.setAttribute('aria-expanded', 'false');
+    const row = mk('div', 'cv-tb-row');
+    const pct = btn('pct', 'Zoom 100 %', '', () => zoomTo(1, { animate: true }));
+    pct.classList.add('cv-tb-pct');
+    pct.textContent = '100%';
+    const mods = btn('mods', 'Modulation cables arrive in a later stage', ICON.mods, null);
+    mods.disabled = true;
+    mods.setAttribute('aria-disabled', 'true');
+    const chip = mk('button', 'cv-tb-chip');
+    chip.type = 'button';
+    chip.setAttribute('data-cv-tb', 'native');
+    chip.textContent = 'page zoomed · 1:1';
+    chip.title = 'The page is zoomed by the browser: pinch out to return to 1:1 (the canvas takes its gestures back there)';
+    chip.hidden = true;
+    let hintT = 0;
+    listen(chip, 'click', () => { chip.textContent = 'pinch out to 1:1'; unlater(hintT); hintT = later(() => { chip.textContent = 'page zoomed · 1:1'; }, 2500); });
+    row.append(
+      btn('out', 'Zoom out', ICON.out, () => stepZoom(-1)), pct, btn('in', 'Zoom in', ICON.in, () => stepZoom(1)), mk('span', 'cv-tb-sep'),
+      btn('fit', 'Fit all (0)', ICON.fit, () => fit({ animate: true })),
+      btn('tidy', 'Tidy: lay the modules out again', ICON.tidy, () => { if (typeof o.onTidy === 'function') o.onTidy(); }),
+      mods);
+    bar.append(fold, row, chip);
+    host.append(bar);
+    Object.assign(TB, { bar, row, pct, chip, fold });
+    offs.push(() => { unlater(hintT); try { bar.remove(); } catch (err) { /* gone */ } });
+  }
+
+  /* ---- setup */
+  function setPinchMode(m) {
+    pinchMode = m === 'page' ? 'page' : 'canvas';
+    attr(viewport, 'data-cv-pinch', pinchMode);
+    if (store) { try { store.set(PINCH_PREF, pinchMode); } catch (err) { /* storage */ } }
+  }
+  function setActive(on) {
+    on = !!on;
+    if (on === active) { if (on) resize(); return; }
+    active = on;
+    if (!on) { endGesture(true); stopMotion(); edge = null; queue = []; if (B) endBurst(); outside = null; }
+    else { resize(); schedulePlan(); }
+  }
+  function onFocusIn(e) { // keyboard focus (Tab) or a text field brings its control on screen; a press's target already is
+    const t = e.target;
+    if (!t || t === W || !active) return;
+    if (now() - pressT < 600 && !formCtl(t)) return;
+    reveal(t);
+  }
+  function onVV() {
+    checkNative();
+    const a = doc && doc.activeElement; // the software keyboard came or went: keep the field being typed in on screen
+    if (a && formCtl(a) && inside(W, a) && !native) reveal(a);
+  }
+
+  pinchMode = store && store.get && store.get(PINCH_PREF, 'canvas') === 'page' ? 'page' : 'canvas';
+  attr(viewport, 'data-cv-pinch', pinchMode);
+  attr(viewport, 'data-cv-lod', lod);
+  try { W.style.setProperty('--ik', '1'); } catch (err) { /* inert */ }
+  if (o.layer) wk.setLayer(o.layer);
+  wk.setWheelVeto(() => wheelVeto());
+  // in-panel drags (Serum tiles / labels, the FX grip: wk.dragSource auto-scroll) pan the camera at the band's edges
+  if (typeof wk.setEdgeHook === 'function') wk.setEdgeHook({ pan: p => dragPointer(p), onCamera: cb => api.on('camera', cb) });
+  buildToolbar(o.toolbar);
+  listen(viewport, 'pointerdown', onDownCap, true);
+  listen(viewport, 'pointerup', onUpCap, true);
+  listen(viewport, 'pointerdown', onDown);
+  listen(viewport, 'pointermove', onMove, { passive: true });
+  listen(viewport, 'pointerup', onUp);
+  listen(viewport, 'pointercancel', onCancel);
+  listen(viewport, 'click', onClickCap, true);
+  listen(viewport, 'wheel', onWheelCap, { capture: true, passive: false });
+  listen(viewport, 'wheel', onWheel, { passive: false });
+  for (const t of ['gesturestart', 'gesturechange', 'gestureend']) listen(viewport, t, onGesture, { passive: false });
+  listen(W, 'focusin', onFocusIn);
+  listen(W, 'wk-reveal', e => { if (active && e.target && e.target !== W) reveal(e.target); }); // a panel's popover / overlay opened (no scroller here)
+  // touches on the glass (any): a hook burst ends when the last lifts; Safari gesture events are ignored meanwhile
+  const onTouch = e => { touches = e && e.touches ? e.touches.length : 0; if (!touches && B && B.hook) settle(); };
+  for (const t of ['touchstart', 'touchend', 'touchcancel']) listen(win, t, onTouch, { capture: true, passive: true });
+  listen(win, 'resize', resize, { passive: true });
+  const vv = win.visualViewport;
+  if (vv) { listen(vv, 'resize', onVV, { passive: true }); listen(vv, 'scroll', onVV, { passive: true }); }
+  let ro = null;
+  if (typeof win.ResizeObserver === 'function') { try { ro = new win.ResizeObserver(() => resize()); ro.observe(viewport); } catch (err) { ro = null; } }
+  resize();
+  checkNative();
+  write();
+
+  const wheelVeto = () => movedAt > now() - WHEEL_VETO_MS;
+  const api = {
+    el: W, viewport, overlay: OV,
+    get cam() { return copy(cam); }, get k() { return cam.k; }, get native() { return native; }, get movedAt() { return movedAt; },
+    get selected() { return sel; }, get edit() { return editId; }, get pinchMode() { return pinchMode; }, get lod() { return lod; },
+    get busy() { return !!B; },
+    setCamera, panBy, zoomAt, fit, focusItem, reveal,
+    toWorld: (x, y) => toWorld(cam, x - vp.left, y - vp.top),
+    toClient: (x, y) => { const l = toLocal(cam, x, y); return { x: l.x + vp.left, y: l.y + vp.top }; },
+    band, add, remove, update, clear, ids: () => [...items.keys()], viewOf: id => { const r = items.get(String(id)); return r ? r.view : null; },
+    select, dragPointer, ghost, setActive, setPinchMode, resize, hooks, wheelVeto, escape, key,
+    on(type, fn) {
+      let s = subs.get(type);
+      if (!s) subs.set(type, s = new Set());
+      s.add(fn);
+      return () => s.delete(fn);
+    },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      if (fid) caf(fid);
+      fid = 0;
+      if (B) unlater(B.timer);
+      B = null; G = null; glide = null; anim = null; edge = null;
+      for (const f of offs.splice(0)) { try { f(); } catch (err) { /* gone */ } }
+      if (ro) { try { ro.disconnect(); } catch (err) { /* gone */ } }
+      if (gh) { try { gh.el.remove(); } catch (err) { /* gone */ } gh = null; }
+      wk.setWheelVeto(null);
+      if (typeof wk.setEdgeHook === 'function') wk.setEdgeHook(null);
+      if (o.layer) wk.setLayer(null);
+      items.clear(); subs.clear(); queue = [];
+    },
+  };
+  return api;
+}

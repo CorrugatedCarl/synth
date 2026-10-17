@@ -414,20 +414,20 @@ test('§12.6 storage: pagehide / beforeunload / hidden start the IndexedDB write
   for (const f of s2.dom.winL.pagehide || []) f({ type: 'pagehide' });
   assert.ok(idb.stats.tx >= 1 && idb.stats.put.tracks >= 2, 'the tracks transaction exists before the handler returns: ' + JSON.stringify(idb.stats));
   await api.store.flush(); await s2.settle(20);
-  assert.equal(JSON.parse(idb.data('synth-app', 'tracks').get('t:' + tr.id).j).notes.length, tr.notes.length);
+  assert.equal(JSON.parse(idb.data('synth-canvas', 'tracks').get('t:' + tr.id).j).notes.length, tr.notes.length);
 });
 
 test('§12.6 storage (sign-off item 7): first run migrates a Phase-1 localStorage into IndexedDB and loads its project; autosave rewrites only changed tracks; quota errors show the notice', async () => {
   const proj = JSON.parse(readFileSync(new URL('./ref-p1/project-p1.json', import.meta.url), 'utf8'));
   delete proj.wts;
-  const snap = { 'synth.project': JSON.stringify(proj), 'synth.settings': JSON.stringify({ sr: 0, os: 4, drift: 5, master: 0.8, model: 'serum', vel: 100 }), 'synth.tab': '"inst"' };
+  const snap = { 'synthc.project': JSON.stringify(proj), 'synthc.settings': JSON.stringify({ sr: 0, os: 4, drift: 5, master: 0.8, model: 'serum', vel: 100 }), 'synthc.tab': '"inst"' };
   const ls = fakeStorage(snap), idb = fakeIDB();
   const s2 = await bootMain({ ls, idb });
   const api = s2.api;
   assert.equal(api.store.mode, 'idb', 'IndexedDB store');
   assert.equal(api.store.info().migrated, true, 'first run: migrated');
   assert.deepEqual(api.project().tracks.map(t => t.id), proj.tracks.map(t => t.id), 'the Phase-1 project loaded from the database');
-  const lsApp = () => { const o = Object.fromEntries(ls.m); delete o['synth-app.idb']; return o; }; // (without the verified-database marker)
+  const lsApp = () => { const o = Object.fromEntries(ls.m); delete o['synth-canvas.idb']; return o; }; // (without the verified-database marker)
   assert.deepEqual(lsApp(), snap, 'localStorage untouched (read-only fallback)');
   api.save(); await api.store.flush(); // the first autosave stores the loaded project in its v2 form (states migrated)
   idb.resetStats();
@@ -456,7 +456,7 @@ test('§13.5 Delay spectrum overlay: the FX hosts post {t: "fxtap", id} to the t
 
 // (boots its own page: after the tests that share page(), as the storage tests do)
 test('page simulation: with a fixed sample rate (synth.settings.sr) sim.ctx() is the context main.js plays through, not the closed device-rate probe', async () => {
-  const s2 = await bootMain({ hash: '#serum', ls: fakeStorage({ 'synth.settings': JSON.stringify({ sr: 48000 }) }) });
+  const s2 = await bootMain({ hash: '#serum', ls: fakeStorage({ 'synthc.settings': JSON.stringify({ sr: 48000 }) }) });
   await s2.power(); await s2.settle(30); s2.raf();
   assert.equal(s2.live.length, 2, 'the page context and the probe that learns the device rate');
   assert.equal(s2.live[1].state, 'closed');
@@ -594,7 +594,7 @@ test('R5 Chromium: the speaker-stamped clock is used as it is (only the Latency 
 });
 
 test('R5 the Latency setting persists per device (synth.settings), clamped to −50 … +400 ms; the presets', async () => {
-  const ls = fakeStorage({ 'synth.settings': JSON.stringify({ sr: 0, os: 4, lat: 9999 }) });
+  const ls = fakeStorage({ 'synthc.settings': JSON.stringify({ sr: 0, os: 4, lat: 9999 }) });
   const s = await bootMain({ ls });
   assert.equal(s.api.settings().lat, 400, 'clamped');
   assert.equal(s.api.clock().user, 400);
@@ -602,7 +602,7 @@ test('R5 the Latency setting persists per device (synth.settings), clamped to �
   assert.equal(s.api.settings().lat, -50);
   s.$('#latR').value = '135'; s.$('#latR').oninput();
   s.api.save();
-  assert.equal(JSON.parse(ls.getItem('synth.settings')).lat, 135);
+  assert.equal(JSON.parse(ls.getItem('synthc.settings')).lat, 135);
   const s2 = await bootMain({ ls });
   assert.equal(s2.api.settings().lat, 135, 'read back');
   assert.equal(s2.api.clock().user, 135, 'the clock uses it');
@@ -768,10 +768,13 @@ test('R5 WebKit power-on started at a finger\'s press (no activation yet: the co
 /* ---------------------------------------------------------- chords (R6, R7) */
 // (each boots its own page: a fresh project on the Minimoog, the default model)
 const modelOf = id => MODELS.find(m => m.id === id);
-// a track header's instrument menu entries, 'id=text' (strings only: never a fake-DOM node into assert)
+// a track's instrument menu entries, 'id=text' (strings only: never a fake-DOM node into assert): the canvas shell's
+// instrument chip menu ("Change instrument", main.js instItems), the track's own entry as its row's chip label shows it
+// (voiceOpt: relabelled by voiceSeen)
 function menuOf(s, tr) {
   const row = s.$('#heads').children.find(r => r.dataset && r.dataset.id === tr.id);
-  return row.children[1].children[0].children.map(o => o.value + '=' + o.textContent);
+  const lab = row.children[1].children[0].children[1], text = lab.children.length ? lab.children.map(c => c.textContent).join('') : lab.textContent; // (.hin + .his + .hiv)
+  return globalThis.__synthTest.shell.instItems(tr).map(o => o.value + '=' + (o.value === tr.model ? text : o.label));
 }
 const noteAt = (id, t, n, d = 480) => ({ id, t, d, n, v: 100 });
 
@@ -818,7 +821,7 @@ test('R6: the instrument menu and the track tab name each track\'s voice mode; a
   note().onclick();
   assert.equal(api.project().selTrack, x.id, 'its track selected');
   assert.equal(x.model, 'serum', 'the sound is kept');
-  assert.equal(s.$('#tab-inst').hidden, false, 'the Instrument tab');
+  assert.equal(s.$('#tab-inst').hidden, false, 'the CANVAS view (and the Sources tray to replace it)');
 });
 
 test('R7: Piano Roll previews post aud (B5); the song is sent sorted mid-gesture (B4); a panic re-sends the anchor without fresh (B1); the CPU cap shows on a capped Serum track until lifted', async () => {
@@ -939,7 +942,7 @@ test('G2 two-finger rollback: the step sequencer\'s number boxes and step notes 
 });
 
 test('R6: the chord notice judges a switch on the model\'s last-used values — a saved Unison Prophet-5 is skipped for the Juno-60 (6 voices); the tap gives a polyphonic track', async () => {
-  const s = await bootMain({ hash: '#minimoog', ls: fakeStorage({ 'synth.v.prophet5': JSON.stringify({ un: 1 }) }) });
+  const s = await bootMain({ hash: '#minimoog', ls: fakeStorage({ 'synthc.v.prophet5': JSON.stringify({ un: 1 }) }) });
   const api = s.api, t = api.project().tracks[0], host = api.roll().host, note = () => s.$('#notice');
   host.edit('Draw', () => t.notes.push(noteAt('c1', 1920, 60), noteAt('c2', 1920, 64), noteAt('c3', 1920, 67)));
   const txt = `“${t.name}” is monophonic — its chords play one note. Tap to switch it to the Juno-60 (6 voices; Undo restores it)`;

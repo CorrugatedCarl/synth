@@ -54,7 +54,7 @@
 // rack?) and the Phase-1 helpers moveModule, ladderLabel, moduleTitle, modulePresetPayload / applyModulePreset (v1 module
 // presets), svfDb, impulseDb. Nothing touches the DOM at module top level.
 import { knob, numBox, menu, toggle, seg, slider, contextMenu, tooltip, injectStyles, loadDSP, menuSource, theme, fitCanvas, frame,
-  saveFile, pickFile, ask, wheelGate, dragSource, modifierBar, ticker } from './wk.js?v=9';
+  saveFile, pickFile, ask, wheelGate, dragSource, modifierBar, ticker, localPoint, localScale, onRescale } from './wk.js?v=9';
 import { CurveEditor, shapeLib } from './graph.js?v=9';
 import * as core from './serum-core.js?v=9';
 
@@ -533,7 +533,7 @@ const CSS = `
 [data-nomod] .wk-svg { opacity: 0.85; }
 .fxr2 .fxr-gr { touch-action: none; }
 .fxr2-emb { flex: 0 0 auto; align-self: center; padding: 1px 5px; color: var(--sx-on, #6fe3a1); border: 1px solid currentColor; border-radius: 3px; font: 700 8px/1.4 var(--ui, system-ui, sans-serif); letter-spacing: 0.08em; }
-@media (max-width: 699px) { .fxr2 .fxr2-list { flex-direction: column; overflow-x: visible; } .fxr2-d1 { margin-left: 10px; } }
+@media (max-width: 699px) { .fxr2 .fxr2-list:where(:not([data-cv-world] *)) { flex-direction: column; overflow-x: visible; } .fxr2-d1:where(:not([data-cv-world] *)) { margin-left: 10px; } }
 `;
 // §13.1 touch rules (targets ≥ 44 px): emitted under `@media (pointer: coarse)` and again under `.wk-touch` (wk adds it to
 // <html> at the first touch: an iPad with a trackpad reports a fine pointer), as wk's own rules. The bypass chips keep
@@ -632,6 +632,8 @@ export class FXRackUI {
       ro.observe(this.rack);
       this.offs.push(() => ro.disconnect());
     }
+    // the canvas world's zoom ended: the displays' stores follow k (fitCanvas), so every display repaints
+    this.offs.push(onRescale(this.rack, () => { if (!this.dead) { this.redraw(true); this.drawGrs(); } }));
     if (!this.dsp) {
       loadDSP().then(r => { if (!this.dead && r && r.FXDSP) { this.dsp = r.FXDSP; this.redraw(true); } }, () => {});
     }
@@ -1192,8 +1194,9 @@ export class FXRackUI {
     let g = null;
     cv.addEventListener('pointerdown', e => {
       if (e.button !== 0 || !c.on('mb') || !c.has('mbH')) return;
-      const r = cv.getBoundingClientRect(), H = r.height || cv.clientHeight || 62, w = r.width || cv.clientWidth || 120;
-      const j = clamp(Math.floor((e.clientY - r.top - 4) / Math.max(1, (H - 8) / 3)), 0, 2);
+      // the band under the pointer in layout px (the canvas world may scale the rack); the drag's span stays screen px
+      const r = cv.getBoundingClientRect(), H = cv.clientHeight || r.height || 62, w = r.width || cv.clientWidth || 120;
+      const j = clamp(Math.floor((localPoint(cv, e).y - 4) / Math.max(1, (H - 8) / 3)), 0, 2);
       e.preventDefault();
       g = { id: e.pointerId, pid: PIDS[j], x: e.clientX, n0: c.val(PIDS[j]), span: Math.max(20, w - 56), live: false, fine: !!keysOf(e).fine };
       try { cv.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
@@ -1356,9 +1359,9 @@ export class FXRackUI {
     const D = { P, el: wrap, cv, hgt, draw, key, last: null };
     if (drag) {
       let g = null;
-      const pos = e => { // canvas coordinates: the canvas fills the wrapper's padding box (inside its 1 px border)
-        const r = wrap.getBoundingClientRect(), b = this.box(D);
-        return { x: e.clientX - r.left - (wrap.clientLeft || 0), y: e.clientY - r.top - (wrap.clientTop || 0), w: b.w, h: b.h };
+      const pos = e => { // canvas coordinates: the canvas fills the wrapper's padding box (inside its 1 px border), layout px
+        const p = localPoint(wrap, e), b = this.box(D);
+        return { x: p.x - (wrap.clientLeft || 0), y: p.y - (wrap.clientTop || 0), w: b.w, h: b.h };
       };
       wrap.addEventListener('pointerdown', e => {
         if (e.button !== 0) return;
@@ -1637,7 +1640,7 @@ export class FXRackUI {
       if (k == null) return;
       e.preventDefault();
       if (!k) return;
-      const r = D.el.getBoundingClientRect(), w = this.box(D).w, x = e.clientX - r.left - (D.el.clientLeft || 0);
+      const w = this.box(D).w, x = localPoint(D.el, e).x - (D.el.clientLeft || 0);
       const fL = logX(c.lv('freqL'), w, pad), fH = logX(c.lv('freqH'), w, pad);
       const pid = Math.abs(x - fL) <= Math.abs(x - fH) ? 'qL' : 'qH';
       const n = clamp(c.val(pid) + k * (e.shiftKey ? 0.002 : 0.02), 0, 1);
@@ -1980,7 +1983,7 @@ export class FXRackUI {
     ins.hidden = false;
     ins.classList.remove('fxr-ins-v');
     const top = gap < R.length ? R[gap].el.getBoundingClientRect().top : R.length ? R[R.length - 1].el.getBoundingClientRect().bottom : lr.top;
-    ins.style.top = (top - lr.top - 1 + (this.list.scrollTop || 0)) + 'px';
+    ins.style.top = ((top - lr.top) * localScale(this.list) - 1 + (this.list.scrollTop || 0)) + 'px'; // (screen px → the list's layout px)
     ins.style.left = '0px';
   }
   dragEnd() {
@@ -2443,7 +2446,7 @@ export class FXRackUI {
       return;
     }
     const rr = this.rack.getBoundingClientRect(), pr = P.el.getBoundingClientRect();
-    const top = (this.rack.scrollTop || 0) + pr.top - rr.top;
+    const top = (this.rack.scrollTop || 0) + (pr.top - rr.top) * localScale(this.rack);
     if (fin(top)) this.rack.scrollTop = Math.max(0, top - 4);
     if (flash) { P.el.classList.add('fxr-flash'); setTimeout(() => P.el.classList.remove('fxr-flash'), 600); }
   }

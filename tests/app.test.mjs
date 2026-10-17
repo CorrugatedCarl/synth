@@ -188,7 +188,7 @@ test('updates: a worker of this page\'s version is adopted quietly (no toast, no
 test('updates: an older page gets "Update available — Reload"; Reload saves the project first (IndexedDB written), then the worker takes over (skip) and the page reloads', async () => {
   const s = await page(), { api } = s, toast = s.$('#update');
   let saved = null;
-  const tracks = () => [...idb.data('synth-app', 'tracks').keys()].filter(k => k.startsWith('t:'));
+  const tracks = () => [...idb.data('synth-canvas', 'tracks').keys()].filter(k => k.startsWith('t:'));
   const w2 = sw.arrive(() => false, () => { saved = tracks(); });
   await s.settle(20);
   assert.deepEqual(w2.posted, [{ t: 'adopt', v: N }]);

@@ -1,6 +1,6 @@
 // The on-screen keyboard's view in the page simulation (main.js, tests/main-sim.mjs): Hide / Show keys, the height grip
-// on the panel's top edge and the Key size slider — the key-count ↔ width math, the height clamp (70 px … 60 % of the
-// window), no stuck notes when the keys are rebuilt (or hidden) under a finger, and the preferences persisting
+// on the panel's top edge and the Key size slider — the key-count ↔ width math, the height clamp (70 px … the canvas
+// shell's one height budget, cv-tray budget: the canvas keeps 240 px), no stuck notes when the keys are rebuilt (or hidden) under a finger, and the preferences persisting
 // (synth.kbSize, synth.kbHidden) into the next session.
 // Run: node --test tests/keyboard.test.mjs
 import './v8-guard.mjs';
@@ -67,7 +67,7 @@ test('Key size slider: rebuilds the keys at the chosen width, hides labels on na
   assert.equal(s.$('#keys').children.length, K.notes.length);
   assert.deepEqual(spans(s, 'nm'), [48, 60, 72, 84], 'C labels');
   assert.equal(spans(s, 'kb').length, 18, 'computer-key labels on the 18 keys A … \'');
-  assert.equal(JSON.parse(ls.m.get('synth.kbSize')).kw, 40, 'persisted');
+  assert.equal(JSON.parse(ls.m.get('synthc.kbSize')).kw, 40, 'persisted');
   assert.equal(s.$('#kbw').value, '40');
   s.$('#octup').onclick();
   K = api.kb();
@@ -84,7 +84,7 @@ test('Key size slider: rebuilds the keys at the chosen width, hides labels on na
   K = api.kb();
   assert.deepEqual([K.kw, K.lo, K.hi], [0, 48, 96], 'double-click: four octaves fitted to 1000 px again');
   assert.equal(s.$('#kbw').value, String(Math.round(1000 / 29)), 'the slider shows the fitted width');
-  assert.equal(JSON.parse(ls.m.get('synth.kbSize')).kw, 0);
+  assert.equal(JSON.parse(ls.m.get('synthc.kbSize')).kw, 0);
   // a window resize reflows a chosen width
   slide(s, 50);
   s.$('#keys').clientWidth = 600;
@@ -94,7 +94,7 @@ test('Key size slider: rebuilds the keys at the chosen width, hides labels on na
   fire(s.$('#kbw'), { type: 'dblclick' });
 });
 
-test('height grip: drag up / down sets the key height within 70 px … 60 % of the window; keys, double-click / double-tap reset to the screen\'s default', async () => {
+test('height grip: drag up / down sets the key height within 70 px … the height budget (the canvas keeps 240 px, the top tray folds to its row); keys, double-click / double-tap reset to the screen\'s default', async () => {
   const s = await page(), { api } = s, g = s.$('#kbGrip');
   assert.equal(api.kb().h, 170, 'desktop default');
   assert.equal(g.getAttribute('aria-valuenow'), '170');
@@ -102,7 +102,7 @@ test('height grip: drag up / down sets the key height within 70 px … 60 % of t
   fire(g, ptr('pointermove', 7, 500, 499, { pointerType: 'mouse' }));
   assert.equal(api.kb().h, 271, 'dragged up 101 px');
   assert.equal(g.getAttribute('aria-valuenow'), '271');
-  assert.equal(ls.m.has('synth.kbSize') && JSON.parse(ls.m.get('synth.kbSize')).h, 0, 'not written while dragging');
+  assert.equal(ls.m.has('synthc.kbSize') && JSON.parse(ls.m.get('synthc.kbSize')).h, 0, 'not written while dragging');
   fire(g, ptr('pointermove', 7, 500, -2000, { pointerType: 'mouse' }));
   assert.equal(api.kb().h, 360, 'at most 360 px (a 900 px window allows 476)');
   fire(g, ptr('pointermove', 7, 500, 2000, { pointerType: 'mouse' }));
@@ -112,13 +112,13 @@ test('height grip: drag up / down sets the key height within 70 px … 60 % of t
   fire(g, ptr('pointerup', 7, 500, 480, { pointerType: 'mouse' }));
   assert.equal(api.kb().h, 290);
   assert.ok(!s.$('#perf').classList.contains('short'));
-  assert.equal(JSON.parse(ls.m.get('synth.kbSize')).h, 290, 'written at the end of the drag');
+  assert.equal(JSON.parse(ls.m.get('synthc.kbSize')).h, 290, 'written at the end of the drag');
   fire(g, ptr('pointermove', 7, 500, 100, { pointerType: 'mouse' }));
   assert.equal(api.kb().h, 290, 'the drag has ended');
-  // the 60 % rule: a short window lowers the keys in use, the chosen height is kept for a taller one
+  // the height budget (cv-tray budget): a short window lowers the keys in use, the chosen height is kept for a taller one
   await resize(s, 0, 500);
-  assert.deepEqual([api.kb().h, api.kb().hSet], [236, 290], '0.6 × 500 − 64 px of toolbar');
-  assert.equal(g.getAttribute('aria-valuemax'), '236');
+  assert.deepEqual([api.kb().h, api.kb().hSet], [148, 290], '500 − 240 (the canvas) − 48 (the top tray folded to its row) − 64 px of toolbar');
+  assert.equal(g.getAttribute('aria-valuemax'), '148');
   await resize(s, 0, 160);
   assert.equal(api.kb().h, 70, 'never below 70 px');
   await resize(s, 0, 900);
@@ -129,16 +129,16 @@ test('height grip: drag up / down sets the key height within 70 px … 60 % of t
   // more (arrows, End, a drag up — also one that went down first) keeps it, asking for less replaces it
   await resize(s, 0, 500);
   key('ArrowUp'); key('PageUp'); key('End');
-  assert.deepEqual([api.kb().h, api.kb().hSet], [236, 290], 'more than the limit: the remembered 290 px stays');
+  assert.deepEqual([api.kb().h, api.kb().hSet], [148, 290], 'more than the limit: the remembered 290 px stays');
   fire(g, ptr('pointerdown', 6, 500, 600, { pointerType: 'mouse' }));
   fire(g, ptr('pointermove', 6, 500, 640, { pointerType: 'mouse' }));
-  assert.deepEqual([api.kb().h, api.kb().hSet], [196, 196], 'dragged down 40 px');
+  assert.deepEqual([api.kb().h, api.kb().hSet], [108, 108], 'dragged down 40 px');
   fire(g, ptr('pointermove', 6, 500, 580, { pointerType: 'mouse' }));
   fire(g, ptr('pointerup', 6, 500, 580, { pointerType: 'mouse' }));
-  assert.deepEqual([api.kb().h, api.kb().hSet], [236, 290], '… and back up past the limit: the height from before the drag');
-  assert.equal(JSON.parse(ls.m.get('synth.kbSize')).h, 290);
+  assert.deepEqual([api.kb().h, api.kb().hSet], [148, 290], '… and back up past the limit: the height from before the drag');
+  assert.equal(JSON.parse(ls.m.get('synthc.kbSize')).h, 290);
   key('ArrowDown');
-  assert.deepEqual([api.kb().h, api.kb().hSet], [226, 226], 'less: chosen');
+  assert.deepEqual([api.kb().h, api.kb().hSet], [138, 138], 'less: chosen');
   await resize(s, 0, 900);
   key('End'); key('Home'); key('PageUp'); key('PageUp'); key('PageUp'); key('PageUp'); key('PageUp');
   assert.deepEqual([api.kb().h, api.kb().hSet], [270, 270]);
@@ -151,12 +151,12 @@ test('height grip: drag up / down sets the key height within 70 px … 60 % of t
   key('Home'); assert.equal(api.kb().h, 70);
   key('End'); assert.equal(api.kb().h, 360);
   assert.equal(key('KeyA').defaultPrevented, false, 'other keys stay the page\'s (notes)');
-  assert.equal(JSON.parse(ls.m.get('synth.kbSize')).h, 360);
+  assert.equal(JSON.parse(ls.m.get('synthc.kbSize')).h, 360);
   for (const k of ['Enter', 'Delete', 'Backspace']) {
     key('End');
     const e = key(k);
     assert.deepEqual([api.kb().h, api.kb().hSet, e.defaultPrevented, e.stopped], [170, 0, true, true], k + ': the default (and not the page\'s Delete)');
-    assert.equal(JSON.parse(ls.m.get('synth.kbSize')).h, 0);
+    assert.equal(JSON.parse(ls.m.get('synthc.kbSize')).h, 0);
   }
   key('End');
   fire(g, { type: 'dblclick' });
@@ -168,16 +168,16 @@ test('height grip: drag up / down sets the key height within 70 px … 60 % of t
   // a phone / portrait tablet width: its own default (style.css .keys 128 px)
   await resize(s, 800);
   assert.equal(api.kb().h, 128);
-  // the default is the Phase-1 height in any window (the 60 % rule is for a chosen height): a phone in landscape
+  // a window too small for the budget (a phone in landscape): the keys keep their least (70 px), the default stays chosen
   await resize(s, 0, 300);
-  assert.deepEqual([api.kb().h, api.kb().hSet, g.getAttribute('aria-valuemax')], [128, 0, '128'], 'not lowered to 0.6 × 300 − 64 = 116');
+  assert.deepEqual([api.kb().h, api.kb().hSet, g.getAttribute('aria-valuemax')], [70, 0, '70'], 'the budget: the keys at their least');
   key('ArrowUp'); key('End');
   fire(g, ptr('pointerdown', 5, 500, 600, { pointerType: 'mouse' }));
   fire(g, ptr('pointermove', 5, 500, 500, { pointerType: 'mouse' }));
   fire(g, ptr('pointerup', 5, 500, 500, { pointerType: 'mouse' }));
-  assert.deepEqual([api.kb().h, api.kb().hSet], [128, 0], 'taller than the limit already: asking for more changes nothing');
+  assert.deepEqual([api.kb().h, api.kb().hSet], [70, 0], 'at the limit already: asking for more changes nothing (the default is kept)');
   key('ArrowDown');
-  assert.deepEqual([api.kb().h, api.kb().hSet], [116, 116], 'lower: the limit');
+  assert.deepEqual([api.kb().h, api.kb().hSet], [70, 0], 'nor less: the least');
   fire(g, { type: 'dblclick' });
   await resize(s, 1400, 900);
   assert.equal(api.kb().h, 170);
@@ -241,7 +241,7 @@ test('Hide keys: the toolbar stays, fingers on the keys are released, the keys c
   assert.equal(api.held.size, 0, 'the finger\'s note ended with the keys');
   fire(keys, ptr('pointerup', 4, 30, 50));
   assert.equal(api.held.size, 0);
-  assert.equal(ls.m.get('synth.kbHidden'), 'true');
+  assert.equal(ls.m.get('synthc.kbHidden'), 'true');
   s.$('#octup').onclick(); // the toolbar keeps working
   s.$('#keys').clientWidth = 1300;
   b.onclick();
@@ -249,7 +249,7 @@ test('Hide keys: the toolbar stays, fingers on the keys are released, the keys c
   assert.ok(!s.$('#perf').classList.contains('min'));
   assert.equal(b.getAttribute('aria-expanded'), 'true');
   assert.deepEqual([api.kb().w, api.kb().lo, api.kb().hi], [1300, 48, 108], 'five octaves for 1300 px, an octave up');
-  assert.equal(ls.m.get('synth.kbHidden'), 'false');
+  assert.equal(ls.m.get('synthc.kbHidden'), 'false');
   s.$('#octdn').onclick();
   delete globalThis.document.elementFromPoint;
 });
@@ -298,7 +298,7 @@ test('double tap (touch, pen) resets only after two taps in place that changed n
     slide(s, 40);
     const e = keydown(kw, k);
     assert.deepEqual([api.kb().kw, e.defaultPrevented, e.stopped], [0, true, true], k);
-    assert.equal(JSON.parse(ls.m.get('synth.kbSize')).kw, 0, 'saved');
+    assert.equal(JSON.parse(ls.m.get('synthc.kbSize')).kw, 0, 'saved');
   }
   const e = keydown(kw, 'ArrowLeft');
   assert.deepEqual([e.defaultPrevented, e.stopped], [false, false]);
@@ -374,20 +374,20 @@ test('gesture.js: the two-finger layer\'s window pointerdown / click listeners c
 // 'two-finger', main.js track()'s abort): the height as it was, nothing saved; a plain pointercancel keeps it, as before
 test('height grip: a two-finger gesture (flagged pointercancel) puts the height back unsaved; a plain pointercancel keeps and saves it', async () => {
   const s = await page(), { api } = s, g = s.$('#kbGrip');
-  const h0 = api.kb().h, hs0 = api.kb().hSet, saved0 = ls.m.get('synth.kbSize') || null;
+  const h0 = api.kb().h, hs0 = api.kb().hSet, saved0 = ls.m.get('synthc.kbSize') || null;
   fire(g, ptr('pointerdown', 31, 500, 600));
   fire(g, ptr('pointermove', 31, 500, 560));
   assert.equal(api.kb().h, h0 + 40, 'dragged up 40 px');
   fire(g, ptr('pointercancel', 31, 500, 560, { gesture: 'two-finger' }));
   assert.deepEqual([api.kb().h, api.kb().hSet, g.getAttribute('aria-valuenow')], [h0, hs0, String(h0)], 'back as it was');
-  assert.equal(ls.m.get('synth.kbSize') || null, saved0, 'nothing saved');
+  assert.equal(ls.m.get('synthc.kbSize') || null, saved0, 'nothing saved');
   fire(g, ptr('pointermove', 31, 500, 500));
   assert.equal(api.kb().h, h0, 'the drag has ended');
   fire(g, ptr('pointerdown', 32, 500, 600));
   fire(g, ptr('pointermove', 32, 500, 560));
   fire(g, ptr('pointercancel', 32, 500, 560));
   assert.equal(api.kb().h, h0 + 40, 'a plain cancel keeps it');
-  assert.equal(JSON.parse(ls.m.get('synth.kbSize')).h, h0 + 40, 'and saves it');
+  assert.equal(JSON.parse(ls.m.get('synthc.kbSize')).h, h0 + 40, 'and saves it');
   keydown(g, 'Delete'); // (the default again, for the tests after)
   assert.equal(api.kb().hSet, 0);
 });
@@ -400,7 +400,7 @@ test('the keyboard view persists: key height, key width and Hide keys come back 
   fire(g, ptr('pointermove', 9, 500, 550, { pointerType: 'mouse' }));
   fire(g, ptr('pointerup', 9, 500, 550, { pointerType: 'mouse' }));
   s.$('#kbHide').onclick();
-  assert.deepEqual(JSON.parse(ls.m.get('synth.kbSize')), { h: 220, kw: 44 });
+  assert.deepEqual(JSON.parse(ls.m.get('synthc.kbSize')), { h: 220, kw: 44 });
   const s2 = await bootMain({ ls });
   const K = s2.api.kb();
   assert.deepEqual([K.h, K.hSet, K.kw], [220, 220, 44], 'restored');
@@ -409,7 +409,7 @@ test('the keyboard view persists: key height, key width and Hide keys come back 
   assert.equal(s2.$('#kbrow').hidden, true, 'still hidden');
   assert.ok(s2.$('#perf').classList.contains('min'));
   assert.equal(s2.$('#kbHide').getAttribute('aria-expanded'), 'false');
-  const s3 = await bootMain({ ls: fakeStorage({ 'synth.kbSize': JSON.stringify({ h: 'tall', kw: 4000 }), 'synth.kbHidden': 'false' }) });
+  const s3 = await bootMain({ ls: fakeStorage({ 'synthc.kbSize': JSON.stringify({ h: 'tall', kw: 4000 }), 'synthc.kbHidden': 'false' }) });
   const K3 = s3.api.kb();
   assert.deepEqual([K3.h, K3.hSet, K3.kw], [170, 0, 96], 'a non-number is the default, a width beyond the range is clamped');
   assert.equal(s3.$('#kbrow').hidden, false);

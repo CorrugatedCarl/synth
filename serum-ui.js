@@ -1185,9 +1185,21 @@ function pickFile(doc, accept) {
 const fileText = f => (f && f.text ? f.text() : Promise.resolve(''));
 // an overlay opened in a narrow panel (< 1100 px, §13.2) is brought to the top of the screen: it is full screen there
 function fullScreenOverlay(root, ov) {
+  const w = panelW(root);
+  if (w > 0 && w < 1100) revealIn(ov, 'start');
+}
+// the panel's layout width (offsetWidth: the canvas world's zoom does not narrow it), the screen width without layout
+function panelW(root) {
+  try { return root ? +root.offsetWidth || (root.getBoundingClientRect ? root.getBoundingClientRect().width : 0) : 0; } catch (err) { return 0; }
+}
+// bring an overlay on screen: on a page by scrollIntoView; inside the canvas world (no scroller: the camera pans) by a
+// bubbling 'wk-reveal' event the world answers (cv-world reveal)
+function revealIn(el, block) {
   try {
-    const r = root && root.getBoundingClientRect ? root.getBoundingClientRect() : null;
-    if (r && r.width > 0 && r.width < 1100 && typeof ov.scrollIntoView === 'function') ov.scrollIntoView({ block: 'start' });
+    let w = false;
+    for (let n = el; n && n.nodeType === 1; n = n.parentNode) if (n.hasAttribute && n.hasAttribute('data-cv-world')) { w = true; break; }
+    if (w) { const E = (el.ownerDocument && el.ownerDocument.defaultView && el.ownerDocument.defaultView.Event) || globalThis.Event; if (typeof E === 'function') el.dispatchEvent(new E('wk-reveal', { bubbles: true })); }
+    else if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block });
   } catch (err) { /* layout unavailable */ }
 }
 // window.confirm must be called as a method (a detached call throws "Illegal invocation" in browsers)
@@ -1605,6 +1617,8 @@ export class SerumUI {
     this.detectTouch();
     const RO = this.d.defaultView && this.d.defaultView.ResizeObserver || globalThis.ResizeObserver;
     this.ro = RO ? new RO(() => { for (const P of this.allPages()) for (const cv of P.canvases) cv.sized = false; this.queue(); }) : null;
+    // the canvas world's zoom ended (SPEC-canvas §4.4): the displays' stores follow k (paintCanvas), so all re-measure
+    this.offs.push(wk.onRescale(this.el, () => { if (this.dead) return; for (const P of this.allPages()) for (const cv of P.canvases) cv.sized = false; this.queue(); }));
     this.buildHead();
     this.statusEl = mk(this.d, 'div', 'sx-status');
     this.statusEl.setAttribute('role', 'status');
@@ -2194,9 +2208,14 @@ export class SerumUI {
       // clear `sized` (§13.1 hidden content is not painted; displays redraw only on change)
       cv.hid = !(r.width > 0 && r.height > 0);
       if (cv.hid) { if (!this.ro) cv.sized = false; return; }   // no ResizeObserver: measured on every paint instead
-      const w = Math.max(1, Math.round(r.width * dpr)), h = Math.max(1, Math.round(r.height * dpr));
+      // drawn for its layout box (the canvas world may scale the panel: the rect is screen px) at the device ratio × the
+      // zoom, clamped to 0.5…2 and ≤ 16e6 px (SPEC-canvas §4.4): lines and text keep their size against the panel
+      const ls = wk.localScale(cv.el), lw = cv.el.clientWidth || r.width * ls, lh = cv.el.clientHeight || r.height * ls;
+      let q = ls === 1 ? dpr : Math.min(2, Math.max(0.5, dpr / ls));
+      if (lw * lh * q * q > 16e6) q = Math.sqrt(16e6 / (lw * lh));
+      const w = Math.max(1, Math.round(lw * q)), h = Math.max(1, Math.round(lh * q));
       if (cv.el.width !== w || cv.el.height !== h) { cv.el.width = w; cv.el.height = h; }
-      cv.w = w; cv.h = h; cv.dpr = dpr; cv.last = null;
+      cv.w = w; cv.h = h; cv.dpr = q; cv.last = null;
     }
     if (cv.hid) return;
     let k;
@@ -2600,9 +2619,11 @@ export class SerumUI {
     hd.appendChild(x);
     const eb = mk(d, 'div', 'sx-edbox');
     box.append(hd, eb);
+    // placed in the panel's layout px (the canvas world may scale it: the rects are screen px)
     const er = this.el.getBoundingClientRect(), ar = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : er;
-    box.style.left = Math.max(8, Math.min(ar.left - er.left, er.width - 456)) + 'px';
-    box.style.top = (ar.bottom - er.top + 4) + 'px';
+    const ls = wk.localScale(this.el), W = this.el.offsetWidth || er.width * ls;
+    box.style.left = Math.max(8, Math.min((ar.left - er.left) * ls, W - 456)) + 'px';
+    box.style.top = ((ar.bottom - er.top) * ls + 4) + 'px';
     this.el.appendChild(box);
     const prevBp = this.bp;
     this.bp = this.popPage = mkPage(box);
@@ -2633,7 +2654,7 @@ export class SerumUI {
     x.focus();
     this.scanMods();
     if (isEd) fullScreenOverlay(this.el, box);
-    else if (this.el.getBoundingClientRect().width < 1100 && typeof box.scrollIntoView === 'function') { try { box.scrollIntoView({ block: 'nearest' }); } catch (err) { /* no layout */ } }
+    else if (panelW(this.el) < 1100) revealIn(box, 'nearest');
     return P;
   }
   // Full-panel overlay (role=dialog, Escape closes, focus restored). Returns { el, close }.

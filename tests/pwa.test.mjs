@@ -87,16 +87,20 @@ test('index.html: manifest, Apple touch icon (180 px), PNG + SVG favicons, the a
   for (const id of ['install', 'fullscreen', 'installSheet', 'update']) assert.match(HTML, new RegExp('<[a-z]+ id="' + id + '"[^>]*\\shidden[\\s>]'), id + ' starts hidden');
   has(/id="fullscreen"[^>]*aria-pressed="false"/);
   assert.match(HTML, /installed app keeps its own projects/, 'the in-app help says so');
-  // the safe area of the installed app (black-translucent status bar)
+  // the safe area of the installed app (black-translucent status bar): the canvas shell (IMPL-1b §3.1) is one fixed view —
+  // the top tray keeps its row under the status bar's strip, the keyboard tray above the home indicator, #app the sides
   const css = read('style.css');
-  assert.match(css, /\.top \{[^}]*padding: calc\(14px \+ env\(safe-area-inset-top\)\)/);
+  assert.match(css, /\.top\.cv-top \{[^}]*height: calc\(var\(--cv-top, 48px\) \+ 1px \+ env\(safe-area-inset-top\)\); padding: env\(safe-area-inset-top\) 0 0/); // (+ its hairline)
   assert.match(css, /\.perf \{[^}]*padding: 12px 12px calc\(12px \+ env\(safe-area-inset-bottom\)\)/);
+  assert.match(css, /\.cv-app \{[^}]*position: fixed; inset: 0; height: 100dvh; overflow: clip;[^}]*env\(safe-area-inset-right\)[^}]*env\(safe-area-inset-left\)/);
   assert.match(css, /\.modal \{[^}]*env\(safe-area-inset-top\)[^}]*env\(safe-area-inset-bottom\)/);
+  assert.match(css, /\.cv-sheet-bd \{[^}]*env\(safe-area-inset-top\)[^}]*env\(safe-area-inset-bottom\)/);
   assert.match(css, /\.toast \{[^}]*top: calc\(10px \+ env\(safe-area-inset-top\)\)/);
-  // where the header scrolls away (≤ 900 px: iPhone, iPad portrait, Split View) a backdrop under the status bar
-  const narrow = /@media \(max-width: 900px\) \{([\s\S]*?)\n\}/.exec(css)[1];
-  assert.match(narrow, /\.top \{[^}]*position: static/);
-  assert.match(narrow, /body::before \{[^}]*position: fixed; top: 0; left: 0; right: 0; height: env\(safe-area-inset-top\); background: var\(--bg\)[^}]*pointer-events: none/);
+  // the page itself never scrolls (no header scrolling away, so no backdrop under the status bar any more)
+  assert.match(css, /\nbody \{ overflow: hidden; overscroll-behavior: none; \}\n/);
+  assert.doesNotMatch(css, /body::before/);
+  for (const id of ['app', 'topTray', 'topRow', 'topGrip', 'stage', 'viewport', 'world', 'ov', 'appMenu', 'gearPop', 'srcTray', 'fxTray']) assert.match(HTML, new RegExp('id="' + id + '"'), id);
+  assert.match(HTML, /<header id="topTray"[^>]*data-wk-inset="top"/);
 });
 
 test('index.html / style.css: no interface size of the app\'s own (ruling Z1: the page\'s pinch-zoom is the browser\'s, as at 75926b6) — the static viewport meta, no inline script, no − / % / + in the header, no Size help; no touch-action of the page\'s own on html / body, the html rule as before; uiscale.js gone', () => {
@@ -105,7 +109,10 @@ test('index.html / style.css: no interface size of the app\'s own (ruling Z1: th
   assert.equal((HTML.match(/<meta name="viewport"/g) || []).length, 1);
   assert.deepEqual([...HTML.matchAll(/<script\b([^>]*)>/g)].map(m => m[1]).filter(a => !/\ssrc=/.test(a)), [], 'no inline <script>');
   for (const w of ['uiZoom', 'data-uiz', 'synth-ui.scale', 'uiscale', '<b>Size:</b>', 'user-scalable']) assert.ok(!HTML.includes(w), 'index.html: ' + w);
-  for (const w of ['data-uiz', '.uizoom', '.uiz-badge', '--uiz', 'touch-action: pan-x pan-y']) assert.ok(!bare.includes(w), 'style.css: ' + w);
+  for (const w of ['data-uiz', '.uizoom', '.uiz-badge', '--uiz']) assert.ok(!bare.includes(w), 'style.css: ' + w);
+  // (Z1 removed the page-wide pinch ban, :where(html[data-uiz]) :where(body, body *) { touch-action: pan-x pan-y }; the
+  // canvas's own scrollers inside #world may refuse the page's pinch — user decision Q1: a pinch there is the canvas's)
+  for (const m of bare.matchAll(/([^{}]*)\{[^}]*touch-action: pan-x pan-y/g)) assert.match(m[1], /#viewport:not\(\[data-cv-native\]\) #world /, 'touch-action: pan-x pan-y only on scrollers inside the canvas world: ' + m[1].trim());
   assert.match(bare, /\nhtml \{ scroll-padding-top: env\(safe-area-inset-top\); \}\n/, 'the html rule of 75926b6');
   assert.doesNotMatch(bare, /(^|[\s,}])(html|body)\s*\{[^}]*touch-action/, 'no touch-action on html / body');
   assert.equal(existsSync(new URL('uiscale.js', ROOT)), false, 'uiscale.js removed');

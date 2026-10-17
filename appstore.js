@@ -2,6 +2,22 @@
 // (SPEC-serum2 §12.6 "Storage (B21)", lead sign-off on §0.8 item 7; owner I). Browser ES module, no imports.
 // Nothing touches localStorage / indexedDB / BroadcastChannel at module top level (node imports it for the tests).
 //
+// SYNTH Canvas (SPEC-canvas §5.6, §5.8, stage 1a): its own namespace, so a canvas build on a shared origin (localhost while
+// developing; canvas.domlavin.com is an origin of its own anyway) never reads or writes main's `synth-app` database, its
+// `synth.*` keys or its `synth-app.*` bookkeeping keys:
+//   - the database is DB_NAME 'synth-canvas' (BroadcastChannel of the same name); the asset stores are WT_DB / SMP_DB;
+//   - callers keep the app's key names (`synth.settings`, `synth.user.<model>` … : main.js, fx-core, serum-ui, seq-core):
+//     every key starting with `synth.` is stored as `synthc.…` (appKey; APP_NS), at the interface of both stores — other
+//     keys pass through; info().resynced / conflicts name the stored keys (PROJECT_KEY = 'synthc.project');
+//   - the bookkeeping keys are DB_NAME + '.lsat' / '.lsstale' / '.idb' / '.unload'.
+// Schema gate (opts.schema = the highest project schema this build understands, cv-migrate.js SCHEMA; no option: no
+// gate): a stored project with a higher `schema` (schemaOf) — found at open, before an autosave write (IndexedDB: in the
+// write's own transaction; localStorage: when the stored text changed since this store last read or wrote it), or
+// announced by another tab — is never overwritten: the store turns read-only for the project (saveProject / saveNow do
+// nothing; key/value writes go on) and onError gets { readOnly: true, newer: schema } (at open: info().readOnly / newer
+// only). lock() makes the project read-only for the session (main.js: a newer project file was opened). An older
+// build's localStorage project or unload copy never replaces a newer stored one.
+//
 // Two stores with one interface:
 //   createLocalStore(opts)   the Phase-1 localStorage store (main.js `store`, moved here verbatim in M1b): JSON values
 //                            under `synth.*` keys, the project autosave as the JSON text of the project under
@@ -22,19 +38,23 @@
 //                            ONE transaction with every pending key and the project's changed records synchronously, in
 //                            the caller's task (not behind queued work), asks it to commit, and keeps a best-effort
 //                            emergency copy of a changed project in localStorage (UNLOAD_KEY, not an app key) that the next
-//                            run adopts if the transaction never committed. localStorage: = saveProject (synchronous)
+//                            run adopts if the transaction never committed. localStorage: = saveProject (synchronous).
+//                            saveNow(null): the pending keys only, the project left as stored (main.js: a newer
+//                            project from a file is the current one — never written, while the store stays unlocked)
 //   flush() → Promise        resolves when every queued IndexedDB write has finished (localStorage: at once)
-//   info()                   { mode, reason, migrated, resynced: [keys], conflicts: [keys], stale, restored }
+//   info()                   { mode, reason, migrated, resynced: [keys], conflicts: [keys], stale, restored, readOnly, newer }
+//   lock()                   the project read-only for the rest of the session (schema gate)
 //   recovered(k)             IndexedDB: the text kept as '#rec:<k>' by this run's re-sync (the losing side of a conflict),
 //                            or null; localStorage: null
 //   close()
 // opts: { ls (Storage; default globalThis.localStorage, resolved per call as Phase 1 did), onError(info) (info =
 // { key, error, quota, notice, fallback }: every failed write; notice = QUOTA_NOTICE for quota errors, fallback = true
-// when an IDB store has just degraded to localStorage), stamp (localStorage stores: record write times, below) }.
+// when an IDB store has just degraded to localStorage), stamp (localStorage stores: record write times, below),
+// schema (the schema gate, above) }.
 // openAppStore adds { idb (default globalThis.indexedDB), bc (BroadcastChannel or null; default a channel named
 // DB_NAME when available), now () → ms, timeout (open, ms; default 4000) }.
 //
-// IndexedDB layout (`synth-app` v1)
+// IndexedDB layout (DB_NAME v1; the stored, `synthc.` key names below are written `synth.` as the callers use them)
 //   kv      keyPath 'k': { k, v: text, at } for every app key except synth.project (v = the localStorage text);
 //           reserved records: '#meta' (migration state, below), '#rec:<key>' (recovery copies, below)
 //   tracks  keyPath 'id': '#head' { id, m: project JSON without tracks, keys: [record ids in track order], at } or
@@ -69,21 +89,40 @@
 // Other tabs: committed key/value writes are announced on `bc`; the other tabs' stores re-read those keys (Phase 1 read
 // localStorage live). The project is read once at start, as in Phase 1.
 
-export const DB_NAME = 'synth-app';
+export const DB_NAME = 'synth-canvas'; // (main: 'synth-app')
 export const DB_VER = 1;
 export const KV = 'kv';
 export const TRACKS = 'tracks';
-export const PROJECT_KEY = 'synth.project';
-export const STAMP_KEY = 'synth-app.lsat'; // localStorage { key: write time } of fallback sessions (not an app key)
-export const STALE_KEY = 'synth-app.lsstale'; // localStorage { key: write time } of stale fallback sessions (not an app key)
-export const IDB_MARK = 'synth-app.idb'; // localStorage: time of the verified migration (a database holds the app's data)
-export const UNLOAD_KEY = 'synth-app.unload'; // localStorage: saveNow's emergency copy { at, p: project text }
+// the canvas namespace (SPEC-canvas §5.6): `synth.x` as the callers name it → `synthc.x` as stored
+export const APP_NS = 'synthc.', LEGACY_NS = 'synth.';
+export const appKey = k => (typeof k === 'string' && k.startsWith(LEGACY_NS) ? APP_NS + k.slice(LEGACY_NS.length) : k);
+export const PROJECT_KEY = appKey('synth.project');
+export const STAMP_KEY = DB_NAME + '.lsat'; // localStorage { key: write time } of fallback sessions (not an app key)
+export const STALE_KEY = DB_NAME + '.lsstale'; // localStorage { key: write time } of stale fallback sessions (not an app key)
+export const IDB_MARK = DB_NAME + '.idb'; // localStorage: time of the verified migration (a database holds the app's data)
+export const UNLOAD_KEY = DB_NAME + '.unload'; // localStorage: saveNow's emergency copy { at, p: project text }
+export const WT_DB = DB_NAME + '-wt', SMP_DB = DB_NAME + '-smp'; // the asset stores (wtstore / smpstore opts.name; main: synth-wt / synth-smp)
 export const QUOTA_NOTICE = 'Storage full — the project was not saved';
 export const STALE_NOTICE = 'Saved data could not be opened — showing an older copy. Changes made now are kept separately and will not replace it.';
 export const RESTORED_NOTICE = 'Saved data was missing — an older copy was restored';
 const META = '#meta', HEAD = '#head', REC = '#rec:';
 
-export const isAppKey = k => typeof k === 'string' && k.startsWith('synth.');
+export const isAppKey = k => typeof k === 'string' && k.startsWith(APP_NS);
+
+// The `schema` stamp of a stored project (SPEC-canvas §5.8): a project object, its JSON text or its header JSON (the
+// project without tracks) → integer ≥ 0; 0 when there is none (main's projects, pre-canvas autosaves) or it is unreadable
+export function schemaOf(x) {
+  let o = x;
+  if (typeof x === 'string') { try { o = JSON.parse(x); } catch { return 0; } }
+  const n = o && typeof o === 'object' && !Array.isArray(o) ? o.schema : 0;
+  return typeof n === 'number' && n > 0 && n < 1e9 ? Math.floor(n) : 0;
+}
+// the stored project's text of a '#head' record (header JSON, or the raw autosave), or null
+const headText = h => (!h ? null : typeof h.m === 'string' ? h.m : typeof h.raw === 'string' ? h.raw : null);
+function tellNewer(onError, n) {
+  if (typeof onError !== 'function') return;
+  try { onError({ key: PROJECT_KEY, error: null, quota: false, notice: null, fallback: false, readOnly: true, newer: n }); } catch (e) { console.error('appstore: onError', e); }
+}
 
 export function isQuotaError(e) {
   if (!e || typeof e !== 'object') return false;
@@ -182,18 +221,41 @@ export function createLocalStore(opts) {
       if (!o.stale && ls.getItem(STALE_KEY) !== null) { const z = readStamps(ls, STALE_KEY); if (k in z) { delete z[k]; ls.setItem(STALE_KEY, JSON.stringify(z)); } }
     } catch { /* bookkeeping only */ }
   };
-  const put = (k, v) => { try { L().setItem(k, v); stamp(k); } catch (e) { report(o.onError, k, e, false); } };
+  const put = (k, v) => { try { L().setItem(k, v); stamp(k); return true; } catch (e) { report(o.onError, k, e, false); return false; } };
+  // schema gate: seen = the project text this store last read or wrote (a stored text that differs was written by
+  // another tab or build, and is checked before it is replaced)
+  const max = o.schema > 0 ? +o.schema : Infinity;
+  let ro = false, newer = 0, seen = null;
+  const gate = () => {
+    if (ro) return false;
+    if (max === Infinity) return true;
+    let cur = null;
+    try { cur = L().getItem(PROJECT_KEY); } catch { return true; }
+    if (cur === null || cur === seen) return true;
+    const n = schemaOf(cur);
+    if (n > max) { ro = true; newer = n; tellNewer(o.onError, n); return false; }
+    return true;
+  };
   const store = {
     mode: 'ls',
-    get(k, d) { try { const v = L().getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
-    set(k, v) { let s; try { s = JSON.stringify(v); } catch (e) { report(o.onError, k, e, false); return; } put(k, s); },
-    raw(k) { try { return L().getItem(k); } catch { return null; } },
-    setRaw(k, v) { put(k, v); },
-    loadProject() { return store.raw(PROJECT_KEY); },
-    saveProject(p) { put(PROJECT_KEY, typeof p === 'string' ? p : JSON.stringify(p)); },
-    saveNow(p) { store.saveProject(p); },
+    get(k, d) { try { const v = L().getItem(appKey(k)); return v ? JSON.parse(v) : d; } catch { return d; } },
+    set(k, v) { let s; try { s = JSON.stringify(v); } catch (e) { report(o.onError, appKey(k), e, false); return; } store.setRaw(k, s); },
+    raw(k) { try { return L().getItem(appKey(k)); } catch { return null; } },
+    setRaw(k, v) { const K = appKey(k); if (K === PROJECT_KEY) store.saveProject(typeof v === 'string' ? v : String(v)); else put(K, v); },
+    loadProject() {
+      const t = store.raw(PROJECT_KEY);
+      if (max !== Infinity) { seen = t; const n = t === null ? 0 : schemaOf(t); if (n > max) { ro = true; newer = n; } }
+      return t;
+    },
+    saveProject(p) {
+      if (!gate()) return;
+      const s = typeof p === 'string' ? p : JSON.stringify(p);
+      if (put(PROJECT_KEY, s) && max !== Infinity) seen = s;
+    },
+    saveNow(p) { if (p != null) store.saveProject(p); },
     flush() { return Promise.resolve(); },
-    info() { return { mode: 'ls', reason: o.reason || 'local', migrated: false, resynced: [], conflicts: [], stale: !!o.stale, restored: false }; },
+    info() { return { mode: 'ls', reason: o.reason || 'local', migrated: false, resynced: [], conflicts: [], stale: !!o.stale, restored: false, readOnly: ro, newer }; },
+    lock() { ro = true; },
     recovered() { return null; },
     close() { return Promise.resolve(); },
   };
@@ -329,11 +391,13 @@ async function resync(db, st, snap, stamps, stale, now, info) {
     const lsp = isP ? splitProject(lv) : null, same = iv !== undefined && (isP ? sameProject(lsp, iv, lv) : iv === lv);
     // written by a fallback session that ran on the older copy (STALE_KEY, not overwritten by a current write since)
     const lat = +stamps[k] || 0, zat = +stale[k] || 0, old = zat > 0 && !(lat >= zat);
+    // (SPEC-canvas §5.8) a project of a lower schema never replaces a stored one of a higher schema (an older build wrote it)
+    const down = isP && !same && iv !== undefined && schemaOf(headText(st.head)) > schemaOf(lv);
     // IndexedDB still holds the synced value: take localStorage's — unless it was written on the older copy
-    let take = !same && (iv === undefined || (!old && ih === dst[k]));
+    let take = !same && (iv === undefined || (!old && !down && ih === dst[k]));
     if (!same && !take) { // both sides changed: the newest known writer wins (never a stale one), the other text is kept as '#rec:<key>'
-      take = !old && lat > 0 && lat > iat;
-      recs.push({ k: REC + k, v: take ? iv : lv, from: take ? 'idb' : old ? 'stale' : 'ls', at: take ? iat : old ? zat : lat });
+      take = !old && !down && lat > 0 && lat > iat;
+      recs.push({ k: REC + k, v: take ? iv : lv, from: take ? 'idb' : old ? 'stale' : down ? 'older' : 'ls', at: take ? iat : old ? zat : lat });
       info.conflicts.push(k);
     }
     if (take) { if (isP) proj = lsp; else puts.push({ k, v: lv }); info.resynced.push(k); }
@@ -358,13 +422,16 @@ async function resync(db, st, snap, stamps, stale, now, info) {
 }
 
 // saveNow's emergency copy (UNLOAD_KEY): adopted when the database's project is older than it (the unload transaction
-// never committed), dropped otherwise
-async function adoptUnload(db, st, ls, now, info) {
+// never committed), dropped otherwise. Schema gate (max): a copy of a schema above max is left for the build that wrote
+// it; a copy of a lower schema than the stored project never replaces it
+async function adoptUnload(db, st, ls, now, info, max) {
   let u = null;
   try { const t = ls ? ls.getItem(UNLOAD_KEY) : null; if (t === null) return st; u = JSON.parse(t); } catch { u = null; }
   const drop = () => { try { ls.removeItem(UNLOAD_KEY); } catch { /* bookkeeping only */ } };
   if (!u || typeof u !== 'object' || !(u.at > 0) || typeof u.p !== 'string') { drop(); return st; }
-  if (st.head && (+st.head.at || 0) >= u.at) { drop(); return st; }
+  const su = max !== Infinity ? schemaOf(u.p) : 0;
+  if (su > max) return st;
+  if (st.head && ((+st.head.at || 0) >= u.at || (max !== Infinity && schemaOf(headText(st.head)) > su))) { drop(); return st; }
   const next = splitProject(u.p), at = now();
   await txn(db, [TRACKS], 'readwrite', tr => { applyDiff(tr, diffProject(storedSplit(st), next, at)); });
   const back = await readAll(db);
@@ -388,11 +455,29 @@ function idbStore(db, st, o, info, bc) {
   let mode = 'idb', reason = info.reason, local = null, closed = false;
   const pend = new Map(), retry = new Set();
   let chain = Promise.resolve(), kvQueued = false, pjQueued = false;
+  // schema gate: a stored project of a higher schema than this build's makes the project read-only
+  const max = o.schema > 0 ? +o.schema : Infinity;
+  let ro = false, newer = max !== Infinity ? schemaOf(headText(st.head)) : 0;
+  if (newer > max) ro = true; else newer = 0;
+  const newerFound = n => { if (!ro) { ro = true; newer = n; tellNewer(o.onError, n); } };
+  // in a project write's own transaction, before its records: the stored header — when it is not the one this store
+  // committed last (another tab or build wrote it) and of a higher schema, the write is aborted; → () → found schema
+  const guard = tr => {
+    if (max === Infinity) return () => 0;
+    const known = saved ? (saved.raw != null ? saved.raw : saved.m) : null, g = tr.get(HEAD);
+    let hit = 0;
+    g.onsuccess = () => {
+      const t = headText(g.result), n = t !== null && t !== known ? schemaOf(t) : 0;
+      if (n > max) { hit = n; try { g.transaction.abort(); } catch { /* already finishing */ } }
+    };
+    return () => hit;
+  };
 
   function degrade(error) { // IndexedDB failed: the rest of the session on localStorage, the cache written there
     if (mode !== 'idb') return;
     mode = 'ls'; reason = 'failed';
-    local = createLocalStore({ ls: o.ls, onError: o.onError, stamp: true, now, reason });
+    local = createLocalStore({ ls: o.ls, onError: o.onError, stamp: true, now, reason, schema: o.schema });
+    if (ro) local.lock();
     report(o.onError, null, error, true);
     for (const [k, v] of cache) local.setRaw(k, v);
     if (latest) local.saveProject(joinProject(latest));
@@ -420,22 +505,24 @@ function idbStore(db, st, o, info, bc) {
   }
   async function writeProject() {
     pjQueued = false;
-    if (mode !== 'idb' || !latest || latest === saved) return;
+    if (mode !== 'idb' || ro || !latest || latest === saved) return;
     const next = latest, d = diffProject(saved, next, now());
     if (!d) { saved = next; return; }
+    let hit = () => 0;
     try {
-      await txn(db, [TRACKS], 'readwrite', tr => { applyDiff(tr, d); });
+      await txn(db, [TRACKS], 'readwrite', tr => { hit = guard(tr); applyDiff(tr, d); });
       saved = next;
-    } catch (e) { failed([PROJECT_KEY], e); }
+    } catch (e) { if (hit()) newerFound(hit()); else failed([PROJECT_KEY], e); }
   }
   const kick = () => { if (!kvQueued) { kvQueued = true; chain = chain.then(writeKv); } };
   // the page is going away: every pending key and the project's changed records in one transaction started now (in the
   // caller's task, ahead of nothing: a write already in flight commits first, IndexedDB orders them), plus the emergency
-  // copy of a changed project
+  // copy of a changed project. Schema gate: the guard's read is queued first, the records right after it (all in this
+  // task); the transaction is then left to commit by itself (an explicit commit() would come before the guard's answer)
   function writeNow() {
     for (const k of retry) if (!pend.has(k) && cache.has(k)) pend.set(k, cache.get(k));
     retry.clear();
-    const at = now(), next = latest, d = next && next !== saved ? diffProject(saved, next, at) : null, batch = [...pend];
+    const at = now(), next = latest, d = !ro && next && next !== saved ? diffProject(saved, next, at) : null, batch = [...pend];
     if (!d && !batch.length) return;
     pend.clear();
     let u = '';
@@ -444,15 +531,23 @@ function idbStore(db, st, o, info, bc) {
       try { const ls = LS(); if (ls) ls.setItem(UNLOAD_KEY, u + '"p":' + JSON.stringify(joinProject(next)) + '}'); } catch { u = ''; /* best effort */ }
     }
     const names = batch.length && d ? [KV, TRACKS] : batch.length ? [KV] : [TRACKS];
+    const dropCopy = () => { if (u) try { const ls = LS(), t = ls && ls.getItem(UNLOAD_KEY); if (t && t.startsWith(u)) ls.removeItem(UNLOAD_KEY); } catch { /* bookkeeping only */ } };
+    let hit = () => 0;
     txn(db, names, 'readwrite', (...a) => {
       const kv = batch.length ? a[0] : null, tr = d ? a[batch.length ? 1 : 0] : null;
+      if (tr) hit = guard(tr);
       if (kv) for (const [k, v] of batch) kv.put({ k, v, at });
       if (tr) applyDiff(tr, d);
-    }, true).then(() => {
+    }, !d || max === Infinity).then(() => {
       if (d) saved = next;
       if (bc && batch.length) try { bc.postMessage({ kv: batch.map(b => b[0]) }); } catch { /* channel closed */ }
-      if (u) try { const ls = LS(), t = ls && ls.getItem(UNLOAD_KEY); if (t && t.startsWith(u)) ls.removeItem(UNLOAD_KEY); } catch { /* bookkeeping only */ }
-    }, e => failed(batch.map(b => b[0]).concat(d ? [PROJECT_KEY] : []), e));
+      dropCopy();
+    }, e => {
+      if (!hit()) { failed(batch.map(b => b[0]).concat(d ? [PROJECT_KEY] : []), e); return; }
+      dropCopy(); newerFound(hit());
+      for (const [k, v] of batch) if (!pend.has(k)) pend.set(k, v); // (the keys went down with the aborted transaction)
+      kick();
+    });
   }
 
   if (bc) bc.onmessage = ev => { // another tab wrote keys: refresh them (keys with local pending writes win)
@@ -467,35 +562,41 @@ function idbStore(db, st, o, info, bc) {
   const store = {
     get mode() { return mode; },
     get(k, d) { const v = store.raw(k); if (!v) return d; try { return JSON.parse(v); } catch { return d; } },
-    set(k, v) { let s; try { s = JSON.stringify(v); } catch (e) { report(o.onError, k, e, false); return; } store.setRaw(k, s); },
+    set(k, v) { let s; try { s = JSON.stringify(v); } catch (e) { report(o.onError, appKey(k), e, false); return; } store.setRaw(k, s); },
     raw(k) {
-      if (k === PROJECT_KEY) return store.loadProject();
-      return cache.has(k) ? cache.get(k) : null;
+      const K = appKey(k);
+      if (K === PROJECT_KEY) return store.loadProject();
+      return cache.has(K) ? cache.get(K) : null;
     },
     setRaw(k, v) {
-      if (k === PROJECT_KEY) { store.saveProject(String(v)); return; }
+      const K = appKey(k);
+      if (K === PROJECT_KEY) { store.saveProject(String(v)); return; }
       const s = String(v);
-      cache.set(k, s);
+      cache.set(K, s);
       if (closed) return;
-      if (mode !== 'idb') { local.setRaw(k, s); return; }
-      pend.set(k, s); kick();
+      if (mode !== 'idb') { local.setRaw(K, s); return; }
+      pend.set(K, s); kick();
     },
     loadProject() { return latest ? joinProject(latest) : null; },
     saveProject(p) {
+      if (ro) return;
       latest = splitProject(p);
       if (closed) return;
       if (mode !== 'idb') { local.saveProject(joinProject(latest)); return; }
       if (!pjQueued) { pjQueued = true; chain = chain.then(writeProject); }
     },
     saveNow(p) {
-      latest = splitProject(p);
+      const pj = !ro && p != null; // (read-only, or null: the pending keys only)
+      if (pj) latest = splitProject(p);
       if (closed) return;
-      if (mode !== 'idb') { local.saveProject(joinProject(latest)); return; }
+      if (mode !== 'idb') { if (pj) local.saveProject(joinProject(latest)); return; }
       writeNow();
     },
     flush() { return chain.then(() => {}, () => {}); },
-    info() { return { mode, reason, migrated: info.migrated, resynced: info.resynced.slice(), conflicts: info.conflicts.slice(), stale: false, restored: !!info.restored }; },
-    recovered(k) { return recs.has(k) ? recs.get(k) : null; },
+    info() { return { mode, reason, migrated: info.migrated, resynced: info.resynced.slice(), conflicts: info.conflicts.slice(), stale: false, restored: !!info.restored,
+      readOnly: ro || (!!local && local.info().readOnly), newer: newer || (local ? local.info().newer : 0) }; },
+    lock() { ro = true; if (local) local.lock(); },
+    recovered(k) { const K = appKey(k); return recs.has(K) ? recs.get(K) : null; },
     close() {
       if (closed) return Promise.resolve();
       closed = true;
@@ -535,7 +636,7 @@ export function openAppStore(opts) {
       info.restored = mark; // the database was there before (evicted / deleted): this is the older localStorage copy
     } else {
       st = await resync(db, st, snap, ls ? readStamps(ls) : {}, ls ? readStamps(ls, STALE_KEY) : {}, now, info);
-      st = await adoptUnload(db, st, ls, now, info);
+      st = await adoptUnload(db, st, ls, now, info, o.schema > 0 ? +o.schema : Infinity);
     }
     if (ls && !mark) try { ls.setItem(IDB_MARK, String(now())); } catch { /* bookkeeping only */ }
     if (info.restored) tell({ key: null, error: null, quota: false, notice: RESTORED_NOTICE, fallback: false, restored: true });

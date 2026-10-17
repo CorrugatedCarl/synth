@@ -43,159 +43,206 @@
 <link rel="modulepreload" href="midi.js?v=9">
 </head>
 <body>
-<header class="top" data-wk-inset="top">
-  <div class="brand">
-    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 21 L11 9 L11 21 L17 9 L17 21 L23 9 L23 21 L27 13" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/></svg>
-    <div>
-      <div class="logo">SYNTH</div>
-      <div class="sub">circuit-level analog emulation</div>
-    </div>
-  </div>
-  <div class="engine">
-    <button id="power" class="power" type="button" aria-pressed="false"><span class="led"></span><span class="lbl">Power</span></button>
-    <label class="field">Sample rate
-      <select id="sr" title="Context sample rate. Device is best: any other rate is resampled to your audio hardware's rate by the browser">
-        <option value="0">Device</option>
-        <option value="44100">44.1 kHz</option>
-        <option value="48000">48 kHz</option>
-        <option value="88200">88.2 kHz</option>
-        <option value="96000">96 kHz</option>
-        <option value="176400">176.4 kHz</option>
-        <option value="192000">192 kHz</option>
-      </select>
-    </label>
-    <label class="field">Oversampling
-      <select id="os" title="Internal oversampling (capped so the internal rate stays at or below 384 kHz)">
-        <option value="1">1× (off)</option>
-        <option value="2">2×</option>
-        <option value="4">4× (studio)</option>
-        <option value="8">8× (ultra)</option>
-      </select>
-    </label>
-    <label class="field range">Analog drift <input type="range" id="drift" min="0" max="10" step="0.1"></label>
-    <label class="field range">Master <input type="range" id="master" min="0" max="1" step="0.01"></label>
-    <div class="meter">
-      <span id="rate">Engine off</span>
-      <span id="cpu">Press Power or play a key</span>
-      <!-- Output latency (main.js initLatency): the playhead and recorded notes line up with what is heard — the meter's
-           third line (a header field of its own made the header two rows at 1280–1400 px with the engine on) -->
-      <div class="latf"><span id="latL">Latency</span>
-        <button id="lat" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="latPop" aria-describedby="latL" title="Output latency: line the playhead and recording up with what you hear">Auto</button>
-        <div id="latPop" class="latpop" role="dialog" aria-label="Output latency" hidden>
-          <p class="latnote">Raise it only if the playhead still runs ahead of what you hear. The “output” line below is the delay already allowed for: on iPadOS 18.4+ and computers it includes Bluetooth. The Bluetooth preset tops it up to about 200 ms in all. The playhead and recording use it.</p>
-          <div class="latpre" role="group" aria-label="Presets">
-            <button type="button" data-lat="0" aria-pressed="true">Auto</button>
-            <button type="button" data-lat="bt" aria-pressed="false">Bluetooth</button>
-          </div>
-          <div class="latrow">
-            <button type="button" data-step="-5" aria-label="5 ms less" title="5 ms less">−</button>
-            <input type="range" id="latR" min="-50" max="400" step="1" aria-label="Extra output latency in ms">
-            <button type="button" data-step="5" aria-label="5 ms more" title="5 ms more">+</button>
-            <output id="latV" for="latR">+0 ms</output>
-          </div>
-          <pre id="latInfo" class="latinfo"></pre>
-        </div>
+<!-- SYNTH Canvas shell (docs/canvas/IMPL-1b.md §3.1): one fixed full-screen view — the top tray (transport, arrangement,
+     tracks), the canvas between the trays, the keyboard tray as the footer. Ids are the contract: main.js, the tests and
+     the other lanes find every control by them. -->
+<div id="app" class="cv-app">
+<header id="topTray" class="top cv-top still" data-wk-inset="top" aria-label="Transport and tracks">
+  <div class="cv-row" id="topRow">
+    <div class="cv-menu">
+      <button id="appMenuBtn" class="cv-ib cv-brand" type="button" aria-haspopup="menu" aria-label="Menu: new, open, save, export, install, help" title="Menu: new, open, save, export, install, help"><svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M5 21 L11 9 L11 21 L17 9 L17 21 L23 9 L23 21 L27 13" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/></svg><svg class="cv-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg></button>
+      <div id="appMenu" class="cv-pop cv-menupop" role="menu" aria-label="SYNTH" hidden>
+        <div class="cv-brandrow"><div class="logo">SYNTH</div><div class="sub">circuit-level analog emulation · canvas</div></div>
+        <button id="fNew" type="button" role="menuitem" title="New empty project">New</button>
+        <button id="fOpen" type="button" role="menuitem" title="Open a project (.json) or import a MIDI file (.mid)">Open / Import…</button>
+        <button id="fSave" type="button" role="menuitem" title="Download this project as a .json file">Save</button>
+        <button id="fMidi" type="button" role="menuitem" title="Export all tracks as a Standard MIDI File">Export MIDI</button>
+        <button id="fBounce" type="button" role="menuitem" class="hot" title="Render the song to a WAV file">Bounce WAV…</button>
+        <input type="file" id="fFile" accept=".json,.mid,.midi,application/json,audio/midi,audio/x-midi" hidden>
+        <div class="cv-sep" role="separator"></div>
+        <button id="install" type="button" role="menuitem" class="appbtn" hidden aria-label="Install app" title="Install SYNTH as an app: it opens full screen from its icon and works offline"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9.5M6 8.5l4 4 4-4M4 16h12"/></svg><span>Install app</span></button>
+        <button id="fullscreen" type="button" role="menuitem" class="appbtn" hidden aria-pressed="false" aria-label="Full screen" title="Full screen"><svg viewBox="0 0 20 20" aria-hidden="true"><path class="i-enter" d="M3 8V3h5M12 3h5v5M17 12v5h-5M8 17H3v-5"/><path class="i-exit" d="M8 3v5H3M17 8h-5V3M12 17v-5h5M3 12h5v5"/></svg><span>Full screen</span></button>
+        <button id="helpBtn" type="button" role="menuitem" title="How to play, the studio, the app, and how SYNTH works">Help &amp; about</button>
       </div>
     </div>
-    <div class="appctl">
-      <button id="install" type="button" class="appbtn" hidden aria-label="Install app" title="Install SYNTH as an app: it opens full screen from its icon and works offline"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9.5M6 8.5l4 4 4-4M4 16h12"/></svg><span>Install app</span></button>
-      <button id="fullscreen" type="button" class="appbtn ico" hidden aria-pressed="false" aria-label="Full screen" title="Full screen"><svg viewBox="0 0 20 20" aria-hidden="true"><path class="i-enter" d="M3 8V3h5M12 3h5v5M17 12v5h-5M8 17H3v-5"/><path class="i-exit" d="M8 3v5H3M17 8h-5V3M12 17v-5h5M3 12h5v5"/></svg></button>
+    <div class="transport cv-transport" id="transport">
+      <div class="tgrp cv-tplay">
+        <button id="tStart" class="tb" type="button" title="Return to start (Home)" aria-label="Return to start"><svg viewBox="0 0 20 20"><path d="M4 4h2v12H4zM16 4v12L7 10z"/></svg></button>
+        <button id="tPlay" class="tb" type="button" title="Play / stop (Space)" aria-label="Play"><svg viewBox="0 0 20 20"><path class="i-play" d="M6 4l10 6-10 6z"/><path class="i-stop" d="M5 5h10v10H5z"/></svg></button>
+        <button id="tRec" class="tb rec" type="button" title="Record (R)" aria-label="Record" aria-pressed="false"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="5.5"/></svg></button>
+      </div>
+      <div class="tpos" title="Position (bar.beat.tick) and time"><span id="tBBT">1.1.000</span><span id="tTime">0:00.000</span></div>
+      <label class="tfield cv-bpm" title="Tempo (BPM)"><span class="cv-fl">BPM</span><input id="tBpm" type="number" min="20" max="300" step="0.1" aria-label="Tempo"></label>
+      <button id="tMore" class="cv-ib cv-ovf" type="button" aria-haspopup="true" aria-label="More transport controls: time signature, loop, click, count-in" title="Time signature, loop, click, count-in">⋯</button>
+      <div class="cv-tx" id="tMorePop">
+        <label class="tfield cv-sig" title="Time signature"><span class="cv-fl">Time sig</span><span class="sig"><input id="tSigN" type="number" min="1" max="16" step="1" aria-label="Beats per bar"><span>/</span><select id="tSigD" aria-label="Beat unit"><option>2</option><option>4</option><option>8</option><option>16</option></select></span></label>
+        <div class="tgrp">
+          <button id="tLoop" class="tt cv-tog" type="button" aria-pressed="false" title="Loop the highlighted region (drag in the ruler to set it)">Loop</button>
+          <button id="tMetro" class="tt cv-tog" type="button" aria-pressed="false" title="Metronome (M)">Click</button>
+          <label class="tfield cv-count" title="Count-in before recording"><span class="cv-fl">Count-in</span><select id="tCount" aria-label="Count-in before recording"><option value="0">Off</option><option value="1">1 bar</option><option value="2">2 bars</option></select></label>
+        </div>
+      </div>
+      <div class="tgrp cv-undo">
+        <button id="tUndo" class="tb sm" type="button" title="Undo (Ctrl/⌘ Z)" aria-label="Undo"><svg viewBox="0 0 20 20"><path d="M8 5L3 9.5 8 14v-3c4 0 6.5 1 8 4-.5-4.5-3-7.5-8-8z"/></svg></button>
+        <button id="tRedo" class="tb sm" type="button" title="Redo (Shift Ctrl/⌘ Z)" aria-label="Redo"><svg viewBox="0 0 20 20"><path d="M12 5l5 4.5-5 4.5v-3c-4 0-6.5 1-8 4 .5-4.5 3-7.5 8-8z"/></svg></button>
+      </div>
+    </div>
+    <div class="cv-trk">
+      <button id="trkChip" class="cv-tchip" type="button" aria-haspopup="true" title="The selected track: tap for the track list"><span class="cv-sw" aria-hidden="true"></span><span class="cv-cart" aria-hidden="true"></span><span class="cv-ct"><span class="cv-cn">Track</span><span class="cv-cv"></span></span><svg class="cv-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg></button>
+      <div id="trkPop" class="cv-pop cv-trkpop" role="menu" aria-label="Tracks" hidden></div>
+      <span id="trkDots" class="cv-dots" role="group" aria-label="Tracks"></span>
+      <span class="tabtrack cv-sr" id="tabTrack"></span>
+    </div>
+    <nav class="tabs cv-tabs" aria-label="Editor views">
+      <button type="button" data-tab="canvas" class="on" title="The selected track's instrument, its effects and its output, on the canvas">Canvas</button>
+      <button type="button" data-tab="roll" title="The selected track's notes">Roll</button>
+    </nav>
+    <div class="engine cv-engine">
+      <!-- narrow windows (≤ 740 px, style.css): Power, the level and the meter fold into "⏻ ▾" (#engPop, a popover); wider,
+           #engPop is display: contents and they sit in the row -->
+      <button id="engMore" class="cv-ib cv-ovf cv-engmore" type="button" aria-haspopup="true" aria-label="Engine: power, load and latency" title="Engine power, load and latency"><span class="led" aria-hidden="true"></span><svg class="cv-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg></button>
+      <div class="cv-ex" id="engPop">
+      <button id="power" class="power" type="button" aria-pressed="false" title="Engine power"><span class="led"></span><svg class="cv-pwr" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v6.5M6.2 5.6a6 6 0 1 0 7.6 0"/></svg><span class="lbl">Power</span></button>
+      <label class="field range cv-master" title="Master level"><span class="cv-fl">Master</span><input type="range" id="master" min="0" max="1" step="0.01" aria-label="Master level"></label>
+      <div class="cv-meterbox">
+        <div class="meter" id="meter" title="Engine: sample rate and load — tap for the whole text">
+          <span id="rate">Engine off</span>
+          <span id="cpu">Press Power or play a key</span>
+          <!-- Output latency (main.js initLatency): the playhead and recorded notes line up with what is heard -->
+          <div class="latf"><span id="latL">Latency</span>
+            <button id="lat" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="latPop" aria-describedby="latL" title="Output latency: line the playhead and recording up with what you hear">Auto</button>
+            <div id="latPop" class="latpop" role="dialog" aria-label="Output latency" hidden>
+              <p class="latnote">Raise it only if the playhead still runs ahead of what you hear. The “output” line below is the delay already allowed for: on iPadOS 18.4+ and computers it includes Bluetooth. The Bluetooth preset tops it up to about 200 ms in all. The playhead and recording use it.</p>
+              <div class="latpre" role="group" aria-label="Presets">
+                <button type="button" data-lat="0" aria-pressed="true">Auto</button>
+                <button type="button" data-lat="bt" aria-pressed="false">Bluetooth</button>
+              </div>
+              <div class="latrow">
+                <button type="button" data-step="-5" aria-label="5 ms less" title="5 ms less">−</button>
+                <input type="range" id="latR" min="-50" max="400" step="1" aria-label="Extra output latency in ms">
+                <button type="button" data-step="5" aria-label="5 ms more" title="5 ms more">+</button>
+                <output id="latV" for="latR">+0 ms</output>
+              </div>
+              <pre id="latInfo" class="latinfo"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+      <button id="gearBtn" class="cv-ib cv-gear" type="button" aria-haspopup="true" aria-label="Settings: sample rate, oversampling, drift, recording, pinch" title="Settings"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 6.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8zM8.6 2h2.8l.4 2.2 1.6.9 2.1-.8 1.4 2.4-1.7 1.5v1.8l1.7 1.5-1.4 2.4-2.1-.8-1.6.9-.4 2.2H8.6l-.4-2.2-1.6-.9-2.1.8-1.4-2.4 1.7-1.5V8.2L3.1 6.7l1.4-2.4 2.1.8 1.6-.9z"/></svg></button>
+      <div id="gearPop" class="cv-pop cv-gearpop" role="dialog" aria-label="Settings" hidden>
+        <h3>Engine</h3>
+        <label class="field range cv-gmaster">Master level <input type="range" id="masterG" min="0" max="1" step="0.01" aria-label="Master level"></label>
+        <label class="field">Sample rate
+          <select id="sr" title="Context sample rate. Device is best: any other rate is resampled to your audio hardware's rate by the browser">
+            <option value="0">Device</option>
+            <option value="44100">44.1 kHz</option>
+            <option value="48000">48 kHz</option>
+            <option value="88200">88.2 kHz</option>
+            <option value="96000">96 kHz</option>
+            <option value="176400">176.4 kHz</option>
+            <option value="192000">192 kHz</option>
+          </select>
+        </label>
+        <label class="field">Oversampling
+          <select id="os" title="Internal oversampling (capped so the internal rate stays at or below 384 kHz)">
+            <option value="1">1× (off)</option>
+            <option value="2">2×</option>
+            <option value="4">4× (studio)</option>
+            <option value="8">8× (ultra)</option>
+          </select>
+        </label>
+        <label class="field range">Analog drift <input type="range" id="drift" min="0" max="10" step="0.1"></label>
+        <h3>Recording</h3>
+        <label class="field">Mode <select id="tRecMode" title="Recording mode"><option value="overdub">Overdub</option><option value="replace">Replace</option></select></label>
+        <div class="field"><span>Input quantise</span><button id="tInQ" class="tt" type="button" aria-pressed="false" title="Quantize note starts as they are recorded (uses the quantize grid)">Input Q</button></div>
+        <h3>Canvas</h3>
+        <label class="field">Pinch on canvas <select id="pinchMode" title="What two fingers do on the canvas: zoom the canvas (the page zooms over the trays), or zoom the whole page as before"><option value="canvas">Zoom canvas</option><option value="page">Zoom page</option></select></label>
+      </div>
     </div>
   </div>
-</header>
-
-<section class="studio" id="studio" aria-label="Multitrack studio">
-  <div class="transport" id="transport">
-    <div class="tgrp">
-      <button id="tStart" class="tb" type="button" title="Return to start (Home)" aria-label="Return to start"><svg viewBox="0 0 20 20"><path d="M4 4h2v12H4zM16 4v12L7 10z"/></svg></button>
-      <button id="tPlay" class="tb" type="button" title="Play / stop (Space)" aria-label="Play"><svg viewBox="0 0 20 20"><path class="i-play" d="M6 4l10 6-10 6z"/><path class="i-stop" d="M5 5h10v10H5z"/></svg></button>
-      <button id="tRec" class="tb rec" type="button" title="Record (R)" aria-label="Record" aria-pressed="false"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="5.5"/></svg></button>
-    </div>
-    <div class="tpos" title="Position (bar.beat.tick) and time"><span id="tBBT">1.1.000</span><span id="tTime">0:00.000</span></div>
-    <label class="tfield">Tempo <input id="tBpm" type="number" min="20" max="300" step="0.1"></label>
-    <label class="tfield">Time sig <span class="sig"><input id="tSigN" type="number" min="1" max="16" step="1"><span>/</span><select id="tSigD"><option>2</option><option>4</option><option>8</option><option>16</option></select></span></label>
-    <label class="tfield">Bars <input id="tBars" type="number" min="1" max="999" step="1"></label>
-    <div class="tgrp">
-      <button id="tLoop" class="tt" type="button" aria-pressed="false" title="Loop the highlighted region (drag in the ruler to set it)">Loop</button>
-      <button id="tMetro" class="tt" type="button" aria-pressed="false" title="Metronome (M)">Click</button>
-      <select id="tCount" title="Count-in before recording"><option value="0">No count-in</option><option value="1">Count-in 1 bar</option><option value="2">Count-in 2 bars</option></select>
-      <select id="tRecMode" title="Recording mode"><option value="overdub">Overdub</option><option value="replace">Replace</option></select>
-      <button id="tInQ" class="tt" type="button" aria-pressed="false" title="Quantize note starts as they are recorded (uses the quantize grid)">Input Q</button>
-    </div>
-    <div class="tgrp">
-      <button id="tUndo" class="tb sm" type="button" title="Undo (Ctrl/⌘ Z)" aria-label="Undo"><svg viewBox="0 0 20 20"><path d="M8 5L3 9.5 8 14v-3c4 0 6.5 1 8 4-.5-4.5-3-7.5-8-8z"/></svg></button>
-      <button id="tRedo" class="tb sm" type="button" title="Redo (Shift Ctrl/⌘ Z)" aria-label="Redo"><svg viewBox="0 0 20 20"><path d="M12 5l5 4.5-5 4.5v-3c-4 0-6.5 1-8 4 .5-4.5 3-7.5 8-8z"/></svg></button>
-    </div>
-    <div class="tgrp file">
-      <button id="fNew" type="button" title="New empty project">New</button>
-      <button id="fOpen" type="button" title="Open a project (.json) or import a MIDI file (.mid)">Open / Import…</button>
-      <button id="fSave" type="button" title="Download this project as a .json file">Save</button>
-      <button id="fMidi" type="button" title="Export all tracks as a Standard MIDI File">Export MIDI</button>
-      <button id="fBounce" type="button" class="hot" title="Render the song to a WAV file">Bounce WAV…</button>
-      <input type="file" id="fFile" accept=".json,.mid,.midi,application/json,audio/midi,audio/x-midi" hidden>
-    </div>
-  </div>
-  <div class="arrbar">
-    <button id="aAdd" type="button" title="Add a track using the currently shown instrument">+ Track</button>
+  <div class="arrbar cv-arrbar" id="arrbar">
+    <button id="aAdd" type="button" title="Add a track: pick its instrument in the Sources tray">+ Track</button>
     <button id="aMulti" type="button" title="Give track 1 MIDI channel 1, track 2 channel 2 … so a multi-channel controller can play them all at once">Assign MIDI channels</button>
     <span class="sep"></span>
     <span class="rangeinfo" id="aRange">Drag across the lanes to select bars</span>
-    <button id="aCopy" type="button" title="Copy the selected bars (all tracks)">Copy</button>
-    <button id="aPaste" type="button" title="Paste bars at the playhead (merging)">Paste</button>
-    <button id="aDup" type="button" title="Duplicate the selected bars right after themselves">Duplicate</button>
-    <button id="aClear" type="button" title="Delete the notes in the selected bars">Clear</button>
-    <button id="aDel" type="button" title="Remove the selected bars and close the gap">Delete bars</button>
-    <button id="aIns" type="button" title="Insert empty bars at the start of the selection (or the playhead)">Insert bars</button>
-    <button id="aLoopSel" type="button" title="Set the loop to the selection">Loop selection</button>
+    <button id="aBars" class="cv-ovf cv-barsbtn" type="button" aria-haspopup="true" title="Copy, paste, duplicate, clear, delete or insert bars, loop the selection">Bars <svg class="cv-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg></button>
+    <div class="cv-aedit" id="aEdit">
+      <button id="aCopy" type="button" title="Copy the selected bars (all tracks)">Copy</button>
+      <button id="aPaste" type="button" title="Paste bars at the playhead (merging)">Paste</button>
+      <button id="aDup" type="button" title="Duplicate the selected bars right after themselves">Duplicate</button>
+      <button id="aClear" type="button" title="Delete the notes in the selected bars">Clear</button>
+      <button id="aDel" type="button" title="Remove the selected bars and close the gap">Delete bars</button>
+      <button id="aIns" type="button" title="Insert empty bars at the start of the selection (or the playhead)">Insert bars</button>
+      <button id="aLoopSel" type="button" title="Set the loop to the selection">Loop selection</button>
+    </div>
+    <label class="tfield cv-bars" title="Song length in bars"><span class="cv-fl">Song</span><input id="tBars" type="number" min="1" max="999" step="1" aria-label="Song length in bars"></label>
   </div>
-  <div class="arrwrap" id="arrwrap">
-    <div class="heads" id="heads"></div>
-    <div class="lanes" id="lanes"></div>
-  </div>
-</section>
+  <section class="studio" id="studio" aria-label="Multitrack studio">
+    <div class="arrwrap" id="arrwrap">
+      <div class="heads" id="heads"></div>
+      <div class="lanes" id="lanes"></div>
+    </div>
+  </section>
+  <div id="topGrip" class="cv-tgrip" role="slider" tabindex="0" aria-label="Track list height" aria-orientation="vertical" aria-valuemin="48" aria-valuemax="160" aria-valuenow="48" aria-controls="studio" title="Drag down for the track list, up to fold it · double-click (double-tap) to fold / unfold"></div>
+</header>
 
-<nav class="tabs" aria-label="Editor views">
-  <button type="button" data-tab="inst" class="on">Instrument</button>
-  <button type="button" data-tab="roll">Piano Roll</button>
-  <button type="button" data-tab="fx" title="The selected track’s effects rack (every instrument has one)">FX</button>
-  <span class="tabtrack" id="tabTrack"></span>
-</nav>
-
-<div class="tab" id="tab-inst">
-  <nav id="models" class="models" aria-label="Instrument for the selected track"></nav>
-  <main>
-    <section id="inst" class="inst" aria-label="Instrument panel">
-      <p class="boot" id="boot">Loading the instruments… If this message stays, the page needs a current browser (Safari 14.5+, Chrome 66+, Firefox 76+) with JavaScript enabled, opened over https:// rather than as a local file.</p>
-      <noscript><p class="boot">This instrument needs JavaScript.</p></noscript>
-    </section>
-    <section class="console">
-      <div class="scope">
-        <canvas id="scope" aria-label="Oscilloscope"></canvas>
-        <div class="scope-ctl">
-          <button type="button" data-mode="wave" class="on">Scope</button>
-          <button type="button" data-mode="fft">Spectrum</button>
+<main id="stage" class="cv-stage">
+  <!-- the CANVAS view (today's Instrument tab id: hidden ⇔ ROLL shows) -->
+  <div class="tab cv-view" id="tab-inst">
+    <div id="viewport" class="cv-viewport" tabindex="0" aria-label="Track canvas">
+      <div id="world" class="cv-world" data-cv-world>
+        <!-- today's parts: the canvas modules take them by reference (cv-module, IMPL-1b §5.3) -->
+        <div id="cvParts" class="cv-parts">
+          <section id="inst" class="inst" aria-label="Instrument panel">
+            <p class="boot" id="boot">Loading the instruments… If this message stays, the page needs a current browser (iPadOS / Safari 16.4 or later; Chrome 108+, Firefox 110+ on a computer) with JavaScript enabled, opened over https:// rather than as a local file.</p>
+            <noscript><p class="boot">This instrument needs JavaScript.</p></noscript>
+          </section>
+          <section id="fxrack" class="fxtab" aria-label="Effects rack"></section>
+          <div class="scope">
+            <canvas id="scope" aria-label="Oscilloscope"></canvas>
+            <div class="scope-ctl">
+              <button type="button" data-mode="wave" class="on">Scope</button>
+              <button type="button" data-mode="fft">Spectrum</button>
+            </div>
+          </div>
+          <div class="about">
+            <h2 id="about-title"></h2>
+            <p id="about"></p>
+            <div id="algo" class="algo" hidden></div>
+          </div>
         </div>
       </div>
-      <div class="about">
-        <h2 id="about-title"></h2>
-        <p id="about"></p>
-        <div id="algo" class="algo" hidden></div>
-        <p class="help"><b>Play:</b> computer keys <kbd data-code="KeyA">A</kbd>–<kbd data-code="Semicolon">;</kbd> (white) and <kbd data-code="KeyW">W</kbd> <kbd data-code="KeyE">E</kbd> <kbd data-code="KeyT">T</kbd> <kbd data-code="KeyY">Y</kbd> <kbd data-code="KeyU">U</kbd> <kbd data-code="KeyO">O</kbd> <kbd data-code="KeyP">P</kbd> (black), <kbd data-code="KeyZ">Z</kbd>/<kbd data-code="KeyX">X</kbd> octave, <kbd data-code="KeyC">C</kbd>/<kbd data-code="KeyV">V</kbd> velocity. Click or touch the keyboard (lower on a key = louder); drag the tab on its top edge to make the keys taller or shorter, <b>Key size</b> for more or fewer keys, <b>Hide keys</b> to fold it down to its controls. Or plug in a MIDI controller (Chrome, Edge, Firefox) — each track listens on its MIDI channel. <b>Studio:</b> <kbd>Space</kbd> play/stop, <kbd data-code="KeyR">R</kbd> record, <kbd data-code="KeyM">M</kbd> metronome, <kbd>Home</kbd> to start, <kbd>Ctrl/⌘ Z</kbd> undo. Keys go by position, so any layout works: if R, M or Q is a note key on yours, use the key where it sits on a US keyboard. <b>Controls:</b> drag up/down, <kbd>Shift</kbd>-drag for fine, scroll wheel, double-click to reset. <b>App:</b> the full-screen button (in the header, where the browser has one) hides the browser’s bars; <b>Install app</b> (on iPad / iPhone: Share → Add to Home Screen) puts SYNTH on your home screen or dock — it then opens full screen like an app and works offline after its first launch. On iPad the installed app is the better full screen: the browser’s keeps its own controls and may stop fast playing with a warning. On iPad and iPhone the installed app keeps its own projects, separate from the browser’s: Save a project in one (the app saves through the share sheet: Save to Files) and Open it in the other to move it across.</p>
+    </div>
+    <div id="overlay" class="cv-overlay"></div>
+    <div id="cvToolbar" class="cv-toolbar"></div>
+    <aside id="srcTray" class="cv-side cv-left" data-wk-inset="left" aria-label="Sources">
+      <button id="srcRail" class="cv-rail" type="button" title="Sources: the instruments (tap to open)"><span class="cv-railico" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="2.5" y="5" width="15" height="10" rx="1.5"/><path d="M5.5 15V11M8.5 15V11M11.5 15V11M14.5 15V11"/><circle cx="6" cy="8" r="0.9"/><circle cx="10" cy="8" r="0.9"/><circle cx="14" cy="8" r="0.9"/></svg></span><span class="cv-raillab">Sources</span></button>
+      <div id="srcPanel" class="cv-panel" role="region" aria-label="Sources: synths" hidden>
+        <div class="cv-ph"><h2>Synths</h2><button id="srcClose" class="cv-x" type="button" aria-label="Close the Sources tray" title="Close (Esc)">✕</button></div>
+        <p class="cv-pmode" id="srcMode"></p>
+        <div id="srcList" class="cv-tiles"></div>
+        <p class="cv-pnote">Serum parts, note tools and modulators arrive here in later stages.</p>
       </div>
-    </section>
-  </main>
-</div>
+      <div id="srcGrip" class="cv-sgrip"></div>
+    </aside>
+    <aside id="fxTray" class="cv-side cv-right" data-wk-inset="right" aria-label="Effects">
+      <button id="fxRail" class="cv-rail" type="button" title="Effects (tap to open)"><span class="cv-railico" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="5" y="2.5" width="10" height="15" rx="2"/><circle cx="8" cy="7" r="1.4"/><circle cx="12" cy="7" r="1.4"/><rect x="7.5" y="11.5" width="5" height="3" rx="0.8"/></svg></span><span class="cv-raillab">Effects</span></button>
+      <div id="fxPanel" class="cv-panel" role="region" aria-label="Effects" hidden>
+        <div class="cv-ph"><h2>Effects</h2><button id="fxClose" class="cv-x" type="button" aria-label="Close the Effects tray" title="Close (Esc)">✕</button></div>
+        <p class="cv-pnote big">Effects are added with the FX panel’s own <b>+</b> (its module list) for now: switch a module on, drag ≡ to reorder it, its power button bypasses it.</p>
+        <p class="cv-pnote">Effect tiles you can drag onto the canvas or into a panel arrive in a later stage.</p>
+      </div>
+      <div id="fxGrip" class="cv-sgrip"></div>
+    </aside>
+  </div>
 
-<div class="tab" id="tab-fx" hidden>
-  <div class="fxbar"><span id="fxtitle">FX rack</span><span class="fxhint">Effects run after the instrument, before the output limiter. Switch modules on from the list, drag ≡ to reorder them; a module’s power button bypasses it.</span></div>
-  <section id="fxrack" class="fxtab" aria-label="Effects rack"></section>
-</div>
-
-<div class="tab" id="tab-roll" hidden>
-  <div class="rolltools" id="rolltools"></div>
-  <div class="rollwrap" id="rollwrap" data-gesture="own"></div>
-  <p class="rollhelp">Double-click to add a note · drag to move (Shift = no snap, Alt/Option = copy) · drag edges to resize · double-click a note to delete · drag the empty grid to select · velocity lane at the bottom · drag in the ruler to set the loop. <b>Touch:</b> tap a note to select it and show its handles, drag a handle to resize (every selected note) · hold a note to select its chord · hold the empty grid, then drag to select · one finger on the empty grid scrolls · double-tap to add or delete · <b>Fine</b> / <b>Alt</b> / <b>Shift</b> in the toolbar stand in for the keys (tap = next gesture, double-tap = lock). Double-tap (double-click) a lane in the arrangement to edit its notes here, from that bar. Zoom: Ctrl/⌘-wheel or pinch sideways = time; Alt-wheel, pinch up / down (or on the keys at the left) or Keys −/+ = key size; two fingers scroll. The keys at the left play one note at a time — play chords on the keyboard below. Keys: <kbd>Del</kbd> delete, arrows nudge (Shift = octave), <kbd data-code="KeyQ">Q</kbd> quantize, <kbd>Ctrl/⌘</kbd>+<kbd>A</kbd> <kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd> <kbd>D</kbd> <kbd>Z</kbd>, <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> tools.</p>
-</div>
+  <div class="tab cv-roll" id="tab-roll" hidden>
+    <div class="rolltools" id="rolltools"></div>
+    <div class="rollwrap" id="rollwrap" data-gesture="own"></div>
+    <p class="rollhelp" id="rollhelp" title="Tap for the whole help">Double-click to add a note · drag to move (Shift = no snap, Alt/Option = copy) · drag edges to resize · double-click a note to delete · drag the empty grid to select · velocity lane at the bottom · drag in the ruler to set the loop. <b>Touch:</b> tap a note to select it and show its handles, drag a handle to resize (every selected note) · hold a note to select its chord · hold the empty grid, then drag to select · one finger on the empty grid scrolls · double-tap to add or delete · <b>Fine</b> / <b>Alt</b> / <b>Shift</b> in the toolbar stand in for the keys (tap = next gesture, double-tap = lock). Double-tap (double-click) a lane in the arrangement to edit its notes here, from that bar. Zoom: Ctrl/⌘-wheel or pinch sideways = time; Alt-wheel, pinch up / down (or on the keys at the left) or Keys −/+ = key size; two fingers scroll. The keys at the left play one note at a time — play chords on the keyboard below. Keys: <kbd>Del</kbd> delete, arrows nudge (Shift = octave), <kbd data-code="KeyQ">Q</kbd> quantize, <kbd>Ctrl/⌘</kbd>+<kbd>A</kbd> <kbd>C</kbd> <kbd>X</kbd> <kbd>V</kbd> <kbd>D</kbd> <kbd>Z</kbd>, <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd> tools.</p>
+  </div>
+</main>
 
 <!-- data-gesture (gesture.js, the two-finger layer): "own" canvases pinch themselves, "music" fingers are never paired
      (chords), "perf" (the keyboard panel's controls) never pairs with a key that follows -->
@@ -224,6 +271,17 @@
     <div id="keys" class="keys" role="group" aria-label="Piano keyboard"></div>
   </div>
 </section>
+</div>
+
+<!-- ≡ → Help & about (cv-tray sheet in #ov): the help text and the footer, moved into the sheet while it is open -->
+<div id="helpParts" hidden>
+  <p class="help"><b>Play:</b> computer keys <kbd data-code="KeyA">A</kbd>–<kbd data-code="Semicolon">;</kbd> (white) and <kbd data-code="KeyW">W</kbd> <kbd data-code="KeyE">E</kbd> <kbd data-code="KeyT">T</kbd> <kbd data-code="KeyY">Y</kbd> <kbd data-code="KeyU">U</kbd> <kbd data-code="KeyO">O</kbd> <kbd data-code="KeyP">P</kbd> (black), <kbd data-code="KeyZ">Z</kbd>/<kbd data-code="KeyX">X</kbd> octave, <kbd data-code="KeyC">C</kbd>/<kbd data-code="KeyV">V</kbd> velocity. Click or touch the keyboard (lower on a key = louder); drag the tab on its top edge to make the keys taller or shorter, <b>Key size</b> for more or fewer keys, <b>Hide keys</b> to fold it down to its controls. Or plug in a MIDI controller (Chrome, Edge, Firefox) — each track listens on its MIDI channel. <b>Studio:</b> <kbd>Space</kbd> play/stop, <kbd data-code="KeyR">R</kbd> record, <kbd data-code="KeyM">M</kbd> metronome, <kbd>Home</kbd> to start, <kbd>Ctrl/⌘ Z</kbd> undo. Keys go by position, so any layout works: if R, M or Q is a note key on yours, use the key where it sits on a US keyboard. <b>Canvas:</b> the selected track's instrument, its effects and its output sit on the canvas: drag empty space to pan, pinch (or Ctrl/⌘-wheel) to zoom, drag a module by its top bar. The tab under the top row shows the track list; <b>Sources</b> at the left holds the instruments — tap one to use it, or drag it onto the canvas (replaces the instrument) or the track list (a new track). <b>Controls:</b> drag up/down, <kbd>Shift</kbd>-drag for fine, scroll wheel, double-click to reset. <b>App:</b> the full-screen button (in the ≡ menu, where the browser has one) hides the browser’s bars; <b>Install app</b> (on iPad / iPhone: Share → Add to Home Screen) puts SYNTH on your home screen or dock — it then opens full screen like an app and works offline after its first launch. On iPad the installed app is the better full screen: the browser’s keeps its own controls and may stop fast playing with a warning. On iPad and iPhone the installed app keeps its own projects, separate from the browser’s: Save a project in one (the app saves through the share sheet: Save to Files) and Open it in the other to move it across.</p>
+  <div class="foot">
+    <p><b>How it works.</b> Every sound is generated in real time by a custom DSP engine running on the browser’s audio thread — no samples. Oscillators, filters, envelopes and effects are modelled from their circuits and computed in 64-bit floating point at up to 8× the output sample rate (at most 384 kHz internally), then band-limited back down with ~100 dB Kaiser half-band filters. Instrument and company names are trademarks of their respective owners and are used only to describe the instruments being emulated; this project is not affiliated with or endorsed by them. The instrument drawings are original illustrations.</p>
+  </div>
+</div>
+<!-- the top layer (#ov): sheets, the large editors and popovers that must not live under the canvas transform -->
+<div id="ov" class="cv-ov"></div>
 
 <div id="modal" class="modal" hidden>
   <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
@@ -255,10 +313,6 @@
   <button type="button" id="updateGo" class="hot">Reload</button>
   <button type="button" id="updateX" class="tx" aria-label="Later" title="Later: the update is used the next time SYNTH opens">×</button>
 </div>
-
-<footer class="foot">
-  <p><b>How it works.</b> Every sound is generated in real time by a custom DSP engine running on the browser’s audio thread — no samples. Oscillators, filters, envelopes and effects are modelled from their circuits and computed in 64-bit floating point at up to 8× the output sample rate (at most 384 kHz internally), then band-limited back down with ~100 dB Kaiser half-band filters. Instrument and company names are trademarks of their respective owners and are used only to describe the instruments being emulated; this project is not affiliated with or endorsed by them.</p>
-</footer>
 
 <div id="tip" class="tip" aria-hidden="true"></div>
 <script type="module" src="main.js?v=9"></script>

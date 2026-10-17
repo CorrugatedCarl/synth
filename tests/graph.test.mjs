@@ -1510,6 +1510,20 @@ test('EnvEditor touch: a double-tap on a curve handle resets it; the mouse doubl
   assert.equal(st.e.ca, 0.5);
 });
 
+test('EnvEditor touch double-tap: the 24 px tolerance is screen px under the canvas camera (pos() → layout px + k), like CurveEditor / PathEditor', () => {
+  // two taps on the same curve handle `d` screen px apart; k = layout px per screen px (1 / camera zoom)
+  const resets = (k, d) => {
+    let r = 0, n = 0;
+    const pts2 = [{ px: 100, py: 50, k }, { px: 100 + d * k, py: 50, k }];
+    const fake = { lastTap: null, pos() { return pts2[n]; }, resetCurve() { r++; } }, g = { t: 6, started: false };
+    EnvEditor.prototype.tap.call(fake, { pointerType: 'touch', timeStamp: 1000 }, g); n = 1;
+    EnvEditor.prototype.tap.call(fake, { pointerType: 'touch', timeStamp: 1100 }, g);
+    return r;
+  };
+  assert.deepEqual([0.5, 1, 2].map(z => resets(1 / z, 20)), [1, 1, 1], '20 screen px apart resets at 50 / 100 / 200 %');
+  assert.deepEqual([0.5, 1, 2].map(z => resets(1 / z, 30)), [0, 0, 0], '30 screen px apart never pairs');
+});
+
 /* ------------------------------------------------------------------ review fixes (U5, round 2) */
 test('CurveEditor mcurve: RISE / FALL typed entry reads units (s, ms, comma), bare numbers in the shown unit, Off', () => {
   const d = fresh();

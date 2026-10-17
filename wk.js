@@ -12,6 +12,9 @@
 // fader.nAt, rangeBar.drag / .norm / .parse, pianoKeys.layout / .hit / .velocity / .noteName, stepGrid.valueAt,
 // zoomPan.zoom / .pan, modifierBar.mods / .consume (the touch modifier latches every gesture reads), dragSource.edge (the
 // edge auto-scroll speed), tooltip.textOf (a touch status line's text) and loadDSP.URLS (the §0.3 list, the default).
+// The canvas world (SPEC-canvas §4.4–4.7): localPoint / localScale (pointer maths under its CSS scale), closeTransient,
+// setWheelVeto, setEdgeHook, visibleBand, edgePan2, setLayer / layer (the top layer), setCanvasScale / canvasScale, onRescale /
+// rescaleCanvases, releaseCanvases.
 //
 // Conventions shared by every widget:
 //   · values are normalised n ∈ [0,1] unless the widget says otherwise (menu items carry their own `v`);
@@ -226,10 +229,14 @@ export function longPress(el, e, fire) {
 }
 
 /* --------------------------------------------------------------- wheel */
+// the canvas camera's veto (setWheelVeto): a camera that moved < 300 ms ago slid this control under a resting pointer
+let wheelVeto = null;
+const vetoed = () => { if (!wheelVeto) return false; try { return !!wheelVeto(); } catch (err) { return false; } };
 function wheelIn(focusEl, e, hoverT) {
-  // only taken when the control has focus or the pointer has rested on it (not while the page scrolls past)
+  // only taken when the control has focus or the pointer has rested on it (not while the page scrolls past), and never
+  // while the canvas camera is moving under the pointer (the wheel stays the camera's)
   const d = e.deltaY || (e.shiftKey ? e.deltaX : 0); // Shift+wheel arrives as deltaX in Chromium/macOS
-  if (!d) return null;
+  if (!d || vetoed()) return null;
   if (D().activeElement !== focusEl && e.timeStamp - hoverT < 300) return null;
   return { px: d * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1), notch: e.deltaMode > 0 || Math.abs(d) >= 50 };
 }
@@ -2206,7 +2213,9 @@ modifierBar.consume = consumeLatches;
 // a zone does not scroll at once). Each frame that scrolled calls move(info) again at the same x, y (targets move under
 // a still finger; t = the last event's time + the frames since); info.scrolled = ms since the last auto-scroll step
 // (Infinity: none), so a consumer can ask a drop to rest on a target that a scroll brought. Stops before the drop /
-// cancel callbacks (a scroll would close a menu the drop opens) and while the page is hidden.
+// cancel callbacks (a scroll would close a menu the drop opens) and while the page is hidden. Inside the canvas world
+// ([data-cv-world]) with a setEdgeHook hook: what no DOM scroller takes pans the camera (hook.pan(pointer | null): both
+// axes, its band; edgePan2's law), and each camera step re-fires move at the same x, y with scrolled 0.
 const AS_EDGE = { mouse: 0, pen: 72, touch: 72 }, AS_MAX = { mouse: 1200, pen: 1200, touch: 1200 }; // zone depth (px), top speed (px/s)
 const AS_RAMP = 240, AS_ARM = 12, AS_MAXDT = 50, AS_MINBAND = 96;
 // signed speed (px/s; < 0 toward lo) of a pointer at p in the band [lo, hi]: ±max past an edge (whatever the zone), 0
@@ -2228,20 +2237,31 @@ function asPad(d, root) {
     return cs ? { t: px(cs.scrollPaddingTop), b: px(cs.scrollPaddingBottom) } : { t: 0, b: 0 };
   } catch (err) { return { t: 0, b: 0 }; }
 }
-// the page's visible band in client px (y): the visual viewport less the pinned bars that overlap it and the root's
-// scroll padding (at least AS_MINBAND)
+// the page's visible band in client px: the visual viewport less the pinned bars that overlap it and the root's scroll
+// padding (at least AS_MINBAND each way). top / bottom bars first (dragSource reads only those: unchanged), then the
+// canvas's side trays (data-wk-inset="left" | "right") against the band they leave
 function asBand(d, insets, pad) {
-  const w = (d && d.defaultView) || globalThis, vv = w.visualViewport || null, H = +w.innerHeight || 0;
-  const top = vv ? +vv.offsetTop || 0 : 0, B = { top, bottom: top + (vv && vv.height > 0 ? +vv.height : H) };
+  const w = (d && d.defaultView) || globalThis, vv = w.visualViewport || null, H = +w.innerHeight || 0, W = +w.innerWidth || 0;
+  const top = vv ? +vv.offsetTop || 0 : 0, left = vv ? +vv.offsetLeft || 0 : 0;
+  const B = { top, bottom: top + (vv && vv.height > 0 ? +vv.height : H), left, right: left + (vv && vv.width > 0 ? +vv.width : W) };
+  const rects = [];
   for (const n of insets) {
     let r = null;
     try { r = n.isConnected === false ? null : n.getBoundingClientRect(); } catch (err) { r = null; }
-    if (!r || !(r.bottom > r.top) || r.bottom <= B.top || r.top >= B.bottom) continue;
-    if (n.getAttribute('data-wk-inset') === 'top') B.top = Math.max(B.top, Math.min(r.bottom, B.bottom - AS_MINBAND));
-    else B.bottom = Math.min(B.bottom, Math.max(r.top, B.top + AS_MINBAND));
+    if (r && r.bottom > r.top) rects.push([n.getAttribute('data-wk-inset'), r]);
+  }
+  for (const [s, r] of rects) {
+    if (r.bottom <= B.top || r.top >= B.bottom) continue;
+    if (s === 'top') B.top = Math.max(B.top, Math.min(r.bottom, B.bottom - AS_MINBAND));
+    else if (s !== 'left' && s !== 'right') B.bottom = Math.min(B.bottom, Math.max(r.top, B.top + AS_MINBAND));
   }
   if (pad && pad.t > 0) B.top = Math.max(B.top, Math.min(pad.t, B.bottom - AS_MINBAND));
   if (pad && pad.b > 0 && H > 0) B.bottom = Math.min(B.bottom, Math.max(H - pad.b, B.top + AS_MINBAND));
+  for (const [s, r] of rects) {
+    if ((s !== 'left' && s !== 'right') || !(r.right > r.left) || r.bottom <= B.top || r.top >= B.bottom || r.right <= B.left || r.left >= B.right) continue;
+    if (s === 'left') B.left = Math.max(B.left, Math.min(r.right, B.right - AS_MINBAND));
+    else B.right = Math.min(B.right, Math.max(r.left, B.left + AS_MINBAND));
+  }
   return B;
 }
 // does n scroll vertically (computed overflow-y auto / scroll / overlay; hidden / visible / clip never here)? cached per drag
@@ -2291,14 +2311,38 @@ export function dragSource(el, payload) {
     return (G.axis === 'x' ? dy > dx : dx > dy) ? 'drag' : 'scroll';
   }
   const unwatch = G => { if (G && G.docOff) { G.docOff(); G.docOff = null; } };
-  /* ---- edge auto-scroll (asEdge above); A = { G, d, w, root, insets, pad, css, carry, cancel, prev, t0, arm, y0, rootT, off } */
+  /* ---- edge auto-scroll (asEdge above); A = { G, d, w, root, insets, pad, css, carry, cancel, prev, t0, arm, y0, rootT, off,
+   * hook, camOff } */
   function asBegin(e) {
     const d = el.ownerDocument || D();
     if (!auto || !d) return;
     const root = d.scrollingElement || d.documentElement || null;
     A = { G: g, d, w: d.defaultView || null, root, insets: asInsets(d), pad: asPad(d, root), css: new Map(), carry: new Map(),
-      cancel: null, prev: -1, t0: -1, arm: {}, y0: e.clientY, rootT: null,
-      off: listen(d, 'visibilitychange', () => { if (d.visibilityState === 'hidden') asHalt(); }) };
+      cancel: null, prev: -1, t0: -1, arm: {}, y0: e.clientY, rootT: null, hook: null, camOff: null,
+      off: listen(d, 'visibilitychange', () => { if (d.visibilityState === 'hidden') { asHalt(); asCam(true); } }) };
+    // inside the canvas world (setEdgeHook: no DOM scroller there — #viewport clips) what no scroller takes pans the
+    // camera; each camera step re-fires move at the same x, y (scrolled 0: targets moved under a still pointer)
+    if (edgeHook && inWorld(el)) {
+      const G0 = g, hk = edgeHook;
+      A.hook = hk;
+      try {
+        A.camOff = hk.onCamera(() => {
+          if (!A || A.G !== G0 || g !== G0 || !G0.on) return;
+          const t = Math.max(G0.tEv, nowMs());
+          G0.st = t;
+          const i = info(G0, G0.x, G0.y, null, t);
+          G0.over = i.target;
+          cb('move', i);
+        });
+      } catch (err) { A.camOff = null; }
+      asCam(); // (from the press point: the directions it does not ask for arm at once, as asPlan)
+    }
+  }
+  // the camera hook gets the pointer while no DOM scroller scrolls for it (null: one does, or stop)
+  function asCam(stop) {
+    if (!A || !A.hook) return;
+    const G = A.G;
+    try { A.hook.pan(stop || A.cancel || !G.on ? null : { x: G.x, y: G.y, pointerType: G.type }); } catch (err) { /* hook gone */ }
   }
   function asHalt() { // no more scrolling until the pointer next asks for it (the drag goes on)
     if (!A) return;
@@ -2309,6 +2353,8 @@ export function dragSource(el, payload) {
   function asEnd() {
     if (!A) return;
     asHalt();
+    asCam(true);
+    if (A.camOff) { try { A.camOff(); } catch (err) { /* gone */ } }
     A.off();
     A = null;
   }
@@ -2347,12 +2393,12 @@ export function dragSource(el, payload) {
     A.cancel = null;
     const G = A.G;
     if (g !== G || !G.on) return;
-    if (A.d.visibilityState === 'hidden') { asHalt(); return; }
+    if (A.d.visibilityState === 'hidden') { asHalt(); asCam(true); return; }
     const now = +ts || 0, dt = A.prev < 0 ? 0 : clamp(now - A.prev, 0, AS_MAXDT);
     A.prev = now;
     if (G.fT < 0) G.fT = now; // the first frame since the last pointer event
     const h = asPlan(G.y, G.over !== undefined ? G.over : under(G.x, G.y));
-    if (!h) { asHalt(); return; }
+    if (!h) { asHalt(); asCam(); return; } // (a scroller at its end: the camera takes over)
     if (A.t0 < 0) A.t0 = now;
     const k = AS_RAMP > 0 ? Math.min(1, (now - A.t0) / AS_RAMP) : 1, t = G.tEv + (now - G.fT);
     if (asStep(h, h.v * k * dt / 1000)) {
@@ -2465,6 +2511,7 @@ export function dragSource(el, payload) {
       g.over = i.target;
       cb('move', i);
       asKick(i.target);
+      asCam();
     }),
     listen(el, 'pointerup', e => { if (g && e.pointerId === g.id) end(e, false); }),
     listen(el, 'pointercancel', e => { if (g && e.pointerId === g.id) end(e, true); }),
@@ -2597,12 +2644,14 @@ export function zoomPan(el, o) {
       if (o.wheel === false) return;
       const r = rectOf(), w = Math.max(1, r.width), hh = Math.max(1, r.height);
       const k = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;
-      if (e.ctrlKey || e.metaKey) { // trackpad pinch arrives as Ctrl-wheel
+      // trackpad pinch arrives as Ctrl-wheel: an explicit zoom, never left to the browser's page zoom (the camera takes
+      // the ones it wants first, in its capture phase); the pan only outside the veto (a camera gliding under the pointer)
+      if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         const f = Math.exp(-(e.deltaY || 0) * k * 0.002);
         cur = zpZoom(get(), f, (e.clientX - r.left) / w, (e.clientY - r.top) / hh, O);
         if (o.set) o.set(cur, 'set');
-      } else if (prefs.wheel && (e.shiftKey || Math.abs(e.deltaX || 0) > Math.abs(e.deltaY || 0))) {
+      } else if (!vetoed() && prefs.wheel && (e.shiftKey || Math.abs(e.deltaX || 0) > Math.abs(e.deltaY || 0))) {
         const px = (e.deltaX || (e.shiftKey ? e.deltaY : 0) || 0) * k;
         if (!px) return;
         e.preventDefault();
@@ -2667,15 +2716,123 @@ export function theme(el) {
   }
   return out;
 }
-// Size a canvas for its CSS box at the device pixel ratio, capped at 2 (§13.1); returns the 2D context in CSS px (or null).
+// Size a canvas for its CSS (layout) box at the device pixel ratio, capped at 2 (§13.1); returns the 2D context in CSS px
+// (or null). Inside the canvas world (an ancestor [data-cv-world], scaled by the camera's k: setCanvasScale) the backing
+// store follows the zoom: clamp(dpr · k, 0.5, 2) (SPEC-canvas §4.4); every store stays ≤ CANVAS_MAX_PX device px.
+const CANVAS_MAX_PX = 16e6;
+let canvasK = 1;
+const inWorld = el => { for (let n = el; n && n.nodeType === 1; n = n.parentNode) if (n.hasAttribute && n.hasAttribute('data-cv-world')) return true; return false; };
 export function fitCanvas(cv, w, hgt) {
   const d = D(), win = d && d.defaultView || globalThis, dpr = Math.min(2, Math.max(1, +win.devicePixelRatio || 1));
-  const Wd = Math.max(1, Math.round(w * dpr)), Hd = Math.max(1, Math.round(hgt * dpr));
+  let s = canvasK !== 1 && inWorld(cv) ? clamp(dpr * canvasK, 0.5, 2) : dpr;
+  const area = Math.max(1, w) * Math.max(1, hgt);
+  if (area * s * s > CANVAS_MAX_PX) s = Math.sqrt(CANVAS_MAX_PX / area);
+  const Wd = Math.max(1, Math.round(w * s)), Hd = Math.max(1, Math.round(hgt * s));
   if (cv.width !== Wd) cv.width = Wd;
   if (cv.height !== Hd) cv.height = Hd;
   const ctx = cv.getContext ? cv.getContext('2d') : null;
-  if (ctx && ctx.setTransform) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if (ctx && ctx.setTransform) ctx.setTransform(s, 0, 0, s, 0, 0);
   return ctx;
+}
+
+/* ------------------------------------------- the canvas world (SPEC-canvas §4.4–4.7; IMPL-1b §4.3) */
+// The track canvas scales one layer (#world, [data-cv-world]) with a CSS transform: getBoundingClientRect() is screen px
+// there, offsetWidth / clientWidth layout px. Pointer maths of anything that can sit under it goes through localPoint.
+// localScale(el): layout px per screen px of el (1/k in the world, 1 elsewhere; 1 for a zero-size box or a node without
+// offsetWidth — SVG: pass the nearest HTML ancestor). localPoint(el, e): the pointer in el's layout px from its border
+// box's top-left (subtract clientLeft / clientTop for the padding box) — also right under the browser's pinch-zoom.
+export function localScale(el) {
+  let r = null;
+  try { r = el && el.getBoundingClientRect ? el.getBoundingClientRect() : null; } catch (err) { r = null; }
+  const ow = el ? +el.offsetWidth : 0;
+  return r && r.width > 0 && ow > 0 ? ow / r.width : 1;
+}
+export function localPoint(el, e) {
+  const r = el.getBoundingClientRect(), ow = +el.offsetWidth, oh = +el.offsetHeight;
+  const sx = r.width > 0 && ow > 0 ? ow / r.width : 1, sy = r.height > 0 && oh > 0 ? oh / r.height : sx;
+  return { x: (e.clientX - r.left) * sx, y: (e.clientY - r.top) * sy };
+}
+// closeTransient(): the open popup list / context menu closes and the kit tooltip hides — the camera calls it when a
+// move starts (a transform pan fires no scroll, which is what closes them on a page)
+export function closeTransient() {
+  if (active) active(false);
+  hideTip();
+}
+// setWheelVeto(fn | null): while fn() is true no kit control takes the wheel (wheelIn: knobs, numBoxes, menus, sliders,
+// wheelGate; zoomPan's wheel) — the canvas camera's 300 ms after a move
+export function setWheelVeto(fn) { wheelVeto = typeof fn === 'function' ? fn : null; }
+// setEdgeHook({ pan(p | null), onCamera(cb) → off } | null): the canvas camera for dragSource's edge auto-scroll inside
+// [data-cv-world] (cv-world: pan = world.dragPointer, onCamera = world.on('camera')); drags with autoScroll: false (module
+// bars, the Sources tray) drive dragPointer themselves
+let edgeHook = null;
+export function setEdgeHook(h) { edgeHook = h && typeof h.pan === 'function' && typeof h.onCamera === 'function' ? h : null; }
+// visibleBand(doc): the part of the visual viewport no pinned tray covers, client px { left, top, right, bottom }: less
+// [data-wk-inset=top | bottom] bars (as dragSource's edge auto-scroll), [data-wk-inset=left | right] side trays and rails,
+// the root's scroll padding and — visualViewport.height — the software keyboard
+export function visibleBand(doc) {
+  const d = doc || D();
+  if (!d) return { left: 0, top: 0, right: 0, bottom: 0 };
+  const root = d.scrollingElement || d.documentElement || null;
+  const B = asBand(d, asInsets(d), asPad(d, root));
+  return { left: B.left, top: B.top, right: B.right, bottom: B.bottom };
+}
+// edgePan2(band, p, st) → { vx, vy } px/s (+ = toward right / bottom): dragSource's edge law (asEdge: AS_EDGE zones —
+// mouse none, so a mouse pans only past the edge —, quadratic, AS_MAX past the edge) on each axis against `band`, ramping
+// in over AS_RAMP ms; a direction counts once the pointer has been outside its zone since the drag began or moved
+// AS_ARM px that way (a drag that starts in a zone does not pan at once). p = { x, y, pointerType, t? (ms) }; st = an
+// object the caller keeps for one drag (start point, arming, ramp start)
+export function edgePan2(band, p, st) {
+  const kind = p.pointerType === 'touch' || p.pointerType === 'pen' ? p.pointerType : 'mouse';
+  const E = AS_EDGE[kind], M = AS_MAX[kind], t = p.t != null && isFinite(p.t) ? +p.t : nowMs();
+  if (!st.arm) { st.arm = {}; st.x0 = p.x; st.y0 = p.y; st.t0 = -1; }
+  const axis = (v, a, d) => { // arming, as asPlan: a direction this evaluation does not ask for is armed from now on
+    const s = a + (v < 0 ? '-' : v > 0 ? '+' : '');
+    if (!(v < 0)) st.arm[a + '-'] = true;
+    if (!(v > 0)) st.arm[a + '+'] = true;
+    return v && !st.arm[s] ? (d * Math.sign(v) >= AS_ARM ? ((st.arm[s] = true), v) : 0) : v;
+  };
+  let vx = axis(asEdge(p.x, band.left, band.right, E, M), 'x', p.x - st.x0);
+  let vy = axis(asEdge(p.y, band.top, band.bottom, E, M), 'y', p.y - st.y0);
+  if (!vx && !vy) { st.t0 = -1; return { vx: 0, vy: 0 }; }
+  if (st.t0 < 0) st.t0 = t;
+  const k = AS_RAMP > 0 ? Math.min(1, Math.max(0, t - st.t0) / AS_RAMP) : 1;
+  return { vx: vx * k, vy: vy * k };
+}
+// the top layer (#ov): pieces that must not scale or clip with the world (the large LFO editor, sheets) render there.
+// layer(x) → the top layer when x lies inside [data-cv-world] (and one is set), else x
+let topLayer = null;
+export function setLayer(el) { topLayer = el || null; }
+export function layer(fallback) { return topLayer && fallback && inWorld(fallback) ? topLayer : fallback; }
+// setCanvasScale(k): the camera's zoom at its last zoom end; fitCanvas sizes in-world stores for it. canvasScale(el): the
+// factor el's canvas stores take on top of the device ratio (k inside the world, else 1; no layout read) for owners that
+// size their own canvases
+export function setCanvasScale(k) { canvasK = k > 0 && isFinite(k) ? +k : 1; }
+export function canvasScale(el) { return canvasK !== 1 && inWorld(el) ? canvasK : 1; }
+// static canvas owners (drawn on change, not by a ticker) register a repaint for a zoom end: onRescale(el, fn) → off;
+// rescaleCanvases(root?) calls the ones inside root (all without it; detached ones are skipped). Animated canvases pick
+// the new scale up on their next tick through fitCanvas
+const rescalers = new Map(); // el → Set(fn)
+export function onRescale(el, fn) {
+  if (!el || typeof fn !== 'function') return () => {};
+  let s = rescalers.get(el);
+  if (!s) rescalers.set(el, s = new Set());
+  s.add(fn);
+  return () => { s.delete(fn); if (!s.size && rescalers.get(el) === s) rescalers.delete(el); };
+}
+export function rescaleCanvases(root) {
+  const list = [...rescalers];
+  if (list.length > 256) for (const [el] of list) if (el.isConnected === false) rescalers.delete(el); // owners that never called off()
+  for (const [el, s] of list) {
+    if (el.isConnected === false || (root && root !== el && !(typeof root.contains === 'function' && root.contains(el)))) continue;
+    for (const f of [...s]) { try { f(); } catch (err) { console.error(err); } }
+  }
+}
+// releaseCanvases(root): every canvas under root to 0 × 0 (Safari frees the backing store; an unmounted body's)
+export function releaseCanvases(root) {
+  let list = [];
+  try { list = root && typeof root.querySelectorAll === 'function' ? Array.from(root.querySelectorAll('canvas')) : []; } catch (err) { list = []; }
+  if (root && root.tagName === 'CANVAS') list.push(root);
+  for (const c of list) { c.width = 0; c.height = 0; }
 }
 // One animation frame (setTimeout fallback); returns a cancel function.
 export function frame(fn) {
@@ -3229,13 +3386,14 @@ const CSS = `
 .fxr-xhead { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
 .fxr-flash { animation: fxr-flash 0.6s ease-out; }
 @keyframes fxr-flash { from { box-shadow: 0 0 0 2px var(--sx-accent, #4fb3ff); } to { box-shadow: 0 0 0 0 transparent; } }
-@media (max-width: 899px) { .fxr-root .wk-md { --wk-d: 34px; } }
+/* window-width rules stay outside the canvas world: a module's width is world px, not the window's */
+@media (max-width: 899px) { .fxr-root:where(:not([data-cv-world] *)) .wk-md { --wk-d: 34px; } }
 @media (max-width: 700px) {
-  .fxr-root { grid-template-columns: minmax(0, 1fr); }
-  .fxr-tiles { flex-direction: row; overflow-x: auto; padding-bottom: 4px; }
-  .fxr-tile { flex: 0 0 auto; }
-  .fxr-tname { max-width: 120px; }
-  .fxr-rack { max-height: none; }
+  .fxr-root:where(:not([data-cv-world] *)) { grid-template-columns: minmax(0, 1fr); }
+  .fxr-tiles:where(:not([data-cv-world] *)) { flex-direction: row; overflow-x: auto; padding-bottom: 4px; }
+  .fxr-tile:where(:not([data-cv-world] *)) { flex: 0 0 auto; }
+  .fxr-tname:where(:not([data-cv-world] *)) { max-width: 120px; }
+  .fxr-rack:where(:not([data-cv-world] *)) { max-height: none; }
 }
 @media (prefers-reduced-motion: reduce) { .fxr-flash { animation: none; } }
 @media (prefers-reduced-motion: reduce) { .wk-tip { transition: none; } }

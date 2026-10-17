@@ -3,30 +3,55 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Serum 2 CPU bench</title>
+<title>SYNTH CPU bench</title>
 <!--
-  SPEC-serum2 §14.1 iPad gate (owner I): runs the benchmark scenarios d–m of tests/bench-scenarios.mjs in this browser
-  (Safari on an iPad Pro for the M2 / M4 records) through the real engine and DSP scripts, evaluated on this page's main
-  thread with AudioWorklet stand-ins — the same code the worklet runs, timed with performance.now(). Load = fraction of
-  real time for 1 s of audio (median of 5 runs, base 48 kHz, oversampling 2); Worst = the slowest 128-frame quantum of
-  those runs as a fraction of its real time (> 1 = a missed deadline; coarse where the browser rounds performance.now()).
-  Rows q1 / q2 (live preset switch, §11.10): the slowest quantum of the first chord on the new preset. Every row must
-  measure ≤ 0.6 on an iPad Pro (hard ceiling); the iPad column is the target. Copy the JSON at the end into
-  tests/bench.json ("ipad").
-  Serve the repository root over http(s) and open /tests/bench.html (file:// cannot load modules).
+  SPEC-serum2 §14.1 iPad gate (owner I) and SPEC-canvas §9.1 (the stage 1a iPad baseline, repeated at stages 1d, 1e, 2b
+  and 5): runs the benchmark scenarios d–q2 of tests/bench-scenarios.mjs, plus classic-engine rows c1–c6 (the default
+  panel of six models — the DX7's Brass Ensemble — at the app's default oversampling 4), in this browser through the real engine and DSP scripts,
+  evaluated on this page's main thread with AudioWorklet stand-ins — the same code the worklet runs, timed with
+  performance.now(). Nothing here changes the DSP.
+  Load = fraction of real time for 1 s of audio (median of 5 runs within a pass, base 48 kHz); Worst = the slowest
+  128-frame quantum as a fraction of its real time (> 1 = a missed deadline; coarse where the browser rounds
+  performance.now()). Rows q1 / q2 (live preset switch, §11.10): the slowest quantum of the first chord on the new preset.
+  "Run 5 passes" repeats the whole bench five times (SPEC-canvas §9.1: five runs, the median per row; the spread
+  [min, max] over the passes is the run-to-run noise the iPad gate of §9.2 allows). "Copy results" copies one JSON record
+  for tests/bench.json "ipad" (rows = medians, spread, worst, every pass, the device and the app build measured).
+  On canvas.domlavin.com: https://canvas.domlavin.com/tests/bench.html (served with the site). Locally: serve the
+  repository root over http(s) and open /tests/bench.html (file:// cannot load modules).
+  The DSP scripts load at ?v=N, so on a device where SYNTH is installed the service worker serves its cached build: the
+  page names the build it measures and warns when a newer one is deployed but not yet applied.
 -->
 <style>
-  :root { color-scheme: light dark; --bg: #f6f7f9; --ink: #16191d; --mute: #5d6672; --line: #d8dde3; --bad: #c0392b; --ok: #1e7f4f; --warn: #b7791f; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #0f1216; --ink: #dfe6ee; --mute: #8b96a3; --line: #2a333d; --bad: #ff6a4a; --ok: #6fe3a1; --warn: #f7c948; } }
-  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, sans-serif; }
-  h1 { font-size: 18px; margin: 0 0 4px; }
-  p { color: var(--mute); margin: 0 0 12px; max-width: 70ch; }
-  button { font: inherit; padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; min-height: 44px; }
-  table { border-collapse: collapse; margin: 12px 0; width: 100%; max-width: 900px; }
+  :root { color-scheme: light dark; --bg: #f6f7f9; --card: #ffffff; --ink: #16191d; --mute: #5d6672; --line: #d8dde3; --bad: #c0392b; --ok: #1e7f4f;
+    --warn: #b7791f; --acc: #2563eb; --acc-ink: #ffffff; --bar: #e3e7ec; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0f1216; --card: #171b21; --ink: #dfe6ee; --mute: #8b96a3; --line: #2a333d; --bad: #ff6a4a; --ok: #6fe3a1;
+    --warn: #f7c948; --acc: #5b8def; --acc-ink: #0b0e12; --bar: #232a33; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, sans-serif; }
+  main { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p { color: var(--mute); margin: 0 0 12px; max-width: 72ch; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; margin: 12px 0; }
+  ol { margin: 4px 0 0; padding-left: 20px; } li { margin: 2px 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button { font: inherit; padding: 8px 16px; border-radius: 10px; border: 1px solid var(--line); background: transparent; color: inherit; min-height: 44px; cursor: pointer; }
+  button.primary { background: var(--acc); color: var(--acc-ink); border-color: var(--acc); font-weight: 600; }
+  button:disabled { opacity: 0.45; cursor: default; }
+  label { color: var(--mute); }
+  input[type=text] { font: inherit; min-height: 44px; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: inherit; width: min(320px, 100%); }
+  #status { min-height: 1.45em; margin: 8px 0 4px; }
+  .bar { height: 6px; border-radius: 3px; background: var(--bar); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; background: var(--acc); transition: width 0.3s; }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { border-collapse: collapse; width: 100%; min-width: 560px; }
   th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th { color: var(--mute); font-weight: 600; font-size: 13px; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.lbl { color: var(--mute); font-size: 13px; }
   .bad { color: var(--bad); font-weight: 600; } .ok { color: var(--ok); } .warn { color: var(--warn); }
-  pre { background: rgba(127, 127, 127, 0.12); padding: 8px; border-radius: 8px; overflow-x: auto; max-width: 900px; }
+  #build.warn { font-weight: 600; }
+  pre { background: rgba(127, 127, 127, 0.12); padding: 8px; border-radius: 8px; overflow-x: auto; font-size: 12px; max-height: 40vh; margin: 8px 0 0; }
+  .note { font-size: 13px; color: var(--mute); }
 </style>
 <script>
   // AudioWorkletGlobalScope stand-ins for the classic scripts below (one "scope": this page)
@@ -50,57 +75,250 @@
 <script src="../engine.js?v=9"></script>
 </head>
 <body>
-<h1>Serum 2 CPU bench (§14.1 rows d–m)</h1>
-<p>Each row renders 1 s of audio five times through the engine (median). Targets: the iPad column; hard ceiling 0.6 on an iPad Pro. Keep the screen awake and the device on power while it runs (≈ 1–2 min).</p>
-<button id="run" type="button">Run</button> <span id="status"></span>
-<table><thead><tr><th>Row</th><th>Scenario</th><th class="n">Load</th><th class="n">Worst</th><th class="n">iPad target</th><th class="n">node target</th></tr></thead><tbody id="rows"></tbody></table>
+<main>
+<h1>SYNTH CPU bench</h1>
+<p>Renders each scenario through the real engine and reports its CPU load (fraction of real time; 1 = the whole audio deadline). The Serum and FX rows have iPad targets; every row must stay under 0.6 on an iPad Pro.</p>
+
+<div class="card">
+  <strong>On the iPad</strong>
+  <ol>
+    <li>Plug the iPad in, close the SYNTH Canvas app and other apps.</li>
+    <li>Open this page in Safari and tap <b>Run 5 passes</b>. Keep the page in front until it finishes (the page asks the screen to stay on; a few minutes).</li>
+    <li>Tap <b>Copy results</b> and paste them into the chat (or <b>Share…</b> to send them to the Mac).</li>
+  </ol>
+</div>
+
+<div class="card">
+  <div class="row">
+    <label for="device">Device</label>
+    <input id="device" type="text" placeholder="e.g. iPad Pro 11″ M4" autocomplete="off">
+  </div>
+  <div id="build" class="note" style="margin-top:8px">Checking which app build this page measures…</div>
+</div>
+
+<div class="row">
+  <button id="run5" class="primary" type="button">Run 5 passes</button>
+  <button id="run1" type="button">Run 1 pass</button>
+  <button id="stop" type="button" disabled>Stop</button>
+  <button id="copy" type="button" disabled>Copy results</button>
+  <button id="share" type="button" hidden disabled>Share…</button>
+</div>
+<div id="status" aria-live="polite"></div>
+<div class="bar" aria-hidden="true"><i id="prog"></i></div>
+
+<div class="scroll card" style="padding:4px 6px">
+  <table>
+    <thead><tr><th>Row</th><th>Scenario</th><th class="n">Load</th><th class="n">Spread</th><th class="n">Worst</th><th class="n">iPad target</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+<p class="note">Load: the median over the passes run so far (during a pass: that pass). Spread: lowest – highest pass. Red: over 0.6; amber: over the iPad target. Classic rows c1–c6 (six classic synths, 8 voices or mono, oversampling 4) have no target: they are the baseline for later engine stages.</p>
 <pre id="json" hidden></pre>
+</main>
 <script type="module">
   import { scenarios, measure } from './bench-scenarios.mjs';
+  import { MODELS, patchFor } from '../models.js?v=9';
+  import { defaultFx2 } from '../serum-core.js?v=9';
   const $ = id => document.getElementById(id);
+  const tryLS = (fn, d) => { try { return fn(globalThis.localStorage); } catch { return d; } };
   const env = {
     mk: po => new globalThis.BenchProc({ processorOptions: po }),
     advance: n => { globalThis.currentFrame += n; },
     FXDSP: globalThis.FXDSP, SxBase: globalThis.SxBase, now: () => performance.now(),
   };
-  const list = scenarios(), tb = $('rows');
+  // the classic rows run at the app's default oversampling (4) — measure() builds its processors at 2
+  const env4 = Object.assign({}, env, { mk: po => new globalThis.BenchProc({ processorOptions: Object.assign({}, po, { os: 4 }) }) });
+  const chord = (k, base = 48, step = 3) => Array.from({ length: k }, (_, i) => [base + step * i, 0.8]);
+  function classic(id, preset, n) {
+    const m = MODELS.find(x => x.id === id), v = Object.fromEntries(m.controls.map(c => [c.id, c.def]));
+    if (preset) Object.assign(v, m.presets.find(p => p.name === preset).v);
+    return { patch: patchFor(m, v, defaultFx2(), { sr: 48000, bpm: 120, drift: 0.5, hiss: 1 }), notes: chord(n) };
+  }
+  // (the DX7's default E.Piano decays to silence within the timed runs: its sustained Brass Ensemble instead)
+  const CLASSIC = [['c1', 'prophet5', null, 8], ['c2', 'juno60', null, 8], ['c3', 'minimoog', null, 1], ['c4', 'dx7', 'Brass Ensemble', 8],
+    ['c5', 'solina', null, 8], ['c6', 'jupiter8', null, 8]].map(([id, model, preset, n]) => {
+    const m = MODELS.find(x => x.id === model);
+    return { id, label: `Classic: ${m.name} ${preset || 'default'}, ${n > 1 ? n + ' voices' : 'mono'}, OS 4`, kind: 'voice', ipad: null, env: env4, build: () => classic(model, preset, n) };
+  });
+  const list = scenarios().concat(CLASSIC), tb = $('rows'), cells = new Map();
   for (const s of list) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${s.id}</td><td>${s.label}</td><td class="n" id="l-${s.id}">—</td><td class="n" id="w-${s.id}">—</td><td class="n">${s.ipad}</td><td class="n">${s.node}</td>`;
+    // (cells by reference: row ids such as g" cannot be element ids)
+    const tr = document.createElement('tr'), td = (txt, cls) => { const c = document.createElement('td'); c.textContent = txt; if (cls) c.className = cls; tr.appendChild(c); return c; };
+    td(s.id); td(s.label, 'lbl');
+    cells.set(s.id, { l: td('—', 'n'), s: td('—', 'n'), w: td('—', 'n') });
+    td(s.ipad == null ? '—' : String(s.ipad), 'n');
     tb.appendChild(tr);
   }
   const missing = ['SxBase', 'SxMod', 'SerumDSP', 'FXDSP', 'BenchProc'].filter(g => !globalThis[g]);
-  if (missing.length) $('status').textContent = 'Scripts missing: ' + missing.join(', ');
-  const pause = () => new Promise(r => setTimeout(r, 30));
-  $('run').onclick = async () => {
-    $('run').disabled = true;
-    const out = {}, worst = {};
+  const status = t => { $('status').textContent = t; };
+  if (missing.length) status('Scripts missing: ' + missing.join(', '));
+
+  /* ---- device name (remembered on this device) */
+  $('device').value = tryLS(ls => ls.getItem('bench.device') || '', '');
+  $('device').addEventListener('change', () => { tryLS(ls => ls.setItem('bench.device', $('device').value.trim().slice(0, 80))); if (last) show(last); });
+
+  /* ---- which build of the app's files this page measures: through the service worker, its cached build; else the network */
+  const build = { files: null, deployed: null, note: '' };
+  (async () => {
+    try { const t = await (await fetch('../sw.js', { cache: 'no-store' })).text(); build.deployed = (/const BUILD = '([0-9a-f]+)'/.exec(t) || [])[1] || null; } catch { /* offline */ }
+    let shells = [];
+    try { if (globalThis.caches) shells = (await caches.keys()).filter(k => /^synth-shell-v\d+-[0-9a-f]+$/.test(k)).map(k => k.replace(/^synth-shell-v\d+-/, '')); } catch { /* no Cache Storage */ }
+    const viaSW = !!(navigator.serviceWorker && navigator.serviceWorker.controller) && !/^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+    const el = $('build');
+    if (!viaSW) { build.files = build.deployed; el.textContent = 'Measuring the files on the server' + (build.deployed ? ' (build ' + build.deployed + ')' : '') + '.'; return; }
+    if (shells.length === 1 && (!build.deployed || shells[0] === build.deployed)) { build.files = shells[0]; el.textContent = 'Measuring the app’s current build ' + shells[0] + '.'; return; }
+    build.files = shells.length === 1 ? shells[0] : null;
+    build.note = 'an update of the app is installed but not applied';
+    el.className = 'warn';
+    // Safari's service worker is not the Home Screen app's (each keeps its own website data): updating the app leaves this
+    // page's worker as it was, and a reload never activates a waiting worker (sw.js never skips waiting by itself). The
+    // page applies the update itself, as pwa.js accept() does: { t: 'skip' } to the waiting worker, reload on the takeover
+    el.textContent = 'A newer build' + (build.deployed ? ' (' + build.deployed + ')' : '') + ' is deployed than the one this page runs' +
+      (build.files ? ' (' + build.files + ')' : '') + '. The Home Screen app updates separately: tap Apply update (or close every ' +
+      location.hostname + ' tab in Safari and open this page again).';
+    let reg = null;
+    try { reg = await navigator.serviceWorker.getRegistration(); if (reg && !reg.waiting) { await reg.update(); await new Promise(r => setTimeout(r, 1500)); } } catch { /* no registration */ }
+    if (!reg || !(reg.waiting || reg.installing)) return;
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = 'Apply update'; b.style.marginLeft = '8px';
+    b.onclick = () => {
+      const w = reg.waiting || reg.installing;
+      if (!w) { location.reload(); return; }
+      b.disabled = true; b.textContent = 'Updating…';
+      navigator.serviceWorker.addEventListener('controllerchange', () => location.reload(), { once: true });
+      setTimeout(() => location.reload(), 4000);
+      try { w.postMessage({ t: 'skip' }); } catch { location.reload(); }
+    };
+    el.append(' ', b);
+  })();
+
+  /* ---- results */
+  const med = a => { const b = a.slice().sort((x, y) => x - y), n = b.length; return n ? (n & 1 ? b[n >> 1] : (b[n / 2 - 1] + b[n / 2]) / 2) : NaN; };
+  const r4 = x => +x.toFixed(4);
+  let last = tryLS(ls => JSON.parse(ls.getItem('bench.last') || 'null'), null);
+  function record(passes, interrupted, coldRows) {
+    // (the preset-switch rows measure JIT-cold code: only the first pass since the page loaded is cold, and only if it
+    // ran whole — an interrupted or stopped one, or a later Run in the same load, is warmed up: cold null)
+    const rows = {}, spread = {}, worst = {}, cold = coldRows || null;
     for (const s of list) {
-      $('status').textContent = 'Running ' + s.id + '…';
-      await pause();
-      const cell = $('l-' + s.id);
-      try {
-        const r = measure(s, env, { runs: 5, seconds: 1 });
-        out[s.id] = +r.load.toFixed(4);
-        cell.textContent = r.load.toFixed(3);
-        cell.className = 'n ' + (r.load > 0.6 ? 'bad' : r.load > s.ipad ? 'warn' : 'ok');
-        if (r.worst !== undefined && s.kind !== 'switch') {
-          const wc = $('w-' + s.id), w = r.worst;
-          worst[s.id] = +w.toFixed(3);
-          wc.textContent = w.toFixed(2);
-          wc.className = 'n ' + (w > 1 ? 'bad' : w > 0.6 ? 'warn' : 'ok');
-        }
-      } catch (err) {
-        cell.textContent = 'error'; cell.className = 'n bad'; cell.title = String(err && err.stack || err);
-        console.error(s.id, err);
-      }
+      const L = passes.map(p => p.rows[s.id]).filter(Number.isFinite), W = passes.map(p => p.worst[s.id]).filter(Number.isFinite);
+      if (L.length) { rows[s.id] = r4(med(L)); spread[s.id] = [r4(Math.min(...L)), r4(Math.max(...L))]; }
+      if (W.length) worst[s.id] = +med(W).toFixed(3);
     }
-    const rec = { ua: navigator.userAgent, date: new Date().toISOString().slice(0, 10), rows: out, worst };
-    $('json').hidden = false;
-    $('json').textContent = JSON.stringify(rec, null, 1);
-    $('status').textContent = 'Done — rows over 0.6 are marked red, over the iPad target amber.';
-    $('run').disabled = false;
+    return { date: new Date().toISOString().slice(0, 10), device: $('device').value.trim() || null, ua: navigator.userAgent,
+      screen: `${screen.width}×${screen.height} @${devicePixelRatio}x`, cores: navigator.hardwareConcurrency || null,
+      build: build.files, deployed: build.deployed, stale: !!build.note, page: location.origin + location.pathname,
+      method: 'tests/bench.html: each pass renders every row 5 × 1 s (row load = median of the 5); rows = median over the passes, spread = [min, max] over the passes; worst = median over the passes of the slowest quantum / its real time; cold = the preset-switch rows of the first pass since the page loaded, when that pass ran whole (null otherwise: reload the page to measure cold again); stale = this device ran an older build than the deployed one',
+      passes: passes.length, interrupted: interrupted || 0, rows, spread, worst, cold, perPass: passes.map(p => p.rows) };
+  }
+  // one key per line: pastes cleanly into tests/bench.json
+  const text = rec => '{\n' + Object.entries(rec).map(([k, v]) => ' ' + JSON.stringify(k) + ': ' + JSON.stringify(v)).join(',\n') + '\n}';
+  function show(rec) {
+    last = rec;
+    if (rec.device !== ($('device').value.trim() || null)) rec.device = $('device').value.trim() || null;
+    $('json').hidden = false; $('json').textContent = text(rec);
+    $('copy').disabled = false; $('share').disabled = false;
+    tryLS(ls => ls.setItem('bench.last', JSON.stringify(rec)));
+  }
+  function paint(rec) {
+    for (const s of list) {
+      const v = rec.rows[s.id], sp = rec.spread[s.id], w = rec.worst[s.id], C = cells.get(s.id), cell = C.l;
+      if (v === undefined) continue;
+      cell.textContent = v.toFixed(3);
+      cell.className = 'n ' + (v > 0.6 ? 'bad' : s.ipad != null && v > s.ipad ? 'warn' : 'ok');
+      C.s.textContent = sp && rec.passes > 1 ? sp[0].toFixed(3) + '–' + sp[1].toFixed(3) : '—';
+      const wc = C.w;
+      if (w !== undefined && s.kind !== 'switch') { wc.textContent = w.toFixed(2); wc.className = 'n ' + (w > 1 ? 'bad' : w > 0.6 ? 'warn' : 'ok'); }
+    }
+  }
+  if (last && last.rows) { paint(last); show(last); status('Last results (' + last.date + ', ' + last.passes + ' pass' + (last.passes === 1 ? '' : 'es') + ') — run again or copy them.'); }
+
+  async function copyText(t) {
+    try { await navigator.clipboard.writeText(t); return true; } catch { /* older browsers / no permission */ }
+    const ta = document.createElement('textarea');
+    ta.value = t; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.appendChild(ta);
+    ta.select(); ta.setSelectionRange(0, t.length);
+    let ok = false; try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    return ok;
+  }
+  $('copy').onclick = async () => {
+    if (!last) return;
+    show(last);
+    const ok = await copyText(text(last));
+    $('copy').textContent = ok ? 'Copied ✓' : 'Select the text below';
+    setTimeout(() => { $('copy').textContent = 'Copy results'; }, 2500);
+    if (!ok) { const r = document.createRange(); r.selectNodeContents($('json')); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); }
   };
+  if (typeof navigator.share === 'function') {
+    $('share').hidden = false;
+    $('share').onclick = () => { if (last) navigator.share({ title: 'SYNTH bench results', text: text(last) }).catch(() => {}); };
+  }
+
+  /* ---- running */
+  let stop = false, hiddenSeen = false, lock = null, running = false;
+  let fresh = true; // nothing measured since the page loaded (its first pass is the only cold one)
+  document.addEventListener('visibilitychange', async () => {
+    if (document.hidden) { hiddenSeen = true; return; }
+    if (running && 'wakeLock' in navigator && !lock) try { lock = await navigator.wakeLock.request('screen'); } catch { lock = null; }
+  });
+  const pause = ms => new Promise(r => setTimeout(r, ms));
+  const fmtT = s => s >= 90 ? Math.round(s / 60) + ' min' : Math.round(s) + ' s';
+  async function run(n) {
+    if (running || missing.length) return;
+    running = true; stop = false;
+    const first = fresh; fresh = false; // (before any measure(): a stopped or failed first pass uses up the cold chance too)
+    for (const b of ['run5', 'run1', 'copy', 'share']) $(b).disabled = true;
+    $('stop').disabled = false;
+    try { if ('wakeLock' in navigator) lock = await navigator.wakeLock.request('screen'); } catch { lock = null; }
+    const passes = [], t0 = performance.now(), total = n * list.length;
+    let done = 0, interrupted = 0, coldRows = null; // coldRows: this Run's cold switch rows (its pass 1, the page's first)
+    for (let k = 0; k < n && !stop; k++) {
+      hiddenSeen = false;
+      const pass = { rows: {}, worst: {} };
+      for (const s of list) {
+        if (stop) break;
+        const eta = done ? fmtT((performance.now() - t0) / 1000 / done * (total - done)) : '';
+        status(`Pass ${k + 1} of ${n} · row ${s.id}${eta ? ' · about ' + eta + ' left' : ''}${lock ? '' : ' · keep the screen on'}`);
+        $('prog').style.width = (100 * done / total).toFixed(1) + '%';
+        await pause(30);
+        const cell = cells.get(s.id).l;
+        try {
+          const r = measure(s, s.env || env, { runs: 5, seconds: 1 });
+          pass.rows[s.id] = r4(r.load);
+          if (r.worst !== undefined && s.kind !== 'switch') pass.worst[s.id] = +r.worst.toFixed(3);
+          if (!passes.length) paint({ rows: pass.rows, spread: {}, worst: pass.worst, passes: 1 });
+        } catch (err) {
+          cell.textContent = 'error'; cell.className = 'n bad'; cell.title = String(err && err.stack || err);
+          console.error(s.id, err);
+        }
+        done++;
+      }
+      if (stop) break;
+      if (hiddenSeen) { interrupted++; status(`Pass ${k + 1} was interrupted (the page went to the background) — it is left out.`); await pause(1500); continue; }
+      if (first && k === 0) { // the page's first pass, whole: its switch rows are the cold values (never a later pass promoted)
+        coldRows = {};
+        for (const s of list) if (s.kind === 'switch' && Number.isFinite(pass.rows[s.id])) coldRows[s.id] = pass.rows[s.id];
+      }
+      passes.push(pass);
+      const rec = record(passes, interrupted, coldRows);
+      paint(rec); show(rec);
+      await pause(500);
+    }
+    $('prog').style.width = '100%';
+    if (lock) { try { await lock.release(); } catch { /* released */ } lock = null; }
+    running = false;
+    for (const b of ['run5', 'run1']) $(b).disabled = false;
+    $('stop').disabled = true;
+    if (last) { $('copy').disabled = false; $('share').disabled = false; }
+    const over = last ? list.filter(s => last.rows[s.id] > 0.6).map(s => s.id) : [];
+    status(stop ? `Stopped after ${passes.length} complete pass${passes.length === 1 ? '' : 'es'}.`
+      : `Done: ${passes.length} pass${passes.length === 1 ? '' : 'es'}${interrupted ? ` (${interrupted} interrupted)` : ''} in ${fmtT((performance.now() - t0) / 1000)}. ` +
+        (over.length ? 'Over 0.6: ' + over.join(', ') + '. ' : '') + 'Tap Copy results.');
+  }
+  $('run5').onclick = () => run(5);
+  $('run1').onclick = () => run(1);
+  $('stop').onclick = () => { stop = true; $('stop').disabled = true; status('Stopping after this row…'); };
 </script>
 </body>
 </html>

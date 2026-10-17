@@ -11,7 +11,7 @@
 //   shapeLib     — the shared JSON shape library (`synth.sx.shapes`) behind the editors' Load / Save Shape menus
 // Browser ES module: nothing touches document / window at module top level, so node can import it (§0.1, §10.6).
 import { contextMenu, injectStyles, menuSource, theme, fitCanvas, ticker, saveFile, pickFile, ask,
-  numBox, toggle, seg, slider, xyPad, modifierBar, zoomPan } from './wk.js?v=9';
+  numBox, toggle, seg, slider, xyPad, modifierBar, zoomPan, localPoint, localScale, layer, onRescale } from './wk.js?v=9';
 import { evalPts, bend, CURVE_K, ENV_K, MAX_PTS, N_BUS, MAX_CRV_PTS, MAX_SPEC_PTS, PATH_DEFAULT, PZ_DEFAULT, LFO_TOOLS,
   SLEW_T, fmtTime, parseCore } from './serum-core.js?v=9';
 
@@ -509,8 +509,10 @@ function liveRegion() {
 }
 // Playhead loop while the element is connected (wk.ticker: ≤ 30 fps, 10 fps with reduced motion, not while hidden).
 function animator(el, fn) { return ticker(el, () => fn()); }
-// Touch hit radii (§13.1: 44 px targets): points, curve handles and curves 22 px; mouse 8 / 6 px.
-const R_PT = touch => (touch ? 22 : 8), R_HD = touch => (touch ? 22 : 6);
+// Touch hit radii (§13.1: 44 px targets): points, curve handles and curves 22 px; mouse 8 / 6 px — screen px: P.k (layout
+// px per screen px, 1/k under the canvas world's zoom) turns them into the editor's layout px
+const hk = P => (P && P.k > 0 ? P.k : 1);
+const R_PT = (touch, P) => (touch ? 22 : 8) * hk(P), R_HD = (touch, P) => (touch ? 22 : 6) * hk(P);
 // The canvases fill the editor's padding box (position: absolute; 100 % inside a 1 px border-box frame), so bitmaps
 // are sized from clientWidth / clientHeight and pointer positions are measured from the padding-box origin.
 // `hgt` = the nominal (border-box) height, used when layout has not happened yet.
@@ -518,10 +520,18 @@ function boxSize(el, minW, hgt) {
   const r = el.getBoundingClientRect(), bw = el.clientLeft || 0, bh = el.clientTop || 0;
   return { w: Math.max(minW, el.clientWidth || (r.width ? r.width - 2 * bw : 300)), h: Math.max(16, el.clientHeight || hgt - 2 * bh) };
 }
-function boxOrigin(el) {
-  const r = el.getBoundingClientRect();
-  return { left: r.left + (el.clientLeft || 0), top: r.top + (el.clientTop || 0) };
+function boxOrigin(el) { // the padding box's top-left, client px
+  const r = el.getBoundingClientRect(), k = localScale(el);
+  return { left: r.left + (el.clientLeft || 0) / k, top: r.top + (el.clientTop || 0) / k };
 }
+// SPEC-canvas §4.7: an editor may sit under the canvas world's CSS scale, where client px are screen px and the
+// geometry (clientWidth, X(), Y()) layout px. boxPoint(el, e): the pointer in the padding box's layout px (wk.localPoint
+// less the border) with k = layout px per screen px; boxClient(el, lx, ly): a layout point of the padding box in client px
+function boxPoint(el, e) {
+  const p = localPoint(el, e);
+  return { px: p.x - (el.clientLeft || 0), py: p.y - (el.clientTop || 0), k: localScale(el) };
+}
+function boxClient(el, lx, ly) { const r = boxOrigin(el), k = localScale(el); return { x: r.left + lx / k, y: r.top + ly / k }; }
 // §13.1: hidden pages are not painted — an editor that is detached or not rendered (on a display: none page) skips
 // drawing; its ResizeObserver fires when the page is shown again (0 × 0 → its size) and redraws it.
 const unrendered = el => !el.isConnected || (typeof el.getClientRects === 'function' && el.getClientRects().length === 0);
@@ -554,7 +564,10 @@ function attachZoom(ed, mode) {
   ed.view = FULL;
   if (!mode) return;
   const axis = mode === 'x' || mode === 'y' ? mode : 'xy';
-  const rect = () => { const r = boxOrigin(ed.root), s = ed.size(); return { left: r.left + PAD, top: r.top + PAD, width: Math.max(1, s.w - 2 * PAD), height: Math.max(1, s.h - 2 * PAD) }; };
+  const rect = () => { // the plot in client px (zoomPan's ratios: right under the world's zoom too)
+    const r = boxOrigin(ed.root), s = ed.size(), k = localScale(ed.root);
+    return { left: r.left + PAD / k, top: r.top + PAD / k, width: Math.max(1, (s.w - 2 * PAD) / k), height: Math.max(1, (s.h - 2 * PAD) / k) };
+  };
   ed.zp = zoomPan(ed.root, { axis, min: ZOOM_MIN, rect, get: () => ed.view, set: (v, ph) => { if (ph === 'start') ed.abort(); ed.setView(v); } });
   ed.offs.push(() => ed.zp.destroy());
 }
@@ -634,7 +647,7 @@ export class CurveEditor {
     on(root, 'keydown', e => this.key(e));
     on(root, 'focus', () => this.draw());
     on(root, 'blur', () => this.draw());
-    this.offs.push(menuSource(root, { keys: false }), observeSize(root, () => this.draw()));
+    this.offs.push(menuSource(root, { keys: false }), observeSize(root, () => this.draw()), onRescale(root, () => this.draw()));
     attachZoom(this, this.o.zoom);
     this.anim = animator(root, () => this.drawOverlay());
     if (this.o.playhead) this.anim.start();
@@ -680,9 +693,8 @@ export class CurveEditor {
   X(x, s) { const v = this.view; return PAD + (x - v.x0) / (v.x1 - v.x0) * (s.w - 2 * PAD); }
   Y(y, s) { const v = this.view; return PAD + ((1 - y) - v.y0) / (v.y1 - v.y0) * (s.h - 2 * PAD); }
   pos(e) {
-    const r = boxOrigin(this.root), s = this.size(), v = this.view;
-    const px = e.clientX - r.left, py = e.clientY - r.top;
-    return { px, py, x: v.x0 + (px - PAD) / (s.w - 2 * PAD) * (v.x1 - v.x0), y: 1 - (v.y0 + (py - PAD) / (s.h - 2 * PAD) * (v.y1 - v.y0)), s };
+    const B = boxPoint(this.root, e), s = this.size(), v = this.view, px = B.px, py = B.py;
+    return { px, py, k: B.k, x: v.x0 + (px - PAD) / (s.w - 2 * PAD) * (v.x1 - v.x0), y: 1 - (v.y0 + (py - PAD) / (s.h - 2 * PAD) * (v.y1 - v.y0)), s };
   }
   /* zoom (o.zoom: true | 'x' | 'y' | 'xy'): pinch / two-finger pan, Ctrl-wheel; menu Reset Zoom, key 0 */
   zoomed() { return !isFull(this.view); }
@@ -705,7 +717,7 @@ export class CurveEditor {
     this.finish();
   }
   hitPoint(p, P, touch) {
-    const R = R_PT(touch);
+    const R = R_PT(touch, P);
     let best = -1, bd = R * R + 1e-9;
     for (let i = 0; i < p.length; i++) {
       const dx = this.X(p[i][0], P.s) - P.px, dy = this.Y(p[i][1], P.s) - P.py, d = dx * dx + dy * dy;
@@ -720,7 +732,7 @@ export class CurveEditor {
   }
   hitHandle(p, P, touch) {
     if (this.o.readOnly) return -1;
-    const R = R_HD(touch);
+    const R = R_HD(touch, P);
     let best = -1, bd = R * R + 1e-9;
     for (let i = 0; i < p.length - 1; i++) {
       const hh = handle(p, i);
@@ -779,7 +791,7 @@ export class CurveEditor {
     if (e.pointerId !== g.id) return;
     if (e.pointerType === 'mouse' && !(e.buttons & 1)) { this.finish(); return; }
     const P = this.pos(e);
-    if (Math.hypot(P.px - g.P0.px, P.py - g.P0.py) > 3) g.moved = true;
+    if (Math.hypot(P.px - g.P0.px, P.py - g.P0.py) > 3 * hk(P)) g.moved = true;
     if (!g.moved) return;
     const grid = this.grid(), tie = this.tie();
     if (g.mode === 'move' || g.mode === 'rainbow') {
@@ -829,7 +841,7 @@ export class CurveEditor {
     if (g.mode === 'marquee' && !g.moved && !g.add) { this.sel.clear(); this.act = -1; this.draw(); }
     if (g.touch && !g.moved) { // double-tap = double-click
       const t = e.timeStamp, L = this.lastTap;
-      if (L && t - L.t < 350 && Math.hypot(P.px - L.px, P.py - L.py) < 24) { this.lastTap = null; this.dbl(P); }
+      if (L && t - L.t < 350 && Math.hypot(P.px - L.px, P.py - L.py) < 24 * hk(P)) { this.lastTap = null; this.dbl(P); }
       else this.lastTap = { t, px: P.px, py: P.py };
     }
   }
@@ -987,9 +999,8 @@ export class CurveEditor {
     const p = this.pts, n = p.length, k = e.key, ro = !!this.o.readOnly;
     if (k === 'ContextMenu' || (k === 'F10' && e.shiftKey)) {
       e.preventDefault();
-      const r = boxOrigin(this.root), s = this.size(), q = p[this.act];
-      const x = q ? r.left + this.X(q[0], s) : r.left + s.w / 2, y = q ? r.top + this.Y(q[1], s) : r.top + s.h / 2;
-      contextMenu(x, y, this.menuItems(this.act), { anchor: this.root });
+      const s = this.size(), q = p[this.act], c = boxClient(this.root, q ? this.X(q[0], s) : s.w / 2, q ? this.Y(q[1], s) : s.h / 2);
+      contextMenu(c.x, c.y, this.menuItems(this.act), { anchor: this.root });
       return;
     }
     if (k === 'Tab') {
@@ -1323,7 +1334,7 @@ export class EnvEditor {
     on(root, 'keydown', e => this.key(e));
     on(root, 'focus', () => this.draw());
     on(root, 'blur', () => this.draw());
-    this.offs.push(menuSource(root, { keys: false }), observeSize(root, () => this.draw()));
+    this.offs.push(menuSource(root, { keys: false }), observeSize(root, () => this.draw()), onRescale(root, () => this.draw()));
     this.anim = animator(root, () => this.drawOverlay());
     if (this.o.playhead) this.anim.start();
     this.draw();
@@ -1371,9 +1382,9 @@ export class EnvEditor {
       se: [[x0, Y(st)], [xR, Y(en)]],
     };
   }
-  pos(e) { const r = boxOrigin(this.root); return { px: e.clientX - r.left, py: e.clientY - r.top }; }
+  pos(e) { return boxPoint(this.root, e); }
   hit(P, touch) {
-    const s = this.size(), e = this.env(), G = this.geo(s, e, this.scale(s, e)), R = R_PT(touch);
+    const s = this.size(), e = this.env(), G = this.geo(s, e, this.scale(s, e)), R = R_PT(touch, P);
     const pts = G.corners.concat(G.handles), wid = [G.xA - G.x0, G.xD - G.xH, G.xR - G.xS];
     let best = -1, bd = R * R + 1e-9;
     // later corners first on ties (zero-length stages stack up; moveEv re-targets on the first move); the curve
@@ -1390,7 +1401,7 @@ export class EnvEditor {
     return best;
   }
   near(P, t, touch) { // is target t (8 / 9) within reach of P?
-    const s = this.size(), e = this.env(), G = this.geo(s, e, this.scale(s, e)), R = R_PT(touch), q = G.se[t - 8];
+    const s = this.size(), e = this.env(), G = this.geo(s, e, this.scale(s, e)), R = R_PT(touch, P), q = G.se[t - 8];
     return !!q && Math.hypot(q[0] - P.px, q[1] - P.py) <= R;
   }
   emit(patch, phase) { if (this.o.set) this.o.set(patch, phase); }
@@ -1472,7 +1483,7 @@ export class EnvEditor {
   tap(e, g) {
     if (e.pointerType !== 'touch' || g.started) { this.lastTap = null; return; }
     const P = this.pos(e), L = this.lastTap;
-    if (L && L.t0 === g.t && e.timeStamp - L.t < 350 && Math.hypot(P.px - L.px, P.py - L.py) < 24) {
+    if (L && L.t0 === g.t && e.timeStamp - L.t < 350 && Math.hypot(P.px - L.px, P.py - L.py) < 24 * hk(P)) { // (24 screen px)
       this.lastTap = null;
       if (g.t >= 5) this.resetCurve(g.t);
     } else this.lastTap = { t: e.timeStamp, px: P.px, py: P.py, t0: g.t };
@@ -1482,8 +1493,8 @@ export class EnvEditor {
     const k = e.key;
     if ((k === 'ContextMenu' || (k === 'F10' && e.shiftKey)) && this.o.menu) {
       e.preventDefault();
-      const r = boxOrigin(this.root), s = this.size();
-      this.o.menu(r.left + s.w / 2, r.top + s.h / 2);
+      const s = this.size(), c = boxClient(this.root, s.w / 2, s.h / 2);
+      this.o.menu(c.x, c.y);
       return;
     }
     if (k === 'Tab') {
@@ -1682,7 +1693,7 @@ export class PathEditor {
     on(root, 'keydown', e => this.key(e));
     on(root, 'focus', () => this.draw());
     on(root, 'blur', () => this.draw());
-    this.offs.push(menuSource(root, { keys: false }), observeSize(root, () => this.draw()));
+    this.offs.push(menuSource(root, { keys: false }), observeSize(root, () => this.draw()), onRescale(root, () => this.draw()));
     attachZoom(this, this.o.zoom);
     this.anim = animator(root, () => this.drawOverlay());
     if (this.o.playhead) this.anim.start();
@@ -1707,8 +1718,8 @@ export class PathEditor {
   X(x, s) { const v = this.view; return PAD + (x - v.x0) / (v.x1 - v.x0) * (s.w - 2 * PAD); }
   Y(y, s) { const v = this.view; return PAD + ((1 - y) - v.y0) / (v.y1 - v.y0) * (s.h - 2 * PAD); }
   pos(e) {
-    const r = boxOrigin(this.root), s = this.size(), v = this.view, px = e.clientX - r.left, py = e.clientY - r.top;
-    return { px, py, x: v.x0 + (px - PAD) / (s.w - 2 * PAD) * (v.x1 - v.x0), y: 1 - (v.y0 + (py - PAD) / (s.h - 2 * PAD) * (v.y1 - v.y0)), s };
+    const B = boxPoint(this.root, e), s = this.size(), v = this.view, px = B.px, py = B.py;
+    return { px, py, k: B.k, x: v.x0 + (px - PAD) / (s.w - 2 * PAD) * (v.x1 - v.x0), y: 1 - (v.y0 + (py - PAD) / (s.h - 2 * PAD) * (v.y1 - v.y0)), s };
   }
   zoomed() { return !isFull(this.view); }
   setView(v) { this.view = viewOf(v); this.draw(); }
@@ -1722,7 +1733,7 @@ export class PathEditor {
     this.finish();
   }
   hitPoint(p, P, touch) {
-    const R = R_PT(touch), n = pathClosed(p) ? p.length - 1 : p.length;
+    const R = R_PT(touch, P), n = pathClosed(p) ? p.length - 1 : p.length;
     let best = -1, bd = R * R + 1e-9;
     for (let i = 0; i < n; i++) {
       const dx = this.X(p[i][0], P.s) - P.px, dy = this.Y(p[i][1], P.s) - P.py, d = dx * dx + dy * dy;
@@ -1732,7 +1743,7 @@ export class PathEditor {
   }
   hitHandle(p, P, touch) {
     if (this.o.readOnly) return -1;
-    const R = R_HD(touch);
+    const R = R_HD(touch, P);
     let best = -1, bd = R * R + 1e-9;
     for (let i = 0; i < p.length - 1; i++) {
       const hh = pathHandle(p, i);
@@ -1744,7 +1755,7 @@ export class PathEditor {
   }
   hitCurve(p, P, touch) { // { i, t } of the curve within reach, else null
     const s = P.s, v = this.view, w = (s.w - 2 * PAD) / (v.x1 - v.x0), hh = (s.h - 2 * PAD) / (v.y1 - v.y0), nr = pathNearest(p, P.x, P.y, w, hh);
-    return nr.i >= 0 && nr.d <= R_HD(touch) ? nr : null;
+    return nr.i >= 0 && nr.d <= R_HD(touch, P) ? nr : null;
   }
 
   /* pointer gestures */
@@ -1790,7 +1801,7 @@ export class PathEditor {
     if (e.pointerId !== g.id) return;
     if (e.pointerType === 'mouse' && !(e.buttons & 1)) { this.finish(); return; }
     const P = this.pos(e), M = mods(e);
-    if (Math.hypot(P.px - g.P0.px, P.py - g.P0.py) > 3) g.moved = true;
+    if (Math.hypot(P.px - g.P0.px, P.py - g.P0.py) > 3 * hk(P)) g.moved = true;
     if (!g.moved) return;
     const grid = this.grid();
     if (g.mode === 'move') {
@@ -1825,7 +1836,7 @@ export class PathEditor {
     if (g.mode === 'marquee' && !g.moved && !g.add) { this.sel.clear(); this.act = -1; this.draw(); }
     if (g.touch && !g.moved) {
       const t = e.timeStamp, L = this.lastTap;
-      if (L && t - L.t < 350 && Math.hypot(P.px - L.px, P.py - L.py) < 24) { this.lastTap = null; this.dbl(P); }
+      if (L && t - L.t < 350 && Math.hypot(P.px - L.px, P.py - L.py) < 24 * hk(P)) { this.lastTap = null; this.dbl(P); }
       else this.lastTap = { t, px: P.px, py: P.py };
     }
   }
@@ -1900,8 +1911,8 @@ export class PathEditor {
     const p = this.path, n = this.count(), k = e.key, ro = !!this.o.readOnly;
     if (k === 'ContextMenu' || (k === 'F10' && e.shiftKey)) {
       e.preventDefault();
-      const r = boxOrigin(this.root), s = this.size(), q = p[this.act];
-      contextMenu(q ? r.left + this.X(q[0], s) : r.left + s.w / 2, q ? r.top + this.Y(q[1], s) : r.top + s.h / 2, this.menuItems(), { anchor: this.root });
+      const s = this.size(), q = p[this.act], c = boxClient(this.root, q ? this.X(q[0], s) : s.w / 2, q ? this.Y(q[1], s) : s.h / 2);
+      contextMenu(c.x, c.y, this.menuItems(), { anchor: this.root });
       return;
     }
     if (k === 'Tab') {
@@ -2143,7 +2154,8 @@ export function lfoEditorLarge(container, o) {
   const d = D();
   if (!d) return null;
   injectStyles();
-  const prevFocus = d.activeElement, host = container || d.body;
+  // under the canvas world (a CSS transform: position: fixed would be the world's) it opens in the top layer (wk.layer)
+  const prevFocus = d.activeElement, host = layer(container) || d.body;
   const el = d.createElement('div');
   el.className = 'gx-overlay';
   el.setAttribute('role', 'dialog');
@@ -2192,6 +2204,19 @@ export function lfoEditorLarge(container, o) {
   }
   x.addEventListener('click', () => finish(true));
   el.addEventListener('keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); finish(true); } });
+  // opened outside its container (the top layer): the container's hardware keys (a panel's ⌘Z undo …) still see the
+  // modified keys the editor left alone — a copy goes to the container, and what it takes stops here
+  if (container && host !== container) {
+    el.addEventListener('keydown', e => {
+      if (e.defaultPrevented || e.key === 'Escape' || !(e.metaKey || e.ctrlKey || e.altKey)) return;
+      const E = win.KeyboardEvent || globalThis.KeyboardEvent || win.Event || globalThis.Event;
+      let c;
+      try { c = new E('keydown', { key: e.key, code: e.code, metaKey: e.metaKey, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, bubbles: true, cancelable: true }); } catch (err) { return; }
+      for (const k of ['key', 'code', 'metaKey', 'ctrlKey', 'shiftKey', 'altKey']) if (c[k] !== e[k]) try { Object.defineProperty(c, k, { value: e[k] }); } catch (err) { /* read-only */ }
+      container.dispatchEvent(c);
+      if (c.defaultPrevented) { e.preventDefault(); e.stopPropagation(); }
+    });
+  }
   editor.root.focus({ preventScroll: true });
   return {
     el, editor, setTool,

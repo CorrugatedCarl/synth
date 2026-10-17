@@ -3109,6 +3109,59 @@ test('dragSource auto-scroll: steps clamp to the scroll range in JS — an uncla
   } finally { raf.uninstall(); }
 });
 
+test('dragSource in the canvas world (setEdgeHook): what no DOM scroller takes goes to the camera hook (from the press point; null at drop / cancel / a hidden page / while a scroller scrolls); a camera step re-fires move at the same x, y with scrolled 0; autoScroll false and drags outside the world never call it', () => {
+  const sj = v => JSON.stringify(v); // (primitives / JSON only)
+  const pans = [], cams = new Set();
+  const hook = { pan: p => pans.push(p ? [p.x, p.y, p.pointerType] : null), onCamera: cb => { cams.add(cb); return () => cams.delete(cb); } };
+  const step = () => { for (const f of [...cams]) f({ tx: 0, ty: -10, k: 1 }); };
+  wk.setEdgeHook(hook);
+  try {
+    const r = scrollRig({ top: 0 });
+    r.html.scrollHeight = 0; // the canvas app: the page never scrolls (#app fixed, #viewport clips)
+    const W = r.d.createElement('div'); W.setAttribute('data-cv-world', ''); r.d.body.appendChild(W); W.appendChild(r.tile);
+    r.T('pointerdown', 600, 400, 5000); r.T('pointermove', 600, 390, 5016);
+    assert.equal(sj([pans[0], cams.size]), sj([[600, 390, 'touch'], 1]), 'begin: the start point (arms the directions it does not ask for)');
+    r.T('pointermove', 600, 560, 5032); // in the bottom zone: no DOM scroller can go down
+    assert.equal(sj([pans.at(-1), raf.pending]), sj([[600, 560, 'touch'], 0]), 'the camera, not a DOM scroll');
+    const n = r.log.length;
+    step();
+    assert.equal(sj(r.log.at(-1).slice(0, 3).concat(r.log.at(-1)[5], r.log.length - n)), sj(['move', 600, 560, 0, 1]), 'a camera step: move again at the same point, scrolled 0');
+    r.T('pointerup', 600, 560, 5400);
+    assert.equal(sj([r.log.at(-1)[0], pans.at(-1), cams.size]), sj(['drop', null, 0]), 'drop: the camera stops first, unsubscribed');
+    step();
+    assert.equal(r.log.at(-1)[0], 'drop', 'no move after the drop');
+    // Escape and a hidden page stop it too
+    for (const end of [() => key(r.d.body, 'Escape'), () => { r.d.visibilityState = 'hidden'; fire(r.d, 'visibilitychange'); r.d.visibilityState = 'visible'; r.T('pointerup', 600, 100, 6200); }]) {
+      pans.length = 0;
+      r.T('pointerdown', 600, 400, 6000); r.T('pointermove', 600, 390, 6016); r.T('pointermove', 600, 100, 6032);
+      assert.equal(sj(pans.at(-1)), sj([600, 100, 'touch']));
+      end();
+      assert.equal(sj([pans.at(-1), cams.size]), sj([null, 0]));
+    }
+    // a DOM scroller inside the world that can still scroll keeps priority: the camera gets null meanwhile
+    const list = r.d.createElement('div'), row = r.d.createElement('div');
+    list._cs = { overflowX: 'auto', overflowY: 'auto' }; place(list, 0, 200, 600, 300); scroller(list, 300, 1000);
+    list.append(row); W.append(list);
+    r.d.elementFromPoint = (x, y) => (y >= 200 && y < 500 && x < 600 ? row : r.d.body);
+    pans.length = 0;
+    r.T('pointerdown', 300, 350, 7000); r.T('pointermove', 300, 340, 7016); r.T('pointermove', 300, 490, 7032);
+    assert.equal(sj([pans.at(-1), raf.pending]), sj([null, 1]), 'the list scrolls; the camera waits');
+    r.T('pointerup', 300, 490, 7100);
+    r.src.destroy();
+    // autoScroll: false (module bars, the Sources tray drive dragPointer themselves) and a tile outside the world: never
+    for (const [inW, payload] of [[true, { autoScroll: false }], [false, {}]]) {
+      raf.uninstall();
+      const r2 = scrollRig({ top: 0, payload });
+      r2.html.scrollHeight = 0;
+      if (inW) { const W2 = r2.d.createElement('div'); W2.setAttribute('data-cv-world', ''); r2.d.body.appendChild(W2); W2.appendChild(r2.tile); }
+      pans.length = 0;
+      r2.T('pointerdown', 600, 400, 5000); r2.T('pointermove', 600, 390, 5016); r2.T('pointermove', 600, 560, 5032); r2.T('pointerup', 600, 560, 5100);
+      assert.equal(sj([pans.length, cams.size, r2.log.at(-1)[0]]), sj([0, 0, 'drop']), inW ? 'autoScroll false' : 'outside the world');
+      r2.src.destroy();
+    }
+  } finally { wk.setEdgeHook(null); raf.uninstall(); }
+});
+
 test('dragSource auto-scroll: a mouse has no zone — nothing inside the band, full speed over the header, the keyboard or outside the window', () => {
   try {
     const r = scrollRig({ top: 1000, type: 'mouse' });
@@ -3452,4 +3505,171 @@ test('two-finger zones: pianoKeys is "music", zoomPan marks its element "own" (a
   zp.destroy(); zp2.destroy();
   assert.deepEqual([el.hasAttribute('data-gesture'), el2.getAttribute('data-gesture')], [false, 'music']);
   pk.destroy();
+});
+
+/* ------------------------------------------- the canvas world support (SPEC-canvas §4.4–4.7; IMPL-1b §4.3, §8.2) */
+import { place as placeEl, layout as layoutEl } from './wk-dom.mjs';
+const sj = v => JSON.stringify(v); // (fake-DOM nodes never reach assert: primitives / JSON only)
+
+test('localPoint / localScale: the pointer in layout px under a scaled ancestor (k = 0.5, 1, 2); a zero-size box or no offsetWidth counts as scale 1', () => {
+  const d = fresh();
+  const el = d.createElement('div'); d.body.appendChild(el);
+  for (const k of [0.5, 1, 2]) {
+    placeEl(el, 100, 50, 300 * k, 120 * k); layoutEl(el, 300, 120);
+    const p = wk.localPoint(el, { clientX: 100 + 30 * k, clientY: 50 + 60 * k });
+    assert.equal(sj([Math.round(p.x * 1e9) / 1e9, Math.round(p.y * 1e9) / 1e9, wk.localScale(el)]), sj([30, 60, 1 / k]), 'k ' + k);
+  }
+  placeEl(el, 100, 50, 0, 0); layoutEl(el, 300, 120);
+  assert.equal(sj([wk.localScale(el), wk.localPoint(el, { clientX: 110, clientY: 55 })]), sj([1, { x: 10, y: 5 }]), 'zero rect');
+  const svg = d.createElementNS('http://www.w3.org/2000/svg', 'svg'); // (no offsetWidth in browsers: the caller passes an HTML ancestor)
+  Object.defineProperty(svg, 'offsetWidth', { value: undefined });
+  placeEl(svg, 0, 0, 40, 40);
+  assert.equal(wk.localScale(svg), 1);
+});
+
+test('closeTransient: closes the open context menu / popup list and hides the kit tooltip', () => {
+  const d = fresh();
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    wk.contextMenu(10, 10, [{ label: 'x' }]);
+    assert.equal(byCls(d.body, 'wk-ctx').length, 1);
+    const el = d.createElement('div'); d.body.appendChild(el);
+    wk.tooltip(el, () => 'TIP');
+    fire(el, 'pointerenter', { bubbles: false }); mock.timers.tick(450);
+    assert.equal(d.getElementById('wk-tip').classList.contains('wk-show'), true);
+    wk.closeTransient();
+    assert.equal(sj([byCls(d.body, 'wk-ctx').length, d.getElementById('wk-tip').classList.contains('wk-show')]), sj([0, false]));
+    wk.closeTransient(); // nothing open: harmless
+  } finally { mock.timers.reset(); }
+});
+
+test('setWheelVeto: while it answers true no kit control takes the wheel (knob, numBox, wheelGate, zoomPan); null lifts it', () => {
+  const d = fresh();
+  const { el, st } = mkKnob();
+  const gateEl = d.createElement('div'); d.body.appendChild(gateEl);
+  const take = wk.wheelGate(gateEl);
+  let zp = 0; const cv = d.createElement('canvas'); d.body.appendChild(cv); placeEl(cv, 0, 0, 100, 50);
+  const z = wk.zoomPan(cv, { get: () => ({ x0: 0, x1: 1, y0: 0, y1: 1 }), set: () => { zp++; } });
+  let veto = true;
+  wk.setWheelVeto(() => veto);
+  try {
+    el.focus();
+    const e1 = fire(el, 'wheel', { deltaY: -100, timeStamp: 1e6 });
+    fire(gateEl, 'pointerenter', { bubbles: false, timeStamp: 0 });
+    const g1 = take(new (class { constructor() { this.deltaY = -100; this.deltaX = 0; this.deltaMode = 0; this.timeStamp = 1e6; } })());
+    const pz = fire(cv, 'wheel', { deltaY: -100, shiftKey: true, clientX: 50, clientY: 25 });
+    assert.equal(sj([st.n, e1.defaultPrevented, g1, zp, pz.defaultPrevented]), sj([0.5, false, null, 0, false]), 'vetoed: the page (the camera) keeps the wheel');
+    // an explicit zoom (Ctrl / ⌘-wheel, a trackpad pinch) is never vetoed: left alone it would zoom the browser's page
+    const cz = fire(cv, 'wheel', { deltaY: -100, ctrlKey: true, clientX: 50, clientY: 25 });
+    assert.equal(sj([zp, cz.defaultPrevented]), sj([1, true]), 'Ctrl-wheel: the editor zooms even under the veto');
+    veto = false;
+    fire(el, 'wheel', { deltaY: -100, timeStamp: 2e6 });
+    fire(cv, 'wheel', { deltaY: -100, shiftKey: true, clientX: 50, clientY: 25 });
+    assert.ok(st.n > 0.5 && zp === 2, 'lifted');
+    wk.setWheelVeto(() => { throw new Error('gone'); });
+    fire(el, 'wheel', { deltaY: -100, timeStamp: 3e6 });
+    assert.ok(st.n > 0.51, 'a throwing veto counts as none');
+  } finally { wk.setWheelVeto(null); z.destroy(); take.destroy(); }
+});
+
+test('visibleBand: the visual viewport less top / bottom bars (as before) and left / right side trays and rails; hidden ones ignored', () => {
+  const d = fresh(), win = d.defaultView;
+  d.querySelectorAll = sel => (sel === '[data-wk-inset]' ? all(d.documentElement).filter(n => n.hasAttribute && n.hasAttribute('data-wk-inset')) : []);
+  const inset = (side, l, t, w, h) => { const n = d.createElement('div'); n.setAttribute('data-wk-inset', side); d.body.appendChild(n); placeEl(n, l, t, w, h); return n; };
+  assert.equal(sj(wk.visibleBand(d)), sj({ left: 0, top: 0, right: 1280, bottom: 800 }));
+  inset('top', 0, 0, 1280, 120); inset('bottom', 0, 640, 1280, 160);
+  assert.equal(sj(wk.visibleBand(d)), sj({ left: 0, top: 120, right: 1280, bottom: 640 }));
+  inset('left', 0, 120, 284, 520); const rt = inset('right', 1236, 120, 44, 520);
+  assert.equal(sj(wk.visibleBand(d)), sj({ left: 284, top: 120, right: 1236, bottom: 640 }));
+  placeEl(rt, 0, 0, 0, 0); // a hidden rail (ROLL shown): no box
+  assert.equal(wk.visibleBand(d).right, 1280);
+  win.visualViewport = { offsetLeft: 100, offsetTop: 50, width: 600, height: 400 }; // the browser's pinch-zoom (and the keyboard)
+  assert.equal(sj(wk.visibleBand(d)), sj({ left: 284, top: 120, right: 700, bottom: 450 }));
+  delete win.visualViewport;
+});
+
+test('edgePan2: dragSource\'s law per axis — touch zones of 72 px (quadratic), full speed past the edge, mouse only past it; ramp-in over 240 ms; a direction arms once the pointer was outside its zone or moved 12 px that way', () => {
+  const B = { left: 100, top: 100, right: 900, bottom: 700 };
+  const at = (x, y, type, t, st) => wk.edgePan2(B, { x, y, pointerType: type, t }, st);
+  let st = {};
+  assert.equal(sj(at(500, 400, 'touch', 0, st)), sj({ vx: 0, vy: 0 }), 'the middle (arms every direction)');
+  at(136, 400, 'touch', 10, st); // half way into the left zone: the ramp starts
+  const v = at(136, 400, 'touch', 250, st); // ramped in
+  assert.equal(sj([Math.round(v.vx), v.vy]), sj([-300, 0]), '(0.5)² × 1200, toward the left');
+  assert.equal(sj(at(50, 750, 'touch', 600, st)), sj({ vx: -1200, vy: 1200 }), 'past two edges: both axes at full speed');
+  st = {};
+  at(500, 400, 'mouse', 0, st);
+  assert.equal(sj(at(130, 400, 'mouse', 10, st)), sj({ vx: 0, vy: 0 }), 'a mouse has no zone');
+  at(90, 400, 'mouse', 20, st);
+  assert.equal(at(90, 400, 'mouse', 300, st).vx, -1200, 'past the edge');
+  st = {};
+  assert.equal(at(120, 400, 'touch', 0, st).vx, 0, 'starting in a zone: not armed');
+  assert.equal(at(115, 400, 'touch', 300, st).vx, 0, '5 px that way: still not');
+  const a = at(105, 400, 'touch', 600, st);
+  assert.ok(a.vx === 0, 'armed now (15 px), the ramp starts at 0');
+  assert.ok(at(105, 400, 'touch', 900, st).vx < -800, 'and runs');
+  const r = {};
+  at(500, 400, 'touch', 0, r); at(40, 400, 'touch', 1000, r);
+  assert.equal(Math.round(at(40, 400, 'touch', 1120, r).vx), -600, 'half the ramp (120 of 240 ms)');
+});
+
+test('setCanvasScale / canvasScale: fitCanvas sizes in-world stores at clamp(dpr · k, 0.5, 2), outside the world at the dpr; every store ≤ 16e6 px', () => {
+  const d = fresh();
+  d.defaultView.devicePixelRatio = 2;
+  const w = d.createElement('div'); w.setAttribute('data-cv-world', ''); d.body.appendChild(w);
+  const inCv = d.createElement('canvas'), outCv = d.createElement('canvas');
+  w.appendChild(inCv); d.body.appendChild(outCv);
+  try {
+    wk.setCanvasScale(0.5);
+    wk.fitCanvas(inCv, 100, 50); wk.fitCanvas(outCv, 100, 50);
+    assert.equal(sj([inCv.width, inCv.height, outCv.width, outCv.height, wk.canvasScale(inCv), wk.canvasScale(outCv)]), sj([100, 50, 200, 100, 0.5, 1]));
+    wk.setCanvasScale(2);
+    const ctx = wk.fitCanvas(inCv, 100, 50);
+    assert.equal(sj([inCv.width, ctx.calls.at(-1)]), sj([200, ['setTransform', 2, 0, 0, 2, 0, 0]]), 'capped at 2');
+    wk.setCanvasScale(0.1);
+    wk.fitCanvas(inCv, 100, 50);
+    assert.equal(inCv.width, 50, 'at least 0.5');
+    wk.setCanvasScale(1);
+    wk.fitCanvas(outCv, 4000, 3000);
+    assert.ok(outCv.width * outCv.height <= 16e6 + 8000, 'the 16e6 px cap: ' + outCv.width + ' × ' + outCv.height);
+  } finally { wk.setCanvasScale(1); }
+});
+
+test('onRescale / rescaleCanvases: repaints of the static canvases inside the root (all without one; detached ones skipped); off() unregisters; releaseCanvases empties every canvas under a root', () => {
+  const d = fresh();
+  const w = d.createElement('div'), a = d.createElement('div'), b = d.createElement('div'), gone = d.createElement('div');
+  w.appendChild(a); d.body.append(w, b);
+  const log = [];
+  const offA = wk.onRescale(a, () => log.push('a'));
+  wk.onRescale(b, () => log.push('b'));
+  wk.onRescale(gone, () => log.push('gone'));
+  wk.onRescale(a, () => { throw new Error('a painter failed'); });
+  const err = console.error; console.error = () => {};
+  try {
+    wk.rescaleCanvases(w);
+    assert.equal(log.join(), 'a', 'only inside the root; a failing one does not stop the rest');
+    wk.rescaleCanvases();
+    assert.equal(log.join(), 'a,a,b', 'all (the detached one skipped)');
+    offA();
+    wk.rescaleCanvases(w);
+    assert.equal(log.join(), 'a,a,b');
+  } finally { console.error = err; }
+  const c1 = d.createElement('canvas'), c2 = d.createElement('canvas');
+  c1.width = 300; c1.height = 100; c2.width = 40; c2.height = 40;
+  a.appendChild(c1); b.appendChild(c2);
+  a.querySelectorAll = sel => (sel === 'canvas' ? all(a).filter(n => n.localName === 'canvas') : []);
+  wk.releaseCanvases(a);
+  assert.equal(sj([c1.width, c1.height, c2.width]), sj([0, 0, 40]));
+  wk.releaseCanvases(null);
+});
+
+test('setLayer / layer: an element inside [data-cv-world] gets the top layer, anything else itself', () => {
+  const d = fresh();
+  const w = d.createElement('div'), inner = d.createElement('div'), outer = d.createElement('div'), ov = d.createElement('div');
+  w.setAttribute('data-cv-world', ''); w.appendChild(inner); d.body.append(w, outer, ov);
+  assert.ok(wk.layer(inner) === inner, 'no layer set: itself');
+  wk.setLayer(ov);
+  try {
+    assert.equal(sj([wk.layer(inner) === ov, wk.layer(w) === ov, wk.layer(outer) === outer, wk.layer(null)]), sj([true, true, true, null]));
+  } finally { wk.setLayer(null); }
 });

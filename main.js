@@ -3,12 +3,23 @@ import * as S from './song.js?v=9';
 import { PianoRoll } from './roll.js?v=9';
 import { Arrangement } from './arrange.js?v=9';
 import * as core from './serum-core.js?v=9';
-import { openAppStore } from './appstore.js?v=9';
+import { openAppStore, PROJECT_KEY, WT_DB, SMP_DB } from './appstore.js?v=9';
+// canvas stage 1a (SPEC-canvas §5.8): project schema gate + uid; cv-graph (and cv-mods through it) ride in the precache
+// now, used from stage 1c / 2a
+import * as CM from './cv-migrate.js?v=9';
+import './cv-graph.js?v=9';
 import { createAssetManager, portPoster, userIdsOf, userAssetIds, idKind, TEXT as ATEXT } from './assets.js?v=9';
 import { createMidi, targets as midiTargets, noteCh, noteMsg } from './midi.js?v=9';
 import { initApp } from './pwa.js?v=9';
 import * as AC from './audioclock.js?v=9';
 import { installGestures } from './gesture.js?v=9';
+// stage 1b canvas shell (docs/canvas/IMPL-1b.md): SHELL lane cv-tray / cv-art, WORLD lane cv-world, MODULES lane cv-module / cv-cables
+import * as cvTray from './cv-tray.js?v=9';
+import * as cvArt from './cv-art.js?v=9';
+import * as cvWorld from './cv-world.js?v=9';
+import * as cvModule from './cv-module.js?v=9';
+import * as cvCables from './cv-cables.js?v=9';
+import { fitCanvas } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom)
 
 const VERSION = '9';
 const $ = (s, el = document) => el.querySelector(s);
@@ -19,15 +30,42 @@ const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 // stay as the read-only fallback; without a working IndexedDB the Phase-1 localStorage store. The interface is the
 // Phase-1 one (synchronous get / set on a cache). Every failed write — a quota error in particular — shows a notice
 // (notices raised before the page is up wait for boot).
+// SYNTH Canvas (SPEC-canvas §5.6, stage 1a): the store is the canvas build's own — database `synth-canvas`, keys stored as
+// `synthc.*` (the `synth.*` names below map to them), asset stores WT_DB / SMP_DB — so on a shared origin (localhost)
+// main's data is never read or written. Schema gate (§5.8): a project saved by a newer SYNTH Canvas (autosave, file, or
+// another window writing while this one is open) is opened read-only for the session: autosave off (the store refuses
+// too), Save disabled, and a notice whose tap applies the waiting update (pwa.js) or reloads. A newer FILE locks only
+// itself: the project carries newerSchema (in memory and History, never saved: it is never written) and while it is
+// the current one nothing is saved and Save is off; Undo / New / Open bring back a project that saves as usual (the
+// store, holding the user's own older project, stays unlocked).
 let booted = false;
 const early = [];
+let readOnly = 0; // the newer schema met by the store (0: none) — the session is locked
+// nothing may save the current project (readOnly first: goReadOnly may run before `project` exists)
+const roNow = () => !!readOnly || !!(project && project.newerSchema > CM.SCHEMA);
+const SAVE_TITLE = 'Download this project as a .json file'; // (= index.html #fSave)
+function roUI() { // #fSave follows roNow (after a load, Undo / Redo, New)
+  const b = document.getElementById('fSave'), ro = roNow();
+  if (b) { b.disabled = ro; b.title = ro ? CM.READ_ONLY_NOTICE : SAVE_TITLE; }
+}
 function storeError(e) {
+  if (e && e.readOnly) { goReadOnly(e.newer); return; }
   const txt = e && e.notice ? e.notice : e && e.fallback ? 'Storage problem — the app keeps working on this browser’s local storage' : '';
   if (!txt) return;
   const ms = e.stale || e.restored ? 20000 : 8000; // working on an older copy: shown longer
   if (booted) notice(txt, ms); else early.push([txt, ms]);
 }
-const store = await openAppStore({ onError: storeError });
+function goReadOnly(n) {
+  if (!readOnly) { readOnly = n || CM.SCHEMA + 1; store.lock(); }
+  roUI();
+  if (booted) readOnlyNotice();
+}
+function readOnlyNotice() {
+  const msg = CM.READ_ONLY_NOTICE;
+  noticeActs.set(msg, () => { if (app && app.accept) app.accept(); else location.reload(); });
+  notice(msg, 30000);
+}
+const store = await openAppStore({ onError: storeError, schema: CM.SCHEMA });
 const modelById = id => MODELS.find(m => m.id === id) || MODELS[1];
 
 // lat: the user's "Output latency" offset in ms (header Latency control, R5) — playhead, recording and host.latency
@@ -101,9 +139,16 @@ function fromPos(c, p) {
 function fxLoad(fx, refs) {
   try { return core.normalizeFx(fx, refs); } catch (err) { console.warn('FX rack unreadable: the default rack', err); return core.defaultFx2(); }
 }
-function loadProject(json) {
-  const p = S.deserialize(json);
-  const o = typeof json === 'string' ? JSON.parse(json) : json;
+// Canvas (SPEC-canvas §5.8): the project is brought to this build's schema first (cv-migrate upgrade; it gets its uid) —
+// or, saved by a newer build, opened read-only: an autosave for the session (goReadOnly, once it parsed); a file (o.file)
+// as itself (p.newerSchema: roNow while it is the current project)
+function loadProject(json, lo = {}) {
+  let o = json;
+  if (typeof json === 'string') { try { o = JSON.parse(json); } catch { throw new Error('Not a valid project file'); } }
+  const up = CM.upgrade(o);
+  o = up.p;
+  const p = S.deserialize(o);
+  CM.stamp(p, o);
   for (const k of ['drawLen', 'follow', 'ghosts']) if (o && k in o) p[k] = o[k];
   const byId = new Map(((o && o.tracks) || []).map(t => [t && t.id, t]));
   for (const t of p.tracks) {
@@ -116,10 +161,11 @@ function loadProject(json) {
     if (isSx(t)) t.vals = { s: core.normalizeSerum(t.vals && t.vals.s) };
     t.fx = r && r.fx && typeof r.fx === 'object' ? fxLoad(r.fx, isSx(t) ? t.vals.s : undefined) : core.defaultFx2();
   }
+  if (up.readOnly) { if (lo.file) p.newerSchema = up.from; else goReadOnly(up.from); }
   return p;
 }
 function freshProject(m) {
-  const p = S.newProject({ model: m.id, vals: loadVals(m), name: 'Untitled', trackName: m.name + ' 1' });
+  const p = CM.stamp(S.newProject({ model: m.id, vals: loadVals(m), name: 'Untitled', trackName: m.name + ' 1' }));
   for (const t of p.tracks) { t.fx = newFx(m); seedPend.add(t.id); }
   return p;
 }
@@ -127,6 +173,7 @@ const seedPend = new Set(); // tracks whose next patch re-seeds the FX rack's LF
 let project;
 {
   const raw = store.loadProject();
+  if (store.info().readOnly) goReadOnly(store.info().newer); // (a newer autosave, even an unreadable one, is never replaced)
   try { project = raw ? loadProject(raw) : null; } catch { project = null; }
   if (!project) {
     const fromHash = MODELS.find(m => '#' + m.id === location.hash);
@@ -154,8 +201,10 @@ function save(now) {
   if (rollViewT) rollViewSave(); // a Piano Roll row height still waiting for its debounce
   store.set('synth.settings', settings);
   if (!model.custom) store.set('synth.v.' + model.id, vals);
-  // = song.serialize; never carries embedded wavetables (only saved files do, §7.10)
-  if (now === true) store.saveNow(project); else store.saveProject(project);
+  // = song.serialize; never carries embedded wavetables (only saved files do, §7.10). Read-only (schema gate: the store
+  // locked, or a newer file's project current): no project autosave — saveNow still writes the pending keys
+  const ro = roNow();
+  if (now === true) store.saveNow(ro ? null : project); else if (!ro) store.saveProject(project);
 }
 function persist() { clearTimeout(saveT); saveT = setTimeout(save, 400); }
 function flush() { if (saveT) save(); } // write a pending save now (before the current model/track changes)
@@ -231,14 +280,18 @@ function voiceSeen(tr, patch) {
   const l = voiceInfo(patch, isSx(tr) ? tr.vals.s : null).label;
   if (!voiceShown.has(tr.id) || voiceShown.get(tr.id) === l) return;
   voiceShown.set(tr.id, l);
-  const o = voiceOpt.get(tr.id);
-  if (o && o.value === tr.model) o.textContent = modelById(tr.model).name + ' · ' + l;
+  const o = voiceOpt.get(tr.id), v = o && o.lastChild, b = o && o.parentNode;
+  if (o && o.value === tr.model) { // the row chip's voice span (its model name gives way to it, never the other way)
+    if (v && v.className === 'hiv') v.textContent = l; else o.textContent = modelById(tr.model).name + ' · ' + l;
+    if (b && b.className === 'hinst') b.title = instTitle(modelById(tr.model).name, l);
+  }
   if (tr.id === project.selTrack) tabTrackUI();
 }
 function tabTrackUI() {
   const t = trk();
   if (!voiceShown.has(t.id)) voiceShown.set(t.id, trackVoice(t).label);
   $('#tabTrack').textContent = `Track: ${t.name} · ${voiceShown.get(t.id)}`;
+  trkChipUI(); // (the top row's track chip shows the same: name, model · voice)
 }
 const patchQ = new Set();
 function queuePatch(tr = trk()) {
@@ -407,10 +460,21 @@ async function addModule(c, url) {
 }
 const kHz = x => (x / 1000).toFixed(1).replace(/\.0$/, '');
 let pendCtx = null, failMsg = '', silentEl = null, devRate = +store.get('synth.devsr', 0) || 0;
+// SPEC-canvas §9.4: SYNTH Canvas needs iPadOS / Safari 16.4+ (overflow: clip and @container: 16, dvh: 15.4, the playback
+// audio session: 16.4), Chrome 108+, Firefox 110+ — checked by feature where the browser can say (CSS.supports; Safari on
+// iOS / iPadOS: navigator.audioSession), never by guessing
+const PLATFORM_MIN = 'SYNTH Canvas needs iPadOS / Safari 16.4 or later (Chrome 108+, Firefox 110+ on a computer)';
 function audioProblem() {
   if (window.isSecureContext === false) return 'Audio needs a secure page — reload this site over https://';
-  if (!window.AudioContext || !window.AudioWorkletNode) return 'This browser can’t run the synth engine: it needs AudioWorklet (Safari 14.5+, Chrome 66+, Firefox 76+)';
+  if (!window.AudioContext || !window.AudioWorkletNode) return 'This browser can’t run the synth engine (no AudioWorklet): ' + PLATFORM_MIN;
   return '';
+}
+function platformProblem() {
+  const C = window.CSS, ua = navigator.userAgent || '';
+  if (!C || typeof C.supports !== 'function') return '';
+  const css = C.supports('overflow', 'clip') && C.supports('container-type', 'inline-size') && C.supports('height', '1dvh');
+  const safariIOS = isIOS() && /Version\/\d.*Safari\//.test(ua) && !/CriOS|FxiOS|EdgiOS/.test(ua);
+  return css && !(safariIOS && !('audioSession' in navigator)) ? '' : PLATFORM_MIN + ' — some parts may not work in this browser';
 }
 function audioFail(msg) { failMsg = msg; $('#cpu').textContent = msg; $('#cpu').classList.add('warn'); stickyNotice(msg); }
 const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -791,10 +855,8 @@ function chordCheck(t) {
   });
   notice(txt, 15000);
 }
-function instPicker(tr) { // the Instrument tab: its model list (and a Serum panel's voicing) in view
-  selectTrack(tr.id); openTab('inst');
-  const el = $('#models .on') || $('#models');
-  if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+function instPicker(tr) { // the track's instrument on the canvas and the Sources tray to replace it (a Serum: its voicing in its panel)
+  selectTrack(tr.id); openTab('canvas'); cvOpenSources('replace'); cvReveal(tr.id);
 }
 function edit(label, fn, trs) {
   hist.record(project);
@@ -824,6 +886,7 @@ function applyRestore(p, keepSound = false) {
   for (const t of project.tracks) { sendPatch(t); sendSong(t, true); }
   renderAll(!keepSound || prevSel !== project.selTrack);
   if (T.playing) reanchor(false);
+  roUI(); // (a newer file's project read-only; Undo / New away from it: saved again)
   persist();
 }
 function undo() { applyRestore(hist.undo(project), true); updateUndoUI(); }
@@ -1157,23 +1220,12 @@ function playingUI(trs) {
 }
 
 /* -------------------------------------------------------- model nav */
+// (the canvas shell: the Sources tray's tiles replace the model nav; the selected track's model is marked there, and its
+// drawing shows on the top row's track chip)
 function renderNav() {
-  const nav = $('#models');
-  nav.innerHTML = '';
-  for (const m of MODELS) {
-    const b = h('button', m === model ? 'on' : '');
-    b.type = 'button';
-    if (m === model) b.setAttribute('aria-current', 'true');
-    b.title = `Use the ${m.name} on track “${trk().name}”`;
-    b.append(h('span', 'yr', String(m.year)), h('span', 'nm', m.name), h('span', 'mk', m.maker));
-    b.onclick = () => setTrackModel(trk(), m.id);
-    nav.append(b);
-  }
-  const on = nav.querySelector('.on');
-  if (on) {
-    const l = on.offsetLeft - nav.offsetLeft, r = l + on.offsetWidth;
-    if (l < nav.scrollLeft || r > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = l - 24;
-  }
+  if (shell.tiles) shell.tiles.setCurrent(model.id);
+  if (shell.tiles && shell.src && shell.src.isOpen() && shell.tiles.mode() === 'replace') srcModeUI('replace'); // (its track's name)
+  trkChipUI();
 }
 function setTrackModel(tr, id) {
   if (id === tr.model) return;
@@ -1205,7 +1257,7 @@ function selectTrack(id) {
 /* ------------------------------------------------------------ panel */
 function renderPanel() {
   ui.clear();
-  if (model.custom) { renderCustom($('#inst')); return; }
+  if (model.custom) { renderCustom($('#inst')); cvPanelDone(); return; }
   sxPanel.drop();
   const th = model.theme, el = $('#inst');
   el.className = `inst ctl-${th.ctl} knob-${th.knob}${th.wood ? ' wood' : ''} m-${model.id}`;
@@ -1217,6 +1269,7 @@ function renderPanel() {
   nm.append(h('div', 'maker', model.maker), h('div', 'mname', model.name), h('div', 'mmodel', `${model.model} · ${model.year} · track “${trk().name}”`));
   if (th.stripes) { const s = h('div', 'stripes'); for (const c of th.stripes) { const i = h('i'); i.style.background = c; s.append(i); } nm.append(s); }
   plate.append(nm, h('div', 'tag', model.tag), presetUI());
+  { const sp = syncPresetSel; syncPresetSel = k => { sp(k); cvChipSync(); }; } // the canvas module's preset chip follows
   const secs = h('div', 'secs');
   let ops = null; // DX7 operator rows share one horizontal scroller so row 1's labels stay over every column
   model.sections.forEach((s, si) => {
@@ -1233,6 +1286,7 @@ function renderPanel() {
   $('#about-title').textContent = `${model.maker} ${model.name} (${model.year})`;
   $('#about').textContent = model.about;
   drawAlgo();
+  cvPanelDone();
 }
 
 function control(c, si) {
@@ -1382,7 +1436,7 @@ function wheelIn(el, e) {
   const d = e.deltaY || (e.shiftKey ? e.deltaX : 0); // Shift+wheel arrives as deltaX in Chromium/macOS
   if (!d) return null;
   const now = performance.now();
-  if (document.activeElement !== el && (now - pageScrollT < 400 || now - (hoverT.get(el) || 0) < 300)) return null;
+  if (document.activeElement !== el && (now - pageScrollT < 400 || now - (hoverT.get(el) || 0) < 300 || cvWheelVeto())) return null;
   e.preventDefault();
   return { px: d * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1), notch: e.deltaMode > 0 || Math.abs(d) >= 50 };
 }
@@ -1551,6 +1605,11 @@ const tables = createAssetManager({
   progress: genProgress,
   touch: touchDev,
   zoneOf: o => zoneOf(o),
+  // the canvas build's own asset databases (SPEC-canvas §5.6; main's are synth-wt / synth-smp)
+  stores: {
+    wt: () => import('./wtstore.js?v=' + VERSION).then(m => m.openStore({ name: WT_DB }).catch(() => m.memoryStore())),
+    smp: () => import('./smpstore.js?v=' + VERSION).then(m => m.openStore({ name: SMP_DB }).catch(() => m.memoryStore())),
+  },
 });
 const wtHost = tables.host.wt, smpHost = tables.host.smp;
 const wtMod = () => tables.wtMod();
@@ -1577,11 +1636,14 @@ function genProgress(p) {
 const userTables = s => (s ? userIdsOf(s) : []);
 const userSmps = (s, fx) => userAssetIds(s || null, fx || null);
 
-// snapshot / FX meter subscriptions (smon, §11.6): the Serum panel while the Instrument tab shows it, the FX tab
+// snapshot / FX meter subscriptions (smon, §11.6; SPEC-canvas §9.3): the Serum panel and the FX rack while their canvas
+// modules show their bodies (cvLive: the CANVAS view, not a card, not folded), never for a hidden page
 const monitors = {
   sx: new Set(), on: new Map(),
   wanted(id) {
-    return (this.sx.has(id) && !$('#tab-inst').hidden && sxPanel.trackId === id && !document.hidden) || (fxTab.trackId === id && !!fxTab.ui);
+    if (document.hidden) return false;
+    return (this.sx.has(id) && sxPanel.trackId === id && cvLive(cvModule.ID.inst))
+      || (fxTab.trackId === id && !!fxTab.ui && cvLive(cvModule.fxKey(fxTab.sx ? 'serum' : '')));
   },
   set(id, on) { if (on) this.sx.add(id); else this.sx.delete(id); this.sync(); },
   sync() {
@@ -1593,6 +1655,7 @@ const monitors = {
       if (w) this.on.set(id, true); else this.on.delete(id);
       postTo({ id }, { t: 'smon', on: w });
     }
+    if (peerStale && !peerT) peerT = requestAnimationFrame(peerRun); // a peer edited while this one was hidden
   },
   deliver(id, d) {
     if (sxPanel.ui && sxPanel.trackId === id) { sxPanel.ui.setSnapshot(d); zoneWarm(id, d.s); }
@@ -1644,7 +1707,8 @@ function sxEdit(t, fn, o) {
 let sxRefT = 0;
 function sxRefresh() { // repaint the mounted panel and rack (outside edits: MIDI, program change, wheel, new tables)
   if (sxRefT) return;
-  sxRefT = requestAnimationFrame(() => { sxRefT = 0; if (sxPanel.ui) sxPanel.ui.refresh(); if (fxTab.ui) fxTab.ui.refresh(); });
+  // (+ the canvas: a preset load or a MIDI power change re-derives the FX module's subtitle and the cable's route label)
+  sxRefT = requestAnimationFrame(() => { sxRefT = 0; if (sxPanel.ui) sxPanel.ui.refresh(); if (fxTab.ui) fxTab.ui.refresh(); cvRelabel(); });
 }
 // app preferences changed (the panel stores them): every Serum track is recompiled — the MPE preferences, smoothing
 // and Ultra reach compileSerum (§12.6, §13.10) — and the rack preferences (smoothing, silence tails) reach every track
@@ -2147,9 +2211,9 @@ function sxHost(t0) {
   const id = t0.id, T = () => project.tracks.find(x => x.id === id) || t0;
   return {
     state: () => T().vals.s,
-    edit: (fn, o) => sxEdit(T(), fn, o),
+    edit: (fn, o) => { sxEdit(T(), fn, o); if (!(o && o.ui)) peerRefresh(id, 2); cvChipSync(); }, // (the FX module follows: peerRefresh)
     fx: () => fxOf(T()),
-    editFx: (fn, o) => fxEdit(T(), fn, o),
+    editFx: (fn, o) => { fxEdit(T(), fn, o); peerRefresh(id, 2); },
     v2Fx: true, // the FX state may become a v2 state in place (fx-ui / sx-ui-mix conversion, §2.6.3)
     bpm: () => project.bpm,
     sampleRate: () => (ctx ? ctx.sampleRate : settings.sr || devRate || 48000),
@@ -2205,12 +2269,12 @@ function fxHost(t0) {
   const id = t0.id, T = () => project.tracks.find(x => x.id === id) || t0;
   return {
     fx: () => fxOf(T()),
-    editFx: (fn, o) => fxEdit(T(), fn, o),
+    editFx: (fn, o) => { fxEdit(T(), fn, o); peerRefresh(id, 1); }, // (the Serum panel follows: peerRefresh)
     v2Fx: true,
     racks: () => (isSx(T()) ? 3 : 1),
     irs: smpHost,
     state: () => (isSx(T()) ? T().vals.s : null),
-    edit: (fn, o) => { if (isSx(T())) sxEdit(T(), fn, o); },
+    edit: (fn, o) => { if (isSx(T())) { sxEdit(T(), fn, o); peerRefresh(id, 1); } },
     bpm: () => project.bpm,
     gr: () => (fxTab.trackId === id ? fxTab.gr : null),
     // the rack's monitor tap (§13.5 Delay spectrum overlay): instance id ('' off) → the node; the latest 1024 frames
@@ -2265,9 +2329,12 @@ function renderCustom(el) {
     }
   }, err => { if (gen === sxPanel.gen) { box.innerHTML = ''; box.append(h('p', 'boot', 'The panel could not be loaded (' + err.message + '). Reload the page to try again.')); } });
 }
-// the FX tab (every track): the rack UI bound to track.fx
-const fxTab = { ui: null, trackId: null, fx: null, gr: null, ftap: null, gen: 0 };
-function dropFxTab() {
+// the FX rack (every track): the rack UI bound to track.fx — the canvas's FX module keeps it mounted (sx: built for a
+// Serum's three racks)
+const fxTab = { ui: null, trackId: null, fx: null, sx: false, gr: null, ftap: null, gen: 0 };
+// (today's openTab drops it when the FX tab hides; the canvas FX module keeps it: openTab no longer drops it, IMPL-1b §4.8)
+function dropFxTab() { if (!cvView) fxDrop(); }
+function fxDrop() {
   fxTab.gen++;
   const u = fxTab.ui;
   fxTab.ui = null; fxTab.trackId = null; fxTab.fx = null; fxTab.gr = null; fxTab.ftap = null;
@@ -2277,9 +2344,10 @@ function dropFxTab() {
 function renderFxTab() {
   const box = $('#fxrack'), t = trk();
   if (!box) return;
-  $('#fxtitle').textContent = `FX rack · track “${t.name}” (${modelById(t.model).name})`;
-  if (fxTab.ui && fxTab.trackId === t.id && fxTab.fx === fxOf(t)) { fxTab.ui.refresh(); return; }
-  dropFxTab();
+  const ft = $('#fxtitle'); // (today's FX tab header; on the canvas the FX module's title says it)
+  if (ft) ft.textContent = `FX rack · track “${t.name}” (${modelById(t.model).name})`;
+  if (fxTab.ui && fxTab.trackId === t.id && fxTab.fx === fxOf(t) && fxTab.sx === isSx(t)) { fxTab.ui.refresh(); return; }
+  fxDrop();
   box.innerHTML = '';
   box.append(h('p', 'boot', 'Loading the FX rack…'));
   const gen = fxTab.gen;
@@ -2287,7 +2355,7 @@ function renderFxTab() {
     if (gen !== fxTab.gen) return;
     box.innerHTML = '';
     try {
-      fxTab.trackId = t.id; fxTab.fx = fxOf(t);
+      fxTab.trackId = t.id; fxTab.fx = fxOf(t); fxTab.sx = isSx(t);
       fxTab.ui = new M.fxui.FXRackUI(box, fxHost(t), { embedded: false, dsp: globalThis.FXDSP || null, racks: isSx(t) ? 3 : 1, v2Fx: true });
     } catch (err) {
       console.error(err);
@@ -2535,26 +2603,10 @@ function renderHeads() {
     const meter = h('div', 'hmeter'); meter.append(h('i'));
     top.append(name, tb('M', 'mute', 'Mute', 'm'), tb('S', 'solo', 'Solo', 's'), tb('●', 'arm', 'Arm for recording', 'r'), meter);
     const bot = h('div', 'hrow');
-    const msel = h('select', 'hmodel'); msel.title = 'Instrument'; msel.setAttribute('aria-label', 'Instrument');
-    // each entry names its voice mode (R6): the track's own model as its patch plays, the others as they start
-    const tv = trackVoice(t);
-    voiceShown.set(t.id, tv.label);
-    for (const m of MODELS) {
-      const o = h('option', null, m.name + ' · ' + (m.id === t.model ? tv : modelVoice(m)).label); o.value = m.id; msel.append(o);
-      if (m.id === t.model) voiceOpt.set(t.id, o);
-    }
-    msel.value = t.model;
-    msel.onchange = () => setTrackModel(t, msel.value);
-    let psel;
-    if (modelById(t.model).custom) { // Serum: presets live in the panel's own browser (§11.8); the header names the sound
-      psel = h('span', 'hpreset hpname', t.preset || 'Init'); psel.title = 'Preset (open the Serum panel’s browser to change it)';
-    } else {
-      psel = h('select', 'hpreset'); psel.title = 'Preset'; psel.setAttribute('aria-label', 'Preset');
-      const o0 = h('option', null, t.preset ? t.preset : (t.preset === null ? 'Custom' : '—')); o0.value = ''; psel.append(o0);
-      for (const p of presetList(modelById(t.model))) { const o = h('option', null, p.name); o.value = p.key; psel.append(o); }
-      psel.value = '';
-      psel.onchange = () => { const p = presetList(modelById(t.model)).find(x => x.key === psel.value); if (p) applyPreset(t, p); };
-    }
+    // the instrument chip (its drawing, model · voice mode, R6: as its patch plays); the preset select lives on the
+    // instrument module's bar now (cv-module), the other models in the chip's menu (instItems)
+    voiceShown.set(t.id, trackVoice(t).label);
+    const ichip = instChip(t);
     const ch = h('select', 'hch'); ch.title = 'MIDI input channel'; ch.setAttribute('aria-label', 'MIDI input channel');
     for (let c = 0; c <= 16; c++) { const o = h('option', null, c ? 'Ch ' + c : 'Omni'); o.value = c; ch.append(o); }
     ch.value = t.ch;
@@ -2569,12 +2621,15 @@ function renderHeads() {
     dup.onclick = () => duplicateTrack(t);
     const del = h('button', 'hb', '✕'); del.type = 'button'; del.title = 'Delete track';
     del.onclick = () => deleteTrack(t);
-    bot.append(msel, psel, ch, vol, pan, dup, del);
+    bot.append(ichip, ch, vol, pan, dup, del);
     row.append(top, bot);
     el.append(row);
     if (i === project.tracks.length - 1) row.classList.add('last');
   });
+  trkDotsUI();
   tabTrackUI();
+  cvChipSync(); // the instrument module's preset chip ('Custom' after a knob tweak, a Serum preset loaded)
+  if (shell.top && shell.nTr !== project.tracks.length) { shell.nTr = project.tracks.length; applyKbHeight(); } // (the top tray's row stops)
   arr && arr.render();
 }
 function addTrack(m = model, vals0 = null) {
@@ -2594,6 +2649,7 @@ function duplicateTrack(t) {
   c.vol = t.vol; c.pan = t.pan; c.ch = t.ch;
   if (t.seq) c.seq = JSON.parse(JSON.stringify(t.seq));
   c.fx = clone(fxOf(t)); seedPend.add(c.id);
+  if (t.lay) c.lay = clone(t.lay); // (the canvas layout, view only)
   project.tracks.splice(project.tracks.indexOf(t) + 1, 0, c);
   syncNodes(); sendSong(c, true);
   renderHeads(); persist(); updateUndoUI();
@@ -2618,6 +2674,7 @@ function rangeUI() {
   el.textContent = on ? `Bars ${S.fmtBBT(project, range[0])} → ${S.fmtBBT(project, range[1])}` : 'Drag across the lanes to select bars';
   for (const id of ['aCopy', 'aDup', 'aClear', 'aDel', 'aLoopSel']) $('#' + id).disabled = !on;
   $('#aPaste').disabled = !rangeClip;
+  $('#aBars').classList.toggle('has', on || !!rangeClip); // (the folded "Bars ▾" of a narrow window: something to do)
 }
 function setLoop(s, e) {
   s = Math.max(0, Math.round(s)); e = Math.round(e);
@@ -2711,24 +2768,28 @@ function rangeOp(name) {
 
 /* piano-roll toolbar */
 let tool = 'select';
+// CANVAS │ ROLL (the canvas shell): 'roll', or else 'canvas' — a view saved before the canvas ('inst' / 'fx') opens CANVAS.
+// The FX rack lives in its canvas module now (always mounted), so no tab builds or drops it.
 function openTab(name) {
-  if (name !== 'roll' && name !== 'fx') name = 'inst';
-  for (const b of document.querySelectorAll('.tabs button')) b.classList.toggle('on', b.dataset.tab === name);
-  $('#tab-inst').hidden = name !== 'inst';
+  name = name === 'roll' ? 'roll' : 'canvas';
+  for (const b of document.querySelectorAll('.tabs button')) { const on = b.dataset.tab === name; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); }
+  $('#tab-inst').hidden = name !== 'canvas';
   $('#tab-roll').hidden = name !== 'roll';
-  const fx = $('#tab-fx');
-  if (fx) fx.hidden = name !== 'fx';
-  if (name === 'roll') { roll.resize(); roll.render(); }
-  if (name === 'fx') renderFxTab(); else dropFxTab();
-  if (name === 'inst' && sxPanel.ui) sxPanel.ui.refresh(); // the rack may have changed on the FX tab
+  if (name === 'roll') { if (shell.src) { shell.src.close(); shell.fx.close(); } roll.resize(); roll.render(); } // (the side trays are the canvas's)
+  if (world) world.setActive(name === 'canvas');
+  // a default camera owed since a track switch under ROLL: now, on the real band (setActive measured it)
+  if (name === 'canvas' && cvCamDef && cvView && cvCamDef === CM.camKey(project.uid, cvView.trackId)) cvCamRestore(trk());
   monitors.sync();
   store.set('synth.tab', name);
 }
-// the instrument panel and, while it is shown, the FX tab follow the selected track
+// the instrument panel, the FX rack (always mounted on the canvas; today's FX tab only while shown) and the canvas modules
+// follow the selected track
 function renderViews() {
-  renderPanel();
+  cvBusy = true;
+  try { renderPanel(); } finally { cvBusy = false; }
   const fx = $('#tab-fx');
-  if (fx && !fx.hidden) renderFxTab();
+  if (cvOn() || (fx && !fx.hidden)) renderFxTab();
+  cvRender();
 }
 function gridSelect(value, onChange, withOff, title) {
   const s = h('select'); s.title = title || '';
@@ -2884,7 +2945,7 @@ function initTransport() {
   $('#tSigD').onchange = e => { project.sig = [project.sig[0], +e.target.value]; reanchor(false); arr.render(); roll.render(); persist(); };
   numIn('tBars', el => { project.bars = clamp(Math.round(+el.value) || 1, 1, 999); el.value = project.bars; arr.fit(); persist(); });
   $('#tUndo').onclick = undo; $('#tRedo').onclick = redo;
-  $('#aAdd').onclick = () => addTrack();
+  $('#aAdd').onclick = () => cvOpenSources('track'); // (+ Track: pick its instrument in the Sources tray)
   $('#aMulti').onclick = () => { project.tracks.forEach((t, i) => { t.ch = (i % 16) + 1; }); renderHeads(); persist(); };
   $('#aCopy').onclick = () => rangeOp('copy'); $('#aPaste').onclick = () => rangeOp('paste'); $('#aDup').onclick = () => rangeOp('dup');
   $('#aClear').onclick = () => rangeOp('clear'); $('#aDel').onclick = () => rangeOp('delete'); $('#aIns').onclick = () => rangeOp('insert');
@@ -2911,9 +2972,11 @@ function initTransport() {
       else {
         let o;
         try { o = JSON.parse(await f.text()); } catch { throw new Error('Not a valid project file'); }
+        flush(); // a pending autosave of the current project lands first
         // embedded user wavetables and samples (§7.10, SPEC-serum2 §9.8) go into their stores, never into the project
         await restoreEmbedded(o);
-        const p = loadProject(o); hist.record(project); if (T.playing) stop(); applyRestore(p);
+        const p = loadProject(o, { file: true }); hist.record(project); if (T.playing) stop(); applyRestore(p);
+        if (p.newerSchema) readOnlyNotice(); // (saved by a newer build: this project read-only, the store not locked)
       }
     } catch (err) { alert('Could not open that file: ' + err.message); }
   };
@@ -3168,27 +3231,38 @@ function setKeyWidth(px, save = true) {
 }
 let kbH = 170; // the key height in use (px)
 const kbDefH = () => (window.innerWidth <= 900 ? 128 : 170); // = style.css .keys
-// the panel's height besides the keys (toolbar, padding; not a passing notice), measured while the keys are shown
+// the panel's height besides the keys (toolbar, padding), measured while the keys are shown (a notice floats over the
+// canvas, out of flow: style.css .notice)
 function kbChrome() {
-  const p = $('#perf'), nt = $('#notice'), d = p.offsetHeight - $('#keys').offsetHeight - (nt.hidden ? 0 : nt.offsetHeight + 8);
+  const d = $('#perf').offsetHeight - $('#keys').offsetHeight;
   return !$('#kbrow').hidden && d > 0 ? d : 64;
 }
-const kbMaxH = (chrome = kbChrome()) => clamp(Math.floor(0.6 * (window.innerHeight || 800) - chrome), KB_H[0], KB_H[1]);
-// (a chosen height is shown within 70 px … 60 % of the window; the default is the Phase-1 height whatever the window)
+// The canvas shell's one height budget (cv-tray budget, replacing the 60 % rule): the canvas between the trays keeps
+// ≥ 240 px. kbMaxH: the most the keys may take when the keyboard tray leads (the top tray pushed to its one row).
+const kbMaxH = (chrome = kbChrome()) => clamp(Math.floor(cvTray.budget({ vh: trayVh(), top: cvTray.TOP_ROW, bottom: chrome + KB_H[1],
+  active: 'bottom', topMin: cvTray.TOP_ROW, bottomMin: chrome + KB_H[0] }).bottom - chrome), KB_H[0], KB_H[1]);
+// The keys and the top tray as the budget allows: the chosen key height (kbSize.h within 70 px … kbMaxH; 0 = the screen's
+// default) and the top tray's wanted height, the tray dragged last (shell.lead) winning and the other pushed toward its
+// fold — never below one row / 70 px keys (a window too small for the rule: the canvas gets what is left)
 function applyKbHeight(chrome = kbChrome()) {
-  const max = kbMaxH(chrome), g = $('#kbGrip'), p = $('#perf');
-  kbH = kbSize.h ? clamp(kbSize.h, KB_H[0], max) : kbDefH();
+  const max = kbMaxH(chrome), g = $('#kbGrip'), p = $('#perf'), keys = !$('#kbrow').hidden;
+  const want = kbSize.h ? clamp(kbSize.h, KB_H[0], max) : kbDefH();
+  const B = cvTray.budget({ vh: trayVh(), top: topWant(), bottom: chrome + (keys ? want : 0), active: shell.lead,
+    topMin: cvTray.TOP_ROW, bottomMin: chrome + (keys ? KB_H[0] : 0) });
+  kbH = keys ? clamp(Math.floor(B.bottom - chrome), KB_H[0], Math.max(KB_H[0], want)) : want;
   p.style.setProperty('--kbh', kbH + 'px');
   p.classList.toggle('short', kbH < 100); // the wheels drop their labels
   g.setAttribute('aria-valuenow', String(kbH)); g.setAttribute('aria-valuemax', String(Math.max(max, kbH)));
   g.setAttribute('aria-valuetext', `${kbH} pixels${kbSize.h ? '' : ' (default)'}`);
+  topShow(B.top);
 }
-// px: the key height (0 = the default for the screen), within 70 px … 60 % of the window. Asking for that limit or more
-// while the keys already reach it keeps the height chosen before (was; a drag's: at its start), so one chosen in a taller
-// window comes back when there is room again.
+// px: the key height (0 = the default for the screen), within 70 px … kbMaxH. Asking for that limit or more while the
+// keys already reach it keeps the height chosen before (was; a drag's: at its start), so one chosen in a taller window
+// comes back when there is room again. The keyboard tray leads from then on (the budget pushes the top tray).
 function setKbHeight(px, save = true, chrome = kbChrome(), was = kbSize.h) {
-  const max = kbMaxH(chrome), p = Math.round(px), shown = was ? Math.min(was, max) : kbDefH();
+  const max = kbMaxH(chrome), p = Math.round(px), shown = Math.min(was || kbDefH(), max); // (the budget lowers a default too)
   kbSize.h = !(px > 0) ? 0 : p < max ? Math.max(KB_H[0], p) : p >= shown && shown >= max ? was : max;
+  shell.lead = 'bottom';
   applyKbHeight(chrome);
   if (save) kbSave();
 }
@@ -3200,7 +3274,8 @@ function setKbHidden(on, save = true) {
   b.querySelector('span').textContent = on ? 'Show keys' : 'Hide keys';
   b.title = on ? 'Show the on-screen keyboard' : 'Hide the on-screen keyboard (the controls stay)';
   if (save) store.set('synth.kbHidden', on);
-  if (!on) { applyKbHeight(); buildKeys(); } // laid out for the width they now have
+  applyKbHeight(); // (the top tray may take the room the keys leave)
+  if (!on) buildKeys(); // laid out for the width they now have
 }
 function keyVis(n, on) { const k = keyEls.get(n); if (k) k.classList.toggle('down', on); }
 function keyAt(x, y) {
@@ -3247,28 +3322,22 @@ function initKbView() {
   const hid = !!store.get('synth.kbHidden', false);
   setKbHidden(hid, false); // (shown: sized and laid out for the width)
   if (hid) applyKbHeight();
-  noMenu(grip);
-  let moved = false; // (the last press of the grip dragged it: not a tap)
-  grip.addEventListener('pointerdown', e => {
-    if (e.button > 0) return;
-    e.preventDefault(); // (a mouse press does not focus it: the arrow keys stay the page's)
-    const y0 = e.clientY, h0 = kbH, was = kbSize.h, chrome = kbChrome();
-    moved = false;
-    grip.classList.add('drag');
-    track(grip, e, ev => {
-      if (!moved && Math.abs(ev.clientY - y0) < 3) return; // a tap (or the first of a double tap) leaves it alone
-      moved = true;
-      setKbHeight(Math.max(KB_H[0], h0 + y0 - ev.clientY), false, chrome, was); // up = taller
-    }, () => { grip.classList.remove('drag'); if (moved) kbSave(); },
-    () => { if (moved) { kbSize.h = was; applyKbHeight(chrome); } moved = false; }); // a two-finger gesture: as it was, nothing saved
-  });
-  onDouble(grip, () => setKbHeight(0), () => !moved);
-  grip.addEventListener('keydown', e => {
-    const k = e.key, st = e.shiftKey ? 1 : 10;
-    const d = { ArrowUp: st, ArrowRight: st, ArrowDown: -st, ArrowLeft: -st, PageUp: 40, PageDown: -40 }[k];
-    if (d) setKbHeight(kbH + d); else if (k === 'Home') setKbHeight(KB_H[0]); else if (k === 'End') setKbHeight(KB_H[1]);
-    else if (k === 'Enter' || k === 'Delete' || k === 'Backspace') setKbHeight(0); else return;
-    e.preventDefault(); e.stopPropagation(); // (not the page's arrow / Home / Delete keys)
+  // the height grip on the shell's grip helper (cv-tray trayGrip, shared with the top tray): drag (up = taller), arrows ±10
+  // (Shift ±1), Page Up / Down ±40, Home / End, Enter / Delete / Backspace and double-click / double-tap = the default
+  let d = null; // a drag's start: the panel's chrome and the height chosen before it
+  shell.kb = cvTray.trayGrip(grip, {
+    edge: 'bottom', label: 'Keyboard height', step: 10,
+    get: () => kbH, min: () => KB_H[0], max: () => kbMaxH(d ? d.chrome : kbChrome()),
+    text: v => `${v} pixels${kbSize.h ? '' : ' (default)'}`,
+    start: () => { d = { chrome: kbChrome(), was: kbSize.h }; },
+    set: (px, phase) => {
+      if (phase === 'move' && d) setKbHeight(Math.max(KB_H[0], px), false, d.chrome, d.was);
+      else if (phase === 'end') { if (d) kbSave(); d = null; }
+      else if (phase === 'cancel') { if (d) { kbSize.h = d.was; applyKbHeight(d.chrome); } d = null; } // a two-finger gesture: as it was, nothing saved
+      else if (phase === 'reset') setKbHeight(0);
+      else if (phase === 'key') setKbHeight(px);
+    },
+    onDouble: () => setKbHeight(0),
   });
   kw.addEventListener('input', () => setKeyWidth(+kw.value || KB_W[0], false));
   kw.addEventListener('change', kbSave);
@@ -3319,12 +3388,14 @@ function initKeys() {
     if (k === 'escape') { // works whatever has focus
       if (!$('#modal').hidden) { $('#modal').hidden = true; return; }
       if (app && app.sheetOpen()) { app.closeSheet(); return; }
+      if (cvShellEscape() || cvWorldEscape()) return; // stage 1b: a popover / tray / sheet, then a canvas drag / edit state / selection
       if (cancelLearn(true)) return; // a pending MIDI Learn, not a panic
       if (textEntry(t) || (t && t.tagName === 'SELECT')) t.blur();
       if (inRoll && roll.getSelection().length) roll.selectNone(); else panic();
       return;
     }
     if (textEntry(t) || !$('#modal').hidden || (app && app.sheetOpen())) return; // only real text entry keeps the keys
+    if (cvWorldKey(e)) return; // stage 1b: canvas shortcuts (only while focus is in #viewport; never Space or a play key)
     const mod = e.metaKey || e.ctrlKey;
     if (mod) {
       if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
@@ -3441,11 +3512,11 @@ const td = new Float32Array(8192), fd = new Float32Array(4096);
 function drawScope() {
   const cv = $('#scope');
   if (!cv.offsetParent) return;
-  const dpr = window.devicePixelRatio || 1;
+  // the store through the kit (wk.fitCanvas): dpr capped at 2 and, in the OUT module, the camera's zoom (clamp(dpr·k,
+  // 0.5, 2), SPEC §4.4): sharp at 200 %, no full-size store per frame at 50 %. The context draws in CSS px
   const W = cv.clientWidth, H = cv.clientHeight;
-  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
-  const g = cv.getContext('2d');
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const g = fitCanvas(cv, W, H);
+  if (!g) return;
   g.fillStyle = '#07090a'; g.fillRect(0, 0, W, H);
   g.strokeStyle = 'rgba(124,255,181,0.07)'; g.lineWidth = 1;
   for (let i = 1; i < 10; i++) { const x = Math.round(W * i / 10) + 0.5; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
@@ -3505,14 +3576,617 @@ function frame() {
   drawScope();
 }
 
+/* ============================================== canvas shell, stage 1b (docs/canvas/IMPL-1b.md §2, §4.8) */
+// Three lanes build it in parallel; each edits only its own region below and the main.js functions IMPL-1b §2.3 gives it.
+// The functions here are the cross-lane entry points: their names and signatures are fixed by the contract (each lane
+// replaces only its own stubs' bodies). Until a lane lands, its stubs keep today's behaviour.
+/* ---------------------------------------------- cv SHELL: top tray, keyboard tray, side trays, ≡ / ⚙, chips */
+// The shell around the canvas (IMPL-1b §5.1, SPEC-canvas §2.1–§2.4): the top tray (one 48 px row; its grip reveals the
+// arrangement toolbar, the ruler and the track rows, heights snapped to whole rows), the keyboard tray on the same grip
+// helper (cv-tray trayGrip), one height budget for both (cv-tray budget: the canvas keeps ≥ 240 px, the tray dragged last
+// wins and pushes the other toward its fold), the side trays (Sources: the synth drawings, tap or drag; Effects), the
+// ≡ / ⚙ / ⋯ / Bars ▾ / track-list popovers and the Help sheet in #ov. Tray heights and widths persist in synth.cv.trays.
+const shell = { top: null, kb: null, src: null, fx: null, tiles: null, menus: [], sheet: null, lead: 'bottom', leadWas: 'bottom',
+  topH: 0, topLast: 0, topShown: 0, safeTop: 0, chrome: 0, srcAsk: false, drop: null, chipModel: '', instT: 0, dots: [], nTr: 0 };
+const oneRow = () => cvTray.topSnaps(1)[1]; // the arrangement toolbar, the ruler and one track row
+const trayVh = () => Math.max(0, (window.innerHeight || 800) - shell.safeTop);
+function trayPref() { const p = store.get(cvTray.TRAY_PREF, null); return p && typeof p === 'object' ? p : {}; }
+function trayPrefSave() { store.set(cvTray.TRAY_PREF, Object.assign({}, trayPref(), { top: shell.topH, topLast: shell.topLast })); }
+// the top tray's wanted height within its stops for this many tracks (its shown height comes from the budget)
+function topWant() { const S = cvTray.topSnaps(project.tracks.length); return clamp(shell.topH || cvTray.TOP_ROW, cvTray.TOP_ROW, S[S.length - 1]); }
+// the most the top tray may take when it leads (the keys pushed down to their least)
+function topMaxH() {
+  const S = cvTray.topSnaps(project.tracks.length), keys = !$('#kbrow').hidden, chrome = shell.chrome || kbChrome(), lo = chrome + (keys ? KB_H[0] : 0);
+  const B = cvTray.budget({ vh: trayVh(), top: S[S.length - 1], bottom: lo, active: 'top', topMin: cvTray.TOP_ROW, bottomMin: lo });
+  return Math.max(cvTray.TOP_ROW, Math.min(S[S.length - 1], Math.floor(B.top)));
+}
+// the top tray at the budget's px: its height (CSS --cv-top), folded to its row below the first track row
+function topShow(px) {
+  const el = $('#topTray'), h = Math.max(cvTray.TOP_ROW, Math.round(px)), was = shell.topShown;
+  shell.topShown = h;
+  el.style.setProperty('--cv-top', h + 'px');
+  const folded = h <= cvTray.TOP_ROW + 2;
+  el.classList.toggle('collapsed', folded);
+  if (was && was <= cvTray.TOP_ROW + 2 && !folded && arr) arr.resize(); // (hidden, the lanes had no width)
+  if (shell.top) shell.top.sync();
+}
+// the top grip's phases (cv-tray trayGrip): a drag follows the finger, its release snaps to whole rows
+function topSet(px, phase) {
+  const el = $('#topTray');
+  if (phase === 'reset') px = shell.topShown > cvTray.TOP_ROW + 2 ? cvTray.TOP_ROW : oneRow();
+  shell.topH = Math.max(cvTray.TOP_ROW, Math.round(px));
+  if (phase === 'move') { el.classList.add('drag'); applyKbHeight(shell.chrome || undefined); return; }
+  el.classList.remove('drag');
+  if (phase === 'cancel') shell.lead = shell.leadWas; // a two-finger gesture: as it was, nothing saved
+  else { shell.lead = 'top'; if (shell.topH > cvTray.TOP_ROW) shell.topLast = shell.topH; }
+  applyKbHeight();
+  shell.chrome = 0;
+  if (phase !== 'cancel') trayPrefSave();
+}
+// double-tap / double-click on the top grip: folded ↔ the last height
+function topToggle() {
+  if (shell.topShown > cvTray.TOP_ROW + 2) { shell.topLast = Math.max(shell.topH, oneRow()); shell.topH = cvTray.TOP_ROW; }
+  else { shell.topH = Math.max(shell.topLast || 0, oneRow()); shell.lead = 'top'; }
+  applyKbHeight(); trayPrefSave();
+}
+// the status bar's strip above the top tray (env(safe-area-inset-top), the installed app): out of the budget's height
+function shellMeasure() {
+  let s = 0;
+  try { const cs = typeof getComputedStyle === 'function' ? getComputedStyle($('#topTray')) : null; s = cs ? parseFloat(cs.paddingTop) || 0 : 0; } catch { s = 0; }
+  shell.safeTop = s;
+}
+// the selected track in the top row: chip (colour, drawing, name, model · voice) and its dot
+function trkChipUI() {
+  const t = trk(), c = $('#trkChip');
+  if (!c) return;
+  c.style.setProperty('--tc', t.color);
+  $('#trkChip .cv-cn').textContent = t.name;
+  $('#trkChip .cv-cv').textContent = modelById(t.model).name + ' · ' + (voiceShown.get(t.id) || trackVoice(t).label);
+  if (shell.chipModel !== t.model) { shell.chipModel = t.model; $('#trkChip .cv-cart').innerHTML = cvArt.chip(t.model); }
+  c.setAttribute('aria-label', `Track “${t.name}” (${modelById(t.model).name}) — the track list`);
+  for (const d of shell.dots) { const on = d.dataset.id === t.id; d.classList.toggle('on', on); d.setAttribute('aria-pressed', on ? 'true' : 'false'); }
+}
+// one dot per track (tap selects); rebuilt with the track rows
+function trkDotsUI() {
+  const box = $('#trkDots');
+  if (!box) return;
+  box.innerHTML = '';
+  shell.dots = project.tracks.map(t => {
+    const d = h('button', 'cv-dot'); d.type = 'button'; d.dataset.id = t.id;
+    d.style.setProperty('--tc', t.color);
+    d.title = t.name; d.setAttribute('aria-label', 'Select track “' + t.name + '”');
+    d.onclick = () => selectTrack(t.id);
+    box.append(d);
+    return d;
+  });
+  trkChipUI();
+}
+// the track list under the chip's ▾: every track (tap selects) and + Add track
+function trkListUI() {
+  const pop = $('#trkPop');
+  pop.innerHTML = '';
+  for (const t of project.tracks) {
+    const b = h('button', 'cv-tpi' + (t.id === project.selTrack ? ' on' : '')); b.type = 'button'; b.setAttribute('role', 'menuitem');
+    b.style.setProperty('--tc', t.color);
+    const art = h('span', 'cv-cart'); art.innerHTML = cvArt.chip(t.model); art.setAttribute('aria-hidden', 'true');
+    const tx = h('span', 'cv-tpt'); tx.append(h('b', null, t.name), h('small', null, modelById(t.model).name + ' · ' + (voiceShown.get(t.id) || trackVoice(t).label)));
+    b.append(h('span', 'cv-sw'), art, tx);
+    b.onclick = () => selectTrack(t.id);
+    pop.append(b);
+  }
+  const add = h('button', 'cv-tpi add', '+ Add a track…'); add.type = 'button'; add.setAttribute('role', 'menuitem');
+  add.onclick = () => cvOpenSources('track');
+  pop.append(add);
+}
+// the track rows' instrument chip: tap → the instrument on the canvas; long-press / right-click → its menu
+function instItems(t) { // every model, named with its voice mode (R6: the track's own as its patch plays)
+  return MODELS.map(m => ({ value: m.id, label: m.name + ' · ' + (m.id === t.model ? voiceShown.get(t.id) || trackVoice(t).label : modelVoice(m).label) }));
+}
+function instMenu(t, x, y) {
+  shell.instT = performance.now();
+  const tr = () => project.tracks.find(q => q.id === t.id);
+  const change = id => { const q = tr(); if (!q) return; selectTrack(q.id); if (!cvDropInstrument(id, null)) setTrackModel(trk(), id); };
+  cvTray.popupMenu(x, y, [
+    { label: 'Change instrument', sub: instItems(t).map(it => ({ label: it.label, checked: it.value === t.model, action: () => change(it.value) })) },
+    { label: 'Show on canvas', action: () => { const q = tr(); if (q) instShow(q); } },
+    { label: 'Open piano roll', action: () => { const q = tr(); if (q) { selectTrack(q.id); openTab('roll'); } } },
+    { sep: true },
+    { label: 'Replace with… (Sources tray)', action: () => { const q = tr(); if (q) { selectTrack(q.id); cvOpenSources('replace'); } } },
+  ]);
+}
+function instShow(t) { selectTrack(t.id); if ($('#tab-inst').hidden) openTab('canvas'); cvReveal(t.id); }
+function instTitle(name, tv) { return `${name} · ${tv} — tap: show it on the canvas · hold or right-click: change the instrument, open the roll`; }
+function instChip(t) {
+  const m = modelById(t.model), tv = voiceShown.get(t.id) || trackVoice(t).label;
+  const b = h('button', 'hinst'); b.type = 'button';
+  b.title = instTitle(m.name, tv);
+  b.setAttribute('aria-label', `Instrument ${m.name}: show it on the canvas (menu: change it)`);
+  const art = h('span', 'hia'); art.setAttribute('aria-hidden', 'true'); art.innerHTML = cvArt.chip(t.model);
+  // model · voice mode: three spans, the model name ellipsised first (style.css .hin / .his / .hiv; ≤ 900 px only the voice
+  // mode: the drawing names the model), the voice mode always whole
+  const lab = h('span', 'hil'); lab.append(h('span', 'hin', m.name), h('span', 'his', ' · '), h('span', 'hiv', tv));
+  lab.value = t.model; // (voiceSeen relabels its .hiv while it names the model)
+  voiceOpt.set(t.id, lab);
+  b.append(art, lab);
+  b.onclick = () => { if (performance.now() - shell.instT > 700) instShow(t); }; // (not the release of a long-press)
+  cvTray.menuSource(b);
+  b.addEventListener('contextmenu', e => { e.preventDefault(); instMenu(t, e.clientX, e.clientY); });
+  return b;
+}
+/* the Sources tray: tap → replace the selected track's instrument (or, opened by + Track, a new track); drag → the canvas
+   (replace, with the true-size outline and edge pan) or the track list (a new track) */
+function srcModeUI(mode) {
+  if (!shell.tiles) return;
+  shell.tiles.setMode(mode);
+  const p = $('#srcMode');
+  p.innerHTML = '';
+  if (mode === 'track') p.append('Tap one for ', h('b', null, 'a new track'), ', or drag it onto the track list.');
+  else p.append('Tap one to use it on ', h('b', null, '“' + trk().name + '”'), ', or drag it onto the canvas. Drag it onto the track list for a new track.');
+}
+function srcOver(t) {
+  if (!t || typeof t.closest !== 'function') return null;
+  if (t.closest('#topTray')) return 'tracks';
+  if (!$('#tab-inst').hidden && t.closest('#viewport')) return 'canvas';
+  return null;
+}
+function srcPick(id, mode) {
+  if (mode === 'track') { addTrack(modelById(id)); shell.src.close(); return; }
+  if (!cvDropInstrument(id, null)) setTrackModel(trk(), id); // (the same model: nothing)
+}
+function srcDragEnd() {
+  if (world) { world.ghost(null); world.dragPointer(null); }
+  $('#topTray').classList.remove('cv-dropt');
+  shell.drop = null;
+}
+const srcDrag = {
+  move(id, i) {
+    const tracks = i.over === 'tracks';
+    $('#topTray').classList.toggle('cv-dropt', tracks);
+    if (!world) return;
+    // over the canvas a drop can only replace in place (until 1e, IMPL-1b decision 6): the true-size outline sits on the
+    // instrument module it replaces (its top-left, the new size), not under the finger — the drop never moves it
+    const im = i.over === 'canvas' && cvView ? cvView.modules.get(cvModule.ID.inst) : null, ir = im ? im.rect() : null;
+    if (i.over === 'canvas') {
+      const sz = cvModuleSize(id), label = modelById(id).name + (id === trk().model ? '' : ' · replaces ' + modelById(trk().model).name);
+      const c = ir ? world.toClient(ir.x, ir.y) : null;
+      shell.drop = c ? world.ghost({ x: c.x, y: c.y, w: sz.w, h: sz.h, dx: 0, dy: 0, snap: false, label }) : world.ghost({ x: i.x, y: i.y, w: sz.w, h: sz.h, label });
+    } else { world.ghost(null); shell.drop = null; }
+    // edge pan once the pointer has left the tray (not while it is still over it), never over the track list nor over the
+    // canvas while the outline is pinned to the module (a pan would only carry it away)
+    world.dragPointer(tracks || ir || !i.left ? null : { x: i.x, y: i.y, pointerType: i.pointerType });
+  },
+  begin(id, i) { srcDrag.move(id, i); },
+  drop(id, i) {
+    const rect = shell.drop;
+    srcDragEnd();
+    if (i.over === 'tracks') { addTrack(modelById(id)); return true; }
+    if (i.over === 'canvas') { if (!cvDropInstrument(id, rect)) setTrackModel(trk(), id); return true; }
+    return false;
+  },
+  cancel() { srcDragEnd(); },
+};
+function sideChanged(which, on) {
+  if (!on) return;
+  if (which === 'src') { if (!shell.srcAsk) srcModeUI('replace'); shell.srcAsk = false; }
+  // a narrow window (portrait, Stage Manager): the tray not in use folds to its rail
+  const other = which === 'src' ? shell.fx : shell.src; // (null while initShell restores the first one)
+  if (other && (window.innerWidth || 1400) < 1100) other.close();
+}
+// the meter (rate · load · latency): a tap shows its whole text over the row
+function meterUI() {
+  const m = $('#meter');
+  let off = null;
+  const close = () => { if (!m.classList.contains('open')) return false; m.classList.remove('open'); if (off) { off(); off = null; } return true; };
+  m.addEventListener('click', e => {
+    if (e.target && e.target.closest && e.target.closest('.latf button, .latpop')) return;
+    if (close()) return;
+    m.classList.add('open');
+    const f = ev => { if (!m.contains(ev.target)) close(); };
+    document.addEventListener('pointerdown', f, true);
+    off = () => document.removeEventListener('pointerdown', f, true);
+  });
+  return { close };
+}
+// ≡ → Help & about: today's help text and the footer, moved into a sheet in #ov while it is open
+function helpSheet() {
+  const parts = $('#helpParts'), kids = [...parts.children], body = h('div', 'cv-help');
+  for (const k of kids) body.append(k);
+  if (shell.sheet) shell.sheet.close();
+  shell.sheet = cvTray.sheet({ title: 'Help & about', body, layer: $('#ov'), wide: true,
+    onClose: () => { for (const k of kids) parts.append(k); shell.sheet = null; } });
+}
+function initShell() {
+  shellMeasure();
+  const P = trayPref();
+  shell.topH = P.top === 0 || P.top > 0 ? Math.max(cvTray.TOP_ROW, +P.top) : oneRow(); // (first run: one track row shown)
+  shell.topLast = +P.topLast > cvTray.TOP_ROW ? +P.topLast : oneRow();
+  // the top tray's grip: drag (snaps to whole rows on release), keys, double-tap = folded ↔ the last height
+  shell.top = cvTray.trayGrip($('#topGrip'), {
+    edge: 'top', label: 'Track list height', step: cvTray.ROW_H,
+    get: () => shell.topShown || cvTray.TOP_ROW, set: topSet, min: () => cvTray.TOP_ROW, max: () => topMaxH(),
+    snaps: () => cvTray.topSnaps(project.tracks.length), onDouble: topToggle,
+    start: () => { shell.leadWas = shell.lead; shell.lead = 'top'; shell.chrome = kbChrome(); },
+    text: v => (v <= cvTray.TOP_ROW + 2 ? 'folded to one row' : `${Math.max(0, Math.round((v - oneRow()) / cvTray.ROW_H) + 1)} track rows`),
+  });
+  // the menus: ≡ (file, app, help), ⚙ (settings), the transport's ⋯ and the arrangement's Bars ▾ (narrow windows), tracks
+  shell.menus = [
+    cvTray.menuPop($('#appMenuBtn'), $('#appMenu')),
+    cvTray.menuPop($('#gearBtn'), $('#gearPop'), { pick: false, onOpen: () => { $('#masterG').value = $('#master').value; } }),
+    cvTray.menuPop($('#tMore'), $('#tMorePop'), { attr: 'data-open', pick: false }),
+    cvTray.menuPop($('#aBars'), $('#aEdit'), { attr: 'data-open' }),
+    cvTray.menuPop($('#trkChip'), $('#trkPop'), { onOpen: trkListUI }),
+    // narrow windows (≤ 740 px): "⏻ ▾" shows Power and the meter (with its latency button) folded out of the row
+    cvTray.menuPop($('#engMore'), $('#engPop'), { attr: 'data-open', pick: false, onClose: () => { if (shell.meter) shell.meter.close(); } }),
+  ];
+  shell.meter = meterUI();
+  // ⚙'s master level (shown where the top row's folds away, ≤ 1099 px): drives #master (its handler sets and saves)
+  $('#masterG').oninput = () => { const m = $('#master'); m.value = $('#masterG').value; if (m.oninput) m.oninput(); };
+  $('#helpBtn').onclick = () => helpSheet();
+  const pm = $('#pinchMode');
+  pm.value = store.get('synth.cv.pinch', 'canvas') === 'page' ? 'page' : 'canvas';
+  pm.onchange = () => { const v = pm.value === 'page' ? 'page' : 'canvas'; if (world) world.setPinchMode(v); else store.set('synth.cv.pinch', v); };
+  $('#rollhelp').onclick = () => $('#rollhelp').classList.toggle('open');
+  // the side trays (a tap on the rail opens; the keyboard and the top row keep them open while played)
+  const keep = t => !!(t && t.closest && t.closest('#perf, #topRow, .wk-ctx, .wk-pop'));
+  shell.src = cvTray.sideTray($('#srcTray'), { side: 'left', key: 'src', store, rail: $('#srcRail'), panel: $('#srcPanel'), grip: $('#srcGrip'),
+    label: 'Sources', keepOpen: keep, onChange: on => sideChanged('src', on) });
+  shell.fx = cvTray.sideTray($('#fxTray'), { side: 'right', key: 'fx', store, rail: $('#fxRail'), panel: $('#fxPanel'), grip: $('#fxGrip'),
+    label: 'Effects', keepOpen: keep, onChange: on => sideChanged('fx', on) });
+  $('#srcClose').onclick = () => shell.src.close();
+  $('#fxClose').onclick = () => shell.fx.close();
+  shell.tiles = cvTray.sourcesTray($('#srcList'), { models: MODELS, tray: $('#srcTray'), layer: $('#ov'), pick: srcPick, drag: srcDrag,
+    overOf: srcOver, canvasGhost: () => !!world && !$('#tab-inst').hidden, onLeave: () => shell.src.close() });
+  srcModeUI('replace');
+  if ((window.innerWidth || 1400) < 1100 && shell.src.isOpen() && shell.fx.isOpen()) shell.fx.close();
+  // the top tray animates its height from now on (not from the stylesheet's 48 px to the restored height at load)
+  setTimeout(() => $('#topTray').classList.remove('still'), 80); // (a timer: a page opened in a background tab gets no frames)
+  if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (tests/cv-shell-sim.test.mjs, main.test menus)
+    globalThis.__synthTest.shell = { shell, openTab, instItems, instMenu, cvOpenSources, srcPick, srcDrag, srcOver, topSet, topToggle,
+      topWant, topMaxH, kbMaxH: c => kbMaxH(c), applyKbHeight, trkListUI, helpSheet, cvShellEscape };
+  }
+}
+function cvShellEscape() { // Escape: closes an open ≡ / ⚙ popover, side tray or sheet → true
+  if (shell.sheet) { shell.sheet.close(); return true; }
+  for (const m of shell.menus) if (m.close()) return true;
+  if (shell.meter && shell.meter.close()) return true;
+  if (shell.src && shell.src.close()) return true;
+  return !!(shell.fx && shell.fx.close());
+}
+function cvOpenSources(mode) { // opens the Sources tray; mode 'replace' (a tap replaces trk()'s instrument) | 'track' (a tap adds a track)
+  if (!shell.src) return;
+  if ($('#tab-inst').hidden) openTab('canvas'); // (the side trays belong to the CANVAS view)
+  shell.srcAsk = true;
+  srcModeUI(mode === 'track' ? 'track' : 'replace');
+  if (shell.src.isOpen()) shell.srcAsk = false; else shell.src.open();
+}
+/* ---------------------------------------------- cv WORLD: camera, gestures, toolbar, canvas keys */
+let world = null; // the CANVAS view's cv-world World (initWorld); null before it and wherever it cannot be built
+// the camera over #world (pan / pinch / wheel, momentum, native-zoom hand-over, culling, toolbar); a failure leaves the app
+// working without it (world = null: the gesture hooks fall back to today's scrolling, the stubs answer false)
+function initWorld() {
+  const vp = $('#viewport'), w = $('#world');
+  if (!vp || !w) { world = null; return; }
+  try {
+    world = cvWorld.createWorld(vp, { world: w, overlay: $('#overlay'), toolbar: $('#cvToolbar'), layer: $('#ov'),
+      isBackground: el => cvModule.isBackground(el), onTidy: () => cvTidy(), store });
+    world.on('movestart', () => hideTip()); // (the kit's popups and tip close in the world: wk.closeTransient)
+  } catch (err) { world = null; console.warn('Canvas camera unavailable — the panels stay where they are', err); }
+}
+// Escape: ends a canvas drag, leaves edit state, then deselects → true — only while focus is on the canvas (the viewport, a
+// module root or its bar; = cv-world canvasFocus, SPEC §4.8), as the roll's own selection does: with focus anywhere else
+// (a key, Hold, a tray, after a track-row chip's reveal) Escape stays today's panic at once
+function cvWorldEscape() {
+  if (!world) return false;
+  const vp = $('#viewport'), a = document.activeElement;
+  let on = !!a && a === vp;
+  if (!on && a && vp && vp.contains(a) && !/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName || '') && !a.isContentEditable) {
+    for (let n = a; n && n !== vp && typeof n.hasAttribute === 'function'; n = n.parentNode) {
+      if (n.hasAttribute('data-cv-bar')) { on = true; break; }
+      if (n.hasAttribute('data-cv-mod')) { on = n === a; break; }
+    }
+  }
+  return on ? world.escape() : false;
+}
+function cvWorldKey(e) { return world ? world.key(e) : false; } // canvas shortcuts while focus is in #viewport (0, 1, arrows, ⌘/Ctrl-A) → true
+function cvWheelVeto() { return world ? world.wheelVeto() : false; } // a camera move < 300 ms ago: knobs leave the wheel to the canvas
+/* ---------------------------------------------- cv MODULES: modules, cables, layout, camera prefs */
+// The selected track's modules (cv-module createTrackView): today's #inst (classic renderPanel or the whole SerumUI), the
+// FX rack (#fxrack: FXRackUI, kept mounted) and the scope (OUT) move — by reference, ids kept — from #cvParts into the
+// module bodies and back; .about opens from the instrument's ⋯ → About. Positions, widths, folds and z live in track.lay
+// (one History step per move / fold / resize; bring-to-front none); the camera lives in device prefs (CAM_PREF, keyed by
+// CM.camKey(project uid, track id)), never in History. Without the canvas DOM (no #cvParts / #world: an index.html from
+// before the shell) nothing moves and today's tabs keep working.
+const cvParts = { home: null, root: null, inst: null, fx: null, scope: null, about: null };
+let cvView = null, cvViewKey = '', cvTestWorld = null, cvBusy = false, cvCamT = 0, cvCamPend = null, cvChipC = null;
+const cvSeen = new Map(); // model id → the measured {w, h} of its instrument module on this device (drop outlines)
+const cvW = () => cvTestWorld || world;
+const cvOn = () => !!cvParts.home;
+function initModules() {
+  const home = $('#cvParts'), root = $('#world');
+  if (!home || !root) return;
+  Object.assign(cvParts, { home, root, inst: $('#inst'), fx: $('#fxrack'), scope: $('.scope'), about: $('.about') });
+  home.hidden = true;
+  const tw = globalThis.__synthTest && globalThis.__synthTest.cvWorld; // (tests/canvas-sim: a scripted world)
+  if (typeof tw === 'function') cvTestWorld = tw(root);
+  const W = cvW();
+  if (W && typeof W.on === 'function') {
+    W.on('cameraend', d => cvCamQueue((d && d.cam) || W.cam));
+    W.on('lod', () => monitors.sync());
+  }
+  window.addEventListener('pagehide', cvCamFlush);
+  document.addEventListener('visibilitychange', () => { if (document.hidden) cvCamFlush(); });
+}
+// a module shows its body: the CANVAS view is up, the module is mounted as a body (not a card) and not folded. Without the
+// canvas DOM: today's tabs (the FX rack exists only while its tab shows)
+function cvLive(key) {
+  if (!cvView) return key === cvModule.ID.inst ? !$('#tab-inst').hidden : true;
+  return !$('#tab-inst').hidden && cvView.live(key);
+}
+function cvRender() {
+  if (!cvOn()) return;
+  const t = trk(), key = project.uid + '/' + t.id, W = cvW();
+  if (cvView && cvViewKey === key) { cvView.sync(t); return; }
+  cvCamFlush(); // the outgoing track's camera first
+  if (cvView) { cvView.destroy(); cvView = null; }
+  if (W && typeof W.clear === 'function') W.clear();
+  cvViewKey = key;
+  cvView = cvModule.createTrackView(W, t, cvHost());
+  cvCamRestore(t);
+  monitors.sync();
+}
+function cvHost() {
+  const P = cvParts, home = n => { if (n && P.home) P.home.append(n); };
+  return {
+    root: P.root, doc: document,
+    bodies: {
+      inst: { mount: b => b.append(P.inst), unmount: () => home(P.inst) },
+      fx: { mount: b => b.append(P.fx), unmount: () => home(P.fx) },
+      out: { mount: b => { b.classList.add('cv-out'); b.append(P.scope); }, unmount: () => home(P.scope) },
+    },
+    title: cvTitle,
+    menu: cvMenu,
+    art: kind => cvModule.cardArt(kind, trk().model),
+    lay: cvLay,
+    shown: () => monitors.sync(),
+  };
+}
+function cvTitle(kind) {
+  const t = trk(), m = modelById(t.model);
+  if (kind === 'inst') return { title: m.name, sub: t.name, chip: cvChip(t) };
+  if (kind === 'fx') {
+    const fx = fxOf(t), n = fx.racks.reduce((a, r) => a + (r && Array.isArray(r.mods) ? r.mods.length : 0), 0);
+    if (isSx(t)) return { title: 'Serum FX (own)', sub: cvCables.routeLabel(t.vals && t.vals.s, fx) || 'no effects' };
+    return { title: 'FX Panel', sub: n ? n + (n === 1 ? ' effect' : ' effects') : 'empty' };
+  }
+  return { title: 'OUT', sub: 'master output' };
+}
+// the instrument module's chip: a classic track's preset select (today's track-row select) / a Serum's preset name
+function cvChip(t) {
+  const m = modelById(t.model), key = t.id + '/' + m.id;
+  if (!cvChipC || cvChipC.key !== key) {
+    const el = m.custom ? h('span', 'cv-pname') : h('select', 'cv-psel');
+    if (m.custom) el.title = 'Preset (change it in the panel’s browser)';
+    else {
+      el.title = 'Preset'; el.setAttribute('aria-label', 'Preset');
+      el.onchange = () => { const tr = trk(), p = presetList(modelById(tr.model)).find(x => x.key === el.value); el.value = ''; if (p) applyPreset(tr, p); };
+    }
+    cvChipC = { key, el, sig: null };
+  }
+  cvChipFill(t);
+  return cvChipC.el;
+}
+function cvChipFill(t) {
+  const C = cvChipC, m = modelById(t.model);
+  if (!C || C.key !== t.id + '/' + m.id) return;
+  if (m.custom) { const s = t.preset || 'Init'; if (C.el.textContent !== s) C.el.textContent = s; return; }
+  const list = presetList(m), sig = list.length + ':' + t.preset;
+  if (sig === C.sig) return;
+  C.sig = sig;
+  C.el.innerHTML = '';
+  const o0 = h('option', null, t.preset ? t.preset : t.preset === null ? 'Custom' : '—'); o0.value = ''; C.el.append(o0);
+  let grp = null, gname = '';
+  for (const p of list) {
+    if (p.group !== gname) { grp = h('optgroup'); grp.label = p.group; gname = p.group; C.el.append(grp); }
+    const o = h('option', null, p.name); o.value = p.key; grp.append(o);
+  }
+  C.el.value = '';
+}
+function cvChipSync() { if (cvView) cvChipFill(trk()); } // the preset name changed (renderPanel's preset UI, a Serum edit)
+function cvMenu(kind, key) {
+  const V = cvView, m = V && V.modules.get(key);
+  if (!m) return [];
+  const fold = { label: m.fold ? 'Unfold' : 'Fold', action: () => V.toggleFold(key) };
+  const front = { label: 'Bring to front', action: () => V.front(key) };
+  const tidyI = { label: 'Tidy the canvas', action: () => cvTidy() };
+  if (kind === 'inst') {
+    return [{ label: 'About the ' + modelById(trk().model).name + '…', action: cvAbout }, { label: 'Replace with…', action: () => cvOpenSources('replace') },
+      { sep: true }, { label: 'Reset width', action: () => V.resetWidth(key), disabled: !m.wSet }, fold, front, { sep: true }, tidyI];
+  }
+  return kind === 'fx' ? [fold, front, { sep: true }, tidyI] : [fold];
+}
+// track.lay writes (cv-module host.lay): 'start' opens the undo step, 'end' writes the entry (alone: bring to front, pins,
+// no step). The step is recorded at that 'end', just before the write and only when the layout really changes: a drop on
+// the cell it left or a cancelled drag (Escape, a second finger) records nothing, so the redo stack survives
+let cvLayPend = null; // {key, what, label, was}: the move / fold / resize 'start' opened (was: the track's lay as JSON)
+function cvLay(key, entry, phase, what) {
+  if (phase === 'start') {
+    const m = cvView && cvView.modules.get(key), verb = what === 'fold' ? 'Fold' : what === 'resize' ? 'Resize' : 'Move';
+    cvLayPend = { key, what, label: verb + ' ' + (m ? m.title : key), was: JSON.stringify(trk().lay || null) };
+    return;
+  }
+  if (phase === 'cancel') { if (cvLayPend && cvLayPend.key === key) cvLayPend = null; return; }
+  if (phase !== 'end' || !entry) return;
+  const t = trk(), p = cvLayPend && cvLayPend.key === key && cvLayPend.what === what ? cvLayPend : null;
+  if (p) {
+    cvLayPend = null;
+    const nx = key === cvModule.ID.fx ? cvModule.ID.sxFx : key === cvModule.ID.sxFx ? cvModule.ID.fx : null;
+    const next = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {}, { [key]: entry });
+    if (nx) delete next[nx];
+    if (JSON.stringify(next) === p.was) return; // (nothing moved: no step, no write)
+    hist.record(project, p.label); updateUndoUI();
+  }
+  if (!t.lay || typeof t.lay !== 'object') t.lay = {};
+  t.lay[key] = entry;
+  // one FX entry at most (fx1 | i1/fx): layOf's fallback then carries the place across a classic ↔ Serum change, never a
+  // stale one from before (in the step 'start' opened; an entry here holds x, y, fold and z, so nothing is lost)
+  const ox = key === cvModule.ID.fx ? cvModule.ID.sxFx : key === cvModule.ID.sxFx ? cvModule.ID.fx : null;
+  if (ox) delete t.lay[ox];
+  persist(); updateUndoUI();
+}
+// About: the model's text and the DX7 algorithm diagram (.about, kept by reference) in a sheet
+function cvAbout() {
+  const a = cvParts.about;
+  if (!a) return;
+  drawAlgo();
+  const title = $('#about-title').textContent || modelById(trk().model).name, back = () => { if (cvParts.home) cvParts.home.append(a); };
+  try { if (cvTray.sheet({ title, body: a, layer: $('#ov') || document.body, onClose: back })) return; } catch (err) { /* the SHELL lane's sheet not in yet */ }
+  const wrap = h('div', 'cv-lite'), dlg = h('div', 'cv-lite-dlg'), x = h('button', 'cv-lite-x', '✕');
+  dlg.setAttribute('role', 'dialog'); dlg.setAttribute('aria-label', title);
+  x.type = 'button'; x.setAttribute('aria-label', 'Close');
+  const close = () => { wrap.remove(); back(); };
+  x.onclick = close; wrap.onclick = e => { if (e.target === wrap) close(); };
+  dlg.append(x, a); wrap.append(dlg); ($('#ov') || document.body).append(wrap);
+}
+// the camera: saved 500 ms after a move ends (one LRU record), restored on a track switch / load, else the default: the
+// instrument's top-left 24 px inside the visible band, at k = 1 when its whole width fits there (the FX module beside it
+// too when both fit at an editable zoom), else at the k that fits its width — its bar's chip, ⋯ and ▾ clear the rails
+// (portrait) — never below CARD_K. While ROLL shows the band has no size: the default is owed (cvCamDef) and computed
+// when CANVAS opens (openTab)
+let cvCamLast = null; // {key, cam}: the camera last restored or saved (an unchanged camera writes nothing)
+let cvCamDef = null; // the camKey whose default camera is owed (computed while the canvas was hidden)
+const camSame = (a, b) => !!a && !!b && Math.abs(a.tx - b.tx) < 0.5 && Math.abs(a.ty - b.ty) < 0.5 && Math.abs(a.k - b.k) < 1e-4;
+function cvCamQueue(cam) {
+  if (!cam || !cvView) return;
+  const key = CM.camKey(project.uid, cvView.trackId);
+  if (cvCamLast && cvCamLast.key === key && camSame(cvCamLast.cam, cam)) { clearTimeout(cvCamT); cvCamT = 0; cvCamPend = null; return; }
+  cvCamPend = { key, cam: { tx: cam.tx, ty: cam.ty, k: cam.k } };
+  clearTimeout(cvCamT); cvCamT = setTimeout(cvCamFlush, 500);
+}
+function cvCamFlush() {
+  clearTimeout(cvCamT); cvCamT = 0;
+  const p = cvCamPend;
+  cvCamPend = null;
+  if (!p) return;
+  store.set(cvModule.CAM_PREF, cvModule.camPut(store.get(cvModule.CAM_PREF, null), p.key, p.cam));
+  cvCamLast = p;
+}
+function cvCamRestore(t) {
+  const W = cvW();
+  if (!W || !cvView || typeof W.setCamera !== 'function') return;
+  const key = CM.camKey(project.uid, t.id), c = cvModule.camGet(store.get(cvModule.CAM_PREF, null), key);
+  if (c) { cvCamDef = null; cvCamLast = { key, cam: c }; W.setCamera(c, { animate: false }); return; }
+  const m = cvView.modules.get(cvModule.ID.inst);
+  if (!m) return;
+  const b = W.band();
+  if ($('#tab-inst').hidden || !(b.right > b.left && b.bottom > b.top)) { cvCamDef = key; return; } // (ROLL: a 0 × 0 viewport)
+  cvCamDef = null;
+  const o = W.toClient(0, 0), cam = W.cam, r = m.rect(), P = 24, bw = b.right - b.left - 2 * P;
+  const fm = cvView.modules.get(cvModule.fxKey(t.model)), f = fm && fm.rect();
+  const kAll = f ? bw / Math.max(1, f.x + f.w - r.x) : 0; // the instrument and the FX module side by side
+  const k = kAll >= cvWorld.EDIT_K ? Math.min(1, kAll) : Math.max(cvWorld.CARD_K, Math.min(1, bw / Math.max(1, r.w)));
+  const d = { k, tx: Math.round(b.left - (o.x - cam.tx) + P - r.x * k), ty: Math.round(b.top - (o.y - cam.ty) + P - r.y * k) };
+  cvCamLast = { key, cam: d }; // (the default is not stored until the user moves away from it)
+  W.setCamera(d, { animate: false });
+}
+// Serum panel ↔ FX module: both edit the same t.fx (and Serum state); an edit in one refreshes the other on the next frame
+// (never the one that made it). A peer that is not showing its body is refreshed when it shows again (monitors.sync).
+let peerT = 0, peerBits = 0, peerStale = 0; // bits: 1 the Serum panel, 2 the FX module
+function peerRefresh(id, bit) {
+  if (!cvView) return;
+  if (bit === 1 ? !(sxPanel.ui && sxPanel.trackId === id) : !(fxTab.ui && fxTab.trackId === id)) { if (cvView.trackId === id) cvRelabel(); return; }
+  peerBits |= bit;
+  if (!peerT) peerT = requestAnimationFrame(peerRun);
+}
+function peerRun() {
+  peerT = 0;
+  const b = peerBits | peerStale;
+  peerBits = 0; peerStale = 0;
+  if (b & 1 && sxPanel.ui) { if (cvLive(cvModule.ID.inst)) sxPanel.ui.refresh(); else peerStale |= 1; }
+  if (b & 2 && fxTab.ui) { if (cvLive(cvModule.fxKey(fxTab.sx ? 'serum' : ''))) fxTab.ui.refresh(); else peerStale |= 2; }
+  cvRelabel();
+}
+let cvRelT = 0;
+function cvRelabel() { // titles, chip and the Serum's route label after an edit (coalesced)
+  if (cvRelT || !cvView) return;
+  cvRelT = requestAnimationFrame(() => { cvRelT = 0; if (cvView && cvView.trackId === trk().id) cvView.refresh(trk()); });
+}
+// a synth dropped on the canvas (or picked in the Sources tray's replace mode): replaces the selected track's instrument
+// in place (until 1e, SPEC §2.7), one History step, an undo notice
+function cvDropInstrument(modelId, at) {
+  const t = trk(), m = MODELS.find(x => x.id === modelId);
+  if (!m || m.id === t.model) return false;
+  const old = modelById(t.model), id = t.id;
+  setTrackModel(t, m.id); // (renderPanel → cvPanelDone: the FX module and the titles follow)
+  // the step the replacement left on top of History (or the equal one it kept): the tap undoes it only while it is still
+  // the newest — after a later step (a move, a knob, a note) the old instrument comes back as a step of its own instead,
+  // never undoing that later edit (an undo / redo makes a new entry object: the safe branch too)
+  const step = hist.u[hist.u.length - 1];
+  const msg = `Replaced ${old.name} with ${m.name} · tap to undo`;
+  noticeActs.set(msg, () => {
+    noticeActs.delete(msg); notice('', 0);
+    const tr = project.tracks.find(x => x.id === id);
+    if (!tr || tr.model !== m.id) return; // (already undone, or replaced again)
+    if (hist.u[hist.u.length - 1] === step) undo(); else setTrackModel(tr, old.id);
+  });
+  notice(msg, 8000);
+  return true;
+}
+function cvReveal(trackId, key = cvModule.ID.inst) {
+  if (project.tracks.some(t => t.id === trackId)) selectTrack(trackId);
+  const roll = $('#tab-roll');
+  if (roll && !roll.hidden) openTab('canvas');
+  const W = cvW();
+  if (W && cvView && cvView.modules.has(key) && typeof W.focusItem === 'function') W.focusItem(key, { k: W.k < cvWorld.CARD_K ? 1 : W.k, edit: false });
+}
+function cvModuleSize(modelId) {
+  const m = cvView && cvView.modules.get(cvModule.ID.inst);
+  if (m && trk().model === modelId && m.shown === 'body' && !m.fold) { const r = m.rect(); if (r.h > cvModule.BAR_H * 3) cvSeen.set(modelId, { w: r.w, h: r.h }); }
+  return cvSeen.get(modelId) || cvModule.sizeFor(modelId);
+}
+function cvTidy() {
+  const t = trk();
+  if (!cvView) return;
+  const td = cvModule.tidy(t, cvView.sizes()), old = t.lay && typeof t.lay === 'object' ? t.lay : {}, lay = Object.assign({}, old);
+  const ID = cvModule.ID, other = k => (k === ID.fx ? ID.sxFx : k === ID.sxFx ? ID.fx : null);
+  for (const k in td) {
+    const e = { x: td[k].x, y: td[k].y }, ox = other(k), o = old[k] || (ox && old[ox]); // (the FX fold through a model change)
+    if (old[k] && o.w != null) e.w = o.w;
+    if (o && o.fold) e.fold = 1;
+    lay[k] = e;
+    if (ox) delete lay[ox]; // one FX entry at most (cvLay)
+  }
+  // already tidy: no step (a recorded no-op would still drop the redo stack); cvModule.tidy is pure, so the step is
+  // taken here, before the write
+  if (t.lay && typeof t.lay === 'object' && JSON.stringify(lay) === JSON.stringify(t.lay)) { cvView.sync(t); return; }
+  hist.record(project, 'Tidy'); updateUndoUI();
+  t.lay = lay;
+  persist();
+  cvView.sync(t);
+}
+// renderPanel / renderCustom ran outside renderViews (a model change, a track rename, a 303 pattern): the FX module and
+// the module titles follow
+function cvPanelDone() {
+  if (cvBusy || !cvView) return;
+  const t = trk();
+  if (fxTab.sx !== isSx(t) || fxTab.trackId !== t.id) renderFxTab();
+  cvRender();
+}
+if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (tests/canvas-sim.test.mjs)
+  globalThis.__synthTest.cv = {
+    view: () => cvView, parts: cvParts, world: () => cvW(), sxPanel, fxTab, monitors, hist, undo, redo, render: cvRender,
+    renderViews, tidy: cvTidy, drop: cvDropInstrument, reveal: cvReveal, size: cvModuleSize, live: cvLive, camFlush: cvCamFlush,
+    chipSync: cvChipSync, heads: renderHeads, duplicateTrack, openTab, about: cvAbout, menu: cvMenu, peer: () => ({ peerT, peerBits, peerStale }),
+  };
+}
+
 /* -------------------------------------------------------------- boot */
 let app = null; // pwa.js initApp's controller
 function boot() {
   // the two-finger layer (gesture.js) first: its window capture listeners run before every other (pressStart, wake, the
-  // keys …), so a two-finger pan / pinch never presses what it lands on; the page's pinch-zoom stays the browser's
-  installGestures(window);
-  // the interface size of build 8 (uiscale.js, since removed) left its key behind: dropped once (nothing written without it)
-  try { if (localStorage.getItem('synth-ui.scale') !== null) localStorage.removeItem('synth-ui.scale'); } catch { /* storage blocked */ }
+  // keys …), so a two-finger pan / pinch never presses what it lands on; the page's pinch-zoom stays the browser's. Over
+  // the canvas its script pan and pinch drive the camera (the hooks answer false elsewhere, and while there is no world)
+  installGestures(window, { pan: (sx, sy, at) => (world ? world.hooks.pan(sx, sy, at) : false), zoom: (f, cx, cy, at) => (world ? world.hooks.zoom(f, cx, cy, at) : false) });
+  // (main's boot drops build 8's 'synth-ui.scale' key here; the canvas build never had it and leaves main's keys alone)
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   defs.setAttribute('width', 0); defs.setAttribute('height', 0); defs.style.position = 'absolute';
   defs.innerHTML = '<defs><radialGradient id="knobShine" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff" stop-opacity="0.22"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.04"/><stop offset="1" stop-color="#000" stop-opacity="0.25"/></radialGradient></defs>';
@@ -3520,9 +4194,10 @@ function boot() {
 
   initEditors();
   initTransport();
+  initShell(); initWorld(); initModules(); // the stage-1b canvas shell (IMPL-1b §6: this order; renderAll then mounts the modules)
   renderAll();
   buildKeys(); initKeys();
-  openTab(store.get('synth.tab', 'inst'));
+  openTab(store.get('synth.tab', 'canvas'));
 
   // Power: on; off when the engine was running as the press began; a context the browser suspended/interrupted is resumed
   // rather than closed. The state is taken before wake() below runs: by the click it may already have resumed the context.
@@ -3570,7 +4245,7 @@ function boot() {
     b.onclick = () => { scopeMode = b.dataset.mode; for (const x of document.querySelectorAll('.scope-ctl button')) x.classList.toggle('on', x === b); };
   }
   // a new window size (rotation, Split View): the keyboard's height and keys, the roll and the arrangement re-fitted
-  function relayout() { applyKbHeight(); buildKeys(); roll.resize(); arr.resize(); }
+  function relayout() { shellMeasure(); applyKbHeight(); buildKeys(); roll.resize(); arr.resize(); }
   let rw;
   window.addEventListener('resize', () => { clearTimeout(rw); rw = setTimeout(relayout, 120); });
   window.addEventListener('hashchange', () => { const m = MODELS.find(x => '#' + x.id === location.hash); if (m) setTrackModel(trk(), m.id); });
@@ -3584,14 +4259,16 @@ function boot() {
   powerUI();
   booted = true;
   for (const [txt, ms] of early.splice(0)) notice(txt, ms); // storage notices raised while the page was starting
+  const old = platformProblem(); if (old) notice(old, 20000); // (SPEC-canvas §9.4)
   recoveredNotice();
+  if (readOnly) goReadOnly(readOnly); // a newer project met while starting: Save disabled, the notice (SPEC-canvas §5.8)
   requestAnimationFrame(frame);
 }
 // §12.6 storage: a project autosaved by a session that could not open the database (it ran on the older localStorage copy)
 // was kept separately by this run's re-sync (appstore '#rec:'): offered as a project file to download (open it with
 // File › Open to continue from it)
 function recoveredNotice() {
-  const inf = store.info(), txt = inf.conflicts.includes('synth.project') && store.recovered ? store.recovered('synth.project') : null;
+  const inf = store.info(), txt = inf.conflicts.includes(PROJECT_KEY) && store.recovered ? store.recovered('synth.project') : null;
   if (!txt) return;
   let ok = false;
   try { ok = !!S.deserialize(txt); } catch { ok = false; }

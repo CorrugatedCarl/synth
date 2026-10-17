@@ -121,6 +121,11 @@ const fin = x => typeof x === 'number' && isFinite(x);
 const arr = x => (Array.isArray(x) ? x : []);
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const clamp01 = x => (x > 0 ? (x < 1 ? x : 1) : 0);
+// a canvas store's px per layout px: the device ratio (≤ 2) × the canvas world's zoom inside it (SPEC-canvas §4.4)
+const storeDpr = (doc, cv) => {
+  const w = doc && doc.defaultView, dpr = Math.min(2, Math.max(1, (w && w.devicePixelRatio) || 1)), k = wk.canvasScale ? wk.canvasScale(cv) : 1;
+  return k === 1 ? dpr : clamp(dpr * k, 0.5, 2);
+};
 const r5 = x => Math.round(x * 1e5) / 1e5 + 0;
 const pc12 = n => ((n % 12) + 12) % 12;
 const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
@@ -280,7 +285,7 @@ const CSS = `
   background-image: linear-gradient(90deg, transparent 8.33%, rgba(0, 0, 0, 0.45) 8.33% 16.67%, transparent 16.67% 25%, rgba(0, 0, 0, 0.45) 25% 33.33%,
     transparent 33.33% 50%, rgba(0, 0, 0, 0.45) 50% 58.33%, transparent 58.33% 66.67%, rgba(0, 0, 0, 0.45) 66.67% 75%, transparent 75% 83.33%,
     rgba(0, 0, 0, 0.45) 83.33% 91.67%, transparent 91.67%); }
-@media (max-width: 1099px) { .sx-seqov { position: fixed; z-index: 1000; border-radius: 0; } }
+@media (max-width: 1099px) { .sx-seqov:where(:not([data-cv-world] *)) { position: fixed; z-index: 1000; border-radius: 0; } } /* (not in the canvas world: fixed would be the world's) */
 .sx-recbtn[aria-pressed="true"] { color: #0f1216; background: #ff5b5b; border-color: transparent; }
 .sx-macpane { display: grid; grid-template-columns: repeat(auto-fill, minmax(68px, 1fr)); gap: 4px; width: 100%; }
 @media (pointer: coarse) {
@@ -1194,6 +1199,7 @@ class LaneView {
       this.ro.observe(this.cv);
       this.offs.push(() => this.ro.disconnect());
     }
+    if (wk.onRescale) this.offs.push(wk.onRescale(this.cv, () => { this.last = null; this.refresh(); })); // a canvas world zoom end
   }
   def() { return this.o.lanes.find(L => L.key === this.cur) || this.o.lanes[0]; }
   label(L) { return typeof L.label === 'function' ? L.label() : L.label; }
@@ -1252,8 +1258,8 @@ class LaneView {
   }
   size() {
     if (this.sz) return this.sz;
-    const r = this.cv.getBoundingClientRect(), s = { w: Math.max(40, r.width || 600), h: Math.max(24, r.height || 72) };
-    if (this.ro && r.width > 0 && r.height > 0) this.sz = s;
+    const r = this.cv.getBoundingClientRect(), s = { w: Math.max(40, this.cv.offsetWidth || r.width || 600), h: Math.max(24, this.cv.offsetHeight || r.height || 72) };
+    if (this.ro && r.width > 0 && r.height > 0) this.sz = s;   // (layout px: the canvas world's zoom does not change them)
     return s;
   }
   xOf(t, v) { return KEYW + (t - v.t0) * v.pps; }
@@ -1262,7 +1268,7 @@ class LaneView {
   norm(L, v) { return L.bool ? (v ? 1 : 0) : L.lo === undefined ? clamp01(v) : (v - L.lo) / (L.hi - L.lo); }
   denorm(L, u) { const v = L.lo === undefined ? u : L.lo + u * (L.hi - L.lo); return L.int ? Math.round(v) : r5(v); }
   draw(L, ob, v) {
-    const { w, h } = this.size(), cv = this.cv, d = this.doc.defaultView, dpr = Math.min(2, Math.max(1, (d && d.devicePixelRatio) || 1));
+    const { w, h } = this.size(), cv = this.cv, dpr = storeDpr(this.doc, cv);
     cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
     const g = cv.getContext ? cv.getContext('2d') : null;
     if (!g) return;
@@ -1296,7 +1302,7 @@ class LaneView {
   }
   // the roll's selection as it acts (indices into the records)
   selOf() { const R = this.o.roll; return R && typeof R.selNow === 'function' ? R.selNow() : arr(R && R.sel); }
-  local(e) { const r = this.cv.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+  local(e) { return wk.localPoint(this.cv, e); } // layout px (the canvas world may scale the panel)
   // index of the record (or strum entry) whose bar is nearest to x within tol px, −1 for none
   near(list, x, v, tol) {
     let best = -1, bd = tol + 1e-9;
@@ -1318,7 +1324,7 @@ class LaneView {
     if (this.dead || this.g || (e.pointerType === 'mouse' && e.button !== 0)) return;
     const L = this.def(), ob = this.o.obj();
     if (!ob || L.type === 'auto') return;
-    const p = this.local(e), v = this.o.roll.view(), { h } = this.size(), tol = e.pointerType === 'touch' ? 14 : 7;
+    const p = this.local(e), v = this.o.roll.view(), { h } = this.size(), tol = (e.pointerType === 'touch' ? 14 : 7) * wk.localScale(this.cv);
     this.lastType = e.pointerType || 'mouse';
     e.preventDefault();
     if (L.type === 'strum') {
@@ -2360,6 +2366,7 @@ export class PianoRoll {
       this.ro.observe(el);
       this.offs.push(() => this.ro.disconnect());
     }
+    if (wk.onRescale) this.offs.push(wk.onRescale(el, () => { this.last = null; this.refresh(); })); // a canvas world zoom end
     return el;
   }
 
@@ -2394,7 +2401,7 @@ export class PianoRoll {
   // the element's size (defaults before layout); kept while a ResizeObserver reports changes (not while hidden: 0 × 0)
   size() {
     if (this.sz) return this.sz;
-    const r = this.el.getBoundingClientRect(), s = { w: Math.max(KEYW + 40, r.width || 640), h: Math.max(RULER + 24, r.height || 300) };
+    const r = this.el.getBoundingClientRect(), s = { w: Math.max(KEYW + 40, this.el.offsetWidth || r.width || 640), h: Math.max(RULER + 24, this.el.offsetHeight || r.height || 300) };
     this.real = r.width > 0 && r.height > 0;
     if (this.ro && this.real) this.sz = s;
     return s;
@@ -2434,7 +2441,12 @@ export class PianoRoll {
     return row < 0 || row >= v.rows.length ? -1 : row;
   }
   // pointer position in the roll (during a gesture against the box measured at its start: no layout read per move)
-  local(e) { const G = this.g, r = G && G.rect ? G.rect : this.el.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+  // in layout px (the canvas world may scale the panel: × ls, its layout px per screen px)
+  local(e) {
+    const G = this.g;
+    if (G && G.rect) return { x: (e.clientX - G.rect.left) * G.ls, y: (e.clientY - G.rect.top) * G.ls };
+    return wk.localPoint(this.el, e);
+  }
   // the selection as it acts: indices into the records, kept while the records keep their time, length and pitch (lane
   // edits of velocity / expression / accent keep it); any other change of the list clears it
   selNow() {
@@ -2474,7 +2486,7 @@ export class PianoRoll {
     this.drawOv();
   }
   ctx(cv) {
-    const { w, h } = this.size(), win = this.doc.defaultView, dpr = Math.min(2, Math.max(1, (win && win.devicePixelRatio) || 1));
+    const { w, h } = this.size(), dpr = storeDpr(this.doc, cv);
     const W = Math.round(w * dpr), H = Math.round(h * dpr);
     if (cv.width !== W) cv.width = W;
     if (cv.height !== H) cv.height = H;
@@ -2674,7 +2686,7 @@ export class PianoRoll {
     const c = this.clip();
     if (!c) return;
     if (this.el.focus && this.keysOn()) this.el.focus({ preventScroll: true });
-    const rect = this.el.getBoundingClientRect(), p = { x: e.clientX - rect.left, y: e.clientY - rect.top }, v = this.view(), m = mods(e);
+    const rect = this.el.getBoundingClientRect(), ls = wk.localScale(this.el), p = { x: (e.clientX - rect.left) * ls, y: (e.clientY - rect.top) * ls }, v = this.view(), m = mods(e);
     let G = null;
     if (p.y < RULER) { if (p.x >= KEYW) G = this.rulerDown(p, v, c, e); }
     else if (p.x < KEYW) {
@@ -2684,7 +2696,7 @@ export class PianoRoll {
     if (!G) return;
     e.preventDefault();
     // the gesture keeps the geometry and the box of its start (view(), local())
-    Object.assign(G, { id: e.pointerId, x0: p.x, y0: p.y, x1: p.x, y1: p.y, moved: false, started: false, touch: e.pointerType === 'touch', free: m.alt, v, rect });
+    Object.assign(G, { id: e.pointerId, x0: p.x, y0: p.y, x1: p.x, y1: p.y, moved: false, started: false, touch: e.pointerType === 'touch', free: m.alt, v, rect, ls });
     this.g = G;
     try { this.el.setPointerCapture(e.pointerId); } catch (err) { /* pointer gone */ }
     this.refresh();

@@ -18,6 +18,7 @@ import * as wk from '../wk.js?v=9';
 import * as S from '../song.js?v=9';
 import { PianoRoll } from '../roll.js?v=9';
 import { Arrangement } from '../arrange.js?v=9';
+import * as CW from '../cv-world.js?v=9';
 
 const { Ev, ptr, fire, place } = dom;
 // never hand a fake-DOM node to assert (its AssertionError walks the cyclic tree: tens of GB): primitives, or JSON
@@ -811,4 +812,153 @@ test('destroy() takes every listener off the window and forgets the session', ()
   touch(a, 'pointerdown', 100, 100, 1); T = 30; touch(a, 'pointerdown', 200, 100, 2, { isPrimary: false });
   g.destroy();
   eq([types.reduce((s, t) => s + win.listenerCount(t), 0), g.state().listeners, g.state().session, g.state().touches], [0, 0, null, 0]);
+});
+
+/* ------------------------------------------------------------------ the canvas camera's hooks (SPEC-canvas §4.2, §11.3) */
+// the world on the same fake window: its frames in the window's rAF queue (flushed after each touch), the layer's clock
+function canvas(d, win) {
+  const vp = d.createElement('div'), w = d.createElement('div'), ov = d.createElement('div');
+  vp.id = 'viewport'; vp._ta = 'none'; // (#viewport: touch-action none → a script session over it)
+  w.setAttribute('data-cv-world', '');
+  vp.append(w); d.body.append(vp, ov);
+  place(vp, 0, 0, 1280, 800); place(ov, 0, 0, 1280, 800);
+  const env = { win, doc: d, now: () => T, raf: f => win.requestAnimationFrame(f), caf: id => win.cancelAnimationFrame(id), setTimeout: setT, clearTimeout: clearT };
+  const world = CW.createWorld(vp, { world: w, overlay: ov, env, isBackground: el => !!el && el.classList.contains('bg') });
+  return { vp, w, world };
+}
+const hooked = ref => ({ pan: (sx, sy, at) => (ref.world ? ref.world.hooks.pan(sx, sy, at) : false), zoom: (f, cx, cy, at) => (ref.world ? ref.world.hooks.zoom(f, cx, cy, at) : false) });
+
+test('canvas: a camera pan the first finger started is never rolled back — paired, it goes on as the session\'s pan and pinch (no jump back; the content under the midpoint stays under it)', () => {
+  const ref = {}, { d, win, g } = setup(hooked(ref));
+  const { vp, world } = canvas(d, win);
+  ref.world = world;
+  touch(vp, 'pointerdown', 400, 300, 1);
+  T = 16; touch(vp, 'pointermove', 420, 300, 1);
+  T = 32; touch(vp, 'pointermove', 440, 300, 1);
+  eq(world.cam.tx, 40, 'the world\'s own one-finger pan');
+  const seen = [];
+  world.on('camera', c => seen.push(c.tx));
+  T = 100; touch(vp, 'pointerdown', 600, 300, 2, { isPrimary: false }); // within PAIR_MS: gesture.js pairs it (nav, script)
+  eq([g.state().session, g.state().native, world.cam.tx], ['nav', false, 40], 'the pan is cancelled where it is (flagged pointercancel)');
+  holdF = true; // (WebKit: one pointermove per finger of a touch event, then the frame)
+  T = 116; touch(vp, 'pointermove', 450, 300, 1); touch(vp, 'pointermove', 610, 300, 2); // midpoint +10 (> PAN_PX)
+  holdF = false; frame();
+  eq([world.cam.tx, world.k], [50, 1], 'the session pans on from the camera as it is');
+  ok(Math.min(...seen) >= 40, 'never back past where the first finger left it: ' + seen.join(','));
+  T = 132; touch(vp, 'pointermove', 650, 300, 2); // spread 160 → 200: the pinch engages (f = 1), the midpoint +20 pans
+  eq([world.cam.tx, world.k], [70, 1]);
+  const c0 = world.cam, w0 = CW.toWorld(c0, 550, 300);
+  T = 148; touch(vp, 'pointermove', 700, 300, 2); // spread 250: × 1.25 about the midpoint (575, 300)
+  const w1 = CW.toWorld(world.cam, 575, 300);
+  eq(Math.round(world.k * 1000) / 1000, 1.25);
+  ok(Math.abs(w1.x - w0.x) < 1e-9 && Math.abs(w1.y - w0.y) < 1e-9, 'the content under the midpoint moved with it');
+  T = 200; touch(vp, 'pointerup', 450, 300, 1); touch(vp, 'pointerup', 700, 300, 2);
+});
+
+test('canvas: a second finger rolls back a module drag (the bar\'s wk.dragSource cancels) and a knob, and moves the camera instead', () => {
+  const ref = {}, { d, win } = setup(hooked(ref));
+  const { w, world } = canvas(d, win);
+  ref.world = world;
+  const mod = d.createElement('div'), bar = d.createElement('div');
+  mod.setAttribute('data-cv-mod', 'i1'); bar._ta = 'none'; mod.append(bar); w.append(mod);
+  place(bar, 100, 100, 400, 40);
+  const log = [];
+  wk.dragSource(bar, { scrollAxis: 'none', autoScroll: false, begin: () => log.push('begin'), move: () => log.push('move'), drop: () => log.push('drop'), cancel: () => log.push('cancel') });
+  touch(bar, 'pointerdown', 200, 120, 1);
+  T = 20; touch(bar, 'pointermove', 220, 120, 1);
+  T = 40; touch(bar, 'pointermove', 240, 120, 1);
+  ok(log.includes('begin') && log.includes('move'), 'the bar drags');
+  T = 80; touch(world.viewport, 'pointerdown', 500, 400, 2, { isPrimary: false });
+  eq(log.at(-1), 'cancel', 'rolled back (the module returns to its start)');
+  T = 100; touch(bar, 'pointermove', 230, 140, 1); touch(world.viewport, 'pointermove', 490, 420, 2);
+  eq([log.filter(x => x === 'move').length, world.cam.ty !== 0], [2, true], 'no more drag moves; the camera moves');
+});
+
+test('canvas: the pinch engages only after PINCH_PX of spread (f starts at 1: no jump) and then gets the frame-to-frame spread ratio about the midpoint', () => {
+  const zooms = [], pans = [];
+  const { div } = setup({ pan: (sx, sy) => pans.push([sx, sy]), zoom: (f, cx, cy) => { zooms.push([Math.round(f * 1e6) / 1e6, cx, cy]); } });
+  const a = div(); a._ta = 'none';
+  eq(G.PINCH_PX, 6);
+  touch(a, 'pointerdown', 100, 300, 1); T = 30; touch(a, 'pointerdown', 300, 300, 2, { isPrimary: false });
+  T = 40; touch(a, 'pointermove', 305, 300, 2); // spread 205: 5 px — nothing yet
+  eq([zooms.length, pans.length], [0, 0]);
+  T = 50; touch(a, 'pointermove', 307, 300, 2); // 7 px: engaged — the probe at f = 1, and the pan catches up the midpoint's 3.5 px
+  eq(zooms, [[1, 203.5, 300]]);
+  eq(pans, [[-3.5, -0]]);
+  T = 60; touch(a, 'pointermove', 100 + 207 * 1.5, 300, 2);
+  eq(zooms.at(-1)[0], 1.5, 'the ratio since the last applied frame');
+  T = 70; touch(a, 'pointermove', 50, 300, 1);
+  eq(zooms.at(-1)[0], Math.round((410.5 - 50) / 310.5 * 1e6) / 1e6, 'each frame its own ratio');
+});
+
+test('canvas: hooks answering false (not the canvas: a tray, ROLL) fall through to today\'s scroller chain and page; a zoom refused is just ignored', () => {
+  const { d, win, div, g } = setup({ pan: () => false, zoom: () => false });
+  const box = div(), inner = div('div', box);
+  box._oy = 'auto'; place(box, 0, 0, 400, 300); box.scrollHeight = 1000; box.scrollTop = 500;
+  inner._ta = 'none';
+  d.elementFromPoint = () => inner;
+  win.scrollX = 0; win.scrollY = 0; win.scrollBy = () => {};
+  touch(inner, 'pointerdown', 100, 200, 1); T = 30; touch(inner, 'pointerdown', 200, 200, 2, { isPrimary: false });
+  T = 40; touch(inner, 'pointermove', 100, 180, 1); T = 50; touch(inner, 'pointermove', 200, 160, 2);
+  ok(box.scrollTop > 500, 'the tray scroller scrolled: ' + box.scrollTop);
+  eq(g.state().session, 'nav');
+});
+
+test('canvas: \'Zoom page\' pinch mode (#viewport touch-action pinch-zoom) — a two-finger drag or a drifting pinch never moves the camera (SPEC §4.3: two fingers are the browser\'s)', () => {
+  const ref = {}, { d, win, g } = setup(hooked(ref));
+  const { vp, world } = canvas(d, win);
+  ref.world = world;
+  vp._ta = 'pinch-zoom'; world.setPinchMode('page');
+  touch(vp, 'pointerdown', 400, 300, 1); T = 30; touch(vp, 'pointerdown', 600, 300, 2, { isPrimary: false });
+  eq([g.state().session, g.state().native], ['nav', false], 'a script session (no pan-x / pan-y)');
+  T = 50; touch(vp, 'pointermove', 400, 380, 1); touch(vp, 'pointermove', 600, 380, 2); // both +80: a two-finger drag
+  T = 70; touch(vp, 'pointermove', 380, 392, 1); touch(vp, 'pointermove', 640, 392, 2); // a drifting pinch
+  eq(world.cam, { tx: 0, ty: 0, k: 1 }, 'the camera stays');
+  T = 90; touch(vp, 'pointerup', 380, 392, 1); touch(vp, 'pointerup', 640, 392, 2);
+  world.setPinchMode('canvas'); vp._ta = 'none';
+});
+
+test('canvas: editor zones inside a module (graph / sample / clip editors: zoomPan → own) are the camera\'s unless the module is in edit state ([data-cv-edit]); its keys (wk.pianoKeys → music) always play chords', () => {
+  for (const edit of [false, true]) {
+    const { d, g } = setup();
+    const mod = d.createElement('div'); mod.setAttribute('data-cv-mod', 'i1'); d.body.append(mod);
+    if (edit) mod.setAttribute('data-cv-edit', '');
+    const cv = d.createElement('canvas'); mod.append(cv); place(cv, 0, 0, 300, 100);
+    const zp = wk.zoomPan(cv, { axis: 'xy', get: () => ({ x0: 0, x1: 1, y0: 0, y1: 1 }), set: () => {} });
+    eq(cv.getAttribute('data-gesture'), 'own');
+    touch(cv, 'pointerdown', 50, 50, 1); T = 30; touch(cv, 'pointerdown', 150, 50, 2, { isPrimary: false });
+    eq(g.state().session, edit ? 'own' : 'nav', edit ? 'in edit state: the editor\'s own pinch' : 'not in edit state: a nav session (the camera)');
+    T = 50; touch(cv, 'pointerup', 50, 50, 1); touch(cv, 'pointerup', 150, 50, 2);
+    zp.destroy();
+    // the Serum keyboard (music): a chord in edit state or not — keys never sleep (a camera pinch starts off them)
+    T += 2000;
+    const keys = wk.pianoKeys({ lo: 48, hi: 72, on: () => {}, off: () => {} });
+    mod.append(keys.el); place(keys.el, 0, 200, 600, 80);
+    const k1 = d.createElement('div'), k2 = d.createElement('div'); keys.el.append(k1, k2);
+    const got = []; keys.el.addEventListener('pointerdown', e => got.push(e.pointerId), true);
+    touch(k1, 'pointerdown', 50, 240, 1); T += 20; touch(k2, 'pointerdown', 120, 240, 2, { isPrimary: false });
+    eq([got.join(), g.state().session], ['1,2', null], 'a chord (music never pairs) — edit state ' + edit);
+    keys.destroy();
+  }
+});
+
+test('canvas: the momentum guard\'s consumed touch (the viewport\'s capture listener) is still seen by the two-finger layer first and pairs with a second finger', () => {
+  const ref = {}, { d, win, g } = setup(hooked(ref));
+  const { vp, w, world } = canvas(d, win);
+  ref.world = world;
+  const knob = d.createElement('div'); knob._ta = 'none'; w.append(knob);
+  let presses = 0; knob.addEventListener('pointerdown', () => presses++);
+  touch(vp, 'pointerdown', 600, 400, 1);
+  for (let i = 1; i <= 6; i++) { T += 16; touch(vp, 'pointermove', 600 - 25 * i, 400, 1); }
+  T += 8; touch(vp, 'pointerup', 450, 400, 1);
+  T += 16; win.requestAnimationFrame(() => {}); touch(vp, 'pointermove', 0, 0, 99); // (a frame: the glide runs)
+  ok(world.busy, 'gliding');
+  T += 300; // gesture.js's grace after a lone touch is irrelevant here; the glide goes on (≈ 300 ms decay)
+  const e1 = touch(knob, 'pointerdown', 300, 300, 3);
+  eq([presses, g.state().touches], [0, 1], 'consumed by the viewport, recorded by the layer');
+  T += 40; touch(vp, 'pointerdown', 420, 300, 4, { isPrimary: false });
+  eq(g.state().session, 'nav', 'the consumed touch paired');
+  T += 16; touch(vp, 'pointermove', 300, 330, 3); touch(vp, 'pointermove', 420, 330, 4);
+  ok(world.cam.ty > 0, 'the session pans the camera');
+  void e1;
 });

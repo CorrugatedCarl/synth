@@ -489,6 +489,28 @@ export class History {
 /* ------------------------------------------------------- persistence */
 export function serialize(project) { return JSON.stringify(project); }
 
+// SYNTH Canvas stage 1b (SPEC-canvas §5.1, IMPL-1b §4.9): a track's module layout, view only (never compiled, never in
+// presets): { [module id]: { x, y, w?, fold?: 1, z? } } in world px. Invalid entries are dropped; nothing valid → undefined
+// (deserialize then adds no key: an old track's History snapshot stays byte-identical).
+const LAY_KEY = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-z0-9]{0,15})?$/;
+const finN = x => typeof x === 'number' && Number.isFinite(x);
+export function normLay(lay) {
+  if (!isObj(lay)) return undefined;
+  const out = {};
+  let n = 0;
+  for (const k of Object.keys(lay)) {
+    if (n >= 64) break;
+    const e = lay[k];
+    if (k === '__proto__' || !LAY_KEY.test(k) || !isObj(e) || !finN(e.x) || !finN(e.y)) continue;
+    const o = { x: clamp(R(e.x), -1e6, 1e6), y: clamp(R(e.y), -1e6, 1e6) };
+    if (finN(e.w)) o.w = clamp(R(e.w), 120, 4000);
+    if (e.fold) o.fold = 1;
+    if (finN(e.z)) o.z = clamp(R(e.z), 1, 1e6);
+    out[k] = o; n++;
+  }
+  return n ? out : undefined;
+}
+
 export function deserialize(json) {
   let o = json;
   if (typeof json === 'string') {
@@ -527,7 +549,7 @@ export function deserialize(json) {
     const notes = [], cc = [];
     if (Array.isArray(r.notes)) for (const x of r.notes) { const c = mkNote(x); if (c) notes.push(c); }
     if (Array.isArray(r.cc)) for (const x of r.cc) { const c = mkCC(x); if (c) cc.push(c); }
-    p.tracks.push({
+    const tr = {
       id, name: str(r.name, 'Track ' + (i + 1), 100),
       color: typeof r.color === 'string' && /^#[0-9a-f]{6}$/i.test(r.color) ? r.color.toLowerCase() : TRACK_COLORS[i % TRACK_COLORS.length],
       model: typeof r.model === 'string' && /^[\w-]{1,32}$/.test(r.model) ? r.model : 'minimoog',
@@ -535,7 +557,10 @@ export function deserialize(json) {
       ch: clamp(R(num(r.ch, 0)), 0, 16), mute: bool(r.mute, false), solo: bool(r.solo, false), arm: bool(r.arm, false),
       vol: clamp(num(r.vol, 0.8), 0, 1.25), pan: clamp(num(r.pan, 0), -1, 1),
       notes: sortNotes(notes), cc: sortCC(cc),
-    });
+    };
+    const lay = normLay(r.lay); // (canvas stage 1b; absent = Tidy)
+    if (lay) tr.lay = lay;
+    p.tracks.push(tr);
   });
   if (!p.tracks.length) p.tracks.push(newTrack(p));
   p.selTrack = p.tracks.some(t => t.id === o.selTrack) ? o.selTrack : p.tracks[0].id;

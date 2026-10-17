@@ -25,6 +25,13 @@
 // " *" copy); a Shift/Alt modifier bar in touch mode (wk.touchMode, or the first touch inside the editor).
 import * as wk from './wk.js?v=9';
 import * as wt from './wt.js?v=9';
+// a canvas's layout box { w, h } and, with e, the pointer in it { x, y } (layout px): the editor may sit under the canvas
+// world's CSS scale, where getBoundingClientRect is screen px (SPEC-canvas §4.7)
+function lbox(cv, e) {
+  const r = cv.getBoundingClientRect(), k = wk.localScale(cv);
+  const w = cv.clientWidth || (r.width || 1) * k, h = cv.clientHeight || (r.height || 1) * k;
+  return e ? { w, h, x: (e.clientX - r.left) * k, y: (e.clientY - r.top) * k } : { w, h };
+}
 
 const FRAME = 2048, MAXF = 256;
 const STORE_KEY = 'synth.sx.wte', FORMULA_KEY = 'synth.sx.formulas';
@@ -237,17 +244,18 @@ const CSS = `
 .wte-zone { flex: 1 1 0; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--sx-ink, #dfe6ee); border: 1px dashed var(--sx-mute, #7f8b98); border-radius: 6px; font: 600 11px/1.3 var(--ui, system-ui, sans-serif); letter-spacing: 0.05em; text-transform: uppercase; }
 .wte-zone.wte-hot { border-style: solid; border-color: var(--sx-accent, #4fb3ff); background: rgba(79, 179, 255, 0.12); }
 .wte-busy { position: absolute; inset: 0; z-index: 4; display: flex; align-items: center; justify-content: center; color: var(--sx-mute, #7f8b98); background: var(--sx-bg, #0f1216); font-size: 13px; }
+/* (a window-width rule: not inside the canvas world, where the editor's width is the module's) */
 @media (max-width: 760px) {
-  .wte-root { min-height: 0; padding: 6px; overflow-y: auto; }
-  .wte-fft { flex-direction: column; height: auto; }
-  .wte-fftw { flex: 0 0 130px; }
-  .wte-mid { flex: 0 0 auto; flex-direction: column; min-height: 0; }
-  .wte-tools { grid-template-columns: repeat(6, 32px); }
-  .wte-wavew { flex: 0 0 auto; }
-  .wte-cvw { flex: 0 0 180px; }
-  .wte-side, .wte-fside { width: auto; flex-direction: row; align-items: center; }
-  .wte-foot { flex-wrap: wrap; height: auto; }
-  .wte-strip { flex: 1 1 100%; height: 60px; }
+  .wte-root:where(:not([data-cv-world] *)) { min-height: 0; padding: 6px; overflow-y: auto; }
+  .wte-fft:where(:not([data-cv-world] *)) { flex-direction: column; height: auto; }
+  .wte-fftw:where(:not([data-cv-world] *)) { flex: 0 0 130px; }
+  .wte-mid:where(:not([data-cv-world] *)) { flex: 0 0 auto; flex-direction: column; min-height: 0; }
+  .wte-tools:where(:not([data-cv-world] *)) { grid-template-columns: repeat(6, 32px); }
+  .wte-wavew:where(:not([data-cv-world] *)) { flex: 0 0 auto; }
+  .wte-cvw:where(:not([data-cv-world] *)) { flex: 0 0 180px; }
+  .wte-side:where(:not([data-cv-world] *)), .wte-fside:where(:not([data-cv-world] *)) { width: auto; flex-direction: row; align-items: center; }
+  .wte-foot:where(:not([data-cv-world] *)) { flex-wrap: wrap; height: auto; }
+  .wte-strip:where(:not([data-cv-world] *)) { flex: 1 1 100%; height: 60px; }
 }
 @media (pointer: coarse) { .wte-btn, .wte-fnum, .wte-gin { min-height: 32px; } }
 `;
@@ -661,6 +669,7 @@ export class WTEditor {
       this.ro = new win.ResizeObserver(() => this.invalidate());
       this.ro.observe(R);
     } else if (win && win.addEventListener) this.on(win, 'resize', () => this.invalidate());
+    this.offs.push(wk.onRescale(R, () => this.invalidate())); // the canvas world's zoom ended: stores at the new k
   }
   dropOff() { this.drop.classList.remove('wte-on'); for (const z of this.zones) z.classList.remove('wte-hot'); }
 
@@ -1263,9 +1272,9 @@ export class WTEditor {
 
   /* ------------------------------------------------------------ pointer: waveform */
   wavePos(e) {
-    const r = this.waveCv.getBoundingClientRect(), w = r.width || 1, h = r.height || 1, pad = 6;
+    const B = lbox(this.waveCv, e), w = B.w, h = B.h, pad = 6;
     const z = this.prefs.waveZoom, x0 = this.waveScroll * (1 - 1 / z);
-    return { x: clamp(x0 + (e.clientX - r.left) / w / z, 0, 1), y: clamp(1 - 2 * (e.clientY - r.top - pad) / Math.max(1, h - 2 * pad), -1, 1) };
+    return { x: clamp(x0 + B.x / w / z, 0, 1), y: clamp(1 - 2 * (B.y - pad) / Math.max(1, h - 2 * pad), -1, 1) };
   }
   capture(cv, e) { try { cv.setPointerCapture(e.pointerId); } catch (err) { /* pointer gone */ } }
   waveDown(e) {
@@ -1332,13 +1341,13 @@ export class WTEditor {
   }
 
   /* ------------------------------------------------------------ pointer: FFT area */
-  fftGeom() {
-    const r = this.fftCv.getBoundingClientRect(), w = r.width || 1, h = r.height || 1, gap = 6;
+  fftGeom(e) { // layout px, as paintFFT draws (the pointer too, with e)
+    const B = lbox(this.fftCv, e), w = B.w, h = B.h, gap = 6;
     const magH = Math.round((h - gap) * 0.62);
-    return { r, w, h, magH, phTop: magH + gap, phH: h - magH - gap, n: this.prefs.binZoom };
+    return { w, h, magH, phTop: magH + gap, phH: h - magH - gap, n: this.prefs.binZoom, x: B.x, y: B.y };
   }
   fftHit(e) {
-    const G = this.fftGeom(), x = e.clientX - G.r.left, y = e.clientY - G.r.top;
+    const G = this.fftGeom(e), x = G.x, y = G.y;
     const k = clamp(1 + Math.floor(x / G.w * G.n), 1, G.n), row = y < G.magH + 3 ? 'mag' : 'ph';
     const v = row === 'mag' ? clamp(1 - y / G.magH, 0, 1) * this.magRange : clamp(1 - (y - G.phTop) / G.phH, 0, 1);
     return { k, row, v, G };
@@ -1436,13 +1445,13 @@ export class WTEditor {
   }
 
   /* ------------------------------------------------------------ pointer: thumbnails */
-  thumbAt(clientX) {
+  thumbAt(clientX) { // (client px → the strip's layout px: the canvas world may scale the editor)
     const r = this.strip.getBoundingClientRect(), R = this.table ? this.table.frames.length : 1;
-    return clamp(Math.floor((clientX - r.left + this.strip.scrollLeft) / TW), 0, R - 1);
+    return clamp(Math.floor(((clientX - r.left) * wk.localScale(this.strip) + this.strip.scrollLeft) / TW), 0, R - 1);
   }
   gapAt(clientX) {
     const r = this.strip.getBoundingClientRect(), R = this.table.frames.length;
-    return clamp(Math.round((clientX - r.left + this.strip.scrollLeft) / TW), 0, R);
+    return clamp(Math.round(((clientX - r.left) * wk.localScale(this.strip) + this.strip.scrollLeft) / TW), 0, R);
   }
   thumbDown(e) {
     if (!this.table || e.button !== 0 || this.g) return;
@@ -1528,9 +1537,11 @@ export class WTEditor {
     }
     d.clear();
   }
-  fit(cv) {
-    const r = cv.getBoundingClientRect(), dpr = Math.min(3, this.win.devicePixelRatio || 1);
-    const w = Math.max(1, Math.round(r.width)), h = Math.max(1, Math.round(r.height));
+  fit(cv) { // drawn in layout px; the store at the device ratio × the canvas world's zoom (≤ 16e6 px)
+    const B = lbox(cv), k = 1 / wk.localScale(cv);
+    const w = Math.max(1, Math.round(B.w)), h = Math.max(1, Math.round(B.h));
+    let dpr = clamp(Math.min(3, this.win.devicePixelRatio || 1) * k, 0.5, 3);
+    if (w * h * dpr * dpr > 16e6) dpr = Math.sqrt(16e6 / (w * h));
     if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
     const g = cv.getContext('2d');
     if (!g) return null;

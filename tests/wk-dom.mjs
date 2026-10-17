@@ -148,8 +148,12 @@ export class El extends Tgt {
     const r = this._rect || { left: parseFloat(this.style.left) || 0, top: parseFloat(this.style.top) || 0, width: 40, height: 40 };
     return { left: r.left, top: r.top, width: r.width, height: r.height, right: r.left + r.width, bottom: r.top + r.height, x: r.left, y: r.top };
   }
-  get clientWidth() { return this._rect ? this._rect.width : 0; }
-  get clientHeight() { return this._rect ? this._rect.height : 0; }
+  get clientWidth() { return this._off ? this._off.w : this._rect ? this._rect.width : 0; }
+  get clientHeight() { return this._off ? this._off.h : this._rect ? this._rect.height : 0; }
+  // the layout box (offsetWidth / -Height): the placed rect's size, or layout(el, w, h)'s — an element under a CSS
+  // transform (the canvas world's scale k: rect = layout · k)
+  get offsetWidth() { return this._off ? this._off.w : this._rect ? this._rect.width : 0; }
+  get offsetHeight() { return this._off ? this._off.h : this._rect ? this._rect.height : 0; }
   setPointerCapture(id) { this._cap = id; }
   releasePointerCapture(id) { if (this._cap === id) this._cap = null; }
   getContext(kind) { if (this.localName !== 'canvas' || kind !== '2d') return null; return this._ctx || (this._ctx = ctx2d(this)); }
@@ -223,3 +227,5 @@ export const key = (el, k, o = {}) => fire(el, 'keydown', Object.assign({ key: k
 export const setPlatform = p => Object.defineProperty(globalThis, 'navigator', { value: { platform: p }, configurable: true, writable: true });
 // Places an element's box (getBoundingClientRect / clientWidth) for geometry-dependent tests.
 export function place(el, left, top, width, height) { el._rect = { left, top, width, height }; return el; }
+// An element's layout size apart from its screen rect (place): offsetWidth / -Height = w / h (a scaled ancestor).
+export function layout(el, w, h) { el._off = { w, h }; return el; }

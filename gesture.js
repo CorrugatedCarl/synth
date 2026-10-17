@@ -52,10 +52,20 @@
 //   · WebKit GestureEvents: not passed on during a nav session (the roll / arrangement would take them for a
 //     trackpad pinch), never preventDefault-ed (passive: the page's pinch stays the browser's, a Mac trackpad's too).
 // Pen and mouse pointers are never paired or swallowed.
-// API: installGestures(win, { pan(dx, dy, at)?, now, event, setTimeout, clearTimeout (tests) }) → { claim(pointerId,
-// { cancel }) → unclaim, busy(), state(), destroy() }.
+// The canvas camera (SPEC-canvas §4.2; cv-world.js) takes a script session's pan and pinch through two hooks, routed by
+// place: pan(sx, sy, at) — the midpoint's travel in scroll convention (sx = −Δx, CSS px), at = { cx, cy } the session's
+// grip (client px) — returns false to leave it to the scroller chain and the page as above (trays, roll), anything else
+// takes it; zoom(f, cx, cy, at) — the spread's ratio since the last applied frame, about the midpoint (cx, cy) now: it
+// engages once the spread changed PINCH_PX on the glass since the grip and starts at f = 1 (no jump); per frame the pan
+// first, then the zoom, so the content under the midpoint stays under it. A camera pan the first finger started is never
+// rolled back (the canvas registers no claim(): it keeps its camera at the flagged pointercancel and the session goes on
+// from there). Inside a canvas module ([data-cv-mod]) an 'own' zone counts only while the module is in edit state
+// ([data-cv-edit]): otherwise the walk goes on up, so a pinch on a module's graph moves the camera. A 'music' zone (the
+// module's keys) always counts: its chords play, as today (a camera pinch starts off the keys, as on the tray keyboard).
+// API: installGestures(win, { pan(sx, sy, at)?, zoom(f, cx, cy, at)?, now, event, setTimeout, clearTimeout (tests) }) →
+// { claim(pointerId, { cancel }) → unclaim, busy(), state(), destroy() }.
 export const PAIR_MS = 250, PAIR_DIST = 600, STILL_PX = 10, LATE_MS = 1200, LATE_PX = 360, EDGE_PX = 24;
-export const GRACE_MS = 400, REGRIP_MS = 400, WATCHDOG_MS = 3000, PAN_PX = 8;
+export const GRACE_MS = 400, REGRIP_MS = 400, WATCHDOG_MS = 3000, PAN_PX = 8, PINCH_PX = 6;
 // WebKit bug 181954 (iOS): right after the page scrolled by script, a touch / pen move (or two) may report clientX /
 // clientY off by hundreds of px. jumpy(last, x, y, t, at): a move to (x, y) at t, more than JUMP_PX from the last
 // good point { x, y }, within JUMP_MS of a script scroll of the page at `at` (null: none) — the caller drops it, never
@@ -65,10 +75,16 @@ export const jumpy = (last, x, y, t, at) => at != null && t - at < JUMP_MS && Ma
 
 const BLOCK = ['click', 'dblclick', 'auxclick', 'mousedown', 'mouseup', 'contextmenu'];
 const OVER = /^(auto|scroll|overlay)$/;
+// an own zone inside a canvas module that is not in edit state sleeps (the camera's); music never does (keys never pair:
+// a two-finger press on Serum's keyboard or the ARP / CLIP slot keys is a chord far more often than a pinch)
+const asleep = n => {
+  for (let m = n; m && typeof m.getAttribute === 'function'; m = m.parentNode) if (m.getAttribute('data-cv-mod') != null) return m.getAttribute('data-cv-edit') == null;
+  return false;
+};
 const zoneOf = t => {
   for (let n = t; n && typeof n.getAttribute === 'function'; n = n.parentNode) {
     const z = n.getAttribute('data-gesture');
-    if (z) return { kind: z, el: n };
+    if (z && !(z === 'own' && asleep(n))) return { kind: z, el: n };
   }
   return { kind: '', el: null };
 };
@@ -107,7 +123,7 @@ export function installGestures(win, opts) {
   // the range inputs under a session's fingers ({ el, v }): their thumbs may follow a finger (its touchmove's default
   // handling is the browser's, never prevented), so their values go back again when the last touch ends
   const late = new Set();
-  // S: { kind: 'nav' | 'own', ids, el (own: its element), at (its last event), native, base / last (frames), panOn,
+  // S: { kind: 'nav' | 'own', ids, el (own: its element), at (its last event), native, base / last (frames), panOn, zoomOn,
   // carry (sub-px scroll), chain (scrollers), rootT (the page scrolled), regrip / dog (timers) }
   let S = null, suppressUntil = -1;
   const suppressing = () => !!S || now() < suppressUntil;
@@ -198,7 +214,7 @@ export function installGestures(win, opts) {
 
   /* the session */
   function open(kind, q, p, t) {
-    S = { kind, ids: new Set([q.id, p.id]), el: null, at: t, native: false, base: null, last: null, panOn: false,
+    S = { kind, ids: new Set([q.id, p.id]), el: null, at: t, native: false, base: null, last: null, panOn: false, zoomOn: false,
       carry: { x: 0, y: 0 }, chain: null, rootT: null, regrip: 0, dog: 0 };
     watch(S, WATCHDOG_MS);
   }
@@ -219,11 +235,11 @@ export function installGestures(win, opts) {
     suppressUntil = now() + GRACE_MS;
   }
   function reset() { if (S) { spend(S); finish(); } } // the page went away under the fingers
-  function frame() { // the midpoint of the first two session touches
+  function frame() { // the midpoint and spread of the first two session touches
     const a = [];
     for (const id of S.ids) { const p = pts.get(id); if (p && !p.spent) a.push(p); if (a.length === 2) break; }
     if (a.length < 2) return null;
-    return { cx: (a[0].x + a[1].x) / 2, cy: (a[0].y + a[1].y) / 2 };
+    return { cx: (a[0].x + a[1].x) / 2, cy: (a[0].y + a[1].y) / 2, d: Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y) };
   }
   function rebase() { S.base = S.last = frame(); } // the fingers changed: go on from here (no jump)
   function regrip() { // one finger left: another may come within REGRIP_MS, else it is spent and the session over
@@ -240,13 +256,21 @@ export function installGestures(win, opts) {
   function track() { // the script's pan: the midpoint's travel, once past PAN_PX from the grip (the travel so far too)
     const f = frame();
     if (!f || !S.base) return;
-    let dx = f.cx - S.last.cx, dy = f.cy - S.last.cy;
+    const L = S.last;
+    let dx = f.cx - L.cx, dy = f.cy - L.cy, zf = 1;
     S.last = f;
+    // the zoom hook's pinch: the spread's ratio frame to frame once it changed PINCH_PX since the grip — engaged when the
+    // hook takes f = 1 there (no jump); it engages the pan too (the content under the midpoint stays under it)
+    if (typeof o.zoom === 'function') {
+      if (S.zoomOn) zf = L.d > 0 && f.d > 0 ? f.d / L.d : 1;
+      else if (Math.abs(f.d - S.base.d) > PINCH_PX * perPt() && o.zoom(1, f.cx, f.cy, S.base) !== false) S.zoomOn = true;
+    }
     if (!S.panOn) {
-      if (Math.hypot(f.cx - S.base.cx, f.cy - S.base.cy) <= PAN_PX * perPt()) return;
+      if (!S.zoomOn && Math.hypot(f.cx - S.base.cx, f.cy - S.base.cy) <= PAN_PX * perPt()) return;
       S.panOn = true; dx = f.cx - S.base.cx; dy = f.cy - S.base.cy;
     }
     if (dx || dy) panBy(S, -dx, -dy);
+    if (zf !== 1 && isFinite(zf)) o.zoom(zf, f.cx, f.cy, S.base);
   }
 
   /* the pan */
@@ -274,7 +298,7 @@ export function installGestures(win, opts) {
   // scroll by (dx, dy): the nearest scroller under the session's midpoint that can still go that way (each axis on its
   // own), what it can't take to the next one out, the rest to the page; whole px, the remainders carried
   function panBy(s, dx, dy) {
-    if (typeof o.pan === 'function') { o.pan(dx, dy, s.base); return; }
+    if (typeof o.pan === 'function' && o.pan(dx, dy, s.base) !== false) return; // (false: not the canvas's — scroll as below)
     const c = s.carry;
     c.x += dx; c.y += dy;
     let lx = c.x < 0 ? Math.ceil(c.x) : Math.floor(c.x), ly = c.y < 0 ? Math.ceil(c.y) : Math.floor(c.y);

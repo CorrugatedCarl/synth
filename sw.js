@@ -37,15 +37,16 @@
  */
 'use strict';
 const VERSION = '9';
-const BUILD = '6ee5c3f8b067'; // (tools/precache.mjs --write: a hash of the precached files)
+const BUILD = '628d04df1ca4'; // (tools/precache.mjs --write: a hash of the precached files)
 // (tools/precache.mjs --write rewrites these two lists from the sources)
 const ASSETS = [
-  'appstore.js', 'arrange.js', 'assets.js', 'audioclock.js', 'engine.js', 'fx-core.js', 'fx-dsp.js', 'fx-mods2.js',
-  'fx-ui.js', 'gesture.js', 'graph.js', 'laws.js', 'main.js', 'midi.js', 'models.js', 'pwa.js', 'roll.js',
-  'seq-core.js', 'serum-core.js', 'serum-dsp.js', 'serum-ui.js', 'smp.js', 'smpgen.js', 'smprender.js', 'smpstore.js',
-  'smpwork.js', 'song.js', 'style.css', 'sx-base.js', 'sx-filt2.js', 'sx-gran.js', 'sx-mod.js', 'sx-sample.js',
-  'sx-seq.js', 'sx-spec.js', 'sx-ui-mix.js', 'sx-ui-osc.js', 'sx-ui-seq.js', 'sx-warp.js', 'tuning.js', 'wk.js',
-  'wt.js', 'wtedit.js', 'wtstore.js', 'wtwork.js',
+  'appstore.js', 'arrange.js', 'assets.js', 'audioclock.js', 'cv-art.js', 'cv-cables.js', 'cv-graph.js',
+  'cv-migrate.js', 'cv-mods.js', 'cv-module.js', 'cv-tray.js', 'cv-world.js', 'engine.js', 'fx-core.js', 'fx-dsp.js',
+  'fx-mods2.js', 'fx-ui.js', 'gesture.js', 'graph.js', 'laws.js', 'main.js', 'midi.js', 'models.js', 'pwa.js',
+  'roll.js', 'seq-core.js', 'serum-core.js', 'serum-dsp.js', 'serum-ui.js', 'smp.js', 'smpgen.js', 'smprender.js',
+  'smpstore.js', 'smpwork.js', 'song.js', 'style.css', 'sx-base.js', 'sx-filt2.js', 'sx-gran.js', 'sx-mod.js',
+  'sx-sample.js', 'sx-seq.js', 'sx-spec.js', 'sx-ui-mix.js', 'sx-ui-osc.js', 'sx-ui-seq.js', 'sx-warp.js', 'tuning.js',
+  'wk.js', 'wt.js', 'wtedit.js', 'wtstore.js', 'wtwork.js',
 ];
 const STATIC = [
   './', 'icons/apple-touch-icon-180.png', 'icons/favicon-32.png', 'icons/icon-192.png', 'icons/icon-512.png',

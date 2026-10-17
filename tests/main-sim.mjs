@@ -305,7 +305,7 @@ export async function bootMain(o = {}) {
     root[pre ? 'webkitRequestFullscreen' : 'requestFullscreen'] = function (opt) { sim.fsCalls = (sim.fsCalls || []).concat([['enter', opt]]); D[el] = root; fsChange(); return pre ? undefined : Promise.resolve(); };
     D[pre ? 'webkitExitFullscreen' : 'exitFullscreen'] = function () { sim.fsCalls = (sim.fsCalls || []).concat([['exit']]); D[el] = null; fsChange(); return pre ? undefined : Promise.resolve(); };
   }
-  G.__synthTest = {};
+  G.__synthTest = Object.assign({}, o.synthTest || {}); // o.synthTest: hooks main.js reads while it boots (canvas-sim: cvWorld)
   const url = new URL('main.js?v=9&sim=' + (++boots), ROOT).href;
   await import(url);
   const api = G.__synthTest.api;
