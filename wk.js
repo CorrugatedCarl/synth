@@ -1,6 +1,7 @@
 // wk.js — widget kit and shared browser infrastructure for the Serum panel, the FX rack and the editors
-// (SPEC-serum §8.7.1, §9.1, §9.4). Browser ES module with no imports; nothing touches document / window /
-// navigator at module top level, so node can import it (pure tests, §10.6).
+// (SPEC-serum §8.7.1, §9.1, §9.4). Browser ES module; its one import, gesture.js (the WebKit 181954 move filter it
+// shares with the two-finger layer), is DOM-free too: nothing touches document / window / navigator at module top
+// level, so node can import it (pure tests, §10.6).
 //
 // Exports: setPrefs/getPrefs, injectStyles, knob, numBox, menu, toggle, seg, slider, contextMenu, tooltip, loadDSP,
 // plus shared infrastructure for graph.js / fx-ui.js / serum-ui.js: menuSource, fireContext, theme, fitCanvas, frame,
@@ -9,8 +10,8 @@
 // Phase 2 (SPEC-serum2 §11.14, §13.1): fader, meter, xyPad, rangeBar, pianoKeys, stepGrid, iconSeg, modifierBar,
 // dragSource, longPress, zoomPan. Their pure maths hang off the widget functions (no extra exports): meter.pos,
 // fader.nAt, rangeBar.drag / .norm / .parse, pianoKeys.layout / .hit / .velocity / .noteName, stepGrid.valueAt,
-// zoomPan.zoom / .pan, modifierBar.mods / .consume (the touch modifier latches every gesture reads), tooltip.textOf
-// (a touch status line's text) and loadDSP.URLS (the §0.3 list, the default).
+// zoomPan.zoom / .pan, modifierBar.mods / .consume (the touch modifier latches every gesture reads), dragSource.edge (the
+// edge auto-scroll speed), tooltip.textOf (a touch status line's text) and loadDSP.URLS (the §0.3 list, the default).
 //
 // Conventions shared by every widget:
 //   · values are normalised n ∈ [0,1] unless the widget says otherwise (menu items carry their own `v`);
@@ -21,6 +22,7 @@
 //     marker shows only while |live − base| > 0.002 (base = the control's own n, or an optional `base` field);
 //   · ContextMenu / Shift+F10 and a 500 ms touch long-press dispatch a `contextmenu` MouseEvent on the
 //     focusable element (bubbles), so one `contextmenu` listener serves mouse, keyboard and touch.
+import { jumpy } from './gesture.js?v=8';
 
 const SVG = 'http://www.w3.org/2000/svg';
 const prefs = { tooltips: 1, dblClick: 'type', wheel: 1 };
@@ -37,6 +39,10 @@ const num01 = v => clamp(+v || 0, 0, 1); // NaN / undefined → 0
 const snap = (n, steps) => steps > 0 ? Math.round(num01(n) * steps) / steps : num01(n);
 const isMac = () => { const n = globalThis.navigator; return !!n && /Mac|iPhone|iPad|iPod/.test(n.platform || ''); };
 const ctxKey = e => e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey);
+// The two-finger layer (gesture.js) asks the first finger's owner to roll back with a synthetic pointercancel flagged
+// e.gesture === 'two-finger': the widgets restore the pre-gesture value ('move' + 'end' with it) and keep the modifier
+// latches for the next gesture; a plain pointercancel (a system interruption) keeps the value, as before.
+const twoF = e => !!e && e.gesture === 'two-finger';
 
 function h(tag, cls, text) {
   const e = D().createElement(tag);
@@ -326,7 +332,7 @@ export function knob(o) {
     focus();
     if (e.metaKey || e.ctrlKey) { reset(); return; } // Cmd/Ctrl-click = reset to def
     const n0 = num01(o.get()), steps = stepsOf();
-    g = { id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, n: n0, k0: 0, p: n0, moved: false, touch: lastType === 'touch', lp: null, steps };
+    g = { id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, n: n0, n0, k0: 0, p: n0, moved: false, touch: lastType === 'touch', lp: null, steps };
     if (steps) g.p = g.k0 = Math.round(n0 * steps);
     try { el.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
     el.classList.add('wk-drag');
@@ -371,16 +377,17 @@ export function knob(o) {
     dets.forEach((v, i) => { const d = Math.abs(p - v); if (d <= Math.min(r, detW.w[i]) && d < bd) { bd = d; best = v; } });
     return best;
   }
-  function finish() {
+  function finish(back) { // back: a two-finger rollback (twoF) — the value from before the press
     if (!g) return null;
     const G = g;
     g = null;
     if (G.lp) G.lp.cancel();
     try { el.releasePointerCapture(G.id); } catch (err) { /* already released */ }
     el.classList.remove('wk-drag');
+    if (back === true) { G.n = G.n0; o.set(G.n, 'move'); lastTap = null; }
     o.set(G.n, 'end');
     update();
-    consumeLatches();
+    if (back !== true) consumeLatches();
     return G;
   }
   el.addEventListener('pointerup', e => {
@@ -390,7 +397,7 @@ export function knob(o) {
     if (lastTap && e.timeStamp - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 24) { lastTap = null; edit(); }
     else lastTap = { t: e.timeStamp, x: e.clientX, y: e.clientY };
   });
-  el.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(); });
+  el.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(twoF(e)); });
   el.addEventListener('lostpointercapture', e => { if (g && e.pointerId === g.id) finish(); });
   el.addEventListener('contextmenu', () => { if (g) { lastTap = null; finish(); } });
   el.addEventListener('dblclick', e => {
@@ -912,7 +919,7 @@ export function numBox(o) {
     focus();
     if (e.metaKey || e.ctrlKey) { reset(); return; }
     const st = stepsOf(), n0 = num01(o.get()), k0 = Math.round(n0 * st);
-    g = { id: e.pointerId, y: e.clientY, x0: e.clientX, y0: e.clientY, st, k0, p: k0, k: k0, px: st > 100 ? 800 / st : 8, moved: false, touch: lastType === 'touch', lp: null };
+    g = { id: e.pointerId, y: e.clientY, x0: e.clientX, y0: e.clientY, st, k0, p: k0, k: k0, n0, px: st > 100 ? 800 / st : 8, moved: false, touch: lastType === 'touch', lp: null };
     try { el.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
     el.classList.add('wk-drag');
     o.set(n0, 'start');
@@ -929,16 +936,17 @@ export function numBox(o) {
     const k = g.p >= g.k0 ? Math.floor(g.p + 1e-9) : Math.ceil(g.p - 1e-9);
     if (k !== g.k) { g.k = k; o.set(k / g.st + 0, 'move'); update(); }
   });
-  function finish() {
+  function finish(back) { // back: a two-finger rollback (twoF)
     if (!g) return null;
     const G = g;
     g = null;
     if (G.lp) G.lp.cancel();
     try { el.releasePointerCapture(G.id); } catch (err) { /* already released */ }
     el.classList.remove('wk-drag');
-    o.set(G.k / G.st + 0, 'end');
+    if (back === true) { o.set(G.n0, 'move'); o.set(G.n0, 'end'); lastTap = null; }
+    else o.set(G.k / G.st + 0, 'end');
     update();
-    consumeLatches();
+    if (back !== true) consumeLatches();
     return G;
   }
   el.addEventListener('pointerup', e => {
@@ -948,7 +956,7 @@ export function numBox(o) {
     if (lastTap && e.timeStamp - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 24) { lastTap = null; edit(); }
     else lastTap = { t: e.timeStamp, x: e.clientX, y: e.clientY };
   });
-  el.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(); });
+  el.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(twoF(e)); });
   el.addEventListener('lostpointercapture', e => { if (g && e.pointerId === g.id) finish(); });
   el.addEventListener('contextmenu', () => { if (g) { lastTap = null; finish(); } });
   el.addEventListener('dblclick', e => {
@@ -1170,7 +1178,7 @@ function sliderCore(o) {
     focus();
     if (e.metaKey || e.ctrlKey) { reset(); return; }
     const n0 = num01(o.get()), pos = posOf(e);
-    g = { id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, len: pos.len, p: n0, n: n0, moved: false, touch: lastType === 'touch', lp: null };
+    g = { id: e.pointerId, x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, len: pos.len, p: n0, n: n0, n0, moved: false, touch: lastType === 'touch', lp: null };
     try { el.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
     el.classList.add('wk-drag');
     o.set(n0, 'start');
@@ -1193,16 +1201,17 @@ function sliderCore(o) {
     const n = snap(g.p, stepsOf());
     if (n !== g.n) { g.n = n; o.set(n, 'move'); update(); }
   });
-  function finish() {
+  function finish(back) { // back: a two-finger rollback (twoF) — also undoes the jump of the press
     if (!g) return null;
     const G = g;
     g = null;
     if (G.lp) G.lp.cancel();
     try { el.releasePointerCapture(G.id); } catch (err) { /* already released */ }
     el.classList.remove('wk-drag');
+    if (back === true) { G.n = G.n0; o.set(G.n, 'move'); lastTap = null; }
     o.set(G.n, 'end');
     update();
-    consumeLatches();
+    if (back !== true) consumeLatches();
     return G;
   }
   el.addEventListener('pointerup', e => {
@@ -1212,7 +1221,7 @@ function sliderCore(o) {
     if (lastTap && e.timeStamp - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 24) { lastTap = null; edit(); }
     else lastTap = { t: e.timeStamp, x: e.clientX, y: e.clientY };
   });
-  el.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(); });
+  el.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(twoF(e)); });
   el.addEventListener('lostpointercapture', e => { if (g && e.pointerId === g.id) finish(); });
   el.addEventListener('contextmenu', () => { if (g) { lastTap = null; finish(); } });
   el.addEventListener('dblclick', e => {
@@ -1490,6 +1499,7 @@ export function xyPad(o) {
     if (e.metaKey || e.ctrlKey) { reset(); return; }
     const p = posOf(e);
     g = { id: e.pointerId, px: e.clientX, py: e.clientY, x: gx(), y: gy(), w: p.w, h: p.h, lp: null };
+    g.x0 = g.x; g.y0 = g.y;
     try { pad.setPointerCapture(e.pointerId); } catch (err) { /* pointer gone */ }
     el.classList.add('wk-drag');
     X.set(g.x, 'start'); Y.set(g.y, 'start');
@@ -1513,19 +1523,20 @@ export function xyPad(o) {
     if (ny !== g.y) { g.y = ny; Y.set(ny, 'move'); }
     update();
   });
-  function finish() {
+  function finish(back) { // back: a two-finger rollback (twoF) — also undoes the jump of the press
     if (!g) return;
     const G = g;
     g = null;
     if (G.lp) G.lp.cancel();
     try { pad.releasePointerCapture(G.id); } catch (err) { /* released */ }
     el.classList.remove('wk-drag');
+    if (back === true) { G.x = G.x0; G.y = G.y0; X.set(G.x, 'move'); Y.set(G.y, 'move'); }
     X.set(G.x, 'end'); Y.set(G.y, 'end');
     update();
-    consumeLatches();
+    if (back !== true) consumeLatches();
   }
   pad.addEventListener('pointerup', e => { if (g && e.pointerId === g.id) finish(); });
-  pad.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(); });
+  pad.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(twoF(e)); });
   pad.addEventListener('lostpointercapture', e => { if (g && e.pointerId === g.id) finish(); });
   pad.addEventListener('contextmenu', e => {
     if (g) finish();
@@ -1684,7 +1695,7 @@ export function rangeBar(o) {
     else if (x <= xLo) { part = 'lo'; r0 = [v, hi]; }
     else { part = 'hi'; r0 = [lo, v]; }
     (part === 'hi' ? hHi : hLo).focus({ preventScroll: true });
-    g = { id: e.pointerId, x0: x, y0: e.clientY, part, r0, r: r0, cell: G.cell, mn: G.mn, mx: G.mx, moved: false, touch, lp: null };
+    g = { id: e.pointerId, x0: x, y0: e.clientY, part, r0, r: r0, o: [lo, hi], cell: G.cell, mn: G.mn, mx: G.mx, moved: false, touch, lp: null };
     try { trk.setPointerCapture(e.pointerId); } catch (err) { /* pointer gone */ }
     el.classList.add('wk-drag');
     o.set(cur(), 'start');
@@ -1699,16 +1710,17 @@ export function rangeBar(o) {
     const r = rbDrag(g.r0, g.part, (e.clientX - g.x0) / g.cell, g.mn, g.mx);
     if (r[0] !== g.r[0] || r[1] !== g.r[1]) { g.r = r; o.set(r, 'move'); update(); }
   });
-  function finish() {
+  function finish(back) { // back: a two-finger rollback (twoF) — also undoes an edge moved by the press
     if (!g) return null;
     const G = g;
     g = null;
     if (G.lp) G.lp.cancel();
     try { trk.releasePointerCapture(G.id); } catch (err) { /* released */ }
     el.classList.remove('wk-drag');
+    if (back === true) { G.r = G.o; o.set(G.r, 'move'); lastTap = null; }
     o.set(G.r, 'end');
     update();
-    consumeLatches();
+    if (back !== true) consumeLatches();
     return G;
   }
   trk.addEventListener('pointerup', e => {
@@ -1718,7 +1730,7 @@ export function rangeBar(o) {
     if (lastTap && e.timeStamp - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 24) { lastTap = null; edit(); }
     else lastTap = { t: e.timeStamp, x: e.clientX, y: e.clientY };
   });
-  trk.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(); });
+  trk.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(twoF(e)); });
   trk.addEventListener('lostpointercapture', e => { if (g && e.pointerId === g.id) finish(); });
   trk.addEventListener('contextmenu', () => { if (g) { lastTap = null; finish(); } });
   trk.addEventListener('dblclick', e => {
@@ -1817,6 +1829,7 @@ export function pianoKeys(o) {
   const el = h('div', 'wk-piano');
   el.setAttribute('role', 'group');
   el.setAttribute('aria-roledescription', 'keyboard');
+  el.setAttribute('data-gesture', 'music'); // an instrument: the two-finger layer never pairs its touches (chords)
   if (o.color) el.style.setProperty('--wk-pc', String(o.color));
   if (o.litColor || o.color) el.style.setProperty('--wk-pc2', String(o.litColor || o.color));
   const W = { el, update, setRange, fit, range: () => [L.lo, L.hi], notes, release, destroy };
@@ -2004,9 +2017,10 @@ export function stepGrid(o) {
     e.preventDefault();
     const [r, j] = rc, cr = cells[r][j].el.getBoundingClientRect(), fine = modsOf(e).fine;
     setAct(r, j, true);
-    g = { id: e.pointerId, r, j, v: val(r, j), y: e.clientY, x0: e.clientX, y0: e.clientY, fine, moved: false, touch: e.pointerType === 'touch', done: new Map() };
+    g = { id: e.pointerId, r, j, v: val(r, j), y: e.clientY, x0: e.clientX, y0: e.clientY, fine, moved: false, touch: e.pointerType === 'touch', done: new Map(), org: new Map() };
     try { el.setPointerCapture(e.pointerId); } catch (err) { /* pointer gone */ }
     el.classList.add('wk-drag');
+    g.org.set(j, g.v); // every touched cell's value from before the gesture (a two-finger rollback restores them)
     o.set(r, j, g.v, 'start');
     if (!fine) { g.v = sgVal(e.clientY - cr.top, cr.height); put(r, j, g.v, 'move'); }
     g.done.set(j, g.v);
@@ -2024,13 +2038,13 @@ export function stepGrid(o) {
       for (let k = j0 + dir; k !== j; k += dir) { // cells in between: the pointer height interpolated across the jump
         const q = row[k].el.getBoundingClientRect(), y = y0 + (e.clientY - y0) * (k - j0) / (j - j0);
         const vk = g.fine ? g.v : sgVal(y - q.top, q.height);
-        if (!g.done.has(k)) o.set(g.r, k, val(g.r, k), 'start');
+        if (!g.done.has(k)) { g.org.set(k, val(g.r, k)); o.set(g.r, k, g.org.get(k), 'start'); }
         put(g.r, k, vk, 'move');
         g.done.set(k, Math.round(clamp(vk, -1, 1) * 100) / 100 + 0);
       }
       g.j = j;
       act = [g.r, j];
-      if (!g.done.has(j)) o.set(g.r, j, val(g.r, j), 'start');
+      if (!g.done.has(j)) { g.org.set(j, val(g.r, j)); o.set(g.r, j, g.org.get(j), 'start'); }
     }
     const cr = row[j].el.getBoundingClientRect();
     const v = g.fine ? clamp(g.v + (g.y - e.clientY) / Math.max(1, cr.height) * 0.2, -1, 1) : sgVal(e.clientY - cr.top, cr.height);
@@ -2040,15 +2054,16 @@ export function stepGrid(o) {
     g.done.set(j, Math.round(v * 100) / 100 + 0);
     update();
   });
-  function finish() {
+  function finish(back) { // back: a two-finger rollback (twoF) — every cell the gesture touched gets its old value
     if (!g) return null;
     const G = g;
     g = null;
     try { el.releasePointerCapture(G.id); } catch (err) { /* released */ }
     el.classList.remove('wk-drag');
-    for (const [j, v] of G.done) o.set(G.r, j, v, 'end');
+    if (back === true) { lastTap = null; for (const [j, v] of G.org) { o.set(G.r, j, v, 'move'); o.set(G.r, j, v, 'end'); } }
+    else for (const [j, v] of G.done) o.set(G.r, j, v, 'end');
     update();
-    consumeLatches();
+    if (back !== true) consumeLatches();
     return G;
   }
   el.addEventListener('pointerup', e => {
@@ -2058,7 +2073,7 @@ export function stepGrid(o) {
     if (lastTap && e.timeStamp - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 24) { lastTap = null; edit(); }
     else lastTap = { t: e.timeStamp, x: e.clientX, y: e.clientY };
   });
-  el.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(); });
+  el.addEventListener('pointercancel', e => { if (g && e.pointerId === g.id) finish(twoF(e)); });
   el.addEventListener('lostpointercapture', e => { if (g && e.pointerId === g.id) finish(); });
   el.addEventListener('dblclick', e => { if (!dis && cellAt(e.target) && lastType !== 'touch' && !(ti && e.target === ti.inp)) { e.preventDefault(); edit(); } });
   el.addEventListener('keydown', e => {
@@ -2174,19 +2189,92 @@ modifierBar.consume = consumeLatches;
 // (registered before any touch begins, as iOS Safari requires; touch events stay aimed at the touched node) cancels
 // every move, so the page does not scroll and Safari does not pointercancel the gesture; the decision is also taken from
 // a touchmove that arrives before its pointermove. payload = { data (value or () => value), begin?(info), move?(info),
-// drop?(info), cancel?(info), hold?, slop?, touchSlop?, scrollAxis? }; info = { data, x, y, alt, shift, fine (the event
-// keys or modifier latches at the press or the start), pointerType, quick (a touch drag started without the hold), t
-// (the event's timeStamp; performance.now() without one), target (the element under the pointer:
-// document.elementFromPoint — a drag ghost needs pointer-events: none) }. The click that ends a drag is swallowed;
-// Escape cancels; the latches are consumed when a drag ends. Returns { active() → bool, cancel(), destroy() }.
+// drop?(info), cancel?(info), hold?, slop?, touchSlop?, scrollAxis?, autoScroll? }; info = { data, x, y, alt, shift,
+// fine (the event keys or modifier latches at the press or the start), pointerType, quick (a touch drag started without
+// the hold), t (the event's timeStamp; performance.now() without one), scrolled (below), target (the element under the
+// pointer: document.elementFromPoint — a drag ghost needs pointer-events: none) }. The click that ends a drag is
+// swallowed; Escape cancels; the latches are consumed when a drag ends. Returns { active() → bool, cancel(), destroy() }.
+// Edge auto-scroll (payload.autoScroll !== false; vertical only): while a drag is live, a pen or touch pointer in the
+// AS_EDGE zone at the top / bottom of the visible part of a scroll container — the innermost one under the pointer that
+// can still scroll that way (CSS overflow-y auto / scroll), else the page — scrolls it on animation frames, faster the
+// deeper it is (dragSource.edge: quadratic, ramping in over AS_RAMP ms; each step clamped to the scroll range in JS — iOS
+// reads back an out-of-range scrollTop as set — and none past the limits). A mouse has no zone: it scrolls only past the
+// edge (over a pinned bar, outside the window), so desktop drags near the header stay put. The page's band is the visual
+// viewport less the host's pinned bars, marked data-wk-inset="top" | "bottom" (a pointer over them is past the edge:
+// full speed), and less the root's scroll-padding-top / -bottom (the installed app's status-bar strip). A direction
+// counts once the pointer has been outside its zone since the start, or moved AS_ARM px that way (a drag that starts in
+// a zone does not scroll at once). Each frame that scrolled calls move(info) again at the same x, y (targets move under
+// a still finger; t = the last event's time + the frames since); info.scrolled = ms since the last auto-scroll step
+// (Infinity: none), so a consumer can ask a drop to rest on a target that a scroll brought. Stops before the drop /
+// cancel callbacks (a scroll would close a menu the drop opens) and while the page is hidden.
+const AS_EDGE = { mouse: 0, pen: 72, touch: 72 }, AS_MAX = { mouse: 1200, pen: 1200, touch: 1200 }; // zone depth (px), top speed (px/s)
+const AS_RAMP = 240, AS_ARM = 12, AS_MAXDT = 50, AS_MINBAND = 96;
+// signed speed (px/s; < 0 toward lo) of a pointer at p in the band [lo, hi]: ±max past an edge (whatever the zone), 0
+// in the middle, quadratic in the depth into an edge zone (a zone is at most a quarter of the band)
+function asEdge(p, lo, hi, edge, max) {
+  if (!(max > 0) || !isFinite(p) || !(hi > lo)) return 0;
+  if (p < lo) return -max; if (p > hi) return max; // over a pinned bar / outside the window
+  const e = Math.min(+edge || 0, (hi - lo) / 4);
+  if (!(e > 0)) return 0;
+  const k = clamp(p < lo + e ? (p - lo - e) / e : p > hi - e ? (p - hi + e) / e : 0, -1, 1);
+  return k * Math.abs(k) * max;
+}
+const asInsets = d => { try { const q = d && typeof d.querySelectorAll === 'function' ? d.querySelectorAll('[data-wk-inset]') : null; return q ? Array.from(q) : []; } catch (err) { return []; } };
+// the root's scroll-padding-top / -bottom in px (style.css: env(safe-area-inset-top), the PWA's status-bar strip): { t, b }
+function asPad(d, root) {
+  const px = v => (/^-?[\d.]+px$/.test(String(v || '').trim()) ? Math.max(0, parseFloat(v)) : 0);
+  try {
+    const w = d && d.defaultView, cs = root && w && typeof w.getComputedStyle === 'function' ? w.getComputedStyle(root) : null;
+    return cs ? { t: px(cs.scrollPaddingTop), b: px(cs.scrollPaddingBottom) } : { t: 0, b: 0 };
+  } catch (err) { return { t: 0, b: 0 }; }
+}
+// the page's visible band in client px (y): the visual viewport less the pinned bars that overlap it and the root's
+// scroll padding (at least AS_MINBAND)
+function asBand(d, insets, pad) {
+  const w = (d && d.defaultView) || globalThis, vv = w.visualViewport || null, H = +w.innerHeight || 0;
+  const top = vv ? +vv.offsetTop || 0 : 0, B = { top, bottom: top + (vv && vv.height > 0 ? +vv.height : H) };
+  for (const n of insets) {
+    let r = null;
+    try { r = n.isConnected === false ? null : n.getBoundingClientRect(); } catch (err) { r = null; }
+    if (!r || !(r.bottom > r.top) || r.bottom <= B.top || r.top >= B.bottom) continue;
+    if (n.getAttribute('data-wk-inset') === 'top') B.top = Math.max(B.top, Math.min(r.bottom, B.bottom - AS_MINBAND));
+    else B.bottom = Math.min(B.bottom, Math.max(r.top, B.top + AS_MINBAND));
+  }
+  if (pad && pad.t > 0) B.top = Math.max(B.top, Math.min(pad.t, B.bottom - AS_MINBAND));
+  if (pad && pad.b > 0 && H > 0) B.bottom = Math.min(B.bottom, Math.max(H - pad.b, B.top + AS_MINBAND));
+  return B;
+}
+// does n scroll vertically (computed overflow-y auto / scroll / overlay; hidden / visible / clip never here)? cached per drag
+function asScrolls(d, n, cache) {
+  let s = cache.get(n);
+  if (s !== undefined) return s;
+  s = false;
+  try {
+    const w = d && d.defaultView, cs = w && typeof w.getComputedStyle === 'function' ? w.getComputedStyle(n) : null;
+    s = !!cs && /^(auto|scroll|overlay)$/.test(String(cs.overflowY || ''));
+  } catch (err) { /* no style: not a scroller */ }
+  cache.set(n, s);
+  return s;
+}
+// n's greatest scrollTop (the page's visible height: the larger of its clientHeight and innerHeight — iOS)
+const asLim = (n, root, w) => Math.max(0, (+n.scrollHeight || 0) - (n === root ? Math.max(+n.clientHeight || 0, +(w && w.innerHeight) || 0) : +n.clientHeight || 0));
+// can n still scroll in direction dir (−1 up | 1 down)?
+function asRoom(n, dir, lim) {
+  const pos = +n.scrollTop || 0;
+  return lim > 1 && (dir < 0 ? pos > 0.5 : pos < lim - 0.5);
+}
 export function dragSource(el, payload) {
   const P = payload || {};
   const hold = P.hold >= 0 ? +P.hold : 250, slop = P.slop > 0 ? +P.slop : 4, tslop = P.touchSlop > 0 ? +P.touchSlop : 6;
-  let g = null, keyOff = null, clickOff = null;
+  const auto = P.autoScroll !== false;
+  let g = null, keyOff = null, clickOff = null, A = null; // A: the live drag's auto-scroll state
   const under = (x, y) => { const d = D(); try { return d && typeof d.elementFromPoint === 'function' ? d.elementFromPoint(x, y) : null; } catch (err) { return null; } };
   const tOf = e => (e && typeof e.timeStamp === 'number' && e.timeStamp > 0 ? e.timeStamp : nowMs());
-  const info = (G, x, y, e) => ({ data: call(P.data), x, y, alt: G.m.alt, shift: G.m.shift, fine: G.m.fine, pointerType: G.type,
-    quick: !!G.quick, t: tOf(e), target: under(x, y) });
+  const info = (G, x, y, e, t) => {
+    const T = t != null ? t : tOf(e);
+    return { data: call(P.data), x, y, alt: G.m.alt, shift: G.m.shift, fine: G.m.fine, pointerType: G.type,
+      quick: !!G.quick, t: T, scrolled: G.st != null ? Math.max(0, T - G.st) : Infinity, target: under(x, y) };
+  };
   const cb = (k, i) => { if (typeof P[k] === 'function') P[k](i); };
   const axisOf = () => {
     let a = P.scrollAxis;
@@ -2203,6 +2291,87 @@ export function dragSource(el, payload) {
     return (G.axis === 'x' ? dy > dx : dx > dy) ? 'drag' : 'scroll';
   }
   const unwatch = G => { if (G && G.docOff) { G.docOff(); G.docOff = null; } };
+  /* ---- edge auto-scroll (asEdge above); A = { G, d, w, root, insets, pad, css, carry, cancel, prev, t0, arm, y0, rootT, off } */
+  function asBegin(e) {
+    const d = el.ownerDocument || D();
+    if (!auto || !d) return;
+    const root = d.scrollingElement || d.documentElement || null;
+    A = { G: g, d, w: d.defaultView || null, root, insets: asInsets(d), pad: asPad(d, root), css: new Map(), carry: new Map(),
+      cancel: null, prev: -1, t0: -1, arm: {}, y0: e.clientY, rootT: null,
+      off: listen(d, 'visibilitychange', () => { if (d.visibilityState === 'hidden') asHalt(); }) };
+  }
+  function asHalt() { // no more scrolling until the pointer next asks for it (the drag goes on)
+    if (!A) return;
+    if (A.cancel) { A.cancel(); A.cancel = null; }
+    A.prev = -1; A.t0 = -1;
+    A.carry.clear();
+  }
+  function asEnd() {
+    if (!A) return;
+    asHalt();
+    A.off();
+    A = null;
+  }
+  // what would scroll for the pointer at client y over element t: { n, v (px/s; < 0 up) } or null
+  function asPlan(y, t) {
+    const G = A.G, d = A.d, root = A.root, kind = G.type === 'touch' || G.type === 'pen' ? G.type : 'mouse';
+    const E = AS_EDGE[kind], M = AS_MAX[kind], B = asBand(d, A.insets, A.pad);
+    let h = null;
+    for (let n = t; !h && n && n.nodeType === 1 && n !== root && n !== d.body; n = n.parentNode) {
+      if (!asScrolls(d, n, A.css)) continue;
+      const r = n.getBoundingClientRect(), v = asEdge(y, Math.max(r.top, B.top), Math.min(r.bottom, B.bottom), E, M);
+      if (v && asRoom(n, Math.sign(v), asLim(n, root, A.w))) h = { n, v };
+    }
+    if (!h && root) { const v = asEdge(y, B.top, B.bottom, E, M); if (v && asRoom(root, Math.sign(v), asLim(root, root, A.w))) h = { n: root, v }; }
+    // arming: a direction this evaluation does not ask for is armed from now on; an unarmed one needs AS_ARM px that way
+    const s = h ? (h.v < 0 ? '-' : '+') : '';
+    if (s !== '-') A.arm['-'] = true;
+    if (s !== '+') A.arm['+'] = true;
+    if (h && !A.arm[s]) { if ((y - A.y0) * Math.sign(h.v) >= AS_ARM) A.arm[s] = true; else h = null; }
+    return h;
+  }
+  // scroll h.n by `delta` px (sub-pixel remainders carried: scroll offsets may be whole px), clamped to its range here —
+  // iOS does not clamp a script scroll at once (WebKit bug 179735); true if it moved
+  function asStep(h, delta) {
+    const want = (A.carry.get(h.n) || 0) + delta, step = want < 0 ? Math.ceil(want) : Math.floor(want);
+    if (!step) { A.carry.set(h.n, want); return false; }
+    const b = +h.n.scrollTop || 0, to = clamp(b + step, 0, asLim(h.n, A.root, A.w));
+    if (to === b) { A.carry.set(h.n, 0); return false; }
+    h.n.scrollTop = to;
+    const got = (+h.n.scrollTop || 0) - b;
+    A.carry.set(h.n, got === step ? want - step : 0);
+    return got !== 0;
+  }
+  function asTick(ts) {
+    if (!A) return;
+    A.cancel = null;
+    const G = A.G;
+    if (g !== G || !G.on) return;
+    if (A.d.visibilityState === 'hidden') { asHalt(); return; }
+    const now = +ts || 0, dt = A.prev < 0 ? 0 : clamp(now - A.prev, 0, AS_MAXDT);
+    A.prev = now;
+    if (G.fT < 0) G.fT = now; // the first frame since the last pointer event
+    const h = asPlan(G.y, G.over !== undefined ? G.over : under(G.x, G.y));
+    if (!h) { asHalt(); return; }
+    if (A.t0 < 0) A.t0 = now;
+    const k = AS_RAMP > 0 ? Math.min(1, (now - A.t0) / AS_RAMP) : 1, t = G.tEv + (now - G.fT);
+    if (asStep(h, h.v * k * dt / 1000)) {
+      if (h.n === A.root) A.rootT = t;
+      G.st = t;
+      const i = info(G, G.x, G.y, null, t);
+      G.over = i.target;
+      cb('move', i); // targets moved under the pointer: the consumer hit-tests again
+    }
+    if (A && g === G) A.cancel = frame(asTick); // (the move callback may have ended the drag)
+  }
+  function asKick(target) { // after a pointer move: start the frames when an edge asks for a scroll
+    if (!A || A.cancel || A.G !== g) return;
+    if (asPlan(g.y, target)) { A.prev = -1; A.t0 = -1; A.cancel = frame(asTick); }
+  }
+  // iOS WebKit may give a touch / pen move (or two) wrong clientX / clientY right after the page scrolled by script
+  // (WebKit bug 181954): within JUMP_MS of a page step, a jump of more than JUMP_PX is dropped — never two in a row
+  // (gesture.js jumpy, shared with the two-finger layer's pan)
+  const asOutlier = (G, x, y, t) => !!A && G.type !== 'mouse' && jumpy(G, x, y, t, A.rootT);
   function abandon() { // a pending (not started) gesture
     if (g.timer) clearTimeout(g.timer);
     unwatch(g);
@@ -2221,22 +2390,27 @@ export function dragSource(el, payload) {
     try { el.setPointerCapture(g.id); } catch (err) { /* pointer gone */ }
     const d = D();
     if (d) keyOff = listen(d, 'keydown', ev => { if (ev.key === 'Escape' && g && g.on) { ev.preventDefault(); ev.stopPropagation(); end(null, true); } }, true);
+    g.tEv = tOf(e); g.fT = -1;
+    asBegin(e);
     cb('begin', info(g, e.clientX, e.clientY, e));
   }
   function end(e, cancelled) {
     const G = g;
     if (!G) return;
     g = null;
+    // a lifted finger's position that a script scroll may have spoilt (asOutlier): the last good one
+    const bad = !!e && asOutlier(G, e.clientX, e.clientY, tOf(e));
+    asEnd(); // before any callback: no scroll after the drop (a scroll closes the menu a drop may open)
     if (G.timer) clearTimeout(G.timer);
     unwatch(G);
     if (keyOff) { keyOff(); keyOff = null; }
     try { el.releasePointerCapture(G.id); } catch (err) { /* released */ }
     el.classList.remove('wk-armed', 'wk-dragging');
     if (!G.on) return;
-    const i = info(G, e ? e.clientX : G.x, e ? e.clientY : G.y, e);
+    const i = info(G, e && !bad ? e.clientX : G.x, e && !bad ? e.clientY : G.y, e);
     if (cancelled) cb('cancel', i);
     else { if (e) eatClick(e.timeStamp); cb('drop', i); }
-    consumeLatches();
+    if (!twoF(e)) consumeLatches(); // a two-finger rollback leaves the latches for the next gesture
   }
   // The click that follows the drop is swallowed in the document's capture phase (before any listener of el, whatever
   // the order they were added in); the one-shot listener goes with the next click anywhere.
@@ -2265,7 +2439,8 @@ export function dragSource(el, payload) {
       const touch = e.pointerType === 'touch';
       if (touch && e.isPrimary === false) return; // a second finger (a pinch, a two-finger scroll): never a drag
       g = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, ax: e.clientX, ay: e.clientY, type: e.pointerType || 'mouse',
-        on: false, armed: !touch, quick: false, timer: 0, docOff: null, m: modsOf(e), axis: touch ? axisOf() : null };
+        on: false, armed: !touch, quick: false, timer: 0, docOff: null, m: modsOf(e), axis: touch ? axisOf() : null,
+        tEv: 0, fT: -1, st: null, over: undefined, held: false }; // (auto-scroll: event time, its first frame, last step, target, a move held back)
       if (!touch) return;
       g.timer = setTimeout(() => { if (g && !g.on) { g.timer = 0; g.armed = true; g.ax = g.x; g.ay = g.y; el.classList.add('wk-armed'); } }, hold);
       // another pointer down anywhere before the drag starts (a second finger off el): abandoned
@@ -2274,6 +2449,8 @@ export function dragSource(el, payload) {
     }),
     listen(el, 'pointermove', e => {
       if (!g || e.pointerId !== g.id) return;
+      if (g.on && !g.held && asOutlier(g, e.clientX, e.clientY, tOf(e))) { g.held = true; return; } // one move at most: the next is taken
+      g.held = false;
       g.x = e.clientX; g.y = e.clientY;
       if (!g.on) {
         if (g.type === 'touch') {
@@ -2283,7 +2460,11 @@ export function dragSource(el, payload) {
         } else if (Math.hypot(e.clientX - g.x0, e.clientY - g.y0) <= slop) return;
         start(e);
       }
-      cb('move', info(g, e.clientX, e.clientY, e));
+      g.tEv = tOf(e); g.fT = -1;
+      const i = info(g, e.clientX, e.clientY, e);
+      g.over = i.target;
+      cb('move', i);
+      asKick(i.target);
     }),
     listen(el, 'pointerup', e => { if (g && e.pointerId === g.id) end(e, false); }),
     listen(el, 'pointercancel', e => { if (g && e.pointerId === g.id) end(e, true); }),
@@ -2308,6 +2489,7 @@ export function dragSource(el, payload) {
     destroy() { if (g) end(null, true); for (const f of offs) f(); if (clickOff) { clickOff(); clickOff = null; } },
   };
 }
+dragSource.edge = asEdge;
 
 /* ------------------------------------------------------------- zoomPan */
 // zoomPan(el, o): pinch zoom and two-finger pan for canvases (sample displays, spectrograms, the piano roll, the arp
@@ -2356,6 +2538,9 @@ export function zoomPan(el, o) {
   const ax = o.axis === 'y' || o.axis === 'xy' ? o.axis : 'x', O = { axis: ax, min: o.min, max: o.max };
   const pts = new Map();
   let G = null, cur = null, docOff = null;
+  // el owns its two-finger gestures: the two-finger layer (gesture.js) leaves a pinch with both fingers on el alone
+  const mark = !!el.setAttribute && !el.hasAttribute('data-gesture');
+  if (mark) el.setAttribute('data-gesture', 'own');
   const get = () => zpView(o.get ? o.get() : null);
   const rectOf = () => { const r = o.rect ? o.rect() : null; return r && isFinite(r.left) && isFinite(r.top) ? r : el.getBoundingClientRect(); };
   function begin() {
@@ -2428,7 +2613,7 @@ export function zoomPan(el, o) {
   ];
   return {
     active: () => !!G,
-    destroy() { for (const f of offs) f(); if (docOff) docOff(); pts.clear(); G = null; },
+    destroy() { for (const f of offs) f(); if (docOff) docOff(); pts.clear(); G = null; if (mark && el.getAttribute('data-gesture') === 'own') el.removeAttribute('data-gesture'); },
   };
 }
 zoomPan.zoom = zpZoom;
@@ -2783,7 +2968,7 @@ function hideTip(el) {
 function refreshTip(el) { if (tipOwner === el && tipEl && tipEl.classList.contains('wk-show')) showTip(el); }
 
 /* ------------------------------------------------------------ DSP loader */
-// Injects each classic DSP script once per document (keyed by path, so 'serum-dsp.js?v=7' and 'serum-dsp.js'
+// Injects each classic DSP script once per document (keyed by path, so 'serum-dsp.js?v=8' and 'serum-dsp.js'
 // are the same script), in order (async = false). Resolves when every script has loaded, failed or timed out;
 // never rejects. A missing, broken or failed script yields null for its global. DSP_GLOBALS = the SPEC-serum2 §0.3
 // list (files 1–11, table order) → their globals: a script whose global is already defined (a static <script> or

@@ -944,9 +944,9 @@ test('loadDSP: once per document and path, ordered, never rejects, null for fail
   try {
     delete globalThis.SerumDSP; delete globalThis.FXDSP;
     const d = fresh();
-    const p1 = wk.loadDSP(['serum-dsp.js?v=7', 'fx-dsp.js?v=7']);
+    const p1 = wk.loadDSP(['serum-dsp.js?v=8', 'fx-dsp.js?v=8']);
     assert.equal(d.scripts.length, 2);
-    assert.deepEqual(d.scripts.map(s => [s.src, s.async, s.parentNode === d.head]), [['serum-dsp.js?v=7', false, true], ['fx-dsp.js?v=7', false, true]]);
+    assert.deepEqual(d.scripts.map(s => [s.src, s.async, s.parentNode === d.head]), [['serum-dsp.js?v=8', false, true], ['fx-dsp.js?v=8', false, true]]);
     const p2 = wk.loadDSP(['serum-dsp.js', 'fx-dsp.js']); // same paths without the cache-buster: no new scripts
     const p3 = wk.loadDSP(['./serum-dsp.js?v=9']);
     assert.equal(d.scripts.length, 2);
@@ -958,9 +958,9 @@ test('loadDSP: once per document and path, ordered, never rejects, null for fail
     assert.deepEqual(two(await p1), { SerumDSP: S, FXDSP: null });
     assert.deepEqual(two(await p2), { SerumDSP: S, FXDSP: null });
     assert.equal(warned.length, 1);
-    assert.match(warned[0], /fx-dsp\.js\?v=7/);
+    assert.match(warned[0], /fx-dsp\.js\?v=8/);
     // the document remembers: later calls inject nothing and resolve at once
-    assert.deepEqual(two(await wk.loadDSP(['fx-dsp.js?v=7'])), { SerumDSP: S, FXDSP: null });
+    assert.deepEqual(two(await wk.loadDSP(['fx-dsp.js?v=8'])), { SerumDSP: S, FXDSP: null });
     assert.equal(d.scripts.length, 2);
     // already-present globals (static <script> tags): no injection
     const d2 = fresh();
@@ -1407,7 +1407,7 @@ test('§11.14 exports: the Phase-2 widgets and their pure maths', () => {
     assert.equal(typeof wk[f], 'function', f);
   }
   for (const [w, fs] of [['meter', ['pos']], ['fader', ['nAt']], ['rangeBar', ['norm', 'drag', 'parse']], ['pianoKeys', ['layout', 'hit', 'velocity', 'noteName']],
-    ['stepGrid', ['valueAt']], ['zoomPan', ['zoom', 'pan']], ['modifierBar', ['mods', 'consume']]]) {
+    ['stepGrid', ['valueAt']], ['zoomPan', ['zoom', 'pan']], ['modifierBar', ['mods', 'consume']], ['dragSource', ['edge']]]) {
     for (const f of fs) assert.equal(typeof wk[w][f], 'function', w + '.' + f);
   }
   // no DOM needed for the pure parts
@@ -2250,7 +2250,7 @@ test('loadDSP(): the default list is files 1–11 in table order (§0.3); define
     assert.equal(timers.length, d.scripts.length);
     assert.ok(timers.every(t => typeof t.hasRef !== 'function' || t.hasRef() === false), 'unref: a pending load keeps no node process alive');
     // a panel's default call after main.js loaded DSP_URLS (versioned paths): nothing new
-    const again = wk.loadDSP(wk.loadDSP.URLS.map(u => u + '?v=7'));
+    const again = wk.loadDSP(wk.loadDSP.URLS.map(u => u + '?v=8'));
     assert.equal(d.scripts.length, 10);
     const vals = {};
     d.scripts.forEach((s, i) => { const g = G[wk.loadDSP.URLS.indexOf(s.src)]; vals[g] = Object.freeze({ id: g }); globalThis[g] = vals[g]; fire(s, i % 2 ? 'load' : 'error', { bubbles: false }); });
@@ -2866,4 +2866,590 @@ test('ticker: the frame-rate gate comes first (matchMedia / getClientRects only 
     if (mm === undefined) delete globalThis.matchMedia; else globalThis.matchMedia = mm;
     raf.uninstall();
   }
+});
+
+/* ------------------------------------- dragSource edge auto-scroll (iPad: reach a control scrolled out of view) */
+// No assert on fake-DOM nodes here (an AssertionError would walk the cyclic fake DOM): ids, numbers and booleans only.
+test('dragSource.edge: 0 mid-band, ±max past an edge (any zone), quadratic depth, zone ≤ a quarter of the band', () => {
+  const E = wk.dragSource.edge;
+  assert.equal(typeof E, 'function');
+  assert.equal(E(300, 73, 569, 72, 1500), 0);
+  assert.equal(E(73, 73, 569, 72, 1500), -1500);
+  assert.equal(E(10, 73, 569, 72, 1500), -1500);   // over the sticky header: past the edge
+  assert.equal(E(569, 73, 569, 72, 1500), 1500);
+  assert.equal(E(700, 73, 569, 72, 1500), 1500);   // over the keyboard panel
+  near(E(73 + 36, 73, 569, 72, 1500), -375, 1e-9); // half way in: a quarter of the speed
+  near(E(569 - 18, 73, 569, 72, 1500), 1500 * 0.75 * 0.75, 1e-9);
+  near(E(110, 100, 200, 72, 1000), -360, 1e-9);    // a 100 px band: 25 px zones
+  assert.equal(E(150, 100, 100, 72, 1000), 0);
+  assert.equal(E(NaN, 0, 800, 72, 1000), 0);
+  // no zone (a mouse): nothing inside the band, full speed past either edge
+  assert.equal(E(10, 0, 800, 0, 1000), 0);
+  assert.equal(E(0, 0, 800, 0, 1000), 0);
+  assert.equal(E(-5, 0, 800, 0, 1000), -1000);
+  assert.equal(E(801, 0, 800, 0, 1000), 1000);
+});
+
+// A 3000 px page in an 800 px window: a sticky header (73 px, data-wk-inset=top) and the keyboard panel (231 px,
+// data-wk-inset=bottom) leave the band 73…569; a control every 100 px of page (elementFromPoint follows the scroll).
+// scroller(): scrollTop clamps and rounds like Chrome's; ios = true stores whatever is set (iOS reads an out-of-range
+// script scroll back as set, WebKit bug 179735) and logs every value written.
+function scroller(n, top, h, ios = false) {
+  let st = top;
+  n.wrote = [];
+  Object.defineProperty(n, 'scrollTop', { configurable: true, get: () => st, set: v => { n.wrote.push(v); st = ios ? v : Math.max(0, Math.min(Math.round(v), h - n.clientHeight)); } });
+  n.scrollHeight = h;
+  return n;
+}
+function scrollRig(o = {}) {
+  const d = fresh();
+  raf.install();
+  const html = d.documentElement;
+  place(html, 0, 0, 1280, 800);
+  scroller(html, o.top != null ? o.top : 1000, 3000, !!o.ios);
+  const hdr = d.createElement('header'), perf = d.createElement('section'), tile = d.createElement('button');
+  hdr.setAttribute('data-wk-inset', 'top'); perf.setAttribute('data-wk-inset', 'bottom');
+  hdr.id = 'hdr'; perf.id = 'perf';
+  place(hdr, 0, 0, 1280, 73); place(perf, 0, 569, 1280, 231);
+  const knobs = Array.from({ length: 30 }, (_, k) => { const n = d.createElement('div'); n.id = 'k' + k; return n; });
+  d.body.append(hdr, tile, ...knobs, perf);
+  d.querySelectorAll = sel => (sel === '[data-wk-inset]' ? [hdr, perf] : []);
+  d.defaultView.getComputedStyle = n => n._cs || { overflowY: 'visible', scrollPaddingTop: 'auto', scrollPaddingBottom: 'auto' };
+  const page = (x, y) => (y < 73 ? hdr : y >= 569 ? perf : knobs[Math.floor((y + html.scrollTop) / 100)] || d.body);
+  d.elementFromPoint = (x, y) => (o.at && o.at(x, y)) || page(x, y);
+  const log = [];
+  const src = wk.dragSource(tile, Object.assign({
+    data: 'lfo1', scrollAxis: 'none',
+    begin: () => log.push(['begin']),
+    move: i => log.push(['move', i.x, i.y, i.target ? i.target.id : null, i.t, i.scrolled]),
+    drop: i => log.push(['drop', i.x, i.y, i.target ? i.target.id : null, i.t, i.scrolled]),
+    cancel: () => log.push(['cancel']),
+  }, o.payload));
+  const type = o.type || 'touch';
+  const T = (kind, x, y, t, x2 = {}) => ptr(tile, kind, x, y, Object.assign({ pointerType: type, pointerId: 3, isPrimary: true, timeStamp: t }, x2));
+  const frames = (n, t0) => { for (let k = 0; k < n; k++) raf.flush(1, t0 + k * 40); };
+  return { d, html, hdr, perf, tile, knobs, log, src, T, frames };
+}
+
+test('dragSource auto-scroll: a finger in the top band scrolls the page up — ramping in, faster deeper, re-hit-testing every frame — and stops at the top', () => {
+  try {
+    const { html, log, src, T, frames } = scrollRig({ top: 300 });
+    T('pointerdown', 600, 400, 5000);
+    T('pointermove', 600, 390, 5016);                 // a quick drag (scrollAxis none) mid-band: no frames
+    assert.deepEqual(log.map(l => l[0]), ['begin', 'move']);
+    assert.equal(log[1][5], Infinity);                // not scrolled
+    assert.equal(raf.pending, 0);
+    T('pointermove', 600, 80, 5100);                  // 65 px into the 72 px zone under the header
+    assert.equal(raf.pending, 1);
+    frames(1, 0);                                     // the episode's first frame: no time has passed
+    assert.equal(html.scrollTop, 300);
+    frames(1, 40);                                    // 40 ms at 1/6 of the ramp: 1200 · 0.815 · 40/240 · 0.04 ≈ 6.5 px
+    assert.equal(html.scrollTop, 294);
+    const m = log.at(-1);
+    assert.deepEqual(m.slice(0, 4), ['move', 600, 80, 'k3']); // same point, the control now under it ((80 + 294) / 100)
+    assert.equal(m[4], 5140);                         // t: the last event's time + the frames since
+    assert.equal(m[5], 0);
+    let prev = 294, steps = [];
+    for (let k = 2; k < 40 && raf.pending; k++) { frames(1, k * 40); steps.push(prev - html.scrollTop); prev = html.scrollTop; }
+    assert.equal(html.scrollTop, 0);                  // the top: the frames stop
+    assert.equal(raf.pending, 0);
+    assert.ok(steps[1] > steps[0] && steps[4] > steps[1]); // ramping in
+    assert.ok(Math.max(...steps) <= Math.ceil(1200 * 0.82 * 0.04)); // never past the depth's speed
+    const ids = log.filter(l => l[0] === 'move' && l[2] === 80).map(l => l[3]);
+    assert.deepEqual([...new Set(ids)], ['k3', 'k2', 'k1', 'k0']); // targets came under the still finger
+    const ts = log.filter(l => l[0] === 'move').map(l => l[4]);
+    assert.ok(ts.every((t, k) => !k || t >= ts[k - 1]));
+    T('pointerup', 600, 80, 6400);
+    assert.deepEqual(log.at(-1).slice(0, 4), ['drop', 600, 80, 'k0']);
+    assert.ok(log.at(-1)[5] > 0 && log.at(-1)[5] < Infinity); // ms since the last scroll step
+    src.destroy();
+  } finally { raf.uninstall(); }
+});
+
+test('dragSource auto-scroll: a drag that starts in an edge band does not scroll that way until it left the band or moved 12 px toward the edge', () => {
+  try {
+    const { html, log, T, frames } = scrollRig({ top: 1000 });
+    // the tile strip just above the keyboard panel: the drag starts in the bottom band and goes up
+    T('pointerdown', 600, 540, 5000);
+    T('pointermove', 600, 532, 5016);
+    T('pointermove', 600, 520, 5032);
+    assert.equal(log[0][0], 'begin');
+    assert.equal(raf.pending, 0);
+    T('pointermove', 600, 543, 5048);                 // 11 px down from the start: not yet
+    assert.equal(raf.pending, 0);
+    T('pointermove', 600, 545, 5064);                 // 13 px: the user means it
+    assert.equal(raf.pending, 1);
+    frames(8, 0);
+    assert.ok(html.scrollTop > 1000);
+    T('pointerup', 600, 545, 5500);
+    assert.equal(raf.pending, 0);
+    // left the band, then came back: scrolls
+    T('pointerdown', 600, 540, 6000);
+    T('pointermove', 600, 532, 6016);
+    T('pointermove', 600, 400, 6032);
+    assert.equal(raf.pending, 0);
+    T('pointermove', 600, 560, 6048);
+    assert.equal(raf.pending, 1);
+    T('pointerup', 600, 560, 6100);
+    // the top band from a start in the bottom one: armed at once
+    T('pointerdown', 600, 540, 7000);
+    T('pointermove', 600, 532, 7016);
+    T('pointermove', 600, 90, 7032);
+    assert.equal(raf.pending, 1);
+    T('pointercancel', 600, 90, 7040);
+    assert.equal(raf.pending, 0);
+  } finally { raf.uninstall(); }
+});
+
+test('dragSource auto-scroll: drop, cancel, Escape, destroy and a hidden page stop it — nothing scrolls or moves after the gesture', () => {
+  try {
+    const { d, html, log, src, T, frames } = scrollRig({ top: 1500 });
+    const go = t => { T('pointerdown', 600, 400, t); T('pointermove', 600, 390, t + 16); T('pointermove', 600, 560, t + 32); frames(4, t); };
+    for (const [how, end] of [['drop', () => T('pointerup', 600, 560, 9000)], ['cancel', () => T('pointercancel', 600, 560, 9000)],
+      ['cancel', () => key(d.body, 'Escape')], [null, () => src.cancel()]]) {
+      log.length = 0;
+      go(8000);
+      const top = html.scrollTop;
+      assert.ok(top > 1500, String(how));
+      end();
+      assert.equal(raf.pending, 0, String(how));
+      const n = log.length;
+      frames(5, 9000);
+      assert.equal(html.scrollTop, top);
+      assert.equal(log.length, n);
+      if (how) assert.equal(log.at(-1)[0], how);
+      T('pointerup', 600, 560, 9100);
+      html.scrollTop = 1500;
+    }
+    // hidden mid-drag: the frames stop, the drag goes on; the next move starts them again (the ramp anew)
+    go(10000);
+    d.visibilityState = 'hidden';
+    fire(d, 'visibilitychange');
+    assert.equal(raf.pending, 0);
+    d.visibilityState = 'visible';
+    assert.ok(src.active());
+    T('pointermove', 600, 561, 10200);
+    assert.equal(raf.pending, 1);
+    const top = html.scrollTop;
+    frames(1, 20000);
+    assert.equal(html.scrollTop, top);               // first frame of the new episode: no time yet
+    src.destroy();
+    assert.equal(raf.pending, 0);
+    assert.equal(d.listenerCount('visibilitychange'), 0);
+    // a move callback that ends the drag from a scrolled frame (the consumer cancels): no frame after it
+    let stop = false;
+    const r2 = scrollRig({ top: 1500, payload: { move: () => { if (stop) r2.src.cancel(); } } });
+    r2.T('pointerdown', 600, 400, 5000); r2.T('pointermove', 600, 390, 5016); r2.T('pointermove', 600, 560, 5032);
+    r2.frames(2, 0);
+    stop = true;
+    r2.frames(1, 80);
+    assert.ok(!r2.src.active());
+    assert.equal(raf.pending, 0);
+  } finally { raf.uninstall(); }
+});
+
+test('dragSource auto-scroll: the innermost scrolling container under the pointer goes first (overflow hidden never), then the page; vertical only', () => {
+  try {
+    let list, row, wrap;
+    const { d, html, src, T, frames } = scrollRig({ top: 1000, at: (x, y) => (list && y >= 200 && y < 500 && x < 600 ? row : null) });
+    // the MATRIX list: 300 px tall at y 200, scrolled 30 px, in an overflow: hidden wrapper that must not scroll
+    wrap = d.createElement('div'); list = d.createElement('div'); row = d.createElement('div');
+    wrap._cs = { overflowX: 'hidden', overflowY: 'hidden' };
+    list._cs = { overflowX: 'auto', overflowY: 'auto' };
+    place(wrap, 0, 150, 600, 400); scroller(wrap, 0, 2000);
+    place(list, 0, 200, 600, 300); scroller(list, 30, 1000);
+    list.append(row); wrap.append(list); d.body.append(wrap);
+    T('pointerdown', 300, 350, 5000);
+    T('pointermove', 300, 340, 5016);
+    T('pointermove', 300, 210, 5032);               // in the list's top zone (200…272), far below the page's (73…145)
+    frames(12, 0);
+    assert.equal(list.scrollTop, 0);
+    assert.equal(html.scrollTop, 1000);
+    assert.equal(wrap.scrollTop, 0);
+    assert.equal(wrap.wrote.length, 0);
+    assert.equal(raf.pending, 0);                   // the list is at its top, the page band does not ask
+    T('pointermove', 300, 100, 5200);               // over the list's top edge, in the page's band: the page scrolls
+    frames(6, 1000);
+    assert.ok(html.scrollTop < 1000);
+    T('pointerup', 300, 100, 6000);
+    // near the list's right end (a sideways scroller too): nothing scrolls sideways or at all mid-height
+    const top = html.scrollTop, n = list.wrote.length;
+    T('pointerdown', 300, 350, 7000);
+    T('pointermove', 300, 340, 7016);
+    T('pointermove', 595, 350, 7032);
+    assert.equal(raf.pending, 0);
+    T('pointerup', 595, 350, 7100);
+    assert.equal(html.scrollTop, top);
+    assert.equal(list.wrote.length, n);
+    src.destroy();
+  } finally { raf.uninstall(); }
+});
+
+test('dragSource auto-scroll: steps clamp to the scroll range in JS — an unclamped iOS-style scroller never goes out of range and the loop stops at the limit', () => {
+  try {
+    // top: 30 px left, a finger over the header (full speed, 48 px a frame after the ramp)
+    let r = scrollRig({ top: 30, ios: true });
+    r.T('pointerdown', 600, 400, 5000); r.T('pointermove', 600, 390, 5016); r.T('pointermove', 600, 40, 5032);
+    r.frames(20, 0);
+    assert.equal(r.html.scrollTop, 0);
+    assert.ok(r.html.wrote.length > 0 && r.html.wrote.every(v => v >= 0 && v <= 2200), JSON.stringify(r.html.wrote));
+    assert.equal(raf.pending, 0);                   // at the limit: no frame scheduled
+    r.T('pointerup', 600, 40, 6000);
+    r.src.destroy(); raf.uninstall();
+    // bottom: the page's visible height is the larger of clientHeight and innerHeight (700 vs 800: limit 3000 − 800)
+    r = scrollRig({ top: 2190, ios: true });
+    place(r.html, 0, 0, 1280, 700);
+    r.T('pointerdown', 600, 400, 5000); r.T('pointermove', 600, 410, 5016); r.T('pointermove', 600, 700, 5032);
+    r.frames(20, 0);
+    assert.equal(r.html.scrollTop, 2200);
+    assert.ok(r.html.wrote.length > 0 && r.html.wrote.every(v => v >= 0 && v <= 2200), JSON.stringify(r.html.wrote));
+    assert.equal(raf.pending, 0);
+    r.T('pointerup', 600, 700, 6000);
+    r.src.destroy();
+  } finally { raf.uninstall(); }
+});
+
+test('dragSource auto-scroll: a mouse has no zone — nothing inside the band, full speed over the header, the keyboard or outside the window', () => {
+  try {
+    const r = scrollRig({ top: 1000, type: 'mouse' });
+    r.T('pointerdown', 600, 400, 5000); r.T('pointermove', 600, 390, 5016);
+    r.T('pointermove', 600, 74, 5032);              // just under the header (a finger's zone): still
+    assert.equal(raf.pending, 0);
+    r.T('pointermove', 600, 568, 5040);             // just above the keyboard panel: still
+    assert.equal(raf.pending, 0);
+    r.T('pointermove', 600, 50, 5048);              // over the header: up at 1200 px/s
+    r.frames(10, 0);                                // ramp done after 240 ms: then 48 px a 40 ms frame
+    let a = r.html.scrollTop;
+    r.frames(1, 400);
+    assert.equal(a - r.html.scrollTop, 48);
+    r.T('pointermove', 600, 300, 5600);             // back in the band: stops
+    r.frames(1, 440);
+    assert.equal(raf.pending, 0);
+    r.T('pointermove', 600, 700, 5700);             // over the keyboard panel: down
+    r.frames(10, 1000);
+    a = r.html.scrollTop;
+    r.frames(1, 1400);
+    assert.equal(r.html.scrollTop - a, 48);
+    r.T('pointermove', 600, -20, 5800);             // above the window (pointer capture): up again
+    r.frames(10, 2000);
+    a = r.html.scrollTop;
+    r.frames(1, 2400);
+    assert.equal(a - r.html.scrollTop, 48);
+    r.T('pointerup', 600, -20, 6000);
+    r.src.destroy();
+  } finally { raf.uninstall(); }
+});
+
+test('dragSource auto-scroll: the root scroll-padding narrows the band (the PWA status-bar strip); sub-pixel speeds carry over; visual viewport; autoScroll: false', () => {
+  try {
+    // header scrolled away (11" portrait: static below 900 px), scroll-padding-top 24 px: the band starts at 24
+    let r = scrollRig({ top: 1000, type: 'mouse' });
+    r.hdr.remove();
+    r.html._cs = { overflowY: 'visible', scrollPaddingTop: '24px', scrollPaddingBottom: '0px' };
+    r.T('pointerdown', 600, 400, 5000); r.T('pointermove', 600, 390, 5016);
+    r.T('pointermove', 600, 30, 5032);              // inside the band: a mouse stays
+    assert.equal(raf.pending, 0);
+    r.T('pointermove', 600, 20, 5048);              // in the strip: past the band's top
+    assert.equal(raf.pending, 1);
+    r.T('pointerup', 600, 20, 5100);
+    r.src.destroy(); raf.uninstall();
+    // the same for a finger: its 72 px zone starts at 24 (24…96); without the padding 95 would be mid-band
+    for (const [pad, want] of [['24px', 1], ['auto', 0], ['10%', 0]]) {
+      r = scrollRig({ top: 1000 });
+      r.hdr.remove();
+      r.html._cs = { overflowY: 'visible', scrollPaddingTop: pad, scrollPaddingBottom: 'auto' };
+      r.T('pointerdown', 600, 400, 5000); r.T('pointermove', 600, 390, 5016);
+      r.T('pointermove', 600, 95, 5032);
+      assert.equal(raf.pending, want, pad);
+      r.T('pointerup', 600, 95, 5100);
+      r.src.destroy(); raf.uninstall();
+    }
+    // scroll-padding-bottom: with the keyboard panel gone, the band ends 30 px above the window's bottom
+    r = scrollRig({ top: 1000, type: 'mouse' });
+    r.perf.remove();
+    r.html._cs = { overflowY: 'visible', scrollPaddingTop: '0px', scrollPaddingBottom: '30px' };
+    r.T('pointerdown', 600, 400, 5000); r.T('pointermove', 600, 390, 5016);
+    r.T('pointermove', 600, 765, 5032);
+    assert.equal(raf.pending, 0);
+    r.T('pointermove', 600, 775, 5048);
+    assert.equal(raf.pending, 1);
+    r.T('pointerup', 600, 775, 5100);
+    r.src.destroy(); raf.uninstall();
+    // a shallow finger: 12 px/s → under a pixel per frame, yet the page creeps
+    r = scrollRig({ top: 1000 });
+    r.T('pointerdown', 600, 400, 5000); r.T('pointermove', 600, 390, 5016);
+    r.T('pointermove', 600, 145 - 7.2, 5032);
+    r.frames(31, 0);                                // 1.2 s
+    assert.ok(r.html.scrollTop <= 1000 - 10 && r.html.scrollTop >= 1000 - 16, String(r.html.scrollTop));
+    r.T('pointerup', 600, 138, 7000);
+    r.src.destroy(); raf.uninstall();
+    // pinch-zoomed: the visual viewport is the band (the bars outside it do not count)
+    r = scrollRig({ top: 1000 });
+    r.d.defaultView.visualViewport = { offsetLeft: 0, offsetTop: 200, width: 640, height: 300 };
+    r.T('pointerdown', 300, 350, 5000); r.T('pointermove', 300, 340, 5016);
+    r.T('pointermove', 300, 490, 5032);             // 10 px above the visual bottom (500)
+    assert.equal(raf.pending, 1);
+    r.T('pointermove', 300, 350, 5048);
+    r.frames(1, 0);
+    assert.equal(raf.pending, 0);                   // back mid-band: the frames stop
+    r.T('pointerup', 300, 350, 6000);
+    r.src.destroy(); raf.uninstall();
+    // autoScroll: false
+    r = scrollRig({ top: 1000, payload: { autoScroll: false } });
+    r.T('pointerdown', 600, 400, 5000); r.T('pointermove', 600, 390, 5016); r.T('pointermove', 600, 80, 5032);
+    assert.equal(raf.pending, 0);
+    r.T('pointerup', 600, 80, 6000);
+    assert.equal(r.html.scrollTop, 1000);
+    r.src.destroy();
+  } finally { raf.uninstall(); }
+});
+
+test('dragSource auto-scroll (iOS, WebKit bug 181954): just after a page step, a far jump of the finger is dropped (never two moves in a row); the lift uses the last good point', () => {
+  try {
+    const { log, T, frames } = scrollRig({ top: 1500 });
+    T('pointerdown', 600, 400, 5000); T('pointermove', 600, 390, 5016);
+    T('pointermove', 600, 80, 5032);
+    frames(6, 0);                                     // the page scrolled at t ≈ 5032 + 200
+    const n = log.length;
+    T('pointermove', 600, 300, 5250);                 // 220 px in one move: dropped
+    assert.equal(log.length, n);
+    T('pointermove', 600, 83, 5260);                  // the finger is still up there
+    assert.deepEqual(log.at(-1).slice(0, 3), ['move', 600, 83]);
+    T('pointermove', 600, 300, 5270);
+    T('pointermove', 600, 320, 5280);                 // the next is taken: a real fast move
+    assert.deepEqual(log.at(-1).slice(0, 3), ['move', 600, 320]);
+    T('pointermove', 600, 84, 5285);                  // far: dropped …
+    T('pointermove', 600, 500, 5287);                 // … but never two in a row (sparse moves of a busy page are real)
+    assert.deepEqual(log.at(-1).slice(0, 3), ['move', 600, 500]);
+    T('pointermove', 600, 320, 5288);
+    T('pointermove', 600, 320, 5289);
+    T('pointermove', 600, 84, 5290);                  // (far again, within 250 ms of a page scroll: held)
+    T('pointerup', 600, 84, 5300);                    // the lift is far from the last good point (320): that point
+    assert.deepEqual(log.at(-1).slice(0, 3), ['drop', 600, 320]);
+    // an Apple Pencil (pen) too; a mouse never
+    for (const [type, want] of [['pen', 'move 600 50'], ['mouse', 'move 600 300']]) {
+      const r = scrollRig({ top: 1500, type });
+      r.T('pointerdown', 600, 400, 5000); r.T('pointermove', 600, 390, 5016); r.T('pointermove', 600, 50, 5032);
+      r.frames(6, 0);
+      assert.ok(r.html.scrollTop < 1500, type);
+      r.T('pointermove', 600, 300, 5250);
+      assert.equal(r.log.at(-1).slice(0, 3).join(' '), want, type);
+      r.T('pointerup', 600, 300, 5300);
+      r.src.destroy(); raf.uninstall();
+    }
+  } finally { raf.uninstall(); }
+});
+
+/* ------------------------------------------------ two-finger rollback (the gesture.js contract, G2) */
+// The two-finger layer asks the first finger's owner to roll back with a synthetic pointercancel flagged
+// e.gesture === 'two-finger': each widget restores the value from before the press ('move' then 'end' with it) and
+// leaves the modifier latches for the next gesture; a plain pointercancel keeps the moved value, as before.
+const TWO = { gesture: 'two-finger' };
+const tch = (o = {}) => Object.assign({ pointerType: 'touch' }, o);
+
+test('two-finger rollback: knob and numBox restore the value from before the press, keep the latches; a plain cancel commits', () => {
+  const d = fresh();
+  const bar = wk.modifierBar({});
+  d.body.appendChild(bar.el);
+  const fineBtn = all(bar.el).find(e => e.getAttribute && e.getAttribute('data-mod') === 'fine');
+  const { st, el } = mkKnob();
+  fineBtn.click();
+  assert.equal(bar.state().fine, 1);
+  ptr(el, 'pointerdown', 100, 100, tch());
+  ptr(el, 'pointermove', 100, -100, tch()); // Fine: 200 px → 0.1
+  near(st.n, 0.6);
+  ptr(el, 'pointercancel', 100, -100, tch(TWO));
+  assert.deepEqual(st.calls.slice(-2), [['move', 0.5], ['end', 0.5]]);
+  assert.deepEqual([st.n, el._cap, el.classList.contains('wk-drag')], [0.5, null, false]);
+  assert.equal(bar.state().fine, 1);                     // the latch waits for a real gesture
+  ptr(el, 'pointerdown', 100, 100);
+  ptr(el, 'pointermove', 100, 80);
+  ptr(el, 'pointerup', 100, 80);
+  near(st.n, 0.51);
+  assert.equal(bar.state().fine, 0);
+  // a plain cancel (a system interruption) keeps the moved value
+  st.n = 0.5; st.calls.length = 0;
+  ptr(el, 'pointerdown', 100, 100);
+  ptr(el, 'pointermove', 100, 60);
+  ptr(el, 'pointercancel', 100, 60);
+  assert.deepEqual(st.calls.map(c => c[0]), ['start', 'move', 'end']);
+  near(st.calls.at(-1)[1], 0.7);
+  // a flagged cancel for another pointer is not this gesture's
+  st.calls.length = 0;
+  const n0 = st.n;
+  ptr(el, 'pointerdown', 100, 100);
+  ptr(el, 'pointermove', 100, 80);
+  ptr(el, 'pointercancel', 100, 80, Object.assign({ pointerId: 9 }, TWO));
+  assert.ok(el.classList.contains('wk-drag'));
+  ptr(el, 'pointercancel', 100, 80, TWO);
+  assert.deepEqual(st.calls.slice(-2), [['move', n0], ['end', n0]]); // back to the value at the press
+  // numBox: an off-grid value comes back exactly (not the nearest step)
+  const nb = mkNb();
+  nb.st.n = 0.3; nb.w.update(); nb.st.calls.length = 0;
+  ptr(nb.el, 'pointerdown', 0, 100, tch());
+  ptr(nb.el, 'pointermove', 0, 76, tch());
+  assert.equal(nb.st.calls.at(-1)[0], 'move');
+  ptr(nb.el, 'pointercancel', 0, 76, tch(TWO));
+  assert.deepEqual(nb.st.calls.slice(-2), [['move', 0.3], ['end', 0.3]]);
+  assert.equal(nb.el._cap, null);
+  nb.st.calls.length = 0;
+  ptr(nb.el, 'pointerdown', 0, 100);
+  ptr(nb.el, 'pointermove', 0, 76);
+  ptr(nb.el, 'pointercancel', 0, 76);
+  assert.deepEqual(nb.st.calls.map(c => c[0]), ['start', 'move', 'end']);
+  assert.notEqual(nb.st.calls.at(-1)[1], 0.3);
+  bar.clear(); bar.destroy();
+});
+
+test('two-finger rollback: slider and fader undo the jump of the press; xyPad both axes; rangeBar an edge moved by the press', () => {
+  const d = fresh();
+  const st = { n: 0.5, calls: [] };
+  const s = wk.slider({ label: 'H', get: () => st.n, set: (n, ph) => { st.n = n; st.calls.push([ph, n]); }, def: 0.5 });
+  d.body.appendChild(s.el);
+  place(one(s.el, 'wk-slt'), 100, 0, 200, 10);
+  ptr(s.el, 'pointerdown', 120, 5, tch());                // jumps to 0.1
+  near(st.n, 0.1);
+  ptr(s.el, 'pointercancel', 120, 5, tch(TWO));
+  assert.deepEqual(st.calls.map(c => c[0]), ['start', 'move', 'move', 'end']);
+  assert.deepEqual(st.calls.slice(-2), [['move', 0.5], ['end', 0.5]]);
+  st.calls.length = 0;
+  ptr(s.el, 'pointerdown', 120, 5);
+  ptr(s.el, 'pointercancel', 120, 5);                     // plain: the jump stays
+  near(st.n, 0.1);
+  assert.equal(st.calls.at(-1)[0], 'end');
+  const fs = { n: 1, calls: [] };
+  const f = wk.fader({ label: 'MAIN', get: () => fs.n, set: (n, ph) => { fs.n = n; fs.calls.push([ph, n]); }, def: 0.7 });
+  d.body.appendChild(f.el);
+  place(one(f.el, 'wk-slt'), 0, 0, 10, 100);
+  ptr(f.el, 'pointerdown', 5, 80, tch());
+  near(fs.n, 0.2);
+  ptr(f.el, 'pointermove', 5, 70, tch());
+  ptr(f.el, 'pointercancel', 5, 70, tch(TWO));
+  assert.deepEqual(fs.calls.slice(-2), [['move', 1], ['end', 1]]);
+  // xyPad: the jump and the drag of both axes come back
+  const xy = { x: 0.5, y: 0.5, calls: [] };
+  const mkAx = k => ({ label: k, get: () => xy[k], set: (n, ph) => { xy[k] = n; xy.calls.push([k, ph, n]); } });
+  const p = wk.xyPad({ x: mkAx('x'), y: mkAx('y') });
+  d.body.appendChild(p.el);
+  const pad = one(p.el, 'wk-xyp');
+  place(pad, 100, 100, 100, 100);
+  ptr(pad, 'pointerdown', 120, 130, tch());
+  ptr(pad, 'pointermove', 130, 120, tch());
+  near(xy.x, 0.3);
+  ptr(pad, 'pointercancel', 130, 120, tch(TWO));
+  assert.deepEqual(xy.calls.slice(-4), [['x', 'move', 0.5], ['y', 'move', 0.5], ['x', 'end', 0.5], ['y', 'end', 0.5]]);
+  assert.equal(pad._cap, null);
+  xy.calls.length = 0;
+  ptr(pad, 'pointerdown', 120, 130);
+  ptr(pad, 'pointercancel', 120, 130);
+  assert.deepEqual(xy.calls.slice(-2).map(c => c[1]), ['end', 'end']);
+  near(xy.x, 0.2);
+  // rangeBar: a press outside the range moved the hi edge at once
+  const rs = { r: [10, 20], calls: [] };
+  const rb = wk.rangeBar({ min: 0, max: 127, get: () => rs.r, set: (r, ph) => { rs.r = r; rs.calls.push([ph, r.slice()]); } });
+  d.body.appendChild(rb.el);
+  const trk = one(rb.el, 'wk-rbt');
+  place(trk, 0, 0, 128, 20);
+  ptr(trk, 'pointerdown', 100.5, 10, tch());
+  assert.deepEqual(rs.r, [10, 100]);
+  ptr(trk, 'pointermove', 110.5, 10, tch());
+  ptr(trk, 'pointercancel', 110.5, 10, tch(TWO));
+  assert.deepEqual(rs.calls.slice(-2), [['move', [10, 20]], ['end', [10, 20]]]);
+  ptr(trk, 'pointerdown', 100.5, 10);
+  ptr(trk, 'pointercancel', 100.5, 10);
+  assert.deepEqual(rs.r, [10, 100]);
+});
+
+test('two-finger rollback: stepGrid restores every painted cell’s ORIGINAL value (not the painted ones)', () => {
+  const d = fresh();
+  const v = [[0.1, -0.2, 0.3, 0.4, 0, 0, 0, 0]], calls = [];
+  const sg = wk.stepGrid({ rows: ['Pan'], steps: 8, get: (r, j) => v[r][j], set: (r, j, x, ph) => { v[r][j] = x; calls.push([j, ph, x]); } });
+  d.body.appendChild(sg.el);
+  const cells = byCls(sg.el, 'wk-sgc');
+  cells.forEach((c, i) => place(c, 20 * i, 0, 20, 40));
+  ptr(cells[1], 'pointerdown', 25, 10, tch());            // +0.5 at once
+  ptr(sg.el, 'pointermove', 45, 30, tch());
+  ptr(sg.el, 'pointermove', 65, 40, tch());               // painted cells 1–3
+  assert.deepEqual(v[0].slice(0, 4), [0.1, 0.5, -0.5, -1]);
+  calls.length = 0;
+  ptr(sg.el, 'pointercancel', 65, 40, tch(TWO));
+  assert.deepEqual(v[0].slice(0, 5), [0.1, -0.2, 0.3, 0.4, 0]);
+  assert.deepEqual(calls, [[1, 'move', -0.2], [1, 'end', -0.2], [2, 'move', 0.3], [2, 'end', 0.3], [3, 'move', 0.4], [3, 'end', 0.4]]);
+  assert.equal(sg.el._cap, null);
+  // plain cancel: the painted values stay
+  ptr(cells[1], 'pointerdown', 25, 10);
+  ptr(sg.el, 'pointermove', 45, 30);
+  ptr(sg.el, 'pointercancel', 45, 30);
+  assert.deepEqual(v[0].slice(1, 3), [0.5, -0.5]);
+});
+
+test('two-finger rollback: dragSource — the flagged cancel abandons a pending touch and cancels a live drag; its edge auto-scroll stops', () => {
+  try {
+    const { html, log, src, tile, T, frames } = scrollRig({ top: 1500 });
+    // pending (a hold not yet started): abandoned, nothing called
+    T('pointerdown', 600, 400, 5000);
+    ptr(tile, 'pointercancel', 600, 400, { pointerType: 'touch', pointerId: 3, timeStamp: 5050, gesture: 'two-finger' });
+    assert.deepEqual(log, []);
+    assert.ok(!src.active());
+    T('pointermove', 600, 380, 5060);                     // the finger goes on: no drag
+    assert.deepEqual(log, []);
+    T('pointerup', 600, 380, 5070);
+    // live and auto-scrolling (a drag in the bottom band): cancelled, the frames stop
+    T('pointerdown', 600, 400, 6000); T('pointermove', 600, 390, 6016); T('pointermove', 600, 560, 6032);
+    frames(4, 6000);
+    const top = html.scrollTop;
+    assert.ok(top > 1500);
+    ptr(tile, 'pointercancel', 600, 560, { pointerType: 'touch', pointerId: 3, timeStamp: 6200, gesture: 'two-finger' });
+    assert.equal(log.at(-1)[0], 'cancel');
+    assert.ok(!src.active());
+    assert.equal(raf.pending, 0);
+    const n = log.length;
+    frames(5, 7000);
+    assert.equal(html.scrollTop, top);
+    T('pointermove', 600, 300, 7300); T('pointerup', 600, 300, 7310);
+    assert.equal(log.length, n);                          // nothing after the gesture (no move, no drop)
+    src.destroy();
+  } finally { raf.uninstall(); }
+});
+
+test('two-finger rollback: dragSource keeps the modifier latches on the flagged cancel (like every widget); a plain cancel and a drop spend them', () => {
+  const d = fresh();
+  const bar = wk.modifierBar({});
+  d.body.appendChild(bar.el);
+  const altBtn = all(bar.el).find(e => e.getAttribute && e.getAttribute('data-mod') === 'alt');
+  const tile = d.createElement('button'); d.body.appendChild(tile);
+  d.elementFromPoint = () => tile;
+  const log = [];
+  const src = wk.dragSource(tile, { data: 'lfo1', scrollAxis: 'x', autoScroll: false,
+    begin: i => log.push('begin ' + i.alt), move: () => {}, drop: i => log.push('drop ' + i.alt), cancel: i => log.push('cancel ' + i.alt) });
+  const T = (k, x, y, t, o = {}) => ptr(tile, k, x, y, Object.assign({ pointerType: 'touch', pointerId: 3, isPrimary: true, timeStamp: t }, o));
+  altBtn.click();
+  assert.equal(bar.state().alt, 1);
+  T('pointerdown', 100, 100, 1000); T('pointermove', 100, 120, 1050);  // across scrollAxis x: a quick drag at once
+  T('pointercancel', 100, 120, 1100, TWO);
+  assert.deepEqual(log, ['begin true', 'cancel true']);
+  assert.equal(bar.state().alt, 1);                       // kept for the next gesture
+  T('pointerdown', 100, 100, 3000); T('pointermove', 100, 120, 3050);
+  assert.equal(log.at(-1), 'begin true');
+  T('pointerup', 100, 120, 3100);
+  assert.deepEqual([log.at(-1), bar.state().alt], ['drop true', 0]); // the drop spends it
+  altBtn.click();
+  T('pointerdown', 100, 100, 5000); T('pointermove', 100, 120, 5050); T('pointercancel', 100, 120, 5100);
+  assert.deepEqual([log.at(-1), bar.state().alt], ['cancel true', 0]); // a plain (system) cancel too
+  src.destroy(); bar.clear(); bar.destroy();
+});
+
+test('two-finger zones: pianoKeys is "music", zoomPan marks its element "own" (an existing marker wins; destroy removes its own)', () => {
+  const d = fresh();
+  const pk = wk.pianoKeys({ lo: 60, hi: 71 });
+  d.body.appendChild(pk.el);
+  assert.equal(pk.el.getAttribute('data-gesture'), 'music');
+  const el = d.createElement('canvas'), el2 = d.createElement('div');
+  d.body.append(el, el2);
+  el2.setAttribute('data-gesture', 'music');
+  const zp = wk.zoomPan(el, { get: () => null, set() {} }), zp2 = wk.zoomPan(el2, {});
+  assert.deepEqual([el.getAttribute('data-gesture'), el2.getAttribute('data-gesture')], ['own', 'music']);
+  zp.destroy(); zp2.destroy();
+  assert.deepEqual([el.hasAttribute('data-gesture'), el2.getAttribute('data-gesture')], [false, 'music']);
+  pk.destroy();
 });

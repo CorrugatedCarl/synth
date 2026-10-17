@@ -15,7 +15,15 @@ body { min-height: 100vh; overflow-x: hidden; padding: 0 env(safe-area-inset-rig
 /* viewport-fit=cover: in the installed app (black-translucent status bar) the page runs under the status bar and the home
    indicator — the header, the keyboard panel, dialogs and full-screen layers keep their content inside the safe area
    (a scrolled-to element stops below the status bar); a browser tab's insets are 0 */
-html { scroll-padding-top: env(safe-area-inset-top); }
+html { scroll-padding-top: env(safe-area-inset-top); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+/* the interface size (uiscale.js, iOS / iPadOS: html[data-uiz] at every size — off while the page is natively zoomed,
+   so the native pinch can zoom it back out): no native page pinch — the app's own
+   (gesture.js → uiscale.js) instead; a native zoom would also stop the size from applying. On every element inside body,
+   since WebKit resets the used touch-action at each scroll container (on html alone it does nothing); zero specificity,
+   so every touch-action of the page's own still wins. It does not stop a double-tap zoom above 100 % (WebKit allows one
+   unless none / manipulation: uiscale.js waits for the page to be zoomed back out). The safe-area insets are used
+   undivided: whether env() follows the page scale is a device test (html's --uiz is set for a division) */
+:where(html[data-uiz]) :where(body, body *) { touch-action: pan-x pan-y; }
 button, select, input { font: inherit; color: inherit; }
 button { cursor: pointer; }
 kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--bg2); }
@@ -34,9 +42,28 @@ kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px
 .power .led, .hold .led { width: 9px; height: 9px; border-radius: 50%; background: #3a1a12; box-shadow: inset 0 0 2px #000; }
 .power[aria-pressed="true"] .led, .hold[aria-pressed="true"] .led { background: #ff4a2a; box-shadow: 0 0 8px #ff4a2a, 0 0 2px #fff inset; }
 .power[aria-pressed="true"] { border-color: #6b3b20; }
-.meter { display: flex; flex-direction: column; font-family: var(--mono); font-size: 11px; color: var(--mute); min-width: 210px; line-height: 1.5; }
+.meter { display: flex; flex-direction: column; font-family: var(--mono); font-size: 11px; color: var(--mute); min-width: 210px; line-height: 1.3; }
 .meter #rate { color: var(--text); }
 .meter .warn { color: #ff6a4a; }
+/* Output latency (main.js initLatency): the meter's third line, a compact button (a field of its own widened the header
+   to two rows at 1280–1400 px); its popover under it, kept inside the viewport */
+.latf { position: relative; display: flex; align-items: center; gap: 6px; }
+.latf > button { position: relative; background: var(--bg2); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; font: 11px/12px var(--mono); color: var(--text); min-width: 0; text-align: left; -webkit-tap-highlight-color: transparent; }
+.latf > button[aria-expanded="true"] { border-color: var(--hot); }
+.latpop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; width: min(320px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid #3a3c42; border-radius: 10px; background: var(--bg2); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55); color: var(--text); text-transform: none; letter-spacing: 0; font-family: var(--ui); font-size: 12px; line-height: 1.4; }
+.latpop[hidden] { display: none; }
+.latnote { margin: 0; color: var(--mute); line-height: 1.45; }
+.latpre { display: flex; gap: 6px; flex-wrap: wrap; }
+.latpop button { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 10px; font-size: 12px; -webkit-tap-highlight-color: transparent; }
+.latpop button[aria-pressed="true"] { border-color: var(--hot); color: var(--hot); background: #1d1810; }
+.latpop button:disabled { opacity: 0.45; cursor: default; }
+.latrow { display: flex; align-items: center; gap: 6px; }
+.latrow input { flex: 1 1 auto; min-width: 0; accent-color: var(--hot); }
+.latrow button { width: 30px; padding: 4px 0; }
+.latrow output { font-family: var(--mono); min-width: 58px; text-align: right; }
+.latinfo { margin: 0; font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--mute); white-space: pre-wrap; }
+/* touch targets: the header button stays one meter line tall (taller would grow the header row) — a larger hit area */
+@media (pointer: coarse) { .latf > button::after { content: ''; position: absolute; inset: -9px -10px; } .latpop button { min-height: 34px; } .latrow button { width: 38px; } .latrow input { height: 32px; } }
 .boot { margin: 0; font-size: 13px; color: var(--label); line-height: 1.5; }
 /* Install app / Full screen (pwa.js shows the ones this browser offers; none in the installed app) */
 .appctl { display: flex; align-items: center; gap: 8px; }
@@ -47,9 +74,19 @@ kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px
 .appbtn svg { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .appbtn.ico { width: 34px; padding: 0; }
 #install { color: var(--hot); border-color: #5a4320; background: #1d1810; }
+/* a touch screen (iPad Safari: − / % / + too): Install as an icon (its aria-label says it) — one header row less */
+@media (pointer: coarse) { #install { width: 34px; padding: 0; } #install > span { display: none; } }
 #fullscreen .i-exit, #fullscreen[aria-pressed="true"] .i-enter { display: none; }
 #fullscreen[aria-pressed="true"] .i-exit { display: inline; }
 #fullscreen[aria-pressed="true"] { color: var(--hot); border-color: #5a4320; }
+/* the interface size (uiscale.js shows it on iOS / iPadOS): − / 100 % / +; a pinch's % badge (on html, outside the
+   preview transform of body) */
+.uizoom { display: flex; align-items: center; gap: 4px; }
+.uizoom[hidden] { display: none; }
+.uizoom .pct { min-width: 64px; padding: 0 8px; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.uizoom .appbtn:disabled { opacity: 0.4; cursor: default; border-color: var(--line); }
+.uiz-badge { position: fixed; z-index: 1002; top: calc(12px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 999px; border: 1px solid #5a4320; background: rgba(20, 21, 24, 0.94); color: var(--hot); font: 700 15px/1.2 var(--mono); box-shadow: 0 8px 24px rgba(0,0,0,0.5); pointer-events: none; }
+.uiz-badge[hidden] { display: none; }
 
 /* ---------------------------------------------------------- model nav */
 .models { display: flex; gap: 8px; padding: 14px 24px; overflow-x: auto; scrollbar-width: thin; border-bottom: 1px solid var(--line); }
@@ -297,10 +334,11 @@ body.recording .transport { border-color: #6b2a1c; }
 .rlab { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--mute); margin: 0 2px; }
 .rolltools button.on { border-color: var(--hot); color: var(--hot); background: #1d1810; }
 .rolltools button { padding: 4px 8px; }
+@media (pointer: coarse) { .rolltools button { min-height: 36px; min-width: 36px; } } /* touch targets */
 .rchk { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--text); padding: 0 4px; cursor: pointer; }
 .rchk input { accent-color: var(--hot); }
 .rsel { font-family: var(--mono); font-size: 11px; color: var(--mute); margin-left: auto; }
-.rollwrap { height: clamp(300px, calc(100vh - 400px), 640px); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #0c0d0f; position: relative; }
+.rollwrap { height: clamp(300px, calc(100vh - 400px), 640px); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #0c0d0f; position: relative; touch-action: none; } /* also on the box: WebKit 218015 (double-tap zoom through an absolute canvas) */
 .rollwrap canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
 .rollhelp { font-size: 12px; color: var(--mute); line-height: 1.6; margin: 8px 0 0; }
 .playing { font-family: var(--mono); font-size: 11px; color: var(--hot); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px; }

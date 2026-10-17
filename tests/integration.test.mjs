@@ -10,10 +10,10 @@ import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import * as core from '../serum-core.js?v=7';
-import * as W from '../wt.js?v=7';
-import { memoryStore } from '../wtstore.js?v=7';
-import { MODELS, patchFor } from '../models.js?v=7';
+import * as core from '../serum-core.js?v=8';
+import * as W from '../wt.js?v=8';
+import { memoryStore } from '../wtstore.js?v=8';
+import { MODELS, patchFor } from '../models.js?v=8';
 import { loadFixture } from './fixtures/load.mjs';
 import { dspScope, DSP_TABLE, DSP_FILES, noAlloc } from './dsp-scope.mjs';
 
@@ -1121,8 +1121,8 @@ test('§0.3 failure isolation: each optional script replaced by a throwing copy 
 });
 
 test('§15.13 bounce equivalence (§10.7f) with arp + clip + granular + Convolve: offline from tick T ≡ live after 1 s of pre-roll (−80 dB)', async () => {
-  const { playbackEntry, irEntry } = await import('../smpwork.js?v=7');
-  const { convShapeOf } = await import('../assets.js?v=7');
+  const { playbackEntry, irEntry } = await import('../smpwork.js?v=8');
+  const { convShapeOf } = await import('../assets.js?v=8');
   const sr = 48000, bpm = 120, fpt = sr * 60 / (bpm * 960), T0 = 3840, n = sr;
   const tone = (hz, ph) => Float32Array.from({ length: n }, (_, j) => 0.4 * Math.sin(2 * Math.PI * hz * j / sr + ph) + 0.15 * Math.sin(2 * Math.PI * 2.7 * hz * j / sr));
   const smpE = () => playbackEntry('smp:eqv', { rate: sr, ch: 2, len: n, L: tone(220, 0), R: tone(220, 1), root: 57, loop: null }, null);
@@ -1179,4 +1179,186 @@ test('§0.3/§12.5: the v2 render path allocates nothing — sequencer, MPE note
     for (let k = 0; k < 375; k++) { src.process([], [[L, R]]); tgt.process([], [[L, R]]); S.ctx.currentFrame += 128; }
   });
   assert.ok(tgt.voices.some(v => v.active), 'MIDI OUT reached the target');
+});
+
+/* ------------------------------------------------------------------ R7: chords in the song scheduler; previews */
+// (the iPad chord report: B1 a late start, B2 a song update / B3 a tempo change in the 4 frames before a chord, B5 the
+// Piano Roll's previews). Live processors without the JIT warm-up (offline: it changes nothing here); fpt 25 = 120 BPM.
+const C5 = [60, 63, 66, 70, 73];
+const chordSong = (T0, d = 1800, ns = C5) => { const o = []; for (const n of ns) o.push(T0, d, n, 100); return { t: 'song', notes: o, cc: [] }; };
+function chordProc(S, model) { // song note-ons logged [frame, note] (previews arrive through msg, not songEvents)
+  const p = S.mk({ os: 1, hostOS: 1, offline: true }), log = [];
+  if (model === 'serum') sendSx(p, sState()); else p.msg({ t: 'patch', p: plainPatch(model) });
+  run(S, [p], 1280);
+  const on = p.noteOn;
+  p.noteOn = function (n, v, ch, ext, aud) { if (!aud) log.push([p.spanF, n]); return on.call(this, n, v, ch, ext, aud); };
+  return { p, log };
+}
+// renders up to absolute frame `to`, each [frame, msg] posted before the quantum that starts at or after its frame
+function runTo(S, p, to, msgs = []) {
+  const q = msgs.slice().sort((a, b) => a[0] - b[0]);
+  run(S, [p], to - S.ctx.currentFrame, () => { while (q.length && q[0][0] <= S.ctx.currentFrame) p.msg(q.shift()[1]); });
+}
+const startMsg = (frame, o) => Object.assign({ t: 'transport', play: true, seek: true, frame, tick: 0, fpt: 25, loop: false }, o);
+const notesOf = log => log.map(x => x[1]).sort((a, b) => a - b).join();
+
+test('R7 B1: a late play / seek marked fresh plays the chord at its tick (≤ 0.25 s late); unmarked (a new node, a panic) or later replays nothing', () => {
+  const S = scope();
+  for (const model of ['prophet5', 'serum']) {
+    for (const [late, fresh, want] of [[-1024, false, 5], [5, true, 5], [64, true, 5], [300, true, 5], [300, false, 0], [12000, true, 5], [14400, true, 0]]) {
+      const { p, log } = chordProc(S, model);
+      p.msg(chordSong(0));
+      const now = S.ctx.currentFrame;
+      p.msg(startMsg(now + 2 - late, fresh ? { fresh: true } : null)); // (≡ 2 mod 4 when on time, as main.js's rounded frames)
+      runTo(S, p, now + 128 * 30);
+      assert.equal(log.length, want, `${model}, ${late} frames late${fresh ? ', fresh' : ''}`);
+      if (want) assert.equal(notesOf(log), C5.join());
+    }
+  }
+});
+
+test('R7 B2/B3: a song update or a tempo change landing in the 4 frames before a chord drops none of it and fires none twice', () => {
+  const S = scope();
+  for (const model of ['prophet5', 'serum']) {
+    for (const when of ['none', 'early', 'at', 'after']) { // the update one quantum before the chord's, at it, one after
+      const { p, log } = chordProc(S, model), base = S.ctx.currentFrame, F = base + 3138;
+      let T0 = 1000; while ((F + T0 * 25) % 128 < 125) T0++; // the chord's frame 1–3 frames before a quantum boundary Fq
+      const Fq = Math.ceil((F + T0 * 25) / 128) * 128, song = chordSong(T0);
+      p.msg(song);
+      const msgs = [[base, startMsg(F, { fresh: true })]];
+      if (when !== 'none') msgs.push([Fq + { early: -128, at: 0, after: 128 }[when], song]);
+      runTo(S, p, Fq + 128 * 20, msgs);
+      assert.equal(notesOf(log), C5.join(), `${model}, song update ${when}`);
+      assert.equal(new Set(log.map(x => x[0])).size, 1, 'one frame');
+    }
+  }
+  // B3: main.js reanchor(false) (121 BPM) whose frame P lands around the chord's frame Fc: the chord plays once at every P
+  for (let dP = -8; dP <= 8; dP++) {
+    const { p, log } = chordProc(S, 'prophet5'), base = S.ctx.currentFrame, F = base + 3138, T0 = 1500, Fc = F + T0 * 25, P = Fc + dP;
+    p.msg(chordSong(T0));
+    runTo(S, p, Fc + 4096, [[base, startMsg(F, { fresh: true })],
+      [P - 2400, { t: 'transport', play: true, seek: false, frame: P, tick: (P - F) / 25, fpt: 48000 * 60 / (121 * 960), loop: false }]]);
+    assert.equal(notesOf(log), C5.join(), `re-anchor at the chord's frame ${dP >= 0 ? '+' : ''}${dP}`);
+  }
+  // the guard: a re-anchor a hair behind the chord that just fired (float rounding) does not fire it again; a real step
+  // back (a loop remap) plays it again when it is reached. (The chord fires at Fc or one span later — its frame reached
+  // through rounded tick arithmetic —, before the re-anchor's frame Fc + 8.)
+  for (const [back, want] of [[0.1, 5], [480, 10]]) {
+    const { p, log } = chordProc(S, 'prophet5'), base = S.ctx.currentFrame, F = base + 3136, T0 = 1500, Fc = F + T0 * 25;
+    p.msg(chordSong(T0));
+    runTo(S, p, Fc + 20000, [[base, startMsg(F, { fresh: true })],
+      [Fc - 2400, { t: 'transport', play: true, seek: false, frame: Fc + 8, tick: T0 - back, fpt: 25, loop: false }]]);
+    assert.equal(log.length, want, `re-anchored ${back} ticks back`);
+    assert.ok(log[4][0] < Fc + 8, 'the chord fired before the re-anchor');
+  }
+});
+
+test('R7 B5: a preview (aud) never takes or releases the song\'s voices, nor the song a preview\'s — poly analog, DX7, Serum, Solina', () => {
+  const S = scope();
+  const held = (p, n) => (p.kind === 'divide' ? (p.div.gate[n] ? 1 : 0) : p.voices.filter(v => v.gate && v.note === n).length);
+  for (const model of ['jupiter8', 'dx7', 'serum', 'solina']) {
+    const { p, log } = chordProc(S, model), base = S.ctx.currentFrame, F = base + 1024;
+    // a long chord from tick 0; note 72 from tick 480 for 240 ticks
+    const song = chordSong(0, 9600, [60, 64, 67]);
+    song.notes.push(480, 240, 72, 100);
+    p.msg(song);
+    runTo(S, p, F + 128 * 10, [[base, startMsg(F, { fresh: true })]]);
+    assert.equal(notesOf(log), '60,64,67', model);
+    const one = model === 'solina' ? 1 : 2; // (the Solina has one gate per key)
+    p.msg({ t: 'on', n: 64, v: 0.8, aud: 1 }); run(S, [p], 256);
+    assert.equal(held(p, 64), one, `${model}: the preview of a song note sounds on its own voice`);
+    p.msg({ t: 'off', n: 64, aud: 1 }); run(S, [p], 256);
+    assert.equal(held(p, 64), 1, `${model}: its note-off leaves the song's note sounding`);
+    p.msg({ t: 'on', n: 72, v: 0.8, aud: 1 }); // held across the song's 72 (tick 480 … 720)
+    runTo(S, p, F + 800 * 25);
+    assert.equal(log.length, 4);
+    // (Serum's "one of any note number": the song's 72 takes the preview's voice over, and releases it)
+    assert.equal(held(p, 72), model === 'serum' ? 0 : 1, `${model}: the song's note-off left the preview's 72`);
+    p.msg({ t: 'off', n: 72, aud: 1 }); run(S, [p], 256);
+    assert.equal(held(p, 72), 0, `${model}: the preview's note-off released it`);
+    assert.equal(held(p, 60) + held(p, 64) + held(p, 67), 3, `${model}: the chord still sounds`);
+  }
+  // all five Prophet-5 voices held by the song: a preview is not heard rather than steal one; a key (no aud) still steals
+  const { p } = chordProc(S, 'prophet5'), base = S.ctx.currentFrame;
+  p.msg(chordSong(0, 9600));
+  runTo(S, p, base + 1024 + 1280, [[base, startMsg(base + 1024, { fresh: true })]]);
+  const gated = () => p.voices.filter(v => v.gate).map(v => v.note).sort((a, b) => a - b).join();
+  assert.equal(gated(), C5.join());
+  p.msg({ t: 'on', n: 80, v: 0.8, aud: 1 }); run(S, [p], 256);
+  assert.equal(gated(), C5.join(), 'the preview took no voice');
+  p.msg({ t: 'off', n: 80, aud: 1 }); run(S, [p], 256);
+  assert.equal(gated(), C5.join());
+  p.msg({ t: 'on', n: 80, v: 0.8 }); run(S, [p], 256);
+  assert.equal(gated(), '63,66,70,73,80', 'a key steals the oldest as before');
+  // a preview's note-off without a voice of its own (none was free) releases the key's note only when the song does not hold it
+  p.msg({ t: 'off', n: 80, aud: 1 }); run(S, [p], 256);
+  assert.equal(gated(), '63,66,70,73');
+  p.msg({ t: 'off', n: 63, aud: 1 }); run(S, [p], 256);
+  assert.equal(gated(), '63,66,70,73', 'the song holds 63');
+});
+
+test('R7 B5, a Serum sequencer (Arp, keyboard transpose): a preview\'s note-off goes where its note-on went; a preview of a key the sequencer holds is not sent; a key shared by a preview and the keys is down until both let go', () => {
+  const S = scope({ console: quietConsole });
+  const on = (p, n, aud) => { p.msg(Object.assign({ t: 'on', n, v: 0.8 }, aud ? { aud: 1 } : null)); run(S, [p], 256); };
+  const off = (p, n, aud) => { p.msg(Object.assign({ t: 'off', n }, aud ? { aud: 1 } : null)); run(S, [p], 256); };
+  const gated = p => [...p.voices].filter(v => v.gate).map(v => v.note).sort((a, b) => a - b).join(); // (this realm's arrays)
+  const arp = a => vState(st => { st.p['arp.on'] = a; });
+  // the Arp switched off while a key is held (its record stays: heldN > 0), then a preview: straight to the allocator, and
+  // its note-off too — of another pitch, or of the held key's own pitch; a preview held while the Arp is switched on
+  for (const n of [72, 48]) {
+    const p = S.mk({ os: 1 });
+    sendSx(p, arp(1)); run(S, [p], 512);
+    on(p, 48); sendSx(p, arp(0)); run(S, [p], 256);
+    assert.equal([p.sqOn, p.sxSeq.heldN].join(), '0,1');
+    on(p, n, true);
+    assert.ok(gated(p).split(',').includes(String(n)), 'the preview sounds');
+    off(p, n, true); run(S, [p], 48000);
+    assert.equal(gated(p), '', `preview ${n}: released`);
+    off(p, 48);
+    assert.equal(p.sxSeq.heldN, 0, `preview ${n}: the key's record released`);
+  }
+  {
+    const p = S.mk({ os: 1 });
+    sendSx(p, arp(0)); run(S, [p], 512);
+    on(p, 60, true); sendSx(p, arp(1)); run(S, [p], 256);
+    assert.equal(p.sqOn, 1);
+    off(p, 60, true); run(S, [p], 48000);
+    assert.equal([gated(p), p.sxSeq.heldN].join('|'), '|0', 'a preview started before the Arp: released');
+  }
+  // the Arp holds a chord (keys 60 / 64 / 67): a preview of 64 leaves it in the arpeggio; a preview alone arpeggiates
+  {
+    const p = S.mk({ os: 1 });
+    sendSx(p, arp(1)); run(S, [p], 512);
+    for (const n of [60, 64, 67]) on(p, n);
+    assert.equal([p.sxSeq.hN, p.sxSeq.heldN].join(), '3,3');
+    on(p, 64, true); off(p, 64, true);
+    assert.equal([p.sxSeq.hN, p.sxSeq.heldN].join(), '3,3', 'the arp still holds 64');
+    for (const n of [60, 64, 67]) off(p, n);
+    on(p, 70, true);
+    assert.equal(p.sxSeq.hN, 1, 'a preview alone feeds the arp');
+    off(p, 70, true);
+    assert.equal([p.sxSeq.hN, p.sxSeq.heldN].join(), '0,0');
+  }
+  // keyboard transpose +2 (the sequencer active, no Arp): keys 60 / 64 / 67 sound 62 / 66 / 69; a preview of 64 keeps them
+  const tr = vState(st => { st.kbd.trans = 2; });
+  {
+    const p = S.mk({ os: 1 });
+    sendSx(p, tr); run(S, [p], 512);
+    for (const n of [60, 64, 67]) on(p, n);
+    assert.equal(gated(p), '62,66,69');
+    on(p, 64, true); off(p, 64, true);
+    assert.equal([gated(p), p.sxSeq.heldN].join('|'), '62,66,69|3', 'the key\'s note kept');
+  }
+  // preview then key on one pitch: the key's note-off (or the preview's, either order) leaves it for the other
+  for (const first of ['key', 'preview']) {
+    const p = S.mk({ os: 1 });
+    sendSx(p, tr); run(S, [p], 512);
+    on(p, 64, true); on(p, 64);
+    assert.equal(gated(p), '66');
+    if (first === 'key') off(p, 64); else off(p, 64, true);
+    assert.equal([gated(p), p.sxSeq.heldN].join('|'), '66|1', first + ' released first: still down');
+    if (first === 'key') off(p, 64, true); else off(p, 64);
+    run(S, [p], 256);
+    assert.equal([gated(p), p.sxSeq.heldN].join('|'), '|0', 'both released');
+  }
 });

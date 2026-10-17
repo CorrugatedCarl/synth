@@ -12,8 +12,9 @@
 // Reload". Nothing reloads by itself: Reload saves the project (opts.beforeReload, given at most 5 s), then the worker is
 // activated (`skip`) and the page reloads when it has taken over. Another window's update shows the toast here too. A
 // toast put off with × comes back when the page returns to the front after an hour (an iPad app stays suspended for days).
-// iPad: the browser's full screen (WebKit's) keeps its own controls and may stop fast tapping with a "typing in full
-// screen" warning — the first full screen there says that the installed app is the full-screen one.
+// iPad: the browser's full screen (WebKit's) keeps its own controls, may stop fast tapping with a "typing in full
+// screen" warning, and a pinch may leave it (WebKit 227387: zooming the Piano Roll) — the first full screen there says that
+// the installed app is the full-screen one.
 // The pure parts (platform, appButtons, installSteps, fullscreenApi, isStandalone, swAllowed) are exported for the tests.
 
 /* ------------------------------------------------------------------ pure parts */
@@ -170,9 +171,10 @@ export function initApp(opts) {
     const was = FS.active();
     (was ? FS.exit() : FS.enter()).then(() => {
       sync();
-      // iPad: WebKit's full screen keeps a control of its own and may stop quick tapping (a played keyboard) with its
-      // "typing in full screen" warning — said once, with the way to a full screen without either
-      if (!was && P.ios && !fsTold) { fsTold = true; say('The browser’s full screen may stop fast playing with a warning — Install app gives SYNTH a full screen of its own', 9000); }
+      // iPad: WebKit's full screen keeps a control of its own, may stop quick tapping (a played keyboard) with its
+      // "typing in full screen" warning, and a pinch (zooming the Piano Roll) may leave it (WebKit 227387) — said once,
+      // with the way to a full screen without any of that
+      if (!was && P.ios && !fsTold) { fsTold = true; say('The browser’s full screen may stop fast playing with a warning — Install app gives SYNTH a full screen of its own. A pinch (zooming the Piano Roll) may also leave the browser’s full screen.', 10000); }
     }, () => { sync(); if (!was) say('Full screen is not available here', 5000); });
   };
   for (const t of ['fullscreenchange', 'webkitfullscreenchange']) doc.addEventListener(t, sync);
@@ -223,7 +225,19 @@ export function initApp(opts) {
   }
   if (sheet) {
     const c = $('insClose'); if (c) c.onclick = closeSheet;
-    sheet.addEventListener('pointerdown', e => { if (e.target === sheet) closeSheet(); });
+    // the backdrop closes it: a mouse / pen at the press, a finger on its tap's release (≤ 10 px) — a scroll or a
+    // two-finger gesture starting there (gesture.js cancels the first finger) leaves it open
+    let bp = null;
+    sheet.addEventListener('pointerdown', e => {
+      bp = null;
+      if (e.target !== sheet) return;
+      if (e.pointerType === 'touch') bp = { id: e.pointerId, x: e.clientX, y: e.clientY }; else closeSheet();
+    });
+    sheet.addEventListener('pointerup', e => {
+      const P = bp; bp = null;
+      if (P && P.id === e.pointerId && e.target === sheet && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= 10) closeSheet();
+    });
+    sheet.addEventListener('pointercancel', e => { if (bp && bp.id === e.pointerId) bp = null; });
   }
 
   /* service worker + update toast */

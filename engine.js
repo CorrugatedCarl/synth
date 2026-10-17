@@ -1473,6 +1473,8 @@ class SynthProcessor extends AudioWorkletProcessor {
     if (po.song) this.songMsg(po.song);
     if (po.transport) this.transportMsg(po.transport);
     this.port.onmessage = (ev) => this.msg(ev.data);
+    // built (the first processor of the scope: warmed up) — main.js resumes a context it held suspended meanwhile (WebKit)
+    if (!this.offline) this.port.postMessage({ t: 'ready' });
   }
   // Renders every engine path through attack, sustain and release, so a model's first notes do not run in the
   // interpreter while the JIT catches up (single quanta used to reach 1.5-2x the budget). Two rounds: the first
@@ -1507,7 +1509,7 @@ class SynthProcessor extends AudioWorkletProcessor {
     if (this.rack) this.rack.reset();
     this.ct = null; this.pat.fill(0); this.patSeen = false; this.mon = false; this.monF = 0; this.spanF = 0;
     this.pnN = 0; this.nfG = 1; this.nfT = 1; this.sxW = 0; this.sxWK = ''; this.sxWarm = null;
-    this.extN = 0; this.lastNote = 60; this.mpe.fill(0);
+    this.extN = 0; this.lastNote = 60; this.mpe.fill(0); this.vOwn.fill(0); this.audK.fill(0);
     this.sqOff(); this.sxSeq = null; this.vcN = 0; this.rr.fill(0); this.mixPk.fill(0); this.monoCh = 0; this.monoEx = null;
     this.sxMask = 1; this.sxBusOn = 0; this.sxReal = 1; this.sxRel = 0; this.sxRelN = 0; this.sxRelT = 0; this.inSpan = 0;
     this.setOS(os);
@@ -1547,6 +1549,12 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.rr = new Uint16Array(512); this.procs = null; this.inSpan = 0; this.ending = 0;
     this.sxExA = []; for (let i = 0; i < SXV; i++) this.sxExA.push(new Float64Array(3));
     this.sxTr = new Int16Array(17 * 128).fill(-1); this.monoCh = 0; this.monoEx = null;
+    // R7 B5: who owns each poly voice (by voice index: 0 the song / the keys, 1 a preview — the Piano Roll's audition,
+    // {t: 'on', aud: 1}) and the Solina keys a preview started; a preview never takes or releases a voice it does not own.
+    // Serum: audK[n] is the route of the preview of n (channel 0) — 1 through the sequencer (its key there), 2 not sent
+    // (the sequencer already held the key for the song / the keys), 3 straight to the allocator (owner 1), 4 = 1 and the
+    // song / the keys struck the key since (it is down until both let go)
+    this.vOwn = new Uint8Array(SXV); this.audK = new Uint8Array(128);
     this.mixPk = new Float64Array(4);
     // CP.outMask of the current patch (sxMask: the pairs rendered, incl. bus pairs still draining after their last send was
     // switched off; sxReal: the patch's own mask; sxRel / sxRelN: the draining bus bits and their frames left); bus pairs
@@ -1568,8 +1576,11 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.setPatch(DEFAULT_PATCH);
     // song playback / transport (scheduled against currentFrame so every track node stays in sync)
     // anch: the next re-seek follows a transport start / seek or a loop wrap, whose anchor (tp.frame, tp.tick) may lie up to
-    // one 4-frame span before the frame it is handled at (RULINGS2 bug fix 1)
+    // one 4-frame span before the frame it is handled at (RULINGS2 bug fix 1); fresh: that start / seek came from play() /
+    // a seek (accepted late, R7 B1); lastT: the song position of the last span whose events fired (NaN: none since the
+    // start / stop; R7 B2 / B3)
     this.sn = []; this.sc = []; this.ni = 0; this.ci = 0; this.seqOn = []; this.reseek = true; this.anch = false; this.frames = 0; this.quietF = 0;
+    this.fresh = false; this.lastT = NaN;
     this.tp = { play: false, frame: 0, tick: 0, fpt: 1, loop: false, ls: 0, le: 0, wrap: false, pend: null };
   }
   rnd() { let x = this.r; x ^= x << 13; x ^= x >>> 17; x ^= x << 5; this.r = x >>> 0; return this.r / 2147483648 - 1; }
@@ -1957,6 +1968,7 @@ class SynthProcessor extends AudioWorkletProcessor {
     if (hard) this.fadeOut(null);
     if (this.voices) for (const v of this.voices) { v.noteOff(); v.sus = false; if (hard) v.kill(); }
     if (this.div) this.div.allOff(hard);
+    this.audK.fill(0);
     this.clrHeld();
   }
   // the mono held-key list; for Serum each entry also keeps its MIDI channel (heldC) and [gen, x, y, z] (heldE): the
@@ -1971,9 +1983,9 @@ class SynthProcessor extends AudioWorkletProcessor {
     if (this.ending === 1) return; // after {t: 'bye'} the node only fades out (end)
     switch (d.t) {
       case 'patch': this.setPatch(d.p); break;
-      // ch: the MIDI channel of a note of an MPE track (§12.4, §6.17); absent for every other note
-      case 'on': this.noteOn(d.n, d.v, d.ch); break;
-      case 'off': this.noteOff(d.n, d.rv, d.ch); break;
+      // ch: the MIDI channel of a note of an MPE track (§12.4, §6.17); absent for every other note. aud: a preview (R7 B5)
+      case 'on': this.noteOn(d.n, d.v, d.ch, 0, d.aud ? 1 : 0); break;
+      case 'off': this.noteOff(d.n, d.rv, d.ch, 0, d.aud ? 1 : 0); break;
       // the panel's arp / clip launch and stop buttons (§7.7 commands, §12.4)
       case 'seqcmd': if (this.sxSeq !== null && this.kind === 'serum' && typeof d.cmd === 'string') this.sxSeq.cmd(d.cmd, d.arg); break;
       // seqT parts without a patch (§4.4, §12.4): {t: 'sqt', part} or {t: 'sqt', parts: {name: part}}
@@ -2093,63 +2105,77 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.pnN = k;
     if (k === 0) this.panicClear();
   }
-  // ch: MIDI channel of an MPE note (0 = none); ext: a note delivered by another track's MIDI OUT (§7.9, never forwarded)
-  noteOn(n, v, ch, ext) {
-    const p = this.p;
+  // ch: MIDI channel of an MPE note (0 = none); ext: a note delivered by another track's MIDI OUT (§7.9, never forwarded);
+  // aud: a preview (R7 B5). Poly: a preview reuses / takes only its own voices or free / released ones (none left: it is
+  // not heard), the song and the keys never reuse a preview's voice and steal one before their own; mono models as before
+  noteOn(n, v, ch, ext, aud) {
+    const p = this.p, a = aud ? 1 : 0;
     this.lastNote = n;
     if (this.kind === 'serum') { // §12.3: through the sequencer while it is active, else to the allocator
-      const c = ch > 0 && ch <= 16 ? ch | 0 : 0;
-      if (this.sqOn === 1) this.sxSeq.input(1, n, v, c, this.nowF(), ext ? 1 : 0);
-      else this.sxIn(1, n, v, c);
+      const c = ch > 0 && ch <= 16 ? ch | 0 : 0, q = c === 0 && n >= 0 && n <= 127 && n === Math.floor(n) ? n : -1;
+      if (this.sqOn === 1) {
+        // R7 B5: the sequencer keeps one record per key — a preview of a key it already holds is not sent (the key is
+        // down once: the song's note keeps sounding); the song / the keys striking a key a preview holds share it
+        const sq = this.sxSeq, held = q >= 0 && sq.rF !== undefined && (sq.rF[q] & 1) !== 0; // (rF & 1: R_REC)
+        if (a && q >= 0) { if (held) { this.audK[q] = 2; return; } this.audK[q] = 1; }
+        else if (!a && q >= 0 && this.audK[q] === 1) this.audK[q] = held ? 4 : 2; // (2: the preview's record is gone)
+        sq.input(1, n, v, c, this.nowF(), ext ? 1 : 0);
+      } else { if (a && q >= 0) this.audK[q] = 3; this.sxIn(1, n, v, c, a); }
       return;
     }
     if (this.rack) this.rack.trigger(); // Hyper RETRIG
     if (!this.anyActive()) { this.smTargets(); this.smSnap(); } // nothing sounding: start at the panel values
-    if (this.kind === 'divide') { this.div.noteOn(n); return; }
+    if (this.kind === 'divide') { if (a) this.audK[n] = 1; this.div.noteOn(n); return; } // (a key: up when both let go)
     if (p.mode !== 'poly') {
       const i = this.held.indexOf(n); if (i >= 0) this.held.splice(i, 1);
       this.held.push(n);
       this.monoPlay(v, true);
       return;
     }
+    const own = this.vOwn;
     let vc = null;
-    if (this.kind !== 'fm') { for (const x of this.voices) if (x.active && x.note === n) { vc = x; break; } }
-    else for (const x of this.voices) if (x.gate && !x.sus && x.note === n) x.noteOff(); // DX7: a repeated key gets a voice of its own
+    if (this.kind !== 'fm') { for (const x of this.voices) if (x.active && x.note === n && own[x.i] === a) { vc = x; break; } }
+    else for (const x of this.voices) if (x.gate && !x.sus && x.note === n && own[x.i] === a) x.noteOff(); // DX7: a repeated key gets a voice of its own
     if (!vc) {
       let best = null;
       for (const x of this.voices) if (!x.active && (!best || x.stamp < best.stamp)) best = x;
       if (!best) for (const x of this.voices) if (!x.gate && (!best || x.stamp < best.stamp)) best = x;
+      if (!best && a) { for (const x of this.voices) if (own[x.i] === 1 && (!best || x.stamp < best.stamp)) best = x; if (!best) return; }
       if (!best) for (const x of this.voices) if (x.sus && (!best || x.stamp < best.stamp)) best = x; // pedal-held before key-held
+      if (!best) for (const x of this.voices) if (own[x.i] === 1 && (!best || x.stamp < best.stamp)) best = x; // previews first
       if (!best) for (const x of this.voices) if (!best || x.stamp < best.stamp) best = x;
       vc = best;
       if (vc.active && this.kind === 'fm') { this.fadeOut([vc]); vc.kill(); } // operator key sync would cut a sounding voice
     }
-    vc.stamp = ++this.stamp;
+    vc.stamp = ++this.stamp; own[vc.i] = a;
     vc.noteOn(n, v, false, this.glc(false));
   }
+  // R7 B5: the song holds note n (its note-off is still due)
+  songHas(n) { const on = this.seqOn; for (let i = 0; i < on.length; i += 2) if (on[i] === n) return true; return false; }
   // A Serum note that bypasses the sequencer (inactive, or SxSeq missing: then the keyboard transpose kbd.trans is
-  // applied here, §7.1, and the note-off releases the note its note-on started)
-  sxIn(on, n, v, ch) {
+  // applied here, §7.1, and the note-off releases the note its note-on started); a: the preview owner (noteOn / noteOff)
+  sxIn(on, n, v, ch, a) {
     const k = n >= 0 && n <= 127 && n === Math.floor(n) ? ch * 128 + n : -1;
     if (on) {
       const m = n + this.sqTr;
       if (this.sqTr !== 0 && !(m >= 0 && m <= 127)) { if (k >= 0) this.sxTr[k] = -2; return; } // out of range: dropped
       if (k >= 0) this.sxTr[k] = this.sqTr !== 0 ? m : -1;
-      this.sxNote(1, m, v, ch, 0, 0, 0, 0);
+      this.sxNote(1, m, v, ch, 0, 0, 0, 0, a);
       return;
     }
     let m = n;
     if (k >= 0) { const r = this.sxTr[k]; this.sxTr[k] = -1; if (r === -2) return; if (r >= 0) m = r; }
-    this.sxNote(0, m, v, ch, 0, 0, 0, 0);
+    this.sxNote(0, m, v, ch, 0, 0, 0, 0, a);
   }
   // The Serum voice allocator (§12.3) — every note reaching the voices goes through here: input notes and the notes the
   // sequencer generates (gen 1, with expression x, y, z ∈ [0, 1] used by a voice without an MPE channel). Poly:
   // SerumDSP.allocate over voices[0 … POLY−1] (same-note reuse with "one of any note number", then inactive, not gated,
   // sustain-held, then the Voice Steal Priority); mono plays voices[0] (the voice does portamento, legato and unison
-  // itself). The rack's RETRIG modules restart at every voice note-on (§8.1).
-  sxNote(on, n, vel, ch, x, y, z, gen) {
+  // itself). The rack's RETRIG modules restart at every voice note-on (§8.1). a: a preview (R7 B5, poly): its own voice
+  // (sxAud), never one the allocator would take from the song or the keys; its note-off (a 1 / 2, noteOff) as sxOff
+  sxNote(on, n, vel, ch, x, y, z, gen, a) {
     const vs = this.voices;
-    if (!on) { this.sxOff(n, vel, ch); return; }
+    if (!on) { this.sxOff(n, vel, ch, a); return; }
     if (this.rack) this.rack.trigger();
     if (!vs || !vs.length) return; // SerumDSP missing: a silent track
     if (this.sxW) { const SD = globalThis.SerumDSP; if (SD) SD.warmEnd(this); this.sxW = 0; } // real notes now
@@ -2164,7 +2190,8 @@ class SynthProcessor extends AudioWorkletProcessor {
     }
     const SD = globalThis.SerumDSP, nUse = this.sxUse < vs.length ? this.sxUse : vs.length;
     let vc = null;
-    if (SD && SD.allocate) vc = SD.allocate(this, n, c, nUse);
+    if (a) { if (!SD || !SD.allocate || SD.allocate(this, n, c, nUse)) vc = this.sxAud(n, c, nUse); } // (allocate: an unmapped key)
+    else if (SD && SD.allocate) vc = SD.allocate(this, n, c, nUse);
     else { // (a SerumDSP without allocate: the Phase-1 rule)
       if (this.sxOne) for (let i = 0; i < nUse; i++) { const w = vs[i]; if (w.active && w.note === n) { vc = w; break; } }
       if (!vc) {
@@ -2176,15 +2203,16 @@ class SynthProcessor extends AudioWorkletProcessor {
         vc = best;
       }
     }
-    if (!vc) return; // a key the tuning leaves unmapped (§6.18)
-    vc.stamp = ++this.stamp;
+    if (!vc) return; // a key the tuning leaves unmapped (§6.18); a preview without a voice of its own
+    vc.stamp = ++this.stamp; this.vOwn[vc.i] = a ? 1 : 0;
     let ex = null;
     if (gen) { ex = this.sxExA[vc.i >= 0 && vc.i < SXV ? vc.i : 0]; ex[0] = x; ex[1] = y; ex[2] = z; }
     if (c === 0 && ex === null) vc.noteOn(n, vel, false, 1);
     else vc.noteOn(n, vel, false, 1, c, ex);
   }
-  // Serum note-off (rv = release velocity): mono as Phase 1; poly releases the gated voices of (note, channel)
-  sxOff(n, rv, ch) {
+  // Serum note-off (rv = release velocity): mono as Phase 1; poly releases the gated voices of (note, channel) its owner
+  // holds (a as noteOff: 0 the song / keys, 1 a preview, 2 a preview whose note the song does not hold)
+  sxOff(n, rv, ch, a) {
     const p = this.p, c = ch > 0 && ch <= 16 ? ch | 0 : 0;
     if (p.mode !== 'poly') {
       const i = this.heldAt(n, c); if (i < 0) return;
@@ -2197,7 +2225,21 @@ class SynthProcessor extends AudioWorkletProcessor {
       }
       return;
     }
-    for (const x of this.voices) if (x.gate && x.note === n && (x.ch | 0) === c) { if (this.sustain) x.sus = true; else x.noteOff(rv); }
+    const own = this.vOwn, o = a ? 1 : 0;
+    let k = 0;
+    for (const x of this.voices) if (x.gate && x.note === n && (x.ch | 0) === c && own[x.i] === o) { if (this.sustain) x.sus = true; else x.noteOff(rv); k++; }
+    if (k === 0 && a === 2) for (const x of this.voices) if (x.gate && x.note === n && (x.ch | 0) === c) { if (this.sustain) x.sus = true; else x.noteOff(rv); }
+  }
+  // R7 B5: a Serum preview's voice among voices[0 … U−1] — its own of (n, c) with "one of any note number", else free (lowest
+  // stamp), released, then its own oldest; null when every other voice is held by the song or the keys
+  sxAud(n, c, U) {
+    const vs = this.voices, own = this.vOwn;
+    let best = null;
+    if (this.sxOne) for (let i = 0; i < U; i++) { const w = vs[i]; if (w.active && w.note === n && (w.ch | 0) === c && own[w.i] === 1) return w; }
+    for (let i = 0; i < U; i++) { const w = vs[i]; if (!w.active && (!best || w.stamp < best.stamp)) best = w; }
+    if (!best) for (let i = 0; i < U; i++) { const w = vs[i]; if (!w.gate && (!best || w.stamp < best.stamp)) best = w; }
+    if (!best) for (let i = 0; i < U; i++) { const w = vs[i]; if (own[w.i] === 1 && (!best || w.stamp < best.stamp)) best = w; }
+    return best;
   }
   // Serum's held entry of (note n, channel c), the most recent one; −1 when none
   heldAt(n, c) {
@@ -2229,14 +2271,31 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.monoGate = true;
   }
   // rv: release velocity (MIDI note-off, 0–1), passed to the Serum voices it releases (§11.3); ch, ext as noteOn. A
-  // Serum note-off goes to the sequencer while it is active or still holds input keys (they were transposed / held by it)
-  noteOff(n, rv, ch, ext) {
-    const p = this.p;
-    if (this.kind === 'divide') { this.div.gate[n] = this.sustain && this.div.gate[n] ? 2 : 0; return; }
+  // Serum note-off goes to the sequencer while it is active or still holds input keys (they were transposed / held by it).
+  // aud (R7 B5): a preview's note-off releases the preview's poly voices of n; when it has none (never heard, or re-struck
+  // by a patch change) any voice of n unless the song holds n — the song's and the keys' note-offs never release a preview
+  noteOff(n, rv, ch, ext, aud) {
+    const p = this.p, a = aud ? (this.songHas(n) ? 1 : 2) : 0;
+    if (this.kind === 'divide') { // the key stays down while the other owner (preview / song) still holds it
+      if (a) { if (!this.audK[n]) return; this.audK[n] = 0; if (a === 1) return; } else if (this.audK[n]) return;
+      this.div.gate[n] = this.sustain && this.div.gate[n] ? 2 : 0; return;
+    }
     if (this.kind === 'serum') {
-      const c = ch > 0 && ch <= 16 ? ch | 0 : 0, sq = this.sxSeq;
+      // a preview's note-off goes where its note-on went (audK); the song's / the keys' leave a key a preview still holds
+      // down, and skip the sequencer when its record of the key is the preview's (their note-on went to the allocator)
+      const c = ch > 0 && ch <= 16 ? ch | 0 : 0, sq = this.sxSeq, q = c === 0 && n >= 0 && n <= 127 && n === Math.floor(n) ? n : -1;
+      const k = q >= 0 ? this.audK[q] : 0;
+      if (a) { // (k 0: no route kept — a mono / poly switch cleared it — the rule below)
+        if (q >= 0) this.audK[q] = 0;
+        if (k === 2 || k === 4) return; // the sequencer's key is the song's / the keys'
+        if (k === 3 || sq === null || (k === 0 && this.sqOn !== 1 && sq.heldN <= 0)) this.sxIn(0, n, rv, c, a);
+        else sq.input(0, n, rv, c, this.nowF(), ext ? 1 : 0);
+        return;
+      }
+      if (k === 4) { this.audK[q] = 1; return; } // the preview still holds the key
+      if (k === 1) { this.sxIn(0, n, rv, c, 0); return; }
       if (sq !== null && (this.sqOn === 1 || sq.heldN > 0)) sq.input(0, n, rv, c, this.nowF(), ext ? 1 : 0);
-      else this.sxIn(0, n, rv, c);
+      else this.sxIn(0, n, rv, c, a);
       return;
     }
     if (p.mode !== 'poly') {
@@ -2250,7 +2309,10 @@ class SynthProcessor extends AudioWorkletProcessor {
       }
       return;
     }
-    for (const x of this.voices) if (x.gate && x.note === n) { if (this.sustain) x.sus = true; else x.noteOff(); }
+    const own = this.vOwn, o = a ? 1 : 0;
+    let k = 0;
+    for (const x of this.voices) if (x.gate && x.note === n && own[x.i] === o) { if (this.sustain) x.sus = true; else x.noteOff(); k++; }
+    if (k === 0 && a === 2) for (const x of this.voices) if (x.gate && x.note === n) { if (this.sustain) x.sus = true; else x.noteOff(); }
   }
   runLFO(nCh) {
     const L = this.p.lfo, inc = L.rate * this.CH / this.fs;
@@ -2315,7 +2377,7 @@ class SynthProcessor extends AudioWorkletProcessor {
   transportMsg(d) {
     const tp = this.tp;
     if (!d.play) {
-      tp.pend = null;
+      tp.pend = null; this.lastT = NaN;
       if (tp.play) {
         tp.play = false; this.releaseSong(true); this.transportHook(false);
         // preference "silence effect tails when transport stops" (§11.5): the rack's tails fade out over 5 ms
@@ -2323,7 +2385,7 @@ class SynthProcessor extends AudioWorkletProcessor {
       }
       return;
     }
-    tp.pend = { frame: d.frame, tick: d.tick, fpt: d.fpt, loop: !!d.loop, ls: d.ls || 0, le: d.le || 0, seek: d.seek !== false, end: d.end == null ? null : d.end };
+    tp.pend = { frame: d.frame, tick: d.tick, fpt: d.fpt, loop: !!d.loop, ls: d.ls || 0, le: d.le || 0, seek: d.seek !== false, end: d.end == null ? null : d.end, fresh: !!d.fresh };
   }
   releaseSong(stop) {
     const on = this.seqOn;
@@ -2358,8 +2420,8 @@ class SynthProcessor extends AudioWorkletProcessor {
         if (start) this.releaseSong(false);
         tp.play = true; tp.frame = P.frame; tp.tick = P.tick; tp.fpt = P.fpt; tp.loop = P.loop; tp.ls = P.ls; tp.le = P.le; tp.end = P.end;
         tp.wrap = P.loop && P.le > P.ls && P.tick < P.le;
-        this.reseek = true; this.anch = start;
-        if (start) this.transportHook(true);
+        this.reseek = true; this.anch = start; this.fresh = start && P.fresh;
+        if (start) { this.lastT = NaN; this.transportHook(true); }
       } else dist = P.frame - F;
     }
     if (!tp.play) return dist;
@@ -2371,7 +2433,7 @@ class SynthProcessor extends AudioWorkletProcessor {
       tp.frame = Fb; tp.tick = tp.ls;
       t = this.tickAt(F);
       this.releaseSong(false);
-      this.reseek = true; this.anch = true;
+      this.reseek = true; this.anch = true; this.fresh = false; this.lastT = NaN;
     }
     if (tp.end != null && t >= tp.end) { tp.play = false; this.releaseSong(true); this.transportHook(false); if (this.sq && this.sq.sync) this.seqRelease(); return dist; }
     const sn = this.sn, sc = this.sc;
@@ -2381,15 +2443,24 @@ class SynthProcessor extends AudioWorkletProcessor {
       // hair short of the loop end, one span later —, so t can lie past the anchor tick by up to 4 frames: the events at
       // or after the anchor are still due and play now (Phase 1 searched from t and dropped the notes exactly at the play
       // / seek tick when the frame was not a multiple of 4, and loop-start notes at such wraps). An older anchor (a node
-      // created mid-song, a late message) keeps the search from t: nothing from the past is replayed.
-      const t0 = this.anch && tp.tick < t && tp.frame >= F - 4 - 1e-6 ? tp.tick : t;
+      // created mid-song, a panic's re-send) keeps the search from t: nothing from the past is replayed. R7 B1: a start /
+      // seek marked fresh (play(), a seek) that arrives late — its frame up to 0.25 s past — plays the anchor tick's notes
+      // now, late, instead of dropping them. R7 B2 / B3: a re-seek without an anchor (a song update, a tempo / loop / time
+      // signature change) searches the events after lastT, the position of the last span handled — the notes due since
+      // (≤ 4 frames before t) still play, and none at lastT twice (t a hair behind it: float rounding of the new anchor);
+      // from t only when the position really went back
+      let t0 = t, aft = false;
+      if (this.anch) { if (tp.tick < t && (tp.frame >= F - 4 - 1e-6 || (this.fresh && F - tp.frame <= 0.25 * this.base))) t0 = tp.tick; }
+      else if (t >= this.lastT - 0.5) { t0 = this.lastT; aft = true; } // (NaN: none since the start)
       let lo = 0, hi = sn.length / 4;
-      while (lo < hi) { const m = (lo + hi) >> 1; if (sn[m * 4] < t0) lo = m + 1; else hi = m; }
+      if (aft) while (lo < hi) { const m = (lo + hi) >> 1; if (sn[m * 4] <= t0) lo = m + 1; else hi = m; }
+      else while (lo < hi) { const m = (lo + hi) >> 1; if (sn[m * 4] < t0) lo = m + 1; else hi = m; }
       this.ni = lo;
       lo = 0; hi = sc.length / 3;
-      while (lo < hi) { const m = (lo + hi) >> 1; if (sc[m * 3] < t0) lo = m + 1; else hi = m; }
+      if (aft) while (lo < hi) { const m = (lo + hi) >> 1; if (sc[m * 3] <= t0) lo = m + 1; else hi = m; }
+      else while (lo < hi) { const m = (lo + hi) >> 1; if (sc[m * 3] < t0) lo = m + 1; else hi = m; }
       this.ci = lo;
-      this.reseek = false; this.anch = false;
+      this.reseek = false; this.anch = false; this.fresh = false;
     }
     // note-offs first
     const on = this.seqOn;
@@ -2415,6 +2486,7 @@ class SynthProcessor extends AudioWorkletProcessor {
       if (tp.wrap && end > tp.le) end = tp.le;
       on.push(n, end);
     }
+    this.lastT = t; // every event at or before t has been handled
     // distance to the next event
     let nt = 1e18;
     if (this.ni * 4 < sn.length) nt = sn[this.ni * 4];

@@ -11,9 +11,9 @@
 //   shapeLib     — the shared JSON shape library (`synth.sx.shapes`) behind the editors' Load / Save Shape menus
 // Browser ES module: nothing touches document / window at module top level, so node can import it (§0.1, §10.6).
 import { contextMenu, injectStyles, menuSource, theme, fitCanvas, ticker, saveFile, pickFile, ask,
-  numBox, toggle, seg, slider, xyPad, modifierBar, zoomPan } from './wk.js?v=7';
+  numBox, toggle, seg, slider, xyPad, modifierBar, zoomPan } from './wk.js?v=8';
 import { evalPts, bend, CURVE_K, ENV_K, MAX_PTS, N_BUS, MAX_CRV_PTS, MAX_SPEC_PTS, PATH_DEFAULT, PZ_DEFAULT, LFO_TOOLS,
-  SLEW_T, fmtTime, parseCore } from './serum-core.js?v=7';
+  SLEW_T, fmtTime, parseCore } from './serum-core.js?v=8';
 
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 const fin = x => typeof x === 'number' && isFinite(x);
@@ -833,7 +833,9 @@ export class CurveEditor {
       else this.lastTap = { t, px: P.px, py: P.py };
     }
   }
-  cancel(e) { if (this.g && (!e || e.pointerId === this.g.id)) this.finish(); }
+  // a pointercancel / lost capture ends the gesture keeping its edit — except gesture.js's two-finger cancel (a second
+  // finger made it a pan / pinch): undone, as by the editor's own pinch (abort)
+  cancel(e) { if (this.g && (!e || e.pointerId === this.g.id)) { if (e && e.type === 'pointercancel' && e.gesture === 'two-finger') this.abort(); else this.finish(); } }
   finish() {
     const g = this.g;
     if (!g) return;
@@ -1307,7 +1309,7 @@ export class EnvEditor {
     on(root, 'pointerdown', e => this.down(e));
     on(root, 'pointermove', e => this.moveEv(e));
     on(root, 'pointerup', e => { if (this.g && e.pointerId === this.g.id) { const g = this.g; this.finish(); this.tap(e, g); } });
-    on(root, 'pointercancel', e => { if (this.g && e.pointerId === this.g.id) this.finish(); });
+    on(root, 'pointercancel', e => { if (this.g && e.pointerId === this.g.id) this.finish(e.gesture === 'two-finger'); });
     on(root, 'lostpointercapture', e => { if (this.g && e.pointerId === this.g.id) this.finish(); });
     on(root, 'dblclick', e => { if (this.lastType === 'touch') return; const t = this.hit(this.pos(e)); if (t >= 5) this.resetCurve(t); });
     // right-click / long-press: on a curve handle or a Start / End handle it resets that (to 0.5 / 0 = −inf dB),
@@ -1447,17 +1449,18 @@ export class EnvEditor {
     this.draw();
   }
   pick(E, patch) { const o = {}; for (const k in patch) o[k] = E[k]; return o; } // the gesture's start values
-  finish() {
+  finish(back) { // back: gesture.js's two-finger rollback — the dragged stage's values from before the press
     const g = this.g;
     if (!g) return;
     this.g = null;
     try { this.root.releasePointerCapture(g.id); } catch (err) { /* released */ }
     if (g.started) {
-      const E = this.env(), keys = [['a'], ['h'], ['d', 's'], ['s'], ['r'], ['ca'], ['cd'], ['cr'], ['st'], ['en']][g.t], patch = {};
+      const E = back === true ? g.env : this.env(), keys = [['a'], ['h'], ['d', 's'], ['s'], ['r'], ['ca'], ['cd'], ['cr'], ['st'], ['en']][g.t], patch = {};
       for (const k of keys) patch[k] = E[k];
+      if (back === true) this.emit(Object.assign({}, patch), 'move');
       this.emit(patch, 'end');
     }
-    modifierBar.consume();
+    if (back !== true) modifierBar.consume();
     this.announce();
     this.draw();
   }
@@ -1670,7 +1673,8 @@ export class PathEditor {
     on(root, 'pointerdown', e => this.down(e));
     on(root, 'pointermove', e => this.moveEv(e));
     on(root, 'pointerup', e => this.up(e));
-    on(root, 'pointercancel', e => { if (this.g && e.pointerId === this.g.id) this.finish(); });
+    // (gesture.js's two-finger cancel undoes the gesture, as the editor's own pinch does: abort)
+    on(root, 'pointercancel', e => { if (this.g && e.pointerId === this.g.id) { if (e.gesture === 'two-finger') this.abort(); else this.finish(); } });
     on(root, 'lostpointercapture', e => { if (this.g && e.pointerId === this.g.id) this.finish(); });
     on(root, 'pointerleave', () => { if (!this.g && this.hover) { this.hover = null; this.draw(); } });
     on(root, 'dblclick', e => { if (this.lastType !== 'touch') this.dbl(this.pos(e)); });

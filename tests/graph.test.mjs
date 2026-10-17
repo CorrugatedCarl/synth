@@ -682,7 +682,7 @@ test('EnvEditor: stacked zero-length stages, keyboard, ghosts, playhead', () => 
 /* ------------------------------------------------- Phase 2 (SPEC-serum2 §11.14, §15.12) */
 const { PathEditor, PZEditor, lfoEditorLarge } = G;
 const core = await import('../serum-core.js');
-const wk = await import('../wk.js?v=7'); // the instance graph.js imports (one set of modifier latches)
+const wk = await import('../wk.js?v=8'); // the instance graph.js imports (one set of modifier latches)
 const P = pts.path;
 function validPath(p, msg = '') {
   assert.ok(Array.isArray(p) && p.length >= 2 && p.length <= MAX_PTS, msg + ' length');
@@ -1706,4 +1706,40 @@ test('pts.path: an open path never closes by an edit (the last point landing on 
   const c = P.normalize(core.PATH_DEFAULT);
   assert.ok(P.isClosed(P.move(c, 0, 0.3, 0.3)));
   assert.ok(P.isClosed(P.setClosed(m, true)));
+});
+
+test('two-finger rollback (gesture.js\'s pointercancel flagged e.gesture === "two-finger"): Curve, Env and Path editors undo the drag (the values at the press, then "end"); a plain cancel keeps', () => {
+  const TW = { pointerType: 'touch', pointerId: 4, isPrimary: true }, TWO = { pointerType: 'touch', pointerId: 4, isPrimary: true, gesture: 'two-finger' };
+  {
+    const { root, st } = mkCurve();
+    const p0 = JSON.stringify(st.p);
+    at(root, 'pointerdown', X(0.5), Y(1), TW); at(root, 'pointermove', X(0.6), Y(0.8), TW);
+    assert.notEqual(JSON.stringify(st.p), p0);
+    at(root, 'pointercancel', X(0.6), Y(0.8), TWO);
+    assert.equal(JSON.stringify(st.p), p0);
+    assert.deepEqual(st.calls.map(c => c[0]), ['start', 'move', 'move', 'end']);
+    at(root, 'pointerdown', X(0.5), Y(1), TW); at(root, 'pointermove', X(0.6), Y(0.8), TW); at(root, 'pointercancel', X(0.6), Y(0.8), TW);
+    assert.notEqual(JSON.stringify(st.p), p0, 'plain cancel keeps');
+  }
+  {
+    const { root, st } = mkEnv();
+    const xA = EP + PX;
+    at(root, 'pointerdown', xA, EY(1), TW); at(root, 'pointermove', xA + PX / 2, EY(1), TW);
+    near(st.e.a, 1.5, 1e-9);
+    at(root, 'pointercancel', xA + PX / 2, EY(1), TWO);
+    assert.equal(st.e.a, 1);
+    assert.deepEqual(st.calls.map(c => c[0]), ['start', 'move', 'move', 'end']);
+    assert.deepEqual(st.calls.at(-1)[1], { a: 1 });
+    at(root, 'pointerdown', xA, EY(1), TW); at(root, 'pointermove', xA + PX / 2, EY(1), TW); at(root, 'pointercancel', xA + PX / 2, EY(1), TW);
+    near(st.e.a, 1.5, 1e-9, 'plain cancel keeps');
+  }
+  {
+    const { root, st } = mkPath();
+    const p0 = JSON.stringify(st.p);
+    at(root, 'pointerdown', X(0.5), Y(1), TW); at(root, 'pointermove', X(0.4), Y(0.8), TW);
+    assert.notEqual(JSON.stringify(st.p), p0);
+    at(root, 'pointercancel', X(0.4), Y(0.8), TWO);
+    assert.equal(JSON.stringify(st.p), p0);
+    assert.equal(st.calls.at(-1)[0], 'end');
+  }
 });

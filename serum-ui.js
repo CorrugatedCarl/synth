@@ -47,14 +47,14 @@
 // factory presets), synth.sx.default (Save as Default Preset), synth.sx.vc (user Voice Control presets),
 // synth.sx.shapes (via graph.shapeLib), synth.fxchains.
 // MIDI program change: index browserList(host.presets.list(), storage[BROWSER_KEY]) (§9.10, §11.8).
-import * as core from './serum-core.js?v=7';
-import * as wt from './wt.js?v=7';
-import * as wk from './wk.js?v=7';
-import * as gx from './graph.js?v=7';
-import * as fxui from './fx-ui.js?v=7';
-import * as wte from './wtedit.js?v=7';
-import * as osc from './sx-ui-osc.js?v=7';
-import * as seq from './sx-ui-seq.js?v=7';
+import * as core from './serum-core.js?v=8';
+import * as wt from './wt.js?v=8';
+import * as wk from './wk.js?v=8';
+import * as gx from './graph.js?v=8';
+import * as fxui from './fx-ui.js?v=8';
+import * as wte from './wtedit.js?v=8';
+import * as osc from './sx-ui-osc.js?v=8';
+import * as seq from './sx-ui-seq.js?v=8';
 
 /* ================================================================ constants and small helpers */
 
@@ -95,6 +95,8 @@ const clone = v => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)))
 const frac = x => x - Math.floor(x);
 const sgn = v => (v > 0 ? '+' : '');
 const own = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+// gesture.js's synthetic pointercancel: a second finger made this touch a pan / pinch — roll the gesture back
+const twoF = e => !!e && e.gesture === 'two-finger';
 // an FX parameter (base in the FX state): FX ids other than g.master / g.bypass (their base is in s.p). SPEC-serum2
 // §3.11.1: FX-ness is never derived from the static index (the SYN2 ids follow the FX block); isFxId is the only FX test.
 const isFxPar = id => core.isFxId(id) && id !== 'g.master' && id !== 'g.bypass';
@@ -1242,6 +1244,7 @@ function numField(doc, o) {
     const G = g;
     g = null;
     try { val.releasePointerCapture(G.id); } catch (err) { /* released */ }
+    if (twoF(e)) { G.last = G.v0; o.set(G.v0, 'move'); tap = null; }   // two-finger rollback: the value from before
     o.set(G.last, 'end');
     update();
   };
@@ -1378,12 +1381,18 @@ function hSlider(doc, o) {
     if (e.button !== 0) return;
     e.preventDefault(); el.focus();
     if ((e.metaKey || e.ctrlKey) && o.def !== undefined) { o.set(o.def, 'set'); update(); return; }
-    g = { id: e.pointerId, n: at(e) };
+    g = { id: e.pointerId, n: at(e), n0: o.get() };
     try { el.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
-    o.set(o.get(), 'start'); o.set(g.n, 'move'); update();
+    o.set(g.n0, 'start'); o.set(g.n, 'move'); update();
   });
   el.addEventListener('pointermove', e => { if (g && e.pointerId === g.id) { g.n = at(e); o.set(g.n, 'move'); update(); } });
-  const end = () => { if (!g) return; const n = g.n; g = null; o.set(n, 'end'); update(); };
+  const end = e => { // a two-finger rollback (twoF) also undoes the jump of the press
+    if (!g || (twoF(e) && e.pointerId !== g.id)) return;
+    const G = g;
+    g = null;
+    if (twoF(e)) { G.n = G.n0; o.set(G.n, 'move'); }
+    o.set(G.n, 'end'); update();
+  };
   el.addEventListener('pointerup', end);
   el.addEventListener('pointercancel', end);
   el.addEventListener('keydown', e => {
@@ -1412,7 +1421,7 @@ const focusable = el => (el && (el.matches && el.matches('button, [tabindex]') ?
   : el.querySelector && el.querySelector('button, [tabindex]'))) || el;
 const mkPage = el => ({ el: el || null, binds: [], canvases: [], editors: [], lives: [] });
 // the MIX page module (U3), loaded on demand: the page degrades to a notice while it is missing
-const loadMix = () => import('./sx-ui-mix.js?v=7');
+const loadMix = () => import('./sx-ui-mix.js?v=8');
 // wk.contextMenu items from knobMenuItems-style groups ({label, sub}) with an action per leaf
 const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label, sub: subMenu(it.sub, act) }
   : Object.assign({ label: it.label, action: () => act(it) }, it.checked !== undefined ? { checked: it.checked } : {})));
@@ -1523,6 +1532,7 @@ export class SerumUI {
     this.edDirty = true;
     this.held = new Set();            // destinations whose control is being dragged (last setN phase start / move)
     this.gest = new Set();            // destinations whose drag gesture has changed the value (its end is an undo step)
+    this.ph0 = new Map();             // LFO PHASE base at a drag's 'start' (a two-finger rollback puts it back unsnapped)
     this.noteGroup = 0;               // note groups seen in the snapshots (notes 0 → > 0), for the header render cache
     this.editSeq = 0;                 // state edits made through the panel (the header render cache's patch version)
     this.lastRender = null;           // the last header render handed back by host.renderLast (drag-export, §13.2.5)
@@ -1614,9 +1624,17 @@ export class SerumUI {
     if (!d) return;
     const phase = ph || 'set', label = d.label || id, cur = this.getN(id);
     let v = snapN(id, n, fx);
+    const isPh = /^l([1-9]|10)\.phase$/.test(id);
+    let ph0;
+    if (isPh) { // the base at the drag's 'start' (per destination: two hands may drag two LFOs)
+      if (phase === 'start') this.ph0.set(id, cur);
+      ph0 = this.ph0.get(id);
+      if (phase !== 'start' && phase !== 'move') this.ph0.delete(id);
+    }
     // LFO PHASE ✓ Snap to Grid (§6.15.2, §13.13): the base phase in multiples of 360/lfoGrid.x degrees while dragging
-    // only — typed, reset, wheel and keyboard values ('set') and a press without a move keep their value
-    if (this.lfoSnap && (phase === 'move' || (phase === 'end' && v !== cur)) && /^l([1-9]|10)\.phase$/.test(id)) {
+    // only — typed, reset, wheel and keyboard values ('set'), a press without a move and a two-finger rollback (the
+    // value from before the press: 'move' + 'end' with it) keep their value
+    if (this.lfoSnap && isPh && (phase === 'move' || (phase === 'end' && v !== cur)) && ph0 !== v) {
       const g = this.s() && this.s().lfoGrid, x = g && g.x >= 1 ? Math.round(g.x) : 1;
       v = Math.round(clamp01(v) * x) / x;
     }
@@ -2594,7 +2612,19 @@ export class SerumUI {
         if (pri) { e.preventDefault(); if (!pri.action || pri.action() !== false) O.close(); }
       }
     });
-    O.el.addEventListener('pointerdown', e => { if (e.target === O.el) O.close(); });
+    // the backdrop closes it: a mouse / pen at the press, a finger on its tap's release (≤ 10 px) — a scroll or a
+    // two-finger gesture starting there (gesture.js cancels the first finger) leaves it open
+    let bp = null;
+    O.el.addEventListener('pointerdown', e => {
+      bp = null;
+      if (e.target !== O.el) return;
+      if (e.pointerType === 'touch') bp = { id: e.pointerId, x: e.clientX, y: e.clientY }; else O.close();
+    });
+    O.el.addEventListener('pointerup', e => {
+      const P = bp; bp = null;
+      if (P && P.id === e.pointerId && e.target === O.el && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= 10) O.close();
+    });
+    O.el.addEventListener('pointercancel', e => { if (bp && bp.id === e.pointerId) bp = null; });
     const f = body.querySelector ? body.querySelector('input, textarea, button') : null;
     if (f && f.focus) f.focus(); else if (row.firstChild) row.firstChild.focus();
     return O;
@@ -2887,6 +2917,7 @@ export class SerumUI {
       try { el.releasePointerCapture(D.id); } catch (err) { /* released */ }
       if (ev.type === 'pointercancel') this.eatClick = null;   // no click follows a cancelled pointer
       else if (this.eatClick) this.eatClick.t = Date.now();   // a long depth drag: the click comes at release
+      if (twoF(ev)) { D.a = D.a0; this.edit(s => core.setModAmount(s, slot, D.a), { label: 'Mod depth', phase: 'move' }); }   // two-finger rollback
       this.edit(s => core.setModAmount(s, slot, D.a), { label: 'Mod depth', phase: 'end' });
     };
     const offs = [on(el, 'pointermove', move), on(el, 'pointerup', up), on(el, 'pointercancel', up)];
@@ -2980,7 +3011,7 @@ export class SerumUI {
           this.tileEat = { el: b, t: Date.now() };
           if (!D || this.drag !== D) return;
           const hit = this.hitTest(i.x, i.y);
-          this.dragDone(hit && this.settled(hit, i.t) ? hit : null, i.x, i.y);
+          this.dragDone(hit && this.settled(hit, i.t, i.scrolled) ? hit : null, i.x, i.y);
         },
         cancel: () => { const D = mine; mine = null; if (D && this.drag === D) this.dragDone(null); },
       });
@@ -3041,10 +3072,12 @@ export class SerumUI {
     this.el.classList.toggle('sx-candrop', !!hit);
     D.hit = hit;
   }
-  // a quick touch drag's drop target counts once the finger has rested on it SETTLE_MS (by event time t)
-  settled(hit, t) {
+  // a quick touch drag's drop target counts once the finger has rested on it SETTLE_MS (by event time t); so does any
+  // touch drop within SETTLE_MS of an edge auto-scroll step (wk.dragSource info.scrolled: ms since the view last
+  // auto-scrolled — the target may have just scrolled under a still finger)
+  settled(hit, t, scrolled) {
     const D = this.drag;
-    if (!D || !D.quick) return true;
+    if (!D || !(D.quick || (D.touch && scrolled < SETTLE_MS))) return true;
     return sameHit(D.hit, hit) && +t - D.at >= SETTLE_MS;
   }
   // a drop target's name for the touch ghost (the finger hides the target and its highlight); '' = none
@@ -3501,7 +3534,7 @@ export class SerumUI {
   moduleDrag(name, module) {
     if (typeof wk.dragSource !== 'function') return;
     const asrc = audioSrcOf(module), same = !!KIND_MEMBERS[modKind(module)];
-    let ghost = null, over = null;
+    let ghost = null, over = null, at = -Infinity; // at: event time the target under the pointer last changed (the drop's rest rule)
     const find = i => {
       const t = closest(i.target, '[data-modlabel]'), m = t ? t.getAttribute('data-modlabel') : null;
       if (m && same && m !== module && modKind(m) === modKind(module)) return { kind: 'module', el: t, m };
@@ -3518,12 +3551,14 @@ export class SerumUI {
       move: i => {
         const h = find(i), t = h ? h.el : null, touch = i.pointerType === 'touch', n = touch && h ? this.hitName(h) : '';
         if (ghost) ghostAt(ghost, i.x, i.y, touch, label(i, h) + (n ? ' → ' + n : ''));
-        if (t !== over) { if (over) over.classList.remove('sx-droptgt'); over = t; if (t) t.classList.add('sx-droptgt'); }
+        if (t !== over) { if (over) over.classList.remove('sx-droptgt'); over = t; at = +i.t; if (t) t.classList.add('sx-droptgt'); }
       },
       drop: i => {
-        const h = find(i);
+        const h = find(i), was = over;
         clear();
         if (!h) return;
+        // a touch lift within SETTLE_MS of an edge auto-scroll step drops only on a target the finger rested on (settled())
+        if (i.pointerType === 'touch' && i.scrolled < SETTLE_MS && (h.el !== was || +i.t - at < SETTLE_MS)) return;
         if (h.kind === 'module') this.moduleDrop(module, h.m, !!i.alt, !!i.shift);
         else this.doDrop(h, asrc, i.x, i.y);
       },
@@ -4390,7 +4425,14 @@ export class SerumUI {
       if (!g.moved && Math.abs(g.acc) > 0.02) { g.moved = true; put(g.c0, 'start'); }
       if (g.moved) put(g.c0 + g.acc, 'move');
     });
-    const up = e => { if (!g || e.pointerId !== g.id) return; const G = g; g = null; if (G.moved) put(G.c0 + G.acc, 'end'); };
+    const up = e => {
+      if (!g || e.pointerId !== g.id) return;
+      const G = g;
+      g = null;
+      if (!G.moved) return;
+      if (twoF(e)) { G.acc = 0; put(G.c0, 'move'); }   // two-finger rollback: the curve from before
+      put(G.c0 + G.acc, 'end');
+    };
     sv.addEventListener('pointerup', up);
     sv.addEventListener('pointercancel', up);
     sv.addEventListener('dblclick', e => { e.preventDefault(); if (aux) put(0, 'set'); else this.openCurve(slot, sv); });

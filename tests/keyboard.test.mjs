@@ -347,6 +347,49 @@ test('index.html: the Key size slider is named by its label (no aria-label of it
   assert.match(html, /<button id="kbHide"[^>]*>.*<span>Hide keys<\/span><\/button>/);
 });
 
+// the two-finger layer (gesture.js, tests/gesture.test.mjs): installed first in boot(), so its window listeners come
+// before pressStart, wake and the keys'; the zones of index.html. (main-sim's window has no capture phase and runs every
+// listener: only the order and the layer's own answer are seen here.)
+test('gesture.js: the two-finger layer\'s window pointerdown / click listeners come first; #kbrow is "music", #rollwrap "own", #perf "perf"', async () => {
+  const s = await page(), L = s.dom.winL, body = s.dom.document.body;
+  const ev = (type, o) => Object.assign({ type, target: body, cancelable: true, prevented: false, imm: false,
+    preventDefault() { this.prevented = true; }, stopImmediatePropagation() { this.imm = true; }, stopPropagation() {} }, o);
+  const t = (type, id, x, primary) => ev(type, { pointerType: 'touch', pointerId: id, isPrimary: primary, clientX: x, clientY: 300 });
+  L.pointerdown[0](t('pointerdown', 901, 300, true));
+  const second = t('pointerdown', 902, 400, false);
+  L.pointerdown[0](second);
+  assert.deepEqual([second.prevented, second.imm], [true, true], 'a second finger 100 px away at once: a two-finger gesture, its press swallowed');
+  const c = ev('click', { detail: 1 });
+  L.click[0](c);
+  assert.equal(c.imm, true, 'its click swallowed first');
+  for (const id of [901, 902]) L.pointerup[0](t('pointerup', id, 300, id === 901));
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  for (const [id, kind] of [['kbrow', 'music'], ['rollwrap', 'own'], ['perf', 'perf']]) assert.match(html, new RegExp(`<\\w+ [^>]*id="${id}"[^>]*data-gesture="${kind}"`), id);
+});
+
+// a two-finger gesture that starts with a finger on the grip (gesture.js's pointercancel flagged e.gesture ===
+// 'two-finger', main.js track()'s abort): the height as it was, nothing saved; a plain pointercancel keeps it, as before
+test('height grip: a two-finger gesture (flagged pointercancel) puts the height back unsaved; a plain pointercancel keeps and saves it', async () => {
+  const s = await page(), { api } = s, g = s.$('#kbGrip');
+  const h0 = api.kb().h, hs0 = api.kb().hSet, saved0 = ls.m.get('synth.kbSize') || null;
+  fire(g, ptr('pointerdown', 31, 500, 600));
+  fire(g, ptr('pointermove', 31, 500, 560));
+  assert.equal(api.kb().h, h0 + 40, 'dragged up 40 px');
+  fire(g, ptr('pointercancel', 31, 500, 560, { gesture: 'two-finger' }));
+  assert.deepEqual([api.kb().h, api.kb().hSet, g.getAttribute('aria-valuenow')], [h0, hs0, String(h0)], 'back as it was');
+  assert.equal(ls.m.get('synth.kbSize') || null, saved0, 'nothing saved');
+  fire(g, ptr('pointermove', 31, 500, 500));
+  assert.equal(api.kb().h, h0, 'the drag has ended');
+  fire(g, ptr('pointerdown', 32, 500, 600));
+  fire(g, ptr('pointermove', 32, 500, 560));
+  fire(g, ptr('pointercancel', 32, 500, 560));
+  assert.equal(api.kb().h, h0 + 40, 'a plain cancel keeps it');
+  assert.equal(JSON.parse(ls.m.get('synth.kbSize')).h, h0 + 40, 'and saves it');
+  keydown(g, 'Delete'); // (the default again, for the tests after)
+  assert.equal(api.kb().hSet, 0);
+});
+
 // (boots its own page: after the tests that share page())
 test('the keyboard view persists: key height, key width and Hide keys come back in the next session; bad stored values are ignored', async () => {
   const s = await page(), g = s.$('#kbGrip');

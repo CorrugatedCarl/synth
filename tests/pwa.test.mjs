@@ -99,6 +99,24 @@ test('index.html: manifest, Apple touch icon (180 px), PNG + SVG favicons, the a
   assert.match(narrow, /body::before \{[^}]*position: fixed; top: 0; left: 0; right: 0; height: env\(safe-area-inset-top\); background: var\(--bg\)[^}]*pointer-events: none/);
 });
 
+test('index.html / style.css: the interface size (uiscale.js) — the static viewport meta unchanged (BASE_VP), the inline boot between it and style.css, #uiZoom in the header hidden until uiscale.js shows it, the help; touch-action pan-x pan-y at zero specificity inside body on html[data-uiz] (never a rule on html alone: WebKit resets it at scroll containers), text-size-adjust', async () => {
+  const U = await import('../uiscale.js?v=' + N), css = read('style.css'), bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.equal(/<meta name="viewport" content="([^"]+)">/.exec(HTML)[1], U.BASE_VP);
+  const iMeta = HTML.indexOf('<meta name="viewport"'), iBoot = HTML.indexOf('<script>(function(){'), iCss = HTML.indexOf('<link rel="stylesheet" href="style.css');
+  assert.ok(iMeta > 0 && iMeta < iBoot && iBoot < iCss, 'meta ' + iMeta + ' < boot ' + iBoot + ' < style.css ' + iCss);
+  assert.match(HTML.slice(iBoot, iCss), /localStorage\.getItem\('synth-ui\.scale'\)/);
+  assert.match(HTML, /<div id="uiZoom" [^>]*\shidden>/, '#uiZoom starts hidden');
+  const iCtl = HTML.indexOf('<div class="appctl">'), iZoom = HTML.indexOf('id="uiZoom"'), iIns = HTML.indexOf('id="install"');
+  assert.ok(iCtl > 0 && iCtl < iZoom && iZoom < iIns, 'in the header\'s .appctl');
+  for (const id of ['uiZoomOut', 'uiZoomPct', 'uiZoomIn']) assert.match(HTML, new RegExp('<button id="' + id + '" type="button"'), id);
+  assert.match(HTML, /<b>Size:<\/b> on iPad and iPhone, pinch the page/);
+  assert.match(css, /:where\(html\[data-uiz\]\) :where\(body, body \*\) \{ touch-action: pan-x pan-y; \}/);
+  assert.doesNotMatch(bare, /(^|[\s,}])html\[data-uiz\][^{]*\{[^}]*touch-action/, 'no touch-action rule on html[data-uiz] itself');
+  assert.match(bare, /\nhtml \{[^}]*-webkit-text-size-adjust: 100%; text-size-adjust: 100%/);
+  assert.match(bare, /\.uizoom\[hidden\] \{ display: none; \}/);
+  assert.match(bare, /\.uiz-badge \{[^}]*position: fixed;[^}]*pointer-events: none/);
+});
+
 /* ------------------------------------------------------------------ precache list */
 test('precache: sw.js lists exactly what the page requests (tools/precache.mjs crawl of index.html, the module graph, worklets, workers); one version everywhere', () => {
   const R = appRequests(), S = swLists(SW);

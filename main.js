@@ -1,14 +1,17 @@
-import { MODELS, DX_ALGS, patchFor, groupSong } from './models.js?v=7';
-import * as S from './song.js?v=7';
-import { PianoRoll } from './roll.js?v=7';
-import { Arrangement } from './arrange.js?v=7';
-import * as core from './serum-core.js?v=7';
-import { openAppStore } from './appstore.js?v=7';
-import { createAssetManager, portPoster, userIdsOf, userAssetIds, idKind, TEXT as ATEXT } from './assets.js?v=7';
-import { createMidi, targets as midiTargets, noteCh, noteMsg } from './midi.js?v=7';
-import { initApp } from './pwa.js?v=7';
+import { MODELS, DX_ALGS, patchFor, groupSong } from './models.js?v=8';
+import * as S from './song.js?v=8';
+import { PianoRoll } from './roll.js?v=8';
+import { Arrangement } from './arrange.js?v=8';
+import * as core from './serum-core.js?v=8';
+import { openAppStore } from './appstore.js?v=8';
+import { createAssetManager, portPoster, userIdsOf, userAssetIds, idKind, TEXT as ATEXT } from './assets.js?v=8';
+import { createMidi, targets as midiTargets, noteCh, noteMsg } from './midi.js?v=8';
+import { initApp } from './pwa.js?v=8';
+import * as AC from './audioclock.js?v=8';
+import { initUiScale } from './uiscale.js?v=8';
+import { installGestures } from './gesture.js?v=8';
 
-const VERSION = '7';
+const VERSION = '8';
 const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -28,7 +31,9 @@ function storeError(e) {
 const store = await openAppStore({ onError: storeError });
 const modelById = id => MODELS.find(m => m.id === id) || MODELS[1];
 
-const settings = Object.assign({ sr: 0, os: 4, drift: 5, master: 0.8, model: 'minimoog', vel: 100 }, store.get('synth.settings', {}));
+// lat: the user's "Output latency" offset in ms (header Latency control, R5) — playhead, recording and host.latency
+const settings = Object.assign({ sr: 0, os: 4, drift: 5, master: 0.8, model: 'minimoog', vel: 100, lat: 0 }, store.get('synth.settings', {}));
+settings.lat = clamp(Math.round(+settings.lat) || 0, -50, 400);
 let ctx = null, an = null, master = null, metroBus = null, powering = null;
 let octave = 0, sustain = false;
 const ui = new Map();
@@ -147,6 +152,7 @@ let saveT = 0;
 // (appstore saveNow), as Phase 1 wrote localStorage synchronously here
 function save(now) {
   clearTimeout(saveT); saveT = 0;
+  if (rollViewT) rollViewSave(); // a Piano Roll row height still waiting for its debounce
   store.set('synth.settings', settings);
   if (!model.custom) store.set('synth.v.' + model.id, vals);
   // = song.serialize; never carries embedded wavetables (only saved files do, §7.10)
@@ -173,6 +179,7 @@ function buildPatch(tr, sr, offline = false) {
     patch.osCap = offline ? 0 : sxCap;
     if (!offline) capQ4(patch);
   }
+  if (!offline) voiceSeen(tr, patch);
   return patch;
 }
 // §14.3 Q4 (live Serum patches): POLY ≤ 8 — the engine's voice count and CP.poly (the Active Voices source's scale and
@@ -185,6 +192,54 @@ function capQ4(patch) {
     if (patch.serum && patch.serum.poly > cap) patch.serum = Object.assign({}, patch.serum, { poly: cap });
   }
   return patch;
+}
+/* R6: voice modes — what a chord on a track plays like (the instrument menu, the track tab, the chord notice) */
+// A patch's voice mode (after capQ4; s: the track's Serum state — its POLY before the cap, its arpeggiator / clip player):
+// mode 'mono' (one note: lowest / last wins) | 'unison' (every voice on one note) | 'poly'; n voices (Infinity: the
+// Solina's every key); prio; cap: the CPU safeguard's POLY cap (Q4 / Q6) lowered n; seq 'Arp' | 'Seq': a Serum
+// arpeggiator / clip player in front of the voices; label as shown ("Mono", "Poly 5", "Poly 4 (CPU cap) · Arp")
+function voiceInfo(patch, s = null) {
+  const div = patch.engine === 'divide', mode = div || patch.mode === 'poly' ? 'poly' : patch.mode === 'unison' ? 'unison' : 'mono';
+  const n = div ? Infinity : mode === 'poly' ? Math.max(1, patch.poly | 0) : 1;
+  const vo = s && s.voicing, sp = s && s.p;
+  const cap = mode === 'poly' && !!vo && Number.isFinite(+vo.poly) && clamp(Math.round(+vo.poly), 1, 32) > n;
+  const seq = sp && +sp['arp.on'] >= 0.5 ? 'Arp' : sp && +sp['clip.on'] >= 0.5 ? 'Seq' : '';
+  const label = (mode === 'mono' ? 'Mono' : mode === 'unison' ? 'Unison' : div ? 'Poly' : 'Poly ' + n) + (cap ? ' (CPU cap)' : '') + (seq ? ' · ' + seq : '');
+  return { mode, n, prio: patch.prio || 'last', cap, seq, label };
+}
+// a track's voice mode without building its patch (no FX rack, no Serum compile): the classic model's map (a few µs), the
+// Serum state's voicing as compileSerum reads it; capped as buildPatch caps a live patch
+function trackVoice(tr) {
+  const m = modelById(tr.model), v = tr.vals || {};
+  if (m.custom) {
+    const s = v.s && typeof v.s === 'object' ? v.s : null, vo = (s && s.voicing) || {}, mono = +vo.mono >= 0.5;
+    const n = Number.isFinite(+vo.poly) ? clamp(Math.round(+vo.poly), 1, 32) : 8;
+    return voiceInfo(capQ4({ engine: 'serum', mode: mono ? 'mono' : 'poly', poly: mono ? 1 : n, prio: 'last' }), s);
+  }
+  const P = {};
+  for (const c of m.controls) P[c.id] = c.conv ? c.conv(v[c.id]) : v[c.id];
+  try { return voiceInfo(m.map(P, v, { drift: 0, hiss: 0, sr: 48000, bpm: project.bpm, smooth: 1, fx: null, qr: null })); } catch { return voiceInfo({ mode: 'poly', poly: 8 }); }
+}
+const voiceDef = new Map(); // model id → its default voice mode (the instrument menu's other entries; the chord notice)
+function modelVoice(m) {
+  if (!voiceDef.has(m.id)) voiceDef.set(m.id, m.custom ? voiceInfo({ engine: 'serum', mode: 'poly', poly: 8 }) : trackVoice({ model: m.id, vals: defaults(m) }));
+  return voiceDef.get(m.id);
+}
+// what the instrument menu entry of each track's model and the track tab show (track id → label, option); a patch that
+// changes a mode (an assign-mode knob, Serum's voicing, the CPU cap or its lifting) updates them (buildPatch)
+const voiceShown = new Map(), voiceOpt = new Map();
+function voiceSeen(tr, patch) {
+  const l = voiceInfo(patch, isSx(tr) ? tr.vals.s : null).label;
+  if (!voiceShown.has(tr.id) || voiceShown.get(tr.id) === l) return;
+  voiceShown.set(tr.id, l);
+  const o = voiceOpt.get(tr.id);
+  if (o && o.value === tr.model) o.textContent = modelById(tr.model).name + ' · ' + l;
+  if (tr.id === project.selTrack) tabTrackUI();
+}
+function tabTrackUI() {
+  const t = trk();
+  if (!voiceShown.has(t.id)) voiceShown.set(t.id, trackVoice(t).label);
+  $('#tabTrack').textContent = `Track: ${t.name} · ${voiceShown.get(t.id)}`;
 }
 const patchQ = new Set();
 function queuePatch(tr = trk()) {
@@ -298,6 +353,10 @@ const osFor = sr => Math.min(settings.os, osCap(sr));
 let sxCap = 8, qrStep = 0;
 // device class of the §14.2 budgets (touch: pointer coarse, or a touch seen) — passed to every budget holder
 let touchDev = (() => { try { return matchMedia('(pointer: coarse)').matches || (navigator.maxTouchPoints || 0) > 0; } catch { return false; } })();
+// the Piano Roll's touch defaults (18 px rows, the ≥ 14 px automatic floor, grab tabs, the Modifiers group): a coarse
+// primary pointer, or an iPad (a trackpad makes its pointer fine) — not a mouse-driven touchscreen laptop (maxTouchPoints
+// > 0 there too); a finger or pen on the roll still turns them on (roll.js tseen / coarse, rollFing)
+const rollTouchDev = (() => { try { const n = navigator; return matchMedia('(pointer: coarse)').matches || /iP(hone|ad|od)/.test(n.userAgent) || (n.platform === 'MacIntel' && n.maxTouchPoints > 1); } catch { return false; } })();
 // §14.3 quality caps at step k: CP.qr [uniMax, grainsMax, specHopMul, specStreams, grainsProc] (+ FXP.convMax). Q5 and Q6
 // are IMPL additions (M4 performance): after Q4 a dense Sample / Granular patch (8 voices × 3 oscillators × unison 16,
 // warps per grain) still measured 0.32 / 0.45 at OS 1 on an M4 Max — beyond real time on a 1.5–3× slower iPad, with no
@@ -378,14 +437,55 @@ function playbackSession(on) {
   try { quiet(silentEl.play()); } catch { /* ignore */ }
 }
 // Resume a context that is suspended (no user activation yet) or 'interrupted' (iOS: call, Siri, another app).
-// Registered in the capture phase of every gesture, so resume() runs while the gesture still counts.
+// Registered in the capture phase of every gesture, so resume() runs while the gesture still counts. A context powerOn
+// holds suspended while its nodes are built (holdCtx) is left alone once it has run; one that never ran (WebKit: a
+// finger's activation comes on release, the power-on started at the press) is unlocked by this gesture and suspended
+// again — the resume at the engine's ready is then allowed, outside any gesture
+const ranCtx = new WeakSet(); // contexts that have run (WebKit: unlocked — a resume outside a gesture is allowed)
+const resumeCtx = c => { const r = c.resume(); quiet(r && r.then ? r.then(() => { ranCtx.add(c); }) : r); };
 function wake() {
   const c = ctx || pendCtx;
-  if (!c || c.state === 'running' || c.state === 'closed') return;
-  quiet(c.resume());
+  if (!c || c.state === 'running' || c.state === 'closed' || (c === holdCtx && ranCtx.has(c))) return;
+  resumeCtx(c);
+  if (c === holdCtx) quiet(c.suspend()); // (still held: no render before the warm-up is done)
   if (silentEl && silentEl.paused) { try { quiet(silentEl.play()); } catch { /* ignore */ } }
 }
 function learnDevRate(r) { if (r && r !== devRate) { devRate = r; store.set('synth.devsr', r); } rateLabels(); }
+// The audible clock (audioclock.js, R5): WebKit — Safari, every iPad browser, the Home-Screen app — stamps
+// getOutputTimestamp at render, so its output path (outputLatency, IO buffer + ring, stalls) is subtracted there; + the
+// user's offset (settings.lat) everywhere
+const CLK = AC.createClock(isIOS() || navigator.vendor === 'Apple Computer, Inc.', settings.lat);
+// WebKit power-on: the first processor's JIT warm-up (≈ 0.25–0.6 s on the worklet thread, engine.js warmUp) would stall
+// a running context, and WebKit keeps every stall as output latency for the context's life. So the nodes are built with
+// the context suspended (holdCtx: no wake(), no paused nag) and it resumes at the engine's {t: 'ready'} (3 s at most); a
+// resume iOS refuses outside the gesture is left to wake() at the next tap.
+let holdCtx = null, readyF = null, meterT = 0;
+function whenReady(ms) {
+  return new Promise(res => {
+    const f = () => { for (const N of nodes.values()) if (!N.ready) return; done(); };
+    const done = () => { clearTimeout(tm); if (readyF === f) readyF = null; res(); };
+    const tm = setTimeout(done, ms);
+    readyF = f;
+  });
+}
+// the stall meter (audioclock meterSample): every 5 ms while the engine starts (stalls in script evaluation and the
+// processor constructors), then every animation frame (frame()); the drift baseline is taken 2 s after the start
+function clockSample(c = ctx) {
+  if (!c || !AC.meterSample(CLK, performance.now() / 1000, c.currentTime, c.state === 'running')) return;
+  if (ctx) rateText();
+  if (AC.driftDue(CLK)) driftNotice();
+}
+function meterRun(c) {
+  clearInterval(meterT); meterT = 0;
+  if (c) meterT = setInterval(() => { if (c === ctx || c === pendCtx) clockSample(c); else meterRun(null); }, 5);
+}
+// WebKit's ring lead only resets with a new context, and only once the old one is gone (await close, not in one handler)
+const DRIFT_TXT = 'Audio timing drifted — tap to resync';
+function driftNotice() {
+  noticeActs.set(DRIFT_TXT, () => { noticeActs.delete(DRIFT_TXT); notice('', 0); resync(); });
+  notice(DRIFT_TXT, 30000);
+}
+async function resync() { await powerOff(); try { await powerOn(); } catch { /* powerOn reports it */ } }
 // Never waits on resume(): the graph is built even while the context is suspended, and the next tap/key starts it.
 async function powerOn() {
   if (ctx) { wake(); return; }
@@ -402,30 +502,43 @@ async function powerOn() {
   if (!settings.sr || c.sampleRate !== settings.sr) learnDevRate(c.sampleRate);
   else if (!devRate) { try { const d = new AudioContext(); learnDevRate(d.sampleRate); quiet(d.close()); } catch { /* unknown device rate */ } }
   pendCtx = c;
-  c.onstatechange = () => { if (c === ctx || c === pendCtx) powerUI(); };
-  quiet(c.resume()); // synchronous inside the gesture that called powerOn
+  AC.resetClock(CLK); meterRun(c);
+  c.onstatechange = () => { if (c.state === 'running') ranCtx.add(c); if (c === ctx || c === pendCtx) powerUI(); };
+  resumeCtx(c); // synchronous inside the gesture that called powerOn
   powerUI();
   const job = powering = (async () => {
     try {
       if (!c.audioWorklet) throw new Error('this browser has no AudioWorklet support');
       await addModules(c);
       if (pendCtx !== c) throw new Error('cancelled');
+      const hold = CLK.webkit && typeof c.suspend === 'function';
+      if (hold) {
+        holdCtx = c;
+        try { await c.suspend(); } catch { /* built running: the warm-up stall is measured instead */ }
+        if (pendCtx !== c) throw new Error('cancelled');
+        powerUI();
+      }
       master = c.createGain(); master.gain.value = settings.master;
       an = c.createAnalyser(); an.fftSize = 8192; an.smoothingTimeConstant = 0.75;
       master.connect(c.destination); master.connect(an);
       metroBus = c.createGain(); metroBus.gain.value = 1; metroBus.connect(c.destination);
       ctx = c; pendCtx = null; failMsg = ''; hotT = 0;
+      const ready = hold ? whenReady(3000) : null;
       syncNodes();
+      if (ready) { readyF && readyF(); await ready; if (ctx !== c) throw new Error('cancelled'); }
     } catch (err) {
+      if (holdCtx === c) holdCtx = null;
       const mine = ctx === c || pendCtx === c;
       if (pendCtx === c) pendCtx = null;
       if (ctx === c) { ctx = null; an = master = metroBus = null; nodes.clear(); }
       quiet(c.close());
-      if (mine) { playbackSession(false); if (err.message !== 'cancelled') audioFail('Audio engine failed to start: ' + err.message); powerUI(); }
+      if (mine) { meterRun(null); playbackSession(false); if (err.message !== 'cancelled') audioFail('Audio engine failed to start: ' + err.message); powerUI(); }
       throw err;
     }
+    if (holdCtx === c) holdCtx = null;
     powerUI();
     if (c.state !== 'running') quiet(c.resume());
+    setTimeout(() => { if (ctx === c) { meterRun(null); AC.settle(CLK); } }, 2000);
   })();
   try { await job; } finally { if (powering === job) powering = null; }
 }
@@ -435,7 +548,8 @@ function powerOff() {
   if (T.playing) stop();
   previewStop(); previewEnd(); // (the kept preview node belongs to this context)
   ctx = null; pendCtx = null; powering = null; an = null; master = null; metroBus = null;
-  nodes.clear();
+  nodes.clear(); meterRun(null);
+  if (readyF) readyF(); // a power-on waiting for the engine's 'ready' gives up now (no nodes left)
   seqRun.clear(); if (model.id === 'tb303') renderPanel();
   for (const k of [...held.keys()]) held.delete(k);
   hk.clear();
@@ -460,6 +574,7 @@ function makeNode(tr) {
   node.port.onmessage = e => {
     const d = e.data, t = project.tracks.find(x => x.id === id) || tr;
     if (d.t === 'stats') { N.load = d.load; N.voices = d.voices; N.os = d.os || 0; statsText(); }
+    else if (d.t === 'ready') { N.ready = true; if (readyF) readyF(); } // the processor is built (the first: warmed up)
     else if (d.t === 'step' && t.id === project.selTrack && (seqRun.has(t.id) || (T.playing && seqOf(t).sync))) seqStep(d.s);
     else if (d.t === 'smon') { if (d.fxph) N.fxph = d.fxph; monitors.deliver(id, d); }
     else if (d.t === 'fxph') { if (d.v) N.fxph = d.v; for (const f of N.phWait.splice(0)) f(d.v); }
@@ -516,21 +631,23 @@ const idleNotice = () => sticky || genTxt;
 function notice(txt, ms) { clearTimeout(noticeT); noticeT = 0; showNotice(txt); if (ms) noticeT = setTimeout(() => { noticeT = 0; showNotice(idleNotice()); }, ms); }
 function stickyNotice(txt) { sticky = txt; if (!noticeT) showNotice(idleNotice()); }
 function powerUI() {
-  const c = ctx || pendCtx, run = !!c && c.state === 'running', cpu = $('#cpu');
+  const c = ctx || pendCtx, run = !!c && c.state === 'running', cpu = $('#cpu'), hold = !!c && c === holdCtx;
   $('#power').setAttribute('aria-pressed', run ? 'true' : 'false');
   clearTimeout(pauseT);
-  if (ctx) rateText(); else $('#rate').textContent = pendCtx ? 'Starting engine…' : 'Engine off';
+  if (ctx && !hold) rateText(); else $('#rate').textContent = c ? 'Starting engine…' : 'Engine off';
   if (run) { if (!/^DSP/.test(cpu.textContent)) cpu.textContent = 'DSP load —'; cpu.classList.remove('warn'); stickyNotice(failMsg); return; }
   if (!c) { cpu.textContent = failMsg || 'Press Power or play a key'; cpu.classList.toggle('warn', !!failMsg); stickyNotice(failMsg); return; }
+  // suspended by powerOn while the nodes are built (WebKit): not a pause to nag about
+  if (hold) { cpu.textContent = 'Warming up the engine…'; cpu.classList.remove('warn'); stickyNotice(failMsg); return; }
   pauseT = setTimeout(() => { // a fresh context is 'suspended' for a moment even when allowed to start: only nag if it stays that way
     const k = ctx || pendCtx;
-    if (!k || k.state === 'running' || k.state === 'closed') return;
+    if (!k || k === holdCtx || k.state === 'running' || k.state === 'closed') return;
     const msg = k.state === 'interrupted' ? 'Audio was interrupted by the system — tap a key or Power to resume' : 'Audio is paused — tap a key or Power to start it';
     cpu.textContent = msg; cpu.classList.add('warn'); stickyNotice(msg);
   }, 400);
 }
 function rateText() {
-  if (!ctx) return;
+  if (!ctx || ctx === holdCtx) return;
   const sr = ctx.sampleRate, os = osFor(sr);
   let s = `${kHz(sr)} kHz × ${os} = ${kHz(sr * os)} kHz · 64-bit`;
   if (os < settings.os) s += ` (${settings.os}× capped)`;
@@ -538,7 +655,10 @@ function rateText() {
   // Serum tracks run at their own oversampling (Global quality, CPU cap)
   const sx = [...new Set(project.tracks.filter(isSx).map(t => sxOSFor(t, sr)))].sort((a, b) => a - b);
   const capped = project.tracks.some(t => isSx(t) && sxOSFor(t, sr) < Math.min(sxQuality(t), osCap(sr)));
-  if (sx.length) s += ` · Serum ${sx.map(x => kHz(sr * x)).join('/')} kHz${capped ? ' (CPU cap)' : ''}${qrStep ? ` · quality step Q${qrStep} (CPU cap)` : ''}`;
+  // (Q4 / Q6 cap Serum's polyphony: shown here and on the capped tracks' labels until a Quality choice lifts it, R7)
+  if (sx.length) s += ` · Serum ${sx.map(x => kHz(sr * x)).join('/')} kHz${capped ? ' (CPU cap)' : ''}${qrStep ? ` · quality step Q${qrStep}${qrStep >= 4 ? `, polyphony ≤ ${qrStep >= 6 ? 4 : 8}` : ''} (CPU cap)` : ''}`;
+  // (how far the heard audio trails the rendered: the Latency popover's readout — not here, where it widened the
+  // header to two rows at 1280–1400 px with the engine on)
   $('#rate').textContent = s;
 }
 // Option labels: rates other than the device's are resampled by the browser; OS above the 384 kHz cap is reduced
@@ -604,14 +724,18 @@ function lowerOS() {
 
 /* --------------------------------------------------------- song data */
 const CCK = { bend: 0, wheel: 1, sus: 2, at: 3 };
+// R7 B4: a Piano Roll gesture appends and moves notes in place (sorted again only at its end): the engine (and the break
+// below) need them in order — a sorted copy (song.sortNotes order) when they are not
+function inOrder(a, cmp) { for (let i = 1; i < a.length; i++) if (cmp(a[i - 1], a[i]) > 0) return a.slice().sort(cmp); return a; }
+const noteCmp = (a, b) => a.t - b.t || a.n - b.n, ccCmp = (a, b) => a.t - b.t;
 function songData(tr, start = -Infinity, end = Infinity) {
   const notes = [], cc = [];
-  for (const n of tr.notes) {
+  for (const n of inOrder(tr.notes, noteCmp)) {
     if (n.t < start - 1e-9 && n.t + n.d <= start) continue;
     if (n.t >= end) break;
     notes.push(n.t, Math.min(n.d, end - n.t), n.n, n.v);
   }
-  for (const c of tr.cc) if (c.t < end) cc.push(c.t, CCK[c.k] ?? 1, c.v);
+  for (const c of inOrder(tr.cc, ccCmp)) if (c.t < end) cc.push(c.t, CCK[c.k] ?? 1, c.v);
   return { notes, cc };
 }
 const songQ = new Map();
@@ -626,10 +750,52 @@ function sendAllSongs() { for (const t of project.tracks) sendSong(t, true); }
 /* ----------------------------------------------------------- editing */
 let gesture = false;
 function changed(trs = [trk()]) {
-  for (const t of trs) { S.sortNotes(t.notes); t.cc.sort((a, b) => a.t - b.t); sendSong(t); }
+  for (const t of trs) { S.sortNotes(t.notes); t.cc.sort((a, b) => a.t - b.t); sendSong(t); chordCheck(t); }
   fitBars();
   persist();
   arr && arr.render(); roll && roll.render(); updateUndoUI();
+}
+// R6: chords a track cannot play — ≥ 2 pitches starting within CHORD_TK on a mono / unison track, or more pitches than
+// its voices on a poly one (legato overlaps never count; an arpeggiator / clip player plays chords its own way): a notice
+// once per track and session. Its tap switches the track to the first polyphonic model with voices for the chord
+// (setTrackModel: undoable), else opens the instrument picker (a Serum track — its voicing is in its panel —, a chord
+// beyond every model)
+const CHORD_TK = S.PPQ / 32; // a 128th: a drawn chord's notes share a tick, a played one's lie within ≈ 15 ms at 120 BPM
+const POLY_TO = ['prophet5', 'juno60', 'jupiter8', 'dx7'], chordWarned = new Set();
+function chordSize(notes) { // the most pitches starting together (notes sorted)
+  let k = 0;
+  for (let i = 0, j = 0; i < notes.length; i = j) {
+    const ps = new Set();
+    while (j < notes.length && notes[j].t - notes[i].t <= CHORD_TK) ps.add(notes[j++].n);
+    if (ps.size > k) k = ps.size;
+  }
+  return k;
+}
+function chordCheck(t) {
+  if (chordWarned.has(t.id) || t.notes.length < 2) return;
+  const v = trackVoice(t), k = chordSize(t.notes);
+  if (v.seq || k <= (v.mode === 'poly' ? v.n : 1)) return;
+  chordWarned.add(t.id);
+  // the voices a switch would really give: setTrackModel loads the model's last-used values (loadVals) — a saved Unison /
+  // Solo plays one note
+  const voiceTo = x => trackVoice({ model: x.id, vals: loadVals(x) });
+  const m = modelById(t.model), to = m.custom ? null : POLY_TO.map(modelById).find(x => x !== m && voiceTo(x).n >= k);
+  const what = v.mode !== 'poly' ? `is ${v.mode === 'unison' ? 'in unison mode' : 'monophonic'} — its chords play one note`
+    : `has ${v.n} voices${v.cap ? ' (CPU cap)' : ''} — a chord of ${k} notes drops some`;
+  const txt = `“${t.name}” ${what}. Tap to ${to ? `switch it to the ${to.name} (${voiceTo(to).n} voices; Undo restores it)` : 'open its instrument'}`;
+  noticeActs.set(txt, () => {
+    noticeActs.delete(txt); notice('', 0);
+    const tr = project.tracks.find(x => x.id === t.id); // (undo / redo replace the track objects)
+    if (!tr) return;
+    // (re-checked: the last-used values may have changed during the 15 s; flush lands a pending save first)
+    if (to && tr.model === m.id && (flush(), voiceTo(to).n >= k)) setTrackModel(tr, to.id); else instPicker(tr);
+  });
+  notice(txt, 15000);
+}
+function instPicker(tr) { // the Instrument tab: its model list (and a Serum panel's voicing) in view
+  selectTrack(tr.id); openTab('inst');
+  const el = $('#models .on') || $('#models');
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
 }
 function edit(label, fn, trs) {
   hist.record(project);
@@ -670,31 +836,39 @@ function updateUndoUI() { // canUndoFrom may serialise the project, so coalesce 
 }
 
 /* ---------------------------------------------------------- transport */
-const T = { playing: false, rec: false, a: null, pos: 0, startPos: 0, take: 0, lastClr: 0 };
+// a: the anchor the nodes play from (render frames); as: the anchors still sounding, oldest first (the play() start,
+// then each seek / tempo / loop change while playing: an older one's audio is heard until the next one's frame comes out
+// of the speakers); seekA: the latest seek's anchor (recTick)
+const T = { playing: false, rec: false, a: null, as: [], seekA: null, pos: 0, startPos: 0, take: 0, lastClr: 0 };
 const fpt = () => ctx.sampleRate * 60 / (project.bpm * S.PPQ);
 function loopInfo() { const L = project.loop; return { loop: !!(L.on && L.end > L.start), ls: L.start, le: L.end }; }
 function anchor(F, tick) { const L = loopInfo(); return { frame: F, tick, fpt: fpt(), loop: L.loop, ls: L.ls, le: L.le, wrap: L.loop && tick < L.le }; }
-function tickAt(F) {
-  const a = T.a;
-  let t = a.tick + (F - a.frame) / a.fpt;
-  if (a.wrap && t >= a.le) t = a.ls + (t - a.le) % (a.le - a.ls);
-  return t;
+// frame of the audio that is (was) leaving the speakers at a performance.now() time (audioclock.js: WebKit's render-stamped
+// timestamp less its output path; + the Latency setting)
+function outFrame(perfTs) { const now = performance.now(); return AC.outFrame(CLK, ctx, perfTs == null ? now : perfTs, now); }
+// s the heard audio trails the rendered (Serum's clip recorder, host.latency; the header readout): below 0 when the
+// Latency setting asks for more than the clock's own delay (the playhead and recording apply it as it is)
+function outLatency() { return ctx ? clamp(ctx.currentTime - outFrame() / ctx.sampleRate, -0.1, 1) : 0; }
+// the heard song position: on the latest anchor heard (T.as) — before a seek / tempo change is heard the audio before it,
+// at a start the start tick (never ticks before it: no backwards jump of the playhead once the output delay is allowed for)
+function curTick(perfTs) { return T.playing && T.a ? AC.heardTick(outFrame(perfTs), T.as) : T.pos; }
+// the recorded position: after a seek the take reads the seek's line from the jump on (extrapolated back while the old
+// audio is still heard: a key pressed after the jump belongs to it, its start and end on one line); else curTick
+function recTick(perfTs) {
+  const s = T.playing ? T.seekA : null;
+  if (!s || !T.as.includes(s)) return curTick(perfTs);
+  const F = outFrame(perfTs);
+  return F < s.frame ? AC.tickAt(F, s) : AC.heardTick(F, T.as);
 }
-function outFrame(perfTs) { // frame of the audio that is (was) leaving the speakers at a performance.now() time
-  const sr = ctx.sampleRate;
-  const o = ctx.getOutputTimestamp ? ctx.getOutputTimestamp() : null;
-  const ts = perfTs == null ? performance.now() : perfTs;
-  if (o && o.performanceTime > 0 && o.contextTime > 0) return (o.contextTime + (ts - o.performanceTime) / 1000) * sr;
-  return (ctx.currentTime - (ctx.outputLatency || 0) - (ctx.baseLatency || 0) - (performance.now() - ts) / 1000) * sr;
-}
-function curTick(perfTs) { return T.playing && T.a ? tickAt(outFrame(perfTs)) : T.pos; }
-function postTransport(seek) { postAll(Object.assign({ t: 'transport', play: true, seek }, T.a)); }
+// fresh: a start / seek (the engine plays the anchor tick's notes even when the message arrives a little late); never on the
+// re-sends to a node created mid-song (makeNode) or after a panic, or a tempo / loop change
+function postTransport(seek) { postAll(Object.assign({ t: 'transport', play: true, seek }, seek ? { fresh: true } : null, T.a)); }
 async function play(from = T.pos, countBars = 0) {
   try { await powerOn(); } catch { return; }
   if (!ctx || T.playing) return;
   for (const t of project.tracks) if (songQ.has(t.id)) sendSong(t, true);
   const F = Math.round((ctx.currentTime + 0.06 + (ctx.baseLatency || 0)) * ctx.sampleRate);
-  T.a = anchor(F, from - countBars * S.barTicks(project));
+  T.a = anchor(F, from - countBars * S.barTicks(project)); T.as = [T.a]; T.seekA = null;
   T.playing = true; T.startPos = from; T.lastClr = from;
   postTransport(true);
   metroStart();
@@ -702,10 +876,10 @@ async function play(from = T.pos, countBars = 0) {
 }
 function stop() {
   if (!T.playing) { if (T.pos !== 0) { T.pos = 0; posUI(); } return; }
-  const t = curTick();
+  const t = recTick();
   if (T.rec) finishRec(t);
   postAll({ t: 'transport', play: false });
-  T.playing = false; T.rec = false; T.a = null;
+  T.playing = false; T.rec = false; T.a = T.seekA = null; T.as = [];
   T.pos = T.startPos;
   metroStop();
   if (!seqRun.has(project.selTrack)) for (const e of stepEls) e.classList.remove('now'); // synced 303 stopped with the song
@@ -713,26 +887,100 @@ function stop() {
 }
 function reanchor(seekTick) { // tempo/loop change (or a seek) while playing, applied in sync on every node
   if (!T.playing || !ctx) return;
-  const F = Math.round((ctx.currentTime + 0.05) * ctx.sampleRate);
-  const t = seekTick == null || seekTick === false ? tickAt(F) : seekTick;
-  T.a = anchor(F, t);
-  postTransport(seekTick != null && seekTick !== false);
+  const sr = ctx.sampleRate, F = Math.round((ctx.currentTime + 0.05) * sr), H = outFrame(), sk = seekTick != null && seekTick !== false;
+  const t = sk ? seekTick : AC.tickAt(F, T.a);
+  // an anchor not rendered yet never sounds: the nodes' single pending slot (engine tp.pend) takes this one instead
+  const p = T.a.frame > ctx.currentTime * sr ? T.as.pop() : null;
+  T.a = anchor(F, t); T.as.push(T.a);
+  if (sk || (p && p === T.seekA)) T.seekA = T.a; // (a seek replaced before it sounded: this one carries its jump)
+  let j = -1; for (let i = 0; i < T.as.length - 1; i++) if (T.as[i].frame <= H) j = i;
+  if (j > 0) T.as.splice(0, j); // the anchors before the latest one heard are gone
+  postTransport(sk);
   metroStart(F);
 }
 function seek(tick) {
   tick = Math.max(0, Math.round(tick));
-  if (T.playing) { if (T.rec) finishRec(curTick()); reanchor(tick); T.startPos = tick; }
+  if (T.playing) { if (T.rec) finishRec(recTick()); reanchor(tick); T.startPos = tick; }
   else T.pos = tick;
   posUI();
 }
 function toggleRec() {
-  if (T.rec) { finishRec(curTick()); T.rec = false; transportUI(); return; }
+  if (T.rec) { finishRec(recTick()); T.rec = false; transportUI(); return; }
   if (!project.tracks.some(t => t.arm)) { trk().arm = true; renderHeads(); }
   hist.record(project); updateUndoUI();
   T.take = S.newId();
   if (T.playing) { T.rec = true; T.lastClr = curTick(); transportUI(); return; }
   T.rec = true;
   play(T.pos, project.metronome.countIn | 0);
+}
+
+/* output latency: the header Latency control (R5) */
+// settings.lat (ms, −50 … +400) is added to the clock's own estimate for the playhead, recording and host.latency.
+// Presets Auto (+0) and Bluetooth: a top-up to about BT_MS of output delay in all, over what the clock already allows
+// (outputLatency includes Bluetooth on iPadOS 18.4+ and desktops — a flat +200 counted it twice; none reported before
+// 18.4: +200); a fine slider with ±5 ms steps, and a live readout of what the clock measures. Kept in this device's
+// synth.settings (latBT: the Bluetooth preset chosen; the installed app on an iPad keeps its own).
+const BT_MS = 200;
+// the hardware delay the clock already allows (s): WebKit the smoothed outputLatency (Bluetooth on iPadOS 18.4+, a fixed
+// 512 / sr in a Private tab, 0 before 18.4); Chromium the speaker stamp's device delay (= outputLatency)
+const latHw = () => (!ctx || ctx === holdCtx ? 0 : CLK.webkit ? CLK.outLat || +ctx.outputLatency || 0 : +ctx.outputLatency || 0);
+const btLat = () => Math.max(0, BT_MS - Math.round(latHw() * 1000));
+// the engine off where outputLatency is reported: the top-up is not known yet (never a blind +200)
+const btBlind = () => (!ctx || ctx === holdCtx) && 'outputLatency' in ((window.AudioContext || window.webkitAudioContext || {}).prototype || {});
+const latName = v => (settings.latBT ? 'Bluetooth' : v === 0 ? 'Auto' : (v > 0 ? '+' : '') + v + ' ms');
+function setLat(v, bt) {
+  settings.lat = clamp(Math.round(+v) || 0, -50, 400); settings.latBT = !!bt; CLK.user = settings.lat;
+  persist(); latUI(); rateText();
+}
+// a preset button: 'bt' the Bluetooth top-up as measured now, else its ms
+function latPreset(k) { if (k === 'bt') { if (!btBlind()) setLat(btLat(), true); } else setLat(k); }
+function latUI() {
+  const v = settings.lat, b = $('#lat');
+  b.textContent = latName(v); b.setAttribute('aria-label', 'Output latency: ' + latName(v));
+  $('#latR').value = String(v); $('#latV').textContent = (v > 0 ? '+' : '') + v + ' ms';
+  for (const p of $('#latPop').querySelectorAll('[data-lat]')) {
+    p.setAttribute('aria-pressed', (p.dataset.lat === 'bt' ? !!settings.latBT : !settings.latBT && +p.dataset.lat === v) ? 'true' : 'false');
+  }
+  btUI();
+}
+function btUI() { // the Bluetooth preset: its top-up as measured now (latRead refreshes it while the popover is open)
+  const p = [...$('#latPop').querySelectorAll('[data-lat]')].find(x => x.dataset.lat === 'bt');
+  if (!p) return;
+  const blind = btBlind(), hw = Math.round(latHw() * 1000);
+  p.disabled = blind;
+  p.textContent = blind ? 'Bluetooth' : `Bluetooth +${btLat()} ms`;
+  p.title = blind ? 'Start the engine first: it measures the Bluetooth delay' : `About ${BT_MS} ms of output delay in all: ${hw} ms already allowed + ${btLat()} ms`;
+}
+function latRead() {
+  btUI();
+  const el = $('#latInfo'), ms = x => (x == null ? '—' : (x * 1000).toFixed(1) + ' ms');
+  const eng = CLK.webkit ? 'WebKit, stamped at render' : 'Chromium, stamped at the speaker';
+  if (!ctx || ctx === holdCtx) { el.textContent = `engine    ${eng}\nThe measured numbers show while the engine runs.`; return; }
+  const I = AC.clockInfo(CLK, ctx, performance.now());
+  el.textContent = [`engine    ${eng}`, `output    ${I.out == null ? 'not reported' : ms(I.out)}`, `base      ${ms(I.base)}`,
+    `stamp     ${ms(I.stamp)} behind currentTime`, CLK.webkit ? `ring      ${ms(I.ring)} (estimate)` : '',
+    `stalls    ${ms(I.stall)}${CLK.webkit ? '' : ' (not added here)'}`, `IO step   ${ms(I.io)}`,
+    `heard     ${ms(outLatency())} after render`, `allowed   ${ms(I.auto)} auto + ${ms(I.user)} yours`].filter(Boolean).join('\n');
+}
+function initLatency() {
+  const btn = $('#lat'), pop = $('#latPop'), r = $('#latR');
+  let tmr = 0;
+  const close = () => { if (pop.hidden) return; pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); clearInterval(tmr); tmr = 0; };
+  const open = () => {
+    pop.hidden = false; btn.setAttribute('aria-expanded', 'true');
+    pop.style.transform = ''; // kept inside the viewport (the header wraps on a narrow screen)
+    const b = pop.getBoundingClientRect(), dx = Math.min(0, innerWidth - 8 - b.right) || Math.max(0, 8 - b.left);
+    if (dx) pop.style.transform = `translateX(${dx}px)`;
+    latRead(); tmr = setInterval(latRead, 250);
+  };
+  btn.onclick = () => (pop.hidden ? open() : close());
+  r.oninput = () => setLat(r.value);
+  for (const b of pop.querySelectorAll('[data-lat]')) b.onclick = () => latPreset(b.dataset.lat);
+  for (const b of pop.querySelectorAll('[data-step]')) b.onclick = () => setLat(settings.lat + +b.dataset.step);
+  document.addEventListener('pointerdown', e => { if (!pop.hidden && !(e.target && e.target.closest && e.target.closest('.latf'))) close(); }, true);
+  const esc = e => { if (e.key === 'Escape' && !pop.hidden) { e.preventDefault(); e.stopPropagation(); close(); btn.focus(); } }; // (not a panic)
+  btn.addEventListener('keydown', esc); pop.addEventListener('keydown', esc);
+  latUI();
 }
 
 /* metronome: Web Audio clicks scheduled ahead from the same transport anchor */
@@ -776,12 +1024,12 @@ function metroTick() {
 
 /* --------------------------------------------------------- recording */
 const recLive = new Map(); // `${trackId}|${src}:${n}` -> { tr, n, t0, v }
-function recStart(tr, key, n, v, ts) { recLive.set(tr.id + '|' + key, { tr, n, t0: curTick(ts), v }); }
+function recStart(tr, key, n, v, ts) { recLive.set(tr.id + '|' + key, { tr, n, t0: recTick(ts), v }); }
 function recEnd(tr, key, ts) {
   const k = tr.id + '|' + key, r = recLive.get(k);
   if (!r) return;
   recLive.delete(k);
-  commitNote(r, curTick(ts));
+  commitNote(r, recTick(ts));
 }
 function commitNote(r, t1) {
   const a = T.a;
@@ -798,7 +1046,7 @@ function commitNote(r, t1) {
 function finishRec(t) { for (const r of recLive.values()) commitNote(r, t); recLive.clear(); }
 function recCC(trs, k, v, ts) {
   if (!T.rec || !T.playing) return;
-  const t = Math.round(curTick(ts));
+  const t = Math.round(recTick(ts));
   if (t < 0) return;
   for (const tr of trs) {
     if (!tr.arm) continue;
@@ -895,7 +1143,7 @@ function panic() {
   hk.clear();
   setSustain(false);
   postAll({ t: 'panic' });
-  if (T.playing) { postTransport(true); }
+  if (T.playing) postAll(Object.assign({ t: 'transport', play: true, seek: true }, T.a)); // (not fresh: the old anchor replays nothing, R7 B1)
 }
 function setSustain(on) {
   sustain = on;
@@ -951,7 +1199,7 @@ function selectTrack(id) {
   bind();
   renderNav(); renderViews(); renderHeads();
   roll && roll.setTrack(); arr && arr.render();
-  $('#tabTrack').textContent = 'Track: ' + trk().name;
+  tabTrackUI();
   persist();
 }
 
@@ -1095,8 +1343,10 @@ function showTip(el, c) {
 function hideTip(delay = 0) { clearTimeout(tipHide); tipHide = setTimeout(() => tip.classList.remove('show'), delay); }
 
 // Pointer drag with capture. Ends on pointerup/cancel, lost capture, or a mouse move with no button held
-// (a context menu can swallow the pointerup), so a drag can never be left running.
-function track(el, e, move, end) {
+// (a context menu can swallow the pointerup), so a drag can never be left running. abort (optional) runs first when
+// the two-finger layer (gesture.js) cancels the drag — a pointercancel flagged e.gesture === 'two-finger': it puts back
+// what the drag changed (a plain pointercancel keeps it, as before).
+function track(el, e, move, end, abort) {
   let done = false;
   const mv = ev => { if (ev.pointerId !== e.pointerId) return; if (ev.pointerType === 'mouse' && !(ev.buttons & 1)) return fin(); move(ev); };
   const fin = ev => {
@@ -1104,11 +1354,25 @@ function track(el, e, move, end) {
     done = true;
     for (const [t, f] of L) el.removeEventListener(t, f);
     try { el.releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    if (abort && ev && ev.type === 'pointercancel' && ev.gesture === 'two-finger') abort();
     if (end) end();
   };
   const L = [['pointermove', mv], ['pointerup', fin], ['pointercancel', fin], ['lostpointercapture', fin]];
   try { el.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
   for (const [t, f] of L) el.addEventListener(t, f);
+}
+// A press that acts at once for a mouse or pen, but for a finger on its tap's release (≤ 10 px): a scroll or a
+// two-finger gesture (gesture.js cancels the first finger) starting there never selects or closes anything.
+// ok(e): the press (and the release) counts.
+function pressOrTap(el, ok, fn) {
+  let p = null;
+  el.addEventListener('pointerdown', e => {
+    p = null;
+    if (!ok(e)) return;
+    if (e.pointerType === 'touch') p = { id: e.pointerId, x: e.clientX, y: e.clientY }; else fn(e);
+  });
+  el.addEventListener('pointerup', e => { const P = p; p = null; if (P && P.id === e.pointerId && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= 10 && ok(e)) fn(e); });
+  el.addEventListener('pointercancel', e => { if (p && p.id === e.pointerId) p = null; });
 }
 const noMenu = el => el.addEventListener('contextmenu', e => e.preventDefault());
 /* wheel: normalised delta; only taken when the control has focus, or the pointer rested on it and the page isn't scrolling */
@@ -1143,12 +1407,17 @@ function drag(el, c) {
     const range = c.step ? (c.max - c.min) / c.step : 100;
     const base = range > 40 ? 0.0045 : Math.max(0.0045, 1 / (range * 22));
     showTip(el, c);
+    const tr = trk(), v0 = vals[c.id], pre0 = tr.preset; // (a two-finger rollback puts both back: the preset stays named)
     track(el, e, ev => {
       p = clamp(p + (yPrev - ev.clientY) * (ev.shiftKey ? base * 0.2 : base), 0, 1); yPrev = ev.clientY;
       const v = fromPos(c, p);
       if (v !== vals[c.id]) setVal(c.id, v);
       showTip(el, c);
-    }, () => { dragging = false; hideTip(400); });
+    }, () => { dragging = false; hideTip(400); }, () => {
+      if (trk() !== tr) return;
+      if (vals[c.id] !== v0) setVal(c.id, v0);
+      if (tr.preset !== pre0) { tr.preset = pre0; renderHeads(); persist(); }
+    });
   });
   el.addEventListener('dblclick', () => { setVal(c.id, c.def); showTip(el, c); hideTip(800); });
   el.addEventListener('wheel', e => {
@@ -1924,7 +2193,7 @@ function sxHost(t0) {
     download: (name, blob) => download(blob, name),
     tuningFile: () => tuningFile(T().vals.s.global.tun),
     metronome: on => { project.metronome.on = !!on; transportUI(); persist(); },
-    latency: () => (ctx ? (ctx.baseLatency || 0) + (ctx.outputLatency || 0) : 0),
+    latency: () => outLatency(), // the playhead's output delay (audioclock.js + the Latency setting): clip records line up with it
     qualityChosen: () => liftCaps(),
     storage: hostStore,
     notify: txt => notice(txt, 3500),
@@ -2160,7 +2429,8 @@ function seqUI(tr) {
       if (e.button !== 0 || e.ctrlKey) return;
       e.preventDefault(); box.focus({ preventScroll: true });
       let acc = get(), yPrev = e.clientY; // accumulated, so Shift mid-drag only changes the rate from here on
-      track(box, e, ev => { acc = clamp(acc + (yPrev - ev.clientY) / (ev.shiftKey ? 8 : 2), min, max); yPrev = ev.clientY; put(acc); });
+      const v0 = get();
+      track(box, e, ev => { acc = clamp(acc + (yPrev - ev.clientY) / (ev.shiftKey ? 8 : 2), min, max); yPrev = ev.clientY; put(acc); }, null, () => put(v0));
     });
     box.addEventListener('wheel', e => { const wv = wheelIn(box, e); if (wv) put(get() + wheelStep(box, wv)); }, { passive: false });
     box.addEventListener('keydown', e => {
@@ -2216,7 +2486,9 @@ function seqUI(tr) {
       if (e.button !== 0 || e.ctrlKey) return;
       e.preventDefault(); note.focus({ preventScroll: true });
       let a = s.n, yPrev = e.clientY;
-      track(note, e, ev => { a = clamp(a + (yPrev - ev.clientY) / 9, 0, 12); yPrev = ev.clientY; const v = Math.round(a); if (v !== s.n) { s.n = v; s.g = 1; draw(); send(); } });
+      const n0 = s.n, g0 = s.g; // (a two-finger rollback puts back the pitch and a rest the drag turned into a note)
+      track(note, e, ev => { a = clamp(a + (yPrev - ev.clientY) / 9, 0, 12); yPrev = ev.clientY; const v = Math.round(a); if (v !== s.n) { s.n = v; s.g = 1; draw(); send(); } },
+        null, () => { if (s.n !== n0 || s.g !== g0) { s.n = n0; s.g = g0; draw(); send(); } });
     });
     const nudge = d => { const v = clamp(s.n + d, 0, 12); if (v !== s.n) { s.n = v; s.g = 1; draw(); send(); } }; // a rest only becomes a note when the pitch actually moves
     note.addEventListener('wheel', e => { const wv = wheelIn(note, e); if (wv) nudge(wheelStep(note, wv)); }, { passive: false });
@@ -2237,17 +2509,17 @@ function seqUI(tr) {
 /* ------------------------------------------------------ track headers */
 function renderHeads() {
   const el = $('#heads');
-  el.innerHTML = '';
+  el.innerHTML = ''; voiceOpt.clear();
   el.append(h('div', 'hruler', `${project.tracks.length} track${project.tracks.length === 1 ? '' : 's'}`));
   project.tracks.forEach((t, i) => {
     const row = h('div', 'head' + (t.id === project.selTrack ? ' sel' : ''));
     row.style.setProperty('--tc', t.color);
     row.dataset.id = t.id;
-    row.addEventListener('pointerdown', e => { if (!e.target.closest('button, select, input')) selectTrack(t.id); });
+    pressOrTap(row, e => !e.target.closest('button, select, input'), () => selectTrack(t.id)); // (a finger: on the tap's release)
     row.addEventListener('dblclick', e => { if (!e.target.closest('button, select, input')) openTab('roll'); });
     const top = h('div', 'hrow');
     const name = h('input', 'hname'); name.value = t.name; name.title = 'Track name'; name.setAttribute('aria-label', 'Track name');
-    name.onchange = () => { hist.record(project); t.name = name.value.trim() || t.name; name.value = t.name; persist(); updateUndoUI(); if (t.id === project.selTrack) { $('#tabTrack').textContent = 'Track: ' + t.name; renderPanel(); } };
+    name.onchange = () => { hist.record(project); t.name = name.value.trim() || t.name; name.value = t.name; persist(); updateUndoUI(); if (t.id === project.selTrack) { tabTrackUI(); renderPanel(); } };
     name.addEventListener('keydown', e => { if (e.key === 'Enter') name.blur(); e.stopPropagation(); });
     const tb = (lbl, key, title, cls) => {
       const b = h('button', 'hb ' + cls, lbl); b.type = 'button'; b.title = title;
@@ -2256,7 +2528,7 @@ function renderHeads() {
         t[key] = !t[key];
         b.setAttribute('aria-pressed', t[key] ? 'true' : 'false');
         if (key !== 'arm') mix();
-        if (key === 'arm' && !t.arm && T.rec) for (const [k, r] of recLive) if (r.tr === t) { commitNote(r, curTick()); recLive.delete(k); }
+        if (key === 'arm' && !t.arm && T.rec) for (const [k, r] of recLive) if (r.tr === t) { commitNote(r, recTick()); recLive.delete(k); }
         arr && arr.render(); persist();
       };
       return b;
@@ -2265,7 +2537,13 @@ function renderHeads() {
     top.append(name, tb('M', 'mute', 'Mute', 'm'), tb('S', 'solo', 'Solo', 's'), tb('●', 'arm', 'Arm for recording', 'r'), meter);
     const bot = h('div', 'hrow');
     const msel = h('select', 'hmodel'); msel.title = 'Instrument'; msel.setAttribute('aria-label', 'Instrument');
-    for (const m of MODELS) { const o = h('option', null, m.name); o.value = m.id; msel.append(o); }
+    // each entry names its voice mode (R6): the track's own model as its patch plays, the others as they start
+    const tv = trackVoice(t);
+    voiceShown.set(t.id, tv.label);
+    for (const m of MODELS) {
+      const o = h('option', null, m.name + ' · ' + (m.id === t.model ? tv : modelVoice(m)).label); o.value = m.id; msel.append(o);
+      if (m.id === t.model) voiceOpt.set(t.id, o);
+    }
     msel.value = t.model;
     msel.onchange = () => setTrackModel(t, msel.value);
     let psel;
@@ -2297,7 +2575,7 @@ function renderHeads() {
     el.append(row);
     if (i === project.tracks.length - 1) row.classList.add('last');
   });
-  $('#tabTrack').textContent = 'Track: ' + trk().name;
+  tabTrackUI();
   arr && arr.render();
 }
 function addTrack(m = model, vals0 = null) {
@@ -2350,18 +2628,31 @@ function setLoop(s, e) {
   transportUI(); reanchor(false); persist();
   arr && arr.render(); roll && roll.render();
 }
+// a two-finger gesture took a ruler drag over (arrange.js restore, roll.js _rollback): the loop as at the press, its on
+// flag too (setLoop turns it on)
+function restoreLoop(L) {
+  Object.assign(project.loop, { start: L.start, end: L.end, on: !!L.on });
+  transportUI(); reanchor(false); persist();
+  arr && arr.render(); roll && roll.render();
+}
 function initEditors() {
   arr = new Arrangement($('#lanes'), {
     getProject: () => project,
     selectTrack: id => selectTrack(id),
-    openTrack: id => { selectTrack(id); openTab('roll'); },
+    // a double-tapped lane opens its track in the roll at the tapped bar (t: its tick)
+    openTrack: (id, t) => { selectTrack(id); openTab('roll'); if (Number.isFinite(t)) roll.reveal(t); },
     getPlayhead: () => curTick(),
     setPlayhead: t => seek(t),
     setLoop,
+    restoreLoop,
     getRange: () => range,
     setRange: (s, e) => { range = s == null || e == null || e <= s ? null : [Math.round(s), Math.round(e)]; rangeUI(); arr.render(); },
     rowHeight: 56,
   });
+  // a preview's note-off goes to the node its note-on went to (pitch → track ids, note-on order): the selection may have
+  // moved in between (selectTrack → roll.setTrack ends a held gesture after selTrack changed; a _blip's 170 ms off), and
+  // a preview voice is the preview's own (R7 B5) — the song's / the keys' note-offs never release it
+  const audTr = new Map();
   roll = new PianoRoll($('#rollwrap'), {
     getProject: () => project,
     getTrack: () => trk(),
@@ -2369,13 +2660,24 @@ function initEditors() {
     beginEdit: () => { hist.record(project); gesture = true; updateUndoUI(); },
     endEdit: () => { gesture = false; changed(); },
     changed: () => { sendSong(trk()); arr && arr.render(); },
-    audition: (n, v) => { postTo(trk(), { t: 'on', n, v: (v || 100) / 127 }); if (!ctx) powerOn().catch(() => {}); },
-    auditionOff: n => postTo(trk(), { t: 'off', n }),
+    // aud: a preview — a voice of its own, never the song's (R7 B5: tapping a chord note while the loop plays kept cutting it)
+    audition: (n, v) => {
+      const t = trk(); let q = audTr.get(n); if (!q) audTr.set(n, q = []); q.push(t.id);
+      postTo(t, { t: 'on', n, v: (v || 100) / 127, aud: 1 }); if (!ctx) powerOn().catch(() => {});
+    },
+    auditionOff: n => { const q = audTr.get(n), id = q ? q.shift() : null; if (q && !q.length) audTr.delete(n); postTo(id == null ? trk() : { id }, { t: 'off', n, aud: 1 }); },
     getPlayhead: () => curTick(),
     setPlayhead: t => seek(t),
     setLoop,
+    restoreLoop,
     getSnap: () => project.snap,
     onSelect: n => { const el = $('#rSel'); if (el) el.textContent = n ? `${n} selected` : 'No selection (edits apply to all notes)'; },
+    touch: rollTouchDev, // taller default rows; automatic sizing keeps rows ≥ 14 px (the roll scrolls instead)
+    rollRowH: rollView.rowH,
+    onRows: r => { rollView.rowH = r; clearTimeout(rollViewT); rollViewT = setTimeout(rollViewSave, 300); },
+    // the toolbar's touch modifier latches (buildRollTools); a finger or pen on the roll shows them
+    mods: e => { if (e && e.pointerType && e.pointerType !== 'mouse' && !rollFing) { rollFing = true; rollLatchUI(); } return rollMods(e); },
+    consumeMods: () => rollConsume(),
   });
   $('#arrwrap').addEventListener('pointerdown', () => { lastArea = 'arr'; }, true);
   $('#rollwrap').addEventListener('pointerdown', () => { lastArea = 'roll'; }, true);
@@ -2447,6 +2749,27 @@ function quantizeNow() {
   const q = project.quantize;
   transform('Quantize', ns => S.quantize(ns, { grid: q.grid, strength: q.strength, swing: q.swing, starts: q.starts, ends: q.ends }));
 }
+// Touch modifier latches of the Piano Roll — wk.modifierBar's keys, labels and rules, the roll's own set (no Serum kit
+// load, no latch carried over from another surface): Fine = no snap (Shift-drag), Alt = a drag copies / the velocity lane
+// paints, Shift = taps add to (or remove from) the selection. Tap = the next roll gesture, double-tap = locked until
+// tapped off. Shown on a coarse-pointer device / an iPad, or once a finger / pen touches the roll (host.mods).
+const rollLatch = { fine: 0, alt: 0, shift: 0 }, rollLatchT = {}, rollLatchB = {}; // B: the buttons, [button, label] per key
+let rollFing = false, rollLatchG = null;
+function rollMods(e) {
+  const sh = !!(e && e.shiftKey);
+  return { fine: sh || rollLatch.fine > 0, alt: !!(e && e.altKey) || rollLatch.alt > 0, shift: sh || rollLatch.shift > 0 };
+}
+function rollConsume() { let ch = false; for (const k in rollLatch) if (rollLatch[k] === 1) { rollLatch[k] = 0; ch = true; } if (ch) rollLatchUI(); }
+function rollLatchUI() {
+  if (rollLatchG) rollLatchG.style.display = rollTouchDev || rollFing ? '' : 'none';
+  for (const k in rollLatchB) {
+    const [b, l] = rollLatchB[k], st = rollLatch[k];
+    b.classList.toggle('on', st > 0);
+    b.style.boxShadow = st === 2 ? 'inset 0 -2px 0 currentColor' : ''; // locked
+    b.setAttribute('aria-pressed', st > 0 ? 'true' : 'false');
+    b.setAttribute('aria-label', l + (st === 2 ? ' (locked)' : st === 1 ? ' (next gesture)' : ''));
+  }
+}
 function buildRollTools() {
   const bar = $('#rolltools');
   bar.innerHTML = '';
@@ -2458,6 +2781,18 @@ function buildRollTools() {
   const tools = [['select', 'Select', 'Select / move / resize (1)'], ['draw', 'Draw', 'Draw notes (2)'], ['erase', 'Erase', 'Erase notes (3)']];
   const tb = tools.map(([k, l, ti]) => { const b = btn(l, ti, () => setTool(k)); b.dataset.tool = k; return b; });
   grp('Tool', ...tb);
+  // touch modifier latches (rollLatch): tap = next gesture, double-tap = lock, tap again = off
+  const latch = [['fine', 'Fine', 'Fine: drag without snapping (= Shift-drag)'], ['alt', 'Alt', 'Alt: dragging a note copies it; on the velocity lane, paint'],
+    ['shift', 'Shift', 'Shift: tap notes to add them to (or take them out of) the selection; hold-drag adds a box']].map(([k, l, ti]) => {
+    const b = btn(l, ti + ' · tap: next gesture, double-tap: lock', e => {
+      const t = (e && e.timeStamp) || Date.now(), st = rollLatch[k];
+      rollLatch[k] = st === 1 && rollLatchT[k] != null && t - rollLatchT[k] < 350 ? 2 : st ? 0 : 1;
+      rollLatchT[k] = t; rollLatchUI();
+    });
+    b.dataset.mod = k; rollLatchB[k] = [b, l]; return b;
+  });
+  rollLatchG = grp('Modifiers', ...latch); rollLatchG.id = 'rollMods';
+  rollLatchUI();
   grp('Snap', gridSelect(project.snap, v => { project.snap = v; persist(); roll.render(); }, true, 'Grid that notes snap to while editing'),
     h('span', 'rlab', 'Length'), gridSelect(project.drawLen || 0, v => { project.drawLen = v; roll.setDrawLength(v); persist(); }, true, 'Length of new notes (Off = same as snap)'));
   const q = project.quantize;
@@ -2490,7 +2825,10 @@ function buildRollTools() {
     btn('Duplicate', 'Duplicate selection after itself (Ctrl/⌘ D)', () => roll.duplicate()), btn('Delete', 'Delete selection (Del)', () => roll.deleteSelected()));
   const follow = chk('Follow', project.follow !== false, 'Scroll with the playhead', v => { project.follow = v; roll.setFollow(v); persist(); });
   const ghosts = chk('Ghosts', !!project.ghosts, 'Show other tracks’ notes faintly', v => { project.ghosts = v; roll.setGhosts(v); persist(); });
-  grp('View', btn('−', 'Zoom out', () => roll.zoomX(1 / 1.4)), btn('+', 'Zoom in', () => roll.zoomX(1.4)), btn('Fit', 'Fit notes', () => roll.fit()), follow, ghosts);
+  // Keys −/+: the row height (the keys' size; also pinch up / down, Alt-wheel), kept for this device
+  const keyZ = (txt, label, d) => { const b = btn(txt, label + ' (row height, kept on this device)', () => roll.zoomRows(d)); b.setAttribute('aria-label', label); return b; };
+  grp('View', btn('−', 'Zoom out', () => roll.zoomX(1 / 1.4)), btn('+', 'Zoom in', () => roll.zoomX(1.4)), btn('Fit', 'Fit notes', () => roll.fit()),
+    h('span', 'rlab', 'Keys'), keyZ('−', 'Smaller keys', -1), keyZ('+', 'Bigger keys', 1), follow, ghosts);
   const sel = h('span', 'rsel'); sel.id = 'rSel'; sel.textContent = 'No selection (edits apply to all notes)';
   bar.append(sel);
   roll.setFollow(project.follow !== false); roll.setGhosts(!!project.ghosts); roll.setDrawLength(project.drawLen || 0);
@@ -2583,7 +2921,7 @@ function initTransport() {
   $('#fBounce').onclick = () => openBounce();
   $('#bCancel').onclick = () => { $('#modal').hidden = true; };
   bounceButton();
-  $('#modal').addEventListener('pointerdown', e => { if (e.target.id === 'modal') $('#modal').hidden = true; });
+  pressOrTap($('#modal'), e => e.target.id === 'modal', () => { $('#modal').hidden = true; }); // the backdrop (a finger: on release)
 }
 function slug(s) { return (s || 'untitled').replace(/[^\w\- ]+/g, '').trim().replace(/\s+/g, '-').toLowerCase() || 'untitled'; }
 // The files the page hands over (Save, Export MIDI, Bounce WAV, presets, wavetables…). The iPad / iPhone home-screen app
@@ -2774,6 +3112,15 @@ const kbSize = (() => {
   return o && typeof o === 'object' ? { h: n(o.h, KB_H), kw: n(o.kw, KB_W) } : { h: 0, kw: 0 };
 })();
 const kbSave = () => store.set('synth.kbSize', { h: kbSize.h, kw: kbSize.kw });
+// The Piano Roll's row height (synth.rollView {rowH}, px 5–56; 0 = sized to each track): a per-device choice (pinch,
+// Keys −/+, Alt-wheel; fingers want taller rows than a mouse), not the project's. Written 300 ms after the last change
+// (Alt-wheel streams), or by save().
+const rollView = (() => {
+  const o = store.get('synth.rollView', null), r = o && typeof o === 'object' ? +o.rowH : 0;
+  return { rowH: Number.isFinite(r) && r > 0 ? clamp(Math.round(r), 5, 56) : 0 };
+})();
+let rollViewT = 0;
+const rollViewSave = () => { clearTimeout(rollViewT); rollViewT = 0; store.set('synth.rollView', { rowH: rollView.rowH }); };
 // The keys shown at a width of W px: kw = 0 fits whole octaves (2–5), else as many whole white keys of kw px as fit (at
 // least an octave, C to C; at most the 75 of MIDI 0–127). The range starts on a C at or below the computer keys' octave
 // (60 + 12·octave) — further below the more octaves fit — and fills upwards (downwards once it reaches G9).
@@ -2913,7 +3260,8 @@ function initKbView() {
       if (!moved && Math.abs(ev.clientY - y0) < 3) return; // a tap (or the first of a double tap) leaves it alone
       moved = true;
       setKbHeight(Math.max(KB_H[0], h0 + y0 - ev.clientY), false, chrome, was); // up = taller
-    }, () => { grip.classList.remove('drag'); if (moved) kbSave(); });
+    }, () => { grip.classList.remove('drag'); if (moved) kbSave(); },
+    () => { if (moved) { kbSize.h = was; applyKbHeight(chrome); } moved = false; }); // a two-finger gesture: as it was, nothing saved
   });
   onDouble(grip, () => setKbHeight(0), () => !moved);
   grip.addEventListener('keydown', e => {
@@ -3136,10 +3484,11 @@ function drawScope() {
 /* ----------------------------------------------------- animation loop */
 function frame() {
   requestAnimationFrame(frame);
+  if (ctx && !meterT) clockSample(ctx); // (the stall meter; its 5 ms timer while the engine starts)
   if (T.playing && T.a && ctx) {
     const t = curTick();
     posUI(t);
-    roll && roll.setPlayhead(t); arr && arr.setPlayhead(t);
+    roll && roll.setPlayhead(t, true); arr && arr.setPlayhead(t, true); // drawn in this frame, not the next
     replaceSweep(t);
     if (!project.loop.on && !T.rec && t > S.songEnd(project) + S.barTicks(project)) stop();
   }
@@ -3159,7 +3508,11 @@ function frame() {
 
 /* -------------------------------------------------------------- boot */
 let app = null; // pwa.js initApp's controller
+let uiz = null; // uiscale.js initUiScale's: the interface size (iOS / iPadOS)
 function boot() {
+  // the two-finger layer (gesture.js) first: its window capture listeners run before every other (pressStart, wake, the
+  // keys …), so a two-finger pan / pinch never presses what it lands on; a pinch goes to the interface size (uiz, below)
+  installGestures(window, { scale: () => uiz });
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   defs.setAttribute('width', 0); defs.setAttribute('height', 0); defs.style.position = 'absolute';
   defs.innerHTML = '<defs><radialGradient id="knobShine" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff" stop-opacity="0.22"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.04"/><stop offset="1" stop-color="#000" stop-opacity="0.25"/></radialGradient></defs>';
@@ -3204,6 +3557,7 @@ function boot() {
   };
   drift.oninput = () => { settings.drift = +drift.value; persist(); for (const t of project.tracks) queuePatch(t); };
   mst.oninput = () => { settings.master = +mst.value; persist(); if (master) master.gain.setTargetAtTime(settings.master, ctx.currentTime, 0.02); };
+  initLatency();
   vel.oninput = () => setVel(+vel.value);
   $('#octdn').onclick = () => setOctave(octave - 1);
   $('#octup').onclick = () => setOctave(octave + 1);
@@ -3215,8 +3569,11 @@ function boot() {
   for (const b of document.querySelectorAll('.scope-ctl button')) {
     b.onclick = () => { scopeMode = b.dataset.mode; for (const x of document.querySelectorAll('.scope-ctl button')) x.classList.toggle('on', x === b); };
   }
+  // a new window size or interface size (uiscale.js onApply: a viewport-meta change may not fire resize): the keyboard's
+  // height and keys, the roll and the arrangement re-fitted
+  function relayout() { applyKbHeight(); buildKeys(); roll.resize(); arr.resize(); }
   let rw;
-  window.addEventListener('resize', () => { clearTimeout(rw); rw = setTimeout(() => { applyKbHeight(); buildKeys(); roll.resize(); arr.resize(); }, 120); });
+  window.addEventListener('resize', () => { clearTimeout(rw); rw = setTimeout(relayout, 120); });
   window.addEventListener('hashchange', () => { const m = MODELS.find(x => '#' + x.id === location.hash); if (m) setTrackModel(trk(), m.id); });
   window.addEventListener('pagehide', saveNow);
   window.addEventListener('beforeunload', saveNow);
@@ -3224,6 +3581,8 @@ function boot() {
   // the installed app (pwa.js): Full screen / Install app buttons, offline service worker, update toast — an update
   // reloads only when the user asks, after the project is saved
   app = initApp({ version: VERSION, notice, beforeReload: async () => { releaseKeys(); save(); await store.flush(); } });
+  // the interface size (uiscale.js, iOS / iPadOS: − / % / + in the header; gesture.js routes a two-finger pinch to it)
+  uiz = initUiScale({ notice, onApply: relayout });
   const why = audioProblem(); if (why) audioFail(why);
   powerUI();
   booted = true;
@@ -3252,7 +3611,10 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
     powerOn, noteOn, noteOff, renderLast, resampleTo, preview, previewStop, previewEnd, clipToTrack, lastIn, inputSubs, liftCaps, lowerOS,
     caps: () => ({ sxCap, qrStep }), setTrackModel, addTrack, selectTrack, save, flush, sxLoad, sxSave, sxPreset, midi, renderOffline,
     songData, sxOSFor, pv, bounceSet, genProgress, notice, stickyNotice, deleteTrack, capQ4, ctx: () => ctx,
+    clock: () => CLK, curTick, outLatency, transport: () => T, settings: () => settings, latPreset, // (the audio clock, R5)
     held, kbRange, kbMaxH, app: () => app, kb: () => ({ h: kbH, kw: kbSize.kw, hSet: kbSize.h, lo: kbLo, hi: kbHi, w: kbW, px: kbPx, notes: [...keyEls.keys()], ptrs: new Map(ptrs) }),
+    roll: () => roll, arr: () => arr,
+    uiz: () => uiz, // (the interface size, uiscale.js)
   };
 }
 boot();

@@ -8,11 +8,16 @@
 //  - storage: a fake localStorage and, optionally, the fake IndexedDB of tests/fakes.mjs (appstore `synth-app`);
 //    no Workers (the asset manager builds on the main thread), no BroadcastChannel,
 //  - controllable requestAnimationFrame (sim.raf() runs the queued callbacks) and unref'd timers (the test process exits),
-//  - the browser around the page (pwa.js): o.ua / o.platform / o.touch (navigator), o.display ('standalone' |
+//  - the browser around the page (pwa.js): o.ua / o.platform / o.touch (navigator; o.maxTouch: maxTouchPoints apart from
+//    the coarse pointer — a mouse-driven touchscreen laptop, an iPad with a trackpad), o.display ('standalone' |
 //    'fullscreen': the display-mode media queries that match), o.navStandalone (iOS navigator.standalone), o.fs (the
 //    Fullscreen API on document.documentElement: 'std' | 'webkit'; none by default), o.sw (a navigator.serviceWorker
 //    fake), o.location (merged into location: protocol, hostname, …; location.reload() counts sim.reloads),
-//    navigator.storage (persisted() / persist() calls in sim.persist).
+//    navigator.storage (persisted() / persist() calls in sim.persist), o.vendor (navigator.vendor),
+//  - the audio clock (R5): o.clock 'webkit' | 'std' — getOutputTimestamp stamped as that engine does, outputLatency /
+//    baseLatency (o.outLat / o.baseLat), a fake performance.now() (sim.ms, moved by sim.run / sim.advance); every context
+//    records its resume / suspend / close calls (ctx.calls), every worklet node the context state it was built in
+//    (node.state0); o.noReady / o.readyMs: the engine's {t: 'ready'} dropped / late.
 // main.js publishes its hosts and a few internals on globalThis.__synthTest.api (its test hook) for the tests.
 //   const sim = await bootMain({ hash: '#serum', idb: fakeIDB(), ls: fakeStorage({...}) });
 //   await sim.power(); sim.raf(); sim.run(48000); sim.key('KeyA', true) …
@@ -25,6 +30,7 @@ import { fakeStorage } from './fakes.mjs';
 
 const ROOT = new URL('../', import.meta.url);
 const realTimeout = globalThis.setTimeout; // (sim.settle waits on a timer that keeps the process alive)
+const REAL_PERF = globalThis.performance;  // (o.clock boots replace it with sim.ms; the others get it back)
 const ENGINE = readFileSync(new URL('engine.js', ROOT), 'utf8');
 
 /* ------------------------------------------------------------------ DOM stub */
@@ -86,19 +92,32 @@ function makeDom() {
 }
 
 /* ------------------------------------------------------------------ Web Audio fakes */
-// one AudioWorkletGlobalScope: the §0.3 scripts in table order, then engine.js; processors post through `out`
-function workletScope(sr) {
+// one AudioWorkletGlobalScope: the §0.3 scripts in table order, then engine.js; processors post through `out`. What a
+// processor posts from its constructor (engine.js {t: 'ready'}) reaches its node a microtask later, as in a browser
+// (after main.js has set node.port.onmessage); o.noReady drops 'ready', o.readyMs delivers it that many ms later.
+function workletScope(sr, o = {}) {
   const D = dspScope({ sampleRate: sr, fast: true });
-  let Proc = null;
+  let Proc = null, early = null;
   const outs = new Map(); // processor → its node (worklet → main messages)
   D.run('(function (reg, out) { globalThis.AudioWorkletProcessor = class AudioWorkletProcessor { constructor() { const self = this;'
     + ' this.port = { postMessage(m) { out(self, m); }, onmessage: null }; } };'
     + ' globalThis.registerProcessor = function registerProcessor(name, cls) { reg(cls); }; })', 'sim-worklet.js')(c => { Proc = c; }, (p, m) => {
+    if (m && m.t === 'ready' && o.noReady) return;
     const node = outs.get(p);
-    if (node) node._fromProc(m);
+    if (node) node._fromProc(m); else if (early) early.push(m);
   });
   D.run(ENGINE, 'engine.js');
-  return { D, ctx: D.ctx, outs, make: (po, node) => { const p = new Proc({ processorOptions: po }); outs.set(p, node); return p; } };
+  const make = (po, node) => {
+    early = [];
+    const p = new Proc({ processorOptions: po }), q = early;
+    early = null; outs.set(p, node);
+    if (q.length && node) {
+      const send = () => { for (const m of q) node._fromProc(m); };
+      if (o.readyMs) setTimeout(send, o.readyMs); else queueMicrotask(send);
+    }
+    return p;
+  };
+  return { D, ctx: D.ctx, outs, make };
 }
 class Param {
   constructor(v) { this.value = v; }
@@ -127,8 +146,16 @@ class BaseContext {
     return n;
   }
   createOscillator() { const n = new Node(this, 'osc'); n.frequency = new Param(440); n.start = () => {}; n.stop = () => {}; return n; }
-  resume() { this.state = 'running'; return Promise.resolve(); }
-  close() { this.state = 'closed'; return Promise.resolve(); }
+  // calls: the state changes asked for, in order (a suspended context's state and time stand still until resume); a
+  // change fires statechange a microtask later
+  _to(call, state) {
+    (this.calls || (this.calls = [])).push(call);
+    if (this.state !== state) { this.state = state; queueMicrotask(() => { if (typeof this.onstatechange === 'function') this.onstatechange({ type: 'statechange' }); }); }
+    return Promise.resolve();
+  }
+  resume() { return this._to('resume', 'running'); }
+  suspend() { return this._to('suspend', 'suspended'); }
+  close() { return this._to('close', 'closed'); }
 }
 // the gain / pan path of node n to the destination: [{g, pan}] (a fan-out gives several)
 function paths(n, g = 1, pan = 0, seen = new Set()) {
@@ -173,6 +200,7 @@ export async function bootMain(o = {}) {
     constructor(ctx, name, opts) {
       super(ctx, 'worklet');
       this.name = name; this.posted = []; this.got = []; this.proc = null; this.pend = []; this.ended = false;
+      this.state0 = ctx.state; // the context's state when the node (and its processor) was built
       this.po = structuredClone((opts && opts.processorOptions) || {});
       const node = this;
       this.port = {
@@ -194,9 +222,21 @@ export async function bootMain(o = {}) {
     constructor(opt) {
       super(opt && opt.sampleRate);
       this.live = true; this._scope = null;
+      if (o.clock) { // (see bootMain: the audio clock personalities)
+        this.baseLatency = o.baseLat || 0;
+        if (o.outLat === null) delete this.outputLatency; else this.outputLatency = o.outLat || 0;
+        this._ts = { contextTime: 0, performanceTime: 0 };
+        this.getOutputTimestamp = () => Object.assign({}, this._ts);
+      }
+      this.born = sim.live.map(x => x.state); // the states of the earlier contexts when this one was created
       sim.live.push(this);
     }
-    scope() { return this._scope || (this._scope = workletScope(this.sampleRate)); }
+    scope() { return this._scope || (this._scope = workletScope(this.sampleRate, o)); }
+    // the stamp after a render: WebKit at the rendered frame, Chromium at the speaker (frames − device delay)
+    _stamp() {
+      const t = this.frames / this.sampleRate, d = o.clock === 'webkit' ? 0 : (+this.outputLatency || 0) + this.baseLatency;
+      this._ts = { contextTime: Math.max(0, t - d), performanceTime: sim.ms };
+    }
   }
   class OfflineAudioContext extends BaseContext {
     constructor(a, b, c) {
@@ -242,10 +282,18 @@ export async function bootMain(o = {}) {
   G.BroadcastChannel = undefined;
   G.Worker = undefined;
   const storage = { persisted: () => { sim.persist.push('persisted'); return Promise.resolve(false); }, persist: () => { sim.persist.push('persist'); return Promise.resolve(true); } };
-  const nav = { userAgent: o.ua || 'node-sim', platform: o.platform || 'node', maxTouchPoints: o.touch ? 5 : 0, storage };
+  const nav = { userAgent: o.ua || 'node-sim', platform: o.platform || 'node', maxTouchPoints: o.maxTouch != null ? o.maxTouch : o.touch ? 5 : 0, storage };
   if (o.navStandalone !== undefined) nav.standalone = o.navStandalone;
   if (o.sw) nav.serviceWorker = o.sw;
+  if (o.vendor) nav.vendor = o.vendor;
   Object.defineProperty(G, 'navigator', { value: nav, configurable: true, writable: true });
+  // the audio clock (o.clock 'webkit' | 'std'): live contexts stamp getOutputTimestamp as that engine does — WebKit at the
+  // rendered frame (nothing subtracted), Chromium at the speaker (− outputLatency − baseLatency) — with o.outLat / o.baseLat
+  // (s; o.outLat null: no outputLatency, iPadOS < 18.4), and performance.now() is sim.ms: sim.run advances it with the
+  // frames it renders (sim.run(n, false): a catch-up render that takes no wall time), sim.advance(ms) without rendering
+  // (a stall). Without o.clock: no stamps, the real performance.now().
+  sim.ms = 1000;
+  Object.defineProperty(G, 'performance', { value: o.clock ? { now: () => sim.ms, timeOrigin: REAL_PERF.timeOrigin } : REAL_PERF, configurable: true, writable: true });
   // the Fullscreen API (pwa.js): none unless o.fs; entering / leaving fires (webkit)fullscreenchange on the document
   const D = dom.document, root = D.documentElement, pre = o.fs === 'webkit' ? 'webkit' : '';
   const fsChange = () => { for (const f of dom.docL[pre ? 'webkitfullscreenchange' : 'fullscreenchange'] || []) f({ type: 'fullscreenchange' }); };
@@ -258,7 +306,7 @@ export async function bootMain(o = {}) {
     D[pre ? 'webkitExitFullscreen' : 'exitFullscreen'] = function () { sim.fsCalls = (sim.fsCalls || []).concat([['exit']]); D[el] = null; fsChange(); return pre ? undefined : Promise.resolve(); };
   }
   G.__synthTest = {};
-  const url = new URL('main.js?v=7&sim=' + (++boots), ROOT).href;
+  const url = new URL('main.js?v=8&sim=' + (++boots), ROOT).href;
   await import(url);
   const api = G.__synthTest.api;
   if (!api) throw new Error('main.js did not publish its test hook');
@@ -277,8 +325,9 @@ export async function bootMain(o = {}) {
       return null;
     },
     nodeOf: id => { const N = api.nodes.get(id); return N ? N.node : null; },
-    // renders `frames` of the live context (every worklet node, creation order), returning each node's output
-    run(frames) {
+    // renders `frames` of the live context (every worklet node, creation order), returning each node's output; with
+    // o.clock each quantum moves sim.ms on (unless wall === false) and stamps getOutputTimestamp
+    run(frames, wall = true) {
       const c = sim.ctx();
       if (!c) throw new Error('no live context');
       const list = c.nodes.filter(n => n.kind === 'worklet' && n.proc), N = Math.ceil(frames / 128) * 128;
@@ -291,9 +340,11 @@ export async function bootMain(o = {}) {
           out.get(n).L.set(L, off); out.get(n).R.set(R, off);
         }
         c.scope().ctx.currentFrame += 128; c.frames += 128;
+        if (o.clock) { if (wall) sim.ms += 128 / c.sampleRate * 1000; c._stamp(); }
       }
       return out;
     },
+    advance(ms) { sim.ms += ms; },
     key(code, down, extra) {
       const e = Object.assign({ type: down ? 'keydown' : 'keyup', code, key: '', target: dom.document.body, repeat: false, timeStamp: performance.now(),
         preventDefault() {}, stopPropagation() {}, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false }, extra || {});

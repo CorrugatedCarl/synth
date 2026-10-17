@@ -71,9 +71,9 @@
 // view edits (smpo UI fields, §2.2.3): no undo step.
 //
 // Browser ES module: nothing touches document / window / storage at module top level (node imports it for tests).
-import * as core from './serum-core.js?v=7';
-import * as wk from './wk.js?v=7';
-import * as gx from './graph.js?v=7';
+import * as core from './serum-core.js?v=8';
+import * as wk from './wk.js?v=8';
+import * as gx from './graph.js?v=8';
 
 /* ================================================================ constants and small helpers */
 
@@ -227,6 +227,15 @@ const modsOf = e => (wk.modifierBar && typeof wk.modifierBar.mods === 'function'
 const consumeMods = () => { if (wk.modifierBar && typeof wk.modifierBar.consume === 'function') wk.modifierBar.consume(); };
 // a mouse move without a pressed button: the drag's pointerup was missed (lost capture, the element was hidden)
 const noButton = e => e.pointerType === 'mouse' && typeof e.buttons === 'number' && e.buttons === 0;
+// gesture.js's synthetic pointercancel: a second finger made this touch a pan / pinch — the drag is rolled back
+const twoF = e => !!e && e.gesture === 'two-finger';
+// a two-finger rollback: each destination id of v0 ({ id: n at the press }) back to its value ('move' + 'end' = one
+// undo step at most; an id the gesture never changed and holds no drag of is left alone)
+function putBack(K, v0) {
+  const ids = Object.keys(v0).filter(id => K.getN(id) !== v0[id] || K.dragging(id));
+  for (const id of ids) K.setN(id, v0[id], 'move');
+  for (const id of ids) K.setN(id, v0[id], 'end');
+}
 
 // plain (non-destination) widgets, repainted with the panel
 const pToggle = (kit, o) => kit.bind(wk.toggle(Object.assign({ kind: 'led' }, o)));
@@ -1781,7 +1790,9 @@ export class MultiView extends TypeView {
       let best = -1, bd = 14 * 14;
       for (const i of [2, 4, 6]) { const dx = G.pts[i][0] - px, dy = G.pts[i][1] - py, q = dx * dx + dy * dy; if (q < bd) { bd = q; best = i; } }
       if (best < 0) return;
-      g = { id: e.pointerId, i: best, r, sw: G.sw, base: G.pts[best - 1][0], top: G.top, bot: G.bot };
+      const v0 = {};
+      for (const id of ['matt', 'mdec', 'msus', 'mrel']) v0[P + '.' + id] = K.getN(P + '.' + id);
+      g = { id: e.pointerId, i: best, r, sw: G.sw, base: G.pts[best - 1][0], top: G.top, bot: G.bot, v0 };
       try { c.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
       e.preventDefault();
     });
@@ -1798,7 +1809,7 @@ export class MultiView extends TypeView {
       put(e, 'move');
     });
     const end = () => { const P2 = this.P; for (const id of ['matt', 'mdec', 'msus', 'mrel']) if (K.dragging(P2 + '.' + id)) K.setN(P2 + '.' + id, K.getN(P2 + '.' + id), 'end'); g = null; };
-    const up = e => { if (!g || e.pointerId !== g.id) return; put(e, 'end'); g = null; };
+    const up = e => { if (!g || e.pointerId !== g.id) return; if (twoF(e)) putBack(K, g.v0); else put(e, 'end'); g = null; };
     c.addEventListener('pointerup', up);
     c.addEventListener('pointercancel', up);
     c.addEventListener('lostpointercapture', e => { if (g && e.pointerId === g.id) end(); });
@@ -2092,8 +2103,14 @@ class SmpBase extends TypeView {
     if (e.button !== 0) return;
     if (e.pointerType === 'touch') this.touches.add(e.pointerId);
     if (this.g) {
-      // a second finger: a pinch (wk.zoomPan) — the first finger's gesture ends, its long-press never fires
-      if (e.pointerType === 'touch' && e.pointerId !== this.g.id) { this.up(e, true, this.g); return; }
+      // a second finger: a pinch (wk.zoomPan) — the first finger's gesture is rolled back (a pinch never drags what it
+      // lands on, G1; gesture.js sends no cancel within one own element), its long-press never fires; a touch during a
+      // pen or mouse gesture (a palm) ends it, kept
+      if (e.pointerType === 'touch' && e.pointerId !== this.g.id) {
+        const g = this.g;
+        if (this.touches.size > 1) { this.g = null; if (g.lp) { clearTimeout(g.lp); g.lp = 0; } this.rollback(g, true); } else this.up(e, true, g);
+        return;
+      }
       this.up(e, true, this.g);   // a stale gesture whose pointerup was missed gives way to the new press
     }
     if (this.pinching()) return;
@@ -2113,6 +2130,10 @@ class SmpBase extends TypeView {
       else if (this.xyOn()) g = Object.assign(g, { kind: 'xy' });
       else if (L.loop && m.loop >= 1 && m.loop <= 3 && G.px > L.loop.x0 + 8 && G.px < L.loop.x1 - 8 && G.py < G.H * 0.25) g = Object.assign(g, { kind: 'loop', LS: K.getN(P + '.lstart'), LE: K.getN(P + '.lend') });
     }
+    // what the gesture may set, as at the press (a two-finger rollback puts it back: up())
+    g.back = g.kind === 'marker' ? [P + '.' + g.key] : g.kind === 'xf' ? [P + '.xfade'] : g.kind === 'xy' ? [P + '.pos', P + '.gy'] : [];
+    g.v0n = {};
+    for (const id of g.back) g.v0n[id] = K.getN(id);
     this.g = g;
     try { this.cv.el.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
     if (e.pointerType === 'touch') {   // long-press: Manual slicing toggles a mark, else the display menu
@@ -2161,13 +2182,16 @@ class SmpBase extends TypeView {
     }
   }
   // the end of the display gesture g (default this.g; its pointer = e's unless `force`): moves close their undo gesture,
-  // a cancelled one (pointercancel, a lost capture, a pinch starting, a stale gesture replaced) keeps what it had set
+  // a cancelled one (pointercancel, a lost capture, a stale gesture replaced, a palm during a pen gesture) keeps what it
+  // had set — except gesture.js's two-finger cancel (twoF): a second finger elsewhere made it a pan / pinch, so
+  // rollback() (a second finger on this display: down())
   up(e, cancel, force) {
     const g = force || this.g;
     if (!g || (!force && e.pointerId !== g.id)) return;
     this.g = null;
     if (g.lp) { clearTimeout(g.lp); g.lp = 0; }
     const K = this.kit, P = this.P;
+    if (cancel && !force && twoF(e)) { this.rollback(g, false); return; }
     if (g.kind === 'marker' && g.moved) { K.setN(P + '.' + g.key, K.getN(P + '.' + g.key), 'end'); this.D.pcmIdle(); }
     else if (g.kind === 'xf' && g.moved) K.setN(P + '.xfade', K.getN(P + '.xfade'), 'end');
     else if (g.kind === 'xy' && g.moved) this.putXY(cancel ? null : this.geo(e), 'end');
@@ -2178,6 +2202,17 @@ class SmpBase extends TypeView {
       this.D.sampleEdit(o, s => { s.osc[o].smpo.slice.thr = t; }, 'Slice threshold');
     } else if (g.kind === 'thr') K.queue();
     consumeMods();
+  }
+  // a two-finger rollback of g: markers, X-fade, X/Y and the loop go back to how they were at the press ('move' + 'end':
+  // no net undo step), a view drag too — unless own (the pinch on this display: wk.zoomPan's capture listener already
+  // took the dragged view as its start, putting it back would jump a frame); the modifier latches stay for the next gesture
+  rollback(g, own) {
+    const K = this.kit, P = this.P;
+    if (!g.moved) { if (g.kind === 'thr') K.queue(); return; }
+    if (g.kind === 'loop' && g.lphase) K.edit(s => { s.p[P + '.lstart'] = g.LS; s.p[P + '.lend'] = g.LE; }, { label: 'Move loop', phase: 'end' });
+    else if (g.kind === 'view') { if (!own) { this.zv = { a: g.v0.a, b: g.v0.b }; K.queue(); } }
+    else if (g.kind === 'thr') K.queue();
+    else if (g.back && g.back.length) { putBack(K, g.v0n); if (g.kind === 'marker') this.D.pcmIdle(); }
   }
   putXY(G, ph) {   // G null: the gesture ends where it is
     const K = this.kit, P = this.P;
@@ -2275,12 +2310,12 @@ class SmpBase extends TypeView {
       if (e.button !== 0) return;
       e.stopPropagation();
       e.preventDefault();
-      g = { id: e.pointerId };
+      g = { id: e.pointerId, v0: { [P + '.pos']: K.getN(P + '.pos'), [P + '.gy']: K.getN(P + '.gy') } };   // (v0: a two-finger rollback)
       try { dot.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
       this.putXY(this.geo(e), 'start');
     });
     dot.addEventListener('pointermove', e => { if (g && e.pointerId === g.id) { if (noButton(e)) lost(e); else this.putXY(this.geo(e), 'move'); } });
-    const up = e => { if (g && e.pointerId === g.id) { g = null; this.putXY(this.geo(e), 'end'); } };
+    const up = e => { if (g && e.pointerId === g.id) { const G = g; g = null; if (twoF(e)) putBack(K, G.v0); else this.putXY(this.geo(e), 'end'); } };
     const lost = e => { if (g && e.pointerId === g.id) { g = null; this.putXY(null, 'end'); } };   // its pointerup went elsewhere
     dot.addEventListener('pointerup', up);
     dot.addEventListener('pointercancel', up);
@@ -2395,6 +2430,7 @@ export class GranView extends SampleView {
       if (!gd || e.pointerId !== gd.id) return;
       const G = gd;
       gd = null;
+      if (twoF(e)) { putBack(K, { [P + '.wamt']: G.a, [P + '.wskew']: G.k }); return; }   // a two-finger rollback
       K.setN(P + '.wamt', K.getN(P + '.wamt'), 'end'); K.setN(P + '.wskew', K.getN(P + '.wskew'), 'end');
       consumeMods();
       this.ateWin = G.moved ? Date.now() : 0;
@@ -2454,9 +2490,10 @@ export class SpecView extends SmpBase {
       let g = null;
       // the handle sits at the frequency's height on the spectrogram's log axis (20 Hz … 20 kHz)
       const nAt = e => { const r = this.cv.el.getBoundingClientRect(), y = clamp01(1 - (e.clientY - r.top) / Math.max(1, r.height)); return core.lawNorm(id, 20 * Math.pow(1000, y)); };
-      h.addEventListener('pointerdown', e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); g = { id: e.pointerId }; try { h.setPointerCapture(e.pointerId); } catch (err) { /* gone */ } K.setN(id, nAt(e), 'start'); });
+      h.addEventListener('pointerdown', e => { if (e.button !== 0) return; e.stopPropagation(); e.preventDefault(); g = { id: e.pointerId, n0: K.getN(id) }; try { h.setPointerCapture(e.pointerId); } catch (err) { /* gone */ } K.setN(id, nAt(e), 'start'); });
       h.addEventListener('pointermove', e => { if (g && e.pointerId === g.id) { if (noButton(e)) lost(e); else K.setN(id, nAt(e), 'move'); } });
-      const up = e => { if (g && e.pointerId === g.id) { g = null; K.setN(id, nAt(e), 'end'); } };
+      // (a two-finger rollback, twoF: the frequency from before the press — the press itself jumped it)
+      const up = e => { if (g && e.pointerId === g.id) { const G = g; g = null; if (twoF(e)) putBack(K, { [id]: G.n0 }); else K.setN(id, nAt(e), 'end'); } };
       const lost = e => { if (g && e.pointerId === g.id) { g = null; K.setN(id, K.getN(id), 'end'); } };   // its pointerup went elsewhere
       h.addEventListener('pointerup', up);
       h.addEventListener('pointercancel', up);
@@ -3023,7 +3060,9 @@ export class FilterPanel {
     const up = e => {
       if (!g || e.pointerId !== g.id) return;
       const G = g;
-      if (G.moved) put(e, 'end');
+      // a two-finger rollback (twoF): cutoff / res from before the press
+      if (G.moved && twoF(e)) K.edit(s => { s.p[F + 'cutoff'] = G.c0; s.p[F + 'res'] = G.r0; }, { label: 'Filter cutoff / res', phase: 'end' });
+      else if (G.moved) put(e, 'end');
       g = null;
       if (!G.moved && e.type === 'pointerup') cycle();
     };

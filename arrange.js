@@ -1,4 +1,4 @@
-import { barTicks, beatTicks, snapTick, songEnd } from './song.js?v=7';
+import { barTicks, beatTicks, snapTick, songEnd } from './song.js?v=8';
 
 // Arrangement overview: ruler + one lane per track, drawn on a single hi-DPI canvas.
 const RULER = 24, PADY = 6, MAX_AREA = 16e6; // backing-store area cap (iOS Safari limit)
@@ -20,6 +20,7 @@ export class Arrangement {
       display: 'block', width: '100%', height: RULER + 'px', touchAction: 'pan-y', userSelect: 'none',
       webkitUserSelect: 'none', webkitTouchCallout: 'none', webkitTapHighlightColor: 'transparent', overscrollBehaviorX: 'contain',
     });
+    el.setAttribute('data-gesture', 'own'); // its own two-finger pinch: the two-finger layer (gesture.js) leaves it alone
     container.append(el);
     this.ctx = el.getContext('2d');
     this.buf = document.createElement('canvas'); this.bctx = this.buf.getContext('2d');
@@ -33,6 +34,8 @@ export class Arrangement {
     on('pointermove', e => this.move(e));
     on('pointerup', e => this.up(e, false));
     on('pointercancel', e => this.up(e, true));
+    // a capture lost without a pointerup / pointercancel (another element took it): the drag ends as a cancel
+    on('lostpointercapture', e => { const g = this.g; if (g && g.kind !== 'pinch' && g.id === e.pointerId) this.up(e, true); });
     on('wheel', e => this.wheel(e), { passive: false });
     on('contextmenu', e => { if (this.g) e.preventDefault(); });
     // desktop Safari reports trackpad pinch as GestureEvents, not ctrl+wheel (iOS touch pinches arrive as pointers too: ignored here)
@@ -64,11 +67,13 @@ export class Arrangement {
     this.frame();
   }
   resize() { this.w = this.measure(); this.dirty = true; this.frame(); }
-  setPlayhead(t) {
+  // sync: the caller is a frame callback (main.js frame()) — draw in this frame (one requested now would run a frame late)
+  setPlayhead(t, sync) {
     if (!Number.isFinite(t)) return;
     const prev = this.ph;
     this.ph = t;
-    if (t === prev || !this.w) { this.frame(); return; }
+    const go = () => { if (!sync || this.dead) return this.frame(); if (this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; } this.draw(); };
+    if (t === prev || !this.w) { go(); return; }
     const p = this.host.getProject();
     // auto-fit grows (in 4-bar steps) to keep a playhead that runs past the song end in view
     if (this.auto) { if (p && this.fitEnd(p, this.fb) !== this.fe) this.dirty = true; }
@@ -77,7 +82,7 @@ export class Arrangement {
       const a = this.x0, b = this.xt(this.w);
       if (prev >= a && prev <= b && (t < a || t > b)) { this.x0 = t - (b - a) * 0.05; this.clampView(p); this.dirty = true; }
     }
-    this.frame();
+    go();
   }
   setFollow(on) { this.follow = !!on; }
   fit() { this.auto = true; this.dirty = true; this.frame(); }
@@ -110,6 +115,7 @@ export class Arrangement {
     this.dead = true;
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
+    clearTimeout(this.tipT); this.tip = null;
     for (const f of this.offs) f();
     this.offs = [];
     if (this.ro) this.ro.disconnect();
@@ -183,8 +189,11 @@ export class Arrangement {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     const touch = e.pointerType === 'touch';
     if (touch) {
+      // a primary touch: no other touch is on the screen — forget stale ones (a pointerup that never reached the canvas)
+      if (e.isPrimary === true && this.pts.size) { this.pts.clear(); if (this.g && (this.g.kind === 'pinch' || this.g.touch)) this.g = null; }
       this.pts.set(e.pointerId, e.clientX);
       if (this.pts.size === 2) {
+        if (this.g && this.g.kind !== 'pinch') this.restore(this.g); // the first finger's drag turns into the pinch: undone
         const [a, b] = [...this.pts.values()], mid = (a + b) / 2 - this.el.getBoundingClientRect().left;
         this.g = { kind: 'pinch', d: Math.max(8, Math.abs(a - b)), ppt: this.ppt, at: this.xt(mid) };
         return;
@@ -197,22 +206,38 @@ export class Arrangement {
     try { this.el.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
     const { x, y } = this.pos(e), h = this.hit(x, y, p, touch);
     let sel = null;
+    // what the drag may change, as at the press (a two-finger takeover restores it: restore())
+    const L = p.loop, was = { sel0: p.selTrack, loop0: L ? { start: L.start, end: L.end, on: !!L.on } : null, rng0: this.range() };
     if (h.kind === 'lane') {
       if (!h.track) return;
-      const tp = this.tap, tm = now();
-      if (tp && tm - tp.time < 400 && Math.abs(x - tp.x) < 10 && Math.abs(y - tp.y) < 10 && tp.row === h.row) {
-        this.tap = null;
-        this.host.openTrack(h.track.id);
+      const tp = this.tap, tm = now(), dz = touch ? 24 : 10; // a finger's second tap lands farther off
+      if (tp && tm - tp.time < 400 && Math.abs(x - tp.x) < dz && Math.abs(y - tp.y) < dz && tp.row === h.row) {
+        this.tap = null; this.tipOff();
+        this.host.openTrack(h.track.id, Math.max(0, snapTick(this.xt(tp.x), barTicks(p), 'floor'))); // the roll opens at the tapped bar
         return;
       }
       // touch/pen may turn into a vertical scroll (pointercancel) or a pinch: select on tap or horizontal drag instead
       if (h.track.id !== p.selTrack) { if (e.pointerType === 'mouse') this.host.selectTrack(h.track.id); else sel = h.track.id; }
     }
-    this.g = { id: e.pointerId, kind: h.kind, edge: h.edge, fix: h.fix, org: h.org, row: h.row, x, y, t: this.xt(x), touch, moved: false, sel,
-      lo: h.edge ? Math.min(h.fix, h.org) : null, hi: h.edge ? Math.max(h.fix, h.org) : null };
+    this.g = Object.assign({ id: e.pointerId, kind: h.kind, edge: h.edge, fix: h.fix, org: h.org, row: h.row, x, y, t: this.xt(x), touch, moved: false, sel,
+      lo: h.edge ? Math.min(h.fix, h.org) : null, hi: h.edge ? Math.max(h.fix, h.org) : null }, was);
     this.render();
   }
   pick(g) { const id = g.sel; g.sel = null; if (id) this.host.selectTrack(id); }
+  // A two-finger gesture took the drag over (gesture.js's pointercancel flagged e.gesture === 'two-finger', or the
+  // canvas's own pinch): the loop or range it dragged and the track it selected go back to how they were at the press.
+  // The loop's on flag needs host.restoreLoop({ start, end, on }); without it setLoop restores the bounds (and turns it on).
+  restore(g) {
+    g.sel = null;
+    const p = this.host.getProject();
+    if (!p) return;
+    if (g.moved && g.kind === 'ruler') {
+      const L = g.loop0;
+      if (L && this.host.restoreLoop) this.host.restoreLoop(L);
+      else if (L && L.end > L.start) this.host.setLoop(L.start, L.end);
+    } else if (g.moved) this.host.setRange(g.rng0 ? g.rng0[0] : null, g.rng0 ? g.rng0[1] : null);
+    if (g.sel0 != null && p.selTrack !== g.sel0 && p.tracks.some(t => t.id === g.sel0)) this.host.selectTrack(g.sel0);
+  }
   move(e) {
     if (this.pts.has(e.pointerId)) this.pts.set(e.pointerId, e.clientX);
     const g = this.g;
@@ -236,8 +261,9 @@ export class Arrangement {
       g.moved = true;
       this.pick(g);
     }
-    if (this.edgeScroll(x)) x = this.pos(e).x;
-    const t = this.xt(x), grid = e.shiftKey ? beatTicks(p) : barTicks(p);
+    if (this.edgeScroll(x, g)) x = this.pos(e).x;
+    // whole bars (Shift: beats); a finger has no Shift: beats once a bar is 160 px or wider
+    const t = this.xt(x), grid = e.shiftKey || (g.touch && barTicks(p) * this.ppt >= 160) ? beatTicks(p) : barTicks(p);
     const [lo, hi] = g.edge ? this.edge(g.fix, t, grid, g.org) : this.span(g.t, t, grid);
     if (lo === g.lo && hi === g.hi) return; // unchanged: don't re-send (setLoop re-anchors the transport while playing)
     g.lo = lo; g.hi = hi;
@@ -252,23 +278,34 @@ export class Arrangement {
     if (!g || g.id !== e.pointerId) return;
     this.g = null;
     try { this.el.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
+    if (cancel && e.gesture === 'two-finger') this.restore(g);
     if (!cancel && !g.moved) {
       this.pick(g);
       const p = this.host.getProject();
       if (p) {
         const t = Math.max(0, e.shiftKey ? Math.round(g.t) : snapTick(g.t, beatTicks(p), 'round'));
-        if (g.kind === 'lane') { this.host.setRange(null); this.tap = { time: now(), x: g.x, y: g.y, row: g.row }; }
+        if (g.kind === 'lane') { this.host.setRange(null); this.tap = { time: now(), x: g.x, y: g.y, row: g.row }; if (g.touch) this.tipOn(g); }
         this.host.setPlayhead(t);
         this.ph = t;
       }
     }
     this.render();
   }
-  edgeScroll(x) {
-    const m = 16;
-    const d = x > this.w - m ? x - (this.w - m) : x < m && this.x0 > 0 ? x - m : 0;
+  // g: the drag — a finger gets a 32 px zone, and one that pressed inside a zone scrolls only once it moves on toward that edge
+  edgeScroll(x, g) {
+    const t = !!(g && g.touch), m = t ? 32 : 16;
+    const R = x > this.w - m && (!t || g.x <= this.w - m || x > g.x + 4), L = x < m && this.x0 > 0 && (!t || g.x >= m || x < g.x - 4);
+    const d = R ? x - (this.w - m) : L ? x - m : 0;
     return d ? this.scrollPx(d * 0.5) : false;
   }
+  // touch: a tap on a lane shows, the first few times a session, that its notes are edited in the Piano Roll
+  tipOn(g) {
+    if ((this.tips = (this.tips || 0) + 1) > 3) return;
+    this.tip = { x: g.x, row: g.row };
+    clearTimeout(this.tipT);
+    this.tipT = setTimeout(() => this.tipOff(), 2500);
+  }
+  tipOff() { clearTimeout(this.tipT); this.tipT = 0; if (this.tip) { this.tip = null; this.frame(); } }
   hover(e) {
     const p = this.host.getProject();
     if (!p || !this.w) return;
@@ -323,6 +360,14 @@ export class Arrangement {
       c.fillStyle = COL.hot;
       c.fillRect(px / dpr, 0, lw / dpr, h);
       c.beginPath(); c.moveTo(x - 5, 0); c.lineTo(x + 5, 0); c.lineTo(x, 7); c.closePath(); c.fill();
+    }
+    const tip = this.tip;
+    if (tip && p.tracks[tip.row]) {
+      const s = 'Double-tap to edit its notes', tw = s.length * 6.2 + 14, ty = RULER + tip.row * rh + rh / 2;
+      const tx = clamp(tip.x - tw / 2, 4, Math.max(4, w - tw - 4));
+      c.fillStyle = 'rgba(12,13,15,0.92)'; c.fillRect(tx, ty - 10, tw, 20);
+      c.fillStyle = COL.hot; c.fillRect(tx, ty - 10, 2, 20);
+      c.font = FONT; c.textBaseline = 'middle'; c.textAlign = 'left'; c.fillStyle = '#e9e7e2'; c.fillText(s, tx + 8, ty);
     }
   }
   paint(c, p, w, h, rh) {

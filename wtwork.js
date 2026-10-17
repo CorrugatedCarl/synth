@@ -1,7 +1,7 @@
 // wtwork.js — module Worker that builds wavetable and noise entries off the main thread (SPEC-serum §7.5, §11.8):
 // factory builds take 30–100 ms. Requests { q, id, table?, rec? }: a factory / sub / noise id, a user Table
 // ({ frames, morph }) or a user noise record; the reply { q, entry } transfers every level buffer, { q, err } on failure.
-import * as wt from './wt.js?v=7';
+import * as wt from './wt.js?v=8';
 
 self.onmessage = e => {
   const { q, id, table, rec } = e.data || {};

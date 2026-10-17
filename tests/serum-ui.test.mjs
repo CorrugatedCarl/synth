@@ -53,7 +53,7 @@ const oscStub = await import('../sx-ui-osc.js');
 const seqStub = await import('../sx-ui-seq.js');
 const mixStub = await import('../sx-ui-mix.js');
 const kitStub = await import('./serum-ui-stubs/kit.js');
-const wkm = await import('../wk.js?v=7');   // the instance serum-ui uses (same specifier: shared modifier latches)
+const wkm = await import('../wk.js?v=8');   // the instance serum-ui uses (same specifier: shared modifier latches)
 
 const near = (a, b, tol = 1e-9) => assert.ok(Math.abs(a - b) <= tol, `${a} != ${b}`);
 const fresh = () => core.normalizeSerum(core.defaultSerum());
@@ -2112,6 +2112,17 @@ test('review: no-op presses are no edits; LFO PHASE snap while dragging only; Sm
   near(s().p['l1.phase'], 50 / 360, 1e-12);
   u.setN('l1.phase', 50 / 360, 'start'); u.setN('l1.phase', 0.3, 'move');
   assert.equal(s().p['l1.phase'], 0.25);
+  u.setN('l1.phase', 0.25, 'end');
+  // a two-finger rollback (wk knob: 'move' + 'end' with the value from before the press) is no drag: never snapped
+  u.setN('l1.phase', 0.1, 'set');
+  host.log.length = 0;
+  u.setN('l1.phase', 0.1, 'start'); u.setN('l1.phase', 0.1, 'move'); u.setN('l1.phase', 0.1, 'end');   // a still finger
+  near(s().p['l1.phase'], 0.1, 1e-12);
+  assert.deepEqual(host.log.filter(x => x[0] === 'edit'), []);
+  u.setN('l1.phase', 0.1, 'start'); u.setN('l1.phase', 0.13, 'move');
+  assert.equal(s().p['l1.phase'], 0.125);                                   // the drag snaps
+  u.setN('l1.phase', 0.1, 'move'); u.setN('l1.phase', 0.1, 'end');          // rolled back after moves: the press value
+  near(s().p['l1.phase'], 0.1, 1e-12);
   u.lfoSnap = false;
   // GLOBAL > PREFERENCES Smoothing scale: a drag shows its value and commits once (storage + prefsChanged)
   u.setPage('global');
@@ -2445,5 +2456,133 @@ test('a Phase-1 chain (v1 library entry, Phase-1 factory chain) on a migrated Ph
   }
   // saving a chain keeps the v1 entry as stored (it still migrates at load with refs)
   assert.deepEqual(host.store.get('synth.fxchains', []).map(c => [c.name, c.fx.v]), [['Mine', 1]]);
+  u.destroy();
+});
+
+test('SerumUI: settled() — a touch drop right after an edge auto-scroll needs a target the finger rested on (wk.dragSource info.scrolled)', async () => {
+  const { u } = await mount();
+  const H = { kind: 'dest', el: { n: 1 }, id: 'f.res' }, H2 = { kind: 'dest', el: { n: 2 }, id: 'f.cut' };   // (sameHit: by element)
+  u.drag = { touch: true, quick: false, hit: H, at: 1000 };
+  assert.equal(u.settled(H, 1050, Infinity), true);    // never scrolled: a held drag drops where it is
+  assert.equal(u.settled(H, 1050, 40), false);         // scrolled 40 ms ago, on the target for 50 ms: no
+  assert.equal(u.settled(H, 1100, 40), true);          // on it ≥ 100 ms: yes
+  assert.equal(u.settled(H2, 1300, 40), false);        // not the target the finger rested on
+  assert.equal(u.settled(H, 1050, 100), true);         // the last scroll step ≥ 100 ms ago
+  assert.equal(u.settled(H, 1050), true);              // an older kit without info.scrolled
+  u.drag = { touch: false, quick: false, hit: H, at: 1000 };
+  assert.equal(u.settled(H, 1001, 0), true);           // mouse / pen: where it is released
+  u.drag = { touch: true, quick: true, hit: H, at: 1000 };
+  assert.equal(u.settled(H, 1050, Infinity), false);   // a quick drag keeps its rule
+  u.drag = null;
+  u.destroy();
+});
+
+test('SerumUI: module-label drag (touch) — a lift right after an edge auto-scroll drops only on a target the finger rested on SETTLE_MS', async () => {
+  const { doc, u, s } = await mount();
+  const el = u.el, lab = el.querySelectorAll('[data-modlabel]').find(n => n.getAttribute('data-modlabel') === 'oscA');
+  const res = byDest(el, 'f.res'), pan = byDest(el, 'a.pan'), rows = () => s().matrix.filter(r => r.src).map(r => r.src + '→' + r.dst);
+  // the page scrolls (wk.dragSource edge auto-scroll): f.res comes under a still finger once it is up 50 px
+  const html = doc.documentElement, q = new Map(), rAF = globalThis.requestAnimationFrame, cAF = globalThis.cancelAnimationFrame;
+  let top = 1000, id = 0;
+  Object.defineProperty(html, 'scrollTop', { configurable: true, get: () => top, set: v => { top = v; } });
+  html.scrollHeight = 4000;
+  globalThis.requestAnimationFrame = f => { q.set(++id, f); return id; };
+  globalThis.cancelAnimationFrame = i => { q.delete(i); };
+  const frames = (n, t0) => { for (let k = 0; k < n; k++) { const fs = [...q.values()]; q.clear(); for (const f of fs) f(t0 + 40 * k); } };
+  const T = (type, x, y, t) => ptr(lab, type, x, y, { pointerType: 'touch', pointerId: 7, button: 0, isPrimary: true, timeStamp: t });
+  const grab = async t => { T('pointerdown', 300, 400, t); await new Promise(r => setTimeout(r, 270)); T('pointermove', 300, 390, t + 300); };
+  try {
+    doc.pointAt = () => (top < 950 ? res : pan);
+    // no auto-scroll: a held touch drag drops where it is lifted (as before)
+    await grab(50000);
+    T('pointerup', 300, 390, 50301);
+    assert.deepEqual(rows(), ['osca→a.pan']);
+    // up into the top edge zone: f.res scrolls under the finger at the 200 ms frame; lifted 30 ms later — no drop
+    await grab(60000);
+    T('pointermove', 300, 20, 60316);
+    frames(6, 0);
+    assert.ok(top < 950 && top > 900, String(top));
+    assert.ok(res.classList.contains('sx-droptgt'));
+    T('pointerup', 300, 20, 60316 + 200 + 30);
+    assert.deepEqual(rows(), ['osca→a.pan']);
+    assert.equal(res.classList.contains('sx-droptgt'), false);
+    // the same, but the finger stays on f.res 210 ms while the page still scrolls: the drop counts
+    top = 1000;
+    await grab(70000);
+    T('pointermove', 300, 20, 70316);
+    frames(11, 0);
+    T('pointerup', 300, 20, 70316 + 400 + 10);
+    assert.deepEqual(rows(), ['osca→a.pan', 'osca→f.res']);
+  } finally {
+    if (rAF === undefined) delete globalThis.requestAnimationFrame; else globalThis.requestAnimationFrame = rAF;
+    if (cAF === undefined) delete globalThis.cancelAnimationFrame; else globalThis.cancelAnimationFrame = cAF;
+    u.destroy();
+  }
+});
+
+test('two-finger rollback (gesture.js\'s pointercancel flagged e.gesture === "two-finger"): numField, Alt depth drag, matrix curve cell restore the value from before the press; a plain cancel commits; the dialog backdrop closes on a finger\'s tap release only', async () => {
+  const { doc, host, u, s } = await mount();
+  const TWO = { gesture: 'two-finger' }, T = o => Object.assign({ pointerType: 'touch', pointerId: 7 }, o);
+  // numField (GLOBAL A4): dragged, then a second finger — 440 again, and the rolled-back press is no double-tap's first tap
+  u.setPage('global');
+  await flush(doc);
+  const a4 = spin(u.pages.global.el, 'A4 (Hz)');
+  ptr(a4, 'pointerdown', 50, 50, T({ timeStamp: 9000 }));
+  ptr(a4, 'pointermove', 50, 10, T());
+  assert.notEqual(s().global.a4, 440);
+  host.log.length = 0;
+  ptr(a4, 'pointercancel', 50, 10, T(TWO));
+  assert.equal(s().global.a4, 440);
+  assert.deepEqual(host.log.map(x => x[2]), ['move', 'end']);
+  ptr(a4, 'pointerdown', 50, 50, T({ timeStamp: 9100 }));
+  assert.equal(a4.parentNode.querySelector('input'), null, 'no typed entry');
+  ptr(a4, 'pointermove', 50, 10, T());
+  ptr(a4, 'pointercancel', 50, 10, T());                       // plain: kept
+  assert.notEqual(s().global.a4, 440);
+  // Alt depth drag on a knob: the row's amount comes back
+  u.setPage('osc');
+  await flush(doc);
+  u.edit(st => { st.matrix[0] = row({ src: 'lfo2', amt: 0.3, dst: 'f.res' }); });
+  u.selectSrc('lfo2');
+  const res = byDest(u.el, 'f.res');
+  ptr(res, 'pointerdown', 100, 100, { altKey: true, pointerId: 3 });
+  ptr(u.el, 'pointermove', 100, 50, { pointerId: 3 });
+  near(s().matrix[0].amt, 0.8, 1e-9);
+  host.log.length = 0;
+  ptr(u.el, 'pointercancel', 100, 50, { pointerId: 3, gesture: 'two-finger' });
+  near(s().matrix[0].amt, 0.3, 1e-12);
+  assert.deepEqual(host.log.filter(x => x[1] === 'Mod depth').map(x => x[2]), ['move', 'end']);
+  assert.equal(doc.body.querySelector('.sx-ghost'), null);
+  ptr(res, 'pointerdown', 100, 100, { altKey: true, pointerId: 4 });
+  ptr(u.el, 'pointermove', 100, 50, { pointerId: 4 });
+  ptr(u.el, 'pointercancel', 100, 50, { pointerId: 4 });       // plain: kept
+  near(s().matrix[0].amt, 0.8, 1e-9);
+  // matrix curve cell
+  u.setPage('matrix');
+  await flush(doc);
+  const crv = u.pages.matrix.el.querySelectorAll('.sx-mrow')[0].querySelector('.sx-mcrv').firstChild;
+  ptr(crv, 'pointerdown', 10, 100, T());
+  ptr(crv, 'pointermove', 10, 60, T());
+  near(s().matrix[0].curve, 0.4, 1e-9);
+  ptr(crv, 'pointercancel', 10, 60, T(TWO));
+  assert.equal(s().matrix[0].curve, 0);
+  ptr(crv, 'pointerdown', 10, 100, T());
+  ptr(crv, 'pointermove', 10, 60, T());
+  ptr(crv, 'pointercancel', 10, 60, T());                      // plain: kept
+  near(s().matrix[0].curve, 0.4, 1e-9);
+  // dialog backdrop: a mouse closes at the press; a finger on its tap's release; a two-finger cancel leaves it open
+  const ov = () => u.el.querySelector('.sx-dlg-ov');
+  u.confirmDlg('Init?', 'Sure?', () => {});
+  ptr(ov(), 'pointerdown', 5, 5, T());
+  assert.ok(ov(), 'not at the press');
+  ptr(ov(), 'pointercancel', 5, 5, T(TWO)); ptr(ov(), 'pointerup', 5, 5, T());
+  assert.ok(ov(), 'cancelled: open');
+  ptr(ov(), 'pointerdown', 5, 5, T()); ptr(ov(), 'pointerup', 30, 5, T());
+  assert.ok(ov(), 'a 25 px drag: open');
+  ptr(ov(), 'pointerdown', 5, 5, T()); ptr(ov(), 'pointerup', 8, 6, T());
+  assert.equal(ov(), null, 'a tap closes it');
+  u.confirmDlg('Init?', 'Sure?', () => {});
+  ptr(ov(), 'pointerdown', 5, 5);
+  assert.equal(ov(), null, 'a mouse: at the press');
   u.destroy();
 });

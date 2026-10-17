@@ -33,8 +33,8 @@
 //   routeMenuItems(s, ch, fx?)    pure: route menu items [{v, label, checked}] of strip key `ch` (fx needed for buses)
 //
 // Browser ES module: nothing touches document / window / storage at module top level (node imports it for tests).
-import * as core from './serum-core.js?v=7';
-import * as wk from './wk.js?v=7';
+import * as core from './serum-core.js?v=8';
+import * as wk from './wk.js?v=8';
 
 /* ================================================================ small helpers */
 
@@ -456,8 +456,12 @@ export class MixerPage {
     });
     const up = e => {
       if (!g || e.pointerId !== g.id) return;
-      if (g.moved) put(e, 'end');
+      const G = g;
       g = null;
+      // gesture.js's two-finger cancel (a second finger made this a pan / pinch): cutoff / res as at the press; the
+      // modifier latches stay for the next gesture
+      if (e.gesture === 'two-finger') { if (G.moved) K.edit(s => { s.p[P + '.cutoff'] = G.cut0; s.p[P + '.res'] = G.res0; }, { label: T.label + ' cutoff / res', phase: 'end' }); return; }
+      if (G.moved) { g = G; put(e, 'end'); g = null; }
       if (wk.modifierBar && typeof wk.modifierBar.consume === 'function') wk.modifierBar.consume();
     };
     c.addEventListener('pointerup', up);

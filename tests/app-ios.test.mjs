@@ -73,6 +73,17 @@ test('iPad Safari: Install app opens the Add to Home Screen sheet for Safari on 
   s.$('#install').click();
   for (const f of sheet.listeners.pointerdown || []) f({ target: sheet });
   assert.equal(sheet.hidden, true, 'a tap beside the dialog');
+  // a finger closes it on the tap's release: a pan, or a two-finger gesture (gesture.js's flagged pointercancel), leaves it open
+  const P = (type, o) => { for (const f of sheet.listeners[type] || []) f(Object.assign({ type, target: sheet, pointerId: 7, pointerType: 'touch', clientX: 100, clientY: 100 }, o)); };
+  s.$('#install').click();
+  P('pointerdown');
+  assert.equal(sheet.hidden, false, 'not at the press');
+  P('pointercancel', { gesture: 'two-finger' }); P('pointerup');
+  assert.equal(sheet.hidden, false, 'cancelled: still open');
+  P('pointerdown'); P('pointerup', { clientX: 140 });
+  assert.equal(sheet.hidden, false, 'a 40 px drag is no tap');
+  P('pointerdown'); P('pointerup', { clientX: 104 });
+  assert.equal(sheet.hidden, true, 'a tap closes it');
 });
 
 test('iPad home-screen app (navigator.standalone): no Full screen, no Install app, the sheet closed; persistent storage asked once', async () => {
@@ -200,4 +211,31 @@ test('iPad home-screen app: Export MIDI, Save and Bounce WAV hand their file to 
     for (const k of ['standalone', 'canShare', 'share', 'userActivation']) delete nav[k];
     s.api.notice('', 0);
   }
+});
+
+test('iPad: the interface size (uiscale.js) — − / % / + shown, html[data-uiz] at 100 %; + writes the zoom-in meta for the window width (innerWidth 1400 here: width=1273, shrink-to-fit=no) and keeps 1.1; − from 100 % the device-width form; % back to 100 % (the static meta\'s content); the page re-fits after it', async () => {
+  const s = await page(), z = s.api.uiz(), meta = s.$('meta[name="viewport"]'), root = s.dom.document.documentElement, ls = globalThis.localStorage;
+  const BASE = 'width=device-width,initial-scale=1,viewport-fit=cover';
+  assert.equal(z.available(), true);
+  assert.equal(s.$('#uiZoom').hidden, false);
+  assert.equal(root.getAttribute('data-uiz'), '', 'native page pinch off on iOS at every size');
+  assert.equal(meta.getAttribute('content'), null, 'nothing written at 100 %');
+  assert.equal(s.$('#uiZoomPct').textContent, '100 %');
+  try {
+    s.$('#uiZoomIn').click();
+    assert.equal(meta.getAttribute('content'), 'width=1273,initial-scale=' + 1400 / 1273 + ',shrink-to-fit=no,user-scalable=no,viewport-fit=cover');
+    assert.equal(ls.getItem('synth-ui.scale'), '1.1');
+    assert.deepEqual([root.getAttribute('data-uiz'), s.$('#uiZoomPct').textContent, z.get()], ['1.1', '110 %', 1.1]);
+    await s.settle(350); s.raf(); // the new layout: main.js relayout (keyboard height, keys, roll, arrangement)
+    s.$('#uiZoomPct').click();
+    assert.equal(meta.getAttribute('content'), BASE);
+    assert.equal(ls.getItem('synth-ui.scale'), null);
+    s.$('#uiZoomOut').click();
+    assert.equal(meta.getAttribute('content'), 'width=device-width,initial-scale=0.9,minimum-scale=0.9,user-scalable=no,viewport-fit=cover');
+    assert.equal(ls.getItem('synth-ui.scale'), '0.9');
+  } finally {
+    s.$('#uiZoomPct').click();
+    await s.settle(350); s.raf();
+  }
+  assert.deepEqual([meta.getAttribute('content'), z.get()], [BASE, 1]);
 });

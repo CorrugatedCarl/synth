@@ -10,8 +10,8 @@ import { readFileSync } from 'node:fs';
 
 // Imported before any DOM exists (§0.1, §10.6).
 const F = await import('../fx-ui.js');
-const wk = await import('../wk.js?v=7'); // the instance fx-ui.js imports (versioned specifier)
-const core = await import('../serum-core.js?v=7');
+const wk = await import('../wk.js?v=8'); // the instance fx-ui.js imports (versioned specifier)
+const core = await import('../serum-core.js?v=8');
 const { FXRackUI, moveModule, ladderLabel, moduleTitle, modulePresetPayload, applyModulePreset, svfDb, impulseDb, listRows, addMenuItems, moveTarget } = F;
 import { all, byCls, one, byAttr, fresh, fire, ptr, key, place, raf, advance } from './wk-dom.mjs';
 
@@ -1382,6 +1382,53 @@ test('FXRackUI: a plain click on an EQ handle edits nothing (no host edit); a dr
   const I = st.fx.racks[0].mods[0];
   assert.equal(I.p.freqL, 0.3137);
   assert.ok(I.p.gainL > 0.6123);
+  rack.destroy();
+});
+
+test('FXRackUI, two-finger rollback (gesture.js\'s pointercancel flagged e.gesture === "two-finger"): display drags (filter, EQ handle, transfer, splitter) and the multiband threshold bars put their values back; a plain cancel keeps; no click after it', () => {
+  const C = inst('cmp', 'cmp');
+  C.p.mb = 1; C.p.mbH = 0.25; C.p.mbM = 0.5; C.p.mbL = 0.75;
+  const E = inst('eq', 'eq');
+  E.p.freqL = 0.3137; E.p.gainL = 0.6123; E.p.freqH = 0.77; E.p.gainH = 0.41;
+  const { rack, st } = mkRack({ fx: fx2([inst('fil', 'fil'), E, inst('dist', 'dist'), inst('split2', 'split2'), C]) });
+  const I = id => st.fx.racks[0].mods.find(x => x.id === id), P = id => JSON.stringify(I(id).p);
+  const TW = { pointerType: 'touch', pointerId: 8 }, TWO = { pointerType: 'touch', pointerId: 8, gesture: 'two-finger' };
+  const roll = (el, x0, y0, x1, y1, id) => {
+    const p0 = P(id), n0 = st.edits.length;
+    ptr(el, 'pointerdown', x0, y0, TW); ptr(el, 'pointermove', (x0 + x1) / 2, (y0 + y1) / 2, TW); ptr(el, 'pointermove', x1, y1, TW);
+    assert.notEqual(P(id), p0, id + ': dragged');
+    ptr(el, 'pointercancel', x1, y1, TWO);
+    assert.equal(P(id), p0, id + ': rolled back');
+    assert.equal(st.edits.at(-1).phase, 'end', id + ': the gesture closed');
+    assert.ok(st.edits.length > n0);
+  };
+  // FX filter display (dragXY): cutoff / res; its Alt-click view cycling never fires on a cancel
+  const fd = rack.panels.get('fil').displays[0];
+  place(fd.el, 0, 0, 200, 96);
+  roll(fd.el, 100, 50, 150, 20, 'fil');
+  ptr(fd.el, 'pointerdown', 100, 50, Object.assign({ altKey: true }, TW)); ptr(fd.el, 'pointercancel', 100, 50, Object.assign({ altKey: true }, TWO));
+  assert.equal(rack.filtView('fil'), 0, 'no view cycle');
+  // EQ handle (frequency + gain)
+  const ed = rack.panels.get('eq').displays[0];
+  place(ed.el, 0, 0, 300, 110);
+  rack.redraw(true);
+  const [hx, hy] = ed.cv.getContext('2d').calls.filter(c => c[0] === 'arc').at(-2).slice(1, 3);
+  roll(ed.el, hx, hy, hx + 30, hy - 20, 'eq');
+  // transfer curve (DRIVE) and the splitter crossover
+  const xf = one(panelOf(rack, 'dist'), 'fxr-xfer');
+  place(xf, 0, 0, 78, 74);
+  roll(xf, 30, 50, 30, 20, 'dist');
+  const sp = one(panelOf(rack, 'split2'), 'fxr2-spl');
+  place(sp, 0, 0, 212, 74);
+  roll(sp, 100, 30, 140, 30, 'split2');
+  // the multiband GR display: a band threshold bar
+  const cv = rack.panels.get('cmp').grCv;
+  place(cv, 0, 0, 156, 64);
+  roll(cv, 60, 58, 80, 58, 'cmp');
+  // a plain cancel keeps the dragged value (as before)
+  const p0 = P('dist');
+  ptr(xf, 'pointerdown', 30, 50, TW); ptr(xf, 'pointermove', 30, 20, TW); ptr(xf, 'pointercancel', 30, 20, TW);
+  assert.notEqual(P('dist'), p0);
   rack.destroy();
 });
 

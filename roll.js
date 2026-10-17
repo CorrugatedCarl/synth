@@ -1,6 +1,6 @@
 // PianoRoll — canvas note editor for one track. All edits go through host.edit / host.beginEdit+changed+endEdit.
 // The specifier must match main.js's song import exactly: a different query string loads a second copy of song.js with its own note-id counter.
-import { PPQ, barTicks, beatTicks, fmtBBT, snapTick, sortNotes, songEnd, copyNotes, pasteNotes, newId } from './song.js?v=7';
+import { PPQ, barTicks, beatTicks, fmtBBT, snapTick, sortNotes, songEnd, copyNotes, pasteNotes, newId } from './song.js?v=8';
 
 const GUT = 64, RUL = 24, VEL = 72, MAXPPT = 1.5, BW = 38;
 const BG = '#0c0d0f', ACC = '#f2a33a', TEXT = '#e9e7e2', MUTE = '#8d8b86', LINE = '#24262b';
@@ -9,6 +9,31 @@ const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const BLK = [0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0];
 const AUTO_X = new Set(['marquee', 'move', 'resizeR', 'resizeL', 'create', 'erase', 'ruler', 'loopEdge', 'velpaint']);
 const DBL = 6, HOLD = 90;   // double-click slop (px); touch delay (ms) before Draw/Erase act, so a pinch can start first
+// row heights (px): pinch / Alt-wheel / Keys −/+ range; Fit's cap (mouse, touch); automatic sizing never goes below
+// ROW_AUTO_T on touch (the roll scrolls instead); the default (mouse, touch); the Keys −/+ steps
+const ROW_MIN = 5, ROW_MAX = 56, ROW_FIT = 32, ROW_FIT_T = 44, ROW_AUTO_T = 14, ROW_DEF = 12, ROW_DEF_T = 18;
+const ROW_STEPS = [5, 6, 7, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 40, 48, 56];
+const PZ_ENGAGE = 6;        // px the finger spread must change before a two-finger gesture zooms (until then it only pans)
+// Touch / pen editing (a mouse keeps the legacy _hit and thresholds): grab zones (px) per pointer type and tool — inR / inL
+// inside a note's end / start (at most 45 % / 25 % of a selected note, 40 % of an unselected one), outR / outL past a
+// SELECTED note's end / start and slopY off its row, outU / slopU for an unselected note (modest: one finger still
+// scrolls between notes), minL the narrowest note with a start zone. Draw: reach past a note only from the grid cell
+// it ends in (_hitZ), so the next cell stays drawable
+const ZONES = {
+  touch: { select: { inR: 14, inL: 10, outR: 22, outL: 12, slopY: 8, outU: 6, slopU: 4, minL: 28 },
+    draw: { inR: 12, inL: 8, outR: 10, outL: 6, slopY: 3, outU: 3, slopU: 3, minL: 28 },
+    erase: { inR: 0, inL: 0, outR: 2, outL: 0, slopY: 2, outU: 2, slopU: 2, minL: 1e9 } },
+  pen: { select: { inR: 8, inL: 6, outR: 8, outL: 4, slopY: 2, outU: 4, slopU: 2, minL: 18 },
+    draw: { inR: 6, inL: 4, outR: 4, outL: 2, slopY: 1, outU: 2, slopU: 1, minL: 18 },
+    erase: { inR: 0, inL: 0, outR: 1, outL: 0, slopY: 1, outU: 1, slopU: 1, minL: 1e9 } },
+};
+// TROW: rows are a touch target of about this height (the vertical slop shrinks as rows grow); HWIN: a selected note's
+// handle beats a neighbour's body only this close; drag thresholds (touch, touch on a handle, pen); double-tap reach
+// (touch, pen) and the wobble a touch tap may have; hold before a finger's select box / chord select (and its slack);
+// auto-scroll zone at the right edge on touch; velocity-stem / loop-edge reach (touch, pen)
+const TROW = 28, HWIN = 6, TSLOP = 8, TSLOP_RZ = 5, PSLOP = 4, TDBL = 24, PDBL = 12, TTAP = 12, LONG = 500, LONG_SLOP = 8, TEDGE = 28;
+const TSTEM = 14, PSTEM = 8, TLOOP = 14, PLOOP = 8, CHORD_TOL = PPQ / 16;
+const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 const AUTO_Y = new Set(['marquee', 'move', 'create', 'erase']);
 const TOOLS = ['select', 'draw', 'erase'];
 
@@ -52,15 +77,22 @@ export class PianoRoll {
     this.W = 0; this.H = 0; this.dpr = 1;
     const p = host.getProject();
     this.ppt = 220 / (p ? barTicks(p) : PPQ * 4);
-    this.rowHf = 12; this.rowH = 12; this.sx = 0; this.sy = 0; this.syr = 0;
+    // rowPref: the row height the user chose on this device (host.rollRowH; pinch, Keys −/+, Alt-wheel) — kept on track
+    // switches; without one, opening a track sizes rows to its range (from rowBase down, never below ROW_AUTO_T on touch)
+    const r0 = +host.rollRowH;
+    this.rowBase = host.touch ? ROW_DEF_T : ROW_DEF; this.rowPref = Number.isFinite(r0) && r0 > 0 ? clamp(r0, ROW_MIN, ROW_MAX) : null;
+    this.rowHf = this.rowPref || this.rowBase; this.rowH = Math.round(this.rowHf); this.sx = 0; this.sy = 0; this.syr = 0; this.tseen = false;
     this.tool = 'select'; this.drawLen = 0; this.lastLen = 0; this.follow = false; this.ghosts = true;
+    this.coarse = !!host.touch; // the last pointer was a finger or pen (a touch device until then): handles on selected notes
     this.sel = new Set(); this.ins = null; this.ph = +host.getPlayhead() || 0;
     this.g = null; this.hover = null; this.keys = new Set(); this.touches = new Map(); this.lastTap = null;
     this.pals = new Map(); this.raf = 0; this.autoRaf = 0; this.dirty = true; this.cur = ''; this.focused = false;
     this.want = { type: 'center', lo: 48, hi: 72 };
-    for (const k of ['_down', '_move', '_up', '_cancel', '_lost', '_leave', '_wheel', '_frame', '_autoTick', '_focus', '_menu']) this[k] = this[k].bind(this);
+    for (const k of ['_down', '_move', '_up', '_cancel', '_lost', '_leave', '_wheel', '_frame', '_autoTick', '_focus', '_menu', '_gest']) this[k] = this[k].bind(this);
     this._ls = [['pointerdown', this._down], ['pointermove', this._move], ['pointerup', this._up], ['pointercancel', this._cancel], ['lostpointercapture', this._lost],
       ['pointerleave', this._leave], ['wheel', this._wheel, { passive: false }], ['focus', this._focus], ['blur', this._focus], ['contextmenu', this._menu]];
+    // WebKit's GestureEvents (desktop Safari's trackpad pinch; iPad pinches send them beside the pointers): see _gest
+    if (typeof window !== 'undefined' && 'GestureEvent' in window) for (const ev of ['gesturestart', 'gesturechange', 'gestureend']) this._ls.push([ev, this._gest, { passive: false }]);
     for (const [ev, fn, o] of this._ls) c.addEventListener(ev, fn, o);
     if (typeof ResizeObserver !== 'undefined') { this.ro = new ResizeObserver(() => this.resize()); this.ro.observe(container); }
     else { this.ro = null; this._wr = () => this.resize(); window.addEventListener('resize', this._wr); }
@@ -132,22 +164,36 @@ export class PianoRoll {
     if (this.g) this._apply();
     this.render();
   }
-  zoomY(f, cy) {
+  // row height (the keys' size) by factor f about client y cy (default: the grid's middle): a user choice, kept (_rowsChosen)
+  zoomY(f, cy) { this._rows(this.rowHf * (+f || 1), cy); }
+  // Keys −/+: the next ROW_STEPS step up (dir > 0) or down — fixed steps, so − undoes + exactly
+  zoomRows(dir, cy) {
+    const r = this.rowH;
+    let nx = 0;
+    for (const s of ROW_STEPS) if (dir > 0 ? s > r && !nx : s < r) nx = s;
+    if (nx) this._rows(nx, cy);
+  }
+  _rows(hf, cy) {
     const ay = cy != null ? clamp(cy - this.el.getBoundingClientRect().top - RUL, 0, this.gh) : this.gh / 2;
-    const row = (this.sy + ay) / this.rowH;
-    this.rowHf = clamp(this.rowHf * (+f || 1), 5, 32); this.rowH = Math.round(this.rowHf);
+    const row = (this.sy + ay) / this.rowH, was = this.rowHf;
+    this.rowHf = clamp(hf, ROW_MIN, ROW_MAX); this.rowH = Math.round(this.rowHf);
     this.sy = row * this.rowH - ay; this.clampY();
+    if (this.rowHf !== was) this._rowsChosen();
     if (this.g) this._apply();
     this.render();
   }
+  _rowsChosen() { this.rowPref = this.rowHf; if (this.host.onRows) this.host.onRows(this.rowH); }
+  _touch() { return !!this.host.touch || this.tseen; } // a touch device, or a finger seen on the roll
   fit() { this.want = { type: 'fit' }; this._applyWant(); this.render(); }
   _applyWant() {
     const w = this.want;
     if (!w || this.gw < 10 || this.gh < 10) return;
     this.want = null;
     if (w.type === 'center') {
-      const rows = w.hi - w.lo + 1;
-      if (rows * this.rowH > this.gh) { this.rowHf = Math.max(5, Math.floor(this.gh / (rows + 1))); this.rowH = Math.round(this.rowHf); }
+      // from the default size each time (rows grow back after a wide track); a chosen size is kept, the view scrolls
+      const rows = w.hi - w.lo + 1, b = this.rowBase;
+      this.rowHf = this.rowPref || clamp(rows * b > this.gh ? Math.floor(this.gh / (rows + 1)) : b, this._touch() ? ROW_AUTO_T : ROW_MIN, b);
+      this.rowH = Math.round(this.rowHf);
       this.sy = (127 - (w.lo + w.hi) / 2 + 0.5) * this.rowH - this.gh / 2; this.clampY();
       return;
     }
@@ -165,20 +211,33 @@ export class PianoRoll {
     const span = t1 - t0;
     this.ppt = clamp(this.gw / (span * 1.08), this._minPpt(), MAXPPT);
     this.sx = t0 - span * 0.04; this.clampX();
-    this.rowHf = clamp(Math.floor(this.gh / (hi - lo + 5)), 5, 32); this.rowH = Math.round(this.rowHf);
+    const tc = this._touch();
+    this.rowHf = clamp(Math.floor(this.gh / (hi - lo + 5)), tc ? ROW_AUTO_T : ROW_MIN, tc ? ROW_FIT_T : ROW_FIT); this.rowH = Math.round(this.rowHf);
     this.sy = (127 - (lo + hi) / 2 + 0.5) * this.rowH - this.gh / 2; this.clampY();
   }
   setFollow(on) { this.follow = !!on; if (this.follow) this.setPlayhead(this.ph); }
   setGhosts(on) { this.ghosts = !!on; this.render(); }
-  setPlayhead(t) {
+  // sync: the caller is a frame callback (main.js frame()) — draw in this frame; a frame requested from inside one only
+  // runs in the next, so the playhead would show a value one frame old (as arrange.js; `now` is the clock helper above)
+  setPlayhead(t, sync) {
     this.ph = +t || 0;
     if (this.follow && !this.g && this.gw > 0) {
       const x = this.t2x(this.ph);
       if (x > this.W - 12 || x < GUT) { const o = this.sx; this.sx = this.ph - this.gw * 0.04 / this.ppt; this.clampX(); if (this.sx !== o) this.dirty = true; }
     }
-    this._req();
+    if (!sync || this.dead) { this._req(); return; }
+    if (this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; }
+    this._frame();
   }
   getInsertPoint() { return this.ins; }
+  // bring tick t into view (the arrangement's double-tapped bar): scrolled to just before it unless it already shows
+  reveal(t) {
+    t = Math.max(0, +t || 0);
+    if (this.gw < 10) return;
+    const x = this.t2x(t);
+    if (x >= GUT && x <= GUT + this.gw * 0.75) return;
+    this.sx = t - this.gw * 0.04 / this.ppt; this.clampX(); this.render();
+  }
   _notes() { const tr = this.host.getTrack(); return tr ? tr.notes : []; }
   _setSel(ids) { this.sel = new Set(ids); this._notify(); this.render(); }
   selectAll() { this._setSel(this._notes().map(x => x.id)); }
@@ -277,7 +336,12 @@ export class PianoRoll {
     this.pals.set(col, p);
     return p;
   }
-  _hit(x, y) {
+  // modifiers of a gesture: the event's keys or the host's touch latches (Fine = no snap, Alt = copy / paint, Shift = add)
+  _mods(e) { const h = this.host; return h.mods ? h.mods(e) : { fine: !!(e && e.shiftKey), alt: !!(e && e.altKey), shift: !!(e && e.shiftKey) }; }
+  _zones(pk, tool) { return (pk && ZONES[pk] && ZONES[pk][tool]) || null; }
+  // z: a touch / pen zone table (_zones), else (mouse) the legacy test below, unchanged
+  _hit(x, y, z) {
+    if (z) return this._hitZ(x, y, z);
     const tr = this.host.getTrack();
     if (!tr || y < RUL || y >= this.gb || x < GUT) return null;
     const n = this.y2n(y);
@@ -295,32 +359,62 @@ export class PianoRoll {
     else { const rz = w >= 18 ? 6 : 3, lz = w >= 18 ? 4 : 2; best.part = x >= best.x1 - rz ? 'r' : x <= best.x0 + lz ? 'l' : 'b'; }
     return best;
   }
-  _stemAt(x, y) {
+  // Touch / pen hit test: notes within the zones of z (rows above / below too), best first by class k — 3 a selected
+  // note's handle within HWIN of the note (wins over an unselected neighbour's body: back-to-back notes stay grabbable)
+  // or a selected note's body (at d 0 it beats a selected neighbour's outer handle: a selected run moves), 2 inside an
+  // unselected note, 1.5 a selected note's handle farther out, 1 within reach — then by distance dx + 2·dy, then the
+  // later note
+  _hitZ(x, y, z) {
+    const tr = this.host.getTrack();
+    if (!tr || y < RUL || y >= this.gb || x < GUT) return null;
+    const rh = this.rowH, room = Math.max(0, (TROW - rh) / 2), sy = Math.min(z.slopY, room), su = Math.min(z.slopU, room);
+    const nLo = this.y2n(Math.min(this.gb - 1, y + sy)), nHi = this.y2n(Math.max(RUL, y - sy));
+    // Draw: outside a note only from the grid cell(s) it ends / starts in; 3 px elsewhere and with snap Off
+    const snap = this._snap(), cell = z === ZONES.touch.draw || z === ZONES.pen.draw ? (snap ? snapTick(this.x2t(x), snap, 'floor') : -1) : null;
+    let best = null, bk = -1, bd = Infinity;
+    for (const nt of tr.notes) {
+      if (nt.n < nLo || nt.n > nHi) continue;
+      const sel = this.sel.has(nt.id), ry = this.n2y(nt.n), dy = y < ry ? ry - y : y >= ry + rh ? y - (ry + rh) + 1 : 0;
+      if (dy > (sel ? sy : su)) continue;
+      const x0 = this.t2x(nt.t), x1 = Math.max(x0 + 2, this.t2x(nt.t + nt.d)), w = x1 - x0;
+      let oR = sel ? z.outR : z.outU, oL = sel ? z.outL : 0;
+      if (cell != null && !(cell >= 0 && cell < nt.t + nt.d && cell + snap > nt.t)) { oR = Math.min(oR, 3); oL = Math.min(oL, 3); }
+      if (x < x0 - oL || x > x1 + oR) continue;
+      const dx = x < x0 ? x0 - x : x > x1 ? x - x1 : 0;
+      const ri = Math.min(z.inR, w * (sel ? 0.45 : 0.4)), li = w >= z.minL ? Math.min(z.inL, w * 0.25) : 0;
+      const part = x >= x1 - ri ? 'r' : li && x <= x0 + li ? 'l' : 'b';
+      const k = sel && part !== 'b' ? (dx <= HWIN ? 3 : 1.5) : !dx && !dy ? (sel ? 3 : 2) : 1, d = dx + 2 * dy;
+      if (k > bk || (k === bk && d <= bd)) { bk = k; bd = d; best = { note: nt, x0, x1, part, k }; }
+    }
+    return best;
+  }
+  _stemAt(x, y, reach = 5) {
     let best = null, bs = Infinity;
     for (const nt of this._notes()) {
       const dx = Math.abs(this.t2x(nt.t) - x);
-      if (dx > 5) continue;
+      if (dx > reach) continue;
       const s = dx + Math.abs(this.v2y(nt.v) - y) * 0.25 - (this.sel.has(nt.id) ? 1 : 0);
       if (s < bs) { bs = s; best = nt; }
     }
     return best;
   }
-  _loopEdge(x) {
+  _loopEdge(x, reach = 5) {
     const p = this.host.getProject(), lp = p && p.loop;
     if (!lp || !(lp.end > lp.start)) return null;
-    const near = t => { const ex = this.t2x(t); return ex >= GUT && ex <= this.W && Math.abs(x - ex) <= 5; };
+    const near = t => { const ex = this.t2x(t); return ex >= GUT && ex <= this.W && Math.abs(x - ex) <= reach; };
     return near(lp.end) ? 'end' : near(lp.start) ? 'start' : null;
   }
-  _hover(x, y, quiet) {
-    const reg = this._region(x, y), hv = { reg, x, y };
+  // pk 'pen': a hovering Pencil sees the pen's zones
+  _hover(x, y, quiet, pk) {
+    const reg = this._region(x, y), hv = { reg, x, y, pk }, pen = pk === 'pen';
     let cur = 'default';
     if (reg === 'grid') {
       hv.n = clamp(this.y2n(y), 0, 127); hv.t = Math.max(0, this.x2t(x));
-      const h = this._hit(x, y); hv.hit = h;
+      const h = this._hit(x, y, pen ? this._zones('pen', this.tool) : null); hv.hit = h;
       cur = this.tool === 'erase' ? ERASER : h ? (h.part === 'b' ? 'move' : 'ew-resize') : this.tool === 'draw' ? PENCIL : 'crosshair';
     } else if (reg === 'keys') { hv.n = clamp(this.y2n(y), 0, 127); cur = 'pointer'; }
-    else if (reg === 'ruler') { hv.t = Math.max(0, this.x2t(x)); cur = this._loopEdge(x) ? 'ew-resize' : 'pointer'; }
-    else if (reg === 'vel') { hv.t = Math.max(0, this.x2t(x)); hv.stem = this._stemAt(x, y); cur = hv.stem ? 'ns-resize' : 'crosshair'; }
+    else if (reg === 'ruler') { hv.t = Math.max(0, this.x2t(x)); cur = this._loopEdge(x, pen ? PLOOP : 5) ? 'ew-resize' : 'pointer'; }
+    else if (reg === 'vel') { hv.t = Math.max(0, this.x2t(x)); hv.stem = this._stemAt(x, y, pen ? PSTEM : 5); cur = hv.stem ? 'ns-resize' : 'crosshair'; }
     this.hover = hv; this._cursor(cur);
     if (!quiet) this._req();
   }
@@ -330,13 +424,17 @@ export class PianoRoll {
     const [x, y] = this._pos(e);
     if (this.g && this.g.id === e.pointerId) this._finish(false, false, true); // this pointer's earlier pointerup never reached us
     if (e.pointerType === 'touch') {
+      this.tseen = true; this.gfing = true;
       // a primary touch means no other finger is down: drop entries whose pointerup we missed
       if (e.isPrimary) { this.touches.clear(); if (this.g && (this.g.touch || this.g.type === 'pinch')) this._finish(false, false, true); }
-      this.touches.set(e.pointerId, { x, y });
+      this.touches.set(e.pointerId, { x, y, reg: this._region(x, y) });
       if (this.touches.size === 2) {
+        // a key the first finger sounds on the strip plays on until the pinch is confirmed (_pinchApply)
+        const k = this.g && this.g.type === 'keys' ? this.g.key : null;
+        if (k != null) this.g.key = null;
         if (this.g) this._finish(false, true, true); // undo whatever the first finger started; keep its capture
         for (const id of this.touches.keys()) try { this.el.setPointerCapture(id); } catch { /* pointer gone */ }
-        this._pinchStart(); return;
+        this._pinchStart(); this.g.kaud = k; return;
       }
       if (this.touches.size > 2) return;
     }
@@ -346,11 +444,28 @@ export class PianoRoll {
     e.preventDefault();
     try { this.el.focus({ preventScroll: true }); } catch { /* older browsers */ }
     try { this.el.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
-    const reg = this._region(x, y), ts = e.timeStamp || Date.now(), lt = this.lastTap;
-    const dbl = !!lt && btn === 0 && ts - lt.ts < 350 && Math.abs(x - lt.x) < DBL && Math.abs(y - lt.y) < DBL && lt.reg === reg;
-    this.lastTap = dbl ? null : { ts, x, y, reg };
-    const tool = btn === 5 ? 'erase' : this.tool, tr = this.host.getTrack();
-    const g = this.g = { id: e.pointerId, type: 'none', x0: x, y0: y, x, y, dmax: 0, sh: e.shiftKey, moved: false, began: false, touch: e.pointerType === 'touch' };
+    // pk: 'touch' | 'pen' get their zones and thresholds per event; a mouse (or '') keeps the legacy ones
+    const pk = e.pointerType === 'touch' || e.pointerType === 'pen' ? e.pointerType : null;
+    if (pk && !this.coarse) { this.coarse = true; this.render(); }
+    const reg = this._region(x, y), ts = e.timeStamp || Date.now(), lt = this.lastTap, m = this._mods(e);
+    const tool = btn === 5 ? 'erase' : this.tool, tr = this.host.getTrack(), z = this._zones(pk, tool);
+    // the hit first (hit / near: what a drag grabs): a double-tap counts only on the same target both times (a note, the
+    // empty grid or a key), so two quick taps on neighbouring notes delete nothing. Touch / pen: the target is the note
+    // under the press (ih: zero reach); a selected note's handle window counts only for a second tap off every note (t2:
+    // a finger's wobble past a narrow note), so a double-tap beside / above a selected note or on its neighbour never
+    // deletes it; dn: the note a double-tap deletes
+    const hit = reg === 'grid' && tr && tool !== 'erase' ? this._hit(x, y, z) : null, near = !!hit && (!z || hit.k >= 2);
+    const ih = z && hit ? this._hitZ(x, y, { ...z, outR: 0, outL: 0, outU: 0, slopY: 0, slopU: 0 }) : near ? hit : null;
+    const tgt = reg === 'grid' ? (ih ? ih.note.id : 'empty') : reg === 'keys' ? 'k' + clamp(this.y2n(y), 0, 127) : reg;
+    const t2 = reg === 'grid' && !ih && near ? hit.note.id : tgt;
+    const dz = pk === 'touch' ? TDBL : pk === 'pen' ? PDBL : DBL;
+    const dbl = !!lt && btn === 0 && ts - lt.ts < 350 && Math.abs(x - lt.x) < dz && Math.abs(y - lt.y) < dz && lt.reg === reg && (lt.tgt === tgt || lt.tgt === t2);
+    const dn = dbl && reg === 'grid' ? (ih ? ih.note : lt.tgt === t2 && t2 !== 'empty' ? hit.note : null) : null;
+    this.lastTap = dbl ? null : { ts, x, y, reg, tgt };
+    // sh: no snap (Shift / Fine; the event's Shift is re-read per move, fl keeps the latch); add: Shift (add to the
+    // selection); alt: Alt (copy / paint)
+    const g = this.g = { id: e.pointerId, type: 'none', x0: x, y0: y, x, y, dmax: 0, sh: m.fine, fl: this._mods(null).fine, add: m.shift, alt: m.alt,
+      moved: false, began: false, touch: pk === 'touch', pen: pk === 'pen', z, ze: this._zones(pk, 'erase') };
     // touch gestures can turn into a pinch: keep what's needed to roll their edits back
     if (g.touch && tr && (reg === 'grid' || reg === 'vel')) g.orig = { tr, list: tr.notes.slice(), vals: tr.notes.map(o => [o.t, o.d, o.n, o.v]), sel: new Set(this.sel) };
     this.hover = null;
@@ -358,55 +473,90 @@ export class PianoRoll {
     if (reg === 'ruler') return this._rulerDown(g, x);
     if (reg === 'keys') return this._keysDown(g, x, y, dbl);
     if (!tr) { if (g.touch && reg === 'grid') this._panStart(g); return; }
-    if (reg === 'vel') return this._velDown(g, x, y, e.altKey);
+    if (reg === 'vel') return this._velDown(g, x, y, g.alt);
     if (reg !== 'grid') return;
-    const hit = tool === 'erase' ? null : this._hit(x, y);
     if (g.touch && (tool === 'erase' || (tool === 'draw' && !hit))) {
       g.type = 'hold'; g.tool = tool;
       g.timer = setTimeout(() => { if (this.g === g) { this._holdGo(); this._apply(); } }, HOLD);
       return;
     }
     if (tool === 'erase') return this._eraseStart(g, x, y);
-    if (hit && dbl) { g.type = 'none'; this._delNote(hit.note); return; }
+    if (dn) { g.type = 'none'; this._delNote(dn); return; }
+    if (dbl && tool === 'select') { g.type = 'none'; this._dblCreate(x, y, g.sh); return; }
     if (hit) return this._noteDown(g, hit, e);
     if (tool === 'draw') return this._createStart(g, x, y);
-    if (dbl) { g.type = 'none'; this._dblCreate(x, y, e.shiftKey); return; }
-    if (g.touch) { g.tap = true; return this._panStart(g); }
-    g.type = 'marquee'; g.base = e.shiftKey ? new Set(this.sel) : new Set();
+    if (g.touch) {
+      // a finger scrolls the roll; held still (LONG ms, LONG_SLOP px) it draws a select box instead
+      g.tap = true; this._panStart(g);
+      g.timer = setTimeout(() => { if (this.g === g && g.dmax < LONG_SLOP) this._lpMarquee(g); }, LONG);
+      return;
+    }
+    g.type = 'marquee'; g.base = g.add ? new Set(this.sel) : new Set();
     g.ct0 = this.x2t(x); g.cy0 = y - RUL + this.syr;
-    if (!e.shiftKey && this.sel.size) { this.sel.clear(); this._notify(); }
+    if (!g.add && this.sel.size) { this.sel.clear(); this._notify(); }
     this._setIns(x);
     this._cursor('crosshair'); this.render();
   }
+  // a finger held still on the empty grid: undo any wobble scroll, select from the press point (Shift latch: add)
+  _lpMarquee(g) {
+    clearTimeout(g.timer); g.timer = 0;
+    this.sx = g.sx0; this.sy = g.sy0; this.clampX(); this.clampY();
+    g.type = 'marquee'; g.tap = false; g.moved = true; g.lp = now(); this.lastTap = null;
+    g.base = g.add ? new Set(this.sel) : new Set();
+    if (!g.add && this.sel.size) { this.sel.clear(); this._notify(); }
+    g.ct0 = this.x2t(g.x0); g.cy0 = g.y0 - RUL + this.syr;
+    this._setIns(g.x0); this._marquee(); this.render();
+  }
+  // a finger held still on a note: select its chord (every note starting with it, within CHORD_TOL, so a played chord
+  // counts), which then moves / resizes as one; Shift latch: added to the selection
+  _chordSel(g) {
+    g.timer = 0;
+    const t0 = g.note.t, ids = this._notes().filter(o => Math.abs(o.t - t0) <= CHORD_TOL).map(o => o.id);
+    this.sel = new Set(g.add ? [...this.sel, ...ids] : ids); this.sel.add(g.note.id);
+    g.solo = g.toggleOff = false; g.lp = now(); this.lastTap = null;
+    this._notify(); this.render();
+  }
   _setIns(x) { const s = this._snap(), t = Math.max(0, this.x2t(x)); this.ins = Math.max(0, s ? snapTick(t, s) : Math.round(t)); }
   _move(e) {
-    if (e.pointerType === 'touch' && this.touches.has(e.pointerId)) { const [x, y] = this._pos(e); this.touches.set(e.pointerId, { x, y }); }
+    const tp = e.pointerType === 'touch' && this.touches.get(e.pointerId);
+    if (tp) [tp.x, tp.y] = this._pos(e);
     const g = this.g;
-    if (g && g.type === 'pinch') { this._pinchMove(); return; }
+    // a pinch is applied once per frame (_frame), from both fingers' latest positions: one touch event's fingers arrive
+    // as separate pointermoves, and the spread measured between them is off by one finger's step
+    if (g && g.type === 'pinch') { g.pend = true; this._req(); return; }
     if (g) { if (g.id === e.pointerId) this._dragMove(e); return; }
-    if (e.pointerType !== 'touch' && !e.buttons) { const [x, y] = this._pos(e); this._hover(x, y); }
+    if (e.pointerType !== 'touch' && !e.buttons) {
+      if (e.pointerType === 'mouse' && this.coarse) { this.coarse = false; this.render(); } // a mouse / trackpad again: no handles
+      const [x, y] = this._pos(e); this._hover(x, y, false, e.pointerType);
+    }
+  }
+  // a finger lifts: a pinch first catches up with the moves still waiting for a frame
+  _tdel(e) {
+    if (e.pointerType !== 'touch') return;
+    if (this.g && this.g.type === 'pinch' && this.g.pend) { this._pinchApply(); this._req(); }
+    this.touches.delete(e.pointerId);
   }
   _up(e) {
-    if (e.pointerType === 'touch') this.touches.delete(e.pointerId);
+    this._tdel(e);
     const g = this.g;
     if (!g) return;
-    if (g.type === 'pinch') { if (this.touches.size < 2) { this.g = null; this.render(); } return; }
+    if (g.type === 'pinch') { if (this.touches.size < 2) this._finish(false); return; }
     if (g.id !== e.pointerId) return;
     if (g.type === 'hold') { this._holdGo(); g.late = true; } // quick tap: draw / erase at the press point now
     this._finish(true);
   }
   _cancel(e) {
-    if (e.pointerType === 'touch') this.touches.delete(e.pointerId);
+    this._tdel(e);
     const g = this.g;
     if (!g) return;
-    if (g.type === 'pinch') { if (this.touches.size < 2) this.g = null; return; }
+    if (g.type === 'pinch') { if (this.touches.size < 2) this._finish(false); return; }
     if (g.id === e.pointerId) this._finish(false, true);
   }
   _lost(e) {
-    if (e.pointerType === 'touch') this.touches.delete(e.pointerId);
+    this._tdel(e);
     const g = this.g;
     if (!g) return;
-    if (g.type === 'pinch') { if (this.touches.size < 2) { this.g = null; this.render(); } return; }
+    if (g.type === 'pinch') { if (this.touches.size < 2) this._finish(false); return; }
     if (g.id === e.pointerId) this._finish(false, false, true); // capture taken away mid-gesture: its pointerup may never come
   }
   _leave() { if (!this.g && this.hover) { this.hover = null; this._req(); } }
@@ -422,12 +572,22 @@ export class PianoRoll {
     if (ch || Math.abs(dx) >= Math.abs(dy)) e.preventDefault(); // let the page scroll once the roll hits its vertical limit
     if (ch) { if (this.g) this._apply(); this.render(); }
   }
+  // WebKit GestureEvents: always preventDefault (else Safari zooms the page). A gesture with a finger on the roll (gfing:
+  // set by any touch pointerdown) is the pointers' pinch; without, it's a trackpad pinch: time, Shift = the keys
+  _gest(e) {
+    e.preventDefault();
+    if (e.type === 'gesturestart') { this.gs = 1; this.gfing = this.touches.size > 0; return; }
+    if (e.type !== 'gesturechange' || this.gfing || this.touches.size || !(e.scale > 0)) return;
+    const f = e.scale / (this.gs || 1); this.gs = e.scale;
+    if (e.shiftKey) this.zoomY(f, Number.isFinite(e.clientY) ? e.clientY : null); else this.zoomX(f, Number.isFinite(e.clientX) ? e.clientX : null);
+  }
   _dragMove(e) {
     const g = this.g, [x, y] = this._pos(e);
-    g.x = x; g.y = y; g.sh = e.shiftKey;
+    g.x = x; g.y = y; g.sh = !!e.shiftKey || g.fl;
     const d = Math.hypot(x - g.x0, y - g.y0);
     if (d > g.dmax) g.dmax = d;
-    if (!g.moved && d >= (g.touch ? 6 : 3)) { g.moved = true; this._startDrag(); }
+    const thr = g.touch ? (g.type === 'resizeR' || g.type === 'resizeL' ? TSLOP_RZ : TSLOP) : g.pen ? PSLOP : 3;
+    if (!g.moved && d >= thr) { g.moved = true; this._startDrag(); }
     this._apply();
     if (!this.autoRaf && this._autoDir().some(v => v)) this.autoRaf = requestAnimationFrame(this._autoTick);
   }
@@ -464,6 +624,9 @@ export class PianoRoll {
     if (g.tool === 'erase') this._eraseStart(g, g.x0, g.y0); else this._createStart(g, g.x0, g.y0);
   }
   _rollback(g) {
+    // a ruler / loop-edge drag a second finger took over: the loop as at the press (its on flag too: setLoop turns it on)
+    const L = g.loop0;
+    if (L && g.looped) { if (this.host.restoreLoop) this.host.restoreLoop(L); else if (L.end > L.start) this.host.setLoop(L.start, L.end); }
     const o = g.orig, tr = this.host.getTrack();
     if (!o || tr !== o.tr) return;
     if (g.began) { tr.notes.length = 0; o.list.forEach((x, i) => { [x.t, x.d, x.n, x.v] = o.vals[i]; tr.notes.push(x); }); }
@@ -473,7 +636,9 @@ export class PianoRoll {
     const g = this.g;
     if (!g) return;
     switch (g.type) {
-      case 'pan': this.sx = g.sx0 - (g.x - g.x0) / this.ppt; this.sy = g.sy0 - (g.y - g.y0); this.clampX(); this.clampY(); this.render(); break;
+      case 'pan': // a finger scrolls once past its drag threshold (a still finger may yet become a select box)
+        if (!g.touch || g.moved) { this.sx = g.sx0 - (g.x - g.x0) / this.ppt; this.sy = g.sy0 - (g.y - g.y0); this.clampX(); this.clampY(); this.render(); }
+        break;
       case 'marquee': if (g.moved) this._marquee(); break;
       case 'move': if (g.moved) this._moveApply(); break;
       case 'resizeR': case 'resizeL': if (g.moved) this._resizeApply(); break;
@@ -493,10 +658,12 @@ export class PianoRoll {
     this.g = null;
     if (g.timer) clearTimeout(g.timer);
     if (this.autoRaf) { cancelAnimationFrame(this.autoRaf); this.autoRaf = 0; }
-    if (g.type === 'pinch') { this.render(); return; }
+    if (g.type === 'pinch') return this._pinchEnd(g);
     if (!keep) try { this.el.releasePointerCapture(g.id); } catch { /* already released */ }
     if (abort) this._rollback(g);
-    if (g.began || g.dmax >= DBL) this.lastTap = null; // a drag isn't the first half of a double-click
+    if (g.began || g.lp || g.dmax >= (g.touch ? TTAP : DBL)) this.lastTap = null; // a drag (or a hold) isn't the first half of a double-click
+    // a latched (not locked) modifier served this gesture; a scroll or the key strip reads none: kept for the next edit
+    if (!abort && this.host.consumeMods && !(g.type === 'pan' && g.moved) && g.type !== 'keys') this.host.consumeMods();
     switch (g.type) {
       case 'move': case 'resizeR': case 'resizeL':
         if (!g.began && click) {
@@ -513,7 +680,7 @@ export class PianoRoll {
       }
       case 'keys': this._audOff(g.key); break;
       case 'pan':
-        if (g.tap && !g.moved && click) { if (!g.sh && this.sel.size) { this.sel.clear(); this._notify(); } this._setIns(g.x0); }
+        if (g.tap && !g.moved && click) { if (!g.sh && !g.add && this.sel.size) { this.sel.clear(); this._notify(); } this._setIns(g.x0); }
         break;
       case 'ruler': case 'loopEdge':
         // a press that never changed the loop and barely moved is a click: set the playhead where it was pressed
@@ -524,15 +691,21 @@ export class PianoRoll {
         break;
     }
     if (g.began) { const tr = this.host.getTrack(); if (tr) sortNotes(tr.notes); this.host.endEdit(); }
-    if (!g.touch) this._hover(g.x, g.y, true);
+    if (!g.touch) this._hover(g.x, g.y, true, g.pen ? 'pen' : undefined);
     this.render();
   }
   _autoDir() {
     const g = this.g;
     if (!g || !g.moved || !AUTO_X.has(g.type)) return [0, 0];
+    // a finger gets wider zones (it hides what it nears); one that pressed inside a zone scrolls only once it moves on
+    // toward that edge (a resize grabbed near the right edge doesn't run off at once)
+    const t = g.touch, R = this.W - (t ? TEDGE : 6), L = GUT + (t ? 12 : 0), T = RUL + (t ? 10 : 0), B = this.gb - (t ? 10 : 0);
     let vx = 0, vy = 0;
-    if (g.x > this.W - 6) vx = g.x - (this.W - 6) + 1; else if (g.x < GUT) vx = g.x - GUT - 1;
-    if (AUTO_Y.has(g.type)) { if (g.y < RUL) vy = g.y - RUL - 1; else if (g.y > this.gb) vy = g.y - this.gb + 1; }
+    if (g.x > R && (!t || g.x0 <= R || g.x > g.x0 + 4)) vx = g.x - R + 1; else if (g.x < L && (!t || g.x0 >= L || g.x < g.x0 - 4)) vx = g.x - L - 1;
+    if (AUTO_Y.has(g.type)) {
+      if (g.y < T && (!t || g.y0 >= T || g.y < g.y0 - 4)) vy = g.y - T - 1;
+      else if (g.y > B && (!t || g.y0 <= B || g.y > g.y0 + 4)) vy = g.y - B + 1;
+    }
     return [vx, vy];
   }
   _autoTick() {
@@ -548,20 +721,46 @@ export class PianoRoll {
 
   /* -------------------------------------------------------- gestures */
   _panStart(g) { g.type = 'pan'; g.sx0 = this.sx; g.sy0 = this.sy; this._cursor('grabbing'); }
-  _pinchStart() {
-    const [a, b] = [...this.touches.values()], mx = (a.x + b.x) / 2;
-    this.g = { type: 'pinch', d0: Math.max(20, Math.hypot(a.x - b.x, a.y - b.y)), ppt0: this.ppt, tm: this.x2t(mx), my0: (a.y + b.y) / 2, sy0: this.sy };
+  // Two fingers zoom and pan; the tick and pitch under their midpoint stay under it. Zone and axis are chosen once, from
+  // where and at what angle the fingers land: on the key strip (midpoint < GUT+16 px, ≥ 45° from horizontal) the rows
+  // (the keys' size), time held; from the ruler, velocity lane or a corner, time; on the grid rows when steeper than 60°,
+  // else time. prev: the pinch this one continues (another finger took over) — its start row height and pending key.
+  _pinchStart(prev) {
+    const ids = [...this.touches.keys()].slice(0, 2), [a, b] = ids.map(i => this.touches.get(i)), r = a.reg;
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, ang = Math.atan2(Math.abs(a.y - b.y), Math.abs(a.x - b.x)) * 180 / Math.PI;
+    const zone = mx < GUT + 16 && ang >= 45 ? 'keys' : r === 'ruler' || r === 'corner' || r === 'vel' || r === 'velg' ? 'time' : 'grid';
+    this.lastTap = null; // its first finger is no first half of a double-tap
+    this.g = { type: 'pinch', ids, zone, ax: zone === 'keys' || (zone === 'grid' && ang > 60) ? 'y' : 'x', on: false, pend: false,
+      d0: Math.max(20, Math.hypot(a.x - b.x, a.y - b.y)), mx0: mx, my0: my, ppt0: this.ppt, rowHf0: this.rowHf, sx0: this.sx,
+      tm: this.x2t(mx), row: (this.sy + my - RUL) / this.rowH, rh0: prev ? prev.rh0 : this.rowHf, kaud: prev ? prev.kaud : null };
   }
-  _pinchMove() {
-    const g = this.g, [a, b] = [...this.touches.values()];
-    if (!b) return;
-    const d = Math.max(20, Math.hypot(a.x - b.x, a.y - b.y)), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-    this.ppt = clamp(g.ppt0 * d / g.d0, this._minPpt(), MAXPPT);
-    this.sx = g.tm - (mx - GUT) / this.ppt; this.sy = g.sy0 - (my - g.my0); this.clampX(); this.clampY(); this.render();
+  _pinchApply() {
+    let g = this.g;
+    g.pend = false;
+    const ids = [...this.touches.keys()].slice(0, 2);
+    if (ids.length < 2) return;
+    if (ids[0] !== g.ids[0] || ids[1] !== g.ids[1]) { this._pinchStart(g); g = this.g; } // a palm / third finger took over: restart from this view
+    const [a, b] = ids.map(i => this.touches.get(i)), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, d = Math.max(20, Math.hypot(a.x - b.x, a.y - b.y));
+    // the zoom engages after PZ_ENGAGE px of spread change, rebased there (no jump): a two-finger pan stays a pure pan
+    if (!g.on && Math.abs(d - g.d0) >= PZ_ENGAGE) { g.on = true; g.d0 += Math.sign(d - g.d0) * PZ_ENGAGE; }
+    // a confirmed pinch (zooming, or panned PZ_ENGAGE px) stops the first finger's key
+    if (g.kaud != null && (g.on || Math.hypot(mx - g.mx0, my - g.my0) >= PZ_ENGAGE)) { this._audOff(g.kaud); g.kaud = null; }
+    if (g.on && g.ax === 'x') this.ppt = clamp(g.ppt0 * d / g.d0, this._minPpt(), MAXPPT);
+    else if (g.on) { this.rowHf = clamp(g.rowHf0 * d / g.d0, ROW_MIN, ROW_MAX); this.rowH = Math.round(this.rowHf); }
+    this.sx = g.zone === 'keys' ? g.sx0 : g.tm - (mx - GUT) / this.ppt;
+    this.sy = g.row * this.rowH - (my - RUL);
+    this.clampX(); this.clampY(); this.dirty = true;
+  }
+  // every pinch ends here (_finish): a changed row height is the user's choice for this device
+  _pinchEnd(g) {
+    if (g.kaud != null) this._audOff(g.kaud);
+    if (this.rowHf !== g.rh0) this._rowsChosen();
+    this.render();
   }
   _rulerDown(g, x) {
-    const edge = this._loopEdge(x), p = this.host.getProject();
+    const edge = this._loopEdge(x, g.touch ? TLOOP : g.pen ? PLOOP : 5), p = this.host.getProject(), lp = p && p.loop;
     g.rt0 = this.x2t(x);
+    if (g.touch && lp) g.loop0 = { start: lp.start, end: lp.end, on: !!lp.on }; // (_rollback: a second finger took over)
     if (edge) { g.type = 'loopEdge'; g.edge = edge; g.et0 = p.loop[edge]; this._cursor('ew-resize'); }
     else g.type = 'ruler';
   }
@@ -576,23 +775,36 @@ export class PianoRoll {
   }
   _noteDown(g, hit, e) {
     const nt = hit.note, was = this.sel.has(nt.id);
-    if (e.shiftKey) { if (was) g.toggleOff = true; else this.sel.add(nt.id); }
+    if (g.add) { if (was) g.toggleOff = true; else this.sel.add(nt.id); }
     else if (!was) this.sel = new Set([nt.id]);
     else if (this.sel.size > 1) g.solo = true;
     this._notify();
     g.type = hit.part === 'r' ? 'resizeR' : hit.part === 'l' ? 'resizeL' : 'move';
-    g.note = nt; g.dup = e.altKey && g.type === 'move';
-    g.ct0 = this.x2t(g.x0); g.n0 = clamp(this.y2n(g.y0), 0, 127);
+    g.note = nt; g.dup = g.alt && g.type === 'move';
+    // pitch counts from the note's own row (a touch / pen press may land beside it: yo is that offset, 0 for a mouse);
+    // touch: from the press's content row instead, with hysteresis (_rowsMoved)
+    const ry = this.n2y(nt.n); g.yo = g.y0 - clamp(g.y0, ry, ry + this.rowH - 1);
+    g.ct0 = this.x2t(g.x0); g.n0 = clamp(this.y2n(g.y0 - g.yo), 0, 127); g.r0 = (g.y0 - RUL + this.syr) / this.rowH;
     g.aud = nt.n; this._aud(nt.n, nt.v);
+    // a finger held still on the note selects its chord; not on a note of a larger selection (a pause to aim before
+    // dragging it would drop the rest), unless Shift adds
+    if (g.touch && (g.add || !was || this.sel.size < 2)) g.timer = setTimeout(() => { if (this.g === g && !g.moved && !g.began) this._chordSel(g); }, LONG);
     this._cursor(g.type === 'move' ? (g.dup ? 'copy' : 'move') : 'ew-resize');
     this.render();
   }
+  // touch: whole rows the finger moved from the press, once ¾ of a row away (a sideways drag's drift keeps the pitch)
+  _rowsMoved(g) {
+    const k = g.r0 - (g.y - RUL + this.syr) / this.rowH;
+    if (!g.dnOn && Math.abs(k) >= 0.75) g.dnOn = true;
+    return g.dnOn ? Math.round(k) : 0;
+  }
   _moveApply() {
-    const g = this.g, snap = g.sh ? 0 : this._snap(), raw = this.x2t(g.x) - g.ct0;
+    const g = this.g, snap = g.sh ? 0 : this._snap(), raw = this.x2t(g.x) - g.ct0, ax = Math.abs(raw * this.ppt);
     let dt = 0;
-    if (g.dtOn || Math.abs(raw * this.ppt) >= 4) { g.dtOn = true; dt = snap ? snapTick(g.mt + raw, snap) - g.mt : Math.round(raw); }
+    // time follows after 4 px (touch: 10 px of a mostly sideways move, so a pitch drag's drift keeps the start)
+    if (g.dtOn || (g.touch ? ax >= 10 && ax >= 0.5 * Math.abs(g.y - g.y0) : ax >= 4)) { g.dtOn = true; dt = snap ? snapTick(g.mt + raw, snap) - g.mt : Math.round(raw); }
     dt = Math.max(dt, -g.minT);
-    const dn = clamp(this.y2n(g.y) - g.n0, -g.minN, 127 - g.maxN);
+    const dn = clamp(g.touch ? this._rowsMoved(g) : this.y2n(g.y - g.yo) - g.n0, -g.minN, 127 - g.maxN);
     if ((!g.began && !dt && !dn) || (dt === g.dt && dn === g.dn)) return;
     this._edit0();
     g.dt = dt; g.dn = dn;
@@ -629,17 +841,18 @@ export class PianoRoll {
     this.sel = new Set([nt.id]); this._notify();
     this.lastTap = null; // a second click on the note just drawn mustn't count as a double-click (delete)
     g.type = 'create'; g.note = nt; g.t0 = t; g.aud = n; this._aud(n, nt.v);
+    g.n0 = n; g.r0 = (y - RUL + this.syr) / this.rowH;
     this._cursor(PENCIL); this.host.changed(); this.render();
   }
   _createApply() {
     const g = this.g, nt = g.note, snap = g.sh ? 0 : this._snap();
     let ch = false;
-    if (!g.sized && Math.abs(g.x - g.x0) >= 4) g.sized = true;
+    if (!g.sized && Math.abs(g.x - g.x0) >= (g.touch ? 10 : 4)) g.sized = true; // a finger's wobble is no resize
     if (g.sized) {
       const tt = this.x2t(g.x), end = snap ? snapTick(tt, snap, 'ceil') : Math.round(tt), d = Math.max(snap || 1, end - g.t0);
       if (d !== nt.d) { nt.d = d; ch = true; }
     }
-    const n = clamp(this.y2n(g.y), 0, 127);
+    const n = clamp(g.touch ? g.n0 + this._rowsMoved(g) : this.y2n(g.y), 0, 127);
     if (n !== nt.n) { nt.n = n; ch = true; this._audOff(g.aud); g.aud = n; this._aud(n, nt.v); }
     if (ch) { this.host.changed(); this.render(); }
   }
@@ -656,7 +869,7 @@ export class PianoRoll {
   }
   _eraseStart(g, x, y) { g.type = 'erase'; g.lx = x; g.ly = y; this._cursor(ERASER); this._eraseAt(x, y); }
   _eraseAt(x, y) {
-    const h = this._hit(x, y), tr = this.host.getTrack();
+    const h = this._hit(x, y, this.g && this.g.ze), tr = this.host.getTrack();
     if (!h || !tr) return;
     const i = tr.notes.indexOf(h.note);
     if (i < 0) return;
@@ -672,7 +885,7 @@ export class PianoRoll {
   }
   // every tool grabs the stem under the press; Alt, a press away from stems, or a sideways sweep paints a line
   _velDown(g, x, y, paint) {
-    const st = paint ? null : this._stemAt(x, y);
+    const st = paint ? null : this._stemAt(x, y, g.touch ? TSTEM : g.pen ? PSTEM : 5);
     g.vt0 = this.x2t(x);
     if (st) {
       g.type = 'vel'; g.note = st; g.v0 = st.v;
@@ -748,13 +961,14 @@ export class PianoRoll {
   /* ---------------------------------------------------------- drawing */
   _frame() {
     this.raf = 0;
+    if (this.g && this.g.type === 'pinch' && this.g.pend) this._pinchApply();
     const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
     if (dpr !== this.dpr) { this.resize(); return; }
     if (this.W < 2 || this.gh < 4) return;
     if (this.want) this._applyWant();
     if (this.dirty) {
       this.dirty = false;
-      if (this.hover && !this.g) this._hover(this.hover.x, this.hover.y, true);
+      if (this.hover && !this.g) this._hover(this.hover.x, this.hover.y, true, this.hover.pk);
       this._scene(this.bctx);
     }
     const c = this.ctx;
@@ -847,14 +1061,31 @@ export class PianoRoll {
       };
       drawSet(un, pal.fill, null);
       drawSet(se, pal.sel, '#ffffff');
+      // touch / pen: grab tabs on the selected notes' ends (and starts, where a note is long enough for a start zone)
+      let ns = 0;
+      for (const L of se) ns += L.length;
+      if (this.coarse && ns && ns <= 256) {
+        const minL = ZONES.touch.select.minL, grips = [];
+        c.beginPath();
+        for (const L of se) for (const x of L) {
+          const [a, y, w] = rect(x);
+          rr(c, a + w - 3, y - 2, 7, rowH + 4, 3); grips.push(a + w, y);
+          if (w >= minL) { rr(c, a - 4, y - 2, 7, rowH + 4, 3); grips.push(a - 1, y); }
+        }
+        c.fillStyle = 'rgba(255,255,255,0.92)'; c.fill(); c.lineWidth = 1; c.strokeStyle = BG; c.stroke();
+        c.beginPath();
+        for (let i = 0; i < grips.length; i += 2) c.rect(grips[i], grips[i + 1] + 3, 1, Math.max(1, rowH - 6));
+        c.fillStyle = 'rgba(12,13,15,0.55)'; c.fill();
+      }
       if (rowH >= 10) {
-        c.font = `9px ${FONT}`; c.textBaseline = 'middle'; c.textAlign = 'left';
+        const fs = clamp(Math.round(rowH * 0.4), 9, 14), cw = fs * 5.6 / 9; // names grow with tall (touch) rows
+        c.font = `${fs}px ${FONT}`; c.textBaseline = 'middle'; c.textAlign = 'left';
         for (const [sets, k] of [[un, 0], [se, 1]]) for (let i = 0; i < 16; i++) {
           if (!sets[i].length) continue;
           c.fillStyle = pal.txt[i][k];
           for (const x of sets[i]) {
             const [a, y, w] = rect(x), nm = noteName(x.n), vis = Math.min(a + w, W) - Math.max(a, GUT);
-            if (vis >= nm.length * 5.6 + 8) c.fillText(nm, Math.max(a, GUT) + 4, y + rowH / 2 + 0.5);
+            if (vis >= nm.length * cw + 8) c.fillText(nm, Math.max(a, GUT) + 4, y + rowH / 2 + 0.5);
           }
         }
       }
@@ -862,7 +1093,11 @@ export class PianoRoll {
     }
     c.font = `11px ${FONT}`; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillStyle = '#5c5a56';
     if (!tr) c.fillText('No track selected', GUT + gw / 2, RUL + (gb - RUL) / 2);
-    else if (!tr.notes.length) c.fillText(this.tool === 'draw' ? 'Click and drag to draw notes' : 'Double-click to add a note, or arm the track and record', GUT + gw / 2, RUL + (gb - RUL) / 2);
+    else if (!tr.notes.length) {
+      const tip = this.coarse ? (this.tool === 'draw' ? 'Tap or drag to draw notes' : 'Double-tap to add a note (or pick Draw), or arm the track and record')
+        : this.tool === 'draw' ? 'Click and drag to draw notes' : 'Double-click to add a note, or arm the track and record';
+      c.fillText(tip, GUT + gw / 2, RUL + (gb - RUL) / 2);
+    }
     c.restore();
     if (tr && present < sel.size && !this.g) { const ids = new Set(); for (const x of tr.notes) if (sel.has(x.id)) ids.add(x.id); this.sel = ids; this._notify(); }
 
@@ -948,8 +1183,9 @@ export class PianoRoll {
       else if (isBlk(n)) c.rect(BW, Math.round(this.n2y(n) + rowH / 2), GUT - 1 - BW, 1);
     }
     c.fillStyle = '#9f9c94'; c.fill();
-    c.font = `9px ${FONT}`; c.textAlign = 'right'; c.textBaseline = 'middle';
-    for (let n = nLo; n <= nHi; n++) if (n % 12 === 0) { c.fillStyle = n === 60 ? '#b4721c' : '#69665f'; c.fillText(noteName(n), GUT - 5, this.n2y(n) + rowH / 2 + 0.5); }
+    // C labels; every white key once rows are 18 px (the touch default) or taller
+    c.font = `${clamp(Math.round(rowH * 0.4), 9, 12)}px ${FONT}`; c.textAlign = 'right'; c.textBaseline = 'middle';
+    for (let n = nLo; n <= nHi; n++) if (n % 12 === 0 || (rowH >= 18 && !isBlk(n))) { c.fillStyle = n === 60 ? '#b4721c' : n % 12 ? '#8a877f' : '#69665f'; c.fillText(noteName(n), GUT - 5, this.n2y(n) + rowH / 2 + 0.5); }
     c.restore();
     c.fillStyle = '#050506'; c.fillRect(GUT - 1, RUL, 1, gb - RUL);
 
@@ -1008,7 +1244,22 @@ export class PianoRoll {
       c.fillStyle = 'rgba(242,163,58,0.08)'; c.fillRect(a, b, w, h);
       c.strokeStyle = 'rgba(242,163,58,0.8)'; c.lineWidth = 1; c.strokeRect(a, b, w, h);
     }
+    const fing = g && (g.touch || g.pen);
+    // touch / pen: a guide line at the edge being placed (the finger hides the note itself)
+    if (fing && g.note && (g.type === 'create' || (g.moved && (g.type === 'move' || g.type === 'resizeR' || g.type === 'resizeL')))) {
+      const t = g.type === 'resizeR' || (g.type === 'create' && g.sized) ? g.note.t + g.note.d : g.note.t, x = Math.round(this.t2x(t));
+      if (x >= GUT && x <= W) { c.fillStyle = 'rgba(242,163,58,0.75)'; c.fillRect(x, RUL, 1, gb - RUL); }
+    }
     c.restore();
+    // a hold that selected (box or chord): a ring closing on the press point (no haptics on the web)
+    if (g && g.lp) {
+      const k = (now() - g.lp) / 280;
+      if (k < 1) {
+        c.beginPath(); c.arc(g.x0, g.y0, 10 + 22 * (1 - k), 0, Math.PI * 2);
+        c.strokeStyle = `rgba(242,163,58,${(0.9 * (1 - k)).toFixed(3)})`; c.lineWidth = 2; c.stroke();
+        this._req();
+      }
+    }
 
     // pressed / hovered keys
     c.save(); c.beginPath(); c.rect(0, RUL, GUT - 1, gb - RUL); c.clip();
@@ -1042,13 +1293,26 @@ export class PianoRoll {
       c.beginPath(); c.moveTo(px - 5, RUL - 10); c.lineTo(px + 6, RUL - 10); c.lineTo(px + 0.5, RUL - 1); c.closePath(); c.fill();
     }
 
-    // corner readout
+    // readout: in the corner (mouse), or floating above the finger / pen (the corner is under the hand)
     const info = this._info();
-    if (info) {
+    if (info && fing) this._float(c, g, info.filter(Boolean).join('  '));
+    else if (info) {
       c.font = `9px ${FONT}`; c.textAlign = 'left'; c.textBaseline = 'middle';
       if (info[0]) { c.fillStyle = TEXT; c.fillText(info[0], 6, 8); }
       if (info[1]) { c.fillStyle = MUTE; c.fillText(info[1], 6, 18); }
     }
     if (this.focused) { c.strokeStyle = 'rgba(242,163,58,0.35)'; c.lineWidth = 1; c.strokeRect(0.5, 0.5, W - 1, H - 1); }
+  }
+  // the readout pill 64 px above the touch point (below it near the top), kept inside the roll
+  _float(c, g, s) {
+    if (!s) return;
+    const fs = 12, w = Math.round(s.length * fs * 0.62) + 14, h = 22;
+    const x = clamp(g.x - w / 2, GUT + 4, Math.max(GUT + 4, this.W - w - 4));
+    let y = g.y - 64;
+    if (y < RUL + 4) y = Math.min(this.H - h - 4, g.y + 40);
+    c.beginPath(); rr(c, x, y, w, h, 6);
+    c.fillStyle = 'rgba(12,13,15,0.9)'; c.fill(); c.strokeStyle = 'rgba(242,163,58,0.6)'; c.lineWidth = 1; c.stroke();
+    c.font = `600 ${fs}px ${FONT}`; c.textAlign = 'left'; c.textBaseline = 'middle'; c.fillStyle = TEXT;
+    c.fillText(s, x + 7, y + h / 2 + 0.5);
   }
 }

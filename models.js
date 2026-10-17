@@ -7,7 +7,7 @@
  * patchFor(model, vals, fx, opts) = the complete engine patch of a track (SPEC-serum2 §12.7): the model's map + the
  * track's FX rack (FXP v2) — shared by main.js (which adds only live-session fields), bounces and the tests.
  */
-import * as SC from './serum-core.js?v=7';
+import * as SC from './serum-core.js?v=8';
 
 const { defaultSerum, compileSerum, FACTORY_PRESETS } = SC;
 

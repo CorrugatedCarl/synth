@@ -6,13 +6,13 @@
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as core from '../serum-core.js?v=7';
-import * as W from '../wt.js?v=7';
-import { MODELS, patchFor } from '../models.js?v=7';
+import * as core from '../serum-core.js?v=8';
+import * as W from '../wt.js?v=8';
+import { MODELS, patchFor } from '../models.js?v=8';
 import { dspScope } from './dsp-scope.mjs';
-import * as A from '../assets.js?v=7';
-import * as wtstore from '../wtstore.js?v=7';
-import * as smpstore from '../smpstore.js?v=7';
+import * as A from '../assets.js?v=8';
+import * as wtstore from '../wtstore.js?v=8';
+import * as smpstore from '../smpstore.js?v=8';
 
 const SR = 48000, BPM = 120;
 

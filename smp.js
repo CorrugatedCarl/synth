@@ -31,7 +31,7 @@
 // - sampleLevels(…, loop): loop-aware decimation (see there); odf[0] = 0 (no predecessor frame); specAnalyse cuts a
 //   > 48 kHz source to 20 s before resampling; bakeLoop(L, R, ls, le, n) (factory loop crossfades); aiffInfo(buf)
 //   (root / loop / rate / frames of an AIFF without decoding, for files the browser decodes).
-import { FRAME, noiseLevels, HALFBAND } from './wt.js?v=7';
+import { FRAME, noiseLevels, HALFBAND } from './wt.js?v=8';
 
 /** Error code of a not-implemented helper (kept for callers that test for it; every helper is implemented). */
 export const ENOTIMPL = 'ENOTIMPL';

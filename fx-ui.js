@@ -54,9 +54,9 @@
 // rack?) and the Phase-1 helpers moveModule, ladderLabel, moduleTitle, modulePresetPayload / applyModulePreset (v1 module
 // presets), svfDb, impulseDb. Nothing touches the DOM at module top level.
 import { knob, numBox, menu, toggle, seg, slider, contextMenu, tooltip, injectStyles, loadDSP, menuSource, theme, fitCanvas, frame,
-  saveFile, pickFile, ask, wheelGate, dragSource, modifierBar, ticker } from './wk.js?v=7';
-import { CurveEditor, shapeLib } from './graph.js?v=7';
-import * as core from './serum-core.js?v=7';
+  saveFile, pickFile, ask, wheelGate, dragSource, modifierBar, ticker } from './wk.js?v=8';
+import { CurveEditor, shapeLib } from './graph.js?v=8';
+import * as core from './serum-core.js?v=8';
 
 const { DESTS, DEST_INDEX, FX_MODULES, FX_ORDER_DEFAULT, MODFX_LADDER, DLY_LADDER, DIST_MODES, DLY_MODES, REV_LABELS,
   EQ_TYPES_L, EQ_TYPES_H, CMP_RATIO_DETENTS, FILTERS, fmtParam, lawValue, lawNorm, varLabel } = core;
@@ -579,6 +579,8 @@ const fAtX = (x, w, pad) => 20 * Math.pow(1000, clamp((x - pad) / (w - 2 * pad),
 const closest = (n, stop, test) => { for (; n && n !== stop; n = n.parentNode) if (n.getAttribute && test(n)) return n; return null; };
 const keysOf = e => (modifierBar && typeof modifierBar.mods === 'function' ? modifierBar.mods(e) : { alt: !!(e && e.altKey), shift: !!(e && e.shiftKey), fine: !!(e && e.shiftKey) });
 const consume = () => { if (modifierBar && typeof modifierBar.consume === 'function') modifierBar.consume(); };
+// gesture.js's synthetic pointercancel: a second finger made this touch a pan / pinch — the drag is rolled back
+const twoF = e => !!e && e.gesture === 'two-finger';
 // §13.1 / §13.5: a touch long-press (500 ms) opens the context menu of a custom element as a right-click does
 // (wk.menuSource: one `contextmenu`, the browser's duplicate swallowed); the click that ends a touch long-press is eaten
 // (a long-press on a branch's BYP button must not also toggle it). → remover
@@ -1209,6 +1211,7 @@ export class FXRackUI {
     cv.addEventListener('pointermove', e => { if (g && e.pointerId === g.id) put(e, 'move'); });
     const end = e => {
       if (!g || e.pointerId !== g.id) return;
+      if (twoF(e)) { const G = g; g = null; if (G.live) { this.setP(c.id, G.pid, G.n0, 'end'); this.drawGr(c.P); } return; }   // the threshold as it was
       if (g.live) put(e, 'end');
       g = null;
       consume();
@@ -1342,7 +1345,8 @@ export class FXRackUI {
   }
 
   /* ---------------------------------------------------------- displays */
-  // A canvas display redrawn when key() changes; drag(P0, P, phase, e) for 2-parameter drags.
+  // A canvas display redrawn when key() changes; drag(P0, P, phase, e) for 2-parameter drags (phases 'start', 'move',
+  // 'end', and 'cancel' = a two-finger rollback: the values from before the press).
   display(P, cls, label, hgt, draw, key, drag) {
     const wrap = h('div', 'fxr-disp ' + cls), cv = h('canvas');
     cv.setAttribute('role', 'img');
@@ -1364,7 +1368,8 @@ export class FXRackUI {
         g.started = drag(g.P0, g.P0, 'start', e) !== false;
       });
       wrap.addEventListener('pointermove', e => { if (g && e.pointerId === g.id && g.started) drag(g.P0, pos(e), 'move', e); });
-      const end = e => { if (!g || e.pointerId !== g.id) return; const G = g; g = null; if (G.started) drag(G.P0, pos(e), 'end', e); };
+      // gesture.js's two-finger cancel ends the drag with the phase 'cancel': the drag puts back what it set (no click)
+      const end = e => { if (!g || e.pointerId !== g.id) return; const G = g; g = null; if (G.started) drag(G.P0, pos(e), twoF(e) ? 'cancel' : 'end', e); };
       wrap.addEventListener('pointerup', end);
       wrap.addEventListener('pointercancel', end);
     }
@@ -1423,6 +1428,7 @@ export class FXRackUI {
       if (phase === 'start') { st = { x0: c.val(xPid), y0: c.val(yPid), live: false, px: P0.x, py: P0.y, ax: 0, ay: 0, fine: !!keysOf(e).fine, e0: e }; return true; }
       if (!st) return false;
       const put = (nx, ny, ph) => this.edit(fx => this.withInst(fx, c.id, I => { I.p[xPid] = nx; I.p[yPid] = ny; }), label, ph, null, true);
+      if (phase === 'cancel') { const S = st; st = null; if (S.live) { put(S.x0, S.y0, 'end'); this.redraw(); } return true; }
       if (!st.live) {
         if (phase !== 'end' && Math.hypot(P.x - P0.x, P.y - P0.y) >= 3) { st.live = true; put(st.x0, st.y0, 'start'); }
         else { if (phase === 'end') { const e0 = st.e0; st = null; if (O.click && e && e.type === 'pointerup') O.click(e0); } return true; }
@@ -1462,6 +1468,7 @@ export class FXRackUI {
     const drag = (P0, P, phase, e) => {
       if (phase === 'start') { st = { n0: c.val('drive'), live: false }; return true; }
       if (!st) return false;
+      if (phase === 'cancel') { const S = st; st = null; if (S.live) { this.setP(c.id, 'drive', S.n0, 'end'); this.redraw(); } return true; }
       const dy = P0.y - P.y;
       if (!st.live) {
         if (phase !== 'end' && Math.abs(dy) >= 3) { st.live = true; this.setP(c.id, 'drive', st.n0, 'start'); } else { if (phase === 'end') st = null; return true; }
@@ -1607,6 +1614,7 @@ export class FXRackUI {
       if (!grab) return false;
       const b = grab.b, label = instTitle(this.fx(), c.id) + ' ' + (b === 'L' ? 'Low' : 'High') + ' Band';
       const put = (nf, ny, ph) => this.edit(fx => this.withInst(fx, c.id, I => { I.p['freq' + b] = nf; I.p[grab.yPid] = ny; }), label, ph, null, true);
+      if (phase === 'cancel') { if (grab.live) put(grab.f0, grab.y0, 'end'); grab = null; D.last = null; this.redraw(); return true; }
       if (!grab.live) {
         if (phase !== 'end' && Math.hypot(P.x - P0.x, P.y - P0.y) >= 3) { grab.live = true; put(grab.f0, grab.y0, 'start'); }
         else { if (phase === 'end') { grab = null; D.last = null; this.redraw(); } return true; }
@@ -1709,6 +1717,7 @@ export class FXRackUI {
       }
       const st = this.splitDrag;
       if (!st) return false;
+      if (phase === 'cancel') { this.splitDrag = null; if (st.live) { this.setP(c.id, st.pid, st.n0, 'end'); this.redraw(); } return true; }
       if (!st.live) { if (phase !== 'end' && Math.abs(P.x - P0.x) >= 3) { st.live = true; this.setP(c.id, st.pid, st.n0, 'start'); } else { if (phase === 'end') this.splitDrag = null; return true; } }
       const X = relFreq(c.type, c.v, st.pid, st.n0, st.ax + (P.x - st.px) * (st.fine || (e && e.shiftKey) ? 0.1 : 1) / Math.max(1, P.w - 2 * pad));
       st.ax = X.ax; st.px = P.x;

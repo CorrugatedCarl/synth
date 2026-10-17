@@ -13,8 +13,8 @@ if (typeof nodeModule.registerHooks === 'function') {
 } else nodeModule.register('./serum-ui.hooks.mjs', import.meta.url);
 
 // imported before any DOM exists: no document / window access at module top level
-const mix = await import('../sx-ui-mix.js?v=7');
-const core = await import('../serum-core.js?v=7');
+const mix = await import('../sx-ui-mix.js?v=8');
+const core = await import('../serum-core.js?v=8');
 const { makeKit, stubOf } = await import('./serum-ui-stubs/kit.js');
 const dom = await import('./wk-dom.mjs');
 const { all, byCls, one, byAttr, fire, ptr, place } = dom;
@@ -266,6 +266,30 @@ test('MixerPage: filter strips — S1 / S2 type menus, the mini display draws th
     assert.deepEqual(T.log.slice(-3).map(e => [e[1], e[2]]), [['FILTER 1 cutoff / res', 'start'], ['FILTER 1 cutoff / res', 'move'], ['FILTER 1 cutoff / res', 'end']]);
     assert.equal(cv.getAttribute('data-dest'), 'f.cutoff');
   } finally { delete globalThis.SerumDSP; }
+});
+
+test('MixerPage, two-finger rollback (gesture.js\'s pointercancel flagged e.gesture === "two-finger"): the filter display drag and a fader (its jump too) come back; a plain cancel keeps', () => {
+  const s = fresh();
+  s.p['f.on'] = 1;
+  const { T, kit, strip } = mount({ s });
+  const TW = { pointerType: 'touch', pointerId: 6 }, TWO = { pointerType: 'touch', pointerId: 6, gesture: 'two-finger' };
+  const cv = one(strip('f1').el, 'sxm-fdisp');
+  place(cv, 0, 0, 60, 44);
+  const c0 = kit.getN('f.cutoff'), r0 = kit.getN('f.res');
+  ptr(cv, 'pointerdown', 10, 40, TW); ptr(cv, 'pointermove', 30, 11, TW);
+  assert.notEqual(kit.getN('f.res'), r0);
+  ptr(cv, 'pointercancel', 30, 11, TWO);
+  assert.deepEqual([kit.getN('f.cutoff'), kit.getN('f.res')], [c0, r0]);
+  assert.deepEqual(T.log.at(-1).slice(1, 3), ['FILTER 1 cutoff / res', 'end']);
+  ptr(cv, 'pointerdown', 10, 40, TW); ptr(cv, 'pointermove', 30, 11, TW); ptr(cv, 'pointercancel', 30, 11, TW);
+  assert.notEqual(kit.getN('f.res'), r0, 'plain cancel keeps');
+  // a fader (wk sliderCore): the press jumps it — the value from before comes back through the kit
+  const fd = one(strip('a').el, 'wk-fader'), id = fd.getAttribute('data-dest'), n0 = kit.getN(id);
+  place(one(fd, 'wk-slt'), 0, 0, 10, 100);
+  ptr(fd, 'pointerdown', 5, 95, TW);
+  assert.notEqual(kit.getN(id), n0);
+  ptr(fd, 'pointercancel', 5, 95, TWO);
+  assert.deepEqual([kit.getN(id), T.held.size], [n0, 0]);
 });
 
 test('MixerPage: destroy removes the page; idempotent', () => {

@@ -4,7 +4,7 @@ import './v8-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import * as T from '../tuning.js?v=7';
+import * as T from '../tuning.js?v=8';
 
 const close = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg || ''} expected ${b} ± ${tol}, got ${a}`);
 const cents = r => 1200 * Math.log2(r);

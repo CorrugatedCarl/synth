@@ -553,6 +553,24 @@ test('WTEditor headless: pointercancel, undo and frame changes mid-stroke, toolt
       assert.equal(ed.table.frames[ed.cur], f0);
       ed.close();
     }
+    { // gesture.js's two-finger cancel (e.gesture === 'two-finger': a second finger made it a pan / pinch) undoes the
+      // stroke and leaves no undo step; the thumbnail strip never reorders
+      const { ed } = await openEd(doc);
+      const f0 = ed.table.frames[ed.cur], u0 = ed.undo.u.length, T = { pointerType: 'touch' };
+      ptr(ed.waveCv, 'pointerdown', 100, 210, T);
+      ptr(ed.waveCv, 'pointermove', 300, 210, T);
+      assert.notEqual(ed.table.frames[ed.cur], f0);
+      fire(ed.waveCv, 'pointercancel', { clientX: 300, clientY: 210, pointerType: 'touch', gesture: 'two-finger' });
+      assert.equal(ed.g, null);
+      assert.equal(ed.table.frames[ed.cur], f0);
+      assert.equal(ed.undo.u.length, u0);
+      const before = ed.table.frames.slice();
+      ptr(ed.thCv, 'pointerdown', 10, 520, T); ptr(ed.thCv, 'pointermove', 140, 520, T);
+      fire(ed.thCv, 'pointercancel', { clientX: 140, clientY: 520, pointerType: 'touch', gesture: 'two-finger' });
+      assert.deepEqual(ed.table.frames, before);
+      assert.equal(ed.g, null);
+      ed.close();
+    }
     { // Ctrl+Z mid-stroke reverts the stroke (history intact); redo and strip keys are ignored until the stroke ends
       const { ed } = await openEd(doc);
       await ed.runOp('single.flipV');
@@ -645,7 +663,7 @@ test('WTEditor headless: pointercancel, undo and frame changes mid-stroke, toolt
 
 /* ================================================================== Phase 2 (SPEC-serum2 §13.13b, §11.13; inv B11) */
 
-const wk5 = await import('../wk.js?v=7'); // the instance wtedit imports (its touch modifier latches)
+const wk5 = await import('../wk.js?v=8'); // the instance wtedit imports (its touch modifier latches)
 const { channelFor, otherOscs, copyRange } = E;
 const menuLabels = doc => all(doc.body).filter(n => n.classList && n.classList.contains('wk-cl')).map(n => n.textContent);
 const menuItem = (doc, label) => all(doc.body).find(n => n.classList && n.classList.contains('wk-ci') && one(n, 'wk-cl') && one(n, 'wk-cl').textContent === label) || null;

@@ -3,7 +3,7 @@
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as core from '../serum-core.js?v=7';
+import * as core from '../serum-core.js?v=8';
 import { dspScope, DSP_TABLE, noAlloc } from './dsp-scope.mjs';
 import { readFileSync } from 'node:fs';
 

@@ -9,8 +9,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { bootMain } from './main-sim.mjs';
 import { fakeStorage, fakeIDB } from './fakes.mjs';
-import { MODELS } from '../models.js?v=7';
-import * as core from '../serum-core.js?v=7';
+import { MODELS } from '../models.js?v=8';
+import * as core from '../serum-core.js?v=8';
+import * as S from '../song.js?v=8';
 
 const peak = x => { let m = 0; for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > m) m = a; } return m; };
 const maxDiff = (x, y, n = Math.min(x.length, y.length)) => { let m = 0; for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(x[i] - y[i])); return m; };
@@ -467,4 +468,504 @@ test('page simulation: with a fixed sample rate (synth.settings.sr) sim.ctx() is
   const out = s2.run(12000);
   s2.key('KeyA', false);
   assert.ok(peak(out.get(node).L) > 0.02, 'sim.run renders the page context');
+});
+
+/* ---------------------------------------------------------- the audible clock (R5) */
+// (each boots its own page with a clock personality: a fake performance.now() driven by sim.run / sim.advance)
+const IPAD = { ua: 'Mozilla/5.0 (iPad; CPU OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1',
+  platform: 'MacIntel', touch: true, vendor: 'Apple Computer, Inc.', clock: 'webkit', baseLat: 128 / 48000 };
+const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b} (±${tol})`);
+// the tick heard at sim.ms + dms: the stamp less the output path d (s), on the anchor (after its frame)
+function heardAt(s, d, dms = 0) {
+  const c = s.ctx(), a = s.api.transport().a, o = c.getOutputTimestamp();
+  const F = (o.contextTime + (s.ms + dms - o.performanceTime) / 1000 - d) * c.sampleRate;
+  assert.ok(F >= a.frame, 'heard after the anchor');
+  return a.tick + (F - a.frame) / a.fpt;
+}
+
+test('R5 WebKit power-on: the nodes are built with the context suspended (no paused nag, a tap does not resume it), resumed at the engine\'s ready', async () => {
+  const s = await bootMain(Object.assign({ readyMs: 600, outLat: 0.18 }, IPAD));
+  const p = s.api.powerOn();
+  await s.settle(450);
+  const c = s.ctx();
+  assert.equal(c.state, 'suspended', 'held while the processors are built');
+  assert.deepEqual(c.calls, ['resume', 'suspend'], 'resumed in the gesture (unlock), suspended before the nodes');
+  const ns = c.nodes.filter(n => n.kind === 'worklet');
+  assert.ok(ns.length >= 1);
+  assert.deepEqual(ns.map(n => n.state0), ns.map(() => 'suspended'), 'every processor built (warm-up) while suspended');
+  assert.equal(s.$('#cpu').textContent, 'Warming up the engine…', 'no "Audio is paused" nag');
+  assert.equal(s.$('#notice').hidden, true);
+  for (const f of s.dom.winL.pointerdown || []) f({ type: 'pointerdown', target: s.dom.document.body, repeat: false });
+  assert.equal(c.state, 'suspended', 'a tap meanwhile leaves it held (wake)');
+  await s.settle(300); await p;
+  assert.deepEqual(c.calls, ['resume', 'suspend', 'resume'], 'resumed at ready');
+  assert.equal(c.state, 'running');
+  assert.equal(s.api.clock().webkit, true);
+  await s.settle(5);
+  assert.match(s.$('#cpu').textContent, /^DSP load/);
+});
+
+test('R5 WebKit power-on without the engine\'s ready: resumed after 3 s anyway', async () => {
+  const s = await bootMain(Object.assign({ noReady: true }, IPAD));
+  const p = s.api.powerOn();
+  await s.settle(2500);
+  assert.equal(s.ctx().state, 'suspended');
+  await s.settle(700); await p;
+  assert.deepEqual(s.ctx().calls, ['resume', 'suspend', 'resume']);
+});
+
+test('R5 WebKit (Bluetooth): the playhead, a recorded note and host.latency use one audible clock (outputLatency + ring + the Latency setting); play / seek post fresh, a tempo change and a new node do not', async () => {
+  const s = await bootMain(Object.assign({ outLat: 0.18 }, IPAD));
+  await s.power(); await s.settle(5);
+  const api = s.api, c = s.ctx(), T = api.transport(), proj = api.project(), tr = proj.tracks[0], sr = c.sampleRate;
+  assert.equal(c.state, 'running');
+  proj.metronome.countIn = 0; proj.metronome.on = false;
+  const node = s.nodeOf(tr.id);
+  node.posted.length = 0;
+  s.$('#tPlay').click(); await s.settle(2);
+  assert.equal(T.playing, true);
+  const tp = () => node.posted.filter(x => x.m.t === 'transport').map(x => x.m);
+  assert.deepEqual(tp().map(m => [m.seek, m.fresh]), [[true, true]], 'Play: seek + fresh');
+  assert.equal(api.curTick(), 0, 'before the start is heard: the start tick, never one before it');
+  s.run(48000); s.raf();
+  let d = 0.18 + 256 / sr;
+  near(api.curTick(), heardAt(s, d), 1e-6, 'playhead = render stamp − (outputLatency + ring)');
+  assert.equal(s.$('#tBBT').textContent, S.fmtBBT(proj, Math.round(heardAt(s, d))), 'the position display');
+  near(api.sxHost(tr).latency(), d, 1e-9, 'host.latency: the same delay');
+  // the Latency setting moves all three by exactly its amount
+  s.$('#latR').value = '120'; s.$('#latR').oninput();
+  assert.equal(api.settings().lat, 120);
+  d += 0.12;
+  near(api.curTick(), heardAt(s, d), 1e-6, '+120 ms');
+  near(api.sxHost(tr).latency(), d, 1e-9, 'host.latency +120 ms');
+  assert.equal(s.$('#lat').textContent, '+120 ms');
+  assert.doesNotMatch(s.$('#rate').textContent, /output/, 'not on the header line (one header row at 1280 px)');
+  s.$('#lat').onclick();
+  assert.match(s.$('#latInfo').textContent, /heard +30\d\.\d ms after render/, 'the Latency popover\'s readout');
+  s.$('#lat').onclick();
+  // recording: a note played at a key's timeStamp lands on the tick heard then
+  s.$('#tRec').click();
+  assert.equal(T.rec, true);
+  const m1 = s.ms, t0 = api.curTick(m1);
+  near(t0, heardAt(s, d), 1e-6, 'the playhead at the key press');
+  s.key('KeyA', true);
+  s.run(4800); s.raf();
+  const t1 = heardAt(s, d);
+  s.key('KeyA', false);
+  s.$('#tRec').click();
+  const rec = tr.notes.filter(n => n.take === T.take);
+  assert.equal(rec.length, 1, 'one recorded note');
+  assert.deepEqual([rec[0].t, rec[0].d], [Math.round(t0), Math.max(1, Math.round(t1 - t0))], 'start and length on the heard clock');
+  // a seek while playing: the old audio is still heard until the new anchor's frame comes out (no early jump)
+  const before = api.curTick();
+  node.posted.length = 0;
+  s.$('#tStart').click();
+  assert.deepEqual(tp().map(m => [m.seek, m.fresh, m.tick]), [[true, true, 0]], 'seek: fresh');
+  near(api.curTick(), before, 1e-6, 'still the old position');
+  s.run(48000 * 0.05 + (d + 0.01) * sr); s.raf();
+  assert.ok(api.curTick() >= 0 && api.curTick() < 960, 'then the seek target: ' + api.curTick());
+  // a tempo change re-anchors without fresh; a node created mid-song gets the anchor without fresh
+  node.posted.length = 0;
+  s.$('#tBpm').value = '100'; s.$('#tBpm').onchange();
+  assert.deepEqual(tp().map(m => [m.seek, m.fresh]), [[false, undefined]], 'tempo: no fresh');
+  const t2 = api.addTrack();
+  const n2 = s.nodeOf(t2.id).posted.filter(x => x.m.t === 'transport').map(x => x.m);
+  assert.deepEqual(n2.map(m => [m.seek, m.fresh]), [[true, undefined]], 'a new node: the anchor, no fresh');
+  s.$('#tPlay').click();
+  assert.equal(T.playing, false);
+});
+
+test('R5 Chromium: the speaker-stamped clock is used as it is (only the Latency setting is added); no suspend at power-on', async () => {
+  const s = await bootMain({ clock: 'std', outLat: 0.03, baseLat: 0.01 });
+  await s.power(); await s.settle(5);
+  const api = s.api, c = s.ctx(), T = api.transport(), tr = api.project().tracks[0];
+  assert.deepEqual(c.calls, ['resume'], 'no hold');
+  assert.equal(api.clock().webkit, false);
+  api.project().metronome.countIn = 0;
+  s.$('#tPlay').click(); await s.settle(2);
+  s.run(48000); s.raf();
+  near(api.curTick(), heardAt(s, 0), 1e-6, 'the stamp is the heard time');
+  near(api.sxHost(tr).latency(), 0.04, 1e-9, 'host.latency: currentTime − the heard time');
+  s.$('#latR').value = '50'; s.$('#latR').oninput();
+  near(api.curTick(), heardAt(s, 0.05), 1e-6, '+50 ms');
+  near(api.sxHost(tr).latency(), 0.09, 1e-9);
+  s.$('#tPlay').click();
+  assert.equal(T.playing, false);
+});
+
+test('R5 the Latency setting persists per device (synth.settings), clamped to −50 … +400 ms; the presets', async () => {
+  const ls = fakeStorage({ 'synth.settings': JSON.stringify({ sr: 0, os: 4, lat: 9999 }) });
+  const s = await bootMain({ ls });
+  assert.equal(s.api.settings().lat, 400, 'clamped');
+  assert.equal(s.api.clock().user, 400);
+  s.$('#latR').value = '-80'; s.$('#latR').oninput();
+  assert.equal(s.api.settings().lat, -50);
+  s.$('#latR').value = '135'; s.$('#latR').oninput();
+  s.api.save();
+  assert.equal(JSON.parse(ls.getItem('synth.settings')).lat, 135);
+  const s2 = await bootMain({ ls });
+  assert.equal(s2.api.settings().lat, 135, 'read back');
+  assert.equal(s2.api.clock().user, 135, 'the clock uses it');
+  assert.equal(s2.$('#latR').value, '135');
+  assert.deepEqual([s2.$('#lat').textContent, s2.$('#latV').textContent], ['+135 ms', '+135 ms']);
+  // the popover: open / close, the readout before the engine runs
+  const btn = s2.$('#lat'), pop = s2.$('#latPop');
+  assert.equal(pop.hidden, true);
+  btn.onclick();
+  assert.deepEqual([pop.hidden, btn.getAttribute('aria-expanded')], [false, 'true']);
+  assert.match(s2.$('#latInfo').textContent, /^engine +Chromium/);
+  btn.onclick();
+  assert.equal(pop.hidden, true);
+});
+
+test('R5 the Bluetooth preset tops the delay the clock already allows up to about 200 ms (outputLatency includes Bluetooth on iPadOS 18.4+): +20 over 180 ms reported, +200 where none is reported (before 18.4); the slider and Auto clear it', async () => {
+  const s = await bootMain(Object.assign({ outLat: 0.18 }, IPAD));
+  await s.power(); await s.settle(5);
+  s.run(4800); s.raf(); // a running read of outputLatency
+  s.api.latPreset('bt');
+  assert.deepEqual([s.api.settings().lat, s.api.settings().latBT, s.api.clock().user, s.$('#lat').textContent], [20, true, 20, 'Bluetooth']);
+  near(s.api.outLatency(), 0.2 + 256 / 48000, 1e-6, 'about 200 ms in all (+ the ring)');
+  s.$('#latR').value = '40'; s.$('#latR').oninput();
+  assert.deepEqual([s.api.settings().lat, s.api.settings().latBT, s.$('#lat').textContent], [40, false, '+40 ms']);
+  s.api.latPreset('bt'); s.api.latPreset('0');
+  assert.deepEqual([s.api.settings().lat, s.api.settings().latBT, s.$('#lat').textContent], [0, false, 'Auto']);
+  const s2 = await bootMain(Object.assign({}, IPAD, { outLat: null }));
+  await s2.power(); await s2.settle(5);
+  s2.run(4800); s2.raf();
+  s2.api.latPreset('bt');
+  assert.deepEqual([s2.api.settings().lat, s2.$('#lat').textContent], [200, 'Bluetooth']);
+});
+
+test('two-finger takeover of a ruler drag: the piano roll\'s host gets the arrangement\'s restoreLoop (the loop as at the press, its on flag too — setLoop turns it on)', async () => {
+  const s = await bootMain({ ls: fakeStorage({}) });
+  const p = s.api.project(), rh = s.api.roll().host, ah = s.api.arr().host;
+  assert.equal(typeof rh.restoreLoop, 'function');
+  assert.equal(rh.restoreLoop, ah.restoreLoop, 'one function for both editors');
+  rh.setLoop(960, 3840);
+  assert.deepEqual([p.loop.start, p.loop.end, p.loop.on], [960, 3840, true]);
+  rh.restoreLoop({ start: 0, end: 7680, on: false });
+  assert.deepEqual([p.loop.start, p.loop.end, p.loop.on], [0, 7680, false]);
+});
+
+test('R5 WebKit stall drift: a render stall caught up later (> 60 ms past the settled start) asks to resync; the resync closes the context before the new one', async () => {
+  const s = await bootMain(Object.assign({ outLat: 0.012 }, IPAD));
+  await s.power();
+  await s.settle(2100); // the start's 5 ms meter has ended: the baseline is taken, animation frames sample now
+  const api = s.api, c = s.ctx();
+  assert.equal(api.clock().settled, true);
+  // the IO sawtooth (currentTime in 128-frame steps), 2 s of it: the meter learns its jitter
+  const P = 128 / 48000 * 1000;
+  const tick = () => { s.advance(P); s.raf(); s.run(128, false); s.raf(); };
+  for (let k = 0; k < 750; k++) tick();
+  assert.equal(api.clock().stall, 0, 'no stall');
+  assert.equal(s.$('#notice').hidden, true);
+  // the audio thread stalls 200 ms (context time stands still), then renders the missed frames at once
+  s.advance(100); s.raf(); s.advance(100); s.raf(); s.run(9600, false); s.raf();
+  const st = api.clock().stall;
+  assert.ok(st > 0.18 && st <= 0.2, 'measured ' + st);
+  assert.equal(s.$('#notice').textContent, 'Audio timing drifted — tap to resync');
+  assert.equal(s.$('#notice').dataset.act, '1', 'tap to act');
+  s.$('#lat').onclick();
+  assert.match(s.$('#latInfo').textContent, /heard +2\d\d\.\d ms after render/, 'the readout includes it');
+  s.$('#lat').onclick();
+  s.$('#notice').onclick();
+  await s.settle(30);
+  const c2 = s.ctx();
+  assert.notEqual(c2, c, 'a new context');
+  assert.equal(c.state, 'closed');
+  assert.deepEqual(c2.born.slice(s.live.indexOf(c), s.live.indexOf(c) + 1), ['closed'], 'created after the old one closed');
+  assert.equal(api.clock().stall, 0, 'the new context starts without the lead');
+  assert.equal(s.$('#notice').hidden, true);
+});
+
+test('R5 a burst of re-anchors while playing (a loop-end drag, a held BPM spinner: the tempo kept), 50 ms apart on Bluetooth: the playhead stays on the heard line — no freeze ahead of the sound', async () => {
+  const s = await bootMain(Object.assign({ outLat: 0.18 }, IPAD));
+  await s.power(); await s.settle(5);
+  const api = s.api, c = s.ctx(), T = api.transport(), proj = api.project(), sr = c.sampleRate, host = api.roll().host;
+  proj.metronome.countIn = 0; proj.metronome.on = false; proj.loop.on = false;
+  s.$('#tPlay').click(); await s.settle(2);
+  s.run(48000); s.raf();
+  const a0 = Object.assign({}, T.a), d = 0.18 + 256 / sr;
+  const line = () => { const o = c.getOutputTimestamp(), F = (o.contextTime + (s.ms - o.performanceTime) / 1000 - d) * sr; return a0.tick + (F - a0.frame) / a0.fpt; };
+  for (let k = 0; k < 8; k++) {
+    host.setLoop(0, 30720 + 960 * k); // (each snapped step of the drag re-anchors)
+    for (let j = 0; j < 5; j++) { s.run(480); near(api.curTick(), line(), 1e-6, `step ${k}, +${10 * (j + 1)} ms`); }
+  }
+  s.$('#tPlay').click();
+});
+
+test('R5 recording across a seek: a key pressed just after the jump (the old audio still heard) is a note at the target with its real length — back, back into a loop, forward; desktop too', async () => {
+  for (const [name, o] of [['iPad', Object.assign({ outLat: 0.18 }, IPAD)], ['Chromium', { clock: 'std', outLat: 0.03 }]]) {
+    for (const dir of ['back', 'loop', 'forward']) {
+      const s = await bootMain(o);
+      await s.power(); await s.settle(5);
+      const api = s.api, c = s.ctx(), T = api.transport(), proj = api.project(), tr = proj.tracks[0], sr = c.sampleRate;
+      proj.metronome.countIn = 0; proj.metronome.on = false;
+      Object.assign(proj.loop, { on: dir === 'loop', start: 0, end: 7680 });
+      s.$('#tPlay').click(); await s.settle(2);
+      s.run(48000 * 3); s.raf();
+      s.$('#tRec').click();
+      const target = dir === 'forward' ? 30720 : 0;
+      if (dir === 'forward') api.roll().host.setPlayhead(target); else s.$('#tStart').click();
+      s.run(0.04 * sr);
+      const before = api.curTick();
+      assert.ok(before > 3000, `${name} ${dir}: the old position still heard (${before})`);
+      s.key('KeyA', true);
+      s.run(0.5 * sr); s.raf();
+      const t1 = api.curTick();
+      s.key('KeyA', false);
+      s.$('#tRec').click();
+      const rec = tr.notes.filter(n => n.take === T.take);
+      assert.equal(rec.length, 1, `${name} ${dir}: one note`);
+      const [t, dd] = [rec[0].t, rec[0].d];
+      if (dir === 'forward') {
+        assert.ok(t <= target && t > target - 700, `${name} forward: starts just before the target (${t})`);
+        assert.equal(t + dd, Math.round(t1), `${name} forward: ends at the release`);
+        near(dd, 960, 3, `${name} forward: half a second long`);
+      } else assert.deepEqual([t, dd], [0, Math.round(t1)], `${name} ${dir}: from the target to the release`);
+      s.$('#tPlay').click();
+    }
+  }
+});
+
+test('R5 a Latency setting past the clock\'s own delay (Chromium, 40 ms stamp lag, −50 ms): the playhead and host.latency stay one clock — host.latency −10 ms, not floored at 0', async () => {
+  const s = await bootMain({ clock: 'std', outLat: 0.03, baseLat: 0.01 });
+  await s.power(); await s.settle(5);
+  const api = s.api, tr = api.project().tracks[0];
+  api.project().metronome.countIn = 0;
+  s.$('#tPlay').click(); await s.settle(2);
+  s.run(48000); s.raf();
+  s.$('#latR').value = '-50'; s.$('#latR').oninput();
+  near(api.curTick(), heardAt(s, -0.05), 1e-6, 'the playhead: 50 ms later than the stamp');
+  near(api.sxHost(tr).latency(), -0.01, 1e-9, 'host.latency: the same delay, signed');
+  s.$('#tPlay').click();
+});
+
+test('R5 WebKit power-on started at a finger\'s press (no activation yet: the context starts locked): the release unlocks the held context — it runs at the engine\'s ready without another tap', async () => {
+  const s = await bootMain(Object.assign({ readyMs: 600, outLat: 0.18 }, IPAD));
+  const Base = globalThis.AudioContext;
+  let gesture = false;
+  // WebKit: a context created outside an activation starts suspended; resume() outside one is refused (left pending)
+  globalThis.AudioContext = class extends Base {
+    constructor(opt) { super(opt); this.state = 'suspended'; this.locked = true; }
+    resume() { if (this.locked && !gesture) { (this.calls || (this.calls = [])).push('resume(refused)'); return new Promise(() => {}); } this.locked = false; return super.resume(); }
+  };
+  try {
+    const p = s.api.powerOn(); // (a key's pointerdown)
+    await s.settle(450);
+    const c = s.ctx();
+    assert.deepEqual([c.calls, c.state], [['resume(refused)', 'suspend'], 'suspended'], 'held, still locked');
+    gesture = true;
+    for (const f of s.dom.winL.pointerup || []) f({ type: 'pointerup', target: s.dom.document.body, pointerId: 1, pointerType: 'touch', isPrimary: true, button: 0, buttons: 0, clientX: 0, clientY: 0, timeStamp: 0, preventDefault() {}, stopPropagation() {} });
+    gesture = false;
+    assert.deepEqual([c.calls, c.state], [['resume(refused)', 'suspend', 'resume', 'suspend'], 'suspended'], 'the release: unlocked, still held');
+    assert.equal(s.$('#cpu').textContent, 'Warming up the engine…');
+    await s.settle(300); await p;
+    assert.deepEqual([c.calls.slice(4), c.state], [['resume'], 'running'], 'resumed at ready, no second tap');
+  } finally { globalThis.AudioContext = Base; }
+});
+
+/* ---------------------------------------------------------- chords (R6, R7) */
+// (each boots its own page: a fresh project on the Minimoog, the default model)
+const modelOf = id => MODELS.find(m => m.id === id);
+// a track header's instrument menu entries, 'id=text' (strings only: never a fake-DOM node into assert)
+function menuOf(s, tr) {
+  const row = s.$('#heads').children.find(r => r.dataset && r.dataset.id === tr.id);
+  return row.children[1].children[0].children.map(o => o.value + '=' + o.textContent);
+}
+const noteAt = (id, t, n, d = 480) => ({ id, t, d, n, v: 100 });
+
+test('R6: the instrument menu and the track tab name each track\'s voice mode; a chord a track cannot play asks once (tap: a polyphonic model, undoable; Serum: its instrument); legato lines never ask', async () => {
+  const s = await bootMain({ hash: '#minimoog' });
+  const api = s.api, t = api.project().tracks[0], host = api.roll().host, note = () => s.$('#notice');
+  assert.equal(t.model, 'minimoog');
+  assert.equal(s.$('#tabTrack').textContent, `Track: ${t.name} · Mono`);
+  const menu = menuOf(s, t);
+  for (const e of ['minimoog=Minimoog · Mono', 'tb303=TB-303 · Mono', 'prophet5=Prophet-5 · Poly 5', 'juno60=Juno-60 · Poly 6', 'jupiter8=Jupiter-8 · Poly 8',
+    'dx7=DX7 · Poly 16', 'solina=Solina · Poly', 'serum=Serum · Poly 8']) assert.ok(menu.includes(e), e + ' in ' + menu.join(' | '));
+  // a legato / glide line (overlapping notes that start apart) asks nothing
+  host.edit('Draw', () => t.notes.push(noteAt('l1', 0, 48, 600), noteAt('l2', 480, 50, 600), noteAt('l3', 960, 52, 600)));
+  assert.equal(note().hidden, true, 'no notice for a legato line');
+  // a chord does, once per track
+  host.edit('Draw', () => t.notes.push(noteAt('c1', 1920, 60), noteAt('c2', 1920, 64), noteAt('c3', 1920, 67)));
+  assert.equal(note().textContent, `“${t.name}” is monophonic — its chords play one note. Tap to switch it to the Prophet-5 (5 voices; Undo restores it)`);
+  assert.equal(note().dataset.act, '1', 'tap to act');
+  api.notice('', 0);
+  host.edit('Draw', () => t.notes.push(noteAt('f1', 3840, 62), noteAt('f2', 3860, 65))); // a played chord (a 20-tick flam)
+  assert.equal(note().hidden, true, 'once per track and session');
+  // the tap (its action stays with its text): the track becomes a Prophet-5 — an undo step —, the labels follow
+  api.notice(`“${t.name}” is monophonic — its chords play one note. Tap to switch it to the Prophet-5 (5 voices; Undo restores it)`, 0);
+  note().onclick();
+  const t2 = api.project().tracks[0];
+  assert.equal(t2.model, 'prophet5');
+  assert.equal(s.$('#tabTrack').textContent, `Track: ${t2.name} · Poly 5`);
+  assert.ok(menuOf(s, t2).includes('prophet5=Prophet-5 · Poly 5'));
+  assert.equal(note().hidden, true);
+  s.$('#tUndo').onclick();
+  assert.equal(api.project().tracks[0].model, 'minimoog', 'undone');
+  assert.equal(s.$('#tabTrack').textContent, `Track: ${api.project().tracks[0].name} · Mono`);
+  // a poly track: only a chord beyond its voices asks — the Juno-60 (6): 6 notes no, 8 notes yes → the Jupiter-8 (8)
+  const j = api.addTrack(modelOf('juno60'));
+  host.edit('Draw', () => { for (let k = 0; k < 6; k++) j.notes.push(noteAt('j' + k, 0, 60 + 2 * k)); });
+  assert.equal(note().hidden, true, 'six notes on six voices');
+  host.edit('Draw', () => { for (let k = 0; k < 8; k++) j.notes.push(noteAt('k' + k, 1920, 60 + 2 * k)); });
+  assert.equal(note().textContent, `“${j.name}” has 6 voices — a chord of 8 notes drops some. Tap to switch it to the Jupiter-8 (8 voices; Undo restores it)`);
+  // a mono Serum patch: the tap opens its instrument (the voicing lives in its panel) instead of replacing the sound
+  const x = api.addTrack(modelOf('serum'));
+  x.vals.s.voicing.mono = 1; // (as the panel's Voicing › Mono sets it)
+  host.edit('Draw', () => x.notes.push(noteAt('x1', 0, 60), noteAt('x2', 0, 63)));
+  assert.equal(note().textContent, `“${x.name}” is monophonic — its chords play one note. Tap to open its instrument`);
+  note().onclick();
+  assert.equal(api.project().selTrack, x.id, 'its track selected');
+  assert.equal(x.model, 'serum', 'the sound is kept');
+  assert.equal(s.$('#tab-inst').hidden, false, 'the Instrument tab');
+});
+
+test('R7: Piano Roll previews post aud (B5); the song is sent sorted mid-gesture (B4); a panic re-sends the anchor without fresh (B1); the CPU cap shows on a capped Serum track until lifted', async () => {
+  const s = await bootMain({ hash: '#minimoog' });
+  await s.power(); await s.settle(5); s.raf();
+  const api = s.api, t = api.project().tracks[0], host = api.roll().host, node = s.nodeOf(t.id);
+  node.posted.length = 0;
+  host.audition(60, 100); host.auditionOff(60);
+  assert.deepEqual(node.posted.map(x => [x.m.t, x.m.n, x.m.aud]), [['on', 60, 1], ['off', 60, 1]]);
+  // B4: a gesture appends / moves notes in place (sorted only at its end): songData sends a sorted copy
+  t.notes.push(noteAt('b1', 960, 64), noteAt('b2', 0, 67), noteAt('b3', 0, 60));
+  const d = api.songData(t);
+  assert.deepEqual(d.notes, [0, 480, 60, 100, 0, 480, 67, 100, 960, 480, 64, 100]);
+  assert.deepEqual(t.notes.map(n => n.id), ['b1', 'b2', 'b3'], 'the track\'s own array untouched');
+  // B1: play posts fresh; a panic's re-send of the same (old) anchor does not
+  api.project().metronome.countIn = 0;
+  node.posted.length = 0;
+  s.$('#tPlay').click(); await s.settle(2);
+  s.$('#panic').onclick();
+  assert.deepEqual(node.posted.filter(x => x.m.t === 'transport').map(x => [x.m.seek, x.m.fresh]), [[true, true], [true, undefined]]);
+  s.$('#tPlay').click();
+  // R7 cap display: a Serum track at POLY 16 through Q4 (≤ 8) and Q6 (≤ 4), then a Quality choice
+  const x = api.addTrack(modelOf('serum'));
+  x.vals.s.voicing.poly = 16;
+  api.queuePatch(x); s.raf();
+  assert.equal(s.$('#tabTrack').textContent, `Track: ${x.name} · Poly 16`);
+  const lower = () => { for (const N of api.nodes.values()) N.load = 0; api.nodes.get(x.id).load = 1.2; api.lowerOS(); s.raf(); };
+  for (let k = 0; k < 8 && api.caps().qrStep < 4; k++) lower();
+  assert.equal(api.caps().qrStep, 4);
+  assert.equal(s.$('#tabTrack').textContent, `Track: ${x.name} · Poly 8 (CPU cap)`, 'the track tab');
+  assert.ok(menuOf(s, x).includes('serum=Serum · Poly 8 (CPU cap)'), 'its instrument menu');
+  assert.match(s.$('#rate').textContent, / · quality step Q4, polyphony ≤ 8 \(CPU cap\)/);
+  lower(); lower();
+  assert.equal(api.caps().qrStep, 6);
+  assert.equal(s.$('#tabTrack').textContent, `Track: ${x.name} · Poly 4 (CPU cap)`);
+  api.liftCaps(); s.raf();
+  assert.equal(api.caps().qrStep, 0);
+  assert.equal(s.$('#tabTrack').textContent, `Track: ${x.name} · Poly 16`, 'lifted');
+});
+
+test('G2 two-finger rollback (gesture.js\'s pointercancel flagged e.gesture === "two-finger"): a classic knob drag puts the value and the preset name back (a plain cancel keeps both); a finger selects a track header and closes the modal backdrop on its tap\'s release only, a mouse at the press', async () => {
+  const s = await bootMain({ hash: '#minimoog' });
+  const api = s.api, find = (n, f) => { if (f(n)) return n; for (const c of n.children || []) { const r = find(c, f); if (r) return r; } return null; };
+  const ev = (type, o) => Object.assign({ type, button: 0, buttons: type === 'pointerup' ? 0 : 1, ctrlKey: false, shiftKey: false, pointerId: 5, pointerType: 'touch',
+    clientX: 50, clientY: 300, preventDefault() {}, stopPropagation() {} }, o);
+  const fire = (el, type, o) => el.dispatchEvent(ev(type, Object.assign({ target: el }, o)));
+  const TWO = { gesture: 'two-finger' };
+  // classic knob: the first change made the preset "Custom" (null) — the rollback puts the value and the name back
+  const t = api.project().tracks[0], knob = find(s.$('#inst'), n => n.className === 'knob');
+  assert.ok(knob, 'a classic knob');
+  t.preset = 'Fat Bass';
+  const v0 = JSON.stringify(t.vals);
+  fire(knob, 'pointerdown'); fire(knob, 'pointermove', { clientY: 200 });
+  assert.notEqual(JSON.stringify(t.vals), v0, 'dragged');
+  assert.equal(t.preset, null, 'Custom while dragging');
+  fire(knob, 'pointercancel', Object.assign({ clientY: 200 }, TWO));
+  assert.equal(JSON.stringify(t.vals), v0, 'the value back');
+  assert.equal(t.preset, 'Fat Bass', 'the preset name back');
+  fire(knob, 'pointermove', { clientY: 100 });
+  assert.equal(JSON.stringify(t.vals), v0, 'the drag is over');
+  fire(knob, 'pointerdown'); fire(knob, 'pointermove', { clientY: 200 }); fire(knob, 'pointercancel', { clientY: 200 });
+  assert.notEqual(JSON.stringify(t.vals), v0, 'a plain cancel keeps the value');
+  assert.equal(t.preset, null);
+  // track header rows: a finger selects on its tap's release; a two-finger cancel or a 30 px slide selects nothing
+  api.addTrack();
+  const [t0, t1] = api.project().tracks.map(x => x.id);
+  api.selectTrack(t0);
+  const row = id => find(s.$('#heads'), n => !!n.dataset && n.dataset.id === id);
+  fire(row(t1), 'pointerdown');
+  assert.equal(api.project().selTrack, t0, 'not at the press');
+  fire(row(t1), 'pointercancel', TWO); fire(row(t1), 'pointerup');
+  assert.equal(api.project().selTrack, t0, 'cancelled');
+  fire(row(t1), 'pointerdown'); fire(row(t1), 'pointerup', { clientX: 80 });
+  assert.equal(api.project().selTrack, t0, 'a slide');
+  fire(row(t1), 'pointerdown'); fire(row(t1), 'pointerup', { clientX: 53 });
+  assert.equal(api.project().selTrack, t1, 'a tap selects');
+  fire(row(t0), 'pointerdown', { pointerType: 'mouse' });
+  assert.equal(api.project().selTrack, t0, 'a mouse at the press');
+  // the modal dialog's backdrop
+  const m = s.$('#modal'), bd = { target: { id: 'modal' } };
+  m.hidden = false;
+  fire(m, 'pointerdown', bd);
+  assert.equal(m.hidden, false, 'not at the press');
+  fire(m, 'pointercancel', Object.assign({}, bd, TWO)); fire(m, 'pointerup', bd);
+  assert.equal(m.hidden, false, 'cancelled: open');
+  fire(m, 'pointerdown', bd); fire(m, 'pointerup', Object.assign({ clientX: 52 }, bd));
+  assert.equal(m.hidden, true, 'a tap closes it');
+  m.hidden = false;
+  fire(m, 'pointerdown', Object.assign({ pointerType: 'mouse' }, bd));
+  assert.equal(m.hidden, true, 'a mouse at the press');
+  fire(m, 'pointerup', Object.assign({ pointerType: 'mouse' }, bd));
+});
+
+test('G2 two-finger rollback: the step sequencer\'s number boxes and step notes (a rest the drag made a note is a rest again)', async () => {
+  const s = await bootMain({ hash: '#tb303' });
+  const api = s.api, find = (n, f) => { if (f(n)) return n; for (const c of n.children || []) { const r = find(c, f); if (r) return r; } return null; };
+  const ev = (type, o) => Object.assign({ type, button: 0, buttons: 1, ctrlKey: false, shiftKey: false, pointerId: 6, pointerType: 'touch', clientX: 50, clientY: 300,
+    preventDefault() {}, stopPropagation() {} }, o);
+  const fire = (el, type, o) => el.dispatchEvent(ev(type, Object.assign({ target: el }, o)));
+  const t = api.project().tracks[0];
+  assert.equal(t.model, 'tb303');
+  const tempo = find(s.$('#inst'), n => n.className === 'num' && n.attrs && n.attrs['aria-label'] === 'Tempo');
+  const step = find(s.$('#inst'), n => n.className === 'snote' && n.attrs && n.attrs['aria-label'] === 'Step 2 note');
+  assert.ok(tempo && step, 'Tempo box and a step note');
+  const bpm0 = t.seq.bpm;
+  fire(tempo, 'pointerdown'); fire(tempo, 'pointermove', { clientY: 260 });
+  assert.notEqual(t.seq.bpm, bpm0);
+  fire(tempo, 'pointercancel', { gesture: 'two-finger' });
+  assert.equal(t.seq.bpm, bpm0);
+  t.seq.pat[1].g = 0;
+  const n0 = t.seq.pat[1].n;
+  fire(step, 'pointerdown'); fire(step, 'pointermove', { clientY: 250 });
+  assert.deepEqual([t.seq.pat[1].g, t.seq.pat[1].n !== n0], [1, true], 'the drag made the rest a note');
+  fire(step, 'pointercancel', { gesture: 'two-finger' });
+  assert.deepEqual([t.seq.pat[1].g, t.seq.pat[1].n], [0, n0], 'a rest again');
+  fire(step, 'pointerdown'); fire(step, 'pointermove', { clientY: 250 }); fire(step, 'pointercancel');
+  assert.equal(t.seq.pat[1].g, 1, 'a plain cancel keeps');
+});
+
+test('R6: the chord notice judges a switch on the model\'s last-used values — a saved Unison Prophet-5 is skipped for the Juno-60 (6 voices); the tap gives a polyphonic track', async () => {
+  const s = await bootMain({ hash: '#minimoog', ls: fakeStorage({ 'synth.v.prophet5': JSON.stringify({ un: 1 }) }) });
+  const api = s.api, t = api.project().tracks[0], host = api.roll().host, note = () => s.$('#notice');
+  host.edit('Draw', () => t.notes.push(noteAt('c1', 1920, 60), noteAt('c2', 1920, 64), noteAt('c3', 1920, 67)));
+  const txt = `“${t.name}” is monophonic — its chords play one note. Tap to switch it to the Juno-60 (6 voices; Undo restores it)`;
+  assert.equal(note().textContent, txt);
+  note().onclick();
+  const t2 = api.project().tracks[0];
+  assert.equal(t2.model, 'juno60');
+  assert.equal(s.$('#tabTrack').textContent, `Track: ${t2.name} · Poly 6`);
+});
+
+test('R7 B5: a Piano Roll preview\'s note-off goes to the track its note-on went to — the selection moved in between (a held note, a 170 ms blip); the same pitch on two tracks pairs in order', async () => {
+  const s = await bootMain({ hash: '#minimoog' });
+  await s.power(); await s.settle(5); s.raf();
+  const api = s.api, a = api.project().tracks[0], b = api.addTrack(modelOf('prophet5')), host = api.roll().host;
+  api.selectTrack(a.id);
+  const na = s.nodeOf(a.id), nb = s.nodeOf(b.id), notes = n => n.posted.filter(x => x.m.t === 'on' || x.m.t === 'off').map(x => x.m.t + x.m.n);
+  na.posted.length = 0; nb.posted.length = 0;
+  host.audition(63, 100);
+  api.selectTrack(b.id);
+  host.auditionOff(63);
+  assert.deepEqual([notes(na), notes(nb)], [['on63', 'off63'], []], 'the off to the first track');
+  na.posted.length = 0; nb.posted.length = 0;
+  api.selectTrack(a.id); host.audition(61, 100);
+  api.selectTrack(b.id); host.audition(61, 100);
+  host.auditionOff(61); host.auditionOff(61);
+  assert.deepEqual([notes(na), notes(nb)], [['on61', 'off61'], ['on61', 'off61']], 'one off each, in order');
+  host.auditionOff(70); // (an off with no preview: the selected track, as before)
+  assert.deepEqual(notes(nb).slice(2), ['off70']);
 });

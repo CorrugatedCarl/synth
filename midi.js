@@ -7,7 +7,7 @@
 //    navigator.requestMIDIAccess (the 'Enable MIDI' button). main.js implements the host and keeps the live input routing
 //    shared with the on-screen and computer keyboards (held notes, recording, power, the wheels).
 // Browser-module rule: nothing here touches the DOM, window or navigator at module top level.
-import { midiValue, isFxId, VIRTUAL, S1_PAIRS, syncS1 } from './serum-core.js?v=7';
+import { midiValue, isFxId, VIRTUAL, S1_PAIRS, syncS1 } from './serum-core.js?v=8';
 
 /* ======================================================== pure routing core */
 

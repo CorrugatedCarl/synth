@@ -10,8 +10,8 @@
 // Run: node tests/fixtures/gen-compiled.mjs   (tests/serum-core.test.mjs fails when these drift from the modules)
 import { writeFileSync } from 'node:fs';
 import * as P1 from '../ref-p1/serum-core.js';
-import { defaultSerum, compileSerum, assembleCT } from '../../serum-core.js?v=7';
-import { defaultFxV1, compileFx, compileFxT } from '../../fx-core.js?v=7';
+import { defaultSerum, compileSerum, assembleCT } from '../../serum-core.js?v=8';
+import { defaultFxV1, compileFx, compileFxT } from '../../fx-core.js?v=8';
 import { stringify } from './load.mjs';
 
 const out = (f, o) => writeFileSync(new URL('./' + f, import.meta.url), stringify(o));

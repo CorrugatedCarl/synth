@@ -10,11 +10,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 // imported before any DOM exists: no document / window access at module top level
-const seq = await import('../sx-ui-seq.js?v=7');
-const core = await import('../serum-core.js?v=7');
+const seq = await import('../sx-ui-seq.js?v=8');
+const core = await import('../serum-core.js?v=8');
 const { makeKit, stubOf } = await import('./serum-ui-stubs/kit.js');
 const dom = await import('./wk-dom.mjs');
-const wk = await import('../wk.js?v=7');
+const wk = await import('../wk.js?v=8');
 
 const fresh = () => core.normalizeSerum(core.defaultSerum());
 const MAJOR = [0, 2, 4, 5, 7, 9, 11];
@@ -112,6 +112,30 @@ test('rollHit: time / row / note at a point, note parts, overlaps, folded rows, 
   const h3 = seq.rollHit(notes, view, NaN, 5);
   assert.equal(h3.i, -1);
   assert.ok(Number.isNaN(h3.t));
+});
+
+test('rollHit touch zones: out / slopY (selected notes) and outU / slopU (the rest) reach past a note\'s end and off its row; a selected note\'s near handle beats a neighbour\'s body; near', () => {
+  const rows = [60, 62, 64], view = { t0: 0, pps: 10, rows, rowH: 12, top: 0, edge: 6 };
+  const notes = [note(0, 2, 62), note(2, 2, 62), note(6, 1, 64)];
+  const z = sel => Object.assign({}, view, { edge: 14, out: 18, slopY: 8, outU: 6, slopU: 4 }, sel ? { sel } : {});
+  const pick = (v, x, y) => { const h = seq.rollHit(notes, v, x, y); return [h.i, h.part, h.near === undefined ? null : h.near, h.row, h.note]; };
+  // no touch fields: the plain test (the result has no `near`)
+  assert.deepEqual(pick(view, 45, 18), [-1, '', null, 1, 62]);
+  // just past the boundary: the neighbour's body; with the left note selected its handle (3 px out) wins
+  assert.deepEqual(pick(z([]), 22, 18), [1, 'start', true, 1, 62]);
+  assert.deepEqual(pick(z([0]), 22, 18), [0, 'end', true, 1, 62]);
+  // past the end: 6 px for an unselected note, 18 px for a selected one (not near beyond 6 px)
+  assert.deepEqual(pick(z([]), 45, 18), [1, 'end', false, 1, 62]);
+  assert.deepEqual(pick(z([]), 47, 18).slice(0, 1), [-1]);
+  assert.deepEqual(pick(z([1]), 57, 18), [1, 'end', false, 1, 62]);
+  // off the row: 4 px for an unselected note, 8 px for a selected one; row / note stay the point's own
+  assert.deepEqual(pick(z([]), 30, 26), [1, 'body', false, 0, 60]);
+  assert.deepEqual(pick(z([]), 30, 29).slice(0, 1), [-1]);
+  assert.deepEqual(pick(z([1]), 30, 29), [1, 'body', false, 0, 60]);
+  // without sel every note has the full reach
+  assert.deepEqual(pick(z(), 57, 18), [1, 'end', false, 1, 62]);
+  // a narrow note keeps its `edge` extension, then the reach
+  assert.deepEqual(pick(z([]), 79, 5), [2, 'end', false, 2, 64]);
 });
 
 test('laneValueAt: null lanes are NaN; the curve law of the graph points; x clamped', () => {
@@ -888,6 +912,26 @@ test('ClipPage: recording clock — EXTEND a beat ahead of the DSP playhead, lat
   } finally { clock(null); }
 });
 
+test('ClipPage: recording with a slightly negative host.latency (a Latency setting past the clock\'s own delay) places notes that much after the DSP playhead; below −0.1 s it is clamped', () => {
+  for (const [L, want] of [[-0.02, -0.02], [-0.5, -0.1]]) {
+    let input = null;
+    const { s, kit, T, root } = mount({ host: { onInput: fn => { input = fn; }, latency: () => L } });
+    s.clip.clips[0].len = 16;
+    const k = 120 / 60000 * 4;
+    clock(0);
+    try {
+      const clip = new seq.ClipPage(root, kit);
+      T.setSnap(snapSeq({ 4: 1, 5: 0 }));
+      assert.ok(clip.record(true));
+      assert.ok(Math.abs(clip.rec.latK - want * 1000 * k) < 1e-12, 'latK ' + clip.rec.latK);
+      clock(400); T.setSnap(snapSeq({ 4: 1, 5: 400 * k }));
+      input(true, 60, 100, 400);
+      assert.ok(Math.abs(clip.pending()[0][0] - (clip.dspPos(400) - want * 1000 * k)) < 1e-4, 'placed ' + -want * 1000 + ' ms after the DSP position');
+      clip.destroy();
+    } finally { clock(null); }
+  }
+});
+
 test('ClipPage: a recording belongs to its clip; ↶ takes back the bars EXTEND added; finish keeps the bars reached; note room', () => {
   let input = null;
   const { s, kit, T, root } = mount({ host: { onInput: fn => { input = fn; } } });
@@ -1306,6 +1350,56 @@ test('PianoRoll: touch — double-tap adds, a second finger cancels a drag (reve
   for (const l of ['Copy', 'Paste', 'Chop', 'Conform to Scale', 'Legato', 'Mute (0)', 'Quantize', 'Reverse', 'Scale Time 50% (/)', 'Double Entire Clip', 'Scale Entire Clip 50%',
     'Grid', 'Fold', 'Note Preview', 'Zoom', 'Wrap Clip to Begin Here']) assert.ok(labels.some(x => x.startsWith(l)), l);
   assert.deepEqual(roll.sel, [1]);
+});
+
+test('PianoRoll: touch zones — two quick taps on neighbouring notes delete nothing; a selected 1/16 resizes from 10 px past its end (no jump); a press beside its row keeps the pitch; a double-tap past it adds', () => {
+  const { clip, roll, X, Y } = rollOf({ clip: { notes: [note(0, 1, 60), note(1, 1, 60)] } });
+  const t = { pointerType: 'touch' }, at = (type, x, y) => dom.ptr(roll.el, type, x, y, t);
+  const tap = (x, y) => { at('pointerdown', x, y); at('pointerup', x, y); };
+  tap(X(0.5), Y(60)); tap(X(1.5), Y(60));
+  assert.deepEqual(clip.notes, [note(0, 1, 60), note(1, 1, 60)], 'both neighbours survive');
+  dom.advance(1000);
+  // the second note selected: 10 px past its end grabs its end; the end follows the finger's travel (2 steps)
+  clip.notes = [note(0, 1, 60), note(4, 1, 60)];
+  tap(X(4.5), Y(60));
+  assert.deepEqual(roll.sel, [1]);
+  dom.advance(1000);
+  at('pointerdown', X(5) + 10, Y(60)); at('pointermove', X(6) + 10, Y(60)); at('pointermove', X(7) + 10, Y(60)); at('pointerup', X(7) + 10, Y(60));
+  assert.deepEqual(clip.notes, [note(0, 1, 60), note(4, 3, 60)], 'resized by the travel');
+  // a press 5 px above its row, dragged 2 steps right: moved in time, the pitch kept
+  dom.advance(1000);
+  const above = Y(60) - roll.view().rowH / 2 - 5;
+  at('pointerdown', X(5), above); at('pointermove', X(6), above); at('pointermove', X(7), above); at('pointerup', X(7), above);
+  assert.deepEqual(clip.notes, [note(0, 1, 60), note(6, 3, 60)], 'moved, pitch kept');
+  // a double-tap 10 px past the selected note's end (its far reach) adds a note there instead of deleting it
+  dom.advance(1000);
+  tap(X(9) + 10, Y(60)); tap(X(9) + 12, Y(60));
+  assert.deepEqual(clip.notes.map(r => r.slice(0, 3)), [[0, 1, 60], [6, 3, 60], [9, 3, 60]], 'added');
+});
+
+test('PianoRoll: touch double-tap targets — just past an unselected note\'s end (its reach) deletes nothing; an empty-grid tap then a tap there adds; a selected note\'s near handle deletes it', () => {
+  const { clip, roll, X, Y } = rollOf({ clip: { notes: [note(0, 4, 60)] } });
+  const t = { pointerType: 'touch' }, at = (type, x, y) => dom.ptr(roll.el, type, x, y, t);
+  const tap = (x, y) => { at('pointerdown', x, y); at('pointerup', x, y); };
+  for (const dx of [1, 4, 5]) {
+    roll.setSel([], roll.recs()); dom.advance(1000);
+    tap(X(4) + dx, Y(60)); tap(X(4) + dx, Y(60));
+    assert.deepEqual(clip.notes.map(r => r.slice(0, 3)), [[0, 4, 60]], dx + ' px past the unselected note: kept');
+  }
+  // 3 px above its row, in its end zone (slopY)
+  roll.setSel([], roll.recs()); dom.advance(1000);
+  const above = Y(60) - roll.view().rowH / 2 - 3;
+  tap(X(4) - 2, above); tap(X(4) - 2, above);
+  assert.deepEqual(clip.notes.map(r => r.slice(0, 3)), [[0, 4, 60]], 'above its end zone: kept');
+  // the empty grid 10 px past it, then 4 px past its end: a double-tap on empty grid — a note added at that cell
+  roll.setSel([], roll.recs()); dom.advance(1000);
+  tap(X(4) + 10, Y(60)); tap(X(4) + 4, Y(60));
+  assert.deepEqual(clip.notes.map(r => r.slice(0, 1).concat(r[2])), [[0, 60], [4, 60]], 'added');
+  // already selected: a double-tap on its near handle 4 px past its end deletes it
+  clip.notes = [note(0, 4, 60)];
+  roll.setSel([0], roll.recs()); dom.advance(1000);
+  tap(X(4) + 4, Y(60)); tap(X(4) + 4, Y(60));
+  assert.deepEqual(clip.notes, [], 'selected: deleted');
 });
 
 test('PianoRoll: marquee and Shift selection, keyboard shortcuts, clipboard (notes and time range)', () => {
@@ -1764,6 +1858,52 @@ test('LaneView: a chord shares one bar — a drag edits the selected notes of it
   assert.deepEqual(c.notes.map(n => n[3]).slice(0, 3), [c.notes[0][3], c.notes[0][3], c.notes[0][3]]);
   assert.ok(c.notes[0][3] < 40 && c.notes[3][3] === 100);
   page.destroy();
+});
+
+test('LaneView, two-finger rollback (gesture.js\'s pointercancel flagged e.gesture === "two-finger"): a value drag and a strum press come back, a plain cancel keeps; a finger flips a boolean lane on its tap\'s release only (never on a cancel or a slide), a mouse at the press', () => {
+  const { s, kit, T, root } = mount();
+  const arp = new seq.ArpPage(root, kit);
+  s.arp.slots[0].shape = 1;
+  T.paint();
+  dom.fire(dom.one(arp.sec.pattern, 'sx-pated'), 'click');
+  const ed = arp.patEd, lanes = ed.lanes;
+  s.arp.slots[0].pat.ev = [[2, 2, 3, 100, 0]];
+  dom.place(ed.roll.el, 0, 0, KEYW + 320, RULER + 32 * 12);
+  ed.roll.refresh();
+  T.paint();
+  const v = ed.roll.view(), x = KEYW + 2 * v.pps + 2, ev = () => s.arp.slots[0].pat.ev[0];
+  dom.place(lanes.cv, 0, 0, KEYW + 320, 72);
+  const TW = { pointerType: 'touch', pointerId: 4 }, TWO = { pointerType: 'touch', pointerId: 4, gesture: 'two-finger' };
+  // NOTE VEL (a value lane): the press sets 127, the drag more — a second finger puts 100 back
+  dom.ptr(lanes.cv, 'pointerdown', x, 4, TW);
+  assert.equal(ev()[3], 127);
+  dom.ptr(lanes.cv, 'pointermove', x, 30, TW);
+  dom.ptr(lanes.cv, 'pointercancel', x, 30, TWO);
+  assert.equal(ev()[3], 100);
+  assert.equal(T.log.filter(e => e[0] === 'edit').at(-1)[2], 'end');
+  dom.ptr(lanes.cv, 'pointerdown', x, 4, TW); dom.ptr(lanes.cv, 'pointercancel', x, 4, TW);
+  assert.equal(ev()[3], 127, 'plain cancel keeps');
+  // ACCENT (a boolean lane)
+  dom.fire(lanes.tabBtns[1], 'click');
+  dom.ptr(lanes.cv, 'pointerdown', x, 30, TW);
+  assert.equal(ev()[4], 0, 'not at the press');
+  dom.ptr(lanes.cv, 'pointercancel', x, 30, TWO);
+  assert.equal(ev()[4], 0, 'two-finger cancel: no flip');
+  dom.ptr(lanes.cv, 'pointerdown', x, 30, TW); dom.ptr(lanes.cv, 'pointermove', x + 30, 30, TW); dom.ptr(lanes.cv, 'pointerup', x + 30, 30, TW);
+  assert.equal(ev()[4], 0, 'a slide: no flip');
+  dom.ptr(lanes.cv, 'pointerdown', x, 30, TW); dom.ptr(lanes.cv, 'pointerup', x + 3, 31, TW);
+  assert.equal(ev()[4], 1, 'a tap flips');
+  dom.ptr(lanes.cv, 'pointerdown', x, 30);
+  assert.equal(ev()[4], 0, 'a mouse flips at the press');
+  dom.ptr(lanes.cv, 'pointerup', x, 30);
+  // STRUM: the press added an entry — the two-finger cancel takes it away again
+  dom.fire(lanes.tabBtns[2], 'click');
+  const st0 = JSON.stringify(s.arp.slots[0].pat.strum);
+  dom.ptr(lanes.cv, 'pointerdown', KEYW + 8 * v.pps + 1, 36, TW);
+  assert.notEqual(JSON.stringify(s.arp.slots[0].pat.strum), st0);
+  dom.ptr(lanes.cv, 'pointercancel', KEYW + 8 * v.pps + 1, 36, TWO);
+  assert.equal(JSON.stringify(s.arp.slots[0].pat.strum), st0);
+  assert.equal(lanes.g, null);
 });
 
 test('note limits: the bank budget refuses additions with a notice; Double / Paste Clip / Load Clip respect the room', () => {

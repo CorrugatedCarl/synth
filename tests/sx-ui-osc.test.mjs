@@ -18,8 +18,8 @@ if (typeof nodeModule.registerHooks === 'function') {
 } else nodeModule.register('./serum-ui.hooks.mjs', import.meta.url);
 
 // imported before any DOM exists: no document / window access at module top level
-const osc = await import('../sx-ui-osc.js?v=7');
-const core = await import('../serum-core.js?v=7');
+const osc = await import('../sx-ui-osc.js?v=8');
+const core = await import('../serum-core.js?v=8');
 const { makeKit, stubOf } = await import('./serum-ui-stubs/kit.js');
 const gxStub = await import('../graph.js');
 const wtStub = await import('./serum-ui-stubs/wt.js');
@@ -1669,6 +1669,151 @@ test('FILTER display: a finger drags relatively after an 8 px slop (a tap with j
   dom.fire(disp, 'pointermove', { pointerId: 1, clientX: 150, clientY: 90, buttons: 0 });
   assert.deepEqual([s.p['f.cutoff'], s.p['f.res']], [0.25, 0.75]);
   assert.deepEqual(T.log.filter(x => x[1] === 'Filter cutoff / res').at(-1)[2], 'end');
+});
+
+// gesture.js's two-finger layer cancels the first finger with a synthetic pointercancel flagged e.gesture === 'two-finger':
+// what the drag set goes back to its value at the press; a plain pointercancel keeps it (as before)
+const TW = { pointerType: 'touch', pointerId: 9 }, TWO = { pointerType: 'touch', pointerId: 9, gesture: 'two-finger' };
+test('two-finger rollback: the sample display — S marker, loop band, X-fade and the view drag come back; a plain cancel keeps', async () => {
+  const { s, kit, T, root } = mount();
+  const P = new osc.OscPanel(root, kit, 0), V = P.views.sample;
+  s.osc[0].type = 'sample'; s.osc[0].smp = 'smp:1';
+  T.paint(); await settle(); T.paint();
+  const cv = dom.byAttr(V.el, 'data-oscdisp', '0')[0];
+  dom.place(cv, 0, 0, 1000, 100);
+  const S0 = kit.getN('a.sstart');
+  dom.ptr(cv, 'pointerdown', 2, 50, TW); dom.ptr(cv, 'pointermove', 200, 50, TW); dom.ptr(cv, 'pointermove', 300, 50, TW);
+  near(kit.getN('a.sstart'), 0.3);
+  dom.ptr(cv, 'pointercancel', 300, 50, TWO);
+  assert.equal(kit.getN('a.sstart'), S0);
+  assert.deepEqual(T.log.filter(x => x[0] === 'setN' && x[1] === 'a.sstart').map(x => x[3]), ['start', 'move', 'move', 'end']);
+  assert.equal(V.g, null);
+  dom.ptr(cv, 'pointerdown', 2, 50, TW); dom.ptr(cv, 'pointermove', 300, 50, TW); dom.ptr(cv, 'pointercancel', 300, 50, TW);
+  near(kit.getN('a.sstart'), 0.3);                                  // plain: kept
+  // the loop band (one edit at the end puts both markers back)
+  s.osc[0].smpo.loop = 1; s.p['a.lstart'] = 0.4; s.p['a.lend'] = 0.6;
+  T.paint();
+  dom.ptr(cv, 'pointerdown', 500, 10, TW); dom.ptr(cv, 'pointermove', 550, 10, TW);
+  near(s.p['a.lstart'], 0.45);
+  dom.ptr(cv, 'pointercancel', 550, 10, TWO);
+  assert.deepEqual([s.p['a.lstart'], s.p['a.lend']], [0.4, 0.6]);
+  assert.deepEqual(T.log.filter(x => x[1] === 'Move loop').map(x => x[2]), ['start', 'end']);
+  // the X-fade handle
+  const L = osc.markerLayout(V.mm(), V.viewR(), 1000), xf = L.markers.find(m => m.id === 'XF'), y0 = V.xfY(xf.y, 100), X0 = kit.getN('a.xfade');
+  dom.ptr(cv, 'pointerdown', xf.x, y0, TW); dom.ptr(cv, 'pointermove', xf.x, y0 - 42, TW);
+  assert.notEqual(kit.getN('a.xfade'), X0);
+  dom.ptr(cv, 'pointercancel', xf.x, y0 - 42, TWO);
+  assert.equal(kit.getN('a.xfade'), X0);
+  // a zoom drag on the empty display: the view as it was
+  const v0 = JSON.stringify(V.viewR());
+  dom.ptr(cv, 'pointerdown', 250, 90, TW); dom.ptr(cv, 'pointermove', 250, 0, TW);
+  assert.notEqual(JSON.stringify(V.viewR()), v0);
+  dom.ptr(cv, 'pointercancel', 250, 0, TWO);
+  assert.equal(JSON.stringify(V.viewR()), v0);
+});
+
+test('two-finger rollback: a pinch on the sample display itself (an own element: no gesture.js cancel) rolls the first finger\'s S marker back; a view drag keeps its view (the pinch starts from it)', async () => {
+  const { s, kit, T, root } = mount();
+  const P = new osc.OscPanel(root, kit, 0), V = P.views.sample;
+  s.osc[0].type = 'sample'; s.osc[0].smp = 'smp:1';
+  T.paint(); await settle(); T.paint();
+  const cv = dom.byAttr(V.el, 'data-oscdisp', '0')[0];
+  dom.place(cv, 0, 0, 1000, 100);
+  const t = id => ({ pointerType: 'touch', pointerId: id }), log = () => T.log.filter(x => x[0] === 'setN' && x[1] === 'a.sstart').map(x => x[3] + ':' + x[2]);
+  const S0 = kit.getN('a.sstart');
+  dom.ptr(cv, 'pointerdown', 2, 50, t(31)); dom.ptr(cv, 'pointermove', 300, 50, t(31));
+  near(kit.getN('a.sstart'), 0.3);
+  dom.ptr(cv, 'pointerdown', 600, 50, t(32));                       // the second finger on the same display
+  assert.equal(kit.getN('a.sstart'), S0);
+  assert.deepEqual(log().slice(-2), ['move:' + S0, 'end:' + S0]);
+  assert.equal(V.g, null);
+  for (let k = 1; k <= 5; k++) { dom.ptr(cv, 'pointermove', 300 - 10 * k, 50, t(31)); dom.ptr(cv, 'pointermove', 600 + 10 * k, 50, t(32)); }
+  assert.ok(V.zv && V.zv.b - V.zv.a < 0.95);                        // the pinch zoomed
+  assert.equal(kit.getN('a.sstart'), S0);                           // the first finger edits nothing more
+  dom.ptr(cv, 'pointerup', 250, 50, t(31)); dom.ptr(cv, 'pointerup', 650, 50, t(32));
+  // a one-finger zoom drag on the empty display, then a second finger: the view stays as dragged (no jump back)
+  V.zv = { a: 0, b: 1 };
+  dom.ptr(cv, 'pointerdown', 450, 90, t(33)); dom.ptr(cv, 'pointermove', 450, 20, t(33));
+  const dragged = JSON.stringify(V.viewR());
+  assert.notEqual(dragged, JSON.stringify({ a: 0, b: 1 }));
+  dom.ptr(cv, 'pointerdown', 700, 50, t(34));
+  assert.equal(JSON.stringify(V.viewR()), dragged);
+  dom.ptr(cv, 'pointerup', 450, 20, t(33)); dom.ptr(cv, 'pointerup', 700, 50, t(34));
+});
+
+test('two-finger rollback: the X|Y dot (and its jump), Spectral Hi / Lo handles, the multisample envelope graph, the FILTER display and the grain window Alt-drag', async () => {
+  // X|Y dot (Granular, Manual X|Y): the press jumps the dot — both axes come back
+  {
+    const { s, kit, root, T } = mount();
+    const P = new osc.OscPanel(root, kit, 0), V = P.views.gran;
+    s.osc[0].type = 'gran'; s.osc[0].smp = 'smp:1';
+    T.paint();
+    item(V.loopItems(), 'Manual (X|Y)').action();
+    T.paint();
+    const cv = dom.byAttr(V.el, 'data-oscdisp', '0')[0], dot = dom.byAttr(V.el, 'data-xy', '1')[0];
+    dom.place(cv, 0, 0, 1000, 100);
+    const x0 = kit.getN('a.pos'), y0 = kit.getN('a.gy');
+    dom.ptr(dot, 'pointerdown', 250, 25, TW); dom.ptr(dot, 'pointermove', 300, 30, TW);
+    assert.notEqual(kit.getN('a.pos'), x0);
+    dom.ptr(dot, 'pointercancel', 300, 30, TWO);
+    assert.deepEqual([kit.getN('a.pos'), kit.getN('a.gy'), T.held.size], [x0, y0, 0]);
+    dom.ptr(dot, 'pointerdown', 250, 25, TW); dom.ptr(dot, 'pointercancel', 250, 25, TW);
+    assert.deepEqual([s.p['a.pos'], s.p['a.gy']], [0.25, 0.75]);   // plain: kept
+    // the grain window's Alt-drag (amount x / skew y)
+    const wb = byLabel(V.el, 'Grain window (OSC A); Alt-drag: amount (x) / skew (y)');
+    const a0 = kit.getN('a.wamt'), k0 = kit.getN('a.wskew');
+    dom.ptr(wb, 'pointerdown', 100, 100, Object.assign({ altKey: true }, TW)); dom.ptr(wb, 'pointermove', 70, 115, TW);
+    assert.notEqual(kit.getN('a.wamt'), a0);
+    dom.ptr(wb, 'pointercancel', 70, 115, TWO);
+    assert.deepEqual([kit.getN('a.wamt'), kit.getN('a.wskew'), T.held.size], [a0, k0, 0]);
+  }
+  // Spectral Hi handle: the press puts it at the finger — the frequency from before comes back
+  {
+    const { s, kit, root, T } = mount();
+    const P = new osc.OscPanel(root, kit, 0), V = P.views.spec;
+    s.osc[0].type = 'spec'; s.osc[0].smp = 'smp:1';
+    T.paint();
+    const [hi] = V.hl, cv = dom.byAttr(V.el, 'data-oscdisp', '0')[0];
+    dom.place(cv, 0, 0, 1000, 100);
+    const h0 = kit.getN('a.fhi');
+    dom.ptr(hi.h, 'pointerdown', 990, 50, TW);
+    assert.notEqual(kit.getN('a.fhi'), h0);
+    dom.ptr(hi.h, 'pointercancel', 990, 50, TWO);
+    assert.equal(kit.getN('a.fhi'), h0);
+    assert.deepEqual(T.log.filter(x => x[0] === 'setN' && x[1] === 'a.fhi').map(x => x[3]), ['start', 'move', 'end']);
+  }
+  // the multisample envelope graph (attack corner)
+  {
+    const { doc, s, kit, root, T } = mount();
+    const P = new osc.OscPanel(root, kit, 0), V = P.views.multi;
+    s.osc[0].type = 'multi'; s.osc[0].multi = 'fmsmp:Keys/EP';
+    T.paint();
+    const box = popBox(doc, openPop(T, root, 'Multisample envelope (OSC A)'));
+    T.paint();
+    const ecv = dom.byCls(box, 'sxo-mini')[0];
+    dom.place(ecv, 0, 0, 260, 44);
+    const G = V.envGeo(260, 44), [ax, ay] = G.pts[2], m0 = kit.getN('a.matt');
+    dom.ptr(ecv, 'pointerdown', ax, ay, TW); dom.ptr(ecv, 'pointermove', ax + 20, ay, TW);
+    assert.notEqual(kit.getN('a.matt'), m0);
+    dom.ptr(ecv, 'pointercancel', ax + 20, ay, TWO);
+    assert.deepEqual([kit.getN('a.matt'), T.held.size], [m0, 0]);
+    dom.ptr(ecv, 'pointerdown', ax, ay, TW); dom.ptr(ecv, 'pointermove', ax + 20, ay, TW); dom.ptr(ecv, 'pointercancel', ax + 20, ay, TW);
+    assert.notEqual(kit.getN('a.matt'), m0);                       // plain: kept
+  }
+  // the FILTER display (a finger drags relatively after the slop)
+  {
+    const { s, kit, root, T } = mount();
+    const fl = new osc.FilterPanel(root, kit, 0);
+    T.paint();
+    const disp = dom.byCls(fl.el, 'sx-disp')[0];
+    dom.place(disp, 0, 0, 200, 100);
+    s.p['f.cutoff'] = 0.5; s.p['f.res'] = 0.2;
+    dom.ptr(disp, 'pointerdown', 20, 80, TW); dom.ptr(disp, 'pointermove', 60, 60, TW);
+    near(s.p['f.cutoff'], 0.7);
+    dom.ptr(disp, 'pointercancel', 60, 60, TWO);
+    assert.deepEqual([s.p['f.cutoff'], s.p['f.res'], s.ui.filtView[0] | 0], [0.5, 0.2, 0]);   // (no view cycle either)
+    assert.equal(T.log.filter(x => x[1] === 'Filter cutoff / res').at(-1)[2], 'end');
+  }
 });
 
 test('display keys follow unison (stalks) and every slice mark; the grain window button takes touch drags', () => {

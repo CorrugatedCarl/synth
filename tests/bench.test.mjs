@@ -89,7 +89,7 @@ test('§14.1 bench.json: the calibration t_ref(calib) and the targets of every r
 // through tests/ref-p1 measured in the same run (bench.json calib = t_ref(calib)); pairs in alternating order, the median of
 // the per-pair ratios, re-measured (≤ 5 attempts) while over the gate (RULINGS2 Performance).
 test('§14.1 row p (node gate): an idle Serum v2 track (default patch, no notes) after the 2 s quiet window ≤ 1.5 × 0.002 — the skip path', async (t) => {
-  const core = await import('../serum-core.js?v=7'), { patchFor } = await import('../models.js?v=7'), W = await import('../wt.js?v=7');
+  const core = await import('../serum-core.js?v=8'), { patchFor } = await import('../models.js?v=8'), W = await import('../wt.js?v=8');
   const D = dspScope({ engine: true });
   const p = new D.Proc({ processorOptions: { os: 2, hostOS: 4, trackId: 'idle' } });
   const s = core.defaultSerum(), patch = patchFor('serum', { s }, core.defaultFx2(), { sr: 48000, bpm: 120, prefs: { smooth: 1, silenceTails: 1 } });

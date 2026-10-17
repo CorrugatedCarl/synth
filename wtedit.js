@@ -23,8 +23,8 @@
 // WAV, Single-Cycle Waves (ZIP), 8-bit .256, Selection; TABLE ▸ Save Table… / Rename / Init All (the name field's menu,
 // also on a right-click of the name while it is not being edited; the name is tinted while the table is an automatic
 // " *" copy); a Shift/Alt modifier bar in touch mode (wk.touchMode, or the first touch inside the editor).
-import * as wk from './wk.js?v=7';
-import * as wt from './wt.js?v=7';
+import * as wk from './wk.js?v=8';
+import * as wt from './wt.js?v=8';
 
 const FRAME = 2048, MAXF = 256;
 const STORE_KEY = 'synth.sx.wte', FORMULA_KEY = 'synth.sx.formulas';
@@ -1317,11 +1317,12 @@ export class WTEditor {
     if (g.kind === 'thumb') this.thumbUp(g);
   }
   // The browser took the pointer (a touch pan on the thumbnail strip, a system gesture): never reorder frames;
-  // a wave/FFT stroke keeps what was drawn (one undo step restores the frame).
+  // a wave/FFT stroke keeps what was drawn (one undo step restores the frame). gesture.js's two-finger cancel (a second
+  // finger made it a pan / pinch, e.gesture === 'two-finger') undoes the stroke instead: cancelGesture.
   pointerCancel(e) {
     const g = this.g;
     if (!g || e.pointerId !== g.id) return;
-    this.endGesture();
+    if (e.gesture === 'two-finger') this.cancelGesture(); else this.endGesture();
   }
   cancelGesture() {
     const g = this.g;
