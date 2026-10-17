@@ -1307,3 +1307,21 @@ Revision 2 answers a review of revision 1. Every point was checked against the c
 | 25 | Browser minimums; camera key collides across projects | Accepted: §9.4 iPadOS/Safari 16.4+, §4.4 key by project uid |
 | 26 | Auto-move OSC into another Serum; keep press-and-hold menu | Accepted: §8.3, §8.5, §2.6, §7.11 |
 | 27 | Documents | Accepted: SUMMARY.md; §13 rewritten |
+
+---
+
+## User decisions (2026-10-17)
+
+These answer §13 and override any default above that differs.
+
+| Q | Decision |
+|---|---|
+| Q1 Canvas pinch | **Zoom the canvas.** Pinch over the trays keeps native page zoom; while the page is natively zoomed the canvas hands gestures back to the browser (§4.3). |
+| Q2 FX panels | **A pedalboard of effects** (one panel = one `FXRack`). |
+| Q3 Serum limits | Accepted by default: 3 OSC, 1 SUB, 1 NOISE, 2 FILTER per Serum; a 4th oscillator starts "Serum 2" (revisit at milestone 3). |
+| Q4 Modulatable-knob order | Accepted by default as in §7.4 / §10 (revisit at milestone 2). |
+| Q5 Mod cables | Accepted by default: **always shown**, fading when cluttered. |
+| Q6 Library | **Start fresh on the canvas site.** No change to `main`: no Export/Import library buttons. Songs move by Save (main) → Open (canvas). "Save as classic project" (canvas → main file) stays. |
+| Q7 Knob undo | Keep today's policy (D12) for now; ask again later. |
+| Q8 Mouse drag | **Drag empty canvas pans**; Shift-drag box-selects. |
+| — | The user earlier rejected an app-owned whole-page zoom that reflowed the layout; canvas zoom is a transform of the world layer only and never reflows the page. Two-finger false-press protection (`gesture.js`) stays. |
