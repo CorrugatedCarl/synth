@@ -4181,12 +4181,21 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
 
 /* -------------------------------------------------------------- boot */
 let app = null; // pwa.js initApp's controller
+// a node (or a text node's element) inside something the user types into — the only places text may be selected
+const TEXT_FIELD = 'input:not([type=range]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=color]), textarea, select, [contenteditable]:not([contenteditable="false"])';
+function isTextField(t) {
+  const el = t && t.nodeType === 3 ? t.parentElement : t;
+  return !!(el && typeof el.closest === 'function' && el.closest(TEXT_FIELD));
+}
 function boot() {
   // the two-finger layer (gesture.js) first: its window capture listeners run before every other (pressStart, wake, the
   // keys …), so a two-finger pan / pinch never presses what it lands on; the page's pinch-zoom stays the browser's. Over
   // the canvas its script pan and pinch drive the camera (the hooks answer false elsewhere, and while there is no world)
   installGestures(window, { pan: (sx, sy, at) => (world ? world.hooks.pan(sx, sy, at) : false), zoom: (f, cx, cy, at) => (world ? world.hooks.zoom(f, cx, cy, at) : false) });
   // (main's boot drops build 8's 'synth-ui.scale' key here; the canvas build never had it and leaves main's keys alone)
+  // no text selection outside fields: iPadOS can still start one (word select + loupe) on a double-tap or hold where
+  // style.css's user-select: none leaves a gap
+  document.addEventListener('selectstart', e => { if (!isTextField(e.target)) e.preventDefault(); });
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   defs.setAttribute('width', 0); defs.setAttribute('height', 0); defs.style.position = 'absolute';
   defs.innerHTML = '<defs><radialGradient id="knobShine" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff" stop-opacity="0.22"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.04"/><stop offset="1" stop-color="#000" stop-opacity="0.25"/></radialGradient></defs>';

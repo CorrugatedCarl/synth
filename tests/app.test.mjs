@@ -98,6 +98,23 @@ test('desktop Chrome: no interface size of the app\'s own (ruling Z1) — no tes
   assert.ok(!LS.writes.some(k => /synth-ui\.scale/.test(k)), LS.writes.join());
 });
 
+test('no text selection outside fields: style.css makes the app unselectable (no callout, no tap flash) with fields excepted, and boot refuses a selectstart anywhere but a field (iPad double-tap / hold)', async () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /body \{ -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; \}/);
+  assert.match(css, /html \{ -webkit-tap-highlight-color: transparent; \}/);
+  assert.match(css, /:is\(input:not\(\[type=range\], \[type=checkbox\], \[type=radio\], \[type=button\], \[type=color\]\), textarea, select, \[contenteditable\]:not\(\[contenteditable="false"\]\)\) \{ -webkit-user-select: text; user-select: text;/);
+  const s = await page();
+  const fs = s.dom.docL.selectstart || [];
+  assert.equal(fs.length, 1, 'one selectstart guard');
+  const fire = (target) => { let prevented = false; fs[0]({ type: 'selectstart', target, preventDefault() { prevented = true; } }); return prevented; };
+  const el = (field) => ({ nodeType: 1, closest: sel => (field && /textarea/.test(sel) ? {} : null) });
+  assert.equal(fire(el(false)), true, 'a label, button or panel: refused');
+  assert.equal(fire({ nodeType: 3, parentElement: el(false) }), true, 'a text node in a label: refused');
+  assert.equal(fire(el(true)), false, 'inside a field: allowed');
+  assert.equal(fire({ nodeType: 3, parentElement: el(true) }), false, 'a text node in a field: allowed');
+  assert.equal(fire(null), true, 'no target: refused');
+});
+
 test('desktop Chrome: Install app through beforeinstallprompt (the browser\'s own banner replaced), one prompt per offer; appinstalled hides it and asks for persistent storage', async () => {
   const s = await page(), ins = s.$('#install'), fs = s.$('#fullscreen');
   let prompted = 0, choose = null;
