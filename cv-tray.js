@@ -178,7 +178,8 @@ export function trayGrip(grip, o) {
 
 /**
  * A side tray: a RAIL_W rail (a tap opens), the panel (SIDE_W, resizable by a grip on its inner edge ≥ EDGE_INSET from
- * the screen edge), closes on Escape (the caller's chain), on a press outside it and as soon as a drag leaves it.
+ * the screen edge), closes on its rail, its ✕, Escape (the caller's chain) and as soon as a drag leaves it — never on a
+ * press outside it (a tap on the canvas keeps it open).
  * o.rail / o.panel / o.grip: the tray's nodes (index.html); missing ones are made. o.key: its part of the TRAY_PREF record.
  * @param {HTMLElement} el  #srcTray | #fxTray
  * @param {{side: 'left' | 'right', store?: {get: Function, set: Function}, key?: string, rail?: HTMLElement,
@@ -213,8 +214,7 @@ export function sideTray(el, o) {
     panel.hidden = !on;
     rail.setAttribute('aria-expanded', on ? 'true' : 'false');
     if (offDoc) { offDoc(); offDoc = null; }
-    // a press anywhere outside (the canvas, the top tray …) closes it; it still reaches what it pressed
-    if (on && d) offDoc = listen(d, 'pointerdown', e => { const t = e.target; if (!inside(el, t) && !(o.keepOpen && o.keepOpen(t))) setOpen(false); }, true);
+    // a press outside (the canvas, the top tray …) leaves it open (the user's call): only its rail, its ✕ and Escape close it
     if (persist) save();
     if (typeof o.onChange === 'function') o.onChange(on);
   }

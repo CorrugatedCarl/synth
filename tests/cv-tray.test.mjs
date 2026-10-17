@@ -1,6 +1,6 @@
 import './v8-guard.mjs';
 // cv-tray.js (stage 1b SHELL lane; docs/canvas/IMPL-1b.md §8.1): budget(), topSnaps(), trayGrip (drag, two-finger
-// rollback, keys, double-tap, ARIA), sideTray (tap opens, grip inset, close on a press outside / drag leave), sourcesTray
+// rollback, keys, double-tap, ARIA), sideTray (tap opens, grip inset, stays open on a press outside, closes on drag leave), sourcesTray
 // drag verdicts (out / along / hold) and drop routing, menuPop, sheet. Fake DOM: tests/wk-dom.mjs; never pass fake-DOM
 // nodes to assert.* (ids, strings and numbers only).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-tray.test.mjs
@@ -180,7 +180,7 @@ function sideRig(o = {}) {
   return { d, el, rail, panel, grip, outside, keep, store, mem, changes, S };
 }
 
-test('sideTray: a tap on the rail opens and closes it (aria-expanded, the panel shown); a press outside closes it (not on the kept areas); close() says whether it was open; state persisted', () => {
+test('sideTray: a tap on the rail opens and closes it (aria-expanded, the panel shown); a press outside (the canvas) leaves it open — the user\'s call; close() says whether it was open; state persisted', () => {
   const R = sideRig();
   assert.deepEqual([R.S.isOpen(), R.panel.hidden, R.rail.getAttribute('aria-expanded'), R.rail.getAttribute('aria-controls')], [false, true, 'false', 'srcPanel']);
   R.rail.click();
@@ -192,7 +192,8 @@ test('sideTray: a tap on the rail opens and closes it (aria-expanded, the panel 
   ptr(R.keep, 'pointerdown', 50, 50);
   assert.equal(R.S.isOpen(), true, 'the keyboard keeps it (playing while browsing)');
   ptr(R.outside, 'pointerdown', 500, 50);
-  assert.deepEqual([R.S.isOpen(), R.panel.hidden], [false, true], 'a press outside closes it');
+  assert.deepEqual([R.S.isOpen(), R.panel.hidden], [true, false], 'a press on the canvas leaves it open');
+  assert.equal(R.S.close(), true, 'close() closes it');
   assert.equal(R.S.close(), false, 'closed already');
   R.S.open();
   assert.equal(R.S.close(), true);
