@@ -71,9 +71,9 @@
 // view edits (smpo UI fields, §2.2.3): no undo step.
 //
 // Browser ES module: nothing touches document / window / storage at module top level (node imports it for tests).
-import * as core from './serum-core.js?v=8';
-import * as wk from './wk.js?v=8';
-import * as gx from './graph.js?v=8';
+import * as core from './serum-core.js?v=9';
+import * as wk from './wk.js?v=9';
+import * as gx from './graph.js?v=9';
 
 /* ================================================================ constants and small helpers */
 
@@ -2656,8 +2656,9 @@ export class OscPanel {
   O() { return this.kit.s().osc[this.o]; }
   build() {
     const K = this.kit, d = K.doc, o = this.o, P = this.P, T = OSC_T[o];
-    // the shell's module menu (Lock / Init / Copy / Paste, label drags: serum-ui) gets this panel's items (§13.3)
-    const shell = K.panel(T, OSC_M[o], P + '.on', '', { items: () => this.menuItems() });
+    // the shell's module menu (Lock / Init / Copy / Paste, label drags: serum-ui) gets this panel's items (§13.3);
+    // collapse: the shell folds to its title row while the oscillator is off (C1, as SUB, NOISE and the filters)
+    const shell = K.panel(T, OSC_M[o], P + '.on', '', { items: () => this.menuItems(), collapse: true });
     const { el, head, body } = shell;
     this.shell = shell;
     el.classList.add('sxo-osc');
@@ -2875,7 +2876,7 @@ export class SubPanel {
       { label: 'Edit Note Ranges…', action: () => openPane(K, 'map-sub', this.shell.name || this.route.btn, 'SUB note ranges', this.map) }];
   }
   build() {
-    const K = this.kit, d = K.doc, shell = K.panel('SUB', 'sub', 's.on', '', { items: () => this.menuItems() }), { el, head, body } = shell;
+    const K = this.kit, d = K.doc, shell = K.panel('SUB', 'sub', 's.on', '', { items: () => this.menuItems(), collapse: true }), { el, head, body } = shell;
     this.shell = shell;
     el.classList.add('sxo-mod');
     if (el.style && el.style.setProperty) el.style.setProperty('--sxo-c', '#a78bfa');
@@ -2926,7 +2927,7 @@ export class NoisePanel {
       { label: 'Edit Note Ranges…', action: () => openPane(K, 'map-noise', this.shell.name || this.route.btn, 'NOISE note ranges', this.map) }];
   }
   build() {
-    const K = this.kit, D = this.D, d = K.doc, shell = K.panel('NOISE', 'noise', 'n.on', '', { items: () => this.menuItems() }), { el, head, body } = shell;
+    const K = this.kit, D = this.D, d = K.doc, shell = K.panel('NOISE', 'noise', 'n.on', '', { items: () => this.menuItems(), collapse: true }), { el, head, body } = shell;
     this.shell = shell;
     el.classList.add('sxo-mod');
     el.setAttribute('data-noisepanel', '1');
@@ -3010,7 +3011,7 @@ export class FilterPanel {
   }
   build() {
     const K = this.kit, D = this.D, d = K.doc, k = this.k, F = this.F, T = k ? 'FILTER 2' : 'FILTER 1', mod = k ? 'filter2' : 'filter';
-    const shell = K.panel(T, mod, F + 'on'), { el, head, body } = shell;
+    const shell = K.panel(T, mod, F + 'on', '', { collapse: true }), { el, head, body } = shell;
     this.shell = shell;
     el.classList.add('sxo-mod');
     if (el.style && el.style.setProperty) el.style.setProperty('--sxo-c', k ? '#ff5b8a' : '#ff8a5b');

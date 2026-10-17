@@ -18,8 +18,8 @@ if (typeof nodeModule.registerHooks === 'function') {
 } else nodeModule.register('./serum-ui.hooks.mjs', import.meta.url);
 
 // imported before any DOM exists: no document / window access at module top level
-const osc = await import('../sx-ui-osc.js?v=8');
-const core = await import('../serum-core.js?v=8');
+const osc = await import('../sx-ui-osc.js?v=9');
+const core = await import('../serum-core.js?v=9');
 const { makeKit, stubOf } = await import('./serum-ui-stubs/kit.js');
 const gxStub = await import('../graph.js');
 const wtStub = await import('./serum-ui-stubs/wt.js');
@@ -177,6 +177,31 @@ test('OSC B / C: b.* / c.* bindings, modules oscB / oscC, display markers; OSC C
   assert.ok(destsIn(B.el).has('b.warpMode'));
   assert.equal(destsIn(Cp.el).has('c.warpMode'), false);
   assert.equal(Cp.el.getAttribute('aria-label'), 'OSC C');
+});
+
+test('C1: the seven oscillator-area shells fold while off (kit.panel o.collapse); their own title-row items are direct children the fold hides', () => {
+  const { kit, T, root } = mount();
+  const P = [new osc.OscPanel(root, kit, 0), new osc.OscPanel(root, kit, 1), new osc.OscPanel(root, kit, 2), new osc.SubPanel(root, kit), new osc.NoisePanel(root, kit),
+    new osc.FilterPanel(root, kit, 0), new osc.FilterPanel(root, kit, 1)];
+  T.paint();
+  const POWER = ['a.on', 'b.on', 'c.on', 's.on', 'n.on', 'f.on', 'f2.on'];
+  // the fold rule keeps power, title, lock mark and chevron (serum-ui's shell) and hides every other child of the head
+  const KEEP = ['wk-power', 'sx-tname', 'sx-lockmark', 'sx-peek'];
+  P.forEach((p, i) => {
+    const sh = p.shell;
+    assert.ok(sh && sh.collapse === true, POWER[i]);
+    assert.ok(sh.el === p.el && sh.head.parentNode === p.el && sh.body.parentNode === p.el, POWER[i]);
+    const pw = byDest(sh.head, POWER[i]);
+    assert.ok(pw && pw.parentNode === sh.head && pw.classList.contains('wk-power'), POWER[i]);
+    assert.ok(sh.name.parentNode === sh.head, POWER[i]);
+    const kept = sh.head.children.filter(n => KEEP.some(c => n.classList.contains(c)));
+    assert.equal(kept.length, 2, POWER[i]);
+    assert.ok(kept[0] === pw && kept[1] === sh.name, POWER[i]);
+    // nothing of the panel sits beside the head and body (the fold hides the body as a whole)
+    assert.equal(p.el.children.length, 2, POWER[i]);
+  });
+  assert.equal(P[5].el.className, 'sx-panel sxo-mod');
+  assert.equal(P[6].el.className, 'sx-panel sxo-mod');
 });
 
 test('OscPanel: type menu, one view per type (the current one shown, its head in the title row), view() and keys', async () => {

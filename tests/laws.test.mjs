@@ -4,7 +4,7 @@ import './v8-guard.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import * as L from '../laws.js?v=8';
+import * as L from '../laws.js?v=9';
 import * as P1 from './ref-p1/serum-core.js';
 
 const close = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg || ''} expected ${b} ± ${tol}, got ${a}`);

@@ -12,9 +12,9 @@ import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as dom from './wk-dom.mjs';
-import * as S from '../song.js?v=8';
-import { PianoRoll } from '../roll.js?v=8';
-import { Arrangement } from '../arrange.js?v=8';
+import * as S from '../song.js?v=9';
+import { PianoRoll } from '../roll.js?v=9';
+import { Arrangement } from '../arrange.js?v=9';
 
 // never hand a fake-DOM node to assert (its AssertionError walks the cyclic tree: tens of GB): compare primitives, and
 // anything else as JSON (a node would throw on its cycle at once)

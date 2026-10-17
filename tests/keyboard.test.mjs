@@ -358,7 +358,9 @@ test('gesture.js: the two-finger layer\'s window pointerdown / click listeners c
   L.pointerdown[0](t('pointerdown', 901, 300, true));
   const second = t('pointerdown', 902, 400, false);
   L.pointerdown[0](second);
-  assert.deepEqual([second.prevented, second.imm], [true, true], 'a second finger 100 px away at once: a two-finger gesture, its press swallowed');
+  // (main-sim has no getComputedStyle: every touch may pinch-zoom → a native session, swallowed only — never
+  // preventDefault-ed, the browser's pinch as without the layer; ruling Z1)
+  assert.deepEqual([second.prevented, second.imm], [false, true], 'a second finger 100 px away at once: a two-finger gesture, its press swallowed');
   const c = ev('click', { detail: 1 });
   L.click[0](c);
   assert.equal(c.imm, true, 'its click swallowed first');

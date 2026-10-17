@@ -7,7 +7,7 @@ import { readFileSync, mkdtempSync, copyFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import * as C from '../serum-core.js?v=8';
+import * as C from '../serum-core.js?v=9';
 import * as P1 from './ref-p1/serum-core.js';
 import { loadFixture } from './fixtures/load.mjs';
 
@@ -2708,7 +2708,7 @@ test('MODULE_FIELDS (v2) and FACTORY_PRESETS (migrated Phase-1 presets; FACTORY_
   }
   // the table and noise ids exist in wt.js, the factory sample / multisample ids in smpgen's catalogues (a typo would leave
   // an oscillator silent); sample-like needs: `spec:` analyses and `wtsmp:` tables played as samples of those
-  const W = await import('../wt.js?v=8'), G = await import('../smpgen.js?v=8');
+  const W = await import('../wt.js?v=9'), G = await import('../smpgen.js?v=9');
   const known = new Set([...W.FACTORY_TABLES.map(t => t.id), ...W.SUB_TABLES, ...W.NOISES.map(n => n.id)]);
   const base = id => id.replace(/^spec:/, '').replace(/^wtsmp:/, '');
   for (const pr of FACTORY_PRESETS) for (const id of compileSerum(pr.v.s).needs) assert.ok(known.has(base(id)) || G.byId(base(id)), pr.name + ': ' + id);
@@ -2773,7 +2773,7 @@ const W2 = id => C.WARPS2.findIndex(w => w.id === id);
 const S1state = () => migrate1(defaultV1());
 
 test('19 tuning (§11.4, §6.18): re-exported by serum-core; CP.tune from global.tun.tab, Step data from global.tun.scl', async () => {
-  const T = await import('../tuning.js?v=8');
+  const T = await import('../tuning.js?v=9');
   for (const k of ['parseScl', 'parseKbm', 'parseTun', 'tableFrom', 'stepTable', 'describe']) assert.equal(C[k], T[k], k);
   const P0 = compileSerum(defaultSerum()).serum;
   assert.deepEqual([P0.sclN, P0.sclPer, P0.use & 512], [0, 0, 0]);
@@ -3402,7 +3402,7 @@ test('31 assetNeeds and fxModded2 (§9.8, §11.1)', () => {
 });
 
 test('32 §11.1 re-exports: every export of laws.js, fx-core.js, seq-core.js and tuning.js is reachable, identical, through serum-core', async () => {
-  const mods = { laws: await import('../laws.js?v=8'), fx: await import('../fx-core.js?v=8'), seq: await import('../seq-core.js?v=8'), tuning: await import('../tuning.js?v=8') };
+  const mods = { laws: await import('../laws.js?v=9'), fx: await import('../fx-core.js?v=9'), seq: await import('../seq-core.js?v=9'), tuning: await import('../tuning.js?v=9') };
   const LOCAL = ['lawValue', 'lawNorm'];          // serum-core's id-based versions shadow the laws.js ones (Phase-1 signatures)
   const seen = new Map();
   for (const [name, M] of Object.entries(mods)) {

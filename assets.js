@@ -122,9 +122,9 @@
 //   the 20 s cap shows a notice once per session. Cache trims never evict what the project uses now; factory records
 //   served from the main-thread LRU mark their cache entry used.
 // - farmPatch(model, preset, bpm) builds the render-farm patches (exported for the tests).
-import { MODELS, patchFor } from './models.js?v=8';
+import { MODELS, patchFor } from './models.js?v=9';
 
-const VERSION = '8';
+const VERSION = '9';
 
 /** Phase-1 budget of unreferenced wavetable entries kept posted in the worklet (§7.5). */
 export const KEEP_BYTES = 32 * 1048576;

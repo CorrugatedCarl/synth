@@ -7,7 +7,7 @@
 //   (data-oscdisp on the oscillator display, data-noisepanel on NOISE); made = every panel built
 //   oscData(kit): { tinfo, forget, lfoToWavetable, lfoToNoise, renderOscWarp, lfoShape, canRenderWarp } recording
 //   calls = [[name, …args]]
-import * as core from '../../serum-core.js?v=8';
+import * as core from '../../serum-core.js?v=9';
 
 export * from '../../sx-ui-osc.js?real';
 export const __stub = true;
@@ -18,7 +18,7 @@ const OSC_M = ['oscA', 'oscB', 'oscC'], OSC_P = ['a', 'b', 'c'], OSC_L = ['A', '
 const FIELDS = m => ((core.MODULE_FIELDS[m] || { p: [] }).p).filter(id => core.DEST_INDEX[id] !== undefined && !(core.MATRIX_ONLY || []).includes(id));
 
 function shell(kit, root, title, module, power) {
-  const P = kit.panel(title, module, power);
+  const P = kit.panel(title, module, power, '', { collapse: true });   // as the real panels (C1)
   for (const id of FIELDS(module)) if (id !== power) P.body.appendChild(kit.knob(id, { label: id.slice(id.indexOf('.') + 1).toUpperCase(), size: 'sm' }).el);
   if (root) root.appendChild(P.el);
   return P;

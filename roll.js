@@ -1,6 +1,6 @@
 // PianoRoll — canvas note editor for one track. All edits go through host.edit / host.beginEdit+changed+endEdit.
 // The specifier must match main.js's song import exactly: a different query string loads a second copy of song.js with its own note-id counter.
-import { PPQ, barTicks, beatTicks, fmtBBT, snapTick, sortNotes, songEnd, copyNotes, pasteNotes, newId } from './song.js?v=8';
+import { PPQ, barTicks, beatTicks, fmtBBT, snapTick, sortNotes, songEnd, copyNotes, pasteNotes, newId } from './song.js?v=9';
 
 const GUT = 64, RUL = 24, VEL = 72, MAXPPT = 1.5, BW = 38;
 const BG = '#0c0d0f', ACC = '#f2a33a', TEXT = '#e9e7e2', MUTE = '#8d8b86', LINE = '#24262b';

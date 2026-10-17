@@ -99,22 +99,17 @@ test('index.html: manifest, Apple touch icon (180 px), PNG + SVG favicons, the a
   assert.match(narrow, /body::before \{[^}]*position: fixed; top: 0; left: 0; right: 0; height: env\(safe-area-inset-top\); background: var\(--bg\)[^}]*pointer-events: none/);
 });
 
-test('index.html / style.css: the interface size (uiscale.js) — the static viewport meta unchanged (BASE_VP), the inline boot between it and style.css, #uiZoom in the header hidden until uiscale.js shows it, the help; touch-action pan-x pan-y at zero specificity inside body on html[data-uiz] (never a rule on html alone: WebKit resets it at scroll containers), text-size-adjust', async () => {
-  const U = await import('../uiscale.js?v=' + N), css = read('style.css'), bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
-  assert.equal(/<meta name="viewport" content="([^"]+)">/.exec(HTML)[1], U.BASE_VP);
-  const iMeta = HTML.indexOf('<meta name="viewport"'), iBoot = HTML.indexOf('<script>(function(){'), iCss = HTML.indexOf('<link rel="stylesheet" href="style.css');
-  assert.ok(iMeta > 0 && iMeta < iBoot && iBoot < iCss, 'meta ' + iMeta + ' < boot ' + iBoot + ' < style.css ' + iCss);
-  assert.match(HTML.slice(iBoot, iCss), /localStorage\.getItem\('synth-ui\.scale'\)/);
-  assert.match(HTML, /<div id="uiZoom" [^>]*\shidden>/, '#uiZoom starts hidden');
-  const iCtl = HTML.indexOf('<div class="appctl">'), iZoom = HTML.indexOf('id="uiZoom"'), iIns = HTML.indexOf('id="install"');
-  assert.ok(iCtl > 0 && iCtl < iZoom && iZoom < iIns, 'in the header\'s .appctl');
-  for (const id of ['uiZoomOut', 'uiZoomPct', 'uiZoomIn']) assert.match(HTML, new RegExp('<button id="' + id + '" type="button"'), id);
-  assert.match(HTML, /<b>Size:<\/b> on iPad and iPhone, pinch the page/);
-  assert.match(css, /:where\(html\[data-uiz\]\) :where\(body, body \*\) \{ touch-action: pan-x pan-y; \}/);
-  assert.doesNotMatch(bare, /(^|[\s,}])html\[data-uiz\][^{]*\{[^}]*touch-action/, 'no touch-action rule on html[data-uiz] itself');
-  assert.match(bare, /\nhtml \{[^}]*-webkit-text-size-adjust: 100%; text-size-adjust: 100%/);
-  assert.match(bare, /\.uizoom\[hidden\] \{ display: none; \}/);
-  assert.match(bare, /\.uiz-badge \{[^}]*position: fixed;[^}]*pointer-events: none/);
+test('index.html / style.css: no interface size of the app\'s own (ruling Z1: the page\'s pinch-zoom is the browser\'s, as at 75926b6) — the static viewport meta, no inline script, no − / % / + in the header, no Size help; no touch-action of the page\'s own on html / body, the html rule as before; uiscale.js gone', () => {
+  const css = read('style.css'), bare = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.equal(/<meta name="viewport" content="([^"]+)">/.exec(HTML)[1], 'width=device-width,initial-scale=1,viewport-fit=cover');
+  assert.equal((HTML.match(/<meta name="viewport"/g) || []).length, 1);
+  assert.deepEqual([...HTML.matchAll(/<script\b([^>]*)>/g)].map(m => m[1]).filter(a => !/\ssrc=/.test(a)), [], 'no inline <script>');
+  for (const w of ['uiZoom', 'data-uiz', 'synth-ui.scale', 'uiscale', '<b>Size:</b>', 'user-scalable']) assert.ok(!HTML.includes(w), 'index.html: ' + w);
+  for (const w of ['data-uiz', '.uizoom', '.uiz-badge', '--uiz', 'touch-action: pan-x pan-y']) assert.ok(!bare.includes(w), 'style.css: ' + w);
+  assert.match(bare, /\nhtml \{ scroll-padding-top: env\(safe-area-inset-top\); \}\n/, 'the html rule of 75926b6');
+  assert.doesNotMatch(bare, /(^|[\s,}])(html|body)\s*\{[^}]*touch-action/, 'no touch-action on html / body');
+  assert.equal(existsSync(new URL('uiscale.js', ROOT)), false, 'uiscale.js removed');
+  assert.doesNotMatch(MAIN, /import [^;]*uiscale\.js/, 'main.js imports no uiscale.js');
 });
 
 /* ------------------------------------------------------------------ precache list */

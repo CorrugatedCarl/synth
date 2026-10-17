@@ -3,18 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<!-- the interface size (uiscale.js): on iOS / iPadOS the stored size is applied before the first paint, and html gets
-     data-uiz at every size (style.css: no native page pinch, the app's own instead; uiscale.js takes it off while the
-     page is natively zoomed, e.g. an iPhone's focus zoom, so a pinch can zoom it back out) — the gate, clamp and strings of
-     uiscale.js (tests/uiscale.test.mjs runs this script against it); no less-than sign in it (tests/main-sim.mjs) -->
-<script>(function(){var d=document,h=d.documentElement,n=navigator,v=window.visualViewport,s,P,N,c;
-if(!(/iP(hone|ad|od)/.test(n.userAgent)||(n.platform==='MacIntel'&&n.maxTouchPoints>1&&!/Android/.test(n.userAgent))))return;
-h.setAttribute('data-uiz','');
-try{s=+localStorage.getItem('synth-ui.scale');P=Math.round(v&&v.width>0?v.width*v.scale:h.clientWidth);
-if(!(s>=0.5&&2>=s)||!(P>=200))return;s=Math.min(s,Math.max(1,P/360));if(0.005>Math.abs(s-1))return;
-if(1>s)c='width=device-width,initial-scale='+s+',minimum-scale='+s;else{N=Math.round(P/s);c='width='+N+',initial-scale='+P/N+',shrink-to-fit=no';}
-d.querySelector('meta[name="viewport"]').setAttribute('content',c+',user-scalable=no,viewport-fit=cover');
-h.setAttribute('data-uiz',String(s));h.style.setProperty('--uiz',String(s));}catch(e){}})();</script>
 <title>SYNTH — Circuit-Level Analog Synthesizer Emulations</title>
 <meta name="description" content="Play twelve landmark synthesizers from 1965–1983 in your browser — Moog, ARP, Yamaha, Sequential, Korg, Roland, Oberheim — modelled at the circuit level in 64-bit floating point with up to 384 kHz internal processing.">
 <meta name="theme-color" content="#0c0d0f">
@@ -44,15 +32,15 @@ h.setAttribute('data-uiz',String(s));h.style.setProperty('--uiz',String(s));}cat
 <link rel="preload" as="style" crossorigin href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap">
 <link rel="stylesheet" crossorigin href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" media="print" onload="this.media='all'">
 <noscript><link rel="stylesheet" crossorigin href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap"></noscript>
-<link rel="stylesheet" href="style.css?v=8">
-<link rel="modulepreload" href="serum-core.js?v=8">
-<link rel="modulepreload" href="laws.js?v=8">
-<link rel="modulepreload" href="fx-core.js?v=8">
-<link rel="modulepreload" href="seq-core.js?v=8">
-<link rel="modulepreload" href="tuning.js?v=8">
-<link rel="modulepreload" href="appstore.js?v=8">
-<link rel="modulepreload" href="assets.js?v=8">
-<link rel="modulepreload" href="midi.js?v=8">
+<link rel="stylesheet" href="style.css?v=9">
+<link rel="modulepreload" href="serum-core.js?v=9">
+<link rel="modulepreload" href="laws.js?v=9">
+<link rel="modulepreload" href="fx-core.js?v=9">
+<link rel="modulepreload" href="seq-core.js?v=9">
+<link rel="modulepreload" href="tuning.js?v=9">
+<link rel="modulepreload" href="appstore.js?v=9">
+<link rel="modulepreload" href="assets.js?v=9">
+<link rel="modulepreload" href="midi.js?v=9">
 </head>
 <body>
 <header class="top" data-wk-inset="top">
@@ -110,12 +98,6 @@ h.setAttribute('data-uiz',String(s));h.style.setProperty('--uiz',String(s));}cat
       </div>
     </div>
     <div class="appctl">
-      <!-- the interface size (uiscale.js; iOS / iPadOS only: a computer's browser zooms by itself) -->
-      <div id="uiZoom" class="uizoom" role="group" aria-label="Interface size" hidden>
-        <button id="uiZoomOut" type="button" class="appbtn ico" aria-label="Smaller interface" title="Smaller interface"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10h10"/></svg></button>
-        <button id="uiZoomPct" type="button" class="appbtn pct" aria-label="Interface size 100 %" title="Interface size: tap for 100 %">100 %</button>
-        <button id="uiZoomIn" type="button" class="appbtn ico" aria-label="Bigger interface" title="Bigger interface"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10h10M10 5v10"/></svg></button>
-      </div>
       <button id="install" type="button" class="appbtn" hidden aria-label="Install app" title="Install SYNTH as an app: it opens full screen from its icon and works offline"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9.5M6 8.5l4 4 4-4M4 16h12"/></svg><span>Install app</span></button>
       <button id="fullscreen" type="button" class="appbtn ico" hidden aria-pressed="false" aria-label="Full screen" title="Full screen"><svg viewBox="0 0 20 20" aria-hidden="true"><path class="i-enter" d="M3 8V3h5M12 3h5v5M17 12v5h-5M8 17H3v-5"/><path class="i-exit" d="M8 3v5H3M17 8h-5V3M12 17v-5h5M3 12h5v5"/></svg></button>
     </div>
@@ -198,7 +180,7 @@ h.setAttribute('data-uiz',String(s));h.style.setProperty('--uiz',String(s));}cat
         <h2 id="about-title"></h2>
         <p id="about"></p>
         <div id="algo" class="algo" hidden></div>
-        <p class="help"><b>Play:</b> computer keys <kbd data-code="KeyA">A</kbd>–<kbd data-code="Semicolon">;</kbd> (white) and <kbd data-code="KeyW">W</kbd> <kbd data-code="KeyE">E</kbd> <kbd data-code="KeyT">T</kbd> <kbd data-code="KeyY">Y</kbd> <kbd data-code="KeyU">U</kbd> <kbd data-code="KeyO">O</kbd> <kbd data-code="KeyP">P</kbd> (black), <kbd data-code="KeyZ">Z</kbd>/<kbd data-code="KeyX">X</kbd> octave, <kbd data-code="KeyC">C</kbd>/<kbd data-code="KeyV">V</kbd> velocity. Click or touch the keyboard (lower on a key = louder); drag the tab on its top edge to make the keys taller or shorter, <b>Key size</b> for more or fewer keys, <b>Hide keys</b> to fold it down to its controls. Or plug in a MIDI controller (Chrome, Edge, Firefox) — each track listens on its MIDI channel. <b>Studio:</b> <kbd>Space</kbd> play/stop, <kbd data-code="KeyR">R</kbd> record, <kbd data-code="KeyM">M</kbd> metronome, <kbd>Home</kbd> to start, <kbd>Ctrl/⌘ Z</kbd> undo. Keys go by position, so any layout works: if R, M or Q is a note key on yours, use the key where it sits on a US keyboard. <b>Controls:</b> drag up/down, <kbd>Shift</kbd>-drag for fine, scroll wheel, double-click to reset. <b>App:</b> the full-screen button (in the header, where the browser has one) hides the browser’s bars; <b>Install app</b> (on iPad / iPhone: Share → Add to Home Screen) puts SYNTH on your home screen or dock — it then opens full screen like an app and works offline after its first launch. On iPad the installed app is the better full screen: the browser’s keeps its own controls and may stop fast playing with a warning. On iPad and iPhone the installed app keeps its own projects, separate from the browser’s: Save a project in one (the app saves through the share sheet: Save to Files) and Open it in the other to move it across. <b>Size:</b> on iPad and iPhone, pinch the page with two fingers (anywhere but the keys, or both fingers in an editor: it zooms itself) or use − / + in the header (next to Install app / Full screen) to make the whole interface bigger or smaller (50–200 %; less on a phone held upright or in a narrow Split View window, where + stops early) — it stays that size; tap the % for 100 %. In the browser’s full screen use − / + (a pinch may leave it); in the installed app also <kbd>⌘ =</kbd> <kbd>⌘ −</kbd> <kbd>⌘ 0</kbd>. On a computer the browser’s own zoom does this (<kbd>Ctrl/⌘ +</kbd> / <kbd>−</kbd>) and is remembered.</p>
+        <p class="help"><b>Play:</b> computer keys <kbd data-code="KeyA">A</kbd>–<kbd data-code="Semicolon">;</kbd> (white) and <kbd data-code="KeyW">W</kbd> <kbd data-code="KeyE">E</kbd> <kbd data-code="KeyT">T</kbd> <kbd data-code="KeyY">Y</kbd> <kbd data-code="KeyU">U</kbd> <kbd data-code="KeyO">O</kbd> <kbd data-code="KeyP">P</kbd> (black), <kbd data-code="KeyZ">Z</kbd>/<kbd data-code="KeyX">X</kbd> octave, <kbd data-code="KeyC">C</kbd>/<kbd data-code="KeyV">V</kbd> velocity. Click or touch the keyboard (lower on a key = louder); drag the tab on its top edge to make the keys taller or shorter, <b>Key size</b> for more or fewer keys, <b>Hide keys</b> to fold it down to its controls. Or plug in a MIDI controller (Chrome, Edge, Firefox) — each track listens on its MIDI channel. <b>Studio:</b> <kbd>Space</kbd> play/stop, <kbd data-code="KeyR">R</kbd> record, <kbd data-code="KeyM">M</kbd> metronome, <kbd>Home</kbd> to start, <kbd>Ctrl/⌘ Z</kbd> undo. Keys go by position, so any layout works: if R, M or Q is a note key on yours, use the key where it sits on a US keyboard. <b>Controls:</b> drag up/down, <kbd>Shift</kbd>-drag for fine, scroll wheel, double-click to reset. <b>App:</b> the full-screen button (in the header, where the browser has one) hides the browser’s bars; <b>Install app</b> (on iPad / iPhone: Share → Add to Home Screen) puts SYNTH on your home screen or dock — it then opens full screen like an app and works offline after its first launch. On iPad the installed app is the better full screen: the browser’s keeps its own controls and may stop fast playing with a warning. On iPad and iPhone the installed app keeps its own projects, separate from the browser’s: Save a project in one (the app saves through the share sheet: Save to Files) and Open it in the other to move it across.</p>
       </div>
     </section>
   </main>
@@ -279,6 +261,6 @@ h.setAttribute('data-uiz',String(s));h.style.setProperty('--uiz',String(s));}cat
 </footer>
 
 <div id="tip" class="tip" aria-hidden="true"></div>
-<script type="module" src="main.js?v=8"></script>
+<script type="module" src="main.js?v=9"></script>
 </body>
 </html>

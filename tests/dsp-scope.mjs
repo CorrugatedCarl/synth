@@ -29,7 +29,7 @@
 // globals at call time, so any `new Float64Array(…)` etc. inside fn throws 'allocation: <name>'.
 import vm from 'node:vm';
 import { readFileSync, existsSync } from 'node:fs';
-import { mulberry32, fnv1a32 } from '../wt.js?v=8';
+import { mulberry32, fnv1a32 } from '../wt.js?v=9';
 
 export const ROOT = new URL('../', import.meta.url);
 // §0.3 table: [file, global] in injection order (engine.js is loaded last, separately)

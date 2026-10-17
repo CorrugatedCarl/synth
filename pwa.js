@@ -13,8 +13,8 @@
 // activated (`skip`) and the page reloads when it has taken over. Another window's update shows the toast here too. A
 // toast put off with × comes back when the page returns to the front after an hour (an iPad app stays suspended for days).
 // iPad: the browser's full screen (WebKit's) keeps its own controls, may stop fast tapping with a "typing in full
-// screen" warning, and a pinch may leave it (WebKit 227387: zooming the Piano Roll) — the first full screen there says that
-// the installed app is the full-screen one.
+// screen" warning, and a pinch may leave it (WebKit 227387: any pinch, the page's own zoom or an editor's) — the first full
+// screen there says that the installed app is the full-screen one.
 // The pure parts (platform, appButtons, installSteps, fullscreenApi, isStandalone, swAllowed) are exported for the tests.
 
 /* ------------------------------------------------------------------ pure parts */
@@ -172,9 +172,9 @@ export function initApp(opts) {
     (was ? FS.exit() : FS.enter()).then(() => {
       sync();
       // iPad: WebKit's full screen keeps a control of its own, may stop quick tapping (a played keyboard) with its
-      // "typing in full screen" warning, and a pinch (zooming the Piano Roll) may leave it (WebKit 227387) — said once,
-      // with the way to a full screen without any of that
-      if (!was && P.ios && !fsTold) { fsTold = true; say('The browser’s full screen may stop fast playing with a warning — Install app gives SYNTH a full screen of its own. A pinch (zooming the Piano Roll) may also leave the browser’s full screen.', 10000); }
+      // "typing in full screen" warning, and a pinch (the page's own zoom or an editor's) may leave it (WebKit 227387) —
+      // said once, with the way to a full screen without any of that
+      if (!was && P.ios && !fsTold) { fsTold = true; say('The browser’s full screen may stop fast playing with a warning — Install app gives SYNTH a full screen of its own. A pinch may also leave the browser’s full screen.', 10000); }
     }, () => { sync(); if (!was) say('Full screen is not available here', 5000); });
   };
   for (const t of ['fullscreenchange', 'webkitfullscreenchange']) doc.addEventListener(t, sync);

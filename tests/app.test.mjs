@@ -58,11 +58,11 @@ function fakeSW() {
   return C;
 }
 
-const sw = fakeSW(), idb = fakeIDB();
+const sw = fakeSW(), idb = fakeIDB(), LS = fakeStorage({});
 let sim = null;
 async function page() {
   if (!sim) {
-    sim = await bootMain({ ua: CHROME, platform: 'Win32', fs: 'std', sw, idb, ls: fakeStorage({}), location: { protocol: 'https:', hostname: 'synth.domlavin.com', href: 'https://synth.domlavin.com/' } });
+    sim = await bootMain({ ua: CHROME, platform: 'Win32', fs: 'std', sw, idb, ls: LS, location: { protocol: 'https:', hostname: 'synth.domlavin.com', href: 'https://synth.domlavin.com/' } });
     await sim.settle(30);
   }
   return sim;
@@ -90,14 +90,12 @@ test('desktop Chrome: Full screen shown (the Fullscreen API works), Install app 
   assert.equal(fs.getAttribute('aria-pressed'), 'false');
 });
 
-test('desktop Chrome: no interface-size control (uiscale.js inert: the browser zooms by itself) — #uiZoom hidden, no listener of its own, the viewport meta untouched, no html[data-uiz]', async () => {
-  const s = await page(), z = s.api.uiz();
-  assert.equal(z.available(), false);
-  assert.equal(z.state().listeners, 0);
-  assert.equal(z.pinchStart({ x: 100, y: 100, d: 120 }), false);
-  assert.equal(s.$('#uiZoom').hidden, true);
+test('desktop Chrome: no interface size of the app\'s own (ruling Z1) — no test hook for it, the viewport meta never written, no html[data-uiz], nothing written to storage for it (no old key here)', async () => {
+  const s = await page();
+  assert.equal(s.api.uiz, undefined);
   assert.equal(s.$('meta[name="viewport"]').getAttribute('content'), null);
   assert.equal(s.dom.document.documentElement.hasAttribute('data-uiz'), false);
+  assert.ok(!LS.writes.some(k => /synth-ui\.scale/.test(k)), LS.writes.join());
 });
 
 test('desktop Chrome: Install app through beforeinstallprompt (the browser\'s own banner replaced), one prompt per offer; appinstalled hides it and asks for persistent storage', async () => {

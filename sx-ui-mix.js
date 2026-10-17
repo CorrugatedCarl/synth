@@ -33,8 +33,8 @@
 //   routeMenuItems(s, ch, fx?)    pure: route menu items [{v, label, checked}] of strip key `ch` (fx needed for buses)
 //
 // Browser ES module: nothing touches document / window / storage at module top level (node imports it for tests).
-import * as core from './serum-core.js?v=8';
-import * as wk from './wk.js?v=8';
+import * as core from './serum-core.js?v=9';
+import * as wk from './wk.js?v=9';
 
 /* ================================================================ small helpers */
 

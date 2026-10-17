@@ -53,7 +53,7 @@ const oscStub = await import('../sx-ui-osc.js');
 const seqStub = await import('../sx-ui-seq.js');
 const mixStub = await import('../sx-ui-mix.js');
 const kitStub = await import('./serum-ui-stubs/kit.js');
-const wkm = await import('../wk.js?v=8');   // the instance serum-ui uses (same specifier: shared modifier latches)
+const wkm = await import('../wk.js?v=9');   // the instance serum-ui uses (same specifier: shared modifier latches)
 
 const near = (a, b, tol = 1e-9) => assert.ok(Math.abs(a - b) <= tol, `${a} != ${b}`);
 const fresh = () => core.normalizeSerum(core.defaultSerum());
@@ -1998,13 +1998,22 @@ const minW = cond => { const m = /\(min-width:\s*(\d+)px\)/.exec(cond); return m
 
 test('review: CSS — narrow-layout hide rules never out-rank the wide layout (OSC B / C, Filter 2); row C; full-screen editors; 44 px touch targets', () => {
   const R = cssRules();
-  // the one-panel-at-a-time rules (specificity 0,4,0) live only below the widths that show every panel (§13.2)
+  // the one-panel-at-a-time rules (specificity 0,5,0) live only below the widths that show every panel (§13.2); a
+  // folded (off, C1) panel is never hidden by them: it shows as its bar
   const hideO = R.filter(r => /\.sx-opan:not\(/.test(r.sel) && /display:\s*none/.test(r.body));
   const hideF = R.filter(r => /\.sx-fpan:not\(/.test(r.sel) && /display:\s*none/.test(r.body));
   assert.equal(hideO.length, 3);
   assert.equal(hideF.length, 2);
-  const cols3 = R.find(r => r.sel === '.sx-colO' && /repeat\(3,/.test(r.body)), tabsF = R.find(r => r.sel === '.sx-colF > .sx-ptabs' && /display:\s*none/.test(r.body));
-  assert.equal(minW(cols3.cond), 1100);
+  for (const r of hideO.concat(hideF)) assert.match(r.sel, /:not\(\[data-[of]="\d"\]\):not\(\.sx-coll\)$/);
+  // ≥ 1100 px the oscillators sit side by side in a wrapping flex row (C1: an off one is a rail, the on ones share the
+  // width); wrap keeps align-content: start, so the row keeps its content height as the grid of three columns did
+  const colsO = R.find(r => r.sel === '.sx-colO' && /display:\s*flex/.test(r.body)), tabsF = R.find(r => r.sel === '.sx-colF > .sx-ptabs' && /display:\s*none/.test(r.body));
+  assert.equal(minW(colsO.cond), 1100);
+  assert.match(colsO.body, /flex-wrap:\s*wrap/);
+  assert.ok(R.some(r => r.sel === '.sx-colO' && !r.cond && /align-content:\s*start/.test(r.body)));
+  const opan = R.find(r => r.sel === '.sx-colO > .sx-opan');
+  assert.ok(opan && minW(opan.cond) === 1100 && /flex:\s*1 1 0;/.test(opan.body));
+  assert.equal(R.some(r => r.sel === '.sx-colO' && /repeat\(3,/.test(r.body)), false);
   assert.equal(minW(tabsF.cond), 1366);
   for (const r of hideO) assert.ok(maxW(r.cond) < 1100, r.sel + ' in ' + JSON.stringify(r.cond));
   for (const r of hideF) assert.ok(maxW(r.cond) < 1366, r.sel + ' in ' + JSON.stringify(r.cond));
@@ -2023,6 +2032,334 @@ test('review: CSS — narrow-layout hide rules never out-rank the wide layout (O
   }
   assert.ok(/width:\s*44px/.test(touch('.sx-crv').body) && /height:\s*44px/.test(touch('.sx-crv').body));
   assert.ok(R.some(r => r.sel === '.sx-touch.sx-root' && /--sx-crvw:\s*46px/.test(r.body)));   // the matrix CRV columns grow with it
+});
+
+/* ================================================================ C1: off oscillators / SUB / NOISE / filters fold */
+test('C1 CSS: folded panels show their title row only (bar; rails where a whole column is off, from 768 px); every-panel-on templates unchanged; instant', () => {
+  const R = cssRules();
+  // the body goes, at every width; the title row keeps power, title, lock mark and chevron (chained :not, one selector)
+  const body = R.filter(r => r.sel === '.sx-coll > .sx-pbody');
+  assert.deepEqual(body.map(r => [r.cond, /display:\s*none/.test(r.body)]), [['', true]]);
+  const hide = R.filter(r => /^\.sx-coll > \.sx-ptitle > :not\(/.test(r.sel));
+  assert.equal(hide.length, 1);
+  assert.deepEqual([...hide[0].sel.matchAll(/:not\(\.([\w-]+)\)/g)].map(m => m[1]), ['wk-power', 'sx-tname', 'sx-lockmark', 'sx-peek']);
+  assert.ok(!hide[0].cond && /display:\s*none !important/.test(hide[0].body));   // over TypeView.show's inline display
+  const head = R.find(r => r.sel === '.sx-panel.sx-coll > .sx-ptitle');
+  assert.ok(head && !head.cond && /flex-direction:\s*var\(--sx-cfd, row\)/.test(head.body) && /margin-bottom:\s*0/.test(head.body));
+  const tname = R.find(r => r.sel === '.sx-coll > .sx-ptitle > .sx-tname');
+  assert.ok(tname && !tname.cond);
+  assert.match(tname.body, /writing-mode:\s*var\(--sx-cwm, horizontal-tb\)/);
+  assert.match(tname.body, /transform:\s*var\(--sx-ctr, none\)/);   // a rail title reads bottom to top (as MIX's off strips)
+  assert.match(R.find(r => r.sel === '.sx-coll > .sx-ptitle > .sx-peek').body, /margin:\s*var\(--sx-cpm, 0 0 0 auto\)/);
+  // the rail variables: only on a fully folded column's panels (≥ 768) and on a folded oscillator of the flex row (≥ 1100)
+  const rails = R.filter(r => /--sx-cfd:\s*column/.test(r.body)).map(r => [minW(r.cond), r.sel]);
+  assert.deepEqual(rails, [[768, '.sx-rowA[data-rail-sn="1"] > .sx-colSN > .sx-coll'], [768, '.sx-rowA[data-rail-o="1"] > .sx-colO > .sx-coll'],
+    [768, '.sx-rowA[data-rail-f="1"] > .sx-colF > .sx-coll'], [1100, '.sx-colO > .sx-opan.sx-coll']]);
+  for (const r of R.filter(r => /--sx-cfd:\s*column/.test(r.body))) {
+    assert.match(r.body, /--sx-cwm:\s*vertical-rl;\s*--sx-cpm:\s*0;\s*--sx-crot:\s*-90deg/);
+    assert.match(r.body, /--sx-ctr:\s*rotate\(180deg\)/);
+  }
+  // the title turn is set with the rail variables only (a bar's title stays horizontal and unturned)
+  assert.deepEqual(R.filter(r => /--sx-ctr:/.test(r.body)).map(r => r.sel), R.filter(r => /--sx-cfd:\s*column/.test(r.body)).map(r => r.sel));
+  assert.match(R.find(r => r.sel === '.sx-colO > .sx-opan.sx-coll').body, /flex:\s*0 0 auto/);
+  // a fully folded column's track is auto (row A packs from the start); with every panel on, the var() fallbacks are
+  // the templates of before (0.8 / 1.5 / 1 from 768, 0.75 / 3.6 / 1 from 1100)
+  const tpl = R.filter(r => r.sel === '.sx-rowA' && /grid-template-columns/.test(r.body)).map(r => [minW(r.cond), r.body.trim()]);
+  assert.deepEqual(tpl, [
+    [768, 'grid-template-columns: var(--sx-tsn, minmax(0, 0.8fr)) var(--sx-to, minmax(0, 1.5fr)) var(--sx-tf, minmax(0, 1fr));'],
+    [1100, 'grid-template-columns: var(--sx-tsn, minmax(0, 0.75fr)) var(--sx-to, minmax(0, 3.6fr)) var(--sx-tf, minmax(0, 1fr));']]);
+  for (const [k, v] of [['sn', 'tsn'], ['o', 'to'], ['f', 'tf']]) {
+    const r = R.find(x => x.sel === '.sx-rowA[data-rail-' + k + '="1"]');
+    assert.ok(r && minW(r.cond) === 768 && new RegExp('--sx-' + v + ':\\s*auto').test(r.body), k);
+  }
+  assert.ok(R.some(r => r.sel === '.sx-rowA' && !r.cond && /justify-content:\s*start/.test(r.body)));
+  // instant: the chevron turn is the one transition of these rules, and reduced motion still stops every transition
+  const c1 = R.filter(r => /sx-coll|sx-peek|sx-rowA|sx-colO|sx-colF|sx-colSN|sx-opan|sx-fpan/.test(r.sel) && /transition/.test(r.body));
+  assert.deepEqual(c1.map(r => r.sel), ['.sx-peek svg']);
+  assert.ok(R.some(r => /prefers-reduced-motion:\s*reduce/.test(r.cond) && r.sel === '.sx-root *' && /transition:\s*none !important/.test(r.body)));
+});
+
+test('C1: an off oscillator / SUB / NOISE / filter folds to its title row; the chevron peeks; tabs choose among the expanded; undo, presets, modulated power, focus, popovers, drop targets', async () => {
+  const { doc, host, root, u, s } = await mount();
+  const el = u.pages.osc.el, rowA = el.querySelector('.sx-rowA'), colO = el.querySelector('.sx-colO'), colF = el.querySelector('.sx-colF');
+  const tabsO = colO.querySelector('.sx-ptabs'), tabsF = colF.querySelector('.sx-ptabs');
+  const tabHidden = bar => bar.querySelectorAll('.sx-ptab').map(b => b.classList.contains('sx-hidden'));
+  const panelOf = id => byDest(el, id).closest('.sx-panel');
+  const coll = id => panelOf(id).classList.contains('sx-coll');
+  const peekOf = id => panelOf(id).querySelector('.sx-peek');
+  const rails = () => ['sn', 'o', 'f'].map(k => rowA.getAttribute('data-rail-' + k)).join('');
+  const nonUi = () => host.log.filter(x => x[0] === 'edit' && !x[3]).length;
+  const OFF = ['b.on', 'c.on', 's.on', 'n.on', 'f.on', 'f2.on'];
+  // init patch: OSC A on, the rest off — folded from the first paint (no saved setting, nothing in the state)
+  for (const id of OFF) assert.ok(coll(id), id);
+  assert.equal(coll('a.on'), false);
+  assert.equal(rails(), '101');                       // SUB + NOISE and both filters: rails from 768 px
+  assert.deepEqual([colO.getAttribute('data-tab'), colF.getAttribute('data-tab')], ['0', '0']);
+  assert.ok(tabsO.classList.contains('sx-hidden') && tabsF.classList.contains('sx-hidden'));   // < 2 expanded: no tabs
+  assert.deepEqual(tabHidden(tabsO), [false, true, true]);
+  for (const id of OFF) {
+    const p = peekOf(id), b = panelOf(id).querySelector('.sx-pbody');
+    assert.ok(b.id && p.getAttribute('aria-controls') === b.id, id);
+    assert.equal(p.getAttribute('aria-expanded'), 'false');
+    assert.equal(p.classList.contains('sx-hidden'), false);
+  }
+  assert.equal(peekOf('b.on').getAttribute('aria-label'), 'Show OSC B controls (off)');
+  assert.ok(peekOf('a.on').classList.contains('sx-hidden'));
+  // title row order = focus order: power, title, lock mark, chevron, then the panel's own (the stub's editor button)
+  assert.deepEqual(panelOf('b.on').querySelector('.sx-ptitle').children.map(n => ['wk-power', 'sx-tname', 'sx-lockmark', 'sx-peek', 'sx-hbtn'].find(c => n.classList.contains(c))),
+    ['wk-power', 'sx-tname', 'sx-lockmark', 'sx-peek', 'sx-hbtn']);
+  for (const p of el.querySelector('.sx-rowC').querySelectorAll('.sx-panel')) assert.equal(p.querySelectorAll('.sx-peek').length, 0);   // opt-in only
+
+  // power on from the bar: one edit (plus the View selection of the click twin), the panel expands and is the one shown
+  const e0 = nonUi();
+  fire(byDest(el, 'b.on'), 'click');
+  await flush(doc);
+  assert.equal(s().p['b.on'], 1);
+  assert.equal(nonUi() - e0, 1);
+  assert.equal(coll('b.on'), false);
+  assert.ok(peekOf('b.on').classList.contains('sx-hidden'));
+  assert.deepEqual([s().ui.oscTab, colO.getAttribute('data-tab')], [1, '1']);
+  assert.equal(tabsO.classList.contains('sx-hidden'), false);
+  assert.deepEqual(tabHidden(tabsO), [false, false, true]);
+  assert.equal(tabsO.querySelectorAll('.sx-ptab')[1].getAttribute('aria-selected'), 'true');
+  u.undoRedo(false);
+  await flush(doc);
+  assert.equal(s().p['b.on'], 0);
+  assert.ok(coll('b.on'));
+  assert.equal(colO.getAttribute('data-tab'), '0');   // oscTab stays 1 (view state): the shown tab is derived
+  assert.equal(s().ui.oscTab, 1);
+
+  // the shown filter: the selected one unless it is folded and the other is not
+  u.setN('f2.on', 1, 'set');
+  await flush(doc);
+  assert.deepEqual([s().ui.filtTab, colF.getAttribute('data-tab'), rails()], [0, '1', '100']);
+  assert.ok(tabsF.classList.contains('sx-hidden') && coll('f.on'));
+  u.setN('f.on', 1, 'set');
+  await flush(doc);
+  assert.deepEqual([colF.getAttribute('data-tab'), tabsF.classList.contains('sx-hidden')], ['0', false]);
+  u.setN('f.on', 0, 'set');
+  u.setN('f2.on', 0, 'set');
+  await flush(doc);
+  assert.equal(rails(), '101');
+
+  // peek: the chevron shows the controls of an off module in the same tick; no edit, the patch unchanged
+  const snap = () => JSON.stringify({ p: s().p, m: s().matrix });
+  const s0 = snap(), e1 = nonUi(), n1 = host.log.length;
+  fire(peekOf('f.on'), 'click');
+  assert.equal(coll('f.on'), false);
+  assert.ok(panelOf('f.on').classList.contains('sx-off'));
+  assert.equal(peekOf('f.on').getAttribute('aria-expanded'), 'true');
+  assert.equal(peekOf('f.on').getAttribute('aria-label'), 'Hide FILTER 1 controls (off)');
+  assert.equal(rails(), '100');
+  assert.deepEqual([snap() === s0, nonUi() - e1, host.log.length - n1], [true, 0, 0]);
+  fire(peekOf('f.on'), 'click');
+  assert.ok(coll('f.on'));
+  assert.equal(rails(), '101');
+  // peek, power on, power off: folded again
+  fire(peekOf('f.on'), 'click');
+  u.setN('f.on', 1, 'set');
+  await flush(doc);
+  u.setN('f.on', 0, 'set');
+  await flush(doc);
+  assert.ok(coll('f.on'));
+  // an outside edit of the same preset keeps a peek; a preset step (header ‹ ›) or a key change (MIDI program change,
+  // host refresh) drops it
+  fire(peekOf('b.on'), 'click');
+  u.refresh();
+  await flush(doc);
+  assert.equal(coll('b.on'), false);
+  u.loadPreset('f:2');
+  await flush(doc);
+  assert.ok(coll('b.on'));
+  fire(peekOf('b.on'), 'click');
+  host.presets.load('f:3');
+  u.refresh();
+  await flush(doc);
+  assert.ok(coll('b.on'));
+  // peeking FILTER 2 while FILTER 1 is the selected tab selects FILTER 2 (the capture pick), so it is the one shown
+  assert.equal(s().ui.filtTab, 0);
+  ptr(peekOf('f2.on'), 'pointerdown', 1, 1);
+  ptr(peekOf('f2.on'), 'pointerup', 1, 1);
+  fire(peekOf('f2.on'), 'click');
+  assert.deepEqual([s().ui.filtTab, colF.getAttribute('data-tab'), coll('f2.on'), coll('f.on')], [1, '1', false, true]);
+  fire(peekOf('f2.on'), 'click');
+  assert.ok(coll('f2.on'));
+
+  // a power driven by an active matrix row is live: expanded (dimmed, its halo on the toggle); bypassed: folded
+  u.edit(st => { st.matrix[0] = row({ src: 'lfo1', amt: 1, dst: 'c.on' }); });
+  await flush(doc);
+  assert.equal(coll('c.on'), false);
+  assert.ok(panelOf('c.on').classList.contains('sx-off') && peekOf('c.on').classList.contains('sx-hidden'));
+  u.edit(st => { st.matrix[0].byp = 1; });
+  await flush(doc);
+  assert.ok(coll('c.on'));
+  const t = fresh(), fx = core.defaultFxV1();
+  assert.deepEqual([ui.powerLive(t, fx, 'a.on'), ui.powerLive(t, fx, 'b.on')], [true, false]);
+  t.matrix[3] = row({ src: 'env2', amt: 0.5, dst: 'b.on' });
+  assert.equal(ui.powerLive(t, fx, 'b.on'), true);
+  t.matrix[3].byp = 1;
+  assert.equal(ui.powerLive(t, fx, 'b.on'), false);
+  t.matrix[3] = row({ src: 'env2', amt: 0, dst: 'b.on' });
+  assert.equal(ui.powerLive(t, fx, 'b.on'), false);
+
+  // folding away: focus inside goes to the power toggle, a popover anchored inside closes, one on the title stays
+  u.setN('b.on', 1, 'set');
+  await flush(doc);
+  const bl = byDest(el, 'b.level');
+  const P1 = u.kit.popover('c1a', bl, 'Test', () => ({ refresh() {}, destroy() {} }), () => '');
+  bl.focus();
+  assert.ok(doc.activeElement === bl);
+  u.setN('b.on', 0, 'set');
+  await flush(doc);
+  assert.ok(coll('b.on'));
+  assert.ok(doc.activeElement === byDest(el, 'b.on'));
+  assert.ok(u.pop === null && !P1.box.isConnected);
+  u.setN('b.on', 1, 'set');
+  await flush(doc);
+  const P2 = u.kit.popover('c1b', panelOf('b.on').querySelector('.sx-tname'), 'Test', () => ({ refresh() {}, destroy() {} }), () => '');
+  u.setN('b.on', 0, 'set');
+  await flush(doc);
+  assert.ok(u.pop === P2 && P2.box.isConnected);
+  P2.close();
+
+  // the bar keeps its targets: NOISE takes an LFO tile (LFO → noise), its power is a destination, the title its menu
+  doc.pointAt = () => panelOf('n.on').querySelector('.sx-tname');
+  assert.equal(u.hitTest(5000, 5000, 'lfo1', false).kind, 'lfoNoise');
+  doc.pointAt = () => byDest(el, 'n.on');
+  const h = u.hitTest(5000, 5000, 'lfo1', false);
+  assert.deepEqual([h.kind, h.id], ['dest', 'n.on']);
+  doc.pointAt = null;
+  fire(panelOf('b.on').querySelector('.sx-tname'), 'contextmenu', { clientX: 5, clientY: 5 });
+  const L = menuLabels(ctxMenus(doc).at(-1));
+  for (const x of ['Lock Module', 'Init Module', 'Copy']) assert.ok(L.includes(x), x);
+  fire(doc.body, 'keydown', { key: 'Escape' });
+  // pressing a folded filter's bar leaves the tab (the filter shown stays); powering it on from the bar selects it
+  u.uiEdit(st => { st.ui.filtTab = 1; });
+  ptr(panelOf('f.on').querySelector('.sx-ptitle'), 'pointerdown', 1, 1);
+  ptr(panelOf('f.on').querySelector('.sx-ptitle'), 'pointerup', 1, 1);
+  assert.equal(s().ui.filtTab, 1);
+  ptr(byDest(el, 'f.on'), 'pointerdown', 1, 1);
+  ptr(byDest(el, 'f.on'), 'pointerup', 1, 1);
+  fire(byDest(el, 'f.on'), 'click');
+  await flush(doc);
+  assert.deepEqual([s().p['f.on'], s().ui.filtTab, colF.getAttribute('data-tab')], [1, 0, '0']);
+  u.setN('f.on', 0, 'set');
+  await flush(doc);
+
+  // opt-in: no other page folds (ARP / CLIP are off by default)
+  for (const p of ['mix', 'arp', 'clip', 'global']) {
+    u.setPage(p);
+    await flush(doc);
+    assert.equal(u.pages[p].el.querySelectorAll('.sx-peek, .sx-coll').length, 0, p);
+  }
+  u.setPage('osc');
+  await flush(doc);
+  // a peek is view state of this panel: a new panel on the same track starts folded
+  fire(peekOf('c.on'), 'click');
+  assert.equal(coll('c.on'), false);
+  u.destroy();
+  const u2 = new ui.SerumUI(root, host);
+  await flush(doc);
+  assert.ok(byDest(u2.pages.osc.el, 'c.on').closest('.sx-panel').classList.contains('sx-coll'));
+  u2.destroy();
+});
+
+test('C1 review: peeks drop on any page (MIX strip, MATRIX row) and on preset-like loads; a silent patch; every module on; focus out of a closing popover / hiding tab', async () => {
+  const { doc, u, s } = await mount();
+  const el = u.pages.osc.el, rowA = el.querySelector('.sx-rowA'), colO = el.querySelector('.sx-colO'), colF = el.querySelector('.sx-colF');
+  const colSN = el.querySelector('.sx-colSN'), tabsO = colO.querySelector('.sx-ptabs'), tabsF = colF.querySelector('.sx-ptabs');
+  const panelOf = id => byDest(el, id).closest('.sx-panel');
+  const coll = id => panelOf(id).classList.contains('sx-coll');
+  const peekOf = id => panelOf(id).querySelector('.sx-peek');
+  const rails = () => ['sn', 'o', 'f'].map(k => rowA.getAttribute('data-rail-' + k)).join('');
+  const go = async p => { u.setPage(p); await flush(doc); };
+  const set = async (id, v) => { u.setN(id, v, 'set'); await flush(doc); };
+  const ALL = ['a.on', 'b.on', 'c.on', 's.on', 'n.on', 'f.on', 'f2.on'];
+
+  // a peek outlives a page switch while its module stays off …
+  fire(peekOf('b.on'), 'click');
+  await go('mix');
+  await go('osc');
+  assert.equal(coll('b.on'), false);
+  // … but powered on and off again while the OSC page is hidden (MIX strip), it folds again
+  await go('mix');
+  await set('b.on', 1);
+  await set('b.on', 0);
+  await go('osc');
+  assert.ok(coll('b.on'));
+  // … as through an active MATRIX row on its power, added and removed on the MATRIX page
+  const empty = JSON.parse(JSON.stringify(s().matrix[0]));
+  fire(peekOf('c.on'), 'click');
+  assert.equal(coll('c.on'), false);
+  await go('matrix');
+  u.edit(st => { st.matrix[0] = row({ src: 'lfo1', amt: 1, dst: 'c.on' }); });
+  await flush(doc);
+  u.edit(st => { st.matrix[0] = JSON.parse(JSON.stringify(empty)); });
+  await flush(doc);
+  await go('osc');
+  assert.ok(coll('c.on'));
+  assert.equal(u.peeks.size, 0);
+  // preset-like loads (seed edits: Init Preset, Hybridize, effect chains) fold every off module
+  fire(peekOf('f.on'), 'click');
+  fire(peekOf('n.on'), 'click');
+  assert.deepEqual([coll('f.on'), coll('n.on')], [false, false]);
+  u.initPreset();
+  await flush(doc);
+  assert.deepEqual([coll('f.on'), coll('n.on'), coll('a.on'), u.peeks.size], [true, true, false, 0]);
+
+  // a silent patch: every column folds to rails, no tab strip
+  await set('a.on', 0);
+  assert.equal(rails(), '111');
+  assert.ok(tabsO.classList.contains('sx-hidden') && tabsF.classList.contains('sx-hidden'));
+  const panels = [colSN, colO, colF].flatMap(c => c.children.filter(n => n.classList.contains('sx-panel')));
+  assert.equal(panels.length, 7);
+  assert.ok(panels.every(p => p.classList.contains('sx-coll')));
+
+  // every module on (the desktop case): nothing folds, every chevron hidden, no rails, both tab strips as before C1
+  for (const id of ALL) u.setN(id, 1, 'set');
+  await flush(doc);
+  assert.equal(el.querySelectorAll('.sx-coll').length, 0);
+  const peeks = el.querySelectorAll('.sx-peek');
+  assert.equal(peeks.length, 7);
+  assert.ok(peeks.every(p => p.classList.contains('sx-hidden')));
+  assert.equal(rails(), '000');
+  assert.ok(!tabsO.classList.contains('sx-hidden') && !tabsF.classList.contains('sx-hidden'));
+  assert.ok(tabsO.querySelectorAll('.sx-ptab').concat(tabsF.querySelectorAll('.sx-ptab')).every(b => !b.classList.contains('sx-hidden')));
+  assert.deepEqual([colO.getAttribute('data-tab'), colF.getAttribute('data-tab')], [String(s().ui.oscTab | 0), String(s().ui.filtTab | 0)]);
+  for (const p of panels) assert.equal(p.querySelector('.sx-ptitle').children.filter(n => n.classList.contains('sx-peek')).length, 1);
+
+  // a focused tab that hides: while the strip shows, focus goes to the selected tab; when the strip hides, to the power
+  // toggle of the focused tab's module
+  u.uiEdit(st => { st.ui.oscTab = 0; st.ui.osc = 0; });
+  await flush(doc);
+  const tb = tabsO.querySelectorAll('.sx-ptab');
+  tb[2].focus();
+  assert.ok(doc.activeElement === tb[2]);
+  await set('c.on', 0);
+  assert.ok(tb[2].classList.contains('sx-hidden'));
+  assert.ok(doc.activeElement === tb[0]);
+  tb[1].focus();
+  await set('a.on', 0);                                // only OSC B expanded: the strip hides
+  assert.ok(tabsO.classList.contains('sx-hidden'));
+  assert.equal(colO.getAttribute('data-tab'), '1');
+  assert.ok(doc.activeElement === byDest(el, 'b.on'));
+
+  // a popover anchored inside a folding panel closes first; focus inside it (its ✕) goes to the panel's power toggle
+  const P = u.kit.popover('c1c', byDest(el, 'b.level'), 'Test', () => ({ refresh() {}, destroy() {} }), () => '');
+  assert.ok(P.box.contains(doc.activeElement));
+  await set('b.on', 0);
+  assert.ok(coll('b.on'));
+  assert.ok(u.pop === null && !P.box.isConnected);
+  assert.ok(doc.activeElement === byDest(el, 'b.on'));
+  // focus elsewhere stays put when a popover anchored in a folding panel closes
+  await set('b.on', 1);
+  const P2 = u.kit.popover('c1d', byDest(el, 'b.level'), 'Test', () => ({ refresh() {}, destroy() {} }), () => '');
+  const other = byDest(el, 'f.on');
+  other.focus();
+  await set('b.on', 0);
+  assert.ok(u.pop === null && !P2.box.isConnected);
+  assert.ok(doc.activeElement === other);
+  u.destroy();
 });
 
 test('review: panel undo after an outside preset load / project undo; undo re-seeds the FX rack only for preset-like steps', async () => {
@@ -2584,5 +2921,78 @@ test('two-finger rollback (gesture.js\'s pointercancel flagged e.gesture === "tw
   u.confirmDlg('Init?', 'Sure?', () => {});
   ptr(ov(), 'pointerdown', 5, 5);
   assert.equal(ov(), null, 'a mouse: at the press');
+  u.destroy();
+});
+
+test('C1 review 2: a press on a folded oscillator bar (title: menu, label drag, a first finger) never swaps the tab shown; closing a peek / undoing a power-on goes back to the tab that was showing', async () => {
+  const { doc, u, s } = await mount();
+  const el = u.pages.osc.el, colO = el.querySelector('.sx-colO');
+  const panelOf = id => byDest(el, id).closest('.sx-panel');
+  const coll = id => panelOf(id).classList.contains('sx-coll');
+  const peekOf = id => panelOf(id).querySelector('.sx-peek');
+  const tap = n => { ptr(n, 'pointerdown', 1, 1); ptr(n, 'pointerup', 1, 1); fire(n, 'click'); };
+  u.setN('b.on', 1, 'set');
+  await flush(doc);
+  u.uiEdit(st => { st.ui.osc = 1; st.ui.oscTab = 1; });
+  await flush(doc);
+  assert.deepEqual([colO.getAttribute('data-tab'), coll('c.on')], ['1', true]);   // A, B on; C off: B shown
+  tap(panelOf('c.on').querySelector('.sx-tname'));
+  await flush(doc);
+  assert.deepEqual([colO.getAttribute('data-tab'), s().ui.oscTab, s().ui.osc], ['1', 1, 2]);   // C selected, B still shown
+  // a peek shows C; closing it goes back to B (not the first expanded, A)
+  tap(peekOf('c.on'));
+  await flush(doc);
+  assert.deepEqual([colO.getAttribute('data-tab'), coll('c.on')], ['2', false]);
+  tap(peekOf('c.on'));
+  await flush(doc);
+  assert.deepEqual([colO.getAttribute('data-tab'), coll('c.on')], ['1', true]);
+  // powering C on from its bar shows it; undo folds it and B is shown again
+  tap(byDest(el, 'c.on'));
+  await flush(doc);
+  assert.deepEqual([s().p['c.on'], s().ui.oscTab, colO.getAttribute('data-tab')], [1, 2, '2']);
+  u.undoRedo(false);
+  await flush(doc);
+  assert.deepEqual([s().p['c.on'], colO.getAttribute('data-tab')], [0, '1']);
+  u.destroy();
+});
+
+test('C1 review 2: the selection a press makes (filter pick, oscillator select, tabs) never folds the start of that press\'s drag into the undo step before it — undo restores the value from before the drag', async () => {
+  for (const [label, on, id, sel] of [
+    ['FILTER 2 (filtTab 0)', 'f2.on', 'f2.cutoff', st => { st.ui.filtTab = 0; }],
+    ['FILTER 1 (filtTab 1)', 'f2.on', 'f.cutoff', st => { st.ui.filtTab = 1; }],
+    ['OSC B (osc 0)', 'b.on', 'b.level', st => { st.ui.osc = 0; st.ui.oscTab = 0; }],
+  ]) {
+    const { doc, u, s } = await mount();
+    const el = u.pages.osc.el;
+    u.setN(on, 1, 'set');
+    if (id === 'f.cutoff') u.setN('f.on', 1, 'set');
+    await flush(doc);
+    u.uiEdit(sel);
+    await flush(doc);
+    const k = byDest(el, id), v0 = s().p[id];
+    ptr(k, 'pointerdown', 10, 100, { pointerId: 5 });
+    ptr(k, 'pointermove', 10, 60, { pointerId: 5 });
+    await flush(doc, 1);                                   // a frame inside the drag (its first move came before it)
+    ptr(k, 'pointermove', 10, 40, { pointerId: 5 });
+    ptr(k, 'pointerup', 10, 40, { pointerId: 5, buttons: 0 });
+    await flush(doc);
+    assert.ok(s().p[id] !== v0, label + ': dragged');
+    u.undoRedo(false);
+    await flush(doc);
+    assert.equal(s().p[id], v0, label + ': undo');
+    u.destroy();
+  }
+  // the backstop: a view edit that re-tops (EDIT ALL …) during a drag waits for the drag's own step
+  const { doc, u, s } = await mount();
+  const k = byDest(u.pages.osc.el, 'a.level'), v0 = s().p['a.level'];
+  ptr(k, 'pointerdown', 10, 100, { pointerId: 6 });
+  u.uiEdit(st => { st.ui.osc = 0; });                      // (an edit that sets uiRebase)
+  ptr(k, 'pointermove', 10, 60, { pointerId: 6 });
+  await flush(doc, 1);
+  ptr(k, 'pointerup', 10, 60, { pointerId: 6, buttons: 0 });
+  await flush(doc);
+  u.undoRedo(false);
+  await flush(doc);
+  assert.equal(s().p['a.level'], v0);
   u.destroy();
 });

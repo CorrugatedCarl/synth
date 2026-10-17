@@ -20,9 +20,11 @@ const ANDROID = 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
 const IPAD_CHROME = 'Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/129.0.6668.69 Mobile/15E148 Safari/604.1';
 const text = el => (el.children && el.children.length ? el.children.map(text).join('') : el.textContent || '');
 
+// the storage of a device that used build 8's interface size (uiscale.js, removed by ruling Z1): its key at 125 %
+const LS = fakeStorage({ 'synth-ui.scale': '1.25' });
 let sim = null;
 async function page() {
-  if (!sim) { sim = await bootMain({ ua: IPAD, platform: 'MacIntel', touch: true, fs: 'webkit', ls: fakeStorage({}) }); await sim.settle(20); }
+  if (!sim) { sim = await bootMain({ ua: IPAD, platform: 'MacIntel', touch: true, fs: 'webkit', ls: LS }); await sim.settle(20); }
   return sim;
 }
 
@@ -35,6 +37,9 @@ test('iPad Safari: Full screen (WebKit-prefixed API) and Install app both shown;
   assert.deepEqual(s.fsCalls, [['enter', undefined]], 'webkitRequestFullscreen on the page');
   assert.equal(fs.getAttribute('aria-pressed'), 'true');
   assert.match(note.textContent, /full screen may stop fast playing with a warning — Install app gives SYNTH a full screen of its own/);
+  // any pinch may leave WebKit's full screen (227387): with ruling Z1 the page's own zoom too, not only the Piano Roll's
+  assert.match(note.textContent, /A pinch may also leave the browser’s full screen\.$/);
+  assert.doesNotMatch(note.textContent, /Piano Roll/);
   fs.click();
   await s.settle();
   assert.deepEqual(s.fsCalls.at(-1), ['exit']);
@@ -213,29 +218,12 @@ test('iPad home-screen app: Export MIDI, Save and Bounce WAV hand their file to 
   }
 });
 
-test('iPad: the interface size (uiscale.js) — − / % / + shown, html[data-uiz] at 100 %; + writes the zoom-in meta for the window width (innerWidth 1400 here: width=1273, shrink-to-fit=no) and keeps 1.1; − from 100 % the device-width form; % back to 100 % (the static meta\'s content); the page re-fits after it', async () => {
-  const s = await page(), z = s.api.uiz(), meta = s.$('meta[name="viewport"]'), root = s.dom.document.documentElement, ls = globalThis.localStorage;
-  const BASE = 'width=device-width,initial-scale=1,viewport-fit=cover';
-  assert.equal(z.available(), true);
-  assert.equal(s.$('#uiZoom').hidden, false);
-  assert.equal(root.getAttribute('data-uiz'), '', 'native page pinch off on iOS at every size');
-  assert.equal(meta.getAttribute('content'), null, 'nothing written at 100 %');
-  assert.equal(s.$('#uiZoomPct').textContent, '100 %');
-  try {
-    s.$('#uiZoomIn').click();
-    assert.equal(meta.getAttribute('content'), 'width=1273,initial-scale=' + 1400 / 1273 + ',shrink-to-fit=no,user-scalable=no,viewport-fit=cover');
-    assert.equal(ls.getItem('synth-ui.scale'), '1.1');
-    assert.deepEqual([root.getAttribute('data-uiz'), s.$('#uiZoomPct').textContent, z.get()], ['1.1', '110 %', 1.1]);
-    await s.settle(350); s.raf(); // the new layout: main.js relayout (keyboard height, keys, roll, arrangement)
-    s.$('#uiZoomPct').click();
-    assert.equal(meta.getAttribute('content'), BASE);
-    assert.equal(ls.getItem('synth-ui.scale'), null);
-    s.$('#uiZoomOut').click();
-    assert.equal(meta.getAttribute('content'), 'width=device-width,initial-scale=0.9,minimum-scale=0.9,user-scalable=no,viewport-fit=cover');
-    assert.equal(ls.getItem('synth-ui.scale'), '0.9');
-  } finally {
-    s.$('#uiZoomPct').click();
-    await s.settle(350); s.raf();
-  }
-  assert.deepEqual([meta.getAttribute('content'), z.get()], [BASE, 1]);
+test('iPad: no interface size of the app\'s own (ruling Z1: the page\'s pinch-zoom is the browser\'s) — the stored size of build 8 dropped once at boot, the viewport meta never written, no html[data-uiz], no test hook for it', async () => {
+  const s = await page();
+  assert.equal(LS.getItem('synth-ui.scale'), null, 'the old key removed');
+  assert.ok(LS.writes.includes('-synth-ui.scale'), LS.writes.join());
+  assert.equal(LS.writes.filter(k => /synth-ui\.scale/.test(k)).length, 1, 'once');
+  assert.equal(s.$('meta[name="viewport"]').getAttribute('content'), null);
+  assert.equal(s.dom.document.documentElement.hasAttribute('data-uiz'), false);
+  assert.equal(s.api.uiz, undefined);
 });

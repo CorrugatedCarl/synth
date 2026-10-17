@@ -47,14 +47,14 @@
 // factory presets), synth.sx.default (Save as Default Preset), synth.sx.vc (user Voice Control presets),
 // synth.sx.shapes (via graph.shapeLib), synth.fxchains.
 // MIDI program change: index browserList(host.presets.list(), storage[BROWSER_KEY]) (§9.10, §11.8).
-import * as core from './serum-core.js?v=8';
-import * as wt from './wt.js?v=8';
-import * as wk from './wk.js?v=8';
-import * as gx from './graph.js?v=8';
-import * as fxui from './fx-ui.js?v=8';
-import * as wte from './wtedit.js?v=8';
-import * as osc from './sx-ui-osc.js?v=8';
-import * as seq from './sx-ui-seq.js?v=8';
+import * as core from './serum-core.js?v=9';
+import * as wt from './wt.js?v=9';
+import * as wk from './wk.js?v=9';
+import * as gx from './graph.js?v=9';
+import * as fxui from './fx-ui.js?v=9';
+import * as wte from './wtedit.js?v=9';
+import * as osc from './sx-ui-osc.js?v=9';
+import * as seq from './sx-ui-seq.js?v=9';
 
 /* ================================================================ constants and small helpers */
 
@@ -288,6 +288,9 @@ function modRows(s, dst) {
   for (let slot = 0; slot < M.length; slot++) { const r = M[slot]; if (r && r.dst === dst && r.src) out.push({ slot, row: r }); }
   return out;
 }
+// C1: a module is live when its power base is on or an active matrix row targets its power id (serum-core possOn):
+// a live module shows its panel, an off one folds to its title row
+export function powerLive(s, fx, id) { return baseN(s, fx, id) >= 0.5 || rowsOf(s).some(r => rowActive(r) && r.dst === id); }
 // the row the per-control actions address (Alt-drag depth, Aux Source, Edit Custom Curve): the selected source's row
 // on dst, else `recent` (when it still targets dst), else the last row; −1 without rows
 export function actionSlot(s, dst, recent) {
@@ -787,22 +790,36 @@ const CSS = `
 .sx-fpan[data-f="1"], .sx-ptab[data-f="1"] { --sx-dot: var(--sx-f2); }
 .sx-opan, .sx-fpan { border-top: 2px solid var(--sx-dot, var(--sx-line)); }
 .sx-opan.sx-osel { box-shadow: 0 0 0 1px var(--sx-dot, var(--sx-accent)); }
-/* one oscillator / one filter at a time only below the widths that show them all: the hide rules (specificity 0,4,0)
-   live inside max-width queries, so no wide-layout rule has to out-rank them (container queries add no specificity) */
+/* one oscillator / one filter at a time only below the widths that show them all: the hide rules (specificity 0,5,0)
+   live inside max-width queries, so no wide-layout rule has to out-rank them (container queries add no specificity).
+   C1: a folded (off) panel is never hidden behind a tab: it shows as its bar, the tabs choose among the expanded ones */
 @container sx (max-width: 1099px) {
-  .sx-colO[data-tab="0"] > .sx-opan:not([data-o="0"]), .sx-colO[data-tab="1"] > .sx-opan:not([data-o="1"]), .sx-colO[data-tab="2"] > .sx-opan:not([data-o="2"]) { display: none; }
+  .sx-colO[data-tab="0"] > .sx-opan:not([data-o="0"]):not(.sx-coll), .sx-colO[data-tab="1"] > .sx-opan:not([data-o="1"]):not(.sx-coll), .sx-colO[data-tab="2"] > .sx-opan:not([data-o="2"]):not(.sx-coll) { display: none; }
 }
 @container sx (max-width: 1365px) {
-  .sx-colF[data-tab="0"] > .sx-fpan:not([data-f="0"]), .sx-colF[data-tab="1"] > .sx-fpan:not([data-f="1"]) { display: none; }
+  .sx-colF[data-tab="0"] > .sx-fpan:not([data-f="0"]):not(.sx-coll), .sx-colF[data-tab="1"] > .sx-fpan:not([data-f="1"]):not(.sx-coll) { display: none; }
 }
+/* C1: a column whose panels are all folded (row A data-rail-sn / -o / -f = "1") shrinks to vertical rails from 768 px;
+   with every panel on, the var() fallbacks are the plain templates. start: auto tracks never stretch */
+.sx-rowA { justify-content: start; }
 @container sx (min-width: 768px) {
-  .sx-rowA { grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.5fr) minmax(0, 1fr); }
+  .sx-rowA { grid-template-columns: var(--sx-tsn, minmax(0, 0.8fr)) var(--sx-to, minmax(0, 1.5fr)) var(--sx-tf, minmax(0, 1fr)); }
   .sx-rowC { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sx-rowA[data-rail-sn="1"] { --sx-tsn: auto; }
+  .sx-rowA[data-rail-o="1"] { --sx-to: auto; }
+  .sx-rowA[data-rail-f="1"] { --sx-tf: auto; }
+  .sx-rowA[data-rail-sn="1"] > .sx-colSN, .sx-rowA[data-rail-o="1"] > .sx-colO, .sx-rowA[data-rail-f="1"] > .sx-colF { grid-auto-rows: minmax(0, 1fr); align-content: stretch; }
+  .sx-rowA[data-rail-o="1"] > .sx-colO { grid-auto-flow: column; }
+  .sx-rowA[data-rail-sn="1"] > .sx-colSN > .sx-coll, .sx-rowA[data-rail-o="1"] > .sx-colO > .sx-coll, .sx-rowA[data-rail-f="1"] > .sx-colF > .sx-coll { --sx-cfd: column; --sx-cwm: vertical-rl; --sx-cpm: 0; --sx-crot: -90deg; --sx-ctr: rotate(180deg); }
 }
 @container sx (min-width: 1100px) {
-  .sx-rowA { grid-template-columns: minmax(0, 0.75fr) minmax(0, 3.6fr) minmax(0, 1fr); }
+  .sx-rowA { grid-template-columns: var(--sx-tsn, minmax(0, 0.75fr)) var(--sx-to, minmax(0, 3.6fr)) var(--sx-tf, minmax(0, 1fr)); }
   .sx-rowC { grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.2fr) minmax(0, 1.5fr) minmax(0, 0.8fr); }
-  .sx-colO { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  /* the three oscillators side by side; wrap so align-content: start keeps the row at its content height (as the grid
+     did); an off oscillator is a rail and the on ones share the width */
+  .sx-colO { display: flex; flex-wrap: wrap; }
+  .sx-colO > .sx-opan { flex: 1 1 0; }
+  .sx-colO > .sx-opan.sx-coll { flex: 0 0 auto; --sx-cfd: column; --sx-cwm: vertical-rl; --sx-cpm: 0; --sx-crot: -90deg; --sx-ctr: rotate(180deg); }
   .sx-colO > .sx-ptabs { display: none; }
   .sx-root .sx-colO .wk-md, .sx-root .sx-colO .wk-lg { --wk-d: 30px; }
 }
@@ -818,6 +835,18 @@ const CSS = `
 .sx-lockmark { display: none; width: 12px; height: 12px; color: var(--sx-neg); }
 .sx-locked > .sx-ptitle .sx-lockmark { display: inline-block; }
 .sx-off > .sx-pbody { opacity: 0.45; }
+/* C1: a folded (off) module: its title row only — power, title, lock mark, chevron — as a bar, or as a vertical rail
+   where the rail variables are set (above; its title reads bottom to top, as the MIX page's off strips); instant (the
+   chevron turns, reduced motion stops that too) */
+.sx-panel.sx-coll { padding: 4px 6px; }
+.sx-coll > .sx-pbody { display: none; }
+.sx-panel.sx-coll > .sx-ptitle { margin-bottom: 0; flex-direction: var(--sx-cfd, row); flex-wrap: nowrap; }
+.sx-coll > .sx-ptitle > :not(.wk-power):not(.sx-tname):not(.sx-lockmark):not(.sx-peek) { display: none !important; }
+.sx-coll > .sx-ptitle > .sx-tname { writing-mode: var(--sx-cwm, horizontal-tb); transform: var(--sx-ctr, none); white-space: nowrap; }
+.sx-peek { padding: 2px 4px; }
+.sx-coll > .sx-ptitle > .sx-peek { margin: var(--sx-cpm, 0 0 0 auto); }
+.sx-peek svg { transform: rotate(var(--sx-crot, 0deg)); transition: transform 0.15s; }
+.sx-peek[aria-expanded="true"] svg { transform: rotate(180deg); }
 .sx-pbody { display: grid; gap: 6px; min-width: 0; }
 .sx-krow { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 4px 6px; min-width: 0; }
 .sx-krow.sx-sp { justify-content: space-between; }
@@ -1056,6 +1085,7 @@ const ICONS = {
   play: ['M5 3.5l7 4.5-7 4.5z'],
   stop: ['M4.5 4.5h7v7h-7z'],
   close: ['M4 4l8 8', 'M12 4l-8 8'],
+  chev: ['M4 6l4 4 4-4'],
   grip: ['M6 4h.01', 'M10 4h.01', 'M6 8h.01', 'M10 8h.01', 'M6 12h.01', 'M10 12h.01'],
   dice: ['M3 3h10v10H3z', 'M6 6h.01', 'M10 10h.01', 'M8 8h.01'],
 };
@@ -1421,7 +1451,7 @@ const focusable = el => (el && (el.matches && el.matches('button, [tabindex]') ?
   : el.querySelector && el.querySelector('button, [tabindex]'))) || el;
 const mkPage = el => ({ el: el || null, binds: [], canvases: [], editors: [], lives: [] });
 // the MIX page module (U3), loaded on demand: the page degrades to a notice while it is missing
-const loadMix = () => import('./sx-ui-mix.js?v=8');
+const loadMix = () => import('./sx-ui-mix.js?v=9');
 // wk.contextMenu items from knobMenuItems-style groups ({label, sub}) with an action per leaf
 const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label, sub: subMenu(it.sub, act) }
   : Object.assign({ label: it.label, action: () => act(it) }, it.checked !== undefined ? { checked: it.checked } : {})));
@@ -1452,7 +1482,8 @@ const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label
 //                             body, name }; o.items() = extra module-menu items appended after the module items
 //                             ([{label, checked?, disabled?, action?, sub?} | {sep: true}], e.g. ✓ Enable Pitch
 //                             Tracking, Edit Note Ranges…); the label is a drag handle onto another module of the same
-//                             kind (plain = swap incl. mods, Alt = copy, Shift-Alt = copy with mods)
+//                             kind (plain = swap incl. mods, Alt = copy, Shift-Alt = copy with mods); o.collapse =
+//                             fold to the title row while the module is off (C1; its chevron shows it meanwhile)
 //   live(fn)                  fn(shown) on every repaint and snapshot frame (live status, e.g. the unison voice warning;
 //                             playheads; clip recording). shown = the page fn was built on is on screen: hidden pages
 //                             are not painted (§13.1), so DOM work should be skipped when it is false — functional work
@@ -1529,6 +1560,7 @@ export class SerumUI {
     this.ticking = false;
     this.modEls = [];
     this.edSel = 'lfo1';
+    this.peeks = new Set();           // C1: power ids of off modules shown by their chevron (view only: no state, undo or save)
     this.edDirty = true;
     this.held = new Set();            // destinations whose control is being dragged (last setN phase start / move)
     this.gest = new Set();            // destinations whose drag gesture has changed the value (its end is an undo step)
@@ -1586,7 +1618,7 @@ export class SerumUI {
       notify: t => this.notify(t),
       confirmLoad: () => this.confirmChange(),
       modified: () => this.dirty || !!this.nameOverride,
-      onLoad: () => { this.dirty = false; this.nameOverride = null; this.edDirty = true; this.oscd.forget(); this.markUndo('Load preset'); this.refresh(); },
+      onLoad: () => { this.dirty = false; this.nameOverride = null; this.edDirty = true; this.oscd.forget(); this.peeks.clear(); this.markUndo('Load preset'); this.refresh(); },
       changed: () => { this.plist = null; this.syncPreset(); this.queue(); },   // the list changed (delete, rename, import, ratings)
       current: () => this.lastKey,   // the current key as the panel knows it (syncPreset), not re-read per browser action
       hybrid: (keys, favor) => this.hybridize(keys, favor),
@@ -1670,10 +1702,13 @@ export class SerumUI {
   edit(fn, opts) {
     const o = Object.assign({ label: 'Edit' }, opts);
     const pre = o.ui || o.seed || this.restoring || o.phase === 'move' ? null : this.phMemOf();   // phase capture arming (S2)
+    if (o.seed) this.peeks.clear();   // C1: preset-like loads (Init Preset, Hybridize, effect chains) fold every off module
     if (this.host.edit) this.host.edit(fn, o);
     if (pre) this.armPhMem(pre);
     if (!o.ui) { this.dirty = true; this.editSeq++; this.markUndo(o.label, o.phase); }
-    else if (!this.restoring) { this.uiRebase = true; this.queue(); }   // view edits that touch state outside s.ui (EDIT ALL …)
+    // view edits that touch state outside s.ui (EDIT ALL …); a selection that only writes s.ui (o.noRebase: snapStr
+    // leaves s.ui out) never re-tops — a press's selection must not fold the start of its own drag into the step before
+    else if (!this.restoring && !o.noRebase) { this.uiRebase = true; this.queue(); }
     this.rackDirty = true;
     this.fc = null;
     this.queue();
@@ -1687,7 +1722,7 @@ export class SerumUI {
     this.fc = null;
     this.queue();
   }
-  uiEdit(fn) { this.edit(fn, { label: 'View', ui: true }); }
+  uiEdit(fn, o) { this.edit(fn, Object.assign({ label: 'View', ui: true }, o)); }
   notify(text) {
     if (this.host.notify) { this.host.notify(text); return; }
     if (!this.el) return;
@@ -1738,7 +1773,9 @@ export class SerumUI {
       // view-only edits ({ui: true}) that changed state outside s.ui / fx.ui (EDIT ALL, record mode, an FX instance's
       // MIX / LEVEL label …) are folded into the current undo position: no step of their own, and syncOutside does not
       // mistake them for an outside change
-      if (this.uiRebase) { this.uiRebase = false; const snap = this.snapStr(); if (snap && snap !== this.undo.top()) this.undo.retop(snap); }
+      // (not while a control is dragged: its value so far would become the position its undo returns to; the drag's
+      // end pushes its own step, which takes the view edit's state along)
+      if (this.uiRebase && !this.held.size) { this.uiRebase = false; const snap = this.snapStr(); if (snap && snap !== this.undo.top()) this.undo.retop(snap); }
       return;
     }
     const label = this.undoPend, snap = this.snapStr();
@@ -1769,7 +1806,7 @@ export class SerumUI {
     try { key = pr && pr.current ? pr.current() : null; } catch (err) { key = null; }
     if (key === undefined) key = null;
     const changed = this.lastKey !== undefined && key !== this.lastKey;
-    if (changed) { this.dirty = false; this.nameOverride = null; }
+    if (changed) { this.dirty = false; this.nameOverride = null; this.peeks.clear(); }
     this.lastKey = key;
     this.plistChecked = false;
     return changed;
@@ -1991,6 +2028,9 @@ export class SerumUI {
   paint(full) {
     const s = this.s();
     if (!s || this.dead) return;
+    // C1: a module that went live drops its peek on any page (only the shown page's panels repaint), so powering it
+    // on and off again elsewhere (MIX strip, MATRIX row) folds it again
+    if (this.peeks.size) { const fx = this.fx(); for (const id of this.peeks) if (powerLive(s, fx, id)) this.peeks.delete(id); }
     this.fc = null;
     this.paintSeq = (this.paintSeq || 0) + 1;
     const shown = this.shownPages();
@@ -2353,6 +2393,7 @@ export class SerumUI {
     this.dirty = false;
     this.nameOverride = null;
     this.oscd.forget();
+    this.peeks.clear();
     this.markUndo('Load preset');
     this.refresh();
     return true;
@@ -2519,11 +2560,35 @@ export class SerumUI {
     wk.contextMenu(r.left, r.bottom + 2, [{ label: 'Renders → OSC ' + OSC_L[o], disabled: true }, { sep: true }].concat(items), { anchor });
   }
   selOsc() { const s = this.s(), o = s && s.ui ? s.ui.osc | 0 : 0; return o >= 0 && o < N_OSC ? o : 0; }
+  // C1: 'live' | 'peek' | 'fold' of a module power id, from the patch (never from DOM classes, so the order of the
+  // repaint binds does not matter); a live module drops its peek, so powering it off again folds it
+  foldOf(id) {
+    if (powerLive(this.s(), this.fx(), id)) { this.peeks.delete(id); return 'live'; }
+    return this.peeks.has(id) ? 'peek' : 'fold';
+  }
+  // C1: the oscillator / filter a tabbed layout shows: the selected one (s.ui.oscTab / filtTab) unless it is folded
+  // and another module of its column is not — then the one shown most recently that still is expanded (closing a
+  // peek or undoing a power-on goes back to the tab that was showing), else the first expanded. Derived per paint,
+  // never written back; the recent list (tabSeen) is this panel's view state only, as the peeks
+  tabOf(kind) {
+    const u = this.s().ui || {}, ids = kind === 'osc' ? OSC_P.map(p => p + '.on') : ['f.on', 'f2.on'];
+    const sel = clamp((kind === 'osc' ? u.oscTab : u.filtTab) | 0, 0, ids.length - 1);
+    const T = this.tabSeen || (this.tabSeen = {}), H = T[kind] || (T[kind] = []);
+    if (this.foldOf(ids[sel]) !== 'fold') {
+      if (H[0] !== sel) { const i = H.indexOf(sel); if (i >= 0) H.splice(i, 1); H.unshift(sel); }
+      return sel;
+    }
+    const m = H.find(i => this.foldOf(ids[i]) !== 'fold');
+    if (m !== undefined) return m;
+    const k = ids.findIndex(id => this.foldOf(id) !== 'fold');
+    return k < 0 ? sel : k;
+  }
 
   /* ---------------------------------------------------------------- dialogs / overlays */
   // Anchored popover holding one editor (remap curves, matrix curves, OSC MAPPING …): make(box) builds the editor into
   // the box and returns it (refresh / destroy); sig() = a signature of what it draws (repaint on change). Opening the
-  // popover of the same key again closes it; Escape, ✕ or a press outside close it. Returns { o: key, ed, close } | null.
+  // popover of the same key again closes it; Escape, ✕ or a press outside close it. Returns { o: key, ed, anchor, close }
+  // | null.
   popover(key, anchor, title, make, sig) {
     if (this.pop) { const same = this.pop.o === key; this.pop.close(); if (same) return null; }
     const d = this.d, box = mk(d, 'div', 'sx-pop');
@@ -2556,7 +2621,7 @@ export class SerumUI {
     // widgets bound inside the popover repaint with it (a custom bind on the editor's refresh)
     const ed2 = binds.length ? { refresh: () => { for (const w of binds) w.update(); if (ed && ed.refresh) ed.refresh(); }, destroy: () => { if (ed && ed.destroy) ed.destroy(); } } : ed;
     if (ed2 !== ed && sig) this.edSig.set(ed2, sig);
-    const P = { o: key, ed: ed2, inner: ed, box, close: () => {
+    const P = { o: key, ed: ed2, inner: ed, box, anchor, close: () => {
       offs.forEach(f => f());
       if (ed2 && ed2.destroy) ed2.destroy();
       if (ed) { this.edSig.delete(ed); this.edKey.delete(ed); }
@@ -3426,34 +3491,62 @@ export class SerumUI {
   // through the kit (§11.14). Narrow layouts (container widths, §13.2): below 1100 px one oscillator at a time (tabs
   // A · B · C with colour dots and power LEDs, s.ui.oscTab), below 1366 px one filter at a time (s.ui.filtTab).
   // Pressing an oscillator panel selects it (s.ui.osc: the Render OSC Warp / Resample target, §13.3.1).
+  // C1: an off oscillator / SUB / NOISE / filter folds to a bar (kit.panel o.collapse); the tabs then choose among the
+  // expanded ones (tabOf) and the folded ones always show as bars. data-rail-sn / -o / -f on row A = "1" while every
+  // panel of that column is folded: from 768 px its track shrinks to vertical rails.
   buildOsc(el) {
     const d = this.d, K = this.kit;
     const rowA = mk(d, 'div', 'sx-row sx-rowA'), colSN = mk(d, 'div', 'sx-col sx-colSN');
     const colO = mk(d, 'div', 'sx-colO'), colF = mk(d, 'div', 'sx-col sx-colF');
     rowA.append(colSN, colO, colF);
     this.oscPanels = [];
-    const mount = (f, box) => { try { const p = f(); this.oscPanels.push(p); return p; } catch (err) { console.error('serum-ui: oscillator panel', err); box.appendChild(mk(d, 'p', 'sx-placeholder', 'Panel unavailable')); return null; } };
-    mount(() => new osc.SubPanel(colSN, K), colSN);
-    mount(() => new osc.NoisePanel(colSN, K), colSN);
+    const cols = { sn: [], o: [], f: [] };   // C1: the power ids of each column's panels
+    const mount = (f, box, col, id) => {
+      try { const p = f(); this.oscPanels.push(p); if (p && p.el) cols[col].push(id); return p; } catch (err) { console.error('serum-ui: oscillator panel', err); box.appendChild(mk(d, 'p', 'sx-placeholder', 'Panel unavailable')); return null; }
+    };
+    mount(() => new osc.SubPanel(colSN, K), colSN, 'sn', 's.on');
+    mount(() => new osc.NoisePanel(colSN, K), colSN, 'sn', 'n.on');
     colO.appendChild(this.panelTabs('osc'));
     for (let o = 0; o < N_OSC; o++) {
-      const p = mount(() => new osc.OscPanel(colO, K, o), colO);
+      const p = mount(() => new osc.OscPanel(colO, K, o), colO, 'o', OSC_P[o] + '.on');
       if (!p || !p.el) continue;
       p.el.classList.add('sx-opan');
       p.el.setAttribute('data-o', String(o));
-      p.el.addEventListener('pointerdown', () => { if (this.selOsc() !== o) this.uiEdit(s => { s.ui.osc = o; s.ui.oscTab = o; }); }, true);
+      // pressing an oscillator selects it (s.ui.osc); its tab (s.ui.oscTab) only while it is expanded: a press on a
+      // folded bar (its title's menu, a label drag, a two-finger gesture's first finger) never swaps the oscillator a
+      // tabbed layout shows (C1). Powering it on or peeking from the bar shows it: the bubbling click, after the
+      // toggle's / chevron's own (keyboard activation too). View edits of s.ui only: no undo re-top (noRebase)
+      const pid = OSC_P[o] + '.on', tabIs = () => ((this.s().ui || {}).oscTab | 0) === o;
+      const sel = () => {
+        const live = this.foldOf(pid) !== 'fold';
+        if (this.selOsc() !== o || (live && !tabIs())) this.uiEdit(s => { s.ui.osc = o; if (live) s.ui.oscTab = o; }, { noRebase: true });
+      };
+      p.el.addEventListener('pointerdown', sel, true);
+      p.el.addEventListener('click', sel, true);
+      p.el.addEventListener('click', () => { if (this.foldOf(pid) !== 'fold' && !tabIs()) this.uiEdit(s => { s.ui.oscTab = o; }, { noRebase: true }); });
     }
     colF.appendChild(this.panelTabs('filt'));
     for (let k = 0; k < 2; k++) {
-      const p = mount(() => new osc.FilterPanel(colF, K, k), colF);
+      const p = mount(() => new osc.FilterPanel(colF, K, k), colF, 'f', k ? 'f2.on' : 'f.on');
       if (!p || !p.el) continue;
       p.el.classList.add('sx-fpan');
       p.el.setAttribute('data-f', String(k));
+      // C1: pressing an expanded filter selects its tab; a folded bar's press leaves it (as the oscillators'); powering
+      // on or peeking from the bar shows it (the bubbling click, after the toggle's / chevron's own). No undo re-top
+      const pid = k ? 'f2.on' : 'f.on';
+      const pick = () => { if (this.foldOf(pid) !== 'fold' && ((this.s().ui || {}).filtTab | 0) !== k) this.uiEdit(s => { s.ui.filtTab = k; }, { noRebase: true }); };
+      p.el.addEventListener('pointerdown', pick, true);
+      p.el.addEventListener('click', pick, true);
+      p.el.addEventListener('click', pick);
     }
     this.custom(() => {
-      const u = this.s().ui, ot = String(clamp(u.oscTab | 0, 0, 2)), ft = String(clamp(u.filtTab | 0, 0, 1)), so = this.selOsc();
+      const ot = String(this.tabOf('osc')), ft = String(this.tabOf('filt')), so = this.selOsc();
       if (colO.getAttribute('data-tab') !== ot) colO.setAttribute('data-tab', ot);
       if (colF.getAttribute('data-tab') !== ft) colF.setAttribute('data-tab', ft);
+      for (const k in cols) {
+        const L = cols[k], v = L.length && L.every(id => this.foldOf(id) === 'fold') ? '1' : '0', a = 'data-rail-' + k;
+        if (rowA.getAttribute(a) !== v) rowA.setAttribute(a, v);
+      }
       for (const p of this.oscPanels) if (p && p.el && p.el.hasAttribute('data-o')) p.el.classList.toggle('sx-osel', +p.el.getAttribute('data-o') === so);
     });
     el.append(rowA, this.tileStrip(), this.rowC());
@@ -3468,7 +3561,7 @@ export class SerumUI {
       const label = kind === 'osc' ? 'OSC ' + OSC_L[k] : 'FILTER ' + (k + 1), power = kind === 'osc' ? OSC_P[k] + '.on' : k ? 'f2.on' : 'f.on';
       const b = btn(d, 'sx-ptab', '', label, () => this.uiEdit(s => {
         if (kind === 'osc') { s.ui.oscTab = k; s.ui.osc = k; } else s.ui.filtTab = k;
-      }));
+      }, { noRebase: true }));
       b.setAttribute('role', 'tab');
       b.setAttribute(kind === 'osc' ? 'data-o' : 'data-f', String(k));
       const dot = mk(d, 'span', 'sx-dot');
@@ -3477,12 +3570,24 @@ export class SerumUI {
       bs.push({ b, power });
       bar.appendChild(b);
     }
+    // C1: tabs choose among the expanded (live or peeked) modules: a folded module shows as its bar instead of a tab,
+    // and the strip shows only while two or more are expanded
     this.custom(() => {
-      const u = this.s().ui, sel = kind === 'osc' ? u.oscTab | 0 : u.filtTab | 0;
+      const sel = this.tabOf(kind), fk = bs.findIndex(x => x.b === d.activeElement);
+      let n = 0;
       bs.forEach(({ b, power }, k) => {
+        const f = this.foldOf(power) === 'fold';
+        if (!f) n++;
         b.setAttribute('aria-selected', k === sel ? 'true' : 'false');
         b.classList.toggle('sx-pon', destOf(power) ? this.getN(power) >= 0.5 : false);
+        b.classList.toggle('sx-hidden', f);
       });
+      bar.classList.toggle('sx-hidden', n < 2);
+      // a focused tab that hides keeps focus near: the selected tab while the strip shows, else its module's power
+      if (fk >= 0 && (n < 2 || bs[fk].b.classList.contains('sx-hidden'))) {
+        const col = bar.parentNode, t = n >= 2 ? bs[sel].b : col && col.querySelector ? col.querySelector('[data-dest="' + bs[fk].power + '"]') : null;
+        if (t && t.focus) t.focus({ preventScroll: true });
+      }
     });
     return bar;
   }
@@ -3494,12 +3599,14 @@ export class SerumUI {
   }
   // panel shell: power toggle (module power = DEST + module menu), title (module menu on right-click / long-press /
   // Enter; drag onto another module's title: swap / Alt copy / Shift-Alt copy with mods), lock mark; greys out while off.
-  // o.items() = extra module-menu items (sub-panels, §11.14)
+  // o.items() = extra module-menu items (sub-panels, §11.14); o.collapse = fold to the title row while the module is
+  // off (C1: the oscillators, SUB, NOISE and the filters)
   panel(title, module, powerId, cls, o) {
     const d = this.d, O = o || {}, el = mk(d, 'section', 'sx-panel' + (cls ? ' ' + cls : ''));
     el.setAttribute('aria-label', title);
     const head = mk(d, 'div', 'sx-ptitle'), body = mk(d, 'div', 'sx-pbody');
-    if (powerId) head.appendChild(this.dToggle(powerId, title + ' on', 'power', { module }).el);
+    const pw = powerId ? this.dToggle(powerId, title + ' on', 'power', { module }) : null;
+    if (pw) head.appendChild(pw.el);
     const name = mk(d, 'span', 'sx-tname', title);
     if (module) {
       name.tabIndex = 0;
@@ -3519,14 +3626,47 @@ export class SerumUI {
     const lock = icon(d, 'lock');
     lock.setAttribute('class', 'sx-lockmark');
     head.append(name, lock);
+    const fold = O.collapse && pw ? this.foldable(el, body, head, name, pw.el, powerId, title) : null;
     el.append(head, body);
     if (module || powerId) {
       this.custom(() => {
         if (powerId) el.classList.toggle('sx-off', this.getN(powerId) < 0.5);
         if (module) el.classList.toggle('sx-locked', arr(this.s().locks.mod).includes(module));
+        if (fold) fold();
       });
     }
     return { el, head, body, name };
+  }
+  // C1: an off module folds to its title row (power, title, lock mark, chevron: a bar, or a rail beside other panels);
+  // the chevron shows the controls while it stays off (a peek: view only, dropped when the module goes live). Its
+  // power toggle (a drop target), title (module menu, label drags) and NOISE's LFO drop keep working while folded.
+  foldable(el, body, head, name, pw, id, title) {
+    const d = this.d;
+    body.id = this.uid + '-pb' + (this.pbN = (this.pbN || 0) + 1);
+    const peek = btn(d, 'sx-hbtn sx-peek', icon(d, 'chev'), 'Show or hide the controls while this module is off', () => {
+      if (this.peeks.has(id)) this.peeks.delete(id); else this.peeks.add(id);
+      if (!this.dead) this.paint(true);   // synchronous: the panel, the tabs and the row attributes flip in this frame
+    });
+    peek.setAttribute('aria-controls', body.id);
+    head.appendChild(peek);               // DOM order = visual order (power, title, lock mark, chevron, then the panel's own)
+    return () => {
+      const f = this.foldOf(id), coll = f === 'fold';
+      if (coll && !el.classList.contains('sx-coll')) this.folding(el, [pw, name, peek]);
+      el.classList.toggle('sx-coll', coll);
+      peek.classList.toggle('sx-hidden', f === 'live');
+      const ex = coll ? 'false' : 'true', lab = (coll ? 'Show ' : 'Hide ') + title + ' controls (off)';
+      if (peek.getAttribute('aria-expanded') !== ex) peek.setAttribute('aria-expanded', ex);
+      if (peek.getAttribute('aria-label') !== lab) peek.setAttribute('aria-label', lab);
+    };
+  }
+  // C1: a panel folds away: a popover anchored in what disappears closes first, then focus that was in what disappears
+  // (or in that popover) goes to its power toggle
+  folding(el, keep) {
+    const a = this.d.activeElement, kept = n => keep.some(k => k && k.contains && k.contains(n));
+    const P = this.pop, closes = !!(P && P.anchor && el.contains(P.anchor) && !kept(P.anchor));
+    const lost = (a && a !== el && el.contains(a) && !kept(a)) || (closes && a && P.box && P.box.contains(a));
+    if (closes) P.close();
+    if (lost && keep[0] && keep[0].focus) keep[0].focus({ preventScroll: true });
   }
   // module label as a drag handle (§13.3, inv B2): dropped on another label of the same kind = swap (Alt: copy, Shift-Alt:
   // copy with mods); the labels of OSC A/B/C, SUB, NOISE and FILTER 1/2 dropped on a control (or a matrix source cell,

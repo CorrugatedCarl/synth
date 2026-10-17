@@ -10,8 +10,8 @@ import { readFileSync } from 'node:fs';
 
 // Imported before any DOM exists (§0.1, §10.6).
 const F = await import('../fx-ui.js');
-const wk = await import('../wk.js?v=8'); // the instance fx-ui.js imports (versioned specifier)
-const core = await import('../serum-core.js?v=8');
+const wk = await import('../wk.js?v=9'); // the instance fx-ui.js imports (versioned specifier)
+const core = await import('../serum-core.js?v=9');
 const { FXRackUI, moveModule, ladderLabel, moduleTitle, modulePresetPayload, applyModulePreset, svfDb, impulseDb, listRows, addMenuItems, moveTarget } = F;
 import { all, byCls, one, byAttr, fresh, fire, ptr, key, place, raf, advance } from './wk-dom.mjs';
 

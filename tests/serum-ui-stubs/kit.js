@@ -2,15 +2,15 @@
 // tests/sx-ui-seq.test.mjs, tests/sx-ui-mix.test.mjs): a kit with exactly the members of the real one
 // (tests/serum-ui.test.mjs compares them), bound to a plain state instead of a SerumUI. Destination widgets are real wk
 // widgets carrying data-dest; virtual destinations (m1…m8, arp.*, clip.*) read and write their state bases as the real
-// kit does; panel(…, o) keeps o.items on the returned shell (P.items); edits apply at once and are logged; nothing is
-// sent anywhere.
+// kit does; panel(…, o) keeps o.items on the returned shell (P.items) and o.collapse as P.collapse; edits apply at once
+// and are logged; nothing is sent anywhere.
 //
 //   const kit = makeKit({ doc, s, fx, host, snap, wt, prefs });
 //   const T = stubOf(kit);   // { log, binds, canvases, lives, pops, prompts, held, paint(), setSnap(snap), destroy(), queued,
 //                            //   shown (default true: the page is on screen; kit.live callbacks get it, as serum-ui's) }
 //   log entries: ['edit' | 'editFx', label, phase, ui] · ['setN', id, n, phase] · ['notify', text] · ['openWtEditor', o]
-import * as core from '../../serum-core.js?v=8';
-import * as wk from '../../wk.js?v=8';
+import * as core from '../../serum-core.js?v=9';
+import * as wk from '../../wk.js?v=9';
 
 export const __stub = true;
 const STUBS = new WeakMap();
@@ -113,6 +113,7 @@ export function makeKit(o) {
       el.append(head, body);
       const P = { el, head, body, name };
       if (o && typeof o.items === 'function') P.items = o.items;
+      P.collapse = !!(o && o.collapse);   // C1: the real shell folds to its title row while the module is off
       return P;
     },
     live: fn => { T.lives.push(fn); return fn; },

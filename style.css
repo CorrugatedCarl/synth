@@ -15,15 +15,7 @@ body { min-height: 100vh; overflow-x: hidden; padding: 0 env(safe-area-inset-rig
 /* viewport-fit=cover: in the installed app (black-translucent status bar) the page runs under the status bar and the home
    indicator — the header, the keyboard panel, dialogs and full-screen layers keep their content inside the safe area
    (a scrolled-to element stops below the status bar); a browser tab's insets are 0 */
-html { scroll-padding-top: env(safe-area-inset-top); -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
-/* the interface size (uiscale.js, iOS / iPadOS: html[data-uiz] at every size — off while the page is natively zoomed,
-   so the native pinch can zoom it back out): no native page pinch — the app's own
-   (gesture.js → uiscale.js) instead; a native zoom would also stop the size from applying. On every element inside body,
-   since WebKit resets the used touch-action at each scroll container (on html alone it does nothing); zero specificity,
-   so every touch-action of the page's own still wins. It does not stop a double-tap zoom above 100 % (WebKit allows one
-   unless none / manipulation: uiscale.js waits for the page to be zoomed back out). The safe-area insets are used
-   undivided: whether env() follows the page scale is a device test (html's --uiz is set for a division) */
-:where(html[data-uiz]) :where(body, body *) { touch-action: pan-x pan-y; }
+html { scroll-padding-top: env(safe-area-inset-top); }
 button, select, input { font: inherit; color: inherit; }
 button { cursor: pointer; }
 kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; background: var(--bg2); }
@@ -74,19 +66,11 @@ kbd { font-family: var(--mono); font-size: 0.85em; padding: 1px 5px; border: 1px
 .appbtn svg { width: 16px; height: 16px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .appbtn.ico { width: 34px; padding: 0; }
 #install { color: var(--hot); border-color: #5a4320; background: #1d1810; }
-/* a touch screen (iPad Safari: − / % / + too): Install as an icon (its aria-label says it) — one header row less */
+/* a touch screen: Install as an icon (its aria-label says it) — one header row less */
 @media (pointer: coarse) { #install { width: 34px; padding: 0; } #install > span { display: none; } }
 #fullscreen .i-exit, #fullscreen[aria-pressed="true"] .i-enter { display: none; }
 #fullscreen[aria-pressed="true"] .i-exit { display: inline; }
 #fullscreen[aria-pressed="true"] { color: var(--hot); border-color: #5a4320; }
-/* the interface size (uiscale.js shows it on iOS / iPadOS): − / 100 % / +; a pinch's % badge (on html, outside the
-   preview transform of body) */
-.uizoom { display: flex; align-items: center; gap: 4px; }
-.uizoom[hidden] { display: none; }
-.uizoom .pct { min-width: 64px; padding: 0 8px; font-family: var(--mono); font-variant-numeric: tabular-nums; }
-.uizoom .appbtn:disabled { opacity: 0.4; cursor: default; border-color: var(--line); }
-.uiz-badge { position: fixed; z-index: 1002; top: calc(12px + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 999px; border: 1px solid #5a4320; background: rgba(20, 21, 24, 0.94); color: var(--hot); font: 700 15px/1.2 var(--mono); box-shadow: 0 8px 24px rgba(0,0,0,0.5); pointer-events: none; }
-.uiz-badge[hidden] { display: none; }
 
 /* ---------------------------------------------------------- model nav */
 .models { display: flex; gap: 8px; padding: 14px 24px; overflow-x: auto; scrollbar-width: thin; border-bottom: 1px solid var(--line); }

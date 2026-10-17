@@ -1,17 +1,16 @@
-import { MODELS, DX_ALGS, patchFor, groupSong } from './models.js?v=8';
-import * as S from './song.js?v=8';
-import { PianoRoll } from './roll.js?v=8';
-import { Arrangement } from './arrange.js?v=8';
-import * as core from './serum-core.js?v=8';
-import { openAppStore } from './appstore.js?v=8';
-import { createAssetManager, portPoster, userIdsOf, userAssetIds, idKind, TEXT as ATEXT } from './assets.js?v=8';
-import { createMidi, targets as midiTargets, noteCh, noteMsg } from './midi.js?v=8';
-import { initApp } from './pwa.js?v=8';
-import * as AC from './audioclock.js?v=8';
-import { initUiScale } from './uiscale.js?v=8';
-import { installGestures } from './gesture.js?v=8';
+import { MODELS, DX_ALGS, patchFor, groupSong } from './models.js?v=9';
+import * as S from './song.js?v=9';
+import { PianoRoll } from './roll.js?v=9';
+import { Arrangement } from './arrange.js?v=9';
+import * as core from './serum-core.js?v=9';
+import { openAppStore } from './appstore.js?v=9';
+import { createAssetManager, portPoster, userIdsOf, userAssetIds, idKind, TEXT as ATEXT } from './assets.js?v=9';
+import { createMidi, targets as midiTargets, noteCh, noteMsg } from './midi.js?v=9';
+import { initApp } from './pwa.js?v=9';
+import * as AC from './audioclock.js?v=9';
+import { installGestures } from './gesture.js?v=9';
 
-const VERSION = '8';
+const VERSION = '9';
 const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -3508,11 +3507,12 @@ function frame() {
 
 /* -------------------------------------------------------------- boot */
 let app = null; // pwa.js initApp's controller
-let uiz = null; // uiscale.js initUiScale's: the interface size (iOS / iPadOS)
 function boot() {
   // the two-finger layer (gesture.js) first: its window capture listeners run before every other (pressStart, wake, the
-  // keys …), so a two-finger pan / pinch never presses what it lands on; a pinch goes to the interface size (uiz, below)
-  installGestures(window, { scale: () => uiz });
+  // keys …), so a two-finger pan / pinch never presses what it lands on; the page's pinch-zoom stays the browser's
+  installGestures(window);
+  // the interface size of build 8 (uiscale.js, since removed) left its key behind: dropped once (nothing written without it)
+  try { if (localStorage.getItem('synth-ui.scale') !== null) localStorage.removeItem('synth-ui.scale'); } catch { /* storage blocked */ }
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   defs.setAttribute('width', 0); defs.setAttribute('height', 0); defs.style.position = 'absolute';
   defs.innerHTML = '<defs><radialGradient id="knobShine" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff" stop-opacity="0.22"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.04"/><stop offset="1" stop-color="#000" stop-opacity="0.25"/></radialGradient></defs>';
@@ -3569,8 +3569,7 @@ function boot() {
   for (const b of document.querySelectorAll('.scope-ctl button')) {
     b.onclick = () => { scopeMode = b.dataset.mode; for (const x of document.querySelectorAll('.scope-ctl button')) x.classList.toggle('on', x === b); };
   }
-  // a new window size or interface size (uiscale.js onApply: a viewport-meta change may not fire resize): the keyboard's
-  // height and keys, the roll and the arrangement re-fitted
+  // a new window size (rotation, Split View): the keyboard's height and keys, the roll and the arrangement re-fitted
   function relayout() { applyKbHeight(); buildKeys(); roll.resize(); arr.resize(); }
   let rw;
   window.addEventListener('resize', () => { clearTimeout(rw); rw = setTimeout(relayout, 120); });
@@ -3581,8 +3580,6 @@ function boot() {
   // the installed app (pwa.js): Full screen / Install app buttons, offline service worker, update toast — an update
   // reloads only when the user asks, after the project is saved
   app = initApp({ version: VERSION, notice, beforeReload: async () => { releaseKeys(); save(); await store.flush(); } });
-  // the interface size (uiscale.js, iOS / iPadOS: − / % / + in the header; gesture.js routes a two-finger pinch to it)
-  uiz = initUiScale({ notice, onApply: relayout });
   const why = audioProblem(); if (why) audioFail(why);
   powerUI();
   booted = true;
@@ -3614,7 +3611,6 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
     clock: () => CLK, curTick, outLatency, transport: () => T, settings: () => settings, latPreset, // (the audio clock, R5)
     held, kbRange, kbMaxH, app: () => app, kb: () => ({ h: kbH, kw: kbSize.kw, hSet: kbSize.h, lo: kbLo, hi: kbHi, w: kbW, px: kbPx, notes: [...keyEls.keys()], ptrs: new Map(ptrs) }),
     roll: () => roll, arr: () => arr,
-    uiz: () => uiz, // (the interface size, uiscale.js)
   };
 }
 boot();

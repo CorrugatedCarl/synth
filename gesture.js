@@ -1,52 +1,61 @@
 // gesture.js — the two-finger layer (lead ruling G1; ipad-designs/two-finger.critique.md §4): on a touch screen a
 // two-finger pan or pinch is recognised before anything else, so it never presses, turns or drags what it lands on.
-// Plain ES module, no imports, nothing touches document / window at module top level (node imports it; wk.js shares
-// jumpy below).
+// The page's own pinch-zoom and scrolling stay the browser's (ruling Z1). Plain ES module, no imports, nothing touches
+// document / window at module top level (node imports it; wk.js shares jumpy below).
 //
 // installGestures(win, opts) puts its listeners on `win` — the WINDOW, never the document (VoiceOver's activation
 // looks for touch listeners on nodes) — in the capture phase: the first statement of main.js boot(), so they run
-// before every other. Model:
+// before every other. Only pointerdown and the click family below may preventDefault; pointermove, pointerup / -cancel,
+// pointerover / -enter and the touch events are PASSIVE (there is no touchmove one): while the window has a non-passive
+// move / lift listener WebKit makes every touch sequence on the page wait for the main thread at its first move / lift
+// (touchMoveTracking / touchEndTracking synchronous), so the browser's scroll, pinch and taps would start late on a
+// busy page — they did not at 75926b6 (ruling Z1). Model:
 //   · the first touch is never delayed: its pointerdown passes through (keys, knobs, buttons react at once);
-//   · a further touch p PAIRS with an earlier one q (not 'music', not spent) when q landed ≤ PAIR_MS ago and p is
-//     ≤ PAIR_DIST from it (the time rule), or q is still (≤ STILL_PX), landed ≤ LATE_MS ago, p is ≤ LATE_PX from it
-//     and q is not at a window edge (≤ EDGE_PX: a resting thumb) — the late rule. These distances and PAN_PX are
-//     physical, tuned at 100 %: divided by the interface size s (one CSS px is s pt). A touch on
+//   · a further touch p PAIRS with an earlier one q (not 'music', not spent, not freed) when q landed ≤ PAIR_MS ago
+//     and p is ≤ PAIR_DIST from it (the time rule), or q is still (≤ STILL_PX), landed ≤ LATE_MS ago, p is ≤ LATE_PX
+//     from it and q is not at the screen's edge (≤ EDGE_PX: a resting thumb) — the late rule. The distances (PAN_PX
+//     too) are physical: CSS px at scale 1, divided by the browser's own pinch-zoom (visualViewport.scale); the edge is
+//     the visual viewport's (a zoomed page panned sideways). A touch on
 //     [data-gesture="music"] (the keys) pairs by the time rule only, never with a q on [data-gesture="perf"] (octave,
-//     hold, the grip … then a key: both work). Otherwise both are independent touches (two hands: hold a note or a
-//     knob, play or tweak);
+//     hold, the grip … then a key: both work). A touch whose press opened a menu (contextmenu: a long-press) or a
+//     widget's hold chooser (a bubbling 'wk-hold' event at the widget) is FREED: it never pairs, so the other hand can
+//     pick from what it opened. Otherwise both are independent touches (two hands: hold a note or a knob, play or tweak);
 //   · both inside one [data-gesture="own"] element (piano roll, arrangement, zoomPan canvases) → session 'own':
 //     every event reaches the owner's pinch / pan; only the click suppression below applies;
 //   · else session 'nav': q's owner is asked to ROLL BACK — claim() callbacks, a range input under q gets its value
 //     back (input + change), then a synthetic pointercancel flagged e.gesture === 'two-finger' at the touched element
 //     (it bubbles through the capturing widget; a plain pointercancel still means "end, keep"). Every later pointer
-//     event of the session's touches is swallowed at the window (pointerover / -enter too; out / leave pass: hover
-//     tips hide) and touchmove is preventDefault-ed (no native pan, pinch or range-thumb drag on top). Once a frame
-//     (WebKit sends one pointermove per finger of a touch event: in between, a new position pairs with an old one — a
-//     sideways two-finger swipe would read as a spread change; a lift flushes it first, with its own position) the
-//     midpoint's travel scrolls the nearest scroller under it that can still go that way, then the page (moves spoilt
-//     by WebKit 181954 dropped: jumpy); a spread change of PINCH_ENGAGE goes to the interface size (opts.scale: uiscale.js,
-//     iOS / iPadOS — available()) and the pan waits meanwhile (the preview follows the fingers; a pinch that ends at
-//     the same size keeps its travel as a scroll). Without it (Android, Windows touch) a session whose fingers both
-//     sit where the browser may pan and zoom (used touch-action; never at a range input) is left native, else the
-//     script pans and nothing zooms;
-//   · a nav session down to one finger waits REGRIP_MS for another (a re-grip continues the pinch: pinchStart
-//     again), then that finger is 'spent': swallowed until it lifts, never paired, the session over; an own one too
-//     (another finger on its element within REGRIP_MS stays in it), then it simply ends — the finger left goes on as an
-//     ordinary touch (no session holding the clicks of the whole page, nor the pairing of another hand, until it lifts);
+//     event of the session's touches is swallowed at the window (stopImmediatePropagation only; pointerover / -enter
+//     too; out / leave pass: hover tips hide). Where the browser scrolls under the session by itself it is NATIVE — no
+//     script pan (it would scroll twice): WebKit lets a scroll view's pan begin unless one of its touches' used
+//     touch-action allows no panning (WKTouchActionGestureRecognizer), so when every active touch allows it (auto,
+//     manipulation, pan-x / pan-y: the page's scroll view has every touch) or a session finger is in an overflow
+//     scroller that can scroll and whose touches all allow it; pinch-zoom stays the browser's wherever its touches
+//     allow it. Else (a touch on touch-action none: a knob, a held key — the browser then pans and zooms nothing) the
+//     script pans: once a frame (WebKit sends one pointermove per finger of a touch event; a lift flushes it first,
+//     with its own position) the midpoint's travel, past PAN_PX, scrolls the nearest scroller under it that can still
+//     go that way, then the page (moves spoilt by WebKit 181954 dropped: jumpy). A range input under a session finger,
+//     whose thumb may follow it (its touchmove's default handling is the browser's), gets its value back at the lift
+//     and again when the last touch ends;
+//   · a nav session down to one finger waits REGRIP_MS for another (a re-grip pans on from the new grip), then that
+//     finger is 'spent': swallowed until it lifts, never paired, the session over; an own one too (another finger
+//     on its element within REGRIP_MS stays in it), then it simply ends — the finger left goes on as an ordinary
+//     touch (no session holding the clicks of the whole page, nor the pairing of another hand, until it lifts);
 //   · click / dblclick / auxclick / mousedown / mouseup with detail ≥ 1 (keyboard, Switch Control and VoiceOver
-//     clicks pass) and contextmenu are swallowed from pairing until every session finger is up + GRACE_MS (WebKit's
-//     two-finger tap clicks the midpoint, metaKey set), and touchend is preventDefault-ed (no synthetic click; not on
-//     form fields: a slider's drag must end); a pointerdown of any type outside a session ends the grace at once;
+//     clicks pass) and contextmenu are swallowed (and preventDefault-ed: no default action, no focus move) from pairing
+//     until every session finger is up + GRACE_MS: WebKit's two-finger tap clicks the midpoint, metaKey set, when it
+//     recognises the tap, and the taps a pinch ends with click — inside the grace. touchend is never prevented (WebKit's
+//     two-finger double-tap, which resets the page's zoom, stays the browser's); a pointerdown of any type outside a
+//     session ends the grace at once;
 //   · stale state cannot lock the page: a primary touch (no other touch down) ends a session first, and so do
 //     WATCHDOG_MS without an event from its touches, a hidden page, pagehide and the window's blur;
 //   · WebKit GestureEvents: not passed on during a nav session (the roll / arrangement would take them for a
-//     trackpad pinch), preventDefault-ed while a touch is down where the app pinches (never with no touch: a Mac
-//     trackpad's pinch stays the page's).
+//     trackpad pinch), never preventDefault-ed (passive: the page's pinch stays the browser's, a Mac trackpad's too).
 // Pen and mouse pointers are never paired or swallowed.
-// API: installGestures(win, { scale: uiscale controller | () => it, pan(dx, dy, at)?, now, event, setTimeout,
-// clearTimeout (tests) }) → { claim(pointerId, { cancel }) → unclaim, busy(), state(), destroy() }.
-export const PAIR_MS = 250, PAIR_DIST = 600, STILL_PX = 10, LATE_MS = 1200, LATE_PX = 360, EDGE_PX = 24, RANGE_PX = 24;
-export const GRACE_MS = 400, REGRIP_MS = 400, WATCHDOG_MS = 3000, PAN_PX = 8, PINCH_ENGAGE = 0.06;
+// API: installGestures(win, { pan(dx, dy, at)?, now, event, setTimeout, clearTimeout (tests) }) → { claim(pointerId,
+// { cancel }) → unclaim, busy(), state(), destroy() }.
+export const PAIR_MS = 250, PAIR_DIST = 600, STILL_PX = 10, LATE_MS = 1200, LATE_PX = 360, EDGE_PX = 24;
+export const GRACE_MS = 400, REGRIP_MS = 400, WATCHDOG_MS = 3000, PAN_PX = 8;
 // WebKit bug 181954 (iOS): right after the page scrolled by script, a touch / pen move (or two) may report clientX /
 // clientY off by hundreds of px. jumpy(last, x, y, t, at): a move to (x, y) at t, more than JUMP_PX from the last
 // good point { x, y }, within JUMP_MS of a script scroll of the page at `at` (null: none) — the caller drops it, never
@@ -65,19 +74,20 @@ const zoneOf = t => {
 };
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 const isRange = t => !!t && t.tagName === 'INPUT' && String(t.type).toLowerCase() === 'range';
-const isField = t => !!t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName || '');
 const css = (win, n) => { try { return typeof win.getComputedStyle === 'function' ? win.getComputedStyle(n) : null; } catch (err) { return null; } };
-// may the browser pan and pinch-zoom natively under a touch on t? WebKit refuses as soon as one touch's used
-// touch-action forbids it (WKTouchActionGestureRecognizer); the used value intersects the ancestors' up to the nearest
-// scroll container, whose own value starts it again (StyleAdjuster computeUsedTouchAction)
-function nativeOK(win, t) {
+const PASSIVE = { capture: true, passive: true };
+// may the browser pan under a touch on t? Its used touch-action — t's and its ancestors' values intersected up to the
+// nearest scroll container, whose own value starts it again (StyleAdjuster computeUsedTouchAction) — has pan-x, pan-y
+// or manipulation in it, or is auto (WKTouchActionGestureRecognizer; pinch-zoom alone, or none: no panning)
+function mayPan(win, t) {
   if (typeof win.getComputedStyle !== 'function') return true;
+  let x = true, y = true;
   for (let n = t; n && n.nodeType === 1; n = n.parentNode) {
     const s = css(win, n), v = String((s && s.touchAction) || 'auto');
-    if (v !== 'auto' && v !== 'manipulation' && (v === 'none' || !/pinch-zoom/.test(v) || !/pan-x/.test(v) || !/pan-y/.test(v))) return false;
-    if (s && (OVER.test(String(s.overflowX || '')) || OVER.test(String(s.overflowY || '')))) return true;
+    if (v !== 'auto' && v !== 'manipulation') { x = x && /pan-x/.test(v); y = y && /pan-y/.test(v); }
+    if (s && (OVER.test(String(s.overflowX || '')) || OVER.test(String(s.overflowY || '')))) break;
   }
-  return true;
+  return x || y;
 }
 
 export function installGestures(win, opts) {
@@ -91,62 +101,88 @@ export function installGestures(win, opts) {
     for (const k in init) if (!(k in e)) try { e[k] = init[k]; } catch (err) { /* read-only */ }
     return e;
   };
-  // the interface size (uiscale.js) where the app pinches the page itself, else null
-  const ui = () => {
-    let s = null;
-    try { s = typeof o.scale === 'function' ? o.scale() : o.scale; } catch (err) { s = null; }
-    return s && typeof s.available === 'function' && s.available() ? s : null;
-  };
-  // CSS px per pt: the pairing / pan distances are physical (one hand or two, a still finger, a thumb on the bezel),
-  // tuned at 100 %; at interface size s one CSS px is s pt (uiscale.js), so they shrink by s (1 where it has none)
-  const perPt = () => { const u = ui(); let s = 1; try { s = u ? +u.get() : 1; } catch (err) { s = 1; } return s > 0 ? 1 / s : 1; };
   const doc = () => win.document || null;
-  const pts = new Map(); // touch pointerId → { id, t0, x0, y0, x, y, target, cap, zone, range, spent, cancelled, held }
+  const pts = new Map(); // touch pointerId → { id, t0, x0, y0, x, y, target, cap, zone, range, spent, cancelled, held, free }
   const claims = new Map(); // pointerId → Set of { cancel }
-  // S: { kind: 'nav' | 'own', ids, el (own: its element), at (its last event), native, ui, base / last (frames),
-  // panOn, pinch (1 on, -1 refused this grip), travel (the midpoint's while pinching), carry (sub-px scroll), chain
-  // (scrollers), rootT (the page scrolled), regrip / dog (timers) }
+  // the range inputs under a session's fingers ({ el, v }): their thumbs may follow a finger (its touchmove's default
+  // handling is the browser's, never prevented), so their values go back again when the last touch ends
+  const late = new Set();
+  // S: { kind: 'nav' | 'own', ids, el (own: its element), at (its last event), native, base / last (frames), panOn,
+  // carry (sub-px scroll), chain (scrollers), rootT (the page scrolled), regrip / dog (timers) }
   let S = null, suppressUntil = -1;
   const suppressing = () => !!S || now() < suppressUntil;
   const stop = e => {
     if (e.cancelable !== false && typeof e.preventDefault === 'function') e.preventDefault();
     if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
   };
+  const swallow = e => { if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); };
+  // a session's pointerdown: swallowed; in a script session preventDefault-ed too (no compatibility mouse events),
+  // never in a native one. Every later event of its touches is swallowed only (passive listeners)
+  const eat = e => (S && S.native ? swallow(e) : stop(e));
 
   /* pairing */
-  function atEdge(q, m) { // m: EDGE_PX in CSS px
-    const W = +win.innerWidth || 0, H = +win.innerHeight || 0;
-    return q.x0 <= m || q.y0 <= m || (W > 0 && q.x0 >= W - m) || (H > 0 && q.y0 >= H - m);
+  // CSS px per physical px (an iPad's pt at scale 1): the browser's own pinch-zoom (visualViewport.scale) magnifies
+  // the page, so the same distance on the glass covers fewer CSS px
+  const perPt = () => { const vv = win.visualViewport, z = vv && +vv.scale > 0 ? +vv.scale : 1; return 1 / z; };
+  function atEdge(q, f) { // q landed ≤ EDGE_PX from the screen's edge: the visual viewport's, in client (layout) coordinates
+    const vv = win.visualViewport, m = EDGE_PX * f;
+    const L = vv ? +vv.offsetLeft || 0 : 0, T = vv ? +vv.offsetTop || 0 : 0;
+    const W = vv && +vv.width > 0 ? +vv.width : +win.innerWidth || 0, H = vv && +vv.height > 0 ? +vv.height : +win.innerHeight || 0;
+    return q.x0 <= L + m || q.y0 <= T + m || (W > 0 && q.x0 >= L + W - m) || (H > 0 && q.y0 >= T + H - m);
   }
   function partner(p, t) { // the newest touch p pairs with, or null
     const music = p.zone.kind === 'music', f = perPt();
     let best = null;
     for (const q of pts.values()) {
-      if (q === p || q.spent || q.cancelled || q.zone.kind === 'music') continue;
+      if (q === p || q.spent || q.cancelled || q.free || q.zone.kind === 'music') continue;
       const age = t - q.t0, d = dist(q, { x: p.x0, y: p.y0 }), timely = age <= PAIR_MS && d <= PAIR_DIST * f;
       if (music) { if (timely && q.zone.kind !== 'perf') best = q; continue; }
-      if (timely || (age <= LATE_MS && d <= LATE_PX * f && dist(q, { x: q.x0, y: q.y0 }) <= STILL_PX * f && !atEdge(q, EDGE_PX * f))) best = q;
+      if (timely || (age <= LATE_MS && d <= LATE_PX * f && dist(q, { x: q.x0, y: q.y0 }) <= STILL_PX * f && !atEdge(q, f))) best = q;
     }
     return best;
   }
-  function nearRange(p) { // a range input under p or within RANGE_PX (its thumb could follow a native gesture)
-    if (isRange(p.target)) return true;
-    const d = doc();
-    let list = [];
-    try { list = d && typeof d.querySelectorAll === 'function' ? d.querySelectorAll('input[type="range"]') : []; } catch (err) { list = []; }
-    for (const r of list) {
-      let b = null;
-      try { b = r.getBoundingClientRect(); } catch (err) { b = null; }
-      if (b && b.width > 0 && p.x0 >= b.left - RANGE_PX && p.x0 <= b.right + RANGE_PX && p.y0 >= b.top - RANGE_PX && p.y0 <= b.bottom + RANGE_PX) return true;
+  // the overflow scrollers t is in that can scroll (WebKit gives each a scroll view of its own), the page's not included
+  function scrollersOf(t) {
+    const d = doc(), out = [];
+    const root = d ? d.scrollingElement || d.documentElement : null, body = d ? d.body : null;
+    for (let n = t; n && n.nodeType === 1 && n !== root && n !== body; n = n.parentNode) {
+      const s = css(win, n);
+      if (!s) continue;
+      const ax = OVER.test(String(s.overflowX || '')) && (+n.scrollWidth || 0) > (+n.clientWidth || 0);
+      const ay = OVER.test(String(s.overflowY || '')) && (+n.scrollHeight || 0) > (+n.clientHeight || 0);
+      if (ax || ay) out.push(n);
+    }
+    return out;
+  }
+  // does the browser scroll under the session by itself (→ native: no script pan)? A scroll view's pan begins unless
+  // one of its touches' used touch-action allows no panning (WKTouchActionGestureRecognizer canPreventGestureRecognizer):
+  // the page's scroll view has every active touch, an overflow scroller's the touches inside it
+  function nativePan(ids) {
+    const all = [...pts.values()], pans = new Map(all.map(x => [x, mayPan(win, x.target)]));
+    if (all.every(x => pans.get(x))) return true;
+    for (const id of ids) {
+      const p = pts.get(id);
+      if (!p || !pans.get(p)) continue;
+      for (const sc of scrollersOf(p.target)) {
+        if (all.every(x => pans.get(x) || !x.target || typeof sc.contains !== 'function' || !sc.contains(x.target))) return true;
+      }
     }
     return false;
   }
-  function restoreRange(p) {
-    const r = p.range;
+  // a menu or chooser opened by the press of every touch on or in el (contextmenu, wk-hold): that touch is freed
+  function freeAt(el) {
+    if (!el) return;
+    for (const x of pts.values()) {
+      if (x.target && (x.target === el || (typeof el.contains === 'function' && el.contains(x.target)))) x.free = true;
+    }
+  }
+  function restoreRec(r) {
     if (!r || r.el.value === r.v) return;
     r.el.value = r.v;
     for (const t of ['input', 'change']) r.el.dispatchEvent(mkEv(t, { bubbles: true }));
   }
+  const restoreRange = p => restoreRec(p.range);
+  function restoreLate() { if (!late.size) return; const a = [...late]; late.clear(); for (const r of a) restoreRec(r); }
   function cancelOwner(q) { // q's owner rolls its press back
     const set = claims.get(q.id);
     claims.delete(q.id);
@@ -162,8 +198,8 @@ export function installGestures(win, opts) {
 
   /* the session */
   function open(kind, q, p, t) {
-    S = { kind, ids: new Set([q.id, p.id]), el: null, at: t, native: false, ui: null, base: null, last: null, panOn: false, pinch: 0,
-      travel: { x: 0, y: 0 }, carry: { x: 0, y: 0 }, chain: null, rootT: null, regrip: 0, dog: 0 };
+    S = { kind, ids: new Set([q.id, p.id]), el: null, at: t, native: false, base: null, last: null, panOn: false,
+      carry: { x: 0, y: 0 }, chain: null, rootT: null, regrip: 0, dog: 0 };
     watch(S, WATCHDOG_MS);
   }
   function watch(s, ms) { // the watchdog: WATCHDOG_MS without an event from the session's touches ends it
@@ -171,63 +207,44 @@ export function installGestures(win, opts) {
       if (S !== s) return;
       const idle = now() - s.at;
       if (idle < WATCHDOG_MS) watch(s, WATCHDOG_MS - idle);
-      else { spend(s); finish(false); }
+      else { spend(s); finish(); }
     }, ms);
   }
   function spend(s) { if (s.kind === 'nav') for (const id of s.ids) { const p = pts.get(id); if (p) p.spent = true; } }
-  function finish(cancel) { // the session is over (cancel: no pinch commit)
+  function finish() { // the session is over
     const s = S;
     if (!s) return;
     S = null;
     unlater(s.dog); unlater(s.regrip);
     suppressUntil = now() + GRACE_MS;
-    if (s.pinch !== 1 || !s.ui) return;
-    if (cancel) { s.ui.pinchCancel(); return; }
-    const z0 = s.ui.get();
-    s.ui.pinchEnd();
-    if (s.ui.get() === z0 && (s.travel.x || s.travel.y)) panBy(s, -s.travel.x, -s.travel.y); // the same size: keep the travel
   }
-  function reset() { if (S) { spend(S); finish(true); } } // the page went away under the fingers
-  function frame() { // midpoint / spread of the first two session touches
+  function reset() { if (S) { spend(S); finish(); } } // the page went away under the fingers
+  function frame() { // the midpoint of the first two session touches
     const a = [];
     for (const id of S.ids) { const p = pts.get(id); if (p && !p.spent) a.push(p); if (a.length === 2) break; }
     if (a.length < 2) return null;
-    return { cx: (a[0].x + a[1].x) / 2, cy: (a[0].y + a[1].y) / 2, d: Math.max(20, dist(a[0], a[1])) };
+    return { cx: (a[0].x + a[1].x) / 2, cy: (a[0].y + a[1].y) / 2 };
   }
-  function rebase() { // the fingers changed: go on from here (no jump; a pinch re-grips)
-    const f = frame();
-    S.base = S.last = f;
-    if (!f) return;
-    if (S.pinch === 1) S.ui.pinchStart({ x: f.cx, y: f.cy, d: f.d });
-    else if (S.pinch === -1) S.pinch = 0;
-  }
+  function rebase() { S.base = S.last = frame(); } // the fingers changed: go on from here (no jump)
   function regrip() { // one finger left: another may come within REGRIP_MS, else it is spent and the session over
     S.base = S.last = null;
     unlater(S.regrip);
     const s = S;
-    s.regrip = later(() => { if (S === s) { spend(s); finish(false); } }, REGRIP_MS);
+    s.regrip = later(() => { if (S === s) { spend(s); finish(); } }, REGRIP_MS);
   }
   // track() once a frame (rAF): after every finger's pointermove of a touch event; flush() at once (a lift)
   let reqId = 0;
   const raf = f => (typeof win.requestAnimationFrame === 'function' ? win.requestAnimationFrame(f) : later(f, 16));
   function pend() { S.pend = true; if (!reqId) reqId = raf(() => { reqId = 0; flush(); }); }
   function flush() { if (S && S.pend) { S.pend = false; track(); } }
-  function track() {
+  function track() { // the script's pan: the midpoint's travel, once past PAN_PX from the grip (the travel so far too)
     const f = frame();
     if (!f || !S.base) return;
     let dx = f.cx - S.last.cx, dy = f.cy - S.last.cy;
     S.last = f;
-    if (S.pinch === 1) { S.travel.x += dx; S.travel.y += dy; S.ui.pinchMove({ x: f.cx, y: f.cy, d: f.d }); return; }
-    if (S.pinch === 0 && S.ui && Math.abs(Math.log(f.d / S.base.d)) > PINCH_ENGAGE) {
-      // from the grip's spread (no travel lost), anchored under the fingers as they are now; the scrollers under the
-      // grip kept for a pinch that ends at the same size (finish: its travel; a lift nulls base / last)
-      if (!S.chain && typeof o.pan !== 'function') S.chain = chainAt(S.base.cx, S.base.cy);
-      if (S.ui.pinchStart({ x: f.cx, y: f.cy, d: S.base.d })) { S.pinch = 1; S.travel = { x: 0, y: 0 }; S.ui.pinchMove({ x: f.cx, y: f.cy, d: f.d }); return; }
-      S.pinch = -1;
-    }
     if (!S.panOn) {
       if (Math.hypot(f.cx - S.base.cx, f.cy - S.base.cy) <= PAN_PX * perPt()) return;
-      S.panOn = true; dx = f.cx - S.base.cx; dy = f.cy - S.base.cy; // the travel so far too
+      S.panOn = true; dx = f.cx - S.base.cx; dy = f.cy - S.base.cy;
     }
     if (dx || dy) panBy(S, -dx, -dy);
   }
@@ -287,32 +304,35 @@ export function installGestures(win, opts) {
   on('pointerdown', e => {
     if (e.pointerType !== 'touch') { suppressUntil = -1; return; } // a pen, the mouse: never paired; a press ends the grace
     const t = now(), tg = e.target;
-    if (e.isPrimary === true) { // no other touch is down: whatever is still held is stale (a missed pointerup)
-      if (S) finish(false);
+    if (e.isPrimary === true) { // no other touch is down: whatever is still held is stale (a missed pointerup / touchend)
+      if (S) finish();
       pts.clear(); claims.clear(); suppressUntil = -1;
+      restoreLate();
     }
     if (pts.has(e.pointerId)) { // an id used again: its old touch is gone
       forget(e.pointerId);
-      if (S && !S.ids.size) finish(false); else if (S && S.kind === 'own' && S.ids.size < 2 && !S.regrip) regrip();
+      if (S && !S.ids.size) finish(); else if (S && S.kind === 'own' && S.ids.size < 2 && !S.regrip) regrip();
     }
     const p = { id: e.pointerId, t0: t, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, target: tg, cap: null, zone: zoneOf(tg),
-      primary: e.isPrimary === true, range: isRange(tg) ? { el: tg, v: tg.value } : null, spent: false, cancelled: false, held: false };
+      primary: e.isPrimary === true, range: isRange(tg) ? { el: tg, v: tg.value } : null, spent: false, cancelled: false, held: false,
+      free: false };
     pts.set(p.id, p);
     // a further finger of a running session: an own one's on its element; a nav one's anywhere — but while one finger
     // waits for a re-grip, a key plays (the other hand)
     if (S && (S.kind === 'nav' ? !(S.regrip && p.zone.kind === 'music') : p.zone.el === S.el)) {
       if (S.kind === 'nav') flush(); // the frame still pending first (rebase starts afresh from here)
       S.at = t; S.ids.add(p.id);
-      if (S.kind === 'nav') { stop(e); unlater(S.regrip); S.regrip = 0; rebase(); } else { unlater(S.regrip); S.regrip = 0; }
+      if (S.kind === 'nav') { eat(e); if (p.range) late.add(p.range); unlater(S.regrip); S.regrip = 0; rebase(); } else { unlater(S.regrip); S.regrip = 0; }
       return;
     }
     const q = S ? null : partner(p, t);
     if (!q) { if (!S) suppressUntil = -1; return; } // a touch of its own: untouched (its press ends the grace)
     if (q.zone.kind === 'own' && p.zone.el === q.zone.el) { open('own', q, p, t); S.el = q.zone.el; return; }
     open('nav', q, p, t);
-    S.ui = ui();
-    S.native = !S.ui && nativeOK(win, q.target) && nativeOK(win, p.target) && !nearRange(q) && !nearRange(p);
-    stop(e);
+    // native where the browser scrolls under the session by itself (WebKit asks every active touch: a held key too)
+    S.native = nativePan(S.ids);
+    for (const x of [q, p]) if (x.range) late.add(x.range);
+    eat(e);
     cancelOwner(q);
     rebase();
   }, true);
@@ -320,14 +340,14 @@ export function installGestures(win, opts) {
   on('pointermove', e => {
     const p = pts.get(e.pointerId);
     if (!p) return;
-    if (p.spent) { stop(e); return; }
+    if (p.spent) { swallow(e); return; }
     const mine = !!S && S.ids.has(p.id), t = now();
     if (mine) S.at = t;
-    if (mine && S.kind === 'nav' && !p.held && jumpy(p, e.clientX, e.clientY, t, S.rootT)) { p.held = true; stop(e); return; }
+    if (mine && S.kind === 'nav' && !p.held && jumpy(p, e.clientX, e.clientY, t, S.rootT)) { p.held = true; swallow(e); return; }
     p.held = false;
     p.x = e.clientX; p.y = e.clientY;
-    if (mine && S.kind === 'nav') { stop(e); if (!S.native) pend(); }
-  }, true);
+    if (mine && S.kind === 'nav') { swallow(e); if (!S.native) pend(); }
+  }, PASSIVE);
   const up = e => {
     const p = pts.get(e.pointerId);
     if (!p) return;
@@ -338,29 +358,34 @@ export function installGestures(win, opts) {
       flush();
     }
     pts.delete(p.id); claims.delete(p.id);
-    if (p.spent) { stop(e); return; }
+    if (p.spent) { swallow(e); restoreRange(p); return; }
     if (!S || !S.ids.has(p.id)) return;
     S.at = now();
     S.ids.delete(p.id);
-    if (S.kind === 'nav') { stop(e); if (!p.cancelled) restoreRange(p); } // (a swallowed press that moved a slider: back)
-    if (!S.ids.size) finish(false);
+    if (S.kind === 'nav') { swallow(e); restoreRange(p); } // (a swallowed press that moved a slider, or a thumb that followed: back)
+    if (!S.ids.size) finish();
     else if (S.kind === 'nav') { if (frame()) rebase(); else regrip(); }
     else if (S.ids.size < 2) regrip(); // an own pinch down to one finger: over unless another lands on its element within REGRIP_MS
   };
-  on('pointerup', up, true);
-  on('pointercancel', e => { if (e.gesture !== 'two-finger') up(e); }, true); // (our own cancel goes on to the owner)
+  on('pointerup', up, PASSIVE);
+  on('pointercancel', e => { if (e.gesture !== 'two-finger') up(e); }, PASSIVE); // (our own cancel goes on to the owner)
   for (const t of ['pointerover', 'pointerenter']) {
-    on(t, e => { const p = pts.get(e.pointerId); if (p && (p.spent || (S && S.kind === 'nav' && S.ids.has(p.id)))) stop(e); }, true);
+    on(t, e => { const p = pts.get(e.pointerId); if (p && (p.spent || (S && S.kind === 'nav' && S.ids.has(p.id)))) swallow(e); }, PASSIVE);
   }
-  on('touchmove', e => { if (S && S.kind === 'nav' && !S.native && e.cancelable) e.preventDefault(); }, { capture: true, passive: false });
-  on('touchend', e => { if (suppressing() && e.cancelable && !isField(e.target)) e.preventDefault(); }, { capture: true, passive: false });
+  // no touchmove listener, a passive touchend: nothing of the browser's scroll, pinch or taps waits for this layer (the
+  // two-finger tap's ⌘-click and a pinch's taps are swallowed by BLOCK below)
+  const lastUp = e => !(e && e.touches && e.touches.length); // no touch left on the screen
+  for (const t of ['touchend', 'touchcancel']) on(t, e => { if (lastUp(e)) restoreLate(); }, PASSIVE);
   for (const t of ['gesturestart', 'gesturechange', 'gestureend']) {
-    on(t, e => {
-      if (S && S.kind === 'nav' && typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-      if (pts.size && e.cancelable && ui()) e.preventDefault();
-    }, { capture: true, passive: false });
+    on(t, e => { if (S && S.kind === 'nav' && typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation(); }, { capture: true, passive: true });
   }
-  for (const t of BLOCK) on(t, e => { if (suppressing() && (t === 'contextmenu' || e.detail >= 1)) stop(e); }, true);
+  for (const t of BLOCK) {
+    on(t, e => {
+      if (suppressing() && (t === 'contextmenu' || e.detail >= 1)) stop(e);
+      else if (t === 'contextmenu') freeAt(e.target); // a long-press's menu: its finger may stay down while the other hand picks
+    }, true);
+  }
+  on('wk-hold', e => freeAt(e.target), true); // a widget's hold chooser (bubbling, at the widget): the same
   on('visibilitychange', () => { const d = doc(); if (d && d.visibilityState === 'hidden') reset(); }, true);
   on('pagehide', reset, true);
   on('blur', e => { if (!e || e.target === win || e.target == null) reset(); }, true); // the window's, not a control's
@@ -374,14 +399,15 @@ export function installGestures(win, opts) {
       return () => s.delete(h);
     },
     busy: () => suppressing(),
-    state: () => ({ session: S ? S.kind : null, native: !!(S && S.native), pinching: !!(S && S.pinch === 1), fingers: S ? S.ids.size : 0,
-      touches: pts.size, spent: [...pts.values()].filter(p => p.spent).length, suppressing: suppressing(), listeners: L.length }),
+    state: () => ({ session: S ? S.kind : null, native: !!(S && S.native), fingers: S ? S.ids.size : 0, touches: pts.size,
+      spent: [...pts.values()].filter(p => p.spent).length, free: [...pts.values()].filter(p => p.free).length, late: late.size,
+      suppressing: suppressing(), listeners: L.length }),
     destroy() {
-      if (S) finish(true);
+      if (S) finish();
       if (reqId && typeof win.cancelAnimationFrame === 'function') win.cancelAnimationFrame(reqId);
       reqId = 0;
       for (const f of L.splice(0)) f();
-      pts.clear(); claims.clear(); suppressUntil = -1;
+      pts.clear(); claims.clear(); late.clear(); suppressUntil = -1;
     },
   };
 }
