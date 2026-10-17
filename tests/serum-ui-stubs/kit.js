@@ -9,8 +9,8 @@
 //   const T = stubOf(kit);   // { log, binds, canvases, lives, pops, prompts, held, paint(), setSnap(snap), destroy(), queued,
 //                            //   shown (default true: the page is on screen; kit.live callbacks get it, as serum-ui's) }
 //   log entries: ['edit' | 'editFx', label, phase, ui] · ['setN', id, n, phase] · ['notify', text] · ['openWtEditor', o]
-import * as core from '../../serum-core.js?v=9';
-import * as wk from '../../wk.js?v=9';
+import * as core from '../../serum-core.js?v=10';
+import * as wk from '../../wk.js?v=10';
 
 export const __stub = true;
 const STUBS = new WeakMap();

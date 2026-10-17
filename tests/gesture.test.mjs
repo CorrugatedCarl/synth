@@ -13,11 +13,11 @@ import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as dom from './wk-dom.mjs';
-import * as G from '../gesture.js?v=9';
-import * as wk from '../wk.js?v=9';
-import * as S from '../song.js?v=9';
-import { PianoRoll } from '../roll.js?v=9';
-import { Arrangement } from '../arrange.js?v=9';
+import * as G from '../gesture.js?v=10';
+import * as wk from '../wk.js?v=10';
+import * as S from '../song.js?v=10';
+import { PianoRoll } from '../roll.js?v=10';
+import { Arrangement } from '../arrange.js?v=10';
 
 const { Ev, ptr, fire, place } = dom;
 // never hand a fake-DOM node to assert (its AssertionError walks the cyclic tree: tens of GB): primitives, or JSON

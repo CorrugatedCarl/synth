@@ -306,7 +306,7 @@ export async function bootMain(o = {}) {
     D[pre ? 'webkitExitFullscreen' : 'exitFullscreen'] = function () { sim.fsCalls = (sim.fsCalls || []).concat([['exit']]); D[el] = null; fsChange(); return pre ? undefined : Promise.resolve(); };
   }
   G.__synthTest = {};
-  const url = new URL('main.js?v=9&sim=' + (++boots), ROOT).href;
+  const url = new URL('main.js?v=10&sim=' + (++boots), ROOT).href;
   await import(url);
   const api = G.__synthTest.api;
   if (!api) throw new Error('main.js did not publish its test hook');

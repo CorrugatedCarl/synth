@@ -682,7 +682,7 @@ test('EnvEditor: stacked zero-length stages, keyboard, ghosts, playhead', () => 
 /* ------------------------------------------------- Phase 2 (SPEC-serum2 §11.14, §15.12) */
 const { PathEditor, PZEditor, lfoEditorLarge } = G;
 const core = await import('../serum-core.js');
-const wk = await import('../wk.js?v=9'); // the instance graph.js imports (one set of modifier latches)
+const wk = await import('../wk.js?v=10'); // the instance graph.js imports (one set of modifier latches)
 const P = pts.path;
 function validPath(p, msg = '') {
   assert.ok(Array.isArray(p) && p.length >= 2 && p.length <= MAX_PTS, msg + ' length');

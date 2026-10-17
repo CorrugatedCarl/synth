@@ -7,8 +7,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync, existsSync } from 'node:fs';
-import * as core from '../serum-core.js?v=9';
-import { mulberry32, fnv1a32, fft as wtFft, rfft as wtRfft } from '../wt.js?v=9';
+import * as core from '../serum-core.js?v=10';
+import { mulberry32, fnv1a32, fft as wtFft, rfft as wtRfft } from '../wt.js?v=10';
 import { dspScope, DSP_FILES, DSP_GLOBALS, DSP_TABLE, source, recorder, noAlloc, ALLOC_NAMES } from './dsp-scope.mjs';
 
 const fixture = name => JSON.parse(readFileSync(new URL('fixtures/' + name, import.meta.url), 'utf8'));

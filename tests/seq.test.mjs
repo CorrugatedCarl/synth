@@ -5,9 +5,9 @@
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as Q from '../seq-core.js?v=9';
-import * as core from '../serum-core.js?v=9';
-import * as laws from '../laws.js?v=9';
+import * as Q from '../seq-core.js?v=10';
+import * as core from '../serum-core.js?v=10';
+import * as laws from '../laws.js?v=10';
 import { dspScope, noAlloc, source, recorder } from './dsp-scope.mjs';
 import * as CPU from './cpu-gate.mjs';
 

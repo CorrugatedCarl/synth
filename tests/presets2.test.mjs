@@ -18,18 +18,18 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
-import * as core from '../serum-core.js?v=9';
-import * as W from '../wt.js?v=9';
-import * as gen from '../smpgen.js?v=9';
-import { patchFor } from '../models.js?v=9';
+import * as core from '../serum-core.js?v=10';
+import * as W from '../wt.js?v=10';
+import * as gen from '../smpgen.js?v=10';
+import { patchFor } from '../models.js?v=10';
 import { dspScope } from './dsp-scope.mjs';
-import * as A from '../assets.js?v=9';
-import * as wtstore from '../wtstore.js?v=9';
-import * as smpstore from '../smpstore.js?v=9';
+import * as A from '../assets.js?v=10';
+import * as wtstore from '../wtstore.js?v=10';
+import * as smpstore from '../smpstore.js?v=10';
 import { T_REF_CALIB, calibRowB } from './cpu-gate.mjs';
 
 const ROOT = new URL('../', import.meta.url);
-const V = '?v=9', SR = 48000, BPM = 120;
+const V = '?v=10', SR = 48000, BPM = 120;
 const P2 = core.FACTORY_PRESETS_V2;
 
 /* ------------------------------------------------------------------ harness */

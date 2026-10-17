@@ -11,7 +11,7 @@ import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import * as C from '../fx-core.js?v=9';
+import * as C from '../fx-core.js?v=10';
 import * as P1 from './ref-p1/serum-core.js';
 
 const DESTS = JSON.parse(readFileSync(new URL('./fixtures/dests.json', import.meta.url), 'utf8')).DESTS;
@@ -355,7 +355,7 @@ test('fxDest / instLabel / storePhases (§3.16.4, §8.1)', () => {
 const ids = (fx) => { const o = []; for (const R of fx.racks) for (const I of R.mods) { o.push(I.id); if (I.br) for (const B of I.br) for (const c of B) o.push(c.id); } return o; };
 const stable = (fx, msg) => { assert.deepEqual(C.normalizeFx2(fx), fx, (msg || '') + ' normalised and idempotent'); assert.equal(new Set(ids(fx)).size, ids(fx).length, 'ids unique'); };
 const row = (t, v, pid) => C.FXP_TAB[t][v].find((r) => r.pid === pid);
-async function serum() { return (await import('../serum-core.js?v=9')); }
+async function serum() { return (await import('../serum-core.js?v=10')); }
 function sState(SC, rows, o = {}) {
   const s = SC.defaultSerum();
   rows.forEach((r, i) => { s.matrix[i] = Object.assign(s.matrix[i], r); });

@@ -49,7 +49,7 @@
  * Everything exported as a constant is deep-frozen. Compiled objects (FXP, FXT) contain typed arrays and are not
  * frozen: treat them as read-only (FXT objects and layouts are memoised and shared between calls with equal content).
  */
-import { lawNorm as lawNormL, snapN as snapL, renderPts } from './laws.js?v=9';
+import { lawNorm as lawNormL, snapN as snapL, renderPts } from './laws.js?v=10';
 
 /* ================================================================ small helpers (verbatim from Phase-1 serum-core) */
 

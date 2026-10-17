@@ -11,9 +11,9 @@
 //   shapeLib     — the shared JSON shape library (`synth.sx.shapes`) behind the editors' Load / Save Shape menus
 // Browser ES module: nothing touches document / window at module top level, so node can import it (§0.1, §10.6).
 import { contextMenu, injectStyles, menuSource, theme, fitCanvas, ticker, saveFile, pickFile, ask,
-  numBox, toggle, seg, slider, xyPad, modifierBar, zoomPan } from './wk.js?v=9';
+  numBox, toggle, seg, slider, xyPad, modifierBar, zoomPan } from './wk.js?v=10';
 import { evalPts, bend, CURVE_K, ENV_K, MAX_PTS, N_BUS, MAX_CRV_PTS, MAX_SPEC_PTS, PATH_DEFAULT, PZ_DEFAULT, LFO_TOOLS,
-  SLEW_T, fmtTime, parseCore } from './serum-core.js?v=9';
+  SLEW_T, fmtTime, parseCore } from './serum-core.js?v=10';
 
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 const fin = x => typeof x === 'number' && isFinite(x);

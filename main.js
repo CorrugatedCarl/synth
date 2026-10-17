@@ -1,16 +1,16 @@
-import { MODELS, DX_ALGS, patchFor, groupSong } from './models.js?v=9';
-import * as S from './song.js?v=9';
-import { PianoRoll } from './roll.js?v=9';
-import { Arrangement } from './arrange.js?v=9';
-import * as core from './serum-core.js?v=9';
-import { openAppStore } from './appstore.js?v=9';
-import { createAssetManager, portPoster, userIdsOf, userAssetIds, idKind, TEXT as ATEXT } from './assets.js?v=9';
-import { createMidi, targets as midiTargets, noteCh, noteMsg } from './midi.js?v=9';
-import { initApp } from './pwa.js?v=9';
-import * as AC from './audioclock.js?v=9';
-import { installGestures } from './gesture.js?v=9';
+import { MODELS, DX_ALGS, patchFor, groupSong } from './models.js?v=10';
+import * as S from './song.js?v=10';
+import { PianoRoll } from './roll.js?v=10';
+import { Arrangement } from './arrange.js?v=10';
+import * as core from './serum-core.js?v=10';
+import { openAppStore } from './appstore.js?v=10';
+import { createAssetManager, portPoster, userIdsOf, userAssetIds, idKind, TEXT as ATEXT } from './assets.js?v=10';
+import { createMidi, targets as midiTargets, noteCh, noteMsg } from './midi.js?v=10';
+import { initApp } from './pwa.js?v=10';
+import * as AC from './audioclock.js?v=10';
+import { installGestures } from './gesture.js?v=10';
 
-const VERSION = '9';
+const VERSION = '10';
 const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -3507,12 +3507,21 @@ function frame() {
 
 /* -------------------------------------------------------------- boot */
 let app = null; // pwa.js initApp's controller
+// a node (or a text node's element) inside something the user types into — the only places text may be selected
+const TEXT_FIELD = 'input:not([type=range]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=color]), textarea, select, [contenteditable]:not([contenteditable="false"])';
+function isTextField(t) {
+  const el = t && t.nodeType === 3 ? t.parentElement : t;
+  return !!(el && typeof el.closest === 'function' && el.closest(TEXT_FIELD));
+}
 function boot() {
   // the two-finger layer (gesture.js) first: its window capture listeners run before every other (pressStart, wake, the
   // keys …), so a two-finger pan / pinch never presses what it lands on; the page's pinch-zoom stays the browser's
   installGestures(window);
   // the interface size of build 8 (uiscale.js, since removed) left its key behind: dropped once (nothing written without it)
   try { if (localStorage.getItem('synth-ui.scale') !== null) localStorage.removeItem('synth-ui.scale'); } catch { /* storage blocked */ }
+  // no text selection outside fields: iPadOS can still start one (word select + loupe) on a double-tap or hold where
+  // style.css's user-select: none leaves a gap
+  document.addEventListener('selectstart', e => { if (!isTextField(e.target)) e.preventDefault(); });
   const defs = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   defs.setAttribute('width', 0); defs.setAttribute('height', 0); defs.style.position = 'absolute';
   defs.innerHTML = '<defs><radialGradient id="knobShine" cx="35%" cy="30%" r="75%"><stop offset="0" stop-color="#fff" stop-opacity="0.22"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.04"/><stop offset="1" stop-color="#000" stop-opacity="0.25"/></radialGradient></defs>';

@@ -36,8 +36,8 @@
  * A new worker never activates by itself while a SYNTH window is open (no skipWaiting at install).
  */
 'use strict';
-const VERSION = '9';
-const BUILD = '6ee5c3f8b067'; // (tools/precache.mjs --write: a hash of the precached files)
+const VERSION = '10';
+const BUILD = 'b8dd78f44870'; // (tools/precache.mjs --write: a hash of the precached files)
 // (tools/precache.mjs --write rewrites these two lists from the sources)
 const ASSETS = [
   'appstore.js', 'arrange.js', 'assets.js', 'audioclock.js', 'engine.js', 'fx-core.js', 'fx-dsp.js', 'fx-mods2.js',

@@ -83,17 +83,17 @@
  * initModule). Compiled objects contain typed arrays and are not frozen: treat them as read-only (CT / SQP parts are
  * memoised).
  */
-import * as L from './laws.js?v=9';
-import * as FXC from './fx-core.js?v=9';
-import * as SQ from './seq-core.js?v=9';
-import { stepTable, tuningState, describe as tunDescribe } from './tuning.js?v=9';
+import * as L from './laws.js?v=10';
+import * as FXC from './fx-core.js?v=10';
+import * as SQ from './seq-core.js?v=10';
+import { stepTable, tuningState, describe as tunDescribe } from './tuning.js?v=10';
 import { FX_ROWS_V1, RENAME1, DIST_MODES, DIST_FILTER, DLY_MODES, EQ_TYPES_L, EQ_TYPES_H, MODFX_LADDER, DLY_LADDER, REV_LABELS,
-  defaultFxV1, normalizeFxV1, normalizeFx } from './fx-core.js?v=9';
+  defaultFxV1, normalizeFxV1, normalizeFx } from './fx-core.js?v=10';
 
-export * from './laws.js?v=9';
-export * from './fx-core.js?v=9';
-export * from './seq-core.js?v=9';
-export * from './tuning.js?v=9';
+export * from './laws.js?v=10';
+export * from './fx-core.js?v=10';
+export * from './seq-core.js?v=10';
+export * from './tuning.js?v=10';
 
 const { bend, evalPts, renderPts, CURVE_K } = L;
 

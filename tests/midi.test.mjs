@@ -10,10 +10,10 @@ import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import * as core from '../serum-core.js?v=9';
-import * as fxc from '../fx-core.js?v=9';
-import * as Q from '../seq-core.js?v=9';
-import * as M from '../midi.js?v=9';
+import * as core from '../serum-core.js?v=10';
+import * as fxc from '../fx-core.js?v=10';
+import * as Q from '../seq-core.js?v=10';
+import * as M from '../midi.js?v=10';
 
 const SRC = readFileSync(new URL('../midi.js', import.meta.url), 'utf8');
 const N = (/const VERSION = '(\d+)'/.exec(readFileSync(new URL('../main.js', import.meta.url), 'utf8')) || [])[1];

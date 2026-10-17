@@ -9,9 +9,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { bootMain } from './main-sim.mjs';
 import { fakeStorage, fakeIDB } from './fakes.mjs';
-import { MODELS } from '../models.js?v=9';
-import * as core from '../serum-core.js?v=9';
-import * as S from '../song.js?v=9';
+import { MODELS } from '../models.js?v=10';
+import * as core from '../serum-core.js?v=10';
+import * as S from '../song.js?v=10';
 
 const peak = x => { let m = 0; for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > m) m = a; } return m; };
 const maxDiff = (x, y, n = Math.min(x.length, y.length)) => { let m = 0; for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(x[i] - y[i])); return m; };

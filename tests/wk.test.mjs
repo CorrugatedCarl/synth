@@ -944,11 +944,11 @@ test('loadDSP: once per document and path, ordered, never rejects, null for fail
   try {
     delete globalThis.SerumDSP; delete globalThis.FXDSP;
     const d = fresh();
-    const p1 = wk.loadDSP(['serum-dsp.js?v=9', 'fx-dsp.js?v=9']);
+    const p1 = wk.loadDSP(['serum-dsp.js?v=10', 'fx-dsp.js?v=10']);
     assert.equal(d.scripts.length, 2);
-    assert.deepEqual(d.scripts.map(s => [s.src, s.async, s.parentNode === d.head]), [['serum-dsp.js?v=9', false, true], ['fx-dsp.js?v=9', false, true]]);
+    assert.deepEqual(d.scripts.map(s => [s.src, s.async, s.parentNode === d.head]), [['serum-dsp.js?v=10', false, true], ['fx-dsp.js?v=10', false, true]]);
     const p2 = wk.loadDSP(['serum-dsp.js', 'fx-dsp.js']); // same paths without the cache-buster: no new scripts
-    const p3 = wk.loadDSP(['./serum-dsp.js?v=9']);
+    const p3 = wk.loadDSP(['./serum-dsp.js?v=10']);
     assert.equal(d.scripts.length, 2);
     const S = Object.freeze({ id: 'S' });
     globalThis.SerumDSP = S;
@@ -958,9 +958,9 @@ test('loadDSP: once per document and path, ordered, never rejects, null for fail
     assert.deepEqual(two(await p1), { SerumDSP: S, FXDSP: null });
     assert.deepEqual(two(await p2), { SerumDSP: S, FXDSP: null });
     assert.equal(warned.length, 1);
-    assert.match(warned[0], /fx-dsp\.js\?v=9/);
+    assert.match(warned[0], /fx-dsp\.js\?v=10/);
     // the document remembers: later calls inject nothing and resolve at once
-    assert.deepEqual(two(await wk.loadDSP(['fx-dsp.js?v=9'])), { SerumDSP: S, FXDSP: null });
+    assert.deepEqual(two(await wk.loadDSP(['fx-dsp.js?v=10'])), { SerumDSP: S, FXDSP: null });
     assert.equal(d.scripts.length, 2);
     // already-present globals (static <script> tags): no injection
     const d2 = fresh();
@@ -2250,7 +2250,7 @@ test('loadDSP(): the default list is files 1–11 in table order (§0.3); define
     assert.equal(timers.length, d.scripts.length);
     assert.ok(timers.every(t => typeof t.hasRef !== 'function' || t.hasRef() === false), 'unref: a pending load keeps no node process alive');
     // a panel's default call after main.js loaded DSP_URLS (versioned paths): nothing new
-    const again = wk.loadDSP(wk.loadDSP.URLS.map(u => u + '?v=9'));
+    const again = wk.loadDSP(wk.loadDSP.URLS.map(u => u + '?v=10'));
     assert.equal(d.scripts.length, 10);
     const vals = {};
     d.scripts.forEach((s, i) => { const g = G[wk.loadDSP.URLS.indexOf(s.src)]; vals[g] = Object.freeze({ id: g }); globalThis[g] = vals[g]; fire(s, i % 2 ? 'load' : 'error', { bubbles: false }); });

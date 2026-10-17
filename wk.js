@@ -22,7 +22,7 @@
 //     marker shows only while |live − base| > 0.002 (base = the control's own n, or an optional `base` field);
 //   · ContextMenu / Shift+F10 and a 500 ms touch long-press dispatch a `contextmenu` MouseEvent on the
 //     focusable element (bubbles), so one `contextmenu` listener serves mouse, keyboard and touch.
-import { jumpy } from './gesture.js?v=9';
+import { jumpy } from './gesture.js?v=10';
 
 const SVG = 'http://www.w3.org/2000/svg';
 const prefs = { tooltips: 1, dblClick: 'type', wheel: 1 };
@@ -2968,7 +2968,7 @@ function hideTip(el) {
 function refreshTip(el) { if (tipOwner === el && tipEl && tipEl.classList.contains('wk-show')) showTip(el); }
 
 /* ------------------------------------------------------------ DSP loader */
-// Injects each classic DSP script once per document (keyed by path, so 'serum-dsp.js?v=9' and 'serum-dsp.js'
+// Injects each classic DSP script once per document (keyed by path, so 'serum-dsp.js?v=10' and 'serum-dsp.js'
 // are the same script), in order (async = false). Resolves when every script has loaded, failed or timed out;
 // never rejects. A missing, broken or failed script yields null for its global. DSP_GLOBALS = the SPEC-serum2 §0.3
 // list (files 1–11, table order) → their globals: a script whose global is already defined (a static <script> or

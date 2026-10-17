@@ -54,9 +54,9 @@
 // rack?) and the Phase-1 helpers moveModule, ladderLabel, moduleTitle, modulePresetPayload / applyModulePreset (v1 module
 // presets), svfDb, impulseDb. Nothing touches the DOM at module top level.
 import { knob, numBox, menu, toggle, seg, slider, contextMenu, tooltip, injectStyles, loadDSP, menuSource, theme, fitCanvas, frame,
-  saveFile, pickFile, ask, wheelGate, dragSource, modifierBar, ticker } from './wk.js?v=9';
-import { CurveEditor, shapeLib } from './graph.js?v=9';
-import * as core from './serum-core.js?v=9';
+  saveFile, pickFile, ask, wheelGate, dragSource, modifierBar, ticker } from './wk.js?v=10';
+import { CurveEditor, shapeLib } from './graph.js?v=10';
+import * as core from './serum-core.js?v=10';
 
 const { DESTS, DEST_INDEX, FX_MODULES, FX_ORDER_DEFAULT, MODFX_LADDER, DLY_LADDER, DIST_MODES, DLY_MODES, REV_LABELS,
   EQ_TYPES_L, EQ_TYPES_H, CMP_RATIO_DETENTS, FILTERS, fmtParam, lawValue, lawNorm, varLabel } = core;

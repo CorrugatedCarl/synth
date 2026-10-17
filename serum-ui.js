@@ -47,14 +47,14 @@
 // factory presets), synth.sx.default (Save as Default Preset), synth.sx.vc (user Voice Control presets),
 // synth.sx.shapes (via graph.shapeLib), synth.fxchains.
 // MIDI program change: index browserList(host.presets.list(), storage[BROWSER_KEY]) (§9.10, §11.8).
-import * as core from './serum-core.js?v=9';
-import * as wt from './wt.js?v=9';
-import * as wk from './wk.js?v=9';
-import * as gx from './graph.js?v=9';
-import * as fxui from './fx-ui.js?v=9';
-import * as wte from './wtedit.js?v=9';
-import * as osc from './sx-ui-osc.js?v=9';
-import * as seq from './sx-ui-seq.js?v=9';
+import * as core from './serum-core.js?v=10';
+import * as wt from './wt.js?v=10';
+import * as wk from './wk.js?v=10';
+import * as gx from './graph.js?v=10';
+import * as fxui from './fx-ui.js?v=10';
+import * as wte from './wtedit.js?v=10';
+import * as osc from './sx-ui-osc.js?v=10';
+import * as seq from './sx-ui-seq.js?v=10';
 
 /* ================================================================ constants and small helpers */
 
@@ -1451,7 +1451,7 @@ const focusable = el => (el && (el.matches && el.matches('button, [tabindex]') ?
   : el.querySelector && el.querySelector('button, [tabindex]'))) || el;
 const mkPage = el => ({ el: el || null, binds: [], canvases: [], editors: [], lives: [] });
 // the MIX page module (U3), loaded on demand: the page degrades to a notice while it is missing
-const loadMix = () => import('./sx-ui-mix.js?v=9');
+const loadMix = () => import('./sx-ui-mix.js?v=10');
 // wk.contextMenu items from knobMenuItems-style groups ({label, sub}) with an action per leaf
 const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label, sub: subMenu(it.sub, act) }
   : Object.assign({ label: it.label, action: () => act(it) }, it.checked !== undefined ? { checked: it.checked } : {})));

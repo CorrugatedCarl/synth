@@ -10,10 +10,10 @@ import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import * as core from '../serum-core.js?v=9';
-import * as W from '../wt.js?v=9';
-import { memoryStore } from '../wtstore.js?v=9';
-import { MODELS, patchFor } from '../models.js?v=9';
+import * as core from '../serum-core.js?v=10';
+import * as W from '../wt.js?v=10';
+import { memoryStore } from '../wtstore.js?v=10';
+import { MODELS, patchFor } from '../models.js?v=10';
 import { loadFixture } from './fixtures/load.mjs';
 import { dspScope, DSP_TABLE, DSP_FILES, noAlloc } from './dsp-scope.mjs';
 
@@ -1121,8 +1121,8 @@ test('§0.3 failure isolation: each optional script replaced by a throwing copy 
 });
 
 test('§15.13 bounce equivalence (§10.7f) with arp + clip + granular + Convolve: offline from tick T ≡ live after 1 s of pre-roll (−80 dB)', async () => {
-  const { playbackEntry, irEntry } = await import('../smpwork.js?v=9');
-  const { convShapeOf } = await import('../assets.js?v=9');
+  const { playbackEntry, irEntry } = await import('../smpwork.js?v=10');
+  const { convShapeOf } = await import('../assets.js?v=10');
   const sr = 48000, bpm = 120, fpt = sr * 60 / (bpm * 960), T0 = 3840, n = sr;
   const tone = (hz, ph) => Float32Array.from({ length: n }, (_, j) => 0.4 * Math.sin(2 * Math.PI * hz * j / sr + ph) + 0.15 * Math.sin(2 * Math.PI * 2.7 * hz * j / sr));
   const smpE = () => playbackEntry('smp:eqv', { rate: sr, ch: 2, len: n, L: tone(220, 0), R: tone(220, 1), root: 57, loop: null }, null);

@@ -7,7 +7,7 @@
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import * as AC from '../audioclock.js?v=9';
+import * as AC from '../audioclock.js?v=10';
 
 const SR = 48000, Q = 128 / SR;
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b} (±${tol})`);

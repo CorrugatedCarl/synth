@@ -53,7 +53,7 @@ const oscStub = await import('../sx-ui-osc.js');
 const seqStub = await import('../sx-ui-seq.js');
 const mixStub = await import('../sx-ui-mix.js');
 const kitStub = await import('./serum-ui-stubs/kit.js');
-const wkm = await import('../wk.js?v=9');   // the instance serum-ui uses (same specifier: shared modifier latches)
+const wkm = await import('../wk.js?v=10');   // the instance serum-ui uses (same specifier: shared modifier latches)
 
 const near = (a, b, tol = 1e-9) => assert.ok(Math.abs(a - b) <= tol, `${a} != ${b}`);
 const fresh = () => core.normalizeSerum(core.defaultSerum());

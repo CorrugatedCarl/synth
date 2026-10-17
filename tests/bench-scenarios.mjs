@@ -14,13 +14,13 @@
 //   const S = scenarios();                          // [{id, label, node, ipad, kind, gran?, build()}]
 //   const r = measure(S[0], env, {runs: 5});        // {load, loads, peak, worst}
 // env = { mk(processorOptions) → processor, advance(frames), FXDSP, SxBase, now() → ms }.
-import * as core from '../serum-core.js?v=9';
-import * as W from '../wt.js?v=9';
-import { patchFor, MODELS } from '../models.js?v=9';
-import * as smp from '../smp.js?v=9';
-import { playbackEntry, specEntry, irEntry } from '../smpwork.js?v=9';
-import { convShapeOf } from '../assets.js?v=9';
-import { lawNorm as lawN } from '../laws.js?v=9';
+import * as core from '../serum-core.js?v=10';
+import * as W from '../wt.js?v=10';
+import { patchFor, MODELS } from '../models.js?v=10';
+import * as smp from '../smp.js?v=10';
+import { playbackEntry, specEntry, irEntry } from '../smpwork.js?v=10';
+import { convShapeOf } from '../assets.js?v=10';
+import { lawNorm as lawN } from '../laws.js?v=10';
 
 export const SR = 48000;
 const W2 = id => core.WARPS2.findIndex(w => w.id === id) / (core.WARPS2.length - 1);

@@ -12,6 +12,12 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--ui); -webkit-font-smoothing: antialiased; }
 body { min-height: 100vh; overflow-x: hidden; padding: 0 env(safe-area-inset-right) 0 env(safe-area-inset-left); }
+/* an instrument, not a document: no text selection, magnifier loupe, long-press callout or tap flash anywhere (an iPad
+   double-tap or hold acts on the control it lands on); fields stay selectable and editable (main.js boot also refuses a
+   selectstart outside them, where iPadOS ignores the CSS) */
+html { -webkit-tap-highlight-color: transparent; }
+body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+:is(input:not([type=range], [type=checkbox], [type=radio], [type=button], [type=color]), textarea, select, [contenteditable]:not([contenteditable="false"])) { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
 /* viewport-fit=cover: in the installed app (black-translucent status bar) the page runs under the status bar and the home
    indicator — the header, the keyboard panel, dialogs and full-screen layers keep their content inside the safe area
    (a scrolled-to element stops below the status bar); a browser tab's insets are 0 */

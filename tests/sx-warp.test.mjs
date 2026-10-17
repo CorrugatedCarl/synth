@@ -4,8 +4,8 @@ import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import * as core from '../serum-core.js?v=9';
-import * as fxc from '../fx-core.js?v=9';
+import * as core from '../serum-core.js?v=10';
+import * as fxc from '../fx-core.js?v=10';
 import { dspScope, DSP_TABLE, noAlloc } from './dsp-scope.mjs';
 
 const REF_DSP = readFileSync(new URL('ref-p1/serum-dsp.js', import.meta.url), 'utf8');

@@ -57,8 +57,8 @@
 //   §10.1 stereo rule halves the velocity layers keeping the extremes (keptVels; 2 layers → the loudest one). Every
 //   instrument of the table renders within its budget (tests/smpgen.test.mjs: 76 MB in total at GEN_VER 3, none expected mono
 //   renders in stereo), so the rule and assets.js's last-resort mono fold are safety nets.
-import { LIMITS, toF32, mono, loopSearch, bakeLoop, fft } from './smp.js?v=9';
-import { mulberry32, fnv1a32 } from './wt.js?v=9';
+import { LIMITS, toF32, mono, loopSearch, bakeLoop, fft } from './smp.js?v=10';
+import { mulberry32, fnv1a32 } from './wt.js?v=10';
 
 /** Generator version: part of every cache key (`gen:<asset id>@<GEN_VER>`, §9.7); bump when any output changes. */
 export const GEN_VER = 3;
