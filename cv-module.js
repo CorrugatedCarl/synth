@@ -13,7 +13,7 @@
 // Bodies cull by hiding in 1b (cull 'hide': the SerumUI instance keeps its panel undo, page and editors); the 'unmount'
 // path (body.unmount + wk.releaseCanvases) is built for 1c.
 import * as wk from './wk.js?v=9';
-import { GRID } from './cv-world.js?v=9';
+import { DOT } from './cv-world.js?v=9';
 import * as cvArt from './cv-art.js?v=9';
 import { createCables, deriveCables } from './cv-cables.js?v=9';
 
@@ -47,8 +47,8 @@ const H_GUESS = { inst: 560, serum: 840, fx: 420, out: 260 };
 const fin = x => typeof x === 'number' && isFinite(x);
 const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
-const gsnap = v => Math.round(v / GRID) * GRID;
-const gup = v => Math.ceil(v / GRID) * GRID;
+const gsnap = v => Math.round(v / DOT) * DOT; // the visible grid's dots (cv-world DOT)
+const gup = v => Math.ceil(v / DOT) * DOT;
 
 /**
  * @typedef {{x: number, y: number, w?: number, fold?: 1, z?: number}} LayEntry  world px (top-left incl. the bar)
@@ -157,6 +157,7 @@ const FOLD_SVG = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25
  * @param {ModuleOpts} o @param {{world?: object, doc?: Document}} [env] @returns {Module} */
 export function createModule(o, env) {
   const E = env || {}, doc = E.doc || globalThis.document, W = () => E.world || null;
+  const snapOn = () => { const wd = W(); return !(wd && typeof wd.snapOn === 'function') || wd.snapOn(); }; // the toolbar's toggle
   const mk = (tag, cls, txt) => { const e = doc.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
   const btn = (cls, label, html) => { const b = mk('button', cls); b.type = 'button'; b.setAttribute('aria-label', label); b.title = label; if (html) b.innerHTML = html; return b; };
   const id = String(o.id), kind = o.kind || 'inst', cull = o.cull === 'unmount' ? 'unmount' : 'hide';
@@ -294,7 +295,7 @@ export function createModule(o, env) {
     D.i = i;
     const p = W2(i.x, i.y);
     let nx = D.x0 + p.x - D.p0.x, ny = D.y0 + p.y - D.p0.y;
-    if (!i.fine) { nx = gsnap(nx); ny = gsnap(ny); }
+    if (!i.fine && snapOn()) { nx = gsnap(nx); ny = gsnap(ny); }
     if (nx === lx && ny === ly) return;
     setPos(nx, ny, true);
     if (o.onMove) o.onMove(nx, ny, 'move');
@@ -371,7 +372,7 @@ export function createModule(o, env) {
   const size = i => {
     if (!R) return;
     const p = W2(i.x, i.y), nw0 = R.w0 + p.x - R.p0.x, before = w;
-    setW(i.fine ? nw0 : gsnap(nw0));
+    setW(i.fine || !snapOn() ? nw0 : gsnap(nw0));
     if (w !== before && o.onResize) o.onResize(w, 'move');
   };
   if (grip) {

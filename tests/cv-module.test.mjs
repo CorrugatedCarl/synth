@@ -1,7 +1,7 @@
 import './v8-guard.mjs';
 // cv-module.js (stage 1b MODULES lane; docs/canvas/IMPL-1b.md §8.3): isBackground / BG_SEL, fxKey + layOf fallback,
 // tidy columns, camGet / camPut LRU (keys: cv-migrate camKey), createModule chrome on tests/wk-dom.mjs (bar 40 px, jacks, fold, setPos,
-// view hide vs unmount), top-bar move (world delta = screen / k, 8 px snap, Shift = no snap, two-finger cancel restores),
+// view hide vs unmount), top-bar move (world delta = screen / k, snap to the 32 px dots, Shift = no snap, two-finger cancel restores),
 // createTrackView with a scripted world (bodies, ports, cables, lay callbacks, FX key swap), song.js lay validation (normLay)
 // and round-trip. Never pass fake-DOM nodes to assert.*.
 // Run alone: node --max-old-space-size=2048 --test tests/cv-module.test.mjs
@@ -77,10 +77,10 @@ test('fxKey and the stage-1b ids', () => {
 });
 
 test('tidy: instrument → FX → OUT in one row from (0, 0), GAP apart, tops aligned, columns on the grid', () => {
-  assert.deepEqual(M.tidy({ model: 'minimoog' }, {}), { i1: { x: 0, y: 0 }, fx1: { x: 1240, y: 0 }, out: { x: 2160, y: 0 } });
-  assert.deepEqual(M.tidy({ model: 'serum' }, null), { i1: { x: 0, y: 0 }, 'i1/fx': { x: 1360, y: 0 }, out: { x: 2280, y: 0 } });
+  assert.deepEqual(M.tidy({ model: 'minimoog' }, {}), { i1: { x: 0, y: 0 }, fx1: { x: 1248, y: 0 }, out: { x: 2176, y: 0 } });
+  assert.deepEqual(M.tidy({ model: 'serum' }, null), { i1: { x: 0, y: 0 }, 'i1/fx': { x: 1376, y: 0 }, out: { x: 2304, y: 0 } });
   const t = M.tidy({ model: 'juno60' }, { i1: { w: 1003, h: 500 }, fx1: { w: 700, h: 300 }, out: { w: 280, h: 230 } });
-  assert.deepEqual(Object.entries(t).map(([k, v]) => [k, v.x, v.y]), [['i1', 0, 0], ['fx1', 1168, 0], ['out', 2032, 0]]);
+  assert.deepEqual(Object.entries(t).map(([k, v]) => [k, v.x, v.y]), [['i1', 0, 0], ['fx1', 1184, 0], ['out', 2048, 0]]);
   assert.ok(Object.values(t).every(v => v.x % 8 === 0), 'grid columns');
   assert.ok(t.fx1.x >= 1003 + M.GAP && t.out.x >= t.fx1.x + 700 + M.GAP, 'GAP at least');
 });
@@ -93,7 +93,7 @@ test('layOf: the stored entry (a copy), the other FX key after a model change (p
   e.x = 1; assert.equal(tr.lay.i1.x, 40, 'a copy');
   assert.deepEqual(M.layOf(tr, 'fx1', td), { x: 1500, y: -64, fold: 1, z: 7 }, 'a classic track finds the Serum FX place');
   assert.deepEqual(M.layOf({ model: 'serum', lay: { fx1: { x: 3, y: 4 } } }, 'i1/fx', td), { x: 3, y: 4 }, 'and back');
-  assert.deepEqual(M.layOf(tr, 'out', td), { x: 2160, y: 0 }, 'no entry: Tidy');
+  assert.deepEqual(M.layOf(tr, 'out', td), { x: 2176, y: 0 }, 'no entry: Tidy');
   assert.deepEqual(M.layOf({ model: 'minimoog' }, 'i1', td), { x: 0, y: 0 });
   assert.deepEqual(M.layOf({ model: 'minimoog', lay: { i1: { x: 'a', y: 2 } } }, 'i1', td), { x: 0, y: 0 }, 'an invalid entry: Tidy');
   assert.deepEqual(M.layOf(null, 'zz', null), { x: 0, y: 0 });
@@ -209,7 +209,7 @@ test('createModule: setPos live is a transform (no layout), commit moves left / 
   assert.equal(one(m.el, 'cv-grip').getAttribute('aria-label'), 'Module width');
 });
 
-test('top-bar move: world delta = screen delta / k, 8 px snap, one start / end pair, edge-pan pointer, re-projection on camera frames', () => {
+test('top-bar move: world delta = screen delta / k, snap to the dots (32), one start / end pair, edge-pan pointer, re-projection on camera frames', () => {
   const doc = fresh(), W = fakeWorld(2);
   const { m, moves } = mod({ x: 16, y: 24 }, { doc, world: W });
   doc.body.append(m.el);
@@ -218,21 +218,31 @@ test('top-bar move: world delta = screen delta / k, 8 px snap, one start / end p
   assert.equal(moves.length, 0, 'inside the 4 px slop: no move yet');
   ptr(m.bar, 'pointermove', 541, 311, { pointerId: 1, pointerType: 'mouse' }); // +41, +11 screen = +20.5, +5.5 world → snapped
   assert.deepEqual(moves[0], ['start', 16, 24], 'start at the first real move');
-  assert.deepEqual(moves[1], ['move', 40, 32], '(16 + 20.5, 24 + 5.5) snapped to 8');
+  assert.deepEqual(moves[1], ['move', 32, 32], '(16 + 20.5, 24 + 5.5) snapped to the dots');
   assert.equal(W.selected, 'i1', 'a moved module is selected');
-  assert.equal(m.el.style.transform, 'translate3d(24px, 8px, 0)');
+  assert.equal(m.el.style.transform, 'translate3d(16px, 8px, 0)');
   assert.deepEqual(W.pointers.at(-1), '541,311');
   // the camera pans under a still pointer (edge pan): the module stays under the finger in screen terms
   W.cam.tx -= 80; W.emit('camera', W.cam);
-  assert.deepEqual(moves.at(-1), ['move', 80, 32], 'world under the pointer moved by 80 / 2');
+  assert.deepEqual(moves.at(-1), ['move', 64, 32], 'world under the pointer moved by 80 / 2 (76.5 → 64)');
   ptr(m.bar, 'pointerup', 541, 311, { pointerId: 1, pointerType: 'mouse' });
-  assert.deepEqual(moves.at(-1), ['end', 80, 32]);
+  assert.deepEqual(moves.at(-1), ['end', 64, 32]);
   assert.equal(moves.filter(x => x[0] === 'start').length, 1);
   assert.equal(moves.filter(x => x[0] === 'end').length, 1);
-  assert.deepEqual([m.el.style.left, m.el.style.top, m.el.style.transform], ['80px', '32px', '']);
+  assert.deepEqual([m.el.style.left, m.el.style.top, m.el.style.transform], ['64px', '32px', '']);
   assert.equal(W.pointers.at(-1), null, 'the drag pointer cleared');
   W.emit('camera', W.cam);
   assert.equal(moves.at(-1)[0], 'end', 'no re-projection after the drop');
+});
+
+test('top-bar move: with the canvas Snap toggle off the module follows the pointer freely (no Shift needed)', () => {
+  const doc = fresh(), W = fakeWorld(0.5);
+  W.snapOn = () => false;
+  const { m, moves } = mod({ x: 16, y: 24 }, { doc, world: W });
+  ptr(m.bar, 'pointerdown', 500, 300, { pointerId: 1, pointerType: 'mouse' });
+  ptr(m.bar, 'pointermove', 541, 311, { pointerId: 1, pointerType: 'mouse' });
+  assert.deepEqual(moves[1], ['move', 98, 46], 'unsnapped: 16 + 41 / 0.5, 24 + 11 / 0.5');
+  ptr(m.bar, 'pointerup', 541, 311, { pointerId: 1, pointerType: 'mouse' });
 });
 
 test('top-bar move: Shift = no snap; a two-finger pointercancel restores the start; Escape cancels', () => {
@@ -252,7 +262,7 @@ test('top-bar move: Shift = no snap; a two-finger pointercancel restores the sta
   ptr(m.bar, 'pointerdown', 10, 10, { pointerId: 4, pointerType: 'touch', isPrimary: true });
   ptr(m.bar, 'pointermove', 10, 30, { pointerId: 4, pointerType: 'touch', isPrimary: true });
   assert.deepEqual(moves.map(x => x[0]), ['start', 'move']);
-  assert.deepEqual(moves.at(-1), ['move', 0, 24], '+20 snapped');
+  assert.deepEqual(moves.at(-1), ['move', 0, 32], '+20 snapped (to the dots)');
   key(doc, 'Escape');
   assert.deepEqual(moves.at(-1), ['cancel', 0, 0]);
 });
@@ -334,15 +344,15 @@ test('createTrackView: three modules from Tidy, added to the world, bodies mount
   assert.deepEqual([...V.modules.keys()], ['i1', 'fx1', 'out']);
   assert.deepEqual(W.log.filter(x => x.startsWith('add')), ['add i1', 'add fx1', 'add out']);
   assert.deepEqual(bodies, ['mount cv-body', 'mount cv-body', 'mount cv-body']);
-  assert.deepEqual([...V.modules.values()].map(m => [m.x, m.y, m.w]), [[0, 0, 1080], [1240, 0, 760], [2160, 0, 280]]);
+  assert.deepEqual([...V.modules.values()].map(m => [m.x, m.y, m.w]), [[0, 0, 1080], [1248, 0, 760], [2176, 0, 280]]);
   assert.deepEqual(root.childNodes.map(n => n.getAttribute('class') + ':' + (n.getAttribute('data-cv-mod') || '')),
     ['cv-cables:', 'cv-cable-ends:', 'cv-mod:i1', 'cv-mod:fx1', 'cv-mod:out']);
   const P = V.ports();
-  assert.deepEqual([...P.entries()].map(([k, p]) => k + '@' + p.x + ',' + p.y), ['i1.out@1080,68', 'fx1.in@1240,68', 'fx1.out@2000,68', 'out.in@2160,68']);
+  assert.deepEqual([...P.entries()].map(([k, p]) => k + '@' + p.x + ',' + p.y), ['i1.out@1080,68', 'fx1.in@1248,68', 'fx1.out@2008,68', 'out.in@2176,68']);
   const d = all(root).filter(n => n.getAttribute && n.getAttribute('class') === 'cv-cable').map(n => n.getAttribute('d'));
   assert.equal(d.length, 2);
   assert.ok(d[0].startsWith('M 1080 68 C'), 'instrument out → FX in');
-  assert.ok(d[1].endsWith('2160 68'), 'FX out → OUT in');
+  assert.ok(d[1].endsWith('2176 68'), 'FX out → OUT in');
   assert.equal(V.live('i1'), true);
   assert.equal(V.live('nope'), false);
   // selection raises the touching cables
@@ -362,14 +372,14 @@ test('createTrackView: a move = one start / end pair through host.lay; fold and 
   ptr(fx.bar, 'pointerdown', 1300, 20, { pointerId: 1, pointerType: 'mouse' });
   const zcalls = calls.filter(c => c[1] === 'end' && c[2] === 'z');
   assert.equal(zcalls.length, 1, 'a press brings it to front (tie at z 1)');
-  assert.deepEqual(JSON.parse(zcalls[0][3]), { x: 1240, y: 0, z: 2 });
+  assert.deepEqual(JSON.parse(zcalls[0][3]), { x: 1248, y: 0, z: 2 });
   ptr(fx.bar, 'pointermove', 1340, 100, { pointerId: 1, pointerType: 'mouse' });
   ptr(fx.bar, 'pointermove', 1380, 180, { pointerId: 1, pointerType: 'mouse' });
   ptr(fx.bar, 'pointerup', 1380, 180, { pointerId: 1, pointerType: 'mouse' });
   const mv = calls.filter(c => c[2] === 'move');
   assert.deepEqual(mv.map(c => c[1]), ['start', 'end']);
-  assert.deepEqual(JSON.parse(mv[1][3]), { x: 1320, y: 160, z: 2 });
-  assert.deepEqual(tr.lay.fx1, { x: 1320, y: 160, z: 2 });
+  assert.deepEqual(JSON.parse(mv[1][3]), { x: 1344, y: 160, z: 2 });
+  assert.deepEqual(tr.lay.fx1, { x: 1344, y: 160, z: 2 });
   assert.equal(V.ports().get('fx1.in').y, 160 + 68, 'the cables follow');
   ptr(fx.bar, 'pointerdown', 1400, 180, { pointerId: 2, pointerType: 'mouse' });
   assert.equal(calls.filter(c => c[2] === 'z').length, 1, 'already in front: no write');
@@ -378,12 +388,12 @@ test('createTrackView: a move = one start / end pair through host.lay; fold and 
   calls.length = 0;
   fx.nudge(-8, 32);
   assert.deepEqual(calls.filter(c => c[2] === 'move').map(c => c[1]), ['start', 'end']);
-  assert.deepEqual(tr.lay.fx1, { x: 1312, y: 192, z: 2 });
+  assert.deepEqual(tr.lay.fx1, { x: 1336, y: 192, z: 2 });
   // fold from the menu path: one step
   calls.length = 0;
   V.toggleFold('out');
   assert.deepEqual(calls.filter(c => c[2] === 'fold').map(c => c[1]), ['start', 'end']);
-  assert.deepEqual(JSON.parse(calls.find(c => c[1] === 'end')[3]), { x: 2160, y: 0, fold: 1 });
+  assert.deepEqual(JSON.parse(calls.find(c => c[1] === 'end')[3]), { x: 2176, y: 0, fold: 1 });
   assert.ok(calls.some(c => c[0] === 'out' && c[1] === 'shown'), 'monitors hear about it');
   assert.equal(V.live('out'), false, 'folded: not live');
   // width: grip resize then Reset width
@@ -408,7 +418,7 @@ test('createTrackView.sync: lay changes (undo) move modules without remounting; 
   bodies.length = 0;
   const undone = JSON.parse(JSON.stringify(tr)); delete undone.lay; // (History brings a new object)
   V.sync(undone);
-  assert.deepEqual([V.modules.get('fx1').x, V.modules.get('fx1').y, V.modules.get('fx1').fold], [1240, 0, false], 'back to Tidy');
+  assert.deepEqual([V.modules.get('fx1').x, V.modules.get('fx1').y, V.modules.get('fx1').fold], [1248, 0, false], 'back to Tidy');
   assert.deepEqual(bodies, [], 'no body remounted');
   const sx = Object.assign(JSON.parse(JSON.stringify(tr)), { model: 'serum' });
   W.select('i1');
@@ -458,18 +468,18 @@ const grip = (V, from, to, id) => {
 test('createTrackView lay: the first write pins the modules Tidy still places — a resize, a sync, a reload or a Reset width never moves the others; an untouched track keeps no lay; a model change on an untouched track places FX / OUT from the new width once', () => {
   const doc = fresh(), tr = { id: 'trk_1', model: 'minimoog', name: 'Bass 1', color: '#3b82c4' };
   const R = view2(tr, doc);
-  const tidyRow = 'i1:0,0+1080 fx1:1240,0+760 out:2160,0+280';
+  const tidyRow = 'i1:0,0+1080 fx1:1248,0+760 out:2176,0+280';
   assert.equal(xs(R.V), tidyRow);
   assert.equal('lay' in tr, false, 'untouched: no lay key');
-  assert.equal(grip(R.V, 1080, 1400, 3), 1400);
-  assert.equal(xs(R.V), 'i1:0,0+1400 fx1:1240,0+760 out:2160,0+280', 'the others stay where they stand');
+  assert.equal(grip(R.V, 1080, 1400, 3), 1408, 'snapped to the dots');
+  assert.equal(xs(R.V), 'i1:0,0+1408 fx1:1248,0+760 out:2176,0+280', 'the others stay where they stand');
   assert.deepEqual(Object.keys(tr.lay).sort(), ['fx1', 'i1', 'out'], 'pinned with the resize');
   assert.deepEqual(R.calls.filter(c => c[2] === 'pin').map(c => c[0] + ' ' + c[1]), ['fx1 end', 'out end'], 'after the resize\'s own end (one undo step)');
   R.sync(clone(R.ref.t));
-  assert.equal(xs(R.V), 'i1:0,0+1400 fx1:1240,0+760 out:2160,0+280', 'a sync (an undo / redo restore) moves nothing');
+  assert.equal(xs(R.V), 'i1:0,0+1408 fx1:1248,0+760 out:2176,0+280', 'a sync (an undo / redo restore) moves nothing');
   R.V.destroy();
   const R2 = view2(clone(R.ref.t), doc); // a reload
-  assert.equal(xs(R2.V), 'i1:0,0+1400 fx1:1240,0+760 out:2160,0+280', 'a reload neither');
+  assert.equal(xs(R2.V), 'i1:0,0+1408 fx1:1248,0+760 out:2176,0+280', 'a reload neither');
   R2.V.resetWidth('i1');
   R2.V.destroy();
   const R3 = view2(clone(R2.ref.t), doc);
@@ -481,7 +491,7 @@ test('createTrackView lay: the first write pins the modules Tidy still places �
   R4.sync(sx);
   const a = xs(R4.V);
   R4.sync(clone(sx));
-  assert.deepEqual([a, xs(R4.V)], ['i1:0,0+1200 out:2280,0+280 i1/fx:1360,0+760', 'i1:0,0+1200 out:2280,0+280 i1/fx:1360,0+760']);
+  assert.deepEqual([a, xs(R4.V)], ['i1:0,0+1200 out:2304,0+280 i1/fx:1376,0+760', 'i1:0,0+1200 out:2304,0+280 i1/fx:1376,0+760']);
   assert.equal('lay' in R4.ref.t, false, 'still no lay');
   R4.V.destroy();
 });

@@ -22,8 +22,12 @@ import * as wk from './wk.js?v=9';
 export const K_MIN = 0.25, K_MAX = 2;
 /** Below CARD_K modules render as cards; at or above EDIT_K a selected module is in edit state. */
 export const CARD_K = 0.5, EDIT_K = 0.9;
-/** Snap grid (world px). */
+/** Fine step (world px): keyboard nudges. */
 export const GRID = 8;
+/** The visible grid (world px): its dots are every DOT, brighter ones every MAJOR; modules snap to DOT. */
+export const DOT = 32, MAJOR = 128;
+/** The snap-to-grid pref (appstore; stored as synthc.cv.snap): on unless switched off in the toolbar. */
+export const SNAP_PREF = 'synth.cv.snap';
 /** Culling margin around the viewport (screen px, converted with k), mount slice budget (ms per frame). */
 export const CULL_MARGIN = 256, SLICE_MS = 12;
 /** A touch landing while the camera glides, or within MOMENTUM_GUARD_MS after it stops, only stops the glide. */
@@ -137,17 +141,24 @@ export function visibleRect(cam, vw, vh, margin) {
 }
 /** Do two world rects overlap? @param {Rect} a @param {Rect} b @returns {boolean} */
 export function intersects(a, b) { return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h; }
-/** The dot grid of #viewport: CSS background-size (px) and position (px) for a dot centred in each tile, so the dots
- * land on world multiples of g (default 4·GRID); the tile doubles until it is ≥ 16 screen px (no dust when zoomed out).
- * @returns {{size: number, x: number, y: number}} */
-export function gridBg(cam, g) {
-  let size = (g > 0 ? +g : 4 * GRID) * cam.k;
-  while (size < 16) size *= 2;
-  const m = v => { const r = v % size; return r < 0 ? r + size : r; };
-  return { size, x: m(cam.tx - size / 2), y: m(cam.ty - size / 2) };
+/** The dot grid of #viewport, fixed to the world (it scales and moves exactly with the modules, never re-spaces): two
+ * layers of CSS background — MAJOR dots (always shown) and DOT dots, whose alpha fades smoothly out as they crowd
+ * together when zoomed out (gone below 10 screen px apart, full from 24) instead of stepping. A dot sits on each world
+ * multiple; sizes and positions in screen px, alpha in 1/100 steps (the background string changes only that often).
+ * @returns {{major: {size: number, x: number, y: number}, minor: {size: number, x: number, y: number, a: number}}} */
+export function gridBg(cam) {
+  const layer = s => { const m = v => { const r = v % s; return r < 0 ? r + s : r; }; return { size: s, x: m(cam.tx - s / 2), y: m(cam.ty - s / 2) }; };
+  const minor = layer(DOT * cam.k);
+  minor.a = Math.round(Math.max(0, Math.min(1, (minor.size - 10) / 14)) * 100) / 100;
+  return { major: layer(MAJOR * cam.k), minor };
 }
-/** v snapped to the grid g (default GRID). @returns {number} */
-export function snap(v, g) { const s = g > 0 ? +g : GRID, r = Math.round(v / s) * s; return r === 0 ? 0 : r; }
+/** The background-image of #viewport for a minor-dot alpha a (0…1): the MAJOR layer first (on top), then DOT. */
+export function gridImage(a) {
+  return 'radial-gradient(circle, rgba(233, 231, 226, 0.24) 1.1px, transparent 1.6px), '
+    + 'radial-gradient(circle, rgba(233, 231, 226, ' + Math.round(0.15 * a * 1000) / 1000 + ') 0.9px, transparent 1.4px)';
+}
+/** v snapped to the grid g (default DOT, the visible dots). @returns {number} */
+export function snap(v, g) { const s = g > 0 ? +g : DOT, r = Math.round(v / s) * s; return r === 0 ? 0 : r; }
 /** Level of detail for zoom k: 'card' below CARD_K, else 'body'; while `pinching` the previous one is kept (pinch-defer).
  * @param {number} k @param {View} prev @param {boolean} pinching @returns {View} */
 export function lodOf(k, prev, pinching) {
@@ -220,7 +231,7 @@ export function createWorld(viewport, o) {
   /* ---- state */
   let cam = { tx: 0, ty: 0, k: 1 }, shown = null, ikK = 1;
   let vp = { left: 0, top: 0, width: 0, height: 0 }, ovO = { left: 0, top: 0 }; // cached rects (resize)
-  let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9;
+  let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, gridA = -1, snapping = true;
   let lod = 'body', sel = null, editId = null, editSup = false, focusBack = null;
   let pin = null; // a bar double-tap's edit state { id, k }: it holds at the focus zoom even below EDIT_K (a large module's fit)
   let fid = 0, planDirty = false, queue = [], estMs = 0; // the frame, the plan, item views waiting for a slice
@@ -269,9 +280,10 @@ export function createWorld(viewport, o) {
     if (shown && shown.tx === cam.tx && shown.ty === cam.ty && shown.k === cam.k) return false;
     shown = copy(cam);
     W.style.transform = 'translate(' + cam.tx + 'px, ' + cam.ty + 'px) scale(' + cam.k + ')';
-    const g = gridBg(cam);
-    viewport.style.backgroundSize = g.size + 'px ' + g.size + 'px';
-    viewport.style.backgroundPosition = g.x + 'px ' + g.y + 'px';
+    const g = gridBg(cam), vs = viewport.style;
+    if (g.minor.a !== gridA) { gridA = g.minor.a; vs.backgroundImage = gridImage(gridA); }
+    vs.backgroundSize = g.major.size + 'px ' + g.major.size + 'px, ' + g.minor.size + 'px ' + g.minor.size + 'px';
+    vs.backgroundPosition = g.major.x + 'px ' + g.major.y + 'px, ' + g.minor.x + 'px ' + g.minor.y + 'px';
     if (gh && gh.g) placeGhost();
     const pct = Math.round(cam.k * 100) + '%';
     if (pct !== pctShown && TB.pct) { pctShown = pct; TB.pct.textContent = pct; TB.pct.setAttribute('aria-label', 'Zoom ' + pct + ' — reset to 100 %'); }
@@ -854,7 +866,7 @@ export function createWorld(viewport, o) {
     const g = gh.g, w = Math.max(0, +g.w || 0), h = Math.max(0, +g.h || 0);
     const p = toWorld(cam, g.x - vp.left, g.y - vp.top);
     let x = p.x - (g.dx != null ? +g.dx : w / 2), y = p.y - (g.dy != null ? +g.dy : h / 2);
-    if (g.snap !== false) { x = snap(x); y = snap(y); }
+    if (g.snap !== false && snapping) { x = snap(x); y = snap(y); }
     const l = toLocal(cam, x, y), s = gh.el.style;
     s.transform = 'translate(' + (l.x + vp.left - ovO.left) + 'px, ' + (l.y + vp.top - ovO.top) + 'px)';
     s.width = w * cam.k + 'px'; s.height = h * cam.k + 'px';
@@ -885,7 +897,7 @@ export function createWorld(viewport, o) {
     if (!it) return false;
     if (typeof it.nudge === 'function') it.nudge(dx, dy);
     else if (typeof it.onMove === 'function') {
-      const q = it.rect(), x = snap(q.x) + dx, y = snap(q.y) + dy;
+      const q = it.rect(), x = (snapping ? snap(q.x) : q.x) + dx, y = (snapping ? snap(q.y) : q.y) + dy;
       if (typeof it.setPos === 'function') it.setPos(x, y);
       it.onMove(x, y, 'start'); it.onMove(x, y, 'end');
     } else return false;
@@ -904,7 +916,7 @@ export function createWorld(viewport, o) {
     if (k === '1') { e.preventDefault(); zoomTo(1, { animate: true }); return true; }
     const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k];
     if (d && sel) {
-      const s = GRID * (e.shiftKey ? 4 : 1);
+      const s = (snapping ? DOT : GRID) * (e.shiftKey ? 4 : 1); // a dot at a time while snapping, else the fine step
       if (!nudge(sel, d[0] * s, d[1] * s)) return false;
       e.preventDefault();
       return true;
@@ -927,6 +939,7 @@ export function createWorld(viewport, o) {
     tidy: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="5" width="5" height="10" rx="1"/><rect x="9.5" y="5" width="3.5" height="7" rx="1"/><rect x="15" y="5" width="2.5" height="5" rx="0.8"/></svg>',
     mods: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10c2-5 4-5 5 0s3 5 5 0 4-5 5 0"/></svg>',
     tools: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.2 12.2 17 17M6 8.5h5M8.5 6v5"/></svg>',
+    snap: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3.5v6.5a5 5 0 0 0 10 0V3.5M5 7h3M12 7h3"/><circle cx="4" cy="17" r="0.9"/><circle cx="10" cy="17" r="0.9"/><circle cx="16" cy="17" r="0.9"/></svg>',
   };
   function buildToolbar(host) {
     if (!host || !doc) return;
@@ -950,6 +963,7 @@ export function createWorld(viewport, o) {
     const pct = btn('pct', 'Zoom 100 %', '', () => zoomTo(1, { animate: true }));
     pct.classList.add('cv-tb-pct');
     pct.textContent = '100%';
+    const snapB = btn('snap', 'Snap to grid', ICON.snap, () => setSnap(!snapping));
     const mods = btn('mods', 'Modulation cables arrive in a later stage', ICON.mods, null);
     mods.disabled = true;
     mods.setAttribute('aria-disabled', 'true');
@@ -965,14 +979,26 @@ export function createWorld(viewport, o) {
       btn('out', 'Zoom out', ICON.out, () => stepZoom(-1)), pct, btn('in', 'Zoom in', ICON.in, () => stepZoom(1)), mk('span', 'cv-tb-sep'),
       btn('fit', 'Fit all (0)', ICON.fit, () => fit({ animate: true })),
       btn('tidy', 'Tidy: lay the modules out again', ICON.tidy, () => { if (typeof o.onTidy === 'function') o.onTidy(); }),
-      mods);
+      snapB, mods);
     bar.append(fold, row, chip);
     host.append(bar);
-    Object.assign(TB, { bar, row, pct, chip, fold });
+    Object.assign(TB, { bar, row, pct, chip, fold, snap: snapB });
+    snapUI();
     offs.push(() => { unlater(hintT); try { bar.remove(); } catch (err) { /* gone */ } });
   }
 
   /* ---- setup */
+  // snap to grid (toolbar toggle, remembered): module moves, drops, nudges and the width grip land on the dots (DOT);
+  // Shift / Fine still moves freely while it is on
+  function snapUI() { if (TB.snap) { TB.snap.setAttribute('aria-pressed', String(snapping)); TB.snap.title = 'Snap to grid: ' + (snapping ? 'on' : 'off'); TB.snap.setAttribute('aria-label', TB.snap.title); } }
+  function setSnap(on) {
+    on = !!on;
+    if (on === snapping) return;
+    snapping = on;
+    snapUI();
+    if (store) { try { store.set(SNAP_PREF, on); } catch (err) { /* storage */ } }
+    emit('snap', on);
+  }
   function setPinchMode(m) {
     pinchMode = m === 'page' ? 'page' : 'canvas';
     attr(viewport, 'data-cv-pinch', pinchMode);
@@ -998,6 +1024,7 @@ export function createWorld(viewport, o) {
   }
 
   pinchMode = store && store.get && store.get(PINCH_PREF, 'canvas') === 'page' ? 'page' : 'canvas';
+  snapping = !(store && store.get && store.get(SNAP_PREF, true) === false);
   attr(viewport, 'data-cv-pinch', pinchMode);
   attr(viewport, 'data-cv-lod', lod);
   try { W.style.setProperty('--ik', '1'); } catch (err) { /* inert */ }
@@ -1041,6 +1068,7 @@ export function createWorld(viewport, o) {
     toClient: (x, y) => { const l = toLocal(cam, x, y); return { x: l.x + vp.left, y: l.y + vp.top }; },
     band, add, remove, update, clear, ids: () => [...items.keys()], viewOf: id => { const r = items.get(String(id)); return r ? r.view : null; },
     select, dragPointer, ghost, setActive, setPinchMode, resize, hooks, wheelVeto, escape, key,
+    snapOn: () => snapping, setSnap,
     on(type, fn) {
       let s = subs.get(type);
       if (!s) subs.set(type, s = new Set());

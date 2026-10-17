@@ -37,7 +37,7 @@
  */
 'use strict';
 const VERSION = '9';
-const BUILD = 'f6cfc48f6f4d'; // (tools/precache.mjs --write: a hash of the precached files)
+const BUILD = '840ec4340596'; // (tools/precache.mjs --write: a hash of the precached files)
 // (tools/precache.mjs --write rewrites these two lists from the sources)
 const ASSETS = [
   'appstore.js', 'arrange.js', 'assets.js', 'audioclock.js', 'cv-art.js', 'cv-cables.js', 'cv-graph.js',

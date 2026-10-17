@@ -32,7 +32,8 @@ test('maths: clampK, toWorld ∘ toLocal = identity, panCam is a finger delta, s
     near(w.x, x, 1e-6, 'x'); near(w.y, y, 1e-6, 'y');
   }
   eq(W.panCam({ tx: 10, ty: 20, k: 0.5 }, 5, -7), { tx: 15, ty: 13, k: 0.5 }, 'content follows the finger');
-  eq([W.snap(13), W.snap(12), W.snap(-3), W.snap(-5), W.snap(17, 16)], [16, 16, 0, -8, 16]);
+  eq([W.DOT, W.MAJOR, W.SNAP_PREF], [32, 128, 'synth.cv.snap'], 'the visible grid, its pref');
+  eq([W.snap(13), W.snap(17), W.snap(48), W.snap(-3), W.snap(-20), W.snap(17, 16)], [0, 32, 64, 0, -32, 16], 'default: the dots (DOT)');
   ok(!Object.is(W.snap(-3), -0), 'no −0');
 });
 
@@ -66,18 +67,23 @@ test('maths: fitCam contains every rect with the padding, k ≤ kMax, centred; e
   eq(W.fitCam([{ x: 0, y: 0, w: 100, h: 100 }], 1000, 1000).k, 1, 'a small layout stays at 100 % (kMax 1)');
 });
 
-test('maths: gridBg — dots on world multiples of 32, never denser than 16 screen px; visibleRect / intersects', () => {
-  for (const c of [{ tx: 13, ty: -57, k: 1 }, { tx: 1000.5, ty: 3, k: 0.3 }, { tx: -77, ty: 41, k: 2 }]) {
+test('maths: gridBg — two layers fixed to the world (dots on multiples of 32 and 128 at every zoom, never re-spaced), the fine layer fading smoothly when zoomed out; visibleRect / intersects', () => {
+  const onGrid = (c, L, step) => {
+    ok(L.x >= 0 && L.x < L.size && L.y >= 0 && L.y < L.size, 'position inside one tile');
+    const w = W.toWorld(c, L.x + L.size / 2, L.y + L.size / 2), m = v => { const r = ((v % step) + step) % step; return r < step / 2 ? r : r - step; };
+    near(m(w.x), 0, 1e-6, 'x on the grid'); near(m(w.y), 0, 1e-6, 'y on the grid');
+  };
+  for (const c of [{ tx: 13, ty: -57, k: 1 }, { tx: 1000.5, ty: 3, k: 0.3 }, { tx: -77, ty: 41, k: 2 }, { tx: 5, ty: 5, k: 0.25 }]) {
     const g = W.gridBg(c);
-    ok(g.size >= 16, 'size ' + g.size);
-    ok(g.x >= 0 && g.x < g.size && g.y >= 0 && g.y < g.size, 'position inside one tile');
-    // a dot sits at the tile centre: position + size / 2 (+ n·size) is a world multiple of 32
-    const w = W.toWorld(c, g.x + g.size / 2, g.y + g.size / 2);
-    near(((w.x % 32) + 32) % 32 < 16 ? ((w.x % 32) + 32) % 32 : ((w.x % 32) + 32) % 32 - 32, 0, 1e-6, 'x on the grid');
-    near(((w.y % 32) + 32) % 32 < 16 ? ((w.y % 32) + 32) % 32 : ((w.y % 32) + 32) % 32 - 32, 0, 1e-6, 'y on the grid');
+    near(g.minor.size, 32 * c.k, 1e-9, 'fine dots: exactly 32 world px apart'); near(g.major.size, 128 * c.k, 1e-9, 'major: 128');
+    onGrid(c, g.minor, 32); onGrid(c, g.major, 128);
   }
-  eq(W.gridBg({ tx: 0, ty: 0, k: 1 }).size, 32);
-  eq(W.gridBg({ tx: 0, ty: 0, k: 0.25 }).size, 16, 'k 0.25: every other dot (8 → 16 px)');
+  eq([W.gridBg({ tx: 0, ty: 0, k: 1 }).minor.a, W.gridBg({ tx: 0, ty: 0, k: 0.25 }).minor.a, W.gridBg({ tx: 0, ty: 0, k: 0.5 }).minor.a], [1, 0, 0.43], 'full at 100 %, gone at 25 %, between at 50 %');
+  // a pinch from 25 % to 200 %: the fine layer's alpha only ever creeps (no step) and never goes back down
+  let prev = -1;
+  for (let k = 0.25; k <= 2; k += 0.005) { const a = W.gridBg({ tx: 0, ty: 0, k }).minor.a; ok(a >= prev && a - Math.max(prev, 0) <= 0.03, 'smooth at k ' + k.toFixed(3)); prev = a; }
+  ok(/0\.24\) 1\.1px/.test(W.gridImage(1)) && /0\.15\) 0\.9px/.test(W.gridImage(1)), 'the major layer first, then the fine one');
+  ok(/, 0\) 0\.9px/.test(W.gridImage(0)), 'fine layer transparent at alpha 0');
   eq(W.visibleRect({ tx: 100, ty: 50, k: 2 }, 800, 600, 0), { x: -50, y: -25, w: 400, h: 300 });
   eq(W.visibleRect({ tx: 0, ty: 0, k: 0.5 }, 100, 100, 50), { x: -100, y: -100, w: 400, h: 400 }, 'margin in screen px');
   eq([W.intersects({ x: 0, y: 0, w: 10, h: 10 }, { x: 9, y: 9, w: 5, h: 5 }), W.intersects({ x: 0, y: 0, w: 10, h: 10 }, { x: 10, y: 0, w: 5, h: 5 })], [true, false]);
@@ -160,7 +166,7 @@ test('createWorld: the transform string, the dot grid, --ik written only at a zo
   const { w, vp, world, frame, events } = setup();
   frame();
   eq(w.style.transform, 'translate(0px, 0px) scale(1)');
-  eq(vp.style.backgroundSize, '32px 32px');
+  eq(vp.style.backgroundSize, '128px 128px, 32px 32px');
   eq(w.style['--ik'], '1');
   world.setCamera({ tx: 10.25, ty: -4, k: 0.5 });
   eq(names(events.splice(0)), ['movestart', 'camera', 'camera', 'cameraend', 'lod'].slice(0, 4), 'one jump: movestart, the frame, the rounded rest, cameraend');
@@ -628,7 +634,11 @@ test('keys (focus in the viewport or on a module root / bar): 0 fits, 1 = 100 %,
   world.select('a');
   eq(key('ArrowRight'), [true, true]);
   eq(key('ArrowDown', { shiftKey: true }), [true, true]);
-  eq(moves, ['start:24,24', 'end:24,24', 'start:24,56', 'end:24,56'], 'one onMove start / end pair per press');
+  eq(moves, ['start:64,32', 'end:64,32', 'start:64,160', 'end:64,160'], 'snapping: onto the dots, a dot a time (Shift ×4); one start / end pair per press');
+  world.setSnap(false);
+  eq(key('ArrowRight'), [true, true]);
+  eq(moves.slice(-2), ['start:72,160', 'end:72,160'], 'snap off: the fine step from where it is');
+  world.setSnap(true);
   eq(key('a'), [false, false], 'a play key');
   eq(key(' '), [false, false], 'Space');
   eq(key('a', { metaKey: true }), [true, true], '⌘A: select all (one selection in 1b)');
@@ -648,7 +658,7 @@ test('dragPointer: edge auto-pan per wk.edgePan2 against the band (a pointer ove
   frame();
   eq(world.band(), { left: 44, top: 100, right: 1000, bottom: 700 }, 'the band: the viewport less the rail');
   const g = world.ghost({ x: 500, y: 400, w: 200, h: 100, label: 'Juno-60' });
-  eq(g, { x: 400, y: 248, w: 200, h: 100 }, 'centred under the pointer, snapped to 8');
+  eq(g, { x: 416, y: 256, w: 200, h: 100 }, 'centred under the pointer, snapped to the dots (32)');
   // an outline larger than the canvas (a Serum's): its label moves into the visible part, at the band's top-left
   world.ghost({ x: 500, y: 400, w: 1200, h: 900, label: 'Serum · replaces Juno-60' });
   const gEl = all(d.documentElement).find(n => n.className === 'cv-ghost'), lab = all(d.documentElement).find(n => n.className === 'cv-ghost-label');
@@ -668,8 +678,8 @@ test('dragPointer: edge auto-pan per wk.edgePan2 against the band (a pointer ove
   // the ghost re-projects every frame: it stays under the pointer (500, 400) whatever the camera did
   const ghost = all(d.documentElement).find(n => n.className === 'cv-ghost');
   const tf = /translate\(([-\d.]+)px, ([-\d.]+)px\)/.exec(ghost.style.transform);
-  near(+tf[1] + parseFloat(ghost.style.width) / 2, 500, 8, 'x under the pointer (grid snap)');
-  near(+tf[2] + 100 + parseFloat(ghost.style.height) / 2, 400, 8, 'y under the pointer');
+  near(+tf[1] + parseFloat(ghost.style.width) / 2, 500, 16, 'x under the pointer (grid snap)');
+  near(+tf[2] + 100 + parseFloat(ghost.style.height) / 2, 400, 16, 'y under the pointer');
   // speed: the law of wk.edgePan2 (full speed past the edge after its ramp: 1200 px/s → ≈ 19 px per 16 ms frame)
   const x0 = world.cam.tx; frame(); const step = world.cam.tx - x0;
   near(step, 1200 * 0.016, 1, 'px per frame');
@@ -754,4 +764,25 @@ test('setPinchMode persists synth.cv.pinch and marks the viewport; setActive(fal
   world.setActive(true); frame(2);
   world.destroy();
   eq([vp.listenerCount('pointerdown'), vp.listenerCount('wheel'), vp.listenerCount('pointermove'), w.listenerCount('focusin'), win.listenerCount('resize'), win.listenerCount('touchstart')], [0, 0, 0, 0, 0, 0]);
+});
+
+test('Snap to grid: the toolbar toggle (aria-pressed, remembered in synth.cv.snap, a snap event); off = free ghost drops; a saved off starts off', () => {
+  const { tb, world, prefs, frame } = setup();
+  frame();
+  const b = all(tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'snap');
+  ok(b, 'the Snap button');
+  eq([b.getAttribute('aria-pressed'), world.snapOn()], ['true', true], 'on by default');
+  const told = [];
+  world.on('snap', on => told.push(on));
+  b.click();
+  eq([b.getAttribute('aria-pressed'), world.snapOn(), prefs.get('synth.cv.snap')], ['false', false, false]);
+  eq(told, [false], 'a snap event');
+  const g = world.ghost({ x: 500, y: 400, w: 200, h: 100, label: 'x' });
+  eq([g.x % 32 !== 0 || g.y % 32 !== 0, g.x, g.y], [true, 400, 250], 'off: the outline follows the pointer exactly');
+  b.click();
+  eq([world.snapOn(), prefs.get('synth.cv.snap')], [true, true]);
+  const S2 = setup({ prefs: [['synth.cv.snap', false]] });
+  S2.frame();
+  const b2 = all(S2.tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'snap');
+  eq([S2.world.snapOn(), b2.getAttribute('aria-pressed')], [false, 'false'], 'restored off');
 });

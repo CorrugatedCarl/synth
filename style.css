@@ -744,11 +744,13 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
    edits between this marker and the cv-module marker. */
 /* the camera's viewport: one finger / the mouse pans it (cv-world.js), two fingers pinch it (gesture.js hooks); the page's
    own pinch stays over the trays. overflow: clip (not hidden): no programmatic scroll can shift the world (focus reveals
-   pan the camera instead). The dot grid is its background (cv-world gridBg: 32 world px, never denser than 16 screen px) */
+   pan the camera instead). The dot grid is its background, fixed to the world (cv-world gridBg: dots every 32 world px fading
+   smoothly when zoomed out, brighter ones every 128 — never re-spaced, so it never jumps) */
 #viewport { overflow: clip; touch-action: none; overscroll-behavior: contain; outline: none; cursor: grab;
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
-  background-color: #0a0b0d; background-image: radial-gradient(circle, rgba(233, 231, 226, 0.15) 0.9px, transparent 1.4px);
-  background-size: 32px 32px; background-repeat: repeat; }
+  background-color: #0a0b0d; background-repeat: repeat;
+  background-image: radial-gradient(circle, rgba(233, 231, 226, 0.24) 1.1px, transparent 1.6px), radial-gradient(circle, rgba(233, 231, 226, 0.15) 0.9px, transparent 1.4px);
+  background-size: 128px 128px, 32px 32px; } /* first paint at 100 %: cv-world write() keeps both layers on the world */
 #viewport:focus-visible { box-shadow: inset 0 0 0 2px rgba(242, 163, 58, 0.5); }
 #viewport[data-cv-busy] { cursor: grabbing; }
 #viewport[data-cv-busy] > #world { will-change: transform; } /* only while it moves: at rest the modules re-raster sharp */
@@ -787,6 +789,8 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-tb-btn:hover:not(:disabled) { background: #22252b; }
 .cv-tb-btn:active:not(:disabled) { background: #2b2e35; }
 .cv-tb-btn:disabled { color: var(--mute); opacity: 0.4; cursor: default; }
+.cv-tb-btn[aria-pressed="true"] { color: var(--hot); background: rgba(242, 163, 58, 0.12); } /* a toggle that is on (Snap) */
+.cv-tb-btn[aria-pressed="false"] { color: var(--mute); }
 .cv-tb-btn:focus-visible, .cv-tb-chip:focus-visible { outline: 2px solid var(--hot); outline-offset: -2px; }
 .cv-tb-pct { width: auto; min-width: 54px; padding: 0 6px; font: 600 12px/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--text); }
 .cv-tb-sep { flex: 0 0 1px; width: 1px; height: 20px; margin: 0 4px; background: #2b2e34; }

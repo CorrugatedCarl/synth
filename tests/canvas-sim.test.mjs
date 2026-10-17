@@ -67,7 +67,7 @@ test('boot: the selected track\'s three modules hold #inst, #fxrack and the scop
   assert.equal(cv.parts.fx.parentNode === V().modules.get('fx1').body, true, '#fxrack in the FX body');
   assert.equal(cv.parts.scope.parentNode === V().modules.get('out').body, true, 'the scope in OUT');
   assert.equal('lay' in T(), false, 'no lay written by just looking');
-  assert.deepEqual([...V().modules.values()].map(m => [m.id, m.x, m.y]), [['i1', 0, 0], ['fx1', 1240, 0], ['out', 2160, 0]]);
+  assert.deepEqual([...V().modules.values()].map(m => [m.id, m.x, m.y]), [['i1', 0, 0], ['fx1', 1248, 0], ['out', 2176, 0]]);
   const ttl = nameOf(T().model);
   assert.deepEqual([...V().modules.values()].map(m => m.title), [ttl, 'FX Panel', 'OUT']);
   assert.deepEqual(cv.menu('inst', 'i1').filter(x => !x.sep).map(x => x.label), ['About the ' + ttl + '…', 'Replace with…', 'Reset width', 'Fold', 'Bring to front', 'Tidy the canvas']);
@@ -84,21 +84,21 @@ test('a top-bar move: track.lay written, one History step; undo restores the pla
   drag(m, 160, 96);
   assert.equal(hsteps(), n0 + 1, 'exactly one History step');
   assert.equal(cv.hist.undoLabel, 'Move FX Panel');
-  assert.deepEqual(T().lay.fx1, { x: 1400, y: 96, z: 2 });
-  assert.deepEqual([m.x, m.y], [1400, 96]);
+  assert.deepEqual(T().lay.fx1, { x: 1408, y: 96, z: 2 });
+  assert.deepEqual([m.x, m.y], [1408, 96]);
   assert.equal(V().cables.list().length, 2);
   const port = V().ports().get('fx1.in');
-  assert.deepEqual([port.x, port.y], [1400, 96 + 68], 'the cable follows');
+  assert.deepEqual([port.x, port.y], [1408, 96 + 68], 'the cable follows');
   // a knob tweak after the move: undo keeps it (knob undo = today's policy)
   const k = Object.keys(T().vals).find(x => typeof T().vals[x] === 'number');
   T().vals[k] = 0.123;
   cv.undo();
   assert.equal(T() !== t0, true, 'History brings new track objects');
   assert.equal(T().vals[k], 0.123, 'knob value kept');
-  assert.deepEqual(T().lay.fx1, { x: 1240, y: 0, z: 2 }, 'lay back to before the move (bring-to-front is not a step)');
-  assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [1240, 0], 'the module went back');
+  assert.deepEqual(T().lay.fx1, { x: 1248, y: 0, z: 2 }, 'lay back to before the move (bring-to-front is not a step)');
+  assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [1248, 0], 'the module went back');
   cv.redo();
-  assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [1400, 96]);
+  assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [1408, 96]);
   assert.equal(V().modules.get('fx1').body === cv.parts.fx.parentNode, true, 'no remount through undo / redo');
 });
 
@@ -111,7 +111,7 @@ test('fold and Tidy: one History step each; Tidy keeps widths and folds', () => 
   cv.tidy();
   assert.equal(hsteps(), n0 + 2);
   assert.equal(cv.hist.undoLabel, 'Tidy');
-  assert.deepEqual([T().lay.fx1.x, T().lay.fx1.y, T().lay.out.x, T().lay.out.fold], [1240, 0, 2160, 1]);
+  assert.deepEqual([T().lay.fx1.x, T().lay.fx1.y, T().lay.out.x, T().lay.out.fold], [1248, 0, 2176, 1]);
   cv.undo(); cv.undo();
   assert.equal(V().modules.get('out').fold, false);
 });
@@ -265,9 +265,9 @@ test('the instrument chip (a classic track\'s preset select) follows a preset lo
 });
 
 test('lay through serialize / deserialize, History and duplicateTrack', () => {
-  drag(V().modules.get('i1'), 48, 32);
+  drag(V().modules.get('i1'), 64, 32);
   const lay = JSON.parse(JSON.stringify(T().lay));
-  assert.ok(lay.i1 && lay.i1.x === 48);
+  assert.ok(lay.i1 && lay.i1.x === 64);
   const back = S.deserialize(S.serialize(P()));
   assert.deepEqual(back.tracks.find(x => x.id === T().id).lay, lay);
   const n = P().tracks.length;
@@ -292,17 +292,17 @@ test('a classic → Serum → classic change keeps the FX module where the user 
   api.addTrack(undefined); sim.raf();
   if (MODELS.find(m => m.id === T().model).custom) { api.setTrackModel(T(), 'juno60'); sim.raf(); }
   drag(V().modules.get('fx1'), 320, 0);
-  assert.deepEqual([T().lay.fx1.x, T().lay.fx1.y], [1560, 0]);
+  assert.deepEqual([T().lay.fx1.x, T().lay.fx1.y], [1568, 0]);
   api.setTrackModel(T(), 'serum'); sim.raf();
   const sf = V().modules.get('i1/fx');
-  assert.deepEqual([sf.x, sf.y], [1560, 0], 'the Serum FX takes its place');
+  assert.deepEqual([sf.x, sf.y], [1568, 0], 'the Serum FX takes its place');
   drag(sf, -296, 200);
-  assert.deepEqual([T().lay['i1/fx'].x, T().lay['i1/fx'].y, 'fx1' in T().lay], [1264, 200, false], 'one FX entry');
+  assert.deepEqual([T().lay['i1/fx'].x, T().lay['i1/fx'].y, 'fx1' in T().lay], [1280, 192, false], 'one FX entry');
   api.setTrackModel(T(), 'juno60'); sim.raf();
   const f = V().modules.get('fx1');
-  assert.deepEqual([f.x, f.y], [1264, 200], 'back to a classic: where the user last put it');
+  assert.deepEqual([f.x, f.y], [1280, 192], 'back to a classic: where the user last put it');
   cv.tidy();
   assert.deepEqual(['fx1' in T().lay, 'i1/fx' in T().lay], [true, false], 'Tidy keeps one FX entry too');
   cv.undo();
-  assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [1264, 200], 'undo of the Tidy');
+  assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [1280, 192], 'undo of the Tidy');
 });
