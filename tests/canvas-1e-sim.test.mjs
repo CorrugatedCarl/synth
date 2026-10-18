@@ -361,13 +361,13 @@ test('U14: the default camera of a two-instrument track keeps every top bar clea
   cv.add('juno60', null); sim.raf();
   camAgain(t);
   const bar2 = barBox('i2'), k0 = W.k;
-  assert.equal(k0, 1, 'k 1 without a reserved box');
+  assert.ok(k0 > 0.9, 'an editable k without a reserved box: ' + k0);
   // the box where the Juno-60's bar lands at that camera (the band ends 8 px over it, as cv-world's band() does)
   const box = { left: 56, top: Math.round(bar2.top) - 20, right: 536, bottom: Math.round(bar2.top) + 148 };
   camAgain(t, { band: () => ({ left: 44, top: 48, right: 1520, bottom: box.top - 8 }), reserved: () => [box] });
   const hit = [...V().modules.keys()].filter(k => meets(barBox(k), box));
   assert.deepEqual(hit, [], 'no bar under the box (k ' + W.k + ')');
-  assert.ok(W.k >= 0.5 && W.k < 1, 'a lower k lifts the stacked bar above it: ' + W.k);
+  assert.ok(W.k >= 0.5 && W.k < k0, 'a lower k lifts the stacked bar above it: ' + W.k);
   assert.ok(barBox('i1').left >= 44 && barBox('i1').top >= 48, 'the primary still at the band\'s top-left');
 });
 
@@ -384,4 +384,21 @@ test('U2: a piano-roll audition reaches every powered instrument whose key zone 
   assert.equal(aud(0, () => R.audition(66, 100)), 'on:i2:78', 'the primary off: the Juno-60 still previews');
   assert.equal(aud(0, () => { R.auditionOff(50); R.auditionOff(66); }), 'off:i1:50 off:i2:78');
   cv.undo(); sim.raf();
+});
+
+test('U3: the default camera leaves every instrument\'s key-zone pill right of the rail (inside the band); ⋯ → Key zone… opens it', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  camAgain(t);
+  for (const k of ['i1', 'i2']) {
+    const m = V().modules.get(k), zw = m.zoneW;
+    assert.ok(zw > 0, k + ': a pill');
+    assert.ok(W.toClient(m.x - zw, m.y).x >= BAND.left, k + ': its pill\'s left ' + W.toClient(m.x - zw, m.y).x + ' ≥ the band\'s ' + BAND.left);
+  }
+  const it = cv.menu('i2').find(x => x.label === 'Key zone…');
+  assert.ok(it, 'the menu item: ' + cv.menu('i2').map(x => x.label).join(' | '));
+  it.action();
+  assert.equal(V().modules.get('i2').el.children.find(c => c.className === 'cv-zone').getAttribute('aria-expanded'), 'true', 'its popover open');
+  V().modules.get('i2').zoneClose();
+  assert.equal(cv.menu('fx1').some(x => x.label === 'Key zone…'), false, 'instruments only');
 });

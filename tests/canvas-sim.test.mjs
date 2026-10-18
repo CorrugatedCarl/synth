@@ -82,7 +82,7 @@ test('boot: the selected track\'s three modules hold #inst, #fxrack and the scop
   assert.deepEqual([...V().modules.values()].map(m => m.title), [ttl, 'FX Panel', 'OUT']);
   const menu = cv.menu('inst', 'i1').filter(x => !x.sep);
   assert.deepEqual(menu.map(x => x.label), ['About the ' + ttl + '…', 'Replace with…', 'Hardware layout', 'Simple layout', 'Save sound…', 'Delete saved sound', 'Init sound',
-    'Power', 'Solo in track', 'Primary instrument', 'Duplicate', 'Delete', 'Fold', 'Bring to front', 'Tidy the canvas'], // (1e: the device items)
+    'Power', 'Key zone…', 'Solo in track', 'Primary instrument', 'Duplicate', 'Delete', 'Fold', 'Bring to front', 'Tidy the canvas'], // (1e: the device items; U3: Key zone…)
     'no Reset width (nothing is resizable)');
   assert.deepEqual(menu.slice(2, 4).map(x => x.checked), [true, false], 'Hardware layout checked');
   assert.equal(menu.find(x => x.label === 'Delete saved sound').disabled, true, 'no saved sound loaded');
@@ -100,9 +100,10 @@ test('the Hardware layout: #inst is the hardware panel; the module is fixed at c
   assert.match(cv.parts.inst.className, /\binst hw\b/);
 });
 
-test('default camera: k = 1, the instrument 24 px inside the visible band (no saved camera)', () => {
-  const m = V().modules.get('i1');
-  assert.deepEqual(W.cam, { tx: BAND.left - VP.left + 24 - m.x, ty: BAND.top - VP.top + 24 - m.y, k: 1 });
+test('default camera: k = 1, the instrument 24 px inside the visible band (no saved camera) — past its key-zone pill (1e, U3: the two fitted, so k < 1 here)', () => {
+  const m = V().modules.get('i1'), zw = m.zoneW, k = Math.min(1, (BAND.right - BAND.left - 48) / (m.w + zw));
+  assert.ok(zw > 0);
+  assert.deepEqual(W.cam, { tx: BAND.left - VP.left + 24 - Math.round((m.x - zw) * k), ty: BAND.top - VP.top + 24 - Math.round(m.y * k), k });
 });
 
 test('a top-bar move: track.lay written, one History step; undo restores the place and keeps the knob values; redo', () => {
@@ -170,7 +171,8 @@ test('track switch: the view is rebuilt for the new track (cards first: world cl
   assert.notEqual(V(), before);
   assert.equal(V().trackId, t2.id);
   assert.ok(W.log.includes('clear'));
-  assert.deepEqual(W.cam, { tx: 68, ty: 24, k: 1 }, 'a new track: the default camera');
+  const m2 = V().modules.get('i1'), k2 = Math.min(1, (BAND.right - BAND.left - 48) / (m2.w + m2.zoneW));
+  assert.deepEqual(W.cam, { tx: 68 + Math.round(m2.zoneW * k2), ty: 24, k: k2 }, 'a new track: the default camera (past the key-zone pill: 1e, U3)');
   assert.equal(cv.parts.inst.parentNode === V().modules.get('i1').body, true, 'the parts moved to the new view');
   cv.camFlush();
   assert.ok(!api.store.get('synth.cam', null).e.some(e => e[0] === CM.camKey(P().uid, t2.id)), 'an untouched default camera is not stored');

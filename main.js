@@ -4455,6 +4455,7 @@ function cvMenu(a, b) {
     const v = instView(t, key), mdl = modelById(v.model), d = t.dev[key], prim = key === CMOD.primId(t), here = fn => () => { setCur(trk(), key); fn(); };
     const head = [{ label: 'About the ' + mdl.name + '…', action: here(cvAbout) }, { label: 'Replace with…', action: here(() => cvOpenSources('replace')) }];
     const devs = [{ label: 'Power', checked: d.on !== false, action: () => cvPower(key, d.on === false) },
+      { label: 'Key zone…', action: () => { const mm = cvView && cvView.modules.get(key); if (mm) mm.zoneOpen(); } }, // (U3: the pill's popover)
       { label: 'Solo in track', checked: !!d.solo, action: () => cvSolo(key) },
       { label: prim ? 'Primary instrument' : 'Make primary', checked: prim, disabled: prim, action: () => cvMakePrimary(key) },
       { label: 'Duplicate', action: () => cvDuplicate(key) }, { label: 'Delete', action: () => cvDeleteInst(trk(), key) }];
@@ -4555,10 +4556,13 @@ function cvCamRestore(t) {
   if ($('#tab-inst').hidden || !(b.right > b.left && b.bottom > b.top)) { cvCamDef = key; return; } // (ROLL: a 0 × 0 viewport)
   cvCamDef = null;
   const o = W.toClient(0, 0), cam = W.cam, r = m.rect(), P = 24, bw = b.right - b.left - 2 * P;
+  // (U3) the left edge framed is the key-zone pill's (outside the instruments' left edge: Tidy stacks them at one x), so it
+  // never sits under the rail; the instrument alone fits with it (its bar's ⋯ / ▾ stay inside the band)
+  const x0 = r.x - Math.max(0, ...CMOD.instIds(t).map(id => { const q = cvView.modules.get(id); return q && Math.abs(q.x - r.x) < 1 ? q.zoneW || 0 : 0; }));
   const fm = H.fx && cvView.modules.get(H.fx), f = fm && fm.rect();
   const kAll = f ? bw / Math.max(1, f.x + f.w - r.x) : 0; // the instrument and the FX module side by side
-  let k = kAll >= cvWorld.EDIT_K ? Math.min(1, kAll) : Math.max(cvWorld.READ_K, Math.min(1, bw / Math.max(1, r.w)));
-  const ox = o.x - cam.tx, oy = o.y - cam.ty, camAt = kk => ({ k: kk, tx: Math.round(b.left - ox + P - r.x * kk), ty: Math.round(b.top - oy + P - r.y * kk) });
+  let k = kAll >= cvWorld.EDIT_K ? Math.min(1, kAll) : Math.max(cvWorld.READ_K, Math.min(1, bw / Math.max(1, r.x + r.w - x0)));
+  const ox = o.x - cam.tx, oy = o.y - cam.ty, camAt = kk => ({ k: kk, tx: Math.round(b.left - ox + P - x0 * kk), ty: Math.round(b.top - oy + P - r.y * kk) });
   // no module's top bar under the floating toolbar or the minimap (U14: world.reserved, client px): a lower k, never below
   // READ_K, lifts a stacked instrument's bar above them
   const R = typeof W.reserved === 'function' ? W.reserved() || [] : [], BH = cvModule.BAR_H;

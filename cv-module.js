@@ -603,6 +603,9 @@ export function createModule(o, env) {
     setPower, get on() { return pwr; },
     /** (1e) the key-zone pill's {lo, hi, xp} (an instrument made with o.zone); no callback */
     setZone, get zone() { return zv ? Object.assign({}, zv) : null; }, zoneOpen: () => { if (zpill && !zpop) zoneOpen(); }, zoneClose,
+    /** (1e, U3) how far the pill reaches left of the module (world px: its width and the 10 px gap; 0 without one) — a
+     * camera that frames the module keeps it clear of the rail (one layout read) */
+    get zoneW() { return zpill ? (+zpill.offsetWidth || 72) + 10 : 0; },
     /** (1e) the bar badge: text or null */
     setBadge, get badge() { return badgeEl && !badgeEl.hidden ? badgeEl.textContent : null; },
     destroy() {
