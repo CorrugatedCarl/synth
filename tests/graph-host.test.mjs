@@ -465,3 +465,24 @@ test('H10: a newer post replacing a waiting one keeps a new TB-303\'s pattern ({
   assert.deepEqual([m.some(x => x.t === 'graph' && x.insts.some(y => y.id === id)), seq.length, seq.length && seq[0].s.pat[0].n], [true, 1, 9], m.map(tag).join(' '));
   CMOD.removeInst(b, id); sim.api.sendPatch(b);
 });
+
+test('H13: New / Open forget the current instruments — a file whose track ids repeat opens each track on its primary (last: it replaces the project, undone after)', async () => {
+  await page();
+  const cv = globalThis.__synthTest.cv;
+  sim.api.selectTrack('trk_a'); sim.raf();
+  cv.setCur('i2');
+  assert.equal(cv.cur(), 'i2');
+  const o = clone(P()); o.tracks = [F.tracks().a]; o.selTrack = 'trk_a';
+  const file = { name: 'same-ids.synth.json', type: 'application/json', text: async () => JSON.stringify(o) };
+  await sim.$('#fFile').onchange({ target: { files: [file], value: '' } });
+  await sim.settle(10); sim.raf();
+  assert.deepEqual([P().selTrack, P().tracks.length, cv.cur()], ['trk_a', 1, 'i1'], 'Open: the primary');
+  cv.setCur('i2');
+  const was = globalThis.confirm; globalThis.confirm = () => true;
+  try { sim.$('#fNew').onclick(); } finally { globalThis.confirm = was; }
+  sim.raf();
+  cv.undo(); sim.raf(); // (back to the opened file: undo restores, it does not forget)
+  assert.deepEqual([P().selTrack, cv.cur()], ['trk_a', 'i1'], 'New forgot it (an undo of New restores the project, its tracks on their primary)');
+  cv.undo(); sim.raf();
+  assert.equal(P().tracks.length > 1, true, 'the project before the Open');
+});

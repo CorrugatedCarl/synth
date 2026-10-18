@@ -3216,6 +3216,7 @@ function initTransport() {
     hist.record(project);
     if (T.playing) stop();
     const p = freshProject(model);
+    curDevs.clear(); // (another project: each track opens on its primary, whatever ids repeat — review H13)
     applyRestore(p);
   };
   $('#fSave').onclick = () => projectFile().then(txt => download(new Blob([txt], { type: 'application/json' }), slug(project.name) + '.synth.json'),
@@ -3236,7 +3237,7 @@ function initTransport() {
         flush(); // a pending autosave of the current project lands first
         // embedded user wavetables and samples (§7.10, SPEC-serum2 §9.8) go into their stores, never into the project
         await restoreEmbedded(o);
-        const p = loadProject(o, { file: true }); hist.record(project); if (T.playing) stop(); applyRestore(p);
+        const p = loadProject(o, { file: true }); hist.record(project); if (T.playing) stop(); curDevs.clear(); applyRestore(p);
         if (p.newerSchema) readOnlyNotice(); // (saved by a newer build: this project read-only, the store not locked)
       }
     } catch (err) { alert('Could not open that file: ' + err.message); }
