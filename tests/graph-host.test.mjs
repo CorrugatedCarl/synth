@@ -388,3 +388,18 @@ test('H5: a Serum\'s monitor is its Inst part alone (its message carries its own
   assert.equal(got.length > 0, true, 'snapshots arrive');
   assert.deepEqual(got.map(d => (d.s ? 's' : 'none') + ':' + d.i + ':' + ('gr' in d)), got.map(() => 's:i1:true'), 'never a message without the snapshot; its FX meters in it');
 });
+
+test('H6: Duplicate track copies every device, cable and per-instrument field — a canonical track with an instrument off, a named primary, no panel', async () => {
+  await page();
+  const dup = t => { const n = P().tracks.length; globalThis.__synthTest.cv.duplicateTrack(t); sim.raf(); assert.equal(P().tracks.length, n + 1); return P().tracks[P().tracks.indexOf(byId(t.id)) + 1]; };
+  const t = addJuno(), i2 = CMOD.addInst(t, 'tb303', { vals: vals('tb303') });
+  CMOD.setPower(t, i2, false); t.dev.i1.name = 'Lead'; t.dev[i2].seq = pat(7); sim.api.sendPatch(t);
+  assert.equal(CG.compileTrack(t).canonical, true, '(canonical: one instrument sounds)');
+  const c = dup(t);
+  assert.deepEqual([devs(c), cables(c), c.prim, c.dev.i1.name, c.dev[i2].on, c.dev[i2].seq.pat[0].n, c.nid], [devs(t), cables(t), 'i1', 'Lead', false, 7, t.nid]);
+  assert.equal(c.dev.i1.vals !== t.dev.i1.vals && c.dev.fx1.fx !== t.dev.fx1.fx, true, 'copies, not shared objects');
+  // a classic primary cabled straight to OUT: the copy has no panel either
+  const u = addJuno(); CMOD.removePanel(u, 'fx1'); sim.api.sendPatch(u);
+  const cu = dup(u);
+  assert.deepEqual([devs(cu), cables(cu), devs(u)], ['i1,out', 'i1.out>out.in', 'i1,out']);
+});

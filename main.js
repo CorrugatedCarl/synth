@@ -2888,13 +2888,12 @@ function duplicateTrack(t) {
   const c = S.newTrack(project, { model: t.model, vals: JSON.parse(JSON.stringify(t.vals)), name: t.name + ' copy', preset: t.preset });
   c.notes = S.cloneNotes(t.notes); c.cc = t.cc.map(x => ({ t: x.t, k: x.k, v: x.v }));
   c.vol = t.vol; c.pan = t.pan; c.ch = t.ch;
-  if (t.seq) c.seq = JSON.parse(JSON.stringify(t.seq));
-  c.fx = clone(fxOf(t)); seedPend.add(c.id);
-  if (t.dev && CMOD.isGraphShape(t)) { // (stage 1e: every instrument, panel and cable; adopt reads the devices)
+  seedPend.add(c.id);
+  if (t.dev) { // (stage 1e: every instrument, panel and cable with their fields — any shape; adopt reads the devices)
     for (const k of ['model', 'vals', 'preset', 'seq', 'fx']) delete c[k];
     Object.assign(c, { prim: t.prim, nid: t.nid, dev: clone(t.dev), wires: clone(t.wires) });
     if (t.mods) c.mods = clone(t.mods);
-  }
+  } else { if (t.seq) c.seq = clone(t.seq); c.fx = clone(fxOf(t)); }
   if (t.lay) c.lay = clone(t.lay); // (the canvas layout, view only)
   project.tracks.splice(project.tracks.indexOf(t) + 1, 0, c);
   CMOD.adopt(project); // (the copy's devices keep their ids: they are per track)
