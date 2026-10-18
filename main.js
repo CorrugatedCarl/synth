@@ -487,6 +487,7 @@ function sendGraph(tr, N, c) {
   const first = !N.graphed, G = graphParts(tr, ctx.sampleRate, false, c), post = m => N.node.port.postMessage(m);
   seedPend.delete(tr.id);
   if (first) graphCache(N, tr, G.graph);
+  const pid = CMOD.primId(tr), fresh = G.graph.insts.filter(x => !N.gon.has(x.id) && !(first && x.id === pid) && G.seqs[x.id]).map(x => x.id);
   if (N.gkey !== G.graph.key) {
     N.gkey = G.graph.key;
     post(Object.assign({ t: 'graph' }, G.graph));
@@ -495,11 +496,12 @@ function sendGraph(tr, N, c) {
     for (const id of [...N.insts.keys()]) if (!(id in G.patches)) N.insts.delete(id);
     for (const id of [...N.chains.keys()]) if (!(id in G.chains)) N.chains.delete(id);
     for (const id of [...N.osI.keys()]) if (!(id in G.patches)) N.osI.delete(id);
+    monitors.sync(); // (the parts its subscriptions show may have moved; the first graph: device ids from now on)
   }
-  if (first) monitors.sync(); // (its parts are device ids from now on)
   const go = () => {
     for (const id of Object.keys(G.patches)) postPatch(N, G.patches[id], instCache(N, id), id);
     for (const id of Object.keys(G.chains)) postChain(N, id, G.chains[id]);
+    for (const id of fresh) post({ t: 'seq', s: G.seqs[id], i: id }); // (a new TB-303 Inst: its pattern, as a new node's options)
   };
   if (!G.needs.length) { tables.release(tr.id); N.waitP = null; go(); return; }
   learnStates(tr);
@@ -559,6 +561,10 @@ const sxOSFor = (tr, sr, offline = false) => Math.min(offline && prefs.ultra ? 4
 function liftCaps() {
   hotT = 0;
   if (sxCap < 8 || qrStep > 0) { sxCap = 8; qrStep = 0; for (const t of project.tracks) if (hasSx(t)) queuePatch(t); }
+  if (ctx) for (const [id, N] of nodes) if (N.osI && N.osI.size) { // (stage 1e: the instruments lowered alone go back up)
+    for (const i of N.osI.keys()) postTo({ id }, { t: 'os', v: osFor(ctx.sampleRate) }, i);
+    N.osI.clear();
+  }
   if (ctx) rateText();
 }
 const trackOS = (tr, sr) => (isSx(tr) ? sxOSFor(tr, sr) : osFor(sr));
@@ -2638,7 +2644,7 @@ function seqOf(tr, dev) {
   if (!d.seq || !Array.isArray(d.seq.pat) || d.seq.pat.length !== 16) d.seq = JSON.parse(JSON.stringify(SEQ_DEF));
   return d.seq;
 }
-const devArgs = (a, b) => (typeof a === 'string' ? [a, b] : [null, a]); // (dev?, extra?)
+const devArgs = (a, b) => (typeof a === 'string' ? [a, b] : a == null ? [null, b] : [null, a]); // (dev?, extra?)
 function seqPayload(tr, a, b) {
   const [dev, extra] = devArgs(a, b), q = seqOf(tr, dev);
   return Object.assign({ pat: q.pat, len: 16, bpm: q.bpm, swing: q.swing / 100 * 0.5, root: 48, sync: !!q.sync, run: seqRun.has(dev ? tr.id + '/' + dev : tr.id) && !q.sync }, extra || {});

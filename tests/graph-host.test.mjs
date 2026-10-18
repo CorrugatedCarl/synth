@@ -196,6 +196,10 @@ test('module CPU: legacy i0 / c0 → the primary and its FX module keys, graphed
   const m = sim.nodeOf(a.id).posted.slice(k).map(x => x.m).filter(x => x.t === 'os');
   assert.deepEqual(m, [{ t: 'os', v: os0 / 2, i: 'i2' }]);
   assert.deepEqual([sim.api.settings().os, sim.api.capsOf(a, 'i2'), sim.api.capsOf(a, 'i1')], [os0, `OS ${os0}→${os0 / 2}`, null]);
+  const k2 = sim.nodeOf(a.id).posted.length;
+  sim.api.liftCaps(); // (a quality choice lifts every step: the Inst goes back up)
+  assert.deepEqual(sim.nodeOf(a.id).posted.slice(k2).map(x => x.m).filter(x => x.t === 'os'), [{ t: 'os', v: os0, i: 'i2' }]);
+  assert.equal(sim.api.capsOf(a, 'i2'), null);
 });
 
 test('messages name their device on graphed nodes only: postTo, the 303 per device, audition, FX taps, MIDI learn per Serum', async () => {
@@ -213,8 +217,11 @@ test('messages name their device on graphed nodes only: postTo, the 303 per devi
   H.seqCmd('stop'); assert.deepEqual(last(b), { t: 'seqcmd', cmd: 'stop', arg: undefined, i: 'i1' });
   assert.equal(H.dev, 'i1');
   // a TB-303 beside the Juno: its own pattern, sequencer message and run state
-  const i3 = CMOD.addInst(a, 'tb303', { vals: vals('tb303') });
+  const i3 = CMOD.addInst(a, 'tb303', { vals: vals('tb303') }), k3 = sim.nodeOf(a.id).posted.length;
   sim.api.sendPatch(a);
+  const add = sim.nodeOf(a.id).posted.slice(k3).map(x => x.m);
+  assert.deepEqual(add.map(tag), ['graph', 'patch:' + i3, 'seq:' + i3], 'a new 303 Inst: graph, its patch, its pattern');
+  assert.equal(add[2].s.pat.length, 16);
   const q = sim.api.seqOf(a, i3);
   assert.equal(q === a.dev[i3].seq && q !== sim.api.seqOf(a), true, 'per device (the primary: its own)');
   sim.api.seqSend(a, i3, { run: true });
