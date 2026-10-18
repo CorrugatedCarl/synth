@@ -126,12 +126,38 @@ function fxOf(t) {
 function newFx(m) { const d = m && m.custom ? sxDefault() : null; return d && fxOk(d.fx) ? fxLoad(clone(d.fx), d.v.s) : core.defaultFx2(); }
 // the base value n of FX destination `id` (static g.* ids live in the Serum state) in a track's FX state: the instance's
 // parameter (§3.16.4 fxDest; v1 ids of Hyper's Dimension rows resolve through RENAME1) — MIDI-learned controllers (midi.js writeCC)
-function fxSet(t, id, n) {
-  const fx = fxOf(t);
+function fxSet(t, id, n, dev) {
+  const fx = dev ? fxOfDev(t, dev) : fxOf(t);
   const d = core.fxDest(id, fx);
   if (d && d.inst && d.inst.p && typeof d.inst.p === 'object') d.inst.p[d.pid] = n;
 }
 const clone = x => JSON.parse(JSON.stringify(x));
+// stage 1e (IMPL-1e §3.3): the FX state of device `id` — a Serum's own (dev.fx), a panel's — migrated in place as fxOf
+// does the primary's (a classic instrument: the panel it feeds; none: the primary's, fxOf)
+function fxOfDev(t, id) {
+  let d = t && t.dev ? t.dev[id] : null;
+  if (d && d.kind === 'synth' && d.model !== 'serum') { const p = CMOD.destOf(t, id); d = p && t.dev[p].kind === 'panel' ? t.dev[p] : null; }
+  if (!d) return fxOf(t);
+  if (isV2Fx(d.fx)) return d.fx;
+  d.fx = fxOk(d.fx) ? fxLoad(d.fx, d.model === 'serum' && d.vals ? d.vals.s : undefined) : core.defaultFx2();
+  return d.fx;
+}
+// the devices besides the primary and its FX (stage 1e: they enter from outside too): Serum states and FX states
+// normalised as loadProject does the primary's, a classic instrument's values over its model's defaults (bind)
+function normDevs(t) {
+  if (!t || !t.dev) return;
+  const pid = CMOD.primId(t), f = CMOD.fxDevOf(t);
+  for (const id of Object.keys(t.dev)) {
+    const d = t.dev[id];
+    if (id === pid || (f && id === f.id) || !d || typeof d !== 'object') continue;
+    if (d.kind === 'synth') {
+      const m = modelById(d.model);
+      d.model = m.id;
+      if (m.custom) { d.vals = { s: core.normalizeSerum(d.vals && d.vals.s) }; d.fx = d.fx && typeof d.fx === 'object' ? fxLoad(d.fx, d.vals.s) : core.defaultFx2(); }
+      else d.vals = Object.assign(defaults(m), d.vals);
+    } else if (d.kind === 'panel') d.fx = d.fx && typeof d.fx === 'object' ? fxLoad(d.fx) : core.defaultFx2();
+  }
+}
 
 // song.deserialize validates the core schema; carry over the extras this UI keeps (303 patterns, FX racks, view
 // prefs). Serum states and FX racks are normalised here (they enter from outside: autosave, files, §11.8).
@@ -164,6 +190,7 @@ function loadProject(json, lo = {}) {
     // (golden shard 4) and the project is saved with v2 racks (§15.1 item 6)
     if (isSx(t)) t.vals = { s: core.normalizeSerum(t.vals && t.vals.s) };
     t.fx = t.fx && typeof t.fx === 'object' ? fxLoad(t.fx, isSx(t) ? t.vals.s : undefined) : core.defaultFx2();
+    normDevs(t); // (stage 1e: every other instrument and panel the same way)
   }
   if (up.readOnly) { if (lo.file) p.newerSchema = up.from; else goReadOnly(up.from); }
   return p;
@@ -240,6 +267,43 @@ function buildPatch(tr, sr, offline = false) {
   if (!offline) voiceSeen(tr, patch);
   return patch;
 }
+// Stage 1e (IMPL-1e §3.3): one instrument device's patch on a graphed node — cv-graph instPatch (a Serum with its own FX;
+// a classic one without a rack: its panel is a {t: 'chain'}) with buildPatch's options and live fields (the Serum caps;
+// the voice mode of the primary). A chain: the panel's FX state compiled as a classic track's rack (cv-graph chainPatch).
+const liveOpts = (tr, sr, offline) => ({ sr: sr || (ctx ? ctx.sampleRate : 48000), bpm: project.bpm, drift: settings.drift / 10, hiss: 1,
+  qr: offline ? null : qrOf(qrStep), prefs: offline || !prefs.ultra ? prefs : Object.assign({}, prefs, { ultra: 0 }), seed: seedPend.has(tr.id) });
+function buildInstPatch(tr, id, sr, offline = false) {
+  const d = tr.dev[id], m = modelById(d.model);
+  const patch = CG.instPatch({ model: m.id, vals: d.vals, fx: m.custom ? fxOfDev(tr, id) : undefined }, liveOpts(tr, sr, offline));
+  if (m.custom) {
+    patch.osCap = offline ? 0 : sxCap;
+    if (!offline) capQ4(patch);
+  }
+  if (!offline && id === CMOD.primId(tr)) voiceSeen(tr, patch);
+  return patch;
+}
+const buildChain = (tr, id, sr, offline = false) => CG.chainPatch(fxOfDev(tr, id), liveOpts(tr, sr, offline));
+// a track's whole graph form (c: its compileTrack): {graph, patches: {id: patch}, chains: {id: {fxr, fxrT}}, seqs: {id: s},
+// needs} — the processorOptions of a node / an offline render (offline: no caps; a 303 only when synced, not running)
+function graphParts(tr, sr, offline = false, c = CG.compileTrack(tr)) {
+  const g = c.canonical ? CG.compileGraph(tr) : c, patches = {}, chains = {}, seqs = {}, needs = new Set();
+  for (const { id } of g.graph.insts) {
+    const p = patches[id] = buildInstPatch(tr, id, sr, offline);
+    for (const x of p.needs || []) needs.add(x);
+    if (tr.dev[id].model === 'tb303' && (!offline || seqOf(tr, id).sync)) seqs[id] = seqPayload(tr, id, offline ? { run: false } : undefined);
+  }
+  for (const { id } of g.graph.chains) { const x = chains[id] = buildChain(tr, id, sr, offline); for (const n of x.fxr.needs || []) needs.add(n); }
+  return { graph: Object.assign({}, g.graph), patches, chains, seqs, needs: [...needs] };
+}
+// the states a track's devices hold (the asset manager reads `~opsKey` / Convolve shapes from them; tracks() is the primary)
+function learnStates(tr) {
+  for (const id of Object.keys(tr.dev || {})) {
+    const d = tr.dev[id];
+    if (d && d.kind === 'synth' && d.model === 'serum') tables.learn({ s: d.vals && d.vals.s, fx: d.fx });
+    else if (d && d.kind === 'panel' && d.fx) tables.learn({ fx: d.fx });
+  }
+}
+const convOf = G => { for (const x of [...Object.values(G.chains), ...Object.values(G.patches)]) if (x.fxr && x.fxr.convMax) return x.fxr.convMax; return undefined; };
 // §14.3 Q4 (live Serum patches): POLY ≤ 8 — the engine's voice count and CP.poly (the Active Voices source's scale and
 // the snapshot's maxVoices), so the step changes nothing but the number of voices; voices above are released. Q6 (IMPL,
 // M4 performance; see qrOf): POLY ≤ 4
@@ -353,6 +417,8 @@ const SKIP_CP = new Set(['ctKey']), SKIP_SQ = new Set(['key']);
 function sendPatch(tr = trk()) {
   const N = nodes.get(tr.id);
   if (!N) return;
+  const c = CG.compileTrack(tr);
+  if (!c.canonical || N.graphed) { sendGraph(tr, N, c); return; } // (stage 1e: a graph shape, or a node that is graphed)
   const p = buildPatch(tr);
   seedPend.delete(tr.id);
   // §9.5: the assets the patch can play (Serum needs ∪ FX needs) are posted before it; a patch that replaces a posted
@@ -373,21 +439,74 @@ function partCache(N, patch) {
   N.last = Object.assign({}, patch); delete N.last.serumT; delete N.last.seqT; delete N.last.fxrT;
   return N;
 }
-function postPatch(N, p) {
-  if (N.engine !== p.engine) { N.engine = p.engine; N.ctKey = ''; N.ctParts.clear(); N.sqParts.clear(); N.last = null; } // the engine drops its tables when the model changes
+// C: the part cache (a legacy node: the node record itself; a graphed node: its Inst's, N.insts), i: that Inst's id
+function postPatch(N, p, C = N, i) {
+  if (C.engine !== p.engine) { C.engine = p.engine; C.ctKey = ''; C.ctParts.clear(); C.sqParts.clear(); C.last = null; } // the engine drops its tables when the model changes
   let ct = null, sq = null;
-  if (p.serumT) { ct = ctDelta(N, p.serumT); if (ct) p.serumT = ct; else delete p.serumT; }
-  if (p.seqT) { sq = partDelta(N.sqParts, p.seqT); if (sq) p.seqT = sq; else delete p.seqT; }
-  if (p.fxrT) { if (N.xsKey === p.fxrT.key) delete p.fxrT; else N.xsKey = p.fxrT.key; }
-  if (N.last && !p.fxrT && sameVal(p, N.last, SKIP_TOP)) { // only tables changed
-    if (ct && Object.keys(ct.parts).length) N.node.port.postMessage({ t: 'ct', key: ct.key, parts: ct.parts });
-    if (sq) N.node.port.postMessage({ t: 'sqt', parts: sq.parts });
+  if (p.serumT) { ct = ctDelta(C, p.serumT); if (ct) p.serumT = ct; else delete p.serumT; }
+  if (p.seqT) { sq = partDelta(C.sqParts, p.seqT); if (sq) p.seqT = sq; else delete p.seqT; }
+  if (p.fxrT) { if (C.xsKey === p.fxrT.key) delete p.fxrT; else C.xsKey = p.fxrT.key; }
+  if (C.last && !p.fxrT && sameVal(p, C.last, SKIP_TOP)) { // only tables changed
+    if (ct && Object.keys(ct.parts).length) N.node.port.postMessage(i === undefined ? { t: 'ct', key: ct.key, parts: ct.parts } : { t: 'ct', i, key: ct.key, parts: ct.parts });
+    if (sq) N.node.port.postMessage(i === undefined ? { t: 'sqt', parts: sq.parts } : { t: 'sqt', i, parts: sq.parts });
     return;
   }
   const last = Object.assign({}, p);
   delete last.serumT; delete last.seqT; delete last.fxrT;
-  N.last = last;
-  N.node.port.postMessage({ t: 'patch', p });
+  C.last = last;
+  N.node.port.postMessage(i === undefined ? { t: 'patch', p } : { t: 'patch', i, p });
+}
+/* Stage 1e (IMPL-1e §2.5, §3.3): the graph protocol. A node that has received a {t: 'graph'} is graphed (N.graphed, sticky
+   until the node is recreated) and is driven by these messages only, even once its track is canonical again; a canonical
+   track's node that never was keeps today's stream (tests/canonical-stream.test.mjs). Per post: {t: 'graph'} when the
+   structure key changed ({t: 'power', i, on} after it for an Inst whose `on` changed: the engine applies a power state it
+   already has as nothing), then {t: 'patch', i, p} per Inst through its part cache (N.insts: id → {engine, ctKey,
+   ctParts, sqParts, xsKey, last}) and {t: 'chain', c, fxr, fxrT?} per shared panel (N.chains: id → {xsKey, last}; fxrT
+   absent = its tables unchanged, as a patch's). The assets of every part wait as today's patch does. */
+const newPart = () => ({ engine: '', ctKey: '', ctParts: new Map(), sqParts: new Map(), xsKey: '', last: null });
+const instCache = (N, id) => N.insts.get(id) || N.insts.set(id, newPart()).get(id);
+// a node's first graph: its i0 / c0 are adopted by position (i0 → the primary; c0 → chains[0] when the primary is
+// classic), so their caches start from the legacy ones (an unchanged part is not re-sent: its state and tails are kept)
+function graphCache(N, tr, graph) {
+  const legacy = !N.graphed && N.ctParts instanceof Map, pid = CMOD.primId(tr), f = CMOD.fxDevOf(tr);
+  N.graphed = true; N.gkey = ''; N.gon = new Map(); N.waitP = null; N.insts = new Map(); N.chains = new Map(); N.osI = new Map();
+  if (!legacy) return N;
+  N.insts.set(pid, { engine: N.engine, ctKey: N.ctKey, ctParts: N.ctParts, sqParts: N.sqParts, xsKey: N.xsKey, last: N.last });
+  if (f && !f.own && N.last && N.last.fxr && graph.chains.length && graph.chains[0].id === f.id) N.chains.set(f.id, { xsKey: N.xsKey, last: N.last.fxr });
+  return N;
+}
+function postChain(N, id, x) {
+  const C = N.chains.get(id) || N.chains.set(id, { xsKey: '', last: null }).get(id);
+  const fxrT = x.fxrT && C.xsKey !== x.fxrT.key ? x.fxrT : null;
+  if (fxrT) C.xsKey = fxrT.key;
+  if (!fxrT && C.last && sameVal(x.fxr, C.last)) return;
+  C.last = x.fxr;
+  N.node.port.postMessage(fxrT ? { t: 'chain', c: id, fxr: x.fxr, fxrT } : { t: 'chain', c: id, fxr: x.fxr });
+}
+function sendGraph(tr, N, c) {
+  const first = !N.graphed, G = graphParts(tr, ctx.sampleRate, false, c), post = m => N.node.port.postMessage(m);
+  seedPend.delete(tr.id);
+  if (first) graphCache(N, tr, G.graph);
+  if (N.gkey !== G.graph.key) {
+    N.gkey = G.graph.key;
+    post(Object.assign({ t: 'graph' }, G.graph));
+    for (const x of G.graph.insts) if (N.gon.has(x.id) && N.gon.get(x.id) !== x.on) post({ t: 'power', i: x.id, on: x.on });
+    N.gon = new Map(G.graph.insts.map(x => [x.id, x.on]));
+    for (const id of [...N.insts.keys()]) if (!(id in G.patches)) N.insts.delete(id);
+    for (const id of [...N.chains.keys()]) if (!(id in G.chains)) N.chains.delete(id);
+    for (const id of [...N.osI.keys()]) if (!(id in G.patches)) N.osI.delete(id);
+  }
+  if (first) monitors.sync(); // (its parts are device ids from now on)
+  const go = () => {
+    for (const id of Object.keys(G.patches)) postPatch(N, G.patches[id], instCache(N, id), id);
+    for (const id of Object.keys(G.chains)) postChain(N, id, G.chains[id]);
+  };
+  if (!G.needs.length) { tables.release(tr.id); N.waitP = null; go(); return; }
+  learnStates(tr);
+  const done = tables.ensure(G.needs, { trackId: tr.id, convMax: convOf(G) });
+  if (tables.ready(G.needs)) { N.waitP = null; go(); return; }
+  N.waitP = go; // (a newer post of the track replaces a waiting one)
+  done.then(() => { if (N.waitP === go && nodes.get(tr.id) === N) { N.waitP = null; go(); } });
 }
 function queueAll() { for (const t of project.tracks) queuePatch(t); }
 // a classic panel wrote a value (ClassicPanel set): its preset becomes Custom, the patch, autosave
@@ -439,7 +558,7 @@ const sxOSFor = (tr, sr, offline = false) => Math.min(offline && prefs.ultra ? 4
 // lifts every CPU-safeguard step (a Quality chosen on the GLOBAL page or the app's oversampling)
 function liftCaps() {
   hotT = 0;
-  if (sxCap < 8 || qrStep > 0) { sxCap = 8; qrStep = 0; for (const t of project.tracks) if (isSx(t)) queuePatch(t); }
+  if (sxCap < 8 || qrStep > 0) { sxCap = 8; qrStep = 0; for (const t of project.tracks) if (hasSx(t)) queuePatch(t); }
   if (ctx) rateText();
 }
 const trackOS = (tr, sr) => (isSx(tr) ? sxOSFor(tr, sr) : osFor(sr));
@@ -632,46 +751,76 @@ function powerOff() {
   return c.close().catch(() => {});
 }
 function makeNode(tr) {
-  const sr = ctx.sampleRate, patch = buildPatch(tr); // a new node always gets the curve tables (and a fresh rack)
+  // stage 1e: a track of a graph shape gets a graphed node, built from processorOptions graph / patches / chains / seqs
+  // (IMPL-1e §2.5; offline renders the same, renderOffline); a canonical one today's options
+  const sr = ctx.sampleRate, c = CG.compileTrack(tr), G = c.canonical ? null : graphParts(tr, sr, false, c);
+  const patch = G ? null : buildPatch(tr); // a new node always gets the curve tables (and a fresh rack)
   seedPend.delete(tr.id);
+  const po = { os: trackOS(tr, sr), hostOS: osFor(sr), patch, song: songData(tr), seq: !G && tr.model === 'tb303' ? seqPayload(tr) : null,
+    trackId: tr.id }; // the MIDI OUT registry of the worklet scope (SPEC-serum2 §7.9)
+  if (G) Object.assign(po, { graph: G.graph, patches: G.patches, chains: G.chains, seqs: G.seqs });
   const node = new AudioWorkletNode(ctx, 'synth-engine', {
     numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
-    processorOptions: { os: trackOS(tr, sr), hostOS: osFor(sr), patch, song: songData(tr), seq: tr.model === 'tb303' ? seqPayload(tr) : null,
-      trackId: tr.id }, // the MIDI OUT registry of the worklet scope (SPEC-serum2 §7.9)
+    processorOptions: po,
   });
   const gain = ctx.createGain(), pan = ctx.createStereoPanner(), a = ctx.createAnalyser();
   a.fftSize = 512;
   node.connect(gain); gain.connect(pan); pan.connect(master); pan.connect(a);
-  const N = partCache({ node, gain, pan, an: a, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: null, phWait: [], waitP: null }, patch);
+  const N0 = { node, gain, pan, an: a, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: null, phWait: [], waitP: null };
+  const N = G ? graphCache(N0, tr, G.graph) : partCache(N0, patch);
+  if (G) { // (every part starts with its options: the caches hold them)
+    N.gkey = G.graph.key; N.gon = new Map(G.graph.insts.map(x => [x.id, x.on]));
+    for (const id of Object.keys(G.patches)) N.insts.set(id, partCache({}, G.patches[id]));
+    for (const id of Object.keys(G.chains)) N.chains.set(id, { xsKey: G.chains[id].fxrT ? G.chains[id].fxrT.key : '', last: G.chains[id].fxr });
+  }
   const id = tr.id;
   node.port.onmessage = e => {
     const d = e.data, t = project.tracks.find(x => x.id === id) || tr;
     if (d.t === 'stats') { N.load = d.load; N.voices = d.voices; N.os = d.os || 0; statsText(); if (Array.isArray(d.per)) cvCpu(id, N, d.per); }
     else if (d.t === 'ready') { N.ready = true; if (readyF) readyF(); } // the processor is built (the first: warmed up)
-    else if (d.t === 'step' && t.id === project.selTrack && (seqRun.has(t.id) || (T.playing && seqOf(t).sync))) seqStep(t, d.s);
-    else if (d.t === 'smon') { if (d.fxph) N.fxph = d.fxph; monitors.deliver(id, d); }
-    else if (d.t === 'fxph') { if (d.v) N.fxph = d.v; for (const f of N.phWait.splice(0)) f(d.v); }
+    else if (d.t === 'step') { // (a graphed node names the 303: d.i; legacy: the primary)
+      const dev = typeof d.i === 'string' ? d.i : CMOD.primId(t);
+      if (t.id === project.selTrack && (seqRun.has(t.id + '/' + dev) || (T.playing && seqOf(t, dev).sync))) seqStepTo(t, dev, d.s);
+    }
+    else if (d.t === 'smon') { if (d.fxph && primFx(t, N, d)) N.fxph = d.fxph; monitors.deliver(id, d); }
+    else if (d.t === 'fxph') { if (d.v && primFx(t, N, d)) N.fxph = d.v; for (const f of N.phWait.splice(0)) f(d.v); }
     else if (d.t === 'fxover' && Array.isArray(d.ids)) { // §8.5: the rack's 32 MB cap left these instances bypassed
-      const fx = fxOf(t), names = d.ids.map(x => (isV2Fx(fx) && core.instLabel(fx, x)) || x);
+      const part = typeof d.c === 'string' ? d.c : typeof d.i === 'string' ? d.i : null, fx = part ? fxOfDev(t, part.replace(/\/fx$/, '')) : fxOf(t);
+      const names = d.ids.map(x => (isV2Fx(fx) && core.instLabel(fx, x)) || x);
       notice(`FX memory limit reached — ${names.join(', ')} bypassed (track “${t.name}”)`, 8000);
     }
   };
   if (T.playing && T.a) node.port.postMessage(Object.assign({ t: 'transport', play: true, seek: true }, T.a));
-  if (patch.needs) tables.ensure(patch.needs, { trackId: tr.id, node, s: isSx(tr) ? tr.vals.s : null, fx: fxOf(tr), convMax: patch.fxr && patch.fxr.convMax });
-  const mw = monitors.wanted(id);
+  if (G) { if (G.needs.length) { learnStates(tr); tables.ensure(G.needs, { trackId: tr.id, node, convMax: convOf(G) }); } }
+  else if (patch.needs) tables.ensure(patch.needs, { trackId: tr.id, node, s: isSx(tr) ? tr.vals.s : null, fx: fxOf(tr), convMax: patch.fxr && patch.fxr.convMax });
+  const mw = monitors.wanted(id, N);
   if (mw.length) { node.port.postMessage({ t: 'mon', ids: mw }); monitors.on.set(id, mw.join()); }
   return N;
 }
 // the modules' CPU on their top bars (SPEC-canvas §10 1d): the engine's load per Inst / Chain of the track shown, smoothed
-// over ≈ 1 s (stats arrive every 0.25 s of audio; a part's time is counted in whole ms, unbiased but noisy); stage 1d: the
-// engine's i0 is the instrument module, c0 the FX module (a Serum: its own FX)
-const CPU_PART = { i0: () => cvModule.ID.inst, c0: t => cvModule.fxKey(t.model) };
+// over ≈ 1 s (stats arrive every 0.25 s of audio; a part's time is counted in whole ms, unbiased but noisy), kept per
+// module key (N.cpu). A legacy node's i0 is the primary's module, c0 its FX module (a Serum: its own FX, prim + '/fx'); a
+// graphed node's part ids are the module keys (stage 1e: device ids, iN/fx)
+function cpuKey(t, N, part) {
+  if (N.graphed) return part;
+  const p = CMOD.primId(t);
+  if (part === 'i0') return p;
+  if (part !== 'c0') return null;
+  const f = CMOD.fxDevOf(t);
+  return f && !f.own ? f.id : p + '/fx';
+}
 function cvCpu(id, N, per) {
-  const sm = N.cpu || (N.cpu = {});
-  for (const e of per) if (e && CPU_PART[e.id] && Number.isFinite(e.load)) sm[e.id] = sm[e.id] === undefined ? e.load : sm[e.id] + 0.25 * (e.load - sm[e.id]);
-  const t = cvView && cvView.trackId === id ? project.tracks.find(x => x.id === id) : null;
+  const t = project.tracks.find(x => x.id === id), sm = N.cpu || (N.cpu = {});
   if (!t) return;
-  for (const k of Object.keys(sm)) { const m = cvView.modules.get(CPU_PART[k](t)); if (m && m.setCpu) m.setCpu(sm[k]); }
+  for (const e of per) { const k = e && typeof e.id === 'string' ? cpuKey(t, N, e.id) : null; if (k && Number.isFinite(e.load)) sm[k] = sm[k] === undefined ? e.load : sm[k] + 0.25 * (e.load - sm[k]); }
+  if (!cvView || cvView.trackId !== id) return;
+  for (const k of Object.keys(sm)) { const m = cvView.modules.get(k); if (m && m.setCpu) m.setCpu(sm[k]); }
+}
+// a smon / fxph from the primary's FX (its phases are N.fxph: phase memory, presets): a legacy node's every one
+function primFx(t, N, d) {
+  if (!N.graphed || (d.i === undefined && d.c === undefined)) return true;
+  const f = CMOD.fxDevOf(t);
+  return !!f && (f.own ? d.i === f.id || d.c === f.id + '/fx' : d.c === f.id);
 }
 function syncNodes() {
   if (!ctx) return;
@@ -696,7 +845,18 @@ function mix() {
     N.pan.pan.setTargetAtTime(t.pan, ctx.currentTime, 0.015);
   }
 }
-function postTo(tr, m) { const N = tr && nodes.get(tr.id); if (N) N.node.port.postMessage(m); }
+// dev (stage 1e): the device the message is for — on a graphed node it gains `i` (an instrument; a Serum's own FX 'iN/fx':
+// its Serum) or `c` (a panel), and with aud an audition note `aud` (that Inst alone); legacy nodes never get them
+function postTo(tr, m, dev, aud) {
+  const N = tr && nodes.get(tr.id);
+  if (!N) return;
+  if (dev != null && N.graphed) {
+    const t = project.tracks.find(x => x.id === tr.id), d = t && t.dev ? t.dev[dev] : null;
+    m = Object.assign({}, m, d && d.kind === 'panel' ? { c: dev } : { i: String(dev).replace(/\/fx$/, '') });
+    if (aud && m.i) m.aud = 1;
+  }
+  N.node.port.postMessage(m);
+}
 function postAll(m) { for (const N of nodes.values()) N.node.port.postMessage(m); }
 /* status: the Power LED shows a context that is actually running; a suspended/interrupted one asks for a tap */
 // The notice line: a timed message (notice), else the sticky one (audio problems), else the factory generation progress
@@ -774,11 +934,47 @@ function statsText() {
   if (load > 0.85 && (maxOS() > 1 || qrLever())) { if (!hotT) hotT = now; else if (now - hotT > (load > 1 ? 1000 : 2000)) lowerOS(); }
   else hotT = 0;
 }
-// highest oversampling in use: the app setting (tracks of the other models) and Serum tracks (their own)
-function plainOS() { return project.tracks.some(t => !isSx(t)) ? osFor(ctx.sampleRate) : 0; }
-function sxMaxOS() { let m = 0; for (const t of project.tracks) if (isSx(t)) m = Math.max(m, sxOSFor(t, ctx.sampleRate)); return m; }
+// highest oversampling in use: the app setting (instruments of the other models) and Serum instruments (their own; a
+// device has the track's `vals` shape: sxOSFor reads it). Stage 1e: every instrument of a track, not only its primary
+const devsOf = t => (t.dev ? CMOD.instIds(t).map(id => t.dev[id]) : [t]);
+const hasSx = t => devsOf(t).some(d => d.model === 'serum'), hasPlain = t => devsOf(t).some(d => d.model !== 'serum');
+function plainOS() { return project.tracks.some(hasPlain) ? osFor(ctx.sampleRate) : 0; }
+function sxMaxOS() { let m = 0; for (const t of project.tracks) for (const d of devsOf(t)) if (d.model === 'serum') m = Math.max(m, sxOSFor(d, ctx.sampleRate)); return m; }
 function maxOS() { return Math.max(plainOS(), sxMaxOS()); }
-const qrLever = () => qrStep < QR_STEPS && project.tracks.some(isSx);
+const qrLever = () => qrStep < QR_STEPS && project.tracks.some(hasSx);
+// a graphed node's load by group (its parts' smoothed loads, N.cpu); a legacy node's by its model
+function groupLoads(t, N) {
+  if (!N.graphed || !N.cpu) return isSx(t) ? [0, N.load] : [N.load, 0];
+  let lp = 0, ls = 0;
+  for (const k of Object.keys(N.cpu)) { const d = t.dev[k.replace(/\/fx$/, '')]; if (d && d.model === 'serum') ls += N.cpu[k]; else lp += N.cpu[k]; }
+  return [lp, ls];
+}
+// stage 1e: the heaviest classic Inst of the busiest track, when that track's node is graphed (it is lowered alone,
+// {t: 'os', i, v}, session only: N.osI); null → today's broadcast of the app setting
+function heavyInst() {
+  let top = null;
+  for (const t of project.tracks) { const N = nodes.get(t.id); if (N && hasPlain(t) && (!top || N.load > top.N.load)) top = { t, N }; }
+  if (!top || !top.N.graphed || !top.N.cpu) return null;
+  const { t, N } = top, base = osFor(ctx.sampleRate);
+  let h = null;
+  for (const id of Object.keys(N.cpu)) {
+    const d = t.dev[id], os = N.osI.has(id) ? N.osI.get(id) : base;
+    if (d && d.kind === 'synth' && d.model !== 'serum' && os > 1 && (!h || N.cpu[id] > h.load)) h = { t, N, id, os, load: N.cpu[id] };
+  }
+  return h;
+}
+// the badge of a module the safeguard capped (IMPL-1e §3.3; lane C2 draws it): 'OS 4→2' | 'Q3' | null
+function capsOf(t, dev) {
+  const id = dev || CMOD.primId(t), d = t && t.dev ? t.dev[id] : null, N = t && nodes.get(t.id);
+  if (!d || d.kind !== 'synth' || !ctx) return null;
+  const sr = ctx.sampleRate;
+  if (d.model === 'serum') {
+    const own = Math.min(sxQuality(d), osCap(sr)), os = sxOSFor(d, sr);
+    return os < own ? `OS ${own}→${os}` : qrStep ? 'Q' + qrStep : null;
+  }
+  const v = N && N.osI ? N.osI.get(id) : undefined;
+  return v !== undefined && v < osFor(sr) ? `OS ${osFor(sr)}→${v}` : null;
+}
 // one step down for the group carrying more of the load (the per-node loads the processors report): the app setting
 // for the other models (persisted, as the select shows it), or the Serum tracks' caps (session only): their
 // oversampling first (never above a track's own quality, §11.4 sign-off), at 1× their unison voices; the other group
@@ -787,21 +983,27 @@ function lowerOS() {
   hotT = 0;
   const po = plainOS(), so = sxMaxOS();
   let lp = 0, ls = 0;
-  for (const t of project.tracks) { const N = nodes.get(t.id); if (N) { if (isSx(t)) ls += N.load; else lp += N.load; } }
+  for (const t of project.tracks) { const N = nodes.get(t.id); if (N) { const g = groupLoads(t, N); lp += g[0]; ls += g[1]; } }
   const sxFirst = ls >= lp && (so > 1 || qrLever());
-  if (!sxFirst && po > 1) {
+  const h = !sxFirst && po > 1 ? heavyInst() : null;
+  if (h) { // (stage 1e: a graphed track's heaviest classic instrument alone)
+    const v = h.os / 2, d = h.t.dev[h.id];
+    h.N.osI.set(h.id, v);
+    postTo(h.t, { t: 'os', v }, h.id);
+    notice(`DSP load stayed above 85% — oversampling of ${d.name || modelById(d.model).name} (track “${h.t.name}”) lowered to ${v}× to avoid dropouts`, 9000);
+  } else if (!sxFirst && po > 1) {
     const v = po / 2;
     settings.os = v; $('#os').value = String(v); persist();
     postAll({ t: 'os', v }); rateText(); rateLabels();
     notice(`DSP load stayed above 85% — oversampling lowered to ${v}× to avoid dropouts`, 9000);
   } else if (so > 1) {
     sxCap = so / 2;
-    for (const t of project.tracks) if (isSx(t)) queuePatch(t);
+    for (const t of project.tracks) if (hasSx(t)) queuePatch(t);
     rateText();
     notice(`DSP load stayed above 85% — Serum oversampling capped at ${sxCap}× to avoid dropouts`, 9000);
   } else if (qrLever()) { // §14.3: Q1 … Q4 (+ Q5, Q6) after the oversampling cap, one per step, each named in a notice
     qrStep++;
-    for (const t of project.tracks) if (isSx(t)) queuePatch(t);
+    for (const t of project.tracks) if (hasSx(t)) queuePatch(t);
     rateText();
     notice(`DSP load stayed above 85% — Serum quality step Q${qrStep}: ${QR_NOTICE[qrStep]} to avoid dropouts`, 9000);
   }
@@ -892,6 +1094,18 @@ function fitBars() {
   const need = Math.max(1, Math.ceil(end / bt));
   if (need > project.bars) { project.bars = need; $('#tBars').value = project.bars; }
 }
+// the knob-tweak policy for the devices besides the primary and its FX: an instrument that kept its model keeps its values,
+// pattern and own FX; a panel its FX state (the device ids are per track: the same id is the same device)
+function keepDevs(t, cur) {
+  if (!cur || !t.dev || !cur.dev) return;
+  const pid = CMOD.primId(t), f = CMOD.fxDevOf(t);
+  for (const id of Object.keys(t.dev)) {
+    const d = t.dev[id], c = cur.dev[id];
+    if (id === pid || (f && id === f.id) || !d || !c || d.kind !== c.kind) continue;
+    if (d.kind === 'synth' && d.model === c.model) { d.vals = c.vals; if (c.seq) d.seq = c.seq; if (c.fx) d.fx = c.fx; }
+    else if (d.kind === 'panel' && c.fx) d.fx = c.fx;
+  }
+}
 function applyRestore(p, keepSound = false) {
   if (!p) return;
   CMOD.adopt(p); // (History snapshots and loads are plain objects: the accessors first)
@@ -900,6 +1114,7 @@ function applyRestore(p, keepSound = false) {
     if (cur && cur.model === t.model) t.vals = cur.vals;
     if (cur && cur.seq) t.seq = cur.seq;
     if (cur && cur.fx) t.fx = cur.fx; // FX rack edits follow the knob-tweak policy (§11.8)
+    keepDevs(t, cur); // (stage 1e: every other instrument and panel the same)
   } else for (const t of p.tracks) seedPend.add(t.id); // a loaded project re-seeds the racks' LFO phases
   for (const t of p.tracks) fxOf(t);
   const prevSel = project.selTrack;
@@ -1530,22 +1745,43 @@ const userSmps = (s, fx) => userAssetIds(s || null, fx || null);
 // snapshot / FX meter subscriptions (smon, §11.6; SPEC-canvas §6.8, §6.9, §9.3): one per mounted module with live
 // displays, keyed by (track, device) — a Serum panel (its device), an FX panel (its device; a Serum's own FX: the
 // Serum's) — each live while its module is (cvLive: the CANVAS view, on screen, not folded) and never for a hidden page,
-// naming the engine parts it shows (`parts`: the Inst i0 — Serum's snapshot —, the Chain c0 — the rack's meters; stage
-// 1d's canonical track). A track's node sends snapshots of the parts of its live subscriptions ({t: 'mon', ids}; on: their
-// ids, sorted, joined); a snapshot reaches every subscription of the track.
-//   sub(trackId, dev, {parts, live() → bool, deliver(d)}) → off
+// naming what it shows by `role` ('inst': an instrument's snapshot, 'fx': an FX panel's meters, 'both'; the engine parts
+// are resolved per node: partsOf). A track's node sends snapshots of the parts of its live subscriptions ({t: 'mon',
+// ids}; on: their ids, sorted, joined). A legacy node's parts are i0 / c0 and its snapshot reaches every subscription of
+// the track (stage 1d); a graphed node's are device ids (stage 1e) and its snapshot ({t: 'smon', i | c}) reaches the
+// subscriptions showing that part (an instrument's also those showing its own FX: it carries their meters).
+//   sub(trackId, dev, {role, live() → bool, deliver(d)}) → off   (role: 'both' by default; `parts` ['i0'] / ['c0'] /
+//   both, stage 1d's form, are read as the role)
+function partsOf(t, N, dev, role) {
+  const inst = role !== 'fx', fx = role !== 'inst';
+  if (!N || !N.graphed || !t || !t.dev) return [...(inst ? ['i0'] : []), ...(fx ? ['c0'] : [])];
+  if (typeof dev !== 'string') return [];
+  if (/\/fx$/.test(dev)) return fx ? [dev] : [];
+  const d = t.dev[dev];
+  if (!d) return [];
+  if (d.kind === 'panel') return fx ? [dev] : [];
+  const out = inst ? [dev] : [];
+  if (fx && d.model === 'serum') out.push(dev + '/fx');
+  else if (fx) { const p = CMOD.destOf(t, dev); if (p && t.dev[p].kind === 'panel') out.push(p); }
+  return out;
+}
+const roleOf = o => (o.role ? o.role : Array.isArray(o.parts) && o.parts.length ? (o.parts.includes('i0') ? (o.parts.includes('c0') ? 'both' : 'inst') : 'fx') : 'both');
 const monitors = {
   subs: new Set(), on: new Map(),
   sub(trackId, dev, o) {
-    const S = { trackId, dev, parts: Array.isArray(o.parts) && o.parts.length ? o.parts : ['i0', 'c0'], live: o.live, deliver: o.deliver };
+    const S = { trackId, dev, role: roleOf(o), live: o.live, deliver: o.deliver, cur: [] };
     this.subs.add(S);
     this.sync();
     return () => { if (this.subs.delete(S)) this.sync(); };
   },
-  wanted(id) { // → the parts to monitor, sorted ([] = none)
+  wanted(id, N0) { // → the parts to monitor, sorted ([] = none)
     const w = new Set();
     if (document.hidden) return [];
-    for (const S of this.subs) if (S.trackId === id) { try { if (S.live()) for (const q of S.parts) w.add(q); } catch (err) { console.warn(err); } }
+    const N = N0 || nodes.get(id), t = project.tracks.find(x => x.id === id);
+    for (const S of this.subs) if (S.trackId === id) {
+      S.cur = partsOf(t, N, S.dev, S.role);
+      try { if (S.live()) for (const q of S.cur) w.add(q); } catch (err) { console.warn(err); }
+    }
     return [...w].sort();
   },
   sync() {
@@ -1559,16 +1795,25 @@ const monitors = {
     }
     if (peerStale && !peerT) peerT = requestAnimationFrame(peerRun); // a peer edited while this one was hidden
   },
-  deliver(id, d) { for (const S of [...this.subs]) if (S.trackId === id && S.deliver) S.deliver(d); },
-  fx(id) { return (this.on.get(id) || '').split(',').includes('c0'); }, // the rack's meters and phases arrive (N.fxph fresh)
+  deliver(id, d) {
+    const part = typeof d.i === 'string' ? d.i : typeof d.c === 'string' ? d.c : null;
+    for (const S of [...this.subs]) if (S.trackId === id && S.deliver && (part === null || S.cur.includes(part) || (d.i === part && S.cur.includes(part + '/fx')))) S.deliver(d);
+  },
+  // the meters and phases of an FX part arrive (N.fxph fresh): dev's (default: the primary's FX)
+  fx(id, dev) {
+    const on = (this.on.get(id) || '').split(','), N = nodes.get(id);
+    if (!N || !N.graphed) return on.includes('c0');
+    const t = project.tracks.find(x => x.id === id), f = dev || (t && CMOD.fxDevOf(t) ? CMOD.fxDevOf(t).id : null);
+    return partsOf(t, N, f, 'fx').some(q => on.includes(q));
+  },
 };
-// the Serum panel's subscription (SerumUI host.monitor: on while it is built and the page shows): per track
-const sxMons = new Map(); // track id → off
-function sxMonitor(t, on) {
-  const id = t.id, off = sxMons.get(id);
-  if (!on) { if (off) { sxMons.delete(id); off(); } return; }
+// the Serum panel's subscription (SerumUI host.monitor: on while it is built and the page shows): per (track, device)
+const sxMons = new Map(); // trackId/dev → off
+function sxMonitor(t, on, dev = CMOD.primId(t)) {
+  const id = t.id, key = id + '/' + dev, off = sxMons.get(key);
+  if (!on) { if (off) { sxMons.delete(key); off(); } return; }
   if (off) { monitors.sync(); return; }
-  sxMons.set(id, monitors.sub(id, t.prim || 'i1', { parts: ['i0', 'c0'], // (its snapshot, and its FX page's meters)
+  sxMons.set(key, monitors.sub(id, dev, { role: 'both', // (its snapshot, and its FX page's meters)
     live: () => sxPanel.trackId === id && cvLive(cvModule.ID.inst),
     deliver: d => { if (sxPanel.ui && sxPanel.trackId === id) { sxPanel.ui.setSnapshot(d); zoneWarm(id, d.s); } },
   }));
@@ -1859,20 +2104,22 @@ const midi = createMidi({
   noteOff: (n, src, ts, rv) => noteOff(n, src, ts, rv),
   ctl: (kind, v, src, ts, trs) => ctl(kind, v, src, ts, trs || targets(src)),
   post: (t, m) => postTo(t, m),
+  // stage 1e: the Serum instruments of a track ([{id, s, fx, prim}], the primary first): each has its own learn map
+  instsOf: t => (t.dev ? CMOD.instIds(t).filter(id => t.dev[id].model === 'serum').map(id => ({ id, s: t.dev[id].vals.s, fx: fxOfDev(t, id), prim: id === CMOD.primId(t) })) : []),
   heldNotes: src => heldNotes(src),
   programChange: (trs, n) => programChange(trs, n),
   modUI: v => { if (setModUI) setModUI(v, false); },
   bendUI: v => { if (setBendUI) setBendUI(v, false); },
   track: id => project.tracks.find(x => x.id === id),
   isSx: t => isSx(t),
-  fxSet: (t, id, n) => fxSet(t, id, n),
+  fxSet: (t, id, n, dev) => fxSet(t, id, n, dev),
   changed: (t, patch, refresh) => { sxDirty.add(t.id); if (patch) queuePatch(t); persist(); if (refresh) sxRefresh(); },
   notice: (txt, ms) => notice(txt, ms),
   button: () => $('#midi'),
 });
-const midiLearn = (id, dest) => midi.learn(id, dest);
+const midiLearn = (id, dest, dev = null) => midi.learn(id, dev, dest); // (dev: the Serum instrument; null: the primary)
 const cancelLearn = say => midi.cancelLearn(say);
-const midiForget = (t, dest) => midi.forget(t, dest);
+const midiForget = (t, dest, dev = null) => midi.forget(t, dest, dev);
 // preference "Mod wheel → WT Pos": while a WT editor is open the wheel scrubs its oscillator's WT POS (§9.9)
 let wtEdit = null; // { id: track id, osc } of the open WT editor
 function wheelToWt(v) {
@@ -1885,25 +2132,36 @@ function wheelToWt(v) {
 }
 
 /* ------------------------------------------------ offline renders (bounce, resample, render-last; §9.6) */
+// a track's offline render parts: {patch} (canonical) or graphParts' graph form with patch null (stage 1e)
+function offParts(tr, sr) {
+  const c = CG.compileTrack(tr);
+  return c.canonical ? { patch: buildPatch(tr, sr, true) } : Object.assign({ patch: null }, graphParts(tr, sr, true, c));
+}
 // One OfflineAudioContext at rate sr with the §0.3 scripts and one engine node per item {tr, patch, os, song,
 // transport, seq?, gain?, pan?}: the assets every patch needs are built for sr (IRs at that rate, factory content
 // generated or awaited) and given to the first node (wavetables as `wts`, §9 entries as `smps`); every node carries its
 // track id, so MIDI OUT between the rendered tracks works as live (§7.9). at = {s, fx} for patches of states that are
-// not the project's tracks (render-last of a preset, …).
+// not the project's tracks (render-last of a preset, …). Stage 1e: an item of a graph-shaped track carries graphParts'
+// {graph, patches, chains, seqs, needs} (patch null): its node is built as the live one (offline = live, IMPL-1e §3.3).
 async function renderOffline(sr, frames, items, at) {
   if (!window.OfflineAudioContext) throw new Error('offline rendering is not available in this browser');
   const oc = new OfflineAudioContext({ numberOfChannels: 2, length: Math.max(128, Math.ceil(frames)), sampleRate: sr });
   await addModules(oc);
   const ids = new Set();
-  for (const x of items) for (const id of x.patch.needs || []) ids.add(id);
+  for (const x of items) {
+    for (const id of (x.patch && x.patch.needs) || x.needs || []) ids.add(id);
+    if (x.graph && x.tr) learnStates(x.tr);
+  }
   const ents = ids.size ? await tables.entries([...ids], sr, at) : [];
   const wts = ents.filter(e => idKind(e.id) === 'wt'), smps = ents.filter(e => idKind(e.id) !== 'wt');
   const bus = oc.createGain(); bus.connect(oc.destination);
   items.forEach((x, n) => {
+    const po = { os: x.os, hostOS: x.hostOS || x.os, offline: true, patch: x.patch, wts: n === 0 && wts.length ? wts : null,
+      smps: n === 0 && smps.length ? smps : null, song: x.song, transport: x.transport, seq: x.seq || null, trackId: x.tr ? x.tr.id : '' };
+    if (x.graph) Object.assign(po, { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs });
     const node = new AudioWorkletNode(oc, 'synth-engine', {
       numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
-      processorOptions: { os: x.os, hostOS: x.hostOS || x.os, offline: true, patch: x.patch, wts: n === 0 && wts.length ? wts : null,
-        smps: n === 0 && smps.length ? smps : null, song: x.song, transport: x.transport, seq: x.seq || null, trackId: x.tr ? x.tr.id : '' },
+      processorOptions: po,
     });
     const g = oc.createGain(), pn = oc.createStereoPanner();
     g.gain.value = x.gain === undefined ? 1 : x.gain; pn.pan.value = x.pan || 0;
@@ -1976,10 +2234,14 @@ async function resampleTo(t, target) {
 // song notes from tick 0 through the current patch, FX rack and assets, the sequencer included — the same path as a
 // bounce of those notes. Ends once the output stays below −80 dBFS for 50 ms after the last note-off (≤ 10 s later).
 // The 24-bit WAV is downloaded and stored as a user sample in the Renders folder; the result is handed back for the
-// header's drag-export. shift: the current preset as JSON (+ its user assets) instead.
+// header's drag-export. shift: the current preset as JSON (+ its user assets) instead. Stage 1e: o.dev, a Serum instrument
+// of the track (default the primary), rendered alone through its own FX (buildInstPatch); a canonical track's primary
+// renders as before (buildPatch).
 async function renderLast(t, o) {
-  if (!isSx(t)) throw new Error('Rendering needs a Serum track');
-  const s = t.vals.s, fx = fxOf(t), name = (t.preset || 'Init').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Init';
+  const dev = (o && o.dev) || CMOD.primId(t), d = t.dev ? t.dev[dev] : null, legacy = dev === CMOD.primId(t) && CG.compileTrack(t).canonical;
+  if (legacy ? !isSx(t) : !d || d.model !== 'serum') throw new Error('Rendering needs a Serum track');
+  const s = legacy ? t.vals.s : d.vals.s, fx = legacy ? fxOf(t) : fxOfDev(t, dev), pn = legacy ? t.preset : d.preset;
+  const name = (pn || 'Init').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Init';
   if (o && o.shift) {
     const pre = Object.assign({ type: 'synth.serum.preset', name, v: { s: clone(s) }, fx: clone(fx) }, await presetAssets([{ v: { s }, fx }]));
     download(new Blob([JSON.stringify(pre)], { type: 'application/json' }), slug(name) + '.serum.json');
@@ -1991,8 +2253,8 @@ async function renderLast(t, o) {
   const group = g.notes.map(x => ({ n: x.n, vel: x.vel, on: x.on, off: x.off >= 0 ? x.off : Math.max(x.on, now) }));
   const sr = ctx ? ctx.sampleRate : settings.sr || devRate || 48000, bpm = project.bpm;
   const song = groupSong(group, bpm), last = Math.max(...group.map(x => x.off)), fpt = sr * 60 / (bpm * S.PPQ);
-  const patch = buildPatch(t, sr, true);
-  const buf = await renderOffline(sr, (last + 10.05) * sr, [{ tr: t, patch, os: sxOSFor(t, sr, true), hostOS: osCap(sr), song,
+  const patch = legacy ? buildPatch(t, sr, true) : buildInstPatch(t, dev, sr, true);
+  const buf = await renderOffline(sr, (last + 10.05) * sr, [{ tr: t, patch, os: sxOSFor(legacy ? t : d, sr, true), hostOS: osCap(sr), song,
     transport: { play: true, frame: 0, tick: 0, fpt, loop: false } }], { s, fx });
   const chs = [buf.getChannelData(0), buf.getChannelData(1)];
   const end = tailEnd(chs, Math.round(last * sr), Math.pow(10, -80 / 20), Math.round(0.05 * sr), Math.round((last + 10) * sr));
@@ -2126,8 +2388,8 @@ function tuningFile(cur) {
 
 // the Serum panel's host (§8.8, RULINGS host additions, SPEC-serum2 §11.15); bound to a track id, reading the live
 // project each call
-function sxHost(t0) {
-  const id = t0.id, T = () => project.tracks.find(x => x.id === id) || t0;
+function sxHost(t0, dv) {
+  const id = t0.id, T = () => project.tracks.find(x => x.id === id) || t0, dev = dv || CMOD.primId(t0) || 'i1'; // (stage 1e: its device)
   return {
     state: () => T().vals.s,
     edit: (fn, o) => { sxEdit(T(), fn, o); if (!(o && o.ui)) peerRefresh(id, 2); cvChipSync(); }, // (the FX module follows: peerRefresh)
@@ -2139,12 +2401,12 @@ function sxHost(t0) {
     wt: wtHost,
     smp: smpHost,
     audition: {
-      on: (n, v) => { if (!ctx) powerOn().catch(() => {}); postTo(T(), { t: 'on', n, v }); inputNote(T(), 1, n, v, performance.now(), true); },
-      off: n => { postTo(T(), { t: 'off', n }); inputNote(T(), 0, n, 0, performance.now(), true); },
+      on: (n, v) => { if (!ctx) powerOn().catch(() => {}); postTo(T(), { t: 'on', n, v }, dev, true); inputNote(T(), 1, n, v, performance.now(), true); },
+      off: n => { postTo(T(), { t: 'off', n }, dev, true); inputNote(T(), 0, n, 0, performance.now(), true); },
     },
-    monitor: on => sxMonitor(T(), on),
-    dev: t0.prim || 'i1', // (its [data-dest] resolve inside [data-dev], SPEC §8.6)
-    fxTap: inst => postTo({ id }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }),   // (the FX page's Delay overlay)
+    monitor: on => sxMonitor(T(), on, dev),
+    dev, // (its [data-dest] resolve inside [data-dev], SPEC §8.6)
+    fxTap: inst => postTo({ id }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }, dev),   // (the FX page's Delay overlay)
     presets: {
       list: sxPresetList,
       get: key => sxPreset(key),
@@ -2163,14 +2425,14 @@ function sxHost(t0) {
       importFile: file => sxImport(file),
       current: () => sxCurrent(T()),
     },
-    midiLearn: dest => midiLearn(id, dest),
-    midiForget: dest => midiForget(T(), dest),
+    midiLearn: dest => midiLearn(id, dest, dev),
+    midiForget: dest => midiForget(T(), dest, dev),
     resample: target => resampleTo(T(), target),
-    renderLast: o => renderLast(T(), o || {}),
+    renderLast: o => renderLast(T(), Object.assign({ dev }, o || {})),
     preview: (key, clip) => preview(key, clip),
     previewMacros: v => previewMacros(v),
     tracks: () => project.tracks.filter(x => x.id !== id).map(x => ({ id: x.id, name: x.name, model: x.model })),
-    seqCmd: (cmd, arg) => postTo(T(), { t: 'seqcmd', cmd, arg }),
+    seqCmd: (cmd, arg) => postTo(T(), { t: 'seqcmd', cmd, arg }, dev),
     onInput: fn => { if (typeof fn === 'function') inputSubs.set(id, fn); else inputSubs.delete(id); },
     clipToTrack: (trackId, notes) => clipToTrack(trackId, notes),
     download: (name, blob) => download(blob, name),
@@ -2199,7 +2461,7 @@ function fxHost(t0, rec = fxTab) {
     gr: () => (rec.trackId === id ? rec.gr : null),
     // the rack's monitor tap (§13.5 Delay spectrum overlay): instance id ('' off) → the node; the latest 1024 frames
     tap: () => (rec.trackId === id ? rec.ftap || null : null),
-    setTap: inst => postTo({ id }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }),
+    setTap: inst => postTo({ id }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }, rec.dev), // (a panel: c; a Serum's own: i)
     locked: dest => { const t = T(); return isSx(t) && !!t.vals.s && t.vals.s.locks.p.includes(dest); },
     storage: hostStore,
     notify: txt => notice(txt, 3500),
@@ -2284,7 +2546,7 @@ function renderFxTab() {
       fxTab.trackId = t.id; fxTab.dev = fd ? fd.id : null; fxTab.fx = fxOf(t); fxTab.sx = isSx(t);
       fxTab.ui = new M.fxui.FXRackUI(box, fxHost(t, rec), { embedded: false, dsp: globalThis.FXDSP || null, racks: isSx(t) ? 3 : 1, v2Fx: true });
       if (fxTab.ui && fxTab.ui.el && fxTab.dev) fxTab.ui.el.setAttribute('data-dev', fxTab.dev); // (its fx.<inst>.<pid> dests: that device's)
-      fxTab.mon = monitors.sub(t.id, fxTab.dev, { parts: ['c0'], live: () => rec.trackId === t.id && !!rec.ui && cvLive(key), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; } });
+      fxTab.mon = monitors.sub(t.id, fxTab.dev, { role: 'fx', live: () => rec.trackId === t.id && !!rec.ui && cvLive(key), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; } });
     } catch (err) {
       console.error(err);
       fxTab.ui = null; fxTab.trackId = null;
@@ -2360,25 +2622,40 @@ function drawAlgo() {
 }
 
 /* ------------------------------------------------- TB-303 sequencer */
-const seqRun = new Set();
-function seqOf(tr) {
-  if (!tr.seq || !Array.isArray(tr.seq.pat) || tr.seq.pat.length !== 16) tr.seq = JSON.parse(JSON.stringify(SEQ_DEF));
-  return tr.seq;
+// Stage 1e: per device (a track may hold several 303s). seqRun is keyed trackId + '/' + dev; a bare track id means its
+// primary (and delete(trackId) stops every one of the track), so stage-1d callers keep working. seqOf(t, dev),
+// seqPayload(t, dev?, extra?), seqSend(t, dev?, extra?), seqToggle(t, on, quiet, dev?): dev omitted = the primary (a
+// legacy node's messages never name it: postTo). seqStepTo(t, dev, s): the step a node reports → that 303's panel.
+class SeqRun extends Set {
+  key(k) { if (k.includes('/')) return k; const t = project.tracks.find(x => x.id === k); return k + '/' + ((t && CMOD.primId(t)) || 'i1'); }
+  has(k) { return super.has(this.key(k)); }
+  add(k) { return super.add(this.key(k)); }
+  delete(k) { if (k.includes('/')) return super.delete(k); let n = false; for (const x of [...this]) if (x.startsWith(k + '/')) n = super.delete(x) || n; return n; }
 }
-function seqPayload(tr, extra) {
-  const q = seqOf(tr);
-  return Object.assign({ pat: q.pat, len: 16, bpm: q.bpm, swing: q.swing / 100 * 0.5, root: 48, sync: !!q.sync, run: seqRun.has(tr.id) && !q.sync }, extra || {});
+const seqRun = new SeqRun();
+function seqOf(tr, dev) {
+  const d = (tr.dev && CMOD.instOf(tr, dev)) || tr;
+  if (!d.seq || !Array.isArray(d.seq.pat) || d.seq.pat.length !== 16) d.seq = JSON.parse(JSON.stringify(SEQ_DEF));
+  return d.seq;
 }
-function seqSend(tr, extra) { postTo(tr, { t: 'seq', s: seqPayload(tr, extra) }); persist(); }
-function seqToggle(tr, on, quiet) {
-  if (!seqRun.has(tr.id) && !on) return;
-  if (on) seqRun.add(tr.id); else seqRun.delete(tr.id);
-  const P = !quiet && classicOf(tr);
+const devArgs = (a, b) => (typeof a === 'string' ? [a, b] : [null, a]); // (dev?, extra?)
+function seqPayload(tr, a, b) {
+  const [dev, extra] = devArgs(a, b), q = seqOf(tr, dev);
+  return Object.assign({ pat: q.pat, len: 16, bpm: q.bpm, swing: q.swing / 100 * 0.5, root: 48, sync: !!q.sync, run: seqRun.has(dev ? tr.id + '/' + dev : tr.id) && !q.sync }, extra || {});
+}
+function seqSend(tr, a, b) { const [dev, extra] = devArgs(a, b); postTo(tr, { t: 'seq', s: seqPayload(tr, dev, extra) }, dev); persist(); }
+function seqToggle(tr, on, quiet, dev = null) {
+  const k = dev ? tr.id + '/' + dev : tr.id;
+  if (!seqRun.has(k) && !on) return;
+  if (on) seqRun.add(k); else seqRun.delete(seqRun.key(k));
+  const P = !quiet && (!dev || dev === CMOD.primId(tr)) && classicOf(tr);
   if (P) P.seqRunUI(on); // (its RUN button, the step lights, a hardware panel's RUN LED)
-  if (on && !ctx) powerOn().then(() => { if (seqRun.has(tr.id)) seqSend(tr); }).catch(() => {}); // Stop pressed while starting wins
-  else seqSend(tr, { run: on });
+  if (on && !ctx) powerOn().then(() => { if (seqRun.has(k)) seqSend(tr, dev); }).catch(() => {}); // Stop pressed while starting wins
+  else seqSend(tr, dev, { run: on });
 }
 function seqStep(tr, i) { const P = classicOf(tr); if (P) P.seqStep(i); }
+// the hook lane C2 generalises (classicPanels.get(trackId/dev)); stage 1e: the primary's panel, the single cpanel
+function seqStepTo(t, dev, s) { if (dev === CMOD.primId(t)) seqStep(t, s); }
 // "→ Piano roll": the pattern written into the track as notes (1 bar at the playhead), one undo step
 function seqToRoll(tr, q) {
   edit('Pattern to notes', () => {
@@ -2900,23 +3177,26 @@ function midiOutIds(p) {
 // (or a synced 303), plus the MIDI OUT graph as it plays live (§7.9) — every audible target of a source with notes,
 // even with no notes of its own, and every source with notes whose target is audible, a muted or soloed-out one at gain
 // 0 (live, its node keeps running at gain 0 and drives the target)
+// (stage 1e: a graph-shaped track's item carries its graph form, offParts; a synced 303 is any powered one of the track)
+const syncedOf = tr => (tr.dev ? CG.powered(tr) : []).some(id => tr.dev[id].model === 'tb303' && tr.dev[id].seq && tr.dev[id].seq.sync);
 function bounceSet(sr) {
-  const P = new Map(), patchOf = tr => { if (!P.has(tr)) P.set(tr, buildPatch(tr, sr, true)); return P.get(tr); };
+  const P = new Map(), partsOf = tr => { if (!P.has(tr)) P.set(tr, offParts(tr, sr)); return P.get(tr); };
   const want = new Map();
   for (const tr of project.tracks) {
-    const synced = tr.model === 'tb303' && tr.seq && tr.seq.sync;
+    const synced = (tr.model === 'tb303' && tr.seq && tr.seq.sync) || syncedOf(tr);
     if (audible(tr) && (tr.notes.length || synced)) want.set(tr, tr.vol);
   }
   for (const tr of project.tracks) {
-    if (!isSx(tr) || !tr.notes.length) continue;
-    for (const id of midiOutIds(patchOf(tr))) {
+    if (!hasSx(tr) || !tr.notes.length) continue;
+    const x = partsOf(tr);
+    for (const id of (x.patch ? [x.patch] : Object.values(x.patches)).flatMap(midiOutIds)) {
       const tg = project.tracks.find(x => x.id === id);
       if (!tg || tg === tr || !audible(tg)) continue;
       if (!want.has(tg)) want.set(tg, tg.vol);
       if (!want.has(tr)) want.set(tr, 0);
     }
   }
-  return project.tracks.filter(tr => want.has(tr)).map(tr => ({ tr, patch: patchOf(tr), gain: want.get(tr) }));
+  return project.tracks.filter(tr => want.has(tr)).map(tr => Object.assign({ tr, gain: want.get(tr) }, partsOf(tr)));
 }
 async function bounce() {
   const rsel = $('#bRange').value, sr = +$('#bSr').value, bits = +$('#bBits').value, tail = +$('#bTail').value, norm = $('#bNorm').checked;
@@ -2931,12 +3211,13 @@ async function bounce() {
   try {
     const f = sr * 60 / (project.bpm * S.PPQ);
     const items = [];
-    for (const { tr, patch, gain } of bounceSet(sr)) {
-      const synced = tr.model === 'tb303' && tr.seq && tr.seq.sync;
+    for (const x of bounceSet(sr)) {
+      const { tr, patch, gain } = x, synced = tr.model === 'tb303' && tr.seq && tr.seq.sync;
       // a Serum track renders at its own quality (Ultra with "Use Ultra quality when rendering") regardless of the
       // dialog (§11.4, SPEC-serum2 §12.6); every node carries its track id: MIDI OUT between the bounced tracks (§7.9)
-      items.push({ tr, patch, os: isSx(tr) ? sxOSFor(tr, sr, true) : os, hostOS: os, song: songData(tr, start, end),
-        transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, seq: synced ? seqPayload(tr, { run: false }) : null, gain, pan: tr.pan });
+      items.push(Object.assign({ tr, patch, os: isSx(tr) ? sxOSFor(tr, sr, true) : os, hostOS: os, song: songData(tr, start, end),
+        transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, seq: patch && synced ? seqPayload(tr, { run: false }) : null, gain, pan: tr.pan },
+      x.graph ? { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs, needs: x.needs } : null));
     }
     if (!items.length) { note.textContent = 'No audible tracks with notes in that range.'; go.disabled = false; return; }
     const buf = await renderOffline(sr, Math.ceil(secs * sr), items);
@@ -4274,6 +4555,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
     powerOn, noteOn, noteOff, renderLast, resampleTo, preview, previewStop, previewEnd, clipToTrack, lastIn, inputSubs, liftCaps, lowerOS,
     caps: () => ({ sxCap, qrStep }), setTrackModel, addTrack, selectTrack, save, flush, sxLoad, sxSave, sxPreset, midi, renderOffline,
     songData, sxOSFor, pv, bounceSet, genProgress, notice, stickyNotice, deleteTrack, capQ4, ctx: () => ctx,
+    capsOf, postTo, seqOf, seqSend, seqRun, seqStepTo, buildInstPatch, graphParts, offParts, monitors, partsOf, applyRestore, // (stage 1e host)
     clock: () => CLK, curTick, outLatency, transport: () => T, settings: () => settings, latPreset, // (the audio clock, R5)
     held, kbRange, kbMaxH, app: () => app, kb: () => ({ h: kbH, kw: kbSize.kw, hSet: kbSize.h, lo: kbLo, hi: kbHi, w: kbW, px: kbPx, notes: [...keyEls.keys()], ptrs: new Map(ptrs) }),
     roll: () => roll, arr: () => arr,
