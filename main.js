@@ -1843,20 +1843,23 @@ const userSmps = (s, fx) => userAssetIds(s || null, fx || null);
 // are resolved per node: partsOf). A track's node sends snapshots of the parts of its live subscriptions ({t: 'mon',
 // ids}; on: their ids, sorted, joined). A legacy node's parts are i0 / c0 and its snapshot reaches every subscription of
 // the track (stage 1d); a graphed node's are device ids (stage 1e) and its snapshot ({t: 'smon', i | c}) reaches the
-// subscriptions showing that part (an instrument's also those showing its own FX: it carries their meters).
+// subscriptions showing that part (a Serum's whole device — panel and own FX — is its Inst part: one message, its
+// snapshot with its own FX's meters; review H5).
 //   sub(trackId, dev, {role, live() → bool, deliver(d)}) → off   (role: 'both' by default; `parts` ['i0'] / ['c0'] /
 //   both, stage 1d's form, are read as the role)
 function partsOf(t, N, dev, role) {
   const inst = role !== 'fx', fx = role !== 'inst';
   if (!N || !N.graphed || !t || !t.dev) return [...(inst ? ['i0'] : []), ...(fx ? ['c0'] : [])];
   if (typeof dev !== 'string') return [];
-  if (/\/fx$/.test(dev)) return fx ? [dev] : [];
-  const d = t.dev[dev];
+  const own = /\/fx$/.test(dev), d = t.dev[own ? dev.slice(0, -3) : dev];
+  if (own) return fx ? (d && d.model === 'serum' ? [dev.slice(0, -3)] : [dev]) : [];
   if (!d) return [];
   if (d.kind === 'panel') return fx ? [dev] : [];
+  // a Serum: its Inst part alone, whatever the role — its message carries its own FX's meters and phases ({i, s, gr, fxph,
+  // ftap}); its 'iN/fx' part as well would post a second message without the snapshot (blanking the panel's) and tap twice
+  if (d.model === 'serum') return [dev];
   const out = inst ? [dev] : [];
-  if (fx && d.model === 'serum') out.push(dev + '/fx');
-  else if (fx) { const p = CMOD.destOf(t, dev); if (p && t.dev[p].kind === 'panel') out.push(p); }
+  if (fx) { const p = CMOD.destOf(t, dev); if (p && t.dev[p].kind === 'panel') out.push(p); }
   return out;
 }
 const roleOf = o => (o.role ? o.role : Array.isArray(o.parts) && o.parts.length ? (o.parts.includes('i0') ? (o.parts.includes('c0') ? 'both' : 'inst') : 'fx') : 'both');

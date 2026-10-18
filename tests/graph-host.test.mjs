@@ -172,12 +172,13 @@ test('monitors per device: part ids resolved per node (legacy i0 / c0, graphed d
     M.sub(b.id, 'i1', { role: 'fx', live: () => true, deliver: d => got.push('b.i1fx:' + tag(d)) }),
     M.sub(leg.id, 'i1', { role: 'both', live: () => true, deliver: d => got.push('leg:' + tag(d)) }),
   ];
-  assert.deepEqual([mon(a).ids, mon(b).ids, mon(leg).ids], [['fx1', 'i2'], ['i1', 'i1/fx'], ['c0', 'i0']]);
+  assert.deepEqual([mon(a).ids, mon(b).ids, mon(leg).ids], [['fx1', 'i2'], ['i1'], ['c0', 'i0']], '(a Serum: its Inst part alone, review H5)');
   got.length = 0; // (the engine's own snapshots so far)
   assert.deepEqual([sim.api.partsOf(a, N(a), 'i1', 'both'), sim.api.partsOf(a, N(a), 'fx1', 'inst'), sim.api.partsOf(leg, N(leg), 'i1', 'fx')], [['i1', 'fx1'], [], ['c0']]);
   for (const [t, d] of [[a, { t: 'smon', i: 'i2', s: {} }], [a, { t: 'smon', c: 'fx1', gr: [1] }], [a, { t: 'smon', i: 'i1', s: {} }],
     [b, { t: 'smon', i: 'i1', s: {}, gr: [2] }], [b, { t: 'smon', c: 'i1/fx', gr: [2] }], [leg, { t: 'smon', s: {} }]]) sim.nodeOf(t.id)._fromProc(d);
-  assert.deepEqual(got, ['a.i2:smon:i2', 'a.fx1:smon:fx1', 'b.i1:smon:i1', 'b.i1fx:smon:i1', 'b.i1:smon:i1/fx', 'b.i1fx:smon:i1/fx', 'leg:smon']);
+  // (a stray {c: 'i1/fx'} — never asked for now — reaches nobody: the Serum's subscriptions get its {i} message once each)
+  assert.deepEqual(got, ['a.i2:smon:i2', 'a.fx1:smon:fx1', 'b.i1:smon:i1', 'b.i1fx:smon:i1', 'leg:smon']);
   assert.deepEqual([M.fx(a.id, 'fx1'), M.fx(b.id), M.fx(leg.id)], [true, true, true]);
   for (const off of offs) off();
   assert.deepEqual([mon(a).ids, mon(leg).ids], [[], []]);
@@ -373,4 +374,17 @@ test('H3: a key zone on a one-instrument track reaches the engine — the graph 
   assert.deepEqual([m.length > 0 && m[0].t, N(t).graphed, lastGraph(t) && lastGraph(t).insts[0].zone], ['graph', true, { lo: 48, hi: 72, xp: 12 }]);
   const o = sim.api.offParts(t, sim.ctx().sampleRate);
   assert.deepEqual([o.patch, o.graph && o.graph.insts[0].zone], [null, { lo: 48, hi: 72, xp: 12 }], 'a bounce: the same graph');
+});
+
+test('H5: a Serum\'s monitor is its Inst part alone (its message carries its own FX meters) — every message a Serum panel gets has its snapshot', async () => {
+  await page();
+  const b = P().tracks.find(x => x.id === 'trk_b'), M = sim.api.monitors, got = [];
+  assert.deepEqual([sim.api.partsOf(b, N(b), 'i1', 'both'), sim.api.partsOf(b, N(b), 'i1', 'fx'), sim.api.partsOf(b, N(b), 'i1', 'inst')], [['i1'], ['i1'], ['i1']]);
+  const off = M.sub(b.id, 'i1', { role: 'both', live: () => true, deliver: d => got.push(d) });
+  const mon = sim.nodeOf(b.id).posted.map(x => x.m).filter(m => m.t === 'mon').pop();
+  assert.deepEqual(mon.ids, ['i1']);
+  sim.run(8192);
+  off();
+  assert.equal(got.length > 0, true, 'snapshots arrive');
+  assert.deepEqual(got.map(d => (d.s ? 's' : 'none') + ':' + d.i + ':' + ('gr' in d)), got.map(() => 's:i1:true'), 'never a message without the snapshot; its FX meters in it');
 });
