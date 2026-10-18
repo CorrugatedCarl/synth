@@ -4,7 +4,7 @@ This is the living tracker for the canvas redesign. The design is [SPEC-canvas.m
 
 - **Branch:** `canvas` of CorrugatedCarl/synth. `main` stays live at synth.domlavin.com and is never merged into or overwritten by canvas work ("in case I regret it").
 - **Preview:** canvas.domlavin.com (repo CorrugatedCarl/synth-canvas), deployed with `tools/deploy-canvas.sh` from the committed `canvas` HEAD. The canvas site has its own storage and starts fresh.
-- **Every stage:** build → independent review with adversarial verification → fixes → every test file run one at a time → deploy → the user tries it on the iPad → feedback folded in before the next stage.
+- **Every stage (lean, agreed 2026-10-18 to save usage):** one builder → review-and-fix (one reviewer for 1c, 2a, 3; two focused reviewers — sound/engine and interface — for the risky audio stages 1d, 1e, 2b; no per-finding verifiers) → every test file run one at a time → deploy → the user tries it on the iPad → feedback folded in before the next stage.
 
 ## Stages
 
