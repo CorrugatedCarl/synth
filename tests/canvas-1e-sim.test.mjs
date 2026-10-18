@@ -568,3 +568,26 @@ test('U8: the chord / voice-mode notice stays quiet on a several-instrument trac
   assert.match(note(), /is monophonic — its chords play one note/, 'alone: the notice');
   api.notice('', 0);
 });
+
+test('U17: a track switch mounts several device bodies one job per body, a slice per frame (the world hidden until the last), then every panel of the new track is up', () => {
+  const a = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  const d3 = cv.add('dx7', null); sim.raf();
+  const b = fresh('juno60'), vp = sim.$('#viewport');
+  const REAL = globalThis.performance;
+  let ms = 1e6;
+  globalThis.performance = { now: () => (ms += 20), timeOrigin: REAL.timeOrigin }; // (every read 20 ms later: a 12 ms slice holds one job)
+  try {
+    api.selectTrack(a.id);
+    const J = cv.mount();
+    assert.ok(J, 'mounting');
+    assert.deepEqual([J.jobs.slice().sort().join(','), vp.hasAttribute('data-cv-mounting')], [['fx1', 'i1', 'i2', d3].sort().join(','), true], 'one job per body, the world hidden');
+    const left = [];
+    for (let i = 0; i < 4; i++) { sim.raf(); const M = cv.mount(); left.push(M ? M.jobs.length : -1); }
+    assert.deepEqual(left, [3, 2, 1, 0], 'one body a frame');
+    for (let i = 0; i < 60 && cv.mount(); i++) sim.raf();
+    assert.deepEqual([cv.mount(), vp.hasAttribute('data-cv-mounting')], [null, false], 'shown once done');
+    assert.deepEqual(['i1', 'i2', d3].map(k => { const P = cv.classicPanels.get(a.id + '/' + k); return !!P && !P.dead; }), [true, true, true], 'every instrument\'s panel');
+  } finally { globalThis.performance = REAL; }
+  void b;
+});
