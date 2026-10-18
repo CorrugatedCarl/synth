@@ -11,6 +11,9 @@
 //      a classic track's FX state becomes the shared panel fx1 (i1.out → fx1.in → out.in), a Serum's its own (i1.fx;
 //      i1.out → out.in). A panel holds today's v2 FX state whole (`fx`; a classic panel compiles and shows its Main rack
 //      as before), so every sound compiles bit-identically (cv-graph compileTrack, tests/canonical-stream.test.mjs)
+//   4  stage 1e: several instruments per track — an instrument's on / solo / zone / name, a cable's level g, any number
+//      of instruments and panels (cv-model's editing API): additive, nothing to convert (a 3 opens as before; a 4 in a
+//      stage-1c build opens read-only, as it should: that build would drop the fields)
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
@@ -37,7 +40,7 @@ import { compileTrack, kindOf, port } from './cv-graph.js?v=9';
 import { defaultFx2 } from './serum-core.js?v=9';
 
 export { schemaOf };
-export const SCHEMA = 3;
+export const SCHEMA = 4;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -62,6 +65,8 @@ export const STEPS = Object.freeze([
   p => Object.assign({}, p, { schema: 2 }),
   // 2 → 3: project v2 tracks (stage 1c, §5.4)
   p => Object.assign(toV2(p), { schema: 3 }),
+  // 3 → 4: several instruments per track (stage 1e, IMPL-1e §3.2) — additive
+  p => Object.assign({}, p, { schema: 4 }),
 ]);
 
 export function upgrade(o) {

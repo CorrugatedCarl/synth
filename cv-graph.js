@@ -1,4 +1,4 @@
-// cv-graph.js — a track's device graph in SYNTH Canvas (SPEC-canvas §5.1, §5.5, §6.7; stage 1a skeleton). Pure ES module:
+// cv-graph.js — a track's device graph in SYNTH Canvas (SPEC-canvas §5.1, §5.5, §6.7, §6.8; stages 1a, 1e). Pure ES module:
 // no DOM, no engine (node-tested: tests/cv-graph.test.mjs).
 //
 // A v1 track (today's: model / vals / preset / seq / fx) is one canonical shape by definition. A v2 track (stage 1c on,
@@ -8,8 +8,9 @@
 //   - one powered Serum (its own FX inside it, dev.fx) → OUT.
 // Device shapes (stage 1c, cv-migrate toV2): a shared panel holds today's v2 FX state whole, { kind: 'panel', fx } (a
 // classic track's rack: its Main rack shows and compiles as before); the §5.1 single-rack form { rack: { mods, byp, lock,
-// ui } } is read too (1e). Other shapes compile to the graph protocol of §6.8 from stage 1e; until then compileTrack
-// reports them as not canonical (main.js then compiles the primary alone).
+// ui } } is read too (1e). Every other shape (stage 1e: several instruments, fan-in, levels, a Serum into a panel) compiles
+// to the graph protocol of §6.8 / IMPL-1e §2.5: one Inst per instrument (render order, the primary first, salt 0), one
+// shared chain per panel, edges [src, dst, g] (src an instrument or panel id, dst a panel id or 'out').
 //
 //   LIMITS                 ≤ 8 instruments, ≤ 16 shared panels, ≤ 48 effects per panel (§6.7, §9.2)
 //   kindOf(dev)            'inst' | 'panel' | 'out' | 'mod' | null
@@ -18,14 +19,32 @@
 //   powered(track)         the instruments that sound: on, and soloed when any instrument of the track is (§2.7)
 //   validate(track)        { ok, errors: [{ code, msg, at }] } — codes: out (not exactly one OUT), end (unknown device or
 //                          port), dir (not an out → in cable), dup, own-fx (into an instrument: a Serum's own FX take only
-//                          that Serum), cycle, fan-out / chain (one output into several inputs, panel → panel: stage 4),
-//                          inst / panels / fx (limits), prim (not an instrument), nomod (a mod row to a knob that cannot
-//                          be modulated: classic struct / none, cv-mods.js)
+//                          that Serum), cycle, fan-out / chain (one output into several inputs, panel → panel: stage 4;
+//                          fan-in — several outputs into one input — is allowed), g (a level not a finite number ≥ 0),
+//                          zone (lo / hi ints 0…127, lo ≤ hi, xp an int −48…48), flag (on / solo not booleans), inst /
+//                          panels / fx (limits), prim (not an instrument), nomod (a mod row to a knob that cannot be
+//                          modulated: classic struct / none, cv-mods.js)
 //   order(track)           device ids, sources before what they feed (stable: dev key order), or null on a cycle
 //   compileTrack(track)    { canonical: true, shape: 'classic' | 'serum', inst, v1: { model, vals, preset, seq, fx } } |
-//                          { canonical: false, why, errors, order, powered }
+//                          { canonical: false, why, errors, graph, patches, chains, order, powered } (why: several |
+//                          none | shape | invalid; an invalid track still compiles the cables that are usable)
+//   compileGraph(track)    the graph form of any track (a canonical one too: graphed nodes, IMPL-1e §3.3) →
+//                          { canonical, why, errors, graph, patches, chains, order, powered }:
+//                            graph   { insts: [{ id, on, zone: { lo, hi, xp }, salt }], chains: [{ id }], edges: [[a, b, g]],
+//                                      out: 'out', key } — insts primary first then in order, chains in order, every
+//                                      usable cable with its level (unpowered instruments' too: they do not sound); key: the
+//                                      structure as a string (change detection: ids, order, edges, on, zones, salts)
+//                            patches { id: { model, vals, preset, seq, fx } } (fx: a Serum's own; undefined: a classic)
+//                            chains  { id: FX state } (a panel's state, or its single rack as a Main rack: fxOfPanel)
+//   saltOf(id, prim)       an Inst's seed salt: 0 for the primary, else (devNum(id) * 0x9E3779B9) >>> 0 (§6.2.1)
+//   zoneOf(dev)            { lo, hi, xp } (absent: 0…127, 0)          devNum('fx12') → 12
+//   instPatch(dev, opts)   one Inst's patch ({t: 'patch', i, p}): patchFor of the instrument with its own FX (a Serum) or
+//                          an empty rack, a classic one without fxr / fxrT (its sound goes to the shared chains)
+//   chainPatch(fx, opts)   one shared chain ({t: 'chain', c, fxr, fxrT}): patchFor's rack compile for a classic track (no
+//                          Serum gains), so a canonical classic track's chain is its legacy patch's rack
 import { classOf } from './cv-mods.js?v=9';
-import { defaultFx2 } from './serum-core.js?v=9';
+import { defaultFx2, compileFx, compileFxT } from './serum-core.js?v=9';
+import { patchFor } from './models.js?v=9';
 
 export const LIMITS = Object.freeze({ inst: 8, panels: 16, fxPerPanel: 48 });
 const MOD_KINDS = new Set(['lfo', 'env', 'velo', 'at', 'bend', 'note', 'macro', 'cc']);
@@ -54,6 +73,17 @@ export function powered(t) {
   return ins.some(id => t.dev[id].solo) ? ins.filter(id => t.dev[id].solo) : ins;
 }
 const wiresOf = t => (Array.isArray(t.wires) ? t.wires.filter(isObj) : []);
+const isInt = (x, a, b) => Number.isInteger(x) && x >= a && x <= b;
+const zoneOk = z => isObj(z) && isInt(z.lo, 0, 127) && isInt(z.hi, 0, 127) && z.lo <= z.hi && (z.xp === undefined || isInt(z.xp, -48, 48));
+const gOk = g => typeof g === 'number' && Number.isFinite(g) && g >= 0;
+export function zoneOf(d) {
+  const z = isObj(d) && isObj(d.zone) ? d.zone : null, n = (x, a, b, def) => (Number.isFinite(x) ? Math.min(b, Math.max(a, Math.round(x))) : def);
+  if (!z) return { lo: 0, hi: 127, xp: 0 };
+  const lo = n(z.lo, 0, 127, 0), hi = n(z.hi, 0, 127, 127);
+  return { lo: Math.min(lo, hi), hi: Math.max(lo, hi), xp: n(z.xp, -48, 48, 0) };
+}
+export const devNum = id => { const m = /(\d+)$/.exec(id); return m ? +m[1] : 0; };
+export const saltOf = (id, prim) => (id === prim ? 0 : (devNum(id) * 0x9E3779B9) >>> 0);
 
 export function order(t) {
   if (!isV2(t)) return null;
@@ -84,10 +114,16 @@ export function validate(t) {
   if (panels.length > LIMITS.panels) err('panels', `At most ${LIMITS.panels} FX panels per track`);
   for (const id of panels) if (effectCount(rackOf(dev[id])) > LIMITS.fxPerPanel) err('fx', `At most ${LIMITS.fxPerPanel} effects per panel`, id);
   if (t.prim != null && K(t.prim) !== 'inst') err('prim', 'The primary instrument is not an instrument of this track', t.prim);
+  for (const id of ins) {
+    const d = dev[id];
+    if ((d.on !== undefined && typeof d.on !== 'boolean') || (d.solo !== undefined && typeof d.solo !== 'boolean')) err('flag', 'Power and solo are on or off', id);
+    if (d.zone !== undefined && !zoneOk(d.zone)) err('zone', 'A key zone is two notes 0…127 (low ≤ high) and a transpose −48…48', id);
+  }
   const seen = new Set(), from = new Map();
   for (const w of wiresOf(t)) {
     const a = port(w.a), b = port(w.b), at = w.id || null;
     if (!a || !b || !(a.dev in dev) || !(b.dev in dev)) { err('end', 'A cable ends on nothing', at); continue; }
+    if (w.g !== undefined && !gOk(w.g)) err('g', 'A cable level is a number ≥ 0', at);
     const ka = K(a.dev), kb = K(b.dev);
     if (kb === 'inst') {
       if (dev[b.dev].model === 'serum') err('own-fx', 'A Serum’s own FX take only that Serum · Make a shared panel', at);
@@ -99,6 +135,7 @@ export function validate(t) {
     const key = w.a + '>' + w.b;
     if (seen.has(key)) { err('dup', 'These two jacks are already connected', at); continue; }
     seen.add(key);
+    // (fan-in, several outputs into one input, is a mix: allowed from stage 1e)
     if (from.has(a.dev)) err('fan-out', 'One output feeds one input (several: a later stage)', at); else from.set(a.dev, b.dev);
     if (ka === 'panel' && kb === 'panel') err('chain', 'Panel → panel chains come in a later stage', at);
   }
@@ -136,7 +173,7 @@ export function compileTrack(t) {
       v1: { model: t.model, vals: t.vals, preset: t.preset, seq: t.seq, fx: t.fx } };
   }
   const v = validate(t), ord = order(t), on = powered(t);
-  const no = why => ({ canonical: false, why, errors: v.errors, order: ord, powered: on });
+  const no = why => Object.assign({ canonical: false, why, errors: v.errors }, graphOf(t, ord, on));
   if (!v.ok) return no('invalid');
   if (on.length !== 1) return no(on.length ? 'several' : 'none');
   const id = on[0], d = t.dev[id], out = Object.keys(t.dev).find(k => kindOf(t.dev[k]) === 'out');
@@ -155,4 +192,66 @@ export function compileTrack(t) {
   const feed = into(src).filter(sounding);
   if (feed.length !== 1 || port(feed[0].a).dev !== id || !unity(feed[0])) return no('shape');
   return { canonical: true, shape: 'classic', inst: id, v1: Object.assign(v1, { fx: fxOfPanel(t.dev[src]) }) };
+}
+
+/* ------------------------------------------------------------- the graph form (stage 1e, IMPL-1e §2.5, §3.1) */
+// the cables the engine can play: out → in, an instrument or panel into a panel or OUT, one per output (the first), no
+// panel → panel (a later stage) — what validate refuses is left out, so an invalid track still compiles (cycle-free:
+// instruments have no input, OUT no output, panels feed no panel)
+function edgesOf(t) {
+  const dev = t.dev, E = [], from = new Set();
+  for (const w of wiresOf(t)) {
+    const a = port(w.a), b = port(w.b);
+    if (!a || !b || !(a.dev in dev) || !(b.dev in dev) || a.port !== 'out' || b.port !== 'in' || from.has(a.dev)) continue;
+    const ka = kindOf(dev[a.dev]), kb = kindOf(dev[b.dev]);
+    if ((ka !== 'inst' && ka !== 'panel') || (kb !== 'panel' && kb !== 'out') || (ka === 'panel' && kb === 'panel')) continue;
+    from.add(a.dev);
+    E.push([a.dev, kb === 'out' ? 'out' : b.dev, gOk(w.g) ? w.g : 1]);
+  }
+  return E;
+}
+function graphOf(t, ord, on) {
+  const dev = t.dev, ids = ord || Object.keys(dev), ins = ids.filter(id => kindOf(dev[id]) === 'inst');
+  const prim = kindOf(dev[t.prim]) === 'inst' ? t.prim : ins[0];
+  const order1 = prim ? [prim, ...ins.filter(id => id !== prim)] : [], panels = ids.filter(id => kindOf(dev[id]) === 'panel');
+  const graph = {
+    insts: order1.map(id => ({ id, on: on.includes(id), zone: zoneOf(dev[id]), salt: saltOf(id, prim) })),
+    chains: panels.map(id => ({ id })), edges: edgesOf(t), out: 'out', key: '',
+  };
+  graph.key = JSON.stringify([graph.insts, graph.chains, graph.edges]);
+  const patches = {}, chains = {};
+  for (const id of order1) { const d = dev[id]; patches[id] = { model: d.model, vals: d.vals, preset: d.preset, seq: d.seq, fx: d.model === 'serum' ? d.fx : undefined }; }
+  for (const id of panels) chains[id] = fxOfPanel(dev[id]);
+  return { graph, patches, chains, order: ord, powered: on };
+}
+// a v1 track as the devices stage 1c gives it (i1 → fx1 → out; a Serum i1 → out), its objects shared
+function v2View(t) {
+  const i1 = { kind: 'synth', model: t.model, vals: t.vals, preset: t.preset, seq: t.seq };
+  if (t.model === 'serum') return { prim: 'i1', dev: { i1: Object.assign(i1, { fx: t.fx }), out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }] };
+  return { prim: 'i1', dev: { i1, fx1: { kind: 'panel', fx: t.fx }, out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }] };
+}
+export function compileGraph(t) {
+  if (!isObj(t)) throw new Error('compileGraph: not a track');
+  const T = isV2(t) ? t : v2View(t), c = compileTrack(T);
+  if (!c.canonical) return c;
+  return Object.assign({ canonical: true, why: null, errors: [] }, graphOf(T, order(T), powered(T)));
+}
+// the patch of one Inst (a classic one: no rack of its own on a graph node, IMPL-1e §2.1 sharedRack)
+export function instPatch(d, opts) {
+  const sx = d.model === 'serum', p = patchFor(d.model, d.vals, sx && d.fx ? d.fx : defaultFx2(), opts);
+  if (!sx) {
+    const fn = p.fxr && Array.isArray(p.fxr.needs) ? p.fxr.needs : [];
+    delete p.fxr; delete p.fxrT;
+    if (fn.length && p.needs) { p.needs = p.needs.filter(x => !fn.includes(x)); if (!p.needs.length) delete p.needs; }
+  }
+  return p;
+}
+// one shared chain's rack: patchFor's compileFx call for a classic model (no Serum master / bypass / bus levels)
+export function chainPatch(fx, opts) {
+  const o = opts || {}, pr = o.prefs || {}, sr = o.sr > 0 ? +o.sr : 48000, bpm = o.bpm > 0 ? +o.bpm : 120, smooth = pr.smooth > 0 ? +pr.smooth : 1;
+  const fxr = compileFx(fx, {
+    bpm, rate: sr, master: undefined, bypass: undefined, direct: undefined, bus1v: undefined, bus2v: undefined, modded: null,
+    seed: !!o.seed, smooth, silence: pr.silenceTails === undefined ? 1 : pr.silenceTails ? 1 : 0, qr: o.qr || null,
+  });
+  return { fxr, fxrT: compileFxT(fx) };
 }
