@@ -1053,6 +1053,9 @@ function lowerOS() {
     const v = po / 2;
     settings.os = v; $('#os').value = String(v); persist();
     postAll({ t: 'os', v }); rateText(); rateLabels();
+    for (const [id, N] of nodes) if (N.osI) for (const [i, o] of [...N.osI]) { // (the instruments lowered alone below it stay there)
+      if (o < v) postTo({ id }, { t: 'os', v: o }, i); else N.osI.delete(i);
+    }
     notice(`DSP load stayed above 85% — oversampling lowered to ${v}× to avoid dropouts`, 9000);
   } else if (so > 1) {
     sxCap = so / 2;

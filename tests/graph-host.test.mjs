@@ -403,3 +403,21 @@ test('H6: Duplicate track copies every device, cable and per-instrument field �
   const cu = dup(u);
   assert.deepEqual([devs(cu), cables(cu), devs(u)], ['i1,out', 'i1.out>out.in', 'i1,out']);
 });
+
+test('H7: the safeguard never raises an instrument it lowered alone — the broadcast step re-posts the lower ones; the badge tells the engine\'s truth', async () => {
+  await page();
+  const a = byId('trk_a'), node = sim.nodeOf(a.id), os0 = sim.api.settings().os, k = node.posted.length;
+  const engOS = () => node.proc.insts.filter(x => x.id === 'i1' || x.id === 'i2').map(x => x.id + ':' + (x.osPend || x.OS)).sort().join(' ');
+  assert.equal(os0 >= 4, true, '(two steps per instrument, then the broadcast: os ' + os0 + ')');
+  const steps = Math.log2(os0) * 2 + 1; // (each instrument to 1×, then one broadcast)
+  for (let s = 0; s < steps; s++) {
+    node._fromProc({ t: 'stats', load: 0.9, voices: 2, per: [{ id: 'i1', load: 0.3 }, { id: 'i2', load: 0.5 }, { id: 'fx1', load: 0.1 }] });
+    sim.api.lowerOS();
+  }
+  const os = node.posted.slice(k).map(x => x.m).filter(m => m.t === 'os'), v = os0 / 2;
+  const tail = os.slice(-3);
+  assert.deepEqual([tail[0].v, 'i' in tail[0], tail.slice(1).map(m => m.i + ':' + m.v).sort()], [v, false, ['i1:1', 'i2:1']], 'the broadcast, then the lowered ones again');
+  assert.deepEqual([sim.api.settings().os, engOS(), sim.api.capsOf(a, 'i1'), sim.api.capsOf(a, 'i2')], [v, 'i1:1 i2:1', `OS ${v}→1`, `OS ${v}→1`]);
+  sim.api.liftCaps(); sim.api.settings().os = os0; // (the app setting back for the tests after)
+  for (const N0 of sim.api.nodes.values()) N0.node.port.postMessage({ t: 'os', v: os0 });
+});
