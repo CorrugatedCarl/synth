@@ -12,8 +12,8 @@ This is the living tracker for the canvas redesign. The design is [SPEC-canvas.m
 |---|---|---|
 | 1a Foundations | Own storage (`synth-canvas` DB, `synthc.` keys), schema gate + read-only open, project uid, platform message, skeletons, iPad bench page | **Done** (1f6721b) |
 | 1b Canvas shell | Top tray, keyboard tray, Sources tray with original illustrations, camera world, movable modules, derived cables | **Done** (1f6721b) + feedback fixes below |
-| 1b+ Hardware panels | Fixed, hardware-accurate front panels for the 12 classic synths; Hardware/Resizable layout toggle in each module's ⋯ menu; zoom never changes how modules look | **In progress** |
-| 1c Instances + project v2 | ClassicPanel instances, multi-instance Serum UI, project v2 + migration, canonical compile, Save as classic project, minimap, box-select, track-switch mounting | Next |
+| 1b+ Hardware panels | Fixed, hardware-accurate front panels for the 12 classic synths; Hardware/Resizable layout toggle in each module's ⋯ menu; zoom never changes how modules look | **Done** (2e74572; contract docs/canvas/IMPL-panels.md) |
+| 1c Instances + project v2 | ClassicPanel instances, multi-instance Serum UI, project v2 + migration, canonical compile, Save as classic project, minimap, box-select, track-switch mounting (no Import library: the user chose to start fresh) | **In progress** |
 | 1d Track engine | `engine.js` split into Track / Inst / Chain, bit-identical; CPU per module | Planned (iPad bench recorded 2026-10-18) |
 | 1e Several synths per track | Multiple instruments per track, shared/separate FX panels (pedalboards), editable audio cables, Effects tray, power, key zones — **completes milestone 1** | Planned |
 | 2a Performance modulators | Project Mod Wheel (one per project), Velocity, Aftertouch, Bend on Serum knobs and its own FX; mod list; cable inspector | Planned |
@@ -46,3 +46,9 @@ These override the spec where they differ.
 - Trays slide and collapse; the keyboard tray is resizable/hideable.
 - Agents never search outside the project folder and scratchpad (macOS privacy prompts).
 - Test memory safety: never the full suite in parallel agents; one test file at a time; never fake-DOM nodes in `assert.*`.
+
+## Implementation decisions taken during stages (user may revisit)
+
+- **Hardware panels (1b+):** 2 px per mm; module sizes rounded up to the 32 px grid. Controls a synth has beside its keyboard (e.g. Minimoog DECAY, CS-80 / Jupiter-8 portamento, Juno-60 octave transpose, Solina ensemble) are drawn on their real side plate, not moved to the extras strip. Hardware controls we don't emulate are drawn dimmed ("not emulated"). The ⋯ menu gained Save / Delete / Init sound and the chip gained ◀ ▶ preset arrows (a hardware face has no preset plate).
+- **Controls sleep below 50 % zoom:** without cards, a one-finger pan of a zoomed-out canvas would otherwise turn whatever knob it lands on, so below 50 % a press inside a module pans unless the module was double-tapped. Nothing visible changes.
+- **Making room:** when a wider instrument would overlap, the FX and OUT modules move right (never pulled back left).
