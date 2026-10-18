@@ -1,0 +1,315 @@
+# Stage 1e: several synths per track (IMPL-1e) — contract
+
+What stage 1e builds, how the work is split, and the rules every builder follows. The design is [SPEC-canvas.md](SPEC-canvas.md)
+§2.7–2.9, §5.1, §6.2–6.9, §9.2, §10 1e, §11.2; [ROADMAP.md](ROADMAP.md) wins where they differ (no resizable modules, no
+collision, side trays never auto-close, Lock view, Hardware/Simple). What exists: [IMPL-1c.md](IMPL-1c.md) (instances, project
+v2, canonical compile), [IMPL-1d.md](IMPL-1d.md) (Track / Inst / Chain, facade, `mon`, `stats.per`). Sections 1–5 are the
+contract; §6 the lanes; §7 the gates; §8 the notes the builders fill in when done.
+
+**Invariant of the stage**: a track that is canonical today (one powered instrument → one panel → OUT, or one Serum → own FX →
+OUT) renders bit for bit what it renders now, through the legacy messages (`tests/canonical-stream.test.mjs` unchanged) and
+through the graph messages (new `golden-graph` cases). Everything new only runs for shapes that cannot exist today.
+
+## 1. Vocabulary
+
+- **Device**: an entry of `track.dev` (§5.1): instrument `iN` (`kind: 'synth'`), shared panel `fxN` (`kind: 'panel'`), `out`.
+  A Serum's own FX is inside its device (`dev.fx`); on the canvas it is the module `iN/fx`.
+- **Module key** = **device id**: `i1`, `i2`, `fx1`, `fx2`, `i2/fx`, `out`. `cv-module.ID` stays for the default ids only; nothing
+  new reads it.
+- **Engine part**: an `Inst` or a `Chain` in the worklet. Part ids: positional `i0` / `c0` until a track node has received its
+  first `{t: 'graph'}`; from then on **device ids**: an Inst is `iN`, a shared chain `fxN`, a Serum's own FX `iN/fx`.
+- **Primary** (`track.prim`): the instrument today's single-instrument code paths mean when they say "the track's model":
+  `graph.insts[0]`, salt 0, MIDI program change target, the instrument a classic file keeps the track id for.
+- **Graphed node**: a track node that has received a graph message. `N.graphed` in main.js; from then on that node is driven by
+  the graph protocol only (even once the track is canonical again), until the node is recreated.
+
+## 2. Engine (`engine.js`, lane A)
+
+### 2.1 Structure
+
+```
+Track
+ ├─ insts[]   render order; insts[0] = i0 = the primary        Inst: id, on, zlo, zhi, zxp, salt, sharedRack, fxc, rack, live
+ ├─ chains[]  shared panels in render order; c0 = chains[0] || i0.fxc   Chain: id, rack, srcs[], g (Float64Array), alias, ownBy,
+ │                                                                       Lb/Rb (alias of its single source's, else own), live, mon, t
+ ├─ dying[]   removed Insts / Chains, rendered until silent, then dropped
+ ├─ outSrc[]  the parts cabled into OUT, outG (gains);  Track.Lb/Rb = alias of the single OUT source's buffers (g 1), else own
+ ├─ hold      per (ch, note): which Insts received the note-on and at which pitch; held velocity (for restrike)
+ └─ out       panicFade → outStage, as today
+```
+
+- **Legacy structure** (constructor, before any graph): `c0 = new Chain`, `i0 = new Inst(T, os, c0)`, `i0.fxc = c0`, `i0.rack =
+  c0.rack`, `chains = [c0]`, `c0.srcs = [i0]`, `c0.alias = 1`, `c0.ownBy = i0`, `outSrc = [c0]`, `Track.Lb = i0.Lb`. Ids `i0` / `c0`.
+  This is 1d's object graph exactly; `facade()` is unchanged.
+- **Every Inst owns a private Chain** `fxc` (its own FX when it is a Serum). A classic Inst's `rack` is the rack of the shared chain
+  it feeds when it is that chain's only source (alias shape), else `null`. In legacy structure `i0.rack = c0.rack` for both kinds,
+  as today. A Serum Inst's `rack` is always `fxc.rack`. The Track re-resolves `rack` after every patch that changes an Inst's kind
+  (graph nodes only; legacy nodes never touch `rack`).
+- **`sharedRack`** = 1 on a classic Inst of a graph node whose `rack` is a shared chain's. `Inst.setPatch` / `setSerum` call
+  `rack.set(p.fxr || null, p.fxrT)` only when `sharedRack === 0` (legacy: always, as today). Shared chains are set only by
+  `{t: 'chain'}`.
+- **`ownBy`**: the Inst whose private chain this is. The Track never processes a chain whose `ownBy` is a Serum (legacy: today's
+  `I.kind !== 'serum'` guard, same operations). Shared chains have `ownBy = null`.
+
+### 2.2 Span (§6.3) — `Track.renderSpan(Lo, Ro, off, n)`
+
+```
+for I of insts, then dying:  I.live = I.renderSpan(n)            // 0 = skipped (nothing rendered, buffers stale)
+for c of chains (order), then dying chains:
+    if (c.ownBy && c.ownBy.kind === 'serum') continue               // a Serum's own FX ran inside renderSerum
+    live sources = c.srcs with .live
+    none live: if (c.rack.idle()) { c.live = 0; continue }  else zero c.Lb/Rb (own buffers; an aliased chain aliases only a live source)
+    one live source at g 1 and c.alias: c.Lb === src.Lb (no copy)   else copy-first: Lb[i] = s0.Lb[i] * g0 (g 1: plain copy), add the rest
+    c.rack.setNote(most recent note-on among its sources) — only when c.srcs.length > 1 (one source: the Inst called it, as today)
+    timed: c.rack.process(c.Lb, c.Rb, n); c.live = 1
+no part feeding OUT is live: zero Lo/Ro, return                      // the Track-level skip: no panicFade, no outStage (§6.4)
+OUT: Track.Lb === the single live source's buffers (g 1), else copy-first sum into own buffers
+if (pnN) panicFade(n); outStage(Lo, Ro, off, n)
+```
+
+With the legacy structure this is: `i0.renderSpan` → (classic) `c0.rack.process(i0.Lb, i0.Rb)` → `panicFade` → `outStage`, i.e. 1d's
+`renderSpan` operation for operation. **No arithmetic is added on any alias path.**
+
+**Idle** (`Inst.renderSpan`): today's rule, plus power: skip when nothing is active or fading **and** (`on === 0` **or** quiet > 2 s)
+**and** (`!rack || rack.idle()`). A powered-off Inst therefore skips as soon as its 3 ms fade has ended (budget ≤ 0.0005). Serum's
+`SD.idle` keeps clocks as today.
+
+**Sequencers** (`Track.process`): the scan of §6.3 step 1 runs over every Inst with `on === 1` (`sxSeq.fire/next`, `seqEvents`,
+`q.pos += len`); a powered-off Inst neither fires nor splits spans. One Inst: today's statements.
+
+### 2.3 Notes, zones, power (§6.6)
+
+- `Track.noteOn(n, v, ch, ext, aud, i)` / `noteOff(n, rv, ch, ext, aud, i)` keep their names (tests wrap them). `aud` targets one
+  Inst: `i` (an id) or `insts[0]`. Otherwise every Inst with `on === 1` and `zlo ≤ n ≤ zhi` receives `noteOn(n + zxp, v, ch, ext, 0)`
+  (a transposed note outside 0…127 is dropped); the Track records the receivers and their transposed pitches in `hold`
+  (preallocated: `Uint8Array(17·128)` receiver bits by Inst index, `Int16Array(8·17·128)` pitches, `Float64Array(17·128)` velocity;
+  `ch` indexes as `(ch | 0)`, the original `ch` is passed through). A note-off reaches exactly the recorded receivers at the recorded
+  pitches, whatever the zones are now. One Inst, zone 0…127, xp 0: today's calls.
+- Controller state (`bend`, `wheel`, `sus`, `at`, `pat`, `mpe`, `os` without `i`) reaches every Inst, powered or not (as 1d).
+- `{t: 'power', i, on}`: off → `on = 0`, `allOff(true)`, `seqRelease()` (303), its cables' audio fades with the voices; the Inst
+  keeps every setting and keeps receiving controller state. On → `on = 1`; held keys (velocity > 0 in `hold`, in zone) are restruck
+  through `noteOn`; its sequencer re-anchors: `if (I.sq) I.sq.syncStep = null`; `if (I.sxSeq) I.sxSeq.transport(tp.play)`.
+  Click-free: largest output step < −60 dB on off and on (engine-track test).
+
+### 2.4 Seeds (§6.2.1)
+
+`Inst.salt` (uint32; 0 for `i0` of a legacy node and for the primary). Applied: `this.r = 987654321 ^ salt` at the two reset
+sites; each `AVoice` / `FVoice` after construction: `v.r = ((v.r ^ salt) >>> 0) || 1`; `Chorus` gets a `seed` field (`22222`,
+reset uses it; the Inst sets `chorus.seed = 22222 ^ salt`); `serum-dsp.js` / `sx-mod.js` / `sx-seq.js` XOR `(proc.seedSalt | 0)`
+where they set `SEED` / `SEED2` (one token per site; `proc.seedSalt` is the Inst's `salt`). Salt 0 changes nothing (goldens).
+Solina's `Math.random` is scope-shared: documented, tested as "two Solinas depend on build order".
+
+### 2.5 Messages (§6.8)
+
+| Message | Dir | Effect |
+|---|---|---|
+| `{t:'graph', insts:[{id, on, zone:{lo,hi,xp}, salt}], chains:[{id}], edges:[[src, dst, g]], out:'out', key}` | → | Applied between quanta. `insts` is the render order (`[0]` the primary); `chains` in render order; `src` an Inst or chain id, `dst` a chain id or `'out'`, `g` a number (1 skipped). **First graph on a node adopts the legacy parts by position**: `i0` becomes `insts[0].id` (state and tails kept, no re-patch needed); `c0` becomes `chains[0].id` when the primary is classic, else stays the primary's own `fxc` named `<id>/fx`. Later graphs match by id: unknown Inst ids are built (`new Inst(T, os, new Chain)`, patched by a following `patch`), unknown chains built; missing ones move to `dying` (`allOff(true)`, rendered until silent / idle, then dropped). Alias / rack / sharedRack resolved after every graph |
+| `{t:'patch', i, p}` | → | one Inst (a Serum's includes its own FX as today). No `i`: `insts[0]`. A classic Inst's patch on a graph node carries no `fxr` / `fxrT` (main strips them); even if it did, `sharedRack` ignores it |
+| `{t:'chain', c, fxr, fxrT}` | → | one shared chain: `rack.set(fxr, fxrT)`, `fxOver` (posts `{t:'fxover', ids, c}`) |
+| `{t:'power', i, on}` | → | §2.3 |
+| `seq`, `seqcmd`, `sqt`, `ct`, `fxtap`, `fxph` | → | gain `i` (`fxtap` / `fxph`: `i` = a Serum's own FX, `c` = a shared chain); absent: `insts[0]` / `c0` |
+| `os` | → | no `i`: every Inst (as today); `{t:'os', i, v}`: one Inst (the safeguard) |
+| `on` / `off` | → | optional `i` with `aud` |
+| `mon` | → | ids are part ids (legacy `i0` / `c0`, or device ids after a graph); `smon` = every part |
+| `stats` | ← | `per`: every Inst `{id, load, voices, os}` (its own `renderSpan` time, a Serum's own FX excluded), every shared chain and every Serum's own chain `{id, load}`. `load`, `voices`, `os` as today (`voices`, `os` of `insts[0]`) |
+| `smon` | ← | legacy node: today's single message. Graph node: one message per subscribed part: `{t:'smon', i, s, gr, fxph, ftap}` (an Inst: snapshot and its own FX's meters) or `{t:'smon', c, gr, fxph, ftap}` |
+| `step`, `fxover`, `fxph` reply | ← | gain `i` / `c` on graph nodes only |
+| `processorOptions` | → | besides today's fields: `graph`, `patches: {id: p}`, `chains: {id: {fxr, fxrT}}`, `seqs: {id: s}` applied in that order after `patch` / `seq` (offline bounce = live) |
+
+Legacy nodes post exactly today's messages (canonical-stream); every message above without `i` / `c` behaves as today.
+
+### 2.6 Warm-up, limits, allocation
+
+- `Track.warmUp` adds, after today's rounds: two classic Insts into one shared chain into OUT; a Serum through its own FX into a
+  shared chain; a power-off with held keys and a power-on restrike. Only analog `WARM` patches for the extra Insts (**never a Solina:
+  `Math.random` is seeded by the harness**). `restore` drops the extra parts and returns to the legacy structure.
+- Limits: ≤ 8 Insts, ≤ 16 shared chains, preallocated index arrays; no allocation in `process` / `renderSpan` (`noAlloc`); building
+  parts allocates in `msg` only.
+- `Date.now()` pairs per Inst and per processed chain (today's pattern).
+
+## 3. Compile, model, host (lane B)
+
+### 3.1 `cv-graph.js`
+
+- `validate`: **fan-in is allowed** (several `*.out` into one `*.in`); `fan-out` and `chain` (panel → panel) stay refused (stage 4);
+  `own-fx` stays; `g` must be a finite number ≥ 0 when present; zones `{lo, hi, xp}` ints 0…127 / −48…48 (`zone` code); `on` / `solo`
+  booleans.
+- `compileTrack(t)` non-canonical result: `{ canonical: false, why, errors, graph, patches, chains, order, powered }` with
+  `graph = {insts: [{id, on, zone, salt}], chains: [{id}], edges: [[a, b, g]], out, key}` (ids in `order`, primary first;
+  `on` = `powered(t)` membership; `salt` = 0 for the primary, else `(devNum(id) * 0x9E3779B9) >>> 0`), `patches = {id: {model, vals,
+  preset, seq, fx}}` (`fx`: a Serum's own; `undefined` for a classic), `chains = {id: fxState}` (today's whole FX state or the
+  single-rack form, as `fxOfPanel`). `key`: a string of the structure (ids, order, edges with gains, on, zones, salts) for change
+  detection. Edges of unpowered instruments are included (they do not sound).
+- `compileGraph(t)`: the same result for a **canonical** track (used by graphed nodes). Exported; `compileTrack` keeps its canonical
+  answer unchanged.
+
+### 3.2 `cv-model.js` — the editing API (pure, node-tested; History is the caller's)
+
+```
+addInst(t, modelId, {vals, preset, ui, name}) → id   zone 0…127/0, on, auto-patch: a wire to the shared panel with the most
+                                                     instrument sources (ties: lowest id), else to OUT; a Serum the same (its own FX
+                                                     is inside it)
+removeInst(t, id) → {ok, why}                        refused for the last instrument; its wires dropped; a removed primary → the
+                                                     lowest remaining instrument id becomes prim
+addPanel(t, {fx, name}) → id                         no wires
+removePanel(t, id)                                   every source of the panel is re-wired to what the panel fed (OUT); wires dropped
+connect(t, a, b, g = 1) → {ok, why, wire}            trial copy through validate; a's existing wire is replaced (re-patch); refusal =
+                                                     the validate message (the own-fx one offers the fix below)
+disconnect(t, wireId)
+setPower(t, id, on)   setSolo(t, id, solo)   setZone(t, id, {lo, hi, xp})   makePrimary(t, id)
+setModel(t, id, modelId, {vals}) → kept FX rules      classic → Serum: when the instrument was the only source of its panel and that
+                                                     panel fed OUT, the panel's state becomes the Serum's own FX and the panel goes
+                                                     (today's reshape); otherwise the Serum keeps feeding the panel with empty own FX.
+                                                     Serum → classic: its own FX becomes a new panel between it and its destination
+sharedPanelFix(t, serumId, srcId) → panelId          "Make a shared panel": a panel after the Serum, both connected to it, the panel
+                                                     to what the Serum fed
+instIds(t) → [ids] (prim first)   isGraphShape(t)    (not canonical)
+```
+`reshape` for the primary accessors keeps working. `song.normDev` keeps `on`, `solo`, `zone`, `name`, wire `g`. Schema **4**
+(`STEPS[3]` additive: nothing to convert; a 3 opens as before). `toV1` unchanged (already splits per instrument).
+
+### 3.3 `main.js` host side (lane B owns these functions; nothing in the canvas region)
+
+- `sendPatch(tr)`: `c = compileTrack(tr)`. Legacy path (bit-for-bit today's code) when `c.canonical && !N.graphed`. Otherwise
+  `N.graphed = true` and the graph path: `g = c.canonical ? compileGraph(tr) : c`; post `{t:'graph'}` when `N.gkey !== g.graph.key`;
+  per Inst `buildInstPatch(tr, id, sr, offline)` = `patchFor(model, vals, ownFx || defaultFx(), opts)` with, for a classic, `fxr` /
+  `fxrT` deleted and the FX `needs` removed; caps / voiceSeen as today per Serum; `postPatch` generalised with a part cache per Inst
+  (`N.insts: Map(id → {engine, ctKey, ctParts, sqParts, xsKey, last})`) and `{t:'patch', i, p}`; per shared chain `compileFx(fx,
+  {bpm, rate, seed, smooth, silence, qr})` + `compileFxT`, cache `N.chains: Map(id → {xsKey, last})`, `{t:'chain', c, fxr, fxrT}`;
+  assets: `tables.ensure` over the union of needs, patches waiting as today.
+- `makeNode(tr)`: a non-canonical track builds with `processorOptions.graph / patches / chains / seqs` (helper shared with
+  `renderOffline`); `N.graphed = true`. Canonical: today's options.
+- `postTo(tr, m, dev)`: adds `i` (instrument) or `c` (panel) only when `N.graphed` and `dev` is given. Callers that must pass a
+  device: `seqSend` (303 of device), `sxHost` (`seqCmd`, `ct`, `sqt`, audition `on`/`off`, `fxTap`), `fxHost` (`fxtap`, `fxph`).
+  Legacy nodes never get `i` / `c` (the stream).
+- `monitors.sub(trackId, dev, {role: 'inst' | 'fx' | 'both', live, deliver})`: `sync` resolves part ids through
+  `partsOf(t, N, dev, role)` (legacy: `i0` / `c0`; graphed: `dev`, `dev + '/fx'` for a Serum's own FX, a panel id); `deliver` routes a
+  graph node's `smon` by `d.i` / `d.c` to the subs of that device (legacy: every sub, as today). `monitors.fx(trackId, dev)`.
+- `cvCpu`: part id → module key (legacy `i0` → `primId(t)`, `c0` → `fxDevOf(t).id` or `prim + '/fx'`; graph ids are keys); `N.cpu`
+  keyed by module key; `powerOff` clears.
+- `renderOffline`: per track `compileTrack` → graph options for non-canonical tracks (offline = live, tested). `renderLast(t, o)`
+  renders `o.dev` (a Serum id, default the primary) alone through `buildInstPatch`. `previewPatch` / `smprender` unchanged.
+- Safeguard (`lowerOS`): per track the heaviest Inst from `N.cpu`: classic → `{t:'os', i, v: OS/2}` (session-only; legacy nodes:
+  today's broadcast); Serum → today's `sxCap` / `qrStep` steps. `capsOf(t, dev)` for the badge (lane C2 draws it).
+- MIDI (`midi.js` + host): `learn(trackId, dev, dest)`; the map lives in that Serum's `vals.s.midi`; `mapCC` applies a CC to every
+  Serum instrument of each target track (`H.instsOf(t)` → `[{id, s, fx}]`), each with its own map; program change → the primary;
+  `isMpe` → the primary. `fxSet` takes the device. Tests: per-instance learn / CC, program change.
+- Sequencer plumbing: `seqOf(t, dev)`, `seqSend(t, dev)`, `seqRun` keyed `trackId + '/' + dev`; `step` with `i` → the right
+  ClassicPanel instance (C2 provides `classicPanels.get(trackId/dev)`; B leaves a hook `seqStepTo(t, dev, s)` that C2 fills).
+- `applyRestore` / `loadProject` / `freshProject` / `duplicateTrack`: unchanged except `song.normDev` fields.
+
+## 4. Canvas widgets (lane C1 — no `main.js`) and integration (lane C2)
+
+### 4.1 `cv-module.js`
+- `createModule(o)` gains `power: {on, onToggle}` (the `.cv-pow` slot becomes a ⏻ button, `aria-pressed`; `setPower(on)` dims the
+  module with `[data-off]`), `zone: {lo, hi, xp, onChange}` (the key-zone pill on the left edge, "keys: all" / "keys: C3–C6 · +12";
+  tap → a small `wk` popover with low / high / transpose; `setZone`), `setBadge(text | null)` (a bar badge: "not connected – silent",
+  "OS 4→2"), `solo` in the menu is the host's. `createTrackView(world, track, host)` becomes device-driven: `host.devices(track) →
+  [{key, kind: 'inst' | 'fx' | 'out', model, dev}]`, `host.bodies.mount(key, el)` / `unmount(key)`, `host.title(key)`, `host.menu(key)`,
+  `host.size(key)`; `sync` diffs by key. `tidy(track, sizes)`: instruments stacked left (prim first), panels in the middle (a Serum's
+  own FX beside its Serum), OUT right; `layOf` for any key; `makeRoom(rects, key)` for any key. Costs for `W.add` as today.
+- `fxKey(model)` stays for the default ids; new code uses `dev + '/fx'`.
+
+### 4.2 `cv-cables.js`
+- `cablesOf(track)`: audio cables from `track.wires` (editable: no `data-ro`), plus the derived read-only `iN.out → iN/fx.in` inside
+  every Serum (label `routeLabel`). A wire end `iN.out` of a Serum is drawn from port `iN/fx.out`. Colour: the source instrument's
+  colour (track colour until instruments have their own); `dim` when the source is powered off (`cv-off`: grey).
+- Interaction (`createCables(worldEl, {onSelect(id | null), onAction(id, action)})`): tap selects (highlight; a floating `×`
+  Disconnect at the midpoint while selected), long-press / right-click → `wk` menu (Disconnect); Escape clears.
+- `createCableDrag(world, {ports, jacks, canConnect(a, b) → {ok, why}, onConnect(a, b), onRepatch(wireId, a, b)})`: a press on a
+  `[data-cv-jack]` (cv-world routes it: never a pan, cancelled by a second finger) draws a live bézier from the jack; compatible jacks
+  glow (`cv-ok`), incompatible dim with the reason as a title; release within 32 screen px snaps; release on a module body picks its
+  first compatible input; tap on a jack → "Connect to…" `popupMenu` of compatible jacks. Dragging a cable end off a jack re-patches.
+- Stroke widths from `--ik` as today; no `vector-effect`.
+
+### 4.3 `cv-tray.js` — the Effects tray
+`effectsTray(el, {items: [{id: 'panel'} | {id: <effect type>, name, group}], pick(id), drag: {begin, move, drop(id, {over: 'canvas' |
+'panel', key?, at}), cancel}, overOf, cost(id) → '~3 %' | ''})`, mirroring `sourcesTray` (tiles `button.cv-tile[data-fx]`, grouped as
+the rack's add menu, `wk.dragSource`, the tray slides shut as a drag leaves it and never on its own). `index.html` gets the tray
+markup in place of the placeholder; `style.css` the tiles, the ⏻ / `[data-off]` / zone pill / badge / `cv-ok` / `cv-off` styles.
+
+### 4.4 `cv-world.js`
+A press on `[data-cv-jack]` goes to a `jack` hook (`hooks.jack(ev, jackEl)`; returns true when taken) before the pan; `sleeper`
+already skips jacks. Two fingers cancel the hook's drag (`cancel`). Nothing else changes (no cards, no collision, Lock view kept).
+
+### 4.5 Lane C2 — `main.js` integration (after lanes A, B, C1 are merged)
+- Bodies per device: `classicPanels: Map('trackId/dev' → ClassicPanel)`, `serumPanels` (SerumUI records with `dev`), `fxPanels`
+  (one `fxPanelRec` per shared panel and per Serum's own FX); `cvParts` bodies created per device (not moved singletons);
+  `renderPanel` / `renderCustom` / `renderFxTab` take `(t, dev)`; the track-switch mounting jobs are one per device body; the global
+  `model` / `vals` / `cpanel` mean **the current instrument** of the selected track (`curDev` per track: the last tapped instrument
+  module, default the primary; `bind()` follows it). Presets, the chip, Save / Delete / Init sound, About, Hardware / Simple, the
+  303 sequencer page services take `(t, dev)`.
+- Sources tray: a drop on **empty canvas** adds an instrument (`CMOD.addInst` + `lay` at the drop point + auto-patch, one History
+  step, the Replace notice becomes "Added Juno-60 · tap to undo"); a drop on an instrument's bar or `Replace with…` replaces that
+  instrument (`CMOD.setModel`); a tap in replace mode replaces the current instrument. "Make primary", Delete (refused for the last),
+  Duplicate, Solo in track, Power in the ⋯ menu; ⏻ on the bar; the zone pill; the "not connected – silent" badge from
+  `validate` / wires; a module with a safeguard cap shows its badge.
+- Effects tray: `effectsTray` wired: the panel tile drops a shared panel at the point (cabled to OUT, nothing feeding it); an effect
+  tile onto a panel module adds the instance to its rack (`core.newInstance` as the rack's add menu does, one History step), onto
+  empty canvas creates a panel holding it.
+- Cables: `cablesOf(t)` drawn; connect / re-patch / disconnect through `CMOD.connect` / `disconnect` with one History step each,
+  the refusal in `#notice`, the own-fx refusal with the one-tap "Make a shared panel" action (`noticeActs`).
+- Soft caps (lane D's `cv-cost.js`): the 4th instrument on a touch device warns (notice), a second heavy Serum confirms; tile costs on
+  both trays; ⚙ gets "Measure this device".
+- After every edit: `queuePatch(t)`, `cvRender()`, `renderHeads()`; the track chip shows "2 instruments" (`trkChipUI`).
+- Transition accessors: left in place this stage (the ~180 sites keep meaning the primary); C2 removes only the ones its own changes
+  make dead. Their removal is logged as a 2a item.
+- Page-sim tests (`canvas-sim`): drop adds (graph message, one undo step), cables, power, zone, Effects tray, Make primary, delete
+  refused for the last, badge, CPU per device, monitors per device, Save as classic project of a two-instrument track.
+
+### 4.6 Lane D — `cv-cost.js` (pure + a Worker runner, no `main.js`)
+- `COST`: per-model load estimates per voice at OS 4 from `tests/bench.json` (`c1`–`c6` rows → per-voice; Serum default / heavy;
+  an effect ≈ from rows j–m), `estimate(dev | modelId | effectId, factor) → load`, `label(load) → '~3 %'`.
+- `measureDevice(opts) → Promise<factor>`: a Worker (the `smprender.js` loading pattern: the DSP scripts + engine.js, `?v=`) renders
+  rows `c1`, `j` and a light Serum row for 1 s each, median of 3, divided by the `node` reference rows → the device factor; stored by
+  the caller in prefs (`cv.devFactor`). Progress and cancel.
+- `softCap(track, adding, {touch, factor}) → {warn: string | null, confirm: string | null}` (§9.2 soft caps).
+- Tests: `cv-cost.test.mjs` (estimates monotone, labels, softCap table; the Worker runner behind a stub).
+
+## 5. Protocol fixtures shared by the lanes
+
+`tests/fixtures/graph-1e.mjs` (lane B writes it first, lane A reads it): three hand-built v2 tracks and the exact messages
+`compileTrack` + the host produce for them — (a) Juno-60 + Minimoog → fx1 → out; (b) Serum (own FX with a reverb) + Prophet-5 → fx1 →
+out, the Prophet soloed off; (c) two Juno-60 → separate panels → out with a 0.5 gain on one wire — with the canonical (a′) single
+Juno → fx1 → out through the graph form. Lane A's engine tests consume these messages; lane B's cv-graph tests assert them.
+
+## 6. Lanes, ownership, order
+
+| Lane | Files (exclusive) | Tests it owns |
+|---|---|---|
+| **A engine** | `engine.js`; seed sites in `serum-dsp.js`, `sx-mod.js`, `sx-seq.js` (one token each); `tests/bench-scenarios.mjs` (+ `measure` for a `track` kind), `tests/bench.json` targets (row `r`) | `engine-track`, `golden-graph` (new §11.2 cases), `bench` (row r), `integration` noAlloc case extended |
+| **B compile / host** | `cv-graph.js`, `cv-model.js`, `cv-migrate.js`, `song.js`, `midi.js`, `tests/fixtures/graph-1e.mjs`; `main.js` **host functions only**: `buildPatch` / `buildInstPatch`, `sendPatch` / `postPatch` / `partCache` / caches, `makeNode` (options + `onmessage` routing), `cvCpu` / `CPU_PART`, `postTo`, `monitors` / `sxMonitor` / `fxTab.mon` part ids, `lowerOS` / `statsText` / `capsOf`, `renderOffline` / `renderLast` / `resampleTo`, `midiLearn` / `programChange` / the `midi` host, `seqOf` / `seqSend` / `seqRun`, `sxHost` / `fxHost` message calls (`dev` plumbing only), `loadProject` / `applyRestore` normalisation | `cv-graph`, `cv-migrate`, `midi`, `main` (host cases), `canonical-stream` (must pass unchanged), a new `graph-host.test.mjs` (main-sim: a two-instrument track posts graph / patch i / chain; offline = live options) |
+| **C1 widgets** | `cv-module.js`, `cv-cables.js`, `cv-tray.js`, `cv-world.js`, `index.html`, `style.css` | `cv-module`, `cv-cables`, `cv-tray`, `cv-world`, `wk-dom` cases |
+| **D cost** | `cv-cost.js` (new), `tests/cv-cost.test.mjs` | `cv-cost` |
+| **C2 integration** (phase 2, one builder) | `main.js` canvas / shell / presets / panels regions, `classic-panel.js` if needed, `canvas-sim` / `cv-shell-sim` / `cv-fixes-sim` | page sims, `pwa` (precache), `lint` |
+
+Rules for every lane: work in your own worktree on a branch `1e-<lane>` from `canvas`; commit as you go; never run two test files at
+once; one file at a time with `node --max-old-space-size=2048 --test tests/<file>.test.mjs`; never pass fake-DOM nodes to `assert`;
+`import './v8-guard.mjs'` first; `?v=9` on every import; new files reachable from `main.js` (C2 runs `node tools/precache.mjs
+--write` at the end); goldens bit-identical; match the code's voice (dense, terse comments). Phase 1 = A ∥ B ∥ C1 ∥ D; the lead merges
+(B's `main.js` host hunks and C2's regions do not overlap); phase 2 = C2; then review.
+
+## 7. Gates (acceptance, SPEC §10 1e)
+
+- `golden-classic`, `golden-fx`, `golden-presets`, `golden-random`, `golden-graph` (1d cases) bit-identical; `canonical-stream`
+  unchanged; **new golden-graph cases**: every classic model (default + its presets), every Serum factory preset, every FX chain,
+  rendered through `{t:'graph'}` + `{t:'patch', i}` + `{t:'chain'}` on the new engine equal the legacy `{t:'patch', p}` render on
+  `ref-1c` bit for bit (messages compared after mapping `i1 → i0`, `fx1` / `i1/fx → c0` and dropping `i` / `c`).
+- `engine-track`: two sequencer-free Insts into one chain = `copy(A) + B` rendered alone, before the limiter, bit for bit (render A
+  and B each as a single-Inst Track with the same empty chain and compare the sum against the two-Inst Track's chain input); with a
+  running TB-303 or a Serum ARP beside them the difference is measured and asserted below a recorded bound; two identical Junos on
+  one track are not sample-identical (salts); a powered-off TB-303 fires no notes and splits no spans; power off / on click-free
+  (largest step < −60 dB) and ≤ 0.0005 load when off; bend / wheel set while off are current at power-on; zones and note-off routing
+  (zone changed mid-note); restrike of held keys; MIDI OUT into a two-instrument track; `stats.per` and `smon` per part on a graph
+  node; the first graph adopts `i0` / `c0`; removal fades.
+- Offline bounce = live render for a two-instrument track (`graph-host` / `main` test).
+- Bench: V8 ≤ 2 % per row vs `bench.json node` (A/B as 1d), JSC ≤ 3 % (the lead runs the shell method), **row r** (Prophet-5 +
+  Juno-60 + default Serum + EQ / chorus / delay panel) recorded with its target; allocation-free (`noAlloc`, GC check); warm-up: the
+  first quantum of each new path ≤ 1.5× steady state (bench.test).
+- iPad: the user's five-pass bench after deploy: every row within 5 % of `"ipad1d"`; row r within 25 % of the device factor.
+- UI (page sims + the user on the iPad): a Juno and a Minimoog and a Serum on one track, shared or separate panels, each switchable,
+  mixed into one OUT; Effects tray; power; zones; cables editable; Save as classic project of such a track lists what is lost.
+
+## 8. Notes (filled in by the builders and the lead at the end)
+
+_(decisions taken, gates as measured, what was left for 2a)_
