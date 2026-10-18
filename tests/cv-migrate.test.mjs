@@ -400,3 +400,23 @@ test('H4: t.fx of a classic primary cabled straight to OUT (its panel deleted) r
   t.model = 'serum'; t.fx = C.defaultFx2(); // (a Serum primary: its own FX, written)
   assert.deepEqual([shape(), MO.fxDevOf(t).own], ['i1,out | i1.out>out.in', true]);
 });
+
+test('H8: Save as classic project lists key zones, cable levels, solo, a Serum\'s shared panel and silent instruments that sound in main', () => {
+  const t = { id: 'trk_1', name: 'T', color: '#f00', notes: [], prim: 'i1', nid: 4,
+    dev: { i1: { kind: 'synth', model: 'serum', vals: { s: C.defaultSerum() }, preset: null, fx: C.defaultFx2() },
+      i2: { kind: 'synth', model: 'juno60', vals: {}, preset: null, zone: { lo: 48, hi: 72, xp: 12 }, solo: true },
+      i3: { kind: 'synth', model: 'minimoog', vals: {}, preset: null },
+      fx1: { kind: 'panel', fx: C.defaultFx2() }, out: { kind: 'out' } },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'i2.out', b: 'fx1.in', g: 0.5 }, { id: 'w3', a: 'fx1.out', b: 'out.in' }] };
+  const r = M.toV1({ schema: 4, tracks: [t] }), L = r.lost.join('\n');
+  assert.deepEqual(r.p.tracks.map(x => x.model), ['serum', 'juno60', 'minimoog']);
+  for (const [re, what] of [[/T · juno60”: its key zone/, 'the zone'], [/T · juno60”: its cable level/, 'the level'], [/“T”: solo/, 'solo'],
+    [/“T”: the panel fx1 after the Serum/, 'a Serum into a shared panel: its effects not copied'],
+    [/T · minimoog”: was not connected/, 'an unconnected instrument sounds in main'], [/“T”: was silent/, 'the soloed-out primary sounds in main']]) assert.match(L, re, what + '\n' + L);
+  assert.doesNotMatch(L, /copied for each instrument/, 'one classic source of fx1: nothing copied');
+  // a one-instrument track with a zone (a graph shape now): its own track, the zone listed
+  const z = M.trackToV2({ id: 'trk_2', name: 'Z', model: 'juno60', vals: {}, preset: null, fx: C.defaultFx2(), notes: [] });
+  z.dev.i1.zone = { lo: 60, hi: 127, xp: 0 };
+  const rz = M.toV1({ tracks: [z] });
+  assert.deepEqual([rz.p.tracks.length, rz.lost.length, /“Z”: its key zone/.test(rz.lost.join())], [1, 1, true]);
+});
