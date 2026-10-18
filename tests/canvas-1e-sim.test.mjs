@@ -438,3 +438,24 @@ test('U16: with the toolbar\'s Snap off, a new instrument, a duplicate and an Ef
   const id2 = cv.add('dx7', { x: 1001, y: 4003 }); sim.raf();
   assert.deepEqual([T().lay[id2].x, T().lay[id2].y], [992, 4000], 'Snap on: the dots');
 });
+
+test('U10: the badges — an instrument into a panel that feeds nothing is silent too; a panel fed by nothing says so; the CPU safeguard\'s cap on its instrument', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  const B = k => V().modules.get(k).badge;
+  assert.deepEqual(['i1', 'i2', 'fx1', 'out'].map(B), [null, null, null, null], 'all cabled');
+  cv.cable.disconnect(T().wires.find(w => w.a === 'fx1.out').id); sim.raf();
+  assert.deepEqual(['i1', 'i2', 'fx1'].map(B), ['not connected – silent', 'not connected – silent', 'not connected – silent'], 'the panel feeds nothing: its sources silent');
+  cv.undo(); sim.raf();
+  assert.deepEqual(['i1', 'i2', 'fx1'].map(B), [null, null, null]);
+  assert.equal(cv.fx.drag.drop('panel', { over: 'canvas', at: { x: 4000, y: 1600 } }), true); sim.raf();
+  const p = Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').pop();
+  assert.equal(B(p), 'nothing connected', 'the Effects tray\'s new panel: fed by nothing');
+  cv.cable.repatch(T().wires.find(w => w.a === 'i2.out').id, 'i2.out', p + '.in'); sim.raf();
+  assert.deepEqual([B(p), B('i2')], [null, null], 'fed now');
+  // the CPU safeguard's cap (capsOf: the instrument lowered to 1×) is drawn on that instrument's bar
+  const N = api.nodes.get(t.id), was = N.osI;
+  N.osI = new Map([['i2', 1]]);
+  try { cv.render(); assert.match(String(B('i2')), /^OS \d→1$/); assert.equal(B('i1'), null); }
+  finally { N.osI = was; cv.render(); }
+});

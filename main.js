@@ -4824,11 +4824,19 @@ function cvDeletePanel(key) {
   cvAfter(t);
   return true;
 }
-// the badge on an instrument's bar: "not connected – silent" (no cable out), else the CPU safeguard's cap (capsOf)
+// the badge on a module's bar: an instrument "not connected – silent" when its cable reaches no OUT (none, or a panel
+// that feeds nothing: one panel hop, U10), else the CPU safeguard's cap (capsOf); a shared panel "nothing connected"
+// (nothing feeds it: the Effects tray's new one) or "not connected – silent" (it feeds nothing)
 function cvBadge(key) {
-  const t = trk();
-  if (!CMOD.instOf(t, key)) return null;
-  return CMOD.destOf(t, key) ? capsOf(t, key) : 'not connected – silent';
+  const t = trk(), d = t.dev && t.dev[key], SIL = 'not connected – silent';
+  const outs = id => { const x = CMOD.destOf(t, id); return !!x && kindOfKey(t, x) === 'out'; };
+  if (CMOD.instOf(t, key)) {
+    const x = CMOD.destOf(t, key);
+    return x && (kindOfKey(t, x) === 'out' || (t.dev[x].kind === 'panel' && outs(x))) ? capsOf(t, key) : SIL;
+  }
+  if (!d || d.kind !== 'panel') return null;
+  if (!(t.wires || []).some(w => w && w.b === key + '.in')) return 'nothing connected';
+  return outs(key) ? null : SIL;
 }
 // cables (SPEC §2.9): a jack's model port — a Serum's own-FX input stands for the Serum's (so cabling another instrument
 // there meets the own-fx refusal and its "Make a shared panel" fix, §2.13); the trial on a copy of the cables
