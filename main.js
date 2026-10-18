@@ -4216,6 +4216,7 @@ function initModules() {
   if (W && typeof W.on === 'function') {
     W.on('cameraend', d => cvCamQueue((d && d.cam) || W.cam));
     W.on('screen', () => monitors.sync()); // (a module went on / off screen: its live displays follow, CULL_MARGIN early)
+    W.on('resize', () => cvCamResized()); // (the keyboard tray sized after boot, a rotation: an untouched default follows)
   }
   window.addEventListener('pagehide', cvCamFlush);
   document.addEventListener('visibilitychange', () => { if (document.hidden) cvCamFlush(); });
@@ -4563,6 +4564,15 @@ function cvCamFlush() {
   store.set(cvModule.CAM_PREF, cvModule.camPut(store.get(cvModule.CAM_PREF, null), p.key, p.cam));
   cvCamLast = p;
 }
+// the canvas changed size (U14: the keyboard tray sized after the boot's camera, a rotation): a camera still at its untouched
+// default (none stored for the track, the camera where the default put it) is derived again — no bar under the toolbar
+function cvCamResized() {
+  const W = cvW();
+  if (!cvView || !W || $('#tab-inst').hidden) return;
+  const key = CM.camKey(project.uid, cvView.trackId);
+  if (!cvCamLast || cvCamLast.key !== key || cvCamPend || !camSame(cvCamLast.cam, W.cam) || cvModule.camGet(store.get(cvModule.CAM_PREF, null), key)) return;
+  cvCamRestore(trk());
+}
 function cvCamRestore(t) {
   const W = cvW();
   if (!W || !cvView || typeof W.setCamera !== 'function') return;
@@ -4581,15 +4591,15 @@ function cvCamRestore(t) {
   const kAll = f ? bw / Math.max(1, f.x + f.w - r.x) : 0; // the instrument and the FX module side by side
   let k = kAll >= cvWorld.EDIT_K ? Math.min(1, kAll) : Math.max(cvWorld.READ_K, Math.min(1, bw / Math.max(1, r.x + r.w - x0)));
   const ox = o.x - cam.tx, oy = o.y - cam.ty, camAt = kk => ({ k: kk, tx: Math.round(b.left - ox + P - x0 * kk), ty: Math.round(b.top - oy + P - r.y * kk) });
-  // no module's top bar under the floating toolbar or the minimap (U14: world.reserved, client px): a lower k, never below
-  // READ_K, lifts a stacked instrument's bar above them
-  const R = typeof W.reserved === 'function' ? W.reserved() || [] : [], BH = cvModule.BAR_H;
+  // no module's top bar (nor an instrument's key-zone pill under it) under the floating toolbar or the minimap (U14:
+  // world.reserved, client px): a lower k, never below READ_K, lifts a stacked instrument's bar above them
+  const R = typeof W.reserved === 'function' ? W.reserved() || [] : [], BH = cvModule.BAR_H, ZH = 74; // (the pill: 26 px, 48 px down)
   for (let i = 0; i < 8 && R.length; i++) {
     const c = camAt(k);
     let want = k;
     for (const mm of cvView.modules.values()) {
-      const q = mm.rect(), L = ox + c.tx + q.x * k, T = oy + c.ty + q.y * k, Rr = L + q.w * k, Bb = T + BH * k;
-      for (const z of R) if (L < z.right && z.left < Rr && T < z.bottom && z.top < Bb && q.y + BH > r.y) want = Math.min(want, (z.top - 8 - b.top - P) / (q.y - r.y + BH));
+      const q = mm.rect(), zw = mm.zoneW || 0, hh = zw ? ZH : BH, L = ox + c.tx + (q.x - zw) * k, T = oy + c.ty + q.y * k, Rr = ox + c.tx + (q.x + q.w) * k, Bb = T + hh * k;
+      for (const z of R) if (L < z.right && z.left < Rr && T < z.bottom && z.top < Bb && q.y + hh > r.y) want = Math.min(want, (z.top - 8 - b.top - P) / (q.y - r.y + hh));
     }
     if (!(want < k) || want < cvWorld.READ_K) break;
     k = want;

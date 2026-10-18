@@ -1159,7 +1159,7 @@ test('jack hook (1e): a stale drag (its lift lost) ends at the next primary pres
 
 /* ------------------------------------------------------------------ UI fixes (stage 1e review, fixer U) */
 test('U14: the band leaves out the floating toolbar and the minimap above it (fit / focus / reveal / the default camera never put a module under them); a drag hides the minimap and the toolbar takes no press', () => {
-  const { tb, world, item, frame } = setup();
+  const { tb, vp, world, item, frame } = setup();
   frame();
   const mm = tb.childNodes.find(n => n.className === 'cv-minimap');
   place(tb, 56, 644, 480, 44); place(mm, 56, 524, 176, 112); // (the viewport: 0…1000 × 100…700; the row at its foot, the map above)
@@ -1183,6 +1183,12 @@ test('U14: the band leaves out the floating toolbar and the minimap above it (fi
   eq(tb.hasAttribute('data-cv-drag'), true, 'a tray drag holds it over a null pointer (a pinned outline)');
   world.setDragging(false);
   eq(tb.hasAttribute('data-cv-drag'), false);
+  // a resize of the viewport (a tray's height, a rotation) is announced: main.js re-derives an untouched default camera
+  const rs = [];
+  world.on('resize', d => rs.push(d.w + 'x' + d.h));
+  world.resize();
+  place(vp, 0, 100, 1000, 500); world.resize();
+  eq(rs, ['1000x500'], 'once per real change');
   adv(200); frame();
 });
 

@@ -353,7 +353,8 @@ function camAgain(t, o = {}) {
   finally { for (const k of Object.keys(o)) { if (was[k] === undefined) delete W[k]; else W[k] = was[k]; } }
 }
 // the screen box of module k's top bar (40 world px) under the scripted camera
-const barBox = k => { const m = V().modules.get(k), a = W.toClient(m.x, m.y), b = W.toClient(m.x + m.w, m.y + 40); return { left: a.x, top: a.y, right: b.x, bottom: b.y }; };
+// (an instrument's: its key-zone pill under it too, 26 px at 48 px down, left of its edge)
+const barBox = k => { const m = V().modules.get(k), zw = m.zoneW || 0, a = W.toClient(m.x - zw, m.y), b = W.toClient(m.x + m.w, m.y + (zw ? 74 : 40)); return { left: a.x, top: a.y, right: b.x, bottom: b.y }; };
 const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 
 test('U14: the default camera of a two-instrument track keeps every top bar clear of the toolbar + minimap box (world.reserved), never below READ_K', () => {
@@ -369,6 +370,25 @@ test('U14: the default camera of a two-instrument track keeps every top bar clea
   assert.deepEqual(hit, [], 'no bar under the box (k ' + W.k + ')');
   assert.ok(W.k >= 0.5 && W.k < k0, 'a lower k lifts the stacked bar above it: ' + W.k);
   assert.ok(barBox('i1').left >= 44 && barBox('i1').top >= 48, 'the primary still at the band\'s top-left');
+});
+
+test('U14: an untouched default camera follows a later resize of the canvas (the keyboard tray sized after boot, a rotation): bars stay clear of the box; a camera the user moved stays', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  camAgain(t);
+  const bar2 = barBox('i2'), k0 = W.k, box = { left: 56, top: Math.round(bar2.top) - 20, right: 536, bottom: Math.round(bar2.top) + 148 };
+  const was = { band: W.band };
+  W.band = () => ({ left: 44, top: 48, right: 1520, bottom: box.top - 8 }); W.reserved = () => [box];
+  try {
+    W.emit('resize', {});
+    assert.deepEqual([[...V().modules.keys()].filter(k => meets(barBox(k), box)), W.k < k0], [[], true], 'derived again: k ' + W.k);
+    const moved = { tx: W.cam.tx - 300, ty: W.cam.ty, k: W.k };
+    W.setCamera(moved); // (the user's pan: cameraend → queued, then stored)
+    cv.camFlush();
+    W.band = () => ({ left: 44, top: 48, right: 1520, bottom: 700 }); W.reserved = () => [];
+    W.emit('resize', {});
+    assert.deepEqual(W.cam, moved, 'a camera the user moved is theirs');
+  } finally { W.band = was.band; delete W.reserved; }
 });
 
 test('U2: a piano-roll audition reaches every powered instrument whose key zone holds the note (its transpose too); the note-off goes exactly where the note-on went', () => {

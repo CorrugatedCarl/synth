@@ -274,10 +274,13 @@ export function createWorld(viewport, o) {
   /* ---- measuring (never per frame) */
   function rectOf(el) { try { const r = el.getBoundingClientRect(); return { left: +r.left || 0, top: +r.top || 0, width: +r.width || 0, height: +r.height || 0 }; } catch (err) { return { left: 0, top: 0, width: 0, height: 0 }; } }
   function resize() {
+    const was = vp;
     vp = rectOf(viewport);
     ovO = OV ? rectOf(OV) : { left: vp.left, top: vp.top };
     bandC = null;
     recache();
+    // (U14) the viewport changed (a tray's height, a rotation): main.js re-derives an untouched default camera
+    if (was.width !== vp.width || was.height !== vp.height || was.left !== vp.left || was.top !== vp.top) emit('resize', { w: vp.width, h: vp.height });
   }
   // the canvas's visible client rect: the viewport ∩ wk.visibleBand (visual viewport less trays, rails, the keyboard)
   function vis() {
