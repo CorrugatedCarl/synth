@@ -8,7 +8,7 @@
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dspScope } from './dsp-scope.mjs';
+import { dspScope, noAlloc } from './dsp-scope.mjs';
 import * as core from '../serum-core.js?v=9';
 import * as W from '../wt.js?v=9';
 import { patchFor, MODELS } from '../models.js?v=9';
@@ -20,6 +20,12 @@ const tables = (p, patch) => { for (const id of patch.needs || []) if (/^(factor
 const classic = (id, fx) => { const m = MODELS.find(x => x.id === id); return patchFor(m, Object.fromEntries(m.controls.map(c => [c.id, c.def])), fx || core.defaultFx2(), { sr: SR, bpm: 120 }); };
 const serum = (edit, fx) => { const s = core.defaultSerum(); if (edit) edit(s); return patchFor('serum', { s: core.normalizeSerum(s) }, fx || core.defaultFx2(), { sr: SR, bpm: 120, prefs: { smooth: 1, silenceTails: 1 } }); };
 // a reverb on the track's rack (the FX scenarios' recipe)
+// an EQ panel turned down (level 0.1 normalized: ≈ −27 dB)
+function quietEq() {
+  const fx = core.defaultFx2(), id = core.newInstance(fx, 'eq', { rack: 0 });
+  fx.racks[0].mods.find(x => x.id === id).p.level = 0.1;
+  return fx;
+}
 function verb() {
   const fx = core.defaultFx2(), id = core.newInstance(fx, 'rev', { rack: 0 }), I = fx.racks[0].mods.find(x => x.id === id);
   I.p.mix = 0.5;
@@ -396,6 +402,19 @@ test('1e power (§2.3): off and on are click-free (largest output step < −60 d
   assert.ok(!x2.voices.some(v => v.gate), 'the note-offs reached the restruck voices');
 });
 
+test('1e power (review E7): the power-on restrike triggers a shared panel no Inst holds, as a note-on does (Hyper RETRIG)', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const { p } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: SINE, i2: SINE }, { fx1: fxOf() });
+  const r = p.chains[0].rack, tr = r.trigger, log = [];
+  r.trigger = function (...a) { log.push(1); return tr.apply(this, a); };
+  assert.equal(p.chains[0].drive, 1);
+  p.msg({ t: 'on', n: 48, v: 0.8 }); p.msg({ t: 'on', n: 52, v: 0.8 }); run(D, p, 4);
+  assert.equal(log.splice(0).length, 4, 'a note-on: once per receiving Inst');
+  p.msg({ t: 'power', i: 'i2', on: false }); run(D, p, 4);
+  p.msg({ t: 'power', i: 'i2', on: true });
+  assert.equal(log.splice(0).length, 2, 'the restrike: once per restruck key');
+});
+
 test('1e power: a powered-off instrument costs ≤ 0.0005 load once its fade has ended (two Insts off with keys held: the skip path)', async (t) => {
   const D = dspScope({ engine: true, fast: true, console: quiet });
   const { p } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: classic('prophet5'), i2: serum() }, { fx1: fxOf() }, { os: 2, hostOS: 4, trackId: 'pw' });
@@ -431,6 +450,19 @@ test('1e zones (§2.3): notes reach the powered Insts whose zone admits them, tr
   // powered off: no notes; controller state still reaches it
   p.msg({ t: 'power', i: 'i1', on: false }); p.msg({ t: 'on', n: 40, v: 0.8 }); p.msg({ t: 'off', n: 40 });
   assert.deepEqual(log.splice(0).filter(e => e !== 'i2-50'), ['i2+35', 'i2-35']);
+});
+
+test('1e zones (review E8): a repeated note-on after a transpose change releases the pitch it recorded first — nothing stays held', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), g = xp => graph(['i1', gi('i2', { zone: { lo: 0, hi: 127, xp } })], ['fx1'], EDGES2);
+  const { p } = gnode(D, g(0), { i1: SINE, i2: SINE }, { fx1: fxOf() });
+  const log = [], x2 = p.insts[1];
+  for (const k of ['noteOn', 'noteOff']) { const f = x2[k]; x2[k] = function (n, ...a) { log.push((k === 'noteOn' ? '+' : '-') + n); return f.call(this, n, ...a); }; }
+  p.msg({ t: 'on', n: 60, v: 0.8 }); run(D, p, 4);
+  p.msg(g(12));
+  p.msg({ t: 'on', n: 60, v: 0.8 }); p.msg({ t: 'on', n: 60, v: 0.8 }); run(D, p, 4);
+  p.msg({ t: 'off', n: 60 }); run(D, p, 4);
+  assert.deepEqual(log, ['+60', '-60', '+72', '+72', '-72'], 'the old pitch released before the new one; the same pitch retriggers as before');
+  assert.ok(!x2.voices.some(v => v.gate), 'no voice left held');
 });
 
 test('1e MIDI OUT (§7.9) into a two-Inst track: the ext notes fan out to every Inst by zone; a sequencer of the track never feeds its own track', () => {
@@ -491,7 +523,7 @@ test('1e stats.per and smon per part on a graph node: every Inst (its own spans,
   assert.deepEqual([p.chains[0].rack.tapId, x2.rack.tapId], [id, '']);
 });
 
-test('1e removal (§2.5): a removed Inst fades out (click-free) and is dropped; a removed panel\'s tail plays out into OUT, then it is dropped and the track returns to the alias shape', () => {
+test('1e removal (§2.5): a removed Inst fades out (click-free) and is dropped; a removed panel\'s tail plays out into OUT, then it is dropped and the track returns to the alias shape', (t) => {
   const D = dspScope({ engine: true, fast: true, console: quiet });
   const { p } = gnode(D, graph(['i1', 'i2'], ['fx1', 'fx2'], [['i1', 'fx1', 1], ['i2', 'fx2', 1], ['fx1', 'out', 1], ['fx2', 'out', 1]]), { i1: SINE, i2: SINE }, { fx1: fxOf(), fx2: fxOf(verb()) });
   const alone = graph(['i1'], ['fx1'], [['i1', 'fx1', 1], ['fx1', 'out', 1]]);
@@ -503,6 +535,158 @@ test('1e removal (§2.5): a removed Inst fades out (click-free) and is dropped; 
   assert.ok(tail > 1e-5, 'the tail reaches OUT');
   run(D, p, Math.ceil(12 * SR / 128));
   assert.deepEqual([p.dyC.length, p.simple, p.Lb === p.i0.Lb], [0, 1, true], 'idle: dropped, the alias shape again');
+  // the dying fade keeps its route (review E1): its cable gain, the panel it fed (kept, or removed with it: the panel's OUT
+  // gain), nothing for an unconnected instrument — i2 ten times SINE's level, so a fade at gain 1 straight into OUT jumps
+  const LOUD = Object.assign({}, SINE, { level: 0.06 }), E = (e2, ch2) => [['i1', 'fx1', 1], ['fx1', 'out', 1]].concat(e2), cases = [
+    ['i2 → OUT at 0.1', ['fx1'], E([['i2', 'out', 0.1]]), {}, alone],
+    ['i2 → quiet EQ (kept)', ['fx1', 'fx2'], E([['i2', 'fx2', 1], ['fx2', 'out', 1]]), { fx2: fxOf(quietEq()) }, graph(['i1'], ['fx1', 'fx2'], E([['fx2', 'out', 1]]))],
+    ['i2 → quiet EQ → OUT at 0.3, both removed', ['fx1', 'fx2'], E([['i2', 'fx2', 1], ['fx2', 'out', 0.3]]), { fx2: fxOf(quietEq()) }, alone],
+    ['i2 unconnected', ['fx1'], E([]), {}, alone]];
+  for (const [name, ch, edges, cf, after] of cases) {
+    const { p: q } = gnode(D, graph(['i1', 'i2'], ch, edges), { i1: SINE, i2: LOUD }, Object.assign({ fx1: fxOf() }, cf));
+    const o2 = play(D, q, 90, [[1, { t: 'on', n: 36, v: 0.8 }], [1, { t: 'on', n: 43, v: 0.8 }], [60, after]]);
+    const s2 = Math.max(maxStep(o2.L, 60, 20), maxStep(o2.R, 60, 20)), pre = peakOf(o2.L.subarray(40 * 128, 60 * 128)), post = peakOf(o2.L.subarray(60 * 128, 62 * 128));
+    t.diagnostic(`${name}: step ${(20 * Math.log10(s2)).toFixed(1)} dB, peak ${pre.toFixed(5)} → ${post.toFixed(5)}`);
+    assert.ok(s2 < 0.001, `${name}: largest step ${(20 * Math.log10(s2)).toFixed(1)} dB ≥ −60 dB`);
+    assert.ok(post <= pre * 1.05, `${name}: no burst (${pre} → ${post})`);
+    assert.equal(q.dyI.length, 0, `${name}: dropped once faded`);
+  }
+});
+
+test('1e removal routes (review E1): an Inst into a removed panel into a kept one — the fade and the tail follow the cables at their gains; nothing allocates, a panic included', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const E = [['i1', 'fx2', 1], ['fx2', 'out', 1], ['i3', 'fx2', 0.7]];
+  const off = id => gi(id, { on: false }); // (i1, i3 silent: fx2 hears only the removed parts below)
+  const { p } = gnode(D, graph([off('i1'), 'i2', off('i3')], ['fx1', 'fx2'], [['i2', 'fx1', 0.5], ['fx1', 'fx2', 0.8]].concat(E)), { i1: classic('juno60'), i2: classic('prophet5'), i3: serum(null, verb()) },
+    { fx1: fxOf(verb()), fx2: fxOf(quietEq()) });
+  const [, x2] = p.insts, [f1, f2] = p.chains;
+  for (const n of [48, 55, 60]) p.msg({ t: 'on', n, v: 0.8 });
+  run(D, p, 60);
+  p.msg(graph([off('i1'), off('i3')], ['fx2'], E)); // i2 and fx1 removed
+  assert.deepEqual([x2.dyTo === f1, x2.dyG, x2.dyO, x2.nOut, f1.dyTo === f2, f1.dyG, f1.dyO, f1.nOut], [true, 0.5, 0, 1, true, 0.8, 0, 1], 'their routes');
+  // fx2's input peak (no allocation in the probe)
+  const rp = f2.rack.process, o = out();
+  let pk = 0;
+  f2.rack.process = function (a, b, n, ...x) { for (let i = 0; i < n; i++) { const v = Math.abs(a[i]); if (v > pk) pk = v; } return rp.call(this, a, b, n, ...x); };
+  noAlloc(D, () => { for (let k = 0; k < 40; k++) { if (k === 30) p.msg({ t: 'panic' }); p.process([], o); D.ctx.currentFrame += 128; } });
+  assert.deepEqual([p.dyI.length, p.dyC.length, p.pnN], [0, 0, 0]);
+  assert.ok(pk > 1e-3, `the kept panel heard the removed ones (${pk})`);
+});
+
+test('1e panic / bye while removed parts die (review E2): the output fade ends in silence — the output stage gets nothing unfaded in the quantum the fade ends in, nor after', (t) => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), res = {};
+  const g2 = graph(['i1', 'i2'], ['fx1', 'fx2'], [['i1', 'fx1', 1], ['i2', 'fx2', 1], ['fx1', 'out', 1], ['fx2', 'out', 1]]);
+  for (const [rm, end] of [[false, 'panic'], [true, 'panic'], [true, 'bye']]) {
+    const { p } = gnode(D, g2, { i1: classic('juno60'), i2: classic('prophet5') }, { fx1: fxOf(verb()), fx2: fxOf(verb()) });
+    for (const n of [48, 55, 60]) p.msg({ t: 'on', n, v: 0.9 });
+    run(D, p, 150);
+    if (rm) p.msg(graph(['i1'], ['fx1'], [['i1', 'fx1', 1], ['fx1', 'out', 1]])); // i2 and fx2 removed: fx2's reverb tail dies into OUT
+    run(D, p, 3);
+    if (rm) assert.ok(p.dyC.length === 1 && p.simple === 0, 'fx2 dying');
+    p.msg({ t: end });
+    // the output stage's input (its limiter delays the output by 1 ms: the fade's own tail is still heard after its end)
+    const r = { end: -1, rest: 0, after: 0, pre: 0 }, os = p.outStage;
+    let pn = 0, k = 0;
+    p.outStage = function (Lo, Ro, off, n) {
+      for (let i = 0; i < n; i++) {
+        const a = Math.max(Math.abs(this.Lb[i]), Math.abs(this.Rb[i]));
+        if (r.end < 0) { if (pn > 0 && this.pnN === 0 && i >= pn) r.rest = Math.max(r.rest, a); else r.pre = Math.max(r.pre, a); }
+        else r.after = Math.max(r.after, a);
+      }
+      return os.call(this, Lo, Ro, off, n);
+    };
+    for (; k < 6; k++) { pn = p.pnN; run(D, p, 1); if (pn > 0 && p.pnN === 0 && r.end < 0) r.end = k; }
+    res[(rm ? 'removed ' : 'control ') + end] = r;
+    if (rm && end === 'panic') assert.deepEqual([p.dyI.length, p.dyC.length, p.simple, p.Lb === p.i0.Lb], [0, 0, 1, true], 'cleared: the alias shape again');
+  }
+  t.diagnostic(JSON.stringify(res));
+  for (const [k, r] of Object.entries(res)) {
+    assert.ok(r.end >= 0 && r.pre > 0.05, k + ': sounding, then the fade ended');
+    assert.ok(r.rest === 0 && r.after < 1e-3, `${k}: silent after the fade (${r.rest}, ${r.after})`);
+  }
+});
+
+// counts a rack's transport() and reset(true) calls (play start, the "silence tails on stop" preference)
+function rackCalls(r) {
+  const c = { tr: 0, reset: 0 }, rs = r.reset, tr = r.transport;
+  r.reset = function (s) { if (s) c.reset++; return rs.call(this, s); }; r.transport = function () { c.tr++; return tr.call(this); };
+  return c;
+}
+const tpMsg = (D, play) => ({ t: 'transport', play, frame: D.ctx.currentFrame, tick: 0, fpt: 25, seek: true, fresh: true });
+function playStop(D, p) { p.msg(tpMsg(D, true)); run(D, p, 4); p.msg({ t: 'on', n: 48, v: 0.8 }); run(D, p, 4); p.msg(tpMsg(D, false)); run(D, p, 2); }
+
+test('1e transport (review E3): a shared panel no Inst holds (two sources) re-anchors at play start — rack.transport() once, as a legacy node\'s rack', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), fx = verb();
+  const { p: L } = mk(D, NODE, classic('juno60', fx)), cl = rackCalls(L.c0.rack);
+  playStop(D, L);
+  const { p } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: classic('juno60'), i2: classic('minimoog') }, { fx1: fxOf(fx) });
+  const c = rackCalls(p.chains[0].rack);
+  assert.equal(p.chains[0].drive, 1);
+  playStop(D, p);
+  assert.deepEqual([cl.tr, c.tr], [1, 1], 'legacy, shared panel: one transport() at play start');
+  // a panel fed by a panel (no Inst holds it either)
+  const { p: q } = gnode(D, graph(['i1'], ['fx1', 'fx2'], [['i1', 'fx1', 1], ['fx1', 'fx2', 1], ['fx2', 'out', 1]]), { i1: classic('juno60') }, { fx1: fxOf(), fx2: fxOf(fx) });
+  const c1 = rackCalls(q.chains[0].rack), c2 = rackCalls(q.chains[1].rack);
+  playStop(D, q);
+  assert.deepEqual([c1.tr, c2.tr], [1, 1], 'the Inst\'s panel through the Inst, the next one by the Track');
+});
+
+test('1e transport (review E4): the adopted panel keeps the legacy FXP — "silence tails on stop" resets it once, as on the legacy node, before any {t: chain}', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), fx = verb();
+  const { p: L } = mk(D, NODE, classic('juno60', fx)), cl = rackCalls(L.c0.rack);
+  assert.equal(L.i0.p.fxr.silence, 1);
+  playStop(D, L);
+  const res = [cl.reset];
+  for (const g of [graph(['i1'], ['fx1'], [['i1', 'fx1', 1], ['fx1', 'out', 1]]), graph(['i1', 'i2'], ['fx1'], EDGES2)]) {
+    const { p } = mk(D, NODE, classic('juno60', fx)), c0 = p.c0, c = rackCalls(c0.rack);
+    p.msg(g); // (main's graphCache holds the legacy FXP as the panel's: no {t: chain} follows; the patches come stripped)
+    for (const x of g.insts) p.msg({ t: 'patch', i: x.id, p: bare(classic(x.id === 'i1' ? 'juno60' : 'minimoog')) });
+    assert.ok(p.chains[0] === c0 && c0.id === 'fx1');
+    playStop(D, p);
+    res.push(c.reset);
+  }
+  assert.deepEqual(res, [1, 1, 1], 'legacy, adopted alone, adopted with a second source: one reset(true) at stop');
+});
+
+test('1e reshape (review E6): Serum → classic hands its own FX to the new panel even when a quantum renders between the graph and the patch', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), res = [];
+  for (const gap of [0, 1, 3]) {
+    const sp = serum(null, verb()), { p } = mk(D, NODE, sp);
+    p.msg(graph(['i1'], [], [['i1', 'out', 1]]));
+    p.msg({ t: 'on', n: 48, v: 0.8 }); run(D, p, 20);
+    const own = p.i0.rack;
+    p.msg(graph(['i1'], ['fx1'], [['i1', 'fx1', 1], ['fx1', 'out', 1]])); // (setModel: the Serum's FX become the new panel)
+    run(D, p, gap);
+    p.msg({ t: 'patch', i: 'i1', p: bare(classic('juno60', verb())) });
+    res.push([gap, p.chains[0].rack === own, p.i0.rack === own, p.simple]);
+    p.msg(graph(['i1'], ['fx1'], [['i1', 'fx1', 1], ['fx1', 'out', 1]])); run(D, p, gap); // (a later graph: the panel is no longer new — Serum and back keeps it)
+    p.msg({ t: 'patch', i: 'i1', p: sp }); tables(p, sp); p.msg({ t: 'patch', i: 'i1', p: bare(classic('juno60')) });
+    res.push([gap, p.chains[0].rack === own, p.i0.rack === own, p.simple]);
+  }
+  assert.deepEqual(res.map(e => e.join()), ['0,true,true,1', '0,true,true,1', '1,true,true,1', '1,true,true,1', '3,true,true,1', '3,true,true,1'], 'handed over; a later graph: the panel is not new (no swap back)');
+});
+
+test('1e part messages (review E9): fxtap / fxph naming a classic Inst reach the panel it feeds (its private chain never renders); a classic Inst that was a Serum keeps its old sequencer asleep at power-on', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const { p, sent } = gnode(D, graph(['i1', 'i2', 'i3'], ['fx1'], [['i1', 'fx1', 1], ['i2', 'fx1', 1], ['fx1', 'out', 1], ['i3', 'out', 1]]),
+    { i1: classic('juno60'), i2: serum(null, verb()), i3: classic('prophet5') }, { fx1: fxOf(verb()) });
+  const [x1, x2, x3] = p.insts, r = p.chains[0].rack, id = r.U[0].id;
+  p.msg({ t: 'fxtap', i: 'i1', id });
+  assert.deepEqual([r.tapId, x1.fxc.rack.tapId, x2.rack.tapId], [id, '', ''], 'the panel i1 feeds');
+  p.msg({ t: 'fxtap', i: 'i3', id: 'zz' }); // (i3 feeds no panel: ignored)
+  assert.deepEqual([r.tapId, x3.fxc.rack.tapId], [id, '']);
+  run(D, p, 20); sent.length = 0;
+  p.msg({ t: 'fxph', i: 'i1' }); p.msg({ t: 'fxph', i: 'i3' });
+  assert.deepEqual(sent.map(m => [m.i, JSON.stringify(m.v)]), [['i1', JSON.stringify(r.phases())], ['i3', 'null']]);
+  // Serum → classic keeps its SxSeq object (made by the first Serum patch); the power-on re-anchors only a Serum's
+  const sp = serum(s => { s.p['arp.on'] = 1; });
+  p.msg({ t: 'patch', i: 'i3', p: sp }); tables(p, sp); p.msg({ t: 'patch', i: 'i3', p: bare(classic('prophet5')) });
+  assert.ok(x3.sxSeq !== null && x3.kind !== 'serum');
+  const tr = x3.sxSeq.transport, log = [];
+  x3.sxSeq.transport = function (...a) { log.push(a); return tr.apply(this, a); };
+  p.msg({ t: 'power', i: 'i3', on: false }); p.msg({ t: 'power', i: 'i3', on: true });
+  p.msg({ t: 'power', i: 'i2', on: false }); p.msg({ t: 'power', i: 'i2', on: true });
+  assert.equal(log.length, 0, 'not a Serum: its sequencer is not touched');
 });
 
 test('1e processorOptions (§2.5): graph / patches / chains / seqs build the track a message build builds — bit for bit (offline bounce = live)', () => {

@@ -1468,10 +1468,12 @@ class Inst {
     // scripts read — doubles from the start, V8: a salt above 2^30 must not change the map); sharedRack: rack is a shared
     // panel's (its single source: patches never set it, {t: 'chain'} does); feed: the Chain it feeds, nOut: its consumers
     // (aliasing needs exactly one); live: rendered this span; t: ms of its spans since the last stats; slot: its bit in the
-    // Track's held-note record; nOn: stamp of its last note-on (a shared panel's key tracking); overK: fxover's last list
+    // Track's held-note record; nOn: stamp of its last note-on (a shared panel's key tracking); overK: fxover's last list;
+    // dyTo / dyG / dyO: its route once removed (Track.retire: the panel it fed and that cable's gain, its OUT cable's gain)
     this.on = 1; this.zlo = 0; this.zhi = 127; this.zxp = 0; this.salt = 0.5; this.salt = 0; this.seedSalt = 0.5; this.seedSalt = 0;
     this.sharedRack = 0; this.feed = null; this.nOut = 0; this.live = 0; this.t = 0; this.slot = 0; this.nOn = 0; this.overK = '';
     this.init(os, fxc.rack);
+    this.dyTo = null; this.dyG = 0.5; this.dyG = 0; this.dyO = 0.5; this.dyO = 0; // (last: the render fields keep their slots)
   }
   // §6.2.1: a new salt (graph); the PRNG states move by old ^ new (a fresh Inst: exactly the salted seeds); a Serum's
   // own streams take it at its next attach / reset (serum-dsp, sx-mod, sx-seq read proc.seedSalt)
@@ -2617,7 +2619,9 @@ class Inst {
 // panel); drive: the Track keys and triggers its rack (no single source holds it as its rack); from: a removed panel's
 // single source (the reshape hand-over, Track.handOver); oL / oR its own buffers, Lb / Rb what it processed last (its own
 // or its source's); nOut: its consumers; live: processed this span; fxr: its last {t: 'chain'} FXP (transport-stop
-// silence); used: processed since it was built; nOn: 0 (read beside the Insts' when keying)
+// silence); used: 0 while it is new — built by the latest graph, rendered or not (the next graph sets it: the hand-over's
+// test, review E6); nOn: 0 (read beside the Insts' when keying); dyTo / dyG / dyO: its route once removed
+// (Track.retireC: the panel it fed, that cable's gain, its OUT cable's gain)
 class Chain {
   constructor(base) {
     this.id = 'c0'; this.mon = false; this.t = 0; // its meters are subscribed (mon); ms of its processing since the last stats
@@ -2627,6 +2631,7 @@ class Chain {
     this.srcs = []; this.g = new Float64Array(CH_SRC); this.ns = 0; this.alias = 0; this.ownBy = null; this.drive = 0; this.from = null;
     this.oL = new Float64Array(128); this.oR = new Float64Array(128); this.Lb = this.oL; this.Rb = this.oR;
     this.nOut = 0; this.live = 0; this.fxr = null; this.overK = ''; this.used = 0; this.nOn = 0;
+    this.dyTo = null; this.dyG = 0.5; this.dyG = 0; this.dyO = 0.5; this.dyO = 0;
   }
 }
 const MAX_I = 8, MAX_C = 16, CH_SRC = MAX_I + MAX_C, OUT_SRC = 2 * CH_SRC, NK = 17 * 128; // limits (§2.6); held keys (ch × note)
@@ -2833,7 +2838,7 @@ class Track extends Facade {
     }
   }
   // a graph node's Inst / part message (IMPL-1e §2.5): `i` the Inst (absent: insts[0]); fxtap: `c` a shared panel, `i` a
-  // Serum's own FX (absent: c0)
+  // Serum's own FX or the panel a classic Inst feeds (absent: c0)
   partMsg(d) {
     if (d.t === 'fxtap') { const r = this.rackFor(d); if (r !== null && typeof r.setTap === 'function') r.setTap(typeof d.id === 'string' ? d.id : ''); return; }
     const I = this.instOf(d.i);
@@ -2842,7 +2847,10 @@ class Track extends Facade {
   }
   rackFor(d) {
     if (d.c !== undefined) { const c = this.chainOf(d.c); return c !== null ? c.rack : null; }
-    if (d.i !== undefined) { const I = this.instOf(d.i); return I !== null ? I.fxc.rack : null; }
+    if (d.i !== undefined) { // (a classic Inst: the panel it feeds — its private chain never renders, review E9)
+      const I = this.instOf(d.i);
+      return I === null ? null : I.kind === 'serum' ? I.fxc.rack : I.feed !== null ? I.feed.rack : null;
+    }
     return this.c0.rack;
   }
   // the rack's LFO phases (§13.5): legacy {t: 'fxph', v}; a graph node names the part ({i} a Serum's own FX, {c} a panel)
@@ -2936,7 +2944,7 @@ class Track extends Facade {
     for (const id of cid) {
       let c = null;
       for (const y of oldC) if (y.id === id) c = y;
-      if (c === null) { c = new Chain(this.base); c.id = id; } else c.used = 1; // (only a panel this graph built is new: handOver)
+      if (c === null) { c = new Chain(this.base); c.id = id; } else c.used = 1; // (only a panel this graph built is new: handOver — rendered or not)
       c.ownBy = null;
       C.push(c);
     }
@@ -2950,7 +2958,7 @@ class Track extends Facade {
     const I = this.i0, c = this.c0;
     I.id = id;
     if (I.kind !== 'serum' && cid !== '') { // c0 becomes the shared panel; the Inst gets a private chain of its own
-      c.id = cid; c.ownBy = null;
+      c.id = cid; c.ownBy = null; c.fxr = I.p && I.p.fxr ? I.p.fxr : null; // (its FXP: main re-sends no unchanged {t: chain}, review E4)
       const f = new Chain(this.base); f.id = id + '/fx'; f.ownBy = I; I.fxc = f;
       this.chains = [c];
     } else { c.id = id + '/fx'; this.chains = []; }
@@ -3014,8 +3022,9 @@ class Track extends Facade {
     const c = x.feed;
     if (c !== null && c.ns === 1 && x.nOut === 1) { x.rack = c.rack; x.sharedRack = 1; } else { x.rack = null; x.sharedRack = 0; }
   }
-  // an Inst leaves the graph: its notes stop (3 ms fade), its sequencers end, its keys are forgotten; it renders into OUT
-  // until silent (a Serum's own FX tail included)
+  // an Inst leaves the graph: its notes stop (3 ms fade), its sequencers end, its keys are forgotten; it renders until
+  // silent (a Serum's own FX tail included) along its last route — the panel it fed, its OUT cable, at their gains (none:
+  // it was not heard and is not now)
   retire(x) {
     x.on = 0; x.allOff(true); x.seqRelease(); if (x.sq !== null) x.sq.run = false; x.sqOff();
     x.mon = false; x.fxc.mon = false; if (x.sx) x.sx.mon = 0;
@@ -3023,15 +3032,29 @@ class Track extends Facade {
     for (let k = 0; k < NK; k++) H[k] &= b;
     if (this.slots[x.slot] === x) this.slots[x.slot] = null;
     if (x.sharedRack === 1) { x.rack = null; x.sharedRack = 0; }
-    x.feed = null; x.nOut = 1;
+    this.route(x, x.feed);
+    x.feed = null;
     this.dyI.push(x);
   }
-  // a panel leaves the graph: its tail goes to OUT until its rack is idle; `from` its single source (the hand-over)
+  // a panel leaves the graph: its tail goes along its last route (the panel it fed, OUT) until its rack is idle; `from` its
+  // single source (the hand-over)
   retireC(c) {
     const s = c.ns === 1 ? c.srcs[0] : null;
     c.from = s instanceof Inst ? s : null;
-    c.srcs.length = 0; c.ns = 0; c.alias = 0; c.drive = 1; c.nOut = 1; c.mon = false;
+    let to = null;
+    for (const y of this.chains) if (y !== c) for (let j = 0; j < y.ns; j++) if (y.srcs[j] === c) to = y;
+    c.srcs.length = 0; c.ns = 0; c.alias = 0; c.drive = 1; c.mon = false;
+    this.route(c, to);
     this.dyC.push(c);
+  }
+  // a removed part's route (review E1), read from the graph it leaves: dyTo the panel it fed (null: none) at dyG, dyO its
+  // OUT cable's gain (0: none); nOut its consumers (aliasing needs exactly one)
+  route(s, to) {
+    s.dyTo = to; s.dyG = 0; s.dyO = 0;
+    if (to !== null) for (let j = 0; j < to.ns; j++) if (to.srcs[j] === s) s.dyG = to.g[j];
+    const S = this.outSrc;
+    for (let k = 0; k < this.outN; k++) if (S[k] === s) s.dyO = this.outG[k];
+    s.nOut = (to !== null ? 1 : 0) + (s.dyO > 0 ? 1 : 0);
   }
   // {t: 'patch', i, p} on a graph node: the Inst's rack follows its kind (resolved before the patch, so setSerum sets its
   // own FX and a classic patch leaves a shared panel to {t: 'chain'}); a kind change re-resolves the graph
@@ -3084,9 +3107,11 @@ class Track extends Facade {
       const n = k & 127, m = n + x.zxp;
       if (n < x.zlo || n > x.zhi || m < 0 || m > 127) continue;
       x.noteOn(m, V[k], k >> 7, 0, 0); H[k] |= b; P[o + k] = m;
+      const c = x.feed;
+      if (c !== null && c.drive === 1 && c.rack !== null) c.rack.trigger(); // (as Track.noteOn, review E7)
     }
     if (x.sq !== null) x.sq.syncStep = null;
-    if (x.sxSeq !== null) x.sxSeq.transport(this.tp.play);
+    if (x.sxSeq !== null && x.kind === 'serum') x.sxSeq.transport(this.tp.play); // (as Inst.transportHook: a Serum's only, review E9)
   }
 
   /* ---- notes (§2.3) ---- */
@@ -3103,8 +3128,9 @@ class Track extends Facade {
     const P = this.holdP;
     let bits = this.holdR[k];
     for (let j = 0; j < X.length; j++) {
-      const x = X[j], m = n + x.zxp;
+      const x = X[j], m = n + x.zxp, h = x.slot * NK + k;
       if (x.on !== 1 || n < x.zlo || n > x.zhi || m < 0 || m > 127) continue;
+      if ((bits & (1 << x.slot)) !== 0 && P[h] !== m) x.noteOff(P[h], undefined, ch, ext, 0); // (struck again at a new transpose: the old pitch first, review E8)
       x.noteOn(m, v, ch, ext, 0);
       bits |= 1 << x.slot; P[x.slot * NK + k] = m;
       const c = x.feed;
@@ -3172,7 +3198,8 @@ class Track extends Facade {
     const I = this.insts, C = this.chains;
     for (let k = 0; k < I.length; k++) I[k].panicClear();
     for (let k = 0; k < C.length; k++) { const c = C[k]; if (c.drive === 1 && c.rack !== null) c.rack.reset(false); }
-    if (this.dyI.length !== 0 || this.dyC.length !== 0) { this.dyI.length = 0; this.dyC.length = 0; this.resolveSimple(); }
+    // (inside a span the output stage still works on the faded sum: spanG re-resolves after it, review E2)
+    if (this.dyI.length !== 0 || this.dyC.length !== 0) { this.dyI.length = 0; this.dyC.length = 0; if (this.inSpan === 0) this.resolveSimple(); }
   }
   panicFade(n) { // raised-cosine fade of the whole output, then panicClear
     const Lb = this.Lb, Rb = this.Rb, M = this.pnM;
@@ -3221,7 +3248,12 @@ class Track extends Facade {
   tickAt(F) { const tp = this.tp; return tp.tick + (F - tp.frame) / tp.fpt; }
   // the song position in beats at the start of the current span, or null when stopped (Serum's host field, §8.4.1)
   songBeat() { const tp = this.tp; return tp && tp.play ? this.tickAt(this.spanF) / 960 : null; }
-  transportHook(playing) { const I = this.insts; for (let i = 0; i < I.length; i++) I[i].transportHook(playing); }
+  // play / stop: every Inst's (its rack: one it holds); at play start the panels no Inst holds (drive) re-anchor too (review
+  // E3; a legacy c0 is held by i0)
+  transportHook(playing) {
+    const I = this.insts; for (let i = 0; i < I.length; i++) I[i].transportHook(playing);
+    if (playing) { const C = this.chains; for (let k = 0; k < C.length; k++) { const c = C[k]; if (c.drive === 1 && c.rack !== null) c.rack.transport(); } }
+  }
   songEvents(F) { // handles transport + song events due at frame F; returns frames to the next event
     const tp = this.tp;
     let dist = 1e9;
@@ -3411,16 +3443,16 @@ class Track extends Facade {
     const I = this.insts, C = this.chains, DI = this.dyI, DC = this.dyC;
     for (let k = 0; k < I.length; k++) { const x = I[k], tf = Date.now(); x.live = x.renderSpan(n); x.t += Date.now() - tf; }
     for (let k = 0; k < DI.length; k++) { const x = DI[k]; x.live = x.renderSpan(n); }
+    for (let k = 0; k < DC.length; k++) this.chainSpan(DC[k], n); // (first: a removed panel may feed a kept one)
     for (let k = 0; k < C.length; k++) this.chainSpan(C[k], n);
-    for (let k = 0; k < DC.length; k++) this.chainSpan(DC[k], n);
     const S = this.outSrc, G = this.outG, m = this.outN;
     let nl = 0, one = null, g1 = 1;
     for (let k = 0; k < m; k++) if (S[k].live === 1) { nl++; one = S[k]; g1 = G[k]; }
-    for (let k = 0; k < DI.length; k++) if (DI[k].live === 1) { nl++; one = DI[k]; g1 = 1; }
-    for (let k = 0; k < DC.length; k++) if (DC[k].live === 1) { nl++; one = DC[k]; g1 = 1; }
+    for (let k = 0; k < DI.length; k++) { const s = DI[k]; if (s.live === 1 && s.dyO > 0) { nl++; one = s; g1 = s.dyO; } }
+    for (let k = 0; k < DC.length; k++) { const s = DC[k]; if (s.live === 1 && s.dyO > 0) { nl++; one = s; g1 = s.dyO; } }
     if (nl === 0) { // the Track-level skip (§6.4); a panic fade still runs out
       for (let i = 0; i < n; i++) { Lo[off + i] = 0; if (Ro !== Lo) Ro[off + i] = 0; }
-      if (this.pnN) { this.pnN = this.pnN > n ? this.pnN - n : 0; if (this.pnN === 0) this.panicClear(); }
+      if (this.pnN) { this.pnN = this.pnN > n ? this.pnN - n : 0; if (this.pnN === 0) { this.panicClear(); this.resolveSimple(); } }
       this.bury();
       return;
     }
@@ -3429,12 +3461,14 @@ class Track extends Facade {
       const L = this.oL, R = this.oR;
       let first = true;
       for (let k = 0; k < m; k++) { const s = S[k]; if (s.live === 1) { mixIn(L, R, s, G[k], first, n); first = false; } }
-      for (let k = 0; k < DI.length; k++) { const s = DI[k]; if (s.live === 1) { mixIn(L, R, s, 1, first, n); first = false; } }
-      for (let k = 0; k < DC.length; k++) { const s = DC[k]; if (s.live === 1) { mixIn(L, R, s, 1, first, n); first = false; } }
+      for (let k = 0; k < DI.length; k++) { const s = DI[k]; if (s.live === 1 && s.dyO > 0) { mixIn(L, R, s, s.dyO, first, n); first = false; } }
+      for (let k = 0; k < DC.length; k++) { const s = DC[k]; if (s.live === 1 && s.dyO > 0) { mixIn(L, R, s, s.dyO, first, n); first = false; } }
       this.Lb = L; this.Rb = R;
     }
-    if (this.pnN) this.panicFade(n);
+    const pn = this.pnN;
+    if (pn) this.panicFade(n);
     this.outStage(Lo, Ro, off, n);
+    if (pn !== 0 && this.pnN === 0) this.resolveSimple(); // (the panic ended: its dying parts were dropped)
     this.bury();
   }
   // one panel's span: its live sources (the single one at gain 1 in place, else copy-first into its own buffers; none: zero
@@ -3442,9 +3476,11 @@ class Track extends Facade {
   chainSpan(c, n) {
     const own = c.ownBy;
     if (own !== null && own.kind === 'serum') { c.live = own.live; return; } // (a Serum's own FX ran inside renderSerum)
-    const S = c.srcs, g = c.g, ns = c.ns, r = c.rack;
+    const S = c.srcs, g = c.g, ns = c.ns, r = c.rack, DI = this.dyI, DC = this.dyC;
     let nl = 0, one = null, g1 = 1;
     for (let j = 0; j < ns; j++) if (S[j].live === 1) { nl++; one = S[j]; g1 = g[j]; }
+    for (let k = 0; k < DI.length; k++) { const s = DI[k]; if (s.dyTo === c && s.live === 1) { nl++; one = s; g1 = s.dyG; } } // (removed sources: their fade / tail)
+    for (let k = 0; k < DC.length; k++) { const s = DC[k]; if (s.dyTo === c && s.live === 1) { nl++; one = s; g1 = s.dyG; } }
     if (nl === 0) {
       if (r === null || r.idle()) { c.live = 0; return; }
       c.Lb = c.oL; c.Rb = c.oR; c.oL.fill(0, 0, n); c.oR.fill(0, 0, n);
@@ -3453,6 +3489,8 @@ class Track extends Facade {
       const L = c.oL, R = c.oR;
       let first = true;
       for (let j = 0; j < ns; j++) { const s = S[j]; if (s.live === 1) { mixIn(L, R, s, g[j], first, n); first = false; } }
+      for (let k = 0; k < DI.length; k++) { const s = DI[k]; if (s.dyTo === c && s.live === 1) { mixIn(L, R, s, s.dyG, first, n); first = false; } }
+      for (let k = 0; k < DC.length; k++) { const s = DC[k]; if (s.dyTo === c && s.live === 1) { mixIn(L, R, s, s.dyG, first, n); first = false; } }
       c.Lb = L; c.Rb = R;
     }
     if (r !== null) {
@@ -3463,7 +3501,7 @@ class Track extends Facade {
       }
       const tf = Date.now(); r.process(c.Lb, c.Rb, n); c.t += Date.now() - tf;
     }
-    c.live = 1; c.used = 1;
+    c.live = 1;
   }
   // drops the dying parts that have gone silent (in place: no allocation)
   bury() {
