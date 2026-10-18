@@ -364,3 +364,13 @@ test('H2: the legacy stream is for one-instrument tracks only — a second instr
   const fx2 = CMOD.addPanel(z, {}); sim.api.sendPatch(z);
   assert.deepEqual([N(z).graphed, tag(sent(z, k)[0]), lastGraph(z).chains.map(c => c.id).sort()], [true, 'graph', ['fx1', fx2]]);
 });
+
+test('H3: a key zone on a one-instrument track reaches the engine — the graph protocol live and offline', async () => {
+  await page();
+  const t = addJuno(), k = sim.nodeOf(t.id).posted.length;
+  CMOD.setZone(t, 'i1', { lo: 48, hi: 72, xp: 12 }); sim.api.sendPatch(t);
+  const m = sent(t, k);
+  assert.deepEqual([m.length > 0 && m[0].t, N(t).graphed, lastGraph(t) && lastGraph(t).insts[0].zone], ['graph', true, { lo: 48, hi: 72, xp: 12 }]);
+  const o = sim.api.offParts(t, sim.ctx().sampleRate);
+  assert.deepEqual([o.patch, o.graph && o.graph.insts[0].zone], [null, { lo: 48, hi: 72, xp: 12 }], 'a bounce: the same graph');
+});

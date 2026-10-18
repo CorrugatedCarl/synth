@@ -244,3 +244,20 @@ test('1e: the graph key follows the structure (power, solo, zone, level, cables,
   t.prim = 'i2';
   assert.deepEqual(G.compileGraph(t).graph.insts.map(x => [x.id, x.salt]), [['i2', 0], ['i1', 0x9E3779B9]], 'the primary first, salt 0');
 });
+
+/* host fixes (the stage-1e review round) */
+test('H3: a key zone or transpose on the sounding instrument is not today\'s shape (the graph carries it); the full zone is', () => {
+  const T = v1Tracks(), juno = v2Of(T.find(x => x.model === 'juno60')), sx = v2Of(T.find(x => x.model === 'serum'));
+  assert.deepEqual([G.compileTrack(juno).canonical, G.compileTrack(sx).canonical], [true, true], '(zone 0…127, 0 written out)');
+  for (const [t, z] of [[juno, { lo: 60, hi: 127, xp: 0 }], [juno, { lo: 0, hi: 127, xp: 12 }], [sx, { lo: 0, hi: 72, xp: -12 }]]) {
+    t.dev.i1.zone = z;
+    const c = G.compileTrack(t);
+    assert.deepEqual([c.canonical, c.why, c.graph.insts[0].zone], [false, 'shape', z], JSON.stringify(z));
+  }
+  delete juno.dev.i1.zone;
+  assert.equal(G.compileTrack(juno).canonical, true);
+  // an instrument that does not sound keeps its zone without changing the shape (it plays nothing)
+  juno.dev.i2 = { kind: 'synth', model: 'minimoog', vals: {}, preset: null, on: false, zone: { lo: 0, hi: 59, xp: 0 } };
+  juno.wires.push({ id: 'w3', a: 'i2.out', b: 'fx1.in' });
+  assert.equal(G.compileTrack(juno).canonical, true);
+});

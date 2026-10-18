@@ -5,7 +5,8 @@
 // §5.1: dev / wires / mods / prim) is validated and ordered here, and its canonical shapes (§5.5) are presented as a v1
 // view that main.js compiles through today's buildPatch / sendPatch path, so the node receives today's message stream:
 //   - one powered classic instrument → at most one shared panel → OUT (no panel: today's empty rack);
-//   - one powered Serum (its own FX inside it, dev.fx) → OUT.
+//   - one powered Serum (its own FX inside it, dev.fx) → OUT;
+//   (the sounding instrument over every key, untransposed: a key zone / transpose is a graph shape, 1e review H3).
 // Device shapes (stage 1c, cv-migrate toV2): a shared panel holds today's v2 FX state whole, { kind: 'panel', fx } (a
 // classic track's rack: its Main rack shows and compiles as before); the §5.1 single-rack form { rack: { mods, byp, lock,
 // ui } } is read too (1e). Every other shape (stage 1e: several instruments, fan-in, levels, a Serum into a panel) compiles
@@ -176,7 +177,8 @@ export function compileTrack(t) {
   const no = why => Object.assign({ canonical: false, why, errors: v.errors }, graphOf(t, ord, on));
   if (!v.ok) return no('invalid');
   if (on.length !== 1) return no(on.length ? 'several' : 'none');
-  const id = on[0], d = t.dev[id], out = Object.keys(t.dev).find(k => kindOf(t.dev[k]) === 'out');
+  const id = on[0], d = t.dev[id], out = Object.keys(t.dev).find(k => kindOf(t.dev[k]) === 'out'), z = zoneOf(d);
+  if (z.lo !== 0 || z.hi !== 127 || z.xp !== 0) return no('shape'); // (a key zone / transpose: the graph's Inst carries it)
   const W = wiresOf(t), into = k => W.filter(w => { const b = port(w.b); return b && b.dev === k; });
   const sounding = k => { const a = port(k.a); return a && (kindOf(t.dev[a.dev]) !== 'inst' || on.includes(a.dev)); };
   const last = into(out).filter(sounding);
