@@ -1,4 +1,4 @@
-# SYNTH — handover briefing (2026-10-18)
+# SYNTH — handover briefing (2026-10-18, updated after stage 1e)
 
 Written for the next agent taking over this project. Read it fully, then `docs/canvas/ROADMAP.md`. Project-wide rules are in `CLAUDE.md`
 at the repo root (auto-loaded). The user is non-technical-friendly but very engaged: they test on their iPad Pro and Mac, give fast,
@@ -56,29 +56,34 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
 | 1c Instances + project v2 (schema 3, `cv-model.js` adopt(), canonical compile, classic-panel.js, multi-instance Serum UI, minimap, box-select, Save as classic project) | done |
 | UI fixes (no resizing, Lock view, Hardware/Simple round trip, trays stay open) | done (3cd4509) |
 | 1d Track engine (`engine.js` → Track / Inst / Chain, bit-identical; per-module CPU) | done (8094026); iPad bench after 1d PASSED (bench.json `"ipad1d"`) |
-| **1e Several synths per track** (completes milestone 1) | **NEXT** — SPEC §10 1e, §6 |
-| 2a Performance modulators (project Mod Wheel, Velocity, Aftertouch, Bend; mod list; cable inspector) | planned |
+| 1e Several synths per track (completes milestone 1): graph engine, N instruments → shared / separate panels → OUT, editable cables, Effects tray, power, key zones, per-instrument MIDI learn / render-last / CPU, Measure this device, soft caps | done (IMPL-1e.md: contract §1–7, notes §8); **iPad bench after 1e pending** |
+| **2a Performance modulators** (project Mod Wheel, Velocity, Aftertouch, Bend; mod list; cable inspector) + retiring the 1e transition accessors (IMPL-1e §8.3) | **NEXT** — SPEC §10 2a, §7.10 |
 | 2b Modulation everywhere (LFO GLOBAL/PER NOTE, ENV, Macro, CC, Chaos on any Serum/FX knob + 237 classic controls) | planned |
 | 3 Serum taken apart (VOICE hub + parts as modules) | planned |
 | 4–6 later (full patching, per-voice classic modulation, polish) | later |
 
 **Immediate next actions**
-1. (Done 2026-10-18) The iPad bench after 1d is recorded as `tests/bench.json` `"ipad1d"`: every row within 5 % of the pre-split
-   `"ipad"` baseline, so 1d passes on the iPad. Future re-runs (1e, 2b, 5) compare against `"ipad1d"`. When asking for a run, check the
-   pasted JSON says `"stale": false` and names the deployed build: Chrome's service worker keeps serving the previous build until its
-   update is applied (Safari on the iPad, with no cached copy, measures the server files directly).
-2. Start stage 1e with the full process. Scope per SPEC §10 1e (graph/patch/chain/power protocol; N Insts → shared or separate panels →
-   OUT; editable audio cables; Effects tray; power; key zones; per-instrument MIDI learn etc.), honouring ROADMAP's feedback table
-   (fixed sizes, no collision, trays never auto-close, Lock view, Hardware/Simple). Acceptance includes bit-exact canonical tracks and the
-   two-sequencer-free-Insts sum test.
+1. Ask the user to run the iPad bench after 1e: `https://canvas.domlavin.com/tests/bench.html` in Safari on the iPad (plugged in, other
+   apps closed), Run 5 passes, Copy results, paste. Check the JSON says `"stale": false` and names the deployed build (a browser whose
+   service worker has not applied the update measures the previous build). Record it as `tests/bench.json` `"ipad1e"`: every row within
+   5 % of `"ipad1d"`, the new row r ≤ 0.12 and within 25 % of the device factor (⚙ → Measure this device on the iPad shows it). Then the
+   user tries 1e on the iPad (SPEC §11.4 items 4, 5, 8, 9: tile drags from both trays, cable drags with a two-finger cancel, portrait with
+   several modules, 3 instruments at 60 fps) and feedback goes into ROADMAP's table before 2a.
+2. Start stage 2a with the full process (contract → parallel builders → integrate → multi-dimension review with adversarial verification →
+   fixes → one-file-at-a-time sweep → deploy). Scope per SPEC §10 2a and §7.10; add the 1e leftovers of IMPL-1e §8.3 (retire the
+   transition accessors — ≈ 180 `t.model` / `t.vals` / `fxOf(t)` sites that mean the primary —, the primary-only paths). The 1e process
+   worked well: four parallel lanes with exclusive files, one integration lane after, four reviewers that each reproduce findings by
+   script, three fixers that write the failing test first; keep it.
 3. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)
 
 - `main.js` — app boot, project/state, transport, keyboard, menus, track list, canvas wiring (cvView, cvTidy, makeRoom, monitors, cvCpu).
-- `engine.js` — AudioWorklet processor: `Track` (registered `synth-engine`) / `Inst` / `Chain`; facade keeps legacy callers working.
+- `engine.js` — AudioWorklet processor: `Track` (registered `synth-engine`) holding N `Inst`s and M shared `Chain`s (stage 1e graph: `{t:'graph'}`, `patch i`, `chain c`, `power`; alias paths keep today's shapes bit-identical; IMPL-1e §2); facade keeps legacy callers working.
   DSP scripts loaded before it in order (sx-base, sx-filt2, sx-warp, sx-mod, sx-sample, sx-gran, sx-spec, sx-seq, fx-mods2, serum-dsp,
   fx-dsp, engine).
+- `cv-graph.js` (compileTrack / compileGraph: canonical v1 view or the graph messages), `cv-model.js` (the editing API: addInst, connect, setPower, setZone, makePrimary, setModel, sharedPanelFix …; adopt + transition accessors), `cv-cost.js` (cost table, estimates, soft caps, Measure this device Worker).
+- `main.js` 1e: `instView(t, dev)` (a track-shaped view of any instrument; the primary is the track), `curDevs` (the current instrument), per-device `classicPanels` / `serumPanels` / `fxPanels`, `sendGraph` + per-Inst / per-chain caches, `legacyOk` (one-instrument tracks keep today's message stream), `partsOf` / monitors by device.
 - `models.js` (model definitions/params), `serum-core.js`/`serum-dsp.js`/`sx-*.js` (Serum), `fx-*.js` (FX), `laws.js`, `tuning.js`.
 - Canvas UI: `cv-world.js` (camera, grid/snap, Lock view, gestures hooks, toolbar, minimap, box-select), `cv-module.js` (module chrome,
   fold, menu, CPU slot), `cv-cables.js`, `cv-tray.js` (top/side trays, Sources), `cv-art.js` (instrument illustrations), `cv-panel.js` +
@@ -99,6 +104,9 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
   worklet warm-up stalls permanently add latency on iOS (hence suspend-until-ready); touch-action resets at scroll containers; script
   scrolls aren't clamped immediately on iOS; 1 ms timer resolution; non-passive window touch listeners delay native scroll.
 - Long agent runs die if the Mac sleeps (lid closed) or the usage limit hits; work in the tree survives — resume the agent with a message.
+- The harness creates agent worktrees from `main` (ee2a939), not from `canvas`: every builder must `git reset --hard <base>` first (the 1e briefs say so; check `git log -1` in each worktree before merging).
+- The 1e review round (four reviewers reproducing by script) found ~35 real bugs the lane tests missed (undo copying sound across devices, a deleted panel re-inserted by an accessor, removed parts fading at the wrong gain, the minimap swallowing clicks on stacked modules…); fixers that write the failing test first refuted nothing and left a 70-test trail. Keep both steps.
+- The stacked-modules layout puts a second instrument's bar where the floating minimap was: any overlay over the canvas must be reserved out of `world.band()`.
 - Review rounds reliably found real bugs that tests missed (stuck preview voices, playhead freeze, header wrap, wrong-track taps, page
   zoom over the FX rack, MIDI OUT to self after the engine split). Keep at least one real review per stage.
 

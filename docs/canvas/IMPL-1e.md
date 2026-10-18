@@ -363,6 +363,21 @@ once; one file at a time with `node --max-old-space-size=2048 --test tests/<file
   Solo, Key zone (coalesced over 2 s), Make primary, Duplicate, Delete, Connect, Re-patch, Disconnect, Make a shared panel, Add FX panel,
   Delete panel are one step each; **an effect added to an existing panel is not a History step** (the rack "+" policy: FX edits are kept
   through undo by the knob-tweak rule), with a notice. Panel titles use the device number ("FX Panel 3").
+- **Review fixes U1–U17** (`cv-module.js`, `cv-cables.js`, `cv-tray.js`, `cv-world.js`, `style.css`, `main.js` canvas regions):
+  `fx1` and `i1/fx` share one lay entry only when they are not both modules (U1); `world.band()` now means the visible band minus the
+  toolbar and minimap boxes (`reserved()`, `setDragging()`, a `'resize'` event), the default camera, fit, focus and reveal frame into it,
+  the minimap hides and the toolbar takes no presses during any drag (`#cvToolbar[data-cv-drag]`), the untouched default camera is
+  re-derived on resize (U14); piano-roll auditions reach every powered instrument whose zone holds the note, transposed, with the
+  receivers kept per note (U2); the default camera frames the key-zone pill (`zoneW`), so a lone Minimoog opens at ≈ 0.94 instead of 1 on a
+  1440 px band, and ⋯ gains "Key zone…" (U3; the user may prefer the pill inside the module instead); Make primary keeps every body
+  except the two that change home (U4); the toolbar moves right of an open left tray (U15); new modules follow the Snap toggle (U16);
+  ⏻ has a 44 px × `--ik` hit area growing left and up (U5); the badge follows the cable through one panel to OUT, a panel fed by nothing
+  says "nothing connected" (U10); an effect dropped on an instrument goes into its FX, a panel dropped on a module lands beside it, an
+  Effects drag shows an outline (U11); Duplicate runs the soft caps (U9); `inputSubs` is keyed per device (U6); `wtEdit` remembers its
+  device (U7); the chord notice is skipped with several instruments (U8); read-only jacks are not patchable or focusable but remain drop
+  targets, so the own-FX refusal and its fix are reached by dropping an output on the Serum's own-FX input or module body (U12, reverses
+  C1); a press on a cable pans and a tap selects it (U13, reverses C1); track-switch mounting with several bodies is page-tested (U17).
+  New `__synthTest.cv` hooks: `touch`, `wheelToWt`, `chordCheck`, `mount`, `delPanel`.
 
 ### 8.2 Gates as measured (M4 Max, node 24, 2026-10-18)
 
@@ -391,6 +406,11 @@ once; one file at a time with `node --max-old-space-size=2048 --test tests/<file
 - Row r has no `jsc` record yet; SPEC §6.8's protocol table should drop `kind` / `racks` / `order` from the graph message.
 - A visual marker for the current instrument; the Serum ARP pause while powered off is not unit-tested (the TB-303 is).
 
-### 8.4 JavaScriptCore gate
+### 8.4 JavaScriptCore gate (macOS jsc shell, both engines in `$262.createRealm()` realms, 7 interleaved 1 s pairs × 3 processes)
 
-_(filled in below once run)_
+Load ratio new / 1d (median of 21 pairs): d 1.003, e 1.013, f 0.992, f' 0.995, g 1.001, g' 0.993, g" 0.999, h 1.001, h' 0.993,
+i 0.996 (the measure() overhead itself 0.981), c1 0.995, c2 1.000, c3 1.003, c4 0.995, c5 0.996, c6 1.005 — every row ≤ 3 % (A/A floor
+≈ 1 % on medians). Worst quantum, each engine alone (as `measure()`), vs `jsc.worstMs` + 10 %: every row inside except e (0.78–0.86 ms vs
+0.81), which the 1d engine misses by the same amount on today's busy machine (Photoshop at 74 % CPU; bench.json's 0.74 dates from
+2026-10-13): a baseline gap, not a 1e regression. Row r on JSC: load 0.092–0.096 (target 0.15), worst quantum 0.36–0.40 ms alone.
+Harness: scratchpad `jsc1e/` (export.mjs → rows.json + blob.bin, bench.js for jsc, run.sh, summary.py); not in the repo.
