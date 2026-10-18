@@ -321,3 +321,26 @@ test('Save as classic project of a several-instrument track lists what the class
     assert.deepEqual(v1.tracks.map(x => 'dev' in x), v1.tracks.map(() => false));
   } finally { globalThis.confirm = was; }
 });
+
+// UI fixes (stage 1e review, fixer U: findings U1–U17). Each test makes its own track (api.addTrack selects it)
+const MOD = id => MODELS.find(m => m.id === id);
+const fresh = (id = 'minimoog') => { const t = api.addTrack(MOD(id)); sim.raf(); return t; };
+const at = k => { const m = V().modules.get(k); return m ? Math.round(m.x) + ',' + Math.round(m.y) : null; };
+
+test('U1: a Serum primary next to a shared panel fx1 — i1/fx and fx1 keep places of their own (Tidy separates them; moving one never drops the other\'s entry)', () => {
+  fresh('minimoog');
+  cv.add('juno60', { x: 0, y: 2400 }); sim.raf();
+  assert.deepEqual(T().wires.map(w => w.a + '>' + w.b).sort(), ['fx1.out>out.in', 'i1.out>fx1.in', 'i2.out>fx1.in'], 'the Juno-60 into the shared panel');
+  cv.setCur('i1'); cv.setTrackModel(cv.view1e('i1'), 'serum'); sim.raf();
+  assert.deepEqual([keys().includes('i1/fx'), keys().includes('fx1')], [true, true], keys());
+  assert.notEqual(at('i1/fx'), at('fx1'), 'not on top of each other: ' + at('i1/fx') + ' / ' + at('fx1'));
+  cv.tidy(); sim.raf();
+  assert.notEqual(at('i1/fx'), at('fx1'), 'Tidy separates them');
+  assert.deepEqual([!!T().lay['i1/fx'], !!T().lay.fx1], [true, true], 'both entries written: ' + Object.keys(T().lay).join(','));
+  const was = at('i1/fx');
+  V().modules.get('fx1').nudge(64, 0); sim.raf();
+  assert.deepEqual([!!T().lay['i1/fx'], at('i1/fx')], [true, was], 'moving fx1 keeps i1/fx where it stands');
+  V().modules.get('i1/fx').nudge(0, 64); sim.raf();
+  assert.equal(!!T().lay.fx1, true, 'moving i1/fx keeps fx1\'s entry');
+  assert.notEqual(at('i1/fx'), at('fx1'));
+});

@@ -996,3 +996,12 @@ test('createTrackView (1e): V.cableDrag — patching on the view\'s own ports, j
   D.destroy();
   R.V.destroy();
 });
+
+/* ---------------------------------------------------------------- UI fixes (stage 1e review, fixer U) */
+test('layOf (U1): the other FX key is no fallback while it is a module of its own (a Serum primary\'s i1/fx beside a shared panel fx1)', () => {
+  const td = { 'i1/fx': { x: 1400, y: 0 }, fx1: { x: 2900, y: 0 } };
+  const tr = { model: 'serum', lay: { fx1: { x: 3, y: 4 } } };
+  assert.deepEqual(M.layOf(tr, 'i1/fx', td, ['i1', 'i2', 'i1/fx', 'fx1', 'out']), { x: 1400, y: 0 }, 'its own Tidy place, not fx1\'s entry');
+  assert.deepEqual(M.layOf(tr, 'i1/fx', td, ['i1', 'i1/fx', 'out']), { x: 3, y: 4 }, 'fx1 gone (a model change): its place carried over');
+  assert.deepEqual(M.layOf(tr, 'i1/fx', td), { x: 3, y: 4 }, 'no keys: as before');
+});

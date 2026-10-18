@@ -4346,7 +4346,7 @@ function cvSetLayout(want, dev) {
   if (want === 'flow') e.ui = 'flow'; else delete e.ui;
   lay[K] = e;
   if (cvView) for (const [k, mm] of cvView.modules) { // the pins (as cvLay's first write): Tidy-placed modules stay where they stand
-    if (k === K || lay[k] || (k === cvModule.ID.fx && lay[cvModule.ID.sxFx]) || (k === cvModule.ID.sxFx && lay[cvModule.ID.fx])) continue;
+    if (k === K || lay[k] || (cvOtherFx(k) && lay[cvOtherFx(k)])) continue;
     const p = { x: Math.round(mm.x), y: Math.round(mm.y) };
     if (mm.fold) p.fold = 1;
     lay[k] = p;
@@ -4460,6 +4460,12 @@ function cvMenu(a, b) {
   if (kind === 'fx' && !/\/fx$/.test(key)) return [fold, front, { sep: true }, { label: 'Delete panel', action: () => cvDeletePanel(key) }, { sep: true }, tidyI];
   return kind === 'fx' ? [fold, front, { sep: true }, tidyI] : [fold];
 }
+// the FX key whose lay entry stands for `key`'s (stage 1b: fx1 ↔ i1/fx across a classic ↔ Serum change) — null while both
+// are modules of the shown view (1e: a Serum primary's own FX beside a shared panel fx1 — each keeps its own place)
+function cvOtherFx(key) {
+  const ID = cvModule.ID, o = key === ID.fx ? ID.sxFx : key === ID.sxFx ? ID.fx : null;
+  return o && !(cvView && cvView.modules.has(o)) ? o : null;
+}
 // track.lay writes (cv-module host.lay): 'start' opens the undo step, 'end' writes the entry (alone: bring to front, pins,
 // no step). The step is recorded at that 'end', just before the write and only when the layout really changes: a drop on
 // the cell it left or a cancelled drag (Escape, a second finger) records nothing, so the redo stack survives
@@ -4475,7 +4481,7 @@ function cvLay(key, entry, phase, what) {
   const t = trk(), p = cvLayPend && cvLayPend.key === key && cvLayPend.what === what ? cvLayPend : null;
   if (p) {
     cvLayPend = null;
-    const nx = key === cvModule.ID.fx ? cvModule.ID.sxFx : key === cvModule.ID.sxFx ? cvModule.ID.fx : null;
+    const nx = cvOtherFx(key);
     const next = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {}, { [key]: entry });
     if (nx) delete next[nx];
     if (JSON.stringify(next) === p.was) return; // (nothing moved: no step, no write)
@@ -4484,8 +4490,9 @@ function cvLay(key, entry, phase, what) {
   if (!t.lay || typeof t.lay !== 'object') t.lay = {};
   t.lay[key] = entry;
   // one FX entry at most (fx1 | i1/fx): layOf's fallback then carries the place across a classic ↔ Serum change, never a
-  // stale one from before (in the step 'start' opened; an entry here holds x, y, fold and z, so nothing is lost)
-  const ox = key === cvModule.ID.fx ? cvModule.ID.sxFx : key === cvModule.ID.sxFx ? cvModule.ID.fx : null;
+  // stale one from before (in the step 'start' opened; an entry here holds x, y, fold and z, so nothing is lost) — unless
+  // the other is a module of its own (1e: a Serum primary's i1/fx beside a shared panel fx1: cvOtherFx)
+  const ox = cvOtherFx(key);
   if (ox) delete t.lay[ox];
   persist(); updateUndoUI();
 }
@@ -4616,7 +4623,7 @@ function cvTidy() {
   const t = trk();
   if (!cvView) return;
   const td = cvModule.tidy(t, cvView.sizes(), cvView.devices()), old = t.lay && typeof t.lay === 'object' ? t.lay : {}, lay = Object.assign({}, old);
-  const ID = cvModule.ID, other = k => (k === ID.fx ? ID.sxFx : k === ID.sxFx ? ID.fx : null);
+  const other = cvOtherFx;
   for (const k in td) {
     const e = { x: td[k].x, y: td[k].y }, ox = other(k), o = old[k] || (ox && old[ox]); // (the FX fold through a model change)
     if (o && o.fold) e.fold = 1;
