@@ -731,7 +731,12 @@ export function createTrackView(world, track, host) {
     const d = devOf(key), kind = kindOf(key);
     if (kind === 'inst') { m.setPower(!(d && d.on === false)); if (m.zone) m.setZone(d && d.zone); }
     m.setBadge(typeof H.badge === 'function' ? call(H.badge, key) || null : null);
-    for (const j of m.jackIds()) { const e = m.jack(j); if (jackPort(T, key + '.' + j)) e.removeAttribute('data-ro'); else e.setAttribute('data-ro', ''); }
+    // a jack inside a Serum is its own route (data-ro): no press, no focus, no "Connect to…" (U12) — the patchable ones buttons
+    for (const j of m.jackIds()) {
+      const e = m.jack(j);
+      if (jackPort(T, key + '.' + j)) { e.removeAttribute('data-ro'); e.setAttribute('role', 'button'); e.tabIndex = 0; }
+      else { e.setAttribute('data-ro', ''); e.removeAttribute('role'); e.tabIndex = -1; }
+    }
     m.cost = costOf(key);
     const c = colorOf(key);
     if (c) m.el.style.setProperty('--mc', c);

@@ -925,10 +925,10 @@ test('createTrackView (1e, device-driven): one module per device (keys = device 
   key(byCls(R.V.modules.get('i3').el, 'wk-nb')[2], 'ArrowUp');
   assert.deepEqual(R.zn, ['i3 {"lo":48,"hi":84,"xp":13}'], 'host.zone(key, zone)');
   R.V.modules.get('i3').zoneClose();
-  // jacks: patchable buttons; inside the Serum read-only
+  // jacks: patchable buttons; inside the Serum read-only (U12: no button there — no press, no focus, no menu)
   const J = id => { const [k, j] = [id.slice(0, id.lastIndexOf('.')), id.slice(id.lastIndexOf('.') + 1)]; return R.V.modules.get(k).jack(j); };
-  assert.deepEqual(['i1.out', 'i2.out', 'i2/fx.in', 'i2/fx.out', 'fx1.in', 'out.in'].map(j => J(j).getAttribute('role') + (J(j).hasAttribute('data-ro') ? ' ro' : '')),
-    ['button', 'button ro', 'button ro', 'button', 'button', 'button']);
+  assert.deepEqual(['i1.out', 'i2.out', 'i2/fx.in', 'i2/fx.out', 'fx1.in', 'out.in'].map(j => J(j).getAttribute('role') + (J(j).hasAttribute('data-ro') ? ' ro' : '') + ' ' + J(j).tabIndex),
+    ['button 0', 'null ro -1', 'null ro -1', 'button 0', 'button 0', 'button 0']);
   assert.deepEqual(R.V.jacks().map(j => j.id), ['i1.out', 'i2.out', 'i3.out', 'i2/fx.in', 'i2/fx.out', 'fx1.in', 'fx1.out', 'fx2.in', 'fx2.out', 'out.in']);
   assert.deepEqual([R.V.port('i2/fx.out'), R.V.port('i2.out'), R.V.port('fx1.in')], ['i2.out', null, 'fx1.in']);
   // cables: the wires (editable) and the Serum's own route

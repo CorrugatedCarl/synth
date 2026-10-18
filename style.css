@@ -1087,7 +1087,7 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
    inside a Serum are its own route ([data-ro]) */
 .cv-jack { touch-action: none; }
 .cv-jack[role="button"] { cursor: crosshair; outline: none; }
-.cv-jack[role="button"][data-ro] { cursor: default; }
+.cv-jack[data-ro] { cursor: default; } /* (inside a Serum: no press, no focus — still a drop target for the own-FX refusal) */
 .cv-jack:focus-visible { box-shadow: 0 0 0 1.5px #0c0d0f, 0 0 0 calc(3px * var(--ik, 1)) var(--hot); }
 /* while patching: compatible jacks glow, the rest dim (their title says why), the target lights up */
 #world[data-cv-patching] .cv-jack.cv-no { opacity: 0.3; filter: grayscale(1); }

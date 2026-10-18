@@ -407,3 +407,17 @@ test('createCableDrag (1e): a tap on a jack opens "Connect to…" (compatible ja
   assert.deepEqual([R.log, R.D.active()], [['connect i1.out out.in'], false]);
   R.D.destroy();
 });
+
+/* ---------------------------------------------------------------- UI fixes (stage 1e review, fixer U) */
+test('createCableDrag (U12): a read-only jack (data-ro: inside a Serum) never takes a press — not even one the host maps to a model port (its own FX input stands for the Serum) — nor opens "Connect to…"; it stays a drop target: an output dropped there meets the own-FX refusal (and its fix)', () => {
+  const R = patchRig({ port: j => (j === 'i2/fx.in' ? 'i2.in' : C.jackPort(v2(), j)), canConnect: (a, b) => (b === 'i2.in' ? { ok: false, why: 'own FX take only that Serum' } : { ok: true }) });
+  R.J('i2/fx.in').setAttribute('data-ro', ''); R.J('i2.out').setAttribute('data-ro', '');
+  assert.equal(R.press('i2/fx.in', 1376, 768), false, 'untaken: the press is the canvas\'s');
+  assert.equal(R.D.menu('i2/fx.in'), null, 'no "Connect to…"');
+  key(R.J('i2/fx.in'), 'Enter');
+  assert.equal(all(R.doc.body).filter(n => n.getAttribute && /wk-ctx/.test(n.getAttribute('class') || '')).length, 0, 'Enter on it: no menu');
+  R.press('i3.out', 1000, 1600); R.mv(1100, 1500); R.mv(1380, 770);
+  assert.equal(R.cls('i2/fx.in'), 'cv-no', 'a target, refused');
+  R.upAt(1380, 770);
+  assert.deepEqual(R.log, ['refuse i3.out i2.in: own FX take only that Serum'], 'the refusal (main.js: "Make a shared panel")');
+});

@@ -416,6 +416,9 @@ export function createCableDrag(world, o) {
   const call = (f, ...a) => { if (typeof f !== 'function') return undefined; try { return f(...a); } catch (err) { console.error(err); return undefined; } };
   const listen = (t, type, fn, opt) => { t.addEventListener(type, fn, opt); return () => t.removeEventListener(type, fn, opt); };
   const portOf = j => (typeof Op.port === 'function' ? call(Op.port, j) || null : j || null);
+  // (U12) a read-only jack (data-ro: inside a Serum) takes no press and opens no menu, whatever its model port; it stays a
+  // drop target (its own FX input stands for the Serum: an output dropped there meets the own-FX refusal and its fix)
+  const ro = el => !!el && typeof el.hasAttribute === 'function' && el.hasAttribute('data-ro');
   const dirOf = j => (/\.in$/.test(j) ? 'in' : /\.out$/.test(j) ? 'out' : null);
   const modOf = j => j.slice(0, j.lastIndexOf('.'));
   const at = (p, k) => (p && (typeof p.get === 'function' ? p.get(k) : p[k])) || null;
@@ -450,7 +453,7 @@ export function createCableDrag(world, o) {
   let D = null, dead = false, unhook = null;
   /* ---- the press (the world's jack hook) */
   function press(e, el) {
-    if (D || dead || !el || typeof el.getAttribute !== 'function' || (e.button != null && e.button !== 0)) return false;
+    if (D || dead || !el || typeof el.getAttribute !== 'function' || ro(el) || (e.button != null && e.button !== 0)) return false;
     const j = el.getAttribute('data-cv-jack'), dir = j && dirOf(j);
     if (!dir || !portOf(j)) return false;
     const ws = dir === 'in' ? wires().filter(c => c.b === j) : [], w = ws.length ? ws[ws.length - 1] : null;
@@ -578,6 +581,7 @@ export function createCableDrag(world, o) {
     const dir = dirOf(j || '');
     if (!dir || !portOf(j) || dead) return null;
     const L = jacks(), me = L.find(J => J.id === j) || { id: j, el: null };
+    if (ro(me.el)) return null;
     const items = [{ label: 'Connect ' + labelOf(j, me) + ' to…', disabled: true }];
     let n = 0;
     for (const J of L) {
