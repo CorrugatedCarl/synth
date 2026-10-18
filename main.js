@@ -1107,7 +1107,9 @@ function chordSize(notes) { // the most pitches starting together (notes sorted)
   return k;
 }
 function chordCheck(t) {
-  if (chordWarned.has(t.id) || t.notes.length < 2) return;
+  // (U8) several instruments: the primary's voicing says little about what plays (zones split the keys) and the tap would
+  // replace the primary — no notice
+  if (chordWarned.has(t.id) || t.notes.length < 2 || instN(t) > 1) return;
   const v = trackVoice(t), k = chordSize(t.notes);
   if (v.seq || k <= (v.mode === 'poly' ? v.n : 1)) return;
   chordWarned.add(t.id);

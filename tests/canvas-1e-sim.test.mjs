@@ -553,3 +553,18 @@ test('U7: Mod wheel → WT Pos scrubs the Serum whose WT editor is open (not the
     assert.equal(wt(s2), 0.7, 'closed: nothing');
   } finally { pr.wheelWt = was; }
 });
+
+test('U8: the chord / voice-mode notice stays quiet on a several-instrument track (it judged the primary alone and its tap replaced it); a one-instrument track still gets it', () => {
+  const chord = () => [60, 64, 67].map(n => ({ t: 0, n, d: 480, v: 100 }));
+  fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  T().notes = chord();
+  api.notice('', 0);
+  cv.chordCheck(T());
+  assert.equal(note(), '', 'a Juno-60 beside the monophonic Minimoog: no notice');
+  fresh('minimoog');
+  T().notes = chord();
+  cv.chordCheck(T());
+  assert.match(note(), /is monophonic — its chords play one note/, 'alone: the notice');
+  api.notice('', 0);
+});
