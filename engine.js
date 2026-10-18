@@ -1472,8 +1472,8 @@ class Inst {
     // dyTo / dyG / dyO: its route once removed (Track.retire: the panel it fed and that cable's gain, its OUT cable's gain)
     this.on = 1; this.zlo = 0; this.zhi = 127; this.zxp = 0; this.salt = 0.5; this.salt = 0; this.seedSalt = 0.5; this.seedSalt = 0;
     this.sharedRack = 0; this.feed = null; this.nOut = 0; this.live = 0; this.t = 0; this.slot = 0; this.nOn = 0; this.overK = '';
-    this.dyTo = null; this.dyG = 0.5; this.dyG = 0; this.dyO = 0.5; this.dyO = 0;
     this.init(os, fxc.rack);
+    this.dyTo = null; this.dyG = 0.5; this.dyG = 0; this.dyO = 0.5; this.dyO = 0; // (last: the render fields keep their slots)
   }
   // §6.2.1: a new salt (graph); the PRNG states move by old ^ new (a fresh Inst: exactly the salted seeds); a Serum's
   // own streams take it at its next attach / reset (serum-dsp, sx-mod, sx-seq read proc.seedSalt)
