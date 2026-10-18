@@ -537,6 +537,7 @@ export function normDev(r) {
       if (z && z.lo > z.hi) [z.lo, z.hi] = [z.hi, z.lo];
       if (z && (z.lo !== 0 || z.hi !== 127 || z.xp !== 0)) o.zone = z;
       if (typeof d.name === 'string' && d.name) o.name = str(d.name, null, 100);
+      if (typeof d.fxId === 'string' && /^fx\d{1,6}$/.test(d.fxId)) o.fxId = d.fxId; // (a Serum's folded-in panel id, cv-model reshape)
     } else if (d.kind === 'panel') {
       o = { kind: 'panel' };
       if (isObj(d.fx)) o.fx = d.fx;

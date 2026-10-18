@@ -6,7 +6,8 @@
 // fx as own fields: song.js newTrack, an old record) is converted in place (cv-migrate trackToV2: the same object, so
 // references held elsewhere stay good); every track then gets the transition accessors (§5.4, stages 1c–1e):
 //   track.model, vals, preset, seq   → dev[prim].<same>
-//   track.fx                         → a Serum primary's own FX (dev[prim].fx), else the panel the primary feeds (its fx)
+//   track.fx                         → a Serum primary's own FX (dev[prim].fx), else the panel the primary feeds (its fx);
+//                                      none (a classic primary straight into OUT): undefined, a write does nothing
 // They are non-enumerable, so JSON (autosave, History snapshots, files) carries only the v2 form, and the ~120 main.js
 // sites that read t.model / t.vals / fxOf(t) keep working until they move to instOf(t, id) (the accessors go in 2a).
 // Assigning track.model across classic ↔ Serum reshapes the graph by the kept-FX rules of setModel (§2.5: a track's rack
@@ -29,7 +30,8 @@
 //   setPower(t, id, on)  setSolo(t, id, solo)  setZone(t, id, {lo, hi, xp}) → {ok, zone}  makePrimary(t, id) → {ok, why}
 //   setModel(t, id, modelId, {vals, preset, fx}) → {ok, why}   classic → Serum: the only source of a panel that feeds OUT
 //        takes the panel's state as its own FX and the panel goes (1c's reshape); otherwise it keeps feeding the panel with
-//        an empty own rack (`fx` when given). Serum → classic: its own FX become a new panel between it and what it fed;
+//        an empty own rack (`fx` when given); the folded panel's id is kept on the Serum (dev.fxId, saved). Serum →
+//        classic: its own FX become a panel between it and what it fed (id: dev.fxId when free, else a new one);
 //        when it fed a shared panel (panel → panel: stage 4) it keeps feeding that panel and its own FX, when they hold any
 //        effect, are kept as an unconnected panel
 //   sharedPanelFix(t, serumId, srcId) → panelId   "Make a shared panel" (the own-fx refusal): a panel after the Serum,
@@ -83,6 +85,7 @@ function reshape(t, id, toSerum) {
     const pw = outWire(t, pid);
     if (inWires(t, pid).length === 1 && pw && pw.b === out + '.in') { // its own panel: the state comes inside the Serum
       if (t.dev[pid].fx !== undefined) d.fx = t.dev[pid].fx;
+      d.fxId = pid; // (the panel's id, saved: a change back to classic unfolds it under the same id — its layout entry)
       delete t.dev[pid]; // (its layout entry stays: the view puts the Serum FX where the panel was, cv-module layOf)
       t.wires = t.wires.filter(x => !touches(x, pid) && x !== w);
       wire(t, id + '.out', out + '.in', pw.g);
@@ -91,13 +94,14 @@ function reshape(t, id, toSerum) {
     if (d.fx === undefined) d.fx = defaultFx2(); // a shared panel: the Serum keeps feeding it, its own rack empty
     return 'kept';
   }
-  const fx = d.fx;
-  delete d.fx;
+  const fx = d.fx, was = typeof d.fxId === 'string' && /^fx\d+$/.test(d.fxId) && !(d.fxId in t.dev) ? d.fxId : null;
+  delete d.fx; delete d.fxId;
   if (pid) { // fed a shared panel: still does (panel → panel is stage 4); its own effects kept as a panel of their own
     if (hasFx(fx)) t.dev[nextId(t, 'fx')] = { kind: 'panel', fx };
     return 'kept';
   }
-  const np = 'fx1' in t.dev ? nextId(t, 'fx') : 'fx1', P = { kind: 'panel' };
+  // the panel it folded in, under that id (free: nothing else ever takes it); else a new id — never another reused one
+  const np = was || nextId(t, 'fx'), P = { kind: 'panel' };
   if (fx !== undefined) P.fx = fx;
   t.dev[np] = P;
   t.wires = t.wires.filter(x => x !== w);
@@ -125,9 +129,9 @@ const ACC = {
   seq: { get() { return prim(this).seq; }, set(v) { const d = prim(this); if (v === undefined) delete d.seq; else d.seq = v; } },
   fx: {
     get() { const f = fxDevOf(this); return f ? f.dev.fx : undefined; },
-    set(v) {
-      let f = fxDevOf(this);
-      if (!f) { reshape(this, primId(this), false); f = fxDevOf(this); } // (a classic primary straight into OUT: a panel for it)
+    set(v) { // (a classic primary straight into OUT, or silent, has no FX device: nothing — never a panel the user deleted)
+      const f = fxDevOf(this);
+      if (!f) return;
       if (v === undefined) delete f.dev.fx; else f.dev.fx = v;
     },
   },

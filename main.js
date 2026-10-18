@@ -124,7 +124,8 @@ const isV2Fx = fx => !!fx && typeof fx === 'object' && fx.v >= 2 && Array.isArra
 const fxOk = fx => !!fx && typeof fx === 'object' && (isV2Fx(fx) || (!!fx.p && typeof fx.p === 'object'));
 function fxOf(t) {
   if (isV2Fx(t.fx)) return t.fx;
-  t.fx = fxOk(t.fx) ? fxLoad(t.fx, isSx(t) && t.vals ? t.vals.s : undefined) : core.defaultFx2();
+  if (t.dev && !CMOD.fxDevOf(t)) return core.defaultFx2(); // (stage 1e: a classic primary cabled straight to OUT has no rack — an empty one, detached: nothing inserted)
+  t.fx =fxOk(t.fx) ? fxLoad(t.fx, isSx(t) && t.vals ? t.vals.s : undefined) : core.defaultFx2();
   return t.fx;
 }
 // the rack of a new track: a Serum track's from the default preset when it has one (migrated with its Serum state)
@@ -194,7 +195,7 @@ function loadProject(json, lo = {}) {
     // as refs (the instances its rows / locks / MIDI map address are kept); the migrated rack renders bit-identically
     // (golden shard 4) and the project is saved with v2 racks (§15.1 item 6)
     if (isSx(t)) t.vals = { s: core.normalizeSerum(t.vals && t.vals.s) };
-    t.fx = t.fx && typeof t.fx === 'object' ? fxLoad(t.fx, isSx(t) ? t.vals.s : undefined) : core.defaultFx2();
+    if (CMOD.fxDevOf(t)) t.fx = t.fx && typeof t.fx === 'object' ? fxLoad(t.fx, isSx(t) ? t.vals.s : undefined) : core.defaultFx2(); // (no FX device: none)
     normDevs(t); // (stage 1e: every other instrument and panel the same way)
   }
   if (up.readOnly) { if (lo.file) p.newerSchema = up.from; else goReadOnly(up.from); }
@@ -287,6 +288,16 @@ const saveNow = () => save(true);
 // panel → OUT; a Serum with its own FX → OUT) as its v1 view — the very vals / FX objects the track holds — so the node
 // gets today's message stream (tests/canonical-stream.test.mjs). Other shapes (stage 1e) compile their primary alone
 // until the graph protocol lands.
+// the legacy stream (today's {t: 'patch', p}, no device ids) is for a track of ONE instrument — the primary, sounding —
+// and at most the one panel it feeds (c: its compileTrack). A canonical compile of several instruments (the others off or
+// soloed out), of a primary off, or with a panel of its own beside it gets the graph protocol: the messages that name a
+// device (303s, auditions, FX taps, monitors) need device ids (review H2; stage 1e IMPL §3.3)
+function legacyOk(tr, c = CG.compileTrack(tr)) {
+  if (!c.canonical) return false;
+  if (!tr.dev) return true;
+  const ids = CMOD.instIds(tr), f = CMOD.fxDevOf(tr);
+  return ids.length === 1 && c.inst === ids[0] && Object.keys(tr.dev).every(k => !tr.dev[k] || tr.dev[k].kind !== 'panel' || (!!f && !f.own && k === f.id));
+}
 function buildPatch(tr, sr, offline = false) {
   fxOf(tr); // (a v1 rack reaching the track is migrated in place first, as before)
   const c = CG.compileTrack(tr), V = c.canonical ? c.v1 : CM.primV1(tr);
@@ -458,7 +469,7 @@ function sendPatch(tr = trk()) {
   const N = nodes.get(tr.id);
   if (!N) return;
   const c = CG.compileTrack(tr);
-  if (!c.canonical || N.graphed) { sendGraph(tr, N, c); return; } // (stage 1e: a graph shape, or a node that is graphed)
+  if (!legacyOk(tr, c) || N.graphed) { sendGraph(tr, N, c); return; } // (stage 1e: not one instrument, or a node that is graphed)
   const p = buildPatch(tr);
   seedPend.delete(tr.id);
   // §9.5: the assets the patch can play (Serum needs ∪ FX needs) are posted before it; a patch that replaces a posted
@@ -502,7 +513,8 @@ function postPatch(N, p, C = N, i) {
    structure key changed ({t: 'power', i, on} after it for an Inst whose `on` changed: the engine applies a power state it
    already has as nothing), then {t: 'patch', i, p} per Inst through its part cache (N.insts: id → {engine, ctKey,
    ctParts, sqParts, xsKey, last}) and {t: 'chain', c, fxr, fxrT?} per shared panel (N.chains: id → {xsKey, last}; fxrT
-   absent = its tables unchanged, as a patch's). The assets of every part wait as today's patch does. */
+   absent = its tables unchanged, as a patch's). A post waits for the assets of every part as today's patch does — its
+   graph, power and new 303 patterns with it (review H10, H11). */
 const newPart = () => ({ engine: '', ctKey: '', ctParts: new Map(), sqParts: new Map(), xsKey: '', last: null });
 const instCache = (N, id) => N.insts.get(id) || N.insts.set(id, newPart()).get(id);
 // a node's first graph: its i0 / c0 are adopted by position (i0 → the primary; c0 → chains[0] when the primary is
@@ -511,6 +523,7 @@ function graphCache(N, tr, graph) {
   const legacy = !N.graphed && N.ctParts instanceof Map, pid = CMOD.primId(tr), f = CMOD.fxDevOf(tr);
   N.graphed = true; N.gkey = ''; N.gon = new Map(); N.waitP = null; N.insts = new Map(); N.chains = new Map(); N.osI = new Map();
   if (!legacy) return N;
+  N.gon.set(pid, true); // (i0: the primary, sounding — a legacy node's one instrument; its pattern is there, its power diffed)
   N.insts.set(pid, { engine: N.engine, ctKey: N.ctKey, ctParts: N.ctParts, sqParts: N.sqParts, xsKey: N.xsKey, last: N.last });
   if (f && !f.own && N.last && N.last.fxr && graph.chains.length && graph.chains[0].id === f.id) N.chains.set(f.id, { xsKey: N.xsKey, last: N.last.fxr });
   return N;
@@ -524,24 +537,28 @@ function postChain(N, id, x) {
   N.node.port.postMessage(fxrT ? { t: 'chain', c: id, fxr: x.fxr, fxrT } : { t: 'chain', c: id, fxr: x.fxr });
 }
 function sendGraph(tr, N, c) {
-  const first = !N.graphed, G = graphParts(tr, ctx.sampleRate, false, c), post = m => N.node.port.postMessage(m);
+  const G = graphParts(tr, ctx.sampleRate, false, c), post = m => N.node.port.postMessage(m);
   seedPend.delete(tr.id);
-  if (first) graphCache(N, tr, G.graph);
-  const pid = CMOD.primId(tr), fresh = G.graph.insts.filter(x => !N.gon.has(x.id) && !(first && x.id === pid) && G.seqs[x.id]).map(x => x.id);
-  if (N.gkey !== G.graph.key) {
-    N.gkey = G.graph.key;
-    post(Object.assign({ t: 'graph' }, G.graph));
-    for (const x of G.graph.insts) if (N.gon.has(x.id) && N.gon.get(x.id) !== x.on) post({ t: 'power', i: x.id, on: x.on });
-    N.gon = new Map(G.graph.insts.map(x => [x.id, x.on]));
-    for (const id of [...N.insts.keys()]) if (!(id in G.patches)) N.insts.delete(id);
-    for (const id of [...N.chains.keys()]) if (!(id in G.chains)) N.chains.delete(id);
-    for (const id of [...N.osI.keys()]) if (!(id in G.patches)) N.osI.delete(id);
-    monitors.sync(); // (the parts its subscriptions show may have moved; the first graph: device ids from now on)
-  }
+  if (!N.graphed) graphCache(N, tr, G.graph);
+  // the structure goes with its parts, after their assets (review H11: while a post waits the node keeps its last graph —
+  // a new Inst never plays the default patch, a new panel never passes dry); a new TB-303 Inst gets its pattern as its graph
+  // goes, the current one (H10: a newer post replacing a waiting one cannot drop it)
   const go = () => {
+    const fresh = [];
+    if (N.gkey !== G.graph.key) {
+      for (const x of G.graph.insts) if (!N.gon.has(x.id) && G.seqs[x.id]) fresh.push(x.id);
+      N.gkey = G.graph.key;
+      post(Object.assign({ t: 'graph' }, G.graph));
+      for (const x of G.graph.insts) if (N.gon.has(x.id) && N.gon.get(x.id) !== x.on) post({ t: 'power', i: x.id, on: x.on });
+      N.gon = new Map(G.graph.insts.map(x => [x.id, x.on]));
+      for (const id of [...N.insts.keys()]) if (!(id in G.patches)) N.insts.delete(id);
+      for (const id of [...N.chains.keys()]) if (!(id in G.chains)) N.chains.delete(id);
+      for (const id of [...N.osI.keys()]) if (!(id in G.patches)) N.osI.delete(id);
+      monitors.on.delete(tr.id); monitors.sync(); // (the parts its subscriptions show may have moved — asked again: a sync while this post waited went to the old structure; the first graph: device ids from now on)
+    }
     for (const id of Object.keys(G.patches)) postPatch(N, G.patches[id], instCache(N, id), id);
     for (const id of Object.keys(G.chains)) postChain(N, id, G.chains[id]);
-    for (const id of fresh) post({ t: 'seq', s: G.seqs[id], i: id }); // (a new TB-303 Inst: its pattern, as a new node's options)
+    for (const id of fresh) post({ t: 'seq', s: seqPayload(tr, id), i: id }); // (a new TB-303 Inst: its pattern, as a new node's options)
   };
   if (!G.needs.length) { tables.release(tr.id); N.waitP = null; go(); return; }
   learnStates(tr);
@@ -800,7 +817,7 @@ function powerOff() {
 function makeNode(tr) {
   // stage 1e: a track of a graph shape gets a graphed node, built from processorOptions graph / patches / chains / seqs
   // (IMPL-1e §2.5; offline renders the same, renderOffline); a canonical one today's options
-  const sr = ctx.sampleRate, c = CG.compileTrack(tr), G = c.canonical ? null : graphParts(tr, sr, false, c);
+  const sr = ctx.sampleRate, c = CG.compileTrack(tr), G = legacyOk(tr, c) ? null : graphParts(tr, sr, false, c);
   const patch = G ? null : buildPatch(tr); // a new node always gets the curve tables (and a fresh rack)
   seedPend.delete(tr.id);
   const po = { os: trackOS(tr, sr), hostOS: osFor(sr), patch, song: songData(tr), seq: !G && tr.model === 'tb303' ? seqPayload(tr) : null,
@@ -857,9 +874,11 @@ function cpuKey(t, N, part) {
   return f && !f.own ? f.id : p + '/fx';
 }
 function cvCpu(id, N, per) {
-  const t = project.tracks.find(x => x.id === id), sm = N.cpu || (N.cpu = {});
+  const t = project.tracks.find(x => x.id === id), old = N.cpu || {}, sm = {};
   if (!t) return;
-  for (const e of per) { const k = e && typeof e.id === 'string' ? cpuKey(t, N, e.id) : null; if (k && Number.isFinite(e.load)) sm[k] = sm[k] === undefined ? e.load : sm[k] + 0.25 * (e.load - sm[k]); }
+  // (rebuilt from this report: a part the engine no longer has — a removed device — leaves N.cpu, review H9)
+  for (const e of per) { const k = e && typeof e.id === 'string' ? cpuKey(t, N, e.id) : null; if (k && Number.isFinite(e.load)) sm[k] = old[k] === undefined ? e.load : old[k] + 0.25 * (e.load - old[k]); }
+  N.cpu = sm;
   if (!cvView || cvView.trackId !== id) return;
   for (const k of Object.keys(sm)) { const m = cvView.modules.get(k); if (m && m.setCpu) m.setCpu(sm[k]); }
 }
@@ -1042,6 +1061,9 @@ function lowerOS() {
     const v = po / 2;
     settings.os = v; $('#os').value = String(v); persist();
     postAll({ t: 'os', v }); rateText(); rateLabels();
+    for (const [id, N] of nodes) if (N.osI) for (const [i, o] of [...N.osI]) { // (the instruments lowered alone below it stay there)
+      if (o < v) postTo({ id }, { t: 'os', v: o }, i); else N.osI.delete(i);
+    }
     notice(`DSP load stayed above 85% — oversampling lowered to ${v}× to avoid dropouts`, 9000);
   } else if (so > 1) {
     sxCap = so / 2;
@@ -1142,28 +1164,27 @@ function fitBars() {
   const need = Math.max(1, Math.ceil(end / bt));
   if (need > project.bars) { project.bars = need; $('#tBars').value = project.bars; }
 }
-// the knob-tweak policy for the devices besides the primary and its FX: an instrument that kept its model keeps its values,
-// pattern and own FX; a panel its FX state (the device ids are per track: the same id is the same device)
+// the knob-tweak policy (§11.8) per device — the device ids are per track and never reused, so the same id is the same
+// device (stage 1e: never one device's state into another id: a re-patch, Make primary, Delete of a primary): an instrument
+// keeps its pattern, and its values and own FX when it kept its model; a panel its FX state. Stage 1c's "a track's rack is
+// kept when its model changes": the primary's rack, when the primary is the same device and its rack moved between its
+// panel and the Serum (classic ↔ Serum: one track's FX device is not in the other)
 function keepDevs(t, cur) {
   if (!cur || !t.dev || !cur.dev) return;
-  const pid = CMOD.primId(t), f = CMOD.fxDevOf(t);
   for (const id of Object.keys(t.dev)) {
     const d = t.dev[id], c = cur.dev[id];
-    if (id === pid || (f && id === f.id) || !d || !c || d.kind !== c.kind) continue;
-    if (d.kind === 'synth' && d.model === c.model) { d.vals = c.vals; if (c.seq) d.seq = c.seq; if (c.fx) d.fx = c.fx; }
+    if (!d || !c || typeof d !== 'object' || typeof c !== 'object' || d.kind !== c.kind) continue;
+    if (d.kind === 'synth') { if (d.model === c.model) { d.vals = c.vals; if (c.fx) d.fx = c.fx; } if (c.seq) d.seq = c.seq; }
     else if (d.kind === 'panel' && c.fx) d.fx = c.fx;
   }
+  const fa = CMOD.fxDevOf(t), fb = CMOD.fxDevOf(cur);
+  if (fa && fb && fb.dev.fx && fa.id !== fb.id && CMOD.primId(t) === CMOD.primId(cur) && (fa.own ? !(fb.id in t.dev) : fb.own && !(fa.id in cur.dev))) fa.dev.fx = fb.dev.fx;
 }
 function applyRestore(p, keepSound = false) {
   if (!p) return;
   CMOD.adopt(p); // (History snapshots and loads are plain objects: the accessors first)
-  if (keepSound) for (const t of p.tracks) { // undo/redo never reverts knob tweaks on a track that kept its instrument
-    const cur = project.tracks.find(x => x.id === t.id);
-    if (cur && cur.model === t.model) t.vals = cur.vals;
-    if (cur && cur.seq) t.seq = cur.seq;
-    if (cur && cur.fx) t.fx = cur.fx; // FX rack edits follow the knob-tweak policy (§11.8)
-    keepDevs(t, cur); // (stage 1e: every other instrument and panel the same)
-  } else for (const t of p.tracks) seedPend.add(t.id); // a loaded project re-seeds the racks' LFO phases
+  if (keepSound) for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); // undo/redo never reverts knob tweaks (per device)
+  else for (const t of p.tracks) seedPend.add(t.id); // a loaded project re-seeds the racks' LFO phases
   for (const t of p.tracks) fxOf(t);
   const prevSel = project.selTrack;
   project = p;
@@ -1833,20 +1854,23 @@ const userSmps = (s, fx) => userAssetIds(s || null, fx || null);
 // are resolved per node: partsOf). A track's node sends snapshots of the parts of its live subscriptions ({t: 'mon',
 // ids}; on: their ids, sorted, joined). A legacy node's parts are i0 / c0 and its snapshot reaches every subscription of
 // the track (stage 1d); a graphed node's are device ids (stage 1e) and its snapshot ({t: 'smon', i | c}) reaches the
-// subscriptions showing that part (an instrument's also those showing its own FX: it carries their meters).
+// subscriptions showing that part (a Serum's whole device — panel and own FX — is its Inst part: one message, its
+// snapshot with its own FX's meters; review H5).
 //   sub(trackId, dev, {role, live() → bool, deliver(d)}) → off   (role: 'both' by default; `parts` ['i0'] / ['c0'] /
 //   both, stage 1d's form, are read as the role)
 function partsOf(t, N, dev, role) {
   const inst = role !== 'fx', fx = role !== 'inst';
   if (!N || !N.graphed || !t || !t.dev) return [...(inst ? ['i0'] : []), ...(fx ? ['c0'] : [])];
   if (typeof dev !== 'string') return [];
-  if (/\/fx$/.test(dev)) return fx ? [dev] : [];
-  const d = t.dev[dev];
+  const own = /\/fx$/.test(dev), d = t.dev[own ? dev.slice(0, -3) : dev];
+  if (own) return fx ? (d && d.model === 'serum' ? [dev.slice(0, -3)] : [dev]) : [];
   if (!d) return [];
   if (d.kind === 'panel') return fx ? [dev] : [];
+  // a Serum: its Inst part alone, whatever the role — its message carries its own FX's meters and phases ({i, s, gr, fxph,
+  // ftap}); its 'iN/fx' part as well would post a second message without the snapshot (blanking the panel's) and tap twice
+  if (d.model === 'serum') return [dev];
   const out = inst ? [dev] : [];
-  if (fx && d.model === 'serum') out.push(dev + '/fx');
-  else if (fx) { const p = CMOD.destOf(t, dev); if (p && t.dev[p].kind === 'panel') out.push(p); }
+  if (fx) { const p = CMOD.destOf(t, dev); if (p && t.dev[p].kind === 'panel') out.push(p); }
   return out;
 }
 const roleOf = o => (o.role ? o.role : Array.isArray(o.parts) && o.parts.length ? (o.parts.includes('i0') ? (o.parts.includes('c0') ? 'both' : 'inst') : 'fx') : 'both');
@@ -2226,10 +2250,10 @@ function wheelToWt(v) {
 }
 
 /* ------------------------------------------------ offline renders (bounce, resample, render-last; §9.6) */
-// a track's offline render parts: {patch} (canonical) or graphParts' graph form with patch null (stage 1e)
+// a track's offline render parts: {patch} (one instrument, legacyOk: as live) or graphParts' graph form with patch null (stage 1e)
 function offParts(tr, sr) {
   const c = CG.compileTrack(tr);
-  return c.canonical ? { patch: buildPatch(tr, sr, true) } : Object.assign({ patch: null }, graphParts(tr, sr, true, c));
+  return legacyOk(tr, c) ? { patch: buildPatch(tr, sr, true) } : Object.assign({ patch: null }, graphParts(tr, sr, true, c));
 }
 // One OfflineAudioContext at rate sr with the §0.3 scripts and one engine node per item {tr, patch, os, song,
 // transport, seq?, gain?, pan?}: the assets every patch needs are built for sr (IRs at that rate, factory content
@@ -2332,7 +2356,7 @@ async function resampleTo(t, target) { // (t: a device view — a Serum besides 
 // of the track (default the primary), rendered alone through its own FX (buildInstPatch); a canonical track's primary
 // renders as before (buildPatch).
 async function renderLast(t, o) {
-  const dev = (o && o.dev) || CMOD.primId(t), d = t.dev ? t.dev[dev] : null, legacy = dev === CMOD.primId(t) && CG.compileTrack(t).canonical;
+  const dev = (o && o.dev) || CMOD.primId(t), d = t.dev ? t.dev[dev] : null, legacy = dev === CMOD.primId(t) && legacyOk(t);
   if (legacy ? !isSx(t) : !d || d.model !== 'serum') throw new Error('Rendering needs a Serum track');
   const s = legacy ? t.vals.s : d.vals.s, fx = legacy ? fxOf(t) : fxOfDev(t, dev), pn = legacy ? t.preset : d.preset;
   const name = (pn || 'Init').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Init';
@@ -2875,13 +2899,12 @@ function duplicateTrack(t) {
   const c = S.newTrack(project, { model: t.model, vals: JSON.parse(JSON.stringify(t.vals)), name: t.name + ' copy', preset: t.preset });
   c.notes = S.cloneNotes(t.notes); c.cc = t.cc.map(x => ({ t: x.t, k: x.k, v: x.v }));
   c.vol = t.vol; c.pan = t.pan; c.ch = t.ch;
-  if (t.seq) c.seq = JSON.parse(JSON.stringify(t.seq));
-  c.fx = clone(fxOf(t)); seedPend.add(c.id);
-  if (t.dev && CMOD.isGraphShape(t)) { // (stage 1e: every instrument, panel and cable; adopt reads the devices)
+  seedPend.add(c.id);
+  if (t.dev) { // (stage 1e: every instrument, panel and cable with their fields — any shape; adopt reads the devices)
     for (const k of ['model', 'vals', 'preset', 'seq', 'fx']) delete c[k];
     Object.assign(c, { prim: t.prim, nid: t.nid, dev: clone(t.dev), wires: clone(t.wires) });
     if (t.mods) c.mods = clone(t.mods);
-  }
+  } else { if (t.seq) c.seq = clone(t.seq); c.fx = clone(fxOf(t)); }
   if (t.lay) c.lay = clone(t.lay); // (the canvas layout, view only)
   project.tracks.splice(project.tracks.indexOf(t) + 1, 0, c);
   CMOD.adopt(project); // (the copy's devices keep their ids: they are per track)
@@ -3193,6 +3216,7 @@ function initTransport() {
     hist.record(project);
     if (T.playing) stop();
     const p = freshProject(model);
+    curDevs.clear(); // (another project: each track opens on its primary, whatever ids repeat — review H13)
     applyRestore(p);
   };
   $('#fSave').onclick = () => projectFile().then(txt => download(new Blob([txt], { type: 'application/json' }), slug(project.name) + '.synth.json'),
@@ -3213,7 +3237,7 @@ function initTransport() {
         flush(); // a pending autosave of the current project lands first
         // embedded user wavetables and samples (§7.10, SPEC-serum2 §9.8) go into their stores, never into the project
         await restoreEmbedded(o);
-        const p = loadProject(o, { file: true }); hist.record(project); if (T.playing) stop(); applyRestore(p);
+        const p = loadProject(o, { file: true }); hist.record(project); if (T.playing) stop(); curDevs.clear(); applyRestore(p);
         if (p.newerSchema) readOnlyNotice(); // (saved by a newer build: this project read-only, the store not locked)
       }
     } catch (err) { alert('Could not open that file: ' + err.message); }

@@ -36,7 +36,7 @@
 //                           instrument with its FX); autosave and History never carry it, the canvas reader ignores it
 // The in-memory track (accessors onto the primary, one adopt point) is cv-model.js.
 import { schemaOf } from './appstore.js?v=9';
-import { compileTrack, kindOf, port } from './cv-graph.js?v=9';
+import { compileTrack, kindOf, port, powered, zoneOf } from './cv-graph.js?v=9';
 import { defaultFx2 } from './serum-core.js?v=9';
 
 export { schemaOf };
@@ -146,14 +146,26 @@ export function toV1(p0) {
     if (c.canonical && ins.length === 1) { const v = Object.assign({}, c.v1); if (v.seq == null) delete v.seq; out.push(Object.assign(coreOf(t), v)); continue; }
     // not today's shape: each instrument its own track (the primary first, keeping the track's id), notes copied
     ins.sort((a, b) => (a === t.prim ? -1 : b === t.prim ? 1 : 0));
+    const W = t.wires.filter(isObj), dst = k => { const w = W.find(x => x.a === k + '.out'), b = w && port(w.b); return b && b.dev in t.dev ? { id: b.dev, g: w.g } : null; };
+    const srcs = pid => W.filter(w => (port(w.b) || {}).dev === pid).map(w => (port(w.a) || {}).dev).filter(k => kindOf(t.dev[k]) === 'inst');
+    const on = powered(t), lvl = g => g !== undefined && g !== 1;
     ins.forEach((id, i) => {
-      const v = instV1(t, id), pid = t.dev[id].model === 'serum' ? null : panelOf(t, id);
-      if (pid && t.wires.filter(w => isObj(w) && (port(w.b) || {}).dev === pid).length > 1) lost.push(`“${t.name}”: the shared panel ${pid} (copied for each instrument)`);
+      const d = t.dev[id], v = instV1(t, id), to = dst(id), via = to && kindOf(t.dev[to.id]) === 'panel' ? to.id : null, end = via ? dst(via) : to;
       const tr = Object.assign(coreOf(t), v);
-      if (i) { tr.id = freshId(); tr.name = (t.name || 'Track') + ' · ' + (t.dev[id].name || t.dev[id].model); delete tr.lay; }
-      if (t.dev[id].on === false) lost.push(`“${tr.name}”: was switched off`);
+      if (i) { tr.id = freshId(); tr.name = (t.name || 'Track') + ' · ' + (d.name || d.model); delete tr.lay; }
+      const nm = `“${tr.name}”: `;
+      if (via && d.model === 'serum') lost.push(`“${t.name}”: the panel ${via} after the Serum (its effects are not in the Serum’s track)`);
+      else if (via && srcs(via).filter(k => t.dev[k].model !== 'serum').length > 1) lost.push(`“${t.name}”: the shared panel ${via} (copied for each instrument)`);
+      // (each becomes a track of its own that sounds: say so of one that did not)
+      if (d.on === false) lost.push(nm + 'was switched off');
+      else if (!end || kindOf(t.dev[end.id]) !== 'out') lost.push(nm + 'was not connected (it sounds now)');
+      else if (!on.includes(id)) lost.push(nm + 'was silent (another instrument soloed; it sounds now)');
+      const z = zoneOf(d);
+      if (z.lo !== 0 || z.hi !== 127 || z.xp !== 0) lost.push(nm + 'its key zone / transpose (it plays every key)');
+      if ((to && lvl(to.g)) || (via && end && lvl(end.g))) lost.push(nm + 'its cable level');
       out.push(tr);
     });
+    if (ins.some(k => t.dev[k].solo)) lost.push(`“${t.name}”: solo in track`);
     if (Array.isArray(t.mods) && t.mods.length) lost.push(`“${t.name}”: ${t.mods.length} modulation cable${t.mods.length > 1 ? 's' : ''}`);
   }
   p.tracks = out;

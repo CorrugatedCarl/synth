@@ -388,3 +388,61 @@ test('1e cv-model: setModel keeps the FX by the rules (classic ↔ Serum), share
   assert.deepEqual([MO.sharedPanelFix(d, 'i1', i4), MO.destOf(d, i4)], [pid, pid]);
   assert.equal(MO.setModel(d, 'zz', 'dx7').ok, false);
 });
+
+/* host fixes (the stage-1e review round) */
+test('H4: t.fx of a classic primary cabled straight to OUT (its panel deleted) reads undefined and a write inserts nothing', () => {
+  const p = MO.adopt({ tracks: [S.newTrack(null, { model: 'juno60' })] }), t = p.tracks[0];
+  assert.equal(MO.removePanel(t, 'fx1').ok, true);
+  const shape = () => Object.keys(t.dev).sort().join(',') + ' | ' + t.wires.map(w => w.a + '>' + w.b).join(' ');
+  assert.deepEqual([shape(), t.fx, MO.fxDevOf(t)], ['i1,out | i1.out>out.in', undefined, null]);
+  t.fx = C.defaultFx2();
+  assert.equal(shape(), 'i1,out | i1.out>out.in', 'no panel re-inserted (no History step would hold it)');
+  t.model = 'serum'; t.fx = C.defaultFx2(); // (a Serum primary: its own FX, written)
+  assert.deepEqual([shape(), MO.fxDevOf(t).own], ['i1,out | i1.out>out.in', true]);
+});
+
+test('H8: Save as classic project lists key zones, cable levels, solo, a Serum\'s shared panel and silent instruments that sound in main', () => {
+  const t = { id: 'trk_1', name: 'T', color: '#f00', notes: [], prim: 'i1', nid: 4,
+    dev: { i1: { kind: 'synth', model: 'serum', vals: { s: C.defaultSerum() }, preset: null, fx: C.defaultFx2() },
+      i2: { kind: 'synth', model: 'juno60', vals: {}, preset: null, zone: { lo: 48, hi: 72, xp: 12 }, solo: true },
+      i3: { kind: 'synth', model: 'minimoog', vals: {}, preset: null },
+      fx1: { kind: 'panel', fx: C.defaultFx2() }, out: { kind: 'out' } },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'i2.out', b: 'fx1.in', g: 0.5 }, { id: 'w3', a: 'fx1.out', b: 'out.in' }] };
+  const r = M.toV1({ schema: 4, tracks: [t] }), L = r.lost.join('\n');
+  assert.deepEqual(r.p.tracks.map(x => x.model), ['serum', 'juno60', 'minimoog']);
+  for (const [re, what] of [[/T · juno60”: its key zone/, 'the zone'], [/T · juno60”: its cable level/, 'the level'], [/“T”: solo/, 'solo'],
+    [/“T”: the panel fx1 after the Serum/, 'a Serum into a shared panel: its effects not copied'],
+    [/T · minimoog”: was not connected/, 'an unconnected instrument sounds in main'], [/“T”: was silent/, 'the soloed-out primary sounds in main']]) assert.match(L, re, what + '\n' + L);
+  assert.doesNotMatch(L, /copied for each instrument/, 'one classic source of fx1: nothing copied');
+  // a one-instrument track with a zone (a graph shape now): its own track, the zone listed
+  const z = M.trackToV2({ id: 'trk_2', name: 'Z', model: 'juno60', vals: {}, preset: null, fx: C.defaultFx2(), notes: [] });
+  z.dev.i1.zone = { lo: 60, hi: 127, xp: 0 };
+  const rz = M.toV1({ tracks: [z] });
+  assert.deepEqual([rz.p.tracks.length, rz.lost.length, /“Z”: its key zone/.test(rz.lost.join())], [1, 1, true]);
+});
+
+test('H4 ids: a Serum unfolds the panel it folded in under that id (dev.fxId, saved); a deleted panel\'s id never comes back', () => {
+  const mk = () => MO.adopt({ tracks: [S.newTrack(null, { model: 'juno60' })] }).tracks[0];
+  const ids = t => Object.keys(t.dev).sort().join(',');
+  // the canonical round trip classic → Serum → classic: fx1 again, its state; the id saved through song.js
+  const t = mk(), cho = C.defaultFx2(); C.newInstance(cho, 'cho', { rack: 0 }); t.fx = cho;
+  t.model = 'serum';
+  assert.deepEqual([ids(t), t.dev.i1.fxId, t.dev.i1.fx === cho], ['i1,out', 'fx1', true]);
+  const back = S.normDev(JSON.parse(JSON.stringify(t)));
+  assert.equal(back.dev.i1.fxId, 'fx1', 'song.normDev keeps it');
+  assert.equal(S.normDev({ dev: { i1: { kind: 'synth', model: 'serum', fxId: 'x<1' } } }).dev.i1.fxId, undefined, '(only an fx id)');
+  t.model = 'dx7';
+  assert.deepEqual([ids(t), t.dev.fx1.fx === cho, 'fxId' in t.dev.i1, MO.destOf(t, 'i1')], ['fx1,i1,out', true, false, 'fx1']);
+  MO.setModel(t, 'i1', 'serum'); MO.setModel(t, 'i1', 'juno60'); // (setModel: the same rule)
+  assert.deepEqual([ids(t), t.dev.fx1.fx === cho], ['fx1,i1,out', true]);
+  // fx1 deleted, then classic → Serum → classic: a new panel fx2 (an undo past the delete keeps fx1 — the chorus — apart
+  // from it: the device ids per track are never one another's)
+  const u = mk(); u.fx = cho;
+  const before = JSON.parse(JSON.stringify(u));
+  MO.removePanel(u, 'fx1');
+  u.model = 'serum';
+  assert.deepEqual([ids(u), 'fxId' in u.dev.i1], ['i1,out', false]);
+  u.model = 'juno60';
+  assert.deepEqual([ids(u), MO.destOf(u, 'i1')], ['fx2,i1,out', 'fx2']);
+  assert.deepEqual([Object.keys(before.dev).filter(k => k in u.dev && before.dev[k].kind === 'panel'), before.dev.fx1.fx.racks[0].mods.map(m => m.type)], [[], ['cho']], 'no shared panel id: keepDevs keeps the snapshot\'s chorus');
+});

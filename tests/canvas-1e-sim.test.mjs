@@ -321,3 +321,17 @@ test('Save as classic project of a several-instrument track lists what the class
     assert.deepEqual(v1.tracks.map(x => 'dev' in x), v1.tracks.map(() => false));
   } finally { globalThis.confirm = was; }
 });
+
+// host fixes (the stage-1e review round, fixer H: host / data — tests/graph-host.test.mjs holds the rest)
+test('H4 (page): Delete panel on a one-instrument track — the patch, undo and redo never put a panel back; the module goes', () => {
+  const t = api.addTrack(MODELS.find(m => m.id === 'juno60')); sim.raf();
+  const shape = () => { const x = T(); return Object.keys(x.dev).sort().join(',') + ' | ' + x.wires.map(w => w.a + '>' + w.b).sort().join(' '); };
+  assert.equal(T().id, t.id);
+  const n = hsteps();
+  assert.equal(cv.delPanel('fx1'), true); sim.raf(); sim.raf();
+  assert.deepEqual([shape(), keys(), hsteps(), /^Delete /.test(cv.hist.undoLabel)], ['i1,out | i1.out>out.in', 'i1,out', n + 1, true], 'deleted: the Juno cabled to OUT');
+  cv.undo(); sim.raf(); sim.raf();
+  assert.deepEqual([shape(), keys()], ['fx1,i1,out | fx1.out>out.in i1.out>fx1.in', 'fx1,i1,out']);
+  cv.redo(); sim.raf(); sim.raf();
+  assert.deepEqual([shape(), keys()], ['i1,out | i1.out>out.in', 'i1,out'], 'redo: still no panel');
+});
