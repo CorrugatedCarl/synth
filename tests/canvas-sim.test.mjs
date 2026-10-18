@@ -81,7 +81,8 @@ test('boot: the selected track\'s three modules hold #inst, #fxrack and the scop
   const ttl = nameOf(T().model);
   assert.deepEqual([...V().modules.values()].map(m => m.title), [ttl, 'FX Panel', 'OUT']);
   const menu = cv.menu('inst', 'i1').filter(x => !x.sep);
-  assert.deepEqual(menu.map(x => x.label), ['About the ' + ttl + '…', 'Replace with…', 'Hardware layout', 'Simple layout', 'Save sound…', 'Delete saved sound', 'Init sound', 'Fold', 'Bring to front', 'Tidy the canvas'],
+  assert.deepEqual(menu.map(x => x.label), ['About the ' + ttl + '…', 'Replace with…', 'Hardware layout', 'Simple layout', 'Save sound…', 'Delete saved sound', 'Init sound',
+    'Power', 'Solo in track', 'Primary instrument', 'Duplicate', 'Delete', 'Fold', 'Bring to front', 'Tidy the canvas'], // (1e: the device items)
     'no Reset width (nothing is resizable)');
   assert.deepEqual(menu.slice(2, 4).map(x => x.checked), [true, false], 'Hardware layout checked');
   assert.equal(menu.find(x => x.label === 'Delete saved sound').disabled, true, 'no saved sound loaded');
@@ -349,7 +350,7 @@ test('the ⋯ toggle Hardware ↔ Simple (the user\'s report: "i switched to the
   assert.ok(m().fixed && !('lay' in T() && T().lay.i1), 'fixed, no lay yet');
   const ids = () => [...cv.panel().ui.keys()].filter(k => k[0] !== '@').sort().join(','), ids0 = ids();
   const pick = label => { const it = cv.menu('inst', 'i1').find(x => x.label === label); assert.ok(it && !it.disabled, label + ': in the menu, enabled'); it.action(); sim.raf(); };
-  const checks = () => cv.menu('inst', 'i1').filter(x => x.checked != null).map(x => x.label + ':' + x.checked).join(' ');
+  const checks = () => cv.menu('inst', 'i1').filter(x => x.checked != null && / layout$/.test(x.label)).map(x => x.label + ':' + x.checked).join(' ');
   const flowState = () => [cv.instUi(T()), cv.hw(), m().w, m().fixed && m().fixed.w, m().fixed && m().fixed.h, m().el.hasAttribute('data-cv-fixed')];
   const hwState = () => [cv.instUi(T()), !!cv.hw(), m().w, m().fixed && m().fixed.w, m().fixed && m().fixed.h];
   for (let i = 0; i < 3; i++) { // round trips from the menu (Simple → Hardware → Simple …)
@@ -521,7 +522,8 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   sh.srcPick('prophet5', 'replace'); sim.raf();
   assert.deepEqual([T().model, cv.instUi(T()), hsteps()], ['prophet5', 'flow', n + 1]);
   n = hsteps();
-  assert.equal(sh.srcDrag.drop('obxa', { over: 'canvas' }), true); sim.raf();
+  const bar = () => V().modules.get('i1').bar; // (1e: a drop on the instrument's top bar replaces it; on empty canvas it adds one)
+  assert.equal(sh.srcDrag.drop('obxa', { over: 'canvas', target: bar() }), true); sim.raf();
   assert.deepEqual([T().model, cv.instUi(T()), hsteps()], ['obxa', 'flow', n + 1]);
   // Serum: no hardware panel — the switch does nothing to it
   sh.srcPick('serum', 'track'); sim.raf();
@@ -550,7 +552,7 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   sh.shell.src.open(); sim.raf();
   sh.srcPick('prophet5', 'replace'); sim.raf();
   sh.srcPick('obxa', 'track'); sim.raf();
-  assert.equal(sh.srcDrag.drop('juno60', { over: 'canvas' }), true); sim.raf();
+  assert.equal(sh.srcDrag.drop('juno60', { over: 'canvas', target: bar() }), true); sim.raf();
   assert.equal(sh.srcDrag.drop('dx7', { over: 'tracks' }), true); sim.raf();
   assert.deepEqual([sh.shell.src.isOpen(), tiles.mode()], [true, 'replace'], 'open; back to replacing after a new track');
 });
