@@ -2951,11 +2951,22 @@ function initEditors() {
     endEdit: () => { gesture = false; changed(); },
     changed: () => { sendSong(trk()); arr && arr.render(); },
     // aud: a preview — a voice of its own, never the song's (R7 B5: tapping a chord note while the loop plays kept cutting it)
+    // stage 1e: on a graphed node every powered instrument whose key zone holds n hears it, transposed (the engine routes
+    // a preview to one Inst: i); the receivers [[dev, pitch]] are kept for the note-off (a legacy node: to: null, as before)
     audition: (n, v) => {
-      const t = trk(); let q = audTr.get(n); if (!q) audTr.set(n, q = []); q.push(t.id);
-      postTo(t, { t: 'on', n, v: (v || 100) / 127, aud: 1 }); if (!ctx) powerOn().catch(() => {});
+      const t = trk(), N = nodes.get(t.id), to = N && N.graphed && t.dev ? CG.powered(t).map(id => [id, CG.zoneOf(t.dev[id])])
+        .filter(([, z]) => n >= z.lo && n <= z.hi && n + z.xp >= 0 && n + z.xp <= 127).map(([id, z]) => [id, n + z.xp]) : null;
+      let q = audTr.get(n); if (!q) audTr.set(n, q = []); q.push({ id: t.id, to });
+      if (to) for (const [id, m] of to) postTo(t, { t: 'on', n: m, v: (v || 100) / 127, aud: 1 }, id, true);
+      else postTo(t, { t: 'on', n, v: (v || 100) / 127, aud: 1 });
+      if (!ctx) powerOn().catch(() => {});
     },
-    auditionOff: n => { const q = audTr.get(n), id = q ? q.shift() : null; if (q && !q.length) audTr.delete(n); postTo(id == null ? trk() : { id }, { t: 'off', n, aud: 1 }); },
+    auditionOff: n => {
+      const q = audTr.get(n), r = q ? q.shift() : null; if (q && !q.length) audTr.delete(n);
+      const tr = r ? { id: r.id } : trk();
+      if (r && r.to) for (const [id, m] of r.to) postTo(tr, { t: 'off', n: m, aud: 1 }, id, true);
+      else postTo(tr, { t: 'off', n, aud: 1 });
+    },
     getPlayhead: () => curTick(),
     setPlayhead: t => seek(t),
     setLoop,

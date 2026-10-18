@@ -370,3 +370,18 @@ test('U14: the default camera of a two-instrument track keeps every top bar clea
   assert.ok(W.k >= 0.5 && W.k < 1, 'a lower k lifts the stacked bar above it: ' + W.k);
   assert.ok(barBox('i1').left >= 44 && barBox('i1').top >= 48, 'the primary still at the band\'s top-left');
 });
+
+test('U2: a piano-roll audition reaches every powered instrument whose key zone holds the note (its transpose too); the note-off goes exactly where the note-on went', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  cv.zone('i2', { lo: 60, hi: 72, xp: 12 }); sim.raf();
+  const R = api.roll().host, aud = (from, f) => { const k = posted(t); f(); return sent(t, k).filter(m => m.aud).map(m => m.t + ':' + (m.i || '-') + ':' + m.n).join(' '); };
+  assert.equal(api.nodes.get(t.id).graphed, true);
+  assert.equal(aud(0, () => R.audition(64, 100)), 'on:i1:64 on:i2:76', 'both: the Juno-60 transposed');
+  assert.equal(aud(0, () => R.audition(50, 100)), 'on:i1:50', 'below the Juno-60\'s zone: the Minimoog alone');
+  cv.power('i1', false); sim.raf();
+  assert.equal(aud(0, () => R.auditionOff(64)), 'off:i1:64 off:i2:76', 'the offs where the ons went (the Minimoog off since)');
+  assert.equal(aud(0, () => R.audition(66, 100)), 'on:i2:78', 'the primary off: the Juno-60 still previews');
+  assert.equal(aud(0, () => { R.auditionOff(50); R.auditionOff(66); }), 'off:i1:50 off:i2:78');
+  cv.undo(); sim.raf();
+});
