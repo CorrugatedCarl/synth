@@ -323,21 +323,24 @@ export function createCables(worldEl, o) {
     }
     return null;
   };
+  // (U13) a press on a cable is the canvas's pan (cv-module isBackground: the world captures the pointer) unless it is a
+  // tap: no capture here, its moves and lift followed on the document (capture phase: retargeted to the viewport too)
   const offs = [
     listen(U.e, 'pointerdown', e => {
       const id = cableAt(e.target);
       if (!id || (e.button != null && e.button !== 0)) return;
-      press = { id, pid: e.pointerId, x: e.clientX, y: e.clientY, ctx: false };
-      try { e.target.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
+      press = { id, pid: e.pointerId, x: e.clientX, y: e.clientY, ctx: false, moved: false };
     }),
-    listen(U.e, 'pointermove', e => { if (press && e.pointerId === press.pid && Math.hypot(e.clientX - press.x, e.clientY - press.y) > TAP_PX) press = null; }, { passive: true }),
-    listen(U.e, 'pointerup', e => {
+    listen(doc, 'pointermove', e => { if (press && e.pointerId === press.pid && Math.hypot(e.clientX - press.x, e.clientY - press.y) > TAP_PX) press.moved = true; }, { capture: true, passive: true }),
+    listen(doc, 'pointerup', e => {
       const P = press;
+      if (!P || e.pointerId !== P.pid) return;
       press = null;
-      if (P && e.pointerId === P.pid && !P.ctx && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) select(P.id);
-    }),
-    listen(U.e, 'pointercancel', () => { press = null; }),
+      if (!P.ctx && !P.moved && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) select(P.id);
+    }, true),
+    listen(doc, 'pointercancel', e => { if (press && e.pointerId === press.pid) press = null; }, true),
     listen(U.e, 'contextmenu', e => { // right-click, a touch long-press (wk.menuSource)
+      if (press && press.moved) { if (e.preventDefault) e.preventDefault(); return; } // (a pan's long-press timer: no menu)
       const id = cableAt(e.target) || (press && press.id);
       if (!id) return;
       if (e.preventDefault) e.preventDefault();

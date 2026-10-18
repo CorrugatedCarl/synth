@@ -105,8 +105,17 @@ const gup = v => Math.ceil(v / DOT) * DOT;
 /** Is el a module background (one finger / the mouse pans the camera from it)? el itself must match BG_SEL and lie
  * in a [data-cv-mod]. @param {Element} el @returns {boolean} */
 export function isBackground(el) {
-  if (!el || el.nodeType !== 1 || typeof el.matches !== 'function' || typeof el.closest !== 'function') return false;
+  if (!el || el.nodeType !== 1) return false;
+  if (cableHit(el)) return true; // (1e, U13) an editable cable pans like the canvas around it; a tap on it selects (cv-cables)
+  if (typeof el.matches !== 'function' || typeof el.closest !== 'function') return false;
   try { return !!el.matches(BG_SEL) && !!el.closest('[data-cv-mod]'); } catch (err) { return false; }
+}
+// an editable cable's hit path (cv-cables: path.cv-cable-hit in g[data-cable], no [data-ro])
+function cableHit(el) {
+  try {
+    const g = el.parentNode;
+    return /(^|\s)cv-cable-hit(\s|$)/.test(el.getAttribute('class') || '') && !!g && typeof g.getAttribute === 'function' && g.getAttribute('data-cable') != null && !g.hasAttribute('data-ro');
+  } catch (err) { return false; }
 }
 /** The lay key of a track's FX module: 'i1/fx' (a Serum's own FX) or 'fx1' (a classic track's panel).
  * @param {string} model @returns {string} */

@@ -10,6 +10,8 @@ import assert from 'node:assert/strict';
 import * as dom from './wk-dom.mjs';
 import * as W from '../cv-world.js?v=9';
 import * as wk from '../wk.js?v=9';
+import * as MOD from '../cv-module.js?v=9';
+import * as CAB from '../cv-cables.js?v=9';
 
 const { Ev, ptr, fire, place, layout, all } = dom;
 // never hand a fake-DOM node to assert (its AssertionError walks the cyclic tree): primitives, or JSON
@@ -1182,4 +1184,27 @@ test('U14: the band leaves out the floating toolbar and the minimap above it (fi
   world.setDragging(false);
   eq(tb.hasAttribute('data-cv-drag'), false);
   adv(200); frame();
+});
+
+test('U13: a press on an editable cable pans the camera like the canvas around it (the main.js background test: cv-module isBackground); a tap still selects it; a read-only cable takes no press at all', () => {
+  const { vp, w, world, frame, d } = setup({ opts: { isBackground: el => MOD.isBackground(el) } });
+  const sel = [], L = CAB.createCables(w, { doc: d, onSelect: id => sel.push(id) });
+  L.set([{ id: 'w1', a: 'i1.out', b: 'fx1.in', kind: 'audio' }]);
+  L.layout(new Map([['i1.out', { x: 100, y: 100 }], ['fx1.in', { x: 700, y: 400 }]]));
+  const hit = all(L.under).find(n => n.getAttribute && n.getAttribute('class') === 'cv-cable-hit');
+  frame();
+  mouse(hit, 'pointerdown', 300, 300); mouse(vp, 'pointermove', 330, 300); mouse(vp, 'pointermove', 360, 310); mouse(vp, 'pointerup', 360, 310);
+  frame();
+  eq([world.cam.tx, world.cam.ty, sel], [60, 10, []], 'a mouse drag along it pans; no selection');
+  adv(500);
+  touch(hit, 'pointerdown', 300, 300, 1); touch(vp, 'pointermove', 340, 300, 1); touch(vp, 'pointerup', 340, 300, 1);
+  eq([world.cam.tx, sel], [100, []], 'a finger too');
+  adv(500); frame(30);
+  const tx = world.cam.tx;
+  touch(hit, 'pointerdown', 300, 300, 1); touch(vp, 'pointerup', 302, 301, 1);
+  eq([world.cam.tx, sel], [tx, ['w1']], 'a tap selects it (the camera stays)');
+  eq(MOD.isBackground(hit), true);
+  L.set([{ id: 'w1', a: 'i1.out', b: 'fx1.in', kind: 'audio', readonly: true }]);
+  eq(MOD.isBackground(hit), false, 'read-only: not a press target at all (CSS pointer-events: none)');
+  L.destroy();
 });

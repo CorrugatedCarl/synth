@@ -421,3 +421,22 @@ test('createCableDrag (U12): a read-only jack (data-ro: inside a Serum) never ta
   R.upAt(1380, 770);
   assert.deepEqual(R.log, ['refuse i3.out i2.in: own FX take only that Serum'], 'the refusal (main.js: "Make a shared panel")');
 });
+
+test('createCables (U13): the press takes no pointer capture (the canvas pans from a cable); a tap selects even when the world captured its lift; a press that moved (a pan) opens no long-press menu', () => {
+  const R = layers(), other = R.doc.createElement('div');
+  R.doc.body.append(other);
+  ptr(R.hit('w1'), 'pointerdown', 500, 300, { pointerId: 3, pointerType: 'touch' });
+  assert.equal(R.hit('w1')._cap == null, true, 'no capture on the path');
+  ptr(other, 'pointerup', 503, 302, { pointerId: 3, pointerType: 'touch' }); // (retargeted: the viewport holds the capture)
+  assert.deepEqual(R.sel, ['w1'], 'a tap: selected');
+  R.L.select(null);
+  ptr(R.hit('w3'), 'pointerdown', 500, 300, { pointerId: 4, pointerType: 'touch' });
+  ptr(other, 'pointermove', 560, 300, { pointerId: 4, pointerType: 'touch' }); // (the pan: to the viewport)
+  fire(R.L.under, 'contextmenu', { clientX: 500, clientY: 300 }); // (wk.menuSource's long-press timer, never told of the moves)
+  assert.deepEqual([R.L.selected(), menuLabels(R.doc)], [null, []], 'no menu, no selection');
+  ptr(other, 'pointerup', 560, 300, { pointerId: 4, pointerType: 'touch' });
+  assert.equal(R.L.selected(), null, 'a pan is no tap');
+  fire(R.hit('w4'), 'contextmenu', { clientX: 300, clientY: 200 });
+  assert.equal(R.L.selected(), 'w4', 'a right-click still opens it');
+  R.L.destroy();
+});
