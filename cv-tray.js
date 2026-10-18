@@ -1,7 +1,8 @@
 // cv-tray.js — the shell's trays (SPEC-canvas §2.1–§2.4, §3 drag-in; contract: docs/canvas/IMPL-1b.md §4.6): the one
 // height budget of the top tray and the keyboard tray, the grip helper both use (lifted from main.js initKbView), the side
 // trays (Sources left, Effects right; opened by a tap on their rail, never an edge swipe), the Sources tray's tiles and
-// their drag-out, the ≡ / ⚙ popovers and the sheets in #ov. Owner: SHELL lane.
+// their drag-out, the ≡ / ⚙ popovers and the sheets in #ov. Owner: SHELL lane. Stage 1e (IMPL-1e §4.3): the Effects
+// tray's tiles (effectsTray: the empty FX panel + the effect types, their cost; the same drag-out as a Sources tile).
 // Rules: plain ES module, no DOM at module top level, survives tests/main-sim.mjs's DOM stub (it keeps references to the
 // nodes it makes or is given, never queries them back); imports carry ?v=9.
 import * as wk from './wk.js?v=9';

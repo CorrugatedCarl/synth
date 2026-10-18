@@ -1,7 +1,8 @@
 import './v8-guard.mjs';
 // cv-tray.js (stage 1b SHELL lane; docs/canvas/IMPL-1b.md §8.1): budget(), topSnaps(), trayGrip (drag, two-finger
 // rollback, keys, double-tap, ARIA), sideTray (tap opens, grip inset, stays open on a press outside, never closes itself), sourcesTray
-// drag verdicts (out / along / hold) and drop routing, menuPop, sheet. Fake DOM: tests/wk-dom.mjs; never pass fake-DOM
+// drag verdicts (out / along / hold) and drop routing, menuPop, sheet; (1e) effectsTray (tiles, groups, costs, drops into
+// a panel / onto the canvas, never closing the tray), the Effects tray markup and the 1e styles. Fake DOM: tests/wk-dom.mjs; never pass fake-DOM
 // nodes to assert.* (ids, strings and numbers only).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-tray.test.mjs
 import test from 'node:test';
@@ -497,4 +498,110 @@ test('sourcesTray (1c): the "Hardware | Simple" switch — two aria-pressed butt
   assert.match(css, /\.cv-tiles\[data-layout="flow"\] \.cv-tbadge \{ display: block; \}/);
   assert.match(css, /@media \(pointer: coarse\) \{ \.cv-segb \{ min-height: 44px;/, '44 px on a touch screen');
   S.destroy();
+});
+
+/* ---------------------------------------------------------------- the Effects tray (1e) */
+// the rack's add menu (fx-ui addMenuItems shape: type, label, group; a disabled one skipped)
+const FXI = [{ type: 'eq', label: 'EQ', group: 'Effects' }, { type: 'cho', label: 'Chorus', group: 'Effects' }, { type: 'rev', label: 'Hall Reverb', group: 'Effects' },
+  { type: 'dly', label: 'Delay', group: 'Effects', disabled: true }, { type: 'split2', label: 'Splitter 2', group: 'Splitters' }];
+function fxRig(o = {}) {
+  const R = sideRig({ opts: { side: 'right', key: 'fx' } }), list = R.d.createElement('div'), layer = mkEl(R.d, 'div', 'ov');
+  raf.install();
+  R.panel.append(list);
+  place(R.el, 1000, 100, 284, 600);
+  R.S.open();
+  const log = [], picks = [];
+  let leaves = 0;
+  // the canvas left of the tray; a panel module 'fx1' at x 400…700, y 200…500 (client px)
+  const over = (t, x, y) => (x >= 1000 ? null : x >= 400 && x <= 700 && y >= 200 && y <= 500 ? { over: 'panel', key: 'fx1' } : 'canvas');
+  const F = T.effectsTray(list, Object.assign({
+    items: FXI, tray: R.el, layer, pick: id => picks.push(id), overOf: over, onLeave: () => { leaves++; },
+    cost: id => (id === 'rev' ? '~3 %' : id === 'panel' ? '' : '~1 %'), toWorld: (x, y) => ({ x: (x - 100) * 2, y: (y - 50) * 2 }),
+    drag: {
+      begin: (id, i) => log.push('begin ' + id + ' ' + i.over),
+      move: (id, i) => log.push('move ' + i.over + (i.key ? ':' + i.key : '')),
+      drop: (id, i) => { log.push('drop ' + id + ' ' + i.over + ' ' + (i.key || '-') + ' @' + i.at.x + ',' + i.at.y); return true; },
+      cancel: id => log.push('cancel ' + id),
+    },
+  }, o));
+  R.list = list; R.layer = layer; R.F = F; R.log = log; R.picks = picks;
+  Object.defineProperty(R, 'leaves', { get: () => leaves });
+  return R;
+}
+const fxTile = (R, id) => R.F.tiles().find(t => t.getAttribute('data-fx') === id);
+
+test('effectsTray (1e): the empty FX Panel tile first, then one tile per effect grouped as the rack\'s add menu (a heading per group), its cost on this device; a tap picks', () => {
+  const R = fxRig();
+  assert.deepEqual(R.F.tiles().map(t => t.getAttribute('data-fx')), ['panel', 'eq', 'cho', 'rev', 'split2'], 'a disabled item has no tile');
+  assert.deepEqual(R.list.children.map(n => n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-fx')), ['#Panel', 'panel', '#Effects', 'eq', 'cho', 'rev', '#Splitters', 'split2']);
+  assert.ok(R.F.tiles().every(t => t.tagName === 'BUTTON' && t.className === 'cv-tile cv-ftile' && t.getAttribute('type') === 'button'));
+  const rev = fxTile(R, 'rev'), pan = fxTile(R, 'panel');
+  assert.deepEqual(rev.children.map(c => c.className), ['cv-fglyph', 'cv-tname', 'cv-tcost']);
+  assert.deepEqual([rev.children[0].textContent, rev.children[1].textContent, rev.children[2].textContent, rev.children[2].hidden], ['HR', 'Hall Reverb', '~3 %', false]);
+  assert.deepEqual([pan.children[0].className, pan.children[1].textContent, pan.children[2].hidden], ['cv-fglyph cv-fpanel', 'Empty FX Panel', true], 'no cost: hidden');
+  assert.equal(pan.children[0].getAttribute('aria-hidden'), 'true');
+  assert.equal(fxTile(R, 'eq').children[0].textContent, 'EQ');
+  rev.click(); pan.click();
+  assert.deepEqual(R.picks, ['rev', 'panel']);
+  assert.equal(R.S.isOpen(), true, 'a tap leaves it open');
+  // costs re-read (a measured device factor)
+  R.F.destroy();
+  let k = 1;
+  const F2 = T.effectsTray(R.list, { items: FXI, pick() {}, drag: {}, cost: () => '~' + k + ' %' });
+  k = 7; F2.refresh();
+  assert.equal(F2.tile('eq').children[2].textContent, '~7 %');
+  assert.equal(F2.tile('nope'), null);
+  assert.equal(R.list.children.filter(n => n.tagName === 'H3').length, 3, 'the first tray\'s headings went with it');
+  F2.destroy();
+});
+
+test('effectsTray (1e): a tile drags out like a Sources tile — over a panel module (info.over \'panel\', info.key), over the canvas (\'canvas\'), info.at from toWorld; the tray never closes by itself (leaving it, dropping)', () => {
+  const R = fxRig(), t = fxTile(R, 'rev'), tp = { pointerType: 'touch' };
+  ptr(t, 'pointerdown', 1100, 300, at(tp));
+  ptr(t, 'pointermove', 1088, 302, at(tp)); // (outward: across the tray's scroll axis)
+  assert.deepEqual(R.log, ['begin rev null', 'move null']);
+  assert.equal(R.layer.children[0].className, 'cv-tghost touch cv-fghost', 'the ghost in the layer');
+  ptr(t, 'pointermove', 800, 300, at(tp));
+  assert.deepEqual([R.leaves, R.S.isOpen(), R.log.at(-1)], [1, true, 'move canvas'], 'left the tray: still open');
+  assert.equal(R.layer.children[0].children[1].textContent, '+ New panel with it');
+  ptr(t, 'pointermove', 500, 300, at(tp));
+  assert.equal(R.log.at(-1), 'move panel:fx1');
+  assert.equal(R.layer.children[0].children[1].textContent, '+ Add to the panel');
+  TS += 150;
+  ptr(t, 'pointermove', 501, 301, at(tp)); ptr(t, 'pointerup', 501, 301, at(tp));
+  assert.equal(R.log.at(-1), 'drop rev panel fx1 @802,502', 'dropped into the panel (world point)');
+  assert.deepEqual([R.S.isOpen(), R.layer.children.length], [true, 0], 'still open; the ghost gone');
+  // the empty panel tile over a panel module: a new panel there (never into a panel)
+  R.log.length = 0;
+  const p = fxTile(R, 'panel');
+  ptr(p, 'pointerdown', 1100, 300, at(tp)); ptr(p, 'pointermove', 1088, 300, at(tp)); ptr(p, 'pointermove', 500, 300, at(tp));
+  TS += 150;
+  ptr(p, 'pointerup', 500, 300, at(tp));
+  assert.deepEqual(R.log.slice(-2), ['move canvas', 'drop panel canvas - @800,500']);
+  // a flick is a cancel; still open
+  ptr(t, 'pointerdown', 1100, 300, at(tp)); ptr(t, 'pointermove', 1080, 300, at(tp)); ptr(t, 'pointermove', 300, 300, at(tp)); ptr(t, 'pointerup', 300, 300, at(tp));
+  assert.deepEqual([R.log.at(-1), R.S.isOpen()], ['cancel rev', true]);
+  // without toWorld: the client point
+  R.F.destroy();
+  const L2 = [];
+  const F2 = T.effectsTray(R.list, { items: FXI, tray: R.el, layer: R.layer, pick() {}, overOf: () => 'canvas', drag: { drop: (id, i) => { L2.push(i.at.x + ',' + i.at.y + ' ' + i.over); return true; } } });
+  const t2 = F2.tile('eq');
+  ptr(t2, 'pointerdown', 1100, 300, at(tp)); ptr(t2, 'pointermove', 1088, 300, at(tp)); ptr(t2, 'pointermove', 600, 320, at(tp));
+  TS += 150;
+  ptr(t2, 'pointerup', 600, 320, at(tp));
+  assert.deepEqual(L2, ['600,320 canvas']);
+  assert.equal(R.S.isOpen(), true);
+  F2.destroy();
+});
+
+test('index.html (1e): the Effects tray holds its list (#fxList, the tiles\' grid) — every id main.js binds kept; style.css: the tiles, ⏻, [data-off], the zone pill, the badge, cv-ok / cv-no, cv-off, the cable selection and its ×', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  for (const id of ['fxTray', 'fxRail', 'fxPanel', 'fxClose', 'fxGrip', 'fxList']) assert.match(html, new RegExp('id="' + id + '"'), id);
+  assert.match(html, /<div id="fxList" class="cv-tiles cv-ftiles"/);
+  assert.ok(!html.includes('Effect tiles you can drag onto the canvas or into a panel arrive'), 'the placeholder went');
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  for (const sel of ['.cv-tgrp', '.cv-fglyph', '.cv-tcost', 'button.cv-pow', '.cv-mod[data-off] > .cv-body', '.cv-badge', '.cv-zone', '.cv-zpop', '.cv-jack.cv-ok',
+    '#world[data-cv-patching] .cv-jack.cv-no', '.cv-cable-g.cv-off .cv-cable', '.cv-cable-g.cv-sel .cv-cable', '.cv-cable-x']) assert.ok(css.includes(sel + ' '), sel);
+  assert.match(css, /\.cv-cable-x \{[^}]*width: calc\(30px \* var\(--ik, 1\)\)/, 'the × keeps its screen size');
+  assert.match(css, /\.cv-zone::before \{[^}]*calc\(44px \* var\(--ik, 1\)\)/, 'the pill\'s hit area via ::before');
 });

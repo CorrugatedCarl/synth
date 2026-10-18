@@ -4,7 +4,9 @@ import './v8-guard.mjs';
 // the body mounted for the module's life, onScreen → [data-cv-off]), the fixed sizes (nothing is resizable: no grip, ever;
 // a Hardware layout's size without measuring, a Simple layout's FLOW_W with the height measured, setFixed), makeRoom, top-bar move (world delta = screen / k, snap to the 32 px dots, Shift = no snap, two-finger
 // cancel restores), createTrackView with a scripted world (bodies, ports, cables, lay callbacks, FX key swap, host.size),
-// song.js lay validation (normLay, ui: 'flow') and round-trip. Never pass fake-DOM nodes to assert.*.
+// song.js lay validation (normLay, ui: 'flow') and round-trip. Stage 1e: power (⏻, [data-off]), the key-zone pill and its
+// popover, the bar badge, zoneLabel, devicesOf, Tidy for any number of devices, the device-driven track view (sync by key,
+// bodies by key, Serum-inner jacks read-only, cables from wires) and V.cableDrag. Never pass fake-DOM nodes to assert.*.
 // Run alone: node --max-old-space-size=2048 --test tests/cv-module.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +14,7 @@ import { readFileSync } from 'node:fs';
 import * as M from '../cv-module.js?v=9';
 import * as S from '../song.js?v=9';
 import * as CM from '../cv-migrate.js?v=9';
-import { fresh, all, byCls, one, ptr, fire, key } from './wk-dom.mjs';
+import { fresh, all, byCls, one, ptr, fire, key, Ev } from './wk-dom.mjs';
 
 /* ---------------------------------------------------------------- helpers */
 // a scripted cv-world World: k, a camera, toWorld, items, selection, focus, drag pointer, events
@@ -21,6 +23,7 @@ function fakeWorld(k = 1) {
   const W = {
     k, cam: { tx: 0, ty: 0, k }, el: null, items: new Map(), log: [], pointers: [], selected: null,
     toWorld: (x, y) => ({ x: (x - W.cam.tx) / W.k, y: (y - W.cam.ty) / W.k }),
+    toClient: (x, y) => ({ x: x * W.k + W.cam.tx, y: y * W.k + W.cam.ty }), hooks: {}, // (1e: the cable drag)
     add(it) { W.items.set(it.id, it); W.log.push('add ' + it.id); return () => W.remove(it.id); },
     remove(id) { W.items.delete(id); W.log.push('remove ' + id); },
     update(id) { W.log.push('update ' + id); },
@@ -739,4 +742,257 @@ test('the CPU slot (1d review): a fixed width with tabular digits, so a changing
   assert.match(r, /flex: none/, 'never shrinks'); assert.match(r, /min-width: 5ch/, '"<0.1%" … "100%" in one slot (a monospace font)');
   assert.match(r, /text-align: right/); assert.match(r, /white-space: nowrap/); assert.match(r, /font-variant-numeric: tabular-nums/);
   assert.match(css, /\.cv-cpu:empty \{ display: none; \}/, 'no slot without a figure (OUT, power off)');
+});
+
+/* ---------------------------------------------------------------- 1e: power, key zones, badges */
+test('createModule (1e): power — a ⏻ button first on the bar (aria-pressed), a tap toggles it at once and tells onToggle; [data-off] dims the module; setPower is the host\'s (no callback); never a move or a select; without o.power the slot stays hidden', () => {
+  const doc = fresh(), tog = [], picked = [];
+  const { m, moves } = mod({ power: { on: true, onToggle: on => tog.push(on) }, onSelect: () => picked.push(1) }, { doc });
+  doc.body.append(m.el);
+  assert.deepEqual(m.bar.childNodes.map(n => n.getAttribute('class')), ['cv-pow', 'cv-stripe', 'cv-ttl', 'cv-chip', 'cv-cpu', 'cv-btn cv-more', 'cv-btn cv-fold']);
+  const p = one(m.bar, 'cv-pow');
+  assert.deepEqual([p.tagName, p.hidden, p.getAttribute('aria-pressed'), m.on, m.el.hasAttribute('data-off')], ['BUTTON', false, 'true', true, false]);
+  assert.match(p.getAttribute('aria-label'), /Power: on/);
+  ptr(p, 'pointerdown', 20, 20, { pointerId: 2 });
+  ptr(p, 'pointermove', 80, 90, { pointerId: 2, buttons: 1 });
+  ptr(p, 'pointerup', 80, 90, { pointerId: 2 });
+  p.click();
+  assert.deepEqual([tog, m.on, p.getAttribute('aria-pressed'), m.el.hasAttribute('data-off'), moves.length, picked.length], [[false], false, 'false', true, 0, 0], 'off: dimmed; no move, no select');
+  m.setPower(true);
+  assert.deepEqual([tog, m.el.hasAttribute('data-off'), p.getAttribute('aria-pressed')], [[false], false, 'true'], 'the host\'s state: no callback');
+  const off = mod({ power: { on: false } }, { doc });
+  assert.deepEqual([off.m.on, off.m.el.hasAttribute('data-off'), one(off.m.bar, 'cv-pow').getAttribute('aria-pressed')], [false, true, 'false']);
+  const plain = mod({}, { doc });
+  assert.deepEqual([one(plain.m.bar, 'cv-pow').tagName, one(plain.m.bar, 'cv-pow').hidden], ['SPAN', true], 'the reserved slot (OUT, panels)');
+  plain.m.setPower(false);
+  assert.equal(plain.m.el.hasAttribute('data-off'), true, 'setPower dims any module');
+});
+
+test('createModule (1e): the bar badge — made on first use after the title, before the chip; null hides it', () => {
+  const doc = fresh(), { m } = mod({}, { doc });
+  m.setBadge(null);
+  assert.equal(byCls(m.bar, 'cv-badge').length, 0, 'no empty slot');
+  m.setBadge('not connected – silent');
+  assert.deepEqual(m.bar.childNodes.map(n => n.getAttribute('class')).slice(0, 5), ['cv-pow', 'cv-stripe', 'cv-ttl', 'cv-badge', 'cv-chip']);
+  assert.deepEqual([one(m.bar, 'cv-badge').textContent, one(m.bar, 'cv-badge').hidden, m.badge], ['not connected – silent', false, 'not connected – silent']);
+  m.setBadge('OS 4→2');
+  assert.equal(m.badge, 'OS 4→2');
+  m.setBadge(null);
+  assert.deepEqual([one(m.bar, 'cv-badge').hidden, m.badge], [true, null]);
+  const b = mod({ badge: 'OS 4→2' }, { doc });
+  assert.equal(b.m.badge, 'OS 4→2', 'o.badge');
+});
+
+test('zoneLabel / zoneOf / noteName (1e): "keys: all", "keys: C3–C6 · +12" (C4 = 60), clamped and ordered', () => {
+  assert.deepEqual([M.noteName(60), M.noteName(48), M.noteName(84), M.noteName(0), M.noteName(127), M.noteName(61)], ['C4', 'C3', 'C6', 'C-1', 'G9', 'C#4']);
+  assert.equal(M.zoneLabel(null), 'keys: all');
+  assert.equal(M.zoneLabel({ lo: 0, hi: 127, xp: 0 }), 'keys: all');
+  assert.equal(M.zoneLabel({ lo: 48, hi: 84, xp: 12 }), 'keys: C3–C6 · +12');
+  assert.equal(M.zoneLabel({ lo: 36, hi: 59, xp: -5 }), 'keys: C2–B3 · −5');
+  assert.equal(M.zoneLabel({ xp: 7 }), 'keys: all · +7');
+  assert.deepEqual(M.zoneOf({ lo: 90, hi: 30, xp: 99 }), { lo: 30, hi: 90, xp: 48 });
+  assert.deepEqual(M.zoneOf({ lo: -5, hi: 300.4, xp: 'x' }), { lo: 0, hi: 127, xp: 0 });
+});
+
+test('createModule (1e): the key-zone pill on the left edge — its label; a tap opens low / high / transpose (wk number boxes, "All keys"); a step commits (onChange: one call), the pill follows; Escape / a press outside / the pill close it; setZone is the host\'s', () => {
+  const doc = fresh(), got = [];
+  const { m, moves } = mod({ zone: { lo: 48, hi: 84, xp: 12, onChange: z => got.push(JSON.stringify(z)) } }, { doc });
+  doc.body.append(m.el);
+  const pill = one(m.el, 'cv-zone');
+  assert.deepEqual([pill.parentNode === m.el, pill.textContent, pill.getAttribute('aria-label'), pill.hasAttribute('data-all')], [true, 'keys: C3–C6 · +12', 'Key zone: C3–C6 · +12', false]);
+  assert.deepEqual(m.el.childNodes.map(n => n.getAttribute('class')), ['cv-bar', 'cv-body', 'cv-jack', 'cv-zone']);
+  ptr(pill, 'pointerdown', 5, 60, { pointerId: 3 });
+  pill.click();
+  const pop = one(m.el, 'cv-zpop');
+  assert.ok(pop, 'the popover (no top layer here: beside the pill)');
+  assert.equal(pill.getAttribute('aria-expanded'), 'true');
+  const boxes = byCls(pop, 'wk-nb');
+  assert.deepEqual(boxes.map(b => b.getAttribute('aria-label') + ' ' + b.getAttribute('aria-valuetext')), ['Low C3', 'High C6', 'Transpose +12']);
+  key(boxes[0], 'ArrowUp');
+  assert.deepEqual([got, pill.textContent], [['{"lo":49,"hi":84,"xp":12}'], 'keys: C#3–C6 · +12'], 'one step: one commit');
+  key(boxes[2], 'ArrowDown');
+  assert.equal(got.at(-1), '{"lo":49,"hi":84,"xp":11}');
+  key(boxes[1], 'Home'); // high below low: low follows
+  assert.equal(got.at(-1), '{"lo":0,"hi":0,"xp":11}');
+  one(pop, 'cv-zall').click();
+  assert.deepEqual([got.at(-1), pill.textContent, pill.hasAttribute('data-all'), boxes[0].getAttribute('aria-valuetext')], ['{"lo":0,"hi":127,"xp":0}', 'keys: all', true, 'C-1']);
+  key(pop, 'Escape');
+  assert.deepEqual([byCls(m.el, 'cv-zpop').length, pill.getAttribute('aria-expanded')], [0, 'false'], 'Escape closes');
+  pill.click();
+  ptr(doc.body, 'pointerdown', 900, 900, { pointerId: 4 });
+  assert.equal(byCls(m.el, 'cv-zpop').length, 0, 'a press outside closes');
+  pill.click(); pill.click();
+  assert.equal(byCls(m.el, 'cv-zpop').length, 0, 'the pill toggles');
+  m.setZone({ lo: 60, hi: 72, xp: 0 });
+  assert.deepEqual([pill.textContent, m.zone, got.length], ['keys: C4–C5', { lo: 60, hi: 72, xp: 0 }, 4], 'setZone: no callback');
+  assert.equal(moves.length, 0);
+  assert.equal(mod({}, { doc }).m.el.childNodes.some(n => n.getAttribute('class') === 'cv-zone'), false, 'no zone: no pill');
+  m.zoneOpen(); m.destroy();
+  assert.equal(all(doc.body).filter(n => n.getAttribute && n.getAttribute('class') === 'cv-zpop').length, 0, 'destroy closes it');
+});
+
+/* ---------------------------------------------------------------- 1e: devices, Tidy, the device-driven view */
+// a v2 track: a Juno-60 (i1, primary), a Serum (i2) and a Minimoog (i3, off, zoned) — i1 and i2 into fx1 → OUT, i3 unwired; an
+// empty panel fx2
+function v2t(o = {}) {
+  return Object.assign({
+    id: 'trk_1', name: 'Keys', color: '#3b82c4', prim: 'i1', nid: 4,
+    dev: { i1: { kind: 'synth', model: 'juno60', vals: {} }, i2: { kind: 'synth', model: 'serum', vals: {} },
+      i3: { kind: 'synth', model: 'minimoog', vals: {}, on: false, zone: { lo: 48, hi: 84, xp: 12 } }, fx1: { kind: 'panel' }, fx2: { kind: 'panel' }, out: { kind: 'out' } },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'i2.out', b: 'fx1.in' }, { id: 'w3', a: 'fx1.out', b: 'out.in' }],
+  }, o);
+}
+
+test('devicesOf (1e): instruments (the primary first, then by number), each Serum\'s own FX, the panels, OUT; a v1 track: the stage-1b three', () => {
+  const t = v2t({ prim: 'i3' });
+  t.dev.i10 = { kind: 'synth', model: 'tb303' }; t.dev.lfo1 = { kind: 'lfo' };
+  assert.deepEqual(M.devicesOf(t).map(d => d.key + ':' + d.kind + ':' + (d.model || '-') + (d.prim ? ':prim' : '') + (d.own ? ':own ' + d.own : '')),
+    ['i3:inst:minimoog:prim', 'i1:inst:juno60', 'i2:inst:serum', 'i10:inst:tb303', 'i2/fx:fx:serum:own i2', 'fx1:fx:-', 'fx2:fx:-', 'out:out:-']);
+  assert.equal(M.devicesOf(t)[0].dev === t.dev.i3, true, 'the device itself');
+  assert.deepEqual(M.devicesOf({ model: 'serum' }).map(d => d.key + ':' + d.kind), ['i1:inst', 'i1/fx:fx', 'out:out']);
+  assert.deepEqual(M.devicesOf({ prim: 'zz', dev: { i2: { kind: 'synth', model: 'dx7' }, out: { kind: 'out' } } }).map(d => d.key + (d.prim ? '*' : '')), ['i2*', 'out'], 'a stale prim: the first instrument');
+});
+
+test('tidy (1e): instruments stacked left (primary on top), a Serum\'s own FX beside it, panels in the next column, OUT right — on the dots; one instrument → panel → OUT (or a Serum → its own FX → OUT) exactly as the stage-1b Tidy', () => {
+  const xy = L => Object.entries(L).map(([k, v]) => k + '@' + v.x + ',' + v.y).join(' ');
+  assert.equal(xy(M.tidy(v2t(), {})), 'i1@0,0 i2@0,640 i2/fx@1376,640 i3@0,1568 fx1@2304,0 fx2@2304,512 out@3232,0');
+  // measured sizes count (the widest instrument sets the next column; a row is as tall as its tallest)
+  const S = { i1: { w: 1408, h: 512 }, i2: { w: 1200, h: 900 }, 'i2/fx': { w: 760, h: 1000 }, fx1: { w: 760, h: 300 } };
+  assert.equal(xy(M.tidy(v2t(), S)), 'i1@0,0 i2@0,576 i2/fx@1568,576 i3@0,1664 fx1@2496,0 fx2@2496,384 out@3424,0');
+  for (const L of [M.tidy(v2t(), {}), M.tidy(v2t(), S)]) assert.ok(Object.values(L).every(v => v.x % M.GAP % 32 === 0 && v.y % 32 === 0), 'on the dots');
+  // canonical shapes: the stage-1b result
+  const cl = { prim: 'i1', dev: { i1: { kind: 'synth', model: 'minimoog' }, fx1: { kind: 'panel' }, out: { kind: 'out' } } };
+  const sx = { prim: 'i1', dev: { i1: { kind: 'synth', model: 'serum' }, out: { kind: 'out' } } };
+  assert.deepEqual(M.tidy(cl, {}), M.tidy({ model: 'minimoog' }, {}));
+  assert.deepEqual(M.tidy(sx, {}), M.tidy({ model: 'serum' }, {}));
+  assert.deepEqual(M.tidy(cl, { i1: { w: 1003 } }), M.tidy({ model: 'minimoog' }, { i1: { w: 1003 } }), 'measured widths too');
+  // an explicit device list (createTrackView's host.devices)
+  assert.equal(xy(M.tidy({}, {}, [{ key: 'i9', kind: 'inst', model: 'tb303' }, { key: 'fx4', kind: 'fx' }, { key: 'out', kind: 'out' }])), 'i9@0,0 fx4@992,0 out@1920,0');
+  // makeRoom / layOf for any key
+  const rects = { i2: { x: 0, y: 576, w: 1400, h: 600 }, 'i2/fx': { x: 1376, y: 600, w: 760, h: 420 }, fx1: { x: 2496, y: 0, w: 760, h: 300 }, i3: { x: 0, y: 1664, w: 1184, h: 500 } };
+  assert.deepEqual(M.makeRoom(rects, 'i2'), { 'i2/fx': { x: 1568, y: 600 } }, 'only what overlaps its rows moves');
+  assert.deepEqual(M.layOf({ lay: { 'i2/fx': { x: 9, y: 8, fold: 1 } } }, 'i2/fx', {}), { x: 9, y: 8, fold: 1 });
+  assert.deepEqual(M.layOf({ lay: {} }, 'fx2', M.tidy(v2t(), {})), { x: 2304, y: 512 });
+});
+
+// a device-driven host (IMPL-1e §4.5's shape): per-key bodies, titles, menus, sizes, power, zones, badges, cables
+function dview(track, W, doc, o = {}) {
+  const root = doc.createElement('div'), calls = [], bodies = [], pw = [], zn = [], sel = [], acts = [], ref = { t: track };
+  doc.body.append(root);
+  const host = Object.assign({
+    root, doc, devices: t => M.devicesOf(t),
+    bodies: { mount: (k, b) => { bodies.push('mount ' + k); b.setAttribute('data-body', k); }, unmount: k => bodies.push('unmount ' + k) },
+    title: k => ({ title: k.toUpperCase(), sub: ref.t.name }),
+    menu: k => [{ label: 'menu ' + k }],
+    size: k => (k === 'i1' ? { fixed: { w: 1408, h: 512 } } : null),
+    power: (k, on) => pw.push(k + ' ' + on), zone: (k, z) => zn.push(k + ' ' + JSON.stringify(z)),
+    badge: k => (k === 'i3' && !ref.t.wires.some(w => w.a === 'i3.out') ? 'not connected – silent' : null),
+    lay: (k, e, ph, what) => { calls.push([k, ph, what]); if (ph === 'end' && e) { ref.t.lay = ref.t.lay || {}; ref.t.lay[k] = e; } },
+    cables: { onSelect: id => sel.push(id), onAction: (id, a) => acts.push(id + ' ' + a) },
+  }, o);
+  const V = M.createTrackView(W, track, host);
+  return { V, root, calls, bodies, pw, zn, sel, acts, ref, sync: t => { ref.t = t; V.sync(t); } };
+}
+const at2 = V => [...V.modules.entries()].map(([k, m]) => k + '@' + m.x + ',' + m.y).join(' ');
+
+test('createTrackView (1e, device-driven): one module per device (keys = device ids), bodies mounted by key, Tidy for 3 instruments + 2 panels + a Serum\'s own FX + OUT; ⏻ / zone pill / badge on instruments; the jacks inside a Serum read-only; the cables from track.wires', () => {
+  const doc = fresh(), W = fakeWorld(1), t = v2t();
+  const R = dview(t, W, doc);
+  assert.deepEqual([...R.V.modules.keys()], ['i1', 'i2', 'i3', 'i2/fx', 'fx1', 'fx2', 'out']);
+  assert.deepEqual(W.log.filter(x => x.startsWith('add')), ['add i1', 'add i2', 'add i3', 'add i2/fx', 'add fx1', 'add fx2', 'add out']);
+  assert.deepEqual(R.bodies, ['mount i1', 'mount i2', 'mount i3', 'mount i2/fx', 'mount fx1', 'mount fx2', 'mount out']);
+  assert.equal(R.V.modules.get('i2/fx').body.getAttribute('data-body'), 'i2/fx', 'host.bodies.mount(key, bodyEl)');
+  assert.equal(at2(R.V), 'i1@0,0 i2@0,576 i3@0,1504 i2/fx@1568,576 fx1@2496,0 fx2@2496,512 out@3424,0', 'host.size(i1) (1408 × 512) counts');
+  assert.deepEqual([...R.V.modules.values()].map(m => m.w), [1408, M.W_SERUM, M.FLOW_W.minimoog, M.W_FX, M.W_FX, M.W_FX, M.W_OUT]);
+  assert.deepEqual([...R.V.modules.values()].map(m => m.kind), ['inst', 'inst', 'inst', 'fx', 'fx', 'fx', 'out']);
+  assert.deepEqual([...R.V.modules.values()].map(m => m.cost), [600, 3700, 600, 900, 900, 900, 40]);
+  assert.deepEqual(R.V.devices().map(d => d.key), [...R.V.modules.keys()]);
+  // titles / menus by key
+  assert.equal(R.V.modules.get('fx2').title, 'FX2');
+  R.V.modules.get('fx2').openMenu(10, 10);
+  assert.deepEqual(byCls(byCls(doc.body, 'wk-ctx').at(-1), 'wk-cl').map(n => n.textContent), ['menu fx2']);
+  // power, zones, badge
+  const pow = k => one(R.V.modules.get(k).bar, 'cv-pow');
+  assert.deepEqual(['i1', 'i2', 'i3'].map(k => pow(k).tagName + ' ' + pow(k).getAttribute('aria-pressed') + ' ' + R.V.modules.get(k).el.hasAttribute('data-off')),
+    ['BUTTON true false', 'BUTTON true false', 'BUTTON false true']);
+  assert.deepEqual(['i2/fx', 'fx1', 'out'].map(k => pow(k).hidden), [true, true, true], 'no power on panels / OUT');
+  assert.deepEqual(['i1', 'i3'].map(k => one(R.V.modules.get(k).el, 'cv-zone').textContent), ['keys: all', 'keys: C3–C6 · +12']);
+  assert.equal(one(R.V.modules.get('fx1').el, 'cv-zone'), null);
+  assert.deepEqual(['i1', 'i3'].map(k => R.V.modules.get(k).badge), [null, 'not connected – silent']);
+  pow('i1').click();
+  assert.deepEqual([R.pw, R.V.modules.get('i1').el.hasAttribute('data-off')], [['i1 false'], true], 'host.power(key, on)');
+  key(one(R.V.modules.get('i3').el, 'cv-zone'), 'Enter'); one(R.V.modules.get('i3').el, 'cv-zone').click();
+  key(byCls(R.V.modules.get('i3').el, 'wk-nb')[2], 'ArrowUp');
+  assert.deepEqual(R.zn, ['i3 {"lo":48,"hi":84,"xp":13}'], 'host.zone(key, zone)');
+  R.V.modules.get('i3').zoneClose();
+  // jacks: patchable buttons; inside the Serum read-only
+  const J = id => { const [k, j] = [id.slice(0, id.lastIndexOf('.')), id.slice(id.lastIndexOf('.') + 1)]; return R.V.modules.get(k).jack(j); };
+  assert.deepEqual(['i1.out', 'i2.out', 'i2/fx.in', 'i2/fx.out', 'fx1.in', 'out.in'].map(j => J(j).getAttribute('role') + (J(j).hasAttribute('data-ro') ? ' ro' : '')),
+    ['button', 'button ro', 'button ro', 'button', 'button', 'button']);
+  assert.deepEqual(R.V.jacks().map(j => j.id), ['i1.out', 'i2.out', 'i3.out', 'i2/fx.in', 'i2/fx.out', 'fx1.in', 'fx1.out', 'fx2.in', 'fx2.out', 'out.in']);
+  assert.deepEqual([R.V.port('i2/fx.out'), R.V.port('i2.out'), R.V.port('fx1.in')], ['i2.out', null, 'fx1.in']);
+  // cables: the wires (editable) and the Serum's own route
+  assert.deepEqual(R.V.cables.list().map(c => c.id + ' ' + c.a + '>' + c.b + (c.readonly ? ' ro' : '')), ['i2.out>i2/fx.in i2.out>i2/fx.in ro', 'w1 i1.out>fx1.in', 'w2 i2/fx.out>fx1.in', 'w3 fx1.out>out.in']);
+  const d = all(R.root).filter(n => n.getAttribute && n.getAttribute('data-cable') === 'w2')[0].childNodes[1].getAttribute('d');
+  const P = R.V.ports();
+  assert.ok(d.startsWith('M ' + P.get('i2/fx.out').x + ' ' + P.get('i2/fx.out').y + ' C'), 'a Serum\'s wire leaves its own FX module');
+  // selecting a module clears a selected cable
+  R.V.cables.select('w1');
+  W.select('fx2');
+  assert.deepEqual(R.sel, ['w1', null]);
+  R.V.destroy();
+  assert.equal(R.bodies.filter(x => x.startsWith('unmount')).length, 7);
+});
+
+test('createTrackView.sync (1e, device-driven): diffs by key — a removed device goes (its body unmounted), an added one comes, the others stay mounted; power / cables / badges follow; a model change on the same key keeps the module, the Serum\'s own FX comes', () => {
+  const doc = fresh(), W = fakeWorld(1), t = v2t();
+  const R = dview(t, W, doc);
+  R.bodies.length = 0; W.log.length = 0;
+  const t2 = clone(t);
+  delete t2.dev.fx2; t2.dev.fx3 = { kind: 'panel' }; t2.dev.i2.on = false;
+  t2.wires.push({ id: 'w4', a: 'i3.out', b: 'out.in' });
+  R.sync(t2);
+  assert.deepEqual([...R.V.modules.keys()], ['i1', 'i2', 'i3', 'i2/fx', 'fx1', 'out', 'fx3']);
+  assert.deepEqual(R.bodies, ['unmount fx2', 'mount fx3'], 'only what changed');
+  assert.deepEqual(W.log.filter(x => /^(add|remove)/.test(x)), ['remove fx2', 'add fx3']);
+  assert.deepEqual([R.V.modules.get('i2').el.hasAttribute('data-off'), one(R.V.modules.get('i2').bar, 'cv-pow').getAttribute('aria-pressed')], [true, 'false']);
+  assert.deepEqual(R.V.cables.list().filter(c => c.dim).map(c => c.id), ['i2.out>i2/fx.in', 'w2', 'w4'], 'i2 off: its cables grey (the panel still carries i1); i3 is off too');
+  assert.equal(R.V.modules.get('i3').badge, null, 'cabled now: no badge');
+  // the primary Juno becomes a Serum (same key): kept, its own FX module comes, its out jack now inside it
+  R.bodies.length = 0;
+  const t3 = clone(t2);
+  t3.dev.i1.model = 'serum';
+  R.sync(t3);
+  assert.deepEqual(R.bodies, ['mount i1/fx']);
+  assert.deepEqual([R.V.modules.get('i1').w, R.V.modules.get('i1').cost, R.V.modules.get('i1').jack('out').hasAttribute('data-ro')], [1408, 3700, true], 'host.size wins; a Serum\'s cost; inside it now');
+  assert.ok(R.V.modules.has('i1/fx'));
+  // a moved module stays where it was put; Tidy for the rest is stable across syncs (no measured heights)
+  R.V.modules.get('fx1').nudge(32, 0);
+  const a = at2(R.V);
+  R.sync(clone(R.ref.t));
+  assert.equal(at2(R.V), a);
+  assert.deepEqual(R.ref.t.lay.fx1, { x: R.V.modules.get('fx1').x, y: R.V.modules.get('fx1').y }, 'the move written by key');
+  R.V.destroy();
+});
+
+test('createTrackView (1e): V.cableDrag — patching on the view\'s own ports, jacks and model ports (a Serum\'s from its own FX)', () => {
+  const doc = fresh(), W = fakeWorld(1), t = v2t();
+  const R = dview(t, W, doc), log = [];
+  const D = R.V.cableDrag({ canConnect: () => ({ ok: true }), onConnect: (a, b) => log.push(a + ' ' + b), onRepatch: (w, a, b) => log.push(w + ' ' + a + ' ' + b) });
+  assert.equal(typeof W.hooks.jack, 'function', 'the world\'s jack hook');
+  const P = R.V.ports(), J = (k, j) => R.V.modules.get(k).jack(j);
+  const go = (k, j, to) => {
+    const a = P.get(k + '.' + j), b = P.get(to);
+    W.hooks.jack(new Ev('pointerdown', { clientX: a.x, clientY: a.y, pointerId: 1, pointerType: 'mouse' }), J(k, j));
+    ptr(doc.body, 'pointermove', a.x + 40, a.y + 40, { pointerId: 1, buttons: 1 });
+    ptr(doc.body, 'pointermove', b.x + 5, b.y + 5, { pointerId: 1, buttons: 1 });
+    ptr(doc.body, 'pointerup', b.x + 5, b.y + 5, { pointerId: 1 });
+  };
+  go('i3', 'out', 'fx2.in');
+  go('i2/fx', 'out', 'out.in');
+  go('fx1', 'in', 'fx2.in'); // (w2, the last cable into fx1, lifts off)
+  assert.deepEqual(log, ['i3.out fx2.in', 'i2.out out.in', 'w2 i2.out fx2.in']);
+  assert.equal(W.hooks.jack(new Ev('pointerdown', { pointerId: 2 }), J('i2', 'out')), false, 'inside the Serum: not taken');
+  D.destroy();
+  R.V.destroy();
 });
