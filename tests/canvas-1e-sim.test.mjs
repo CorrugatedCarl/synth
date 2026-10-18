@@ -490,6 +490,35 @@ test('U11: Effects-tray drags — an effect over an instrument goes into its FX 
     cv.fx.drag.move('rev', { over: null, x: 900, y: 600, left: true, pointerType: 'mouse' });
     cv.fx.drag.cancel('rev', {});
   } finally { delete W.ghost; }
-  const rv = cv.fx.items.find(x => x.type === 'rev').label;
+  const rv = cv.fx.items.find(x => x.type === 'rev').label; // (the tray's name)
   assert.deepEqual(G, ['+ Panel with ' + rv + '|760', rv + ' → FX Panel|' + V().modules.get('fx1').w, null, null]);
+});
+
+test('U9: the soft caps on a touch device (page sim) — the 4th instrument warns in the notice, a second heavy Serum asks first; Duplicate the same', () => {
+  fresh('minimoog');
+  const was = globalThis.confirm, asked = [];
+  globalThis.confirm = m => { asked.push(String(m)); return false; };
+  cv.touch(true);
+  try {
+    cv.add('juno60', null); sim.raf(); cv.add('dx7', null); sim.raf();
+    assert.doesNotMatch(note(), /instruments \(about/, 'three: no warning');
+    const four = cv.add('prophet5', null); sim.raf();
+    assert.match(note(), /^This track now has 4 instruments \(about [^)]+\)\. More can cause dropouts here/, 'the 4th warns');
+    cv.undo(); sim.raf();
+    assert.equal(T().dev[four], undefined);
+    api.notice('', 0);
+    const d = cv.dup('i2'); sim.raf();
+    assert.equal(T().dev[d].model, 'juno60');
+    assert.match(note(), /^This track now has 4 instruments/, 'a duplicate that makes the 4th warns too');
+    cv.undo(); sim.raf();
+    // heavy Serums (a slow device: the factor makes every Serum heavy)
+    api.store.set('synth.cv.devFactor', 50);
+    const s1 = cv.add('serum', null); sim.raf();
+    assert.deepEqual([T().dev[s1].model, asked.length], ['serum', 0], 'the first heavy Serum: no question');
+    assert.equal(cv.add('serum', null), null, 'a second: asked, declined');
+    assert.match(asked.at(-1), /already has a heavy Serum/);
+    const n = CMOD.instIds(T()).length, k = asked.length;
+    assert.equal(cv.dup(s1), null, 'Duplicate of the heavy Serum: asked, declined');
+    assert.deepEqual([asked.length, CMOD.instIds(T()).length], [k + 1, n]);
+  } finally { globalThis.confirm = was; cv.touch(null); api.store.set('synth.cv.devFactor', 0); }
 });

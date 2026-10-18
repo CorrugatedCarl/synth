@@ -4787,6 +4787,9 @@ function cvDuplicate(key) {
   const t = trk(), d = CMOD.instOf(t, key);
   if (!d) return null;
   if (CMOD.instIds(t).length >= CG.LIMITS.inst) { notice(`At most ${CG.LIMITS.inst} instruments per track`, 4000); return null; }
+  // the soft caps as an add (U9): a second heavy Serum asks first, the 4th instrument warns
+  const cap = COSTM.softCap(t, { kind: 'synth', model: d.model, vals: d.vals, on: d.on }, { touch: touchDev, factor: devFactor() });
+  if (cap.confirm && !confirm(cap.confirm)) return null;
   hist.record(project, 'Duplicate ' + cvDevName(t, key));
   const lay = cvPinned(t);
   const id = CMOD.addInst(t, d.model, { vals: clone(d.vals), preset: d.preset, fx: d.fx ? clone(d.fx) : undefined, name: d.name });
@@ -4803,6 +4806,7 @@ function cvDuplicate(key) {
   sendPatch(t);
   if (d.model === 'tb303') seqSend(t, id);
   cvAfter(t);
+  if (cap.warn) notice(cap.warn, 12000);
   return id;
 }
 // Delete (⋯): refused for the last instrument (a track keeps one: Replace with… changes it), else one History step (the
@@ -5113,6 +5117,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     cable: { can: cvCan, connect: cvConnect, repatch: (w, a, b) => cvConnect(a, b, 'Re-patch'), disconnect: cvDisconnect, refuse: cvRefuse, port: cvJackPort },
     fx: { pick: fxPick, drag: fxDrag, over: fxOver, items: FX_ITEMS, tiles: () => shell.fxTiles, addPanel: (at, type) => cvAddPanel(trk(), at, type), addEffect: (key, type) => cvAddEffect(trk(), key, type) },
     classicPanels, serumPanels, fxPanels, bodyEl: key => cvBodyEl(trk(), key), measure: cvMeasure, costLabels, devFactor, setTrackModel, renderPanels,
+    touch: (t0 => v => { touchDev = v == null ? t0 : !!v; })(touchDev), // (the soft caps' touch rule; null: back to this device's)
   };
 }
 
