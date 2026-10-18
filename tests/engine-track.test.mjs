@@ -599,25 +599,48 @@ test('§14.1 row r (node gate): three instruments into one shared panel ≤ 1.5 
 // §9.2 / IMPL-1e §7: the warm-up covers the graph paths — on a warmed scope, a graph node that has been running silently
 // (as a track does before it is played: the first render after a patch has costs of its own, 1d's as well) plays its first
 // chord through the new paths (two classic Insts at a gain into a shared reverb panel, one straight to OUT: copy-first sums,
-// the panel keyed by the Track) and later a power-on restrike, each first quantum ≤ 1.5 × steady state. Single-quantum
-// timings are noisy: the best of up to 5 fresh scopes counts
-test('§9.2 warm-up: the first quantum of the graph paths (first chord, power-on restrike) ≤ 1.5 × steady state (warmed scope)', (t) => {
-  const P = { i1: classic('juno60'), i2: classic('prophet5'), i3: classic('minimoog') };
+// the panel keyed by the Track) and later a power-on restrike, each first quantum ≤ 1.5 × steady state. In a child node (a
+// worklet starts from a fresh isolate; this file's earlier scopes leave compiled code behind that changes first-call costs);
+// single-quantum timings are noisy: the best of up to 5 fresh scopes counts
+test('§9.2 warm-up: the first quantum of the graph paths (first chord, power-on restrike) ≤ 1.5 × steady state (warmed scope, fresh isolate)', async (t) => {
+  const { spawnSync } = await import('node:child_process');
+  const here = new URL('./', import.meta.url).href, V = '?v=9';
+  const code = `
+    import '${here}v8-guard.mjs';
+    import { dspScope } from '${here}dsp-scope.mjs';
+    import * as core from '${here}../serum-core.js${V}';
+    import { patchFor, MODELS } from '${here}../models.js${V}';
+    const SR = 48000, quiet = { log() {}, warn() {}, error() {}, info() {}, debug() {} }, Z = { lo: 0, hi: 127, xp: 0 };
+    const classic = id => { const m = MODELS.find(x => x.id === id), p = patchFor(m, Object.fromEntries(m.controls.map(c => [c.id, c.def])), core.defaultFx2(), { sr: SR, bpm: 120 }); delete p.fxr; delete p.fxrT; return p; };
+    const fx = core.defaultFx2(), id = core.newInstance(fx, 'rev', { rack: 0 }); fx.racks[0].mods.find(x => x.id === id).p.mix = 0.5;
+    const out = [], g = { t: 'graph', insts: ['i1', 'i2', 'i3'].map((id, k) => ({ id, on: true, zone: Z, salt: k * 77 })), chains: [{ id: 'fx1' }],
+      edges: [['i1', 'fx1', 1], ['i2', 'fx1', 0.7], ['fx1', 'out', 1], ['i3', 'out', 0.5]], out: 'out' };
+    for (let k = 0; k < 5; k++) {
+      const D = dspScope({ engine: true, fast: true, console: quiet });
+      new D.Proc({ processorOptions: { os: 4, hostOS: 4 } }); // (the first live Track of the scope: the warm-up)
+      const p = new D.Proc({ processorOptions: { os: 4, hostOS: 4 } });
+      p.msg(g);
+      for (const [i, m] of [['i1', 'juno60'], ['i2', 'prophet5'], ['i3', 'minimoog']]) p.msg({ t: 'patch', i, p: classic(m) });
+      p.msg({ t: 'chain', c: 'fx1', fxr: core.compileFx(fx, { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx) });
+      const o = [[new Float32Array(128), new Float32Array(128)]], q = () => { const t0 = performance.now(); p.process([], o); D.ctx.currentFrame += 128; return performance.now() - t0; };
+      const steady = n => { const a = []; for (let j = 0; j < n; j++) a.push(q()); return a.slice(n >> 2).sort((x, y) => x - y)[(n - (n >> 2)) >> 1]; };
+      steady(200);
+      for (const n of [48, 55, 60, 64]) p.msg({ t: 'on', n, v: 0.8 });
+      const f1 = q(), m1 = steady(300);
+      p.msg({ t: 'power', i: 'i2', on: false }); steady(100);
+      p.msg({ t: 'power', i: 'i2', on: true });
+      const f2 = q(), m2 = steady(300);
+      out.push([f1, m1, f2, m2]);
+      if (f1 / m1 <= 1.5 && f2 / m2 <= 1.5) break;
+    }
+    console.log(JSON.stringify(out));`;
+  const r = spawnSync(process.execPath, ['--max-old-space-size=2048', '--input-type=module', '-e', code], { encoding: 'utf8', timeout: 120000 });
+  assert.equal(r.status, 0, r.stderr);
+  const got = JSON.parse(r.stdout.trim().split('\n').pop());
   let best = [Infinity, Infinity];
-  for (let k = 0; k < 5 && Math.max(...best) > 1.5; k++) {
-    const D = dspScope({ engine: true, fast: true, console: quiet });
-    mk(D, { os: 4, hostOS: 4 }); // (the first live Track of the scope: the warm-up)
-    const { p } = gnode(D, graph(['i1', 'i2', 'i3'], ['fx1'], [['i1', 'fx1', 1], ['i2', 'fx1', 0.7], ['fx1', 'out', 1], ['i3', 'out', 0.5]]), P, { fx1: fxOf(verb()) }, { os: 4, hostOS: 4 });
-    const o = out(), q = () => { const t0 = performance.now(); p.process([], o); D.ctx.currentFrame += 128; return performance.now() - t0; };
-    const steady = n => { const a = []; for (let j = 0; j < n; j++) a.push(q()); return a.slice(n >> 2).sort((x, y) => x - y)[(n - (n >> 2)) >> 1]; };
-    steady(200); // (running, silent)
-    for (const n of CHORD) p.msg({ t: 'on', n, v: 0.8 });
-    const f1 = q(), m1 = steady(300);
-    p.msg({ t: 'power', i: 'i2', on: false }); steady(100);
-    p.msg({ t: 'power', i: 'i2', on: true });
-    const f2 = q(), m2 = steady(300);
+  for (const [f1, m1, f2, m2] of got) {
     best = [Math.min(best[0], f1 / m1), Math.min(best[1], f2 / m2)];
-    t.diagnostic(`attempt ${k + 1}: first chord ${f1.toFixed(3)} ms / steady ${m1.toFixed(3)} ms (× ${(f1 / m1).toFixed(2)}), restrike ${f2.toFixed(3)} / ${m2.toFixed(3)} ms (× ${(f2 / m2).toFixed(2)})`);
+    t.diagnostic(`first chord ${f1.toFixed(3)} ms / steady ${m1.toFixed(3)} ms (× ${(f1 / m1).toFixed(2)}), restrike ${f2.toFixed(3)} / ${m2.toFixed(3)} ms (× ${(f2 / m2).toFixed(2)})`);
   }
   assert.ok(best[0] <= 1.5 && best[1] <= 1.5, `first quantum × ${best.map(x => x.toFixed(2)).join(' / ')} of steady state`);
 });
