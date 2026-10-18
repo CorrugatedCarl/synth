@@ -105,8 +105,17 @@ const gup = v => Math.ceil(v / DOT) * DOT;
 /** Is el a module background (one finger / the mouse pans the camera from it)? el itself must match BG_SEL and lie
  * in a [data-cv-mod]. @param {Element} el @returns {boolean} */
 export function isBackground(el) {
-  if (!el || el.nodeType !== 1 || typeof el.matches !== 'function' || typeof el.closest !== 'function') return false;
+  if (!el || el.nodeType !== 1) return false;
+  if (cableHit(el)) return true; // (1e, U13) an editable cable pans like the canvas around it; a tap on it selects (cv-cables)
+  if (typeof el.matches !== 'function' || typeof el.closest !== 'function') return false;
   try { return !!el.matches(BG_SEL) && !!el.closest('[data-cv-mod]'); } catch (err) { return false; }
+}
+// an editable cable's hit path (cv-cables: path.cv-cable-hit in g[data-cable], no [data-ro])
+function cableHit(el) {
+  try {
+    const g = el.parentNode;
+    return /(^|\s)cv-cable-hit(\s|$)/.test(el.getAttribute('class') || '') && !!g && typeof g.getAttribute === 'function' && g.getAttribute('data-cable') != null && !g.hasAttribute('data-ro');
+  } catch (err) { return false; }
 }
 /** The lay key of a track's FX module: 'i1/fx' (a Serum's own FX) or 'fx1' (a classic track's panel).
  * @param {string} model @returns {string} */
@@ -203,12 +212,15 @@ export function zoneLabel(z) {
 const okEntry = e => isObj(e) && fin(e.x) && fin(e.y);
 /** The lay entry of `key`, falling back to the other FX key after a classic ↔ Serum model change (its place, fold and
  * z), else Tidy's. Always a copy, never with a width (a stored w is ignored: nothing is resizable).
- * @param {{model: string, lay?: Lay}} track @param {string} key @param {Lay} tidied @returns {LayEntry} */
-export function layOf(track, key, tidied) {
+ * (1e) keys: the track's module keys — while the other FX key is a module of its own (a Serum primary's 'i1/fx' beside a
+ * shared panel 'fx1') its entry is its own, never a fallback.
+ * @param {{model: string, lay?: Lay}} track @param {string} key @param {Lay} tidied @param {string[]} [keys] @returns {LayEntry} */
+export function layOf(track, key, tidied, keys) {
   const L = track && isObj(track.lay) ? track.lay : null;
   if (L && okEntry(L[key])) { const e = Object.assign({}, L[key]); delete e.w; return e; }
-  if (L && (key === ID.fx || key === ID.sxFx)) {
-    const o = L[key === ID.fx ? ID.sxFx : ID.fx];
+  const ox = key === ID.fx ? ID.sxFx : key === ID.sxFx ? ID.fx : null;
+  if (L && ox && !(Array.isArray(keys) && keys.includes(ox))) {
+    const o = L[ox];
     if (okEntry(o)) { const e = Object.assign({}, o); delete e.w; return e; }
   }
   const t = isObj(tidied) && okEntry(tidied[key]) ? tidied[key] : { x: 0, y: 0 };
@@ -600,6 +612,9 @@ export function createModule(o, env) {
     setPower, get on() { return pwr; },
     /** (1e) the key-zone pill's {lo, hi, xp} (an instrument made with o.zone); no callback */
     setZone, get zone() { return zv ? Object.assign({}, zv) : null; }, zoneOpen: () => { if (zpill && !zpop) zoneOpen(); }, zoneClose,
+    /** (1e, U3) how far the pill reaches left of the module (world px: its width and the 10 px gap; 0 without one) — a
+     * camera that frames the module keeps it clear of the rail (one layout read) */
+    get zoneW() { return zpill ? (+zpill.offsetWidth || 72) + 10 : 0; },
     /** (1e) the bar badge: text or null */
     setBadge, get badge() { return badgeEl && !badgeEl.hidden ? badgeEl.textContent : null; },
     destroy() {
@@ -725,13 +740,18 @@ export function createTrackView(world, track, host) {
     const d = devOf(key), kind = kindOf(key);
     if (kind === 'inst') { m.setPower(!(d && d.on === false)); if (m.zone) m.setZone(d && d.zone); }
     m.setBadge(typeof H.badge === 'function' ? call(H.badge, key) || null : null);
-    for (const j of m.jackIds()) { const e = m.jack(j); if (jackPort(T, key + '.' + j)) e.removeAttribute('data-ro'); else e.setAttribute('data-ro', ''); }
+    // a jack inside a Serum is its own route (data-ro): no press, no focus, no "Connect to…" (U12) — the patchable ones buttons
+    for (const j of m.jackIds()) {
+      const e = m.jack(j);
+      if (jackPort(T, key + '.' + j)) { e.removeAttribute('data-ro'); e.setAttribute('role', 'button'); e.tabIndex = 0; }
+      else { e.setAttribute('data-ro', ''); e.removeAttribute('role'); e.tabIndex = -1; }
+    }
     m.cost = costOf(key);
     const c = colorOf(key);
     if (c) m.el.style.setProperty('--mc', c);
   }
   function make(key) {
-    const kind = kindOf(key), M0 = meta(key), L = layOf(T, key, tidied()), SZ = kind === 'inst' || DEV ? sizeOf(key) : null, d = devOf(key);
+    const kind = kindOf(key), M0 = meta(key), L = layOf(T, key, tidied(), keys()), SZ = kind === 'inst' || DEV ? sizeOf(key) : null, d = devOf(key);
     const jk = kind === 'inst' ? [{ id: 'out', side: 'right', kind: 'audio', label: (M0.title || 'Instrument') + ' out' }]
       : kind === 'fx' ? [{ id: 'in', side: 'left', kind: 'audio', label: (M0.title || 'FX') + ' in' }, { id: 'out', side: 'right', kind: 'audio', label: (M0.title || 'FX') + ' out' }]
         : [{ id: 'in', side: 'left', kind: 'audio', label: 'OUT in' }];
@@ -824,7 +844,7 @@ export function createTrackView(world, track, host) {
         const kind = kindOf(k), M0 = meta(k), SZ = kind === 'inst' || DEV ? sizeOf(k) : null;
         if (SZ || (DEV && m.fixed)) m.setFixed(SZ ? SZ.fixed : null); // (the size follows the model and the layout toggle, even mid-drag; before Tidy reads the widths)
         if (DEV && !SZ) m.setW(kindW(kind, modelOf(k)));
-        const L = layOf(T, k, tidied());
+        const L = layOf(T, k, tidied(), want);
         if (!m.dragging()) {
           m.setPos(L.x, L.y, false);
           if (m.fold !== !!L.fold) { m.setFold(!!L.fold); vis = true; }

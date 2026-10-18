@@ -323,21 +323,24 @@ export function createCables(worldEl, o) {
     }
     return null;
   };
+  // (U13) a press on a cable is the canvas's pan (cv-module isBackground: the world captures the pointer) unless it is a
+  // tap: no capture here, its moves and lift followed on the document (capture phase: retargeted to the viewport too)
   const offs = [
     listen(U.e, 'pointerdown', e => {
       const id = cableAt(e.target);
       if (!id || (e.button != null && e.button !== 0)) return;
-      press = { id, pid: e.pointerId, x: e.clientX, y: e.clientY, ctx: false };
-      try { e.target.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
+      press = { id, pid: e.pointerId, x: e.clientX, y: e.clientY, ctx: false, moved: false };
     }),
-    listen(U.e, 'pointermove', e => { if (press && e.pointerId === press.pid && Math.hypot(e.clientX - press.x, e.clientY - press.y) > TAP_PX) press = null; }, { passive: true }),
-    listen(U.e, 'pointerup', e => {
+    listen(doc, 'pointermove', e => { if (press && e.pointerId === press.pid && Math.hypot(e.clientX - press.x, e.clientY - press.y) > TAP_PX) press.moved = true; }, { capture: true, passive: true }),
+    listen(doc, 'pointerup', e => {
       const P = press;
+      if (!P || e.pointerId !== P.pid) return;
       press = null;
-      if (P && e.pointerId === P.pid && !P.ctx && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) select(P.id);
-    }),
-    listen(U.e, 'pointercancel', () => { press = null; }),
+      if (!P.ctx && !P.moved && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) select(P.id);
+    }, true),
+    listen(doc, 'pointercancel', e => { if (press && e.pointerId === press.pid) press = null; }, true),
     listen(U.e, 'contextmenu', e => { // right-click, a touch long-press (wk.menuSource)
+      if (press && press.moved) { if (e.preventDefault) e.preventDefault(); return; } // (a pan's long-press timer: no menu)
       const id = cableAt(e.target) || (press && press.id);
       if (!id) return;
       if (e.preventDefault) e.preventDefault();
@@ -416,6 +419,9 @@ export function createCableDrag(world, o) {
   const call = (f, ...a) => { if (typeof f !== 'function') return undefined; try { return f(...a); } catch (err) { console.error(err); return undefined; } };
   const listen = (t, type, fn, opt) => { t.addEventListener(type, fn, opt); return () => t.removeEventListener(type, fn, opt); };
   const portOf = j => (typeof Op.port === 'function' ? call(Op.port, j) || null : j || null);
+  // (U12) a read-only jack (data-ro: inside a Serum) takes no press and opens no menu, whatever its model port; it stays a
+  // drop target (its own FX input stands for the Serum: an output dropped there meets the own-FX refusal and its fix)
+  const ro = el => !!el && typeof el.hasAttribute === 'function' && el.hasAttribute('data-ro');
   const dirOf = j => (/\.in$/.test(j) ? 'in' : /\.out$/.test(j) ? 'out' : null);
   const modOf = j => j.slice(0, j.lastIndexOf('.'));
   const at = (p, k) => (p && (typeof p.get === 'function' ? p.get(k) : p[k])) || null;
@@ -450,7 +456,7 @@ export function createCableDrag(world, o) {
   let D = null, dead = false, unhook = null;
   /* ---- the press (the world's jack hook) */
   function press(e, el) {
-    if (D || dead || !el || typeof el.getAttribute !== 'function' || (e.button != null && e.button !== 0)) return false;
+    if (D || dead || !el || typeof el.getAttribute !== 'function' || ro(el) || (e.button != null && e.button !== 0)) return false;
     const j = el.getAttribute('data-cv-jack'), dir = j && dirOf(j);
     if (!dir || !portOf(j)) return false;
     const ws = dir === 'in' ? wires().filter(c => c.b === j) : [], w = ws.length ? ws[ws.length - 1] : null;
@@ -578,6 +584,7 @@ export function createCableDrag(world, o) {
     const dir = dirOf(j || '');
     if (!dir || !portOf(j) || dead) return null;
     const L = jacks(), me = L.find(J => J.id === j) || { id: j, el: null };
+    if (ro(me.el)) return null;
     const items = [{ label: 'Connect ' + labelOf(j, me) + ' to…', disabled: true }];
     let n = 0;
     for (const J of L) {

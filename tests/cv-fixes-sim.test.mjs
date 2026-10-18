@@ -101,9 +101,10 @@ test('default camera: k = 1 when the instrument fits the band; a portrait band (
     for (const bw of [1600, 1356, 936, 746, 400]) {
       BAND.right = 44 + bw;
       api.addTrack(); sim.raf();
-      const m = V().modules.get('i1'), k = Math.max(cvWorld.READ_K, Math.min(1, (bw - 48) / m.w)); // (the module's actual width: fixed in its Hardware layout)
+      // (the module's actual width: fixed in its Hardware layout; 1e, U3: its key-zone pill left of it framed too)
+      const m = V().modules.get('i1'), zw = m.zoneW, k = Math.max(cvWorld.READ_K, Math.min(1, (bw - 48) / (m.w + zw)));
       assert.ok(Math.abs(W.cam.k - k) < 1e-9, `band ${bw}: k ${W.cam.k} ≠ ${k} (instrument ${m.w} px)`);
-      assert.deepEqual([W.cam.tx, W.cam.ty], [BAND.left - VP.left + 24 - Math.round(m.x * k), BAND.top - VP.top + 24 - Math.round(m.y * k)]);
+      assert.deepEqual([W.cam.tx, W.cam.ty], [BAND.left - VP.left + 24 - Math.round((m.x - zw) * k), BAND.top - VP.top + 24 - Math.round(m.y * k)]);
       if (k > cvWorld.READ_K) assert.ok(VP.left + (m.x + m.w) * k + W.cam.tx <= BAND.right - 24 + 0.5, 'the whole instrument (its bar\'s right end) inside the band');
     }
   } finally { BAND.right = r0; }
@@ -116,8 +117,8 @@ test('default camera while ROLL shows: owed (the band has no size there), comput
   assert.equal(W.log.slice(n).some(l => l.startsWith('cam ')), false, 'no camera computed under ROLL');
   cv.openTab('canvas');
   const cams = W.log.slice(n).filter(l => l.startsWith('cam '));
-  const m = V().modules.get('i1'), k = Math.max(cvWorld.READ_K, Math.min(1, (BAND.right - BAND.left - 48) / m.w)); // (a wide fixed-size instrument: fitted)
-  assert.deepEqual(cams, ['cam ' + [BAND.left - VP.left + 24 - Math.round(m.x * k), BAND.top - VP.top + 24 - Math.round(m.y * k), k].join(',')], 'on CANVAS: the default, 24 px inside the band past the rail');
+  const m = V().modules.get('i1'), zw = m.zoneW, k = Math.max(cvWorld.READ_K, Math.min(1, (BAND.right - BAND.left - 48) / (m.w + zw))); // (a wide fixed-size instrument: fitted, its key-zone pill too: 1e, U3)
+  assert.deepEqual(cams, ['cam ' + [BAND.left - VP.left + 24 - Math.round((m.x - zw) * k), BAND.top - VP.top + 24 - Math.round(m.y * k), k].join(',')], 'on CANVAS: the default, 24 px inside the band past the rail (and the pill)');
   cv.openTab('canvas');
   assert.equal(W.log.slice(n).filter(l => l.startsWith('cam ')).length, 1, 'once');
 });

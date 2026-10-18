@@ -207,11 +207,19 @@ export function sideTray(el, o) {
   let w = clamp(+saved.w || SIDE_W, SIDE_MIN, SIDE_MAX), open = false, offDoc = null;
   const maxW = () => { const win = d && d.defaultView, vw = win && win.innerWidth > 0 ? win.innerWidth : 1e4; return Math.max(SIDE_MIN, Math.min(SIDE_MAX, Math.floor(vw / 2) - RAIL_W)); };
   const save = () => { if (!o.store) return; const p = Object.assign({}, pref()); p[key] = { open, w }; o.store.set(TRAY_PREF, p); };
-  const applyW = () => { if (el.style && el.style.setProperty) el.style.setProperty('--cv-side-w', w + 'px'); };
+  // (1e, U15) the stage (the tray's parent) knows it too — class cv-<side>-open, --cv-<side>-w: the canvas toolbar moves
+  // past the open tray (style.css)
+  const host = () => (el.parentNode && el.parentNode.classList ? el.parentNode : null);
+  const applyW = () => {
+    if (el.style && el.style.setProperty) el.style.setProperty('--cv-side-w', w + 'px');
+    const H = host();
+    if (H && H.style && H.style.setProperty) H.style.setProperty('--cv-' + side + '-w', w + 'px');
+  };
   function setOpen(on, persist = true) {
     if (open === on) return;
     open = on;
     el.classList.toggle('open', on);
+    if (host()) host().classList.toggle('cv-' + side + '-open', on);
     panel.hidden = !on;
     rail.setAttribute('aria-expanded', on ? 'true' : 'false');
     if (offDoc) { offDoc(); offDoc = null; }
@@ -381,7 +389,7 @@ function tileDrag(d, o, b, id, T) {
     const R = overOf(i.target, i.x, i.y), over = R.over || null, key = R.key == null ? null : R.key;
     if (over !== G.over || key !== G.key) { G.over = over; G.key = key; G.at = i.t; }
     i.over = over;
-    if (T.norm) i.key = key;
+    if (T.norm) { i.key = key; i.near = R.near == null ? null : R.near; }
     if (T.at) i.at = T.at(i);
     if (!G.left && o.tray) {
       const r = G.trayR;
@@ -435,17 +443,18 @@ const initials = s => { const w = String(s || '').replace(/[^A-Za-z0-9 ]+/g, ' '
  * one per effect type grouped as the rack's add menu (an h3.cv-tgrp before each group). o.items: [{id: 'panel'} | {id |
  * type: <effect type>, name | label, group}] (fx-ui addMenuItems gives the latter; disabled ones are skipped); o.cost(id) →
  * '~3 %' | '' on each tile (refresh() re-reads). Tiles: button.cv-tile.cv-ftile[data-fx]. A tap: o.pick(id). A drag (as a
- * Sources tile): every callback's info.over is 'canvas' | 'panel' | null and info.key the panel's module key, from
- * o.overOf(target, x, y) → 'canvas' | 'panel' | {over, key} | null (the panel tile over a panel counts as 'canvas': a new
- * panel there); info.at the point under the pointer (o.toWorld(x, y) when given: world px; else client px);
+ * Sources tile): every callback's info.over is 'canvas' | 'panel' | 'inst' | null and info.key the module's key, from
+ * o.overOf(target, x, y) → 'canvas' | 'panel' | {over, key} | null (the panel tile over a panel or an instrument counts as
+ * 'canvas' with info.near that module: a new panel beside it); info.at the point under the pointer (o.toWorld(x, y) when
+ * given: world px; else client px);
  * drag.drop(id, info) → true when done (else drag.cancel). The tray never closes by itself — not as a drag leaves it, nor
  * on a drop (the user's rule, ROADMAP 2026-10-17 / 18: only its rail, ✕ or Escape): o.onLeave is a notice.
  * @param {HTMLElement} el  the tray panel's list container (#fxList)
  * @param {{
  *   items: Array<{id?: string, type?: string, name?: string, label?: string, group?: string, disabled?: boolean}>,
  *   pick: (id: string) => void,
- *   drag: {begin?: Function, move?: Function, drop: (id: string, info: {over: 'canvas' | 'panel', key?: string, at: {x: number, y: number}}) => boolean, cancel?: Function},
- *   overOf?: (target: Element | null, x: number, y: number) => 'canvas' | 'panel' | {over: string, key?: string} | null,
+ *   drag: {begin?: Function, move?: Function, drop: (id: string, info: {over: 'canvas' | 'panel' | 'inst', key?: string, near?: string, at: {x: number, y: number}}) => boolean, cancel?: Function},
+ *   overOf?: (target: Element | null, x: number, y: number) => 'canvas' | 'panel' | {over: 'panel' | 'inst' | 'canvas', key?: string} | null,
  *   cost?: (id: string) => string, toWorld?: (x: number, y: number) => {x: number, y: number},
  *   canvasGhost?: () => boolean, tray?: HTMLElement, onLeave?: () => void, layer?: HTMLElement,
  *   label?: (id: string, over: string | null, key: string | null) => string, doc?: Document,
@@ -463,14 +472,16 @@ export function effectsTray(el, o) {
   const costOf = id => { try { return o.cost ? String(o.cost(id) || '') : ''; } catch { return ''; } };
   const labelOf = (id, over, key) => {
     if (o.label) { try { return String(o.label(id, over, key) || ''); } catch { return ''; } }
-    return over === 'panel' ? '+ Add to the panel' : over === 'canvas' ? (id === FX_PANEL ? '+ New FX panel' : '+ New panel with it') : '';
+    return over === 'panel' ? '+ Add to the panel' : over === 'inst' ? '+ Add to its effects' : over === 'canvas' ? (id === FX_PANEL ? '+ New FX panel' : '+ New panel with it') : '';
   };
+  // (U11) 'inst' (an instrument module: the effect goes into its FX) beside 'canvas' / 'panel'; the empty panel over a
+  // module is a canvas drop beside that module (near), never into it
   const norm = id => r => {
-    let over = r && typeof r === 'object' ? r.over || null : r || null, key = r && typeof r === 'object' && r.key != null ? String(r.key) : null;
-    if (over !== 'canvas' && over !== 'panel') over = null;
-    if (over === 'panel' && id === FX_PANEL) { over = 'canvas'; key = null; } // (an empty panel never goes into a panel)
-    if (over !== 'panel') key = null;
-    return { over, key };
+    let over = r && typeof r === 'object' ? r.over || null : r || null, key = r && typeof r === 'object' && r.key != null ? String(r.key) : null, near = null;
+    if (over !== 'canvas' && over !== 'panel' && over !== 'inst') over = null;
+    if ((over === 'panel' || over === 'inst') && id === FX_PANEL) { over = 'canvas'; near = key; key = null; } // (an empty panel never goes into a module)
+    if (over !== 'panel' && over !== 'inst') key = null;
+    return { over, key, near };
   };
   const at = i => { if (o.toWorld) { try { const p = o.toWorld(i.x, i.y); if (p && isFinite(p.x) && isFinite(p.y)) return { x: p.x, y: p.y }; } catch { /* no world */ } } return { x: i.x, y: i.y }; };
   let grp = null;

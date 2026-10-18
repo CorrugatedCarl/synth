@@ -335,3 +335,293 @@ test('H4 (page): Delete panel on a one-instrument track — the patch, undo and 
   cv.redo(); sim.raf(); sim.raf();
   assert.deepEqual([shape(), keys()], ['i1,out | i1.out>out.in', 'i1,out'], 'redo: still no panel');
 });
+
+// UI fixes (stage 1e review, fixer U: findings U1–U17). Each test makes its own track (api.addTrack selects it)
+const MOD = id => MODELS.find(m => m.id === id);
+const fresh = (id = 'minimoog') => { const t = api.addTrack(MOD(id)); sim.raf(); cv.renderViews(); sim.raf(); return t; }; // (the switch's mounting completed at once)
+const at = k => { const m = V().modules.get(k); return m ? Math.round(m.x) + ',' + Math.round(m.y) : null; };
+
+test('U1: a Serum primary next to a shared panel fx1 — i1/fx and fx1 keep places of their own (Tidy separates them; moving one never drops the other\'s entry)', () => {
+  fresh('minimoog');
+  cv.add('juno60', { x: 0, y: 2400 }); sim.raf();
+  assert.deepEqual(T().wires.map(w => w.a + '>' + w.b).sort(), ['fx1.out>out.in', 'i1.out>fx1.in', 'i2.out>fx1.in'], 'the Juno-60 into the shared panel');
+  cv.setCur('i1'); cv.setTrackModel(cv.view1e('i1'), 'serum'); sim.raf();
+  assert.deepEqual([keys().includes('i1/fx'), keys().includes('fx1')], [true, true], keys());
+  assert.notEqual(at('i1/fx'), at('fx1'), 'not on top of each other: ' + at('i1/fx') + ' / ' + at('fx1'));
+  cv.tidy(); sim.raf();
+  assert.notEqual(at('i1/fx'), at('fx1'), 'Tidy separates them');
+  assert.deepEqual([!!T().lay['i1/fx'], !!T().lay.fx1], [true, true], 'both entries written: ' + Object.keys(T().lay).join(','));
+  const was = at('i1/fx');
+  V().modules.get('fx1').nudge(64, 0); sim.raf();
+  assert.deepEqual([!!T().lay['i1/fx'], at('i1/fx')], [true, was], 'moving fx1 keeps i1/fx where it stands');
+  V().modules.get('i1/fx').nudge(0, 64); sim.raf();
+  assert.equal(!!T().lay.fx1, true, 'moving i1/fx keeps fx1\'s entry');
+  assert.notEqual(at('i1/fx'), at('fx1'));
+});
+
+// the default camera of track t again (a switch away and back: none stored while it stays the default); o: world overrides
+function camAgain(t, o = {}) {
+  const was = {};
+  for (const k of Object.keys(o)) { was[k] = W[k]; W[k] = o[k]; }
+  try { const other = P().tracks.find(x => x.id !== t.id); api.selectTrack(other.id); sim.raf(3); api.selectTrack(t.id); sim.raf(3); }
+  finally { for (const k of Object.keys(o)) { if (was[k] === undefined) delete W[k]; else W[k] = was[k]; } }
+}
+// the screen box of module k's top bar (40 world px) under the scripted camera
+// (an instrument's: its key-zone pill under it too, 26 px at 48 px down, left of its edge)
+const barBox = k => { const m = V().modules.get(k), zw = m.zoneW || 0, a = W.toClient(m.x - zw, m.y), b = W.toClient(m.x + m.w, m.y + (zw ? 74 : 40)); return { left: a.x, top: a.y, right: b.x, bottom: b.y }; };
+const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
+test('U14: the default camera of a two-instrument track keeps every top bar clear of the toolbar + minimap box (world.reserved), never below READ_K', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  camAgain(t);
+  const bar2 = barBox('i2'), k0 = W.k;
+  assert.ok(k0 > 0.9, 'an editable k without a reserved box: ' + k0);
+  // the box where the Juno-60's bar lands at that camera (the band ends 8 px over it, as cv-world's band() does)
+  const box = { left: 56, top: Math.round(bar2.top) - 20, right: 536, bottom: Math.round(bar2.top) + 148 };
+  camAgain(t, { band: () => ({ left: 44, top: 48, right: 1520, bottom: box.top - 8 }), reserved: () => [box] });
+  const hit = [...V().modules.keys()].filter(k => meets(barBox(k), box));
+  assert.deepEqual(hit, [], 'no bar under the box (k ' + W.k + ')');
+  assert.ok(W.k >= 0.5 && W.k < k0, 'a lower k lifts the stacked bar above it: ' + W.k);
+  assert.ok(barBox('i1').left >= 44 && barBox('i1').top >= 48, 'the primary still at the band\'s top-left');
+});
+
+test('U14: an untouched default camera follows a later resize of the canvas (the keyboard tray sized after boot, a rotation): bars stay clear of the box; a camera the user moved stays', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  camAgain(t);
+  const bar2 = barBox('i2'), k0 = W.k, box = { left: 56, top: Math.round(bar2.top) - 20, right: 536, bottom: Math.round(bar2.top) + 148 };
+  const was = { band: W.band };
+  W.band = () => ({ left: 44, top: 48, right: 1520, bottom: box.top - 8 }); W.reserved = () => [box];
+  try {
+    W.emit('resize', {});
+    assert.deepEqual([[...V().modules.keys()].filter(k => meets(barBox(k), box)), W.k < k0], [[], true], 'derived again: k ' + W.k);
+    const moved = { tx: W.cam.tx - 300, ty: W.cam.ty, k: W.k };
+    W.setCamera(moved); // (the user's pan: cameraend → queued, then stored)
+    cv.camFlush();
+    W.band = () => ({ left: 44, top: 48, right: 1520, bottom: 700 }); W.reserved = () => [];
+    W.emit('resize', {});
+    assert.deepEqual(W.cam, moved, 'a camera the user moved is theirs');
+  } finally { W.band = was.band; delete W.reserved; }
+});
+
+test('U2: a piano-roll audition reaches every powered instrument whose key zone holds the note (its transpose too); the note-off goes exactly where the note-on went', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  cv.zone('i2', { lo: 60, hi: 72, xp: 12 }); sim.raf();
+  const R = api.roll().host, aud = (from, f) => { const k = posted(t); f(); return sent(t, k).filter(m => m.aud).map(m => m.t + ':' + (m.i || '-') + ':' + m.n).join(' '); };
+  assert.equal(api.nodes.get(t.id).graphed, true);
+  assert.equal(aud(0, () => R.audition(64, 100)), 'on:i1:64 on:i2:76', 'both: the Juno-60 transposed');
+  assert.equal(aud(0, () => R.audition(50, 100)), 'on:i1:50', 'below the Juno-60\'s zone: the Minimoog alone');
+  cv.power('i1', false); sim.raf();
+  assert.equal(aud(0, () => R.auditionOff(64)), 'off:i1:64 off:i2:76', 'the offs where the ons went (the Minimoog off since)');
+  assert.equal(aud(0, () => R.audition(66, 100)), 'on:i2:78', 'the primary off: the Juno-60 still previews');
+  assert.equal(aud(0, () => { R.auditionOff(50); R.auditionOff(66); }), 'off:i1:50 off:i2:78');
+  cv.undo(); sim.raf();
+});
+
+test('U3: the default camera leaves every instrument\'s key-zone pill right of the rail (inside the band); ⋯ → Key zone… opens it', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  camAgain(t);
+  for (const k of ['i1', 'i2']) {
+    const m = V().modules.get(k), zw = m.zoneW;
+    assert.ok(zw > 0, k + ': a pill');
+    assert.ok(W.toClient(m.x - zw, m.y).x >= BAND.left, k + ': its pill\'s left ' + W.toClient(m.x - zw, m.y).x + ' ≥ the band\'s ' + BAND.left);
+  }
+  const it = cv.menu('i2').find(x => x.label === 'Key zone…');
+  assert.ok(it, 'the menu item: ' + cv.menu('i2').map(x => x.label).join(' | '));
+  it.action();
+  assert.equal(V().modules.get('i2').el.children.find(c => c.className === 'cv-zone').getAttribute('aria-expanded'), 'true', 'its popover open');
+  V().modules.get('i2').zoneClose();
+  assert.equal(cv.menu('fx1').some(x => x.label === 'Key zone…'), false, 'instruments only');
+});
+
+test('U4: Make primary rebuilds only the bodies that change home — the other instruments\' panels and the other FX racks are kept (the same objects, still mounted)', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  const d3 = cv.add('dx7', null); sim.raf();
+  const p2 = cv.fx.addPanel(null, null); sim.raf();
+  const cp3 = cv.classicPanels.get(t.id + '/' + d3), el3 = cv.bodyEl(d3), fr = cv.fxPanels.get(t.id + '/' + p2), fel = cv.bodyEl(p2);
+  assert.deepEqual([!!cp3, !!fr], [true, true], 'a DX7 panel and a second FX panel built');
+  cv.primary('i2'); sim.raf();
+  assert.deepEqual([T().prim, cv.parts.inst.parentNode === bodyOf('i2')], ['i2', true], 'the Juno-60 is #inst now');
+  assert.deepEqual([cv.classicPanels.get(t.id + '/' + d3) === cp3, !cp3.dead, cp3.root === el3, el3.parentNode === bodyOf(d3)], [true, true, true, true], 'the DX7\'s panel kept, in its module');
+  assert.deepEqual([cv.fxPanels.get(t.id + '/' + p2) === fr, cv.bodyEl(p2) === fel, fel.parentNode === bodyOf(p2)], [true, true, true], 'the other panel\'s rack kept');
+  const cp1 = cv.classicPanels.get(t.id + '/i1');
+  assert.deepEqual([!!cp1 && cp1.root === cv.bodyEl('i1'), cv.bodyEl('i1').parentNode === bodyOf('i1'), cv.bodyEl('i1') === cv.parts.inst], [true, true, false], 'the Minimoog built in an element of its own');
+  assert.equal(cv.classicPanels.get(t.id + '/i2').root === cv.parts.inst, true, 'the Juno-60 rebuilt in #inst');
+  assert.equal([...cv.classicPanels.values()].filter(P => !P.dead && P.root === cv.parts.inst).length, 1, 'one panel in #inst');
+  cv.undo(); sim.raf();
+  assert.deepEqual([T().prim, cv.parts.inst.parentNode === bodyOf('i1')], ['i1', true], 'undo');
+});
+
+test('U16: with the toolbar\'s Snap off, a new instrument, a duplicate and an Effects-tray panel land where they were put (not on the dots)', () => {
+  fresh('minimoog');
+  W.snapOn = () => false;
+  try {
+    const id = cv.add('juno60', { x: 1001, y: 2003 }); sim.raf();
+    assert.deepEqual([T().lay[id].x, T().lay[id].y], [1001, 2003], 'the instrument');
+    const d = cv.dup(id); sim.raf();
+    const m = V().modules.get(id).rect();
+    assert.deepEqual([T().lay[d].x, T().lay[d].y], [Math.round(m.x), Math.round(m.y + m.h + 64)], 'the duplicate under it, unsnapped');
+    assert.equal(cv.fx.drag.drop('panel', { over: 'canvas', at: { x: 3011, y: 1013 } }), true); sim.raf();
+    const p = Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').pop();
+    assert.deepEqual([T().lay[p].x, T().lay[p].y], [3011 - 24, 1013 - 20], 'the panel');
+  } finally { delete W.snapOn; }
+  const id2 = cv.add('dx7', { x: 1001, y: 4003 }); sim.raf();
+  assert.deepEqual([T().lay[id2].x, T().lay[id2].y], [992, 4000], 'Snap on: the dots');
+});
+
+test('U10: the badges — an instrument into a panel that feeds nothing is silent too; a panel fed by nothing says so; the CPU safeguard\'s cap on its instrument', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  const B = k => V().modules.get(k).badge;
+  assert.deepEqual(['i1', 'i2', 'fx1', 'out'].map(B), [null, null, null, null], 'all cabled');
+  cv.cable.disconnect(T().wires.find(w => w.a === 'fx1.out').id); sim.raf();
+  assert.deepEqual(['i1', 'i2', 'fx1'].map(B), ['not connected – silent', 'not connected – silent', 'not connected – silent'], 'the panel feeds nothing: its sources silent');
+  cv.undo(); sim.raf();
+  assert.deepEqual(['i1', 'i2', 'fx1'].map(B), [null, null, null]);
+  assert.equal(cv.fx.drag.drop('panel', { over: 'canvas', at: { x: 4000, y: 1600 } }), true); sim.raf();
+  const p = Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').pop();
+  assert.equal(B(p), 'nothing connected', 'the Effects tray\'s new panel: fed by nothing');
+  cv.cable.repatch(T().wires.find(w => w.a === 'i2.out').id, 'i2.out', p + '.in'); sim.raf();
+  assert.deepEqual([B(p), B('i2')], [null, null], 'fed now');
+  // the CPU safeguard's cap (capsOf: the instrument lowered to 1×) is drawn on that instrument's bar
+  const N = api.nodes.get(t.id), was = N.osI;
+  N.osI = new Map([['i2', 1]]);
+  try { cv.render(); assert.match(String(B('i2')), /^OS \d→1$/); assert.equal(B('i1'), null); }
+  finally { N.osI = was; cv.render(); }
+});
+
+test('U11: Effects-tray drags — an effect over an instrument goes into its FX (its panel; a Serum\'s own); the empty panel over a module lands beside it, overlapping nothing; an outline follows the drag', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  const sx = cv.add('serum', null); sim.raf();
+  const tgt = (key, kind) => ({ closest: q => (/#viewport/.test(q) ? {} : null), getAttribute: a => (a === 'data-cv-mod' ? key : a === 'data-cv-kind' ? kind : null), parentNode: null });
+  assert.deepEqual(cv.fx.over(tgt('i2', 'inst')), { over: 'inst', key: 'i2' }, 'an instrument module: its FX');
+  const mods = k => (T().dev[k].fx.racks[0].mods || []).map(x => x.type).join(',');
+  const n = hsteps(), was = mods('fx1');
+  assert.equal(cv.fx.drag.drop('dly', { over: 'inst', key: 'i2' }), true); sim.raf();
+  assert.deepEqual([mods('fx1'), hsteps(), Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').length], [(was ? was + ',' : '') + 'dly', n, 1], 'into the Juno-60\'s panel (fx1): no new panel');
+  assert.equal(cv.fx.drag.drop('rev', { over: 'inst', key: sx }), true); sim.raf();
+  assert.match(JSON.stringify(T().dev[sx].fx), /"rev"/, 'a Serum: its own FX');
+  // the empty panel over fx1: a new panel right of it, nothing overlapping (OUT moved on)
+  const ov = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  const r1 = V().modules.get('fx1').rect();
+  assert.equal(cv.fx.drag.drop('panel', { over: 'canvas', near: 'fx1', at: { x: r1.x + 40, y: r1.y + 40 } }), true); sim.raf();
+  const p = Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').pop(), R = V().rects();
+  assert.ok(p !== 'fx1' && R[p].x >= r1.x + r1.w, 'beside fx1: ' + JSON.stringify(R[p]));
+  assert.deepEqual(Object.keys(R).filter(k => k !== p && ov(R[k], R[p])), [], 'overlapping nothing');
+  cv.undo(); sim.raf();
+  assert.equal(T().dev[p], undefined, 'one step');
+  // the outline: a new panel's under the pointer over empty canvas, the target module's over a module, none elsewhere
+  const G = [];
+  W.ghost = g => { G.push(g ? (g.label || '') + '|' + g.w : null); return g ? { x: 0, y: 0, w: g.w, h: g.h } : null; };
+  try {
+    cv.fx.drag.begin('rev', { over: 'canvas', x: 900, y: 600, left: true, pointerType: 'mouse' });
+    cv.fx.drag.move('rev', { over: 'panel', key: 'fx1', x: 900, y: 600, left: true, pointerType: 'mouse' });
+    cv.fx.drag.move('rev', { over: null, x: 900, y: 600, left: true, pointerType: 'mouse' });
+    cv.fx.drag.cancel('rev', {});
+  } finally { delete W.ghost; }
+  const rv = cv.fx.items.find(x => x.type === 'rev').label; // (the tray's name)
+  assert.deepEqual(G, ['+ Panel with ' + rv + '|760', rv + ' → FX Panel|' + V().modules.get('fx1').w, null, null]);
+});
+
+test('U9: the soft caps on a touch device (page sim) — the 4th instrument warns in the notice, a second heavy Serum asks first; Duplicate the same', () => {
+  fresh('minimoog');
+  const was = globalThis.confirm, asked = [];
+  globalThis.confirm = m => { asked.push(String(m)); return false; };
+  cv.touch(true);
+  try {
+    cv.add('juno60', null); sim.raf(); cv.add('dx7', null); sim.raf();
+    assert.doesNotMatch(note(), /instruments \(about/, 'three: no warning');
+    const four = cv.add('prophet5', null); sim.raf();
+    assert.match(note(), /^This track now has 4 instruments \(about [^)]+\)\. More can cause dropouts here/, 'the 4th warns');
+    cv.undo(); sim.raf();
+    assert.equal(T().dev[four], undefined);
+    api.notice('', 0);
+    const d = cv.dup('i2'); sim.raf();
+    assert.equal(T().dev[d].model, 'juno60');
+    assert.match(note(), /^This track now has 4 instruments/, 'a duplicate that makes the 4th warns too');
+    cv.undo(); sim.raf();
+    // heavy Serums (a slow device: the factor makes every Serum heavy)
+    api.store.set('synth.cv.devFactor', 50);
+    const s1 = cv.add('serum', null); sim.raf();
+    assert.deepEqual([T().dev[s1].model, asked.length], ['serum', 0], 'the first heavy Serum: no question');
+    assert.equal(cv.add('serum', null), null, 'a second: asked, declined');
+    assert.match(asked.at(-1), /already has a heavy Serum/);
+    const n = CMOD.instIds(T()).length, k = asked.length;
+    assert.equal(cv.dup(s1), null, 'Duplicate of the heavy Serum: asked, declined');
+    assert.deepEqual([asked.length, CMOD.instIds(T()).length], [k + 1, n]);
+  } finally { globalThis.confirm = was; cv.touch(null); api.store.set('synth.cv.devFactor', 0); }
+});
+
+test('U6: two Serums on one track keep their own live-input subscriptions (clip recording, key lights): a played note reaches both; one leaving keeps the other', () => {
+  const t = fresh('serum');
+  const s2 = cv.add('serum', null); sim.raf();
+  const got = [];
+  api.sxHost(t, 'i1').onInput((on, n) => got.push('i1:' + on + ':' + n));
+  api.sxHost(t, s2).onInput((on, n) => got.push(s2 + ':' + on + ':' + n));
+  api.noteOn(60, 0.8); api.noteOff(60);
+  assert.deepEqual(got.sort(), ['i1:0:60', 'i1:1:60', s2 + ':0:60', s2 + ':1:60'].sort());
+  api.sxHost(t, 'i1').onInput(null);
+  got.length = 0;
+  api.noteOn(62, 0.8); api.noteOff(62);
+  assert.deepEqual(got, [s2 + ':1:62', s2 + ':0:62'], 'the other one stays subscribed');
+  api.sxHost(t, s2).onInput(null);
+});
+
+test('U7: Mod wheel → WT Pos scrubs the Serum whose WT editor is open (not the primary)', () => {
+  const t = fresh('serum');
+  const s2 = cv.add('serum', null); sim.raf();
+  const pr = api.prefs(), was = pr.wheelWt, wt = id => T().dev[id].vals.s.p['a.wt'];
+  const w1 = wt('i1');
+  pr.wheelWt = true;
+  try {
+    api.sxHost(t, s2).editorOpen(0);
+    cv.wheelToWt(0.7);
+    assert.deepEqual([wt(s2), wt('i1')], [0.7, w1], 'its own oscillator A');
+    api.sxHost(t, s2).editorOpen(null);
+    cv.wheelToWt(0.2);
+    assert.equal(wt(s2), 0.7, 'closed: nothing');
+  } finally { pr.wheelWt = was; }
+});
+
+test('U8: the chord / voice-mode notice stays quiet on a several-instrument track (it judged the primary alone and its tap replaced it); a one-instrument track still gets it', () => {
+  const chord = () => [60, 64, 67].map(n => ({ t: 0, n, d: 480, v: 100 }));
+  fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  T().notes = chord();
+  api.notice('', 0);
+  cv.chordCheck(T());
+  assert.equal(note(), '', 'a Juno-60 beside the monophonic Minimoog: no notice');
+  fresh('minimoog');
+  T().notes = chord();
+  cv.chordCheck(T());
+  assert.match(note(), /is monophonic — its chords play one note/, 'alone: the notice');
+  api.notice('', 0);
+});
+
+test('U17: a track switch mounts several device bodies one job per body, a slice per frame (the world hidden until the last), then every panel of the new track is up', () => {
+  const a = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  const d3 = cv.add('dx7', null); sim.raf();
+  const b = fresh('juno60'), vp = sim.$('#viewport');
+  const REAL = globalThis.performance;
+  let ms = 1e6;
+  globalThis.performance = { now: () => (ms += 20), timeOrigin: REAL.timeOrigin }; // (every read 20 ms later: a 12 ms slice holds one job)
+  try {
+    api.selectTrack(a.id);
+    const J = cv.mount();
+    assert.ok(J, 'mounting');
+    assert.deepEqual([J.jobs.slice().sort().join(','), vp.hasAttribute('data-cv-mounting')], [['fx1', 'i1', 'i2', d3].sort().join(','), true], 'one job per body, the world hidden');
+    const left = [];
+    for (let i = 0; i < 4; i++) { sim.raf(); const M = cv.mount(); left.push(M ? M.jobs.length : -1); }
+    assert.deepEqual(left, [3, 2, 1, 0], 'one body a frame');
+    for (let i = 0; i < 60 && cv.mount(); i++) sim.raf();
+    assert.deepEqual([cv.mount(), vp.hasAttribute('data-cv-mounting')], [null, false], 'shown once done');
+    assert.deepEqual(['i1', 'i2', d3].map(k => { const P = cv.classicPanels.get(a.id + '/' + k); return !!P && !P.dead; }), [true, true, true], 'every instrument\'s panel');
+  } finally { globalThis.performance = REAL; }
+  void b;
+});

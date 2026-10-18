@@ -925,10 +925,10 @@ test('createTrackView (1e, device-driven): one module per device (keys = device 
   key(byCls(R.V.modules.get('i3').el, 'wk-nb')[2], 'ArrowUp');
   assert.deepEqual(R.zn, ['i3 {"lo":48,"hi":84,"xp":13}'], 'host.zone(key, zone)');
   R.V.modules.get('i3').zoneClose();
-  // jacks: patchable buttons; inside the Serum read-only
+  // jacks: patchable buttons; inside the Serum read-only (U12: no button there — no press, no focus, no menu)
   const J = id => { const [k, j] = [id.slice(0, id.lastIndexOf('.')), id.slice(id.lastIndexOf('.') + 1)]; return R.V.modules.get(k).jack(j); };
-  assert.deepEqual(['i1.out', 'i2.out', 'i2/fx.in', 'i2/fx.out', 'fx1.in', 'out.in'].map(j => J(j).getAttribute('role') + (J(j).hasAttribute('data-ro') ? ' ro' : '')),
-    ['button', 'button ro', 'button ro', 'button', 'button', 'button']);
+  assert.deepEqual(['i1.out', 'i2.out', 'i2/fx.in', 'i2/fx.out', 'fx1.in', 'out.in'].map(j => J(j).getAttribute('role') + (J(j).hasAttribute('data-ro') ? ' ro' : '') + ' ' + J(j).tabIndex),
+    ['button 0', 'null ro -1', 'null ro -1', 'button 0', 'button 0', 'button 0']);
   assert.deepEqual(R.V.jacks().map(j => j.id), ['i1.out', 'i2.out', 'i3.out', 'i2/fx.in', 'i2/fx.out', 'fx1.in', 'fx1.out', 'fx2.in', 'fx2.out', 'out.in']);
   assert.deepEqual([R.V.port('i2/fx.out'), R.V.port('i2.out'), R.V.port('fx1.in')], ['i2.out', null, 'fx1.in']);
   // cables: the wires (editable) and the Serum's own route
@@ -995,4 +995,25 @@ test('createTrackView (1e): V.cableDrag — patching on the view\'s own ports, j
   assert.equal(W.hooks.jack(new Ev('pointerdown', { pointerId: 2 }), J('i2', 'out')), false, 'inside the Serum: not taken');
   D.destroy();
   R.V.destroy();
+});
+
+/* ---------------------------------------------------------------- UI fixes (stage 1e review, fixer U) */
+test('layOf (U1): the other FX key is no fallback while it is a module of its own (a Serum primary\'s i1/fx beside a shared panel fx1)', () => {
+  const td = { 'i1/fx': { x: 1400, y: 0 }, fx1: { x: 2900, y: 0 } };
+  const tr = { model: 'serum', lay: { fx1: { x: 3, y: 4 } } };
+  assert.deepEqual(M.layOf(tr, 'i1/fx', td, ['i1', 'i2', 'i1/fx', 'fx1', 'out']), { x: 1400, y: 0 }, 'its own Tidy place, not fx1\'s entry');
+  assert.deepEqual(M.layOf(tr, 'i1/fx', td, ['i1', 'i1/fx', 'out']), { x: 3, y: 4 }, 'fx1 gone (a model change): its place carried over');
+  assert.deepEqual(M.layOf(tr, 'i1/fx', td), { x: 3, y: 4 }, 'no keys: as before');
+});
+
+test('⏻ (U5): a zoom-scaled hit area through ::before — 44 screen px at any zoom, growing left and up from the button only (never over the stripe / title, nor down into the panel); folded, it stops at the bar\'s edge (the zone pill beside it)', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const sec = css.slice(css.indexOf('/* ===================================================================== cv-module')).replace(/\/\*[\s\S]*?\*\//g, '');
+  const r = /\.cv-bar > button\.cv-pow::before \{([^}]*)\}/.exec(sec);
+  assert.ok(r, 'the rule');
+  assert.match(r[1], /width: max\(100%, calc\(44px \* var\(--ik, 1\)\)\)/);
+  assert.match(r[1], /height: max\(100%, calc\(44px \* var\(--ik, 1\)\)\)/);
+  assert.match(r[1], /right: 0;/, 'its right edge the button\'s: never over the stripe');
+  assert.match(r[1], /bottom: 0;/, 'its bottom the button\'s: never into the panel');
+  assert.match(sec, /\.cv-mod\[data-cv-fold\] > \.cv-bar > button\.cv-pow::before \{[^}]*width: calc\(100% \+ 4px\)/, 'folded: to the bar\'s edge');
 });

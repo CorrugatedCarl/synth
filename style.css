@@ -258,6 +258,8 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-parts .scope { height: 220px; }
 .cv-overlay { position: absolute; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
 .cv-toolbar { position: absolute; left: 56px; bottom: 12px; z-index: 10; }
+/* (1e) past the open Sources tray (cv-tray sideTray marks the stage: cv-left-open, --cv-left-w), never under it */
+.cv-left-open > .cv-toolbar { left: calc(56px + var(--cv-left-w, 240px)); }
 .cv-toolbar:empty { display: none; }
 /* the side trays: a 44 px rail on the canvas edge (a tap opens), the panel beside it, the width grip on the inner edge */
 .cv-side { position: absolute; top: 0; bottom: 0; z-index: 20; display: flex; align-items: stretch; pointer-events: none; --cv-side-w: 240px; }
@@ -840,6 +842,10 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
   overflow: hidden; touch-action: none; }
 #cvToolbar .cv-minimap[hidden] { display: none; }
 #cvToolbar .cv-minimap canvas { display: block; width: 176px; height: 112px; cursor: pointer; }
+/* (1e) while a drag runs (a module, a cable, a tray tile: cv-world [data-cv-drag]) the minimap steps aside and the toolbar
+   takes no press, so a drop there reaches the module under it (the band keeps their boxes clear: cv-world band()) */
+#cvToolbar[data-cv-drag] .cv-minimap { visibility: hidden; }
+#cvToolbar[data-cv-drag] .cv-tb > *, #cvToolbar[data-cv-drag] .cv-minimap { pointer-events: none; }
 .cv-marquee { position: absolute; border: 1px solid var(--hot); background: rgba(242, 163, 58, 0.1); border-radius: 2px; pointer-events: none; }
 #viewport[data-cv-marquee] { cursor: crosshair; }
 /* a track switch (main.js cvSwitch): the world hidden while the new bodies mount over frames, then a short fade in */
@@ -1053,6 +1059,10 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 .cv-pow svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .cv-pow[aria-pressed="true"] { color: var(--mc); }
 .cv-bar > button.cv-pow:hover, .cv-bar > button.cv-pow:focus-visible { background: #252930; outline: none; }
+/* its hit area: 44 screen px at any zoom (--ik), grown left (past the module's edge) and up from the button — never over
+   the stripe / title (a move) nor down into the panel; folded, only to the bar's edge (the key-zone pill sits beside it) */
+.cv-bar > button.cv-pow::before { content: ''; position: absolute; right: 0; bottom: 0; width: max(100%, calc(44px * var(--ik, 1))); height: max(100%, calc(44px * var(--ik, 1))); }
+.cv-mod[data-cv-fold] > .cv-bar > button.cv-pow::before { width: calc(100% + 4px); }
 .cv-mod[data-off] > .cv-body { opacity: 0.45; filter: grayscale(0.7); }
 .cv-mod[data-off] .cv-stripe { background: #4a4d55; }
 .cv-mod[data-off] .cv-title { color: var(--mute); }
@@ -1077,7 +1087,7 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
    inside a Serum are its own route ([data-ro]) */
 .cv-jack { touch-action: none; }
 .cv-jack[role="button"] { cursor: crosshair; outline: none; }
-.cv-jack[role="button"][data-ro] { cursor: default; }
+.cv-jack[data-ro] { cursor: default; } /* (inside a Serum: no press, no focus — still a drop target for the own-FX refusal) */
 .cv-jack:focus-visible { box-shadow: 0 0 0 1.5px #0c0d0f, 0 0 0 calc(3px * var(--ik, 1)) var(--hot); }
 /* while patching: compatible jacks glow, the rest dim (their title says why), the target lights up */
 #world[data-cv-patching] .cv-jack.cv-no { opacity: 0.3; filter: grayscale(1); }

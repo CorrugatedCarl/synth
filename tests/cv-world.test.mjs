@@ -10,6 +10,8 @@ import assert from 'node:assert/strict';
 import * as dom from './wk-dom.mjs';
 import * as W from '../cv-world.js?v=9';
 import * as wk from '../wk.js?v=9';
+import * as MOD from '../cv-module.js?v=9';
+import * as CAB from '../cv-cables.js?v=9';
 
 const { Ev, ptr, fire, place, layout, all } = dom;
 // never hand a fake-DOM node to assert (its AssertionError walks the cyclic tree): primitives, or JSON
@@ -1153,4 +1155,62 @@ test('jack hook (1e): a stale drag (its lift lost) ends at the next primary pres
   touch(R.jack, 'pointerdown', 900, 168, 6);
   R.world.setActive(false);
   eq([R.log, R.world.jacking], [['cancel'], false]);
+});
+
+/* ------------------------------------------------------------------ UI fixes (stage 1e review, fixer U) */
+test('U14: the band leaves out the floating toolbar and the minimap above it (fit / focus / reveal / the default camera never put a module under them); a drag hides the minimap and the toolbar takes no press', () => {
+  const { tb, vp, world, item, frame } = setup();
+  frame();
+  const mm = tb.childNodes.find(n => n.className === 'cv-minimap');
+  place(tb, 56, 644, 480, 44); place(mm, 56, 524, 176, 112); // (the viewport: 0…1000 × 100…700; the row at its foot, the map above)
+  eq(world.reserved(), [{ left: 56, top: 644, right: 536, bottom: 688 }, { left: 56, top: 524, right: 232, bottom: 636 }], 'the toolbar row and the minimap');
+  eq(world.band(), { left: 0, top: 100, right: 1000, bottom: 516 }, 'the band ends 8 px over the minimap');
+  const a = item('a', 0, 0, 1000, 1200);
+  world.add(a); frame();
+  world.fit({ animate: false });
+  const c = world.cam;
+  ok(100 + c.ty + 1200 * c.k <= 524, 'a fit ends above the minimap: ' + (100 + c.ty + 1200 * c.k));
+  world.setMap(false);
+  eq(world.band().bottom, 636, 'the map hidden: only the toolbar row');
+  world.setMap(true);
+  // a drag (a module's, a cable's: dragPointer) — the minimap steps aside, the toolbar takes no press; a caller's hold too
+  eq(tb.hasAttribute('data-cv-drag'), false);
+  world.dragPointer({ x: 500, y: 400, pointerType: 'touch' });
+  eq(tb.hasAttribute('data-cv-drag'), true, 'dragging');
+  world.dragPointer(null);
+  eq(tb.hasAttribute('data-cv-drag'), false, 'the drag ended');
+  world.setDragging(true); world.dragPointer({ x: 500, y: 400, pointerType: 'mouse' }); world.dragPointer(null);
+  eq(tb.hasAttribute('data-cv-drag'), true, 'a tray drag holds it over a null pointer (a pinned outline)');
+  world.setDragging(false);
+  eq(tb.hasAttribute('data-cv-drag'), false);
+  // a resize of the viewport (a tray's height, a rotation) is announced: main.js re-derives an untouched default camera
+  const rs = [];
+  world.on('resize', d => rs.push(d.w + 'x' + d.h));
+  world.resize();
+  place(vp, 0, 100, 1000, 500); world.resize();
+  eq(rs, ['1000x500'], 'once per real change');
+  adv(200); frame();
+});
+
+test('U13: a press on an editable cable pans the camera like the canvas around it (the main.js background test: cv-module isBackground); a tap still selects it; a read-only cable takes no press at all', () => {
+  const { vp, w, world, frame, d } = setup({ opts: { isBackground: el => MOD.isBackground(el) } });
+  const sel = [], L = CAB.createCables(w, { doc: d, onSelect: id => sel.push(id) });
+  L.set([{ id: 'w1', a: 'i1.out', b: 'fx1.in', kind: 'audio' }]);
+  L.layout(new Map([['i1.out', { x: 100, y: 100 }], ['fx1.in', { x: 700, y: 400 }]]));
+  const hit = all(L.under).find(n => n.getAttribute && n.getAttribute('class') === 'cv-cable-hit');
+  frame();
+  mouse(hit, 'pointerdown', 300, 300); mouse(vp, 'pointermove', 330, 300); mouse(vp, 'pointermove', 360, 310); mouse(vp, 'pointerup', 360, 310);
+  frame();
+  eq([world.cam.tx, world.cam.ty, sel], [60, 10, []], 'a mouse drag along it pans; no selection');
+  adv(500);
+  touch(hit, 'pointerdown', 300, 300, 1); touch(vp, 'pointermove', 340, 300, 1); touch(vp, 'pointerup', 340, 300, 1);
+  eq([world.cam.tx, sel], [100, []], 'a finger too');
+  adv(500); frame(30);
+  const tx = world.cam.tx;
+  touch(hit, 'pointerdown', 300, 300, 1); touch(vp, 'pointerup', 302, 301, 1);
+  eq([world.cam.tx, sel], [tx, ['w1']], 'a tap selects it (the camera stays)');
+  eq(MOD.isBackground(hit), true);
+  L.set([{ id: 'w1', a: 'i1.out', b: 'fx1.in', kind: 'audio', readonly: true }]);
+  eq(MOD.isBackground(hit), false, 'read-only: not a press target at all (CSS pointer-events: none)');
+  L.destroy();
 });
