@@ -1,5 +1,7 @@
 # SYNTH Canvas: architecture spec
 
+> **Status, and every change the user's feedback made after this spec was written, live in [ROADMAP.md](ROADMAP.md).** Where they differ, ROADMAP wins (e.g. §2.11 cards/culling are dropped; classic synths use fixed hardware panels by default).
+
 | | |
 |---|---|
 | Status | Revision 2, for the user's review. Answers to §13 may change details, not the structure. Review fixes are listed in the [Review log](#review-log) |
@@ -296,6 +298,8 @@ Each track has its own world and its own remembered camera. Default flow left �
 - What "per note" means on each kind of knob, and when each kind of knob becomes modulatable, is in §7.5 and §7.8.
 
 ### 2.11 Zoom levels, culling, toolbar, minimap
+
+> **Superseded in part (user feedback, 2026-10-17; see ROADMAP.md):** no cards and no visible culling — modules render identically at every zoom; only off-screen live displays pause. The toolbar, minimap and Tidy below still apply.
 
 - Camera range **k = 0.25–2**.
 - **Below k ≈ 0.5, modules render as cards**: illustration, title, power, jacks. Knobs hide, tickers and halos stop, cables still attach. (Knobs would be under 20 px on screen anyway.)
