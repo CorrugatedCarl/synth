@@ -55,7 +55,7 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
 | 1b+ Hardware panels (12 synths, `cv-panel.js` + `panels/<model>.js`, 2 px/mm, Hardware/Simple) | done |
 | 1c Instances + project v2 (schema 3, `cv-model.js` adopt(), canonical compile, classic-panel.js, multi-instance Serum UI, minimap, box-select, Save as classic project) | done |
 | UI fixes (no resizing, Lock view, Hardware/Simple round trip, trays stay open) | done (3cd4509) |
-| 1d Track engine (`engine.js` → Track / Inst / Chain, bit-identical; per-module CPU) | done (8094026) — **iPad bench re-run pending** |
+| 1d Track engine (`engine.js` → Track / Inst / Chain, bit-identical; per-module CPU) | done (8094026); iPad bench after 1d PASSED (bench.json `"ipad1d"`) |
 | **1e Several synths per track** (completes milestone 1) | **NEXT** — SPEC §10 1e, §6 |
 | 2a Performance modulators (project Mod Wheel, Velocity, Aftertouch, Bend; mod list; cable inspector) | planned |
 | 2b Modulation everywhere (LFO GLOBAL/PER NOTE, ENV, Macro, CC, Chaos on any Serum/FX knob + 237 classic controls) | planned |
@@ -63,10 +63,10 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
 | 4–6 later (full patching, per-voice classic modulation, polish) | later |
 
 **Immediate next actions**
-1. Ask the user to re-run the iPad bench after 1d (Safari or Chrome on the iPad, plugged in, other apps closed):
-   `https://canvas.domlavin.com/tests/bench.html` → Run 5 passes → Copy results → paste. Compare per-row loads with `tests/bench.json`
-   `"ipad"` (recorded 2026-10-18 on build 5edb4208e614, pre-split). Within a few % = 1d passes on the iPad. Record the new run (keep the
-   old one as the baseline, e.g. add `"ipad1d"`).
+1. (Done 2026-10-18) The iPad bench after 1d is recorded as `tests/bench.json` `"ipad1d"`: every row within 5 % of the pre-split
+   `"ipad"` baseline, so 1d passes on the iPad. Future re-runs (1e, 2b, 5) compare against `"ipad1d"`. When asking for a run, check the
+   pasted JSON says `"stale": false` and names the deployed build: Chrome's service worker keeps serving the previous build until its
+   update is applied (Safari on the iPad, with no cached copy, measures the server files directly).
 2. Start stage 1e with the full process. Scope per SPEC §10 1e (graph/patch/chain/power protocol; N Insts → shared or separate panels →
    OUT; editable audio cables; Effects tray; power; key zones; per-instrument MIDI learn etc.), honouring ROADMAP's feedback table
    (fixed sizes, no collision, trays never auto-close, Lock view, Hardware/Simple). Acceptance includes bit-exact canonical tracks and the
