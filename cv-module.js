@@ -6,15 +6,16 @@
 //
 // A module = .cv-mod[data-cv-mod][data-cv-kind] absolutely positioned in #world at its lay entry (top-left, world px):
 //   .cv-bar (40 world px; drag = move, tap = select, double-tap = focus, long-press / right-click / ⋯ = menu, ▾ = fold)
-//   .cv-body (the existing panel: #inst, #fxrack, the scope), .cv-card (the drawing; below CARD_K), .cv-jack × n, and
-//   the instrument's right-edge .cv-grip (width). The module's ring is a box-shadow, so a folded module is exactly BAR_H
-//   tall and the jack offsets are pure geometry (w, fold): nothing is measured per frame. contain: paint sits on the body,
-//   not the root: the jacks' hit circles and the bar's upward hit extension lie outside the module box.
-// Bodies cull by hiding in 1b (cull 'hide': the SerumUI instance keeps its panel undo, page and editors); the 'unmount'
-// path (body.unmount + wk.releaseCanvases) is built for 1c.
+//   .cv-body (the existing panel: #inst, #fxrack, the scope), .cv-jack × n, and the instrument's right-edge .cv-grip
+//   (width; hidden on a fixed-size module: [data-cv-fixed]). The module's ring is a box-shadow, so a folded module is
+//   exactly BAR_H tall and the jack offsets are pure geometry (w, fold): nothing is measured per frame. contain: paint
+//   sits on the body, not the root: the jacks' hit circles and the bar's upward hit extension lie outside the module box.
+// Zoom consistency (IMPL-panels §8.2): the body mounts once at creation and stays mounted for the module's life (no cards,
+// nothing hidden at any zoom); off screen the root carries [data-cv-off] (CSS animations pause, host.shown → monitors).
+// A classic instrument in its Hardware layout is fixed-size (host.size: {fixed: {w, h}}, cv-panel sizeOf): no grip, no
+// measuring; in its Resizable layout (and a Serum) the width grip works as before (host.size: {range}).
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
-import * as cvArt from './cv-art.js?v=9';
 import { createCables, deriveCables } from './cv-cables.js?v=9';
 
 /** Top bar height on every device (world px); the bar's hit area grows upward only (::before, calc(… * var(--ik))). */
@@ -32,8 +33,12 @@ export const ID = Object.freeze({ inst: 'i1', fx: 'fx1', sxFx: 'i1/fx', out: 'ou
  * appstore has no delete, so an LRU of separate keys could never shrink. Device prefs only: never in the project / History. */
 export const CAM_PREF = 'synth.cam', CAM_MAX = 200;
 /** Press targets that pan the camera with one finger / the mouse (the press target itself must match; IMPL-1b §4.4):
- * panel backgrounds and the card — never the top bar (it moves the module), a control, an editor canvas or a jack. */
-export const BG_SEL = '.cv-body, .cv-card, .cv-art, .cv-art *, .cv-cardname, .inst, .plate, .nameplate, .nameplate > div, .plate > .tag, .secs, '
+ * panel backgrounds and a hardware panel's art — never the top bar (it moves the module), a control, an editor canvas or a
+ * jack. */
+export const BG_SEL = '.cv-body, .inst, .plate, .nameplate, .nameplate > div, .plate > .tag, .secs, '
+  // a hardware panel (cv-panel): its root, the static art (the decor SVG and everything in it), the live layer's
+  // gaps and the extras strip's chrome — never a .hw-c widget
+  + '.inst.hw, .hw-decor, .hw-decor *, .hw-ctls, .hw-extras, .hw-xcap, '
   + '.sec, .sec > h3, .ctls, .ctl, .opswrap, .sxhost, .sx-root, .sx-head, .fxtab, .fxr-root, .fxr2-bar, .fxr-side, .fxr-rack, .fxr-empty, '
   + '.cv-out, .scope, .scope > canvas, .cv-outlab, '
   // the Serum panel's containers (a third of its surface) and the TB-303 sequencer's chrome (not .snote, not its buttons)
@@ -54,27 +59,28 @@ const gup = v => Math.ceil(v / DOT) * DOT;
  * @typedef {{x: number, y: number, w?: number, fold?: 1, z?: number}} LayEntry  world px (top-left incl. the bar)
  * @typedef {Object<string, LayEntry>} Lay  track.lay (view only: never compiled, never in presets)
  * @typedef {{id: 'in' | 'out', side: 'left' | 'right', kind: 'audio', label: string}} Jack
+ * @typedef {{w: number, h?: number}} Fixed  a fixed module size (world px, the bar included; no h: measured)
  * @typedef {{
  *   id: string, kind: 'inst' | 'fx' | 'out', title: string, sub?: string, color?: string,
  *   x: number, y: number, w: number, fold?: boolean, z?: number,
- *   resizable?: {min: number, max: number}, cull: 'hide' | 'unmount', cost?: number,
+ *   resizable?: {min: number, max: number}, fixed?: Fixed | null, cost?: number,
  *   jacks: Jack[],
  *   body: {mount: (bodyEl: HTMLElement) => void, unmount: (bodyEl: HTMLElement) => void},
  *   chip?: HTMLElement | string,
  *   menu?: () => Array<object>,
- *   art?: () => string,
  *   onMove?: (x: number, y: number, phase: 'start' | 'move' | 'end' | 'cancel') => void,
  *   onFold?: (fold: boolean) => void,
  *   onResize?: (w: number, phase: 'start' | 'move' | 'end' | 'cancel') => void,
- *   onSelect?: () => void, onDouble?: () => void, onPress?: () => void, onView?: (v: string) => void,
- * }} ModuleOpts  (additions: art — the card drawing's SVG markup; onPress — a press on the bar (bring to front);
- *   onView — the body was shown / hidden (monitors))
+ *   onSelect?: () => void, onDouble?: () => void, onPress?: () => void, onScreen?: (on: boolean) => void,
+ * }} ModuleOpts  (additions: onPress — a press on the bar (bring to front); onScreen — the module entered / left the
+ *   screen (monitors); fixed — the Hardware layout's size: no grip, no measuring)
  * @typedef {{
- *   id: string, el: HTMLElement, bar: HTMLElement, body: HTMLElement, cull: 'hide' | 'unmount', cost: number,
+ *   id: string, el: HTMLElement, bar: HTMLElement, body: HTMLElement, cost: number,
  *   rect: () => {x: number, y: number, w: number, h: number},
- *   view: (v: 'body' | 'card', why?: string) => void,
+ *   onScreen: (on: boolean) => void,
  *   setPos: (x: number, y: number, live?: boolean) => void,
  *   setW: (w: number) => void, setFold: (fold: boolean) => void, setZ: (z: number) => void,
+ *   setFixed: (size: Fixed | null) => void,
  *   setTitle: (title: string, sub?: string) => void, setChip: (chip: HTMLElement | string | null) => void,
  *   port: (jackId: string) => {x: number, y: number},
  *   destroy: () => void,
@@ -149,6 +155,29 @@ export function camPut(rec, key, cam, max) {
 export function sizeFor(modelId) {
   return modelId === 'serum' ? { w: W_SERUM, h: H_GUESS.serum } : { w: W_CLASSIC, h: H_GUESS.inst };
 }
+/** Room for a fixed-size instrument (IMPL-panels §7.3): the modules whose left edge is at or right of the instrument's
+ * left edge and whose vertical span overlaps it (R) move right together — their relative layout kept — so the nearest
+ * one starts GAP (gap) past the instrument, on the dots; null when R is empty or already starts a dot or more past it.
+ * Never moves anything left. Pure. @param {Object<string, {x: number, y: number, w: number, h: number}>} rects
+ * @param {string} key the instrument @param {number} [gap] @returns {Object<string, {x: number, y: number}> | null} */
+export function makeRoom(rects, key, gap) {
+  const I = isObj(rects) ? rects[key] : null, g = fin(gap) ? gap : GAP;
+  if (!I || ![I.x, I.y, I.w, I.h].every(fin)) return null;
+  const R = [];
+  for (const k of Object.keys(rects)) {
+    const r = rects[k];
+    if (k === key || !r || ![r.x, r.y, r.w, r.h].every(fin)) continue;
+    if (r.x >= I.x && r.y < I.y + I.h && I.y < r.y + Math.max(r.h, 1)) R.push(k);
+  }
+  if (!R.length) return null;
+  const x0 = Math.min(...R.map(k => rects[k].x));
+  if (x0 >= I.x + I.w + DOT) return null;
+  const d = gup(I.x + I.w + g) - x0;
+  if (!(d > 0)) return null;
+  const out = {};
+  for (const k of R) out[k] = { x: rects[k].x + d, y: rects[k].y };
+  return out;
+}
 
 /* ---------------------------------------------------------------- one module */
 const FOLD_SVG = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg>';
@@ -160,13 +189,15 @@ export function createModule(o, env) {
   const snapOn = () => { const wd = W(); return !(wd && typeof wd.snapOn === 'function') || wd.snapOn(); }; // the toolbar's toggle
   const mk = (tag, cls, txt) => { const e = doc.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
   const btn = (cls, label, html) => { const b = mk('button', cls); b.type = 'button'; b.setAttribute('aria-label', label); b.title = label; if (html) b.innerHTML = html; return b; };
-  const id = String(o.id), kind = o.kind || 'inst', cull = o.cull === 'unmount' ? 'unmount' : 'hide';
+  const id = String(o.id), kind = o.kind || 'inst';
   let RZ = o.resizable && fin(o.resizable.min) && fin(o.resizable.max) ? { min: o.resizable.min, max: o.resizable.max } : null; // (setRange: a model change)
+  const fixOk = f => !!f && fin(f.w) && f.w > 0;
+  let FX = fixOk(o.fixed) ? { w: Math.round(o.fixed.w), h: fin(o.fixed.h) && o.fixed.h > BAR_H ? Math.round(o.fixed.h) : 0 } : null; // the Hardware layout's size
   let x = fin(o.x) ? o.x : 0, y = fin(o.y) ? o.y : 0, lx = x, ly = y; // committed left / top, live position
-  let w = fin(o.w) && o.w > 0 ? o.w : defaultW(kind === 'inst' ? ID.inst : kind === 'out' ? ID.out : ID.fx);
-  let fold = !!o.fold, z = fin(o.z) ? o.z : 1, cur = 'body', mounted = false, hCache = 0, dead = false, title = '', chipCur;
+  let w = FX ? FX.w : fin(o.w) && o.w > 0 ? o.w : defaultW(kind === 'inst' ? ID.inst : kind === 'out' ? ID.out : ID.fx);
+  let fold = !!o.fold, z = fin(o.z) ? o.z : 1, mounted = false, hCache = 0, dead = false, title = '', chipCur, onScr = true;
   const el = mk('div', 'cv-mod');
-  el.setAttribute('data-cv-mod', id); el.setAttribute('data-cv-kind', kind); el.setAttribute('data-cv-view', 'body');
+  el.setAttribute('data-cv-mod', id); el.setAttribute('data-cv-kind', kind);
   el.setAttribute('role', 'group');
   if (o.color) el.style.setProperty('--mc', o.color);
   const bar = mk('div', 'cv-bar');
@@ -179,11 +210,8 @@ export function createModule(o, env) {
   const more = btn('cv-btn cv-more', 'Module menu'); more.textContent = '⋯'; more.setAttribute('aria-haspopup', 'menu');
   const foldB = btn('cv-btn cv-fold', 'Fold', FOLD_SVG);
   bar.append(pow, stripe, ttl, chipEl, cpu, more, foldB);
-  const body = mk('div', 'cv-body'), card = mk('div', 'cv-card');
-  card.setAttribute('aria-hidden', 'true');
-  const cardArt = mk('div', 'cv-art'), cardName = mk('div', 'cv-cardname');
-  card.append(cardArt, cardName);
-  el.append(bar, body, card);
+  const body = mk('div', 'cv-body');
+  el.append(bar, body);
   const jacks = new Map(); // jack id → {el, side}
   for (const j of Array.isArray(o.jacks) ? o.jacks : []) {
     const je = mk('span', 'cv-jack');
@@ -194,7 +222,7 @@ export function createModule(o, env) {
     jacks.set(j.id, { el: je, side: j.side === 'left' ? 'left' : 'right' });
   }
   let grip = null;
-  if (RZ) {
+  if (RZ || FX) { // (a fixed module keeps its grip hidden: setFixed(null) brings it back — the Resizable layout)
     grip = mk('div', 'cv-grip');
     grip.setAttribute('role', 'separator'); grip.setAttribute('aria-orientation', 'vertical'); grip.setAttribute('aria-label', 'Module width');
     grip.title = 'Drag to change the width';
@@ -206,8 +234,9 @@ export function createModule(o, env) {
     const yy = jackY() + 'px';
     for (const j of jacks.values()) if (j.el.style.top !== yy) j.el.style.top = yy;
   }
-  function measure() { // the module's layout height (world px): a layout read, never per frame
+  function measure() { // the module's layout height (world px): a layout read, never per frame (a fixed height: none)
     if (fold) return BAR_H;
+    if (FX && FX.h) return FX.h;
     const hh = +el.offsetHeight || 0;
     if (hh > 0) hCache = hh;
     return hCache || BAR_H;
@@ -232,8 +261,17 @@ export function createModule(o, env) {
   };
   const setW = nw => {
     if (!fin(nw) || nw <= 0) return;
-    w = RZ ? clamp(Math.round(nw), RZ.min, RZ.max) : Math.round(nw);
+    w = FX ? FX.w : RZ ? clamp(Math.round(nw), RZ.min, RZ.max) : Math.round(nw);
     el.style.width = w + 'px';
+  };
+  // the fixed size (Hardware layout) or none (Resizable): the body's height is set once (no measuring), the grip hides
+  const setFixed = f => {
+    const n = fixOk(f) ? { w: Math.round(f.w), h: fin(f.h) && f.h > BAR_H ? Math.round(f.h) : 0 } : null;
+    if (R && n) { R = null; el.classList.remove('cv-sizing'); } // (a grip drag cut short by an undo / a toggle)
+    FX = n;
+    if (n) { el.setAttribute('data-cv-fixed', ''); w = n.w; el.style.width = w + 'px'; } else el.removeAttribute('data-cv-fixed');
+    body.style.height = n && n.h ? (n.h - BAR_H) + 'px' : '';
+    hCache = 0;
   };
   const setFold = f => {
     fold = !!f;
@@ -253,9 +291,7 @@ export function createModule(o, env) {
     sEl.hidden = !s;
     el.setAttribute('aria-label', title + ' module');
     bar.setAttribute('aria-label', title + (s ? ' · ' + s : '') + ' — drag to move');
-    if (cardName.textContent !== title) { cardName.textContent = title; cardArt.textContent = ''; if (cur === 'card') drawArt(); } // (a model change: its drawing)
   };
-  function drawArt() { if (!cardArt.firstChild && o.art) { try { cardArt.innerHTML = o.art() || ''; } catch (err) { /* no drawing */ } } }
   const setChip = c => { // the same element again stays put (an open select keeps its picker and focus)
     if (c === chipCur && (typeof c !== 'object' || !c || c.parentNode === chipEl)) return;
     chipCur = c;
@@ -263,7 +299,7 @@ export function createModule(o, env) {
     else { chipEl.textContent = ''; if (c) chipEl.append(c); }
     chipEl.hidden = !c;
   };
-  // ---- body: mounted at creation (the default view is 'body'; the world may switch it to a card)
+  // ---- body: mounted at creation, for the module's life (Z1: no cards; unmounted only by destroy)
   function mount() { if (mounted || dead) return; mounted = true; if (o.body && o.body.mount) o.body.mount(body); }
   function unmount() {
     if (!mounted) return;
@@ -271,18 +307,14 @@ export function createModule(o, env) {
     if (typeof wk.releaseCanvases === 'function') { try { wk.releaseCanvases(body); } catch (err) { /* kit without it */ } }
     if (o.body && o.body.unmount) o.body.unmount(body);
   }
-  function view(v, why) {
-    v = v === 'card' ? 'card' : 'body';
-    if (why) el.setAttribute('data-cv-why', String(why)); else el.removeAttribute('data-cv-why');
-    if (v === cur) return;
-    if (v === 'card') {
-      if (!fold) { const hb = measure() - BAR_H; if (hb > 0) card.style.minHeight = hb + 'px'; } // the card keeps the body's footprint
-      drawArt();
-      if (cull === 'unmount') unmount();
-    } else mount();
-    cur = v;
-    el.setAttribute('data-cv-view', v);
-    if (o.onView) o.onView(v);
+  // on / off screen (the world's plan): nothing visible changes — [data-cv-off] pauses CSS animations, the owner pauses
+  // its live displays (monitors)
+  function onScreen(on) {
+    on = on !== false;
+    if (on === onScr) return;
+    onScr = on;
+    if (on) el.removeAttribute('data-cv-off'); else el.setAttribute('data-cv-off', '');
+    if (o.onScreen) o.onScreen(on);
   }
   // ---- bar: move (wk.dragSource), tap / double-tap, menu
   const ctl = t => { for (let n = t; n && n !== bar; n = n.parentNode) if (n === chipEl || n === more || n === foldB) return true; return false; };
@@ -370,7 +402,7 @@ export function createModule(o, env) {
   // ---- width grip (instrument): world delta / k, grid-snapped (Shift / Fine: free), one onResize start / end pair
   let R = null, gripDrag = null, gpress = null;
   const size = i => {
-    if (!R) return;
+    if (!R || FX) return;
     const p = W2(i.x, i.y), nw0 = R.w0 + p.x - R.p0.x, before = w;
     setW(i.fine || !snapOn() ? nw0 : gsnap(nw0));
     if (w !== before && o.onResize) o.onResize(w, 'move');
@@ -378,7 +410,7 @@ export function createModule(o, env) {
   if (grip) {
     gripDrag = wk.dragSource(grip, {
       data: id, scrollAxis: 'none', autoScroll: false,
-      begin(i) { R = { w0: w, p0: gpress ? W2(gpress.x, gpress.y) : W2(i.x, i.y) }; el.classList.add('cv-sizing'); if (o.onResize) o.onResize(w, 'start'); },
+      begin(i) { if (FX) return; R = { w0: w, p0: gpress ? W2(gpress.x, gpress.y) : W2(i.x, i.y) }; el.classList.add('cv-sizing'); if (o.onResize) o.onResize(w, 'start'); },
       move: size,
       drop(i) { if (!R) return; size(i); R = null; el.classList.remove('cv-sizing'); if (o.onResize) o.onResize(w, 'end'); },
       cancel() { if (!R) return; const w0 = R.w0; R = null; el.classList.remove('cv-sizing'); setW(w0); if (o.onResize) o.onResize(w, 'cancel'); },
@@ -386,15 +418,15 @@ export function createModule(o, env) {
     grip.addEventListener('pointerdown', e => { if (e.button !== 0) return; gpress = { x: e.clientX, y: e.clientY }; grab(grip, e); });
   }
   // ---- initial state
-  setPos(x, y, false); setW(w); setFold(fold); setZ(z);
+  setPos(x, y, false); setFixed(FX); setW(w); setFold(fold); setZ(z);
   setTitle(o.title, o.sub);
   setChip(o.chip || null);
   mount();
   const M = {
-    id, el, bar, body, card, cull, cost: fin(o.cost) ? o.cost : 600, kind,
+    id, el, bar, body, cost: fin(o.cost) ? o.cost : 600, kind,
     rect: () => ({ x: lx, y: ly, w, h: fold ? BAR_H : measure() }),
-    view,
-    setPos, setW, setFold, setZ, setTitle, setChip,
+    onScreen,
+    setPos, setW, setFold, setZ, setTitle, setChip, setFixed,
     /** (addition) the grip's width range after a classic ↔ Serum model change (a resizable module only); re-clamps w */
     setRange(r) {
       if (!RZ || !r || !fin(r.min) || !fin(r.max) || (r.min === RZ.min && r.max === RZ.max)) return;
@@ -405,7 +437,7 @@ export function createModule(o, env) {
     port(jackId) { const j = jacks.get(jackId); return j ? { x: j.side === 'left' ? 0 : w, y: jackY() } : { x: w / 2, y: BAR_H / 2 }; },
     // (additions) state reads for the track view, main.js and tests
     get x() { return lx; }, get y() { return ly; }, get w() { return w; }, get z() { return z; }, get fold() { return fold; },
-    get shown() { return cur; }, get title() { return title; },
+    get screen() { return onScr; }, get fixed() { return FX ? Object.assign({}, FX) : null; }, get title() { return title; },
     dragging: () => !!D || !!R,
     /** the canvas arrow keys (cv-world key): one onMove start / end pair per nudge (one undo step) */
     nudge(dx, dy) {
@@ -436,8 +468,9 @@ export function createModule(o, env) {
  * bodies and the edits; this module never touches the project except through host callbacks.
  * host.lay(key, entry, phase, what): 'start' opens the undo step of a move / fold / resize (what), 'end' writes the
  * entry; an 'end' without a 'start' (bring to front: z) writes without an undo step; 'cancel' changes nothing.
- * (Additions: host.root — the element modules live in (default world.el: #world); host.shown(key) — a body was shown /
- * hidden or folded (main.js: monitors.sync); host.art(kind) — the card drawing; host.select(key) / host.focus(key).)
+ * (Additions: host.root — the element modules live in (default world.el: #world); host.shown(key) — a module went on /
+ * off screen or folded (main.js: monitors.sync); host.size(kind) — the instrument's size: {fixed: {w, h}} (Hardware
+ * layout) or {range: {min, max}} (Resizable; default widthRange(model)); host.select(key) / host.focus(key).)
  * @param {object|null} world  cv-world World (null: modules still lay out in host.root at k = 1)
  * @param {{id: string, model: string, name: string, color: string, lay?: Lay}} track
  * @param {object} host
@@ -450,6 +483,8 @@ export function createTrackView(world, track, host) {
   const mods = new Map(); // key → Module
   const cables = createCables(root, { doc });
   const keys = () => [ID.inst, fxKey(T.model), ID.out];
+  // the instrument's size from the host: {fixed: {w, h}} (a Hardware layout) or {range: {min, max}} (resizable)
+  const sizeOf = () => { let s = null; try { s = H.size ? H.size('inst') : null; } catch (err) { s = null; } return isObj(s) && (isObj(s.fixed) || isObj(s.range)) ? s : { range: widthRange(T.model) }; };
   const kindOf = key => (key === ID.inst ? 'inst' : key === ID.out ? 'out' : 'fx');
   const sizes = () => { const o = {}; for (const [k, m] of mods) { const r = m.rect(); o[k] = { w: r.w, h: r.h }; } return o; };
   const tidied = () => { const o = {}; for (const [k, m] of mods) o[k] = { w: m.w }; return tidy(T, o); }; // (widths only: no layout read)
@@ -458,10 +493,11 @@ export function createTrackView(world, track, host) {
   const entryOf = key => {
     const m = mods.get(key);
     if (!m) return null;
-    const e = { x: Math.round(m.x), y: Math.round(m.y) };
-    if (m.wSet) e.w = m.w;
+    const e = { x: Math.round(m.x), y: Math.round(m.y) }, old = isObj(T.lay) && isObj(T.lay[key]) ? T.lay[key] : null;
+    if (m.wSet) e.w = m.fixed && old && fin(old.w) ? old.w : m.w; // (a fixed module keeps the Resizable width it had)
     if (m.fold) e.fold = 1;
     if (m.zSet) e.z = m.z;
+    if (old && old.ui === 'flow') e.ui = 'flow'; // the instrument's layout choice (IMPL-panels §7.1) rides along
     return e;
   };
   let lastPorts = null;
@@ -482,19 +518,18 @@ export function createTrackView(world, track, host) {
   };
   const update = key => { if (world && typeof world.update === 'function') world.update(key); };
   function make(key) {
-    const kind = kindOf(key), M0 = meta(kind), L = layOf(T, key, tidied());
+    const kind = kindOf(key), M0 = meta(kind), L = layOf(T, key, tidied()), SZ = kind === 'inst' ? sizeOf() : null;
     const jk = kind === 'inst' ? [{ id: 'out', side: 'right', kind: 'audio', label: (M0.title || 'Instrument') + ' out' }]
       : kind === 'fx' ? [{ id: 'in', side: 'left', kind: 'audio', label: (M0.title || 'FX') + ' in' }, { id: 'out', side: 'right', kind: 'audio', label: (M0.title || 'FX') + ' out' }]
         : [{ id: 'in', side: 'left', kind: 'audio', label: 'OUT in' }];
     const m = createModule({
       id: key, kind, title: M0.title || '', sub: M0.sub, chip: M0.chip, color: T.color,
       x: L.x, y: L.y, w: kind === 'inst' && fin(L.w) ? L.w : defaultW(key, T.model), fold: !!L.fold, z: fin(L.z) ? L.z : 1,
-      resizable: kind === 'inst' ? widthRange(T.model) : undefined,
-      cull: 'hide', cost: kind === 'inst' ? (T.model === 'serum' ? 3700 : 600) : kind === 'fx' ? 900 : 40,
+      resizable: SZ ? SZ.range || widthRange(T.model) : undefined, fixed: SZ ? SZ.fixed || null : null,
+      cost: kind === 'inst' ? (T.model === 'serum' ? 3700 : 600) : kind === 'fx' ? 900 : 40,
       jacks: jk,
       body: H.bodies && H.bodies[kind] ? H.bodies[kind] : null,
       menu: () => (H.menu ? H.menu(kind, key) : []),
-      art: () => (H.art ? H.art(kind) : ''),
       onPress: () => front(key),
       onSelect: () => { if (H.select) H.select(key); },
       onDouble: () => { if (H.focus) H.focus(key); },
@@ -510,7 +545,7 @@ export function createTrackView(world, track, host) {
         relay();
         if (phase === 'end' || phase === 'cancel') update(key);
       },
-      onView: () => { if (H.shown) H.shown(key); },
+      onScreen: () => { if (H.shown) H.shown(key); },
       onSize: () => { relay(); update(key); },
     }, { world, doc });
     m.zSet = fin(L.z); m.wSet = kind === 'inst' && fin(L.w);
@@ -555,11 +590,15 @@ export function createTrackView(world, track, host) {
       for (const k of want) { // (instrument first: Tidy places the others from its new width — a model change on an untouched track)
         let m = mods.get(k);
         if (!m) { make(k); continue; }
-        const kind = kindOf(k), M0 = meta(kind), L = layOf(T, k, tidied());
-        if (kind === 'inst') m.setRange(widthRange(T.model)); // (the grip's limits follow the model, even mid-drag)
+        const kind = kindOf(k), M0 = meta(kind), SZ = kind === 'inst' ? sizeOf() : null;
+        if (SZ) { // (the size follows the model and the layout toggle, even mid-drag; before Tidy reads the widths)
+          if (SZ.fixed) m.setFixed(SZ.fixed); else { m.setFixed(null); m.setRange(SZ.range); }
+        }
+        const L = layOf(T, k, tidied());
         if (!m.dragging()) {
           m.setPos(L.x, L.y, false);
-          if (kind === 'inst') { const r = widthRange(T.model); m.wSet = fin(L.w); m.setW(fin(L.w) ? clamp(L.w, r.min, r.max) : defaultW(k, T.model)); }
+          if (SZ && !SZ.fixed) { const r = SZ.range; m.wSet = fin(L.w); m.setW(fin(L.w) ? clamp(L.w, r.min, r.max) : defaultW(k, T.model)); }
+          else if (SZ) m.wSet = fin(L.w); // (a Hardware layout ignores the Resizable width but keeps it: its lay entry still carries w)
           if (m.fold !== !!L.fold) { m.setFold(!!L.fold); vis = true; }
         }
         m.zSet = fin(L.z);
@@ -583,13 +622,13 @@ export function createTrackView(world, track, host) {
       relay();
     },
     ports,
-    /** the module `key` shows its body (not a card, not folded) */
-    live(key) { const m = mods.get(key); return !!m && m.shown === 'body' && !m.fold; },
+    /** the module `key` is on screen (the world's plan, CULL_MARGIN early) and not folded: its live displays run */
+    live(key) { const m = mods.get(key); return !!m && m.screen && !m.fold; },
     /** user actions from the module menus (each one undo step, except front) */
     toggleFold(key) { const m = mods.get(key); if (!m) return; m.setFold(!m.fold); lay(key, 'start', 'fold'); lay(key, 'end', 'fold'); relay(); update(key); if (H.shown) H.shown(key); },
     resetWidth(key) {
       const m = mods.get(key);
-      if (!m || kindOf(key) !== 'inst') return;
+      if (!m || kindOf(key) !== 'inst' || m.fixed) return;
       lay(key, 'start', 'resize');
       m.wSet = false;
       m.setW(defaultW(key, T.model));
@@ -608,7 +647,3 @@ export function createTrackView(world, track, host) {
   return V;
 }
 
-/** The card drawing of a module kind (cv-art; '' while the SHELL lane's drawings are not in). */
-export function cardArt(kind, model) {
-  try { return kind === 'inst' ? cvArt.art(model, { w: 320, h: 188 }) : cvArt.glyph(kind === 'out' ? 'out' : 'fx', { w: 160, h: 96 }); } catch (err) { return ''; }
-}

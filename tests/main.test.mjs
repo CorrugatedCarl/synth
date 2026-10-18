@@ -7,6 +7,7 @@ import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { TB_FX, DX_FX } from './fixtures/panels.mjs';
 import { bootMain } from './main-sim.mjs';
 import { fakeStorage, fakeIDB } from './fakes.mjs';
 import { MODELS } from '../models.js?v=9';
@@ -915,30 +916,67 @@ test('G2 two-finger rollback (gesture.js\'s pointercancel flagged e.gesture === 
   fire(m, 'pointerup', Object.assign({ pointerType: 'mouse' }, bd));
 });
 
-test('G2 two-finger rollback: the step sequencer\'s number boxes and step notes (a rest the drag made a note is a rest again)', async () => {
-  const s = await bootMain({ hash: '#tb303' });
+test('G2 two-finger rollback: the step sequencer\'s Tempo (a knob in the Hardware layout, a number box in the Resizable one) and step notes (a rest the drag made a note is a rest again) — once per layout', async () => {
+  // the Hardware layout from a fixture TB-303 panel (tests/fixtures/panels.mjs, through cv-panel's test hook) until
+  // panels/tb303.js lands; the ⋯ toggle gives the Resizable one (today's sequencer DOM)
+  const s = await bootMain({ hash: '#tb303', synthTest: { panels: { tb303: TB_FX } } });
   const api = s.api, find = (n, f) => { if (f(n)) return n; for (const c of n.children || []) { const r = find(c, f); if (r) return r; } return null; };
   const ev = (type, o) => Object.assign({ type, button: 0, buttons: 1, ctrlKey: false, shiftKey: false, pointerId: 6, pointerType: 'touch', clientX: 50, clientY: 300,
     preventDefault() {}, stopPropagation() {} }, o);
   const fire = (el, type, o) => el.dispatchEvent(ev(type, Object.assign({ target: el }, o)));
   const t = api.project().tracks[0];
   assert.equal(t.model, 'tb303');
-  const tempo = find(s.$('#inst'), n => n.className === 'num' && n.attrs && n.attrs['aria-label'] === 'Tempo');
-  const step = find(s.$('#inst'), n => n.className === 'snote' && n.attrs && n.attrs['aria-label'] === 'Step 2 note');
-  assert.ok(tempo && step, 'Tempo box and a step note');
-  const bpm0 = t.seq.bpm;
-  fire(tempo, 'pointerdown'); fire(tempo, 'pointermove', { clientY: 260 });
-  assert.notEqual(t.seq.bpm, bpm0);
-  fire(tempo, 'pointercancel', { gesture: 'two-finger' });
-  assert.equal(t.seq.bpm, bpm0);
-  t.seq.pat[1].g = 0;
-  const n0 = t.seq.pat[1].n;
-  fire(step, 'pointerdown'); fire(step, 'pointermove', { clientY: 250 });
-  assert.deepEqual([t.seq.pat[1].g, t.seq.pat[1].n !== n0], [1, true], 'the drag made the rest a note');
-  fire(step, 'pointercancel', { gesture: 'two-finger' });
-  assert.deepEqual([t.seq.pat[1].g, t.seq.pat[1].n], [0, n0], 'a rest again');
-  fire(step, 'pointerdown'); fire(step, 'pointermove', { clientY: 250 }); fire(step, 'pointercancel');
-  assert.equal(t.seq.pat[1].g, 1, 'a plain cancel keeps');
+  const cv = globalThis.__synthTest.cv;
+  for (const layout of ['hw', 'flow']) {
+    if (layout === 'flow') cv.setLayout('flow');
+    assert.equal(cv.instUi(api.project().tracks[0]), layout);
+    const tempo = find(s.$('#inst'), n => n.attrs && n.attrs.role === 'slider' && n.attrs['aria-label'] === 'Tempo');
+    const step = find(s.$('#inst'), n => n.className === 'snote' && n.attrs && n.attrs['aria-label'] === 'Step 2 note');
+    assert.ok(tempo && step, layout + ': Tempo and a step note');
+    assert.equal(tempo.className, layout === 'hw' ? 'knob hw-tempo' : 'num', layout + ': the hardware TEMPO knob / today\'s number box');
+    const tr = api.project().tracks[0], bpm0 = tr.seq.bpm;
+    fire(tempo, 'pointerdown'); fire(tempo, 'pointermove', { clientY: 260 });
+    assert.notEqual(tr.seq.bpm, bpm0, layout);
+    fire(tempo, 'pointercancel', { gesture: 'two-finger' });
+    assert.equal(tr.seq.bpm, bpm0, layout);
+    tr.seq.pat[1].g = 0;
+    const n0 = tr.seq.pat[1].n;
+    fire(step, 'pointerdown'); fire(step, 'pointermove', { clientY: 250 });
+    assert.deepEqual([tr.seq.pat[1].g, tr.seq.pat[1].n !== n0], [1, true], layout + ': the drag made the rest a note');
+    fire(step, 'pointercancel', { gesture: 'two-finger' });
+    assert.deepEqual([tr.seq.pat[1].g, tr.seq.pat[1].n], [0, n0], layout + ': a rest again');
+    fire(step, 'pointerdown'); fire(step, 'pointermove', { clientY: 250 }); fire(step, 'pointercancel');
+    assert.equal(tr.seq.pat[1].g, 1, layout + ': a plain cancel keeps');
+  }
+});
+
+test('Hardware panels in the page: a DX7 (fixture) — button 18 + OPERATOR SELECT address r2, DATA ENTRY sets it (one value, the preset Custom), the LCD says so; a TB-303 (fixture) key writes the cursor step', async () => {
+  const s = await bootMain({ hash: '#dx7', synthTest: { panels: { dx7: DX_FX, tb303: TB_FX } } });
+  const api = s.api, find = (n, f) => { if (f(n)) return n; for (const c of n.children || []) { const r = find(c, f); if (r) return r; } return null; };
+  const ev = (type, o) => Object.assign({ type, button: 0, buttons: 1, ctrlKey: false, shiftKey: false, pointerId: 7, pointerType: 'mouse', clientX: 50, clientY: 300,
+    preventDefault() {}, stopPropagation() {} }, o);
+  const fire = (el, type, o) => el.dispatchEvent(ev(type, Object.assign({ target: el }, o)));
+  const t = api.project().tracks[0], cv = globalThis.__synthTest.cv;
+  assert.equal(t.model, 'dx7');
+  assert.ok(cv.hw(), 'the hardware panel rendered');
+  const btn = n => find(s.$('#inst'), x => x.attrs && x.attrs['data-n'] === String(n));
+  fire(btn(18), 'pointerdown');
+  const opsel = find(s.$('#inst'), x => x.attrs && x.attrs['aria-label'] === 'Operator select');
+  fire(opsel, 'pointerdown');
+  assert.equal(btn(18).parentNode.attrs['data-ctl'], 'r2', 'button 18 addresses operator 2\'s coarse frequency');
+  const data = find(s.$('#inst'), x => x.attrs && x.attrs['aria-label'] === 'Data entry'), r0 = t.vals.r2;
+  t.preset = 'X';
+  fire(data, 'pointerdown', { clientY: 300 }); fire(data, 'pointermove', { clientY: 200 }); fire(data, 'pointerup', { clientY: 200, buttons: 0 });
+  assert.ok(t.vals.r2 > r0, 'DATA ENTRY raised r2');
+  assert.equal(t.preset, null, 'Custom');
+  const lcd = find(s.$('#inst'), x => x.className === 'hw-lcd');
+  assert.match(lcd.children[1].textContent, /^OP2 COARSE=/);
+  // the TB-303: a key in PITCH mode writes the cursor step (step 1), its grid follows
+  api.setTrackModel(t, 'tb303');
+  const tb = api.project().tracks[0], key = find(s.$('#inst'), x => x.attrs && x.attrs['aria-label'] === 'Key E');
+  tb.seq.pat[0].g = 0;
+  fire(key, 'pointerdown');
+  assert.deepEqual([tb.seq.pat[0].n, tb.seq.pat[0].g], [4, 1]);
 });
 
 test('R6: the chord notice judges a switch on the model\'s last-used values — a saved Unison Prophet-5 is skipped for the Juno-60 (6 voices); the tap gives a polyphonic track', async () => {

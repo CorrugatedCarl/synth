@@ -1,0 +1,1274 @@
+// cv-panel.js — the fixed hardware front panels of the classic synths (docs/canvas/IMPL-panels.md §3–§6; owner: ENGINE).
+// A model's layout (panels/<model>.js: data only, mm of the real instrument) becomes one fixed-size module body: a cached
+// SVG of the static art (areas, sections, rules, legends, dials, inert controls) under one absolutely placed widget per
+// live control, plus the "extras" strip of our controls the hardware lacks. Nothing here measures layout or reflows: every
+// position is pure maths from the layout and PX_PER_MM, so the module looks the same at every zoom and on every device.
+// Rules: plain ES module, no DOM / window / storage at module top level (node imports it: tests, tools/panel-check.mjs);
+// render() survives tests/main-sim.mjs's DOM stub (keeps references to its nodes, no querySelector of its own nodes, no
+// layout reads). Widgets register in main.js's `ui` map through the api (main.js hwApi, IMPL-panels §4.4).
+import { DOT } from './cv-world.js?v=9';
+import { BAR_H } from './cv-module.js?v=9';
+import { LAYOUTS, HW_IDS, layoutOf } from './panels/index.js?v=9';
+
+export { LAYOUTS, HW_IDS, layoutOf };
+/** Layout format version; world px per mm of the real instrument (one scale for every model, IMPL-panels §3.1). */
+export const FORMAT = 1, PX_PER_MM = 2;
+/** Hit areas (mm): every live control's ≥ HIT_MIN_MM both ways; by default a control's own box grows to HIT_DEF_MM. */
+export const HIT_MIN_MM = 14, HIT_DEF_MM = 15;
+/** The seam of case colour between the face and an aux plate (mm); a cropped band without controls (mm, R2). */
+export const SEAM_MM = 8, BAND_MAX_MM = 24;
+/** The extras strip (world px): a row, its caption, the inner padding; cell widths per our control type. */
+export const XROW = 64, XCAP = 16, XPAD = 8;
+export const XCELL = Object.freeze({ k: 72, b: 72, s: n => Math.max(72, 16 + 52 * (n | 0)) });
+/** A selector's extras cell: XCELL.s, wider when its option names are long (today's .sel pills in one row: ~26 px of LED
+ * and padding + 5.8 px a character each, 3 px apart) — from the names, never measured. @param {string[]} opts */
+export const selCellW = opts => Math.max(XCELL.s(opts.length), Math.ceil(16 + opts.reduce((a, o) => a + 26 + 5.8 * String(o).length, 0) + 3 * (opts.length - 1)));
+/** TB-303's 16-step grid block in the extras strip (px). */
+export const SEQ_GRID = Object.freeze({ w: 16 * 36, h: 192 });
+/** Limits: decor items per layout, content size (mm). */
+export const MAX_DECOR = 3000, MAX_W_MM = 2000, MAX_H_MM = 1000;
+/** Maker names never printed on a panel (whole words, case-sensitive: "ARPEGGIO" and "Minimoog" pass). */
+export const MAKERS = Object.freeze(['Moog', 'ARP', 'Eminent', 'Yamaha', 'Sequential', 'Korg', 'Roland', 'Oberheim']);
+/** Control kinds → the models.js types a live one may carry ([]: display or decoration only; §3.4.1). */
+export const KINDS = Object.freeze({
+  knob: ['k'], slider: ['k', 's'], rotary: ['s', 'k'], switch: ['b', 's', 'k'], button: ['b', 's', 'k'], buttons: ['s', 'k'], jacks: ['s'],
+  led: [], display: [], jack: [], lamp: [], screw: [], fuse: [], strig: [], slot: [],
+});
+/** Waveform / arrow pictograms (path data in a −1…1 box, stroked). */
+export const GLYPHS = Object.freeze({
+  'wave:sine': 'M-1 0C-0.67-1.15-0.33-1.15 0 0S0.67 1.15 1 0',
+  'wave:tri': 'M-1 0.6L0-0.6L1 0.6',
+  'wave:saw': 'M-1 0.6L0-0.6V0.6L1-0.6V0.6',
+  'wave:rsaw': 'M-1-0.6L0 0.6V-0.6L1 0.6V-0.6',
+  'wave:trisaw': 'M-1 0.6C-0.55 0.45-0.15 0-0.05-0.6L0.15 0.6C0.55 0.45 0.85 0 1-0.6',
+  'wave:sq': 'M-1 0.6V-0.6H0V0.6H1V-0.6',
+  'wave:rect': 'M-1 0.6V-0.6H-0.35V0.6H1V-0.6',
+  'wave:narrow': 'M-1 0.6V-0.6H-0.75V0.6H1V-0.6',
+  'wave:pulse': 'M-1 0.6H-0.2V-0.6H0.2V0.6H1',
+  'wave:noise': 'M-1 0.1L-0.8-0.5L-0.6 0.4L-0.4-0.2L-0.2 0.6L0-0.6L0.2 0.3L0.4-0.4L0.6 0.5L0.8-0.3L1 0.2',
+  'arrow:up': 'M0 0.8V-0.8M-0.5-0.3L0-0.8L0.5-0.3',
+  'arrow:down': 'M0-0.8V0.8M-0.5 0.3L0 0.8L0.5 0.3',
+  'arrow:right': 'M-0.8 0H0.8M0.3-0.5L0.8 0L0.3 0.5',
+});
+/** The special tokens of a model (§3.4.3): live ids the renderer binds itself (`multi`: may repeat), extras-only ones,
+ * and the kind each must be. Every token is validated; `usable()` refuses a layout whose tokens this build cannot draw. */
+export const TOKENS = Object.freeze({
+  tb303: {
+    kind: { 'seq:tempo': 'knob', 'seq:runLed': 'led', 'seq:run': 'button', 'seq:clear': 'button', 'seq:key': 'button', 'seq:pitch': 'button', 'seq:time': 'button',
+      'seq:down': 'button', 'seq:up': 'button', 'seq:accent': 'button', 'seq:slide': 'button', 'seq:back': 'button', 'seq:next': 'button' },
+    extras: ['seq:sync', 'seq:swing', 'seq:random', 'seq:demo', 'seq:toRoll', 'seq:grid'], multi: ['seq:key'],
+  },
+  dx7: {
+    kind: { 'dx:data': 'slider', 'dx:no': 'button', 'dx:yes': 'button', 'dx:btn': 'button', 'dx:opsel': 'button', 'dx:edit': 'button', 'dx:function': 'button',
+      'dx:memInt': 'button', 'dx:led': 'display', 'dx:lcd': 'display', 'dx:chart': 'display' },
+    extras: [], multi: ['dx:btn'],
+  },
+});
+/** Tokens this build renders (a layout using another one falls back to the Resizable panel, §4.5). */
+export const RENDERED_TOKENS = new Set([...Object.keys(TOKENS.tb303.kind), ...TOKENS.tb303.extras, ...Object.keys(TOKENS.dx7.kind)]);
+/** The DX7's buttons 1–32 (§6.3): the parameter each live one selects in edit mode (op: per operator; eg: per EG step),
+ * the function-mode one, and its LCD names. */
+export const DX_EDIT = Object.freeze({ 7: 'alg', 8: 'fb', 10: 'ls', 18: 'r', 19: 'f', 20: 'd', 21: 'R', 22: 'L', 26: 's', 27: 'l', 28: 'v', 31: 'tr' });
+export const DX_FUNC = Object.freeze({ 17: 'pmd' });
+const DX_NAME = { alg: 'ALGORITHM', fb: 'FEEDBACK', ls: 'LFO SPEED', tr: 'TRANSPOSE', pmd: 'WHEEL RANGE', r: 'COARSE', f: 'FINE', d: 'DETUNE', R: 'RATE', L: 'LEVEL', s: 'RATE SCL', l: 'OUT LEVEL', v: 'KEY VEL' };
+/** The id a DX7 button addresses in a state {op, eg, mode} (null: not live in that mode). */
+export function dxAddr(n, st) {
+  if (st.mode === 'function') return DX_FUNC[n] || null;
+  if (st.mode !== 'edit') return null;
+  const p = DX_EDIT[n];
+  if (!p) return null;
+  if (p === 'R' || p === 'L') return p + st.eg + '_' + st.op;
+  return p.length === 1 ? p + st.op : p; // (r f d s l v: per operator)
+}
+/** The DX7 LCD's two lines (16 characters each) for a state, the addressed control and its value text. */
+export function dxLcd(st, alg, addr, valText, presetNo, presetName) {
+  const fit = t => String(t).slice(0, 16).padEnd(16, ' ');
+  if (st.mode === 'play') return [fit('INTERNAL' + (presetNo ? ' ' + String(presetNo).padStart(2, '0') : '')), fit(presetName || 'CUSTOM')];
+  if (st.mode === 'function') return [fit('FUNCTION CONTROL'), fit((DX_NAME[addr] || '') + '=' + valText)];
+  const head = 'ALG' + String(alg).padStart(2, '0') + '     111111';
+  if (!addr) return [fit(head), fit('')];
+  const m = /^([a-zA-Z])(\d)(?:_(\d))?$/.exec(addr);
+  if (m && !['alg', 'fb', 'ls', 'tr'].includes(addr)) {
+    const key = m[1], op = m[3] || m[2], eg = m[3] ? m[2] : '';
+    return [fit(head), fit('OP' + op + ' ' + DX_NAME[key] + eg + '=' + valText)];
+  }
+  return [fit(head), fit((DX_NAME[addr] || addr.toUpperCase()) + '=' + valText)];
+}
+
+const FONTS = { sans: "'Helvetica Neue', Helvetica, Arial, sans-serif", condensed: "'Arial Narrow', 'Helvetica Neue', Arial, sans-serif",
+  rounded: "ui-rounded, 'SF Pro Rounded', 'Arial Rounded MT Bold', 'Helvetica Neue', Arial, sans-serif" };
+const FRAMES_A = ['none', 'wood', 'metal', 'line'], FRAMES_S = ['box', 'outline', 'header', 'rule', 'none'], TITLES = ['top', 'bottom', 'break', 'header', 'none'];
+const DECOR_T = ['rect', 'line', 'path', 'text', 'glyph', 'scale', 'ladder', 'grille', 'stripes', 'louvres', 'screws'];
+const STYLES = ['rocker', 'bat', 'slide', 'lever', 'paddle'], LABS = ['n', 's', 'e', 'w', 'none'], PTRS = ['line', 'triangle', 'notch', 'dot', 'fin', 'bar'];
+const PATH_RE = /^[MmLlHhVvCcSsQqTtAaZz0-9 .,eE+-]*$/;
+const MAKER_RE = new RegExp('\\b(' + MAKERS.join('|') + ')\\b');
+const KNOB_BOX = 64 / 50; // today's knob SVG: the skirt is 50 of its 64 viewBox units → the box that draws the skirt at d
+const DIAL_IN = 0.6, DIAL_TICK = 1.4, DIAL_LAB = 3.9, DIAL_OUT = 5.4; // printed dial: tick from / length, label radius, extent (mm past the skirt)
+const HDR_MM = 7; // a 'header' section's band
+const fin = x => typeof x === 'number' && isFinite(x);
+const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
+const r05 = v => Math.round(v * 2) / 2;
+const ceil32 = v => Math.max(DOT, Math.ceil(v / DOT - 1e-9) * DOT);
+const n3 = v => String(Math.round(v * 1000) / 1000);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const colorOk = c => typeof c === 'string' && /^(#[0-9a-fA-F]{3,8}|[a-z]+|rgba?\([0-9., %]+\))$/.test(c);
+
+/* ---------------------------------------------------------------- model + layout helpers */
+const ctlMaps = new WeakMap();
+/** models.js controls of a model by id. @returns {Map<string, object>} */
+function ctlsOf(model) {
+  let m = ctlMaps.get(model);
+  if (!m) { m = new Map(); for (const c of (model && model.controls) || []) m.set(c.id, c); ctlMaps.set(model, m); }
+  return m;
+}
+const tokOf = (model, id) => { const T = model && TOKENS[model.id]; return T && typeof id === 'string' && id.includes(':') ? T : null; };
+const isTok = (model, id) => { const T = tokOf(model, id); return !!T && (id in T.kind || T.extras.includes(id)); };
+const capOf = c => (Array.isArray(c.cap) && fin(c.cap[0]) && fin(c.cap[1]) ? c.cap : [10, 6]);
+/** A control's own size (mm, w × h). */
+function ownOf(c) {
+  switch (c.kind) {
+    case 'knob': case 'rotary': case 'jack': case 'lamp': case 'led': case 'screw': return [+c.d || 0, +c.d || 0];
+    case 'slider': { const cap = capOf(c), t = (+c.len || 0) + cap[1]; return c.orient === 'h' ? [t, cap[0]] : [cap[0], t]; }
+    default: return [+c.w || 0, +c.h || 0];
+  }
+}
+/** The element box (mm): a knob's / rotary's SVG box draws its skirt at d. */
+const boxOf = c => (c.kind === 'knob' || c.kind === 'rotary' ? [c.d * KNOB_BOX, c.d * KNOB_BOX] : ownOf(c));
+const hitOf = (c, own) => (Array.isArray(c.hit) && fin(c.hit[0]) && fin(c.hit[1]) ? [c.hit[0], c.hit[1]] : [Math.max(own[0], HIT_DEF_MM), Math.max(own[1], HIT_DEF_MM)]);
+/** The entries of a buttons / jacks control (each its own press target). */
+const entriesOf = c => (Array.isArray(c.at) ? c.at.filter(isObj) : []);
+const entryOwn = (c, e) => (c.kind === 'jacks' ? [+(e.d || c.d) || 0, +(e.d || c.d) || 0] : [+(e.w || c.w) || 0, +(e.h || c.h) || 0]);
+/** The hardware positions → the value each writes (null: a position we don't emulate), or null for a continuous control.
+ * @param {object} c layout control @param {object} mc models.js control */
+export function positionsOf(c, mc) {
+  if (!mc) return null;
+  if (c.kind === 'knob' || (c.kind === 'slider' && mc.t === 'k') || (c.kind === 'switch' && c.level)) return null;
+  if (c.kind === 'buttons' || c.kind === 'jacks') return entriesOf(c).map(e => e.v);
+  if (c.kind === 'button') return Array.isArray(c.cycle) ? c.cycle.slice() : [0, 1];
+  if (Array.isArray(c.map)) return c.map.slice();
+  if (mc.t === 'b') return [0, 1];
+  if (mc.t === 's') return mc.opts.map((o, i) => i);
+  return null;
+}
+const valOk = (mc, v) => (mc.t === 'b' ? v === 0 || v === 1 : mc.t === 's' ? Number.isInteger(v) && v >= 0 && v < mc.opts.length : fin(v) && v >= Math.min(mc.min, mc.max) - 1e-9 && v <= Math.max(mc.min, mc.max) + 1e-9);
+/** Where a live control's section is: `sec` by id, else the first section (of its area) holding its centre. */
+function secIndex(L, c) {
+  const S = Array.isArray(L.sections) ? L.sections : [], a = c.a || 'main';
+  if (typeof c.sec === 'string') return S.findIndex(s => s && s.id === c.sec);
+  const p = c.kind === 'buttons' || c.kind === 'jacks' ? (entriesOf(c)[0] || c) : c;
+  return S.findIndex(s => s && (s.a || 'main') === a && p.x >= s.x - 1e-9 && p.x <= s.x + s.w + 1e-9 && p.y >= s.y - 1e-9 && p.y <= s.y + s.h + 1e-9);
+}
+const liveOf = (c, model) => !c.inert && typeof c.id === 'string' && c.kind in KINDS && (KINDS[c.kind].length > 0 || (isTok(model, c.id) && c.kind !== 'led' && c.kind !== 'display'));
+const showOf = c => !c.inert && (c.kind === 'led' || c.kind === 'display');
+
+/* ---------------------------------------------------------------- validation */
+/**
+ * Every problem of a layout for its models.js model, as readable strings (empty = valid; §3.3). The renderer refuses a
+ * layout with problems (the model falls back to its Resizable panel).
+ * @param {object} L layout @param {object} model models.js model @returns {string[]}
+ */
+export function validate(L, model) {
+  const P = [], bad = s => { if (P.length < 200) P.push(s); };
+  if (!isObj(L)) return ['layout: not an object'];
+  if (!isObj(model) || !Array.isArray(model.controls)) return ['model: not a models.js model'];
+  if (L.v !== FORMAT) bad('v: must be ' + FORMAT);
+  if (L.id !== model.id) bad(`id: "${L.id}" is not the model's ("${model.id}")`);
+  const words = (where, s) => { if (typeof s === 'string' && MAKER_RE.test(s)) bad(`${where}: a maker name ("${s}")`); };
+  // scheme and case
+  if (L.scheme != null && !isObj(L.scheme)) bad('scheme: not an object');
+  if (L.case != null && L.case !== 'wood' && !colorOk(L.case)) bad('case: not a colour (or "wood")');
+  const S = isObj(L.scheme) ? L.scheme : {};
+  if (S.font != null && !(S.font in FONTS)) bad('scheme.font: one of ' + Object.keys(FONTS).join(', '));
+  if (isObj(S.knob) && S.knob.ptrStyle != null && !PTRS.includes(S.knob.ptrStyle)) bad('scheme.knob.ptrStyle: one of ' + PTRS.join(', '));
+  // areas
+  const A = new Map();
+  if (!Array.isArray(L.areas) || !L.areas.length) bad('areas: at least one');
+  else {
+    L.areas.forEach((a, i) => {
+      const w = `areas[${i}]`;
+      if (!isObj(a)) { bad(w + ': not an object'); return; }
+      if (typeof a.id !== 'string' || !a.id) { bad(w + ': id'); return; }
+      if (A.has(a.id)) bad(w + `: duplicate id "${a.id}"`);
+      if (!Array.isArray(a.src) || a.src.length !== 4 || !a.src.every(fin) || !(a.src[2] > 0) || !(a.src[3] > 0)) { bad(w + ': src [x, y, w, h] with w, h > 0'); return; }
+      if (!Array.isArray(a.at) || a.at.length !== 2 || !a.at.every(fin)) { bad(w + ': at [x, y]'); return; }
+      if (a.frame != null && !FRAMES_A.includes(a.frame)) bad(w + ': frame one of ' + FRAMES_A.join(', '));
+      if (a.fill != null && !colorOk(a.fill)) bad(w + ': fill');
+      A.set(a.id, a);
+    });
+    if (L.areas[0] && L.areas[0].id !== 'main') bad('areas[0]: its id must be "main"');
+  }
+  const inArea = (a, x, y, w, h, where) => {
+    const r = A.get(a || 'main');
+    if (!r) { bad(`${where}: unknown area "${a}"`); return false; }
+    const e = 1e-6, [sx, sy, sw, sh] = r.src;
+    if (x < sx - e || y < sy - e || x + w > sx + sw + e || y + h > sy + sh + e) { bad(`${where}: outside its area "${r.id}"`); return false; }
+    return true;
+  };
+  // content size
+  if (A.size) {
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const a of A.values()) { x0 = Math.min(x0, a.at[0]); y0 = Math.min(y0, a.at[1]); x1 = Math.max(x1, a.at[0] + a.src[2]); y1 = Math.max(y1, a.at[1] + a.src[3]); }
+    if (x1 - x0 > MAX_W_MM || y1 - y0 > MAX_H_MM) bad(`content: ${Math.round(x1 - x0)} × ${Math.round(y1 - y0)} mm > ${MAX_W_MM} × ${MAX_H_MM}`);
+  }
+  // sections
+  const secIds = new Set();
+  if (!Array.isArray(L.sections)) bad('sections: an array');
+  else L.sections.forEach((s, i) => {
+    const w = `sections[${i}]`;
+    if (!isObj(s)) { bad(w + ': not an object'); return; }
+    if (typeof s.id !== 'string' || !s.id || secIds.has(s.id)) bad(w + ': a unique id');
+    secIds.add(s.id);
+    if (typeof s.label !== 'string') bad(w + ': label');
+    words(w + '.label', s.label);
+    if (![s.x, s.y, s.w, s.h].every(fin) || !(s.w > 0) || !(s.h > 0)) { bad(w + ': x, y, w, h'); return; }
+    if (s.frame != null && !FRAMES_S.includes(s.frame)) bad(w + ': frame one of ' + FRAMES_S.join(', '));
+    if (s.title != null && !TITLES.includes(s.title)) bad(w + ': title one of ' + TITLES.join(', '));
+    inArea(s.a, s.x, s.y, s.w, s.h, w);
+  });
+  // controls
+  const M = ctlsOf(model), seen = new Map(), T = TOKENS[model.id] || null, hits = [];
+  const count = id => seen.set(id, (seen.get(id) || 0) + 1);
+  if (!Array.isArray(L.controls)) bad('controls: an array');
+  else L.controls.forEach((c, i) => {
+    const w = `controls[${i}]` + (c && c.id ? ` (${c.id})` : '');
+    if (!isObj(c)) { bad(w + ': not an object'); return; }
+    if (!(c.kind in KINDS)) { bad(w + `: unknown kind "${c.kind}"`); return; }
+    if (!fin(c.x) || !fin(c.y)) { bad(w + ': x, y'); return; }
+    if (c.lab != null && !LABS.includes(c.lab)) bad(w + ': lab one of ' + LABS.join(', '));
+    if (c.label != null && typeof c.label !== 'string') bad(w + ': label');
+    words(w + '.label', c.label);
+    if (Array.isArray(c.legends)) c.legends.forEach(s => words(w + '.legends', s));
+    if (c.style != null && !STYLES.includes(c.style)) bad(w + ': style one of ' + STYLES.join(', '));
+    if (c.orient != null && c.orient !== 'v' && c.orient !== 'h') bad(w + ': orient v | h');
+    if (isObj(c.skin) && c.skin.ptrStyle != null && !PTRS.includes(c.skin.ptrStyle)) bad(w + ': skin.ptrStyle');
+    // sizes
+    const k = c.kind;
+    if ((k === 'knob' || k === 'rotary' || k === 'jack' || k === 'lamp' || k === 'led' || k === 'screw') && !(c.d > 0)) bad(w + ': d > 0');
+    if (k === 'slider' && (!(c.len > 0) || (c.cap != null && !(Array.isArray(c.cap) && c.cap[0] > 0 && c.cap[1] > 0)))) bad(w + ': len > 0, cap [w, h]');
+    if ((k === 'switch' || k === 'button' || k === 'display' || k === 'fuse' || k === 'strig' || k === 'slot') && (!(c.w > 0) || !(c.h > 0))) bad(w + ': w, h > 0');
+    if ((k === 'buttons' || k === 'jacks') && (!entriesOf(c).length || entriesOf(c).some(e => !fin(e.x) || !fin(e.y)))) { bad(w + ': at [{v, x, y}, …]'); return; }
+    if (k === 'jacks' && !entriesOf(c).every(e => (e.d || c.d) > 0)) bad(w + ': d > 0');
+    if (k === 'buttons' && !entriesOf(c).every(e => (e.w || c.w) > 0 && (e.h || c.h) > 0)) bad(w + ': w, h > 0');
+    if (k === 'switch' && c.positions != null && !(Number.isInteger(c.positions) && c.positions >= 2 && c.positions <= 4)) bad(w + ': positions 2–4');
+    // inside the area
+    const parts = k === 'buttons' || k === 'jacks' ? entriesOf(c).map(e => ({ x: e.x, y: e.y, o: entryOwn(c, e) })) : [{ x: c.x, y: c.y, o: ownOf(c) }];
+    for (const p of parts) inArea(c.a, p.x - p.o[0] / 2, p.y - p.o[1] / 2, p.o[0], p.o[1], w);
+    if (c.inert) { if (c.id != null && !(typeof c.id === 'string' && c.id.startsWith('#'))) bad(w + ': an inert control has no id'); return; }
+    // displays
+    if (k === 'led' || k === 'display') {
+      if (c.id != null && !(T && T.kind[c.id] === k)) bad(w + ': a display carries no id (or its token)');
+      if (k === 'led' && c.id == null) {
+        if (!M.has(c.of)) bad(w + `: of "${c.of}" is not a control of the model`);
+        if (!Array.isArray(c.when) || !['ne', 'eq', 'ge', 'in'].includes(c.when[0])) bad(w + ': when [op, value]');
+      }
+      if (k === 'display' && c.id == null && c.show !== 'preset') bad(w + ': show "preset"');
+      if (c.id != null) count(c.id);
+      return;
+    }
+    if (!(KINDS[k].length || (T && T.kind[c.id] === k))) { bad(w + `: a ${k} is decoration only (inert: true)`); return; }
+    if (typeof c.id !== 'string' || !c.id) { bad(w + ': a live control needs an id (or inert: true)'); return; }
+    const mc = M.get(c.id);
+    if (!mc) {
+      if (!T || !(c.id in T.kind)) { bad(w + `: "${c.id}" is not a control of the model`); return; }
+      if (T.kind[c.id] !== k) bad(w + `: ${c.id} must be a ${T.kind[c.id]}`);
+      if (c.id === 'seq:key' && !(Number.isInteger(c.note) && c.note >= 0 && c.note <= 12)) bad(w + ': note 0–12');
+      if (c.id === 'dx:btn' && !(Number.isInteger(c.n) && c.n >= 1 && c.n <= 32)) bad(w + ': n 1–32');
+      if (c.id === 'seq:key' || c.id === 'dx:btn') { const f = c.id === 'seq:key' ? 'note' : 'n', key = c.id + '#' + c[f]; if (seen.has(key)) bad(w + `: ${f} ${c[f]} twice`); seen.set(key, 1); }
+      count(c.id);
+    } else {
+      if (!KINDS[k].includes(mc.t)) bad(w + `: a ${k} cannot carry a "${mc.t}" control`);
+      if (mc.t === 'k' && k === 'switch' && !c.level && !Array.isArray(c.map)) bad(w + ': a "k" switch needs map or level');
+      if (mc.t === 'k' && k === 'rotary' && !Array.isArray(c.map)) bad(w + ': a "k" rotary needs map');
+      if (mc.t === 'k' && k === 'button' && !Array.isArray(c.cycle)) bad(w + ': a "k" button needs cycle');
+      if (mc.t === 'k' && k === 'buttons' && entriesOf(c).some(e => !fin(e.v))) bad(w + ': a "k" buttons entry needs v');
+      if (mc.t === 's' && k === 'slider' && !Array.isArray(c.legends) && !Array.isArray(c.map)) bad(w + ': an "s" slider needs legends (its detents)');
+      if (mc.t === 's' && k === 'button' && !Array.isArray(c.cycle)) bad(w + ': an "s" button needs cycle');
+      if (mc.t === 'b' && k === 'switch' && c.level) bad(w + ': level is for a "k" control');
+      const pos = positionsOf(c, mc);
+      if (pos) {
+        if (pos.length < 2) bad(w + ': at least 2 positions');
+        if (!pos.some(v => v != null)) bad(w + ': every position is null');
+        for (const v of pos) if (v != null && !valOk(mc, v)) { bad(w + `: ${JSON.stringify(v)} is not a value of ${mc.id}`); break; }
+        if (Array.isArray(c.legends) && c.legends.length !== pos.length) bad(w + `: ${c.legends.length} legends for ${pos.length} positions`);
+        if (k === 'switch' && c.positions != null && c.positions !== pos.length) bad(w + `: positions ${c.positions} ≠ ${pos.length}`);
+        if (k === 'switch' && pos.length > 4) bad(w + ': a switch has 2–4 positions');
+        if (mc.t === 's' && !Array.isArray(c.map) && k !== 'buttons' && k !== 'jacks' && k !== 'button' && pos.length !== mc.opts.length) bad(w + ': positions ≠ options (use map)');
+      }
+      if (k === 'buttons' && isObj(c.combo)) {
+        for (const [v, pr] of Object.entries(c.combo)) if (!valOk(mc, +v) || !Array.isArray(pr) || pr.length !== 2 || !pr.every(x => entriesOf(c).some(e => e.v === x))) bad(w + `: combo ${v}`);
+      }
+      count(c.id);
+    }
+    // hit boxes (content mm)
+    if (A.has(c.a || 'main')) {
+      const ar = A.get(c.a || 'main'), dx = ar.at[0] - ar.src[0], dy = ar.at[1] - ar.src[1];
+      for (const p of parts) {
+        const hb = hitOf(c, p.o);
+        if (hb[0] < HIT_MIN_MM - 1e-9 || hb[1] < HIT_MIN_MM - 1e-9) bad(`${w}: hit box ${n3(hb[0])} × ${n3(hb[1])} mm < ${HIT_MIN_MM} mm`);
+        hits.push({ w, x: p.x + dx - hb[0] / 2, y: p.y + dy - hb[1] / 2, ww: hb[0], hh: hb[1] });
+      }
+    }
+    if (secIndex(L, c) < 0) bad(w + ': not inside a section' + (c.sec ? ` ("${c.sec}" unknown)` : ''));
+  });
+  for (let i = 0; i < hits.length; i++) for (let j = i + 1; j < hits.length; j++) {
+    const a = hits[i], b = hits[j];
+    if (a.x < b.x + b.ww - 1e-6 && b.x < a.x + a.ww - 1e-6 && a.y < b.y + b.hh - 1e-6 && b.y < a.y + a.hh - 1e-6) bad(`${a.w} and ${b.w}: hit boxes overlap`);
+  }
+  // extras
+  const ex = L.extras;
+  if (!isObj(ex) || !Array.isArray(ex.ids)) bad('extras: { ids: [] }');
+  else {
+    for (const id of ex.ids) {
+      if (M.has(id)) count(id);
+      else if (T && T.extras.includes(id)) count(id);
+      else bad(`extras: "${id}" is not a control of the model`);
+    }
+    if (ex.caption != null) { if (typeof ex.caption !== 'string') bad('extras.caption'); words('extras.caption', ex.caption); }
+    if (ex.at != null) {
+      if (!Array.isArray(ex.at) || ex.at.length !== 4 || !ex.at.every(fin) || !(ex.at[2] > 0) || !(ex.at[3] > 0)) bad('extras.at: [x, y, w, h]');
+      else {
+        for (const a of A.values()) {
+          const [ax, ay] = a.at, [, , aw, ah] = a.src, [x, y, ww, hh] = ex.at;
+          if (x < ax + aw - 1e-6 && ax < x + ww - 1e-6 && y < ay + ah - 1e-6 && ay < y + hh - 1e-6) bad(`extras.at: overlaps area "${a.id}"`);
+        }
+        const g = P.length ? null : geometry(L, model);
+        if (g && g.extras && g.extras.over) bad('extras.at: the cells do not fit');
+      }
+    }
+  }
+  // every models.js id exactly once (live or extras); tokens at most once (seq:key / dx:btn may repeat); the DX7's
+  // buttons address the operator ids (§6.3: they count as placed when dx:btn is)
+  const dxAddr = model.id === 'dx7' && seen.has('dx:btn');
+  for (const id of M.keys()) {
+    const n = seen.get(id) || 0;
+    if (n === 0 && !(dxAddr && id !== 'vol' && id !== 'dac')) bad(`${id}: not placed (a live control or extras.ids)`);
+    if (n > 1) bad(`${id}: placed ${n} times`);
+  }
+  if (T) for (const [id, n] of seen) if (!M.has(id) && !id.includes('#') && n > 1 && !T.multi.includes(id)) bad(`${id}: placed ${n} times`);
+  // decor
+  if (L.decor != null && !Array.isArray(L.decor)) bad('decor: an array');
+  else if (Array.isArray(L.decor)) {
+    if (L.decor.length > MAX_DECOR) bad(`decor: ${L.decor.length} items > ${MAX_DECOR}`);
+    L.decor.forEach((d, i) => {
+      const w = `decor[${i}]`;
+      if (!isObj(d) || !DECOR_T.includes(d.t)) { bad(w + ': t one of ' + DECOR_T.join(', ')); return; }
+      if (d.t === 'text') { if (typeof d.s !== 'string') bad(w + ': s'); words(w, d.s); }
+      if (d.t === 'path' && (typeof d.d !== 'string' || !PATH_RE.test(d.d))) bad(w + ': path data');
+      if (d.t === 'glyph' && !(d.g in GLYPHS)) bad(w + `: unknown glyph "${d.g}"`);
+      if ((d.t === 'scale' || d.t === 'ladder') && Array.isArray(d.labels)) d.labels.forEach(s => words(w, s));
+      for (const f of ['fill', 'stroke']) if (d[f] != null && d[f] !== 'wood' && d[f] !== 'none' && !colorOk(d[f])) bad(w + ': ' + f);
+      const bb = decorBox(d);
+      if (!bb) { bad(w + ': coordinates'); return; }
+      if (bb !== 'skip') inArea(d.a, bb[0], bb[1], bb[2], bb[3], w);
+    });
+  }
+  return P;
+}
+// a decor item's bounding box in its area frame (mm), or null when its numbers are not finite
+function decorBox(d) {
+  const all = (...v) => v.every(fin);
+  switch (d.t) {
+    case 'rect': case 'grille': case 'stripes': case 'louvres': return all(d.x, d.y, d.w, d.h) ? [d.x, d.y, d.w, d.h] : null;
+    case 'line': return all(d.x1, d.y1, d.x2, d.y2) ? [Math.min(d.x1, d.x2), Math.min(d.y1, d.y2), Math.abs(d.x2 - d.x1), Math.abs(d.y2 - d.y1)] : null;
+    case 'text': return all(d.x, d.y) ? [d.x, d.y, 0, 0] : null;
+    case 'glyph': return all(d.x, d.y, d.size) ? [d.x - d.size / 2, d.y - d.size / 2, d.size, d.size] : null;
+    case 'scale': return all(d.x, d.y, d.d) ? [d.x, d.y, 0, 0] : null;
+    case 'ladder': return all(d.x, d.y, d.len) ? [d.x, d.y, 0, 0] : null;
+    case 'screws': return Array.isArray(d.pts) && d.pts.length && d.pts.every(p => Array.isArray(p) && all(p[0], p[1]))
+      ? (() => { const xs = d.pts.map(p => p[0]), ys = d.pts.map(p => p[1]); return [Math.min(...xs), Math.min(...ys), Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys)]; })() : null;
+    case 'path': return d.x == null && d.y == null ? 'skip' : all(d.x, d.y) ? [d.x, d.y, 0, 0] : null; // (path data: its own frame, unchecked)
+    default: return null;
+  }
+}
+
+/** The layout of `id` when it validates against `model` (problems: console.warn once, then null: Resizable only).
+ * (globalThis.__synthTest.panels: the page simulations' fixture layouts, by model id — never cached.) */
+const usableC = new Map();
+const testLayout = id => { const t = globalThis.__synthTest; return t && t.panels && Object.prototype.hasOwnProperty.call(t.panels, id) ? t.panels[id] : undefined; };
+export function usable(id, model) {
+  const TL = testLayout(id);
+  if (TL === undefined && usableC.has(id)) { const u = usableC.get(id); if (u.model === model) return u.L; }
+  const L = TL !== undefined ? TL : layoutOf(id);
+  let ok = null;
+  if (L && model && model.id === id) {
+    const p = validate(L, model);
+    const toks = [];
+    for (const c of L.controls || []) if (c && typeof c.id === 'string' && isTok(model, c.id) && !RENDERED_TOKENS.has(c.id)) toks.push(c.id);
+    for (const t of (L.extras && L.extras.ids) || []) if (isTok(model, t) && !RENDERED_TOKENS.has(t)) toks.push(t);
+    if (toks.length) p.push('tokens not rendered by this build: ' + [...new Set(toks)].join(', '));
+    if (p.length) { try { console.warn(`cv-panel: the ${id} hardware layout is not used (Resizable panel instead):\n  ` + p.slice(0, 12).join('\n  ')); } catch (err) { /* no console */ } }
+    else ok = L;
+  }
+  if (TL === undefined) usableC.set(id, { model, L: ok });
+  return ok;
+}
+
+/* ---------------------------------------------------------------- geometry */
+const geoC = new WeakMap();
+/**
+ * The panel in module-body px (origin: the body's top-left, under the 40 px bar), pure maths (cached per layout).
+ * @returns {{W: number, H: number, body: {w: number, h: number}, content: {x: number, y: number, w: number, h: number},
+ *   mm: {x0: number, y0: number, offX: number}, areas: object[], sections: object[], controls: object[], order: number[],
+ *   extras: {x: number, y: number, w: number, h: number, cells: object[], over: boolean, note: boolean} | null}}
+ */
+export function geometry(L, model) {
+  let g = geoC.get(L);
+  if (g && g.model === model) return g.geo;
+  const A = new Map();
+  for (const a of L.areas) A.set(a.id, a);
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const a of A.values()) { x0 = Math.min(x0, a.at[0]); y0 = Math.min(y0, a.at[1]); x1 = Math.max(x1, a.at[0] + a.src[2]); y1 = Math.max(y1, a.at[1] + a.src[3]); }
+  const ex = isObj(L.extras) ? L.extras : { ids: [] }, xat = Array.isArray(ex.at) && ex.at.length === 4 ? ex.at : null;
+  if (xat) { x0 = Math.min(x0, xat[0]); y0 = Math.min(y0, xat[1]); x1 = Math.max(x1, xat[0] + xat[2]); y1 = Math.max(y1, xat[1] + xat[3]); }
+  const cw = x1 - x0, ch = y1 - y0, X = PX_PER_MM;
+  const W = ceil32(cw * X), offX = r05((W - cw * X) / 2);
+  const px = x => r05(offX + (x - x0) * X), py = y => r05((y - y0) * X);
+  const toC = (a, x, y) => { const r = A.get(a || 'main') || A.get('main'); return [x - r.src[0] + r.at[0], y - r.src[1] + r.at[1]]; };
+  const rectPx = (cx, cy, w, h) => ({ x: r05(offX + (cx - x0 - w / 2) * X), y: r05((cy - y0 - h / 2) * X), w: r05(w * X), h: r05(h * X) });
+  const M = ctlsOf(model);
+  // controls
+  const controls = (L.controls || []).map((c, i) => {
+    const live = liveOf(c, model), show = showOf(c), [cx, cy] = toC(c.a, c.x, c.y);
+    const o = { i, id: typeof c.id === 'string' ? c.id : null, kind: c.kind, live, show, inert: !!c.inert, a: c.a || 'main', cx, cy, sec: live || show ? secIndex(L, c) : -1 };
+    if (c.kind === 'buttons' || c.kind === 'jacks') {
+      o.entries = entriesOf(c).map(e => { const [ex2, ey2] = toC(c.a, e.x, e.y), ow = entryOwn(c, e), hb = hitOf(c, ow); return { v: e.v, cx: ex2, cy: ey2, box: rectPx(ex2, ey2, ow[0], ow[1]), hit: rectPx(ex2, ey2, hb[0], hb[1]) }; });
+      const u = (k) => { let a = Infinity, b = Infinity, cc = -Infinity, d = -Infinity; for (const e of o.entries) { const r = e[k]; a = Math.min(a, r.x); b = Math.min(b, r.y); cc = Math.max(cc, r.x + r.w); d = Math.max(d, r.y + r.h); } return { x: a, y: b, w: cc - a, h: d - b }; };
+      o.box = u('box'); o.hit = u('hit');
+    } else {
+      const ow = ownOf(c), bx = boxOf(c), hb = hitOf(c, ow);
+      o.box = rectPx(cx, cy, bx[0], bx[1]); o.own = rectPx(cx, cy, ow[0], ow[1]); o.hit = rectPx(cx, cy, hb[0], hb[1]);
+    }
+    if (live && M.has(c.id)) o.mc = M.get(c.id);
+    return o;
+  });
+  // the DOM / Tab order: sections in layout order, then rows (top to bottom, 8 mm apart), left to right in each
+  const order = [], bySec = new Map();
+  for (const o of controls) if (o.live || o.show) { const k = o.sec; if (!bySec.has(k)) bySec.set(k, []); bySec.get(k).push(o); }
+  for (const k of [...bySec.keys()].sort((a, b) => (a < 0 ? 1e9 : a) - (b < 0 ? 1e9 : b))) {
+    const list = bySec.get(k).sort((a, b) => a.cy - b.cy || a.cx - b.cx);
+    let row = [], top = -Infinity;
+    const flush = () => { row.sort((a, b) => a.cx - b.cx || a.cy - b.cy); for (const o of row) order.push(o.i); row = []; };
+    for (const o of list) { if (o.cy - top > 8) { flush(); top = o.cy; } row.push(o); }
+    flush();
+  }
+  // extras
+  const ids = Array.isArray(ex.ids) ? ex.ids.filter(id => typeof id === 'string') : [], inert = (L.controls || []).some(c => c && c.inert);
+  let extras = null, exH = 0;
+  const cellW = id => { const mc = M.get(id); if (id === 'seq:grid') return SEQ_GRID.w; if (id === 'seq:sync' || id === 'seq:toRoll') return 128; if (id === 'seq:random') return 104; return mc ? (mc.t === 's' ? selCellW(mc.opts) : XCELL[mc.t] || 72) : 72; };
+  const cellH = id => (id === 'seq:grid' ? SEQ_GRID.h : XROW);
+  if (ids.length || inert) {
+    const r = xat ? { x: px(xat[0]), y: py(xat[1]), w: r05(xat[2] * X), h: r05(xat[3] * X) } : { x: 0, y: r05(ch * X), w: W, h: 0 };
+    const cells = [];
+    let x = r.x + XPAD, y = r.y + XCAP, rowH = 0, over = false;
+    for (const id of ids) {
+      const w = cellW(id), h = cellH(id);
+      if (!xat && x + w > r.x + r.w - XPAD && x > r.x + XPAD) { x = r.x + XPAD; y += rowH; rowH = 0; }
+      cells.push({ id, x, y, w, h });
+      x += w; rowH = Math.max(rowH, h);
+      if (xat && (x > r.x + r.w + 1e-6 || y + h > r.y + r.h + 1e-6)) over = true;
+    }
+    if (!xat) { r.h = XCAP + (ids.length ? rowH + (y - r.y - XCAP) + XPAD : 0); exH = r.h; }
+    extras = Object.assign(r, { cells, over, note: inert, caption: ids.length ? (typeof ex.caption === 'string' ? ex.caption : 'EXTRAS · not on the original') : '' });
+  }
+  const H = ceil32(BAR_H + ch * X + exH);
+  const geo = {
+    W, H, body: { w: W, h: H - BAR_H }, content: { x: offX, y: 0, w: r05(cw * X), h: r05(ch * X) }, mm: { x0, y0, offX },
+    areas: [...A.values()].map(a => { const [cx, cy] = [a.at[0], a.at[1]]; return { id: a.id, x: px(cx), y: py(cy), w: r05(a.src[2] * X), h: r05(a.src[3] * X) }; }),
+    sections: (L.sections || []).map(s => { const [sx, sy] = toC(s.a, s.x, s.y); return { id: s.id, label: s.label, x: px(sx), y: py(sy), w: r05(s.w * X), h: r05(s.h * X) }; }),
+    controls, order, extras,
+  };
+  geoC.set(L, { model, geo });
+  return geo;
+}
+/** The module's outer size (world px; the 40 px bar included): multiples of DOT. @returns {{w: number, h: number}} */
+export function sizeOf(L, model) { const g = geometry(L, model); return { w: g.W, h: g.H }; }
+/** The live hit boxes in body px (each buttons / jacks entry its own). @returns {{id: string, x: number, y: number, w: number, h: number}[]} */
+export function hitBoxes(L, model) {
+  const out = [];
+  for (const o of geometry(L, model).controls) {
+    if (!o.live) continue;
+    if (o.entries) for (const e of o.entries) out.push(Object.assign({ id: o.id, v: e.v }, e.hit));
+    else out.push(Object.assign({ id: o.id }, o.hit));
+  }
+  return out;
+}
+
+/* ---------------------------------------------------------------- the static art (one SVG) */
+const svgC = new WeakMap();
+/** A colour shaded by f (−1 darker … +1 lighter). */
+function shade(hex, f) {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex || '');
+  if (!m) return hex;
+  const n = parseInt(m[1], 16), ch = s => { const v = (n >> s) & 255, t = f < 0 ? v * (1 + f) : v + (255 - v) * f; return Math.round(Math.max(0, Math.min(255, t))); };
+  return '#' + [16, 8, 0].map(s => ch(s).toString(16).padStart(2, '0')).join('');
+}
+/**
+ * The static SVG markup of a panel: viewBox in content mm over the whole body (width / height in px), area fills and
+ * frames, section frames and titles, decor items, printed labels / dials / legends, inert controls (dimmed, titled
+ * "LABEL — not emulated"). aria-hidden; no <image>, href, xlink, foreignObject or script; text escaped. Cached per layout.
+ */
+export function decorSvg(L, model) {
+  const c0 = svgC.get(L);
+  if (c0 && c0.model === model) return c0.s;
+  const s = buildSvg(L, model);
+  svgC.set(L, { model, s });
+  return s;
+}
+function buildSvg(L, model) {
+  const g = geometry(L, model), S = isObj(L.scheme) ? L.scheme : {}, X = PX_PER_MM;
+  const LEG = S.legend || '#eeeeee', RULE = S.rule || LEG, PANEL = S.panel || '#151515', ACC = S.accent || '#f2a33a';
+  const K = Object.assign({ skirt: '#151515', cap: '#2a2a2a', ptr: '#ffffff', ptrStyle: 'line', capR: 0.7 }, isObj(S.knob) ? S.knob : {});
+  const SL = Object.assign({ cap: '#e8e8e4', line: '#111111', groove: '#050505' }, isObj(S.slider) ? S.slider : {});
+  const BT = Object.assign({ cap: '#2b2b2b', led: '#ff3b2a', ledOff: '#3a1512', text: LEG }, isObj(S.button) ? S.button : {});
+  const JK = Object.assign({ nut: '#c8c8c8', hole: '#050505' }, isObj(S.jack) ? S.jack : {});
+  const named = n => (n && isObj(S.rocker) && S.rocker[n]) || (n && isObj(S.switch) && S.switch[n]) || (colorOk(n) && n.startsWith('#') ? n : null);
+  const wid = 'hw-wood-' + String(L.id).replace(/[^\w-]/g, '');
+  const wood = S.wood || '#5a3218';
+  const col = c => (c === 'wood' ? `url(#${wid})` : c);
+  const A = new Map(); for (const a of L.areas) A.set(a.id, a);
+  const off = a => { const r = A.get(a || 'main') || A.get('main'); return [r.at[0] - r.src[0], r.at[1] - r.src[1]]; };
+  const inA = (a, s) => { const [dx, dy] = off(a); return dx || dy ? `<g transform="translate(${n3(dx)} ${n3(dy)})">${s}</g>` : s; };
+  const o = [];
+  const { x0, y0, offX } = g.mm;
+  o.push(`<svg xmlns="http://www.w3.org/2000/svg" class="hw-svg" viewBox="${n3(x0 - offX / X)} ${n3(y0)} ${n3(g.W / X)} ${n3(g.body.h / X)}" width="${g.W}" height="${g.body.h}" aria-hidden="true" focusable="false" font-family="${esc(FONTS[S.font] || FONTS.sans)}">`);
+  o.push(`<defs><linearGradient id="${wid}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="9" y2="1.6" spreadMethod="repeat">`
+    + [[0, -0.18], [0.22, 0.1], [0.4, -0.05], [0.55, 0.16], [0.75, -0.12], [1, -0.18]].map(([p, f]) => `<stop offset="${p}" stop-color="${shade(wood, f)}"/>`).join('') + '</linearGradient></defs>');
+  // areas
+  for (const a of L.areas) {
+    const [x, y, w, h] = [a.at[0], a.at[1], a.src[2], a.src[3]], r = fin(a.r) ? a.r : 0;
+    o.push(`<rect x="${n3(x)}" y="${n3(y)}" width="${n3(w)}" height="${n3(h)}" rx="${n3(r)}" fill="${esc(col(a.fill || PANEL))}"/>`);
+    const fr = a.frame || 'none';
+    if (fr === 'metal') o.push(`<rect x="${n3(x + 0.6)}" y="${n3(y + 0.6)}" width="${n3(w - 1.2)}" height="${n3(h - 1.2)}" rx="${n3(r)}" fill="none" stroke="#a9a8a2" stroke-width="1.2"/>`);
+    else if (fr === 'wood') o.push(`<rect x="${n3(x + 1.5)}" y="${n3(y + 1.5)}" width="${n3(w - 3)}" height="${n3(h - 3)}" rx="${n3(r)}" fill="none" stroke="url(#${wid})" stroke-width="3"/>`);
+    else if (fr === 'line') o.push(`<rect x="${n3(x + 0.2)}" y="${n3(y + 0.2)}" width="${n3(w - 0.4)}" height="${n3(h - 0.4)}" rx="${n3(r)}" fill="none" stroke="${esc(RULE)}" stroke-width="0.35" opacity="0.6"/>`);
+  }
+  // sections
+  for (const s of L.sections || []) {
+    const fr = s.frame || 'none', ti = s.title || 'none', ink = s.headerInk || LEG;
+    let q = '';
+    if (s.fill) q += `<rect x="${n3(s.x)}" y="${n3(s.y)}" width="${n3(s.w)}" height="${n3(s.h)}" fill="${esc(col(s.fill))}"/>`;
+    if (fr === 'box') q += `<rect x="${n3(s.x + 0.2)}" y="${n3(s.y + 0.2)}" width="${n3(s.w - 0.4)}" height="${n3(s.h - 0.4)}" rx="0.8" fill="none" stroke="${esc(RULE)}" stroke-width="0.4"/>`;
+    if (fr === 'outline') q += `<rect x="${n3(s.x + 0.8)}" y="${n3(s.y + 0.8)}" width="${n3(s.w - 1.6)}" height="${n3(s.h - 1.6)}" rx="2.5" fill="none" stroke="${esc(RULE)}" stroke-width="0.5"/>`;
+    if (fr === 'header') q += `<rect x="${n3(s.x)}" y="${n3(s.y)}" width="${n3(s.w)}" height="${HDR_MM}" fill="${esc(col(s.headerFill || ACC))}"/>`;
+    if (fr === 'rule') q += `<path d="M${n3(s.x)} ${n3(s.y)}V${n3(s.y + s.h)}M${n3(s.x + s.w)} ${n3(s.y)}V${n3(s.y + s.h)}" stroke="${esc(RULE)}" stroke-width="0.5" fill="none"/>`;
+    const tsz = s.titleSize > 0 ? s.titleSize : ti === 'bottom' ? 4.6 : 3.2;
+    if (ti === 'top' || (ti === 'header' && fr !== 'header')) q += text(s.x + s.w / 2, s.y + 2 + tsz * 0.8, s.label, { size: tsz, weight: 700, anchor: 'middle', fill: LEG, ls: 0.25 });
+    else if (ti === 'header') q += text(s.x + s.w / 2, s.y + HDR_MM / 2 + tsz * 0.36, s.label, { size: tsz, weight: 700, anchor: 'middle', fill: ink, ls: 0.25 });
+    else if (ti === 'bottom') q += text(s.x + s.w / 2, s.y + s.h - 3.5, s.label, { size: tsz, weight: 700, anchor: 'middle', fill: LEG, ls: 0.35 });
+    else if (ti === 'break') {
+      const tw = String(s.label).length * tsz * 0.62 + 3, y = s.y + 0.8;
+      q += `<rect x="${n3(s.x + s.w / 2 - tw / 2)}" y="${n3(y - tsz * 0.6)}" width="${n3(tw)}" height="${n3(tsz * 1.2)}" fill="${esc(col(s.fill || PANEL))}"/>`;
+      q += text(s.x + s.w / 2, y + tsz * 0.36, s.label, { size: tsz, weight: 700, anchor: 'middle', fill: LEG, ls: 0.25 });
+    }
+    if (q) o.push(inA(s.a, q));
+  }
+  // decor items
+  for (const d of L.decor || []) { const q = decorItem(d, { LEG, RULE, PANEL, col, wid }); if (q) o.push(inA(d.a, q)); }
+  // printed parts of the controls (labels, dials, legends) and the inert controls
+  const M = ctlsOf(model);
+  for (const c of L.controls || []) {
+    if (!isObj(c) || !(c.kind in KINDS)) continue;
+    let q = '';
+    const ls = c.labSize > 0 ? c.labSize : 2.6, lab = c.lab || 'n';
+    const dial = (c.kind === 'knob' || c.kind === 'rotary') && (isObj(c.scale) || Array.isArray(c.legends));
+    // printed dial (a knob's scale) and rotary detents
+    if ((c.kind === 'knob' || c.kind === 'rotary') && isObj(c.scale)) q += scaleSvg(c.x, c.y, c.d, c.sweep || 270, c.scale, LEG);
+    if (c.kind === 'rotary' && Array.isArray(c.legends)) q += detentsSvg(c.x, c.y, c.d, c.sweep || 270, c.legends, LEG);
+    if (c.kind === 'slider' && isObj(c.scale)) q += ladderSvg(Object.assign({ x: c.x, y: c.y, len: c.len, orient: c.orient, gap: capOf(c)[0] / 2 }, c.scale), LEG);
+    if (c.kind === 'slider' && Array.isArray(c.legends)) q += ladderSvg({ x: c.x, y: c.y, len: c.len, orient: c.orient, gap: capOf(c)[0] / 2, n: c.legends.length, labels: c.legends, side: c.side || 'r', invert: c.invert }, LEG);
+    if (c.kind === 'jacks') for (const e of entriesOf(c)) { q += jackSvg(e.x, e.y, (e.d || c.d), JK); if (e.label) q += text(e.x, e.y - (e.d || c.d) / 2 - 1.2, e.label, { size: ls, anchor: 'middle', fill: LEG }); }
+    if (c.kind === 'buttons') for (const e of entriesOf(c)) if (e.label) q += text(e.x, e.y - (e.h || c.h) / 2 - 1.4 - (c.led === 'above' ? 3 : 0), e.label, { size: ls, anchor: 'middle', fill: LEG });
+    // the printed label
+    if (c.label && lab !== 'none' && c.kind !== 'buttons' && c.kind !== 'jacks') {
+      const ow = ownOf(c), ext = (c.kind === 'knob' || c.kind === 'rotary') ? c.d / 2 + (dial ? DIAL_OUT : 1.2) : 0;
+      const ey = ext || ow[1] / 2 + 1.3 + (c.kind === 'button' && c.led === 'above' ? 3 : 0), exx = ext || ow[0] / 2 + 1.3;
+      const lines = String(c.label).split('\n'), lh = ls * 1.12;
+      const t = { size: ls, weight: c.labWeight || 600, fill: LEG, ls: 0.12 };
+      if (lab === 'n') q += text(c.x, c.y - ey - 0.5 - (lines.length - 1) * lh, c.label, Object.assign(t, { anchor: 'middle' }));
+      else if (lab === 's') q += text(c.x, c.y + ey + ls * 0.85, c.label, Object.assign(t, { anchor: 'middle' }));
+      else q += text(c.x + (lab === 'e' ? exx : -exx), c.y + ls * 0.36 - (lines.length - 1) * lh / 2, c.label, Object.assign(t, { anchor: lab === 'e' ? 'start' : 'end' }));
+    }
+    if (c.inert) q += inertSvg(c, { K, SL, BT, JK, LEG, named, M });
+    if (q) o.push(inA(c.a, q));
+  }
+  o.push('</svg>');
+  return o.join('');
+}
+function text(x, y, s, t) {
+  const lines = String(s).split('\n'), lh = t.size * 1.12;
+  const a = `x="${n3(x)}" y="${n3(y)}" font-size="${n3(t.size)}"${t.anchor && t.anchor !== 'start' ? ` text-anchor="${t.anchor}"` : ''}${t.weight ? ` font-weight="${t.weight}"` : ''}`
+    + `${t.fill ? ` fill="${esc(t.fill)}"` : ''}${t.ls ? ` letter-spacing="${n3(t.ls)}"` : ''}${t.font && FONTS[t.font] ? ` font-family="${esc(FONTS[t.font])}"` : ''}`
+    + `${fin(t.rot) && t.rot ? ` transform="rotate(${n3(t.rot)} ${n3(x)} ${n3(y)})"` : ''}`;
+  if (lines.length === 1) return `<text ${a}>${esc(t.caps ? s.toUpperCase() : s)}</text>`;
+  return `<text ${a}>` + lines.map((l, i) => `<tspan x="${n3(x)}"${i ? ` dy="${n3(lh)}"` : ''}>${esc(t.caps ? l.toUpperCase() : l)}</tspan>`).join('') + '</text>';
+}
+const polar = (x, y, r, deg) => { const a = deg * Math.PI / 180; return [x + Math.sin(a) * r, y - Math.cos(a) * r]; };
+function glyphSvg(g, x, y, size, colr, sw) {
+  const s = size / 2;
+  return `<path d="${GLYPHS[g]}" transform="translate(${n3(x)} ${n3(y)}) scale(${n3(s)})" fill="none" stroke="${esc(colr)}" stroke-width="${n3((sw || 0.32) / s)}" stroke-linejoin="round" stroke-linecap="round"/>`;
+}
+function scaleSvg(x, y, d, sweep, sc, LEG) {
+  const n = Math.max(2, sc.n | 0 || 11), r0 = d / 2 + DIAL_IN, r1 = r0 + DIAL_TICK, rl = d / 2 + DIAL_LAB, sz = sc.size > 0 ? sc.size : 2.3;
+  let p = '', q = '';
+  for (let i = 0; i < n; i++) {
+    const a = -sweep / 2 + sweep * i / (n - 1), [ax, ay] = polar(x, y, r0, a), [bx, by] = polar(x, y, r1, a);
+    p += `M${n3(ax)} ${n3(ay)}L${n3(bx)} ${n3(by)}`;
+  }
+  const labs = Array.isArray(sc.labels) ? sc.labels : [];
+  labs.forEach((l, i) => {
+    if (l == null || l === '') return;
+    const a = -sweep / 2 + sweep * (labs.length === n ? i / (n - 1) : i / Math.max(1, labs.length - 1)), [lx, ly] = polar(x, y, rl, a);
+    q += text(lx, ly + sz * 0.36, String(l), { size: sz, anchor: 'middle', fill: LEG });
+  });
+  return `<path d="${p}" stroke="${esc(LEG)}" stroke-width="0.32" fill="none"/>` + q;
+}
+function detentsSvg(x, y, d, sweep, legends, LEG) {
+  const n = legends.length, r0 = d / 2 + DIAL_IN, r1 = r0 + DIAL_TICK * 0.8, rl = d / 2 + DIAL_LAB + 0.4;
+  let p = '', q = '';
+  legends.forEach((l, i) => {
+    const a = n > 1 ? -sweep / 2 + sweep * i / (n - 1) : 0, [ax, ay] = polar(x, y, r0, a), [bx, by] = polar(x, y, r1, a), [lx, ly] = polar(x, y, rl + (typeof l === 'string' && l in GLYPHS ? 0.6 : 0), a);
+    p += `M${n3(ax)} ${n3(ay)}L${n3(bx)} ${n3(by)}`;
+    if (typeof l === 'string' && l in GLYPHS) q += glyphSvg(l, lx, ly, 3.4, LEG, 0.34);
+    else if (l != null && l !== '') q += text(lx, ly + 0.85, String(l), { size: 2.4, anchor: 'middle', fill: LEG });
+  });
+  return `<path d="${p}" stroke="${esc(LEG)}" stroke-width="0.32" fill="none"/>` + q;
+}
+// a slide pot's printed ladder: n ticks along its travel beside the slot (side l | r | both), labels from the minimum end
+function ladderSvg(d, LEG) {
+  const n = Math.max(2, d.n | 0 || 11), h = d.orient === 'h', len = +d.len || 0, gap = (+d.gap || 4) + 0.8, tl = 1.6, sz = d.size > 0 ? d.size : 2.2;
+  const sides = d.side === 'both' ? [-1, 1] : d.side === 'l' ? [-1] : [1];
+  let p = '', q = '';
+  const labs = Array.isArray(d.labels) ? d.labels : [];
+  for (let i = 0; i < n; i++) {
+    let f = i / (n - 1);
+    if (d.invert) f = 1 - f;
+    const along = h ? d.x - len / 2 + f * len : d.y + len / 2 - f * len;
+    for (const sd of sides) {
+      if (h) p += `M${n3(along)} ${n3(d.y + sd * gap)}V${n3(d.y + sd * (gap + tl))}`;
+      else p += `M${n3(d.x + sd * gap)} ${n3(along)}H${n3(d.x + sd * (gap + tl))}`;
+    }
+    const l = labs.length === n ? labs[i] : null;
+    if (l != null && l !== '') {
+      const sd = sides[sides.length - 1];
+      if (h) q += text(along, d.y + sd * (gap + tl + 1) + (sd > 0 ? sz * 0.8 : 0), String(l), { size: sz, anchor: 'middle', fill: LEG });
+      else q += text(d.x + sd * (gap + tl + 0.8), along + sz * 0.36, String(l), { size: sz, anchor: sd > 0 ? 'start' : 'end', fill: LEG });
+    }
+  }
+  return `<path d="${p}" stroke="${esc(LEG)}" stroke-width="0.3" fill="none"/>` + q;
+}
+function jackSvg(x, y, d, JK) {
+  return `<circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(d / 2)}" fill="${esc(JK.nut)}"/><circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(d * 0.24)}" fill="${esc(JK.hole)}"/>`;
+}
+function decorItem(d, C) {
+  const st = (dflt) => ` stroke="${esc(C.col(d.stroke || dflt))}" stroke-width="${n3(d.sw > 0 ? d.sw : 0.3)}"`;
+  switch (d.t) {
+    case 'rect': return `<rect x="${n3(d.x)}" y="${n3(d.y)}" width="${n3(d.w)}" height="${n3(d.h)}"${d.r > 0 ? ` rx="${n3(d.r)}"` : ''} fill="${esc(C.col(d.fill || 'none'))}"${d.stroke ? st(C.RULE) : ''}/>`;
+    case 'line': return `<line x1="${n3(d.x1)}" y1="${n3(d.y1)}" x2="${n3(d.x2)}" y2="${n3(d.y2)}"${st(C.RULE)}${Array.isArray(d.dash) ? ` stroke-dasharray="${d.dash.filter(fin).map(n3).join(' ')}"` : ''}/>`;
+    case 'path': return `<path d="${esc(d.d)}" fill="${esc(C.col(d.fill || 'none'))}"${d.stroke || !d.fill ? st(C.RULE) : ''}${fin(d.x) && fin(d.y) ? ` transform="translate(${n3(d.x)} ${n3(d.y)})"` : ''}/>`;
+    case 'text': return text(d.x, d.y, d.s, { size: d.size > 0 ? d.size : 2.6, weight: d.weight, anchor: d.anchor, fill: d.fill || C.LEG, ls: d.ls, rot: d.rot, font: d.font, caps: d.caps });
+    case 'glyph': return glyphSvg(d.g, d.x, d.y, d.size, d.fill || C.LEG, d.sw);
+    case 'scale': return scaleSvg(d.x, d.y, d.d, d.sweep || 270, d, d.fill || C.LEG);
+    case 'ladder': return ladderSvg(d, d.fill || C.LEG);
+    case 'grille': {
+      const hole = d.hole > 0 ? d.hole : 1.6, pit = d.pitch > hole ? d.pitch : hole * 2;
+      let p = '';
+      for (let y = d.y + pit / 2, r = 0; y < d.y + d.h; y += pit * 0.866, r++) for (let x = d.x + pit / 2 + (r % 2 ? pit / 2 : 0); x < d.x + d.w; x += pit) p += `M${n3(x - hole / 2)} ${n3(y)}a${n3(hole / 2)} ${n3(hole / 2)} 0 1 0 ${n3(hole)} 0a${n3(hole / 2)} ${n3(hole / 2)} 0 1 0 ${n3(-hole)} 0`;
+      return `<rect x="${n3(d.x)}" y="${n3(d.y)}" width="${n3(d.w)}" height="${n3(d.h)}" fill="${esc(C.col(d.fill || '#1b1b1b'))}"/><path d="${p}" fill="#050505"/>`;
+    }
+    case 'stripes': case 'louvres': {
+      const pit = d.pitch > 0 ? d.pitch : 2.4;
+      let p = '';
+      for (let y = d.y + pit / 2; y < d.y + d.h; y += pit) p += `M${n3(d.x)} ${n3(y)}H${n3(d.x + d.w)}`;
+      const sw = d.t === 'louvres' ? pit * 0.45 : (d.sw > 0 ? d.sw : 0.3);
+      return (d.fill ? `<rect x="${n3(d.x)}" y="${n3(d.y)}" width="${n3(d.w)}" height="${n3(d.h)}" fill="${esc(C.col(d.fill))}"/>` : '')
+        + `<path d="${p}" stroke="${esc(d.stroke || (d.t === 'louvres' ? '#050505' : C.RULE))}" stroke-width="${n3(sw)}" fill="none"/>`;
+    }
+    case 'screws': {
+      const r = (d.d > 0 ? d.d : 4) / 2;
+      return d.pts.map(([x, y]) => `<circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(r)}" fill="#b7b7b2" stroke="#5c5c58" stroke-width="0.25"/><path d="M${n3(x - r * 0.7)} ${n3(y)}H${n3(x + r * 0.7)}" stroke="#4a4a46" stroke-width="${n3(r * 0.28)}"/>`).join('');
+    }
+    default: return '';
+  }
+}
+// an inert (not emulated) control: drawn with the model's skin at opacity 0.55, titled "LABEL — not emulated"
+function inertSvg(c, C) {
+  const name = String(c.label || c.kind).replace(/\n/g, ' '), tip = name + ' — not emulated', p = fin(c.p) ? Math.max(0, Math.min(1, c.p)) : 0.5;
+  const sk = Object.assign({}, C.K, isObj(c.skin) ? c.skin : {});
+  let q = '';
+  const { x, y } = c;
+  switch (c.kind) {
+    case 'knob': case 'rotary': {
+      const r = c.d / 2, a = -(c.sweep || 270) / 2 + (c.sweep || 270) * p, [px1, py1] = polar(x, y, r * 0.94, a), [px2, py2] = polar(x, y, r * (sk.capR || 0.6) + 0.4, a);
+      q = `<circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(r)}" fill="${esc(sk.skirt)}"/><circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(r * (sk.capR || 0.6))}" fill="${esc(sk.cap)}"/>`
+        + `<line x1="${n3(px1)}" y1="${n3(py1)}" x2="${n3(px2)}" y2="${n3(py2)}" stroke="${esc(sk.ptr)}" stroke-width="${n3(Math.max(0.6, c.d * 0.05))}" stroke-linecap="round"/>`;
+      break;
+    }
+    case 'slider': {
+      const cap = capOf(c), h = c.orient === 'h', len = +c.len || 0, f = c.invert ? 1 - p : p;
+      const cx = h ? x - len / 2 + f * len : x, cy = h ? y : y + len / 2 - f * len, cw = h ? cap[1] : cap[0], ch = h ? cap[0] : cap[1];
+      q = (h ? `<line x1="${n3(x - len / 2)}" y1="${n3(y)}" x2="${n3(x + len / 2)}" y2="${n3(y)}"` : `<line x1="${n3(x)}" y1="${n3(y - len / 2)}" x2="${n3(x)}" y2="${n3(y + len / 2)}"`)
+        + ` stroke="${esc(C.SL.groove)}" stroke-width="1.6" stroke-linecap="round"/><rect x="${n3(cx - cw / 2)}" y="${n3(cy - ch / 2)}" width="${n3(cw)}" height="${n3(ch)}" rx="0.6" fill="${esc(C.named(c.color) || C.SL.cap)}"/>`
+        + (h ? `<line x1="${n3(cx)}" y1="${n3(cy - ch / 2 + 0.6)}" x2="${n3(cx)}" y2="${n3(cy + ch / 2 - 0.6)}"` : `<line x1="${n3(cx - cw / 2 + 0.6)}" y1="${n3(cy)}" x2="${n3(cx + cw / 2 - 0.6)}" y2="${n3(cy)}"`) + ` stroke="${esc(C.SL.line)}" stroke-width="0.5"/>`;
+      break;
+    }
+    case 'switch': {
+      const w = c.w, h = c.h, fill = C.named(c.color) || '#2a2a2a', v = c.orient === 'v' || (c.orient == null && h > w);
+      if ((c.style || 'rocker') === 'rocker' || c.style === 'paddle') {
+        const on = p >= 0.5, [hx, hy, hw, hh] = v ? [x - w / 2, on ? y : y - h / 2, w, h / 2] : [on ? x : x - w / 2, y - h / 2, w / 2, h];
+        q = `<rect x="${n3(x - w / 2)}" y="${n3(y - h / 2)}" width="${n3(w)}" height="${n3(h)}" rx="0.8" fill="${esc(fill)}"/><rect x="${n3(hx)}" y="${n3(hy)}" width="${n3(hw)}" height="${n3(hh)}" rx="0.8" fill="#000" opacity="0.28"/>`;
+      } else {
+        const k = Math.min(w, h) * 0.42, f = p, kx = v ? x : x - w / 2 + k + f * (w - 2 * k), ky = v ? y + h / 2 - k - f * (h - 2 * k) : y;
+        q = `<rect x="${n3(x - w / 2)}" y="${n3(y - h / 2)}" width="${n3(w)}" height="${n3(h)}" rx="${n3(Math.min(w, h) / 2)}" fill="#0c0c0c" stroke="#555" stroke-width="0.3"/><circle cx="${n3(kx)}" cy="${n3(ky)}" r="${n3(k)}" fill="${esc(C.named(c.color) || '#cfcfcf')}"/>`;
+      }
+      break;
+    }
+    case 'button': {
+      const fill = C.named(c.color) || C.BT.cap, led = c.led || 'none', lit = !!c.lit;
+      q = `<rect x="${n3(x - c.w / 2)}" y="${n3(y - c.h / 2)}" width="${n3(c.w)}" height="${n3(c.h)}" rx="0.8" fill="${esc(fill)}"/>`;
+      if (led !== 'none') { const ly = led === 'cap' ? y - c.h * 0.22 : led === 'above' ? y - c.h / 2 - 2 : y + c.h / 2 + 2; q += `<circle cx="${n3(x)}" cy="${n3(ly)}" r="1" fill="${esc(lit ? C.BT.led : C.BT.ledOff)}"/>`; }
+      if (c.onCap) q += text(x, y + 1, c.onCap, { size: Math.min(2.4, c.h * 0.3), anchor: 'middle', fill: C.BT.text });
+      break;
+    }
+    case 'jack': q = jackSvg(x, y, c.d, C.JK); break;
+    case 'lamp': case 'led': q = `<circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(c.d / 2)}" fill="#2a2a2a" stroke="#777" stroke-width="0.3"/><circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(c.d * 0.36)}" fill="${esc(C.named(c.color) || c.color || '#c8321e')}" opacity="${c.lit ? 1 : 0.45}"/>`; break;
+    case 'screw': q = `<circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(c.d / 2)}" fill="#b7b7b2"/><path d="M${n3(x - c.d * 0.35)} ${n3(y)}H${n3(x + c.d * 0.35)}" stroke="#4a4a46" stroke-width="${n3(c.d * 0.14)}"/>`; break;
+    case 'display': q = `<rect x="${n3(x - c.w / 2)}" y="${n3(y - c.h / 2)}" width="${n3(c.w)}" height="${n3(c.h)}" rx="0.6" fill="#140606"/>`; break;
+    case 'fuse': case 'strig': q = `<rect x="${n3(x - c.w / 2)}" y="${n3(y - c.h / 2)}" width="${n3(c.w)}" height="${n3(c.h)}" rx="${n3(Math.min(c.w, c.h) / 2)}" fill="#1a1a1a" stroke="#888" stroke-width="0.3"/>`; break;
+    case 'slot': q = `<rect x="${n3(x - c.w / 2)}" y="${n3(y - c.h / 2)}" width="${n3(c.w)}" height="${n3(c.h)}" rx="0.6" fill="#070707" stroke="#3a3a3a" stroke-width="0.4"/>`; break;
+    case 'buttons': case 'jacks': for (const e of entriesOf(c)) q += c.kind === 'jacks' ? jackSvg(e.x, e.y, e.d || c.d, C.JK) : `<rect x="${n3(e.x - (e.w || c.w) / 2)}" y="${n3(e.y - (e.h || c.h) / 2)}" width="${n3(e.w || c.w)}" height="${n3(e.h || c.h)}" rx="0.8" fill="${esc(C.named(e.color || c.color) || C.BT.cap)}"/>`; break;
+    default: break;
+  }
+  return `<g class="hw-inert" opacity="0.55" data-tip="${esc(tip)}"><title>${esc(tip)}</title>${q}</g>`;
+}
+
+/* ---------------------------------------------------------------- render: the live layer */
+const SVGNS = 'http://www.w3.org/2000/svg';
+/** The detented positions of a control: P (position → value, null = not emulated), V (the valid positions, in order),
+ * posOf(v) (the position whose value is nearest v: a k control between detents shows the nearest one), kOf(v) (its
+ * index in V). Taps, drags, keys and the wheel move over V, so a null position is drawn and always skipped. */
+export function stepper(P) {
+  const V = [];
+  P.forEach((v, i) => { if (v != null) V.push(i); });
+  const posOf = v => { let best = V[0], bd = Infinity; for (const i of V) { const d = Math.abs(P[i] - v); if (d < bd - 1e-9) { bd = d; best = i; } } return best; };
+  return { P, V, posOf, kOf: v => Math.max(0, V.indexOf(posOf(v))) };
+}
+/**
+ * Fills `root` (#inst) with the hardware panel of `L` and registers its controls through `api` (main.js hwApi: knob /
+ * slider / selector / toggle are today's widgets, the rest are built here on api.bind / dragB / tap / watch).
+ * Synchronous; one widget per live control; never measures. @returns {{w: number, h: number, destroy: () => void}}
+ */
+export function render(root, L, model, api) {
+  const geo = geometry(L, model), S = isObj(L.scheme) ? L.scheme : {}, M = ctlsOf(model);
+  const doc = (api && api.doc) || root.ownerDocument || globalThis.document;
+  const mk = (tag, cls) => { const e = doc.createElement(tag); if (cls) e.className = cls; return e; };
+  const sv = (tag, at) => { const e = doc.createElementNS(SVGNS, tag); for (const k in at) e.setAttribute(k, String(at[k])); return e; };
+  const prop = (el, k, v) => { if (v == null || v === '') return; try { el.style.setProperty(k, String(v)); } catch (err) { /* inert */ } };
+  const place = (el, r, ox, oy) => { el.style.left = (r.x - (ox || 0)) + 'px'; el.style.top = (r.y - (oy || 0)) + 'px'; el.style.width = r.w + 'px'; el.style.height = r.h + 'px'; };
+  const hitVars = (el, hit) => { prop(el, '--hit-w', hit.w + 'px'); prop(el, '--hit-h', hit.h + 'px'); };
+  const named = n => (n && isObj(S.rocker) && S.rocker[n]) || (n && isObj(S.switch) && S.switch[n]) || (n && isObj(S.button) && S.button[n]) || (typeof n === 'string' && n.startsWith('#') ? n : null);
+  if (typeof root.replaceChildren === 'function') root.replaceChildren(); else root.textContent = '';
+  const th = model.theme || {};
+  root.className = `inst hw knob-${th.knob || 'std'} m-${model.id}` + (L.case === 'wood' ? ' hw-wood' : '');
+  root.setAttribute('data-hw', L.id);
+  root.style.width = geo.W + 'px'; root.style.height = geo.body.h + 'px';
+  const K = Object.assign({ ptrStyle: 'line', capR: 0.7 }, isObj(S.knob) ? S.knob : {}), SL = isObj(S.slider) ? S.slider : {}, BT = isObj(S.button) ? S.button : {}, JK = isObj(S.jack) ? S.jack : {};
+  for (const [k, v] of [['--hw-panel', S.panel], ['--hw-legend', S.legend], ['--hw-rule', S.rule || S.legend], ['--hw-accent', S.accent], ['--hw-wood', S.wood],
+    ['--hw-case', L.case === 'wood' ? S.wood || '#5a3218' : L.case || S.panel], ['--hw-font', FONTS[S.font] || FONTS.sans],
+    ['--hw-knob-skirt', K.skirt], ['--hw-knob-cap', K.cap], ['--hw-knob-ptr', K.ptr], ['--hw-sl-cap', SL.cap], ['--hw-sl-line', SL.line], ['--hw-sl-groove', SL.groove],
+    ['--hw-btn-cap', BT.cap], ['--hw-led', BT.led], ['--hw-led-off', BT.ledOff], ['--hw-btn-text', BT.text], ['--hw-jack-nut', JK.nut], ['--hw-jack-hole', JK.hole]]) prop(root, k, v);
+  root.setAttribute('data-ptr', K.ptrStyle);
+  if (K.knurl) root.setAttribute('data-knurl', ''); else root.removeAttribute('data-knurl');
+  if (SL.capShape) root.setAttribute('data-cap', SL.capShape);
+  const deco = mk('div', 'hw-decor');
+  deco.innerHTML = decorSvg(L, model);
+  const ctls = mk('div', 'hw-ctls');
+  ctls.setAttribute('role', 'group'); ctls.setAttribute('aria-label', (model.name || model.id) + ' front panel');
+  root.append(deco, ctls);
+  const txtOf = (c, mc, P, i) => {
+    const l = Array.isArray(c.legends) ? c.legends[i] : null;
+    if (mc.t === 's' && P[i] != null && mc.opts[P[i]] != null && (l == null || String(l) in GLYPHS)) return String(mc.opts[P[i]]);
+    if (l != null && !(String(l) in GLYPHS)) return String(l).replace(/\n/g, ' ');
+    return P[i] == null ? '—' : mc.t === 'b' ? (P[i] ? 'On' : 'Off') : api.fmt(mc, P[i]);
+  };
+  // a binding over the valid positions (index in V) for dragB: a drag, the keys and the wheel step through them
+  const posBinding = (c, mc, stp, axis) => Object.assign({}, api.bind(mc), {
+    label: mc.label, get: () => stp.kOf(api.get(mc.id)), min: 0, max: Math.max(1, stp.V.length - 1), step: 1, def: stp.kOf(mc.def), axis, invert: !!c.invert,
+    set: k => { k = Math.max(0, Math.min(stp.V.length - 1, Math.round(k))); const v = stp.P[stp.V[k]]; if (v !== api.get(mc.id)) api.set(mc.id, v); },
+    fmt: k => txtOf(c, mc, stp.P, stp.V[Math.max(0, Math.min(stp.V.length - 1, Math.round(k)))]),
+  });
+  const nextOf = (mc, stp) => () => { const k = stp.kOf(api.get(mc.id)), v = stp.P[stp.V[(k + 1) % stp.V.length]]; if (v !== api.get(mc.id)) api.set(mc.id, v); };
+  // the knob drawing (today's structure and classes, so the knob skins apply): skirt, the rotating group, cap, pointer
+  function pointer(rot, sk) {
+    const ps = sk.ptrStyle || 'line', cr = 25 * (fin(sk.capR) ? Math.max(0.2, Math.min(1, sk.capR)) : 0.7);
+    if (ps === 'dot') rot.append(sv('circle', { class: 'hw-pt', cx: 32, cy: n3(32 - cr + 4), r: 2.2 }));
+    else if (ps === 'triangle') rot.append(sv('path', { class: 'hw-pt', d: 'M32 7.5L28.8 13.2H35.2Z' }));
+    else if (ps === 'fin') rot.append(sv('path', { class: 'hw-pt hw-fin', d: 'M32 1.5L26.2 13.5A6.6 6.6 0 0 0 37.8 13.5Z' }));
+    else if (ps === 'bar') rot.append(sv('rect', { class: 'hw-bar', x: 27.5, y: 7, width: 9, height: 50, rx: 4.5 }), sv('line', { class: 'ind', x1: 32, y1: 9.5, x2: 32, y2: 22 }));
+    else rot.append(sv('line', cr < 19 ? { class: 'ind', x1: 32, y1: 8, x2: 32, y2: n3(32 - cr - 1) } : { class: 'ind', x1: 32, y1: n3(32 - cr + 1.8), x2: 32, y2: n3(32 - cr + 11) }));
+  }
+  function knobSvg(sk) {
+    const cr = 25 * (fin(sk.capR) ? Math.max(0.2, Math.min(1, sk.capR)) : 0.7);
+    const svg = sv('svg', { viewBox: '0 0 64 64', 'aria-hidden': 'true', focusable: 'false' }), rot = sv('g', { class: 'rot' });
+    rot.append(sv('circle', { class: 'cap', cx: 32, cy: 32, r: n3(cr) }));
+    pointer(rot, sk);
+    svg.append(sv('circle', { class: 'skirt', cx: 32, cy: 32, r: 25 }), rot);
+    return { svg, rot };
+  }
+  const skinOf = c => Object.assign({}, K, isObj(c.skin) ? c.skin : {});
+  function skinVars(el, c) {
+    const s = isObj(c.skin) ? c.skin : null;
+    if (!s) return;
+    prop(el, '--hw-knob-skirt', s.skirt); prop(el, '--hw-knob-cap', s.cap); prop(el, '--hw-knob-ptr', s.ptr);
+    if (s.ptrStyle) el.setAttribute('data-ptr', s.ptrStyle);
+    if (s.knurl != null) el.setAttribute('data-knurl', s.knurl ? '1' : '0');
+  }
+  // today's knob, its drawing adjusted to the skin (cap radius, pointer shape): its own nodes, looked up once
+  function skinKnob(el, c) {
+    skinVars(el, c);
+    const sk = skinOf(c);
+    if (typeof el.querySelector !== 'function') return;
+    let cap = null, shine = null, ind = null, rot = null;
+    try { cap = el.querySelector('.cap'); shine = el.querySelector('.shine'); ind = el.querySelector('.ind'); rot = el.querySelector('.rot'); } catch (err) { return; }
+    const cr = n3(25 * (fin(sk.capR) ? Math.max(0.2, Math.min(1, sk.capR)) : 0.7));
+    if (cap && cap.setAttribute) cap.setAttribute('r', cr);
+    if (shine && shine.setAttribute) shine.setAttribute('r', cr);
+    if (ind && typeof ind.remove === 'function') ind.remove();
+    if (rot && typeof rot.append === 'function') pointer(rot, sk);
+  }
+  function hwRotary(c, mc) {
+    const P = positionsOf(c, mc), stp = stepper(P), sweep = c.sweep || 270, N = P.length;
+    const el = mk('div', 'knob hw-rot');
+    el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', mc.label);
+    el.setAttribute('aria-valuemin', '0'); el.setAttribute('aria-valuemax', String(N - 1));
+    skinVars(el, c);
+    const { svg, rot } = knobSvg(skinOf(c));
+    el.append(svg);
+    const upd = () => {
+      const i = stp.posOf(api.get(mc.id));
+      rot.setAttribute('transform', `rotate(${n3(N > 1 ? -sweep / 2 + sweep * i / (N - 1) : 0)} 32 32)`);
+      el.setAttribute('aria-valuenow', String(i)); el.setAttribute('aria-valuetext', txtOf(c, mc, P, i));
+    };
+    api.watch(mc.id, upd); upd();
+    api.dragB(el, posBinding(c, mc, stp, 'y'), { tap: nextOf(mc, stp) });
+    return el;
+  }
+  function hwSlider(c, mc) { // a detented slide pot (an "s" control, or "k" with map): the cap snaps to its legends
+    const P = positionsOf(c, mc), stp = stepper(P), N = P.length, h = c.orient === 'h';
+    const el = mk('div', 'slider hw-det');
+    el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', mc.label);
+    el.setAttribute('aria-valuemin', '0'); el.setAttribute('aria-valuemax', String(N - 1));
+    if (h) el.setAttribute('data-orient', 'h');
+    const cap = mk('div', 'cap');
+    if (named(c.color)) cap.style.background = named(c.color);
+    el.append(mk('div', 'groove'), cap);
+    const upd = () => {
+      const i = stp.posOf(api.get(mc.id));
+      let f = N > 1 ? i / (N - 1) : 0;
+      if (c.invert) f = 1 - f;
+      const p = `calc(${n3(f)} * (100% - var(--cap-h, 14px)))`;
+      if (h) cap.style.left = p; else cap.style.bottom = p;
+      el.setAttribute('aria-valuenow', String(i)); el.setAttribute('aria-valuetext', txtOf(c, mc, P, i));
+    };
+    api.watch(mc.id, upd); upd();
+    api.dragB(el, posBinding(c, mc, stp, h ? 'x' : 'y'), { tap: nextOf(mc, stp) });
+    return el;
+  }
+  function hwSwitch(c, mc, o) {
+    const el = mk('button', 'hw-sw'), style = c.style || 'rocker', orient = c.orient || (c.h > c.w ? 'v' : 'h');
+    el.type = 'button'; el.setAttribute('aria-label', mc.label);
+    prop(el, '--kd', r05(Math.min(o.own.w, o.own.h) * 0.8) + 'px'); // (a bat / lever / slide knob's size)
+    el.setAttribute('data-style', style); el.setAttribute('data-orient', orient);
+    prop(el, '--sw-c', named(c.color));
+    if (c.level) { // a level rocker (CS-80 SAW / SQUARE): a tap toggles 0 ↔ the last level, a drag along it sets the level
+      el.setAttribute('data-level', ''); el.setAttribute('role', 'slider');
+      el.setAttribute('aria-valuemin', String(mc.min)); el.setAttribute('aria-valuemax', String(mc.max));
+      const fill = mk('u', 'hw-sw-fill');
+      el.append(mk('i', 'hw-sw-a'), mk('i', 'hw-sw-b'), fill);
+      let last = mc.max;
+      const upd = () => {
+        const v = api.get(mc.id), f = (v - mc.min) / ((mc.max - mc.min) || 1);
+        if (v !== mc.min) last = v;
+        fill.style[orient === 'v' ? 'height' : 'width'] = n3(Math.max(0, Math.min(1, f)) * 100) + '%';
+        el.setAttribute('data-pos', v !== mc.min ? '1' : '0');
+        el.setAttribute('aria-valuenow', String(v)); el.setAttribute('aria-valuetext', api.fmt(mc, v));
+      };
+      api.watch(mc.id, upd); upd();
+      api.dragB(el, Object.assign({}, api.bind(mc), { axis: orient === 'h' ? 'x' : 'y' }), { tap: () => api.set(mc.id, api.get(mc.id) !== mc.min ? mc.min : last) });
+      return el;
+    }
+    const P = positionsOf(c, mc), stp = stepper(P), N = P.length;
+    el.setAttribute('data-n', String(N));
+    let knob = null;
+    if (style === 'rocker' || style === 'paddle') el.append(mk('i', 'hw-sw-a'), mk('i', 'hw-sw-b'));
+    else { knob = mk('b', 'hw-sw-k'); el.append(mk('i', 'hw-sw-t'), knob); }
+    if (N > 2) { el.setAttribute('role', 'slider'); el.setAttribute('aria-valuemin', '0'); el.setAttribute('aria-valuemax', String(N - 1)); }
+    const upd = () => {
+      const i = stp.posOf(api.get(mc.id));
+      el.setAttribute('data-pos', String(i));
+      if (knob) prop(knob, '--f', n3(N > 1 ? i / (N - 1) : 0));
+      if (N > 2) { el.setAttribute('aria-valuenow', String(i)); el.setAttribute('aria-valuetext', txtOf(c, mc, P, i)); }
+      else { el.setAttribute('aria-pressed', i === 1 ? 'true' : 'false'); if (Array.isArray(c.legends) || mc.t === 's') el.setAttribute('aria-valuetext', txtOf(c, mc, P, i)); }
+    };
+    api.watch(mc.id, upd); upd();
+    api.dragB(el, posBinding(c, mc, stp, orient === 'h' ? 'x' : 'y'), { tap: nextOf(mc, stp) });
+    return el;
+  }
+  const ledOn = (when, v) => { const [op, x] = Array.isArray(when) ? when : ['ne', 0]; return op === 'eq' ? v === x : op === 'ge' ? v >= x : op === 'in' ? Array.isArray(x) && x.includes(v) : v !== x; };
+  function hwButton(c, mc) { // a latching push button: a tap steps through `cycle`; its LED shows the step (ledLevels)
+    const P = positionsOf(c, mc), stp = stepper(P);
+    const el = mk('button', 'hw-btn');
+    el.type = 'button'; el.setAttribute('aria-label', mc.label); el.setAttribute('data-led', c.led || 'cap');
+    prop(el, '--btn-c', named(c.color));
+    const led = mk('span', 'hw-led');
+    el.append(led);
+    if (c.onCap) { const t = mk('span', 'hw-cap'); t.textContent = String(c.onCap); el.append(t); }
+    const upd = () => {
+      const k = stp.kOf(api.get(mc.id)), i = stp.V[k];
+      el.setAttribute('aria-pressed', k > 0 ? 'true' : 'false');
+      el.setAttribute('data-lit', Array.isArray(c.ledLevels) ? String(c.ledLevels[i] || 'off') : k > 0 ? 'on' : 'off');
+      if (stp.V.length > 2) el.setAttribute('aria-valuetext', txtOf(c, mc, P, i)); else el.removeAttribute('aria-valuetext');
+    };
+    api.watch(mc.id, upd); upd();
+    api.tap(el, nextOf(mc, stp));
+    return el;
+  }
+  function hwButtons(c, mc, o) { // one lit of a group (radio); a combo value lights two (pressing the lit one of two releases it to the other)
+    const jack = c.kind === 'jacks', combo = isObj(c.combo) ? c.combo : {};
+    const grp = mk('div', 'hw-grp' + (jack ? ' hw-jacks' : ''));
+    grp.setAttribute('role', 'radiogroup'); grp.setAttribute('aria-label', mc.label);
+    const es = entriesOf(c), btns = es.map((e, i) => {
+      const b = mk('button', jack ? 'hw-jk' : 'hw-btn hw-opt'), r = o.entries[i];
+      b.type = 'button'; b.setAttribute('role', 'radio'); b.setAttribute('data-v', String(e.v));
+      b.setAttribute('aria-label', String(e.label || (mc.t === 's' ? mc.opts[e.v] : api.fmt(mc, e.v))).replace(/\n/g, ' '));
+      if (!jack) { b.setAttribute('data-led', c.led || 'cap'); prop(b, '--btn-c', named(e.color || c.color)); b.append(mk('span', 'hw-led')); if (e.onCap || c.onCap) { const t = mk('span', 'hw-cap'); t.textContent = String(e.onCap || c.onCap); b.append(t); } }
+      else b.append(mk('i', 'hw-jk-ring'), mk('b', 'hw-jk-cord'));
+      place(b, r.box, o.box.x, o.box.y);
+      hitVars(b, r.hit);
+      api.tap(b, () => press(e.v));
+      grp.append(b);
+      return b;
+    });
+    const litOf = v => { const pr = combo[v]; if (Array.isArray(pr)) return pr; let best = null, bd = Infinity; for (const e of es) { const d = Math.abs(e.v - v); if (d < bd) { bd = d; best = e.v; } } return [best]; };
+    function press(v) {
+      const cur = api.get(mc.id), lit = litOf(cur);
+      let nv = v;
+      if (lit.length === 2 && lit.includes(v)) nv = lit[0] === v ? lit[1] : lit[0]; // the lit one of two: release it
+      else if (lit.length === 1 && lit[0] !== v) { for (const [cv, pr] of Object.entries(combo)) if (Array.isArray(pr) && pr.includes(v) && pr.includes(lit[0])) nv = +cv; }
+      if (nv !== cur) api.set(mc.id, nv);
+    }
+    const upd = () => {
+      const lit = litOf(api.get(mc.id));
+      btns.forEach((b, i) => { const on = lit.includes(es[i].v); b.setAttribute('aria-checked', on ? 'true' : 'false'); b.setAttribute('data-lit', on ? 'on' : 'off'); b.tabIndex = on && lit[0] === es[i].v ? 0 : -1; });
+    };
+    api.watch(mc.id, upd); upd();
+    grp.addEventListener('keydown', e => { // radio group: one tab stop, the arrows move the selection
+      const d = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
+      if (!d) return;
+      e.preventDefault(); e.stopPropagation();
+      const cur = litOf(api.get(mc.id))[0], i = Math.max(0, es.findIndex(x => x.v === cur)), j = (i + d + es.length) % es.length;
+      api.set(mc.id, es[j].v);
+      try { btns[j].focus({ preventScroll: true }); } catch (err) { /* inert */ }
+    });
+    return grp;
+  }
+  /* ---- the special areas (§6.2 TB-303, §6.3 DX7): widgets bound to api.seq / api.dx, not to one models.js id */
+  const post = []; // run once every widget is built (watchers chained after today's widgets set their own updater)
+  const SQ = api.seq || null, DX = api.dx || null;
+  const tapBtn = (label, fn, cls) => { const b = mk('button', 'hw-btn' + (cls ? ' ' + cls : '')); b.type = 'button'; b.setAttribute('aria-label', label); b.append(mk('span', 'hw-led')); api.tap(b, fn); return b; };
+  const lit = (el, on) => el.setAttribute('data-lit', on === 'dim' ? 'dim' : on ? 'on' : 'off');
+  function seqWidget(c, o) {
+    const id = c.id, st = SQ.state, step = () => SQ.q.pat[st.cur];
+    const edit = () => { SQ.send(); SQ.redraw(); SQ.changed(); };
+    const next = d => { st.cur = (st.cur + d + 16) % 16; SQ.redraw(); SQ.changed(); };
+    if (id === 'seq:tempo') { // TEMPO over the pattern's bpm (40–220): today's number box as the hardware knob
+      const el = mk('div', 'knob hw-tempo'), sw = c.sweep || 300, q = () => SQ.q;
+      el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', 'Tempo');
+      el.setAttribute('aria-valuemin', '40'); el.setAttribute('aria-valuemax', '220');
+      skinVars(el, c);
+      const { svg, rot } = knobSvg(skinOf(c));
+      el.append(svg);
+      const upd = () => { const v = q().bpm; rot.setAttribute('transform', `rotate(${n3(-sw / 2 + sw * (v - 40) / 180)} 32 32)`); el.setAttribute('aria-valuenow', String(v)); el.setAttribute('aria-valuetext', v + ' BPM'); };
+      const b = { label: 'Tempo', min: 40, max: 220, step: 1, def: 128, axis: 'y', get: () => q().bpm, fmt: v => v + ' BPM',
+        set: v => { v = Math.max(40, Math.min(220, Math.round(v))); if (v !== q().bpm) { q().bpm = v; SQ.send(); upd(); } }, snap: () => ({ v0: q().bpm }), restore: k => b.set(k.v0) };
+      upd();
+      api.dragB(el, b);
+      return el;
+    }
+    if (id === 'seq:run') { // RUN / STOP (id seqrun: main.js seqToggle keeps it current; its last child is the state text)
+      const b = tapBtn('Run / Stop', () => { if (!SQ.q.sync) SQ.toggle(!SQ.running()); });
+      b.id = 'seqrun'; b.setAttribute('data-led', c.led || 'cap');
+      const t = mk('span', 'hw-sr'); b.append(t);
+      const upd = () => { const on = SQ.running(); b.setAttribute('aria-pressed', on ? 'true' : 'false'); t.textContent = on ? 'Stop' : 'Run'; lit(b, on); b.setAttribute('aria-disabled', SQ.q.sync ? 'true' : 'false'); };
+      api.watch('@seqrun', upd); upd();
+      return b;
+    }
+    if (id === 'seq:clear') { const b = tapBtn('Pattern clear', () => SQ.doClear()); b.setAttribute('data-led', c.led || 'cap'); return b; }
+    const keyFn = {
+      'seq:key': () => { if (st.mode !== 'pitch') return; const s0 = step(); s0.n = c.note; s0.g = 1; edit(); },
+      'seq:pitch': () => { st.mode = 'pitch'; SQ.changed(); },
+      'seq:time': () => { st.mode = 'time'; SQ.changed(); },
+      'seq:down': () => { const s0 = step(); if (st.mode === 'time') { s0.g = 1; SQ.send(); next(1); } else { s0.o = s0.o === -1 ? 0 : -1; edit(); } },
+      'seq:up': () => { const s0 = step(); if (st.mode === 'pitch') { s0.o = s0.o === 1 ? 0 : 1; edit(); } }, // (time mode: a tie — not emulated)
+      'seq:accent': () => { const s0 = step(); if (st.mode === 'time') { s0.g = 0; SQ.send(); next(1); } else { s0.a = s0.a ? 0 : 1; edit(); } },
+      'seq:slide': () => { const s0 = step(); if (st.mode === 'pitch') { s0.s = s0.s ? 0 : 1; edit(); } },
+      'seq:back': () => next(-1), 'seq:next': () => next(1),
+    }[id];
+    if (!keyFn) return null;
+    const NAMES = { 'seq:pitch': 'Pitch mode', 'seq:time': 'Time mode', 'seq:down': 'Transpose down', 'seq:up': 'Transpose up', 'seq:accent': 'Accent', 'seq:slide': 'Slide', 'seq:back': 'Back', 'seq:next': 'Write / next' };
+    const KEYS = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B', 'C′'];
+    const b = tapBtn(id === 'seq:key' ? 'Key ' + KEYS[c.note] : NAMES[id], keyFn);
+    if (c.onCap) { const t = mk('span', 'hw-cap'); t.textContent = String(c.onCap); b.append(t); }
+    b.setAttribute('data-led', c.led || 'cap');
+    const ledOf = {
+      'seq:key': () => st.mode === 'pitch' && step().g && step().n === c.note, 'seq:pitch': () => st.mode === 'pitch', 'seq:time': () => st.mode === 'time',
+      'seq:down': () => step().o === -1, 'seq:up': () => step().o === 1, 'seq:accent': () => !!step().a, 'seq:slide': () => !!step().s,
+    }[id];
+    const upd = () => { const on = ledOf ? !!ledOf() : false; lit(b, on); if (id !== 'seq:back' && id !== 'seq:next') b.setAttribute('aria-pressed', on ? 'true' : 'false'); };
+    SQ.onChange(upd); upd();
+    return b;
+  }
+  // the DX7 (§6.3): select a parameter with a button, set it with DATA ENTRY or NO / YES; the LCD and LED say what
+  const dxB = []; // {n, el, wrap}
+  let dxRefresh = () => {};
+  function dxWidget(c, o, w) {
+    const id = c.id, st = DX.state, addr = () => (st.mode === 'edit' || st.mode === 'function' ? dxAddr(st.mode === 'function' ? 17 : st.param, st) : null);
+    if (id === 'dx:btn') {
+      const b = mk('button', 'hw-btn hw-dxb');
+      b.type = 'button'; b.setAttribute('data-n', String(c.n)); b.setAttribute('data-led', 'none');
+      prop(b, '--btn-c', named(c.color));
+      b.append(mk('span', 'hw-led'));
+      if (c.onCap) { const t = mk('span', 'hw-cap'); t.textContent = String(c.onCap); b.append(t); }
+      const label = String(c.label || 'Button ' + c.n).replace(/\n/g, ' ');
+      api.tap(b, () => {
+        if (st.mode === 'play') { if (c.n <= DX.presets) DX.load(c.n); dxRefresh(); return; }
+        const a = dxAddr(c.n, st);
+        if (!a) { if (api.tip) { api.tip(b, label + ' — not emulated'); if (api.untip) api.untip(1200); } return; }
+        if (st.mode === 'edit') { if ((c.n === 21 || c.n === 22) && st.param === c.n) st.eg = st.eg % 4 + 1; st.param = c.n; }
+        dxRefresh();
+      });
+      dxB.push({ n: c.n, el: b, wrap: w, label });
+      return b;
+    }
+    if (id === 'dx:opsel' || id === 'dx:edit' || id === 'dx:function' || id === 'dx:memInt') {
+      const names = { 'dx:opsel': 'Operator select', 'dx:edit': 'Edit / compare', 'dx:function': 'Function', 'dx:memInt': 'Memory select internal' };
+      const b = tapBtn(names[id], () => {
+        if (id === 'dx:opsel') { st.op = st.op % 6 + 1; if (st.mode !== 'edit') st.mode = 'edit'; }
+        else st.mode = id === 'dx:edit' ? 'edit' : id === 'dx:function' ? 'function' : 'play';
+        dxRefresh();
+      });
+      prop(b, '--btn-c', named(c.color));
+      b.setAttribute('data-led', 'none');
+      const upd = () => { const on = id === 'dx:opsel' ? false : st.mode === { 'dx:edit': 'edit', 'dx:function': 'function', 'dx:memInt': 'play' }[id]; b.setAttribute('aria-pressed', on ? 'true' : 'false'); lit(b, on); };
+      dxB.push({ n: 0, el: b, upd });
+      return b;
+    }
+    if (id === 'dx:no' || id === 'dx:yes') {
+      const d = id === 'dx:yes' ? 1 : -1;
+      const b = tapBtn(d > 0 ? 'Yes (+1)' : 'No (−1)', () => {
+        const a = addr(), mc = a && M.get(a);
+        if (!mc) return;
+        const stp = mc.step || (mc.max - mc.min) / 100, v = Math.max(mc.min, Math.min(mc.max, +(api.get(a) + d * stp).toFixed(4)));
+        if (v !== api.get(a)) api.set(a, v);
+      });
+      prop(b, '--btn-c', named(c.color));
+      b.setAttribute('data-led', 'none');
+      return b;
+    }
+    if (id === 'dx:data') { // DATA ENTRY: a slide pot over whatever is selected (its cap jumps to the selection's value)
+      const el = mk('div', 'slider hw-dx');
+      el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', 'Data entry');
+      const cap = mk('div', 'cap');
+      if (named(c.color)) cap.style.background = named(c.color);
+      el.append(mk('div', 'groove'), cap);
+      const cur = () => { const a = addr(), mc = a && M.get(a); return mc ? api.bind(mc) : null; };
+      const NONE = { label: 'Data entry', min: 0, max: 1, step: 0, def: 0, get: () => 0, set: () => {}, fmt: () => '—', snap: () => null, restore: () => {} };
+      const b = {
+        get label() { return (cur() || NONE).label; }, get min() { return (cur() || NONE).min; }, get max() { return (cur() || NONE).max; },
+        get step() { return (cur() || NONE).step; }, get def() { return (cur() || NONE).def; }, axis: c.orient === 'h' ? 'x' : 'y',
+        get: () => (cur() || NONE).get(), set: v => (cur() || NONE).set(v), fmt: v => (cur() || NONE).fmt(v),
+        snap: () => { const k = cur(); return k ? { k, t: k.snap() } : null; }, restore: s0 => { if (s0) s0.k.restore(s0.t); },
+      };
+      api.dragB(el, b);
+      const upd = () => {
+        const k = cur(), f = k ? (k.get() - k.min) / ((k.max - k.min) || 1) : 0, p = `calc(${n3(Math.max(0, Math.min(1, f)))} * (100% - var(--cap-h, 14px)))`;
+        if (c.orient === 'h') cap.style.left = p; else cap.style.bottom = p;
+        el.setAttribute('aria-valuetext', k ? k.label + ' ' + k.fmt(k.get()) : '—');
+      };
+      dxB.push({ n: 0, el, upd });
+      return el;
+    }
+    return null;
+  }
+  function dxShow(c, o) { // the LED (preset number), the LCD, the algorithm chart
+    const st = DX.state, r = o.own || o.box;
+    if (c.id === 'dx:led') {
+      const el = mk('span', 'hw-dsp'); place(el, r);
+      el.setAttribute('aria-live', 'off'); el.setAttribute('aria-label', 'Preset number');
+      const upd = () => { const n = typeof api.presetNo === 'function' ? api.presetNo() : null; el.textContent = n ? String(n).padStart(2, ' ') : '--'; };
+      api.watch('@preset', upd); upd();
+      return el;
+    }
+    if (c.id === 'dx:lcd') {
+      const el = mk('div', 'hw-lcd'), l1 = mk('span'), l2 = mk('span');
+      place(el, r);
+      prop(el, '--lcd-fs', n3(Math.max(6, Math.min(14, (r.w - 12) / (16 * 0.62), (r.h - 2) / 2.5))) + 'px'); // 16 × 2 characters fill the window
+
+      el.setAttribute('aria-live', 'polite'); el.setAttribute('aria-label', 'Display');
+      el.append(l1, l2);
+      const upd = () => {
+        const a = st.mode === 'play' ? null : dxAddr(st.mode === 'function' ? 17 : st.param, st), mc = a && M.get(a);
+        const n = typeof api.presetNo === 'function' ? api.presetNo() : null;
+        const [x, y] = dxLcd(st, Math.round(api.get('alg')), a, mc ? api.fmt(mc, api.get(a)) : '', n, DX.presetName ? DX.presetName() : '');
+        l1.textContent = x; l2.textContent = y;
+      };
+      dxB.push({ n: 0, el, upd });
+      api.watch('@preset', upd);
+      return el;
+    }
+    if (c.id === 'dx:chart') { // all 32 algorithms, two rows of 16 (algoLayout), the current one lit
+      const el = mk('div', 'hw-chart'); place(el, r);
+      el.setAttribute('aria-hidden', 'true');
+      const W = r.w, H = r.h, cw = W / 16, ch = H / 2, svg = sv('svg', { viewBox: `0 0 ${n3(W)} ${n3(H)}`, width: n3(W), height: n3(H) }), cells = [];
+      for (let i = 0; i < 32 && DX.algs && DX.algs[i]; i++) {
+        const [edges, car] = DX.algs[i], L2 = DX.layout(edges, car), g = sv('g', { transform: `translate(${n3((i % 16) * cw)} ${n3(Math.floor(i / 16) * ch)})` });
+        const bs = Math.min((cw - 4) / Math.max(1, L2.cols), (ch - 10) / (L2.maxL + 1)) * 0.62, px2 = (cw - 4) / Math.max(1, L2.cols), py2 = (ch - 10) / (L2.maxL + 1);
+        const P2 = k => ({ x: 2 + L2.xs[k] * px2 + px2 / 2, y: 2 + (L2.maxL - L2.lvl[k]) * py2 + py2 / 2 });
+        let d = '';
+        for (const [f, t] of edges) { const A = P2(f), B = P2(t); d += `M${n3(A.x)} ${n3(A.y)}L${n3(B.x)} ${n3(B.y)}`; }
+        g.append(sv('path', { d: d || 'M0 0', class: 'hw-ch-e' }));
+        for (let k = 1; k <= 6; k++) { const A = P2(k); g.append(sv('rect', { x: n3(A.x - bs / 2), y: n3(A.y - bs / 2), width: n3(bs), height: n3(bs), class: car.includes(k) ? 'hw-ch-c' : 'hw-ch-o' })); }
+        const t = sv('text', { x: n3(cw / 2), y: n3(ch - 2), class: 'hw-ch-n' }); t.textContent = String(i + 1);
+        g.append(t);
+        svg.append(g); cells.push(g);
+      }
+      el.append(svg);
+      let on = -1;
+      const upd = () => { const a = Math.max(1, Math.min(32, Math.round(api.get('alg')))) - 1; if (a === on) return; if (cells[on]) cells[on].removeAttribute('data-on'); if (cells[a]) cells[a].setAttribute('data-on', ''); on = a; };
+      upd();
+      post.push(() => api.watch('alg', upd));
+      return el;
+    }
+    return null;
+  }
+  function liveWidget(c, o) {
+    const mc = M.get(c.id);
+    if (!mc) { // a token (TB-303 / DX7 special areas)
+      const w = mk('div', 'hw-c'), el = c.id.startsWith('seq:') && SQ ? seqWidget(c, o) : c.id.startsWith('dx:') && DX ? dxWidget(c, o, w) : null;
+      if (!el) return null;
+      w.setAttribute('data-ctl', c.id); w.setAttribute('data-kind', c.kind);
+      place(w, o.box);
+      if (c.kind === 'slider') { const cap = capOf(c); prop(w, '--cap-w', cap[0] * PX_PER_MM + 'px'); prop(w, '--cap-h', cap[1] * PX_PER_MM + 'px'); } // (DATA ENTRY)
+      hitVars(el, o.hit);
+      w.append(el);
+      return w;
+    }
+    const w = mk('div', 'hw-c'), k = c.kind;
+    w.setAttribute('data-ctl', c.id); w.setAttribute('data-kind', k);
+    place(w, o.box);
+    let el = null;
+    if (k === 'knob') { el = api.knob(Object.assign({}, mc, { sweep: c.sweep || 270 })); skinKnob(el, c); }
+    else if (k === 'slider' && mc.t === 'k' && !Array.isArray(c.map)) {
+      const cap = capOf(c);
+      prop(w, '--cap-w', cap[0] * PX_PER_MM + 'px'); prop(w, '--cap-h', cap[1] * PX_PER_MM + 'px');
+      el = api.slider(Object.assign({}, mc, { orient: c.orient === 'h' ? 'h' : 'v', invert: !!c.invert, hw: true, capColor: named(c.color) }), -1);
+    } else if (k === 'slider') { const cap = capOf(c); prop(w, '--cap-w', cap[0] * PX_PER_MM + 'px'); prop(w, '--cap-h', cap[1] * PX_PER_MM + 'px'); el = hwSlider(c, mc); }
+    else if (k === 'rotary') el = hwRotary(c, mc);
+    else if (k === 'switch') el = hwSwitch(c, mc, o);
+    else if (k === 'button') el = hwButton(c, mc);
+    else if (k === 'buttons' || k === 'jacks') el = hwButtons(c, mc, o);
+    if (!el) return null;
+    if (k !== 'buttons' && k !== 'jacks') hitVars(el, o.hit);
+    w.append(el);
+    return w;
+  }
+  function showWidget(c, o) { // a live display: an LED following a control, the preset number
+    if (c.id === 'seq:runLed' && SQ) {
+      const el = mk('span', 'hw-led hw-show'); place(el, o.own || o.box);
+      prop(el, '--led-c', named(c.color) || c.color);
+      const upd = () => el.setAttribute('data-lit', SQ.running() ? 'on' : 'off');
+      api.watch('@seqrun', upd); upd();
+      return el;
+    }
+    if (typeof c.id === 'string' && c.id.startsWith('dx:') && DX) return dxShow(c, o);
+    if (c.kind === 'led' && c.id == null) {
+      const el = mk('span', 'hw-led hw-show'), r = o.own || o.box;
+      place(el, r);
+      prop(el, '--led-c', named(c.color) || c.color);
+      const upd = () => el.setAttribute('data-lit', ledOn(c.when, api.get(c.of)) ? 'on' : 'off');
+      api.watch(c.of, upd); upd();
+      return el;
+    }
+    if (c.kind === 'display' && c.show === 'preset') {
+      const el = mk('span', 'hw-dsp'), r = o.own || o.box, dg = c.digits > 0 ? c.digits | 0 : 2;
+      place(el, r);
+      el.setAttribute('aria-live', 'off'); el.setAttribute('aria-label', 'Preset number');
+      prop(el, '--dsp-c', named(c.color) || c.color);
+      const upd = () => { const n = typeof api.presetNo === 'function' ? api.presetNo() : null; el.textContent = n ? String(n).padStart(dg, ' ') : '-'.repeat(dg); };
+      api.watch('@preset', upd); upd();
+      return el;
+    }
+    return null;
+  }
+  for (const i of geo.order) {
+    const c = L.controls[i], o = geo.controls[i];
+    const el = o.live ? liveWidget(c, o) : o.show ? showWidget(c, o) : null;
+    if (el) ctls.append(el);
+  }
+  // the extras strip: our controls with no hardware counterpart, as today's widgets (they look like ours, never like the hardware)
+  const X = geo.extras;
+  if (X) {
+    const xs = mk('div', 'hw-extras' + (X.cells.length ? '' : ' hw-xnote'));
+    place(xs, X);
+    const cap = mk('span', 'hw-xcap');
+    cap.textContent = [X.caption, X.note ? 'Dimmed controls are not emulated' : ''].filter(Boolean).join(' · ');
+    xs.append(cap);
+    const SEQX = SQ ? { 'seq:sync': SQ.sync, 'seq:swing': SQ.swing, 'seq:random': SQ.rnd, 'seq:demo': SQ.demo, 'seq:toRoll': SQ.toRoll, 'seq:grid': SQ.steps } : {};
+    for (const cell of X.cells) {
+      const mc = M.get(cell.id);
+      if (!mc && SEQX[cell.id]) { // today's sequencer parts (classes and ids unchanged), the grid included
+        const w = mk('div', 'hw-xcell'); w.setAttribute('data-ctl', cell.id);
+        place(w, cell, X.x, X.y);
+        w.append(SEQX[cell.id]);
+        xs.append(w);
+        continue;
+      }
+      if (!mc) continue;
+      const w = mk('div', 'ctl t-' + mc.t);
+      w.setAttribute('data-ctl', cell.id);
+      place(w, cell, X.x, X.y);
+      const el = mc.t === 'k' ? api.knob(mc) : mc.t === 's' ? api.selector(mc) : api.toggle(mc), lab = mk('label');
+      lab.textContent = mc.label;
+      w.append(el, lab);
+      xs.append(w);
+    }
+    root.append(xs);
+  }
+  // the DX7's buttons follow its state: the id each addresses (data-ctl, rebound on OP / EG / mode), live or dimmed in this
+  // mode, the selected one ringed; every DX7 id refreshes the displays when it is the addressed one (one watcher each)
+  if (DX && dxB.length) {
+    const st = DX.state;
+    dxRefresh = () => {
+      const sel = st.mode === 'edit' ? st.param : st.mode === 'function' ? 17 : 0;
+      for (const B of dxB) {
+        if (B.upd) { B.upd(); continue; }
+        const a = st.mode === 'play' ? null : dxAddr(B.n, st), on = st.mode === 'play' ? B.n <= DX.presets : !!a;
+        B.wrap.setAttribute('data-ctl', a || 'dx:btn');
+        B.el.setAttribute('aria-label', a && M.get(a) ? B.label + ' — ' + M.get(a).label : st.mode === 'play' && on ? 'Preset ' + B.n : B.label);
+        if (on) B.el.removeAttribute('data-off'); else B.el.setAttribute('data-off', '');
+        if (B.n === sel && a) B.el.setAttribute('data-sel', ''); else B.el.removeAttribute('data-sel');
+        B.el.setAttribute('aria-pressed', B.n === sel && a ? 'true' : 'false');
+      }
+    };
+    post.push(() => { for (const id of M.keys()) api.watch(id, () => { const a = st.mode === 'play' ? null : dxAddr(st.mode === 'function' ? 17 : st.param, st); if (id === a || id === 'alg') dxRefresh(); }); });
+    dxRefresh();
+  }
+  for (const f of post) f();
+  // a tap on a dimmed (inert) control says it is not emulated
+  deco.addEventListener('click', e => {
+    for (let n = e.target; n && n !== deco; n = n.parentNode) {
+      const t = typeof n.getAttribute === 'function' ? n.getAttribute('data-tip') : null;
+      if (t) { if (api.tip) api.tip(n, t); if (api.untip) api.untip(1200); return; }
+    }
+  });
+  return { w: geo.W, h: geo.H, destroy() { /* every listener is on the panel's own nodes */ } };
+}

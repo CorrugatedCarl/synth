@@ -1,7 +1,8 @@
 import './v8-guard.mjs';
-// cv-world.js (stage 1b WORLD lane; docs/canvas/IMPL-1b.md §8.2): camera maths, culling / cards / sliced mounting,
-// pinch-defer, native-zoom hand-over, momentum guard, late-finger pinch, wheel + veto, edit state, edge auto-pan, ghost
-// re-projection, localPoint under the world transform. Fake DOM: tests/wk-dom.mjs. Never pass fake-DOM nodes to assert.*
+// cv-world.js (stage 1b WORLD lane; docs/canvas/IMPL-1b.md §8.2; Z1 of docs/canvas/IMPL-panels.md §8.1): camera maths,
+// on-screen tracking (planScreen, onScreen from cached rects, the 'screen' event), zoom consistency (nothing changes look
+// at any zoom), the soft DOM budget, sleeping controls below READ_K, native-zoom hand-over, momentum guard, late-finger
+// pinch, wheel + veto, edit state, edge auto-pan, ghost re-projection, localPoint under the world transform. Fake DOM: tests/wk-dom.mjs. Never pass fake-DOM nodes to assert.*
 // (compare ids / strings / numbers). Run alone: node --max-old-space-size=2048 --test tests/cv-world.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,8 +24,9 @@ function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 10139
 /* ------------------------------------------------------------------ pure maths */
 test('maths: clampK, toWorld ∘ toLocal = identity, panCam is a finger delta, snap', () => {
   eq([W.clampK(0.1), W.clampK(3), W.clampK(1.3), W.clampK(NaN), W.clampK(-1), W.clampK(Infinity)], [0.25, 2, 1.3, 1, 0.25, 2]);
-  eq([W.K_MIN, W.K_MAX, W.CARD_K, W.EDIT_K, W.GRID, W.CULL_MARGIN, W.SLICE_MS, W.MOMENTUM_GUARD_MS, W.WHEEL_VETO_MS, W.BUDGET_EL],
-    [0.25, 2, 0.5, 0.9, 8, 256, 12, 120, 300, 9000], 'the contract constants');
+  eq([W.K_MIN, W.K_MAX, W.READ_K, W.EDIT_K, W.GRID, W.CULL_MARGIN, W.MOMENTUM_GUARD_MS, W.WHEEL_VETO_MS, W.BUDGET_EL],
+    [0.25, 2, 0.5, 0.9, 8, 256, 120, 300, 9000], 'the contract constants');
+  eq(['CARD_K', 'lodOf', 'planMount', 'SLICE_MS'].filter(k => k in W), [], 'no cards, no level of detail (Z1)');
   const R = rng(7);
   for (let i = 0; i < 200; i++) {
     const c = { tx: (R() - 0.5) * 4000, ty: (R() - 0.5) * 4000, k: 0.25 + R() * 1.75 }, x = (R() - 0.5) * 3000, y = (R() - 0.5) * 3000;
@@ -89,29 +91,21 @@ test('maths: gridBg — two layers fixed to the world (dots on multiples of 32 a
   eq([W.intersects({ x: 0, y: 0, w: 10, h: 10 }, { x: 9, y: 9, w: 5, h: 5 }), W.intersects({ x: 0, y: 0, w: 10, h: 10 }, { x: 10, y: 0, w: 5, h: 5 })], [true, false]);
 });
 
-test('lodOf: card below 0.5, body from it; a pinch keeps the previous level across 0.5 (pinch-defer)', () => {
-  eq([W.lodOf(0.49, 'body', false), W.lodOf(0.5, 'card', false), W.lodOf(1.2, 'card', false)], ['card', 'body', 'body']);
-  eq([W.lodOf(0.3, 'body', true), W.lodOf(0.9, 'card', true)], ['body', 'card'], 'pinching: kept');
-  eq(W.lodOf(0.3, undefined, true), 'card', 'nothing before: the level of k');
-});
-
-test('planMount: margin culling (screen px), nearest the centre first, the DOM budget cuts the farthest (the nearest always mounts)', () => {
-  const c = { tx: 0, ty: 0, k: 1 }, vw = 1000, vh = 600;
+test('planScreen: an item is on screen when it meets the viewport grown by the margin (screen px, at every zoom); no rect → on', () => {
+  const vw = 1000, vh = 600;
   const items = [
-    { id: 'far', rect: { x: 1400, y: 0, w: 100, h: 100 }, cost: 10 },     // 400 px right of the view: culled (margin 256)
-    { id: 'edge', rect: { x: 1200, y: 0, w: 100, h: 100 }, cost: 10 },    // 200 px out: inside the margin
-    { id: 'mid', rect: { x: 450, y: 250, w: 100, h: 100 }, cost: 10 },    // on the centre
-    { id: 'left', rect: { x: 0, y: 0, w: 100, h: 100 }, cost: 10 },
+    { id: 'far', rect: { x: 1400, y: 0, w: 100, h: 100 } },   // 400 px right of the view at k 1
+    { id: 'edge', rect: { x: 1200, y: 0, w: 100, h: 100 } },  // 200 px out: inside the 256 px margin
+    { id: 'mid', rect: { x: 450, y: 250, w: 100, h: 100 } },
+    { id: 'none', rect: null },
   ];
-  const p = W.planMount(items, c, vw, vh);
-  eq(p.body, ['mid', 'left', 'edge'], 'nearest the centre first');
-  eq([p.card, p.why], [['far'], { far: 'cull' }]);
-  const b = W.planMount(items, c, vw, vh, { budget: 15 });
-  eq([b.body, b.card.sort(), b.why.left, b.why.edge], [['mid'], ['edge', 'far', 'left'], 'budget', 'budget'], 'past the budget: cards');
-  eq(W.planMount([{ id: 'serum', rect: { x: 0, y: 0, w: 10, h: 10 }, cost: 20000 }], c, vw, vh).body, ['serum'], 'the nearest always mounts');
-  const z = W.planMount(items, { tx: 0, ty: 0, k: 0.4 }, vw, vh);
-  eq([z.body.length, z.why.mid], [0, 'zoom'], 'below CARD_K: every item a card');
-  eq(W.planMount(items, c, vw, vh, { margin: 0 }).card.sort(), ['edge', 'far'], 'no margin');
+  eq(W.planScreen(items, { tx: 0, ty: 0, k: 1 }, vw, vh), { on: ['edge', 'mid', 'none'], off: ['far'] });
+  eq(W.planScreen(items, { tx: 0, ty: 0, k: 1 }, vw, vh, 0), { on: ['mid', 'none'], off: ['far', 'edge'] }, 'no margin');
+  // k 0.25: the view covers 4000 × 2400 world px (+ 1024 for the margin): everything; k 2: 500 × 300 (+ 128)
+  eq(W.planScreen(items, { tx: 0, ty: 0, k: 0.25 }, vw, vh).off, [], 'zoomed out: all on screen');
+  eq(W.planScreen(items, { tx: 0, ty: 0, k: 2 }, vw, vh), { on: ['mid', 'none'], off: ['far', 'edge'] }, 'k 2: the margin is 128 world px');
+  eq(W.planScreen([{ id: 'a', rect: { x: -400, y: 0, w: 100, h: 100 } }], { tx: 0, ty: 0, k: 2 }, vw, vh).off, ['a'], 'left of the view');
+  eq(W.planScreen([{ id: 'a', rect: { x: -170, y: 0, w: 100, h: 100 } }], { tx: 0, ty: 0, k: 2 }, vw, vh).on, ['a'], '−170…−70 meets −128');
 });
 
 /* ------------------------------------------------------------------ the world on the fake DOM */
@@ -146,14 +140,14 @@ function setup(o = {}) {
     isBackground: el => !!el && el.classList.contains('bg') }, o.opts || {}));
   const frame = (n = 1) => { for (let i = 0; i < n; i++) { const q = rq.splice(0); for (const f of q) f(T); T += 16; } };
   const events = [];
-  for (const t of ['camera', 'movestart', 'cameraend', 'lod', 'native', 'select', 'edit']) world.on(t, x => events.push([t, x]));
-  // a world item: a positioned element (its body the owner's) logging its view() calls; viewMs: the clock a call takes
-  function item(id, x, y, iw, ih, cost, viewMs = 0) {
+  for (const t of ['camera', 'movestart', 'cameraend', 'screen', 'budget', 'native', 'select', 'edit']) world.on(t, x => events.push([t, x]));
+  // a world item: a positioned element (its body the owner's) logging its onScreen calls and counting its rect() reads
+  function item(id, x, y, iw, ih, cost) {
     const el = d.createElement('div'), body = d.createElement('div');
     el.setAttribute('data-cv-mod', id); body.className = 'bg';
     el.append(body); w.append(el);
-    const it = { id, el, body, cull: 'hide', cost, log: [], x, y, rect: () => ({ x: it.x, y: it.y, w: iw, h: ih }),
-      view(v, why) { it.log.push(v + (why ? ':' + why : '')); T += viewMs; } };
+    const it = { id, el, body, cost, log: [], reads: 0, x, y, rect: () => { it.reads++; return { x: it.x, y: it.y, w: iw, h: ih }; },
+      onScreen(on) { it.log.push(on ? 'on' : 'off'); if (on) el.removeAttribute('data-cv-off'); else el.setAttribute('data-cv-off', ''); } };
     return it;
   }
   return { d, win, vp, w, ov, tb, world, frame, events, item, prefs, tidy, rq };
@@ -188,55 +182,89 @@ test('createWorld: the transform string, the dot grid, --ik written only at a zo
   eq([events.filter(e => e[0] === 'cameraend').pop()[1].zoomed, w.style['--ik']], [false, ik]);
 });
 
-test('items: cards first at add (switch), bodies in ≤ 12 ms slices nearest the centre first; culling, cards below 0.5, budget cards; clear() + re-add shows cards first', () => {
-  const { world, frame, item } = setup();
-  const a = item('a', 400, 200, 200, 200, 100, 5), b = item('b', 100, 100, 100, 100, 100, 5), c = item('c', 700, 400, 100, 100, 100, 5), far = item('far', 5000, 0, 100, 100, 100, 5);
-  for (const it of [b, far, c, a]) world.add(it);
-  eq([a.log, b.log, far.log], [['card:switch'], ['card:switch'], ['card:switch']], 'cards first, at once');
+test('items: never a view(); onScreen from cached rects — once per crossing of the margin during a pan (no rect() read in the burst), re-read at cameraend / update; the screen event carries the changes', () => {
+  const { world, frame, item, events } = setup();
+  const a = item('a', 400, 200, 200, 200, 100), far = item('far', 1400, 0, 100, 100, 100);
+  world.add(a); world.add(far);
   frame();
-  // 5 ms per view(): two per frame (a third would pass 12 ms), cards first, then bodies nearest the centre (500, 300)
-  const order = () => [a, b, c, far].map(x => x.log.slice(1).join(',')).join(' | ');
-  eq(order(), 'body |  |  | card:cull', 'first frame: the culled card, then the nearest body');
-  frame();
-  eq(order(), 'body | body | body | card:cull', 'second frame: the next two');
-  eq(world.viewOf('far'), 'card');
-  // zoom out below CARD_K: every item a card (why 'zoom'), at the zoom end only
-  world.setCamera({ tx: 0, ty: 0, k: 0.4 });
-  frame(3);
-  eq([a.log.at(-1), b.log.at(-1), c.log.at(-1), far.log.at(-1)], ['card:zoom', 'card:zoom', 'card:zoom', 'card:zoom']);
-  // a track switch: clear and add again → cards first, then bodies
-  world.setCamera({ tx: 0, ty: 0, k: 1 });
-  frame(3);
-  world.clear();
-  eq(world.ids(), []);
-  const a2 = item('a', 400, 200, 200, 200, 100), b2 = item('b', 100, 100, 100, 100, 100);
-  world.add(a2); world.add(b2);
-  eq([a2.log, b2.log], [['card:switch'], ['card:switch']]);
-  frame(2);
-  eq([a2.log, b2.log], [['card:switch', 'body'], ['card:switch', 'body']]);
+  eq([a.log, far.log], [[], ['off']], 'on screen from the start (nothing changes at add); the far one off');
+  eq(events.filter(e => e[0] === 'screen').map(e => e[1]), [{ on: [], off: ['far'] }]);
+  ok(!('view' in a) && a.el.childNodes.length === 1, 'the body is the owner\'s: never swapped');
+  // a pan towards `far`: it comes on 256 px before it shows; rect() is not read during the burst
+  const r0 = far.reads;
+  events.length = 0;
+  for (let i = 0; i < 10; i++) { world.panBy(-20, 0); frame(); }
+  eq([far.log, far.reads], [['off', 'on'], r0], 'on once it is within the margin (cached rects only)');
+  eq(events.filter(e => e[0] === 'screen').map(e => e[1]), [{ on: ['far'], off: [] }]);
+  adv(200); frame();
+  ok(far.reads > r0, 'cameraend: the rects are read again');
+  // update(): a moved item is re-read and re-planned
+  far.x = 9000; world.update('far'); frame();
+  eq(far.log.at(-1), 'off');
+  eq([world.onScreen('a'), world.onScreen('far')], [true, false]);
 });
 
-test('items: the DOM budget leaves the farthest as "budget" cards; update() re-plans after a size change; a pinch across 0.5 defers the level to its end', () => {
-  const { world, frame, item, events, vp } = setup();
-  const near1 = item('n', 450, 250, 100, 100, 6000), far1 = item('f', 900, 500, 100, 100, 6000);
-  world.add(near1); world.add(far1);
-  frame(3);
-  eq([near1.log.at(-1), far1.log.at(-1)], ['body', 'card:budget'], '9000 elements: the nearer Serum mounts, the other stays a card');
-  // the hooks' pinch from k 1 down to 0.4: nothing changes until the fingers lift
+test('Z1: a zoom sweep 2 → 0.25 → 1 leaves every item\'s attributes and children as they were (but data-cv-off / -sel / -edit); the DOM budget is a warning (budget event), nothing hidden', () => {
+  const { vp, world, frame, item, events, d } = setup();
+  const a = item('a', 0, 0, 900, 500, 6000), b = item('b', 1100, 0, 700, 400, 6000);
+  const knob = d.createElement('div'); knob.className = 'knob'; a.body.append(knob);
+  const warn = console.warn; let warned = 0;
+  console.warn = () => { warned++; };
+  try {
+    world.add(a); world.add(b);
+  } finally { console.warn = warn; }
+  eq([events.filter(e => e[0] === 'budget').map(e => e[1]), warned], [[{ over: true, cost: 12000 }], 1], 'past BUDGET_EL: one event and one warning');
+  const snap = it => {
+    const out = [];
+    const walk = n => { out.push(n.localName + '|' + [...n._a].filter(([k]) => !/^data-cv-(off|sel|edit)$/.test(k)).map(x => x.join('=')).join(',') + '|' + JSON.stringify(n.style)); for (const c of n.childNodes) if (c.nodeType === 1) walk(c); };
+    walk(it.el);
+    return out.join('\n');
+  };
+  world.setCamera({ tx: 0, ty: 0, k: 2 }); frame(2);
+  const s0 = [snap(a), snap(b)];
   const at = { cx: 500, cy: 400 };
   win2touches(vp, 2);
-  ok(world.hooks.zoom(0.7, 500, 400, at) && world.hooks.zoom(0.6, 500, 400, at), 'claimed');
-  frame(2);
-  ok(world.k < 0.5, 'k ' + world.k);
-  eq([near1.log.at(-1), vp.getAttribute('data-cv-lod')], ['body', 'body'], 'mid-pinch: no view change (pinch-defer)');
-  win2touches(vp, 0); // the last finger lifts: the burst ends (150 ms after the last move), the plan runs
-  adv(200); frame(3);
-  eq([near1.log.at(-1), far1.log.at(-1), vp.getAttribute('data-cv-lod')], ['card:zoom', 'card:zoom', 'card'], 'at the end: cards');
-  ok(events.some(e => e[0] === 'lod' && e[1].lod === 'card'), 'lod event');
-  // update(): a module that grew is re-planned
-  world.setCamera({ tx: 0, ty: 0, k: 1 }); frame(3);
-  near1.x = 5000; world.update('n'); frame(2);
-  eq(near1.log.at(-1), 'card:cull', 'moved out of view (update)');
+  for (let i = 0; i < 12; i++) { world.hooks.zoom(0.84, 500, 400, at); frame(); eq([snap(a), snap(b)], s0, 'mid-pinch (k ' + world.k.toFixed(2) + ')'); }
+  win2touches(vp, 0); adv(200); frame(2);
+  ok(world.k < 0.3, 'k ' + world.k);
+  eq([snap(a), snap(b)], s0, 'zoomed out: the same modules');
+  world.setCamera({ tx: 0, ty: 0, k: 1 }); frame(2);
+  eq([snap(a), snap(b)], s0, 'back at 1');
+  world.remove('b');
+  eq(events.filter(e => e[0] === 'budget').at(-1)[1], { over: false, cost: 6000 }, 'back under: another event');
+});
+
+test('controls sleep below READ_K: a press in a module body pans (the control never sees it, nor its click); a tap selects, a double-tap focuses (edit state wakes them); the wheel is vetoed; the bar always works', () => {
+  const { vp, world, frame, item, d } = setup();
+  const m = item('m', 0, 0, 900, 500);
+  world.add(m);
+  const ctl = d.createElement('button'), bar = d.createElement('div');
+  bar.setAttribute('data-cv-bar', '');
+  m.body.append(ctl); m.el.append(bar);
+  let downs = 0, clicks = 0, barDowns = 0;
+  ctl.addEventListener('pointerdown', () => downs++); ctl.addEventListener('click', () => clicks++); bar.addEventListener('pointerdown', () => barDowns++);
+  world.setCamera({ tx: 0, ty: 0, k: 0.4 }); frame();
+  touch(ctl, 'pointerdown', 200, 300, 1); touch(vp, 'pointermove', 240, 300, 1); touch(vp, 'pointerup', 240, 300, 1);
+  fire(ctl, 'click');
+  eq([downs, clicks, world.cam.tx], [0, 0, 40], 'k 0.4: the press panned the camera');
+  adv(500);
+  touch(ctl, 'pointerdown', 200, 300, 1); touch(vp, 'pointerup', 200, 300, 1); fire(ctl, 'click');
+  eq([world.selected, world.edit, downs, clicks], ['m', null, 0, 0], 'a tap selects the module; its click is the world\'s');
+  adv(100);
+  touch(ctl, 'pointerdown', 202, 300, 1); touch(vp, 'pointerup', 202, 300, 1);
+  frame(30); adv(300); frame();
+  eq([world.edit, world.k], ['m', 1], 'a double-tap focuses it: 100 %, edit state');
+  touch(ctl, 'pointerdown', 200, 300, 1); touch(ctl, 'pointerup', 200, 300, 1);
+  eq(downs, 1, 'awake: the control takes its press');
+  // in edit state its controls stay awake even below READ_K (a pinned focus)
+  world.setCamera({ tx: 0, ty: 0, k: 0.4 }); world.select('m'); frame();
+  adv(400);
+  eq(world.wheelVeto(), true, 'below READ_K no knob takes the wheel');
+  touch(bar, 'pointerdown', 50, 110, 1); touch(bar, 'pointerup', 50, 110, 1);
+  eq(barDowns, 1, 'the bar always gets its press (it moves the module)');
+  world.setCamera({ tx: 0, ty: 0, k: 0.6 }); frame(); adv(400);
+  touch(ctl, 'pointerdown', 200, 300, 1); touch(ctl, 'pointerup', 200, 300, 1);
+  eq([downs, world.wheelVeto()], [2, false], 'k 0.6: as today');
 });
 function win2touches(vp, n) { // the window's touch count (touchstart / touchend carry e.touches)
   const win = vp.ownerDocument.defaultView;
@@ -599,7 +627,7 @@ test('focusItem: the item centred at k (fit when larger than the band), selected
   world.focusItem('tall', { animate: false });
   eq(cam(world.cam), { tx: 500 - 2400, ty: 48, k: 1 }, 'k 1, centred across, its top 48 px inside the band');
   eq([world.selected, world.edit], ['tall', 'tall']);
-  const wide = item('wide', 0, 3000, 2600, 2400); // wider than the band even at CARD_K: left aligned at CARD_K
+  const wide = item('wide', 0, 3000, 2600, 2400); // wider than the band even at READ_K: left aligned at READ_K
   world.add(wide);
   world.focusItem('wide', { animate: false, edit: false });
   eq(cam(world.cam), { tx: 48, ty: 48 - 1500, k: 0.5 });
@@ -610,15 +638,15 @@ test('focusItem: the item centred at k (fit when larger than the band), selected
   eq(cam(world.cam), { tx: -56, ty: 0, k: 1 }, '16 px inside the band');
 });
 
-test('fit: a layout that fits just under CARD_K with the 48 px margin is shown at CARD_K (bodies) when it fits there with 12 px; never below the band', () => {
+test('fit: the true fit with the 48 px margin — below 0.5 too (no card level any more), down to K_MIN', () => {
   const { world, frame, item } = setup();
   const a = item('a', 0, 0, 1900, 1100); // band 1000 × 600: 48 px pads → k = min(904/1900, 504/1100) ≈ 0.458
   world.add(a); frame();
   world.fit({ animate: false });
-  eq(world.k, 0.5, 'bodies (1900 × 0.5 = 950 ≤ 976, 550 ≤ 576)');
-  a.x = 0; const b = item('b', 0, 0, 2400, 1100); world.remove('a'); world.add(b);
+  near(world.k, Math.min(904 / 1900, 504 / 1100), 1e-9, 'the true fit');
+  const b = item('b', 0, 0, 9000, 5000); world.remove('a'); world.add(b);
   world.fit({ animate: false });
-  ok(world.k < 0.5, 'too wide even at a thin margin: the true fit (' + world.k + ')');
+  eq(world.k, W.K_MIN, 'clamped at K_MIN');
 });
 
 test('keys (focus in the viewport or on a module root / bar): 0 fits, 1 = 100 %, arrows nudge the selection one GRID (Shift ×4) through onMove start / end; form controls and play keys are not the canvas\'s', () => {

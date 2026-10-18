@@ -1,9 +1,10 @@
 import './v8-guard.mjs';
 // cv-module.js (stage 1b MODULES lane; docs/canvas/IMPL-1b.md §8.3): isBackground / BG_SEL, fxKey + layOf fallback,
 // tidy columns, camGet / camPut LRU (keys: cv-migrate camKey), createModule chrome on tests/wk-dom.mjs (bar 40 px, jacks, fold, setPos,
-// view hide vs unmount), top-bar move (world delta = screen / k, snap to the 32 px dots, Shift = no snap, two-finger cancel restores),
-// createTrackView with a scripted world (bodies, ports, cables, lay callbacks, FX key swap), song.js lay validation (normLay)
-// and round-trip. Never pass fake-DOM nodes to assert.*.
+// the body mounted for the module's life, onScreen → [data-cv-off]), the fixed size of a Hardware layout (no grip, no
+// measuring, setFixed), makeRoom, top-bar move (world delta = screen / k, snap to the 32 px dots, Shift = no snap, two-finger
+// cancel restores), createTrackView with a scripted world (bodies, ports, cables, lay callbacks, FX key swap, host.size),
+// song.js lay validation (normLay, ui: 'flow') and round-trip. Never pass fake-DOM nodes to assert.*.
 // Run alone: node --max-old-space-size=2048 --test tests/cv-module.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -36,7 +37,7 @@ const body = log => ({ mount: b => log.push('mount ' + b.getAttribute('class')),
 function mod(o, env) {
   const log = [], moves = [];
   const m = M.createModule(Object.assign({
-    id: 'i1', kind: 'inst', title: 'Minimoog', sub: 'Bass 1', x: 16, y: 24, w: 1080, cull: 'hide',
+    id: 'i1', kind: 'inst', title: 'Minimoog', sub: 'Bass 1', x: 16, y: 24, w: 1080,
     jacks: [{ id: 'out', side: 'right', kind: 'audio', label: 'Minimoog out' }], body: body(log),
     onMove: (x, y, ph) => moves.push([ph, x, y]),
   }, o), env);
@@ -45,10 +46,12 @@ function mod(o, env) {
 
 /* ---------------------------------------------------------------- pure helpers */
 test('BG_SEL / isBackground: module chrome and panel backgrounds pan; controls never; outside a module nothing', () => {
-  for (const c of ['.cv-body', '.inst', '.plate', '.nameplate', '.secs', '.sec', '.ctls', '.sx-root', '.fxr-root', '.cv-out']) {
+  for (const c of ['.cv-body', '.inst', '.plate', '.nameplate', '.secs', '.sec', '.ctls', '.sx-root', '.fxr-root', '.cv-out',
+    '.inst.hw', '.hw-decor', '.hw-decor *', '.hw-ctls', '.hw-extras', '.hw-xcap']) { // (a hardware panel's art pans; never a .hw-c widget)
     assert.ok(M.BG_SEL.split(',').map(s => s.trim()).includes(c), 'BG_SEL has ' + c);
   }
-  for (const bad of ['button', 'input', 'select', '.knob', '.wk-knob', '[data-dest]', '.cv-jack', '.cv-bar', '.cv-ttl', '.cv-title', '.cv-sub', 'canvas,', '.cv-grip']) {
+  for (const bad of ['button', 'input', 'select', '.knob', '.wk-knob', '[data-dest]', '.cv-jack', '.cv-bar', '.cv-ttl', '.cv-title', '.cv-sub', 'canvas,', '.cv-grip',
+    '.hw-c', '.hw-sw', '.hw-btn', '.hw-jk', '.cv-card', '.cv-art']) {
     assert.ok(!M.BG_SEL.split(',').map(s => s.trim()).includes(bad.replace(/,$/, '')), 'BG_SEL leaves out ' + bad);
   }
   // a minimal element: matches() by class against the list, closest('[data-cv-mod]') by a flag
@@ -133,20 +136,21 @@ test('sizeFor: the drop outline of a model (Serum wider)', () => {
 });
 
 /* ---------------------------------------------------------------- one module on wk-dom */
-test('createModule: chrome, a 40 px bar, jacks on the edges, fold → BAR_H tall, card keeps the body (hide), unmount calls unmount', () => {
+test('createModule: chrome, a 40 px bar, jacks on the edges, fold → BAR_H tall, the body mounted for the module\'s life (Z1: no card), onScreen marks [data-cv-off] only', () => {
   const doc = fresh();
-  const { m, log } = mod({}, { doc });
+  const scr = [];
+  const { m, log } = mod({ onScreen: on => scr.push(on) }, { doc });
   doc.body.append(m.el);
   assert.equal(m.el.getAttribute('data-cv-mod'), 'i1');
   assert.equal(m.el.getAttribute('data-cv-kind'), 'inst');
-  assert.equal(m.el.getAttribute('data-cv-view'), 'body');
+  assert.equal(m.el.hasAttribute('data-cv-view'), false, 'no views');
   assert.equal(m.bar.hasAttribute('data-cv-bar'), true);
-  assert.deepEqual(m.el.childNodes.map(n => n.getAttribute('class')), ['cv-bar', 'cv-body', 'cv-card', 'cv-jack']);
+  assert.deepEqual(m.el.childNodes.map(n => n.getAttribute('class')), ['cv-bar', 'cv-body', 'cv-jack'], 'no card');
   assert.deepEqual(m.bar.childNodes.map(n => n.getAttribute('class')), ['cv-pow', 'cv-stripe', 'cv-ttl', 'cv-chip', 'cv-cpu', 'cv-btn cv-more', 'cv-btn cv-fold']);
   assert.equal(one(m.bar, 'cv-title').textContent, 'Minimoog');
   assert.equal(one(m.bar, 'cv-sub').textContent, 'Bass 1');
   assert.deepEqual([m.el.style.left, m.el.style.top, m.el.style.width, m.el.style.zIndex], ['16px', '24px', '1080px', '1']);
-  assert.deepEqual(log, ['mount cv-body'], 'the body is mounted at once (default view: body)');
+  assert.deepEqual(log, ['mount cv-body'], 'the body is mounted at once');
   const jack = one(m.el, 'cv-jack');
   assert.deepEqual([jack.getAttribute('data-cv-jack'), jack.getAttribute('data-side'), jack.getAttribute('aria-label')], ['i1.out', 'right', 'Minimoog out']);
   assert.deepEqual(m.port('out'), { x: 1080, y: M.BAR_H + M.JACK_Y });
@@ -159,24 +163,62 @@ test('createModule: chrome, a 40 px bar, jacks on the edges, fold → BAR_H tall
   m.setFold(false);
   assert.equal(m.el.hasAttribute('data-cv-fold'), false);
   m.setW(5000); assert.equal(m.w, 5000, 'not resizable: any width');
-  // card with cull 'hide': the body node and what it holds stay
+  // off screen: [data-cv-off] and the owner's hook — the body and what it holds stay, nothing is hidden or unmounted
   const inner = doc.createElement('div'); m.body.append(inner);
-  m.view('card', 'zoom');
-  assert.equal(m.el.getAttribute('data-cv-view'), 'card');
-  assert.equal(m.el.getAttribute('data-cv-why'), 'zoom');
-  assert.equal(inner.parentNode === m.body && m.body.parentNode === m.el, true, 'hide: the body and its content stay');
-  assert.deepEqual(log, ['mount cv-body'], 'hide: no unmount');
-  m.view('body');
-  assert.equal(m.el.getAttribute('data-cv-view'), 'body');
+  assert.equal(m.screen, true);
+  m.onScreen(false); m.onScreen(false);
+  assert.deepEqual([m.screen, m.el.hasAttribute('data-cv-off'), scr], [false, true, [false]], 'once per change');
+  assert.equal(inner.parentNode === m.body && m.body.parentNode === m.el, true, 'the body and its content stay');
+  assert.equal(m.body.hidden, false);
+  m.onScreen(true);
+  assert.deepEqual([m.screen, m.el.hasAttribute('data-cv-off'), scr], [true, false, [false, true]]);
+  assert.deepEqual(log, ['mount cv-body'], 'never unmounted by the camera');
   m.destroy();
   assert.deepEqual(log, ['mount cv-body', 'unmount cv-body']);
   assert.equal(m.el.parentNode === null, true);
-  // cull 'unmount': card unmounts, body mounts again
-  const u = mod({ id: 'out', kind: 'out', cull: 'unmount', jacks: [{ id: 'in', side: 'left' }], art: () => '<svg/>' }, { doc });
-  u.m.view('card');
-  u.m.view('body');
-  assert.deepEqual(u.log, ['mount cv-body', 'unmount cv-body', 'mount cv-body']);
+  const u = mod({ id: 'out', kind: 'out', jacks: [{ id: 'in', side: 'left' }] }, { doc });
   assert.deepEqual(u.m.port('in'), { x: 0, y: M.BAR_H + M.JACK_Y });
+});
+
+test('createModule: a fixed size (the Hardware layout) — width and height set once, rect() without measuring, the grip hidden ([data-cv-fixed]) and inert; setFixed(null) brings the grip back', () => {
+  const doc = fresh();
+  const { m } = mod({ resizable: { min: 480, max: 1600 }, fixed: { w: 1408, h: 512 }, w: 1200 }, { doc });
+  doc.body.append(m.el);
+  let reads = 0;
+  Object.defineProperty(m.el, 'offsetHeight', { get() { reads++; return 999; } });
+  assert.deepEqual([m.w, m.rect().w, m.rect().h, reads], [1408, 1408, 512, 0], 'the fixed size, no layout read');
+  assert.equal(m.el.hasAttribute('data-cv-fixed'), true);
+  assert.equal(m.body.style.height, (512 - M.BAR_H) + 'px', 'the body height is set once');
+  assert.deepEqual(m.fixed, { w: 1408, h: 512 });
+  m.setW(900);
+  assert.equal(m.w, 1408, 'setW cannot change a fixed module');
+  const grip = one(m.el, 'cv-grip');
+  assert.ok(grip, 'the grip exists (hidden by CSS)');
+  ptr(grip, 'pointerdown', 100, 100); ptr(grip, 'pointermove', 300, 100); ptr(grip, 'pointerup', 300, 100);
+  assert.equal(m.w, 1408, 'a grip drag does nothing while fixed');
+  m.setFold(true);
+  assert.equal(m.rect().h, M.BAR_H, 'folded: the bar');
+  m.setFold(false);
+  m.setFixed(null);
+  assert.deepEqual([m.el.hasAttribute('data-cv-fixed'), m.body.style.height, m.fixed], [false, '', null], 'resizable again');
+  m.setW(1200);
+  assert.equal(m.w, 1200);
+  assert.equal(m.rect().h, 999, 'measured again');
+  m.setFixed({ w: 1088 }); // a model without a hardware panel yet: a fixed width, the height measured
+  assert.deepEqual([m.w, m.rect().h, m.el.hasAttribute('data-cv-fixed')], [1088, 999, true]);
+});
+
+test('makeRoom: the modules right of the instrument that overlap it vertically move right together to GAP past it (on the dots); never left; null when clear', () => {
+  const R = (x, y, w, h) => ({ x, y, w, h });
+  const base = { i1: R(0, 0, 1408, 512), fx1: R(1248, 0, 760, 400), out: R(2176, 0, 280, 260) };
+  assert.deepEqual(M.makeRoom(base, 'i1'), { fx1: { x: 1568, y: 0 }, out: { x: 2496, y: 0 } }, 'the relative layout kept');
+  assert.equal(M.makeRoom({ i1: R(0, 0, 1408, 512), fx1: R(1568, 0, 760, 400), out: R(2496, 0, 280, 260) }, 'i1'), null, 'already clear');
+  assert.equal(M.makeRoom({ i1: R(0, 0, 1408, 512), fx1: R(1440, 0, 760, 400) }, 'i1'), null, 'a dot or more past it: clear');
+  assert.deepEqual(M.makeRoom({ i1: R(0, 0, 1408, 512), fx1: R(1420, 0, 760, 400) }, 'i1'), { fx1: { x: 1568, y: 0 } }, 'less than a dot past it: moved');
+  assert.deepEqual(M.makeRoom({ i1: R(64, 96, 1408, 512), fx1: R(1248, 520, 760, 400), out: R(1300, 700, 280, 260) }, 'i1'), { fx1: { x: 1632, y: 520 } }, 'out lies below the instrument: ignored; gup(64 + 1408 + 160) = 1632');
+  assert.equal(M.makeRoom({ i1: R(0, 0, 1408, 512), fx1: R(-900, 0, 760, 400), out: R(200, 600, 280, 260) }, 'i1'), null, 'left of it / below it: ignored');
+  assert.equal(M.makeRoom({ i1: R(0, 0, 1408, 512) }, 'i1'), null);
+  assert.deepEqual(M.makeRoom({ i1: R(0, 0, 1408, 512), fx1: R(1248, 0, 760, 400) }, 'i1', 320), { fx1: { x: 1728, y: 0 } }, 'a gap of 320');
 });
 
 test('createModule: setPos live is a transform (no layout), commit moves left / top; setZ, setTitle, setChip', () => {
@@ -526,6 +568,46 @@ test('createTrackView.sync: the grip\'s width range follows a classic ↔ Serum 
   R.V.destroy();
 });
 
+test('createTrackView: host.size drives the instrument — fixed in a Hardware layout (Tidy from its width), resizable after a toggle (sync); the stored Resizable width and lay.i1.ui survive a move; live() = on screen and not folded', () => {
+  const doc = fresh(), tr = { id: 'trk_1', model: 'minimoog', name: 'Bass 1', color: '#3b82c4' };
+  let size = { fixed: { w: 1408, h: 512 } };
+  const root = doc.createElement('div'), ref = { t: tr }, shown = [];
+  doc.body.append(root);
+  const host = {
+    root, doc, title: kind => ({ title: kind }), size: kind => (kind === 'inst' ? size : null),
+    lay: (k, e, ph) => { if (ph === 'end' && e) { ref.t.lay = ref.t.lay || {}; ref.t.lay[k] = e; } },
+    shown: k => shown.push(k),
+  };
+  const V = M.createTrackView(fakeWorld(1), tr, host), I = () => V.modules.get('i1');
+  assert.deepEqual([I().fixed, I().el.hasAttribute('data-cv-fixed')], [{ w: 1408, h: 512 }, true]);
+  assert.equal(xs(V), 'i1:0,0+1408 fx1:1568,0+760 out:2496,0+280', 'Tidy places the others after the fixed width');
+  // the toggle: Resizable (the host answers a range now; lay.i1 carries ui 'flow' and the stored width)
+  size = { range: M.widthRange('minimoog') };
+  V.sync(Object.assign(clone(ref.t), { lay: { i1: { x: 0, y: 0, w: 1280, ui: 'flow' }, fx1: { x: 1568, y: 0 }, out: { x: 2496, y: 0 } } }));
+  ref.t = { id: 'trk_1', model: 'minimoog', lay: { i1: { x: 0, y: 0, w: 1280, ui: 'flow' }, fx1: { x: 1568, y: 0 }, out: { x: 2496, y: 0 } } };
+  assert.deepEqual([I().fixed, I().w, I().el.hasAttribute('data-cv-fixed')], [null, 1280, false], 'resizable at its stored width');
+  // back to Hardware: the fixed width, the stored width kept in lay (a move writes it back untouched)
+  size = { fixed: { w: 1408, h: 512 } };
+  const hwLay = { i1: { x: 0, y: 0, w: 1280 }, fx1: { x: 1568, y: 0 }, out: { x: 2496, y: 0 } };
+  ref.t = Object.assign(clone(ref.t), { lay: clone(hwLay) });
+  V.sync(ref.t);
+  assert.deepEqual([I().w, I().fixed && I().fixed.w], [1408, 1408]);
+  const b = I().bar;
+  ptr(b, 'pointerdown', 100, 20); ptr(b, 'pointermove', 140, 20); ptr(b, 'pointermove', 196, 20); ptr(b, 'pointerup', 196, 20);
+  assert.deepEqual([ref.t.lay.i1.x, ref.t.lay.i1.w, 'ui' in ref.t.lay.i1], [96, 1280, false], 'a move in Hardware keeps the Resizable width');
+  ref.t.lay.i1.ui = 'flow'; size = { range: M.widthRange('minimoog') }; V.sync(ref.t);
+  ptr(b, 'pointerdown', 100, 20); ptr(b, 'pointermove', 140, 20); ptr(b, 'pointermove', 132, 20); ptr(b, 'pointerup', 132, 20);
+  assert.equal(ref.t.lay.i1.ui, 'flow', 'a move keeps the layout choice');
+  // live(): on screen and not folded
+  assert.equal(V.live('fx1'), true);
+  V.modules.get('fx1').onScreen(false);
+  assert.deepEqual([V.live('fx1'), shown.at(-1)], [false, 'fx1'], 'off screen: host.shown');
+  V.modules.get('fx1').onScreen(true);
+  V.toggleFold('fx1');
+  assert.equal(V.live('fx1'), false, 'folded');
+  V.destroy();
+});
+
 test('createTrackView.sync: the FX module keeps its place across classic → Serum → classic (the host keeps one FX entry; layOf\'s fallback carries it)', () => {
   const doc = fresh(), tr = { id: 'trk_1', model: 'minimoog', name: 'Bass 1', color: '#3b82c4', lay: { fx1: { x: 1560, y: 0 } } };
   const R = view2(tr, doc);
@@ -556,6 +638,13 @@ test('song.normLay: valid entries kept (rounded, clamped), invalid ones dropped,
   const many = {};
   for (let i = 0; i < 80; i++) many['m' + i] = { x: i, y: 0 };
   assert.equal(Object.keys(S.normLay(many)).length, 64);
+});
+
+test('song.normLay: an instrument\'s layout choice — ui: \'flow\' (Resizable) kept, anything else dropped (absent = Hardware); no schema bump', () => {
+  assert.deepEqual(S.normLay({ i1: { x: 0, y: 0, w: 1280, ui: 'flow' } }), { i1: { x: 0, y: 0, w: 1280, ui: 'flow' } });
+  assert.deepEqual(S.normLay({ i1: { x: 0, y: 0, ui: 'hw' }, out: { x: 1, y: 1, ui: 1 } }), { i1: { x: 0, y: 0 }, out: { x: 1, y: 1 } });
+  const t = S.deserialize(S.serialize({ bpm: 120, tracks: [{ id: 't1', name: 'A', model: 'minimoog', notes: [], lay: { i1: { x: 0, y: 0, ui: 'flow' } } }] }));
+  assert.equal(t.tracks[0].lay.i1.ui, 'flow');
 });
 
 test('song.deserialize: lay round-trips; no lay on an old track (no new key); serialize carries it', () => {

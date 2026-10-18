@@ -12,29 +12,35 @@
 // Frames: the camera is written once per animation frame (the gesture.js hooks write at once: they already run in its
 // frame); a burst of moves — a gesture, a glide, an animation, wheel events up to 150 ms apart, a drag's edge pan — emits
 // movestart once (kit popups close: wk.closeTransient), camera per written frame and cameraend at its end. During a
-// burst there are no layout reads and no mounting: #world gets will-change only then ([data-cv-busy]); at its end the
-// translation rounds to device px, a zoom re-rasters (--ik, wk.setCanvasScale + rescaleCanvases) and planMount runs —
-// item views change in ≤ SLICE_MS slices, nearest the centre first, cards before bodies (so a pinch across CARD_K
-// never thrashes: the level of detail follows only at its end).
+// burst there are no layout reads: #world gets will-change only then ([data-cv-busy]); at its end the translation rounds
+// to device px and a zoom re-rasters (--ik, wk.setCanvasScale + rescaleCanvases).
+// Zoom consistency (IMPL-panels §8, the user's Z1): zooming never changes how a module looks — no cards, no level of
+// detail, nothing hidden, unmounted or resized; modules simply scale with the camera. The world only tells each item
+// whether it is on screen (planScreen over cached rects, after every written frame: onScreen(on) + a 'screen' event), so
+// off-screen live displays can pause invisibly; below READ_K a press inside a module body pans (its controls sleep).
 import * as wk from './wk.js?v=9';
 
 /** Smallest / largest camera zoom. */
 export const K_MIN = 0.25, K_MAX = 2;
-/** Below CARD_K modules render as cards; at or above EDIT_K a selected module is in edit state. */
-export const CARD_K = 0.5, EDIT_K = 0.9;
+/** READ_K: the smallest zoom a focus or a default camera lands on (a readability floor: nothing changes look there); below
+ * it a press in a module body pans the camera unless the module is in edit state. At or above EDIT_K a selected module
+ * is in edit state. */
+export const READ_K = 0.5, EDIT_K = 0.9;
 /** Fine step (world px): keyboard nudges. */
 export const GRID = 8;
 /** The visible grid (world px): its dots are every DOT, brighter ones every MAJOR; modules snap to DOT. */
 export const DOT = 32, MAJOR = 128;
 /** The snap-to-grid pref (appstore; stored as synthc.cv.snap): on unless switched off in the toolbar. */
 export const SNAP_PREF = 'synth.cv.snap';
-/** Culling margin around the viewport (screen px, converted with k), mount slice budget (ms per frame). */
-export const CULL_MARGIN = 256, SLICE_MS = 12;
+/** The on-screen margin around the viewport (screen px, converted with k): an item this close counts as on screen (its
+ * live displays resume before they show). */
+export const CULL_MARGIN = 256;
 /** A touch landing while the camera glides, or within MOMENTUM_GUARD_MS after it stops, only stops the glide. */
 export const MOMENTUM_GUARD_MS = 120;
 /** The knob wheel veto window after a camera move (ms). */
 export const WHEEL_VETO_MS = 300;
-/** Mounted-body DOM budget of the selected track (elements; SPEC §9.3). */
+/** The DOM budget of the selected track (elements; SPEC §9.3): a soft one — past it the world emits 'budget' and warns
+ * once per crossing; nothing visible changes (IMPL-panels §8.1). */
 export const BUDGET_EL = 9000;
 /** The pinch engages once the finger spread changed this much (physical px; as gesture.js PINCH_PX). */
 export const PINCH_PX = 6;
@@ -52,29 +58,26 @@ const TAP_PX = { touch: 8, pen: 4, mouse: 4 }, DTAP_MS = 320, DTAP_PX = 24, REVE
  * @typedef {{tx: number, ty: number, k: number}} Camera  local = world·k + t
  * @typedef {{x: number, y: number, w: number, h: number}} Rect  world px unless stated
  * @typedef {{x: number, y: number}} Pt
- * @typedef {'body' | 'card'} View
- * @typedef {'zoom' | 'cull' | 'budget' | 'switch'} Why  why an item is shown as a card (or 'switch': first paint)
  * @typedef {{
  *   id: string,
  *   el: HTMLElement,
  *   rect: () => Rect,
- *   cull: 'hide' | 'unmount',
  *   cost?: number,
- *   view: (v: View, why?: Why) => void,
+ *   onScreen?: (on: boolean) => void,
  *   nudge?: (dx: number, dy: number) => void,
  *   setPos?: (x: number, y: number) => void,
  *   onMove?: (x: number, y: number, phase: 'start' | 'move' | 'end' | 'cancel') => void,
- * }} Item  a world item (cv-module Module implements it): `el` is absolutely positioned in #world by its owner;
- *   view('body') mounts / shows its body, view('card') unmounts ('unmount') or hides ('hide') it. The world calls
- *   view() — sliced, ≤ SLICE_MS per frame, nearest the viewport centre first — and never touches the body itself.
- *   The canvas arrow keys move the selected item by nudge(dx, dy) when it has one, else setPos + onMove 'start' / 'end'
- *   (one undo step: the owner's onMove records it).
+ * }} Item  a world item (cv-module Module implements it): `el` is absolutely positioned in #world by its owner. The world
+ *   never hides, unmounts, swaps or resizes it: it reads rect() only at add / update / resize / cameraend (cached
+ *   between: no layout read during a burst) and calls onScreen(on) when the item enters or leaves the viewport grown by
+ *   CULL_MARGIN. The canvas arrow keys move the selected item by nudge(dx, dy) when it has one, else setPos + onMove
+ *   'start' / 'end' (one undo step: the owner's onMove records it).
  * @typedef {{cx: number, cy: number}} At  a two-finger session's base midpoint, client px
  * @typedef {{
  *   el: HTMLElement, viewport: HTMLElement, overlay: HTMLElement,
  *   readonly cam: Camera, readonly k: number, readonly native: boolean, readonly movedAt: number,
  *   readonly selected: string | null, readonly edit: string | null, readonly pinchMode: 'canvas' | 'page',
- *   readonly lod: View, readonly busy: boolean,
+ *   readonly busy: boolean,
  *   setCamera: (cam: Camera, o?: {animate?: boolean}) => void,
  *   panBy: (dx: number, dy: number) => void,
  *   zoomAt: (f: number, clientX: number, clientY: number, o?: {animate?: boolean}) => void,
@@ -89,7 +92,7 @@ const TAP_PX = { touch: 8, pen: 4, mouse: 4 }, DTAP_MS = 320, DTAP_PX = 24, REVE
  *   update: (id?: string) => void,
  *   clear: () => void,
  *   ids: () => string[],
- *   viewOf: (id: string) => View | null,
+ *   onScreen: (id: string) => boolean,
  *   select: (id: string | null) => void,
  *   dragPointer: (p: {x: number, y: number, pointerType: string} | null) => void,
  *   ghost: (g: {x: number, y: number, w: number, h: number, dx?: number, dy?: number, snap?: boolean, label?: string} | null) => Rect | null,
@@ -100,7 +103,7 @@ const TAP_PX = { touch: 8, pen: 4, mouse: 4 }, DTAP_MS = 320, DTAP_PX = 24, REVE
  *   wheelVeto: () => boolean,
  *   escape: () => boolean,
  *   key: (e: KeyboardEvent) => boolean,
- *   on: (type: 'camera' | 'movestart' | 'cameraend' | 'lod' | 'native' | 'select' | 'edit', fn: (d: any) => void) => () => void,
+ *   on: (type: 'camera' | 'movestart' | 'cameraend' | 'screen' | 'budget' | 'native' | 'select' | 'edit' | 'snap', fn: (d: any) => void) => () => void,
  *   destroy: () => void,
  * }} World
  */
@@ -159,38 +162,16 @@ export function gridImage(a) {
 }
 /** v snapped to the grid g (default DOT, the visible dots). @returns {number} */
 export function snap(v, g) { const s = g > 0 ? +g : DOT, r = Math.round(v / s) * s; return r === 0 ? 0 : r; }
-/** Level of detail for zoom k: 'card' below CARD_K, else 'body'; while `pinching` the previous one is kept (pinch-defer).
- * @param {number} k @param {View} prev @param {boolean} pinching @returns {View} */
-export function lodOf(k, prev, pinching) {
-  if (pinching && (prev === 'body' || prev === 'card')) return prev;
-  return k < CARD_K ? 'card' : 'body';
-}
-/** Which items show their bodies: in view (+margin), k ≥ CARD_K, nearest the centre first, until the DOM budget (the
- * nearest one always mounts; past the first one over budget every farther one stays a card).
- * @param {{id: string, rect: Rect, cost?: number}[]} items @param {Camera} cam @param {number} vw @param {number} vh
- * @param {{margin?: number, budget?: number, lod?: View}} [o]
- * @returns {{body: string[], card: string[], why: Object<string, Why>}} body: mount order */
-export function planMount(items, cam, vw, vh, o) {
-  o = o || {};
-  const margin = o.margin != null ? +o.margin : CULL_MARGIN, budget = o.budget != null ? +o.budget : BUDGET_EL;
-  const lod = o.lod === 'card' || o.lod === 'body' ? o.lod : lodOf(cam.k, 'body', false);
-  const body = [], card = [], why = {}, near = [];
-  const vis = visibleRect(cam, vw, vh, margin), cx = (vw / 2 - cam.tx) / cam.k, cy = (vh / 2 - cam.ty) / cam.k;
+/** Which items are on screen: those intersecting the viewport grown by `margin` screen px (default CULL_MARGIN), at any
+ * zoom. An item without a rect counts as on screen. Pure. @param {{id: string, rect: Rect | null}[]} items
+ * @param {Camera} cam @param {number} vw @param {number} vh @param {number} [margin] @returns {{on: string[], off: string[]}} */
+export function planScreen(items, cam, vw, vh, margin) {
+  const vis = visibleRect(cam, vw, vh, margin != null ? +margin : CULL_MARGIN), on = [], off = [];
   for (const it of items || []) {
     if (!it) continue;
-    const r = it.rect;
-    if (lod === 'card') { card.push(it.id); why[it.id] = 'zoom'; continue; }
-    if (!r || !intersects(r, vis)) { card.push(it.id); why[it.id] = 'cull'; continue; }
-    const dx = Math.max(r.x - cx, 0, cx - r.x - r.w), dy = Math.max(r.y - cy, 0, cy - r.y - r.h);
-    near.push({ id: it.id, cost: it.cost > 0 ? +it.cost : 0, d: Math.hypot(dx, dy), e: Math.hypot(r.x + r.w / 2 - cx, r.y + r.h / 2 - cy) });
+    if (!it.rect || intersects(it.rect, vis)) on.push(it.id); else off.push(it.id);
   }
-  near.sort((a, b) => a.d - b.d || a.e - b.e);
-  let used = 0, full = false;
-  for (const n of near) {
-    if (!full && (!body.length || used + n.cost <= budget)) { used += n.cost; body.push(n.id); continue; }
-    full = true; card.push(n.id); why[n.id] = 'budget';
-  }
-  return { body, card, why };
+  return { on, off };
 }
 
 /* ---------------------------------------------------------------- the world */
@@ -198,7 +179,8 @@ export function planMount(items, cam, vw, vh, o) {
  * Creates the camera on #viewport over #world. Installs: one-finger / mouse pan on empty canvas and known module
  * backgrounds (o.isBackground), momentum + its guard (capture pointerdown on the viewport), the late-finger pinch upgrade,
  * wheel / Ctrl-wheel / Safari gesture* zoom, the native-zoom hand-over (visualViewport.scale > 1 → [data-cv-native],
- * hooks return false), focus reveal, culling / cards / sliced mounting, selection and edit state ([data-cv-edit]),
+ * hooks return false), focus reveal, on-screen tracking (onScreen / 'screen'), sleeping controls below READ_K, selection
+ * and edit state ([data-cv-edit]),
  * edge auto-pan for drags (dragPointer) and the drop outline (ghost) in #overlay, the floating toolbar in o.toolbar.
  * @param {HTMLElement} viewport  #viewport
  * @param {{
@@ -232,14 +214,14 @@ export function createWorld(viewport, o) {
   let cam = { tx: 0, ty: 0, k: 1 }, shown = null, ikK = 1;
   let vp = { left: 0, top: 0, width: 0, height: 0 }, ovO = { left: 0, top: 0 }; // cached rects (resize)
   let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, gridA = -1, snapping = true;
-  let lod = 'body', sel = null, editId = null, editSup = false, focusBack = null;
+  let sel = null, editId = null, editSup = false, focusBack = null;
   let pin = null; // a bar double-tap's edit state { id, k }: it holds at the focus zoom even below EDIT_K (a large module's fit)
-  let fid = 0, planDirty = false, queue = [], estMs = 0; // the frame, the plan, item views waiting for a slice
+  let fid = 0, scrDirty = false, overBudget = false; // the frame, the on-screen plan owed, the soft DOM budget crossed
   let B = null; // the live burst: { hook, until, band, timer, last }
   let G = null; // the world's own pointer gesture (pan / pinch)
   let glide = null, glideEnd = -1e9, anim = null, edge = null, gh = null, gs = null; // gs: Safari gesture scale
   let touches = 0, pressT = -1e9, lastTap = null, outside = null, bandC = null, pctShown = '', clickUntil = -1e9;
-  const items = new Map(); // id → { item, view, why }
+  const items = new Map(); // id → { item, rect (cached: add / update / resize / cameraend), on (on screen) }
   const subs = new Map();
   const offs = [];
   const listen = (t, type, fn, opt) => { if (!t || typeof t.addEventListener !== 'function') return; t.addEventListener(type, fn, opt); offs.push(() => t.removeEventListener(type, fn, opt)); };
@@ -254,7 +236,7 @@ export function createWorld(viewport, o) {
     vp = rectOf(viewport);
     ovO = OV ? rectOf(OV) : { left: vp.left, top: vp.top };
     bandC = null;
-    schedulePlan();
+    recache();
   }
   // the canvas's visible client rect: the viewport ∩ wk.visibleBand (visual viewport less trays, rails, the keyboard)
   function band() {
@@ -298,12 +280,8 @@ export function createWorld(viewport, o) {
     if (glide) stepGlide(T);
     if (anim) stepAnim(T);
     if (edge) stepEdge(T);
-    write();
-    if (!B && active) {
-      if (planDirty) plan();
-      if (queue.length) slices();
-    }
-    if (glide || anim || (edge && edge.v) || (!B && active && queue.length)) request();
+    if ((write() || scrDirty) && active) screen(); // (cached rects only: no layout read in a burst)
+    if (glide || anim || (edge && edge.v)) request();
   }
 
   /* ---- bursts: movestart … cameraend */
@@ -345,7 +323,7 @@ export function createWorld(viewport, o) {
     }
     emit('cameraend', { cam: copy(cam), zoomed });
     computeEdit();
-    schedulePlan();
+    recache();
   }
   function stopMotion() { glide = null; anim = null; }
 
@@ -417,9 +395,7 @@ export function createWorld(viewport, o) {
   }
   function fitCamera(ids, kMax) {
     const bx = bandBox(frameBand()), rs = rectsOf(ids);
-    let c = fitCam(rs, bx.w, bx.h, { pad: FIT_PAD, kMax: kMax > 0 ? kMax : 1 });
-    // just short of the card level: bodies at CARD_K when the layout still fits with a thinner margin (12 px)
-    if (c.k < CARD_K && (!(kMax > 0) || kMax >= CARD_K)) { const d = fitCam(rs, bx.w, bx.h, { pad: 12, kMax: CARD_K }); if (d.k >= CARD_K) c = d; }
+    const c = fitCam(rs, bx.w, bx.h, { pad: FIT_PAD, kMax: kMax > 0 ? kMax : 1 });
     return { tx: c.tx + bx.x, ty: c.ty + bx.y, k: c.k };
   }
   function fit(opt) {
@@ -447,10 +423,10 @@ export function createWorld(viewport, o) {
     let c;
     if (r.w * k > bx.w - 2 * FIT_PAD || r.h * k > bx.h - 2 * FIT_PAD) {
       c = fitCamera([id], k); // larger than the band at k
-      // a fit that would only show its card (a 1300 px Serum in an iPad's canvas: ≈ 0.3) frames its width instead, top
-      // aligned (left aligned when still wider), never below CARD_K: a double-tap is for editing
-      if (c.k < CARD_K && k >= CARD_K) {
-        const kw = Math.max(CARD_K, Math.min(k, (bx.w - 2 * FIT_PAD) / Math.max(1, r.w)));
+      // a fit below the readability floor (a 1300 px Serum in an iPad's canvas: ≈ 0.3) frames its width instead, top
+      // aligned (left aligned when still wider), never below READ_K: a double-tap is for editing
+      if (c.k < READ_K && k >= READ_K) {
+        const kw = Math.max(READ_K, Math.min(k, (bx.w - 2 * FIT_PAD) / Math.max(1, r.w)));
         c = { tx: r.w * kw <= bx.w - 2 * FIT_PAD ? bx.x + bx.w / 2 - (r.x + r.w / 2) * kw : bx.x + FIT_PAD - r.x * kw, ty: bx.y + FIT_PAD - r.y * kw, k: kw };
       }
     } else c = { tx: bx.x + bx.w / 2 - (r.x + r.w / 2) * k, ty: bx.y + bx.h / 2 - (r.y + r.h / 2) * k, k };
@@ -473,17 +449,53 @@ export function createWorld(viewport, o) {
     if (Math.abs(dx) >= 1 || Math.abs(dy) >= 1) setCamera(panCam(anim ? anim.c1 : cam, dx, dy), { animate: true });
   }
 
-  /* ---- items, the plan and its slices */
+  /* ---- items: cached rects, on screen or not (Z1: never hidden, unmounted, swapped or resized) */
+  function cacheRect(rec) { try { rec.rect = rec.item.rect(); } catch (err) { rec.rect = null; } }
+  function recache(id) { // a layout read: only outside a burst (add / update / resize / cameraend)
+    for (const [k, r] of items) if (id == null || k === id) cacheRect(r);
+    budget();
+    schedule();
+  }
+  function schedule() { scrDirty = true; request(); }
+  // which items are on screen: from the cached rects after each written frame, so off-screen live displays pause
+  // (and resume CULL_MARGIN screen px before they show again); 'screen' carries the changes only
+  function screen() {
+    scrDirty = false;
+    if (!(vp.width > 0) || !(vp.height > 0)) return; // (a hidden canvas: everything keeps its state)
+    const list = [];
+    for (const [id, r] of items) list.push({ id, rect: r.rect });
+    const p = planScreen(list, cam, vp.width, vp.height), on = [], off = [];
+    const set = (id, v) => {
+      const r = items.get(id);
+      if (!r || r.on === v) return;
+      r.on = v;
+      (v ? on : off).push(id);
+      if (typeof r.item.onScreen === 'function') { try { r.item.onScreen(v); } catch (err) { console.error(err); } }
+    };
+    for (const id of p.on) set(id, true);
+    for (const id of p.off) set(id, false);
+    if (on.length || off.length) emit('screen', { on, off });
+  }
+  function budget() { // the soft DOM budget: an event and a warning per crossing, nothing visible
+    let cost = 0;
+    for (const r of items.values()) cost += r.item.cost > 0 ? +r.item.cost : 0;
+    const over = cost > BUDGET_EL;
+    if (over === overBudget) return;
+    overBudget = over;
+    if (over) { try { console.warn('cv-world: ' + cost + ' elements on the canvas (budget ' + BUDGET_EL + ')'); } catch (err) { /* no console */ } }
+    emit('budget', { over, cost });
+  }
   function add(item) {
     if (!item || item.id == null) throw new Error('cv-world.add: an item needs an id');
     const id = String(item.id);
     if (items.has(id)) remove(id);
-    const rec = { item, view: 'card', why: 'switch' };
+    const rec = { item, rect: null, on: true }; // (on screen until the plan says otherwise: nothing changes at add)
     items.set(id, rec);
-    try { item.view('card', 'switch'); } catch (err) { console.error(err); } // cards first (a track switch), bodies in slices
+    cacheRect(rec);
     if (sel === id) attr(item.el, 'data-cv-sel', true);
     if (editId === id) attr(item.el, 'data-cv-edit', true);
-    schedulePlan();
+    budget();
+    schedule();
     return () => { if (items.get(id) === rec) remove(id); };
   }
   function remove(id) {
@@ -491,42 +503,13 @@ export function createWorld(viewport, o) {
     const rec = items.get(id);
     if (!rec) return;
     items.delete(id);
-    queue = queue.filter(q => q.id !== id);
     attr(rec.item.el, 'data-cv-sel', false); attr(rec.item.el, 'data-cv-edit', false);
     if (sel === id) { sel = null; emit('select', { id: null }); }
     if (editId === id) { editId = null; emit('edit', { id: null }); }
+    budget();
   }
-  function clear() { for (const id of [...items.keys()]) remove(id); queue = []; focusBack = null; editSup = false; pin = null; }
-  function schedulePlan() { planDirty = true; request(); }
-  function plan() {
-    planDirty = false;
-    if (!(vp.width > 0) || !(vp.height > 0)) return;
-    const L = lodOf(cam.k, lod, false);
-    if (L !== lod) { lod = L; attr(viewport, 'data-cv-lod', lod); emit('lod', { lod }); }
-    const list = [];
-    for (const [id, r] of items) { let rect = null; try { rect = r.item.rect(); } catch (err) { rect = null; } list.push({ id, rect, cost: r.item.cost }); }
-    const p = planMount(list, cam, vp.width, vp.height, { lod });
-    const want = id => items.get(id);
-    queue = [];
-    for (const id of p.card) { const r = want(id); if (r && (r.view !== 'card' || r.why !== p.why[id])) queue.push({ id, v: 'card', why: p.why[id] }); }
-    for (const id of p.body) { const r = want(id); if (r && r.view !== 'body') queue.push({ id, v: 'body' }); }
-  }
-  // item views, ≤ SLICE_MS per frame (the next one only when the slowest so far still fits)
-  function slices() {
-    const t0 = now();
-    let n = 0;
-    while (queue.length) {
-      if (n && now() - t0 + estMs > SLICE_MS) break;
-      const q = queue.shift(), r = items.get(q.id);
-      if (!r || (r.view === q.v && (q.v === 'body' || r.why === q.why))) continue;
-      r.view = q.v; r.why = q.v === 'card' ? q.why : null;
-      const s = now();
-      try { r.item.view(q.v, q.why); } catch (err) { console.error(err); }
-      estMs = Math.max(estMs * 0.8, now() - s);
-      n++;
-    }
-  }
-  function update(id) { if (id == null || items.has(String(id))) schedulePlan(); }
+  function clear() { for (const id of [...items.keys()]) remove(id); focusBack = null; editSup = false; pin = null; }
+  function update(id) { if (id == null) recache(); else if (items.has(String(id))) recache(String(id)); }
 
   /* ---- selection and edit state */
   function select(id) {
@@ -647,8 +630,19 @@ export function createWorld(viewport, o) {
   function tap(g, e) {
     if (g.mid) return;
     const t = g.tgt, T = now();
+    if (g.sleep) { // a tap on a sleeping module selects it; a double-tap focuses it (100 % or its width: edit state)
+      clickUntil = T + 350; // (its click is the world's: the control under it never sees it)
+      if (lastTap && lastTap.id === g.sleep && T - lastTap.t <= DTAP_MS && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) <= DTAP_PX) {
+        lastTap = null;
+        if (items.has(g.sleep)) focusItem(g.sleep, { animate: true });
+        return;
+      }
+      lastTap = { t: T, x: e.clientX, y: e.clientY, id: g.sleep };
+      select(g.sleep);
+      return;
+    }
     if (t === viewport || t === W) {
-      if (lastTap && T - lastTap.t <= DTAP_MS && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) <= DTAP_PX) { lastTap = null; fit({ animate: true }); return; }
+      if (lastTap && !lastTap.id && T - lastTap.t <= DTAP_MS && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) <= DTAP_PX) { lastTap = null; fit({ animate: true }); return; }
       lastTap = { t: T, x: e.clientX, y: e.clientY };
       select(null);
       return;
@@ -679,6 +673,19 @@ export function createWorld(viewport, o) {
       if (!G) startPan(e, false, true);
       return;
     }
+    // controls sleep below READ_K (the cards used to keep a zoomed-out pan from turning whatever knob it landed on; now
+    // nothing changes look, so the protection is behaviour only): a press in a module body that is not in edit state
+    // pans; a tap selects the module, a double-tap focuses it (edit state wakes its controls). Bars, jacks: as always
+    const id = cam.k < READ_K - 1e-9 && !G && (e.button === 0 || e.button == null) ? sleeper(e.target) : null;
+    if (id) { take(e); startPan(e, false, false); G.sleep = id; }
+  }
+  function sleeper(t) { // the module whose body t lies in, unless t is in its bar or a jack, or the module is in edit state
+    for (let n = t; n && n !== viewport && typeof n.getAttribute === 'function'; n = n.parentNode) {
+      if (n.getAttribute('data-cv-bar') != null || n.getAttribute('data-cv-jack') != null) return null;
+      const id = n.getAttribute('data-cv-mod');
+      if (id != null) return items.has(id) && id !== editId ? id : null;
+    }
+    return null;
   }
   function onDown(e) {
     if (!active || native || G) return;
@@ -803,7 +810,7 @@ export function createWorld(viewport, o) {
       if (!sx && !sy) return true;
       stopMotion();
       cam = panCam(cam, -sx, -sy);
-      moved(true, true); write();
+      moved(true, true); write(); schedule(); // (on screen: planned in the next frame from the cached rects)
       return true;
     },
     zoom(f, cx, cy, at) {
@@ -811,7 +818,7 @@ export function createWorld(viewport, o) {
       if (f === 1 || !(f > 0) || !isFinite(f)) return true;
       stopMotion();
       cam = zoomAbout(cam, f, cx - vp.left, cy - vp.top);
-      moved(true, true); write();
+      moved(true, true); write(); schedule();
       return true;
     },
   };
@@ -1008,8 +1015,8 @@ export function createWorld(viewport, o) {
     on = !!on;
     if (on === active) { if (on) resize(); return; }
     active = on;
-    if (!on) { endGesture(true); stopMotion(); edge = null; queue = []; if (B) endBurst(); outside = null; }
-    else { resize(); schedulePlan(); }
+    if (!on) { endGesture(true); stopMotion(); edge = null; if (B) endBurst(); outside = null; }
+    else resize();
   }
   function onFocusIn(e) { // keyboard focus (Tab) or a text field brings its control on screen; a press's target already is
     const t = e.target;
@@ -1026,7 +1033,6 @@ export function createWorld(viewport, o) {
   pinchMode = store && store.get && store.get(PINCH_PREF, 'canvas') === 'page' ? 'page' : 'canvas';
   snapping = !(store && store.get && store.get(SNAP_PREF, true) === false);
   attr(viewport, 'data-cv-pinch', pinchMode);
-  attr(viewport, 'data-cv-lod', lod);
   try { W.style.setProperty('--ik', '1'); } catch (err) { /* inert */ }
   if (o.layer) wk.setLayer(o.layer);
   wk.setWheelVeto(() => wheelVeto());
@@ -1057,16 +1063,17 @@ export function createWorld(viewport, o) {
   checkNative();
   write();
 
-  const wheelVeto = () => movedAt > now() - WHEEL_VETO_MS;
+  // no knob takes the wheel for 300 ms after a camera move, nor below READ_K (the controls sleep there: §8.1)
+  const wheelVeto = () => movedAt > now() - WHEEL_VETO_MS || cam.k < READ_K - 1e-9;
   const api = {
     el: W, viewport, overlay: OV,
     get cam() { return copy(cam); }, get k() { return cam.k; }, get native() { return native; }, get movedAt() { return movedAt; },
-    get selected() { return sel; }, get edit() { return editId; }, get pinchMode() { return pinchMode; }, get lod() { return lod; },
+    get selected() { return sel; }, get edit() { return editId; }, get pinchMode() { return pinchMode; },
     get busy() { return !!B; },
     setCamera, panBy, zoomAt, fit, focusItem, reveal,
     toWorld: (x, y) => toWorld(cam, x - vp.left, y - vp.top),
     toClient: (x, y) => { const l = toLocal(cam, x, y); return { x: l.x + vp.left, y: l.y + vp.top }; },
-    band, add, remove, update, clear, ids: () => [...items.keys()], viewOf: id => { const r = items.get(String(id)); return r ? r.view : null; },
+    band, add, remove, update, clear, ids: () => [...items.keys()], onScreen: id => { const r = items.get(String(id)); return !!r && r.on; },
     select, dragPointer, ghost, setActive, setPinchMode, resize, hooks, wheelVeto, escape, key,
     snapOn: () => snapping, setSnap,
     on(type, fn) {
@@ -1088,7 +1095,7 @@ export function createWorld(viewport, o) {
       wk.setWheelVeto(null);
       if (typeof wk.setEdgeHook === 'function') wk.setEdgeHook(null);
       if (o.layer) wk.setLayer(null);
-      items.clear(); subs.clear(); queue = [];
+      items.clear(); subs.clear();
     },
   };
   return api;

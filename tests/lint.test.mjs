@@ -14,7 +14,8 @@ const ROOT = new URL('../', import.meta.url);
 const read = (dir, f) => readFileSync(new URL(f, dir), 'utf8');
 const MAIN = read(ROOT, 'main.js');
 const N = (/const VERSION = '(\d+)'/.exec(MAIN) || [])[1];
-const SITE = readdirSync(ROOT).filter(f => f.endsWith('.js'));
+// the root scripts and the hardware panel layouts (panels/*.js: plain data modules, imported by panels/index.js)
+const SITE = readdirSync(ROOT).filter(f => f.endsWith('.js')).concat(readdirSync(new URL('panels/', ROOT)).filter(f => f.endsWith('.js')).map(f => 'panels/' + f));
 const isModule = src => /^\s*(import\s[^(]|import\s*\{|export\s)/m.test(src);
 const MODULES = SITE.filter(f => isModule(read(ROOT, f)));
 const CLASSIC = SITE.filter(f => !MODULES.includes(f));
@@ -49,6 +50,12 @@ for (const f of MODULES) {
     assert.deepEqual(bad, []);
   });
 }
+
+// the hardware panel layouts are data: panels/<model>.js import nothing (panels/index.js imports them, cv-panel.js the index)
+test('panels/<model>.js import nothing (data only)', () => {
+  const bad = SITE.filter(f => f.startsWith('panels/') && f !== 'panels/index.js' && specifiers(read(ROOT, f)).length);
+  assert.deepEqual(bad, []);
+});
 
 for (const f of MODULES) {
   const hits = read(ROOT, f).split('\n').map((l, i) => [i + 1, l]).filter(([, l]) => />=\s*(?:\w+\.)?NS\b/.test(l) && !/^\s*(\/\/|\*)/.test(l));

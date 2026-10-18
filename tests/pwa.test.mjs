@@ -128,8 +128,10 @@ test('precache: sw.js lists exactly what the page requests (tools/precache.mjs c
   assert.deepEqual(S.assets.slice().sort(), R.versioned, 'sw.js ASSETS (node tools/precache.mjs --write)');
   assert.deepEqual(S.statics, R.statics, 'sw.js STATIC');
   assert.equal(S.build, buildHash(R), 'sw.js BUILD: a site file changed since node tools/precache.mjs --write (run it; a release also bumps VERSION)');
-  // every script of the site is reached by the crawl (a new worker or worklet would show here) — sw.js itself excepted
-  const js = readdirSync(ROOT).filter(f => f.endsWith('.js') && f !== 'sw.js').sort();
+  // every script of the site is reached by the crawl (a new worker or worklet would show here) — sw.js itself excepted;
+  // the hardware panel layouts (panels/*.js, imported directory-relative by panels/index.js) too
+  const js = readdirSync(ROOT).filter(f => f.endsWith('.js') && f !== 'sw.js')
+    .concat(readdirSync(new URL('panels/', ROOT)).filter(f => f.endsWith('.js')).map(f => 'panels/' + f)).sort();
   assert.deepEqual(R.versioned.filter(f => f.endsWith('.js')), js);
   assert.ok(R.versioned.includes('style.css') && R.versioned.includes('pwa.js') && R.versioned.includes('engine.js'));
   for (const f of ['wtwork.js', 'smpwork.js', 'smprender.js', 'sx-ui-mix.js', 'serum-ui.js']) assert.ok(R.versioned.includes(f), f);
@@ -304,7 +306,8 @@ test('sw ?v= files offline: AudioWorklet modules (addModule), module Workers and
   const before = E.fetches.length;
   const reqs = [['engine.js', 'audioworklet'], ['sx-base.js', 'audioworklet'], ['fx-dsp.js', 'audioworklet'], ['serum-dsp.js', 'audioworklet'],
     ['wtwork.js', 'worker'], ['smpwork.js', 'worker'], ['smprender.js', 'worker'], ['wt.js', 'script'], ['smpgen.js', 'script'],
-    ['sx-base.js', 'script'], ['engine.js', 'script'], ['main.js', 'script'], ['pwa.js', 'script'], ['serum-ui.js', 'script'], ['sx-ui-mix.js', 'script'], ['style.css', 'style']];
+    ['sx-base.js', 'script'], ['engine.js', 'script'], ['main.js', 'script'], ['pwa.js', 'script'], ['serum-ui.js', 'script'], ['sx-ui-mix.js', 'script'],
+    ['cv-panel.js', 'script'], ['panels/index.js', 'script'], ['panels/minimoog.js', 'script'], ['style.css', 'style']];
   for (const [f, dest] of reqs) {
     const res = await E.get('/' + f + '?v=' + N, { dest });
     assert.equal(res.status, 200, f);

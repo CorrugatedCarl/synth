@@ -3,8 +3,9 @@
 //   index.html     the stylesheet, module script and modulepreloads (?v=N), the manifest and the icons it links;
 //   manifest       its icons;
 //   ES modules     from main.js and the modulepreloads, every relative import / export-from / import() (static
-//                  './x.js?v=N', dynamic './x.js?v=' + VERSION) and every 'x.js?v=' + VERSION string (AudioWorklet
-//                  modules, Workers), followed through the files they name;
+//                  './x.js?v=N', dynamic './x.js?v=' + VERSION; resolved against the importing file's directory:
+//                  panels/<model>.js) and every 'x.js?v=' + VERSION string (AudioWorklet modules, Workers: against the
+//                  page), followed through the files they name;
 //   main.js        DSP_FILES (the AudioWorklet scripts, addModule(f + '?v=' + VERSION), also injected by wk.loadDSP);
 //   smprender.js   its DSP list and engine.js (importScripts with the worker's own ?v=).
 // sw.js BUILD is a hash of those files' contents (buildHash): its precache is a cache of that build, so a change deployed
@@ -49,10 +50,13 @@ export function appRequests(root = ROOT) {
     for (const i of man.icons || []) statics.add(i.src);
   }
   // the module graph, worklets and workers
+  // an ES import resolves against the importing file's directory (panels/index.js → panels/minimoog.js); worklet and
+  // worker URLs ('x.js?v=' + VERSION) against the page, as the browser does
+  const rel = (spec, from) => new URL(spec, 'file:///' + from).pathname.slice(1);
   while (queue.length) {
     const f = queue.shift(), src = read(f, root), V = versionOf(src);
-    for (const m of src.matchAll(/\b(?:import|export)\s*(?:[\w*{}\s,$]*?\sfrom\s*)?(['"])(\.\/[^'"?]+)\?v=(\d+)\1/g)) addV(m[2], m[3], f);
-    for (const m of src.matchAll(/\bimport\(\s*(['"])(\.\/[^'"?]+)\?v=(\d+)\1\s*\)/g)) addV(m[2], m[3], f);
+    for (const m of src.matchAll(/\b(?:import|export)\s*(?:[\w*{}\s,$]*?\sfrom\s*)?(['"])(\.{1,2}\/[^'"?]+)\?v=(\d+)\1/g)) addV(rel(m[2], f), m[3], f);
+    for (const m of src.matchAll(/\bimport\(\s*(['"])(\.{1,2}\/[^'"?]+)\?v=(\d+)\1\s*\)/g)) addV(rel(m[2], f), m[3], f);
     for (const m of src.matchAll(/(['"])((?:\.\/)?[\w.-]+\.js)\?v=\1\s*\+\s*VERSION\b/g)) {
       if (!V) { problems.push(f + ": '" + m[2] + "?v=' + VERSION without a VERSION constant"); continue; }
       addV(m[2], V, f);

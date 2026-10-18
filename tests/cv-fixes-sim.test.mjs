@@ -71,17 +71,19 @@ test('the replace notice undoes only its own step: tapped at once it is Undo; af
 });
 
 test('a cancelled drag (pointercancel: a second finger) and a drop on the cell it left record nothing — the redo stack survives; Tidy of a tidy canvas: no step', () => {
-  drag(V().modules.get('fx1'), 160, 96);
+  const i = V().modules.get('i1'), f0 = pos('fx1');
+  assert.deepEqual(f0, [Math.ceil((i.x + i.w + 160) / 32) * 32, 0], 'the FX sits 160 px (on the dots) right of the fixed-size Prophet-5 (makeRoom)');
+  drag(V().modules.get('fx1'), 160 * W.k, 96 * W.k); // (world px at the camera's zoom)
   assert.equal(cv.hist.undoLabel, 'Move FX Panel');
   cv.undo();
   assert.equal(cv.hist.canRedoFrom(P()), true);
   const n = cv.hist.u.length;
   drag(V().modules.get('fx1'), 120, 64, 'pointercancel');
-  assert.deepEqual([pos('fx1'), cv.hist.u.length, cv.hist.canRedoFrom(P())], [[1248, 0], n, true], 'cancelled: back, no step, redo kept');
+  assert.deepEqual([pos('fx1'), cv.hist.u.length, cv.hist.canRedoFrom(P())], [f0, n, true], 'cancelled: back, no step, redo kept');
   drag(V().modules.get('fx1'), 2, 1);
-  assert.deepEqual([pos('fx1'), cv.hist.u.length, cv.hist.canRedoFrom(P())], [[1248, 0], n, true], 'dropped on its own cell: no step, redo kept');
+  assert.deepEqual([pos('fx1'), cv.hist.u.length, cv.hist.canRedoFrom(P())], [f0, n, true], 'dropped on its own cell: no step, redo kept');
   cv.redo();
-  assert.deepEqual(pos('fx1'), [1408, 96], 'the undone move can still be redone');
+  assert.deepEqual(pos('fx1'), [f0[0] + 160, 96], 'the undone move can still be redone');
   cv.tidy();
   const m = cv.hist.u.length;
   assert.equal(cv.hist.undoLabel, 'Tidy');
@@ -93,16 +95,16 @@ test('a cancelled drag (pointercancel: a second finger) and a drop on the cell i
   assert.equal(cv.hist.undoLabel, 'Tidy');
 });
 
-test('default camera: k = 1 when the instrument fits the band; a portrait band (rails on both sides) fits its width — its bar\'s ⋯ / ▾ clear the rail — never below CARD_K', () => {
+test('default camera: k = 1 when the instrument fits the band; a portrait band (rails on both sides) fits its width — its bar\'s ⋯ / ▾ clear the rail — never below READ_K', () => {
   const r0 = BAND.right;
   try {
-    for (const [right, k] of [[1400, 1], [44 + 936, (936 - 48) / 1080], [44 + 746, (746 - 48) / 1080], [44 + 400, cvWorld.CARD_K]]) {
-      BAND.right = right;
+    for (const bw of [1600, 1356, 936, 746, 400]) {
+      BAND.right = 44 + bw;
       api.addTrack(); sim.raf();
-      const m = V().modules.get('i1');
-      assert.ok(Math.abs(W.cam.k - k) < 1e-9, `band ${right - 44}: k ${W.cam.k} ≠ ${k}`);
+      const m = V().modules.get('i1'), k = Math.max(cvWorld.READ_K, Math.min(1, (bw - 48) / m.w)); // (the module's actual width: fixed in its Hardware layout)
+      assert.ok(Math.abs(W.cam.k - k) < 1e-9, `band ${bw}: k ${W.cam.k} ≠ ${k} (instrument ${m.w} px)`);
       assert.deepEqual([W.cam.tx, W.cam.ty], [BAND.left - VP.left + 24 - Math.round(m.x * k), BAND.top - VP.top + 24 - Math.round(m.y * k)]);
-      if (k > cvWorld.CARD_K) assert.ok(VP.left + (m.x + m.w) * k + W.cam.tx <= right - 24 + 0.5, 'the whole instrument (its bar\'s right end) inside the band');
+      if (k > cvWorld.READ_K) assert.ok(VP.left + (m.x + m.w) * k + W.cam.tx <= BAND.right - 24 + 0.5, 'the whole instrument (its bar\'s right end) inside the band');
     }
   } finally { BAND.right = r0; }
 });
@@ -114,7 +116,8 @@ test('default camera while ROLL shows: owed (the band has no size there), comput
   assert.equal(W.log.slice(n).some(l => l.startsWith('cam ')), false, 'no camera computed under ROLL');
   cv.openTab('canvas');
   const cams = W.log.slice(n).filter(l => l.startsWith('cam '));
-  assert.deepEqual(cams, ['cam 68,24,1'], 'on CANVAS: the default, 24 px inside the band past the rail');
+  const m = V().modules.get('i1'), k = Math.max(cvWorld.READ_K, Math.min(1, (BAND.right - BAND.left - 48) / m.w)); // (a wide fixed-size instrument: fitted)
+  assert.deepEqual(cams, ['cam ' + [BAND.left - VP.left + 24 - Math.round(m.x * k), BAND.top - VP.top + 24 - Math.round(m.y * k), k].join(',')], 'on CANVAS: the default, 24 px inside the band past the rail');
   cv.openTab('canvas');
   assert.equal(W.log.slice(n).filter(l => l.startsWith('cam ')).length, 1, 'once');
 });

@@ -506,6 +506,7 @@ export function normLay(lay) {
     if (finN(e.w)) o.w = clamp(R(e.w), 120, 4000);
     if (e.fold) o.fold = 1;
     if (finN(e.z)) o.z = clamp(R(e.z), 1, 1e6);
+    if (e.ui === 'flow') o.ui = 'flow'; // a classic instrument's Resizable layout (IMPL-panels §7.1; absent = Hardware); view only, no schema bump
     out[k] = o; n++;
   }
   return n ? out : undefined;

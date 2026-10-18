@@ -812,8 +812,130 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
   .cv-tb:not([data-open]) > .cv-tb-row { display: none; }
 }
 
+/* ===================================================================== cv-panel (ENGINE lane, IMPL-panels)
+   The hardware front panels (cv-panel.js): the .inst.hw root, its static art (one SVG), the live layer's widgets (scoped
+   under .hw-c, so the extras strip keeps today's widget look) and the extras strip. Fixed world px only: nothing here
+   uses --ik or changes with the zoom (Z1), so a zoom end restyles nothing. */
+.inst.hw { position: relative; padding: 0; border-radius: 0 0 12px 12px; box-shadow: none; overflow: hidden; contain: layout paint style;
+  background: var(--hw-case, #151515); color: var(--hw-legend, #eee); font-family: var(--hw-font, var(--ui)); }
+.inst.hw.hw-wood { background: linear-gradient(90deg, rgba(0, 0, 0, 0.32), rgba(255, 255, 255, 0.05) 45%, rgba(0, 0, 0, 0.28)),
+  repeating-linear-gradient(177deg, color-mix(in srgb, var(--hw-wood, #5a3218) 86%, #000) 0 3px, color-mix(in srgb, var(--hw-wood, #5a3218) 88%, #fff) 3px 7px,
+    color-mix(in srgb, var(--hw-wood, #5a3218) 74%, #000) 7px 9px, var(--hw-wood, #5a3218) 9px 14px); }
+.inst.hw > .hw-decor { position: absolute; inset: 0; }
+.inst.hw > .hw-decor > svg { position: absolute; left: 0; top: 0; display: block; overflow: hidden; text-rendering: geometricPrecision; } /* (Chrome: printed text built at one camera zoom kept its old raster scale, or vanished, at another) */
+.inst.hw .hw-inert { cursor: help; }
+/* the live layer: only the widgets take presses — the gaps fall through to the art (a pan); each widget's press area is
+   its ::before, sized by the renderer (--hit-w / --hit-h: ≥ 28 world px), so a press on it is a press on the widget */
+.inst.hw > .hw-ctls { position: absolute; inset: 0; pointer-events: none; }
+.inst.hw .hw-c { position: absolute; pointer-events: none; }
+.inst.hw .hw-c > * { position: absolute; left: 0; top: 0; width: 100%; height: 100%; margin: 0; pointer-events: none; touch-action: none; }
+.inst.hw .hw-c > :not(.hw-grp)::before, .inst.hw .hw-grp > button::before { content: ''; position: absolute; left: 50%; top: 50%;
+  width: var(--hit-w, 100%); height: var(--hit-h, 100%); transform: translate(-50%, -50%); pointer-events: auto; }
+.inst.hw .hw-c :focus-visible { outline: 2px solid var(--hot); outline-offset: 2px; box-shadow: none; }
+/* knobs and rotary switches: today's knob drawing in the model's skin (the printed dial is in the art) */
+.inst.hw .hw-c .knob { border-radius: 50%; cursor: ns-resize; }
+.inst.hw .hw-c .knob .ticks, .inst.hw .hw-c .knob .shine { display: none; }
+.inst.hw .hw-c .knob .skirt { fill: var(--hw-knob-skirt, #151515); stroke: none; }
+.inst.hw[data-knurl] .hw-c .knob:not([data-knurl="0"]) .skirt, .inst.hw .hw-c .knob[data-knurl="1"] .skirt {
+  stroke: color-mix(in srgb, var(--hw-knob-skirt, #151515) 70%, #fff); stroke-width: 1.3; stroke-dasharray: 1.15 1.15; }
+.inst.hw .hw-c .knob .cap { fill: var(--hw-knob-cap, #2a2a2a); stroke: rgba(0, 0, 0, 0.45); stroke-width: 0.6; }
+.inst.hw .hw-c .knob .ind { stroke: var(--hw-knob-ptr, #fff); stroke-width: 2.4; stroke-linecap: round; }
+.inst.hw .hw-c .knob .hw-pt { fill: var(--hw-knob-ptr, #fff); }
+.inst.hw .hw-c .knob .hw-fin { fill: var(--hw-knob-skirt, #151515); stroke: var(--hw-knob-ptr, #fff); stroke-width: 1.2; stroke-linejoin: round; }
+.inst.hw .hw-c .knob .hw-bar { fill: var(--hw-knob-cap, #2a2a2a); }
+/* slide pots: the cap's size from the layout (--cap-w across, --cap-h along the travel) */
+.inst.hw .hw-c .slider { cursor: ns-resize; }
+.inst.hw .hw-c .slider[data-orient="h"] { cursor: ew-resize; }
+.inst.hw .hw-c .slider .sticks { display: none; }
+.inst.hw .hw-c .slider .groove { top: calc(var(--cap-h, 14px) / 2); bottom: calc(var(--cap-h, 14px) / 2); width: 3px; margin-left: -1.5px; background: var(--hw-sl-groove, #050505); }
+.inst.hw .hw-c .slider[data-orient="h"] .groove { left: calc(var(--cap-h, 14px) / 2); right: calc(var(--cap-h, 14px) / 2); top: 50%; bottom: auto; width: auto; height: 3px; margin: -1.5px 0 0; }
+.inst.hw .hw-c .slider .cap { left: 0; right: 0; height: var(--cap-h, 14px); border-radius: 2px; background: var(--hw-sl-cap, #e8e8e4); }
+.inst.hw .hw-c .slider .cap::after { top: calc(50% - 1px); background: var(--hw-sl-line, #111); }
+.inst.hw .hw-c .slider[data-orient="h"] .cap { top: 0; bottom: 0; right: auto; width: var(--cap-h, 14px); height: auto; }
+.inst.hw .hw-c .slider[data-orient="h"] .cap::after { left: calc(50% - 1px); right: auto; top: 2px; bottom: 2px; width: 2px; height: auto; }
+.inst.hw[data-cap="ridged"] .hw-c .slider .cap { background: repeating-linear-gradient(0deg, var(--hw-sl-cap, #e8e8e4) 0 2px, color-mix(in srgb, var(--hw-sl-cap, #e8e8e4) 75%, #000) 2px 3px); }
+/* switches: rockers (the pressed half shaded), bat / lever / slide (a knob along its slot), level rockers (a fill) */
+.inst.hw .hw-sw { display: block; padding: 0; border: 0; color: inherit; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.inst.hw .hw-sw[data-style="rocker"], .inst.hw .hw-sw[data-style="paddle"] { display: flex; overflow: hidden; border-radius: 2px; background: var(--sw-c, #444);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45), 0 1px 2px rgba(0, 0, 0, 0.65); }
+.inst.hw .hw-sw[data-orient="v"] { flex-direction: column; }
+.inst.hw .hw-sw > i { flex: 1 1 50%; display: block; pointer-events: none; }
+.inst.hw .hw-sw[data-pos="0"] > .hw-sw-a, .inst.hw .hw-sw[data-pos="1"] > .hw-sw-b { background: linear-gradient(rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.24)); }
+.inst.hw .hw-sw[data-pos="0"] > .hw-sw-b, .inst.hw .hw-sw[data-pos="1"] > .hw-sw-a { background: linear-gradient(rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0.05)); }
+.inst.hw .hw-sw:not([data-style="rocker"]):not([data-style="paddle"]) { border-radius: 999px; background: #0c0c0c; box-shadow: inset 0 0 0 1px #4d4d4d; }
+.inst.hw .hw-sw > .hw-sw-t { position: absolute; left: 50%; top: 18%; bottom: 18%; width: 2px; margin-left: -1px; background: #2c2c2c; }
+.inst.hw .hw-sw[data-orient="h"] > .hw-sw-t { left: 18%; right: 18%; top: 50%; bottom: auto; width: auto; height: 2px; margin: -1px 0 0; }
+.inst.hw .hw-sw > .hw-sw-k { position: absolute; width: var(--kd, 12px); height: var(--kd, 12px); border-radius: 50%; transform: translate(-50%, -50%); pointer-events: none;
+  background: radial-gradient(circle at 35% 32%, #fff, var(--sw-c, #c4c4c4) 48%, color-mix(in srgb, var(--sw-c, #c4c4c4) 55%, #000)); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.7); }
+.inst.hw .hw-sw[data-orient="v"] > .hw-sw-k { left: 50%; top: calc(var(--kd, 12px) / 2 + var(--f, 0) * (100% - var(--kd, 12px))); }
+.inst.hw .hw-sw[data-orient="h"] > .hw-sw-k { top: 50%; left: calc(var(--kd, 12px) / 2 + var(--f, 0) * (100% - var(--kd, 12px))); }
+.inst.hw .hw-sw > .hw-sw-fill { position: absolute; left: 0; bottom: 0; width: 100%; height: 0; background: rgba(255, 255, 255, 0.32); pointer-events: none; }
+.inst.hw .hw-sw[data-orient="h"] > .hw-sw-fill { top: 0; width: 0; height: 100%; }
+/* push buttons with LEDs; button groups (one lit); jacks used as a selector (the selected one: a lit ring and a cord) */
+.inst.hw .hw-btn { display: block; padding: 0; border: 0; border-radius: 2px; background: var(--btn-c, var(--hw-btn-cap, #2b2b2b)); color: var(--hw-btn-text, #eee);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 1px 2px rgba(0, 0, 0, 0.6); font: 700 9px/1 var(--hw-font, var(--ui)); cursor: pointer;
+  -webkit-tap-highlight-color: transparent; }
+.inst.hw .hw-btn:active { box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5); }
+.inst.hw .hw-btn > .hw-led { position: absolute; left: 50%; top: 18%; width: 6px; height: 6px; margin-left: -3px; border-radius: 50%; background: var(--hw-led-off, #3a1512); pointer-events: none; }
+.inst.hw .hw-btn[data-led="above"] > .hw-led { top: -10px; }
+.inst.hw .hw-btn[data-led="below"] > .hw-led { top: auto; bottom: -10px; }
+.inst.hw .hw-btn[data-led="none"] > .hw-led { display: none; }
+.inst.hw .hw-btn[data-lit="on"] > .hw-led { background: var(--hw-led, #ff3b2a); box-shadow: 0 0 6px var(--hw-led, #ff3b2a); }
+.inst.hw .hw-btn[data-lit="dim"] > .hw-led { background: color-mix(in srgb, var(--hw-led, #ff3b2a) 45%, #000); }
+.inst.hw .hw-btn > .hw-cap { position: absolute; left: 0; right: 0; bottom: 20%; text-align: center; pointer-events: none; }
+.inst.hw .hw-grp > button { position: absolute; pointer-events: none; }
+.inst.hw .hw-jk { padding: 0; border: 0; border-radius: 50%; cursor: pointer; -webkit-tap-highlight-color: transparent;
+  background: radial-gradient(circle, var(--hw-jack-hole, #050505) 0 24%, var(--hw-jack-nut, #c8c8c8) 27% 100%); }
+.inst.hw .hw-jk > .hw-jk-ring { position: absolute; inset: -3px; border: 2px solid transparent; border-radius: 50%; pointer-events: none; }
+.inst.hw .hw-jk[data-lit="on"] > .hw-jk-ring { border-color: var(--hot); }
+.inst.hw .hw-jk > .hw-jk-cord { display: none; position: absolute; left: 35%; top: 50%; width: 30%; height: 150%; border-radius: 3px; background: #c4442f;
+  transform: rotate(28deg); transform-origin: 50% 0; pointer-events: none; }
+.inst.hw .hw-jk[data-lit="on"] > .hw-jk-cord { display: block; }
+/* live displays: an LED following a control, a numeric display */
+.inst.hw .hw-show { position: absolute; border-radius: 50%; background: #2a0d0b; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.5); }
+.inst.hw .hw-show[data-lit="on"] { background: var(--led-c, #ff3b2a); box-shadow: 0 0 6px var(--led-c, #ff3b2a); }
+.inst.hw .hw-dsp { position: absolute; display: flex; align-items: center; justify-content: center; border-radius: 2px; background: #140606;
+  color: var(--dsp-c, #ff3b2a); font: 700 20px/1 var(--mono); white-space: pre; }
+/* the special areas: TB-303 (a RUN / STOP state text for screen readers, the step cursor in the extras grid), DX7
+   (the selected parameter's ring, dimmed buttons this mode leaves dead, the 16 × 2 LCD, the algorithm chart) */
+.inst.hw .hw-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.inst.hw .hw-xcell { position: absolute; display: flex; align-items: center; justify-content: flex-start; }
+.inst.hw .hw-xcell > .steps { flex: 1 1 auto; }
+.inst.hw .hw-extras .step.cur { box-shadow: 0 0 0 2px var(--hot) inset; }
+.inst.hw .hw-extras .seqbtn { background: #1a1d22; border-color: #343941; color: var(--text); }
+.inst.hw .hw-extras .seqnum label { color: var(--mute); }
+.inst.hw .hw-dxb[data-sel] { box-shadow: 0 0 0 2px var(--hot), 0 1px 2px rgba(0, 0, 0, 0.6); }
+.inst.hw .hw-dxb[data-off] { filter: saturate(0.55) brightness(0.8); }
+.inst.hw .hw-lcd { position: absolute; display: flex; flex-direction: column; justify-content: center; padding: 0 6px; border-radius: 2px;
+  background: linear-gradient(#a9b59a, #95a387); color: #1d2418; font: 600 var(--lcd-fs, 14px)/1.25 var(--mono); white-space: pre; overflow: hidden; box-shadow: inset 0 0 0 2px #3a4234; }
+.inst.hw .hw-chart { position: absolute; }
+.inst.hw .hw-chart svg { display: block; overflow: visible; }
+.inst.hw .hw-chart .hw-ch-e { fill: none; stroke: var(--hw-legend, #ddd); stroke-width: 0.8; opacity: 0.6; }
+.inst.hw .hw-chart .hw-ch-o { fill: none; stroke: var(--hw-legend, #ddd); stroke-width: 0.8; }
+.inst.hw .hw-chart .hw-ch-c { fill: var(--hw-legend, #ddd); }
+.inst.hw .hw-chart .hw-ch-n { fill: var(--hw-legend, #ddd); font: 600 7px var(--mono); text-anchor: middle; }
+.inst.hw .hw-chart g[data-on] .hw-ch-o, .inst.hw .hw-chart g[data-on] .hw-ch-e { stroke: var(--hot); opacity: 1; }
+.inst.hw .hw-chart g[data-on] .hw-ch-c, .inst.hw .hw-chart g[data-on] .hw-ch-n { fill: var(--hot); }
+/* the instrument module's chip on a classic track: ◀ preset ▶ (the Hardware panel has no preset plate) */
+.cv-pchip { display: inline-flex; align-items: center; gap: 2px; min-width: 0; }
+.cv-pstep { flex: 0 0 auto; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent;
+  color: var(--mute); font-size: 11px; line-height: 1; -webkit-tap-highlight-color: transparent; }
+.cv-pstep:hover, .cv-pstep:focus-visible { background: #252930; color: var(--text); outline: none; }
+/* the extras strip: ours, never the hardware's (the app's dark surface, a top rule, the caption, today's widgets) */
+.inst.hw > .hw-extras { position: absolute; background: #101216; border-top: 1px solid #2a2e35; color: var(--text); font-family: var(--ui); }
+.inst.hw > .hw-extras.hw-xnote { background: none; border-top: 0; }
+.inst.hw .hw-xcap { position: absolute; left: 8px; top: 2px; font: 600 9px/12px var(--ui); letter-spacing: 0.08em; text-transform: uppercase; color: var(--mute); white-space: nowrap; }
+.inst.hw .hw-extras.hw-xnote .hw-xcap { color: rgba(242, 239, 230, 0.55); }
+.inst.hw .hw-extras > .ctl { position: absolute; justify-content: flex-start; padding-top: 2px; }
+.inst.hw .hw-extras .knob { width: 40px; height: 40px; }
+.inst.hw .hw-extras .ctl > label { margin-top: 2px; }
+.inst.hw .hw-extras .sel { flex-direction: row; }
+/* (the app's own ink there: a light hardware theme's --label / --ink and its pale widget faces, .m-tb303 .tog, are the panel's) */
+.inst.hw > .hw-extras { --ink: #eee; --label: #ccc; }
+.inst.hw .hw-extras .sel .opt, .inst.hw .hw-extras .tog { background: rgba(0, 0, 0, 0.3); }
+
 /* ===================================================================== cv-module (MODULES lane, stage 1b; IMPL-1b §2.2)
-   .cv-mod chrome (bar, body, jacks, fold, resize grip, card), cable layers (strokes from --ik), OUT. Only the MODULES lane
+   .cv-mod chrome (bar, body, jacks, fold, resize grip), cable layers (strokes from --ik), OUT. Only the MODULES lane
    edits below this marker (it stays the last section of the file). */
 /* the module: its ring is a box-shadow (a folded module is exactly the 40 px bar; jack offsets are pure geometry);
    contain: paint sits on the body, since the jacks' hit circles and the bar's upward hit extension lie outside the box */
@@ -851,7 +973,9 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 @media (prefers-reduced-motion: reduce) { .cv-fold svg { transition: none; } }
 /* body: the existing panel, framed by the module's ring */
 .cv-body { position: relative; contain: layout paint style; overflow: clip; border-radius: 0 0 12px 12px; }
-.cv-mod[data-cv-fold] .cv-body, .cv-mod[data-cv-fold] .cv-card, .cv-mod[data-cv-view="card"] .cv-body { display: none; }
+.cv-mod[data-cv-fold] .cv-body { display: none; }
+/* off screen (cv-world's plan): nothing visible changes — CSS animations pause (Z1: no cards, nothing hidden at any zoom) */
+.cv-mod[data-cv-off] * { animation-play-state: paused; }
 .cv-body > .inst { border-radius: 0 0 12px 12px; box-shadow: none; }
 .cv-body > .inst.wood { margin: 0 22px; border-radius: 0; }
 .cv-body > .inst.custom .sx-root { border-radius: 0 0 12px 12px; box-shadow: none; }
@@ -859,13 +983,6 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-out { padding: 10px; background: #0b0d0f; }
 .cv-out .scope { min-height: 0; height: 200px; border-radius: 8px; }
 .cv-out .scope canvas { min-height: 0; height: 100%; }
-/* card (below CARD_K, or culled): the drawing and the name, on the body's last footprint so nothing moves */
-.cv-card { display: none; }
-.cv-mod[data-cv-view="card"]:not([data-cv-fold]) .cv-card { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
-  padding: 24px; border-radius: 0 0 12px 12px; background: radial-gradient(120% 90% at 50% 40%, #181b21, #0f1114); }
-.cv-art svg { display: block; width: 320px; max-width: 100%; height: auto; }
-.cv-cardname { font-size: 40px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: #d9d6cf; text-align: center; }
-.cv-mod[data-cv-why="budget"] .cv-card::after { content: 'zoom in to edit'; font-size: 22px; color: var(--mute); }
 /* jacks on the edges: the dot is 16 world px, the hit circle 44 screen px at any zoom */
 .cv-jack { position: absolute; z-index: 3; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%;
   background: radial-gradient(circle, #07080a 0 3.5px, var(--mc) 4px 6px, #2e333b 6.5px); box-shadow: 0 0 0 1.5px #0c0d0f, 0 2px 6px rgba(0, 0, 0, 0.6); }
@@ -879,7 +996,7 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-grip::after { content: ''; position: absolute; top: 50%; left: 50%; width: 4px; height: 48px; margin: -24px 0 0 -2px; border-radius: 2px; background: #59606b;
   opacity: 0; transition: opacity 0.15s; }
 .cv-mod:hover > .cv-grip::after, .cv-mod.cv-sizing > .cv-grip::after, .cv-grip:focus-visible::after { opacity: 1; }
-.cv-mod[data-cv-fold] > .cv-grip, .cv-mod[data-cv-view="card"] > .cv-grip { display: none; }
+.cv-mod[data-cv-fold] > .cv-grip, .cv-mod[data-cv-fixed] > .cv-grip { display: none; } /* a Hardware layout: fixed size, no grip */
 @media (pointer: coarse) { .cv-grip::after { opacity: 0.6; } }
 /* cables: two SVG layers in #world (under the modules; ends above), strokes from --ik (never vector-effect) */
 svg.cv-cables, svg.cv-cable-ends { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }

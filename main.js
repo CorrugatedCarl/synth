@@ -19,6 +19,8 @@ import * as cvArt from './cv-art.js?v=9';
 import * as cvWorld from './cv-world.js?v=9';
 import * as cvModule from './cv-module.js?v=9';
 import * as cvCables from './cv-cables.js?v=9';
+// the hardware front panels (docs/canvas/IMPL-panels.md, ENGINE lane): fixed-size classic instruments, Hardware / Resizable
+import * as cvPanel from './cv-panel.js?v=9';
 import { fitCanvas } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom)
 
 const VERSION = '9';
@@ -1255,8 +1257,20 @@ function selectTrack(id) {
 }
 
 /* ------------------------------------------------------------ panel */
+// A classic instrument shows its Hardware layout (cv-panel: the real front panel, fixed size) unless the track chose the
+// Resizable one (track.lay.i1.ui === 'flow': today's flowing sections, the width grip). A model whose hardware panel is
+// not drawn yet (or fails validation) shows today's panel in either; in Hardware it keeps a fixed width (IMPL-panels §7).
+const hwLayoutOf = m => (m && !m.custom ? cvPanel.usable(m.id, m) : null);
+function instUi(t) {
+  if (!t || isSx(t)) return 'flow';
+  const e = t.lay && typeof t.lay === 'object' ? t.lay[cvModule.ID.inst] : null;
+  return e && e.ui === 'flow' ? 'flow' : 'hw';
+}
+let hwPanel = null; // the rendered hardware panel ({w, h, destroy}) or null
 function renderPanel() {
   ui.clear();
+  if (hwPanel) { hwPanel.destroy(); hwPanel = null; }
+  { const el = $('#inst'); el.removeAttribute('style'); el.removeAttribute('data-hw'); el.removeAttribute('data-ptr'); el.removeAttribute('data-knurl'); el.removeAttribute('data-cap'); } // (a hardware panel's size and --hw-* go)
   if (model.custom) { renderCustom($('#inst')); cvPanelDone(); return; }
   sxPanel.drop();
   const th = model.theme, el = $('#inst');
@@ -1264,6 +1278,16 @@ function renderPanel() {
   const vars = { panel: th.panel, face: th.face, ink: th.ink, label: th.label, accent: th.accent, cap: th.cap || '#eee', capline: th.capLine || '#111' };
   for (const k in vars) el.style.setProperty('--' + k, vars[k]);
   el.innerHTML = '';
+  const L = instUi(trk()) === 'hw' ? hwLayoutOf(model) : null;
+  if (L) { // the hardware front panel: presets through the module's chip (◀ ▶) and its ⋯ menu (Save / Delete / Init)
+    syncPresetSel = () => cvChipSync();
+    hwPanel = cvPanel.render(el, L, model, hwApi());
+    $('#about-title').textContent = `${model.maker} ${model.name} (${model.year})`;
+    $('#about').textContent = model.about;
+    drawAlgo();
+    cvPanelDone();
+    return;
+  }
   const plate = h('div', 'plate');
   const nm = h('div', 'nameplate');
   nm.append(h('div', 'maker', model.maker), h('div', 'mname', model.name), h('div', 'mmodel', `${model.model} · ${model.year} · track “${trk().name}”`));
@@ -1292,6 +1316,7 @@ function renderPanel() {
 function control(c, si) {
   const th = model.theme;
   const wrap = h('div', 'ctl t-' + c.t);
+  wrap.setAttribute('data-ctl', c.id); // (one live widget per models.js id in either layout: presets, undo, 2b's mod menus)
   let el;
   if (c.t === 'k') el = th.ctl === 'slider' ? slider(c, si) : th.ctl === 'num' ? numBox(c) : knob(c);
   else if (c.t === 's') el = selector(c);
@@ -1314,30 +1339,33 @@ function ariaVal(el, c) {
   el.setAttribute('aria-valuemin', c.min); el.setAttribute('aria-valuemax', c.max);
   el.setAttribute('aria-valuenow', vals[c.id]); el.setAttribute('aria-valuetext', fmt(c, vals[c.id]));
 }
-function knob(c) {
-  const el = h('div', 'knob');
+function knob(c) { // c.sweep (a hardware panel's printed dial, deg; default 270)
+  const el = h('div', 'knob'), sw = c.sweep > 0 ? +c.sweep : 270;
   el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', c.label);
   el.innerHTML = `<svg viewBox="0 0 64 64"><g class="ticks">${TICKS}</g><circle class="skirt" cx="32" cy="32" r="25"/><g class="rot"><circle class="cap" cx="32" cy="32" r="17.5"/><circle class="shine" cx="32" cy="32" r="17.5"/><line class="ind" x1="32" y1="9" x2="32" y2="21"/></g></svg>`;
   const rot = el.querySelector('.rot');
   const upd = () => {
-    rot.setAttribute('transform', `rotate(${(-135 + 270 * toPos(c, vals[c.id])).toFixed(2)} 32 32)`);
+    rot.setAttribute('transform', `rotate(${(-sw / 2 + sw * toPos(c, vals[c.id])).toFixed(2)} 32 32)`);
     ariaVal(el, c);
   };
   ui.set(c.id, upd); upd();
   drag(el, c);
   return el;
 }
-function slider(c, si) {
+function slider(c, si) { // c.orient 'h' (the cap moves along x), c.invert (minimum at the top / right), c.capColor, c.hw (a hardware panel's)
   const th = model.theme;
   const el = h('div', 'slider');
   el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', c.label);
+  if (c.orient === 'h') el.setAttribute('data-orient', 'h');
   const ticks = h('div', 'sticks');
   for (let i = 0; i <= 10; i++) ticks.append(h('i'));
   const cap = h('div', 'cap');
-  if (th.capColors) cap.style.background = th.capColors[si % th.capColors.length];
+  if (c.capColor) cap.style.background = c.capColor;
+  else if (th.capColors && !c.hw) cap.style.background = th.capColors[si % th.capColors.length];
   el.append(h('div', 'groove'), ticks, cap);
-  const upd = () => {
-    cap.style.bottom = `calc(${toPos(c, vals[c.id]).toFixed(4)} * (100% - 14px))`;
+  const upd = () => { // the cap's travel: the slot less the cap (--cap-h on a hardware panel, 14 px here)
+    const p = toPos(c, vals[c.id]), q = (c.invert ? 1 - p : p).toFixed(4);
+    if (c.orient === 'h') cap.style.left = `calc(${q} * (100% - var(--cap-h, 14px)))`; else cap.style.bottom = `calc(${q} * (100% - var(--cap-h, 14px)))`;
     ariaVal(el, c);
   };
   ui.set(c.id, upd); upd();
@@ -1382,13 +1410,56 @@ function toggle(c) {
   return b;
 }
 
+// the hardware panel's view of this page (cv-panel render: IMPL-panels §4.4): values, the ui map, today's widgets and drag
+function hwApi() {
+  return {
+    doc: document, model,
+    get: id => vals[id], set: (id, v) => setVal(id, v),
+    watch: (id, fn) => { const prev = ui.get(id); ui.set(id, prev ? () => { prev(); fn(); } : fn); }, // (setVal, refreshAll, presets, undo)
+    bind: bindingOf, knob, slider, selector, toggle, dragB, track, noMenu, hoverable, wheelIn, wheelStep,
+    tap: (el, fn) => { // a mouse at the press, a finger on its tap's release; Enter / Space (a keyboard click: detail 0)
+      pressOrTap(el, e => e.button === 0 && !e.ctrlKey, fn);
+      el.addEventListener('click', e => { if (e.detail === 0) fn(e); });
+      noMenu(el);
+    },
+    tip: (el, text) => tipText(el, text), untip: ms => hideTip(ms),
+    fmt: (c, v) => fmt(c, v),
+    presetNo: () => { const c = presetCur(); return c && /^f\d+$/.test(c.key) ? +c.key.slice(1) + 1 : null; }, // the factory number (1-based)
+    seq: model.id === 'tb303' ? hwSeq(trk()) : null,
+    dx: model.id === 'dx7' ? hwDx(trk()) : null,
+  };
+}
+// the TB-303's hardware step entry (IMPL-panels §6.2): a step cursor and PITCH / TIME mode per track (session only, never
+// in the project) over seqParts; onChange: the face's LEDs follow every pattern edit (keys, the grid, Clear, Randomise)
+const seqHw = new Map(); // track id → { cur, mode }
+function hwSeq(tr) {
+  let st = seqHw.get(tr.id);
+  if (!st) seqHw.set(tr.id, st = { cur: 0, mode: 'pitch' });
+  const fns = new Set(), changed = () => { for (const f of fns) f(); };
+  const P = seqParts(tr, { cursor: { get: () => st.cur, set: i => { st.cur = i; P.redraw(); changed(); } }, onChange: changed });
+  return Object.assign(P, { state: st, changed, onChange: fn => fns.add(fn) });
+}
+// the DX7's select-and-set workflow (IMPL-panels §6.3): {op, param (the button), eg, mode} per track, session only
+const dxHw = new Map(); // track id → { op, param, eg, mode }
+function hwDx(tr) {
+  let st = dxHw.get(tr.id);
+  if (!st) dxHw.set(tr.id, st = { op: 1, param: 7, eg: 1, mode: 'edit' });
+  const m = modelById(tr.model);
+  return {
+    state: st, algs: DX_ALGS, layout: algoLayout, presets: m.presets.length,
+    load: n => { if (trk().model === m.id) presetLoad('f' + (n - 1)); },
+    presetName: () => trk().preset,
+  };
+}
+
 /* tooltip */
 const tip = $('#tip');
 let tipHide;
-function showTip(el, c) {
+function showTip(el, c) { tipText(el, `${c.label}: ${fmt(c, vals[c.id])}`); }
+function tipText(el, text) { // #tip with free text over el (screen px: right under the canvas transform too)
   clearTimeout(tipHide);
   const r = el.getBoundingClientRect();
-  tip.textContent = `${c.label}: ${fmt(c, vals[c.id])}`;
+  tip.textContent = text;
   tip.style.left = (r.left + r.width / 2) + 'px';
   tip.style.top = (r.top - 6) + 'px';
   tip.classList.add('show');
@@ -1449,52 +1520,84 @@ function wheelStep(el, w) { // whole steps (+ = up): one per mouse notch, one pe
   const n = Math.trunc(a.v / 40); a.v -= n * 40;
   return -n;
 }
-function drag(el, c) {
-  let dragging = false;
+// A control's Binding (IMPL-panels §5.4): what a drag, the wheel and the keys read and write. bindingOf(c) is a models.js
+// control's; a hardware panel's detented widgets bind over positions (cv-panel) on top of it. snap() / restore(token):
+// the two-finger rollback (the value and the preset name back).
+function bindingOf(c) {
+  return {
+    id: c.id, label: c.label, min: c.min, max: c.max, step: c.step, def: c.def, axis: c.orient === 'h' ? 'x' : 'y', invert: !!c.invert,
+    get: () => vals[c.id], set: v => setVal(c.id, v), fmt: v => fmt(c, v),
+    snap: () => { const tr = trk(); return { tr, v0: vals[c.id], pre0: tr.preset }; },
+    restore: k => {
+      if (trk() !== k.tr) return;
+      if (vals[c.id] !== k.v0) setVal(c.id, k.v0);
+      if (k.tr.preset !== k.pre0) { k.tr.preset = k.pre0; renderHeads(); persist(); }
+    },
+  };
+}
+const posB = (b, v) => (v - b.min) / ((b.max - b.min) || 1);
+function fromPosB(b, p) {
+  let v = b.min + clamp(p, 0, 1) * (b.max - b.min);
+  if (b.step) v = Math.round(v / b.step) * b.step;
+  return +v.toFixed(4);
+}
+const tipB = (el, b) => tipText(el, `${b.label}: ${b.fmt(b.get())}`);
+function drag(el, c) { dragB(el, bindingOf(c)); }
+// The drag of a knob / slider / number over a Binding: relative travel along b.axis (y: up = more; x: right = more;
+// b.invert flips it) accumulated per move, Shift = fine, the tip, double-click = b.def, the wheel (wheelIn / wheelStep
+// with the canvas veto), arrow / Page / Home / End keys, a two-finger pointercancel → b.restore. o.tap: a press that ends
+// where it began (≤ 4 px mouse, 10 px touch) without a change — a hardware switch steps on it.
+function dragB(el, b, o = {}) {
+  let dragging = false, cancelled = false;
   noMenu(el); hoverable(el);
   el.addEventListener('pointerdown', e => {
     if (e.button !== 0 || e.ctrlKey) return;
     e.preventDefault(); el.focus({ preventScroll: true });
-    dragging = true;
-    let p = toPos(c, vals[c.id]), yPrev = e.clientY; // accumulate per move, so pressing Shift mid-drag doesn't rescale what was already dragged
-    const range = c.step ? (c.max - c.min) / c.step : 100;
+    dragging = true; cancelled = false;
+    const X = b.axis === 'x', at = ev => (X ? ev.clientX : -ev.clientY) * (b.invert ? -1 : 1);
+    let p = posB(b, b.get()), prev = at(e); // accumulate per move, so pressing Shift mid-drag doesn't rescale what was already dragged
+    const range = b.step ? (b.max - b.min) / b.step : 100;
     const base = range > 40 ? 0.0045 : Math.max(0.0045, 1 / (range * 22));
-    showTip(el, c);
-    const tr = trk(), v0 = vals[c.id], pre0 = tr.preset; // (a two-finger rollback puts both back: the preset stays named)
+    tipB(el, b);
+    const k = b.snap(), v0 = b.get(), x0 = e.clientX, y0 = e.clientY, slop = e.pointerType === 'touch' ? 10 : 4;
+    let far = false;
     track(el, e, ev => {
-      p = clamp(p + (yPrev - ev.clientY) * (ev.shiftKey ? base * 0.2 : base), 0, 1); yPrev = ev.clientY;
-      const v = fromPos(c, p);
-      if (v !== vals[c.id]) setVal(c.id, v);
-      showTip(el, c);
-    }, () => { dragging = false; hideTip(400); }, () => {
-      if (trk() !== tr) return;
-      if (vals[c.id] !== v0) setVal(c.id, v0);
-      if (tr.preset !== pre0) { tr.preset = pre0; renderHeads(); persist(); }
-    });
+      if (!far && Math.hypot(ev.clientX - x0, ev.clientY - y0) > slop) far = true;
+      const a = at(ev);
+      p = clamp(p + (a - prev) * (ev.shiftKey ? base * 0.2 : base), 0, 1); prev = a;
+      const v = fromPosB(b, p);
+      if (v !== b.get()) b.set(v);
+      tipB(el, b);
+    }, () => {
+      dragging = false; hideTip(400);
+      if (o.tap && !far && !cancelled && b.get() === v0) o.tap();
+    }, () => b.restore(k));
   });
-  el.addEventListener('dblclick', () => { setVal(c.id, c.def); showTip(el, c); hideTip(800); });
+  if (o.tap) el.addEventListener('pointercancel', () => { cancelled = true; }, true); // (a cancelled press is never a tap)
+  el.addEventListener('dblclick', () => { b.set(b.def); tipB(el, b); hideTip(800); });
   el.addEventListener('wheel', e => {
     const w = wheelIn(el, e); if (!w) return;
     let v;
-    if (c.step) { const n = wheelStep(el, w); if (!n) return; v = clamp(Math.round(vals[c.id] / c.step + n) * c.step, c.min, c.max); v = +v.toFixed(4); }
-    else v = fromPos(c, toPos(c, vals[c.id]) + (w.notch ? -Math.sign(w.px) * 0.01 : clamp(-w.px * 0.001, -0.02, 0.02)) * (e.shiftKey ? 0.2 : 1));
-    if (v !== vals[c.id]) setVal(c.id, v);
-    showTip(el, c); hideTip(700);
+    if (b.step) { const n = wheelStep(el, w); if (!n) return; v = clamp(Math.round(b.get() / b.step + n) * b.step, b.min, b.max); v = +v.toFixed(4); }
+    else v = fromPosB(b, posB(b, b.get()) + (w.notch ? -Math.sign(w.px) * 0.01 : clamp(-w.px * 0.001, -0.02, 0.02)) * (e.shiftKey ? 0.2 : 1));
+    if (v !== b.get()) b.set(v);
+    tipB(el, b); hideTip(700);
   }, { passive: false });
   el.addEventListener('keydown', e => {
-    const st = c.step ? c.step / (c.max - c.min) : (e.shiftKey ? 0.002 : 0.02), k = e.key;
+    const st = b.step ? b.step / ((b.max - b.min) || 1) : (e.shiftKey ? 0.002 : 0.02), k = e.key;
     let v;
-    if (k === 'ArrowUp' || k === 'ArrowRight') v = fromPos(c, toPos(c, vals[c.id]) + st);
-    else if (k === 'ArrowDown' || k === 'ArrowLeft') v = fromPos(c, toPos(c, vals[c.id]) - st);
-    else if (k === 'PageUp' || k === 'PageDown') v = fromPos(c, toPos(c, vals[c.id]) + (k === 'PageUp' ? 1 : -1) * Math.max(st, 0.1));
-    else if (k === 'Home') v = c.min;
-    else if (k === 'End') v = c.max;
+    if (k === 'ArrowUp' || k === 'ArrowRight') v = fromPosB(b, posB(b, b.get()) + st);
+    else if (k === 'ArrowDown' || k === 'ArrowLeft') v = fromPosB(b, posB(b, b.get()) - st);
+    else if (k === 'PageUp' || k === 'PageDown') v = fromPosB(b, posB(b, b.get()) + (k === 'PageUp' ? 1 : -1) * Math.max(st, 0.1));
+    else if (k === 'Home') v = b.min;
+    else if (k === 'End') v = b.max;
+    else if (o.tap && (k === 'Enter' || k === ' ')) { e.preventDefault(); o.tap(); return; }
     else return;
     e.preventDefault(); e.stopPropagation();
-    setVal(c.id, v);
-    showTip(el, c); hideTip(700);
+    b.set(v);
+    tipB(el, b); hideTip(700);
   });
-  el.addEventListener('pointerenter', () => { if (!dragging) showTip(el, c); });
+  el.addEventListener('pointerenter', () => { if (!dragging) tipB(el, b); });
   el.addEventListener('pointerleave', () => { if (!dragging) hideTip(); });
   el.addEventListener('blur', () => { if (!dragging) hideTip(); });
 }
@@ -1509,11 +1612,49 @@ function applyPreset(tr, p) {
   const m = modelById(tr.model);
   tr.vals = Object.assign(defaults(m), p.v);
   tr.preset = p.name;
-  if (tr.id === project.selTrack) { bind(); refreshAll(); syncPresetSel(p.key); }
+  if (tr.id === project.selTrack) { presetKey = p.key || null; bind(); refreshAll(); syncPresetSel(p.key); }
   sendPatch(tr); renderHeads(); persist();
 }
 let syncPresetSel = () => {};
-function presetUI() {
+// The preset actions, shared by the Resizable panel's preset plate, the module chip (◀ ▶) and its ⋯ menu (Save / Delete /
+// Init: the Hardware panel has no plate; IMPL-panels §7.4). The current entry: the one last loaded (presetKey), else the
+// first with the track's preset name.
+let presetKey = null;
+function presetCur(m = model) { const l = presetList(m), t = trk(); return l.find(x => x.key === presetKey && x.name === t.preset) || l.find(x => x.name === t.preset) || null; }
+function presetLoad(key) { const p = presetList(model).find(x => x.key === key); if (p) { presetKey = key; applyPreset(trk(), p); } return !!p; }
+function presetStep(d) { // ◀ ▶: from the blank / Custom entry, ▶ the first, ◀ the last
+  const keys = presetList(model).map(p => p.key);
+  if (!keys.length) return;
+  const cur = presetCur();
+  let i = cur ? keys.indexOf(cur.key) : -1;
+  i = i < 0 ? (d > 0 ? 0 : keys.length - 1) : (i + d + keys.length) % keys.length;
+  presetLoad(keys[i]);
+}
+function presetSave() {
+  const cur = presetCur();
+  const name = (prompt('Name this sound:', trk().preset && cur && /^u\d+$/.test(cur.key) ? trk().preset : 'My ' + model.name + ' sound') || '').trim();
+  if (!name) return;
+  const up = userPresets(), i = up.findIndex(p => p.name === name);
+  if (i >= 0 && !confirm(`Replace the saved sound “${name}”?`)) return;
+  if (i >= 0) up[i] = { name, v: Object.assign({}, vals) }; else up.push({ name, v: Object.assign({}, vals) });
+  store.set('synth.user.' + model.id, up);
+  trk().preset = name; presetKey = 'u' + (i >= 0 ? i : up.length - 1);
+  syncPresetSel(presetKey); renderHeads(); persist();
+}
+const presetSaved = () => { const c = presetCur(); return c && /^u\d+$/.test(c.key) ? c : null; }; // a saved sound is loaded
+function presetDelete() {
+  const c = presetSaved(), m = c && /^u(\d+)$/.exec(c.key);
+  if (!m) return;
+  const up = userPresets(), p = up[+m[1]];
+  if (!p || !confirm(`Delete the saved sound “${p.name}”?`)) return;
+  up.splice(+m[1], 1);
+  store.set('synth.user.' + model.id, up);
+  if (trk().preset === p.name) trk().preset = null;
+  presetKey = null;
+  syncPresetSel(); renderHeads(); persist();
+}
+function presetInit() { presetKey = null; applyPreset(trk(), { name: null, v: {} }); }
+function presetUI() { // the Resizable panel's preset plate
   const w = h('div', 'presets');
   const sel = h('select'); sel.setAttribute('aria-label', 'Preset');
   const fill = () => {
@@ -1529,42 +1670,18 @@ function presetUI() {
   const del = h('button', null, 'Delete'); del.type = 'button'; del.title = 'Delete the selected saved sound';
   const delUI = () => { del.hidden = !/^u\d+$/.test(sel.value); };
   syncPresetSel = key => { // the entry just loaded (key), else the first one with the track's preset name
-    const l = presetList(model), p = l.find(x => x.key === key && x.name === trk().preset) || l.find(x => x.name === trk().preset);
+    if (key) presetKey = key;
+    fill();
+    const p = presetCur();
     sel.value = p ? p.key : ''; delUI();
   };
-  const load = key => { const p = presetList(model).find(x => x.key === key); if (p) applyPreset(trk(), p); delUI(); };
-  sel.onchange = () => load(sel.value);
-  const step = d => {
-    const keys = [...sel.querySelectorAll('option')].map(o => o.value).filter(Boolean);
-    if (!keys.length) return;
-    let i = keys.indexOf(sel.value);
-    i = i < 0 ? (d > 0 ? 0 : keys.length - 1) : (i + d + keys.length) % keys.length; // from the blank entry: ▶ first, ◀ last
-    sel.value = keys[i]; load(keys[i]);
-  };
-  const prev = h('button', null, '◀'); prev.type = 'button'; prev.title = 'Previous preset'; prev.onclick = () => step(-1);
-  const next = h('button', null, '▶'); next.type = 'button'; next.title = 'Next preset'; next.onclick = () => step(1);
-  const save = h('button', null, 'Save'); save.type = 'button';
-  save.onclick = () => {
-    const name = (prompt('Name this sound:', trk().preset && /^u\d+$/.test(sel.value) ? trk().preset : 'My ' + model.name + ' sound') || '').trim();
-    if (!name) return;
-    const up = userPresets(), i = up.findIndex(p => p.name === name);
-    if (i >= 0 && !confirm(`Replace the saved sound “${name}”?`)) return;
-    if (i >= 0) up[i] = { name, v: Object.assign({}, vals) }; else up.push({ name, v: Object.assign({}, vals) });
-    store.set('synth.user.' + model.id, up);
-    trk().preset = name;
-    fill(); syncPresetSel('u' + (i >= 0 ? i : up.length - 1)); renderHeads(); persist();
-  };
-  del.onclick = () => {
-    const m = /^u(\d+)$/.exec(sel.value); if (!m) return;
-    const up = userPresets(), p = up[+m[1]];
-    if (!p || !confirm(`Delete the saved sound “${p.name}”?`)) return;
-    up.splice(+m[1], 1);
-    store.set('synth.user.' + model.id, up);
-    if (trk().preset === p.name) trk().preset = null;
-    fill(); syncPresetSel(); renderHeads(); persist();
-  };
+  sel.onchange = () => { presetLoad(sel.value); delUI(); };
+  const prev = h('button', null, '◀'); prev.type = 'button'; prev.title = 'Previous preset'; prev.onclick = () => presetStep(-1);
+  const next = h('button', null, '▶'); next.type = 'button'; next.title = 'Next preset'; next.onclick = () => presetStep(1);
+  const save = h('button', null, 'Save'); save.type = 'button'; save.onclick = presetSave;
+  del.onclick = presetDelete;
   const init = h('button', null, 'Init'); init.type = 'button'; init.title = 'Reset every control to its default';
-  init.onclick = () => applyPreset(trk(), { name: null, v: {} });
+  init.onclick = presetInit;
   w.append(prev, sel, next, save, del, init);
   syncPresetSel();
   return w;
@@ -1637,7 +1754,7 @@ const userTables = s => (s ? userIdsOf(s) : []);
 const userSmps = (s, fx) => userAssetIds(s || null, fx || null);
 
 // snapshot / FX meter subscriptions (smon, §11.6; SPEC-canvas §9.3): the Serum panel and the FX rack while their canvas
-// modules show their bodies (cvLive: the CANVAS view, not a card, not folded), never for a hidden page
+// modules are live (cvLive: the CANVAS view, on screen, not folded), never for a hidden page
 const monitors = {
   sx: new Set(), on: new Map(),
   wanted(id) {
@@ -2456,6 +2573,7 @@ function seqToggle(tr, on, quiet) {
   if (tr.id === project.selTrack && !quiet) {
     const b = $('#seqrun'); if (b) { b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.lastChild.textContent = on ? 'Stop' : 'Run'; }
     if (!on) for (const e of stepEls) e.classList.remove('now');
+    const u = ui.get('@seqrun'); if (u) u(); // (a hardware panel's RUN LED)
   }
   if (on && !ctx) powerOn().then(() => { if (seqRun.has(tr.id)) seqSend(tr); }).catch(() => {}); // Stop pressed while starting wins
   else seqSend(tr, { run: on });
@@ -2467,13 +2585,14 @@ function seqRandom(q) {
     Math.random() < 0.3 ? 1 : 0, Math.random() < 0.22 ? 1 : 0, Math.random() < 0.82 ? 1 : 0));
   q.pat[0].g = 1;
 }
-function seqUI(tr) {
+// The TB-303 sequencer's parts (IMPL-panels §6.2): the Resizable panel composes them as today (seqUI: same DOM, ids,
+// classes); the Hardware panel puts RUN / TEMPO / CLEAR and the step keys on the face (cv-panel, through hwApi().seq) and
+// the rest in its extras strip. o.cursor {get(), set(i)}: the hardware step cursor (the grid marks it, a tap on a column's
+// number or background moves it); o.onChange: after any pattern edit made here (the hardware LEDs follow).
+function seqParts(tr, o = {}) {
   stepEls.length = 0;
   const q = seqOf(tr);
   const send = () => seqSend(tr);
-  const sec = h('div', 'sec seq');
-  sec.append(h('h3', null, 'Pattern Sequencer'));
-  const bar = h('div', 'seqbar');
   const running = seqRun.has(tr.id);
   const run = h('button', 'seqbtn run'); run.id = 'seqrun'; run.type = 'button';
   run.append(h('span', 'led'), h('span', null, running ? 'Stop' : 'Run'));
@@ -2482,7 +2601,7 @@ function seqUI(tr) {
   run.onclick = () => seqToggle(tr, !seqRun.has(tr.id));
   const sync = h('button', 'seqbtn'); sync.type = 'button';
   sync.title = 'Lock the pattern to the song transport: it plays whenever the song plays, at the song tempo';
-  const syncDraw = () => { sync.textContent = q.sync ? '⛓ Synced to song' : 'Sync to song'; sync.classList.toggle('on', !!q.sync); run.disabled = !!q.sync; };
+  const syncDraw = () => { sync.textContent = q.sync ? '⛓ Synced to song' : 'Sync to song'; sync.classList.toggle('on', !!q.sync); run.disabled = !!q.sync; const u = ui.get('@seqrun'); if (u) u(); };
   syncDraw();
   sync.onclick = () => { q.sync = !q.sync; if (q.sync) seqToggle(tr, false); syncDraw(); send(); };
   const numCtl = (label, get, set, min, max, unit) => {
@@ -2511,11 +2630,13 @@ function seqUI(tr) {
   };
   const steps = h('div', 'steps');
   const redraw = [];
-  const rnd = h('button', 'seqbtn', 'Randomise'); rnd.type = 'button'; rnd.onclick = () => { seqRandom(q); redraw.forEach(f => f()); send(); };
+  const all = () => { redraw.forEach(f => f()); if (o.onChange) o.onChange(); };
+  const clear = () => { q.pat = q.pat.map(() => st(0, 0, 0, 0, 1)); all(); send(); };
+  const rnd = h('button', 'seqbtn', 'Randomise'); rnd.type = 'button'; rnd.onclick = () => { seqRandom(q); all(); send(); };
   const clr = h('button', 'seqbtn', 'Clear'); clr.type = 'button';
-  clr.onclick = () => { q.pat = q.pat.map(() => st(0, 0, 0, 0, 1)); redraw.forEach(f => f()); send(); };
+  clr.onclick = clear;
   const dflt = h('button', 'seqbtn', 'Demo'); dflt.type = 'button';
-  dflt.onclick = () => { q.pat = JSON.parse(JSON.stringify(SEQ_DEF.pat)); redraw.forEach(f => f()); send(); };
+  dflt.onclick = () => { q.pat = JSON.parse(JSON.stringify(SEQ_DEF.pat)); all(); send(); };
   const toRoll = h('button', 'seqbtn', '→ Piano roll'); toRoll.type = 'button';
   toRoll.title = 'Write this pattern into the track as notes (1 bar at the playhead) so you can edit and arrange it';
   toRoll.onclick = () => edit('Pattern to notes', () => {
@@ -2530,23 +2651,26 @@ function seqUI(tr) {
       prev = { note, slide: !!s.s };
     });
   }, [tr]);
-  bar.append(run, sync, numCtl('Tempo', () => q.bpm, v => { q.bpm = v; }, 40, 220, ''), numCtl('Swing', () => q.swing, v => { q.swing = v; }, 0, 50, '%'), rnd, dflt, clr, toRoll,
-    h('span', 'seqhint', 'Drag a note up/down · ACC = accent · SLD = slide into next step · click the LED to make a rest'));
+  const tempo = numCtl('Tempo', () => q.bpm, v => { q.bpm = v; }, 40, 220, ''), swing = numCtl('Swing', () => q.swing, v => { q.swing = v; }, 0, 50, '%');
+  const hint = h('span', 'seqhint', 'Drag a note up/down · ACC = accent · SLD = slide into next step · click the LED to make a rest');
   q.pat.forEach((s, i) => {
     const col = h('div', 'step' + (i % 4 === 0 ? ' beat' : ''));
     const led = h('button', 'sled'); led.type = 'button'; led.title = 'Note / rest';
     const note = h('div', 'snote'); note.tabIndex = 0;
     note.setAttribute('role', 'slider'); note.setAttribute('aria-label', `Step ${i + 1} note`);
     note.setAttribute('aria-valuemin', 0); note.setAttribute('aria-valuemax', 12);
-    const mk = (txt, key, val) => { const b = h('button', 'sbtn', txt); b.type = 'button'; b.onclick = () => { s[key] = s[key] === val ? 0 : val; draw(); send(); }; return b; };
+    const mk = (txt, key, val) => { const b = h('button', 'sbtn', txt); b.type = 'button'; b.onclick = () => { s[key] = s[key] === val ? 0 : val; draw(); send(); if (o.onChange) o.onChange(); }; return b; };
     const up = mk('UP', 'o', 1), dn = mk('DN', 'o', -1), acc = mk('ACC', 'a', 1), sld = mk('SLD', 's', 1);
-    led.onclick = () => { s.g = s.g ? 0 : 1; draw(); send(); };
+    led.onclick = () => { s.g = s.g ? 0 : 1; draw(); send(); if (o.onChange) o.onChange(); };
+    const num = h('span', 'snum', String(i + 1));
     const draw = () => {
+      s = q.pat[i]; // (Clear / Demo / Randomise replace the pattern's steps)
       note.textContent = s.g ? SEQ_NOTES[s.n] : '—';
       note.setAttribute('aria-valuenow', s.n); note.setAttribute('aria-valuetext', s.g ? SEQ_NOTES[s.n] : 'rest');
       col.classList.toggle('rest', !s.g);
       up.classList.toggle('on', s.o === 1); dn.classList.toggle('on', s.o === -1);
       acc.classList.toggle('on', !!s.a); sld.classList.toggle('on', !!s.s);
+      if (o.cursor) col.classList.toggle('cur', o.cursor.get() === i);
     };
     noMenu(note); hoverable(note);
     note.addEventListener('pointerdown', e => {
@@ -2554,22 +2678,35 @@ function seqUI(tr) {
       e.preventDefault(); note.focus({ preventScroll: true });
       let a = s.n, yPrev = e.clientY;
       const n0 = s.n, g0 = s.g; // (a two-finger rollback puts back the pitch and a rest the drag turned into a note)
-      track(note, e, ev => { a = clamp(a + (yPrev - ev.clientY) / 9, 0, 12); yPrev = ev.clientY; const v = Math.round(a); if (v !== s.n) { s.n = v; s.g = 1; draw(); send(); } },
-        null, () => { if (s.n !== n0 || s.g !== g0) { s.n = n0; s.g = g0; draw(); send(); } });
+      track(note, e, ev => { a = clamp(a + (yPrev - ev.clientY) / 9, 0, 12); yPrev = ev.clientY; const v = Math.round(a); if (v !== s.n) { s.n = v; s.g = 1; draw(); send(); if (o.onChange) o.onChange(); } },
+        null, () => { if (s.n !== n0 || s.g !== g0) { s.n = n0; s.g = g0; draw(); send(); if (o.onChange) o.onChange(); } });
     });
-    const nudge = d => { const v = clamp(s.n + d, 0, 12); if (v !== s.n) { s.n = v; s.g = 1; draw(); send(); } }; // a rest only becomes a note when the pitch actually moves
+    const nudge = d => { const v = clamp(s.n + d, 0, 12); if (v !== s.n) { s.n = v; s.g = 1; draw(); send(); if (o.onChange) o.onChange(); } }; // a rest only becomes a note when the pitch actually moves
     note.addEventListener('wheel', e => { const wv = wheelIn(note, e); if (wv) nudge(wheelStep(note, wv)); }, { passive: false });
     note.addEventListener('keydown', e => {
       if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
       e.preventDefault(); e.stopPropagation();
       nudge(e.key === 'ArrowUp' ? 1 : -1);
     });
+    if (o.cursor) { // the hardware cursor: a tap on the column's number or its background selects the step
+      const pick = e => { if (e.target === col || e.target === num) { o.cursor.set(i); } };
+      col.addEventListener('click', pick);
+    }
     draw(); redraw.push(draw);
-    col.append(h('span', 'snum', String(i + 1)), led, note, up, dn, acc, sld);
+    col.append(num, led, note, up, dn, acc, sld);
     stepEls.push(col);
     steps.append(col);
   });
-  sec.append(bar, steps);
+  return { q, send, run, sync, tempo, swing, rnd, demo: dflt, clear: clr, doClear: clear, toRoll, hint, steps, redraw: () => redraw.forEach(f => f()),
+    toggle: on => seqToggle(tr, on), running: () => seqRun.has(tr.id) };
+}
+function seqUI(tr) { // the Resizable panel's sequencer (today's DOM)
+  const P = seqParts(tr);
+  const sec = h('div', 'sec seq');
+  sec.append(h('h3', null, 'Pattern Sequencer'));
+  const bar = h('div', 'seqbar');
+  bar.append(P.run, P.sync, P.tempo, P.swing, P.rnd, P.demo, P.clear, P.toRoll, P.hint);
+  sec.append(bar, P.steps);
   return sec;
 }
 
@@ -3861,7 +3998,7 @@ function cvOpenSources(mode) { // opens the Sources tray; mode 'replace' (a tap 
 }
 /* ---------------------------------------------- cv WORLD: camera, gestures, toolbar, canvas keys */
 let world = null; // the CANVAS view's cv-world World (initWorld); null before it and wherever it cannot be built
-// the camera over #world (pan / pinch / wheel, momentum, native-zoom hand-over, culling, toolbar); a failure leaves the app
+// the camera over #world (pan / pinch / wheel, momentum, native-zoom hand-over, on-screen tracking, toolbar); a failure leaves the app
 // working without it (world = null: the gesture hooks fall back to today's scrolling, the stubs answer false)
 function initWorld() {
   const vp = $('#viewport'), w = $('#world');
@@ -3911,13 +4048,14 @@ function initModules() {
   const W = cvW();
   if (W && typeof W.on === 'function') {
     W.on('cameraend', d => cvCamQueue((d && d.cam) || W.cam));
-    W.on('lod', () => monitors.sync());
+    W.on('screen', () => monitors.sync()); // (a module went on / off screen: its live displays follow, CULL_MARGIN early)
   }
   window.addEventListener('pagehide', cvCamFlush);
   document.addEventListener('visibilitychange', () => { if (document.hidden) cvCamFlush(); });
 }
-// a module shows its body: the CANVAS view is up, the module is mounted as a body (not a card) and not folded. Without the
-// canvas DOM: today's tabs (the FX rack exists only while its tab shows)
+// a module's live displays run: the CANVAS view is up, the module is on screen (cv-world's plan, 256 px early) and not
+// folded (Z1: nothing changes look — only off-screen work pauses). Without the canvas DOM: today's tabs (the FX rack
+// exists only while its tab shows)
 function cvLive(key) {
   if (!cvView) return key === cvModule.ID.inst ? !$('#tab-inst').hidden : true;
   return !$('#tab-inst').hidden && cvView.live(key);
@@ -3925,14 +4063,72 @@ function cvLive(key) {
 function cvRender() {
   if (!cvOn()) return;
   const t = trk(), key = project.uid + '/' + t.id, W = cvW();
-  if (cvView && cvViewKey === key) { cvView.sync(t); return; }
+  if (cvView && cvViewKey === key) { cvView.sync(t); cvRoom(false); return; }
   cvCamFlush(); // the outgoing track's camera first
   if (cvView) { cvView.destroy(); cvView = null; }
   if (W && typeof W.clear === 'function') W.clear();
   cvViewKey = key;
   cvView = cvModule.createTrackView(W, t, cvHost());
+  cvRoom(true);
   cvCamRestore(t);
   monitors.sync();
+}
+// the instrument's size: a classic one in its Hardware layout is fixed (cv-panel sizeOf; a model whose panel is not
+// drawn yet: today's panel at its fixed default width), else resizable (its grip range)
+function cvInstSize(t) {
+  const m = modelById(t.model);
+  if (m.custom || instUi(t) === 'flow') return { range: cvModule.widthRange(t.model) };
+  const L = hwLayoutOf(m);
+  return { fixed: L ? cvPanel.sizeOf(L, m) : { w: cvModule.W_CLASSIC } };
+}
+// a fixed-size instrument makes room (IMPL-panels §7.3): the modules right of it that it now overlaps move right
+// together (cvModule.makeRoom) — after a build (a load, a track switch: stage-1b layouts, whose FX / OUT sit where a
+// 1080 px panel ended) or a size change (the layout toggle, a replace). Written to track.lay without a step of its own:
+// inside the toggle's / replace's step, else a view normalisation (like a z write)
+let cvRoomSig = '';
+function cvRoom(built) {
+  const K = cvModule.ID.inst, m = cvView && cvView.modules.get(K);
+  if (!m || !m.fixed) { cvRoomSig = ''; return; }
+  const sig = cvView.trackId + ':' + m.w + 'x' + (m.fixed.h || 0);
+  if (!built && sig === cvRoomSig) return;
+  cvRoomSig = sig;
+  const rects = {};
+  for (const [k, mm] of cvView.modules) rects[k] = mm.rect();
+  const mv = cvModule.makeRoom(rects, K);
+  if (!mv) return;
+  const t = trk(), old = t.lay && typeof t.lay === 'object' ? t.lay : {};
+  for (const k of Object.keys(mv)) {
+    const mm = cvView.modules.get(k), o = old[k] || {}, e = { x: mv[k].x, y: mv[k].y };
+    if (o.w != null) e.w = o.w;
+    if (mm && mm.fold) e.fold = 1;
+    if (o.z != null) e.z = o.z;
+    cvLay(k, e, 'end', 'room');
+  }
+  // the instrument pinned too (a Tidy-placed one would re-tidy from the new widths)
+  if (!old[K]) { const e = { x: Math.round(m.x), y: Math.round(m.y) }; if (m.fold) e.fold = 1; cvLay(K, e, 'end', 'pin'); }
+  cvView.sync(trk());
+}
+// the ⋯ menu's layout items: Hardware (the real front panel, fixed) or Resizable (today's flowing panel and its grip);
+// one History step; values, presets and the 303 pattern live in the track, so every control comes back as it was
+function cvSetLayout(want) {
+  const t = trk(), K = cvModule.ID.inst;
+  if (isSx(t) || (want !== 'hw' && want !== 'flow') || instUi(t) === want) return;
+  hist.record(project, want === 'flow' ? 'Resizable layout' : 'Hardware layout');
+  const lay = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {}), m = cvView && cvView.modules.get(K);
+  const e = lay[K] ? Object.assign({}, lay[K]) : m ? { x: Math.round(m.x), y: Math.round(m.y) } : { x: 0, y: 0 };
+  if (!lay[K] && m) { if (m.fold) e.fold = 1; if (m.zSet) e.z = m.z; }
+  if (want === 'flow') e.ui = 'flow'; else delete e.ui;
+  lay[K] = e;
+  if (cvView) for (const [k, mm] of cvView.modules) { // the pins (as cvLay's first write): Tidy-placed modules stay where they stand
+    if (k === K || lay[k] || (k === cvModule.ID.fx && lay[cvModule.ID.sxFx]) || (k === cvModule.ID.sxFx && lay[cvModule.ID.fx])) continue;
+    const p = { x: Math.round(mm.x), y: Math.round(mm.y) };
+    if (mm.fold) p.fold = 1;
+    lay[k] = p;
+  }
+  t.lay = lay;
+  persist();
+  renderPanel(); // (→ cvPanelDone → cvRender → sync: the module's size follows, room is made)
+  updateUndoUI();
 }
 function cvHost() {
   const P = cvParts, home = n => { if (n && P.home) P.home.append(n); };
@@ -3945,7 +4141,7 @@ function cvHost() {
     },
     title: cvTitle,
     menu: cvMenu,
-    art: kind => cvModule.cardArt(kind, trk().model),
+    size: kind => (kind === 'inst' ? cvInstSize(trk()) : null),
     lay: cvLay,
     shown: () => monitors.sync(),
   };
@@ -3960,17 +4156,22 @@ function cvTitle(kind) {
   }
   return { title: 'OUT', sub: 'master output' };
 }
-// the instrument module's chip: a classic track's preset select (today's track-row select) / a Serum's preset name
+// the instrument module's chip: a classic track's ◀ preset select ▶ (the Hardware panel has no preset plate: the chip
+// loads, the ⋯ menu saves / deletes / inits) / a Serum's preset name
 function cvChip(t) {
   const m = modelById(t.model), key = t.id + '/' + m.id;
   if (!cvChipC || cvChipC.key !== key) {
-    const el = m.custom ? h('span', 'cv-pname') : h('select', 'cv-psel');
-    if (m.custom) el.title = 'Preset (change it in the panel’s browser)';
+    let el, sel;
+    if (m.custom) { el = sel = h('span', 'cv-pname'); el.title = 'Preset (change it in the panel’s browser)'; }
     else {
-      el.title = 'Preset'; el.setAttribute('aria-label', 'Preset');
-      el.onchange = () => { const tr = trk(), p = presetList(modelById(tr.model)).find(x => x.key === el.value); el.value = ''; if (p) applyPreset(tr, p); };
+      sel = h('select', 'cv-psel');
+      sel.title = 'Preset'; sel.setAttribute('aria-label', 'Preset');
+      sel.onchange = () => { const v = sel.value; sel.value = ''; if (trk().model === m.id) presetLoad(v); };
+      const step = (txt, d, lab) => { const b = h('button', 'cv-pstep', txt); b.type = 'button'; b.title = lab; b.setAttribute('aria-label', lab); b.onclick = e => { e.stopPropagation(); if (trk().model === m.id) presetStep(d); }; return b; };
+      el = h('span', 'cv-pchip');
+      el.append(step('◀', -1, 'Previous preset'), sel, step('▶', 1, 'Next preset'));
     }
-    cvChipC = { key, el, sig: null };
+    cvChipC = { key, el, sel, sig: null };
   }
   cvChipFill(t);
   return cvChipC.el;
@@ -3982,16 +4183,21 @@ function cvChipFill(t) {
   const list = presetList(m), sig = list.length + ':' + t.preset;
   if (sig === C.sig) return;
   C.sig = sig;
-  C.el.innerHTML = '';
-  const o0 = h('option', null, t.preset ? t.preset : t.preset === null ? 'Custom' : '—'); o0.value = ''; C.el.append(o0);
+  const sel = C.sel;
+  sel.innerHTML = '';
+  const o0 = h('option', null, t.preset ? t.preset : t.preset === null ? 'Custom' : '—'); o0.value = ''; sel.append(o0);
   let grp = null, gname = '';
   for (const p of list) {
-    if (p.group !== gname) { grp = h('optgroup'); grp.label = p.group; gname = p.group; C.el.append(grp); }
+    if (p.group !== gname) { grp = h('optgroup'); grp.label = p.group; gname = p.group; sel.append(grp); }
     const o = h('option', null, p.name); o.value = p.key; grp.append(o);
   }
-  C.el.value = '';
+  sel.value = '';
 }
-function cvChipSync() { if (cvView) cvChipFill(trk()); } // the preset name changed (renderPanel's preset UI, a Serum edit)
+function cvChipSync() { // the preset name changed (renderPanel's preset UI, a Serum edit): the chip, a hardware preset display
+  if (cvView) cvChipFill(trk());
+  const u = ui.get('@preset');
+  if (u) u();
+}
 function cvMenu(kind, key) {
   const V = cvView, m = V && V.modules.get(key);
   if (!m) return [];
@@ -3999,8 +4205,17 @@ function cvMenu(kind, key) {
   const front = { label: 'Bring to front', action: () => V.front(key) };
   const tidyI = { label: 'Tidy the canvas', action: () => cvTidy() };
   if (kind === 'inst') {
-    return [{ label: 'About the ' + modelById(trk().model).name + '…', action: cvAbout }, { label: 'Replace with…', action: () => cvOpenSources('replace') },
-      { sep: true }, { label: 'Reset width', action: () => V.resetWidth(key), disabled: !m.wSet }, fold, front, { sep: true }, tidyI];
+    const t = trk(), mdl = modelById(t.model), head = [{ label: 'About the ' + mdl.name + '…', action: cvAbout }, { label: 'Replace with…', action: () => cvOpenSources('replace') }];
+    const reset = { label: 'Reset width', action: () => V.resetWidth(key), disabled: !m.wSet };
+    if (mdl.custom) return [...head, { sep: true }, reset, fold, front, { sep: true }, tidyI]; // (Serum: always resizable, its own browser saves)
+    // a classic synth: its real front panel (default) or today's resizable panel; the sound actions of its preset plate
+    const u = instUi(t), hw = !!hwLayoutOf(mdl);
+    return [...head, { sep: true },
+      { label: hw ? 'Hardware layout' : 'Hardware layout (not drawn yet · fixed size)', checked: u === 'hw', action: () => cvSetLayout('hw') },
+      { label: 'Resizable layout', checked: u === 'flow', action: () => cvSetLayout('flow') },
+      { sep: true },
+      { label: 'Save sound…', action: presetSave }, { label: 'Delete saved sound', action: presetDelete, disabled: !presetSaved() }, { label: 'Init sound', action: presetInit },
+      { sep: true }, ...(u === 'flow' ? [reset] : []), fold, front, { sep: true }, tidyI];
   }
   return kind === 'fx' ? [fold, front, { sep: true }, tidyI] : [fold];
 }
@@ -4050,7 +4265,7 @@ function cvAbout() {
 // the camera: saved 500 ms after a move ends (one LRU record), restored on a track switch / load, else the default: the
 // instrument's top-left 24 px inside the visible band, at k = 1 when its whole width fits there (the FX module beside it
 // too when both fit at an editable zoom), else at the k that fits its width — its bar's chip, ⋯ and ▾ clear the rails
-// (portrait) — never below CARD_K. While ROLL shows the band has no size: the default is owed (cvCamDef) and computed
+// (portrait) — never below READ_K. While ROLL shows the band has no size: the default is owed (cvCamDef) and computed
 // when CANVAS opens (openTab)
 let cvCamLast = null; // {key, cam}: the camera last restored or saved (an unchanged camera writes nothing)
 let cvCamDef = null; // the camKey whose default camera is owed (computed while the canvas was hidden)
@@ -4083,7 +4298,7 @@ function cvCamRestore(t) {
   const o = W.toClient(0, 0), cam = W.cam, r = m.rect(), P = 24, bw = b.right - b.left - 2 * P;
   const fm = cvView.modules.get(cvModule.fxKey(t.model)), f = fm && fm.rect();
   const kAll = f ? bw / Math.max(1, f.x + f.w - r.x) : 0; // the instrument and the FX module side by side
-  const k = kAll >= cvWorld.EDIT_K ? Math.min(1, kAll) : Math.max(cvWorld.CARD_K, Math.min(1, bw / Math.max(1, r.w)));
+  const k = kAll >= cvWorld.EDIT_K ? Math.min(1, kAll) : Math.max(cvWorld.READ_K, Math.min(1, bw / Math.max(1, r.w)));
   const d = { k, tx: Math.round(b.left - (o.x - cam.tx) + P - r.x * k), ty: Math.round(b.top - (o.y - cam.ty) + P - r.y * k) };
   cvCamLast = { key, cam: d }; // (the default is not stored until the user moves away from it)
   W.setCamera(d, { animate: false });
@@ -4136,11 +4351,15 @@ function cvReveal(trackId, key = cvModule.ID.inst) {
   const roll = $('#tab-roll');
   if (roll && !roll.hidden) openTab('canvas');
   const W = cvW();
-  if (W && cvView && cvView.modules.has(key) && typeof W.focusItem === 'function') W.focusItem(key, { k: W.k < cvWorld.CARD_K ? 1 : W.k, edit: false });
+  if (W && cvView && cvView.modules.has(key) && typeof W.focusItem === 'function') W.focusItem(key, { k: W.k < cvWorld.READ_K ? 1 : W.k, edit: false });
 }
+// the Sources drop outline of `modelId`: its hardware size while the current instrument shows the Hardware layout (a drop
+// replaces it in place and the layout choice stays), else the flow size measured on this device (or the default)
 function cvModuleSize(modelId) {
+  const mdl = MODELS.find(x => x.id === modelId), L = mdl ? hwLayoutOf(mdl) : null;
+  if (L && instUi(trk()) === 'hw') return cvPanel.sizeOf(L, mdl);
   const m = cvView && cvView.modules.get(cvModule.ID.inst);
-  if (m && trk().model === modelId && m.shown === 'body' && !m.fold) { const r = m.rect(); if (r.h > cvModule.BAR_H * 3) cvSeen.set(modelId, { w: r.w, h: r.h }); }
+  if (m && trk().model === modelId && !m.fixed && !m.fold) { const r = m.rect(); if (r.h > cvModule.BAR_H * 3) cvSeen.set(modelId, { w: r.w, h: r.h }); }
   return cvSeen.get(modelId) || cvModule.sizeFor(modelId);
 }
 function cvTidy() {
@@ -4176,6 +4395,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     view: () => cvView, parts: cvParts, world: () => cvW(), sxPanel, fxTab, monitors, hist, undo, redo, render: cvRender,
     renderViews, tidy: cvTidy, drop: cvDropInstrument, reveal: cvReveal, size: cvModuleSize, live: cvLive, camFlush: cvCamFlush,
     chipSync: cvChipSync, heads: renderHeads, duplicateTrack, openTab, about: cvAbout, menu: cvMenu, peer: () => ({ peerT, peerBits, peerStale }),
+    setLayout: cvSetLayout, instUi, hw: () => hwPanel, presetStep, presetInit,
   };
 }
 
