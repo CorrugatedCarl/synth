@@ -537,3 +537,19 @@ test('U6: two Serums on one track keep their own live-input subscriptions (clip 
   assert.deepEqual(got, [s2 + ':1:62', s2 + ':0:62'], 'the other one stays subscribed');
   api.sxHost(t, s2).onInput(null);
 });
+
+test('U7: Mod wheel → WT Pos scrubs the Serum whose WT editor is open (not the primary)', () => {
+  const t = fresh('serum');
+  const s2 = cv.add('serum', null); sim.raf();
+  const pr = api.prefs(), was = pr.wheelWt, wt = id => T().dev[id].vals.s.p['a.wt'];
+  const w1 = wt('i1');
+  pr.wheelWt = true;
+  try {
+    api.sxHost(t, s2).editorOpen(0);
+    cv.wheelToWt(0.7);
+    assert.deepEqual([wt(s2), wt('i1')], [0.7, w1], 'its own oscillator A');
+    api.sxHost(t, s2).editorOpen(null);
+    cv.wheelToWt(0.2);
+    assert.equal(wt(s2), 0.7, 'closed: nothing');
+  } finally { pr.wheelWt = was; }
+});

@@ -2215,12 +2215,12 @@ const midiLearn = (id, dest, dev = null) => midi.learn(id, dev, dest); // (dev: 
 const cancelLearn = say => midi.cancelLearn(say);
 const midiForget = (t, dest, dev = null) => midi.forget(t, dest, dev);
 // preference "Mod wheel → WT Pos": while a WT editor is open the wheel scrubs its oscillator's WT POS (§9.9)
-let wtEdit = null; // { id: track id, osc } of the open WT editor
+let wtEdit = null; // { id: track id, dev: its Serum (U7: the one whose editor is open, not always the primary), osc }
 function wheelToWt(v) {
   if (!prefs.wheelWt || !wtEdit) return;
-  const t = project.tracks.find(x => x.id === wtEdit.id);
-  if (!t || !isSx(t)) return;
-  t.vals.s.p[['a', 'b', 'c'][wtEdit.osc] + '.wt'] = clamp(+v || 0, 0, 1);
+  const t = project.tracks.find(x => x.id === wtEdit.id), x = t && (!t.dev || CMOD.instOf(t, wtEdit.dev)) ? instView(t, wtEdit.dev) : null;
+  if (!x || !isSx(x)) return;
+  x.vals.s.p[['a', 'b', 'c'][wtEdit.osc] + '.wt'] = clamp(+v || 0, 0, 1);
   sxDirty.add(t.id);
   queuePatch(t); persist(); sxRefresh();
 }
@@ -2541,7 +2541,7 @@ function sxHost(t0, dv) {
     qualityChosen: () => liftCaps(),
     storage: hostStore,
     notify: txt => notice(txt, 3500),
-    editorOpen: o => { wtEdit = o === 0 || o === 1 || o === 2 ? { id, osc: o } : null; },
+    editorOpen: o => { wtEdit = o === 0 || o === 1 || o === 2 ? { id, dev, osc: o } : wtEdit && (wtEdit.id !== id || wtEdit.dev !== dev) ? wtEdit : null; }, // (another one's open editor stays)
     prefsChanged,
   };
 }
@@ -2579,9 +2579,9 @@ const serumPanels = new Map();
 const sxRecs = () => [sxPanel, ...serumPanels.values()];
 function sxDrop(r) {
   r.gen++;
-  const u = r.ui;
+  const u = r.ui, tid = r.trackId;
   r.ui = null; r.trackId = null; r.vals = null;
-  if (u) wtEdit = null;
+  if (u && (!wtEdit || (wtEdit.id === tid && wtEdit.dev === r.dev))) wtEdit = null; // (its own editor only, U7)
   cancelLearn(!!u);
   if (u) { try { u.destroy(); } catch (err) { console.warn(err); } }
   monitors.sync();
@@ -5121,6 +5121,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     fx: { pick: fxPick, drag: fxDrag, over: fxOver, items: FX_ITEMS, tiles: () => shell.fxTiles, addPanel: (at, type) => cvAddPanel(trk(), at, type), addEffect: (key, type) => cvAddEffect(trk(), key, type) },
     classicPanels, serumPanels, fxPanels, bodyEl: key => cvBodyEl(trk(), key), measure: cvMeasure, costLabels, devFactor, setTrackModel, renderPanels,
     touch: (t0 => v => { touchDev = v == null ? t0 : !!v; })(touchDev), // (the soft caps' touch rule; null: back to this device's)
+    wheelToWt, chordCheck,
   };
 }
 
