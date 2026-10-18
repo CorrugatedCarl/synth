@@ -37,13 +37,13 @@
  */
 'use strict';
 const VERSION = '9';
-const BUILD = '99045318de43'; // (tools/precache.mjs --write: a hash of the precached files)
+const BUILD = '7d779bd3f6bf'; // (tools/precache.mjs --write: a hash of the precached files)
 // (tools/precache.mjs --write rewrites these two lists from the sources)
 const ASSETS = [
   'appstore.js', 'arrange.js', 'assets.js', 'audioclock.js', 'classic-panel.js', 'cv-art.js', 'cv-cables.js',
-  'cv-graph.js', 'cv-migrate.js', 'cv-model.js', 'cv-mods.js', 'cv-module.js', 'cv-panel.js', 'cv-tray.js',
-  'cv-world.js', 'engine.js', 'fx-core.js', 'fx-dsp.js', 'fx-mods2.js', 'fx-ui.js', 'gesture.js', 'graph.js',
-  'laws.js', 'main.js', 'midi.js', 'models.js', 'panels/arp2600.js', 'panels/cs80.js', 'panels/dx7.js',
+  'cv-cost.js', 'cv-graph.js', 'cv-migrate.js', 'cv-model.js', 'cv-mods.js', 'cv-module.js', 'cv-panel.js',
+  'cv-tray.js', 'cv-world.js', 'engine.js', 'fx-core.js', 'fx-dsp.js', 'fx-mods2.js', 'fx-ui.js', 'gesture.js',
+  'graph.js', 'laws.js', 'main.js', 'midi.js', 'models.js', 'panels/arp2600.js', 'panels/cs80.js', 'panels/dx7.js',
   'panels/index.js', 'panels/juno60.js', 'panels/jupiter8.js', 'panels/minimoog.js', 'panels/modular.js',
   'panels/ms20.js', 'panels/obxa.js', 'panels/prophet5.js', 'panels/solina.js', 'panels/tb303.js', 'pwa.js', 'roll.js',
   'seq-core.js', 'serum-core.js', 'serum-dsp.js', 'serum-ui.js', 'smp.js', 'smpgen.js', 'smprender.js', 'smpstore.js',

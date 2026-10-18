@@ -4845,14 +4845,16 @@ function fxAddInst(fx, type) {
   return nid;
 }
 // an FX panel (the Empty FX Panel tile; an effect tile on empty canvas: a panel holding it) at the drop point (else beside
-// the others), cabled to OUT, nothing feeding it — one History step
-function cvAddPanel(t, at, type) {
+// the others), cabled to OUT, nothing feeding it (src: an instrument cabled through it — a tap for one without a panel) —
+// one History step
+function cvAddPanel(t, at, type, src = null) {
   if (Object.keys(t.dev).filter(k => kindOfKey(t, k) === 'fx' && !/\//.test(k)).length >= CG.LIMITS.panels) { notice(`At most ${CG.LIMITS.panels} FX panels per track`, 4000); return null; }
   hist.record(project, type ? 'New panel with ' + fxName(type) : 'Add FX panel');
   const lay = cvPinned(t), fx = core.defaultFx2();
   if (type) fxAddInst(fx, type);
   const id = CMOD.addPanel(t, { fx }), out = Object.keys(t.dev).find(k => kindOfKey(t, k) === 'out') || 'out';
   CMOD.connect(t, id + '.out', out + '.in');
+  if (src && CMOD.instOf(t, src)) CMOD.connect(t, src + '.out', id + '.in');
   const p = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? at : cvBelow(t, 'fx');
   if (p) lay[id] = { x: cvDot(p.x), y: cvDot(p.y) };
   t.lay = lay;
@@ -4898,12 +4900,12 @@ function fxOver(target) {
   return M && M.kind === 'fx' ? { over: 'panel', key: M.key } : 'canvas';
 }
 // a tap on an Effects tile: the panel tile adds an empty panel; an effect goes into the current instrument's FX (its
-// panel, a Serum's own), else into a new panel
+// panel, a Serum's own), else into a new panel the instrument is cabled through
 function fxPick(id) {
   const t = trk();
   if (id === cvTray.FX_PANEL) { cvAddPanel(t, null, null); return; }
   const cur = curOf(t), d = t.dev[cur], k = d && d.model === 'serum' ? cur + '/fx' : CMOD.destOf(t, cur);
-  if (k && kindOfKey(t, k) === 'fx') cvAddEffect(t, k, id); else cvAddPanel(t, null, id);
+  if (k && kindOfKey(t, k) === 'fx') cvAddEffect(t, k, id); else cvAddPanel(t, null, id, cur);
 }
 const fxDrag = {
   move(id, i) { if (world) world.dragPointer(i.over === 'panel' || !i.left ? null : { x: i.x, y: i.y, pointerType: i.pointerType }); }, // (edge pan over empty canvas)

@@ -270,6 +270,46 @@ test('module CPU per device from stats.per (each instrument, each panel; OUT non
   r.ui = null; r.trackId = null;
 });
 
+test('per instrument: Hardware / Simple of one instrument (its lay key, its own panel), About of it; Tidy lays out every device (one step); an Effects tap for an instrument without a panel cables it through a new one', () => {
+  const t = T(), n = hsteps();
+  const it = cv.menu('i2').find(x => x.label === 'Simple layout');
+  it.action(); sim.raf();
+  assert.deepEqual([T().lay.i2.ui, cv.instUi(T(), 'i2'), cv.instUi(T(), 'i1'), hsteps(), cv.hist.undoLabel], ['flow', 'flow', 'hw', n + 1, 'Simple layout']);
+  assert.deepEqual([V().modules.get('i2').w, cv.classicPanels.get(t.id + '/i2').layout], [864, null], 'the Juno-60 in its Simple width, its panel re-rendered');
+  cv.undo(); sim.raf();
+  assert.equal(cv.instUi(T(), 'i2'), 'hw');
+  cv.menu('i2').find(x => /^About the /.test(x.label)).action();
+  assert.deepEqual([cv.cur(), sim.$('#about-title').textContent], ['i2', 'Roland Juno-60 (1982)'], 'About: that instrument (now the current one)');
+  // Tidy: instruments stacked left, panels in the middle, OUT right
+  cv.tidy(); sim.raf();
+  const L = T().lay, x = k => L[k].x;
+  assert.deepEqual([x('i1'), x('i2'), x(ID.sx), x('fx1') > x('i1'), x('out') > x('fx1'), L.i2.y > L.i1.y, cv.hist.undoLabel], [0, 0, 0, true, true, true, 'Tidy']);
+  cv.undo(); sim.raf();
+  // a tap on an effect while the current instrument feeds OUT directly: a new panel it is cabled through
+  const d = cv.dup('i1'); sim.raf();
+  cv.cable.connect(d + '.out', 'out.in'); sim.raf();
+  cv.setCur(d);
+  const m = hsteps();
+  cv.fx.pick('eq'); sim.raf();
+  const p = T().wires.find(q => q.a === d + '.out').b.split('.')[0];
+  assert.deepEqual([T().dev[p].kind, T().dev[p].fx.racks[0].mods.map(q => q.type).join(','), T().wires.find(q => q.a === p + '.out').b, hsteps()], ['panel', 'eq', 'out.in', m + 1]);
+  cv.undo(); cv.undo(); cv.undo(); sim.raf();
+  assert.equal(T().dev[d], undefined, 'undo: back to before the duplicate');
+});
+
+test('⚙ Measure this device: without a Worker here it fails with the reason in #notice and the button comes back; a stored factor scales the tray labels', async () => {
+  const sh0 = sh.shell.measure;
+  assert.equal(sh0.btn.textContent, 'Measure this device');
+  await cv.measure(sh0.btn, sh0.st);
+  assert.deepEqual([sh0.btn.textContent, note().length > 0], ['Measure this device', true], note());
+  const tile = () => sh.shell.tiles.tiles().find(b => b.getAttribute('data-model') === 'serum').children.find(c => c.className === 'cv-tcost').textContent;
+  const before = tile();
+  api.store.set('synth.cv.devFactor', 4); cv.costLabels();
+  assert.notEqual(tile(), before, 'a slower device: higher estimates (' + before + ' → ' + tile() + ')');
+  assert.equal(cv.devFactor(), 4);
+  api.store.set('synth.cv.devFactor', 0); cv.costLabels();
+});
+
 test('Save as classic project of a several-instrument track lists what the classic SYNTH cannot hold', async () => {
   const was = globalThis.confirm;
   let asked = '';
