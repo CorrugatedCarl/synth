@@ -288,6 +288,16 @@ const saveNow = () => save(true);
 // panel → OUT; a Serum with its own FX → OUT) as its v1 view — the very vals / FX objects the track holds — so the node
 // gets today's message stream (tests/canonical-stream.test.mjs). Other shapes (stage 1e) compile their primary alone
 // until the graph protocol lands.
+// the legacy stream (today's {t: 'patch', p}, no device ids) is for a track of ONE instrument — the primary, sounding —
+// and at most the one panel it feeds (c: its compileTrack). A canonical compile of several instruments (the others off or
+// soloed out), of a primary off, or with a panel of its own beside it gets the graph protocol: the messages that name a
+// device (303s, auditions, FX taps, monitors) need device ids (review H2; stage 1e IMPL §3.3)
+function legacyOk(tr, c = CG.compileTrack(tr)) {
+  if (!c.canonical) return false;
+  if (!tr.dev) return true;
+  const ids = CMOD.instIds(tr), f = CMOD.fxDevOf(tr);
+  return ids.length === 1 && c.inst === ids[0] && Object.keys(tr.dev).every(k => !tr.dev[k] || tr.dev[k].kind !== 'panel' || (!!f && !f.own && k === f.id));
+}
 function buildPatch(tr, sr, offline = false) {
   fxOf(tr); // (a v1 rack reaching the track is migrated in place first, as before)
   const c = CG.compileTrack(tr), V = c.canonical ? c.v1 : CM.primV1(tr);
@@ -459,7 +469,7 @@ function sendPatch(tr = trk()) {
   const N = nodes.get(tr.id);
   if (!N) return;
   const c = CG.compileTrack(tr);
-  if (!c.canonical || N.graphed) { sendGraph(tr, N, c); return; } // (stage 1e: a graph shape, or a node that is graphed)
+  if (!legacyOk(tr, c) || N.graphed) { sendGraph(tr, N, c); return; } // (stage 1e: not one instrument, or a node that is graphed)
   const p = buildPatch(tr);
   seedPend.delete(tr.id);
   // §9.5: the assets the patch can play (Serum needs ∪ FX needs) are posted before it; a patch that replaces a posted
@@ -801,7 +811,7 @@ function powerOff() {
 function makeNode(tr) {
   // stage 1e: a track of a graph shape gets a graphed node, built from processorOptions graph / patches / chains / seqs
   // (IMPL-1e §2.5; offline renders the same, renderOffline); a canonical one today's options
-  const sr = ctx.sampleRate, c = CG.compileTrack(tr), G = c.canonical ? null : graphParts(tr, sr, false, c);
+  const sr = ctx.sampleRate, c = CG.compileTrack(tr), G = legacyOk(tr, c) ? null : graphParts(tr, sr, false, c);
   const patch = G ? null : buildPatch(tr); // a new node always gets the curve tables (and a fresh rack)
   seedPend.delete(tr.id);
   const po = { os: trackOS(tr, sr), hostOS: osFor(sr), patch, song: songData(tr), seq: !G && tr.model === 'tb303' ? seqPayload(tr) : null,
@@ -2226,10 +2236,10 @@ function wheelToWt(v) {
 }
 
 /* ------------------------------------------------ offline renders (bounce, resample, render-last; §9.6) */
-// a track's offline render parts: {patch} (canonical) or graphParts' graph form with patch null (stage 1e)
+// a track's offline render parts: {patch} (one instrument, legacyOk: as live) or graphParts' graph form with patch null (stage 1e)
 function offParts(tr, sr) {
   const c = CG.compileTrack(tr);
-  return c.canonical ? { patch: buildPatch(tr, sr, true) } : Object.assign({ patch: null }, graphParts(tr, sr, true, c));
+  return legacyOk(tr, c) ? { patch: buildPatch(tr, sr, true) } : Object.assign({ patch: null }, graphParts(tr, sr, true, c));
 }
 // One OfflineAudioContext at rate sr with the §0.3 scripts and one engine node per item {tr, patch, os, song,
 // transport, seq?, gain?, pan?}: the assets every patch needs are built for sr (IRs at that rate, factory content
@@ -2332,7 +2342,7 @@ async function resampleTo(t, target) { // (t: a device view — a Serum besides 
 // of the track (default the primary), rendered alone through its own FX (buildInstPatch); a canonical track's primary
 // renders as before (buildPatch).
 async function renderLast(t, o) {
-  const dev = (o && o.dev) || CMOD.primId(t), d = t.dev ? t.dev[dev] : null, legacy = dev === CMOD.primId(t) && CG.compileTrack(t).canonical;
+  const dev = (o && o.dev) || CMOD.primId(t), d = t.dev ? t.dev[dev] : null, legacy = dev === CMOD.primId(t) && legacyOk(t);
   if (legacy ? !isSx(t) : !d || d.model !== 'serum') throw new Error('Rendering needs a Serum track');
   const s = legacy ? t.vals.s : d.vals.s, fx = legacy ? fxOf(t) : fxOfDev(t, dev), pn = legacy ? t.preset : d.preset;
   const name = (pn || 'Init').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Init';

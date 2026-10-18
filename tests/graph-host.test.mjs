@@ -47,14 +47,17 @@ test('a canonical track posts no graph message: today\'s options and stream (no 
   const m = sent(t, n0);
   assert.deepEqual(m.map(tag), ['patch'], 'today\'s {t: patch, p}');
   assert.equal(!!N(t).graphed, false);
-  // a powered-off second instrument keeps today's shape: still the legacy stream
-  const i2 = CMOD.addInst(t, 'minimoog', { vals: vals('minimoog') });
-  CMOD.setPower(t, i2, false);
-  const n1 = node.posted.length;
-  t.vals.lr = 8; sim.api.sendPatch(t);
-  assert.deepEqual(sent(t, n1).map(tag), ['patch']);
-  assert.equal(!!N(t).graphed, false);
-  CMOD.removeInst(t, i2); sim.api.sendPatch(t);
+  // (review H2) a powered-off second instrument: the compile is canonical (one sounds), but the node must name devices —
+  // the graph protocol (the legacy stream is for one-instrument tracks only); on another track: this one stays legacy
+  const u = addJuno(), nu = sim.nodeOf(u.id);
+  const i2 = CMOD.addInst(u, 'minimoog', { vals: vals('minimoog') });
+  CMOD.setPower(u, i2, false);
+  assert.equal(CG.compileTrack(u).canonical, true);
+  const n1 = nu.posted.length;
+  u.vals.lr = 8; sim.api.sendPatch(u);
+  const m1 = sent(u, n1);
+  assert.deepEqual([m1[0].t, m1[0].insts.map(x => x.id + ':' + x.on), m1.some(x => x.t === 'patch' && x.i === undefined), N(u).graphed],
+    ['graph', ['i1:true', i2 + ':false'], false, true]);
 });
 
 test('a live track given two instruments: graph (i0 / c0 adopted), patch i per Inst, the chain on its first change; sticky graphed', async () => {
@@ -262,6 +265,7 @@ test('render-last of one Serum instrument of a track (o.dev): rendered alone thr
 /* ---------------------------------------------------- host fixes (the stage-1e review round: findings H1–H13) */
 const devs = t => Object.keys(t.dev).sort().join(','), cables = t => t.wires.map(w => w.a + '>' + w.b).sort().join(' ');
 const byId = id => P().tracks.find(x => x.id === id);
+const lastGraph = t => sent(t).filter(m => m.t === 'graph').pop() || null;
 
 test('H4: a classic primary cabled straight to OUT has no rack — a patch, t.fx read / written, a save, undo / redo insert no panel', async () => {
   await page();
@@ -329,4 +333,34 @@ test('H1: undo / redo keep the sound per device id — a re-patch, Make primary,
   sim.api.applyRestore(s1, true);
   u = byId(u.id);
   assert.deepEqual([devs(u), u.fx.racks[0].mods.map(m => m.type).join(',')], ['i1,out', 'cho,eq']);
+});
+
+const rec = (id, o) => Object.assign({ id, name: id, color: '#e8a23a', ch: 0, mute: false, solo: false, arm: false, vol: 0.8, pan: 0, notes: [], cc: [] }, o);
+const pat = n => ({ pat: Array.from({ length: 16 }, () => ({ n, o: 0, a: 0, s: 0, g: 1 })), bpm: 120, swing: 0, sync: false });
+test('H2: the legacy stream is for one-instrument tracks only — a second instrument off, the primary off, a panel of its own: a graphed node, device messages name their device', async () => {
+  await page();
+  const core = await import('../serum-core.js?v=9'), p = clone(P());
+  p.tracks.push(rec('trk_h2a', { prim: 'i1', nid: 3, dev: { // two TB-303s, the second off with its own pattern
+    i1: { kind: 'synth', model: 'tb303', vals: vals('tb303'), preset: null, seq: pat(0) },
+    i2: { kind: 'synth', model: 'tb303', vals: vals('tb303'), preset: null, on: false, seq: pat(5) },
+    fx1: { kind: 'panel', fx: core.defaultFx2() }, out: { kind: 'out' } },
+  wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }, { id: 'w3', a: 'i2.out', b: 'fx1.in' }] }));
+  p.tracks.push(rec('trk_h2b', { prim: 'i1', nid: 3, dev: { // the primary off, a Serum sounding
+    i1: { kind: 'synth', model: 'juno60', vals: vals('juno60'), preset: null, on: false },
+    i2: { kind: 'synth', model: 'serum', vals: { s: core.normalizeSerum(core.defaultSerum()) }, preset: null, fx: core.defaultFx2() },
+    out: { kind: 'out' } },
+  wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }, { id: 'w2', a: 'i2.out', b: 'out.in' }] }));
+  sim.api.applyRestore(p); sim.raf(); await sim.settle(5);
+  const x = byId('trk_h2a'), y = byId('trk_h2b'), last = t => sim.nodeOf(t.id).posted[sim.nodeOf(t.id).posted.length - 1].m;
+  assert.deepEqual([CG.compileTrack(x).canonical, CG.compileTrack(y).canonical, CG.compileTrack(y).inst], [true, true, 'i2'], '(one instrument sounds)');
+  for (const t of [x, y]) assert.deepEqual([N(t).graphed, sim.nodeOf(t.id).po.patch, 'graph' in sim.nodeOf(t.id).po], [true, null, true], t.id + ': built graphed');
+  sim.api.seqSend(x, 'i2', { run: true });
+  assert.deepEqual([last(x).t, last(x).i, last(x).s.pat[0].n], ['seq', 'i2', 5], 'the 303 that is off: its own pattern, to it');
+  sim.api.sxHost(y, 'i2').audition.on(60, 0.5);
+  assert.deepEqual([last(y).t, last(y).i, last(y).aud], ['on', 'i2', 1]);
+  sim.api.sxHost(y, 'i2').audition.off(60);
+  // a one-instrument track with an unconnected panel beside its own (the Effects tray's new panel): graphed on its next post
+  const z = addJuno(), k = sim.nodeOf(z.id).posted.length;
+  const fx2 = CMOD.addPanel(z, {}); sim.api.sendPatch(z);
+  assert.deepEqual([N(z).graphed, tag(sent(z, k)[0]), lastGraph(z).chains.map(c => c.id).sort()], [true, 'graph', ['fx1', fx2]]);
 });
