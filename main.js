@@ -1462,13 +1462,13 @@ function ctl(kind, v, src = 0, ts = performance.now(), trs = targets(src)) {
 // the panel's own auditions) and the last input note group of a Serum track (render-last, §12.6 / §13.2.5: a group
 // starts at a note-on while no input note of the track is held and ends at its last note-off; ≤ 16 notes
 // {n, vel, on, off} in seconds from the group's first note-on; auditions count)
-const inputSubs = new Map(); // track id → fn(on, n, vel 1–127, t ms)
+const inputSubs = new Map(); // track id → Map(dev → fn(on, n, vel 1–127, t ms)): each Serum panel of the track its own (U6)
 const lastIn = new Map();    // track id → { t0, held: Map(n → note | null), notes: [{n, vel, on, off}] }
 const GROUP_MAX = 16;
 // The group follows the physical keys (§12.6): every held key is in `held` (null once the group stores no more notes), so
 // the group ends at the last note-off however many notes it has; at most GROUP_MAX notes are stored
 function inputNote(t, on, n, v, ts, audition) {
-  if (!audition) { const f = inputSubs.get(t.id); if (f) { try { f(on ? 1 : 0, n, on ? Math.max(1, Math.round(v * 127)) : 0, ts); } catch (err) { console.warn(err); } } }
+  if (!audition) { const S = inputSubs.get(t.id); if (S) for (const f of [...S.values()]) { try { f(on ? 1 : 0, n, on ? Math.max(1, Math.round(v * 127)) : 0, ts); } catch (err) { console.warn(err); } } }
   if (!hasSx(t)) return; // (render-last: any Serum instrument of the track, stage 1e)
   let g = lastIn.get(t.id);
   if (on) {
@@ -2529,7 +2529,10 @@ function sxHost(t0, dv) {
     previewMacros: v => previewMacros(v),
     tracks: () => project.tracks.filter(x => x.id !== id).map(x => ({ id: x.id, name: x.name, model: x.model })),
     seqCmd: (cmd, arg) => postTo(T(), { t: 'seqcmd', cmd, arg }, dev),
-    onInput: fn => { if (typeof fn === 'function') inputSubs.set(id, fn); else inputSubs.delete(id); },
+    onInput: fn => { // (per Serum of the track, U6)
+      let S = inputSubs.get(id);
+      if (typeof fn === 'function') { if (!S) inputSubs.set(id, S = new Map()); S.set(dev, fn); } else if (S) { S.delete(dev); if (!S.size) inputSubs.delete(id); }
+    },
     clipToTrack: (trackId, notes) => clipToTrack(trackId, notes),
     download: (name, blob) => download(blob, name),
     tuningFile: () => tuningFile(V().vals.s.global.tun),

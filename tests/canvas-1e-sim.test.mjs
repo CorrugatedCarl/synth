@@ -522,3 +522,18 @@ test('U9: the soft caps on a touch device (page sim) — the 4th instrument warn
     assert.deepEqual([asked.length, CMOD.instIds(T()).length], [k + 1, n]);
   } finally { globalThis.confirm = was; cv.touch(null); api.store.set('synth.cv.devFactor', 0); }
 });
+
+test('U6: two Serums on one track keep their own live-input subscriptions (clip recording, key lights): a played note reaches both; one leaving keeps the other', () => {
+  const t = fresh('serum');
+  const s2 = cv.add('serum', null); sim.raf();
+  const got = [];
+  api.sxHost(t, 'i1').onInput((on, n) => got.push('i1:' + on + ':' + n));
+  api.sxHost(t, s2).onInput((on, n) => got.push(s2 + ':' + on + ':' + n));
+  api.noteOn(60, 0.8); api.noteOff(60);
+  assert.deepEqual(got.sort(), ['i1:0:60', 'i1:1:60', s2 + ':0:60', s2 + ':1:60'].sort());
+  api.sxHost(t, 'i1').onInput(null);
+  got.length = 0;
+  api.noteOn(62, 0.8); api.noteOff(62);
+  assert.deepEqual(got, [s2 + ':1:62', s2 + ':0:62'], 'the other one stays subscribed');
+  api.sxHost(t, s2).onInput(null);
+});
