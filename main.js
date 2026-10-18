@@ -513,7 +513,8 @@ function postPatch(N, p, C = N, i) {
    structure key changed ({t: 'power', i, on} after it for an Inst whose `on` changed: the engine applies a power state it
    already has as nothing), then {t: 'patch', i, p} per Inst through its part cache (N.insts: id → {engine, ctKey,
    ctParts, sqParts, xsKey, last}) and {t: 'chain', c, fxr, fxrT?} per shared panel (N.chains: id → {xsKey, last}; fxrT
-   absent = its tables unchanged, as a patch's). The assets of every part wait as today's patch does. */
+   absent = its tables unchanged, as a patch's). A post waits for the assets of every part as today's patch does — its
+   graph, power and new 303 patterns with it (review H10, H11). */
 const newPart = () => ({ engine: '', ctKey: '', ctParts: new Map(), sqParts: new Map(), xsKey: '', last: null });
 const instCache = (N, id) => N.insts.get(id) || N.insts.set(id, newPart()).get(id);
 // a node's first graph: its i0 / c0 are adopted by position (i0 → the primary; c0 → chains[0] when the primary is
@@ -522,6 +523,7 @@ function graphCache(N, tr, graph) {
   const legacy = !N.graphed && N.ctParts instanceof Map, pid = CMOD.primId(tr), f = CMOD.fxDevOf(tr);
   N.graphed = true; N.gkey = ''; N.gon = new Map(); N.waitP = null; N.insts = new Map(); N.chains = new Map(); N.osI = new Map();
   if (!legacy) return N;
+  N.gon.set(pid, true); // (i0: the primary, sounding — a legacy node's one instrument; its pattern is there, its power diffed)
   N.insts.set(pid, { engine: N.engine, ctKey: N.ctKey, ctParts: N.ctParts, sqParts: N.sqParts, xsKey: N.xsKey, last: N.last });
   if (f && !f.own && N.last && N.last.fxr && graph.chains.length && graph.chains[0].id === f.id) N.chains.set(f.id, { xsKey: N.xsKey, last: N.last.fxr });
   return N;
@@ -535,24 +537,28 @@ function postChain(N, id, x) {
   N.node.port.postMessage(fxrT ? { t: 'chain', c: id, fxr: x.fxr, fxrT } : { t: 'chain', c: id, fxr: x.fxr });
 }
 function sendGraph(tr, N, c) {
-  const first = !N.graphed, G = graphParts(tr, ctx.sampleRate, false, c), post = m => N.node.port.postMessage(m);
+  const G = graphParts(tr, ctx.sampleRate, false, c), post = m => N.node.port.postMessage(m);
   seedPend.delete(tr.id);
-  if (first) graphCache(N, tr, G.graph);
-  const pid = CMOD.primId(tr), fresh = G.graph.insts.filter(x => !N.gon.has(x.id) && !(first && x.id === pid) && G.seqs[x.id]).map(x => x.id);
-  if (N.gkey !== G.graph.key) {
-    N.gkey = G.graph.key;
-    post(Object.assign({ t: 'graph' }, G.graph));
-    for (const x of G.graph.insts) if (N.gon.has(x.id) && N.gon.get(x.id) !== x.on) post({ t: 'power', i: x.id, on: x.on });
-    N.gon = new Map(G.graph.insts.map(x => [x.id, x.on]));
-    for (const id of [...N.insts.keys()]) if (!(id in G.patches)) N.insts.delete(id);
-    for (const id of [...N.chains.keys()]) if (!(id in G.chains)) N.chains.delete(id);
-    for (const id of [...N.osI.keys()]) if (!(id in G.patches)) N.osI.delete(id);
-    monitors.sync(); // (the parts its subscriptions show may have moved; the first graph: device ids from now on)
-  }
+  if (!N.graphed) graphCache(N, tr, G.graph);
+  // the structure goes with its parts, after their assets (review H11: while a post waits the node keeps its last graph —
+  // a new Inst never plays the default patch, a new panel never passes dry); a new TB-303 Inst gets its pattern as its graph
+  // goes, the current one (H10: a newer post replacing a waiting one cannot drop it)
   const go = () => {
+    const fresh = [];
+    if (N.gkey !== G.graph.key) {
+      for (const x of G.graph.insts) if (!N.gon.has(x.id) && G.seqs[x.id]) fresh.push(x.id);
+      N.gkey = G.graph.key;
+      post(Object.assign({ t: 'graph' }, G.graph));
+      for (const x of G.graph.insts) if (N.gon.has(x.id) && N.gon.get(x.id) !== x.on) post({ t: 'power', i: x.id, on: x.on });
+      N.gon = new Map(G.graph.insts.map(x => [x.id, x.on]));
+      for (const id of [...N.insts.keys()]) if (!(id in G.patches)) N.insts.delete(id);
+      for (const id of [...N.chains.keys()]) if (!(id in G.chains)) N.chains.delete(id);
+      for (const id of [...N.osI.keys()]) if (!(id in G.patches)) N.osI.delete(id);
+      monitors.on.delete(tr.id); monitors.sync(); // (the parts its subscriptions show may have moved — asked again: a sync while this post waited went to the old structure; the first graph: device ids from now on)
+    }
     for (const id of Object.keys(G.patches)) postPatch(N, G.patches[id], instCache(N, id), id);
     for (const id of Object.keys(G.chains)) postChain(N, id, G.chains[id]);
-    for (const id of fresh) post({ t: 'seq', s: G.seqs[id], i: id }); // (a new TB-303 Inst: its pattern, as a new node's options)
+    for (const id of fresh) post({ t: 'seq', s: seqPayload(tr, id), i: id }); // (a new TB-303 Inst: its pattern, as a new node's options)
   };
   if (!G.needs.length) { tables.release(tr.id); N.waitP = null; go(); return; }
   learnStates(tr);

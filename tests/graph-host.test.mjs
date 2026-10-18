@@ -431,3 +431,37 @@ test('H9: module CPU keeps only the parts the engine still reports — a removed
   node._fromProc({ t: 'stats', load: 0.1, voices: 0, per: [{ id: 'i1', load: 0.08 }, { id: 'fx1', load: 0.02 }] });
   assert.deepEqual([Object.keys(N(c).cpu).sort(), N(c).cpu.i1 > 0.08 && N(c).cpu.i1 < 0.1], [['fx1', 'i1'], true], 'pruned; the kept ones still smoothed');
 });
+
+// an asset wait (tables.ready false: a variant being rebuilt) held open until release()
+function holdAssets() {
+  const T = sim.api.tables, r0 = T.ready, e0 = T.ensure, res = [];
+  T.ready = () => false;
+  T.ensure = () => new Promise(r => res.push(r));
+  return async () => { T.ready = r0; T.ensure = e0; for (const r of res.splice(0)) r(); await sim.settle(5); };
+}
+test('H11: during an asset wait the graph waits with its parts — a new instrument never plays the default patch, a new panel never passes dry', async () => {
+  await page();
+  const b = byId('trk_b'), k = sim.nodeOf(b.id).posted.length, release = holdAssets();
+  let id, during;
+  try {
+    id = CMOD.addInst(b, 'juno60', { vals: Object.assign(vals('juno60'), { lr: 3 }) }); sim.api.sendPatch(b);
+    during = sent(b, k).map(tag);
+  } finally { await release(); }
+  assert.equal(during.includes('graph') && !during.includes('patch:' + id), false, 'no graph with ' + id + ' before its patch: ' + during.join(' '));
+  const after = sent(b, k).map(tag);
+  assert.deepEqual([after.includes('graph'), after.includes('patch:' + id), after.indexOf('graph') < after.indexOf('patch:' + id)], [true, true, true], after.join(' '));
+  CMOD.removeInst(b, id); sim.api.sendPatch(b);
+});
+
+test('H10: a newer post replacing a waiting one keeps a new TB-303\'s pattern ({t: seq, i}, the current one)', async () => {
+  await page();
+  const b = byId('trk_b'), k = sim.nodeOf(b.id).posted.length, release = holdAssets();
+  let id;
+  try {
+    id = CMOD.addInst(b, 'tb303', { vals: vals('tb303') }); sim.api.sendPatch(b);
+    b.dev[id].vals.cut = (b.dev[id].vals.cut || 0) + 1; b.dev[id].seq = pat(9); sim.api.sendPatch(b); // (a newer post while the first waits)
+  } finally { await release(); }
+  const m = sent(b, k), seq = m.filter(x => x.t === 'seq' && x.i === id);
+  assert.deepEqual([m.some(x => x.t === 'graph' && x.insts.some(y => y.id === id)), seq.length, seq.length && seq[0].s.pat[0].n], [true, 1, 9], m.map(tag).join(' '));
+  CMOD.removeInst(b, id); sim.api.sendPatch(b);
+});
