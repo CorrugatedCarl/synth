@@ -576,3 +576,48 @@ test('1e host protocol (lane B): a classic primary straight to OUT keeps c0 as i
     patches: { i1: bare(classic('prophet5')) }, chains: { fx1: fxOf() }, seqs: {} }));
   assert.deepEqual([b.graphed, b.simple, b.i0.id, b.c0.id, b.i0.p.poly], [1, 1, 'i1', 'fx1', b.i0.voices.length]);
 });
+
+// §14.1 row r (IMPL-1e §7): tests/bench-scenarios.mjs's graph node — Prophet-5 + Juno-60 + default Serum into one EQ / chorus
+// / delay panel, a chord on all three — through the CPU gate (calibrated, ≤ 1.5 × its node target)
+test('§14.1 row r (node gate): three instruments into one shared panel ≤ 1.5 × 0.15', async (t) => {
+  const { scenarios } = await import('./bench-scenarios.mjs');
+  const S = scenarios().find(s => s.id === 'r'), B = S.build(), D = dspScope({ engine: true, fast: true, console: quiet });
+  const p = new D.Proc({ processorOptions: { os: 4, hostOS: 4, offline: true } });
+  p.msg(B.graph);
+  for (const [id, patch] of Object.entries(B.patches)) { p.msg({ t: 'patch', i: id, p: patch }); tables(p, patch); }
+  for (const [id, c] of Object.entries(B.chains)) p.msg(Object.assign({ t: 'chain', c: id }, c));
+  for (const [n, v] of B.notes) p.msg({ t: 'on', n, v });
+  const o = out(), sec = () => run(D, p, SR / 128, o);
+  sec();
+  assert.deepEqual([p.insts.map(x => x.kind).join(), p.insts.every(x => x.live === 1), peakOf(o[0][0]) > 0.01], ['analog,analog,serum', true, true]);
+  assert.equal(CPU.BENCH.targets.r.node, S.node);
+  const best = await CPU.gateLoad(sec, S.node);
+  t.diagnostic(`row r: ${best.load.toFixed(4)} calibrated (raw ${best.raw.toFixed(4)}, t(calib) ${best.calib.toFixed(0)} ms, attempt ${best.attempt})`);
+  assert.ok(best.load <= 1.5 * S.node, `row r: ${best.load.toFixed(4)} > 1.5 × ${S.node}`);
+});
+
+// §9.2 / IMPL-1e §7: the warm-up covers the graph paths — on a warmed scope, a graph node that has been running silently
+// (as a track does before it is played: the first render after a patch has costs of its own, 1d's as well) plays its first
+// chord through the new paths (two classic Insts at a gain into a shared reverb panel, one straight to OUT: copy-first sums,
+// the panel keyed by the Track) and later a power-on restrike, each first quantum ≤ 1.5 × steady state. Single-quantum
+// timings are noisy: the best of up to 5 fresh scopes counts
+test('§9.2 warm-up: the first quantum of the graph paths (first chord, power-on restrike) ≤ 1.5 × steady state (warmed scope)', (t) => {
+  const P = { i1: classic('juno60'), i2: classic('prophet5'), i3: classic('minimoog') };
+  let best = [Infinity, Infinity];
+  for (let k = 0; k < 5 && Math.max(...best) > 1.5; k++) {
+    const D = dspScope({ engine: true, fast: true, console: quiet });
+    mk(D, { os: 4, hostOS: 4 }); // (the first live Track of the scope: the warm-up)
+    const { p } = gnode(D, graph(['i1', 'i2', 'i3'], ['fx1'], [['i1', 'fx1', 1], ['i2', 'fx1', 0.7], ['fx1', 'out', 1], ['i3', 'out', 0.5]]), P, { fx1: fxOf(verb()) }, { os: 4, hostOS: 4 });
+    const o = out(), q = () => { const t0 = performance.now(); p.process([], o); D.ctx.currentFrame += 128; return performance.now() - t0; };
+    const steady = n => { const a = []; for (let j = 0; j < n; j++) a.push(q()); return a.slice(n >> 2).sort((x, y) => x - y)[(n - (n >> 2)) >> 1]; };
+    steady(200); // (running, silent)
+    for (const n of CHORD) p.msg({ t: 'on', n, v: 0.8 });
+    const f1 = q(), m1 = steady(300);
+    p.msg({ t: 'power', i: 'i2', on: false }); steady(100);
+    p.msg({ t: 'power', i: 'i2', on: true });
+    const f2 = q(), m2 = steady(300);
+    best = [Math.min(best[0], f1 / m1), Math.min(best[1], f2 / m2)];
+    t.diagnostic(`attempt ${k + 1}: first chord ${f1.toFixed(3)} ms / steady ${m1.toFixed(3)} ms (× ${(f1 / m1).toFixed(2)}), restrike ${f2.toFixed(3)} / ${m2.toFixed(3)} ms (× ${(f2 / m2).toFixed(2)})`);
+  }
+  assert.ok(best[0] <= 1.5 && best[1] <= 1.5, `first quantum × ${best.map(x => x.toFixed(2)).join(' / ')} of steady state`);
+});

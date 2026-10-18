@@ -10,7 +10,9 @@
 // changes to the row's patch while the track is silent (0.5 s, the warm-ups' time) and the chord is played again; their
 // load is the slowest quantum of the first 1.5 s of that chord (fraction of real time; a JIT-cold voice path is what it
 // catches — at the onset, and the paths a note meets only later: grains ending, playheads reaching the region end; M4:
-// was the first 50 ms), `steady` the median quantum of the chord after 0.5 s.
+// was the first 50 ms), `steady` the median quantum of the chord after 0.5 s. Rows of kind 'track' (r, IMPL-1e §7) render a
+// graph node with several instruments: {t: 'graph'}, {t: 'patch', i} per instrument, {t: 'chain', c} per shared panel, the
+// chord reaching every instrument (full key zones); classic instruments at the app's oversampling (4).
 //   const S = scenarios();                          // [{id, label, node, ipad, kind, gran?, build()}]
 //   const r = measure(S[0], env, {runs: 5});        // {load, loads, peak, worst}
 // env = { mk(processorOptions) → processor, advance(frames), FXDSP, SxBase, now() → ms }.
@@ -97,6 +99,22 @@ function fxInst(fx, type, vals, where) {
   for (const [k, v] of Object.entries(vals || {})) setP(I, k, v);
   return I;
 }
+// row r (IMPL-1e §7): Prophet-5 'Poly Strings' + Juno-60 + default Serum into one shared panel (EQ → chorus → delay) → OUT
+function trackR() {
+  const cl = (id, preset) => {
+    const m = MODELS.find(x => x.id === id), v = Object.fromEntries(m.controls.map(c => [c.id, c.def]));
+    if (preset) Object.assign(v, m.presets.find(p => p.name === preset).v);
+    const p = patchFor(m, v, core.defaultFx2(), { sr: SR, bpm: 120, drift: 0.5, hiss: 1 });
+    delete p.fxr; delete p.fxrT; // (a classic Inst's patch on a graph node: its panel is a {t: 'chain'})
+    return p;
+  };
+  const fx = core.defaultFx2();
+  fxInst(fx, 'eq', {}); fxInst(fx, 'cho', { mix: 0.5 }); fxInst(fx, 'dly', { mix: 0.3 });
+  const Z = { lo: 0, hi: 127, xp: 0 }, ins = ['i1', 'i2', 'i3'].map((id, k) => ({ id, on: true, zone: Z, salt: k ? ((k + 1) * 0x9E3779B9) >>> 0 : 0 }));
+  return { graph: { t: 'graph', insts: ins, chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['i2', 'fx1', 1], ['i3', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: 'r' },
+    patches: { i1: cl('prophet5', 'Poly Strings'), i2: cl('juno60', null), i3: sx(() => {}).patch },
+    chains: { fx1: { fxr: core.compileFx(fx, { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx) } }, notes: chord(4, 48, 4) };
+}
 function fxScn(make) {
   const fx = core.defaultFx2(), extra = make(fx) || {};
   const fxp = core.compileFx(fx, { bpm: 120, rate: SR }), fxt = core.compileFxT(fx);
@@ -161,6 +179,8 @@ export function scenarios() {
       }) },
     // live preset switch (§11.10): row d's WT patch, then the preset changes to h' / g" while the track is silent; the
     // load is the slowest quantum of the first chord on the new preset (≤ 1 = within the deadline)
+    { id: 'r', label: 'Track: Prophet-5 Poly Strings + Juno-60 + default Serum → one EQ / chorus / delay panel, a 4-note chord on all three',
+      node: 0.15, ipad: 0.2, kind: 'track', build: trackR },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',
@@ -193,6 +213,15 @@ function prepare(B, kind, env, now) {
   };
   const api = (q, gr) => ({ step: (frames, timed) => quanta(q, frames, timed), peak: () => pk, runPeak: () => { const r = rpk; rpk = 0; return r; },
     grains: gr, worst: () => wq });
+  if (kind === 'track') {
+    const p = env.mk({ os: 4, hostOS: 4, offline: true });
+    p.msg(B.graph);
+    for (const [id, patch] of Object.entries(B.patches)) { p.msg({ t: 'patch', i: id, p: patch }); sendTables(p, patch); }
+    for (const [id, c] of Object.entries(B.chains)) p.msg(Object.assign({ t: 'chain', c: id }, c));
+    for (const [n, v] of B.notes) p.msg({ t: 'on', n, v });
+    const L = new Float32Array(128), R = new Float32Array(128), out = [[L, R]];
+    return api(() => { p.process([], out); env.advance(128); track(L, 128); }, () => -1);
+  }
   if (kind === 'voice') {
     const p = env.mk({ os: 2, hostOS: 4, offline: true });
     p.msg({ t: 'patch', p: B.patch });

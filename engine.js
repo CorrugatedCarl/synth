@@ -2936,7 +2936,7 @@ class Track extends Facade {
     for (const id of cid) {
       let c = null;
       for (const y of oldC) if (y.id === id) c = y;
-      if (c === null) { c = new Chain(this.base); c.id = id; }
+      if (c === null) { c = new Chain(this.base); c.id = id; } else c.used = 1; // (only a panel this graph built is new: handOver)
       c.ownBy = null;
       C.push(c);
     }
