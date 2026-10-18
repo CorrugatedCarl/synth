@@ -1,5 +1,7 @@
 // cv-graph.js tests (SPEC-canvas §5.1, §5.5, §6.7, §10 stage 1a skeleton): v1 tracks and the canonical v2 shapes present
 // today's v1 view (patchFor of it equals the track's own, every factory preset); validation codes; topological order.
+// Stage 1e (IMPL-1e §3.1, §5): the graph form (tests/fixtures/graph-1e.mjs), compileGraph = today's patch for canonical
+// tracks (instPatch + chainPatch), the new validation codes, the structure key.
 // Run: node --max-old-space-size=2048 --test tests/cv-graph.test.mjs
 import './v8-guard.mjs';
 import { test } from 'node:test';
@@ -136,4 +138,109 @@ test('order: sources before what they feed (stable), powered, ports and kinds', 
   assert.deepEqual([G.port('i2/oscA.out'), G.port('fx1.in'), G.port('x'), G.port(3)], [{ dev: 'i2/oscA', port: 'out' }, { dev: 'fx1', port: 'in' }, null, null]);
   assert.deepEqual(['synth', 'panel', 'out', 'lfo', 'macro', 'nope'].map(kind => G.kindOf({ kind })), ['inst', 'panel', 'out', 'mod', 'mod', null]);
   assert.deepEqual([G.isV2(t), G.isV2({ model: 'x' }), G.order({ model: 'x' })], [true, false, null]);
+});
+
+/* ---------------------------------------------------------------- stage 1e: the graph form (IMPL-1e §3.1, §5) */
+const F = await import('./fixtures/graph-1e.mjs?v=9');
+const keyless = g => { const o = Object.assign({}, g); delete o.key; delete o.t; return o; };
+
+test('1e: the fixture tracks compile to the graph form (not canonical): graph, patches, chains, salts as written out', () => {
+  const T = F.tracks();
+  for (const [k, why] of [['a', 'several'], ['b', 'shape'], ['c', 'several']]) {
+    const t = T[k], r = G.compileTrack(t);
+    assert.deepEqual([r.canonical, r.why, G.validate(t).ok], [false, why, true], k);
+    assert.deepEqual(keyless(r.graph), F.GRAPH[k], k);
+    assert.deepEqual(Object.keys(r.patches), r.graph.insts.map(x => x.id), k);
+    assert.deepEqual(Object.keys(r.chains), r.graph.chains.map(x => x.id), k);
+    for (const id of Object.keys(r.patches)) {
+      const d = t.dev[id], p = r.patches[id];
+      assert.equal(p.vals === d.vals && p.model === d.model && p.preset === d.preset, true, k + id + ': the device\'s own objects');
+      assert.equal(p.fx === (d.model === 'serum' ? d.fx : undefined), true, k + id + ': fx a Serum\'s own');
+    }
+    for (const id of Object.keys(r.chains)) assert.equal(r.chains[id] === t.dev[id].fx, true, k + id + ': the panel\'s state');
+    assert.deepEqual(r.powered, k === 'b' ? ['i1'] : ['i1', 'i2']);
+    assert.equal(typeof r.graph.key, 'string');
+    assert.deepEqual(G.compileGraph(t).graph, r.graph, 'compileGraph = compileTrack for a graph shape');
+  }
+  assert.deepEqual([G.saltOf('i1', 'i1'), G.saltOf('i2', 'i1'), G.saltOf('i1', 'i2'), G.saltOf('i7', 'i1')],
+    [0, (2 * 0x9E3779B9) >>> 0, 0x9E3779B9, (7 * 0x9E3779B9) >>> 0]);
+  assert.deepEqual([G.devNum('fx12'), G.devNum('out'), G.devNum('i3')], [12, 0, 3]);
+});
+
+test('1e: the fixture messages are compileGraph + instPatch + chainPatch at the host\'s options (graph, patch i, chain c)', () => {
+  const T = F.tracks();
+  for (const k of ['a', 'b', 'c', 'a2']) {
+    const M = F.MSGS[k], t = T[k], g = G.compileGraph(t);
+    assert.deepEqual(M.map(m => m.t + ':' + (m.i || m.c || '')), ['graph:', ...g.graph.insts.map(x => 'patch:' + x.id), ...g.graph.chains.map(x => 'chain:' + x.id)], k);
+    assert.deepEqual(keyless(M[0]), F.GRAPH[k], k);
+    assert.equal(M[0].key, g.graph.key);
+    for (const m of M.filter(x => x.t === 'patch')) assert.equal(t.dev[m.i].model === 'serum' ? 'fxr' in m.p && m.p.osCap === 8 : !('fxr' in m.p) && !('fxrT' in m.p), true, k + m.i);
+  }
+  // (a2) canonical: the Inst's patch + its chain's rack = today's patch of that track (the legacy {t:'patch', p})
+  const t = T.a2, d = t.dev.i1, M = F.MSGS.a2, legacy = patchFor(d.model, d.vals, t.dev.fx1.fx, F.OPTS);
+  assert.equal(G.compileTrack(t).canonical, true);
+  assert.deepEqual(Object.assign({}, M[1].p, { fxr: M[2].fxr, fxrT: M[2].fxrT }), legacy);
+});
+
+test('1e: compileGraph of every canonical factory sound = today\'s patch (instPatch + chainPatch; a Serum its own FX)', () => {
+  for (const t of v1Tracks()) {
+    for (const x of [t, v2Of(t)]) {
+      const g = G.compileGraph(x), legacy = patchFor(t.model, t.vals, t.fx, OPTS);
+      assert.deepEqual([g.canonical, g.graph.insts.map(i => [i.id, i.on, i.salt]), g.graph.out], [true, [['i1', true, 0]], 'out'], t.preset);
+      const P = g.patches.i1, ip = G.instPatch({ model: P.model, vals: P.vals, fx: P.fx }, OPTS);
+      if (t.model === 'serum') {
+        assert.deepEqual([g.graph.chains, g.graph.edges], [[], [['i1', 'out', 1]]]);
+        assert.deepEqual(ip, legacy, t.preset);
+      } else {
+        assert.deepEqual([g.graph.chains, g.graph.edges], [[{ id: 'fx1' }], [['i1', 'fx1', 1], ['fx1', 'out', 1]]]);
+        assert.deepEqual(patchFor(P.model, P.vals, g.chains.fx1, OPTS), legacy, t.preset);
+        const both = Object.assign({}, ip, G.chainPatch(g.chains.fx1, OPTS)), L = Object.assign({}, legacy);
+        assert.deepEqual([...(both.needs || [])].sort(), [...(L.needs || [])].sort(), t.preset);
+        delete both.needs; delete L.needs;
+        assert.deepEqual(both, L, t.preset + ': the Inst\'s patch + its chain = today\'s');
+      }
+    }
+  }
+});
+
+test('1e: validate — fan-in allowed, levels, zones, power / solo flags; an invalid track compiles its usable cables', () => {
+  const T = F.tracks(), codes = x => G.validate(x).errors.map(e => e.code);
+  assert.deepEqual(codes(T.a), [], 'two instruments into one panel (fan-in)');
+  const into = clone(T.c); into.wires.push({ id: 'w9', a: 'fx2.out', b: 'out.in' }); // (dup of w4's jacks)
+  assert.deepEqual(codes(into), ['dup']);
+  const lv = clone(T.c);
+  for (const g of [-1, NaN, Infinity, '1']) { lv.wires[3].g = g; assert.deepEqual(codes(lv), ['g'], String(g)); }
+  lv.wires[3].g = 0; assert.deepEqual(codes(lv), [], 'level 0 is a level');
+  const z = clone(T.a);
+  for (const zone of [{ lo: 0, hi: 128 }, { lo: 60, hi: 59 }, { lo: 1.5, hi: 9 }, { lo: 0, hi: 127, xp: 49 }, { lo: 0, hi: 127, xp: -49 }, 'all']) {
+    z.dev.i2.zone = zone; assert.deepEqual(codes(z), ['zone'], JSON.stringify(zone));
+  }
+  z.dev.i2.zone = { lo: 48, hi: 72, xp: -12 }; assert.deepEqual(codes(z), []);
+  assert.deepEqual(G.compileTrack(z).graph.insts[1].zone, { lo: 48, hi: 72, xp: -12 });
+  const f = clone(T.a); f.dev.i2.on = 1; assert.deepEqual(codes(f), ['flag']);
+  f.dev.i2.on = false; f.dev.i2.solo = 'yes'; assert.deepEqual(codes(f), ['flag']);
+  assert.deepEqual(G.zoneOf({}), { lo: 0, hi: 127, xp: 0 });
+  assert.deepEqual(G.zoneOf({ zone: { lo: 90, hi: 30, xp: 99 } }), { lo: 30, hi: 90, xp: 48 });
+  // fan-out and panel → panel refused; the compile keeps the first cable of an output and no chain
+  const bad = clone(T.c);
+  bad.wires.push({ id: 'w5', a: 'i1.out', b: 'fx2.in' }, { id: 'w6', a: 'fx1.out', b: 'fx2.in' });
+  assert.deepEqual(codes(bad).sort(), ['chain', 'fan-out', 'fan-out']);
+  const r = G.compileTrack(bad);
+  assert.deepEqual([r.canonical, r.why], [false, 'invalid']);
+  assert.deepEqual(r.graph.edges, F.GRAPH.c.edges);
+});
+
+test('1e: the graph key follows the structure (power, solo, zone, level, cables, primary), not the sound', () => {
+  const t = F.tracks().a, k0 = G.compileGraph(t).graph.key, key = () => G.compileGraph(t).graph.key;
+  t.dev.i1.vals.vcf = 7; t.dev.fx1.fx.racks[0].mods.length = 0;
+  assert.equal(key(), k0, 'knobs and racks are patches, not structure');
+  for (const [edit, undo] of [
+    [() => { t.dev.i2.on = false; }, () => { delete t.dev.i2.on; }],
+    [() => { t.dev.i2.solo = true; }, () => { delete t.dev.i2.solo; }],
+    [() => { t.dev.i2.zone = { lo: 0, hi: 59, xp: 0 }; }, () => { delete t.dev.i2.zone; }],
+    [() => { t.wires[2].g = 0.25; }, () => { delete t.wires[2].g; }],
+    [() => { t.prim = 'i2'; }, () => { t.prim = 'i1'; }],
+  ]) { edit(); assert.notEqual(key(), k0); undo(); assert.equal(key(), k0); }
+  t.prim = 'i2';
+  assert.deepEqual(G.compileGraph(t).graph.insts.map(x => [x.id, x.salt]), [['i2', 0], ['i1', 0x9E3779B9]], 'the primary first, salt 0');
 });
