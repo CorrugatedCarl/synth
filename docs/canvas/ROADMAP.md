@@ -14,7 +14,7 @@ This is the living tracker for the canvas redesign. The design is [SPEC-canvas.m
 | 1b Canvas shell | Top tray, keyboard tray, Sources tray with original illustrations, camera world, movable modules, derived cables | **Done** (1f6721b) + feedback fixes below |
 | 1b+ Hardware panels | Fixed, hardware-accurate front panels for the 12 classic synths; Hardware/Resizable layout toggle in each module's ⋯ menu; zoom never changes how modules look | **In progress** |
 | 1c Instances + project v2 | ClassicPanel instances, multi-instance Serum UI, project v2 + migration, canonical compile, Save as classic project, minimap, box-select, track-switch mounting | Next |
-| 1d Track engine | `engine.js` split into Track / Inst / Chain, bit-identical; CPU per module | Gated on the **iPad bench** (see below) |
+| 1d Track engine | `engine.js` split into Track / Inst / Chain, bit-identical; CPU per module | Planned (iPad bench recorded 2026-10-18) |
 | 1e Several synths per track | Multiple instruments per track, shared/separate FX panels (pedalboards), editable audio cables, Effects tray, power, key zones — **completes milestone 1** | Planned |
 | 2a Performance modulators | Project Mod Wheel (one per project), Velocity, Aftertouch, Bend on Serum knobs and its own FX; mod list; cable inspector | Planned |
 | 2b Modulation everywhere | LFO (GLOBAL / PER NOTE), ENV, Macro, CC, Chaos modules on any Serum knob, any FX knob and 237 classic controls — **completes milestone 2** | Planned |
@@ -23,7 +23,7 @@ This is the living tracker for the canvas redesign. The design is [SPEC-canvas.m
 
 ## Gates
 
-- **iPad bench (before 1d):** the user opens `https://canvas.domlavin.com/tests/bench.html` in Safari on the iPad (plugged in, other apps closed), taps **Run 5 passes**, then **Copy results**, and pastes them; they go into `tests/bench.json` under `"ipad"`. Stage 1d's performance gates compare against it.
+- **iPad bench (before 1d): DONE 2026-10-18** — recorded in `tests/bench.json` `"ipad"` (iPad Pro, iPadOS 26.6, Chrome for iOS/WebKit). Device factor vs the M4 Max node reference ≈ 0.67–1.00 (median ≈ 0.83): every row well inside its iPad target. WebKit's 1 ms timer quantizes the 'worst quantum' columns (0.375 = one tick), so 1d's iPad gate uses the row loads. To re-run: the user opens `https://canvas.domlavin.com/tests/bench.html` in Safari on the iPad (plugged in, other apps closed), taps **Run 5 passes**, then **Copy results**, and pastes them; they go into `tests/bench.json` under `"ipad"`. Stage 1d's performance gates compare against it.
 - **Sound:** every stage keeps the golden tests bit-identical for unchanged sounds; DSP files only change from 1d on.
 
 ## Changes to the plan from the user's feedback (after the spec)
