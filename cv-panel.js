@@ -64,7 +64,7 @@ export const TOKENS = Object.freeze({
     extras: [], multi: ['dx:btn'],
   },
 });
-/** Tokens this build renders (a layout using another one falls back to the Resizable panel, §4.5). */
+/** Tokens this build renders (a layout using another one falls back to the Simple panel, §4.5). */
 export const RENDERED_TOKENS = new Set([...Object.keys(TOKENS.tb303.kind), ...TOKENS.tb303.extras, ...Object.keys(TOKENS.dx7.kind)]);
 /** The DX7's buttons 1–32 (§6.3): the parameter each live one selects in edit mode (op: per operator; eg: per EG step),
  * the function-mode one, and its LCD names. */
@@ -164,7 +164,7 @@ const showOf = c => !c.inert && (c.kind === 'led' || c.kind === 'display');
 /* ---------------------------------------------------------------- validation */
 /**
  * Every problem of a layout for its models.js model, as readable strings (empty = valid; §3.3). The renderer refuses a
- * layout with problems (the model falls back to its Resizable panel).
+ * layout with problems (the model falls back to its Simple panel).
  * @param {object} L layout @param {object} model models.js model @returns {string[]}
  */
 export function validate(L, model) {
@@ -381,7 +381,7 @@ function decorBox(d) {
   }
 }
 
-/** The layout of `id` when it validates against `model` (problems: console.warn once, then null: Resizable only).
+/** The layout of `id` when it validates against `model` (problems: console.warn once, then null: Simple only).
  * (globalThis.__synthTest.panels: the page simulations' fixture layouts, by model id — never cached.) */
 const usableC = new Map();
 const testLayout = id => { const t = globalThis.__synthTest; return t && t.panels && Object.prototype.hasOwnProperty.call(t.panels, id) ? t.panels[id] : undefined; };
@@ -396,7 +396,7 @@ export function usable(id, model) {
     for (const c of L.controls || []) if (c && typeof c.id === 'string' && isTok(model, c.id) && !RENDERED_TOKENS.has(c.id)) toks.push(c.id);
     for (const t of (L.extras && L.extras.ids) || []) if (isTok(model, t) && !RENDERED_TOKENS.has(t)) toks.push(t);
     if (toks.length) p.push('tokens not rendered by this build: ' + [...new Set(toks)].join(', '));
-    if (p.length) { try { console.warn(`cv-panel: the ${id} hardware layout is not used (Resizable panel instead):\n  ` + p.slice(0, 12).join('\n  ')); } catch (err) { /* no console */ } }
+    if (p.length) { try { console.warn(`cv-panel: the ${id} hardware layout is not used (Simple panel instead):\n  ` + p.slice(0, 12).join('\n  ')); } catch (err) { /* no console */ } }
     else ok = L;
   }
   if (TL === undefined) usableC.set(id, { model, L: ok });

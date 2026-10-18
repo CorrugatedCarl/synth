@@ -94,7 +94,7 @@ test('CANVAS │ ROLL: openTab shows one view; a saved "inst" or "fx" (before th
   }
 });
 
-test('+ Track opens the Sources tray in "new track" mode; a tile tap there adds a track with that instrument (one undo step) and closes the tray', async () => {
+test('+ Track opens the Sources tray in "new track" mode; a tile tap there adds a track with that instrument (one undo step); the tray stays open (the user\'s rule), back in "replace" mode', async () => {
   const s = await bootMain({ hash: '#minimoog' }), sh = shellOf(), api = s.api;
   s.$('#aAdd').onclick();
   assert.deepEqual([sh.shell.src.isOpen(), sh.shell.tiles.mode()], [true, 'track']);
@@ -105,7 +105,8 @@ test('+ Track opens the Sources tray in "new track" mode; a tile tap there adds 
   assert.equal(P.tracks.length, n0 + 1);
   assert.equal(P.tracks.at(-1).model, 'dx7');
   assert.equal(P.selTrack, P.tracks.at(-1).id, 'the new track selected');
-  assert.equal(sh.shell.src.isOpen(), false, 'closed');
+  assert.deepEqual([sh.shell.src.isOpen(), sh.shell.tiles.mode()], [true, 'replace'], 'still open (only its rail, its ✕ or Escape close it); the next tap replaces');
+  assert.match(s.$('#srcMode').children.map(c => c.textContent || '').join(''), /DX7/, 'on the new track');
   s.$('#tUndo').onclick(); s.raf();
   assert.equal(api.project().tracks.length, n0, 'one undo step');
   // the rail opens it in "replace" mode
@@ -114,7 +115,7 @@ test('+ Track opens the Sources tray in "new track" mode; a tile tap there adds 
   assert.equal(sh.shell.tiles.mode(), 'replace');
 });
 
-test('Sources tray, replace mode: a tap replaces the selected track\'s instrument (one undo step, the undo notice); the same model does nothing', async () => {
+test('Sources tray, replace mode: a tap replaces the selected track\'s instrument (one undo step, the undo notice); the tray stays open; the same model in the tray\'s layout does nothing', async () => {
   const s = await bootMain({ hash: '#minimoog' }), sh = shellOf(), api = s.api;
   sh.cvOpenSources('replace');
   const t = api.project().tracks[0];

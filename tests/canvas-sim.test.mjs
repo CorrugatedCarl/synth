@@ -4,8 +4,10 @@ import './v8-guard.mjs';
 // one History step (undo restores the position, knob values kept), the camera never in History and kept per project uid
 // + track, track switch, monitors (smon) only while a module is on screen, Serum ↔ FX panel peer refresh, drop → replace
 // + undo toast, lay through serialize / deserialize / History. Hardware panels (docs/canvas/IMPL-panels.md §7, §9.2):
-// the Minimoog boots in its fixed Hardware layout; the ⋯ menu's Hardware / Resizable toggle (one step, lay.i1.ui, values
-// kept, undo / redo, reload, duplicate); makeRoom inside the toggle's step and on a load. One boot per file.
+// the Minimoog boots in its fixed Hardware layout; the ⋯ menu's Hardware / Simple toggle (one step, lay.i1.ui, values
+// kept, round trips, undo / redo, reload, duplicate; nothing resizable: fixed sizes, Tidy never changes a width); makeRoom
+// inside the toggle's step and on a load; the Sources tray's Hardware | Simple both ways, the tray never closing itself.
+// One boot per file.
 // The world is a scripted one (bootMain synthTest.cvWorld → main.js cvTestWorld), so these tests do not depend on the
 // WORLD lane's camera; the real world is exercised by tests/cv-world.test.mjs. Never passes stub DOM nodes to assert.*.
 // Run alone: node --max-old-space-size=2048 --test tests/canvas-sim.test.mjs
@@ -17,6 +19,7 @@ import * as S from '../song.js?v=9';
 import * as CM from '../cv-migrate.js?v=9';
 import { MODELS } from '../models.js?v=9';
 import * as cvPanel from '../cv-panel.js?v=9';
+import * as cvModule from '../cv-module.js?v=9';
 
 /* ---------------------------------------------------------------- a scripted world (cv-world's World surface) */
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 }; // (a 1408 px Minimoog fits at k 1)
@@ -78,8 +81,8 @@ test('boot: the selected track\'s three modules hold #inst, #fxrack and the scop
   const ttl = nameOf(T().model);
   assert.deepEqual([...V().modules.values()].map(m => m.title), [ttl, 'FX Panel', 'OUT']);
   const menu = cv.menu('inst', 'i1').filter(x => !x.sep);
-  assert.deepEqual(menu.map(x => x.label), ['About the ' + ttl + '…', 'Replace with…', 'Hardware layout', 'Resizable layout', 'Save sound…', 'Delete saved sound', 'Init sound', 'Fold', 'Bring to front', 'Tidy the canvas'],
-    'no Reset width in the Hardware layout');
+  assert.deepEqual(menu.map(x => x.label), ['About the ' + ttl + '…', 'Replace with…', 'Hardware layout', 'Simple layout', 'Save sound…', 'Delete saved sound', 'Init sound', 'Fold', 'Bring to front', 'Tidy the canvas'],
+    'no Reset width (nothing is resizable)');
   assert.deepEqual(menu.slice(2, 4).map(x => x.checked), [true, false], 'Hardware layout checked');
   assert.equal(menu.find(x => x.label === 'Delete saved sound').disabled, true, 'no saved sound loaded');
   assert.deepEqual(cv.menu('out', 'out').map(x => x.label), ['Fold']);
@@ -333,43 +336,50 @@ test('a classic → Serum → classic change keeps the FX module where the user 
   assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [x2, 192], 'undo of the Tidy');
 });
 
-test('the ⋯ toggle Hardware ↔ Resizable: one History step, lay.i1.ui, values and the preset kept, the grip comes back; undo / redo both ways; reload and duplicate keep it', () => {
+test('the ⋯ toggle Hardware ↔ Simple (the user\'s report: "i switched to the simple one and i cant switch back"): each switch one History step from the module menu, the panel re-rendered in that layout at its fixed size, the check mark on it, values and the preset kept — several round trips, undo / redo both ways, a move, Tidy, reload and duplicate', () => {
   const t0 = api.addTrack(MODELS.find(m => m.id === 'minimoog')); sim.raf();
   assert.equal(T().model, 'minimoog');
   assert.equal(cv.instUi(T()), 'hw');
   api.selectTrack(t0.id); sim.raf();
   T().vals.fc = 7.25; T().vals.r1 = 1; T().preset = 'Fat Bass';
-  const vals = JSON.stringify(T().vals), n0 = hsteps(), m = () => V().modules.get('i1');
+  const vals = JSON.stringify(T().vals), n0 = hsteps(), m = () => V().modules.get('i1'), FW = cvModule.FLOW_W.minimoog;
   assert.ok(m().fixed && !('lay' in T() && T().lay.i1), 'fixed, no lay yet');
-  const item = cv.menu('inst', 'i1').find(x => x.label === 'Resizable layout');
-  item.action();
-  assert.equal(hsteps(), n0 + 1, 'one History step');
-  assert.equal(cv.hist.undoLabel, 'Resizable layout');
-  assert.equal(T().lay.i1.ui, 'flow');
-  assert.deepEqual([T().lay.i1.x, T().lay.i1.y], [m().x, m().y], 'lay.i1 created from the module\'s place');
-  assert.ok(T().lay.fx1 && T().lay.out, 'the Tidy-placed modules pinned where they stand');
-  assert.equal(m().fixed, null);
-  assert.equal(m().el.hasAttribute('data-cv-fixed'), false, 'the grip is back');
-  assert.equal(m().w, 1080, 'the default Resizable width');
-  assert.equal(cv.hw(), null, 'today\'s flowing panel in #inst');
-  assert.deepEqual([JSON.stringify(T().vals), T().preset], [vals, 'Fat Bass'], 'values and the preset name kept');
-  const menu = cv.menu('inst', 'i1').filter(x => !x.sep);
-  assert.deepEqual(menu.filter(x => x.checked != null).map(x => [x.label, x.checked]), [['Hardware layout', false], ['Resizable layout', true]]);
-  assert.ok(menu.some(x => x.label === 'Reset width'), 'Reset width in the Resizable layout');
-  // the stored Resizable width survives the Hardware layout (and a move there)
-  m().setW(1280); T().lay.i1.w = 1280;
-  cv.setLayout('hw');
-  assert.deepEqual([hsteps(), cv.hist.undoLabel, 'ui' in T().lay.i1, T().lay.i1.w, m().w], [n0 + 2, 'Hardware layout', false, 1280, 1408]);
+  const ids = () => [...cv.panel().ui.keys()].filter(k => k[0] !== '@').sort().join(','), ids0 = ids();
+  const pick = label => { const it = cv.menu('inst', 'i1').find(x => x.label === label); assert.ok(it && !it.disabled, label + ': in the menu, enabled'); it.action(); sim.raf(); };
+  const checks = () => cv.menu('inst', 'i1').filter(x => x.checked != null).map(x => x.label + ':' + x.checked).join(' ');
+  const flowState = () => [cv.instUi(T()), cv.hw(), m().w, m().fixed && m().fixed.w, m().fixed && m().fixed.h, m().el.hasAttribute('data-cv-fixed')];
+  const hwState = () => [cv.instUi(T()), !!cv.hw(), m().w, m().fixed && m().fixed.w, m().fixed && m().fixed.h];
+  for (let i = 0; i < 3; i++) { // round trips from the menu (Simple → Hardware → Simple …)
+    pick('Simple layout');
+    assert.deepEqual(flowState(), ['flow', null, FW, FW, 0, true], 'Simple: today\'s flowing panel at the Minimoog\'s fixed width (the height measured)');
+    assert.deepEqual([hsteps(), cv.hist.undoLabel, checks()], [n0 + 2 * i + 1, 'Simple layout', 'Hardware layout:false Simple layout:true'], 'one step; the check mark');
+    assert.deepEqual([JSON.stringify(T().vals), T().preset, ids()], [vals, 'Fat Bass', ids0], 'values, the preset name and every control kept');
+    if (!i) { assert.deepEqual([T().lay.i1.x, T().lay.i1.y], [m().x, m().y], 'lay.i1 created from the module\'s place'); assert.ok(T().lay.fx1 && T().lay.out, 'the Tidy-placed modules pinned where they stand'); }
+    pick('Hardware layout');
+    assert.deepEqual(hwState(), ['hw', true, 1408, 1408, 512], 'Hardware: the hardware panel at its size, back from Simple');
+    assert.deepEqual([hsteps(), cv.hist.undoLabel, checks(), 'ui' in T().lay.i1, 'w' in T().lay.i1], [n0 + 2 * i + 2, 'Hardware layout', 'Hardware layout:true Simple layout:false', false, false]);
+    assert.deepEqual([JSON.stringify(T().vals), T().preset, ids()], [vals, 'Fat Bass', ids0]);
+    const fx = V().modules.get('fx1');
+    assert.ok(fx.x >= m().x + m().w + cvModule.GAP - 1 || fx.y >= m().y + m().rect().h, 'never overlapped: room made for the wider panel');
+    assert.deepEqual(V().ports().get('i1.out'), { x: m().x + m().w, y: m().y + cvModule.BAR_H + cvModule.JACK_Y }, 'the out jack (and its cable) at the new edge');
+  }
+  // undo / redo walk the switches back and forth
+  cv.undo(); sim.raf();
+  assert.deepEqual(flowState(), ['flow', null, FW, FW, 0, true], 'undo: Simple');
+  cv.undo(); sim.raf();
+  assert.deepEqual(hwState(), ['hw', true, 1408, 1408, 512], 'undo: Hardware');
+  cv.redo(); sim.raf();
+  assert.deepEqual(flowState(), ['flow', null, FW, FW, 0, true], 'redo: Simple');
+  assert.equal(checks(), 'Hardware layout:false Simple layout:true');
+  pick('Hardware layout');
+  assert.deepEqual(hwState(), ['hw', true, 1408, 1408, 512], 'from the menu after an undo / redo: Hardware again');
+  cv.undo(); sim.raf();
+  assert.deepEqual([JSON.stringify(T().vals), T().preset, ids()], [vals, 'Fat Bass', ids0], 'values still kept');
+  // in Simple: a move keeps the choice and writes no width; Tidy moves modules only (never a width, never the layout)
   drag(m(), 64, 0);
-  assert.equal(T().lay.i1.w, 1280, 'a move in the Hardware layout keeps the Resizable width');
-  cv.undo(); // the move
-  cv.undo(); // back to Resizable
-  assert.deepEqual([cv.instUi(T()), m().fixed, m().w], ['flow', null, 1280], 'undo: Resizable again, its width');
-  cv.undo();
-  assert.deepEqual([cv.instUi(T()), !!m().fixed], ['hw', true], 'undo: Hardware');
-  cv.redo();
-  assert.deepEqual([cv.instUi(T()), m().fixed], ['flow', null], 'redo: Resizable');
-  assert.equal(JSON.stringify(T().vals), vals, 'values still kept');
+  assert.deepEqual([T().lay.i1.ui, 'w' in T().lay.i1], ['flow', false]);
+  cv.tidy(); sim.raf();
+  assert.deepEqual([cv.instUi(T()), m().w, T().lay.i1.ui, cv.hw()], ['flow', FW, 'flow', null], 'Tidy: still Simple at its width');
   // reload (serialize / deserialize) and duplicate keep the choice
   const back = S.deserialize(S.serialize(P()));
   assert.equal(back.tracks.find(x => x.id === T().id).lay.i1.ui, 'flow');
@@ -380,6 +390,30 @@ test('the ⋯ toggle Hardware ↔ Resizable: one History step, lay.i1.ui, values
   const n1 = hsteps();
   cv.setLayout('flow');
   assert.equal(hsteps(), n1);
+});
+
+test('Hardware ↔ Simple round trips on several models (Minimoog, TB-303, Juno-60, DX7, ARP 2600): the fixed size of each layout, the same controls each time, the TB-303 pattern kept; a stored width never wins', () => {
+  for (const id of ['minimoog', 'tb303', 'juno60', 'dx7', 'arp2600']) {
+    const mdl = MODELS.find(x => x.id === id), t = api.addTrack(mdl); sim.raf();
+    api.selectTrack(t.id); sim.raf();
+    const m = () => V().modules.get('i1'), hw = cvPanel.sizeOf(cvPanel.layoutOf(id), mdl), seq = JSON.stringify(T().seq || null);
+    const ids = () => [...cv.panel().ui.keys()].filter(k => k[0] !== '@').sort().join(',');
+    const hwIds = ids();
+    cv.setLayout('flow'); sim.raf();
+    const flowIds = ids();
+    for (let i = 0; i < 2; i++) {
+      cv.setLayout('hw'); sim.raf();
+      assert.deepEqual([cv.instUi(T()), !!cv.hw(), m().w, m().fixed.h, ids()], ['hw', true, hw.w, hw.h, hwIds], id + ': Hardware');
+      T().lay.i1.w = 480; // (a width stored before the no-resizing rule: ignored)
+      cv.setLayout('flow'); sim.raf();
+      assert.deepEqual([cv.instUi(T()), cv.hw(), m().w, ids()], ['flow', null, cvModule.FLOW_W[id], flowIds], id + ': Simple');
+    }
+    cv.undo(); sim.raf();
+    assert.deepEqual([cv.instUi(T()), m().w], ['hw', hw.w], id + ': undo');
+    cv.redo(); sim.raf();
+    assert.deepEqual([cv.instUi(T()), m().w], ['flow', cvModule.FLOW_W[id]], id + ': redo');
+    assert.equal(JSON.stringify(T().seq || null), seq, id + ': the pattern kept');
+  }
 });
 
 test('makeRoom: a fixed instrument pushes overlapping FX / OUT right — inside the toggle\'s step (undo takes it back), and on a load (a stage-1b layout) without a step', () => {
@@ -465,19 +499,20 @@ test('project v2 (1c): every track adopted after loads, undo / redo, add and dup
   assert.deepEqual(back.tracks.map(x => x.model), P().tracks.map(x => x.model), 'main\'s song.js reads each track\'s instrument');
 });
 
-test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / replaces a classic synth in its Resizable layout inside that one step; Hardware as before; Serum ignores it; the choice persists', async () => {
+test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / replaces a classic synth in its Simple layout inside that one step; Hardware brings it back (a tap on the current model\'s tile switches its layout both ways); Serum ignores it; the choice persists; the tray never closes itself', async () => {
   const sh = globalThis.__synthTest.shell, tiles = sh.shell.tiles;
   assert.equal(tiles.layout(), 'hw', 'Hardware by default');
   const simple = sim.$('#srcLayout').children[0].children[1]; // the switch's Simple button
   assert.deepEqual([simple.textContent, simple.getAttribute('aria-pressed')], ['Simple', 'false']);
   simple.dispatchEvent({ type: 'click', target: simple, preventDefault() {}, stopPropagation() {} });
   assert.deepEqual([tiles.layout(), simple.getAttribute('aria-pressed'), api.store.get('synth.cv.trayLayout', null)], ['flow', 'true', 'flow'], 'remembered');
-  // a tap in track mode: a new track, its instrument Resizable, one step
+  // a tap in track mode: a new track, its instrument Simple, one step
   let n = hsteps();
+  const nT = P().tracks.length;
   sh.srcPick('juno60', 'track'); sim.raf();
   assert.deepEqual([T().model, T().lay && T().lay.i1 && T().lay.i1.ui, cv.instUi(T()), hsteps()], ['juno60', 'flow', 'flow', n + 1]);
   cv.undo(); sim.raf();
-  assert.ok(!P().tracks.some(t => t.model === 'juno60' && t.lay && t.lay.i1 && t.lay.i1.ui === 'flow'), 'one undo takes the add away');
+  assert.equal(P().tracks.length, nT, 'one undo takes the add away');
   // a replace (tap in replace mode / a canvas drop): the same, in the replace's step
   n = hsteps();
   sh.srcPick('prophet5', 'replace'); sim.raf();
@@ -488,8 +523,31 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   // Serum: no hardware panel — the switch does nothing to it
   sh.srcPick('serum', 'track'); sim.raf();
   assert.deepEqual([T().model, !!(T().lay && T().lay.i1 && T().lay.i1.ui)], ['serum', false]);
-  // Hardware: as before (no ui written)
+  // Hardware: a new track as before (no ui written)
   tiles.setLayout('hw');
   sh.srcDrag.drop('dx7', { over: 'tracks' }); sim.raf();
   assert.deepEqual([T().model, cv.instUi(T()), !!(T().lay && T().lay.i1 && T().lay.i1.ui)], ['dx7', 'hw', false]);
+  // the user's report ("i switched to the simple one and i cant switch back"): Simple, a tap on the current model's tile …
+  tiles.setLayout('flow');
+  n = hsteps();
+  sh.srcPick('dx7', 'replace'); sim.raf();
+  assert.deepEqual([T().model, cv.instUi(T()), cv.hw(), hsteps(), cv.hist.undoLabel], ['dx7', 'flow', null, n + 1, 'Simple layout'], 'Simple: its own step');
+  // … then Hardware and the same tile: back to the hardware panel, one step
+  tiles.setLayout('hw');
+  sh.srcPick('dx7', 'replace'); sim.raf();
+  assert.deepEqual([T().model, cv.instUi(T()), !!cv.hw(), hsteps(), cv.hist.undoLabel], ['dx7', 'hw', true, n + 2, 'Hardware layout'], 'Hardware again');
+  // a replace in Hardware on a Simple track: the new synth in Hardware (the tray's switch decides), in the replace's step
+  cv.setLayout('flow'); sim.raf();
+  n = hsteps();
+  sh.srcPick('juno60', 'replace'); sim.raf();
+  assert.deepEqual([T().model, cv.instUi(T()), !!cv.hw(), hsteps()], ['juno60', 'hw', true, n + 1]);
+  cv.undo(); sim.raf();
+  assert.deepEqual([T().model, cv.instUi(T())], ['dx7', 'flow'], 'one undo: the DX7 in Simple again');
+  // the tray stays open through picks and drops (only its rail, its ✕ or Escape close it)
+  sh.shell.src.open(); sim.raf();
+  sh.srcPick('prophet5', 'replace'); sim.raf();
+  sh.srcPick('obxa', 'track'); sim.raf();
+  assert.equal(sh.srcDrag.drop('juno60', { over: 'canvas' }), true); sim.raf();
+  assert.equal(sh.srcDrag.drop('dx7', { over: 'tracks' }), true); sim.raf();
+  assert.deepEqual([sh.shell.src.isOpen(), tiles.mode()], [true, 'replace'], 'open; back to replacing after a new track');
 });

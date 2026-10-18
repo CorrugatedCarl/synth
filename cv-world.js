@@ -54,6 +54,11 @@ export const ZOOM_STEPS = Object.freeze([0.25, 1 / 3, 0.5, 2 / 3, 0.75, 1, 1.25,
 export const PINCH_PREF = 'synth.cv.pinch';
 /** The minimap pref (appstore; stored as synthc.cv.minimap): shown unless switched off in the toolbar. */
 export const MAP_PREF = 'synth.cv.minimap';
+/** The lock-view pref (appstore; stored as synthc.cv.lock): off unless switched on in the toolbar. While locked no
+ * gesture on the canvas pans or zooms the camera (drags, two fingers, wheel / trackpad, momentum, Safari gesture*, the
+ * 0 / 1 keys, double-tap fit / focus, focus reveal, a drag's edge pan); the minimap and the toolbar's zoom / fit buttons
+ * still move it, and the app's own moves (a track switch's camera, a reveal after an add) still happen. */
+export const LOCK_PREF = 'synth.cv.lock';
 /** A finger held this long (ms) on empty canvas, then dragged, draws a marquee instead of panning (SPEC §4.1). */
 export const MARQUEE_HOLD_MS = 250;
 /** The minimap's size (CSS px). */
@@ -113,7 +118,7 @@ const TAP_PX = { touch: 8, pen: 4, mouse: 4 }, DTAP_MS = 320, DTAP_PX = 24, REVE
  *   wheelVeto: () => boolean,
  *   escape: () => boolean,
  *   key: (e: KeyboardEvent) => boolean,
- *   on: (type: 'camera' | 'movestart' | 'cameraend' | 'screen' | 'budget' | 'native' | 'select' | 'edit' | 'snap', fn: (d: any) => void) => () => void,
+ *   on: (type: 'camera' | 'movestart' | 'cameraend' | 'screen' | 'budget' | 'native' | 'select' | 'edit' | 'snap' | 'lock', fn: (d: any) => void) => () => void,
  *   destroy: () => void,
  * }} World
  */
@@ -241,7 +246,7 @@ export function createWorld(viewport, o) {
   /* ---- state */
   let cam = { tx: 0, ty: 0, k: 1 }, shown = null, ikK = 1;
   let vp = { left: 0, top: 0, width: 0, height: 0 }, ovO = { left: 0, top: 0 }; // cached rects (resize)
-  let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, gridA = -1, snapping = true;
+  let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, gridA = -1, snapping = true, locked = false;
   let sel = null, editId = null, editSup = false, focusBack = null;
   const selSet = new Set(); // the selection (sel: its primary — the one tapped or moved last)
   let pin = null; // a bar double-tap's edit state { id, k }: it holds at the focus zoom even below EDIT_K (a large module's fit)
@@ -442,6 +447,14 @@ export function createWorld(viewport, o) {
     const rec = items.get(id);
     if (!rec) return;
     const k = clampK(opt.k > 0 ? opt.k : 1), edit = opt.edit !== false, animate = opt.animate !== false;
+    if (locked && edit) { // the view locked: a double-tap selects and wakes the module where the camera is (no move)
+      focusBack = null;
+      select(id);
+      editSup = false;
+      pin = { id, k: cam.k };
+      computeEdit();
+      return;
+    }
     // a second double-tap on the same module goes back to the camera before the first
     if (focusBack && focusBack.id === id && edit && near(cam, focusBack.to)) {
       const back = focusBack.from;
@@ -471,6 +484,7 @@ export function createWorld(viewport, o) {
   }
   const near = (a, b) => Math.abs(a.k - b.k) < 1e-3 && Math.abs(a.tx - b.tx) < 2 && Math.abs(a.ty - b.ty) < 2;
   function reveal(t) {
+    if (locked) return; // (the view locked: a focused control or an opened popover never pans it)
     let r = null;
     try { r = t && typeof t.getBoundingClientRect === 'function' ? t.getBoundingClientRect() : t; } catch (err) { r = null; }
     if (!r || !isFinite(r.left) || !isFinite(r.top)) return;
@@ -615,10 +629,11 @@ export function createWorld(viewport, o) {
       G.moved = true; // the travel since the press follows at once
     }
     const t = now();
-    cam = panCam(cam, x - G.x, y - G.y);
+    if (!locked) cam = panCam(cam, x - G.x, y - G.y); // (the view locked: still a drag — never a tap, its click eaten — the camera stays)
     G.x = x; G.y = y;
     G.s.push([x, y, t]);
     while (G.s.length > 2 && t - G.s[0][2] > 100) G.s.shift();
+    if (locked) return;
     moved(false);
     request();
   }
@@ -635,6 +650,7 @@ export function createWorld(viewport, o) {
     p.x = e.clientX; p.y = e.clientY;
     const f = pframe(), L = G.last;
     G.last = f;
+    if (locked) return; // (the view locked: the two fingers are still the world's — nothing pressed — the camera stays)
     cam = panCam(cam, f.cx - L.cx, f.cy - L.cy);
     if (G.zoomOn) { if (L.d > 0 && f.d > 0) cam = zoomAbout(cam, f.d / L.d, f.cx - vp.left, f.cy - vp.top); }
     else if (Math.abs(f.d - G.base.d) > PINCH_PX / vvScale()) G.zoomOn = true; // from here f starts at 1: no jump
@@ -726,7 +742,7 @@ export function createWorld(viewport, o) {
       return;
     }
     if (t === viewport || t === W) {
-      if (lastTap && !lastTap.id && T - lastTap.t <= DTAP_MS && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) <= DTAP_PX) { lastTap = null; fit({ animate: true }); return; }
+      if (!locked && lastTap && !lastTap.id && T - lastTap.t <= DTAP_MS && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) <= DTAP_PX) { lastTap = null; fit({ animate: true }); return; }
       lastTap = { t: T, x: e.clientX, y: e.clientY };
       select(null);
       return;
@@ -815,7 +831,7 @@ export function createWorld(viewport, o) {
     capture(g.id, false);
     if (!g.moved) { if (g.guard) clickUntil = now() + 350; else tap(g, e); settle(); return; }
     clickUntil = now() + 350;
-    const v = g.type === 'touch' && !g.noGlide && !reduced() ? velocity(g) : null;
+    const v = g.type === 'touch' && !g.noGlide && !locked && !reduced() ? velocity(g) : null;
     if (v) { glide = { vx: v.vx, vy: v.vy, t: now() }; request(); return; }
     settle();
   }
@@ -862,6 +878,7 @@ export function createWorld(viewport, o) {
     if (!active || native || e.defaultPrevented || !(e.ctrlKey || e.metaKey) || (editorZone(e.target) && !wheelVeto())) return;
     e.preventDefault();
     if (typeof e.stopPropagation === 'function') e.stopPropagation();
+    if (locked) return; // (the view locked: taken all the same — never a knob's turn, never the page's zoom)
     const f = Math.exp(-(e.deltaY || 0) * wheelMul(e) * 0.002);
     glide = null; anim = null;
     cam = zoomAbout(cam, f, e.clientX - vp.left, e.clientY - vp.top);
@@ -875,6 +892,7 @@ export function createWorld(viewport, o) {
     if (!dx && !dy) return;
     if (now() - movedAt > WHEEL_VETO_MS && scrollerTakes(e.target, dx, dy)) return; // (not one sliding under a moving camera)
     e.preventDefault();
+    if (locked) return; // (the view locked: the page never scrolls nor swipes back either)
     glide = null; anim = null;
     cam = panCam(cam, -dx, -dy);
     moved(true); request();
@@ -887,7 +905,7 @@ export function createWorld(viewport, o) {
     if (e.type === 'gestureend') { gs = null; return; }
     const s = +e.scale || 1, f = s / gs;
     gs = s;
-    if (f === 1 || !isFinite(f)) return;
+    if (locked || f === 1 || !isFinite(f)) return; // (locked: prevented — no page zoom — and the camera stays)
     const x = isFinite(e.clientX) ? e.clientX : vp.left + vp.width / 2, y = isFinite(e.clientY) ? e.clientY : vp.top + vp.height / 2;
     glide = null; anim = null;
     cam = zoomAbout(cam, f, x - vp.left, y - vp.top);
@@ -903,7 +921,7 @@ export function createWorld(viewport, o) {
   const hooks = {
     pan(sx, sy, at) { // 'Zoom page' (SPEC §4.3): two fingers are the browser's — the canvas pans with one finger only
       if (pinchMode !== 'canvas' || !claims(at)) return false;
-      if (!sx && !sy) return true;
+      if (locked || (!sx && !sy)) return true; // (locked: the canvas's all the same — no scroller, no page — and nothing moves)
       stopMotion();
       cam = panCam(cam, -sx, -sy);
       moved(true, true); write(); schedule(); // (on screen: planned in the next frame from the cached rects)
@@ -911,7 +929,7 @@ export function createWorld(viewport, o) {
     },
     zoom(f, cx, cy, at) {
       if (pinchMode !== 'canvas' || !claims(at)) return false;
-      if (f === 1 || !(f > 0) || !isFinite(f)) return true;
+      if (locked || f === 1 || !(f > 0) || !isFinite(f)) return true;
       stopMotion();
       cam = zoomAbout(cam, f, cx - vp.left, cy - vp.top);
       moved(true, true); write(); schedule();
@@ -933,7 +951,7 @@ export function createWorld(viewport, o) {
 
   /* ---- drags: edge auto-pan and the drop outline */
   function dragPointer(p) {
-    if (!p) { if (edge) { edge = null; settle(); } return; }
+    if (!p || locked) { if (edge) { edge = null; settle(); } return; } // (the view locked: no edge pan)
     if (!edge) { edge = { p, st: {}, last: -1, v: false, bt: -1e9, b: null }; }
     edge.p = { x: +p.x || 0, y: +p.y || 0, pointerType: p.pointerType || 'mouse' };
     const t = now();
@@ -1015,8 +1033,8 @@ export function createWorld(viewport, o) {
       if (k.toLowerCase() === 'a' && !e.shiftKey) { e.preventDefault(); selectMany([...items.keys()]); return true; }
       return false;
     }
-    if (k === '0') { e.preventDefault(); fit({ animate: true }); return true; }
-    if (k === '1') { e.preventDefault(); zoomTo(1, { animate: true }); return true; }
+    if (k === '0') { e.preventDefault(); if (!locked) fit({ animate: true }); return true; } // (locked: the canvas's key, no move)
+    if (k === '1') { e.preventDefault(); if (!locked) zoomTo(1, { animate: true }); return true; }
     const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k];
     if (d && sel) {
       const s = (snapping ? DOT : GRID) * (e.shiftKey ? 4 : 1); // a dot at a time while snapping, else the fine step
@@ -1044,6 +1062,8 @@ export function createWorld(viewport, o) {
     tools: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.2 12.2 17 17M6 8.5h5M8.5 6v5"/></svg>',
     snap: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3.5v6.5a5 5 0 0 0 10 0V3.5M5 7h3M12 7h3"/><circle cx="4" cy="17" r="0.9"/><circle cx="10" cy="17" r="0.9"/><circle cx="16" cy="17" r="0.9"/></svg>',
     map: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="4" width="15" height="12" rx="1.5"/><rect x="5" y="6.5" width="4" height="3"/><rect x="10.5" y="8" width="4.5" height="5"/></svg>',
+    lock: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4.5" y="9" width="11" height="8" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9M10 12.2v1.6"/></svg>',
+    unlock: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4.5" y="9" width="11" height="8" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 5.8-1.1M10 12.2v1.6"/></svg>',
   };
   function buildToolbar(host) {
     if (!host || !doc) return;
@@ -1068,6 +1088,7 @@ export function createWorld(viewport, o) {
     pct.classList.add('cv-tb-pct');
     pct.textContent = '100%';
     const snapB = btn('snap', 'Snap to grid', ICON.snap, () => setSnap(!snapping));
+    const lockB = btn('lock', 'Lock view', ICON.unlock, () => setLock(!locked));
     const mapB = btn('map', 'Minimap', ICON.map, () => setMap(!mapOn));
     const mods = btn('mods', 'Modulation cables arrive in a later stage', ICON.mods, null);
     mods.disabled = true;
@@ -1084,12 +1105,12 @@ export function createWorld(viewport, o) {
       btn('out', 'Zoom out', ICON.out, () => stepZoom(-1)), pct, btn('in', 'Zoom in', ICON.in, () => stepZoom(1)), mk('span', 'cv-tb-sep'),
       btn('fit', 'Fit all (0)', ICON.fit, () => fit({ animate: true })),
       btn('tidy', 'Tidy: lay the modules out again', ICON.tidy, () => { if (typeof o.onTidy === 'function') o.onTidy(); }),
-      snapB, mapB, mods);
+      snapB, lockB, mapB, mods);
     bar.append(fold, row, chip);
     host.append(bar);
-    Object.assign(TB, { bar, row, pct, chip, fold, snap: snapB, map: mapB });
+    Object.assign(TB, { bar, row, pct, chip, fold, snap: snapB, lock: lockB, map: mapB });
     buildMap(host);
-    snapUI(); mapUI();
+    snapUI(); lockUI(); mapUI();
     offs.push(() => { unlater(hintT); try { bar.remove(); } catch (err) { /* gone */ } });
   }
 
@@ -1189,6 +1210,26 @@ export function createWorld(viewport, o) {
     if (store) { try { store.set(SNAP_PREF, on); } catch (err) { /* storage */ } }
     emit('snap', on);
   }
+  // lock view (toolbar toggle, remembered): no gesture on the canvas moves the camera (LOCK_PREF); the minimap and the
+  // toolbar's zoom / fit buttons still do. Switching it on stops a glide and a drag's edge pan where they are
+  function lockUI() {
+    attr(viewport, 'data-cv-locked', locked);
+    const b = TB.lock;
+    if (!b) return;
+    b.setAttribute('aria-pressed', String(locked));
+    b.title = 'Lock view: ' + (locked ? 'on' : 'off');
+    b.setAttribute('aria-label', b.title);
+    b.innerHTML = locked ? ICON.lock : ICON.unlock;
+  }
+  function setLock(on) {
+    on = !!on;
+    if (on === locked) return;
+    locked = on;
+    if (on && (glide || edge)) { glide = null; glideEnd = -1e9; edge = null; settle(); }
+    lockUI();
+    if (store) { try { store.set(LOCK_PREF, on); } catch (err) { /* storage */ } }
+    emit('lock', on);
+  }
   function setPinchMode(m) {
     pinchMode = m === 'page' ? 'page' : 'canvas';
     attr(viewport, 'data-cv-pinch', pinchMode);
@@ -1216,7 +1257,9 @@ export function createWorld(viewport, o) {
   pinchMode = store && store.get && store.get(PINCH_PREF, 'canvas') === 'page' ? 'page' : 'canvas';
   snapping = !(store && store.get && store.get(SNAP_PREF, true) === false);
   mapOn = !(store && store.get && store.get(MAP_PREF, true) === false);
+  locked = !!(store && store.get && store.get(LOCK_PREF, false) === true);
   attr(viewport, 'data-cv-pinch', pinchMode);
+  attr(viewport, 'data-cv-locked', locked);
   try { W.style.setProperty('--ik', '1'); } catch (err) { /* inert */ }
   if (o.layer) wk.setLayer(o.layer);
   wk.setWheelVeto(() => wheelVeto());
@@ -1259,7 +1302,7 @@ export function createWorld(viewport, o) {
     toClient: (x, y) => { const l = toLocal(cam, x, y); return { x: l.x + vp.left, y: l.y + vp.top }; },
     band, add, remove, update, clear, ids: () => [...items.keys()], onScreen: id => { const r = items.get(String(id)); return !!r && r.on; },
     select, selectMany, get selection() { return [...selSet]; }, dragPointer, ghost, setActive, setPinchMode, resize, hooks, wheelVeto, escape, key,
-    snapOn: () => snapping, setSnap, mapOn: () => mapOn, setMap,
+    snapOn: () => snapping, setSnap, mapOn: () => mapOn, setMap, lockOn: () => locked, setLock,
     on(type, fn) {
       let s = subs.get(type);
       if (!s) subs.set(type, s = new Set());

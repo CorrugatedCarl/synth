@@ -3,7 +3,7 @@
 // updaters (`ui`) and sequencer / step elements, so two instances never share state; destroy() empties its root (the
 // module body remounts by building a new one from the track, where every value lives).
 //   new ClassicPanel(root, { track, model, layout, host })
-//     layout   a cv-panel layout (the Hardware panel, IMPL-panels) or null (the Resizable panel: today's flowing sections)
+//     layout   a cv-panel layout (the Hardware panel, IMPL-panels) or null (the Simple panel: today's flowing sections)
 //     host     the page's services (main.js classicHost): changed(track, id) after a value write (preset → Custom, the
 //              patch, autosave, the DX7 chart), presetTouched(track) (the rollback put a preset name back), kit (track,
 //              pressOrTap, noMenu, hoverable, wheelIn, wheelStep, tip, untip), presets (list / cur / load / step / save /
@@ -310,7 +310,7 @@ export class ClassicPanel {
     return Object.assign(P, { state: st0, changed, onChange: fn => fns.add(fn) });
   }
 
-  /* ---- the Resizable panel's preset plate (the preset actions are the host's, shared with the chip and the ⋯ menu) */
+  /* ---- the Simple panel's preset plate (the preset actions are the host's, shared with the chip and the ⋯ menu) */
   presetPlate() {
     const h = (a, b, t) => this.h(a, b, t), P = this.host.presets, tr = this.track, m = this.model;
     const w = h('div', 'presets'), sel = h('select'); sel.setAttribute('aria-label', 'Preset');
@@ -341,7 +341,7 @@ export class ClassicPanel {
     return w;
   }
 
-  /* ---- TB-303 sequencer (IMPL-panels §6.2): the Resizable panel composes the parts as today (seqUI: same DOM, ids,
+  /* ---- TB-303 sequencer (IMPL-panels §6.2): the Simple panel composes the parts as today (seqUI: same DOM, ids,
      classes); the Hardware panel puts RUN / TEMPO / CLEAR and the step keys on the face (cv-panel through api().seq) and
      the rest in its extras strip. o.cursor {get(), set(i)}: the hardware step cursor; o.onChange: after any pattern edit */
   seqStep(i) { this.stepEls.forEach((e, k) => e.classList.toggle('now', k === i)); }
@@ -453,7 +453,7 @@ export class ClassicPanel {
       toggle: on => S.toggle(tr, on), running: () => S.running(tr) };
     return this.seq;
   }
-  seqUI() { // the Resizable panel's sequencer (today's DOM)
+  seqUI() { // the Simple panel's sequencer (today's DOM)
     const P = this.seqParts(), sec = this.h('div', 'sec seq'), bar = this.h('div', 'seqbar');
     sec.append(this.h('h3', null, 'Pattern Sequencer'));
     bar.append(P.run, P.sync, P.tempo, P.swing, P.rnd, P.demo, P.clear, P.toRoll, P.hint);

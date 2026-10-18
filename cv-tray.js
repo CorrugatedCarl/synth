@@ -178,8 +178,8 @@ export function trayGrip(grip, o) {
 
 /**
  * A side tray: a RAIL_W rail (a tap opens), the panel (SIDE_W, resizable by a grip on its inner edge ≥ EDGE_INSET from
- * the screen edge), closes on its rail, its ✕, Escape (the caller's chain) and as soon as a drag leaves it — never on a
- * press outside it (a tap on the canvas keeps it open).
+ * the screen edge), closes only on its rail, its ✕ and Escape (the caller's chain) — never by itself: not on a press
+ * outside it (a tap on the canvas keeps it open), a tile's tap, a drag leaving it or a drop (the user's rule).
  * o.rail / o.panel / o.grip: the tray's nodes (index.html); missing ones are made. o.key: its part of the TRAY_PREF record.
  * @param {HTMLElement} el  #srcTray | #fxTray
  * @param {{side: 'left' | 'right', store?: {get: Function, set: Function}, key?: string, rail?: HTMLElement,
@@ -270,7 +270,7 @@ export function sideTray(el, o) {
  * track). Every drag callback gets info.over: 'canvas' | 'tracks' | null (o.overOf(target, x, y)) and info.left (the
  * pointer has left o.tray since the drag began); a quick touch drag
  * (no hold) drops only on a zone it rested on SETTLE_MS (a flick is a cancel); o.onLeave() once the pointer leaves
- * o.tray (the side tray closes, so the drop area shows).
+ * o.tray (a notice only: main.js leaves the tray open — the canvas beside it takes the drop).
  * @param {HTMLElement} el  the tray panel's list container
  * @param {{
  *   models: Array<{id: string, name: string, year: number, maker: string}>,
@@ -290,7 +290,7 @@ export function sideTray(el, o) {
  */
 // (stage 1c) o.layoutEl: where the "Hardware | Simple" switch goes (a segmented pair, aria-pressed); o.layout: the
 // starting choice ('hw' | 'flow'); o.onLayout(l): the user switched. 'flow' (Simple) marks every classic tile SIMPLE: a
-// tap or drop creates the synth in its Resizable layout (the caller's: lay.i1.ui = 'flow'); Serum has no hardware panel
+// tap or drop creates the synth in its Simple layout (the caller's: lay.i1.ui = 'flow'); Serum has no hardware panel
 export function sourcesTray(el, o) {
   const d = docOf(o, el);
   let mode = 'replace', cur = null, lay = o.layout === 'flow' ? 'flow' : 'hw';
@@ -382,7 +382,7 @@ export function sourcesTray(el, o) {
   if (o.layoutEl) {
     const g = mk(d, 'div', 'cv-seg');
     g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Synth layout');
-    for (const [k, txt, tip] of [['hw', 'Hardware', 'New synths with their real front panel (fixed size)'], ['flow', 'Simple', 'New synths with the simple, resizable panel']]) {
+    for (const [k, txt, tip] of [['hw', 'Hardware', 'New synths with their real front panel'], ['flow', 'Simple', 'New synths with the simple panel']]) {
       const b = mk(d, 'button', 'cv-segb', txt);
       b.type = 'button'; b.title = tip; b.setAttribute('data-layout', k);
       offs.push(listen(b, 'click', () => { if (lay !== k) { setLayout(k); if (o.onLayout) o.onLayout(k); } }));

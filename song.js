@@ -490,8 +490,9 @@ export class History {
 export function serialize(project) { return JSON.stringify(project); }
 
 // SYNTH Canvas stage 1b (SPEC-canvas §5.1, IMPL-1b §4.9): a track's module layout, view only (never compiled, never in
-// presets): { [module id]: { x, y, w?, fold?: 1, z? } } in world px. Invalid entries are dropped; nothing valid → undefined
-// (deserialize then adds no key: an old track's History snapshot stays byte-identical).
+// presets): { [module id]: { x, y, fold?: 1, z?, ui?: 'flow' } } in world px. Invalid entries are dropped; nothing valid →
+// undefined (deserialize then adds no key: an old track's History snapshot stays byte-identical). A width (w, from before
+// the no-resizing rule of 2026-10-18) is dropped: every module has one fixed width now; no schema bump.
 const LAY_KEY = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-z0-9]{0,15})?$/;
 const finN = x => typeof x === 'number' && Number.isFinite(x);
 export function normLay(lay) {
@@ -503,10 +504,9 @@ export function normLay(lay) {
     const e = lay[k];
     if (k === '__proto__' || !LAY_KEY.test(k) || !isObj(e) || !finN(e.x) || !finN(e.y)) continue;
     const o = { x: clamp(R(e.x), -1e6, 1e6), y: clamp(R(e.y), -1e6, 1e6) };
-    if (finN(e.w)) o.w = clamp(R(e.w), 120, 4000);
     if (e.fold) o.fold = 1;
     if (finN(e.z)) o.z = clamp(R(e.z), 1, 1e6);
-    if (e.ui === 'flow') o.ui = 'flow'; // a classic instrument's Resizable layout (IMPL-panels §7.1; absent = Hardware); view only, no schema bump
+    if (e.ui === 'flow') o.ui = 'flow'; // a classic instrument's Simple layout (IMPL-panels §7.1; absent = Hardware); view only, no schema bump
     out[k] = o; n++;
   }
   return n ? out : undefined;

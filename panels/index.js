@@ -1,7 +1,7 @@
 // panels/index.js — model id → hardware front-panel layout of the twelve classic synths (docs/canvas/IMPL-panels.md §3).
 // Owner: ENGINE lane (this index never needs an AUTHOR edit: every model's file is already imported). Each
 // panels/<model>.js is one AUTHOR lane's data file: a default export that is a layout object (§3) or null (not drawn
-// yet → that model offers only the Resizable layout). Plain ES module, nothing but data: node imports it (tests).
+// yet → that model offers only the Simple layout). Plain ES module, nothing but data: node imports it (tests).
 // Not imported by the site yet: the ENGINE lane wires it (through cv-panel.js) together with the precache crawl's
 // directory-relative imports (tools/precache.mjs, IMPL-panels §2.3), so the tree stays green until then.
 import modular from './modular.js?v=9';
@@ -18,7 +18,7 @@ import juno60 from './juno60.js?v=9';
 import dx7 from './dx7.js?v=9';
 
 /** model id → layout (null: not drawn yet), in models.js MODELS order. Every classic model has a physical counterpart;
- * Serum (custom) and the FX panels have none and are not listed (always resizable). */
+ * Serum (custom) and the FX panels have none and are not listed. */
 export const LAYOUTS = Object.freeze({ modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7 });
 /** The classic models with a hardware layout slot, in MODELS order. */
 export const HW_IDS = Object.freeze(Object.keys(LAYOUTS));

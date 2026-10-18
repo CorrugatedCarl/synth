@@ -20,7 +20,7 @@ import * as cvArt from './cv-art.js?v=9';
 import * as cvWorld from './cv-world.js?v=9';
 import * as cvModule from './cv-module.js?v=9';
 import * as cvCables from './cv-cables.js?v=9';
-// the hardware front panels (docs/canvas/IMPL-panels.md, ENGINE lane): fixed-size classic instruments, Hardware / Resizable
+// the hardware front panels (docs/canvas/IMPL-panels.md, ENGINE lane): fixed-size classic instruments, Hardware / Simple
 import * as cvPanel from './cv-panel.js?v=9';
 // stage 1c: the classic panel as an instance (renderPanel, controls, preset plate, TB-303 sequencer with their track passed in)
 import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
@@ -1237,9 +1237,11 @@ function renderNav() {
   if (shell.tiles && shell.src && shell.src.isOpen() && shell.tiles.mode() === 'replace') srcModeUI('replace'); // (its track's name)
   trkChipUI();
 }
-// o.ui 'flow': the new synth in its Resizable layout (the Sources tray's Simple), inside this step
+// o.ui 'flow' | 'hw': the synth in that layout (the Sources tray's Simple | Hardware), inside this step — the same model
+// switches its layout (its own step), so the tray's switch goes both ways
 function setTrackModel(tr, id, o = null) {
-  if (id === tr.model) { if (o && o.ui === 'flow' && tr === trk() && instUi(tr) !== 'flow' && !modelById(id).custom) cvSetLayout('flow'); return; }
+  const ui = o && (o.ui === 'flow' || o.ui === 'hw') && !modelById(id).custom ? o.ui : null;
+  if (id === tr.model) { if (ui && tr === trk() && instUi(tr) !== ui) cvSetLayout(ui); return; }
   flush(); // a pending save of the outgoing model's values must not be dropped
   const old = modelById(tr.model), m = modelById(id);
   hist.record(project);
@@ -1247,7 +1249,7 @@ function setTrackModel(tr, id, o = null) {
   postTo(tr, { t: 'panic' });
   if (new RegExp('^' + old.name.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '( \\d+)?$').test(tr.name)) tr.name = m.name + ' ' + (project.tracks.indexOf(tr) + 1);
   tr.model = id; tr.vals = loadVals(m); tr.preset = null; // tr.fx (the track's rack) is kept
-  if (o && o.ui === 'flow' && !m.custom) layUi(tr, 'flow');
+  if (ui === 'flow' || (ui === 'hw' && instUi(tr) === 'flow')) layUi(tr, ui); // (Hardware on an untouched track: no lay key)
   if (tr.id === project.selTrack) { bind(); settings.model = id; renderNav(); renderPanel(); history.replaceState(null, '', '#' + id); }
   sendPatch(tr);
   if (id === 'tb303') seqSend(tr);
@@ -1268,8 +1270,8 @@ function selectTrack(id) {
 
 /* ------------------------------------------------------------ panel */
 // A classic instrument shows its Hardware layout (cv-panel: the real front panel, fixed size) unless the track chose the
-// Resizable one (track.lay.i1.ui === 'flow': today's flowing sections, the width grip). A model whose hardware panel is
-// not drawn yet (or fails validation) shows today's panel in either; in Hardware it keeps a fixed width (IMPL-panels §7).
+// Simple one (track.lay.i1.ui === 'flow': today's flowing sections at its model's fixed width, cvModule.FLOW_W). A model
+// whose hardware panel is not drawn yet (or fails validation) shows today's panel in either (IMPL-panels §7).
 const hwLayoutOf = m => (m && !m.custom ? cvPanel.usable(m.id, m) : null);
 function instUi(t) {
   if (!t || isSx(t)) return 'flow';
@@ -1405,7 +1407,7 @@ function applyPreset(tr, p) {
   sendPatch(tr); renderHeads(); persist();
 }
 let syncPresetSel = () => {};
-// The preset actions, shared by the Resizable panel's preset plate, the module chip (◀ ▶) and its ⋯ menu (Save / Delete /
+// The preset actions, shared by the Simple panel's preset plate, the module chip (◀ ▶) and its ⋯ menu (Save / Delete /
 // Init: the Hardware panel has no plate; IMPL-panels §7.4), each on a track (default: the selected one). The current
 // entry: the one last loaded on that track (presetKeys), else the first with the track's preset name.
 const presetKeys = new Map(); // track id → the key of the entry last loaded
@@ -3539,13 +3541,16 @@ function srcOver(t) {
   if (!$('#tab-inst').hidden && t.closest('#viewport')) return 'canvas';
   return null;
 }
-// the Sources tray's "Hardware | Simple" switch (stage 1c, the user's request): Simple creates a classic synth in its
-// Resizable layout (lay.i1.ui = 'flow', as the module's ⋯ → Resizable layout), inside the add's / replace's own undo step
+// the Sources tray's "Hardware | Simple" switch (stage 1c, the user's request): a classic synth picked or dropped comes in
+// that layout (lay.i1.ui = 'flow' or none, as the module's ⋯ → Simple / Hardware layout), inside the add's / replace's own
+// undo step; a tap on the current model's tile switches its layout to the tray's (both ways: Simple and back to Hardware)
 const TRAY_LAYOUT = 'synth.cv.trayLayout';
-const srcUi = id => (shell.tiles && shell.tiles.layout() === 'flow' && !modelById(id).custom ? 'flow' : null);
+const srcUi = id => (!shell.tiles || modelById(id).custom ? null : shell.tiles.layout() === 'flow' ? 'flow' : 'hw');
 function srcPick(id, mode) {
   const ui = srcUi(id);
-  if (mode === 'track') { addTrack(modelById(id), null, { ui }); shell.src.close(); return; }
+  // the tray stays open (the user's rule: only its rail, its ✕ or Escape close it); after a new track it goes back to
+  // replacing the (new) selected track's instrument
+  if (mode === 'track') { addTrack(modelById(id), null, { ui }); srcModeUI('replace'); return; }
   if (!cvDropInstrument(id, null, { ui })) setTrackModel(trk(), id, { ui }); // (the same model: only the layout, if asked)
 }
 function srcDragEnd() {
@@ -3651,7 +3656,7 @@ function initShell() {
   $('#srcClose').onclick = () => shell.src.close();
   $('#fxClose').onclick = () => shell.fx.close();
   shell.tiles = cvTray.sourcesTray($('#srcList'), { models: MODELS, tray: $('#srcTray'), layer: $('#ov'), pick: srcPick, drag: srcDrag,
-    overOf: srcOver, canvasGhost: () => !!world && !$('#tab-inst').hidden, onLeave: () => shell.src.close(),
+    overOf: srcOver, canvasGhost: () => !!world && !$('#tab-inst').hidden, // (a drag out of the tray leaves it open: the user's rule)
     layoutEl: $('#srcLayout'), layout: store.get(TRAY_LAYOUT, 'hw'), onLayout: l => store.set(TRAY_LAYOUT, l) });
   srcModeUI('replace');
   if ((window.innerWidth || 1400) < 1100 && shell.src.isOpen() && shell.fx.isOpen()) shell.fx.close();
@@ -3709,8 +3714,8 @@ function cvWheelVeto() { return world ? world.wheelVeto() : false; } // a camera
 /* ---------------------------------------------- cv MODULES: modules, cables, layout, camera prefs */
 // The selected track's modules (cv-module createTrackView): today's #inst (classic renderPanel or the whole SerumUI), the
 // FX rack (#fxrack: FXRackUI, kept mounted) and the scope (OUT) move — by reference, ids kept — from #cvParts into the
-// module bodies and back; .about opens from the instrument's ⋯ → About. Positions, widths, folds and z live in track.lay
-// (one History step per move / fold / resize; bring-to-front none); the camera lives in device prefs (CAM_PREF, keyed by
+// module bodies and back; .about opens from the instrument's ⋯ → About. Positions, folds and z live in track.lay
+// (one History step per move / fold; bring-to-front none); the camera lives in device prefs (CAM_PREF, keyed by
 // CM.camKey(project uid, track id)), never in History. Without the canvas DOM (no #cvParts / #world: an index.html from
 // before the shell) nothing moves and today's tabs keep working.
 const cvParts = { home: null, root: null, inst: null, fx: null, scope: null, about: null };
@@ -3753,13 +3758,12 @@ function cvRender() {
   cvCamRestore(t);
   monitors.sync();
 }
-// the instrument's size: a classic one in its Hardware layout is fixed (cv-panel sizeOf; a model whose panel is not
-// drawn yet: today's panel at its fixed default width), else resizable (its grip range)
+// the instrument's size — always fixed, nothing is resizable (the user's rule, 2026-10-18): a classic one in its Hardware
+// layout its panel's (cv-panel sizeOf), in its Simple layout (or a model whose panel is not drawn yet) its model's
+// width (cvModule.FLOW_W: everything fits; the height measured), a Serum W_SERUM
 function cvInstSize(t) {
-  const m = modelById(t.model);
-  if (m.custom || instUi(t) === 'flow') return { range: cvModule.widthRange(t.model) };
-  const L = hwLayoutOf(m);
-  return { fixed: L ? cvPanel.sizeOf(L, m) : { w: cvModule.W_CLASSIC } };
+  const m = modelById(t.model), L = m.custom || instUi(t) === 'flow' ? null : hwLayoutOf(m);
+  return { fixed: L ? cvPanel.sizeOf(L, m) : { w: cvModule.defaultW(cvModule.ID.inst, t.model) } };
 }
 // a fixed-size instrument makes room (IMPL-panels §7.3): the modules right of it that it now overlaps move right
 // together (cvModule.makeRoom) — after a build (a load, a track switch: stage-1b layouts, whose FX / OUT sit where a
@@ -3779,7 +3783,6 @@ function cvRoom(built) {
   const t = trk(), old = t.lay && typeof t.lay === 'object' ? t.lay : {};
   for (const k of Object.keys(mv)) {
     const mm = cvView.modules.get(k), o = old[k] || {}, e = { x: mv[k].x, y: mv[k].y };
-    if (o.w != null) e.w = o.w;
     if (mm && mm.fold) e.fold = 1;
     if (o.z != null) e.z = o.z;
     cvLay(k, e, 'end', 'room');
@@ -3788,7 +3791,7 @@ function cvRoom(built) {
   if (!old[K]) { const e = { x: Math.round(m.x), y: Math.round(m.y) }; if (m.fold) e.fold = 1; cvLay(K, e, 'end', 'pin'); }
   cvView.sync(trk());
 }
-// the ⋯ menu's layout items: Hardware (the real front panel, fixed) or Resizable (today's flowing panel and its grip);
+// the ⋯ menu's layout items: Hardware (the real front panel) or Simple (today's flowing panel; both fixed sizes);
 // one History step; values, presets and the 303 pattern live in the track, so every control comes back as it was
 // track.lay.i1.ui without a step of its own (the caller's): the instrument's entry from the module's place when it has none
 function layUi(t, ui) {
@@ -3801,7 +3804,7 @@ function layUi(t, ui) {
 function cvSetLayout(want) {
   const t = trk(), K = cvModule.ID.inst;
   if (isSx(t) || (want !== 'hw' && want !== 'flow') || instUi(t) === want) return;
-  hist.record(project, want === 'flow' ? 'Resizable layout' : 'Hardware layout');
+  hist.record(project, want === 'flow' ? 'Simple layout' : 'Hardware layout');
   const lay = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {}), m = cvView && cvView.modules.get(K);
   const e = lay[K] ? Object.assign({}, lay[K]) : m ? { x: Math.round(m.x), y: Math.round(m.y) } : { x: 0, y: 0 };
   if (!lay[K] && m) { if (m.fold) e.fold = 1; if (m.zSet) e.z = m.z; }
@@ -3894,26 +3897,25 @@ function cvMenu(kind, key) {
   const tidyI = { label: 'Tidy the canvas', action: () => cvTidy() };
   if (kind === 'inst') {
     const t = trk(), mdl = modelById(t.model), head = [{ label: 'About the ' + mdl.name + '…', action: cvAbout }, { label: 'Replace with…', action: () => cvOpenSources('replace') }];
-    const reset = { label: 'Reset width', action: () => V.resetWidth(key), disabled: !m.wSet };
-    if (mdl.custom) return [...head, { sep: true }, reset, fold, front, { sep: true }, tidyI]; // (Serum: always resizable, its own browser saves)
-    // a classic synth: its real front panel (default) or today's resizable panel; the sound actions of its preset plate
+    if (mdl.custom) return [...head, { sep: true }, fold, front, { sep: true }, tidyI]; // (Serum: its own browser saves)
+    // a classic synth: its real front panel (default) or today's simple panel; the sound actions of its preset plate
     const u = instUi(t), hw = !!hwLayoutOf(mdl);
     return [...head, { sep: true },
-      { label: hw ? 'Hardware layout' : 'Hardware layout (not drawn yet · fixed size)', checked: u === 'hw', action: () => cvSetLayout('hw') },
-      { label: 'Resizable layout', checked: u === 'flow', action: () => cvSetLayout('flow') },
+      { label: hw ? 'Hardware layout' : 'Hardware layout (not drawn yet)', checked: u === 'hw', action: () => cvSetLayout('hw') },
+      { label: 'Simple layout', checked: u === 'flow', action: () => cvSetLayout('flow') },
       { sep: true },
       { label: 'Save sound…', action: () => presetSave() }, { label: 'Delete saved sound', action: () => presetDelete(), disabled: !presetSaved() }, { label: 'Init sound', action: () => presetInit() },
-      { sep: true }, ...(u === 'flow' ? [reset] : []), fold, front, { sep: true }, tidyI];
+      { sep: true }, fold, front, { sep: true }, tidyI];
   }
   return kind === 'fx' ? [fold, front, { sep: true }, tidyI] : [fold];
 }
 // track.lay writes (cv-module host.lay): 'start' opens the undo step, 'end' writes the entry (alone: bring to front, pins,
 // no step). The step is recorded at that 'end', just before the write and only when the layout really changes: a drop on
 // the cell it left or a cancelled drag (Escape, a second finger) records nothing, so the redo stack survives
-let cvLayPend = null; // {key, what, label, was}: the move / fold / resize 'start' opened (was: the track's lay as JSON)
+let cvLayPend = null; // {key, what, label, was}: the move / fold 'start' opened (was: the track's lay as JSON)
 function cvLay(key, entry, phase, what) {
   if (phase === 'start') {
-    const m = cvView && cvView.modules.get(key), verb = what === 'fold' ? 'Fold' : what === 'resize' ? 'Resize' : 'Move';
+    const m = cvView && cvView.modules.get(key), verb = what === 'fold' ? 'Fold' : 'Move';
     cvLayPend = { key, what, label: verb + ' ' + (m ? m.title : key), was: JSON.stringify(trk().lay || null) };
     return;
   }
@@ -4041,13 +4043,13 @@ function cvReveal(trackId, key = cvModule.ID.inst) {
   const W = cvW();
   if (W && cvView && cvView.modules.has(key) && typeof W.focusItem === 'function') W.focusItem(key, { k: W.k < cvWorld.READ_K ? 1 : W.k, edit: false });
 }
-// the Sources drop outline of `modelId`: its hardware size while the current instrument shows the Hardware layout (a drop
-// replaces it in place and the layout choice stays), else the flow size measured on this device (or the default)
+// the Sources drop outline of `modelId`: its hardware size while the tray's switch is on Hardware (a drop replaces it in
+// place, in that layout), else the Simple size measured on this device (or its fixed width and a guessed height)
 function cvModuleSize(modelId) {
   const mdl = MODELS.find(x => x.id === modelId), L = mdl ? hwLayoutOf(mdl) : null;
-  if (L && instUi(trk()) === 'hw') return cvPanel.sizeOf(L, mdl);
+  if (L && srcUi(modelId) === 'hw') return cvPanel.sizeOf(L, mdl);
   const m = cvView && cvView.modules.get(cvModule.ID.inst);
-  if (m && trk().model === modelId && !m.fixed && !m.fold) { const r = m.rect(); if (r.h > cvModule.BAR_H * 3) cvSeen.set(modelId, { w: r.w, h: r.h }); }
+  if (m && trk().model === modelId && !(m.fixed && m.fixed.h) && !m.fold) { const r = m.rect(); if (r.h > cvModule.BAR_H * 3) cvSeen.set(modelId, { w: r.w, h: r.h }); }
   return cvSeen.get(modelId) || cvModule.sizeFor(modelId);
 }
 function cvTidy() {
@@ -4057,8 +4059,8 @@ function cvTidy() {
   const ID = cvModule.ID, other = k => (k === ID.fx ? ID.sxFx : k === ID.sxFx ? ID.fx : null);
   for (const k in td) {
     const e = { x: td[k].x, y: td[k].y }, ox = other(k), o = old[k] || (ox && old[ox]); // (the FX fold through a model change)
-    if (old[k] && o.w != null) e.w = o.w;
     if (o && o.fold) e.fold = 1;
+    if (old[k] && old[k].ui === 'flow') e.ui = 'flow'; // (the instrument's layout choice stays: Tidy only moves modules, never a size)
     lay[k] = e;
     if (ox) delete lay[ox]; // one FX entry at most (cvLay)
   }

@@ -482,7 +482,7 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .step.rest .snote { color: #666; }
 .step .sbtn { font-size: 9px; font-weight: 700; padding: 3px 0; border-radius: 3px; border: 1px solid rgba(0,0,0,0.3); background: rgba(255,255,255,0.55); color: #333; letter-spacing: 0.03em; }
 .step .sbtn.on { background: var(--accent); color: #fff; border-color: var(--accent); }
-@media (max-width: 760px) { .steps { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .steps:not(#world *) { grid-template-columns: repeat(8, minmax(0, 1fr)); } } /* (never in a canvas module: its size is fixed whatever the window) */
 
 /* DX7 algorithm diagram */
 .algo { margin: 12px 0 4px; }
@@ -685,12 +685,13 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
   .kbctl button.midi { max-width: 140px; }
   .kbctl { margin-bottom: 6px; gap: 8px; }
   .keys { height: var(--kbh, 128px); }
-  .inst { padding: 14px 14px 16px; }
-  .inst.wood { margin: 0 12px; }
-  .inst.wood::before, .inst.wood::after { width: 12px; }
-  .inst.wood::before { left: -12px; }
-  .inst.wood::after { right: -12px; }
-  .nameplate .mname { font-size: 26px; }
+  /* (the panel rules below never reach a canvas module (#world): a module has one fixed size whatever the window) */
+  .inst:not(#world *) { padding: 14px 14px 16px; }
+  .inst.wood:not(#world *) { margin: 0 12px; }
+  .inst.wood:not(#world *)::before, .inst.wood:not(#world *)::after { width: 12px; }
+  .inst.wood:not(#world *)::before { left: -12px; }
+  .inst.wood:not(#world *)::after { right: -12px; }
+  .nameplate .mname:not(#world *) { font-size: 26px; }
 }
 @media (max-width: 840px) {
   /* iPad portrait (744–834), Stage Manager: the chip drops its model line (its track list, #tabTrack keep it), the meter
@@ -723,11 +724,11 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
   .cv-row :is(.cv-pop, .cv-tx, .cv-ex) { position: fixed; right: auto; bottom: auto; transform: none; }
 }
 @media (max-width: 560px) {
-  .ctl { width: 54px; }
-  .knob { width: 44px; height: 44px; }
+  .ctl:not(#world *) { width: 54px; } /* (never in a canvas module: its size is fixed whatever the window) */
+  .knob:not(#world *) { width: 44px; height: 44px; }
   .field.range input { width: 84px; }
   .wheel .slot { width: 22px; }
-  .sec { flex: 1 1 100%; }
+  .sec:not(#world *) { flex: 1 1 100%; }
   /* the toolbar in one row on a phone: Key size takes the room left, Hide keys is an icon (both keep their names) */
   .kbctl { gap: 6px; }
   .octv { min-width: 44px; }
@@ -763,6 +764,7 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
   background-size: 128px 128px, 32px 32px; } /* first paint at 100 %: cv-world write() keeps both layers on the world */
 #viewport:focus-visible { box-shadow: inset 0 0 0 2px rgba(242, 163, 58, 0.5); }
 #viewport[data-cv-busy] { cursor: grabbing; }
+#viewport[data-cv-locked] { cursor: default; } /* the toolbar's Lock view: no gesture moves the camera */
 #viewport[data-cv-busy] > #world { will-change: transform; } /* only while it moves: at rest the modules re-raster sharp */
 #world { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-origin: 0 0; }
 #world .cv-mod, #world [data-cv-mod] { cursor: auto; }
@@ -1017,14 +1019,6 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-bar > .cv-btn, .cv-bar > .cv-chip, .cv-bar > .cv-pow { position: relative; z-index: 4; }
 .cv-jack::before { content: ''; position: absolute; left: 50%; top: 50%; width: calc(44px * var(--ik, 1)); height: calc(44px * var(--ik, 1));
   transform: translate(-50%, -50%); border-radius: 50%; }
-/* the instrument's width grip: its right edge below the out jack */
-.cv-grip { position: absolute; z-index: 2; top: 104px; bottom: 12px; right: -8px; width: 16px; cursor: ew-resize; touch-action: none; }
-.cv-grip::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: max(16px, calc(24px * var(--ik, 1))); transform: translateX(-50%); }
-.cv-grip::after { content: ''; position: absolute; top: 50%; left: 50%; width: 4px; height: 48px; margin: -24px 0 0 -2px; border-radius: 2px; background: #59606b;
-  opacity: 0; transition: opacity 0.15s; }
-.cv-mod:hover > .cv-grip::after, .cv-mod.cv-sizing > .cv-grip::after, .cv-grip:focus-visible::after { opacity: 1; }
-.cv-mod[data-cv-fold] > .cv-grip, .cv-mod[data-cv-fixed] > .cv-grip { display: none; } /* a Hardware layout: fixed size, no grip */
-@media (pointer: coarse) { .cv-grip::after { opacity: 0.6; } }
 /* cables: two SVG layers in #world (under the modules; ends above), strokes from --ik (never vector-effect) */
 svg.cv-cables, svg.cv-cable-ends { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 .cv-cable { fill: none; stroke: var(--cc, #8d8b86); stroke-width: calc(4px * var(--ik, 1)); stroke-linecap: round; }

@@ -13,7 +13,7 @@ const [id, out] = process.argv.slice(2);
 if (!id) { console.log('usage: node tools/panel-check.mjs <model> [out-dir]\nmodels: ' + P.HW_IDS.join(', ')); process.exit(2); }
 const model = MODELS.find(m => m.id === id), L = P.layoutOf(id);
 if (!model) { console.error(`unknown model "${id}"`); process.exit(2); }
-if (!L) { console.log(`${id}: no layout yet (panels/${id}.js exports null) — the model shows its Resizable panel`); process.exit(0); }
+if (!L) { console.log(`${id}: no layout yet (panels/${id}.js exports null) — the model shows its Simple panel`); process.exit(0); }
 const probs = P.validate(L, model);
 console.log(`${id} — ${L.hw || ''}`);
 if (probs.length) { console.log(`\n${probs.length} problem(s):`); for (const p of probs) console.log('  · ' + p); }

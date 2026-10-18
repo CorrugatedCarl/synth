@@ -1,6 +1,6 @@
 import './v8-guard.mjs';
 // cv-tray.js (stage 1b SHELL lane; docs/canvas/IMPL-1b.md §8.1): budget(), topSnaps(), trayGrip (drag, two-finger
-// rollback, keys, double-tap, ARIA), sideTray (tap opens, grip inset, stays open on a press outside, closes on drag leave), sourcesTray
+// rollback, keys, double-tap, ARIA), sideTray (tap opens, grip inset, stays open on a press outside, never closes itself), sourcesTray
 // drag verdicts (out / along / hold) and drop routing, menuPop, sheet. Fake DOM: tests/wk-dom.mjs; never pass fake-DOM
 // nodes to assert.* (ids, strings and numbers only).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-tray.test.mjs
@@ -237,6 +237,29 @@ test('sideTray: the width grip sits on the inner edge ≥ 24 px from the screen 
   ptr(L.grip, 'pointerup', 960, 300, at());
   assert.equal(L.S.width(), 280);
   assert.deepEqual(Object.keys(JSON.parse(L.mem.get(T.TRAY_PREF))), ['fx']);
+});
+
+test('sideTray + sourcesTray as main.js wires them (the user\'s rule): a tile\'s tap, a drag out of the tray onto the canvas and its drop never close the tray — only its rail, its ✕ or Escape', () => {
+  const R = sideRig(), list = R.d.createElement('div'), layer = mkEl(R.d, 'div', 'ov');
+  raf.install();
+  R.panel.append(list);
+  place(R.el, 0, 100, 284, 600);
+  R.S.open();
+  const picks = [], drops = [];
+  let left = 0;
+  const S = T.sourcesTray(list, { models: MODELS, tray: R.el, layer, pick: (id, mode) => picks.push(id + ':' + mode),
+    overOf: (t, x) => (x > 300 ? 'canvas' : null), onLeave: () => { left++; },
+    drag: { drop: (id, i) => { drops.push(id + ' ' + i.over); return true; } } });
+  const tile = S.tiles().find(t => t.getAttribute('data-model') === 'juno60'), tp = { pointerType: 'touch' };
+  tile.click();
+  assert.deepEqual([picks, R.S.isOpen()], [['juno60:replace'], true], 'a tap: picked, still open');
+  ptr(tile, 'pointerdown', 100, 300, at(tp)); ptr(tile, 'pointermove', 112, 302, at(tp)); ptr(tile, 'pointermove', 400, 300, at(tp));
+  assert.deepEqual([left, R.S.isOpen()], [1, true], 'dragged out of the tray: still open');
+  TS += 150;
+  ptr(tile, 'pointermove', 402, 301, at(tp)); ptr(tile, 'pointerup', 402, 301, at(tp));
+  assert.deepEqual([drops, R.S.isOpen()], [['juno60 canvas'], true], 'dropped on the canvas: still open');
+  assert.equal(R.S.close(), true, 'close() (the ✕ / Escape) closes it');
+  S.destroy();
 });
 
 function srcRig(over) {

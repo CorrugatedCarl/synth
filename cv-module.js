@@ -1,4 +1,4 @@
-// cv-module.js — canvas module chrome (top bar, body, jacks, fold, resize), the stage-1b track layout (instrument,
+// cv-module.js — canvas module chrome (top bar, body, jacks, fold), the stage-1b track layout (instrument,
 // FX panel, OUT) and the camera-pref helpers (SPEC-canvas §2.6, §2.8, §4.5, §5.1 lay; contract: docs/canvas/IMPL-1b.md
 // §4.4). Owner: MODULES lane.
 // Rules: plain ES module, no DOM at module top level (node imports it), survives tests/main-sim.mjs's DOM stub;
@@ -6,24 +6,31 @@
 //
 // A module = .cv-mod[data-cv-mod][data-cv-kind] absolutely positioned in #world at its lay entry (top-left, world px):
 //   .cv-bar (40 world px; drag = move, tap = select, double-tap = focus, long-press / right-click / ⋯ = menu, ▾ = fold)
-//   .cv-body (the existing panel: #inst, #fxrack, the scope), .cv-jack × n, and the instrument's right-edge .cv-grip
-//   (width; hidden on a fixed-size module: [data-cv-fixed]). The module's ring is a box-shadow, so a folded module is
-//   exactly BAR_H tall and the jack offsets are pure geometry (w, fold): nothing is measured per frame. contain: paint
+//   .cv-body (the existing panel: #inst, #fxrack, the scope) and .cv-jack × n. The module's ring is a box-shadow, so a
+//   folded module is exactly BAR_H tall and the jack offsets are pure geometry (w, fold): nothing is measured per frame. contain: paint
 //   sits on the body, not the root: the jacks' hit circles and the bar's upward hit extension lie outside the module box.
 // Zoom consistency (IMPL-panels §8.2): the body mounts once at creation and stays mounted for the module's life (no cards,
 // nothing hidden at any zoom); off screen the root carries [data-cv-off] (CSS animations pause, host.shown → monitors).
-// A classic instrument in its Hardware layout is fixed-size (host.size: {fixed: {w, h}}, cv-panel sizeOf): no grip, no
-// measuring; in its Resizable layout (and a Serum) the width grip works as before (host.size: {range}).
+// No module is resizable (the user's rule, 2026-10-18): each has one fixed width that fits all of its content — a classic
+// instrument's Hardware layout its panel's size (host.size: {fixed: {w, h}}, cv-panel sizeOf: no measuring), its Simple
+// layout FLOW_W of its model and a Serum W_SERUM (host.size: {fixed: {w}}: the height measured), the FX panel W_FX, OUT
+// W_OUT. A stored width (track.lay.<id>.w, from before the rule) is ignored and never written again.
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
 import { createCables, deriveCables } from './cv-cables.js?v=9';
 
 /** Top bar height on every device (world px); the bar's hit area grows upward only (::before, calc(… * var(--ik))). */
 export const BAR_H = 40;
-/** Resizable instrument width range and defaults (world px). */
-export const MIN_W = 480, MAX_W = 1600, W_CLASSIC = 1080, W_SERUM = 1200, W_FX = 760, W_OUT = 280;
-/** The Serum panel's narrowest module width (its ≥ 1100 container layout reflows below; 768: the tablet layout). */
-export const MIN_W_SERUM = 768;
+/** Module widths (world px; fixed — nothing is resizable): a Serum's (its ≥ 1100 container layout), the FX panel's, OUT's,
+ * and W_CLASSIC for a classic model FLOW_W does not list. */
+export const W_CLASSIC = 1080, W_SERUM = 1200, W_FX = 760, W_OUT = 280;
+/** A classic synth's Simple ('flow') layout width per model (world px, on the dots): measured so that every section,
+ * control and the TB-303 step sequencer fit with room to spare (nothing clips or scrolls: the TB-303's steps need
+ * ≥ 608, the DX7's operator rows ≥ 992), the sections packed into the fewest, fullest rows. */
+export const FLOW_W = Object.freeze({
+  modular: 1024, minimoog: 1184, arp2600: 1088, solina: 992, cs80: 1024, prophet5: 1088,
+  ms20: 1056, tb303: 832, obxa: 1056, jupiter8: 864, juno60: 864, dx7: 1024,
+});
 /** Column gap Tidy leaves between instrument → FX panel → OUT (world px). */
 export const GAP = 160;
 /** Stage-1b module ids (= track.lay keys, = the device ids stage 1c's toV2 gives them, SPEC §5.1 / §5.4). */
@@ -53,29 +60,27 @@ const H_GUESS = { inst: 560, serum: 840, fx: 420, out: 260 };
 
 const fin = x => typeof x === 'number' && isFinite(x);
 const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
-const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const gsnap = v => Math.round(v / DOT) * DOT; // the visible grid's dots (cv-world DOT)
 const gup = v => Math.ceil(v / DOT) * DOT;
 
 /**
- * @typedef {{x: number, y: number, w?: number, fold?: 1, z?: number}} LayEntry  world px (top-left incl. the bar)
+ * @typedef {{x: number, y: number, fold?: 1, z?: number, ui?: 'flow'}} LayEntry  world px (top-left incl. the bar; a stored w is ignored)
  * @typedef {Object<string, LayEntry>} Lay  track.lay (view only: never compiled, never in presets)
  * @typedef {{id: 'in' | 'out', side: 'left' | 'right', kind: 'audio', label: string}} Jack
  * @typedef {{w: number, h?: number}} Fixed  a fixed module size (world px, the bar included; no h: measured)
  * @typedef {{
  *   id: string, kind: 'inst' | 'fx' | 'out', title: string, sub?: string, color?: string,
  *   x: number, y: number, w: number, fold?: boolean, z?: number,
- *   resizable?: {min: number, max: number}, fixed?: Fixed | null, cost?: number,
+ *   fixed?: Fixed | null, cost?: number,
  *   jacks: Jack[],
  *   body: {mount: (bodyEl: HTMLElement) => void, unmount: (bodyEl: HTMLElement) => void},
  *   chip?: HTMLElement | string,
  *   menu?: () => Array<object>,
  *   onMove?: (x: number, y: number, phase: 'start' | 'move' | 'end' | 'cancel') => void,
  *   onFold?: (fold: boolean) => void,
- *   onResize?: (w: number, phase: 'start' | 'move' | 'end' | 'cancel') => void,
  *   onSelect?: () => void, onDouble?: () => void, onPress?: () => void, onScreen?: (on: boolean) => void,
  * }} ModuleOpts  (additions: onPress — a press on the bar (bring to front); onScreen — the module entered / left the
- *   screen (monitors); fixed — the Hardware layout's size: no grip, no measuring)
+ *   screen (monitors); fixed — the instrument's size: w, and h when it is known (a Hardware layout: no measuring))
  * @typedef {{
  *   id: string, el: HTMLElement, bar: HTMLElement, body: HTMLElement, cost: number,
  *   rect: () => {x: number, y: number, w: number, h: number},
@@ -99,12 +104,11 @@ export function isBackground(el) {
 /** The lay key of a track's FX module: 'i1/fx' (a Serum's own FX) or 'fx1' (a classic track's panel).
  * @param {string} model @returns {string} */
 export function fxKey(model) { return model === 'serum' ? ID.sxFx : ID.fx; }
-/** A module's default width (world px) on a track of `model`. */
+/** A module's width (world px) on a track of `model` (the instrument: its Simple layout's, or a Serum's; a Hardware
+ * layout's comes from its panel: cv-panel sizeOf). */
 export function defaultW(key, model) {
-  return key === ID.inst ? (model === 'serum' ? W_SERUM : W_CLASSIC) : key === ID.out ? W_OUT : W_FX;
+  return key === ID.inst ? (model === 'serum' ? W_SERUM : FLOW_W[model] || W_CLASSIC) : key === ID.out ? W_OUT : W_FX;
 }
-/** The instrument's width range for `model`. */
-export const widthRange = model => ({ min: model === 'serum' ? MIN_W_SERUM : MIN_W, max: MAX_W });
 /** Tidy: instrument → FX → OUT in columns from (0, 0), GAP apart, tops aligned. sizes: id → {w, h} (measured or default).
  * Each column starts on the grid. Positions only: widths and folds stay the caller's.
  * @param {{model: string}} track @param {Object<string, {w: number, h: number}>} sizes @returns {Lay} */
@@ -120,11 +124,11 @@ export function tidy(track, sizes) {
 }
 const okEntry = e => isObj(e) && fin(e.x) && fin(e.y);
 /** The lay entry of `key`, falling back to the other FX key after a classic ↔ Serum model change (its place, fold and
- * z; not its width), else Tidy's. Always a copy. @param {{model: string, lay?: Lay}} track @param {string} key
- * @param {Lay} tidied @returns {LayEntry} */
+ * z), else Tidy's. Always a copy, never with a width (a stored w is ignored: nothing is resizable).
+ * @param {{model: string, lay?: Lay}} track @param {string} key @param {Lay} tidied @returns {LayEntry} */
 export function layOf(track, key, tidied) {
   const L = track && isObj(track.lay) ? track.lay : null;
-  if (L && okEntry(L[key])) return Object.assign({}, L[key]);
+  if (L && okEntry(L[key])) { const e = Object.assign({}, L[key]); delete e.w; return e; }
   if (L && (key === ID.fx || key === ID.sxFx)) {
     const o = L[key === ID.fx ? ID.sxFx : ID.fx];
     if (okEntry(o)) { const e = Object.assign({}, o); delete e.w; return e; }
@@ -155,7 +159,7 @@ export function camPut(rec, key, cam, max) {
 }
 /** The world size of a module about to be dropped for `modelId` (the tray's true-size outline). @returns {{w: number, h: number}} */
 export function sizeFor(modelId) {
-  return modelId === 'serum' ? { w: W_SERUM, h: H_GUESS.serum } : { w: W_CLASSIC, h: H_GUESS.inst };
+  return { w: defaultW(ID.inst, modelId), h: modelId === 'serum' ? H_GUESS.serum : H_GUESS.inst };
 }
 /** Room for a fixed-size instrument (IMPL-panels §7.3): the modules whose left edge is at or right of the instrument's
  * left edge and whose vertical span overlaps it (R) move right together — their relative layout kept — so the nearest
@@ -192,9 +196,8 @@ export function createModule(o, env) {
   const mk = (tag, cls, txt) => { const e = doc.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
   const btn = (cls, label, html) => { const b = mk('button', cls); b.type = 'button'; b.setAttribute('aria-label', label); b.title = label; if (html) b.innerHTML = html; return b; };
   const id = String(o.id), kind = o.kind || 'inst';
-  let RZ = o.resizable && fin(o.resizable.min) && fin(o.resizable.max) ? { min: o.resizable.min, max: o.resizable.max } : null; // (setRange: a model change)
   const fixOk = f => !!f && fin(f.w) && f.w > 0;
-  let FX = fixOk(o.fixed) ? { w: Math.round(o.fixed.w), h: fin(o.fixed.h) && o.fixed.h > BAR_H ? Math.round(o.fixed.h) : 0 } : null; // the Hardware layout's size
+  let FX = fixOk(o.fixed) ? { w: Math.round(o.fixed.w), h: fin(o.fixed.h) && o.fixed.h > BAR_H ? Math.round(o.fixed.h) : 0 } : null; // the instrument's size
   let x = fin(o.x) ? o.x : 0, y = fin(o.y) ? o.y : 0, lx = x, ly = y; // committed left / top, live position
   let w = FX ? FX.w : fin(o.w) && o.w > 0 ? o.w : defaultW(kind === 'inst' ? ID.inst : kind === 'out' ? ID.out : ID.fx);
   let fold = !!o.fold, z = fin(o.z) ? o.z : 1, mounted = false, hCache = 0, dead = false, title = '', chipCur, onScr = true;
@@ -222,13 +225,6 @@ export function createModule(o, env) {
     if (j.label) { je.setAttribute('aria-label', j.label); je.title = j.label; }
     el.append(je);
     jacks.set(j.id, { el: je, side: j.side === 'left' ? 'left' : 'right' });
-  }
-  let grip = null;
-  if (RZ || FX) { // (a fixed module keeps its grip hidden: setFixed(null) brings it back — the Resizable layout)
-    grip = mk('div', 'cv-grip');
-    grip.setAttribute('role', 'separator'); grip.setAttribute('aria-orientation', 'vertical'); grip.setAttribute('aria-label', 'Module width');
-    grip.title = 'Drag to change the width';
-    el.append(grip);
   }
   // ---- geometry
   const jackY = () => (fold ? BAR_H / 2 : BAR_H + JACK_Y);
@@ -263,13 +259,13 @@ export function createModule(o, env) {
   };
   const setW = nw => {
     if (!fin(nw) || nw <= 0) return;
-    w = FX ? FX.w : RZ ? clamp(Math.round(nw), RZ.min, RZ.max) : Math.round(nw);
+    w = FX ? FX.w : Math.round(nw);
     el.style.width = w + 'px';
   };
-  // the fixed size (Hardware layout) or none (Resizable): the body's height is set once (no measuring), the grip hides
+  // the instrument's size (its layout's: a model change or the layout toggle brings a new one): with h (a Hardware
+  // layout) the body's height is set once (no measuring); without, the height is measured
   const setFixed = f => {
     const n = fixOk(f) ? { w: Math.round(f.w), h: fin(f.h) && f.h > BAR_H ? Math.round(f.h) : 0 } : null;
-    if (R && n) { R = null; el.classList.remove('cv-sizing'); } // (a grip drag cut short by an undo / a toggle)
     FX = n;
     if (n) { el.setAttribute('data-cv-fixed', ''); w = n.w; el.style.width = w + 'px'; } else el.removeAttribute('data-cv-fixed');
     body.style.height = n && n.h ? (n.h - BAR_H) + 'px' : '';
@@ -401,24 +397,6 @@ export function createModule(o, env) {
     setFold(!fold);
     if (o.onFold) o.onFold(fold);
   });
-  // ---- width grip (instrument): world delta / k, grid-snapped (Shift / Fine: free), one onResize start / end pair
-  let R = null, gripDrag = null, gpress = null;
-  const size = i => {
-    if (!R || FX) return;
-    const p = W2(i.x, i.y), nw0 = R.w0 + p.x - R.p0.x, before = w;
-    setW(i.fine || !snapOn() ? nw0 : gsnap(nw0));
-    if (w !== before && o.onResize) o.onResize(w, 'move');
-  };
-  if (grip) {
-    gripDrag = wk.dragSource(grip, {
-      data: id, scrollAxis: 'none', autoScroll: false,
-      begin(i) { if (FX) return; R = { w0: w, p0: gpress ? W2(gpress.x, gpress.y) : W2(i.x, i.y) }; el.classList.add('cv-sizing'); if (o.onResize) o.onResize(w, 'start'); },
-      move: size,
-      drop(i) { if (!R) return; size(i); R = null; el.classList.remove('cv-sizing'); if (o.onResize) o.onResize(w, 'end'); },
-      cancel() { if (!R) return; const w0 = R.w0; R = null; el.classList.remove('cv-sizing'); setW(w0); if (o.onResize) o.onResize(w, 'cancel'); },
-    });
-    grip.addEventListener('pointerdown', e => { if (e.button !== 0) return; gpress = { x: e.clientX, y: e.clientY }; grab(grip, e); });
-  }
   // ---- initial state
   setPos(x, y, false); setFixed(FX); setW(w); setFold(fold); setZ(z);
   setTitle(o.title, o.sub);
@@ -429,21 +407,15 @@ export function createModule(o, env) {
     rect: () => ({ x: lx, y: ly, w, h: fold ? BAR_H : measure() }),
     onScreen,
     setPos, setW, setFold, setZ, setTitle, setChip, setFixed,
-    /** (addition) the grip's width range after a classic ↔ Serum model change (a resizable module only); re-clamps w */
-    setRange(r) {
-      if (!RZ || !r || !fin(r.min) || !fin(r.max) || (r.min === RZ.min && r.max === RZ.max)) return;
-      RZ = { min: r.min, max: r.max };
-      setW(w);
-    },
     /** module-local offset of a jack (pure geometry: w and fold) */
     port(jackId) { const j = jacks.get(jackId), o = fold ? JACK_OUT : 0; return j ? { x: j.side === 'left' ? (o ? -o : 0) : w + o, y: jackY() } : { x: w / 2, y: BAR_H / 2 }; },
     // (additions) state reads for the track view, main.js and tests
     get x() { return lx; }, get y() { return ly; }, get w() { return w; }, get z() { return z; }, get fold() { return fold; },
     get screen() { return onScr; }, get fixed() { return FX ? Object.assign({}, FX) : null; }, get title() { return title; },
-    dragging: () => !!D || !!R,
+    dragging: () => !!D,
     /** the canvas arrow keys (cv-world key): one onMove start / end pair per nudge (one undo step) */
     nudge(dx, dy) {
-      if (D || R || !fin(dx) || !fin(dy) || (!dx && !dy)) return;
+      if (D || !fin(dx) || !fin(dy) || (!dx && !dy)) return;
       if (o.onMove) o.onMove(x, y, 'start');
       setPos(x + dx, y + dy, false);
       if (o.onMove) o.onMove(x, y, 'end');
@@ -453,7 +425,7 @@ export function createModule(o, env) {
     destroy() {
       if (dead) return;
       if (D) { D = null; dragEnd(); }
-      moveDrag.destroy(); if (gripDrag) gripDrag.destroy(); menuOff();
+      moveDrag.destroy(); menuOff();
       if (ro) { try { ro.disconnect(); } catch (err) { /* gone */ } }
       unmount();
       dead = true;
@@ -468,11 +440,12 @@ export function createModule(o, env) {
  * The stage-1b view of one track: instrument (ID.inst), FX module (fxKey(model)), OUT (ID.out), positioned from
  * track.lay (layOf), added to the world, plus the derived cables (cv-cables). main.js (MODULES region) supplies the
  * bodies and the edits; this module never touches the project except through host callbacks.
- * host.lay(key, entry, phase, what): 'start' opens the undo step of a move / fold / resize (what), 'end' writes the
+ * host.lay(key, entry, phase, what): 'start' opens the undo step of a move / fold (what), 'end' writes the
  * entry; an 'end' without a 'start' (bring to front: z) writes without an undo step; 'cancel' changes nothing.
  * (Additions: host.root — the element modules live in (default world.el: #world); host.shown(key) — a module went on /
- * off screen or folded (main.js: monitors.sync); host.size(kind) — the instrument's size: {fixed: {w, h}} (Hardware
- * layout) or {range: {min, max}} (Resizable; default widthRange(model)); host.select(key) / host.focus(key).)
+ * off screen or folded (main.js: monitors.sync); host.size(kind) — the instrument's fixed size: {fixed: {w, h}} (a
+ * Hardware layout) or {fixed: {w}} (the Simple layout, a Serum: the height measured; default defaultW(ID.inst, model));
+ * host.select(key) / host.focus(key).)
  * @param {object|null} world  cv-world World (null: modules still lay out in host.root at k = 1)
  * @param {{id: string, model: string, name: string, color: string, lay?: Lay}} track
  * @param {object} host
@@ -485,18 +458,21 @@ export function createTrackView(world, track, host) {
   const mods = new Map(); // key → Module
   const cables = createCables(root, { doc });
   const keys = () => [ID.inst, fxKey(T.model), ID.out];
-  // the instrument's size from the host: {fixed: {w, h}} (a Hardware layout) or {range: {min, max}} (resizable)
-  const sizeOf = () => { let s = null; try { s = H.size ? H.size('inst') : null; } catch (err) { s = null; } return isObj(s) && (isObj(s.fixed) || isObj(s.range)) ? s : { range: widthRange(T.model) }; };
+  // the instrument's fixed size from the host: {fixed: {w, h}} (a Hardware layout) or {fixed: {w}} (the height measured)
+  const sizeOf = () => {
+    let s = null;
+    try { s = H.size ? H.size('inst') : null; } catch (err) { s = null; }
+    return isObj(s) && isObj(s.fixed) && fin(s.fixed.w) && s.fixed.w > 0 ? s : { fixed: { w: defaultW(ID.inst, T.model) } };
+  };
   const kindOf = key => (key === ID.inst ? 'inst' : key === ID.out ? 'out' : 'fx');
   const sizes = () => { const o = {}; for (const [k, m] of mods) { const r = m.rect(); o[k] = { w: r.w, h: r.h }; } return o; };
   const tidied = () => { const o = {}; for (const [k, m] of mods) o[k] = { w: m.w }; return tidy(T, o); }; // (widths only: no layout read)
-  // the lay entry of a module as it stands: w only once the user set one (a model's default width follows the model:
-  // a Serum's 1200 is its ≥ 1100 container layout), z only once brought to front
+  // the lay entry of a module as it stands: never a width (each module's is fixed: a stored w from before is dropped
+  // here, on its next write), z only once brought to front
   const entryOf = key => {
     const m = mods.get(key);
     if (!m) return null;
     const e = { x: Math.round(m.x), y: Math.round(m.y) }, old = isObj(T.lay) && isObj(T.lay[key]) ? T.lay[key] : null;
-    if (m.wSet) e.w = m.fixed && old && fin(old.w) ? old.w : m.w; // (a fixed module keeps the Resizable width it had)
     if (m.fold) e.fold = 1;
     if (m.zSet) e.z = m.z;
     if (old && old.ui === 'flow') e.ui = 'flow'; // the instrument's layout choice (IMPL-panels §7.1) rides along
@@ -532,8 +508,7 @@ export function createTrackView(world, track, host) {
         : [{ id: 'in', side: 'left', kind: 'audio', label: 'OUT in' }];
     const m = createModule({
       id: key, kind, title: M0.title || '', sub: M0.sub, chip: M0.chip, color: T.color,
-      x: L.x, y: L.y, w: kind === 'inst' && fin(L.w) ? L.w : defaultW(key, T.model), fold: !!L.fold, z: fin(L.z) ? L.z : 1,
-      resizable: SZ ? SZ.range || widthRange(T.model) : undefined, fixed: SZ ? SZ.fixed || null : null,
+      x: L.x, y: L.y, w: defaultW(key, T.model), fold: !!L.fold, z: fin(L.z) ? L.z : 1, fixed: SZ ? SZ.fixed : null,
       cost: kind === 'inst' ? (T.model === 'serum' ? 3700 : 600) : kind === 'fx' ? 900 : 40,
       jacks: jk,
       body: H.bodies && H.bodies[kind] ? H.bodies[kind] : null,
@@ -559,16 +534,10 @@ export function createTrackView(world, track, host) {
         if (phase === 'end' || phase === 'cancel') { update(key); if (G2) { for (const g of G2.list) update(g.k); grp = null; } }
       },
       onFold: f => { lay(key, 'start', 'fold'); lay(key, 'end', 'fold'); relay(); update(key); if (H.shown) H.shown(key); },
-      onResize: (w, phase) => {
-        if (phase === 'start') { m.w0Set = m.wSet; m.wSet = true; } else if (phase === 'cancel') m.wSet = m.w0Set;
-        if (phase !== 'move') lay(key, phase, 'resize');
-        relay();
-        if (phase === 'end' || phase === 'cancel') update(key);
-      },
       onScreen: () => { if (H.shown) H.shown(key); },
       onSize: () => { relay(); update(key); },
     }, { world, doc });
-    m.zSet = fin(L.z); m.wSet = kind === 'inst' && fin(L.w);
+    m.zSet = fin(L.z);
     if (root) root.append(m.el);
     mods.set(key, m);
     if (world && typeof world.add === 'function') world.add(m);
@@ -611,14 +580,10 @@ export function createTrackView(world, track, host) {
         let m = mods.get(k);
         if (!m) { make(k); continue; }
         const kind = kindOf(k), M0 = meta(kind), SZ = kind === 'inst' ? sizeOf() : null;
-        if (SZ) { // (the size follows the model and the layout toggle, even mid-drag; before Tidy reads the widths)
-          if (SZ.fixed) m.setFixed(SZ.fixed); else { m.setFixed(null); m.setRange(SZ.range); }
-        }
+        if (SZ) m.setFixed(SZ.fixed); // (the size follows the model and the layout toggle, even mid-drag; before Tidy reads the widths)
         const L = layOf(T, k, tidied());
         if (!m.dragging()) {
           m.setPos(L.x, L.y, false);
-          if (SZ && !SZ.fixed) { const r = SZ.range; m.wSet = fin(L.w); m.setW(fin(L.w) ? clamp(L.w, r.min, r.max) : defaultW(k, T.model)); }
-          else if (SZ) m.wSet = fin(L.w); // (a Hardware layout ignores the Resizable width but keeps it: its lay entry still carries w)
           if (m.fold !== !!L.fold) { m.setFold(!!L.fold); vis = true; }
         }
         m.zSet = fin(L.z);
@@ -646,15 +611,6 @@ export function createTrackView(world, track, host) {
     live(key) { const m = mods.get(key); return !!m && m.screen && !m.fold; },
     /** user actions from the module menus (each one undo step, except front) */
     toggleFold(key) { const m = mods.get(key); if (!m) return; m.setFold(!m.fold); lay(key, 'start', 'fold'); lay(key, 'end', 'fold'); relay(); update(key); if (H.shown) H.shown(key); },
-    resetWidth(key) {
-      const m = mods.get(key);
-      if (!m || kindOf(key) !== 'inst' || m.fixed) return;
-      lay(key, 'start', 'resize');
-      m.wSet = false;
-      m.setW(defaultW(key, T.model));
-      lay(key, 'end', 'resize');
-      relay(); update(key);
-    },
     front,
     sizes,
     destroy() {
