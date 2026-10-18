@@ -180,7 +180,7 @@ export function scenarios() {
     // live preset switch (§11.10): row d's WT patch, then the preset changes to h' / g" while the track is silent; the
     // load is the slowest quantum of the first chord on the new preset (≤ 1 = within the deadline)
     { id: 'r', label: 'Track: Prophet-5 Poly Strings + Juno-60 + default Serum → one EQ / chorus / delay panel, a 4-note chord on all three',
-      node: 0.15, ipad: 0.2, kind: 'track', build: trackR },
+      node: 0.15, ipad: 0.12, kind: 'track', build: trackR },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',

@@ -310,6 +310,87 @@ once; one file at a time with `node --max-old-space-size=2048 --test tests/<file
 - UI (page sims + the user on the iPad): a Juno and a Minimoog and a Serum on one track, shared or separate panels, each switchable,
   mixed into one OUT; Effects tray; power; zones; cables editable; Save as classic project of such a track lists what is lost.
 
-## 8. Notes (filled in by the builders and the lead at the end)
+## 8. Notes (2026-10-18, after the review round)
 
-_(decisions taken, gates as measured, what was left for 2a)_
+### 8.1 What was built, by lane
+
+- **A engine** (`engine.js`; one-token seed sites in `serum-dsp.js`, `sx-mod.js`, `sx-seq.js`): the graph of §2 as specified. Decisions: the
+  first graph adopts `c0` as the panel the classic primary feeds (found from the edges; `c0 = chains[0] || i0.fxc`); a classic → Serum patch
+  on a graph node takes over the panel the last graph removed while that instrument was its only source (as its own FX), and Serum → classic
+  hands its own FX to the newly built panel it alone feeds (without this the model-switch cases could not be bit-identical in graph form);
+  removed parts keep their last route (`dyTo` / `dyG` / `dyO`, review E1) and dying panels render before kept ones; shared panels with several
+  sources are keyed from the most recent source note-on and triggered by fanned-out note-ons (sequencer notes do not trigger them); panels
+  with several sources get `rack.transport()` at play start (E3); a panic or bye that ends mid-span re-resolves the alias shape only after
+  `outStage` (E2); `Chain.used` = "not built by the latest graph", set only by `graphMsg` (E6); a re-struck key at a new transpose releases
+  the old pitch first (E8); the power-on restrike triggers drive panels (E7) and re-anchors `sxSeq` on Serum Insts only; `fxtap` / `fxph`
+  with `i` on a classic Inst target the panel it feeds (E9); a preview (`aud`) to a powered-off Inst is dropped; new Insts start at the
+  Track's host oversampling; a salt that changes on a live Inst (Make primary) shifts the running PRNG states and a Serum's own streams take
+  it at their next attach / reset; the warm-up runs a graph (two classic Insts into a shared panel, a Serum through its own FX into it, a
+  power-off with held keys and the restrike) with analog `WARM` patches only, ≈ 25 ms, then `restore` returns the legacy structure.
+  Validation inside the engine: ids unique and never `'out'`, 1 ≤ instruments ≤ 8, ≤ 16 panels (an invalid graph is ignored whole); zones
+  ints (lo / hi 0…127, xp −48…48); `g` a number 0…1e6 else 1; an edge source `'iN/fx'` means instrument `iN`; a patch with an unknown `i` is
+  ignored; a chain message before the first graph is ignored; a power message whose `on` already matches is a no-op.
+- **B compile / model / host** (`cv-graph.js`, `cv-model.js`, `cv-migrate.js`, `song.js`, `midi.js`, the host functions of `main.js`):
+  §3 as specified plus `compileGraph`, `instPatch` / `chainPatch`, `saltOf` / `zoneOf` / `devNum`; the editing API of §3.2 with `destOf`.
+  Decisions: an invalid track still compiles (the first cable per output is kept, panel → panel cables dropped); auto-patch joins only a
+  panel that already has an instrument source, else OUT; Serum → classic while feeding a shared panel keeps feeding it and a non-empty own
+  FX becomes a new unconnected panel (panel → panel is stage 4); classic → Serum that is not its panel's only source keeps the cable with an
+  empty own rack; `removePanel` on a panel with no output cuts its sources; `connect` swaps reversed ports, keeps a re-patched wire's id,
+  and refuses only on errors the track did not already have (the own-fx refusal returns `fix: 'panel'`); `sharedPanelFix` joins the panel
+  the Serum already feeds; a Serum that folds a panel into its own FX remembers its id (`dev.fxId`, saved) and unfolds under that id when it
+  is free, else `nextId` — no other id is ever reused (review H4); `t.fx` of a classic primary straight into OUT reads `undefined` and a
+  write is a no-op (`fxOf` hands out a detached empty rack; H4); the legacy node path is taken only for one-instrument tracks whose panel,
+  if any, is the primary's (`legacyOk`; H2); a zone or transpose on the sounding instrument makes the shape non-canonical (H3); undo / redo
+  keep the sound per device id, the 1c "rack kept on a model change" rule only when the primary is the same device and the rack moved
+  between its panel and the Serum (H1); `duplicateTrack` clones every device (H6); a Serum is monitored through its Inst part only (its
+  `smon` carries its own FX meters; H5); a graph post is atomic after assets (graph, power, patches, chains, new 303 patterns in one `go`;
+  H10 / H11); `lowerOS` re-posts per-Inst oversampling after a broadcast (H7); `cvCpu` prunes removed parts (H9); `curDevs` is cleared on
+  New / Open (H13); `toV1` lists zones, cable levels, solo, a Serum feeding a panel and silent instruments that become audible (H8).
+- **C1 widgets** (`cv-module.js`, `cv-cables.js`, `cv-tray.js`, `cv-world.js`, `index.html`, `style.css`): §4.1–4.4 as specified, with
+  `devicesOf`, `tidy` for any number of devices, the zone pill / ⏻ / badge, `cablesOf` / `createCableDrag` / `effectsTray` / the world's
+  jack hook. Decisions: the Effects tray never closes during a drag (ROADMAP wins over §4.3's "slides shut"); a lifted cable end dropped on
+  nothing goes back (Disconnect stays explicit); grey cables also cover solo; cables do not pan (a press selects on a tap); the jacks inside
+  a Serum are not patchable (its external jack is `iN/fx.out`).
+- **D cost** (`cv-cost.js`): per-model costs measured in node on the reference Mac for all 12 classic models (bench.json has no node
+  c-rows; the iPad `c1`–`c6` agree within 0.7–1.05), Serum terms fitted to rows d–h' (±8 %), effects measured per type; `measureDevice`
+  runs rows c1, j, e in a Blob Worker (the smprender loading pattern) and returns the median load / reference ratio; soft caps on touch
+  devices only; pref `synth.cv.devFactor`.
+- **C2 integration** (`main.js`): device views (`instView`; the primary is its track through the transition accessors), the current
+  instrument (`curDevs`: last tapped, default the primary; `bind` / `model` / `vals` / `cpanel` follow it), `#inst` / `#fxrack` belong to the
+  primary and its FX while other devices get their own elements built after the sync; per-device records `classicPanels`, `serumPanels`,
+  `fxPanels`; the Sources tray adds on empty canvas and replaces on a bar or by tap; ⋯ gains Power, Solo in track, Make primary, Duplicate,
+  Delete; the Effects tray lists `core.FXTYPES`; cables, badges, soft caps and Measure this device wired. History: Add, Replace, Power,
+  Solo, Key zone (coalesced over 2 s), Make primary, Duplicate, Delete, Connect, Re-patch, Disconnect, Make a shared panel, Add FX panel,
+  Delete panel are one step each; **an effect added to an existing panel is not a History step** (the rack "+" policy: FX edits are kept
+  through undo by the knob-tweak rule), with a notice. Panel titles use the device number ("FX Panel 3").
+
+### 8.2 Gates as measured (M4 Max, node 24, 2026-10-18)
+
+- Sound: golden-classic 8/8, golden-fx 3/3, golden-presets 8/8, golden-random 1/1; golden-graph 6/6 with every classic preset, every Serum
+  preset, every FX chain and every 1d case rendered on the new engine in legacy, graph-message and processorOptions form, each bit for bit
+  against ref-1c; canonical-stream 1/1 unchanged (fixture untouched).
+- engine-track 34/34: copy(A)+B bit for bit at the panel input; co-resident sequencer bound 9.2e-4 (−60.8 dB) beside a TB-303 (asserted
+  < 2e-3) and 3.3e-8 beside a Serum ARP (< 1e-6), 1e-16 without controller moves; salts; powered-off TB-303 silent and no span splits;
+  power off −77.5 dB / on −62.4 dB; removal < −76 dB at a 0.1 cable, through a quiet EQ kept or removed, and unconnected (E1); quiet load
+  0.00021 (Prophet-5), 0.00032 (Serum), 0.00041 (two off with keys held); warm-up first chord ×1.06, restrike ×1.04 of steady state.
+- V8 A/B vs the 1d engine (9 interleaved 1 s pairs, 3 processes, median): d 1.002, e 1.000, f 0.995, f' 0.999, g 1.001, g' 1.003,
+  g" 1.005, h 0.995, h' 0.999, i 1.003, c1 1.007, c2 1.004, c3 0.999, c4 0.987, c5 0.959, c6 0.993, p 0.980, q1 0.975, q2 0.978; after the
+  review fixes d 1.006, g" 1.011, c1 1.008, p 1.013 (A/A floor ≈ 0.5–1 %). Row r (Prophet-5 + Juno-60 + default Serum + EQ / chorus /
+  delay panel): 0.097–0.102 calibrated, target 0.15. Allocation-free: noAlloc on a three-instrument graph node with a removed part fading,
+  the bench GC check. JavaScriptCore: see 8.4. iPad: pending (the user's five-pass run after the deploy; every row within 5 % of
+  `"ipad1d"`, row r within 25 % of the device factor).
+- UI: canvas-1e-sim, canvas-sim, cv-shell-sim, cv-fixes-sim, graph-host, cv-module, cv-cables, cv-tray, cv-world, cv-cost, midi,
+  cv-graph, cv-migrate, main, lint, pwa green (counts in the sweep log of the deploy commit).
+
+### 8.3 Left for stage 2a
+
+- Remove the transition accessors (`t.model` / `vals` / `preset` / `seq` / `fx`): still ≈ 180 sites meaning the primary. Primary-only
+  paths: program change, MPE detection, `zoneOf` (the sample zone), `wtEdit` default, `renderLast` default device, `voiceSeen` and the
+  voice-mode labels, `rateText`, `syncPhases` / the FX phase memory on preset save, `resampleTo`, `sxEdit`.
+- A dying Inst that fanned out follows only its last panel; graph edits (gain change, disconnect of a sounding Inst) switch without a fade.
+- Row r has no `jsc` record yet; SPEC §6.8's protocol table should drop `kind` / `racks` / `order` from the graph message.
+- A visual marker for the current instrument; the Serum ARP pause while powered off is not unit-tested (the TB-303 is).
+
+### 8.4 JavaScriptCore gate
+
+_(filled in below once run)_
