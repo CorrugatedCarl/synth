@@ -83,7 +83,7 @@ function reshape(t, id, toSerum) {
     const pw = outWire(t, pid);
     if (inWires(t, pid).length === 1 && pw && pw.b === out + '.in') { // its own panel: the state comes inside the Serum
       if (t.dev[pid].fx !== undefined) d.fx = t.dev[pid].fx;
-      delete t.dev[pid]; dropLay(t, pid);
+      delete t.dev[pid]; // (its layout entry stays: the view puts the Serum FX where the panel was, cv-module layOf)
       t.wires = t.wires.filter(x => !touches(x, pid) && x !== w);
       wire(t, id + '.out', out + '.in', pw.g);
       return 'moved';
