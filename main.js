@@ -868,9 +868,11 @@ function cpuKey(t, N, part) {
   return f && !f.own ? f.id : p + '/fx';
 }
 function cvCpu(id, N, per) {
-  const t = project.tracks.find(x => x.id === id), sm = N.cpu || (N.cpu = {});
+  const t = project.tracks.find(x => x.id === id), old = N.cpu || {}, sm = {};
   if (!t) return;
-  for (const e of per) { const k = e && typeof e.id === 'string' ? cpuKey(t, N, e.id) : null; if (k && Number.isFinite(e.load)) sm[k] = sm[k] === undefined ? e.load : sm[k] + 0.25 * (e.load - sm[k]); }
+  // (rebuilt from this report: a part the engine no longer has — a removed device — leaves N.cpu, review H9)
+  for (const e of per) { const k = e && typeof e.id === 'string' ? cpuKey(t, N, e.id) : null; if (k && Number.isFinite(e.load)) sm[k] = old[k] === undefined ? e.load : old[k] + 0.25 * (e.load - old[k]); }
+  N.cpu = sm;
   if (!cvView || cvView.trackId !== id) return;
   for (const k of Object.keys(sm)) { const m = cvView.modules.get(k); if (m && m.setCpu) m.setCpu(sm[k]); }
 }

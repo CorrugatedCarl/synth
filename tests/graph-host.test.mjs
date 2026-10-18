@@ -421,3 +421,13 @@ test('H7: the safeguard never raises an instrument it lowered alone — the broa
   sim.api.liftCaps(); sim.api.settings().os = os0; // (the app setting back for the tests after)
   for (const N0 of sim.api.nodes.values()) N0.node.port.postMessage({ t: 'os', v: os0 });
 });
+
+test('H9: module CPU keeps only the parts the engine still reports — a removed device\'s load is gone', async () => {
+  await page();
+  const c = byId('trk_c'), node = sim.nodeOf(c.id);
+  node._fromProc({ t: 'stats', load: 0.3, voices: 0, per: [{ id: 'i1', load: 0.1 }, { id: 'i2', load: 0.15 }, { id: 'fx1', load: 0.02 }, { id: 'fx2', load: 0.03 }] });
+  assert.deepEqual(Object.keys(N(c).cpu).sort(), ['fx1', 'fx2', 'i1', 'i2']);
+  assert.equal(CMOD.removeInst(c, 'i2').ok, true); CMOD.removePanel(c, 'fx2'); sim.api.sendPatch(c);
+  node._fromProc({ t: 'stats', load: 0.1, voices: 0, per: [{ id: 'i1', load: 0.08 }, { id: 'fx1', load: 0.02 }] });
+  assert.deepEqual([Object.keys(N(c).cpu).sort(), N(c).cpu.i1 > 0.08 && N(c).cpu.i1 < 0.1], [['fx1', 'i1'], true], 'pruned; the kept ones still smoothed');
+});
