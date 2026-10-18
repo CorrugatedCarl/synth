@@ -258,6 +258,8 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-parts .scope { height: 220px; }
 .cv-overlay { position: absolute; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
 .cv-toolbar { position: absolute; left: 56px; bottom: 12px; z-index: 10; }
+/* (1e) past the open Sources tray (cv-tray sideTray marks the stage: cv-left-open, --cv-left-w), never under it */
+.cv-left-open > .cv-toolbar { left: calc(56px + var(--cv-left-w, 240px)); }
 .cv-toolbar:empty { display: none; }
 /* the side trays: a 44 px rail on the canvas edge (a tap opens), the panel beside it, the width grip on the inner edge */
 .cv-side { position: absolute; top: 0; bottom: 0; z-index: 20; display: flex; align-items: stretch; pointer-events: none; --cv-side-w: 240px; }

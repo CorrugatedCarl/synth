@@ -207,11 +207,19 @@ export function sideTray(el, o) {
   let w = clamp(+saved.w || SIDE_W, SIDE_MIN, SIDE_MAX), open = false, offDoc = null;
   const maxW = () => { const win = d && d.defaultView, vw = win && win.innerWidth > 0 ? win.innerWidth : 1e4; return Math.max(SIDE_MIN, Math.min(SIDE_MAX, Math.floor(vw / 2) - RAIL_W)); };
   const save = () => { if (!o.store) return; const p = Object.assign({}, pref()); p[key] = { open, w }; o.store.set(TRAY_PREF, p); };
-  const applyW = () => { if (el.style && el.style.setProperty) el.style.setProperty('--cv-side-w', w + 'px'); };
+  // (1e, U15) the stage (the tray's parent) knows it too — class cv-<side>-open, --cv-<side>-w: the canvas toolbar moves
+  // past the open tray (style.css)
+  const host = () => (el.parentNode && el.parentNode.classList ? el.parentNode : null);
+  const applyW = () => {
+    if (el.style && el.style.setProperty) el.style.setProperty('--cv-side-w', w + 'px');
+    const H = host();
+    if (H && H.style && H.style.setProperty) H.style.setProperty('--cv-' + side + '-w', w + 'px');
+  };
   function setOpen(on, persist = true) {
     if (open === on) return;
     open = on;
     el.classList.toggle('open', on);
+    if (host()) host().classList.toggle('cv-' + side + '-open', on);
     panel.hidden = !on;
     rail.setAttribute('aria-expanded', on ? 'true' : 'false');
     if (offDoc) { offDoc(); offDoc = null; }

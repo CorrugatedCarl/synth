@@ -605,3 +605,20 @@ test('index.html (1e): the Effects tray holds its list (#fxList, the tiles\' gri
   assert.match(css, /\.cv-cable-x \{[^}]*width: calc\(30px \* var\(--ik, 1\)\)/, 'the × keeps its screen size');
   assert.match(css, /\.cv-zone::before \{[^}]*calc\(44px \* var\(--ik, 1\)\)/, 'the pill\'s hit area via ::before');
 });
+
+/* ---------------------------------------------------------------- UI fixes (stage 1e review, fixer U) */
+test('U15: an open side tray tells its stage (the parent: class cv-left-open / cv-right-open, --cv-left-w / --cv-right-w) — the canvas toolbar moves right of the open Sources tray (style.css)', () => {
+  const R = sideRig(), host = R.el.parentNode;
+  assert.deepEqual([host.classList.contains('cv-left-open'), host.style['--cv-left-w']], [false, '240px'], 'closed: its width known, no class');
+  R.rail.click();
+  assert.deepEqual([host.classList.contains('cv-left-open'), host.style['--cv-left-w']], [true, '240px']);
+  R.S.setWidth(300);
+  assert.equal(host.style['--cv-left-w'], '300px', 'a resize follows');
+  R.S.close();
+  assert.equal(host.classList.contains('cv-left-open'), false);
+  const L = sideRig({ opts: { side: 'right', key: 'fx' } });
+  L.S.open();
+  assert.deepEqual([L.el.parentNode.classList.contains('cv-right-open'), L.el.parentNode.style['--cv-right-w']], [true, '240px']);
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /\.cv-left-open > \.cv-toolbar \{[^}]*left: calc\(56px \+ var\(--cv-left-w, 240px\)\)/, 'the toolbar past the open Sources tray');
+});
