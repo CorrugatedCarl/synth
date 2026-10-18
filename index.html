@@ -232,8 +232,9 @@
       <button id="fxRail" class="cv-rail" type="button" title="Effects (tap to open)"><span class="cv-railico" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="5" y="2.5" width="10" height="15" rx="2"/><circle cx="8" cy="7" r="1.4"/><circle cx="12" cy="7" r="1.4"/><rect x="7.5" y="11.5" width="5" height="3" rx="0.8"/></svg></span><span class="cv-raillab">Effects</span></button>
       <div id="fxPanel" class="cv-panel" role="region" aria-label="Effects" hidden>
         <div class="cv-ph"><h2>Effects</h2><button id="fxClose" class="cv-x" type="button" aria-label="Close the Effects tray" title="Close (Esc)">✕</button></div>
-        <p class="cv-pnote big">Effects are added with the FX panel’s own <b>+</b> (its module list) for now: switch a module on, drag ≡ to reorder it, its power button bypasses it.</p>
-        <p class="cv-pnote">Effect tiles you can drag onto the canvas or into a panel arrive in a later stage.</p>
+        <p class="cv-pmode" id="fxMode">Drag an effect into an FX panel, or onto the canvas for a new panel. An empty panel takes any instrument you cable into it.</p>
+        <div id="fxList" class="cv-tiles cv-ftiles" data-tray="fx"></div>
+        <p class="cv-pnote">Inside a panel: drag ≡ to reorder, its power button bypasses an effect. Saved rack presets and chains arrive here in a later stage.</p>
       </div>
       <div id="fxGrip" class="cv-sgrip"></div>
     </aside>

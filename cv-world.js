@@ -22,6 +22,9 @@
 // with the mouse, a 250 ms hold then a drag with a finger — selects what it touches; a mouse drag still pans), the
 // selected item that started a move carries the others (cv-module TrackView), and a minimap in the toolbar (item rects +
 // the visible area from the cached rects; drag to pan, tap to centre; drawn only when the camera or the layout changes).
+// Stage 1e: a press on a jack ([data-cv-jack]) is offered to hooks.jack(e, jackEl) (cv-cables createCableDrag) in the
+// capture phase, before any pan, sleeping module or control: a truthy answer takes it (never a pan). A second touch while
+// it runs cancels it (the answer's cancel(), else hooks.jackCancel) and the two fingers pinch the camera (two fingers win).
 import * as wk from './wk.js?v=9';
 
 /** Smallest / largest camera zoom. */
@@ -114,7 +117,9 @@ const TAP_PX = { touch: 8, pen: 4, mouse: 4 }, DTAP_MS = 320, DTAP_PX = 24, REVE
  *   setActive: (on: boolean) => void,
  *   setPinchMode: (m: 'canvas' | 'page') => void,
  *   resize: () => void,
- *   hooks: {pan: (sx: number, sy: number, at: At) => boolean, zoom: (f: number, cx: number, cy: number, at: At) => boolean},
+ *   hooks: {pan: (sx: number, sy: number, at: At) => boolean, zoom: (f: number, cx: number, cy: number, at: At) => boolean,
+ *     jack?: (e: PointerEvent, jackEl: Element) => (boolean | {cancel?: () => void}), jackCancel?: () => void},
+ *   setJackHook: (fn: Function | null, cancel?: Function) => () => void,
  *   wheelVeto: () => boolean,
  *   escape: () => boolean,
  *   key: (e: KeyboardEvent) => boolean,
@@ -254,6 +259,7 @@ export function createWorld(viewport, o) {
   let mapOn = true, mapDirty = true, MM = null; // the minimap: shown, a redraw owed, its parts { el, cv, btn, drag }
   let B = null; // the live burst: { hook, until, band, timer, last }
   let G = null; // the world's own pointer gesture (pan / pinch)
+  let J = null; // a press hooks.jack took: { id, type, x, y, cancel } until its pointer lifts
   let glide = null, glideEnd = -1e9, anim = null, edge = null, gh = null, gs = null; // gs: Safari gesture scale
   let touches = 0, pressT = -1e9, lastTap = null, outside = null, bandC = null, pctShown = '', clickUntil = -1e9;
   const items = new Map(); // id → { item, rect (cached: add / update / resize / cameraend), on (on screen) }
@@ -759,6 +765,29 @@ export function createWorld(viewport, o) {
     if (!active) return;
     const ed = editId && items.get(editId);
     outside = ed && !inside(ed.item.el, e.target) ? { id: e.pointerId, x: e.clientX, y: e.clientY } : null;
+    if (J && e.pointerId !== J.id && (e.isPrimary === true || J.type !== (e.pointerType || 'mouse'))) { const j = J; J = null; jackStop(j); } // (stale: its lift was lost)
+    if (J && e.pointerId !== J.id && e.pointerType === 'touch') { // a second finger during a cable drag: two fingers win
+      const j = J;
+      J = null;
+      jackStop(j);
+      if (native || G) return;
+      take(e);
+      if (pinchMode !== 'canvas') { clickUntil = now() + 350; return; } // ('Zoom page': the browser's pinch has both)
+      G = { kind: 'pan', id: j.id, type: 'touch', px: j.x, py: j.y };
+      capture(j.id, true);
+      toPinch(e);
+      return;
+    }
+    if (!G && !J && (e.button === 0 || e.button == null) && typeof hooks.jack === 'function') { // (under native zoom too: a control)
+      const je = jackOf(e.target);
+      let r = false;
+      if (je) { try { r = hooks.jack(e, je); } catch (err) { console.error(err); r = false; } }
+      if (r) {
+        take(e);
+        J = { id: e.pointerId, type: e.pointerType || 'mouse', x: e.clientX, y: e.clientY, cancel: r && typeof r.cancel === 'function' ? r.cancel : null };
+        return;
+      }
+    }
     if (native) return;
     if (G && (e.pointerType === 'touch' ? e.isPrimary === true : G.type !== 'touch')) endGesture(true); // a stale pan (its lift was lost)
     if (G && e.pointerType === 'touch' && G.type === 'touch') { // a further touch while the world's touch pan runs
@@ -785,6 +814,17 @@ export function createWorld(viewport, o) {
     const id = cam.k < READ_K - 1e-9 && !G && (e.button === 0 || e.button == null) ? sleeper(e.target) : null;
     if (id) { take(e); startPan(e, false, false); G.sleep = id; }
   }
+  function jackOf(t) { // the [data-cv-jack] t lies in (inside a world item), or null
+    for (let n = t; n && n !== viewport && typeof n.getAttribute === 'function'; n = n.parentNode) {
+      if (n.getAttribute('data-cv-jack') != null) return n;
+      if (n.getAttribute('data-cv-mod') != null) return null;
+    }
+    return null;
+  }
+  function jackStop(j) { // cancel a cable drag (the hook's answer, else hooks.jackCancel); idempotent on the hook's side
+    const f = j && j.cancel ? j.cancel : typeof hooks.jackCancel === 'function' ? hooks.jackCancel : null;
+    if (f) { try { f(); } catch (err) { console.error(err); } }
+  }
   function sleeper(t) { // the module whose body t lies in, unless t is in its bar or a jack, or the module is in edit state
     for (let n = t; n && n !== viewport && typeof n.getAttribute === 'function'; n = n.parentNode) {
       if (n.getAttribute('data-cv-bar') != null || n.getAttribute('data-cv-jack') != null) return null;
@@ -808,6 +848,7 @@ export function createWorld(viewport, o) {
     if (empty) focusVp(); // the canvas keys
   }
   function onMove(e) {
+    if (J && e.pointerId === J.id) { J.x = e.clientX; J.y = e.clientY; } // (the finger a late second one pinches from)
     if (!G) return;
     if (G.type === 'mouse' && e.pointerId === G.id && e.buttons === 0) { endGesture(true); return; } // released unseen
     if (G.kind === 'pinch') pinchMove(e);
@@ -822,6 +863,7 @@ export function createWorld(viewport, o) {
     }
   }
   function onUp(e) {
+    if (J && e.pointerId === J.id) J = null;
     if (!G) return;
     if (G.kind === 'pinch') { pinchLift(e.pointerId); return; }
     if (G.kind === 'marquee') { if (e.pointerId === G.id) marqueeEnd(true); return; }
@@ -836,6 +878,7 @@ export function createWorld(viewport, o) {
     settle();
   }
   function onCancel(e) { // the two-finger layer's flagged cancel: the camera stays (never rolled back), no glide
+    if (J && e.pointerId === J.id) { const j = J; J = null; if (e.gesture === 'two-finger') jackStop(j); }
     if (!G) return;
     if (G.kind === 'pinch') { if (e.pointerId === G.a.id || e.pointerId === G.b.id) endGesture(true); return; }
     if (e.pointerId === G.id) endGesture(true);
@@ -1045,6 +1088,7 @@ export function createWorld(viewport, o) {
     return false;
   }
   function escape() {
+    if (J) { const j = J; J = null; jackStop(j); return true; } // (a cable drag)
     if (G) { endGesture(true); return true; }
     if (editId) { editSup = true; computeEdit(); return true; }
     if (sel || selSet.size) { select(null); return true; }
@@ -1239,7 +1283,7 @@ export function createWorld(viewport, o) {
     on = !!on;
     if (on === active) { if (on) resize(); return; }
     active = on;
-    if (!on) { endGesture(true); stopMotion(); edge = null; if (B) endBurst(); outside = null; }
+    if (!on) { endGesture(true); stopMotion(); edge = null; if (B) endBurst(); outside = null; if (J) { const j = J; J = null; jackStop(j); } }
     else resize();
   }
   function onFocusIn(e) { // keyboard focus (Tab) or a text field brings its control on screen; a press's target already is
@@ -1296,13 +1340,20 @@ export function createWorld(viewport, o) {
     el: W, viewport, overlay: OV,
     get cam() { return copy(cam); }, get k() { return cam.k; }, get native() { return native; }, get movedAt() { return movedAt; },
     get selected() { return sel; }, get edit() { return editId; }, get pinchMode() { return pinchMode; },
-    get busy() { return !!B; },
+    get busy() { return !!B; }, get jacking() { return !!J; },
     setCamera, panBy, zoomAt, fit, focusItem, reveal,
     toWorld: (x, y) => toWorld(cam, x - vp.left, y - vp.top),
     toClient: (x, y) => { const l = toLocal(cam, x, y); return { x: l.x + vp.left, y: l.y + vp.top }; },
     band, add, remove, update, clear, ids: () => [...items.keys()], onScreen: id => { const r = items.get(String(id)); return !!r && r.on; },
     select, selectMany, get selection() { return [...selSet]; }, dragPointer, ghost, setActive, setPinchMode, resize, hooks, wheelVeto, escape, key,
     snapOn: () => snapping, setSnap, mapOn: () => mapOn, setMap, lockOn: () => locked, setLock,
+    /** (1e) installs the jack hook (cv-cables createCableDrag): fn(e, jackEl) → truthy | {cancel} takes the press;
+     * cancel: the fallback two-finger cancel. Returns a remover (only removes its own hook) */
+    setJackHook(fn, cancel) {
+      const f = typeof fn === 'function' ? fn : null, c = typeof cancel === 'function' ? cancel : null;
+      hooks.jack = f; hooks.jackCancel = c;
+      return () => { if (hooks.jack === f) { hooks.jack = null; hooks.jackCancel = null; } };
+    },
     on(type, fn) {
       let s = subs.get(type);
       if (!s) subs.set(type, s = new Set());
@@ -1315,7 +1366,7 @@ export function createWorld(viewport, o) {
       if (fid) caf(fid);
       fid = 0;
       if (B) unlater(B.timer);
-      B = null; G = null; glide = null; anim = null; edge = null;
+      B = null; G = null; J = null; glide = null; anim = null; edge = null;
       for (const f of offs.splice(0)) { try { f(); } catch (err) { /* gone */ } }
       if (ro) { try { ro.disconnect(); } catch (err) { /* gone */ } }
       if (gh) { try { gh.el.remove(); } catch (err) { /* gone */ } gh = null; }

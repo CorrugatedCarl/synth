@@ -15,9 +15,14 @@
 // instrument's Hardware layout its panel's size (host.size: {fixed: {w, h}}, cv-panel sizeOf: no measuring), its Simple
 // layout FLOW_W of its model and a Serum W_SERUM (host.size: {fixed: {w}}: the height measured), the FX panel W_FX, OUT
 // W_OUT. A stored width (track.lay.<id>.w, from before the rule) is ignored and never written again.
+// Stage 1e (IMPL-1e §4.1): several devices per track. A module key is a device id ('i1', 'i2', 'fx1', 'i2/fx' — a Serum's
+// own FX —, 'out'). createModule gains power (⏻ on the bar, [data-off] dims the module), the key-zone pill (instruments:
+// "keys: all" / "keys: C3–C6 · +12", a tap opens low / high / transpose) and a bar badge. createTrackView is device-driven
+// when the host gives devices(track) (else exactly the stage-1b view: instrument, FX, OUT); devicesOf(track) is the default
+// list, tidy() lays out any number of devices, the cables come from track.wires (cv-cables cablesOf).
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
-import { createCables, deriveCables } from './cv-cables.js?v=9';
+import { createCables, deriveCables, cablesOf, jackPort, createCableDrag } from './cv-cables.js?v=9';
 
 /** Top bar height on every device (world px); the bar's hit area grows upward only (::before, calc(… * var(--ik))). */
 export const BAR_H = 40;
@@ -57,6 +62,8 @@ export const BG_SEL = '.cv-body, .inst, .plate, .nameplate, .nameplate > div, .p
 export const JACK_Y = 28, JACK_OUT = 14;
 /** Tidy's guess of a module's height before it was measured (world px): the instrument's per model in sizeFor. */
 const H_GUESS = { inst: 560, serum: 840, fx: 420, out: 260 };
+/** (1e) Tidy's vertical gap between stacked modules (instruments, panels; world px, on the dots). */
+export const VGAP = 64;
 
 const fin = x => typeof x === 'number' && isFinite(x);
 const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
@@ -109,10 +116,10 @@ export function fxKey(model) { return model === 'serum' ? ID.sxFx : ID.fx; }
 export function defaultW(key, model) {
   return key === ID.inst ? (model === 'serum' ? W_SERUM : FLOW_W[model] || W_CLASSIC) : key === ID.out ? W_OUT : W_FX;
 }
-/** Tidy: instrument → FX → OUT in columns from (0, 0), GAP apart, tops aligned. sizes: id → {w, h} (measured or default).
- * Each column starts on the grid. Positions only: widths and folds stay the caller's.
- * @param {{model: string}} track @param {Object<string, {w: number, h: number}>} sizes @returns {Lay} */
-export function tidy(track, sizes) {
+/** (1e) A module's default width by kind: an instrument its model's (FLOW_W, W_SERUM), an FX module W_FX, OUT W_OUT. */
+export function kindW(kind, model) { return kind === 'inst' ? defaultW(ID.inst, model) : kind === 'out' ? W_OUT : W_FX; }
+// the stage-1b Tidy (the legacy view's: instrument → FX → OUT, keyed by the stage-1b ids)
+function tidy1(track, sizes) {
   const model = track && track.model, lay = {};
   let x = 0;
   for (const k of [ID.inst, fxKey(model), ID.out]) {
@@ -121,6 +128,77 @@ export function tidy(track, sizes) {
     x = gup(x + w + GAP);
   }
   return lay;
+}
+const devNum = id => { const m = /(\d+)$/.exec(id); return m ? +m[1] : 0; };
+const byNum = (a, b) => devNum(a) - devNum(b) || (a < b ? -1 : a > b ? 1 : 0);
+/**
+ * (1e) The modules of a track, in view order: instruments (the primary first, then by device number), each Serum's own FX
+ * ('iN/fx'), the shared panels (by number), OUT. A track without dev (v1): the stage-1b three. Pure; the default
+ * host.devices of createTrackView.
+ * @param {{prim?: string, dev?: object, model?: string}} track
+ * @returns {Array<{key: string, kind: 'inst' | 'fx' | 'out', model: string | null, dev: object | null, prim?: boolean, own?: string}>}
+ */
+export function devicesOf(track) {
+  const t = isObj(track) ? track : {}, D = isObj(t.dev) ? t.dev : null;
+  if (!D) return [{ key: ID.inst, kind: 'inst', model: t.model || null, dev: null, prim: true }, { key: fxKey(t.model), kind: 'fx', model: t.model === 'serum' ? 'serum' : null, dev: null }, { key: ID.out, kind: 'out', model: null, dev: null }];
+  const ids = Object.keys(D).filter(k => isObj(D[k])), of = kind => ids.filter(k => D[k].kind === kind);
+  const syn = of('synth').sort(byNum), pr = syn.includes(t.prim) ? t.prim : syn[0];
+  if (pr) syn.splice(syn.indexOf(pr), 1), syn.unshift(pr);
+  const out = syn.map(k => ({ key: k, kind: 'inst', model: D[k].model || null, dev: D[k], prim: k === pr }));
+  for (const k of syn) if (D[k].model === 'serum') out.push({ key: k + '/fx', kind: 'fx', model: 'serum', dev: D[k], own: k });
+  for (const k of of('panel').sort(byNum)) out.push({ key: k, kind: 'fx', model: null, dev: D[k] });
+  for (const k of of('out').sort(byNum)) out.push({ key: k, kind: 'out', model: null, dev: D[k] });
+  return out;
+}
+/**
+ * Tidy: instrument → FX → OUT in columns from (0, 0), GAP apart, tops aligned. sizes: id → {w, h} (measured or default).
+ * Each column starts on the grid. Positions only: widths and folds stay the caller's.
+ * (1e) Any number of devices (a v2 track, or `devs` given — createTrackView's host.devices list): the instruments stacked
+ * in the left column (the primary on top, VGAP apart), each Serum's own FX beside its Serum, the shared panels stacked in
+ * the next column, OUT right of everything. One instrument → panel → OUT (or a Serum → its own FX → OUT) lays out exactly
+ * as the stage-1b Tidy.
+ * @param {{model?: string, dev?: object}} track @param {Object<string, {w: number, h: number}>} sizes
+ * @param {Array<{key: string, kind: string, model?: string, own?: string}>} [devs] @returns {Lay}
+ */
+export function tidy(track, sizes, devs) {
+  if (!Array.isArray(devs) && !(track && isObj(track.dev))) return tidy1(track, sizes);
+  const L = Array.isArray(devs) ? devs.filter(d => isObj(d) && typeof d.key === 'string') : devicesOf(track), lay = {};
+  const S = k => (isObj(sizes) && isObj(sizes[k]) ? sizes[k] : null);
+  const wOf = d => { const s = S(d.key); return s && fin(s.w) && s.w > 0 ? s.w : kindW(d.kind, d.model); };
+  const hOf = d => { const s = S(d.key); return s && fin(s.h) && s.h > 0 ? s.h : d.kind === 'inst' ? (d.model === 'serum' ? H_GUESS.serum : H_GUESS.inst) : H_GUESS[d.kind] || H_GUESS.fx; };
+  const ins = L.filter(d => d.kind === 'inst'), insK = new Set(ins.map(d => d.key));
+  const own = new Map(), pans = [], outs = L.filter(d => d.kind === 'out');
+  for (const d of L) if (d.kind === 'fx') { const o = d.own || (/^(.+)\/fx$/.exec(d.key) || [])[1]; if (o && insK.has(o) && !own.has(o)) own.set(o, d); else pans.push(d); }
+  const max = (A, f) => A.reduce((m, d) => Math.max(m, f(d)), 0);
+  const x1 = ins.length ? gup(max(ins, wOf) + GAP) : 0, ownW = max([...own.values()], wOf);
+  let y = 0;
+  for (const d of ins) {
+    lay[d.key] = { x: 0, y };
+    let h = hOf(d);
+    const f = own.get(d.key);
+    if (f) { lay[f.key] = { x: x1, y }; h = Math.max(h, hOf(f)); }
+    y = gup(y + h + VGAP);
+  }
+  const x2 = ownW ? gup(x1 + ownW + GAP) : x1;
+  y = 0;
+  for (const d of pans) { lay[d.key] = { x: x2, y }; y = gup(y + hOf(d) + VGAP); }
+  const x3 = pans.length ? gup(x2 + max(pans, wOf) + GAP) : x2;
+  y = 0;
+  for (const d of outs) { lay[d.key] = { x: x3, y }; y = gup(y + hOf(d) + VGAP); }
+  return lay;
+}
+/** (1e) A MIDI note's name in the app's naming (C4 = 60). */
+export function noteName(n) { const N = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'], k = Math.round(+n) || 0; return N[((k % 12) + 12) % 12] + (Math.floor(k / 12) - 1); }
+/** (1e) A key zone {lo, hi, xp} (0…127, 0…127, −48…48), clamped and ordered; anything else → all keys. */
+export function zoneOf(z) {
+  const c = (v, a, b, d) => (fin(v) ? Math.max(a, Math.min(b, Math.round(v))) : d);
+  const lo = c(z && z.lo, 0, 127, 0), hi = c(z && z.hi, 0, 127, 127);
+  return { lo: Math.min(lo, hi), hi: Math.max(lo, hi), xp: c(z && z.xp, -48, 48, 0) };
+}
+/** (1e) The key-zone pill's text: "keys: all", "keys: C3–C6", "keys: all · +12", "keys: C3–C6 · −5". */
+export function zoneLabel(z) {
+  const Z = zoneOf(z), all = Z.lo === 0 && Z.hi === 127;
+  return 'keys: ' + (all ? 'all' : noteName(Z.lo) + '–' + noteName(Z.hi)) + (Z.xp ? ' · ' + (Z.xp > 0 ? '+' : '−') + Math.abs(Z.xp) : '');
 }
 const okEntry = e => isObj(e) && fin(e.x) && fin(e.y);
 /** The lay entry of `key`, falling back to the other FX key after a classic ↔ Serum model change (its place, fold and
@@ -187,6 +265,10 @@ export function makeRoom(rects, key, gap) {
 
 /* ---------------------------------------------------------------- one module */
 const FOLD_SVG = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg>';
+const POW_SVG = '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M4.4 3.6a4.6 4.6 0 1 0 5.2 0M7 1.6v5"/></svg>';
+// (1e) createModule options beside ModuleOpts: power {on, onToggle(on)} — the ⏻ button; zone {lo, hi, xp, onChange({lo, hi,
+// xp})} — the key-zone pill (instruments); badge — the bar badge's first text; patch — the jacks are focusable buttons
+// (role=button, tabindex 0: Enter / Space → cv-cables "Connect to…")
 /** Builds one module's chrome (top bar · colour stripe · title · chip · ⋯ · ▾, body, jacks) as a cv-world Item.
  * env.world: the World (k, toWorld, dragPointer, on, select, focusItem); without one the module still works at k = 1.
  * @param {ModuleOpts} o @param {{world?: object, doc?: Document}} [env] @returns {Module} */
@@ -207,7 +289,9 @@ export function createModule(o, env) {
   if (o.color) el.style.setProperty('--mc', o.color);
   const bar = mk('div', 'cv-bar');
   bar.setAttribute('data-cv-bar', ''); bar.tabIndex = 0;
-  const pow = mk('span', 'cv-pow'); pow.hidden = true; // power: the slot is reserved (instruments switch on / off from 1e)
+  // power (1e): o.power → a ⏻ button (aria-pressed); without it the slot stays reserved and hidden (OUT, the FX panels)
+  const pow = o.power ? btn('cv-pow', 'Power', POW_SVG) : mk('span', 'cv-pow');
+  if (!o.power) pow.hidden = true;
   const stripe = mk('span', 'cv-stripe'); stripe.setAttribute('aria-hidden', 'true');
   const ttl = mk('span', 'cv-ttl'), tEl = mk('span', 'cv-title'), sEl = mk('span', 'cv-sub');
   ttl.append(tEl, sEl);
@@ -223,6 +307,7 @@ export function createModule(o, env) {
     je.setAttribute('data-cv-jack', id + '.' + j.id); je.setAttribute('data-side', j.side === 'left' ? 'left' : 'right');
     je.setAttribute('data-kind', j.kind || 'audio');
     if (j.label) { je.setAttribute('aria-label', j.label); je.title = j.label; }
+    if (o.patch) { je.setAttribute('role', 'button'); je.tabIndex = 0; } // (1e) patchable: Enter / Space → "Connect to…"
     el.append(je);
     jacks.set(j.id, { el: je, side: j.side === 'left' ? 'left' : 'right' });
   }
@@ -297,6 +382,85 @@ export function createModule(o, env) {
     else { chipEl.textContent = ''; if (c) chipEl.append(c); }
     chipEl.hidden = !c;
   };
+  // ---- (1e) power, the key-zone pill, the bar badge
+  let pwr = !(o.power && o.power.on === false), zv = o.zone ? zoneOf(o.zone) : null, zpill = null, zpop = null, badgeEl = null;
+  const setPower = on => {
+    pwr = on !== false;
+    if (pwr) el.removeAttribute('data-off'); else el.setAttribute('data-off', '');
+    if (o.power) {
+      pow.setAttribute('aria-pressed', pwr ? 'true' : 'false');
+      const L = pwr ? 'Power: on — switch off' : 'Power: off — switch on';
+      pow.setAttribute('aria-label', L); pow.title = L;
+    }
+  };
+  if (o.power) pow.addEventListener('click', e => { e.stopPropagation(); setPower(!pwr); if (o.power.onToggle) o.power.onToggle(pwr); });
+  const setBadge = text => { // "not connected – silent", "OS 4→2" (null: none); made on first use (no empty slot in the bar)
+    const t = text == null || text === '' ? '' : String(text);
+    if (!badgeEl) { if (!t) return; badgeEl = mk('span', 'cv-badge'); bar.insertBefore(badgeEl, chipEl); }
+    if (badgeEl.textContent !== t) badgeEl.textContent = t;
+    badgeEl.hidden = !t;
+    badgeEl.title = t;
+  };
+  if (zv) {
+    zpill = btn('cv-zone', 'Key zone');
+    zpill.setAttribute('aria-haspopup', 'dialog');
+    zpill.addEventListener('pointerdown', e => e.stopPropagation()); // (a control: never the world's press, never a move)
+    zpill.addEventListener('click', e => { e.stopPropagation(); if (zpop) zoneClose(); else zoneOpen(); });
+    el.append(zpill);
+  }
+  function setZone(z) {
+    if (!zpill) return;
+    zv = zoneOf(z);
+    const L = zoneLabel(zv);
+    if (zpill.textContent !== L) zpill.textContent = L;
+    zpill.title = L + ' — tap to set the range and transpose';
+    zpill.setAttribute('aria-label', 'Key zone: ' + L.slice(6));
+    if (zv.lo === 0 && zv.hi === 127 && !zv.xp) zpill.setAttribute('data-all', ''); else zpill.removeAttribute('data-all');
+    if (zpop) zpop.sync();
+  }
+  // the zone popover: low / high / transpose (wk numBoxes: drag, arrows, typed entry) and "All keys"; in the top layer at the
+  // pill (wk.layer), closed by the pill, Escape, a press outside or a camera move (wk transient). A drag's end or a key
+  // step commits (o.zone.onChange: one undo step each); the pill follows live
+  function zoneOpen() {
+    const lay = wk.layer(el), box = mk('div', 'cv-zpop'), r = zpill.getBoundingClientRect();
+    box.setAttribute('role', 'dialog'); box.setAttribute('aria-label', 'Key zone of ' + title);
+    let cur = Object.assign({}, zv);
+    const commit = ph => { setZone(cur); if (ph !== 'move' && ph !== 'start' && o.zone.onChange) o.zone.onChange(Object.assign({}, zv)); };
+    const note = (lab, k) => wk.numBox({ label: lab, steps: 127, get: () => cur[k] / 127, def: k === 'lo' ? 0 : 1,
+      fmt: n => noteName(Math.round(n * 127)),
+      parse: t => { const m = /^\s*([A-Ga-g])([#b]?)\s*(-?\d+)\s*$/.exec(t); if (!m) { const v = parseFloat(t); return isFinite(v) ? v / 127 : null; } const pc = { c: 0, d: 2, e: 4, f: 5, g: 7, a: 9, b: 11 }[m[1].toLowerCase()] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0); return (pc + (+m[3] + 1) * 12) / 127; },
+      set: (n, ph) => { const v = Math.round(n * 127); cur[k] = v; if (k === 'lo' && cur.hi < v) cur.hi = v; if (k === 'hi' && cur.lo > v) cur.lo = v; commit(ph); } });
+    const lo = note('Low', 'lo'), hi = note('High', 'hi');
+    const xp = wk.numBox({ label: 'Transpose', steps: 96, get: () => (cur.xp + 48) / 96, def: 0.5,
+      fmt: n => { const v = Math.round(n * 96) - 48; return (v > 0 ? '+' : v < 0 ? '−' : '') + Math.abs(v); },
+      parse: t => { const v = parseFloat(String(t).replace('−', '-')); return isFinite(v) ? (Math.max(-48, Math.min(48, Math.round(v))) + 48) / 96 : null; },
+      set: (n, ph) => { cur.xp = Math.round(n * 96) - 48; commit(ph); } });
+    const allB = mk('button', 'cv-zall', 'All keys');
+    allB.type = 'button';
+    allB.addEventListener('click', () => { cur = { lo: 0, hi: 127, xp: 0 }; commit('set'); sync(); });
+    box.append(lo.el, hi.el, xp.el, allB);
+    const sync = () => { cur = Object.assign({}, zv); lo.update(); hi.update(); xp.update(); };
+    const fixed = lay !== el; // (the top layer: client px; else inside the module, below the pill)
+    if (fixed) { box.style.position = 'fixed'; box.style.left = Math.round(r.left) + 'px'; box.style.top = Math.round(r.bottom + 6) + 'px'; }
+    lay.append(box);
+    const d = doc, onDown = e => { if (!box.contains(e.target) && !zpill.contains(e.target)) zoneClose(); };
+    const onKey = e => { if (e.key === 'Escape') { if (e.preventDefault) e.preventDefault(); if (e.stopPropagation) e.stopPropagation(); zoneClose(true); } };
+    d.addEventListener('pointerdown', onDown, true);
+    box.addEventListener('keydown', onKey);
+    const tOff = typeof wk.addTransient === 'function' ? wk.addTransient(() => zoneClose()) : () => {};
+    zpop = { box, sync, off() { d.removeEventListener('pointerdown', onDown, true); box.removeEventListener('keydown', onKey); tOff(); for (const w of [lo, hi, xp]) w.destroy(); } };
+    zpill.setAttribute('aria-expanded', 'true');
+    try { lo.focus(); } catch (err) { /* no focus */ }
+  }
+  function zoneClose(focusBack) {
+    if (!zpop) return false;
+    const z = zpop;
+    zpop = null;
+    z.off(); z.box.remove();
+    zpill.setAttribute('aria-expanded', 'false');
+    if (focusBack) { try { zpill.focus(); } catch (err) { /* gone */ } }
+    return true;
+  }
   // ---- body: mounted at creation, for the module's life (Z1: no cards; unmounted only by destroy)
   function mount() { if (mounted || dead) return; mounted = true; if (o.body && o.body.mount) o.body.mount(body); }
   function unmount() {
@@ -315,8 +479,8 @@ export function createModule(o, env) {
     if (o.onScreen) o.onScreen(on);
   }
   // ---- bar: move (wk.dragSource), tap / double-tap, menu
-  const ctl = t => { for (let n = t; n && n !== bar; n = n.parentNode) if (n === chipEl || n === more || n === foldB) return true; return false; };
-  for (const c of [chipEl, more, foldB]) c.addEventListener('pointerdown', e => e.stopPropagation()); // controls never start a move
+  const ctl = t => { for (let n = t; n && n !== bar; n = n.parentNode) if (n === chipEl || n === more || n === foldB || (o.power && n === pow)) return true; return false; };
+  for (const c of o.power ? [pow, chipEl, more, foldB] : [chipEl, more, foldB]) c.addEventListener('pointerdown', e => e.stopPropagation()); // controls never start a move
   let D = null, camOff = null, press = null; // the live drag: {x0, y0 (module), p0 (world point under the press), last info}
   const W2 = (cx, cy) => { const wd = W(); return wd && typeof wd.toWorld === 'function' ? wd.toWorld(cx, cy) : { x: cx, y: cy }; };
   const pointer = p => { const wd = W(); if (wd && typeof wd.dragPointer === 'function') wd.dragPointer(p); };
@@ -401,6 +565,9 @@ export function createModule(o, env) {
   setPos(x, y, false); setFixed(FX); setW(w); setFold(fold); setZ(z);
   setTitle(o.title, o.sub);
   setChip(o.chip || null);
+  if (o.power) setPower(pwr);
+  if (zv) setZone(zv);
+  if (o.badge) setBadge(o.badge);
   mount();
   const M = {
     id, el, bar, body, cost: fin(o.cost) ? o.cost : 600, kind,
@@ -426,9 +593,18 @@ export function createModule(o, env) {
       if (o.onMove) o.onMove(x, y, 'end');
     },
     jack: jackId => (jacks.get(jackId) || {}).el || null,
+    /** (1e) the jack ids of the module, in order */
+    jackIds: () => [...jacks.keys()],
     openMenu,
+    /** (1e) power: [data-off] dims the module (and the ⏻ button's aria-pressed when it has one) — the host's state, no callback */
+    setPower, get on() { return pwr; },
+    /** (1e) the key-zone pill's {lo, hi, xp} (an instrument made with o.zone); no callback */
+    setZone, get zone() { return zv ? Object.assign({}, zv) : null; }, zoneOpen: () => { if (zpill && !zpop) zoneOpen(); }, zoneClose,
+    /** (1e) the bar badge: text or null */
+    setBadge, get badge() { return badgeEl && !badgeEl.hidden ? badgeEl.textContent : null; },
     destroy() {
       if (dead) return;
+      zoneClose();
       if (D) { D = null; dragEnd(); }
       moveDrag.destroy(); menuOff();
       if (ro) { try { ro.disconnect(); } catch (err) { /* gone */ } }
@@ -451,6 +627,17 @@ export function createModule(o, env) {
  * off screen or folded (main.js: monitors.sync); host.size(kind) — the instrument's fixed size: {fixed: {w, h}} (a
  * Hardware layout) or {fixed: {w}} (the Simple layout, a Serum: the height measured; default defaultW(ID.inst, model));
  * host.select(key) / host.focus(key).)
+ * (1e) Device-driven when host.devices(track) is given (IMPL-1e §4.1): its list [{key, kind: 'inst' | 'fx' | 'out', model,
+ * dev}] (devicesOf(track) is the default one) makes one module per key — a module key is the device id ('i1', 'fx1',
+ * 'i2/fx', 'out') — and sync diffs by key (a kind change rebuilds that one). Then, per key:
+ *   host.bodies.mount(key, bodyEl) / host.bodies.unmount(key, bodyEl)   the module's body (mounted for its life)
+ *   host.title(key) → {title, sub, chip}   host.menu(key) → items   host.size(key) → {fixed: {w, h?}} | null
+ *   host.power(key, on)?  → instruments get the ⏻ button (dev.on !== false shows on)
+ *   host.zone(key, {lo, hi, xp})?  → instruments get the key-zone pill (dev.zone)
+ *   host.badge(key) → text | null   the bar badge ("not connected – silent", "OS 4→2"), read on every sync / refresh
+ *   host.cables: {onSelect(id | null), onAction(id, 'disconnect' | …), menu(id) → items}   the editable cables (cablesOf)
+ * Instruments' jacks are focusable buttons; the jacks inside a Serum (its out → its own FX's in) carry data-ro.
+ * Tidy (no lay entry) places any number of devices (tidy(track, sizes, devices)). Same geometry on every device.
  * @param {object|null} world  cv-world World (null: modules still lay out in host.root at k = 1)
  * @param {{id: string, model: string, name: string, color: string, lay?: Lay}} track
  * @param {object} host
@@ -459,19 +646,43 @@ export function createModule(o, env) {
  */
 export function createTrackView(world, track, host) {
   const H = host || {}, doc = H.doc || globalThis.document, root = H.root || (world && world.el) || null;
+  const DEV = typeof H.devices === 'function';
   let T = track;
   const mods = new Map(); // key → Module
-  const cables = createCables(root, { doc });
-  const keys = () => [ID.inst, fxKey(T.model), ID.out];
-  // the instrument's fixed size from the host: {fixed: {w, h}} (a Hardware layout) or {fixed: {w}} (the height measured)
-  const sizeOf = () => {
-    let s = null;
-    try { s = H.size ? H.size('inst') : null; } catch (err) { s = null; }
-    return isObj(s) && isObj(s.fixed) && fin(s.fixed.w) && s.fixed.w > 0 ? s : { fixed: { w: defaultW(ID.inst, T.model) } };
+  const CB = DEV && isObj(H.cables) ? H.cables : {};
+  const cables = createCables(root, { doc, onSelect: CB.onSelect, onAction: CB.onAction, menu: CB.menu });
+  let DL = [], DM = new Map(); // (1e) the host's devices, by key
+  const readDevs = () => {
+    if (!DEV) return;
+    let L = null;
+    try { L = H.devices(T); } catch (err) { console.error(err); L = null; }
+    const seen = new Set();
+    DL = (Array.isArray(L) ? L : []).filter(d => isObj(d) && typeof d.key === 'string' && /^(inst|fx|out)$/.test(d.kind) && !seen.has(d.key) && seen.add(d.key));
+    DM = new Map(DL.map(d => [d.key, d]));
   };
-  const kindOf = key => (key === ID.inst ? 'inst' : key === ID.out ? 'out' : 'fx');
+  readDevs();
+  const tModel = () => { try { return T.model; } catch (err) { return null; } }; // (a v2 track's accessor throws without an instrument)
+  const keys = () => (DEV ? DL.map(d => d.key) : [ID.inst, fxKey(T.model), ID.out]);
+  const kindOf = key => (DEV ? (DM.get(key) || { kind: 'fx' }).kind : key === ID.inst ? 'inst' : key === ID.out ? 'out' : 'fx');
+  const modelOf = key => (DEV ? (DM.get(key) || {}).model || null : kindOf(key) === 'inst' ? T.model : null);
+  const devOf = key => (DEV ? (DM.get(key) || {}).dev || null : null);
+  const call = (f, ...a) => { try { return typeof f === 'function' ? f(...a) : undefined; } catch (err) { console.error(err); return undefined; } };
+  // the instrument's fixed size from the host: {fixed: {w, h}} (a Hardware layout) or {fixed: {w}} (the height measured);
+  // (1e) any module's, by key; an instrument's default its model's width
+  const sizeOf = key => {
+    const kind = kindOf(key);
+    let s = null;
+    try { s = H.size ? (DEV ? H.size(key) : kind === 'inst' ? H.size('inst') : null) : null; } catch (err) { s = null; }
+    if (isObj(s) && isObj(s.fixed) && fin(s.fixed.w) && s.fixed.w > 0) return s;
+    return kind === 'inst' ? { fixed: { w: DEV ? kindW('inst', modelOf(key)) : defaultW(ID.inst, T.model) } } : null;
+  };
   const sizes = () => { const o = {}; for (const [k, m] of mods) { const r = m.rect(); o[k] = { w: r.w, h: r.h }; } return o; };
-  const tidied = () => { const o = {}; for (const [k, m] of mods) o[k] = { w: m.w }; return tidy(T, o); }; // (widths only: no layout read)
+  // Tidy's widths (no layout read); (1e) a known fixed height too, so stacked modules never move as heights are measured
+  const tidied = () => {
+    const o = {};
+    for (const [k, m] of mods) { o[k] = { w: m.w }; if (DEV && m.fixed && m.fixed.h) o[k].h = m.fixed.h; }
+    return DEV ? tidy(T, o, DL) : tidy1(T, o);
+  };
   // the lay entry of a module as it stands: never a width (each module's is fixed: a stored w from before is dropped
   // here, on its next write), z only once brought to front
   const entryOf = key => {
@@ -490,7 +701,7 @@ export function createTrackView(world, track, host) {
     return p;
   }
   function relay() { lastPorts = ports(); cables.layout(lastPorts); }
-  const meta = kind => { try { return (H.title && H.title(kind)) || {}; } catch (err) { return {}; } };
+  const meta = key => { try { return (H.title && H.title(DEV ? key : kindOf(key))) || {}; } catch (err) { return {}; } };
   const lay = (key, phase, what) => {
     if (!H.lay) return;
     H.lay(key, entryOf(key), phase, what);
@@ -506,18 +717,38 @@ export function createTrackView(world, track, host) {
     if (!m || !ids || ids.length < 2 || !ids.includes(key)) return null;
     return { key, x0: m.x, y0: m.y, list: ids.filter(k => k !== key && mods.has(k)).map(k => { const o = mods.get(k); return { k, m: o, x0: o.x, y0: o.y }; }) };
   };
+  const costOf = key => { const kind = kindOf(key); return kind === 'inst' ? ((DEV ? modelOf(key) : T.model) === 'serum' ? 3700 : 600) : kind === 'fx' ? 900 : 40; };
+  const colorOf = key => { const d = devOf(key); return (d && typeof d.color === 'string' && d.color) || T.color; };
+  // (1e) the per-device state a sync / refresh brings: power, zone, badge, the inner Serum jacks, cost, colour
+  function decorate(key, m) {
+    if (!DEV) return;
+    const d = devOf(key), kind = kindOf(key);
+    if (kind === 'inst') { m.setPower(!(d && d.on === false)); if (m.zone) m.setZone(d && d.zone); }
+    m.setBadge(typeof H.badge === 'function' ? call(H.badge, key) || null : null);
+    for (const j of m.jackIds()) { const e = m.jack(j); if (jackPort(T, key + '.' + j)) e.removeAttribute('data-ro'); else e.setAttribute('data-ro', ''); }
+    m.cost = costOf(key);
+    const c = colorOf(key);
+    if (c) m.el.style.setProperty('--mc', c);
+  }
   function make(key) {
-    const kind = kindOf(key), M0 = meta(kind), L = layOf(T, key, tidied()), SZ = kind === 'inst' ? sizeOf() : null;
+    const kind = kindOf(key), M0 = meta(key), L = layOf(T, key, tidied()), SZ = kind === 'inst' || DEV ? sizeOf(key) : null, d = devOf(key);
     const jk = kind === 'inst' ? [{ id: 'out', side: 'right', kind: 'audio', label: (M0.title || 'Instrument') + ' out' }]
       : kind === 'fx' ? [{ id: 'in', side: 'left', kind: 'audio', label: (M0.title || 'FX') + ' in' }, { id: 'out', side: 'right', kind: 'audio', label: (M0.title || 'FX') + ' out' }]
         : [{ id: 'in', side: 'left', kind: 'audio', label: 'OUT in' }];
-    const m = createModule({
-      id: key, kind, title: M0.title || '', sub: M0.sub, chip: M0.chip, color: T.color,
-      x: L.x, y: L.y, w: defaultW(key, T.model), fold: !!L.fold, z: fin(L.z) ? L.z : 1, fixed: SZ ? SZ.fixed : null,
-      cost: kind === 'inst' ? (T.model === 'serum' ? 3700 : 600) : kind === 'fx' ? 900 : 40,
+    const ext = {};
+    if (DEV) {
+      ext.patch = true;
+      if (kind === 'inst' && typeof H.power === 'function') ext.power = { on: !(d && d.on === false), onToggle: on => H.power(key, on) };
+      if (kind === 'inst' && typeof H.zone === 'function') ext.zone = Object.assign(zoneOf(d && d.zone), { onChange: z => H.zone(key, z) });
+    }
+    const m = createModule(Object.assign({
+      id: key, kind, title: M0.title || '', sub: M0.sub, chip: M0.chip, color: colorOf(key),
+      x: L.x, y: L.y, w: DEV ? kindW(kind, modelOf(key)) : defaultW(key, T.model), fold: !!L.fold, z: fin(L.z) ? L.z : 1, fixed: SZ ? SZ.fixed : null,
+      cost: costOf(key),
       jacks: jk,
-      body: H.bodies && H.bodies[kind] ? H.bodies[kind] : null,
-      menu: () => (H.menu ? H.menu(kind, key) : []),
+      body: DEV ? { mount: b => { if (H.bodies && H.bodies.mount) H.bodies.mount(key, b); }, unmount: b => { if (H.bodies && H.bodies.unmount) H.bodies.unmount(key, b); } }
+        : H.bodies && H.bodies[kind] ? H.bodies[kind] : null,
+      menu: () => (H.menu ? (DEV ? H.menu(key) : H.menu(kind, key)) : []),
       onPress: () => front(key),
       onSelect: () => { if (H.select) H.select(key); },
       onDouble: () => { if (H.focus) H.focus(key); },
@@ -541,8 +772,9 @@ export function createTrackView(world, track, host) {
       onFold: f => { lay(key, 'start', 'fold'); lay(key, 'end', 'fold'); relay(); update(key); if (H.shown) H.shown(key); },
       onScreen: () => { if (H.shown) H.shown(key); },
       onSize: () => { relay(); update(key); },
-    }, { world, doc });
+    }, ext), { world, doc });
     m.zSet = fin(L.z);
+    decorate(key, m);
     if (root) root.append(m.el);
     mods.set(key, m);
     if (world && typeof world.add === 'function') world.add(m);
@@ -564,28 +796,33 @@ export function createTrackView(world, track, host) {
     m.setZ(top + 1); m.zSet = true;
     lay(key, 'end', 'z');
   }
+  const cablesNow = () => (DEV ? cablesOf(T) : deriveCables(T));
   for (const k of keys()) make(k);
-  cables.set(deriveCables(T));
+  cables.set(cablesNow());
   relay();
   // cables touching the selection are raised, the others dimmed (§2.9); kept by module id, so a re-derived cable list
   // (a model change, a Serum route edit) is highlighted again
   let selOff = null, selId = null;
   const hl = () => cables.highlight(selId && mods.has(selId) ? cables.list().filter(c => c.a.startsWith(selId + '.') || c.b.startsWith(selId + '.')).map(c => c.id) : null);
-  if (world && typeof world.on === 'function') selOff = world.on('select', d => { selId = (d && d.id) || null; hl(); });
+  if (world && typeof world.on === 'function') selOff = world.on('select', d => { selId = (d && d.id) || null; hl(); if (selId) cables.select(null); });
+  const removeMod = k => { const m = mods.get(k); if (world && typeof world.remove === 'function') world.remove(k); m.destroy(); mods.delete(k); };
   const V = {
-    trackId: T.id, model: T.model, modules: mods, cables,
-    /** applies lay / title / model changes without remounting bodies (an FX key swap moves the FX body to the new module) */
+    trackId: T.id, model: tModel(), modules: mods, cables,
+    /** applies lay / title / model changes without remounting bodies (an FX key swap moves the FX body to the new module);
+     * (1e) device-driven: modules come and go with host.devices(track) (diffed by key) */
     sync(track) {
       T = track || T;
-      V.trackId = T.id; V.model = T.model;
+      readDevs();
+      V.trackId = T.id; V.model = tModel();
       const want = keys();
-      for (const k of [...mods.keys()]) if (!want.includes(k)) { const m = mods.get(k); if (world && typeof world.remove === 'function') world.remove(k); m.destroy(); mods.delete(k); }
+      for (const k of [...mods.keys()]) if (!want.includes(k) || (DEV && mods.get(k).kind !== kindOf(k))) removeMod(k);
       let vis = false; // a fold changed (an undo / redo restore): host.shown once, after every module is in its state
       for (const k of want) { // (instrument first: Tidy places the others from its new width — a model change on an untouched track)
         let m = mods.get(k);
         if (!m) { make(k); continue; }
-        const kind = kindOf(k), M0 = meta(kind), SZ = kind === 'inst' ? sizeOf() : null;
-        if (SZ) m.setFixed(SZ.fixed); // (the size follows the model and the layout toggle, even mid-drag; before Tidy reads the widths)
+        const kind = kindOf(k), M0 = meta(k), SZ = kind === 'inst' || DEV ? sizeOf(k) : null;
+        if (SZ || (DEV && m.fixed)) m.setFixed(SZ ? SZ.fixed : null); // (the size follows the model and the layout toggle, even mid-drag; before Tidy reads the widths)
+        if (DEV && !SZ) m.setW(kindW(kind, modelOf(k)));
         const L = layOf(T, k, tidied());
         if (!m.dragging()) {
           m.setPos(L.x, L.y, false);
@@ -595,19 +832,20 @@ export function createTrackView(world, track, host) {
         m.setZ(fin(L.z) ? L.z : 1);
         m.setTitle(M0.title || '', M0.sub);
         if (M0.chip !== undefined) m.setChip(M0.chip);
-        if (T.color) m.el.style.setProperty('--mc', T.color);
+        if (DEV) decorate(k, m); else if (T.color) m.el.style.setProperty('--mc', T.color);
         update(k);
       }
-      cables.set(deriveCables(T));
+      cables.set(cablesNow());
       hl();
       relay();
       if (vis && H.shown) H.shown(); // (main.js: monitors.sync — the Serum / FX live displays follow an undone fold)
     },
-    /** (addition) titles, chips and the derived cables after an edit (no lay, no world update) */
+    /** (addition) titles, chips and the derived cables after an edit (no lay, no world update); (1e) power, zone, badge */
     refresh(track) {
       if (track) T = track;
-      for (const [k, m] of mods) { const M0 = meta(kindOf(k)); m.setTitle(M0.title || '', M0.sub); if (M0.chip !== undefined) m.setChip(M0.chip); }
-      cables.set(deriveCables(T));
+      readDevs();
+      for (const [k, m] of mods) { const M0 = meta(k); m.setTitle(M0.title || '', M0.sub); if (M0.chip !== undefined) m.setChip(M0.chip); decorate(k, m); }
+      cables.set(cablesNow());
       hl();
       relay();
     },
@@ -618,6 +856,20 @@ export function createTrackView(world, track, host) {
     toggleFold(key) { const m = mods.get(key); if (!m) return; m.setFold(!m.fold); lay(key, 'start', 'fold'); lay(key, 'end', 'fold'); relay(); update(key); if (H.shown) H.shown(key); },
     front,
     sizes,
+    /** (1e) the host's devices as shown; the jacks [{id, el, dir, mod, label}]; module rects (world px); a jack's model port */
+    devices: () => DL.map(d => Object.assign({}, d)),
+    jacks() {
+      const L = [];
+      for (const [k, m] of mods) for (const j of m.jackIds()) { const el = m.jack(j); L.push({ id: k + '.' + j, el, dir: j === 'in' ? 'in' : 'out', mod: k, label: el.getAttribute('aria-label') || k + '.' + j }); }
+      return L;
+    },
+    rects() { const o = {}; for (const [k, m] of mods) o[k] = m.rect(); return o; },
+    port: j => jackPort(T, j),
+    /** (1e) cv-cables createCableDrag on this view (ports, jacks, rects, port, the cables) — o: canConnect, onConnect,
+     * onRepatch, onDisconnect?, onRefuse?; the caller destroys it with the view */
+    cableDrag(o) {
+      return createCableDrag(world, Object.assign({ ports, jacks: () => V.jacks(), rects: () => V.rects(), port: j => jackPort(T, j), cables, color: () => T.color, doc }, o || {}));
+    },
     destroy() {
       if (selOff) selOff();
       for (const [k, m] of mods) { if (world && typeof world.remove === 'function') world.remove(k); m.destroy(); }
@@ -627,4 +879,3 @@ export function createTrackView(world, track, host) {
   };
   return V;
 }
-
