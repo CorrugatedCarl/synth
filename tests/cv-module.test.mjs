@@ -1005,3 +1005,15 @@ test('layOf (U1): the other FX key is no fallback while it is a module of its ow
   assert.deepEqual(M.layOf(tr, 'i1/fx', td, ['i1', 'i1/fx', 'out']), { x: 3, y: 4 }, 'fx1 gone (a model change): its place carried over');
   assert.deepEqual(M.layOf(tr, 'i1/fx', td), { x: 3, y: 4 }, 'no keys: as before');
 });
+
+test('⏻ (U5): a zoom-scaled hit area through ::before — 44 screen px at any zoom, growing left and up from the button only (never over the stripe / title, nor down into the panel); folded, it stops at the bar\'s edge (the zone pill beside it)', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const sec = css.slice(css.indexOf('/* ===================================================================== cv-module')).replace(/\/\*[\s\S]*?\*\//g, '');
+  const r = /\.cv-bar > button\.cv-pow::before \{([^}]*)\}/.exec(sec);
+  assert.ok(r, 'the rule');
+  assert.match(r[1], /width: max\(100%, calc\(44px \* var\(--ik, 1\)\)\)/);
+  assert.match(r[1], /height: max\(100%, calc\(44px \* var\(--ik, 1\)\)\)/);
+  assert.match(r[1], /right: 0;/, 'its right edge the button\'s: never over the stripe');
+  assert.match(r[1], /bottom: 0;/, 'its bottom the button\'s: never into the panel');
+  assert.match(sec, /\.cv-mod\[data-cv-fold\] > \.cv-bar > button\.cv-pow::before \{[^}]*width: calc\(100% \+ 4px\)/, 'folded: to the bar\'s edge');
+});

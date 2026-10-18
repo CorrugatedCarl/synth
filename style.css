@@ -1059,6 +1059,10 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 .cv-pow svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
 .cv-pow[aria-pressed="true"] { color: var(--mc); }
 .cv-bar > button.cv-pow:hover, .cv-bar > button.cv-pow:focus-visible { background: #252930; outline: none; }
+/* its hit area: 44 screen px at any zoom (--ik), grown left (past the module's edge) and up from the button — never over
+   the stripe / title (a move) nor down into the panel; folded, only to the bar's edge (the key-zone pill sits beside it) */
+.cv-bar > button.cv-pow::before { content: ''; position: absolute; right: 0; bottom: 0; width: max(100%, calc(44px * var(--ik, 1))); height: max(100%, calc(44px * var(--ik, 1))); }
+.cv-mod[data-cv-fold] > .cv-bar > button.cv-pow::before { width: calc(100% + 4px); }
 .cv-mod[data-off] > .cv-body { opacity: 0.45; filter: grayscale(0.7); }
 .cv-mod[data-off] .cv-stripe { background: #4a4d55; }
 .cv-mod[data-off] .cv-title { color: var(--mute); }
