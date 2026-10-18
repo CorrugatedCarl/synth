@@ -421,3 +421,20 @@ test('U4: Make primary rebuilds only the bodies that change home — the other i
   cv.undo(); sim.raf();
   assert.deepEqual([T().prim, cv.parts.inst.parentNode === bodyOf('i1')], ['i1', true], 'undo');
 });
+
+test('U16: with the toolbar\'s Snap off, a new instrument, a duplicate and an Effects-tray panel land where they were put (not on the dots)', () => {
+  fresh('minimoog');
+  W.snapOn = () => false;
+  try {
+    const id = cv.add('juno60', { x: 1001, y: 2003 }); sim.raf();
+    assert.deepEqual([T().lay[id].x, T().lay[id].y], [1001, 2003], 'the instrument');
+    const d = cv.dup(id); sim.raf();
+    const m = V().modules.get(id).rect();
+    assert.deepEqual([T().lay[d].x, T().lay[d].y], [Math.round(m.x), Math.round(m.y + m.h + 64)], 'the duplicate under it, unsnapped');
+    assert.equal(cv.fx.drag.drop('panel', { over: 'canvas', at: { x: 3011, y: 1013 } }), true); sim.raf();
+    const p = Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').pop();
+    assert.deepEqual([T().lay[p].x, T().lay[p].y], [3011 - 24, 1013 - 20], 'the panel');
+  } finally { delete W.snapOn; }
+  const id2 = cv.add('dx7', { x: 1001, y: 4003 }); sim.raf();
+  assert.deepEqual([T().lay[id2].x, T().lay[id2].y], [992, 4000], 'Snap on: the dots');
+});
