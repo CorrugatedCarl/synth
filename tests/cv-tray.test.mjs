@@ -622,3 +622,27 @@ test('U15: an open side tray tells its stage (the parent: class cv-left-open / c
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
   assert.match(css, /\.cv-left-open > \.cv-toolbar \{[^}]*left: calc\(56px \+ var\(--cv-left-w, 240px\)\)/, 'the toolbar past the open Sources tray');
 });
+
+test('effectsTray (U11): over an instrument module (overOf → {over: \'inst\', key}) an effect goes into its FX (\'+ Add to its effects\'); the panel tile over a module is a canvas drop beside it (info.near: that module)', () => {
+  const L = [];
+  // the canvas left of the tray: a panel module 'fx1' at x 400…700, y 200…500, an instrument 'i2' at x 400…700, y 520…700
+  const over = (t, x, y) => (x >= 1000 ? null : x >= 400 && x <= 700 && y >= 200 && y <= 500 ? { over: 'panel', key: 'fx1' } : x >= 400 && x <= 700 && y >= 520 ? { over: 'inst', key: 'i2' } : 'canvas');
+  const R = fxRig({ overOf: over, drag: { move: (id, i) => L.push('move ' + i.over + ':' + (i.key || '-') + ':' + (i.near || '-')), drop: (id, i) => { L.push('drop ' + id + ' ' + i.over + ':' + (i.key || '-') + ':' + (i.near || '-')); return true; } } });
+  const tp = { pointerType: 'touch' }, go = (id, x, y) => {
+    const t = fxTile(R, id);
+    ptr(t, 'pointerdown', 1100, 300, at(tp)); ptr(t, 'pointermove', 1088, 302, at(tp)); ptr(t, 'pointermove', x, y, at(tp));
+    const lab = R.layer.children[0] ? R.layer.children[0].children[1].textContent : '';
+    TS += 150;
+    ptr(t, 'pointerup', x, y, at(tp));
+    return lab;
+  };
+  assert.equal(go('rev', 500, 600), '+ Add to its effects');
+  assert.deepEqual(L.slice(-2), ['move inst:i2:-', 'drop rev inst:i2:-']);
+  assert.equal(go('panel', 500, 600), '+ New FX panel');
+  assert.deepEqual(L.slice(-2), ['move canvas:-:i2', 'drop panel canvas:-:i2'], 'beside the instrument');
+  go('panel', 500, 300);
+  assert.equal(L.at(-1), 'drop panel canvas:-:fx1', 'beside the panel (never into it)');
+  go('rev', 200, 300);
+  assert.equal(L.at(-1), 'drop rev canvas:-:-', 'empty canvas: no module near');
+  assert.equal(R.S.isOpen(), true);
+});

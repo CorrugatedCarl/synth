@@ -4112,6 +4112,7 @@ function initShell() {
   // instrument's FX, a drag goes into a panel module or onto empty canvas (a new panel); the tray never closes by itself
   const fxl = $('#fxList');
   if (fxl) shell.fxTiles = cvTray.effectsTray(fxl, { items: FX_ITEMS, pick: fxPick, drag: fxDrag, overOf: fxOver, tray: $('#fxTray'), layer: $('#ov'),
+    canvasGhost: () => !!world && !$('#tab-inst').hidden, // (over empty canvas the world draws the new panel's outline)
     cost: id => COSTM.label(COSTM.estimate(id, devFactor())), toWorld: (x, y) => { const W = cvW(); return W && typeof W.toWorld === 'function' ? W.toWorld(x, y) : null; } });
   costLabels();
   // ⚙ → Measure this device (its line in the Canvas section): the trays' load labels follow this device's speed
@@ -4950,30 +4951,65 @@ function cvModUnder(el, bar) {
 }
 // an instrument's top bar under a Sources drag (a drop there replaces it; anywhere else on the canvas adds one, §2.7)
 const cvInstUnder = el => { const M = cvModUnder(el, true); return M && M.kind === 'inst' ? M.key : null; };
+// the module under an Effects drag: an FX module (any part of it: into its rack), an instrument (U11: into its FX), else
+// empty canvas
 function fxOver(target) {
   if (srcOver(target) !== 'canvas') return null;
   const M = cvModUnder(target, false);
-  return M && M.kind === 'fx' ? { over: 'panel', key: M.key } : 'canvas';
+  return M && M.kind === 'fx' ? { over: 'panel', key: M.key } : M && M.kind === 'inst' ? { over: 'inst', key: M.key } : 'canvas';
 }
-// a tap on an Effects tile: the panel tile adds an empty panel; an effect goes into the current instrument's FX (its
-// panel, a Serum's own), else into a new panel the instrument is cabled through
+// an effect into instrument dev's FX (its panel, a Serum's own), else into a new panel the instrument is cabled through
+function fxInto(t, dev, id) {
+  const d = t.dev[dev], k = d && d.model === 'serum' ? dev + '/fx' : CMOD.destOf(t, dev);
+  return k && kindOfKey(t, k) === 'fx' ? cvAddEffect(t, k, id) : cvAddPanel(t, null, id, dev);
+}
+// a tap on an Effects tile: the panel tile adds an empty panel; an effect goes into the current instrument's FX
 function fxPick(id) {
   const t = trk();
   if (id === cvTray.FX_PANEL) { cvAddPanel(t, null, null); return; }
-  const cur = curOf(t), d = t.dev[cur], k = d && d.model === 'serum' ? cur + '/fx' : CMOD.destOf(t, cur);
-  if (k && kindOfKey(t, k) === 'fx') cvAddEffect(t, k, id); else cvAddPanel(t, null, id, cur);
+  fxInto(t, curOf(t), id);
 }
+// a new panel dropped on module `near` (U11: the panel tile is never put into a module, nor over it): right of it, GAP
+// apart, the modules it then overlaps moved right (cvModule.makeRoom) — in the add's own step
+function fxBeside(t, near, type) {
+  const m = cvView && cvView.trackId === t.id ? cvView.modules.get(near) : null;
+  if (!m) return null;
+  const r = m.rect(), id = cvAddPanel(t, { x: r.x + r.w + cvModule.GAP, y: r.y }, type);
+  if (!id || !cvView || !cvView.modules.has(id)) return id;
+  const mv = cvModule.makeRoom(cvView.rects(), id);
+  if (mv) {
+    const lay = Object.assign({}, t.lay);
+    for (const k of Object.keys(mv)) lay[k] = Object.assign({}, lay[k] || {}, { x: mv[k].x, y: mv[k].y });
+    t.lay = lay; persist(); cvView.sync(t);
+  }
+  return id;
+}
+// an Effects tile dragged out: a drop outline on the canvas (a new panel's, under the pointer; the target module's when it
+// goes into one), the toolbar and the minimap aside for the whole drag (U14), edge pan over empty canvas
+const fxGhost = { rect: null };
 const fxDrag = {
-  move(id, i) { if (world) world.dragPointer(i.over === 'panel' || !i.left ? null : { x: i.x, y: i.y, pointerType: i.pointerType }); }, // (edge pan over empty canvas)
-  begin(id, i) { fxDrag.move(id, i); },
-  drop(id, i) {
-    if (world) world.dragPointer(null);
-    const t = trk();
-    if (i.over === 'panel' && i.key && id !== cvTray.FX_PANEL) return !!cvAddEffect(t, i.key, id) || true;
-    if (i.over === 'canvas') { const a = i.at && Number.isFinite(i.at.x) ? { x: i.at.x - 24, y: i.at.y - 20 } : cvAt(i); cvAddPanel(t, a, id === cvTray.FX_PANEL ? null : id); return true; }
-    return false;
+  move(id, i) {
+    const W = cvW(), M = (i.over === 'panel' || i.over === 'inst') && i.key && cvView ? cvView.modules.get(i.key) : null;
+    if (W && typeof W.ghost === 'function') {
+      if (M) { const r = M.rect(), c = W.toClient(r.x, r.y); W.ghost({ x: c.x, y: c.y, w: r.w, h: r.h, dx: 0, dy: 0, snap: false, label: (id === cvTray.FX_PANEL ? '' : fxName(id) + ' → ') + M.title }); fxGhost.rect = null; }
+      else if (i.over === 'canvas') fxGhost.rect = W.ghost({ x: i.x, y: i.y, w: cvModule.W_FX, h: 420, dx: 24, dy: 20, label: id === cvTray.FX_PANEL ? '+ FX Panel' : '+ Panel with ' + fxName(id) });
+      else { W.ghost(null); fxGhost.rect = null; }
+    }
+    if (world) world.dragPointer(M || !i.left || i.over !== 'canvas' ? null : { x: i.x, y: i.y, pointerType: i.pointerType });
   },
-  cancel() { if (world) world.dragPointer(null); },
+  begin(id, i) { if (world) world.setDragging(true); fxDrag.move(id, i); },
+  end() { const W = cvW(); if (W && typeof W.ghost === 'function') W.ghost(null); if (world) { world.dragPointer(null); world.setDragging(false); } const r = fxGhost.rect; fxGhost.rect = null; return r; },
+  drop(id, i) {
+    const g = fxDrag.end(), t = trk();
+    if ((i.over === 'panel' || i.over === 'inst') && i.key && id !== cvTray.FX_PANEL) { if (i.over === 'panel') cvAddEffect(t, i.key, id); else fxInto(t, i.key, id); return true; }
+    if (i.over !== 'canvas') return false;
+    const type = id === cvTray.FX_PANEL ? null : id;
+    if (i.near && fxBeside(t, i.near, type)) return true;
+    const a = g ? { x: g.x, y: g.y } : i.at && Number.isFinite(i.at.x) ? { x: i.at.x - 24, y: i.at.y - 20 } : cvAt(i);
+    cvAddPanel(t, a, type);
+    return true;
+  },
+  cancel() { fxDrag.end(); },
 };
 // the trays' load labels on this device (cv-cost estimates × the measured factor): the Sources tiles' and the Effects
 // tiles' (refreshed after a measurement)

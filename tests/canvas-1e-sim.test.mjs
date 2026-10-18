@@ -459,3 +459,37 @@ test('U10: the badges — an instrument into a panel that feeds nothing is silen
   try { cv.render(); assert.match(String(B('i2')), /^OS \d→1$/); assert.equal(B('i1'), null); }
   finally { N.osI = was; cv.render(); }
 });
+
+test('U11: Effects-tray drags — an effect over an instrument goes into its FX (its panel; a Serum\'s own); the empty panel over a module lands beside it, overlapping nothing; an outline follows the drag', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  const sx = cv.add('serum', null); sim.raf();
+  const tgt = (key, kind) => ({ closest: q => (/#viewport/.test(q) ? {} : null), getAttribute: a => (a === 'data-cv-mod' ? key : a === 'data-cv-kind' ? kind : null), parentNode: null });
+  assert.deepEqual(cv.fx.over(tgt('i2', 'inst')), { over: 'inst', key: 'i2' }, 'an instrument module: its FX');
+  const mods = k => (T().dev[k].fx.racks[0].mods || []).map(x => x.type).join(',');
+  const n = hsteps(), was = mods('fx1');
+  assert.equal(cv.fx.drag.drop('dly', { over: 'inst', key: 'i2' }), true); sim.raf();
+  assert.deepEqual([mods('fx1'), hsteps(), Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').length], [(was ? was + ',' : '') + 'dly', n, 1], 'into the Juno-60\'s panel (fx1): no new panel');
+  assert.equal(cv.fx.drag.drop('rev', { over: 'inst', key: sx }), true); sim.raf();
+  assert.match(JSON.stringify(T().dev[sx].fx), /"rev"/, 'a Serum: its own FX');
+  // the empty panel over fx1: a new panel right of it, nothing overlapping (OUT moved on)
+  const ov = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  const r1 = V().modules.get('fx1').rect();
+  assert.equal(cv.fx.drag.drop('panel', { over: 'canvas', near: 'fx1', at: { x: r1.x + 40, y: r1.y + 40 } }), true); sim.raf();
+  const p = Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').pop(), R = V().rects();
+  assert.ok(p !== 'fx1' && R[p].x >= r1.x + r1.w, 'beside fx1: ' + JSON.stringify(R[p]));
+  assert.deepEqual(Object.keys(R).filter(k => k !== p && ov(R[k], R[p])), [], 'overlapping nothing');
+  cv.undo(); sim.raf();
+  assert.equal(T().dev[p], undefined, 'one step');
+  // the outline: a new panel's under the pointer over empty canvas, the target module's over a module, none elsewhere
+  const G = [];
+  W.ghost = g => { G.push(g ? (g.label || '') + '|' + g.w : null); return g ? { x: 0, y: 0, w: g.w, h: g.h } : null; };
+  try {
+    cv.fx.drag.begin('rev', { over: 'canvas', x: 900, y: 600, left: true, pointerType: 'mouse' });
+    cv.fx.drag.move('rev', { over: 'panel', key: 'fx1', x: 900, y: 600, left: true, pointerType: 'mouse' });
+    cv.fx.drag.move('rev', { over: null, x: 900, y: 600, left: true, pointerType: 'mouse' });
+    cv.fx.drag.cancel('rev', {});
+  } finally { delete W.ghost; }
+  const rv = cv.fx.items.find(x => x.type === 'rev').label;
+  assert.deepEqual(G, ['+ Panel with ' + rv + '|760', rv + ' → FX Panel|' + V().modules.get('fx1').w, null, null]);
+});
