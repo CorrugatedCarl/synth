@@ -466,6 +466,21 @@ test('H10: a newer post replacing a waiting one keeps a new TB-303\'s pattern ({
   CMOD.removeInst(b, id); sim.api.sendPatch(b);
 });
 
+test('H4 ids: delete fx1, classic → Serum → classic, undo past the delete — the old chorus comes back whole (the new panel is fx2)', async () => {
+  await page();
+  const core = await import('../serum-core.js?v=9');
+  let t = addJuno();
+  core.newInstance(t.fx, 'cho', { rack: 0 }); sim.api.sendPatch(t);
+  const S0 = clone(P());
+  CMOD.removePanel(t, 'fx1'); sim.api.sendPatch(t);
+  CMOD.setModel(t, 'i1', 'serum', { vals: { s: core.normalizeSerum(core.defaultSerum()) } }); sim.api.sendPatch(t);
+  CMOD.setModel(t, 'i1', 'juno60', { vals: vals('juno60') }); sim.api.sendPatch(t);
+  assert.deepEqual([devs(t), CMOD.destOf(t, 'i1'), t.dev.fx2.fx.racks[0].mods.length], ['fx2,i1,out', 'fx2', 0]);
+  sim.api.applyRestore(S0, true);
+  t = byId(t.id);
+  assert.deepEqual([devs(t), t.fx.racks[0].mods.map(m => m.type).join(',')], ['fx1,i1,out', 'cho']);
+});
+
 test('H13: New / Open forget the current instruments — a file whose track ids repeat opens each track on its primary (last: it replaces the project, undone after)', async () => {
   await page();
   const cv = globalThis.__synthTest.cv;

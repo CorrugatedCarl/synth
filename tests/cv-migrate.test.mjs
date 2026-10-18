@@ -420,3 +420,29 @@ test('H8: Save as classic project lists key zones, cable levels, solo, a Serum\'
   const rz = M.toV1({ tracks: [z] });
   assert.deepEqual([rz.p.tracks.length, rz.lost.length, /“Z”: its key zone/.test(rz.lost.join())], [1, 1, true]);
 });
+
+test('H4 ids: a Serum unfolds the panel it folded in under that id (dev.fxId, saved); a deleted panel\'s id never comes back', () => {
+  const mk = () => MO.adopt({ tracks: [S.newTrack(null, { model: 'juno60' })] }).tracks[0];
+  const ids = t => Object.keys(t.dev).sort().join(',');
+  // the canonical round trip classic → Serum → classic: fx1 again, its state; the id saved through song.js
+  const t = mk(), cho = C.defaultFx2(); C.newInstance(cho, 'cho', { rack: 0 }); t.fx = cho;
+  t.model = 'serum';
+  assert.deepEqual([ids(t), t.dev.i1.fxId, t.dev.i1.fx === cho], ['i1,out', 'fx1', true]);
+  const back = S.normDev(JSON.parse(JSON.stringify(t)));
+  assert.equal(back.dev.i1.fxId, 'fx1', 'song.normDev keeps it');
+  assert.equal(S.normDev({ dev: { i1: { kind: 'synth', model: 'serum', fxId: 'x<1' } } }).dev.i1.fxId, undefined, '(only an fx id)');
+  t.model = 'dx7';
+  assert.deepEqual([ids(t), t.dev.fx1.fx === cho, 'fxId' in t.dev.i1, MO.destOf(t, 'i1')], ['fx1,i1,out', true, false, 'fx1']);
+  MO.setModel(t, 'i1', 'serum'); MO.setModel(t, 'i1', 'juno60'); // (setModel: the same rule)
+  assert.deepEqual([ids(t), t.dev.fx1.fx === cho], ['fx1,i1,out', true]);
+  // fx1 deleted, then classic → Serum → classic: a new panel fx2 (an undo past the delete keeps fx1 — the chorus — apart
+  // from it: the device ids per track are never one another's)
+  const u = mk(); u.fx = cho;
+  const before = JSON.parse(JSON.stringify(u));
+  MO.removePanel(u, 'fx1');
+  u.model = 'serum';
+  assert.deepEqual([ids(u), 'fxId' in u.dev.i1], ['i1,out', false]);
+  u.model = 'juno60';
+  assert.deepEqual([ids(u), MO.destOf(u, 'i1')], ['fx2,i1,out', 'fx2']);
+  assert.deepEqual([Object.keys(before.dev).filter(k => k in u.dev && before.dev[k].kind === 'panel'), before.dev.fx1.fx.racks[0].mods.map(m => m.type)], [[], ['cho']], 'no shared panel id: keepDevs keeps the snapshot\'s chorus');
+});
