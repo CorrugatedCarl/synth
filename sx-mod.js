@@ -791,6 +791,7 @@
       for (let l = 0; l < N_LFO; l++) m.oY0[l] = DEF_CT.lfoTab[l * 1025];
       m.fPh.fill(0); m.fCy.fill(0);
       m.scM = 1; m.scP = 1; m.fB0.fill(0); m.jmp = 0;
+      m.seed = (SEED ^ (proc.seedSalt | 0)) >>> 0;              // (IMPL-1e §2.4: an Inst's salt; 0 = SEED)
       seedMonoChaos(m);
       seedProcLfos(m);
       m.pSlew.fill(0);
