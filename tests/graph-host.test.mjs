@@ -284,3 +284,49 @@ test('H4: a classic primary cabled straight to OUT has no rack — a patch, t.fx
   const r = byId(t.id);
   assert.deepEqual([devs(r), cables(r)], ['i1,out', 'i1.out>out.in'], 'redo: no panel re-inserted');
 });
+
+test('H1: undo / redo keep the sound per device id — a re-patch, Make primary, Delete of a primary never copy one device\'s state into another', async () => {
+  await page();
+  const core = await import('../serum-core.js?v=9');
+  // Juno → fx1 (chorus); fx2 (delay) → OUT; the primary re-patched into fx2, undone
+  let t = addJuno();
+  core.newInstance(t.dev.fx1.fx, 'cho', { rack: 0 });
+  const fx2 = CMOD.addPanel(t, {}); core.newInstance(t.dev[fx2].fx, 'dly', { rack: 0 });
+  CMOD.connect(t, fx2 + '.out', 'out.in'); sim.api.sendPatch(t);
+  const types = x => ['fx1', fx2].map(k => x.dev[k].fx.racks[0].mods.map(m => m.type).join(',')).join(' | ');
+  let snap = clone(P());
+  assert.equal(CMOD.connect(t, 'i1.out', fx2 + '.in').ok, true); sim.api.sendPatch(t);
+  sim.api.applyRestore(snap, true);
+  t = byId(t.id);
+  assert.deepEqual([types(t), t.dev.fx1.fx === t.dev[fx2].fx, CMOD.destOf(t, 'i1')], ['cho | dly', false, 'fx1'], 're-patch undone');
+  // two Junos: Make primary i2, undone — i1 keeps its own values
+  const i2 = CMOD.addInst(t, 'juno60', { vals: Object.assign(vals('juno60'), { lr: 8 }) });
+  t.dev.i1.vals.lr = 5; sim.api.sendPatch(t);
+  snap = clone(P());
+  CMOD.makePrimary(t, i2); sim.api.sendPatch(t);
+  sim.api.applyRestore(snap, true);
+  t = byId(t.id);
+  assert.deepEqual([t.prim, t.dev.i1.vals.lr, t.dev[i2].vals.lr, t.dev.i1.vals === t.dev[i2].vals], ['i1', 5, 8, false], 'Make primary undone');
+  // Delete of the primary (the other Juno becomes primary), undone
+  snap = clone(P());
+  assert.equal(CMOD.removeInst(t, 'i1').ok, true); sim.api.sendPatch(t);
+  t.dev[i2].vals.lr = 9; // (a knob tweak after the delete: kept by the undo)
+  sim.api.applyRestore(snap, true);
+  t = byId(t.id);
+  assert.deepEqual([t.prim, t.dev.i1.vals.lr, t.dev[i2].vals.lr], ['i1', 5, 9], 'Delete of a primary undone');
+  // (regression) a one-instrument track's rack across a model change is still kept (stage 1c: classic → Serum moves it into
+  // the Serum, an effect added there, the undo brings it back to the panel; the redo to the Serum)
+  let u = addJuno();
+  core.newInstance(u.fx, 'cho', { rack: 0 });
+  const s0 = clone(P());
+  CMOD.setModel(u, 'i1', 'serum', { vals: { s: core.normalizeSerum(core.defaultSerum()) } }); sim.api.sendPatch(u);
+  assert.deepEqual([devs(u), CMOD.fxDevOf(u).own], ['i1,out', true]);
+  core.newInstance(u.fx, 'eq', { rack: 0 });
+  const s1 = clone(P());
+  sim.api.applyRestore(s0, true);
+  u = byId(u.id);
+  assert.deepEqual([devs(u), u.fx.racks[0].mods.map(m => m.type).join(',')], ['fx1,i1,out', 'cho,eq'], 'undo: the panel holds the rack as edited');
+  sim.api.applyRestore(s1, true);
+  u = byId(u.id);
+  assert.deepEqual([devs(u), u.fx.racks[0].mods.map(m => m.type).join(',')], ['i1,out', 'cho,eq']);
+});

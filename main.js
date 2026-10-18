@@ -1143,28 +1143,27 @@ function fitBars() {
   const need = Math.max(1, Math.ceil(end / bt));
   if (need > project.bars) { project.bars = need; $('#tBars').value = project.bars; }
 }
-// the knob-tweak policy for the devices besides the primary and its FX: an instrument that kept its model keeps its values,
-// pattern and own FX; a panel its FX state (the device ids are per track: the same id is the same device)
+// the knob-tweak policy (§11.8) per device — the device ids are per track and never reused, so the same id is the same
+// device (stage 1e: never one device's state into another id: a re-patch, Make primary, Delete of a primary): an instrument
+// keeps its pattern, and its values and own FX when it kept its model; a panel its FX state. Stage 1c's "a track's rack is
+// kept when its model changes": the primary's rack, when the primary is the same device and its rack moved between its
+// panel and the Serum (classic ↔ Serum: one track's FX device is not in the other)
 function keepDevs(t, cur) {
   if (!cur || !t.dev || !cur.dev) return;
-  const pid = CMOD.primId(t), f = CMOD.fxDevOf(t);
   for (const id of Object.keys(t.dev)) {
     const d = t.dev[id], c = cur.dev[id];
-    if (id === pid || (f && id === f.id) || !d || !c || d.kind !== c.kind) continue;
-    if (d.kind === 'synth' && d.model === c.model) { d.vals = c.vals; if (c.seq) d.seq = c.seq; if (c.fx) d.fx = c.fx; }
+    if (!d || !c || typeof d !== 'object' || typeof c !== 'object' || d.kind !== c.kind) continue;
+    if (d.kind === 'synth') { if (d.model === c.model) { d.vals = c.vals; if (c.fx) d.fx = c.fx; } if (c.seq) d.seq = c.seq; }
     else if (d.kind === 'panel' && c.fx) d.fx = c.fx;
   }
+  const fa = CMOD.fxDevOf(t), fb = CMOD.fxDevOf(cur);
+  if (fa && fb && fb.dev.fx && fa.id !== fb.id && CMOD.primId(t) === CMOD.primId(cur) && (fa.own ? !(fb.id in t.dev) : fb.own && !(fa.id in cur.dev))) fa.dev.fx = fb.dev.fx;
 }
 function applyRestore(p, keepSound = false) {
   if (!p) return;
   CMOD.adopt(p); // (History snapshots and loads are plain objects: the accessors first)
-  if (keepSound) for (const t of p.tracks) { // undo/redo never reverts knob tweaks on a track that kept its instrument
-    const cur = project.tracks.find(x => x.id === t.id);
-    if (cur && cur.model === t.model) t.vals = cur.vals;
-    if (cur && cur.seq) t.seq = cur.seq;
-    if (cur && cur.fx) t.fx = cur.fx; // FX rack edits follow the knob-tweak policy (§11.8)
-    keepDevs(t, cur); // (stage 1e: every other instrument and panel the same)
-  } else for (const t of p.tracks) seedPend.add(t.id); // a loaded project re-seeds the racks' LFO phases
+  if (keepSound) for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); // undo/redo never reverts knob tweaks (per device)
+  else for (const t of p.tracks) seedPend.add(t.id); // a loaded project re-seeds the racks' LFO phases
   for (const t of p.tracks) fxOf(t);
   const prevSel = project.selTrack;
   project = p;
