@@ -2902,8 +2902,8 @@ class Track extends Facade {
     return null;
   }
   // {t: 'graph', insts: [{id, on, zone: {lo, hi, xp}, salt}], chains: [{id}], edges: [[src, dst, g]], out, key}: the
-  // first one adopts the legacy parts by position (i0 → insts[0]; c0 → chains[0] when the primary is classic, else it stays
-  // the primary's own FX '<id>/fx'); later ones match by id — unknown Insts / Chains are built, missing ones move to dying
+  // first one adopts the legacy parts (i0 → insts[0], the primary; c0 → the panel a classic primary feeds, else it stays
+  // the primary's private chain '<id>/fx': c0 = chains[0] || i0.fxc, IMPL-1e §2.1); later ones match by id — unknown Insts / Chains are built, missing ones move to dying
   // (their fade / tail goes to OUT, then they are dropped). A malformed graph (no Inst, > 8 Insts, > 16 panels, a repeated
   // id) is ignored
   graphMsg(d) {
@@ -2911,7 +2911,11 @@ class Track extends Facade {
     if (gi === null || gi.length < 1 || gi.length > MAX_I || gc.length > MAX_C) return;
     const iid = gi.map(e => String(e && e.id)), cid = gc.map(e => String(e && e.id)), all = iid.concat(cid), out = typeof d.out === 'string' ? d.out : 'out';
     if (new Set(all).size !== all.length || all.indexOf(out) >= 0) return;
-    if (this.graphed === 0) this.adopt(iid[0], cid.length ? cid[0] : '');
+    if (this.graphed === 0) { // (c0 → the panel the primary feeds: chains[0] in every graph main.js builds)
+      let pc = '';
+      for (const e of ge) if (Array.isArray(e) && String(e[0]) === iid[0] && cid.indexOf(e[1]) >= 0) pc = e[1];
+      this.adopt(iid[0], pc);
+    }
     const oldI = this.insts, oldC = this.chains, I = [], C = [], pw = [];
     for (const x of oldI) if (iid.indexOf(x.id) < 0) this.retire(x);   // (first: their slots are free for the new ones)
     for (const c of oldC) if (cid.indexOf(c.id) < 0) this.retireC(c);
@@ -3114,11 +3118,11 @@ class Track extends Facade {
     if (aud) { const x = this.instOf(i); if (x !== null) x.noteOff(n, rv, ch, ext, aud); return; }
     const X = this.insts;
     if (k < 0) { X[0].noteOff(n, rv, ch, ext, 0); return; }
-    const bits = this.holdR[k], P = this.holdP;
+    const bits = this.holdR[k], P = this.holdP, rec = bits !== 0 || this.holdV[k] > 0; // (recorded: its receivers, maybe none)
     this.holdR[k] = 0; this.holdV[k] = 0;
     for (let j = 0; j < X.length; j++) {
       const x = X[j];
-      if (bits !== 0) { if ((bits & (1 << x.slot)) !== 0) x.noteOff(P[x.slot * NK + k], rv, ch, ext, 0); continue; }
+      if (rec) { if ((bits & (1 << x.slot)) !== 0) x.noteOff(P[x.slot * NK + k], rv, ch, ext, 0); continue; }
       const m = n + x.zxp; // (a key with no record — struck before the graph took its note-on: the zones as they are now)
       if (x.on === 1 && n >= x.zlo && n <= x.zhi && m >= 0 && m <= 127) x.noteOff(m, rv, ch, ext, 0);
     }

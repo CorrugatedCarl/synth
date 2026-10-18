@@ -1,7 +1,10 @@
 // The Track / Inst / Chain engine (SPEC-canvas §6.2–6.4, §6.8, §10 1d): the structure every path builds, the
 // compatibility facade (fields, methods, overrides through it), the hosts the voice code sees (only Inst objects), the
 // stats per Inst / Chain, the monitor subscriptions by id ({t: 'mon', ids}), the idle skip per Inst and per Track, and
-// the warm-up's restore. Bit-exactness against the pre-split engine: tests/golden-graph.test.mjs.
+// the warm-up's restore. Stage 1e (IMPL-1e §2, §7): several Insts per track — adoption of i0 / c0 by the first graph,
+// the copy-first sum, the co-resident sequencer bound, salts, power (sequencers, clicks, load, controller state, restrike),
+// zones, MIDI OUT into a graph node, stats.per / smon / fxph / fxtap / fxover per part, removal, processorOptions = messages,
+// the warmed graph paths, row r. Bit-exactness against the pre-split engine: tests/golden-graph.test.mjs.
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -202,4 +205,374 @@ test('MIDI OUT (§7.9): a sequencer never forwards to its own track — the regi
   assert.equal(nA(), 0, 'its own track: never (the pre-split rule, T === this.proc)');
   assert.ok(nT() >= 4, `another track: its notes (${nT()})`);
   for (const p of [A, B, T]) p.msg({ t: 'bye' });
+});
+
+/* ------------------------------------------------------------------ stage 1e: several Insts per track (IMPL-1e §2, §7) */
+const Z = { lo: 0, hi: 127, xp: 0 }, NODE = { os: 4, hostOS: 4, offline: true };
+const saltOf = id => (id === 'i1' ? 0 : (+id.slice(1) * 0x9E3779B9) >>> 0); // (cv-graph's: 0 for the primary)
+const gi = (id, o) => Object.assign({ id, on: true, zone: Z, salt: saltOf(id) }, o || {});
+const graph = (insts, chains, edges) => ({ t: 'graph', insts: insts.map(x => (typeof x === 'string' ? gi(x) : x)), chains: chains.map(id => ({ id })),
+  edges, out: 'out', key: JSON.stringify([insts, chains, edges]) });
+const bare = p => { const q = Object.assign({}, p); delete q.fxr; delete q.fxrT; return q; }; // (main strips a classic Inst's FX on a graph node)
+const fxOf = fx => ({ fxr: core.compileFx(fx || core.defaultFx2(), { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx || core.defaultFx2()) });
+// a graph node as main.js builds it: the graph, {t: patch, i} per Inst (+ its tables), {t: chain, c} per panel
+function gnode(D, g, patches, chains = {}, po = NODE) {
+  const { p, sent } = mk(D, po);
+  p.msg(g);
+  for (const [id, patch] of Object.entries(patches)) { p.msg({ t: 'patch', i: id, p: patch.engine === 'serum' ? patch : bare(patch) }); tables(p, patch); }
+  for (const [id, fx] of Object.entries(chains)) p.msg(Object.assign({ t: 'chain', c: id }, fx));
+  return { p, sent };
+}
+// the input of a rack per call (copies), concatenated: L then R
+function rackIn(r) {
+  const L = [], R = [], rp = r.process;
+  r.process = function (a, b, n, ...x) { L.push(Float64Array.from(a.subarray(0, n))); R.push(Float64Array.from(b.subarray(0, n))); return rp.call(this, a, b, n, ...x); };
+  const cat = A => { const o = new Float64Array(A.reduce((k, a) => k + a.length, 0)); let k = 0; for (const a of A) { o.set(a, k); k += a.length; } return o; };
+  return () => ({ L: cat(L), R: cat(R) });
+}
+// renders quanta with events [[quantum, msg]] → the output (Float64, L / R)
+function play(D, p, quanta, ev = []) {
+  const o = out(), L = new Float64Array(quanta * 128), R = new Float64Array(quanta * 128);
+  for (let k = 0; k < quanta; k++) {
+    for (const [q, m] of ev) if (q === k) p.msg(m);
+    p.process([], o); D.ctx.currentFrame += 128; L.set(o[0][0], k * 128); R.set(o[0][1], k * 128);
+  }
+  return { L, R };
+}
+const maxStep = (a, q0 = 0, ms = 1e9) => { let m = 0; for (let i = Math.max(1, q0 * 128), e = Math.min(a.length, q0 * 128 + ms * SR / 1000); i < e; i++) { const d = Math.abs(a[i] - a[i - 1]); if (d > m) m = d; } return m; };
+const peakOf = a => { let m = 0; for (const x of a) if (Math.abs(x) > m) m = Math.abs(x); return m; };
+const sameBits = (a, b) => a.length === b.length && a.every((x, i) => Object.is(x, b[i]));
+const CHORD = [48, 55, 60, 64];
+const chordEv = (q0, q1) => CHORD.map(n => [q0, { t: 'on', n, v: 0.8 }]).concat(CHORD.map(n => [q1, { t: 'off', n }]));
+const SEQ = { pat: [0, 3, 7, 12, 0, 5, 10, 3].map((n, k) => ({ n, o: 0, a: k & 1, s: k === 3 ? 1 : 0, g: 1 })), len: 8, bpm: 132, swing: 0.1, root: 36, sync: false, run: true };
+// a quiet sine instrument (output ≈ 0.006): a cut would step by ≈ −44 dB; two voices' onset and the 3 ms de-click fade stay
+// below −60 dB (measured in the 20 ms after a power / removal event: the key presses themselves are not under test)
+const SINE = { engine: 'analog', mode: 'poly', poly: 4, prio: 'last', legato: true, glide: 0, unison: 1, bendRange: 2, drift: 0, envOv: 1, bw: 24000, level: 0.006,
+  osc: [{ on: 1, lev: 1, oct: 0, fine: 0, saw: 0, pulse: 0, tri: 0, sine: 1, pw: 0.5, kbd: 1 }, { on: 0, lev: 0 }, { on: 0, lev: 0 }],
+  hpf: { type: 'none', oct: 4.3, res: 0 }, vcf: { type: 'moog', oct: 13, res: 0, env: 0, kbd: 0, drive: 1 },
+  fenv: { a: 0.01, d: 0.4, s: 1, r: 0.3 }, aenv: { a: 0.02, d: 0.3, s: 1, r: 0.3 }, lfo: { rate: 5, wave: 0 }, fx: { chorus: 0, ensemble: 0, hiss: 0 } };
+const EDGES2 = [['i1', 'fx1', 1], ['i2', 'fx1', 1], ['fx1', 'out', 1]];
+
+test('1e structure: the first graph adopts i0 / c0 by position (state kept: a note sounding before it renders on bit for bit), later graphs match by id', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  for (const sx of [false, true]) {
+    const patch = sx ? serum(null, verb()) : classic('juno60', verb()), ev = [[0, { t: 'on', n: 48, v: 0.8 }], [0, { t: 'on', n: 55, v: 0.8 }], [60, { t: 'off', n: 48 }], [60, { t: 'off', n: 55 }]];
+    const a = mk(D, NODE, patch).p, b = mk(D, NODE, patch).p, I = b.i0, C = b.c0;
+    const g = sx ? graph(['i1'], [], [['i1', 'out', 1]]) : graph(['i1'], ['fx1'], [['i1', 'fx1', 1], ['fx1', 'out', 1]]);
+    const A = play(D, a, 120, ev), Bo = play(D, b, 120, ev.concat([[30, g]]));
+    assert.ok(sameBits(A.L, Bo.L) && sameBits(A.R, Bo.R), (sx ? 'Serum' : 'classic') + ': the graph changes no sample (no re-patch, tails and rack kept)');
+    assert.ok(peakOf(A.L) > 1e-3);
+    assert.deepEqual([b.graphed, b.simple, b.i0 === I, I.id, b.insts.length], [1, 1, true, 'i1', 1]);
+    if (sx) assert.deepEqual([b.chains.length, I.fxc === C, C.id, I.rack === C.rack, b.c0 === C], [0, true, 'i1/fx', true, true], 'a Serum keeps c0 as its own FX');
+    else assert.deepEqual([b.chains[0] === C, C.id, C.ownBy, I.rack === C.rack, I.sharedRack, I.fxc !== C, I.fxc.id, I.fxc.ownBy === I], [true, 'fx1', null, true, 1, true, 'i1/fx', true], 'c0 becomes the shared panel fx1');
+  }
+  // later graphs: by id — a new Inst is built (its private chain, a free slot), a missing one dies, an unknown id is ignored
+  const { p } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: classic('juno60'), i2: classic('minimoog') }, { fx1: fxOf() });
+  const [x1, x2] = p.insts;
+  assert.deepEqual([x1.id, x2.id, x2.fxc.id, x2.fxc.ownBy === x2, x1.slot, x2.slot, x2.salt, x2.seedSalt, p.simple, x1.rack, x2.rack, p.chains[0].drive],
+    ['i1', 'i2', 'i2/fx', true, 0, 1, saltOf('i2'), saltOf('i2'), 0, null, null, 1]);
+  assert.ok(x2.constructor === x1.constructor && x2.voices.every(v => v.e === x2), 'an Inst like any other');
+  p.msg(graph(['i2', 'i1'], ['fx1'], EDGES2));
+  assert.ok(p.insts[0] === x2 && p.insts[1] === x1 && p.i0 === x2, 'reordered (render order, primary first), same objects');
+  p.msg({ t: 'patch', i: 'i9', p: bare(classic('dx7')) });
+  assert.equal(x1.kind + x2.kind, 'analoganalog', 'an unknown id changes nothing');
+  p.msg(graph(['i3'], ['fx1'], [['i3', 'fx1', 1], ['fx1', 'out', 1]]));
+  assert.deepEqual([p.insts.length, p.insts[0].id, p.insts[0].slot, p.dyI.length], [1, 'i3', 0, 2], 'both moved to dying, slot 0 reused');
+  p.msg({ t: 'graph', insts: [gi('i3'), gi('i3')], chains: [], edges: [] });
+  assert.equal(p.insts[0].id, 'i3', 'a repeated id: the graph is ignored');
+});
+
+test('1e sum (§6.3): two sequencer-free Insts into one panel = copy(A) + B rendered alone, bit for bit, before the limiter', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), ev = chordEv(2, 70);
+  const A = classic('juno60'), Bp = classic('minimoog');
+  const one = (id, patch) => { const { p } = gnode(D, graph([id], ['fx1'], [[id, 'fx1', 1], ['fx1', 'out', 1]]), { [id]: patch }, { fx1: fxOf() }); const get = rackIn(p.chains[0].rack); play(D, p, 110, ev); return get(); };
+  const a = one('i1', A), b = one('i2', Bp);
+  const { p } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: A, i2: Bp }, { fx1: fxOf() });
+  const get = rackIn(p.chains[0].rack);
+  play(D, p, 110, ev);
+  const s = get();
+  assert.ok(peakOf(a.L) > 1e-3 && peakOf(b.L) > 1e-3, 'both sound');
+  assert.equal(s.L.length, a.L.length);
+  let bad = -1;
+  for (let i = 0; i < s.L.length && bad < 0; i++) if (!Object.is(s.L[i], a.L[i] + b.L[i]) || !Object.is(s.R[i], a.R[i] + b.R[i])) bad = i;
+  assert.equal(bad, -1, 'the panel input is exactly the sum');
+});
+
+test('1e co-resident sequencer (§6.3): beside a running TB-303 or a Serum ARP an instrument renders on their span grid — the difference is measured and stays below its recorded bound', (t) => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), A = classic('juno60');
+  // (bend / wheel moves while the chord sounds: the smoothing steps per span, so the span grid shows)
+  const ev = chordEv(2, 140).concat([[20, { t: 'bend', v: 0.6 }], [40, { t: 'wheel', v: 0.8 }], [70, { t: 'bend', v: -0.3 }], [100, { t: 'wheel', v: 0 }]]);
+  const arp = serum(s => { s.p['arp.on'] = 1; });
+  // max |difference| / the instrument's peak alone, measured on the M4 Max (IMPL-1e §8): TB-303 9.2e-4 (−60.8 dB), Serum ARP
+  // 3.3e-8 (−150 dB): the bounds about 2× / 30× above
+  const BOUND = { tb303: 2e-3, serum: 1e-6 };
+  for (const [name, B, seq] of [['tb303', classic('tb303'), SEQ], ['serum', arp, null]]) {
+    const one = (id, patch, s) => {
+      const { p } = gnode(D, graph([id], ['fx1'], [[id, 'fx1', 1], ['fx1', 'out', 1]]), { [id]: patch }, { fx1: fxOf() });
+      if (s) p.msg({ t: 'seq', i: id, s: Object.assign({}, s) });
+      const get = rackIn(p.chains[0].rack); play(D, p, 150, ev); return get();
+    };
+    const a = one('i1', A, null), b = one('i2', B, seq);
+    const { p } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: A, i2: B }, { fx1: fxOf() });
+    if (seq) p.msg({ t: 'seq', i: 'i2', s: Object.assign({}, seq) });
+    const spans = []; const rs = p.renderSpan; p.renderSpan = function (Lo, Ro, off, n) { spans.push(n); return rs.call(this, Lo, Ro, off, n); };
+    const get = rackIn(p.chains[0].rack);
+    play(D, p, 150, ev);
+    const s = get();
+    assert.ok(spans.some(n => n < 128), name + ': its events split the spans');
+    let d = 0;
+    for (let i = 0; i < s.L.length; i++) d = Math.max(d, Math.abs(s.L[i] - b.L[i] - a.L[i]), Math.abs(s.R[i] - b.R[i] - a.R[i]));
+    const rel = d / peakOf(a.L);
+    t.diagnostic(`${name}: max |sum − (A + B)| = ${d.toExponential(2)} (${rel.toExponential(2)} of A's peak, ${(20 * Math.log10(rel || 1e-30)).toFixed(1)} dB)`);
+    assert.ok(peakOf(b.L) > 1e-3 && peakOf(a.L) > 1e-3, name + ': both sound');
+    assert.ok(rel <= BOUND[name], `${name}: ${rel} > ${BOUND[name]}`);
+  }
+});
+
+test('1e salts (§6.2.1): two identical Junos on one track are not sample-identical; with equal salts they would be; two Solinas depend on build order', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), J = classic('juno60');
+  const pair = (s2) => {
+    const { p } = gnode(D, graph(['i1', gi('i2', { salt: s2 })], ['fx1'], EDGES2), { i1: J, i2: J }, { fx1: fxOf() });
+    const got = { i1: [], i2: [] };
+    for (const x of p.insts) { const r = x.renderSpan; x.renderSpan = function (n) { const k = r.call(this, n); got[this.id].push(...this.Lb.subarray(0, n)); return k; }; }
+    play(D, p, 60, chordEv(1, 50));
+    return got;
+  };
+  const a = pair(saltOf('i2')), b = pair(0);
+  assert.ok(peakOf(a.i1) > 1e-3);
+  assert.ok(!sameBits(a.i1, a.i2), 'salted: the second Juno draws its own drift / noise');
+  assert.ok(sameBits(b.i1, b.i2), 'salt 0 on both: identical (what the salts prevent)');
+  // Solina: Math.random of the scope (the divider phases), drawn when each patch builds its divider
+  const sol = classic('solina'), solo = order => {
+    D.seed('solina-order');
+    const { p } = mk(D, NODE);
+    p.msg(graph(['i1', 'i2'], ['fx1'], EDGES2));
+    for (const id of order) p.msg({ t: 'patch', i: id, p: bare(sol) });
+    p.msg(Object.assign({ t: 'chain', c: 'fx1' }, fxOf()));
+    const x = p.insts[0], got = [], r = x.renderSpan;
+    x.renderSpan = function (n) { const k = r.call(this, n); got.push(...this.Lb.subarray(0, n)); return k; };
+    play(D, p, 40, chordEv(1, 30));
+    return got; // (i1's own output: the sum of the two is symmetric)
+  };
+  const s12 = solo(['i1', 'i2']);
+  assert.ok(sameBits(s12, solo(['i1', 'i2'])), 'the same build order: the same render');
+  assert.ok(!sameBits(s12, solo(['i2', 'i1'])), 'documented: two Solinas depend on the order their patches arrive');
+});
+
+test('1e power (§2.3): a powered-off TB-303 fires nothing and splits no spans; on again it re-anchors and plays', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const { p, sent } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: classic('juno60'), i2: classic('tb303') }, { fx1: fxOf() });
+  p.msg({ t: 'seq', i: 'i2', s: Object.assign({}, SEQ) });
+  const spans = [], fires = []; const rs = p.renderSpan, x2 = p.insts[1], sf = x2.seqFire;
+  p.renderSpan = function (Lo, Ro, off, n) { spans.push(n); return rs.call(this, Lo, Ro, off, n); };
+  x2.seqFire = function (s) { fires.push(s); return sf.call(this, s); };
+  run(D, p, 200);
+  assert.ok(fires.length >= 4 && spans.some(n => n < 128) && sent.some(m => m.t === 'step' && m.i === 'i2'), 'running: steps, split spans, {t: step, i}');
+  p.msg({ t: 'power', i: 'i2', on: false });
+  assert.equal(x2.on, 0);
+  run(D, p, 4); // (its 3 ms fade)
+  fires.length = 0; spans.length = 0; sent.length = 0;
+  run(D, p, 200);
+  assert.deepEqual([fires.length, spans.every(n => n === 128), sent.filter(m => m.t === 'step').length, x2.act, x2.voices.some(v => v.active)], [0, true, 0, 0, false], 'off: nothing fires, nothing splits');
+  p.msg({ t: 'power', i: 'i2', on: true });
+  run(D, p, 200);
+  assert.ok(fires.length >= 4 && spans.some(n => n < 128), 'on: it plays again');
+});
+
+test('1e power (§2.3): off and on are click-free (largest output step < −60 dB); controller state set while off is current at power-on; held keys are restruck', (t) => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const { p } = gnode(D, graph(['i1', gi('i2', { zone: { lo: 0, hi: 127, xp: 7 } })], ['fx1'], EDGES2), { i1: SINE, i2: SINE }, { fx1: fxOf() });
+  const x2 = p.insts[1], log = [], on = x2.noteOn;
+  x2.noteOn = function (n, v, ...a) { log.push(n); return on.call(this, n, v, ...a); };
+  const ev = [[1, { t: 'on', n: 36, v: 0.8 }], [1, { t: 'on', n: 43, v: 0.8 }], [80, { t: 'power', i: 'i2', on: false }], [100, { t: 'wheel', v: 0.7 }], [100, { t: 'bend', v: 0.5 }],
+    [140, { t: 'power', i: 'i2', on: true }], [200, { t: 'off', n: 36 }], [200, { t: 'off', n: 43 }]];
+  const o = play(D, p, 260, ev);
+  const steps = [80, 140].map(q => Math.max(maxStep(o.L, q, 20), maxStep(o.R, q, 20))), st = Math.max(...steps), pk = peakOf(o.L);
+  t.diagnostic(`steps: off ${(20 * Math.log10(steps[0])).toFixed(1)} dB, on ${(20 * Math.log10(steps[1])).toFixed(1)} dB (peak ${pk.toFixed(4)})`);
+  assert.ok(pk > 0.004, `audible (${pk})`);
+  assert.ok(st < 0.001, `largest step ${(20 * Math.log10(st)).toFixed(1)} dB ≥ −60 dB`);
+  assert.deepEqual(log, [43, 50, 43, 50], 'struck in zone (+7), restruck at power-on');
+  assert.deepEqual([x2.wheel, x2.bendRaw, x2.bend], [0.7, 0.5, 1], 'wheel and bend sent while off are current');
+  assert.ok(!x2.voices.some(v => v.gate), 'the note-offs reached the restruck voices');
+});
+
+test('1e power: a powered-off instrument costs ≤ 0.0005 load once its fade has ended (two Insts off with keys held: the skip path)', async (t) => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const { p } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: classic('prophet5'), i2: serum() }, { fx1: fxOf() }, { os: 2, hostOS: 4, trackId: 'pw' });
+  for (const n of CHORD) p.msg({ t: 'on', n, v: 0.8 });
+  run(D, p, 20);
+  p.msg({ t: 'power', i: 'i1', on: false }); p.msg({ t: 'power', i: 'i2', on: false });
+  const o = out(), sec = () => run(D, p, SR / 128, o);
+  sec();
+  assert.ok(p.insts.every(x => x.live === 0) && o[0][0].every(x => x === 0), 'skipping, silent');
+  const best = await CPU.gateLoad(sec, 0.0005, { limit: 1 });
+  t.diagnostic(`two powered-off Insts: ${best.load.toFixed(5)} calibrated (raw ${best.raw.toFixed(5)}, attempt ${best.attempt})`);
+  assert.ok(best.load <= 0.0005, `${best.load.toFixed(5)} > 0.0005`);
+});
+
+test('1e zones (§2.3): notes reach the powered Insts whose zone admits them, transposed; a note-off reaches exactly the recorded receivers at their pitches, whatever the zones are now', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), g = (z1, z2) => graph([gi('i1', { zone: z1 }), gi('i2', { zone: z2 })], ['fx1'], EDGES2);
+  const { p } = gnode(D, g({ lo: 0, hi: 59, xp: 0 }, { lo: 60, hi: 127, xp: 12 }), { i1: classic('juno60'), i2: classic('prophet5') }, { fx1: fxOf() });
+  const log = [];
+  for (const x of p.insts) for (const k of ['noteOn', 'noteOff']) { const f = x[k]; x[k] = function (n, ...a) { log.push(this.id + (k === 'noteOn' ? '+' : '-') + n); return f.call(this, n, ...a); }; }
+  p.msg({ t: 'on', n: 48, v: 0.8 }); p.msg({ t: 'on', n: 64, v: 0.8 }); p.msg({ t: 'on', n: 120, v: 0.8 });
+  assert.deepEqual(log.splice(0), ['i1+48', 'i2+76'], 'split at 60, the upper zone +12 (120 + 12 is dropped)');
+  run(D, p, 10);
+  p.msg(g(Z, { lo: 0, hi: 127, xp: -5 })); // zones changed mid-note
+  p.msg({ t: 'off', n: 48 }); p.msg({ t: 'off', n: 64 }); p.msg({ t: 'off', n: 120 });
+  assert.deepEqual(log.splice(0), ['i1-48', 'i2-76'], 'the recorded receivers, at the recorded pitches (120: none)');
+  p.msg({ t: 'on', n: 50, v: 0.8 }); p.msg({ t: 'off', n: 50 });
+  assert.deepEqual(log.splice(0), ['i1+50', 'i2+45', 'i1-50', 'i2-45'], 'new notes: the new zones');
+  // MPE channels are their own keys; a preview targets one Inst (aud, i)
+  p.msg({ t: 'on', n: 50, v: 0.8, ch: 3 }); p.msg({ t: 'on', n: 50, v: 0.8, ch: 4 }); p.msg({ t: 'off', n: 50, ch: 3 });
+  assert.deepEqual(log.splice(0), ['i1+50', 'i2+45', 'i1+50', 'i2+45', 'i1-50', 'i2-45']);
+  p.msg({ t: 'on', n: 70, v: 0.8, aud: true, i: 'i2' }); p.msg({ t: 'off', n: 70, aud: true, i: 'i2' }); p.msg({ t: 'on', n: 71, v: 0.8, aud: true });
+  assert.deepEqual(log.splice(0), ['i2+70', 'i2-70', 'i1+71'], 'previews: the Inst named, else insts[0], untransposed');
+  // powered off: no notes; controller state still reaches it
+  p.msg({ t: 'power', i: 'i1', on: false }); p.msg({ t: 'on', n: 40, v: 0.8 }); p.msg({ t: 'off', n: 40 });
+  assert.deepEqual(log.splice(0).filter(e => e !== 'i2-50'), ['i2+35', 'i2-35']);
+});
+
+test('1e MIDI OUT (§7.9) into a two-Inst track: the ext notes fan out to every Inst by zone; a sequencer of the track never feeds its own track', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const arpTo = id => serum(s => { s.p['arp.on'] = 1; s.arp.midiOut = 2; s.arp.outTrack = id; });
+  const { p: T } = gnode(D, graph(['i1', 'i2', 'i3'], ['fx1'], [['i1', 'fx1', 1], ['i2', 'fx1', 1], ['i3', 'fx1', 1], ['fx1', 'out', 1]]),
+    { i1: classic('juno60'), i2: classic('minimoog'), i3: arpTo('m-tgt') }, { fx1: fxOf() }, { os: 2, hostOS: 4, trackId: 'm-tgt', offline: true });
+  const { p: S } = mk(D, { trackId: 'm-src', offline: true }, arpTo('m-tgt'));
+  const n = { i1: 0, i2: 0, i3: 0, ext: 0 };
+  for (const x of T.insts) { const f = x.noteOn; x.noteOn = function (k, v, ch, ext, ...a) { n[this.id]++; if (ext) n.ext++; return f.call(this, k, v, ch, ext, ...a); }; }
+  S.msg({ t: 'on', n: 60, v: 0.8 }); S.msg({ t: 'on', n: 64, v: 0.8 });
+  for (let k = 0; k < 300; k++) for (const p of [S, T]) run(D, p, 1);
+  const own = n.i3;
+  T.msg({ t: 'on', n: 48, v: 0.8 }); // (i3's arpeggiator: its MIDI OUT names its own track — never forwarded to it)
+  for (let k = 0; k < 100; k++) for (const p of [S, T]) run(D, p, 1);
+  assert.ok(own >= 5 && n.i1 >= own && n.i2 === n.i1, `the instruments play the ext notes (${n.i1}, ${n.i2}, ${own})`);
+  assert.ok(n.ext >= 3 * 5, 'ext notes');
+  for (const p of [S, T]) p.msg({ t: 'bye' });
+  assert.ok(T.insts.every(x => x.procs === null));
+});
+
+test('1e stats.per and smon per part on a graph node: every Inst (its own spans, a Serum\'s own FX excluded), every panel and every Serum\'s own FX', () => {
+  const D = dspScope({ engine: true, console: quiet });
+  let clock = 0;
+  D.run('(function (f) { Date.now = function now() { return f(); }; })', 'clock.js')(() => clock);
+  const { p, sent } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: classic('prophet5'), i2: serum(null, verb()) }, { fx1: fxOf(verb()) }, { os: 2, hostOS: 4, offline: true });
+  const [x1, x2] = p.insts, wrap = (o, k, dt) => { const f = o[k]; o[k] = function (...a) { clock += dt; return f.apply(this, a); }; };
+  wrap(x1, 'renderSpan', 2); wrap(x2, 'renderSpan', 3); wrap(p.chains[0].rack, 'process', 1); wrap(x2.rack, 'process', 1);
+  for (const n of [48, 52, 55]) p.msg({ t: 'on', n, v: 0.8 });
+  run(D, p, 200);
+  const st = sent.filter(m => m.t === 'stats');
+  assert.equal(st.length, 2);
+  for (const m of st) {
+    assert.equal(m.per.map(e => e.id).join(), 'i1,i2,fx1,i2/fx');
+    const by = Object.fromEntries(m.per.map(e => [e.id, e.load])), u = m.load / 7; // per quantum: 2 + (3 + 1) + 1 = 7 clock ms
+    for (const [id, k] of [['i1', 2], ['i2', 3], ['fx1', 1], ['i2/fx', 1]]) assert.ok(Math.abs(by[id] - k * u) < 1e-9, `${id}: ${by[id]} vs ${k * u}`);
+    assert.deepEqual([m.per[0].os, m.per[1].os, m.voices, m.os, m.per[0].voices], [x1.OS, x2.OS, x1.act, x1.OS, x1.act], 'voices / os: insts[0]\'s');
+    assert.equal(m.per[1].voices, x2.sxVoices());
+    assert.equal(Object.keys(m.per[2]).sort().join(), 'id,load');
+  }
+  const mons = (ids, quanta = 40) => { sent.length = 0; p.msg({ t: 'mon', ids }); run(D, p, quanta); return sent.filter(m => m.t === 'smon'); };
+  let s = mons(['i1', 'i2', 'fx1', 'i2/fx']);
+  const of = k => s.filter(m => (m.i || m.c) === k);
+  assert.ok(of('i1').length >= 3 && of('i1').every(m => m.s === null && m.gr === null && !('c' in m)), 'a classic Inst: no snapshot, no own FX');
+  assert.ok(of('i2').every(m => m.s && m.gr !== null && m.fxph !== null) && of('i2').length >= 3, 'a Serum: its snapshot and its own FX\'s meters');
+  assert.ok(of('fx1').every(m => m.gr !== null && !('s' in m)) && of('fx1').length >= 3, 'the panel');
+  assert.ok(of('i2/fx').length >= 3 && of('i2/fx').every(m => m.gr !== null && !('i' in m)), 'the Serum\'s own FX');
+  assert.equal(x2.sx.mon, 1);
+  s = mons(['fx1']);
+  assert.ok(s.length >= 3 && s.every(m => m.c === 'fx1'), 'only the panel on screen');
+  assert.deepEqual([x1.mon, x2.mon, x2.sx.mon], [false, false, 0]);
+  assert.equal(mons([]).length, 0);
+  // fxph / fxtap name the part
+  sent.length = 0; p.msg({ t: 'fxph', c: 'fx1' }); p.msg({ t: 'fxph', i: 'i2' }); p.msg({ t: 'fxph' });
+  assert.deepEqual(sent.map(m => [m.t, m.c || m.i, !!m.v]), [['fxph', 'fx1', true], ['fxph', 'i2', true], ['fxph', 'fx1', true]]);
+  const id = p.chains[0].rack.U[0].id;
+  p.msg({ t: 'fxtap', c: 'fx1', id });
+  assert.deepEqual([p.chains[0].rack.tapId, x2.rack.tapId], [id, '']);
+});
+
+test('1e removal (§2.5): a removed Inst fades out (click-free) and is dropped; a removed panel\'s tail plays out into OUT, then it is dropped and the track returns to the alias shape', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const { p } = gnode(D, graph(['i1', 'i2'], ['fx1', 'fx2'], [['i1', 'fx1', 1], ['i2', 'fx2', 1], ['fx1', 'out', 1], ['fx2', 'out', 1]]), { i1: SINE, i2: SINE }, { fx1: fxOf(), fx2: fxOf(verb()) });
+  const alone = graph(['i1'], ['fx1'], [['i1', 'fx1', 1], ['fx1', 'out', 1]]);
+  const o = play(D, p, 120, [[1, { t: 'on', n: 36, v: 0.8 }], [1, { t: 'on', n: 43, v: 0.8 }], [60, alone]]);
+  const st = Math.max(maxStep(o.L, 60, 20), maxStep(o.R, 60, 20));
+  assert.ok(peakOf(o.L) > 0.004 && st < 0.001, `largest step ${(20 * Math.log10(st)).toFixed(1)} dB`);
+  assert.deepEqual([p.dyI.length, p.dyC.length, p.simple], [0, 1, 0], 'i2 faded and dropped; fx2\'s reverb tail still playing');
+  const tail = peakOf(play(D, p, 40, [[0, { t: 'off', n: 36 }], [0, { t: 'off', n: 43 }]]).L.subarray(128 * 20));
+  assert.ok(tail > 1e-5, 'the tail reaches OUT');
+  run(D, p, Math.ceil(12 * SR / 128));
+  assert.deepEqual([p.dyC.length, p.simple, p.Lb === p.i0.Lb], [0, 1, true], 'idle: dropped, the alias shape again');
+});
+
+test('1e processorOptions (§2.5): graph / patches / chains / seqs build the track a message build builds — bit for bit (offline bounce = live)', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const g = graph(['i1', 'i2', gi('i3', { zone: { lo: 0, hi: 60, xp: -12 } })], ['fx1', 'fx2'], [['i1', 'fx1', 1], ['i2', 'fx1', 0.5], ['i3', 'fx2', 1], ['fx1', 'out', 1], ['fx2', 'out', 0.8]]);
+  const P = { i1: classic('juno60'), i2: serum(null, verb()), i3: classic('tb303') }, C = { fx1: fxOf(verb()), fx2: fxOf() }, S = Object.assign({}, SEQ);
+  const ev = chordEv(2, 90), fresh = () => { D.seed('po-vs-msg'); D.ctx.currentFrame = 0; };
+  fresh();
+  const { p: a } = gnode(D, g, P, C, NODE);
+  a.msg({ t: 'seq', i: 'i3', s: S });
+  const m = play(D, a, 160, ev);
+  fresh();
+  const { p: b } = mk(D, Object.assign({}, NODE, { graph: g, patches: Object.fromEntries(Object.entries(P).map(([k, x]) => [k, x.engine === 'serum' ? x : bare(x)])), chains: C, seqs: { i3: S } }));
+  assert.deepEqual([b.graphed, b.insts.map(x => x.id).join(), b.chains.map(c => c.id).join(), b.insts[2].sq.run, b.insts[1].kind], [1, 'i1,i2,i3', 'fx1,fx2', true, 'serum']);
+  const q = play(D, b, 160, ev);
+  assert.ok(peakOf(m.L) > 1e-3);
+  assert.ok(sameBits(m.L, q.L) && sameBits(m.R, q.R), 'identical');
+});
+
+test('1e: the graph paths are warmed up — the first live Track of a scope ran them, then restored itself to the legacy structure', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), { p } = mk(D, { os: 4, hostOS: 4 });
+  assert.deepEqual([p.graphed, p.simple, p.insts.length, p.chains.length, p.i0.id, p.c0.id, p.i0.fxc === p.c0, p.c0.ownBy === p.i0, p.i0.rack === p.c0.rack,
+    p.dyI.length, p.dyC.length, p.wI, p.i0.salt, p.i0.on, p.holdR.every(x => x === 0)], [0, 1, 1, 1, 'i0', 'c0', true, true, true, 0, 0, null, 0, 1, true]);
+  assert.ok(p.Lb === p.i0.Lb, 'the output stage on the Inst\'s buffers');
+});
+
+test('1e host protocol (lane B): a graph applies on-changes with the power semantics and the {t: power} that follows it is a no-op; {t: chain} without fxrT keeps the tables', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const g = on2 => graph(['i1', gi('i2', { on: on2 })], ['fx1'], EDGES2);
+  const { p } = gnode(D, g(true), { i1: SINE, i2: SINE }, { fx1: fxOf() });
+  const x2 = p.insts[1], log = [], f = x2.noteOn, a = x2.allOff;
+  x2.noteOn = function (n, ...r) { log.push('+' + n); return f.call(this, n, ...r); };
+  x2.allOff = function (h) { log.push('allOff' + (h ? '!' : '')); return a.call(this, h); };
+  p.msg({ t: 'on', n: 40, v: 0.8 }); run(D, p, 4);
+  p.msg(g(false)); p.msg({ t: 'power', i: 'i2', on: false });
+  assert.deepEqual([log.splice(0).join(), x2.on], ['+40,allOff!', 0], 'the graph powers off (one fade); the power message changes nothing');
+  run(D, p, 4);
+  p.msg(g(true)); p.msg({ t: 'power', i: 'i2', on: true });
+  assert.deepEqual([log.splice(0).join(), x2.on], ['+40', 1], 'the graph powers on and restrikes once');
+  // {t: chain} without fxrT (its tables key unchanged): the rack keeps its tables
+  const r = p.chains[0].rack, xs = [];
+  const sx = r.setXS; r.setXS = function (t) { xs.push(t); return sx.call(this, t); };
+  p.msg(Object.assign({ t: 'chain', c: 'fx1' }, { fxr: fxOf(verb()).fxr }));
+  assert.equal(xs.length, 0, 'no fxrT: the previous tables stay');
+  p.msg(Object.assign({ t: 'chain', c: 'fx1' }, fxOf(verb())));
+  assert.equal(xs.length, 1);
+  // fxover (§8.5) names the part on a graph node: {c} a panel, {i} a Serum's own FX
+  const { p: q, sent } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: SINE, i2: serum() }, { fx1: fxOf() });
+  q.chains[0].rack.over = ['m1']; q.insts[1].rack.over = ['m2'];
+  sent.length = 0; q.assets();
+  assert.deepEqual(sent.filter(m => m.t === 'fxover').map(m => [m.i || m.c, m.ids.join()]), [['i2', 'm2'], ['fx1', 'm1']]);
+});
+
+test('1e host protocol (lane B): a classic primary straight to OUT keeps c0 as its private chain (c0 = chains[0] || i0.fxc); {t: fxph} without c answers c0; processorOptions with patch / seq null', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const { p, sent } = mk(D, NODE, classic('juno60'));
+  const I = p.i0, C = p.c0;
+  p.msg(graph(['i1'], [], [['i1', 'out', 1]]));
+  assert.deepEqual([p.chains.length, p.c0 === C, I.fxc === C, C.id, C.ownBy === I, I.rack, I.sharedRack, p.simple], [0, true, true, 'i1/fx', true, null, 0, 0]);
+  sent.length = 0; p.msg({ t: 'fxph' });
+  assert.deepEqual([sent.length, sent[0].c], [1, 'i1/fx']);
+  p.msg({ t: 'on', n: 48, v: 0.8 });
+  assert.ok(peakOf(play(D, p, 10).L) > 1e-3, 'it sounds straight into OUT');
+  // the first graph adopts the panel the primary feeds as c0
+  const { p: q } = mk(D, NODE, classic('juno60'));
+  const c0 = q.c0;
+  q.msg(graph(['i1', 'i2'], ['fx1', 'fx2'], [['i2', 'fx1', 1], ['i1', 'fx2', 1], ['fx1', 'out', 1], ['fx2', 'out', 1]]));
+  assert.deepEqual([c0.id, q.chains[1] === c0, q.i0.rack === c0.rack, q.c0 === q.chains[0]], ['fx2', true, true, true]);
+  // processorOptions of a graph node: patch / seq null
+  const { p: b } = mk(D, Object.assign({}, NODE, { patch: null, seq: null, graph: graph(['i1'], ['fx1'], [['i1', 'fx1', 1], ['fx1', 'out', 1]]),
+    patches: { i1: bare(classic('prophet5')) }, chains: { fx1: fxOf() }, seqs: {} }));
+  assert.deepEqual([b.graphed, b.simple, b.i0.id, b.c0.id, b.i0.p.poly], [1, 1, 'i1', 'fx1', b.i0.voices.length]);
 });
