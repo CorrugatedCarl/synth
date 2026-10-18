@@ -723,3 +723,20 @@ test('folded jacks (1c, the iPad report): outside the edges, clear of ⋯ / ▾ 
   assert.equal(i1.fold, true);
   V.destroy();
 });
+
+test('setCpu (1d): the module\'s DSP load on its top bar — its share of the audio deadline (the engine\'s stats per Inst / Chain), empty for none', () => {
+  const doc = fresh(), { m } = mod({}, { doc }), c = one(m.bar, 'cv-cpu');
+  assert.equal(c.textContent, '', 'nothing until the engine reports');
+  m.setCpu(0.0234); assert.equal(c.textContent, '2.3%'); assert.match(c.title, /2\.3% of the audio deadline/);
+  m.setCpu(0.42); assert.equal(c.textContent, '42%');
+  m.setCpu(0.00002); assert.equal(c.textContent, '<0.1%');
+  m.setCpu(null); assert.deepEqual([c.textContent, c.title], ['', '']);
+  m.setCpu(NaN); assert.equal(c.textContent, '');
+});
+
+test('the CPU slot (1d review): a fixed width with tabular digits, so a changing figure never moves the chip or the title', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8'), r = (css.match(/\.cv-cpu \{[^}]*\}/) || [''])[0];
+  assert.match(r, /flex: none/, 'never shrinks'); assert.match(r, /min-width: 5ch/, '"<0.1%" … "100%" in one slot (a monospace font)');
+  assert.match(r, /text-align: right/); assert.match(r, /white-space: nowrap/); assert.match(r, /font-variant-numeric: tabular-nums/);
+  assert.match(css, /\.cv-cpu:empty \{ display: none; \}/, 'no slot without a figure (OUT, power off)');
+});

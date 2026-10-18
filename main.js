@@ -621,6 +621,7 @@ function powerOff() {
   previewStop(); previewEnd(); // (the kept preview node belongs to this context)
   ctx = null; pendCtx = null; powering = null; an = null; master = null; metroBus = null;
   nodes.clear(); meterRun(null);
+  if (cvView) for (const m of cvView.modules.values()) if (m.setCpu) m.setCpu(null); // (no engine: no module CPU)
   if (readyF) readyF(); // a power-on waiting for the engine's 'ready' gives up now (no nodes left)
   seqRun.clear(); if (model.id === 'tb303') renderPanel();
   for (const k of [...held.keys()]) held.delete(k);
@@ -645,7 +646,7 @@ function makeNode(tr) {
   const id = tr.id;
   node.port.onmessage = e => {
     const d = e.data, t = project.tracks.find(x => x.id === id) || tr;
-    if (d.t === 'stats') { N.load = d.load; N.voices = d.voices; N.os = d.os || 0; statsText(); }
+    if (d.t === 'stats') { N.load = d.load; N.voices = d.voices; N.os = d.os || 0; statsText(); if (Array.isArray(d.per)) cvCpu(id, N, d.per); }
     else if (d.t === 'ready') { N.ready = true; if (readyF) readyF(); } // the processor is built (the first: warmed up)
     else if (d.t === 'step' && t.id === project.selTrack && (seqRun.has(t.id) || (T.playing && seqOf(t).sync))) seqStep(t, d.s);
     else if (d.t === 'smon') { if (d.fxph) N.fxph = d.fxph; monitors.deliver(id, d); }
@@ -657,8 +658,20 @@ function makeNode(tr) {
   };
   if (T.playing && T.a) node.port.postMessage(Object.assign({ t: 'transport', play: true, seek: true }, T.a));
   if (patch.needs) tables.ensure(patch.needs, { trackId: tr.id, node, s: isSx(tr) ? tr.vals.s : null, fx: fxOf(tr), convMax: patch.fxr && patch.fxr.convMax });
-  if (monitors.wanted(id)) { node.port.postMessage({ t: 'smon', on: true }); monitors.on.set(id, true); }
+  const mw = monitors.wanted(id);
+  if (mw.length) { node.port.postMessage({ t: 'mon', ids: mw }); monitors.on.set(id, mw.join()); }
   return N;
+}
+// the modules' CPU on their top bars (SPEC-canvas §10 1d): the engine's load per Inst / Chain of the track shown, smoothed
+// over ≈ 1 s (stats arrive every 0.25 s of audio; a part's time is counted in whole ms, unbiased but noisy); stage 1d: the
+// engine's i0 is the instrument module, c0 the FX module (a Serum: its own FX)
+const CPU_PART = { i0: () => cvModule.ID.inst, c0: t => cvModule.fxKey(t.model) };
+function cvCpu(id, N, per) {
+  const sm = N.cpu || (N.cpu = {});
+  for (const e of per) if (e && CPU_PART[e.id] && Number.isFinite(e.load)) sm[e.id] = sm[e.id] === undefined ? e.load : sm[e.id] + 0.25 * (e.load - sm[e.id]);
+  const t = cvView && cvView.trackId === id ? project.tracks.find(x => x.id === id) : null;
+  if (!t) return;
+  for (const k of Object.keys(sm)) { const m = cvView.modules.get(CPU_PART[k](t)); if (m && m.setCpu) m.setCpu(sm[k]); }
 }
 function syncNodes() {
   if (!ctx) return;
@@ -1514,36 +1527,40 @@ function genProgress(p) {
 const userTables = s => (s ? userIdsOf(s) : []);
 const userSmps = (s, fx) => userAssetIds(s || null, fx || null);
 
-// snapshot / FX meter subscriptions (smon, §11.6; SPEC-canvas §6.9, §9.3): one per mounted module with live displays,
-// keyed by (track, device) — a Serum panel (its device), an FX panel (its device; a Serum's own FX: the Serum's) — each
-// live while its module is (cvLive: the CANVAS view, on screen, not folded) and never for a hidden page. A track's node
-// sends snapshots ({t: 'smon', on}) while any of its subscriptions is live; a snapshot reaches every subscription of it.
-//   sub(trackId, dev, {live() → bool, deliver(d)}) → off
+// snapshot / FX meter subscriptions (smon, §11.6; SPEC-canvas §6.8, §6.9, §9.3): one per mounted module with live
+// displays, keyed by (track, device) — a Serum panel (its device), an FX panel (its device; a Serum's own FX: the
+// Serum's) — each live while its module is (cvLive: the CANVAS view, on screen, not folded) and never for a hidden page,
+// naming the engine parts it shows (`parts`: the Inst i0 — Serum's snapshot —, the Chain c0 — the rack's meters; stage
+// 1d's canonical track). A track's node sends snapshots of the parts of its live subscriptions ({t: 'mon', ids}; on: their
+// ids, sorted, joined); a snapshot reaches every subscription of the track.
+//   sub(trackId, dev, {parts, live() → bool, deliver(d)}) → off
 const monitors = {
   subs: new Set(), on: new Map(),
   sub(trackId, dev, o) {
-    const S = { trackId, dev, live: o.live, deliver: o.deliver };
+    const S = { trackId, dev, parts: Array.isArray(o.parts) && o.parts.length ? o.parts : ['i0', 'c0'], live: o.live, deliver: o.deliver };
     this.subs.add(S);
     this.sync();
     return () => { if (this.subs.delete(S)) this.sync(); };
   },
-  wanted(id) {
-    if (document.hidden) return false;
-    for (const S of this.subs) if (S.trackId === id) { try { if (S.live()) return true; } catch (err) { console.warn(err); } }
-    return false;
+  wanted(id) { // → the parts to monitor, sorted ([] = none)
+    const w = new Set();
+    if (document.hidden) return [];
+    for (const S of this.subs) if (S.trackId === id) { try { if (S.live()) for (const q of S.parts) w.add(q); } catch (err) { console.warn(err); } }
+    return [...w].sort();
   },
   sync() {
     const ids = new Set(this.on.keys());
     for (const S of this.subs) ids.add(S.trackId);
     for (const id of ids) {
-      const w = this.wanted(id);
-      if (!!this.on.get(id) === w) continue;
-      if (w) this.on.set(id, true); else this.on.delete(id);
-      postTo({ id }, { t: 'smon', on: w });
+      const w = this.wanted(id), k = w.join();
+      if ((this.on.get(id) || '') === k) continue;
+      if (k) this.on.set(id, k); else this.on.delete(id);
+      postTo({ id }, { t: 'mon', ids: w });
     }
     if (peerStale && !peerT) peerT = requestAnimationFrame(peerRun); // a peer edited while this one was hidden
   },
   deliver(id, d) { for (const S of [...this.subs]) if (S.trackId === id && S.deliver) S.deliver(d); },
+  fx(id) { return (this.on.get(id) || '').split(',').includes('c0'); }, // the rack's meters and phases arrive (N.fxph fresh)
 };
 // the Serum panel's subscription (SerumUI host.monitor: on while it is built and the page shows): per track
 const sxMons = new Map(); // track id → off
@@ -1551,7 +1568,7 @@ function sxMonitor(t, on) {
   const id = t.id, off = sxMons.get(id);
   if (!on) { if (off) { sxMons.delete(id); off(); } return; }
   if (off) { monitors.sync(); return; }
-  sxMons.set(id, monitors.sub(id, t.prim || 'i1', {
+  sxMons.set(id, monitors.sub(id, t.prim || 'i1', { parts: ['i0', 'c0'], // (its snapshot, and its FX page's meters)
     live: () => sxPanel.trackId === id && cvLive(cvModule.ID.inst),
     deliver: d => { if (sxPanel.ui && sxPanel.trackId === id) { sxPanel.ui.setSnapshot(d); zoneWarm(id, d.s); } },
   }));
@@ -1629,7 +1646,7 @@ function syncPhases() {
   for (const t of project.tracks) {
     const N = nodes.get(t.id), fx = fxOf(t);
     if (!N || !hasLfoFx(fx)) continue;
-    if (monitors.on.get(t.id) && N.fxph) { setPhases(t, N.fxph); continue; }
+    if (monitors.fx(t.id) && N.fxph) { setPhases(t, N.fxph); continue; }
     jobs.push(new Promise(res => {
       const tm = setTimeout(res, 300);
       N.phWait.push(v => { clearTimeout(tm); setPhases(t, v); res(); });
@@ -1728,7 +1745,7 @@ function sxSave(t, name, cat) {
   sxSaveUser(up);
   t.preset = name; sxKeys.set(t.id, 'u:' + name); sxDirty.delete(t.id);
   renderHeads(); persist();
-  if (N && !monitors.on.get(t.id)) { // monitoring off: ask the rack for its phases and complete the stored preset
+  if (N && !monitors.fx(t.id)) { // monitoring off: ask the rack for its phases and complete the stored preset
     N.phWait.push(v => {
       if (!v) return;
       setPhases(t, v);
@@ -2267,7 +2284,7 @@ function renderFxTab() {
       fxTab.trackId = t.id; fxTab.dev = fd ? fd.id : null; fxTab.fx = fxOf(t); fxTab.sx = isSx(t);
       fxTab.ui = new M.fxui.FXRackUI(box, fxHost(t, rec), { embedded: false, dsp: globalThis.FXDSP || null, racks: isSx(t) ? 3 : 1, v2Fx: true });
       if (fxTab.ui && fxTab.ui.el && fxTab.dev) fxTab.ui.el.setAttribute('data-dev', fxTab.dev); // (its fx.<inst>.<pid> dests: that device's)
-      fxTab.mon = monitors.sub(t.id, fxTab.dev, { live: () => rec.trackId === t.id && !!rec.ui && cvLive(key), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; } });
+      fxTab.mon = monitors.sub(t.id, fxTab.dev, { parts: ['c0'], live: () => rec.trackId === t.id && !!rec.ui && cvLive(key), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; } });
     } catch (err) {
       console.error(err);
       fxTab.ui = null; fxTab.trackId = null;
@@ -3323,7 +3340,7 @@ let scopeMode = 'wave';
 const td = new Float32Array(8192), fd = new Float32Array(4096);
 function drawScope() {
   const cv = $('#scope');
-  if (!cv.offsetParent) return;
+  if (!cv.offsetParent || (cvView && !cvView.live(cvModule.ID.out))) return; // (canvas: only while OUT is live — on screen, not folded)
   // the store through the kit (wk.fitCanvas): dpr capped at 2 and, in the OUT module, the camera's zoom (clamp(dpr·k,
   // 0.5, 2), SPEC §4.4): sharp at 200 %, no full-size store per frame at 50 %. The context draws in CSS px
   const W = cv.clientWidth, H = cv.clientHeight;

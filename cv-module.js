@@ -211,7 +211,7 @@ export function createModule(o, env) {
   const stripe = mk('span', 'cv-stripe'); stripe.setAttribute('aria-hidden', 'true');
   const ttl = mk('span', 'cv-ttl'), tEl = mk('span', 'cv-title'), sEl = mk('span', 'cv-sub');
   ttl.append(tEl, sEl);
-  const chipEl = mk('span', 'cv-chip'), cpu = mk('span', 'cv-cpu'); // CPU: per module from 1d (empty until then)
+  const chipEl = mk('span', 'cv-chip'), cpu = mk('span', 'cv-cpu'); // CPU: per module (setCpu, the engine's stats per Inst / Chain)
   const more = btn('cv-btn cv-more', 'Module menu'); more.textContent = '⋯'; more.setAttribute('aria-haspopup', 'menu');
   const foldB = btn('cv-btn cv-fold', 'Fold', FOLD_SVG);
   bar.append(pow, stripe, ttl, chipEl, cpu, more, foldB);
@@ -407,6 +407,11 @@ export function createModule(o, env) {
     rect: () => ({ x: lx, y: ly, w, h: fold ? BAR_H : measure() }),
     onScreen,
     setPos, setW, setFold, setZ, setTitle, setChip, setFixed,
+    /** (1d) the module's DSP load on its top bar: a fraction of the audio deadline (the engine's stats.per), null = none */
+    setCpu(load) {
+      const t = fin(load) && load >= 0 ? (load >= 0.1 ? Math.round(load * 100) : load >= 0.001 ? (load * 100).toFixed(1) : '<0.1') + '%' : '';
+      if (cpu.textContent !== t) { cpu.textContent = t; cpu.title = t ? 'DSP load of this module: ' + t + ' of the audio deadline' : ''; }
+    },
     /** module-local offset of a jack (pure geometry: w and fold) */
     port(jackId) { const j = jacks.get(jackId), o = fold ? JACK_OUT : 0; return j ? { x: j.side === 'left' ? (o ? -o : 0) : w + o, y: jackY() } : { x: w / 2, y: BAR_H / 2 }; },
     // (additions) state reads for the track view, main.js and tests

@@ -758,7 +758,8 @@
             const id = this.outIds[G[6]];
             if (typeof id !== 'string' || !id) continue;
             const T = reg.get(id);
-            if (!T || T === this.proc || typeof T.extNote !== 'function' || T === sent) continue;
+            // never its own track (the registry holds the engine's Track, proc is its Inst: proc.T)
+            if (!T || T === this.proc || T === this.proc.T || typeof T.extNote !== 'function' || T === sent) continue;
             if (tap === 2 && (T === this.fwdSk0 || T === this.fwdSk1)) continue;   // this clip note reached T by the Clip Player tap
             const old = this.fwdP[slot];
             if (old !== null && old !== T) old.extNote(F + EXT_DELAY, 0, n, 0);

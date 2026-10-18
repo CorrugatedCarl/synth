@@ -203,7 +203,7 @@ test('cvReveal: selects the track, focuses the module (k 1 below READ_K); cvModu
   assert.deepEqual(cv.size('minimoog'), { w: 1408, h: 512 }, 'a model with a hardware panel: its fixed size (the Hardware layout)');
 });
 
-test('monitors (smon) follow the module: on while the Serum module is on screen, off in ROLL, folded or off screen', async () => {
+test('monitors ({t: mon, ids}) follow the module: on while the Serum module is on screen, off in ROLL, folded or off screen', async () => {
   await sim.power(); sim.raf(); await sim.settle(5);
   const t = api.addTrack(undefined); // a classic track; switched to a Serum below
   api.setTrackModel(t, 'serum'); sim.raf(); await sim.settle(5);
@@ -213,9 +213,12 @@ test('monitors (smon) follow the module: on while the Serum module is on screen,
   const refresh = { sx: 0, fx: 0 };
   cv.sxPanel.ui = { refresh() { refresh.sx++; }, destroy() {}, setSnapshot() {}, confirmChange: () => true, snap: null };
   cv.sxPanel.trackId = t.id; cv.sxPanel.vals = T().vals;
-  const smon = () => api.nodes.get(t.id).node.posted.filter(x => x.m && x.m.t === 'smon').map(x => x.m.on);
+  const mons = () => api.nodes.get(t.id).node.posted.filter(x => x.m && x.m.t === 'mon').map(x => x.m.ids);
+  const smon = () => mons().map(ids => ids.length > 0); // (on: any part subscribed)
   api.sxHost(T()).monitor(true);
   assert.deepEqual(smon().slice(-1), [true], 'shown: on');
+  assert.deepEqual(mons().slice(-1), [['c0', 'i0']], 'the Serum module: its snapshot (Inst i0) and its FX page\'s meters (Chain c0)');
+  assert.equal(api.nodes.get(t.id).node.posted.filter(x => x.m && x.m.t === 'smon').length, 0, 'the legacy smon is not sent');
   cv.openTab('roll');
   assert.deepEqual(smon().slice(-1), [false], 'ROLL: off');
   cv.openTab('canvas');
@@ -550,4 +553,27 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   assert.equal(sh.srcDrag.drop('juno60', { over: 'canvas' }), true); sim.raf();
   assert.equal(sh.srcDrag.drop('dx7', { over: 'tracks' }), true); sim.raf();
   assert.deepEqual([sh.shell.src.isOpen(), tiles.mode()], [true, 'replace'], 'open; back to replacing after a new track');
+});
+
+test('module CPU (1d): the engine\'s stats per Inst / Chain reach the shown track\'s instrument and FX modules (OUT has none)', async () => {
+  await sim.power(); sim.raf(); await sim.settle(5);
+  const t = T(), cpu = key => { const m = V().modules.get(key); return m ? (m.bar.children.find(c => c.className === 'cv-cpu') || {}).textContent : null; };
+  sim.run(Math.round(sim.ctx().sampleRate * 0.6));
+  assert.match(cpu(cvModule.ID.inst), /%$/, 'the instrument module: Inst i0');
+  assert.match(cpu(cvModule.fxKey(t.model)), /%$/, 'the FX module: Chain c0');
+  assert.equal(cpu(cvModule.ID.out), '', 'OUT: no engine part');
+});
+
+test('OUT scope (1d review): drawn only while the OUT module is live — not off screen, not folded', async () => {
+  await sim.power(); sim.raf(); await sim.settle(5);
+  const sc = sim.$('#scope'), m = () => V().modules.get(cvModule.ID.out), gc = sc.getContext, g = new Proxy({}, { get: () => () => {} });
+  let n = 0;
+  sc.offsetParent = {}; sc.getContext = () => { n++; return g; }; // (laid out; each draw fetches its context once)
+  try {
+    sim.raf(); assert.ok(n > 0, 'on screen: drawn');
+    m().onScreen(false); n = 0; sim.raf(); assert.equal(n, 0, 'off screen: not drawn (nothing visible changes)');
+    m().onScreen(true); sim.raf(); assert.ok(n > 0, 'back on screen: drawn');
+    V().toggleFold(cvModule.ID.out); n = 0; sim.raf(); assert.equal(n, 0, 'folded: not drawn');
+    V().toggleFold(cvModule.ID.out); sim.raf(); assert.ok(n > 0, 'unfolded: drawn');
+  } finally { sc.offsetParent = null; sc.getContext = gc; }
 });

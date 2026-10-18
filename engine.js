@@ -1440,7 +1440,7 @@ const EXT_N = 256;                                                           // 
 // every processor of this scope (until its {t: 'bye'}): an asset stored or dropped through any node is announced to every
 // rack (FXRack.assets(): Convolve adopts an IR that arrived after its patch and sizes its delay lines, §9.5)
 const ALL = new Set();
-function assetsChanged() { for (const q of ALL) if (q.rack) { try { q.rack.assets(); q.fxOver(); } catch (err) { /* a failed rack keeps its old IR */ } } }
+function assetsChanged() { for (const q of ALL) q.assets(); }
 const osCapOf = base => Math.max(1, 2 ** Math.floor(Math.log2(384000 / base + 1e-9))); // internal rate ≤ 384 kHz
 function decChain(os) { // cascaded half-band decimators for one channel: os → 1
   const d = [];
@@ -1449,96 +1449,62 @@ function decChain(os) { // cascaded half-band decimators for one channel: os →
   return d;
 }
 
-class SynthProcessor extends AudioWorkletProcessor {
-  constructor(opt) {
-    super();
-    const po = (opt && opt.processorOptions) || {};
-    this.hostOS = po.hostOS || po.os || 4; // the app's oversampling (a Serum track runs at its own, §11.4)
-    this.offline = !!po.offline;           // a bounce / resample: no deadline, so no JIT warm-ups
-    this.init(po.os || 4);
-    // the first processor in this global scope warms the JIT up before anything is heard (once, never again)
-    if (!warmed && !this.offline) { warmed = true; try { this.warmUp(); } catch (err) { /* a failed warm-up only costs speed */ } this.restore(po.os || 4); }
-    // MIDI OUT target registry (§7.9): track nodes only. A processor without a track id (preset preview, resample, render
-    // farm) has no registry either: its sequencer's MIDI OUT events are dropped (§7.9 "has no target")
-    this.trackId = typeof po.trackId === 'string' && po.trackId ? po.trackId : '';
-    if (this.trackId) { PROCS.set(this.trackId, this); this.procs = PROCS; }
-    ALL.add(this);
-    // wavetables / sample assets of an offline render (bounce, resample): given to the first node of the context only,
-    // the stores are shared by every processor of the global scope (§7.5; SPEC-serum2 §9.6)
-    const SD = globalThis.SerumDSP, SB = globalThis.SxBase;
-    if (SD && Array.isArray(po.wts)) for (const e of po.wts) if (e && e.id) SD.storeWT(e.id, e);
-    if (SB && Array.isArray(po.smps)) for (const e of po.smps) if (e && e.id) SB.storeAsset(e.id, e);
-    if (po.patch) this.setPatch(po.patch);
-    if (po.seq) this.seqMsg(po.seq);
-    if (po.song) this.songMsg(po.song);
-    if (po.transport) this.transportMsg(po.transport);
-    this.port.onmessage = (ev) => this.msg(ev.data);
-    // built (the first processor of the scope: warmed up) — main.js resumes a context it held suspended meanwhile (WebKit)
-    if (!this.offline) this.port.postMessage({ t: 'ready' });
-  }
-  // Renders every engine path through attack, sustain and release, so a model's first notes do not run in the
-  // interpreter while the JIT catches up (single quanta used to reach 1.5-2x the budget). Two rounds: the first
-  // collects type feedback for every branch, the second leaves code optimised with all of it.
-  warmUp() {
-    const io = [[new Float32Array(128), new Float32Array(128)]], run = (k) => { for (let b = 0; b < k; b++) { this.process(null, io); this.statN = 0; } };
-    for (let round = 0; round < 2; round++) {
-      for (const w of WARM) {
-        this.setPatch(w);
-        this.noteOn(48, 0.9); this.noteOn(67, 0.6);
-        run(30);
-        if (round === 0) this.reqOS(this.OS === 4 ? 2 : 4);
-        this.noteOff(48); this.noteOff(67);
-        run(10);
-        this.osPend = 0; this.osR = 1; this.osHold = 0;
-      }
-    }
-    // Serum voices (every warp / filter family / LFO mode, §8.4.2) and every FX rack module and mode (§8.5.2)
-    const SD = globalThis.SerumDSP;
-    if (SD) SD.warmUp(this);
-    if (this.rack) this.rack.warmUp();
+// SPEC-canvas §6.2: a track is one Track (the AudioWorkletProcessor 'synth-engine', below) holding Insts (instruments)
+// and Chains (FX panels). Stage 1d: every track is canonical — one Inst (i0) and one Chain (c0, the track's FX rack:
+// a classic Inst feeds it as a shared panel, a Serum Inst holds it as its own FX) — driven by today's messages.
+// Inst: an instrument — voices, smoothing, LFO, tails, decimators, chorus / ensemble, the TB-303 sequencer, a Serum's
+// sequencer and own FX: every field the voice and DSP scripts read by name (`e.*`, `proc.*`). The method bodies were
+// moved from the single-class processor unchanged (§6.2 verbatim-move rule; the few lifted lines are marked §6.2). The
+// Track's `tp` is shared by reference; `songBeat()`, `nowF()`, `songHas()` forward to it. One class for every path (live,
+// preview, offline, render farm, golden harness): only Inst objects reach AVoice / FVoice / Divide / SerumVoice /
+// SerumDSP / SxMod / SxSeq as their host, so their property loads stay monomorphic.
+class Inst {
+  constructor(T, os, fxc) {
+    this.T = T; this.id = 'i0'; this.port = T.port; this.tp = T.tp; this.fxc = fxc; // fxc: the Chain of this.rack
+    this.hostOS = T.hostOS; // the app's oversampling (a Serum track runs at its own, §11.4)
+    this.offline = T.offline;
+    this.init(os, fxc.rack);
   }
   // back to the freshly built state after the warm-up, resetting in place (fields that never change in normal use
   // are not reassigned, so the code compiled during the warm-up stays valid)
   restore(os) {
     this.kind = ''; this.voices = null; this.div = null;
     this.bend = this.bendRaw = this.wheel = this.at = 0; this.sustain = false; this.clrHeld(); this.stamp = 0;
-    this.lfoPh = this.lfoSH = this.lfoLast = this.gdrift = 0; this.r = 987654321; this.loadT = 0; this.statN = 0; this.ctl = 0; this.act = 0;
-    this.chorus.reset(); this.ens.reset(); this.lim.reset(); this.dcx.fill(0); this.dcy.fill(0);
+    this.lfoPh = this.lfoSH = this.lfoLast = this.gdrift = 0; this.r = 987654321; this.ctl = 0; this.act = 0;
+    this.chorus.reset(); this.ens.reset();
     const SD = globalThis.SerumDSP;
     if (SD && this.sx) SD.reset(this);
     if (this.rack) this.rack.reset();
-    this.ct = null; this.pat.fill(0); this.patSeen = false; this.mon = false; this.monF = 0; this.spanF = 0;
-    this.pnN = 0; this.nfG = 1; this.nfT = 1; this.sxW = 0; this.sxWK = ''; this.sxWarm = null;
-    this.extN = 0; this.lastNote = 60; this.mpe.fill(0); this.vOwn.fill(0); this.audK.fill(0);
+    this.ct = null; this.pat.fill(0); this.patSeen = false; this.mon = false;
+    this.nfG = 1; this.nfT = 1; this.sxW = 0; this.sxWK = ''; this.sxWarm = null;
+    this.lastNote = 60; this.mpe.fill(0); this.vOwn.fill(0); this.audK.fill(0);
     this.sqOff(); this.sxSeq = null; this.vcN = 0; this.rr.fill(0); this.mixPk.fill(0); this.monoCh = 0; this.monoEx = null;
-    this.sxMask = 1; this.sxBusOn = 0; this.sxReal = 1; this.sxRel = 0; this.sxRelN = 0; this.sxRelT = 0; this.inSpan = 0;
+    this.sxMask = 1; this.sxBusOn = 0; this.sxReal = 1; this.sxRel = 0; this.sxRelN = 0; this.sxRelT = 0;
     this.setOS(os);
-    this.dacHold = this.dacT = this.dacPend = 0; this.osPend = 0; this.osR = 1; this.osHold = 0; this.quietF = 0; this.frames = 0;
+    this.dacHold = this.dacT = this.dacPend = 0; this.osPend = 0; this.osR = 1; this.osHold = 0; this.quietF = 0;
     this.setPatch(DEFAULT_PATCH);
   }
-  init(os) {
-    this.voices = null; this.div = null; this.sq = null; this.songCtl = false;
+  init(os, rack) {
+    this.voices = null; this.div = null; this.sq = null;
     this.base = sampleRate;
     this.p = DEFAULT_PATCH;
     this.bend = 0; this.bendRaw = 0; this.wheel = 0; this.at = 0; this.sustain = false;
     this.held = []; this.heldC = []; this.heldE = []; this.stamp = 0; this.monoGate = false;
     this.lfoPh = 0; this.lfoSH = 0; this.lfoLast = 0; this.gdrift = 0; this.r = 987654321;
-    this.load = 0; this.loadT = 0; this.statN = 0; this.ctl = 0;
+    this.ctl = 0;
     this.smT = new Float64Array(S_N); this.smS = new Float64Array(S_N); this.smA = new Float64Array(S_N);
     this.smB = new Float64Array(S_N); this.smD = new Float64Array(S_N); this.smMv = false;
     // Serum host fields (§8.4.1, §11.2): sx belongs to SerumDSP (attach), ct = last curve tables, pat = poly pressure
-    this.sx = null; this.ct = null; this.pat = new Float64Array(128); this.patSeen = false; this.spanF = 0;
+    this.sx = null; this.ct = null; this.pat = new Float64Array(128); this.patSeen = false;
     // sxW: the hidden-voice warm-up runs (SerumDSP.warmStart); sxWK: the patch shape it last warmed (SerumDSP.warmKey);
     // sxWarm: SxBase's lazy warm-up queue of this processor (declared here: created by warmAdd, §11.10)
     this.sxUse = 1; this.sxOne = 1; this.sxDir = 0; this.sxDirOn = 0; this.sxW = 0; this.sxWK = ''; this.sxWarm = null;
-    this.mon = false; this.monF = 0; // snapshot / FX monitor subscription (smon)
-    this.pnN = 0; this.pnM = Math.max(1, Math.round(this.base * 0.005)); // panic: frames left of the output fade, its length
+    this.mon = false; // this Inst's snapshot is subscribed (smon / mon: SerumDSP's sx.mon follows it)
     this.nfG = 1; this.nfT = 1; // Serum without the FX rack: master × bypass gain (now, target)
-    // MIDI OUT ring (§7.9): [frame, on, note, velocity] × EXT_N, extN entries in arrival order; the last note-on of any
-    // model (the FX rack's key tracking, §12.5); MPE expressions per channel 0–16 [bend, y, z, x] (§12.4, read by SxMod)
-    // (lastNote: a double field from the start, as SerumVoice.note — a boxed note number must not change the
-    // processor's map at the first note, V8)
-    this.ext = new Float64Array(EXT_N * 4); this.extN = 0; this.lastNote = 60.5; this.lastNote = 60; this.mpe = new Float64Array(17 * 4);
+    // the last note-on of any model (the FX rack's key tracking, §12.5); MPE expressions per channel 0–16 [bend, y, z, x]
+    // (§12.4, read by SxMod) (lastNote: a double field from the start, as SerumVoice.note — a boxed note number must not
+    // change the processor's map at the first note, V8)
+    this.lastNote = 60.5; this.lastNote = 60; this.mpe = new Float64Array(17 * 4);
     // Serum v2 processor fields (SPEC-serum2 §12.2): the sequencer (SxSeq.Seq, made on the first Serum patch with an
     // SQP; sqOn = the patch's sequencer is active and applied), clip-lane macro bases (NaN = none, written by SxSeq),
     // the Voice Control step counter (SxMod), multisample round-robin counters, the engine's MIDI OUT registry (read by
@@ -1546,7 +1512,7 @@ class SynthProcessor extends AudioWorkletProcessor {
     // arrays of generated notes, the transposition record of notes played without SxSeq (§7.1: kbd.trans applied here),
     // the mono voice's channel / expression, the snapshot's Bus 1 / Bus 2 / Main / Direct peaks (§6.20 mix[7…10])
     this.sxSeq = null; this.sqOn = 0; this.sqTr = 0; this.seqMacro = new Float64Array(8).fill(NaN); this.vcN = 0;
-    this.rr = new Uint16Array(512); this.procs = null; this.inSpan = 0; this.ending = 0;
+    this.rr = new Uint16Array(512); this.procs = null;
     this.sxExA = []; for (let i = 0; i < SXV; i++) this.sxExA.push(new Float64Array(3));
     this.sxTr = new Int16Array(17 * 128).fill(-1); this.monoCh = 0; this.monoEx = null;
     // R7 B5: who owns each poly voice (by voice index: 0 the song / the keys, 1 a preview — the Piano Roll's audition,
@@ -1562,26 +1528,17 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.sxMask = 1; this.sxBusOn = 0; this.sxReal = 1; this.sxRel = 0; this.sxRelN = 0; this.sxRelT = 0;
     this.b1Lb = new Float64Array(128); this.b1Rb = new Float64Array(128); this.b2Lb = new Float64Array(128); this.b2Rb = new Float64Array(128);
     this.setOS(os);
-    this.chorus = new Chorus(this.base); this.ens = new Ensemble(this.base); this.lim = new Limiter(this.base);
-    this.dcx = new Float64Array(2); this.dcy = new Float64Array(2); // (typed: the field keeps one type in every processor)
+    this.chorus = new Chorus(this.base); this.ens = new Ensemble(this.base);
     this.monoBuf = new Float64Array(128); this.Lb = new Float64Array(128); this.Rb = new Float64Array(128); this.act = 0;
     this.dLb = new Float64Array(128); this.dRb = new Float64Array(128); this.osG = new Float64Array(128);
-    // the FX rack of this track (any model): after the built-in chorus / ensemble, before the limiter (§1, §11.5)
-    const FX = globalThis.FXDSP;
-    this.rack = null;
-    if (FX) { try { this.rack = new FX.FXRack(this.base); } catch (err) { this.rack = null; } }
+    // the FX rack of this track (any model): after the built-in chorus / ensemble, before the limiter (§1, §11.5) — the
+    // Chain's (a classic Inst feeds it as the track's shared panel, a Serum Inst holds it as its own FX, §6.2)
+    this.rack = rack;
     this.dacHold = 0; this.dacT = 0; this.dacPend = 0;
     this.osPend = 0; this.osR = 1; this.osHold = 0; // pending oversampling change: fade ramp, frames held at zero
     this.kind = '';
     this.setPatch(DEFAULT_PATCH);
-    // song playback / transport (scheduled against currentFrame so every track node stays in sync)
-    // anch: the next re-seek follows a transport start / seek or a loop wrap, whose anchor (tp.frame, tp.tick) may lie up to
-    // one 4-frame span before the frame it is handled at (RULINGS2 bug fix 1); fresh: that start / seek came from play() /
-    // a seek (accepted late, R7 B1); lastT: the song position of the last span whose events fired (NaN: none since the
-    // start / stop; R7 B2 / B3)
-    this.sn = []; this.sc = []; this.ni = 0; this.ci = 0; this.seqOn = []; this.reseek = true; this.anch = false; this.frames = 0; this.quietF = 0;
-    this.fresh = false; this.lastT = NaN;
-    this.tp = { play: false, frame: 0, tick: 0, fpt: 1, loop: false, ls: 0, le: 0, wrap: false, pend: null };
+    this.quietF = 0; // frames since anything last sounded (the idle skip, §6.4: per Inst)
   }
   rnd() { let x = this.r; x ^= x << 13; x ^= x >>> 17; x ^= x << 5; this.r = x >>> 0; return this.r / 2147483648 - 1; }
   setOS(os) {
@@ -1879,7 +1836,7 @@ class SynthProcessor extends AudioWorkletProcessor {
     if (k) this.port.postMessage({ t: 'fxover', ids: o.slice() });
   }
   // the frame an event handled now belongs to: the current span inside process(), else the next render quantum
-  nowF() { return this.inSpan === 1 ? this.spanF : typeof currentFrame === 'number' ? currentFrame : this.frames; }
+  nowF() { return this.T.nowF(); } // (§6.2: the Track's)
   reqOS(v) { // while anything sounds the change waits behind a short fade (see osFade)
     if (v === this.OS) this.osPend = 0;
     else if (this.tailN || this.tailDN || this.tailSN || this.anyActive()) this.osPend = v;
@@ -1979,13 +1936,11 @@ class SynthProcessor extends AudioWorkletProcessor {
     if (p.glide > 0 && (!p.glideLegato || legato)) return 1 - Math.exp(-1 / (p.glide * 0.3 * this.fs / this.CH));
     return 1;
   }
+  // the messages that address an instrument (Track.msg routes them, §6.8: controller state to every Inst, the rest to
+  // Inst 0 until stage 1e names one); the case bodies as they were
   msg(d) {
-    if (this.ending === 1) return; // after {t: 'bye'} the node only fades out (end)
     switch (d.t) {
       case 'patch': this.setPatch(d.p); break;
-      // ch: the MIDI channel of a note of an MPE track (§12.4, §6.17); absent for every other note. aud: a preview (R7 B5)
-      case 'on': this.noteOn(d.n, d.v, d.ch, 0, d.aud ? 1 : 0); break;
-      case 'off': this.noteOff(d.n, d.rv, d.ch, 0, d.aud ? 1 : 0); break;
       // the panel's arp / clip launch and stop buttons (§7.7 commands, §12.4)
       case 'seqcmd': if (this.sxSeq !== null && this.kind === 'serum' && typeof d.cmd === 'string') this.sxSeq.cmd(d.cmd, d.arg); break;
       // seqT parts without a patch (§4.4, §12.4): {t: 'sqt', part} or {t: 'sqt', parts: {name: part}}
@@ -1996,13 +1951,6 @@ class SynthProcessor extends AudioWorkletProcessor {
         }
         break;
       case 'pat': if (d.n >= 0 && d.n < 128) { this.pat[d.n | 0] = +d.v || 0; this.patSeen = true; } break; // poly pressure
-      case 'wt': { const SD = globalThis.SerumDSP; if (SD) SD.storeWT(d.id, d); break; }
-      case 'wtf': { const SD = globalThis.SerumDSP; if (SD) SD.storeWTFrame(d.id, d.frame, d.levels); break; }
-      case 'wtdel': { const SD = globalThis.SerumDSP; if (SD) SD.dropWT(d.id); break; }
-      // sample-like assets (SPEC-serum2 §4.5, §9.5): {t: 'smp', …entry} / {t: 'smpdel', id} into SxBase's shared store
-      // (RULINGS2 F1: every processor's rack hears of every store / drop — FXRack.assets() decides what concerns it)
-      case 'smp': { const SB = globalThis.SxBase; if (SB && typeof d.id === 'string' && SB.storeAsset(d.id, d)) assetsChanged(); break; }
-      case 'smpdel': { const SB = globalThis.SxBase; if (SB && typeof d.id === 'string') { SB.dropAsset(d.id); assetsChanged(); } break; }
       // CT v2 parts without a patch (§4.1, §12.4): {t: 'ct', key, parts} — any subset of the parts, merged by SerumDSP —
       // or one part {t: 'ct', key, name, part}
       case 'ct':
@@ -2024,13 +1972,6 @@ class SynthProcessor extends AudioWorkletProcessor {
         if (k >= 0 && c >= 0 && c <= 16 && c === Math.floor(c)) this.mpe[c * 4 + k] = v === v ? v : 0;
         break;
       }
-      case 'bye': this.end(); break; // the node is about to be disconnected (§7.9)
-      case 'smon': // the host's snapshot / FX meter subscription: posted every ~33 ms of audio while on
-        this.mon = !!d.on; this.monF = 0;
-        if (this.sx) this.sx.mon = d.on ? 1 : 0;
-        if (this.mon) this.postMon();
-        break;
-      case 'fxph': this.port.postMessage({ t: 'fxph', v: this.rack ? this.rack.phases() : null }); break;
       // the rack's monitor tap (§13.5 Delay spectrum overlay): instance id, '' = off; sent with the monitor message
       case 'fxtap': if (this.rack && typeof this.rack.setTap === 'function') this.rack.setTap(typeof d.id === 'string' ? d.id : ''); break;
       case 'bend': this.bendRaw = d.v; this.bend = d.v * (this.p.bendRange || 2); break;
@@ -2055,55 +1996,22 @@ class SynthProcessor extends AudioWorkletProcessor {
         this.hostOS = d.v;
         if (this.kind !== 'serum') this.reqOS(d.v);
         break;
-      case 'panic': this.panic(); break;
       case 'seq': this.seqMsg(d.s); break;
-      case 'song': this.songMsg(d); break;
-      case 'transport': this.transportMsg(d); break;
     }
   }
-  panic() {
-    this.allOff(true); if (this.sq) this.sq.run = false; this.seqOn = []; this.extN = 0;
+  // the Inst's part of a panic after its notes stopped (Track.panic): sequencer notes, Serum state
+  panicSx() {
     if (this.sxSeq !== null) { this.sxSeq.panic(); this.sxTr.fill(-1); } // held / latched / generated notes cleared (§7.8)
     const SD = globalThis.SerumDSP;
     if (SD && this.sx) SD.reset(this);
-    // the de-click fades just rendered would re-excite effects cleared now: the output (fades, chorus / ensemble,
-    // FX rack) fades out over 5 ms instead, then everything is cleared (at once when nothing can sound)
-    const quiet = !this.tailN && !this.tailDN && !this.tailSN && this.quietF > this.base * 2 && (!this.rack || this.rack.idle());
-    if (quiet) this.panicClear(); else this.pnN = this.pnM;
   }
-  // {t: 'bye'}: the node is about to be disconnected. It leaves the MIDI OUT registry and the scope's processor set (§7.9),
-  // drops its own registry (nothing it still generates is forwarded), stops its song and transport, panics (a panic
-  // already fading keeps its fade) and ignores every later message; process() returns false once the output fade has
-  // ended, so the node and everything it holds can be collected (Web Audio lifetime rules)
-  end() {
-    if (this.ending === 1) return;
-    if (this.trackId && PROCS.get(this.trackId) === this) PROCS.delete(this.trackId);
-    this.trackId = ''; this.procs = null;
-    ALL.delete(this);
-    const tp = this.tp;
-    tp.play = false; tp.pend = null; this.sn = []; this.sc = []; this.reseek = true;
-    this.mon = false; if (this.sx) this.sx.mon = 0;
-    if (this.pnN === 0) this.panic();
-    else { this.seqOn = []; this.extN = 0; if (this.sq) this.sq.run = false; if (this.sxSeq !== null) { this.sxSeq.panic(); this.sxTr.fill(-1); } }
-    this.ending = 1;
-  }
-  panicClear() {
-    this.pnN = 0;
+  // nothing of this Inst can sound: no de-click tail, quiet for 2 s, its FX idle (Track.panic)
+  isQuiet() { return !this.tailN && !this.tailDN && !this.tailSN && this.quietF > this.base * 2 && (!this.rack || this.rack.idle()); }
+  panicClear() { // (Track.panicClear: after the output fade)
     this.tailN = this.tailP = this.tailSN = this.tailSP = this.tailDN = this.tailDP = 0; this.tailBus = 0;
     this.dacHold = this.dacPend = 0; this.dacLive = false;
     this.chorus.reset(); this.chorus.snap(); this.ens.reset(); this.ens.snap();
     if (this.rack) this.rack.reset(false);
-  }
-  panicFade(n) { // raised-cosine fade of the whole output, then panicClear
-    const Lb = this.Lb, Rb = this.Rb, M = this.pnM;
-    let k = this.pnN;
-    for (let i = 0; i < n; i++) {
-      const g = k > 0 ? 0.5 - 0.5 * Math.cos(Math.PI * k / M) : 0;
-      Lb[i] *= g; Rb[i] *= g;
-      if (k > 0) k--;
-    }
-    this.pnN = k;
-    if (k === 0) this.panicClear();
   }
   // ch: MIDI channel of an MPE note (0 = none); ext: a note delivered by another track's MIDI OUT (§7.9, never forwarded);
   // aud: a preview (R7 B5). Poly: a preview reuses / takes only its own voices or free / released ones (none left: it is
@@ -2151,7 +2059,7 @@ class SynthProcessor extends AudioWorkletProcessor {
     vc.noteOn(n, v, false, this.glc(false));
   }
   // R7 B5: the song holds note n (its note-off is still due)
-  songHas(n) { const on = this.seqOn; for (let i = 0; i < on.length; i += 2) if (on[i] === n) return true; return false; }
+  songHas(n) { return this.T.songHas(n); } // (§6.2: the Track's)
   // A Serum note that bypasses the sequencer (inactive, or SxSeq missing: then the keyboard transpose kbd.trans is
   // applied here, §7.1, and the note-off releases the note its note-on started); a: the preview owner (noteOn / noteOff)
   sxIn(on, n, v, ch, a) {
@@ -2368,39 +2276,12 @@ class SynthProcessor extends AudioWorkletProcessor {
     this.dacHold = hold; this.dacPend = pend;
     return act;
   }
-  /* ---- song playback ------------------------------------------------ */
-  // notes: flat [t, d, n, v(1..127)] sorted by t; cc: flat [t, k, v] (k: 0 bend, 1 wheel, 2 sus, 3 aftertouch)
-  songMsg(d) {
-    this.sn = d.notes || []; this.sc = d.cc || [];
-    this.reseek = true;
-  }
-  transportMsg(d) {
-    const tp = this.tp;
-    if (!d.play) {
-      tp.pend = null; this.lastT = NaN;
-      if (tp.play) {
-        tp.play = false; this.releaseSong(true); this.transportHook(false);
-        // preference "silence effect tails when transport stops" (§11.5): the rack's tails fade out over 5 ms
-        if (this.rack && this.p.fxr && this.p.fxr.silence) this.rack.reset(true);
-      }
-      return;
-    }
-    tp.pend = { frame: d.frame, tick: d.tick, fpt: d.fpt, loop: !!d.loop, ls: d.ls || 0, le: d.le || 0, seek: d.seek !== false, end: d.end == null ? null : d.end, fresh: !!d.fresh };
-  }
-  releaseSong(stop) {
-    const on = this.seqOn;
-    for (let i = 0; i < on.length; i += 2) this.noteOff(on[i]);
-    this.seqOn = [];
-    if (stop && this.songCtl) {
-      this.songCtl = false;
-      this.msg({ t: 'sus', v: false }); this.msg({ t: 'bend', v: 0 });
-    }
-  }
+  /* ---- song playback: the Track's (below); the Inst's song position and transport hook ---- */
   tickAt(F) { const tp = this.tp; return tp.tick + (F - tp.frame) / tp.fpt; }
   // Serum host fields (§8.4.1): the song tempo while the transport plays, else the patch's; the song position in
   // beats at the start of the current span, or null when stopped
   get bpm() { const tp = this.tp; return tp && tp.play ? 60 * this.base / (tp.fpt * 960) : this.p && this.p.bpm > 0 ? this.p.bpm : 120; }
-  songBeat() { const tp = this.tp; return tp && tp.play ? this.tickAt(this.spanF) / 960 : null; }
+  songBeat() { return this.T.songBeat(); } // (§6.2: the Track's)
   // play with seek (playing) / stop: Serum's host-synced state and the rack's LFO phases restart, so a song rendered
   // from a given tick is identical live and offline (§6.16, §8.5.2)
   transportHook(playing) {
@@ -2409,132 +2290,6 @@ class SynthProcessor extends AudioWorkletProcessor {
     if (this.sxSeq !== null && this.kind === 'serum') this.sxSeq.transport(playing); // §7.8
     if (playing && this.rack) this.rack.transport();
   }
-  songEvents(F) { // handles transport + song events due at frame F; returns frames to the next event
-    const tp = this.tp;
-    let dist = 1e9;
-    if (tp.pend) {
-      const P = tp.pend;
-      if (F >= P.frame - 0.5) {
-        tp.pend = null;
-        const start = P.seek || !tp.play;
-        if (start) this.releaseSong(false);
-        tp.play = true; tp.frame = P.frame; tp.tick = P.tick; tp.fpt = P.fpt; tp.loop = P.loop; tp.ls = P.ls; tp.le = P.le; tp.end = P.end;
-        tp.wrap = P.loop && P.le > P.ls && P.tick < P.le;
-        this.reseek = true; this.anch = start; this.fresh = start && P.fresh;
-        if (start) { this.lastT = NaN; this.transportHook(true); }
-      } else dist = P.frame - F;
-    }
-    if (!tp.play) return dist;
-    let t = this.tickAt(F);
-    if (tp.wrap && t >= tp.le) {
-      const L = tp.le - tp.ls;
-      let Fb = tp.frame + (tp.le - tp.tick) * tp.fpt;
-      while (F - Fb >= L * tp.fpt) Fb += L * tp.fpt;
-      tp.frame = Fb; tp.tick = tp.ls;
-      t = this.tickAt(F);
-      this.releaseSong(false);
-      this.reseek = true; this.anch = true; this.fresh = false; this.lastT = NaN;
-    }
-    if (tp.end != null && t >= tp.end) { tp.play = false; this.releaseSong(true); this.transportHook(false); if (this.sq && this.sq.sync) this.seqRelease(); return dist; }
-    const sn = this.sn, sc = this.sc;
-    if (this.reseek) {
-      // RULINGS2 bug fix 1: a start / seek / loop wrap is handled at the first 4-frame span boundary at or after its frame
-      // — a wrap whose frame (a float) rounds a hair past a boundary, or whose tick position at that boundary rounds a
-      // hair short of the loop end, one span later —, so t can lie past the anchor tick by up to 4 frames: the events at
-      // or after the anchor are still due and play now (Phase 1 searched from t and dropped the notes exactly at the play
-      // / seek tick when the frame was not a multiple of 4, and loop-start notes at such wraps). An older anchor (a node
-      // created mid-song, a panic's re-send) keeps the search from t: nothing from the past is replayed. R7 B1: a start /
-      // seek marked fresh (play(), a seek) that arrives late — its frame up to 0.25 s past — plays the anchor tick's notes
-      // now, late, instead of dropping them. R7 B2 / B3: a re-seek without an anchor (a song update, a tempo / loop / time
-      // signature change) searches the events after lastT, the position of the last span handled — the notes due since
-      // (≤ 4 frames before t) still play, and none at lastT twice (t a hair behind it: float rounding of the new anchor);
-      // from t only when the position really went back
-      let t0 = t, aft = false;
-      if (this.anch) { if (tp.tick < t && (tp.frame >= F - 4 - 1e-6 || (this.fresh && F - tp.frame <= 0.25 * this.base))) t0 = tp.tick; }
-      else if (t >= this.lastT - 0.5) { t0 = this.lastT; aft = true; } // (NaN: none since the start)
-      let lo = 0, hi = sn.length / 4;
-      if (aft) while (lo < hi) { const m = (lo + hi) >> 1; if (sn[m * 4] <= t0) lo = m + 1; else hi = m; }
-      else while (lo < hi) { const m = (lo + hi) >> 1; if (sn[m * 4] < t0) lo = m + 1; else hi = m; }
-      this.ni = lo;
-      lo = 0; hi = sc.length / 3;
-      if (aft) while (lo < hi) { const m = (lo + hi) >> 1; if (sc[m * 3] <= t0) lo = m + 1; else hi = m; }
-      else while (lo < hi) { const m = (lo + hi) >> 1; if (sc[m * 3] < t0) lo = m + 1; else hi = m; }
-      this.ci = lo;
-      this.reseek = false; this.anch = false; this.fresh = false;
-    }
-    // note-offs first
-    const on = this.seqOn;
-    for (let i = on.length - 2; i >= 0; i -= 2) if (on[i + 1] <= t) { this.noteOff(on[i]); on.splice(i, 2); }
-    // controllers
-    while (this.ci * 3 < sc.length && sc[this.ci * 3] <= t) {
-      const k = sc[this.ci * 3 + 1], v = sc[this.ci * 3 + 2];
-      this.songCtl = true;
-      if (k === 0) this.msg({ t: 'bend', v });
-      else if (k === 1) this.wheel = v;
-      else if (k === 2) this.msg({ t: 'sus', v: v >= 0.5 });
-      else this.at = v;
-      this.ci++;
-    }
-    // note-ons
-    while (this.ni * 4 < sn.length && sn[this.ni * 4] <= t) {
-      const j = this.ni * 4, st = sn[j], n = sn[j + 2];
-      this.ni++;
-      if (tp.wrap && st >= tp.le) continue;
-      for (let i = on.length - 2; i >= 0; i -= 2) if (on[i] === n) on.splice(i, 2); // overlapping same pitch: the new note owns it
-      this.noteOn(n, sn[j + 3] / 127);
-      let end = st + sn[j + 1];
-      if (tp.wrap && end > tp.le) end = tp.le;
-      on.push(n, end);
-    }
-    this.lastT = t; // every event at or before t has been handled
-    // distance to the next event
-    let nt = 1e18;
-    if (this.ni * 4 < sn.length) nt = sn[this.ni * 4];
-    if (this.ci * 3 < sc.length && sc[this.ci * 3] < nt) nt = sc[this.ci * 3];
-    for (let i = 1; i < on.length; i += 2) if (on[i] < nt) nt = on[i];
-    if (tp.wrap && tp.le < nt) nt = tp.le;
-    if (tp.end != null && tp.end < nt) nt = tp.end;
-    if (nt < 1e17) { const df = (nt - t) * tp.fpt; if (df < dist) dist = df; }
-    return dist < 1 ? 1 : dist;
-  }
-
-  /* ---- MIDI OUT target (SPEC-serum2 §7.9) ----------------------------- */
-  // Called by another processor of this scope (its sequencer's tapped events) with F = the event's frame + 128: the
-  // event lands in this processor's future whichever node the context processes first. The ring keeps arrival order;
-  // when full, the oldest note-on is dropped (the new event when it is itself the oldest note-on), never a note-off.
-  extNote(F, on, n, vel) {
-    F = +F; n = +n; vel = +vel;
-    if (!(F - F === 0 && n >= 0 && n <= 127)) return; // a finite frame, a MIDI note
-    const e = this.ext, o = on ? 1 : 0;
-    let k = this.extN;
-    if (k >= EXT_N) {
-      let m = -1;
-      for (let i = 0; i < k; i++) if (e[4 * i + 1] === 1 && (m < 0 || e[4 * i] < e[4 * m])) m = i;
-      if (m < 0 || (o === 1 && F < e[4 * m])) return;
-      e.copyWithin(4 * m, 4 * m + 4, 4 * k); k--;
-    }
-    e[4 * k] = F; e[4 * k + 1] = o; e[4 * k + 2] = Math.round(n); e[4 * k + 3] = vel === vel ? vel : 0;
-    this.extN = k + 1;
-  }
-  // fires the ring entries due at frame F like song events (note-offs first, then note-ons, each in arrival order) and
-  // returns the frames to the next one (span splitting in process)
-  extEvents(F) {
-    const e = this.ext;
-    for (let pass = 0; pass < 2; pass++) {
-      for (let i = 0; i < this.extN;) {
-        const j = 4 * i;
-        if (e[j] <= F && e[j + 1] === pass) {
-          const nt = e[j + 2], v = e[j + 3];
-          e.copyWithin(j, j + 4, 4 * this.extN); this.extN--;
-          if (pass === 0) this.noteOff(nt, undefined, 0, 1); else this.noteOn(nt, v, 0, 1); // ext: never forwarded again
-        } else i++;
-      }
-    }
-    let dist = 1e9;
-    for (let i = 0; i < this.extN; i++) { const df = e[4 * i] - F; if (df < dist) dist = df; }
-    return dist < 1 ? 1 : dist;
-  }
-
   /* ---- TB-303 style step sequencer, clocked in the audio thread ---- */
   seqMsg(s) {
     const q = this.sq || (this.sq = { run: false, sync: false, pat: [], len: 16, bpm: 120, root: 36, step: -1, pos: 0, fired: true, offed: true, tie: false, cur: -1, swing: 0, syncStep: null });
@@ -2601,57 +2356,6 @@ class SynthProcessor extends AudioWorkletProcessor {
     if (!q.offed && q.pos >= gateAt) { q.offed = true; this.seqGateOff(); }
     return (q.offed ? sl : gateAt) - q.pos;
   }
-  process(inputs, outputs) {
-    const t0 = Date.now();
-    const out = outputs[0], Lo = out[0], Ro = out[1] || out[0];
-    const n = Lo.length;
-    if (this.ending === 1 && this.pnN === 0) { // ended ({t: 'bye'}) and faded out: silent, and no longer an active source
-      Lo.fill(0); if (Ro !== Lo) Ro.fill(0);
-      return false;
-    }
-    const F0 = typeof currentFrame === 'number' ? currentFrame : this.frames;
-    this.frames = F0 + n;
-    const q = this.sq;
-    let off = 0;
-    this.inSpan = 1;
-    while (off < n) {
-      let len = n - off;
-      const F = F0 + off;
-      this.spanF = F; // songBeat() of this span (and of a transport applied at F)
-      let d = this.songEvents(F);
-      if (this.extN) { const d3 = this.extEvents(F); if (d3 < d) d = d3; }
-      // Serum's sequencer (§12.5): the inputs due at F went in above; its events due at F fire now, the span ends at
-      // its next one (4-frame granularity, as song events)
-      if (this.sqOn === 1) { const sxq = this.sxSeq; sxq.fire(F); const d4 = sxq.next(F); if (d4 < d) d = d4; }
-      if (q && (q.run || q.sync)) { const d2 = this.seqEvents(F); if (d2 < d) d = d2; }
-      if (d < len) { len = Math.max(4, Math.ceil(d / 4) * 4); if (len > n - off) len = n - off; }
-      this.renderSpan(Lo, Ro, off, len);
-      if (q && q.run && !q.sync) q.pos += len;
-      off += len;
-    }
-    this.inSpan = 0;
-    if (this.mon && (this.monF += n) >= this.base * 0.033) { this.monF = 0; this.postMon(); }
-    this.loadT += Date.now() - t0;
-    this.statN += n;
-    if (this.statN >= this.base * 0.25) {
-      this.port.postMessage({ t: 'stats', load: this.loadT / (this.statN / this.base * 1000), voices: this.kind === 'serum' ? this.sxVoices() : this.act, os: this.OS });
-      this.loadT = 0; this.statN = 0;
-    }
-    return true;
-  }
-  // monitor message (§8.4.4, §11.6): Serum's snapshot (null for other models), the rack's gain reduction and phases
-  // SPEC-serum2 §6.20 / §12.4: snapshot v2; its mix meters 7…10 (Bus 1, Bus 2, Main, Direct) are the engine's peaks since
-  // the previous message, in dBFS (−120 = silence)
-  postMon() {
-    const SD = globalThis.SerumDSP, r = this.rack, s = SD && this.kind === 'serum' && this.sx ? SD.snapshot(this) : null;
-    if (s && s.mix && s.mix.length >= 11) {
-      const pk = this.mixPk;
-      for (let k = 0; k < 4; k++) s.mix[7 + k] = pk[k] > 1e-6 ? 20 * Math.log10(pk[k]) : -120;
-    }
-    this.mixPk.fill(0);
-    const ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null;
-    this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
-  }
   sxVoices() { // oscillator voices sounding (Serum's voice counter)
     const SD = globalThis.SerumDSP, s = SD && this.sx ? SD.snapshot(this) : null;
     return s ? s.oscVoices : 0;
@@ -2686,21 +2390,22 @@ class SynthProcessor extends AudioWorkletProcessor {
     }
     if (dec.length === 0) for (let i = 0; i < n; i++) dst[i] = src[i];
   }
-  renderSpan(Lo, Ro, off, n) {
+  // one span of this Inst (§6.3): → 1 rendered into Lb / Rb (a Serum: through its own FX; a classic Inst: up to its
+  // panel, which Track.renderSpan processes), 0 idle: skipped (§6.4, the Track then skips the output stage)
+  renderSpan(n) {
     if (this.osPend && this.osR === 0) { this.setOS(this.osPend); this.osPend = 0; this.osHold = Math.ceil(this.base * 0.0017); }
     const OS = this.OS, N = n * OS, buf = this.buf, p = this.p;
     this.ctl += n / 4; // control ticks (rate independent), also counted while skipping: idle voices' EGs keep time
     // silent instrument: once every voice and effect tail has died away, skip the DSP entirely
-    const any = this.tailN > 0 || this.tailDN > 0 || this.tailSN > 0 || this.pnN > 0 || this.sxW > 0 || this.anyActive() ||
+    const any = this.tailN > 0 || this.tailDN > 0 || this.tailSN > 0 || this.T.pnN > 0 || this.sxW > 0 || this.anyActive() ||
       (this.kind === 'serum' && this.sxLazy() > 0);
     if (any) this.quietF = 0;
     else if ((this.quietF += n) > this.base * 2 && (!this.rack || this.rack.idle())) {
-      for (let i = 0; i < n; i++) { Lo[off + i] = 0; if (Ro !== Lo) Ro[off + i] = 0; }
       this.act = 0;
       if (this.kind === 'serum') { const SD = globalThis.SerumDSP; if (SD && this.sx) SD.idle(this, n); } // LFOs, clocks, smoothers keep time
-      return;
+      return 0;
     }
-    if (this.kind === 'serum') { this.renderSerum(Lo, Ro, off, n); return; }
+    if (this.kind === 'serum') { this.renderSerum(n); return 1; }
     buf.fill(0, 0, N);
     if (this.tailN) { // de-click fade of voices that were stopped hard
       const k = Math.min(N, this.tailN), tl = this.tail, P = this.tailP;
@@ -2754,14 +2459,13 @@ class SynthProcessor extends AudioWorkletProcessor {
     for (let i = 0; i < n; i++) Lb[i] = Rb[i] = mono[i];
     this.chorus.process(mono, Lb, Rb, n);
     this.ens.process(mono, Lb, Rb, n);
-    if (this.rack) { this.rack.setNote(this.lastNote); this.rack.process(Lb, Rb, n); } // the track's FX rack (bypass-cheap when every module is off)
-    if (this.pnN) this.panicFade(n);
-    this.outStage(Lo, Ro, off, n);
+    if (this.rack) this.rack.setNote(this.lastNote); // the track's FX rack (bypass-cheap when every module is off): its process, Track.renderSpan (§6.2)
+    return 1;
   }
   // Serum span (§11.2; SPEC-serum2 §12.5): voices at the OS rate into sxOut (main pair, + the direct and bus pairs of
   // CP.outMask) → FX modulation → decimation of each used channel → oversampling fade → FX rack (buses, direct,
   // master, bypass) → DC block / limiter. Unused pairs are never touched (§14.1 cheap bypass).
-  renderSerum(Lo, Ro, off, n) {
+  renderSerum(n) {
     const SD = globalThis.SerumDSP, N = n * this.OS, m = this.sxMask, dir = (m & 2) !== 0;
     const b1 = (m & 4) !== 0 && this.decB1L !== null, b2 = (m & 8) !== 0 && this.decB2L !== null;
     const L = this.buf, R = this.bufR, DL = this.bufDL, DR = this.bufDR;
@@ -2850,9 +2554,11 @@ class SynthProcessor extends AudioWorkletProcessor {
       if (dir) pk[3] = this.peak2(dLb, dRb, n, pk[3]);
     }
     if (this.rack) {
+      const tf = Date.now(); // (its share of the load: the FX module's CPU, §6.8 stats.per)
       if (b1 || b2) this.rack.process(Lb, Rb, n, dir ? dLb : undefined, dir ? dRb : undefined, b1 ? b1Lb : undefined, b1 ? b1Rb : undefined,
         b2 ? b2Lb : undefined, b2 ? b2Rb : undefined);
       else this.rack.process(Lb, Rb, n, dir ? dLb : undefined, dir ? dRb : undefined);
+      this.fxc.t += Date.now() - tf;
     } else { // no fx-dsp: the direct pair, master and Bypass (base values, ramped across the span); buses are dropped
       if (dir) for (let i = 0; i < n; i++) { Lb[i] += dLb[i]; Rb[i] += dRb[i]; }
       const g0 = this.nfG, dg = (this.nfT - g0) / n;
@@ -2873,12 +2579,441 @@ class SynthProcessor extends AudioWorkletProcessor {
       if ((this.sxRelT -= n) <= 0) this.sxRelN = 0;
       if (this.sxRelN <= 0) { this.sxRelN = 0; this.sxMask &= ~r; this.sxRel = 0; }
     }
-    if (this.pnN) this.panicFade(n);
-    this.outStage(Lo, Ro, off, n);
   }
   peak2(a, b, n, p) {
     for (let i = 0; i < n; i++) { const x = a[i] < 0 ? -a[i] : a[i], y = b[i] < 0 ? -b[i] : b[i]; if (x > p) p = x; if (y > p) p = y; }
     return p;
+  }
+}
+
+// A shared FX panel of a track (§6.2, §6.5): one FXRack. Stage 1d: the track's one rack (c0), shared by reference with
+// Inst 0 (inst.rack), which feeds it (classic) or holds it as its own FX (Serum): identity = the panel, so a model change
+// never rebuilds it (tails survive, as before the split).
+class Chain {
+  constructor(base) {
+    this.id = 'c0'; this.mon = false; this.t = 0; // its meters are subscribed (mon); ms of its processing since the last stats
+    const FX = globalThis.FXDSP;
+    this.rack = null;
+    if (FX) { try { this.rack = new FX.FXRack(base); } catch (err) { this.rack = null; } }
+  }
+}
+
+// The compatibility facade (§6.2): every field and method of Inst 0 the Track does not have itself is an accessor of
+// Facade.prototype (between Track and AudioWorkletProcessor), so callers that reach into "the processor" — the tests,
+// the bench, the golden harness — keep working unchanged; a method read returns Inst 0's own override when one was set
+// through the facade, else its prototype method bound to it; `rack` is the first Chain's. Installed once, from the first
+// Track's Inst, before anything renders; the Track's own code never goes through it (it holds i0 / c0).
+class Facade extends AudioWorkletProcessor {}
+let FACADE = false;
+function facade(T) {
+  FACADE = true;
+  const P = Facade.prototype, own = Object.prototype.hasOwnProperty;
+  const def = (k, d) => { if (!(k in T)) Object.defineProperty(P, k, Object.assign({ configurable: true }, d)); };
+  def('rack', { get() { return this.c0.rack; }, set(v) { this.c0.rack = v; this.i0.rack = v; } });
+  for (const k of Object.keys(T.i0)) def(k, { get() { return this.i0[k]; }, set(v) { this.i0[k] = v; } });
+  for (const k of Object.getOwnPropertyNames(Inst.prototype)) {
+    const d = Object.getOwnPropertyDescriptor(Inst.prototype, k);
+    if (k === 'constructor') continue;
+    if (d.get || d.set) def(k, { get() { return this.i0[k]; }, set(v) { this.i0[k] = v; } });
+    else def(k, { get() { const I = this.i0; return own.call(I, k) ? I[k] : (...a) => d.value.apply(I, a); }, set(v) { this.i0[k] = v; } });
+  }
+}
+
+// The track: the AudioWorkletProcessor 'synth-engine' (§6.2). It owns the events (song, MIDI OUT ring, the Insts'
+// sequencers → spans on the 4-frame grid), the transport, message dispatch, panic / end, the monitors and stats, and the
+// output stage (panicFade → DC block, limiter, clip); its Insts and Chains render each span. Stage 1d: one Inst and one
+// Chain, driven by today's messages (every track is canonical); the multi-instrument graph is stage 1e.
+class Track extends Facade {
+  constructor(opt) {
+    super();
+    const po = (opt && opt.processorOptions) || {};
+    this.hostOS = po.hostOS || po.os || 4; // the app's oversampling (a Serum track runs at its own, §11.4)
+    this.offline = !!po.offline;           // a bounce / resample: no deadline, so no JIT warm-ups
+    this.base = sampleRate;
+    // song playback / transport (scheduled against currentFrame so every track node stays in sync)
+    // anch: the next re-seek follows a transport start / seek or a loop wrap, whose anchor (tp.frame, tp.tick) may lie up to
+    // one 4-frame span before the frame it is handled at (RULINGS2 bug fix 1); fresh: that start / seek came from play() /
+    // a seek (accepted late, R7 B1); lastT: the song position of the last span whose events fired (NaN: none since the
+    // start / stop; R7 B2 / B3)
+    this.sn = []; this.sc = []; this.ni = 0; this.ci = 0; this.seqOn = []; this.reseek = true; this.anch = false; this.frames = 0;
+    this.fresh = false; this.lastT = NaN; this.songCtl = false;
+    this.tp = { play: false, frame: 0, tick: 0, fpt: 1, loop: false, ls: 0, le: 0, wrap: false, pend: null };
+    this.inSpan = 0; this.spanF = 0; this.ending = 0;
+    // MIDI OUT ring (§7.9): [frame, on, note, velocity] × EXT_N, extN entries in arrival order
+    this.ext = new Float64Array(EXT_N * 4); this.extN = 0;
+    this.pnN = 0; this.pnM = Math.max(1, Math.round(this.base * 0.005)); // panic: frames left of the output fade, its length
+    this.mon = false; this.monF = 0; // a snapshot / FX monitor subscription is on (smon / mon); frames since the last one
+    this.loadT = 0; this.statN = 0;
+    this.lim = new Limiter(this.base);
+    this.dcx = new Float64Array(2); this.dcy = new Float64Array(2); // (typed: the field keeps one type in every processor)
+    this.trackId = ''; this.procs = null;
+    // the graph (§6.2): stage 1d, Inst 0 into Chain 0; the output stage works on the last buffers — with one Inst its own
+    // (§6.3 in-place aliasing: today's operations in today's order)
+    this.c0 = new Chain(this.base); this.chains = [this.c0];
+    this.i0 = new Inst(this, po.os || 4, this.c0); this.insts = [this.i0];
+    this.Lb = this.i0.Lb; this.Rb = this.i0.Rb;
+    if (!FACADE) facade(this);
+    // the first processor in this global scope warms the JIT up before anything is heard (once, never again)
+    if (!warmed && !this.offline) { warmed = true; try { this.warmUp(); } catch (err) { /* a failed warm-up only costs speed */ } this.restore(po.os || 4); }
+    // MIDI OUT target registry (§7.9): track nodes only. A processor without a track id (preset preview, resample, render
+    // farm) has no registry either: its sequencer's MIDI OUT events are dropped (§7.9 "has no target")
+    this.trackId = typeof po.trackId === 'string' && po.trackId ? po.trackId : '';
+    if (this.trackId) { PROCS.set(this.trackId, this); this.procs = PROCS; this.i0.procs = PROCS; }
+    ALL.add(this);
+    // wavetables / sample assets of an offline render (bounce, resample): given to the first node of the context only,
+    // the stores are shared by every processor of the global scope (§7.5; SPEC-serum2 §9.6)
+    const SD = globalThis.SerumDSP, SB = globalThis.SxBase;
+    if (SD && Array.isArray(po.wts)) for (const e of po.wts) if (e && e.id) SD.storeWT(e.id, e);
+    if (SB && Array.isArray(po.smps)) for (const e of po.smps) if (e && e.id) SB.storeAsset(e.id, e);
+    if (po.patch) this.i0.setPatch(po.patch);
+    if (po.seq) this.i0.seqMsg(po.seq);
+    if (po.song) this.songMsg(po.song);
+    if (po.transport) this.transportMsg(po.transport);
+    this.port.onmessage = (ev) => this.msg(ev.data);
+    // built (the first processor of the scope: warmed up) — main.js resumes a context it held suspended meanwhile (WebKit)
+    if (!this.offline) this.port.postMessage({ t: 'ready' });
+  }
+  // Renders every engine path through attack, sustain and release, so a model's first notes do not run in the
+  // interpreter while the JIT catches up (single quanta used to reach 1.5-2x the budget). Two rounds: the first
+  // collects type feedback for every branch, the second leaves code optimised with all of it. Through the Track's own
+  // paths (process, span splitting, the shared Chain, the output stage) and Inst 0.
+  warmUp() {
+    const I = this.i0, io = [[new Float32Array(128), new Float32Array(128)]], run = (k) => { for (let b = 0; b < k; b++) { this.process(null, io); this.statN = 0; } };
+    for (let round = 0; round < 2; round++) {
+      for (const w of WARM) {
+        I.setPatch(w);
+        this.noteOn(48, 0.9); this.noteOn(67, 0.6);
+        run(30);
+        if (round === 0) I.reqOS(I.OS === 4 ? 2 : 4);
+        this.noteOff(48); this.noteOff(67);
+        run(10);
+        I.osPend = 0; I.osR = 1; I.osHold = 0;
+      }
+    }
+    // Serum voices (every warp / filter family / LFO mode, §8.4.2) and every FX rack module and mode (§8.5.2)
+    const SD = globalThis.SerumDSP;
+    if (SD) SD.warmUp(I);
+    if (I.rack) I.rack.warmUp();
+  }
+  // back to the freshly built state after the warm-up (Inst.restore: in place)
+  restore(os) {
+    this.loadT = 0; this.statN = 0; this.c0.t = 0; this.c0.mon = false;
+    this.lim.reset(); this.dcx.fill(0); this.dcy.fill(0);
+    this.mon = false; this.monF = 0; this.spanF = 0; this.pnN = 0; this.extN = 0; this.inSpan = 0; this.frames = 0;
+    this.i0.restore(os);
+  }
+  msg(d) {
+    if (this.ending === 1) return; // after {t: 'bye'} the node only fades out (end)
+    switch (d.t) {
+      // ch: the MIDI channel of a note of an MPE track (§12.4, §6.17); absent for every other note. aud: a preview (R7 B5)
+      case 'on': this.noteOn(d.n, d.v, d.ch, 0, d.aud ? 1 : 0); break;
+      case 'off': this.noteOff(d.n, d.rv, d.ch, 0, d.aud ? 1 : 0); break;
+      case 'wt': { const SD = globalThis.SerumDSP; if (SD) SD.storeWT(d.id, d); break; }
+      case 'wtf': { const SD = globalThis.SerumDSP; if (SD) SD.storeWTFrame(d.id, d.frame, d.levels); break; }
+      case 'wtdel': { const SD = globalThis.SerumDSP; if (SD) SD.dropWT(d.id); break; }
+      // sample-like assets (SPEC-serum2 §4.5, §9.5): {t: 'smp', …entry} / {t: 'smpdel', id} into SxBase's shared store
+      // (RULINGS2 F1: every processor's rack hears of every store / drop — FXRack.assets() decides what concerns it)
+      case 'smp': { const SB = globalThis.SxBase; if (SB && typeof d.id === 'string' && SB.storeAsset(d.id, d)) assetsChanged(); break; }
+      case 'smpdel': { const SB = globalThis.SxBase; if (SB && typeof d.id === 'string') { SB.dropAsset(d.id); assetsChanged(); } break; }
+      case 'bye': this.end(); break; // the node is about to be disconnected (§7.9)
+      // the host's snapshot / FX meter subscriptions, posted every ~33 ms of audio while any is on: smon every part
+      // (legacy), mon the Insts / Chains by id (SPEC-canvas §6.8: the modules on screen)
+      case 'smon': this.watch(!!d.on, null); break;
+      case 'mon': this.watch(false, d.ids); break;
+      case 'fxph': { const r = this.c0.rack; this.port.postMessage({ t: 'fxph', v: r ? r.phases() : null }); break; }
+      case 'panic': this.panic(); break;
+      case 'song': this.songMsg(d); break;
+      case 'transport': this.transportMsg(d); break;
+      // controller state reaches every Inst (§6.6); the rest (patch, seq, seqcmd, sqt, ct, fxtap) Inst 0 — stage 1e: the
+      // Inst the message names
+      case 'bend': case 'wheel': case 'at': case 'sus': case 'pat': case 'mpe': case 'os': {
+        const I = this.insts;
+        for (let i = 0; i < I.length; i++) I[i].msg(d);
+        break;
+      }
+      default: this.i0.msg(d);
+    }
+  }
+  // all: every part (smon); else the parts whose id is in ids (mon)
+  watch(all, ids) {
+    const I = this.i0, c = this.c0, has = id => all || (Array.isArray(ids) && ids.indexOf(id) >= 0);
+    I.mon = has(I.id); c.mon = has(c.id);
+    this.mon = I.mon || c.mon; this.monF = 0;
+    if (I.sx) I.sx.mon = I.mon ? 1 : 0;
+    if (this.mon) this.postMon();
+  }
+  // RULINGS2 F1: every processor's rack hears of every asset stored / dropped (FXRack.assets() decides what concerns it)
+  assets() { const r = this.c0.rack; if (r) { try { r.assets(); this.i0.fxOver(); } catch (err) { /* a failed rack keeps its old IR */ } } }
+  // notes reach Inst 0 (stage 1e: the powered Insts whose zone admits them, §6.6) — through these methods, so a caller that
+  // wraps the processor's noteOn / noteOff (the golden harness's transport log) sees every song / ext / live note
+  noteOn(n, v, ch, ext, aud) { this.i0.noteOn(n, v, ch, ext, aud); }
+  noteOff(n, rv, ch, ext, aud) { this.i0.noteOff(n, rv, ch, ext, aud); }
+  // R7 B5: the song holds note n (its note-off is still due)
+  songHas(n) { const on = this.seqOn; for (let i = 0; i < on.length; i += 2) if (on[i] === n) return true; return false; }
+  // the frame an event handled now belongs to: the current span inside process(), else the next render quantum
+  nowF() { return this.inSpan === 1 ? this.spanF : typeof currentFrame === 'number' ? currentFrame : this.frames; }
+  panic() {
+    const I = this.i0;
+    I.allOff(true); if (I.sq) I.sq.run = false; this.seqOn = []; this.extN = 0;
+    I.panicSx();
+    // the de-click fades just rendered would re-excite effects cleared now: the output (fades, chorus / ensemble,
+    // FX rack) fades out over 5 ms instead, then everything is cleared (at once when nothing can sound)
+    if (I.isQuiet()) this.panicClear(); else this.pnN = this.pnM;
+  }
+  // {t: 'bye'}: the node is about to be disconnected. It leaves the MIDI OUT registry and the scope's processor set (§7.9),
+  // drops its own registry (nothing it still generates is forwarded), stops its song and transport, panics (a panic
+  // already fading keeps its fade) and ignores every later message; process() returns false once the output fade has
+  // ended, so the node and everything it holds can be collected (Web Audio lifetime rules)
+  end() {
+    if (this.ending === 1) return;
+    if (this.trackId && PROCS.get(this.trackId) === this) PROCS.delete(this.trackId);
+    const I = this.i0;
+    this.trackId = ''; this.procs = null; I.procs = null;
+    ALL.delete(this);
+    const tp = this.tp;
+    tp.play = false; tp.pend = null; this.sn = []; this.sc = []; this.reseek = true;
+    this.mon = false; I.mon = false; this.c0.mon = false; if (I.sx) I.sx.mon = 0;
+    if (this.pnN === 0) this.panic();
+    else { this.seqOn = []; this.extN = 0; if (I.sq) I.sq.run = false; if (I.sxSeq !== null) { I.sxSeq.panic(); I.sxTr.fill(-1); } }
+    this.ending = 1;
+  }
+  panicClear() { this.pnN = 0; this.i0.panicClear(); }
+  panicFade(n) { // raised-cosine fade of the whole output, then panicClear
+    const Lb = this.Lb, Rb = this.Rb, M = this.pnM;
+    let k = this.pnN;
+    for (let i = 0; i < n; i++) {
+      const g = k > 0 ? 0.5 - 0.5 * Math.cos(Math.PI * k / M) : 0;
+      Lb[i] *= g; Rb[i] *= g;
+      if (k > 0) k--;
+    }
+    this.pnN = k;
+    if (k === 0) this.panicClear();
+  }
+  /* ---- song playback ------------------------------------------------ */
+  // notes: flat [t, d, n, v(1..127)] sorted by t; cc: flat [t, k, v] (k: 0 bend, 1 wheel, 2 sus, 3 aftertouch)
+  songMsg(d) {
+    this.sn = d.notes || []; this.sc = d.cc || [];
+    this.reseek = true;
+  }
+  transportMsg(d) {
+    const tp = this.tp;
+    if (!d.play) {
+      tp.pend = null; this.lastT = NaN;
+      if (tp.play) {
+        tp.play = false; this.releaseSong(true); this.transportHook(false);
+        // preference "silence effect tails when transport stops" (§11.5): the rack's tails fade out over 5 ms
+        const I = this.i0;
+        if (I.rack && I.p.fxr && I.p.fxr.silence) I.rack.reset(true);
+      }
+      return;
+    }
+    tp.pend = { frame: d.frame, tick: d.tick, fpt: d.fpt, loop: !!d.loop, ls: d.ls || 0, le: d.le || 0, seek: d.seek !== false, end: d.end == null ? null : d.end, fresh: !!d.fresh };
+  }
+  releaseSong(stop) {
+    const on = this.seqOn;
+    for (let i = 0; i < on.length; i += 2) this.noteOff(on[i]);
+    this.seqOn = [];
+    if (stop && this.songCtl) {
+      this.songCtl = false;
+      this.msg({ t: 'sus', v: false }); this.msg({ t: 'bend', v: 0 });
+    }
+  }
+  tickAt(F) { const tp = this.tp; return tp.tick + (F - tp.frame) / tp.fpt; }
+  // the song position in beats at the start of the current span, or null when stopped (Serum's host field, §8.4.1)
+  songBeat() { const tp = this.tp; return tp && tp.play ? this.tickAt(this.spanF) / 960 : null; }
+  transportHook(playing) { const I = this.insts; for (let i = 0; i < I.length; i++) I[i].transportHook(playing); }
+  songEvents(F) { // handles transport + song events due at frame F; returns frames to the next event
+    const tp = this.tp;
+    let dist = 1e9;
+    if (tp.pend) {
+      const P = tp.pend;
+      if (F >= P.frame - 0.5) {
+        tp.pend = null;
+        const start = P.seek || !tp.play;
+        if (start) this.releaseSong(false);
+        tp.play = true; tp.frame = P.frame; tp.tick = P.tick; tp.fpt = P.fpt; tp.loop = P.loop; tp.ls = P.ls; tp.le = P.le; tp.end = P.end;
+        tp.wrap = P.loop && P.le > P.ls && P.tick < P.le;
+        this.reseek = true; this.anch = start; this.fresh = start && P.fresh;
+        if (start) { this.lastT = NaN; this.transportHook(true); }
+      } else dist = P.frame - F;
+    }
+    if (!tp.play) return dist;
+    let t = this.tickAt(F);
+    if (tp.wrap && t >= tp.le) {
+      const L = tp.le - tp.ls;
+      let Fb = tp.frame + (tp.le - tp.tick) * tp.fpt;
+      while (F - Fb >= L * tp.fpt) Fb += L * tp.fpt;
+      tp.frame = Fb; tp.tick = tp.ls;
+      t = this.tickAt(F);
+      this.releaseSong(false);
+      this.reseek = true; this.anch = true; this.fresh = false; this.lastT = NaN;
+    }
+    if (tp.end != null && t >= tp.end) { tp.play = false; this.releaseSong(true); this.transportHook(false); const I = this.i0; if (I.sq && I.sq.sync) I.seqRelease(); return dist; }
+    const sn = this.sn, sc = this.sc;
+    if (this.reseek) {
+      // RULINGS2 bug fix 1: a start / seek / loop wrap is handled at the first 4-frame span boundary at or after its frame
+      // — a wrap whose frame (a float) rounds a hair past a boundary, or whose tick position at that boundary rounds a
+      // hair short of the loop end, one span later —, so t can lie past the anchor tick by up to 4 frames: the events at
+      // or after the anchor are still due and play now (Phase 1 searched from t and dropped the notes exactly at the play
+      // / seek tick when the frame was not a multiple of 4, and loop-start notes at such wraps). An older anchor (a node
+      // created mid-song, a panic's re-send) keeps the search from t: nothing from the past is replayed. R7 B1: a start /
+      // seek marked fresh (play(), a seek) that arrives late — its frame up to 0.25 s past — plays the anchor tick's notes
+      // now, late, instead of dropping them. R7 B2 / B3: a re-seek without an anchor (a song update, a tempo / loop / time
+      // signature change) searches the events after lastT, the position of the last span handled — the notes due since
+      // (≤ 4 frames before t) still play, and none at lastT twice (t a hair behind it: float rounding of the new anchor);
+      // from t only when the position really went back
+      let t0 = t, aft = false;
+      if (this.anch) { if (tp.tick < t && (tp.frame >= F - 4 - 1e-6 || (this.fresh && F - tp.frame <= 0.25 * this.base))) t0 = tp.tick; }
+      else if (t >= this.lastT - 0.5) { t0 = this.lastT; aft = true; } // (NaN: none since the start)
+      let lo = 0, hi = sn.length / 4;
+      if (aft) while (lo < hi) { const m = (lo + hi) >> 1; if (sn[m * 4] <= t0) lo = m + 1; else hi = m; }
+      else while (lo < hi) { const m = (lo + hi) >> 1; if (sn[m * 4] < t0) lo = m + 1; else hi = m; }
+      this.ni = lo;
+      lo = 0; hi = sc.length / 3;
+      if (aft) while (lo < hi) { const m = (lo + hi) >> 1; if (sc[m * 3] <= t0) lo = m + 1; else hi = m; }
+      else while (lo < hi) { const m = (lo + hi) >> 1; if (sc[m * 3] < t0) lo = m + 1; else hi = m; }
+      this.ci = lo;
+      this.reseek = false; this.anch = false; this.fresh = false;
+    }
+    // note-offs first
+    const on = this.seqOn;
+    for (let i = on.length - 2; i >= 0; i -= 2) if (on[i + 1] <= t) { this.noteOff(on[i]); on.splice(i, 2); }
+    // controllers
+    while (this.ci * 3 < sc.length && sc[this.ci * 3] <= t) {
+      const k = sc[this.ci * 3 + 1], v = sc[this.ci * 3 + 2];
+      this.songCtl = true;
+      if (k === 0) this.msg({ t: 'bend', v });
+      else if (k === 1) { const I = this.insts; for (let i = 0; i < I.length; i++) I[i].wheel = v; } // (every Inst, §6.6)
+      else if (k === 2) this.msg({ t: 'sus', v: v >= 0.5 });
+      else { const I = this.insts; for (let i = 0; i < I.length; i++) I[i].at = v; }
+      this.ci++;
+    }
+    // note-ons
+    while (this.ni * 4 < sn.length && sn[this.ni * 4] <= t) {
+      const j = this.ni * 4, st = sn[j], n = sn[j + 2];
+      this.ni++;
+      if (tp.wrap && st >= tp.le) continue;
+      for (let i = on.length - 2; i >= 0; i -= 2) if (on[i] === n) on.splice(i, 2); // overlapping same pitch: the new note owns it
+      this.noteOn(n, sn[j + 3] / 127);
+      let end = st + sn[j + 1];
+      if (tp.wrap && end > tp.le) end = tp.le;
+      on.push(n, end);
+    }
+    this.lastT = t; // every event at or before t has been handled
+    // distance to the next event
+    let nt = 1e18;
+    if (this.ni * 4 < sn.length) nt = sn[this.ni * 4];
+    if (this.ci * 3 < sc.length && sc[this.ci * 3] < nt) nt = sc[this.ci * 3];
+    for (let i = 1; i < on.length; i += 2) if (on[i] < nt) nt = on[i];
+    if (tp.wrap && tp.le < nt) nt = tp.le;
+    if (tp.end != null && tp.end < nt) nt = tp.end;
+    if (nt < 1e17) { const df = (nt - t) * tp.fpt; if (df < dist) dist = df; }
+    return dist < 1 ? 1 : dist;
+  }
+
+  /* ---- MIDI OUT target (SPEC-serum2 §7.9) ----------------------------- */
+  // Called by another processor of this scope (its sequencer's tapped events) with F = the event's frame + 128: the
+  // event lands in this processor's future whichever node the context processes first. The ring keeps arrival order;
+  // when full, the oldest note-on is dropped (the new event when it is itself the oldest note-on), never a note-off.
+  extNote(F, on, n, vel) {
+    F = +F; n = +n; vel = +vel;
+    if (!(F - F === 0 && n >= 0 && n <= 127)) return; // a finite frame, a MIDI note
+    const e = this.ext, o = on ? 1 : 0;
+    let k = this.extN;
+    if (k >= EXT_N) {
+      let m = -1;
+      for (let i = 0; i < k; i++) if (e[4 * i + 1] === 1 && (m < 0 || e[4 * i] < e[4 * m])) m = i;
+      if (m < 0 || (o === 1 && F < e[4 * m])) return;
+      e.copyWithin(4 * m, 4 * m + 4, 4 * k); k--;
+    }
+    e[4 * k] = F; e[4 * k + 1] = o; e[4 * k + 2] = Math.round(n); e[4 * k + 3] = vel === vel ? vel : 0;
+    this.extN = k + 1;
+  }
+  // fires the ring entries due at frame F like song events (note-offs first, then note-ons, each in arrival order) and
+  // returns the frames to the next one (span splitting in process)
+  extEvents(F) {
+    const e = this.ext;
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < this.extN;) {
+        const j = 4 * i;
+        if (e[j] <= F && e[j + 1] === pass) {
+          const nt = e[j + 2], v = e[j + 3];
+          e.copyWithin(j, j + 4, 4 * this.extN); this.extN--;
+          if (pass === 0) this.noteOff(nt, undefined, 0, 1); else this.noteOn(nt, v, 0, 1); // ext: never forwarded again
+        } else i++;
+      }
+    }
+    let dist = 1e9;
+    for (let i = 0; i < this.extN; i++) { const df = e[4 * i] - F; if (df < dist) dist = df; }
+    return dist < 1 ? 1 : dist;
+  }
+  process(inputs, outputs) {
+    const t0 = Date.now();
+    const out = outputs[0], Lo = out[0], Ro = out[1] || out[0];
+    const n = Lo.length;
+    if (this.ending === 1 && this.pnN === 0) { // ended ({t: 'bye'}) and faded out: silent, and no longer an active source
+      Lo.fill(0); if (Ro !== Lo) Ro.fill(0);
+      return false;
+    }
+    const F0 = typeof currentFrame === 'number' ? currentFrame : this.frames;
+    this.frames = F0 + n;
+    const I = this.i0, q = I.sq;
+    let off = 0;
+    this.inSpan = 1;
+    while (off < n) {
+      let len = n - off;
+      const F = F0 + off;
+      this.spanF = F; // songBeat() of this span (and of a transport applied at F)
+      let d = this.songEvents(F);
+      if (this.extN) { const d3 = this.extEvents(F); if (d3 < d) d = d3; }
+      // Serum's sequencer (§12.5): the inputs due at F went in above; its events due at F fire now, the span ends at
+      // its next one (4-frame granularity, as song events)
+      if (I.sqOn === 1) { const sxq = I.sxSeq; sxq.fire(F); const d4 = sxq.next(F); if (d4 < d) d = d4; }
+      if (q && (q.run || q.sync)) { const d2 = I.seqEvents(F); if (d2 < d) d = d2; }
+      if (d < len) { len = Math.max(4, Math.ceil(d / 4) * 4); if (len > n - off) len = n - off; }
+      this.renderSpan(Lo, Ro, off, len);
+      if (q && q.run && !q.sync) q.pos += len;
+      off += len;
+    }
+    this.inSpan = 0;
+    if (this.mon && (this.monF += n) >= this.base * 0.033) { this.monF = 0; this.postMon(); }
+    this.loadT += Date.now() - t0;
+    this.statN += n;
+    if (this.statN >= this.base * 0.25) this.stats();
+    return true;
+  }
+  // one span (§6.3): the Inst renders (a Serum through its own FX), the shared Chain processes a classic Inst's output
+  // (its panel), then panicFade → outStage. The track skips the span — zero output, no panicFade, no output stage — only
+  // when every Inst skips (§6.4): an Inst skips only once quiet for 2 s with its FX idle, so the Chains are idle too, and
+  // with one Inst this is the rule as it was (the DC block and limiter state freeze during silence)
+  renderSpan(Lo, Ro, off, n) {
+    const I = this.i0;
+    if (I.renderSpan(n) === 0) { for (let i = 0; i < n; i++) { Lo[off + i] = 0; if (Ro !== Lo) Ro[off + i] = 0; } return; }
+    if (I.kind !== 'serum') { const c = this.c0, r = c.rack; if (r !== null) { const tf = Date.now(); r.process(this.Lb, this.Rb, n); c.t += Date.now() - tf; } }
+    if (this.pnN) this.panicFade(n);
+    this.outStage(Lo, Ro, off, n);
+  }
+  // stats (every 0.25 s of audio): the track's load, voices and oversampling, and per Inst / Chain (§6.8 per — the
+  // modules' CPU on the canvas): a Chain its own processing time, the Inst the rest of the track's
+  stats() {
+    const I = this.i0, c = this.c0, ms = this.statN / this.base * 1000, load = this.loadT / ms, fl = c.t / ms;
+    const voices = I.kind === 'serum' ? I.sxVoices() : I.act;
+    this.port.postMessage({ t: 'stats', load, voices, os: I.OS, per: [{ id: I.id, load: Math.max(0, load - fl), voices, os: I.OS }, { id: c.id, load: fl }] });
+    this.loadT = 0; this.statN = 0; c.t = 0;
+  }
+  // monitor message (§8.4.4, §11.6): Serum's snapshot (null for other models), the rack's gain reduction and phases — each
+  // while its part is subscribed (smon: every part; mon: the Inst / Chain ids on screen, SPEC-canvas §6.8)
+  // SPEC-serum2 §6.20 / §12.4: snapshot v2; its mix meters 7…10 (Bus 1, Bus 2, Main, Direct) are the engine's peaks since
+  // the previous message, in dBFS (−120 = silence)
+  postMon() {
+    const I = this.i0, c = this.c0, SD = globalThis.SerumDSP, r = c.mon ? c.rack : null, s = I.mon && SD && I.kind === 'serum' && I.sx ? SD.snapshot(I) : null;
+    if (s && s.mix && s.mix.length >= 11) {
+      const pk = I.mixPk;
+      for (let k = 0; k < 4; k++) s.mix[7 + k] = pk[k] > 1e-6 ? 20 * Math.log10(pk[k]) : -120;
+    }
+    I.mixPk.fill(0);
+    const ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null;
+    this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
   }
   // output stage: DC block, stereo-linked peak limiter, final safety clip
   outStage(Lo, Ro, off, n) {
@@ -2899,4 +3034,4 @@ class SynthProcessor extends AudioWorkletProcessor {
   }
 }
 
-registerProcessor('synth-engine', SynthProcessor);
+registerProcessor('synth-engine', Track);

@@ -4,7 +4,7 @@ This is the living tracker for the canvas redesign. The design is [SPEC-canvas.m
 
 - **Branch:** `canvas` of CorrugatedCarl/synth. `main` stays live at synth.domlavin.com and is never merged into or overwritten by canvas work ("in case I regret it").
 - **Preview:** canvas.domlavin.com (repo CorrugatedCarl/synth-canvas), deployed with `tools/deploy-canvas.sh` from the committed `canvas` HEAD. The canvas site has its own storage and starts fresh.
-- **Every stage (lean, agreed 2026-10-18 to save usage):** one builder → review-and-fix (one reviewer for 1c, 2a, 3; two focused reviewers — sound/engine and interface — for the risky audio stages 1d, 1e, 2b; no per-finding verifiers) → every test file run one at a time → deploy → the user tries it on the iPad → feedback folded in before the next stage.
+- **Every stage:** contract → parallel builders → integrate → multi-dimension review with adversarial verification → fixes → every test file run one at a time → deploy → the user tries it on the iPad → feedback folded in before the next stage. (Stages 1c and 1d ran lean while usage was limited; the user asked for the full process again from 1e.)
 
 ## Stages
 
@@ -14,7 +14,7 @@ This is the living tracker for the canvas redesign. The design is [SPEC-canvas.m
 | 1b Canvas shell | Top tray, keyboard tray, Sources tray with original illustrations, camera world, movable modules, derived cables | **Done** (1f6721b) + feedback fixes below |
 | 1b+ Hardware panels | Fixed, hardware-accurate front panels for the 12 classic synths; Hardware/Resizable layout toggle in each module's ⋯ menu; zoom never changes how modules look | **Done** (2e74572; contract docs/canvas/IMPL-panels.md) |
 | 1c Instances + project v2 | ClassicPanel instances, multi-instance Serum UI, project v2 (schema 3) + migration, canonical compile, Save as classic project, minimap, box-select, track-switch mounting, Sources tray Hardware/Simple switch, folded-module jacks outside the bar (no Import library: the user chose to start fresh) | **Done** (IMPL-1c.md) |
-| 1d Track engine | `engine.js` split into Track / Inst / Chain, bit-identical; CPU per module | **Next** (iPad bench recorded 2026-10-18) |
+| 1d Track engine | `engine.js` split into Track / Inst / Chain, bit-identical (golden + golden-graph); CPU per module on the top bars | **Done** (IMPL-1d.md); iPad bench re-run by the user pending |
 | 1e Several synths per track | Multiple instruments per track, shared/separate FX panels (pedalboards), editable audio cables, Effects tray, power, key zones — **completes milestone 1** | Planned |
 | 2a Performance modulators | Project Mod Wheel (one per project), Velocity, Aftertouch, Bend on Serum knobs and its own FX; mod list; cable inspector | Planned |
 | 2b Modulation everywhere | LFO (GLOBAL / PER NOTE), ENV, Macro, CC, Chaos modules on any Serum knob, any FX knob and 237 classic controls — **completes milestone 2** | Planned |

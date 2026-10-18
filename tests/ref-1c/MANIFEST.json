@@ -1,0 +1,5 @@
+{
+  "note": "Frozen pre-split engine (SPEC-canvas §10 1d, §11.2): a verbatim copy of engine.js at commit 1ea3c5b (stage 1c), the single-class SynthProcessor the Track / Inst / Chain split was made from. Never edit: tests/golden-graph.test.mjs pins its hash and renders it against the current engine.js (the same DSP scripts and modules on both sides).",
+  "commit": "1ea3c5b8c105e7e07d35acb2fa4d6fab56aa3ed9",
+  "files": { "engine.js": { "sha256": "d5d0b375735736ed43015ef90671f9bf56208b85d8e12595d33d3bc55efbdd1d" } }
+}

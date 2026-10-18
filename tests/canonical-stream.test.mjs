@@ -7,8 +7,9 @@
 // undefined) and values; not v8.serialize's bytes, whose Smi / double encoding of the same number follows V8's object-shape
 // history, not the data). The reference was recorded once from main's code at the merge base a02ab5d
 // (tests/fixtures/stream-main.json); the canvas build must reproduce it exactly.
-// Left out of the comparison, by design: the monitor subscriptions ({t: 'smon'}) and the FX phase read-backs they
-// replace ({t: 'fxph'}) — which displays are live is UI (main: the tab shown; canvas: the module on screen, §6.8 'mon').
+// Left out of the comparison, by design: the monitor subscriptions ({t: 'smon'}; on the canvas from stage 1d
+// {t: 'mon', ids}, §6.8) and the FX phase read-backs they replace ({t: 'fxph'}) — which displays are live is UI (main:
+// the tab shown; canvas: the module on screen).
 // Run: node --max-old-space-size=2048 --test tests/canonical-stream.test.mjs
 // Re-record (only from main's tree, never from canvas code): extract the merge base into the scratchpad
 // (git archive a02ab5d | tar -x -C <dir>), then STREAM_REC=<dir> node --max-old-space-size=2048 --test tests/canonical-stream.test.mjs
@@ -22,7 +23,7 @@ import { pathToFileURL } from 'node:url';
 const HERE = new URL('../', import.meta.url);
 const FIX = new URL('./fixtures/stream-main.json', import.meta.url);
 const P1 = readFileSync(new URL('./ref-p1/project-p1.json', import.meta.url), 'utf8');
-const SKIP = new Set(['smon', 'fxph']);
+const SKIP = new Set(['smon', 'mon', 'fxph']);
 // the canonical text of a structured-cloneable value (what a postMessage carries, independent of V8's representation)
 function canon(x) {
   if (x === null) return 'null';

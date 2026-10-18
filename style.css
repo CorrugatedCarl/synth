@@ -987,7 +987,8 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-psel:hover, .cv-psel:focus-visible { border-color: #4a505a; outline: none; }
 .cv-psel option, .cv-psel optgroup { background: #1a1a1a; color: #eee; }
 .cv-pname { display: inline-flex; align-items: center; padding: 0 10px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #c9c6bf; }
-.cv-cpu { font: 11px var(--mono); color: var(--mute); }
+/* the module's CPU (1d): one fixed slot ("<0.1%" … "100%"), so a changing figure never moves the chip or the title */
+.cv-cpu { flex: none; min-width: 5ch; text-align: right; white-space: nowrap; font: 11px var(--mono); font-variant-numeric: tabular-nums; color: var(--mute); }
 .cv-cpu:empty { display: none; }
 .cv-btn { flex: 0 0 auto; display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: transparent;
   color: var(--mute); font-size: 18px; line-height: 1; -webkit-tap-highlight-color: transparent; }
