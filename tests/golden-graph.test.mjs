@@ -5,8 +5,10 @@
 // Serum preset, every FX chain on a classic and on a Serum track) through the event script, plus the paths the split
 // touched: the idle skip ("note → 3 s silence → note", with and without an FX tail), an oversampling change mid-note,
 // model switches mid-note (classic ↔ Serum: tails, the kept rack), panic, {t: 'bye'}, both sequencers, the monitors
-// (smon vs {t: 'mon', ids}) and everything the processor posts. Stage 1e adds the {t: 'graph'} renders (§11.2).
-// GOLDEN_FULL=1: also 44.1 kHz × 1 and Serum at OS 1 and 4.
+// (smon vs {t: 'mon', ids}) and everything the processor posts. Stage 1e (IMPL-1e §7): every render is also made in the
+// graph form of the canonical track — {t: 'graph'} + {t: 'patch', i} + {t: 'chain', c} (a model switch: the reshape's
+// new graph) — and as processorOptions (graph, patches, chains, seqs), both bit for bit equal to the legacy render, the
+// posted messages equal once the part ids (i, c) are dropped. GOLDEN_FULL=1: also 44.1 kHz × 1 and Serum at OS 1 and 4.
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -42,20 +44,76 @@ function tap(p, log) {
     log.push(structuredClone(c)); // (into this realm: the scopes' objects have their own prototypes)
   };
 }
-// renders one case on both engines: the same id (Math.random), options, setup and events → [legacy, new]
-function both(c) {
-  return [L, B].map(X => {
-    const log = [], r = H.render(H.scope(X, c.sr || H.SR), { id: c.id, po: c.po, seconds: c.seconds, events: typeof c.events === 'function' ? c.events(X) : c.events,
-      setup(p) { tap(p, log); c.setup(X, p); } });
+/* ---- the graph form of a canonical track (IMPL-1e §2.5, §3.3: what main.js posts for a graphed node) */
+const Z = { lo: 0, hi: 127, xp: 0 }, P1 = { id: 'i1', on: true, zone: Z, salt: 0 };
+const gClassic = fx => ({ t: 'graph', insts: [P1], chains: [{ id: fx }], edges: [['i1', fx, 1], [fx, 'out', 1]], out: 'out', key: 'i1>' + fx + '>out' });
+const gSerum = () => ({ t: 'graph', insts: [P1], chains: [], edges: [['i1', 'out', 1]], out: 'out', key: 'i1>out' });
+const strip = p => { const q = Object.assign({}, p); delete q.fxr; delete q.fxrT; return q; };
+// a legacy message → its graph-form messages; st: the shape so far (a classic patch → the panel fxN with the patch's FXP,
+// a new panel after a Serum: the reshape; a Serum patch → its own FX, OUT); part ids i0 → i1, c0 → the panel (a Serum's
+// own FX meters come with its Inst's monitor message)
+function gMsg(d, st) {
+  if (d.t === 'patch') {
+    const p = d.p, o = [];
+    if (p.engine === 'serum') { if (st.kind !== 'serum') { o.push(gSerum()); st.kind = 'serum'; } o.push({ t: 'patch', i: 'i1', p }); return o; }
+    if (st.kind !== 'classic') { st.fx = 'fx' + ++st.n; o.push(gClassic(st.fx)); st.kind = 'classic'; }
+    o.push({ t: 'patch', i: 'i1', p: strip(p) }, { t: 'chain', c: st.fx, fxr: p.fxr, fxrT: p.fxrT });
+    return o;
+  }
+  if (d.t === 'seq' || d.t === 'seqcmd' || d.t === 'sqt' || d.t === 'ct') return [Object.assign({}, d, { i: 'i1' })];
+  if (d.t === 'mon') return [{ t: 'mon', ids: d.ids.map(k => (k === 'i0' ? 'i1' : k === 'c0' ? (st.kind === 'serum' ? '' : st.fx) : k)).filter(k => k) }];
+  return [d];
+}
+const gEvents = (ev, st) => { const o = []; for (const [f, d] of ev) for (const m of gMsg(d, st)) o.push([f, m]); return o; };
+// renders one case: the legacy engine (ref-1c) and the Track engine from the same id (Math.random), options, setup and
+// events, then the Track engine in the graph form (G: the setup's messages, then the events', translated) and as
+// processorOptions (P: the setup's tables, assets, patch and sequence gathered into graph / patches / chains / seqs, the
+// rest posted after construction) → [legacy, new, G, P]
+function forms(c) {
+  const sr = c.sr || H.SR, evOf = X => (typeof c.events === 'function' ? c.events(X) : c.events || []);
+  const one = (X, form) => {
+    const log = [], st = { kind: '', fx: '', n: 0 };
+    let po = c.po, ev = evOf(X), setup = p => c.setup(X, p);
+    if (form === 'G') { const sent = []; c.setup(X, { msg: d => { sent.push(...gMsg(d, st)); } }); setup = p => { for (const m of sent) p.msg(m); }; }
+    if (form === 'P') {
+      const rest = [], o = { wts: [], smps: [], patches: {}, chains: {}, seqs: {} };
+      c.setup(X, { msg(d) {
+        if (d.t === 'wt') o.wts.push(d);
+        else if (d.t === 'smp') o.smps.push(d);
+        else if (d.t === 'patch' || d.t === 'seq') {
+          for (const m of gMsg(d, st)) {
+            if (m.t === 'graph') o.graph = m; else if (m.t === 'patch') o.patches[m.i] = m.p; else if (m.t === 'chain') o.chains[m.c] = { fxr: m.fxr, fxrT: m.fxrT };
+            else o.seqs[m.i] = m.s;
+          }
+        } else rest.push(...gMsg(d, st));
+      } });
+      po = Object.assign({}, c.po, o);
+      setup = p => { for (const m of rest) p.msg(m); };
+    }
+    if (form !== 'legacy') ev = gEvents(ev, st);
+    const r = H.render(H.scope(X, sr), { id: c.id, po, seconds: c.seconds, events: ev, setup(p) { tap(p, log); setup(p); } });
     r.log = log;
     return r;
+  };
+  return [one(L, 'legacy'), one(B, 'legacy'), one(B, 'G'), one(B, 'P')];
+}
+// the posted messages of a graph form against the legacy ones: the part ids dropped (every one names the track's parts)
+const IDS = /^(i1|i1\/fx|fx\d+)$/;
+function unId(log, bad, id) {
+  return log.map(m => {
+    if (!m || typeof m !== 'object' || !('i' in m || 'c' in m)) return m;
+    if (('i' in m && !IDS.test(m.i)) || ('c' in m && !IDS.test(m.c))) bad.push(`${id}: part id ${m.i || m.c} in ${m.t}`);
+    const o = Object.assign({}, m); delete o.i; delete o.c;
+    return o;
   });
 }
 function check(bad, id, r, { audible = true, msgs = true } = {}) {
-  const d = bits(r[0], r[1]);
-  if (d) bad.push(`${id}: ${d}`);
   if (audible && !(H.peak(r[0]) > 1e-4)) bad.push(`${id}: silent`);
-  if (msgs && !isDeepStrictEqual(r[0].log, r[1].log)) bad.push(`${id}: posted messages differ (${r[0].log.length} vs ${r[1].log.length})`);
+  for (let k = 1; k < r.length; k++) {
+    const tag = id + ['', '', ' (graph)', ' (processorOptions)'][k], d = bits(r[0], r[k]);
+    if (d) bad.push(`${tag}: ${d}`);
+    if (msgs && !isDeepStrictEqual(r[0].log, k === 1 ? r[1].log : unId(r[k].log, bad, tag))) bad.push(`${tag}: posted messages differ (${r[0].log.length} vs ${r[k].log.length})`);
+  }
 }
 const patchMsg = (X, p, model, vals, fx, o = {}) => {
   const patch = H.trackPatch(X, model, vals, fx, o);
@@ -95,13 +153,13 @@ test('tests/ref-1c/engine.js is the frozen pre-split engine (SHA-256 pinned)', (
 });
 
 for (const [sr, os] of CL_RATES) {
-  test(`every classic preset (12 models + default panels) at ${sr / 1000} kHz × ${os}: legacy vs Track engine, bit for bit (+ posted messages)`, () => {
+  test(`every classic preset (12 models + default panels) at ${sr / 1000} kHz × ${os}: legacy vs Track engine (legacy messages, graph form, processorOptions), bit for bit (+ posted messages)`, () => {
     const bad = [];
     let n = 0;
     for (const m of MODELS) {
       for (const pr of [null, ...m.presets]) {
         const id = `graph:${m.id}:${pr ? pr.name : '(default)'}:${sr}:${os}`;
-        const r = both({ id, sr, po: { os, hostOS: os }, events: H.script(sr), setup(X, p) {
+        const r = forms({ id, sr, po: { os, hostOS: os }, events: H.script(sr), setup(X, p) {
           patchMsg(X, p, m.id, classicVals(m.id, pr), fxm.defaultFx2(), { sr, seed: true });
           if (m.id === 'tb303') p.msg({ t: 'seq', s: H.clone(SEQ303) });
         } });
@@ -115,12 +173,12 @@ for (const [sr, os] of CL_RATES) {
 }
 
 for (const os of SX_OS) {
-  test(`every Serum factory preset (${core.FACTORY_PRESETS.length}) at OS ${os}, with its assets: legacy vs Track engine, bit for bit (+ posted messages)`, async () => {
+  test(`every Serum factory preset (${core.FACTORY_PRESETS.length}) at OS ${os}, with its assets: legacy vs Track engine (legacy messages, graph form, processorOptions), bit for bit (+ posted messages)`, async () => {
     const bad = [];
     let loud = 0;
     for (const pr of core.FACTORY_PRESETS) {
       const id = `graph:serum:${pr.name}:${os}`, v = sxOf(pr, os), smps = await presetAssets(v);
-      const r = both({ id, po: { os, hostOS: 4 }, events: H.script(H.SR), setup(X, p) {
+      const r = forms({ id, po: { os, hostOS: 4 }, events: H.script(H.SR), setup(X, p) {
         for (const e of smps) p.msg(Object.assign({ t: 'smp' }, e)); // (into the scope's store: every rack hears of it, Track.assets)
         patchMsg(X, p, 'serum', { s: H.clone(v.s) }, H.clone(v.fx), { seed: true });
       } });
@@ -133,12 +191,12 @@ for (const os of SX_OS) {
   });
 }
 
-test(`every FX chain (${fxm.FACTORY_CHAINS.chains.length}) on a classic track (the shared panel: Track.renderSpan) and on a Serum track (its own FX: Inst.renderSerum)`, () => {
+test(`every FX chain (${fxm.FACTORY_CHAINS.chains.length}) on a classic track (the shared panel: Track.renderSpan, {t: 'chain'}) and on a Serum track (its own FX: Inst.renderSerum), in every form`, () => {
   const bad = [];
   for (const ch of fxm.FACTORY_CHAINS.chains) {
     for (const model of ['prophet5', 'serum']) {
       const id = `graph:chain:${ch.name}:${model}`;
-      const r = both({ id, po: { os: model === 'serum' ? 2 : 4, hostOS: 4 }, events: H.script(H.SR), setup(X, p) {
+      const r = forms({ id, po: { os: model === 'serum' ? 2 : 4, hostOS: 4 }, events: H.script(H.SR), setup(X, p) {
         const fx = fxm.normalizeFx2(H.clone(ch.fx));
         if (model === 'serum') { const v = sxDefault(2); patchMsg(X, p, 'serum', { s: v.s }, fx, { seed: true }); }
         else patchMsg(X, p, model, classicVals(model, null), fx, { seed: true });
@@ -187,11 +245,11 @@ const CASES = [
 ];
 function chain(name) { const c = fxm.FACTORY_CHAINS.chains.find(x => x.name === name); assert.ok(c, name); return c.fx; }
 
-test('the paths the split touched: idle skip, oversampling and model changes mid-note, panic, bye, sequencers, monitors — bit for bit', () => {
+test('the paths the split touched: idle skip, oversampling and model changes mid-note (graph form: the reshape keeps the rack), panic, bye, sequencers, monitors — bit for bit in every form', () => {
   const bad = [];
   for (const c of CASES) {
     const id = 'graph:case:' + c.name, sx = c.model === 'serum';
-    const r = both({ id, seconds: c.seconds, po: { os: sx ? 2 : 4, hostOS: 4 }, events: c.events, setup(X, p) {
+    const r = forms({ id, seconds: c.seconds, po: { os: sx ? 2 : 4, hostOS: 4 }, events: c.events, setup(X, p) {
       const fx = c.chain ? fxm.normalizeFx2(H.clone(chain(c.chain))) : fxm.defaultFx2();
       H.postTables(X, p, H.trackPatch(X, 'serum', { s: sxDefault(2).s }, fxm.defaultFx2()).needs); // (the Serum patches of the events)
       if (sx) { const v = sxDefault(2); if (c.arp) v.s.p['arp.on'] = 1; patchMsg(X, p, 'serum', { s: v.s }, fx, { seed: true }); }
@@ -200,26 +258,31 @@ test('the paths the split touched: idle skip, oversampling and model changes mid
       if (c.mon) p.msg(X === L ? { t: 'smon', on: true } : { t: 'mon', ids: ['i0', 'c0'] });
     } });
     check(bad, id, r);
-    if (c.mon && !(r[1].log.filter(m => m.t === 'smon' && m.s && m.gr).length > 20)) bad.push(id + ': snapshots posted');
+    for (let k = 1; k < r.length; k++) if (c.mon && !(r[k].log.filter(m => m.t === 'smon' && m.s && m.gr).length > 20)) bad.push(id + ': snapshots posted ' + k);
+    if (c.model === 'tb303' && !r[2].log.some(m => m.t === 'step' && m.i === 'i1')) bad.push(id + ': {t: step, i} on the graph node');
   }
   assert.deepEqual(bad, []);
 });
 
-test('idle skip: once quiet the Track skips the output stage (its state frozen) exactly where the legacy engine did — outStage calls and the DC block state', () => {
-  const runs = [L, B].map(X => {
-    const calls = [];
+test('idle skip: once quiet the Track skips the output stage (its state frozen) exactly where the legacy engine did — outStage calls and the DC block state (legacy messages and graph form)', () => {
+  const runs = [[L, 0], [B, 0], [B, 1]].map(([X, g]) => {
+    const calls = [], st = { kind: '', fx: '', n: 0 };
     const r = H.render(H.scope(X), { id: 'graph:idle-outstage', seconds: 5.5, po: { os: 4, hostOS: 4 },
       events: [[0, on(48)], [F(0.3), off(48)], [F(3.6), on(55)], [F(4.2), off(55)]],
       setup(p) {
-        patchMsg(X, p, 'prophet5', classicVals('prophet5', null), fxm.defaultFx2());
+        const send = p.msg.bind(p);
+        patchMsg(X, g ? { msg: d => { for (const m of gMsg(d, st)) send(m); } } : p, 'prophet5', classicVals('prophet5', null), fxm.defaultFx2());
+        if (g) assert.equal(p.graphed + p.simple, 2, 'a graph node in the alias shape');
         const o = p.outStage;
         p.outStage = function (Lo, Ro, off, n) { calls.push(H.scope(X).g.currentFrame + off); return o.call(this, Lo, Ro, off, n); };
       } });
     return { r, calls, dc: Array.from(r.proc.dcy) };
   });
-  assert.equal(bits(runs[0].r, runs[1].r), '');
-  assert.deepEqual(runs[1].calls, runs[0].calls, 'the output stage runs in the same spans');
-  assert.deepEqual(runs[1].dc, runs[0].dc);
+  for (const k of [1, 2]) {
+    assert.equal(bits(runs[0].r, runs[k].r), '');
+    assert.deepEqual(runs[k].calls, runs[0].calls, 'the output stage runs in the same spans');
+    assert.deepEqual(runs[k].dc, runs[0].dc);
+  }
   const seen = new Set(runs[0].calls.map(f => f - (f % 128))), skipped = [];
   for (let f = F(0.3) - (F(0.3) % 128); f < F(3.6); f += 128) if (!seen.has(f)) skipped.push(f);
   assert.ok(skipped.length > F(0.5) / 128, `the silence after the 2 s quiet window skips the output stage (${skipped.length} quanta)`);

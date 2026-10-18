@@ -339,7 +339,7 @@
         this.mod = null; this.cp = null; this.mac = null; this.reg = null; this.vlo = 1; this.vhi = 127;
         this.fwdP = new Array(4 * 128).fill(null);    // MIDI OUT: target that received the note-on, per (pane, tap, note)
         this.fwdSk0 = null; this.fwdSk1 = null;       // targets the Clip Player tap reached for the clip note being emitted
-        this.rs = SEED;
+        this.rs = (SEED ^ (this.proc && this.proc.seedSalt)) >>> 0;
         this.cqK = new Int8Array(MAXQ); this.cqA = new Int8Array(MAXQ); this.cqN = 0;
         this.pedal = 0; this.latch = 0; this.playing = 0; this.beat = 0;
         this.warned = 0;
@@ -594,7 +594,7 @@
       qNext(F, q) { return q > 0 ? nextQ(this.uEv(F), q) : this.uAt(F); }
       // §7.8 play with seek; uP = the position at F before the seek (the timebase it replaced)
       onSeek(F, uP) {
-        this.rs = SEED;
+        this.rs = (SEED ^ (this.proc && this.proc.seedSalt)) >>> 0;
         const u = this.uAt(F), ue = this.uEv(F);     // ue: the transport anchor's position when it lies in the last granule
         if (this.aRun) {
           // restart at the next LAUNCH QUANT boundary (Off: the next step of the RATE grid; Hz: at once); the old schedule
@@ -658,7 +658,7 @@
       wake(F) {
         if (this.tbPlay || this.busy()) return;
         this.fB0 = 0; this.fF0 = F;
-        this.rs = SEED;
+        this.rs = (SEED ^ (this.proc && this.proc.seedSalt)) >>> 0;
         this.arpRestart();
         this.vRun = -1;
       }

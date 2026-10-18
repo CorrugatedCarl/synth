@@ -1687,7 +1687,7 @@
           crv: new Array(NROW).fill(''), spec: new Array(N_OSC).fill(''), velo: '', note: '' },
         remap: DEF_REMAP,
         tap: new Float64Array(TAP_N), tapW: 0, tap2: new Float64Array(TAP_N), tapW2: 0,
-        memPh: new Float64Array(N_OSC), subPh: 0, alt: 0, seed: SEED, rng: SEED,
+        memPh: new Float64Array(N_OSC), subPh: 0, alt: 0, seed: (SEED ^ (proc.seedSalt | 0)) >>> 0, rng: (SEED ^ (proc.seedSalt | 0)) >>> 0,
         grains: 0, pk: new Float64Array(11),                  // processor grain count (SxGran, §6.9.2); mix-meter peaks
         snap: makeSnap(),
         // first-use warm-up on the real patch (warmStart): hidden voices, spans left, tables wait, saved bookkeeping
@@ -1729,7 +1729,7 @@
       sx.cMono = 0; sx.cLegato = 0; sx.cPoly = 8; sx.a4 = 440; sx.steal = 0; sx.anyDir = 0; sx.anyBus = 0;
       sx.remap = DEF_REMAP;
       sx.tap.fill(0); sx.tapW = 0; sx.tap2.fill(0); sx.tapW2 = 0;
-      sx.memPh.fill(0); sx.subPh = 0; sx.alt = 0; sx.seed = SEED; sx.rng = SEED;
+      sx.memPh.fill(0); sx.subPh = 0; sx.alt = 0; sx.seed = (SEED ^ (proc.seedSalt | 0)) >>> 0; sx.rng = sx.seed;
       sx.grains = 0; sx.pk.fill(0);
       if (sx.msRR) sx.msRR.fill(0);                           // multisample round robins (SxSample's counters in sx, §6.8)
       sx.hw = null; sx.hwL = null; sx.hwR = null; sx.hwN = 0; sx.hwOn = 0; sx.hwWait = 0; sx.hwSt = 0;   // a reset ends the warm-ups

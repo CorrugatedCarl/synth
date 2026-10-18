@@ -1168,17 +1168,29 @@ test('§15.13 bounce equivalence (§10.7f) with arp + clip + granular + Convolve
   assert.ok(dB(d / ref) < -80, `difference ${dB(d / ref).toFixed(1)} dB`);
 });
 
-test('§0.3/§12.5: the v2 render path allocates nothing — sequencer, MPE notes, direct and bus pairs, MIDI OUT ring', () => {
-  const S = scope(), src = S.mk({ os: 2, trackId: 'a' }), tgt = S.mk({ os: 2, trackId: 'b', patch: mmPatch() });
+test('§0.3/§12.5: the v2 render path allocates nothing — sequencer, MPE notes, direct and bus pairs, MIDI OUT ring; a graph node (IMPL-1e §2.6: several Insts, zones, gains, a shared panel, a removed Inst fading out)', () => {
+  const S = scope(), src = S.mk({ os: 2, trackId: 'a' }), tgt = S.mk({ os: 2, trackId: 'b' });
+  // the MIDI OUT target: a graph node — Minimoog and Juno-60 (+12, gain 0.7) into one panel, a Serum straight to OUT at 0.5
+  const Z = { lo: 0, hi: 127, xp: 0 }, ins = [{ id: 'i1', on: true, zone: Z, salt: 0 }, { id: 'i2', on: true, zone: { lo: 0, hi: 127, xp: 12 }, salt: 0x3C6EF372 },
+    { id: 'i3', on: true, zone: Z, salt: 0x9E3779B9 }], bare = p => { const q = Object.assign({}, p); delete q.fxr; delete q.fxrT; return q; };
+  tgt.msg({ t: 'graph', insts: ins, chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['i2', 'fx1', 0.7], ['fx1', 'out', 1], ['i3', 'out', 0.5]], out: 'out', key: 'k' });
+  tgt.msg({ t: 'patch', i: 'i1', p: bare(mmPatch()) }); tgt.msg({ t: 'patch', i: 'i2', p: bare(plainPatch('juno60')) });
+  const fp = mmPatch();
+  tgt.msg({ t: 'chain', c: 'fx1', fxr: fp.fxr, fxrT: fp.fxrT });
+  const sp = sxPatch(vState());
+  tgt.msg({ t: 'patch', i: 'i3', p: sp }); for (const id of sp.needs) tgt.msg(wtMsg(id));
   sendSx(src, vState(st => { st.p['arp.on'] = 1; st.arp.midiOut = 2; st.arp.outTrack = 'b'; st.p['a.bus1'] = 0.7; st.osc[1].route = 2; st.p['b.on'] = 1; st.global.mpe.on = 1; }));
   assert.ok((src.sxMask & 6) === 6, 'direct and bus 1 in use');
   src.msg({ t: 'on', n: 60, v: 0.8, ch: 2 }); src.msg({ t: 'on', n: 64, v: 0.7, ch: 3 }); src.msg({ t: 'mpe', ch: 2, k: 'b', v: 0.2 });
   run(S, [src, tgt], 48000);                                           // first calls (inline caches, lazy pools)
+  tgt.msg({ t: 'graph', insts: ins.slice(0, 2), chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['i2', 'fx1', 0.7], ['fx1', 'out', 1]], out: 'out', key: 'k2' });
+  assert.equal(tgt.dyI.length, 1, 'i3 removed: it fades out (and is dropped) inside the checked quanta');
   const L = new Float32Array(128), R = new Float32Array(128);
   noAlloc(S.D, () => {
     for (let k = 0; k < 375; k++) { src.process([], [[L, R]]); tgt.process([], [[L, R]]); S.ctx.currentFrame += 128; }
   });
   assert.ok(tgt.voices.some(v => v.active), 'MIDI OUT reached the target');
+  assert.ok(tgt.insts[1].voices.some(v => v.active) && tgt.dyI.length === 0 && tgt.simple === 0, 'both instruments play; the removed one is gone');
 });
 
 /* ------------------------------------------------------------------ R7: chords in the song scheduler; previews */
