@@ -4,7 +4,9 @@
 //    a seeded random message stream must produce the same host calls, in the same order, with the same arguments, and
 //    the same final states;
 //  - MPE zone routing (member/master channels, mixed MPE and Phase-1 targets);
-//  - the Web MIDI adapter (button texts, permission auto-connect, retry, hot-plug) on a stub navigator.
+//  - the Web MIDI adapter (button texts, permission auto-connect, retry, hot-plug) on a stub navigator;
+//  - stage 1e (IMPL-1e §3.3): several Serum instruments on a track — learn / forget per instrument (its own map),
+//    learned controllers over every Serum instrument of each target, program change to the track (the primary).
 // Run: node --test tests/midi.test.mjs
 import './v8-guard.mjs';
 import test from 'node:test';
@@ -753,4 +755,45 @@ test('adapter: Enable MIDI button, permission auto-connect, retry, hot-plug, uns
     await new Promise(r => setTimeout(r, 5));
     assert.equal(typeof b.onclick, 'function');
   }
+});
+
+test('1e: several Serum instruments per track — learn / forget per instrument, a CC over every instrument by its own map, program change', async () => {
+  const log = [], T = timers(), project = project0(), E = world(project, log, T);
+  const t = Object.assign(sxTrack(7, 0, { arm: true, midi: { 50: 'macro1' } }), { name: 'Two' });
+  const s2 = sxState({ 50: 'macro2', 51: 'fx.dist.drive' }), fx2 = { p: {} }, sets = [], chg = [];
+  project.tracks = [t, plainTrack(8, 0, { arm: true })];
+  const R = v2(E, {
+    instsOf: x => (x === t ? [{ id: 'i1', s: t.vals.s, fx: t.fx, prim: true }, { id: 'i3', s: s2, fx: fx2, prim: false }] : []),
+    fxSet: (x, id, n, dev) => sets.push([x.id, id, n, dev]),
+    changed: (x, patch, refresh, dev) => chg.push([x.id, patch, refresh, dev === undefined ? 'none' : dev]),
+  });
+  // learn(trackId, dev, dest): that instrument's map; learn(trackId, dest): the primary's
+  let p = R.learn(7, 'i3', 'a.semi');
+  assert.deepEqual(R.learning, { id: 7, dest: 'a.semi' });
+  R.message([0xb0, 60, 0], 0);
+  assert.equal(await p, 60);
+  assert.deepEqual([s2.midi['60'], t.vals.s.midi['60'], chg[0]], ['a.semi', undefined, [7, false, false, 'i3']]);
+  chg.length = 0; // (then the controller applies at once, Phase 1)
+  p = R.learn(7, 'f.var'); R.message([0xb0, 61, 0], 0);
+  assert.equal(await p, 61);
+  assert.deepEqual([t.vals.s.midi['61'], s2.midi['61'], chg[0]], ['f.var', undefined, [7, false, false, 'i1']]);
+  chg.length = 0;
+  p = R.learn(7, 'i9', 'f.var'); R.message([0xb0, 62, 0], 0);
+  assert.deepEqual([await p, chg.length], [62, 0], 'no such instrument: the controller, nothing mapped');
+  // one controller, each instrument by its own map (one change per track); FX ids into that instrument's FX
+  chg.length = 0;
+  R.message([0xb0, 50, 127], 0);
+  assert.deepEqual([t.vals.s.macros[0].v, s2.macros[1].v, t.vals.s.macros[1].v, chg], [1, 1, 0, [[7, true, true, 'none']]]);
+  R.message([0xb0, 51, 127], 0);
+  assert.deepEqual(sets, [[7, 'fx.dist.drive', 1, 'i3']]);
+  // forget(t, dest, dev)
+  chg.length = 0;
+  R.forget(t, 'a.semi', 'i3');
+  assert.deepEqual([s2.midi['60'], chg], [undefined, [[7, false, true, 'i3']]]);
+  R.forget(t, 'f.var');
+  assert.equal(t.vals.s.midi['61'], undefined);
+  // program change: the targeted tracks (main.js loads the preset into each one's primary)
+  log.length = 0;
+  R.message([0xc0, 5], 0);
+  assert.deepEqual(log.filter(e => e[0] === 'pc'), [['pc', [7, 8], 5]]);
 });
