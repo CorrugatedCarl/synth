@@ -173,6 +173,13 @@ const rowActive = r => !!(r && r.src && r.dst && !r.byp && r.amt !== 0 && r.out 
 const emptyRow = () => ({ src: '', amt: 0, dst: '', bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1,
   acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 });   // v2 row (§2.3)
 const warnOnce = (() => { const seen = new Set(); return (k, ...a) => { if (!seen.has(k)) { seen.add(k); console.warn(...a); } }; })();
+// a touch device (coarse pointer or touch points): its panel undo keeps at most UNDO_TOUCH_BYTES of snapshots
+const UNDO_TOUCH_BYTES = 4 * 1024 * 1024;
+function isTouchDev(d) {
+  const w = (d && d.defaultView) || globalThis, n = w.navigator || globalThis.navigator;
+  try { if (w.matchMedia && w.matchMedia('(pointer: coarse)').matches) return true; } catch (err) { /* no media queries */ }
+  return !!(n && n.maxTouchPoints > 0);
+}
 const nowMs = () => { const p = globalThis.performance; return p && typeof p.now === 'function' ? p.now() : Date.now(); };
 const s1On = s => !!(s && s.global && s.global.s1);
 const s0Os = s => (s && s.global ? s.global.os : undefined);
@@ -901,6 +908,11 @@ const CSS = `
 .sx-note { color: var(--sx-neg); font-size: 11px; }
 .sx-pop { position: absolute; z-index: 40; width: min(440px, calc(100% - 16px)); max-height: calc(100% - 16px); overflow: auto; padding: 8px; background: var(--sx-panel); border: 1px solid var(--sx-accent); border-radius: 8px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6); }
 .sx-ov { position: absolute; inset: 0; z-index: 60; display: flex; flex-direction: column; background: rgba(9, 11, 14, 0.97); border-radius: 10px; overflow: auto; }
+/* the panel's top-layer twin on the canvas (SPEC-canvas §4.7): its popovers and overlays at screen size, over everything */
+.sx-root.sx-layer, .cv-ov > .sx-root.sx-layer { position: fixed; inset: 0; z-index: 0; padding: 0; background: none; border-radius: 0; box-shadow: none; pointer-events: none; overflow: visible; }
+.sx-layer > * { pointer-events: auto; }
+.sx-layer > .sx-ov { position: fixed; border-radius: 0; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+.sx-layer > .sx-pop { position: fixed; max-height: calc(100dvh - 16px); }
 /* overlays fill the screen below 1100 px (§13.2): at least one viewport tall, scrolled to the top of the screen when opened */
 @container sx (max-width: 1099px) {
   .sx-ov { border-radius: 0; min-height: 100vh; min-height: 100dvh; }
@@ -1599,7 +1611,9 @@ export class SerumUI {
     this.edSig = new WeakMap();       // graph editor → () => signature of what it draws
     this.edKey = new WeakMap();
     this.snapT = -1e9;
-    this.undo = undoStack(100);       // panel undo / redo (§13.2.4)
+    // panel undo / redo (§13.2.4); capped at 4 MB of snapshots on a touch device (SPEC-canvas §5.7: several Serums per page)
+    this.undoMax = isTouchDev(this.d) ? UNDO_TOUCH_BYTES : 16 * 1024 * 1024;
+    this.undo = undoStack(100, { maxBytes: this.undoMax });
     this.undoPend = null;             // label of the edit gesture whose snapshot is taken at the next paint
     this.restoring = false;
     this.touch = false;
@@ -1613,6 +1627,10 @@ export class SerumUI {
     if (s && s.ui && EDIT_SRC.test(s.ui.mod)) this.edSel = s.ui.mod;
     this.el = mk(this.d, 'div', 'sx-root');
     this.el.id = this.uid;
+    // the device this panel is (SPEC-canvas §8.6): its [data-dest] ids resolve inside it — 'a.level' exists in every Serum
+    this.dev = typeof this.host.dev === 'string' && this.host.dev ? this.host.dev : 'i1';
+    this.el.setAttribute('data-dev', this.dev);
+    this.lay = null;                  // the top-layer twin of the root (popovers, overlays) while the panel is on the canvas
     root.appendChild(this.el);
     this.detectTouch();
     const RO = this.d.defaultView && this.d.defaultView.ResizeObserver || globalThis.ResizeObserver;
@@ -1637,6 +1655,7 @@ export class SerumUI {
       current: () => this.lastKey,   // the current key as the panel knows it (syncPreset), not re-read per browser action
       hybrid: (keys, favor) => this.hybridize(keys, favor),
       storage: this.host.storage,
+      layer: () => this.layerEl(),
     });
     // "Default WT view" (§9.7) for new tracks: the host creates them with withPrefs (os / author only), so a
     // sound that is still the untouched default opens in 3D when the preference says so (a view-only edit)
@@ -2608,6 +2627,17 @@ export class SerumUI {
   // the box and returns it (refresh / destroy); sig() = a signature of what it draws (repaint on change). Opening the
   // popover of the same key again closes it; Escape, ✕ or a press outside close it. Returns { o: key, ed, anchor, close }
   // | null.
+  // Where popovers and overlays go: the panel itself on a page; on the canvas (inside [data-cv-world], whose transform
+  // would scale and clip them) a twin root in the top layer (wk.layer: #ov) — div.sx-root.sx-layer with the panel's
+  // classes and data-dev, so the panel's CSS and container queries apply at screen size (SPEC-canvas §4.7, §8.6)
+  layerEl() {
+    const L = wk.layer ? wk.layer(this.el) : this.el;
+    if (!L || L === this.el || this.dead) { if (this.lay) { this.lay.remove(); this.lay = null; } return this.el; }
+    if (!this.lay) { this.lay = mk(this.d, 'div', ''); this.lay.setAttribute('data-dev', this.dev); this.lay.setAttribute('data-sx-layer', this.uid); }
+    this.lay.className = String(this.el.className || 'sx-root') + ' sx-layer';
+    if (this.lay.parentNode !== L) L.appendChild(this.lay);
+    return this.lay;
+  }
   popover(key, anchor, title, make, sig) {
     if (this.pop) { const same = this.pop.o === key; this.pop.close(); if (same) return null; }
     const d = this.d, box = mk(d, 'div', 'sx-pop');
@@ -2619,12 +2649,21 @@ export class SerumUI {
     hd.appendChild(x);
     const eb = mk(d, 'div', 'sx-edbox');
     box.append(hd, eb);
-    // placed in the panel's layout px (the canvas world may scale it: the rects are screen px)
     const er = this.el.getBoundingClientRect(), ar = anchor && anchor.getBoundingClientRect ? anchor.getBoundingClientRect() : er;
-    const ls = wk.localScale(this.el), W = this.el.offsetWidth || er.width * ls;
-    box.style.left = Math.max(8, Math.min((ar.left - er.left) * ls, W - 456)) + 'px';
-    box.style.top = ((ar.bottom - er.top) * ls + 4) + 'px';
-    this.el.appendChild(box);
+    const L = this.layerEl();
+    if (L !== this.el) { // on the canvas: in the top layer at the anchor, screen px (unscaled at any zoom; a pan closes it)
+      const win = this.d.defaultView || globalThis, vw = +win.innerWidth || 1024, vh = +win.innerHeight || 768;
+      box.style.left = Math.max(8, Math.min(ar.left, vw - 456)) + 'px';
+      box.style.top = Math.max(8, ar.bottom + 4) + 'px';
+      L.appendChild(box);
+      const bh = +box.offsetHeight || 0;
+      if (bh && ar.bottom + 4 + bh > vh - 8) box.style.top = Math.max(8, Math.min(ar.top - 4 - bh, vh - 8 - bh)) + 'px';
+    } else { // placed in the panel's layout px (the canvas world may scale it: the rects are screen px)
+      const ls = wk.localScale(this.el), W = this.el.offsetWidth || er.width * ls;
+      box.style.left = Math.max(8, Math.min((ar.left - er.left) * ls, W - 456)) + 'px';
+      box.style.top = ((ar.bottom - er.top) * ls + 4) + 'px';
+      this.el.appendChild(box);
+    }
     const prevBp = this.bp;
     this.bp = this.popPage = mkPage(box);
     let ed;
@@ -2642,6 +2681,7 @@ export class SerumUI {
     // widgets bound inside the popover repaint with it (a custom bind on the editor's refresh)
     const ed2 = binds.length ? { refresh: () => { for (const w of binds) w.update(); if (ed && ed.refresh) ed.refresh(); }, destroy: () => { if (ed && ed.destroy) ed.destroy(); } } : ed;
     if (ed2 !== ed && sig) this.edSig.set(ed2, sig);
+    if (L !== this.el && wk.addTransient) offs.push(wk.addTransient(() => P.close())); // (a camera move: never stranded)
     const P = { o: key, ed: ed2, inner: ed, box, anchor, close: () => {
       offs.forEach(f => f());
       if (ed2 && ed2.destroy) ed2.destroy();
@@ -2653,7 +2693,8 @@ export class SerumUI {
     this.pop = P;
     x.focus();
     this.scanMods();
-    if (isEd) fullScreenOverlay(this.el, box);
+    if (L !== this.el) { /* (the top layer: placed above; below 1100 px of screen an editor is a full-screen sheet by the container rule) */ }
+    else if (isEd) fullScreenOverlay(this.el, box);
     else if (panelW(this.el) < 1100) revealIn(box, 'nearest');
     return P;
   }
@@ -2675,9 +2716,10 @@ export class SerumUI {
       if (prev && prev.focus && prev.isConnected !== false) prev.focus();
     };
     ov.addEventListener('keydown', e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); O.close(); } });
-    this.el.appendChild(ov);
+    const L = this.layerEl(); // (on the canvas: a sheet in the top layer, whatever the zoom)
+    L.appendChild(ov);
     this.overlay = O;
-    fullScreenOverlay(this.el, ov);
+    if (L === this.el) fullScreenOverlay(this.el, ov);
     return O;
   }
   dialog(title, body, buttons) {
@@ -4959,6 +5001,7 @@ export class SerumUI {
     clearTimeout(this.tipT);
     this.dropRender();
     if (this.host.monitor) this.host.monitor(false);
+    if (this.lay) { this.lay.remove(); this.lay = null; }
     this.el.remove();
   }
 }
@@ -5294,9 +5337,10 @@ export class PresetBrowser {
     this.ov = { el: ov, list, cols, cat, prev, tabB, tagBox, tagMode, stars, auto, metaEl, bar2, macBar, macs, q };
     this.invalidate();
     this.sel = this.current();
-    this.box.appendChild(ov);
+    const L = typeof this.o.layer === 'function' ? this.o.layer() || this.box : this.box; // (the canvas: the panel's top layer)
+    L.appendChild(ov);
     this.render();
-    fullScreenOverlay(this.box, ov);
+    if (L === this.box) fullScreenOverlay(this.box, ov);
     this.focusList();
   }
   close() {

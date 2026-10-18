@@ -2996,3 +2996,50 @@ test('C1 review 2: the selection a press makes (filter pick, oscillator select, 
   assert.equal(s().p['a.level'], v0);
   u.destroy();
 });
+
+/* ================================================================ several instances on the canvas (SPEC-canvas §10 stage 1c) */
+test('two SerumUIs on one canvas: data-dev scoping, separate state and undo, popovers / overlays / the browser in the top layer; 4 MB undo on touch', async () => {
+  const doc = new Doc();
+  globalThis.document = doc;
+  globalThis.MouseEvent = Ev;
+  const world = doc.createElement('div'), ov = doc.createElement('div');
+  world.setAttribute('data-cv-world', '');
+  doc.body.appendChild(world); doc.body.appendChild(ov);
+  wkm.setLayer(ov);
+  try {
+    const mk = (dev, touch) => {
+      const host = mkHost({ dev }), root = doc.createElement('div');
+      world.appendChild(root);
+      doc.defaultView.matchMedia = q => ({ matches: !!touch && /coarse/.test(q), addEventListener() {}, removeEventListener() {} });
+      return { host, u: new ui.SerumUI(root, host) };
+    };
+    const A = mk('i1', false), B = mk('i2', true);
+    await flush(doc);
+    assert.deepEqual([A.u.el.getAttribute('data-dev'), B.u.el.getAttribute('data-dev')], ['i1', 'i2']);
+    assert.ok(!!(byDest(A.u.el, 'a.level') && byDest(B.u.el, 'a.level')), '`a.level` in each, scoped by its [data-dev] root');
+    assert.deepEqual([A.u.undoMax, B.u.undoMax], [16 * 1024 * 1024, 4 * 1024 * 1024], 'the touch device keeps 4 MB of panel undo');
+    // an edit in one never reaches the other (state, undo)
+    const v0 = B.host.st.s.p['a.level'];
+    A.u.setN('a.level', 0.123, 'set');
+    await flush(doc);
+    assert.equal(A.host.st.s.p['a.level'], 0.123);
+    assert.equal(B.host.st.s.p['a.level'], v0);
+    assert.equal(A.u.undo.canUndo(), true); assert.equal(B.u.undo.canUndo(), false);
+    // a popover: in the top layer at screen size (a twin root with the panel's classes and device), closed by a camera move
+    const P = A.u.kit.popover('t1', byDest(A.u.el, 'a.level'), 'Test', () => ({ refresh() {}, destroy() {} }), () => '');
+    assert.ok(P && ov.contains(P.box) && !A.u.el.contains(P.box), 'in #ov');
+    const lay = P.box.parentNode;
+    assert.ok(lay.classList.contains('sx-root') && lay.classList.contains('sx-layer'));
+    assert.equal(lay.getAttribute('data-dev'), 'i1');
+    wkm.closeTransient();
+    assert.equal(A.u.pop, null, 'a pan (closeTransient) closes it');
+    const O = A.u.overlayOpen('sx-dlg-ov', 'Dialog');
+    assert.ok(ov.contains(O.el), 'an overlay: a sheet in the top layer');
+    O.close();
+    B.u.browser.open();
+    assert.ok(ov.contains(B.u.browser.ov.el) && !B.u.el.contains(B.u.browser.ov.el), 'the preset browser too');
+    B.u.browser.close();
+    A.u.destroy(); B.u.destroy();
+    assert.equal(ov.childNodes.length, 0, 'destroy takes the top-layer twins away');
+  } finally { wkm.setLayer(null); }
+});

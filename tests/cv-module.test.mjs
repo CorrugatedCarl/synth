@@ -157,7 +157,7 @@ test('createModule: chrome, a 40 px bar, jacks on the edges, fold → BAR_H tall
   assert.equal(jack.style.top, (M.BAR_H + M.JACK_Y) + 'px', 'the dot sits at the port offset');
   m.setFold(true);
   assert.equal(m.rect().h, M.BAR_H);
-  assert.deepEqual(m.port('out'), { x: 1080, y: M.BAR_H / 2 }, 'folded: jacks on the bar');
+  assert.deepEqual(m.port('out'), { x: 1080 + M.JACK_OUT, y: M.BAR_H / 2 }, 'folded: the jacks at the bar\'s middle, just outside the edge');
   assert.equal(m.el.hasAttribute('data-cv-fold'), true);
   assert.equal(one(m.bar, 'cv-fold').getAttribute('aria-expanded'), 'false');
   m.setFold(false);
@@ -680,4 +680,65 @@ test('the cv-module CSS section: last in style.css, counter-scaled hit areas fro
   assert.match(sec, /\.cv-body \{[^}]*contain: layout paint style/);
   assert.match(sec, /\.cv-bar \{[^}]*height: 40px;[^}]*touch-action: none/);
   assert.ok(!/min-height:\s*(44|48)px/.test(sec), 'hit areas grow through ::before, never min-height');
+});
+
+test('createTrackView (1c): a selection of several moves together — live, one start for the mover, the others written in its step; a cancel puts them back; a nudge carries them', () => {
+  const doc = fresh(), W = fakeWorld(1), tr = { id: 'trk_1', model: 'minimoog', name: 'Bass 1', color: '#3b82c4' };
+  W.sel = ['fx1', 'out'];
+  Object.defineProperty(W, 'selection', { get: () => W.sel.slice() });
+  W.select = (id, o) => { if (!(o && o.keep && W.sel.includes(id))) W.sel = id ? [id] : []; W.selected = id; W.emit('select', { id }); };
+  const { V, calls } = view(tr, W, doc), fx = V.modules.get('fx1'), out = V.modules.get('out'), i1 = V.modules.get('i1');
+  const o0 = [out.x, out.y];
+  ptr(fx.bar, 'pointerdown', 1300, 20, { pointerId: 1, pointerType: 'mouse' });
+  ptr(fx.bar, 'pointermove', 1340, 100, { pointerId: 1, pointerType: 'mouse' });
+  assert.deepEqual(W.sel, ['fx1', 'out'], 'the group kept');
+  const d = [fx.x - 1248, fx.y];
+  assert.deepEqual([out.x, out.y], [o0[0] + d[0], o0[1] + d[1]], 'the other follows, live');
+  assert.equal(out.el.style.transform !== '', true, '(a transform while live)');
+  ptr(fx.bar, 'pointerup', 1340, 100, { pointerId: 1, pointerType: 'mouse' });
+  const mv = calls.filter(c => c[2] === 'move' || c[2] === 'group');
+  assert.deepEqual(mv.map(c => c[0] + ' ' + c[1] + ' ' + c[2]), ['fx1 start move', 'fx1 end move', 'out end group'], 'one step: the mover records, the others join it');
+  assert.deepEqual([tr.lay.out.x, tr.lay.out.y, i1.x], [o0[0] + d[0], o0[1] + d[1], 0], 'written; the unselected one stays');
+  // Escape / a second finger: everything back
+  const o1 = [out.x, out.y], f1 = [fx.x, fx.y];
+  ptr(fx.bar, 'pointerdown', 1400, 120, { pointerId: 2, pointerType: 'mouse' });
+  ptr(fx.bar, 'pointermove', 1500, 220, { pointerId: 2, pointerType: 'mouse' });
+  fire(fx.bar, 'pointercancel', { pointerId: 2, pointerType: 'mouse', gesture: 'two-finger' });
+  assert.deepEqual([fx.x, fx.y, out.x, out.y], [...f1, ...o1], 'cancelled: back');
+  // a nudge (the canvas arrows) carries the group too
+  fx.nudge(32, 0);
+  assert.deepEqual([out.x, tr.lay.out.x], [o1[0] + 32, o1[0] + 32]);
+  W.sel = ['fx1'];
+  fx.nudge(32, 0);
+  assert.equal(out.x, o1[0] + 32, 'alone: only it');
+  V.destroy();
+});
+
+test('folded jacks (1c, the iPad report): outside the edges, clear of ⋯ / ▾ / the chip; the bar controls win the hit test; ▾ still folds and unfolds', () => {
+  const doc = fresh(), W = fakeWorld(1), tr = { id: 'trk_1', model: 'minimoog', name: 'Bass 1', color: '#3b82c4' };
+  const { V } = view(tr, W, doc), i1 = V.modules.get('i1'), fx = V.modules.get('fx1');
+  for (const m of [i1, fx]) m.setFold(true);
+  // the bar's geometry (style.css): padding-right 4 px, ▾ and ⋯ 32 px wide, 8 px apart; the dot 16 px; the coarse circle 44 px
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /\.cv-bar \{[^}]*padding: 0 4px 0 12px/); assert.match(css, /\.cv-btn \{[^}]*width: 32px/);
+  for (const m of [i1, fx]) {
+    const w = m.w, fold = [w - 4 - 32, w - 4], more = [w - 4 - 32 - 8 - 32, w - 4 - 32 - 8];
+    const out = m.port('out'), dot = [out.x - 8, out.x + 8];
+    assert.ok(dot[0] >= w + 6 && dot[0] > fold[1] && dot[0] > more[1], m.id + ': the out dot clear of ▾ and ⋯ ' + JSON.stringify([dot, fold]));
+    if (m.jack('in')) { const p = m.port('in'); assert.ok(p.x + 8 <= -6, m.id + ': the in dot outside the left edge (padding 12 px)'); }
+  }
+  assert.match(css, /\.cv-mod\[data-cv-fold\] > \.cv-jack\[data-side="right"\] \{ left: calc\(100% \+ 14px\); \}/, 'CSS = port geometry (JACK_OUT)');
+  assert.match(css, /\.cv-mod\[data-cv-fold\] > \.cv-jack\[data-side="left"\] \{ left: -14px; \}/);
+  assert.equal(M.JACK_OUT, 14);
+  assert.match(css, /\.cv-bar > \.cv-btn, \.cv-bar > \.cv-chip, \.cv-bar > \.cv-pow \{ position: relative; z-index: 4; \}/, 'above the jacks (z 3)');
+  assert.match(css, /\.cv-jack \{ position: absolute; z-index: 3;/);
+  // cables attach where the dots are
+  assert.deepEqual(V.ports().get('i1.out'), { x: i1.x + i1.w + M.JACK_OUT, y: i1.y + M.BAR_H / 2 });
+  // ▾ toggles (a press there is the button's: its pointerdown never starts a move)
+  const foldB = one(i1.bar, 'cv-fold');
+  ptr(foldB, 'pointerdown', 1130, 20, { pointerId: 9, pointerType: 'touch' }); fire(foldB, 'click');
+  assert.equal(i1.fold, false, 'unfolded');
+  fire(foldB, 'click');
+  assert.equal(i1.fold, true);
+  V.destroy();
 });

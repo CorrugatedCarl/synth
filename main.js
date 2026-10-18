@@ -4,10 +4,11 @@ import { PianoRoll } from './roll.js?v=9';
 import { Arrangement } from './arrange.js?v=9';
 import * as core from './serum-core.js?v=9';
 import { openAppStore, PROJECT_KEY, WT_DB, SMP_DB } from './appstore.js?v=9';
-// canvas stage 1a (SPEC-canvas §5.8): project schema gate + uid; cv-graph (and cv-mods through it) ride in the precache
-// now, used from stage 1c / 2a
+// canvas stage 1a (SPEC-canvas §5.8): project schema gate + uid; stage 1c: project v2 (cv-migrate toV2 / toV1 / the file
+// mirror), the in-memory track (cv-model adopt: accessors onto the primary instrument), the canonical compile (cv-graph)
 import * as CM from './cv-migrate.js?v=9';
-import './cv-graph.js?v=9';
+import * as CG from './cv-graph.js?v=9';
+import * as CMOD from './cv-model.js?v=9';
 import { createAssetManager, portPoster, userIdsOf, userAssetIds, idKind, TEXT as ATEXT } from './assets.js?v=9';
 import { createMidi, targets as midiTargets, noteCh, noteMsg } from './midi.js?v=9';
 import { initApp } from './pwa.js?v=9';
@@ -21,6 +22,8 @@ import * as cvModule from './cv-module.js?v=9';
 import * as cvCables from './cv-cables.js?v=9';
 // the hardware front panels (docs/canvas/IMPL-panels.md, ENGINE lane): fixed-size classic instruments, Hardware / Resizable
 import * as cvPanel from './cv-panel.js?v=9';
+// stage 1c: the classic panel as an instance (renderPanel, controls, preset plate, TB-303 sequencer with their track passed in)
+import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
 import { fitCanvas } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom)
 
 const VERSION = '9';
@@ -75,7 +78,8 @@ const settings = Object.assign({ sr: 0, os: 4, drift: 5, master: 0.8, model: 'mi
 settings.lat = clamp(Math.round(+settings.lat) || 0, -50, 400);
 let ctx = null, an = null, master = null, metroBus = null, powering = null;
 let octave = 0, sustain = false;
-const ui = new Map();
+let cpanel = null; // the selected track's classic panel (classic-panel.js ClassicPanel), or null (a Serum track)
+const uiOf = () => (cpanel ? cpanel.ui : EMPTY_UI), EMPTY_UI = new Map(); // its value updaters (id → fn; '@seqrun', '@preset')
 
 /* ---------------------------------------------- Serum preferences (§9.7) */
 // App-wide, stored by the Serum panel (serum-ui.js normPrefs) under synth.sx.prefs; read here for the patches of every
@@ -128,13 +132,6 @@ function fxSet(t, id, n) {
   if (d && d.inst && d.inst.p && typeof d.inst.p === 'object') d.inst.p[d.pid] = n;
 }
 const clone = x => JSON.parse(JSON.stringify(x));
-function fmt(c, v) { return c.fmt ? c.fmt(v) : c.t === 'k' ? (+v).toFixed(1) : String(v); }
-function toPos(c, v) { return (v - c.min) / (c.max - c.min); }
-function fromPos(c, p) {
-  let v = c.min + clamp(p, 0, 1) * (c.max - c.min);
-  if (c.step) v = Math.round(v / c.step) * c.step;
-  return +v.toFixed(4);
-}
 
 // song.deserialize validates the core schema; carry over the extras this UI keeps (303 patterns, FX racks, view
 // prefs). Serum states and FX racks are normalised here (they enter from outside: autosave, files, §11.8).
@@ -153,15 +150,20 @@ function loadProject(json, lo = {}) {
   CM.stamp(p, o);
   for (const k of ['drawLen', 'follow', 'ghosts']) if (o && k in o) p[k] = o[k];
   const byId = new Map(((o && o.tracks) || []).map(t => [t && t.id, t]));
-  for (const t of p.tracks) {
+  for (const t of p.tracks) { // a record song.js read as v1 (no valid devices): its 303 pattern and rack from the record
     const r = byId.get(t.id);
+    if (t.dev) continue;
     if (r && r.seq && Array.isArray(r.seq.pat)) t.seq = r.seq;
+    if (r && r.fx && typeof r.fx === 'object') t.fx = r.fx;
+  }
+  CMOD.adopt(p); // (SPEC-canvas §5.4: v2 tracks with their accessors; the code below reads the primary through them)
+  for (const t of p.tracks) {
     // SPEC-serum2 §12.6: Serum states through normalizeSerum (v1 → v2 migration, §2.6), FX states through §2.6.3's
     // normalizeFx — a v1 rack (any model) is migrated, migrateFx1(normalizeFxV1(fx), refs), with the track's Serum state
     // as refs (the instances its rows / locks / MIDI map address are kept); the migrated rack renders bit-identically
     // (golden shard 4) and the project is saved with v2 racks (§15.1 item 6)
     if (isSx(t)) t.vals = { s: core.normalizeSerum(t.vals && t.vals.s) };
-    t.fx = r && r.fx && typeof r.fx === 'object' ? fxLoad(r.fx, isSx(t) ? t.vals.s : undefined) : core.defaultFx2();
+    t.fx = t.fx && typeof t.fx === 'object' ? fxLoad(t.fx, isSx(t) ? t.vals.s : undefined) : core.defaultFx2();
   }
   if (up.readOnly) { if (lo.file) p.newerSchema = up.from; else goReadOnly(up.from); }
   return p;
@@ -169,7 +171,7 @@ function loadProject(json, lo = {}) {
 function freshProject(m) {
   const p = CM.stamp(S.newProject({ model: m.id, vals: loadVals(m), name: 'Untitled', trackName: m.name + ' 1' }));
   for (const t of p.tracks) { t.fx = newFx(m); seedPend.add(t.id); }
-  return p;
+  return CMOD.adopt(p);
 }
 const seedPend = new Set(); // tracks whose next patch re-seeds the FX rack's LFO phases (§4.2: loads, track creation)
 let project;
@@ -217,9 +219,15 @@ const saveNow = () => save(true);
 // "Use Ultra quality when rendering" does, §13.10). patchFor (models.js, SPEC-serum2 §12.7) builds the track's whole
 // patch (model map with the FX state, the quality caps and the app preferences; FX rack); only the live-session fields
 // are added here: the rack re-seed, the oversampling cap and Q4's POLY cap (§14.3).
+// The canonical compile (SPEC-canvas §5.5): cv-graph presents a track of today's shape (one instrument → at most one
+// panel → OUT; a Serum with its own FX → OUT) as its v1 view — the very vals / FX objects the track holds — so the node
+// gets today's message stream (tests/canonical-stream.test.mjs). Other shapes (stage 1e) compile their primary alone
+// until the graph protocol lands.
 function buildPatch(tr, sr, offline = false) {
-  const m = modelById(tr.model), s = m.custom && tr.vals.s ? tr.vals.s : null;
-  const patch = patchFor(m, tr.vals, fxOf(tr), {
+  fxOf(tr); // (a v1 rack reaching the track is migrated in place first, as before)
+  const c = CG.compileTrack(tr), V = c.canonical ? c.v1 : CM.primV1(tr);
+  const m = modelById(V.model), s = m.custom && V.vals.s ? V.vals.s : null;
+  const patch = patchFor(m, V.vals, V.fx, {
     sr: sr || (ctx ? ctx.sampleRate : 48000), bpm: project.bpm, drift: settings.drift / 10, hiss: 1,
     // offline: no quality caps (the CP defaults; the touch-device stream / grain pools differ by ≈ 1 MB and a render has no
     // deadline); live: the device defaults and the safeguard's step
@@ -382,14 +390,13 @@ function postPatch(N, p) {
   N.node.port.postMessage({ t: 'patch', p });
 }
 function queueAll() { for (const t of project.tracks) queuePatch(t); }
-function setVal(id, v) {
-  vals[id] = v;
-  const u = ui.get(id); if (u) u();
+// a classic panel wrote a value (ClassicPanel set): its preset becomes Custom, the patch, autosave
+function valChanged(t, id) {
   if (id === 'alg') drawAlgo();
-  if (trk().preset) { trk().preset = null; renderHeads(); }
-  queuePatch(); persist();
+  if (t.preset) { t.preset = null; renderHeads(); }
+  queuePatch(t); persist();
 }
-function refreshAll() { for (const u of ui.values()) u(); drawAlgo(); }
+function refreshAll() { if (cpanel) cpanel.refresh(); drawAlgo(); }
 
 /* ------------------------------------------------------------- audio */
 const nodes = new Map(); // track id -> { node, gain, pan, an, load, voices }
@@ -640,7 +647,7 @@ function makeNode(tr) {
     const d = e.data, t = project.tracks.find(x => x.id === id) || tr;
     if (d.t === 'stats') { N.load = d.load; N.voices = d.voices; N.os = d.os || 0; statsText(); }
     else if (d.t === 'ready') { N.ready = true; if (readyF) readyF(); } // the processor is built (the first: warmed up)
-    else if (d.t === 'step' && t.id === project.selTrack && (seqRun.has(t.id) || (T.playing && seqOf(t).sync))) seqStep(d.s);
+    else if (d.t === 'step' && t.id === project.selTrack && (seqRun.has(t.id) || (T.playing && seqOf(t).sync))) seqStep(t, d.s);
     else if (d.t === 'smon') { if (d.fxph) N.fxph = d.fxph; monitors.deliver(id, d); }
     else if (d.t === 'fxph') { if (d.v) N.fxph = d.v; for (const f of N.phWait.splice(0)) f(d.v); }
     else if (d.t === 'fxover' && Array.isArray(d.ids)) { // §8.5: the rack's 32 MB cap left these instances bypassed
@@ -874,6 +881,7 @@ function fitBars() {
 }
 function applyRestore(p, keepSound = false) {
   if (!p) return;
+  CMOD.adopt(p); // (History snapshots and loads are plain objects: the accessors first)
   if (keepSound) for (const t of p.tracks) { // undo/redo never reverts knob tweaks on a track that kept its instrument
     const cur = project.tracks.find(x => x.id === t.id);
     if (cur && cur.model === t.model) t.vals = cur.vals;
@@ -946,7 +954,7 @@ function stop() {
   T.playing = false; T.rec = false; T.a = T.seekA = null; T.as = [];
   T.pos = T.startPos;
   metroStop();
-  if (!seqRun.has(project.selTrack)) for (const e of stepEls) e.classList.remove('now'); // synced 303 stopped with the song
+  if (!seqRun.has(project.selTrack) && cpanel) cpanel.seqStep(-1); // synced 303 stopped with the song
   transportUI(); posUI();
 }
 function reanchor(seekTick) { // tempo/loop change (or a seek) while playing, applied in sync on every node
@@ -1229,8 +1237,9 @@ function renderNav() {
   if (shell.tiles && shell.src && shell.src.isOpen() && shell.tiles.mode() === 'replace') srcModeUI('replace'); // (its track's name)
   trkChipUI();
 }
-function setTrackModel(tr, id) {
-  if (id === tr.model) return;
+// o.ui 'flow': the new synth in its Resizable layout (the Sources tray's Simple), inside this step
+function setTrackModel(tr, id, o = null) {
+  if (id === tr.model) { if (o && o.ui === 'flow' && tr === trk() && instUi(tr) !== 'flow' && !modelById(id).custom) cvSetLayout('flow'); return; }
   flush(); // a pending save of the outgoing model's values must not be dropped
   const old = modelById(tr.model), m = modelById(id);
   hist.record(project);
@@ -1238,6 +1247,7 @@ function setTrackModel(tr, id) {
   postTo(tr, { t: 'panic' });
   if (new RegExp('^' + old.name.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '( \\d+)?$').test(tr.name)) tr.name = m.name + ' ' + (project.tracks.indexOf(tr) + 1);
   tr.model = id; tr.vals = loadVals(m); tr.preset = null; // tr.fx (the track's rack) is kept
+  if (o && o.ui === 'flow' && !m.custom) layUi(tr, 'flow');
   if (tr.id === project.selTrack) { bind(); settings.model = id; renderNav(); renderPanel(); history.replaceState(null, '', '#' + id); }
   sendPatch(tr);
   if (id === 'tb303') seqSend(tr);
@@ -1266,179 +1276,38 @@ function instUi(t) {
   const e = t.lay && typeof t.lay === 'object' ? t.lay[cvModule.ID.inst] : null;
   return e && e.ui === 'flow' ? 'flow' : 'hw';
 }
-let hwPanel = null; // the rendered hardware panel ({w, h, destroy}) or null
+// the page's services for a ClassicPanel (one per mounted classic instrument: its own track, values and updaters)
+const classicHost = {
+  doc: document,
+  changed: valChanged,
+  presetTouched: () => { renderHeads(); persist(); },
+  kit: { track: (...a) => track(...a), pressOrTap: (...a) => pressOrTap(...a), noMenu: el => noMenu(el), hoverable: el => hoverable(el),
+    wheelIn: (el, e) => wheelIn(el, e), wheelStep: (el, w) => wheelStep(el, w), tip: (el, text) => tipText(el, text), untip: ms => hideTip(ms) },
+  presets: { list: m => presetList(m), cur: t => presetCur(t), load: (t, key) => presetLoad(key, t), step: (t, d) => presetStep(d, t),
+    save: t => presetSave(t), del: t => presetDelete(t), init: t => presetInit(t), touch: (t, key) => presetKeys.set(t.id, key) },
+  chip: () => cvChipSync(),
+  presetNo: t => { const c = presetCur(t); return c && /^f\d+$/.test(c.key) ? +c.key.slice(1) + 1 : null; }, // the factory number (1-based)
+  seq: { of: tr => seqOf(tr), send: tr => seqSend(tr), running: tr => seqRun.has(tr.id), toggle: (tr, on) => seqToggle(tr, on), toRoll: seqToRoll,
+    hw: tr => { let st = seqHw.get(tr.id); if (!st) seqHw.set(tr.id, st = { cur: 0, mode: 'pitch' }); return st; } },
+  dx: tr => hwDx(tr),
+};
+const classicOf = tr => (cpanel && !cpanel.dead && tr && cpanel.track === tr ? cpanel : null);
 function renderPanel() {
-  ui.clear();
-  if (hwPanel) { hwPanel.destroy(); hwPanel = null; }
+  if (cpanel) { cpanel.destroy(); cpanel = null; }
   { const el = $('#inst'); el.removeAttribute('style'); el.removeAttribute('data-hw'); el.removeAttribute('data-ptr'); el.removeAttribute('data-knurl'); el.removeAttribute('data-cap'); } // (a hardware panel's size and --hw-* go)
   if (model.custom) { renderCustom($('#inst')); cvPanelDone(); return; }
   sxPanel.drop();
-  const th = model.theme, el = $('#inst');
-  el.className = `inst ctl-${th.ctl} knob-${th.knob}${th.wood ? ' wood' : ''} m-${model.id}`;
-  const vars = { panel: th.panel, face: th.face, ink: th.ink, label: th.label, accent: th.accent, cap: th.cap || '#eee', capline: th.capLine || '#111' };
-  for (const k in vars) el.style.setProperty('--' + k, vars[k]);
-  el.innerHTML = '';
-  const L = instUi(trk()) === 'hw' ? hwLayoutOf(model) : null;
-  if (L) { // the hardware front panel: presets through the module's chip (◀ ▶) and its ⋯ menu (Save / Delete / Init)
-    syncPresetSel = () => cvChipSync();
-    hwPanel = cvPanel.render(el, L, model, hwApi());
-    $('#about-title').textContent = `${model.maker} ${model.name} (${model.year})`;
-    $('#about').textContent = model.about;
-    drawAlgo();
-    cvPanelDone();
-    return;
-  }
-  const plate = h('div', 'plate');
-  const nm = h('div', 'nameplate');
-  nm.append(h('div', 'maker', model.maker), h('div', 'mname', model.name), h('div', 'mmodel', `${model.model} · ${model.year} · track “${trk().name}”`));
-  if (th.stripes) { const s = h('div', 'stripes'); for (const c of th.stripes) { const i = h('i'); i.style.background = c; s.append(i); } nm.append(s); }
-  plate.append(nm, h('div', 'tag', model.tag), presetUI());
-  { const sp = syncPresetSel; syncPresetSel = k => { sp(k); cvChipSync(); }; } // the canvas module's preset chip follows
-  const secs = h('div', 'secs');
-  let ops = null; // DX7 operator rows share one horizontal scroller so row 1's labels stay over every column
-  model.sections.forEach((s, si) => {
-    const se = h('div', 'sec' + (s.wide ? ' wide' : '') + (s.op ? ' op' : ''));
-    se.append(h('h3', null, s.title));
-    const cs = h('div', 'ctls');
-    for (const c of s.c) cs.append(control(c, si));
-    se.append(cs);
-    if (s.op) { if (!ops) { ops = h('div', 'opswrap'); secs.append(ops); } ops.append(se); }
-    else secs.append(se);
-  });
-  el.append(plate, secs);
-  if (model.id === 'tb303') secs.append(seqUI(trk()));
+  const t = trk(), L = instUi(t) === 'hw' ? hwLayoutOf(model) : null;
+  cpanel = new ClassicPanel($('#inst'), { track: t, model, layout: L, host: classicHost }); // (Hardware: presets through the chip and the ⋯ menu)
+  syncPresetSel = k => { if (cpanel) cpanel.syncPreset(k); else cvChipSync(); };
   $('#about-title').textContent = `${model.maker} ${model.name} (${model.year})`;
   $('#about').textContent = model.about;
   drawAlgo();
   cvPanelDone();
 }
-
-function control(c, si) {
-  const th = model.theme;
-  const wrap = h('div', 'ctl t-' + c.t);
-  wrap.setAttribute('data-ctl', c.id); // (one live widget per models.js id in either layout: presets, undo, 2b's mod menus)
-  let el;
-  if (c.t === 'k') el = th.ctl === 'slider' ? slider(c, si) : th.ctl === 'num' ? numBox(c) : knob(c);
-  else if (c.t === 's') el = selector(c);
-  else el = toggle(c);
-  const lab = h('label', null, c.label);
-  wrap.append(el, lab);
-  return wrap;
-}
-
-const TICKS = (() => {
-  let s = '';
-  for (let i = 0; i <= 10; i++) {
-    const a = (-135 + 27 * i) * Math.PI / 180;
-    const x1 = 32 + Math.sin(a) * 28.5, y1 = 32 - Math.cos(a) * 28.5, x2 = 32 + Math.sin(a) * 31.5, y2 = 32 - Math.cos(a) * 31.5;
-    s += `<line x1="${x1.toFixed(2)}" y1="${y1.toFixed(2)}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}"/>`;
-  }
-  return s;
-})();
-function ariaVal(el, c) {
-  el.setAttribute('aria-valuemin', c.min); el.setAttribute('aria-valuemax', c.max);
-  el.setAttribute('aria-valuenow', vals[c.id]); el.setAttribute('aria-valuetext', fmt(c, vals[c.id]));
-}
-function knob(c) { // c.sweep (a hardware panel's printed dial, deg; default 270)
-  const el = h('div', 'knob'), sw = c.sweep > 0 ? +c.sweep : 270;
-  el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', c.label);
-  el.innerHTML = `<svg viewBox="0 0 64 64"><g class="ticks">${TICKS}</g><circle class="skirt" cx="32" cy="32" r="25"/><g class="rot"><circle class="cap" cx="32" cy="32" r="17.5"/><circle class="shine" cx="32" cy="32" r="17.5"/><line class="ind" x1="32" y1="9" x2="32" y2="21"/></g></svg>`;
-  const rot = el.querySelector('.rot');
-  const upd = () => {
-    rot.setAttribute('transform', `rotate(${(-sw / 2 + sw * toPos(c, vals[c.id])).toFixed(2)} 32 32)`);
-    ariaVal(el, c);
-  };
-  ui.set(c.id, upd); upd();
-  drag(el, c);
-  return el;
-}
-function slider(c, si) { // c.orient 'h' (the cap moves along x), c.invert (minimum at the top / right), c.capColor, c.hw (a hardware panel's)
-  const th = model.theme;
-  const el = h('div', 'slider');
-  el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', c.label);
-  if (c.orient === 'h') el.setAttribute('data-orient', 'h');
-  const ticks = h('div', 'sticks');
-  for (let i = 0; i <= 10; i++) ticks.append(h('i'));
-  const cap = h('div', 'cap');
-  if (c.capColor) cap.style.background = c.capColor;
-  else if (th.capColors && !c.hw) cap.style.background = th.capColors[si % th.capColors.length];
-  el.append(h('div', 'groove'), ticks, cap);
-  const upd = () => { // the cap's travel: the slot less the cap (--cap-h on a hardware panel, 14 px here)
-    const p = toPos(c, vals[c.id]), q = (c.invert ? 1 - p : p).toFixed(4);
-    if (c.orient === 'h') cap.style.left = `calc(${q} * (100% - var(--cap-h, 14px)))`; else cap.style.bottom = `calc(${q} * (100% - var(--cap-h, 14px)))`;
-    ariaVal(el, c);
-  };
-  ui.set(c.id, upd); upd();
-  drag(el, c);
-  return el;
-}
-function numBox(c) {
-  const el = h('div', 'num');
-  el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', c.label);
-  const upd = () => { el.textContent = fmt(c, vals[c.id]); ariaVal(el, c); };
-  ui.set(c.id, upd); upd();
-  drag(el, c);
-  return el;
-}
-function selector(c) {
-  const el = h('div', 'sel' + (c.opts.length <= 2 ? ' two' : ''));
-  el.setAttribute('role', 'radiogroup'); el.setAttribute('aria-label', c.label);
-  const bs = c.opts.map((o, i) => {
-    const b = h('button', 'opt'); b.type = 'button'; b.setAttribute('role', 'radio');
-    b.append(h('span', 'led'), h('span', 'txt', o));
-    b.onclick = () => setVal(c.id, i);
-    el.append(b);
-    return b;
-  });
-  const upd = () => bs.forEach((b, i) => { const on = vals[c.id] === i; b.classList.toggle('on', on); b.setAttribute('aria-checked', on ? 'true' : 'false'); b.tabIndex = on ? 0 : -1; });
-  el.addEventListener('keydown', e => { // radio group: one tab stop, arrows move the selection
-    const d = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
-    if (!d) return;
-    e.preventDefault(); e.stopPropagation();
-    const i = (vals[c.id] + d + c.opts.length) % c.opts.length;
-    setVal(c.id, i); bs[i].focus();
-  });
-  ui.set(c.id, upd); upd();
-  return el;
-}
-function toggle(c) {
-  const b = h('button', 'tog'); b.type = 'button'; b.setAttribute('aria-label', c.label);
-  b.append(h('span', 'led'));
-  b.onclick = () => setVal(c.id, vals[c.id] ? 0 : 1);
-  const upd = () => { b.classList.toggle('on', !!vals[c.id]); b.setAttribute('aria-pressed', vals[c.id] ? 'true' : 'false'); };
-  ui.set(c.id, upd); upd();
-  return b;
-}
-
-// the hardware panel's view of this page (cv-panel render: IMPL-panels §4.4): values, the ui map, today's widgets and drag
-function hwApi() {
-  return {
-    doc: document, model,
-    get: id => vals[id], set: (id, v) => setVal(id, v),
-    watch: (id, fn) => { const prev = ui.get(id); ui.set(id, prev ? () => { prev(); fn(); } : fn); }, // (setVal, refreshAll, presets, undo)
-    bind: bindingOf, knob, slider, selector, toggle, dragB, track, noMenu, hoverable, wheelIn, wheelStep,
-    tap: (el, fn) => { // a mouse at the press, a finger on its tap's release; Enter / Space (a keyboard click: detail 0)
-      pressOrTap(el, e => e.button === 0 && !e.ctrlKey, fn);
-      el.addEventListener('click', e => { if (e.detail === 0) fn(e); });
-      noMenu(el);
-    },
-    tip: (el, text) => tipText(el, text), untip: ms => hideTip(ms),
-    fmt: (c, v) => fmt(c, v),
-    presetNo: () => { const c = presetCur(); return c && /^f\d+$/.test(c.key) ? +c.key.slice(1) + 1 : null; }, // the factory number (1-based)
-    seq: model.id === 'tb303' ? hwSeq(trk()) : null,
-    dx: model.id === 'dx7' ? hwDx(trk()) : null,
-  };
-}
-// the TB-303's hardware step entry (IMPL-panels §6.2): a step cursor and PITCH / TIME mode per track (session only, never
-// in the project) over seqParts; onChange: the face's LEDs follow every pattern edit (keys, the grid, Clear, Randomise)
+// the TB-303's hardware step entry state (IMPL-panels §6.2): a step cursor and PITCH / TIME mode per track (session only, never
+// in the project)
 const seqHw = new Map(); // track id → { cur, mode }
-function hwSeq(tr) {
-  let st = seqHw.get(tr.id);
-  if (!st) seqHw.set(tr.id, st = { cur: 0, mode: 'pitch' });
-  const fns = new Set(), changed = () => { for (const f of fns) f(); };
-  const P = seqParts(tr, { cursor: { get: () => st.cur, set: i => { st.cur = i; P.redraw(); changed(); } }, onChange: changed });
-  return Object.assign(P, { state: st, changed, onChange: fn => fns.add(fn) });
-}
 // the DX7's select-and-set workflow (IMPL-panels §6.3): {op, param (the button), eg, mode} per track, session only
 const dxHw = new Map(); // track id → { op, param, eg, mode }
 function hwDx(tr) {
@@ -1447,15 +1316,14 @@ function hwDx(tr) {
   const m = modelById(tr.model);
   return {
     state: st, algs: DX_ALGS, layout: algoLayout, presets: m.presets.length,
-    load: n => { if (trk().model === m.id) presetLoad('f' + (n - 1)); },
-    presetName: () => trk().preset,
+    load: n => { if (tr.model === m.id) presetLoad('f' + (n - 1), tr); },
+    presetName: () => tr.preset,
   };
 }
 
 /* tooltip */
 const tip = $('#tip');
 let tipHide;
-function showTip(el, c) { tipText(el, `${c.label}: ${fmt(c, vals[c.id])}`); }
 function tipText(el, text) { // #tip with free text over el (screen px: right under the canvas transform too)
   clearTimeout(tipHide);
   const r = el.getBoundingClientRect();
@@ -1520,88 +1388,6 @@ function wheelStep(el, w) { // whole steps (+ = up): one per mouse notch, one pe
   const n = Math.trunc(a.v / 40); a.v -= n * 40;
   return -n;
 }
-// A control's Binding (IMPL-panels §5.4): what a drag, the wheel and the keys read and write. bindingOf(c) is a models.js
-// control's; a hardware panel's detented widgets bind over positions (cv-panel) on top of it. snap() / restore(token):
-// the two-finger rollback (the value and the preset name back).
-function bindingOf(c) {
-  return {
-    id: c.id, label: c.label, min: c.min, max: c.max, step: c.step, def: c.def, axis: c.orient === 'h' ? 'x' : 'y', invert: !!c.invert,
-    get: () => vals[c.id], set: v => setVal(c.id, v), fmt: v => fmt(c, v),
-    snap: () => { const tr = trk(); return { tr, v0: vals[c.id], pre0: tr.preset }; },
-    restore: k => {
-      if (trk() !== k.tr) return;
-      if (vals[c.id] !== k.v0) setVal(c.id, k.v0);
-      if (k.tr.preset !== k.pre0) { k.tr.preset = k.pre0; renderHeads(); persist(); }
-    },
-  };
-}
-const posB = (b, v) => (v - b.min) / ((b.max - b.min) || 1);
-function fromPosB(b, p) {
-  let v = b.min + clamp(p, 0, 1) * (b.max - b.min);
-  if (b.step) v = Math.round(v / b.step) * b.step;
-  return +v.toFixed(4);
-}
-const tipB = (el, b) => tipText(el, `${b.label}: ${b.fmt(b.get())}`);
-function drag(el, c) { dragB(el, bindingOf(c)); }
-// The drag of a knob / slider / number over a Binding: relative travel along b.axis (y: up = more; x: right = more;
-// b.invert flips it) accumulated per move, Shift = fine, the tip, double-click = b.def, the wheel (wheelIn / wheelStep
-// with the canvas veto), arrow / Page / Home / End keys, a two-finger pointercancel → b.restore. o.tap: a press that ends
-// where it began (≤ 4 px mouse, 10 px touch) without a change — a hardware switch steps on it.
-function dragB(el, b, o = {}) {
-  let dragging = false, cancelled = false;
-  noMenu(el); hoverable(el);
-  el.addEventListener('pointerdown', e => {
-    if (e.button !== 0 || e.ctrlKey) return;
-    e.preventDefault(); el.focus({ preventScroll: true });
-    dragging = true; cancelled = false;
-    const X = b.axis === 'x', at = ev => (X ? ev.clientX : -ev.clientY) * (b.invert ? -1 : 1);
-    let p = posB(b, b.get()), prev = at(e); // accumulate per move, so pressing Shift mid-drag doesn't rescale what was already dragged
-    const range = b.step ? (b.max - b.min) / b.step : 100;
-    const base = range > 40 ? 0.0045 : Math.max(0.0045, 1 / (range * 22));
-    tipB(el, b);
-    const k = b.snap(), v0 = b.get(), x0 = e.clientX, y0 = e.clientY, slop = e.pointerType === 'touch' ? 10 : 4;
-    let far = false;
-    track(el, e, ev => {
-      if (!far && Math.hypot(ev.clientX - x0, ev.clientY - y0) > slop) far = true;
-      const a = at(ev);
-      p = clamp(p + (a - prev) * (ev.shiftKey ? base * 0.2 : base), 0, 1); prev = a;
-      const v = fromPosB(b, p);
-      if (v !== b.get()) b.set(v);
-      tipB(el, b);
-    }, () => {
-      dragging = false; hideTip(400);
-      if (o.tap && !far && !cancelled && b.get() === v0) o.tap();
-    }, () => b.restore(k));
-  });
-  if (o.tap) el.addEventListener('pointercancel', () => { cancelled = true; }, true); // (a cancelled press is never a tap)
-  el.addEventListener('dblclick', () => { b.set(b.def); tipB(el, b); hideTip(800); });
-  el.addEventListener('wheel', e => {
-    const w = wheelIn(el, e); if (!w) return;
-    let v;
-    if (b.step) { const n = wheelStep(el, w); if (!n) return; v = clamp(Math.round(b.get() / b.step + n) * b.step, b.min, b.max); v = +v.toFixed(4); }
-    else v = fromPosB(b, posB(b, b.get()) + (w.notch ? -Math.sign(w.px) * 0.01 : clamp(-w.px * 0.001, -0.02, 0.02)) * (e.shiftKey ? 0.2 : 1));
-    if (v !== b.get()) b.set(v);
-    tipB(el, b); hideTip(700);
-  }, { passive: false });
-  el.addEventListener('keydown', e => {
-    const st = b.step ? b.step / ((b.max - b.min) || 1) : (e.shiftKey ? 0.002 : 0.02), k = e.key;
-    let v;
-    if (k === 'ArrowUp' || k === 'ArrowRight') v = fromPosB(b, posB(b, b.get()) + st);
-    else if (k === 'ArrowDown' || k === 'ArrowLeft') v = fromPosB(b, posB(b, b.get()) - st);
-    else if (k === 'PageUp' || k === 'PageDown') v = fromPosB(b, posB(b, b.get()) + (k === 'PageUp' ? 1 : -1) * Math.max(st, 0.1));
-    else if (k === 'Home') v = b.min;
-    else if (k === 'End') v = b.max;
-    else if (o.tap && (k === 'Enter' || k === ' ')) { e.preventDefault(); o.tap(); return; }
-    else return;
-    e.preventDefault(); e.stopPropagation();
-    b.set(v);
-    tipB(el, b); hideTip(700);
-  });
-  el.addEventListener('pointerenter', () => { if (!dragging) tipB(el, b); });
-  el.addEventListener('pointerleave', () => { if (!dragging) hideTip(); });
-  el.addEventListener('blur', () => { if (!dragging) hideTip(); });
-}
-
 /* ---------------------------------------------------------- presets */
 function userPresets(m = model) { return store.get('synth.user.' + m.id, []); }
 function presetList(m) {
@@ -1612,80 +1398,53 @@ function applyPreset(tr, p) {
   const m = modelById(tr.model);
   tr.vals = Object.assign(defaults(m), p.v);
   tr.preset = p.name;
-  if (tr.id === project.selTrack) { presetKey = p.key || null; bind(); refreshAll(); syncPresetSel(p.key); }
+  presetKeys.set(tr.id, p.key || null);
+  if (tr.id === project.selTrack) bind();
+  const P = classicOf(tr);
+  if (P) { P.refresh(); drawAlgo(); P.syncPreset(p.key); } else if (tr.id === project.selTrack) { drawAlgo(); syncPresetSel(p.key); }
   sendPatch(tr); renderHeads(); persist();
 }
 let syncPresetSel = () => {};
 // The preset actions, shared by the Resizable panel's preset plate, the module chip (◀ ▶) and its ⋯ menu (Save / Delete /
-// Init: the Hardware panel has no plate; IMPL-panels §7.4). The current entry: the one last loaded (presetKey), else the
-// first with the track's preset name.
-let presetKey = null;
-function presetCur(m = model) { const l = presetList(m), t = trk(); return l.find(x => x.key === presetKey && x.name === t.preset) || l.find(x => x.name === t.preset) || null; }
-function presetLoad(key) { const p = presetList(model).find(x => x.key === key); if (p) { presetKey = key; applyPreset(trk(), p); } return !!p; }
-function presetStep(d) { // ◀ ▶: from the blank / Custom entry, ▶ the first, ◀ the last
-  const keys = presetList(model).map(p => p.key);
+// Init: the Hardware panel has no plate; IMPL-panels §7.4), each on a track (default: the selected one). The current
+// entry: the one last loaded on that track (presetKeys), else the first with the track's preset name.
+const presetKeys = new Map(); // track id → the key of the entry last loaded
+function presetCur(t = trk()) { const l = presetList(modelById(t.model)), k = presetKeys.get(t.id); return l.find(x => x.key === k && x.name === t.preset) || l.find(x => x.name === t.preset) || null; }
+function presetLoad(key, t = trk()) { const p = presetList(modelById(t.model)).find(x => x.key === key); if (p) applyPreset(t, p); return !!p; }
+function presetStep(d, t = trk()) { // ◀ ▶: from the blank / Custom entry, ▶ the first, ◀ the last
+  const keys = presetList(modelById(t.model)).map(p => p.key);
   if (!keys.length) return;
-  const cur = presetCur();
+  const cur = presetCur(t);
   let i = cur ? keys.indexOf(cur.key) : -1;
   i = i < 0 ? (d > 0 ? 0 : keys.length - 1) : (i + d + keys.length) % keys.length;
-  presetLoad(keys[i]);
+  presetLoad(keys[i], t);
 }
-function presetSave() {
-  const cur = presetCur();
-  const name = (prompt('Name this sound:', trk().preset && cur && /^u\d+$/.test(cur.key) ? trk().preset : 'My ' + model.name + ' sound') || '').trim();
+function presetSave(t = trk()) {
+  const m = modelById(t.model), cur = presetCur(t);
+  const name = (prompt('Name this sound:', t.preset && cur && /^u\d+$/.test(cur.key) ? t.preset : 'My ' + m.name + ' sound') || '').trim();
   if (!name) return;
-  const up = userPresets(), i = up.findIndex(p => p.name === name);
+  const up = userPresets(m), i = up.findIndex(p => p.name === name);
   if (i >= 0 && !confirm(`Replace the saved sound “${name}”?`)) return;
-  if (i >= 0) up[i] = { name, v: Object.assign({}, vals) }; else up.push({ name, v: Object.assign({}, vals) });
-  store.set('synth.user.' + model.id, up);
-  trk().preset = name; presetKey = 'u' + (i >= 0 ? i : up.length - 1);
-  syncPresetSel(presetKey); renderHeads(); persist();
+  if (i >= 0) up[i] = { name, v: Object.assign({}, t.vals) }; else up.push({ name, v: Object.assign({}, t.vals) });
+  store.set('synth.user.' + m.id, up);
+  t.preset = name; presetKeys.set(t.id, 'u' + (i >= 0 ? i : up.length - 1));
+  presetShown(t); renderHeads(); persist();
 }
-const presetSaved = () => { const c = presetCur(); return c && /^u\d+$/.test(c.key) ? c : null; }; // a saved sound is loaded
-function presetDelete() {
-  const c = presetSaved(), m = c && /^u(\d+)$/.exec(c.key);
-  if (!m) return;
-  const up = userPresets(), p = up[+m[1]];
+const presetSaved = (t = trk()) => { const c = presetCur(t); return c && /^u\d+$/.test(c.key) ? c : null; }; // a saved sound is loaded
+function presetDelete(t = trk()) {
+  const c = presetSaved(t), mm = c && /^u(\d+)$/.exec(c.key), m = modelById(t.model);
+  if (!mm) return;
+  const up = userPresets(m), p = up[+mm[1]];
   if (!p || !confirm(`Delete the saved sound “${p.name}”?`)) return;
-  up.splice(+m[1], 1);
-  store.set('synth.user.' + model.id, up);
-  if (trk().preset === p.name) trk().preset = null;
-  presetKey = null;
-  syncPresetSel(); renderHeads(); persist();
+  up.splice(+mm[1], 1);
+  store.set('synth.user.' + m.id, up);
+  if (t.preset === p.name) t.preset = null;
+  presetKeys.delete(t.id);
+  presetShown(t); renderHeads(); persist();
 }
-function presetInit() { presetKey = null; applyPreset(trk(), { name: null, v: {} }); }
-function presetUI() { // the Resizable panel's preset plate
-  const w = h('div', 'presets');
-  const sel = h('select'); sel.setAttribute('aria-label', 'Preset');
-  const fill = () => {
-    sel.innerHTML = '';
-    const o0 = h('option', null, '— Presets —'); o0.value = ''; sel.append(o0);
-    let grp = null, gname = '';
-    for (const p of presetList(model)) {
-      if (p.group !== gname) { grp = h('optgroup'); grp.label = p.group; gname = p.group; sel.append(grp); }
-      const o = h('option', null, p.name); o.value = p.key; grp.append(o);
-    }
-  };
-  fill();
-  const del = h('button', null, 'Delete'); del.type = 'button'; del.title = 'Delete the selected saved sound';
-  const delUI = () => { del.hidden = !/^u\d+$/.test(sel.value); };
-  syncPresetSel = key => { // the entry just loaded (key), else the first one with the track's preset name
-    if (key) presetKey = key;
-    fill();
-    const p = presetCur();
-    sel.value = p ? p.key : ''; delUI();
-  };
-  sel.onchange = () => { presetLoad(sel.value); delUI(); };
-  const prev = h('button', null, '◀'); prev.type = 'button'; prev.title = 'Previous preset'; prev.onclick = () => presetStep(-1);
-  const next = h('button', null, '▶'); next.type = 'button'; next.title = 'Next preset'; next.onclick = () => presetStep(1);
-  const save = h('button', null, 'Save'); save.type = 'button'; save.onclick = presetSave;
-  del.onclick = presetDelete;
-  const init = h('button', null, 'Init'); init.type = 'button'; init.title = 'Reset every control to its default';
-  init.onclick = presetInit;
-  w.append(prev, sel, next, save, del, init);
-  syncPresetSel();
-  return w;
-}
+function presetInit(t = trk()) { presetKeys.delete(t.id); applyPreset(t, { name: null, v: {} }); }
+// the track's preset name changed outside a load: its panel's plate and the chip follow
+function presetShown(t) { const P = classicOf(t); if (P) P.syncPreset(presetKeys.get(t.id)); else if (t === trk()) syncPresetSel(); }
 
 /* ------------------------------------------ Serum and the FX racks (SPEC-serum §11.8) */
 // The panel modules (serum-ui.js, fx-ui.js and their siblings) and wt.js / wtstore.js load on first use, so the other
@@ -1753,19 +1512,27 @@ function genProgress(p) {
 const userTables = s => (s ? userIdsOf(s) : []);
 const userSmps = (s, fx) => userAssetIds(s || null, fx || null);
 
-// snapshot / FX meter subscriptions (smon, §11.6; SPEC-canvas §9.3): the Serum panel and the FX rack while their canvas
-// modules are live (cvLive: the CANVAS view, on screen, not folded), never for a hidden page
+// snapshot / FX meter subscriptions (smon, §11.6; SPEC-canvas §6.9, §9.3): one per mounted module with live displays,
+// keyed by (track, device) — a Serum panel (its device), an FX panel (its device; a Serum's own FX: the Serum's) — each
+// live while its module is (cvLive: the CANVAS view, on screen, not folded) and never for a hidden page. A track's node
+// sends snapshots ({t: 'smon', on}) while any of its subscriptions is live; a snapshot reaches every subscription of it.
+//   sub(trackId, dev, {live() → bool, deliver(d)}) → off
 const monitors = {
-  sx: new Set(), on: new Map(),
+  subs: new Set(), on: new Map(),
+  sub(trackId, dev, o) {
+    const S = { trackId, dev, live: o.live, deliver: o.deliver };
+    this.subs.add(S);
+    this.sync();
+    return () => { if (this.subs.delete(S)) this.sync(); };
+  },
   wanted(id) {
     if (document.hidden) return false;
-    return (this.sx.has(id) && sxPanel.trackId === id && cvLive(cvModule.ID.inst))
-      || (fxTab.trackId === id && !!fxTab.ui && cvLive(cvModule.fxKey(fxTab.sx ? 'serum' : '')));
+    for (const S of this.subs) if (S.trackId === id) { try { if (S.live()) return true; } catch (err) { console.warn(err); } }
+    return false;
   },
-  set(id, on) { if (on) this.sx.add(id); else this.sx.delete(id); this.sync(); },
   sync() {
-    const ids = new Set([...this.sx, ...this.on.keys()]);
-    if (fxTab.trackId) ids.add(fxTab.trackId);
+    const ids = new Set(this.on.keys());
+    for (const S of this.subs) ids.add(S.trackId);
     for (const id of ids) {
       const w = this.wanted(id);
       if (!!this.on.get(id) === w) continue;
@@ -1774,11 +1541,19 @@ const monitors = {
     }
     if (peerStale && !peerT) peerT = requestAnimationFrame(peerRun); // a peer edited while this one was hidden
   },
-  deliver(id, d) {
-    if (sxPanel.ui && sxPanel.trackId === id) { sxPanel.ui.setSnapshot(d); zoneWarm(id, d.s); }
-    if (fxTab.trackId === id) { fxTab.gr = d.gr || null; fxTab.ftap = d.ftap || null; }
-  },
+  deliver(id, d) { for (const S of [...this.subs]) if (S.trackId === id && S.deliver) S.deliver(d); },
 };
+// the Serum panel's subscription (SerumUI host.monitor: on while it is built and the page shows): per track
+const sxMons = new Map(); // track id → off
+function sxMonitor(t, on) {
+  const id = t.id, off = sxMons.get(id);
+  if (!on) { if (off) { sxMons.delete(id); off(); } return; }
+  if (off) { monitors.sync(); return; }
+  sxMons.set(id, monitors.sub(id, t.prim || 'i1', {
+    live: () => sxPanel.trackId === id && cvLive(cvModule.ID.inst),
+    deliver: d => { if (sxPanel.ui && sxPanel.trackId === id) { sxPanel.ui.setSnapshot(d); zoneWarm(id, d.s); } },
+  }));
+}
 // "Switch to Single Sample" (host.smp.saveFrom → zoneOf): the zone sample the panel's recent voice plays, from the
 // snapshot's zone index and the multisample's record (read once per multisample, cached)
 const msRecs = new Map();
@@ -1871,11 +1646,19 @@ async function projectFile() {
     for (const id of userTables(s)) ids.add(id);
     for (const id of userSmps(s, fxOf(t))) sm.add(id);
   }
-  const o = JSON.parse(S.serialize(project));
+  const o = CM.mirror(JSON.parse(S.serialize(project))); // (SPEC-canvas §5.8: main opens it as each track's primary + its FX)
   if (ids.size) o.wts = await tables.embed([...ids]);
   if (sm.size) o.smps = await tables.embedSmps([...sm]);
   persist();
   return JSON.stringify(o);
+}
+// "Save as classic project" (SPEC-canvas §5.4, the regret path): the file the classic SYNTH (main) opens — each track's
+// instrument with its FX (cv-migrate toV1: today's shape converts exactly). What main cannot hold is listed first (null:
+// the user declined). (A read-only project too: it writes nothing here.)
+async function classicFile() {
+  const r = CM.toV1(JSON.parse(await projectFile()));
+  if (r.lost.length && !confirm('The classic SYNTH can’t hold everything in this project:\n• ' + r.lost.join('\n• ') + '\n\nSave it anyway?')) return null;
+  return JSON.stringify(r.p);
 }
 // embedded assets of a project / preset / pack file go into the stores (identical ids skipped), never into the state
 async function restoreEmbedded(o) {
@@ -2340,7 +2123,8 @@ function sxHost(t0) {
       on: (n, v) => { if (!ctx) powerOn().catch(() => {}); postTo(T(), { t: 'on', n, v }); inputNote(T(), 1, n, v, performance.now(), true); },
       off: n => { postTo(T(), { t: 'off', n }); inputNote(T(), 0, n, 0, performance.now(), true); },
     },
-    monitor: on => monitors.set(id, on),
+    monitor: on => sxMonitor(T(), on),
+    dev: t0.prim || 'i1', // (its [data-dest] resolve inside [data-dev], SPEC §8.6)
     fxTap: inst => postTo({ id }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }),   // (the FX page's Delay overlay)
     presets: {
       list: sxPresetList,
@@ -2382,7 +2166,7 @@ function sxHost(t0) {
   };
 }
 // the FX tab's rack host: any track's fx (Serum's parameter locks hold, §9.6); Serum tracks show the three racks
-function fxHost(t0) {
+function fxHost(t0, rec = fxTab) {
   const id = t0.id, T = () => project.tracks.find(x => x.id === id) || t0;
   return {
     fx: () => fxOf(T()),
@@ -2393,9 +2177,9 @@ function fxHost(t0) {
     state: () => (isSx(T()) ? T().vals.s : null),
     edit: (fn, o) => { if (isSx(T())) { sxEdit(T(), fn, o); peerRefresh(id, 1); } },
     bpm: () => project.bpm,
-    gr: () => (fxTab.trackId === id ? fxTab.gr : null),
+    gr: () => (rec.trackId === id ? rec.gr : null),
     // the rack's monitor tap (§13.5 Delay spectrum overlay): instance id ('' off) → the node; the latest 1024 frames
-    tap: () => (fxTab.trackId === id ? fxTab.ftap || null : null),
+    tap: () => (rec.trackId === id ? rec.ftap || null : null),
     setTap: inst => postTo({ id }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }),
     locked: dest => { const t = T(); return isSx(t) && !!t.vals.s && t.vals.s.locks.p.includes(dest); },
     storage: hostStore,
@@ -2432,7 +2216,7 @@ function renderCustom(el) {
   const gen = sxPanel.gen;
   if (!tables.WT) tables.list(); // user tables for the menus
   tables.smpMods().catch(() => {}); // sample catalogues and the stored user samples for the menus
-  uiMods().then(M => {
+  cvBuild(uiMods()).then(M => {
     if (gen !== sxPanel.gen) return;
     box.innerHTML = '';
     try {
@@ -2448,14 +2232,19 @@ function renderCustom(el) {
 }
 // the FX rack (every track): the rack UI bound to track.fx — the canvas's FX module keeps it mounted (sx: built for a
 // Serum's three racks)
-const fxTab = { ui: null, trackId: null, fx: null, sx: false, gr: null, ftap: null, gen: 0 };
+// One FXRackUI per FX panel (SPEC-canvas §10 1c): a panel record holds its rack UI, its track and device, the meters its
+// monitor subscription delivers, and its host reads them from it. The canvas shows the selected track's one panel (fxTab);
+// stage 1e mounts a record per panel device.
+const fxPanelRec = () => ({ ui: null, trackId: null, dev: null, fx: null, sx: false, gr: null, ftap: null, gen: 0, mon: null });
+const fxTab = fxPanelRec();
 // (today's openTab drops it when the FX tab hides; the canvas FX module keeps it: openTab no longer drops it, IMPL-1b §4.8)
 function dropFxTab() { if (!cvView) fxDrop(); }
 function fxDrop() {
   fxTab.gen++;
   const u = fxTab.ui;
-  fxTab.ui = null; fxTab.trackId = null; fxTab.fx = null; fxTab.gr = null; fxTab.ftap = null;
+  fxTab.ui = null; fxTab.trackId = null; fxTab.dev = null; fxTab.fx = null; fxTab.gr = null; fxTab.ftap = null;
   if (u) { try { u.destroy(); } catch (err) { console.warn(err); } }
+  if (fxTab.mon) { const off = fxTab.mon; fxTab.mon = null; off(); }
   monitors.sync();
 }
 function renderFxTab() {
@@ -2468,12 +2257,15 @@ function renderFxTab() {
   box.innerHTML = '';
   box.append(h('p', 'boot', 'Loading the FX rack…'));
   const gen = fxTab.gen;
-  uiMods().then(M => {
+  cvBuild(uiMods()).then(M => {
     if (gen !== fxTab.gen) return;
     box.innerHTML = '';
     try {
-      fxTab.trackId = t.id; fxTab.fx = fxOf(t); fxTab.sx = isSx(t);
-      fxTab.ui = new M.fxui.FXRackUI(box, fxHost(t), { embedded: false, dsp: globalThis.FXDSP || null, racks: isSx(t) ? 3 : 1, v2Fx: true });
+      const fd = CMOD.fxDevOf(t), key = cvModule.fxKey(t.model), rec = fxTab;
+      fxTab.trackId = t.id; fxTab.dev = fd ? fd.id : null; fxTab.fx = fxOf(t); fxTab.sx = isSx(t);
+      fxTab.ui = new M.fxui.FXRackUI(box, fxHost(t, rec), { embedded: false, dsp: globalThis.FXDSP || null, racks: isSx(t) ? 3 : 1, v2Fx: true });
+      if (fxTab.ui && fxTab.ui.el && fxTab.dev) fxTab.ui.el.setAttribute('data-dev', fxTab.dev); // (its fx.<inst>.<pid> dests: that device's)
+      fxTab.mon = monitors.sub(t.id, fxTab.dev, { live: () => rec.trackId === t.id && !!rec.ui && cvLive(key), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; } });
     } catch (err) {
       console.error(err);
       fxTab.ui = null; fxTab.trackId = null;
@@ -2549,15 +2341,7 @@ function drawAlgo() {
 }
 
 /* ------------------------------------------------- TB-303 sequencer */
-const SEQ_NOTES = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B', 'C′'];
-const st = (n, o, a, sl, g = 1) => ({ n, o, a, s: sl, g });
-const SEQ_DEF = {
-  bpm: 128, swing: 0, sync: false,
-  pat: [st(0, 0, 1, 0), st(0, 0, 0, 0), st(12, 0, 0, 1), st(0, 0, 0, 0), st(3, 0, 1, 0), st(0, 0, 0, 1), st(10, 0, 0, 0), st(0, 0, 0, 0, 0),
-    st(0, 0, 1, 0), st(7, 0, 0, 1), st(5, 0, 0, 0), st(3, 0, 0, 0), st(12, 0, 1, 1), st(0, 1, 0, 0), st(5, 0, 0, 0), st(6, 0, 1, 0)],
-};
 const seqRun = new Set();
-const stepEls = [];
 function seqOf(tr) {
   if (!tr.seq || !Array.isArray(tr.seq.pat) || tr.seq.pat.length !== 16) tr.seq = JSON.parse(JSON.stringify(SEQ_DEF));
   return tr.seq;
@@ -2570,76 +2354,15 @@ function seqSend(tr, extra) { postTo(tr, { t: 'seq', s: seqPayload(tr, extra) })
 function seqToggle(tr, on, quiet) {
   if (!seqRun.has(tr.id) && !on) return;
   if (on) seqRun.add(tr.id); else seqRun.delete(tr.id);
-  if (tr.id === project.selTrack && !quiet) {
-    const b = $('#seqrun'); if (b) { b.setAttribute('aria-pressed', on ? 'true' : 'false'); b.lastChild.textContent = on ? 'Stop' : 'Run'; }
-    if (!on) for (const e of stepEls) e.classList.remove('now');
-    const u = ui.get('@seqrun'); if (u) u(); // (a hardware panel's RUN LED)
-  }
+  const P = !quiet && classicOf(tr);
+  if (P) P.seqRunUI(on); // (its RUN button, the step lights, a hardware panel's RUN LED)
   if (on && !ctx) powerOn().then(() => { if (seqRun.has(tr.id)) seqSend(tr); }).catch(() => {}); // Stop pressed while starting wins
   else seqSend(tr, { run: on });
 }
-function seqStep(i) { stepEls.forEach((e, k) => e.classList.toggle('now', k === i)); }
-function seqRandom(q) {
-  const scale = [0, 0, 3, 5, 7, 7, 10, 12];
-  q.pat = q.pat.map(() => st(scale[(Math.random() * scale.length) | 0], Math.random() < 0.18 ? 1 : Math.random() < 0.08 ? -1 : 0,
-    Math.random() < 0.3 ? 1 : 0, Math.random() < 0.22 ? 1 : 0, Math.random() < 0.82 ? 1 : 0));
-  q.pat[0].g = 1;
-}
-// The TB-303 sequencer's parts (IMPL-panels §6.2): the Resizable panel composes them as today (seqUI: same DOM, ids,
-// classes); the Hardware panel puts RUN / TEMPO / CLEAR and the step keys on the face (cv-panel, through hwApi().seq) and
-// the rest in its extras strip. o.cursor {get(), set(i)}: the hardware step cursor (the grid marks it, a tap on a column's
-// number or background moves it); o.onChange: after any pattern edit made here (the hardware LEDs follow).
-function seqParts(tr, o = {}) {
-  stepEls.length = 0;
-  const q = seqOf(tr);
-  const send = () => seqSend(tr);
-  const running = seqRun.has(tr.id);
-  const run = h('button', 'seqbtn run'); run.id = 'seqrun'; run.type = 'button';
-  run.append(h('span', 'led'), h('span', null, running ? 'Stop' : 'Run'));
-  run.setAttribute('aria-pressed', running ? 'true' : 'false');
-  run.disabled = !!q.sync;
-  run.onclick = () => seqToggle(tr, !seqRun.has(tr.id));
-  const sync = h('button', 'seqbtn'); sync.type = 'button';
-  sync.title = 'Lock the pattern to the song transport: it plays whenever the song plays, at the song tempo';
-  const syncDraw = () => { sync.textContent = q.sync ? '⛓ Synced to song' : 'Sync to song'; sync.classList.toggle('on', !!q.sync); run.disabled = !!q.sync; const u = ui.get('@seqrun'); if (u) u(); };
-  syncDraw();
-  sync.onclick = () => { q.sync = !q.sync; if (q.sync) seqToggle(tr, false); syncDraw(); send(); };
-  const numCtl = (label, get, set, min, max, unit) => {
-    const w = h('div', 'seqnum'); const box = h('div', 'num'); box.tabIndex = 0;
-    box.setAttribute('role', 'slider'); box.setAttribute('aria-label', label);
-    box.setAttribute('aria-valuemin', min); box.setAttribute('aria-valuemax', max);
-    const upd = () => { box.textContent = get() + unit; box.setAttribute('aria-valuenow', get()); box.setAttribute('aria-valuetext', get() + unit); };
-    const put = v => { v = clamp(Math.round(v), min, max); if (v !== get()) { set(v); upd(); send(); } };
-    upd(); noMenu(box); hoverable(box);
-    box.addEventListener('pointerdown', e => {
-      if (e.button !== 0 || e.ctrlKey) return;
-      e.preventDefault(); box.focus({ preventScroll: true });
-      let acc = get(), yPrev = e.clientY; // accumulated, so Shift mid-drag only changes the rate from here on
-      const v0 = get();
-      track(box, e, ev => { acc = clamp(acc + (yPrev - ev.clientY) / (ev.shiftKey ? 8 : 2), min, max); yPrev = ev.clientY; put(acc); }, null, () => put(v0));
-    });
-    box.addEventListener('wheel', e => { const wv = wheelIn(box, e); if (wv) put(get() + wheelStep(box, wv)); }, { passive: false });
-    box.addEventListener('keydown', e => {
-      const d = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 10, PageDown: -10 }[e.key];
-      if (d == null && e.key !== 'Home' && e.key !== 'End') return;
-      e.preventDefault(); e.stopPropagation();
-      put(e.key === 'Home' ? min : e.key === 'End' ? max : get() + d);
-    });
-    w.append(box, h('label', null, label));
-    return w;
-  };
-  const steps = h('div', 'steps');
-  const redraw = [];
-  const all = () => { redraw.forEach(f => f()); if (o.onChange) o.onChange(); };
-  const clear = () => { q.pat = q.pat.map(() => st(0, 0, 0, 0, 1)); all(); send(); };
-  const rnd = h('button', 'seqbtn', 'Randomise'); rnd.type = 'button'; rnd.onclick = () => { seqRandom(q); all(); send(); };
-  const clr = h('button', 'seqbtn', 'Clear'); clr.type = 'button';
-  clr.onclick = clear;
-  const dflt = h('button', 'seqbtn', 'Demo'); dflt.type = 'button';
-  dflt.onclick = () => { q.pat = JSON.parse(JSON.stringify(SEQ_DEF.pat)); all(); send(); };
-  const toRoll = h('button', 'seqbtn', '→ Piano roll'); toRoll.type = 'button';
-  toRoll.title = 'Write this pattern into the track as notes (1 bar at the playhead) so you can edit and arrange it';
-  toRoll.onclick = () => edit('Pattern to notes', () => {
+function seqStep(tr, i) { const P = classicOf(tr); if (P) P.seqStep(i); }
+// "→ Piano roll": the pattern written into the track as notes (1 bar at the playhead), one undo step
+function seqToRoll(tr, q) {
+  edit('Pattern to notes', () => {
     const at = S.snapTick(T.playing ? curTick() : T.pos, S.barTicks(project), 'floor');
     let prev = null;
     q.pat.forEach((s, i) => {
@@ -2651,63 +2374,6 @@ function seqParts(tr, o = {}) {
       prev = { note, slide: !!s.s };
     });
   }, [tr]);
-  const tempo = numCtl('Tempo', () => q.bpm, v => { q.bpm = v; }, 40, 220, ''), swing = numCtl('Swing', () => q.swing, v => { q.swing = v; }, 0, 50, '%');
-  const hint = h('span', 'seqhint', 'Drag a note up/down · ACC = accent · SLD = slide into next step · click the LED to make a rest');
-  q.pat.forEach((s, i) => {
-    const col = h('div', 'step' + (i % 4 === 0 ? ' beat' : ''));
-    const led = h('button', 'sled'); led.type = 'button'; led.title = 'Note / rest';
-    const note = h('div', 'snote'); note.tabIndex = 0;
-    note.setAttribute('role', 'slider'); note.setAttribute('aria-label', `Step ${i + 1} note`);
-    note.setAttribute('aria-valuemin', 0); note.setAttribute('aria-valuemax', 12);
-    const mk = (txt, key, val) => { const b = h('button', 'sbtn', txt); b.type = 'button'; b.onclick = () => { s[key] = s[key] === val ? 0 : val; draw(); send(); if (o.onChange) o.onChange(); }; return b; };
-    const up = mk('UP', 'o', 1), dn = mk('DN', 'o', -1), acc = mk('ACC', 'a', 1), sld = mk('SLD', 's', 1);
-    led.onclick = () => { s.g = s.g ? 0 : 1; draw(); send(); if (o.onChange) o.onChange(); };
-    const num = h('span', 'snum', String(i + 1));
-    const draw = () => {
-      s = q.pat[i]; // (Clear / Demo / Randomise replace the pattern's steps)
-      note.textContent = s.g ? SEQ_NOTES[s.n] : '—';
-      note.setAttribute('aria-valuenow', s.n); note.setAttribute('aria-valuetext', s.g ? SEQ_NOTES[s.n] : 'rest');
-      col.classList.toggle('rest', !s.g);
-      up.classList.toggle('on', s.o === 1); dn.classList.toggle('on', s.o === -1);
-      acc.classList.toggle('on', !!s.a); sld.classList.toggle('on', !!s.s);
-      if (o.cursor) col.classList.toggle('cur', o.cursor.get() === i);
-    };
-    noMenu(note); hoverable(note);
-    note.addEventListener('pointerdown', e => {
-      if (e.button !== 0 || e.ctrlKey) return;
-      e.preventDefault(); note.focus({ preventScroll: true });
-      let a = s.n, yPrev = e.clientY;
-      const n0 = s.n, g0 = s.g; // (a two-finger rollback puts back the pitch and a rest the drag turned into a note)
-      track(note, e, ev => { a = clamp(a + (yPrev - ev.clientY) / 9, 0, 12); yPrev = ev.clientY; const v = Math.round(a); if (v !== s.n) { s.n = v; s.g = 1; draw(); send(); if (o.onChange) o.onChange(); } },
-        null, () => { if (s.n !== n0 || s.g !== g0) { s.n = n0; s.g = g0; draw(); send(); if (o.onChange) o.onChange(); } });
-    });
-    const nudge = d => { const v = clamp(s.n + d, 0, 12); if (v !== s.n) { s.n = v; s.g = 1; draw(); send(); if (o.onChange) o.onChange(); } }; // a rest only becomes a note when the pitch actually moves
-    note.addEventListener('wheel', e => { const wv = wheelIn(note, e); if (wv) nudge(wheelStep(note, wv)); }, { passive: false });
-    note.addEventListener('keydown', e => {
-      if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
-      e.preventDefault(); e.stopPropagation();
-      nudge(e.key === 'ArrowUp' ? 1 : -1);
-    });
-    if (o.cursor) { // the hardware cursor: a tap on the column's number or its background selects the step
-      const pick = e => { if (e.target === col || e.target === num) { o.cursor.set(i); } };
-      col.addEventListener('click', pick);
-    }
-    draw(); redraw.push(draw);
-    col.append(num, led, note, up, dn, acc, sld);
-    stepEls.push(col);
-    steps.append(col);
-  });
-  return { q, send, run, sync, tempo, swing, rnd, demo: dflt, clear: clr, doClear: clear, toRoll, hint, steps, redraw: () => redraw.forEach(f => f()),
-    toggle: on => seqToggle(tr, on), running: () => seqRun.has(tr.id) };
-}
-function seqUI(tr) { // the Resizable panel's sequencer (today's DOM)
-  const P = seqParts(tr);
-  const sec = h('div', 'sec seq');
-  sec.append(h('h3', null, 'Pattern Sequencer'));
-  const bar = h('div', 'seqbar');
-  bar.append(P.run, P.sync, P.tempo, P.swing, P.rnd, P.demo, P.clear, P.toRoll, P.hint);
-  sec.append(bar, P.steps);
-  return sec;
 }
 
 /* ------------------------------------------------------ track headers */
@@ -2769,11 +2435,13 @@ function renderHeads() {
   if (shell.top && shell.nTr !== project.tracks.length) { shell.nTr = project.tracks.length; applyKbHeight(); } // (the top tray's row stops)
   arr && arr.render();
 }
-function addTrack(m = model, vals0 = null) {
+function addTrack(m = model, vals0 = null, o = null) {
   hist.record(project);
   const t = S.newTrack(project, { model: m.id, vals: vals0 ? JSON.parse(JSON.stringify(vals0)) : loadVals(m), name: `${m.name} ${project.tracks.length + 1}` });
   t.fx = newFx(m); seedPend.add(t.id);
+  if (o && o.ui === 'flow' && !m.custom) t.lay = { [cvModule.ID.inst]: { x: 0, y: 0, ui: 'flow' } }; // (the Sources tray's Simple)
   project.tracks.push(t);
+  CMOD.adopt(project);
   syncNodes();
   selectTrack(t.id);
   renderHeads(); persist(); updateUndoUI();
@@ -2788,6 +2456,7 @@ function duplicateTrack(t) {
   c.fx = clone(fxOf(t)); seedPend.add(c.id);
   if (t.lay) c.lay = clone(t.lay); // (the canvas layout, view only)
   project.tracks.splice(project.tracks.indexOf(t) + 1, 0, c);
+  CMOD.adopt(project); // (the copy's devices keep their ids: they are per track)
   syncNodes(); sendSong(c, true);
   renderHeads(); persist(); updateUndoUI();
 }
@@ -2922,6 +2591,8 @@ function openTab(name) {
 // the instrument panel, the FX rack (always mounted on the canvas; today's FX tab only while shown) and the canvas modules
 // follow the selected track
 function renderViews() {
+  if (cvSwitching()) { cvSwitch(); return; } // (a track switch on the canvas: the bodies mount over frames)
+  if (cvMount) cvMountEnd(); // (a switch still mounting: this render completes it at once)
   cvBusy = true;
   try { renderPanel(); } finally { cvBusy = false; }
   const fx = $('#tab-fx');
@@ -3097,6 +2768,8 @@ function initTransport() {
     applyRestore(p);
   };
   $('#fSave').onclick = () => projectFile().then(txt => download(new Blob([txt], { type: 'application/json' }), slug(project.name) + '.synth.json'),
+    err => alert('Could not save the project: ' + err.message));
+  $('#fSaveV1').onclick = () => classicFile().then(r => { if (r) download(new Blob([r], { type: 'application/json' }), slug(project.name) + '.classic.synth.json'); },
     err => alert('Could not save the project: ' + err.message));
   $('#fMidi').onclick = () => download(new Blob([S.exportMIDI(project)], { type: 'audio/midi' }), slug(project.name) + '.mid');
   $('#fOpen').onclick = () => $('#fFile').click();
@@ -3866,9 +3539,14 @@ function srcOver(t) {
   if (!$('#tab-inst').hidden && t.closest('#viewport')) return 'canvas';
   return null;
 }
+// the Sources tray's "Hardware | Simple" switch (stage 1c, the user's request): Simple creates a classic synth in its
+// Resizable layout (lay.i1.ui = 'flow', as the module's ⋯ → Resizable layout), inside the add's / replace's own undo step
+const TRAY_LAYOUT = 'synth.cv.trayLayout';
+const srcUi = id => (shell.tiles && shell.tiles.layout() === 'flow' && !modelById(id).custom ? 'flow' : null);
 function srcPick(id, mode) {
-  if (mode === 'track') { addTrack(modelById(id)); shell.src.close(); return; }
-  if (!cvDropInstrument(id, null)) setTrackModel(trk(), id); // (the same model: nothing)
+  const ui = srcUi(id);
+  if (mode === 'track') { addTrack(modelById(id), null, { ui }); shell.src.close(); return; }
+  if (!cvDropInstrument(id, null, { ui })) setTrackModel(trk(), id, { ui }); // (the same model: only the layout, if asked)
 }
 function srcDragEnd() {
   if (world) { world.ghost(null); world.dragPointer(null); }
@@ -3896,8 +3574,9 @@ const srcDrag = {
   drop(id, i) {
     const rect = shell.drop;
     srcDragEnd();
-    if (i.over === 'tracks') { addTrack(modelById(id)); return true; }
-    if (i.over === 'canvas') { if (!cvDropInstrument(id, rect)) setTrackModel(trk(), id); return true; }
+    const ui = srcUi(id);
+    if (i.over === 'tracks') { addTrack(modelById(id), null, { ui }); return true; }
+    if (i.over === 'canvas') { if (!cvDropInstrument(id, rect, { ui })) setTrackModel(trk(), id, { ui }); return true; }
     return false;
   },
   cancel() { srcDragEnd(); },
@@ -3972,7 +3651,8 @@ function initShell() {
   $('#srcClose').onclick = () => shell.src.close();
   $('#fxClose').onclick = () => shell.fx.close();
   shell.tiles = cvTray.sourcesTray($('#srcList'), { models: MODELS, tray: $('#srcTray'), layer: $('#ov'), pick: srcPick, drag: srcDrag,
-    overOf: srcOver, canvasGhost: () => !!world && !$('#tab-inst').hidden, onLeave: () => shell.src.close() });
+    overOf: srcOver, canvasGhost: () => !!world && !$('#tab-inst').hidden, onLeave: () => shell.src.close(),
+    layoutEl: $('#srcLayout'), layout: store.get(TRAY_LAYOUT, 'hw'), onLayout: l => store.set(TRAY_LAYOUT, l) });
   srcModeUI('replace');
   if ((window.innerWidth || 1400) < 1100 && shell.src.isOpen() && shell.fx.isOpen()) shell.fx.close();
   // the top tray animates its height from now on (not from the stylesheet's 48 px to the restored height at load)
@@ -4110,6 +3790,14 @@ function cvRoom(built) {
 }
 // the ⋯ menu's layout items: Hardware (the real front panel, fixed) or Resizable (today's flowing panel and its grip);
 // one History step; values, presets and the 303 pattern live in the track, so every control comes back as it was
+// track.lay.i1.ui without a step of its own (the caller's): the instrument's entry from the module's place when it has none
+function layUi(t, ui) {
+  const K = cvModule.ID.inst, lay = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {}), m = cvView && cvView.trackId === t.id ? cvView.modules.get(K) : null;
+  const e = lay[K] ? Object.assign({}, lay[K]) : m ? { x: Math.round(m.x), y: Math.round(m.y) } : { x: 0, y: 0 };
+  if (ui === 'flow') e.ui = 'flow'; else delete e.ui;
+  lay[K] = e;
+  t.lay = lay;
+}
 function cvSetLayout(want) {
   const t = trk(), K = cvModule.ID.inst;
   if (isSx(t) || (want !== 'hw' && want !== 'flow') || instUi(t) === want) return;
@@ -4195,7 +3883,7 @@ function cvChipFill(t) {
 }
 function cvChipSync() { // the preset name changed (renderPanel's preset UI, a Serum edit): the chip, a hardware preset display
   if (cvView) cvChipFill(trk());
-  const u = ui.get('@preset');
+  const u = uiOf().get('@preset');
   if (u) u();
 }
 function cvMenu(kind, key) {
@@ -4214,7 +3902,7 @@ function cvMenu(kind, key) {
       { label: hw ? 'Hardware layout' : 'Hardware layout (not drawn yet · fixed size)', checked: u === 'hw', action: () => cvSetLayout('hw') },
       { label: 'Resizable layout', checked: u === 'flow', action: () => cvSetLayout('flow') },
       { sep: true },
-      { label: 'Save sound…', action: presetSave }, { label: 'Delete saved sound', action: presetDelete, disabled: !presetSaved() }, { label: 'Init sound', action: presetInit },
+      { label: 'Save sound…', action: () => presetSave() }, { label: 'Delete saved sound', action: () => presetDelete(), disabled: !presetSaved() }, { label: 'Init sound', action: () => presetInit() },
       { sep: true }, ...(u === 'flow' ? [reset] : []), fold, front, { sep: true }, tidyI];
   }
   return kind === 'fx' ? [fold, front, { sep: true }, tidyI] : [fold];
@@ -4327,11 +4015,11 @@ function cvRelabel() { // titles, chip and the Serum's route label after an edit
 }
 // a synth dropped on the canvas (or picked in the Sources tray's replace mode): replaces the selected track's instrument
 // in place (until 1e, SPEC §2.7), one History step, an undo notice
-function cvDropInstrument(modelId, at) {
+function cvDropInstrument(modelId, at, o = null) {
   const t = trk(), m = MODELS.find(x => x.id === modelId);
   if (!m || m.id === t.model) return false;
   const old = modelById(t.model), id = t.id;
-  setTrackModel(t, m.id); // (renderPanel → cvPanelDone: the FX module and the titles follow)
+  setTrackModel(t, m.id, o); // (renderPanel → cvPanelDone: the FX module and the titles follow)
   // the step the replacement left on top of History (or the equal one it kept): the tap undoes it only while it is still
   // the newest — after a later step (a move, a knob, a note) the old instrument comes back as a step of its own instead,
   // never undoing that later edit (an undo / redo makes a new entry object: the safe branch too)
@@ -4382,10 +4070,63 @@ function cvTidy() {
   persist();
   cvView.sync(t);
 }
+// Track switch (SPEC-canvas §2.12, stage 1c): the new track's module frames go up at once (their sizes from its layout, its
+// camera restored), then the bodies mount over the next frames — the one nearest the view's centre first, as many per
+// frame as fit in CV_SLICE_MS (at least one) — with the world hidden ([data-cv-mounting]: visibility hidden) until the
+// last is built (a Serum panel / an FX rack: until its UI is up, at most CV_MOUNT_MAX ms), then shown with a short fade:
+// nothing half-built, no pop, and the modules render exactly as they will (Z1). Off the canvas (ROLL, no world) a switch
+// renders at once, as before.
+const CV_SLICE_MS = 12, CV_MOUNT_MAX = 500; // (past it the frames show with the panel's own "Loading…": never a long blank canvas)
+let cvMount = null, cvBuilds = 0; // the switch mounting { key, jobs, t0, raf }; UI builds in flight (uiMods)
+function cvBuild(p) { cvBuilds++; return p.finally(() => { cvBuilds = Math.max(0, cvBuilds - 1); }); }
+function cvSwitching() {
+  if (!cvOn() || !cvView || !cvViewKey || $('#tab-inst').hidden || typeof requestAnimationFrame !== 'function') return false;
+  return cvViewKey !== project.uid + '/' + trk().id;
+}
+function cvSwitch() {
+  if (cvMount) cvMountEnd(false);
+  cvRender(); // (the frames and the camera; the bodies still hold the outgoing panels, hidden until replaced)
+  const vp = $('#viewport'), W = cvW(), b = W && typeof W.band === 'function' ? W.band() : null;
+  if (vp) vp.setAttribute('data-cv-mounting', '');
+  const dist = key => { // the module's centre from the band's centre (screen px)
+    const m = cvView && cvView.modules.get(key);
+    if (!m || !b || !W.toClient) return 0;
+    const r = m.rect(), c = W.toClient(r.x + r.w / 2, r.y + Math.min(r.h, 600) / 2);
+    return Math.hypot(c.x - (b.left + b.right) / 2, c.y - (b.top + b.bottom) / 2);
+  };
+  const jobs = [
+    { key: cvModule.ID.inst, run: () => { cvBusy = true; try { renderPanel(); } finally { cvBusy = false; } } },
+    { key: cvModule.fxKey(trk().model), run: () => renderFxTab() },
+  ].sort((x, y) => dist(x.key) - dist(y.key));
+  cvMount = { key: cvViewKey, jobs, t0: performance.now(), raf: requestAnimationFrame(cvMountStep) };
+}
+function cvJob(j) { try { j.run(); cvRender(); } catch (err) { console.error(err); } } // (the frames follow each body: titles, sizes)
+function cvMountStep() {
+  const M = cvMount;
+  if (!M) return;
+  M.raf = 0;
+  if (M.key !== cvViewKey) { cvMountEnd(); return; } // (another render took over: finish now, never left hidden)
+  const t0 = performance.now();
+  while (M.jobs.length) { cvJob(M.jobs.shift()); if (performance.now() - t0 >= CV_SLICE_MS) break; } // (at least one a frame)
+  if (M.jobs.length || (cvBuilds > 0 && performance.now() - M.t0 < CV_MOUNT_MAX)) { M.raf = requestAnimationFrame(cvMountStep); return; }
+  cvMountEnd(true);
+}
+// the switch is done (or superseded: show false): any job left runs now, the world shows (the fade is CSS's)
+function cvMountEnd(show = true) {
+  const M = cvMount;
+  if (!M) return;
+  cvMount = null;
+  if (M.raf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(M.raf);
+  if (show) for (const j of M.jobs.splice(0)) cvJob(j);
+  const vp = $('#viewport');
+  if (vp && show) vp.removeAttribute('data-cv-mounting');
+  if (show) { cvRender(); monitors.sync(); }
+}
 // renderPanel / renderCustom ran outside renderViews (a model change, a track rename, a 303 pattern): the FX module and
 // the module titles follow
 function cvPanelDone() {
   if (cvBusy || !cvView) return;
+  if (cvMount) { cvMountEnd(); return; } // (an edit during a switch's mounting — a model change —: it completes now)
   const t = trk();
   if (fxTab.sx !== isSx(t) || fxTab.trackId !== t.id) renderFxTab();
   cvRender();
@@ -4395,7 +4136,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     view: () => cvView, parts: cvParts, world: () => cvW(), sxPanel, fxTab, monitors, hist, undo, redo, render: cvRender,
     renderViews, tidy: cvTidy, drop: cvDropInstrument, reveal: cvReveal, size: cvModuleSize, live: cvLive, camFlush: cvCamFlush,
     chipSync: cvChipSync, heads: renderHeads, duplicateTrack, openTab, about: cvAbout, menu: cvMenu, peer: () => ({ peerT, peerBits, peerStale }),
-    setLayout: cvSetLayout, instUi, hw: () => hwPanel, presetStep, presetInit,
+    setLayout: cvSetLayout, instUi, hw: () => (cpanel ? cpanel.hw : null), presetStep, presetInit, panel: () => cpanel, classicFile,
   };
 }
 

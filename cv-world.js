@@ -18,6 +18,10 @@
 // detail, nothing hidden, unmounted or resized; modules simply scale with the camera. The world only tells each item
 // whether it is on screen (planScreen over cached rects, after every written frame: onScreen(on) + a 'screen' event), so
 // off-screen live displays can pause invisibly; below READ_K a press inside a module body pans (its controls sleep).
+// Stage 1c: a selection of several items (Shift-click on a bar adds; ⌘/Ctrl-A; a marquee — Shift-drag on empty canvas
+// with the mouse, a 250 ms hold then a drag with a finger — selects what it touches; a mouse drag still pans), the
+// selected item that started a move carries the others (cv-module TrackView), and a minimap in the toolbar (item rects +
+// the visible area from the cached rects; drag to pan, tap to centre; drawn only when the camera or the layout changes).
 import * as wk from './wk.js?v=9';
 
 /** Smallest / largest camera zoom. */
@@ -48,6 +52,12 @@ export const PINCH_PX = 6;
 export const ZOOM_STEPS = Object.freeze([0.25, 1 / 3, 0.5, 2 / 3, 0.75, 1, 1.25, 1.5, 2]);
 /** The camera pinch-mode pref (appstore; stored as synthc.cv.pinch). */
 export const PINCH_PREF = 'synth.cv.pinch';
+/** The minimap pref (appstore; stored as synthc.cv.minimap): shown unless switched off in the toolbar. */
+export const MAP_PREF = 'synth.cv.minimap';
+/** A finger held this long (ms) on empty canvas, then dragged, draws a marquee instead of panning (SPEC §4.1). */
+export const MARQUEE_HOLD_MS = 250;
+/** The minimap's size (CSS px). */
+export const MAP_W = 176, MAP_H = 112;
 
 // momentum: px/ms to start (0.12 = 120 px/s), cap, stop; decay time constant (ms: a gentle glide); camera animation (ms);
 // a wheel / hook burst ends this long after its last event; taps: slop per pointer type, double-tap window and distance
@@ -165,6 +175,24 @@ export function snap(v, g) { const s = g > 0 ? +g : DOT, r = Math.round(v / s) *
 /** Which items are on screen: those intersecting the viewport grown by `margin` screen px (default CULL_MARGIN), at any
  * zoom. An item without a rect counts as on screen. Pure. @param {{id: string, rect: Rect | null}[]} items
  * @param {Camera} cam @param {number} vw @param {number} vh @param {number} [margin] @returns {{on: string[], off: string[]}} */
+/** The items a marquee touches: ids whose rect intersects the world rect r (rects: [{id, rect}]). Pure. */
+export function inRect(list, r) {
+  const out = [];
+  for (const it of list || []) if (it && it.rect && intersects(it.rect, r)) out.push(it.id);
+  return out;
+}
+/** The minimap's mapping: the union of the item rects and the view rect, padded, fitted (centred) into w × h px →
+ * { s, ox, oy } with map = world · s + o. Pure. @param {Rect[]} rects @param {Rect} view */
+export function mapFit(rects, view, w, h, pad) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const r of [...(rects || []), view]) {
+    if (!r || !isFinite(r.x) || !isFinite(r.y)) continue;
+    x0 = Math.min(x0, r.x); y0 = Math.min(y0, r.y); x1 = Math.max(x1, r.x + Math.max(0, +r.w || 0)); y1 = Math.max(y1, r.y + Math.max(0, +r.h || 0));
+  }
+  if (!(x1 > x0) || !(y1 > y0)) return { s: 1, ox: 0, oy: 0 };
+  const p = pad != null ? pad : 6, s = Math.min((w - 2 * p) / (x1 - x0), (h - 2 * p) / (y1 - y0));
+  return { s, ox: (w - (x1 - x0) * s) / 2 - x0 * s, oy: (h - (y1 - y0) * s) / 2 - y0 * s };
+}
 export function planScreen(items, cam, vw, vh, margin) {
   const vis = visibleRect(cam, vw, vh, margin != null ? +margin : CULL_MARGIN), on = [], off = [];
   for (const it of items || []) {
@@ -215,8 +243,10 @@ export function createWorld(viewport, o) {
   let vp = { left: 0, top: 0, width: 0, height: 0 }, ovO = { left: 0, top: 0 }; // cached rects (resize)
   let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, gridA = -1, snapping = true;
   let sel = null, editId = null, editSup = false, focusBack = null;
+  const selSet = new Set(); // the selection (sel: its primary — the one tapped or moved last)
   let pin = null; // a bar double-tap's edit state { id, k }: it holds at the focus zoom even below EDIT_K (a large module's fit)
   let fid = 0, scrDirty = false, overBudget = false; // the frame, the on-screen plan owed, the soft DOM budget crossed
+  let mapOn = true, mapDirty = true, MM = null; // the minimap: shown, a redraw owed, its parts { el, cv, btn, drag }
   let B = null; // the live burst: { hook, until, band, timer, last }
   let G = null; // the world's own pointer gesture (pan / pinch)
   let glide = null, glideEnd = -1e9, anim = null, edge = null, gh = null, gs = null; // gs: Safari gesture scale
@@ -267,6 +297,7 @@ export function createWorld(viewport, o) {
     vs.backgroundSize = g.major.size + 'px ' + g.major.size + 'px, ' + g.minor.size + 'px ' + g.minor.size + 'px';
     vs.backgroundPosition = g.major.x + 'px ' + g.major.y + 'px, ' + g.minor.x + 'px ' + g.minor.y + 'px';
     if (gh && gh.g) placeGhost();
+    mapDirty = true;
     const pct = Math.round(cam.k * 100) + '%';
     if (pct !== pctShown && TB.pct) { pctShown = pct; TB.pct.textContent = pct; TB.pct.setAttribute('aria-label', 'Zoom ' + pct + ' — reset to 100 %'); }
     emit('camera', copy(cam));
@@ -281,6 +312,7 @@ export function createWorld(viewport, o) {
     if (anim) stepAnim(T);
     if (edge) stepEdge(T);
     if ((write() || scrDirty) && active) screen(); // (cached rects only: no layout read in a burst)
+    if (mapDirty && mapOn && active) drawMap();
     if (glide || anim || (edge && edge.v)) request();
   }
 
@@ -453,6 +485,7 @@ export function createWorld(viewport, o) {
   function cacheRect(rec) { try { rec.rect = rec.item.rect(); } catch (err) { rec.rect = null; } }
   function recache(id) { // a layout read: only outside a burst (add / update / resize / cameraend)
     for (const [k, r] of items) if (id == null || k === id) cacheRect(r);
+    mapDirty = true;
     budget();
     schedule();
   }
@@ -504,30 +537,47 @@ export function createWorld(viewport, o) {
     if (!rec) return;
     items.delete(id);
     attr(rec.item.el, 'data-cv-sel', false); attr(rec.item.el, 'data-cv-edit', false);
-    if (sel === id) { sel = null; emit('select', { id: null }); }
+    if (selSet.delete(id)) { if (sel === id) sel = selSet.size ? [...selSet].pop() : null; emit('select', { id: sel, ids: [...selSet] }); }
+    mapDirty = true;
     if (editId === id) { editId = null; emit('edit', { id: null }); }
     budget();
   }
-  function clear() { for (const id of [...items.keys()]) remove(id); focusBack = null; editSup = false; pin = null; }
+  function clear() { for (const id of [...items.keys()]) remove(id); selSet.clear(); sel = null; focusBack = null; editSup = false; pin = null; mapDirty = true; }
   function update(id) { if (id == null) recache(); else if (items.has(String(id))) recache(String(id)); }
 
   /* ---- selection and edit state */
-  function select(id) {
+  // select(id): only it (null: nothing); {keep}: a member of a selection of several keeps them (a move of the group);
+  // {add}: Shift-click toggles it in or out of the selection
+  function select(id, o) {
     id = id == null ? null : String(id);
     if (id !== null && !items.has(id)) id = null;
+    const keep = o && o.keep && id && selSet.has(id), add = o && o.add && id;
     editSup = false;
-    if (id !== sel) {
-      if (sel && items.has(sel)) attr(items.get(sel).item.el, 'data-cv-sel', false);
-      sel = id;
-      if (sel) attr(items.get(sel).item.el, 'data-cv-sel', true);
-      emit('select', { id: sel });
-    }
+    const was = [...selSet].join('\n') + '|' + sel;
+    if (add) {
+      if (selSet.has(id)) { selSet.delete(id); if (sel === id) sel = selSet.size ? [...selSet].pop() : null; } else { selSet.add(id); sel = id; }
+    } else if (keep) sel = id;
+    else { selSet.clear(); if (id) selSet.add(id); sel = id; }
+    paintSel();
+    if (([...selSet].join('\n') + '|' + sel) !== was) { mapDirty = true; request(); emit('select', { id: sel, ids: [...selSet] }); }
     computeEdit();
   }
+  function selectMany(ids) {
+    const want = (ids || []).map(String).filter(x => items.has(x));
+    const was = [...selSet].join('\n') + '|' + sel;
+    selSet.clear();
+    for (const x of want) selSet.add(x);
+    sel = want.length ? want[want.length - 1] : null;
+    editSup = false;
+    paintSel();
+    if (([...selSet].join('\n') + '|' + sel) !== was) { mapDirty = true; request(); emit('select', { id: sel, ids: [...selSet] }); }
+    computeEdit();
+  }
+  function paintSel(extra) { for (const [k, r] of items) attr(r.item.el, 'data-cv-sel', selSet.has(k) || (!!extra && extra.has(k))); }
   function computeEdit() { // edit state: selected, not left (tap outside / Escape), and k ≥ EDIT_K (or ≥ a double-tap's fit)
     if (pin && (pin.id !== sel || editSup || (anim ? anim.c1 : cam).k < pin.k - 0.02)) pin = null; // (zoomed out past it: over)
     const kOk = cam.k >= EDIT_K - 1e-9 || (!!pin && pin.id === sel);
-    const e = sel && !editSup && items.has(sel) && kOk ? sel : null;
+    const e = sel && selSet.size <= 1 && !editSup && items.has(sel) && kOk ? sel : null; // (a selection of several: no edit state)
     if (e === editId) return;
     if (editId && items.has(editId)) attr(items.get(editId).item.el, 'data-cv-edit', false);
     editId = e;
@@ -552,7 +602,7 @@ export function createWorld(viewport, o) {
     if (anim) { anim = null; settle(); } // a press stops an animation where it is
     const x = e.clientX, y = e.clientY, t = now();
     G = { kind: 'pan', id: e.pointerId, type: e.pointerType || 'mouse', mid: !!mid, x, y, px: x, py: y, x0: x, y0: y, t0: t,
-      moved: false, s: [[x, y, t]], tgt: e.target, noGlide: false, guard: !!guard };
+      moved: false, s: [[x, y, t]], tgt: e.target, noGlide: false, guard: !!guard, empty: e.target === viewport || e.target === W };
     capture(e.pointerId, true);
   }
   function panMove(e) {
@@ -560,6 +610,8 @@ export function createWorld(viewport, o) {
     G.px = x; G.py = y;
     if (!G.moved) {
       if (Math.hypot(x - G.x0, y - G.y0) <= (TAP_PX[G.type] || 4)) return;
+      // a finger held still on empty canvas, then dragged: a marquee (SPEC §4.1), not a pan
+      if (G.type === 'touch' && G.empty && !G.mid && !G.guard && !G.sleep && now() - G.t0 >= MARQUEE_HOLD_MS) { toMarquee(G); marqueeMove(e); return; }
       G.moved = true; // the travel since the press follows at once
     }
     const t = now();
@@ -597,8 +649,40 @@ export function createWorld(viewport, o) {
     G = { kind: 'pan', id: left.id, type: 'touch', mid: false, x: left.x, y: left.y, px: left.x, py: left.y, x0: left.x, y0: left.y,
       t0: now(), moved: true, s: [], tgt: null, noGlide: true };
   }
+  /* ---- the marquee (selects the items it touches; drawn in #overlay, local to it) */
+  function toMarquee(g) {
+    const box = doc && OV ? doc.createElement('div') : null;
+    if (box) { box.className = 'cv-marquee'; OV.append(box); }
+    G = { kind: 'marquee', id: g.id, type: g.type, x0: g.x0, y0: g.y0, x: g.x0, y: g.y0, box, moved: true, hits: new Set() };
+    attr(viewport, 'data-cv-marquee', true);
+  }
+  function marqueeRect() { // world rect of the marquee
+    const a = toWorld(cam, G.x0 - vp.left, G.y0 - vp.top), b = toWorld(cam, G.x - vp.left, G.y - vp.top);
+    return { x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) };
+  }
+  function marqueeMove(e) {
+    G.x = e.clientX; G.y = e.clientY;
+    if (G.box) {
+      const l = Math.min(G.x0, G.x) - ovO.left, t = Math.min(G.y0, G.y) - ovO.top, st = G.box.style;
+      st.left = l + 'px'; st.top = t + 'px'; st.width = Math.abs(G.x - G.x0) + 'px'; st.height = Math.abs(G.y - G.y0) + 'px';
+    }
+    const list = [];
+    for (const [id, r] of items) list.push({ id, rect: r.rect });
+    G.hits = new Set(inRect(list, marqueeRect()));
+    paintSel(G.hits); // (live: what it touches shows selected)
+  }
+  function marqueeEnd(ok) {
+    const g = G;
+    G = null;
+    capture(g.id, false);
+    if (g.box) { try { g.box.remove(); } catch (err) { /* gone */ } }
+    attr(viewport, 'data-cv-marquee', false);
+    clickUntil = now() + 350;
+    if (ok) selectMany([...g.hits]); else paintSel();
+  }
   function endGesture(glideToo) { // the pan ends where it is (a two-finger cancel, Escape, native, hidden)
     if (!G) return;
+    if (G.kind === 'marquee') { marqueeEnd(false); return; }
     const g = G;
     G = null;
     if (g.moved) clickUntil = now() + 350;
@@ -664,6 +748,12 @@ export function createWorld(viewport, o) {
     if (G && e.pointerType === 'touch' && G.type === 'touch') { // a further touch while the world's touch pan runs
       take(e);
       if (pinchMode !== 'canvas') { endGesture(true); clickUntil = now() + 350; return; } // 'Zoom page': the pan stops, the browser's pinch has both (no click)
+      if (G.kind === 'marquee' && e.pointerId !== G.id) { // two fingers win over a finger's marquee: it ends, unapplied, and pinches
+        const g = G;
+        marqueeEnd(false);
+        G = { kind: 'pan', id: g.id, type: 'touch', px: g.x, py: g.y };
+        capture(g.id, true);
+      }
       if (G.kind === 'pan' && e.pointerId !== G.id) toPinch(e);
       return;
     }
@@ -693,6 +783,10 @@ export function createWorld(viewport, o) {
     if (e.button !== 0 && !mid) return;
     const empty = t === viewport || t === W;
     if (!mid && !empty && !isBg(t)) return; // controls keep their own pointerdown: only the press target is tested
+    if (!mid && empty && e.shiftKey && e.pointerType !== 'touch') { // Shift-drag with the mouse: a marquee (a plain drag pans)
+      startPan(e, false); toMarquee(G); e.preventDefault(); focusVp();
+      return;
+    }
     startPan(e, mid);
     if (mid || e.pointerType !== 'touch') e.preventDefault(); // no text selection, no middle-button autoscroll
     if (empty) focusVp(); // the canvas keys
@@ -701,6 +795,7 @@ export function createWorld(viewport, o) {
     if (!G) return;
     if (G.type === 'mouse' && e.pointerId === G.id && e.buttons === 0) { endGesture(true); return; } // released unseen
     if (G.kind === 'pinch') pinchMove(e);
+    else if (G.kind === 'marquee') { if (e.pointerId === G.id) marqueeMove(e); }
     else if (e.pointerId === G.id) panMove(e);
   }
   function onUpCap(e) {
@@ -713,6 +808,7 @@ export function createWorld(viewport, o) {
   function onUp(e) {
     if (!G) return;
     if (G.kind === 'pinch') { pinchLift(e.pointerId); return; }
+    if (G.kind === 'marquee') { if (e.pointerId === G.id) marqueeEnd(true); return; }
     if (e.pointerId !== G.id) return;
     const g = G;
     G = null;
@@ -915,8 +1011,8 @@ export function createWorld(viewport, o) {
     if (!active || !e || e.defaultPrevented || e.altKey) return false;
     if (!canvasFocus(doc && doc.activeElement)) return false;
     const k = String(e.key || ''), mod = e.metaKey || e.ctrlKey;
-    if (mod) { // ⌘/Ctrl-A: select all (one selection in 1b: nothing more to select; the page's text is not the canvas's)
-      if (k.toLowerCase() === 'a' && !e.shiftKey) { e.preventDefault(); return true; }
+    if (mod) { // ⌘/Ctrl-A: select every item (the page's text is not the canvas's)
+      if (k.toLowerCase() === 'a' && !e.shiftKey) { e.preventDefault(); selectMany([...items.keys()]); return true; }
       return false;
     }
     if (k === '0') { e.preventDefault(); fit({ animate: true }); return true; }
@@ -933,7 +1029,7 @@ export function createWorld(viewport, o) {
   function escape() {
     if (G) { endGesture(true); return true; }
     if (editId) { editSup = true; computeEdit(); return true; }
-    if (sel) { select(null); return true; }
+    if (sel || selSet.size) { select(null); return true; }
     return false;
   }
 
@@ -947,6 +1043,7 @@ export function createWorld(viewport, o) {
     mods: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10c2-5 4-5 5 0s3 5 5 0 4-5 5 0"/></svg>',
     tools: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.2 12.2 17 17M6 8.5h5M8.5 6v5"/></svg>',
     snap: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3.5v6.5a5 5 0 0 0 10 0V3.5M5 7h3M12 7h3"/><circle cx="4" cy="17" r="0.9"/><circle cx="10" cy="17" r="0.9"/><circle cx="16" cy="17" r="0.9"/></svg>',
+    map: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="4" width="15" height="12" rx="1.5"/><rect x="5" y="6.5" width="4" height="3"/><rect x="10.5" y="8" width="4.5" height="5"/></svg>',
   };
   function buildToolbar(host) {
     if (!host || !doc) return;
@@ -971,6 +1068,7 @@ export function createWorld(viewport, o) {
     pct.classList.add('cv-tb-pct');
     pct.textContent = '100%';
     const snapB = btn('snap', 'Snap to grid', ICON.snap, () => setSnap(!snapping));
+    const mapB = btn('map', 'Minimap', ICON.map, () => setMap(!mapOn));
     const mods = btn('mods', 'Modulation cables arrive in a later stage', ICON.mods, null);
     mods.disabled = true;
     mods.setAttribute('aria-disabled', 'true');
@@ -986,12 +1084,97 @@ export function createWorld(viewport, o) {
       btn('out', 'Zoom out', ICON.out, () => stepZoom(-1)), pct, btn('in', 'Zoom in', ICON.in, () => stepZoom(1)), mk('span', 'cv-tb-sep'),
       btn('fit', 'Fit all (0)', ICON.fit, () => fit({ animate: true })),
       btn('tidy', 'Tidy: lay the modules out again', ICON.tidy, () => { if (typeof o.onTidy === 'function') o.onTidy(); }),
-      snapB, mods);
+      snapB, mapB, mods);
     bar.append(fold, row, chip);
     host.append(bar);
-    Object.assign(TB, { bar, row, pct, chip, fold, snap: snapB });
-    snapUI();
+    Object.assign(TB, { bar, row, pct, chip, fold, snap: snapB, map: mapB });
+    buildMap(host);
+    snapUI(); mapUI();
     offs.push(() => { unlater(hintT); try { bar.remove(); } catch (err) { /* gone */ } });
+  }
+
+  /* ---- the minimap (toolbar): the item rects and the visible area; drag to pan, tap to centre */
+  function buildMap(host) {
+    const cv = doc.createElement('canvas'), el = doc.createElement('div');
+    el.className = 'cv-minimap';
+    el.setAttribute('role', 'img'); el.setAttribute('aria-label', 'Minimap: drag to move the view, tap to centre it');
+    el.title = 'Minimap: drag to move the view, tap to centre it';
+    el.append(cv);
+    host.append(el);
+    MM = { el, cv, drag: null, fit: null };
+    listen(cv, 'pointerdown', mapDown);
+    listen(cv, 'pointermove', mapMove);
+    listen(cv, 'pointerup', mapUp);
+    listen(cv, 'pointercancel', mapUp);
+    listen(cv, 'contextmenu', e => e.preventDefault());
+    offs.push(() => { try { el.remove(); } catch (err) { /* gone */ } });
+  }
+  function mapUI() {
+    if (MM) attr(MM.el, 'hidden', !mapOn);
+    if (TB.map) { TB.map.setAttribute('aria-pressed', String(mapOn)); TB.map.title = 'Minimap: ' + (mapOn ? 'shown' : 'hidden'); TB.map.setAttribute('aria-label', TB.map.title); }
+  }
+  function setMap(on) {
+    on = !!on;
+    if (on === mapOn) return;
+    mapOn = on;
+    mapUI();
+    if (store) { try { store.set(MAP_PREF, on); } catch (err) { /* storage */ } }
+    if (on) { mapDirty = true; request(); }
+  }
+  const viewRectW = () => { const b = bandBox(bandNow()); return { x: (b.x - cam.tx) / cam.k, y: (b.y - cam.ty) / cam.k, w: b.w / cam.k, h: b.h / cam.k }; };
+  function drawMap() { // cached rects only (no layout read); the mapping is frozen while the map is being dragged
+    mapDirty = false;
+    if (!MM || !(vp.width > 0)) return;
+    const c = MM.cv, ctx = typeof c.getContext === 'function' ? c.getContext('2d') : null;
+    if (!ctx) return;
+    const r = Math.min(2, dpr()), W2 = Math.round(MAP_W * r), H2 = Math.round(MAP_H * r);
+    if (c.width !== W2) c.width = W2;
+    if (c.height !== H2) c.height = H2;
+    const rects = [], view = viewRectW();
+    for (const [id, rec] of items) if (rec.rect) rects.push({ id, r: rec.rect });
+    const F = MM.drag ? MM.drag.fit : mapFit(rects.map(x => x.r), view, MAP_W, MAP_H);
+    MM.fit = F;
+    ctx.setTransform(r, 0, 0, r, 0, 0);
+    ctx.clearRect(0, 0, MAP_W, MAP_H);
+    for (const x of rects) {
+      const q = x.r, on = selSet.has(x.id);
+      ctx.fillStyle = on ? 'rgba(242, 163, 58, 0.75)' : 'rgba(158, 166, 178, 0.45)';
+      ctx.fillRect(q.x * F.s + F.ox, q.y * F.s + F.oy, Math.max(2, q.w * F.s), Math.max(2, q.h * F.s));
+    }
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)'; ctx.lineWidth = 1.25;
+    ctx.strokeRect(view.x * F.s + F.ox, view.y * F.s + F.oy, view.w * F.s, view.h * F.s);
+  }
+  function mapPt(e) { // a pointer on the map → world px (the map's own rect: outside the world, screen = layout px)
+    const rc = rectOf(MM.cv), F = (MM.drag && MM.drag.fit) || MM.fit || { s: 1, ox: 0, oy: 0 };
+    return { x: (e.clientX - rc.left - F.ox) / F.s, y: (e.clientY - rc.top - F.oy) / F.s };
+  }
+  function centreOn(wx, wy, animate) { // the band's centre over world (wx, wy), the zoom kept
+    const b = bandBox(band());
+    setCamera({ tx: b.x + b.w / 2 - wx * cam.k, ty: b.y + b.h / 2 - wy * cam.k, k: cam.k }, { animate });
+  }
+  function mapDown(e) {
+    if (!MM || (e.button != null && e.button !== 0)) return;
+    e.preventDefault(); e.stopPropagation();
+    if (!MM.fit) drawMap();
+    const p = mapPt(e), v = viewRectW(), inside = p.x >= v.x && p.x <= v.x + v.w && p.y >= v.y && p.y <= v.y + v.h;
+    MM.drag = { id: e.pointerId, fit: MM.fit, x0: e.clientX, y0: e.clientY, moved: false, off: inside ? { x: p.x - (v.x + v.w / 2), y: p.y - (v.y + v.h / 2) } : { x: 0, y: 0 }, inside };
+    try { MM.cv.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
+  }
+  function mapMove(e) {
+    const D = MM && MM.drag;
+    if (!D || e.pointerId !== D.id) return;
+    if (!D.moved && Math.hypot(e.clientX - D.x0, e.clientY - D.y0) <= 3) return;
+    D.moved = true;
+    const p = mapPt(e);
+    centreOn(p.x - D.off.x, p.y - D.off.y, false);
+  }
+  function mapUp(e) {
+    const D = MM && MM.drag;
+    if (!D || e.pointerId !== D.id) return;
+    MM.drag = null;
+    try { MM.cv.releasePointerCapture(e.pointerId); } catch (err) { /* gone */ }
+    if (e.type === 'pointerup' && !D.moved) { const p = mapPt(e); centreOn(p.x, p.y, true); } // a tap: centre there
+    mapDirty = true; request();
   }
 
   /* ---- setup */
@@ -1032,6 +1215,7 @@ export function createWorld(viewport, o) {
 
   pinchMode = store && store.get && store.get(PINCH_PREF, 'canvas') === 'page' ? 'page' : 'canvas';
   snapping = !(store && store.get && store.get(SNAP_PREF, true) === false);
+  mapOn = !(store && store.get && store.get(MAP_PREF, true) === false);
   attr(viewport, 'data-cv-pinch', pinchMode);
   try { W.style.setProperty('--ik', '1'); } catch (err) { /* inert */ }
   if (o.layer) wk.setLayer(o.layer);
@@ -1074,8 +1258,8 @@ export function createWorld(viewport, o) {
     toWorld: (x, y) => toWorld(cam, x - vp.left, y - vp.top),
     toClient: (x, y) => { const l = toLocal(cam, x, y); return { x: l.x + vp.left, y: l.y + vp.top }; },
     band, add, remove, update, clear, ids: () => [...items.keys()], onScreen: id => { const r = items.get(String(id)); return !!r && r.on; },
-    select, dragPointer, ghost, setActive, setPinchMode, resize, hooks, wheelVeto, escape, key,
-    snapOn: () => snapping, setSnap,
+    select, selectMany, get selection() { return [...selSet]; }, dragPointer, ghost, setActive, setPinchMode, resize, hooks, wheelVeto, escape, key,
+    snapOn: () => snapping, setSnap, mapOn: () => mapOn, setMap,
     on(type, fn) {
       let s = subs.get(type);
       if (!s) subs.set(type, s = new Set());

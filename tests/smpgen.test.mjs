@@ -25,6 +25,7 @@ const wt = await imp('wt.js');
 const smp = await imp('smp.js');
 const work = await imp('smpwork.js');
 const A = await imp('assets.js');
+const CG = await imp('cv-graph.js'), CM = await imp('cv-migrate.js'), CMOD = await imp('cv-model.js'); // (main.js buildPatch: the canonical compile, stage 1c)
 const notImpl = fn => assert.throws(fn, e => e && e.code === 'ENOTIMPL');
 
 /* ------------------------------------------------------------------ catalogues (§10.1–§10.3) */
@@ -552,9 +553,9 @@ function fnSource(src, name) {
   return src.slice(i, j + 1);
 }
 test('§10.1: patchFor — main.js buildPatch adds only live-session fields; farmPatch = patchFor(drift 0, hiss 0, default rack)', () => {
-  const make = new Function('modelById', 'fxOf', 'ctx', 'project', 'settings', 'sxUni', 'prefs', 'seedPend', 'sxCap', 'core', 'patchFor', fnSource(MAIN, 'buildPatch') + '\nreturn buildPatch;');
+  const make = new Function('modelById', 'fxOf', 'ctx', 'project', 'settings', 'sxUni', 'prefs', 'seedPend', 'sxCap', 'core', 'patchFor', 'CG', 'CM', fnSource(MAIN, 'buildPatch') + '\nreturn buildPatch;');
   const prefs = { smooth: 1, silenceTails: 1 };
-  const buildPatch = make(id => models.MODELS.find(m => m.id === id), t => t.fx, null, { bpm: 97 }, { drift: 0 }, 16, prefs, new Set(), 8, core, models.patchFor);
+  const buildPatch = make(id => models.MODELS.find(m => m.id === id), t => t.fx, null, { bpm: 97 }, { drift: 0 }, 16, prefs, new Set(), 8, core, models.patchFor, CG, CM);
   for (const m of models.MODELS) {
     const p = m.presets[Math.min(1, m.presets.length - 1)];
     const vals = m.custom ? JSON.parse(JSON.stringify(p.v)) : valsOf(m.id, p.name), fx = m.custom && p.fx ? JSON.parse(JSON.stringify(p.fx)) : core.defaultFx();
@@ -564,6 +565,12 @@ test('§10.1: patchFor — main.js buildPatch adds only live-session fields; far
     delete live.osCap;
     const pure = models.patchFor(m.id, vals, fx, { sr: 44100, bpm: 97, drift: 0, hiss: 1, qr: null, prefs, seed: false });
     assert.deepEqual(live, pure, m.id + ': buildPatch = patchFor + live-session fields');
+    // the same track in its v2 form (stage 1c: cv-model adopt, the canonical compile) builds the same patch
+    const t2 = CMOD.adopt({ tracks: [{ id: 't1', model: m.id, vals: JSON.parse(JSON.stringify(vals)), fx: JSON.parse(JSON.stringify(fx)) }] }).tracks[0];
+    assert.equal(CMOD.isAdopted(t2) && CG.compileTrack(t2).canonical, true, m.id + ': v2, canonical');
+    const live2 = buildPatch(t2, 44100, true);
+    delete live2.osCap;
+    assert.deepEqual(live2, pure, m.id + ': the v2 track compiles to the same patch');
     if (!m.custom) {
       const f = A.farmPatch(m.id, p.name, 97);
       assert.deepEqual(f.patch, models.patchFor(m.id, valsOf(m.id, p.name), null, { sr: 48000, bpm: 97, drift: 0, hiss: 0 }), m.id + ': farm patch');

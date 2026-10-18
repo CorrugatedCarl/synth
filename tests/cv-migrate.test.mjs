@@ -9,13 +9,16 @@ import { readFileSync } from 'node:fs';
 import * as M from '../cv-migrate.js?v=9';
 import * as A from '../appstore.js?v=9';
 import * as S from '../song.js?v=9';
+import * as MO from '../cv-model.js?v=9';
+import * as G from '../cv-graph.js?v=9';
+import * as C from '../serum-core.js?v=9';
 import { fakeStorage, fakeIDB } from './fakes.mjs';
 
 const P1 = readFileSync(new URL('./ref-p1/project-p1.json', import.meta.url), 'utf8'); // a main (schema 0) project file
 const deepFreeze = o => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); for (const v of Object.values(o)) deepFreeze(v); } return o; };
 
 test('constants: SCHEMA, one step per schema, the read-only notice (§2.13)', () => {
-  assert.equal(M.SCHEMA, 2, '1a: uid; 1b: track.lay');
+  assert.equal(M.SCHEMA, 3, '1a: uid; 1b: track.lay; 1c: project v2 tracks');
   assert.equal(M.STEPS.length, M.SCHEMA, 'STEPS[n] turns schema n into n + 1');
   assert.equal(M.READ_ONLY_NOTICE, 'Opened read-only: saved by a newer SYNTH Canvas · Reload');
   assert.equal(M.schemaOf, A.schemaOf, 'one definition of a project\'s schema (the store\'s gate uses it)');
@@ -28,9 +31,10 @@ test('a main project (schema 0) is brought to SCHEMA: uid made, the input untouc
   assert.ok(M.isUid(up.p.uid), up.p.uid);
   assert.notEqual(up.p, o);
   assert.deepEqual(o, copy, 'never mutated');
-  const p = M.stamp(S.deserialize(up.p), up.p);
+  const p = MO.adopt(M.stamp(S.deserialize(up.p), up.p));
   assert.deepEqual([p.uid, p.schema], [up.p.uid, M.SCHEMA]);
   assert.deepEqual(p.tracks.map(t => t.model), S.deserialize(copy).tracks.map(t => t.model));
+  assert.deepEqual(p.tracks.map(t => t.prim), p.tracks.map(() => 'i1'), 'v2 tracks (stage 1c): the instrument is device i1, the primary');
   // saved, the stamps travel with it (song.serialize keeps every field); main's deserialize ignores them (the file opens there)
   const back = JSON.parse(S.serialize(p));
   assert.deepEqual([back.uid, back.schema], [p.uid, M.SCHEMA]);
@@ -125,8 +129,117 @@ test('page: projects get a uid that survives reloads; a newer autosave opens rea
 test('1 → 2 (stage 1b, track.lay): additive — a schema-1 project keeps its uid and fields, lay survives song.js', () => {
   const o = deepFreeze({ name: 'one', schema: 1, uid: 'p_abc123xyz0', tracks: [{ id: 'trk_1', model: 'juno60', notes: [], lay: { i1: { x: 8, y: 16 } } }] });
   const up = M.upgrade(o);
-  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [1, false, 2, 'p_abc123xyz0']);
-  assert.deepEqual(up.p.tracks, o.tracks, 'nothing converted');
+  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [1, false, M.SCHEMA, 'p_abc123xyz0']);
+  assert.deepEqual(M.STEPS[1](o).tracks, o.tracks, 'nothing converted by 1 → 2');
   assert.deepEqual(S.deserialize(up.p).tracks[0].lay, { i1: { x: 8, y: 16 } });
   assert.deepEqual(M.STEPS[1]({ schema: 1, uid: 'p_abc123xyz0', x: 1 }), { schema: 2, uid: 'p_abc123xyz0', x: 1 });
+});
+
+/* ------------------------------------------------------------ project v2 (stage 1c, §5.1, §5.4, §5.8) */
+const P1J = () => JSON.parse(P1);
+// a main project as the page holds it before stage 1c: song.js v1 tracks with their rack (main.js loadProject)
+function mainProject() {
+  const o = P1J(), p = S.deserialize(o), raw = new Map(o.tracks.map(t => [t.id, t]));
+  for (const t of p.tracks) {
+    const r = raw.get(t.id);
+    if (r.seq && Array.isArray(r.seq.pat)) t.seq = r.seq;
+    if (t.model === 'serum') t.vals = { s: C.normalizeSerum(t.vals.s) };
+    t.fx = r.fx ? C.normalizeFx(r.fx, t.model === 'serum' ? t.vals.s : undefined) : C.defaultFx2();
+  }
+  return p;
+}
+
+test('toV2: classic → i1 → fx1 (the whole FX state) → out; Serum (its own FX) → out; v2 input kept, the mirror dropped', () => {
+  const v = M.trackToV2({ id: 'trk_1', name: 'A', model: 'juno60', vals: { a: 1 }, preset: 'P', seq: null, fx: { v: 2, racks: [] }, notes: [], lay: { i1: { x: 0, y: 0 } } });
+  assert.deepEqual(v, { id: 'trk_1', name: 'A', notes: [], lay: { i1: { x: 0, y: 0 } }, prim: 'i1', nid: 2,
+    dev: { i1: { kind: 'synth', model: 'juno60', vals: { a: 1 }, preset: 'P' }, fx1: { kind: 'panel', fx: { v: 2, racks: [] } }, out: { kind: 'out' } },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }] });
+  const sx = M.trackToV2({ id: 'trk_2', model: 'serum', vals: { s: 1 }, preset: null, fx: { v: 2 } });
+  assert.deepEqual([sx.dev.i1.fx, Object.keys(sx.dev), sx.wires], [{ v: 2 }, ['i1', 'out'], [{ id: 'w1', a: 'i1.out', b: 'out.in' }]]);
+  assert.equal(G.validate(v).ok && G.validate(sx).ok, true);
+  const file = Object.assign({}, v, { model: 'dx7', vals: { x: 1 }, fx: 3 });
+  assert.deepEqual(M.trackToV2(file), v, 'a file\'s mirror is never read back');
+});
+
+test('toV2 → toV1 round-trips exactly (project-p1 and every model); the compile of the v2 form is the v1 one', () => {
+  const p = mainProject(), v1 = JSON.parse(JSON.stringify(p));
+  const v2 = M.toV2(p), back = M.toV1(v2);
+  assert.deepEqual(back.lost, []);
+  assert.deepEqual(back.p, v1, 'main\'s project, field for field');
+  for (const t of v2.tracks) {
+    const c = G.compileTrack(t), o = v1.tracks.find(x => x.id === t.id);
+    assert.equal(c.canonical, true, t.name);
+    assert.deepEqual([c.v1.model, c.v1.vals, c.v1.fx], [o.model, o.vals, o.fx], t.name);
+  }
+  assert.equal('schema' in M.toV1(Object.assign({ schema: 3 }, v2)).p, false, 'main\'s files carry no schema');
+});
+
+test('toV1 of a shape main cannot hold: one track per instrument, notes copied, what is lost listed', () => {
+  const t = M.trackToV2({ id: 'trk_1', name: 'Split', model: 'juno60', vals: {}, preset: null, fx: C.defaultFx2(), notes: [{ t: 0, d: 10, n: 60, v: 100 }] });
+  t.dev.i2 = { kind: 'synth', model: 'minimoog', vals: {}, preset: null, on: false };
+  t.wires.push({ id: 'w3', a: 'i2.out', b: 'fx1.in' });
+  t.mods = [{ id: 'r1', src: 'l1.out', dst: 'i1:fc' }];
+  const r = M.toV1({ tracks: [t] });
+  assert.deepEqual(r.p.tracks.map(x => [x.id, x.name, x.model, x.notes.length]), [['trk_1', 'Split', 'juno60', 1], [r.p.tracks[1].id, 'Split · minimoog', 'minimoog', 1]]);
+  assert.notEqual(r.p.tracks[1].id, 'trk_1');
+  assert.deepEqual(r.p.tracks.map(x => x.fx === r.p.tracks[0].fx || JSON.stringify(x.fx) === JSON.stringify(r.p.tracks[0].fx)), [true, true], 'each takes the panel it fed');
+  assert.equal(r.lost.length, 3, r.lost.join(' | ')); // the shared panel, the switched-off instrument, the modulation cable
+});
+
+test('adopt: v1 tracks become v2 in place; the accessors read and write the primary; JSON carries only the v2 form', () => {
+  const p = mainProject(), tr = p.tracks[0], model = tr.model, vals = tr.vals, fx = tr.fx;
+  assert.equal(MO.adopt(p), p);
+  assert.equal(p.tracks[0], tr, 'the same object');
+  assert.deepEqual([tr.model, tr.vals, tr.fx, MO.isAdopted(tr)], [model, vals, fx, true]);
+  const j = JSON.parse(JSON.stringify(tr));
+  for (const k of M.V1_KEYS) assert.equal(k in j, false, k);
+  assert.deepEqual(Object.keys(j).slice(-4), ['prim', 'nid', 'dev', 'wires']);
+  tr.vals = { x: 1 }; tr.preset = 'Y';
+  assert.deepEqual([tr.dev.i1.vals, tr.dev.i1.preset], [{ x: 1 }, 'Y']);
+  const nf = C.defaultFx2(); tr.fx = nf;
+  assert.equal(MO.fxDevOf(tr).dev.fx, nf);
+  MO.adopt(p); // twice: nothing changes
+  assert.equal(tr.fx, nf);
+  // History snapshots are plain JSON: adopted again after undo
+  const H = new S.History(10);
+  H.record(p); tr.vals = { x: 2 };
+  const u = H.undo(p);
+  assert.equal(MO.isAdopted(u.tracks[0]), false);
+  MO.adopt(u);
+  assert.deepEqual([u.tracks[0].vals, u.tracks[0].model, u.tracks[0].fx.v], [{ x: 1 }, model, 2]);
+});
+
+test('adopt: a model change across classic ↔ Serum keeps the FX state (moved between the panel and the Serum)', () => {
+  const p = MO.adopt({ tracks: [S.newTrack(null, { model: 'juno60' })] }), t = p.tracks[0], fx = C.defaultFx2();
+  t.fx = fx;
+  t.model = 'serum';
+  assert.deepEqual([Object.keys(t.dev).sort(), t.dev.i1.fx === fx, t.fx === fx, G.compileTrack(t).shape], [['i1', 'out'], true, true, 'serum']);
+  t.model = 'dx7';
+  assert.deepEqual([Object.keys(t.dev).sort(), t.dev.fx1.fx === fx, 'fx' in t.dev.i1, t.fx === fx, G.compileTrack(t).shape], [['fx1', 'i1', 'out'], true, false, true, 'classic']);
+  assert.equal(G.validate(t).ok, true);
+  t.model = 'juno60'; // classic → classic: nothing reshaped
+  assert.equal(t.dev.fx1.fx, fx);
+  t.seq = { pat: [] }; t.seq = undefined;
+  assert.equal('seq' in t.dev.i1, false);
+});
+
+test('song.js keeps v2 tracks (dev, wires, prim, nid) and ignores a file\'s mirror; main reads the mirror', () => {
+  const p = MO.adopt(mainProject()), file = M.mirror(JSON.parse(S.serialize(p)));
+  for (const t of file.tracks) assert.equal(t.model, p.tracks.find(x => x.id === t.id).model, 'mirror: the primary at track level');
+  const back = S.deserialize(file);
+  for (const t of back.tracks) {
+    assert.equal('model' in t, false, 'the devices win');
+    const o = p.tracks.find(x => x.id === t.id);
+    assert.deepEqual([t.prim, t.nid, Object.keys(t.dev), t.wires], [o.prim, o.nid, Object.keys(o.dev), o.wires]);
+    assert.deepEqual(t.dev.i1.vals, JSON.parse(JSON.stringify(o.vals)));
+  }
+  // main's song.js knows no `dev`: what it reads is the mirror — each track's primary instrument and its FX (§5.8)
+  const onMain = S.deserialize(Object.assign({}, file, { tracks: file.tracks.map(t => { const c = Object.assign({}, t); delete c.dev; return c; }) }));
+  for (const t of onMain.tracks) assert.equal(t.model, p.tracks.find(x => x.id === t.id).model);
+  const raw = file.tracks.find(t => t.model === 'serum') || file.tracks[0];
+  assert.deepEqual(raw.fx, JSON.parse(JSON.stringify(p.tracks.find(x => x.id === raw.id).fx)), 'and its FX (loadProject reads the record\'s fx)');
+  // damaged records: no instrument → read as v1; a bad primary → the first instrument; bad wires dropped
+  assert.equal(S.normDev({ dev: { out: { kind: 'out' } } }), null);
+  const d = S.normDev({ prim: 'zz', nid: 0, dev: { i3: { kind: 'synth', model: 'x y' }, out: { kind: 'out' }, 'B!': { kind: 'synth' } }, wires: [{ a: 'i3.out', b: 'out.in' }, { a: 'x', b: 'y' }] });
+  assert.deepEqual(d, { prim: 'i3', nid: 4, dev: { i3: { kind: 'synth', model: 'minimoog', vals: {}, preset: null }, out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i3.out', b: 'out.in' }] });
 });

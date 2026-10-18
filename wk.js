@@ -2754,10 +2754,15 @@ export function localPoint(el, e) {
 }
 // closeTransient(): the open popup list / context menu closes and the kit tooltip hides — the camera calls it when a
 // move starts (a transform pan fires no scroll, which is what closes them on a page)
+const transients = new Set(); // (stage 1c) closers of popups that live in the top layer at a world element's place
 export function closeTransient() {
   if (active) active(false);
   hideTip();
+  for (const f of [...transients]) { try { f(); } catch (err) { console.warn(err); } }
 }
+// addTransient(fn) → off: fn closes a popup placed over a world element from the top layer (a Serum popover in #ov):
+// closeTransient (the camera's move start) calls it, as it closes the kit's own menus, so nothing is stranded by a pan
+export function addTransient(fn) { if (typeof fn !== 'function') return () => {}; transients.add(fn); return () => transients.delete(fn); }
 // setWheelVeto(fn | null): while fn() is true no kit control takes the wheel (wheelIn: knobs, numBoxes, menus, sliders,
 // wheelGate; zoomPan's wheel) — the canvas camera's 300 ms after a move
 export function setWheelVeto(fn) { wheelVeto = typeof fn === 'function' ? fn : null; }

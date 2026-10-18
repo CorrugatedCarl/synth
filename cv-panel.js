@@ -1163,7 +1163,7 @@ export function render(root, L, model, api) {
       return w;
     }
     const w = mk('div', 'hw-c'), k = c.kind;
-    w.setAttribute('data-ctl', c.id); w.setAttribute('data-kind', k);
+    w.setAttribute('data-ctl', c.id); w.setAttribute('data-dest', c.id); w.setAttribute('data-kind', k); // (data-dest: 1c, the canvas's modulation drops)
     place(w, o.box);
     let el = null;
     if (k === 'knob') { el = api.knob(Object.assign({}, mc, { sweep: c.sweep || 270 })); skinKnob(el, c); }
@@ -1234,7 +1234,7 @@ export function render(root, L, model, api) {
       }
       if (!mc) continue;
       const w = mk('div', 'ctl t-' + mc.t);
-      w.setAttribute('data-ctl', cell.id);
+      w.setAttribute('data-ctl', cell.id); w.setAttribute('data-dest', cell.id);
       place(w, cell, X.x, X.y);
       const el = mc.t === 'k' ? api.knob(mc) : mc.t === 's' ? api.selector(mc) : api.toggle(mc), lab = mk('label');
       lab.textContent = mc.label;

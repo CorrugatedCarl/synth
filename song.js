@@ -512,6 +512,51 @@ export function normLay(lay) {
   return n ? out : undefined;
 }
 
+// SYNTH Canvas stage 1c (SPEC-canvas §5.1, §5.4): a v2 track's devices and cables. Plain data, validated like the v1
+// fields they replace (an instrument's vals as v1 vals; its seq / fx and a panel's fx as they were read before: raw, the
+// page normalises them); the primary must be an instrument. Nothing valid → null (the track is read as v1: a file's
+// mirror, else the defaults). The in-memory accessors are cv-model.js adopt's (the page), never song.js's.
+const DEV_ID = /^[a-z][a-z0-9]{0,15}$/, PORT_ID = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-zA-Z0-9]{0,15})?\.[a-z][a-z0-9]{0,7}$/;
+export function normDev(r) {
+  if (!isObj(r) || !isObj(r.dev)) return null;
+  const dev = {};
+  let n = 0, top = 0;
+  for (const k of Object.keys(r.dev)) {
+    if (n >= 64) break;
+    const d = r.dev[k];
+    if (k === '__proto__' || !DEV_ID.test(k) || !isObj(d) || typeof d.kind !== 'string' || !/^[a-z]{1,12}$/.test(d.kind)) continue;
+    let o;
+    if (d.kind === 'synth') {
+      o = { kind: 'synth', model: typeof d.model === 'string' && /^[\w-]{1,32}$/.test(d.model) ? d.model : 'minimoog', vals: isObj(d.vals) ? plain(d.vals) : {}, preset: str(d.preset, null, 100) };
+      if (isObj(d.seq) && Array.isArray(d.seq.pat)) o.seq = d.seq;
+      if (isObj(d.fx)) o.fx = d.fx;
+      if (d.on === false) o.on = false;
+      if (typeof d.name === 'string' && d.name) o.name = str(d.name, null, 100);
+    } else if (d.kind === 'panel') {
+      o = { kind: 'panel' };
+      if (isObj(d.fx)) o.fx = d.fx;
+      if (typeof d.name === 'string' && d.name) o.name = str(d.name, null, 100);
+    } else if (d.kind === 'out') o = { kind: 'out' };
+    else o = Object.assign(plain(d), { kind: d.kind }); // (later stages' modulator modules: plain data)
+    dev[k] = o; n++;
+    const m = /(\d+)$/.exec(k); if (m) top = Math.max(top, +m[1]);
+  }
+  const ins = Object.keys(dev).filter(k => dev[k].kind === 'synth');
+  if (!ins.length) return null;
+  const prim = typeof r.prim === 'string' && dev[r.prim] && dev[r.prim].kind === 'synth' ? r.prim : ins[0];
+  const wires = [], wids = new Set();
+  for (const w of Array.isArray(r.wires) ? r.wires.slice(0, 256) : []) {
+    if (!isObj(w) || typeof w.a !== 'string' || typeof w.b !== 'string' || !PORT_ID.test(w.a) || !PORT_ID.test(w.b)) continue;
+    let id = typeof w.id === 'string' && /^w\d{1,6}$/.test(w.id) && !wids.has(w.id) ? w.id : '';
+    for (let i = 1; !id; i++) if (!wids.has('w' + i)) id = 'w' + i;
+    wids.add(id);
+    const o = { id, a: w.a, b: w.b };
+    if (typeof w.g === 'number' && Number.isFinite(w.g) && w.g !== 1) o.g = clamp(w.g, 0, 4);
+    wires.push(o);
+  }
+  return { prim, nid: clamp(Math.max(R(num(r.nid, 1)), top + 1), 1, 1e6), dev, wires };
+}
+
 export function deserialize(json) {
   let o = json;
   if (typeof json === 'string') {
@@ -550,6 +595,7 @@ export function deserialize(json) {
     const notes = [], cc = [];
     if (Array.isArray(r.notes)) for (const x of r.notes) { const c = mkNote(x); if (c) notes.push(c); }
     if (Array.isArray(r.cc)) for (const x of r.cc) { const c = mkCC(x); if (c) cc.push(c); }
+    const v2 = normDev(r); // (canvas stage 1c: the instrument lives in dev; a file's v1 mirror is then ignored)
     const tr = {
       id, name: str(r.name, 'Track ' + (i + 1), 100),
       color: typeof r.color === 'string' && /^#[0-9a-f]{6}$/i.test(r.color) ? r.color.toLowerCase() : TRACK_COLORS[i % TRACK_COLORS.length],
@@ -559,8 +605,10 @@ export function deserialize(json) {
       vol: clamp(num(r.vol, 0.8), 0, 1.25), pan: clamp(num(r.pan, 0), -1, 1),
       notes: sortNotes(notes), cc: sortCC(cc),
     };
+    if (v2) { delete tr.model; delete tr.vals; delete tr.preset; }
     const lay = normLay(r.lay); // (canvas stage 1b; absent = Tidy)
     if (lay) tr.lay = lay;
+    if (v2) Object.assign(tr, v2);
     p.tracks.push(tr);
   });
   if (!p.tracks.length) p.tracks.push(newTrack(p));

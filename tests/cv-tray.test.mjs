@@ -6,6 +6,7 @@ import './v8-guard.mjs';
 // Run alone: node --max-old-space-size=2048 --test tests/cv-tray.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { fresh, raf, ptr, fire, key, place, advance } from './wk-dom.mjs';
 import * as T from '../cv-tray.js?v=9';
 import { MODELS } from '../models.js?v=9';
@@ -266,7 +267,8 @@ test('sourcesTray: one tile per model (its drawing, name, year · maker), the cu
   const tiles = R.S.tiles();
   assert.deepEqual(tiles.map(t => t.getAttribute('data-model')), MODELS.map(m => m.id));
   const t0 = tileOf(R, 'minimoog');
-  assert.deepEqual(t0.children.map(c => c.className), ['cv-tart', 'cv-tname', 'cv-tmeta']);
+  assert.deepEqual(t0.children.map(c => c.className), ['cv-tart', 'cv-tname', 'cv-tmeta', 'cv-tbadge']);
+  assert.deepEqual(tileOf(R, 'serum').children.map(c => c.className), ['cv-tart', 'cv-tname', 'cv-tmeta'], 'Serum: no SIMPLE badge (no hardware panel)');
   assert.equal(t0.children[1].textContent, 'Minimoog');
   assert.equal(t0.children[2].textContent, '1970 · Moog Music');
   assert.equal(tileOf(R, 'serum').children[1].textContent, 'Serum (complete)');
@@ -453,4 +455,23 @@ test('sheet: a dialog in the layer (title, ✕, labelled), focus on ✕ and back
   T.sheet({ title: 'C', body: d.createElement('div'), layer, onClose: () => { closed++; } });
   ptr(layer.children[0], 'pointerdown', 5, 5);
   assert.deepEqual([closed, layer.children.length], [4, 0], 'a mouse press on the backdrop');
+});
+
+test('sourcesTray (1c): the "Hardware | Simple" switch — two aria-pressed buttons, onLayout on a change, the list marked (SIMPLE badges via CSS)', () => {
+  const d = fresh(), list = d.createElement('div'), host = d.createElement('div'), got = [];
+  d.body.append(host, list);
+  const S = T.sourcesTray(list, { models: MODELS, pick() {}, drag: {}, layoutEl: host, layout: 'flow', onLayout: l => got.push(l) });
+  const bs = host.children[0].children;
+  assert.deepEqual(bs.map(b => [b.textContent, b.getAttribute('aria-pressed')]), [['Hardware', 'false'], ['Simple', 'true']]);
+  assert.deepEqual([S.layout(), list.getAttribute('data-layout'), host.children[0].getAttribute('role')], ['flow', 'flow', 'group']);
+  bs[0].click();
+  assert.deepEqual([S.layout(), list.getAttribute('data-layout'), bs[0].getAttribute('aria-pressed'), got], ['hw', 'hw', 'true', ['hw']]);
+  bs[0].click();
+  assert.deepEqual(got, ['hw'], 'no change: no call');
+  S.setLayout('flow');
+  assert.deepEqual([bs[1].getAttribute('aria-pressed'), got], ['true', ['hw']], 'setLayout (a restore) does not call back');
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /\.cv-tiles\[data-layout="flow"\] \.cv-tbadge \{ display: block; \}/);
+  assert.match(css, /@media \(pointer: coarse\) \{ \.cv-segb \{ min-height: 44px;/, '44 px on a touch screen');
+  S.destroy();
 });

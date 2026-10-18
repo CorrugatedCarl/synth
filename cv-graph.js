@@ -6,8 +6,10 @@
 // view that main.js compiles through today's buildPatch / sendPatch path, so the node receives today's message stream:
 //   - one powered classic instrument → at most one shared panel → OUT (no panel: today's empty rack);
 //   - one powered Serum (its own FX inside it, dev.fx) → OUT.
-// (1a: the v2 device shapes follow the §5.1 example; stage 1c's cv-migrate toV2 settles them.) Other shapes compile to the
-// graph protocol of §6.8 from stage 1e; until then compileTrack reports them as not canonical.
+// Device shapes (stage 1c, cv-migrate toV2): a shared panel holds today's v2 FX state whole, { kind: 'panel', fx } (a
+// classic track's rack: its Main rack shows and compiles as before); the §5.1 single-rack form { rack: { mods, byp, lock,
+// ui } } is read too (1e). Other shapes compile to the graph protocol of §6.8 from stage 1e; until then compileTrack
+// reports them as not canonical (main.js then compiles the primary alone).
 //
 //   LIMITS                 ≤ 8 instruments, ≤ 16 shared panels, ≤ 48 effects per panel (§6.7, §9.2)
 //   kindOf(dev)            'inst' | 'panel' | 'out' | 'mod' | null
@@ -80,7 +82,7 @@ export function validate(t) {
   const ins = ids.filter(id => K(id) === 'inst'), panels = ids.filter(id => K(id) === 'panel');
   if (ins.length > LIMITS.inst) err('inst', `At most ${LIMITS.inst} instruments per track`);
   if (panels.length > LIMITS.panels) err('panels', `At most ${LIMITS.panels} FX panels per track`);
-  for (const id of panels) if (effectCount(dev[id].rack) > LIMITS.fxPerPanel) err('fx', `At most ${LIMITS.fxPerPanel} effects per panel`, id);
+  for (const id of panels) if (effectCount(rackOf(dev[id])) > LIMITS.fxPerPanel) err('fx', `At most ${LIMITS.fxPerPanel} effects per panel`, id);
   if (t.prim != null && K(t.prim) !== 'inst') err('prim', 'The primary instrument is not an instrument of this track', t.prim);
   const seen = new Set(), from = new Map();
   for (const w of wiresOf(t)) {
@@ -112,8 +114,12 @@ export function validate(t) {
   return { ok: !errors.length, errors };
 }
 
-// a shared panel's rack as the v1 FX state of a classic track (its Main rack; the bus racks empty, as on a classic track)
+// the effects of a panel as one list (its FX state's racks, or the single-rack form)
+const rackOf = p => (isObj(p.fx) && Array.isArray(p.fx.racks) ? { mods: p.fx.racks.flatMap(r => (isObj(r) && Array.isArray(r.mods) ? r.mods : [])) } : p.rack);
+// a shared panel as the v1 FX state of a classic track: the FX state it holds (the same object: edits and the compile
+// see one state), or its single rack as the Main rack (the bus racks empty, as on a classic track)
 function fxOfPanel(p) {
+  if (p && isObj(p.fx)) return p.fx;
   const fx = defaultFx2(), r = p && isObj(p.rack) ? p.rack : null;
   if (r) {
     fx.racks[0] = Object.assign(fx.racks[0], { mods: Array.isArray(r.mods) ? r.mods : [], byp: r.byp || 0, lock: r.lock || 0 });

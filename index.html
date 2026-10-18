@@ -56,6 +56,7 @@
         <button id="fNew" type="button" role="menuitem" title="New empty project">New</button>
         <button id="fOpen" type="button" role="menuitem" title="Open a project (.json) or import a MIDI file (.mid)">Open / Import…</button>
         <button id="fSave" type="button" role="menuitem" title="Download this project as a .json file">Save</button>
+        <button id="fSaveV1" type="button" role="menuitem" title="Download a project file the classic SYNTH (synth.domlavin.com) opens: each track’s instrument with its effects">Save as classic project</button>
         <button id="fMidi" type="button" role="menuitem" title="Export all tracks as a Standard MIDI File">Export MIDI</button>
         <button id="fBounce" type="button" role="menuitem" class="hot" title="Render the song to a WAV file">Bounce WAV…</button>
         <input type="file" id="fFile" accept=".json,.mid,.midi,application/json,audio/midi,audio/x-midi" hidden>
@@ -221,6 +222,7 @@
       <div id="srcPanel" class="cv-panel" role="region" aria-label="Sources: synths" hidden>
         <div class="cv-ph"><h2>Synths</h2><button id="srcClose" class="cv-x" type="button" aria-label="Close the Sources tray" title="Close (Esc)">✕</button></div>
         <p class="cv-pmode" id="srcMode"></p>
+        <div id="srcLayout" class="cv-srclay"></div>
         <div id="srcList" class="cv-tiles"></div>
         <p class="cv-pnote">Serum parts, note tools and modulators arrive here in later stages.</p>
       </div>

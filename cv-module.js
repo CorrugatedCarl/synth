@@ -44,8 +44,10 @@ export const BG_SEL = '.cv-body, .inst, .plate, .nameplate, .nameplate > div, .p
   // the Serum panel's containers (a third of its surface) and the TB-303 sequencer's chrome (not .snote, not its buttons)
   + '.sx-panel, .sx-pbody, .sx-krow, .sx-ptitle, .sx-tabs, .sx-colO, .sx-col, .sx-rowA, .sx-row, .sx-master, .sx-pages, .sx-page, '
   + '.steps, .step, .seqbar, .snum, .seqhint';
-/** Jack centre below the bar on the module's edge (world px); folded modules carry their jacks on the bar's middle. */
-export const JACK_Y = 28;
+/** Jack centre below the bar on the module's edge (world px); folded modules carry their jacks at the bar's middle height,
+ * JACK_OUT world px outside the left / right edge (so the dot never covers the bar's ⋯ / ▾ / chip; the bar controls also
+ * win the hit test over a jack's enlarged touch circle: style.css). */
+export const JACK_Y = 28, JACK_OUT = 14;
 /** Tidy's guess of a module's height before it was measured (world px): the instrument's per model in sizeFor. */
 const H_GUESS = { inst: 560, serum: 840, fx: 420, out: 260 };
 
@@ -338,7 +340,7 @@ export function createModule(o, env) {
     begin(i) { // (the drag starts past the slop: the module follows from the press point, not from there)
       D = { x0: x, y0: y, p0: press ? W2(press.x, press.y) : W2(i.x, i.y), i };
       bar.classList.add('cv-moving');
-      select();
+      select(true); // (a member of a selection of several keeps it: the group moves with it)
       if (o.onMove) o.onMove(x, y, 'start');
       const wd = W();
       if (wd && typeof wd.on === 'function') camOff = wd.on('camera', () => { if (D) follow(D.i); }); // edge pan / a second finger: re-project
@@ -360,14 +362,14 @@ export function createModule(o, env) {
     },
   });
   // tap = world.select, double-tap = world.focusItem (100 % and edit state); then the owner's callbacks
-  function select() { const wd = W(); if (wd && typeof wd.select === 'function') wd.select(id); if (o.onSelect) o.onSelect(); }
+  function select(keep, add) { const wd = W(); if (wd && typeof wd.select === 'function') wd.select(id, keep || add ? { keep: !!keep, add: !!add } : undefined); if (o.onSelect) o.onSelect(); }
   function focus() { const wd = W(); if (wd && typeof wd.focusItem === 'function') wd.focusItem(id, { animate: true }); if (o.onDouble) o.onDouble(); }
   let tapT = -1e9, tapX = 0, tapY = 0;
   const onClick = e => {
     if (ctl(e.target)) return;
     const t = typeof e.timeStamp === 'number' ? e.timeStamp : Date.now(), dbl = t - tapT < 350 && Math.hypot(e.clientX - tapX, e.clientY - tapY) < 24;
     tapT = dbl ? -1e9 : t; tapX = e.clientX; tapY = e.clientY;
-    if (dbl) focus(); else select();
+    if (dbl) focus(); else if (e.shiftKey) select(false, true); else select(); // (Shift-click: add to / take from the selection)
   };
   bar.addEventListener('click', onClick);
   // the press captures the pointer at once: a quick mouse flick leaves the 40 px bar before the drag's 4 px slop, and its
@@ -434,7 +436,7 @@ export function createModule(o, env) {
       setW(w);
     },
     /** module-local offset of a jack (pure geometry: w and fold) */
-    port(jackId) { const j = jacks.get(jackId); return j ? { x: j.side === 'left' ? 0 : w, y: jackY() } : { x: w / 2, y: BAR_H / 2 }; },
+    port(jackId) { const j = jacks.get(jackId), o = fold ? JACK_OUT : 0; return j ? { x: j.side === 'left' ? (o ? -o : 0) : w + o, y: jackY() } : { x: w / 2, y: BAR_H / 2 }; },
     // (additions) state reads for the track view, main.js and tests
     get x() { return lx; }, get y() { return ly; }, get w() { return w; }, get z() { return z; }, get fold() { return fold; },
     get screen() { return onScr; }, get fixed() { return FX ? Object.assign({}, FX) : null; }, get title() { return title; },
@@ -517,6 +519,12 @@ export function createTrackView(world, track, host) {
     if (phase === 'end') for (const k of mods.keys()) if (k !== key && !(isObj(T.lay) && okEntry(T.lay[k]))) H.lay(k, entryOf(k), 'end', 'pin');
   };
   const update = key => { if (world && typeof world.update === 'function') world.update(key); };
+  let grp = null; // a group move: { key (the mover), x0, y0, list: [{ k, m, x0, y0 }] }
+  const groupOf = key => {
+    const ids = world && Array.isArray(world.selection) ? world.selection : null, m = mods.get(key);
+    if (!m || !ids || ids.length < 2 || !ids.includes(key)) return null;
+    return { key, x0: m.x, y0: m.y, list: ids.filter(k => k !== key && mods.has(k)).map(k => { const o = mods.get(k); return { k, m: o, x0: o.x, y0: o.y }; }) };
+  };
   function make(key) {
     const kind = kindOf(key), M0 = meta(kind), L = layOf(T, key, tidied()), SZ = kind === 'inst' ? sizeOf() : null;
     const jk = kind === 'inst' ? [{ id: 'out', side: 'right', kind: 'audio', label: (M0.title || 'Instrument') + ' out' }]
@@ -534,9 +542,21 @@ export function createTrackView(world, track, host) {
       onSelect: () => { if (H.select) H.select(key); },
       onDouble: () => { if (H.focus) H.focus(key); },
       onMove: (x, y, phase) => {
+        // a selection of several moves together (stage 1c): the others follow the mover's delta, live, and land in the
+        // same undo step (written after the mover's entry, which records it)
+        if (phase === 'start') grp = groupOf(key);
+        const G2 = grp && grp.key === key ? grp : null;
+        if (G2) {
+          const dx = m.x - G2.x0, dy = m.y - G2.y0;
+          for (const g of G2.list) {
+            if (phase === 'cancel') g.m.setPos(g.x0, g.y0, false);
+            else if (phase !== 'start') g.m.setPos(g.x0 + dx, g.y0 + dy, phase === 'move');
+          }
+        }
         if (phase !== 'move') lay(key, phase, 'move');
+        if (G2 && phase === 'end') for (const g of G2.list) if (H.lay) H.lay(g.k, entryOf(g.k), 'end', 'group');
         relay();
-        if (phase === 'end' || phase === 'cancel') update(key);
+        if (phase === 'end' || phase === 'cancel') { update(key); if (G2) { for (const g of G2.list) update(g.k); grp = null; } }
       },
       onFold: f => { lay(key, 'start', 'fold'); lay(key, 'end', 'fold'); relay(); update(key); if (H.shown) H.shown(key); },
       onResize: (w, phase) => {

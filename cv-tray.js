@@ -288,9 +288,12 @@ export function sideTray(el, o) {
  * @returns {{setCurrent: (modelId: string) => void, setMode: (m: 'replace' | 'track') => void, mode: () => string,
  *   tiles: () => HTMLElement[], destroy: () => void}}
  */
+// (stage 1c) o.layoutEl: where the "Hardware | Simple" switch goes (a segmented pair, aria-pressed); o.layout: the
+// starting choice ('hw' | 'flow'); o.onLayout(l): the user switched. 'flow' (Simple) marks every classic tile SIMPLE: a
+// tap or drop creates the synth in its Resizable layout (the caller's: lay.i1.ui = 'flow'); Serum has no hardware panel
 export function sourcesTray(el, o) {
   const d = docOf(o, el);
-  let mode = 'replace', cur = null;
+  let mode = 'replace', cur = null, lay = o.layout === 'flow' ? 'flow' : 'hw';
   const tiles = new Map(), offs = [];
   const overOf = (t, x, y) => { try { return o.overOf ? o.overOf(t, x, y) || null : null; } catch { return null; } };
   const labelOf = (id, over) => (o.label ? o.label(id, over) : over === 'tracks' ? '+ New track' : '');
@@ -305,6 +308,7 @@ export function sourcesTray(el, o) {
     pic.innerHTML = cvArt.art(m.id, cvArt.TILE);
     const nm = mk(d, 'span', 'cv-tname', meta.label), mt = mk(d, 'span', 'cv-tmeta', `${meta.year} · ${meta.maker}`);
     b.append(pic, nm, mt);
+    if (!m.custom) { const bd = mk(d, 'span', 'cv-tbadge', 'SIMPLE'); bd.setAttribute('aria-hidden', 'true'); b.append(bd); } // (shown in Simple: CSS)
     offs.push(listen(b, 'click', e => { if (e && e.defaultPrevented) return; o.pick(m.id, mode); }));
     offs.push(tileDrag(b, m.id));
     el.appendChild(b);
@@ -373,7 +377,29 @@ export function sourcesTray(el, o) {
     });
     return () => { ds.destroy(); done(); };
   }
+  // the "Hardware | Simple" switch (a segmented pair)
+  const segB = {};
+  if (o.layoutEl) {
+    const g = mk(d, 'div', 'cv-seg');
+    g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Synth layout');
+    for (const [k, txt, tip] of [['hw', 'Hardware', 'New synths with their real front panel (fixed size)'], ['flow', 'Simple', 'New synths with the simple, resizable panel']]) {
+      const b = mk(d, 'button', 'cv-segb', txt);
+      b.type = 'button'; b.title = tip; b.setAttribute('data-layout', k);
+      offs.push(listen(b, 'click', () => { if (lay !== k) { setLayout(k); if (o.onLayout) o.onLayout(k); } }));
+      g.appendChild(b);
+      segB[k] = b;
+    }
+    o.layoutEl.appendChild(g);
+  }
+  function setLayout(l) {
+    lay = l === 'flow' ? 'flow' : 'hw';
+    el.setAttribute('data-layout', lay);
+    for (const k in segB) segB[k].setAttribute('aria-pressed', String(k === lay));
+    for (const [id, b] of tiles) if (!(o.models.find(m => m.id === id) || {}).custom) b.setAttribute('aria-description', lay === 'flow' ? 'simple panel' : 'hardware panel');
+  }
+  setLayout(lay);
   return {
+    setLayout, layout: () => lay,
     setCurrent(id) {
       cur = id;
       for (const [k, b] of tiles) {

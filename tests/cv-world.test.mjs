@@ -814,3 +814,116 @@ test('Snap to grid: the toolbar toggle (aria-pressed, remembered in synth.cv.sna
   const b2 = all(S2.tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'snap');
   eq([S2.world.snapOn(), b2.getAttribute('aria-pressed')], [false, 'false'], 'restored off');
 });
+
+/* ------------------------------------------------------------------ stage 1c: selection, marquee, minimap */
+test('selection (1c): Shift-click adds / removes, a move of a member keeps the group, ⌘A selects all, Escape clears; edit state only with one', () => {
+  const { vp, world, item, frame } = setup();
+  const a = item('a', 0, 0, 200, 100), b = item('b', 400, 0, 200, 100), c = item('c', 0, 400, 200, 100);
+  for (const x of [a, b, c]) world.add(x);
+  frame();
+  world.select('a'); world.select('b', { add: true });
+  eq([world.selection, world.selected], [['a', 'b'], 'b']);
+  eq([a.el.hasAttribute('data-cv-sel'), b.el.hasAttribute('data-cv-sel'), c.el.hasAttribute('data-cv-sel')], [true, true, false]);
+  eq(world.edit, null, 'two selected: no edit state');
+  world.select('a', { keep: true });
+  eq([world.selection, world.selected], [['a', 'b'], 'a'], 'a member of the group: kept (its move carries the others)');
+  world.select('b', { add: true });
+  eq(world.selection, ['a'], 'Shift-click again takes it out');
+  world.select('c');
+  eq(world.selection, ['c'], 'a plain select: only it');
+  vp.focus();
+  ok(world.key({ key: 'a', metaKey: true, preventDefault() {} }), '⌘A');
+  eq(world.selection.sort(), ['a', 'b', 'c']);
+  ok(world.escape());
+  eq([world.selection, world.selected], [[], null]);
+  world.select('b'); world.remove('b');
+  eq([world.selection, world.selected], [[], null], 'a removed item leaves the selection');
+});
+
+test('marquee (1c): Shift + mouse drag on empty canvas selects what it touches (live), the camera stays; a plain mouse drag still pans; Escape cancels', () => {
+  const { vp, ov, world, item, frame } = setup();
+  const a = item('a', 0, 0, 200, 100), b = item('b', 400, 0, 200, 100), c = item('c', 0, 400, 200, 100);
+  for (const x of [a, b, c]) world.add(x);
+  frame();
+  mouse(vp, 'pointerdown', 150, 150, { shiftKey: true }); // world (150, 50): inside a
+  mouse(vp, 'pointermove', 450, 180, { shiftKey: true }); // to world (450, 80): a and b
+  eq([vp.hasAttribute('data-cv-marquee'), ov.childNodes.length, a.el.hasAttribute('data-cv-sel'), b.el.hasAttribute('data-cv-sel'), c.el.hasAttribute('data-cv-sel')], [true, 1, true, true, false], 'live');
+  const box = ov.childNodes[0];
+  eq([box.className, box.style.left, box.style.top, box.style.width, box.style.height], ['cv-marquee', '150px', '50px', '300px', '30px']);
+  mouse(vp, 'pointerup', 450, 180);
+  frame();
+  eq([world.selection.sort(), cam(world.cam), ov.childNodes.length, vp.hasAttribute('data-cv-marquee')], [['a', 'b'], { tx: 0, ty: 0, k: 1 }, 0, false]);
+  mouse(vp, 'pointerdown', 700, 600); mouse(vp, 'pointermove', 760, 620); mouse(vp, 'pointerup', 760, 620);
+  frame();
+  eq(cam(world.cam), { tx: 60, ty: 20, k: 1 }, 'a plain drag pans (the user\'s choice)');
+  world.select(null);
+  mouse(vp, 'pointerdown', 100, 520, { shiftKey: true }); mouse(vp, 'pointermove', 400, 700, { shiftKey: true });
+  ok(world.escape(), 'Escape');
+  eq([world.selection, ov.childNodes.length, c.el.hasAttribute('data-cv-sel')], [[], 0, false], 'cancelled: nothing selected');
+});
+
+test('marquee (1c) by touch: a finger held 250 ms on empty canvas, then dragged, draws it; a quicker drag pans', () => {
+  const { vp, world, item, frame } = setup();
+  const a = item('a', 0, 0, 200, 100), b = item('b', 400, 0, 200, 100);
+  world.add(a); world.add(b);
+  frame();
+  touch(vp, 'pointerdown', 150, 150, 1); adv(100); touch(vp, 'pointermove', 480, 160, 1); touch(vp, 'pointerup', 480, 160, 1);
+  frame(40);
+  ok(world.cam.tx !== 0, 'a quick drag pans');
+  eq(world.selection, []);
+  world.setCamera({ tx: 0, ty: 0, k: 1 });
+  frame(); adv(600);
+  touch(vp, 'pointerdown', 150, 150, 1); adv(W.MARQUEE_HOLD_MS + 10); touch(vp, 'pointermove', 480, 160, 1); touch(vp, 'pointerup', 480, 160, 1);
+  frame();
+  eq([world.selection.sort(), cam(world.cam)], [['a', 'b'], { tx: 0, ty: 0, k: 1 }], 'held, then dragged: a marquee');
+});
+
+test('marquee (1c) by touch: a second finger during it wins — the marquee ends unapplied and the two fingers pinch the camera', () => {
+  const { vp, ov, world, item, frame } = setup();
+  const a = item('a', 0, 0, 200, 100), b = item('b', 400, 0, 200, 100);
+  world.add(a); world.add(b);
+  frame(); adv(600);
+  touch(vp, 'pointerdown', 150, 150, 1); adv(W.MARQUEE_HOLD_MS + 10); touch(vp, 'pointermove', 480, 160, 1);
+  eq([vp.hasAttribute('data-cv-marquee'), ov.childNodes.length, a.el.hasAttribute('data-cv-sel')], [true, 1, true], 'a marquee runs');
+  const e = touch(vp, 'pointerdown', 700, 160, 2, { isPrimary: false });
+  ok(e._imm, 'the second finger is the world\'s');
+  eq([vp.hasAttribute('data-cv-marquee'), ov.childNodes.length, a.el.hasAttribute('data-cv-sel'), b.el.hasAttribute('data-cv-sel'), world.selection], [false, 0, false, false, []], 'ended, nothing selected');
+  touch(vp, 'pointermove', 460, 160, 1); touch(vp, 'pointermove', 380, 160, 1); touch(vp, 'pointermove', 800, 160, 2);
+  ok(world.k > 1.2, 'a pinch: zoomed in ' + world.k);
+  touch(vp, 'pointerup', 380, 160, 1); touch(vp, 'pointerup', 800, 160, 2);
+  frame(3);
+  eq([world.selection, world.busy], [[], false]);
+});
+
+test('minimap (1c): mapFit pure; drawn from cached rects only when the camera or the layout changes; tap centres, drag pans; the toggle remembered', () => {
+  const F = W.mapFit([{ x: 0, y: 0, w: 1000, h: 500 }], { x: 0, y: 0, w: 500, h: 250 }, 176, 112, 6);
+  near(F.s, 164 / 1000, 1e-9, 'fits the width'); near(F.ox, 6, 1e-9, 'x'); near(F.oy, (112 - 500 * F.s) / 2, 1e-9, 'centred y');
+  eq(W.mapFit([], null, 176, 112), { s: 1, ox: 0, oy: 0 });
+  const { tb, world, item, frame, prefs } = setup();
+  const a = item('a', 0, 0, 1000, 500);
+  world.add(a);
+  frame();
+  const mm = tb.childNodes.find(n => n.className === 'cv-minimap'), cv = mm.childNodes[0], ctx = cv.getContext('2d');
+  ok(mm && !mm.hasAttribute('hidden'), 'shown by default');
+  const calls = () => (ctx.calls || []).filter(x => x[0] === 'strokeRect').length;
+  const n0 = calls();
+  ok(n0 >= 1, 'drawn');
+  const reads = a.reads;
+  frame(3);
+  eq([calls(), a.reads], [n0, reads], 'nothing changed: no redraw, no rect read');
+  world.panBy(-100, 0); frame();
+  eq([calls() > n0, a.reads], [true, reads], 'a camera move: redrawn from the cached rects');
+  // a tap on the map centres the band (1000 × 600 viewport) on that world point
+  place(cv, 10, 500, 176, 112);
+  const M = W.mapFit([a.rect()], { x: 100, y: 0, w: 1000, h: 600 }, 176, 112), wx = 800, wy = 300;
+  const cx = 10 + wx * M.s + M.ox, cy = 500 + wy * M.s + M.oy;
+  world.setCamera({ tx: -100, ty: 0, k: 1 }); frame();
+  ptr(cv, 'pointerdown', cx, cy, { pointerId: 3 }); ptr(cv, 'pointerup', cx, cy, { pointerId: 3 });
+  frame(30);
+  const c = world.cam;
+  near((500 - c.tx) / c.k, wx, 1, 'centred x'); near((400 - 100 - c.ty) / c.k, wy, 1, 'centred y');
+  const btn = tb.childNodes[0].childNodes.find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'tools') ? all(tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'map') : null;
+  ok(btn, 'the toolbar toggle');
+  btn.click();
+  eq([mm.hasAttribute('hidden'), prefs.get(W.MAP_PREF), btn.getAttribute('aria-pressed')], [true, false, 'false'], 'hidden, remembered');
+});

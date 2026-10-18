@@ -406,3 +406,90 @@ test('makeRoom: a fixed instrument pushes overlapping FX / OUT right — inside 
   api.selectTrack(other.id); sim.raf(); api.selectTrack(t.id); sim.raf();
   assert.deepEqual([T().lay.fx1.x, T().lay.out.x], [1568, 2496]);
 });
+
+/* ---------------------------------------------------------------- stage 1c */
+test('track switch (1c): the frames and the camera at once, the bodies over the next frames (nearest first), the world hidden until done', async () => {
+  // (the Serum / FX rack UIs never finish loading in the simulation — wk.loadDSP waits for script loads — so a switch shows
+  // after CV_MOUNT_MAX, 0.5 s, as a browser would when a first load is slow: never a long blank canvas)
+  const vp = sim.$('#viewport'), done = async () => { for (let i = 0; i < 60 && vp.hasAttribute('data-cv-mounting'); i++) { await sim.settle(40); sim.raf(); } };
+  { // a slow first load: hidden for at most CV_MOUNT_MAX (500 ms), then shown (the bodies' own "Loading…")
+    const t0 = performance.now();
+    api.addTrack(MODELS.find(m => m.id === 'serum')); sim.raf();
+    await done();
+    const ms = performance.now() - t0;
+    assert.ok(!vp.hasAttribute('data-cv-mounting') && ms < 1100, 'shown after the cap, not 1.5 s: ' + Math.round(ms) + ' ms');
+    cv.undo(); sim.raf(); await done();
+  }
+  const a = T(), b = api.addTrack(MODELS.find(m => m.id === 'juno60')); sim.raf();
+  await done();
+  assert.equal(vp.hasAttribute('data-cv-mounting'), false);
+  api.selectTrack(a.id);
+  assert.deepEqual([V().trackId, vp.hasAttribute('data-cv-mounting')], [a.id, true], 'the new frames now, hidden');
+  assert.notEqual(cv.panel() && cv.panel().track, a, 'its panel not built yet (the next frame)');
+  sim.raf();
+  if (a.model !== 'serum') assert.equal(cv.panel().track, a, 'the first frame: the nearest body (the instrument) built');
+  await done();
+  assert.equal(vp.hasAttribute('data-cv-mounting'), false, 'shown once every body is in');
+  if (a.model !== 'serum') assert.equal(cv.panel().track, a, 'the panel is the new track\'s');
+  // an edit while mounting completes the switch at once
+  api.selectTrack(b.id);
+  assert.equal(vp.hasAttribute('data-cv-mounting'), true);
+  api.setTrackModel(b, 'prophet5');
+  assert.deepEqual([vp.hasAttribute('data-cv-mounting'), cv.panel().track === T(), T().model], [false, true, 'prophet5']);
+});
+
+test('project v2 (1c): every track adopted after loads, undo / redo, add and duplicate; the canonical compile; Save as classic project', async () => {
+  const MO = await import('../cv-model.js?v=9'), G = await import('../cv-graph.js?v=9');
+  const all = () => P().tracks.every(t => MO.isAdopted(t) && t.prim === 'i1' && typeof t.model === 'string');
+  assert.ok(all(), 'boot');
+  const t = api.addTrack(MODELS.find(m => m.id === 'dx7')); sim.raf();
+  assert.ok(all(), 'add');
+  cv.duplicateTrack(t); sim.raf();
+  assert.ok(all(), 'duplicate');
+  api.setTrackModel(T(), 'serum'); sim.raf();
+  assert.deepEqual([Object.keys(T().dev).sort(), G.compileTrack(T()).shape], [['i1', 'out'], 'serum']);
+  cv.undo(); sim.raf();
+  assert.ok(all(), 'undo');
+  assert.deepEqual([T().model, Object.keys(T().dev).sort(), G.compileTrack(T()).shape], ['dx7', ['fx1', 'i1', 'out'], 'classic']);
+  cv.redo(); sim.raf();
+  assert.ok(all() && T().model === 'serum', 'redo');
+  for (const x of P().tracks) assert.equal(G.compileTrack(x).canonical, true, x.name);
+  const json = JSON.parse(JSON.stringify(P()));
+  assert.ok(json.tracks.every(x => !('model' in x) && x.dev), 'the autosave / History form: v2 only');
+  // the file main opens
+  const txt = await cv.classicFile();
+  const v1 = JSON.parse(txt);
+  assert.equal('schema' in v1, false);
+  assert.deepEqual(v1.tracks.map(x => [x.id, x.model, !!x.fx, 'dev' in x]), P().tracks.map(x => [x.id, x.model, true, false]));
+  const back = S.deserialize(v1);
+  assert.deepEqual(back.tracks.map(x => x.model), P().tracks.map(x => x.model), 'main\'s song.js reads each track\'s instrument');
+});
+
+test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / replaces a classic synth in its Resizable layout inside that one step; Hardware as before; Serum ignores it; the choice persists', async () => {
+  const sh = globalThis.__synthTest.shell, tiles = sh.shell.tiles;
+  assert.equal(tiles.layout(), 'hw', 'Hardware by default');
+  const simple = sim.$('#srcLayout').children[0].children[1]; // the switch's Simple button
+  assert.deepEqual([simple.textContent, simple.getAttribute('aria-pressed')], ['Simple', 'false']);
+  simple.dispatchEvent({ type: 'click', target: simple, preventDefault() {}, stopPropagation() {} });
+  assert.deepEqual([tiles.layout(), simple.getAttribute('aria-pressed'), api.store.get('synth.cv.trayLayout', null)], ['flow', 'true', 'flow'], 'remembered');
+  // a tap in track mode: a new track, its instrument Resizable, one step
+  let n = hsteps();
+  sh.srcPick('juno60', 'track'); sim.raf();
+  assert.deepEqual([T().model, T().lay && T().lay.i1 && T().lay.i1.ui, cv.instUi(T()), hsteps()], ['juno60', 'flow', 'flow', n + 1]);
+  cv.undo(); sim.raf();
+  assert.ok(!P().tracks.some(t => t.model === 'juno60' && t.lay && t.lay.i1 && t.lay.i1.ui === 'flow'), 'one undo takes the add away');
+  // a replace (tap in replace mode / a canvas drop): the same, in the replace's step
+  n = hsteps();
+  sh.srcPick('prophet5', 'replace'); sim.raf();
+  assert.deepEqual([T().model, cv.instUi(T()), hsteps()], ['prophet5', 'flow', n + 1]);
+  n = hsteps();
+  assert.equal(sh.srcDrag.drop('obxa', { over: 'canvas' }), true); sim.raf();
+  assert.deepEqual([T().model, cv.instUi(T()), hsteps()], ['obxa', 'flow', n + 1]);
+  // Serum: no hardware panel — the switch does nothing to it
+  sh.srcPick('serum', 'track'); sim.raf();
+  assert.deepEqual([T().model, !!(T().lay && T().lay.i1 && T().lay.i1.ui)], ['serum', false]);
+  // Hardware: as before (no ui written)
+  tiles.setLayout('hw');
+  sh.srcDrag.drop('dx7', { over: 'tracks' }); sim.raf();
+  assert.deepEqual([T().model, cv.instUi(T()), !!(T().lay && T().lay.i1 && T().lay.i1.ui)], ['dx7', 'hw', false]);
+});
