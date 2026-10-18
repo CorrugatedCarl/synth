@@ -6,7 +6,8 @@
 // fx as own fields: song.js newTrack, an old record) is converted in place (cv-migrate trackToV2: the same object, so
 // references held elsewhere stay good); every track then gets the transition accessors (§5.4, stages 1c–1e):
 //   track.model, vals, preset, seq   → dev[prim].<same>
-//   track.fx                         → a Serum primary's own FX (dev[prim].fx), else the panel the primary feeds (its fx)
+//   track.fx                         → a Serum primary's own FX (dev[prim].fx), else the panel the primary feeds (its fx);
+//                                      none (a classic primary straight into OUT): undefined, a write does nothing
 // They are non-enumerable, so JSON (autosave, History snapshots, files) carries only the v2 form, and the ~120 main.js
 // sites that read t.model / t.vals / fxOf(t) keep working until they move to instOf(t, id) (the accessors go in 2a).
 // Assigning track.model across classic ↔ Serum reshapes the graph by the kept-FX rules of setModel (§2.5: a track's rack
@@ -125,9 +126,9 @@ const ACC = {
   seq: { get() { return prim(this).seq; }, set(v) { const d = prim(this); if (v === undefined) delete d.seq; else d.seq = v; } },
   fx: {
     get() { const f = fxDevOf(this); return f ? f.dev.fx : undefined; },
-    set(v) {
-      let f = fxDevOf(this);
-      if (!f) { reshape(this, primId(this), false); f = fxDevOf(this); } // (a classic primary straight into OUT: a panel for it)
+    set(v) { // (a classic primary straight into OUT, or silent, has no FX device: nothing — never a panel the user deleted)
+      const f = fxDevOf(this);
+      if (!f) return;
       if (v === undefined) delete f.dev.fx; else f.dev.fx = v;
     },
   },

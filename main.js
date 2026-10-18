@@ -124,7 +124,8 @@ const isV2Fx = fx => !!fx && typeof fx === 'object' && fx.v >= 2 && Array.isArra
 const fxOk = fx => !!fx && typeof fx === 'object' && (isV2Fx(fx) || (!!fx.p && typeof fx.p === 'object'));
 function fxOf(t) {
   if (isV2Fx(t.fx)) return t.fx;
-  t.fx = fxOk(t.fx) ? fxLoad(t.fx, isSx(t) && t.vals ? t.vals.s : undefined) : core.defaultFx2();
+  if (t.dev && !CMOD.fxDevOf(t)) return core.defaultFx2(); // (stage 1e: a classic primary cabled straight to OUT has no rack — an empty one, detached: nothing inserted)
+  t.fx =fxOk(t.fx) ? fxLoad(t.fx, isSx(t) && t.vals ? t.vals.s : undefined) : core.defaultFx2();
   return t.fx;
 }
 // the rack of a new track: a Serum track's from the default preset when it has one (migrated with its Serum state)
@@ -194,7 +195,7 @@ function loadProject(json, lo = {}) {
     // as refs (the instances its rows / locks / MIDI map address are kept); the migrated rack renders bit-identically
     // (golden shard 4) and the project is saved with v2 racks (§15.1 item 6)
     if (isSx(t)) t.vals = { s: core.normalizeSerum(t.vals && t.vals.s) };
-    t.fx = t.fx && typeof t.fx === 'object' ? fxLoad(t.fx, isSx(t) ? t.vals.s : undefined) : core.defaultFx2();
+    if (CMOD.fxDevOf(t)) t.fx = t.fx && typeof t.fx === 'object' ? fxLoad(t.fx, isSx(t) ? t.vals.s : undefined) : core.defaultFx2(); // (no FX device: none)
     normDevs(t); // (stage 1e: every other instrument and panel the same way)
   }
   if (up.readOnly) { if (lo.file) p.newerSchema = up.from; else goReadOnly(up.from); }

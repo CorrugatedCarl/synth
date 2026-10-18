@@ -388,3 +388,15 @@ test('1e cv-model: setModel keeps the FX by the rules (classic ↔ Serum), share
   assert.deepEqual([MO.sharedPanelFix(d, 'i1', i4), MO.destOf(d, i4)], [pid, pid]);
   assert.equal(MO.setModel(d, 'zz', 'dx7').ok, false);
 });
+
+/* host fixes (the stage-1e review round) */
+test('H4: t.fx of a classic primary cabled straight to OUT (its panel deleted) reads undefined and a write inserts nothing', () => {
+  const p = MO.adopt({ tracks: [S.newTrack(null, { model: 'juno60' })] }), t = p.tracks[0];
+  assert.equal(MO.removePanel(t, 'fx1').ok, true);
+  const shape = () => Object.keys(t.dev).sort().join(',') + ' | ' + t.wires.map(w => w.a + '>' + w.b).join(' ');
+  assert.deepEqual([shape(), t.fx, MO.fxDevOf(t)], ['i1,out | i1.out>out.in', undefined, null]);
+  t.fx = C.defaultFx2();
+  assert.equal(shape(), 'i1,out | i1.out>out.in', 'no panel re-inserted (no History step would hold it)');
+  t.model = 'serum'; t.fx = C.defaultFx2(); // (a Serum primary: its own FX, written)
+  assert.deepEqual([shape(), MO.fxDevOf(t).own], ['i1,out | i1.out>out.in', true]);
+});

@@ -258,3 +258,29 @@ test('render-last of one Serum instrument of a track (o.dev): rendered alone thr
   assert.deepEqual(po.patch, api.buildInstPatch(a, sx, sr, true), 'that Serum and its own FX, offline');
   CMOD.removeInst(a, sx); api.sendPatch(a);
 });
+
+/* ---------------------------------------------------- host fixes (the stage-1e review round: findings H1–H13) */
+const devs = t => Object.keys(t.dev).sort().join(','), cables = t => t.wires.map(w => w.a + '>' + w.b).sort().join(' ');
+const byId = id => P().tracks.find(x => x.id === id);
+
+test('H4: a classic primary cabled straight to OUT has no rack — a patch, t.fx read / written, a save, undo / redo insert no panel', async () => {
+  await page();
+  const core = await import('../serum-core.js?v=9');
+  const t = addJuno(), S0 = clone(P());
+  assert.equal(CMOD.removePanel(t, 'fx1').ok, true);
+  assert.deepEqual([devs(t), cables(t)], ['i1,out', 'i1.out>out.in']);
+  sim.api.sendPatch(t); sim.api.buildPatch(t);
+  assert.deepEqual([devs(t), cables(t)], ['i1,out', 'i1.out>out.in'], 'a patch (buildPatch fxOf)');
+  assert.equal(t.fx, undefined);
+  t.fx = core.defaultFx2();
+  assert.deepEqual([devs(t), cables(t)], ['i1,out', 'i1.out>out.in'], 't.fx = … without an FX device: nothing');
+  const was = globalThis.confirm; globalThis.confirm = () => true;
+  try { await globalThis.__synthTest.cv.classicFile(); } finally { globalThis.confirm = was; }
+  assert.deepEqual([devs(byId(t.id)), cables(byId(t.id))], ['i1,out', 'i1.out>out.in'], 'a save (projectFile)');
+  const S1 = clone(P());
+  sim.api.applyRestore(S0, true); // (undo of the Delete panel)
+  assert.deepEqual([devs(byId(t.id)), cables(byId(t.id))], ['fx1,i1,out', 'fx1.out>out.in i1.out>fx1.in']);
+  sim.api.applyRestore(S1, true); // (its redo)
+  const r = byId(t.id);
+  assert.deepEqual([devs(r), cables(r)], ['i1,out', 'i1.out>out.in'], 'redo: no panel re-inserted');
+});
