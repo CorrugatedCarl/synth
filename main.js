@@ -3987,7 +3987,7 @@ function srcPick(id, mode) {
   if (!cvDropInstrument(id, null, { ui }, v)) setTrackModel(v, id, { ui }); // (the same model: only the layout, if asked)
 }
 function srcDragEnd() {
-  if (world) { world.ghost(null); world.dragPointer(null); }
+  if (world) { world.ghost(null); world.dragPointer(null); world.setDragging(false); }
   $('#topTray').classList.remove('cv-dropt');
   shell.drop = null;
 }
@@ -4011,7 +4011,7 @@ const srcDrag = {
     // canvas while the outline is pinned to a module (a pan would only carry it away)
     world.dragPointer(tracks || ir || !i.left ? null : { x: i.x, y: i.y, pointerType: i.pointerType });
   },
-  begin(id, i) { srcDrag.move(id, i); },
+  begin(id, i) { if (world) world.setDragging(true); srcDrag.move(id, i); }, // (the minimap steps aside for the whole drag, U14)
   drop(id, i) {
     const rect = shell.drop, k = i.over === 'canvas' ? cvInstUnder(i.target) : null;
     srcDragEnd();
@@ -4546,8 +4546,22 @@ function cvCamRestore(t) {
   const o = W.toClient(0, 0), cam = W.cam, r = m.rect(), P = 24, bw = b.right - b.left - 2 * P;
   const fm = H.fx && cvView.modules.get(H.fx), f = fm && fm.rect();
   const kAll = f ? bw / Math.max(1, f.x + f.w - r.x) : 0; // the instrument and the FX module side by side
-  const k = kAll >= cvWorld.EDIT_K ? Math.min(1, kAll) : Math.max(cvWorld.READ_K, Math.min(1, bw / Math.max(1, r.w)));
-  const d = { k, tx: Math.round(b.left - (o.x - cam.tx) + P - r.x * k), ty: Math.round(b.top - (o.y - cam.ty) + P - r.y * k) };
+  let k = kAll >= cvWorld.EDIT_K ? Math.min(1, kAll) : Math.max(cvWorld.READ_K, Math.min(1, bw / Math.max(1, r.w)));
+  const ox = o.x - cam.tx, oy = o.y - cam.ty, camAt = kk => ({ k: kk, tx: Math.round(b.left - ox + P - r.x * kk), ty: Math.round(b.top - oy + P - r.y * kk) });
+  // no module's top bar under the floating toolbar or the minimap (U14: world.reserved, client px): a lower k, never below
+  // READ_K, lifts a stacked instrument's bar above them
+  const R = typeof W.reserved === 'function' ? W.reserved() || [] : [], BH = cvModule.BAR_H;
+  for (let i = 0; i < 8 && R.length; i++) {
+    const c = camAt(k);
+    let want = k;
+    for (const mm of cvView.modules.values()) {
+      const q = mm.rect(), L = ox + c.tx + q.x * k, T = oy + c.ty + q.y * k, Rr = L + q.w * k, Bb = T + BH * k;
+      for (const z of R) if (L < z.right && z.left < Rr && T < z.bottom && z.top < Bb && q.y + BH > r.y) want = Math.min(want, (z.top - 8 - b.top - P) / (q.y - r.y + BH));
+    }
+    if (!(want < k) || want < cvWorld.READ_K) break;
+    k = want;
+  }
+  const d = camAt(k);
   cvCamLast = { key, cam: d }; // (the default is not stored until the user moves away from it)
   W.setCamera(d, { animate: false });
 }

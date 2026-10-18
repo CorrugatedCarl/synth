@@ -344,3 +344,29 @@ test('U1: a Serum primary next to a shared panel fx1 — i1/fx and fx1 keep plac
   assert.equal(!!T().lay.fx1, true, 'moving i1/fx keeps fx1\'s entry');
   assert.notEqual(at('i1/fx'), at('fx1'));
 });
+
+// the default camera of track t again (a switch away and back: none stored while it stays the default); o: world overrides
+function camAgain(t, o = {}) {
+  const was = {};
+  for (const k of Object.keys(o)) { was[k] = W[k]; W[k] = o[k]; }
+  try { const other = P().tracks.find(x => x.id !== t.id); api.selectTrack(other.id); sim.raf(3); api.selectTrack(t.id); sim.raf(3); }
+  finally { for (const k of Object.keys(o)) { if (was[k] === undefined) delete W[k]; else W[k] = was[k]; } }
+}
+// the screen box of module k's top bar (40 world px) under the scripted camera
+const barBox = k => { const m = V().modules.get(k), a = W.toClient(m.x, m.y), b = W.toClient(m.x + m.w, m.y + 40); return { left: a.x, top: a.y, right: b.x, bottom: b.y }; };
+const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+
+test('U14: the default camera of a two-instrument track keeps every top bar clear of the toolbar + minimap box (world.reserved), never below READ_K', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  camAgain(t);
+  const bar2 = barBox('i2'), k0 = W.k;
+  assert.equal(k0, 1, 'k 1 without a reserved box');
+  // the box where the Juno-60's bar lands at that camera (the band ends 8 px over it, as cv-world's band() does)
+  const box = { left: 56, top: Math.round(bar2.top) - 20, right: 536, bottom: Math.round(bar2.top) + 148 };
+  camAgain(t, { band: () => ({ left: 44, top: 48, right: 1520, bottom: box.top - 8 }), reserved: () => [box] });
+  const hit = [...V().modules.keys()].filter(k => meets(barBox(k), box));
+  assert.deepEqual(hit, [], 'no bar under the box (k ' + W.k + ')');
+  assert.ok(W.k >= 0.5 && W.k < 1, 'a lower k lifts the stacked bar above it: ' + W.k);
+  assert.ok(barBox('i1').left >= 44 && barBox('i1').top >= 48, 'the primary still at the band\'s top-left');
+});

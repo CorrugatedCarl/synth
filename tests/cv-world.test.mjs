@@ -1154,3 +1154,32 @@ test('jack hook (1e): a stale drag (its lift lost) ends at the next primary pres
   R.world.setActive(false);
   eq([R.log, R.world.jacking], [['cancel'], false]);
 });
+
+/* ------------------------------------------------------------------ UI fixes (stage 1e review, fixer U) */
+test('U14: the band leaves out the floating toolbar and the minimap above it (fit / focus / reveal / the default camera never put a module under them); a drag hides the minimap and the toolbar takes no press', () => {
+  const { tb, world, item, frame } = setup();
+  frame();
+  const mm = tb.childNodes.find(n => n.className === 'cv-minimap');
+  place(tb, 56, 644, 480, 44); place(mm, 56, 524, 176, 112); // (the viewport: 0…1000 × 100…700; the row at its foot, the map above)
+  eq(world.reserved(), [{ left: 56, top: 644, right: 536, bottom: 688 }, { left: 56, top: 524, right: 232, bottom: 636 }], 'the toolbar row and the minimap');
+  eq(world.band(), { left: 0, top: 100, right: 1000, bottom: 516 }, 'the band ends 8 px over the minimap');
+  const a = item('a', 0, 0, 1000, 1200);
+  world.add(a); frame();
+  world.fit({ animate: false });
+  const c = world.cam;
+  ok(100 + c.ty + 1200 * c.k <= 524, 'a fit ends above the minimap: ' + (100 + c.ty + 1200 * c.k));
+  world.setMap(false);
+  eq(world.band().bottom, 636, 'the map hidden: only the toolbar row');
+  world.setMap(true);
+  // a drag (a module's, a cable's: dragPointer) — the minimap steps aside, the toolbar takes no press; a caller's hold too
+  eq(tb.hasAttribute('data-cv-drag'), false);
+  world.dragPointer({ x: 500, y: 400, pointerType: 'touch' });
+  eq(tb.hasAttribute('data-cv-drag'), true, 'dragging');
+  world.dragPointer(null);
+  eq(tb.hasAttribute('data-cv-drag'), false, 'the drag ended');
+  world.setDragging(true); world.dragPointer({ x: 500, y: 400, pointerType: 'mouse' }); world.dragPointer(null);
+  eq(tb.hasAttribute('data-cv-drag'), true, 'a tray drag holds it over a null pointer (a pinned outline)');
+  world.setDragging(false);
+  eq(tb.hasAttribute('data-cv-drag'), false);
+  adv(200); frame();
+});

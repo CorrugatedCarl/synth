@@ -280,7 +280,7 @@ export function createWorld(viewport, o) {
     recache();
   }
   // the canvas's visible client rect: the viewport ∩ wk.visibleBand (visual viewport less trays, rails, the keyboard)
-  function band() {
+  function vis() {
     const r = { left: vp.left, top: vp.top, right: vp.left + vp.width, bottom: vp.top + vp.height };
     let b = null;
     try { b = wk.visibleBand(doc); } catch (err) { b = null; }
@@ -288,11 +288,33 @@ export function createWorld(viewport, o) {
     const o2 = { left: Math.max(r.left, b.left), top: Math.max(r.top, b.top), right: Math.min(r.right, b.right), bottom: Math.min(r.bottom, b.bottom) };
     return o2.right > o2.left && o2.bottom > o2.top ? o2 : r;
   }
-  // the band during a gesture: measured once per burst (or every 250 ms between bursts)
+  // (1e, U14) the floating toolbar's boxes (its row, the minimap above it while shown), client px — a module under them
+  // would lose its presses to them
+  function reserved() {
+    const out = [], add = el => { const r = el ? rectOf(el) : null; if (r && r.width > 0 && r.height > 0) out.push({ left: r.left, top: r.top, right: r.left + r.width, bottom: r.top + r.height }); };
+    if (o.toolbar && TB.bar) add(o.toolbar);
+    if (MM && mapOn) add(MM.el);
+    return out;
+  }
+  // b less the reserved boxes at its foot (each overlaps it and reaches its lowest 200 px): its bottom over the highest
+  // one's top (gap px; at least 120 px of band stay)
+  function cut(b, gap) {
+    const c = Object.assign({}, b);
+    for (const r of reserved()) {
+      if (!(r.left < c.right && r.right > c.left && r.top < b.bottom && r.bottom > b.bottom - 200)) continue;
+      c.bottom = Math.max(c.top + 120, Math.min(c.bottom, r.top - gap));
+    }
+    return c;
+  }
+  // the band: the visible rect less the toolbar and the minimap (U14) — what a fit, a focus, a reveal and main.js's
+  // default camera frame into, so no module lands under them (the gestures, the edge pan and the minimap's own view
+  // rect keep the visible rect)
+  function band() { return cut(vis(), 8); }
+  // the visible rect during a gesture: measured once per burst (or every 250 ms between bursts)
   function bandNow() {
     if (B && B.band) return B.band;
     const t = now();
-    if (!bandC || t - bandC.t > 250) bandC = { t, b: band() };
+    if (!bandC || t - bandC.t > 250) bandC = { t, b: vis() };
     if (B) B.band = bandC.b;
     return bandC.b;
   }
@@ -427,15 +449,9 @@ export function createWorld(viewport, o) {
     for (const [id, r] of items) if (!ids || ids.includes(id)) { try { out.push(r.item.rect()); } catch (err) { /* gone */ } }
     return out;
   }
-  // the band a fit or a focus frames into: less the floating toolbar's strip at its foot (a fit never lands under it)
-  function frameBand() {
-    const b = Object.assign({}, bandNow());
-    const tb = TB.bar && o.toolbar ? rectOf(o.toolbar) : null;
-    if (tb && tb.height > 0 && tb.top < b.bottom && tb.top + tb.height > b.bottom - 120 && tb.left < b.right && tb.left + tb.width > b.left) {
-      b.bottom = Math.max(b.top + 120, tb.top - 8 + FIT_PAD / 2);
-    }
-    return b;
-  }
+  // the band a fit or a focus frames into: less the floating toolbar and the minimap at its foot (a fit never lands under
+  // them; the fit's own padding may reach FIT_PAD / 2 over the gap)
+  function frameBand() { return cut(bandNow(), 8 - FIT_PAD / 2); }
   function fitCamera(ids, kMax) {
     const bx = bandBox(frameBand()), rs = rectsOf(ids);
     const c = fitCam(rs, bx.w, bx.h, { pad: FIT_PAD, kMax: kMax > 0 ? kMax : 1 });
@@ -495,7 +511,7 @@ export function createWorld(viewport, o) {
     try { r = t && typeof t.getBoundingClientRect === 'function' ? t.getBoundingClientRect() : t; } catch (err) { r = null; }
     if (!r || !isFinite(r.left) || !isFinite(r.top)) return;
     const right = r.right != null ? r.right : r.left + (r.width || 0), bottom = r.bottom != null ? r.bottom : r.top + (r.height || 0);
-    const b = band(), L = b.left + REVEAL_PAD, R = b.right - REVEAL_PAD, T = b.top + REVEAL_PAD, Bo = b.bottom - REVEAL_PAD;
+    const b = band(), L = b.left + REVEAL_PAD, R = b.right - REVEAL_PAD, T = b.top + REVEAL_PAD, Bo = b.bottom - REVEAL_PAD; // (above the toolbar: U14)
     const dx = right - r.left > R - L || r.left < L ? L - r.left : right > R ? R - right : 0;
     const dy = bottom - r.top > Bo - T || r.top < T ? T - r.top : bottom > Bo ? Bo - bottom : 0;
     if (Math.abs(dx) >= 1 || Math.abs(dy) >= 1) setCamera(panCam(anim ? anim.c1 : cam, dx, dy), { animate: true });
@@ -994,11 +1010,12 @@ export function createWorld(viewport, o) {
 
   /* ---- drags: edge auto-pan and the drop outline */
   function dragPointer(p) {
+    away(1, !!p); // (a module / cable / tray drag: the minimap steps aside, U14)
     if (!p || locked) { if (edge) { edge = null; settle(); } return; } // (the view locked: no edge pan)
     if (!edge) { edge = { p, st: {}, last: -1, v: false, bt: -1e9, b: null }; }
     edge.p = { x: +p.x || 0, y: +p.y || 0, pointerType: p.pointerType || 'mouse' };
     const t = now();
-    if (!edge.v && t - edge.bt > 100) { edge.b = band(); edge.bt = t; } // (trays close as a drag leaves them)
+    if (!edge.v && t - edge.bt > 100) { edge.b = vis(); edge.bt = t; } // (trays close as a drag leaves them)
     // every position counts for arming (as dragSource's asPlan per move), not only the ones a frame samples: the drag's
     // start point and a quick move into a zone before the next frame
     wk.edgePan2(edge.b || bandNow(), { x: edge.p.x, y: edge.p.y, pointerType: edge.p.pointerType, t }, edge.st);
@@ -1174,6 +1191,14 @@ export function createWorld(viewport, o) {
     listen(cv, 'contextmenu', e => e.preventDefault());
     offs.push(() => { try { el.remove(); } catch (err) { /* gone */ } });
   }
+  // (U14) while a drag runs (a module's, a cable's, a tray tile's: dragPointer; bit 2 a caller's hold, setDragging) the
+  // toolbar takes no press and the minimap steps aside ([data-cv-drag]: style.css), so a drop there reaches the module under it
+  let awayB = 0;
+  function away(bit, on) {
+    const was = awayB;
+    awayB = on ? awayB | bit : awayB & ~bit;
+    if (!!was !== !!awayB) attr(o.toolbar, 'data-cv-drag', !!awayB);
+  }
   function mapUI() {
     if (MM) attr(MM.el, 'hidden', !mapOn);
     if (TB.map) { TB.map.setAttribute('aria-pressed', String(mapOn)); TB.map.title = 'Minimap: ' + (mapOn ? 'shown' : 'hidden'); TB.map.setAttribute('aria-label', TB.map.title); }
@@ -1213,8 +1238,8 @@ export function createWorld(viewport, o) {
     const rc = rectOf(MM.cv), F = (MM.drag && MM.drag.fit) || MM.fit || { s: 1, ox: 0, oy: 0 };
     return { x: (e.clientX - rc.left - F.ox) / F.s, y: (e.clientY - rc.top - F.oy) / F.s };
   }
-  function centreOn(wx, wy, animate) { // the band's centre over world (wx, wy), the zoom kept
-    const b = bandBox(band());
+  function centreOn(wx, wy, animate) { // the visible band's centre over world (wx, wy), the zoom kept
+    const b = bandBox(vis());
     setCamera({ tx: b.x + b.w / 2 - wx * cam.k, ty: b.y + b.h / 2 - wy * cam.k, k: cam.k }, { animate });
   }
   function mapDown(e) {
@@ -1344,9 +1369,11 @@ export function createWorld(viewport, o) {
     setCamera, panBy, zoomAt, fit, focusItem, reveal,
     toWorld: (x, y) => toWorld(cam, x - vp.left, y - vp.top),
     toClient: (x, y) => { const l = toLocal(cam, x, y); return { x: l.x + vp.left, y: l.y + vp.top }; },
-    band, add, remove, update, clear, ids: () => [...items.keys()], onScreen: id => { const r = items.get(String(id)); return !!r && r.on; },
+    band, reserved, add, remove, update, clear, ids: () => [...items.keys()], onScreen: id => { const r = items.get(String(id)); return !!r && r.on; },
     select, selectMany, get selection() { return [...selSet]; }, dragPointer, ghost, setActive, setPinchMode, resize, hooks, wheelVeto, escape, key,
     snapOn: () => snapping, setSnap, mapOn: () => mapOn, setMap, lockOn: () => locked, setLock,
+    /** (1e, U14) a drag the caller runs (a tray tile's): the toolbar and the minimap step aside until setDragging(false) */
+    setDragging: on => away(2, !!on),
     /** (1e) installs the jack hook (cv-cables createCableDrag): fn(e, jackEl) → truthy | {cancel} takes the press;
      * cancel: the fallback two-finger cancel. Returns a remover (only removes its own hook) */
     setJackHook(fn, cancel) {
