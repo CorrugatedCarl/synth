@@ -241,3 +241,20 @@ test('messages name their device on graphed nodes only: postTo, the 303 per devi
   assert.equal(s.p['a.wt'] > 0.99, true, 'the learned controller writes that state');
   t.arm = false;
 });
+
+test('render-last of one Serum instrument of a track (o.dev): rendered alone through its own FX (buildInstPatch offline)', async () => {
+  await page();
+  const core = await import('../serum-core.js?v=9');
+  const a = P().tracks.find(x => x.id === 'trk_a'), api = sim.api;
+  const sx = CMOD.addInst(a, 'serum', { vals: { s: core.normalizeSerum(core.defaultSerum()) } });
+  api.sendPatch(a); api.selectTrack(a.id);
+  const T0 = 2e6;
+  api.noteOn(60, 100 / 127, 0, T0); api.noteOff(60, 0, T0 + 250);
+  await assert.rejects(api.renderLast(a, { dev: 'i1' }), /Serum/, 'a classic instrument');
+  const r = await api.renderLast(a, { dev: sx });
+  assert.match(r.name, / C4\.wav$/);
+  const po = sim.lastOffline.nodes[0].po, sr = sim.lastOffline.ctx.sampleRate;
+  assert.deepEqual([po.offline, 'graph' in po, po.trackId], [true, false, a.id]);
+  assert.deepEqual(po.patch, api.buildInstPatch(a, sx, sr, true), 'that Serum and its own FX, offline');
+  CMOD.removeInst(a, sx); api.sendPatch(a);
+});

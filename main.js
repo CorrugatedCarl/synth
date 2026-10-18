@@ -1427,7 +1427,7 @@ const GROUP_MAX = 16;
 // the group ends at the last note-off however many notes it has; at most GROUP_MAX notes are stored
 function inputNote(t, on, n, v, ts, audition) {
   if (!audition) { const f = inputSubs.get(t.id); if (f) { try { f(on ? 1 : 0, n, on ? Math.max(1, Math.round(v * 127)) : 0, ts); } catch (err) { console.warn(err); } } }
-  if (!isSx(t)) return;
+  if (!hasSx(t)) return; // (render-last: any Serum instrument of the track, stage 1e)
   let g = lastIn.get(t.id);
   if (on) {
     if (!g || g.held.size === 0) { g = { t0: ts, held: new Map(), notes: [] }; lastIn.set(t.id, g); }
