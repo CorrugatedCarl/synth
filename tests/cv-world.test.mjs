@@ -3,7 +3,8 @@ import './v8-guard.mjs';
 // on-screen tracking (planScreen, onScreen from cached rects, the 'screen' event), zoom consistency (nothing changes look
 // at any zoom), the soft DOM budget, sleeping controls below READ_K, native-zoom hand-over, momentum guard, late-finger
 // pinch, wheel + veto, edit state, edge auto-pan, ghost re-projection, localPoint under the world transform. Fake DOM: tests/wk-dom.mjs. Never pass fake-DOM nodes to assert.*
-// (compare ids / strings / numbers). Run alone: node --max-old-space-size=2048 --test tests/cv-world.test.mjs
+// (compare ids / strings / numbers). Stage 1e: the jack hook (a press on a jack is the cable drag's; a second finger
+// cancels it and pinches; a two-finger cancel, Escape, setActive(false) cancel it). Run alone: node --max-old-space-size=2048 --test tests/cv-world.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as dom from './wk-dom.mjs';
@@ -1053,4 +1054,103 @@ test('lock view: the toolbar\'s + / − / % / fit and the minimap (a tap, a drag
   touch(vp, 'pointermove', 380, 160, 1); touch(vp, 'pointermove', 800, 160, 2);
   touch(vp, 'pointerup', 380, 160, 1); touch(vp, 'pointerup', 800, 160, 2); frame(3);
   eq([world.selection, ov.childNodes.length, cam(world.cam)], [[], 0, { tx: 0, ty: 0, k: 1 }], 'ended unapplied; the pinch moves nothing');
+});
+
+/* ------------------------------------------------------------------ 1e: the jack hook (cable drags) */
+function jackRig(o) {
+  const R = setup(o);
+  const m = R.item('m', 0, 0, 900, 500);
+  R.world.add(m);
+  const jack = R.d.createElement('span'), dot = R.d.createElement('i');
+  jack.setAttribute('data-cv-jack', 'm.out'); jack.append(dot); m.el.append(jack);
+  let downs = 0; jack.addEventListener('pointerdown', () => downs++);
+  const log = [];
+  R.frame();
+  Object.assign(R, { m, jack, dot, log });
+  Object.defineProperty(R, 'downs', { get: () => downs });
+  return R;
+}
+
+test('jack hook (1e): a press on a [data-cv-jack] goes to hooks.jack(e, jackEl) before any pan — taken (never a pan, never the jack\'s own pointerdown); a refusal leaves it alone; setJackHook\'s remover', () => {
+  const R = jackRig();
+  eq(typeof R.world.setJackHook, 'function');
+  const off = R.world.setJackHook((e, el) => { R.log.push('jack ' + el.getAttribute('data-cv-jack') + ' ' + e.pointerType); return { cancel: () => R.log.push('cancel') }; });
+  eq(typeof R.world.hooks.jack, 'function', 'installed on hooks.jack');
+  const e = mouse(R.dot, 'pointerdown', 900, 168);
+  eq([R.log, !!e._imm, e.defaultPrevented, R.downs, R.world.jacking], [['jack m.out mouse'], true, true, 0, true], 'taken in the capture phase (a press inside the jack too)');
+  mouse(R.vp, 'pointermove', 960, 220, { buttons: 1 }); R.frame();
+  eq(cam(R.world.cam), { tx: 0, ty: 0, k: 1 }, 'never a pan');
+  mouse(R.vp, 'pointerup', 960, 220);
+  eq(R.world.jacking, false, 'its lift ends it');
+  // the hook says no: the press is left alone (the world does nothing with a jack either: not a background)
+  R.log.length = 0;
+  const off2 = R.world.setJackHook(() => false);
+  const e2 = mouse(R.jack, 'pointerdown', 900, 168);
+  eq([!!e2._imm, R.downs, R.world.jacking], [false, 1, false]);
+  mouse(R.vp, 'pointermove', 990, 168, { buttons: 1 }); R.frame();
+  eq(R.world.cam.tx, 0, 'no pan from a jack');
+  mouse(R.vp, 'pointerup', 990, 168);
+  off(); // (not its hook any more: nothing removed)
+  eq(typeof R.world.hooks.jack, 'function');
+  off2();
+  eq([R.world.hooks.jack, R.world.hooks.jackCancel], [null, null], 'removed');
+  // a press elsewhere never reaches a hook; a right / middle button never either
+  R.world.setJackHook(() => { R.log.push('jack'); return true; });
+  mouse(R.m.body, 'pointerdown', 300, 300); mouse(R.vp, 'pointerup', 300, 300);
+  mouse(R.jack, 'pointerdown', 900, 168, { button: 2 });
+  mouse(R.jack, 'pointerdown', 900, 168, { button: 1 }); mouse(R.vp, 'pointerup', 900, 168, { button: 1 });
+  eq(R.log, [], 'only the primary button on a jack');
+});
+
+test('jack hook (1e): two fingers always win — a second touch cancels the cable drag (the answer\'s cancel, else hooks.jackCancel) and the two fingers pinch the camera; a two-finger pointercancel cancels it too; Escape too', () => {
+  const R = jackRig();
+  R.world.setJackHook(() => true, () => R.log.push('jackCancel'));
+  touch(R.jack, 'pointerdown', 900, 168, 1);
+  touch(R.jack, 'pointermove', 860, 200, 1); // (the drag's own moves: the world only tracks the finger)
+  T += 300;
+  const e = touch(R.vp, 'pointerdown', 1100, 200, 2, { isPrimary: false });
+  eq([R.log, !!e._imm, R.world.jacking], [['jackCancel'], true, false], 'cancelled; the second finger is the world\'s');
+  const k0 = R.world.k;
+  touch(R.vp, 'pointermove', 830, 200, 1); touch(R.vp, 'pointermove', 800, 200, 1); touch(R.vp, 'pointermove', 1200, 200, 2);
+  ok(R.world.k > k0 * 1.2, 'a pinch from the jack finger and the new one: ' + R.world.k);
+  touch(R.vp, 'pointerup', 800, 200, 1); touch(R.vp, 'pointerup', 1200, 200, 2);
+  R.frame(3);
+  // the answer's own cancel wins over jackCancel; gesture.js's flagged cancel ends it
+  R.log.length = 0;
+  R.world.setJackHook(() => ({ cancel: () => R.log.push('own cancel') }), () => R.log.push('jackCancel'));
+  touch(R.jack, 'pointerdown', 900, 168, 3);
+  const c = new Ev('pointercancel', { bubbles: true, pointerId: 3, pointerType: 'touch', clientX: 900, clientY: 168 });
+  c.gesture = 'two-finger';
+  R.jack.dispatchEvent(c);
+  eq([R.log, R.world.jacking], [['own cancel'], false]);
+  // a plain lift: nothing cancelled; Escape (world.escape) cancels a live one first
+  R.log.length = 0;
+  touch(R.jack, 'pointerdown', 900, 168, 4); touch(R.vp, 'pointerup', 900, 168, 4);
+  eq(R.log, []);
+  mouse(R.jack, 'pointerdown', 900, 168);
+  eq([R.world.escape(), R.log, R.world.jacking], [true, ['own cancel'], false]);
+  mouse(R.vp, 'pointerup', 900, 168);
+  // 'Zoom page' pinch mode: the drag is cancelled, the browser's pinch has both (no camera zoom)
+  const P = jackRig({ prefs: [['synth.cv.pinch', 'page']] });
+  P.world.setJackHook(() => true, () => P.log.push('jackCancel'));
+  touch(P.jack, 'pointerdown', 900, 168, 1);
+  touch(P.vp, 'pointerdown', 1100, 200, 2, { isPrimary: false });
+  touch(P.vp, 'pointermove', 700, 200, 1); touch(P.vp, 'pointermove', 1300, 200, 2);
+  eq([P.log, P.world.k], [['jackCancel'], 1]);
+  touch(P.vp, 'pointerup', 700, 200, 1); touch(P.vp, 'pointerup', 1300, 200, 2);
+});
+
+test('jack hook (1e): a stale drag (its lift lost) ends at the next primary press; the view lock still allows patching; setActive(false) cancels', () => {
+  const R = jackRig({ prefs: [['synth.cv.lock', true]] });
+  R.world.setJackHook(() => true, () => R.log.push('cancel'));
+  eq(R.world.lockOn(), true);
+  touch(R.jack, 'pointerdown', 900, 168, 1);
+  eq(R.world.jacking, true, 'locked view: a cable drag is no camera move');
+  touch(R.m.body, 'pointerdown', 300, 300, 5, { isPrimary: true }); // (finger 1's lift was lost)
+  eq([R.log, R.world.jacking], [['cancel'], false]);
+  touch(R.vp, 'pointerup', 300, 300, 5);
+  R.log.length = 0;
+  touch(R.jack, 'pointerdown', 900, 168, 6);
+  R.world.setActive(false);
+  eq([R.log, R.world.jacking], [['cancel'], false]);
 });

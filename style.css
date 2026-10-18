@@ -305,6 +305,17 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-tile.wk-armed { border-color: var(--hot); }
 .cv-tart { display: block; width: 96px; height: 56px; margin-bottom: 4px; }
 .cv-tart svg { display: block; }
+/* the Effects tray (1e): group headings across the grid, effect tiles (an initials glyph, the name, the cost on this device) */
+.cv-tgrp { grid-column: 1 / -1; margin: 8px 2px 0; font-size: 10px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--mute); }
+.cv-tgrp:first-child { margin-top: 0; }
+.cv-ftiles { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+.cv-fglyph { display: grid; place-items: center; width: 56px; height: 40px; margin-bottom: 4px; border-radius: 8px; border: 1px solid #30353d;
+  background: linear-gradient(#1c1f25, #121418); color: var(--hot); font: 800 15px/1 var(--ui); letter-spacing: 0.04em; }
+.cv-fglyph.cv-fpanel { color: #c9c6bf; }
+.cv-fglyph svg { display: block; width: 40px; height: 28px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linejoin: round; }
+.cv-tcost { font: 10px/1.3 var(--mono); color: var(--mute); }
+.cv-tcost[hidden] { display: none; }
+.cv-fghost .cv-fglyph { margin: 0; }
 .cv-tname { max-width: 100%; font-weight: 700; font-size: 12px; line-height: 1.25; text-align: center; text-wrap: balance; overflow-wrap: anywhere; }
 .cv-tmeta { max-width: 100%; font-size: 10px; line-height: 1.25; color: var(--mute); text-align: center; text-wrap: balance; overflow-wrap: anywhere; } /* (year · maker: two lines rather than cut) */
 .cv-sgrip { pointer-events: auto; position: absolute; top: 0; bottom: 0; width: 24px; z-index: 1; display: none; cursor: ew-resize; touch-action: none; outline: none; }
@@ -1036,3 +1047,55 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 .cv-lite { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, 0.55); pointer-events: auto; }
 .cv-lite-dlg { position: relative; width: min(640px, 100%); max-height: calc(100dvh - 64px); overflow: auto; border-radius: 12px; box-shadow: 0 30px 80px rgba(0, 0, 0, 0.7); }
 .cv-lite-x { position: absolute; top: 8px; right: 8px; width: 36px; height: 36px; border: 0; border-radius: 8px; background: #23272e; color: var(--text); }
+/* 1e: power ⏻ on an instrument's bar; a powered-off module dims ([data-off] — not [data-cv-off], the off-screen mark) */
+.cv-bar > button.cv-pow { flex: 0 0 auto; display: grid; place-items: center; width: 32px; height: 32px; margin-left: -8px; padding: 0; border: 0;
+  border-radius: 8px; background: transparent; color: var(--mute); -webkit-tap-highlight-color: transparent; }
+.cv-pow svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; }
+.cv-pow[aria-pressed="true"] { color: var(--mc); }
+.cv-bar > button.cv-pow:hover, .cv-bar > button.cv-pow:focus-visible { background: #252930; outline: none; }
+.cv-mod[data-off] > .cv-body { opacity: 0.45; filter: grayscale(0.7); }
+.cv-mod[data-off] .cv-stripe { background: #4a4d55; }
+.cv-mod[data-off] .cv-title { color: var(--mute); }
+.cv-mod[data-off] > .cv-jack { filter: grayscale(1); }
+/* the bar badge ("not connected – silent", "OS 4→2") */
+.cv-badge { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 7px; border-radius: 6px;
+  border: 1px solid #5a4320; background: #1d1810; color: var(--hot); font: 600 10.5px/1.3 var(--ui); letter-spacing: 0.03em; }
+.cv-badge[hidden] { display: none; }
+/* the key-zone pill: outside the instrument's left edge, just under its bar (folded: beside the bar); hit area via ::before */
+.cv-zone { position: absolute; z-index: 3; top: 48px; right: calc(100% + 10px); height: 26px; padding: 0 10px; border-radius: 13px; border: 1px solid #3a3f48;
+  background: #15181d; color: #c9c6bf; font: 600 11px/1 var(--ui); letter-spacing: 0.02em; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
+.cv-zone:not([data-all]) { border-color: var(--mc); color: var(--text); }
+.cv-zone:hover, .cv-zone:focus-visible, .cv-zone[aria-expanded="true"] { background: #1d2026; outline: none; }
+.cv-zone::before { content: ''; position: absolute; left: 50%; top: 50%; width: 100%; height: max(100%, calc(44px * var(--ik, 1))); transform: translate(-50%, -50%); }
+.cv-mod[data-cv-fold] > .cv-zone { top: 7px; }
+.cv-zpop { z-index: 60; display: grid; grid-template-columns: repeat(3, auto); align-items: end; gap: 8px 12px; padding: 10px 12px; border-radius: 12px;
+  border: 1px solid var(--line2); background: var(--pop); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.62); color: var(--text); font-family: var(--ui); }
+.cv-mod > .cv-zpop { position: absolute; top: 80px; right: calc(100% + 10px); }
+.cv-zall { grid-column: 1 / -1; height: 30px; border-radius: 8px; border: 1px solid var(--line); background: #17181c; color: var(--text); font: 600 12px var(--ui); }
+.cv-zall:hover, .cv-zall:focus-visible { border-color: #5a4320; color: var(--hot); outline: none; }
+/* patchable jacks (1e): a press drags a cable (cv-world's jack hook), a tap or Enter / Space opens "Connect to…"; the jacks
+   inside a Serum are its own route ([data-ro]) */
+.cv-jack { touch-action: none; }
+.cv-jack[role="button"] { cursor: crosshair; outline: none; }
+.cv-jack[role="button"][data-ro] { cursor: default; }
+.cv-jack:focus-visible { box-shadow: 0 0 0 1.5px #0c0d0f, 0 0 0 calc(3px * var(--ik, 1)) var(--hot); }
+/* while patching: compatible jacks glow, the rest dim (their title says why), the target lights up */
+#world[data-cv-patching] .cv-jack.cv-no { opacity: 0.3; filter: grayscale(1); }
+.cv-jack.cv-ok { box-shadow: 0 0 0 1.5px #0c0d0f, 0 0 0 calc(3px * var(--ik, 1)) rgba(111, 227, 161, 0.85), 0 0 calc(14px * var(--ik, 1)) rgba(111, 227, 161, 0.6); }
+.cv-jack.cv-from, .cv-jack.cv-hot { box-shadow: 0 0 0 1.5px #0c0d0f, 0 0 0 calc(4px * var(--ik, 1)) var(--hot), 0 0 calc(16px * var(--ik, 1)) rgba(242, 163, 58, 0.7); }
+/* editable cables (1e): selectable (a halo on the hit path), the floating × at the midpoint, grey from a silent source */
+.cv-cable-g:not([data-ro]) .cv-cable-hit { cursor: pointer; }
+.cv-cable-g.cv-sel .cv-cable { stroke-width: calc(6px * var(--ik, 1)); }
+.cv-cable-g.cv-sel .cv-cable-hit { stroke: rgba(242, 163, 58, 0.22); }
+.cv-cable-g.cv-off .cv-cable { stroke: #5b5e66; }
+.cv-cable-g.cv-off .cv-cable-lab { fill: #8d8b86; }
+.cv-cable-g.cv-lift { opacity: 0.25; }
+.cv-cable.cv-cable-live { opacity: 0.8; pointer-events: none; }
+.cv-cable.cv-cable-live.cv-snap { opacity: 1; }
+.cv-cable-x { position: absolute; z-index: 10001; display: grid; place-items: center; width: calc(30px * var(--ik, 1)); height: calc(30px * var(--ik, 1));
+  margin: calc(-15px * var(--ik, 1)) 0 0 calc(-15px * var(--ik, 1)); padding: 0; border-radius: 50%; border: calc(1.5px * var(--ik, 1)) solid var(--hot);
+  background: #1d1810; color: var(--hot); font: 700 calc(18px * var(--ik, 1))/1 var(--ui); box-shadow: 0 calc(4px * var(--ik, 1)) calc(12px * var(--ik, 1)) rgba(0, 0, 0, 0.6);
+  -webkit-tap-highlight-color: transparent; }
+.cv-cable-x[hidden] { display: none; }
+.cv-cable-x::before { content: ''; position: absolute; inset: calc(-7px * var(--ik, 1)); border-radius: 50%; }
+.cv-cable-x:hover, .cv-cable-x:focus-visible { background: #2a2418; outline: none; }
