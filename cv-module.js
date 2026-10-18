@@ -805,6 +805,7 @@ export function createTrackView(world, track, host) {
   let selOff = null, selId = null;
   const hl = () => cables.highlight(selId && mods.has(selId) ? cables.list().filter(c => c.a.startsWith(selId + '.') || c.b.startsWith(selId + '.')).map(c => c.id) : null);
   if (world && typeof world.on === 'function') selOff = world.on('select', d => { selId = (d && d.id) || null; hl(); if (selId) cables.select(null); });
+  const drags = []; // (1e) the cable drags made through V.cableDrag
   const removeMod = k => { const m = mods.get(k); if (world && typeof world.remove === 'function') world.remove(k); m.destroy(); mods.delete(k); };
   const V = {
     trackId: T.id, model: tModel(), modules: mods, cables,
@@ -866,11 +867,14 @@ export function createTrackView(world, track, host) {
     rects() { const o = {}; for (const [k, m] of mods) o[k] = m.rect(); return o; },
     port: j => jackPort(T, j),
     /** (1e) cv-cables createCableDrag on this view (ports, jacks, rects, port, the cables) — o: canConnect, onConnect,
-     * onRepatch, onDisconnect?, onRefuse?; the caller destroys it with the view */
+     * onRepatch, onDisconnect?, onRefuse?; destroyed with the view (or earlier by the caller) */
     cableDrag(o) {
-      return createCableDrag(world, Object.assign({ ports, jacks: () => V.jacks(), rects: () => V.rects(), port: j => jackPort(T, j), cables, color: () => T.color, doc }, o || {}));
+      const D = createCableDrag(world, Object.assign({ ports, jacks: () => V.jacks(), rects: () => V.rects(), port: j => jackPort(T, j), cables, color: () => T.color, doc }, o || {}));
+      drags.push(D);
+      return D;
     },
     destroy() {
+      for (const D of drags.splice(0)) D.destroy();
       if (selOff) selOff();
       for (const [k, m] of mods) { if (world && typeof world.remove === 'function') world.remove(k); m.destroy(); }
       mods.clear();
