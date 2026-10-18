@@ -4250,13 +4250,20 @@ function cvMountBody(key, b) {
   if (kind !== 'out' && cvBuilt.get(t.id + '/' + key) !== el) cvDue.add(key);
 }
 // host.bodies.unmount: the module went (removed, its kind changed, the view rebuilt): today's parts go home (their panels
-// stay until the next render, as before); a device's own element takes its panel with it
+// stay until the next render, as before); a device's own element takes its panel with it — except while the same track's
+// view is rebuilt (cvKeep: the primary or its FX changed, U4): it waits there, detached, for its new module (cvKept)
+let cvKeep = null; // key → {el, tid}: the device elements a sig rebuild set aside
 function cvUnmountBody(key) {
   const M = cvMounted.get(key);
   cvMounted.delete(key); cvDue.delete(key);
   if (!M) return;
-  const P = cvParts, el = M.el, k = M.tid + '/' + key;
+  const P = cvParts, el = M.el;
   if (el === P.inst || el === P.fx || el === P.scope) { if (P.home) P.home.append(el); return; }
+  if (cvKeep) { cvKeep.set(key, M); if (typeof el.remove === 'function') el.remove(); return; }
+  cvDropBody(key, M);
+}
+function cvDropBody(key, M) { // a device's own element and its panel go
+  const el = M.el, k = M.tid + '/' + key;
   if (cvEls.get(k) === el) cvEls.delete(k);
   if (cvBuilt.get(k) === el) cvBuilt.delete(k);
   const C = classicPanels.get(k), R = serumPanels.get(k), F = fxPanels.get(k);
@@ -4282,11 +4289,15 @@ function cvRender() {
     // a new track (its camera), or the primary / its FX changed (#inst / #fxrack move to their new modules: a rebuild)
     const same = !!cvView && cvViewKey === key;
     if (!same) cvCamFlush(); // the outgoing track's camera first
-    if (cvView) { cvView.destroy(); cvView = null; }
+    // the same track (a sig change): the device bodies that keep their element survive the rebuild (U4: only the ones
+    // that change home — the new primary / FX in #inst / #fxrack, the old ones in elements of their own — are built)
+    if (same) cvKeep = new Map();
+    if (cvView) { try { cvView.destroy(); } finally { if (!same) cvKeep = null; } cvView = null; }
     if (W && typeof W.clear === 'function') W.clear();
     for (const k of [...cvChips.keys()]) if (!k.startsWith(t.id + '/')) cvChips.delete(k);
     cvViewKey = key; cvViewSig = sig;
-    cvView = cvModule.createTrackView(W, t, cvHost());
+    try { cvView = cvModule.createTrackView(W, t, cvHost()); }
+    finally { const K = cvKeep; cvKeep = null; if (K) for (const [k, M] of K) { const N = cvMounted.get(k); if (!N || N.el !== M.el) cvDropBody(k, M); } }
     // the editable cables (cv-cables createCableDrag on the view): connect / re-patch / disconnect, one History step each
     cvView.cableDrag({ canConnect: cvCan, onConnect: (a, b) => cvConnect(a, b), onRepatch: (w, a, b) => cvConnect(a, b, 'Re-patch'),
       onDisconnect: w => cvDisconnect(w), onRefuse: (a, b, why) => cvRefuse(a, b, why), port: cvJackPort });

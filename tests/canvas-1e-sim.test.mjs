@@ -324,7 +324,7 @@ test('Save as classic project of a several-instrument track lists what the class
 
 // UI fixes (stage 1e review, fixer U: findings U1–U17). Each test makes its own track (api.addTrack selects it)
 const MOD = id => MODELS.find(m => m.id === id);
-const fresh = (id = 'minimoog') => { const t = api.addTrack(MOD(id)); sim.raf(); return t; };
+const fresh = (id = 'minimoog') => { const t = api.addTrack(MOD(id)); sim.raf(); cv.renderViews(); sim.raf(); return t; }; // (the switch's mounting completed at once)
 const at = k => { const m = V().modules.get(k); return m ? Math.round(m.x) + ',' + Math.round(m.y) : null; };
 
 test('U1: a Serum primary next to a shared panel fx1 — i1/fx and fx1 keep places of their own (Tidy separates them; moving one never drops the other\'s entry)', () => {
@@ -401,4 +401,23 @@ test('U3: the default camera leaves every instrument\'s key-zone pill right of t
   assert.equal(V().modules.get('i2').el.children.find(c => c.className === 'cv-zone').getAttribute('aria-expanded'), 'true', 'its popover open');
   V().modules.get('i2').zoneClose();
   assert.equal(cv.menu('fx1').some(x => x.label === 'Key zone…'), false, 'instruments only');
+});
+
+test('U4: Make primary rebuilds only the bodies that change home — the other instruments\' panels and the other FX racks are kept (the same objects, still mounted)', () => {
+  const t = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  const d3 = cv.add('dx7', null); sim.raf();
+  const p2 = cv.fx.addPanel(null, null); sim.raf();
+  const cp3 = cv.classicPanels.get(t.id + '/' + d3), el3 = cv.bodyEl(d3), fr = cv.fxPanels.get(t.id + '/' + p2), fel = cv.bodyEl(p2);
+  assert.deepEqual([!!cp3, !!fr], [true, true], 'a DX7 panel and a second FX panel built');
+  cv.primary('i2'); sim.raf();
+  assert.deepEqual([T().prim, cv.parts.inst.parentNode === bodyOf('i2')], ['i2', true], 'the Juno-60 is #inst now');
+  assert.deepEqual([cv.classicPanels.get(t.id + '/' + d3) === cp3, !cp3.dead, cp3.root === el3, el3.parentNode === bodyOf(d3)], [true, true, true, true], 'the DX7\'s panel kept, in its module');
+  assert.deepEqual([cv.fxPanels.get(t.id + '/' + p2) === fr, cv.bodyEl(p2) === fel, fel.parentNode === bodyOf(p2)], [true, true, true], 'the other panel\'s rack kept');
+  const cp1 = cv.classicPanels.get(t.id + '/i1');
+  assert.deepEqual([!!cp1 && cp1.root === cv.bodyEl('i1'), cv.bodyEl('i1').parentNode === bodyOf('i1'), cv.bodyEl('i1') === cv.parts.inst], [true, true, false], 'the Minimoog built in an element of its own');
+  assert.equal(cv.classicPanels.get(t.id + '/i2').root === cv.parts.inst, true, 'the Juno-60 rebuilt in #inst');
+  assert.equal([...cv.classicPanels.values()].filter(P => !P.dead && P.root === cv.parts.inst).length, 1, 'one panel in #inst');
+  cv.undo(); sim.raf();
+  assert.deepEqual([T().prim, cv.parts.inst.parentNode === bodyOf('i1')], ['i1', true], 'undo');
 });
