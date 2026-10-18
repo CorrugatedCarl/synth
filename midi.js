@@ -165,7 +165,11 @@ export function writeCC(s, dest, val, fxSet, fx) {
 //   programChange(trs, n)                     MIDI program change (the preset browser's list, §9.10)
 //   modUI(v), bendUI(v01)                     the on-screen wheels follow the controller (no callback)
 //   track(id) → track | undefined, isSx(t)
-//   fxSet(t, id, n)                           an FX destination's base value in track t's FX state
+//   instsOf(t) → [{id, s, fx, prim}]          optional (stage 1e): the track's Serum instruments, the primary first —
+//                                               each has its own learn map (s.midi) and FX state; absent: the track
+//                                               itself when isSx (its id null, prim)
+//   fxSet(t, id, n, dev)                      an FX destination's base value in the FX state of track t's instrument dev
+//                                               (null: the primary's)
 //   changed(t, patch, refresh)                a Serum state was edited by MIDI: dirty mark, (queue a patch), persist,
 //                                               (repaint the panel), in this order
 //   notice(text, ms)
@@ -175,20 +179,25 @@ export function writeCC(s, dest, val, fxSet, fx) {
 export function createMidi(host) {
   const H = host;
   let enabled = false;   // Web MIDI requested and granted (or being requested)
-  let pending = null;    // the pending MIDI Learn { id: track id, dest, res, t: timeout }
+  let pending = null;    // the pending MIDI Learn { id: track id, dev, dest, res, t: timeout }
   const later = (f, ms) => (H.setTimeout ? H.setTimeout(f, ms) : setTimeout(f, ms));
   const unlater = t => (H.clearTimeout ? H.clearTimeout(t) : clearTimeout(t));
   const navOf = () => ('nav' in H ? H.nav : globalThis.navigator);
   const onmidimessage = e => message(e.data, e.timeStamp);
+  // a track's Serum instruments (stage 1e), and the one a learn / forget names (dev null: the primary)
+  const instsOf = t => (typeof H.instsOf === 'function' ? H.instsOf(t) : H.isSx(t) ? [{ id: null, s: t.vals.s, fx: t.fx, prim: true }] : []);
+  const instOf = (t, dev) => instsOf(t).find(x => (dev == null ? x.prim : x.id === dev)) || null;
 
   /* ---- MIDI Learn (§11.8): the next controller 0–119 is stored in s.midi; learned controllers write their destinations.
      A pending learn ends with the next controller, or is cancelled: Esc, a timeout (15 s, 30 s while MIDI still needs
-     enabling), another learn, or the panel going away (track change, model change, another project) */
-  function learn(id, dest) {
+     enabling), another learn, or the panel going away (track change, model change, another project). Stage 1e: per
+     instrument — learn(trackId, dev, dest) stores the map in that Serum's state (learn(trackId, dest): the primary) */
+  function learn(id, a, b) {
+    const dev = b === undefined ? null : a, dest = b === undefined ? a : b;
     cancelLearn(false);
     if (!enabled) H.notice('MIDI Learn: enable MIDI (the MIDI button by the keyboard), then move a controller — Esc cancels', 6000);
     else H.notice('MIDI Learn: move a controller — Esc cancels', 6000);
-    return new Promise(res => { pending = { id, dest, res, t: later(() => cancelLearn(true), enabled ? LEARN_MS : LEARN_MS_OFF) }; });
+    return new Promise(res => { pending = { id, dev, dest, res, t: later(() => cancelLearn(true), enabled ? LEARN_MS : LEARN_MS_OFF) }; });
   }
   function cancelLearn(say) {
     const P = pending;
@@ -201,23 +210,26 @@ export function createMidi(host) {
   function learnCC(cc) {
     const P = pending;
     pending = null; unlater(P.t);
-    const t = H.track(P.id);
-    if (t && H.isSx(t)) { learnTo(t.vals.s.midi, cc, P.dest); H.changed(t, false, false); }
+    const t = H.track(P.id), I = t ? instOf(t, P.dev) : null;
+    if (I) { learnTo(I.s.midi, cc, P.dest); H.changed(t, false, false, I.id); }
     P.res(t ? cc : null);
   }
-  function forget(t, dest) {
-    if (!H.isSx(t)) return;
-    forgetIn(t.vals.s.midi, dest);
-    H.changed(t, false, true);
+  function forget(t, dest, dev = null) {
+    const I = instOf(t, dev);
+    if (!I) return;
+    forgetIn(I.s.midi, dest);
+    H.changed(t, false, true, I.id);
   }
-  // learned controllers of the targeted Serum tracks
+  // learned controllers of the targeted tracks: every Serum instrument of each, by its own map
   function mapCC(trs, cc, val) {
     for (const t of trs) {
-      if (!H.isSx(t)) continue;
-      const s = t.vals.s, dest = s.midi && s.midi[String(cc)];
-      if (!dest) continue;
-      if (!writeCC(s, dest, val, (id, n) => H.fxSet(t, id, n), t.fx)) continue;
-      H.changed(t, true, true);
+      let hit = false;
+      for (const I of instsOf(t)) {
+        const s = I.s, dest = s && s.midi && s.midi[String(cc)];
+        if (!dest) continue;
+        if (writeCC(s, dest, val, (id, n) => H.fxSet(t, id, n, I.id), I.fx)) hit = true;
+      }
+      if (hit) H.changed(t, true, true);
     }
   }
 

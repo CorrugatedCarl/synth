@@ -514,7 +514,8 @@ export function normLay(lay) {
 
 // SYNTH Canvas stage 1c (SPEC-canvas §5.1, §5.4): a v2 track's devices and cables. Plain data, validated like the v1
 // fields they replace (an instrument's vals as v1 vals; its seq / fx and a panel's fx as they were read before: raw, the
-// page normalises them); the primary must be an instrument. Nothing valid → null (the track is read as v1: a file's
+// page normalises them); the primary must be an instrument; stage 1e (schema 4) keeps an instrument's on / solo / zone /
+// name and a cable's level g (0…4; 1 = absent). Nothing valid → null (the track is read as v1: a file's
 // mirror, else the defaults). The in-memory accessors are cv-model.js adopt's (the page), never song.js's.
 const DEV_ID = /^[a-z][a-z0-9]{0,15}$/, PORT_ID = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-zA-Z0-9]{0,15})?\.[a-z][a-z0-9]{0,7}$/;
 export function normDev(r) {
@@ -531,6 +532,10 @@ export function normDev(r) {
       if (isObj(d.seq) && Array.isArray(d.seq.pat)) o.seq = d.seq;
       if (isObj(d.fx)) o.fx = d.fx;
       if (d.on === false) o.on = false;
+      if (d.solo === true) o.solo = true; // (stage 1e: solo in track, the key zone — absent = 0…127, no transpose)
+      const z = isObj(d.zone) ? { lo: clamp(R(num(d.zone.lo, 0)), 0, 127), hi: clamp(R(num(d.zone.hi, 127)), 0, 127), xp: clamp(R(num(d.zone.xp, 0)), -48, 48) } : null;
+      if (z && z.lo > z.hi) [z.lo, z.hi] = [z.hi, z.lo];
+      if (z && (z.lo !== 0 || z.hi !== 127 || z.xp !== 0)) o.zone = z;
       if (typeof d.name === 'string' && d.name) o.name = str(d.name, null, 100);
     } else if (d.kind === 'panel') {
       o = { kind: 'panel' };
