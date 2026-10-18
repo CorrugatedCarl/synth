@@ -606,6 +606,7 @@ function liftCaps() {
     N.osI.clear();
   }
   if (ctx) rateText();
+  cvRelabel(); // (the modules' safeguard badges go)
 }
 const trackOS = (tr, sr) => (isSx(tr) ? sxOSFor(tr, sr) : osFor(sr));
 // DSP scripts (classic scripts, one global scope per context; SPEC-serum2 §0.3, §12.1) load before the engine, all
@@ -1053,6 +1054,7 @@ function lowerOS() {
     rateText();
     notice(`DSP load stayed above 85% — Serum quality step Q${qrStep}: ${QR_NOTICE[qrStep]} to avoid dropouts`, 9000);
   }
+  cvRelabel(); // (the modules' safeguard badges, capsOf)
 }
 
 /* --------------------------------------------------------- song data */
