@@ -14,6 +14,8 @@
 // movestart once (kit popups close: wk.closeTransient), camera per written frame and cameraend at its end. During a
 // burst there are no layout reads: #world gets will-change only then ([data-cv-busy]); at its end the translation rounds
 // to device px and a zoom re-rasters (--ik, wk.setCanvasScale + rescaleCanvases).
+// Stage 1g: the dot grid is one device-px canvas under #world (gridDraw), redrawn on each written frame and on a resize /
+// device-ratio change; every dot on a whole device px of one origin (no flicker, the major dots never drift from the minor).
 // Zoom consistency (IMPL-panels §8, the user's Z1): zooming never changes how a module looks — no cards, no level of
 // detail, nothing hidden, unmounted or resized; modules simply scale with the camera. The world only tells each item
 // whether it is on screen (planScreen over cached rects, after every written frame: onScreen(on) + a 'screen' event), so
@@ -164,10 +166,10 @@ export function visibleRect(cam, vw, vh, margin) {
 }
 /** Do two world rects overlap? @param {Rect} a @param {Rect} b @returns {boolean} */
 export function intersects(a, b) { return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h; }
-/** The dot grid of #viewport, fixed to the world (it scales and moves exactly with the modules, never re-spaces): two
- * layers of CSS background — MAJOR dots (always shown) and DOT dots, whose alpha fades smoothly out as they crowd
- * together when zoomed out (gone below 10 screen px apart, full from 24) instead of stepping. A dot sits on each world
- * multiple; sizes and positions in screen px, alpha in 1/100 steps (the background string changes only that often).
+/** The dot grid's maths, fixed to the world (it scales and moves exactly with the modules, never re-spaces): MAJOR dots
+ * (always shown) and DOT dots, whose alpha fades smoothly out as they crowd together when zoomed out (gone below 10 screen
+ * px apart, full from 24) instead of stepping. A dot sits on each world multiple; sizes and positions in screen px, alpha
+ * in 1/100 steps. (Stage 1g: drawn on a canvas by gridDraw — this stays the pure maths.)
  * @returns {{major: {size: number, x: number, y: number}, minor: {size: number, x: number, y: number, a: number}}} */
 export function gridBg(cam) {
   const layer = s => { const m = v => { const r = v % s; return r < 0 ? r + s : r; }; return { size: s, x: m(cam.tx - s / 2), y: m(cam.ty - s / 2) }; };
@@ -175,10 +177,43 @@ export function gridBg(cam) {
   minor.a = Math.round(Math.max(0, Math.min(1, (minor.size - 10) / 14)) * 100) / 100;
   return { major: layer(MAJOR * cam.k), minor };
 }
-/** The background-image of #viewport for a minor-dot alpha a (0…1): the MAJOR layer first (on top), then DOT. */
-export function gridImage(a) {
-  return 'radial-gradient(circle, rgba(233, 231, 226, 0.24) 1.1px, transparent 1.6px), '
-    + 'radial-gradient(circle, rgba(233, 231, 226, ' + Math.round(0.15 * a * 1000) / 1000 + ') 0.9px, transparent 1.4px)';
+/** gridDraw: a layer is drawn only while its dots sit ≥ GRID_MIN_DPX device px apart; never more than GRID_MAX_DOTS. */
+export const GRID_MIN_DPX = 6, GRID_MAX_DOTS = 40000;
+/** The grid's dot sizes at device ratio d (device px): a minor dot is a side × side square, a major one a disc of radius r
+ * (on the same centre: a major dot IS the minor-grid point at a multiple of MAJOR). Pure. */
+export function gridSizes(d) { d = Math.max(1, +d || 1); return { side: Math.max(2, Math.round(1.6 * d)), r: Math.max(1.5, Math.round(2.2 * d) / 2) }; }
+/**
+ * (1g) Draws the dot grid on a device-px 2D context w × h (the viewport × d, no transform): every dot of one origin — the
+ * world multiples of DOT, each at its whole device px round((i·DOT·k + tx)·d), so the MAJOR ones (i, j multiples of 4) can
+ * never drift from the minor ones and every dot rasters alike (no sub-pixel phase: nothing flickers while the camera moves).
+ * Minor dots as gridBg fades them (one path of squares, one fill), major ones always (one path of discs). Pure but for the
+ * context. @returns {{minor: number, major: number}} the dots drawn
+ */
+export function gridDraw(ctx, cam, w, h, d) {
+  const n = { minor: 0, major: 0 };
+  if (!ctx) return n;
+  d = Math.max(1, +d || 1);
+  if (typeof ctx.setTransform === 'function') ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const k = cam.k, sp = DOT * k * d, a = gridBg(cam).minor.a, Z = gridSizes(d), o = Z.side >> 1, c = Z.side / 2 - o;
+  if (!(sp > 0) || !(w > 0) || !(h > 0)) return n;
+  const R = Math.ceil(Z.r) + 1, M = MAJOR / DOT;
+  const axis = (t, len) => { const i0 = Math.ceil((-R - t * d) / sp), i1 = Math.floor((len + R - t * d) / sp), p = []; for (let i = i0; i <= i1; i++) p.push([i, Math.round((i * DOT * k + t) * d)]); return p; };
+  const xs = axis(cam.tx, w), ys = axis(cam.ty, h), maj = i => i % M === 0;
+  const minor = a > 0 && sp >= GRID_MIN_DPX && xs.length * ys.length <= GRID_MAX_DOTS;
+  if (minor) {
+    ctx.fillStyle = 'rgba(233, 231, 226, ' + Math.round(0.15 * a * 1000) / 1000 + ')';
+    ctx.beginPath();
+    for (const [j, y] of ys) for (const [i, x] of xs) if (!(maj(i) && maj(j))) { ctx.rect(x - o, y - o, Z.side, Z.side); n.minor++; }
+    ctx.fill();
+  }
+  if (sp * M >= GRID_MIN_DPX) {
+    ctx.fillStyle = 'rgba(233, 231, 226, 0.24)';
+    ctx.beginPath();
+    for (const [j, y] of ys) if (maj(j)) for (const [i, x] of xs) if (maj(i) && n.major < GRID_MAX_DOTS) { ctx.moveTo(x + c + Z.r, y + c); ctx.arc(x + c, y + c, Z.r, 0, 2 * Math.PI); n.major++; }
+    ctx.fill();
+  }
+  return n;
 }
 /** v snapped to the grid g (default DOT, the visible dots). @returns {number} */
 export function snap(v, g) { const s = g > 0 ? +g : DOT, r = Math.round(v / s) * s; return r === 0 ? 0 : r; }
@@ -251,12 +286,13 @@ export function createWorld(viewport, o) {
   /* ---- state */
   let cam = { tx: 0, ty: 0, k: 1 }, shown = null, ikK = 1;
   let vp = { left: 0, top: 0, width: 0, height: 0 }, ovO = { left: 0, top: 0 }; // cached rects (resize)
-  let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, gridA = -1, snapping = true, locked = false;
+  let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, snapping = true, locked = false;
   let sel = null, editId = null, editSup = false, focusBack = null;
   const selSet = new Set(); // the selection (sel: its primary — the one tapped or moved last)
   let pin = null; // a bar double-tap's edit state { id, k }: it holds at the focus zoom even below EDIT_K (a large module's fit)
   let fid = 0, scrDirty = false, overBudget = false; // the frame, the on-screen plan owed, the soft DOM budget crossed
   let mapOn = true, mapDirty = true, MM = null; // the minimap: shown, a redraw owed, its parts { el, cv, btn, drag }
+  let GC = null, dprMq = null; // (1g) the grid canvas { cv, ctx, w, h, d, n, ms, max, dots }; the device-ratio watch
   let B = null; // the live burst: { hook, until, band, timer, last }
   let G = null; // the world's own pointer gesture (pan / pinch)
   let J = null; // a press hooks.jack took: { id, type, x, y, cancel } until its pointer lifts
@@ -278,9 +314,21 @@ export function createWorld(viewport, o) {
     vp = rectOf(viewport);
     ovO = OV ? rectOf(OV) : { left: vp.left, top: vp.top };
     bandC = null;
+    // (1g) the top / left edge moved alone (the top tray's grip: the width kept; a side edge: the height kept): the camera
+    // follows it, so every world point keeps its place on the screen (one written frame; no burst, no History). A window
+    // resize / rotation (both sizes changed) keeps the world on the viewport's top-left, as before (main.js U14)
+    const seen = was.width > 0 && was.height > 0 && vp.width > 0 && vp.height > 0;
+    const dx = seen && vp.height === was.height ? vp.left - was.left : 0, dy = seen && vp.width === was.width ? vp.top - was.top : 0;
+    if (dx || dy) {
+      cam = { tx: cam.tx - dx, ty: cam.ty - dy, k: cam.k };
+      if (anim) { for (const c of [anim.c0, anim.c1]) { c.tx -= dx; c.ty -= dy; } anim.x -= dx; anim.y -= dy; }
+    }
+    const sized = sizeGrid();
+    if (!write() && sized) drawGrid();
     recache();
-    // (U14) the viewport changed (a tray's height, a rotation): main.js re-derives an untouched default camera
-    if (was.width !== vp.width || was.height !== vp.height || was.left !== vp.left || was.top !== vp.top) emit('resize', { w: vp.width, h: vp.height });
+    // (U14) the viewport changed (a tray's height, a rotation): main.js re-derives an untouched default camera — not for a
+    // moved edge alone (dx / dy: the camera already kept the world in place)
+    if (was.width !== vp.width || was.height !== vp.height || dx || dy) emit('resize', { w: vp.width, h: vp.height, dw: vp.width - was.width, dh: vp.height - was.height, dx, dy });
   }
   // the canvas's visible client rect: the viewport ∩ wk.visibleBand (visual viewport less trays, rails, the keyboard)
   function vis() {
@@ -323,15 +371,50 @@ export function createWorld(viewport, o) {
   }
   const bandBox = b => ({ x: b.left - vp.left, y: b.top - vp.top, w: b.right - b.left, h: b.bottom - b.top }); // local
 
+  /* ---- the dot grid (1g): one device-px canvas under #world, drawn from the camera on each written frame and on a
+     resize / device-ratio change, never otherwise (gridDraw) */
+  function buildGrid() {
+    if (!doc || typeof doc.createElement !== 'function') return;
+    const cv = doc.createElement('canvas');
+    if (!cv) return;
+    cv.className = 'cv-grid';
+    try { cv.setAttribute('aria-hidden', 'true'); if (W.parentNode === viewport && typeof viewport.insertBefore === 'function') viewport.insertBefore(cv, W); else viewport.prepend(cv); } catch (err) { return; }
+    GC = { cv, ctx: null, w: -1, h: -1, d: 0, n: 0, ms: 0, max: 0, dots: 0 };
+    offs.push(() => { try { cv.width = 0; cv.height = 0; cv.remove(); } catch (err) { /* gone */ } });
+  }
+  function sizeGrid() { // the store: the viewport in device px; CSS-sized to it → true when it changed (and was cleared)
+    if (!GC) return false;
+    const d = dpr(), w = Math.max(0, Math.round(vp.width * d)), h = Math.max(0, Math.round(vp.height * d));
+    if (w === GC.w && h === GC.h && d === GC.d) return false;
+    Object.assign(GC, { w, h, d });
+    try { GC.cv.width = w; GC.cv.height = h; GC.cv.style.width = w / d + 'px'; GC.cv.style.height = h / d + 'px'; } catch (err) { /* inert */ }
+    return true;
+  }
+  function drawGrid() {
+    if (!GC || !(GC.w > 0) || !(GC.h > 0)) return;
+    if (!GC.ctx) { try { GC.ctx = typeof GC.cv.getContext === 'function' ? GC.cv.getContext('2d') : null; } catch (err) { GC.ctx = null; } }
+    if (!GC.ctx) return;
+    const t0 = now(), n = gridDraw(GC.ctx, cam, GC.w, GC.h, GC.d), ms = now() - t0;
+    GC.n++; GC.ms += ms; GC.max = Math.max(GC.max, ms); GC.dots = n.minor + n.major;
+  }
+  function watchDpr() { // a device-ratio change (browser zoom, another screen) re-sizes the grid's store
+    try {
+      if (dprMq) dprMq.m.removeEventListener('change', dprMq.f);
+      dprMq = null;
+      const m = typeof win.matchMedia === 'function' ? win.matchMedia('(resolution: ' + dpr() + 'dppx)') : null;
+      if (!m || typeof m.addEventListener !== 'function') return;
+      const f = () => { resize(); watchDpr(); };
+      m.addEventListener('change', f);
+      dprMq = { m, f };
+    } catch (err) { dprMq = null; }
+  }
+
   /* ---- writing the camera (once per frame) */
   function write() {
     if (shown && shown.tx === cam.tx && shown.ty === cam.ty && shown.k === cam.k) return false;
     shown = copy(cam);
     W.style.transform = 'translate(' + cam.tx + 'px, ' + cam.ty + 'px) scale(' + cam.k + ')';
-    const g = gridBg(cam), vs = viewport.style;
-    if (g.minor.a !== gridA) { gridA = g.minor.a; vs.backgroundImage = gridImage(gridA); }
-    vs.backgroundSize = g.major.size + 'px ' + g.major.size + 'px, ' + g.minor.size + 'px ' + g.minor.size + 'px';
-    vs.backgroundPosition = g.major.x + 'px ' + g.major.y + 'px, ' + g.minor.x + 'px ' + g.minor.y + 'px';
+    drawGrid();
     if (gh && gh.g) placeGhost();
     mapDirty = true;
     const pct = Math.round(cam.k * 100) + '%';
@@ -1338,6 +1421,8 @@ export function createWorld(viewport, o) {
   // in-panel drags (Serum tiles / labels, the FX grip: wk.dragSource auto-scroll) pan the camera at the band's edges
   if (typeof wk.setEdgeHook === 'function') wk.setEdgeHook({ pan: p => dragPointer(p), onCamera: cb => api.on('camera', cb) });
   buildToolbar(o.toolbar);
+  buildGrid();
+  watchDpr();
   listen(viewport, 'pointerdown', onDownCap, true);
   listen(viewport, 'pointerup', onUpCap, true);
   listen(viewport, 'pointerdown', onDown);
@@ -1374,6 +1459,8 @@ export function createWorld(viewport, o) {
     toClient: (x, y) => { const l = toLocal(cam, x, y); return { x: l.x + vp.left, y: l.y + vp.top }; },
     band, reserved, add, remove, update, clear, ids: () => [...items.keys()], onScreen: id => { const r = items.get(String(id)); return !!r && r.on; },
     select, selectMany, get selection() { return [...selSet]; }, dragPointer, ghost, setActive, setPinchMode, resize, hooks, wheelVeto, escape, key,
+    /** (1g) the grid's draws since the last reset: { n, ms (total), max, dots (the last frame's) }; reset: true zeroes them */
+    gridStats(reset) { const g = GC ? { n: GC.n, ms: GC.ms, max: GC.max, dots: GC.dots } : { n: 0, ms: 0, max: 0, dots: 0 }; if (reset && GC) { GC.n = 0; GC.ms = 0; GC.max = 0; } return g; },
     snapOn: () => snapping, setSnap, mapOn: () => mapOn, setMap, lockOn: () => locked, setLock,
     /** (1e, U14) a drag the caller runs (a tray tile's): the toolbar and the minimap step aside until setDragging(false) */
     setDragging: on => away(2, !!on),
@@ -1399,6 +1486,7 @@ export function createWorld(viewport, o) {
       B = null; G = null; J = null; glide = null; anim = null; edge = null;
       for (const f of offs.splice(0)) { try { f(); } catch (err) { /* gone */ } }
       if (ro) { try { ro.disconnect(); } catch (err) { /* gone */ } }
+      if (dprMq) { try { dprMq.m.removeEventListener('change', dprMq.f); } catch (err) { /* gone */ } dprMq = null; }
       if (gh) { try { gh.el.remove(); } catch (err) { /* gone */ } gh = null; }
       wk.setWheelVeto(null);
       if (typeof wk.setEdgeHook === 'function') wk.setEdgeHook(null);

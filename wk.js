@@ -14,7 +14,7 @@
 // edge auto-scroll speed), tooltip.textOf (a touch status line's text) and loadDSP.URLS (the §0.3 list, the default).
 // The canvas world (SPEC-canvas §4.4–4.7): localPoint / localScale (pointer maths under its CSS scale), closeTransient,
 // setWheelVeto, setEdgeHook, visibleBand, edgePan2, setLayer / layer (the top layer), setCanvasScale / canvasScale, onRescale /
-// rescaleCanvases, releaseCanvases.
+// rescaleCanvases, releaseCanvases / onRelease.
 //
 // Conventions shared by every widget:
 //   · values are normalised n ∈ [0,1] unless the widget says otherwise (menu items carry their own `v`);
@@ -2832,12 +2832,20 @@ export function rescaleCanvases(root) {
     for (const f of [...s]) { try { f(); } catch (err) { console.error(err); } }
   }
 }
-// releaseCanvases(root): every canvas under root to 0 × 0 (Safari frees the backing store; an unmounted body's)
+// releaseCanvases(root): every canvas under root to 0 × 0 (Safari frees the backing store; an unmounted body's); a canvas
+// with an onRelease(cv, fn) hook calls it after (stage 1g: a hardware face's bitmap shows its SVG again)
+const releasers = new WeakMap(); // canvas → fn
+export function onRelease(cv, fn) {
+  if (!cv || typeof fn !== 'function') return () => {};
+  releasers.set(cv, fn);
+  return () => { if (releasers.get(cv) === fn) releasers.delete(cv); };
+}
 export function releaseCanvases(root) {
   let list = [];
   try { list = root && typeof root.querySelectorAll === 'function' ? Array.from(root.querySelectorAll('canvas')) : []; } catch (err) { list = []; }
   if (root && root.tagName === 'CANVAS') list.push(root);
   for (const c of list) { c.width = 0; c.height = 0; }
+  for (const c of list) { const f = releasers.get(c); if (f) { try { f(); } catch (err) { console.error(err); } } }
 }
 // One animation frame (setTimeout fallback); returns a cancel function.
 export function frame(fn) {

@@ -10,7 +10,9 @@
   user reported as laggy (OB-Xa, Jupiter-8, MS-20, CS-80, Prophet-5, all hardware panels) — and drives the camera the way a finger
   does (world.panBy / zoomAt every frame, the app's own busy / settle path), recording every frame interval: idle, a 2 s pan, a 2 s
   pinch, and the re-raster after the pinch settles (--ik, canvases). Rows = median / p95 / max frame ms and the count of frames over
-  33 ms (two missed vsyncs at 60 Hz). The app shares the site's storage, so the project is
+  33 ms (two missed vsyncs at 60 Hz). Stage 1g: per phase also the dot grid's draw time on the main thread (world.gridStats:
+  mean / max ms per drawn frame) and the hardware faces' bitmap paints (cv-panel faceStats: count, longest ms; they land in
+  the settle phase, after a zoom end below 100 %). The app shares the site's storage, so the project is
   snapshotted first and put back whole at the end (applyRestore, then saved); a crash mid-run leaves the two tracks: delete by hand.
   ?run=1 runs at once (the iOS Simulator / a device without a keyboard); results draw large enough to read from a screenshot.
 -->
@@ -69,28 +71,45 @@
     });
   }
   const raf = () => new Promise(r => requestAnimationFrame(r));
-  async function drive(win, world, kind, ms) { // pan: a sinusoidal 300 px sweep; zoom: in to 1.6× and back out, about the band's centre
+  async function drive(win, world, kind, ms, F = 1.6) { // pan: a sinusoidal 300 px sweep; zoom: in to F× (1.6) and back out, about the band's centre
     const vp = win.document.querySelector('#viewport').getBoundingClientRect(), cx = vp.left + vp.width / 2, cy = vp.top + vp.height / 2;
     const t0 = performance.now(); let lastX = 0, lastK = 1;
     while (performance.now() - t0 < ms) {
       await raf();
       const ph = (performance.now() - t0) / ms * 2 * Math.PI;
       if (kind === 'pan') { const x = 300 * Math.sin(ph); world.panBy(x - lastX, 0); lastX = x; }
-      else { const k = Math.pow(1.6, 0.5 - 0.5 * Math.cos(ph)); world.zoomAt(k / lastK, cx, cy); lastK = k; }
+      else { const k = Math.pow(F, 0.5 - 0.5 * Math.cos(ph)); world.zoomAt(k / lastK, cx, cy); lastK = k; }
     }
   }
+  let PN = null; // the app's cv-panel module (faceStats), imported in the iframe's realm
   async function measure(win, world) {
-    const r = {};
-    r.idle = q(await frames(win, () => sleep(1000)));
-    r.pan = q(await frames(win, () => drive(win, world, 'pan', 2000)));
-    r.zoom = q(await frames(win, () => drive(win, world, 'zoom', 2000)));
-    r.settle = q(await frames(win, () => sleep(700))); // the burst ends ≈ 120 ms after the last move: --ik, canvas re-raster, recache
+    const r = {}, gs = typeof world.gridStats === 'function', fs = PN && PN.faceStats;
+    const phase = async (name, run) => {
+      if (gs) world.gridStats(true);
+      const f0 = fs ? { n: fs.n, max: fs.max } : null;
+      if (fs) fs.max = 0;
+      r[name] = q(await frames(win, run));
+      if (gs) { const g = world.gridStats(); r[name].grid = { n: g.n, mean: g.n ? +(g.ms / g.n).toFixed(3) : 0, max: +g.max.toFixed(2), dots: g.dots }; }
+      if (fs) { r[name].faces = { n: fs.n - f0.n, max: +fs.max.toFixed(1) }; fs.max = Math.max(fs.max, f0.max); }
+    };
+    await phase('idle', () => sleep(1000));
+    await phase('pan', () => drive(win, world, 'pan', 2000));
+    await phase('zoom', () => drive(win, world, 'zoom', 2000));
+    await phase('settle', () => sleep(700)); // the burst ends ≈ 120 ms after the last move: --ik, canvas re-raster, face bitmaps, recache
+    // (1g) a deep pinch: fit → 4× (from 25 % to 100 %: the fine dots fade in, the faces cross native resolution) and back
+    await phase('deep', () => drive(win, world, 'zoom', 3000, 4));
+    await phase('deepSettle', () => sleep(700));
     return r;
   }
   function cell(v, bad, warn) { return '<td class="' + (v > bad ? 'bad' : v > warn ? 'warn' : 'ok') + '">' + v + '</td>'; }
   function table(R) {
-    let h = '<table><tr><th>set · phase</th><th>frames</th><th>median ms</th><th>p95 ms</th><th>max ms</th><th>&gt; 33 ms</th></tr>';
-    for (const set of Object.keys(R.sets)) for (const ph of ['idle', 'pan', 'zoom', 'settle']) { const x = R.sets[set][ph]; h += '<tr><td>' + set + ' · ' + ph + '</td><td>' + x.n + '</td>' + cell(x.med, 20, 12) + cell(x.p95, 33, 20) + cell(x.max, 100, 33) + cell(x.over33, 5, 0) + '</tr>'; }
+    let h = '<table><tr><th>set · phase</th><th>frames</th><th>median ms</th><th>p95 ms</th><th>max ms</th><th>&gt; 33 ms</th><th>grid ms mean / max</th><th>face bitmaps · max ms</th></tr>';
+    for (const set of Object.keys(R.sets)) for (const ph of ['idle', 'pan', 'zoom', 'settle', 'deep', 'deepSettle']) {
+      if (!R.sets[set][ph]) continue;
+      const x = R.sets[set][ph], g = x.grid, f = x.faces;
+      h += '<tr><td>' + set + ' · ' + ph + '</td><td>' + x.n + '</td>' + cell(x.med, 20, 12) + cell(x.p95, 33, 20) + cell(x.max, 100, 33) + cell(x.over33, 5, 0)
+        + '<td>' + (g ? g.mean + ' / ' + g.max : '–') + '</td><td>' + (f ? f.n + ' · ' + f.max : '–') + '</td></tr>';
+    }
     const nk = k => (R.nodes[k] == null ? '–' : R.nodes[k]) + ' (k ' + (R.k[k] == null ? '–' : R.k[k]) + ')';
     return h + '</table><p>nodes: one ' + nk('one') + ' · five ' + nk('five') + ' · dpr ' + R.dpr + ' · viewport ' + R.viewport + '</p>';
   }
@@ -99,6 +118,7 @@
     $('#run').disabled = true; $('#copy').disabled = true; $('#res').textContent = '';
     status('starting the app…');
     const win = await boot(), T = win.__synthTest, api = T.api, cv = T.cv, shell = T.shell;
+    try { PN = await win.Function('u', 'return import(u)')(new URL('../cv-panel.js?v=9', location.href).href); } catch (e) { PN = null; } // (the app's own module instance; before 1g: no faceStats)
     await sleep(800);
     const R = { date: new Date().toISOString().slice(0, 10), ua: navigator.userAgent, dpr: devicePixelRatio, viewport: innerWidth + '×' + innerHeight, sets: {}, nodes: {}, k: {} };
     const made = [];
