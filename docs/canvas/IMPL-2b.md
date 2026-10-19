@@ -93,12 +93,18 @@ Implementation per SPEC §7.6 and the spike (§9.0): a `SerumDSP.attach`-ed Seru
 `CH = 4`, `fs = base`, `wheel` / `at` / `bendRaw` read from the Track's new fields (§2.4), `tp` / `songBeat()` / `bpm` forwarded,
 `seedSalt` from the track id) driven by a **synthetic Serum CP** compiled by the host (§3.1): its processor LFOs (`mono: 1`,
 ≤ 10), ENV 2–4, chaos 1–2, macros 1–8 are the track's modules; `SxMod.begin(shim, sx, nCh)` fills `g[src·32 + c]`. The
-**pseudo-voice** is one `ModV` on a shim voice (no amp output): `noteOn` / legato / `noteOff` from the Track's notes; it evaluates
-PER NOTE LFOs and ENVs; `recentMod` supplies velocity / note / random for "most recent note" rows. **Unreferenced LFOs** are kept
-alive by the compile (§3.1 keep-alive rows to a scratch destination) if the spike shows they are skipped. **Rows** that target
-classic slots, span setters and chains are evaluated by ModCore's own port of the row formula (`SxMod.rowOut` / the §5.2 formula:
-curve from the CT tables, slew, bipolar, aux, `off += amt·x`) once per span with the last chunk's value (classic slots also get the
-span-start value for the interpolation, §5.1). Nothing allocates in `span` (`noAlloc` test); `setRows` builds everything.
+**pseudo-voice** is one `SxMod.ModV` on a shim voice (the `TV` shape of tests/sx-mod.test.mjs; no amp output; the CP synced with
+`SxMod.sync` + `syncCT` before its first note-on): `noteOn` (serum-dsp's note-on prologue: `sx.alt`, `r/r2` seeding; legato when
+other keys are held) / `noteOff` (when the last held key lifts) from the Track's notes; **ModCore drives its chunk loop itself**
+(`follow / sources / matrix / advance` per chunk, whatever the lifetime rule says) so it evaluates PER NOTE LFOs and ENVs while
+gated and the global rows always; `recentMod` supplies velocity / note / random for "most recent note" rows. **Unreferenced
+sources are not evaluated by SxMod** (spike §9.0 Q3): the compile gives every used source a **keep-alive row** to a scratch
+V-scope destination, and **parks unused LFO slots FREE + MONO** (−25 % cost). **Rows** that target classic slots, span setters and
+chains are **synthetic rows of the same CP** (`src → own scratch V-scope destination vi`, with the cable's curve / slew / aux /
+bipolar), evaluated by the pseudo-voice's `matrix()` (the full SPEC-serum2 §5.2 formula incl. CT curve tables) and read back from
+`V.mod.off[vi]` at chunk 0 (span start) and chunk nCh−1 (span end) — no second evaluator; `matrix()` may run at those two chunks
+only when every target is span-rate. Nothing allocates in `span` (`noAlloc` test); `setRows` builds everything (≈ 0.4 MB per
+track at attach: the `sx` state, the CT store, the pseudo-voice).
 
 ### 2.2 Protocol (`Track.msg`, EM §6)
 
@@ -119,7 +125,7 @@ span-start value for the interpolation, §5.1). Nothing allocates in `span` (`no
 
 ### 2.3 Capacity and the value table
 
-10 LFO slots (GLOBAL, PER NOTE and linked together), 3 ENV slots (ENV 2–4), 2 chaos, 8 macros per track for non-Serum targets
+10 LFO slots (GLOBAL, PER NOTE and linked together), 4 ENV slots (ENV 2–4, then ENV 1 — its sustain law is n², Start / End 0; the lifetime uses `envsIdle()`), 2 chaos, 8 macros per track for non-Serum targets
 and `ext`. Beyond that a module still exists but its cables are **not compiled** ("ModCore slots full: 10/10 LFOs" in the
 inspector / Mod list / badge, like 2a's "not compiled: matrix full"). The **value table** (`MC.ctl(k, v)`) holds 32 entries: 8
 macros (k 0–7, the first macro module's knobs) and 24 "value sources" (k 8–31: CC modules and any further macro module's knobs),
@@ -176,14 +182,20 @@ turns on instruments never repost it); macro knob turns and CC input post `{t:'m
 
 ### 3.2 Ext sources (`serum-core.js`, `sx-mod.js`, `serum-dsp.js` — lane A1)
 
-- `SOURCES` gains `ext1…ext16` after index 61 (`add('ext' + k, 'Ext ' + k, 'uni', 'G', 1)`), `NSRC` 78; `sx-mod.js` `NSRC` and
-  `serum-dsp.js` `NSRC2` follow; `S_EXT0 = 62` (a new name: `engine.js` `S_EXT` is the classic ext-input slot).
-- **Fixtures stay identical**: NSRC-sized compile products (`srcUsed` and any other array sized by NSRC in the CP) keep the old
-  length unless the compile uses an ext source (`cp.use & 32768`); `cp2-default.json` / `ct2-default.json` and the goldens prove it.
-- `SxMod.sync` accepts `si` up to the new NSRC; `sources()` and the `monoSrc` copy (EM §4) gain the ext rows; `SD.extIn(inst, ext,
-  nCh)` copies `ext[k·32 + c]` into `g[(S_EXT0 + k − 1)·32 + c]` for `c < nCh` before `begin`. Serum's own matrix UI shows an ext
-  source as "Ext k (canvas)" (`SRC_MENU` excludes them from the Serum's own source menus: a Serum cannot pick them by itself; they
-  are only written by canvas rows).
+- **`serum-core.SOURCES` stays at 62** (no fixture churn: `cpKey`, `srcUsed`, `srcBi` and every compiled fixture are untouched).
+  `compileSerum(s, ctx)` gains `ctx.ext: true`: `compileCore` then accepts row sources `ext1…ext16` as indices `S_EXT0 + k − 1`
+  (`S_EXT0 = 62`, a new name — `engine.js` `S_EXT` is the classic ext-input slot), sets `use |= 32768` (the next free bit after
+  `s1`) and does not mark `srcUsed` for them; without `ctx.ext` (every path today) an `extK` id is rejected as any unknown id.
+  `normRow` / `song.normMods` keep rejecting `extK` in stored rows: ext ids exist only in the **injected copy** of the matrix (§3.3).
+- DSP constants grow to 78: `sx-mod.js` `NSRC` (the `g`, `srcUsed`, `srcBi`, `monoSrc`, `ModV.src` sizes and the `si < NSRC`
+  test in `sync`), `sx-base.js` `NSRC` + `ext1…ext16` appended to `SRC_IDS2` (unipolar), `serum-dsp.js` `NSRC2`; an `extOn` flag on
+  the ModState from `CP.use & 32768`; the two copy loops `if (m.extOn !== 0) for (k = 62; k < 78; k++) s[k] = g[k·32 + gc]` in
+  `ModV.sources` and `ModV.noteOn` (spike §9.0 Q5: with NSRC 78 every existing CP renders bit-identically; an ext row works in the
+  mono and FX contexts with no other change). Two tests pin the constants (`sx-mod.test.mjs:63`, `sx-base.test.mjs:136`) — update.
+- The hand-off (`SD.extIn(inst, ext, nCh)` or inline in the Track): once per span per powered Serum Inst whose CP has
+  `use & 32768`: `inst.sx.g.set(MC.ext, 62·32)` (4 KB) and `inst.sx.mod.monoSrc[62 + k] = ext[k·32 + nCh − 1]`, before its
+  `SD.begin` (the chunk grids line up: Inst nCh = n/4 = ModCore's; Track spans are multiples of 4). Serum's own matrix page shows an
+  injected ext row's source as "Ext k (canvas)" (a label hook; the Serum's own source menus never offer ext).
 - N2 is the gate: the same LFO as a track module through `ext` and as the Serum's own MONO LFO row → identical renders.
 
 ### 3.3 Per-note injection into Serum slots
@@ -320,11 +332,40 @@ iPad bench.
   updated for `mod-core.js`; `v8-guard` clean on `AVoice.render` / `FVoice.render`.
 - N2: `tests/modcore.test.mjs` ext cross-check bit-identical (a GLOBAL track LFO via ext vs the Serum's own MONO LFO row).
 - N3: `tests/classic-mod.test.mjs` oracle ≤ 1e-9, noise-from-zero, fade-out keeps the modulated level, setter quantisation.
-- N4: bench rows `mc` (ModCore 10 LFOs + pseudo-voice + 16 rows ≤ 0.002), `mk` (8-voice Juno + cutoff cable ≤ 8 % over the row
-  without), `ms` (setters ≤ 1 µs per call per voice), `me` (ext hand-off overhead on a Serum row ≤ 1 %); V8 gate on every existing
-  row; the JSC gate (macOS jsc shell) within 3 %; the user's iPad bench after deploy.
+- N4 (revised by the spike, §9.0 Q4 — the user is told in ROADMAP): bench rows `mc0` (ModCore, begin only: 10 GLOBAL LFOs, no
+  note: ≤ 0.002 per track as SPEC §9.2), `mc` (10 GLOBAL LFOs + a gated pseudo-voice with 3 ENVs + 16 rows: ≤ **0.004** per track on
+  the M4 Max with the levers applied — unused slots parked, rows read at span ends, the pseudo-voice ticked every second chunk when
+  it feeds non-Serum targets only; the spike measured 0.0066 without them), `mt` (the typical track: 2 GLOBAL + 1 PER NOTE LFO + 1
+  ENV + 4 rows ≤ 0.0025), `mk` (8-voice Juno + cutoff cable ≤ 8 % over the row without), `ms` (setters ≤ 1 µs per call per voice),
+  `me` (ext hand-off overhead on a Serum row ≤ 1 %); V8 gate on every existing row; the JSC gate (macOS jsc shell) within 3 %; the
+  user's iPad bench after deploy.
 - N5: two Tracks, same frames + same payload → identical `MC.ext` and row outputs across 10 s with a transport seek.
 - Page sims (§6.3) green; the §7.5 table has one test per cell marked 2b (`tests/cv-mods.test.mjs`).
 - Sweep: every test file one at a time; lint, pwa; precache rebuilt.
 
 ## 9. Notes (the builders fill in; §9.0 the spike)
+
+### 9.0 The ModCore spike (2026-10-19; scripts in the lead's scratchpad `modcore/`: lib.mjs, spike1–4.mjs, xcheck.mjs)
+
+- **Q1** A voice-less `SerumDSP.attach(shim)` + `SD.begin(shim, 128)` runs on a shim `{base, OS 1, fs, CH 4, voices [], held [], p:
+  {serum: CP}, ct, bpm, wheel, at, bendRaw, songBeat(), seedSalt, vcN 0, pat null, patSeen false, mpe null, seqMacro null}`; fields
+  read: CH, bpm, songBeat, base, fs, sx, p, ct, wheel, at, bendRaw, seedSalt, OS, vcN, seqMacro, mpe, voices. Four MONO LFOs (FREE Hz,
+  FREE BPM-anchored, RETRIG MONO with smooth, FREE S&H) vs the same LFOs inside a real `engine.js` Serum Inst: **0 differing chunk
+  values over 1500 spans** incl. the RETRIG restarts at note-ons (N2 holds by construction).
+- **Q2** One `ModV` on a shim voice (the `TV` of tests/sx-mod.test.mjs:383–425; the CP synced with `SxMod.sync` + `syncCT` first):
+  ENV 1–4, legato (NOTE updates, VELO kept, nothing restarts), RETRIG / ENVELOPE / FREE per-voice LFOs all correct; rows to scratch
+  V-scope destinations evaluate the full row formula and read back from `mv.off[vi]`; `recentMod` latches velo / note / rand at
+  every non-hidden note-on and stays after the voice ends (until `transport`). Cross-check with a real MONO + LEGATO Serum voice:
+  bit-identical in every gated span; the pseudo-voice keeps ENV releases after the real voice stopped (intended).
+- **Q3** Unreferenced LFOs are **not** evaluated (`offSkip` / `offLfoX` / `monoLfo` write only when `srcUsed` or `sx.mon`; chaos only
+  when a row reads it) → keep-alive rows (≈ 0.05 µs/row/span). `SD.transport(shim, true)` reseeds S&H / chaos, resets anchors and
+  `recent`; two plays from beat 0 are identical (N5).
+- **Q4** Cost per 128-frame span (V8, M4 Max): 10 GLOBAL LFOs + gated pseudo-voice + 3 ENVs + 16 rows 17.7 µs (0.0066); begin only
+  6.5 µs (0.0024); the typical track (2 GLOBAL + 1 PER NOTE + 1 ENV + 4 rows) 9.1 µs (0.0034) → 7.0 with unused slots parked FREE +
+  MONO → 5.8 with rows at span ends → 3.9 with the pseudo-voice ticked every second chunk; begin only 1.1 µs. The gated pseudo-voice
+  costs ≈ 6 µs/span by itself (advance ≈ 3.4, sources ≈ 2.8, matrix ≈ 1.8, follow ≈ 0.9). Hence N4's revised rows.
+- **Q5** NSRC 62 → 78 in sx-base / sx-mod / serum-dsp renders every existing CP bit-identically; an ext row (`mSrc = 62 + k`,
+  `use |= 32768`) works in the mono and FX contexts unchanged and in the voice context with two copy lines; appending to
+  `serum-core.SOURCES` would change `cpKey` / `srcUsed` of every CP (fixture churn) → the compile-ctx route of §3.2.
+- **Q6** No `{t:'mods'}` → nothing runs (the harness lists are explicit); 200 spans of begin + pseudo-voice under throwing
+  constructors: **no allocation**; attach ≈ 0.4 MB per track.
