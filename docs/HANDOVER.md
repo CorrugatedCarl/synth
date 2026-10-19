@@ -1,4 +1,4 @@
-# SYNTH — handover briefing (2026-10-18, updated after stages 1f, 1g and 2a)
+# SYNTH — handover briefing (2026-10-18, updated after stages 1f, 1g, 2a and 1h)
 
 Written for the next agent taking over this project. Read it fully, then `docs/canvas/ROADMAP.md`. Project-wide rules are in `CLAUDE.md`
 at the repo root (auto-loaded). The user is non-technical-friendly but very engaged: they test on their iPad Pro and Mac, give fast,
@@ -60,6 +60,7 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
 | 1f One instrument per track (UI) — completes milestone 1 (canvas, trays, modules, read-only cables, one synth per track, Effects tray): the user found five hardware panels on one canvas unacceptably laggy on the iPad (pinch zoom mostly; pixelated, aliased panels when zoomed out). Drops replace, no ⏻ / zone pill / device items, read-only cables, Effects tray into the track's panel, several-instrument projects open split (`cv-migrate splitTracks`) | done (IMPL-1e.md §8.5) |
 | 1g Canvas rendering at zoom — the grid on a device-px canvas (`cv-world gridDraw`: no flicker, aligned dots), hardware faces as smoothed bitmaps below 100 % (`cv-panel faceTier`), the top tray's grip keeps the canvas still (ROADMAP feedback 2026-10-19) | done (IMPL-1e.md §8.5) |
 | 2a Performance modulators (project Mod Wheel, Velocity, Aftertouch, Bend cabled to Serum knobs / own FX; rows injected at compile; inspector; Mod list; ∿ visibility; live-wheel broadcast) | done (IMPL-2a.md); **the user's iPad try pending** (touch drag onto a knob, two-finger cancel) |
+| 1h GPU faces and grid — the dot grid as a procedural WebGL shader (exact dot centres every frame, nothing stored or transformed) and every hardware face as a GPU texture held ≥ 1 device px per on-screen px (a mipmapped base for k ≤ 1, a finer budgeted window of the visible part above 1), one WebGL2 canvas under the world (`cv-gl.js`, `cv-face.js`); the picture mid-pinch and at rest is the same — the user's three 2026-10-19 rules (no resolution "rendering in" at a zoom end, the grid as a precise measurement tool, devices never below 1:1). The 2D grid + the 1g bitmap tier stay as the fallback (`?nogl`, pref `synth.cv.gl = off`) | done (IMPL-1h.md: contract §1–7, notes §8 incl. the review round); **the user's iPad verdict pending** (ui-bench `paintMax` / `soft` / `winPx` are the numbers to read; the adaptive window cap persists per device) |
 | **2b Modulation everywhere** (LFO GLOBAL/PER NOTE, ENV, Macro, CC, Chaos on any Serum/FX knob + 237 classic controls; ModCore in the worklet) | **NEXT** — SPEC §10 2b, §7.3–7.9; an ENGINE stage: iPad bench after it |
 | 3 Serum taken apart (VOICE hub + parts as modules) | planned |
 | 4–6 later (full patching, per-voice classic modulation, polish) | later |
@@ -81,7 +82,8 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    transition accessors — ≈ 180 `t.model` / `t.vals` / `fxOf(t)` sites that mean the primary —, the primary-only paths). The 1e process
    worked well: four parallel lanes with exclusive files, one integration lane after, four reviewers that each reproduce findings by
    script, three fixers that write the failing test first; keep it.
-3. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
+3. (2026-10-19, after 2a.) The user's rendering feedback produced stage **1h** (IMPL-1h.md): GPU grid + faces. Pending: the user's iPad verdict on canvas.domlavin.com — a fast pinch past 60 % and up to 200 % with several hardware panels (no snap on the grid or the faces, no hitch at the rest), the four wood cases, a module dragged over another (the face falls to the 1g tier while they overlap). The DOM parts (controls, module chrome, Simple / Serum / FX modules) still follow WebKit's own pinch behaviour (compositor-scaled, re-rastered at rest): if that still bothers the user, the next rendering stage is the hardware controls as GPU sprites (IMPL-1h §4). Then stage 2b.
+4. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)
 
@@ -93,7 +95,8 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
 - `cv-graph.js` (compileTrack / compileGraph: canonical v1 view or the graph messages), `cv-model.js` (the editing API: addInst, connect, setPower, setZone, makePrimary, setModel, sharedPanelFix …; adopt + transition accessors), `cv-cost.js` (cost table, estimates, soft caps, Measure this device Worker).
 - `main.js` 1e/1f: `instView(t, dev)` (a track-shaped view of any instrument; the primary is the track), `curDevs` (the current instrument — since 1f always the primary), per-device `classicPanels` / `serumPanels` / `fxPanels` (one each per track since 1f), `sendGraph` + per-Inst / per-chain caches (dormant: every track is canonical since 1f, `legacyOk` keeps today's message stream), `partsOf` / monitors by device, `cvAddInstrument` reachable only as the `__synthTest.cv.add` hook; `cv-migrate.splitTracks` splits multi-instrument projects on load.
 - `models.js` (model definitions/params), `serum-core.js`/`serum-dsp.js`/`sx-*.js` (Serum), `fx-*.js` (FX), `laws.js`, `tuning.js`.
-- Canvas UI: `cv-world.js` (camera, grid/snap, Lock view, gestures hooks, toolbar, minimap, box-select), `cv-module.js` (module chrome,
+- `cv-gl.js` (1h: the WebGL2 layer — grid shader, textured face quads with a rounded-rect clip and a gray uniform, upload/free, context loss) and `cv-face.js` (1h: the hardware-face registry — modes gl / dom / svg, base + window textures, the raster queue (one job per frame, never in a burst, split raster/upload over 8 Mpx), budget, the adaptive window cap `synth.cv.winpx`, the overlap rule against every world item, the patching / power dims as quad alpha + gray).
+- Canvas UI: `cv-world.js` (camera, grid/snap, Lock view, gestures hooks, toolbar, minimap, box-select; 1h: the GL path `buildGL`, `glStats`, `rectOf`), `cv-module.js` (module chrome,
   fold, menu, CPU slot), `cv-cables.js`, `cv-tray.js` (top/side trays, Sources), `cv-art.js` (instrument illustrations), `cv-panel.js` +
   `panels/*.js` (hardware panels), `classic-panel.js` (Simple/flow panels), `cv-model.js` / `cv-migrate.js` / `cv-graph.js` / `cv-mods.js`
   (data model, migration, compile, mod descriptors).
@@ -113,6 +116,7 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
   scrolls aren't clamped immediately on iOS; 1 ms timer resolution; non-passive window touch listeners delay native scroll.
 - Long agent runs die if the Mac sleeps (lid closed) or the usage limit hits; work in the tree survives — resume the agent with a message.
 - The harness creates agent worktrees from `main` (ee2a939), not from `canvas`: every builder must `git reset --hard <base>` first (the 1e briefs say so; check `git log -1` in each worktree before merging).
+- Rendering at zoom (1g → hotfixes → 1h): anything rasterised at the rest zoom and scaled by the compositor during a pinch "renders in" when the finger lifts — the user rejects that (a bitmap grid, the bitmap face tier, WebKit's own layer re-raster). The fix that holds is GPU-resident content drawn every frame from sources that never change at rest (a procedural grid shader, mipmapped textures); per-frame CPU rasters/uploads (a full-viewport 2D canvas) are the hitch. The headless-Chrome CDP harness (`--headless=new --use-angle=metal --force-device-scale-factor=2`) measures what the browser pane cannot (its rAF runs at ~2/s).
 - The 1e review round (four reviewers reproducing by script) found ~35 real bugs the lane tests missed (undo copying sound across devices, a deleted panel re-inserted by an accessor, removed parts fading at the wrong gain, the minimap swallowing clicks on stacked modules…); fixers that write the failing test first refuted nothing and left a 70-test trail. Keep both steps.
 - The stacked-modules layout puts a second instrument's bar where the floating minimap was: any overlay over the canvas must be reserved out of `world.band()`.
 - Review rounds reliably found real bugs that tests missed (stuck preview voices, playhead freeze, header wrap, wrong-track taps, page
