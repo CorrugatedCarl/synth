@@ -24,6 +24,7 @@ import * as cvCables from './cv-cables.js?v=9';
 import * as COSTM from './cv-cost.js?v=9';
 // the hardware front panels (docs/canvas/IMPL-panels.md, ENGINE lane): fixed-size classic instruments, Hardware / Simple
 import * as cvPanel from './cv-panel.js?v=9';
+import { FACES } from './cv-face.js?v=9'; // (1h) the hardware faces' registry: a re-mounted panel is told (cvMountBody)
 // stage 1c: the classic panel as an instance (renderPanel, controls, preset plate, TB-303 sequencer with their track passed in)
 import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
 import { fitCanvas } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom)
@@ -4393,6 +4394,9 @@ function cvMountBody(key, b) {
   cvMounted.set(key, { el, tid: t.id });
   if (kind === 'inst') b.addEventListener('pointerdown', () => { const x = trk(); if (cvView && cvView.trackId === x.id) setCur(x, key); }, { passive: true });
   if (kind !== 'out' && cvBuilt.get(t.id + '/' + key) !== el) cvDue.add(key);
+  // (1h) a built panel re-homed (the same track's view rebuilt, a track switched back) without a camera move: its GL face
+  // finds its new module now, not at the next zoom end (rest-time: a layout read of the decos' offsets)
+  else if (kind === 'inst') { try { FACES.recheck(); } catch (err) { console.error(err); } }
 }
 // host.bodies.unmount: the module went (removed, its kind changed, the view rebuilt): today's parts go home (their panels
 // stay until the next render, as before); a device's own element takes its panel with it — except while the same track's

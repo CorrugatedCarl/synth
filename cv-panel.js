@@ -763,7 +763,8 @@ const msNow = () => (globalThis.performance && typeof globalThis.performance.now
  * shows and the SVG is hidden (visibility: layout unchanged). Until a load lands the previous picture stays (a pinch scales
  * the old bitmap). A failed load keeps the SVG for good (failed). Memory: one canvas at the on-screen size, released at k ≥ 1,
  * by wk.releaseCanvases (an unmounted body: the SVG again; re-tried next frame if still mounted) and by destroy().
- * env (tests): {win, doc, scale, raf, Image, Blob, URL, now}. @returns {{refresh, drop, destroy, readonly shown, readonly failed, readonly canvas, readonly k}}
+ * env (tests): {win, doc, scale, raf, Image, Blob, URL, now, onChange? (1h: the bitmap landed / the load failed)}.
+ * @returns {{refresh, drop, destroy, readonly shown, readonly failed, readonly canvas, readonly k}}
  */
 export function faceTier(deco, svg, markup, w, h, env) {
   env = env || {};
@@ -784,9 +785,12 @@ export function faceTier(deco, svg, markup, w, h, env) {
     if (cv) { const c = cv; cv = null; try { c.width = 0; c.height = 0; c.remove(); } catch (err) { /* gone */ } }
     vis(false);
   }
+  // (1h) env.onChange: the bitmap landed or the load failed — cv-face keeps its GL quad under a pending tier until then
+  const changed = () => { if (typeof env.onChange === 'function') { try { env.onChange(); } catch (err) { console.error(err); } } };
   function fail(err) {
     if (!failed) console.warn('cv-panel: the face bitmap could not be made — the SVG stays', err);
     failed = true; drop();
+    changed();
   }
   function later() { if (due || dead) return; due = true; raf(() => { due = false; refresh(); }); }
   function refresh() {
@@ -837,6 +841,7 @@ export function faceTier(deco, svg, markup, w, h, env) {
       }
       at = s; vis(true);
       const ms = msNow() - t0; faceStats.n++; faceStats.ms += ms; faceStats.max = Math.max(faceStats.max, ms);
+      changed();
     } catch (err) { fail(err); }
   }
   const offS = typeof wk.onRescale === 'function' ? wk.onRescale(deco, refresh) : () => {};
