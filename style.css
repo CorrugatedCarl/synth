@@ -1274,8 +1274,9 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 .cv-mkey.cv-mblk { fill: #1b1c20; }
 .cv-mkeyon { fill: var(--mc, var(--hot)); }
 /* 2b (IMPL-2b §6.2, SPEC §7.11): classic halos — a ring of arcs in the knob (between the skirt and the ticks), the live dot;
-   a slider's range bar and live mark along its groove; a badge on anything else. None takes a press (the 1g / 1h data-tip
-   hit-test and the drags stay); a bypassed row's arc is dimmed */
+   a slider's range bars — thin, beside the groove, the i-th stepped aside (--cp-i), the cap drawn above them (U13: the cap
+   stays readable) — and its live mark across the groove; a badge on anything else. None takes a press (the 1g / 1h
+   data-tip hit-test and the drags stay); a bypassed row's arc is dimmed */
 .ctl { position: relative; }
 .knob { position: relative; }
 .cp-halo { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
@@ -1283,11 +1284,12 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 .cp-arc { fill: none; stroke-width: 3; stroke-linecap: butt; }
 .cp-arc.cp-byp { opacity: 0.35; stroke-dasharray: 2 2; }
 .cp-live { fill: #fff; stroke: #0b0d0f; stroke-width: 1; }
-.cp-range { position: absolute; left: 4px; right: 4px; min-height: 2px; min-width: 2px; border-radius: 2px; opacity: 0.75; pointer-events: none; }
-.slider[data-orient="h"] .cp-range { left: auto; right: auto; top: 4px; bottom: 4px; }
-.cp-range.cp-byp { opacity: 0.3; }
+.cp-range { position: absolute; left: calc(50% + 3px + var(--cp-i, 0) * 4px); width: 3px; min-height: 2px; min-width: 2px; border-radius: 2px; opacity: 0.9; z-index: 0; pointer-events: none; }
+.slider[data-orient="h"] .cp-range { left: auto; width: auto; top: calc(50% + 3px + var(--cp-i, 0) * 4px); height: 3px; }
+.slider .cap { z-index: 1; }
+.cp-range.cp-byp { opacity: 0.35; }
 .cp-range[hidden], .cp-livemk[hidden], .cp-mbadge[hidden] { display: none; }
-.cp-livemk { position: absolute; left: 0; right: 0; height: 2px; background: #fff; box-shadow: 0 0 0 1px #0b0d0f; pointer-events: none; }
+.cp-livemk { position: absolute; left: 0; right: 0; height: 2px; z-index: 2; background: #fff; box-shadow: 0 0 0 1px #0b0d0f; pointer-events: none; }
 .slider[data-orient="h"] .cp-livemk { top: 0; bottom: 0; left: auto; right: auto; width: 2px; height: auto; }
 .cp-mbadge { position: absolute; right: -6px; top: -6px; z-index: 2; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #9aa4b2;
   color: #0b0d0f; font: 700 9px/16px var(--ui); text-align: center; pointer-events: none; box-shadow: 0 0 0 1.5px #0b0d0f; }

@@ -461,7 +461,8 @@ export function envBody(o) {
 export function macroBody(o) {
   const E = editor(o), d = E.d, el = mk(d, 'div', 'cv-mbody cv-mmacro cv-medit');
   const V = () => { const a = E.val('v', null); return Array.from({ length: 8 }, (_, k) => n01(Array.isArray(a) ? a[k] : 0, 0)); };
-  const N = () => { const a = E.val('names', null); return Array.from({ length: 8 }, (_, k) => String(Array.isArray(a) && a[k] != null ? a[k] : 'Macro ' + (k + 1)).slice(0, NAME_MAX)); };
+  const N = () => { const a = E.val('names', null); return Array.from({ length: 8 }, (_, k) => String(Array.isArray(a) && a[k] != null && a[k] !== '' ? a[k] : 'Macro ' + (k + 1)).slice(0, NAME_MAX)); }; // ((U8) a blank name reads as the default)
+  const NS = () => { const a = E.val('names', null); return Array.from({ length: 8 }, (_, k) => String(Array.isArray(a) && a[k] != null ? a[k] : '').slice(0, NAME_MAX)); }; // (the boxes: '' shows the placeholder)
   const knobs = [], names = [], vals = [];
   for (let k = 0; k < 8; k++) {
     const r = row(d, 'cv-mmrow');
@@ -478,9 +479,10 @@ export function macroBody(o) {
     knobs.push(K);
     const nm = mk(d, 'input', 'cv-mname');
     nm.type = 'text'; nm.maxLength = NAME_MAX; nm.setAttribute('maxlength', String(NAME_MAX)); nm.setAttribute('aria-label', 'Macro ' + (k + 1) + ' name');
+    nm.placeholder = 'Macro ' + (k + 1); nm.setAttribute('placeholder', 'Macro ' + (k + 1));
     nm.spellcheck = false;
     nm.addEventListener('pointerdown', stop); nm.addEventListener('keydown', stop); // (its own keys and press: never the world's)
-    nm.addEventListener('change', () => { const a = N(), t = String(nm.value || '').trim().slice(0, NAME_MAX) || 'Macro ' + (k + 1); nm.value = t; if (t === a[k]) return; a[k] = t; E.commit({ names: a }); });
+    nm.addEventListener('change', () => { const a = N(), t = String(nm.value || '').trim().slice(0, NAME_MAX) || 'Macro ' + (k + 1); nm.value = t; if (t === a[k] && NS()[k] === t) return; a[k] = t; E.commit({ names: a }); });
     nm.addEventListener('keyup', e => { if (e.key === 'Enter' || e.key === 'Escape') nm.blur(); });
     names.push(nm);
     const vl = mk(d, 'span', 'cv-mmv', '0%');
@@ -489,7 +491,7 @@ export function macroBody(o) {
     el.append(r);
   }
   function sync() {
-    const vv = V(), nn = N();
+    const vv = V(), nn = NS();
     for (let k = 0; k < 8; k++) { knobs[k].update(); text1(vals[k], Math.round(vv[k] * 100) + '%'); if (names[k].value !== nn[k] && d.activeElement !== names[k]) names[k].value = nn[k]; }
   }
   function update(live) {

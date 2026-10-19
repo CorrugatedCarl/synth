@@ -288,3 +288,168 @@ test('offline renders carry the payload: bounceSet / render-last items and proce
   api.selectTrack(a.id); sim.raf(); cv.renderViews(); sim.raf();
   assert.equal(api.modsFor(a).ext.length, 1, 'the Serum track: its ext slot');
 });
+
+/* ---- (2b fixer C) the review's host / UI findings */
+const selectT = id => { api.selectTrack(id); sim.raf(); cv.renderViews(); sim.raf(); return T(); };
+const dropNew = (kind, at) => { const before = keys().split(','); drop(kind, at); return keys().split(',').find(k => !before.includes(k)); }; // (ids are never reused: the new module's key)
+const undoN = n => { for (let i = 0; i < n; i++) { cv.undo(); sim.raf(); } }; // (counted, not by hsteps: the History's size cap trims old steps under the sim's many snapshots)
+
+test('(U6) the Serum\'s hooks label a canvas row by its source module: sxExtra rows carry label "LFO 1" (the knob menu says "Canvas cable: LFO 1"); extraMatrix lists every row compiled into the Serum with its slot tag ("ext 1"; an injected PER NOTE LFO "LFO 1"); (U7) module titles are numbered', () => {
+  const a = T();
+  assert.equal(a.id, ID.a);
+  assert.deepEqual(api.sxExtra(a, 'i1', 'f.cutoff').map(r => [r.id, r.src, r.label, r.pol]), [['r1', 'ext1', 'LFO 1', 'uni']]);
+  const X = api.sxHost(a).extraMatrix();
+  assert.deepEqual(X.map(r => [r.id, r.src, r.dst, r.tag, r.label, r.amt]), [['r1', 'ext1', 'f.cutoff', 'ext 1', 'LFO 1', a.mods[0].amt]]);
+  U.editState('l1', { lfo: Object.assign({}, a.dev.l1.lfo, { mono: 0 }) }); sim.raf();
+  assert.deepEqual(api.sxHost(a).extraMatrix().map(r => [r.src, r.tag]), [['lfo1', 'LFO 1']], 'the injected slot');
+  cv.undo(); sim.raf();
+  assert.deepEqual([V().modules.get('l1').title, V().modules.get('i1').title], ['LFO 1', 'Serum']);
+  drop('lfo', { x: -600, y: 700 }); drop('velo', { x: -600, y: 1100 });
+  assert.deepEqual([V().modules.get('l2').title, V().modules.get('ve').title], ['LFO 2', 'Velocity']);
+  cv.undo(); cv.undo(); sim.raf();
+  assert.equal(keys(), 'i1,i1/fx,l1,out');
+});
+
+test('(U5) a Serum\'s OWN FX knob with a canvas cable: the FX module\'s rack is painted with the rows (fx-ui paintMods through modHalos, and when the rack is built) and its host\'s extraRows names them for the rack\'s control menu', () => {
+  const a = T(), calls = [];
+  const iid = cv.fx.addEffect('i1/fx', 'rev'); sim.raf();
+  assert.equal(iid, 'rev');
+  M.opts.onMod('l1.out', 'i1:fx.rev.mix'); sim.raf();
+  assert.deepEqual(rows(a), 'r1:l1.out>i1:f.cutoff,r2:l1.out>i1:fx.rev.mix');
+  const rec = cv.fxTab, was = { ui: rec.ui, trackId: rec.trackId, dev: rec.dev, key: rec.key, sx: rec.sx };
+  Object.assign(rec, { ui: { paintMods: f => calls.push(f('fx.rev.mix').map(r => r.id + ':' + r.src + ':' + r.label).join('|') + ' / ' + f('fx.rev.size').length), refresh() {}, destroy() {} }, trackId: a.id, dev: 'i1', key: 'i1/fx', sx: true });
+  try {
+    U.modHalos(a);
+    assert.deepEqual(calls, ['r2:ext1:LFO 1 / 0'], 'the rack painted with the cable\'s row (its ext source, its label)');
+    assert.deepEqual(api.fxHost(a, rec).extraRows('fx.rev.mix').map(r => r.label + ':' + r.src), ['LFO 1:ext1'], 'the rack\'s menu rows');
+    assert.deepEqual(api.fxHost(a, rec).extraRows('fx.rev.size'), []);
+    calls.length = 0;
+    U.editState('l1', { rate: 0.7 }); sim.raf(); // (an edit → modHalos → painted again)
+    assert.equal(calls.length, 1);
+  } finally { Object.assign(rec, was); }
+  undoN(2); // (the cable, the rate edit; addEffect is no step)
+  assert.equal(rows(T()), 'r1:l1.out>i1:f.cutoff');
+});
+
+test('(U2 / P4) a cabled classic knob\'s drag reposts the payload at most every 66 ms and once at the gesture\'s end (15 moves → ≤ 3 {t: \'mods\'}, the last with the final transfer); keys coalesce per frame; (C4) a cables refresh builds the payload once, not per cable', () => {
+  const j = selectT(ID.j), Pn = cv.classicPanels.get(j.id + '/i1'), N = api.nodes.get(j.id);
+  assert.deepEqual([/^r1:l1\.out>i1:cf,r2:l1\.out>fx\d+:fx\.rev\.mix$/.test(rows(j)), N.modsKey === api.buildMods(j).key], [true, true], rows(j));
+  const c = MOD('juno60').controls.find(x => x.id === 'cf');
+  clearPosted(j);
+  for (let i = 1; i <= 15; i++) { Pn.set('cf', +(c.min + (c.max - c.min) * (0.2 + 0.04 * i)).toFixed(3), 'move'); sim.raf(); }
+  const mid = posted(j, 'mods').length;
+  assert.ok(mid >= 1 && mid <= 2, 'held while dragging: ' + mid);
+  assert.equal(posted(j, 'patch').length >= 15, true, 'the knob\'s own value went with every frame');
+  Pn.gestureEnd('cf'); sim.raf();
+  const L = posted(j, 'mods');
+  assert.ok(L.length <= 3 && L.length > mid, 'the end posts: ' + L.length);
+  assert.equal(L[L.length - 1].key, api.buildMods(j).key, 'the final transfer');
+  assert.equal(N.modsHold, false);
+  // keys: five writes in one frame → one repost
+  clearPosted(j);
+  for (let i = 0; i < 5; i++) Pn.set('cf', +(c.min + (c.max - c.min) * (0.5 + 0.02 * i)).toFixed(3));
+  sim.raf();
+  assert.equal(posted(j, 'mods').length, 1);
+  Pn.set('cf', c.def); sim.raf();
+  // (C4) a cables refresh builds the payload a fixed number of times, not once per cable: four cables, then six
+  const e = dropNew('env', { x: -600, y: 1500 }); M.opts.onMod(e + '.out', 'i1:rs'); sim.raf();
+  const m = dropNew('macro', { x: -600, y: 1900 }); M.opts.onMod(m + '.k1', 'i1:lv'); sim.raf();
+  assert.equal(V().cables.list().filter(x => x.kind === 'mod').length, 4);
+  const n0 = U.built(); cv.render(); sim.raf(); const b4 = U.built() - n0;
+  M.opts.onMod(m + '.k2', 'i1:lr'); sim.raf(); M.opts.onMod(e + '.out', 'i1:cf'); sim.raf();
+  assert.equal(V().cables.list().filter(x => x.kind === 'mod').length, 6, rows(T()));
+  const n1 = U.built(); cv.render(); sim.raf(); const b6 = U.built() - n1;
+  assert.ok(b6 <= b4 && b4 <= 4, 'builds per refresh do not grow with the cables: ' + b4 + ' → ' + b6);
+  undoN(6); // (two drops, four cables)
+  assert.equal(rows(T()).split(',').length, 2, rows(T()));
+});
+
+test('(U1) a right-click / long-press on a cable\'s amount badge over a Juno slider: the contextmenu is handed to the control beneath (its own menu opens), the cable menu never', () => {
+  const j = T(), Pn = cv.classicPanels.get(j.id + '/i1'), ctl = Pn.els.get('cf'), got = [];
+  const badge = walk(sim.$('#world'), x => /\bcv-mbadge\b/.test(clsOf(x)) && x.attrs && x.attrs['data-cable'] === 'r1').pop(); // (the live one: the sim DOM's remove() is a no-op)
+  assert.ok(badge && ctl, 'the badge of r1 and the cutoff slider');
+  const doc = sim.dom.document, had = doc.elementsFromPoint;
+  let asked = 0;
+  doc.elementsFromPoint = () => { asked++; return [badge, ctl]; };
+  ctl.listeners.contextmenu = []; // (the panel's own menu: wk.contextMenu cannot build in the sim DOM — the unit test and the browser cover it; here the hand-off alone)
+  ctl.addEventListener('contextmenu', e => { got.push((e.isTrusted ? 'trusted' : 'synthetic') + '@' + e.clientX + ',' + e.clientY); e.preventDefault(); });
+  try {
+    badge.dispatchEvent(ev('contextmenu', { clientX: 12, clientY: 34, isTrusted: true, button: 2 }));
+    const menus = walk(sim.$('#ov') || sim.dom.document.body, x => /\bwk-ctx\b/.test(clsOf(x)));
+    const labels = menus.flatMap(m => walk(m, x => clsOf(x) === 'wk-cl').map(x => x.textContent));
+    assert.deepEqual([got, asked, labels.includes('Disconnect')], [['synthetic@12,34'], 1, false], 'the control got it; no cable menu: ' + labels.join('|'));
+  } finally { if (had) doc.elementsFromPoint = had; else delete doc.elementsFromPoint; }
+});
+
+test('(U3) an eff value outside the transfer\'s range gives no live value (the dot hides) instead of pinning at an end; inside, as before', () => {
+  const j = T(), k = j.id + '/i1', m = api.buildMods(j), xf = m.xfer[0], Pn = cv.classicPanels.get(k);
+  const T_ = x => (xf.tab ? xf.tab[Math.round(x * 128)] : xf.a + xf.b * x), hi = xf.tab ? Math.max(...xf.tab) : Math.max(xf.a, xf.a + xf.b);
+  cv.monitors.deliver(j.id, { t: 'smon', i: 'i1', s: { eff: Float32Array.of(T_(Math.min(1, xf.x0 + 0.1))) } });
+  assert.equal(typeof U.live.get(k).cf, 'number');
+  cv.monitors.deliver(j.id, { t: 'smon', i: 'i1', s: { eff: Float32Array.of(hi + 10) } });
+  assert.equal(U.live.get(k).cf, undefined, 'out of range: none');
+  const mk = walk(Pn.els.get('cf'), q => /\bcp-(livemk|live)\b/.test(clsOf(q)))[0];
+  assert.equal(mk.attrs && 'display' in mk.attrs ? mk.attrs.display === 'none' : !!mk.hidden, true, 'hidden');
+});
+
+test('(live meters) a mounted LFO / ENV / chaos body subscribes the track\'s monitor; a smon with mc and a payload with slots moves the bodies; without slots nothing; the subscription goes with the last such body', () => {
+  const j = T();
+  assert.deepEqual([U.mcMons.has(j.id), [...cv.monitors.subs].some(s => s.trackId === j.id && s.dev === 'i1' && s.role === 'inst')], [true, true]);
+  const e = dropNew('env', { x: -600, y: 1500 });
+  const B = M.bodies.get('l1'), E = M.bodies.get(e);
+  const mc = new Float32Array(16); mc[0] = 0.62; mc[10] = 0.31;
+  const v0 = B.value();
+  cv.monitors.deliver(j.id, { t: 'smon', i: 'i1', s: {}, mc });
+  assert.equal(Object.is(B.value(), v0), true, 'no slots yet (fixer B\'s): nothing moves');
+  const pay = api.buildMods(j);
+  pay.slots = { l1: { kind: 'lfo', i: 0 }, [e]: { kind: 'env', i: 10 } };
+  try {
+    cv.monitors.deliver(j.id, { t: 'smon', i: 'i1', s: {}, mc });
+    assert.deepEqual([+B.value().toFixed(2), +E.value().toFixed(2)], [0.62, 0.31]);
+    mc[0] = 0.1;
+    cv.monitors.deliver(j.id, { t: 'smon', i: 'i1', s: {}, mc });
+    assert.equal(+B.value().toFixed(2), 0.1);
+  } finally { delete pay.slots; }
+  M.del(e); sim.raf();
+  assert.equal(U.mcMons.has(j.id), true, 'the LFO still mounted');
+  M.del('l1'); sim.raf();
+  assert.equal(U.mcMons.has(j.id), false);
+  undoN(3); // (the two deletions, the drop)
+  assert.deepEqual([keys().includes('l1'), keys().includes(e), U.mcMons.has(j.id), rows(T()).split(',').length], [true, false, true, 2]);
+});
+
+test('(U9) the classic badge and the Mod list count cables, not payload rows (an ENV on the Juno\'s VCA mode selector compiles into several rows); (E6) {t: \'modsErr\'} from the node clears its key so the next build reposts', () => {
+  const j = T(), pid = Object.keys(j.dev).find(k => j.dev[k].kind === 'panel');
+  const e = dropNew('env', { x: -600, y: 1500 }); M.opts.onMod(e + '.out', 'i1:vm'); sim.raf();
+  assert.equal(rows(T()).split(',').length, 3, rows(T()));
+  const m = api.buildMods(j), mine = m.rows.filter(r => r.dst.inst === 'i1');
+  assert.ok(mine.length > 2, 'several payload rows for two cables: ' + mine.length);
+  assert.deepEqual([badge('i1'), badge(pid)], ['mods 2', 'mods 1']);
+  M.list();
+  const line = walk(sim.$('#ov'), c => /\bcv-ml-dev\b/.test(clsOf(c))).filter(c => c.attrs['data-dev'] === 'i1').pop(); // (the current list: the sim DOM keeps old ones)
+  assert.equal(walk(line, c => /\bcv-ml-b\b/.test(clsOf(c)))[0].textContent.split(' · ')[0], '2 cables');
+  M.layer().close();
+  undoN(2);
+  assert.equal(rows(T()).split(',').length, 2);
+  // E6 (T(): the undo restored a snapshot — the track object is new)
+  const N = api.nodes.get(j.id), key = N.modsKey;
+  assert.ok(key && key !== 'off');
+  sim.nodeOf(j.id)._fromProc({ t: 'modsErr', i: j.id, key });
+  assert.equal(N.modsKey, undefined);
+  clearPosted(j);
+  api.queuePatch(T()); sim.raf();
+  assert.deepEqual([posted(j, 'mods').length, N.modsKey], [1, key], 'reposted as is');
+});
+
+test('(U10, U11) setTrackModel names the device being replaced and drops the halo subscription with the rows (no monitor without rows); undo brings both back', () => {
+  const j = T(), k = j.id + '/i1';
+  assert.deepEqual([rows(j).split(',').length, U.mons.has(k)], [2, true]);
+  const why = cv.setTrackModel(j, 'minimoog'); sim.raf();
+  assert.equal(why, '1 modulation cable to the Juno-60 removed: the new model has no such knobs');
+  assert.deepEqual([T().model, rows(T()).split(',').length, U.mons.has(k)], ['minimoog', 1, false]);
+  cv.undo(); sim.raf();
+  for (let i = 0; i < 40 && cv.mount && cv.mount(); i++) sim.raf();
+  assert.deepEqual([T().model, rows(T()).split(',').length], ['juno60', 2]);
+  U.halos(T());
+  assert.equal(U.mons.has(k), true);
+});

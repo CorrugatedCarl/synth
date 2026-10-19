@@ -1064,7 +1064,7 @@ test('2a §7.10: the live wheel also reaches every track with a Mod Wheel cable 
   b.mods = [r.row];
   assert.deepEqual(api.buildPatch(b), P);
   // the halo rows, the badge
-  assert.deepEqual(api.sxHost(b).extraRows('f.cutoff'), [{ id: r.row.id, src: 'wheel', amt: r.row.amt, bi: r.row.bi, byp: 0, out: 1 }]);
+  assert.deepEqual(api.sxHost(b).extraRows('f.cutoff'), [{ id: r.row.id, src: 'wheel', amt: r.row.amt, bi: r.row.bi, byp: 0, out: 1, label: 'Mod Wheel', pol: 'uni' }]); // (2b fixer C: the host's label and the source's polarity)
   assert.deepEqual(api.sxHost(b).extraRows('f.res'), []);
   const mc = api.modCount(b);
   assert.deepEqual([mc.canvas, mc.left, mc.max, mc.text], [1, [], 64, 'mods ' + (mc.preset + 1) + '/64']);

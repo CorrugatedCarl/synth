@@ -12,6 +12,7 @@ import { ClassicPanel, SEQ_DEF, fmt } from '../classic-panel.js?v=9';
 import * as cvPanel from '../cv-panel.js?v=9';
 import { MODELS, DX_ALGS } from '../models.js?v=9';
 import { fresh, all, key, fire } from './wk-dom.mjs';
+import { readFileSync } from 'node:fs';
 
 const modelOf = id => MODELS.find(m => m.id === id);
 const defaults = m => Object.fromEntries(m.controls.map(c => [c.id, c.def]));
@@ -245,4 +246,54 @@ test('the mod menu (2b): a right-click, a 500 ms touch long-press (≤ 8 px: wk.
   assert.deepEqual(labels(doc), ['Connect to…', 'Reset Control', 'Enter Value…']);
   menus(doc).at(-1).dispatchEvent(new Ev('keydown', { key: 'Escape', bubbles: true }));
   P3.destroy();
+});
+
+test('(2b fixer C) U2: host.changed(track, id, phase) — a drag\'s moves say \'move\' and its lift \'end\' (once, only after a move); a key, the wheel, a double-click, Reset and Enter Value say nothing; U12: Enter Value… prefills the knob-unit number, not the display text; P7: setLive touches the live dot alone (no arc attribute written); U13: slider range bars are thin bars beside the groove (--cp-i per bar), the cap above them', () => {
+  const doc = fresh(), log = [], tr = track('trk_1', 'juno60'), H = host(doc, log), phases = [];
+  H.changed = (t, id, ph) => { phases.push(id + ':' + (ph === undefined ? '-' : ph)); };
+  H.kit.track = (el, e, move, end) => { // (a kit that follows the pointer on the element)
+    const mv = ev => move(ev), up = ev => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); end(ev); };
+    el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up);
+  };
+  const root = doc.createElement('div'); doc.body.append(root);
+  const P = new ClassicPanel(root, { track: tr, model: modelOf('juno60'), layout: null, host: H });
+  const c = modelOf('juno60').controls.find(x => x.id === 'cf'), w = widget(P.root, 'cf');
+  assert.ok(c.fmt && /Hz/.test(fmt(c, tr.vals.cf)), 'cf shows a formatted value: ' + fmt(c, tr.vals.cf));
+  // a drag: three moves, a lift
+  ptr(w, 'pointerdown', 10, 100, { pointerId: 1 });
+  for (let i = 1; i <= 3; i++) ptr(w, 'pointermove', 10, 100 - 12 * i, { pointerId: 1 });
+  ptr(w, 'pointerup', 10, 64, { pointerId: 1 });
+  assert.deepEqual(phases, ['cf:move', 'cf:move', 'cf:move', 'cf:end'], 'moves, then one end');
+  phases.length = 0;
+  ptr(w, 'pointerdown', 10, 100, { pointerId: 2 }); ptr(w, 'pointerup', 10, 100, { pointerId: 2 }); // (no move: no end)
+  key(w, 'ArrowUp');
+  fire(w, 'dblclick');
+  assert.deepEqual(phases, ['cf:-', 'cf:-'], 'a tap says nothing; a key and a double-click have no phase');
+  // Enter Value…: the prompt's default is the knob-unit number
+  phases.length = 0;
+  let seen = null;
+  globalThis.prompt = (msg, def) => { seen = [msg, def]; return '7.5'; };
+  try { fire(w, 'contextmenu', { clientX: 40, clientY: 40, button: 2 }); pick(doc, 'Enter Value…'); } finally { delete globalThis.prompt; }
+  assert.deepEqual([seen, tr.vals.cf, phases], [['Freq (0…10)', '6'], 7.5, ['cf:-']]);
+  // P7: setLive writes the dot alone
+  const m = modelOf('minimoog'), tm = track('trk_2', 'minimoog'), Pm = mount(doc, tm, null, log), knob = widget(Pm.root, 'fc'), fc = m.controls.find(x => x.id === 'fc');
+  Pm.setMods({ fc: [{ id: 'r1', src: 'l1.out', amt: 0.5 }, { id: 'r2', src: 'e1.out', amt: -0.2 }] }, null);
+  const svg = one(knob, 'cp-halo'), arcs = byCls(svg, 'cp-arc'), dot = one(svg, 'cp-live');
+  let arcW = 0, dotW = 0;
+  for (const a of arcs) { const o = a.setAttribute; a.setAttribute = function (...x) { arcW++; return o.apply(this, x); }; }
+  { const o = dot.setAttribute; dot.setAttribute = function (...x) { dotW++; return o.apply(this, x); }; }
+  Pm.setLive({ fc: fc.max }); Pm.setLive({ fc: (fc.min + fc.max) / 2 }); Pm.setLive(null);
+  assert.deepEqual([arcW, dotW > 0, dot.getAttribute('display')], [0, true, 'none'], 'the arcs untouched, the dot moved and hidden');
+  Pm.set('fc', fc.min);
+  assert.ok(arcW > 0, 'a base change repaints the arcs');
+  Pm.destroy();
+  // U13: two bars on a slider, each at its own --cp-i; the CSS puts them beside the groove and the cap above
+  P.setMods({ cf: [{ id: 'r1', src: 'l1.out', amt: 0.5 }, { id: 'r2', src: 'm1.k1', amt: 0.3 }] }, null);
+  const bars = byCls(w, 'cp-range');
+  assert.deepEqual([bars.length, bars.map(b => b.style.getPropertyValue('--cp-i'))], [2, ['0', '1']]);
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const rule = (css.match(/\n\.cp-range \{[^}]*\}/) || [''])[0];
+  assert.ok(/width: 3px/.test(rule) && /left: calc\(50% \+[^;]*--cp-i/.test(rule) && !/right: 4px/.test(rule), 'a 3 px bar beside the groove, stepped per bar: ' + rule);
+  assert.ok(/\.slider \.cap \{[^}]*z-index: 1/.test(css) || /\.slider > \.cap \{[^}]*z-index: 1/.test(css), 'the cap above the bars');
+  P.destroy();
 });

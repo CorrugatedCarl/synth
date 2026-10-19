@@ -65,6 +65,7 @@ const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
 const fin = x => typeof x === 'number' && isFinite(x);
 const arr = x => (Array.isArray(x) ? x : []);
 const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
+const clamp01 = x => (x > 0 ? (x < 1 ? x : 1) : 0);
 const Doc = () => globalThis.document || null;
 const MODS = FX_ORDER_DEFAULT.slice();
 const SUBS = { dist: 1, cho: 1, rev: 1 }; // modules with structured (non-DEST) state saved in module presets
@@ -2396,12 +2397,42 @@ export class FXRackUI {
     const m = /^fx\.([a-z][a-z0-9]*)\.([A-Za-z0-9]+)$/.exec(id), I = m ? this.inst(m[1]) : null, r = I ? rowIn(I.type, I.v, m[2]) : null;
     if (!r) return;
     e.preventDefault();
-    const inst = w.el.wk;
-    const items = [{ label: 'Reset Control', action: () => { this.setP(I.id, r.pid, r.def, 'set'); this.refresh(); } }];
+    const inst = w.el.wk, items = [];
+    // (SYNTH Canvas 2b, U5) the host's extraRows(destId): the canvas cables on this knob, first, disabled (edited on the canvas)
+    let xr = [];
+    try { xr = typeof this.host.extraRows === 'function' ? arr(this.host.extraRows(id)) : []; } catch (err) { xr = []; }
+    for (const q of xr) if (isObj(q) && q.src) items.push({ label: 'Canvas cable: ' + (typeof q.label === 'string' && q.label ? q.label : String(q.src)), disabled: true });
+    items.push({ label: 'Reset Control', action: () => { this.setP(I.id, r.pid, r.def, 'set'); this.refresh(); } });
     if (inst && typeof inst.edit === 'function') items.push({ label: 'Enter Value…', action: () => inst.edit() });
     const x = this.ctlExtras(id);
     if (x.length) items.push({ sep: true }, ...x);
     contextMenu(e.clientX, e.clientY, items, { anchor: w.el });
+  }
+  // (SYNTH Canvas 2b, U5) halo arcs on the knobs a host names rows for — rowsOf(destId) → [{ amt, bi, byp, out, pol? }]
+  // (a canvas cable's row: Serum's haloArcs rule — a unipolar row [base, base + a], a bipolar row [base ± |a|/2], a bipolar
+  // source (pol 'bi') [base ± |a|], a = amt·out; bypassed / zero rows none) — from the knob's normalised value; the MIX /
+  // LEVEL knob under both ids (its setMod stashes per id). A knob whose rows went is cleared once (not repainted while empty).
+  paintMods(rowsOf) {
+    if (this.dead || typeof rowsOf !== 'function') return;
+    for (const [id, w] of this.knobs) {
+      const m = /^fx\.([a-z][a-z0-9]*)\.([A-Za-z0-9]+)$/.exec(id);
+      let rows = [];
+      try { rows = m ? arr(rowsOf(id)) : []; } catch (err) { rows = []; }
+      const arcs = [];
+      if (rows.length) {
+        const base = clamp01(this.val(m[1], m[2]));
+        for (const r of rows) {
+          if (!isObj(r) || r.byp) continue;
+          const a = (fin(+r.amt) ? +r.amt : 0) * (r.out == null ? 1 : fin(+r.out) ? +r.out : 1), mag = Math.abs(a);
+          if (!mag) continue;
+          let lo, hi;
+          if (r.bi) { lo = base - mag / 2; hi = base + mag / 2; } else if (r.pol === 'bi') { lo = base - mag; hi = base + mag; } else { lo = Math.min(base, base + a); hi = Math.max(base, base + a); }
+          arcs.push({ from: clamp01(lo), to: clamp01(hi), kind: a < 0 ? 'neg' : 'other' });
+        }
+      }
+      if (arcs.length) { w.setMod({ arcs, live: null }); w.modded = true; }
+      else if (w.modded) { w.setMod(null); w.modded = false; }
+    }
   }
   // the control-specific items of a parameter's context menu (§13.5): Compressor RATIO ▸ Limiter Latency Comp (disabled,
   // deviation 11), Bode SHIFT ▸ ✓ Retrig. Appended by ctlMenu; a host mod layer that owns the control menus (mod: true:

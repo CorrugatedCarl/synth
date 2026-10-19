@@ -306,6 +306,11 @@ test('macroBody (2b): 8 rows (a knob, an editable name ≤ 16 chars, the value);
   R.st.v[0] = 0.55; B.sync();
   assert.equal(vals[0].textContent, '55%');
   B.destroy();
+  // (fixer C, U8) blank names (normDev's '') show the default as a placeholder and label the knob "Macro n"
+  const R2 = rig('macro', { v: [0, 0, 0, 0, 0, 0, 0, 0], names: ['', 'Res', '', '', '', '', '', ''] }), N2 = byCls(R2.B.el, 'cv-mname'), K2 = byCls(R2.B.el, 'wk-knob');
+  assert.deepEqual([N2.map(n => n.getAttribute('placeholder')).join(), N2[0].value, N2[1].value, K2[0].getAttribute('aria-label'), K2[1].getAttribute('aria-label')],
+    ['Macro 1,Macro 2,Macro 3,Macro 4,Macro 5,Macro 6,Macro 7,Macro 8', '', 'Res', 'Macro 1', 'Res']);
+  R2.B.destroy();
 });
 
 test('ccBody (2b): the controller numBox (0…127, one edit per key), the channel menu (Omni / 1…16), Learn arms o.learn(true) and shows it (setLearn from the host), the value meter', () => {

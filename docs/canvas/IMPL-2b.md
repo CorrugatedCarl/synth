@@ -830,3 +830,71 @@ a macro knob by keyboard (`v` 0.01, `vals` m1.k1:0), no console errors or warnin
 inputs); the bounce / render-last audio with a payload end to end (the items carry it, the engine's `po.mods` path is
 A1's test); a Serum's own FX knob from a module (lane B routes it through ext / injection — the sim covers the Serum's
 `f.cutoff` only); `modCan` cannot foresee a 'slots' refusal before the drop (the knob lights up, the release tells).
+
+### 9.2 Fixer C — host / UI (2026-10-19; base `a87cec6`, the review's U1–U13, C4, C7, C11, E6 host half, P4, P7, the live meters)
+
+Failing test first, every one (DOM-unit on wk-dom, or the 2b page sim; `tests/canvas-2b-sim.test.mjs` 11 → 19, cv-cables +1,
+classic-panel +1, cv-modlayer +1, serum-ui +2, fx-ui +1, cv-mods-ui +assertions, main.test's sxExtra expectation widened).
+
+- **U1** (`cv-cables.js` modParts): a right-click's contextmenu on an amount badge is handed to the `[data-dest]` control
+  beneath (elementsFromPoint, as U2 of 2a hands the press) as a synthetic contextmenu — the control's own listeners open
+  ITS menu, never the cable's; a touch press handed to the control arms the control's long-press alone
+  (`stopImmediatePropagation` before the badge's menuSource) and the browser's late trusted contextmenu on the badge
+  (Android) is dropped while that press is held. `inBadge` reads `className` too (a test DOM without the class attribute).
+  Browser: the Juno's badges sit over the HPF slider — right-click and a 650 ms touch on them open the HPF's menu
+  ("Connect to… / Reset Control / Enter Value…"), one menu, nothing selected; a Serum badge over `f.cutoff` opens the
+  Serum knob's menu ("Key Track / Modulation, MIDI, Lock…"). The badge's place is unchanged (2a's geometry).
+- **U2 / P4** (`classic-panel.js` + `main.js`): `host.changed(track, id, ph)` — a drag's writes say `'move'`, its lift
+  `'end'` once after a move (`gestureEnd`; a two-finger rollback ends it too), keys / wheel / typed / reset say nothing;
+  `valChanged` holds the node (`N.modsHold`) and `postMods` reposts at most every `MODS_MIN_MS` 66 ms while held (a timer
+  posts the rest), at once at `'end'` (the `'end'` write touches no value: a rollback's preset name stays). Keys coalesce
+  per frame (queuePatch). Sim: 15 moves → ≤ 3 posts (sim time ≈ 0: 2), 5 keys → 1. Browser (a real 15-move CDP drag over
+  ≈ 630 ms): 10 `mods` posts for 18 patches — the 15 Hz throttle as asked, no longer one per frame; a quicker drag is fewer.
+  (A lower rate — 125 ms — would halve it; the knob's own value still travels with every frame's patch.)
+- **C4** (`main.js`, `cv-module.js`): `modsLast` — the payload last built per track — read by `cpSnap` (30 Hz), `modVal`
+  (a macro move) and the meters, never a compile there; the halo transfers cached per `(payload key, cpVer)` — `cpVer`
+  bumped in valChanged — no JSON per tick. `dashed`: cv-module's `cOpts` asks `host.cables.dashedSet()` ONCE per cables
+  refresh (a Set from one `buildMods`); the per-row `dashed(row)` stays for other hosts. Sim: a refresh's builds do not
+  grow with the cable count (4 → 6 cables). `modBudgetOf` (badges, the Mod list) builds fresh (an edit's same tick).
+- **U3** (`cpSnap`): `xferHas(xf, s)` — an eff outside the transfer's range (a table's span, the line a + b·x; a hair of
+  slack) gives no live value: the dot / mark hides instead of pinning at an end (fixer A corrects the engine value).
+- **U5** (`fx-ui.js`, `main.js`): `FXRackUI.paintMods(rowsOf)` paints halo arcs on the knobs the host names rows for
+  (Serum's haloArcs rule; `pol: 'bi'` for bend / chaos; the MIX / LEVEL knob under both ids; cleared once when the rows
+  go); its control menu (mod: false) lists `host.extraRows(destId)` first as disabled "Canvas cable: <label>" items.
+  `modHalos` paints a Serum's own FX module through it (`sxExtra`), and `renderFxTab` once the rack is built; `fxHost`
+  gains `extraRows`. Browser: `fx.rev.mix` / `fx.rev.size` `wk-modded` with an arc each; the menu "Canvas cable: LFO 1".
+- **U6** (`main.js`, `serum-ui.js`): `sxExtra` rows carry `label` (modLabel of the canvas source — "LFO 1", a macro knob by
+  its name) and `pol`; `knobMenuItems` reads `r.label` ("Canvas cable: LFO 1"; an ext source has no Serum name).
+  `sxHost.extraMatrix()` → `sxMatrixRows`: every canvas row compiled into the Serum with its slot tag ("ext 1", an injected
+  "LFO 3" / "ENV 2", a native "Velocity", "not compiled"); serum-ui's MATRIX page lists them read-only under the 64 slots
+  (`.sx-mcv` / `.sx-mcrow`: tag · label · amount · polarity · destination · BYP; rebuilt when their signature changes;
+  a bypassed one dimmed; none without the hook). Browser: "ext 1 | LFO 1 | +50% | → | Filter Res", PER NOTE → "LFO 1".
+- **U7** `cvTitle`: a module's title from `CMOD.modLabelOf` ("LFO 2"; singletons as before). **U8** (`cv-mods-ui.js`): a
+  blank macro name shows "Macro n" as the box's placeholder and labels the knob so (fixer B's normDev defaults are the
+  record's; this is the fallback). **U9** `modBudgetOf`: `canvas` = DISTINCT row ids on a classic / panel device (the
+  badge "mods 2" and the Mod list "2 cables" for an ENV on the Juno's `vm` selector that compiles into four rows) — fixer
+  B's `modBudget` agrees underneath now. **U10** `setTrackModel`'s notice names the device being replaced ("… to the
+  Juno-60 removed …"; "the Serum" as before for one). **U11** `cpHalos(tr)` right after the rows went (no eff monitor
+  without rows: `{t: 'mon'}` streams nothing for it). **C11** the values are assigned before the model (`tr.vals` then
+  `tr.model`: dropGone judges the rows against the new model's values). **U12** Enter Value… prefills the knob-unit
+  number ("Freq (0…10) [6]"). **U13** (`style.css`) range bars 3 px beside the groove (`--cp-i` steps the i-th aside),
+  `.slider .cap` z-index 1 above them, the live mark above the cap. **P7** `setLive` → `paintLive`: the dot / mark /
+  badge ring alone at the monitor rate (a spy on the arc nodes sees no write); arcs on rows / base changes. **C7**
+  (`cv-modlayer.js`): the Aux source / Invert aux section hidden on a classic / panel row (with Save with preset).
+- **E6** host half: `{t: 'modsErr', i, key}` from the node clears `N.modsKey` (a console.warn names the track); the next
+  queuePatch reposts the same payload (sim-tested with the fake node's `_fromProc`).
+- **Live meters**: a mounted LFO / ENV / chaos body subscribes the track's monitor once (`mcMons`: the primary's part,
+  role inst, live while one such body is on screen; gone with the last body); a `smon` carrying `mc` (Float32Array(16),
+  fixer A) with `pay.slots` (`{ moduleId: { kind, i } }`, fixer B; lfo 0…9, ENV 10…13, chaos 14, 15) moves each body
+  (`update(mc[i])`); either field absent → nothing. Sim-tested with both stubbed (the fake node's smon, `slots` set on the
+  memo's payload). Fixer B's `pruneRows` (an effect instance removed from a rack) is called from `fxEditDev` when it
+  exists (`fxPrune`: "n modulation cables removed with the effect", the halos repainted) — untested until the merge.
+- Sim-DOM notes: its `remove()` is a no-op (stale badges / Mod lists stay: the tests pick the last), `childNodes` is
+  inert (classic-panel's `wrapOf` walks `children` then), the History's byte cap trims old steps under the sim's many
+  snapshots (the tests undo counted steps, not to `hsteps()`), module ids are never reused (`dropNew`).
+- Sweep (one file at a time): canvas-2b-sim 19, canvas-2a-sim 26, canvas-1e-sim 24, canvas-sim 22, cv-shell-sim 16,
+  cv-fixes-sim 5, cv-cables 33, cv-module 52, cv-modlayer 12, classic-panel 8, cv-mods-ui 14, fx-ui 54, serum-ui 59,
+  main 37, midi 23, lint 124, pwa 22 — all green; precache rebuilt. Browser (headless Chrome, 1440 × 900, the
+  reviewer's CDP driver over a worktree server): fc1 / fc2 above, no console errors or warnings, no page errors.
+- Open: the meters end to end once A and B merge (the `mc` field's message, `slots`); the iPad's touch on the badge
+  hand-off (the long-press is the control's now: same path as a direct press); `pruneRows` wiring once merged.

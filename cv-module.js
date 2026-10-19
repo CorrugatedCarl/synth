@@ -693,7 +693,8 @@ export function createModule(o, env) {
  *   host.power(key, on)?  → instruments get the ⏻ button (dev.on !== false shows on)
  *   host.zone(key, {lo, hi, xp})?  → instruments get the key-zone pill (dev.zone)
  *   host.badge(key) → text | null   the bar badge ("not connected – silent", "OS 4→2"), read on every sync / refresh
- *   host.cables: {onSelect(id | null), onAction(id, 'disconnect' | …), menu(id) → items}   the editable cables (cablesOf)
+ *   host.cables: {onSelect(id | null), onAction(id, 'disconnect' | …), menu(id) → items, dashed?(row) → bool,
+ *                 dashedSet?() → Set<row id> (asked once per refresh: 2b C4)}   the editable cables (cablesOf)
  *   host.patch: false   (1f) read-only cables: every cable and jack data-ro (no press, focus or "Connect to…"; cableDrag
  *        still works when a caller makes one — main.js does not since stage 1f)
  * Instruments' jacks are focusable buttons; the jacks inside a Serum (its out → its own FX's in) carry data-ro.
@@ -928,7 +929,15 @@ export function createTrackView(world, track, host) {
   }
   // (2a) the mod context: the project (its wheel) and the preset rows, when the host gives them; read-only (1f) keeps the
   // mod cables editable
-  const cOpts = () => (typeof H.project === 'function' || H.presetRows ? { project: call(H.project), presetRows: H.presetRows, dashed: H.cables && typeof H.cables.dashed === 'function' ? H.cables.dashed : undefined } : undefined); // ((2b) host.cables.dashed(row): a per-note source following the last note)
+  // ((2b) host.cables.dashed(row): a per-note source following the last note; (fixer C, C4) host.cables.dashedSet() → the
+  // Set of such row ids, asked ONCE per refresh — the host compiles once, not per cable)
+  const cOpts = () => {
+    if (!(typeof H.project === 'function' || H.presetRows)) return undefined;
+    const C = H.cables || {};
+    let dashed = typeof C.dashed === 'function' ? C.dashed : undefined;
+    if (typeof C.dashedSet === 'function') { let S = null; dashed = r => { if (!S) { try { S = C.dashedSet(); } catch (err) { S = new Set(); } } return !!S && S.has(r.id); }; }
+    return { project: call(H.project), presetRows: H.presetRows, dashed };
+  };
   const cablesNow = () => (!DEV ? deriveCables(T) : RO ? cablesOf(T, cOpts()).map(c => (c.kind === 'mod' ? c : Object.assign({}, c, { readonly: true }))) : cablesOf(T, cOpts()));
   for (const k of keys()) make(k);
   cables.set(cablesNow());
