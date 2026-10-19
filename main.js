@@ -4108,8 +4108,7 @@ function srcModeUI(mode) {
   p.innerHTML = '';
   if (mode === 'track') p.append('Tap ' + one + ' for ', h('b', null, 'a new track'), ', or drag it onto the track list.');
   else p.append('Tap ' + one + ' to use it' + (v === 'flow' ? ' (simple panel)' : '') + ' in place of the ', h('b', null, model.name), ' on ',
-    h('b', null, '“' + trk().name + '”'), ', or drag it onto the canvas. Drag it onto the track list for a new track.',
-    ...(v === 'serum' ? [' A modulator: tap it, or drag it onto the canvas.'] : []));
+    h('b', null, '“' + trk().name + '”'), ', or drag it onto the canvas. Drag it onto the track list for a new track.');
 }
 function srcOver(t) {
   if (!t || typeof t.closest !== 'function') return null;
