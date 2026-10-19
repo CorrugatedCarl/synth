@@ -272,3 +272,74 @@ window 1440 × 900 → viewport 1440 × 813, dpr 2, ANGLE Metal on the M4 Max, 6
 world detaches so the faces show something while the context is gone — if lane F prefers to stay attached and wait for the
 restore, change `glLost` (two lines); (3) the "at rest" draw at every endBurst is one redundant GPU frame per gesture when the
 camera landed on device px — keep (contract-literal) or drop with `if (!write() && !GL) gridAt()`.
+
+### Lane F (cv-face.js, cv-panel.js, style.css, tests/cv-face.test.mjs, tests/cv-panel.test.mjs)
+
+**Interface, as built.** `FACES.register(deco, { markup, w, h, img?, moduleOf, offset, tip?, tier, env })` — `tier` is the 1g
+`faceTier` factory passed in by cv-panel (cv-face imports nothing from cv-panel: cv-world → cv-face → cv-panel → cv-world
+would be a cycle), `env` the tier's / the image loader's test env (cv-panel passes `api.tier` when it is an object, as 1g).
+`FACES.attach({ gl, world })`, `detach()`, `lost()`, `restored()`, `attachment()` (the object attach was given, null detached),
+`quads(rectOf, cam)`, `onChange(fn)`, `stats()` (`+ queued`), `recheck()` (the overlap rule and the offsets re-read — for a
+re-mount main.js makes without a camera move, see the open points). A second `attach` after a `detach` is a restore from
+nothing (bases next frame, one per frame, nearest first; windows at that rest), as lane G calls it. `Face.mode` is
+`'gl' | 'dom' | 'svg'` where `'dom'` means the 1g tier is active and showing its bitmap and `'svg'` the SVG shows (no tier,
+or the tier at k ≥ 1); `Face.shown` (the SVG is replaced) drives cv-panel's one-point data-tip hit-test; `Face.tier` the
+1g object. `data-cv-face` on the module is written by FACES at every mode change (`gl` / `dom` (a tier exists) / `svg`).
+- The quads follow a **module drag live**: the world's cached rect only updates at the drag's end, so FACES watches the
+  module element's `style` with a MutationObserver (the `translate3d` of a live drag, `zIndex`, `left/top` at the drop →
+  the overlap recheck next frame) and `data-cv-fold` / `data-off` (`[data-off]` → quad alpha 0.45 = `.cv-body`'s opacity;
+  the grayscale(0.7) of a powered-off body is not reproduced on the GL face). Without a MutationObserver (node) a
+  `refresh()` reads them. The quad list and its quad objects are reused between frames (no per-frame allocation).
+- The unmount hook is a hidden 0 × 0 `canvas.hw-rel` inside the deco (`wk.onRelease`; cv-module's `releaseCanvases(body)`
+  finds it) — `.inst.hw > .hw-decor > .hw-rel { display: none }`. `wk.onRescale(deco)` is hooked too (a zoom end re-syncs a
+  face re-homed into a module since).
+- **Background fill:** every one of the twelve face SVGs leaves parts of its box open (the horizontal centring strip
+  `offX` 4–15 px each side, the extras strip 16–280 px tall, gaps between areas): modular 12.5 % of the box uncovered,
+  minimoog 25.2, arp2600 10.8, solina 47.2, cs80 19.7, prophet5 18.7, ms20 11.7, tb303 50.3, obxa 15.1, jupiter8 21.6,
+  juno60 20.7, dx7 22.3. So every base and window raster is first filled: the `.inst.hw`'s computed `background-color`
+  (fallback: the inline `--hw-case` / `--hw-panel`), and for the four wood cases (modular, minimoog, solina, prophet5: a
+  gradient background, computed colour transparent) the stripes of `.inst.hw.hw-wood` are painted from `--hw-wood`
+  (color-mix as maths, a 14 px period pattern rotated 3° through `CanvasPattern.setTransform`, then the 90° sheen).
+- **CSS:** `.cv-mod[data-cv-face="gl"] { background: transparent }` is needed as well as the `.inst.hw` rule — `.cv-mod`
+  paints `#101216` under its body, which would hide the GL face. The bar's own gradient, the ring box-shadow and the
+  selection ring stay.
+- **Raster ceilings (added):** `WIN_MAX_PX = 16e6` px per window (the iOS 2D canvas ceiling — a whole CS-80 width at level
+  4 would be 8200 × 2912 = 24 M px) and `TEX_MAX_DIM = 8192` a side (base and window): the level drops to fit
+  (`winLevelOf`). The budget level uses Σ of the *window* areas (the visible parts grown by the margin — what is rastered),
+  the conservative reading of §3.3 that keeps Σ ≤ WIN_BUDGET_PX true. A window is also planned when a base lands at a
+  rest (a face mounted while zoomed in) and at a rest at `k = 1` (level 4: the next 2× zoom-in stays ≥ 1:1).
+- **Budget order:** off-screen windows (farthest first), then off-screen bases farthest from the viewport centre; an
+  off-screen face only evicts faces farther out than itself (no thrash) and is skipped (its SVG) when it still would not
+  fit; an on-screen face is always painted.
+
+**Measured (node, d = 2).** Base rasters: modular 3456 × 1840 (25.4 MB, 33.9 with mips), minimoog 2816 × 944 (10.6 / 14.2),
+arp2600 3136 × 1776 (22.3 / 29.7), solina 3968 × 432 (6.9 / 9.1), cs80 4864 × 1456 (28.3 / 37.8), prophet5 3840 × 944
+(14.5 / 19.3), ms20 2240 × 816 (7.3 / 9.7), tb303 1216 × 1136 (5.5 / 7.4), obxa 4096 × 1072 (17.6 / 23.4), jupiter8
+4288 × 1136 (19.5 / 26.0), juno60 4288 × 752 (12.9 / 17.2), dx7 4096 × 880 (14.4 / 19.2) — all twelve 247 MB with mips.
+Windows, iPad 1366 × 1024 at d = 2, one face centred (window = the visible part + the 0.25-viewport margin, clipped to the
+face): at k = 0.6 the whole face at level 2.4 (cs80 5837 × 1747 = 40.8 MB, modular 36.6, arp2600 32.1, jupiter8 28.1, obxa
+25.3, prophet5 20.9, dx7 20.8, juno60 18.6, minimoog 15.3, ms20 10.5, solina 9.9, tb303 8.0); at k = 1 level 4 capped by the
+16 M px ceiling for the big ones (cs80 2050 × 728 → 6712 × 2384 = 64 MB at level 3.27, modular 3.17, arp2600 3.39, obxa 3.82,
+jupiter8 3.71; the rest level 4: 22–58 MB); at k = 1.6 the 1282-wide visible strip at level 4 (cs80 5128 × 2912 = 59.7 MB,
+modular / arp2600 at 3.68 / 3.75 = 64 MB, the rest 18–47 MB). Five CS-80s tiled in view: k = 0.6 → Σ 35 M px = 140 MB (the
+budget level 2.57 does not bind below the 2.4 head), k = 1 → 38.8 M px = 155 MB (the budget level 4.06 just above the 4
+cap), k = 1.6 → 2 visible, 57 MB.
+
+**Measured (Chrome 152, Mac M4 Max, dpr 2; drawImage of the CS-80 face from a Blob-URL Image onto a 2D canvas, warm /
+cold, read back with getImageData).** The cost follows the *output* pixels, not the panel: base level 2 (4864 × 1456)
+2.8–3.7 ms warm (13.5 / 21.9 ms the first two: the SVG's own layout), the whole panel at the 16 M px cap (7953 × 2381)
+7.1–8.3 ms (34 cold), the 1282 × 728 window at level 4 (5128 × 2912) 3.9 ms by source rect and 3.9 ms by clip + whole-panel
+scale (identical: the browser clips the SVG paint), the 2050 × 728 window at 3.27 (6712 × 2384) 4.5 ms (23.6 cold), a 640 × 360
+region at 4 (2560 × 1440) 1.4 ms. So one window per frame at ≤ 8 ms on the Mac; the GL upload is lane G's number. The
+iPad's numbers are the user's run (§7).
+
+**Open points for the integrator.**
+- A re-mount main.js makes without a camera move (`cvKeep` / a view rebuild re-homing the same `.inst`) reaches FACES only
+  at the next zoom end (`wk.rescaleCanvases`) or `'screen'` change: `cvMountBody` could call `FACES.recheck()` after the
+  mount (or the world could emit `'screen'` on `add`).
+- The viewport size for the windows is read from `world.viewport.clientWidth/Height` at a rest; a `world.size()` getter
+  would be cleaner. The camera comes from the `'cameraend'` payload and `world.cam`.
+- On the GL path the 'dom' faces (an overlapping / folded module) still rely on `wk.setCanvasScale` + `rescaleCanvases`
+  at zoom ends for their 1g bitmap — keep those calls on the GL path.
+- The patching dim (`#world[data-cv-patching="mod"] .cv-mod.cv-nodest > .cv-body { opacity: .35 }`) does not reach a GL
+  face (only `[data-off]` is mirrored as alpha).

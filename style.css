@@ -900,6 +900,12 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .inst.hw > .hw-decor > svg { position: absolute; left: 0; top: 0; display: block; overflow: hidden; text-rendering: geometricPrecision; } /* (Chrome: printed text built at one camera zoom kept its old raster scale, or vanished, at another) */
 /* (1g) the face as a bitmap below native resolution (cv-panel faceTier): the same box, the SVG beside it hidden (visibility) */
 .inst.hw > .hw-decor > .hw-bm { position: absolute; left: 0; top: 0; display: block; pointer-events: none; }
+/* (1h) a GL face (cv-face, data-cv-face="gl" on the module): the texture under #world shows through the module and the
+   panel — their backgrounds go (the base texture carries the panel's fill); the bar, the ring (box-shadow) and the
+   wood cheeks stay DOM. The 0 × 0 sentinel canvas (the unmount hook) never shows. */
+.cv-mod[data-cv-face="gl"] { background: transparent; }
+.cv-mod[data-cv-face="gl"] .inst.hw { background: transparent; }
+.inst.hw > .hw-decor > .hw-rel { display: none; }
 .inst.hw .hw-inert { cursor: help; }
 /* the live layer: only the widgets take presses — the gaps fall through to the art (a pan); each widget's press area is
    its ::before, sized by the renderer (--hit-w / --hit-h: ≥ 28 world px), so a press on it is a press on the widget */

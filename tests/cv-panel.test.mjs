@@ -597,6 +597,42 @@ test('1g faceTier: a zoom end reaches it through wk.onRescale (no main.js change
     const z = tierRig({ k: 1 }); z.frame(); eq1([z.R.imgs.length, z.st().svg], [0, 'visible'], 'at 100 %: nothing loads');
   } finally { console.warn = warn; }
 });
+test('1h: render() registers a parsed face with cv-face (the Face stands as `tier`: mode, shown; api.tier as the env; false → none): on the 2D path the 1g tier under it, data-cv-face on the module, moduleOf / offset (a stub DOM: 0, BAR_H), the data-tip tap under a shown face, destroy', () => {
+  const doc = fresh(), win = doc.defaultView, model = modelOf('tb303');
+  const mkEl = doc.createElement.bind(doc);
+  doc.createElement = tag => { // (the stub DOM parses no innerHTML: a .hw-decor gets its SVG root from the markup string)
+    const el = mkEl(tag);
+    if (tag === 'div') Object.defineProperty(el, 'innerHTML', { set(v) { if (/^<svg/.test(String(v))) { el.textContent = ''; el.append(doc.createElementNS('http://www.w3.org/2000/svg', 'svg')); } }, get() { return ''; }, configurable: true });
+    return el;
+  };
+  const world = mkEl('div'), mod = mkEl('div'), body = mkEl('div'), root = mkEl('div');
+  world.setAttribute('data-cv-world', ''); mod.setAttribute('data-cv-mod', 'i1'); body.className = 'cv-body';
+  body.append(root); mod.append(body); world.append(mod); doc.body.append(world);
+  const R = { k: 1, imgs: [], rq: [] };
+  class Img { constructor() { this.onload = null; this.onerror = null; R.imgs.push(this); } set src(u) { this._src = u; } get src() { return this._src; } }
+  class Bl { constructor(parts, opt) { this.text = parts.join(''); this.type = opt && opt.type; } }
+  const env = { win, doc, scale: () => R.k, raf: f => R.rq.push(f), Image: Img, Blob: Bl, URL: { createObjectURL: () => 'blob:1', revokeObjectURL: () => {} } };
+  const api = Object.assign(fakeApi(model, doc), { tier: env });
+  const r = P.render(root, TB_FX, model, api), F = r.tier;
+  assert.ok(F && typeof F.refresh === 'function' && typeof F.destroy === 'function', 'a Face');
+  eq1([F.mode, F.shown, !!F.tier, mod.getAttribute('data-cv-face')], ['svg', false, true, 'dom'], 'the 2D path at 100 %: the tier under it shows the SVG; the module says dom');
+  const deco = root.childNodes.find(n => n.className === 'hw-decor');
+  assert.ok(deco.childNodes.some(n => n.localName === 'canvas' && n.className === 'hw-rel'), 'the unmount sentinel in the deco');
+  // 50 %: the tier's bitmap → shown; a tap on the deco hit-tests the SVG for that point (elementFromPoint) and tips
+  R.k = 0.5; wk.rescaleCanvases(world); R.imgs.at(-1).onload();
+  eq1([F.mode, F.shown, deco.childNodes.filter(n => n.className === 'hw-bm').length], ['dom', true, 1]);
+  const g = doc.createElementNS('http://www.w3.org/2000/svg', 'g'); g.setAttribute('data-tip', 'CUTOFF — not emulated'); deco.childNodes[0].append(g);
+  doc.elementFromPoint = () => g;
+  const seen = [];
+  deco.addEventListener('click', e => seen.push(e.target === deco), true);
+  fire(deco, 'click', { clientX: 10, clientY: 10 });
+  eq1([seen.length, api.state.tips.at(-1), deco.childNodes[0].style.visibility], [1, 'CUTOFF — not emulated', 'hidden'], 'the tip through the hidden SVG, the SVG hidden again after');
+  r.destroy();
+  eq1([mod.getAttribute('data-cv-face'), deco.childNodes.filter(n => n.localName === 'canvas').length, deco.childNodes[0].style.visibility || 'visible'], [null, 0, 'visible'], 'destroy: the attribute, the bitmap and the sentinel gone');
+  // api.tier === false: no registration
+  const r2 = P.render(mkEl('div'), TB_FX, model, Object.assign(fakeApi(model, doc), { tier: false }));
+  eq1(r2.tier, null);
+});
 test('1g: the face SVG is self-contained (every fill / stroke / font / text-rendering an attribute: it draws the same as an image); render() without a parsed face (a stub DOM) has no tier', () => {
   for (const id of authored) {
     const s = P.decorSvg(P.layoutOf(id), modelOf(id));
