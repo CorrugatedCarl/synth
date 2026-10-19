@@ -181,6 +181,67 @@ after stage 1g (grid canvas, panel bitmap tier) is merged, since both touch `cv-
 - UI: the four modules, the tray section, the drag onto a knob (snap, glow, refusal texts), the inspector, the Mod list, visibility
   modes; iPad: the user tries it after the deploy (touch drag onto a knob, two-finger cancel).
 
-## 8. Notes
+## 8. Notes (2026-10-19, after the review round)
 
-_(filled in at the end)_
+### 8.1 Built, by lane, and the decisions taken
+
+- **A compile / data / host**: rows `{ id, src, dst, amt, bi, curve, aux, inv, byp, out, acurve, crv, rise, fall, slink }` (every field of
+  `normRow`, `acurve` included); ids from the saved counter `track.mid`, never reused (`duplicateTrack` copies it). `injectMods` returns
+  `vals.s` by identity with no rows; otherwise a copy whose matrix holds each valid row in a free slot — a row keeps the slot it had
+  while that slot is free (a per-`vals` hint map; review H5), bypassed / zero rows still take a slot and count in the budget, invalid
+  rows are neither placed nor left, `left` = valid rows with no free slot (they can only arise from a preset load: `addMod` refuses when
+  full). The merged `{ s }` reaches `compileSerum` and `fxModded2` through `patchFor` on every live and offline path (buildPatch,
+  instPatch, bounce, render-last); the preset preview and the render farm do not inject. `song.normDev` keeps `mods` / `mid` with
+  `normRow`'s field rules; `deserialize` keeps `perf` when the file has one (main normalises it to `{ wheel: null }` otherwise); schema
+  5. `ctl('wheel')` posts to `targets(src)` ∪ `wheelTracks()` and records into `targets(src)` only. `sxHost.extraRows` feeds `haloArcs`
+  (canvas arcs after the matrix's, slot −1) and `knobMenuItems` (a disabled "Canvas cable: <src>" line; the Serum's own "Remove All"
+  ignores canvas rows). `cv-mods.descs` reads a 1c panel's `fx`.
+- **B widgets**: modules of kind `mod` (`W_MOD` 240, `MOD_H` per kind, one right jack `kind: 'mod'`, cost 40) in a Tidy column at
+  **x −320** (`MOD_GAP` 80; review U8 — a portrait fit with the Sources tray open is bounded by `K_MIN`, not the column); the host adds
+  the project wheel pseudo-device; mod cables from `track.mods` plus "preset" cables from a Serum's own performance rows when their
+  module exists; bodies in the under layer, the last 24 screen px and the amount badge (an HTML button, 44 px tall, never wider than
+  the badge; a press beneath it reaches the knob, and a pan can start on it — U2 / U4) in the over layer; visibility Always / On select /
+  Never on the toolbar `∿` (`synth.cv.mods`), the 24+ fade with a once-per-session hint (U10); the mod drag resolves knobs through
+  `elementsFromPoint` → `[data-dest]` → `[data-dev]`, looking through badges, with `.cv-ok` / `.cv-nodest` / `.cv-hot` states; mod
+  jacks and cables stay editable while audio cables are read-only (1f). `amtText` is the one amount format: `±` for a positive bipolar
+  amount, `∓` for a negative one (U11). Knob end points are measured once per module from the first `[data-dest]` element with a box
+  (hidden Serum pages keep twins in the DOM — U1) and re-measured on fold, resize, sync, refresh and Serum page edits.
+- **C mod layer** (`cv-modlayer.js`): the inspector (Amount, Bipolar, Curve, Output, Aux + Invert, Rise / Fall / Link, Bypass, Save with
+  preset / Keep on canvas, Disconnect; header "<source> → <knob> · n/64" with "preset" / "not compiled" tags), the Mod list (a cv-tray
+  sheet per track, one section per device with its budget, "Disconnect all" of canvas rows after a confirm), the parameter list
+  (groups → knobs, nomod disabled). `close()` closes the popover if open, else the list (U7); taps inside the popover neither deselect
+  the cable nor reach the cable key handler, and one Escape closes it (U5 / U6); placement clamps to `visualViewport`. Its STYLE is
+  injected once from `main.js` (`#cvModStyle`), not moved into `style.css`.
+- **D integration**: `cvDevices`, bodies from `cv-mods-ui` (the wheel body ↔ `ctl('wheel')` both ways, a two-finger cancel puts the
+  press value back — U3; `+N on other tracks` lists the tracks and reveals the picked one — U14), the Modulators tiles (a drop lands
+  where dropped, a tap goes to the module's `MOD_ORDER` slot of the column and is revealed when off screen — U9), ⋯ menus (Delete with
+  the wheel's confirm, "Modulation list…" on Serum and modulator modules — the Mod list's entry point instead of SPEC §2.11's toolbar
+  button), the mod drag (`canMod` = `destOk` + the budget, `limit: prefs.limitDrop` as the Serum's own WHEEL tile — review H7), the
+  cable menu (Edit…, Bypass, Disconnect — U15; Amount stays in the inspector), the badge "mods n/64 · k not compiled" and a notice when a
+  preset load leaves rows uncompiled (H8), `cvModPlay` per frame only for live modules with a binary-searched lane (U13), `sync()` after
+  undo / redo / preset load.
+- **History**: a drag records "Modulate <knob> with <source>"; the inspector's gestures record one step each through `modPre` (opened at
+  the gesture's first change, reusing a no-op top entry) and `modStep` (names it; prunes it when nothing changed), `modUnstep` drops the
+  step after a two-finger rollback, `modUnpre` / `History.prune` drop no-op steps on refusals (H2); the label of the entry actually
+  undone decides the slot move; "Save with preset" / "Keep on canvas" carry `meta {trackId, dev, slot, row}` on their History entry and
+  undo / redo touch only that slot of that device when it still holds (or is free for) that row, else leave the matrix alone with a
+  notice (H1: Serum edits are not History steps and must never be reverted). Preset-row edits, bypass and disconnects go through
+  `sxEdit` under the knob-tweak policy (no project step). Replacing a Serum that has cables says "N modulation cables … removed: classic
+  knobs take modulation from stage 2b" (H4); "Save as classic project" lists the cables, the modulator modules and the Mod Wheel (H3).
+- **Not done here**: the 1e transition accessors and primary-only paths (IMPL-1e §8.3) stay — with one instrument per track (1f) they
+  mean the instrument; retiring them moves to milestone 3's contract, where Serum parts need per-part state. A Serum's own WHEEL tile
+  still writes into the first empty slot of the un-injected matrix, so one canvas row may move slot when it lands there (H5 keeps the
+  others). After "Save with preset", loading another preset and undoing restores the old preset *name* while the matrix stays the
+  loaded one (pre-existing: keepDevs keeps vals and fx, not the label).
+
+### 8.2 Gates (M4 Max, 2026-10-19)
+
+No cables → the same bytes: `injectMods` identity proof (serum-core), golden-presets 8/8, golden-classic / fx / random unchanged,
+canonical-stream 1/1 unchanged, cp2 / ct2 fixtures untouched; no DSP file changed. A canvas wheel row = the Serum's own WHEEL tile's row
+(serum-core compile equality incl. custom curves, slew, aux, FX destinations; canvas-2a-sim through `dropRow` with the live `limitDrop`,
+both settings). Preset load keeps every cable; Save with preset round-trips with the compile unchanged; the live wheel reaches a cabled,
+unselected, unarmed track and is recorded only into armed targets; 64-row budget: left rows listed, badge / Mod list / compile agree.
+Sweep before the fixes: 70 files / 1968 tests (one test fixed: smpgen's buildPatch extraction); after the fixes: see the deploy commit.
+Browser checks by lanes D and U at 1440×900 and 1024×1366 (drag onto a knob, halos following the perf wheel, inspector, Mod list,
+cable ends across Serum pages, badges beneath knobs, the two-finger rollback). iPad: the user tries the touch drag and the two-finger
+cancel after the deploy.

@@ -1,4 +1,4 @@
-# SYNTH — handover briefing (2026-10-18, updated after stage 1e)
+# SYNTH — handover briefing (2026-10-18, updated after stages 1f, 1g and 2a)
 
 Written for the next agent taking over this project. Read it fully, then `docs/canvas/ROADMAP.md`. Project-wide rules are in `CLAUDE.md`
 at the repo root (auto-loaded). The user is non-technical-friendly but very engaged: they test on their iPad Pro and Mac, give fast,
@@ -59,8 +59,8 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
 | 1e Several synths per track: graph engine, N instruments → shared / separate panels → OUT, editable cables, Effects tray, power, key zones, per-instrument MIDI learn / render-last / CPU, Measure this device, soft caps | done (IMPL-1e.md: contract §1–7, notes §8); iPad bench after 1e PASSED (bench.json `"ipad1e"`, row r 0.081). **UI withdrawn in 1f** (engine, model, fixes kept) |
 | 1f One instrument per track (UI) — completes milestone 1 (canvas, trays, modules, read-only cables, one synth per track, Effects tray): the user found five hardware panels on one canvas unacceptably laggy on the iPad (pinch zoom mostly; pixelated, aliased panels when zoomed out). Drops replace, no ⏻ / zone pill / device items, read-only cables, Effects tray into the track's panel, several-instrument projects open split (`cv-migrate splitTracks`) | done (IMPL-1e.md §8.5) |
 | 1g Canvas rendering at zoom — the grid on a device-px canvas (`cv-world gridDraw`: no flicker, aligned dots), hardware faces as smoothed bitmaps below 100 % (`cv-panel faceTier`), the top tray's grip keeps the canvas still (ROADMAP feedback 2026-10-19) | done (IMPL-1e.md §8.5) |
-| **2a Performance modulators** (project Mod Wheel, Velocity, Aftertouch, Bend; mod list; cable inspector) + retiring the 1e transition accessors (IMPL-1e §8.3) | **NEXT** — SPEC §10 2a, §7.10 |
-| 2b Modulation everywhere (LFO GLOBAL/PER NOTE, ENV, Macro, CC, Chaos on any Serum/FX knob + 237 classic controls) | planned |
+| 2a Performance modulators (project Mod Wheel, Velocity, Aftertouch, Bend cabled to Serum knobs / own FX; rows injected at compile; inspector; Mod list; ∿ visibility; live-wheel broadcast) | done (IMPL-2a.md); **the user's iPad try pending** (touch drag onto a knob, two-finger cancel) |
+| **2b Modulation everywhere** (LFO GLOBAL/PER NOTE, ENV, Macro, CC, Chaos on any Serum/FX knob + 237 classic controls; ModCore in the worklet) | **NEXT** — SPEC §10 2b, §7.3–7.9; an ENGINE stage: iPad bench after it |
 | 3 Serum taken apart (VOICE hub + parts as modules) | planned |
 | 4–6 later (full patching, per-voice classic modulation, polish) | later |
 
@@ -76,7 +76,7 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    5 % of `"ipad1d"`, the new row r ≤ 0.12 and within 25 % of the device factor (⚙ → Measure this device on the iPad shows it). Then the
    user tries 1f on the iPad (tile drags from both trays: a Sources drop replaces, an effect goes into the track's panel; a 1e
    project with several instruments in a track opens split, with the notice) and feedback goes into ROADMAP's table before 2a.
-2. Start stage 2a with the full process (contract → parallel builders → integrate → multi-dimension review with adversarial verification →
+2. (Done 2026-10-19.) Stage 2a shipped with the full process; next is **stage 2b** with the same process (contract → parallel builders → integrate → multi-dimension review with adversarial verification →
    fixes → one-file-at-a-time sweep → deploy). Scope per SPEC §10 2a and §7.10; add the 1e leftovers of IMPL-1e §8.3 (retire the
    transition accessors — ≈ 180 `t.model` / `t.vals` / `fxOf(t)` sites that mean the primary —, the primary-only paths). The 1e process
    worked well: four parallel lanes with exclusive files, one integration lane after, four reviewers that each reproduce findings by
@@ -89,6 +89,7 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
 - `engine.js` — AudioWorklet processor: `Track` (registered `synth-engine`) holding N `Inst`s and M shared `Chain`s (stage 1e graph: `{t:'graph'}`, `patch i`, `chain c`, `power`; alias paths keep today's shapes bit-identical; IMPL-1e §2); facade keeps legacy callers working.
   DSP scripts loaded before it in order (sx-base, sx-filt2, sx-warp, sx-mod, sx-sample, sx-gran, sx-spec, sx-seq, fx-mods2, serum-dsp,
   fx-dsp, engine).
+- `cv-modlayer.js` (2a: the cable inspector, Mod list and parameter list; host interface in IMPL-2a §4), `cv-mods-ui.js` (2a: the wheel / velocity / aftertouch / bend module bodies), `cv-mods.js` (descriptors, `destOk`, `sourcesOf`, `wheelTracks`); `track.mods` rows + `track.mid`, `project.perf.wheel`, schema 5; `cv-graph.injectMods` / `modBudget`; `main.js` `modVals` (injection), `ctl` wheel broadcast, the "cv MODULATION" section (modPre / modStep / modUnstep / modMoveBack History glue), `__synthTest.cv.mod` / `.modUI` hooks.
 - `cv-graph.js` (compileTrack / compileGraph: canonical v1 view or the graph messages), `cv-model.js` (the editing API: addInst, connect, setPower, setZone, makePrimary, setModel, sharedPanelFix …; adopt + transition accessors), `cv-cost.js` (cost table, estimates, soft caps, Measure this device Worker).
 - `main.js` 1e/1f: `instView(t, dev)` (a track-shaped view of any instrument; the primary is the track), `curDevs` (the current instrument — since 1f always the primary), per-device `classicPanels` / `serumPanels` / `fxPanels` (one each per track since 1f), `sendGraph` + per-Inst / per-chain caches (dormant: every track is canonical since 1f, `legacyOk` keeps today's message stream), `partsOf` / monitors by device, `cvAddInstrument` reachable only as the `__synthTest.cv.add` hook; `cv-migrate.splitTracks` splits multi-instrument projects on load.
 - `models.js` (model definitions/params), `serum-core.js`/`serum-dsp.js`/`sx-*.js` (Serum), `fx-*.js` (FX), `laws.js`, `tuning.js`.
