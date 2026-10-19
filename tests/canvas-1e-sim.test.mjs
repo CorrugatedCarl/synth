@@ -125,7 +125,8 @@ test('1f: no ⏻ and no key-zone pill on the bars, the ⋯ menus without device 
   const L = ['About the Minimoog…', 'Replace with…', 'Hardware layout', 'Simple layout', 'Save sound…', 'Delete saved sound', 'Init sound', 'Fold', 'Bring to front', 'Tidy the canvas'];
   assert.deepEqual(labels('i1'), L);
   assert.deepEqual(labels('i2'), L.map(x => x.replace('Minimoog', 'Juno-60')));
-  assert.deepEqual(labels(ID.sx), ['About the Serum…', 'Replace with…', 'Fold', 'Bring to front', 'Tidy the canvas']);
+  // (stage 2a, IMPL-2a §5: a Serum's ⋯ opens its Mod list — "Modulation list…", lane D's choice for the mod list's entry)
+  assert.deepEqual(labels(ID.sx), ['About the Serum…', 'Replace with…', 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']);
   assert.deepEqual([labels('fx1'), labels(ID.sx + '/fx'), labels('out')], [['Fold', 'Bring to front', 'Tidy the canvas'], ['Fold', 'Bring to front', 'Tidy the canvas'], ['Fold']]);
   const C = V().cables.list();
   assert.ok(C.length >= 4, C.length + ' cables');
