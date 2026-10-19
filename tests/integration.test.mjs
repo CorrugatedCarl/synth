@@ -96,7 +96,10 @@ test('§15.13: serum-core constants equal SxBase / SerumDSP / FXDSP tables and t
   assert.equal(FX.VER, core.FXP_VER);
   // v2 tables by voice-vector index (SxBase, §11.5): every destination with a voice slot, every source
   assert.deepEqual({ ...SB.DIDX2 }, { ...core.DIDX });
-  assert.deepEqual({ ...SB.SIDX2 }, { ...core.SIDX });
+  // (IMPL-2b §3.2: SxBase carries the 16 canvas ext inputs after serum-core's 62 sources)
+  const sidx2 = { ...SB.SIDX2 };
+  for (const id of core.EXT_IDS) { assert.equal(sidx2[id.toUpperCase()], core.S_EXT0 + core.extIndex(id) - 1, id); delete sidx2[id.toUpperCase()]; }
+  assert.deepEqual(sidx2, { ...core.SIDX });
   assert.deepEqual({ ...SB.GIDX }, { ...core.GIDX });
   assert.equal(SB.NSV, core.NSV); assert.equal(SB.ND, core.ND); assert.equal(SB.NV1, core.NV1); assert.equal(SB.NF1, core.NF1);
   assert.equal(SB.LAW_TAB2.law.length, core.NSV);
@@ -109,7 +112,8 @@ test('§15.13: serum-core constants equal SxBase / SerumDSP / FXDSP tables and t
     assert.equal(SB.LAW_TAB2.hi[v], d.hi, d.id + ' hi');
     assert.equal(SB.LAW_TAB2.cont[v], cont, d.id + ' cont');
   });
-  assert.equal(SB.SRC_POL2.length, core.NSRC);
+  assert.equal(SB.SRC_POL2.length, core.NSRC + core.N_EXT);
+  assert.equal(SB.NSRC, core.NSRC + core.N_EXT);
   core.SOURCES.forEach((s, i) => assert.equal(SB.SRC_POL2[i], s.pol === 'bi' ? 1 : 0, 'source ' + s.id));
   // SerumDSP's Phase-1 tables are the v1 prefix (synth rows 0–147 by vi = idx, FX rows 148–247, sources 0–33)
   assert.equal(Object.keys(SD.DIDX).length, core.NS);
@@ -668,7 +672,7 @@ test('engine: smon / fxph messages, every model through the rack, direct out thr
 });
 
 /* ------------------------------------------------------------------ SPEC-serum2 M1a step 4: engine, script list, PROCS */
-test('§0.3: main.js, the golden harness and dsp-scope load the same 11 scripts in table order; every file exists', async () => {
+test('§0.3: main.js, the golden harness and dsp-scope load the same 12 scripts in table order (mod-core.js last, IMPL-2b); every file exists', async () => {
   const main = SRC('main.js'), m = /const DSP_FILES = \[([^\]]*)\]/.exec(main);
   assert.ok(m, 'main.js DSP_FILES');
   assert.deepEqual(m[1].split(',').map(x => x.trim().replace(/^'|'$/g, '')).filter(Boolean), [...DSP_FILES]);

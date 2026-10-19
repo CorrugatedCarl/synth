@@ -2632,6 +2632,7 @@ class Chain {
     this.oL = new Float64Array(128); this.oR = new Float64Array(128); this.Lb = this.oL; this.Rb = this.oR;
     this.nOut = 0; this.live = 0; this.fxr = null; this.overK = ''; this.used = 0; this.nOn = 0;
     this.dyTo = null; this.dyG = 0.5; this.dyG = 0; this.dyO = 0.5; this.dyO = 0;
+    this.mcOn = 0; // ModCore rows reached its rack last span (IMPL-2b §4: setMods(null) once when they go)
   }
 }
 const MAX_I = 8, MAX_C = 16, CH_SRC = MAX_I + MAX_C, OUT_SRC = 2 * CH_SRC, NK = 17 * 128; // limits (§2.6); held keys (ch × note)
@@ -2703,6 +2704,9 @@ class Track extends Facade {
     this.oL = new Float64Array(128); this.oR = new Float64Array(128);
     this.holdR = new Uint8Array(NK); this.holdP = new Int16Array(MAX_I * NK); this.holdV = new Float64Array(NK);
     this.slots = [null, null, null, null, null, null, null, null]; this.wI = null; this.wC = null;
+    // IMPL-2b §2.4: the track's controller state (what the broadcasts and the song cc lanes write into every Inst; ModCore's
+    // shim reads them), the keys the player holds (ModCore's legato / last-release rule), the ModCore (null: no rows)
+    this.wheel = 0; this.at = 0; this.bendRaw = 0; this.nHeld = 0; this.mc = null;
     this.c0 = new Chain(this.base); this.chains = [this.c0];
     this.i0 = new Inst(this, po.os || 4, this.c0); this.insts = [this.i0];
     this.legacy(this.i0, this.c0);
@@ -2729,6 +2733,7 @@ class Track extends Facade {
       if (C && typeof C === 'object') for (const id in C) { const e = C[id]; if (e) this.chainMsg({ t: 'chain', c: id, fxr: e.fxr, fxrT: e.fxrT }); }
       if (Q && typeof Q === 'object') for (const id in Q) { const x = this.instOf(id); if (x !== null && Q[id]) x.seqMsg(Q[id]); }
     }
+    if (po.mods && typeof po.mods === 'object') this.modsMsg(po.mods); // (IMPL-2b §2.2: a bounce's rows, after its parts)
     if (po.song) this.songMsg(po.song);
     if (po.transport) this.transportMsg(po.transport);
     this.port.onmessage = (ev) => this.msg(ev.data);
@@ -2794,6 +2799,7 @@ class Track extends Facade {
     this.lim.reset(); this.dcx.fill(0); this.dcy.fill(0);
     this.mon = false; this.monF = 0; this.spanF = 0; this.pnN = 0; this.extN = 0; this.inSpan = 0; this.frames = 0;
     this.nOnK = 0; this.holdR.fill(0); this.holdV.fill(0);
+    this.wheel = 0; this.at = 0; this.bendRaw = 0; this.nHeld = 0; this.mc = null;
     this.i0.restore(os);
   }
   msg(d) {
@@ -2823,12 +2829,15 @@ class Track extends Facade {
       case 'graph': this.graphMsg(d); break;
       case 'chain': this.chainMsg(d); break;
       case 'power': if (this.graphed === 1) { const I = this.instOf(d.i); if (I !== null) this.power(I, d.on ? 1 : 0); } break;
+      // IMPL-2b §2.2: the track's modulation rows (ModCore) and one value of its table
+      case 'mods': this.modsMsg(d); break;
+      case 'mval': if (this.mc !== null) this.mc.ctl(d.k, d.v); break;
       // controller state reaches every Inst, powered or not (§6.6); {t: 'os', i, v}: one Inst (the safeguard, graph nodes)
       case 'bend': case 'wheel': case 'at': case 'sus': case 'pat': case 'mpe': case 'os': {
         if (d.t === 'os') {
           if (d.i !== undefined && this.graphed === 1) { const I = this.instOf(d.i); if (I !== null) I.msg(d); break; }
           this.hostOS = d.v; // (the oversampling a new Inst starts at)
-        }
+        } else if (d.t === 'wheel') this.wheel = +d.v || 0; else if (d.t === 'at') this.at = +d.v || 0; else if (d.t === 'bend') this.bendRaw = +d.v || 0;
         const I = this.insts;
         for (let i = 0; i < I.length; i++) I[i].msg(d);
         break;
@@ -2852,6 +2861,37 @@ class Track extends Facade {
       return I === null ? null : I.kind === 'serum' ? I.fxc.rack : I.feed !== null ? I.feed.rack : null;
     }
     return this.c0.rack;
+  }
+  // {t: 'mods', cp, ct, rows, xfer, ext, vals, keep, bpm} (IMPL-2b §2.2): the track's ModCore takes the payload (built on
+  // the first one); {off: true}, an empty payload (no rows, no ext) or one it rejects → no ModCore (N1: nothing on the audio
+  // path). Leaving: every Serum's ext rows and own-FX sums are cleared, every cabled panel's rack unmodulated next span
+  modsMsg(d) {
+    const MCM = globalThis.ModCore;
+    const empty = !d || d.off === true || !MCM || ((!Array.isArray(d.rows) || d.rows.length === 0) && (!Array.isArray(d.ext) || d.ext.length === 0));
+    if (empty) { this.modsOff(); return; }
+    let MC = this.mc;
+    try {
+      if (MC === null) MC = MCM.create(this, this.base, S_N);
+      MC.setRows(d);
+    } catch (err) { this.modsOff(); return; }  // (a malformed payload: ignored, as any protocol error)
+    this.mc = MC;
+    this.handRows(MC);
+  }
+  modsOff() {
+    if (this.mc === null) return;
+    this.mc = null;
+    const SD = globalThis.SerumDSP;
+    for (const I of this.insts) if (I.kind === 'serum' && I.sx !== null) { I.sx.mcFx = null; I.sx.mcHi = 0; if (SD) SD.extOff(I); }
+    this.handRows(null);
+  }
+  // the classic adapter's rows (IMPL-2b §5, lane A2 Inst.modRows): each classic Inst's payload rows ({…row, slot | field,
+  // xfer}, payload order) — null for an Inst without, or when the ModCore goes; also for an Inst a later graph adds
+  handRows(MC) {
+    for (const I of this.insts) {
+      if (I.kind === 'serum' || typeof I.modRows !== 'function') continue;
+      const rows = MC !== null ? MC.instRows[I.id] : undefined;
+      I.modRows(rows !== undefined ? rows : null);
+    }
   }
   // the rack's LFO phases (§13.5): legacy {t: 'fxph', v}; a graph node names the part ({i} a Serum's own FX, {c} a panel)
   fxph(d) {
@@ -3119,39 +3159,58 @@ class Track extends Facade {
   // methods, so a caller that wraps the processor's noteOn / noteOff (the golden harness's transport log) sees every song /
   // ext / live note. The receivers and their pitches are kept per held key: a note-off reaches exactly them, whatever the
   // zones are now. aud (a preview) targets one Inst: i, else insts[0]
+  // IMPL-2b §2.4: ModCore hears every note a powered Inst took, with the count of the OTHER keys the player holds (its
+  // legato / last-release rule; nHeld follows holdV: the recorded keys, previews excluded)
   noteOn(n, v, ch, ext, aud, i) {
     const k = n >= 0 && n <= 127 && n === Math.floor(n) ? (ch > 0 && ch <= 16 ? ch | 0 : 0) * 128 + n : -1;
-    if (this.graphed === 0) { this.i0.noteOn(n, v, ch, ext, aud); if (k >= 0 && !aud) { this.holdR[k] = 1; this.holdP[k] = n; this.holdV[k] = v > 0 ? v : 0; } return; }
-    if (aud) { const x = this.instOf(i); if (x !== null && x.on === 1) x.noteOn(n, v, ch, ext, aud); return; }
+    const MC = this.mc, rec = k >= 0 && !aud, was = rec && this.holdV[k] > 0 ? 1 : 0;
+    if (this.graphed === 0) {
+      this.i0.noteOn(n, v, ch, ext, aud);
+      if (rec) { this.holdR[k] = 1; this.holdP[k] = n; this.holdV[k] = v > 0 ? v : 0; this.nHeld += (v > 0 ? 1 : 0) - was; }
+      if (MC !== null) MC.noteOn(n, v, this.nHeld - (rec && v > 0 ? 1 : 0), ch);
+      return;
+    }
+    if (aud) { const x = this.instOf(i); if (x !== null && x.on === 1) { x.noteOn(n, v, ch, ext, aud); if (MC !== null) MC.noteOn(n, v, this.nHeld, ch); } return; }
     const X = this.insts;
-    if (k < 0) { if (X[0].on === 1) X[0].noteOn(n, v, ch, ext, 0); return; } // (not a MIDI key: insts[0], as before)
+    if (k < 0) { if (X[0].on === 1) { X[0].noteOn(n, v, ch, ext, 0); if (MC !== null) MC.noteOn(n, v, this.nHeld, ch); } return; } // (not a MIDI key: insts[0], as before)
     const P = this.holdP;
-    let bits = this.holdR[k];
+    let bits = this.holdR[k], took = 0;
     for (let j = 0; j < X.length; j++) {
       const x = X[j], m = n + x.zxp, h = x.slot * NK + k;
       if (x.on !== 1 || n < x.zlo || n > x.zhi || m < 0 || m > 127) continue;
       if ((bits & (1 << x.slot)) !== 0 && P[h] !== m) x.noteOff(P[h], undefined, ch, ext, 0); // (struck again at a new transpose: the old pitch first, review E8)
       x.noteOn(m, v, ch, ext, 0);
+      took = 1;
       bits |= 1 << x.slot; P[x.slot * NK + k] = m;
       const c = x.feed;
       if (c !== null && c.drive === 1 && c.rack !== null) c.rack.trigger(); // (Hyper RETRIG of a panel no Inst holds)
     }
-    this.holdR[k] = bits; this.holdV[k] = v > 0 ? v : 0;
+    this.holdR[k] = bits; this.holdV[k] = v > 0 ? v : 0; this.nHeld += (v > 0 ? 1 : 0) - was;
+    if (MC !== null && took === 1) MC.noteOn(n, v, this.nHeld - (v > 0 ? 1 : 0), ch);
   }
   noteOff(n, rv, ch, ext, aud, i) {
     const k = n >= 0 && n <= 127 && n === Math.floor(n) ? (ch > 0 && ch <= 16 ? ch | 0 : 0) * 128 + n : -1;
-    if (this.graphed === 0) { this.i0.noteOff(n, rv, ch, ext, aud); if (k >= 0 && !aud) { this.holdR[k] = 0; this.holdV[k] = 0; } return; }
-    if (aud) { const x = this.instOf(i); if (x !== null) x.noteOff(n, rv, ch, ext, aud); return; }
+    const MC = this.mc;
+    if (k >= 0 && !aud && this.holdV[k] > 0) this.nHeld--;
+    if (this.graphed === 0) {
+      this.i0.noteOff(n, rv, ch, ext, aud);
+      if (k >= 0 && !aud) { this.holdR[k] = 0; this.holdV[k] = 0; }
+      if (MC !== null) MC.noteOff(n, this.nHeld);
+      return;
+    }
+    if (aud) { const x = this.instOf(i); if (x !== null) { x.noteOff(n, rv, ch, ext, aud); if (MC !== null) MC.noteOff(n, this.nHeld); } return; }
     const X = this.insts;
-    if (k < 0) { X[0].noteOff(n, rv, ch, ext, 0); return; }
+    if (k < 0) { X[0].noteOff(n, rv, ch, ext, 0); if (MC !== null) MC.noteOff(n, this.nHeld); return; }
     const bits = this.holdR[k], P = this.holdP, rec = bits !== 0 || this.holdV[k] > 0; // (recorded: its receivers, maybe none)
     this.holdR[k] = 0; this.holdV[k] = 0;
+    let got = bits !== 0 ? 1 : 0;
     for (let j = 0; j < X.length; j++) {
       const x = X[j];
       if (rec) { if ((bits & (1 << x.slot)) !== 0) x.noteOff(P[x.slot * NK + k], rv, ch, ext, 0); continue; }
       const m = n + x.zxp; // (a key with no record — struck before the graph took its note-on: the zones as they are now)
-      if (x.on === 1 && n >= x.zlo && n <= x.zhi && m >= 0 && m <= 127) x.noteOff(m, rv, ch, ext, 0);
+      if (x.on === 1 && n >= x.zlo && n <= x.zhi && m >= 0 && m <= 127) { x.noteOff(m, rv, ch, ext, 0); got = 1; }
     }
+    if (MC !== null && got === 1) MC.noteOff(n, this.nHeld);
   }
   // R7 B5: the song holds note n (its note-off is still due)
   songHas(n) { const on = this.seqOn; for (let i = 0; i < on.length; i += 2) if (on[i] === n) return true; return false; }
@@ -3161,7 +3220,8 @@ class Track extends Facade {
     const I = this.insts, D = this.dyI;
     for (let k = 0; k < I.length; k++) { const x = I[k]; x.allOff(true); if (x.sq) x.sq.run = false; }
     for (let k = 0; k < D.length; k++) D[k].allOff(true);
-    this.seqOn = []; this.extN = 0; this.holdR.fill(0); this.holdV.fill(0);
+    this.seqOn = []; this.extN = 0; this.holdR.fill(0); this.holdV.fill(0); this.nHeld = 0;
+    if (this.mc !== null) this.mc.noteOff(0, 0);
     let quiet = D.length === 0 && this.dyC.length === 0;
     for (let k = 0; k < I.length; k++) { const x = I[k]; x.panicSx(); if (!x.isQuiet()) quiet = false; }
     for (const c of this.chains) if (c.drive === 1 && c.rack !== null && !c.rack.idle()) quiet = false;
@@ -3252,6 +3312,7 @@ class Track extends Facade {
   // E3; a legacy c0 is held by i0)
   transportHook(playing) {
     const I = this.insts; for (let i = 0; i < I.length; i++) I[i].transportHook(playing);
+    if (this.mc !== null) this.mc.transport(playing);
     if (playing) { const C = this.chains; for (let k = 0; k < C.length; k++) { const c = C[k]; if (c.drive === 1 && c.rack !== null) c.rack.transport(); } }
   }
   songEvents(F) { // handles transport + song events due at frame F; returns frames to the next event
@@ -3320,9 +3381,9 @@ class Track extends Facade {
       const k = sc[this.ci * 3 + 1], v = sc[this.ci * 3 + 2];
       this.songCtl = true;
       if (k === 0) this.msg({ t: 'bend', v });
-      else if (k === 1) { const I = this.insts; for (let i = 0; i < I.length; i++) I[i].wheel = v; } // (every Inst, §6.6)
+      else if (k === 1) { this.wheel = v; const I = this.insts; for (let i = 0; i < I.length; i++) I[i].wheel = v; } // (every Inst, §6.6)
       else if (k === 2) this.msg({ t: 'sus', v: v >= 0.5 });
-      else { const I = this.insts; for (let i = 0; i < I.length; i++) I[i].at = v; }
+      else { this.at = v; const I = this.insts; for (let i = 0; i < I.length; i++) I[i].at = v; }
       this.ci++;
     }
     // note-ons
@@ -3432,8 +3493,9 @@ class Track extends Facade {
   renderSpan(Lo, Ro, off, n) {
     if (this.simple !== 1) { this.spanG(Lo, Ro, off, n); return; }
     const I = this.i0;
+    if (this.mc !== null) this.modPre(n);
     if (I.renderSpan(n) === 0) { for (let i = 0; i < n; i++) { Lo[off + i] = 0; if (Ro !== Lo) Ro[off + i] = 0; } return; }
-    if (I.kind !== 'serum') { const c = this.c0, r = c.rack; if (r !== null) { const tf = Date.now(); r.process(this.Lb, this.Rb, n); c.t += Date.now() - tf; } }
+    if (I.kind !== 'serum') { const c = this.c0, r = c.rack; if (r !== null) { if (this.mc !== null || c.mcOn !== 0) this.chainMods(c, r); const tf = Date.now(); r.process(this.Lb, this.Rb, n); c.t += Date.now() - tf; } }
     if (this.pnN) this.panicFade(n);
     this.outStage(Lo, Ro, off, n);
   }
@@ -3441,6 +3503,7 @@ class Track extends Facade {
   // OUT = the single live source's own buffers at gain 1, else a copy-first sum; skipped when nothing feeding OUT is live
   spanG(Lo, Ro, off, n) {
     const I = this.insts, C = this.chains, DI = this.dyI, DC = this.dyC;
+    if (this.mc !== null) this.modPre(n);
     for (let k = 0; k < I.length; k++) { const x = I[k], tf = Date.now(); x.live = x.renderSpan(n); x.t += Date.now() - tf; }
     for (let k = 0; k < DI.length; k++) { const x = DI[k]; x.live = x.renderSpan(n); }
     for (let k = 0; k < DC.length; k++) this.chainSpan(DC[k], n); // (first: a removed panel may feed a kept one)
@@ -3499,9 +3562,35 @@ class Track extends Facade {
         for (let j = 0; j < ns; j++) { const s = S[j]; if (s.nOn > 0 && (b === null || s.nOn > b.nOn)) b = s; }
         if (b !== null) r.setNote(b.lastNote);
       }
+      if (this.mc !== null || c.mcOn !== 0) this.chainMods(c, r);
       const tf = Date.now(); r.process(c.Lb, c.Rb, n); c.t += Date.now() - tf;
     }
     c.live = 1;
+  }
+  // IMPL-2b §2.4 / §4: ModCore's span before any Inst renders, then the hand-offs — a powered Serum whose CP reads ext
+  // sources takes this span's ext chunk values (SerumDSP.extIn, before its own begin) and the rows on its own FX (summed
+  // into SD.fxMods only while they exist); a classic Inst with rows gets its slot offsets / setter values (Inst.modSpan,
+  // right before its renderSpan). Dying and powered-off Insts: nothing
+  modPre(n) {
+    const MC = this.mc, nCh = n >> 2, SD = globalThis.SerumDSP, I = this.insts;
+    MC.span(this.spanF, n, nCh);
+    for (let k = 0; k < I.length; k++) {
+      const x = I[k];
+      if (x.on !== 1) continue;
+      if (x.kind === 'serum') {
+        const sx = x.sx;
+        if (sx === null) continue;
+        if (MC.extN !== 0) { const cp = x.p.serum; if (cp && (cp.use & 32768) !== 0) SD.extIn(x, MC.ext, nCh); }
+        const v = MC.fxv[x.fxc.id];
+        if (v !== undefined) { sx.mcFx = v; sx.mcHi = MC.fxHi[x.fxc.id]; } else if (sx.mcFx !== null) { sx.mcFx = null; sx.mcHi = 0; }
+      } else if (MC.has[x.id] === 1 && typeof x.modSpan === 'function') x.modSpan(MC.cls0[x.id], MC.cls1[x.id], MC.setv[x.id]);
+    }
+  }
+  // a panel's rack: ModCore's FX-context vector for this span (the layout key the rows were compiled against: a stale key
+  // leaves the rack unmodulated, FXRack.setMods), or setMods(null) once when the rows have gone
+  chainMods(c, r) {
+    const MC = this.mc, v = MC !== null ? MC.fxv[c.id] : undefined;
+    if (v !== undefined) { r.setMods(v, MC.fxKey[c.id]); c.mcOn = 1; } else if (c.mcOn !== 0) { r.setMods(null); c.mcOn = 0; }
   }
   // drops the dying parts that have gone silent (in place: no allocation)
   bury() {
@@ -3557,7 +3646,8 @@ class Track extends Facade {
     for (const I of this.insts) {
       const sx = I.kind === 'serum', r = sx ? I.rack : null;
       if (I.mon) {
-        const s = SD && sx && I.sx ? SD.snapshot(I) : null;
+        // (IMPL-2b §2.4: a classic Inst with cables posts its modulated values in engine units, Inst.modEff — lane A2)
+        const s = SD && sx && I.sx ? SD.snapshot(I) : !sx && this.mc !== null && I.moN > 0 && typeof I.modEff === 'function' ? { eff: I.modEff() } : null;
         if (s && s.mix && s.mix.length >= 11) {
           const pk = I.mixPk;
           for (let k = 0; k < 4; k++) s.mix[7 + k] = pk[k] > 1e-6 ? 20 * Math.log10(pk[k]) : -120;

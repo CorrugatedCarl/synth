@@ -36,7 +36,7 @@ export const ROOT = new URL('../', import.meta.url);
 export const DSP_TABLE = Object.freeze([
   ['sx-base.js', 'SxBase'], ['sx-filt2.js', 'SxFilt2'], ['sx-warp.js', 'SxWarp'], ['sx-mod.js', 'SxMod'],
   ['sx-sample.js', 'SxSample'], ['sx-gran.js', 'SxGran'], ['sx-spec.js', 'SxSpec'], ['sx-seq.js', 'SxSeq'],
-  ['serum-dsp.js', 'SerumDSP'], ['fx-mods2.js', 'FXMods2'], ['fx-dsp.js', 'FXDSP'],
+  ['serum-dsp.js', 'SerumDSP'], ['fx-mods2.js', 'FXMods2'], ['fx-dsp.js', 'FXDSP'], ['mod-core.js', 'ModCore'],
 ].map(e => Object.freeze(e)));
 export const DSP_FILES = Object.freeze(DSP_TABLE.map(e => e[0]));
 export const DSP_GLOBALS = Object.freeze(Object.fromEntries(DSP_TABLE));

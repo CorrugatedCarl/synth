@@ -25,7 +25,7 @@ const read = u => readFileSync(u, 'utf8');
 
 // §0.3: scripts 1–11 in table order (engine.js last). Phase 1 has only serum-dsp.js and fx-dsp.js.
 export const DSP_V2 = ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js',
-  'sx-seq.js', 'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js'];
+  'sx-seq.js', 'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'mod-core.js'];
 export const DSP_REF = ['serum-dsp.js', 'fx-dsp.js'];
 // the files frozen at M0 (only models.js's `?v=` import suffix is rewritten to the sibling path)
 export const REF_FILES = ['serum-core.js', 'wt.js', 'serum-dsp.js', 'fx-dsp.js', 'engine.js', 'models.js'];

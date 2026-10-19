@@ -22,7 +22,7 @@ const CORE = await import(new URL('serum-core.js' + H.SUFFIX, H.ROOT).href);
 const WT = await import(new URL('wt.js' + H.SUFFIX, H.ROOT).href);
 const read = (f) => readFileSync(new URL(f, import.meta.url), 'utf8');
 const SRC = { base: read('../sx-base.js'), mod: read('../sx-mod.js'), dsp: read('../serum-dsp.js'), ref: read('./ref-p1/serum-dsp.js') };
-const NSV = 429, NSRC = 62, MAXFX = 8 + 48 * 24;
+const NSV = 429, NSRC = 78, MAXFX = 8 + 48 * 24;   // (NSRC: 62 sources + 16 canvas ext inputs, IMPL-2b §3.2)
 
 function recorder() {
   const msgs = [];

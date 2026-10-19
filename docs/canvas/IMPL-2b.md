@@ -369,3 +369,97 @@ iPad bench.
   `serum-core.SOURCES` would change `cpKey` / `srcUsed` of every CP (fixture churn) → the compile-ctx route of §3.2.
 - **Q6** No `{t:'mods'}` → nothing runs (the harness lists are explicit); 200 spans of begin + pseudo-voice under throwing
   constructors: **no allocation**; attach ≈ 0.4 MB per track.
+
+### 9.1 Lane A1 — engine core (ModCore, protocol, Track integration, ext sources; 2026-10-19)
+
+**Files**: `mod-core.js` (new, `globalThis.ModCore`, loaded after `fx-dsp.js` and before `engine.js` in every list:
+main.js `DSP_FILES`, wk.js `DSP_GLOBALS`, smprender.js / cv-cost.js `DSP`, tests/dsp-scope.mjs `DSP_TABLE`, golden-harness
+`DSP_V2`, tests/bench.html), `engine.js` (Track / Chain / protocol / postMon only), `sx-base.js`, `sx-mod.js`, `serum-dsp.js`,
+`serum-core.js`, `tests/modcore.test.mjs` (new, 11 tests), `tests/bench-scenarios.mjs` + `tests/bench.json` (rows `mc0`, `mc`,
+`mt`, `me`), the list expectations (app / main / wk / cv-cost / integration / sx-base / sx-mod tests), sw.js precache.
+
+**The payload as built** (`{t:'mods'}`, exact field names; `MC.setRows(m)`):
+- `cp`, `ct` — the synthetic Serum CP and its CT (`ct`: a `{key, parts}` parts object, a full CT, or `null` → defaults);
+  `bpm` — the tempo the CP's BPM LFOs run at while the transport is stopped (default 120; while playing `songBeat()` rules).
+- `rows[]` — `{ id, src, vi, dst, xfer?, perNote? }`: `src` = the **CP source index** the row reads (5 = lfo1 … as
+  serum-core `SIDX`; value sources 62–77); `vi` = the row's scratch V-scope destination (= the CP row's `mDst`; when
+  absent ModCore claims the j-th unclaimed CP row with that `src`, in CP order — so keep-alive rows should follow the real
+  rows); `dst` = `{kind:'cls', inst, slot}` | `{kind:'set', inst, field}` | `{kind:'fx', chain, fx, key?}` (`chain` is a
+  panel id or a Serum's own FX `'<inst>/fx'`, `fx` the flat FX-context index, `key` the layout key the row was compiled
+  against — a stale key leaves the rack unmodulated, `FXRack.setMods`); `xfer` on the row, else `m.xfer[id]` / `m.xfer[j]`.
+- **Transfer** (lane A2's `cv-mods.xferOf` shape, lane B's `xfer[i]` by row index or `row.xfer`): `{a, b, x0}` (T(x) = a +
+  b·x) or `{tab: 129 values over the knob's mod space 0…1, x0}`, `x0` = the knob's position in mod space. ModCore reads
+  each row's `x = V.mod.off[vi]` (the synthetic row already applied amt / curve / crv / slew / aux / bi; several rows may
+  share a `vi` — one cable, several targets: read once, applied per row) and **groups the rows of one knob on one target**
+  (inst + slot, or inst + field, with the same transfer — the group key includes x0 / a / b / three table samples): Σ per
+  group, the group's offset `T(clamp01(x0 + Σ)) − T(x0)`; a `cls` slot sums its groups' offsets (`cls0` with Σ at chunk
+  0, `cls1` at chunk nCh − 1), a `set` field gets the **effective value** `T_first(x0) + Σ group offsets` (one knob → exactly
+  `T(clamp01(x0 + Σ))`), an `fx` row adds x itself (the rack clamps ±2). Without `xfer`: T(x) = x, x0 = 0. Lane B's extra
+  row fields (`amt, bi, curve, crv, aux, inv, rise, fall, byp, out, perNote, slot, tgt`) are carried, not read — except that
+  `MC.instRows[inst]` (for A2's `modRows`) **overrides `slot` with the classic slot index** (`dst.slot`; B's `slot` is the
+  synthetic matrix slot) and attaches the row's `xfer`.
+- `ext[]` — `{k: 1…16, src, id?}`; `vals[]` — `[{k, src, v, id}]` (lane B) or plain values by index; `keep[]` — accepted,
+  informational (the CP already holds the keep-alive rows; `n`, `left`, `dashed`, `i`, `key` ignored; **the host must give every source an ext slot reads a row with nonzero `amt`** — `rowActive` drops
+  `amt: 0` rows at compile, and SxMod skips unreferenced LFOs: spike Q3, test "keep-alive").
+- `{t:'mods', i, off: true, key}`, an empty payload (no rows, no ext) or a rejected one (no `cp`, a CP the DSP refuses) → `T.mc =
+  null` (every Serum's ext rows cleared with `SD.extOff`, its own-FX sum dropped, every cabled panel's rack `setMods(null)`
+  once, every classic Inst `modRows(null)`); a malformed payload after a good one also drops the ModCore (documented
+  choice: "ignored" = no throw, nothing half-applied). `{t:'mval', k, v}` → `MC.ctl`. `processorOptions.mods` after the parts.
+
+**Outputs per span** (`MC.span(F, n, nCh)` from `Track.modPre(n)`, before any Inst renders): `MC.ext` Float64Array(16·32);
+`MC.cls0[inst]` / `MC.cls1[inst]` Float64Array(S_N = 29, the Track passes engine.js's constant); `MC.setv[inst]` `[{field,
+v}]`; `MC.fxv[chain]` Float64Array(MAXFX 1160) + `MC.fxHi[chain]` + `MC.fxKey[chain]`; `MC.has[inst]`; `MC.instRows[inst]`
+(the payload's classic rows for that Inst, `{…row, slot | field, xfer}` in payload order — handed to `Inst.modRows` by
+`Track.handRows` after every `setRows` and `modRows(null)` on off). Call sites: `I.modSpan(cls0, cls1, setv)` right before
+`I.renderSpan(n)` for a powered classic Inst with `MC.has[id]` (guarded by `typeof` until A2's Inst lands); `SD.extIn(I,
+MC.ext, nCh)` for a powered Serum whose CP has `use & 32768` (`inst.sx.g.set(ext, 62·32)`; begin's step (4) copies the
+last chunk into `monoSrc` exactly as it does the G sources — the mono context one span behind, `fxMods` this span: the
+timing of a processor LFO, which is what makes N2 bit-identical for G-scope rows too); the Serum's own FX: the Track sets
+`I.sx.mcFx / mcHi` and `SerumDSP.fxMods` returns `sx.fxSum = SxMod's vector + mcFx` only then (else SxMod's vector itself,
+byte for byte — lane B targets a Serum's own FX through ext / injection only, so this path is unused but harmless); panels: `Track.chainMods(c, r)` → `r.setMods(MC.fxv[c.id], MC.fxKey[c.id])` before `r.process` (`Chain.mcOn`
+remembers to send `setMods(null)` once when the rows go). `postMon`: a classic Inst with `I.moN > 0` posts `s: { eff:
+I.modEff() }` (A2's). Dying / powered-off Insts: nothing.
+
+**Value table** (`MC.ctl(k, v)` from `{t:'mval', k, v}` — the contract's name stands; 32 entries, **24 carried**): k 0–7 =
+the macros, written into the shim's `seqMacro` lane (SxMod's clip-lane path: `macroTargets` → the same per-chunk `kM`
+smoothing a Serum macro knob gets, no recompile and no CP write; `NaN` = the CP's own `macro1…8` base until the first
+value — `vals` seeds it); k 8–23 = the value sources, carried as **ModCore's own ext inputs** (CP sources 62–77: the synthetic CP is
+compiled with `{ext: true}` and its rows name `ext<j+1>` for value entry 8 + j; ModCore glides them per chunk with the same
+`kM` into its `g` rows 62–77, which the pseudo-voice copies like any ext row); k 24–31 are stored only — no CP source
+carries them (every spare source slot of the 78 is either global, written by `ModV.sources`, or bipolar). **Lane B: cap the
+value sources at 16 (k 8–23)**; a 25th needs a second mechanism.
+
+**Levers** (measured with `scratchpad/a1/levers.mjs` on the shipped code, µs per 128-frame span of ModCore alone, M4 Max, node 24):
+- unused LFO slots parked FREE + MONO by the host (the synthetic state's default here and in the bench rows);
+- rows read at the span ends only: `matrix()` at chunks 0 and nCh − 1 (every ModCore target is span-rate; `MC.ext` is
+  copied from `g` per chunk, not through rows);
+- `MC.half` (default on): the pseudo-voice ticks every second chunk (`setDt(2·dtC)`) while no ext slot carries a
+  per-note source (`MC.extPerN === 0`; an ENV / PER NOTE LFO / velo … on an ext slot needs per-chunk values → every chunk);
+  spans with an odd chunk count tick every chunk. Row `mc`: 5.72 → **4.32 µs** (0.00215 → 0.00162); `mt`: 3.72 → **2.19**;
+- `MC.pvOn`: a payload with no rows and no per-note ext source never ticks the pseudo-voice (begin alone): row `mc0`
+  **2.8 µs** (0.00105) for 10 GLOBAL LFOs into 10 ext slots.
+- Bench rows (tests/bench.json targets; `measure()` row − base, median of 5): **mc0 0.0012** (≤ 0.002), **mc 0.0019**
+  (≤ 0.004), **mt 0.0008** (≤ 0.0025), **me ≈ 0.000** (the ext hand-off on row d's 8-voice Serum is below the row's
+  run-to-run jitter of ± 0.004; ≤ 1 % of 0.4 = 0.004). The node gate (≤ 1.5 × target, 3 attempts) lives in
+  tests/modcore.test.mjs; `node --test tests/bench.test.mjs` still passes (every row builds, bench.json targets match).
+
+**Ext sources**: `sx-base` / `sx-mod` / `serum-dsp` NSRC 78 (`ext1…ext16` appended to `SRC_IDS2`, unipolar); `ModState.extOn`
+from `CP.use & 32768`; the copy loops in `ModV.sources` and `ModV.noteOn`, and begin's step (4) for `monoSrc`; `serum-core`
+`SOURCES` stays 62 (`S_EXT0 = 62`, `N_EXT`, `EXT_IDS`, `extIndex(id)`, `extLabel(id)` → "Ext k (canvas)" exported);
+`compileSerum(s, {ext: true})` maps `ext<k>` to `S_EXT0 + k − 1`, sets `use |= 32768`, marks no `srcUsed` (the array stays
+62); without `ctx.ext` an ext id is dropped as any unknown source (cp2 / ct2 fixtures, cpKey unchanged — serum-core tests
+green). Note for lane B: the ext ids must be injected into the **normalised** copy after `normalizeSerum` (`normRow`
+rejects them; `compileSerum` normalises only when `serumShapeOk` fails). New serum-dsp exports: `sync(proc)` (CP / CT
+sync without a span — ModCore's shim after a payload, so a note-on before its first span sees the CP), `extIn`, `extOff`.
+
+**Deviations / notes**: `Inst.modSpan(cls0, cls1, setv)` three-arg form (per the lead's brief; A2 accepts both);
+`MC.instRows` + `Track.handRows` added for A2's `modRows`; the pseudo-voice is driven as the spike's `PseudoVoice` (the
+serum-dsp note-on prologue: `sx.alt` flip, `rng` / `r` / `r2` seeding, `ModV.noteOn(n, v, legato, null, 0, null, other)`);
+legato = other keys held (`Track.nHeld`, kept from `holdV` transitions, previews excluded) **and** the pseudo-voice active;
+release when the last key lifts (`held === 0`); `Track.panic` releases it; the Track's `wheel / at / bendRaw` are own
+fields (the Facade therefore no longer forwards those three names to Inst 0 — no test wrote them through the processor;
+values are always equal to every Inst's). The shim's `seedSalt` is `fnv1a32(trackId)` (0 without an id): two Tracks with
+the same id and payload are identical (N5). `stats()` → `{lfos, envs, rows, ext, us, half}` (`us` through
+`performance.now` where it exists, else `Date.now`). `postMon` for classic `eff` is wired to A2's `modEff()` — unverified
+here (no Inst adapter on this branch). An Inst a later `{t:'graph'}` adds gets its rows only with the next `{t:'mods'}`
+(the host reposts on graph changes; `handRows` runs on every payload).

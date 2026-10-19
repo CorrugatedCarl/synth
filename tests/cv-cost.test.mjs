@@ -297,12 +297,12 @@ test('the Worker body renders the rows (vm worker): DSP scripts + engine.js load
   for (const [id, x] of Object.entries(last.loads)) assert.ok(Number.isFinite(x) && x > 0 && x < 5, id + ' ' + x);
   const files = W.urls.map(u => u.slice('https://synth.test/app/'.length, -4));
   assert.deepEqual(files, ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
-    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'engine.js']);
+    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'mod-core.js', 'engine.js']);
   assert.equal(W.g.SxBase.getAsset('msmp:bench'), null, 'the row assets are dropped after the row');
   // a second run in the same worker loads nothing again; a silent row (no notes) is an error, not a load
   const c1 = C.deviceRows()[0];
   W.send({ t: 'run', rows: [Object.assign({}, c1, { notes: [] })], runs: 1, seconds: 0.02 });
-  assert.equal(W.urls.length, 12);
+  assert.equal(W.urls.length, 13);
   assert.equal(JSON.stringify(W.posted[W.posted.length - 1]), JSON.stringify({ t: 'error', err: 'row c1 rendered silence' }));
   const n = W.posted.length;
   W.g.onmessage({ data: { t: 'other' } });

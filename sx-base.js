@@ -14,14 +14,14 @@
  * are unchanged. [+] marks members beyond the §11.5 list.
  *
  * Constants (built by the same normative builders as serum-core §3.10/§3.11.2, integration-tested in tests/sx-base.test.mjs):
- *   NS 148 · NV1 248 · NF1 100 · ND 529 · NSV 429 (voice-vector length) · NSRC 62 · MAXCH 32 · MAXFX 1160 (8 + 48·24, §5.5)
+ *   NS 148 · NV1 248 · NF1 100 · ND 529 · NSV 429 (voice-vector length) · NSRC 78 (62 + 16 ext, IMPL-2b) · MAXCH 32 · MAXFX 1160 (8 + 48·24, §5.5)
  *   DIDX2      {constant name → vi} for every destination with a voice slot (§3.11.1 naming rule: id upper-cased, '.' → '_')
  *   DIDS2      Array(429) of destination ids by vi; '' at the unused slots 403–405 (scope-M rows g.direct/g.bus1v/g.bus2v)
  *   IDX_OF_VI  Int16Array(429): static DEST index of vi (v < 148 ? v : v + 100), −1 at the unused slots
  *   LAW_TAB2   {law: Uint8Array(429), lo, hi: Float64Array(429), cont: Uint8Array(429)} by vi; law = laws.js LAWS index;
  *              cont = 1 for continuous laws (smoothed). IMPL: the unused slots 403–405 hold law 0, lo = hi = 0, cont 0
  *              (never smoothed, value 0 — their CP.base slots stay 0, §3.11.1)
- *   SIDX2      {SOURCE ID upper-cased → index} (62 sources)   SRC_IDS2 Array(62)   SRC_POL2 Uint8Array(62), 1 = bipolar
+ *   SIDX2      {SOURCE ID upper-cased → index} (78 sources)   SRC_IDS2 Array(78)   SRC_POL2 Uint8Array(78), 1 = bipolar
  *   GIDX       FX-context indices {MASTER 0, BYPASS 1, DIRECT 2, BUS1V 3, BUS2V 4}
  *   OTYPE      oscillator type codes {WT 0, MULTI 1, SAMPLE 2, GRAN 3, SPEC 4} (= serum-core OSC_TYPES order)
  *   WARP_IDS2  Array(82) of WARPS2 ids   WARP_DOM Uint8Array(82) of WDOM codes {NONE 0 (Off), F 1, P 2, O 3, S 4}
@@ -109,7 +109,7 @@
       PI = Math.PI;
 
     const VER = 1;
-    const NS = 148, NV1 = 248, NF1 = 100, ND = 529, NSV = 429, NSRC = 62, MAXCH = 32, MAXFX = 8 + 48 * 24;
+    const NS = 148, NV1 = 248, NF1 = 100, ND = 529, NSV = 429, NSRC = 78, MAXCH = 32, MAXFX = 8 + 48 * 24;
     const MIDI0 = 440 * pow(2, -69 / 12);                   // 8.175798915643707 Hz (MIDI note 0)
 
     /* ------------------------------------------------------------ destinations by vi (§3.11) */
@@ -214,6 +214,8 @@
     for (let l = 1; l <= 10; l++) SRC_IDS2.push('lfo' + l + 'y');
     SRC_IDS2.push('macro5', 'macro6', 'macro7', 'macro8', 'randd', 'osca', 'oscb', 'oscc', 'sub', 'filt1', 'filt2',
       'actv', 'vidx', 'vmod1', 'vmod2');
+    // 62–77: the canvas ext inputs (IMPL-2b §3.2; unipolar; serum-core keeps SOURCES at 62, compileSerum({ext}) names them)
+    for (let k = 1; k <= 16; k++) SRC_IDS2.push('ext' + k);
     if (SRC_IDS2.length !== NSRC) throw new Error('source table has ' + SRC_IDS2.length + ' entries');
     const sidx = {};
     for (let i = 1; i < NSRC; i++) sidx[SRC_IDS2[i].toUpperCase()] = i;
