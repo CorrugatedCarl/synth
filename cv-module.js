@@ -45,6 +45,9 @@ export const FLOW_W = Object.freeze({
 export const W_MOD = 240;
 export const MOD_H = Object.freeze({ wheel: 224, velo: 192, at: 128, bend: 128 });
 export const MOD_ORDER = Object.freeze(['wheel', 'velo', 'at', 'bend']);
+/** (2a U8) The gap between the modulator column and the instruments (world px): the column at x −(W_MOD + MOD_GAP) = −320,
+ * so a fit with the Sources tray open on a portrait iPad keeps it beside the instrument. */
+export const MOD_GAP = 80;
 /** Column gap Tidy leaves between instrument → FX panel → OUT (world px). */
 export const GAP = 160;
 /** Stage-1b module ids (= track.lay keys, = the device ids stage 1c's toV2 gives them, SPEC §5.1 / §5.4). */
@@ -116,6 +119,9 @@ const gup = v => Math.ceil(v / DOT) * DOT;
 export function isBackground(el) {
   if (!el || el.nodeType !== 1) return false;
   if (cableHit(el)) return true; // (1e, U13) an editable cable pans like the canvas around it; a tap on it selects (cv-cables)
+  for (let n = el, i = 0; n && i < 3 && typeof n.getAttribute === 'function'; n = n.parentNode, i++) { // (2a U4) a mod cable's badge too
+    if (/(^|\s)cv-mbadge(\s|$)/.test(n.getAttribute('class') || '')) return true;
+  }
   if (typeof el.matches !== 'function' || typeof el.closest !== 'function') return false;
   try { return !!el.matches(BG_SEL) && !!el.closest('[data-cv-mod]'); } catch (err) { return false; }
 }
@@ -178,7 +184,7 @@ export function devicesOf(track) {
  * (1e) Any number of devices (a v2 track, or `devs` given — createTrackView's host.devices list): the instruments stacked
  * in the left column (the primary on top, VGAP apart), each Serum's own FX beside its Serum, the shared panels stacked in
  * the next column, OUT right of everything. One instrument → panel → OUT (or a Serum → its own FX → OUT) lays out exactly
- * as the stage-1b Tidy. (2a) Modulators (kind 'mod') stack in a column left of the instruments (x < 0, GAP from them), in
+ * as the stage-1b Tidy. (2a) Modulators (kind 'mod') stack in a column left of the instruments (x < 0, MOD_GAP from them), in
  * MOD_ORDER (the wheel, Velocity, Aftertouch, Bend), VGAP apart: nothing else moves for them.
  * @param {{model?: string, dev?: object}} track @param {Object<string, {w: number, h: number}>} sizes
  * @param {Array<{key: string, kind: string, model?: string, own?: string}>} [devs] @returns {Lay}
@@ -211,7 +217,7 @@ export function tidy(track, sizes, devs) {
   for (const d of outs) { lay[d.key] = { x: x3, y }; y = gup(y + hOf(d) + VGAP); }
   const ord = d => { const i = MOD_ORDER.indexOf(mkOf(d)); return i < 0 ? MOD_ORDER.length : i; };
   const mods = L.filter(d => d.kind === 'mod').sort((a, b) => ord(a) - ord(b) || byNum(a.key, b.key));
-  const x0 = -gup(max(mods, wOf) + GAP);
+  const x0 = -gup(max(mods, wOf) + MOD_GAP);
   y = 0;
   for (const d of mods) { lay[d.key] = { x: x0, y }; y = gup(y + hOf(d) + VGAP); }
   return lay;
@@ -694,7 +700,7 @@ export function createTrackView(world, track, host) {
   let T = track;
   const mods = new Map(); // key → Module
   const CB = DEV && isObj(H.cables) ? H.cables : {};
-  const cables = createCables(root, { doc, onSelect: CB.onSelect, onAction: CB.onAction, menu: CB.menu, onHint: CB.onHint, mods: H.mods,
+  const cables = createCables(root, { doc, onSelect: CB.onSelect, onAction: CB.onAction, menu: CB.menu, onHint: CB.onHint, ignore: CB.ignore, mods: H.mods,
     k: () => (world && world.k > 0 ? world.k : 1) });
   let DL = [], DM = new Map(); // (1e) the host's devices, by key
   const readDevs = () => {
@@ -754,7 +760,11 @@ export function createTrackView(world, track, host) {
   }
   /* ---- (2a) knob end points: per module, the [data-dest] elements by '<dev>:<param>' (one walk) and their module-local
    * centres (one rect read each, on first use); dropped by fold / size / sync / refresh / remeasure */
-  const DC = new Map(); // module key → { idx: Map(dk → el), pos: Map(dk → {x, y}) }
+  // (U1) a Serum keeps its hidden pages in the DOM: a key can have several elements (one shown, the rest 0 × 0), so every
+  // one is indexed and the first with a box wins; an end parked on the bar because none was shown is tried again on the
+  // next lookup outside a live move (no rect read per frame of a drag)
+  const DC = new Map(); // module key → { idx: Map(dk → [el]), pos: Map(dk → {x, y, hid?}) }
+  let quiet = false; // (a module's live move: cached ends only)
   function indexOf(k, m) {
     let c = DC.get(k);
     if (c) return c;
@@ -764,7 +774,7 @@ export function createTrackView(world, track, host) {
       for (const e of n.children || []) {
         if (!e || typeof e.getAttribute !== 'function') continue;
         const dv = e.getAttribute('data-dev') || dv0, id = e.getAttribute('data-dest');
-        if (id && !idx.has(dv + ':' + id)) idx.set(dv + ':' + id, e);
+        if (id) { const q = dv + ':' + id, L = idx.get(q); if (L) L.push(e); else idx.set(q, [e]); }
         st.push([e, dv]);
       }
     }
@@ -773,15 +783,19 @@ export function createTrackView(world, track, host) {
     return c;
   }
   const rectOf = e => { try { return e.getBoundingClientRect(); } catch (err) { return null; } };
+  const shown = r => !!r && (r.width > 0 || r.height > 0);
   const barPt = () => ({ x: 0, y: BAR_H / 2 }); // (folded, or the knob not shown: the module's left edge at its bar)
   function localDest(k, m, dk) { // the knob's centre in module px; null: not in this module
-    let c = indexOf(k, m), el = c.idx.get(dk);
-    if (el && el.isConnected === false) { DC.delete(k); c = indexOf(k, m); el = c.idx.get(dk); } // (the body re-rendered)
-    if (!el) return null;
+    let c = indexOf(k, m), L = c.idx.get(dk);
+    if (L && L.some(e => e.isConnected === false)) { DC.delete(k); c = indexOf(k, m); L = c.idx.get(dk); } // (the body re-rendered)
+    if (!L) return null;
     if (m.fold) return barPt();
-    if (c.pos.has(dk)) return c.pos.get(dk);
-    const r = rectOf(el), R = rectOf(m.el), s = R && R.width > 0 && m.w > 0 ? R.width / m.w : 1;
-    const p = r && R && (r.width > 0 || r.height > 0) ? { x: Math.round((r.left + r.width / 2 - R.left) / s * 100) / 100, y: Math.round((r.top + r.height / 2 - R.top) / s * 100) / 100 } : barPt();
+    const q = c.pos.get(dk);
+    if (q && (!q.hid || quiet)) return q;
+    let r = null;
+    for (const e of L) { const x = rectOf(e); if (shown(x)) { r = x; break; } }
+    const R = rectOf(m.el), s = R && R.width > 0 && m.w > 0 ? R.width / m.w : 1;
+    const p = r && R ? { x: Math.round((r.left + r.width / 2 - R.left) / s * 100) / 100, y: Math.round((r.top + r.height / 2 - R.top) / s * 100) / 100 } : Object.assign(barPt(), { hid: true });
     c.pos.set(dk, p);
     return p;
   }
@@ -864,7 +878,8 @@ export function createTrackView(world, track, host) {
         }
         if (phase !== 'move') lay(key, phase, 'move');
         if (G2 && phase === 'end') for (const g of G2.list) if (H.lay) H.lay(g.k, entryOf(g.k), 'end', 'group');
-        relay();
+        quiet = phase === 'start' || phase === 'move';
+        try { relay(); } finally { quiet = false; }
         if (phase === 'end' || phase === 'cancel') { update(key); if (G2) { for (const g of G2.list) update(g.k); grp = null; } }
       },
       onFold: f => { DC.delete(key); lay(key, 'start', 'fold'); lay(key, 'end', 'fold'); relay(); update(key); if (H.shown) H.shown(key); },

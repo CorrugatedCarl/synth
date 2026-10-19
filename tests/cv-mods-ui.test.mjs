@@ -129,3 +129,30 @@ test('atBody / bendBody: a level bar from the left (0…127) and a bipolar one f
     ['cv-mbody cv-mwheel', 'cv-mbody cv-mvelo', 'cv-mbody cv-mat', 'cv-mbody cv-mbend', null]);
   A.destroy(); Bn.destroy();
 });
+
+// UI fixes
+test('(U3) two fingers win on the wheel: the press\'s jump and the drag are rolled back by the two-finger cancel (set(v0): the value from before the press); a plain pointercancel or a lift keeps them', () => {
+  const d = fresh(), sets = [];
+  const B = U.wheelBody({ get: () => 0.25, set: v => sets.push(Math.round(v * 1000) / 1000), doc: d });
+  d.body.append(B.el);
+  const w = cls(B.el, 'cv-mw'), slot = cls(B.el, 'cv-mw-slot');
+  place(slot, 10, 100, 15, 80); layout(slot, 30, 160);
+  ptr(w, 'pointerdown', 17, 106.5, { pointerId: 3, pointerType: 'touch' }); // the jump: 1
+  ptr(w, 'pointermove', 17, 140, { pointerId: 3, pointerType: 'touch' });
+  ptr(w, 'pointercancel', 17, 140, { pointerId: 3, pointerType: 'touch', gesture: 'two-finger' });
+  assert.deepEqual([sets, B.value(), B.dragging(), w.classList.contains('cv-on')], [[1, 0.5, 0.25], 0.25, false, false], 'back to 0.25, sent once more');
+  ptr(w, 'pointerdown', 17, 106.5, { pointerId: 4, pointerType: 'touch' });
+  ptr(w, 'pointercancel', 17, 106.5, { pointerId: 4, pointerType: 'touch' });
+  assert.deepEqual([sets.at(-1), B.value()], [1, 1], 'a plain cancel keeps');
+  B.destroy();
+});
+
+test('(U14) "+N on other tracks": a tap gives onJump the chip (the host lists the tracks at it)', () => {
+  const d = fresh(), got = [];
+  const B = U.wheelBody({ doc: d, onJump: el => got.push(el && el.className) });
+  d.body.append(B.el);
+  B.setOthers(2);
+  cls(B.el, 'cv-mothers').click();
+  assert.deepEqual(got, ['cv-mothers']);
+  B.destroy();
+});

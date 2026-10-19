@@ -18,6 +18,7 @@
 import * as wk from './wk.js?v=9';
 import { sheet } from './cv-tray.js?v=9';
 import { SRC_INDEX } from './serum-core.js?v=9';
+import { amtText } from './cv-cables.js?v=9';
 
 /** A Serum's matrix size (serum-core N_MATRIX): the "n/64" budget's denominator when the host gives none. */
 export const MAX_ROWS = 64;
@@ -34,11 +35,11 @@ const r4 = v => Math.round(v * 1e4) / 1e4 + 0; // + 0: never -0
 const num = (v, d) => typeof v === 'number' && isFinite(v) ? v : d;
 /** Signed percent of an amount −1…1 ("+25%", "-40%", "0%"; serum-ui's matrix format). */
 export const pct = a => { const k = Math.round(num(a, 0) * 100) + 0; return (k > 0 ? '+' : '') + k + '%'; };
-/** Typed percent → −1…1 (or 0…1 with uni): "25", "+25%", "-40 %", "−40" (U+2212); null when not a number. */
+/** Typed percent → −1…1 (or 0…1 with uni): "25", "+25%", "-40 %", "−40" (U+2212), amtText's "±25%" / "∓25%"; null when not a number. */
 export function parsePct(t, uni) {
-  const m = /^\s*([+\-−]?\d+(?:[.,]\d+)?)\s*%?\s*$/.exec(String(t == null ? '' : t));
+  const m = /^\s*([+\-−±∓]?\d+(?:[.,]\d+)?)\s*%?\s*$/.exec(String(t == null ? '' : t));
   if (!m) return null;
-  const v = parseFloat(m[1].replace('−', '-').replace(',', '.')) / 100;
+  const v = parseFloat(m[1].replace(/[−∓]/, '-').replace('±', '').replace(',', '.')) / 100;
   return isFinite(v) ? clamp(v, uni ? 0 : -1, 1) : null;
 }
 
@@ -125,8 +126,10 @@ export const STYLE = `
  *   connect: (src: string, dst: string) => {ok: boolean, why?: string, code?: string, stage?: string},
  *   select?: (id: string | null) => void, notice: (text: string) => void, labelOf?: (id: string) => string,
  *   step: (label: string) => void, confirm?: (text: string) => boolean, row?: (id: string) => Row | null,
+ *   cancel?: () => void,
  * }} ModHost  rowsOf() with no device → every canvas row of the track (the inspector finds a bare row id there); labelOf gets
- *   canvas-form ids: a source ('wheel', 've.out'), a knob ('<dev>:<param>') or a device ('i2' → "Serum 1")
+ *   canvas-form ids: a source ('wheel', 've.out'), a knob ('<dev>:<param>') or a device ('i2' → "Serum 1"); cancel (U12):
+ *   a gesture's live edits ended where they began — drop the step its first edit opened
  */
 
 /** @param {ModHost} host */
@@ -187,7 +190,7 @@ export function createModLayer(host) {
   const budgetText = B => B.used + '/' + B.max + (B.left.size ? ' · ' + B.left.size + ' not compiled' : '');
   const srcOfRow = (R, preset) => preset ? (CANVAS[R.src] || R.src) : R.src;
   const pidOfRow = (R, preset) => preset ? String(R.dst) : splitDst(R.dst)[1];
-  const lineOf = (R, preset, dev) => srcName(srcOfRow(R, preset)) + ' → ' + knobName(dev, pidOfRow(R, preset)) + ' · ' + pct(R.amt) + (R.byp ? ' · bypassed' : '');
+  const lineOf = (R, preset, dev) => srcName(srcOfRow(R, preset)) + ' → ' + knobName(dev, pidOfRow(R, preset)) + ' · ' + amtText(R.amt, R.bi) + (R.byp ? ' · bypassed' : ''); // (U11: the badge's format)
 
   /* ---------------------------------------------------------------- the popover shell (inspector, parameter list) */
   let P = null; // { box, kind, offs, widgets, sync, T? }
@@ -217,17 +220,19 @@ export function createModLayer(host) {
       off() { d.removeEventListener('pointerdown', onDown, { capture: true, passive: true }); d.removeEventListener('keydown', onDocKey); box.removeEventListener('keydown', onKey); tOff(); } };
     return P;
   }
-  // after the content is in: fixed at (x, y) client px, kept inside the window (flips above y when it would run off the bottom)
+  // after the content is in: fixed at (x, y) client px, kept inside what is visible — the visual viewport (native zoom, the
+  // soft keyboard: U12), else the window — flipping above y when it would run off the bottom
   function place(box, x, y) {
-    const d = D(), win = d.defaultView || globalThis, vw = win.innerWidth || 1024, vh = win.innerHeight || 768;
+    const d = D(), win = d.defaultView || globalThis, vv = win.visualViewport;
+    const V = vv && vv.width > 0 && vv.height > 0 ? { x: num(vv.offsetLeft, 0), y: num(vv.offsetTop, 0), w: vv.width, h: vv.height } : { x: 0, y: 0, w: win.innerWidth || 1024, h: win.innerHeight || 768 };
     box.style.left = '0px'; box.style.top = '0px';
     layerOf().appendChild(box);
-    const r = box.getBoundingClientRect(), w = r.width || 340, h = r.height || 0;
-    const px = num(x, (vw - w) / 2), py = num(y, vh / 3);
+    const r = box.getBoundingClientRect(), w = r.width || 340, h = r.height || 0, T = V.y + 8, B = V.y + V.h - 8;
+    const px = num(x, V.x + (V.w - w) / 2), py = num(y, V.y + V.h / 3);
     let top = py;
-    if (top + h > vh - 8) top = py - h - 8 >= 8 ? py - h - 8 : Math.max(8, vh - 8 - h);
-    box.style.left = Math.round(clamp(px, 8, Math.max(8, vw - 8 - w))) + 'px';
-    box.style.top = Math.round(Math.max(8, top)) + 'px';
+    if (top + h > B) top = py - h - 8 >= T ? py - h - 8 : Math.max(T, B - h);
+    box.style.left = Math.round(clamp(px, V.x + 8, Math.max(V.x + 8, V.x + V.w - 8 - w))) + 'px';
+    box.style.top = Math.round(Math.max(T, top)) + 'px';
   }
   function closePop(focusBack) {
     if (!P) return false;
@@ -264,8 +269,9 @@ export function createModLayer(host) {
     if (!T) return false;
     let R = readRow(T);
     if (!R || !T.dev) return false;
-    const dev = T.dev, pre = T.preset, src = srcOfRow(R, pre), pid = pidOfRow(R, pre);
-    const title = srcName(src) + ' → ' + knobName(dev, pid);
+    const dev = T.dev, pre = T.preset;
+    const titleOf = () => srcName(srcOfRow(R, pre)) + ' → ' + knobName(dev, pidOfRow(R, pre)); // (U12: a preset slot can hold another row after a sync)
+    const title = titleOf();
     const p = popover('insp', 'Modulation: ' + title, x, y);
     const box = p.box, W = p.widgets;
     const tags = pre ? [['preset', 'preset']] : [];
@@ -283,22 +289,29 @@ export function createModLayer(host) {
     const changes = f => Object.keys(f).some(k => R[k] !== f[k]);
     // a widget's set(n, phase): live edits per move, one step at the gesture's end when the row changed ('set': a key, a
     // typed value, the wheel, a toggle — a gesture of its own)
+    // (U12) live edits that end where they began (a two-finger rollback, a drag back to its start): host.cancel?() — the
+    // host drops the step its first edit opened
     const live = (lab, toFields) => {
-      let g0 = null;
+      let g0 = null, ed = false;
       return (n, ph) => {
-        if (ph === 'start') { g0 = snapKey(); return; }
+        if (ph === 'start') { g0 = snapKey(); ed = false; return; }
         const f = toFields(n), ch = changes(f);
-        if (ch) edit(f);
+        if (ch) { edit(f); ed = true; }
         if (ph === 'set') { if (ch) step(lab); }
-        else if (ph === 'end') { const was = g0; g0 = null; if (was !== null && was !== snapKey()) step(lab); }
+        else if (ph === 'end') {
+          const was = g0, e2 = ed;
+          g0 = null; ed = false;
+          if (was !== null && was !== snapKey()) step(lab); else if (was !== null && e2) call('cancel');
+        }
       };
     };
     const w = o => { W.push(o); return o; };
     // amount: the bipolar slider and its number box (1 % steps; typed "25", "-40%")
     const amtN = () => (num(R.amt, 0) + 1) / 2, amtF = n => ({ amt: r4(clamp(2 * n - 1, -1, 1)) });
     const amtParse = t => { const a = parsePct(t); return a == null ? null : (a + 1) / 2; };
-    const amt = w(wk.slider({ label: 'Amount', get: amtN, def: 0.5, bipolar: true, orient: 'h', fmt: n => pct(2 * n - 1), parse: amtParse, set: live('Mod amount', amtF) }));
-    const amtB = w(wk.numBox({ label: 'Amount %', steps: 200, get: amtN, def: 0.5, fmt: n => pct(2 * n - 1), parse: amtParse, set: live('Mod amount', amtF) }));
+    const amtT = n => amtText(2 * n - 1, R.bi); // (U11: as the badge and the Mod list say it)
+    const amt = w(wk.slider({ label: 'Amount', get: amtN, def: 0.5, bipolar: true, orient: 'h', fmt: amtT, parse: amtParse, set: live('Mod amount', amtF) }));
+    const amtB = w(wk.numBox({ label: 'Amount %', steps: 200, get: amtN, def: 0.5, fmt: amtT, parse: amtParse, set: live('Mod amount', amtF) }));
     const sA = sec('', amt.el, amtB.el);
     sA.classList.add('cv-ml-amt');
     // bipolar, bypass
@@ -360,6 +373,8 @@ export function createModLayer(host) {
     box.append(sA, tg, sec('', curve.el), sec('', out.el), sec('', aux.el, inv.el), sec('', rise.el), sec('', fall.el, link.el), foot);
     function refresh() {
       for (const x of W) x.update();
+      const tt = titleOf();
+      if (hd.t.textContent !== tt) { hd.t.textContent = tt; hd.t.title = tt; box.setAttribute('aria-label', 'Modulation: ' + tt); }
       const B = budgetOf(dev), left = !pre && B.left.has(T.id);
       hd.b.textContent = B.used + '/' + B.max;
       hd.b.title = devName(dev) + '\'s mod rows: ' + B.used + ' of ' + B.max + ' used' + (B.left.size ? ', ' + B.left.size + ' not compiled' : '');
@@ -509,8 +524,8 @@ export function createModLayer(host) {
 
   return {
     openInspector, openDestList, openList,
-    /** Close everything (the popover and the Mod list). */
-    close() { const a = closePop(), b = closeList(); return a || b; },
+    /** Close the innermost (the Escape chain, U7): the popover when one is open, else the Mod list → whether one closed. */
+    close() { return closePop() || closeList(); },
     isOpen: () => !!P || !!(L && L.S.isOpen()),
     /** Re-read the host after an outside change (undo / redo, a preset load): the open inspector follows its row (closes
      * when it is gone), the Mod list re-renders. */

@@ -4528,7 +4528,7 @@ function cvHost() {
     bodies: { mount: cvMountBody, unmount: cvUnmountBody },
     // (stage 2a) the project wheel and the preset rows for the mod cables, their visibility (the toolbar ∿), the badges' taps
     project: () => project, presetRows: true, mods: (W => (W && typeof W.modsMode === 'function' ? W.modsMode() : undefined))(cvW()),
-    cables: { onSelect: modCableSel, onAction: modCableAct, menu: modCableMenu, onHint: txt => notice(txt, 6000) },
+    cables: { onSelect: modCableSel, onAction: modCableAct, menu: modCableMenu, onHint: modHint, ignore: modAside },
     title: cvTitle,
     menu: cvMenu,
     size: key => { const t = trk(); return CMOD.instOf(t, key) ? cvInstSize(t, key) : null; },
@@ -5064,10 +5064,43 @@ function modUnmount(key) { const B = modBodies.get(key); if (!B) return false; m
 // a value was sent (ctl: the wheel, aftertouch, bend; inputNote: a velocity): the modules of that kind redraw (a dragged
 // wheel ignores it)
 function cvModLive(kind) { if (modBodies.size) for (const B of modBodies.values()) if (B.kind === kind) B.update(modValue(kind)); }
-function cvModPlay() { if (modBodies.size) for (const B of modBodies.values()) if (B.kind !== 'velo') B.update(modValue(B.kind)); } // (frame(), playing)
-// the wheel's "+N on other tracks": its cables there; a tap shows the first such track
+// (frame(), playing) the selected track's lanes on the modules on screen (U13: a folded or off-screen one waits)
+function cvModPlay() {
+  if (!modBodies.size) return;
+  const t = trk();
+  for (const [k, B] of modBodies) if (B.kind !== 'velo' && (!cvView || cvView.live(k))) B.update(modLane(B.kind, t));
+}
+// (U13) perfValue's lane value without its scan of t.cc per body per frame: per track and kind the points sorted by tick
+// (equal ticks: the later in t.cc wins, as there), made again when t.cc changes (another array, another length) or after
+// MOD_LANE_MS (an edit in place), a binary search per frame; before the lane's first point the last value sent
+const MOD_LANE_MS = 500, modLanes = new Map(); // track id + kind → { cc, n, at, L: [[tick, v, i]] }
+function modLane(kind, t) {
+  if (!T.playing || !t || !Array.isArray(t.cc) || (kind !== 'wheel' && kind !== 'at' && kind !== 'bend')) return perfValue(kind, t);
+  const key = t.id + '\n' + kind, now = performance.now();
+  let c = modLanes.get(key);
+  if (!c || c.cc !== t.cc || c.n !== t.cc.length || now - c.at > MOD_LANE_MS) {
+    const L = [];
+    t.cc.forEach((x, i) => { if (x && x.k === kind && x.v !== undefined) L.push([x.t, x.v, i]); });
+    L.sort((a, b) => a[0] - b[0] || a[2] - b[2]);
+    modLanes.set(key, c = { cc: t.cc, n: t.cc.length, at: now, L });
+  }
+  const tick = curTick(), L = c.L;
+  let lo = 0, hi = L.length;
+  while (lo < hi) { const m = (lo + hi) >> 1; if (L[m][0] <= tick) lo = m + 1; else hi = m; }
+  if (lo) return L[lo - 1][1];
+  const P = perfLive.get(t.id);
+  return P && P[kind] !== undefined ? P[kind] : 0;
+}
+// the wheel's "+N on other tracks": its cables there; a tap lists those tracks at the chip (U14), a pick shows its wheel
 const modOthers = () => { const id = trk().id; return CMOD.wheelRows(project).byTrack.filter(x => x.trackId !== id).reduce((n, x) => n + x.rows.length, 0); };
-function modJump() { const id = trk().id, x = CMOD.wheelRows(project).byTrack.find(y => y.trackId !== id); if (x) cvReveal(x.trackId, 'wheel'); }
+function modJumpItems() {
+  const id = trk().id;
+  return CMOD.wheelRows(project).byTrack.filter(x => x.trackId !== id).map(x => {
+    const tr = project.tracks.find(y => y.id === x.trackId), n = x.rows.length;
+    return { label: (tr ? tr.name : x.trackId) + ' · ' + n + ' cable' + (n === 1 ? '' : 's'), action: () => cvReveal(x.trackId, 'wheel') };
+  });
+}
+function modJump(el) { const L = modJumpItems(); if (!L.length) return; const p = modAt(el); cvTray.popupMenu(p.x, p.y, L); }
 // every render: the tray's tiles greyed where their singleton stands, the wheel's count
 function cvModDecor() {
   const T = shell.tiles, t = trk();
@@ -5079,12 +5112,28 @@ function cvModDecor() {
   if (W) W.setOthers(modOthers());
 }
 /* ---- adding (the Sources tray's Modulators) and deleting (⋯) */
-// a tap: left of the instruments, as Tidy's column, below what stands there; a drop: where it lands (on the dots)
-function modSpot(t) {
-  const x = -Math.ceil((cvModule.W_MOD + cvModule.GAP) / cvWorld.DOT) * cvWorld.DOT;
+// a tap: Tidy's column left of the instruments (x −(W_MOD + MOD_GAP), U8), at the module's MOD_ORDER slot (below the
+// modulators before it in that order, as Tidy stacks them) when nothing stands there, else below the column (U9); a drop:
+// where it lands (on the dots)
+function modSpot(t, kind) {
+  const D = cvWorld.DOT, up = v => Math.ceil(v / D) * D, MH = cvModule.MOD_H, G = cvModule.VGAP;
+  const x = -up(cvModule.W_MOD + cvModule.MOD_GAP), h = MH[kind] || MH.at;
+  const R = cvView && cvView.trackId === t.id ? Object.values(cvView.rects()).filter(r => r && r.x < x + cvModule.W_MOD && r.x + r.w > x) : [];
   let y = 0;
-  if (cvView && cvView.trackId === t.id) for (const r of Object.values(cvView.rects())) if (r && r.x < x + cvModule.W_MOD && r.x + r.w > x) y = Math.max(y, r.y + r.h + cvModule.VGAP);
-  return { x, y: Math.ceil(y / cvWorld.DOT) * cvWorld.DOT };
+  for (const k of cvModule.MOD_ORDER) { if (k === kind) break; if (k === 'wheel' ? CMOD.hasWheel(project) : t.dev && t.dev[CMOD.MOD_DEV[k]]) y = up(y + MH[k] + G); }
+  if (!R.some(r => r.y < y + h && r.y + r.h > y)) return { x, y };
+  y = 0;
+  for (const r of R) y = Math.max(y, r.y + r.h + G);
+  return { x, y: up(y) };
+}
+// (U9) a tapped-in module off screen: the camera brings it in at the zoom it has (the trays stay as they are)
+function modShow(key) {
+  const W = cvW(), m = cvView && cvView.modules.get(key);
+  if (!W || !m || typeof W.band !== 'function' || typeof W.focusItem !== 'function') return false;
+  const r = m.rect(), b = W.band(), a = W.toClient(r.x, r.y), z = W.toClient(r.x + r.w, r.y + r.h);
+  if (a.x >= b.left && a.y >= b.top && z.x <= b.right && z.y <= b.bottom) return false;
+  W.focusItem(key, { k: W.k, edit: false });
+  return true;
 }
 function modAdd(kind, at) {
   const t = trk(), key = modKeyOf(kind), name = CMOD.MOD_LABEL[kind];
@@ -5093,9 +5142,11 @@ function modAdd(kind, at) {
   hist.record(project, kind === 'wheel' ? 'Place Mod Wheel' : 'Add ' + name);
   const lay = cvPinned(t);
   if (kind === 'wheel') CMOD.placeWheel(project); else CMOD.addModDev(t, kind);
-  lay[key] = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? { x: cvDot(at.x), y: cvDot(at.y) } : modSpot(t);
+  const tap = !(at && Number.isFinite(at.x) && Number.isFinite(at.y));
+  lay[key] = tap ? modSpot(t, kind) : { x: cvDot(at.x), y: cvDot(at.y) };
   t.lay = lay;
   cvAfter(t);
+  if (tap) modShow(key);
   const step = hist.u[hist.u.length - 1], tid = t.id;
   cvUndoNotice(`Added ${name} · tap to undo`, step, () => {
     const tr = project.tracks.find(x => x.id === tid);
@@ -5212,8 +5263,23 @@ function modCableMenu(id) {
   modMenuId = id;
   const c = cvView && cvView.cables.list().find(x => x.id === id);
   if (!c || c.kind !== 'mod') return [];
-  return [{ label: 'Edit…', action: () => { const p = modAt(cvView && cvView.cables.badge(id)); if (modLayer) modLayer.openInspector(c.preset ? { preset: c.dev, slot: c.slot } : id, p.x, p.y); } }];
+  return [{ label: 'Edit…', action: () => { const p = modAt(cvView && cvView.cables.badge(id)); if (modLayer) modLayer.openInspector(c.preset ? { preset: c.dev, slot: c.slot } : id, p.x, p.y); } },
+    { label: 'Bypass', checked: !!c.byp, action: () => modBypass(id) }]; // (U15, SPEC §2.9; the amount stays the inspector's)
 }
+// (U15) the menu's Bypass: a canvas row one step "Mod bypass"; a preset row the Serum's own edit (sxEdit, as the inspector's)
+function modBypass(id) {
+  const t = trk(), c = cvView && cvView.cables.list().find(x => x.id === id);
+  if (!c || c.kind !== 'mod') return;
+  if (c.preset) modEdit({ preset: c.dev, slot: c.slot }, { byp: c.byp ? 0 : 1 });
+  else { hist.record(project, 'Mod bypass'); CMOD.setMod(t, id, { byp: c.byp ? 0 : 1 }); }
+  cvModAfter(t);
+  cvModSync();
+}
+// (U10) the 24+ hint once a session (every track switch makes a new view, whose cables would say it again)
+let modHinted = false;
+function modHint(txt) { if (modHinted) return; modHinted = true; notice(txt, 6000); }
+// (U5) what is not "elsewhere" for a selected mod cable: the overlays (#ov: the inspector, the Mod list)
+const modAside = el => { const ov = $('#ov'); return !!ov && !!el && typeof ov.contains === 'function' && ov.contains(el); };
 function modCableAct(id, a) { // Disconnect (the menu, the Delete key): a canvas row one step; a preset row the Serum's edit
   const t = trk(), c = cvView && cvView.cables.list().find(x => x.id === id);
   if (a !== 'disconnect' || !c || c.kind !== 'mod') return;
@@ -5239,6 +5305,12 @@ function modStep(label) {
   if (P && P.e && hist.u[hist.u.length - 1] === P.e) { P.e.label = label; hist.prune(project); }
   cvModAfter(t);
   sxRefresh(); // (a preset row's edit: the Serum's matrix page)
+}
+// (U12) the layer's gesture ended where it began (a two-finger rollback, a drag back): the step its first edit opened goes
+function modUnstep() {
+  const P = modPend;
+  modPend = null;
+  if (P && P.e && hist.u[hist.u.length - 1] === P.e) { hist._drop(hist.u.pop()); updateUndoUI(); }
 }
 // after every row edit: the patch, the Serum's halos, the view (cables, the "mods n/64" badge), the track rows
 function cvModAfter(t) { queuePatch(t); modHalos(t); cvRender(); renderHeads(); persist(); updateUndoUI(); }
@@ -5309,7 +5381,7 @@ function initModLayer() {
     if (document.head && !document.getElementById('cvModStyle')) { const st = h('style'); st.id = 'cvModStyle'; st.textContent = MOD_STYLE; document.head.append(st); } // (the layer's styles, once)
     modLayer = createModLayer(modHostO = {
       doc: document, layer: $('#ov') || document.body,
-      descs: modDescs, sources: modSources,
+      descs: modDescs, sources: modSources, cancel: modUnstep,
       rowsOf: dev => { const t = trk(); return dev ? CG.modRowsFor(t, dev) : Array.isArray(t.mods) ? t.mods.slice() : []; },
       presetRows: dev => { const d = trk().dev[dev]; return d ? CMOD.presetRows(d) : []; },
       budget: dev => CG.modBudget(trk(), dev),
@@ -5351,6 +5423,10 @@ function cvRemeasure(id, dev) {
     for (const q of modMeasQ) { const [tid, d] = q.split('\n'); if (cvView && cvView.trackId === tid) cvView.remeasure(d); }
     modMeasQ.clear();
   });
+}
+// (stage 2a UI fixes, tests/canvas-2a-sim: its own hook beside __synthTest.cv.mod)
+if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
+  globalThis.__synthTest.modUI = { spot: modSpot, show: modShow, hint: modHint, lane: modLane, jumpItems: modJumpItems, jump: modJump, bypass: modBypass, unstep: modUnstep, aside: modAside };
 }
 
 // Track switch (SPEC-canvas §2.12, stage 1c): the new track's module frames go up at once (their sizes from its layout, its

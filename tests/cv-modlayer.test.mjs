@@ -255,7 +255,7 @@ test('inspector closes on Escape, a press outside, the camera (wk.closeTransient
   M.openInspector('r1', 0, 0);
   H.rows[0].amt = -1;
   M.sync();
-  assert.equal(lab(pop(), 'Amount').getAttribute('aria-valuetext'), '-100%');
+  assert.equal(lab(pop(), 'Amount').getAttribute('aria-valuetext'), '−100%');
   H.rows.shift();
   M.sync();
   assert.equal(pops(), 0);
@@ -280,7 +280,7 @@ test('Mod list: a sheet grouped by device, budgets, tags (preset / bypassed / no
     lines: byCls(s, 'cv-ml-line').map(l => [l.childNodes[0].textContent, ...byCls(l, 'cv-ml-tag').map(t => t.textContent)].join(' | ')),
   }));
   assert.deepEqual(view(), [
-    { dev: 'i2', head: 'Serum 1', budget: '63/64 · 1 not compiled', lines: ['Mod Wheel → Cutoff · +50%', 'Velocity → Delay Mix · -25% · bypassed | not compiled: matrix full', 'Velocity → A Level · +30% | preset'] },
+    { dev: 'i2', head: 'Serum 1', budget: '63/64 · 1 not compiled', lines: ['Mod Wheel → Cutoff · +50%', 'Velocity → Delay Mix · ∓25% · bypassed | not compiled: matrix full', 'Velocity → A Level · +30% | preset'] },
     { dev: 'i3', head: 'Serum B', budget: '1/64', lines: ['Aftertouch → A Level · +100%'] },
   ]);
   assert.equal(one(sections()[0], 'cv-ml-b').hasAttribute('data-full'), true);
@@ -293,6 +293,7 @@ test('Mod list: a sheet grouped by device, budgets, tags (preset / bypassed / no
   assert.equal(byCls(doc.body, 'cv-ml-pop').length, 0);
   byCls(sections()[0], 'cv-ml-line')[2].click();
   assert.equal(byCls(pop(), 'cv-ml-tag').filter(t => !t.hidden).map(t => t.textContent).join(), 'preset');
+  M.close(); // (U7: the inspector, then the list)
   M.close();
   assert.equal(M.isOpen(), false);
   // Disconnect all (canvas rows only): the confirm names the count; no → nothing
@@ -354,4 +355,68 @@ test('parameter list: groups, nomod greyed (title; a tap notices why), pick → 
   assert.deepEqual(take(f.H), ['connect wheel i2:f.cutoff', 'notice Serum 1\'s mod rows are full (64/64)']);
   f.M.close();
   assert.equal(all(f.doc.body).filter(n => n.classList && n.classList.contains('cv-ml-pop')).length, 0);
+});
+
+// UI fixes
+test('(U7) close() — the Escape chain\'s — closes the inspector first and the Mod list under it on the next one', () => {
+  const { doc, M, pop } = setup();
+  M.openList('Track 1', ['i2']);
+  byCls(one(doc.body, 'cv-sheet'), 'cv-ml-line')[0].click();
+  assert.ok(pop(), 'the inspector over the list');
+  assert.deepEqual([M.close(), !!pop(), !!one(doc.body, 'cv-sheet'), M.isOpen()], [true, false, true, true], 'the inspector only');
+  assert.deepEqual([M.close(), !!one(doc.body, 'cv-sheet'), M.isOpen()], [true, false, false], 'then the list');
+  assert.equal(M.close(), false, 'nothing left');
+});
+
+test('(U11) one amount format (cv-cables amtText): the Mod list and the inspector say what the badge says — a bipolar row ± / ∓, "−" for a negative one; typed back (parsePct reads ± ∓ −)', () => {
+  const { doc, M, pop } = setup();
+  M.openList('Track 1', ['i2']);
+  const lines = byCls(one(doc.body, 'cv-sheet'), 'cv-ml-line').map(l => l.childNodes[0].textContent);
+  assert.deepEqual(lines, ['Mod Wheel → Cutoff · +50%', 'Velocity → Delay Mix · ∓25% · bypassed', 'Velocity → A Level · +30%']);
+  M.close(); M.close();
+  M.openInspector('r2', 0, 0);
+  assert.deepEqual([lab(pop(), 'Amount').getAttribute('aria-valuetext'), lab(pop(), 'Amount %').getAttribute('aria-valuetext')], ['∓25%', '∓25%']);
+  lab(pop(), 'Bipolar').click();
+  assert.equal(lab(pop(), 'Amount').getAttribute('aria-valuetext'), '−25%', 'unipolar now: the sign');
+  M.close();
+  assert.deepEqual([ML.parsePct('∓25%'), ML.parsePct('±25'), ML.parsePct('−25%')], [-0.25, 0.25, -0.25]);
+});
+
+test('(U12) the inspector: a preset row re-read by its slot (undo, a preset load) retitles itself; a gesture that changed nothing after live edits (a two-finger rollback, a drag back to its start) tells host.cancel (the host drops the step it opened); placed inside the visual viewport (native zoom, the soft keyboard)', () => {
+  const s = setup();
+  const { H, M, pop } = s;
+  M.openInspector({ preset: 'i2', slot: 5 }, 0, 0);
+  assert.equal(one(pop(), 'cv-ml-t').textContent, 'Velocity → A Level');
+  Object.assign(H.pre.i2[0], { src: 'wheel', dst: 'f.cutoff' });
+  M.sync();
+  assert.deepEqual([one(pop(), 'cv-ml-t').textContent, one(pop(), 'cv-ml-t').title, pop().getAttribute('aria-label')], ['Mod Wheel → Cutoff', 'Mod Wheel → Cutoff', 'Modulation: Mod Wheel → Cutoff']);
+  M.close();
+  // host.cancel: live edits that end where they began
+  H.cancel = () => H.log.push('cancel');
+  M.openInspector('r1', 0, 0);
+  const amt = lab(pop(), 'Amount'), trk = one(amt, 'wk-slt'), thumb = one(amt, 'wk-slk');
+  place(trk, 0, 0, 200, 10);
+  take(H);
+  ptr(thumb, 'pointerdown', 151, 5, { pointerId: 9 });
+  ptr(amt, 'pointermove', 171, 5, { pointerId: 9 });
+  ptr(amt, 'pointercancel', 171, 5, { pointerId: 9, gesture: 'two-finger' });
+  assert.deepEqual(take(H), ['edit r1 {"amt":0.7}', 'edit r1 {"amt":0.5}', 'cancel'], 'rolled back: the step dropped');
+  ptr(thumb, 'pointerdown', 151, 5, { pointerId: 10 });
+  ptr(amt, 'pointermove', 161, 5, { pointerId: 10 }); ptr(amt, 'pointermove', 151, 5, { pointerId: 10 });
+  ptr(amt, 'pointerup', 151, 5, { pointerId: 10 });
+  assert.deepEqual(take(H), ['edit r1 {"amt":0.6}', 'edit r1 {"amt":0.5}', 'cancel'], 'back to its start');
+  ptr(thumb, 'pointerdown', 151, 5, { pointerId: 11 }); ptr(amt, 'pointerup', 151, 5, { pointerId: 11 });
+  assert.deepEqual(take(H), [], 'no edit: nothing to drop');
+  ptr(thumb, 'pointerdown', 151, 5, { pointerId: 12 }); ptr(amt, 'pointermove', 161, 5, { pointerId: 12 }); ptr(amt, 'pointerup', 161, 5, { pointerId: 12 });
+  assert.deepEqual(take(H), ['edit r1 {"amt":0.6}', 'step Mod amount'], 'a change: its step, no cancel');
+  M.close();
+  // the visual viewport: zoomed in, scrolled to (100, 50), 600 × 400 visible
+  s.doc.defaultView.visualViewport = { width: 600, height: 400, offsetLeft: 100, offsetTop: 50, scale: 2 };
+  try {
+    M.openInspector('r2', 5000, -50);
+    assert.deepEqual([pop().style.left, pop().style.top], [(100 + 600 - 8 - 40) + 'px', (50 + 8) + 'px'], 'clamped into what is visible');
+    M.openInspector('r2', 300, 420);
+    assert.equal(pop().style.top, (420 - 40 - 8) + 'px', 'flips above a point near the visible bottom');
+    M.close();
+  } finally { delete s.doc.defaultView.visualViewport; }
 });

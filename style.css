@@ -1173,13 +1173,16 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 .cv-cable-g.cv-hide { display: none; }
 .cv-cable.cv-cable-live.cv-mlive { stroke-width: calc(2px * var(--ik, 1)); }
 /* the amount badge at the knob end, just before the end drawn above the modules (its right edge there: never over the knob a
-   cable arrives at — they always come in from the left); the only part of a mod cable taking a press (44 screen px via ::before) */
+   cable arrives at — they always come in from the left); the only part of a mod cable taking a press: 44 screen px tall via
+   ::before, never wider than itself (U2: the knobs beside it keep their presses; a knob under it wins: cv-cables), none
+   while patching (a drag looks through it); a press on it pans the canvas, a tap selects (U4) */
 .cv-mbadge { position: absolute; z-index: 10001; transform: translate(-100%, -50%); margin-left: calc(-2px * var(--ik, 1)); display: inline-flex; align-items: center; gap: calc(4px * var(--ik, 1));
   height: calc(18px * var(--ik, 1)); padding: 0 calc(6px * var(--ik, 1)); border-radius: calc(9px * var(--ik, 1)); border: calc(1px * var(--ik, 1)) solid var(--cc, #8d8b86);
   background: #101215; color: var(--cc, #c9c6bf); font: 700 calc(10.5px * var(--ik, 1))/1 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap;
   box-shadow: 0 calc(2px * var(--ik, 1)) calc(6px * var(--ik, 1)) rgba(0, 0, 0, 0.6); -webkit-tap-highlight-color: transparent; }
 .cv-mbadge[hidden] { display: none; }
-.cv-mbadge::before { content: ''; position: absolute; left: 50%; top: 50%; width: max(100%, calc(44px * var(--ik, 1))); height: calc(44px * var(--ik, 1)); transform: translate(-50%, -50%); }
+.cv-mbadge::before { content: ''; position: absolute; left: 50%; top: 50%; width: 100%; height: calc(44px * var(--ik, 1)); transform: translate(-50%, -50%); }
+#world[data-cv-patching] .cv-mbadge { pointer-events: none; }
 .cv-mbadge:hover, .cv-mbadge:focus-visible, .cv-mbadge.cv-sel { background: #1d1810; outline: none; box-shadow: 0 0 0 calc(2px * var(--ik, 1)) var(--hot); }
 .cv-mbadge.cv-off { border-color: #5b5e66; color: #8d8b86; }
 .cv-mbadge.cv-dim { opacity: 0.4; }

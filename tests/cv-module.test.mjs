@@ -1051,14 +1051,14 @@ test('devicesOf / tidy / kindW / layOf (2a): a track\'s Velocity, Aftertouch, Be
     [240, { wheel: 224, velo: 192, at: 128, bend: 128 }, ['wheel', 'velo', 'at', 'bend'], 240, ['wheel', 'velo', 'at', 'bend', null]]);
   const xy = L => Object.entries(L).map(([k, v]) => k + '@' + v.x + ',' + v.y).join(' ');
   const base = xy(M.tidy(v2t(), {}));
-  assert.equal(xy(M.tidy(t, {})), base + ' ve@-416,0 at@-416,256 bd@-416,448', 'a column left of the instruments, VGAP apart, on the dots');
+  assert.equal(xy(M.tidy(t, {})), base + ' ve@-320,0 at@-320,256 bd@-320,448', 'a column left of the instruments, VGAP apart, on the dots');
   const devs = [{ key: 'wheel', kind: 'mod', mod: 'wheel' }, ...M.devicesOf(t)];
   const L = M.tidy(t, {}, devs.reverse());
-  assert.equal(xy(L).split(' ').filter(s => /^(wheel|ve|at|bd)@/.test(s)).join(' '), 'wheel@-416,0 ve@-416,288 at@-416,544 bd@-416,736', 'the wheel first, whatever the list order');
+  assert.equal(xy(L).split(' ').filter(s => /^(wheel|ve|at|bd)@/.test(s)).join(' '), 'wheel@-320,0 ve@-320,288 at@-320,544 bd@-320,736', 'the wheel first, whatever the list order');
   assert.ok(Object.values(L).every(v => v.x % 32 === 0 && v.y % 32 === 0), 'on the dots');
-  assert.equal(xy(M.tidy(t, { ve: { w: 240, h: 300 } }, devs)).split(' ').find(s => s.startsWith('at@')), 'at@-416,672', 'a measured height counts');
+  assert.equal(xy(M.tidy(t, { ve: { w: 240, h: 300 } }, devs)).split(' ').find(s => s.startsWith('at@')), 'at@-320,672', 'a measured height counts');
   assert.deepEqual([M.layOf({ lay: { wheel: { x: 64, y: -96, fold: 1 } } }, 'wheel', L), M.layOf({ lay: {} }, 'bd', L), M.layOf({}, 've', L), M.layOf({}, 'at', {})],
-    [{ x: 64, y: -96, fold: 1 }, { x: -416, y: 736 }, { x: -416, y: 288 }, { x: 0, y: 0 }], 'layOf keys wheel / ve / at / bd');
+    [{ x: 64, y: -96, fold: 1 }, { x: -320, y: 736 }, { x: -320, y: 288 }, { x: 0, y: 0 }], 'layOf keys wheel / ve / at / bd');
 });
 
 // a 2a host: the project wheel added to the devices, knobs in the Serum's body and its own FX, the project
@@ -1084,9 +1084,9 @@ test('createTrackView (2a): modulator modules — kind \'mod\', W_MOD × MOD_H, 
   assert.deepEqual(['wheel', 've', 'bd'].map(k => m(k).el.style['--mc']), [CB.MOD_COLOR.wheel, CB.MOD_COLOR.velo, '#abcdef']);
   const j = m('wheel').jack('out');
   assert.deepEqual([j.getAttribute('data-kind'), j.getAttribute('data-side'), j.getAttribute('role'), j.tabIndex, j.hasAttribute('data-ro'), j.getAttribute('aria-label')], ['mod', 'right', 'button', 0, false, 'WHEEL out']);
-  assert.deepEqual(['wheel', 've', 'bd'].map(k => m(k).x + ',' + m(k).y), ['-416,0', '-416,288', '-416,544'], 'the modulator column');
+  assert.deepEqual(['wheel', 've', 'bd'].map(k => m(k).x + ',' + m(k).y), ['-320,0', '-320,288', '-320,544'], 'the modulator column');
   assert.deepEqual([m('i1').x, m('i1').y], [0, 0], 'the instruments where they were');
-  assert.deepEqual(V.ports().get('wheel.out'), { x: -416 + 240, y: 68 });
+  assert.deepEqual(V.ports().get('wheel.out'), { x: -320 + 240, y: 68 });
   assert.deepEqual(V.jacks().filter(J => J.mod === 'wheel' || J.mod === 'i1').map(J => J.id + ':' + J.dir + ':' + J.kind), ['i1.out:out:audio', 'wheel.out:out:mod']);
   assert.deepEqual(V.cables.list().filter(c => c.kind === 'mod').map(c => c.id + ' ' + c.a + ' ' + c.b + (c.preset ? ' preset' : '')),
     ['r1 wheel.out i2:a.semi', 'r2 ve.out i2:fx.r1.mix', 'r3 bd.out i2:zz.none', 'p:i2:0 ve.out i2:a.pan preset']);
@@ -1184,4 +1184,64 @@ test('createTrackView (2a): host.patch false keeps the audio read-only but the m
   D.destroy();
   V.destroy();
   assert.equal(all(R.root).filter(n => n.getAttribute && /cv-mbadge/.test(n.getAttribute('class') || '')).length, 0, 'the badges go with the view');
+});
+
+// UI fixes
+test('(U1) a knob with hidden twins (a Serum keeps its other pages in the DOM: 0 × 0): the shown one is the end, whichever comes first; a page switch (remeasure) moves it; an end parked on the bar because none was shown is tried again on the next lookup — never during a live move', () => {
+  globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+  try {
+    const R = mview(), V = R.V, sx = V.modules.get('i2'), X = sx.x, Y = sx.y, K = R.K['a.semi'];
+    place(sx.el, 100, 200, 600, 400); place(K, 240, 270, 20, 20);
+    // a hidden page before the knob's own (the old index kept the first it met: the 0 × 0 twin) and one after it
+    const twin = before => {
+      const pg = R.doc.createElement('div'), tw = R.doc.createElement('div');
+      pg.setAttribute('data-dev', 'i2'); tw.setAttribute('data-dest', 'a.semi'); pg.append(tw);
+      const host = K.parentNode.parentNode;
+      if (before) host.insertBefore(pg, K.parentNode); else host.append(pg);
+      place(tw, 0, 0, 0, 0);
+      return tw;
+    };
+    const tw = twin(true), tw2 = twin(false);
+    V.remeasure();
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: X + 300, y: Y + 160 }, 'the shown knob, not a hidden twin');
+    // a page switch: the knob's page hidden, a twin's shown → remeasure → the twin
+    place(K, 0, 0, 0, 0); place(tw2, 340, 370, 20, 20); V.remeasure('i2');
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: X + 500, y: Y + 360 });
+    place(tw2, 0, 0, 0, 0); place(tw, 140, 170, 20, 20); V.remeasure('i2');
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: X + 100, y: Y - 40 });
+    // every page hidden: the bar; shown again (no remeasure): tried again on the next lookup
+    place(tw, 0, 0, 0, 0); V.remeasure('i2');
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: X, y: Y + 20 }, 'none shown: the bar');
+    place(K, 240, 270, 20, 20);
+    let reads = 0;
+    const gb = K.getBoundingClientRect.bind(K);
+    K.getBoundingClientRect = () => { reads++; return gb(); };
+    // (a live move of the module by its bar: the cached end, no rect read per frame)
+    ptr(sx.bar, 'pointerdown', 500, 300, { pointerId: 1, pointerType: 'mouse' });
+    ptr(sx.bar, 'pointermove', 541, 311, { pointerId: 1, pointerType: 'mouse', buttons: 1 });
+    ptr(sx.bar, 'pointermove', 581, 321, { pointerId: 1, pointerType: 'mouse', buttons: 1 });
+    assert.equal(reads, 0, 'not re-read during the live move');
+    ptr(sx.bar, 'pointerup', 581, 321, { pointerId: 1, pointerType: 'mouse' });
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: sx.x + 300, y: sx.y + 160 }, 'shown again: its centre');
+    const n = reads;
+    V.destPort('i2', 'a.semi'); V.ports();
+    assert.deepEqual([n > 0, reads], [true, n], 'measured once: cached again');
+    V.destroy();
+  } finally { delete globalThis.ResizeObserver; }
+});
+
+test('(U4) a mod cable\'s amount badge (and what it holds) is background: the canvas pans from it (its tap selects: cv-cables); another button is not', () => {
+  const R = mview(), V = R.V, b = V.cables.badge('r1');
+  assert.ok(b, 'the badge');
+  const span = b.childNodes[0], btn = R.doc.createElement('button');
+  R.root.append(btn);
+  assert.deepEqual([M.isBackground(b), M.isBackground(span), M.isBackground(btn)], [true, true, false]);
+  V.destroy();
+});
+
+test('(U8) the modulator column stands W_MOD + MOD_GAP (80) left of the instruments: x −320 — a fit with the Sources tray open at 1024 × 1366 keeps the modulators beside the instrument', () => {
+  const t = v2t();
+  t.dev.ve = { kind: 'velo' };
+  assert.deepEqual([M.MOD_GAP, M.tidy(t, {}).ve], [80, { x: -320, y: 0 }]);
+  assert.equal((M.W_MOD + M.MOD_GAP) % 32, 0, 'on the dots');
 });
