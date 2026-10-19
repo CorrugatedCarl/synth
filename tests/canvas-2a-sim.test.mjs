@@ -14,6 +14,7 @@ import { fakeStorage } from './fakes.mjs';
 import * as CG from '../cv-graph.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
 import * as core from '../serum-core.js?v=9';
+import { dropRow } from '../serum-ui.js?v=9';
 import { MODELS } from '../models.js?v=9';
 import { cpOf } from './fixtures/mods-2a.mjs';
 
@@ -104,15 +105,15 @@ test('a mod drag from the wheel onto a Serum knob: canMod / markDests from cv-mo
   assert.deepEqual([rows(), hsteps(), V().cables.selected()], ['r1:wheel>i1:f.cutoff', n0 + 1, 'r1']);
   assert.match(cv.hist.undoLabel, /^Modulate .+ with Mod Wheel$/);
   assert.equal(modCables(), 'r1:wheel.out>i1:f.cutoff');
-  const r = Object.assign({}, T().mods[0]), cp = lastCP(T());
+  const cp = lastCP(T());
   assert.deepEqual(cp, cpOf(api.buildPatch(T())), 'the posted patch is the injected compile');
   const b = CG.modBudget(T(), 'i1');
   assert.equal(badge('i1'), 'mods ' + (b.preset + 1) + '/64', 'the Serum module\'s badge');
-  // the same row through the Serum's own matrix (its WHEEL tile's addMod)
+  // the same row through the Serum's own matrix (its WHEEL tile's dropRow, the "Limit mod depth on drop" preference)
   cv.undo(); sim.raf();
   assert.deepEqual([rows(), modCables()], ['', '']);
   let slot = -1;
-  api.sxHost(T()).edit(s => { slot = core.addMod(s, T().fx, 'wheel', 'f.cutoff', { amt: r.amt, bi: r.bi }); }); sim.raf();
+  api.sxHost(T()).edit(s => { const d = dropRow(s, T().fx, 'wheel', 'f.cutoff', { limit: api.prefs().limitDrop }); slot = d ? d.slot : -1; }); sim.raf();
   assert.ok(slot >= 0);
   assert.deepEqual(lastCP(T()), cp, 'canvas cable ≡ the Serum\'s own row');
   api.sxHost(T()).edit(s => { s.matrix[slot] = core.normRow(null); }); sim.raf();
@@ -398,4 +399,27 @@ test('H2: the move is read from the step actually undone (a no-op step above Sav
   const n1 = hsteps(), lab = cv.hist.undoLabel, rid = T().mods[0].id;
   H.edit(rid, { amt: T().mods[0].amt }); H.step('Mod amount'); sim.raf();
   assert.deepEqual([hsteps(), cv.hist.undoLabel], [n1, lab]);
+});
+
+test('H7: a canvas drop follows the Serum\'s "Limit mod depth on drop" — off: the row its WHEEL tile writes with limit 0 (the drag and the parameter list)', () => {
+  wheelOn();
+  pick(fresh());
+  const fx = T().fx, amt = (dst, limit) => { const s = Object.assign({}, T().dev.i1.vals.s, { matrix: [{ src: '' }] }); core.addMod(s, fx, 'wheel', dst, { limit }); return s.matrix[0].amt; };
+  const dst = ['a.level', 'f.cutoff', 'a.vol', 'f.res', 'f.drive'].find(d => { try { return amt(d, true) !== amt(d, false); } catch { return false; } });
+  assert.ok(dst, '(a knob whose limited drop amount differs)');
+  const was = api.store.get('synth.sx.prefs', null);
+  api.store.set('synth.sx.prefs', Object.assign({}, was || {}, { limitDrop: 0 })); api.prefsChanged();
+  try {
+    assert.equal(api.prefs().limitDrop, 0);
+    M.opts.onMod('wheel', 'i1:' + dst); sim.raf();
+    const cp = lastCP(T());
+    cv.undo(); sim.raf();
+    let slot = -1;
+    api.sxHost(T()).edit(s => { slot = dropRow(s, T().fx, 'wheel', dst, { limit: 0 }).slot; }); sim.raf();
+    assert.deepEqual(lastCP(T()), cp, 'the drag ≡ the WHEEL tile, limit off');
+    api.sxHost(T()).edit(s => { s.matrix[slot] = core.normRow(null); }); sim.raf();
+    assert.equal(M.host().connect('wheel', 'i1:' + dst).ok, true); M.host().step('Modulate'); sim.raf();
+    assert.deepEqual(lastCP(T()), cp, 'the parameter list ≡ the WHEEL tile, limit off');
+    cv.undo(); sim.raf();
+  } finally { api.store.set('synth.sx.prefs', was || {}); api.prefsChanged(); }
 });
