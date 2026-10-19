@@ -163,6 +163,127 @@ export const CLASS_TABLE = Object.freeze({
 
 export const classOf = (modelId, ctlId) => (CLASS_TABLE[modelId] && CLASS_TABLE[modelId][ctlId]) || null;
 
+/* ------------------------------------------------------------------ stage 2b: transfer tables (IMPL-2b §5.3, SPEC §7.8) */
+// A cable on a classic knob reaches the engine as an offset in the units of what the knob changes: a smoothed slot
+// (sm knobs: engine.js S_* below — SLOT mirrors its numbering, tests/classic-mod.test.mjs pins it) or a patch field (apply /
+// proc knobs: the FIELD_CLASS path, 'lfo.rate', 'fenv.a', 'reg.bass', …; the Inst's span setter writes it). The knob's
+// modulation space is x ∈ 0…1 over [lo, hi] (a selector: its options rounded; a toggle: 0 / 1).
+//   SLOT                            { VO, VE, VN, VR, DRV, HO, HR, DO, DR, DH, DHR, LEV, OL, PW, TU, SUB, NZ, RING, EXT, RM, BEND, WHEEL, AT, N }
+//   targetsOf(model, ctlId)         [{ kind: 'slot', slot, field } | { kind: 'field', field }] everything the knob lands on
+//                                   (its class sweep over the default panel and the factory presets, so a knob inert at the
+//                                   current values still has its targets); several for a knob that moves several (a master
+//                                   tune: three TU slots; a filter type switch: character fields and the drive slot)
+//   slotOf(model, ctlId)            the first of them (null: none)
+//   xferOf(model, vals, ctlId, t?)  the transfer of target t (default: the first) at the current panel values: map() swept
+//                                   over the knob (129 points, the neighbours as they are) → { a, b, x0 } when linear within
+//                                   1e-9 (slot = a + b·x), else { tab: Float64Array(129), x0 } (linear interpolation; the
+//                                   exponential laws are within 0.1 % of the table's range between points); x0 = the knob's
+//                                   position in modulation space. The engine adds T(clamp(x0 + Σ)) − T(x0).
+//   xferInv(xf, s) → x              the inverse (a table: its first crossing; outside it: the nearer end)
+//   knobOf(model, vals, ctlId, s, t?)  the knob value (panel units) of engine value s: the classic eff snapshot's halos
+//   slotValue(p, slot)              a slot's value in patch p as engine.js smTargets computes it
+export const SLOT = Object.freeze({ VO: 0, VE: 1, VN: 2, VR: 3, DRV: 4, HO: 5, HR: 6, DO: 7, DR: 8, DH: 9, DHR: 10, LEV: 11, OL: 12, PW: 15, TU: 18,
+  SUB: 21, NZ: 22, RING: 23, EXT: 24, RM: 25, BEND: 26, WHEEL: 27, AT: 28, N: 29 });
+const SLOT_FIELD = Object.freeze({ level: SLOT.LEV, 'vcf.oct': SLOT.VO, 'vcf.envOff': SLOT.VE, 'vcf.env': SLOT.VN, 'vcf.res': SLOT.VR, 'vcf.drive': SLOT.DRV,
+  'hpf.oct': SLOT.HO, 'hpf.res': SLOT.HR, 'dual.oct': SLOT.DO, 'dual.res': SLOT.DR, 'dual.hoct': SLOT.DH, 'dual.hres': SLOT.DHR,
+  sub: SLOT.SUB, noise: SLOT.NZ, ring: SLOT.RING, ext: SLOT.EXT, 'rm.depth': SLOT.RM });
+const OSC_SLOT = Object.freeze({ on: SLOT.OL, lev: SLOT.OL, oct: SLOT.TU, fine: SLOT.TU, pw: SLOT.PW });
+export function slotValue(p, i) {
+  if (i === SLOT.LEV) return p.level || 0;
+  const v = p.vcf || {}, h = p.hpf || {}, d = p.dual;
+  switch (i) {
+    case SLOT.VO: return v.oct || 0; case SLOT.VE: return v.envOff || 0; case SLOT.VN: return v.env || 0; case SLOT.VR: return v.res || 0;
+    case SLOT.DRV: return v.drive || 1; case SLOT.HO: return h.oct || 0; case SLOT.HR: return h.res || 0;
+    case SLOT.DO: return d ? d.oct || 0 : 0; case SLOT.DR: return d ? d.res || 0 : 0; case SLOT.DH: return d ? d.hoct || 0 : 0; case SLOT.DHR: return d ? d.hres || 0 : 0;
+    case SLOT.SUB: return p.sub || 0; case SLOT.NZ: return p.noise || 0; case SLOT.RING: return p.ring || 0; case SLOT.EXT: return p.ext || 0;
+    case SLOT.RM: return p.rm ? p.rm.depth || 0 : 0;
+  }
+  const k = i >= SLOT.OL && i < SLOT.OL + 3 ? i - SLOT.OL : i >= SLOT.PW && i < SLOT.PW + 3 ? i - SLOT.PW : i >= SLOT.TU && i < SLOT.TU + 3 ? i - SLOT.TU : -1;
+  if (k < 0) return 0;
+  const o = (p.osc && p.osc[k]) || {};
+  if (i < SLOT.PW) return o.on ? o.lev || 0 : 0;
+  if (i < SLOT.TU) return o.pw || 0.5;
+  return (o.oct || 0) + (o.fine || 0) * 0.01;
+}
+const ctlOf = (m, id) => m.controls.find(c => c.id === id) || null;
+const rangeOf = c => (c.t === 'k' ? [c.min, c.max] : [0, c.t === 's' ? c.opts.length - 1 : 1]);
+const knobAt = (c, lo, hi, x) => (c.t === 'k' ? lo + (hi - lo) * x : Math.round(lo + (hi - lo) * x));
+const clamp01 = x => (x < 0 ? 0 : x > 1 ? 1 : x);
+// the paths of every field that differs between patches a and b, with the index of an array element ('osc.1.lev')
+function diffIx(a, b, path = '', out = new Set()) {
+  if (isObj(a) && isObj(b)) {
+    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) diffIx(a[k], b[k], path ? path + '.' + k : k, out);
+    return out;
+  }
+  if (isObj(a) !== isObj(b)) { out.add(path + '?'); return out; }
+  if (z(a) !== z(b) && !(a !== a && b !== b)) out.add(path);
+  return out;
+}
+// the target of an indexed field path on `engine` (null: a chunk / struct / presence field, or not a slot there)
+function targetOfField(path, engine) {
+  const s = path.split('.');
+  if (s[0] === 'osc' && s.length === 3) {
+    const slot = OSC_SLOT[s[2]], k = +s[1];
+    return slot !== undefined && engine === 'analog' && k >= 0 && k < 3 ? { kind: 'slot', slot: slot + k, field: 'osc.' + s[2] } : null;
+  }
+  if (path.endsWith('?')) return null;
+  const cls = fieldClass(path, engine);
+  if (cls === 'sm') { const slot = SLOT_FIELD[path]; return slot === undefined ? null : { kind: 'slot', slot, field: path }; }
+  if (cls === 'apply' || cls === 'proc') return { kind: 'field', field: path };
+  return null;
+}
+const sameT = (a, b) => a.kind === b.kind && (a.kind === 'slot' ? a.slot === b.slot : a.field === b.field);
+export function targetsOf(model, ctlId) {
+  const m = modelOf(model), c = m && ctlOf(m, ctlId), out = [];
+  if (!c || m.custom) return out;
+  for (const b of basesOf(m)) {
+    const p0 = patchOf(m, b);
+    for (const x of sweepPoints(c)) {
+      if (x === b[c.id]) continue;
+      const p1 = patchOf(m, Object.assign({}, b, { [c.id]: x }));
+      for (const f of diffIx(p0, p1)) { const t = targetOfField(f, p1.engine || 'analog'); if (t && !out.some(y => sameT(y, t))) out.push(t); }
+    }
+  }
+  return out;
+}
+export const slotOf = (model, ctlId) => targetsOf(model, ctlId)[0] || null;
+const valueAt = (p, t) => (t.kind === 'slot' ? slotValue(p, t.slot) : z(t.field.split('.').reduce((o, k) => (isObj(o) ? o[k] : undefined), p)));
+export function xferOf(model, vals, ctlId, target) {
+  const m = modelOf(model), c = m && ctlOf(m, ctlId);
+  if (!c || m.custom) return null;
+  const t = target || slotOf(m, ctlId);
+  if (!t) return null;
+  const [lo, hi] = rangeOf(c), v = Object.assign({}, vals || {});
+  const cur = v[ctlId] == null ? c.def : +v[ctlId], x0 = clamp01((cur - lo) / (hi - lo));
+  const tab = new Float64Array(129);
+  for (let k = 0; k <= 128; k++) { v[ctlId] = knobAt(c, lo, hi, k / 128); tab[k] = +valueAt(patchOf(m, v), t) || 0; }
+  const a = tab[0], b = tab[128] - a;
+  let lin = true;
+  for (let k = 1; k < 128 && lin; k++) if (Math.abs(tab[k] - (a + b * k / 128)) > 1e-9) lin = false;
+  return lin ? { a, b, x0 } : { tab, x0 };
+}
+export function xferInv(xf, s) {
+  if (!xf) return 0;
+  const t = xf.tab;
+  if (t) {
+    for (let k = 0; k < 128; k++) {
+      const y0 = t[k], y1 = t[k + 1];
+      if (s === y0) return k / 128;
+      if ((s - y0) * (s - y1) < 0) return (k + (s - y0) / (y1 - y0)) / 128;
+    }
+    if (s === t[128]) return 1;
+    return Math.abs(s - t[0]) <= Math.abs(s - t[128]) ? 0 : 1;
+  }
+  if (xf.b === 0) return xf.x0;
+  return clamp01((s - xf.a) / xf.b);
+}
+export function knobOf(model, vals, ctlId, s, target) {
+  const m = modelOf(model), c = m && ctlOf(m, ctlId);
+  if (!c) return 0;
+  const [lo, hi] = rangeOf(c), x = xferInv(xferOf(m, vals, ctlId, target), s);
+  return c.t === 'k' ? lo + (hi - lo) * x : Math.round(lo + (hi - lo) * x);
+}
+
 /* ------------------------------------------------------------------ descriptors */
 const LAW = { k: 'lin', s: 'enum', b: 'bool' };
 export function classicDescs(modelId) {

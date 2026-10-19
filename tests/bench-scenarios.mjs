@@ -23,6 +23,7 @@ import * as smp from '../smp.js?v=9';
 import { playbackEntry, specEntry, irEntry } from '../smpwork.js?v=9';
 import { convShapeOf } from '../assets.js?v=9';
 import { lawNorm as lawN } from '../laws.js?v=9';
+import { SLOT } from '../cv-mods.js?v=9';
 
 export const SR = 48000;
 const W2 = id => core.WARPS2.findIndex(w => w.id === id) / (core.WARPS2.length - 1);
@@ -197,6 +198,29 @@ function fxScn(make) {
   const fxp = core.compileFx(fx, { bpm: 120, rate: SR }), fxt = core.compileFxT(fx);
   return Object.assign({ fx, fxp, fxt }, extra);
 }
+// rows mk / ms (IMPL-2b §8, lane A2: the classic adapter): an 8-voice Juno-60 (its default patch at poly 8) with the cable
+// installed by `prep` on the live processor — the Track's call site of Inst.modSpan is stubbed on the Inst (ModCore is
+// lane A1's) — minus the same row without (`base`). mk: one cutoff cable, a ±2-octave LFO at 2 Hz (smMv on every span:
+// per-chunk interpolation and setRes in every voice; the gate is ≤ 8 % of the row without, tests/classic-mod.test.mjs);
+// ms: four envelope-time fields cabled, their values changing every span (Env.set on every voice per field per span: the
+// setters' own cost; ≤ 1 µs per call per voice = a load of 0.012 at 375 spans × 4 fields × 8 voices per second)
+function juno8(prep) {
+  const m = MODELS.find(x => x.id === 'juno60'), v = Object.fromEntries(m.controls.map(c => [c.id, c.def]));
+  const p = patchFor(m, v, core.defaultFx2(), { sr: SR, bpm: 120, drift: 0.5, hiss: 1 });
+  p.poly = 8;
+  return { patch: p, notes: chord(8), prep };
+}
+function mkPrep(p) {
+  const I = p.i0, c0 = new Float64Array(SLOT.N), c1 = new Float64Array(SLOT.N), rs = I.renderSpan, lfo = F => 2 * Math.sin(2 * Math.PI * 2 * F / SR);
+  I.modRows([{ slot: SLOT.VO }]);
+  I.renderSpan = function (n) { const F = p.spanF; c0[SLOT.VO] = lfo(F); c1[SLOT.VO] = lfo(F + n); this.modSpan(c0, c1, null); return rs.call(this, n); };
+}
+function msPrep(p) {
+  const I = p.i0, F = ['fenv.a', 'fenv.r', 'aenv.a', 'aenv.r'], sv = F.map(field => ({ field, v: 0.1 })), rs = I.renderSpan;
+  let j = 0;
+  I.modRows(F.map(field => ({ field, lo: 0.001, hi: 10 })));
+  I.renderSpan = function (n) { const v = 0.1 + 0.05 * ((j++) & 1); for (const e of sv) e.v = v; this.modSpan(null, null, sv); return rs.call(this, n); };
+}
 
 export function scenarios() {
   const A = () => assets();
@@ -267,6 +291,11 @@ export function scenarios() {
       node: 0.0025, ipad: 0.0025, kind: 'track', base: () => junoTrack(null), build: () => junoTrack(mcRows('mt')) },
     { id: 'me', label: "ext hand-off: row d's Serum with ext1 → f.cutoff fed by a one-LFO ModCore (minus the same Serum reading `fixed`)",
       node: 0.004, ipad: 0.003, kind: 'track', base: () => extTrack(false), build: () => extTrack(true) },
+    // 2b: the classic adapter (minus the same Juno-60 without cables)
+    { id: 'mk', label: 'Classic mod: 8-voice Juno-60 + one cutoff cable (±2 oct LFO) — slot-offset overhead (minus the row without)', node: 0.0035, ipad: 0.003, kind: 'voice',
+      base: () => juno8(null), build: () => juno8(mkPrep) },
+    { id: 'ms', label: 'Classic mod: 8-voice Juno-60 + 4 envelope-time cables changing every span — span-setter overhead (minus the row without)', node: 0.012, ipad: 0.012, kind: 'voice',
+      base: () => juno8(null), build: () => juno8(msPrep) },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',
@@ -319,6 +348,7 @@ function prepare(B, kind, env, now) {
     p.msg({ t: 'patch', p: B.patch });
     sendTables(p, B.patch);
     for (const [n, v] of B.notes) p.msg({ t: 'on', n, v });
+    if (typeof B.prep === 'function') B.prep(p); // (rows mk / ms: cables on the live processor)
     const L = new Float32Array(128), R = new Float32Array(128), out = [[L, R]];
     return api(() => { p.process([], out); env.advance(128); track(L, 128); }, () => (p.sx && p.sx.grains >= 0 ? p.sx.grains | 0 : -1));
   }
