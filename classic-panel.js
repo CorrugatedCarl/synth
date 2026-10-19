@@ -22,9 +22,14 @@
 //            .slider), a numBox / selector / toggle / hardware switch a badge (span.cp-mbadge in its wrap: ∿ and the
 //            row count). Ranges: haloRanges(c, v, rows) (pure, exported). Only the host calls it (throttled at the monitor
 //            rate, for on-screen modules); the panel repaints a control's halo itself when its base value moves.
-//   setLive(eff)  the live dots alone (the monitor path between row changes).
+//   setLive(eff)  the live dots alone (the monitor path between row changes; fixer C P7: paintLive writes the dot / mark /
+//            badge ring only — the arcs are repainted on rows and base changes). A slider's bars are thin, beside the
+//            groove, the i-th stepped aside (--cp-i; U13), the cap above them.
+//   host.changed(track, id, ph)  ph 'move' for a drag's writes, 'end' once at its lift after a move (gestureEnd; the host
+//            coalesces a cabled knob's transfer reposts), nothing for a key / wheel / typed / reset write (U2).
 //   modMenu(ctlId, x, y, el)  the press-and-hold / right-click menu (wk.contextMenu): the host's rows (Bypass / Disconnect
-//            each), Connect to…, Reset Control, Enter Value… (knobs), the host's extra items. Opened by dragB (every knob,
+//            each), Connect to…, Reset Control, Enter Value… (knobs; the knob-unit number prefilled, U12), the host's extra
+//            items. Opened by dragB (every knob,
 //            slider, numBox and hardware control: wk.menuSource — a 500 ms touch long-press ≤ 8 px, a right-click, the
 //            ContextMenu key / Shift+F10) and by selectors / toggles. The 1g / 1h data-tip hit-test is untouched (the halo
 //            nodes take no pointer events).
@@ -126,13 +131,16 @@ export class ClassicPanel {
   }
   get vals() { return this.track.vals; }
   h(tag, cls, txt) { const e = this.doc.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; }
-  // a value write: the widget(s) of id, then the page (the preset becomes Custom, the patch, autosave)
-  set(id, v) {
+  // a value write: the widget(s) of id, then the page (the preset becomes Custom, the patch, autosave); ph (2b U2): 'move'
+  // during a drag, 'end' at its lift (gestureEnd: once, after a move), nothing for a key / wheel / typed / reset write —
+  // the host throttles a cabled knob's transfer repost while 'move' holds
+  set(id, v, ph) {
     if (this.dead) return;
     this.vals[id] = v;
     this.update(id);
-    if (this.host.changed) this.host.changed(this.track, id);
+    if (this.host.changed) this.host.changed(this.track, id, ph);
   }
+  gestureEnd(id) { if (!this.dead && this.host.changed) this.host.changed(this.track, id, 'end'); }
   update(id) { const u = this.ui.get(id); if (u) u(); if (this.halos.has(id)) this.paintHalo(id); } // ((2b) the halo follows the base)
   refresh() { for (const u of this.ui.values()) u(); for (const id of this.halos.keys()) this.paintHalo(id); }
   syncPreset(key) { // the preset changed: the plate, the module chip and a hardware preset display (the host's chip sync calls it)
@@ -277,7 +285,7 @@ export class ClassicPanel {
   binding(c) {
     return {
       id: c.id, label: c.label, min: c.min, max: c.max, step: c.step, def: c.def, axis: c.orient === 'h' ? 'x' : 'y', invert: !!c.invert,
-      get: () => this.vals[c.id], set: v => this.set(c.id, v), fmt: v => fmt(c, v),
+      get: () => this.vals[c.id], set: (v, ph) => this.set(c.id, v, ph), end: () => this.gestureEnd(c.id), fmt: v => fmt(c, v),
       snap: () => ({ tr: this.track, v0: this.vals[c.id], pre0: this.track.preset }),
       restore: k => {
         if (this.dead || this.track !== k.tr) return;
@@ -308,19 +316,20 @@ export class ClassicPanel {
       const base = range > 40 ? 0.0045 : Math.max(0.0045, 1 / (range * 22));
       this.tipB(el, b);
       const k = b.snap(), v0 = b.get(), x0 = e.clientX, y0 = e.clientY, slop = e.pointerType === 'touch' ? 10 : 4;
-      let far = false;
+      let far = false, moved = false;
       K.track(el, e, ev => {
         if (menued) return;
         if (!far && Math.hypot(ev.clientX - x0, ev.clientY - y0) > slop) far = true;
         const a = at(ev);
         p = clamp(p + (a - prev) * (ev.shiftKey ? base * 0.2 : base), 0, 1); prev = a;
         const v = fromPosB(b, p);
-        if (v !== b.get()) b.set(v);
+        if (v !== b.get()) { moved = true; b.set(v, 'move'); } // ((2b U2) a move's write: the host coalesces its reposts)
         this.tipB(el, b);
       }, () => {
         dragging = false; this.untip(400);
+        if (moved && typeof b.end === 'function') b.end(); // (the gesture's end: the host posts what the moves held back)
         if (o.tap && !far && !cancelled && b.get() === v0) o.tap();
-      }, () => b.restore(k));
+      }, () => { b.restore(k); if (moved && typeof b.end === 'function') b.end(); });
     });
     if (o.tap) el.addEventListener('pointercancel', () => { cancelled = true; }, true); // (a cancelled press is never a tap)
     el.addEventListener('dblclick', () => { b.set(b.def); this.tipB(el, b); this.untip(800); });
@@ -359,7 +368,8 @@ export class ClassicPanel {
     if (p && p.getAttribute && p.getAttribute('data-ctl') === id) return p;
     if (!this.wraps) {
       this.wraps = new Map();
-      const walk = n => { for (const ch of n.childNodes || []) { if (ch.nodeType !== 1) continue; const k = ch.getAttribute && ch.getAttribute('data-ctl'); if (k && !this.wraps.has(k)) this.wraps.set(k, ch); walk(ch); } };
+      const kids = n => { const c = n.childNodes; return c && typeof c === 'object' && typeof c.length === 'number' ? c : Array.isArray(n.children) ? n.children : []; }; // (a test DOM without childNodes)
+      const walk = n => { for (const ch of kids(n)) { if (ch.nodeType !== 1) continue; const k = ch.getAttribute && ch.getAttribute('data-ctl'); if (k && !this.wraps.has(k)) this.wraps.set(k, ch); walk(ch); } };
       walk(this.root);
     }
     return this.wraps.get(id) || null;
@@ -387,7 +397,20 @@ export class ClassicPanel {
   setLive(eff) {
     if (this.dead) return;
     this.eff = eff && typeof eff === 'object' ? eff : null;
-    for (const id of this.halos.keys()) this.paintHalo(id);
+    for (const id of this.halos.keys()) this.paintLive(id); // ((P7) the dots alone at the monitor rate; the arcs on rows / base changes)
+  }
+  // the live dot / mark / badge ring of a painted control (nothing else written: the monitor path's whole cost)
+  paintLive(id) {
+    const H = this.hnodes.get(id), c = this.ctls.get(id);
+    if (!H || !c || this.dead) return;
+    const live = this.liveN(id, c);
+    if (H.mode === 'knob') {
+      if (live == null) { if (H.dot.getAttribute('display') !== 'none') H.dot.setAttribute('display', 'none'); }
+      else { const q = dialPt(live, H.R, H.sw); H.dot.setAttribute('cx', q[0].toFixed(2)); H.dot.setAttribute('cy', q[1].toFixed(2)); if (H.dot.hasAttribute('display')) H.dot.removeAttribute('display'); }
+    } else if (H.mode === 'slider') {
+      if (live == null) H.mark.hidden = true;
+      else { H.mark.hidden = false; const s = `calc(${(H.inv ? 1 - live : live).toFixed(4)} * (100% - ${H.cap}) + ${H.cap} / 2 - 1px)`; if (H.X) H.mark.style.left = s; else H.mark.style.bottom = s; }
+    } else H.badge.classList.toggle('cp-live', live != null);
   }
   clearHalo(id) {
     const H = this.hnodes.get(id);
@@ -398,19 +421,19 @@ export class ClassicPanel {
     const rows = this.halos.get(id), c = this.ctls.get(id);
     if (!rows || !c || this.dead) return;
     const el = this.els.get(id), wrap = this.wrapOf(id), d = this.doc;
-    const arcs = haloRanges(c, this.vals[id], rows), live = this.liveN(id, c), cls = el && el.classList ? el.className : '';
+    const arcs = haloRanges(c, this.vals[id], rows), cls = el && el.classList ? el.className : '';
     const mode = c.t === 'k' && /\bknob\b/.test(cls) ? 'knob' : c.t === 'k' && /\bslider\b/.test(cls) ? 'slider' : 'badge';
     let H = this.hnodes.get(id);
     if (H && H.mode !== mode) { this.hnodes.delete(id); for (const n of H.nodes) if (n.parentNode) n.parentNode.removeChild(n); H = null; }
     const color = k => MOD_COLOR[k] || '#9aa4b2';
-    if (mode === 'knob') { // an arc ring between the skirt and the ticks, the live dot on it
+    if (mode === 'knob') { // an arc ring between the skirt and the ticks, the live dot on it (paintLive)
       const sw = c.sweep > 0 ? +c.sweep : 270, R = 27;
       if (!H) {
         const svg = d.createElementNS(SVG, 'svg'); svg.setAttribute('class', 'cp-halo'); svg.setAttribute('viewBox', '0 0 64 64'); svg.setAttribute('aria-hidden', 'true');
         const dot = d.createElementNS(SVG, 'circle'); dot.setAttribute('class', 'cp-live'); dot.setAttribute('r', '2.4'); dot.setAttribute('display', 'none');
         svg.append(dot);
         el.append(svg);
-        H = { mode, nodes: [svg], svg, dot, paths: [], wrap };
+        H = { mode, nodes: [svg], svg, dot, paths: [], wrap, R, sw };
         this.hnodes.set(id, H);
       }
       for (let i = 0; i < Math.max(arcs.length, H.paths.length); i++) {
@@ -421,27 +444,23 @@ export class ClassicPanel {
         p.setAttribute('d', dialArc(a.from, a.to, R, sw)); p.setAttribute('stroke', color(a.kind));
         if (p.hasAttribute('display')) p.removeAttribute('display');
       }
-      if (live == null) H.dot.setAttribute('display', 'none');
-      else { const q = dialPt(live, R, sw); H.dot.setAttribute('cx', q[0].toFixed(2)); H.dot.setAttribute('cy', q[1].toFixed(2)); H.dot.removeAttribute('display'); }
-    } else if (mode === 'slider') { // a range bar along the groove (the cap's travel), a live mark
+    } else if (mode === 'slider') { // (U13) thin range bars beside the groove along the cap's travel (--cp-i: the i-th bar steps aside), a live mark
       const X = c.orient === 'h', inv = !!c.invert, cap = 'var(--cap-h, 14px)';
       if (!H) {
         const bars = [], mark = this.h('div', 'cp-livemk');
         el.append(mark);
-        H = { mode, nodes: [mark], bars, mark, wrap };
+        H = { mode, nodes: [mark], bars, mark, wrap, X, inv, cap };
         this.hnodes.set(id, H);
       }
       const pos = n => (inv ? 1 - n : n);
       for (let i = 0; i < Math.max(arcs.length, H.bars.length); i++) {
         if (i >= arcs.length) { H.bars[i].hidden = true; continue; }
-        if (!H.bars[i]) { const b = this.h('div', 'cp-range'); el.insertBefore(b, H.mark); H.bars[i] = b; H.nodes.push(b); }
+        if (!H.bars[i]) { const b = this.h('div', 'cp-range'); b.style.setProperty('--cp-i', String(i)); el.insertBefore(b, H.mark); H.bars[i] = b; H.nodes.push(b); }
         const a = arcs[i], b = H.bars[i], lo = Math.min(pos(a.from), pos(a.to)), len = Math.abs(a.to - a.from);
         b.hidden = false; b.className = 'cp-range k-' + a.kind + (a.byp ? ' cp-byp' : ''); b.style.background = color(a.kind);
         const s = `calc(${lo.toFixed(4)} * (100% - ${cap}) + ${cap} / 2)`, l = `calc(${len.toFixed(4)} * (100% - ${cap}))`;
         if (X) { b.style.left = s; b.style.width = l; } else { b.style.bottom = s; b.style.height = l; }
       }
-      if (live == null) H.mark.hidden = true;
-      else { H.mark.hidden = false; const s = `calc(${pos(live).toFixed(4)} * (100% - ${cap}) + ${cap} / 2 - 1px)`; if (X) H.mark.style.left = s; else H.mark.style.bottom = s; }
     } else { // a badge on the wrap: ∿ and the row count, the first source's colour
       if (!wrap) return;
       if (!H) { const b = this.h('span', 'cp-mbadge'); b.setAttribute('aria-hidden', 'true'); wrap.append(b); H = { mode, nodes: [b], badge: b, wrap }; this.hnodes.set(id, H); }
@@ -449,8 +468,8 @@ export class ClassicPanel {
       if (H.badge.textContent !== t) H.badge.textContent = t;
       H.badge.style.background = color(arcs.length ? arcs[0].kind : (rows[0].kind || srcKind(rows[0].src) || 'other'));
       H.badge.title = rows.map(r => r.label || r.src).join(', ');
-      H.badge.classList.toggle('cp-live', live != null);
     }
+    this.paintLive(id);
     if (wrap && wrap.classList) wrap.classList.add('cp-modded');
   }
   // the press-and-hold / right-click menu source on a control (wk.menuSource: a 500 ms touch long-press ≤ 8 px, the
@@ -487,11 +506,12 @@ export class ClassicPanel {
     const items = this.menuItems(id, el);
     return wk.contextMenu(x, y, items, { anchor: el || null });
   }
-  // Enter Value… on a knob: a typed number in the control's units (its displayed value prefilled), clamped and stepped
+  // Enter Value… on a knob: a typed number in the control's units (the knob-unit number prefilled — U12: not the display
+  // text, whose "1.39 kHz" would read as 1.39 of 10), clamped and stepped
   enterValue(id) {
     const c = this.ctls.get(id);
     if (!c || c.t !== 'k') return;
-    const t = wk.ask(c.label + ' (' + c.min + '…' + c.max + ')', fmt(c, this.vals[id]));
+    const t = wk.ask(c.label + ' (' + c.min + '…' + c.max + ')', String(r4(+this.vals[id])));
     if (t == null) return;
     const m = /-?\d+(?:[.,]\d+)?/.exec(String(t));
     if (!m) return;

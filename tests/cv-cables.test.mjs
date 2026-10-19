@@ -15,6 +15,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as C from '../cv-cables.js?v=9';
 import * as core from '../serum-core.js?v=9';
+import * as wk from '../wk.js?v=9';
 import { fresh, all, ptr, fire, key, Ev, place } from './wk-dom.mjs';
 import { readFileSync } from 'node:fs';
 
@@ -817,6 +818,34 @@ test('(U2, U4) a press on a badge: a knob beneath it wins (the press handed to t
   assert.deepEqual([R.sel, R.L.selected(), menuLabels(R.doc)], [[], null, []], 'a pan is no tap');
   b.click(); // (Enter / Space / VoiceOver: detail 0)
   assert.deepEqual(R.sel, ['r1'], 'a keyboard click selects');
+  R.L.destroy();
+});
+
+test('(2b fixer C, U1) a long-press / right-click on a badge over a [data-dest] control opens the CONTROL\'s menu, never the cable\'s: a right-click\'s contextmenu is handed to the control beneath (a synthetic one, its own listeners decide); a touch press handed to the control arms the control\'s long-press alone (the badge\'s never), and the browser\'s late trusted contextmenu on the badge is dropped; with nothing beneath the cable menu as before', t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const R = modLayers(), b = R.badge('r1'), knob = R.doc.createElement('div'), cap = R.doc.createElement('span'), got = [];
+  knob.setAttribute('data-dest', 'a.pan'); knob.append(cap); R.W.append(knob);
+  knob.addEventListener('contextmenu', e => { got.push((e.isTrusted ? 'trusted' : 'synthetic') + '@' + e.clientX + ',' + e.clientY + (e.target === cap ? ' cap' : '')); if (e.preventDefault) e.preventDefault(); });
+  wk.menuSource(knob, { keys: false }); // (a classic / Serum knob is a menu source of its own)
+  const other = R.doc.createElement('div'); R.doc.body.append(other);
+  // a right-click: the pointerdown (button 2) is nobody's; the contextmenu lands on the badge and goes to the control beneath
+  R.doc.elementsFromPoint = () => [b.childNodes[0], b, cap, knob, R.W];
+  ptr(b, 'pointerdown', 40, 50, { pointerId: 3, button: 2, buttons: 2 });
+  const e1 = fire(b, 'contextmenu', { clientX: 40, clientY: 50, button: 2, isTrusted: true });
+  assert.deepEqual([got, menuLabels(R.doc), e1.defaultPrevented, R.L.selected()], [['synthetic@40,50 cap'], [], true, null], 'the control\'s menu path, no cable menu, no selection');
+  ptr(other, 'pointerup', 40, 50, { pointerId: 3, button: 2, buttons: 0 });
+  // a touch press: handed to the control (U2), whose own long-press fires once at 500 ms; the badge arms none
+  got.length = 0;
+  ptr(b, 'pointerdown', 40, 50, { pointerId: 4, pointerType: 'touch', isPrimary: true });
+  t.mock.timers.tick(520);
+  assert.deepEqual([got.length, got[0] && got[0].startsWith('synthetic@'), menuLabels(R.doc)], [1, true, []], 'one contextmenu, the control\'s long-press');
+  fire(b, 'contextmenu', { clientX: 40, clientY: 50, button: 2, isTrusted: true }); // (Android: the browser's own, late)
+  assert.deepEqual([got.length, menuLabels(R.doc)], [1, []], 'the trusted duplicate on the badge is dropped');
+  ptr(other, 'pointerup', 40, 50, { pointerId: 4, pointerType: 'touch' });
+  // nothing beneath: the cable's menu as before
+  R.doc.elementsFromPoint = () => [b.childNodes[0], b, R.W];
+  fire(b, 'contextmenu', { clientX: 40, clientY: 50, button: 2, isTrusted: true });
+  assert.deepEqual([got.length, menuLabels(R.doc)[0], R.L.selected()], [1, 'Disconnect', 'r1']);
   R.L.destroy();
 });
 

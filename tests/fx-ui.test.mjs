@@ -1632,3 +1632,30 @@ test('§13.5 Delay: a double-tap on the filter display shows the realtime spectr
   assert.equal(taps.at(-1), '');
   assert.equal(st.notes.length, 0);
 });
+
+test('(2b fixer C, U5) FXRackUI.paintMods(rowsOf): a standalone rack (mod: false) paints halo arcs on the knobs whose rows the host names (Serum\'s rule: unipolar [base, base + a], bipolar row [base ± |a|/2], a bipolar source [base ± |a|], a = amt·out; bypassed / zero rows none; the MIX / LEVEL knob under both ids) and clears them when the rows go; its control menu lists the host\'s extraRows first as disabled "Canvas cable: <label>" entries', () => {
+  const { rack, st, d } = mkRack({ fx: fx2([inst('rev', 'rev'), inst('eq', 'eq')]) });
+  const I = st.fx.racks[0].mods.find(x => x.id === 'rev');
+  I.p.mix = 0.5; I.p.size = 0.4;
+  rack.refresh();
+  const rows = { 'fx.rev.mix': [{ id: 'r1', src: 'ext1', amt: 0.25, bi: 0, byp: 0, out: 1, label: 'LFO 1' }, { id: 'r2', src: 'bend', amt: -0.2, bi: 0, byp: 0, out: 0.5, pol: 'bi' }, { id: 'r3', src: 'velo', amt: 0.3, byp: 1 }],
+    'fx.rev.size': [{ id: 'r4', src: 'env2', amt: 0.4, bi: 1, out: 1, label: 'ENV 1' }] };
+  const mods = new Map();
+  for (const [id, w] of rack.knobs) { const o = w.setMod; w.setMod = m => { mods.set(id, m ? m.arcs.map(a => [+a.from.toFixed(3), +a.to.toFixed(3), a.kind]) : null); return o.call(w, m); }; }
+  rack.paintMods(id => rows[id] || []);
+  assert.deepEqual([mods.get('fx.rev.mix'), mods.get('fx.rev.size'), mods.has('fx.eq.gainL')], [[[0.5, 0.75, 'other'], [0.4, 0.6, 'neg']], [[0.2, 0.6, 'other']], false], 'arcs from the base in the knob\'s normalised range');
+  assert.equal(rack.knobs.get('fx.rev.mix').el.classList.contains('wk-modded'), true);
+  rack.paintMods(() => []);
+  assert.deepEqual([mods.get('fx.rev.mix'), mods.get('fx.rev.size'), rack.knobs.get('fx.rev.mix').el.classList.contains('wk-modded')], [null, null, false], 'cleared once, not repainted while empty');
+  mods.clear();
+  rack.paintMods(() => []);
+  assert.equal(mods.size, 0);
+  // the control menu: the host's rows first
+  rack.host.extraRows = id => rows[id] || [];
+  const e = fire(rack.knobs.get('fx.rev.mix').el, 'contextmenu', { clientX: 3, clientY: 3 });
+  assert.equal(e.defaultPrevented, true);
+  assert.deepEqual(menuLabels(d), ['Canvas cable: LFO 1', 'Canvas cable: bend', 'Canvas cable: velo', 'Reset Control', 'Enter Value…']);
+  const m = byCls(d.body, 'wk-ctx').at(-1);
+  assert.equal(byCls(m, 'wk-ci').filter(n => n.getAttribute('aria-disabled') === 'true').length, 3, 'edited on the canvas, not here');
+  rack.destroy();
+});

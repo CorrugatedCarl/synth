@@ -351,7 +351,7 @@ export function knobMenuItems(s, fx, destId, caps) {
   const c = caps || {}, out = [];
   const sep = () => { if (out.length && out[out.length - 1].kind !== 'sep') out.push({ label: '', kind: 'sep' }); };
   if (c.module && MODULE_FIELDS[c.module]) { out.push(...moduleMenuItems(s, c.module, c)); sep(); }
-  for (const r of arr(c.extra)) if (isObj(r) && r.src) out.push({ label: 'Canvas cable: ' + srcLabel(s, r.src), kind: 'canvas', id: r.id, disabled: true });
+  for (const r of arr(c.extra)) if (isObj(r) && r.src) out.push({ label: 'Canvas cable: ' + (typeof r.label === 'string' && r.label ? r.label : srcLabel(s, r.src)), kind: 'canvas', id: r.id, disabled: true }); // (2b U6: the host's label — an ext source has no Serum name)
   const rows = modRows(s, destId);
   for (const { slot, row } of rows) out.push({ label: 'Bypass Modulator: ' + srcLabel(s, row.src), kind: 'bypass', slot, checked: !!row.byp });
   for (const { slot, row } of rows) out.push({ label: 'Remove Modulator: ' + srcLabel(s, row.src), kind: 'remove', slot });
@@ -958,6 +958,16 @@ const CSS = `
 .sx-mrow.sx-bad { border-color: var(--sx-warn); }
 .sx-mrow.sx-bad .sx-mdst .wk-mbtn { color: var(--sx-warn); }
 .sx-mrow.sx-dropline { box-shadow: 0 -2px 0 var(--sx-cur, #ffd84a); }
+/* (SYNTH Canvas 2b) the canvas cables compiled into this Serum, read-only under the slots */
+.sx-mcv { display: grid; gap: 3px; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--sx-line); }
+.sx-mcv.sx-hidden { display: none; }
+.sx-mcrow { display: grid; align-items: center; gap: 6px; grid-template-columns: 40px minmax(0, 1.2fr) 48px 18px minmax(0, 1.5fr) 30px; padding: 3px 6px; border-radius: 5px;
+  background: var(--sx-panel2); border: 1px dashed var(--sx-line); color: var(--sx-ink); font-size: 10px; }
+.sx-mcrow > * { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sx-mcrow .sx-mn { text-align: left; }
+.sx-mcrow .sx-mamt { justify-content: flex-end; font: 600 10px var(--mono, ui-monospace, monospace); }
+.sx-mcrow .sx-mbyp { color: var(--sx-mute); font-size: 9px; font-weight: 700; letter-spacing: 0.06em; }
+.sx-mcrow.sx-dim > :not(.sx-mn):not(.sx-mbyp) { opacity: 0.45; }
 .sx-mrow > * { min-width: 0; }
 .sx-mrow .wk-menu { width: 100%; }
 .sx-mrow .wk-menu > .wk-lab, .sx-mrow .wk-sl > .wk-lab, .sx-mbyp .wk-tl { display: none !important; }
@@ -4407,6 +4417,36 @@ export class SerumUI {
     for (let slot = 0; slot < N_MX; slot++) list.appendChild(this.matrixRow(slot));
     this.mxList = list;
     body.append(hd, list);
+    // (SYNTH Canvas 2b, U6) the host's extraMatrix(): the canvas cables compiled into this Serum (an ext slot, an injected
+    // PER NOTE LFO / ENV slot, a native source) — read-only rows under the slots: the slot tag, the host's source label,
+    // amount, polarity, destination, BYP; edited on the canvas, not here. Rebuilt when their signature changes.
+    if (typeof this.host.extraMatrix === 'function') {
+      const cvl = mk(d, 'div', 'sx-mcv');
+      cvl.setAttribute('role', 'list');
+      cvl.setAttribute('aria-label', 'Canvas cables on this Serum');
+      let sig = '';
+      this.custom(() => {
+        let rows = [];
+        try { rows = arr(this.host.extraMatrix()).filter(r => isObj(r) && r.id != null); } catch (err) { rows = []; }
+        const s = this.s(), fx = this.fx(), lab = id => { try { return core.destLabel(id, s, fx); } catch (err) { return String(id); } };
+        const k = rows.map(r => [r.id, r.tag, r.label, r.src, r.dst, r.amt, r.bi, r.byp, r.out].join('\t')).join('\n');
+        if (k === sig) return;
+        sig = k;
+        cvl.textContent = '';
+        for (const r of rows) {
+          const row = mk(d, 'div', 'sx-mcrow' + (r.byp ? ' sx-dim' : ''));
+          row.setAttribute('role', 'listitem');
+          row.setAttribute('data-mrow', String(r.id));
+          const a = fin(+r.amt) ? +r.amt : 0;
+          row.append(mk(d, 'span', 'sx-mn', String(r.tag || '')), mk(d, 'span', 'sx-msrc', String(r.label || srcLabel(s, r.src))), mk(d, 'span', 'sx-mamt', sgn(a) + Math.round(a * 100) + '%'),
+            mk(d, 'span', 'sx-mpol', r.bi ? '↔' : '→'), mk(d, 'span', 'sx-mdst', lab(r.dst)), mk(d, 'span', 'sx-mbyp', r.byp ? 'BYP' : ''));
+          row.title = 'A canvas cable (edit it on the canvas)';
+          cvl.appendChild(row);
+        }
+        cvl.classList.toggle('sx-hidden', !rows.length);
+      });
+      body.append(cvl);
+    }
     el.append(pan, this.tileStrip());
   }
   matrixMenu(anchor) {

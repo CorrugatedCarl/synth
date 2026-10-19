@@ -420,3 +420,23 @@ test('(U12) the inspector: a preset row re-read by its slot (undo, a preset load
     M.close();
   } finally { delete s.doc.defaultView.visualViewport; }
 });
+
+test('(2b fixer C, C7) a classic / panel row (host.budget kind): the inspector hides the Aux source section (a ModCore row\'s aux would name the synthetic CP\'s slot) with Save with preset; its header shows the ModCore slots; the Mod list line counts the host\'s cables', () => {
+  const slots = { lfo: [1, 10], env: [0, 4], chaos: [0, 2], macro: [0, 8], vals: [0, 16], ext: [2, 16] };
+  const s = setup({ budget: dev => (dev === 'i2' ? { preset: 0, canvas: 2, left: [], max: 64, kind: 'classic', slots } : { preset: 1, canvas: 1, left: [], max: 64, kind: 'serum', slots }) });
+  const { M, pop } = s;
+  M.openInspector('r1', 10, 10);
+  let p = pop();
+  const secOf = el => { for (let n = el; n; n = n.parentNode) if (n.classList && n.classList.contains('cv-ml-sec')) return n; return null; };
+  const auxSec = secOf(one(p, 'wk-mbtn')), save = byAttr(p, 'data-act', 'save')[0];
+  assert.deepEqual([!!auxSec, auxSec && auxSec.hidden, save.hidden, one(p, 'cv-ml-b').textContent], [true, true, true, 'LFO 1/10 · ENV 0/4 · ext 2/16'], 'no aux, no save, the slots');
+  M.close();
+  M.openInspector('r3', 10, 10); // (a Serum row: the aux menu as before)
+  p = pop();
+  assert.deepEqual([secOf(one(p, 'wk-mbtn')).hidden, byAttr(p, 'data-act', 'save')[0].hidden, one(p, 'cv-ml-b').textContent], [false, false, '2/64']);
+  M.close();
+  M.openList('Track 1', ['i2', 'i3']);
+  const dh = byCls(one(s.doc.body, 'cv-sheet'), 'cv-ml-b').map(d => d.textContent);
+  assert.deepEqual(dh, ['2 cables · LFO 1/10 · ENV 0/4 · ext 2/16', '2/64'], 'the host\'s cable count, the slots');
+  M.close();
+});

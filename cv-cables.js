@@ -101,7 +101,15 @@ export function amtText(amt, bi) {
   return (bi ? (a < 0 && p ? '∓' : '±') : a < 0 ? '−' : '+') + p + '%'; // (U11: a bipolar amount keeps its sign)
 }
 // (U2) inside a mod cable's amount badge (button.cv-mbadge or its spans)?
-const inBadge = n => { for (; n && typeof n.getAttribute === 'function'; n = n.parentNode) if (/(^|\s)cv-mbadge(\s|$)/.test(n.getAttribute('class') || '')) return true; return false; };
+const inBadge = n => { for (; n && typeof n.getAttribute === 'function'; n = n.parentNode) if (/(^|\s)cv-mbadge(\s|$)/.test(n.getAttribute('class') || (typeof n.className === 'string' ? n.className : '') || '')) return true; return false; };
+// (2b U1) a synthetic contextmenu at e's point, for the control beneath a badge (an event class where there is one —
+// MouseEvent, a test DOM's —, a plain copy where the event is a plain object)
+function ctxEv(e) {
+  const init = { bubbles: true, cancelable: true, composed: true, clientX: e.clientX, clientY: e.clientY, button: 2, buttons: 0 };
+  const E = typeof globalThis.MouseEvent === 'function' ? globalThis.MouseEvent : e && e.constructor !== Object && typeof e.constructor === 'function' ? e.constructor : null;
+  if (E) { try { return new E('contextmenu', init); } catch (err) { /* a plain copy */ } }
+  return Object.assign({}, e, init, { type: 'contextmenu', isTrusted: false, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, stopPropagation() {}, stopImmediatePropagation() {} });
+}
 // (U2) the topmost element at a client point that is no badge (document.elementsFromPoint; null without it)
 function beneath(doc, x, y, skip) {
   let L = null;
@@ -309,7 +317,9 @@ export function routeLabel(s, fx) {
  * the under layer (no hit: CSS) and whose last END_PX screen px (o.k(): the world's zoom; rezoom() after a zoom) are a
  * twin g in the over layer; the amount badge button.cv-mbadge[data-cable] (+ span.cv-ptag "preset") in worldEl is the only
  * part taking a press: a tap selects (o.onSelect(id), again on a selected one: the inspector), long-press / right-click
- * the menu. No floating × for them. setModsVisible('always' | 'select' | 'never'): On select shows the mod cables touching
+ * the menu — unless a [data-dest] control lies beneath the badge (elementsFromPoint): then the press AND the contextmenu
+ * are handed to that control (2b U1: a long-press / right-click on a cabled knob always opens the KNOB's menu; the
+ * badge's own long-press never arms). No floating × for them. setModsVisible('always' | 'select' | 'never'): On select shows the mod cables touching
  * the selection (highlight ids, the selected cable), Never none; Always all, and past MOD_FADE_N visible ones those not
  * touching the selection fade (.cv-fade) and o.onHint(MOD_HINT) runs once.
  * @param {HTMLElement} worldEl  #world
@@ -360,13 +370,23 @@ export function createCables(worldEl, o) {
       for (let q = n; q && q !== worldEl && typeof q.getAttribute === 'function'; q = q.parentNode) if (q.getAttribute('data-dest') != null) return n;
       return null;
     };
+    // (2b U1) the menu too: a right-click's contextmenu on the badge goes to the control beneath as a synthetic one (its
+    // own listeners open ITS menu: the control's, never the cable's); a touch press handed to the control arms the
+    // control's long-press alone (stopImmediatePropagation: the badge's menuSource never sees it), so the browser's own
+    // late contextmenu on the badge (Android) is dropped while that press is held
+    let handed = null; // { pid, touch }: the press handed to a control beneath (cleared at its lift, wherever it lands)
+    const lift = e => { if (handed && e.pointerId === handed.pid) handed = null; };
     const offs = [
+      listen(doc, 'pointerup', lift, true), listen(doc, 'pointercancel', lift, true),
       listen(b, 'pointerdown', e => {
+        handed = null;
         if (e.button != null && e.button !== 0) return;
         const k = knob(e);
         if (k) {
           const ev = new e.constructor(e.type, e);
+          handed = { pid: e.pointerId, touch: e.pointerType === 'touch' };
           e.stopPropagation();
+          if (e.stopImmediatePropagation) e.stopImmediatePropagation();
           if (!k.dispatchEvent(ev) && e.preventDefault) e.preventDefault();
           return;
         }
@@ -376,6 +396,9 @@ export function createCables(worldEl, o) {
       listen(b, 'contextmenu', e => {
         if (e.preventDefault) e.preventDefault();
         e.stopPropagation();
+        if (handed && handed.touch && e.isTrusted) return; // (the control's long-press already opened its menu)
+        const k = knob(e);
+        if (k) { k.dispatchEvent(ctxEv(e)); return; }
         if (press && press.moved) return; // (a pan's long-press timer: no menu)
         if (press) press.ctx = true;
         select(id()); openMenu(id(), e.clientX, e.clientY);

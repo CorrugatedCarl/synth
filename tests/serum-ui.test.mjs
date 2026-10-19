@@ -3078,3 +3078,33 @@ test('2a SerumUI: a host with extraRows paints the canvas cables\' arcs on their
   assert.equal(other.length, 0);
   assert.ok(calls.includes('g.master'));
 });
+
+test('(2b fixer C, U6) knobMenuItems: a canvas row with a host label reads "Canvas cable: <label>" (an ext source has no Serum name); without one the Serum source\'s label as before', () => {
+  const s = fresh(), fx = core.defaultFxV1();
+  const it = ui.knobMenuItems(s, fx, 'f.cutoff', { extra: [{ id: 'r1', src: 'ext1', amt: 0.2, label: 'LFO 1' }, { id: 'r2', src: 'lfo3', amt: 0.1, label: 'LFO 2 · PER NOTE' }, { id: 'r3', src: 'velo', amt: 0.1 }] });
+  assert.deepEqual(labels(it).slice(0, 3), ['Canvas cable: LFO 1', 'Canvas cable: LFO 2 · PER NOTE', 'Canvas cable: ' + ui.srcLabel(s, 'velo')]);
+});
+
+test('(2b fixer C, U6) SerumUI MATRIX page: the host\'s extraMatrix() rows (canvas cables injected into this Serum: ext slots, PER NOTE LFO / ENV slots, native sources) are listed read-only under the 64 slots — a slot tag, the source label, amount, polarity, destination, bypass — and follow a repaint; none without the hook', async () => {
+  const rows = [
+    { id: 'r1', src: 'ext1', dst: 'f.cutoff', amt: 0.25, bi: 0, byp: 0, out: 1, label: 'LFO 1', tag: 'ext 1' },
+    { id: 'r2', src: 'lfo3', dst: 'f.res', amt: -0.5, bi: 1, byp: 1, out: 1, label: 'LFO 2', tag: 'LFO 3' },
+  ];
+  const { doc, u } = await mount({ extraMatrix: () => rows });
+  u.setPage('matrix');
+  await flush(doc);
+  const M = u.pages.matrix.el, cv = () => M.querySelectorAll('.sx-mcrow');
+  assert.equal(M.querySelectorAll('.sx-mrow').length, 64, 'the 64 slots untouched');
+  const txt = r => r.querySelectorAll('span').map(n => n.textContent).filter(Boolean).join('|');
+  assert.deepEqual(cv().map(txt), ['ext 1|LFO 1|+25%|→|Filter Cutoff', 'LFO 3|LFO 2|-50%|↔|Filter Res|BYP']);
+  assert.deepEqual(cv().map(r => [r.getAttribute('data-mrow'), r.classList.contains('sx-dim'), r.querySelectorAll('button, input').length]), [['r1', false, 0], ['r2', true, 0]], 'read-only, a bypassed one dimmed');
+  rows.pop();
+  u.refresh(); await flush(doc);
+  assert.equal(cv().length, 1, 'follows the rows');
+  rows.length = 0;
+  u.refresh(); await flush(doc);
+  assert.equal(cv().length, 0);
+  const plain = await mount();
+  plain.u.setPage('matrix'); await flush(plain.doc);
+  assert.equal(plain.u.pages.matrix.el.querySelectorAll('.sx-mcrow').length, 0, 'no hook: nothing');
+});

@@ -417,10 +417,10 @@ export function createModLayer(host) {
       closePop();
       step(pre ? 'Keep on canvas' : 'Save with preset');
     }
-    const sC = sec('', curve.el, crvBtn);
+    const sC = sec('', curve.el, crvBtn), sAux = sec('', aux.el, inv.el);
     sC.classList.add('cv-ml-curve');
-    if (!sx) { move.hidden = true; } // ((2b) a classic / panel row has no preset to move into)
-    box.append(sA, tg, sC, crvBox, sec('', out.el), sec('', aux.el, inv.el), sec('', rise.el), sec('', fall.el, link.el), foot);
+    if (!sx) { move.hidden = true; sAux.hidden = true; } // ((2b) a classic / panel row has no preset to move into; (C7) its aux would name the synthetic CP's slot, not a canvas source — no Aux menu)
+    box.append(sA, tg, sC, crvBox, sec('', out.el), sAux, sec('', rise.el), sec('', fall.el, link.el), foot);
     function refresh() {
       for (const x of W) x.update();
       const tt = titleOf();
