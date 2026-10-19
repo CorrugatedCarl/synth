@@ -51,7 +51,10 @@
 //                             compile is byte-identical); else a shallow copy of s whose matrix (a copied 64-slot array)
 //                             holds each row, in order, in the first free slot (src '': serum-core freeSlot's rule) — so
 //                             buildSerumT keys its custom curve 'crv<slot>' and mSlot / slew / mOut work per slot as
-//                             today. left: the rows that found no free slot (not compiled: "mod rows are full (64/64)")
+//                             today. left: the rows that found no free slot (not compiled: "mod rows are full (64/64)").
+//                             A row keeps the slot it last took while that slot is free (per device: its vals object,
+//                             which undo / redo and preset loads keep; review H5) — removing an earlier row or a native
+//                             row in another's slot moves no other row (per-slot slew / mOut state stays put)
 //   modBudget(track, dev)     { preset, canvas, left, max: 64 }: the slots the Serum's own rows hold, the canvas rows
 //                             placed, the ids left out (dev: a device id or object) — "23/64" = preset + canvas
 //   chainPatch(fx, opts)   one shared chain ({t: 'chain', c, fxr, fxrT}): patchFor's rack compile for a classic track (no
@@ -286,21 +289,27 @@ export function nativeRow(r) {
   return n.src && n.dst ? n : null; // (normRow empties a row with an unknown aux / destination)
 }
 const isFree = r => !isObj(r) || r.src === '' || r.src === undefined;
-// the slots rows take in s: its free slots in order, one per valid row in order (invalid rows: neither placed nor left)
-function place(s, rows) {
-  const M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], free = [], placed = [], left = [], N = [];
-  for (let k = 0; k < N_MATRIX; k++) if (isFree(M[k])) free.push(k);
-  for (const r of rows) {
-    const n = nativeRow(r);
-    if (!n) continue;
-    if (placed.length < free.length) { placed.push({ id: r.id, slot: free[placed.length] }); N.push(n); } else left.push(r.id);
+// the slots rows take in s: a row its last slot (hint: row id → slot) while free, then the rest in order the free slots
+// left, one per valid row (invalid rows: neither placed nor left); placed in rows order
+const lastSlots = new WeakMap(); // a Serum's vals → Map(row id → the slot injectMods last gave it)
+function place(s, rows, hint) {
+  const M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], free = new Set(), V = [], at = new Map(), placed = [], left = [], N = [];
+  for (let k = 0; k < N_MATRIX; k++) if (isFree(M[k])) free.add(k);
+  const used = N_MATRIX - free.size;
+  for (const r of rows) { const n = nativeRow(r); if (n) V.push([r, n]); }
+  if (hint) for (const [r] of V) { const k = hint.get(r.id); if (free.has(k)) { at.set(r, k); free.delete(k); } }
+  const rest = [...free];
+  for (const [r, n] of V) {
+    const k = at.has(r) ? at.get(r) : rest.length ? rest.shift() : -1;
+    if (k >= 0) { placed.push({ id: r.id, slot: k }); N.push(n); } else left.push(r.id);
   }
-  return { placed, left, N, used: N_MATRIX - free.length };
+  return { placed, left, N, used };
 }
 export function injectMods(dev, rows) {
   const s = isObj(dev) && isObj(dev.vals) ? dev.vals.s : undefined;
   if (!Array.isArray(rows) || !rows.length || !isObj(s)) return { s, placed: [], left: [] };
-  const P = place(s, rows);
+  const P = place(s, rows, lastSlots.get(dev.vals));
+  lastSlots.set(dev.vals, new Map(P.placed.map(x => [x.id, x.slot])));
   if (!P.placed.length) return { s, placed: [], left: P.left };
   const M = Array.isArray(s.matrix) ? s.matrix : [], m = Array.from({ length: N_MATRIX }, (_, k) => (k < M.length ? M[k] : normRow(null)));
   P.placed.forEach((x, i) => { m[x.slot] = P.N[i]; });
@@ -308,6 +317,6 @@ export function injectMods(dev, rows) {
 }
 export function modBudget(t, dev) {
   const D = isObj(t) && isObj(t.dev) ? t.dev : {}, id = typeof dev === 'string' ? dev : Object.keys(D).find(k => D[k] === dev);
-  const d = id !== undefined ? D[id] : null, P = place(isObj(d) && isObj(d.vals) ? d.vals.s : null, id !== undefined ? modRowsFor(t, id) : []);
+  const d = id !== undefined ? D[id] : null, P = place(isObj(d) && isObj(d.vals) ? d.vals.s : null, id !== undefined ? modRowsFor(t, id) : [], isObj(d) && isObj(d.vals) ? lastSlots.get(d.vals) : null);
   return { preset: P.used, canvas: P.placed.length, left: P.left, max: N_MATRIX };
 }
