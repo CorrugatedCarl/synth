@@ -13,6 +13,7 @@ import * as W from '../cv-world.js?v=9';
 import * as wk from '../wk.js?v=9';
 import * as MOD from '../cv-module.js?v=9';
 import * as CAB from '../cv-cables.js?v=9';
+import * as FACES from '../cv-face.js?v=9';
 
 const { Ev, ptr, fire, place, layout, all } = dom;
 // never hand a fake-DOM node to assert (its AssertionError walks the cyclic tree): primitives, or JSON
@@ -361,6 +362,142 @@ test('hotfix 2: inside a burst nothing is drawn, whatever the zoom (in ×8, out 
     ok(xs.every(c => c[3] === Z.side && c[4] === Z.side) && last.filter(c => c[0] === 'arc').every(c => c[3] === Z.r), 'the device-sized dots in store px ' + JSON.stringify(Z));
   }
   world.destroy();
+});
+
+/* ------------------------------------------------------------------ (1h) the GL path: a fake createGL through the world's options */
+// a fake GL layer (IMPL-1h §2's surface): the canvas before #world, every draw / resize recorded, the world's loss hooks kept
+function fakeGL(log) {
+  return (vp, o) => {
+    const cv = o.doc.createElement('canvas');
+    cv.className = 'cv-gl'; vp.insertBefore(cv, o.world);
+    const st = { frames: 0, ms: 0, max: 0, bytes: 0, texes: 0, lost: 0, w: 0, h: 0, d: 1 };
+    let alive = true;
+    const gl = { canvas: cv, hooks: o, test: !!o.test,
+      resize(vw, vh, d) { log.push(['resize', vw, vh, d]); const w = Math.round(vw * d), h = Math.round(vh * d); if (w === st.w && h === st.h && d === st.d) return false; st.w = w; st.h = h; st.d = d; return true; },
+      draw(cam, vw, vh, d, quads) { if (!alive) return false; log.push(['draw', cam.tx, cam.ty, cam.k, vw, vh, d, quads ? quads.length : -1]); st.frames++; return true; },
+      upload() { return null; }, free() {}, stats(reset) { const s = Object.assign({}, st); if (reset) { st.frames = 0; st.ms = 0; st.max = 0; } return s; },
+      destroy() { alive = false; log.push(['destroy']); cv.remove(); }, get alive() { return alive; } };
+    return gl;
+  };
+}
+const draws = log => log.filter(e => e[0] === 'draw').length;
+// a bare world on a fresh fake document whose window carries a location / localStorage (the GL pref)
+function bare(win0, createGL) {
+  const d = dom.fresh(), win = d.defaultView;
+  for (const k of Object.keys(win0)) Object.defineProperty(win, k, Object.getOwnPropertyDescriptor(win0, k)); // (a getter stays a getter)
+  win.document = d; d.querySelectorAll = () => [];
+  const vp = d.createElement('div'), w = d.createElement('div');
+  vp.id = 'viewport'; w.id = 'world'; vp.append(w); d.body.append(vp); place(vp, 0, 0, 800, 600);
+  const world = W.createWorld(vp, { world: w, env: { win, doc: d, now: () => T, raf: () => 1, caf: () => {}, setTimeout: setT, clearTimeout: clearT }, createGL });
+  return { vp, world };
+}
+
+test('1h GL path: no .cv-grid canvas (the GL one before #world instead); one GL.draw per written frame, at rest, on resize / a device-ratio change — never without a change; FACES attached with { gl, world }; gridStats / glStats / rectOf', () => {
+  const log = [];
+  const { vp, w, win, world, frame, item } = setup({ opts: { createGL: fakeGL(log) } });
+  frame();
+  const cv = vp.childNodes[0];
+  eq([cv.localName, cv.className, vp.childNodes[1] === w, dom.byCls(vp, 'cv-grid').length, world.glStats() !== null], ['canvas', 'cv-gl', true, 0, true], 'the GL canvas under #world, no 2D grid');
+  const at = FACES.attachment();
+  eq([!!at && at.world === world, !!at && at.gl.canvas === cv, !!at && at.gl.test], [true, true, false], 'FACES.attach({ gl, world }) after creation (no test flag)');
+  eq([log[0][0], log[0].slice(1)], ['resize', [1000, 600, 1]], 'resize first: the buffer = the viewport at dpr');
+  const n0 = draws(log);
+  ok(n0 >= 1 && n0 <= 2, 'drawn at boot: ' + n0);
+  eq(log.filter(e => e[0] === 'draw').pop().slice(1), [0, 0, 1, 1000, 600, 1, 0], 'the draw: the camera, the viewport, dpr, FACES.quads (the stub: none)');
+  frame(5);
+  eq(draws(log), n0, 'frames without a camera change: no draw');
+  // a pan burst: one draw per written frame (the camera of that frame), no 2D store, no transform, no layout read
+  let reads = 0;
+  const gbr = vp.getBoundingClientRect.bind(vp);
+  vp.getBoundingClientRect = () => { reads++; return gbr(); };
+  const N = 12;
+  for (let i = 0; i < N; i++) { world.panBy(7.3, -3.1); frame(); }
+  const g = world.gridStats();
+  eq([draws(log) - n0, reads, world.busy, g.gl, g.n, g.moves, g.dots, g.tf, g.w, g.h, g.s, g.r], [N, 0, true, true, n0 + N, 0, 0, '', 1000, 600, 1, 1], 'a pan: a draw a frame (gridStats: the GL draws, moves 0, dots 0, the buffer)');
+  near(log.filter(e => e[0] === 'draw').pop()[1], 7.3 * N, 1e-9, 'the last draw at the written camera');
+  eq(cv.style.transform || '', '', 'never transformed');
+  const nb = draws(log);
+  adv(200); frame(3);
+  eq([draws(log) - nb, world.busy], [1, false], 'the burst\'s end: one draw at the rounded rest camera');
+  eq(log.filter(e => e[0] === 'draw').pop().slice(1, 3), [Math.round(7.3 * N), Math.round(-3.1 * N)], 'crisp at rest');
+  // a jump: one draw; a resize: resize + draw; a device-ratio change: resize at the new dpr + draw
+  const n1 = draws(log);
+  world.setCamera({ tx: 33.4, ty: -17, k: 0.7 }); frame(2);
+  eq([draws(log), log.filter(e => e[0] === 'draw').pop().slice(1, 3)], [n1 + 2, [33, -17]], 'a jump: the frame and the rounded rest, a draw each (the 2D path: one draw, at rest)');
+  world.setCamera({ tx: 40, ty: -17, k: 0.7 }); frame(2);
+  eq(draws(log), n1 + 4, 'a jump that lands on device px: the frame, and the rest (endBurst always draws once: the contract\'s "at rest")');
+  const r0 = log.filter(e => e[0] === 'resize').length;
+  place(vp, 0, 100, 900, 600); world.resize(); frame(2);
+  eq([log.filter(e => e[0] === 'resize').length - r0, log.filter(e => e[0] === 'resize').pop().slice(1), draws(log)], [1, [900, 600, 1], n1 + 5], 'a resize: the buffer re-sized, one draw');
+  win.devicePixelRatio = 2; world.resize(); frame(2);
+  eq([log.filter(e => e[0] === 'resize').pop().slice(1), draws(log), log.filter(e => e[0] === 'draw').pop()[6], world.gridStats().s], [[900, 600, 2], n1 + 6, 2, 2], 'dpr 2: the buffer at 2×, drawn with d 2');
+  // glStats: GL.stats() + FACES.stats() (its bytes / gl renamed faceBytes / glFaces)
+  const n2 = draws(log), gs = world.glStats();
+  eq(Object.keys(gs).sort(), ['base', 'bytes', 'd', 'dom', 'faceBytes', 'faces', 'frames', 'gl', 'glFaces', 'h', 'lost', 'max', 'ms', 'paintMax', 'paintMs', 'paints', 'texes', 'w', 'windows'].sort());
+  eq([gs.gl, gs.frames, gs.w, gs.h, gs.faces, gs.faceBytes, gs.bytes], [true, n2, 1800, 1200, 0, 0, 0]);
+  eq(world.glStats(true).frames, n2); eq(world.glStats().frames, 0, 'reset');
+  eq(world.gridStats(true).n, 0, 'gridStats resets the same counters');
+  // rectOf: the cached rect of an item (world px), null unknown, never a layout read
+  const it = item('a', 100, 200, 300, 150);
+  world.add(it);
+  eq([world.rectOf('a'), world.rectOf(it.id), world.rectOf('nope'), world.rectOf(null)], [{ x: 100, y: 200, w: 300, h: 150 }, { x: 100, y: 200, w: 300, h: 150 }, null, null]);
+  const reads0 = it.reads;
+  for (let i = 0; i < 5; i++) world.rectOf('a');
+  eq(it.reads, reads0, 'never a layout read');
+  // destroy: FACES detached, the GL destroyed, its canvas gone
+  world.destroy();
+  eq([FACES.attachment(), log[log.length - 1][0], vp.childNodes.includes(cv)], [null, 'destroy', false]);
+});
+
+test('1h GL path: a context loss detaches FACES (the faces fall back to their DOM tier), a restore attaches again + redraws; the third loss (GL dead) builds the 2D grid live — drawn at rest, moved by transform in a burst, exactly the 2D path', () => {
+  const log = [];
+  let glObj = null;
+  const S = setup({ opts: { createGL: (v, o) => (glObj = fakeGL(log)(v, o)) } });
+  S.frame();
+  ok(glObj && S.world.glStats(), 'on the GL path');
+  const n0 = draws(log);
+  glObj.hooks.onLost(false);
+  eq([FACES.attachment(), S.world.glStats() !== null, draws(log)], [null, true, n0], 'lost: detached, the GL kept, no draw');
+  glObj.hooks.onRestored();
+  const at = FACES.attachment();
+  eq([!!at && at.world === S.world, !!at && at.gl === glObj, draws(log)], [true, true, n0 + 1], 'restored: attached again, one redraw');
+  // the third loss: the layer destroyed itself (onLost(true)) — the 2D grid canvas is built and drawn, the GL canvas gone
+  glObj.destroy();
+  glObj.hooks.onLost(true);
+  const gc = S.vp.childNodes[0];
+  eq([FACES.attachment(), S.world.glStats(), gc.className, S.vp.childNodes[1] === S.w, dom.byCls(S.vp, 'cv-gl').length, gc.width, gc.height], [null, null, 'cv-grid', true, 0, 2256, 1456], 'the 2D grid canvas, sized (the hotfix-2 store), the GL canvas gone');
+  const ctx = gc.getContext('2d'), d2 = () => ctx.calls.filter(c => c[0] === 'clearRect').length;
+  eq([d2(), S.world.gridStats().gl, S.world.gridStats().n], [1, undefined, 1], 'drawn once at the camera');
+  const d0 = draws(log);
+  for (let i = 0; i < 4; i++) { S.world.panBy(5, 0); S.frame(); }
+  eq([d2(), draws(log), S.world.gridStats().moves, S.world.busy], [1, d0, 4, true], 'a burst: moved by transform, no draw (2D), no GL draw');
+  adv(200); S.frame(2);
+  eq([d2(), S.world.gridStats().tf], [2, ''], 'rest: one 2D draw');
+  S.world.destroy();
+});
+
+test('1h: ?nogl / nogl=1 in the URL or the pref synth.cv.gl = "off" force the 2D path (createGL never called); "test" / ?gltest pass test: true (preserveDrawingBuffer); a throwing localStorage is ignored; a DOM without WebGL2 keeps the 2D path', () => {
+  const tried = [];
+  const mk = (vp, o) => { tried.push(!!o.test); return fakeGL([])(vp, o); };
+  for (const [search, ls, want] of [['?nogl', null, 'off'], ['?a=1&nogl=1', null, 'off'], ['?nogl=1&b', null, 'off'], ['?noglx', null, 'gl'], ['', 'off', 'off'], ['', 'on', 'gl'], ['', 'test', 'test'], ['?gltest', 'off', 'test'], ['?gltest', null, 'test'], ['?nogl&gltest', 'test', 'off']]) {
+    tried.length = 0;
+    const w0 = { location: { search } };
+    if (ls != null) w0.localStorage = { getItem: k => (k === 'synth.cv.gl' ? ls : null) };
+    const { vp, world } = bare(w0, mk);
+    const tag = JSON.stringify([search, ls]);
+    eq([tried.length ? 'gl:' + tried[0] : 'off', vp.childNodes[0].className, world.glStats() === null], [want === 'off' ? 'off' : 'gl:' + (want === 'test'), want === 'off' ? 'cv-grid' : 'cv-gl', want === 'off'], tag);
+    world.destroy();
+  }
+  const den = {};
+  Object.defineProperty(den, 'localStorage', { get() { throw new Error('denied'); }, enumerable: true, configurable: true });
+  const B = bare(den, mk);
+  eq([B.vp.childNodes[0].className, B.world.glStats() !== null], ['cv-gl', true], 'a localStorage that throws (privacy mode): the GL path');
+  B.world.destroy();
+  // the default fake DOM has no WebGL2 (getContext('webgl2') → null): the real createGL yields null and the 2D grid is built
+  const S = setup();
+  S.frame();
+  eq([S.vp.childNodes[0].className, S.world.glStats(), S.world.gridStats().gl, typeof S.world.rectOf], ['cv-grid', null, undefined, 'function'], 'no WebGL2: the 2D path (rectOf exists on both)');
+  S.world.destroy();
 });
 
 test('1g: a resize that moves the viewport\'s top / left edge (the top tray\'s grip) keeps every world point where it was on the screen; one that keeps them moves nothing either', () => {
