@@ -20,9 +20,16 @@ export const WIN_K0 = 0.5, WIN_MARGIN = 0.25, WIN_HEAD = 2, WIN_BUDGET_PX = 40e6
 export const FACE_BUDGET_BYTES = 384e6;
 /** The base texture (§3.2): L0 = min(dpr, BASE_L_MAX) device px per world px, ≤ BASE_MAX_PX px (the iOS 2D canvas ceiling). */
 export const BASE_L_MAX = 3, BASE_MAX_PX = 16e6;
-/** A window raster ≤ WIN_MAX_PX px (the same ceiling: a whole CS-80 at level 4 would be 24 M px); no texture side over
- * TEX_MAX_DIM (8192: the smallest MAX_TEXTURE_SIZE the site meets) — the level drops to fit, §8 records the cost. */
-export const WIN_MAX_PX = 16e6, TEX_MAX_DIM = 8192;
+/** A window raster ≤ WIN_MAX_PX px to start (the same ceiling: a whole CS-80 at level 4 would be 24 M px); no texture side
+ * over TEX_MAX_DIM (8192: the smallest MAX_TEXTURE_SIZE the site meets) — the level drops to fit, §8 records the cost. The
+ * effective cap (stats().winPx) halves, down to WIN_MIN_PX, whenever a window paint (raster + upload) over PAINT_SLOW_MS
+ * would have been bound by the halved cap, and is kept in localStorage WIN_PX_KEY (read at attach; a slow device settles
+ * there once). A window over WIN_SPLIT_PX px rasters on one frame and uploads on the next (the scratch waits in between). */
+export const WIN_MAX_PX = 16e6, WIN_MIN_PX = 4e6, WIN_SPLIT_PX = 8e6, PAINT_SLOW_MS = 30, WIN_PX_KEY = 'synth.cv.winpx', TEX_MAX_DIM = 8192;
+/** A window is only worth its paint when its level beats the base's by WIN_GAIN (at dpr 2: none until k > 0.75 — the base is
+ * ≥ 1:1 up to k = 1 anyway); its edges snap to WIN_SNAP world px (face-local) so a rebuilt window keeps the texel phase of the
+ * region it shares with the old one (exact when WIN_SNAP · L is whole: the level-4 windows above 100 %). */
+export const WIN_GAIN = 1.5, WIN_SNAP = 64;
 /** The module body's bottom radii (world px; style.css .cv-body) the quads are clipped to. */
 export const BODY_R = 12;
 /** A powered-off module's body is drawn at this opacity (style.css [data-off] > .cv-body); the quads take it as alpha. */
@@ -44,9 +51,10 @@ export function winLevel(d, k, sumArea) {
   const b = sumArea > 0 ? Math.sqrt(WIN_BUDGET_PX / sumArea) : Infinity;
   return Math.min(d * K_MAX, d * WIN_HEAD * k, b);
 }
-/** One window's level: winLevel, then the raster ceilings (WIN_MAX_PX px, TEX_MAX_DIM a side) for its w × h world px. */
-export function winLevelOf(d, k, sumArea, w, h) {
-  return Math.min(winLevel(d, k, sumArea), Math.sqrt(WIN_MAX_PX / Math.max(1, w * h)), TEX_MAX_DIM / Math.max(1, w, h));
+/** One window's level: winLevel, then the raster ceilings (`cap` px — the effective WIN_MAX_PX — and TEX_MAX_DIM a side) for
+ * its w × h world px. */
+export function winLevelOf(d, k, sumArea, w, h, cap) {
+  return Math.min(winLevel(d, k, sumArea), Math.sqrt((fin(cap) ? cap : winPx) / Math.max(1, w * h)), TEX_MAX_DIM / Math.max(1, w, h));
 }
 /** The visible part of a face rect R (world) in a vw × vh viewport: face-local world px, or null off screen. */
 export function visPart(R, cam, vw, vh) {
@@ -55,20 +63,23 @@ export function visPart(R, cam, vw, vh) {
   if (!(x1 > x0 && y1 > y0)) return null;
   return { x: x0 - R.x, y: y0 - R.y, w: x1 - x0, h: y1 - y0 };
 }
-/** The window of a face rect R: the visible part grown by WIN_MARGIN · the viewport on each side (world px), clipped to the
- * face, on whole world px; face-local; null off screen. */
+/** The window of a face rect R: the visible part grown by WIN_MARGIN · the viewport on each side (world px), its edges on the
+ * WIN_SNAP stride (face-local: the texel phase survives a rebuild), clipped to the face; face-local; null off screen. */
 export function winRect(R, cam, vw, vh) {
   if (!visPart(R, cam, vw, vh)) return null;
-  const V = visibleRect(cam, vw, vh, 0), mx = WIN_MARGIN * vw / cam.k, my = WIN_MARGIN * vh / cam.k;
-  const x0 = Math.max(R.x, Math.floor(V.x - mx)), y0 = Math.max(R.y, Math.floor(V.y - my));
-  const x1 = Math.min(R.x + R.w, Math.ceil(V.x + V.w + mx)), y1 = Math.min(R.y + R.h, Math.ceil(V.y + V.h + my));
+  const V = visibleRect(cam, vw, vh, 0), mx = WIN_MARGIN * vw / cam.k, my = WIN_MARGIN * vh / cam.k, S = WIN_SNAP;
+  const x0 = Math.max(0, Math.floor((V.x - mx - R.x) / S) * S), y0 = Math.max(0, Math.floor((V.y - my - R.y) / S) * S);
+  const x1 = Math.min(R.w, Math.ceil((V.x + V.w + mx - R.x) / S) * S), y1 = Math.min(R.h, Math.ceil((V.y + V.h + my - R.y) / S) * S);
   if (!(x1 > x0 && y1 > y0)) return null;
-  return { x: x0 - R.x, y: y0 - R.y, w: x1 - x0, h: y1 - y0 };
+  return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
-/** Is a window ({x, y, w, h, L}, face-local) kept: it still covers the visible part `vis` and its level ≥ dpr · k. */
-export function winKeep(win, vis, d, k) {
+/** Is a window ({x, y, w, h, L}, face-local) kept: it still covers the visible part `vis` and its level ≥ min(dpr · k, Lw) —
+ * Lw the level the planner would make now, so a window the raster ceilings capped below dpr · k is not remade for a level it
+ * cannot get (it is reported `soft` instead). */
+export function winKeep(win, vis, d, k, Lw) {
   if (!win || !vis) return false;
-  return win.L >= d * k - EPS && vis.x >= win.x - EPS && vis.y >= win.y - EPS && vis.x + vis.w <= win.x + win.w + EPS && vis.y + vis.h <= win.y + win.h + EPS;
+  const need = fin(Lw) ? Math.min(d * k, Lw) : d * k;
+  return win.L >= need - EPS && vis.x >= win.x - EPS && vis.y >= win.y - EPS && vis.x + vis.w <= win.x + win.w + EPS && vis.y + vis.h <= win.y + win.h + EPS;
 }
 const texBytes = (w, h, mips) => Math.round(w * h * 4 * (mips ? 4 / 3 : 1));
 
@@ -93,23 +104,37 @@ function bgOf(root, win) {
   if (!wood) return { color, wood: null };
   return { color: prop('--hw-wood') || color, wood: prop('--hw-wood') || '#5a3218' };
 }
+/** The four stripe bands of .inst.hw.hw-wood from --hw-wood: [from, to] world px of the 14 px period and the colour. */
+export const woodBands = w => [[0, 3, mix(w, 0.86, 0)], [3, 7, mix(w, 0.88, 255)], [7, 9, mix(w, 0.74, 0)], [9, 14, w]];
+/** The sheen of .inst.hw.hw-wood (style.css: 90deg, rgba(0,0,0,.32) → rgba(255,255,255,.05) at 45 % → rgba(0,0,0,.28)) as
+ * CSS composites it — its stops interpolated premultiplied — pre-sampled into SHEEN_N stops per segment for a 2D gradient,
+ * which lerps its stops unpremultiplied (the 3-stop gradient was up to 17 levels too light mid-face). [t, grey, alpha] each. */
+export const SHEEN_N = 24;
+export function sheenStops(n = SHEEN_N) {
+  const K = [[0, 0, 0.32], [0.45, 255, 0.05], [1, 0, 0.28]], out = [];
+  for (let s = 0; s + 1 < K.length; s++) {
+    const [t0, c0, a0] = K[s], [t1, c1, a1] = K[s + 1];
+    for (let i = s ? 1 : 0; i <= n; i++) { const f = i / n, a = a0 + (a1 - a0) * f, p = c0 * a0 + (c1 * a1 - c0 * a0) * f; out.push([t0 + (t1 - t0) * f, Math.round(p / a), +a.toFixed(4)]); }
+  }
+  return out;
+}
 /** Fills the scratch (W × H device px at level L, its origin at face-local (ox, oy) world px) as the face's background. */
-function fillBg(bg, ctx, W, H, L, ox, oy, doc) {
+function fillBg(bg, ctx, W, H, L, ox, oy) {
   ctx.fillStyle = bg.color;
   ctx.fillRect(0, 0, W, H);
   if (!bg.wood) return;
-  try { // the stripes: a 14 world px period along 177deg (3° off vertical), then the 90deg sheen across the face
-    const w = bg.wood, P = 14 * L, tile = doc.createElement('canvas');
-    tile.width = Math.max(1, Math.round(16 * L)); tile.height = Math.max(1, Math.round(P));
-    const t = tile.getContext('2d');
-    for (const [a, b, c] of [[0, 3, mix(w, 0.86, 0)], [3, 7, mix(w, 0.88, 255)], [7, 9, mix(w, 0.74, 0)], [9, 14, w]]) { t.fillStyle = c; t.fillRect(0, a * L, tile.width, (b - a) * L); }
-    const pat = ctx.createPattern(tile, 'repeat');
-    if (pat && typeof pat.setTransform === 'function' && typeof globalThis.DOMMatrix === 'function') pat.setTransform(new globalThis.DOMMatrix().translate(-ox * L, -oy * L).rotate(-3));
-    ctx.fillStyle = pat; ctx.fillRect(0, 0, W, H);
+  try { // the stripes: a 14 world px period along 177deg (3° off vertical) as rects in a frame rotated about the face's origin
+    // (crisp edges; a pattern tile is bilinear-blurred), each run 2 px into the next so no seam shows; then the 90deg sheen
+    const P = 14 * L, th = -3 * Math.PI / 180, c = Math.cos(th), s = Math.sin(th), bands = woodBands(bg.wood), OV = 2;
+    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity; // the canvas's corners in the stripes' frame
+    for (const [x, y] of [[0, 0], [W, 0], [0, H], [W, H]]) { const px = x + ox * L, py = y + oy * L, u = c * px + s * py, v = c * py - s * px; u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v); }
+    ctx.save(); ctx.translate(-ox * L, -oy * L); ctx.rotate(th);
+    for (let n = Math.floor(v0 / P) - 1, N = Math.ceil(v1 / P); n <= N; n++) for (const [a, b, col] of bands) { ctx.fillStyle = col; ctx.fillRect(u0 - 1, n * P + a * L, u1 - u0 + 2, (b - a) * L + OV); }
+    ctx.restore();
     const g = ctx.createLinearGradient(-ox * L, 0, (bg.faceW - ox) * L, 0);
-    g.addColorStop(0, 'rgba(0,0,0,0.32)'); g.addColorStop(0.45, 'rgba(255,255,255,0.05)'); g.addColorStop(1, 'rgba(0,0,0,0.28)');
+    if (!g || typeof g.addColorStop !== 'function') return; // (a stub context)
+    for (const [t, v, a] of sheenStops()) g.addColorStop(t, 'rgba(' + v + ',' + v + ',' + v + ',' + a + ')');
     ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-    tile.width = 0; tile.height = 0;
   } catch (err) { /* the flat wood colour stays */ }
 }
 
@@ -118,6 +143,17 @@ const faces = []; // registration order (the z tie-break)
 let seq = 0, GL = null, WD = null, HOOK = null, ATT = null, CAM = null, VP = { w: 0, h: 0 }, bytes = 0, scratch = null, LOST = false, BURST = false;
 const subs = new Set(), S = { paints: 0, paintMs: 0, paintMax: 0 };
 let Q = [], pumping = false, pumpGen = 0, QUAD = []; // the paint queue (one job per frame); the reused quad list
+let winPx = WIN_MAX_PX, STAGE = null; // the effective window cap (px); a split window's raster waiting in the scratch { j, ms }
+const winOf = () => (ATT && ATT.win) || (WD && WD.viewport && WD.viewport.ownerDocument && WD.viewport.ownerDocument.defaultView) || globalThis;
+function winPxRead() { // the persisted cap (clamped); an absent / throwing storage or garbage: the start value
+  winPx = WIN_MAX_PX;
+  try { const w = winOf(), v = parseFloat(w.localStorage && w.localStorage.getItem(WIN_PX_KEY)); if (fin(v)) winPx = Math.min(WIN_MAX_PX, Math.max(WIN_MIN_PX, v)); } catch (err) { /* no storage */ }
+}
+function slowPaint(px, ms) { // a window paint over PAINT_SLOW_MS: halve the cap (to the floor) when the halved cap would have bound it
+  if (!(ms > PAINT_SLOW_MS) || winPx <= WIN_MIN_PX || px <= winPx / 2) return;
+  winPx = Math.max(WIN_MIN_PX, winPx / 2);
+  try { const w = winOf(); if (w.localStorage) w.localStorage.setItem(WIN_PX_KEY, String(winPx)); } catch (err) { /* no storage */ }
+}
 const emit = () => { for (const f of [...subs]) { try { f(); } catch (err) { console.error(err); } } };
 const raf = f => (HOOK && typeof HOOK.raf === 'function' ? HOOK.raf(f) : wk.frame(f));
 const now = () => (HOOK && typeof HOOK.now === 'function' ? HOOK.now() : msNow());
@@ -248,6 +284,7 @@ function pump() {
 function scratchFor(doc, W, H) {
   if (!scratch || scratch.ownerDocument !== doc) scratch = doc.createElement('canvas');
   scratch.width = W; scratch.height = H;
+  STAGE = null; // (a staged raster, if any, is gone with the resize: its job rasters again)
   return scratch;
 }
 function loadImg(F, cb) { // the markup as an Image (a Blob URL, as 1g), retained for the face's life (windows draw from it)
@@ -284,19 +321,25 @@ function run(j) {
   if (!F.img) { loadImg(F, () => { if (!F.dead && F.mounted && GL && !LOST) { Q.unshift(j); pump(); } }); return; } // (this frame starts the load)
   const d = dprOf(F), doc = F.doc;
   if (!F.bg) { F.bg = bgOf(F.root, (F.env && F.env.win) || F.wnd); F.bg.faceW = F.w; }
-  const t0 = now();
-  let W, H, L, win = null;
+  let W, H, L, win = null, ms = 0, c = null;
   if (j.kind === 'base') { L = baseLevel(d, F.w, F.h); W = Math.max(1, Math.round(F.w * L)); H = Math.max(1, Math.round(F.h * L)); }
   else { win = j.win; L = win.L; W = Math.max(1, Math.round(win.w * L)); H = Math.max(1, Math.round(win.h * L)); }
-  if (!enforce(texBytes(W, H, !win), F)) return; // an off-screen face over the budget: skipped (re-planned when it comes on)
-  const c = scratchFor(doc, W, H), x = c.getContext('2d');
-  if (!x) { fail(F, 'no 2D context'); return; }
-  fillBg(F.bg, x, W, H, L, win ? win.x : 0, win ? win.y : 0, doc);
-  x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
-  if (win) x.drawImage(F.img, win.x, win.y, win.w, win.h, 0, 0, W, H); else x.drawImage(F.img, 0, 0, W, H);
+  if (STAGE && STAGE.j === j) { c = scratch; ms = STAGE.ms; STAGE = null; } // the second frame of a split window: the raster waits in the scratch
+  else {
+    if (!enforce(texBytes(W, H, !win), F)) return; // an off-screen face over the budget: skipped (re-planned when it comes on)
+    const t0 = now(), x = (c = scratchFor(doc, W, H)).getContext('2d');
+    if (!x) { fail(F, 'no 2D context'); return; }
+    fillBg(F.bg, x, W, H, L, win ? win.x : 0, win ? win.y : 0);
+    x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+    if (win) x.drawImage(F.img, win.x, win.y, win.w, win.h, 0, 0, W, H); else x.drawImage(F.img, 0, 0, W, H);
+    ms = now() - t0;
+    if (win && W * H > WIN_SPLIT_PX && !j.split) { j.split = true; STAGE = { j, ms }; Q.unshift(j); return; } // a big window: the upload next frame (one job per frame)
+  }
+  const t1 = now();
   let tex = null;
   try { tex = GL.upload(c, { mips: !win }); } catch (err) { tex = null; }
-  const ms = now() - t0; S.paints++; S.paintMs += ms; S.paintMax = Math.max(S.paintMax, ms);
+  ms += now() - t1; S.paints++; S.paintMs += ms; S.paintMax = Math.max(S.paintMax, ms);
+  if (win) slowPaint(W * H, ms);
   if (!tex) { fail(F, 'upload failed'); return; }
   if (win) { free(F, 'win'); F.win = { tex, x: win.x, y: win.y, w: win.w, h: win.h, L }; } else { free(F, 'base'); F.base = { tex, L }; }
   bytes += tex.bytes || 0;
@@ -341,8 +384,9 @@ function plan(c) {
   for (const c2 of cands) sum += c2.wr.w * c2.wr.h;
   for (const { F, vis, wr, d, dist } of cands) {
     const Lw = winLevelOf(d, C.k, sum, wr.w, wr.h), L0 = F.base ? F.base.L : baseLevel(d, F.w, F.h);
-    if (Lw <= L0 + EPS) { if (F.win) { free(F, 'win'); emit(); } continue; } // the base is as fine already
-    if (winKeep(F.win, vis, d, C.k)) continue;
+    if (Lw <= L0 * WIN_GAIN + EPS) { if (F.win) { free(F, 'win'); emit(); } continue; } // the base is as fine already (within WIN_GAIN)
+    if (winKeep(F.win, vis, d, C.k, Lw)) continue;
+    if (F.win && d * C.k <= L0 + EPS) continue; // at or below 1:1 from the base: a window the view left is not remade for coverage (the next rest above k = 1 does)
     jobs.push({ F, kind: 'win', win: Object.assign({ L: Lw }, wr), dist });
   }
   jobs.sort((a, b) => a.dist - b.dist || (a.kind === 'base' ? -1 : 1) - (b.kind === 'base' ? -1 : 1));
@@ -415,7 +459,8 @@ export const FACES = {
     F.api = api;
     return api;
   },
-  /** The GL path: o.gl (cv-gl's §2 surface), o.world (rectOf / on / onScreen / cam / viewport); tests: raf, size, now.
+  /** The GL path: o.gl (cv-gl's §2 surface), o.world (rectOf / on / onScreen / cam / viewport), o.win (the window whose
+   * localStorage keeps the window cap; else the viewport's); tests: raf, size, now.
    * A second attach after a detach (the world's context loss / restore) starts from nothing: every texture is gone, the
    * bases are rebuilt lazily (next frame, one per frame, nearest first), the windows at the rest. */
   attach(o) {
@@ -424,6 +469,7 @@ export const FACES = {
     ATT = o;
     GL = o.gl || null; WD = o.world || null; LOST = false;
     HOOK = { raf: o.raf, size: o.size, now: o.now, offs: [] };
+    winPxRead(); // (o.win, else the viewport's window: the persisted window cap)
     if (WD && typeof WD.on === 'function') {
       HOOK.offs.push(WD.on('cameraend', e => { BURST = false; plan(e && e.cam); }));
       HOOK.offs.push(WD.on('screen', () => { recheck(); plan(); }));
@@ -437,7 +483,7 @@ export const FACES = {
     for (const f of HOOK.offs) { try { f(); } catch (err) { /* gone */ } }
     Q = []; pumping = false; pumpGen++;
     for (const F of faces) { free(F, 'base'); free(F, 'win'); }
-    GL = null; WD = null; HOOK = null; ATT = null; CAM = null; LOST = false; BURST = false;
+    GL = null; WD = null; HOOK = null; ATT = null; CAM = null; LOST = false; BURST = false; STAGE = null;
     if (scratch) { scratch.width = 0; scratch.height = 0; }
     for (const F of faces) sync(F, 'detach');
     emit();
@@ -474,10 +520,18 @@ export const FACES = {
   onChange(fn) { if (typeof fn !== 'function') return () => {}; subs.add(fn); return () => subs.delete(fn); },
   /** The overlap rule and the offsets re-read (a re-mount main.js made without a camera move): a rest-time call. */
   recheck() { for (const F of faces) sync(F, 'refresh'); recheck(); if (GL && WD) plan(); },
+  /** + soft: windows sampled below 1:1 at the current camera (L < dpr · k: the raster ceilings), softMin their worst L / (dpr · k)
+   * (1 when none); winPx the effective window cap. */
   stats(reset) {
-    let gl = 0, dom = 0, base = 0, windows = 0;
-    for (const F of faces) { if (F.dead) continue; if (F.mode === 'gl') gl++; else if (F.tier) dom++; if (F.base) base++; if (F.win) windows++; }
-    const s = { faces: faces.length, gl, dom, bytes, base, windows, paints: S.paints, paintMs: S.paintMs, paintMax: S.paintMax, queued: Q.length };
+    let gl = 0, dom = 0, base = 0, windows = 0, soft = 0, softMin = 1;
+    const k = cam().k;
+    for (const F of faces) {
+      if (F.dead) continue;
+      if (F.mode === 'gl') gl++; else if (F.tier) dom++;
+      if (F.base) base++;
+      if (F.win) { windows++; const r = F.win.L / (dprOf(F) * k); if (r < 1 - EPS) { soft++; softMin = Math.min(softMin, r); } }
+    }
+    const s = { faces: faces.length, gl, dom, bytes, base, windows, soft, softMin, winPx, paints: S.paints, paintMs: S.paintMs, paintMax: S.paintMax, queued: Q.length };
     if (reset) { S.paints = 0; S.paintMs = 0; S.paintMax = 0; }
     return s;
   },
