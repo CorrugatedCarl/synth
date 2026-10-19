@@ -31,6 +31,18 @@
 //                           without a file's mirror fields); toV2 = STEPS[2] on a whole project
 //   toV1(p)                 "Save as classic project" (§5.4): { p: a project main opens (no schema; canonical tracks
 //                           exactly, else one track per instrument), lost: [what main cannot hold] }
+//   splitTracks(p, {name})  (stage 1f: one instrument per track in the UI) a parsed project at SCHEMA → { p, notices }: each
+//                           track holding several instruments, extra panels or a shape that is not today's (power off,
+//                           a key zone, a cable level, a Serum into a panel, no cable to OUT) becomes one v2 track per
+//                           instrument, by toV1's per-instrument rule (instRoutes) but in v2 form — prim → its panel → OUT
+//                           (the panel it fed: its FX state, a shared one copied for each) or a Serum (its own FX) → OUT:
+//                           the primary keeps the track (id, name, lay of the devices kept, its device ids: the panel it
+//                           fed or a new id), the others are new tracks after it ('trk_<n>', "<track> · <model name>"
+//                           via name(modelId), i1 [→ fx1] → out, no lay), notes and the rest of the track copied; an
+//                           instrument that did not sound (off, not cabled to OUT, another one soloed) comes in muted;
+//                           zones, solo, cable levels, unconnected panels and modulation rows are dropped. notices: one
+//                           line per track that held several instruments. A canonical one-instrument track (and a
+//                           project of them: the same object) is returned as it is
 //   primV1(t)               a v2 track's primary instrument as v1 fields { model, vals, preset, seq?, fx }
 //   mirror(o)               a saved FILE's tracks get primV1 at track level (§5.8: main opens it as each track's primary
 //                           instrument with its FX); autosave and History never carry it, the canvas reader ignores it
@@ -131,6 +143,18 @@ export function primV1(t) {
   const id = isObj(t.dev[t.prim]) && t.dev[t.prim].kind === 'synth' ? t.prim : Object.keys(t.dev).find(k => isObj(t.dev[k]) && t.dev[k].kind === 'synth');
   return id ? instV1(t, id) : null;
 }
+// the instruments of a v2 track, the primary first, each with its v1 fields (instV1: a classic one's FX the panel it feeds,
+// a Serum its own) and its route: to — the device its cable reaches {id, g} | null —, via — that panel —, end — what the
+// panel feeds (else to). toV1's and splitTracks' one-track-per-instrument rule
+function instRoutes(t) {
+  const ins = Object.keys(t.dev).filter(k => kindOf(t.dev[k]) === 'inst').sort((a, b) => (a === t.prim ? -1 : b === t.prim ? 1 : 0));
+  const W = (Array.isArray(t.wires) ? t.wires : []).filter(isObj);
+  const dst = k => { const w = W.find(x => x.a === k + '.out'), b = w && port(w.b); return b && b.dev in t.dev ? { id: b.dev, g: w.g } : null; };
+  return ins.map(id => {
+    const to = dst(id), via = to && kindOf(t.dev[to.id]) === 'panel' ? to.id : null;
+    return { id, d: t.dev[id], v: instV1(t, id), to, via, end: via ? dst(via) : to };
+  });
+}
 const coreOf = t => { const o = {}; for (const k of Object.keys(t)) if (!V2_KEYS.includes(k) && k !== 'mods' && !V1_KEYS.includes(k)) o[k] = t[k]; return o; };
 const plainCopy = x => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
 export function toV1(p0) {
@@ -145,12 +169,10 @@ export function toV1(p0) {
     const c = compileTrack(t), ins = Object.keys(t.dev).filter(k => kindOf(t.dev[k]) === 'inst');
     if (c.canonical && ins.length === 1) { const v = Object.assign({}, c.v1); if (v.seq == null) delete v.seq; out.push(Object.assign(coreOf(t), v)); continue; }
     // not today's shape: each instrument its own track (the primary first, keeping the track's id), notes copied
-    ins.sort((a, b) => (a === t.prim ? -1 : b === t.prim ? 1 : 0));
-    const W = t.wires.filter(isObj), dst = k => { const w = W.find(x => x.a === k + '.out'), b = w && port(w.b); return b && b.dev in t.dev ? { id: b.dev, g: w.g } : null; };
+    const W = t.wires.filter(isObj);
     const srcs = pid => W.filter(w => (port(w.b) || {}).dev === pid).map(w => (port(w.a) || {}).dev).filter(k => kindOf(t.dev[k]) === 'inst');
     const on = powered(t), lvl = g => g !== undefined && g !== 1;
-    ins.forEach((id, i) => {
-      const d = t.dev[id], v = instV1(t, id), to = dst(id), via = to && kindOf(t.dev[to.id]) === 'panel' ? to.id : null, end = via ? dst(via) : to;
+    instRoutes(t).forEach(({ id, d, v, to, via, end }, i) => {
       const tr = Object.assign(coreOf(t), v);
       if (i) { tr.id = freshId(); tr.name = (t.name || 'Track') + ' · ' + (d.name || d.model); delete tr.lay; }
       const nm = `“${tr.name}”: `;
@@ -170,6 +192,65 @@ export function toV1(p0) {
   }
   p.tracks = out;
   return { p, lost: [...new Set(lost)] };
+}
+/* ---------------------------------------------------------------- stage 1f: one instrument per track in the UI */
+// a canonical one-instrument track (cv-graph §5.5) and nothing beside it but its panel and OUT: kept as it is
+function single(t) {
+  const ins = Object.keys(t.dev).filter(k => kindOf(t.dev[k]) === 'inst');
+  if (ins.length !== 1) return false;
+  let c = null;
+  try { c = compileTrack(t); } catch { return false; }
+  if (!c.canonical) return false;
+  const pid = t.dev[ins[0]].model === 'serum' ? null : panelOf(t, ins[0]);
+  return Object.keys(t.dev).every(k => k === ins[0] || k === pid || kindOf(t.dev[k]) === 'out');
+}
+const maxTrk = ids => { let n = 0; for (const id of ids) { const m = /^trk_(\d{1,9})$/.exec(id); if (m) n = Math.max(n, +m[1]); } return n; };
+export function splitTracks(p, o = {}) {
+  if (!isObj(p) || !Array.isArray(p.tracks)) return { p, notices: [] };
+  const name = typeof o.name === 'function' ? o.name : m => m, notices = [], out = [];
+  const ids = new Set(p.tracks.map(t => isObj(t) && t.id)), unseen = id => !ids.has(id);
+  let n = maxTrk(ids), changed = false;
+  const freshId = () => { let id; do id = 'trk_' + ++n; while (!unseen(id)); ids.add(id); return id; };
+  for (const t0 of p.tracks) {
+    if (!isObj(t0) || !isObj(t0.dev) || single(t0)) { out.push(t0); continue; }
+    const t = plainCopy(t0), R = instRoutes(t), on = powered(t);
+    if (!R.length) { out.push(t0); continue; } // (no instrument: song.js / adopt deal with it)
+    changed = true;
+    const outId = Object.keys(t.dev).find(k => kindOf(t.dev[k]) === 'out') || 'out';
+    R.forEach(({ id, d, v, via, end }, i) => {
+      const tr = coreOf(t), dv = Object.assign({}, d), sx = d.model === 'serum';
+      for (const k of ['on', 'solo', 'zone', 'fx']) delete dv[k];
+      if (sx) dv.fx = plainCopy(v.fx); else delete dv.fxId;
+      const silent = d.on === false || !end || kindOf(t.dev[end.id]) !== 'out' || !on.includes(id);
+      if (silent) tr.mute = true; // (it did not sound: it stays quiet until unmuted)
+      const P = { kind: 'panel', fx: plainCopy(v.fx) };
+      if (i === 0) { // the primary keeps the track: its ids, the lay of what it keeps
+        let pid = null;
+        tr.nid = t.nid;
+        if (!sx) {
+          pid = via;
+          if (!pid) { let k = Math.max(t.nid | 0, 1, ...Object.keys(t.dev).map(x => { const m = /(\d+)$/.exec(x); return m ? +m[1] + 1 : 0; })); while (('fx' + k) in t.dev) k++; pid = 'fx' + k; tr.nid = k + 1; }
+          else if (isObj(t.dev[via]) && typeof t.dev[via].name === 'string') P.name = t.dev[via].name;
+        }
+        tr.prim = id;
+        tr.dev = { [id]: dv };
+        if (pid) tr.dev[pid] = P;
+        tr.dev[outId] = { kind: 'out' };
+        tr.wires = pid ? [{ id: 'w1', a: id + '.out', b: pid + '.in' }, { id: 'w2', a: pid + '.out', b: outId + '.in' }] : [{ id: 'w1', a: id + '.out', b: outId + '.in' }];
+        if (isObj(t.lay)) { const L = {}; for (const k of [id, id + '/fx', pid, outId]) if (k && isObj(t.lay[k])) L[k] = t.lay[k]; if (Object.keys(L).length) tr.lay = L; else delete tr.lay; }
+      } else { // a new track: i1 [→ fx1] → out (stage 1d's shape), Tidy
+        delete dv.fxId;
+        Object.assign(tr, { id: freshId(), name: (t.name || 'Track') + ' · ' + (d.name || name(d.model)), prim: 'i1', nid: 2, dev: { i1: dv } });
+        delete tr.lay;
+        if (sx) { tr.dev.out = { kind: 'out' }; tr.wires = [{ id: 'w1', a: 'i1.out', b: 'out.in' }]; }
+        else { tr.dev.fx1 = P; tr.dev.out = { kind: 'out' }; tr.wires = [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }]; }
+        tr.notes = plainCopy(t.notes); tr.cc = plainCopy(t.cc);
+      }
+      out.push(tr);
+    });
+    if (R.length > 1) notices.push(`Track “${t.name}” held ${R.length} instruments: now ${R.length} tracks`);
+  }
+  return changed ? { p: Object.assign({}, p, { tracks: out }), notices } : { p, notices };
 }
 export function mirror(o) {
   if (!isObj(o) || !Array.isArray(o.tracks)) return o;

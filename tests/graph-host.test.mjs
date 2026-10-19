@@ -481,23 +481,23 @@ test('H4 ids: delete fx1, classic → Serum → classic, undo past the delete �
   assert.deepEqual([devs(t), t.fx.racks[0].mods.map(m => m.type).join(',')], ['fx1,i1,out', 'cho']);
 });
 
-test('H13: New / Open forget the current instruments — a file whose track ids repeat opens each track on its primary (last: it replaces the project, undone after)', async () => {
+test('H13 / 1f: the current instrument is always the primary (setCur changes nothing); a file whose track holds two instruments opens split (one track each, the primary keeping the id), New and Open undone after', async () => {
   await page();
   const cv = globalThis.__synthTest.cv;
   sim.api.selectTrack('trk_a'); sim.raf();
   cv.setCur('i2');
-  assert.equal(cv.cur(), 'i2');
+  assert.equal(cv.cur(), 'i1', 'stage 1f: the primary');
   const o = clone(P()); o.tracks = [F.tracks().a]; o.selTrack = 'trk_a';
   const file = { name: 'same-ids.synth.json', type: 'application/json', text: async () => JSON.stringify(o) };
   await sim.$('#fFile').onchange({ target: { files: [file], value: '' } });
   await sim.settle(10); sim.raf();
-  assert.deepEqual([P().selTrack, P().tracks.length, cv.cur()], ['trk_a', 1, 'i1'], 'Open: the primary');
-  cv.setCur('i2');
+  assert.deepEqual([P().selTrack, P().tracks.map(t => t.id + ':' + t.model).join(','), cv.cur()], ['trk_a', 'trk_a:juno60,trk_1:minimoog', 'i1'], 'Open: split, on the primary');
+  assert.equal(sim.$('#notice').textContent, 'Track “Juno + Moog” held 2 instruments: now 2 tracks');
   const was = globalThis.confirm; globalThis.confirm = () => true;
   try { sim.$('#fNew').onclick(); } finally { globalThis.confirm = was; }
   sim.raf();
-  cv.undo(); sim.raf(); // (back to the opened file: undo restores, it does not forget)
-  assert.deepEqual([P().selTrack, cv.cur()], ['trk_a', 'i1'], 'New forgot it (an undo of New restores the project, its tracks on their primary)');
+  cv.undo(); sim.raf(); // (back to the opened file)
+  assert.deepEqual([P().selTrack, P().tracks.length, cv.cur()], ['trk_a', 2, 'i1'], 'an undo of New restores the opened project');
   cv.undo(); sim.raf();
-  assert.equal(P().tracks.length > 1, true, 'the project before the Open');
+  assert.equal(P().tracks.length > 2, true, 'the project before the Open');
 });

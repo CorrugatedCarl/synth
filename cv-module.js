@@ -651,6 +651,8 @@ export function createModule(o, env) {
  *   host.zone(key, {lo, hi, xp})?  → instruments get the key-zone pill (dev.zone)
  *   host.badge(key) → text | null   the bar badge ("not connected – silent", "OS 4→2"), read on every sync / refresh
  *   host.cables: {onSelect(id | null), onAction(id, 'disconnect' | …), menu(id) → items}   the editable cables (cablesOf)
+ *   host.patch: false   (1f) read-only cables: every cable and jack data-ro (no press, focus or "Connect to…"; cableDrag
+ *        still works when a caller makes one — main.js does not since stage 1f)
  * Instruments' jacks are focusable buttons; the jacks inside a Serum (its out → its own FX's in) carry data-ro.
  * Tidy (no lay entry) places any number of devices (tidy(track, sizes, devices)). Same geometry on every device.
  * @param {object|null} world  cv-world World (null: modules still lay out in host.root at k = 1)
@@ -661,7 +663,7 @@ export function createModule(o, env) {
  */
 export function createTrackView(world, track, host) {
   const H = host || {}, doc = H.doc || globalThis.document, root = H.root || (world && world.el) || null;
-  const DEV = typeof H.devices === 'function';
+  const DEV = typeof H.devices === 'function', RO = H.patch === false;
   let T = track;
   const mods = new Map(); // key → Module
   const CB = DEV && isObj(H.cables) ? H.cables : {};
@@ -743,7 +745,7 @@ export function createTrackView(world, track, host) {
     // a jack inside a Serum is its own route (data-ro): no press, no focus, no "Connect to…" (U12) — the patchable ones buttons
     for (const j of m.jackIds()) {
       const e = m.jack(j);
-      if (jackPort(T, key + '.' + j)) { e.removeAttribute('data-ro'); e.setAttribute('role', 'button'); e.tabIndex = 0; }
+      if (!RO && jackPort(T, key + '.' + j)) { e.removeAttribute('data-ro'); e.setAttribute('role', 'button'); e.tabIndex = 0; }
       else { e.setAttribute('data-ro', ''); e.removeAttribute('role'); e.tabIndex = -1; }
     }
     m.cost = costOf(key);
@@ -757,7 +759,7 @@ export function createTrackView(world, track, host) {
         : [{ id: 'in', side: 'left', kind: 'audio', label: 'OUT in' }];
     const ext = {};
     if (DEV) {
-      ext.patch = true;
+      ext.patch = !RO;
       if (kind === 'inst' && typeof H.power === 'function') ext.power = { on: !(d && d.on === false), onToggle: on => H.power(key, on) };
       if (kind === 'inst' && typeof H.zone === 'function') ext.zone = Object.assign(zoneOf(d && d.zone), { onChange: z => H.zone(key, z) });
     }
@@ -816,7 +818,7 @@ export function createTrackView(world, track, host) {
     m.setZ(top + 1); m.zSet = true;
     lay(key, 'end', 'z');
   }
-  const cablesNow = () => (DEV ? cablesOf(T) : deriveCables(T));
+  const cablesNow = () => (!DEV ? deriveCables(T) : RO ? cablesOf(T).map(c => Object.assign({}, c, { readonly: true })) : cablesOf(T));
   for (const k of keys()) make(k);
   cables.set(cablesNow());
   relay();

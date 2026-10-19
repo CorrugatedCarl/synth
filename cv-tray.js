@@ -447,7 +447,8 @@ const initials = s => { const w = String(s || '').replace(/[^A-Za-z0-9 ]+/g, ' '
  * o.overOf(target, x, y) → 'canvas' | 'panel' | {over, key} | null (the panel tile over a panel or an instrument counts as
  * 'canvas' with info.near that module: a new panel beside it); info.at the point under the pointer (o.toWorld(x, y) when
  * given: world px; else client px);
- * drag.drop(id, info) → true when done (else drag.cancel). The tray never closes by itself — not as a drag leaves it, nor
+ * drag.drop(id, info) → true when done (else drag.cancel). (1f) o.panel === false: no panel tile (nor a FX_PANEL item); an effect's
+ * tile then says it goes into the track's effects. The tray never closes by itself — not as a drag leaves it, nor
  * on a drop (the user's rule, ROADMAP 2026-10-17 / 18: only its rail, ✕ or Escape): o.onLeave is a notice.
  * @param {HTMLElement} el  the tray panel's list container (#fxList)
  * @param {{
@@ -465,14 +466,15 @@ export function effectsTray(el, o) {
   const d = docOf(o, el), tiles = new Map(), costs = new Map(), offs = [], heads = [];
   const L0 = Array.isArray(o.items) ? o.items : [];
   const list = [];
-  if (!L0.some(it => it && (it.id || it.type) === FX_PANEL)) list.push({ id: FX_PANEL });
-  for (const it of L0) { const id = it && (it.id || it.type); if (typeof id === 'string' && !it.disabled && !list.some(x => x.id === id)) list.push(Object.assign({}, it, { id })); }
+  const P = o.panel !== false;
+  if (P && !L0.some(it => it && (it.id || it.type) === FX_PANEL)) list.push({ id: FX_PANEL });
+  for (const it of L0) { const id = it && (it.id || it.type); if (typeof id === 'string' && !it.disabled && !list.some(x => x.id === id) && (P || id !== FX_PANEL)) list.push(Object.assign({}, it, { id })); }
   const nameOf = it => (it.id === FX_PANEL ? it.name || it.label || 'FX Panel' : String(it.name || it.label || it.id));
   const groupOf = it => (it.id === FX_PANEL ? it.group || 'Panel' : String(it.group || 'Effects'));
   const costOf = id => { try { return o.cost ? String(o.cost(id) || '') : ''; } catch { return ''; } };
   const labelOf = (id, over, key) => {
     if (o.label) { try { return String(o.label(id, over, key) || ''); } catch { return ''; } }
-    return over === 'panel' ? '+ Add to the panel' : over === 'inst' ? '+ Add to its effects' : over === 'canvas' ? (id === FX_PANEL ? '+ New FX panel' : '+ New panel with it') : '';
+    return over === 'panel' ? '+ Add to the panel' : over === 'inst' ? '+ Add to its effects' : over === 'canvas' ? (id === FX_PANEL ? '+ New FX panel' : P ? '+ New panel with it' : '+ Add to the track’s effects') : '';
   };
   // (U11) 'inst' (an instrument module: the effect goes into its FX) beside 'canvas' / 'panel'; the empty panel over a
   // module is a canvas drop beside that module (near), never into it
@@ -491,7 +493,7 @@ export function effectsTray(el, o) {
     const b = mk(d, 'button', 'cv-tile cv-ftile');
     b.type = 'button';
     b.setAttribute('data-fx', id);
-    b.title = panel ? 'An empty FX panel — tap to add one, or drag it onto the canvas' : `${name} — tap to add it, or drag it into an FX panel or onto the canvas (a new panel)`;
+    b.title = panel ? 'An empty FX panel — tap to add one, or drag it onto the canvas' : P ? `${name} — tap to add it, or drag it into an FX panel or onto the canvas (a new panel)` : `${name} — tap or drag it onto the canvas: it goes into the track’s effects`;
     const pic = mk(d, 'span', 'cv-fglyph' + (panel ? ' cv-fpanel' : ''));
     pic.setAttribute('aria-hidden', 'true');
     if (panel) pic.innerHTML = PANEL_SVG; else pic.textContent = initials(name);

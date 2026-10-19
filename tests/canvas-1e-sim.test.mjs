@@ -1,11 +1,11 @@
 import './v8-guard.mjs';
-// Stage 1e on the canvas (lane C2, docs/canvas/IMPL-1e.md §4.5) in the page simulation: several instruments on one track —
-// a Sources drop on empty canvas adds one (the node gets {t: 'graph'} + {t: 'patch', i} + {t: 'chain'}, one undo step),
-// a tap in replace mode replaces the current instrument only, cables connect / re-patch / disconnect through the view's
-// API (track.wires, a new graph, the own-fx refusal and its "Make a shared panel" fix), ⏻ posts {t: 'power'} and dims
-// the module, key zones compile into the graph, the Effects tray adds panels and effects, Make primary moves #inst, the
-// last instrument cannot be deleted, the "not connected – silent" badge, the CPU of each device from stats.per, a Serum
-// panel's monitor per device, Save as classic project lists what it loses; undo / redo of each.
+// Stage 1e on the canvas (docs/canvas/IMPL-1e.md §4.5) and stage 1f (IMPL-1e §8.5: one instrument per track in the UI
+// again) in the page simulation. The UI: a Sources drop anywhere on the canvas replaces the instrument (one undo step, the
+// notice), the module bar has no ⏻ nor key-zone pill, the ⋯ menu no device items, every cable read-only, the Effects tray
+// has no panel tile and puts an effect into the track's panel (a Serum's own FX) wherever it is dropped, a project whose
+// track holds several instruments opens as one track per instrument. Underneath, the host and the engine protocol of
+// several instruments per track stay (the hooks __synthTest.cv add / power / zone: graph + patch i + chain, power, zones,
+// module CPU and monitors per device, Save as classic project, the review fixes U1 U2 U6 U7 U8 U9 U14 U16 U17).
 // The world is canvas-sim's scripted one. One boot per file; strings, numbers and booleans only into assert (never a
 // stub DOM node). Run alone: node --max-old-space-size=2048 --test tests/canvas-1e-sim.test.mjs
 import test from 'node:test';
@@ -51,16 +51,35 @@ const tags = (t, from) => sent(t, from).map(tag);
 const lastGraph = t => { const g = sent(t, 0).filter(m => m.t === 'graph'); return g[g.length - 1] || null; };
 const note = () => sim.$('#notice').textContent;
 const bodyOf = k => V().modules.get(k).body;
+const clone = x => JSON.parse(JSON.stringify(x));
+const labels = k => cv.menu(k).filter(x => !x.sep).map(x => x.label);
+const fxMods = k => (T().dev[k].fx.racks[0].mods || []).map(x => x.type).join(',');
+const panels = (t = T()) => Object.keys(t.dev).filter(k => t.dev[k].kind === 'panel').sort().join(',');
 
-test('a Sources drop on empty canvas adds an instrument where it lands: auto-patched into the shared panel, the node gets graph + patch i + chain, its own body and ClassicPanel, the current one, one undo step and the notice', () => {
-  const t = T(), n0 = hsteps(), k0 = posted(t);
+test('1f: a Sources drop anywhere on the canvas replaces the instrument — empty canvas or its bar; one History step, the notice undoes it; a tap replaces too', () => {
+  const t = T(), n0 = hsteps();
   assert.deepEqual([insts(t), keys()], ['i1:minimoog', 'fx1,i1,out']);
-  assert.equal(sh.srcDrag.drop('juno60', { over: 'canvas', x: 700, y: 1300 }), true, 'no top bar under it: an add');
+  assert.equal(sh.srcDrag.drop('juno60', { over: 'canvas', x: 700, y: 1300 }), true, 'empty canvas');
   sim.raf();
+  assert.deepEqual([insts(), keys(), hsteps(), note()], ['i1:juno60', 'fx1,i1,out', n0 + 1, 'Replaced Minimoog with Juno-60 · tap to undo'], 'replaced, nothing added');
+  assert.equal(!!api.nodes.get(t.id).graphed, false, 'a canonical track: today\'s stream');
+  sim.$('#notice').onclick(); sim.raf();
+  assert.deepEqual([insts(), hsteps()], ['i1:minimoog', n0], 'the notice undid it');
+  assert.equal(sh.srcDrag.drop('dx7', { over: 'canvas', target: V().modules.get('fx1').bar }), true); sim.raf();
+  assert.deepEqual([insts(), hsteps()], ['i1:dx7', n0 + 1], 'over another module too');
+  cv.undo(); sim.raf();
+  sh.srcPick('prophet5', 'replace'); sim.raf();
+  assert.deepEqual([insts(), hsteps(), note()], ['i1:prophet5', n0 + 1, 'Replaced Minimoog with Prophet-5 · tap to undo']);
+  cv.undo(); sim.raf();
+  assert.equal(insts(), 'i1:minimoog');
+});
+
+test('the add hook (cv.add, host only since 1f): an instrument added where asked, auto-patched into the shared panel; the node gets graph + patch i + chain, its own body and ClassicPanel, one undo step and the notice; the current instrument stays the primary', () => {
+  const t = T(), n0 = hsteps(), k0 = posted(t);
+  assert.equal(cv.add('juno60', { x: 640, y: 1280 }), 'i2'); sim.raf();
   assert.deepEqual([insts(t), keys(), hsteps(), cv.hist.undoLabel], ['i1:minimoog,i2:juno60', 'fx1,i1,i2,out', n0 + 1, 'Add Juno-60']);
   assert.deepEqual(t.wires.map(w => w.a + '>' + w.b).sort(), ['fx1.out>out.in', 'i1.out>fx1.in', 'i2.out>fx1.in'], 'into the panel the instruments share');
-  const at = W.toWorld(700, 1300);
-  assert.deepEqual([t.lay.i2.x, t.lay.i2.y], [Math.round((at.x - 160) / 32) * 32, Math.round((at.y - 20) / 32) * 32], 'where it was dropped (its bar under the pointer, on the dots)');
+  assert.deepEqual([t.lay.i2.x, t.lay.i2.y], [640, 1280]);
   assert.deepEqual([t.lay.i1 && t.lay.i1.x, t.lay.fx1 && t.lay.fx1.x], [V().modules.get('i1').x, V().modules.get('fx1').x], 'the Tidy-placed modules pinned where they stood');
   const m = tags(t, k0);
   assert.deepEqual([m[0], m.includes('patch:i2'), m.includes('patch:i1'), m.includes('chain:fx1')], ['graph', true, true, true], m.join(' '));
@@ -70,99 +89,62 @@ test('a Sources drop on empty canvas adds an instrument where it lands: auto-pat
     [true, true, false], '#inst in the primary, its own element in the new one');
   const cp = cv.classicPanels.get(t.id + '/i2');
   assert.deepEqual([!!cp, cp && cp.model.id, cp && cp.root === cv.bodyEl('i2'), cp && cp.track.id], [true, 'juno60', true, t.id + '/i2'], 'a ClassicPanel of the Juno-60 in its body');
-  assert.deepEqual([cv.cur(), cv.panel() === cp, sim.$('#trkChip .cv-cv').textContent], ['i2', true, '2 instruments'], 'the current instrument; the chip says how many');
+  assert.deepEqual([cv.cur(), cv.panel() === cp, sim.$('#trkChip .cv-cv').textContent], ['i1', false, '2 instruments'], 'the primary stays the current one; the chip says how many');
   assert.equal(note(), 'Added Juno-60 · tap to undo');
-  // undo / redo: the instrument and its module go and come back
   cv.undo(); sim.raf();
-  assert.deepEqual([insts(), keys(), cv.classicPanels.has(t.id + '/i2'), cv.cur()], ['i1:minimoog', 'fx1,i1,out', false, 'i1']);
+  assert.deepEqual([insts(), keys(), cv.classicPanels.has(t.id + '/i2')], ['i1:minimoog', 'fx1,i1,out', false]);
   cv.redo(); sim.raf();
   assert.deepEqual([insts(), keys(), cv.classicPanels.has(T().id + '/i2')], ['i1:minimoog,i2:juno60', 'fx1,i1,i2,out', true]);
-  // the notice's tap: undone while it is the newest step
-  cv.undo(); sim.raf(); cv.redo(); sim.raf();
-  assert.equal(sh.srcDrag.drop('dx7', { over: 'canvas', x: 400, y: 1900 }), true); sim.raf();
+  cv.add('dx7', null); sim.raf();
   assert.match(insts(), /^i1:minimoog,i2:juno60,i\d+:dx7$/);
   sim.$('#notice').onclick(); sim.raf();
   assert.equal(insts(), 'i1:minimoog,i2:juno60', 'the tap undid the add');
 });
 
-test('a tap in replace mode replaces the current instrument only (its kept-FX rules); a drop on an instrument\'s top bar replaces that one', () => {
-  const t = T(), n0 = hsteps();
+test('1f: the current instrument is always the primary — setCur changes nothing; a tap and a canvas drop (even over the second instrument\'s bar) replace the primary', () => {
+  const n = hsteps();
   cv.setCur('i2');
+  assert.equal(cv.cur(), 'i1');
   sh.srcPick('prophet5', 'replace'); sim.raf();
-  assert.deepEqual([insts(), hsteps(), note()], ['i1:minimoog,i2:prophet5', n0 + 1, 'Replaced Juno-60 with Prophet-5 · tap to undo']);
-  assert.equal(cv.classicPanels.get(t.id + '/i2').model.id, 'prophet5', 'its panel re-rendered');
+  assert.deepEqual([insts(), hsteps(), note()], ['i1:prophet5,i2:juno60', n + 1, 'Replaced Minimoog with Prophet-5 · tap to undo']);
   sim.$('#notice').onclick(); sim.raf();
   assert.equal(insts(), 'i1:minimoog,i2:juno60', 'the notice undoes it');
-  // onto the primary's bar: the Minimoog is replaced, the Juno-60 stays
-  assert.equal(sh.srcDrag.drop('obxa', { over: 'canvas', target: V().modules.get('i1').bar }), true); sim.raf();
+  assert.equal(sh.srcDrag.drop('obxa', { over: 'canvas', target: V().modules.get('i2').bar }), true); sim.raf();
   assert.deepEqual([insts(), T().model], ['i1:obxa,i2:juno60', 'obxa']);
   cv.undo(); sim.raf();
   assert.equal(insts(), 'i1:minimoog,i2:juno60');
 });
 
-test('cables: connect / re-patch / disconnect through the view API change track.wires and post a new graph, one History step each; refusals in #notice; the badge', () => {
-  const t = T();
-  const pid = cv.fx.addPanel({ x: 1600, y: 900 }, null); sim.raf();
-  assert.deepEqual([t.dev[pid].kind, keys(), t.wires.some(w => w.a === pid + '.out' && w.b === 'out.in')], ['panel', ['fx1', pid, 'i1', 'i2', 'out'].sort().join(','), true], 'a new panel cabled to OUT');
-  let n = hsteps(), k = posted(t);
-  const wid = t.wires.find(w => w.a === 'i2.out').id;
-  assert.deepEqual(cv.cable.can('i2.out', pid + '.in'), { ok: true, why: '' });
-  assert.equal(cv.cable.repatch(wid, 'i2.out', pid + '.in'), true); sim.raf();
-  assert.deepEqual([t.wires.find(w => w.a === 'i2.out').b, t.wires.find(w => w.a === 'i2.out').id, hsteps(), cv.hist.undoLabel], [pid + '.in', wid, n + 1, 'Re-patch Juno-60 → FX Panel ' + CG.devNum(pid)], 'the same cable, its end moved');
-  assert.deepEqual(lastGraph(t).edges.filter(e => e[0] === 'i2'), [['i2', pid, 1]]);
-  assert.ok(tags(t, k).includes('graph'));
-  // disconnect: silent, the badge says so
-  n = hsteps(); k = posted(t);
-  assert.equal(cv.cable.disconnect(wid), true); sim.raf();
-  assert.deepEqual([t.wires.some(w => w.a === 'i2.out'), hsteps(), cv.badge('i2'), V().modules.get('i2').badge], [false, n + 1, 'not connected – silent', 'not connected – silent']);
-  assert.ok(tags(t, k).includes('graph'));
-  assert.equal(V().modules.get('i1').badge, null, 'a cabled instrument: no badge');
-  // connect it back
-  assert.equal(cv.cable.connect('i2.out', 'fx1.in'), true); sim.raf();
-  assert.deepEqual([t.wires.find(w => w.a === 'i2.out').b, V().modules.get('i2').badge], ['fx1.in', null]);
-  // refused: panel → panel (a later stage), nothing recorded
-  n = hsteps();
-  assert.equal(cv.cable.connect('fx1.out', pid + '.in'), false);
-  assert.deepEqual([hsteps(), /later stage/.test(note())], [n, true], note());
-  // undo walks the cable edits back
-  cv.undo(); sim.raf();
-  assert.equal(T().wires.some(w => w.a === 'i2.out'), false, 'undo: disconnected again');
-  cv.undo(); sim.raf();
-  assert.equal(T().wires.find(w => w.a === 'i2.out').b, pid + '.in', 'undo: the re-patch');
-  cv.undo(); sim.raf();
-  assert.equal(T().wires.find(w => w.a === 'i2.out').b, 'fx1.in', 'undo: as before');
-  cv.redo(); cv.redo(); cv.redo(); sim.raf();
-  assert.equal(T().wires.find(w => w.a === 'i2.out').b, 'fx1.in', 'redo: connected back');
+test('1f: no ⏻ and no key-zone pill on the bars, the ⋯ menus without device items (Power, Key zone…, Solo, Primary, Duplicate, Delete, Delete panel), every cable and jack read-only', () => {
+  ID.sx = cv.add('serum', { x: 0, y: 2400 }); sim.raf();
+  assert.equal(keys().includes(ID.sx + '/fx'), true, 'a Serum with its own FX module');
+  for (const [k, m] of V().modules) {
+    const pw = m.bar.children.filter(c => /\bcv-pow\b/.test(c.className || ''));
+    assert.deepEqual([pw.length, pw.every(c => c.hidden === true), m.el.children.some(c => /\bcv-zone\b/.test(c.className || '')), m.zoneW], [1, true, false, 0], k + ': the ⏻ slot hidden, no pill');
+  }
+  const L = ['About the Minimoog…', 'Replace with…', 'Hardware layout', 'Simple layout', 'Save sound…', 'Delete saved sound', 'Init sound', 'Fold', 'Bring to front', 'Tidy the canvas'];
+  assert.deepEqual(labels('i1'), L);
+  assert.deepEqual(labels('i2'), L.map(x => x.replace('Minimoog', 'Juno-60')));
+  assert.deepEqual(labels(ID.sx), ['About the Serum…', 'Replace with…', 'Fold', 'Bring to front', 'Tidy the canvas']);
+  assert.deepEqual([labels('fx1'), labels(ID.sx + '/fx'), labels('out')], [['Fold', 'Bring to front', 'Tidy the canvas'], ['Fold', 'Bring to front', 'Tidy the canvas'], ['Fold']]);
+  const C = V().cables.list();
+  assert.ok(C.length >= 4, C.length + ' cables');
+  assert.deepEqual(C.map(c => !!c.readonly), C.map(() => true), 'every cable read-only');
+  const J = V().jacks();
+  assert.deepEqual(J.map(j => j.el.hasAttribute('data-ro') && j.el.getAttribute('role') !== 'button'), J.map(() => true), 'every jack read-only: ' + J.map(j => j.id).join(' '));
+  V().cables.select(C.find(c => c.id === T().wires[0].id).id);
+  assert.equal(V().cables.selected(), null, 'never selected (no × Disconnect)');
 });
 
-test('a Serum\'s own FX take only that Serum: the refusal offers "Make a shared panel" — one tap puts a panel after the Serum and cables both into it', () => {
-  const t = T();
-  const id = cv.add('serum', { x: 0, y: 2400 }); sim.raf();
-  assert.deepEqual([T().dev[id].model, keys().includes(id + '/fx')], ['serum', true], 'a Serum with its own FX module');
-  ID.sx = id;
-  assert.equal(cv.cable.port(id + '/fx.in'), id + '.in', 'its own FX input stands for the Serum (the refusal and its fix)');
-  const n = hsteps();
-  assert.deepEqual(cv.cable.can('i2.out', id + '.in').ok, false);
-  assert.equal(cv.cable.connect('i2.out', id + '.in'), false);
-  assert.match(note(), /own FX take only that Serum · Make a shared panel/);
-  assert.equal(hsteps(), n, 'refused: no step');
-  sim.$('#notice').onclick(); sim.raf();
-  const dst = t.wires.find(w => w.a === id + '.out').b.split('.')[0];
-  assert.deepEqual([t.dev[dst] && t.dev[dst].kind, t.wires.find(w => w.a === 'i2.out').b, hsteps(), cv.hist.undoLabel], ['panel', dst + '.in', n + 1, 'Make a shared panel']);
-  cv.undo(); sim.raf();
-  assert.deepEqual([T().wires.find(w => w.a === id + '.out').b, T().wires.find(w => w.a === 'i2.out').b], ['fx1.in', 'fx1.in'], 'undo');
-});
-
-test('⏻: power off posts {t: power, i, on: false} after the graph and dims the module (its cables grey); on again; one step each; Solo in track', () => {
+test('power and key zones (hooks cv.power / cv.zone: host and engine protocol): {t: power, i} after the graph, the module dims, its cables grey; zones compile into the graph; one step each; undo', () => {
   const t = T(), m = () => V().modules.get('i2');
   let k = posted(t), n = hsteps();
-  const pow = m().bar.children[0];
-  pow.dispatchEvent({ type: 'click', target: pow, stopPropagation() {}, preventDefault() {} }); sim.raf();
+  cv.power('i2', false); sim.raf();
   assert.deepEqual([t.dev.i2.on, m().el.hasAttribute('data-off'), m().on, hsteps(), cv.hist.undoLabel], [false, true, false, n + 1, 'Power off Juno-60']);
   const s = sent(t, k), p = s.find(x => x.t === 'power');
   assert.deepEqual([s.findIndex(x => x.t === 'graph') < s.findIndex(x => x.t === 'power'), p && p.i, p && p.on], [true, 'i2', false]);
   assert.equal(lastGraph(t).insts.find(x => x.id === 'i2').on, false);
-  assert.equal(V().cables.list().filter(c => c.a === 'i2/fx.out' || c.a === 'i2.out').every(c => c.dim), true, 'its cable grey');
+  assert.equal(V().cables.list().filter(c => c.a === 'i2.out').every(c => c.dim), true, 'its cable grey');
   k = posted(t);
   cv.undo(); sim.raf();
   assert.deepEqual([T().dev.i2.on, m().el.hasAttribute('data-off')], [undefined, false], 'undo: on');
@@ -171,83 +153,45 @@ test('⏻: power off posts {t: power, i, on: false} after the graph and dims the
   assert.equal(m().el.hasAttribute('data-off'), true, 'redo: off');
   cv.power('i2', true); sim.raf();
   assert.equal(m().el.hasAttribute('data-off'), false);
-  // solo in track: only the soloed instrument sounds
-  cv.solo('i1'); sim.raf();
-  assert.deepEqual([T().dev.i1.solo, CG.powered(T()).join(','), lastGraph(T()).insts.filter(x => x.on).map(x => x.id).join(',')], [true, 'i1', 'i1']);
-  cv.undo(); sim.raf();
-  assert.equal(CG.powered(T()).length, 3);
-});
-
-test('key zones compile into the graph (low / high / transpose); quick edits of one zone are one step; undo', () => {
-  const t = T(), n = hsteps(), k = posted(t);
+  // zones: quick edits of one zone are one step
+  n = hsteps(); k = posted(T());
   cv.zone('i2', { lo: 48, hi: 71, xp: 0 });
   cv.zone('i2', { lo: 48, hi: 72, xp: 12 }); sim.raf();
-  assert.deepEqual([t.dev.i2.zone, hsteps(), cv.hist.undoLabel], [{ lo: 48, hi: 72, xp: 12 }, n + 1, 'Key zone of Juno-60']);
-  assert.deepEqual(lastGraph(t).insts.find(x => x.id === 'i2').zone, { lo: 48, hi: 72, xp: 12 });
-  assert.ok(tags(t, k).includes('graph'));
-  assert.deepEqual(V().modules.get('i2').zone, { lo: 48, hi: 72, xp: 12 }, 'the pill');
+  assert.deepEqual([T().dev.i2.zone, hsteps(), cv.hist.undoLabel], [{ lo: 48, hi: 72, xp: 12 }, n + 1, 'Key zone of Juno-60']);
+  assert.deepEqual(lastGraph(T()).insts.find(x => x.id === 'i2').zone, { lo: 48, hi: 72, xp: 12 });
+  assert.ok(tags(T(), k).includes('graph'));
   cv.undo(); sim.raf();
-  assert.deepEqual([T().dev.i2.zone, V().modules.get('i2').zone], [undefined, { lo: 0, hi: 127, xp: 0 }]);
+  assert.equal(T().dev.i2.zone, undefined);
 });
 
-test('Effects tray: its tiles (the panel, the rack\'s effects and splitters, a cost each); the panel tile and an effect onto empty canvas make panels (one step), an effect onto a panel goes into its rack', () => {
+test('1f Effects tray: no panel tile (the effects and splitters, a cost each); a drop on empty canvas, on the panel, on an instrument and a tap all go into the track\'s FX — never a new panel, no History step, one notice each; the outline sits on the module it goes into', () => {
   const t = T(), tiles = cv.fx.tiles().tiles();
-  assert.deepEqual([tiles.length, tiles[0].getAttribute('data-fx'), cv.fx.items.length], [17, 'panel', 16]);
+  assert.deepEqual([tiles.length, cv.fx.items.length, tiles.some(b => b.getAttribute('data-fx') === 'panel')], [16, 16, false]);
   assert.match(cv.fx.tiles().tile('rev').children.find(c => c.className === 'cv-tcost').textContent, /%$/, 'a load estimate');
-  let n = hsteps();
-  assert.equal(cv.fx.drag.drop('panel', { over: 'canvas', at: { x: 2048, y: 1600 } }), true); sim.raf();
-  const p1 = Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').pop();
-  assert.deepEqual([hsteps(), T().lay[p1].x, T().lay[p1].y, T().wires.some(w => w.a === p1 + '.out' && w.b === 'out.in'), V().modules.has(p1)],
-    [n + 1, 2016, 1568, true, true], 'an empty panel at the point, cabled to OUT');
-  // an effect onto that panel: into its rack (the rack's "+": an FX edit, no History step), the chain posted
-  n = hsteps();
-  const k = posted(t);
+  const n = hsteps(), p0 = panels(), k = posted(t);
   assert.equal(cv.fx.over({ closest: q => (/#viewport/.test(q) ? {} : null), getAttribute: () => null, parentNode: null }), 'canvas');
-  assert.equal(cv.fx.drag.drop('dly', { over: 'panel', key: p1 }), true); sim.raf();
-  const mods = () => T().dev[p1].fx.racks[0].mods.map(x => x.type).join(',');
-  assert.deepEqual([mods(), hsteps(), /Added Delay to FX Panel/.test(note())], ['dly', n, true]);
-  assert.ok(tags(t, k).includes('chain:' + p1), 'its chain');
-  // an effect onto empty canvas: a new panel holding it
-  n = hsteps();
-  assert.equal(cv.fx.drag.drop('rev', { over: 'canvas', at: { x: 2048, y: 2400 } }), true); sim.raf();
-  const p2 = Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').pop();
-  assert.deepEqual([p2 !== p1, T().dev[p2].fx.racks[0].mods.map(x => x.type).join(','), hsteps()], [true, 'rev', n + 1]);
-  cv.undo(); cv.undo(); sim.raf();
-  assert.deepEqual([T().dev[p2], T().dev[p1]], [undefined, undefined], 'undo: both panels go');
-  // a tap: into the current instrument's panel
-  cv.setCur('i1');
-  cv.fx.pick('cho'); sim.raf();
-  assert.equal(T().dev.fx1.fx.racks[0].mods.some(x => x.type === 'cho'), true);
-});
-
-test('Make primary: graph.insts[0], #inst moves to its body (the view rebuilt), one step; undo', () => {
-  const t = T(), n = hsteps();
-  cv.primary('i2'); sim.raf();
-  assert.deepEqual([T().prim, T().model, hsteps(), cv.hist.undoLabel, V().devices()[0].key], ['i2', 'juno60', n + 1, 'Make Juno-60 primary', 'i2']);
-  assert.deepEqual([cv.parts.inst.parentNode === bodyOf('i2'), cv.bodyEl('i1').parentNode === bodyOf('i1'), cv.classicPanels.get(t.id + '/i1').root === cv.bodyEl('i1')], [true, true, true]);
-  assert.equal(lastGraph(t).insts[0].id, 'i2');
-  assert.equal(cv.menu('i2').find(x => x.label === 'Primary instrument').checked, true);
-  cv.undo(); sim.raf();
-  assert.deepEqual([T().prim, cv.parts.inst.parentNode === bodyOf('i1')], ['i1', true]);
-});
-
-test('Delete: refused for the last instrument (the reason in #notice, no step); another one goes in one step, undo brings its sound back; Duplicate', () => {
-  const t = T(), n = hsteps();
-  const d = cv.dup('i2'); sim.raf();
-  assert.deepEqual([T().dev[d].model, T().wires.find(w => w.a === d + '.out').b, hsteps()], ['juno60', 'fx1.in', n + 1], 'its cable where the original\'s goes');
-  assert.equal(cv.del(d), true); sim.raf();
-  assert.deepEqual([T().dev[d], hsteps(), keys().includes(d)], [undefined, n + 2, false]);
-  cv.undo(); sim.raf();
-  assert.deepEqual([T().dev[d] && T().dev[d].model, keys().includes(d)], ['juno60', true], 'undo: back with its sound');
-  cv.undo(); sim.raf();
-  // a one-instrument track
-  const one = api.addTrack(MODELS.find(m => m.id === 'juno60')); sim.raf();
-  const m = hsteps();
-  assert.equal(cv.del('i1'), false);
-  assert.deepEqual([CMOD.instIds(one).length, hsteps(), /at least one instrument/.test(note())], [1, m, true]);
-  cv.undo(); sim.raf(); // (the add)
-  api.selectTrack(t.id); sim.raf();
-  assert.equal(insts(), 'i1:minimoog,i2:juno60,' + ID.sx + ':serum');
+  assert.equal(cv.fx.drag.drop('dly', { over: 'canvas', at: { x: 4000, y: 3000 } }), true); sim.raf();
+  assert.deepEqual([fxMods('fx1'), panels(), hsteps(), /^Added Delay to FX Panel/.test(note())], ['dly', p0, n, true], 'empty canvas: the track\'s panel');
+  assert.ok(tags(t, k).includes('chain:fx1'), 'its chain');
+  assert.equal(cv.fx.drag.drop('eq', { over: 'panel', key: 'fx1' }), true); sim.raf();
+  assert.equal(cv.fx.drag.drop('cho', { over: 'inst', key: 'i2' }), true); sim.raf();
+  cv.fx.pick('dist'); sim.raf();
+  assert.deepEqual([fxMods('fx1'), panels(), hsteps()], ['dly,eq,cho,dist', p0, n], 'the panel, an instrument, a tap: all into fx1');
+  assert.equal(cv.fx.drag.drop('rev', { over: 'inst', key: ID.sx }), true); sim.raf();
+  assert.match(JSON.stringify(T().dev[ID.sx].fx), /"rev"/, 'over a Serum: its own FX');
+  assert.equal(cv.fx.drag.drop('rev', { over: null }), false, 'off the canvas: nothing');
+  // the outline: the module the effect goes into (empty canvas: the track's panel), none elsewhere
+  const G = [];
+  W.ghost = g => { G.push(g ? (g.label || '') + '|' + g.w : null); return g ? { x: 0, y: 0, w: g.w, h: g.h } : null; };
+  try {
+    cv.fx.drag.begin('rev', { over: 'canvas', x: 900, y: 600, left: true, pointerType: 'mouse' });
+    cv.fx.drag.move('rev', { over: 'inst', key: 'i2', x: 900, y: 600, left: true, pointerType: 'mouse' });
+    cv.fx.drag.move('rev', { over: null, x: 900, y: 600, left: true, pointerType: 'mouse' });
+    cv.fx.drag.cancel('rev', {});
+  } finally { delete W.ghost; }
+  const rv = cv.fx.items.find(x => x.type === 'rev').label;
+  assert.deepEqual(G, [rv + ' → FX Panel|' + V().modules.get('fx1').w, rv + ' → Juno-60|' + V().modules.get('i2').w, null, null]);
+  assert.equal(hsteps(), n);
 });
 
 test('module CPU per device from stats.per (each instrument, each panel; OUT none); a Serum panel\'s monitor per device', async () => {
@@ -270,31 +214,17 @@ test('module CPU per device from stats.per (each instrument, each panel; OUT non
   r.ui = null; r.trackId = null;
 });
 
-test('per instrument: Hardware / Simple of one instrument (its lay key, its own panel), About of it; Tidy lays out every device (one step); an Effects tap for an instrument without a panel cables it through a new one', () => {
+test('per instrument: Hardware / Simple of a second instrument (its lay key, its own panel); Tidy lays out every device (one step)', () => {
   const t = T(), n = hsteps();
-  const it = cv.menu('i2').find(x => x.label === 'Simple layout');
-  it.action(); sim.raf();
+  cv.menu('i2').find(x => x.label === 'Simple layout').action(); sim.raf();
   assert.deepEqual([T().lay.i2.ui, cv.instUi(T(), 'i2'), cv.instUi(T(), 'i1'), hsteps(), cv.hist.undoLabel], ['flow', 'flow', 'hw', n + 1, 'Simple layout']);
   assert.deepEqual([V().modules.get('i2').w, cv.classicPanels.get(t.id + '/i2').layout], [864, null], 'the Juno-60 in its Simple width, its panel re-rendered');
   cv.undo(); sim.raf();
   assert.equal(cv.instUi(T(), 'i2'), 'hw');
-  cv.menu('i2').find(x => /^About the /.test(x.label)).action();
-  assert.deepEqual([cv.cur(), sim.$('#about-title').textContent], ['i2', 'Roland Juno-60 (1982)'], 'About: that instrument (now the current one)');
-  // Tidy: instruments stacked left, panels in the middle, OUT right
   cv.tidy(); sim.raf();
   const L = T().lay, x = k => L[k].x;
   assert.deepEqual([x('i1'), x('i2'), x(ID.sx), x('fx1') > x('i1'), x('out') > x('fx1'), L.i2.y > L.i1.y, cv.hist.undoLabel], [0, 0, 0, true, true, true, 'Tidy']);
   cv.undo(); sim.raf();
-  // a tap on an effect while the current instrument feeds OUT directly: a new panel it is cabled through
-  const d = cv.dup('i1'); sim.raf();
-  cv.cable.connect(d + '.out', 'out.in'); sim.raf();
-  cv.setCur(d);
-  const m = hsteps();
-  cv.fx.pick('eq'); sim.raf();
-  const p = T().wires.find(q => q.a === d + '.out').b.split('.')[0];
-  assert.deepEqual([T().dev[p].kind, T().dev[p].fx.racks[0].mods.map(q => q.type).join(','), T().wires.find(q => q.a === p + '.out').b, hsteps()], ['panel', 'eq', 'out.in', m + 1]);
-  cv.undo(); cv.undo(); cv.undo(); sim.raf();
-  assert.equal(T().dev[d], undefined, 'undo: back to before the duplicate');
 });
 
 test('⚙ Measure this device: without a Worker here it fails with the reason in #notice and the button comes back; a stored factor scales the tray labels', async () => {
@@ -322,30 +252,37 @@ test('Save as classic project of a several-instrument track lists what the class
   } finally { globalThis.confirm = was; }
 });
 
-// host fixes (the stage-1e review round, fixer H: host / data — tests/graph-host.test.mjs holds the rest)
-test('H4 (page): Delete panel on a one-instrument track — the patch, undo and redo never put a panel back; the module goes', () => {
-  const t = api.addTrack(MODELS.find(m => m.id === 'juno60')); sim.raf();
-  const shape = () => { const x = T(); return Object.keys(x.dev).sort().join(',') + ' | ' + x.wires.map(w => w.a + '>' + w.b).sort().join(' '); };
-  assert.equal(T().id, t.id);
-  const n = hsteps();
-  assert.equal(cv.delPanel('fx1'), true); sim.raf(); sim.raf();
-  assert.deepEqual([shape(), keys(), hsteps(), /^Delete /.test(cv.hist.undoLabel)], ['i1,out | i1.out>out.in', 'i1,out', n + 1, true], 'deleted: the Juno cabled to OUT');
-  cv.undo(); sim.raf(); sim.raf();
-  assert.deepEqual([shape(), keys()], ['fx1,i1,out | fx1.out>out.in i1.out>fx1.in', 'fx1,i1,out']);
-  cv.redo(); sim.raf(); sim.raf();
-  assert.deepEqual([shape(), keys()], ['i1,out | i1.out>out.in', 'i1,out'], 'redo: still no panel');
-});
-
-// UI fixes (stage 1e review, fixer U: findings U1–U17). Each test makes its own track (api.addTrack selects it)
+// UI fixes (stage 1e review, fixer U: findings U1–U17) still meaningful under 1f. Each test makes its own track (api.addTrack selects it)
 const MOD = id => MODELS.find(m => m.id === id);
 const fresh = (id = 'minimoog') => { const t = api.addTrack(MOD(id)); sim.raf(); cv.renderViews(); sim.raf(); return t; }; // (the switch's mounting completed at once)
 const at = k => { const m = V().modules.get(k); return m ? Math.round(m.x) + ',' + Math.round(m.y) : null; };
+
+test('1f Effects tray on single-instrument tracks: a Serum\'s canvas drop goes into its own FX; a classic cabled straight into OUT (a 1e project) gets a panel of its own between it and OUT — one step, never a free panel', () => {
+  fresh('serum');
+  const n = hsteps();
+  assert.equal(cv.fx.drag.drop('dly', { over: 'canvas', at: { x: 3000, y: 3000 } }), true); sim.raf();
+  assert.deepEqual([keys(), JSON.stringify(T().dev.i1.fx.racks[0].mods.map(x => x.type)), hsteps()], ['i1,i1/fx,out', '["dly"]', n]);
+  // a DX7 whose panel was deleted in 1e (cv-model removePanel: straight into OUT)
+  const t = fresh('dx7');
+  CMOD.removePanel(t, 'fx1'); api.sendPatch(t); cv.render(); sim.raf();
+  assert.deepEqual([keys(), panels()], ['i1,out', '']);
+  const m = hsteps();
+  cv.fx.pick('eq'); sim.raf();
+  const p = T().wires.find(w => w.a === 'i1.out').b.split('.')[0];
+  assert.deepEqual([T().dev[p].kind, fxMods(p), T().wires.find(w => w.a === p + '.out').b, hsteps(), CG.compileTrack(T()).canonical], ['panel', 'eq', 'out.in', m + 1, true]);
+  const R = V().rects(), ov = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  assert.deepEqual(Object.keys(R).filter(k => k !== p && ov(R[k], R[p])), [], 'overlapping nothing');
+  cv.fx.pick('dly'); sim.raf();
+  assert.deepEqual([panels(), fxMods(p), hsteps()], [p, 'eq,dly', m + 1], 'the next one into that panel');
+  cv.undo(); sim.raf();
+  assert.equal(panels(), '', 'undo: the panel goes');
+});
 
 test('U1: a Serum primary next to a shared panel fx1 — i1/fx and fx1 keep places of their own (Tidy separates them; moving one never drops the other\'s entry)', () => {
   fresh('minimoog');
   cv.add('juno60', { x: 0, y: 2400 }); sim.raf();
   assert.deepEqual(T().wires.map(w => w.a + '>' + w.b).sort(), ['fx1.out>out.in', 'i1.out>fx1.in', 'i2.out>fx1.in'], 'the Juno-60 into the shared panel');
-  cv.setCur('i1'); cv.setTrackModel(cv.view1e('i1'), 'serum'); sim.raf();
+  cv.setTrackModel(cv.view1e('i1'), 'serum'); sim.raf();
   assert.deepEqual([keys().includes('i1/fx'), keys().includes('fx1')], [true, true], keys());
   assert.notEqual(at('i1/fx'), at('fx1'), 'not on top of each other: ' + at('i1/fx') + ' / ' + at('fx1'));
   cv.tidy(); sim.raf();
@@ -367,7 +304,6 @@ function camAgain(t, o = {}) {
   finally { for (const k of Object.keys(o)) { if (was[k] === undefined) delete W[k]; else W[k] = was[k]; } }
 }
 // the screen box of module k's top bar (40 world px) under the scripted camera
-// (an instrument's: its key-zone pill under it too, 26 px at 48 px down, left of its edge)
 const barBox = k => { const m = V().modules.get(k), zw = m.zoneW || 0, a = W.toClient(m.x - zw, m.y), b = W.toClient(m.x + m.w, m.y + (zw ? 74 : 40)); return { left: a.x, top: a.y, right: b.x, bottom: b.y }; };
 const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 
@@ -377,7 +313,6 @@ test('U14: the default camera of a two-instrument track keeps every top bar clea
   camAgain(t);
   const bar2 = barBox('i2'), k0 = W.k;
   assert.ok(k0 > 0.9, 'an editable k without a reserved box: ' + k0);
-  // the box where the Juno-60's bar lands at that camera (the band ends 8 px over it, as cv-world's band() does)
   const box = { left: 56, top: Math.round(bar2.top) - 20, right: 536, bottom: Math.round(bar2.top) + 148 };
   camAgain(t, { band: () => ({ left: 44, top: 48, right: 1520, bottom: box.top - 8 }), reserved: () => [box] });
   const hit = [...V().modules.keys()].filter(k => meets(barBox(k), box));
@@ -420,115 +355,31 @@ test('U2: a piano-roll audition reaches every powered instrument whose key zone 
   cv.undo(); sim.raf();
 });
 
-test('U3: the default camera leaves every instrument\'s key-zone pill right of the rail (inside the band); ⋯ → Key zone… opens it', () => {
-  const t = fresh('minimoog');
-  cv.add('juno60', null); sim.raf();
-  camAgain(t);
-  for (const k of ['i1', 'i2']) {
-    const m = V().modules.get(k), zw = m.zoneW;
-    assert.ok(zw > 0, k + ': a pill');
-    assert.ok(W.toClient(m.x - zw, m.y).x >= BAND.left, k + ': its pill\'s left ' + W.toClient(m.x - zw, m.y).x + ' ≥ the band\'s ' + BAND.left);
-  }
-  const it = cv.menu('i2').find(x => x.label === 'Key zone…');
-  assert.ok(it, 'the menu item: ' + cv.menu('i2').map(x => x.label).join(' | '));
-  it.action();
-  assert.equal(V().modules.get('i2').el.children.find(c => c.className === 'cv-zone').getAttribute('aria-expanded'), 'true', 'its popover open');
-  V().modules.get('i2').zoneClose();
-  assert.equal(cv.menu('fx1').some(x => x.label === 'Key zone…'), false, 'instruments only');
-});
-
-test('U4: Make primary rebuilds only the bodies that change home — the other instruments\' panels and the other FX racks are kept (the same objects, still mounted)', () => {
-  const t = fresh('minimoog');
-  cv.add('juno60', null); sim.raf();
-  const d3 = cv.add('dx7', null); sim.raf();
-  const p2 = cv.fx.addPanel(null, null); sim.raf();
-  const cp3 = cv.classicPanels.get(t.id + '/' + d3), el3 = cv.bodyEl(d3), fr = cv.fxPanels.get(t.id + '/' + p2), fel = cv.bodyEl(p2);
-  assert.deepEqual([!!cp3, !!fr], [true, true], 'a DX7 panel and a second FX panel built');
-  cv.primary('i2'); sim.raf();
-  assert.deepEqual([T().prim, cv.parts.inst.parentNode === bodyOf('i2')], ['i2', true], 'the Juno-60 is #inst now');
-  assert.deepEqual([cv.classicPanels.get(t.id + '/' + d3) === cp3, !cp3.dead, cp3.root === el3, el3.parentNode === bodyOf(d3)], [true, true, true, true], 'the DX7\'s panel kept, in its module');
-  assert.deepEqual([cv.fxPanels.get(t.id + '/' + p2) === fr, cv.bodyEl(p2) === fel, fel.parentNode === bodyOf(p2)], [true, true, true], 'the other panel\'s rack kept');
-  const cp1 = cv.classicPanels.get(t.id + '/i1');
-  assert.deepEqual([!!cp1 && cp1.root === cv.bodyEl('i1'), cv.bodyEl('i1').parentNode === bodyOf('i1'), cv.bodyEl('i1') === cv.parts.inst], [true, true, false], 'the Minimoog built in an element of its own');
-  assert.equal(cv.classicPanels.get(t.id + '/i2').root === cv.parts.inst, true, 'the Juno-60 rebuilt in #inst');
-  assert.equal([...cv.classicPanels.values()].filter(P => !P.dead && P.root === cv.parts.inst).length, 1, 'one panel in #inst');
-  cv.undo(); sim.raf();
-  assert.deepEqual([T().prim, cv.parts.inst.parentNode === bodyOf('i1')], ['i1', true], 'undo');
-});
-
-test('U16: with the toolbar\'s Snap off, a new instrument, a duplicate and an Effects-tray panel land where they were put (not on the dots)', () => {
+test('U16: with the toolbar\'s Snap off, a new instrument (cv.add) lands where it was put (not on the dots); on, on the dots', () => {
   fresh('minimoog');
   W.snapOn = () => false;
   try {
     const id = cv.add('juno60', { x: 1001, y: 2003 }); sim.raf();
-    assert.deepEqual([T().lay[id].x, T().lay[id].y], [1001, 2003], 'the instrument');
-    const d = cv.dup(id); sim.raf();
-    const m = V().modules.get(id).rect();
-    assert.deepEqual([T().lay[d].x, T().lay[d].y], [Math.round(m.x), Math.round(m.y + m.h + 64)], 'the duplicate under it, unsnapped');
-    assert.equal(cv.fx.drag.drop('panel', { over: 'canvas', at: { x: 3011, y: 1013 } }), true); sim.raf();
-    const p = Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').pop();
-    assert.deepEqual([T().lay[p].x, T().lay[p].y], [3011 - 24, 1013 - 20], 'the panel');
+    assert.deepEqual([T().lay[id].x, T().lay[id].y], [1001, 2003]);
   } finally { delete W.snapOn; }
   const id2 = cv.add('dx7', { x: 1001, y: 4003 }); sim.raf();
   assert.deepEqual([T().lay[id2].x, T().lay[id2].y], [992, 4000], 'Snap on: the dots');
 });
 
-test('U10: the badges — an instrument into a panel that feeds nothing is silent too; a panel fed by nothing says so; the CPU safeguard\'s cap on its instrument', () => {
+test('U10 / 1f: the bar badge is the CPU safeguard\'s cap on its instrument and nothing else — no "not connected" badges (even for a hook-made silent route)', () => {
   const t = fresh('minimoog');
   cv.add('juno60', null); sim.raf();
   const B = k => V().modules.get(k).badge;
   assert.deepEqual(['i1', 'i2', 'fx1', 'out'].map(B), [null, null, null, null], 'all cabled');
-  cv.cable.disconnect(T().wires.find(w => w.a === 'fx1.out').id); sim.raf();
-  assert.deepEqual(['i1', 'i2', 'fx1'].map(B), ['not connected – silent', 'not connected – silent', 'not connected – silent'], 'the panel feeds nothing: its sources silent');
-  cv.undo(); sim.raf();
-  assert.deepEqual(['i1', 'i2', 'fx1'].map(B), [null, null, null]);
-  assert.equal(cv.fx.drag.drop('panel', { over: 'canvas', at: { x: 4000, y: 1600 } }), true); sim.raf();
-  const p = Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').pop();
-  assert.equal(B(p), 'nothing connected', 'the Effects tray\'s new panel: fed by nothing');
-  cv.cable.repatch(T().wires.find(w => w.a === 'i2.out').id, 'i2.out', p + '.in'); sim.raf();
-  assert.deepEqual([B(p), B('i2')], [null, null], 'fed now');
-  // the CPU safeguard's cap (capsOf: the instrument lowered to 1×) is drawn on that instrument's bar
+  CMOD.disconnect(T(), T().wires.find(w => w.a === 'fx1.out').id); cv.render(); sim.raf();
+  assert.deepEqual(['i1', 'i2', 'fx1'].map(B), [null, null, null], 'a silent route: no badge');
   const N = api.nodes.get(t.id), was = N.osI;
   N.osI = new Map([['i2', 1]]);
   try { cv.render(); assert.match(String(B('i2')), /^OS \d→1$/); assert.equal(B('i1'), null); }
   finally { N.osI = was; cv.render(); }
 });
 
-test('U11: Effects-tray drags — an effect over an instrument goes into its FX (its panel; a Serum\'s own); the empty panel over a module lands beside it, overlapping nothing; an outline follows the drag', () => {
-  const t = fresh('minimoog');
-  cv.add('juno60', null); sim.raf();
-  const sx = cv.add('serum', null); sim.raf();
-  const tgt = (key, kind) => ({ closest: q => (/#viewport/.test(q) ? {} : null), getAttribute: a => (a === 'data-cv-mod' ? key : a === 'data-cv-kind' ? kind : null), parentNode: null });
-  assert.deepEqual(cv.fx.over(tgt('i2', 'inst')), { over: 'inst', key: 'i2' }, 'an instrument module: its FX');
-  const mods = k => (T().dev[k].fx.racks[0].mods || []).map(x => x.type).join(',');
-  const n = hsteps(), was = mods('fx1');
-  assert.equal(cv.fx.drag.drop('dly', { over: 'inst', key: 'i2' }), true); sim.raf();
-  assert.deepEqual([mods('fx1'), hsteps(), Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').length], [(was ? was + ',' : '') + 'dly', n, 1], 'into the Juno-60\'s panel (fx1): no new panel');
-  assert.equal(cv.fx.drag.drop('rev', { over: 'inst', key: sx }), true); sim.raf();
-  assert.match(JSON.stringify(T().dev[sx].fx), /"rev"/, 'a Serum: its own FX');
-  // the empty panel over fx1: a new panel right of it, nothing overlapping (OUT moved on)
-  const ov = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-  const r1 = V().modules.get('fx1').rect();
-  assert.equal(cv.fx.drag.drop('panel', { over: 'canvas', near: 'fx1', at: { x: r1.x + 40, y: r1.y + 40 } }), true); sim.raf();
-  const p = Object.keys(T().dev).filter(k => T().dev[k].kind === 'panel').pop(), R = V().rects();
-  assert.ok(p !== 'fx1' && R[p].x >= r1.x + r1.w, 'beside fx1: ' + JSON.stringify(R[p]));
-  assert.deepEqual(Object.keys(R).filter(k => k !== p && ov(R[k], R[p])), [], 'overlapping nothing');
-  cv.undo(); sim.raf();
-  assert.equal(T().dev[p], undefined, 'one step');
-  // the outline: a new panel's under the pointer over empty canvas, the target module's over a module, none elsewhere
-  const G = [];
-  W.ghost = g => { G.push(g ? (g.label || '') + '|' + g.w : null); return g ? { x: 0, y: 0, w: g.w, h: g.h } : null; };
-  try {
-    cv.fx.drag.begin('rev', { over: 'canvas', x: 900, y: 600, left: true, pointerType: 'mouse' });
-    cv.fx.drag.move('rev', { over: 'panel', key: 'fx1', x: 900, y: 600, left: true, pointerType: 'mouse' });
-    cv.fx.drag.move('rev', { over: null, x: 900, y: 600, left: true, pointerType: 'mouse' });
-    cv.fx.drag.cancel('rev', {});
-  } finally { delete W.ghost; }
-  const rv = cv.fx.items.find(x => x.type === 'rev').label; // (the tray's name)
-  assert.deepEqual(G, ['+ Panel with ' + rv + '|760', rv + ' → FX Panel|' + V().modules.get('fx1').w, null, null]);
-});
-
-test('U9: the soft caps on a touch device (page sim) — the 4th instrument warns in the notice, a second heavy Serum asks first; Duplicate the same', () => {
+test('U9: the soft caps on a touch device (page sim, through the add hook: no UI reaches them since 1f) — the 4th instrument warns in the notice, a second heavy Serum asks first', () => {
   fresh('minimoog');
   const was = globalThis.confirm, asked = [];
   globalThis.confirm = m => { asked.push(String(m)); return false; };
@@ -541,19 +392,11 @@ test('U9: the soft caps on a touch device (page sim) — the 4th instrument warn
     cv.undo(); sim.raf();
     assert.equal(T().dev[four], undefined);
     api.notice('', 0);
-    const d = cv.dup('i2'); sim.raf();
-    assert.equal(T().dev[d].model, 'juno60');
-    assert.match(note(), /^This track now has 4 instruments/, 'a duplicate that makes the 4th warns too');
-    cv.undo(); sim.raf();
-    // heavy Serums (a slow device: the factor makes every Serum heavy)
     api.store.set('synth.cv.devFactor', 50);
     const s1 = cv.add('serum', null); sim.raf();
     assert.deepEqual([T().dev[s1].model, asked.length], ['serum', 0], 'the first heavy Serum: no question');
     assert.equal(cv.add('serum', null), null, 'a second: asked, declined');
     assert.match(asked.at(-1), /already has a heavy Serum/);
-    const n = CMOD.instIds(T()).length, k = asked.length;
-    assert.equal(cv.dup(s1), null, 'Duplicate of the heavy Serum: asked, declined');
-    assert.deepEqual([asked.length, CMOD.instIds(T()).length], [k + 1, n]);
   } finally { globalThis.confirm = was; cv.touch(null); api.store.set('synth.cv.devFactor', 0); }
 });
 
@@ -624,4 +467,28 @@ test('U17: a track switch mounts several device bodies one job per body, a slice
     assert.deepEqual(['i1', 'i2', d3].map(k => { const P = cv.classicPanels.get(a.id + '/' + k); return !!P && !P.dead; }), [true, true, true], 'every instrument\'s panel');
   } finally { globalThis.performance = REAL; }
   void b;
+});
+
+test('1f: a saved project whose track holds two instruments opens as two tracks ("Track “X” held 2 instruments: now 2 tracks"); a one-instrument track beside it is untouched; undo of the Open brings the previous project back', async () => {
+  const multi = fresh('minimoog');
+  cv.add('juno60', null); sim.raf();
+  const one = fresh('dx7');
+  const o = clone(P());
+  o.tracks = [clone(P().tracks.find(x => x.id === multi.id)), clone(P().tracks.find(x => x.id === one.id))];
+  o.tracks[0].name = 'Duo';
+  o.selTrack = multi.id;
+  const before = JSON.stringify(P().tracks.map(x => x.id)), oneDev = JSON.stringify(o.tracks[1].dev), oneWires = JSON.stringify(o.tracks[1].wires);
+  const file = { name: 'duo.synth.json', type: 'application/json', text: async () => JSON.stringify(o) };
+  await sim.$('#fFile').onchange({ target: { files: [file], value: '' } });
+  await sim.settle(10); sim.raf();
+  const tr = P().tracks;
+  assert.deepEqual(tr.map(x => x.name + ':' + insts(x)), ['Duo:i1:minimoog', 'Duo · Juno-60:i1:juno60', one.name + ':i1:dx7']);
+  assert.deepEqual([tr[0].id, tr[2].id, P().selTrack], [multi.id, one.id, multi.id], 'the primary keeps the track');
+  assert.equal(note(), 'Track “Duo” held 2 instruments: now 2 tracks');
+  assert.deepEqual([JSON.stringify(tr[2].dev), JSON.stringify(tr[2].wires)], [oneDev, oneWires], 'the one-instrument track as it was');
+  assert.deepEqual(tr.map(x => CG.compileTrack(x).canonical), [true, true, true]);
+  assert.deepEqual(tr.map(x => x.notes.length), [o.tracks[0].notes.length, o.tracks[0].notes.length, o.tracks[1].notes.length]);
+  assert.deepEqual([keys(), sim.$('#trkChip .cv-cv').textContent.includes('instruments')], ['fx1,i1,out', false], 'one instrument on the canvas');
+  cv.undo(); sim.raf();
+  assert.equal(JSON.stringify(P().tracks.map(x => x.id)), before, 'undo: the project before the Open');
 });

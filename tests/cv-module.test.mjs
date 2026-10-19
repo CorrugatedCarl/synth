@@ -997,6 +997,24 @@ test('createTrackView (1e): V.cableDrag — patching on the view\'s own ports, j
   R.V.destroy();
 });
 
+test('createTrackView (1f): host.patch false without host.power / host.zone — no ⏻ (its slot hidden), no zone pill, every jack and every cable read-only (data-ro: no button, no focus, no selection); the badge stays', () => {
+  const doc = fresh(), W = fakeWorld(1), t = v2t();
+  const R = dview(t, W, doc, { patch: false, power: undefined, zone: undefined, badge: k => (k === 'i1' ? 'OS 4→2' : null) });
+  const mods = [...R.V.modules.values()];
+  assert.deepEqual(mods.filter(m => m.kind === 'inst').map(m => one(m.bar, 'cv-pow').hidden), [true, true, true], 'no ⏻');
+  assert.deepEqual(mods.map(m => one(m.el, 'cv-zone') === null), mods.map(() => true), 'no pill');
+  assert.deepEqual(mods.map(m => m.zoneW), mods.map(() => 0));
+  assert.deepEqual(R.V.jacks().map(j => (j.el.getAttribute('role') || '-') + (j.el.hasAttribute('data-ro') ? ' ro' : '') + ' ' + j.el.tabIndex), R.V.jacks().map(() => '- ro -1'));
+  assert.deepEqual(R.V.cables.list().map(c => !!c.readonly), R.V.cables.list().map(() => true));
+  assert.deepEqual(all(R.root).filter(n => n.getAttribute && n.getAttribute('data-cable') != null).map(n => n.hasAttribute('data-ro')), R.V.cables.list().map(() => true));
+  R.V.cables.select('w1');
+  assert.deepEqual([R.V.cables.selected(), R.sel.length], [null, 0], 'a read-only cable is never selected');
+  assert.deepEqual([R.V.modules.get('i1').badge, R.V.modules.get('i2').badge], ['OS 4→2', null]);
+  R.sync(clone(t));
+  assert.deepEqual(R.V.cables.list().map(c => !!c.readonly), R.V.cables.list().map(() => true), 'after a sync too');
+  R.V.destroy();
+});
+
 /* ---------------------------------------------------------------- UI fixes (stage 1e review, fixer U) */
 test('layOf (U1): the other FX key is no fallback while it is a module of its own (a Serum primary\'s i1/fx beside a shared panel fx1)', () => {
   const td = { 'i1/fx': { x: 1400, y: 0 }, fx1: { x: 2900, y: 0 } };

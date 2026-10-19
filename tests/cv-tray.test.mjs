@@ -555,6 +555,16 @@ test('effectsTray (1e): the empty FX Panel tile first, then one tile per effect 
   F2.destroy();
 });
 
+test('effectsTray (1f): panel: false — no Empty FX Panel tile (nor a \'panel\' item), the effects only; their titles say they go into the track\'s effects', () => {
+  const R = fxRig({ panel: false, items: [{ id: 'panel' }, ...FXI] });
+  assert.deepEqual(R.F.tiles().map(t => t.getAttribute('data-fx')), ['eq', 'cho', 'rev', 'split2']);
+  assert.deepEqual(R.list.children.map(n => n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-fx')), ['#Effects', 'eq', 'cho', 'rev', '#Splitters', 'split2']);
+  assert.match(fxTile(R, 'rev').getAttribute('title'), /goes into the track’s effects$/);
+  fxTile(R, 'rev').click();
+  assert.deepEqual(R.picks, ['rev']);
+  R.F.destroy();
+});
+
 test('effectsTray (1e): a tile drags out like a Sources tile — over a panel module (info.over \'panel\', info.key), over the canvas (\'canvas\'), info.at from toWorld; the tray never closes by itself (leaving it, dropping)', () => {
   const R = fxRig(), t = fxTile(R, 'rev'), tp = { pointerType: 'touch' };
   ptr(t, 'pointerdown', 1100, 300, at(tp));

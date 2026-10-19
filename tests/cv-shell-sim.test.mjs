@@ -150,16 +150,8 @@ test('Sources tray drags: over the top tray = the track list (a new track, one u
   assert.deepEqual([api.project().tracks.length, api.project().tracks.at(-1).model], [n0 + 1, 'juno60']);
   s.$('#tUndo').onclick(); s.raf();
   assert.equal(api.project().tracks.length, n0, 'one undo step');
-  // (stage 1e, SPEC §2.7: a drop on empty canvas adds an instrument — one undo step —, on an instrument's top bar replaces it)
-  sh.srcDrag.move('juno60', i('canvas'));
-  assert.equal(sh.srcDrag.drop('juno60', i('canvas')), true);
-  const devs = () => Object.values(api.project().tracks[0].dev).filter(d => d.kind === 'synth').map(d => d.model).join(',');
-  assert.deepEqual([api.project().tracks[0].model, devs()], ['minimoog', 'minimoog,juno60'], 'added beside it');
-  s.$('#tUndo').onclick(); s.raf();
-  assert.equal(devs(), 'minimoog', 'one undo step');
-  const bar = () => globalThis.__synthTest.cv.view().modules.get('i1').bar, on = o => Object.assign(i('canvas'), { target: bar() }, o);
-  sh.srcDrag.move('dx7', on());
-  assert.equal(sh.srcDrag.drop('dx7', on()), true);
+  sh.srcDrag.move('dx7', i('canvas'));
+  assert.equal(sh.srcDrag.drop('dx7', i('canvas')), true);
   assert.equal(api.project().tracks[0].model, 'dx7', 'replaced in place');
   assert.equal(sh.srcDrag.drop('obxa', i(null)), false);
   assert.equal(api.project().tracks[0].model, 'dx7', 'elsewhere: nothing');
@@ -325,12 +317,12 @@ test('Escape with a module selected: focus elsewhere (Hold, a key, a tray) panic
 
 test('a Sources tile dragged over the canvas: the true-size outline sits on the instrument it replaces (a drop never moves it), not under the finger', async () => {
   const s = await bootMain({ hash: '#minimoog' }), sh = shellOf(), cv = globalThis.__synthTest.cv;
-  const r0 = cv.view().modules.get('i1').rect(), bar = cv.view().modules.get('i1').bar; // (stage 1e: over the instrument's top bar)
-  sh.srcDrag.begin('juno60', { over: 'canvas', x: 900, y: 700, left: true, pointerType: 'touch', t: 1, target: bar });
+  const r0 = cv.view().modules.get('i1').rect();
+  sh.srcDrag.begin('juno60', { over: 'canvas', x: 900, y: 700, left: true, pointerType: 'touch', t: 1 });
   const g = sh.shell.drop;
   assert.ok(g, 'an outline');
   assert.deepEqual([Math.round(g.x), Math.round(g.y), g.w], [Math.round(r0.x), Math.round(r0.y), cv.size('juno60').w], 'at the instrument\'s origin, the new size');
-  assert.equal(sh.srcDrag.drop('juno60', { over: 'canvas', x: 900, y: 700, target: bar }), true);
+  assert.equal(sh.srcDrag.drop('juno60', { over: 'canvas', x: 900, y: 700 }), true);
   const r1 = cv.view().modules.get('i1').rect();
   assert.deepEqual([s.api.project().tracks[0].model, r1.x, r1.y], ['juno60', r0.x, r0.y], 'replaced where the outline showed');
 });

@@ -81,8 +81,7 @@ test('boot: the selected track\'s three modules hold #inst, #fxrack and the scop
   const ttl = nameOf(T().model);
   assert.deepEqual([...V().modules.values()].map(m => m.title), [ttl, 'FX Panel', 'OUT']);
   const menu = cv.menu('inst', 'i1').filter(x => !x.sep);
-  assert.deepEqual(menu.map(x => x.label), ['About the ' + ttl + '…', 'Replace with…', 'Hardware layout', 'Simple layout', 'Save sound…', 'Delete saved sound', 'Init sound',
-    'Power', 'Key zone…', 'Solo in track', 'Primary instrument', 'Duplicate', 'Delete', 'Fold', 'Bring to front', 'Tidy the canvas'], // (1e: the device items; U3: Key zone…)
+  assert.deepEqual(menu.map(x => x.label), ['About the ' + ttl + '…', 'Replace with…', 'Hardware layout', 'Simple layout', 'Save sound…', 'Delete saved sound', 'Init sound', 'Fold', 'Bring to front', 'Tidy the canvas'],
     'no Reset width (nothing is resizable)');
   assert.deepEqual(menu.slice(2, 4).map(x => x.checked), [true, false], 'Hardware layout checked');
   assert.equal(menu.find(x => x.label === 'Delete saved sound').disabled, true, 'no saved sound loaded');
@@ -100,10 +99,9 @@ test('the Hardware layout: #inst is the hardware panel; the module is fixed at c
   assert.match(cv.parts.inst.className, /\binst hw\b/);
 });
 
-test('default camera: k = 1, the instrument 24 px inside the visible band (no saved camera) — past its key-zone pill (1e, U3: the two fitted, so k < 1 here)', () => {
-  const m = V().modules.get('i1'), zw = m.zoneW, k = Math.min(1, (BAND.right - BAND.left - 48) / (m.w + zw));
-  assert.ok(zw > 0);
-  assert.deepEqual(W.cam, { tx: BAND.left - VP.left + 24 - Math.round((m.x - zw) * k), ty: BAND.top - VP.top + 24 - Math.round(m.y * k), k });
+test('default camera: k = 1, the instrument 24 px inside the visible band (no saved camera)', () => {
+  const m = V().modules.get('i1');
+  assert.deepEqual(W.cam, { tx: BAND.left - VP.left + 24 - m.x, ty: BAND.top - VP.top + 24 - m.y, k: 1 });
 });
 
 test('a top-bar move: track.lay written, one History step; undo restores the place and keeps the knob values; redo', () => {
@@ -171,8 +169,7 @@ test('track switch: the view is rebuilt for the new track (cards first: world cl
   assert.notEqual(V(), before);
   assert.equal(V().trackId, t2.id);
   assert.ok(W.log.includes('clear'));
-  const m2 = V().modules.get('i1'), k2 = Math.min(1, (BAND.right - BAND.left - 48) / (m2.w + m2.zoneW));
-  assert.deepEqual(W.cam, { tx: 68 + Math.round(m2.zoneW * k2), ty: 24, k: k2 }, 'a new track: the default camera (past the key-zone pill: 1e, U3)');
+  assert.deepEqual(W.cam, { tx: 68, ty: 24, k: 1 }, 'a new track: the default camera');
   assert.equal(cv.parts.inst.parentNode === V().modules.get('i1').body, true, 'the parts moved to the new view');
   cv.camFlush();
   assert.ok(!api.store.get('synth.cam', null).e.some(e => e[0] === CM.camKey(P().uid, t2.id)), 'an untouched default camera is not stored');
@@ -352,7 +349,7 @@ test('the ⋯ toggle Hardware ↔ Simple (the user\'s report: "i switched to the
   assert.ok(m().fixed && !('lay' in T() && T().lay.i1), 'fixed, no lay yet');
   const ids = () => [...cv.panel().ui.keys()].filter(k => k[0] !== '@').sort().join(','), ids0 = ids();
   const pick = label => { const it = cv.menu('inst', 'i1').find(x => x.label === label); assert.ok(it && !it.disabled, label + ': in the menu, enabled'); it.action(); sim.raf(); };
-  const checks = () => cv.menu('inst', 'i1').filter(x => x.checked != null && / layout$/.test(x.label)).map(x => x.label + ':' + x.checked).join(' ');
+  const checks = () => cv.menu('inst', 'i1').filter(x => x.checked != null).map(x => x.label + ':' + x.checked).join(' ');
   const flowState = () => [cv.instUi(T()), cv.hw(), m().w, m().fixed && m().fixed.w, m().fixed && m().fixed.h, m().el.hasAttribute('data-cv-fixed')];
   const hwState = () => [cv.instUi(T()), !!cv.hw(), m().w, m().fixed && m().fixed.w, m().fixed && m().fixed.h];
   for (let i = 0; i < 3; i++) { // round trips from the menu (Simple → Hardware → Simple …)
@@ -524,8 +521,7 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   sh.srcPick('prophet5', 'replace'); sim.raf();
   assert.deepEqual([T().model, cv.instUi(T()), hsteps()], ['prophet5', 'flow', n + 1]);
   n = hsteps();
-  const bar = () => V().modules.get('i1').bar; // (1e: a drop on the instrument's top bar replaces it; on empty canvas it adds one)
-  assert.equal(sh.srcDrag.drop('obxa', { over: 'canvas', target: bar() }), true); sim.raf();
+  assert.equal(sh.srcDrag.drop('obxa', { over: 'canvas' }), true); sim.raf();
   assert.deepEqual([T().model, cv.instUi(T()), hsteps()], ['obxa', 'flow', n + 1]);
   // Serum: no hardware panel — the switch does nothing to it
   sh.srcPick('serum', 'track'); sim.raf();
@@ -554,7 +550,7 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   sh.shell.src.open(); sim.raf();
   sh.srcPick('prophet5', 'replace'); sim.raf();
   sh.srcPick('obxa', 'track'); sim.raf();
-  assert.equal(sh.srcDrag.drop('juno60', { over: 'canvas', target: bar() }), true); sim.raf();
+  assert.equal(sh.srcDrag.drop('juno60', { over: 'canvas' }), true); sim.raf();
   assert.equal(sh.srcDrag.drop('dx7', { over: 'tracks' }), true); sim.raf();
   assert.deepEqual([sh.shell.src.isOpen(), tiles.mode()], [true, 'replace'], 'open; back to replacing after a new track');
 });
