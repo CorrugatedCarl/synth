@@ -3,6 +3,8 @@
 // trays (Sources left, Effects right; opened by a tap on their rail, never an edge swipe), the Sources tray's tiles and
 // their drag-out, the ≡ / ⚙ popovers and the sheets in #ov. Owner: SHELL lane. Stage 1e (IMPL-1e §4.3): the Effects
 // tray's tiles (effectsTray: the empty FX panel + the effect types, their cost; the same drag-out as a Sources tile).
+// Stage 2a (IMPL-2a §3): the Sources tray's Modulators section (sourcesTray o.mods: Mod Wheel, Velocity, Aftertouch, Bend;
+// setPlaced greys a singleton that is already there).
 // Rules: plain ES module, no DOM at module top level, survives tests/main-sim.mjs's DOM stub (it keeps references to the
 // nodes it makes or is given, never queries them back); imports carry ?v=9.
 import * as wk from './wk.js?v=9';
@@ -300,6 +302,21 @@ export function sideTray(el, o) {
 // (stage 1c) o.layoutEl: where the "Hardware | Simple" switch goes (a segmented pair, aria-pressed); o.layout: the
 // starting choice ('hw' | 'flow'); o.onLayout(l): the user switched. 'flow' (Simple) marks every classic tile SIMPLE: a
 // tap or drop creates the synth in its Simple layout (the caller's: lay.i1.ui = 'flow'); Serum has no hardware panel
+// (2a, IMPL-2a §3) o.mods: [{id: 'wheel' | 'velo' | 'at' | 'bend', name, scope?: 'project' | 'track'}] — the Modulators
+// section: one button.cv-tile.cv-mtile[data-mod] per item (an original monochrome glyph, the name, span.cv-treason) in
+// o.modsEl (its section o.modsSec unhidden; without modsEl: an h3.cv-tgrp "Modulators" and the tiles after the synths in
+// el). A tap: (o.modPick || o.pick)(id, mode); a drag as a synth tile's through (o.modDrag || o.drag) with info.mod = true,
+// info.over 'canvas' or null (never 'tracks') and info.at the point (o.toWorld(x, y): world px; else client px); its ghost
+// hides over the canvas only while o.modCanvasGhost() says the world draws an outline for it.
+// setPlaced(id, reason | null): the tile greys out (aria-disabled, .cv-placed) with the reason ("already on this
+// track" / "already in this project"); a placed tile neither picks nor drags. modTiles() / modTile(id).
+const MOD_GLYPH = {
+  wheel: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="14" y="2.5" width="12" height="23" rx="3"/><path d="M15.5 9.5h9M15.5 12h9M15.5 14.5h9"/></svg>',
+  velo: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M5 24.5h30"/><path d="M8 24.5v-4M14 24.5v-8M20 24.5v-12M26 24.5v-16M32 24.5v-20"/></svg>',
+  at: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="7" y="13.5" width="26" height="11" rx="2"/><path d="M20 3.5v7M16.5 7.5 20 11l3.5-3.5"/></svg>',
+  bend: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 14h8c4 0 5-9 8-9s4 18 8 18 4-9 8-9"/></svg>',
+};
+const modGlyph = id => MOD_GLYPH[id] || '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 14c4-8 8-8 12 0s8 8 12 0 6-6 8-3"/></svg>';
 export function sourcesTray(el, o) {
   const d = docOf(o, el);
   let mode = 'replace', cur = null, lay = o.layout === 'flow' ? 'flow' : 'hw';
@@ -343,8 +360,57 @@ export function sourcesTray(el, o) {
     for (const [id, b] of tiles) if (!(o.models.find(m => m.id === id) || {}).custom) b.setAttribute('aria-description', lay === 'flow' ? 'simple panel' : 'hardware panel');
   }
   setLayout(lay);
+  // (2a) the Modulators section
+  const mtiles = new Map(), placed = new Map();
+  if (Array.isArray(o.mods) && o.mods.length) {
+    const box = o.modsEl || el;
+    if (!o.modsEl) { const hd = mk(d, 'h3', 'cv-tgrp cv-mhead', 'Modulators'); el.appendChild(hd); offs.push(() => hd.remove()); }
+    if (o.modsSec) o.modsSec.hidden = false;
+    const pick = o.modPick || o.pick, drag = o.modDrag || o.drag || {};
+    const at = i => { if (o.toWorld) { try { const p = o.toWorld(i.x, i.y); if (p && isFinite(p.x) && isFinite(p.y)) return { x: p.x, y: p.y }; } catch { /* no world */ } } return { x: i.x, y: i.y }; };
+    for (const m of o.mods) {
+      const id = m && typeof m.id === 'string' ? m.id : null;
+      if (!id || mtiles.has(id)) continue;
+      const name = String(m.name || id), b = mk(d, 'button', 'cv-tile cv-mtile');
+      b.type = 'button';
+      b.setAttribute('data-mod', id);
+      if (m.scope) b.setAttribute('data-scope', m.scope);
+      const tip = `${name} — tap to add it${m.scope === 'project' ? ' (one for the whole project)' : ''}, or drag it onto the canvas`;
+      b.title = tip;
+      const pic = mk(d, 'span', 'cv-mglyph');
+      pic.setAttribute('aria-hidden', 'true');
+      pic.innerHTML = modGlyph(id);
+      const nm = mk(d, 'span', 'cv-tname', name), rs = mk(d, 'span', 'cv-treason');
+      rs.hidden = true;
+      b.append(pic, nm, rs);
+      const off = () => placed.has(id);
+      offs.push(listen(b, 'click', e => { if ((e && e.defaultPrevented) || off()) return; pick(id, mode); }));
+      const dd = { begin: (x, i) => { i.mod = true; if (drag.begin) drag.begin(x, i); }, move: (x, i) => { i.mod = true; if (drag.move) drag.move(x, i); },
+        drop: (x, i) => { i.mod = true; return !!drag.drop && drag.drop(x, i); }, cancel: (x, i) => { i.mod = true; if (drag.cancel) drag.cancel(x, i); } };
+      offs.push(tileDrag(d, Object.assign({}, o, { drag: dd, canvasGhost: o.modCanvasGhost }), b, id, { pic: () => modGlyph(id), picCls: 'cv-mglyph', cls: 'cv-mghost', off,
+        norm: r => ({ over: (r && typeof r === 'object' ? r.over : r) === 'canvas' ? 'canvas' : null, key: null, near: null }), at,
+        label: over => (over === 'canvas' ? '+ Add ' + name : '') }));
+      box.appendChild(b);
+      mtiles.set(id, { b, rs, tip, name });
+      offs.push(() => b.remove());
+    }
+  }
+  function setPlaced(id, reason) {
+    const T = mtiles.get(id);
+    if (!T) return;
+    const r = reason == null || reason === '' ? null : String(reason);
+    if (r) placed.set(id, r); else placed.delete(id);
+    T.b.classList.toggle('cv-placed', !!r);
+    if (r) T.b.setAttribute('aria-disabled', 'true'); else T.b.removeAttribute('aria-disabled');
+    T.rs.textContent = r || '';
+    T.rs.hidden = !r;
+    T.b.title = r ? T.name + ' — ' + r : T.tip;
+  }
   return {
     setLayout, layout: () => lay,
+    /** (2a) the Modulators section's tiles; greying one out with its reason (null: available again) */
+    modTiles: () => [...mtiles.values()].map(T => T.b), modTile: id => (mtiles.get(id) || {}).b || null,
+    setPlaced, placed: id => placed.get(id) || null,
     setCurrent(id) {
       cur = id;
       for (const [k, b] of tiles) {
@@ -412,6 +478,7 @@ function tileDrag(d, o, b, id, T) {
     scrollAxis: 'y',
     autoScroll: false,
     begin: i => {
+      if (T.off && T.off()) return; // ((2a) a placed modulator tile: no drag)
       G = { type: i.pointerType, over: null, key: null, at: i.t, left: false, trayR: o.tray ? rectOf(o.tray) : null, ghost: null };
       G.ghost = mkGhost(i.pointerType);
       b.classList.add('lift');

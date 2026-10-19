@@ -320,6 +320,21 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-fghost .cv-fglyph { margin: 0; }
 .cv-tname { max-width: 100%; font-weight: 700; font-size: 12px; line-height: 1.25; text-align: center; text-wrap: balance; overflow-wrap: anywhere; }
 .cv-tmeta { max-width: 100%; font-size: 10px; line-height: 1.25; color: var(--mute); text-align: center; text-wrap: balance; overflow-wrap: anywhere; } /* (year · maker: two lines rather than cut) */
+/* (2a) the Sources tray scrolls as one (the synths, then the Modulators section); its tile grids grow with their content */
+.cv-tscroll { flex: 1 1 0; overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y pinch-zoom; }
+.cv-tscroll > .cv-tiles { overflow: visible; }
+.cv-tsec[hidden] { display: none; }
+.cv-tsec > .cv-tgrp { margin: 4px 12px 6px; }
+.cv-mtiles { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+/* a modulator tile: an original monochrome glyph, the name; placed (a singleton already there): greyed with the reason */
+.cv-mglyph { display: grid; place-items: center; width: 56px; height: 40px; margin-bottom: 4px; border-radius: 8px; border: 1px solid #30353d;
+  background: linear-gradient(#1c1f25, #121418); color: #9fd3e6; }
+.cv-mglyph svg { display: block; width: 40px; height: 28px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+.cv-mghost .cv-mglyph { margin: 0; }
+.cv-treason { max-width: 100%; font-size: 10px; line-height: 1.25; color: var(--mute); text-align: center; text-wrap: balance; }
+.cv-treason[hidden] { display: none; }
+.cv-tile.cv-placed { opacity: 0.45; border-style: dashed; cursor: default; }
+.cv-tile.cv-placed .cv-mglyph { color: var(--mute); }
 .cv-sgrip { pointer-events: auto; position: absolute; top: 0; bottom: 0; width: 24px; z-index: 1; display: none; cursor: ew-resize; touch-action: none; outline: none; }
 .cv-left .cv-sgrip { left: calc(44px + var(--cv-side-w) - 12px); }
 .cv-right .cv-sgrip { right: calc(44px + var(--cv-side-w) - 12px); }
@@ -815,6 +830,11 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-tb-btn:disabled { color: var(--mute); opacity: 0.4; cursor: default; }
 .cv-tb-btn[aria-pressed="true"] { color: var(--hot); background: rgba(242, 163, 58, 0.12); } /* a toggle that is on (Snap) */
 .cv-tb-btn[aria-pressed="false"] { color: var(--mute); }
+/* (2a) ∿ the mod cables' visibility: Always (lit), On select (plain), Never (struck through) */
+.cv-tb-btn[data-cv-tb="mods"] { position: relative; }
+.cv-tb-btn[data-cv-tb="mods"][data-mode="always"] { color: var(--hot); background: rgba(242, 163, 58, 0.12); }
+.cv-tb-btn[data-cv-tb="mods"][data-mode="never"] { color: var(--mute); }
+.cv-tb-btn[data-cv-tb="mods"][data-mode="never"]::after { content: ''; position: absolute; left: 25%; right: 25%; top: 50%; height: 1.6px; background: currentColor; transform: rotate(-35deg); }
 .cv-tb-btn:focus-visible, .cv-tb-chip:focus-visible { outline: 2px solid var(--hot); outline-offset: -2px; }
 .cv-tb-pct { width: auto; min-width: 54px; padding: 0 6px; font: 600 12px/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--text); }
 .cv-tb-sep { flex: 0 0 1px; width: 1px; height: 20px; margin: 0 4px; background: #2b2e34; }
@@ -1110,3 +1130,66 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 .cv-cable-x[hidden] { display: none; }
 .cv-cable-x::before { content: ''; position: absolute; inset: calc(-7px * var(--ik, 1)); border-radius: 50%; }
 .cv-cable-x:hover, .cv-cable-x:focus-visible { background: #2a2418; outline: none; }
+/* 2a: modulator modules (kind 'mod': the Mod Wheel, Velocity, Aftertouch, Bend) — the mod-out jack a filled dot in the
+   module's colour; their bodies (cv-mods-ui) */
+.cv-jack[data-kind="mod"] { background: radial-gradient(circle, var(--mc) 0 4px, #07080a 4.5px 5.5px, var(--mc) 6px 7px, #2e333b 7.5px); }
+.cv-body > .cv-mbody { box-sizing: border-box; height: 100%; display: flex; align-items: center; justify-content: center; gap: 14px; padding: 12px 34px 12px 16px;
+  background: #0b0d0f; color: var(--text); font-family: var(--ui); user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.cv-mread { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 4ch; }
+.cv-mval { font: 600 18px/1.1 var(--mono); font-variant-numeric: tabular-nums; color: var(--mc, var(--text)); }
+.cv-mlab { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--mute); }
+/* the wheel: #modw's slot and ribbed thumb; the slider's whole box takes the press (touch-action: none), focus ring on it */
+.cv-mw { display: flex; justify-content: center; align-self: stretch; padding: 0 18px; border-radius: 10px; touch-action: none; cursor: ns-resize; outline: none; }
+.cv-mw:focus-visible { box-shadow: 0 0 0 2px var(--hot); }
+.cv-mw-slot { position: relative; width: 30px; background: #050506; border-radius: 6px; box-shadow: inset 0 2px 6px #000; overflow: hidden; }
+.cv-mw-thumb { position: absolute; left: 3px; right: 3px; height: 26px; border-radius: 4px; background: repeating-linear-gradient(0deg, #2a2b2f 0 2px, #1b1c1f 2px 4px); border: 1px solid #3a3b40; }
+.cv-mw.cv-on .cv-mw-thumb { border-color: var(--mc, var(--hot)); }
+/* "+N on other tracks" by the jack (a tap lists them); its hit area through ::before */
+.cv-mothers { position: absolute; top: 8px; right: 26px; height: 22px; padding: 0 8px; border-radius: 11px; border: 1px solid #2f4752; background: #10181c;
+  color: #9fd3e6; font: 600 10.5px/1 var(--ui); white-space: nowrap; -webkit-tap-highlight-color: transparent; }
+.cv-mothers[hidden] { display: none; }
+.cv-mothers::before { content: ''; position: absolute; left: 50%; top: 50%; width: 100%; height: max(100%, calc(44px * var(--ik, 1))); transform: translate(-50%, -50%); }
+.cv-mothers:hover, .cv-mothers:focus-visible { background: #15232a; outline: none; }
+/* Velocity: the curve with the last velocity on it, a level bar; Aftertouch / Bend: a level bar (Bend from the centre) */
+.cv-body > .cv-mvelo { gap: 10px; }
+.cv-mcurve { flex: none; width: 112px; height: 112px; overflow: visible; }
+.cv-mframe { fill: #07090a; stroke: #2b2e34; stroke-width: 1; }
+.cv-mcrv { fill: none; stroke: #5b5e66; stroke-width: 2; }
+.cv-mdrop { fill: none; stroke: var(--mc, var(--hot)); stroke-width: 1; stroke-dasharray: 3 3; }
+.cv-mdot { fill: var(--mc, var(--hot)); }
+.cv-mbar { position: relative; flex: 1 1 auto; height: 14px; border-radius: 7px; background: #050506; box-shadow: inset 0 1px 4px #000; overflow: hidden; }
+.cv-mbar > .cv-mfill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: var(--mc, var(--hot)); opacity: 0.85; }
+.cv-mvbar { flex: none; width: 14px; height: 112px; }
+.cv-mvbar > .cv-mfill { top: auto; right: 0; width: auto; height: 0; }
+.cv-mbi > .cv-mmid { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: #3a3b40; }
+/* 2a: mod cables (SPEC §2.9): 2 px in the source module's colour, body under the modules (no hit: the badge is the handle),
+   the last 24 screen px above them (svg.cv-cable-ends), preset rows thin, bypassed grey, the 24+ fade, On select / Never */
+.cv-cable-g[data-kind="mod"] .cv-cable { stroke-width: calc(2px * var(--ik, 1)); }
+.cv-cable-g[data-kind="mod"] .cv-cable-hit { pointer-events: none; }
+.cv-cable-g[data-kind="mod"].cv-hl .cv-cable, .cv-cable-g[data-kind="mod"].cv-sel .cv-cable { stroke-width: calc(3px * var(--ik, 1)); }
+.cv-cable-g[data-kind="mod"].cv-preset .cv-cable { stroke-width: calc(1.25px * var(--ik, 1)); }
+.cv-cable-g[data-kind="mod"].cv-dash .cv-cable { stroke-dasharray: calc(6px * var(--ik, 1)) calc(4px * var(--ik, 1)); }
+.cv-cable-g.cv-fade, .cv-mbadge.cv-fade { opacity: 0.3; }
+.cv-cable-g.cv-hide { display: none; }
+.cv-cable.cv-cable-live.cv-mlive { stroke-width: calc(2px * var(--ik, 1)); }
+/* the amount badge at the knob end, just before the end drawn above the modules (its right edge there: never over the knob a
+   cable arrives at — they always come in from the left); the only part of a mod cable taking a press (44 screen px via ::before) */
+.cv-mbadge { position: absolute; z-index: 10001; transform: translate(-100%, -50%); margin-left: calc(-2px * var(--ik, 1)); display: inline-flex; align-items: center; gap: calc(4px * var(--ik, 1));
+  height: calc(18px * var(--ik, 1)); padding: 0 calc(6px * var(--ik, 1)); border-radius: calc(9px * var(--ik, 1)); border: calc(1px * var(--ik, 1)) solid var(--cc, #8d8b86);
+  background: #101215; color: var(--cc, #c9c6bf); font: 700 calc(10.5px * var(--ik, 1))/1 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap;
+  box-shadow: 0 calc(2px * var(--ik, 1)) calc(6px * var(--ik, 1)) rgba(0, 0, 0, 0.6); -webkit-tap-highlight-color: transparent; }
+.cv-mbadge[hidden] { display: none; }
+.cv-mbadge::before { content: ''; position: absolute; left: 50%; top: 50%; width: max(100%, calc(44px * var(--ik, 1))); height: calc(44px * var(--ik, 1)); transform: translate(-50%, -50%); }
+.cv-mbadge:hover, .cv-mbadge:focus-visible, .cv-mbadge.cv-sel { background: #1d1810; outline: none; box-shadow: 0 0 0 calc(2px * var(--ik, 1)) var(--hot); }
+.cv-mbadge.cv-off { border-color: #5b5e66; color: #8d8b86; }
+.cv-mbadge.cv-dim { opacity: 0.4; }
+.cv-ptag { padding: 0 calc(3px * var(--ik, 1)); border-radius: calc(3px * var(--ik, 1)); background: #2a2418; color: var(--hot); font: 700 calc(8px * var(--ik, 1))/1.4 var(--ui); letter-spacing: 0.06em; text-transform: uppercase; }
+.cv-ptag[hidden] { display: none; }
+/* a mod drag (#world[data-cv-patching="mod"]): the knobs it may land on glow, the other knobs and the modules without one dim;
+   the knob under the finger lights (refused: red), a module's top bar too (the parameter list) */
+#world[data-cv-patching="mod"] [data-dest]:not(.cv-ok) { opacity: 0.35; }
+#world[data-cv-patching="mod"] .cv-mod.cv-nodest > .cv-body { opacity: 0.35; filter: grayscale(0.8); }
+#world[data-cv-patching="mod"] [data-dest].cv-ok { border-radius: 50%; outline: calc(2px * var(--ik, 1)) solid rgba(111, 227, 161, 0.85); outline-offset: 2px; }
+#world[data-cv-patching="mod"] [data-dest].cv-hot { outline: calc(3px * var(--ik, 1)) solid var(--hot); }
+#world[data-cv-patching="mod"] [data-dest].cv-no { opacity: 1; outline: calc(2px * var(--ik, 1)) solid #e5534b; }
+#world[data-cv-patching="mod"] .cv-bar.cv-hot { box-shadow: inset 0 0 0 calc(2px * var(--ik, 1)) var(--hot); }

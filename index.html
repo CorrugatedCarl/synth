@@ -223,8 +223,14 @@
         <div class="cv-ph"><h2>Synths</h2><button id="srcClose" class="cv-x" type="button" aria-label="Close the Sources tray" title="Close (Esc)">✕</button></div>
         <p class="cv-pmode" id="srcMode"></p>
         <div id="srcLayout" class="cv-srclay"></div>
-        <div id="srcList" class="cv-tiles"></div>
-        <p class="cv-pnote">Serum parts, note tools and modulators arrive here in later stages.</p>
+        <div id="srcScroll" class="cv-tscroll">
+          <div id="srcList" class="cv-tiles"></div>
+          <section id="srcModSec" class="cv-tsec" aria-label="Modulators" hidden>
+            <h3 class="cv-tgrp">Modulators</h3>
+            <div id="srcMods" class="cv-tiles cv-mtiles" data-tray="mods"></div>
+          </section>
+        </div>
+        <p class="cv-pnote">Serum parts, note tools, LFOs, envelopes and macros arrive here in later stages.</p>
       </div>
       <div id="srcGrip" class="cv-sgrip"></div>
     </aside>

@@ -6,7 +6,10 @@ import './v8-guard.mjs';
 // cancel restores), createTrackView with a scripted world (bodies, ports, cables, lay callbacks, FX key swap, host.size),
 // song.js lay validation (normLay, ui: 'flow') and round-trip. Stage 1e: power (⏻, [data-off]), the key-zone pill and its
 // popover, the bar badge, zoneLabel, devicesOf, Tidy for any number of devices, the device-driven track view (sync by key,
-// bodies by key, Serum-inner jacks read-only, cables from wires) and V.cableDrag. Never pass fake-DOM nodes to assert.*.
+// bodies by key, Serum-inner jacks read-only, cables from wires) and V.cableDrag. Stage 2a: modulator modules (devicesOf,
+// the Tidy column, layOf keys, W_MOD × MOD_H, the mod-out jack, colours, cost), the knob end points (destPort cached per
+// module, invalidated by fold / size / sync / refresh / remeasure; host.destPort), read-only audio with editable mod
+// cables, the selection's mod cables, the zoom re-cut, a mod drag through V.cableDrag. Never pass fake-DOM nodes to assert.*.
 // Run alone: node --max-old-space-size=2048 --test tests/cv-module.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,7 +17,8 @@ import { readFileSync } from 'node:fs';
 import * as M from '../cv-module.js?v=9';
 import * as S from '../song.js?v=9';
 import * as CM from '../cv-migrate.js?v=9';
-import { fresh, all, byCls, one, ptr, fire, key, Ev } from './wk-dom.mjs';
+import { fresh, all, byCls, one, ptr, fire, key, Ev, place, layout } from './wk-dom.mjs';
+import * as CB from '../cv-cables.js?v=9';
 
 /* ---------------------------------------------------------------- helpers */
 // a scripted cv-world World: k, a camera, toWorld, items, selection, focus, drag pointer, events
@@ -1034,4 +1038,150 @@ test('⏻ (U5): a zoom-scaled hit area through ::before — 44 screen px at any 
   assert.match(r[1], /right: 0;/, 'its right edge the button\'s: never over the stripe');
   assert.match(r[1], /bottom: 0;/, 'its bottom the button\'s: never into the panel');
   assert.match(sec, /\.cv-mod\[data-cv-fold\] > \.cv-bar > button\.cv-pow::before \{[^}]*width: calc\(100% \+ 4px\)/, 'folded: to the bar\'s edge');
+});
+
+/* ---------------------------------------------------------------- stage 2a: modulator modules (IMPL-2a §3) */
+
+test('devicesOf / tidy / kindW / layOf (2a): a track\'s Velocity, Aftertouch, Bend after the rest (kind \'mod\'); Tidy stacks the modulators in a column left of the instruments (the host\'s wheel first, then ve, at, bd), nothing else moves', () => {
+  const t = v2t();
+  t.dev.bd = { kind: 'bend' }; t.dev.ve = { kind: 'velo' }; t.dev.at = { kind: 'at' };
+  assert.deepEqual(M.devicesOf(t).slice(-3).map(d => d.key + ':' + d.kind + ':' + d.mod + ':' + (d.dev === t.dev[d.key])), ['ve:mod:velo:true', 'at:mod:at:true', 'bd:mod:bend:true']);
+  assert.deepEqual(M.devicesOf(v2t()).map(d => d.kind).includes('mod'), false, 'none without them');
+  assert.deepEqual([M.W_MOD, M.MOD_H, M.MOD_ORDER, M.kindW('mod'), ['wheel', 've', 'at', 'bd', 'i1'].map(M.modKind)],
+    [240, { wheel: 224, velo: 192, at: 128, bend: 128 }, ['wheel', 'velo', 'at', 'bend'], 240, ['wheel', 'velo', 'at', 'bend', null]]);
+  const xy = L => Object.entries(L).map(([k, v]) => k + '@' + v.x + ',' + v.y).join(' ');
+  const base = xy(M.tidy(v2t(), {}));
+  assert.equal(xy(M.tidy(t, {})), base + ' ve@-416,0 at@-416,256 bd@-416,448', 'a column left of the instruments, VGAP apart, on the dots');
+  const devs = [{ key: 'wheel', kind: 'mod', mod: 'wheel' }, ...M.devicesOf(t)];
+  const L = M.tidy(t, {}, devs.reverse());
+  assert.equal(xy(L).split(' ').filter(s => /^(wheel|ve|at|bd)@/.test(s)).join(' '), 'wheel@-416,0 ve@-416,288 at@-416,544 bd@-416,736', 'the wheel first, whatever the list order');
+  assert.ok(Object.values(L).every(v => v.x % 32 === 0 && v.y % 32 === 0), 'on the dots');
+  assert.equal(xy(M.tidy(t, { ve: { w: 240, h: 300 } }, devs)).split(' ').find(s => s.startsWith('at@')), 'at@-416,672', 'a measured height counts');
+  assert.deepEqual([M.layOf({ lay: { wheel: { x: 64, y: -96, fold: 1 } } }, 'wheel', L), M.layOf({ lay: {} }, 'bd', L), M.layOf({}, 've', L), M.layOf({}, 'at', {})],
+    [{ x: 64, y: -96, fold: 1 }, { x: -416, y: 736 }, { x: -416, y: 288 }, { x: 0, y: 0 }], 'layOf keys wheel / ve / at / bd');
+});
+
+// a 2a host: the project wheel added to the devices, knobs in the Serum's body and its own FX, the project
+function mview(o = {}) {
+  const doc = fresh(), W = fakeWorld(1), t = v2t();
+  t.dev.ve = { kind: 'velo' }; t.dev.bd = { kind: 'bend', color: '#abcdef' };
+  t.dev.i2.vals = { s: { matrix: [{ src: 'velo', dst: 'a.pan', amt: 0.3 }] } };
+  t.mods = [{ id: 'r1', src: 'wheel', dst: 'i2:a.semi', amt: 0.5 }, { id: 'r2', src: 've.out', dst: 'i2:fx.r1.mix', amt: -0.25, bi: 1 }, { id: 'r3', src: 'bd.out', dst: 'i2:zz.none' }];
+  const K = {}, mounted = [];
+  const knob = (b, dev, id) => { const p = doc.createElement('div'); p.setAttribute('data-dev', dev); const k = doc.createElement('div'); k.setAttribute('data-dest', id); p.append(k); b.append(p); K[id] = k; return k; };
+  const R = dview(t, W, doc, Object.assign({
+    devices: tt => [...M.devicesOf(tt), { key: 'wheel', kind: 'mod', mod: 'wheel' }],
+    bodies: { mount: (k, b) => { mounted.push('mount ' + k); b.setAttribute('data-body', k); if (k === 'i2') { knob(b, 'i2', 'a.semi'); knob(b, 'i2', 'a.pan'); } if (k === 'i2/fx') knob(b, 'i2', 'fx.r1.mix'); }, unmount() {} },
+    project: () => ({ perf: { wheel: { v: 1 } } }), presetRows: true,
+  }, o));
+  return Object.assign(R, { doc, W, t, K, mounted });
+}
+
+test('createTrackView (2a): modulator modules — kind \'mod\', W_MOD × MOD_H, one right mod-out jack (a patchable button), cost 40, the mod colour (else dev.color), placed by Tidy left of the instruments; ports() / jacks() carry them; the mod cables (track.mods + the preset rows) from cablesOf with the host\'s project', () => {
+  const R = mview(), V = R.V, m = k => V.modules.get(k);
+  assert.deepEqual(['wheel', 've', 'bd'].map(k => [m(k).kind, m(k).el.getAttribute('data-cv-kind'), m(k).w, m(k).rect().h, m(k).cost, m(k).jackIds().join()]),
+    [['mod', 'mod', 240, 224, 40], ['mod', 'mod', 240, 192, 40], ['mod', 'mod', 240, 128, 40]].map(a => a.concat('out')));
+  assert.deepEqual(['wheel', 've', 'bd'].map(k => m(k).el.style['--mc']), [CB.MOD_COLOR.wheel, CB.MOD_COLOR.velo, '#abcdef']);
+  const j = m('wheel').jack('out');
+  assert.deepEqual([j.getAttribute('data-kind'), j.getAttribute('data-side'), j.getAttribute('role'), j.tabIndex, j.hasAttribute('data-ro'), j.getAttribute('aria-label')], ['mod', 'right', 'button', 0, false, 'WHEEL out']);
+  assert.deepEqual(['wheel', 've', 'bd'].map(k => m(k).x + ',' + m(k).y), ['-416,0', '-416,288', '-416,544'], 'the modulator column');
+  assert.deepEqual([m('i1').x, m('i1').y], [0, 0], 'the instruments where they were');
+  assert.deepEqual(V.ports().get('wheel.out'), { x: -416 + 240, y: 68 });
+  assert.deepEqual(V.jacks().filter(J => J.mod === 'wheel' || J.mod === 'i1').map(J => J.id + ':' + J.dir + ':' + J.kind), ['i1.out:out:audio', 'wheel.out:out:mod']);
+  assert.deepEqual(V.cables.list().filter(c => c.kind === 'mod').map(c => c.id + ' ' + c.a + ' ' + c.b + (c.preset ? ' preset' : '')),
+    ['r1 wheel.out i2:a.semi', 'r2 ve.out i2:fx.r1.mix', 'r3 bd.out i2:zz.none', 'p:i2:0 ve.out i2:a.pan preset']);
+  assert.deepEqual(R.mounted.filter(b => /wheel|ve|bd/.test(b)), ['mount ve', 'mount bd', 'mount wheel'], 'bodies by key (the host\'s cv-mods-ui)');
+  // sync: a removed modulator goes, its body unmounted
+  const t2 = clone(R.t); delete t2.dev.bd;
+  R.sync(t2);
+  assert.deepEqual([V.modules.has('bd'), V.modules.has('ve')], [false, true]);
+  V.destroy();
+});
+
+test('createTrackView (2a): knob end points — destPort from the [data-dest] centre in module px (the module\'s screen rect at any zoom), cached: one rect read until a fold, a size change (ResizeObserver), sync / refresh or remeasure; ports() holds them under \'<dev>:<param>\'; a knob not on the panel: the module\'s bar; host.destPort wins', () => {
+  const ROs = [];
+  globalThis.ResizeObserver = class { constructor(cb) { ROs.push(cb); } observe() {} disconnect() {} };
+  try {
+    const R = mview(), V = R.V, sx = V.modules.get('i2'), fx = V.modules.get('i2/fx'), X = sx.x, Y = sx.y;
+    // the Serum on screen at half size: 1200 world px → 600 client px from (100, 200); the knob 20 px wide around (250, 280)
+    place(sx.el, 100, 200, 600, 400); place(R.K['a.semi'], 240, 270, 20, 20);
+    place(fx.el, 800, 200, 380, 300); place(R.K['fx.r1.mix'], 840, 240, 10, 10);
+    let reads = 0;
+    const gb = R.K['a.semi'].getBoundingClientRect.bind(R.K['a.semi']);
+    R.K['a.semi'].getBoundingClientRect = () => { reads++; return gb(); };
+    V.remeasure();
+    assert.deepEqual([V.destPort('i2', 'a.semi'), reads], [{ x: X + 300, y: Y + 160 }, 1], '(250 − 100) / ½ = 300; (280 − 200) / ½ = 160');
+    assert.deepEqual(V.ports().get('i2:a.semi'), { x: X + 300, y: Y + 160 });
+    assert.deepEqual(V.ports().get('i2:fx.r1.mix'), { x: fx.x + 90, y: fx.y + 90 }, 'a Serum\'s own FX knob: in its FX module (the same [data-dev])');
+    for (let i = 0; i < 5; i++) V.ports();
+    sx.setPos(X + 64, Y, true); // (a live move: the offset rides along)
+    assert.deepEqual([V.destPort('i2', 'a.semi'), reads], [{ x: X + 364, y: Y + 160 }, 1], 'never measured again per frame');
+    sx.setPos(X, Y);
+    // a size change (the module's ResizeObserver) → measured again once
+    layout(sx.el, 1200, 900);
+    ROs.forEach(f => f());
+    V.ports(); V.ports();
+    assert.equal(reads, 2, 'after a size change');
+    // fold: the module's bar (left end); unfold: measured again
+    V.toggleFold('i2');
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: X, y: Y + 20 }, 'folded: its bar');
+    V.toggleFold('i2');
+    V.destPort('i2', 'a.semi');
+    assert.equal(reads, 3);
+    R.V.refresh(R.ref.t); V.destPort('i2', 'a.semi');
+    R.sync(clone(R.ref.t)); V.destPort('i2', 'a.semi');
+    V.remeasure('i2'); V.destPort('i2', 'a.semi');
+    V.remeasure('fx1'); V.destPort('i2', 'a.semi');
+    assert.equal(reads, 6, 'refresh, sync, remeasure(i2) measure again; another module\'s remeasure does not');
+    // a hidden knob (a page not shown: an empty rect) → the bar; one not on the panel → the bar ('fx.' params: the own FX's)
+    place(R.K['a.semi'], 0, 0, 0, 0); V.remeasure('i2');
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: X, y: Y + 20 });
+    assert.deepEqual([V.destPort('i2', 'zz.none'), V.destPort('i2', 'fx.r9.x'), V.destPort('nope', 'a.semi')], [{ x: X, y: Y + 20 }, { x: fx.x, y: fx.y + 20 }, null]);
+    // a body re-rendered (the knob detached): indexed again
+    const k2 = R.doc.createElement('div'); k2.setAttribute('data-dest', 'a.semi'); R.K['a.semi'].parentNode.append(k2); R.K['a.semi'].remove();
+    place(k2, 340, 370, 20, 20);
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: X + 500, y: Y + 360 }, 'the new element');
+    V.destroy();
+    const R2 = mview({ destPort: (dev, id) => (id === 'a.semi' ? { x: 1, y: 2 } : null) });
+    assert.deepEqual([R2.V.destPort('i2', 'a.semi'), R2.V.ports().get('i2:a.semi')], [{ x: 1, y: 2 }, { x: 1, y: 2 }], 'host.destPort first');
+    R2.V.destroy();
+  } finally { delete globalThis.ResizeObserver; }
+});
+
+test('createTrackView (2a): host.patch false keeps the audio read-only but the mod-out jacks and the mod cables editable; a module\'s selection raises the mod cables ending on its knobs (a Serum\'s own FX: its fx. knobs); visibility through V.setModsVisible / host.mods; a zoom\'s end re-cuts the ends; V.cableDrag drags from a mod jack', () => {
+  const R = mview({ patch: false, mods: 'select' }), V = R.V;
+  assert.deepEqual([V.jacks().filter(J => J.kind === 'mod').map(J => J.el.getAttribute('role') + ' ' + J.el.hasAttribute('data-ro')), V.jacks().find(J => J.id === 'i1.out').el.hasAttribute('data-ro')],
+    [['button false', 'button false', 'button false'], true]);
+  assert.deepEqual(V.cables.list().map(c => c.kind + ':' + !!c.readonly).filter((x, i, a) => a.indexOf(x) === i), ['audio:true', 'mod:false']);
+  assert.equal(V.cables.modsVisible(), 'select', 'host.mods: the starting mode');
+  R.W.select('i2');
+  const raised = () => V.cables.list().filter(c => c.kind === 'mod').filter(c => all(R.root).some(n => n.getAttribute && n.getAttribute('data-cable') === c.id && n.classList.contains('cv-hl'))).map(c => c.id);
+  assert.deepEqual(raised(), ['r1', 'r2', 'r3', 'p:i2:0'], 'the Serum: every knob of it');
+  R.W.select('i2/fx');
+  assert.deepEqual(raised(), ['r2']);
+  R.W.select('wheel');
+  assert.deepEqual(raised(), ['r1']);
+  assert.equal(V.setModsVisible('never'), 'never');
+  assert.equal(V.cables.modsVisible(), 'never');
+  // the ends follow a zoom's end (the world's k)
+  V.setModsVisible('always');
+  const P = V.ports(), endD = () => all(V.cables.over).find(n => n.getAttribute && n.getAttribute('data-cable') === 'r1').childNodes[0].getAttribute('d');
+  assert.ok(P.get('i2:a.semi'), 'the knob end');
+  const d1 = endD();
+  R.W.k = 2; R.W.emit('cameraend', { zoomed: true });
+  assert.notEqual(endD(), d1, 'cut again at k 2');
+  // a mod drag through the view's cableDrag (its jacks, ports, cables)
+  const log = [];
+  R.W.el = R.root; // (the world's element holds the modules)
+  R.doc.elementFromPoint = () => R.K['a.semi'];
+  const D = V.cableDrag({ canConnect: () => ({ ok: true }), onConnect: (a, b) => log.push(a + ' ' + b), onRepatch() {}, markDests: () => [{ dev: 'i2', ids: ['a.semi'] }] });
+  const wj = V.modules.get('wheel').jack('out');
+  assert.equal(typeof R.W.hooks.jack(new Ev('pointerdown', { clientX: 0, clientY: 0, pointerId: 1, pointerType: 'mouse' }), wj), 'object');
+  ptr(R.doc.body, 'pointermove', 50, 50, { pointerId: 1, buttons: 1 });
+  assert.equal(R.K['a.semi'].getAttribute('class'), 'cv-ok cv-hot');
+  ptr(R.doc.body, 'pointerup', 50, 50, { pointerId: 1 });
+  assert.deepEqual(log, ['wheel i2:a.semi']);
+  D.destroy();
+  V.destroy();
+  assert.equal(all(R.root).filter(n => n.getAttribute && /cv-mbadge/.test(n.getAttribute('class') || '')).length, 0, 'the badges go with the view');
 });

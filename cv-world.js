@@ -64,6 +64,11 @@ export const MAP_PREF = 'synth.cv.minimap';
  * 0 / 1 keys, double-tap fit / focus, focus reveal, a drag's edge pan); the minimap and the toolbar's zoom / fit buttons
  * still move it, and the app's own moves (a track switch's camera, a reveal after an add) still happen. */
 export const LOCK_PREF = 'synth.cv.lock';
+/** (2a) The mod-cable visibility pref (appstore; stored as synthc.cv.mods): the toolbar ∿ cycles Always (the default) →
+ * On select → Never; each change emits 'mods' with the mode (the track view's setModsVisible). */
+export const MODS_PREF = 'synth.cv.mods';
+export const MODS_MODES = Object.freeze(['always', 'select', 'never']);
+const MODS_LABEL = { always: 'Always', select: 'On select', never: 'Never' };
 /** A finger held this long (ms) on empty canvas, then dragged, draws a marquee instead of panning (SPEC §4.1). */
 export const MARQUEE_HOLD_MS = 250;
 /** The minimap's size (CSS px). */
@@ -125,7 +130,7 @@ const TAP_PX = { touch: 8, pen: 4, mouse: 4 }, DTAP_MS = 320, DTAP_PX = 24, REVE
  *   wheelVeto: () => boolean,
  *   escape: () => boolean,
  *   key: (e: KeyboardEvent) => boolean,
- *   on: (type: 'camera' | 'movestart' | 'cameraend' | 'screen' | 'budget' | 'native' | 'select' | 'edit' | 'snap' | 'lock', fn: (d: any) => void) => () => void,
+ *   on: (type: 'camera' | 'movestart' | 'cameraend' | 'screen' | 'budget' | 'native' | 'select' | 'edit' | 'snap' | 'lock' | 'mods', fn: (d: any) => void) => () => void,
  *   destroy: () => void,
  * }} World
  */
@@ -286,7 +291,7 @@ export function createWorld(viewport, o) {
   /* ---- state */
   let cam = { tx: 0, ty: 0, k: 1 }, shown = null, ikK = 1;
   let vp = { left: 0, top: 0, width: 0, height: 0 }, ovO = { left: 0, top: 0 }; // cached rects (resize)
-  let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, snapping = true, locked = false;
+  let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, snapping = true, locked = false, modsMode = 'always';
   let sel = null, editId = null, editSup = false, focusBack = null;
   const selSet = new Set(); // the selection (sel: its primary — the one tapped or moved last)
   let pin = null; // a bar double-tap's edit state { id, k }: it holds at the focus zoom even below EDIT_K (a large module's fit)
@@ -1198,7 +1203,7 @@ export function createWorld(viewport, o) {
     return false;
   }
 
-  /* ---- the floating toolbar (#cvToolbar): ⊖ 100% ⊕ · fit · tidy · ∿ (later) · the native-zoom chip */
+  /* ---- the floating toolbar (#cvToolbar): ⊖ 100% ⊕ · fit · tidy · snap · lock · map · ∿ (2a: mod cables) · the native-zoom chip */
   const TB = {};
   const ICON = {
     out: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10h10"/></svg>',
@@ -1237,9 +1242,7 @@ export function createWorld(viewport, o) {
     const snapB = btn('snap', 'Snap to grid', ICON.snap, () => setSnap(!snapping));
     const lockB = btn('lock', 'Lock view', ICON.unlock, () => setLock(!locked));
     const mapB = btn('map', 'Minimap', ICON.map, () => setMap(!mapOn));
-    const mods = btn('mods', 'Modulation cables arrive in a later stage', ICON.mods, null);
-    mods.disabled = true;
-    mods.setAttribute('aria-disabled', 'true');
+    const mods = btn('mods', 'Modulation cables', ICON.mods, () => setModsMode(MODS_MODES[(MODS_MODES.indexOf(modsMode) + 1) % MODS_MODES.length]));
     const chip = mk('button', 'cv-tb-chip');
     chip.type = 'button';
     chip.setAttribute('data-cv-tb', 'native');
@@ -1255,9 +1258,9 @@ export function createWorld(viewport, o) {
       snapB, lockB, mapB, mods);
     bar.append(fold, row, chip);
     host.append(bar);
-    Object.assign(TB, { bar, row, pct, chip, fold, snap: snapB, lock: lockB, map: mapB });
+    Object.assign(TB, { bar, row, pct, chip, fold, snap: snapB, lock: lockB, map: mapB, mods });
     buildMap(host);
-    snapUI(); lockUI(); mapUI();
+    snapUI(); lockUI(); mapUI(); modsUI();
     offs.push(() => { unlater(hintT); try { bar.remove(); } catch (err) { /* gone */ } });
   }
 
@@ -1365,6 +1368,21 @@ export function createWorld(viewport, o) {
     if (store) { try { store.set(SNAP_PREF, on); } catch (err) { /* storage */ } }
     emit('snap', on);
   }
+  // (2a) the mod cables' visibility (toolbar ∿, remembered: MODS_PREF): Always → On select → Never → Always
+  function modsUI() {
+    const b = TB.mods;
+    if (!b) return;
+    b.setAttribute('data-mode', modsMode);
+    b.title = 'Modulation cables: ' + MODS_LABEL[modsMode] + ' (tap: ' + MODS_LABEL[MODS_MODES[(MODS_MODES.indexOf(modsMode) + 1) % 3]] + ')';
+    b.setAttribute('aria-label', 'Modulation cables: ' + MODS_LABEL[modsMode]);
+  }
+  function setModsMode(m) {
+    if (!MODS_MODES.includes(m) || m === modsMode) return;
+    modsMode = m;
+    modsUI();
+    if (store) { try { store.set(MODS_PREF, m); } catch (err) { /* storage */ } }
+    emit('mods', m);
+  }
   // lock view (toolbar toggle, remembered): no gesture on the canvas moves the camera (LOCK_PREF); the minimap and the
   // toolbar's zoom / fit buttons still do. Switching it on stops a glide and a drag's edge pan where they are
   function lockUI() {
@@ -1413,6 +1431,7 @@ export function createWorld(viewport, o) {
   snapping = !(store && store.get && store.get(SNAP_PREF, true) === false);
   mapOn = !(store && store.get && store.get(MAP_PREF, true) === false);
   locked = !!(store && store.get && store.get(LOCK_PREF, false) === true);
+  { const m = store && store.get ? store.get(MODS_PREF, 'always') : 'always'; modsMode = MODS_MODES.includes(m) ? m : 'always'; }
   attr(viewport, 'data-cv-pinch', pinchMode);
   attr(viewport, 'data-cv-locked', locked);
   try { W.style.setProperty('--ik', '1'); } catch (err) { /* inert */ }
@@ -1462,6 +1481,8 @@ export function createWorld(viewport, o) {
     /** (1g) the grid's draws since the last reset: { n, ms (total), max, dots (the last frame's) }; reset: true zeroes them */
     gridStats(reset) { const g = GC ? { n: GC.n, ms: GC.ms, max: GC.max, dots: GC.dots } : { n: 0, ms: 0, max: 0, dots: 0 }; if (reset && GC) { GC.n = 0; GC.ms = 0; GC.max = 0; } return g; },
     snapOn: () => snapping, setSnap, mapOn: () => mapOn, setMap, lockOn: () => locked, setLock,
+    /** (2a) the mod cables' visibility: 'always' | 'select' | 'never' (toolbar ∿, MODS_PREF); a change emits 'mods' */
+    modsMode: () => modsMode, setModsMode,
     /** (1e, U14) a drag the caller runs (a tray tile's): the toolbar and the minimap step aside until setDragging(false) */
     setDragging: on => away(2, !!on),
     /** (1e) installs the jack hook (cv-cables createCableDrag): fn(e, jackEl) → truthy | {cancel} takes the press;

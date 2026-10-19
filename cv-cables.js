@@ -15,6 +15,12 @@
 //   createCableDrag(world, o)   (1e) patching from a jack: live bézier, compatible jacks glow (cv-ok) / others dim with
 //                               the reason (cv-no), 32 px snap, a module body's first compatible jack, re-patch by
 //                               dragging a cable's end off its input, tap = "Connect to…" (also Enter / Space on a jack)
+// Stage 2a (IMPL-2a §3): modulation cables. cablesOf(track, {project, presetRows}) adds one cable per track.mods row
+// (kind 'mod', a '<module>.out' → b '<dev>:<param>') and, given presetRows, one per performance row of a Serum's own matrix
+// (preset: true) whose module exists. A mod cable's body sits in the under layer; its last END_PX screen px in the over
+// layer and its amount badge (button.cv-mbadge in the world: the only part taking a press) above the modules. Visibility
+// Always / On select / Never (setModsVisible), the MOD_FADE_N+ fade and its one-time hint. A press on a mod-out jack
+// ([data-kind="mod"]) drags onto KNOBS: elementFromPoint → closest [data-dest] → closest [data-dev].
 // Each SVG sits at its cables' bounding box (+ PAD) with overflow visible: hit testing outside an SVG's own box is not
 // reliable across engines, and a box per layer keeps the painted area small. No viewBox: one user unit = one world px.
 import { DESTS, DEST_INDEX } from './serum-core.js?v=9';
@@ -28,10 +34,23 @@ export const PAD = 48;
  * TAP_PX (screen px) before it lifts is a tap ("Connect to…" on a jack, select on a cable). */
 export const SNAP_PX = 32, TAP_PX = 8;
 
+/** (2a) A mod cable's end drawn above the modules (screen px); past MOD_FADE_N visible mod cables (Always) the ones not
+ * touching the selection fade and the hint shows once. */
+export const END_PX = 24, MOD_FADE_N = 24;
+/** (2a) The modulator modules' colours (their cables' too, SPEC §2.9): by mod kind. */
+export const MOD_COLOR = Object.freeze({ wheel: '#4fb3d9', velo: '#e8a33d', at: '#b98ae6', bend: '#63c98a' });
+/** (2a) A mod device kind (track.dev) → its fixed module key; a Serum matrix performance source → that module's key. */
+export const MOD_KEY = Object.freeze({ wheel: 'wheel', velo: 've', at: 'at', bend: 'bd' });
+/** (2a) The visibility modes of the mod cables (the toolbar ∿ cycle). */
+export const MOD_MODES = Object.freeze(['always', 'select', 'never']);
+/** (2a) The hint shown once when more than MOD_FADE_N mod cables are visible. */
+export const MOD_HINT = MOD_FADE_N + '+ mod cables, tap ∿ to filter';
+
 const SVG = 'http://www.w3.org/2000/svg';
 const fin = x => typeof x === 'number' && isFinite(x);
 const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
 const r2 = v => Math.round(v * 100) / 100;
+const text1 = (el, t) => { if (el.textContent !== t) el.textContent = t; };
 
 /**
  * @typedef {{
@@ -44,6 +63,28 @@ const r2 = v => Math.round(v * 100) / 100;
  *   drawn from 'i2/fx.out'); src: the instruments it carries; dim: every one of them silent (powered off or not the
  *   soloed one) → .cv-off (grey); g: the wire's level when ≠ 1 (its label: dB)
  */
+
+/** (2a) A track.mods row's src → its module key: 'wheel' → 'wheel', '<dev>.out' → '<dev>' (else null). */
+export function modSrcKey(src) {
+  if (src === 'wheel') return 'wheel';
+  const m = typeof src === 'string' ? /^([^.:/]+)\.out$/.exec(src) : null;
+  return m ? m[1] : null;
+}
+/** (2a) A mod-out jack → the row's src it starts: 'wheel.out' → 'wheel', 've.out' → 've.out'. */
+export function modSrcOf(jack) { return jack === 'wheel.out' ? 'wheel' : String(jack || ''); }
+/** (2a) A mod cable's amount badge: '+50%', '−25%', bipolar '±50%' (amt −1…1). */
+export function amtText(amt, bi) {
+  const a = fin(amt) ? Math.max(-1, Math.min(1, amt)) : 0, p = Math.round(Math.abs(a) * 100);
+  return (bi ? '±' : a < 0 ? '−' : '+') + p + '%';
+}
+/** (2a) A Serum's performance rows (its own s.matrix rows whose src is wheel / velo / at / bend): [{slot, src, dst, amt,
+ * bi, byp}] — cablesOf's presetRows: true. Pure. */
+export function perfRows(dev) {
+  const M = isObj(dev) && isObj(dev.vals) && isObj(dev.vals.s) && Array.isArray(dev.vals.s.matrix) ? dev.vals.s.matrix : [];
+  const out = [];
+  M.forEach((r, slot) => { if (isObj(r) && MOD_KEY[r.src] && typeof r.dst === 'string' && r.dst) out.push({ slot, src: r.src, dst: r.dst, amt: r.amt, bi: r.bi, byp: r.byp }); });
+  return out;
+}
 
 /** Cubic bézier with horizontal tangents d = max(TANGENT_MIN, |x2 − x1| / 2): 'M x1 y1 C x1+d y1, x2−d y2, x2 y2'.
  * @returns {string} an SVG path `d` */
@@ -97,7 +138,7 @@ const dB = g => (g > 0 ? (Math.round(20 * Math.log10(g) * 10) / 10).toFixed(1).r
  * (powered off, or another instrument is soloed) — a panel's output carries what reaches the panel. A track without
  * dev (v1): deriveCables. Pure. @param {{dev?: object, wires?: Array, color?: string}} track @returns {Cable[]}
  */
-export function cablesOf(track) {
+export function cablesOf(track, opts) {
   const t = isObj(track) ? track : {}, D = isObj(t.dev) ? t.dev : null;
   if (!D) return deriveCables(t);
   const tc = typeof t.color === 'string' ? t.color : undefined, on = sounding(D);
@@ -133,7 +174,64 @@ export function cablesOf(track) {
     if (typeof w.g === 'number' && isFinite(w.g) && w.g !== 1) { o.g = w.g; o.label = dB(w.g); }
     out.push(mk(o, srcs.get(devOf(w.a)) || []));
   }
+  return out.concat(modCables(t, D, opts));
+}
+/**
+ * (2a) The mod cables of a v2 track (IMPL-2a §3): one per track.mods row — {id: row id, kind: 'mod', a: '<module>.out' (the
+ * wheel's 'wheel.out', else '<dev>.out'), b: '<dev>:<param>', amt, bi, byp, preset: false, dashed, badge (amtText), color
+ * (the source module's: its dev.color, else MOD_COLOR)}; then, with opts.presetRows (true: perfRows of each Serum; or
+ * (devId, dev) → rows), one per performance row of a Serum's own matrix whose module exists (the wheel: opts.project
+ * .perf.wheel; Velocity / Aftertouch / Bend: that device on the track) — {id: 'p:<dev>:<slot>', preset: true, dev, slot}.
+ * opts.dashed(row) → true draws a row dashed (a per-note source on a target following the last note: none in 2a). Pure.
+ */
+function modCables(t, D, opts) {
+  const o = isObj(opts) ? opts : {}, out = [], tc = typeof t.color === 'string' ? t.color : undefined;
+  const P = isObj(o.project) ? o.project : null, wheel = !!(P && isObj(P.perf) && P.perf.wheel);
+  const mdev = k => (isObj(D[k]) && MOD_KEY[D[k].kind] === k ? D[k] : null);
+  const colorOf = k => { if (k === 'wheel') return MOD_COLOR.wheel; const d = mdev(k); return (d && typeof d.color === 'string' && d.color) || (d && MOD_COLOR[d.kind]) || tc; };
+  const mk = (id, a, b, r, key, extra) => {
+    const c = Object.assign({ id, kind: 'mod', a, b, amt: fin(r.amt) ? r.amt : 0, bi: !!r.bi, byp: !!r.byp, preset: false, dashed: false }, extra);
+    if (typeof o.dashed === 'function') { try { c.dashed = !!o.dashed(r); } catch (err) { /* host */ } }
+    c.badge = amtText(c.amt, c.bi);
+    const col = colorOf(key);
+    if (col) c.color = col;
+    return c;
+  };
+  for (const r of Array.isArray(t.mods) ? t.mods : []) {
+    if (!isObj(r) || typeof r.id !== 'string' || typeof r.dst !== 'string' || r.dst.indexOf(':') < 1) continue;
+    const key = modSrcKey(r.src);
+    if (key) out.push(mk(r.id, key + '.out', r.dst, r, key, { src: r.src }));
+  }
+  const PR = o.presetRows;
+  if (PR) {
+    for (const id of Object.keys(D)) {
+      if (!isSx(D, id)) continue;
+      let rows = null;
+      try { rows = typeof PR === 'function' ? PR(id, D[id]) : perfRows(D[id]); } catch (err) { rows = null; }
+      for (const r of Array.isArray(rows) ? rows : []) {
+        const key = isObj(r) ? MOD_KEY[r.src] : null;
+        if (!key || typeof r.dst !== 'string' || !r.dst || !(key === 'wheel' ? wheel : mdev(key))) continue;
+        out.push(mk('p:' + id + ':' + r.slot, key + '.out', id + ':' + r.dst, r, key, { preset: true, dev: id, slot: r.slot, src: r.src }));
+      }
+    }
+  }
   return out;
+}
+// (2a) the last `L` world px of cablePath(x1, y1, x2, y2) as its own cubic (de Casteljau at the parameter where the arc
+// length from the end reaches L; the arc sampled in 24 chords): {d, x, y} — x, y its start (the badge's place)
+function tail(x1, y1, x2, y2, L) {
+  const t0 = Math.max(TANGENT_MIN, Math.abs(x2 - x1) / 2), P = [x1, y1, x1 + t0, y1, x2 - t0, y2, x2, y2];
+  const at = t => { const u = 1 - t, a = u * u * u, b = 3 * u * u * t, c = 3 * u * t * t, e = t * t * t; return [a * P[0] + b * P[2] + c * P[4] + e * P[6], a * P[1] + b * P[3] + c * P[5] + e * P[7]]; };
+  let t = 0, acc = 0, prev = at(1);
+  for (let i = 23; i >= 0; i--) {
+    const ti = i / 24, q = at(ti), d = Math.hypot(q[0] - prev[0], q[1] - prev[1]);
+    if (acc + d >= L) { t = ti + (1 / 24) * ((acc + d - L) / (d || 1)); break; }
+    acc += d; prev = q;
+  }
+  const l = (a, b) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  const p0 = [P[0], P[1]], p1 = [P[2], P[3]], p2 = [P[4], P[5]], p3 = [P[6], P[7]];
+  const a1 = l(p0, p1), b1 = l(p1, p2), c1 = l(p2, p3), a2 = l(a1, b1), b2 = l(b1, c1), s = l(a2, b2);
+  return { d: `M ${r2(s[0])} ${r2(s[1])} C ${r2(b2[0])} ${r2(b2[1])}, ${r2(c1[0])} ${r2(c1[1])}, ${r2(p3[0])} ${r2(p3[1])}`, x: r2(s[0]), y: r2(s[1]) };
 }
 
 // a Serum destination's base value (stored, else its default)
@@ -174,9 +272,16 @@ export function routeLabel(s, fx) {
  * a wk menu (Disconnect, then o.menu(id)'s items); while one is selected Escape clears it and Delete / Backspace
  * disconnects it (document keydown, capture phase: consumed). A cable's dim (its source silent) → .cv-off (grey).
  * live(spec) draws the cable being patched in the upper layer; hide(id, on) fades the one being re-patched (.cv-lift).
+ * (2a) Mod cables (kind 'mod'): g.cv-cable-g[data-kind="mod"] (+ .cv-preset, .cv-dash; bypassed → .cv-off) whose body is in
+ * the under layer (no hit: CSS) and whose last END_PX screen px (o.k(): the world's zoom; rezoom() after a zoom) are a
+ * twin g in the over layer; the amount badge button.cv-mbadge[data-cable] (+ span.cv-ptag "preset") in worldEl is the only
+ * part taking a press: a tap selects (o.onSelect(id), again on a selected one: the inspector), long-press / right-click
+ * the menu. No floating × for them. setModsVisible('always' | 'select' | 'never'): On select shows the mod cables touching
+ * the selection (highlight ids, the selected cable), Never none; Always all, and past MOD_FADE_N visible ones those not
+ * touching the selection fade (.cv-fade) and o.onHint(MOD_HINT) runs once.
  * @param {HTMLElement} worldEl  #world
  * @param {{doc?: Document, onSelect?: (id: string | null) => void, onAction?: (id: string, action: string) => void,
- *   menu?: (id: string) => Array<object>}} [o]
+ *   menu?: (id: string) => Array<object>, k?: () => number, onHint?: (text: string) => void, mods?: string}} [o]
  */
 export function createCables(worldEl, o) {
   const O0 = o || {}, doc = O0.doc || (worldEl && worldEl.ownerDocument) || globalThis.document;
@@ -193,14 +298,40 @@ export function createCables(worldEl, o) {
   const U = svg('cv-cables', 0), O = svg('cv-cable-ends', 10000);
   if (worldEl) { worldEl.append(U.e); worldEl.append(O.e); }
   let list = [], ports = null, hl = null, sel = null, xb = null, press = null, keyOff = null, liveP = null, dead = false;
-  const items = new Map(); // id → {c, g, vis, hit, lab, d, lx, ly, mx, my}
+  let mode = MOD_MODES.includes(O0.mods) ? O0.mods : 'always', hinted = false;
+  const items = new Map(); // id → {c, g, vis, hit, lab, d, lx, ly, mx, my}; (2a) a mod cable: og (over twin), end, badge, amt, ptag
+  const isMod = it => !!it && !!it.og;
+  const kOf = () => { let k = 1; try { k = typeof O0.k === 'function' ? +O0.k() : 1; } catch (err) { k = 1; } return k > 0 && isFinite(k) ? k : 1; };
+  let kNow = kOf();
+  // a class on a cable's group and, for a mod cable, its over twin and badge
+  const tog = (it, c, on) => { it.g.classList.toggle(c, on); if (it.og) { it.og.classList.toggle(c, on); it.badge.classList.toggle(c, on); } };
   const node = (tag, cls) => { const e = doc.createElementNS(SVG, tag); if (cls) e.setAttribute('class', cls); return e; };
   const listen = (t, type, fn, opt) => { t.addEventListener(type, fn, opt); return () => t.removeEventListener(type, fn, opt); };
   const editable = id => { const it = items.get(id); return !!it && !it.c.readonly; };
+  const drop = it => { it.g.remove(); if (it.og) { it.og.remove(); it.bOff(); it.badge.remove(); } };
+  // (2a) a mod cable's over-layer twin (its end) and its amount badge
+  function modParts(it) {
+    const og = node('g', 'cv-cable-g'), end = node('path', 'cv-cable cv-mend');
+    og.append(end);
+    O.g.append(og);
+    const b = doc.createElement('button'), amt = doc.createElement('span'), ptag = doc.createElement('span');
+    b.className = 'cv-mbadge'; b.type = 'button';
+    amt.className = 'cv-mamt'; ptag.className = 'cv-ptag'; ptag.hidden = true;
+    b.append(amt, ptag);
+    const id = () => it.c.id;
+    const offs = [
+      listen(b, 'pointerdown', e => e.stopPropagation()), // (never the world's press: no pan, no marquee)
+      listen(b, 'click', e => { e.stopPropagation(); if (sel === id()) { if (typeof O0.onSelect === 'function') O0.onSelect(sel); } else select(id()); }),
+      listen(b, 'contextmenu', e => { if (e.preventDefault) e.preventDefault(); e.stopPropagation(); select(id()); openMenu(id(), e.clientX, e.clientY); }),
+      wk.menuSource(b, { keys: false }),
+    ];
+    if (worldEl) worldEl.append(b);
+    Object.assign(it, { og, end, badge: b, amt, ptag, ed: '', bx: NaN, by: NaN, bOff: () => { for (const f of offs) f(); } });
+  }
   function set(cables) {
     list = Array.isArray(cables) ? cables.filter(c => isObj(c) && typeof c.id === 'string') : [];
-    const keep = new Set(list.map(c => c.id));
-    for (const [id, it] of items) if (!keep.has(id)) { it.g.remove(); items.delete(id); }
+    const want = new Map(list.map(c => [c.id, c.kind === 'mod']));
+    for (const [id, it] of items) if (!want.has(id) || want.get(id) !== isMod(it)) { drop(it); items.delete(id); } // (a kind change: made again)
     for (const c of list) {
       let it = items.get(c.id);
       if (!it) {
@@ -209,13 +340,25 @@ export function createCables(worldEl, o) {
         U.g.append(g);
         it = { c, g, vis, hit, lab: null, d: '', lx: NaN, ly: NaN, mx: NaN, my: NaN };
         items.set(c.id, it);
+        if (c.kind === 'mod') modParts(it);
       }
       it.c = c;
       it.g.setAttribute('data-cable', c.id);
       it.g.setAttribute('data-kind', c.kind || 'audio');
       if (c.readonly) it.g.setAttribute('data-ro', ''); else it.g.removeAttribute('data-ro');
       if (c.color) it.g.style.setProperty('--cc', c.color); else if (it.g.style.removeProperty) it.g.style.removeProperty('--cc');
-      if (c.dim) it.g.classList.add('cv-off'); else it.g.classList.remove('cv-off');
+      tog(it, 'cv-off', !!(c.dim || (it.og && c.byp)));
+      if (it.og) {
+        it.og.setAttribute('data-cable', c.id); it.og.setAttribute('data-kind', 'mod');
+        it.badge.setAttribute('data-cable', c.id);
+        for (const n of [it.og, it.badge]) { if (c.color) n.style.setProperty('--cc', c.color); else if (n.style.removeProperty) n.style.removeProperty('--cc'); }
+        tog(it, 'cv-preset', !!c.preset); tog(it, 'cv-dash', !!c.dashed);
+        const t = c.badge || amtText(c.amt, c.bi);
+        if (it.amt.textContent !== t) it.amt.textContent = t;
+        it.ptag.hidden = !c.preset; text1(it.ptag, c.preset ? 'preset' : ''); // (the tag's text only on a preset row: the badge reads as its amount)
+        const L = 'Modulation ' + t + (c.preset ? ' (saved with the preset)' : '') + (c.byp ? ', bypassed' : '') + ' — tap to edit';
+        it.badge.setAttribute('aria-label', L); it.badge.title = L;
+      }
       if (c.label) {
         if (!it.lab) { it.lab = node('text', 'cv-cable-lab'); it.lab.setAttribute('text-anchor', 'middle'); it.g.append(it.lab); }
         if (it.lab.textContent !== c.label) it.lab.textContent = c.label;
@@ -223,7 +366,7 @@ export function createCables(worldEl, o) {
     }
     paintHl();
     if (sel && !editable(sel)) select(null); // (disconnected, or now read-only)
-    if (ports) layout(ports);
+    if (ports) layout(ports); else vis();
   }
   // ports: Map | object 'mod.jack' → {x, y} (world px)
   function layout(p) {
@@ -233,9 +376,11 @@ export function createCables(worldEl, o) {
     for (const it of items.values()) {
       const A = at(it.c.a), B = at(it.c.b), show = !!(A && B && fin(A.x) && fin(A.y) && fin(B.x) && fin(B.y));
       it.g.style.display = show ? '' : 'none';
+      if (it.og) it.og.style.display = show ? '' : 'none';
       if (!show) { it.mx = NaN; continue; }
       const d = cablePath(A.x, A.y, B.x, B.y);
       if (d !== it.d) { it.d = d; it.vis.setAttribute('d', d); it.hit.setAttribute('d', d); }
+      if (it.og) ends(it, A, B);
       // the cubic's midpoint (t = ½) is the chord's midpoint for these symmetric tangents: the label sits above it, the × on it
       it.mx = r2((A.x + B.x) / 2); it.my = r2((A.y + B.y) / 2);
       if (it.lab) {
@@ -247,6 +392,42 @@ export function createCables(worldEl, o) {
     place(U, x0, y0, x1, y1);
     place(O, x0, y0, x1, y1);
     placeX();
+    vis();
+  }
+  // (2a) a mod cable's last END_PX screen px (the over layer) and its badge at their start (world px)
+  function ends(it, A, B) {
+    const T = tail(A.x, A.y, B.x, B.y, END_PX / kNow);
+    if (T.d !== it.ed) { it.ed = T.d; it.end.setAttribute('d', T.d); }
+    if (T.x !== it.bx || T.y !== it.by) { it.bx = T.x; it.by = T.y; it.badge.style.left = T.x + 'px'; it.badge.style.top = T.y + 'px'; }
+  }
+  // (2a) after a zoom: the ends are END_PX screen px again (nothing else moves)
+  function rezoom() {
+    const k = kOf();
+    if (k === kNow) return false;
+    kNow = k;
+    const at = q => (!ports ? null : typeof ports.get === 'function' ? ports.get(q) : ports[q]) || null;
+    for (const it of items.values()) if (it.og && fin(it.mx)) { const A = at(it.c.a), B = at(it.c.b); if (A && B) ends(it, A, B); }
+    return true;
+  }
+  // (2a) the mod cables' visibility (setModsVisible) and the MOD_FADE_N+ fade; the badge follows its cable
+  const touching = id => id === sel || (!!hl && hl.has(id));
+  function vis() {
+    const M = [...items.values()].filter(isMod);
+    const many = mode === 'always' && M.filter(it => fin(it.mx)).length > MOD_FADE_N;
+    for (const it of M) {
+      const t = touching(it.c.id), hide = mode === 'never' || (mode === 'select' && !t);
+      tog(it, 'cv-hide', hide);
+      tog(it, 'cv-fade', many && !t);
+      it.badge.hidden = hide || !fin(it.mx);
+    }
+    if (many && !hinted) { hinted = true; if (typeof O0.onHint === 'function') { try { O0.onHint(MOD_HINT); } catch (err) { console.error(err); } } }
+  }
+  function setModsVisible(m) {
+    if (!MOD_MODES.includes(m)) return mode;
+    mode = m;
+    if (sel && mode === 'never' && isMod(items.get(sel))) select(null);
+    vis();
+    return mode;
   }
   function place(L, x0, y0, x1, y1) {
     const ok = x1 >= x0 && y1 >= y0;
@@ -261,8 +442,8 @@ export function createCables(worldEl, o) {
   function paintHl() {
     for (const [id, it] of items) {
       const on = !!hl && hl.has(id);
-      it.g.classList.toggle('cv-hl', on);
-      it.g.classList.toggle('cv-dim', !!hl && !on);
+      tog(it, 'cv-hl', on);
+      tog(it, 'cv-dim', !!hl && !on);
     }
   }
   /* ---- (1e) selection, the floating ×, the menu */
@@ -270,17 +451,17 @@ export function createCables(worldEl, o) {
   function placeX() {
     const it = sel ? items.get(sel) : null;
     if (!xb) return;
-    const show = !!it && fin(it.mx) && fin(it.my);
+    const show = !!it && !isMod(it) && fin(it.mx) && fin(it.my); // (a mod cable: its badge and the inspector, no ×)
     xb.hidden = !show;
     if (show) { xb.style.left = it.mx + 'px'; xb.style.top = it.my + 'px'; }
   }
   function select(id) {
     const want = id && editable(id) ? id : null;
     if (want === sel) return;
-    if (sel && items.get(sel)) items.get(sel).g.classList.remove('cv-sel');
+    if (sel && items.get(sel)) tog(items.get(sel), 'cv-sel', false);
     sel = want;
     if (sel) {
-      items.get(sel).g.classList.add('cv-sel');
+      tog(items.get(sel), 'cv-sel', true);
       if (!xb && worldEl) {
         xb = doc.createElement('button');
         xb.className = 'cv-cable-x'; xb.type = 'button'; xb.textContent = '×';
@@ -299,6 +480,7 @@ export function createCables(worldEl, o) {
       }
     } else if (keyOff) { keyOff(); keyOff = null; }
     placeX();
+    vis();
     if (typeof O0.onSelect === 'function') O0.onSelect(sel);
   }
   const typing = t => !!t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || '') || t.isContentEditable === true);
@@ -316,8 +498,8 @@ export function createCables(worldEl, o) {
     if (extra.length) L.push({ sep: true }, ...extra);
     return wk.contextMenu(x, y, L);
   }
-  const cableAt = t => {
-    for (let n = t; n && n !== U.e && typeof n.getAttribute === 'function'; n = n.parentNode) {
+  const cableAt = t => { // (2a: a mod cable's badge too — it sits in worldEl)
+    for (let n = t; n && n !== U.e && n !== worldEl && typeof n.getAttribute === 'function'; n = n.parentNode) {
       const id = n.getAttribute('data-cable');
       if (id != null) return editable(id) ? id : null;
     }
@@ -357,13 +539,13 @@ export function createCables(worldEl, o) {
     if (!liveP) { liveP = node('path', 'cv-cable cv-cable-live'); O.g.append(liveP); }
     liveP.setAttribute('d', cablePath(sp.x1, sp.y1, sp.x2, sp.y2));
     if (sp.color) liveP.style.setProperty('--cc', sp.color);
-    liveP.setAttribute('class', 'cv-cable cv-cable-live' + (sp.snap ? ' cv-snap' : ''));
+    liveP.setAttribute('class', 'cv-cable cv-cable-live' + (sp.mod ? ' cv-mlive' : '') + (sp.snap ? ' cv-snap' : '')); // (2a) sp.mod: the mod look
   }
   return {
     under: U.e, over: O.e,
     set,
     layout,
-    highlight(ids) { hl = Array.isArray(ids) ? new Set(ids) : null; paintHl(); },
+    highlight(ids) { hl = Array.isArray(ids) ? new Set(ids) : null; paintHl(); vis(); },
     /** (addition) the current cables and the box of the under layer 'x,y,w,h' — for tests and the world's fit */
     list: () => list.slice(),
     box: () => U.box,
@@ -371,6 +553,9 @@ export function createCables(worldEl, o) {
     select, selected: () => sel,
     escape: () => { if (!sel) return false; select(null); return true; },
     openMenu, hide, live,
+    /** (2a) the mod cables' visibility: 'always' | 'select' | 'never' (anything else: unchanged) → the mode; rezoom() after a
+     * zoom (o.k changed: the ends cut again) → whether it changed; badge(id): a mod cable's badge (the inspector's anchor) */
+    setModsVisible, modsVisible: () => mode, rezoom, badge: id => { const it = items.get(id); return it && it.badge ? it.badge : null; },
     destroy() {
       if (dead) return;
       dead = true;
@@ -380,6 +565,7 @@ export function createCables(worldEl, o) {
       menuOff();
       if (xb) xb.remove();
       if (liveP) liveP.remove();
+      for (const it of items.values()) if (it.og) { it.bOff(); it.badge.remove(); }
       U.e.remove(); O.e.remove(); items.clear(); list = []; ports = null;
     },
   };
@@ -397,6 +583,16 @@ export function createCables(worldEl, o) {
  *   inPort) (callbacks get model ports); elsewhere nothing (a lifted end goes back: Disconnect is the cable's ×; near an
  *   incompatible jack: o.onRefuse(a, b, why)). A tap, Enter / Space or a right-click on a jack opens "Connect to…"
  *   (o.onDisconnect(wireId) adds Disconnect items). Escape, a pointercancel, a second finger (the world) cancel.
+ * (2a) A press on a mod-out jack ([data-kind="mod"]; patchable whatever o.port says) drags a mod cable onto a KNOB: under
+ *   the pointer (o.hit(x, y), default document.elementFromPoint) closest [data-dest] → closest [data-dev] (else its
+ *   module's device) → dst '<dev>:<param>', checked by o.canMod(src, dst) (default o.canConnect; [data-nomod] refused)
+ *   with src = modSrcOf(jack) ('wheel' | '<dev>.out'). While dragging #world has [data-cv-patching="mod"], the knobs
+ *   o.markDests(src) names ([{dev, ids}] | ['<dev>:<param>'] | (dev, id) → bool) carry .cv-ok, the modules without one
+ *   .cv-nodest (CSS dims the rest), every jack .cv-no (audio jacks are never its targets, nor mod jacks an audio drag's);
+ *   the knob under the pointer .cv-hot (refused: .cv-no), a module's top bar .cv-hot. Release on an accepted knob:
+ *   o.onMod(src, dst) (default o.onConnect); on a refused one o.onRefuse(src, dst, why); on a module's top bar
+ *   o.onBarDrop(src, key); a tap, Enter / Space or a right-click on the jack: o.onJackTap(src, jackEl). Two fingers,
+ *   Escape, a pointercancel cancel as for audio cables; the live bézier has the mod look (live({mod: true})).
  * @param {object} world  cv-world World (toClient, toWorld, dragPointer, on, setJackHook, el)
  * @param {{
  *   ports: () => Map<string, {x: number, y: number}>,
@@ -408,6 +604,10 @@ export function createCables(worldEl, o) {
  *   onConnect: (a: string, b: string) => void, onRepatch: (wireId: string, a: string, b: string) => void,
  *   onDisconnect?: (wireId: string) => void, onRefuse?: (a: string, b: string, why: string) => void,
  *   cables?: object, label?: (jack: string) => string, color?: string | (() => string), doc?: Document,
+ *   canMod?: (src: string, dst: string) => {ok: boolean, why?: string}, onMod?: (src: string, dst: string) => void,
+ *   markDests?: (src: string) => Array<{dev: string, ids: string[]} | string> | ((dev: string, id: string) => boolean),
+ *   onBarDrop?: (src: string, key: string) => void, onJackTap?: (src: string, jackEl: Element) => void,
+ *   hit?: (x: number, y: number) => Element | null,
  * }} o
  * @returns {{press: (e: PointerEvent, jackEl: Element) => false | {cancel: () => void},
  *   menu: (jack: string, x?: number, y?: number) => object | null, cancel: () => void, active: () => boolean, destroy: () => void}}
@@ -427,14 +627,16 @@ export function createCableDrag(world, o) {
   const at = (p, k) => (p && (typeof p.get === 'function' ? p.get(k) : p[k])) || null;
   const toClient = (x, y) => (W && typeof W.toClient === 'function' ? W.toClient(x, y) : { x, y });
   const toWorld = (x, y) => (W && typeof W.toWorld === 'function' ? W.toWorld(x, y) : { x, y });
-  function jacks() { // [{id, el, dir, mod, label}]: o.jacks, else every [data-cv-jack] in the world
+  const isModJack = el => !!el && typeof el.getAttribute === 'function' && el.getAttribute('data-kind') === 'mod';
+  function jacks() { // [{id, el, dir, mod, label, kind}]: o.jacks, else every [data-cv-jack] in the world
     let L = call(Op.jacks);
     if (!Array.isArray(L)) {
       L = [];
       const walk = n => { for (const c of n.children || []) { const id = c.getAttribute && c.getAttribute('data-cv-jack'); if (id) L.push({ id, el: c }); else walk(c); } };
       if (W && W.el) walk(W.el);
     }
-    return L.filter(j => j && typeof j.id === 'string').map(j => ({ id: j.id, el: j.el || null, dir: j.dir || dirOf(j.id), mod: j.mod || modOf(j.id), label: j.label }));
+    return L.filter(j => j && typeof j.id === 'string').map(j => ({ id: j.id, el: j.el || null, dir: j.dir || dirOf(j.id), mod: j.mod || modOf(j.id), label: j.label,
+      kind: j.kind || (j.el && typeof j.el.getAttribute === 'function' && j.el.getAttribute('data-kind')) || 'audio' }));
   }
   const labelOf = (j, d) => {
     const L = call(Op.label, j);
@@ -457,6 +659,7 @@ export function createCableDrag(world, o) {
   /* ---- the press (the world's jack hook) */
   function press(e, el) {
     if (D || dead || !el || typeof el.getAttribute !== 'function' || ro(el) || (e.button != null && e.button !== 0)) return false;
+    if (isModJack(el)) return pressMod(e, el);
     const j = el.getAttribute('data-cv-jack'), dir = j && dirOf(j);
     if (!dir || !portOf(j)) return false;
     const ws = dir === 'in' ? wires().filter(c => c.b === j) : [], w = ws.length ? ws[ws.length - 1] : null;
@@ -464,6 +667,17 @@ export function createCableDrag(world, o) {
       mode: w ? 'repatch' : 'new', wire: w ? w.wire : null, fixed: w ? w.a : j, want: w || dir === 'out' ? 'in' : 'out',
       lift: w ? [w.wire] : dir === 'out' ? wires().filter(c => c.a === j).map(c => c.wire) : [],
       marks: new Map(), tgt: null, body: false, near: null, offs: [], camOff: null };
+    try { el.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
+    D.offs.push(listen(doc, 'pointermove', move, { passive: true }), listen(doc, 'pointerup', up), listen(doc, 'pointercancel', pcancel),
+      listen(doc, 'keydown', key, true), listen(el, 'lostpointercapture', lost));
+    return { cancel };
+  }
+  // (2a) a press on a mod-out jack: a mod cable (its targets are knobs)
+  function pressMod(e, el) {
+    const j = el.getAttribute('data-cv-jack');
+    if (!j) return false;
+    D = { pid: e.pointerId, type: e.pointerType || 'mouse', el, grab: j, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, on: false,
+      mod: true, src: modSrcOf(j), fixed: j, marks: new Map(), knobs: [], dimmed: [], memo: new Map(), tgt: null, offs: [], camOff: null };
     try { el.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
     D.offs.push(listen(doc, 'pointermove', move, { passive: true }), listen(doc, 'pointerup', up), listen(doc, 'pointercancel', pcancel),
       listen(doc, 'keydown', key, true), listen(el, 'lostpointercapture', lost));
@@ -482,10 +696,12 @@ export function createCableDrag(world, o) {
   }
   function begin() {
     D.on = true;
+    if (D.mod) { beginMod(); return; }
     for (const J of jacks()) {
       if (!J.el) continue;
       let cls = 'cv-no', why = '';
       if (J.id === D.fixed) cls = 'cv-from';
+      else if (J.kind === 'mod') why = 'A modulation output: drag it onto a knob';
       else if (J.dir !== D.want) why = D.want === 'in' ? 'Connect an output to an input' : 'Connect an input to an output';
       else if (D.mode === 'repatch' && J.id === D.grab) cls = 'cv-ok';
       else { const r = D.want === 'in' ? check(D.fixed, J.id) : check(J.id, D.fixed); if (r.ok) cls = 'cv-ok'; else why = r.why || 'Not compatible'; }
@@ -498,11 +714,88 @@ export function createCableDrag(world, o) {
     D.rects = call(Op.rects) || {}; // (world rects: read once — the camera moves, the modules do not)
     if (W && typeof W.on === 'function') D.camOff = W.on('camera', () => { if (D && D.on) follow(); }); // (an edge pan under a still pointer)
   }
+  /* ---- (2a) the mod drag: knobs are its targets */
+  const attrUp = (n, a) => { for (; n && typeof n.getAttribute === 'function'; n = n.parentNode) if (n.getAttribute(a) != null) return n; return null; };
+  const devAt = el => { const d = attrUp(el, 'data-dev'); if (d) return d.getAttribute('data-dev'); const m = attrUp(el, 'data-cv-mod'); return m ? m.getAttribute('data-cv-mod').split('/')[0] : null; };
+  const hitAt = (x, y) => { if (typeof Op.hit === 'function') return call(Op.hit, x, y) || null; try { return typeof doc.elementFromPoint === 'function' ? doc.elementFromPoint(x, y) : null; } catch (err) { return null; } };
+  function checkMod(dst, el) { // → {ok, why}, memoised per drag
+    let r = D.memo.get(dst);
+    if (r) return r;
+    if (el && el.getAttribute('data-nomod') != null && el.getAttribute('data-nomod') !== '0') r = { ok: false, why: 'This knob can\u2019t be modulated' };
+    else {
+      const q = call(Op.canMod || Op.canConnect, D.src, dst);
+      r = q && typeof q === 'object' ? { ok: !!q.ok, why: q.why ? String(q.why) : '' } : { ok: q !== false && q !== undefined, why: '' };
+      if (!r.ok && !r.why) r.why = 'This knob can\u2019t be modulated';
+    }
+    D.memo.set(dst, r);
+    return r;
+  }
+  function destTest() { // o.markDests(src) → (dev, id) → bool, or null (no knob marked)
+    const r = call(Op.markDests, D.src);
+    if (typeof r === 'function') return (dv, id) => { try { return !!r(dv, id); } catch (err) { return false; } };
+    if (!Array.isArray(r)) return null;
+    const S = new Set();
+    for (const x of r) { if (typeof x === 'string') S.add(x); else if (isObj(x) && typeof x.dev === 'string' && Array.isArray(x.ids)) for (const id of x.ids) S.add(x.dev + ':' + id); }
+    return (dv, id) => S.has(dv + ':' + id);
+  }
+  function beginMod() {
+    for (const J of jacks()) { // every jack: never a target (the source: .cv-from)
+      if (!J.el) continue;
+      const cls = J.id === D.fixed ? 'cv-from' : 'cv-no', why = cls === 'cv-no' ? 'Drag a modulation cable onto a knob' : '';
+      D.marks.set(J.id, { J, cls, why, title: J.el.getAttribute('title') });
+      J.el.classList.add(cls);
+      if (why) J.el.setAttribute('title', why);
+    }
+    const test = destTest(), srcMod = modOf(D.fixed), roots = new Map(), okMods = new Set();
+    if (W && W.el) { // one walk of the world: [data-dest] under [data-dev] (else the module's device), the module roots
+      const st = [[W.el, null, null]];
+      while (st.length) {
+        const [n, dv0, mk0] = st.pop();
+        for (const c of n.children || []) {
+          if (!c || typeof c.getAttribute !== 'function') continue;
+          const mk = c.getAttribute('data-cv-mod'), mkey = mk != null ? mk : mk0, dv = c.getAttribute('data-dev') || dv0 || (mk != null ? mk.split('/')[0] : null);
+          if (mk != null) roots.set(mk, c);
+          const id = c.getAttribute('data-dest');
+          if (id && test && dv && c.getAttribute('data-nomod') == null && test(dv, id)) { c.classList.add('cv-ok'); D.knobs.push(c); if (mkey != null) okMods.add(mkey); }
+          st.push([c, dv, mkey]);
+        }
+      }
+      W.el.setAttribute('data-cv-patching', 'mod');
+    }
+    for (const [k, el] of roots) if (k !== srcMod && !okMods.has(k)) { el.classList.add('cv-nodest'); D.dimmed.push(el); }
+    const mr = attrUp(D.el, 'data-cv-mod'); // (the live cable: the source module's colour)
+    D.color = (mr && mr.style && typeof mr.style.getPropertyValue === 'function' && mr.style.getPropertyValue('--mc')) || colorOf();
+    if (W && typeof W.on === 'function') D.camOff = W.on('camera', () => { if (D && D.on) follow(); });
+  }
+  function followMod() {
+    const t = hitAt(D.x, D.y);
+    let tg = null;
+    const de = attrUp(t, 'data-dest');
+    if (de && de !== D.el) {
+      const dv = devAt(de), id = de.getAttribute('data-dest');
+      if (dv && id) { const r = checkMod(dv + ':' + id, de); tg = { kind: 'knob', el: de, dst: dv + ':' + id, ok: r.ok, why: r.why }; }
+    }
+    if (!tg) {
+      const b = attrUp(t, 'data-cv-bar'), m = b && attrUp(b, 'data-cv-mod'), k = m && m.getAttribute('data-cv-mod');
+      if (k && k !== modOf(D.fixed)) tg = { kind: 'bar', el: b, key: k };
+    }
+    const o1 = D.tgt, same = o1 && tg && o1.el === tg.el;
+    if (!same) {
+      if (o1) o1.el.classList.remove(o1.ok === false ? 'cv-no' : 'cv-hot');
+      if (tg) tg.el.classList.add(tg.ok === false ? 'cv-no' : 'cv-hot');
+      D.tgt = tg;
+    }
+    const P = call(Op.ports), F = at(P, D.fixed);
+    let T = toWorld(D.x, D.y);
+    if (tg && tg.kind === 'knob' && tg.ok) { const r = tg.el.getBoundingClientRect ? tg.el.getBoundingClientRect() : null; if (r) T = toWorld(r.left + r.width / 2, r.top + r.height / 2); }
+    if (C && F && T) C.live({ x1: F.x, y1: F.y, x2: T.x, y2: T.y, color: D.color || undefined, snap: !!(tg && tg.ok !== false), mod: true });
+  }
   function follow() { // the target under the pointer (snap, else a module body's first compatible jack) and the live cable
+    if (D.mod) { followMod(); return; }
     const P = call(Op.ports);
     let best = null, bd = Infinity, near = null, nd = Infinity;
     for (const [id, m] of D.marks) {
-      if (m.cls === 'cv-from' || m.J.dir !== D.want) continue;
+      if (m.cls === 'cv-from' || m.J.dir !== D.want || m.J.kind === 'mod') continue;
       const p = at(P, id);
       if (!p) continue;
       const c = toClient(p.x, p.y), d = Math.hypot(c.x - D.x, c.y - D.y);
@@ -516,7 +809,7 @@ export function createCableDrag(world, o) {
         const r = R[k];
         if (!r || !(w.x >= r.x && w.x <= r.x + r.w && w.y >= r.y && w.y <= r.y + r.h)) continue;
         for (const [id, m] of D.marks) if (m.cls === 'cv-ok' && m.J.mod === k && id !== D.grab) { best = id; body = true; break; }
-        if (!best && !near && k !== modOf(D.fixed)) for (const [id, m] of D.marks) if (m.J.mod === k && m.J.dir === D.want && m.cls === 'cv-no') { near = id; break; }
+        if (!best && !near && k !== modOf(D.fixed)) for (const [id, m] of D.marks) if (m.J.mod === k && m.J.dir === D.want && m.cls === 'cv-no' && m.J.kind !== 'mod') { near = id; break; }
         break;
       }
     }
@@ -542,9 +835,14 @@ export function createCableDrag(world, o) {
       m.J.el.classList.remove(m.cls, 'cv-hot');
       if (m.cls === 'cv-no' && m.why) { if (m.title == null) m.J.el.removeAttribute('title'); else m.J.el.setAttribute('title', m.title); }
     }
+    if (d.mod) { // (2a) the knob marks, the dimmed modules, the target's mark
+      for (const k of d.knobs) k.classList.remove('cv-ok');
+      for (const m of d.dimmed) m.classList.remove('cv-nodest');
+      if (d.tgt) d.tgt.el.classList.remove('cv-hot', 'cv-no');
+    }
     if (d.on) {
       if (W && W.el) W.el.removeAttribute('data-cv-patching');
-      if (C) { for (const id of d.lift) C.hide(id, false); C.live(null); }
+      if (C) { for (const id of d.lift || []) C.hide(id, false); C.live(null); }
       if (W && typeof W.dragPointer === 'function') W.dragPointer(null);
     }
     try { d.el.releasePointerCapture(d.pid); } catch (err) { /* released */ }
@@ -553,9 +851,18 @@ export function createCableDrag(world, o) {
   function up(e) {
     if (!D || e.pointerId !== D.pid) return;
     D.x = e.clientX; D.y = e.clientY;
-    if (!D.on) { // a tap: "Connect to…"
+    if (!D.on) { // a tap: "Connect to…" ((2a) a mod jack's: the host's list)
       const d = finish();
-      if (Math.hypot(d.x - d.x0, d.y - d.y0) <= TAP_PX) menu(d.grab, e.clientX, e.clientY);
+      if (Math.hypot(d.x - d.x0, d.y - d.y0) <= TAP_PX) { if (d.mod) call(Op.onJackTap, d.src, d.el); else menu(d.grab, e.clientX, e.clientY); }
+      return;
+    }
+    if (D.mod) {
+      followMod();
+      const d = finish(), t = d.tgt;
+      if (!t) return;
+      if (t.kind === 'bar') call(Op.onBarDrop, d.src, t.key);
+      else if (t.ok) call(Op.onMod || Op.onConnect, d.src, t.dst);
+      else call(Op.onRefuse, d.src, t.dst, t.why);
       return;
     }
     follow();
@@ -588,7 +895,7 @@ export function createCableDrag(world, o) {
     const items = [{ label: 'Connect ' + labelOf(j, me) + ' to…', disabled: true }];
     let n = 0;
     for (const J of L) {
-      if (J.dir === dir || J.id === j || !portOf(J.id)) continue;
+      if (J.dir === dir || J.id === j || J.kind === 'mod' || !portOf(J.id)) continue;
       const r = dir === 'out' ? check(j, J.id) : check(J.id, j);
       if (!r.ok) continue;
       n++;
@@ -613,12 +920,14 @@ export function createCableDrag(world, o) {
       const je = (e.key === 'Enter' || e.key === ' ') && jackEl(e.target);
       if (!je || je !== e.target) return;
       if (e.preventDefault) e.preventDefault();
+      if (isModJack(je)) { if (!dead) call(Op.onJackTap, modSrcOf(je.getAttribute('data-cv-jack')), je); return; }
       menu(je.getAttribute('data-cv-jack'));
     }));
     offs.push(listen(W.el, 'contextmenu', e => {
       const je = jackEl(e.target);
       if (!je) return;
       if (e.preventDefault) e.preventDefault();
+      if (isModJack(je)) { if (!dead) call(Op.onJackTap, modSrcOf(je.getAttribute('data-cv-jack')), je); return; }
       menu(je.getAttribute('data-cv-jack'), e.clientX, e.clientY);
     }));
   }
