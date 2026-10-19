@@ -14,6 +14,9 @@
 //   4  stage 1e: several instruments per track — an instrument's on / solo / zone / name, a cable's level g, any number
 //      of instruments and panels (cv-model's editing API): additive, nothing to convert (a 3 opens as before; a 4 in a
 //      stage-1c build opens read-only, as it should: that build would drop the fields)
+//   5  stage 2a: performance modulators — track.mods rows (§5.1, cv-mods.js), track.mid (the next row number), the
+//      modulator devices ve / at / bd (kind velo / at / bend), project.perf ({ wheel: { v: 1 } | null }, the one Mod
+//      Wheel, D9): additive, nothing to convert (a 4 opens as before; a 5 in a 1e / 1f build opens read-only)
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
@@ -42,7 +45,10 @@
 //                           it ('trk_<n>', "<track> · <model name>" via name(modelId), the base cut to fit 100
 //                           characters, i1 [→ fx1] → out, no lay), notes and the rest of the track copied; one that did
 //                           not sound (off, not cabled to OUT, another one soloed) comes in muted; zones, solo, cable
-//                           levels, unconnected panels and modulation rows are dropped. notices: one line per track that
+//                           levels and unconnected panels are dropped. Modulation rows (2a) stay with the instrument
+//                           they end on (a new track's: as i1, with the modulator devices they start at); rows to a
+//                           device that does not survive (a panel, nothing) or from a missing modulator are dropped and
+//                           named. Modulator devices stay on the keeper. notices: one line per track that
 //                           held several instruments or lost something audible (what, per instrument). A canonical
 //                           one-instrument track (and a project of them: the same object) is returned as it is
 //   primV1(t)               a v2 track's primary instrument as v1 fields { model, vals, preset, seq?, fx }
@@ -54,7 +60,7 @@ import { compileTrack, kindOf, port, powered, zoneOf } from './cv-graph.js?v=9';
 import { defaultFx2 } from './serum-core.js?v=9';
 
 export { schemaOf };
-export const SCHEMA = 4;
+export const SCHEMA = 5;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -81,6 +87,8 @@ export const STEPS = Object.freeze([
   p => Object.assign(toV2(p), { schema: 3 }),
   // 3 → 4: several instruments per track (stage 1e, IMPL-1e §3.2) — additive
   p => Object.assign({}, p, { schema: 4 }),
+  // 4 → 5: performance modulators (stage 2a, IMPL-2a §2.3: track.mods / mid, ve / at / bd, project.perf) — additive
+  p => Object.assign({}, p, { schema: 5 }),
 ]);
 
 export function upgrade(o) {
@@ -157,7 +165,7 @@ function instRoutes(t) {
     return { id, d: t.dev[id], v: instV1(t, id), to, via, end: via ? dst(via) : to };
   });
 }
-const coreOf = t => { const o = {}; for (const k of Object.keys(t)) if (!V2_KEYS.includes(k) && k !== 'mods' && !V1_KEYS.includes(k)) o[k] = t[k]; return o; };
+const coreOf = t => { const o = {}; for (const k of Object.keys(t)) if (!V2_KEYS.includes(k) && k !== 'mods' && k !== 'mid' && !V1_KEYS.includes(k)) o[k] = t[k]; return o; };
 const plainCopy = x => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
 export function toV1(p0) {
   const p = plainCopy(p0), lost = [];
@@ -205,7 +213,20 @@ function single(t) {
   try { c = compileTrack(t); } catch { return false; }
   if (!c.canonical) return false;
   const sx = t.dev[ins[0]].model === 'serum', pid = sx ? null : panelOf(t, ins[0]);
-  return (sx || !!pid) && Object.keys(t.dev).every(k => k === ins[0] || k === pid || kindOf(t.dev[k]) === 'out');
+  return (sx || !!pid) && Object.keys(t.dev).every(k => k === ins[0] || k === pid || kindOf(t.dev[k]) === 'out' || kindOf(t.dev[k]) === 'mod');
+}
+// (2a) the rows of t that end on instrument id and start at the project wheel or a modulator of t — as they go to the
+// track that instrument becomes (as: its id there); the modulator devices they need
+function rowsTo(t, id, as) {
+  const R = [], devs = {};
+  for (const r of Array.isArray(t.mods) ? t.mods : []) {
+    if (!isObj(r) || typeof r.dst !== 'string' || r.dst.slice(0, r.dst.indexOf(':')) !== id) continue;
+    const m = typeof r.src === 'string' ? /^([a-z][a-z0-9]{0,15})\.out$/.exec(r.src) : null;
+    if (r.src !== 'wheel' && !(m && kindOf(t.dev[m[1]]) === 'mod')) continue;
+    if (m) devs[m[1]] = plainCopy(t.dev[m[1]]);
+    R.push(Object.assign({}, r, { dst: as + r.dst.slice(id.length) }));
+  }
+  return { R, devs };
 }
 const hasFx = fx => isObj(fx) && Array.isArray(fx.racks) && fx.racks.some(r => isObj(r) && Array.isArray(r.mods) && r.mods.length > 0); // (= cv-model's)
 const maxTrk = ids => { let n = 0; for (const id of ids) { const m = /^trk_(\d{1,9})$/.exec(id); if (m) n = Math.max(n, +m[1]); } return n; };
@@ -229,6 +250,7 @@ export function splitTracks(p, o = {}) {
     const k0 = R.findIndex(r => r.heard); // the first sounding instrument keeps the track (else the primary)
     if (k0 > 0) R = [R[k0], ...R.slice(0, k0), ...R.slice(k0 + 1)];
     const used = new Set(R.map(r => r.via).filter(Boolean)), why = [];
+    let kept = 0;
     R.forEach(({ id, d, v, to, via, end, heard }, i) => {
       const tr = coreOf(t), dv = Object.assign({}, d), sx = d.model === 'serum', lost = [];
       for (const k of ['on', 'solo', 'zone', 'fx']) delete dv[k];
@@ -258,8 +280,9 @@ export function splitTracks(p, o = {}) {
         tr.dev = { [id]: dv };
         if (pid) tr.dev[pid] = P;
         tr.dev[outId] = { kind: 'out' };
+        for (const k of Object.keys(t.dev)) if (kindOf(t.dev[k]) === 'mod') tr.dev[k] = t.dev[k]; // (2a: the modulators stay)
         tr.wires = pid ? [{ id: 'w1', a: id + '.out', b: pid + '.in' }, { id: 'w2', a: pid + '.out', b: outId + '.in' }] : [{ id: 'w1', a: id + '.out', b: outId + '.in' }];
-        if (isObj(t.lay)) { const L = {}; for (const k of [id, id + '/fx', pid, outId]) if (k && isObj(t.lay[k])) L[k] = t.lay[k]; if (Object.keys(L).length) tr.lay = L; else delete tr.lay; }
+        if (isObj(t.lay)) { const L = {}; for (const k of [id, id + '/fx', pid, outId, 'wheel', ...Object.keys(t.dev).filter(x => kindOf(t.dev[x]) === 'mod')]) if (k && isObj(t.lay[k])) L[k] = t.lay[k]; if (Object.keys(L).length) tr.lay = L; else delete tr.lay; }
       } else { // a new track: i1 [→ fx1] → out (stage 1d's shape), Tidy; its name cut so " · Model" fits
         delete dv.fxId;
         const sfx = ' · ' + (d.name || name(d.model)), base = (t.name || 'Track').slice(0, Math.max(1, NAME_MAX - sfx.length));
@@ -269,8 +292,12 @@ export function splitTracks(p, o = {}) {
         else { tr.dev.fx1 = P; tr.dev.out = { kind: 'out' }; tr.wires = [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }]; }
         tr.notes = plainCopy(t.notes); tr.cc = plainCopy(t.cc);
       }
+      const { R: rows, devs } = rowsTo(t, id, i === 0 ? id : 'i1'); // (2a: its mod rows go with it)
+      if (rows.length) { kept += rows.length; tr.mods = rows; tr.mid = Math.max(t.mid | 0, 1); if (i) Object.assign(tr.dev, devs); }
       out.push(tr);
     });
+    const lostRows = (Array.isArray(t.mods) ? t.mods.length : 0) - kept;
+    if (lostRows > 0) why.push(`${lostRows} modulation cable${lostRows > 1 ? 's' : ''} to nothing that survives ${lostRows > 1 ? 'were' : 'was'} dropped`);
     const loose = Object.keys(t.dev).filter(k => kindOf(t.dev[k]) === 'panel' && !used.has(k) && hasFx(t.dev[k].fx)).length;
     if (loose) why.push(`${loose} unconnected FX panel${loose > 1 ? 's' : ''} with effects ${loose > 1 ? 'were' : 'was'} dropped`);
     const head = many ? `Track “${t.name}” held ${R.length} instruments: now ${R.length} tracks` : `Track “${t.name}”`;

@@ -20,7 +20,7 @@ const P1 = readFileSync(new URL('./ref-p1/project-p1.json', import.meta.url), 'u
 const deepFreeze = o => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); for (const v of Object.values(o)) deepFreeze(v); } return o; };
 
 test('constants: SCHEMA, one step per schema, the read-only notice (§2.13)', () => {
-  assert.equal(M.SCHEMA, 4, '1a: uid; 1b: track.lay; 1c: project v2 tracks; 1e: several instruments per track');
+  assert.equal(M.SCHEMA, 5, '1a: uid; 1b: track.lay; 1c: project v2 tracks; 1e: several instruments per track; 2a: performance modulators');
   assert.equal(M.STEPS.length, M.SCHEMA, 'STEPS[n] turns schema n into n + 1');
   assert.equal(M.READ_ONLY_NOTICE, 'Opened read-only: saved by a newer SYNTH Canvas · Reload');
   assert.equal(M.schemaOf, A.schemaOf, 'one definition of a project\'s schema (the store\'s gate uses it)');
@@ -254,7 +254,7 @@ const wires = t => t.wires.map(w => w.a + '>' + w.b + (w.g !== undefined ? '@' +
 
 test('1e schema 4: additive (a 3 opens as before); song.normDev keeps on, solo, zone, name and the cable level', () => {
   const p3 = Object.assign(M.toV2(mainProject()), { schema: 3, uid: 'p_abc123xyz0' }), up = M.upgrade(deepFreeze(jclone(p3)));
-  assert.deepEqual([up.from, up.readOnly, up.p.schema], [3, false, 4]);
+  assert.deepEqual([up.from, up.readOnly, up.p.schema], [3, false, M.SCHEMA]);
   assert.deepEqual(Object.assign({}, up.p, { schema: 3 }), p3, 'nothing converted');
   assert.deepEqual(M.STEPS[3]({ schema: 3, tracks: [1] }), { schema: 4, tracks: [1] });
   const d = S.normDev({ prim: 'i2', dev: {
@@ -303,9 +303,9 @@ test('1e cv-model: removeInst / removePanel re-cable; connect / disconnect valid
   const t = juno(); MO.addInst(t, 'minimoog'); MO.addInst(t, 'dx7');
   t.mods = [{ id: 'r1', src: 'l1.out', dst: 'i2:fc' }, { id: 'r2', src: 'l1.out', dst: 'i1:fc' }];
   t.lay = { i2: { x: 1, y: 2 }, i1: { x: 0, y: 0 } };
-  assert.deepEqual(MO.removeInst(t, 'i2'), { ok: true, why: '' });
+  assert.deepEqual(MO.removeInst(t, 'i2'), { rows: ['r1'], ok: true, why: '' }, '(2a) the rows it removed');
   assert.deepEqual([Object.keys(t.dev), wires(t), t.mods.map(r => r.id), Object.keys(t.lay)], [['i1', 'fx1', 'out', 'i3'], ['i1.out>fx1.in', 'fx1.out>out.in', 'i3.out>fx1.in'], ['r2'], ['i1']]);
-  assert.deepEqual(MO.removeInst(t, 'i1'), { ok: true, why: '' });
+  assert.deepEqual(MO.removeInst(t, 'i1'), { rows: ['r2'], ok: true, why: '' });
   assert.deepEqual([t.prim, t.model, MO.instIds(t)], ['i3', 'dx7', ['i3']], 'the lowest remaining instrument is the primary');
   assert.deepEqual(MO.removeInst(t, 'i3'), { ok: false, why: 'A track keeps at least one instrument' });
   assert.equal(MO.removeInst(t, 'fx1').ok, false);
@@ -357,7 +357,7 @@ test('1e cv-model: setModel keeps the FX by the rules (classic ↔ Serum), share
   // classic → Serum, the only source of a panel into OUT: the panel's state becomes its own FX (1c's reshape)
   const a = juno(), fxa = a.dev.fx1.fx; MO.addInst(a, 'minimoog');
   MO.removeInst(a, 'i1');
-  assert.deepEqual(MO.setModel(a, 'i2', 'serum', { vals: { s: 1 } }), { ok: true, why: '' });
+  assert.deepEqual(MO.setModel(a, 'i2', 'serum', { vals: { s: 1 } }), { rows: [], notice: '', ok: true, why: '' });
   assert.deepEqual([Object.keys(a.dev).sort(), a.dev.i2.fx === fxa, wires(a), a.dev.i2.vals, a.dev.i2.preset], [['i2', 'out'], true, ['i2.out>out.in'], { s: 1 }, null]);
   // Serum → classic: its own FX become a new panel between it and what it fed
   MO.setModel(a, 'i2', 'dx7', { vals: {} });
@@ -605,4 +605,214 @@ test('1f page: an autosave whose track holds two instruments opens as two tracks
   assert.deepEqual([s2.api.project().tracks.length, s2.$('#notice').textContent.includes('held')], [2, false], 'saved split: no notice the next time');
   const pre2 = JSON.parse(s2.api.store.raw('synth.project.pre1f') || 'null');
   assert.deepEqual([pre2 && pre2.tracks.length, pre2 && Object.keys(pre2.tracks[0].dev).length], [1, 4], 'never overwritten');
+});
+
+/* ------------------------------------------------------------------ stage 2a: performance modulators (IMPL-2a §2.2, §2.3) */
+const sxTrack = id => { const t = MO.adopt({ tracks: [Object.assign(S.newTrack(null, { model: 'serum' }), { vals: { s: C.normalizeSerum(C.defaultSerum()) }, fx: C.defaultFx2() })] }).tracks[0]; if (id) t.id = id; return t; };
+const mrow = o => Object.assign({ id: 'r1', src: 'wheel', dst: 'i1:f.cutoff', amt: 0.5, bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 }, o);
+const OPT2 = { sr: 48000, bpm: 120 };
+
+test('2a schema 5: additive (a 4 opens as before); song.normDev keeps mod rows by normRow\'s rules and mid, drops invalid ones; perf', () => {
+  const p4 = Object.assign(M.toV2(mainProject()), { schema: 4, uid: 'p_abc123xyz0' }), up = M.upgrade(deepFreeze(jclone(p4)));
+  assert.deepEqual([up.from, up.readOnly, up.p.schema], [4, false, 5]);
+  assert.deepEqual(Object.assign({}, up.p, { schema: 4 }), p4, 'nothing converted');
+  assert.deepEqual(M.STEPS[4]({ schema: 4, tracks: [1] }), { schema: 5, tracks: [1] });
+  const raw2 = { id: 'r2', src: 've.out', dst: 'i1:a.level', amt: 3, bi: true, curve: -9, aux: 'lfo2', inv: 1, byp: 0.7, out: 2, acurve: 0.5, crv: [[0.5, 2, 9], 'x', [0, 0]], rise: 0.3, fall: 0.9, slink: 1, extra: 1 };
+  const d = S.normDev({ dev: { i1: { kind: 'synth', model: 'serum' }, ve: { kind: 'velo' }, out: { kind: 'out' } }, wires: [], mid: 7, mods: [
+    { id: 'r1', src: 'wheel', dst: 'i1:f.cutoff', amt: 0.5 }, raw2,
+    { id: 'r1', src: 'wheel', dst: 'i1:f.res' },                   // a second r1
+    { id: 'x3', src: 'wheel', dst: 'i1:f.res' },                   // not an 'r<n>' id
+    { id: 'r4', src: 'WHEEL', dst: 'i1:f.res' },                   // not a source
+    { id: 'r5', src: 'wheel', dst: 'f.res' },                      // no device
+    { id: 'r6', src: 'wheel', dst: 'i1:f.res', aux: 'Bad aux!' },
+    { id: 'r7', src: 'i2/lfo3.out', dst: 'i1:f.res' },             // (a later stage's source: the shape is kept)
+    'junk', null] });
+  assert.deepEqual(d.mods.map(r => r.id), ['r1', 'r2', 'r7']);
+  assert.deepEqual(d.mods[0], mrow({}));
+  const n = C.normRow(Object.assign({}, raw2, { src: 'velo', dst: 'a.level' }));
+  assert.deepEqual(d.mods[1], Object.assign({ id: 'r2', src: 've.out', dst: 'i1:a.level' }, n, { src: 've.out', dst: 'i1:a.level' }), 'normRow\'s field rules');
+  assert.deepEqual(Object.keys(d.mods[1]), ['id', 'src', 'dst', 'amt', 'bi', 'curve', 'aux', 'inv', 'byp', 'out', 'acurve', 'crv', 'rise', 'fall', 'slink']);
+  assert.deepEqual(d.mods[1].crv, [[0, 0, 0], [1, 1, 1]]);
+  assert.equal(d.mid, 8, 'past every row id');
+  assert.deepEqual(d.dev.ve, { kind: 'velo' });
+  const none = S.normDev({ dev: { i1: { kind: 'synth', model: 'juno60' } }, wires: [], mods: [] });
+  assert.deepEqual(['mods' in none, 'mid' in none], [false, false], 'no rows: no keys (an old track reads byte-identically)');
+  assert.equal(S.normDev({ dev: { i1: { kind: 'synth', model: 'juno60' } }, mid: 4 }).mid, 4, 'a counter without rows is kept (ids never reused)');
+  const many = S.normDev({ dev: { i1: { kind: 'synth', model: 'serum' } }, mods: Array.from({ length: 300 }, (_, k) => ({ id: 'r' + (k + 1), src: 'wheel', dst: 'i1:f.cutoff' })) });
+  assert.deepEqual([many.mods.length, many.mid], [256, 257]);
+  // perf: kept through serialize / deserialize; anything else is null; absent → no key
+  const t = sxTrack();
+  MO.addModDev(t, 'velo');
+  const p = { name: 'P', perf: { wheel: { v: 1 }, junk: 1 }, tracks: [t] };
+  MO.addMod(t, 've.out', 'i1:a.level', { amt: 0.4 });
+  const back = S.deserialize(S.serialize(p));
+  assert.deepEqual(back.perf, { wheel: { v: 1 } });
+  assert.deepEqual([back.tracks[0].mods, back.tracks[0].mid, back.tracks[0].dev.ve], [t.mods, t.mid, { kind: 'velo' }]);
+  assert.deepEqual(S.deserialize({ tracks: [], perf: { wheel: 'x' } }).perf, { wheel: null });
+  assert.equal('perf' in S.deserialize({ tracks: [] }), false);
+  assert.equal('perf' in S.deserialize({ tracks: [], perf: 5 }), false);
+  assert.deepEqual([S.normPerf(null), S.normPerf({ wheel: {} })], [{ wheel: null }, { wheel: { v: 1 } }]);
+  // History snapshots carry both
+  const H = new S.History(), q = { perf: { wheel: { v: 1 } }, tracks: [jclone(t)] };
+  H.record(q);
+  q.perf = { wheel: null }; q.tracks[0].mods = [];
+  const u = H.undo(q);
+  assert.deepEqual([u.perf, u.tracks[0].mods], [{ wheel: { v: 1 } }, t.mods]);
+});
+
+test('2a cv-model: the modulator singletons and the project Mod Wheel (place, list its cables everywhere, remove)', () => {
+  const t = sxTrack('trk_1'), t2 = sxTrack('trk_2'), p = { tracks: [t, t2] };
+  assert.deepEqual([MO.addModDev(t, 'velo'), MO.addModDev(t, 'velo'), MO.addModDev(t, 'at'), MO.addModDev(t, 'bend'), MO.addModDev(t, 'lfo'), MO.addModDev(null, 'at')], ['ve', null, 'at', 'bd', null, null]);
+  assert.deepEqual([t.dev.ve, t.dev.at, t.dev.bd], [{ kind: 'velo' }, { kind: 'at' }, { kind: 'bend' }]);
+  assert.equal(G.compileTrack(t).canonical, true);
+  assert.deepEqual(MO.sourcesOf(t, p).map(x => x.id), ['ve.out', 'at.out', 'bd.out']);
+  assert.equal(MO.hasWheel(p), false);
+  assert.equal(MO.addMod(t, 'wheel', 'i1:f.cutoff', { project: p }).code, 'src', 'no wheel placed');
+  assert.deepEqual(MO.placeWheel(p), { ok: true, byTrack: [] });
+  assert.deepEqual([MO.placeWheel(p).ok, p.perf, MO.hasWheel(p)], [false, { wheel: { v: 1 } }, true]);
+  assert.ok(MO.addMod(t, 'wheel', 'i1:f.cutoff', { project: p }).ok);
+  assert.ok(MO.addMod(t, 've.out', 'i1:a.level').ok);
+  assert.ok(MO.addMod(t2, 'wheel', 'i1:f.res', { project: p }).ok);
+  assert.deepEqual(MO.wheelTracks(p), [t, t2]);
+  t.lay = { ve: { x: 0, y: 0 }, wheel: { x: 5, y: 5 }, i1: { x: 300, y: 0 } };
+  assert.deepEqual(MO.removeModDev(t, 've'), { ok: true, why: '', rows: ['r2'] });
+  assert.deepEqual([t.mods.map(r => r.id), 've' in t.dev, Object.keys(t.lay)], [['r1'], false, ['wheel', 'i1']]);
+  assert.equal(MO.removeModDev(t, 'i1').ok, false, 'not a modulator');
+  assert.deepEqual(MO.wheelRows(p).byTrack, [{ trackId: 'trk_1', rows: ['r1'] }, { trackId: 'trk_2', rows: ['r1'] }]);
+  const r = MO.removeWheel(p);
+  assert.deepEqual(r, { ok: true, byTrack: [{ trackId: 'trk_1', rows: ['r1'] }, { trackId: 'trk_2', rows: ['r1'] }] });
+  assert.deepEqual([p.perf, t.mods, t2.mods, Object.keys(t.lay)], [{ wheel: null }, [], [], ['i1']]);
+  assert.deepEqual(MO.wheelTracks(p), []);
+});
+
+test('2a cv-model addMod: serum-core addMod\'s drop rules, overrides through normRow, ids from track.mid; every refusal leaves the track as it was', () => {
+  const t = sxTrack(), d = t.dev.i1, s = d.vals.s, fx = d.fx, rev = C.newInstance(fx, 'rev', { rack: 0 }), cv = C.newInstance(fx, 'conv', { rack: 0 });
+  MO.addModDev(t, 'velo');
+  s.p['f.cutoff'] = 0.8; // (unipolar limit: max(0.05, min(0.5, 1 − base)))
+  for (const [src, n, dst] of [['wheel', 'wheel', 'f.cutoff'], ['ve.out', 'velo', 'a.pan'], ['wheel', 'wheel', 'a.on'], ['ve.out', 'velo', `fx.${rev}.mix`]]) {
+    const r = MO.addMod(t, src, 'i1:' + dst), o = jclone(s), k = C.addMod(o, fx, n, dst, {});
+    assert.equal(r.ok, true, dst);
+    assert.deepEqual(G.nativeRow(r.row), o.matrix[k], dst + ': the Serum\'s own drop defaults');
+  }
+  assert.deepEqual(t.mods.map(r => [r.id, r.amt, r.bi]), [['r1', 1 - 0.8, 0], ['r2', 0.5, 1], ['r3', -1, 0], ['r4', 0.5, 0]], 'a.on is on: a bool destination drops at −1');
+  assert.equal(t.mid, 5);
+  const o = MO.addMod(t, 'wheel', 'i1:f.res', { amt: -0.25, bi: 1, curve: 0.5, crv: [[0, 0], [1, 1]], rise: 0.2, fall: 0.9, slink: 1, aux: 'lfo1', limit: false });
+  assert.deepEqual(o.row, { id: 'r5', src: 'wheel', dst: 'i1:f.res', amt: -0.25, bi: 1, curve: 0.5, aux: 'lfo1', inv: 0, byp: 0, out: 1, acurve: 0, crv: [[0, 0, 0], [1, 1, 0]], rise: 0.2, fall: 0.2, slink: 1 });
+  assert.deepEqual(MO.removeMod(t, 'r5'), { ok: true, why: '' });
+  assert.equal(MO.addMod(t, 'wheel', 'i1:f.res').row.id, 'r6', 'a removed id is never reused');
+  // setMod: fields through normRow's rules, never the ends
+  assert.equal(MO.setMod(t, 'r1', { amt: 2, bi: 1, src: 'x', dst: 'y', id: 'z', rise: 0.5, slink: 1 }).ok, true);
+  assert.deepEqual([t.mods[0].id, t.mods[0].src, t.mods[0].dst, t.mods[0].amt, t.mods[0].bi, t.mods[0].fall], ['r1', 'wheel', 'i1:f.cutoff', 1, 1, 0.5]);
+  const before = jclone(t.mods);
+  assert.deepEqual(MO.setMod(t, 'r1', { aux: 'nope' }), { ok: false, why: 'Unknown aux source' });
+  assert.equal(MO.setMod(t, 'r99', { amt: 0 }).ok, false);
+  assert.equal(MO.removeMod(t, 'r99').ok, false);
+  // refusals
+  const J = jclone(t), j = juno();
+  const nomodId = C.FXP_TAB.conv && (C.FXP_TAB.conv['2'] || C.FXP_TAB.conv['1']).find(r => r.nomod);
+  const cases = [
+    [t, 'lfo1', 'i1:f.cutoff', {}, 'src'], [t, 'at.out', 'i1:f.cutoff', {}, 'src'], [t, 'wheel', 'i1:f.cutoff', { project: { tracks: [t] } }, 'src'],
+    [t, 'wheel', 'i9:f.cutoff', {}, 'end'], [t, 'wheel', 'nope', {}, 'end'],
+    [t, 'wheel', 'i1:nope', {}, 'nomod'], [t, 'wheel', `i1:fx.${cv}.${nomodId.pid}`, {}, 'nomod'],
+    [t, 'wheel', 'i1:f.cutoff', { aux: 'nope' }, 'aux'],
+    [j, 'wheel', 'i1:cf', {}, 'stage'], [j, 'wheel', 'fx1:fx.x.mix', {}, 'stage'],
+  ];
+  for (const [tr, src, dst, opt, code] of cases) {
+    const was = JSON.stringify(tr), r = MO.addMod(tr, src, dst, opt);
+    assert.deepEqual([r.ok, r.code, r.row], [false, code, null], src + ' → ' + dst);
+    assert.equal(JSON.stringify(tr), was, 'untouched');
+  }
+  assert.equal(MO.addMod(j, 'wheel', 'i1:cf').why, 'Classic knobs take modulation from stage 2b');
+  assert.deepEqual(t.mods, before);
+  assert.deepEqual(jclone(t), J);
+  // the 64-row budget: the Serum's own rows count
+  for (let k = 0; k < 64 - t.mods.length; k++) s.matrix[k] = C.normRow({ src: 'lfo2', amt: 0.1, dst: 'a.wt' });
+  assert.deepEqual(G.modBudget(t, 'i1'), { preset: 64 - t.mods.length, canvas: t.mods.length, left: [], max: 64 });
+  const f = MO.addMod(t, 'wheel', 'i1:f.cutoff', { name: 'Serum 1' });
+  assert.deepEqual([f.ok, f.code, f.why], [false, 'full', 'Serum 1’s mod rows are full (64/64)']);
+  assert.equal(MO.addMod(t, 'wheel', 'i1:f.cutoff').why, 'Serum’s mod rows are full (64/64)');
+});
+
+test('2a cv-model: preset rows, Save with preset (toPreset) and Keep on canvas (fromPreset) — the compiled patch unchanged both ways', () => {
+  const t = sxTrack(), d = t.dev.i1, s = d.vals.s, p = { perf: { wheel: { v: 1 } }, tracks: [t] };
+  MO.addModDev(t, 'velo');
+  s.matrix[0] = C.normRow({ src: 'lfo1', amt: 0.2, dst: 'a.wt' });
+  s.matrix[1] = C.normRow({ src: 'wheel', amt: 0.3, dst: 'f.res' });
+  s.matrix[3] = C.normRow({ src: 'velo', amt: 0.4, dst: 'a.level' });
+  assert.deepEqual(MO.presetRows(d).map(r => [r.slot, r.from, r.src, r.dst, r.amt]), [[1, 'wheel', 'wheel', 'f.res', 0.3], [3, 've.out', 'velo', 'a.level', 0.4]]);
+  assert.deepEqual([MO.presetRows(null), MO.presetRows({ kind: 'synth', model: 'juno60', vals: {} })], [[], []]);
+  MO.addMod(t, 'wheel', 'i1:f.cutoff', { amt: 0.3, curve: 0.2 });
+  MO.addMod(t, 've.out', 'i1:a.pan', { amt: -0.5, rise: 0.1, fall: 0.3 });
+  const pat = () => G.instPatch(d, OPT2, G.modRowsFor(t, 'i1')), P0 = pat();
+  assert.deepEqual(G.injectMods(d, t.mods).placed, [{ id: 'r1', slot: 2 }, { id: 'r2', slot: 4 }]);
+  // canvas → preset: r2 goes into the slot it compiles to (the caller applies the matrix through sxEdit)
+  const r2 = jclone(t.mods[1]), a = MO.toPreset(t, 'r2', s);
+  assert.deepEqual([a.ok, a.slot, t.mods.map(r => r.id)], [true, 4, ['r1']]);
+  assert.deepEqual(a.row, G.nativeRow(r2));
+  assert.equal(s.matrix[4].src, '', 'the live state untouched until the caller applies it');
+  s.matrix = a.matrix;
+  assert.deepEqual(pat(), P0, 'Save with preset: the same compile');
+  // preset → canvas: the row back on the canvas (a new id), compiled where it was
+  const b = MO.fromPreset(t, 'i1', 4, { project: p });
+  assert.deepEqual([b.ok, b.slot, b.row.id, t.mods.map(r => r.id)], [true, 4, 'r3', ['r1', 'r3']]);
+  assert.deepEqual(Object.assign({}, b.row, { id: 'r2' }), r2, 'the same row');
+  s.matrix = b.matrix;
+  assert.deepEqual(pat(), P0, 'Keep on canvas: the same compile');
+  // a preset row in front of the canvas rows: it goes before them in track.mods (it takes its slot again)
+  const c = MO.fromPreset(t, d, 1, { project: p });
+  assert.deepEqual([c.ok, t.mods.map(r => r.id)], [true, ['r4', 'r1', 'r3']]);
+  s.matrix = c.matrix;
+  assert.deepEqual(pat(), P0);
+  const e = MO.toPreset(t, 'r4', s);
+  assert.deepEqual([e.ok, e.slot], [true, 1]);
+  s.matrix = e.matrix;
+  assert.deepEqual(pat(), P0, 'and back into the preset');
+  // refusals
+  assert.equal(MO.fromPreset(t, 'i1', 0, { project: p }).ok, false, 'an LFO row is the Serum\'s own');
+  assert.equal(MO.fromPreset(t, 'i1', 2, { project: p }).ok, false, 'an empty slot');
+  assert.deepEqual(MO.fromPreset(t, 'i1', 1, { project: { tracks: [t] } }), { ok: false, why: 'Add the Mod Wheel module first' });
+  assert.equal(MO.toPreset(t, 'r99', s).ok, false);
+  for (let k = 0; k < 64; k++) if (!s.matrix[k].src) s.matrix[k] = C.normRow({ src: 'lfo2', amt: 0.1, dst: 'a.wt' });
+  assert.deepEqual(MO.toPreset(t, 'r1', s), { ok: false, why: 'Serum’s mod rows are full (64/64)' }, 'not compiled: no slot to take');
+});
+
+test('2a cv-model: removeInst, setModel (Serum → classic) and the model accessor drop the rows to that instrument and say so', () => {
+  const t = sxTrack(), i2 = MO.addInst(t, 'serum', { vals: { s: C.normalizeSerum(C.defaultSerum()) } });
+  MO.addModDev(t, 'velo');
+  MO.addMod(t, 'wheel', 'i1:f.cutoff'); MO.addMod(t, 've.out', i2 + ':a.level'); MO.addMod(t, 'wheel', i2 + ':f.res');
+  const r = MO.setModel(t, i2, 'minimoog', { vals: {} });
+  assert.deepEqual([r.ok, r.rows, r.notice], [true, ['r2', 'r3'], '2 modulation cables to the Serum removed: classic knobs take modulation from stage 2b']);
+  assert.deepEqual(t.mods.map(x => x.id), ['r1']);
+  assert.deepEqual(MO.setModel(t, i2, 'serum', { vals: { s: C.normalizeSerum(C.defaultSerum()) } }).rows, [], 'classic → Serum: nothing to drop');
+  MO.addMod(t, 'wheel', i2 + ':f.res');
+  assert.deepEqual(MO.removeInst(t, i2), { rows: ['r4'], ok: true, why: '' });
+  assert.deepEqual(t.mods.map(x => x.id), ['r1']);
+  t.model = 'juno60'; // (the primary through the accessor: setTrackModel)
+  assert.deepEqual([t.mods, t.dev.ve], [[], { kind: 'velo' }], 'the rows go, the modulator stays');
+});
+
+test('2a splitTracks: rows follow the instrument they end on (a new track\'s as i1, with the modulators they start at); rows to nothing that survives are dropped and named', () => {
+  const a = v2({ id: 'trk_1', model: 'serum', vals: { s: C.normalizeSerum(C.defaultSerum()) } });
+  a.dev.ve = { kind: 'velo' }; a.mods = [mrow({ src: 've.out', dst: 'i1:a.level' })]; a.mid = 2;
+  const p1 = { schema: M.SCHEMA, tracks: [a] };
+  assert.equal(split(p1).p, p1, 'a canonical Serum with a modulator and a row: as it is');
+  const t = v2({ id: 'trk_3', name: 'Duo', model: 'serum', vals: { s: C.normalizeSerum(C.defaultSerum()) } });
+  t.dev.i2 = { kind: 'synth', model: 'serum', vals: { s: C.normalizeSerum(C.defaultSerum()) }, preset: null, fx: C.defaultFx2() };
+  t.wires.push({ id: 'w2', a: 'i2.out', b: 'out.in' });
+  t.dev.ve = { kind: 'velo' }; t.dev.at = { kind: 'at' }; t.dev.fx5 = { kind: 'panel', fx: C.defaultFx2() }; t.nid = 6;
+  t.mods = [mrow({ id: 'r1' }), mrow({ id: 'r2', src: 've.out', dst: 'i2:a.level' }), mrow({ id: 'r3', src: 'at.out', dst: 'i2:f.res' }),
+    mrow({ id: 'r4', dst: 'fx5:fx.x.mix' }), mrow({ id: 'r5', src: 'bd.out', dst: 'i1:f.res' })];
+  t.mid = 6;
+  t.lay = { i1: { x: 0, y: 0 }, ve: { x: -300, y: 0 }, wheel: { x: -300, y: 300 }, i2: { x: 0, y: 900 } };
+  const r = split({ schema: M.SCHEMA, tracks: [t] }), [A, B] = r.p.tracks;
+  assert.deepEqual([A.mods.map(x => x.id), A.mid, Object.keys(A.dev).sort(), Object.keys(A.lay).sort()], [['r1'], 6, ['at', 'i1', 'out', 've'], ['i1', 've', 'wheel']]);
+  assert.deepEqual([B.mods.map(x => [x.id, x.src, x.dst]), B.mid, Object.keys(B.dev).sort()], [[['r2', 've.out', 'i1:a.level'], ['r3', 'at.out', 'i1:f.res']], 6, ['at', 'i1', 'out', 've']]);
+  assert.deepEqual(B.mods[0], mrow({ id: 'r2', src: 've.out', dst: 'i1:a.level' }));
+  assert.match(r.notices[0], /2 modulation cables to nothing that survives were dropped/);
+  assert.deepEqual(r.p.tracks.map(x => G.compileTrack(x).canonical), [true, true]);
+  assert.deepEqual([G.modBudget(A, 'i1').canvas, G.modBudget(B, 'i1').canvas], [1, 2]);
+  assert.equal(split(r.p).p, r.p, 'stable');
+  const back = S.deserialize(JSON.stringify(r.p));
+  assert.deepEqual(back.tracks.map(x => x.mods.map(y => y.id)), [['r1'], ['r2', 'r3']], 'song.js reads them');
+  assert.equal('mid' in M.toV1(r.p).p.tracks[0], false, 'toV1: no v2 field');
 });

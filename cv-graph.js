@@ -39,12 +39,25 @@
 //                            chains  { id: FX state } (a panel's state, or its single rack as a Main rack: fxOfPanel)
 //   saltOf(id, prim)       an Inst's seed salt: 0 for the primary, else (devNum(id) * 0x9E3779B9) >>> 0 (§6.2.1)
 //   zoneOf(dev)            { lo, hi, xp } (absent: 0…127, 0)          devNum('fx12') → 12
-//   instPatch(dev, opts)   one Inst's patch ({t: 'patch', i, p}): patchFor of the instrument with its own FX (a Serum) or
-//                          an empty rack, a classic one without fxr / fxrT (its sound goes to the shared chains)
+//   instPatch(dev, opts, rows)  one Inst's patch ({t: 'patch', i, p}): patchFor of the instrument with its own FX (a Serum)
+//                          or an empty rack, a classic one without fxr / fxrT (its sound goes to the shared chains); a
+//                          Serum with its track's mod rows (modRowsFor) injected (stage 2a)
+// Stage 2a (IMPL-2a §2.1, SPEC §7.7 items 1–2, D11): the canvas mod cables of a track (track.mods rows, cv-mods.js) compile
+// into each Serum's own matrix at compile time — vals.s is never mutated, so a preset load keeps every cable:
+//   modRowsFor(track, devId)  the rows whose dst names device devId ('<devId>:<param>'), in track.mods order
+//   nativeRow(row)            the Serum row a canvas row compiles to (src wheel / velo / at / bend, dst the param id, the
+//                             other fields through serum-core normRow), or null (an unknown source, a refused field)
+//   injectMods(dev, rows)     { s, placed: [{ id, slot }], left: [ids] }: no rows (or none placed) → dev.vals.s itself (the
+//                             compile is byte-identical); else a shallow copy of s whose matrix (a copied 64-slot array)
+//                             holds each row, in order, in the first free slot (src '': serum-core freeSlot's rule) — so
+//                             buildSerumT keys its custom curve 'crv<slot>' and mSlot / slew / mOut work per slot as
+//                             today. left: the rows that found no free slot (not compiled: "mod rows are full (64/64)")
+//   modBudget(track, dev)     { preset, canvas, left, max: 64 }: the slots the Serum's own rows hold, the canvas rows
+//                             placed, the ids left out (dev: a device id or object) — "23/64" = preset + canvas
 //   chainPatch(fx, opts)   one shared chain ({t: 'chain', c, fxr, fxrT}): patchFor's rack compile for a classic track (no
 //                          Serum gains), so a canonical classic track's chain is its legacy patch's rack
-import { classOf } from './cv-mods.js?v=9';
-import { defaultFx2, compileFx, compileFxT } from './serum-core.js?v=9';
+import { classOf, MOD_SRC } from './cv-mods.js?v=9';
+import { defaultFx2, compileFx, compileFxT, normRow, N_MATRIX } from './serum-core.js?v=9';
 import { patchFor } from './models.js?v=9';
 
 export const LIMITS = Object.freeze({ inst: 8, panels: 16, fxPerPanel: 48 });
@@ -238,9 +251,12 @@ export function compileGraph(t) {
   if (!c.canonical) return c;
   return Object.assign({ canonical: true, why: null, errors: [] }, graphOf(T, order(T), powered(T)));
 }
-// the patch of one Inst (a classic one: no rack of its own on a graph node, IMPL-1e §2.1 sharedRack)
-export function instPatch(d, opts) {
-  const sx = d.model === 'serum', p = patchFor(d.model, d.vals, sx && d.fx ? d.fx : defaultFx2(), opts);
+// the patch of one Inst (a classic one: no rack of its own on a graph node, IMPL-1e §2.1 sharedRack); a Serum's mod rows
+// injected: { s: merged } reaches both compileSerum and fxModded2 (patchFor)
+export function instPatch(d, opts, rows) {
+  const sx = d.model === 'serum', inj = sx && Array.isArray(rows) && rows.length ? injectMods(d, rows) : null;
+  const vals = inj && inj.s !== d.vals.s ? Object.assign({}, d.vals, { s: inj.s }) : d.vals;
+  const p = patchFor(d.model, vals, sx && d.fx ? d.fx : defaultFx2(), opts);
   if (!sx) {
     const fn = p.fxr && Array.isArray(p.fxr.needs) ? p.fxr.needs : [];
     delete p.fxr; delete p.fxrT;
@@ -256,4 +272,42 @@ export function chainPatch(fx, opts) {
     seed: !!o.seed, smooth, silence: pr.silenceTails === undefined ? 1 : pr.silenceTails ? 1 : 0, qr: o.qr || null,
   });
   return { fxr, fxrT: compileFxT(fx) };
+}
+
+/* ------------------------------------------------------------- mod rows into a Serum's matrix (stage 2a, IMPL-2a §2.1) */
+export function modRowsFor(t, devId) {
+  const pre = devId + ':';
+  return isObj(t) && Array.isArray(t.mods) ? t.mods.filter(r => isObj(r) && typeof r.dst === 'string' && r.dst.length > pre.length && r.dst.startsWith(pre)) : [];
+}
+export function nativeRow(r) {
+  const src = isObj(r) && typeof r.src === 'string' ? MOD_SRC[r.src] : undefined, i = src && typeof r.dst === 'string' ? r.dst.indexOf(':') : -1;
+  if (i < 1) return null;
+  const n = normRow(Object.assign({}, r, { src, dst: r.dst.slice(i + 1) }));
+  return n.src && n.dst ? n : null; // (normRow empties a row with an unknown aux / destination)
+}
+const isFree = r => !isObj(r) || r.src === '' || r.src === undefined;
+// the slots rows take in s: its free slots in order, one per valid row in order (invalid rows: neither placed nor left)
+function place(s, rows) {
+  const M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], free = [], placed = [], left = [], N = [];
+  for (let k = 0; k < N_MATRIX; k++) if (isFree(M[k])) free.push(k);
+  for (const r of rows) {
+    const n = nativeRow(r);
+    if (!n) continue;
+    if (placed.length < free.length) { placed.push({ id: r.id, slot: free[placed.length] }); N.push(n); } else left.push(r.id);
+  }
+  return { placed, left, N, used: N_MATRIX - free.length };
+}
+export function injectMods(dev, rows) {
+  const s = isObj(dev) && isObj(dev.vals) ? dev.vals.s : undefined;
+  if (!Array.isArray(rows) || !rows.length || !isObj(s)) return { s, placed: [], left: [] };
+  const P = place(s, rows);
+  if (!P.placed.length) return { s, placed: [], left: P.left };
+  const M = Array.isArray(s.matrix) ? s.matrix : [], m = Array.from({ length: N_MATRIX }, (_, k) => (k < M.length ? M[k] : normRow(null)));
+  P.placed.forEach((x, i) => { m[x.slot] = P.N[i]; });
+  return { s: Object.assign({}, s, { matrix: m }), placed: P.placed, left: P.left };
+}
+export function modBudget(t, dev) {
+  const D = isObj(t) && isObj(t.dev) ? t.dev : {}, id = typeof dev === 'string' ? dev : Object.keys(D).find(k => D[k] === dev);
+  const d = id !== undefined ? D[id] : null, P = place(isObj(d) && isObj(d.vals) ? d.vals.s : null, id !== undefined ? modRowsFor(t, id) : []);
+  return { preset: P.used, canvas: P.placed.length, left: P.left, max: N_MATRIX };
 }

@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import * as G from '../cv-graph.js?v=9';
 import { MODELS, patchFor } from '../models.js?v=9';
 import * as C from '../serum-core.js?v=9';
+import * as F2 from './fixtures/mods-2a.mjs';
 
 const clone = x => JSON.parse(JSON.stringify(x));
 const OPTS = { sr: 48000, bpm: 120 };
@@ -260,4 +261,42 @@ test('H3: a key zone or transpose on the sounding instrument is not today\'s sha
   juno.dev.i2 = { kind: 'synth', model: 'minimoog', vals: {}, preset: null, on: false, zone: { lo: 0, hi: 59, xp: 0 } };
   juno.wires.push({ id: 'w3', a: 'i2.out', b: 'fx1.in' });
   assert.equal(G.compileTrack(juno).canonical, true);
+});
+
+/* ------------------------------------------------------------------ stage 2a: canvas mod rows (IMPL-2a §2.1) */
+test('2a fixture (tests/fixtures/mods-2a.mjs): merged matrices, placed / left, the budget and the compiled matrix fields', () => {
+  const T = F2.tracks(), OPT = { sr: 48000, bpm: 120 };
+  const budgets = [{ preset: 0, canvas: 2, left: [], max: 64 }, { preset: 1, canvas: 1, left: [], max: 64 }, { preset: 64, canvas: 0, left: ['r1'], max: 64 }];
+  for (const [i, t] of T.entries()) {
+    const d = t.dev.i1, s = d.vals.s, rows = G.modRowsFor(t, 'i1'), inj = G.injectMods(d, rows), E = F2.MERGED[i];
+    assert.deepEqual(rows, t.mods, 'every row ends on i1');
+    assert.deepEqual([inj.placed, inj.left], [E.placed, E.left], t.id);
+    for (let k = 0; k < 64; k++) {
+      if (E.rows[k]) assert.deepEqual(inj.s.matrix[k], E.rows[k], t.id + ' slot ' + k);
+      if (!E.placed.some(x => x.slot === k)) assert.equal(inj.s.matrix[k], s.matrix[k], 'the preset\'s rows by identity');
+    }
+    if (!E.placed.length) assert.equal(inj.s, s);
+    assert.deepEqual(G.modBudget(t, 'i1'), budgets[i], t.id);
+    const p = G.instPatch(d, OPT, rows);
+    assert.deepEqual(F2.cpOf(p), F2.CP[i], t.id + ': the posted matrix fields');
+    // the same rows written into s.matrix (as the Serum's own tiles would) compile identically
+    const o = clone(s);
+    for (const k of Object.keys(E.rows)) o.matrix[k] = clone(E.rows[k]);
+    assert.deepEqual(p, patchFor('serum', { s: o }, d.fx, OPT), t.id);
+    assert.deepEqual(G.validate(t), { ok: true, errors: [] });
+    assert.equal(G.compileTrack(t).canonical, true, 'modulator devices and rows keep the canonical shape');
+    assert.deepEqual(G.compileGraph(t).graph.insts.map(x => x.id), ['i1'], 'modulators are not instruments');
+  }
+});
+
+test('2a modRowsFor / nativeRow: rows by device (not by prefix), the native row, refusals', () => {
+  const t = { mods: [{ id: 'r1', src: 'wheel', dst: 'i1:f.cutoff' }, { id: 'r2', src: 'wheel', dst: 'i10:f.cutoff' }, null, { id: 'r3', src: 'bd.out', dst: 'i1:' }, { id: 'r4', src: 'at.out', dst: 'i1:a.level' }] };
+  assert.deepEqual(G.modRowsFor(t, 'i1').map(r => r.id), ['r1', 'r4']);
+  assert.deepEqual(G.modRowsFor(t, 'i10').map(r => r.id), ['r2']);
+  assert.deepEqual([G.modRowsFor({}, 'i1'), G.modRowsFor(null, 'i1')], [[], []]);
+  const n = G.nativeRow({ id: 'r9', src: 've.out', dst: 'i2:fx.d1.mix', amt: 3, bi: true, curve: -2, out: 0.5, rise: 0.4, fall: 0.9, slink: 1, crv: [[0.5, 2], [0, 0]] });
+  assert.deepEqual(n, { src: 'velo', amt: 1, dst: 'fx.d1.mix', bi: 1, curve: -1, aux: '', inv: 0, byp: 0, out: 0.5, acurve: 0, crv: [[0, 0, 0], [1, 1, 0]], rise: 0.4, fall: 0.4, slink: 1 });
+  assert.equal(G.nativeRow({ src: 'wheel', dst: 'i1:a.level', aux: 'lfo3' }).aux, 'lfo3');
+  for (const r of [{ src: 'lfo1', dst: 'i1:f.cutoff' }, { src: 'wheel', dst: 'f.cutoff' }, { src: 'wheel', dst: 'i1:nope' }, { src: 'wheel', dst: 'i1:a.level', aux: 'nope' }, null])
+    assert.equal(G.nativeRow(r), null, JSON.stringify(r));
 });

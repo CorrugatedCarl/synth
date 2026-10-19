@@ -189,6 +189,7 @@ function loadProject(json, lo = {}) {
   }
   const p = S.deserialize(o);
   CM.stamp(p, o);
+  p.perf = S.normPerf(p.perf); // (stage 2a: { wheel: { v: 1 } | null })
   for (const k of ['drawLen', 'follow', 'ghosts']) if (o && k in o) p[k] = o[k];
   const byId = new Map(((o && o.tracks) || []).map(t => [t && t.id, t]));
   for (const t of p.tracks) { // a record song.js read as v1 (no valid devices): its 303 pattern and rack from the record
@@ -213,6 +214,7 @@ function loadProject(json, lo = {}) {
 function freshProject(m) {
   const p = CM.stamp(S.newProject({ model: m.id, vals: loadVals(m), name: 'Untitled', trackName: m.name + ' 1' }));
   for (const t of p.tracks) { t.fx = newFx(m); seedPend.add(t.id); }
+  p.perf = S.normPerf(null); // (stage 2a: no Mod Wheel module yet)
   return CMOD.adopt(p);
 }
 const PRE_1F = 'synth.project.pre1f'; // (stored as synthc.project.pre1f)
@@ -313,11 +315,18 @@ function legacyOk(tr, c = CG.compileTrack(tr)) {
   const ids = CMOD.instIds(tr), f = CMOD.fxDevOf(tr);
   return ids.length === 1 && c.inst === ids[0] && Object.keys(tr.dev).every(k => !tr.dev[k] || tr.dev[k].kind !== 'panel' || (!!f && !f.own && k === f.id));
 }
+// Stage 2a (IMPL-2a §2.1, D11): a Serum's vals with its track's canvas mod rows injected into free matrix slots ({ s:
+// merged }: compileSerum and fxModded2 both see them; vals.s untouched) — no rows: vals itself (the same bytes as before)
+function modVals(tr, id, vals, m) {
+  if (!m.custom || !tr.dev || !id || !vals || !vals.s) return vals;
+  const inj = CG.injectMods({ vals }, CG.modRowsFor(tr, id));
+  return inj.s === vals.s ? vals : Object.assign({}, vals, { s: inj.s });
+}
 function buildPatch(tr, sr, offline = false) {
   fxOf(tr); // (a v1 rack reaching the track is migrated in place first, as before)
   const c = CG.compileTrack(tr), V = c.canonical ? c.v1 : CM.primV1(tr);
   const m = modelById(V.model), s = m.custom && V.vals.s ? V.vals.s : null;
-  const patch = patchFor(m, V.vals, V.fx, {
+  const patch = patchFor(m, modVals(tr, c.canonical ? c.inst : CMOD.primId(tr), V.vals, m), V.fx, {
     sr: sr || (ctx ? ctx.sampleRate : 48000), bpm: project.bpm, drift: settings.drift / 10, hiss: 1,
     // offline: no quality caps (the CP defaults; the touch-device stream / grain pools differ by ≈ 1 MB and a render has no
     // deadline); live: the device defaults and the safeguard's step
@@ -337,7 +346,7 @@ const liveOpts = (tr, sr, offline) => ({ sr: sr || (ctx ? ctx.sampleRate : 48000
   qr: offline ? null : qrOf(qrStep), prefs: offline || !prefs.ultra ? prefs : Object.assign({}, prefs, { ultra: 0 }), seed: seedPend.has(tr.id) });
 function buildInstPatch(tr, id, sr, offline = false) {
   const d = tr.dev[id], m = modelById(d.model);
-  const patch = CG.instPatch({ model: m.id, vals: d.vals, fx: m.custom ? fxOfDev(tr, id) : undefined }, liveOpts(tr, sr, offline));
+  const patch = CG.instPatch({ model: m.id, vals: d.vals, fx: m.custom ? fxOfDev(tr, id) : undefined }, liveOpts(tr, sr, offline), m.custom ? CG.modRowsFor(tr, id) : null); // (2a: its mod rows)
   if (m.custom) {
     patch.osCap = offline ? 0 : sxCap;
     if (!offline) capQ4(patch);
@@ -1491,12 +1500,35 @@ function noteOff(n, src = 0, ts = performance.now(), rv) {
   if (![...held.keys()].some(k => k.endsWith(':' + n))) keyVis(n, false);
 }
 function heldNotes(src) { const p = src + ':'; return [...held.keys()].filter(k => k.startsWith(p)).map(k => +k.slice(p.length)); }
-// trs: the tracks (default: the input's targets); midi.js passes the non-MPE targets of an MPE expression
+// trs: the tracks (default: the input's targets); midi.js passes the non-MPE targets of an MPE expression.
+// Stage 2a (SPEC §7.10): the live wheel also reaches every track holding a Mod Wheel cable (wheelTracks: the project's
+// wheel placed, a 'wheel' row on the track) — one physical wheel; it is recorded into trs only (the armed ones, as today).
+// Without the module the posts are today's. perfLive keeps the last value each track was sent (the modules' readouts)
+const perfLive = new Map(); // track id → { wheel, at, bend }
+const wheelTracks = () => CMOD.wheelTracks(project);
 function ctl(kind, v, src = 0, ts = performance.now(), trs = targets(src)) {
   const m = kind === 'bend' ? { t: 'bend', v } : kind === 'wheel' ? { t: 'wheel', v } : kind === 'sus' ? { t: 'sus', v: !!v } : { t: 'at', v };
-  for (const t of trs) postTo(t, m);
+  const to = kind === 'wheel' ? trs.concat(wheelTracks().filter(t => !trs.includes(t))) : trs;
+  for (const t of to) {
+    postTo(t, m);
+    if (kind !== 'sus') { const L = perfLive.get(t.id) || perfLive.set(t.id, {}).get(t.id); L[kind] = v; }
+  }
   recCC(trs, kind, kind === 'sus' ? (v ? 1 : 0) : v, ts);
   if (kind === 'wheel') wheelToWt(v);
+}
+// the value a Velocity / Aftertouch / Bend / Mod Wheel module shows on track t (kind 'wheel' | 'at' | 'bend'; bend −1…1,
+// the others 0…1): during playback the track's recorded lane at the heard tick, when it has one there; else the last
+// live value sent to the track (0: none yet)
+function perfValue(kind, t = trk()) {
+  if (!t || (kind !== 'wheel' && kind !== 'at' && kind !== 'bend')) return 0;
+  if (T.playing && Array.isArray(t.cc)) {
+    const tick = curTick();
+    let v, at = -Infinity;
+    for (const c of t.cc) if (c.k === kind && c.t <= tick && c.t >= at) { at = c.t; v = c.v; }
+    if (v !== undefined) return v;
+  }
+  const L = perfLive.get(t.id);
+  return L && L[kind] !== undefined ? L[kind] : 0;
 }
 // Live input of a track, beyond the engine: the panel's input listener (host.onInput — clip recording, key lights; never
 // the panel's own auditions) and the last input note group of a Serum track (render-last, §12.6 / §13.2.5: a group
@@ -1505,9 +1537,12 @@ function ctl(kind, v, src = 0, ts = performance.now(), trs = targets(src)) {
 const inputSubs = new Map(); // track id → Map(dev → fn(on, n, vel 1–127, t ms)): each Serum panel of the track its own (U6)
 const lastIn = new Map();    // track id → { t0, held: Map(n → note | null), notes: [{n, vel, on, off}] }
 const GROUP_MAX = 16;
+const lastV = new Map(); // track id → the last note-on velocity (0–1), the Velocity module's readout (stage 2a)
+const lastVel = (t = trk()) => (t && lastV.has(t.id) ? lastV.get(t.id) : 0);
 // The group follows the physical keys (§12.6): every held key is in `held` (null once the group stores no more notes), so
 // the group ends at the last note-off however many notes it has; at most GROUP_MAX notes are stored
 function inputNote(t, on, n, v, ts, audition) {
+  if (on) lastV.set(t.id, v);
   if (!audition) { const S = inputSubs.get(t.id); if (S) for (const f of [...S.values()]) { try { f(on ? 1 : 0, n, on ? Math.max(1, Math.round(v * 127)) : 0, ts); } catch (err) { console.warn(err); } } }
   if (!hasSx(t)) return; // (render-last: any Serum instrument of the track, stage 1e)
   let g = lastIn.get(t.id);
@@ -2523,6 +2558,22 @@ function tuningFile(cur) {
   });
 }
 
+// Stage 2a (IMPL-2a §2.4): the canvas mod rows on knob destId of Serum dev that compile (placed), as matrix rows ({id, src:
+// the Serum source, amt, bi, byp, out}) for serum-ui haloArcs and the knob menu
+function sxExtra(t, dev, destId) {
+  const rows = t && t.dev ? CG.modRowsFor(t, dev) : [], key = dev + ':' + destId, mine = rows.filter(r => r.dst === key);
+  if (!mine.length) return [];
+  const on = new Set(CG.injectMods(t.dev[dev], rows).placed.map(x => x.id));
+  return mine.filter(r => on.has(r.id)).map(r => ({ id: r.id, src: CMOD.MOD_SRC[r.src], amt: r.amt, bi: r.bi, byp: r.byp, out: r.out }));
+}
+// a Serum module's "mods n/64" (stage 2a, IMPL-2a §2.4; cvBadge): null without canvas rows to it (the badge keeps the
+// safeguard's text); else cv-graph modBudget { preset, canvas, left, max } and text 'mods <preset + canvas>/64'
+function modCount(t, dev = t && CMOD.primId(t)) {
+  const d = t && t.dev && t.dev[dev];
+  if (!d || d.model !== 'serum' || !CG.modRowsFor(t, dev).length) return null;
+  const b = CG.modBudget(t, dev);
+  return Object.assign(b, { text: 'mods ' + Math.min(b.max, b.preset + b.canvas) + '/' + b.max });
+}
 // the Serum panel's host (§8.8, RULINGS host additions, SPEC-serum2 §11.15); bound to a track id, reading the live
 // project each call. Stage 1e: bound to one Serum instrument of the track (dv, default the primary): its state, own FX,
 // presets, resample and tuning through its device view
@@ -2545,6 +2596,7 @@ function sxHost(t0, dv) {
     },
     monitor: on => sxMonitor(T(), on, dev),
     dev, // (its [data-dest] resolve inside [data-dev], SPEC §8.6)
+    extraRows: destId => sxExtra(T(), dev, destId), // (stage 2a: the canvas cables on a knob — its halo, the knob menu)
     fxTap: inst => postTo({ id }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }, dev),   // (the FX page's Delay overlay)
     presets: {
       list: sxPresetList,
@@ -5109,6 +5161,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
     clock: () => CLK, curTick, outLatency, transport: () => T, settings: () => settings, latPreset, // (the audio clock, R5)
     held, kbRange, kbMaxH, app: () => app, kb: () => ({ h: kbH, kw: kbSize.kw, hSet: kbSize.h, lo: kbLo, hi: kbHi, w: kbW, px: kbPx, notes: [...keyEls.keys()], ptrs: new Map(ptrs) }),
     roll: () => roll, arr: () => arr,
+    ctl, wheelTracks, perfValue, lastVel, modCount, sxExtra, injectMods: CG.injectMods, // (stage 2a host)
   };
 }
 boot();

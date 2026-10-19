@@ -13,6 +13,7 @@ import { fakeStorage, fakeIDB } from './fakes.mjs';
 import { MODELS } from '../models.js?v=9';
 import * as core from '../serum-core.js?v=9';
 import * as S from '../song.js?v=9';
+import * as CMOD from '../cv-model.js?v=9';
 
 const peak = x => { let m = 0; for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > m) m = a; } return m; };
 const maxDiff = (x, y, n = Math.min(x.length, y.length)) => { let m = 0; for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(x[i] - y[i])); return m; };
@@ -1009,4 +1010,67 @@ test('R7 B5: a Piano Roll preview\'s note-off goes to the track its note-on went
   assert.deepEqual([notes(na), notes(nb)], [['on61', 'off61'], ['on61', 'off61']], 'one off each, in order');
   host.auditionOff(70); // (an off with no preview: the selected track, as before)
   assert.deepEqual(notes(nb).slice(2), ['off70']);
+});
+
+test('2a §7.10: the live wheel also reaches every track with a Mod Wheel cable (unselected, unarmed) and is recorded only into the armed targets; at / bend stay per track; canvas rows reach the patch, halos, the badge', async () => {
+  const s = await bootMain({ hash: '#serum' });
+  await s.power(); await s.settle(5); s.raf();
+  const api = s.api, proj = api.project(), T = api.transport(), a = proj.tracks[0], b = api.addTrack(modelOf('serum'));
+  api.selectTrack(a.id);
+  a.arm = true;
+  await s.settle(2);
+  const na = s.nodeOf(a.id), nb = s.nodeOf(b.id), sent = (n, k) => n.posted.filter(x => x.m.t === k).map(x => x.m.v);
+  const clear = () => { na.posted.length = 0; nb.posted.length = 0; };
+  // no module: today's routing (the selected / armed targets only)
+  assert.deepEqual(proj.perf, { wheel: null }, 'loadProject / freshProject: perf normalised');
+  clear(); api.ctl('wheel', 0.25, 0);
+  assert.deepEqual([sent(na, 'wheel'), sent(nb, 'wheel'), api.wheelTracks()], [[0.25], [], []]);
+  // the project wheel, cabled to a knob of b's Serum
+  CMOD.placeWheel(proj);
+  const bi = CMOD.primId(b), r = CMOD.addMod(b, 'wheel', bi + ':f.cutoff', { project: proj });
+  assert.equal(r.ok, true, r.why);
+  assert.deepEqual(api.wheelTracks(), [b]);
+  clear(); api.ctl('wheel', 0.7, 0);
+  assert.deepEqual([sent(na, 'wheel'), sent(nb, 'wheel')], [[0.7], [0.7]], 'the union: targets ∪ wheelTracks');
+  clear(); api.midi.message([0xb0, 1, 127], 1); // (CC 1 on channel 1: the router's ctl('wheel'))
+  assert.deepEqual([sent(na, 'wheel'), sent(nb, 'wheel')], [[1], [1]]);
+  assert.deepEqual([api.perfValue('wheel', a), api.perfValue('wheel', b)], [1, 1]);
+  clear(); api.ctl('at', 0.5, 0); api.ctl('bend', -0.25, 0);
+  assert.deepEqual([sent(na, 'at'), sent(nb, 'at'), sent(na, 'bend'), sent(nb, 'bend')], [[0.5], [], [-0.25], []], 'aftertouch / bend: per track, unchanged');
+  assert.deepEqual([api.perfValue('at', a), api.perfValue('bend', a), api.perfValue('at', b)], [0.5, -0.25, 0]);
+  api.noteOn(60, 0.8, 0, s.ms); api.noteOff(60, 0, s.ms);
+  assert.deepEqual([api.lastVel(a), api.lastVel(b)], [0.8, 0]);
+  // recording: into the armed targets only (a), never into b
+  proj.metronome.countIn = 0; proj.metronome.on = false;
+  s.$('#tPlay').click(); await s.settle(2);
+  s.$('#tRec').click();
+  assert.equal(T.rec, true);
+  s.run(4800); s.raf();
+  const nb0 = b.cc.length;
+  clear(); api.ctl('wheel', 0.4, 0, s.ms);
+  assert.deepEqual([sent(na, 'wheel'), sent(nb, 'wheel')], [[0.4], [0.4]]);
+  assert.ok(a.cc.some(c => c.k === 'wheel' && c.v === 0.4), 'recorded into the armed target');
+  assert.equal(b.cc.length, nb0, 'not into the cabled track');
+  assert.equal(api.perfValue('wheel', a), 0.4, 'during playback: the lane value at the heard tick');
+  s.$('#tRec').click(); s.$('#tPlay').click();
+  // the patch: the row compiles into b's Serum exactly as the same row written into its matrix
+  const P = api.buildPatch(b);
+  b.mods = [];
+  const P0 = api.buildPatch(b), sb = b.vals.s;
+  assert.equal(P.serum.mN, P0.serum.mN + 1, 'one more active row');
+  const k = core.addMod(sb, b.fx, 'wheel', 'f.cutoff', { amt: r.row.amt, bi: r.row.bi });
+  assert.deepEqual(api.buildPatch(b), P, 'canvas row ≡ the Serum\'s own row (its WHEEL tile)');
+  sb.matrix[k] = core.normRow(null);
+  b.mods = [r.row];
+  assert.deepEqual(api.buildPatch(b), P);
+  // the halo rows, the badge
+  assert.deepEqual(api.sxHost(b).extraRows('f.cutoff'), [{ id: r.row.id, src: 'wheel', amt: r.row.amt, bi: r.row.bi, byp: 0, out: 1 }]);
+  assert.deepEqual(api.sxHost(b).extraRows('f.res'), []);
+  const mc = api.modCount(b);
+  assert.deepEqual([mc.canvas, mc.left, mc.max, mc.text], [1, [], 64, 'mods ' + (mc.preset + 1) + '/64']);
+  assert.equal(api.modCount(a), null, 'no canvas rows: the safeguard\'s badge');
+  // the wheel removed: today's routing again
+  CMOD.removeWheel(proj);
+  clear(); api.ctl('wheel', 0.1, 0);
+  assert.deepEqual([sent(na, 'wheel'), sent(nb, 'wheel'), b.mods], [[0.1], [], []]);
 });

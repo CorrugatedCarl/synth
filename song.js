@@ -517,6 +517,8 @@ export function normLay(lay) {
 // page normalises them); the primary must be an instrument; stage 1e (schema 4) keeps an instrument's on / solo / zone /
 // name and a cable's level g (0…4; 1 = absent). Nothing valid → null (the track is read as v1: a file's
 // mirror, else the defaults). The in-memory accessors are cv-model.js adopt's (the page), never song.js's.
+// Stage 2a (schema 5, IMPL-2a §2.3): the track's mod cables `mods` (normMods) and the next row number `mid` (absent when
+// the track never had one: an old track's record and History snapshot stay byte-identical).
 const DEV_ID = /^[a-z][a-z0-9]{0,15}$/, PORT_ID = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-zA-Z0-9]{0,15})?\.[a-z][a-z0-9]{0,7}$/;
 export function normDev(r) {
   if (!isObj(r) || !isObj(r.dev)) return null;
@@ -560,8 +562,52 @@ export function normDev(r) {
     if (typeof w.g === 'number' && Number.isFinite(w.g) && w.g !== 1) o.g = clamp(w.g, 0, 4);
     wires.push(o);
   }
-  return { prim, nid: clamp(Math.max(R(num(r.nid, 1)), top + 1), 1, 1e6), dev, wires };
+  const out = { prim, nid: clamp(Math.max(R(num(r.nid, 1)), top + 1), 1, 1e6), dev, wires }, mods = normMods(r.mods);
+  if (mods.length) out.mods = mods;
+  if (mods.length || (finN(r.mid) && r.mid >= 1)) out.mid = clamp(Math.max(R(num(r.mid, 1)), ...mods.map(x => +x.id.slice(1) + 1), 1), 1, 1e6);
+  return out;
 }
+// Stage 2a: a track's mod cables (SPEC-canvas §5.1, IMPL-2a §1): { id: 'r<n>', src, dst, then serum-core normRow's fields in
+// its order and by its rules (amt / curve / acurve −1…1, out / rise / fall 0…1 (fall = rise when slink), bits, crv: ≤ 64
+// points [x, y, c] repaired as normRow's normPts, or null) }. src 'wheel' or '<device>.<port>', dst '<device>:<param>',
+// aux '' or a source id; ids unique; at most 256 rows; a row failing any check is dropped. (Which sources, devices and
+// params exist — and Serum's own aux ids — the page checks: cv-model, cv-graph nativeRow.)
+const MROW_ID = /^r\d{1,6}$/, MSRC = /^(wheel|[a-z][a-z0-9]{0,15}(\/[a-z][a-zA-Z0-9]{0,15})?\.[a-z][a-z0-9]{0,7})$/;
+const MDST = /^[a-z][a-z0-9]{0,15}:[A-Za-z][\w.]{0,47}$/, MAUX = /^[a-z][a-z0-9]{0,15}$/;
+const fn = (x, d, a, b) => (finN(x) ? clamp(x, a, b) + 0 : d), bitOf = (x, d) => (typeof x === 'boolean' ? (x ? 1 : 0) : finN(x) ? (x >= 0.5 ? 1 : 0) : d);
+const r5 = x => Math.round(x * 1e5) / 1e5 + 0;
+function crvOf(raw) { // (= serum-core normPts(raw, null, false, 64))
+  if (!Array.isArray(raw)) return null;
+  let out = [];
+  for (let i = 0, n = Math.min(raw.length, 65536); i < n; i++) {
+    const q = raw[i];
+    if (!Array.isArray(q) || !finN(q[0]) || !finN(q[1])) continue;
+    out.push([r5(clamp(q[0], 0, 1)), r5(clamp(q[1], 0, 1)), finN(q[2]) ? r5(clamp(q[2], -1, 1)) : 0]);
+  }
+  if (!out.length) return null;
+  out.sort((a, b) => a[0] - b[0]);
+  if (out.length > 64) out = out.slice(0, 64);
+  if (out.length === 1) out.push([1, out[0][1], 0]);
+  out[0][0] = 0; out[out.length - 1][0] = 1;
+  return out;
+}
+export function normMods(list) {
+  const out = [], ids = new Set();
+  for (const r of Array.isArray(list) ? list : []) {
+    if (out.length >= 256) break;
+    if (!isObj(r) || typeof r.id !== 'string' || !MROW_ID.test(r.id) || ids.has(r.id) || typeof r.src !== 'string' || !MSRC.test(r.src)
+      || typeof r.dst !== 'string' || !MDST.test(r.dst)) continue;
+    const aux = r.aux === undefined || r.aux === null ? '' : r.aux;
+    if (typeof aux !== 'string' || (aux && !MAUX.test(aux))) continue;
+    const rise = fn(r.rise, 0, 0, 1), slink = bitOf(r.slink, 0);
+    ids.add(r.id);
+    out.push({ id: r.id, src: r.src, dst: r.dst, amt: fn(r.amt, 0, -1, 1), bi: bitOf(r.bi, 0), curve: fn(r.curve, 0, -1, 1), aux, inv: bitOf(r.inv, 0),
+      byp: bitOf(r.byp, 0), out: fn(r.out, 1, 0, 1), acurve: fn(r.acurve, 0, -1, 1), crv: crvOf(r.crv), rise, fall: slink ? rise : fn(r.fall, 0, 0, 1), slink });
+  }
+  return out;
+}
+// Stage 2a: project.perf, the project's performance modules (D9): { wheel: { v: 1 } | null } — anything else null
+export const normPerf = x => ({ wheel: isObj(x) && isObj(x.wheel) ? { v: 1 } : null });
 
 export function deserialize(json) {
   let o = json;
@@ -619,6 +665,7 @@ export function deserialize(json) {
   });
   if (!p.tracks.length) p.tracks.push(newTrack(p));
   p.selTrack = p.tracks.some(t => t.id === o.selTrack) ? o.selTrack : p.tracks[0].id;
+  if (isObj(o.perf)) p.perf = normPerf(o.perf); // (stage 2a; absent: no key, an old project reads as before)
   return p;
 }
 

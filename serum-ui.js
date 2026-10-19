@@ -271,21 +271,27 @@ function srcGroups(s) {
 // ids (fx.<inst>.<pid>, bases through destBase). unipolar row + unipolar source [base, base + a]; unipolar row +
 // bipolar source [base − |a|, base + |a|]; bipolar row [base − |a|/2, base + |a|/2]; a = amt·out. kind: 'sel' (row
 // source = selSrc), 'neg' (a < 0), 'other'. Aux sources are ignored (the arc shows the maximum reach). Each arc
-// carries its matrix slot.
-export function haloArcs(s, fx, destId, selSrc) {
+// carries its matrix slot. extra (SYNTH Canvas 2a, the host's extraRows(destId)): the canvas cables on this knob as rows
+// {src, amt, bi, byp, out} (they compile into free slots, cv-graph injectMods) — their arcs follow, slot −1, canvas: true.
+export function haloArcs(s, fx, destId, selSrc, extra) {
   const out = [];
   if (!rowOfDest(destId, fx)) return out;
   const base = baseN(s, fx, destId), M = rowsOf(s);
-  for (let slot = 0; slot < M.length; slot++) {
-    const r = M[slot];
-    if (!rowActive(r) || r.dst !== destId) continue;
+  const arc = (r, slot) => {
     const a = r.amt * r.out, m = Math.abs(a);
     let lo, hi;
     if (r.bi) { lo = base - m / 2; hi = base + m / 2; }
     else if (srcPol(r.src) === 'bi') { lo = base - m; hi = base + m; }
     else { lo = Math.min(base, base + a); hi = Math.max(base, base + a); }
-    out.push({ from: clamp01(lo), to: clamp01(hi), kind: r.src === selSrc ? 'sel' : a < 0 ? 'neg' : 'other', slot });
+    const o = { from: clamp01(lo), to: clamp01(hi), kind: r.src === selSrc ? 'sel' : a < 0 ? 'neg' : 'other', slot };
+    if (slot < 0) o.canvas = true;
+    out.push(o);
+  };
+  for (let slot = 0; slot < M.length; slot++) {
+    const r = M[slot];
+    if (rowActive(r) && r.dst === destId) arc(r, slot);
   }
+  for (const r of arr(extra)) if (isObj(r) && rowActive(Object.assign({ dst: destId }, r))) arc(r, -1);
   return out;
 }
 
@@ -336,13 +342,16 @@ export function moduleMenuItems(s, m, caps) {
 // Remove Modulator: <src> (per row) · Remove All Modulators · Aux Source ▸ · Edit Custom Curve · sep · Reset Control ·
 // Enter Value… · [New MemTrig phase set] · sep · Mod Source ▸ · sep · MIDI Learn | MIDI Re-learn (CC n), Remove MIDI
 // CC n · Lock | Unlock (inside a locked module instead: Unlock Control | Lock Control, locks.unp). Items without rows are
-// omitted (never shown disabled). caps = { midi, module: 'oscA'…, paste, recent }. Aux Source / Edit Custom Curve
+// omitted (never shown disabled). caps = { midi, module: 'oscA'…, paste, recent, extra }. Aux Source / Edit Custom Curve
 // address actionSlot(s, destId, caps.recent). Returns [{label, kind, slot?, checked?, sub?}]; separators are
 // { label: '', kind: 'sep' }; Mod Source / Aux Source subs are grouped ([{label: group, sub: [{label, kind, src}]}]).
+// caps.extra (SYNTH Canvas 2a, host.extraRows): the canvas cables on the knob, listed first as 'Canvas cable: <src>'
+// (kind 'canvas', disabled: edited and removed on the canvas, not here).
 export function knobMenuItems(s, fx, destId, caps) {
   const c = caps || {}, out = [];
   const sep = () => { if (out.length && out[out.length - 1].kind !== 'sep') out.push({ label: '', kind: 'sep' }); };
   if (c.module && MODULE_FIELDS[c.module]) { out.push(...moduleMenuItems(s, c.module, c)); sep(); }
+  for (const r of arr(c.extra)) if (isObj(r) && r.src) out.push({ label: 'Canvas cable: ' + srcLabel(s, r.src), kind: 'canvas', id: r.id, disabled: true });
   const rows = modRows(s, destId);
   for (const { slot, row } of rows) out.push({ label: 'Bypass Modulator: ' + srcLabel(s, row.src), kind: 'bypass', slot, checked: !!row.byp });
   for (const { slot, row } of rows) out.push({ label: 'Remove Modulator: ' + srcLabel(s, row.src), kind: 'remove', slot });
@@ -2137,7 +2146,7 @@ export class SerumUI {
   paintMods(full) {
     const s = this.s(), fx = this.fx(), sel = s.ui ? s.ui.mod : '', eff = this.snap && this.snap.eff;
     for (const m of this.modEls) {
-      if (full || !m.arcs) m.arcs = haloArcs(s, fx, m.id, sel);
+      if (full || !m.arcs) m.arcs = haloArcs(s, fx, m.id, sel, this.host.extraRows ? this.host.extraRows(m.id) : null);
       if (!m.arcs.length) { if (m.had) { m.el.wk.setMod(null); m.had = false; } continue; }
       m.el.wk.setMod({ arcs: m.arcs, live: eff && m.i >= 0 && fin(eff[m.i]) ? eff[m.i] : null });
       m.had = true;
@@ -2837,7 +2846,7 @@ export class SerumUI {
     if (!rowOfDest(id, fx)) return;
     const s = this.s(), module = el && el.getAttribute ? el.getAttribute('data-module') : null;
     const caps = { midi: typeof this.host.midiLearn === 'function', module: module || undefined,
-      paste: !!(module && CLIP && CLIP.kind === modKind(module)), recent: this.recentSlot.get(id) };
+      paste: !!(module && CLIP && CLIP.kind === modKind(module)), recent: this.recentSlot.get(id), extra: this.host.extraRows ? this.host.extraRows(id) : null };
     const items = knobMenuItems(s, fx, id, caps).filter(it => !(VIRT_RE.test(id) && (it.kind === 'lock' || it.kind === 'unlock')));
     const extra = this.extraKnobItems(id);
     const acts = this.menuActions(items, id, el, module);
@@ -2882,6 +2891,7 @@ export class SerumUI {
       if (it.kind === 'sep') return { sep: true };
       const a = { label: it.label };
       if (it.checked !== undefined) a.checked = it.checked;
+      if (it.disabled) a.disabled = true; // (a canvas cable: not removable here)
       switch (it.kind) {
         case 'lockModule': a.action = () => this.lockModuleUI(module); break;
         case 'copy': case 'copyMods':

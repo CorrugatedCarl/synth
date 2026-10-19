@@ -3043,3 +3043,38 @@ test('two SerumUIs on one canvas: data-dev scoping, separate state and undo, pop
     assert.equal(ov.childNodes.length, 0, 'destroy takes the top-layer twins away');
   } finally { wkm.setLayer(null); }
 });
+
+/* ================================================================ SYNTH Canvas 2a: canvas cables on a knob (host.extraRows) */
+test('2a haloArcs: the host\'s extra rows (canvas cables) add their arcs after the matrix\'s — slot −1, canvas: true; inactive ones none', () => {
+  const s = fresh(), fx = core.defaultFxV1();
+  s.p['f.cutoff'] = 0.5;
+  s.matrix[0] = row({ src: 'lfo1', amt: 0.3, dst: 'f.cutoff' });
+  const extra = [{ id: 'r1', src: 'wheel', amt: 0.2, bi: 0, byp: 0, out: 1 }, { id: 'r2', src: 'bend', amt: -0.4, bi: 1, byp: 0, out: 1 },
+    { id: 'r3', src: 'velo', amt: 0.5, bi: 0, byp: 1, out: 1 }, { id: 'r4', src: 'at', amt: 0.5, bi: 0, byp: 0, out: 0 }, null];
+  const a = ui.haloArcs(s, fx, 'f.cutoff', 'wheel', extra);
+  assert.deepEqual(a.map(x => [x.slot, x.kind, !!x.canvas]), [[0, 'other', false], [-1, 'sel', true], [-1, 'neg', true]]);
+  near(a[1].from, 0.5, 1e-12); near(a[1].to, 0.7, 1e-12);
+  near(a[2].from, 0.3, 1e-12); near(a[2].to, 0.7, 1e-12);
+  assert.deepEqual(ui.haloArcs(s, fx, 'f.cutoff', 'wheel'), a.slice(0, 1), 'without the host hook: the matrix alone');
+  assert.deepEqual(ui.haloArcs(s, fx, 'nope', 'wheel', extra), []);
+});
+
+test('2a knobMenuItems: canvas cables first, as disabled "Canvas cable: <source>" entries (removed on the canvas, not here)', () => {
+  const s = fresh(), fx = core.defaultFxV1();
+  s.matrix[3] = row({ src: 'lfo1', amt: 0.3, dst: 'f.cutoff' });
+  const it = ui.knobMenuItems(s, fx, 'f.cutoff', { extra: [{ id: 'r1', src: 'wheel', amt: 0.2, bi: 0, byp: 0, out: 1 }, { id: 'r2', src: 'velo', amt: 0.1 }] });
+  assert.deepEqual(labels(it).slice(0, 4), ['Canvas cable: ' + ui.srcLabel(s, 'wheel'), 'Canvas cable: ' + ui.srcLabel(s, 'velo'), 'Bypass Modulator: LFO 1', 'Remove Modulator: LFO 1']);
+  assert.deepEqual(it.slice(0, 2).map(x => [x.kind, x.id, x.disabled]), [['canvas', 'r1', true], ['canvas', 'r2', true]]);
+  assert.deepEqual(labels(ui.knobMenuItems(s, fx, 'f.cutoff', { extra: [] })), labels(ui.knobMenuItems(s, fx, 'f.cutoff', {})));
+});
+
+test('2a SerumUI: a host with extraRows paints the canvas cables\' arcs on their knob (paintMods), none elsewhere', async () => {
+  const calls = [];
+  const { u } = await mount({ extraRows: id => { calls.push(id); return id === 'g.master' ? [{ id: 'r1', src: 'wheel', amt: 0.25, bi: 0, byp: 0, out: 1 }] : []; } });
+  u.scanMods(); u.paintMods(true);
+  const m = u.modEls.find(x => x.id === 'g.master'), other = u.modEls.filter(x => x.id !== 'g.master' && x.arcs && x.arcs.length);
+  assert.ok(m, 'the MASTER knob is a modulation target');
+  assert.deepEqual(m.arcs.map(a => [a.slot, !!a.canvas]), [[-1, true]]);
+  assert.equal(other.length, 0);
+  assert.ok(calls.includes('g.master'));
+});

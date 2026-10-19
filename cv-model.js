@@ -37,9 +37,41 @@
 //   sharedPanelFix(t, serumId, srcId) → panelId   "Make a shared panel" (the own-fx refusal): a panel after the Serum,
 //        Serum and srcId into it, the panel into what the Serum fed (a Serum already feeding a panel: srcId joins it)
 //   instIds(t) → [ids] (primary first)   isGraphShape(t) (not canonical)   destOf(t, id) → the device id it feeds | null
+//
+// Stage 2a, performance modulators (IMPL-2a §2.2; rows: cv-mods.js, the compile: cv-graph injectMods). Pure, in place,
+// History the caller's; a refusal leaves the track untouched.
+//   addModDev(t, kind) → id | null      kind 'velo' | 'at' | 'bend' → the singleton 've' | 'at' | 'bd' (null: there already)
+//   removeModDev(t, id) → { ok, rows }   the device and every row from it ('<id>.out'); rows: the ids removed
+//   placeWheel(p) → { ok, byTrack: [] }  project.perf.wheel = { v: 1 } (ok false: placed already)
+//   removeWheel(p) / wheelRows(p) → { ok, byTrack: [{ trackId, rows }] }   every 'wheel' row of every track (removeWheel
+//        deletes them, the wheel's lay entries and the wheel; wheelRows only lists them: the confirm's counts)
+//   hasWheel(p)
+//   addMod(t, src, dst, o) → { ok, row, why, code }   src 'wheel' (o.project given: its wheel must be placed) or the
+//        '<id>.out' of a modulator of t; dst '<serum id>:<DESTS id | own FX id>' (cv-mods destOk); the matrix not full
+//        (budget incl. the Serum's own rows). Defaults: serum-core addMod's drop rules on the Serum's live state (bi = the
+//        destination's ctr flag; bool dest ±1, bipolar 0.5, unipolar o.limit ≠ false ? max(0.05, min(0.5, 1 − base)) :
+//        0.5; aux ''); o.amt / o.bi / curve / crv / aux / inv / byp / out / acurve / rise / fall / slink override, through
+//        normRow's rules. codes: end (no such device), src (unknown source), nomod, stage (classic / panel knob: 2b),
+//        full ("<name>’s mod rows are full (64/64)", o.name: the module's title), aux (refused by normRow)
+//        Row: { id: 'r<n>', src, dst, amt, bi, curve, aux, inv, byp, out, acurve, crv, rise, fall, slink } (normRow's
+//        fields and order after the ends); ids from the counter track.mid (saved; also past every 'r<n>' present): never reused
+//   setMod(t, rowId, fields) → { ok, why }   the row's fields (not id / src / dst) through normRow's rules
+//   removeMod(t, rowId) → { ok, why }
+//   presetRows(dev) → [{ slot, from, …row }]   a Serum's s.matrix rows with a performance source (wheel / velo / at / bend,
+//        with a destination); from: the canvas source ('wheel', 've.out', …)
+//   toPreset(t, rowId, s) → { ok, why, slot, row, matrix }   the row leaves track.mods and goes into a copy of s.matrix
+//        (matrix) at the slot it compiles to now (the compile is unchanged); refused when it is not placed (matrix full)
+//   fromPreset(t, dev, slot, o) → { ok, why, row, slot, matrix }   the preset row becomes a track.mods row (placed where
+//        it lands in the slot it left whenever the canvas rows before it allow) and a copy of s.matrix without it. The
+//        caller applies matrix through sxEdit (the panel's undo, queuePatch). o.project as addMod's
+//   removeInst / setModel (classic ← Serum) / the model accessor drop the rows to an instrument that is gone or no longer a
+//        Serum: removeInst → rows, setModel → rows and notice (a line for the caller; '' when none)
 import { trackToV2, panelOf, V1_KEYS } from './cv-migrate.js?v=9';
-import { validate, compileTrack, kindOf, port, devNum, zoneOf, LIMITS } from './cv-graph.js?v=9';
-import { defaultFx2 } from './serum-core.js?v=9';
+import { validate, compileTrack, kindOf, port, devNum, zoneOf, LIMITS, modRowsFor, nativeRow, injectMods, modBudget } from './cv-graph.js?v=9';
+import { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, destOk } from './cv-mods.js?v=9';
+// (the host's one namespace for the 2a rows: cv-mods' tables and checks, re-exported)
+export { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, destOk, sourcesOf, wheelTracks } from './cv-mods.js?v=9';
+import { defaultFx2, addMod as sxAddMod, normRow, N_MATRIX } from './serum-core.js?v=9';
 
 const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const done = new WeakSet();
@@ -122,6 +154,7 @@ const ACC = {
       if (v === was) return;
       d.model = v;
       if ((v === 'serum') !== (was === 'serum')) reshape(this, primId(this), v === 'serum');
+      if (was === 'serum' && v !== 'serum') dropRows(this, primId(this)); // (stage 2a: its mod rows go — setModel reports them)
     },
   },
   vals: { get() { return prim(this).vals; }, set(v) { prim(this).vals = v; } },
@@ -191,10 +224,10 @@ export function removeInst(t, id) {
   if (synths(t).length <= 1) return NO('A track keeps at least one instrument');
   delete t.dev[id];
   t.wires = t.wires.filter(w => !touches(w, id));
-  if (Array.isArray(t.mods)) t.mods = t.mods.filter(r => !(isObj(r) && [r.src, r.dst].some(x => typeof x === 'string' && x.split(/[.:]/)[0] === id)));
+  const rows = dropRows(t, id, true);
   dropLay(t, id);
   if (t.prim === id) t.prim = synths(t).sort(byNum)[0];
-  return OK;
+  return Object.assign({ rows }, OK);
 }
 export function addPanel(t, o = {}) {
   if (panels(t).length >= LIMITS.panels) return null;
@@ -263,7 +296,9 @@ export function setModel(t, id, modelId, o = {}) {
   if (o.vals !== undefined) d.vals = o.vals;
   d.preset = o.preset === undefined ? null : o.preset;
   if ((modelId === 'serum') !== (was === 'serum') && reshape(t, id, modelId === 'serum') !== 'moved' && modelId === 'serum' && isObj(o.fx)) d.fx = o.fx; // (no panel state moved in: the caller's rack)
-  return OK;
+  const rows = was === 'serum' && modelId !== 'serum' ? dropRows(t, id) : [];
+  const notice = rows.length ? `${rows.length} modulation cable${rows.length > 1 ? 's' : ''} to ${d.name || 'the Serum'} removed: classic knobs take modulation from stage 2b` : '';
+  return Object.assign({ rows, notice }, OK);
 }
 export function sharedPanelFix(t, serumId, srcId) {
   const w = outWire(t, serumId), dst = w && port(w.b), src = kindOf(t.dev[srcId]) === 'inst' ? srcId : null;
@@ -279,4 +314,146 @@ export function sharedPanelFix(t, serumId, srcId) {
   wire(t, serumId + '.out', pid + '.in');
   if (w) wire(t, pid + '.out', w.b, w.g);
   return join(pid);
+}
+
+/* ------------------------------------------------------------------ performance modulators (stage 2a, IMPL-2a §2.2) */
+const NOMOD = 'This knob can’t be modulated';
+// the rows that end on device id (any: or start at it) leave t.mods; their ids
+function dropRows(t, id, any) {
+  if (!Array.isArray(t.mods)) return [];
+  const hit = r => isObj(r) && (any ? [r.src, r.dst] : [r.dst]).some(x => typeof x === 'string' && x.split(/[.:/]/)[0] === id);
+  const gone = t.mods.filter(hit).map(r => r.id);
+  if (gone.length) t.mods = t.mods.filter(r => !hit(r));
+  return gone;
+}
+const mods = t => (Array.isArray(t.mods) ? t.mods : (t.mods = []));
+const ROW_F = ['amt', 'bi', 'curve', 'aux', 'inv', 'byp', 'out', 'acurve', 'crv', 'rise', 'fall', 'slink'];
+const rowOf = (id, src, dst, n) => { const r = { id, src, dst }; for (const k of ROW_F) r[k] = n[k]; return r; };
+function rowId(t) { // track.mid: the next row number (saved), past every 'r<n>' present
+  let n = Math.max(t.mid | 0, 1);
+  for (const r of mods(t)) { const m = isObj(r) && typeof r.id === 'string' ? /^r(\d{1,6})$/.exec(r.id) : null; if (m) n = Math.max(n, +m[1] + 1); }
+  t.mid = n + 1;
+  return 'r' + n;
+}
+const devKey = (t, dev) => (typeof dev === 'string' ? dev : Object.keys(t.dev).find(k => t.dev[k] === dev));
+const splitDst = dst => { const i = typeof dst === 'string' ? dst.indexOf(':') : -1; return i > 0 ? { dev: dst.slice(0, i), param: dst.slice(i + 1) } : null; };
+export const hasWheel = p => isObj(p) && isObj(p.perf) && isObj(p.perf.wheel);
+function srcOk(t, src, p) {
+  if (src === 'wheel') return p === undefined || hasWheel(p);
+  const m = typeof src === 'string' ? /^([a-z]{2})\.out$/.exec(src) : null, d = m && t.dev[m[1]];
+  return !!d && isObj(d) && MOD_DEV[d.kind] === m[1] && MOD_SRC[src] !== undefined;
+}
+const fullWhy = (o, d) => `${(o && o.name) || d.name || 'Serum'}’s mod rows are full (64/64)`;
+export function addModDev(t, kind) {
+  const id = MOD_DEV[kind];
+  if (!id || !isObj(t) || !isObj(t.dev) || id in t.dev) return null;
+  t.dev[id] = { kind };
+  return id;
+}
+export function removeModDev(t, id) {
+  if (!isObj(t) || !isObj(t.dev) || kindOf(t.dev[id]) !== 'mod') return { ok: false, why: 'No such modulator', rows: [] };
+  delete t.dev[id];
+  const rows = dropRows(t, id, true);
+  dropLay(t, id);
+  return { ok: true, why: '', rows };
+}
+export function placeWheel(p) {
+  if (!isObj(p) || hasWheel(p)) return { ok: false, byTrack: [] };
+  p.perf = { wheel: { v: 1 } };
+  return { ok: true, byTrack: [] };
+}
+export function wheelRows(p) {
+  const byTrack = [];
+  for (const t of isObj(p) && Array.isArray(p.tracks) ? p.tracks : []) {
+    const rows = isObj(t) && Array.isArray(t.mods) ? t.mods.filter(r => isObj(r) && r.src === 'wheel').map(r => r.id) : [];
+    if (rows.length) byTrack.push({ trackId: t.id, rows });
+  }
+  return { ok: true, byTrack };
+}
+export function removeWheel(p) {
+  if (!isObj(p)) return { ok: false, byTrack: [] };
+  const w = wheelRows(p), on = hasWheel(p);
+  for (const t of Array.isArray(p.tracks) ? p.tracks : []) {
+    if (!isObj(t)) continue;
+    if (Array.isArray(t.mods) && t.mods.some(r => isObj(r) && r.src === 'wheel')) t.mods = t.mods.filter(r => !(isObj(r) && r.src === 'wheel'));
+    if (isObj(t.lay)) delete t.lay.wheel;
+  }
+  p.perf = { wheel: null };
+  return { ok: on || w.byTrack.length > 0, byTrack: w.byTrack };
+}
+export function addMod(t, src, dst, o = {}) {
+  const no = (why, code) => ({ ok: false, row: null, why, code });
+  if (!isObj(t) || !isObj(t.dev)) return no('No such track', 'end');
+  if (!srcOk(t, src, o.project)) return no('That modulator is not on this track', 'src');
+  const D = splitDst(dst), d = D && t.dev[D.dev];
+  if (!isObj(d)) return no('A modulation cable ends on nothing', 'end');
+  const k = destOk(d, D.param);
+  if (!k.ok) return no(k.why, k.stage ? 'stage' : 'nomod');
+  const b = modBudget(t, D.dev);
+  if (b.left.length || b.preset + b.canvas >= N_MATRIX) return no(fullWhy(o, d), 'full');
+  // the drop defaults (serum-core addMod, §5.8) against the Serum's live bases, on a one-slot scratch copy
+  const s = isObj(d.vals) && isObj(d.vals.s) ? d.vals.s : {}, tmp = Object.assign({}, s, { matrix: [{ src: '' }] });
+  if (sxAddMod(tmp, d.fx, MOD_SRC[src], D.param, { amt: o.amt, bi: o.bi, limit: o.limit }) !== 0) return no(NOMOD, 'nomod');
+  const f = Object.assign({}, tmp.matrix[0]);
+  for (const x of ROW_F) if (x !== 'amt' && x !== 'bi' && o[x] !== undefined) f[x] = o[x];
+  const n = normRow(f);
+  if (!n.src) return no('Unknown aux source', 'aux');
+  const row = rowOf(rowId(t), src, dst, n);
+  mods(t).push(row);
+  return { ok: true, row, why: '', code: null };
+}
+const findRow = (t, id) => (isObj(t) && Array.isArray(t.mods) ? t.mods.find(r => isObj(r) && r.id === id) : null) || null;
+export function setMod(t, rowId, fields) {
+  const r = findRow(t, rowId);
+  if (!r) return NO('No such cable');
+  const f = {};
+  for (const k of ROW_F) if (isObj(fields) && fields[k] !== undefined) f[k] = fields[k];
+  const n = nativeRow(Object.assign({}, r, f));
+  if (!n) return NO('Unknown aux source');
+  for (const k of ROW_F) r[k] = n[k];
+  return OK;
+}
+export function removeMod(t, rowId) {
+  const r = findRow(t, rowId);
+  if (!r) return NO('No such cable');
+  t.mods = t.mods.filter(x => x !== r);
+  return OK;
+}
+export function presetRows(dev) {
+  const s = isObj(dev) && dev.model === 'serum' && isObj(dev.vals) ? dev.vals.s : null, M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], out = [];
+  for (let slot = 0; slot < M.length && slot < N_MATRIX; slot++) {
+    const r = M[slot];
+    if (isObj(r) && SRC_MOD[r.src] && typeof r.dst === 'string' && r.dst) out.push(Object.assign({ slot, from: SRC_MOD[r.src] }, r));
+  }
+  return out;
+}
+const copyM = M => Array.from({ length: N_MATRIX }, (_, k) => (k < M.length ? M[k] : normRow(null)));
+export function toPreset(t, rowId, s) {
+  const r = findRow(t, rowId), D = r && splitDst(r.dst), d = D && t.dev[D.dev];
+  if (!r || !isObj(d) || !isObj(s) || !Array.isArray(s.matrix)) return NO('No such cable');
+  const x = injectMods({ vals: { s } }, modRowsFor(t, D.dev)).placed.find(q => q.id === rowId), n = nativeRow(r);
+  if (!x || !n) return NO(fullWhy(null, d));
+  const matrix = copyM(s.matrix);
+  matrix[x.slot] = n;
+  t.mods = t.mods.filter(y => y !== r);
+  return { ok: true, why: '', slot: x.slot, row: n, matrix };
+}
+export function fromPreset(t, dev, slot, o = {}) {
+  const id = isObj(t) && isObj(t.dev) ? devKey(t, dev) : undefined, d = id !== undefined ? t.dev[id] : null;
+  const M = isObj(d) && isObj(d.vals) && isObj(d.vals.s) && Array.isArray(d.vals.s.matrix) ? d.vals.s.matrix : null;
+  const r = M && Number.isInteger(slot) && slot >= 0 && slot < Math.min(M.length, N_MATRIX) ? M[slot] : null, src = isObj(r) ? SRC_MOD[r.src] : undefined;
+  if (!src || typeof r.dst !== 'string' || !r.dst) return NO('No performance row in that slot');
+  if (!srcOk(t, src, o.project)) return NO('Add the ' + MOD_LABEL[r.src] + ' module first');
+  const k = destOk(d, r.dst);
+  if (!k.ok) return NO(k.why);
+  // where it goes in track.mods: after the canvas rows (of this Serum) that take the free slots before `slot`, so the
+  // next compile puts it back into `slot` and every other row keeps its slot (exact while there are that many)
+  let j = 0;
+  for (let q = 0; q < slot; q++) if (!isObj(M[q]) || M[q].src === '' || M[q].src === undefined) j++;
+  const mine = modRowsFor(t, id).filter(x => nativeRow(x)), L = mods(t), row = rowOf(rowId(t), src, id + ':' + r.dst, normRow(r));
+  const at = j < mine.length ? L.indexOf(mine[j]) : mine.length ? L.indexOf(mine[mine.length - 1]) + 1 : L.length;
+  L.splice(at, 0, row);
+  const matrix = copyM(M);
+  matrix[slot] = normRow(null);
+  return { ok: true, why: '', row, slot, matrix };
 }
