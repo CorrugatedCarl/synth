@@ -60,7 +60,7 @@ const ID = {};
 test('a Velocity tile dropped on the canvas adds the module where it lands (one History step, the notice undoes it); its tile greys out; a tap adds it left of the instrument', () => {
   const t = T(), n0 = hsteps();
   ID.a = t.id;
-  assert.deepEqual([keys(), tiles().modTiles().length, tiles().placed('velo')], ['i1,i1/fx,out', 4, null]);
+  assert.deepEqual([keys(), tiles().modTiles().length, tiles().placed('velo')], ['i1,i1/fx,out', 10, null]); // (2b: the ten kinds)
   // (2026-10-19) the Modulators live in the Sources tray's Serum view (Hardware / Simple: the classic synths only)
   assert.deepEqual([tiles().view(), sim.$('#srcModSec').hidden], ['hw', true]);
   tiles().setView('serum');
@@ -126,16 +126,22 @@ test('a mod drag from the wheel onto a Serum knob: canMod / markDests from cv-mo
   assert.equal(t.id, T().id);
 });
 
-test('refusals: a classic knob is for stage 2b; a release on a refused knob only tells', () => {
+test('(2b) a classic knob connects: the wheel onto a Minimoog cutoff writes a row (one step) and the node gets a {t: \'mods\'} cls row; a chunk knob is for stage 5, a struct knob never; a release on a refused knob only tells', () => {
   const n0 = hsteps();
   const c = fresh('minimoog');
-  assert.equal(M.opts.canMod('wheel', 'i1:fc').why, 'Mod Wheel → Cutoff: this knob can be modulated from stage 2b');
-  M.opts.onMod('wheel', 'i1:fc'); sim.raf();
-  assert.deepEqual([rows(), hsteps(), note()], ['', n0 + 1, 'Mod Wheel → Cutoff: this knob can be modulated from stage 2b'], '(+1: the new track)');
+  assert.deepEqual([M.opts.canMod('wheel', 'i1:fc').ok, M.marks()('i1', 'fc')], [true, true], 'an sm knob opens and lights up');
+  assert.equal(M.opts.canMod('wheel', 'i1:w1').why, 'Mod Wheel → Osc 1 Wave: this knob can be modulated from stage 5', 'a chunk knob: stage 5');
+  assert.equal(M.opts.canMod('wheel', 'i1:mm').why, 'This knob can\'t be modulated', 'a none knob');
+  M.opts.onMod('wheel', 'i1:w1'); sim.raf();
+  assert.deepEqual([rows(), hsteps(), note()], ['', n0 + 1, 'Mod Wheel → Osc 1 Wave: this knob can be modulated from stage 5'], '(+1: the new track)');
   M.opts.onRefuse('wheel', 'i1:fc', 'This knob can’t be modulated');
   assert.equal(note(), 'This knob can’t be modulated');
-  assert.equal(M.marks()('i1', 'fc'), false, 'no classic knob lights up');
-  cv.undo(); sim.raf(); // (the minimoog track goes)
+  M.opts.onMod('wheel', 'i1:fc'); sim.raf();
+  assert.deepEqual([rows(), hsteps(), cv.hist.undoLabel], ['r1:wheel>i1:fc', n0 + 2, 'Modulate Cutoff with Mod Wheel']);
+  const mods = sim.nodeOf(c.id).posted.map(x => x.m).filter(m => m.t === 'mods');
+  assert.deepEqual([mods.length, mods[0].rows.map(r => r.id + ':' + r.dst.kind + ':' + r.dst.inst), typeof mods[0].xfer[0].x0], [1, ['r1:cls:i1'], 'number'], 'the payload: a cls row with its transfer');
+  assert.ok(api.nodes.get(c.id).graphed, 'a track with a payload is graphed');
+  cv.undo(); sim.raf(); cv.undo(); sim.raf(); // (the row, then the minimoog track)
   assert.equal(P().tracks.some(x => x.id === c.id), false);
   api.selectTrack(ID.b); sim.raf(); cv.renderViews(); sim.raf();
   assert.equal(T().id, ID.b);
@@ -432,7 +438,7 @@ test('H4: replacing a Serum that has cables with a classic synth says the cables
   wheelOn();
   pick(fresh());
   M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf(); M.opts.onMod('wheel', 'i1:f.res'); sim.raf();
-  const r0 = rows(), TXT = '2 modulation cables to the Serum removed: classic knobs take modulation from stage 2b';
+  const r0 = rows(), TXT = '2 modulation cables to the Serum removed: the new model has no such knobs'; // (2b: rows whose param id survives would stay)
   assert.equal(r0.split(',').length, 2);
   cv.drop('minimoog', null); sim.raf();
   assert.deepEqual([T().model, rows()], ['minimoog', '']);
@@ -480,16 +486,22 @@ test('H6: Duplicate track copies the row-id counter (mid) — a deleted row\'s i
   assert.notEqual(CMOD.addMod(c, 'wheel', 'i1:a.level', { project: P() }).row.id, r2);
 });
 
-test('H9: a panel\'s knob (the effects a classic synth feeds) is refused "…from stage 2b": no row, no step', () => {
+test('(2b) H9: a panel\'s knob (the effects a classic synth feeds) connects — an fx row in the payload; a knob of no effect is nomod: no row, no step', () => {
   wheelOn();
   const c = fresh('juno60'), n0 = hsteps(), pid = Object.keys(c.dev).find(k => c.dev[k].kind === 'panel');
   assert.ok(pid, '(a classic track: its panel)');
   const why = M.opts.canMod('wheel', pid + ':fx.dly.mix');
-  assert.equal(why.ok, false);
-  assert.match(why.why, /^Mod Wheel → .+: this knob can be modulated from stage 2b$/);
-  assert.equal(M.marks()(pid, 'fx.dly.mix'), false, 'not lit');
+  assert.deepEqual([why.ok, why.why, M.marks()(pid, 'fx.dly.mix')], [false, 'This knob can\'t be modulated', false], 'no such effect on the panel');
   M.opts.onMod('wheel', pid + ':fx.dly.mix'); sim.raf();
   assert.deepEqual([rows(), hsteps(), note()], ['', n0, why.why]);
+  const iid = cv.fx.addEffect(pid, 'dly'); sim.raf();
+  assert.ok(iid, 'a delay added to the panel');
+  const dst = pid + ':fx.' + iid + '.mix';
+  assert.deepEqual([M.opts.canMod('wheel', dst).ok, M.marks()(pid, 'fx.' + iid + '.mix')], [true, true]);
+  M.opts.onMod('wheel', dst); sim.raf();
+  assert.deepEqual([rows(), cv.hist.undoLabel], ['r1:wheel>' + dst, 'Modulate Delay Mix with Mod Wheel']); // (the knob named by its effect instance)
+  const mods = sim.nodeOf(c.id).posted.map(x => x.m).filter(m => m.t === 'mods');
+  assert.deepEqual(mods[mods.length - 1].rows.map(r => r.dst.kind + ':' + r.dst.chain + ':' + typeof r.dst.fx), ['fx:' + pid + ':number'], 'an fx row to the chain');
 });
 
 // UI fixes

@@ -520,7 +520,7 @@ function validRows(t) {
       let fd = null, key = '';
       try { fd = fxDest(D.param, fx); key = fxLayout(fx).key; } catch { fd = null; }
       if (!fd || fd.nomod) continue;
-      out.push({ r, D, d, S, kind: 'fx', fx: fd.flat, key });
+      out.push({ r, D, d, S, kind: 'fx', fx: 8 + fd.flat, key }); // (the FX-context index: 8 globals + the parameter's flat index, as serum-core's own FX rows; lane D's fixture check)
     }
   }
   return out;

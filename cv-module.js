@@ -928,7 +928,7 @@ export function createTrackView(world, track, host) {
   }
   // (2a) the mod context: the project (its wheel) and the preset rows, when the host gives them; read-only (1f) keeps the
   // mod cables editable
-  const cOpts = () => (typeof H.project === 'function' || H.presetRows ? { project: call(H.project), presetRows: H.presetRows } : undefined);
+  const cOpts = () => (typeof H.project === 'function' || H.presetRows ? { project: call(H.project), presetRows: H.presetRows, dashed: H.cables && typeof H.cables.dashed === 'function' ? H.cables.dashed : undefined } : undefined); // ((2b) host.cables.dashed(row): a per-note source following the last note)
   const cablesNow = () => (!DEV ? deriveCables(T) : RO ? cablesOf(T, cOpts()).map(c => (c.kind === 'mod' ? c : Object.assign({}, c, { readonly: true }))) : cablesOf(T, cOpts()));
   for (const k of keys()) make(k);
   cables.set(cablesNow());

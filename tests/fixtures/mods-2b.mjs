@@ -79,11 +79,11 @@ export function tracks() {
 export const XFER = (model, vals, ctl, T) => ({ a: 0, b: 1, x0: typeof vals[ctl] === 'number' ? vals[ctl] / 10 : 0.5, of: model + '.' + ctl + ':' + (T.kind === 'slot' ? T.slot : T.field) });
 export const TARGETS = (model, ctl) => (model === 'juno60' && ctl === 'a' ? [{ kind: 'field', field: 'fenv.a' }, { kind: 'field', field: 'aenv.a' }] : null);
 // (src 5 = lfo1 of the synthetic CP: the module in LFO slot 1; vi 0 = a.level, 1 = a.pan: the first two scratch
-// destinations; dst.slot 0 = engine.js S_VO, the Juno's VCF cutoff slot; fx 21 = the reverb's mix in the chain's layout)
+// destinations; dst.slot 0 = engine.js S_VO, the Juno's VCF cutoff slot; fx 29 = the reverb's mix in the chain's layout: FX-context 8 + its flat parameter index 21)
 export const PAY1 = {
   rows: [
     { id: 'r2', src: 5, dst: { kind: 'cls', inst: 'i2', slot: 0 }, amt: 0.25, bi: 1, curve: 0.3, crv: null, aux: 0, inv: 0, rise: 0, fall: 0, byp: 0, out: 1, perNote: false, vi: 0, slot: 0, tgt: 0 },
-    { id: 'r3', src: 5, dst: { kind: 'fx', chain: 'fx1', fx: 21, key: '' }, amt: -0.2, bi: 0, curve: 0, crv: null, aux: 0, inv: 0, rise: 0.1, fall: 0.1, byp: 0, out: 1, perNote: false, vi: 1, slot: 1, tgt: 0 },
+    { id: 'r3', src: 5, dst: { kind: 'fx', chain: 'fx1', fx: 29, key: '' }, amt: -0.2, bi: 0, curve: 0, crv: null, aux: 0, inv: 0, rise: 0.1, fall: 0.1, byp: 0, out: 1, perNote: false, vi: 1, slot: 1, tgt: 0 },
   ],
   xfer: [{ a: 0, b: 1, x0: 0.5, of: 'juno60.cf:0' }, null],
   ext: [{ k: 1, src: 5, id: 'l1.out' }],

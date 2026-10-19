@@ -818,3 +818,17 @@ test('2a ยง7.10: CC 1 reaches the host as ctl(\'wheel\') without a track list โ€
   t3.ch = 1;
   assert.deepEqual(union(1, project), [3, 4], 'a target already: once');
 });
+
+test('2b: every control change reaches host.modCC(ch, cc, v01, ts) first (the canvas CC modules, CC learn), the wheel / sustain / learned-controller roles still apply after it; without the hook nothing changes', () => {
+  const log = [], T = timers(), project = project0(), E = world(project, log, T), got = [];
+  const r = v2(E, { modCC: (ch, cc, v, ts) => { got.push([ch, cc, Math.round(v * 1000) / 1000, ts]); } });
+  r.message([0xb0, 1, 127], 5);    // channel 1, CC 1: modCC and the wheel
+  r.message([0xb1, 74, 64], 6);    // channel 2, CC 74
+  r.message([0xbf, 123, 0], 7);    // channel 16, all notes off
+  assert.deepEqual(got, [[1, 1, 1, 5], [2, 74, 0.504, 6], [16, 123, 0, 7]]);
+  const ctl = log.filter(x => x[0] === 'ctl');
+  assert.deepEqual(ctl.map(x => [x[1], x[2], x[3]]), [['wheel', 1, 1]], 'the wheel role after the hook');
+  const log2 = [], r2 = v2(world(project0(), log2, timers()));
+  r2.message([0xb0, 1, 127], 5);
+  assert.deepEqual(log2.filter(x => x[0] === 'ctl').map(x => [x[1], x[2]]), [['wheel', 1]], 'no hook: today\'s dispatch');
+});

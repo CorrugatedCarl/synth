@@ -30,6 +30,7 @@ import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
 import { fitCanvas } from './wk.js?v=9'; // (the OUT module's scope store: the same kit instance as the canvas, its zoom)
 // stage 2a (IMPL-2a §5): the modulator modules' bodies (cv-mods-ui) and the mod layer (cv-modlayer: inspector, Mod list, parameter list)
 import * as cvModsUI from './cv-mods-ui.js?v=9';
+import { xferOf as modXferOf, xferInv as modXferInv, targetsOf as modTargetsOf, srcOf as modSrcOf, descs as modDescsOf } from './cv-mods.js?v=9'; // (2b: the classic halos' knob units)
 import { createModLayer, refusal as modRefusal, STYLE as MOD_STYLE } from './cv-modlayer.js?v=9';
 
 const VERSION = '9';
@@ -317,6 +318,9 @@ function legacyOk(tr, c = CG.compileTrack(tr)) {
   if (!c.canonical) return false;
   if (!tr.dev) return true;
   const ids = CMOD.instIds(tr), f = CMOD.fxDevOf(tr);
+  // (2b) a track with a ModCore payload is graphed: its rows name device ids (dst.inst 'i2', chain 'fx1'), which the
+  // legacy node's i0 / c0 are not — a 2a-only track (no payload) keeps today's stream
+  if (!buildMods(tr).off) return false;
   return ids.length === 1 && c.inst === ids[0] && Object.keys(tr.dev).every(k => !tr.dev[k] || tr.dev[k].kind !== 'panel' || (!!f && !f.own && k === f.id));
 }
 // Stage 2b (IMPL-2b §3.1): the track's {t: 'mods'} payload — cv-graph compileMods (memoised there by content: a knob turn
@@ -328,6 +332,21 @@ function buildMods(tr) {
   return pay && (pay.rows.length || pay.ext.length || pay.vals.length) ? pay : { t: 'mods', i: tr && tr.id, off: true, key: 'off' };
 }
 const modsExt = tr => { const p = buildMods(tr); return p.off ? [] : p.ext; }; // (the track's ext slots, for the injections)
+// (lane D) the payload an offline render carries (processorOptions.mods; null without one)
+const modsFor = tr => { const p = buildMods(tr); return p.off ? null : p; };
+// (lane D) post the track's {t: 'mods'} to its node when the content key changed since the node's last (N.modsKey; a new
+// node's payload travels in its processorOptions): a knob turn on an instrument never reposts it — a cabled classic
+// knob's turn does (its transfer is in the key) —; {off: true} once after a posted payload when nothing is left (N1:
+// a track that never had one gets no message at all)
+function postMods(tr, N) {
+  const pay = buildMods(tr);
+  if (N.modsKey === pay.key) return false;
+  const was = N.modsKey;
+  N.modsKey = pay.key;
+  if (pay.off && (was === undefined || was === 'off')) return false;
+  N.node.port.postMessage(pay);
+  return true;
+}
 // Stage 2a (IMPL-2a §2.1, D11): a Serum's vals with its track's canvas mod rows injected into free matrix slots ({ s:
 // merged }: compileSerum and fxModded2 both see them; vals.s untouched) — no rows: vals itself (the same bytes as before).
 // 2b: with the track's ext slots and modules (ext rows, PER NOTE slot injection); a merged vals holding ext rows carries a
@@ -604,6 +623,7 @@ function sendGraph(tr, N, c) {
     for (const id of Object.keys(G.patches)) postPatch(N, G.patches[id], instCache(N, id), id);
     for (const id of Object.keys(G.chains)) postChain(N, id, G.chains[id]);
     for (const id of fresh) post({ t: 'seq', s: seqPayload(tr, id), i: id }); // (a new TB-303 Inst: its pattern, as a new node's options)
+    postMods(tr, N); // (2b: the ModCore payload after the parts it names; off once when the rows went)
   };
   if (!G.needs.length) { tables.release(tr.id); N.waitP = null; go(); return; }
   learnStates(tr);
@@ -868,6 +888,8 @@ function makeNode(tr) {
   const po = { os: trackOS(tr, sr), hostOS: osFor(sr), patch, song: songData(tr), seq: !G && tr.model === 'tb303' ? seqPayload(tr) : null,
     trackId: tr.id }; // the MIDI OUT registry of the worklet scope (SPEC-serum2 §7.9)
   if (G) Object.assign(po, { graph: G.graph, patches: G.patches, chains: G.chains, seqs: G.seqs });
+  const mods = G ? modsFor(tr) : null; // (2b: the ModCore payload with the parts, IMPL-2b §2.2; a legacy node has none)
+  if (mods) po.mods = mods;
   const node = new AudioWorkletNode(ctx, 'synth-engine', {
     numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
     processorOptions: po,
@@ -875,7 +897,7 @@ function makeNode(tr) {
   const gain = ctx.createGain(), pan = ctx.createStereoPanner(), a = ctx.createAnalyser();
   a.fftSize = 512;
   node.connect(gain); gain.connect(pan); pan.connect(master); pan.connect(a);
-  const N0 = { node, gain, pan, an: a, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: null, phWait: [], waitP: null };
+  const N0 = { node, gain, pan, an: a, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: null, phWait: [], waitP: null, modsKey: mods ? mods.key : undefined };
   const N = G ? graphCache(N0, tr, G.graph) : partCache(N0, patch);
   if (G) { // (every part starts with its options: the caches hold them)
     N.gkey = G.graph.key; N.gon = new Map(G.graph.insts.map(x => [x.id, x.on]));
@@ -1577,12 +1599,13 @@ function perfValue(kind, t = trk()) {
 const inputSubs = new Map(); // track id → Map(dev → fn(on, n, vel 1–127, t ms)): each Serum panel of the track its own (U6)
 const lastIn = new Map();    // track id → { t0, held: Map(n → note | null), notes: [{n, vel, on, off}] }
 const GROUP_MAX = 16;
-const lastV = new Map(); // track id → the last note-on velocity (0–1), the Velocity module's readout (stage 2a)
+const lastV = new Map(), lastN = new Map(); // track id → the last note-on velocity (0–1) / note: the Velocity / (2b) Note modules' readouts
 const lastVel = (t = trk()) => (t && lastV.has(t.id) ? lastV.get(t.id) : 0);
+const lastNote = (t = trk()) => (t && lastN.has(t.id) ? lastN.get(t.id) : null);
 // The group follows the physical keys (§12.6): every held key is in `held` (null once the group stores no more notes), so
 // the group ends at the last note-off however many notes it has; at most GROUP_MAX notes are stored
 function inputNote(t, on, n, v, ts, audition) {
-  if (on) { lastV.set(t.id, v); cvModLive('velo'); } // (lane D: the Velocity module's readout)
+  if (on) { lastV.set(t.id, v); lastN.set(t.id, n); cvModLive('velo'); cvModLive('note'); } // (lane D: the Velocity / Note modules' readouts)
   if (!audition) { const S = inputSubs.get(t.id); if (S) for (const f of [...S.values()]) { try { f(on ? 1 : 0, n, on ? Math.max(1, Math.round(v * 127)) : 0, ts); } catch (err) { console.warn(err); } } }
   if (!hasSx(t)) return; // (render-last: any Serum instrument of the track, stage 1e)
   let g = lastIn.get(t.id);
@@ -1645,7 +1668,7 @@ function setTrackModel(tr0, id, o = null) {
   if (prim) { tr.model = id; tr.vals = loadVals(m); tr.preset = null; } // tr.fx (the track's rack) is kept
   else CMOD.setModel(tr, dev, id, { vals: loadVals(m) });
   // (stage 2a) a Serum's cables to a classic one are dropped (the model setter / setModel): said (cv-model setModel's text)
-  const gone = n0 - CG.modRowsFor(tr, dev).length, why = gone > 0 ? `${gone} modulation cable${gone > 1 ? 's' : ''} to ${nm} removed: classic knobs take modulation from stage 2b` : '';
+  const gone = n0 - CG.modRowsFor(tr, dev).length, why = gone > 0 ? `${gone} modulation cable${gone > 1 ? 's' : ''} to ${nm} removed: the new model has no such knobs` : ''; // (2b: rows whose param id survives stay)
   if (why) notice(why, 6000);
   if (ui === 'flow' || (ui === 'hw' && instUi(tr, dev) === 'flow')) layUi(tr, ui, dev); // (Hardware on an untouched track: no lay key)
   if (tr.id === project.selTrack) {
@@ -1705,6 +1728,15 @@ const classicHost = {
   seq: { of: tr => seqOf(tr), send: tr => seqSend(tr), running: tr => seqRun.has(tr.id), toggle: (tr, on) => seqToggle(tr, on), toRoll: seqToRoll,
     hw: tr => { let st = seqHw.get(tr.id); if (!st) seqHw.set(tr.id, st = { cur: 0, mode: 'pitch' }); return st; } },
   dx: tr => hwDx(tr),
+  // (2b, IMPL-2b §6.2) the press-and-hold / right-click mod menu of a classic control: its canvas rows (Bypass / Disconnect,
+  // one step each), Connect to… (the source picker); the panel's `track` is a device view
+  modMenu: {
+    rows: (v, ctl) => { const t = trOf(v), dev = dvOf(v) || CMOD.primId(t); return t === trk() ? CG.modRowsFor(t, dev).filter(r => r.dst === dev + ':' + ctl).map(r => ({ id: r.id, src: r.src, label: modLabel(r.src), byp: !!r.byp })) : []; },
+    bypass: (v, id, on) => { const t = trOf(v); if (t !== trk()) return; hist.record(project, 'Mod bypass'); CMOD.setMod(t, id, { byp: on ? 1 : 0 }); cvModAfter(t); cvModSync(); },
+    disconnect: (v, id) => { const t = trOf(v); if (t !== trk()) return; hist.record(project, 'Disconnect'); CMOD.removeMod(t, id); cvModAfter(t); cvModSync(); },
+    connect: (v, ctl, el) => { const t = trOf(v), dev = dvOf(v) || CMOD.primId(t); if (t === trk()) modSrcPick(dev + ':' + ctl, el); },
+    canMod: (v, ctl) => { const t = trOf(v), dev = dvOf(v) || CMOD.primId(t); return !!(t.dev && t.dev[dev]) && CMOD.destOk(t.dev[dev], ctl).ok; },
+  },
 };
 const panelKey = v => { const t = trOf(v); return t ? t.id + '/' + (dvOf(v) || CMOD.primId(t)) : ''; };
 const classicOf = v => { const P = v && classicPanels.get(panelKey(v)); return P && !P.dead && P.track === v ? P : null; };
@@ -1727,6 +1759,7 @@ function renderPanel(t = trk(), dev = curOf(t)) {
   const L = instUi(t, dev) === 'hw' ? hwLayoutOf(m) : null;
   classicPanels.set(key, new ClassicPanel(el, { track: v, model: m, layout: L, host: classicHost })); // (Hardware: presets through the chip and the ⋯ menu)
   cpSync();
+  if (t.dev && CG.modRowsFor(t, dev).length) cpHalos(t, dev); // (2b: its halos, the monitor subscription)
   if (cur) { aboutUI(m); drawAlgo(); }
   cvPanelDone();
 }
@@ -2334,6 +2367,7 @@ const midi = createMidi({
   changed: (t, patch, refresh) => { sxDirty.add(t.id); if (patch) queuePatch(t); persist(); if (refresh) sxRefresh(); },
   notice: (txt, ms) => notice(txt, ms),
   button: () => $('#midi'),
+  modCC: (ch, cc, v) => modCC(ch, cc, v), // (2b: the canvas CC modules, CC learn)
 });
 const midiLearn = (id, dest, dev = null) => midi.learn(id, dev, dest); // (dev: the Serum instrument; null: the primary)
 const cancelLearn = say => midi.cancelLearn(say);
@@ -2377,6 +2411,7 @@ async function renderOffline(sr, frames, items, at) {
     const po = { os: x.os, hostOS: x.hostOS || x.os, offline: true, patch: x.patch, wts: n === 0 && wts.length ? wts : null,
       smps: n === 0 && smps.length ? smps : null, song: x.song, transport: x.transport, seq: x.seq || null, trackId: x.tr ? x.tr.id : '' };
     if (x.graph) Object.assign(po, { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs });
+    if (x.mods) po.mods = x.mods; // (2b: the ModCore payload, handled after the parts)
     const node = new AudioWorkletNode(oc, 'synth-engine', {
       numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
       processorOptions: po,
@@ -2473,7 +2508,7 @@ async function renderLast(t, o) {
   const song = groupSong(group, bpm), last = Math.max(...group.map(x => x.off)), fpt = sr * 60 / (bpm * S.PPQ);
   const patch = legacy ? buildPatch(t, sr, true) : buildInstPatch(t, dev, sr, true);
   const buf = await renderOffline(sr, (last + 10.05) * sr, [{ tr: t, patch, os: sxOSFor(legacy ? t : d, sr, true), hostOS: osCap(sr), song,
-    transport: { play: true, frame: 0, tick: 0, fpt, loop: false } }], { s, fx });
+    transport: { play: true, frame: 0, tick: 0, fpt, loop: false }, mods: modsFor(t) }], { s, fx }); // (2b: the Serum alone on a legacy node — its ext rows run; rows to other devices find no Inst there)
   const chs = [buf.getChannelData(0), buf.getChannelData(1)];
   const end = tailEnd(chs, Math.round(last * sr), Math.pow(10, -80 / 20), Math.round(0.05 * sr), Math.round((last + 10) * sr));
   const L = chs[0].slice(0, end), R = chs[1].slice(0, end), low = Math.min(...group.map(x => x.n));
@@ -2609,8 +2644,8 @@ function tuningFile(cur) {
 function sxExtra(t, dev, destId) {
   const rows = t && t.dev ? CG.modRowsFor(t, dev) : [], key = dev + ':' + destId, mine = rows.filter(r => r.dst === key);
   if (!mine.length) return [];
-  const on = new Set(CG.injectMods(t.dev[dev], rows).placed.map(x => x.id));
-  return mine.filter(r => on.has(r.id)).map(r => ({ id: r.id, src: CMOD.MOD_SRC[r.src], amt: r.amt, bi: r.bi, byp: r.byp, out: r.out }));
+  const on = new Map(CG.injectMods(t.dev[dev], rows, modsExt(t), t).placed.map(x => [x.id, x.src])); // (2b: the Serum source each reads — ext<k>, an injected lfo<k> / env<k>, a native id)
+  return mine.filter(r => on.has(r.id)).map(r => ({ id: r.id, src: on.get(r.id) || CMOD.MOD_SRC[r.src], amt: r.amt, bi: r.bi, byp: r.byp, out: r.out }));
 }
 // a Serum module's "mods n/64" (stage 2a, IMPL-2a §2.4; cvBadge): null without canvas rows to it (the badge keeps the
 // safeguard's text); else cv-graph modBudget { preset, canvas, left, max } and text 'mods <preset + canvas>/64', ' · N not
@@ -2618,10 +2653,10 @@ function sxExtra(t, dev, destId) {
 const modLeftN = new Map(); // '<track id>/<dev>' → rows not compiled
 function modCount(t, dev = t && CMOD.primId(t)) {
   const d = t && t.dev && t.dev[dev];
-  if (!d || d.model !== 'serum' || !CG.modRowsFor(t, dev).length) return null;
-  const b = CG.modBudget(t, dev), n = b.left.length;
+  if (!d || (d.kind !== 'synth' && d.kind !== 'panel') || !CG.modRowsFor(t, dev).length) return null;
+  const b = CG.modBudget(t, dev, project), n = b.left.length, sx = d.kind === 'synth' && d.model === 'serum';
   modLeftN.set(t.id + '/' + dev, n);
-  return Object.assign(b, { text: 'mods ' + Math.min(b.max, b.preset + b.canvas) + '/' + b.max + (n ? ' · ' + n + ' not compiled' : '') });
+  return Object.assign(b, { text: 'mods ' + (sx ? Math.min(b.max, b.preset + b.canvas) + '/' + b.max : b.canvas + n) + (n ? ' · ' + n + ' not compiled' : '') }); // (2b: a classic / panel "mods n")
 }
 // the Serum panel's host (§8.8, RULINGS host additions, SPEC-serum2 §11.15); bound to a track id, reading the live
 // project each call. Stage 1e: bound to one Serum instrument of the track (dv, default the primary): its state, own FX,
@@ -3507,7 +3542,7 @@ async function bounce() {
       // a Serum track renders at its own quality (Ultra with "Use Ultra quality when rendering") regardless of the
       // dialog (§11.4, SPEC-serum2 §12.6); every node carries its track id: MIDI OUT between the bounced tracks (§7.9)
       items.push(Object.assign({ tr, patch, os: isSx(tr) ? sxOSFor(tr, sr, true) : os, hostOS: os, song: songData(tr, start, end),
-        transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, seq: patch && synced ? seqPayload(tr, { run: false }) : null, gain, pan: tr.pan },
+        transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, seq: patch && synced ? seqPayload(tr, { run: false }) : null, gain, pan: tr.pan, mods: x.graph ? modsFor(tr) : null },
       x.graph ? { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs, needs: x.needs } : null));
     }
     if (!items.length) { note.textContent = 'No audible tracks with notes in that range.'; go.disabled = false; return; }
@@ -4383,7 +4418,7 @@ function cvLive(key) {
 function cvHomeKeys(t) { const f = t && t.dev ? CMOD.fxDevOf(t) : null; return { inst: t && t.dev ? CMOD.primId(t) : cvModule.ID.inst, fx: f ? (f.own ? f.id + '/fx' : f.id) : null }; }
 const kindOfKey = (t, key) => {
   const d = t && t.dev ? t.dev[key] : null;
-  if (key === 'wheel' ? CMOD.hasWheel(project) : !!d && cvModule.MOD_ORDER.includes(d.kind)) return 'mod'; // (stage 2a: a modulator)
+  if (key === 'wheel' ? CMOD.hasWheel(project) : !!d && cvModule.MOD_ORDER.includes(d.kind) && CMOD.kindOfId(key) === d.kind) return 'mod'; // (stage 2a: a modulator; 2b: any kind, its id by prefix)
   return /\/fx$/.test(key) || (d && d.kind === 'panel') ? 'fx' : d && d.kind === 'out' ? 'out' : d && d.kind === 'synth' ? 'inst' : null;
 };
 // the element device `key` of t renders into (its module body holds it)
@@ -4434,7 +4469,7 @@ function cvDropBody(key, M) { // a device's own element and its panel go
   if (cvEls.get(k) === el) cvEls.delete(k);
   if (cvBuilt.get(k) === el) cvBuilt.delete(k);
   const C = classicPanels.get(k), R = serumPanels.get(k), F = fxPanels.get(k);
-  if (C && C.root === el) { C.destroy(); classicPanels.delete(k); }
+  if (C && C.root === el) { C.destroy(); classicPanels.delete(k); cpMonOff(k); } // ((2b) its halo subscription goes with it)
   if (R && R.el === el) { sxDrop(R); serumPanels.delete(k); }
   if (F && F.el === el) { fxDrop(F); fxPanels.delete(k); }
   if (typeof el.remove === 'function') el.remove();
@@ -4553,7 +4588,8 @@ function cvHost() {
     bodies: { mount: cvMountBody, unmount: cvUnmountBody },
     // (stage 2a) the project wheel and the preset rows for the mod cables, their visibility (the toolbar ∿), the badges' taps
     project: () => project, presetRows: true, mods: (W => (W && typeof W.modsMode === 'function' ? W.modsMode() : undefined))(cvW()),
-    cables: { onSelect: modCableSel, onAction: modCableAct, menu: modCableMenu, onHint: modHint, ignore: modAside },
+    cables: { onSelect: modCableSel, onAction: modCableAct, menu: modCableMenu, onHint: modHint, ignore: modAside,
+      dashed: row => { const p = buildMods(trk()); return !p.off && p.dashed.includes(row.id); } }, // (2b: a per-note source following the last note — compileMods' derived list)
     title: cvTitle,
     menu: cvMenu,
     size: key => { const t = trk(); return CMOD.instOf(t, key) ? cvInstSize(t, key) : null; },
@@ -4939,7 +4975,7 @@ function cvZone(key, z) {
 // the badge on an instrument's bar: the CPU safeguard's cap (capsOf: 'OS 4→2' | 'Qn' | null) — 1f: nothing else (a
 // track's one instrument is cabled to OUT: no "not connected")
 // (stage 2a) a Serum with canvas mod rows: "mods n/64" (modCount) in its place
-function cvBadge(key) { const t = trk(); if (!CMOD.instOf(t, key)) return null; const m = modCount(t, key); return m ? m.text : capsOf(t, key); }
+function cvBadge(key) { const t = trk(), d = t.dev && t.dev[key]; if (!d || (d.kind !== 'synth' && d.kind !== 'panel')) return null; const m = modCount(t, key); return m ? m.text : capsOf(t, key); }
 // Effects tray (SPEC §2.4, §2.8): fx-ui's addMenuItems list — the rack's "+" menu: the 13 effects alphabetically, then the
 // 3 splitters — read from serum-core's FXTYPES (the same list, before fx-ui loads with the first rack)
 const FX_ITEMS = (() => {
@@ -5057,10 +5093,16 @@ function cvMeasure(btn, st) {
 // or a modulator's ⋯ → Modulation list…). History: a drag onto a knob records its own step; the layer's edits open theirs
 // at the gesture's first change (modPre: the snapshot before it) and name it at its end (modStep, the layer's label); a
 // preset row's edits are the Serum's own (sxEdit: knob tweaks, no step). After each: queuePatch, the halos, the view
-const MOD_TILES = [{ id: 'wheel', name: 'Mod Wheel', scope: 'project' }, { id: 'velo', name: 'Velocity', scope: 'track' },
-  { id: 'at', name: 'Aftertouch', scope: 'track' }, { id: 'bend', name: 'Bend', scope: 'track' }];
-const modKindOfKey = (t, key) => (key === 'wheel' ? 'wheel' : t && t.dev && t.dev[key] ? t.dev[key].kind : null);
-const modKeyOf = kind => (kind === 'wheel' ? 'wheel' : CMOD.MOD_DEV[kind] || null);
+// Stage 2b (IMPL-2b §6.3, lane D): every modulator kind (LFO, ENV, Macro, CC, Chaos, Note beside the 2a four), cables to
+// classic and panel knobs (cv-model addMod; compiled by cv-graph compileMods into the {t: 'mods'} payload postMods sends),
+// the editing bodies (one History step per gesture end: modEditState), macro knobs and CCs as {t: 'mval'} (modVal), the
+// classic panels' halos from the engine's eff snapshot (cpHalos / cpSnap), the press-and-hold mod menu (classicHost.modMenu)
+const MOD_TILES = cvTray.MOD_TILES; // (2b: every kind; multi-instance tiles never grey out)
+const modKindOfKey = (t, key) => (key === 'wheel' ? 'wheel' : t && t.dev && t.dev[key] && CMOD.kindOfId(key) === t.dev[key].kind ? t.dev[key].kind : null);
+const modKeyOf = kind => (kind === 'wheel' ? 'wheel' : CMOD.MOD_DEV[kind] || null); // (a singleton's id; a multi kind's comes from addModDev)
+const MOD_EDIT = new Set(['lfo', 'env', 'macro', 'cc', 'chaos', 'note']); // (2b: the bodies over a device's state)
+const modSrcList = t => CMOD.sourcesOf(t, project).concat(CMOD.linkSources(t)); // (every source a cable may start from: the wheel, the modules, the Serums' own LFOs / ENVs)
+const modDestDevs = t => (t && t.dev ? Object.keys(t.dev).filter(k => t.dev[k] && (t.dev[k].kind === 'synth' || t.dev[k].kind === 'panel')) : []); // (the devices with knobs)
 const modSplit = dst => { const i = typeof dst === 'string' ? dst.indexOf(':') : -1; return i > 0 ? { dev: dst.slice(0, i), pid: dst.slice(i + 1) } : null; };
 const isSerumDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && d.model === 'serum'; };
 const serumIds = t => CMOD.instIds(t).filter(k => isSerumDev(t, k));
@@ -5073,27 +5115,99 @@ function cvDevices(t) {
   return L;
 }
 /* ---- the bodies and their live values */
-const modValue = (kind, t = trk()) => (kind === 'velo' ? lastVel(t) : perfValue(kind, t));
+const modValue = (kind, t = trk()) => (kind === 'velo' ? lastVel(t) : kind === 'note' ? lastNote(t) : perfValue(kind, t));
+const modCCLast = new Map(); // '<track id>/<cc module>' → the last controller value received (the meter after a remount)
 function modMount(key, b) {
-  const kind = modKindOfKey(trk(), key), o = { doc: document, get: () => modValue(kind) };
+  const t = trk(), tid = t.id, kind = modKindOfKey(t, key), o = { doc: document, get: () => modValue(kind) };
   modUnmount(key);
   if (kind === 'wheel') Object.assign(o, { label: 'Mod Wheel', set: v => { ctl('wheel', v, 0); if (setModUI) setModUI(v, false); }, onJump: modJump });
+  else if (MOD_EDIT.has(kind)) { // (2b) the editing bodies: the device's state, one step per gesture end, the live hooks
+    Object.assign(o, { get: () => { const x = project.tracks.find(y => y.id === tid); return x && x.dev && x.dev[key] ? x.dev[key] : {}; }, edit: f => modEditState(key, f), bpm: () => project.bpm });
+    if (kind === 'macro') o.set = (k, v) => modVal(trk(), key, 'k' + (k + 1), v); // (a knob's move: the table value, no step)
+    if (kind === 'cc') o.learn = on => modLearn(key, on);
+  }
   const B = cvModsUI.bodyFor(kind, o);
   if (!B) return;
   B.kind = kind;
   b.append(B.el);
   modBodies.set(key, B);
   if (kind === 'wheel') B.setOthers(modOthers());
+  else if (kind === 'note') B.update(lastNote(t));
+  else if (kind === 'cc') { const v = modCCLast.get(tid + '/' + key); if (v !== undefined) B.update(v); }
+  else if (kind === 'macro') B.update(Array.isArray(t.dev[key].v) ? t.dev[key].v.slice() : null); // (its live values are its own knobs: the host's table)
 }
-function modUnmount(key) { const B = modBodies.get(key); if (!B) return false; modBodies.delete(key); B.destroy(); return true; }
-// a value was sent (ctl: the wheel, aftertouch, bend; inputNote: a velocity): the modules of that kind redraw (a dragged
-// wheel ignores it)
+function modUnmount(key) { const B = modBodies.get(key); if (!B) return false; if (modLearnKey && modLearnKey.key === key) modLearn(key, false); modBodies.delete(key); B.destroy(); return true; }
+// a value was sent (ctl: the wheel, aftertouch, bend; inputNote: a velocity, (2b) a note): the modules of that kind redraw
+// (a dragged wheel ignores it)
 function cvModLive(kind) { if (modBodies.size) for (const B of modBodies.values()) if (B.kind === kind) B.update(modValue(kind)); }
 // (frame(), playing) the selected track's lanes on the modules on screen (U13: a folded or off-screen one waits)
+const MOD_LANED = new Set(['wheel', 'at', 'bend']);
 function cvModPlay() {
   if (!modBodies.size) return;
   const t = trk();
-  for (const [k, B] of modBodies) if (B.kind !== 'velo' && (!cvView || cvView.live(k))) B.update(modLane(B.kind, t));
+  for (const [k, B] of modBodies) if (MOD_LANED.has(B.kind) && (!cvView || cvView.live(k))) B.update(modLane(B.kind, t));
+}
+/* ---- (2b) the state edits, the value table, CC learn */
+// a body's edit at a gesture's end: one History step (the 2a modPre / modStep glue), the state through cv-model
+// setModState (bounded, in place); modStep's cvModAfter reposts the payload (the module's state is in its key)
+function modEditState(key, fields) {
+  const t = trk(), kind = modKindOfKey(t, key);
+  if (!kind || kind === 'wheel') return false;
+  modPre();
+  if (!CMOD.setModState(t, key, fields).ok) { modUnpre(); return false; }
+  modStep('Edit ' + CMOD.modLabelOf(key, t.dev[key]));
+  return true;
+}
+// a value of the ModCore table: a macro knob moved (port 'k1'…'k8'), a CC received (port 'out') → {t: 'mval', k, v} to the
+// track's node when the compile gave that source a table entry (buildMods' vals, by id); nothing otherwise (no patch)
+function modVal(t, key, port, v) {
+  const pay = t && t.dev ? buildMods(t) : null;
+  if (!pay || pay.off) return false;
+  const e = pay.vals.find(x => x && x.id === key + '.' + port);
+  if (!e) return false;
+  postTo(t, { t: 'mval', k: e.k, v: Math.max(0, Math.min(1, +v || 0)) });
+  return true;
+}
+let modLearnKey = null; // { tid, key }: the CC module armed for the next controller (one at a time)
+function modLearn(key, on) {
+  if (modLearnKey && (!on || modLearnKey.key !== key)) { const old = modBodies.get(modLearnKey.key); if (old && old.setLearn) old.setLearn(false); modLearnKey = null; }
+  if (!on) return;
+  const B = modBodies.get(key);
+  modLearnKey = { tid: trk().id, key };
+  if (B && B.setLearn) B.setLearn(true);
+  notice('CC learn: move a controller — tap Learn again to cancel', 5000);
+}
+// midi.js host.modCC: a controller (v 0…1) to the CC modules of the channel's targets whose number and channel match (ch 0:
+// omni) → the table value and the body's meter; an armed learn takes its number first (one step "Learn CC"). The module's
+// stored `v` is not written per controller (its state is in the payload's key: a repost per message); the meter is
+// the host's (modCCLast), the table the engine's
+function modCC(ch, cc, v) {
+  const L = modLearnKey;
+  if (L) {
+    const t = project.tracks.find(x => x.id === L.tid), d = t && t.dev ? t.dev[L.key] : null;
+    modLearn(L.key, false);
+    if (d && d.kind === 'cc') {
+      hist.record(project, 'Learn CC');
+      CMOD.setModState(t, L.key, { cc });
+      const B = modBodies.get(L.key);
+      if (B && B.sync) B.sync();
+      cvModAfter(t);
+      notice('CC ' + cc + ' learned', 3000);
+    }
+  }
+  let hit = 0;
+  for (const t of targets(ch)) {
+    if (!t.dev) continue;
+    for (const id of Object.keys(t.dev)) {
+      const d = t.dev[id];
+      if (!d || d.kind !== 'cc' || CMOD.kindOfId(id) !== 'cc' || d.cc !== cc || (d.ch && d.ch !== ch)) continue;
+      modVal(t, id, 'out', v);
+      modCCLast.set(t.id + '/' + id, v);
+      if (t === trk()) { const B = modBodies.get(id); if (B) B.update(v); }
+      hit++;
+    }
+  }
+  return hit;
 }
 // (U13) perfValue's lane value without its scan of t.cc per body per frame: per track and kind the points sorted by tick
 // (equal ticks: the later in t.cc wins, as there), made again when t.cc changes (another array, another length) or after
@@ -5131,7 +5245,7 @@ function cvModDecor() {
   const T = shell.tiles, t = trk();
   if (T && typeof T.setPlaced === 'function') {
     T.setPlaced('wheel', CMOD.hasWheel(project) ? 'already in this project' : null);
-    for (const k of ['velo', 'at', 'bend']) T.setPlaced(k, t.dev && t.dev[CMOD.MOD_DEV[k]] ? 'already on this track' : null);
+    for (const k of ['velo', 'at', 'bend', 'note']) T.setPlaced(k, t.dev && t.dev[CMOD.MOD_DEV[k]] ? 'already on this track' : null); // (multi kinds ignore it)
   }
   const W = modBodies.get('wheel');
   if (W) W.setOthers(modOthers());
@@ -5145,7 +5259,9 @@ function modSpot(t, kind) {
   const x = -up(cvModule.W_MOD + cvModule.MOD_GAP), h = MH[kind] || MH.at;
   const R = cvView && cvView.trackId === t.id ? Object.values(cvView.rects()).filter(r => r && r.x < x + cvModule.W_MOD && r.x + r.w > x) : [];
   let y = 0;
-  for (const k of cvModule.MOD_ORDER) { if (k === kind) break; if (k === 'wheel' ? CMOD.hasWheel(project) : t.dev && t.dev[CMOD.MOD_DEV[k]]) y = up(y + MH[k] + G); }
+  const ORD = cvModule.MOD_ORDER;
+  if (kind !== 'wheel' && CMOD.hasWheel(project)) y = up(y + MH.wheel + G);
+  for (const m of CMOD.modDevs(t)) { if (ORD.indexOf(m.kind) > ORD.indexOf(kind)) break; y = up(y + (MH[m.kind] || MH.at) + G); } // (2b: a multi kind lands after its siblings)
   if (!R.some(r => r.y < y + h && r.y + r.h > y)) return { x, y };
   y = 0;
   for (const r of R) y = Math.max(y, r.y + r.h + G);
@@ -5161,19 +5277,23 @@ function modShow(key) {
   return true;
 }
 function modAdd(kind, at) {
-  const t = trk(), key = modKeyOf(kind), name = CMOD.MOD_LABEL[kind];
-  if (!key || !t.dev) return null;
-  if (kind === 'wheel' ? CMOD.hasWheel(project) : key in t.dev) { notice(name + (kind === 'wheel' ? ' is already in this project' : ' is already on this track'), 3500); return null; }
+  const t = trk(), multi = CMOD.MOD_MULTI.includes(kind), key0 = modKeyOf(kind), name = CMOD.MOD_LABEL[kind];
+  if (!name || !t.dev || (!multi && !key0)) return null;
+  if (!multi && (kind === 'wheel' ? CMOD.hasWheel(project) : key0 in t.dev)) { notice(name + (kind === 'wheel' ? ' is already in this project' : ' is already on this track'), 3500); return null; }
   hist.record(project, kind === 'wheel' ? 'Place Mod Wheel' : 'Add ' + name);
-  const lay = cvPinned(t);
-  if (kind === 'wheel') CMOD.placeWheel(project); else CMOD.addModDev(t, kind);
-  const tap = !(at && Number.isFinite(at.x) && Number.isFinite(at.y));
-  lay[key] = tap ? modSpot(t, kind) : { x: cvDot(at.x), y: cvDot(at.y) };
+  const lay = cvPinned(t), spot = tap => (tap ? modSpot(t, kind) : { x: cvDot(at.x), y: cvDot(at.y) }); // (the spot before the device is there: its siblings)
+  const tap = !(at && Number.isFinite(at.x) && Number.isFinite(at.y)), at2 = spot(tap);
+  let key = key0;
+  if (kind === 'wheel') CMOD.placeWheel(project); else key = CMOD.addModDev(t, kind); // (2b: a multi kind's id from cv-model — l<n>, e<n>, m<n>, c<n>, h<n>)
+  if (!key) { hist.prune(project); updateUndoUI(); return null; }
+  const label = kind === 'wheel' ? name : CMOD.modLabelOf(key, t.dev[key]);
+  if (multi) hist.u[hist.u.length - 1].label = 'Add ' + label; // ("Add LFO 2")
+  lay[key] = at2;
   t.lay = lay;
   cvAfter(t);
   if (tap) modShow(key);
   const step = hist.u[hist.u.length - 1], tid = t.id;
-  cvUndoNotice(`Added ${name} · tap to undo`, step, () => {
+  cvUndoNotice(`Added ${label} · tap to undo`, step, () => {
     const tr = project.tracks.find(x => x.id === tid);
     return tr && (kind === 'wheel' ? CMOD.hasWheel(project) : tr.dev && key in tr.dev) ? () => { if (trk() !== tr) selectTrack(tid); modDelete(key, true); } : null;
   });
@@ -5207,7 +5327,8 @@ function modDelete(key, quiet) {
     for (const x of CMOD.removeWheel(project).byTrack) { const tr = project.tracks.find(y => y.id === x.trackId); if (tr && tr !== t) queuePatch(tr); }
   } else {
     if (!cvModule.MOD_ORDER.includes(kind)) return false;
-    hist.record(project, 'Delete ' + CMOD.MOD_LABEL[kind]);
+    if (modLearnKey && modLearnKey.key === key) modLearn(key, false);
+    hist.record(project, 'Delete ' + CMOD.modLabelOf(key, t.dev[key])); // ("Delete LFO 2", "Delete Velocity")
     CMOD.removeModDev(t, key);
   }
   cvModAfter(t);
@@ -5215,53 +5336,84 @@ function modDelete(key, quiet) {
   return true;
 }
 /* ---- names, checks, the drag onto a knob */
-function modLabel(id) { // canvas-form ids: a source ('wheel', 've.out'), a knob ('i1:f.cutoff'), a device ('i1')
+function modLabel(id) { // canvas-form ids: a source ('wheel', 've.out', 'l2.out', 'm1.k3', 'i1/lfo2.out'), a knob ('i1:f.cutoff', 'i2:cf', 'fx1:fx.rev.mix'), a device ('i1')
   const t = trk();
   if (typeof id !== 'string' || !id) return '';
   if (CMOD.MOD_SRC[id]) return CMOD.MOD_LABEL[CMOD.MOD_SRC[id]];
+  const q = modSrcOf(id);
+  if (q && (q.port || q.link)) { const S = modSrcList(t).find(x => x.id === id); return S ? S.label : q.link ? cvDevName(t, q.dev) + ' ' + q.link.toUpperCase() : CMOD.modLabelOf(q.dev, t.dev && t.dev[q.dev]); }
   const D = modSplit(id);
   if (!D) return t.dev && t.dev[id] ? cvDevName(t, id) : '';
   const d = t.dev ? t.dev[D.dev] : null;
   if (isSerumDev(t, D.dev)) { try { return core.destLabel(D.pid, d.vals.s, d.fx) || D.pid; } catch (err) { return D.pid; } }
+  if (d && d.kind === 'panel') { const x = modDescsOf(d).find(k => k.id === D.pid), m = /^fx\.([^.]+)\./.exec(D.pid); return x ? (m ? modInstLabel(d, m[1]) + ' ' : '') + x.label : D.pid; } // ("Reverb Mix")
   const c = d && d.kind === 'synth' ? (modelById(d.model).controls || []).find(x => x.id === D.pid) : null;
   return c ? c.label : D.pid;
 }
+const modInstLabel = (d, inst) => { try { return core.instLabel(d.fx, inst) || inst; } catch (err) { return inst; } }; // (a panel's effect instance: "Reverb", "Delay 2")
 // can src modulate knob dst ('<dev>:<param>') of this track → {ok, why} (the refusal texts of §2.13)
 function modCan(src, dst) {
   const t = trk(), D = modSplit(dst), d = D && t.dev ? t.dev[D.dev] : null;
   const no = (code, x) => ({ ok: false, why: modRefusal(code, Object.assign({ src: modLabel(src), dst: modLabel(dst) }, x)) });
   if (!d) return no('nomod');
-  const r = CMOD.destOk(d, D.pid);
-  if (!r.ok) return r.stage ? no('stage', { stage: r.stage }) : no('nomod');
-  const b = CG.modBudget(t, D.dev);
-  if (b.left.length || b.preset + b.canvas >= b.max) return no('full', { dev: cvDevName(t, D.dev), used: b.preset + b.canvas, max: b.max });
+  const r = CMOD.destOk(d, D.pid); // (2b: classic sm / apply / proc and panel knobs open; chunk → stage 5; a switched-off oscillator's level says so)
+  if (!r.ok) return r.stage ? no('stage', { stage: r.stage }) : /oscillator/.test(r.why || '') ? { ok: false, why: r.why } : no('nomod');
+  if (isSerumDev(t, D.dev)) { const b = CG.modBudget(t, D.dev, project); if (b.left.length || b.preset + b.canvas >= b.max) return no('full', { dev: cvDevName(t, D.dev), used: b.preset + b.canvas, max: b.max }); }
   return { ok: true, why: '' };
 }
-// the knobs a drag lights up: every modulatable one of the track's Serums (memoised per drag)
+// the knobs a drag lights up: every modulatable one of the track's instruments and panels (memoised per drag)
 function modMarks() {
   const t = trk(), memo = new Map();
-  return (dev, id) => { const k = dev + ':' + id; if (!memo.has(k)) memo.set(k, isSerumDev(t, dev) && CMOD.destOk(t.dev[dev], id).ok); return memo.get(k); };
+  return (dev, id) => { const k = dev + ':' + id; if (!memo.has(k)) memo.set(k, !!(t.dev && t.dev[dev]) && CMOD.destOk(t.dev[dev], id).ok); return memo.get(k); };
 }
-// a drag released on a knob: one step "Modulate <knob> with <source>", the new cable selected
+// (2b) a row the compile cannot evaluate (ModCore LFO / ENV / chaos slots, ext slots or synthetic rows full): the reason;
+// '' when it compiled
+function modLeftWhy(t, dev, id) {
+  const b = CG.modBudget(t, dev, project);
+  if (!b.left.includes(id)) return '';
+  const code = (b.why && b.why[id]) || 'full', s = b.slots || {};
+  return modRefusal(code, { dev: cvDevName(t, dev), used: b.preset + b.canvas, max: b.max, slots: s });
+}
+// a drag released on a knob: one step "Modulate <knob> with <source>", the new cable selected; a row the ModCore budgets
+// refuse goes again (no step, the reason told)
 function modConnect(src, dst) {
   const t = trk(), D = modSplit(dst), ok = modCan(src, dst);
   if (!ok.ok) { notice(ok.why, 4000); return null; }
   hist.record(project, 'Modulate ' + modLabel(dst) + ' with ' + modLabel(src));
+  const e = hist.u[hist.u.length - 1];
   const r = CMOD.addMod(t, src, dst, { project, name: cvDevName(t, D.dev), limit: prefs.limitDrop }); // (the Serum's "Limit mod depth on drop")
   if (!r.ok) { hist.prune(project); notice(r.why || modRefusal(r.code), 4000); updateUndoUI(); return null; }
+  const left = modLeftWhy(t, D.dev, r.row.id);
+  if (left) { CMOD.removeMod(t, r.row.id); if (hist.u[hist.u.length - 1] === e) hist._drop(hist.u.pop()); notice(left, 5000); updateUndoUI(); return null; }
   modPend = null;
   cvModAfter(t);
   modSelect(r.row.id);
   cvModSync();
   return r.row.id;
 }
+// (2b) "Connect to…" from a knob (the classic mod menu, a drop on a module's bar with one source): the sources at the anchor
+function modSrcPick(dst, el) {
+  const t = trk(), L = modSrcList(t), p = modAt(el);
+  if (!L.length) { notice('Add a modulator first (Sources ▸ Modulators)', 4000); return false; }
+  cvTray.popupMenu(p.x, p.y, L.map(s => ({ label: s.label + (s.kind === 'link' && s.used ? ' (in use)' : ''), action: () => modConnect(s.id, dst) })));
+  return true;
+}
 const modAt = el => { const r = el && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null; return r ? { x: r.left, y: r.bottom + 6 } : { x: undefined, y: undefined }; };
 // the parameter list of the Serum a cable is aimed at (a drop on its bar, a tap on the jack); elsewhere the reason
 function modDests(src, dev, el) {
-  const t = trk();
-  if (!dev || !isSerumDev(t, dev)) { notice(dev && t.dev && t.dev[dev] ? modRefusal('stage', {}) : 'Drag a modulation cable onto a Serum knob', 4000); return false; }
+  const t = trk(), d = dev && t.dev ? t.dev[dev] : null;
+  if (!d || !modDescs(dev).length) { notice(d ? modRefusal('nomod') : 'Drag a modulation cable onto a knob', 4000); return false; }
   const p = modAt(el);
   return modLayer ? modLayer.openDestList(src, dev, p.x, p.y) : false;
+}
+// a jack tap: one device with knobs → its list; several → a pick of the device first
+function modJackTap(src, el) {
+  const t = trk(), L = modDestDevs(t);
+  if (!L.length) { notice('Modulation cables end on an instrument’s or a panel’s knobs', 4000); return false; }
+  if (L.length === 1) return modDests(src, L[0], el);
+  const p = modAt(el);
+  cvTray.popupMenu(p.x, p.y, L.map(id => ({ label: cvDevName(t, id), action: () => modDests(src, id, el) })));
+  return true;
 }
 const modDragOpts = {
   canMod: (src, dst) => modCan(src, dst),
@@ -5269,7 +5421,7 @@ const modDragOpts = {
   onMod: (src, dst) => { modConnect(src, dst); },
   onRefuse: (src, dst, why) => notice(why || modRefusal('nomod'), 4000),
   onBarDrop: (src, key) => { const m = cvView && cvView.modules.get(key); modDests(src, String(key).split('/')[0], m ? m.bar : null); },
-  onJackTap: (src, el) => { const S = serumIds(trk()); if (S.length) modDests(src, S[0], el); else notice('Modulation cables end on a Serum’s knobs (classic knobs from stage 2b)', 4000); },
+  onJackTap: (src, el) => { modJackTap(src, el); },
 };
 function modSelect(id) { if (!cvView) return; modSelHost = true; try { cvView.cables.select(id); } finally { modSelHost = false; } }
 /* ---- the mod cables' badges (cv-cables host.cables) */
@@ -5344,6 +5496,65 @@ function modHalos(t) {
     const r = sxRecOf(t.id, d);
     if (r && r.ui && r.trackId === t.id && typeof r.ui.paintMods === 'function') { try { r.ui.paintMods(true); } catch (err) { console.warn(err); } }
   }
+  cpHalos(t); // (2b: the classic panels' rings and range bars)
+}
+/* ---- (2b) classic halos: the rows on each control and the engine's eff snapshot (IMPL-2b §2.4, §6.2) */
+// the rows on a classic instrument's controls as classic-panel setMods reads them ({ ctlId: [{ id, src, kind, amt, bi, byp,
+// out, label }] }; kind: the source module's, a linked Serum LFO / ENV as lfo / env)
+function cpRows(t, dev) {
+  const by = {};
+  for (const r of CG.modRowsFor(t, dev)) {
+    const D = modSplit(r.dst), q = modSrcOf(r.src);
+    if (!D) continue;
+    const kind = q && q.link ? (/^lfo/.test(q.link) ? 'lfo' : 'env') : cvCables.srcKind(r.src) || CMOD.MOD_SRC[r.src] || 'wheel';
+    (by[D.pid] || (by[D.pid] = [])).push({ id: r.id, src: r.src, kind, amt: r.amt, bi: r.bi, byp: r.byp, out: r.out, label: modLabel(r.src) });
+  }
+  return by;
+}
+const cpMons = new Map(), cpLive = new Map(), cpXf = new Map(); // '<track id>/<dev>' → off | { ctlId: knob units } | '…/<ctl>/<tgt>' → { sig, xf }
+// the mounted classic panels of t (one: `only`): their halos from the rows, a monitor subscription while cabled (dropped
+// when the rows go, or with the panel: cvDropBody)
+function cpHalos(t, only) {
+  for (const dev of CMOD.instIds(t)) {
+    if (isSerumDev(t, dev) || (only && dev !== only)) continue;
+    const k = t.id + '/' + dev, P = classicPanels.get(k), rows = cpRows(t, dev), any = Object.keys(rows).length > 0;
+    if (P && !P.dead) { try { P.setMods(rows, any ? cpLive.get(k) || null : null); } catch (err) { console.warn(err); } }
+    if (any && P && !P.dead && !cpMons.has(k)) cpMonitor(t.id, dev);
+    else if (!any && cpMons.has(k)) cpMonOff(k);
+  }
+}
+function cpMonOff(k) { const off = cpMons.get(k); if (off) off(); cpMons.delete(k); cpLive.delete(k); }
+function cpMonitor(tid, dev) {
+  const k = tid + '/' + dev;
+  cpMons.set(k, monitors.sub(tid, dev, { role: 'inst',
+    live: () => { const P = classicPanels.get(k); return !!P && !P.dead && project.selTrack === tid && cvLive(dev); }, // (on-screen modules only)
+    deliver: d => { if (d.s && d.s.eff) cpSnap(tid, dev, d.s.eff); } }));
+}
+// the Inst's eff snapshot (engine units, one per payload row of that Inst in payload order — lane A2's modEff) → knob
+// units through the inverse transfer (cv-mods xferInv of the row's target; the sweep cached per instrument values)
+function cpSnap(tid, dev, eff) {
+  const t = project.tracks.find(x => x.id === tid), k = tid + '/' + dev, P = classicPanels.get(k);
+  if (!t || !P || P.dead || !t.dev || !t.dev[dev]) return;
+  const pay = buildMods(t);
+  if (pay.off) return;
+  const d = t.dev[dev], m = modelById(d.model), out = {}, sig = JSON.stringify(d.vals || {});
+  let j = 0;
+  for (const r of pay.rows) {
+    if (!r.dst || r.dst.inst !== dev || (r.dst.kind !== 'cls' && r.dst.kind !== 'set')) continue;
+    const row = (t.mods || []).find(x => x.id === r.id), D = row && modSplit(row.dst), c = D && (m.controls || []).find(x => x.id === D.pid);
+    if (c && j < eff.length) {
+      const ck = k + '/' + D.pid + '/' + (r.tgt | 0);
+      let X = cpXf.get(ck);
+      if (!X || X.sig !== sig) { const T = modTargetsOf(m, D.pid)[r.tgt | 0]; X = { sig, xf: T ? modXferOf(m, d.vals, D.pid, T) : null }; cpXf.set(ck, X); }
+      if (X.xf) {
+        const x = modXferInv(X.xf, eff[j]), lo = c.t === 'k' ? c.min : 0, hi = c.t === 'k' ? c.max : c.t === 's' ? c.opts.length - 1 : 1;
+        out[D.pid] = c.t === 'k' ? lo + (hi - lo) * x : Math.round(lo + (hi - lo) * x);
+      }
+    }
+    j++;
+  }
+  cpLive.set(k, out);
+  try { P.setLive(out); } catch (err) { console.warn(err); }
 }
 function modEdit(key, f) {
   const t = trk();
@@ -5390,9 +5601,20 @@ function modFromPreset(dev, slot) {
   return r;
 }
 // a Serum's destinations as its matrix menu groups them (serum-core destMenu: the sections, one group per FX instance)
+// (2b) a classic synth's by the model's sections (chunk knobs greyed "stage 5"; struct / none nomod); a panel's by effect
+// instance (nomod rows greyed)
 function modDescs(dev) {
-  const t = trk(), d = isSerumDev(t, dev) ? t.dev[dev] : null, out = [];
-  if (d) for (const g of core.destMenu(d.vals.s, d.fx, { matrix: true })) for (const it of g.items) out.push({ id: it.id, label: it.label, group: g.group, nomod: false });
+  const t = trk(), d = dev && t.dev ? t.dev[dev] : null, out = [];
+  if (!d) return out;
+  if (isSerumDev(t, dev)) { for (const g of core.destMenu(d.vals.s, d.fx, { matrix: true })) for (const it of g.items) out.push({ id: it.id, label: it.label, group: g.group, nomod: false }); return out; }
+  if (d.kind === 'synth') {
+    const m = modelById(d.model), by = new Map(modDescsOf(d).map(x => [x.id, x])), seen = new Set();
+    const put = (group, x) => { const r = CMOD.destOk(d, x.id); seen.add(x.id); out.push(Object.assign({ id: x.id, label: x.label, group, nomod: !r.ok && !r.stage }, r.stage ? { stage: r.stage } : null, !r.ok && !r.stage && r.why ? { why: r.why } : null)); };
+    for (const sec of m.sections || []) for (const c of sec.c || []) { const x = by.get(c.id); if (x && !seen.has(c.id)) put(sec.title || 'Panel', x); }
+    for (const x of by.values()) if (!seen.has(x.id)) put('Other', x);
+    return out;
+  }
+  if (d.kind === 'panel') for (const x of modDescsOf(d)) { const mm = /^fx\.([^.]+)\./.exec(x.id); out.push({ id: x.id, label: x.label, group: mm ? modInstLabel(d, mm[1]) : 'Effects', nomod: !!x.nomod }); }
   return out;
 }
 function modSources(dev) { // the Serum's own sources (the aux menu)
@@ -5409,14 +5631,17 @@ function initModLayer() {
       descs: modDescs, sources: modSources, cancel: modUnstep,
       rowsOf: dev => { const t = trk(); return dev ? CG.modRowsFor(t, dev) : Array.isArray(t.mods) ? t.mods.slice() : []; },
       presetRows: dev => { const d = trk().dev[dev]; return d ? CMOD.presetRows(d) : []; },
-      budget: dev => CG.modBudget(trk(), dev),
+      budget: dev => { const t = trk(), d = t.dev && t.dev[dev]; return Object.assign(CG.modBudget(t, dev, project), { kind: isSerumDev(t, dev) ? 'serum' : d && d.kind === 'panel' ? 'panel' : 'classic' }); }, // (2b: the ModCore slots, the device kind)
       edit: modEdit, remove: modRemove, toPreset: modToPreset, fromPreset: modFromPreset,
       connect: (src, dst) => { // (the parameter list: no step here — the layer names it)
         const ok = modCan(src, dst);
         if (!ok.ok) return { ok: false, why: ok.why };
         modPre();
         const t = trk(), D = modSplit(dst), r = CMOD.addMod(t, src, dst, { project, name: cvDevName(t, D.dev), limit: prefs.limitDrop });
-        if (r.ok) queuePatch(t); else modUnpre();
+        if (!r.ok) { modUnpre(); return r; }
+        const left = modLeftWhy(t, D.dev, r.row.id); // (2b: a row the ModCore budgets refuse goes again)
+        if (left) { CMOD.removeMod(t, r.row.id); modUnpre(); return { ok: false, why: left }; }
+        queuePatch(t);
         return r;
       },
       select: modSelect, notice: txt => notice(txt, 4000), labelOf: modLabel, step: modStep, confirm: q => confirm(q),
@@ -5424,16 +5649,22 @@ function initModLayer() {
   } catch (err) { modLayer = null; console.warn('The modulation inspector is unavailable', err); }
 }
 // ⋯ → Modulation list…: every mod row of the track by Serum (canvas and preset), the budgets
-function modList() { const t = trk(); if (modLayer) modLayer.openList(t.name, serumIds(t).map(id => ({ id, label: cvDevName(t, id) }))); }
-// undo / redo / a load (applyRestore), a preset load (sxLoad): the open inspector and Mod list re-read; no gesture open
-function cvModSync() { modPend = null; if (modLayer) modLayer.sync(); }
-// (a preset load: canvas rows it leaves without a slot are said — "Serum's mod rows are full (64/64): 1 modulation cable not compiled")
+function modList() { const t = trk(); if (modLayer) modLayer.openList(t.name, modDestDevs(t).map(id => ({ id, label: cvDevName(t, id) }))); }
+// undo / redo / a load (applyRestore), a preset load (sxLoad): the open inspector and Mod list re-read, (2b) the editing
+// bodies re-read their state; no gesture open
+function cvModSync() {
+  modPend = null;
+  if (modLayer) modLayer.sync();
+  for (const B of modBodies.values()) if (typeof B.sync === 'function') { try { B.sync(); } catch (err) { console.warn(err); } }
+}
+// (a preset load: canvas rows it leaves without a slot are said — "Serum's mod rows are full (64/64): 1 modulation cable not
+// compiled"; (2b) a classic / panel row the ModCore budgets left out the same way)
 function cvModReload(t) {
-  for (const dev of serumIds(t)) {
+  for (const dev of modDestDevs(t)) {
     if (!CG.modRowsFor(t, dev).length) continue;
-    const k = t.id + '/' + dev, was = modLeftN.get(k) || 0, b = CG.modBudget(t, dev), n = b.left.length;
+    const k = t.id + '/' + dev, was = modLeftN.get(k) || 0, b = CG.modBudget(t, dev, project), n = b.left.length;
     modLeftN.set(k, n);
-    if (n > was) notice(modRefusal('full', { dev: cvDevName(t, dev), used: b.preset + b.canvas, max: b.max }) + `: ${n} modulation cable${n > 1 ? 's' : ''} not compiled`, 6000);
+    if (n > was) notice(modRefusal((b.why && b.why[b.left[0]]) || 'full', { dev: cvDevName(t, dev), used: b.preset + b.canvas, max: b.max, slots: b.slots }) + `: ${n} modulation cable${n > 1 ? 's' : ''} not compiled`, 6000);
   }
   if (t === trk()) cvRender();
   cvModSync();
@@ -5451,7 +5682,8 @@ function cvRemeasure(id, dev) {
 }
 // (stage 2a UI fixes, tests/canvas-2a-sim: its own hook beside __synthTest.cv.mod)
 if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
-  globalThis.__synthTest.modUI = { spot: modSpot, show: modShow, hint: modHint, lane: modLane, jumpItems: modJumpItems, jump: modJump, bypass: modBypass, unstep: modUnstep, aside: modAside };
+  globalThis.__synthTest.modUI = { spot: modSpot, show: modShow, hint: modHint, lane: modLane, jumpItems: modJumpItems, jump: modJump, bypass: modBypass, unstep: modUnstep, aside: modAside,
+    editState: modEditState, val: modVal, learn: modLearn, cc: modCC, halos: cpHalos, snap: cpSnap, rows: cpRows, mons: cpMons, live: cpLive, srcPick: modSrcPick, left: modLeftWhy, jackTap: modJackTap, srcList: modSrcList, destDevs: modDestDevs }; // (2b)
 }
 
 // Track switch (SPEC-canvas §2.12, stage 1c): the new track's module frames go up at once (their sizes from its layout, its
@@ -5660,6 +5892,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
     roll: () => roll, arr: () => arr,
     ctl, wheelTracks, perfValue, lastVel, modCount, sxExtra, injectMods: CG.injectMods, // (stage 2a host)
     buildMods, compileMods: CG.compileMods, // (stage 2b, lane B: the {t: 'mods'} payload)
+    modVal, modCC, modBudget: (t, dev) => CG.modBudget(t, dev, project), postMods, modsFor, // (stage 2b, lane D)
   };
 }
 boot();

@@ -322,7 +322,7 @@ test('2a review H5: a placed row keeps its slot while that slot stays free — a
 
 /* ------------------------------------------------------------------ stage 2b: compileMods, ext rows, slot injection (IMPL-2b §3.1, §3.3) */
 import * as F3 from './fixtures/mods-2b.mjs';
-import { fxLayout } from '../fx-core.js?v=9';
+import { fxLayout, fxDest } from '../fx-core.js?v=9';
 const PRJ = { bpm: 120, perf: { wheel: { v: 1 } } };
 const cm = (t, o) => G.compileMods(t, PRJ, Object.assign({ xferOf: F3.XFER, targetsOf: F3.TARGETS }, o));
 const sans = p => { const o = Object.assign({}, p); delete o.cp; delete o.ct; delete o.key; delete o.t; delete o.i; return o; };
@@ -361,7 +361,7 @@ test('2b every source kind (fixture 1): ext / slot injection / value source / cl
   assert.deepEqual(pay.vals, [{ k: 2, src: C.SRC_INDEX.macro3, v: 0.25, id: 'm1.k3' }, { k: 8, src: G.S_EXT0, v: 0.5, id: 'c1.out' }], 'the value table: the macro knob at 2 (its value), the CC at 8');
   const sv = k => C.vi(G.SCRATCH[k]);
   assert.deepEqual(pay.rows.map(r => [r.id, r.src, r.dst.kind, r.dst.slot !== undefined ? r.dst.slot : r.dst.field !== undefined ? r.dst.field : r.dst.fx, r.perNote, r.vi, r.tgt]), [
-    ['r3', C.SRC_INDEX.lfo1, 'cls', 0, false, sv(0), 0], ['r4', C.SRC_INDEX.env2, 'set', 'fenv.a', true, sv(1), 0], ['r4', C.SRC_INDEX.env2, 'set', 'aenv.a', true, sv(1), 1], ['r5', C.SRC_INDEX.macro3, 'fx', 21, false, sv(2), 0],
+    ['r3', C.SRC_INDEX.lfo1, 'cls', 0, false, sv(0), 0], ['r4', C.SRC_INDEX.env2, 'set', 'fenv.a', true, sv(1), 0], ['r4', C.SRC_INDEX.env2, 'set', 'aenv.a', true, sv(1), 1], ['r5', C.SRC_INDEX.macro3, 'fx', 8 + fxDest('fx.rev.mix', t.dev.fx1.fx).flat, false, sv(2), 0],
     ['r6', C.SRC_INDEX.lfo2, 'cls', 3, true, sv(3), 0], ['r8', C.SRC_INDEX.note, 'cls', 11, true, sv(4), 0], ['r9', C.SRC_INDEX.wheel, 'cls', 0, false, sv(5), 0], ['r10', C.SRC_INDEX.chaos1, 'cls', 0, false, sv(6), 0]],
     'the Juno Env A knob: two payload rows (fenv.a, aenv.a) on one synthetic row');
   assert.deepEqual(pay.dashed, ['r4', 'r6', 'r8'], 'per-note sources on non-Serum destinations');

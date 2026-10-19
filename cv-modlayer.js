@@ -19,6 +19,9 @@ import * as wk from './wk.js?v=9';
 import { sheet } from './cv-tray.js?v=9';
 import { SRC_INDEX } from './serum-core.js?v=9';
 import { amtText } from './cv-cables.js?v=9';
+import { CurveEditor } from './graph.js?v=9'; // ((2b) Curve: Custom… — the Serum matrix's editable curve on a canvas row)
+import { bend, MC_K } from './serum-core.js?v=9';
+const bendOf = (t, c) => bend(t, MC_K * c); // (the curve amount's law, as the matrix page draws it)
 
 /** A Serum's matrix size (serum-core N_MATRIX): the "n/64" budget's denominator when the host gives none. */
 export const MAX_ROWS = 64;
@@ -27,7 +30,15 @@ export const NATIVE = Object.freeze({ wheel: 'wheel', 've.out': 'velo', 'at.out'
 export const CANVAS = Object.freeze({ wheel: 'wheel', velo: 've.out', at: 'at.out', bend: 'bd.out' });
 const SRC_LABEL = { wheel: 'Mod Wheel', 've.out': 'Velocity', 'at.out': 'Aftertouch', 'bd.out': 'Bend' };
 // the row fields a gesture can change (a gesture whose end leaves them as they were records no step)
-const FIELDS = ['amt', 'bi', 'curve', 'aux', 'inv', 'byp', 'out', 'rise', 'fall', 'slink'];
+const FIELDS = ['amt', 'bi', 'curve', 'aux', 'inv', 'byp', 'out', 'rise', 'fall', 'slink', 'crv'];
+// (2b) the ModCore slot budgets ({ lfo: [n, max], env, chaos, macro, vals, ext }) as the header and the refusals say them
+const SLOT_LABELS = [['LFO', 'lfo'], ['ENV', 'env'], ['Chaos', 'chaos'], ['Macro', 'macro'], ['values', 'vals'], ['ext', 'ext']];
+export function slotsText(slots, keys) {
+  const s = isObj(slots) ? slots : {}, out = [];
+  for (const [L, k] of SLOT_LABELS) { if (keys && !keys.includes(k)) continue; const v = s[k]; if (Array.isArray(v) && v.length >= 2) out.push(L + ' ' + num(v[0], 0) + '/' + num(v[1], 0)); }
+  return out.join(' · ');
+}
+const LEFT_TEXT = { full: 'not compiled: matrix full', slots: 'not compiled: ModCore slots full', ext: 'not compiled: ext slots full', nomod: 'not compiled' };
 
 const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
 const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
@@ -60,6 +71,8 @@ export function refusal(code, ctx) {
     const max = num(c.max, MAX_ROWS);
     return (c.dev || 'This Serum') + '\'s mod rows are full (' + Math.min(max, num(c.used, max)) + '/' + max + ')';
   }
+  if (code === 'slots') { const t = slotsText(c.slots, ['lfo', 'env', 'chaos', 'macro', 'vals']); return 'ModCore slots full' + (t ? ': ' + t : ''); } // (2b)
+  if (code === 'ext') { const t = slotsText(c.slots, ['ext']); return 'Ext slots full' + (t ? ' (' + t.replace(/^ext /, '') + ')' : ''); }
   return c.why ? String(c.why) : 'Can\'t connect that';
 }
 
@@ -108,6 +121,11 @@ export const STYLE = `
 .cv-ml-dh > .cv-ml-btn { flex: none; }
 .cv-ml-line[data-byp] > span:first-child { color: var(--mute, #8d8b86); }
 .cv-ml-empty { margin: 0; color: var(--mute, #8d8b86); }
+.cv-ml-curve > .cv-ml-btn { flex: none; height: 32px; padding: 0 10px; font-size: 12px; }
+.cv-ml-crv { height: auto; }
+.cv-ml-dim { opacity: 0.45; }
+.cv-ml-pop [hidden] { display: none !important; }
+.cv-ml-item[data-stage] > .cv-ml-tag { margin-left: auto; }
 `;
 
 /**
@@ -179,15 +197,19 @@ export function createModLayer(host) {
   }
   // { used, max, left: Set of row ids not compiled, full } — budget.left an id list, or a count: the last canvas rows in
   // track.mods order are the ones that found no slot (injectMods fills first-come)
+  // (2b) + slots (the ModCore budgets), why (row id → 'slots' | 'ext' | 'full' | 'nomod'), kind ('serum' | 'classic' |
+  // 'panel': the host's; a Serum without it)
   function budgetOf(dev, rows) {
     const b = call('budget', dev) || {}, max = num(b.max, MAX_ROWS);
     const used = num(b.preset, 0) + num(b.canvas, 0);
     let left = new Set();
     if (Array.isArray(b.left)) left = new Set(b.left.map(String));
     else if (num(b.left, 0) > 0) { const rs = rows || call('rowsOf', dev) || []; left = new Set(rs.slice(Math.max(0, rs.length - b.left)).map(r => r.id)); }
-    return { used, max, left, full: used >= max || left.size > 0 };
+    const kind = typeof b.kind === 'string' ? b.kind : 'serum';
+    return { used, max, left, full: kind === 'serum' ? used >= max || left.size > 0 : left.size > 0, slots: isObj(b.slots) ? b.slots : null, why: isObj(b.why) ? b.why : {}, kind, canvas: num(b.canvas, 0) };
   }
-  const budgetText = B => B.used + '/' + B.max + (B.left.size ? ' · ' + B.left.size + ' not compiled' : '');
+  const leftText = (B, id) => LEFT_TEXT[B.why[id]] || LEFT_TEXT.full;
+  const budgetText = B => (B.kind === 'serum' ? B.used + '/' + B.max : B.canvas + ' cable' + (B.canvas === 1 ? '' : 's') + (B.slots ? ' · ' + slotsText(B.slots, ['lfo', 'env', 'ext']) : '')) + (B.left.size ? ' · ' + B.left.size + ' not compiled' : '');
   const srcOfRow = (R, preset) => preset ? (CANVAS[R.src] || R.src) : R.src;
   const pidOfRow = (R, preset) => preset ? String(R.dst) : splitDst(R.dst)[1];
   const lineOf = (R, preset, dev) => srcName(srcOfRow(R, preset)) + ' → ' + knobName(dev, pidOfRow(R, preset)) + ' · ' + amtText(R.amt, R.bi) + (R.byp ? ' · bypassed' : ''); // (U11: the badge's format)
@@ -269,7 +291,7 @@ export function createModLayer(host) {
     if (!T) return false;
     let R = readRow(T);
     if (!R || !T.dev) return false;
-    const dev = T.dev, pre = T.preset;
+    const dev = T.dev, pre = T.preset, B0 = budgetOf(dev), sx = B0.kind === 'serum';
     const titleOf = () => srcName(srcOfRow(R, pre)) + ' → ' + knobName(dev, pidOfRow(R, pre)); // (U12: a preset slot can hold another row after a sync)
     const title = titleOf();
     const p = popover('insp', 'Modulation: ' + title, x, y);
@@ -325,6 +347,31 @@ export function createModLayer(host) {
       set: live('Mod curve', n => ({ curve: r4(clamp(2 * n - 1, -1, 1)) })) }));
     const out = w(wk.slider({ label: 'Output', get: () => num(R.out, 1), def: 1, bipolar: false, orient: 'h', fmt: n => Math.round(n * 100) + '%', parse: t => parsePct(t, true),
       set: live('Mod output', n => ({ out: r4(clamp(n, 0, 1)) })) }));
+    // (2b) Curve: Custom… — the Serum matrix's editable curve (graph CurveEditor 'mcurve' with its RISE / FALL) on the row's
+    // crv, inline under the curve slider; one step per gesture end; Init drops it (crv null: the curve slider rules again)
+    const crvBtn = button('cv-ml-btn', 'Custom…', 'curve', () => toggleCurve());
+    crvBtn.title = 'Edit a custom curve for this cable (replaces the Curve amount while set)';
+    const crvBox = mk('div', 'cv-ml-crv');
+    crvBox.hidden = true;
+    let crvEd = null;
+    const crvInit = () => { const c0 = num(R.curve, 0), pts = []; for (let j = 0; j <= 4; j++) { const t = j / 4; pts.push([t, Math.round(bendOf(t, c0) * 1e5) / 1e5, 0]); } return pts; };
+    const crvStep = ph => { if (ph === 'set' || ph === 'end') step('Mod custom curve'); };
+    function toggleCurve() {
+      if (crvEd) { try { crvEd.destroy(); } catch (err) { /* gone */ } crvEd = null; crvBox.hidden = true; crvBox.textContent = ''; refresh(); return; }
+      crvBox.hidden = false;
+      try {
+        crvEd = new CurveEditor(crvBox, {
+          kind: 'mcurve', height: 140,
+          get: () => (Array.isArray(R.crv) && R.crv.length >= 2 ? R.crv : crvInit()),
+          set: (pts, ph) => { edit({ crv: pts }); crvStep(ph); },
+          slew: { get: () => ({ rise: num(R.rise, 0), fall: num(R.fall, 0), slink: num(R.slink, 0) }),
+            set: (p, ph) => { const f = {}; for (const k of ['rise', 'fall', 'slink']) if (p && p[k] !== undefined) f[k] = k === 'slink' ? (p[k] ? 1 : 0) : r4(clamp(+p[k] || 0, 0, 1)); if (f.slink || (f.slink === undefined && R.slink)) f.fall = f.rise !== undefined ? f.rise : num(R.rise, 0); if (changes(f)) { edit(f); crvStep(ph); } } },
+          init: () => { if (R.crv) { edit({ crv: null }); step('Init curve'); } },
+        });
+        W.push({ update() { if (crvEd && typeof crvEd.update === 'function') crvEd.update(); }, destroy() { if (crvEd) { try { crvEd.destroy(); } catch (err) { /* gone */ } crvEd = null; } } });
+      } catch (err) { crvBox.hidden = true; crvEd = null; notice('Curve editor not available'); }
+      refresh();
+    }
     // aux source (Serum-native ids normRow accepts) and aux invert
     const auxItems = () => {
       const seen = new Set(['']), list = [{ v: '', label: '(none)' }];
@@ -370,23 +417,31 @@ export function createModLayer(host) {
       closePop();
       step(pre ? 'Keep on canvas' : 'Save with preset');
     }
-    box.append(sA, tg, sec('', curve.el), sec('', out.el), sec('', aux.el, inv.el), sec('', rise.el), sec('', fall.el, link.el), foot);
+    const sC = sec('', curve.el, crvBtn);
+    sC.classList.add('cv-ml-curve');
+    if (!sx) { move.hidden = true; } // ((2b) a classic / panel row has no preset to move into)
+    box.append(sA, tg, sC, crvBox, sec('', out.el), sec('', aux.el, inv.el), sec('', rise.el), sec('', fall.el, link.el), foot);
     function refresh() {
       for (const x of W) x.update();
       const tt = titleOf();
       if (hd.t.textContent !== tt) { hd.t.textContent = tt; hd.t.title = tt; box.setAttribute('aria-label', 'Modulation: ' + tt); }
       const B = budgetOf(dev), left = !pre && B.left.has(T.id);
-      hd.b.textContent = B.used + '/' + B.max;
-      hd.b.title = devName(dev) + '\'s mod rows: ' + B.used + ' of ' + B.max + ' used' + (B.left.size ? ', ' + B.left.size + ' not compiled' : '');
+      // (2b) a Serum row: its matrix "n/64"; a classic / panel row: the ModCore slot budgets "LFO 3/10 · ENV 1/4 · ext 2/16"
+      hd.b.textContent = sx ? B.used + '/' + B.max : slotsText(B.slots, ['lfo', 'env', 'ext']) || B.canvas + ' cables';
+      hd.b.title = sx ? devName(dev) + '\'s mod rows: ' + B.used + ' of ' + B.max + ' used' + (B.left.size ? ', ' + B.left.size + ' not compiled' : '') : 'ModCore slots of this track: ' + (slotsText(B.slots) || 'none') + (B.left.size ? ', ' + B.left.size + ' not compiled' : '');
       if (B.full) hd.b.setAttribute('data-full', ''); else hd.b.removeAttribute('data-full');
       leftTag.hidden = !left;
+      if (left) leftTag.textContent = leftText(B, T.id);
+      const custom = Array.isArray(R.crv) && R.crv.length >= 2;
+      crvBtn.textContent = crvEd ? 'Done' : custom ? 'Custom ✓' : 'Custom…';
+      curve.el.classList.toggle('cv-ml-dim', custom); // (a custom curve replaces the amount)
       // Save with preset needs a free matrix slot (a row that found none has no slot to move into) and a performance source
       let no = '';
       if (!pre && !NATIVE[R.src]) no = 'Only Mod Wheel, Velocity, Aftertouch and Bend cables can be saved with a preset';
       else if (!pre && (left || B.used >= B.max)) no = refusal('full', { dev: devName(dev), used: B.used, max: B.max });
       move.disabled = !!no;
       why.textContent = no;
-      why.hidden = !no;
+      why.hidden = !no || !sx;
       if (no) move.title = no;
     }
     p.sync = () => { const r = readRow(T); if (!r) { closePop(); return; } R = r; refresh(); };
@@ -414,7 +469,8 @@ export function createModLayer(host) {
     const view = mk('div', 'cv-ml-grps');
     box.append(hd.el, view);
     const pick = d => {
-      if (d.nomod) { notice(refusal('nomod')); return; }
+      if (d.nomod) { notice(d.why ? String(d.why) : refusal('nomod')); return; }
+      if (d.stage) { notice(refusal('stage', { src: sn, dst: d.label ? String(d.label) : d.id, stage: String(d.stage) })); return; } // ((2b) a chunk knob: stage 5)
       const knob = d.label ? String(d.label) : d.id, r = call('connect', src, dev + ':' + d.id);
       if (isObj(r) && r.ok) { closePop(); step('Modulate ' + knob + ' with ' + sn); return; }
       notice(isObj(r) && r.why ? String(r.why) : refusal(isObj(r) ? r.code || (r.stage ? 'stage' : '') : '', { src: sn, dst: knob, dev: devName(dev), stage: isObj(r) ? r.stage : '', used: B.used, max: B.max }));
@@ -431,7 +487,8 @@ export function createModLayer(host) {
         const it = button('cv-ml-item', null, null, () => pick(d));
         it.append(mk('span', null, d.label ? String(d.label) : d.id));
         it.setAttribute('data-dest', d.id);
-        if (d.nomod) { it.setAttribute('aria-disabled', 'true'); it.title = refusal('nomod'); }
+        if (d.nomod) { it.setAttribute('aria-disabled', 'true'); it.title = d.why ? String(d.why) : refusal('nomod'); }
+        else if (d.stage) { it.setAttribute('aria-disabled', 'true'); it.setAttribute('data-stage', String(d.stage)); it.title = refusal('stage', { stage: String(d.stage) }); it.append(mk('span', 'cv-ml-tag', 'stage ' + d.stage)); }
         view.append(it);
       }
       focusFirst();
@@ -505,10 +562,10 @@ export function createModLayer(host) {
         });
         el.append(mk('span', null, t));
         if (pre) { const g = mk('span', 'cv-ml-tag', 'preset'); g.setAttribute('data-tag', 'preset'); el.append(g); }
-        if (left) { const g = mk('span', 'cv-ml-tag', 'not compiled: matrix full'); g.setAttribute('data-tag', 'left'); el.append(g); }
+        if (left) { const g = mk('span', 'cv-ml-tag', leftText(B, R.id)); g.setAttribute('data-tag', 'left'); el.append(g); }
         if (R.byp) el.setAttribute('data-byp', '');
         el.setAttribute(pre ? 'data-slot' : 'data-row', pre ? String(R.slot) : R.id);
-        el.setAttribute('aria-label', t + (pre ? ', saved with the preset' : '') + (left ? ', not compiled: matrix full' : ''));
+        el.setAttribute('aria-label', t + (pre ? ', saved with the preset' : '') + (left ? ', ' + leftText(B, R.id) : ''));
         grp.append(el);
         n++;
       };
@@ -517,7 +574,7 @@ export function createModLayer(host) {
       if (!rows.length && !pres.length) grp.append(mk('p', 'cv-ml-empty', 'No modulation'));
       body.append(grp);
     }
-    if (!n && !L.devs.length) body.append(mk('p', 'cv-ml-empty', 'No modulation cables on this track yet. Drag a modulator\'s jack onto a Serum knob.'));
+    if (!n && !L.devs.length) body.append(mk('p', 'cv-ml-empty', 'No modulation cables on this track yet. Drag a modulator\'s jack onto a knob.'));
   }
   const syncList = () => { if (L && L.S.isOpen()) renderList(); };
   function closeList() { if (!L) return false; const l = L; L = null; l.S.close(); return true; }
