@@ -414,3 +414,73 @@ i 0.996 (the measure() overhead itself 0.981), c1 0.995, c2 1.000, c3 1.003, c4 
 0.81), which the 1d engine misses by the same amount on today's busy machine (Photoshop at 74 % CPU; bench.json's 0.74 dates from
 2026-10-13): a baseline gap, not a 1e regression. Row r on JSC: load 0.092–0.096 (target 0.15), worst quantum 0.36–0.40 ms alone.
 Harness: scratchpad `jsc1e/` (export.mjs → rows.json + blob.bin, bench.js for jsc, run.sh, summary.py); not in the repo.
+
+### 8.5 Stage 1f: one instrument per track in the UI (2026-10-19)
+
+**Why.** On the iPad the user found a track with five hardware panels unacceptably laggy ("the interface is what is lagging …
+zooming and panning"), then: "with 5 panels in view it lags mostly when pinch zooming. also the panels look pixelated at that zoom
+and have competing pixels with no anti aliasing so we dont need full resolution rendering at that zoom" (the same in the browser
+and the installed app). They chose to take several synths per track out of the UI and keep everything underneath (option A).
+
+**Withdrawn (UI only).**
+- Sources tray: a drop anywhere on the canvas replaces the track's instrument (`srcDrag`: stage 1d's `cvDropInstrument` /
+  `setTrackModel` path, one History step, "Replaced X with Y · tap to undo", the true-size outline pinned to the instrument); a tap
+  replaces; a drop on the track list still adds a track. `cvInstUnder` is gone.
+- Module bar and ⋯ menu: no ⏻ and no key-zone pill (`host.power` / `host.zone` not given), no Power / Key zone… / Solo in track /
+  Primary instrument / Duplicate / Delete on instruments, no Delete panel. The badge is the CPU safeguard's cap alone (`cvBadge` →
+  `capsOf`); the "not connected" badges cannot occur.
+- Cables are read-only: `createTrackView`'s new `host.patch: false` marks every cable and jack `data-ro` (no selection, no ×, no
+  "Connect to…"); `main.js` no longer calls `cvView.cableDrag`, so the world's jack hook is never installed (cv-world keeps the hook
+  and cv-cables `createCableDrag` stays, unused, for milestone 3). Deleted: `cvConnect`, `cvDisconnect`, `cvRefuse` ("Make a shared
+  panel"), `cvCan`, `cvTrial`, `cvPortName`, `cvJackPort`, `cvSolo`, `cvMakePrimary`, `cvDuplicate`, `cvDeletePanel`, `cvAt`,
+  `fxBeside`, the `__synthTest.cv` hooks `solo`, `primary`, `dup`, `del`, `delPanel`, `cable`, `fx.addPanel`.
+- Effects tray: `effectsTray(…, {panel: false})` (no Empty FX Panel tile); an effect tapped or dropped on a panel module, an
+  instrument or empty canvas goes into the track's FX (`fxTarget`: the module under the pointer, else the primary's FX module) —
+  one notice, no History step (the rack "+" rule); the outline sits on that module (no edge pan). No free panel is ever created:
+  the one exception is a classic instrument cabled straight into OUT (a 1e project whose panel was deleted), which gets a panel of
+  its own between it and OUT (`cvPanelFor`, one step: the canonical shape again). Tile costs and ⚙ Measure this device stay; the
+  soft caps (`COSTM.softCap` in `cvAddInstrument`) stay, reachable only through the hook.
+- The current instrument is always the primary: `curOf(t) = CMOD.primId(t)`; `curDevs`, `setCur`, `instView` / `curView` and the
+  per-device records stay (the hooks, milestone 3).
+
+**Loading several instruments** (`cv-migrate.splitTracks(p, {name}) → {p, notices}`, called by `main.js loadProject` on the
+upgraded object before `song.deserialize` — boot's autosave and File › Open; never on autosave writes, History or `applyRestore`,
+so hook-made several-instrument tracks survive undo in the tests). A canonical one-instrument track (compile canonical, nothing
+beside the instrument but its panel and OUT; a classic straight into OUT counts) is returned as the same object, and a project of
+them as the same project (canonical-stream unchanged). Any other track is rebuilt by toV1's per-instrument rule (`instRoutes`, now
+shared with `toV1`), in v2 form: the primary keeps the track (id, name, its device ids, the lay entries of the devices it keeps,
+nid) → the panel it fed (its FX state; a classic with no panel gets a new `fx<n>`) → OUT, or a Serum (its own FX; a panel after it
+is dropped) → OUT; every other instrument becomes a new track right after it (`trk_<max + 1>`, "<track> · <model name>", i1 [→ fx1]
+→ out, nid 2, no lay, notes / cc / colour / channel copied; a shared panel copied for each). An instrument that did not sound (off,
+not cabled to OUT, another one soloed) comes in muted (decision: what was heard stays what is heard; toV1 makes it sound because
+main has no such state); zones, solo, power flags, cable levels, unconnected panels, a folded panel id of a new track (`fxId`) and
+modulation rows are dropped. One notice per project: "Track “X” held N instruments: now N tracks" (several tracks: joined with
+" · "), shown after boot or at once on Open; an undo of the Open brings the previous project back. A newer-schema (read-only)
+project is never split.
+
+**Stays.** `engine.js` graph protocol (dormant: every track the UI makes is canonical), `cv-graph`, `cv-model`'s editing API,
+`cv-cost`, song's schema 4 fields, the host's legacy / graph predicate (`legacyOk`), per-device records and monitors, module CPU
+per part, Measure this device, every 1e review fix (minimap reserved box, toolbar beside the open tray, undo per device, no panel
+re-insertion …). Their tests are unchanged except as listed below.
+
+**Tests.** canvas-1e-sim rewritten (23): new — a canvas drop replaces (empty canvas or another module's bar, one step, the notice
+undoes, a tap too); the current instrument is always the primary; no ⏻ / pill, the menus without device items, every cable and
+jack read-only; the Effects tray without its panel tile, every drop and the tap into the track's FX with the outline on it; a
+Serum's canvas drop into its own FX and a classic straight into OUT getting its own panel; a saved two-instrument project opening
+as two tracks with the notice (undo of the Open restores). Kept (through `cv.add` / `cv.power` / `cv.zone`): the add hook's
+protocol (graph + patch i + chain, bodies), power / zones, CPU and monitors per device, per-instrument layouts and Tidy, Measure,
+Save as classic project, U1, U14 ×2, U2, U6, U7, U8, U17; reduced: U16 (add only), U9 (add only), U10 (the safeguard badge only).
+Retired: cables connect / re-patch / disconnect, the own-FX refusal and "Make a shared panel", ⏻ by the bar button and Solo, the
+key-zone pill and ⋯ → Key zone… (U3), Make primary (and U4), Delete / Duplicate, the Effects panel tile and free panels (U11's
+panel parts), H4's page test of Delete panel (graph-host keeps the host side). canvas-sim, cv-shell-sim, cv-fixes-sim: every 1e
+change reverted to the 1d assertions (drops replace without a bar target, the menu without device items, the default camera
+without the pill). graph-host H13 rewritten (the current instrument is the primary; the file opens split). cv-migrate +5 (four
+splitTracks cases, the autosave page test), cv-module +1 (`host.patch: false`), cv-tray +1 (`panel: false`).
+
+**Milestone 3's open rendering question.** `tests/ui-bench.html` (eeb4a18): on the Mac, five hardware panels pan and pinch at
+60 fps when the camera is driven by code at fit zoom; the touch path and closer zooms were not measured. WebKit re-rasters the
+module layers at each pinch step and, zoomed out, rasters them at device scale × k without smoothing — the pixelation and the
+aliased thin lines the user saw. The candidate for milestone 3: a smoothed low-resolution raster per module below a zoom
+threshold — a rendering tier, not a DOM change (SPEC §2.11's "modules render identically at every zoom" stays) — plus the two
+switches ui-bench already tries (per-module compositing layers while moving; off-screen bodies not rendered). Several synths per
+track can come back once that is measured on the iPad.
