@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SYNTH Canvas — UI bench</title>
+<!--
+  Canvas UI benchmark (SPEC-canvas §9.3: 60 fps while panning with several instruments on screen; stage 1e follow-up). Loads the
+  app itself (../index.html, same origin, test hooks on) in an iframe, builds two tracks — one hardware synth alone, and the five the
+  user reported as laggy (OB-Xa, Jupiter-8, MS-20, CS-80, Prophet-5, all hardware panels) — and drives the camera the way a finger
+  does (world.panBy / zoomAt every frame, the app's own busy / settle path), recording every frame interval: idle, a 2 s pan, a 2 s
+  pinch, and the re-raster after the pinch settles (--ik, canvases). Rows = median / p95 / max frame ms and the count of frames over
+  33 ms (two missed vsyncs at 60 Hz). Nothing is saved: the app runs on this page's own storage prefix? No — it shares the site's,
+  so the two tracks are added to the project in storage and removed again at the end (a crash leaves them: delete by hand).
+  ?run=1 runs at once (the iOS Simulator / a device without a keyboard); results draw large enough to read from a screenshot.
+-->
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 12px; font: 14px/1.4 -apple-system, "Helvetica Neue", Arial, sans-serif; background: #0d0e11; color: #e6e6e6; }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  p { margin: 4px 0; color: #aaa; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #444; background: #1a1c22; color: #fff; }
+  button:disabled { opacity: 0.5; }
+  table { border-collapse: collapse; margin: 10px 0; font-variant-numeric: tabular-nums; font-size: 15px; }
+  th, td { border: 1px solid #333; padding: 4px 10px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  td.bad { color: #ff6b5a; font-weight: 600; }
+  td.warn { color: #ffb347; }
+  td.ok { color: #7bd88f; }
+  #frame { display: block; width: 100%; height: 62vh; border: 1px solid #333; border-radius: 8px; background: #000; margin-top: 10px; }
+  #out { width: 100%; height: 120px; margin-top: 8px; background: #111; color: #ccc; border: 1px solid #333; font: 12px monospace; }
+  #status { color: #ffb347; }
+</style>
+</head>
+<body>
+<h1>SYNTH Canvas — UI bench</h1>
+<p>Pan and pinch frame times with one hardware synth, and with five (OB-Xa, Jupiter-8, MS-20, CS-80, Prophet-5) on one track. Then the same five with two candidate fixes (per-module layers while moving; off-screen bodies not rendered). Leave the page alone while it runs (≈ 50 s).</p>
+<p><button id="run" type="button">Run</button> <button id="copy" type="button" disabled>Copy results</button> <span id="status"></span></p>
+<iframe id="frame" title="SYNTH Canvas"></iframe>
+<div id="res"></div>
+<textarea id="out" readonly></textarea>
+<script type="module">
+  const $ = s => document.querySelector(s);
+  const SETS = { one: ['prophet5'], five: ['obxa', 'jupiter8', 'ms20', 'cs80', 'prophet5'] };
+  // candidate fixes, tried as extra stylesheets on the five-synth track (SPEC §2.11: nothing visible changes)
+  const MODES = {
+    layers: '#viewport[data-cv-busy] .cv-mod { will-change: transform; }', // one compositing layer per module while the camera moves
+    skip: '.cv-mod > .cv-body { content-visibility: auto; contain-intrinsic-size: auto 1200px 400px; }', // off-screen bodies are not rendered
+    both: '#viewport[data-cv-busy] .cv-mod { will-change: transform; } .cv-mod > .cv-body { content-visibility: auto; contain-intrinsic-size: auto 1200px 400px; }',
+  };
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const status = t => { $('#status').textContent = t; };
+  const q = a => { const s = a.slice().sort((x, y) => x - y); const at = p => +(s[Math.min(s.length - 1, Math.floor(s.length * p))] || 0).toFixed(1); return { n: a.length, med: at(0.5), p95: at(0.95), max: +(s[s.length - 1] || 0).toFixed(1), over33: a.filter(x => x > 33).length }; };
+
+  async function boot() { // the app in the iframe, with the test hooks (window.__synthTest set before main.js runs), same origin
+    const html = await (await fetch('../index.html', { cache: 'no-store' })).text();
+    const doc = html.replace(/<head>/i, '<head><base href="' + new URL('../', location.href).href + '"><script>window.__synthTest = {};<\/script>');
+    const f = $('#frame');
+    f.srcdoc = doc;
+    for (let i = 0; i < 400; i++) { await sleep(50); const w = f.contentWindow; if (w && w.__synthTest && w.__synthTest.cv && w.__synthTest.api && w.__synthTest.shell && w.document.querySelector('#world')) return w; }
+    throw new Error('the app did not start');
+  }
+  function frames(win, run) { // frame intervals while run() drives the camera, until it resolves
+    return new Promise(res => {
+      const out = []; let last = performance.now(), on = true;
+      const tick = t => { out.push(t - last); last = t; if (on) requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+      run().then(() => { on = false; res(out.slice(1)); });
+    });
+  }
+  const raf = () => new Promise(r => requestAnimationFrame(r));
+  async function drive(win, world, kind, ms) { // pan: a sinusoidal 300 px sweep; zoom: in to 1.6× and back out, about the band's centre
+    const vp = win.document.querySelector('#viewport').getBoundingClientRect(), cx = vp.left + vp.width / 2, cy = vp.top + vp.height / 2;
+    const t0 = performance.now(); let lastX = 0, lastK = 1;
+    while (performance.now() - t0 < ms) {
+      await raf();
+      const ph = (performance.now() - t0) / ms * 2 * Math.PI;
+      if (kind === 'pan') { const x = 300 * Math.sin(ph); world.panBy(x - lastX, 0); lastX = x; }
+      else { const k = Math.pow(1.6, 0.5 - 0.5 * Math.cos(ph)); world.zoomAt(k / lastK, cx, cy); lastK = k; }
+    }
+  }
+  async function measure(win, world) {
+    const r = {};
+    r.idle = q(await frames(win, () => sleep(1000)));
+    r.pan = q(await frames(win, () => drive(win, world, 'pan', 2000)));
+    r.zoom = q(await frames(win, () => drive(win, world, 'zoom', 2000)));
+    r.settle = q(await frames(win, () => sleep(700))); // the burst ends ≈ 120 ms after the last move: --ik, canvas re-raster, recache
+    return r;
+  }
+  function cell(v, bad, warn) { return '<td class="' + (v > bad ? 'bad' : v > warn ? 'warn' : 'ok') + '">' + v + '</td>'; }
+  function table(R) {
+    let h = '<table><tr><th>set · phase</th><th>frames</th><th>median ms</th><th>p95 ms</th><th>max ms</th><th>&gt; 33 ms</th></tr>';
+    for (const set of Object.keys(R.sets)) for (const ph of ['idle', 'pan', 'zoom', 'settle']) { const x = R.sets[set][ph]; h += '<tr><td>' + set + ' · ' + ph + '</td><td>' + x.n + '</td>' + cell(x.med, 20, 12) + cell(x.p95, 33, 20) + cell(x.max, 100, 33) + cell(x.over33, 5, 0) + '</tr>'; }
+    const nk = k => (R.nodes[k] == null ? '–' : R.nodes[k]) + ' (k ' + (R.k[k] == null ? '–' : R.k[k]) + ')';
+    return h + '</table><p>nodes: one ' + nk('one') + ' · five ' + nk('five') + ' · dpr ' + R.dpr + ' · viewport ' + R.viewport + '</p>';
+  }
+  const draw = R => { $('#res').innerHTML = table(R); };
+  async function run() {
+    $('#run').disabled = true; $('#copy').disabled = true; $('#res').textContent = '';
+    status('starting the app…');
+    const win = await boot(), T = win.__synthTest, api = T.api, cv = T.cv, shell = T.shell;
+    await sleep(800);
+    const R = { date: new Date().toISOString().slice(0, 10), ua: navigator.userAgent, dpr: devicePixelRatio, viewport: innerWidth + '×' + innerHeight, sets: {}, nodes: {}, k: {} };
+    const made = [];
+    try {
+      for (const set of Object.keys(SETS)) {
+        status('building ' + set + '…');
+        const ids = SETS[set];
+        shell.srcPick(ids[0], 'track'); // a new track with the first synth (hardware panel)
+        await sleep(300);
+        const t = api.project().tracks.find(x => x.id === api.project().selTrack); made.push(t.id);
+        for (const id of ids.slice(1)) { cv.add(id, null); await sleep(250); }
+        cv.tidy(); await sleep(300);
+        for (let i = 0; i < 40 && cv.mount(); i++) await raf(); // the bodies mounted
+        await sleep(600);
+        const world = cv.world();
+        world.fit({ animate: false }); await sleep(400);
+        R.nodes[set] = win.document.querySelectorAll('#world *').length; R.k[set] = +world.k.toFixed(3);
+        status('measuring ' + set + '…');
+        R.sets[set] = await measure(win, world);
+        draw(R);
+        if (set === 'five') for (const mode of Object.keys(MODES)) { // the candidate fixes, each alone, on the five-synth track
+          status('measuring five + ' + mode + '…');
+          const st = win.document.createElement('style'); st.textContent = MODES[mode]; win.document.head.append(st);
+          await sleep(600);
+          R.sets['five+' + mode] = await measure(win, world);
+          st.remove(); await sleep(400);
+          draw(R);
+        }
+      }
+    } finally {
+      status('cleaning up…');
+      for (const id of made) { try { api.deleteTrack(id); } catch (e) {} }
+      await sleep(300);
+    }
+    $('#out').value = JSON.stringify(R);
+    $('#copy').disabled = false; $('#run').disabled = false;
+    status('done — Copy results');
+    return R;
+  }
+  $('#run').onclick = () => run().catch(e => { status('failed: ' + e.message); $('#run').disabled = false; });
+  $('#copy').onclick = async () => { try { await navigator.clipboard.writeText($('#out').value); status('copied'); } catch (e) { $('#out').select(); status('select the text and copy it'); } };
+  if (/[?&]run=1/.test(location.search)) $('#run').click();
+</script>
+</body>
+</html>
