@@ -4253,7 +4253,7 @@ function initModules() {
   if (W && typeof W.on === 'function') {
     W.on('cameraend', d => cvCamQueue((d && d.cam) || W.cam));
     W.on('screen', () => monitors.sync()); // (a module went on / off screen: its live displays follow, CULL_MARGIN early)
-    W.on('resize', () => cvCamResized()); // (the keyboard tray sized after boot, a rotation: an untouched default follows)
+    W.on('resize', e => cvCamResized(e)); // (the keyboard tray sized after boot, a rotation: an untouched default follows)
   }
   window.addEventListener('pagehide', cvCamFlush);
   document.addEventListener('visibilitychange', () => { if (document.hidden) cvCamFlush(); });
@@ -4592,11 +4592,19 @@ function cvCamFlush() {
   cvCamLast = p;
 }
 // the canvas changed size (U14: the keyboard tray sized after the boot's camera, a rotation): a camera still at its untouched
-// default (none stored for the track, the camera where the default put it) is derived again — no bar under the toolbar
-function cvCamResized() {
+// default (none stored for the track, the camera where the default put it) is derived again — no bar under the toolbar.
+// (1g) A moved top / left edge (the top tray's grip: "dragging the track tray down should not move the canvas") was kept
+// still by the world (e.dx / e.dy): an untouched default stays untouched (shifted with it) and is derived again only when
+// the width changed too (a rotation)
+function cvCamResized(e) {
   const W = cvW();
   if (!cvView || !W || $('#tab-inst').hidden) return;
-  const key = CM.camKey(project.uid, cvView.trackId);
+  const key = CM.camKey(project.uid, cvView.trackId), mv = !!e && !!(e.dx || e.dy);
+  if (mv && cvCamLast && cvCamLast.key === key && !cvCamPend) {
+    const c = cvCamLast.cam, s = { tx: c.tx - e.dx, ty: c.ty - e.dy, k: c.k };
+    if (camSame(s, W.cam)) cvCamLast = { key, cam: s };
+  }
+  if (mv && !e.dw) return;
   if (!cvCamLast || cvCamLast.key !== key || cvCamPend || !camSame(cvCamLast.cam, W.cam) || cvModule.camGet(store.get(cvModule.CAM_PREF, null), key)) return;
   cvCamRestore(trk());
 }

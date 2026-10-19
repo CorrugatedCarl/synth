@@ -768,13 +768,12 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
    edits between this marker and the cv-module marker. */
 /* the camera's viewport: one finger / the mouse pans it (cv-world.js), two fingers pinch it (gesture.js hooks); the page's
    own pinch stays over the trays. overflow: clip (not hidden): no programmatic scroll can shift the world (focus reveals
-   pan the camera instead). The dot grid is its background, fixed to the world (cv-world gridBg: dots every 32 world px fading
-   smoothly when zoomed out, brighter ones every 128 — never re-spaced, so it never jumps) */
+   pan the camera instead). The dot grid is a device-px canvas under #world, fixed to the world (cv-world gridDraw: dots every
+   32 world px fading smoothly when zoomed out, brighter ones every 128 — never re-spaced, on whole device px: no flicker) */
 #viewport { overflow: clip; touch-action: none; overscroll-behavior: contain; outline: none; cursor: grab;
   user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
-  background-color: #0a0b0d; background-repeat: repeat;
-  background-image: radial-gradient(circle, rgba(233, 231, 226, 0.24) 1.1px, transparent 1.6px), radial-gradient(circle, rgba(233, 231, 226, 0.15) 0.9px, transparent 1.4px);
-  background-size: 128px 128px, 32px 32px; } /* first paint at 100 %: cv-world write() keeps both layers on the world */
+  background-color: #0a0b0d; }
+#viewport > .cv-grid { position: absolute; left: 0; top: 0; display: block; pointer-events: none; }
 #viewport:focus-visible { box-shadow: inset 0 0 0 2px rgba(242, 163, 58, 0.5); }
 #viewport[data-cv-busy] { cursor: grabbing; }
 #viewport[data-cv-locked] { cursor: default; } /* the toolbar's Lock view: no gesture moves the camera */
@@ -864,6 +863,8 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
     color-mix(in srgb, var(--hw-wood, #5a3218) 74%, #000) 7px 9px, var(--hw-wood, #5a3218) 9px 14px); }
 .inst.hw > .hw-decor { position: absolute; inset: 0; }
 .inst.hw > .hw-decor > svg { position: absolute; left: 0; top: 0; display: block; overflow: hidden; text-rendering: geometricPrecision; } /* (Chrome: printed text built at one camera zoom kept its old raster scale, or vanished, at another) */
+/* (1g) the face as a bitmap below native resolution (cv-panel faceTier): the same box, the SVG beside it hidden (visibility) */
+.inst.hw > .hw-decor > .hw-bm { position: absolute; left: 0; top: 0; display: block; pointer-events: none; }
 .inst.hw .hw-inert { cursor: help; }
 /* the live layer: only the widgets take presses — the gaps fall through to the art (a pan); each widget's press area is
    its ::before, sized by the renderer (--hit-w / --hit-h: ≥ 28 world px), so a press on it is a press on the widget */

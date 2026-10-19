@@ -6,6 +6,9 @@
 // Rules: plain ES module, no DOM / window / storage at module top level (node imports it: tests, tools/panel-check.mjs);
 // render() survives tests/main-sim.mjs's DOM stub (keeps references to its nodes, no querySelector of its own nodes, no
 // layout reads). Widgets register in main.js's `ui` map through the api (main.js hwApi, IMPL-panels §4.4).
+// Stage 1g: below native resolution (camera k < 1 at a zoom end) the face SVG is shown as a bitmap at that zoom's device
+// resolution, filtered down from a finer vector raster (faceTier): no aliased thin lines, no per-frame vector raster in a pinch.
+import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
 import { BAR_H } from './cv-module.js?v=9';
 import { LAYOUTS, HW_IDS, layoutOf } from './panels/index.js?v=9';
@@ -506,6 +509,8 @@ function shade(hex, f) {
  * The static SVG markup of a panel: viewBox in content mm over the whole body (width / height in px), area fills and
  * frames, section frames and titles, decor items, printed labels / dials / legends, inert controls (dimmed, titled
  * "LABEL — not emulated"). aria-hidden; no <image>, href, xlink, foreignObject or script; text escaped. Cached per layout.
+ * Self-contained (1g): every fill, stroke, font and text-rendering is an attribute (nothing from style.css), so the same
+ * string loads as an image (faceTier) and draws the same picture.
  */
 export function decorSvg(L, model) {
   const c0 = svgC.get(L);
@@ -530,7 +535,7 @@ function buildSvg(L, model) {
   const inA = (a, s) => { const [dx, dy] = off(a); return dx || dy ? `<g transform="translate(${n3(dx)} ${n3(dy)})">${s}</g>` : s; };
   const o = [];
   const { x0, y0, offX } = g.mm;
-  o.push(`<svg xmlns="http://www.w3.org/2000/svg" class="hw-svg" viewBox="${n3(x0 - offX / X)} ${n3(y0)} ${n3(g.W / X)} ${n3(g.body.h / X)}" width="${g.W}" height="${g.body.h}" aria-hidden="true" focusable="false" font-family="${esc(FONTS[S.font] || FONTS.sans)}">`);
+  o.push(`<svg xmlns="http://www.w3.org/2000/svg" class="hw-svg" viewBox="${n3(x0 - offX / X)} ${n3(y0)} ${n3(g.W / X)} ${n3(g.body.h / X)}" width="${g.W}" height="${g.body.h}" aria-hidden="true" focusable="false" font-family="${esc(FONTS[S.font] || FONTS.sans)}" text-rendering="geometricPrecision">`);
   o.push(`<defs><linearGradient id="${wid}" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="9" y2="1.6" spreadMethod="repeat">`
     + [[0, -0.18], [0.22, 0.1], [0.4, -0.05], [0.55, 0.16], [0.75, -0.12], [1, -0.18]].map(([p, f]) => `<stop offset="${p}" stop-color="${shade(wood, f)}"/>`).join('') + '</linearGradient></defs>');
   // areas
@@ -741,6 +746,105 @@ function inertSvg(c, C) {
   return `<g class="hw-inert" opacity="0.55" data-tip="${esc(tip)}"><title>${esc(tip)}</title>${q}</g>`;
 }
 
+/* ---------------------------------------------------------------- (1g) the face's bitmap tier below native resolution */
+/** The finer vector raster a face bitmap is filtered down from: FACE_SS × the target, never above native; ≤ FACE_MAX_PX. */
+export const FACE_SS = 2, FACE_MAX_PX = 16e6;
+/** The face bitmaps painted (all panels; tests/ui-bench.html reads it): count, total and longest paint (ms, main thread). */
+export const faceStats = { n: 0, ms: 0, max: 0 };
+const msNow = () => (globalThis.performance && typeof globalThis.performance.now === 'function' ? globalThis.performance.now() : Date.now());
+/**
+ * The bitmap tier of a face (`svg`: the .hw-decor > svg built from `markup`, w × h world px). refresh() — at creation (next
+ * frame) and at each zoom end (wk.onRescale on `deco`) — reads the camera's k (wk.canvasScale): k ≥ 1 → the SVG shows, no
+ * bitmap; k < 1 → the markup loads as an Image (a Blob URL), is rastered at FACE_SS × (devicePixelRatio · k) and drawn,
+ * smoothed ('high'), onto a canvas of exactly w·dpr·k × h·dpr·k device px, CSS-sized w × h in the same place; then the canvas
+ * shows and the SVG is hidden (visibility: layout unchanged). Until a load lands the previous picture stays (a pinch scales
+ * the old bitmap). A failed load keeps the SVG for good (failed). Memory: one canvas at the on-screen size, released at k ≥ 1,
+ * by wk.releaseCanvases (an unmounted body: the SVG again; re-tried next frame if still mounted) and by destroy().
+ * env (tests): {win, doc, scale, raf, Image, Blob, URL, now}. @returns {{refresh, drop, destroy, readonly shown, readonly failed, readonly canvas, readonly k}}
+ */
+export function faceTier(deco, svg, markup, w, h, env) {
+  env = env || {};
+  const doc = env.doc || deco.ownerDocument || globalThis.document, win = env.win || (doc && doc.defaultView) || globalThis;
+  const scale = typeof env.scale === 'function' ? env.scale : () => (typeof wk.canvasScale === 'function' ? wk.canvasScale(deco) : 1);
+  const raf = typeof env.raf === 'function' ? env.raf : f => (typeof win.requestAnimationFrame === 'function' ? win.requestAnimationFrame(f) : setTimeout(f, 16));
+  const Img = env.Image || win.Image || globalThis.Image, Bl = env.Blob || win.Blob || globalThis.Blob, U = env.URL || win.URL || globalThis.URL;
+  let gen = 0, cv = null, at = 0, dead = false, failed = false, due = false, offR = null;
+  const vis = hide => { try { svg.style.visibility = hide ? 'hidden' : ''; } catch (err) { /* inert */ } };
+  // mounted and showing: connected, in the world, no [hidden] ancestor (#cvParts at home) — no layout read
+  const live = () => {
+    if (deco.isConnected === false) return false;
+    for (let n = deco; n && n.nodeType === 1; n = n.parentNode) { if (n.hasAttribute && n.hasAttribute('hidden')) return false; if (n.hasAttribute && n.hasAttribute('data-cv-world')) return true; }
+    return false;
+  };
+  function drop() {
+    gen++; at = 0;
+    if (cv) { const c = cv; cv = null; try { c.width = 0; c.height = 0; c.remove(); } catch (err) { /* gone */ } }
+    vis(false);
+  }
+  function fail(err) {
+    if (!failed) console.warn('cv-panel: the face bitmap could not be made — the SVG stays', err);
+    failed = true; drop();
+  }
+  function later() { if (due || dead) return; due = true; raf(() => { due = false; refresh(); }); }
+  function refresh() {
+    if (dead || failed) return;
+    const k = +scale() || 1;
+    if (!(k < 1 - 1e-6)) { if (cv || at) drop(); else gen++; return; } // (a load in flight is dropped too)
+    if (!live()) return;
+    const d = Math.min(3, Math.max(1, +win.devicePixelRatio || 1)), s = d * k;
+    const Wd = Math.max(1, Math.round(w * s)), Hd = Math.max(1, Math.round(h * s));
+    if (cv && at === s && cv.width === Wd && cv.height === Hd) return;
+    if (typeof Img !== 'function' || typeof Bl !== 'function' || !U || typeof U.createObjectURL !== 'function') { fail('no Image / Blob URL'); return; }
+    const g = ++gen;
+    let url = '', img = null;
+    try { url = U.createObjectURL(new Bl([markup], { type: 'image/svg+xml' })); img = new Img(); } catch (err) { fail(err); return; }
+    const done = ok => {
+      try { U.revokeObjectURL(url); } catch (err) { /* gone */ }
+      img.onload = img.onerror = null;
+      if (g !== gen || dead) return; // superseded (another zoom end, k ≥ 1, a release) or destroyed
+      if (!ok) { fail('the SVG did not decode as an image'); return; }
+      paint(img, d, s, Wd, Hd);
+    };
+    img.onload = () => done(true);
+    img.onerror = () => done(false);
+    img.src = url;
+  }
+  function paint(img, d, s, Wd, Hd) {
+    const t0 = msNow();
+    try {
+      let si = Math.min(d, FACE_SS * s), src = img, tmp = null;
+      if (w * h * si * si > FACE_MAX_PX) si = Math.sqrt(FACE_MAX_PX / (w * h));
+      if (si > s * 1.25) { // the finer vector raster, then one filtered downscale
+        tmp = doc.createElement('canvas');
+        tmp.width = Math.max(1, Math.round(w * si)); tmp.height = Math.max(1, Math.round(h * si));
+        tmp.getContext('2d').drawImage(img, 0, 0, tmp.width, tmp.height);
+        src = tmp;
+      }
+      const c = cv || doc.createElement('canvas');
+      c.width = Wd; c.height = Hd;
+      const x = c.getContext('2d');
+      x.imageSmoothingEnabled = true; x.imageSmoothingQuality = 'high';
+      x.drawImage(src, 0, 0, Wd, Hd);
+      if (tmp) { tmp.width = 0; tmp.height = 0; }
+      if (!cv) {
+        c.className = 'hw-bm'; c.setAttribute('aria-hidden', 'true');
+        c.style.width = w + 'px'; c.style.height = h + 'px';
+        deco.append(c); cv = c;
+        offR = typeof wk.onRelease === 'function' ? wk.onRelease(c, () => { if (cv === c) { drop(); later(); } }) : null;
+      }
+      at = s; vis(true);
+      const ms = msNow() - t0; faceStats.n++; faceStats.ms += ms; faceStats.max = Math.max(faceStats.max, ms);
+    } catch (err) { fail(err); }
+  }
+  const offS = typeof wk.onRescale === 'function' ? wk.onRescale(deco, refresh) : () => {};
+  later();
+  return {
+    refresh, drop,
+    destroy() { if (dead) return; dead = true; offS(); if (offR) offR(); drop(); },
+    get shown() { return !!cv && at > 0; }, get failed() { return failed; }, get canvas() { return cv; }, get k() { return at; },
+  };
+}
+
 /* ---------------------------------------------------------------- render: the live layer */
 const SVGNS = 'http://www.w3.org/2000/svg';
 /** The detented positions of a control: P (position → value, null = not emulated), V (the valid positions, in order),
@@ -779,8 +883,8 @@ export function render(root, L, model, api) {
   root.setAttribute('data-ptr', K.ptrStyle);
   if (K.knurl) root.setAttribute('data-knurl', ''); else root.removeAttribute('data-knurl');
   if (SL.capShape) root.setAttribute('data-cap', SL.capShape);
-  const deco = mk('div', 'hw-decor');
-  deco.innerHTML = decorSvg(L, model);
+  const deco = mk('div', 'hw-decor'), art = decorSvg(L, model);
+  deco.innerHTML = art;
   const ctls = mk('div', 'hw-ctls');
   ctls.setAttribute('role', 'group'); ctls.setAttribute('aria-label', (model.name || model.id) + ' front panel');
   root.append(deco, ctls);
@@ -1263,12 +1367,19 @@ export function render(root, L, model, api) {
     dxRefresh();
   }
   for (const f of post) f();
-  // a tap on a dimmed (inert) control says it is not emulated
+  // (1g) the face's bitmap below native resolution (api.tier: false → none; an object → faceTier's env)
+  const face = deco.firstChild, tier = api && api.tier === false || !face ? null : faceTier(deco, face, art, geo.W, geo.body.h, api && typeof api.tier === 'object' ? api.tier : null);
+  // a tap on a dimmed (inert) control says it is not emulated (under the bitmap: the SVG is hit-tested for that one point)
   deco.addEventListener('click', e => {
-    for (let n = e.target; n && n !== deco; n = n.parentNode) {
+    let t = e.target;
+    if (tier && tier.shown && t === deco && typeof doc.elementFromPoint === 'function') {
+      try { face.style.visibility = ''; t = doc.elementFromPoint(e.clientX, e.clientY) || deco; } catch (err) { t = deco; }
+      face.style.visibility = 'hidden';
+    }
+    for (let n = t; n && n !== deco; n = n.parentNode) {
       const t = typeof n.getAttribute === 'function' ? n.getAttribute('data-tip') : null;
       if (t) { if (api.tip) api.tip(n, t); if (api.untip) api.untip(1200); return; }
     }
   });
-  return { w: geo.W, h: geo.H, destroy() { /* every listener is on the panel's own nodes */ } };
+  return { w: geo.W, h: geo.H, tier, destroy() { if (tier) tier.destroy(); /* every listener is on the panel's own nodes */ } };
 }

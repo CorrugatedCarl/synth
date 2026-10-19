@@ -87,11 +87,56 @@ test('maths: gridBg — two layers fixed to the world (dots on multiples of 32 a
   // a pinch from 25 % to 200 %: the fine layer's alpha only ever creeps (no step) and never goes back down
   let prev = -1;
   for (let k = 0.25; k <= 2; k += 0.005) { const a = W.gridBg({ tx: 0, ty: 0, k }).minor.a; ok(a >= prev && a - Math.max(prev, 0) <= 0.03, 'smooth at k ' + k.toFixed(3)); prev = a; }
-  ok(/0\.24\) 1\.1px/.test(W.gridImage(1)) && /0\.15\) 0\.9px/.test(W.gridImage(1)), 'the major layer first, then the fine one');
-  ok(/, 0\) 0\.9px/.test(W.gridImage(0)), 'fine layer transparent at alpha 0');
+  eq('gridImage' in W, false, '1g: no CSS background grid any more');
   eq(W.visibleRect({ tx: 100, ty: 50, k: 2 }, 800, 600, 0), { x: -50, y: -25, w: 400, h: 300 });
   eq(W.visibleRect({ tx: 0, ty: 0, k: 0.5 }, 100, 100, 50), { x: -100, y: -100, w: 400, h: 400 }, 'margin in screen px');
   eq([W.intersects({ x: 0, y: 0, w: 10, h: 10 }, { x: 9, y: 9, w: 5, h: 5 }), W.intersects({ x: 0, y: 0, w: 10, h: 10 }, { x: 10, y: 0, w: 5, h: 5 })], [true, false]);
+});
+
+// a recording 2D context (plain object: path calls kept as data)
+function recCtx() {
+  const c = { calls: [], rects: [], arcs: [], fills: [], fillStyle: '' };
+  for (const k of ['setTransform', 'clearRect', 'beginPath', 'moveTo']) c[k] = (...a) => c.calls.push([k, ...a]);
+  c.rect = (x, y, w, h) => c.rects.push([x, y, w, h]);
+  c.arc = (x, y, r) => c.arcs.push([x, y, r]);
+  c.fill = () => c.fills.push(c.fillStyle);
+  return c;
+}
+test('1g gridDraw: every dot on a whole device px of one origin (the major ones on the 128 multiples of the minor grid), sizes in whole device px, counts bounded, nothing below GRID_MIN_DPX, the fade of gridBg', () => {
+  eq([W.GRID_MIN_DPX, W.GRID_MAX_DOTS], [6, 40000]);
+  eq([W.gridSizes(1), W.gridSizes(2), W.gridSizes(3)], [{ side: 2, r: 1.5 }, { side: 3, r: 2 }, { side: 5, r: 3.5 }], 'device px: squares of whole px, discs on the squares\' centres');
+  const R = rng(5);
+  for (let i = 0; i < 60; i++) {
+    const d = [1, 2, 3][i % 3], c = { tx: (R() - 0.5) * 3000, ty: (R() - 0.5) * 3000, k: 0.25 + R() * 1.75 }, w = Math.round((300 + R() * 1200) * d), h = Math.round((200 + R() * 900) * d);
+    const x = recCtx(), n = W.gridDraw(x, c, w, h, d), Z = W.gridSizes(d), o = Z.side >> 1, cc = Z.side / 2 - o, sp = 32 * c.k * d, a = W.gridBg(c).minor.a;
+    eq(x.calls[0], ['setTransform', 1, 0, 0, 1, 0, 0]); eq(x.calls[1], ['clearRect', 0, 0, w, h], 'cleared first');
+    // the dot whose world point is (I·32, J·32): round((I·32·k + t)·d)
+    const idx = (p, t) => (p / d - t) / (32 * c.k);
+    for (const [rx, ry, rw, rh] of x.rects) {
+      eq([rw, rh], [Z.side, Z.side]);
+      const X = rx + o, Y = ry + o, I = Math.round(idx(X, c.tx)), J = Math.round(idx(Y, c.ty));
+      eq([X, Y], [Math.round((I * 32 * c.k + c.tx) * d), Math.round((J * 32 * c.k + c.ty) * d)], 'a minor dot on its whole device px');
+      ok(!(I % 4 === 0 && J % 4 === 0), 'no minor dot under a major one');
+    }
+    for (const [ax, ay, r] of x.arcs) {
+      eq(r, Z.r);
+      const X = ax - cc, Y = ay - cc, I = Math.round(idx(X, c.tx)), J = Math.round(idx(Y, c.ty));
+      ok(Number.isInteger(X) && Number.isInteger(Y), 'whole px');
+      eq([X, Y, I % 4 === 0, J % 4 === 0], [Math.round((I * 32 * c.k + c.tx) * d), Math.round((J * 32 * c.k + c.ty) * d), true, true], 'a major dot = the minor-grid point at a multiple of 128');
+    }
+    eq([n.minor, n.major], [x.rects.length, x.arcs.length]);
+    ok(n.minor + n.major <= W.GRID_MAX_DOTS, 'bounded');
+    const want = a > 0 && sp >= W.GRID_MIN_DPX;
+    eq(n.minor > 0, want && (w / sp) * (h / sp) > 16, 'the fine layer only while it shows (alpha) and ≥ 6 device px apart');
+    if (n.minor) eq(x.fills[0], 'rgba(233, 231, 226, ' + Math.round(0.15 * a * 1000) / 1000 + ')', 'its alpha: gridBg\'s fade');
+    eq(x.fills.at(-1), 'rgba(233, 231, 226, 0.24)', 'the major dots always');
+  }
+  // below the threshold (a 0.5 px spacing): no dots at all
+  const x = recCtx(); eq(W.gridDraw(x, { tx: 0, ty: 0, k: 0.01 }, 800, 600, 1), { minor: 0, major: 0 }, 'k 0.01 (outside the camera range): nothing');
+  // a 1440 × 900 window at dpr 2, 100 %: the fine dots (a few thousand) and the major ones; at 25 % only the major ones
+  const y = recCtx(), n1 = W.gridDraw(y, { tx: 0, ty: 0, k: 1 }, 2880, 1800, 2), z = recCtx(), n2 = W.gridDraw(z, { tx: 0, ty: 0, k: 0.25 }, 2880, 1800, 2);
+  ok(n1.minor > 1000 && n1.minor < 1400 && n1.major > 60 && n1.major < 120, JSON.stringify(n1));
+  eq(n2.minor, 0); ok(n2.major > 1000 && n2.major < 1400, JSON.stringify(n2));
 });
 
 test('planScreen: an item is on screen when it meets the viewport grown by the margin (screen px, at every zoom); no rect → on', () => {
@@ -163,7 +208,9 @@ test('createWorld: the transform string, the dot grid, --ik written only at a zo
   const { w, vp, world, frame, events } = setup();
   frame();
   eq(w.style.transform, 'translate(0px, 0px) scale(1)');
-  eq(vp.style.backgroundSize, '128px 128px, 32px 32px');
+  const gc = vp.childNodes[0];
+  eq([gc.localName, gc.className, gc.getAttribute('aria-hidden'), vp.childNodes[1] === w, gc.width, gc.height, gc.style.width, gc.style.height],
+    ['canvas', 'cv-grid', 'true', true, 1000, 600, '1000px', '600px'], '1g: the grid canvas under #world, device px (dpr 1)');
   eq(w.style['--ik'], '1');
   world.setCamera({ tx: 10.25, ty: -4, k: 0.5 });
   eq(names(events.splice(0)), ['movestart', 'camera', 'camera', 'cameraend', 'lod'].slice(0, 4), 'one jump: movestart, the frame, the rounded rest, cameraend');
@@ -183,6 +230,67 @@ test('createWorld: the transform string, the dot grid, --ik written only at a zo
   const ik = w.style['--ik'];
   world.panBy(30, 0); frame(); adv(200);
   eq([events.filter(e => e[0] === 'cameraend').pop()[1].zoomed, w.style['--ik']], [false, ik]);
+});
+
+test('1g: the grid canvas is drawn on each written camera frame and on a resize / device-ratio change — never otherwise', () => {
+  const { vp, w, win, world, frame } = setup();
+  frame();
+  const gc = vp.childNodes[0], ctx = gc.getContext('2d'), draws = () => ctx.calls.filter(c => c[0] === 'clearRect').length;
+  const n0 = draws();
+  ok(n0 >= 1, 'drawn at boot');
+  frame(5);
+  eq(draws(), n0, 'frames without a camera change draw nothing');
+  world.panBy(10.3, -4.7); frame();
+  eq(draws(), n0 + 1, 'one written frame, one draw');
+  world.panBy(5, 5); world.panBy(5, 5); frame();
+  eq(draws(), n0 + 2, 'two moves in one frame: one draw');
+  adv(200); frame(3);
+  const n1 = draws(); // (the burst's end may write its rounded rest)
+  world.resize(); frame(2);
+  eq(draws(), n1, 'a resize that changes nothing: no draw');
+  place(vp, 0, 100, 900, 600); world.resize();
+  eq([gc.width, gc.height, draws()], [900, 600, n1 + 1], 'a resize: sized and drawn');
+  win.devicePixelRatio = 2; world.resize();
+  eq([gc.width, gc.height, gc.style.width, gc.style.height, draws()], [1800, 1200, '900px', '600px', n1 + 2], 'dpr 2: device px, CSS-sized to the viewport');
+  // the dots of a drawn frame are whole device px and the stats count the draws
+  const st = world.gridStats(true);
+  ok(st.n >= 3 && st.dots > 0 && st.max >= 0, JSON.stringify(st));
+  eq(world.gridStats().n, 0, 'reset');
+  const xs = ctx.calls.filter(c => c[0] === 'rect' || c[0] === 'arc').slice(-50);
+  ok(xs.length > 0 && xs.every(c => Number.isInteger(c[1] * 2) && Number.isInteger(c[2] * 2)), 'whole (or half: a disc\'s centre) device px');
+  world.destroy();
+  eq([gc.width, gc.height, vp.childNodes.includes(gc)], [0, 0, false], 'destroy: released and removed');
+  void w;
+});
+
+test('1g: a resize that moves the viewport\'s top / left edge (the top tray\'s grip) keeps every world point where it was on the screen; one that keeps them moves nothing either', () => {
+  const { vp, world, frame, events } = setup();
+  world.setCamera({ tx: 40, ty: 30, k: 0.5 }); frame(); adv(200); frame();
+  const p0 = world.toClient(400, 300), rs = [];
+  world.on('resize', d => rs.push(d));
+  events.length = 0;
+  place(vp, 0, 180, 1000, 520); world.resize(); // the top tray grew by 80 px: the viewport's top went down, its height up
+  const p1 = world.toClient(400, 300);
+  eq([p1.x, p1.y, world.cam.tx, world.cam.ty, world.cam.k], [p0.x, p0.y, 40, -50, 0.5], 'the module stays put on the screen');
+  eq([names(events).filter(n => n === 'camera').length, world.busy], [1, false], 'one written frame, no burst');
+  eq(rs.map(d => [d.dx, d.dy, d.dw, d.dh]), [[0, 80, 0, -80]], 'announced with the edge delta (main.js: no default camera re-derived)');
+  place(vp, 0, 180, 1000, 600); world.resize(); // the window grew below (the keyboard tray, a rotation): the edge stays
+  const p2 = world.toClient(400, 300);
+  eq([p2.x, p2.y, world.cam.ty], [p0.x, p0.y, -50], 'a resize that keeps the edges moves nothing');
+  eq(rs.slice(1).map(d => [d.dx, d.dy, d.dh]), [[0, 0, 80]]);
+  place(vp, 60, 180, 940, 600); world.resize(); // a left edge too (the height kept)
+  const p3 = world.toClient(400, 300);
+  eq([p3.x, p3.y], [p0.x, p0.y], 'left edge');
+  // a window resize / rotation (both sizes change): the world stays on the viewport's top-left, as before
+  const c4 = world.cam;
+  place(vp, 0, 150, 1200, 700); world.resize(); place(vp, 60, 180, 940, 600); world.resize();
+  eq([world.cam.tx, world.cam.ty], [c4.tx, c4.ty], 'a window resize: the camera kept');
+  eq(rs.slice(-2).map(d => [d.dx, d.dy]), [[0, 0], [0, 0]]);
+  // during an animation the target moves with the edge
+  world.setCamera({ tx: 0, ty: 0, k: 1 }, { animate: true }); frame();
+  place(vp, 60, 220, 940, 560); world.resize();
+  frame(30); adv(300); frame();
+  eq([world.cam.tx, world.cam.ty, world.cam.k], [0, -40, 1], 'the animation lands where its target went');
 });
 
 test('items: never a view(); onScreen from cached rects — once per crossing of the margin during a pan (no rect() read in the burst), re-read at cameraend / update; the screen event carries the changes', () => {

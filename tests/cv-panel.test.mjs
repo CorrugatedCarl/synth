@@ -14,6 +14,7 @@ import { BAR_H } from '../cv-module.js?v=9';
 import { DOT } from '../cv-world.js?v=9';
 import { fresh, all, ptr, fire, key } from './wk-dom.mjs';
 import { TB_FX, DX_FX } from './fixtures/panels.mjs';
+import * as wk from '../wk.js?v=9';
 
 const modelOf = id => MODELS.find(m => m.id === id);
 const clone = x => JSON.parse(JSON.stringify(x));
@@ -497,4 +498,110 @@ test('DX7 fixture: validates (the 89 other ids addressed through the buttons); b
   assert.deepEqual(lcd(), ['INTERNAL 03', 'BRASS 1'], 'play mode: the number and the name (presetNo: 3 in the fake)');
   tap(widgetOf(root, 'dx:edit'));
   assert.deepEqual([st.mode, W(18).getAttribute('data-ctl')], ['edit', 'r3']);
+});
+
+/* ---------------------------------------------------------------- (1g) the face's bitmap tier */
+// stubs: an Image whose load the test lands (or fails) by hand, Blob, URL (object URLs counted), a manual rAF queue, the
+// camera's k; the canvases are wk-dom's (recording 2D contexts). Only strings / numbers / booleans go into assert.
+const eq1 = (a, b, m) => assert.equal(JSON.stringify(a), JSON.stringify(b), m);
+function tierRig(o = {}) {
+  const d = fresh(), win = d.defaultView;
+  win.devicePixelRatio = o.dpr || 2;
+  const world = d.createElement('div'), root = d.createElement('div'), deco = d.createElement('div'), svg = d.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  world.setAttribute('data-cv-world', ''); deco.className = 'hw-decor';
+  deco.append(svg); root.append(deco); world.append(root); d.body.append(world);
+  const R = { k: o.k == null ? 1 : o.k, imgs: [], urls: new Set(), made: 0, rq: [] };
+  class Img { constructor() { this.onload = null; this.onerror = null; R.imgs.push(this); } set src(u) { this._src = u; } get src() { return this._src; } }
+  class Bl { constructor(parts, opt) { this.text = parts.join(''); this.type = opt && opt.type; } }
+  const URLs = { createObjectURL: b => { const u = 'blob:' + (++R.made); R.urls.add(u); R.blob = b; return u; }, revokeObjectURL: u => R.urls.delete(u) };
+  const env = { win, doc: d, scale: () => R.k, raf: f => R.rq.push(f), Image: o.noImage ? null : Img, Blob: Bl, URL: URLs };
+  if (o.noImage) win.Image = null;
+  const T = P.faceTier(deco, svg, '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"></svg>', 400, 200, env);
+  const frame = () => { const q = R.rq.splice(0); for (const f of q) f(); };
+  const land = (good = true) => { const i = R.imgs.at(-1); if (good) i.onload(); else i.onerror(); };
+  const bm = () => deco.childNodes.filter(n => n.localName === 'canvas');
+  const st = () => ({ svg: svg.style.visibility || 'visible', n: bm().length, w: T.canvas ? T.canvas.width : 0, h: T.canvas ? T.canvas.height : 0, shown: T.shown });
+  return { d, win, deco, svg, root, world, R, T, frame, land, bm, st };
+}
+const NONE = { svg: 'visible', n: 0, w: 0, h: 0, shown: false };
+test('1g faceTier: k < 1 at a zoom end → the face drawn on a canvas at w·dpr·k device px (filtered down from a finer vector raster), the SVG hidden; the old picture stays until the load lands; k ≥ 1 → the SVG again, the canvas gone', () => {
+  const g = tierRig({ k: 0.5 });
+  eq1(g.st(), NONE, 'nothing until the next frame');
+  g.frame();
+  eq1([g.R.imgs.length, g.R.blob.type, g.R.blob.text.startsWith('<svg'), g.R.urls.size], [1, 'image/svg+xml', true, 1], 'the markup loads as an image from a Blob URL');
+  eq1(g.st().svg, 'visible', 'the SVG shows while it loads');
+  g.land();
+  eq1(g.st(), { svg: 'hidden', n: 1, w: 400, h: 200, shown: true }, 'dpr 2 × k 0.5 × 400 × 200: the canvas shows, the SVG hidden');
+  const cv = g.T.canvas, ctx = cv.getContext('2d');
+  eq1([cv.className, cv.style.width, cv.style.height, cv.getAttribute('aria-hidden'), g.R.urls.size, g.T.k], ['hw-bm', '400px', '200px', 'true', 0, 1], 'the same box (CSS w × h), the URL revoked');
+  eq1([ctx.imageSmoothingEnabled, ctx.imageSmoothingQuality], [true, 'high']);
+  const di = ctx.calls.filter(c => c[0] === 'drawImage');
+  eq1([di.length, di[0][1].localName, di[0][1].width, di[0][1].height, di[0].slice(2)], [1, 'canvas', 0, 0, [0, 0, 400, 200]], 'drawn from a finer raster (released after) scaled down to the device size');
+  const fine = di[0][1].getContext('2d').calls.filter(c => c[0] === 'drawImage');
+  eq1([fine.length, fine[0][1] === g.R.imgs[0], fine[0].slice(2)], [1, true, [0, 0, 800, 400]], 'the vector raster at 2 × the target (= native at dpr 2)');
+  g.T.refresh(); eq1(g.R.imgs.length, 1, 'the same zoom again: nothing to do');
+  // a zoom end at 25 %: the 50 % picture stays until the new one lands
+  g.R.k = 0.25; g.T.refresh();
+  eq1([g.R.imgs.length, g.st().svg, g.st().w], [2, 'hidden', 400], 'the previous bitmap stays meanwhile');
+  g.land();
+  eq1([g.st().w, g.st().h, g.bm().length, g.T.canvas === cv], [200, 100, 1, true], 'redrawn in place at 25 %');
+  // two zoom ends before a load lands: only the last one paints
+  g.R.k = 0.8; g.T.refresh(); g.R.k = 0.6; g.T.refresh();
+  g.R.imgs.at(-2).onload(); eq1(g.st().w, 200, 'a superseded load paints nothing');
+  g.land(); eq1([g.st().w, g.st().h], [480, 240], 'the last one');
+  // back to 100 %: the SVG, no canvas (its store released)
+  g.R.k = 1; g.T.refresh();
+  eq1(g.st(), NONE, 'k ≥ 1: the vector face again');
+  eq1([cv.width, cv.height], [0, 0], 'released');
+  // a load still in flight when k ≥ 1 arrives: discarded
+  g.R.k = 0.5; g.T.refresh(); g.R.k = 1.5; g.T.refresh(); g.land();
+  eq1(g.st().n, 0, 'k 1.5: the late load is dropped');
+  // dpr 1 at 75 %: a finer raster at native (dpr 1 · 1), drawn down to 300 × 150
+  const h = tierRig({ k: 0.75, dpr: 1 }); h.frame(); h.land();
+  const d2 = h.T.canvas.getContext('2d').calls.filter(c => c[0] === 'drawImage');
+  eq1([h.st().w, h.st().h, d2[0][1].localName], [300, 150, 'canvas']);
+  // at 90 % (dpr 2): a finer raster would be < 1.25 × the target: the vector drawn straight at the device size
+  const q = tierRig({ k: 0.9 }); q.frame(); q.land();
+  const d3 = q.T.canvas.getContext('2d').calls.filter(c => c[0] === 'drawImage');
+  eq1([q.st().w, q.st().h, d3[0][1] === q.R.imgs[0]], [720, 360, true]);
+});
+test('1g faceTier: a zoom end reaches it through wk.onRescale (no main.js change); a release (an unmounted body) shows the SVG and re-tries next frame while mounted; not while hidden at home; destroy; a failed decode keeps the SVG for good', () => {
+  const g = tierRig({ k: 0.5 });
+  g.frame(); g.land();
+  eq1(g.st().shown, true);
+  g.R.k = 0.25; wk.rescaleCanvases(g.world);
+  eq1(g.R.imgs.length, 2, 'the zoom end (wk.rescaleCanvases of the world) refreshed it');
+  g.land(); eq1(g.st().w, 200);
+  wk.releaseCanvases(g.T.canvas);
+  eq1(g.st(), NONE, 'released: the SVG');
+  g.frame(); g.land();
+  eq1([g.st().shown, g.st().w], [true, 200], 'still mounted: re-made next frame');
+  g.root.setAttribute('hidden', ''); wk.releaseCanvases(g.T.canvas); g.frame();
+  eq1([g.st().shown, g.R.imgs.length], [false, 3], 'at home (a hidden ancestor): nothing made');
+  g.root.removeAttribute('hidden');
+  g.root.remove(); g.T.refresh(); eq1(g.R.imgs.length, 3, 'detached: nothing');
+  g.world.append(g.root);
+  g.T.refresh(); g.land(); eq1(g.st().shown, true);
+  const cv = g.T.canvas;
+  g.T.destroy();
+  eq1([cv.width, g.st().n, g.st().svg], [0, 0, 'visible'], 'destroy: released, the SVG');
+  g.R.k = 0.5; wk.rescaleCanvases(g.world); eq1(g.R.imgs.length, 4, 'its rescale hook off');
+  const warn = console.warn; let warned = 0; console.warn = () => warned++;
+  try {
+    const f = tierRig({ k: 0.5 });
+    f.frame(); f.land(false);
+    eq1([f.st(), f.T.failed, warned], [NONE, true, 1], 'decode failed: the SVG kept, one warning');
+    f.R.k = 0.25; f.T.refresh(); eq1(f.R.imgs.length, 1, 'never re-tried');
+    const n = tierRig({ k: 0.5, noImage: true }); n.frame();
+    eq1([n.T.failed, n.st().svg, warned], [true, 'visible', 2], 'no Image (a stub DOM): the SVG kept');
+    const z = tierRig({ k: 1 }); z.frame(); eq1([z.R.imgs.length, z.st().svg], [0, 'visible'], 'at 100 %: nothing loads');
+  } finally { console.warn = warn; }
+});
+test('1g: the face SVG is self-contained (every fill / stroke / font / text-rendering an attribute: it draws the same as an image); render() without a parsed face (a stub DOM) has no tier', () => {
+  for (const id of authored) {
+    const s = P.decorSvg(P.layoutOf(id), modelOf(id));
+    assert.ok(/^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" class="hw-svg" [^>]*font-family="[^"]+" text-rendering="geometricPrecision">/.test(s), id + ': the root carries its font and text rendering');
+    assert.ok(!/currentColor|var\(--|<style|<image|<foreignObject/.test(s), id + ': nothing from CSS, nothing external');
+    assert.ok(!/<text(?![^>]*\sfill=)[^>]*>/.test(s), id + ': every text has its fill');
+  }
 });

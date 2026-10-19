@@ -331,6 +331,23 @@ test('U14: an untouched default camera follows a later resize of the canvas (the
   } finally { W.band = was.band; delete W.reserved; }
 });
 
+test('1g: a moved top edge (the top tray\'s grip: "dragging the track tray down should not move the canvas") never re-derives the default camera; the untouched default stays untouched for a later rotation', () => {
+  const t = fresh('minimoog');
+  camAgain(t);
+  const c0 = Object.assign({}, W.cam), k0 = W.k;
+  W.cam = { tx: c0.tx, ty: c0.ty - 80, k: c0.k }; // (cv-world kept the world still on the screen: its camera followed the edge)
+  W.emit('resize', { w: 1520, h: 572, dw: 0, dh: -80, dx: 0, dy: 80 });
+  assert.deepEqual(W.cam, { tx: c0.tx, ty: c0.ty - 80, k: c0.k }, 'the grip drag moved nothing');
+  W.emit('resize', { w: 1520, h: 492, dw: 0, dh: -80, dx: 0, dy: 0 }); // (the keyboard tray: the top edge kept, the camera still the default)
+  const c1 = Object.assign({}, W.cam);
+  const was = W.band;
+  W.band = () => ({ left: 44, top: 48, right: 1100, bottom: 700 });
+  try {
+    W.emit('resize', { w: 1100, h: 652, dw: -420, dh: 160, dx: 0, dy: 0 }); // a rotation: the width changed
+    assert.ok(W.k < k0 && JSON.stringify(W.cam) !== JSON.stringify(c1), 'the untouched default is derived again: k ' + W.k);
+  } finally { W.band = was; }
+});
+
 test('U2: a piano-roll audition reaches every powered instrument whose key zone holds the note (its transpose too); the note-off goes exactly where the note-on went', () => {
   const t = fresh('minimoog');
   cv.add('juno60', null); sim.raf();

@@ -485,6 +485,17 @@ threshold — a rendering tier, not a DOM change (SPEC §2.11's "modules render 
 switches ui-bench already tries (per-module compositing layers while moving; off-screen bodies not rendered). Several synths per
 track can come back once that is measured on the iPad.
 
+**Stage 1g (2026-10-19): the bitmap tier exists.** cv-panel `faceTier`: at each zoom end with k < 1 (wk `onRescale`, the hook the
+Serum canvases use — no main.js change) a hardware panel's face SVG (self-contained: every fill, stroke, font and text-rendering an
+attribute) loads as an Image from a Blob URL, is rastered at 2 × the target (never above native) and drawn with
+`imageSmoothingQuality = 'high'` onto a canvas of exactly w·dpr·k × h·dpr·k device px in the same box; the SVG is hidden
+(`visibility`). k ≥ 1, a face change (a new render), an unmount (wk `releaseCanvases` → `onRelease`) or a failed decode show the
+SVG again (a failure for good). One canvas per mounted panel at its on-screen size; ≈ 2 ms main-thread paint per panel on the
+Mac. The dot grid is a device-px canvas (cv-world `gridDraw`). Still open for milestone 3: the live controls (DOM knobs,
+switches, LEDs) still re-raster in a pinch and shimmer below 100 %; Serum / FX panels and the Simple layout have no bitmap tier
+(their own canvases already follow k through `fitCanvas`); the touch path on the iPad (ui-bench drives the camera by code) and
+whether five panels now pinch at 60 fps there.
+
 **Review round (1f).** Each fix test-first; the split rules above are superseded where they differ:
 - R1 A Serum heard through a panel (every 1e add was auto-patched into the shared panel) keeps that sound: with no effects of its
   own, the panel's FX state becomes its own (reshape's 'moved' rule; also for a lone Serum → panel → OUT); with effects of its own
