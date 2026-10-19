@@ -553,9 +553,10 @@ function fnSource(src, name) {
   return src.slice(i, j + 1);
 }
 test('§10.1: patchFor — main.js buildPatch adds only live-session fields; farmPatch = patchFor(drift 0, hiss 0, default rack)', () => {
-  const make = new Function('modelById', 'fxOf', 'ctx', 'project', 'settings', 'sxUni', 'prefs', 'seedPend', 'sxCap', 'core', 'patchFor', 'CG', 'CM', fnSource(MAIN, 'buildPatch') + '\nreturn buildPatch;');
+  // (stage 2a: buildPatch injects the track's canvas mod rows through modVals — with no rows the vals are handed on untouched)
+  const make = new Function('modelById', 'fxOf', 'ctx', 'project', 'settings', 'sxUni', 'prefs', 'seedPend', 'sxCap', 'core', 'patchFor', 'CG', 'CM', 'CMOD', fnSource(MAIN, 'modVals') + '\n' + fnSource(MAIN, 'buildPatch') + '\nreturn buildPatch;');
   const prefs = { smooth: 1, silenceTails: 1 };
-  const buildPatch = make(id => models.MODELS.find(m => m.id === id), t => t.fx, null, { bpm: 97 }, { drift: 0 }, 16, prefs, new Set(), 8, core, models.patchFor, CG, CM);
+  const buildPatch = make(id => models.MODELS.find(m => m.id === id), t => t.fx, null, { bpm: 97 }, { drift: 0 }, 16, prefs, new Set(), 8, core, models.patchFor, CG, CM, CMOD);
   for (const m of models.MODELS) {
     const p = m.presets[Math.min(1, m.presets.length - 1)];
     const vals = m.custom ? JSON.parse(JSON.stringify(p.v)) : valsOf(m.id, p.name), fx = m.custom && p.fx ? JSON.parse(JSON.stringify(p.fx)) : core.defaultFx();
