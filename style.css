@@ -1218,3 +1218,78 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 #world[data-cv-patching="mod"] [data-dest].cv-hot { outline: calc(3px * var(--ik, 1)) solid var(--hot); }
 #world[data-cv-patching="mod"] [data-dest].cv-no { opacity: 1; outline: calc(2px * var(--ik, 1)) solid #e5534b; }
 #world[data-cv-patching="mod"] .cv-bar.cv-hot { box-shadow: inset 0 0 0 calc(2px * var(--ik, 1)) var(--hot); }
+/* 2b (IMPL-2b §6.1): the editing modulator modules (cv-mods-ui lfoBody / envBody / macroBody / ccBody / chaosBody / noteBody) —
+   rows of wk widgets 190 px wide inside the body's padding (the jack column stays clear on the right); the LFO point editor
+   and the chaos scope are small SVGs; a macro's 8 rows are MACRO_ROW (28 px) tall so its k1…k8 jacks sit at the rows */
+.cv-body > .cv-medit { flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 6px; padding: 12px 34px 12px 16px; }
+.cv-mrow { display: flex; align-items: center; gap: 6px; min-height: 28px; }
+.cv-mrow > .wk-nb, .cv-mrow > .wk-menu { flex: 1 1 auto; min-width: 0; }
+.cv-mrow .wk-nb > .wk-lab, .cv-mrow .wk-menu > .wk-lab { display: none; }
+.cv-mrow .wk-tog { flex: none; min-height: 24px; padding: 2px 6px; }
+.cv-mtag { font-size: 9px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--mute); }
+.cv-mbadge2 { flex: none; min-width: 72px; height: 24px; padding: 0 8px; border-radius: 12px; border: 1px solid var(--mc, var(--hot)); background: #10141a;
+  color: var(--mc, var(--hot)); font: 700 10px/1 var(--ui); letter-spacing: 0.1em; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.cv-mbadge2[aria-pressed="true"] { background: var(--mc, var(--hot)); color: #0b0d0f; }
+.cv-mbadge2:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--hot); }
+.cv-mhead .wk-seg { margin-left: auto; }
+.cv-mshape, .cv-mscope, .cv-menvd { display: block; width: 100%; height: auto; overflow: visible; touch-action: none; }
+.cv-mshape { cursor: crosshair; }
+.cv-mshape.cv-on { cursor: grabbing; }
+.cv-mgrid { fill: none; stroke: #23262c; stroke-width: 1; }
+.cv-mpt { fill: #0b0d0f; stroke: var(--mc, var(--hot)); stroke-width: 1.5; cursor: grab; }
+.cv-mshape.cv-on .cv-mpt { cursor: grabbing; }
+.cv-mline { stroke: var(--mc, var(--hot)); stroke-width: 1.5; }
+.cv-mlive { flex: none; height: 8px; border-radius: 4px; }
+/* ENV: five vertical wk sliders in a row, the curve numBoxes under A / D / R */
+.cv-mslds { justify-content: space-between; align-items: flex-end; }
+.cv-msld { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.cv-msld .wk-sl.wk-v { height: 64px; }
+.cv-msld .wk-sl > .wk-lab, .cv-msld .wk-sl > .wk-num { display: none; }
+.cv-mcrvs { justify-content: space-between; }
+.cv-mcrv1 { display: flex; align-items: center; gap: 4px; }
+.cv-mcrv1 .wk-nb { min-width: 34px; }
+/* Macro: a row per knob — the knob (24 px, no label / number: the name box is the label), the editable name, the value */
+.cv-body > .cv-mmacro { gap: 0; }
+.cv-mmrow { height: 28px; min-height: 28px; gap: 8px; }
+.cv-mmrow .wk-knob { --wk-d: 24px; flex: none; padding: 0; min-width: 0; }
+.cv-mmrow .wk-knob > .wk-lab, .cv-mmrow .wk-knob > .wk-num { display: none; }
+.cv-mmrow .wk-knob > .wk-dh { display: none; }
+.cv-mname { flex: 1 1 auto; min-width: 0; height: 22px; padding: 0 6px; border-radius: 4px; border: 1px solid #262a31; background: #07090a; color: var(--text);
+  font: 600 11px/1 var(--ui); outline: none; -webkit-user-select: text; user-select: text; }
+.cv-mname:focus { border-color: var(--mc, var(--hot)); }
+.cv-mmv { flex: none; min-width: 4ch; text-align: right; font: 600 11px/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--mc, var(--text)); }
+/* CC: the number, the channel, Learn (lit while listening), the value meter */
+.cv-mlearn { flex: none; height: 24px; padding: 0 10px; border-radius: 12px; border: 1px solid #2f4752; background: #10181c; color: #9fd3e6;
+  font: 600 10.5px/1 var(--ui); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.cv-mlearn.cv-on { background: var(--mc, var(--hot)); border-color: var(--mc, var(--hot)); color: #0b0d0f; animation: cv-mblink 1s steps(2, start) infinite; }
+.cv-mlearn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--hot); }
+@keyframes cv-mblink { to { opacity: 0.55; } }
+.cv-mod[data-cv-off] .cv-mlearn.cv-on { animation: none; }
+.cv-mccval .cv-mread { min-width: 3ch; }
+.cv-mccval .cv-mval { font-size: 14px; }
+/* Note: the keyboard meter (128 keys, the last note lit) and its name */
+.cv-body > .cv-mnote { flex-direction: column; gap: 8px; }
+.cv-mkeys { display: block; width: 100%; height: 40px; }
+.cv-mkey { fill: #d8d6cf; stroke: #0b0d0f; stroke-width: 0.4; }
+.cv-mkey.cv-mblk { fill: #1b1c20; }
+.cv-mkeyon { fill: var(--mc, var(--hot)); }
+/* 2b (IMPL-2b §6.2, SPEC §7.11): classic halos — a ring of arcs in the knob (between the skirt and the ticks), the live dot;
+   a slider's range bar and live mark along its groove; a badge on anything else. None takes a press (the 1g / 1h data-tip
+   hit-test and the drags stay); a bypassed row's arc is dimmed */
+.ctl { position: relative; }
+.knob { position: relative; }
+.cp-halo { position: absolute; left: 0; top: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.inst.hw .hw-c .knob > .cp-halo { left: 0; top: 0; width: 100%; height: 100%; }
+.cp-arc { fill: none; stroke-width: 3; stroke-linecap: butt; }
+.cp-arc.cp-byp { opacity: 0.35; stroke-dasharray: 2 2; }
+.cp-live { fill: #fff; stroke: #0b0d0f; stroke-width: 1; }
+.cp-range { position: absolute; left: 4px; right: 4px; min-height: 2px; min-width: 2px; border-radius: 2px; opacity: 0.75; pointer-events: none; }
+.slider[data-orient="h"] .cp-range { left: auto; right: auto; top: 4px; bottom: 4px; }
+.cp-range.cp-byp { opacity: 0.3; }
+.cp-range[hidden], .cp-livemk[hidden], .cp-mbadge[hidden] { display: none; }
+.cp-livemk { position: absolute; left: 0; right: 0; height: 2px; background: #fff; box-shadow: 0 0 0 1px #0b0d0f; pointer-events: none; }
+.slider[data-orient="h"] .cp-livemk { top: 0; bottom: 0; left: auto; right: auto; width: 2px; height: auto; }
+.cp-mbadge { position: absolute; right: -6px; top: -6px; z-index: 2; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #9aa4b2;
+  color: #0b0d0f; font: 700 9px/16px var(--ui); text-align: center; pointer-events: none; box-shadow: 0 0 0 1.5px #0b0d0f; }
+.cp-mbadge.cp-live { box-shadow: 0 0 0 1.5px #fff; }
+.inst.hw .hw-c > .cp-mbadge { left: auto; top: -6px; right: -6px; width: auto; height: 16px; }

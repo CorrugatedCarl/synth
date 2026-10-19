@@ -317,20 +317,39 @@ export function sideTray(el, o) {
 // with info.mod = true, info.over 'canvas' or null (never 'tracks') and info.at the point (o.toWorld(x, y): world px; else
 // client px); its ghost hides over the canvas only while o.modCanvasGhost() says the world draws an outline for it.
 // setPlaced(id, reason | null): the tile greys out (aria-disabled, .cv-placed) with the reason ("already on this
-// track" / "already in this project"); a placed tile neither picks nor drags. modTiles() / modTile(id).
+// track" / "already in this project"); a placed tile neither picks nor drags. modTiles() / modTile(id). (2b) an item with
+// multi: true (LFO, ENV, Macro, CC, Chaos — MOD_TILES) carries data-multi and ignores setPlaced.
 const CLASSIC = m => !m.custom, TO_SERUM = 'Serum and its modulators: the Serum view (the menu above).';
 export const SRC_VIEWS = [
   { id: 'hw', label: 'Hardware', tip: 'The classic synths with their real front panel', layout: 'hw', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
   { id: 'flow', label: 'Simple', tip: 'The classic synths with the simple panel', layout: 'flow', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
-  { id: 'serum', label: 'Serum', tip: 'Serum and the modules made for it', note: 'LFOs, envelopes and macros arrive here in later stages.',
+  { id: 'serum', label: 'Serum', tip: 'Serum and the modules made for it', note: 'Drop a modulator on the canvas and cable its jack to any knob.',
     sections: [{ id: 'serum', models: m => !!m.custom }, { id: 'mods' }, { id: 'parts', head: 'Serum parts', note: 'Arrive in milestone 3.' },
-      { id: 'notes', head: 'Note tools', note: 'Arrive in stage 2b.' }] },
+      { id: 'notes', head: 'Note tools', note: 'Note tools: later.' }] },
 ];
+/** (2b, IMPL-2b §1.1 / §6.1) The Modulators section's tiles, in MOD_ORDER: id = the mod kind, scope 'project' (the wheel)
+ * or 'track', multi = any number per track (its tile never greys out: setPlaced ignores it). The host passes them as
+ * o.mods (with its own names if it likes). */
+export const MOD_TILES = Object.freeze([
+  { id: 'wheel', name: 'Mod Wheel', scope: 'project' }, { id: 'velo', name: 'Velocity', scope: 'track' },
+  { id: 'at', name: 'Aftertouch', scope: 'track' }, { id: 'bend', name: 'Bend', scope: 'track' }, { id: 'note', name: 'Note', scope: 'track' },
+  { id: 'lfo', name: 'LFO', scope: 'track', multi: true }, { id: 'env', name: 'ENV', scope: 'track', multi: true },
+  { id: 'macro', name: 'Macro', scope: 'track', multi: true }, { id: 'cc', name: 'CC', scope: 'track', multi: true },
+  { id: 'chaos', name: 'Chaos', scope: 'track', multi: true },
+].map(Object.freeze));
+// original monochrome glyphs (stroked with currentColor): a wheel, velocity bars, an aftertouch pad, a bend curve, (2b) a
+// sine with a point, an ADSR, four macro dials, a CC fader, a scribble, a key
 const MOD_GLYPH = {
   wheel: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="14" y="2.5" width="12" height="23" rx="3"/><path d="M15.5 9.5h9M15.5 12h9M15.5 14.5h9"/></svg>',
   velo: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M5 24.5h30"/><path d="M8 24.5v-4M14 24.5v-8M20 24.5v-12M26 24.5v-16M32 24.5v-20"/></svg>',
   at: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="7" y="13.5" width="26" height="11" rx="2"/><path d="M20 3.5v7M16.5 7.5 20 11l3.5-3.5"/></svg>',
   bend: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 14h8c4 0 5-9 8-9s4 18 8 18 4-9 8-9"/></svg>',
+  lfo: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 14c4-9 8-9 12 0s8 9 12 0 6-7 8-4"/><circle cx="20" cy="14" r="2"/></svg>',
+  env: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 24.5 10 4l5 10h8l3 4h4l4 6.5"/><path d="M4 24.5h32"/></svg>',
+  macro: '<svg viewBox="0 0 40 28" aria-hidden="true"><circle cx="11" cy="9" r="5"/><circle cx="29" cy="9" r="5"/><circle cx="11" cy="21" r="5"/><circle cx="29" cy="21" r="5"/><path d="M11 9v-3.5M29 9l2.5-2.5M11 21l-2.5 2.5M29 21h3.5"/></svg>',
+  cc: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M8 4v20M20 4v20M32 4v20"/><rect x="4" y="15" width="8" height="4" rx="1"/><rect x="16" y="7" width="8" height="4" rx="1"/><rect x="28" y="11" width="8" height="4" rx="1"/></svg>',
+  chaos: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 16c3-10 5 4 8-4s4 14 7 2 4-10 7 0 3 12 6-2 3-8 4-4"/></svg>',
+  note: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="6" y="3.5" width="28" height="21" rx="2"/><path d="M13 3.5v21M20 3.5v21M27 3.5v21"/><path d="M11 3.5v12h4v-12M18 3.5v12h4v-12M25 3.5v12h4v-12"/></svg>',
 };
 const modGlyph = id => MOD_GLYPH[id] || '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 14c4-8 8-8 12 0s8 8 12 0 6-6 8-3"/></svg>';
 export function sourcesTray(el, o) {
@@ -371,7 +390,8 @@ export function sourcesTray(el, o) {
       b.type = 'button';
       b.setAttribute('data-mod', id);
       if (m.scope) b.setAttribute('data-scope', m.scope);
-      const tip = `${name} — tap to add it${m.scope === 'project' ? ' (one for the whole project)' : ''}, or drag it onto the canvas`;
+      if (m.multi) b.setAttribute('data-multi', ''); // ((2b) any number per track: never placed)
+      const tip = `${name} — tap to add${m.multi ? ' one' : ' it'}${m.scope === 'project' ? ' (one for the whole project)' : ''}, or drag it onto the canvas`;
       b.title = tip;
       const pic = mk(d, 'span', 'cv-mglyph');
       pic.setAttribute('aria-hidden', 'true');
@@ -387,7 +407,7 @@ export function sourcesTray(el, o) {
         norm: r => ({ over: (r && typeof r === 'object' ? r.over : r) === 'canvas' ? 'canvas' : null, key: null, near: null }), at,
         label: over => (over === 'canvas' ? '+ Add ' + name : '') }));
       box.appendChild(b);
-      mtiles.set(id, { b, rs, tip, name });
+      mtiles.set(id, { b, rs, tip, name, multi: !!m.multi });
       offs.push(() => b.remove());
     }
   }
@@ -469,7 +489,7 @@ export function sourcesTray(el, o) {
   setView(view);
   function setPlaced(id, reason) {
     const T = mtiles.get(id);
-    if (!T) return;
+    if (!T || T.multi) return; // ((2b) a multi-instance tile never greys out)
     const r = reason == null || reason === '' ? null : String(reason);
     if (r) placed.set(id, r); else placed.delete(id);
     T.b.classList.toggle('cv-placed', !!r);

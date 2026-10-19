@@ -462,7 +462,7 @@ function v2m(o = {}) {
 }
 
 test('modSrcKey / modSrcOf / amtText / perfRows (2a): row src ↔ module key ↔ jack; the badge text; a Serum\'s performance rows', () => {
-  assert.deepEqual(['wheel', 've.out', 'at.out', 'bd.out', 'i1.out', 'lfo1', 'x.y.out', '', null].map(C.modSrcKey), ['wheel', 've', 'at', 'bd', 'i1', null, null, null, null]);
+  assert.deepEqual(['wheel', 've.out', 'at.out', 'bd.out', 'i1.out', 'lfo1', 'x.y.out', '', null, 'm1.k3'].map(C.modSrcKey), ['wheel', 've', 'at', 'bd', 'i1', null, null, null, null, 'm1']);
   assert.deepEqual(['wheel.out', 've.out', 'at.out'].map(C.modSrcOf), ['wheel', 've.out', 'at.out']);
   assert.deepEqual([C.amtText(0.5), C.amtText(-0.254), C.amtText(0.5, 1), C.amtText(0), C.amtText(3), C.amtText(NaN), C.amtText(-1, true)], ['+50%', '−25%', '±50%', '+0%', '+100%', '+0%', '∓100%']);
   assert.deepEqual(C.perfRows(v2m().dev.i2).map(r => [r.slot, r.src, r.dst, r.amt]), [[3, 'wheel', 'a.level', 0.5], [7, 'velo', 'fx.r1.mix', -0.2], [9, 'at', 'a.pan', 1]]);
@@ -846,4 +846,32 @@ test('(U5, U6) with a mod cable selected, the inspector (.cv-ml-pop / a dialog /
 
 test('(U11) amtText — one amount format for the badge, the Mod list and the inspector: a bipolar amount keeps its sign (± / ∓)', () => {
   assert.deepEqual([C.amtText(0.5, 1), C.amtText(-0.5, 1), C.amtText(-0.004, 1), C.amtText(-0.25), C.amtText(0.25, 0)], ['±50%', '∓50%', '±0%', '−25%', '+25%']);
+});
+
+/* ---------------------------------------------------------------- stage 2b (IMPL-2b §6.1): source ports, kinds by prefix */
+test('modSrcPort / modSrcKey / keyKind / srcKind / MOD_PREFIX / MOD_COLOR (2b): a row src → its module key and jack port (a macro\'s k1…k8); the mod kind of any module key by prefix; colours for every kind', () => {
+  assert.deepEqual(['wheel', 'l1.out', 'm1.k3', 'm1.k8', 'm1.k9', 'm1.k0', 'a.b.out', 've.out', '', null, 'l1'].map(C.modSrcPort),
+    [{ key: 'wheel', port: 'out' }, { key: 'l1', port: 'out' }, { key: 'm1', port: 'k3' }, { key: 'm1', port: 'k8' }, null, null, null, { key: 've', port: 'out' }, null, null, null]);
+  assert.deepEqual(['m1.k3', 'h2.out', 'wheel', 'x'].map(C.modSrcKey), ['m1', 'h2', 'wheel', null]);
+  assert.deepEqual(['wheel', 've', 'at', 'bd', 'nt', 'l1', 'l10', 'e2', 'm1', 'c3', 'h1', 'l', 'lfo1', 'x1', 'i1', 'l01', 'e0', '', null].map(C.keyKind),
+    ['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'lfo', 'env', 'macro', 'cc', 'chaos', null, null, null, null, null, null, null, null]);
+  assert.deepEqual(['m1.k3', 'l2.out', 'wheel', 'zz', 'i1.out'].map(C.srcKind), ['macro', 'lfo', 'wheel', null, null]);
+  assert.deepEqual([C.MOD_PREFIX, Object.keys(C.MOD_COLOR), C.MACRO_PORTS],
+    [{ wheel: 'wheel', velo: 've', at: 'at', bend: 'bd', note: 'nt', lfo: 'l', env: 'e', macro: 'm', cc: 'c', chaos: 'h' }, ['wheel', 'velo', 'at', 'bend', 'lfo', 'env', 'macro', 'cc', 'chaos', 'note'], ['k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8']]);
+  assert.equal(new Set(Object.values(C.MOD_COLOR)).size, 10, 'ten distinct colours');
+});
+
+test('cablesOf (2b): rows from the new kinds — a: \'<dev>.out\', a macro\'s \'<dev>.k<n>\'; the colour by the source kind (the device\'s own colour first); dashed from opts.dashed; a missing source module keeps the track colour', () => {
+  const t = v2m();
+  t.dev.l1 = { kind: 'lfo' }; t.dev.m1 = { kind: 'macro', color: '#111111' }; t.dev.c1 = { kind: 'cc' }; t.dev.nt = { kind: 'note' }; t.dev.e9 = { kind: 'chaos' }; // (e9: a chaos under an env id — no module of its key's kind)
+  t.mods.push({ id: 'r6', src: 'l1.out', dst: 'i2:a.semi', amt: 0.3 }, { id: 'r7', src: 'm1.k3', dst: 'i2:a.pan', amt: -0.5, bi: 1 }, { id: 'r8', src: 'c1.out', dst: 'i2:a.fine', amt: 1 },
+    { id: 'r9', src: 'h1.out', dst: 'i2:a.fine', amt: 1 }, { id: 'r10', src: 'nt.out', dst: 'i2:a.fine', amt: 0.1 }, { id: 'r11', src: 'e9.out', dst: 'i2:a.fine', amt: 0.1 }, { id: 'r12', src: 'm1.k9', dst: 'i2:a.fine', amt: 0.1 });
+  const M = C.cablesOf(t, { dashed: r => r.src.startsWith('l1') }).filter(c => c.kind === 'mod' && /^r(6|7|8|9|10|11|12)$/.test(c.id));
+  assert.deepEqual(M.map(c => [c.id, c.a, c.b, c.badge, c.color, c.dashed]), [
+    ['r6', 'l1.out', 'i2:a.semi', '+30%', C.MOD_COLOR.lfo, true],
+    ['r7', 'm1.k3', 'i2:a.pan', '∓50%', '#111111', false],
+    ['r8', 'c1.out', 'i2:a.fine', '+100%', C.MOD_COLOR.cc, false],
+    ['r9', 'h1.out', 'i2:a.fine', '+100%', '#3b82c4', false],
+    ['r10', 'nt.out', 'i2:a.fine', '+10%', C.MOD_COLOR.note, false],
+    ['r11', 'e9.out', 'i2:a.fine', '+10%', '#3b82c4', false]], 'r12 (a k9 port) dropped; r9 / r11: no module of that key and kind → the track colour');
 });

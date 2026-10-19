@@ -505,8 +505,8 @@ test('sourcesTray (views): the dropdown — a button showing the view (aria-hasp
   assert.deepEqual([S.view(), got, menu.hidden, btn.getAttribute('aria-expanded'), btn.children[0].textContent, items.map(b => b.getAttribute('aria-checked')).join()],
     ['serum', ['serum'], true, 'false', 'Serum', 'false,false,true']);
   assert.deepEqual([shown(), secs(), sec.children[0].children.map(c => c.textContent), sec.children[1].children[1].textContent, list.getAttribute('data-layout'), S.layout()],
-    [['serum'], ['parts', 'notes'], ['Serum parts', 'Arrive in milestone 3.'], 'Arrive in stage 2b.', 'flow', 'flow'], 'Serum: its tile, the placeholders; the classics\' layout kept');
-  assert.equal(note.textContent, 'LFOs, envelopes and macros arrive here in later stages.');
+    [['serum'], ['parts', 'notes'], ['Serum parts', 'Arrive in milestone 3.'], 'Note tools: later.', 'flow', 'flow'], 'Serum: its tile, the placeholders; the classics\' layout kept');
+  assert.equal(note.textContent, 'Drop a modulator on the canvas and cable its jack to any knob.');
   // the same view again: no call; a press outside closes it (nothing picked); the button again closes it
   btn.click(); items[2].click();
   assert.deepEqual([got, S.viewOpen()], [['serum'], false], 'no change: no call');
@@ -837,4 +837,22 @@ test('index.html (2a): the Sources tray scrolls as one (#srcScroll) holding #src
   assert.match(css, /\.cv-mbadge::before \{[^}]*calc\(44px \* var\(--ik, 1\)\)/, 'the badge\'s 44 px hit area');
   assert.match(css, /\.cv-mw \{[^}]*touch-action: none/, 'the wheel takes the finger');
   assert.match(css, /\.cv-tscroll \{[^}]*overflow-y: auto/);
+});
+
+/* ---------------------------------------------------------------- stage 2b (IMPL-2b §6.1): the six new tiles */
+test('sourcesTray (2b): MOD_TILES lists every kind in MOD_ORDER (the wheel project-scoped; LFO / ENV / Macro / CC / Chaos multi); the tiles carry original glyphs (one each) and data-multi; a multi tile never greys out (setPlaced ignored); the Serum view\'s note and the Note tools placeholder re-worded', () => {
+  assert.deepEqual(T.MOD_TILES.map(m => m.id + ':' + m.scope + (m.multi ? ':multi' : '')), ['wheel:project', 'velo:track', 'at:track', 'bend:track', 'note:track', 'lfo:track:multi', 'env:track:multi', 'macro:track:multi', 'cc:track:multi', 'chaos:track:multi']);
+  const R = modRig({ mods: T.MOD_TILES });
+  assert.deepEqual([R.S.modTiles().length, new Set(R.S.modTiles().map(b => b.children[0].innerHTML)).size], [10, 10], 'ten tiles, ten glyphs');
+  assert.ok(R.S.modTiles().every(b => /<svg /.test(b.children[0].innerHTML) && !/<text|<image|href/.test(b.children[0].innerHTML)), 'inline strokes, no text / images / links');
+  const lfo = mtile(R, 'lfo'), velo = mtile(R, 'velo');
+  assert.deepEqual([lfo.hasAttribute('data-multi'), velo.hasAttribute('data-multi'), lfo.title, mtile(R, 'wheel').title],
+    [true, false, 'LFO — tap to add one, or drag it onto the canvas', 'Mod Wheel — tap to add it (one for the whole project), or drag it onto the canvas']);
+  R.S.setPlaced('lfo', 'already on this track'); R.S.setPlaced('velo', 'already on this track');
+  assert.deepEqual([lfo.classList.contains('cv-placed'), lfo.hasAttribute('aria-disabled'), R.S.placed('lfo'), velo.classList.contains('cv-placed'), R.S.placed('velo')], [false, false, null, true, 'already on this track']);
+  lfo.click(); lfo.click();
+  assert.deepEqual(R.picks, ['lfo:replace', 'lfo:replace'], 'picks again and again');
+  R.S.destroy();
+  const serum = T.SRC_VIEWS.find(v => v.id === 'serum');
+  assert.deepEqual([serum.note, serum.sections.find(s => s.id === 'notes').note], ['Drop a modulator on the canvas and cable its jack to any knob.', 'Note tools: later.']);
 });

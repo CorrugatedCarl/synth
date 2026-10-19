@@ -37,10 +37,27 @@ export const SNAP_PX = 32, TAP_PX = 8;
 /** (2a) A mod cable's end drawn above the modules (screen px); past MOD_FADE_N visible mod cables (Always) the ones not
  * touching the selection fade and the hint shows once. */
 export const END_PX = 24, MOD_FADE_N = 24;
-/** (2a) The modulator modules' colours (their cables' too, SPEC §2.9): by mod kind. */
-export const MOD_COLOR = Object.freeze({ wheel: '#4fb3d9', velo: '#e8a33d', at: '#b98ae6', bend: '#63c98a' });
-/** (2a) A mod device kind (track.dev) → its fixed module key; a Serum matrix performance source → that module's key. */
+/** (2a) The modulator modules' colours (their cables' and their classic halos' too, SPEC §2.9 / §7.11): by mod kind;
+ * (2b) the six stage-2b kinds. */
+export const MOD_COLOR = Object.freeze({ wheel: '#4fb3d9', velo: '#e8a33d', at: '#b98ae6', bend: '#63c98a',
+  lfo: '#ff7f5a', env: '#d9c84a', macro: '#5b8cff', cc: '#9aa4b2', chaos: '#e05fb4', note: '#7fe0d6' });
+/** (2a) A singleton mod device kind (track.dev) → its fixed module key; a Serum matrix performance source → that
+ * module's key (perfRows). The multi-instance kinds are keyed by prefix: MOD_PREFIX / keyKind. */
 export const MOD_KEY = Object.freeze({ wheel: 'wheel', velo: 've', at: 'at', bend: 'bd' });
+/** (2b, IMPL-2b §1.1) Every mod kind → its device-id prefix: the singletons their key, the multi-instance kinds a
+ * letter followed by a number ('l1', 'e2', 'm1', 'c3', 'h1'). */
+export const MOD_PREFIX = Object.freeze({ wheel: 'wheel', velo: 've', at: 'at', bend: 'bd', note: 'nt', lfo: 'l', env: 'e', macro: 'm', cc: 'c', chaos: 'h' });
+const PREFIX_KIND = Object.freeze(Object.keys(MOD_PREFIX).reduce((o, k) => { o[MOD_PREFIX[k]] = k; return o; }, {}));
+/** (2b) The mod kind of a module key ('wheel' → 'wheel', 've' → 'velo', 'nt' → 'note', 'l3' → 'lfo', 'm1' → 'macro', 'c2'
+ * → 'cc', 'h1' → 'chaos', 'e1' → 'env'; anything else null). Pure. */
+export function keyKind(key) {
+  if (typeof key !== 'string' || !key) return null;
+  if (PREFIX_KIND[key] && MOD_PREFIX[PREFIX_KIND[key]] === key && !/^[lemch]$/.test(key)) return PREFIX_KIND[key];
+  const m = /^([lemch])([1-9]\d*)$/.exec(key);
+  return m ? PREFIX_KIND[m[1]] : null;
+}
+/** (2b) A macro module's jack ports (its knob rows). */
+export const MACRO_PORTS = Object.freeze(['k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8']);
 /** (2a) The visibility modes of the mod cables (the toolbar ∿ cycle). */
 export const MOD_MODES = Object.freeze(['always', 'select', 'never']);
 /** (2a) The hint shown once when more than MOD_FADE_N mod cables are visible. */
@@ -64,13 +81,18 @@ const text1 = (el, t) => { if (el.textContent !== t) el.textContent = t; };
  *   soloed one) → .cv-off (grey); g: the wire's level when ≠ 1 (its label: dB)
  */
 
-/** (2a) A track.mods row's src → its module key: 'wheel' → 'wheel', '<dev>.out' → '<dev>' (else null). */
-export function modSrcKey(src) {
-  if (src === 'wheel') return 'wheel';
-  const m = typeof src === 'string' ? /^([^.:/]+)\.out$/.exec(src) : null;
-  return m ? m[1] : null;
+/** (2b) A track.mods row's src → its module key and jack port: 'wheel' → {key: 'wheel', port: 'out'}, '<dev>.out' →
+ * {key: dev, port: 'out'}, a macro's '<dev>.k3' → {key: dev, port: 'k3'} (else null). Pure. */
+export function modSrcPort(src) {
+  if (src === 'wheel') return { key: 'wheel', port: 'out' };
+  const m = typeof src === 'string' ? /^([^.:/]+)\.(out|k[1-8])$/.exec(src) : null;
+  return m ? { key: m[1], port: m[2] } : null;
 }
-/** (2a) A mod-out jack → the row's src it starts: 'wheel.out' → 'wheel', 've.out' → 've.out'. */
+/** (2a) A track.mods row's src → its module key: 'wheel' → 'wheel', '<dev>.out' → '<dev>', (2b) '<dev>.k3' → '<dev>' (else null). */
+export function modSrcKey(src) { const p = modSrcPort(src); return p ? p.key : null; }
+/** (2b) The mod kind of a row's source: 'wheel' → 'wheel', 've.out' → 'velo', 'l2.out' → 'lfo', 'm1.k3' → 'macro' (else null). */
+export function srcKind(src) { return keyKind(modSrcKey(src)); }
+/** (2a) A mod-out jack → the row's src it starts: 'wheel.out' → 'wheel', 've.out' → 've.out', (2b) 'm1.k3' → 'm1.k3'. */
 export function modSrcOf(jack) { return jack === 'wheel.out' ? 'wheel' : String(jack || ''); }
 /** (2a) A mod cable's amount badge: '+50%', '−25%', bipolar '±50%' / '∓50%' (amt −1…1) — also the Mod list's and the
  * inspector's (cv-modlayer: one format, U11). */
@@ -187,17 +209,18 @@ export function cablesOf(track, opts) {
   return out.concat(modCables(t, D, opts));
 }
 /**
- * (2a) The mod cables of a v2 track (IMPL-2a §3): one per track.mods row — {id: row id, kind: 'mod', a: '<module>.out' (the
- * wheel's 'wheel.out', else '<dev>.out'), b: '<dev>:<param>', amt, bi, byp, preset: false, dashed, badge (amtText), color
+ * (2a) The mod cables of a v2 track (IMPL-2a §3): one per track.mods row — {id: row id, kind: 'mod', a: '<module>.<port>' (the
+ * wheel's 'wheel.out', '<dev>.out', (2b) a macro knob's '<dev>.k<n>'), b: '<dev>:<param>', amt, bi, byp, preset: false, dashed, badge (amtText), color
  * (the source module's: its dev.color, else MOD_COLOR)}; then, with opts.presetRows (true: perfRows of each Serum; or
  * (devId, dev) → rows), one per performance row of a Serum's own matrix whose module exists (the wheel: opts.project
  * .perf.wheel; Velocity / Aftertouch / Bend: that device on the track) — {id: 'p:<dev>:<slot>', preset: true, dev, slot}.
- * opts.dashed(row) → true draws a row dashed (a per-note source on a target following the last note: none in 2a). Pure.
+ * opts.dashed(row) → true draws a row dashed (.cv-dash: a per-note source on a target following the last note, IMPL-2b
+ * §1.3 — derived by the host, never stored). Colour by the source module's kind (MOD_COLOR, any 2b kind by prefix). Pure.
  */
 function modCables(t, D, opts) {
   const o = isObj(opts) ? opts : {}, out = [], tc = typeof t.color === 'string' ? t.color : undefined;
   const P = isObj(o.project) ? o.project : null, wheel = !!(P && isObj(P.perf) && P.perf.wheel);
-  const mdev = k => (isObj(D[k]) && MOD_KEY[D[k].kind] === k ? D[k] : null);
+  const mdev = k => (isObj(D[k]) && keyKind(k) === D[k].kind ? D[k] : null); // ((2b) any mod kind: key ↔ kind by prefix)
   const colorOf = k => { if (k === 'wheel') return MOD_COLOR.wheel; const d = mdev(k); return (d && typeof d.color === 'string' && d.color) || (d && MOD_COLOR[d.kind]) || tc; };
   const mk = (id, a, b, r, key, extra) => {
     const c = Object.assign({ id, kind: 'mod', a, b, amt: fin(r.amt) ? r.amt : 0, bi: !!r.bi, byp: !!r.byp, preset: false, dashed: false }, extra);
@@ -209,8 +232,8 @@ function modCables(t, D, opts) {
   };
   for (const r of Array.isArray(t.mods) ? t.mods : []) {
     if (!isObj(r) || typeof r.id !== 'string' || typeof r.dst !== 'string' || r.dst.indexOf(':') < 1) continue;
-    const key = modSrcKey(r.src);
-    if (key) out.push(mk(r.id, key + '.out', r.dst, r, key, { src: r.src }));
+    const P = modSrcPort(r.src); // ((2b) a macro's cable leaves at its knob's jack: 'm1.k3')
+    if (P) out.push(mk(r.id, P.key + '.' + P.port, r.dst, r, P.key, { src: r.src }));
   }
   const PR = o.presetRows;
   if (PR) {
