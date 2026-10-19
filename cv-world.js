@@ -14,8 +14,10 @@
 // movestart once (kit popups close: wk.closeTransient), camera per written frame and cameraend at its end. During a
 // burst there are no layout reads: #world gets will-change only then ([data-cv-busy]); at its end the translation rounds
 // to device px and a zoom re-rasters (--ik, wk.setCanvasScale + rescaleCanvases).
-// Stage 1g: the dot grid is one device-px canvas under #world (gridDraw), redrawn on each written frame and on a resize /
-// device-ratio change; every dot on a whole device px of one origin (no flicker, the major dots never drift from the minor).
+// Stage 1g: the dot grid is one device-px canvas under #world (gridDraw); every dot on a whole device px of one origin (no
+// flicker, the major dots never drift from the minor). Hotfix (2026-10-19, "still very laggy, even worse, with one synth"):
+// each draw re-uploads the whole store to the GPU (≈ 30 MB a frame on an iPad Pro), so it is drawn only at rest (a burst's
+// end, a write outside a burst, a resize / device-ratio change); during a burst it moves by a CSS transform (gridFollow).
 // Zoom consistency (IMPL-panels §8, the user's Z1): zooming never changes how a module looks — no cards, no level of
 // detail, nothing hidden, unmounted or resized; modules simply scale with the camera. The world only tells each item
 // whether it is on screen (planScreen over cached rects, after every written frame: onScreen(on) + a 'screen' event), so
@@ -197,7 +199,7 @@ export function gridSizes(d) { d = Math.max(1, +d || 1); return { side: Math.max
 export function gridDraw(ctx, cam, w, h, d) {
   const n = { minor: 0, major: 0 };
   if (!ctx) return n;
-  d = Math.max(1, +d || 1);
+  d = +d > 0 ? +d : 1; // (a capped store: below 1 too)
   if (typeof ctx.setTransform === 'function') ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, w, h);
   const k = cam.k, sp = DOT * k * d, a = gridBg(cam).minor.a, Z = gridSizes(d), o = Z.side >> 1, c = Z.side / 2 - o;
@@ -219,6 +221,26 @@ export function gridDraw(ctx, cam, w, h, d) {
     ctx.fill();
   }
   return n;
+}
+/** (hotfix) The grid canvas's store: GRID_OVER CSS px past the viewport's right / bottom (one MAJOR period at K_MAX: a pan
+ * never runs out of canvas), at most GRID_MAX_S × the CSS size and GRID_MAX_PX device px (the overscan gives way first,
+ * then the scale: CSS stretches a smaller store, its dots still on whole store px). During a burst it is redrawn only when
+ * the transform would scale it past GRID_ZOOM_F (or below 1 / GRID_ZOOM_F) or leave the viewport uncovered (a zoom out),
+ * and never within GRID_GAP_MS of its last draw; a zoom-out redraw looks GRID_AHEAD further out (it starts scaled up by
+ * that much, so it covers a further zoom out by ≈ 1.4× before the next). */
+export const GRID_OVER = MAJOR * K_MAX, GRID_MAX_PX = 8e6, GRID_MAX_S = 2, GRID_ZOOM_F = 2, GRID_GAP_MS = 250, GRID_AHEAD = 1.25;
+/**
+ * (hotfix) The grid canvas's transform during a burst: its last draw (camera c0, a cw × ch CSS px canvas at the viewport's
+ * top-left, transform-origin 0 0) mapped onto the camera c — translate(x, y) scale(s), s = c.k / c0.k, x = c.tx − c0.tx·s
+ * (a canvas point p = w·k0 + t0 lands at s·p + x = w·k + t: every world point where the camera puts it), then wrapped
+ * into (−P, 0] by whole periods P = MAJOR·c.k (the pattern repeats every MAJOR world px; at most one store px of rounding
+ * moves at a wrap, mid-motion). ok: the canvas covers the vw × vh viewport. Pure.
+ * @returns {{x: number, y: number, s: number, ok: boolean}}
+ */
+export function gridFollow(c0, c, cw, ch, vw, vh) {
+  const s = c.k / c0.k, P = MAJOR * c.k, wrap = v => (P > 0 ? v - P * Math.ceil(v / P) : v) || 0;
+  const x = wrap(c.tx - c0.tx * s), y = wrap(c.ty - c0.ty * s);
+  return { x, y, s, ok: x <= 1e-6 && y <= 1e-6 && x + s * cw >= vw - 0.5 && y + s * ch >= vh - 0.5 };
 }
 /** v snapped to the grid g (default DOT, the visible dots). @returns {number} */
 export function snap(v, g) { const s = g > 0 ? +g : DOT, r = Math.round(v / s) * s; return r === 0 ? 0 : r; }
@@ -297,7 +319,7 @@ export function createWorld(viewport, o) {
   let pin = null; // a bar double-tap's edit state { id, k }: it holds at the focus zoom even below EDIT_K (a large module's fit)
   let fid = 0, scrDirty = false, overBudget = false; // the frame, the on-screen plan owed, the soft DOM budget crossed
   let mapOn = true, mapDirty = true, MM = null; // the minimap: shown, a redraw owed, its parts { el, cv, btn, drag }
-  let GC = null, dprMq = null; // (1g) the grid canvas { cv, ctx, w, h, d, n, ms, max, dots }; the device-ratio watch
+  let GC = null, dprMq = null; // (1g) the grid canvas { cv, ctx, w, h, d, s, cw, ch, c0, tf, at, tm, n, ms, max, dots, moves }; the device-ratio watch
   let B = null; // the live burst: { hook, until, band, timer, last }
   let G = null; // the world's own pointer gesture (pan / pinch)
   let J = null; // a press hooks.jack took: { id, type, x, y, cancel } until its pointer lifts
@@ -328,8 +350,8 @@ export function createWorld(viewport, o) {
       cam = { tx: cam.tx - dx, ty: cam.ty - dy, k: cam.k };
       if (anim) { for (const c of [anim.c0, anim.c1]) { c.tx -= dx; c.ty -= dy; } anim.x -= dx; anim.y -= dy; }
     }
-    const sized = sizeGrid();
-    if (!write() && sized) drawGrid();
+    if (sizeGrid()) GC.c0 = null; // (cleared: drawn now, in a burst too)
+    if (!write()) gridAt();
     recache();
     // (U14) the viewport changed (a tray's height, a rotation): main.js re-derives an untouched default camera — not for a
     // moved edge alone (dx / dy: the camera already kept the world in place)
@@ -376,31 +398,73 @@ export function createWorld(viewport, o) {
   }
   const bandBox = b => ({ x: b.left - vp.left, y: b.top - vp.top, w: b.right - b.left, h: b.bottom - b.top }); // local
 
-  /* ---- the dot grid (1g): one device-px canvas under #world, drawn from the camera on each written frame and on a
-     resize / device-ratio change, never otherwise (gridDraw) */
+  /* ---- the dot grid (1g): one device-px canvas under #world (gridDraw). Hotfix: drawn at rest only — a write outside a
+     burst, a burst's end, a resize / device-ratio change; in a burst it follows by transform (gridFollow: no layout read,
+     one style write a frame), redrawn only past GRID_ZOOM_F or uncovered (a zoom out), never within GRID_GAP_MS */
   function buildGrid() {
     if (!doc || typeof doc.createElement !== 'function') return;
     const cv = doc.createElement('canvas');
     if (!cv) return;
     cv.className = 'cv-grid';
     try { cv.setAttribute('aria-hidden', 'true'); if (W.parentNode === viewport && typeof viewport.insertBefore === 'function') viewport.insertBefore(cv, W); else viewport.prepend(cv); } catch (err) { return; }
-    GC = { cv, ctx: null, w: -1, h: -1, d: 0, n: 0, ms: 0, max: 0, dots: 0 };
-    offs.push(() => { try { cv.width = 0; cv.height = 0; cv.remove(); } catch (err) { /* gone */ } });
+    GC = { cv, ctx: null, w: -1, h: -1, d: 0, s: 1, cw: 0, ch: 0, c0: null, tf: '', at: -1e9, tm: 0, n: 0, ms: 0, max: 0, dots: 0, moves: 0 };
+    offs.push(() => { if (GC && GC.tm) unlater(GC.tm); try { cv.width = 0; cv.height = 0; cv.remove(); } catch (err) { /* gone */ } });
   }
-  function sizeGrid() { // the store: the viewport in device px; CSS-sized to it → true when it changed (and was cleared)
+  // the store: (viewport + GRID_OVER) × min(dpr, GRID_MAX_S) device px, ≤ GRID_MAX_PX (the overscan gives way first, then
+  // the scale) → true when it changed (and was cleared)
+  function sizeGrid() {
     if (!GC) return false;
-    const d = dpr(), w = Math.max(0, Math.round(vp.width * d)), h = Math.max(0, Math.round(vp.height * d));
-    if (w === GC.w && h === GC.h && d === GC.d) return false;
-    Object.assign(GC, { w, h, d });
-    try { GC.cv.width = w; GC.cv.height = h; GC.cv.style.width = w / d + 'px'; GC.cv.style.height = h / d + 'px'; } catch (err) { /* inert */ }
+    const d = dpr(), vw = Math.max(0, vp.width), vh = Math.max(0, vp.height), A = (o2, s2) => (vw + o2) * (vh + o2) * s2 * s2;
+    let s = Math.min(d, GRID_MAX_S), O = GRID_OVER;
+    if (A(O, s) > GRID_MAX_PX) {
+      const M = GRID_MAX_PX / (s * s), b = vw + vh;
+      O = Math.max(0, Math.min(O, Math.floor((-b + Math.sqrt(b * b - 4 * (vw * vh - M))) / 2)));
+      if (A(O, s) > GRID_MAX_PX) s = Math.sqrt(GRID_MAX_PX / Math.max(1, (vw + O) * (vh + O)));
+    }
+    const w = vw > 0 && vh > 0 ? Math.round((vw + O) * s) : 0, h = w ? Math.round((vh + O) * s) : 0;
+    if (w === GC.w && h === GC.h && d === GC.d && s === GC.s) return false;
+    Object.assign(GC, { w, h, d, s, cw: w / s, ch: h / s });
+    try { GC.cv.width = w; GC.cv.height = h; GC.cv.style.width = w / s + 'px'; GC.cv.style.height = h / s + 'px'; } catch (err) { /* inert */ }
     return true;
   }
-  function drawGrid() {
-    if (!GC || !(GC.w > 0) || !(GC.h > 0)) return;
+  function drawGrid(c) { // c: the camera drawn (default: the camera); then placed over the camera
+    if (!GC) return;
+    if (GC.tm) { unlater(GC.tm); GC.tm = 0; }
+    if (!(GC.w > 0) || !(GC.h > 0)) return;
     if (!GC.ctx) { try { GC.ctx = typeof GC.cv.getContext === 'function' ? GC.cv.getContext('2d') : null; } catch (err) { GC.ctx = null; } }
     if (!GC.ctx) return;
-    const t0 = now(), n = gridDraw(GC.ctx, cam, GC.w, GC.h, GC.d), ms = now() - t0;
+    c = c || cam;
+    const t0 = now(), n = gridDraw(GC.ctx, c, GC.w, GC.h, GC.s), ms = now() - t0;
     GC.n++; GC.ms += ms; GC.max = Math.max(GC.max, ms); GC.dots = n.minor + n.major;
+    GC.c0 = copy(c); GC.at = t0;
+    gridPlace();
+  }
+  // the transform from the last draw onto the camera ('' when they match): the only per-frame work of a pan
+  function gridPlace() {
+    const c0 = GC.c0;
+    let t = '', f = null;
+    if (c0.tx !== cam.tx || c0.ty !== cam.ty || c0.k !== cam.k) {
+      f = gridFollow(c0, cam, GC.cw, GC.ch, vp.width, vp.height);
+      t = 'translate(' + f.x + 'px, ' + f.y + 'px) scale(' + f.s + ')';
+    }
+    if (t !== GC.tf) { GC.tf = t; GC.moves++; try { GC.cv.style.transform = t; } catch (err) { /* inert */ } }
+    return f;
+  }
+  // after a written frame (and at a burst's end): at rest drawn when stale; in a burst moved, redrawn (from a timer, so a
+  // jump's own end draws once) only past GRID_ZOOM_F / uncovered, ≥ GRID_GAP_MS after the last draw
+  function gridAt() {
+    if (!GC) return;
+    if (!GC.c0 || !B) { if (!GC.c0 || GC.c0.tx !== cam.tx || GC.c0.ty !== cam.ty || GC.c0.k !== cam.k) drawGrid(); else gridPlace(); return; }
+    const f = gridPlace();
+    if (!f || (f.ok && f.s <= GRID_ZOOM_F && f.s >= 1 / GRID_ZOOM_F) || GC.tm) return;
+    GC.tm = later(() => {
+      GC.tm = 0;
+      if (!B || destroyed) return;
+      const g = gridPlace();
+      if (!g || (g.ok && g.s <= GRID_ZOOM_F && g.s >= 1 / GRID_ZOOM_F)) return;
+      // a zoom out: drawn GRID_AHEAD further out (it starts scaled up, so it covers the next stretch of the zoom out)
+      drawGrid(g.s < 1 ? zoomAbout(cam, 1 / GRID_AHEAD, vp.width / 2, vp.height / 2) : cam);
+    }, Math.max(0, GC.at + GRID_GAP_MS - now()));
   }
   function watchDpr() { // a device-ratio change (browser zoom, another screen) re-sizes the grid's store
     try {
@@ -419,7 +483,7 @@ export function createWorld(viewport, o) {
     if (shown && shown.tx === cam.tx && shown.ty === cam.ty && shown.k === cam.k) return false;
     shown = copy(cam);
     W.style.transform = 'translate(' + cam.tx + 'px, ' + cam.ty + 'px) scale(' + cam.k + ')';
-    drawGrid();
+    gridAt();
     if (gh && gh.g) placeGhost();
     mapDirty = true;
     const pct = Math.round(cam.k * 100) + '%';
@@ -469,7 +533,7 @@ export function createWorld(viewport, o) {
     B = null;
     const d = dpr();
     cam = { tx: Math.round(cam.tx * d) / d, ty: Math.round(cam.ty * d) / d, k: cam.k }; // crisp at rest
-    write();
+    if (!write()) gridAt(); // (the grid: drawn once at rest, its transform gone)
     attr(viewport, 'data-cv-busy', false);
     const zoomed = Math.abs(cam.k - ikK) > 1e-9;
     if (zoomed) {
@@ -1479,7 +1543,8 @@ export function createWorld(viewport, o) {
     band, reserved, add, remove, update, clear, ids: () => [...items.keys()], onScreen: id => { const r = items.get(String(id)); return !!r && r.on; },
     select, selectMany, get selection() { return [...selSet]; }, dragPointer, ghost, setActive, setPinchMode, resize, hooks, wheelVeto, escape, key,
     /** (1g) the grid's draws since the last reset: { n, ms (total), max, dots (the last frame's) }; reset: true zeroes them */
-    gridStats(reset) { const g = GC ? { n: GC.n, ms: GC.ms, max: GC.max, dots: GC.dots } : { n: 0, ms: 0, max: 0, dots: 0 }; if (reset && GC) { GC.n = 0; GC.ms = 0; GC.max = 0; } return g; },
+    // (hotfix) moves: the transform writes (a burst's frames); tf: the transform now ('' at rest); w / h / s: the store
+    gridStats(reset) { const g = GC ? { n: GC.n, ms: GC.ms, max: GC.max, dots: GC.dots, moves: GC.moves, tf: GC.tf, w: GC.w, h: GC.h, s: GC.s } : { n: 0, ms: 0, max: 0, dots: 0, moves: 0, tf: '', w: 0, h: 0, s: 1 }; if (reset && GC) { GC.n = 0; GC.ms = 0; GC.max = 0; GC.moves = 0; } return g; },
     snapOn: () => snapping, setSnap, mapOn: () => mapOn, setMap, lockOn: () => locked, setLock,
     /** (2a) the mod cables' visibility: 'always' | 'select' | 'never' (toolbar ∿, MODS_PREF); a change emits 'mods' */
     modsMode: () => modsMode, setModsMode,

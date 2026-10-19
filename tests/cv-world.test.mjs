@@ -211,7 +211,7 @@ test('createWorld: the transform string, the dot grid, --ik written only at a zo
   eq(w.style.transform, 'translate(0px, 0px) scale(1)');
   const gc = vp.childNodes[0];
   eq([gc.localName, gc.className, gc.getAttribute('aria-hidden'), vp.childNodes[1] === w, gc.width, gc.height, gc.style.width, gc.style.height],
-    ['canvas', 'cv-grid', 'true', true, 1000, 600, '1000px', '600px'], '1g: the grid canvas under #world, device px (dpr 1)');
+    ['canvas', 'cv-grid', 'true', true, 1256, 856, '1256px', '856px'], '1g: the grid canvas under #world, device px (dpr 1; hotfix: + GRID_OVER)');
   eq(w.style['--ik'], '1');
   world.setCamera({ tx: 10.25, ty: -4, k: 0.5 });
   eq(names(events.splice(0)), ['movestart', 'camera', 'camera', 'cameraend', 'lod'].slice(0, 4), 'one jump: movestart, the frame, the rounded rest, cameraend');
@@ -233,35 +233,124 @@ test('createWorld: the transform string, the dot grid, --ik written only at a zo
   eq([events.filter(e => e[0] === 'cameraend').pop()[1].zoomed, w.style['--ik']], [false, ik]);
 });
 
-test('1g: the grid canvas is drawn on each written camera frame and on a resize / device-ratio change — never otherwise', () => {
+test('hotfix gridFollow: the transform keeps every world point where the camera puts it (wrapped by whole MAJOR periods), covers the viewport at s ≥ 1; the store constants', () => {
+  eq([W.GRID_OVER, W.GRID_MAX_PX, W.GRID_MAX_S, W.GRID_ZOOM_F, W.GRID_GAP_MS, W.GRID_AHEAD], [256, 8e6, 2, 2, 250, 1.25]);
+  const R = rng(19), vw = 1000, vh = 600, cw = vw + 256, ch = vh + 256;
+  for (let i = 0; i < 300; i++) {
+    const c0 = { tx: (R() - 0.5) * 3000, ty: (R() - 0.5) * 3000, k: 0.25 + R() * 1.75 };
+    const c = i % 3 ? { tx: c0.tx + (R() - 0.5) * 2000, ty: c0.ty + (R() - 0.5) * 2000, k: c0.k } : { tx: (R() - 0.5) * 3000, ty: (R() - 0.5) * 3000, k: W.clampK(c0.k * (0.5 + R() * 1.5)) };
+    const f = W.gridFollow(c0, c, cw, ch, vw, vh), P = 128 * c.k;
+    near(f.s, c.k / c0.k, 1e-12, 's');
+    ok(f.x <= 1e-6 && f.x > -P - 1e-6 && f.y <= 1e-6 && f.y > -P - 1e-6, 'wrapped into (−P, 0]');
+    // a major world point (I·128, J·128): the camera puts it at w·k + t; the canvas point under it (the inverse transform)
+    // is a major point of the drawing (its world = (p − t0) / k0 a whole multiple of 128)
+    for (const [I, J] of [[0, 0], [3, -2], [-7, 5]]) {
+      const sx = I * 128 * c.k + c.tx, sy = J * 128 * c.k + c.ty, wx = ((sx - f.x) / f.s - c0.tx) / c0.k, wy = ((sy - f.y) / f.s - c0.ty) / c0.k;
+      near(wx / 128, Math.round(wx / 128), 1e-6, 'x on a major point'); near(wy / 128, Math.round(wy / 128), 1e-6, 'y on a major point');
+    }
+    if (f.s >= 1 - 1e-12 && P / f.s <= 256 + 1e-9) ok(f.ok, 'covers the viewport at s ≥ 1 (the overscan ≥ one period)');
+  }
+  // a pure pan: s 1, the translate is the camera delta less whole periods; nothing moves → 0, 0
+  eq(W.gridFollow({ tx: 0, ty: 0, k: 1 }, { tx: 0, ty: 0, k: 1 }, cw, ch, vw, vh), { x: 0, y: 0, s: 1, ok: true });
+  eq(W.gridFollow({ tx: 0, ty: 0, k: 1 }, { tx: -40, ty: 300, k: 1 }, cw, ch, vw, vh), { x: -40, y: 300 - 384, s: 1, ok: true });
+  // a zoom out by 0.6 cannot be covered (the redraw's case)
+  eq(W.gridFollow({ tx: 0, ty: 0, k: 1 }, { tx: 0, ty: 0, k: 0.6 }, cw, ch, vw, vh).ok, false);
+});
+
+test('hotfix: the grid canvas is drawn at rest only — boot, a burst\'s end, a write outside a burst, a resize / device-ratio change; a burst moves it by transform (no draw, no layout read)', () => {
   const { vp, w, win, world, frame } = setup();
   frame();
   const gc = vp.childNodes[0], ctx = gc.getContext('2d'), draws = () => ctx.calls.filter(c => c[0] === 'clearRect').length;
   const n0 = draws();
-  ok(n0 >= 1, 'drawn at boot');
+  eq([n0, world.gridStats().tf, gc.style.transform || ''], [1, '', ''], 'drawn once at boot, no transform');
   frame(5);
   eq(draws(), n0, 'frames without a camera change draw nothing');
-  world.panBy(10.3, -4.7); frame();
-  eq(draws(), n0 + 1, 'one written frame, one draw');
-  world.panBy(5, 5); world.panBy(5, 5); frame();
-  eq(draws(), n0 + 2, 'two moves in one frame: one draw');
+  // a pan burst: N frames, 0 draws, N transform writes, no layout read
+  let reads = 0;
+  const gbr = vp.getBoundingClientRect.bind(vp);
+  vp.getBoundingClientRect = () => { reads++; return gbr(); };
+  const m0 = world.gridStats().moves, c0 = world.cam, N = 12;
+  for (let i = 0; i < N; i++) { world.panBy(7.3, -3.1); frame(); }
+  eq([draws(), world.gridStats().moves - m0, reads, world.busy], [n0, N, 0, true], 'a pan: no draw, a transform a frame, no layout read');
+  const f = W.gridFollow(c0, world.cam, 1256, 856, 1000, 600), st = world.gridStats();
+  eq([st.tf, gc.style.transform], ['translate(' + f.x + 'px, ' + f.y + 'px) scale(1)', st.tf], 'the transform: gridFollow from the drawn camera');
+  // the dot drawn for world (0, 0) (at rest: store px = round(t0·d)) lands, moved by the transform, on world (0, 0)'s
+  // screen px after the pan — or on a dot one MAJOR period away from it (the wrap): the pattern is where the camera puts it
+  const P = 128, mx = ((Math.round(c0.tx) + f.x) - world.cam.tx) / P, my = ((Math.round(c0.ty) + f.y) - world.cam.ty) / P;
+  near(mx, Math.round(mx), 1 / P, 'x: the same screen px (± a store px of rounding)'); near(my, Math.round(my), 1 / P, 'y');
+  // the burst ends: exactly one draw, at the rested camera, the transform gone
   adv(200); frame(3);
-  const n1 = draws(); // (the burst's end may write its rounded rest)
+  eq([draws(), world.busy, world.gridStats().tf, gc.style.transform], [n0 + 1, false, '', ''], 'endBurst: one draw, transform reset');
+  const xs = ctx.calls.slice(ctx.calls.findLastIndex(c => c[0] === 'clearRect')).filter(c => c[0] === 'rect' || c[0] === 'arc');
+  ok(xs.length > 0 && xs.every(c => c[0] === 'rect' ? Number.isInteger(c[1]) && Number.isInteger(c[2]) : Number.isInteger(c[1] * 2) && Number.isInteger(c[2] * 2)), 'whole store px (a disc\'s centre: half) after the draw');
+  // a programmatic jump outside a burst: one draw
+  world.setCamera({ tx: 33.4, ty: -17, k: 0.7 }); frame(2);
+  eq([draws(), world.gridStats().tf], [n0 + 2, ''], 'a jump: one draw');
+  const n1 = draws();
   world.resize(); frame(2);
   eq(draws(), n1, 'a resize that changes nothing: no draw');
   place(vp, 0, 100, 900, 600); world.resize();
-  eq([gc.width, gc.height, draws()], [900, 600, n1 + 1], 'a resize: sized and drawn');
+  eq([gc.width, gc.height, gc.style.width, draws()], [1156, 856, '1156px', n1 + 1], 'a resize: sized (+ GRID_OVER) and drawn once');
   win.devicePixelRatio = 2; world.resize();
-  eq([gc.width, gc.height, gc.style.width, gc.style.height, draws()], [1800, 1200, '900px', '600px', n1 + 2], 'dpr 2: device px, CSS-sized to the viewport');
-  // the dots of a drawn frame are whole device px and the stats count the draws
-  const st = world.gridStats(true);
-  ok(st.n >= 3 && st.dots > 0 && st.max >= 0, JSON.stringify(st));
-  eq(world.gridStats().n, 0, 'reset');
-  const xs = ctx.calls.filter(c => c[0] === 'rect' || c[0] === 'arc').slice(-50);
-  ok(xs.length > 0 && xs.every(c => Number.isInteger(c[1] * 2) && Number.isInteger(c[2] * 2)), 'whole (or half: a disc\'s centre) device px');
+  eq([gc.width, gc.height, gc.style.width, gc.style.height, draws()], [2312, 1712, '1156px', '856px', n1 + 2], 'dpr 2: device px, CSS-sized');
+  // a resize inside a burst: drawn at once (the store was cleared), at the camera — no transform
+  world.panBy(50, 0); frame();
+  place(vp, 0, 100, 900, 500); world.resize();
+  eq([draws(), world.gridStats().tf, world.busy], [n1 + 3, '', true], 'a resize in a burst: drawn once, no transform');
+  adv(200); frame(2);
+  eq(draws(), n1 + 3, 'its end: already drawn there (no second draw)');
+  // stats
+  const st2 = world.gridStats(true);
+  ok(st2.n >= 5 && st2.dots > 0 && st2.max >= 0, JSON.stringify(st2));
+  eq([world.gridStats().n, world.gridStats().moves], [0, 0], 'reset');
   world.destroy();
   eq([gc.width, gc.height, vp.childNodes.includes(gc)], [0, 0, false], 'destroy: released and removed');
   void w;
+});
+
+test('hotfix: inside a burst a zoom past GRID_ZOOM_F redraws once, never within GRID_GAP_MS of the last draw; a zoom out redraws GRID_AHEAD further out; the store cap', () => {
+  const { vp, world, frame, win } = setup();
+  frame(); world.setCamera({ tx: 0, ty: 0, k: 0.3 }); frame(); adv(400); frame();
+  const gc = vp.childNodes[0], ctx = gc.getContext('2d'), draws = () => ctx.calls.filter(c => c[0] === 'clearRect').length;
+  const step = (f, n = 1) => { for (let i = 0; i < n; i++) { if (f) world.zoomAt(f, 500, 400); else world.panBy(0.01, 0); frame(); adv(0); } };
+  const n0 = draws();
+  step(1.25, 3); // ×1.95: covered, under ×2
+  eq([draws(), world.busy], [n0, true], 'a zoom in under ×2: no draw');
+  step(1.25); // ×2.44
+  const n1 = n0;
+  eq(draws(), n1 + 1, 'past ×2: one draw (the last was long ago)');
+  const scaleOf = () => { const m = /scale\(([^)]+)\)/.exec(world.gridStats().tf); return m ? +m[1] : 1; };
+  step(1.5, 2); // ×2.25 again, < 250 ms after that draw
+  eq(draws(), n1 + 1, 'rate-limited');
+  ok(scaleOf() > 2, 'meanwhile it stretches: ' + world.gridStats().tf);
+  step(0, 6); // ≈ 100 ms more: still in the window
+  eq(draws(), n1 + 1, 'still rate-limited');
+  step(0, 10); // past GRID_GAP_MS
+  eq(draws(), n1 + 2, 'then one draw');
+  adv(200); frame(2);
+  eq([world.busy, draws()], [false, n1 + 3], 'the end: one draw at rest');
+  // a zoom out: uncovered at once → drawn GRID_AHEAD further out (it starts scaled up by 1.25)
+  adv(400); frame();
+  const n2 = draws();
+  step(0.6);
+  eq(draws(), n2 + 1, 'a zoom out by 0.6: uncovered, drawn');
+  near(scaleOf(), W.GRID_AHEAD, 1e-9, 'scaled up by GRID_AHEAD');
+  step(0.9); // 1.125: still covered, no draw
+  eq(draws(), n2 + 1);
+  adv(200); frame(2);
+  eq([draws(), world.gridStats().tf], [n2 + 2, ''], 'rest: drawn at the camera');
+  // the store cap: a 13" iPad (1376 × 1032 at dpr 2) keeps the full scale (the overscan gives way); a 4K window at dpr 2
+  // and a dpr-3 screen stay ≤ GRID_MAX_PX, ≤ GRID_MAX_S
+  for (const [vw2, vh2, d, sWant] of [[1376, 1032, 2, 2], [3840, 2160, 2, null], [1000, 700, 3, 2]]) {
+    place(vp, 0, 100, vw2, vh2); win.devicePixelRatio = d; world.resize();
+    const g = world.gridStats();
+    ok(g.w * g.h <= W.GRID_MAX_PX && g.s <= W.GRID_MAX_S, JSON.stringify([vw2, vh2, d, g.w, g.h, g.s]));
+    if (sWant) eq(g.s, sWant, 'full scale kept'); else ok(g.s < 1, 'scale capped (8.3 M CSS px: below 1) ' + g.s);
+    ok(g.w >= vw2 * g.s - 1 && g.h >= vh2 * g.s - 1, 'covers the viewport');
+    const xs = ctx.calls.slice(ctx.calls.findLastIndex(c => c[0] === 'clearRect')).filter(c => c[0] === 'rect');
+    ok(xs.every(c => Number.isInteger(c[1]) && Number.isInteger(c[2])), 'whole store px under the cap too');
+  }
+  world.destroy();
 });
 
 test('1g: a resize that moves the viewport\'s top / left edge (the top tray\'s grip) keeps every world point where it was on the screen; one that keeps them moves nothing either', () => {

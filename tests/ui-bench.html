@@ -11,7 +11,7 @@
   does (world.panBy / zoomAt every frame, the app's own busy / settle path), recording every frame interval: idle, a 2 s pan, a 2 s
   pinch, and the re-raster after the pinch settles (--ik, canvases). Rows = median / p95 / max frame ms and the count of frames over
   33 ms (two missed vsyncs at 60 Hz). Stage 1g: per phase also the dot grid's draw time on the main thread (world.gridStats:
-  mean / max ms per drawn frame) and the hardware faces' bitmap paints (cv-panel faceStats: count, longest ms; they land in
+  mean / max ms per draw; hotfix 2026-10-19: draws counted too — at rest only, a burst moves it by transform) and the hardware faces' bitmap paints (cv-panel faceStats: count, longest ms; they land in
   the settle phase, after a zoom end below 100 %). The app shares the site's storage, so the project is
   snapshotted first and put back whole at the end (applyRestore, then saved); a crash mid-run leaves the two tracks: delete by hand.
   ?run=1 runs at once (the iOS Simulator / a device without a keyboard); results draw large enough to read from a screenshot.
@@ -89,7 +89,7 @@
       const f0 = fs ? { n: fs.n, max: fs.max } : null;
       if (fs) fs.max = 0;
       r[name] = q(await frames(win, run));
-      if (gs) { const g = world.gridStats(); r[name].grid = { n: g.n, mean: g.n ? +(g.ms / g.n).toFixed(3) : 0, max: +g.max.toFixed(2), dots: g.dots }; }
+      if (gs) { const g = world.gridStats(); r[name].grid = { n: g.n, mean: g.n ? +(g.ms / g.n).toFixed(3) : 0, max: +g.max.toFixed(2), dots: g.dots, moves: g.moves }; }
       if (fs) { r[name].faces = { n: fs.n - f0.n, max: +fs.max.toFixed(1) }; fs.max = Math.max(fs.max, f0.max); }
     };
     await phase('idle', () => sleep(1000));
@@ -103,12 +103,12 @@
   }
   function cell(v, bad, warn) { return '<td class="' + (v > bad ? 'bad' : v > warn ? 'warn' : 'ok') + '">' + v + '</td>'; }
   function table(R) {
-    let h = '<table><tr><th>set · phase</th><th>frames</th><th>median ms</th><th>p95 ms</th><th>max ms</th><th>&gt; 33 ms</th><th>grid ms mean / max</th><th>face bitmaps · max ms</th></tr>';
+    let h = '<table><tr><th>set · phase</th><th>frames</th><th>median ms</th><th>p95 ms</th><th>max ms</th><th>&gt; 33 ms</th><th>grid draws · ms mean / max</th><th>face bitmaps · max ms</th></tr>';
     for (const set of Object.keys(R.sets)) for (const ph of ['idle', 'pan', 'zoom', 'settle', 'deep', 'deepSettle']) {
       if (!R.sets[set][ph]) continue;
       const x = R.sets[set][ph], g = x.grid, f = x.faces;
       h += '<tr><td>' + set + ' · ' + ph + '</td><td>' + x.n + '</td>' + cell(x.med, 20, 12) + cell(x.p95, 33, 20) + cell(x.max, 100, 33) + cell(x.over33, 5, 0)
-        + '<td>' + (g ? g.mean + ' / ' + g.max : '–') + '</td><td>' + (f ? f.n + ' · ' + f.max : '–') + '</td></tr>';
+        + '<td>' + (g ? g.n + ' · ' + g.mean + ' / ' + g.max : '–') + '</td><td>' + (f ? f.n + ' · ' + f.max : '–') + '</td></tr>';
     }
     const nk = k => (R.nodes[k] == null ? '–' : R.nodes[k]) + ' (k ' + (R.k[k] == null ? '–' : R.k[k]) + ')';
     return h + '</table><p>nodes: one ' + nk('one') + ' · five ' + nk('five') + ' · dpr ' + R.dpr + ' · viewport ' + R.viewport + '</p>';
