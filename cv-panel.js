@@ -1268,6 +1268,10 @@ export function render(root, L, model, api) {
       const w = mk('div', 'hw-c'), el = c.id.startsWith('seq:') && SQ ? seqWidget(c, o) : c.id.startsWith('dx:') && DX ? dxWidget(c, o, w) : null;
       if (!el) return null;
       w.setAttribute('data-ctl', c.id); w.setAttribute('data-kind', c.kind);
+      // (2b, IMPL-2b §6.2) no data-dest: a seq: / dx: token is no models.js control (cv-mods CLASS_TABLE has no class for
+      // it — the 303's pattern tempo, the DX7's mode buttons and DATA ENTRY address no fixed parameter); data-nomod makes a
+      // mod drag say so instead of falling through to the module
+      w.setAttribute('data-nomod', '1');
       place(w, o.box);
       if (c.kind === 'slider') { const cap = capOf(c); prop(w, '--cap-w', cap[0] * PX_PER_MM + 'px'); prop(w, '--cap-h', cap[1] * PX_PER_MM + 'px'); } // (DATA ENTRY)
       hitVars(el, o.hit);
@@ -1338,7 +1342,7 @@ export function render(root, L, model, api) {
     for (const cell of X.cells) {
       const mc = M.get(cell.id);
       if (!mc && SEQX[cell.id]) { // today's sequencer parts (classes and ids unchanged), the grid included
-        const w = mk('div', 'hw-xcell'); w.setAttribute('data-ctl', cell.id);
+        const w = mk('div', 'hw-xcell'); w.setAttribute('data-ctl', cell.id); w.setAttribute('data-nomod', '1'); // ((2b) a token: no parameter)
         place(w, cell, X.x, X.y);
         w.append(SEQX[cell.id]);
         xs.append(w);

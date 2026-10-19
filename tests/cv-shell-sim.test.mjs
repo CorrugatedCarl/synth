@@ -120,7 +120,7 @@ test('Sources views (2026-10-19, the dropdown that replaced "Hardware | Simple")
   const s = await bootMain({ hash: '#minimoog', ls }), sh = shellOf(), T = sh.shell.tiles, vm = s.$('#srcViewMenu'), vb = s.$('#srcView');
   const tap = t => t.dispatchEvent({ type: 'click', target: t, detail: 1, preventDefault() {}, stopPropagation() {} });
   assert.deepEqual([T.view(), T.layout(), vb.children[0].textContent, T.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), s.$('#srcModSec').hidden, s.$('#srcNote').textContent],
-    ['serum', 'hw', 'Serum', ['serum'], false, 'LFOs, envelopes and macros arrive here in later stages.']);
+    ['serum', 'hw', 'Serum', ['serum'], false, 'Drop a modulator on the canvas and cable its jack to any knob.']);
   s.$('#aAdd').onclick();
   assert.deepEqual([sh.shell.src.isOpen(), T.mode(), T.view()], [true, 'track', 'serum'], '+ Track: the view last used');
   tap(vb); tap(vm.children[0]);

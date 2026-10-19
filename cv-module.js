@@ -26,7 +26,8 @@
 // module, measured on demand after a layout change, never per frame).
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
-import { createCables, deriveCables, cablesOf, jackPort, createCableDrag, MOD_COLOR, MOD_KEY } from './cv-cables.js?v=9';
+import { createCables, deriveCables, cablesOf, jackPort, createCableDrag, MOD_COLOR, MOD_PREFIX, keyKind, MACRO_PORTS } from './cv-cables.js?v=9';
+export { MOD_COLOR, MOD_PREFIX, keyKind } from './cv-cables.js?v=9';
 
 /** Top bar height on every device (world px); the bar's hit area grows upward only (::before, calc(… * var(--ik))). */
 export const BAR_H = 40;
@@ -41,10 +42,24 @@ export const FLOW_W = Object.freeze({
   ms20: 1056, tb303: 832, obxa: 1056, jupiter8: 864, juno60: 864, dx7: 1024,
 });
 /** (2a) A modulator module's width and its fixed height per mod kind (world px, the bar included, on the dots); the order
- * of Tidy's modulator column (the wheel first). */
+ * of Tidy's modulator column (the wheel first; (2b, IMPL-2b §1.1) then the singletons, then the multi-instance kinds by
+ * number). (2b) MOD_KINDS: every track-device mod kind devicesOf lists (the project wheel is the host's). */
 export const W_MOD = 240;
-export const MOD_H = Object.freeze({ wheel: 224, velo: 192, at: 128, bend: 128 });
-export const MOD_ORDER = Object.freeze(['wheel', 'velo', 'at', 'bend']);
+export const MOD_H = Object.freeze({ wheel: 224, velo: 192, at: 128, bend: 128, note: 160, lfo: 256, env: 224, macro: 288, cc: 160, chaos: 224 });
+export const MOD_ORDER = Object.freeze(['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos']);
+export const MOD_KINDS = Object.freeze(new Set(MOD_ORDER.filter(k => k !== 'wheel')));
+/** (2b) A macro module's knob rows: MACRO_ROW world px each from MACRO_Y0 (the bar, then the body's padding; cv-mods-ui
+ * macroBody and style.css .cv-mmacro agree); a jack k<n> sits at the row's middle on the right edge. */
+export const MACRO_ROW = 28, MACRO_Y0 = BAR_H + 12;
+/** (2b) The module-local y of jack `i` (0-based) of a module of mod kind `kind`, unfolded: a macro's knob rows, every
+ * other kind the single out jack at JACK_Y. Pure. */
+export function modJackY(kind, i) { return kind === 'macro' ? MACRO_Y0 + MACRO_ROW * (i | 0) + MACRO_ROW / 2 : BAR_H + JACK_Y; }
+/** (2b) The jack specs of a modulator module by kind: a macro's k1…k8 (right edge, at its knob rows), else one 'out'. */
+export function modJacks(kind, title) {
+  const T = title || 'Modulator';
+  if (kind === 'macro') return MACRO_PORTS.map((id, i) => ({ id, side: 'right', kind: 'mod', label: T + ' knob ' + (i + 1), y: modJackY(kind, i) }));
+  return [{ id: 'out', side: 'right', kind: 'mod', label: T + ' out' }];
+}
 /** (2a U8) The gap between the modulator column and the instruments (world px): the column at x −(W_MOD + MOD_GAP) = −320,
  * so a fit with the Sources tray open on a portrait iPad keeps it beside the instrument. */
 export const MOD_GAP = 80;
@@ -85,7 +100,8 @@ const gup = v => Math.ceil(v / DOT) * DOT;
 /**
  * @typedef {{x: number, y: number, fold?: 1, z?: number, ui?: 'flow'}} LayEntry  world px (top-left incl. the bar; a stored w is ignored)
  * @typedef {Object<string, LayEntry>} Lay  track.lay (view only: never compiled, never in presets)
- * @typedef {{id: 'in' | 'out', side: 'left' | 'right', kind: 'audio', label: string}} Jack
+ * @typedef {{id: string, side: 'left' | 'right', kind: 'audio' | 'mod', label: string, y?: number}} Jack  (2b) y: the jack's
+ *   module-local centre y unfolded (a macro's knob rows); without one JACK_Y below the bar
  * @typedef {{w: number, h?: number}} Fixed  a fixed module size (world px, the bar included; no h: measured)
  * @typedef {{
  *   id: string, kind: 'inst' | 'fx' | 'out', title: string, sub?: string, color?: string,
@@ -142,8 +158,10 @@ export function defaultW(key, model) {
 }
 /** (1e) A module's default width by kind: an instrument its model's (FLOW_W, W_SERUM), an FX module W_FX, OUT W_OUT. */
 export function kindW(kind, model) { return kind === 'inst' ? defaultW(ID.inst, model) : kind === 'out' ? W_OUT : kind === 'mod' ? W_MOD : W_FX; }
-/** (2a) The mod kind of a module key ('wheel' / 've' / 'at' / 'bd' → 'wheel' / 'velo' / 'at' / 'bend'; else null). */
-export function modKind(key) { for (const k of MOD_ORDER) if (MOD_KEY[k] === key) return k; return null; }
+/** (2a) The mod kind of a module key ('wheel' / 've' / 'at' / 'bd' → 'wheel' / 'velo' / 'at' / 'bend'; (2b) 'nt' → 'note',
+ * 'l<n>' / 'e<n>' / 'm<n>' / 'c<n>' / 'h<n>' → 'lfo' / 'env' / 'macro' / 'cc' / 'chaos'; else null). mkOf: the same. */
+export function modKind(key) { return keyKind(key); }
+export const mkOf = modKind;
 // the stage-1b Tidy (the legacy view's: instrument → FX → OUT, keyed by the stage-1b ids)
 function tidy1(track, sizes) {
   const model = track && track.model, lay = {};
@@ -159,8 +177,8 @@ const devNum = id => { const m = /(\d+)$/.exec(id); return m ? +m[1] : 0; };
 const byNum = (a, b) => devNum(a) - devNum(b) || (a < b ? -1 : a > b ? 1 : 0);
 /**
  * (1e) The modules of a track, in view order: instruments (the primary first, then by device number), each Serum's own FX
- * ('iN/fx'), the shared panels (by number), OUT; (2a) then the track's modulators (Velocity, Aftertouch, Bend: dev kinds
- * 'velo' / 'at' / 'bend' → {key, kind: 'mod', mod}) — the project's Mod Wheel ({key: 'wheel', kind: 'mod', mod: 'wheel'}) is
+ * ('iN/fx'), the shared panels (by number), OUT; (2a) then the track's modulators (every MOD_KINDS kind in MOD_ORDER, by
+ * number: 'velo' / 'at' / 'bend' / 'note' / 'lfo' / … → {key, kind: 'mod', mod}) — the project's Mod Wheel ({key: 'wheel', kind: 'mod', mod: 'wheel'}) is
  * the host's to add. A track without dev (v1): the stage-1b three. Pure; the default host.devices of createTrackView.
  * @param {{prim?: string, dev?: object, model?: string}} track
  * @returns {Array<{key: string, kind: 'inst' | 'fx' | 'out' | 'mod', model: string | null, dev: object | null, prim?: boolean, own?: string, mod?: string}>}
@@ -175,7 +193,7 @@ export function devicesOf(track) {
   for (const k of syn) if (D[k].model === 'serum') out.push({ key: k + '/fx', kind: 'fx', model: 'serum', dev: D[k], own: k });
   for (const k of of('panel').sort(byNum)) out.push({ key: k, kind: 'fx', model: null, dev: D[k] });
   for (const k of of('out').sort(byNum)) out.push({ key: k, kind: 'out', model: null, dev: D[k] });
-  for (const m of ['velo', 'at', 'bend']) for (const k of of(m).sort(byNum)) out.push({ key: k, kind: 'mod', model: null, dev: D[k], mod: m });
+  for (const m of MOD_ORDER) if (MOD_KINDS.has(m)) for (const k of of(m).filter(k => keyKind(k) === m).sort(byNum)) out.push({ key: k, kind: 'mod', model: null, dev: D[k], mod: m }); // ((2b) every kind whose id fits its prefix (§1.1), Tidy order)
   return out;
 }
 /**
@@ -339,7 +357,7 @@ export function createModule(o, env) {
   bar.append(pow, stripe, ttl, chipEl, cpu, more, foldB);
   const body = mk('div', 'cv-body');
   el.append(bar, body);
-  const jacks = new Map(); // jack id → {el, side}
+  const jacks = new Map(); // jack id → {el, side, y (unfolded module-local centre: a macro's knob rows)}
   for (const j of Array.isArray(o.jacks) ? o.jacks : []) {
     const je = mk('span', 'cv-jack');
     je.setAttribute('data-cv-jack', id + '.' + j.id); je.setAttribute('data-side', j.side === 'left' ? 'left' : 'right');
@@ -347,13 +365,12 @@ export function createModule(o, env) {
     if (j.label) { je.setAttribute('aria-label', j.label); je.title = j.label; }
     if (o.patch) { je.setAttribute('role', 'button'); je.tabIndex = 0; } // (1e) patchable: Enter / Space → "Connect to…"
     el.append(je);
-    jacks.set(j.id, { el: je, side: j.side === 'left' ? 'left' : 'right' });
+    jacks.set(j.id, { el: je, side: j.side === 'left' ? 'left' : 'right', y: fin(j.y) && j.y > BAR_H ? j.y : BAR_H + JACK_Y });
   }
-  // ---- geometry
-  const jackY = () => (fold ? BAR_H / 2 : BAR_H + JACK_Y);
+  // ---- geometry (folded: every jack at the bar's middle height)
+  const jackY = j => (fold ? BAR_H / 2 : j ? j.y : BAR_H + JACK_Y);
   function placeJacks() {
-    const yy = jackY() + 'px';
-    for (const j of jacks.values()) if (j.el.style.top !== yy) j.el.style.top = yy;
+    for (const j of jacks.values()) { const yy = jackY(j) + 'px'; if (j.el.style.top !== yy) j.el.style.top = yy; }
   }
   function measure() { // the module's layout height (world px): a layout read, never per frame (a fixed height: none)
     if (fold) return BAR_H;
@@ -618,7 +635,7 @@ export function createModule(o, env) {
       if (cpu.textContent !== t) { cpu.textContent = t; cpu.title = t ? 'DSP load of this module: ' + t + ' of the audio deadline' : ''; }
     },
     /** module-local offset of a jack (pure geometry: w and fold) */
-    port(jackId) { const j = jacks.get(jackId), o = fold ? JACK_OUT : 0; return j ? { x: j.side === 'left' ? (o ? -o : 0) : w + o, y: jackY() } : { x: w / 2, y: BAR_H / 2 }; },
+    port(jackId) { const j = jacks.get(jackId), o = fold ? JACK_OUT : 0; return j ? { x: j.side === 'left' ? (o ? -o : 0) : w + o, y: jackY(j) } : { x: w / 2, y: BAR_H / 2 }; },
     // (additions) state reads for the track view, main.js and tests
     get x() { return lx; }, get y() { return ly; }, get w() { return w; }, get z() { return z; }, get fold() { return fold; },
     get screen() { return onScr; }, get fixed() { return FX ? Object.assign({}, FX) : null; }, get title() { return title; },
@@ -750,7 +767,7 @@ export function createTrackView(world, track, host) {
   let lastPorts = null;
   function ports() {
     const p = new Map();
-    for (const [k, m] of mods) for (const j of ['in', 'out']) if (m.jack(j)) { const o = m.port(j); p.set(k + '.' + j, { x: m.x + o.x, y: m.y + o.y }); }
+    for (const [k, m] of mods) for (const j of m.jackIds()) { const o = m.port(j); p.set(k + '.' + j, { x: m.x + o.x, y: m.y + o.y }); } // ((2b) every jack: a macro's k1…k8)
     for (const c of cables.list()) { // (2a) a mod cable's knob end (cached offsets: no layout read once measured)
       if (c.kind !== 'mod' || p.has(c.b)) continue;
       const i = c.b.indexOf(':'), q = i > 0 ? destPort(c.b.slice(0, i), c.b.slice(i + 1)) : null;
@@ -845,7 +862,7 @@ export function createTrackView(world, track, host) {
     const kind = kindOf(key), M0 = meta(key), L = layOf(T, key, tidied(), keys()), SZ = kind === 'inst' || DEV ? sizeOf(key) : null, d = devOf(key);
     const jk = kind === 'inst' ? [{ id: 'out', side: 'right', kind: 'audio', label: (M0.title || 'Instrument') + ' out' }]
       : kind === 'fx' ? [{ id: 'in', side: 'left', kind: 'audio', label: (M0.title || 'FX') + ' in' }, { id: 'out', side: 'right', kind: 'audio', label: (M0.title || 'FX') + ' out' }]
-        : kind === 'mod' ? [{ id: 'out', side: 'right', kind: 'mod', label: (M0.title || 'Modulator') + ' out' }]
+        : kind === 'mod' ? modJacks(mkOf(key), M0.title) // ((2b) a macro: k1…k8 at its knob rows)
           : [{ id: 'in', side: 'left', kind: 'audio', label: 'OUT in' }];
     const ext = {};
     if (DEV) {

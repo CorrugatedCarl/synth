@@ -849,7 +849,7 @@ function v2t(o = {}) {
 
 test('devicesOf (1e): instruments (the primary first, then by number), each Serum\'s own FX, the panels, OUT; a v1 track: the stage-1b three', () => {
   const t = v2t({ prim: 'i3' });
-  t.dev.i10 = { kind: 'synth', model: 'tb303' }; t.dev.lfo1 = { kind: 'lfo' };
+  t.dev.i10 = { kind: 'synth', model: 'tb303' }; t.dev.lfo1 = { kind: 'lfo' }; // ((2b) an LFO under an id that is no 'l<n>': not a module)
   assert.deepEqual(M.devicesOf(t).map(d => d.key + ':' + d.kind + ':' + (d.model || '-') + (d.prim ? ':prim' : '') + (d.own ? ':own ' + d.own : '')),
     ['i3:inst:minimoog:prim', 'i1:inst:juno60', 'i2:inst:serum', 'i10:inst:tb303', 'i2/fx:fx:serum:own i2', 'fx1:fx:-', 'fx2:fx:-', 'out:out:-']);
   assert.equal(M.devicesOf(t)[0].dev === t.dev.i3, true, 'the device itself');
@@ -1047,8 +1047,8 @@ test('devicesOf / tidy / kindW / layOf (2a): a track\'s Velocity, Aftertouch, Be
   t.dev.bd = { kind: 'bend' }; t.dev.ve = { kind: 'velo' }; t.dev.at = { kind: 'at' };
   assert.deepEqual(M.devicesOf(t).slice(-3).map(d => d.key + ':' + d.kind + ':' + d.mod + ':' + (d.dev === t.dev[d.key])), ['ve:mod:velo:true', 'at:mod:at:true', 'bd:mod:bend:true']);
   assert.deepEqual(M.devicesOf(v2t()).map(d => d.kind).includes('mod'), false, 'none without them');
-  assert.deepEqual([M.W_MOD, M.MOD_H, M.MOD_ORDER, M.kindW('mod'), ['wheel', 've', 'at', 'bd', 'i1'].map(M.modKind)],
-    [240, { wheel: 224, velo: 192, at: 128, bend: 128 }, ['wheel', 'velo', 'at', 'bend'], 240, ['wheel', 'velo', 'at', 'bend', null]]);
+  assert.deepEqual([M.W_MOD, [M.MOD_H.wheel, M.MOD_H.velo, M.MOD_H.at, M.MOD_H.bend], M.MOD_ORDER.slice(0, 4), M.kindW('mod'), ['wheel', 've', 'at', 'bd', 'i1'].map(M.modKind)],
+    [240, [224, 192, 128, 128], ['wheel', 'velo', 'at', 'bend'], 240, ['wheel', 'velo', 'at', 'bend', null]]); // ((2b) the other kinds follow: the 2b test)
   const xy = L => Object.entries(L).map(([k, v]) => k + '@' + v.x + ',' + v.y).join(' ');
   const base = xy(M.tidy(v2t(), {}));
   assert.equal(xy(M.tidy(t, {})), base + ' ve@-320,0 at@-320,256 bd@-320,448', 'a column left of the instruments, VGAP apart, on the dots');
@@ -1244,4 +1244,41 @@ test('(U8) the modulator column stands W_MOD + MOD_GAP (80) left of the instrume
   t.dev.ve = { kind: 'velo' };
   assert.deepEqual([M.MOD_GAP, M.tidy(t, {}).ve], [80, { x: -320, y: 0 }]);
   assert.equal((M.W_MOD + M.MOD_GAP) % 32, 0, 'on the dots');
+});
+
+/* ---------------------------------------------------------------- stage 2b (IMPL-2b §6.1): every mod kind, the macro's jacks */
+test('devicesOf / MOD_KINDS / mkOf / modJacks / modJackY / MOD_H (2b): every kind of MOD_KINDS in Tidy order (the singletons, then lfo…, env…, macro…, cc…, chaos… by number); a macro\'s k1…k8 at its knob rows; Tidy stacks them by MOD_H', () => {
+  const t = v2t();
+  Object.assign(t.dev, { h1: { kind: 'chaos' }, l2: { kind: 'lfo' }, l10: { kind: 'lfo' }, l1: { kind: 'lfo' }, m1: { kind: 'macro' }, c1: { kind: 'cc' }, e1: { kind: 'env' }, nt: { kind: 'note' }, bd: { kind: 'bend' }, zz: { kind: 'nope' } });
+  assert.deepEqual(M.devicesOf(t).filter(d => d.kind === 'mod').map(d => d.key + ':' + d.mod), ['bd:bend', 'nt:note', 'l1:lfo', 'l2:lfo', 'l10:lfo', 'e1:env', 'm1:macro', 'c1:cc', 'h1:chaos'], 'an unknown kind is no module');
+  assert.deepEqual([[...M.MOD_KINDS], M.MOD_ORDER, Object.keys(M.MOD_H), ['m3', 'nt', 'x9', 'l', 'wheel', 'i1'].map(M.mkOf)],
+    [['velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos'], ['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos'],
+      ['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos'], ['macro', 'note', null, null, 'wheel', null]]);
+  assert.deepEqual([M.MOD_H.lfo, M.MOD_H.env, M.MOD_H.macro, M.MOD_H.cc, M.MOD_H.chaos, M.MOD_H.note, M.MACRO_ROW, M.MACRO_Y0], [256, 224, 288, 160, 224, 160, 28, 52]);
+  assert.deepEqual(M.modJacks('macro', 'Macro').map(j => j.id + '@' + j.y + ':' + j.side + ':' + j.kind + ':' + j.label), ['k1@66', 'k2@94', 'k3@122', 'k4@150', 'k5@178', 'k6@206', 'k7@234', 'k8@262'].map((s, i) => s + ':right:mod:Macro knob ' + (i + 1)));
+  assert.deepEqual([M.modJacks('lfo', 'LFO 1').map(j => j.id + ':' + j.label + ':' + j.y), M.modJackY('macro', 7), M.modJackY('lfo', 0), M.modJackY('env', 3)], [['out:LFO 1 out:undefined'], 262, 68, 68]);
+  assert.ok(M.MOD_H.macro >= M.modJackY('macro', 7) + 14, 'the last jack inside the module');
+  const xy = L => Object.entries(L).filter(([k]) => /^(bd|nt|l1|l2|l10|e1|m1|c1|h1)$/.test(k)).map(([k, v]) => k + '@' + v.x + ',' + v.y).join(' ');
+  assert.equal(xy(M.tidy(t, {})), 'bd@-320,0 nt@-320,192 l1@-320,416 l2@-320,736 l10@-320,1056 e1@-320,1376 m1@-320,1664 c1@-320,2016 h1@-320,2240', 'MOD_H + VGAP, on the dots, by MOD_ORDER then number');
+});
+
+test('createTrackView (2b): a macro module carries jacks k1…k8 at its knob rows (ports() and jacks() hold each; a cable from \'m1.k3\' leaves there), folded all at the bar\'s middle outside the edge; an LFO one out jack; the cables coloured by the source kind', () => {
+  const doc = fresh(), W = fakeWorld(1), t = v2t();
+  t.dev.m1 = { kind: 'macro', v: [0, 0, 0, 0, 0, 0, 0, 0], names: [] }; t.dev.l1 = { kind: 'lfo' }; t.dev.ve = { kind: 'velo' };
+  t.mods = [{ id: 'r9', src: 'm1.k3', dst: 'i2:a.semi', amt: 0.5 }, { id: 'r8', src: 'l1.out', dst: 'i2:a.pan', amt: 0.2 }];
+  const R = dview(t, W, doc, { bodies: { mount: (k, b) => { if (k === 'i2') { const p = doc.createElement('div'); p.setAttribute('data-dev', 'i2'); const q = doc.createElement('div'); q.setAttribute('data-dest', 'a.semi'); p.append(q); b.append(p); } }, unmount() {} } });
+  const V = R.V, m = V.modules.get('m1'), l = V.modules.get('l1');
+  assert.deepEqual([m.kind, m.w, m.rect().h, m.jackIds().join(), l.jackIds().join(), l.rect().h], ['mod', 240, 288, 'k1,k2,k3,k4,k5,k6,k7,k8', 'out', 256]);
+  assert.deepEqual([m.port('k1'), m.port('k3'), m.port('k8'), l.port('out')], [{ x: 240, y: 66 }, { x: 240, y: 122 }, { x: 240, y: 262 }, { x: 240, y: 68 }]);
+  assert.deepEqual([m.jack('k3').style.top, m.jack('k3').getAttribute('data-cv-jack'), m.jack('k3').getAttribute('data-kind'), m.jack('k3').getAttribute('role'), m.jack('k3').getAttribute('aria-label')], ['122px', 'm1.k3', 'mod', 'button', 'M1 knob 3']);
+  const P = V.ports();
+  assert.deepEqual([P.get('m1.k3'), P.get('m1.k8'), P.get('l1.out')], [{ x: m.x + 240, y: m.y + 122 }, { x: m.x + 240, y: m.y + 262 }, { x: l.x + 240, y: l.y + 68 }]);
+  assert.deepEqual(V.jacks().filter(J => J.mod === 'm1').map(J => J.id + ':' + J.dir + ':' + J.kind).slice(0, 3), ['m1.k1:out:mod', 'm1.k2:out:mod', 'm1.k3:out:mod']);
+  assert.deepEqual(V.cables.list().filter(c => c.kind === 'mod').map(c => c.id + ' ' + c.a + ' ' + c.b + ' ' + c.color), ['r9 m1.k3 i2:a.semi ' + CB.MOD_COLOR.macro, 'r8 l1.out i2:a.pan ' + CB.MOD_COLOR.lfo]);
+  assert.deepEqual([m.el.style['--mc'], l.el.style['--mc']], [CB.MOD_COLOR.macro, CB.MOD_COLOR.lfo]);
+  V.toggleFold('m1');
+  assert.deepEqual([m.port('k1'), m.port('k8'), m.jack('k8').style.top], [{ x: 240 + M.JACK_OUT, y: 20 }, { x: 240 + M.JACK_OUT, y: 20 }, '20px'], 'folded: the bar\'s middle, outside the edge');
+  V.toggleFold('m1');
+  assert.deepEqual(m.port('k8'), { x: 240, y: 262 });
+  V.destroy();
 });

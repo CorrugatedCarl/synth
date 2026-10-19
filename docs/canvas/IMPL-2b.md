@@ -645,3 +645,91 @@ A2's `x0`). The three-row track of the fixture (a GLOBAL LFO `l1` → Serum cuto
   `modBudget(...).left` as before; `why[id]` gives the reason text key.
 - C: an edit `{ lfo: whole }` replaces the slot object; `{ rate }` alone is a device-level key; `setModState` never
   changes `kind`.
+### 9.1 Lane C — modules and classic knobs (2026-10-19)
+
+Built (`cv-mods-ui.js`, `cv-module.js`, `cv-cables.js`, `cv-tray.js`, `classic-panel.js`, `cv-panel.js` two token lines,
+`style.css`, their tests; `tests/cv-shell-sim.test.mjs` only mirrors the tray's re-worded note). Nothing in `main.js`,
+`cv-modlayer.js`, the engine or the compile files.
+
+**Bodies** (`cv-mods-ui.bodyFor(kind, o)`, each `{ el, update(v), sync(), destroy(), … }`):
+- `o = { doc?, get: () => dev state, edit(fields), set?(k, v), learn?(on), bpm?() }`. **`edit(fields)` is one History step
+  per gesture**: called once at a gesture's end (a wk `'end'` / `'set'` phase, an input's `change`), never per move
+  (moves show a pending value locally); `fields` are device-level keys — a nested `lfo` / `env` / `chaos` object is passed
+  **whole** (a copy with the change), so the host does `Object.assign(dev, normalised(fields))`. The body re-reads `o.get()`
+  on every redraw and syncs its own widgets right after its edit; the host calls `sync()` after undo / redo / an external
+  edit. `set(k, v)` (macro only): the knob's live value per move → `{t:'mval'}`, no History, no patch. `learn(on)` (cc
+  only): arm / disarm MIDI learn; the host calls `setLearn(false)` when a CC lands or the arm is cancelled.
+- **State shapes assumed** (mirroring Serum: the serum-core-normalised object plus the `p` values beside it — lane B's
+  `song.normDev` should keep these fields): `lfo` `{ kind, lfo: <normLfo>, rate: n }` (`rate` = Serum's `l<k>.rate` n: pow4
+  0…100 Hz; BPM-synced the ladder index over `length − 1`, exactly as Serum's `p['l1.rate']`); `env` `{ kind, env: { bpm,
+  legInv, stealRe }, att, hold, dec, sus, rel: n (Serum's `e<k>.*` laws), crv: [a, d, r] }` (`crv` is the A / D / R segment
+  curvature −1…1 — new, for ModCore's ENV if A1 wants it; otherwise display-only); `macro` `{ kind, v: [8], names: [8] }`;
+  `cc` `{ kind, cc, ch, v }`; `chaos` `{ kind, chaos: { mono, sh }, rate: n (Serum's `c<k>.rate` pow5 0…1000 Hz; BPM-synced the
+  LFO_LADDER index over 14), bpm: 0|1, smooth: 0…1 }` (`smooth` has no Serum counterpart: engine-optional); `note` `{ kind }`.
+- **Live values**: `update(v)` — lfo / env / chaos / cc a value 0…1 (the lfo also `{ v, ph }`: a dot on the shape at phase
+  `ph`); macro an array of 8 (the knobs' live dots, wk's 0.002 rule; `null` hides them); note the last MIDI note (null = none).
+- LFO: the GLOBAL / PER NOTE badge (`lfo.mono`), mode seg (RETRIG / ENV / FREE), rate numBox (Hz, or `lfoLadder(dot, trip)`
+  labels with BPM on), BPM / `·` / `T` toggles, a shape menu of **graph.js `pts.SHAPES`** (Serum's presets: Triangle, Sine,
+  Saw Up / Down, Square, Pulse 25, Ramp Exp, Stairs, Bounce, S&H-ish, Sidechain; 'Custom' otherwise — exported as
+  `LFO_SHAPES`) and a compact point editor (190 × 72 svg; tap adds, drag moves — ends pinned to x 0 / 1 —, a second tap on a
+  point removes it, a vertical drag on a segment bends it: 60 px = full curvature). Drawing through **laws.js `evalPts` /
+  `bend`** (the DSP's own point law); serum-ui exports no LFO drawing helper, so nothing was reused from it.
+- ENV: five vertical wk sliders + three curve numBoxes + an AHDSR display (`bend` per segment). Macro: 8 rows of
+  `MACRO_ROW` (28 px) — a 24 px wk knob, an `<input maxlength=16>` name, the value. CC: numBox 0…127, channel menu (Omni /
+  1…16), Learn, a meter. Chaos: rate (Hz / LFO_LADDER), smoothing, a 64-sample scope. Note: a 128-key strip and the name.
+- Heights (`cv-module.MOD_H`): lfo 256, env 224, macro 288, cc 160, chaos 224, note 160 (on the dots).
+
+**Modules / cables / tray**:
+- `cv-module`: `MOD_KINDS` (Set: velo, at, bend, note, lfo, env, macro, cc, chaos), `MOD_ORDER` (the Tidy order with
+  `wheel` first), `mkOf(key)` = `modKind(key)` = cv-cables `keyKind` (singletons exact, `l<n>` / `e<n>` / `m<n>` / `c<n>` /
+  `h<n>` by prefix), `modJacks(kind, title)` (a macro: `k1…k8` on the right edge at `modJackY('macro', i)` = `MACRO_Y0 +
+  28·i + 14` = 66 … 262; everything else one `out` at `JACK_Y`), `MOD_COLOR` re-exported. **`devicesOf` lists a device
+  only when its id fits its kind's prefix** (`l1: { kind: 'lfo' }` yes, `lfo1: { kind: 'lfo' }` no — §1.1's ids). A jack spec
+  carries an optional unfolded `y`; folded, every jack sits at the bar's middle; `ports()` now walks every jack id.
+- `cv-cables`: `modSrcPort(src) → { key, port }` (`'m1.k3'` → `{ m1, k3 }`; a `k9` is no port), `modSrcKey` unchanged in
+  type (the key string; the contract's `{ key, port }` lives in `modSrcPort` so the 2a callers keep working), `srcKind(src)`,
+  `keyKind(key)`, `MOD_PREFIX`, `MACRO_PORTS`; `MOD_COLOR` gains lfo `#ff7f5a`, env `#d9c84a`, macro `#5b8cff`, cc
+  `#9aa4b2`, chaos `#e05fb4`, note `#7fe0d6`. A cable's `a` is `'<key>.<port>'`; the colour by the source device's kind
+  (its own `color` first); `opts.dashed(row)` → `.cv-dash` (unchanged mechanism, now the host supplies it per §1.3).
+  **`MOD_KEY` stays the four singletons** (perfRows: a Serum's own wheel / velo / at / bend rows; the canvas Note module
+  does not claim a Serum's `note` rows as preset cables).
+- `cv-tray`: `MOD_TILES` (the ten tiles in MOD_ORDER with `scope` and `multi`; the host passes them as `o.mods`), six
+  original glyphs, `multi: true` → `data-multi` and `setPlaced` ignored; the Serum view's note "Drop a modulator on the
+  canvas and cable its jack to any knob.", the Note tools placeholder "Note tools: later.".
+
+**Classic panel** (`classic-panel.js`; host interface for lane D):
+- `panel.setMods(rowsByDest, eff)` — `rowsByDest: { ctlId: [{ id, src, kind?, amt, bi, byp, out, label? }] }` (the canvas
+  rows on each control; `kind` optional: derived from `src` by prefix), `eff: { ctlId: value in knob units } | null` (the
+  classic `eff` snapshot mapped by the host). Paints a knob's arc ring (`svg.cp-halo` in `.knob`, `path.cp-arc.k-<kind>` per
+  row stroked in `MOD_COLOR[kind]`, bypassed rows dimmed / dashed, `circle.cp-live` when the live value differs from the
+  base by > 0.002), a slider's range bars and live mark (`div.cp-range` / `div.cp-livemk` along the cap's travel, `--cap-h`
+  aware), a badge (`span.cp-mbadge`: ∿ + the count, the first source's colour, a title naming the sources) on numBoxes,
+  selectors, toggles and the hardware widgets cv-panel builds itself. `panel.setLive(eff)` moves the dots alone; the panel
+  repaints a control's ring itself when its base value moves (`update` / `refresh`). Ranges from the pure
+  `haloRanges(c, v, rows)` (Serum's rule: uni `[base, base + a]`, bipolar row `[base ± |a|/2]`, bipolar source — bend, chaos
+  — `[base ± |a|]`, `a = amt·out`, zero rows nothing). Nothing painted unless the host calls it; no pointer events on the
+  halo nodes (the 1g / 1h `data-tip` hit-test is untouched).
+- `host.modMenu` (optional, every member optional): `rows(track, ctlId) → [{ id, src, label, byp }]`, `bypass(track,
+  rowId, on)`, `disconnect(track, rowId)`, `connect(track, ctlId, anchorEl)`, `canMod(track, ctlId) → false` (disables
+  Connect to…), `extra(track, ctlId, el) → wk items`. The menu (`panel.modMenu(ctlId, x, y, el)`, items from
+  `panel.menuItems(ctlId, el)`): Bypass <row> (checked) / Disconnect <row> per row, Connect to…, Reset Control, Enter Value…
+  (knobs: `wk.ask`, a typed number in the control's units, clamped and stepped), the host's extra items. No Lock: the
+  classic panel has no lock concept. Opened by `wk.menuSource` on every `dragB` control (knobs, sliders, numBoxes, the
+  hardware widgets through `api.dragB`): a 500 ms touch long-press ≤ 8 px, a right-click, the ContextMenu key / Shift+F10;
+  selectors and toggles too. Once the long-press opened the menu the held finger drags no more.
+- `data-dest`: unchanged on every models.js control; the `seq:` / `dx:` tokens (the 303's pattern tempo, extras cells, the
+  DX7's mode / data entry) carry **`data-nomod`** instead — none has a CLASS_TABLE class (they address no fixed parameter),
+  so a mod drag refuses them in place rather than falling through to the module.
+
+**Verified in the browser** (a scratch no-store server over the worktree, a throw-away test page rendering each module
+with `cv-module.createModule` + the bodies, a Juno-60 and a Minimoog Simple panel with `setMods`; 800 × 500 and 1440 × 900):
+LFO (badge, seg, rate '1/4' with BPM, the shape and its points, the live bar), ENV (sliders, curve boxes, the display), Macro
+(8 rows, names, values, the `k1…k8` jacks at the rows), CC, Chaos (scope), Note (keys); the Juno's slider range bars (cutoff:
+lfo + a dashed bypassed macro, res: env) and the Minimoog's knob rings with the live dot; a right-click on the Juno cutoff opened
+"Bypass LFO 1 / Bypass Cutoff (Macro 1) ✓ / Disconnect … / Connect to… / Reset Control / Enter Value…". Not verified here: the
+modules inside the real canvas (lane D mounts them), touch on the iPad.
+
+**Deviations / notes for the integrator**: `modSrcKey` keeps returning the key (the port in `modSrcPort`); `MOD_KEY` not
+widened (see above); `MOD_H` values chosen here (the contract fixed only the macro's rows); the LFO's `rate`, the ENV's
+`att…rel` / `crv` and the chaos `rate` / `bpm` / `smooth` live beside the normalised object (lane B's `normDev` must keep
+them); `devicesOf` ignores a mod device whose id does not fit its kind's prefix.
