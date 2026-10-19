@@ -45,6 +45,9 @@ export const FLOW_W = Object.freeze({
 export const W_MOD = 240;
 export const MOD_H = Object.freeze({ wheel: 224, velo: 192, at: 128, bend: 128 });
 export const MOD_ORDER = Object.freeze(['wheel', 'velo', 'at', 'bend']);
+/** (2a U8) The gap between the modulator column and the instruments (world px): the column at x −(W_MOD + MOD_GAP) = −320,
+ * so a fit with the Sources tray open on a portrait iPad keeps it beside the instrument. */
+export const MOD_GAP = 80;
 /** Column gap Tidy leaves between instrument → FX panel → OUT (world px). */
 export const GAP = 160;
 /** Stage-1b module ids (= track.lay keys, = the device ids stage 1c's toV2 gives them, SPEC §5.1 / §5.4). */
@@ -181,7 +184,7 @@ export function devicesOf(track) {
  * (1e) Any number of devices (a v2 track, or `devs` given — createTrackView's host.devices list): the instruments stacked
  * in the left column (the primary on top, VGAP apart), each Serum's own FX beside its Serum, the shared panels stacked in
  * the next column, OUT right of everything. One instrument → panel → OUT (or a Serum → its own FX → OUT) lays out exactly
- * as the stage-1b Tidy. (2a) Modulators (kind 'mod') stack in a column left of the instruments (x < 0, GAP from them), in
+ * as the stage-1b Tidy. (2a) Modulators (kind 'mod') stack in a column left of the instruments (x < 0, MOD_GAP from them), in
  * MOD_ORDER (the wheel, Velocity, Aftertouch, Bend), VGAP apart: nothing else moves for them.
  * @param {{model?: string, dev?: object}} track @param {Object<string, {w: number, h: number}>} sizes
  * @param {Array<{key: string, kind: string, model?: string, own?: string}>} [devs] @returns {Lay}
@@ -214,7 +217,7 @@ export function tidy(track, sizes, devs) {
   for (const d of outs) { lay[d.key] = { x: x3, y }; y = gup(y + hOf(d) + VGAP); }
   const ord = d => { const i = MOD_ORDER.indexOf(mkOf(d)); return i < 0 ? MOD_ORDER.length : i; };
   const mods = L.filter(d => d.kind === 'mod').sort((a, b) => ord(a) - ord(b) || byNum(a.key, b.key));
-  const x0 = -gup(max(mods, wOf) + GAP);
+  const x0 = -gup(max(mods, wOf) + MOD_GAP);
   y = 0;
   for (const d of mods) { lay[d.key] = { x: x0, y }; y = gup(y + hOf(d) + VGAP); }
   return lay;
@@ -697,7 +700,7 @@ export function createTrackView(world, track, host) {
   let T = track;
   const mods = new Map(); // key → Module
   const CB = DEV && isObj(H.cables) ? H.cables : {};
-  const cables = createCables(root, { doc, onSelect: CB.onSelect, onAction: CB.onAction, menu: CB.menu, onHint: CB.onHint, mods: H.mods,
+  const cables = createCables(root, { doc, onSelect: CB.onSelect, onAction: CB.onAction, menu: CB.menu, onHint: CB.onHint, ignore: CB.ignore, mods: H.mods,
     k: () => (world && world.k > 0 ? world.k : 1) });
   let DL = [], DM = new Map(); // (1e) the host's devices, by key
   const readDevs = () => {

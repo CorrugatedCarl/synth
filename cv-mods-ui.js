@@ -27,11 +27,12 @@ const pct = v => (v > 0 ? '+' : v < 0 ? '−' : '') + Math.round(Math.abs(v) * 1
 
 /**
  * The Mod Wheel's body: a vertical wheel (div.cv-mw-slot > div.cv-mw-thumb in a role=slider, 0…127), its value, and the
- * "+N on other tracks" chip (button.cv-mothers, hidden at 0) — a tap: o.onJump() (the host lists them and jumps).
- * A press on the slot moves the thumb under the pointer and o.set(v) follows the drag (each move); arrows ±1/127, Page
+ * "+N on other tracks" chip (button.cv-mothers, hidden at 0) — a tap: o.onJump(chip) (the host lists them at it).
+ * A press on the slot moves the thumb under the pointer and o.set(v) follows the drag (each move; a two-finger cancel puts
+ * the value from before the press back); arrows ±1/127, Page
  * Up / Down ±16/127, Home 0, End 1. update(v) from the host (a MIDI wheel, the other on-screen wheel, the selected track's
  * lane in playback) redraws without calling set — ignored while a drag runs.
- * @param {{get?: () => number, set?: (v: number) => void, onJump?: () => void, doc?: Document, label?: string}} o
+ * @param {{get?: () => number, set?: (v: number) => void, onJump?: (chip: HTMLElement) => void, doc?: Document, label?: string}} o
  * @returns {{el: HTMLElement, update: (v: number) => void, setOthers: (n: number) => void, value: () => number, destroy: () => void}}
  */
 export function wheelBody(o) {
@@ -75,9 +76,10 @@ export function wheelBody(o) {
       if (e.preventDefault) e.preventDefault();
       if (e.stopPropagation) e.stopPropagation(); // (a control: never the world's press)
       try { w.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
-      drag = { id: e.pointerId, type: e.pointerType || 'mouse', offs: [] };
+      drag = { id: e.pointerId, type: e.pointerType || 'mouse', offs: [], v0: v };
       const mv = ev => { if (!drag || ev.pointerId !== drag.id) return; if (drag.type === 'mouse' && ev.buttons === 0) { end(); return; } put(at(ev)); };
-      const fin2 = ev => { if (drag && ev.pointerId === drag.id) end(); };
+      // (U3) two fingers win: their cancel (gesture.js, flagged) takes the press's jump and the drag back
+      const fin2 = ev => { if (!drag || ev.pointerId !== drag.id) return; const v0 = drag.v0, back = ev.type === 'pointercancel' && ev.gesture === 'two-finger'; end(); if (back && v0 !== v) put(v0); };
       drag.offs.push(listen(w, 'pointermove', mv, { passive: true }), listen(w, 'pointerup', fin2), listen(w, 'pointercancel', fin2), listen(w, 'lostpointercapture', fin2));
       w.classList.add('cv-on');
       put(at(e));
@@ -94,7 +96,7 @@ export function wheelBody(o) {
       if (e.stopPropagation) e.stopPropagation(); // (never a canvas nudge)
     }),
     listen(oth, 'pointerdown', e => { if (e.stopPropagation) e.stopPropagation(); }),
-    listen(oth, 'click', e => { if (e.stopPropagation) e.stopPropagation(); if (typeof O.onJump === 'function') O.onJump(); }),
+    listen(oth, 'click', e => { if (e.stopPropagation) e.stopPropagation(); if (typeof O.onJump === 'function') O.onJump(oth); }), // (U14: the list at the chip)
   ];
   draw();
   return {

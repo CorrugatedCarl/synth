@@ -1051,14 +1051,14 @@ test('devicesOf / tidy / kindW / layOf (2a): a track\'s Velocity, Aftertouch, Be
     [240, { wheel: 224, velo: 192, at: 128, bend: 128 }, ['wheel', 'velo', 'at', 'bend'], 240, ['wheel', 'velo', 'at', 'bend', null]]);
   const xy = L => Object.entries(L).map(([k, v]) => k + '@' + v.x + ',' + v.y).join(' ');
   const base = xy(M.tidy(v2t(), {}));
-  assert.equal(xy(M.tidy(t, {})), base + ' ve@-416,0 at@-416,256 bd@-416,448', 'a column left of the instruments, VGAP apart, on the dots');
+  assert.equal(xy(M.tidy(t, {})), base + ' ve@-320,0 at@-320,256 bd@-320,448', 'a column left of the instruments, VGAP apart, on the dots');
   const devs = [{ key: 'wheel', kind: 'mod', mod: 'wheel' }, ...M.devicesOf(t)];
   const L = M.tidy(t, {}, devs.reverse());
-  assert.equal(xy(L).split(' ').filter(s => /^(wheel|ve|at|bd)@/.test(s)).join(' '), 'wheel@-416,0 ve@-416,288 at@-416,544 bd@-416,736', 'the wheel first, whatever the list order');
+  assert.equal(xy(L).split(' ').filter(s => /^(wheel|ve|at|bd)@/.test(s)).join(' '), 'wheel@-320,0 ve@-320,288 at@-320,544 bd@-320,736', 'the wheel first, whatever the list order');
   assert.ok(Object.values(L).every(v => v.x % 32 === 0 && v.y % 32 === 0), 'on the dots');
-  assert.equal(xy(M.tidy(t, { ve: { w: 240, h: 300 } }, devs)).split(' ').find(s => s.startsWith('at@')), 'at@-416,672', 'a measured height counts');
+  assert.equal(xy(M.tidy(t, { ve: { w: 240, h: 300 } }, devs)).split(' ').find(s => s.startsWith('at@')), 'at@-320,672', 'a measured height counts');
   assert.deepEqual([M.layOf({ lay: { wheel: { x: 64, y: -96, fold: 1 } } }, 'wheel', L), M.layOf({ lay: {} }, 'bd', L), M.layOf({}, 've', L), M.layOf({}, 'at', {})],
-    [{ x: 64, y: -96, fold: 1 }, { x: -416, y: 736 }, { x: -416, y: 288 }, { x: 0, y: 0 }], 'layOf keys wheel / ve / at / bd');
+    [{ x: 64, y: -96, fold: 1 }, { x: -320, y: 736 }, { x: -320, y: 288 }, { x: 0, y: 0 }], 'layOf keys wheel / ve / at / bd');
 });
 
 // a 2a host: the project wheel added to the devices, knobs in the Serum's body and its own FX, the project
@@ -1084,9 +1084,9 @@ test('createTrackView (2a): modulator modules — kind \'mod\', W_MOD × MOD_H, 
   assert.deepEqual(['wheel', 've', 'bd'].map(k => m(k).el.style['--mc']), [CB.MOD_COLOR.wheel, CB.MOD_COLOR.velo, '#abcdef']);
   const j = m('wheel').jack('out');
   assert.deepEqual([j.getAttribute('data-kind'), j.getAttribute('data-side'), j.getAttribute('role'), j.tabIndex, j.hasAttribute('data-ro'), j.getAttribute('aria-label')], ['mod', 'right', 'button', 0, false, 'WHEEL out']);
-  assert.deepEqual(['wheel', 've', 'bd'].map(k => m(k).x + ',' + m(k).y), ['-416,0', '-416,288', '-416,544'], 'the modulator column');
+  assert.deepEqual(['wheel', 've', 'bd'].map(k => m(k).x + ',' + m(k).y), ['-320,0', '-320,288', '-320,544'], 'the modulator column');
   assert.deepEqual([m('i1').x, m('i1').y], [0, 0], 'the instruments where they were');
-  assert.deepEqual(V.ports().get('wheel.out'), { x: -416 + 240, y: 68 });
+  assert.deepEqual(V.ports().get('wheel.out'), { x: -320 + 240, y: 68 });
   assert.deepEqual(V.jacks().filter(J => J.mod === 'wheel' || J.mod === 'i1').map(J => J.id + ':' + J.dir + ':' + J.kind), ['i1.out:out:audio', 'wheel.out:out:mod']);
   assert.deepEqual(V.cables.list().filter(c => c.kind === 'mod').map(c => c.id + ' ' + c.a + ' ' + c.b + (c.preset ? ' preset' : '')),
     ['r1 wheel.out i2:a.semi', 'r2 ve.out i2:fx.r1.mix', 'r3 bd.out i2:zz.none', 'p:i2:0 ve.out i2:a.pan preset']);
@@ -1237,4 +1237,11 @@ test('(U4) a mod cable\'s amount badge (and what it holds) is background: the ca
   R.root.append(btn);
   assert.deepEqual([M.isBackground(b), M.isBackground(span), M.isBackground(btn)], [true, true, false]);
   V.destroy();
+});
+
+test('(U8) the modulator column stands W_MOD + MOD_GAP (80) left of the instruments: x −320 — a fit with the Sources tray open at 1024 × 1366 keeps the modulators beside the instrument', () => {
+  const t = v2t();
+  t.dev.ve = { kind: 'velo' };
+  assert.deepEqual([M.MOD_GAP, M.tidy(t, {}).ve], [80, { x: -320, y: 0 }]);
+  assert.equal((M.W_MOD + M.MOD_GAP) % 32, 0, 'on the dots');
 });

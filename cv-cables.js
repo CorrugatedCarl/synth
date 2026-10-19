@@ -291,7 +291,8 @@ export function routeLabel(s, fx) {
  * touching the selection fade (.cv-fade) and o.onHint(MOD_HINT) runs once.
  * @param {HTMLElement} worldEl  #world
  * @param {{doc?: Document, onSelect?: (id: string | null) => void, onAction?: (id: string, action: string) => void,
- *   menu?: (id: string) => Array<object>, k?: () => number, onHint?: (text: string) => void, mods?: string}} [o]
+ *   menu?: (id: string) => Array<object>, k?: () => number, onHint?: (text: string) => void, mods?: string,
+ *   ignore?: (target: Element) => boolean}} [o]  ignore (U5): a press / key there is not "elsewhere" (the host's overlays)
  */
 export function createCables(worldEl, o) {
   const O0 = o || {}, doc = O0.doc || (worldEl && worldEl.ownerDocument) || globalThis.document;

@@ -70,7 +70,7 @@ test('a Velocity tile dropped on the canvas adds the module where it lands (one 
   sim.$('#notice').onclick(); sim.raf();
   assert.deepEqual([keys(), hsteps(), 've' in T().dev, tiles().placed('velo')], ['i1,i1/fx,out', n0, false, null], 'the notice undid it');
   tiles().modTile('velo').dispatchEvent({ type: 'click' }); sim.raf();
-  assert.deepEqual([keys(), hsteps(), T().lay.ve.x, cv.hist.undoLabel], ['i1,i1/fx,out,ve', n0 + 1, -416, 'Add Velocity'], 'a tap: Tidy\'s column, left of the instrument');
+  assert.deepEqual([keys(), hsteps(), T().lay.ve.x, cv.hist.undoLabel], ['i1,i1/fx,out,ve', n0 + 1, -320, 'Add Velocity'], 'a tap: Tidy\'s column, left of the instrument');
   tiles().modTile('velo').dispatchEvent({ type: 'click' }); sim.raf();
   assert.equal(hsteps(), n0 + 1, 'a placed tile adds nothing');
   // its readout: the last velocity of the track
@@ -82,7 +82,7 @@ test('the project Mod Wheel: placed from one track (one step "Place Mod Wheel"),
   const n0 = hsteps();
   tiles().modTile('wheel').dispatchEvent({ type: 'click' }); sim.raf();
   assert.deepEqual([keys(), hsteps(), cv.hist.undoLabel, note(), P().perf.wheel ? 1 : 0], ['i1,i1/fx,out,ve,wheel', n0 + 1, 'Place Mod Wheel', 'Added Mod Wheel · tap to undo', 1]);
-  assert.deepEqual([tiles().placed('wheel'), T().lay.wheel.x], ['already in this project', -416]);
+  assert.deepEqual([tiles().placed('wheel'), T().lay.wheel.x], ['already in this project', -320]);
   const b = fresh('serum');
   ID.b = b.id;
   assert.equal(T().id, b.id);
@@ -309,4 +309,107 @@ test('visibility: the toolbar ∿ mode reaches the view', () => {
   assert.equal(V().cables.modsVisible(), 'never');
   W.setModsMode('always');
   assert.equal(V().cables.modsVisible(), 'always');
+});
+
+// UI fixes
+const U = globalThis.__synthTest.modUI;
+test('(U8, U9) a tapped modulator: Tidy\'s column at x −320, in its MOD_ORDER slot when nothing stands there (else below the column); off screen, the camera brings it in (focusItem, no edit)', () => {
+  const c = fresh('serum'), foc = [], f0 = W.focusItem;
+  ID.c = c.id;
+  W.focusItem = (id, o) => foc.push(id + ' ' + JSON.stringify(o));
+  try {
+    W.setCamera({ tx: 1000, ty: 0, k: 1 }); // (the column in view)
+    tiles().modTile('at').dispatchEvent({ type: 'click' }); sim.raf();
+    assert.deepEqual([T().lay.at, V().modules.get('wheel').x, foc], [{ x: -320, y: 288 }, -320, []], 'below the wheel (its slot), in view: no camera move');
+    W.setCamera({ tx: 0, ty: 0, k: 1 }); // (x −320 left of the band)
+    tiles().modTile('bend').dispatchEvent({ type: 'click' }); sim.raf();
+    assert.deepEqual([T().lay.bd, foc], [{ x: -320, y: 480 }, ['bd {"k":1,"edit":false}']], 'its slot after the wheel and Aftertouch; brought in');
+    M.del('at'); sim.raf();
+    tiles().modTile('velo').dispatchEvent({ type: 'click' }); sim.raf();
+    assert.deepEqual(T().lay.ve, { x: -320, y: 288 }, 'Velocity\'s slot (after the wheel) is free: there, not below Bend');
+    tiles().modTile('at').dispatchEvent({ type: 'click' }); sim.raf();
+    assert.deepEqual(T().lay.at, { x: -320, y: 672 }, 'Aftertouch\'s slot (544) is taken by Bend: below the column');
+    assert.equal(cvTidyX(), -320, 'Tidy agrees');
+  } finally { W.focusItem = f0; }
+});
+const cvTidyX = () => { cv.tidy(); sim.raf(); return T().lay.ve.x; };
+
+test('(U10) the 24+ hint shows once a session, not again on each track switch', () => {
+  const t = T(), was = t.mods;
+  const dst = ['f.cutoff', 'f.res', 'a.level', 'a.pan', 'b.level', 'b.pan', 'a.semi', 'b.semi', 'a.fine', 'b.fine'];
+  t.mods = Array.from({ length: 26 }, (_, i) => ({ id: 'h' + i, src: i % 2 ? 'wheel' : 've.out', dst: 'i1:' + dst[i % dst.length], amt: 0.1 }));
+  t.mid = 100;
+  sim.$('#notice').textContent = '';
+  cv.render(); sim.raf();
+  assert.equal(note(), '24+ mod cables, tap ∿ to filter');
+  sim.$('#notice').textContent = '';
+  api.selectTrack(ID.a); sim.raf(); cv.renderViews(); sim.raf();
+  api.selectTrack(t.id); sim.raf(); cv.renderViews(); sim.raf();
+  assert.equal(note(), '', 'a new view: no hint again');
+  t.mods = was; cv.render(); sim.raf();
+});
+
+test('(U12) a layer gesture that ended where it began drops the step its first edit opened (no no-op step on the undo stack)', () => {
+  M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf();
+  const id = T().mods.at(-1).id, n0 = hsteps(), L0 = cv.hist.undoLabel, a0 = T().mods.at(-1).amt;
+  const H = M.host();
+  H.edit(id, { amt: 0.9 }); H.edit(id, { amt: a0 });
+  assert.equal(hsteps(), n0 + 1, 'the step its first edit opened');
+  H.cancel(); sim.raf();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, T().mods.at(-1).amt], [n0, L0, a0]);
+  H.cancel();
+  assert.equal(hsteps(), n0, 'nothing open: nothing dropped');
+});
+
+test('(U13) during playback the modulator bodies follow the lanes only on screen (a folded wheel waits); the lane value = perfValue\'s (sorted points, the later of equal ticks, binary search)', async () => {
+  const t = T(), w = M.bodies.get('wheel');
+  assert.ok(w, 'the wheel on this track');
+  const was = t.cc;
+  t.cc = [{ t: 960, k: 'wheel', v: 0.6 }, { t: 0, k: 'wheel', v: 0.1 }, { t: 480, k: 'wheel', v: 0.3 }, { t: 480, k: 'wheel', v: 0.35 }, { t: 0, k: 'bend', v: -0.5 }];
+  P().metronome.countIn = 0; P().metronome.on = false;
+  sim.$('#tPlay').click(); await sim.settle(2);
+  const seen = [];
+  for (let i = 0; i < 12; i++) { sim.run(4800); sim.raf(); seen.push([U.lane('wheel', t), api.perfValue('wheel', t)]); }
+  assert.ok(seen.every(([a, b]) => a === b), 'the same as perfValue: ' + JSON.stringify(seen));
+  assert.ok(new Set(seen.map(x => x[0])).size >= 2, 'the playhead crossed points: ' + JSON.stringify(seen));
+  assert.equal(U.lane('bend', t), -0.5);
+  V().toggleFold('wheel');
+  w.update(0.999); sim.run(4800); sim.raf();
+  assert.equal(w.value(), 0.999, 'folded (not live): not updated per frame');
+  V().toggleFold('wheel');
+  sim.raf();
+  assert.equal(w.value(), api.perfValue('wheel', t), 'live again');
+  sim.$('#tPlay').click();
+  t.cc = was;
+});
+
+test('(U14) "+N on other tracks" lists the tracks with their wheel cables; a pick shows that track\'s wheel', () => {
+  const B = CMOD.wheelRows(P()).byTrack.filter(x => x.trackId !== T().id);
+  assert.ok(B.length >= 2, 'two other tracks with wheel cables');
+  const items = U.jumpItems();
+  assert.deepEqual(items.map(x => x.label), B.map(x => P().tracks.find(y => y.id === x.trackId).name + ' · ' + x.rows.length + ' cable' + (x.rows.length === 1 ? '' : 's')));
+  const foc = [], f0 = W.focusItem;
+  W.focusItem = (id, o) => foc.push(id);
+  try { items[1].action(); sim.raf(); } finally { W.focusItem = f0; }
+  assert.deepEqual([T().id, foc.at(-1)], [B[1].trackId, 'wheel']);
+  api.selectTrack(ID.c); sim.raf(); cv.renderViews(); sim.raf();
+});
+
+test('(U15) the cable\'s long-press menu: Edit…, Bypass (checked when bypassed; a canvas row one step "Mod bypass", a preset row the Serum\'s own edit)', () => {
+  const r = T().mods.at(-1), n0 = hsteps();
+  let L = M.cmenu(r.id);
+  assert.deepEqual(L.map(x => x.label + (x.checked ? ' ✓' : '')), ['Edit…', 'Bypass']);
+  L[1].action(); sim.raf();
+  assert.deepEqual([T().mods.at(-1).byp, hsteps(), cv.hist.undoLabel], [1, n0 + 1, 'Mod bypass']);
+  assert.deepEqual(M.cmenu(r.id).map(x => x.label + (x.checked ? ' ✓' : '')), ['Edit…', 'Bypass ✓']);
+  cv.undo(); sim.raf();
+  assert.equal(T().mods.at(-1).byp, 0, 'undo');
+  // a preset row: the Serum's matrix (no step of its own)
+  const pr = V().cables.list().find(c => c.kind === 'mod' && c.preset);
+  if (pr) {
+    const n1 = hsteps();
+    M.cmenu(pr.id)[1].action(); sim.raf();
+    assert.deepEqual([T().dev.i1.vals.s.matrix[pr.slot].byp, hsteps()], [pr.byp ? 0 : 1, n1]);
+    M.cmenu(pr.id)[1].action(); sim.raf();
+  }
 });
