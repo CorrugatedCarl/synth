@@ -733,3 +733,100 @@ modules inside the real canvas (lane D mounts them), touch on the iPad.
 widened (see above); `MOD_H` values chosen here (the contract fixed only the macro's rows); the LFO's `rate`, the ENV's
 `att…rel` / `crv` and the chaos `rate` / `bpm` / `smooth` live beside the normalised object (lane B's `normDev` must keep
 them); `devicesOf` ignores a mod device whose id does not fit its kind's prefix.
+### 9.1 Lane D — integration (2026-10-19; `main.js`, `cv-modlayer.js`, `midi.js`, `tests/canvas-2b-sim.test.mjs` 11 tests, the 2a sim flipped, `tests/midi.test.mjs` +1; one-line fixes in lane B's `cv-graph.js` and lane C's `cv-module.js`)
+
+**The fixture check first** (`scratchpad/laneD/fixture.mjs`: fixture track 0 through the real `compileMods` + `instPatch` /
+`chainPatch` into a real Track in the golden harness, 2 s of notes): the three destinations each move the render alone
+(Serum cutoff through ext1 — with the default Serum's filter switched on, its cutoff is inaudible otherwise —, the Juno
+cutoff as a `cls` row, the reverb mix as an `fx` row), `MC.stats()` `{lfos 1, envs 0, rows 2, ext 1}`, a macro row's output
+follows `{t: 'mval'}`, a payload then `{t: 'mods', off: true}` renders the no-mods bytes exactly, no console errors. **One
+integration bug** (lane B's region, `cv-graph.js` `plan`): the fx row's `dst.fx` was `fxDest(...).flat` (the parameter's
+flat index) where the rack's `setMods` vector and A1's ModCore read the **FX-context index 8 + flat** (as serum-core's own
+FX rows, `fk = 8 + d.flat`) — the reverb's mix landed on `ersize`, inaudible. Fixed to `8 + fd.flat`; the fixture's `PAY1`
+(fx 21 → 29) and the cv-graph test pin it against `fxDest` now.
+
+**Posting** (`main.js`): `postMods(tr, N)` after the parts in `sendGraph`'s `go()` — `{t: 'mods'}` when `buildMods(tr).key`
+differs from the node's `N.modsKey`, `{off: true}` once after a posted payload, nothing ever for a track that never had one
+(N1); `makeNode` puts the payload in `processorOptions.mods` (`N.modsKey` seeded from it); offline: `renderOffline` passes
+`x.mods` as `po.mods`, the bounce items carry `modsFor(tr)` for graph-shaped tracks, render-last `modsFor(t)` (the Serum
+alone on a legacy node: its ext rows run, rows to other devices find no Inst there). **`legacyOk` is false while the
+track has a payload**: the rows name device ids (`dst.inst 'i2'`, `chain 'fx1'`), which a legacy node's `i0` / `c0` are not
+— a 2a-only track (no payload) keeps today's stream (`canonical-stream` green). A Serum knob turn reposts nothing (the
+content key); a cabled classic knob's turn does (its `x0`); an uncabled classic knob's doesn't (sim-tested).
+
+**Modules**: `MOD_TILES` is cv-tray's list; `modAdd(kind, at)` for every kind (a multi kind's id from `addModDev`, the step
+relabelled "Add LFO 2", the notice "Added LFO 2 · tap to undo", laid at the drop or at `modSpot` — the Tidy column with a
+multi kind after its siblings); `modDelete` any kind ("Delete LFO 2"; an armed learn disarmed); `kindOfKey` /
+`modKindOfKey` require the id to fit the kind's prefix (lane C's `devicesOf` rule). Bodies through `cvModsUI.bodyFor(kind,
+o)` with lane C's `o`: `get` the device record, `edit(fields)` → `modEditState` (modPre → `CMOD.setModState` → modStep
+"Edit LFO 1": one step per gesture end; the state is in the payload's key, so modStep's cvModAfter reposts it), `bpm`,
+`set` (macro) → `modVal`, `learn` (cc) → `modLearn`; `sync()` of every body after undo / redo / a load (`cvModSync`).
+**Live meters per kind**: macro — its own knobs (the host's values; `update(v)` once at mount); cc — the last controller
+received (`modCCLast`, kept across remounts); note — `lastNote(t)` from `inputNote` (new `lastN`, beside `lastV`); wheel /
+at / bend / velo as 2a. **lfo / env / chaos: no live value** — lane A1's ModCore posts only `stats()` and the classic `eff`
+snapshot, no source values; the LFO's bar, the ENV's dot and the chaos scope stay at their last (initial) value. Open for
+the review round: a small `{t: 'smon'}` extension (`mc: Float32Array` of the evaluated sources' last chunk) would feed them.
+
+**Value table**: `modVal(t, key, port, v)` finds the entry by id in `buildMods(t).vals` (`m1.k1` → k 0…7, `c1.out` → a value
+source k 8…23) and posts `{t: 'mval', k, v}` — nothing otherwise (an uncabled knob). A macro knob's move posts it (no step,
+no patch); the gesture's end is one "Edit Macro 1" step whose repost carries the value as `vals` (the next full `setRows`
+seeds it). **MIDI** (`midi.js` `H.modCC(ch, cc, v01, ts)`, optional, called first for every control change): `main.js
+modCC` routes to the CC modules of `targets(ch)` whose `cc` matches and whose `ch` is 0 or the channel → `modVal` + the
+body's meter; an armed learn (`modLearn(key, on)`: one at a time, "CC learn: move a controller — tap Learn again to
+cancel") takes the number first (one step "Learn CC", `setLearn(false)`, "CC 74 learned"). The module's stored `v` is
+**not** written per controller (it is in the payload's key: a repost per message) — after a reload the meter shows the
+stored value.
+
+**Mod drag**: `modCan` through `destOk` for every device (stage → "…from stage 5", the switched-off oscillator's text
+passed through, else nomod; the 64-row budget for Serums only); `modMarks` lights every device's open knobs; `modConnect`
+adds the row, then asks `modBudget` whether the compile left it out (`modLeftWhy`: 'slots' / 'ext' / 'full' / 'nomod') —
+a refused row is removed again, its step dropped (`hist._drop`: `mid` stays bumped, ids are never reused), the reason
+told ("ModCore slots full: LFO 10/10 · ENV 0/4 …" — `refusal('slots' | 'ext')` new in cv-modlayer); the layer's
+`connect` the same. `modDests` opens the parameter list for any device; `modJackTap` picks the device first when a track
+has several with knobs (a `cvTray.popupMenu`); `modDescs(dev)`: a classic synth by `models.js` `sections` (`destOk` per
+control: chunk knobs carry `stage: '5'` and are greyed "stage 5" in the list, nomod ones their `why`), a panel by effect
+instance (`core.instLabel`), a Serum as before. `modSrcPick(dst, el)` (the classic menu's Connect to…): a popup of
+`modSrcList(t)` = `sourcesOf` ∪ `linkSources` — **the Serums' own LFOs / ENVs are listed in the picker only** (no
+module / jack for them; a linked `used` one says "(in use)"). `modLabel` names every source ('LFO 1', a macro knob by its
+name, 'Serum LFO 2') and knob ('Freq', 'Reverb Mix'). `sxExtra` hands serum-ui the Serum source each row reads (`ext1`, an
+injected `lfo3`, a native id) so its halo and knob menu label them ("Ext 1 (canvas)").
+
+**Inspector / Mod list** (`cv-modlayer.js`): `host.budget(dev)` returns `modBudget` + `kind` ('serum' | 'classic' |
+'panel'); a non-Serum row's header shows `slotsText(slots)` "LFO 1/10 · ENV 0/4 · ext 0/16" (the Mod list's device line "1
+cable · LFO 1/10 · …"), its "not compiled" tag reads the `why` ("…ModCore slots full" / "…ext slots full" / "…matrix
+full"), Save with preset is hidden (`.cv-ml-pop [hidden]` rule: the flex buttons ignored the attribute). **Curve:
+Custom…** — `graph.js` `CurveEditor` ('mcurve' with RISE / FALL / LINK / INIT) inline under the Curve slider, writing
+`crv` through `host.edit` (one step "Mod custom curve" per gesture end; Init → `crv: null`, "Init curve"); `FIELDS` gained
+`crv`. Deviation from §6.3: the layer builds the editor itself from graph.js rather than borrowing serum-ui's `openCurve`
+through a scratch row (serum-ui's is an instance method over `s.matrix`). The dest list greys `stage` entries. Dashed
+cables: `cvHost.cables.dashed(row)` = `buildMods(t).dashed.includes(row.id)`, forwarded by `cv-module`'s `cOpts` (lane C's
+file: one token — the hook was documented but not passed).
+
+**Classic halos** (`cpHalos` / `cpSnap`): after every row edit (`modHalos`) and when a classic panel is (re)built,
+`panel.setMods(cpRows(t, dev), live)` with the rows per control (`kind` by the source's prefix; a linked Serum LFO / ENV as
+lfo / env; `label` for the menu); a cabled, mounted panel gets a `monitors.sub(tid, dev, {role: 'inst'})` whose `live()`
+holds only for the selected track's on-screen module (`cvLive`) and whose `deliver` maps `d.s.eff` (A2's `modEff`: one
+engine-unit value per payload row of that Inst, payload order) to knob units: per row the control's transfer
+`xferOf(model, vals, ctl, targetsOf(...)[r.tgt])` (cached per instrument values — the sweep is 129 `map()` calls, not per
+frame), `xferInv(xf, eff[j])` → the control's range → `panel.setLive({ctl: value})`. The subscription goes with the rows
+or the panel (`cpMonOff` from `cvDropBody`). `classicHost.modMenu`: `rows` / `bypass` ("Mod bypass") / `disconnect`
+("Disconnect") / `connect` (→ `modSrcPick`) / `canMod` (`destOk`), over the panel's device view (`trOf` / `dvOf`).
+Badges: a Serum "mods n/64", a classic instrument or panel "mods n" (+ " · k not compiled"); `cvBadge` now answers for
+panels. `setTrackModel`'s notice reads "… removed: the new model has no such knobs" (cv-model keeps rows whose param id
+survives). `__synthTest.api` gained `modVal`, `modCC`, `modBudget`, `postMods`, `modsFor`; `__synthTest.modUI` the 2b hooks.
+
+**Tests**: `canvas-2b-sim` (11: the LFO drop and badge, the Serum ext row + payload + no repost, PER NOTE injection and
+back, the Juno cls row + transfer repost + halo DOM + dashed, the eff snapshot → live mark, the inspector budgets / dest
+list groups / Mod list, the panel fx row, the macro mval + CC routing + learn, the eleventh LFO refused 'slots' +
+linkSources, delete → off once / undo / redo, the offline items), `canvas-2a-sim` 26 (the five flipped: ten tiles, a
+classic knob connects — chunk → stage 5, none → nomod —, the H9 panel knob connects once an effect is there — a knob of no
+effect is nomod —, the replacement text), `canvas-sim` (ten tiles), `midi` 23 (+ the modCC hook), the sweep green (list in
+the report). Browser (headless Chrome over a worktree server): LFO → Serum cutoff ("mods 1/64", ext [{k 1}]), a Juno
+track with LFO → cutoff and → its panel's reverb mix (badges "mods 1", the cutoff's range bar, the subscription, a note →
+`live.cf` 8.04 from the engine's snapshot with the mark shown), the inspector (budgets, the curve editor), the Mod list,
+a macro knob by keyboard (`v` 0.01, `vals` m1.k1:0), no console errors or warnings.
+
+**Not verified / open**: the LFO / ENV / chaos meters (above); touch on the iPad (the long-press menu, the macro name
+inputs); the bounce / render-last audio with a payload end to end (the items carry it, the engine's `po.mods` path is
+A1's test); a Serum's own FX knob from a module (lane B routes it through ext / injection — the sim covers the Serum's
+`f.cutoff` only); `modCan` cannot foresee a 'slots' refusal before the drop (the knob lights up, the release tells).

@@ -173,6 +173,8 @@ export function writeCC(s, dest, val, fxSet, fx) {
 //   changed(t, patch, refresh)                a Serum state was edited by MIDI: dirty mark, (queue a patch), persist,
 //                                               (repaint the panel), in this order
 //   notice(text, ms)
+//   modCC(ch, cc, v01, ts)                    optional (canvas 2b): every control change (0–127 → 0…1) for the track's CC
+//                                               modules and their learn; the wheel / sustain / MPE roles still apply after it
 //   button() → element                        the 'Enable MIDI' button (adapter)
 //   nav                                       optional: the navigator (default globalThis.navigator, read lazily)
 //   setTimeout, clearTimeout                  optional: timers (default the globals)
@@ -269,6 +271,7 @@ export function createMidi(host) {
       case 'cc': {
         const cc = e.cc, val = e.val;
         if (cc < LEARN_CCS && pending) learnCC(cc); // Serum MIDI Learn takes the next controller 0–119 (§11.8)
+        if (typeof H.modCC === 'function') H.modCC(ch, cc, val / 127, ts); // (canvas 2b: the CC modules of the channel's targets, CC learn — every controller, before the wheel / sustain roles)
         if (cc === 1) { H.ctl('wheel', val / 127, ch, ts); H.modUI(val / 127); }
         else if (cc === 64) H.ctl('sus', val >= 64 ? 1 : 0, ch, ts);
         else if (cc === 120 || cc === 123) allOff(ch, ts);

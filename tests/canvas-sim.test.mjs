@@ -532,7 +532,7 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   tap(vb); tap(serum);
   const shownIds = () => tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
   assert.deepEqual([tiles.view(), tiles.layout(), api.store.get('synth.cv.trayLayout', null), shownIds(), sim.$('#srcModSec').hidden, tiles.modTiles().length],
-    ['serum', 'flow', 'serum', ['serum'], false, 4]);
+    ['serum', 'flow', 'serum', ['serum'], false, 10]); // (2b: the ten modulator tiles)
   // Serum: no hardware panel — the view's layout does nothing to it; in track mode its tile adds a Serum track
   sh.cvOpenSources('track'); sim.raf();
   assert.deepEqual([tiles.mode(), tiles.view()], ['track', 'serum'], '+ Track opens the view last used');
