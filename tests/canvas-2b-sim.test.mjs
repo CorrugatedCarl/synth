@@ -396,7 +396,7 @@ test('(U3) an eff value outside the transfer\'s range gives no live value (the d
 test('(live meters) a mounted LFO / ENV / chaos body subscribes the track\'s monitor; a smon with mc and a payload with slots moves the bodies; without slots nothing; the subscription goes with the last such body', () => {
   const j = T();
   assert.deepEqual([U.mcMons.has(j.id), [...cv.monitors.subs].some(s => s.trackId === j.id && s.dev === 'i1' && s.role === 'inst')], [true, true]);
-  assert.equal(posted(j, 'mon').some(m => Array.isArray(m.ids) && m.ids.includes('mods')), true, "the node's monitor ids carry 'mods' (the Track posts {t: 'smon', mc} on it)");
+  assert.equal((cv.monitors.on.get(j.id) || '').split(',').includes('mods'), true, "the node's monitor ids carry 'mods' (the Track posts {t: 'smon', mc} on it)");
   const e = dropNew('env', { x: -600, y: 1500 });
   const B = M.bodies.get('l1'), E = M.bodies.get(e);
   const mc = new Float32Array(16); mc[0] = 0.62; mc[10] = 0.31;
