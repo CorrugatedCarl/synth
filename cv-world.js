@@ -33,7 +33,14 @@
 // Stage 1e: a press on a jack ([data-cv-jack]) is offered to hooks.jack(e, jackEl) (cv-cables createCableDrag) in the
 // capture phase, before any pan, sleeping module or control: a truthy answer takes it (never a pan). A second touch while
 // it runs cancels it (the answer's cancel(), else hooks.jackCancel) and the two fingers pinch the camera (two fingers win).
+// Stage 1h (IMPL-1h §2): with WebGL2 the grid is a procedural shader on one GL canvas under #world (cv-gl createGL), drawn
+// at every written frame, at rest, on resize / a device-ratio change and when the faces change (cv-face: textured quads
+// over the same canvas): exact dot centres every frame, nothing rasterised at a zoom end. No 2D grid canvas then (no
+// gridStore / gridFollow); `?nogl` or the pref synth.cv.gl = 'off' (and no WebGL2, or three context losses in a minute)
+// keep the hotfix-2 2D grid exactly as it was. The world attaches FACES once the GL exists, detaches on loss / destroy.
 import * as wk from './wk.js?v=9';
+import { createGL } from './cv-gl.js?v=9';
+import * as FACES from './cv-face.js?v=9';
 
 /** Smallest / largest camera zoom. */
 export const K_MIN = 0.25, K_MAX = 2;
@@ -348,6 +355,7 @@ export function createWorld(viewport, o) {
   let fid = 0, scrDirty = false, overBudget = false; // the frame, the on-screen plan owed, the soft DOM budget crossed
   let mapOn = true, mapDirty = true, MM = null; // the minimap: shown, a redraw owed, its parts { el, cv, btn, drag }
   let GC = null, dprMq = null; // (1g) the grid canvas { cv, ctx, w, h, d, s, r, cw, ch, c0, tf, n, ms, max, dots, moves }; the device-ratio watch
+  let GL = null, glOff = null, glDead = false; // (1h) the GL layer (cv-gl; the 2D grid canvas is not made then), its FACES.onChange remover, given up (G4)
   let B = null; // the live burst: { hook, until, band, timer, last, k (the zoom written before it), zoom (it changed) }
   let G = null; // the world's own pointer gesture (pan / pinch)
   let J = null; // a press hooks.jack took: { id, type, x, y, cancel } until its pointer lifts
@@ -431,6 +439,7 @@ export function createWorld(viewport, o) {
      follows by transform (gridFollow: no layout read, one style write a frame), never redrawn (hotfix 2) */
   function buildGrid() {
     if (!doc || typeof doc.createElement !== 'function') return;
+    if (buildGL()) return;
     const cv = doc.createElement('canvas');
     if (!cv) return;
     cv.className = 'cv-grid';
@@ -438,9 +447,58 @@ export function createWorld(viewport, o) {
     GC = { cv, ctx: null, w: -1, h: -1, d: 0, s: 1, r: 1, cw: 0, ch: 0, c0: null, tf: '', n: 0, ms: 0, max: 0, dots: 0, moves: 0 };
     offs.push(() => { try { cv.width = 0; cv.height = 0; cv.remove(); } catch (err) { /* gone */ } });
   }
+  /* ---- (1h) the GL layer: tried first unless the URL says ?nogl / nogl=1 or the pref synth.cv.gl is 'off' (the 2D path
+     to compare: tests, ui-bench); ?gltest / the pref 'test' keep the drawing buffer for readPixels (G1 / G3 probes).
+     On it the grid is drawn by GL.draw at every written frame (write → gridAt), at rest (endBurst), on resize and the
+     device-ratio watch (sizeGrid → GL.resize, then the draw) and when FACES says its quads changed; nothing per frame
+     but that one draw (no gridStore, no transform). A context loss detaches FACES (every texture is dead: the faces fall
+     back to their DOM tier) and a restore attaches it again; three losses in a minute end the layer: the 2D grid is
+     built live (G4), FACES stays detached. */
+  function glPref() { // 'off' | 'test' | '' from the URL (first) or the pref
+    let q = '';
+    try { q = String((win.location && win.location.search) || ''); } catch (err) { q = ''; }
+    if (/[?&]nogl(?:=1)?(?:&|$)/.test(q)) return 'off';
+    if (/[?&]gltest(?:=1)?(?:&|$)/.test(q)) return 'test';
+    let v = '';
+    try { const ls = win.localStorage; v = ls && typeof ls.getItem === 'function' ? ls.getItem('synth.cv.gl') : ''; } catch (err) { v = ''; }
+    return v === 'off' || v === 'test' ? v : '';
+  }
+  function buildGL() {
+    const pref = glPref();
+    if (glDead || pref === 'off') return false;
+    const mk = typeof o.createGL === 'function' ? o.createGL : createGL;
+    let gl = null;
+    try { gl = mk(viewport, { doc, win, world: W, test: pref === 'test', now, onLost: glLost, onRestored: glRestored }); } catch (err) { console.error(err); gl = null; }
+    if (!gl) return false;
+    GL = gl;
+    glOff = FACES.onChange(() => { if (GL && !destroyed) glDraw(); });
+    return true;
+  }
+  function glDraw() { // one frame of the GL layer: the grid, then the faces' quads (FACES.quads: no DOM read)
+    if (!GL) return;
+    let q = null;
+    try { q = FACES.quads(rectById, cam); } catch (err) { console.error(err); q = null; }
+    GL.draw(cam, vp.width, vp.height, dpr(), q);
+  }
+  function glLost(dead) { // a context loss: FACES detached (its textures are dead); the third in a minute: the 2D grid, live
+    if (destroyed || !GL) return;
+    try { FACES.detach(); } catch (err) { console.error(err); }
+    if (!dead) return;
+    glDead = true;
+    if (glOff) { glOff(); glOff = null; }
+    const gl = GL;
+    GL = null;
+    try { gl.destroy(); } catch (err) { /* gone */ }
+    buildGrid();
+    sizeGrid();
+    gridAt();
+  }
+  function glRestored() { if (!destroyed && GL) { try { FACES.attach({ gl: GL, world: api }); } catch (err) { console.error(err); } glDraw(); } }
+  const rectById = id => { const r = items.get(String(id)); return r && r.rect ? r.rect : null; }; // (1h) the cached rect (null unknown)
   // the store (gridStore: the viewport, its overscan for a pan and a zoom out to GRID_REACH, ≤ GRID_MAX_PX) → true when it
   // changed (and was cleared)
   function sizeGrid() {
+    if (GL) { GL.resize(vp.width, vp.height, dpr()); return false; } // (the GL path: the buffer follows the viewport; drawn by gridAt)
     if (!GC) return false;
     const d = dpr(), { w, h, s, r } = gridStore(vp.width, vp.height, d);
     if (w === GC.w && h === GC.h && d === GC.d && s === GC.s) return false;
@@ -471,6 +529,7 @@ export function createWorld(viewport, o) {
   // after a written frame (and at a burst's end): at rest drawn when stale; in a burst only moved (an empty store — boot,
   // a resize — is drawn at once)
   function gridAt() {
+    if (GL) { glDraw(); return; }
     if (!GC) return;
     if (GC.c0 && (B || (GC.c0.tx === cam.tx && GC.c0.ty === cam.ty && GC.c0.k === cam.k))) gridPlace(); else drawGrid();
   }
@@ -1561,7 +1620,26 @@ export function createWorld(viewport, o) {
     select, selectMany, get selection() { return [...selSet]; }, dragPointer, ghost, setActive, setPinchMode, resize, hooks, wheelVeto, escape, key,
     /** (1g) the grid's draws since the last reset: { n, ms (total), max, dots (the last frame's) }; reset: true zeroes them */
     // (hotfix) moves: the transform writes (a burst's frames); tf: the transform now ('' at rest); w / h / s / r: the store, its reach
-    gridStats(reset) { const g = GC ? { n: GC.n, ms: GC.ms, max: GC.max, dots: GC.dots, moves: GC.moves, tf: GC.tf, w: GC.w, h: GC.h, s: GC.s, r: GC.r } : { n: 0, ms: 0, max: 0, dots: 0, moves: 0, tf: '', w: 0, h: 0, s: 1, r: 1 }; if (reset && GC) { GC.n = 0; GC.ms = 0; GC.max = 0; GC.moves = 0; } return g; },
+    // (1h) on the GL path: the GL draws (n / ms / max; dots 0, moves 0, gl: true; w / h / s: the drawing buffer, r 1)
+    gridStats(reset) {
+      if (GL) { const s = GL.stats(reset); return { n: s.frames, ms: s.ms, max: s.max, dots: 0, moves: 0, tf: '', gl: true, w: s.w, h: s.h, s: s.d, r: 1 }; }
+      const g = GC ? { n: GC.n, ms: GC.ms, max: GC.max, dots: GC.dots, moves: GC.moves, tf: GC.tf, w: GC.w, h: GC.h, s: GC.s, r: GC.r } : { n: 0, ms: 0, max: 0, dots: 0, moves: 0, tf: '', w: 0, h: 0, s: 1, r: 1 };
+      if (reset && GC) { GC.n = 0; GC.ms = 0; GC.max = 0; GC.moves = 0; }
+      return g;
+    },
+    /** (1h) null on the 2D path; else GL.stats() (frames, ms, max, bytes, texes, lost, w, h) + FACES.stats() (faces, gl →
+     * glFaces, dom, bytes → faceBytes, base, windows, paints, paintMs, paintMax); reset: true zeroes the draw counters */
+    glStats(reset) {
+      if (!GL) return null;
+      const s = GL.stats(reset);
+      let f = null;
+      try { f = FACES.stats(); } catch (err) { f = null; }
+      const out = Object.assign({ gl: true }, s);
+      if (f) { for (const k of Object.keys(f)) out[k === 'bytes' ? 'faceBytes' : k === 'gl' ? 'glFaces' : k] = f[k]; }
+      return out;
+    },
+    /** (1h) an item's cached rect { x, y, w, h } (world px), null unknown — never a layout read */
+    rectOf: rectById,
     snapOn: () => snapping, setSnap, mapOn: () => mapOn, setMap, lockOn: () => locked, setLock,
     /** (2a) the mod cables' visibility: 'always' | 'select' | 'never' (toolbar ∿, MODS_PREF); a change emits 'mods' */
     modsMode: () => modsMode, setModsMode,
@@ -1590,6 +1668,7 @@ export function createWorld(viewport, o) {
       for (const f of offs.splice(0)) { try { f(); } catch (err) { /* gone */ } }
       if (ro) { try { ro.disconnect(); } catch (err) { /* gone */ } }
       if (dprMq) { try { dprMq.m.removeEventListener('change', dprMq.f); } catch (err) { /* gone */ } dprMq = null; }
+      if (GL) { if (glOff) { glOff(); glOff = null; } try { FACES.detach(); } catch (err) { /* gone */ } try { GL.destroy(); } catch (err) { /* gone */ } GL = null; }
       if (gh) { try { gh.el.remove(); } catch (err) { /* gone */ } gh = null; }
       wk.setWheelVeto(null);
       if (typeof wk.setEdgeHook === 'function') wk.setEdgeHook(null);
@@ -1597,5 +1676,6 @@ export function createWorld(viewport, o) {
       items.clear(); subs.clear();
     },
   };
+  if (GL) { try { FACES.attach({ gl: GL, world: api }); } catch (err) { console.error(err); } }
   return api;
 }

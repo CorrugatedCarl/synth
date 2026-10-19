@@ -196,3 +196,79 @@ reads for leaks and the fallbacks. 4. Fixers (failing test first). 5. Docs, depl
 - The user's iPad: the pinch past 60 % and up to 200 % with 5 panels — no snap on the grid or the faces, no hitch.
 
 ## 8. Notes (the builders fill in)
+
+### Lane G — `cv-gl.js`, the world integration, the grid probes (2026-10-19)
+
+**Built as the contract says**, with these particulars (the integrator should read them before lane F's merge):
+- `createGL(viewport, o)` takes **`o.world`** (the `#world` element: the `.cv-gl` canvas is inserted before it, else prepended) and
+  `o.now()`; it returns null for no context, a context that is not WebGL2 (main-sim's 2D proxy: `createShader` missing or the
+  link status falsy), a failed compile / link (the context is released through `WEBGL_lose_context`) or `o.disabled`. It gets the
+  context **before** inserting the canvas, so a failure leaves the DOM untouched. The GL object also carries `gl` (the raw
+  context: the readPixels probes), `alive` and `ready` getters; `Tex` has `id` and `dead` beside `w, h, bytes, mips`.
+- `onLost(dead)`: the world's hook gets a boolean — `false` for a loss the browser may restore, `true` when the layer gave up
+  (the third loss within `LOSS_WINDOW_MS` = 60 s: `GL.destroy()` already ran). `stats()` adds `w, h, d` (the drawing buffer) and
+  takes `reset` like `gridStats`.
+- **The grid shader folds the origins on the CPU**: `gridUniforms` gives `ox / oy = (t·d) mod s` and `OX / OY = (t·d) mod S`
+  (`s = DOT·k·d`, `S = MAJOR·k·d`, doubles), so the fragment shader only divides numbers of the buffer's size by the period —
+  float32 stays exact to ≈ 1e-4 device px at every camera (a raw `tx·d` of 1e5 would cost 0.01 px). The nearest-multiple
+  distance per axis is `(fract(u) − step(0.5, fract(u)))·period`. Where the nearest minor centre is a major one
+  (`|dM| ≤ s/2` per axis) the minor square is **skipped** — gridDraw's rule (no square under a disc), the same picture.
+  Uniforms: one `vec4 u[3]` (`uniform4fv` from a kept Float32Array: ox oy s H · OX OY S side · r minorA majorA) and the colour
+  (`uniform3f`, set once at build). The pixel centre is `(gl_FragCoord.x, H − gl_FragCoord.y)` (y down, already + 0.5).
+- **The face shader**: `vec4 c[2]` per frame (tx ty k d · W H) and `vec4 q[4]` per quad (rect · clip · radii tl tr br bl ·
+  alpha clipOn) from two kept Float32Arrays; the SDF in world px × k·d gives the one-device-px ramp; the radius is picked per
+  quadrant and capped at half the clip's shorter side. The quad geometry is a 4-vertex TRIANGLE_STRIP, the grid a 3-vertex
+  triangle; one VAO each, bound per program. Texture unit 0 always. Dead textures and empty rects are skipped silently.
+- **Per-frame allocation**: none in cv-gl but the two small objects `gridBg` / `gridSizes` return (the shared maths the
+  contract asks for; ≈ 0.02 ms per draw measured, see below). `GL.draw` re-checks the buffer size against `round(vw·d)` and
+  resizes when a resize was missed (cheap compare; the world calls `resize` first anyway).
+- **cv-world**: `buildGrid()` → `buildGL()` first; `glPref()` reads `?nogl` / `nogl=1` → off, `?gltest` → test, else
+  `localStorage['synth.cv.gl']` 'off' / 'test' (a throwing storage is ignored). `o.createGL` on the world's options replaces
+  the import (the tests' fake). On the GL path `sizeGrid()` = `GL.resize(vp.width, vp.height, dpr())` (returns false: no 2D
+  store to clear) and `gridAt()` = one `GL.draw(cam, vp.width, vp.height, dpr(), FACES.quads(rectOf, cam))` — so `write()`,
+  `endBurst()` (its `if (!write()) gridAt()` keeps a draw at every rest, the contract's "at rest": a jump that lands off
+  device px draws twice — the frame and the rounded rest), `resize()` and the dpr watch all draw through the same two lines.
+  `FACES.onChange` → a draw. **A context loss detaches FACES** (every texture is dead; the faces are expected to fall to their
+  DOM tier) and **a restore re-attaches** (`FACES.attach({ gl, world })` again: lane F should treat a second attach as "all
+  textures gone, rebuild lazily"); the third loss (`dead`) destroys the layer, builds the 2D grid canvas live (`buildGrid()`
+  with `glDead` set, `sizeGrid()`, `gridAt()`) and never retries GL. `FACES.attach` runs after `api` exists (the end of
+  createWorld); `destroy()` removes the onChange subscription, detaches, destroys the GL.
+- `gridStats()` on the GL path: `{ n, ms, max, dots: 0, moves: 0, tf: '', gl: true, w, h, s: d, r: 1 }`; `glStats()` merges
+  `FACES.stats()` into `GL.stats()` with `bytes → faceBytes` and `gl → glFaces` (the GL's own `bytes` and `gl: true` keep their
+  names). `rectOf(id)` exists on both paths.
+- CSS: `#viewport > .cv-grid, #viewport > .cv-gl` share the placement; `.cv-gl` gets `transform: none` and is left out of the
+  `[data-cv-busy]` will-change rule.
+- `cv-face.js` in this branch is a **stub** (header says so): the §3.1 surface the world calls, plus `attachment()` for the
+  tests; `register()` throws 'lane F'. The integrator keeps lane F's file (tests/cv-world.test.mjs only uses `attachment()`
+  — lane F should export the same one-liner, or the integrator drops those three assertions).
+- Not done here: the drawing-buffer cap (`MAX_RENDERBUFFER_SIZE`, 16384 on Apple GPUs) is not applied — a 4K window at dpr 2
+  stays under it; the 2D path's `GRID_MAX_PX` cap has no GL counterpart (the shader's cost is per pixel: ≈ 0.02 ms of main
+  thread per frame at 2880 × 1800).
+
+**Tests** (one file at a time, all green): cv-gl 7 (gridUniforms maths: floors, fade, sizes, folded origins, 200 random cameras;
+createGL null cases; programs / blend / resize; upload / free bytes with mips ×4/3; draw order and call counts; loss → dead
+textures, restore → rebuilt, the third → destroyed; losses 31 s apart never give up; destroy releases everything), cv-world 53
+(50 unchanged on the 2D path + 3 GL: a draw per written frame / rest / resize / dpr, no `.cv-grid`, gridStats / glStats / rectOf
+shapes, attach / detach / re-attach and the live 2D fallback, the ?nogl / pref / ?gltest matrix), canvas-sim 22, cv-shell-sim 16,
+cv-fixes-sim 5, canvas-1e-sim 24, canvas-2a-sim 26, gesture 50, lint 124, pwa 22.
+
+**Measured** (`tests/ui-bench.html`, headless Chrome 155 `--headless=new --use-angle=metal --force-device-scale-factor=2`,
+window 1440 × 900 → viewport 1440 × 813, dpr 2, ANGLE Metal on the M4 Max, 61 rAF/s; the Claude browser pane throttles rAF to
+≈ 3/s, so its numbers were discarded):
+- **G1 consistency**: `equalPx: true` — the whole GL buffer (2832 × 479 device px, 5 426 112 bytes) at camera (100, 60, 1) at
+  rest, then inside one burst (`busy: true`) after a pan away + a 2× zoom in and out + the pan back (the camera exactly the
+  same), then at rest again: 0 bytes differ mid-burst, 0 at rest. (Grid alone: the face part of G1 waits for lane F.)
+- **G3 precision**: 41 major dots over 20 random cameras (k 0.25…2): max centroid error **0.064 device px**, mean 0.037
+  (gate 0.5).
+- **GL draws**: one hardware panel — pan 121 draws, mean 0.021 ms, max 0.2; zoom 120 / 0.017 / 0.1; deep 180 / 0.021 / 0.1;
+  five panels — pan 105 / 0.038 / 0.2, zoom 121 / 0.035 / 0.2, deep 179 / 0.021 / 0.2 (gate: mean ≤ 1 ms). Frames: median
+  16.7 ms everywhere; one 283 ms frame in five · pan (the set's first move: the 1g face bitmaps / monitors waking) and one
+  33.4 ms in five · deep; the 2D run (`?gl=off`) had none over 33 ms in the same phases, with a 0.8–2.2 ms grid draw at each
+  rest and 120 transform writes per pan. `bytes` 0 (no faces yet).
+- Screenshots (CDP `captureScreenshot`, GL vs `?nogl`, cameras k 1 / 0.4 / 1.6 / 0.25): the same grid, the GL discs round and
+  full device resolution where the 2D store had dropped to 1 store px per CSS px (hotfix 2's cap at dpr 2).
+
+**Open for the integrator**: (1) `FACES.attachment()` in the stub (above); (2) lane F's `detach()` on a transient loss: the
+world detaches so the faces show something while the context is gone — if lane F prefers to stay attached and wait for the
+restore, change `glLost` (two lines); (3) the "at rest" draw at every endBurst is one redundant GPU frame per gesture when the
+camera landed on device px — keep (contract-literal) or drop with `if (!write() && !GL) gridAt()`.

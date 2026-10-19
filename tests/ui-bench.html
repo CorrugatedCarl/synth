@@ -15,6 +15,12 @@
   the settle phase, after a zoom end below 100 %). The app shares the site's storage, so the project is
   snapshotted first and put back whole at the end (applyRestore, then saved); a crash mid-run leaves the two tracks: delete by hand.
   ?run=1 runs at once (the iOS Simulator / a device without a keyboard); results draw large enough to read from a screenshot.
+  Stage 1h (IMPL-1h §7): the app boots on the GL path with the pref synth.cv.gl = 'test' (preserveDrawingBuffer: readPixels
+  after a frame; ?gl=off boots the 2D path instead, to compare) — per phase also the GL draws (world.glStats: mean / max ms,
+  texture bytes), and two probes on the first track: G1 "consistency" (the GL canvas's pixels at a camera at rest, then at
+  the same camera inside a burst — a pan away, a 2× zoom in and out, the pan back — then at rest again: byte-equal,
+  equalPx) and G3 "precision" (20 random cameras: the alpha-weighted centroid of a few major dots in the readPixels buffer
+  within 0.5 device px of (i·MAJOR·k + tx)·d).
 -->
 <style>
   :root { color-scheme: dark; }
@@ -36,7 +42,7 @@
 </head>
 <body>
 <h1>SYNTH Canvas — UI bench</h1>
-<p>Pan and pinch frame times with one hardware synth, and with five (OB-Xa, Jupiter-8, MS-20, CS-80, Prophet-5) on one track. Then the same five with two candidate fixes (per-module layers while moving; off-screen bodies not rendered). Leave the page alone while it runs (≈ 50 s).</p>
+<p>Pan and pinch frame times with one hardware synth, and with five (OB-Xa, Jupiter-8, MS-20, CS-80, Prophet-5) on one track. Then the same five with two candidate fixes (per-module layers while moving; off-screen bodies not rendered). Leave the page alone while it runs (≈ 60 s). Stage 1h: the GL grid probes (G1 consistency, G3 precision) run first; <code>?gl=off</code> measures the 2D path instead.</p>
 <p><button id="run" type="button">Run</button> <button id="copy" type="button" disabled>Copy results</button> <span id="status"></span></p>
 <iframe id="frame" title="SYNTH Canvas"></iframe>
 <div id="res"></div>
@@ -51,6 +57,7 @@
     both: '#viewport[data-cv-busy] .cv-mod { will-change: transform; } .cv-mod > .cv-body { content-visibility: auto; contain-intrinsic-size: auto 1200px 400px; }',
   };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const GL_MODE = /[?&]gl=off/.test(location.search) ? 'off' : 'test'; // (1h) the app's grid path: GL with readPixels, or the 2D path
   const status = t => { $('#status').textContent = t; };
   const q = a => { const s = a.slice().sort((x, y) => x - y); const at = p => +(s[Math.min(s.length - 1, Math.floor(s.length * p))] || 0).toFixed(1); return { n: a.length, med: at(0.5), p95: at(0.95), max: +(s[s.length - 1] || 0).toFixed(1), over33: a.filter(x => x > 33).length }; };
 
@@ -81,15 +88,16 @@
       else { const k = Math.pow(F, 0.5 - 0.5 * Math.cos(ph)); world.zoomAt(k / lastK, cx, cy); lastK = k; }
     }
   }
-  let PN = null; // the app's cv-panel module (faceStats), imported in the iframe's realm
+  let PN = null, WM = null; // the app's cv-panel (faceStats) and cv-world (the grid constants) modules, imported in the iframe's realm
   async function measure(win, world) {
-    const r = {}, gs = typeof world.gridStats === 'function', fs = PN && PN.faceStats;
+    const r = {}, gs = typeof world.gridStats === 'function', fs = PN && PN.faceStats, gl = typeof world.glStats === 'function' && !!world.glStats();
     const phase = async (name, run) => {
       if (gs) world.gridStats(true);
       const f0 = fs ? { n: fs.n, max: fs.max } : null;
       if (fs) fs.max = 0;
       r[name] = q(await frames(win, run));
-      if (gs) { const g = world.gridStats(); r[name].grid = { n: g.n, mean: g.n ? +(g.ms / g.n).toFixed(3) : 0, max: +g.max.toFixed(2), dots: g.dots, moves: g.moves }; }
+      if (gs) { const g = world.gridStats(); r[name].grid = { n: g.n, mean: g.n ? +(g.ms / g.n).toFixed(3) : 0, max: +g.max.toFixed(2), dots: g.dots, moves: g.moves, gl: !!g.gl }; }
+      if (gl) { const g = world.glStats(); r[name].gl = { n: g.frames, mean: g.frames ? +(g.ms / g.frames).toFixed(3) : 0, max: +g.max.toFixed(2), bytes: g.bytes, texes: g.texes, faces: g.faces, windows: g.windows, paints: g.paints, paintMax: +(g.paintMax || 0).toFixed(1) }; }
       if (fs) { r[name].faces = { n: fs.n - f0.n, max: +fs.max.toFixed(1) }; fs.max = Math.max(fs.max, f0.max); }
     };
     await phase('idle', () => sleep(1000));
@@ -101,26 +109,77 @@
     await phase('deepSettle', () => sleep(700));
     return r;
   }
+  // (1h) the GL probes on the GL canvas (preserveDrawingBuffer: the pref 'test'): { gl: false } on the 2D path
+  function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
+  async function probes(win, world) {
+    const out = { gl: false };
+    const cv = win.document.querySelector('#viewport > .cv-gl'), gl = cv && cv.getContext('webgl2');
+    if (!gl || !WM) return out;
+    out.gl = true;
+    const d = win.devicePixelRatio, W = () => cv.width, H = () => cv.height;
+    const read = (x, y, w, h) => { const b = new Uint8Array(w * h * 4); gl.readPixels(x, H() - y - h, w, h, gl.RGBA, gl.UNSIGNED_BYTE, b); return b; }; // rows bottom-up
+    const vp = win.document.querySelector('#viewport').getBoundingClientRect(), cx = vp.left + Math.floor(vp.width / 2), cy = vp.top + Math.floor(vp.height / 2);
+    // G1: at rest at C, then inside one burst (moves < 150 ms apart) away and back to C exactly (dyadic steps), then at rest again
+    const C = { tx: 100, ty: 60, k: 1 };
+    world.setCamera(C); await sleep(400);
+    const A = read(0, 0, W(), H());
+    world.panBy(37, -23); await raf(); world.zoomAt(2, cx, cy); await raf(); world.zoomAt(0.5, cx, cy); await raf(); world.panBy(-37, 23); await raf(); await raf();
+    const busy = world.busy, c = world.cam, B = read(0, 0, W(), H());
+    await sleep(400);
+    const A2 = read(0, 0, W(), H()), c2 = world.cam;
+    let dMid = 0, dRest = 0;
+    for (let i = 0; i < A.length; i++) { if (A[i] !== B[i]) dMid++; if (A[i] !== A2[i]) dRest++; }
+    const same = c.tx === C.tx && c.ty === C.ty && c.k === C.k && c2.tx === C.tx && c2.ty === C.ty && c2.k === C.k;
+    out.g1 = { busyMid: busy, sameCam: same, equalPx: same && dMid === 0 && dRest === 0, diffMid: dMid, diffRest: dRest, bytes: A.length, w: W(), h: H() };
+    // G3: 20 random cameras at rest; a few major dots each: the alpha-weighted centroid of a window around the expected centre
+    const R = rng(42), rr = WM.gridSizes(d).r, Rg = Math.ceil(rr + 1.5), M = WM.MAJOR;
+    let n = 0, maxErr = 0, sumErr = 0;
+    const worst = [];
+    for (let t = 0; t < 20; t++) {
+      world.setCamera({ tx: (R() - 0.5) * 800, ty: (R() - 0.5) * 600, k: 0.25 + R() * 1.75 }); await sleep(220);
+      const cm = world.cam, S = M * cm.k * d;
+      const i0 = Math.ceil((Rg + 2 - cm.tx * d) / S), j0 = Math.ceil((Rg + 2 - cm.ty * d) / S);
+      for (const [i, j] of [[i0, j0], [i0 + 1, j0 + 2], [i0 + 3, j0 + 1], [i0 + 2, j0 + 3]]) {
+        const ex = (i * M * cm.k + cm.tx) * d, ey = (j * M * cm.k + cm.ty) * d;
+        if (ex + Rg + 1 >= W() || ey + Rg + 1 >= H() || ex - Rg < 0 || ey - Rg < 0) continue;
+        const x0 = Math.floor(ex) - Rg, y0 = Math.floor(ey) - Rg, w = 2 * Rg + 2, h = 2 * Rg + 2, b = read(x0, y0, w, h);
+        let sw = 0, sx = 0, sy = 0;
+        for (let q = 0; q < h; q++) for (let xx = 0; xx < w; xx++) { const a = b[(q * w + xx) * 4 + 3]; if (!a) continue; sw += a; sx += a * (x0 + xx + 0.5); sy += a * (y0 + h - 1 - q + 0.5); }
+        if (!sw) { worst.push({ cam: cm, i, j, ex, ey, err: Infinity }); n++; maxErr = Infinity; continue; }
+        const err = Math.hypot(sx / sw - ex, sy / sw - ey);
+        n++; sumErr += err; if (err > maxErr) { maxErr = err; }
+        if (err > 0.5) worst.push({ cam: cm, i, j, ex: +ex.toFixed(3), ey: +ey.toFixed(3), cx: +(sx / sw).toFixed(3), cy: +(sy / sw).toFixed(3), err: +err.toFixed(3) });
+      }
+    }
+    out.g3 = { cams: 20, dots: n, maxErr: +maxErr.toFixed(4), meanErr: n ? +(sumErr / n).toFixed(4) : 0, ok: n > 0 && maxErr <= 0.5, worst: worst.slice(0, 5) };
+    return out;
+  }
   function cell(v, bad, warn) { return '<td class="' + (v > bad ? 'bad' : v > warn ? 'warn' : 'ok') + '">' + v + '</td>'; }
   function table(R) {
-    let h = '<table><tr><th>set · phase</th><th>frames</th><th>median ms</th><th>p95 ms</th><th>max ms</th><th>&gt; 33 ms</th><th>grid draws · ms mean / max</th><th>face bitmaps · max ms</th></tr>';
+    let h = '<table><tr><th>set · phase</th><th>frames</th><th>median ms</th><th>p95 ms</th><th>max ms</th><th>&gt; 33 ms</th><th>grid draws · ms mean / max</th><th>gl draws · ms mean / max · MB</th><th>face bitmaps · max ms</th></tr>';
     for (const set of Object.keys(R.sets)) for (const ph of ['idle', 'pan', 'zoom', 'settle', 'deep', 'deepSettle']) {
       if (!R.sets[set][ph]) continue;
-      const x = R.sets[set][ph], g = x.grid, f = x.faces;
+      const x = R.sets[set][ph], g = x.grid, f = x.faces, L = x.gl;
       h += '<tr><td>' + set + ' · ' + ph + '</td><td>' + x.n + '</td>' + cell(x.med, 20, 12) + cell(x.p95, 33, 20) + cell(x.max, 100, 33) + cell(x.over33, 5, 0)
-        + '<td>' + (g ? g.n + ' · ' + g.mean + ' / ' + g.max : '–') + '</td><td>' + (f ? f.n + ' · ' + f.max : '–') + '</td></tr>';
+        + '<td>' + (g ? g.n + ' · ' + g.mean + ' / ' + g.max : '–') + '</td><td>' + (L ? L.n + ' · ' + L.mean + ' / ' + L.max + ' · ' + (L.bytes / 1e6).toFixed(1) : '–') + '</td><td>' + (f ? f.n + ' · ' + f.max : '–') + '</td></tr>';
     }
     const nk = k => (R.nodes[k] == null ? '–' : R.nodes[k]) + ' (k ' + (R.k[k] == null ? '–' : R.k[k]) + ')';
-    return h + '</table><p>nodes: one ' + nk('one') + ' · five ' + nk('five') + ' · dpr ' + R.dpr + ' · viewport ' + R.viewport + '</p>';
+    const P = R.probes, pr = !P ? '' : !P.gl ? '<p>grid: the 2D path (no GL canvas)</p>'
+      : '<p>GL probes — G1 consistency: <b class="' + (P.g1.equalPx ? 'ok' : 'bad') + '">equalPx ' + P.g1.equalPx + '</b> (mid-burst diff ' + P.g1.diffMid + ', rest diff ' + P.g1.diffRest + ' of ' + P.g1.bytes + ' bytes, busy ' + P.g1.busyMid + ', same camera ' + P.g1.sameCam + ') · G3 precision: <b class="' + (P.g3.ok ? 'ok' : 'bad') + '">' + P.g3.dots + ' major dots over ' + P.g3.cams + ' cameras, max err ' + P.g3.maxErr + ' px</b> (mean ' + P.g3.meanErr + ')</p>';
+    return h + '</table>' + pr + '<p>nodes: one ' + nk('one') + ' · five ' + nk('five') + ' · dpr ' + R.dpr + ' · viewport ' + R.viewport + ' · grid ' + (R.gl || '?') + '</p>';
   }
   const draw = R => { $('#res').innerHTML = table(R); };
   async function run() {
     $('#run').disabled = true; $('#copy').disabled = true; $('#res').textContent = '';
     status('starting the app…');
+    // (1h) the app's grid path through the shared storage: 'test' (GL, readPixels) or 'off' (2D); the user's own value put back
+    let glPref = null;
+    try { glPref = localStorage.getItem('synth.cv.gl'); localStorage.setItem('synth.cv.gl', GL_MODE); } catch (e) { /* no storage */ }
     const win = await boot(), T = win.__synthTest, api = T.api, cv = T.cv, shell = T.shell;
     try { PN = await win.Function('u', 'return import(u)')(new URL('../cv-panel.js?v=9', location.href).href); } catch (e) { PN = null; } // (the app's own module instance; before 1g: no faceStats)
+    try { WM = await win.Function('u', 'return import(u)')(new URL('../cv-world.js?v=9', location.href).href); } catch (e) { WM = null; }
     await sleep(800);
-    const R = { date: new Date().toISOString().slice(0, 10), ua: navigator.userAgent, dpr: devicePixelRatio, viewport: innerWidth + '×' + innerHeight, sets: {}, nodes: {}, k: {} };
+    const R = { date: new Date().toISOString().slice(0, 10), ua: navigator.userAgent, dpr: devicePixelRatio, viewport: innerWidth + '×' + innerHeight, sets: {}, nodes: {}, k: {}, gl: GL_MODE === 'off' ? '2d' : 'gl', probes: null };
     const made = [];
     // the user's project as it was (the bench adds two tracks to it, one with five synths: 1f would split it at the next load):
     // put back whole afterwards (applyRestore), the bench tracks also deleted by object first in case the restore fails
@@ -139,6 +198,7 @@
         const world = cv.world();
         world.fit({ animate: false }); await sleep(400);
         R.nodes[set] = win.document.querySelectorAll('#world *').length; R.k[set] = +world.k.toFixed(3);
+        if (!R.probes) { status('GL probes…'); R.probes = await probes(win, world); R.gl = R.probes.gl ? 'gl' : '2d'; world.fit({ animate: false }); await sleep(400); }
         status('measuring ' + set + '…');
         R.sets[set] = await measure(win, world);
         draw(R);
@@ -155,6 +215,7 @@
       status('cleaning up…');
       for (const id of made) { try { const t = api.project().tracks.find(x => x.id === id); if (t) { t.notes = []; api.deleteTrack(t); } } catch (e) { console.error(e); } }
       try { api.applyRestore(JSON.parse(snap)); api.save(); await api.store.flush(); } catch (e) { console.error('ui-bench: the project could not be put back', e); }
+      try { if (glPref == null) localStorage.removeItem('synth.cv.gl'); else localStorage.setItem('synth.cv.gl', glPref); } catch (e) { /* no storage */ }
       await sleep(300);
     }
     $('#out').value = JSON.stringify(R);
