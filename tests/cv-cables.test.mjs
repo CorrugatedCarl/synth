@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import * as C from '../cv-cables.js?v=9';
 import * as core from '../serum-core.js?v=9';
 import { fresh, all, ptr, fire, key, Ev, place } from './wk-dom.mjs';
+import { readFileSync } from 'node:fs';
 
 const nums = d => d.match(/-?[\d.]+/g).map(Number);
 
@@ -463,7 +464,7 @@ function v2m(o = {}) {
 test('modSrcKey / modSrcOf / amtText / perfRows (2a): row src ↔ module key ↔ jack; the badge text; a Serum\'s performance rows', () => {
   assert.deepEqual(['wheel', 've.out', 'at.out', 'bd.out', 'i1.out', 'lfo1', 'x.y.out', '', null].map(C.modSrcKey), ['wheel', 've', 'at', 'bd', 'i1', null, null, null, null]);
   assert.deepEqual(['wheel.out', 've.out', 'at.out'].map(C.modSrcOf), ['wheel', 've.out', 'at.out']);
-  assert.deepEqual([C.amtText(0.5), C.amtText(-0.254), C.amtText(0.5, 1), C.amtText(0), C.amtText(3), C.amtText(NaN), C.amtText(-1, true)], ['+50%', '−25%', '±50%', '+0%', '+100%', '+0%', '±100%']);
+  assert.deepEqual([C.amtText(0.5), C.amtText(-0.254), C.amtText(0.5, 1), C.amtText(0), C.amtText(3), C.amtText(NaN), C.amtText(-1, true)], ['+50%', '−25%', '±50%', '+0%', '+100%', '+0%', '∓100%']);
   assert.deepEqual(C.perfRows(v2m().dev.i2).map(r => [r.slot, r.src, r.dst, r.amt]), [[3, 'wheel', 'a.level', 0.5], [7, 'velo', 'fx.r1.mix', -0.2], [9, 'at', 'a.pan', 1]]);
   assert.deepEqual([C.perfRows(null), C.perfRows({ vals: {} })], [[], []]);
   assert.deepEqual([C.END_PX, C.MOD_FADE_N, C.MOD_MODES, C.MOD_HINT, C.MOD_KEY], [24, 24, ['always', 'select', 'never'], '24+ mod cables, tap ∿ to filter', { wheel: 'wheel', velo: 've', at: 'at', bend: 'bd' }]);
@@ -476,14 +477,14 @@ test('cablesOf (2a): one mod cable per valid track.mods row after the audio ones
   const M = L.slice(base.length);
   assert.deepEqual(M.map(c => [c.id, c.kind, c.a, c.b, c.amt, c.bi, c.byp, c.preset, c.dashed, c.badge, c.color, c.src]), [
     ['r1', 'mod', 'wheel.out', 'i2:a.semi', 0.5, false, false, false, false, '+50%', C.MOD_COLOR.wheel, 'wheel'],
-    ['r2', 'mod', 've.out', 'i2:fx.r1.mix', -0.25, true, true, false, false, '±25%', C.MOD_COLOR.velo, 've.out'],
+    ['r2', 'mod', 've.out', 'i2:fx.r1.mix', -0.25, true, true, false, false, '∓25%', C.MOD_COLOR.velo, 've.out'],
     ['r5', 'mod', 'bd.out', 'i2:a.fine', 1, false, false, false, false, '+100%', '#3b82c4', 'bd.out']], 'invalid rows dropped; a source module that is not there: the track colour (the cable hides: no port)');
   assert.ok(M.every(c => !c.readonly && !c.label), 'editable, no midpoint label (the badge)');
   t.dev.ve.color = '#123456';
   assert.equal(C.cablesOf(t).find(c => c.id === 'r2').color, '#123456', 'the module\'s own colour');
   // preset rows: the wheel's needs project.perf.wheel; Velocity's the ve device; Aftertouch's none here
   const P = C.cablesOf(t, { presetRows: true, project: { perf: { wheel: { v: 1 } } } }).filter(c => c.preset);
-  assert.deepEqual(P.map(c => [c.id, c.a, c.b, c.dev, c.slot, c.badge, c.src]), [['p:i2:3', 'wheel.out', 'i2:a.level', 'i2', 3, '+50%', 'wheel'], ['p:i2:7', 've.out', 'i2:fx.r1.mix', 'i2', 7, '±20%', 'velo']]);
+  assert.deepEqual(P.map(c => [c.id, c.a, c.b, c.dev, c.slot, c.badge, c.src]), [['p:i2:3', 'wheel.out', 'i2:a.level', 'i2', 3, '+50%', 'wheel'], ['p:i2:7', 've.out', 'i2:fx.r1.mix', 'i2', 7, '∓20%', 'velo']]);
   assert.deepEqual(C.cablesOf(t, { presetRows: true, project: { perf: { wheel: null } } }).filter(c => c.preset).map(c => c.id), ['p:i2:7'], 'no wheel in the project');
   assert.deepEqual(C.cablesOf(t, { project: { perf: { wheel: { v: 1 } } } }).filter(c => c.preset), [], 'without presetRows: none');
   const seen = [];
@@ -534,7 +535,7 @@ test('createCables (2a): a mod cable — its body under the modules (g[data-kind
   assert.deepEqual(['r2', 'p:i2:3'].map(id => [R.cl(R.g(id)), R.cl(R.og(id)), R.cl(R.badge(id))]), [
     ['cv-cable-g cv-off', 'cv-cable-g cv-off', 'cv-mbadge cv-off'], ['cv-cable-g cv-preset', 'cv-cable-g cv-preset', 'cv-mbadge cv-preset']], 'bypassed grey; a preset row thin');
   assert.deepEqual([R.badge('p:i2:3').textContent, R.badge('p:i2:3').childNodes[1].hidden, R.badge('r1').childNodes[1].hidden, R.badge('r2').getAttribute('aria-label')],
-    ['+50%preset', false, true, 'Modulation ±25%, bypassed — tap to edit'], 'the "preset" tag');
+    ['+50%preset', false, true, 'Modulation ∓25%, bypassed — tap to edit'], 'the "preset" tag');
   assert.deepEqual([R.g('r5').style.display, R.og('r5').style.display, R.badge('r5').hidden], ['none', 'none', true], 'no source module (bd): hidden, badge too');
   // a zoom: the end is 24 screen px again (12 world px at k 2); nothing else changes
   R.z.k = 2;
@@ -551,11 +552,11 @@ test('createCables (2a): a mod cable — its body under the modules (g[data-kind
   assert.equal(all(R.W).filter(n => n.getAttribute && /cv-mbadge/.test(n.getAttribute('class') || '')).length, 0, 'the badges go with the layers');
 });
 
-test('createCables (2a): the badge is the handle — a tap selects (onSelect; again: onSelect again — the inspector), no ×; its press is never the world\'s; long-press / right-click → the menu; Escape clears, Delete disconnects', () => {
+test('createCables (2a): the badge is the handle — a tap selects (onSelect; again: onSelect again — the inspector), no ×; its press is the canvas\'s (U4: a pan may start there); long-press / right-click → the menu; Escape clears, Delete disconnects', () => {
   const R = modLayers(), b = R.badge('r1');
   const p = ptr(b, 'pointerdown', 10, 10, { pointerId: 3 });
-  assert.equal(p._stop, true, 'never the world\'s press');
-  b.click();
+  assert.equal(p._stop, false, '(U4) the world\'s press too');
+  ptr(b, 'pointerup', 10, 10, { pointerId: 3 });
   assert.deepEqual([R.sel, R.L.selected(), R.cl(R.g('r1')), R.cl(R.og('r1')), R.cl(b)], [['r1'], 'r1', 'cv-cable-g cv-sel', 'cv-cable-g cv-sel', 'cv-mbadge cv-sel']);
   const xb = all(R.W).find(n => n.getAttribute && n.getAttribute('class') === 'cv-cable-x');
   assert.equal(!xb || xb.hidden, true, 'no floating × on a mod cable');
@@ -761,4 +762,88 @@ test('createCableDrag (2a): an audio drag never targets a mod jack (cv-no with t
   fire(R.J['fx1.in'], 'contextmenu', { clientX: 1, clientY: 1 });
   assert.deepEqual(menuLabels(R.doc), ['Connect fx1 in to…', 'i1 out']);
   R.D.destroy();
+});
+
+// UI fixes
+const hasCls = (n, c) => !!n && typeof n.getAttribute === 'function' && (' ' + (n.getAttribute('class') || '') + ' ').includes(' ' + c + ' ');
+test('(U2) a mod drag looks through the amount badges: a badge over a knob is skipped (the knob under it lights and takes the release); style.css: no badge takes a press while patching, its hit area never wider than the badge', () => {
+  const R = modRig(), badge = R.doc.createElement('button'), amt = R.doc.createElement('span');
+  badge.setAttribute('class', 'cv-mbadge'); amt.setAttribute('class', 'cv-mamt'); badge.append(amt); R.el.append(badge);
+  const ef = R.doc.elementFromPoint;
+  R.doc.elementFromPoint = (x, y) => (x === 150 && y === 150 ? amt : ef(x, y));
+  R.doc.elementsFromPoint = (x, y) => (x === 150 && y === 150 ? [amt, badge, R.K.semi, R.el] : [ef(x, y)]);
+  R.press('wheel.out', -176, 168); R.mv(0, 400); R.mv(150, 150);
+  assert.deepEqual([R.cls(R.K.semi), R.cls(badge)], ['knob cv-ok cv-hot', 'cv-mbadge'], 'the knob beneath the badge');
+  R.upAt(150, 150);
+  assert.deepEqual(R.log, ['mod wheel i2:a.semi']);
+  delete R.doc.elementsFromPoint; // (no elementsFromPoint: a badge is no target)
+  R.press('wheel.out', -176, 168); R.mv(0, 400); R.mv(150, 150); R.upAt(150, 150);
+  assert.equal(R.log.length, 1, 'nothing under the badge known: nothing');
+  R.D.destroy();
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /#world\[data-cv-patching\] \.cv-mbadge \{[^}]*pointer-events: none/);
+  const hit = (css.match(/\.cv-mbadge::before \{[^}]*\}/) || [''])[0];
+  assert.ok(hit && /width: 100%/.test(hit) && !/max\(100%/.test(hit), 'the badge\'s hit area: only taller, never wider (toward the knobs): ' + hit);
+});
+
+test('(U2, U4) a press on a badge: a knob beneath it wins (the press handed to the knob: the world never sees the badge\'s); else the canvas pans from it (no stopPropagation) and a tap — its lift wherever the world captured it — selects (again: the inspector); a pan selects nothing and opens no menu; keyboard clicks still select', () => {
+  const R = modLayers(), b = R.badge('r1'), seen = [], knob = R.doc.createElement('div'), cap = R.doc.createElement('span');
+  knob.setAttribute('data-dest', 'a.pan'); knob.append(cap); R.W.append(knob);
+  const other = R.doc.createElement('div'); R.doc.body.append(other);
+  R.W.addEventListener('pointerdown', e => seen.push('world ' + (e.target === b ? 'badge' : e.target === cap ? 'cap' : '?')));
+  const kn = [];
+  knob.addEventListener('pointerdown', e => kn.push(e.pointerId + '@' + e.clientX + ',' + e.clientY + (e.target === cap ? ' cap' : '')));
+  R.doc.elementsFromPoint = () => [b.childNodes[0], b, cap, knob, R.W];
+  const p = ptr(b, 'pointerdown', 40, 50, { pointerId: 5, pointerType: 'touch' });
+  assert.deepEqual([kn, seen, p._stop], [['5@40,50 cap'], ['world cap'], true], 'the knob\'s press (its cap), the badge\'s own never the world\'s');
+  ptr(other, 'pointerup', 40, 50, { pointerId: 5, pointerType: 'touch' });
+  assert.deepEqual([R.sel, R.L.selected()], [[], null], 'no selection');
+  // nothing beneath: the canvas's press; a tap selects
+  R.doc.elementsFromPoint = () => [b.childNodes[0], b, R.W];
+  seen.length = 0;
+  const p2 = ptr(b, 'pointerdown', 40, 50, { pointerId: 6, pointerType: 'touch' });
+  assert.deepEqual([seen, p2._stop], [['world badge'], false], 'the world\'s press: a pan may start');
+  ptr(other, 'pointerup', 43, 52, { pointerId: 6, pointerType: 'touch' });
+  fire(b, 'click', { detail: 1 }); // (a pointer's click: the tap already did it)
+  assert.deepEqual([R.sel, R.L.selected()], [['r1'], 'r1']);
+  ptr(b, 'pointerdown', 40, 50, { pointerId: 7, pointerType: 'touch' }); ptr(other, 'pointerup', 40, 50, { pointerId: 7, pointerType: 'touch' });
+  assert.deepEqual(R.sel, ['r1', 'r1'], 'a tap on the selected one: the inspector again');
+  // a pan from a badge: no selection, no long-press menu
+  R.L.select(null); R.sel.length = 0;
+  ptr(R.badge('r2'), 'pointerdown', 40, 50, { pointerId: 8, pointerType: 'touch' });
+  ptr(other, 'pointermove', 90, 50, { pointerId: 8, pointerType: 'touch' });
+  fire(R.badge('r2'), 'contextmenu', { clientX: 40, clientY: 50 });
+  ptr(other, 'pointerup', 90, 50, { pointerId: 8, pointerType: 'touch' });
+  assert.deepEqual([R.sel, R.L.selected(), menuLabels(R.doc)], [[], null, []], 'a pan is no tap');
+  b.click(); // (Enter / Space / VoiceOver: detail 0)
+  assert.deepEqual(R.sel, ['r1'], 'a keyboard click selects');
+  R.L.destroy();
+});
+
+test('(U5, U6) with a mod cable selected, the inspector (.cv-ml-pop / a dialog / the host\'s ignore) is not "elsewhere": a tap there keeps it; Delete / Backspace / Escape typed there are the inspector\'s (no disconnect, Escape not taken); outside, as before', () => {
+  const R = modLayers(), pop = R.doc.createElement('div'), sl = R.doc.createElement('div'), dlg = R.doc.createElement('div'), mine = R.doc.createElement('div');
+  pop.setAttribute('class', 'cv-ml-pop'); sl.setAttribute('class', 'wk-sl'); pop.append(sl); dlg.setAttribute('role', 'dialog');
+  R.doc.body.append(pop, dlg, mine);
+  R.L.select('r1');
+  for (const t of [sl, dlg]) { ptr(t, 'pointerdown', 5, 5, { pointerId: 2 }); ptr(t, 'pointerup', 5, 5, { pointerId: 2 }); }
+  assert.equal(R.L.selected(), 'r1', 'a tap in the inspector keeps the cable it edits');
+  for (const k of ['Delete', 'Backspace']) key(sl, k);
+  const e = key(sl, 'Escape');
+  assert.deepEqual([R.acts, R.L.selected(), e._stop], [[], 'r1', false], 'its keys: no disconnect, Escape left to it');
+  ptr(mine, 'pointerdown', 5, 5, { pointerId: 2 }); ptr(mine, 'pointerup', 5, 5, { pointerId: 2 });
+  assert.equal(R.L.selected(), null, 'elsewhere: cleared');
+  R.L.destroy();
+  let zone = null;
+  const R2 = modLayers({ ignore: t => t === zone });
+  zone = R2.doc.createElement('div'); R2.doc.body.append(zone);
+  R2.L.select('r1');
+  ptr(zone, 'pointerdown', 5, 5, { pointerId: 2 }); ptr(zone, 'pointerup', 5, 5, { pointerId: 2 }); key(zone, 'Delete');
+  assert.deepEqual([R2.L.selected(), R2.acts], ['r1', []], 'o.ignore(t)');
+  key(R2.doc.body, 'Delete');
+  assert.deepEqual(R2.acts, ['r1 disconnect']);
+  R2.L.destroy();
+});
+
+test('(U11) amtText — one amount format for the badge, the Mod list and the inspector: a bipolar amount keeps its sign (± / ∓)', () => {
+  assert.deepEqual([C.amtText(0.5, 1), C.amtText(-0.5, 1), C.amtText(-0.004, 1), C.amtText(-0.25), C.amtText(0.25, 0)], ['±50%', '∓50%', '±0%', '−25%', '+25%']);
 });

@@ -72,10 +72,20 @@ export function modSrcKey(src) {
 }
 /** (2a) A mod-out jack → the row's src it starts: 'wheel.out' → 'wheel', 've.out' → 've.out'. */
 export function modSrcOf(jack) { return jack === 'wheel.out' ? 'wheel' : String(jack || ''); }
-/** (2a) A mod cable's amount badge: '+50%', '−25%', bipolar '±50%' (amt −1…1). */
+/** (2a) A mod cable's amount badge: '+50%', '−25%', bipolar '±50%' / '∓50%' (amt −1…1) — also the Mod list's and the
+ * inspector's (cv-modlayer: one format, U11). */
 export function amtText(amt, bi) {
   const a = fin(amt) ? Math.max(-1, Math.min(1, amt)) : 0, p = Math.round(Math.abs(a) * 100);
-  return (bi ? '±' : a < 0 ? '−' : '+') + p + '%';
+  return (bi ? (a < 0 && p ? '∓' : '±') : a < 0 ? '−' : '+') + p + '%'; // (U11: a bipolar amount keeps its sign)
+}
+// (U2) inside a mod cable's amount badge (button.cv-mbadge or its spans)?
+const inBadge = n => { for (; n && typeof n.getAttribute === 'function'; n = n.parentNode) if (/(^|\s)cv-mbadge(\s|$)/.test(n.getAttribute('class') || '')) return true; return false; };
+// (U2) the topmost element at a client point that is no badge (document.elementsFromPoint; null without it)
+function beneath(doc, x, y, skip) {
+  let L = null;
+  try { L = doc && typeof doc.elementsFromPoint === 'function' ? doc.elementsFromPoint(x, y) : null; } catch (err) { L = null; }
+  for (const n of L || []) if (!inBadge(n) && !(skip && skip(n))) return n;
+  return null;
 }
 /** (2a) A Serum's performance rows (its own s.matrix rows whose src is wheel / velo / at / bend): [{slot, src, dst, amt,
  * bi, byp}] — cablesOf's presetRows: true. Pure. */
@@ -319,10 +329,33 @@ export function createCables(worldEl, o) {
     amt.className = 'cv-mamt'; ptag.className = 'cv-ptag'; ptag.hidden = true;
     b.append(amt, ptag);
     const id = () => it.c.id;
+    // (U2) a knob beneath the badge wins: the press is handed to it (the badge's own stops here); (U4) else it is the
+    // canvas's press (cv-module isBackground: a pan) and a tap — its lift followed on the document — selects
+    const knob = e => {
+      const n = beneath(doc, e.clientX, e.clientY, x => x === U.e || x === O.e);
+      for (let q = n; q && q !== worldEl && typeof q.getAttribute === 'function'; q = q.parentNode) if (q.getAttribute('data-dest') != null) return n;
+      return null;
+    };
     const offs = [
-      listen(b, 'pointerdown', e => e.stopPropagation()), // (never the world's press: no pan, no marquee)
-      listen(b, 'click', e => { e.stopPropagation(); if (sel === id()) { if (typeof O0.onSelect === 'function') O0.onSelect(sel); } else select(id()); }),
-      listen(b, 'contextmenu', e => { if (e.preventDefault) e.preventDefault(); e.stopPropagation(); select(id()); openMenu(id(), e.clientX, e.clientY); }),
+      listen(b, 'pointerdown', e => {
+        if (e.button != null && e.button !== 0) return;
+        const k = knob(e);
+        if (k) {
+          const ev = new e.constructor(e.type, e);
+          e.stopPropagation();
+          if (!k.dispatchEvent(ev) && e.preventDefault) e.preventDefault();
+          return;
+        }
+        press = { id: id(), pid: e.pointerId, x: e.clientX, y: e.clientY, ctx: false, moved: false, badge: true };
+      }),
+      listen(b, 'click', e => { e.stopPropagation(); if (!(e.detail >= 1)) tapped(id(), true); }), // (Enter / Space / VoiceOver: a pointer's tap is the lift's)
+      listen(b, 'contextmenu', e => {
+        if (e.preventDefault) e.preventDefault();
+        e.stopPropagation();
+        if (press && press.moved) return; // (a pan's long-press timer: no menu)
+        if (press) press.ctx = true;
+        select(id()); openMenu(id(), e.clientX, e.clientY);
+      }),
       wk.menuSource(b, { keys: false }),
     ];
     if (worldEl) worldEl.append(b);
@@ -474,7 +507,7 @@ export function createCables(worldEl, o) {
         // a tap anywhere else (the canvas, a module, a tray) clears it: document capture phase, so nothing can swallow it
         let tp = null;
         const offK = listen(doc, 'keydown', onKey, true);
-        const offD = listen(doc, 'pointerdown', e => { const t = e.target; tp = cableAt(t) || (xb && xb.contains(t)) ? null : { pid: e.pointerId, x: e.clientX, y: e.clientY }; }, true);
+        const offD = listen(doc, 'pointerdown', e => { const t = e.target; tp = cableAt(t) || (xb && xb.contains(t)) || aside(t) ? null : { pid: e.pointerId, x: e.clientX, y: e.clientY }; }, true);
         const offU = listen(doc, 'pointerup', e => { const P = tp; tp = null; if (P && e.pointerId === P.pid && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) select(null); }, true);
         keyOff = () => { offK(); offD(); offU(); };
       }
@@ -483,9 +516,18 @@ export function createCables(worldEl, o) {
     vis();
     if (typeof O0.onSelect === 'function') O0.onSelect(sel);
   }
+  // (U4) a tap on a badge: selects it; on the selected one, onSelect again (the host's inspector)
+  function tapped(id, again) { if (again && id === sel) { if (typeof O0.onSelect === 'function') O0.onSelect(sel); } else select(id); }
   const typing = t => !!t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || '') || t.isContentEditable === true);
+  // (U5, U6) what edits the selected cable is not "elsewhere": the inspector (.cv-ml-pop), any dialog, a wk popup list,
+  // o.ignore(t) — a tap there keeps the selection, its keys are its own
+  const POP = /(^|\s)(cv-ml-pop|wk-pop|wk-ctx)(\s|$)/;
+  function aside(t) {
+    for (let n = t; n && typeof n.getAttribute === 'function'; n = n.parentNode) if (POP.test(n.getAttribute('class') || '') || n.getAttribute('role') === 'dialog') return true;
+    try { return typeof O0.ignore === 'function' && !!O0.ignore(t); } catch (err) { return false; }
+  }
   function onKey(e) { // while a cable is selected: Escape clears it, Delete / Backspace disconnects it (one thing per key)
-    if (!sel) return;
+    if (!sel || aside(e.target)) return;
     if (e.key === 'Escape') select(null);
     else if ((e.key === 'Delete' || e.key === 'Backspace') && !typing(e.target)) act(sel, 'disconnect');
     else return;
@@ -518,7 +560,7 @@ export function createCables(worldEl, o) {
       const P = press;
       if (!P || e.pointerId !== P.pid) return;
       press = null;
-      if (!P.ctx && !P.moved && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) select(P.id);
+      if (!P.ctx && !P.moved && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) tapped(P.id, P.badge);
     }, true),
     listen(doc, 'pointercancel', e => { if (press && e.pointerId === press.pid) press = null; }, true),
     listen(U.e, 'contextmenu', e => { // right-click, a touch long-press (wk.menuSource)
@@ -717,7 +759,8 @@ export function createCableDrag(world, o) {
   /* ---- (2a) the mod drag: knobs are its targets */
   const attrUp = (n, a) => { for (; n && typeof n.getAttribute === 'function'; n = n.parentNode) if (n.getAttribute(a) != null) return n; return null; };
   const devAt = el => { const d = attrUp(el, 'data-dev'); if (d) return d.getAttribute('data-dev'); const m = attrUp(el, 'data-cv-mod'); return m ? m.getAttribute('data-cv-mod').split('/')[0] : null; };
-  const hitAt = (x, y) => { if (typeof Op.hit === 'function') return call(Op.hit, x, y) || null; try { return typeof doc.elementFromPoint === 'function' ? doc.elementFromPoint(x, y) : null; } catch (err) { return null; } };
+  const hitAt0 = (x, y) => { if (typeof Op.hit === 'function') return call(Op.hit, x, y) || null; try { return typeof doc.elementFromPoint === 'function' ? doc.elementFromPoint(x, y) : null; } catch (err) { return null; } };
+  const hitAt = (x, y) => { const t = hitAt0(x, y); return t && inBadge(t) ? beneath(doc, x, y) : t; }; // (U2) through a badge (CSS: none while patching)
   function checkMod(dst, el) { // → {ok, why}, memoised per drag
     let r = D.memo.get(dst);
     if (r) return r;

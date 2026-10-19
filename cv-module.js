@@ -116,6 +116,9 @@ const gup = v => Math.ceil(v / DOT) * DOT;
 export function isBackground(el) {
   if (!el || el.nodeType !== 1) return false;
   if (cableHit(el)) return true; // (1e, U13) an editable cable pans like the canvas around it; a tap on it selects (cv-cables)
+  for (let n = el, i = 0; n && i < 3 && typeof n.getAttribute === 'function'; n = n.parentNode, i++) { // (2a U4) a mod cable's badge too
+    if (/(^|\s)cv-mbadge(\s|$)/.test(n.getAttribute('class') || '')) return true;
+  }
   if (typeof el.matches !== 'function' || typeof el.closest !== 'function') return false;
   try { return !!el.matches(BG_SEL) && !!el.closest('[data-cv-mod]'); } catch (err) { return false; }
 }
@@ -754,7 +757,11 @@ export function createTrackView(world, track, host) {
   }
   /* ---- (2a) knob end points: per module, the [data-dest] elements by '<dev>:<param>' (one walk) and their module-local
    * centres (one rect read each, on first use); dropped by fold / size / sync / refresh / remeasure */
-  const DC = new Map(); // module key → { idx: Map(dk → el), pos: Map(dk → {x, y}) }
+  // (U1) a Serum keeps its hidden pages in the DOM: a key can have several elements (one shown, the rest 0 × 0), so every
+  // one is indexed and the first with a box wins; an end parked on the bar because none was shown is tried again on the
+  // next lookup outside a live move (no rect read per frame of a drag)
+  const DC = new Map(); // module key → { idx: Map(dk → [el]), pos: Map(dk → {x, y, hid?}) }
+  let quiet = false; // (a module's live move: cached ends only)
   function indexOf(k, m) {
     let c = DC.get(k);
     if (c) return c;
@@ -764,7 +771,7 @@ export function createTrackView(world, track, host) {
       for (const e of n.children || []) {
         if (!e || typeof e.getAttribute !== 'function') continue;
         const dv = e.getAttribute('data-dev') || dv0, id = e.getAttribute('data-dest');
-        if (id && !idx.has(dv + ':' + id)) idx.set(dv + ':' + id, e);
+        if (id) { const q = dv + ':' + id, L = idx.get(q); if (L) L.push(e); else idx.set(q, [e]); }
         st.push([e, dv]);
       }
     }
@@ -773,15 +780,19 @@ export function createTrackView(world, track, host) {
     return c;
   }
   const rectOf = e => { try { return e.getBoundingClientRect(); } catch (err) { return null; } };
+  const shown = r => !!r && (r.width > 0 || r.height > 0);
   const barPt = () => ({ x: 0, y: BAR_H / 2 }); // (folded, or the knob not shown: the module's left edge at its bar)
   function localDest(k, m, dk) { // the knob's centre in module px; null: not in this module
-    let c = indexOf(k, m), el = c.idx.get(dk);
-    if (el && el.isConnected === false) { DC.delete(k); c = indexOf(k, m); el = c.idx.get(dk); } // (the body re-rendered)
-    if (!el) return null;
+    let c = indexOf(k, m), L = c.idx.get(dk);
+    if (L && L.some(e => e.isConnected === false)) { DC.delete(k); c = indexOf(k, m); L = c.idx.get(dk); } // (the body re-rendered)
+    if (!L) return null;
     if (m.fold) return barPt();
-    if (c.pos.has(dk)) return c.pos.get(dk);
-    const r = rectOf(el), R = rectOf(m.el), s = R && R.width > 0 && m.w > 0 ? R.width / m.w : 1;
-    const p = r && R && (r.width > 0 || r.height > 0) ? { x: Math.round((r.left + r.width / 2 - R.left) / s * 100) / 100, y: Math.round((r.top + r.height / 2 - R.top) / s * 100) / 100 } : barPt();
+    const q = c.pos.get(dk);
+    if (q && (!q.hid || quiet)) return q;
+    let r = null;
+    for (const e of L) { const x = rectOf(e); if (shown(x)) { r = x; break; } }
+    const R = rectOf(m.el), s = R && R.width > 0 && m.w > 0 ? R.width / m.w : 1;
+    const p = r && R ? { x: Math.round((r.left + r.width / 2 - R.left) / s * 100) / 100, y: Math.round((r.top + r.height / 2 - R.top) / s * 100) / 100 } : Object.assign(barPt(), { hid: true });
     c.pos.set(dk, p);
     return p;
   }
@@ -864,7 +875,8 @@ export function createTrackView(world, track, host) {
         }
         if (phase !== 'move') lay(key, phase, 'move');
         if (G2 && phase === 'end') for (const g of G2.list) if (H.lay) H.lay(g.k, entryOf(g.k), 'end', 'group');
-        relay();
+        quiet = phase === 'start' || phase === 'move';
+        try { relay(); } finally { quiet = false; }
         if (phase === 'end' || phase === 'cancel') { update(key); if (G2) { for (const g of G2.list) update(g.k); grp = null; } }
       },
       onFold: f => { DC.delete(key); lay(key, 'start', 'fold'); lay(key, 'end', 'fold'); relay(); update(key); if (H.shown) H.shown(key); },

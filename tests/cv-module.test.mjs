@@ -1185,3 +1185,56 @@ test('createTrackView (2a): host.patch false keeps the audio read-only but the m
   V.destroy();
   assert.equal(all(R.root).filter(n => n.getAttribute && /cv-mbadge/.test(n.getAttribute('class') || '')).length, 0, 'the badges go with the view');
 });
+
+// UI fixes
+test('(U1) a knob with hidden twins (a Serum keeps its other pages in the DOM: 0 × 0): the shown one is the end, whichever comes first; a page switch (remeasure) moves it; an end parked on the bar because none was shown is tried again on the next lookup — never during a live move', () => {
+  globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+  try {
+    const R = mview(), V = R.V, sx = V.modules.get('i2'), X = sx.x, Y = sx.y, K = R.K['a.semi'];
+    place(sx.el, 100, 200, 600, 400); place(K, 240, 270, 20, 20);
+    // a hidden page before the knob's own (the old index kept the first it met: the 0 × 0 twin) and one after it
+    const twin = before => {
+      const pg = R.doc.createElement('div'), tw = R.doc.createElement('div');
+      pg.setAttribute('data-dev', 'i2'); tw.setAttribute('data-dest', 'a.semi'); pg.append(tw);
+      const host = K.parentNode.parentNode;
+      if (before) host.insertBefore(pg, K.parentNode); else host.append(pg);
+      place(tw, 0, 0, 0, 0);
+      return tw;
+    };
+    const tw = twin(true), tw2 = twin(false);
+    V.remeasure();
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: X + 300, y: Y + 160 }, 'the shown knob, not a hidden twin');
+    // a page switch: the knob's page hidden, a twin's shown → remeasure → the twin
+    place(K, 0, 0, 0, 0); place(tw2, 340, 370, 20, 20); V.remeasure('i2');
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: X + 500, y: Y + 360 });
+    place(tw2, 0, 0, 0, 0); place(tw, 140, 170, 20, 20); V.remeasure('i2');
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: X + 100, y: Y - 40 });
+    // every page hidden: the bar; shown again (no remeasure): tried again on the next lookup
+    place(tw, 0, 0, 0, 0); V.remeasure('i2');
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: X, y: Y + 20 }, 'none shown: the bar');
+    place(K, 240, 270, 20, 20);
+    let reads = 0;
+    const gb = K.getBoundingClientRect.bind(K);
+    K.getBoundingClientRect = () => { reads++; return gb(); };
+    // (a live move of the module by its bar: the cached end, no rect read per frame)
+    ptr(sx.bar, 'pointerdown', 500, 300, { pointerId: 1, pointerType: 'mouse' });
+    ptr(sx.bar, 'pointermove', 541, 311, { pointerId: 1, pointerType: 'mouse', buttons: 1 });
+    ptr(sx.bar, 'pointermove', 581, 321, { pointerId: 1, pointerType: 'mouse', buttons: 1 });
+    assert.equal(reads, 0, 'not re-read during the live move');
+    ptr(sx.bar, 'pointerup', 581, 321, { pointerId: 1, pointerType: 'mouse' });
+    assert.deepEqual(V.destPort('i2', 'a.semi'), { x: sx.x + 300, y: sx.y + 160 }, 'shown again: its centre');
+    const n = reads;
+    V.destPort('i2', 'a.semi'); V.ports();
+    assert.deepEqual([n > 0, reads], [true, n], 'measured once: cached again');
+    V.destroy();
+  } finally { delete globalThis.ResizeObserver; }
+});
+
+test('(U4) a mod cable\'s amount badge (and what it holds) is background: the canvas pans from it (its tap selects: cv-cables); another button is not', () => {
+  const R = mview(), V = R.V, b = V.cables.badge('r1');
+  assert.ok(b, 'the badge');
+  const span = b.childNodes[0], btn = R.doc.createElement('button');
+  R.root.append(btn);
+  assert.deepEqual([M.isBackground(b), M.isBackground(span), M.isBackground(btn)], [true, true, false]);
+  V.destroy();
+});
