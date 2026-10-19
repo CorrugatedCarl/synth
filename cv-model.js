@@ -256,8 +256,9 @@ export function removePanel(t, id) {
   if (pw) for (const w of inWires(t, id)) w.b = pw.b; // (its sources into what it fed: OUT; it fed nothing: cut)
   delete t.dev[id];
   t.wires = t.wires.filter(w => !touches(w, id));
+  const rows = dropRows(t, id); // (the cables to its knobs go with it, as removeInst's — review C8)
   dropLay(t, id);
-  return OK;
+  return Object.assign({ rows }, OK);
 }
 export function connect(t, a, b, g = 1) {
   let A = port(a), B = port(b);
@@ -340,8 +341,9 @@ function dropRows(t, id, any) {
   if (gone.length) t.mods = t.mods.filter(r => !hit(r));
   return gone;
 }
-// (2b) the rows ending on instrument id whose knob the instrument no longer has (a model change: the same param id must
-// be modulatable on the new model, else the row goes); their ids
+// (2b) the rows ending on device id whose knob the device no longer has (a model change: the same param id must be
+// modulatable on the new model, else the row goes; a panel: an effect instance removed — the host calls pruneRows(t,
+// panelId) after a rack edit and tells, review C8); their ids
 function dropGone(t, id) {
   const d = isObj(t) && isObj(t.dev) ? t.dev[id] : null;
   if (!isObj(d) || !Array.isArray(t.mods)) return [];
@@ -350,6 +352,7 @@ function dropGone(t, id) {
   if (gone.length) t.mods = t.mods.filter(r => !hit(r));
   return gone;
 }
+export const pruneRows = dropGone;
 const mods = t => (Array.isArray(t.mods) ? t.mods : (t.mods = []));
 const ROW_F = ['amt', 'bi', 'curve', 'aux', 'inv', 'byp', 'out', 'acurve', 'crv', 'rise', 'fall', 'slink'];
 const rowOf = (id, src, dst, n) => { const r = { id, src, dst }; for (const k of ROW_F) r[k] = n[k]; return r; };
@@ -383,7 +386,11 @@ export function setModState(t, id, fields) {
   const d = isObj(t) && isObj(t.dev) ? t.dev[id] : null;
   if (!isObj(d) || kindOf(d) !== 'mod' || !isObj(fields)) return NO('No such modulator');
   const merged = Object.assign({}, d);
-  for (const k of Object.keys(fields)) { if (k === 'kind') continue; merged[k] = isObj(fields[k]) && isObj(d[k]) ? Object.assign({}, d[k], fields[k]) : fields[k]; }
+  for (const k of Object.keys(fields)) { // (a nested object merges one level; an array element-wise — { crv: [0.9] } keeps the other two, review C12)
+    if (k === 'kind') continue;
+    const f = fields[k], o = d[k];
+    merged[k] = isObj(f) && isObj(o) ? Object.assign({}, o, f) : Array.isArray(f) && Array.isArray(o) ? o.map((x, i) => (i < f.length && f[i] !== undefined ? f[i] : x)).concat(f.slice(o.length)) : f;
+  }
   const n = normModDev(merged);
   for (const k of Object.keys(d)) if (!(k in n)) delete d[k];
   Object.assign(d, n);
@@ -452,6 +459,7 @@ export function addMod(t, src, dst, o = {}) {
     Object.assign(f, { src: 'wheel', amt, dst: 'f.cutoff', bi });
   }
   for (const x of ROW_F) if (x !== 'amt' && x !== 'bi' && o[x] !== undefined) f[x] = o[x];
+  if (!sx) { f.aux = ''; f.inv = 0; } // (an aux names a Serum source; on a classic / panel row it would name the synthetic CP's slot — none, review C7)
   const n = normRow(f);
   if (!n.src) return no('Unknown aux source', 'aux');
   const row = rowOf(rowId(t), src, dst, n);
@@ -466,6 +474,7 @@ export function setMod(t, rowId, fields) {
   for (const k of ROW_F) if (isObj(fields) && fields[k] !== undefined) f[k] = fields[k];
   // (normRow's rules by proxy: a native source / a Serum destination as they are, anything else as a wheel → cutoff row)
   const D = splitDst(r.dst), d = D && t.dev[D.dev], sx = isObj(d) && d.kind === 'synth' && d.model === 'serum';
+  if (!sx) { f.aux = ''; f.inv = 0; } // (C7: no aux on a canvas row)
   const n = nativeRow(Object.assign({}, r, f, sx ? null : { dst: D.dev + ':f.cutoff' }), MOD_SRC[r.src] || 'wheel');
   if (!n) return NO('Unknown aux source');
   for (const k of ROW_F) r[k] = n[k];

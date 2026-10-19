@@ -17,7 +17,7 @@
 //   CP1        the synthetic CP's matrix fields of track 0 (mN; mSlot / mSrc / mDst / mAmt / mBi / mCtx over mN) and the
 //              LFO slot flags (lfoMono / lfoMode), its voice section (a.on base, poly)
 //   XFER       the transfer stub (lane A2's xferOf is stubbed here): the identity { a: 0, b: 1 } tagged with the call
-import { defaultSerum, normalizeSerum, defaultFx2, newInstance, normRow } from '../../serum-core.js?v=9';
+import { defaultSerum, normalizeSerum, defaultFx2, newInstance, normRow, vi } from '../../serum-core.js?v=9';
 import { normModDev } from '../../song.js?v=9';
 
 const ROW = { amt: 0, bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 };
@@ -88,13 +88,15 @@ export const PAY1 = {
   xfer: [{ a: 0, b: 1, x0: 0.5, of: 'juno60.cf:0' }, null],
   ext: [{ k: 1, src: 5, id: 'l1.out' }],
   vals: [],
-  keep: [],
+  keep: [5], // (fixer B, C1: an ext-listed source always gets a keep-alive row — a bypassed synthetic row must not starve the Serum's ext feed)
   left: [],
   dashed: [],
   n: { lfo: 1, env: 0, chaos: 0, macro: 0, vals: 0, ext: 1, rows: 2 },
+  slots: { l1: { kind: 'lfo', i: 0 } }, // (the module's ModCore slot in the live-meter order: lfo 0…9, env 2 3 4 1 → 10…13, chaos 14…15)
 };
+export const KEEP_VI = vi('f2.level'); // (cv-graph KEEP_ID: the shared keep-alive scratch destination)
 export const CP1 = {
-  mN: 2, mSlot: [0, 1], mSrc: [5, 5], mDst: [0, 1], mAmt: [0.25, -0.2], mBi: [1, 0], mCtx: [1, 1],
+  mN: 3, mSlot: [0, 1, 2], mSrc: [5, 5, 5], mDst: [0, 1, KEEP_VI], mAmt: [0.25, -0.2, 1], mBi: [1, 0, 0], mCtx: [1, 1, 1], // (row 3: l1's keep-alive)
   lfoMono: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1], lfoMode: [0, 2, 2, 2, 2, 2, 2, 2, 2, 2], // (slot 1: the module, RETRIG; the rest parked FREE + MONO)
   aOn: 0, poly: 1,
 };
