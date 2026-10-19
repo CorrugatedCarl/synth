@@ -219,10 +219,10 @@
     <div id="cvToolbar" class="cv-toolbar"></div>
     <aside id="srcTray" class="cv-side cv-left" data-wk-inset="left" aria-label="Sources">
       <button id="srcRail" class="cv-rail" type="button" title="Sources: the instruments (tap to open)"><span class="cv-railico" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="2.5" y="5" width="15" height="10" rx="1.5"/><path d="M5.5 15V11M8.5 15V11M11.5 15V11M14.5 15V11"/><circle cx="6" cy="8" r="0.9"/><circle cx="10" cy="8" r="0.9"/><circle cx="14" cy="8" r="0.9"/></svg></span><span class="cv-raillab">Sources</span></button>
-      <div id="srcPanel" class="cv-panel" role="region" aria-label="Sources: synths" hidden>
-        <div class="cv-ph"><h2>Synths</h2><button id="srcClose" class="cv-x" type="button" aria-label="Close the Sources tray" title="Close (Esc)">✕</button></div>
+      <div id="srcPanel" class="cv-panel" role="region" aria-label="Sources" hidden>
+        <div class="cv-ph"><h2>Sources</h2><button id="srcClose" class="cv-x" type="button" aria-label="Close the Sources tray" title="Close (Esc)">✕</button></div>
+        <div id="srcLayout" class="cv-srclay"><button id="srcView" class="cv-vbtn" type="button" aria-haspopup="menu"><span class="cv-vlab">Hardware</span><span class="cv-vcaret" aria-hidden="true">▾</span></button><div id="srcViewMenu" class="cv-pop cv-menupop cv-vmenu" role="menu" aria-label="Sources view" hidden></div></div>
         <p class="cv-pmode" id="srcMode"></p>
-        <div id="srcLayout" class="cv-srclay"></div>
         <div id="srcScroll" class="cv-tscroll">
           <div id="srcList" class="cv-tiles"></div>
           <section id="srcModSec" class="cv-tsec" aria-label="Modulators" hidden>
@@ -230,7 +230,7 @@
             <div id="srcMods" class="cv-tiles cv-mtiles" data-tray="mods"></div>
           </section>
         </div>
-        <p class="cv-pnote">Serum parts, note tools, LFOs, envelopes and macros arrive here in later stages.</p>
+        <p class="cv-pnote" id="srcNote"></p>
       </div>
       <div id="srcGrip" class="cv-sgrip"></div>
     </aside>

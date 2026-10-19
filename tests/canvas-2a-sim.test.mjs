@@ -61,6 +61,10 @@ test('a Velocity tile dropped on the canvas adds the module where it lands (one 
   const t = T(), n0 = hsteps();
   ID.a = t.id;
   assert.deepEqual([keys(), tiles().modTiles().length, tiles().placed('velo')], ['i1,i1/fx,out', 4, null]);
+  // (2026-10-19) the Modulators live in the Sources tray's Serum view (Hardware / Simple: the classic synths only)
+  assert.deepEqual([tiles().view(), sim.$('#srcModSec').hidden], ['hw', true]);
+  tiles().setView('serum');
+  assert.deepEqual([sim.$('#srcModSec').hidden, tiles().modTiles().filter(b => b.hidden).length], [false, 0]);
   assert.equal(M.drag.drop('velo', { over: 'canvas', x: 200, y: 400, at: { x: -600, y: 300 } }), true); sim.raf();
   assert.deepEqual([keys(), hsteps(), cv.hist.undoLabel, note()], ['i1,i1/fx,out,ve', n0 + 1, 'Add Velocity', 'Added Velocity · tap to undo']);
   assert.deepEqual([t.dev.ve.kind, t.lay.ve.x, t.lay.ve.y], ['velo', -704, 192], 'centred on the drop point, on the dots');

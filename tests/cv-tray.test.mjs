@@ -482,23 +482,76 @@ test('sheet: a dialog in the layer (title, ✕, labelled), focus on ✕ and back
   assert.deepEqual([closed, layer.children.length], [4, 0], 'a mouse press on the backdrop');
 });
 
-test('sourcesTray (1c): the "Hardware | Simple" switch — two aria-pressed buttons, onLayout on a change, the list marked (SIMPLE badges via CSS)', () => {
-  const d = fresh(), list = d.createElement('div'), host = d.createElement('div'), got = [];
-  d.body.append(host, list);
-  const S = T.sourcesTray(list, { models: MODELS, pick() {}, drag: {}, layoutEl: host, layout: 'flow', onLayout: l => got.push(l) });
-  const bs = host.children[0].children;
-  assert.deepEqual(bs.map(b => [b.textContent, b.getAttribute('aria-pressed')]), [['Hardware', 'false'], ['Simple', 'true']]);
-  assert.deepEqual([S.layout(), list.getAttribute('data-layout'), host.children[0].getAttribute('role')], ['flow', 'flow', 'group']);
-  bs[0].click();
-  assert.deepEqual([S.layout(), list.getAttribute('data-layout'), bs[0].getAttribute('aria-pressed'), got], ['hw', 'hw', 'true', ['hw']]);
-  bs[0].click();
-  assert.deepEqual(got, ['hw'], 'no change: no call');
+// (2026-10-19, the user's request: "make the hardware/simple switch … into a dropdown menu that includes a new section called
+// serum … to keep them separate") — was the 1c "Hardware | Simple" segmented pair (aria-pressed buttons): now a dropdown
+test('sourcesTray (views): the dropdown — a button showing the view (aria-haspopup menu, aria-expanded), a menu of menuitemradio views; Hardware / Simple show the classic synths only, Serum the Serum tile, the Modulators and the placeholder sections; onView on a change only; setView / setLayout restore without a call; the note follows', () => {
+  const d = fresh(), host = mkEl(d), list = mkEl(d), sec = mkEl(d), note = mkEl(d, 'p'), out = mkEl(d), got = [];
+  const S = T.sourcesTray(list, { models: MODELS, pick() {}, drag: {}, layoutEl: host, secEl: sec, noteEl: note, layout: 'flow', onLayout: l => got.push(l) });
+  const [btn, menu] = host.children, items = menu.children, shown = () => S.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
+  const secs = () => sec.children.map(s => s.getAttribute('data-sec') + (s.hidden ? ':hidden' : ''));
+  const classic = MODELS.filter(m => !m.custom).map(m => m.id);
+  assert.deepEqual([btn.tagName, btn.className, btn.type, btn.getAttribute('aria-haspopup'), btn.getAttribute('aria-expanded'), btn.children[0].textContent, btn.getAttribute('aria-label')],
+    ['BUTTON', 'cv-vbtn', 'button', 'menu', 'false', 'Simple', 'Sources view: Simple']);
+  assert.deepEqual([menu.getAttribute('role'), menu.hidden, items.map(b => [b.getAttribute('role'), b.getAttribute('data-view'), b.children[0].textContent, b.getAttribute('aria-checked')])],
+    ['menu', true, [['menuitemradio', 'hw', 'Hardware', 'false'], ['menuitemradio', 'flow', 'Simple', 'true'], ['menuitemradio', 'serum', 'Serum', 'false']]]);
+  assert.deepEqual([S.view(), S.layout(), S.views(), list.getAttribute('data-layout'), list.getAttribute('data-view')], ['flow', 'flow', ['hw', 'flow', 'serum'], 'flow', 'flow']);
+  assert.deepEqual(shown(), classic, 'Simple: the twelve classics, no Serum');
+  assert.ok(classic.length === 12 && !classic.includes('serum'));
+  assert.deepEqual([secs(), note.textContent], [['parts:hidden', 'notes:hidden'], 'Serum and its modulators: the Serum view (the menu above).']);
+  // a tap opens; the Serum item picks (one call), closes it; the classics hide, the Serum tile and the placeholders show
+  btn.click();
+  assert.deepEqual([menu.hidden, btn.getAttribute('aria-expanded'), S.viewOpen()], [false, 'true', true]);
+  items[2].click();
+  assert.deepEqual([S.view(), got, menu.hidden, btn.getAttribute('aria-expanded'), btn.children[0].textContent, items.map(b => b.getAttribute('aria-checked')).join()],
+    ['serum', ['serum'], true, 'false', 'Serum', 'false,false,true']);
+  assert.deepEqual([shown(), secs(), sec.children[0].children.map(c => c.textContent), sec.children[1].children[1].textContent, list.getAttribute('data-layout'), S.layout()],
+    [['serum'], ['parts', 'notes'], ['Serum parts', 'Arrive in milestone 3.'], 'Arrive in stage 2b.', 'flow', 'flow'], 'Serum: its tile, the placeholders; the classics\' layout kept');
+  assert.equal(note.textContent, 'LFOs, envelopes and macros arrive here in later stages.');
+  // the same view again: no call; a press outside closes it (nothing picked); the button again closes it
+  btn.click(); items[2].click();
+  assert.deepEqual([got, S.viewOpen()], [['serum'], false], 'no change: no call');
+  btn.click(); ptr(out, 'pointerdown', 5, 5);
+  assert.deepEqual([S.viewOpen(), S.view()], [false, 'serum'], 'outside');
+  btn.click(); btn.click();
+  assert.equal(S.viewOpen(), false, 'the button again');
+  // keys: ↓ on the button opens it on the current view; Escape (on the button or in the menu) closes it, focus on the button
+  let e = key(btn, 'ArrowDown');
+  assert.deepEqual([S.viewOpen(), e.defaultPrevented, d.activeElement === items[2]], [true, true, true]);
+  e = key(items[2], 'Escape');
+  assert.deepEqual([S.viewOpen(), e.defaultPrevented, d.activeElement === btn], [false, true, true]);
+  key(btn, 'ArrowUp'); e = key(btn, 'Escape');
+  assert.deepEqual([S.viewOpen(), e.defaultPrevented], [false, true], 'Escape on the button: consumed (the tray stays open)');
+  assert.equal(key(btn, 'Escape').defaultPrevented, false, 'closed: the page\'s Escape');
+  // Enter / Space (a click without a pointer, detail 0): opens on the current view; a pick from the keys puts focus back
+  fire(btn, 'click', { detail: 0 });
+  assert.deepEqual([S.viewOpen(), d.activeElement === items[2]], [true, true]);
+  fire(items[0], 'click', { detail: 0 });
+  assert.deepEqual([S.view(), S.layout(), got, S.viewOpen(), d.activeElement === btn, shown(), secs()], ['hw', 'hw', ['serum', 'hw'], false, true, classic, ['parts:hidden', 'notes:hidden']]);
+  // restores: no call
   S.setLayout('flow');
-  assert.deepEqual([bs[1].getAttribute('aria-pressed'), got], ['true', ['hw']], 'setLayout (a restore) does not call back');
+  assert.deepEqual([S.view(), list.getAttribute('data-layout'), btn.children[0].textContent, got.length], ['flow', 'flow', 'Simple', 2], 'setLayout (a restore) does not call back');
+  S.setView('serum'); S.setView('nope');
+  assert.deepEqual([S.view(), S.layout(), got.length], ['hw', 'hw', 2], 'an unknown view: the first');
+  assert.deepEqual([S.closeView(), (btn.click(), S.closeView()), S.viewOpen()], [false, true, false]);
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
   assert.match(css, /\.cv-tiles\[data-layout="flow"\] \.cv-tbadge \{ display: block; \}/);
-  assert.match(css, /@media \(pointer: coarse\) \{ \.cv-segb \{ min-height: 44px;/, '44 px on a touch screen');
+  assert.match(css, /@media \(pointer: coarse\) \{ \.cv-vbtn \{ min-height: 44px;/, '44 px on a touch screen');
+  for (const sel of ['.cv-vbtn', '.cv-vmenu', '.cv-menupop > button.cv-vitem', '.cv-vitem[aria-checked="true"] .cv-vname', '.cv-tsoon > .cv-tnote', '.cv-srclay']) assert.ok(css.includes(sel + ' '), sel);
+  assert.match(css, /\.cv-tile\[hidden\] \{ display: none; \}/, 'a hidden tile goes (its display: flex would win over [hidden])');
   S.destroy();
+  assert.deepEqual([host.children.length, sec.children.length], [0, 0], 'destroy takes what it made');
+});
+
+test('sourcesTray (views): data-driven — o.views lists the views in order (a later family is one more entry); the given button / menu are used; a view with no layout keeps the classics\'', () => {
+  const d = fresh(), list = mkEl(d), sec = mkEl(d), btn = mkEl(d, 'button'), menu = mkEl(d), got = [];
+  const views = [...T.SRC_VIEWS, { id: 'drums', label: 'Drums', tip: 'Drum machines', sections: [{ id: 'kits', head: 'Drum machines', note: 'Arrive later.' }] }];
+  const S = T.sourcesTray(list, { models: MODELS, pick() {}, drag: {}, viewBtn: btn, viewMenu: menu, secEl: sec, views, view: 'flow', onView: v => got.push(v) });
+  assert.deepEqual([menu.children.map(b => b.getAttribute('data-view')), btn.children.map(c => c.className), menu.getAttribute('role'), btn.children[0].textContent], [['hw', 'flow', 'serum', 'drums'], ['cv-vlab', 'cv-vcaret'], 'menu', 'Simple']);
+  btn.click(); menu.children[3].click();
+  assert.deepEqual([S.view(), S.layout(), got, S.tiles().filter(b => !b.hidden).length, sec.children.map(s => s.getAttribute('data-sec') + (s.hidden ? ':hidden' : ''))],
+    ['drums', 'flow', ['drums'], 0, ['parts:hidden', 'notes:hidden', 'kits']]);
+  S.destroy();
+  assert.deepEqual([btn.children.length, menu.children.length, sec.children.length], [2, 0, 0], 'the given button stays; the items go');
 });
 
 /* ---------------------------------------------------------------- the Effects tray (1e) */
@@ -670,7 +723,7 @@ function modRig(o = {}) {
   const log = [], picks = [];
   let leaves = 0;
   const S = T.sourcesTray(list, Object.assign({
-    models: MODELS, tray, layer, pick: (id, mode) => picks.push(id + ':' + mode), mods: MODS, modsEl: box, modsSec: sec,
+    models: MODELS, tray, layer, pick: (id, mode) => picks.push(id + ':' + mode), mods: MODS, modsEl: box, modsSec: sec, view: 'serum', // (2026-10-19: the Serum view's)
     overOf: (t, x, y) => (y < 100 ? 'tracks' : x > 300 ? 'canvas' : null), canvasGhost: () => true, onLeave: () => { leaves++; },
     toWorld: (x, y) => ({ x: x * 2, y: y - 100 }),
     drag: {
@@ -688,6 +741,10 @@ test('sourcesTray (2a): the Modulators section — one tile per modulator (an or
   const R = modRig();
   assert.deepEqual([R.sec.hidden, R.S.modTiles().map(b => b.getAttribute('data-mod')), R.box.children.length], [false, ['wheel', 'velo', 'at', 'bend'], 4]);
   assert.equal(R.S.tiles().length, MODELS.length, 'tiles(): the synths only');
+  R.S.setView('hw');
+  assert.equal(R.sec.hidden, true, '(2026-10-19) Hardware / Simple: no Modulators (the Serum view\'s)');
+  R.S.setView('serum');
+  assert.equal(R.sec.hidden, false);
   const w = mtile(R, 'wheel');
   assert.deepEqual([w.tagName, w.className, w.type, w.getAttribute('data-scope'), w.children.map(c => c.className), w.children[1].textContent, w.children[2].hidden],
     ['BUTTON', 'cv-tile cv-mtile', 'button', 'project', ['cv-mglyph', 'cv-tname', 'cv-treason'], 'Mod Wheel', true]);
@@ -705,6 +762,9 @@ test('sourcesTray (2a): the Modulators section — one tile per modulator (an or
   d.body.append(list);
   const S2 = T.sourcesTray(list, { models: MODELS.slice(0, 2), mods: MODS.slice(0, 2), pick: () => mp.push('synth pick'), modPick: id => mp.push('mod ' + id), drag: {} });
   assert.deepEqual(list.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-model') || n.getAttribute('data-mod'))), [MODELS[0].id, MODELS[1].id, '#Modulators', 'wheel', 'velo']);
+  assert.deepEqual(list.children.map(n => n.hidden), [false, false, true, true, true], '(2026-10-19) Hardware: the heading and the modulators hidden');
+  S2.setView('serum');
+  assert.deepEqual(list.children.map(n => n.hidden), [true, true, false, false, false], 'Serum: the modulators, no classic');
   S2.modTile('wheel').click();
   assert.deepEqual(mp, ['mod wheel']);
   S2.destroy();
@@ -764,7 +824,9 @@ test('sourcesTray (2a): setPlaced greys a tile with its reason (aria-disabled, c
 
 test('index.html (2a): the Sources tray scrolls as one (#srcScroll) holding #srcList and the Modulators section (#srcModSec hidden until the tray fills it, #srcMods) — every id main.js binds kept; style.css: the section, the tiles, the placed state, the ∿ modes, the mod jack, mod cables, the badge, the patching states, the bodies', () => {
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  for (const id of ['srcTray', 'srcRail', 'srcPanel', 'srcClose', 'srcMode', 'srcLayout', 'srcList', 'srcGrip', 'srcScroll', 'srcModSec', 'srcMods']) assert.match(html, new RegExp('id="' + id + '"'), id);
+  for (const id of ['srcTray', 'srcRail', 'srcPanel', 'srcClose', 'srcMode', 'srcLayout', 'srcList', 'srcGrip', 'srcScroll', 'srcModSec', 'srcMods', 'srcView', 'srcViewMenu', 'srcNote']) assert.match(html, new RegExp('id="' + id + '"'), id);
+  // (2026-10-19) the view dropdown in #srcLayout: its button (the view, ▾) and its menu (the tray fills it)
+  assert.match(html, /<div id="srcLayout" class="cv-srclay"><button id="srcView" class="cv-vbtn" type="button" aria-haspopup="menu"><span class="cv-vlab">Hardware<\/span><span class="cv-vcaret" aria-hidden="true">▾<\/span><\/button><div id="srcViewMenu" class="cv-pop cv-menupop cv-vmenu" role="menu" aria-label="Sources view" hidden><\/div><\/div>/);
   assert.match(html, /<div id="srcScroll" class="cv-tscroll">\s*<div id="srcList" class="cv-tiles"><\/div>\s*<section id="srcModSec" class="cv-tsec" aria-label="Modulators" hidden>\s*<h3 class="cv-tgrp">Modulators<\/h3>\s*<div id="srcMods" class="cv-tiles cv-mtiles" data-tray="mods"><\/div>/);
   assert.ok(!/modulators arrive here in later stages/.test(html), 'the old note went');
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');

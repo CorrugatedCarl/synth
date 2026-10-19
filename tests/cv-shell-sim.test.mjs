@@ -115,6 +115,24 @@ test('+ Track opens the Sources tray in "new track" mode; a tile tap there adds 
   assert.equal(sh.shell.tiles.mode(), 'replace');
 });
 
+test('Sources views (2026-10-19, the dropdown that replaced "Hardware | Simple"): the saved view comes back (\'serum\' too; an unknown one → Hardware); + Track keeps it; a pick from #srcViewMenu saves it and re-words the intro; closing the tray closes the dropdown', async () => {
+  const ls = fakeStorage({ 'synthc.cv.trayLayout': '"serum"' });
+  const s = await bootMain({ hash: '#minimoog', ls }), sh = shellOf(), T = sh.shell.tiles, vm = s.$('#srcViewMenu'), vb = s.$('#srcView');
+  const tap = t => t.dispatchEvent({ type: 'click', target: t, detail: 1, preventDefault() {}, stopPropagation() {} });
+  assert.deepEqual([T.view(), T.layout(), vb.children[0].textContent, T.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), s.$('#srcModSec').hidden, s.$('#srcNote').textContent],
+    ['serum', 'hw', 'Serum', ['serum'], false, 'LFOs, envelopes and macros arrive here in later stages.']);
+  s.$('#aAdd').onclick();
+  assert.deepEqual([sh.shell.src.isOpen(), T.mode(), T.view()], [true, 'track', 'serum'], '+ Track: the view last used');
+  tap(vb); tap(vm.children[0]);
+  assert.deepEqual([T.view(), JSON.parse(ls.m.get('synthc.cv.trayLayout')), T.mode(), T.viewOpen(), s.$('#srcModSec').hidden], ['hw', 'hw', 'track', false, true]);
+  assert.match(s.$('#srcMode').children.map(c => c.textContent || '').join(''), /a new track/, 'the intro redrawn in its mode');
+  tap(vb);
+  sh.shell.src.close();
+  assert.deepEqual([T.viewOpen(), vb.getAttribute('aria-expanded')], [false, 'false'], 'no dropdown left over a closed tray');
+  const s2 = await bootMain({ ls: fakeStorage({ 'synthc.cv.trayLayout': '"nope"' }) });
+  assert.deepEqual([shellOf().shell.tiles.view(), s2.$('#srcView').children[0].textContent], ['hw', 'Hardware']);
+});
+
 test('Sources tray, replace mode: a tap replaces the selected track\'s instrument (one undo step, the undo notice); the tray stays open; the same model in the tray\'s layout does nothing', async () => {
   const s = await bootMain({ hash: '#minimoog' }), sh = shellOf(), api = s.api;
   sh.cvOpenSources('replace');

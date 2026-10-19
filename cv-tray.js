@@ -297,19 +297,35 @@ export function sideTray(el, o) {
  *   label?: (modelId: string, over: string | null) => string, doc?: Document,
  * }} o
  * @returns {{setCurrent: (modelId: string) => void, setMode: (m: 'replace' | 'track') => void, mode: () => string,
- *   tiles: () => HTMLElement[], destroy: () => void}}
+ *   tiles: () => HTMLElement[], setView: (v: string) => void, view: () => string, setLayout: (l: 'hw' | 'flow') => void,
+ *   layout: () => 'hw' | 'flow', closeView: () => boolean, destroy: () => void}}
  */
-// (stage 1c) o.layoutEl: where the "Hardware | Simple" switch goes (a segmented pair, aria-pressed); o.layout: the
-// starting choice ('hw' | 'flow'); o.onLayout(l): the user switched. 'flow' (Simple) marks every classic tile SIMPLE: a
-// tap or drop creates the synth in its Simple layout (the caller's: lay.i1.ui = 'flow'); Serum has no hardware panel
+// (stage 1c →2026-10-19) the tray's views: o.views (default SRC_VIEWS), an ordered list {id, label, tip, layout?, note?,
+// sections}; a dropdown picks one (o.viewBtn: the button showing the view, aria-haspopup menu; o.viewMenu: a .cv-pop
+// role=menu of menuitemradio buttons — both made in o.layoutEl when not given; menuPop: a press outside, Escape, a pick
+// close it; ↑ / ↓ on the button open it on the current view). o.view (or o.layout): the starting view; o.onView(v) (or
+// o.onLayout): the user switched. A section is {id, models: m => bool} (the synth tiles it shows: all in el, in o.models
+// order), {id: 'mods'} (the Modulators section below) or {id, head, note} (a heading and a one-line note — a placeholder,
+// made in o.secEl after the Modulators); a tile or section outside the view gets `hidden`. A view's layout ('hw' | 'flow')
+// is the classic synths': 'flow' (Simple) marks every classic tile SIMPLE, a tap or drop creates the synth in its Simple
+// layout (the caller's: lay.i1.ui = 'flow'); a view without one keeps the last (layout()); Serum has no hardware panel.
+// o.noteEl gets the view's note. A new family (drum machines, pad controllers) is a new entry, not a new tray.
 // (2a, IMPL-2a §3) o.mods: [{id: 'wheel' | 'velo' | 'at' | 'bend', name, scope?: 'project' | 'track'}] — the Modulators
 // section: one button.cv-tile.cv-mtile[data-mod] per item (an original monochrome glyph, the name, span.cv-treason) in
-// o.modsEl (its section o.modsSec unhidden; without modsEl: an h3.cv-tgrp "Modulators" and the tiles after the synths in
-// el). A tap: (o.modPick || o.pick)(id, mode); a drag as a synth tile's through (o.modDrag || o.drag) with info.mod = true,
-// info.over 'canvas' or null (never 'tracks') and info.at the point (o.toWorld(x, y): world px; else client px); its ghost
-// hides over the canvas only while o.modCanvasGhost() says the world draws an outline for it.
+// o.modsEl (its section o.modsSec shown in a view with 'mods'; without modsEl: an h3.cv-tgrp "Modulators" and the tiles
+// after the synths in el). A tap: (o.modPick || o.pick)(id, mode); a drag as a synth tile's through (o.modDrag || o.drag)
+// with info.mod = true, info.over 'canvas' or null (never 'tracks') and info.at the point (o.toWorld(x, y): world px; else
+// client px); its ghost hides over the canvas only while o.modCanvasGhost() says the world draws an outline for it.
 // setPlaced(id, reason | null): the tile greys out (aria-disabled, .cv-placed) with the reason ("already on this
 // track" / "already in this project"); a placed tile neither picks nor drags. modTiles() / modTile(id).
+const CLASSIC = m => !m.custom, TO_SERUM = 'Serum and its modulators: the Serum view (the menu above).';
+export const SRC_VIEWS = [
+  { id: 'hw', label: 'Hardware', tip: 'The classic synths with their real front panel', layout: 'hw', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
+  { id: 'flow', label: 'Simple', tip: 'The classic synths with the simple panel', layout: 'flow', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
+  { id: 'serum', label: 'Serum', tip: 'Serum and the modules made for it', note: 'LFOs, envelopes and macros arrive here in later stages.',
+    sections: [{ id: 'serum', models: m => !!m.custom }, { id: 'mods' }, { id: 'parts', head: 'Serum parts', note: 'Arrive in milestone 3.' },
+      { id: 'notes', head: 'Note tools', note: 'Arrive in stage 2b.' }] },
+];
 const MOD_GLYPH = {
   wheel: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="14" y="2.5" width="12" height="23" rx="3"/><path d="M15.5 9.5h9M15.5 12h9M15.5 14.5h9"/></svg>',
   velo: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M5 24.5h30"/><path d="M8 24.5v-4M14 24.5v-8M20 24.5v-12M26 24.5v-16M32 24.5v-20"/></svg>',
@@ -319,7 +335,8 @@ const MOD_GLYPH = {
 const modGlyph = id => MOD_GLYPH[id] || '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 14c4-8 8-8 12 0s8 8 12 0 6-6 8-3"/></svg>';
 export function sourcesTray(el, o) {
   const d = docOf(o, el);
-  let mode = 'replace', cur = null, lay = o.layout === 'flow' ? 'flow' : 'hw';
+  const VIEWS = Array.isArray(o.views) && o.views.length ? o.views : SRC_VIEWS, viewOf = v => VIEWS.find(V => V.id === v) || VIEWS[0];
+  let mode = 'replace', cur = null, lay = 'hw', view = viewOf(o.view || o.layout).id;
   const tiles = new Map(), offs = [];
   const labelOf = (id, over) => (o.label ? o.label(id, over) : over === 'tracks' ? '+ New track' : '');
   for (const m of o.models) {
@@ -339,33 +356,12 @@ export function sourcesTray(el, o) {
     el.appendChild(b);
     tiles.set(m.id, b);
   }
-  // the "Hardware | Simple" switch (a segmented pair)
-  const segB = {};
-  if (o.layoutEl) {
-    const g = mk(d, 'div', 'cv-seg');
-    g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Synth layout');
-    for (const [k, txt, tip] of [['hw', 'Hardware', 'New synths with their real front panel'], ['flow', 'Simple', 'New synths with the simple panel']]) {
-      const b = mk(d, 'button', 'cv-segb', txt);
-      b.type = 'button'; b.title = tip; b.setAttribute('data-layout', k);
-      offs.push(listen(b, 'click', () => { if (lay !== k) { setLayout(k); if (o.onLayout) o.onLayout(k); } }));
-      g.appendChild(b);
-      segB[k] = b;
-    }
-    o.layoutEl.appendChild(g);
-  }
-  function setLayout(l) {
-    lay = l === 'flow' ? 'flow' : 'hw';
-    el.setAttribute('data-layout', lay);
-    for (const k in segB) segB[k].setAttribute('aria-pressed', String(k === lay));
-    for (const [id, b] of tiles) if (!(o.models.find(m => m.id === id) || {}).custom) b.setAttribute('aria-description', lay === 'flow' ? 'simple panel' : 'hardware panel');
-  }
-  setLayout(lay);
   // (2a) the Modulators section
   const mtiles = new Map(), placed = new Map();
+  let mhead = null;
   if (Array.isArray(o.mods) && o.mods.length) {
     const box = o.modsEl || el;
-    if (!o.modsEl) { const hd = mk(d, 'h3', 'cv-tgrp cv-mhead', 'Modulators'); el.appendChild(hd); offs.push(() => hd.remove()); }
-    if (o.modsSec) o.modsSec.hidden = false;
+    if (!o.modsEl) { const hd = mk(d, 'h3', 'cv-tgrp cv-mhead', 'Modulators'); el.appendChild(hd); mhead = hd; offs.push(() => hd.remove()); }
     const pick = o.modPick || o.pick, drag = o.modDrag || o.drag || {};
     const at = i => { if (o.toWorld) { try { const p = o.toWorld(i.x, i.y); if (p && isFinite(p.x) && isFinite(p.y)) return { x: p.x, y: p.y }; } catch { /* no world */ } } return { x: i.x, y: i.y }; };
     for (const m of o.mods) {
@@ -395,6 +391,82 @@ export function sourcesTray(el, o) {
       offs.push(() => b.remove());
     }
   }
+  // the placeholder sections (a heading, a one-line note), once each, in o.secEl after the Modulators
+  const secs = new Map();
+  for (const V of VIEWS) for (const S of V.sections || []) {
+    if (!o.secEl || !S || S.models || S.id === 'mods' || !S.head || secs.has(S.id)) continue;
+    const sec = mk(d, 'section', 'cv-tsec cv-tsoon');
+    sec.setAttribute('data-sec', S.id); sec.setAttribute('aria-label', S.head);
+    sec.append(mk(d, 'h3', 'cv-tgrp', S.head), mk(d, 'p', 'cv-tnote', S.note || ''));
+    o.secEl.appendChild(sec);
+    secs.set(S.id, sec);
+    offs.push(() => sec.remove());
+  }
+  // the view dropdown: a button showing the view, a menu of the views (menuPop)
+  const host = o.layoutEl || null, vitems = new Map();
+  let vbtn = o.viewBtn || null, vmenu = o.viewMenu || null, vpop = null;
+  if (!vbtn && host) { const b = vbtn = host.appendChild(mk(d, 'button', 'cv-vbtn')); offs.push(() => b.remove()); }
+  if (vbtn && !vmenu && host) { const m = vmenu = host.appendChild(mk(d, 'div', 'cv-pop cv-menupop cv-vmenu')); offs.push(() => m.remove()); }
+  if (vbtn && vmenu) {
+    vbtn.type = 'button';
+    vbtn.setAttribute('aria-haspopup', 'menu');
+    vmenu.setAttribute('role', 'menu');
+    vmenu.setAttribute('aria-label', 'Sources view');
+    if (!vbtn.children.length) { const c = mk(d, 'span', 'cv-vcaret', '▾'); c.setAttribute('aria-hidden', 'true'); vbtn.append(mk(d, 'span', 'cv-vlab'), c); }
+    for (const V of VIEWS) {
+      const b = mk(d, 'button', 'cv-vitem');
+      b.type = 'button';
+      b.setAttribute('role', 'menuitemradio');
+      b.setAttribute('data-view', V.id);
+      b.append(mk(d, 'span', 'cv-vname', V.label), mk(d, 'span', 'cv-vtip', V.tip || ''));
+      // the pick closes it (focus back on the button)
+      offs.push(listen(b, 'click', () => {
+        const was = view;
+        setView(V.id);
+        if (vpop) vpop.close();
+        if (view !== was) { const f = o.onView || o.onLayout; if (f) f(view); }
+      }), () => b.remove());
+      vmenu.appendChild(b);
+      vitems.set(V.id, b);
+    }
+    const P = vpop = menuPop(vbtn, vmenu, { doc: d });
+    const focusCur = () => { const b = vitems.get(view); if (b && b.focus) b.focus(); };
+    offs.push(listen(vbtn, 'click', e => { if (P.isOpen() && e && e.detail === 0) focusCur(); }), // (Enter / Space: on the current view)
+      listen(vbtn, 'keydown', e => {
+        const k = e.key;
+        if (k === 'Escape' && P.isOpen()) { if (e.preventDefault) e.preventDefault(); if (e.stopPropagation) e.stopPropagation(); P.close(); return; }
+        if (k !== 'ArrowDown' && k !== 'ArrowUp') return;
+        if (e.preventDefault) e.preventDefault();
+        P.open(); focusCur();
+      }), () => P.destroy());
+  }
+  function setView(v) {
+    const V = viewOf(v), S = V.sections || [], has = id => S.some(x => x && x.id === id);
+    view = V.id;
+    if (V.layout) lay = V.layout === 'flow' ? 'flow' : 'hw';
+    el.setAttribute('data-layout', lay);
+    el.setAttribute('data-view', view);
+    for (const m of o.models) {
+      const b = tiles.get(m.id);
+      if (!b) continue;
+      b.hidden = !S.some(x => x && typeof x.models === 'function' && x.models(m));
+      if (!m.custom) b.setAttribute('aria-description', lay === 'flow' ? 'simple panel' : 'hardware panel');
+    }
+    const mods = has('mods') && mtiles.size > 0;
+    if (o.modsSec) o.modsSec.hidden = !mods;
+    if (mhead) { mhead.hidden = !mods; for (const T of mtiles.values()) T.b.hidden = !mods; }
+    for (const [id, sec] of secs) sec.hidden = !has(id);
+    if (vbtn) {
+      const lab = vbtn.children[0];
+      if (lab && lab.textContent !== V.label) lab.textContent = V.label;
+      vbtn.setAttribute('aria-label', 'Sources view: ' + V.label);
+      vbtn.setAttribute('data-view', view);
+      vbtn.title = (V.tip || V.label) + ' — tap for the other views';
+    }
+    for (const [id, b] of vitems) b.setAttribute('aria-checked', String(id === view));
+    if (o.noteEl) o.noteEl.textContent = V.note || '';
+  }
+  setView(view);
   function setPlaced(id, reason) {
     const T = mtiles.get(id);
     if (!T) return;
@@ -407,7 +479,10 @@ export function sourcesTray(el, o) {
     T.b.title = r ? T.name + ' — ' + r : T.tip;
   }
   return {
-    setLayout, layout: () => lay,
+    /** the view (an o.views id: 'hw' | 'flow' | 'serum'; setView is a restore: no callback); the dropdown's close (→ was it open) */
+    setView, view: () => view, views: () => VIEWS.map(V => V.id), closeView: () => !!vpop && vpop.close(), viewOpen: () => !!vpop && vpop.isOpen(),
+    /** the classic synths' layout: setLayout('hw' | 'flow') = that view; layout() the last one (kept through Serum) */
+    setLayout: l => setView(l === 'flow' ? 'flow' : 'hw'), layout: () => lay,
     /** (2a) the Modulators section's tiles; greying one out with its reason (null: available again) */
     modTiles: () => [...mtiles.values()].map(T => T.b), modTile: id => (mtiles.get(id) || {}).b || null,
     setPlaced, placed: id => placed.get(id) || null,
