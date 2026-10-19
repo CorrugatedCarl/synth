@@ -1,0 +1,312 @@
+import './v8-guard.mjs';
+// Stage 2a on the canvas (docs/canvas/IMPL-2a.md §5, lane D) in the page simulation: the Modulators tiles (a drop / a tap
+// adds the module, one History step, the notice undoes it; the singletons greyed), the project Mod Wheel on every track, a
+// mod drag onto a Serum knob (a track.mods row whose compile equals the Serum's own WHEEL row), a preset load keeping it,
+// the live wheel to a cabled unselected unarmed track (recorded only into the armed targets), the mod layer hosted (the
+// inspector's edits one step per gesture, Save with preset / Keep on canvas with the compile unchanged, undo / redo), the
+// Mod list's budget, the badge "mods n/64", Delete of the wheel (asked) and of Velocity, Escape.
+// The world is canvas-sim's scripted one. One boot per file; strings, numbers and booleans only into assert (never a
+// stub DOM node). Run alone: node --max-old-space-size=2048 --test tests/canvas-2a-sim.test.mjs
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { bootMain } from './main-sim.mjs';
+import { fakeStorage } from './fakes.mjs';
+import * as CG from '../cv-graph.js?v=9';
+import * as CMOD from '../cv-model.js?v=9';
+import * as core from '../serum-core.js?v=9';
+import { MODELS } from '../models.js?v=9';
+import { cpOf } from './fixtures/mods-2a.mjs';
+
+const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 };
+function scriptedWorld(root) {
+  const L = {};
+  const W = {
+    el: root, k: 1, cam: { tx: 0, ty: 0, k: 1 }, items: new Map(), log: [], selected: null, mode: 'always',
+    setCamera(c) { W.cam = { tx: c.tx, ty: c.ty, k: c.k }; W.k = c.k; W.emit('cameraend', { cam: W.cam, zoomed: true }); },
+    band: () => Object.assign({}, BAND),
+    toClient: (wx, wy) => ({ x: VP.left + wx * W.k + W.cam.tx, y: VP.top + wy * W.k + W.cam.ty }),
+    toWorld: (x, y) => ({ x: (x - VP.left - W.cam.tx) / W.k, y: (y - VP.top - W.cam.ty) / W.k }),
+    add(it) { W.items.set(it.id, it); return () => W.remove(it.id); },
+    remove(id) { W.items.delete(id); },
+    update() {}, clear() { W.items.clear(); },
+    select(id) { W.selected = id; W.emit('select', { id }); },
+    focusItem() {}, dragPointer() {},
+    modsMode: () => W.mode, setModsMode(m) { W.mode = m; W.emit('mods', m); },
+    on(t, fn) { (L[t] || (L[t] = [])).push(fn); return () => { L[t] = L[t].filter(f => f !== fn); }; },
+    emit(t, d) { for (const f of (L[t] || []).slice()) f(d); },
+  };
+  return W;
+}
+
+const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { cvWorld: root => scriptedWorld(root) } });
+const api = sim.api, cv = globalThis.__synthTest.cv, sh = globalThis.__synthTest.shell, W = cv.world(), M = cv.mod;
+await sim.power(); sim.raf(); await sim.settle(20); sim.raf();
+const P = () => api.project(), T = () => P().tracks.find(t => t.id === P().selTrack), V = () => cv.view();
+const hsteps = () => cv.hist.u.length;
+const keys = () => [...V().modules.keys()].sort().join(',');
+const note = () => sim.$('#notice').textContent;
+const tiles = () => sh.shell.tiles;
+const MOD = id => MODELS.find(m => m.id === id);
+const fresh = (id = 'serum') => { const t = api.addTrack(MOD(id)); sim.raf(); cv.renderViews(); sim.raf(); return t; };
+const patches = t => sim.nodeOf(t.id).posted.map(x => x.m).filter(m => m.t === 'patch');
+const lastCP = t => { const L = patches(t); return L.length ? cpOf(L[L.length - 1].p) : null; };
+const rows = (t = T()) => (t.mods || []).map(r => r.id + ':' + r.src + '>' + r.dst).join(',');
+const modCables = () => V().cables.list().filter(c => c.kind === 'mod').map(c => c.id + ':' + c.a + '>' + c.b + (c.preset ? ':preset' : '')).sort().join(',');
+const badge = k => { const m = V().modules.get(k); return m ? (m.bar.children.find(c => /cv-badge/.test(c.className || '')) || {}).textContent || '' : null; };
+const withConfirm = (ans, fn) => { const was = globalThis.confirm, asked = []; globalThis.confirm = m => { asked.push(String(m)); return ans; }; try { fn(); } finally { globalThis.confirm = was; } return asked; };
+const ID = {};
+
+test('a Velocity tile dropped on the canvas adds the module where it lands (one History step, the notice undoes it); its tile greys out; a tap adds it left of the instrument', () => {
+  const t = T(), n0 = hsteps();
+  ID.a = t.id;
+  assert.deepEqual([keys(), tiles().modTiles().length, tiles().placed('velo')], ['i1,i1/fx,out', 4, null]);
+  assert.equal(M.drag.drop('velo', { over: 'canvas', x: 200, y: 400, at: { x: -600, y: 300 } }), true); sim.raf();
+  assert.deepEqual([keys(), hsteps(), cv.hist.undoLabel, note()], ['i1,i1/fx,out,ve', n0 + 1, 'Add Velocity', 'Added Velocity · tap to undo']);
+  assert.deepEqual([t.dev.ve.kind, t.lay.ve.x, t.lay.ve.y], ['velo', -704, 192], 'centred on the drop point, on the dots');
+  assert.equal(tiles().placed('velo'), 'already on this track');
+  assert.equal(!!api.nodes.get(t.id).graphed, false, 'still a canonical track');
+  assert.equal(V().modules.get('ve').kind, 'mod');
+  assert.ok(M.bodies.get('ve'), 'its body: the velocity meter');
+  sim.$('#notice').onclick(); sim.raf();
+  assert.deepEqual([keys(), hsteps(), 've' in T().dev, tiles().placed('velo')], ['i1,i1/fx,out', n0, false, null], 'the notice undid it');
+  tiles().modTile('velo').dispatchEvent({ type: 'click' }); sim.raf();
+  assert.deepEqual([keys(), hsteps(), T().lay.ve.x, cv.hist.undoLabel], ['i1,i1/fx,out,ve', n0 + 1, -416, 'Add Velocity'], 'a tap: Tidy\'s column, left of the instrument');
+  tiles().modTile('velo').dispatchEvent({ type: 'click' }); sim.raf();
+  assert.equal(hsteps(), n0 + 1, 'a placed tile adds nothing');
+  // its readout: the last velocity of the track
+  api.noteOn(60, 0.8, 0); api.noteOff(60, 0);
+  assert.equal(M.bodies.get('ve').value(), 0.8);
+});
+
+test('the project Mod Wheel: placed from one track (one step "Place Mod Wheel"), it shows on another track\'s view and greys its tile there; Velocity stays per track', () => {
+  const n0 = hsteps();
+  tiles().modTile('wheel').dispatchEvent({ type: 'click' }); sim.raf();
+  assert.deepEqual([keys(), hsteps(), cv.hist.undoLabel, note(), P().perf.wheel ? 1 : 0], ['i1,i1/fx,out,ve,wheel', n0 + 1, 'Place Mod Wheel', 'Added Mod Wheel · tap to undo', 1]);
+  assert.deepEqual([tiles().placed('wheel'), T().lay.wheel.x], ['already in this project', -416]);
+  const b = fresh('serum');
+  ID.b = b.id;
+  assert.equal(T().id, b.id);
+  assert.deepEqual([keys(), tiles().placed('wheel'), tiles().placed('velo')], ['i1,i1/fx,out,wheel', 'already in this project', null], 'the wheel on the other track; Velocity free there');
+  assert.equal(V().modules.get('wheel').kind, 'mod');
+  assert.ok(M.bodies.get('wheel'), 'the wheel body');
+  assert.deepEqual(cv.menu('wheel').filter(x => !x.sep).map(x => x.label), ['Delete', 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']);
+  assert.deepEqual(cv.menu('i1').filter(x => !x.sep).map(x => x.label), ['About the Serum…', 'Replace with…', 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']);
+});
+
+test('a mod drag from the wheel onto a Serum knob: canMod / markDests from cv-mods destOk; release → one step, a track.mods row, the cable selected; the posted patch\'s matrix equals the same row written by the Serum\'s own addMod', () => {
+  const t = T(), n0 = hsteps();
+  assert.deepEqual(M.opts.canMod('wheel', 'i1:f.cutoff'), { ok: true, why: '' });
+  const mk = M.opts.markDests('wheel');
+  assert.deepEqual([mk('i1', 'f.cutoff'), mk('i1', 'a.level'), mk('i1', 'no.such'), mk('out', 'f.cutoff')], [true, true, false, false]);
+  assert.equal(M.opts.canMod('wheel', 'i1:no.such').why, 'This knob can\'t be modulated');
+  assert.ok(M.cableDrag(), 'the jack hook made with the view');
+  M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf();
+  assert.deepEqual([rows(), hsteps(), V().cables.selected()], ['r1:wheel>i1:f.cutoff', n0 + 1, 'r1']);
+  assert.match(cv.hist.undoLabel, /^Modulate .+ with Mod Wheel$/);
+  assert.equal(modCables(), 'r1:wheel.out>i1:f.cutoff');
+  const r = Object.assign({}, T().mods[0]), cp = lastCP(T());
+  assert.deepEqual(cp, cpOf(api.buildPatch(T())), 'the posted patch is the injected compile');
+  const b = CG.modBudget(T(), 'i1');
+  assert.equal(badge('i1'), 'mods ' + (b.preset + 1) + '/64', 'the Serum module\'s badge');
+  // the same row through the Serum's own matrix (its WHEEL tile's addMod)
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), modCables()], ['', '']);
+  let slot = -1;
+  api.sxHost(T()).edit(s => { slot = core.addMod(s, T().fx, 'wheel', 'f.cutoff', { amt: r.amt, bi: r.bi }); }); sim.raf();
+  assert.ok(slot >= 0);
+  assert.deepEqual(lastCP(T()), cp, 'canvas cable ≡ the Serum\'s own row');
+  api.sxHost(T()).edit(s => { s.matrix[slot] = core.normRow(null); }); sim.raf();
+  cv.redo(); sim.raf();
+  assert.deepEqual([rows(), lastCP(T())], ['r1:wheel>i1:f.cutoff', cp], 'redo: the cable and its compile back');
+  assert.equal(t.id, T().id);
+});
+
+test('refusals: a classic knob is for stage 2b; a release on a refused knob only tells', () => {
+  const n0 = hsteps();
+  const c = fresh('minimoog');
+  assert.equal(M.opts.canMod('wheel', 'i1:fc').why, 'Mod Wheel → Cutoff: this knob can be modulated from stage 2b');
+  M.opts.onMod('wheel', 'i1:fc'); sim.raf();
+  assert.deepEqual([rows(), hsteps(), note()], ['', n0 + 1, 'Mod Wheel → Cutoff: this knob can be modulated from stage 2b'], '(+1: the new track)');
+  M.opts.onRefuse('wheel', 'i1:fc', 'This knob can’t be modulated');
+  assert.equal(note(), 'This knob can’t be modulated');
+  assert.equal(M.marks()('i1', 'fc'), false, 'no classic knob lights up');
+  cv.undo(); sim.raf(); // (the minimoog track goes)
+  assert.equal(P().tracks.some(x => x.id === c.id), false);
+  api.selectTrack(ID.b); sim.raf(); cv.renderViews(); sim.raf();
+  assert.equal(T().id, ID.b);
+});
+
+test('a preset load keeps every canvas cable (re-injected) and re-derives the preset cables', () => {
+  const t = T(), L = api.sxHost(t).presets.list().filter(p => !p.user);
+  const has = p => (api.sxPreset(p.key).v.s.matrix || []).some(r => r && r.src === 'wheel' && r.dst);
+  const k = (L.find(has) || L[2]).key;
+  api.sxLoad(T(), k); sim.raf();
+  assert.equal(rows(), 'r1:wheel>i1:f.cutoff', 'the canvas cable stays');
+  assert.deepEqual(lastCP(T()), cpOf(api.buildPatch(T())));
+  const inj = CG.injectMods(T().dev.i1, T().mods);
+  assert.deepEqual([inj.placed.map(x => x.id), inj.left], [['r1'], []], 'injected into the new preset');
+  const pre = CMOD.presetRows(T().dev.i1).filter(r => r.src === 'wheel').map(r => 'p:i1:' + r.slot + ':wheel.out>i1:' + r.dst + ':preset');
+  assert.equal(modCables(), ['r1:wheel.out>i1:f.cutoff', ...pre].sort().join(','), 'the preset\'s wheel rows drawn as preset cables');
+});
+
+test('the live wheel (the canvas module, the perf tray, ctl) reaches the cabled, unselected, unarmed track; it is recorded only into the armed targets; playback shows the lane on the module', async () => {
+  const a = P().tracks.find(x => x.id === ID.a), b = P().tracks.find(x => x.id === ID.b);
+  api.selectTrack(a.id); sim.raf(); cv.renderViews(); sim.raf();
+  a.arm = true; b.arm = false;
+  const na = sim.nodeOf(a.id), nb = sim.nodeOf(b.id), sent = (n, k) => n.posted.filter(x => x.m.t === k).map(x => x.m.v);
+  const clear = () => { na.posted.length = 0; nb.posted.length = 0; };
+  const w = M.bodies.get('wheel');
+  assert.ok(w, 'the wheel on the selected track');
+  assert.deepEqual([w.others(), api.wheelTracks().map(x => x.id)], [1, [b.id]], '"+1 on other tracks"');
+  clear();
+  w.el.children[0].dispatchEvent({ type: 'keydown', key: 'End', preventDefault() {}, stopPropagation() {} }); // (the module's wheel, by keys)
+  assert.deepEqual([sent(na, 'wheel'), sent(nb, 'wheel')], [[1], [1]], 'the module → ctl: the selected and the cabled track');
+  clear(); api.ctl('wheel', 0.25, 0);
+  assert.deepEqual([sent(na, 'wheel'), sent(nb, 'wheel'), w.value()], [[0.25], [0.25], 0.25], 'the perf tray / MIDI wheel moves the module');
+  // recording: into the armed target only
+  const Tr = api.transport();
+  P().metronome.countIn = 0; P().metronome.on = false;
+  sim.$('#tPlay').click(); await sim.settle(2);
+  sim.$('#tRec').click();
+  assert.equal(Tr.rec, true);
+  sim.run(4800); sim.raf();
+  const nb0 = b.cc.length;
+  clear(); api.ctl('wheel', 0.4, 0, sim.ms);
+  assert.deepEqual([sent(na, 'wheel'), sent(nb, 'wheel')], [[0.4], [0.4]]);
+  assert.ok(a.cc.some(c => c.k === 'wheel' && c.v === 0.4), 'recorded into the armed target');
+  assert.equal(b.cc.length, nb0, 'not into the cabled track');
+  w.update(0); sim.raf();
+  assert.equal(w.value(), 0.4, 'playing: the module shows the selected track\'s lane');
+  sim.$('#tRec').click(); sim.$('#tPlay').click();
+  a.arm = false;
+  a.cc = a.cc.filter(c => c.k !== 'wheel');
+  api.selectTrack(b.id); sim.raf(); cv.renderViews(); sim.raf();
+});
+
+const walk = (n, f, out = []) => { for (const c of n.children || []) { if (f(c)) out.push(c); walk(c, f, out); } return out; };
+const pop = () => walk(sim.$('#ov'), c => /\bcv-ml-pop\b/.test(c.className || '')).pop() || null;
+const inPop = f => { const p = pop(); return p ? walk(p, f) : []; };
+const ev = (type, o) => Object.assign({ type, preventDefault() {}, stopPropagation() {} }, o || {});
+
+test('the inspector (a badge\'s tap): amount, bipolar, bypass — one History step each gesture, live on the patch; undo / redo of each; Escape closes it', async () => {
+  const t = T(), n0 = hsteps(), amt0 = t.mods[0].amt;
+  M.sel('r1'); await Promise.resolve();
+  assert.equal(M.layer().isOpen(), true, 'opened by the badge');
+  assert.ok(pop(), 'its popover in #ov');
+  const sl = inPop(c => /\bwk-sl\b/.test(c.className || ''))[0];
+  sl.dispatchEvent(ev('keydown', { key: 'PageUp', target: sl }));
+  sim.raf();
+  const amt1 = T().mods[0].amt;
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, Math.round((amt1 - amt0) * 100)], [n0 + 1, 'Mod amount', 20], 'one step');
+  assert.ok(lastCP(T()).mAmt.some(x => Math.abs(x - amt1) < 1e-9), 'the patch follows');
+  const tog = lab => inPop(c => c.attrs && c.attrs['aria-label'] === lab)[0];
+  tog('Bipolar').dispatchEvent(ev('click')); sim.raf();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, T().mods[0].bi], [n0 + 2, 'Mod polarity', 1]);
+  tog('Bypass').dispatchEvent(ev('click')); sim.raf();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, T().mods[0].byp], [n0 + 3, 'Mod bypass', 1]);
+  // the host as the layer drives it: live edits per move, one step at the gesture's end
+  const H = M.host();
+  H.edit('r1', { curve: 0.1 }); H.edit('r1', { curve: 0.3 }); H.step('Mod curve'); sim.raf();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, T().mods[0].curve], [n0 + 4, 'Mod curve', 0.3]);
+  cv.undo(); sim.raf();
+  assert.deepEqual([T().mods[0].curve, T().mods[0].byp], [0, 1]);
+  cv.undo(); cv.undo(); cv.undo(); sim.raf();
+  assert.deepEqual([T().mods[0].amt, T().mods[0].bi, T().mods[0].byp, hsteps()], [amt0, 0, 0, n0]);
+  cv.redo(); cv.redo(); cv.redo(); sim.raf();
+  assert.deepEqual([T().mods[0].amt, T().mods[0].bi, T().mods[0].byp], [amt1, 1, 1]);
+  assert.equal(M.layer().isOpen(), true, 'still open after undo / redo (synced)');
+  sim.key('Escape', true, { key: 'Escape' });
+  assert.equal(M.layer().isOpen(), false, 'Escape closes it');
+  H.edit('r1', { byp: 0, bi: 0 }); H.step('Mod bypass'); sim.raf();
+});
+
+test('Save with preset moves the row into s.matrix (the compile unchanged), Keep on canvas brings it back; each one step, undo / redo keep the two sides consistent', async () => {
+  const cp = lastCP(T()), n0 = hsteps();
+  const perfRows = () => CMOD.presetRows(T().dev.i1).filter(r => r.src === 'wheel' && r.dst === 'f.cutoff').map(r => r.slot);
+  assert.deepEqual(perfRows(), [], 'no such preset row yet');
+  M.sel('r1'); await Promise.resolve();
+  const save = inPop(c => c.attrs && c.attrs['data-act'] === 'save')[0];
+  assert.equal(save.disabled, false);
+  save.dispatchEvent(ev('click')); sim.raf();
+  const slot = perfRows()[0];
+  assert.deepEqual([rows(), perfRows().length, hsteps(), cv.hist.undoLabel, M.layer().isOpen()], ['', 1, n0 + 1, 'Save with preset', false]);
+  assert.deepEqual(lastCP(T()), cp, 'the compile unchanged');
+  assert.ok(modCables().includes('p:i1:' + slot + ':wheel.out>i1:f.cutoff:preset'), 'now a preset cable');
+  assert.notEqual(badge('i1').slice(0, 4), 'mods', 'no canvas rows: no "mods" badge');
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), perfRows(), lastCP(T())], ['r1:wheel>i1:f.cutoff', [], cp], 'undo: on the canvas again, the slot freed');
+  cv.redo(); sim.raf();
+  assert.deepEqual([rows(), perfRows(), lastCP(T())], ['', [slot], cp], 'redo');
+  // Keep on canvas (the preset cable's inspector)
+  M.sel('p:i1:' + slot); await Promise.resolve();
+  const keep = inPop(c => c.attrs && c.attrs['data-act'] === 'keep')[0];
+  assert.ok(keep, 'a preset row: Keep on canvas');
+  keep.dispatchEvent(ev('click')); sim.raf();
+  assert.deepEqual([rows(), perfRows(), hsteps(), cv.hist.undoLabel, lastCP(T())], ['r2:wheel>i1:f.cutoff', [], n0 + 2, 'Keep on canvas', cp]);
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), perfRows(), lastCP(T())], ['', [slot], cp]);
+  cv.redo(); sim.raf();
+  assert.deepEqual([rows(), perfRows(), lastCP(T())], ['r2:wheel>i1:f.cutoff', [], cp]);
+});
+
+test('the Mod list: every row by Serum with its budget n/64 (as the badge and the compile); Escape closes it', () => {
+  const t = T();
+  cv.menu('i1').find(x => x.label === 'Modulation list…').action();
+  assert.equal(M.layer().isOpen(), true);
+  const sheet = walk(sim.$('#ov'), c => /\bcv-ml-list\b/.test(c.className || '')).pop();
+  const b = CG.modBudget(t, 'i1'), txt = walk(sheet, c => /\bcv-ml-b\b/.test(c.className || '')).map(c => c.textContent);
+  assert.deepEqual(txt, [(b.preset + b.canvas) + '/64']);
+  assert.equal(badge('i1'), 'mods ' + (b.preset + b.canvas) + '/64', 'the badge agrees');
+  const lines = walk(sheet, c => /\bcv-ml-line\b/.test(c.className || '')).map(c => c.attrs['data-row'] || 'slot' + c.attrs['data-slot']);
+  assert.equal(lines[0], 'r2', 'the canvas row first, then the preset rows');
+  assert.equal(lines.length, 1 + CMOD.presetRows(t.dev.i1).length);
+  sim.key('Escape', true, { key: 'Escape' });
+  assert.equal(M.layer().isOpen(), false);
+});
+
+test('the parameter list (a jack tap / a drop on the Serum\'s bar): a pick connects, one step', () => {
+  const n0 = hsteps(), r0 = rows();
+  M.opts.onJackTap('wheel', null);
+  assert.equal(M.layer().isOpen(), true);
+  const H = M.host();
+  assert.equal(H.connect('wheel', 'i1:f.res').ok, true); H.step('Modulate Res with Mod Wheel'); sim.raf();
+  assert.deepEqual([rows(), hsteps(), cv.hist.undoLabel], [r0 + ',r3:wheel>i1:f.res', n0 + 1, 'Modulate Res with Mod Wheel']);
+  M.layer().close();
+  const d = M.descs('i1');
+  assert.ok(d.some(x => x.id === 'f.cutoff' && x.group) && d.some(x => /^fx\./.test(x.id)), 'grouped as destMenu, its own FX too');
+  M.opts.onBarDrop('wheel', 'i1');
+  assert.equal(M.layer().isOpen(), true);
+  M.layer().close();
+  cv.undo(); sim.raf();
+  assert.equal(rows(), r0);
+});
+
+test('Delete: Velocity (its rows) one step; the Mod Wheel asks "Remove the Mod Wheel and its N cables on M tracks?" and removes the rows on every track; undo brings all back', () => {
+  const a = () => P().tracks.find(x => x.id === ID.a);
+  api.selectTrack(ID.a); sim.raf(); cv.renderViews(); sim.raf();
+  M.opts.onMod('ve.out', 'i1:a.level'); sim.raf();
+  M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf();
+  assert.deepEqual(a().mods.map(r => r.src), ['ve.out', 'wheel']);
+  const n0 = hsteps();
+  M.del('ve'); sim.raf();
+  assert.deepEqual([keys().includes('ve'), a().mods.map(r => r.src), hsteps(), cv.hist.undoLabel], [false, ['wheel'], n0 + 1, 'Delete Velocity']);
+  cv.undo(); sim.raf();
+  assert.deepEqual([keys().includes('ve'), a().mods.map(r => r.src)], [true, ['ve.out', 'wheel']]);
+  assert.equal(CMOD.wheelRows(P()).byTrack.length, 2);
+  let asked = withConfirm(false, () => cv.menu('wheel').find(x => x.label === 'Delete').action());
+  assert.deepEqual([asked, hsteps(), CMOD.hasWheel(P())], [['Remove the Mod Wheel and its 2 cables on 2 tracks?'], n0, true], 'declined: nothing');
+  const b = P().tracks.find(x => x.id === ID.b), k0 = patches(b).length;
+  asked = withConfirm(true, () => cv.menu('wheel').find(x => x.label === 'Delete').action()); sim.raf();
+  assert.deepEqual([asked.length, hsteps(), cv.hist.undoLabel, CMOD.hasWheel(P()), keys().includes('wheel')], [1, n0 + 1, 'Delete Mod Wheel', false, false]);
+  assert.deepEqual([a().mods.map(r => r.src), P().tracks.find(x => x.id === ID.b).mods.length, tiles().placed('wheel')], [['ve.out'], 0, null]);
+  assert.ok(patches(b).length > k0, 'the other track recompiled');
+  cv.undo(); sim.raf();
+  assert.deepEqual([CMOD.hasWheel(P()), CMOD.wheelRows(P()).byTrack.length, keys().includes('wheel')], [true, 2, true]);
+});
+
+test('visibility: the toolbar ∿ mode reaches the view', () => {
+  W.setModsMode('never');
+  assert.equal(V().cables.modsVisible(), 'never');
+  W.setModsMode('always');
+  assert.equal(V().cables.modsVisible(), 'always');
+});
