@@ -106,10 +106,13 @@ function recCtx() {
 test('1g gridDraw: every dot on a whole device px of one origin (the major ones on the 128 multiples of the minor grid), sizes in whole device px, counts bounded, nothing below GRID_MIN_DPX, the fade of gridBg', () => {
   eq([W.GRID_MIN_DPX, W.GRID_MAX_DOTS], [6, 40000]);
   eq([W.gridSizes(1), W.gridSizes(2), W.gridSizes(3)], [{ side: 2, r: 1.5 }, { side: 3, r: 2 }, { side: 5, r: 3.5 }], 'device px: squares of whole px, discs on the squares\' centres');
+  // (hotfix 2) a store below the device ratio (q device px per store px): the device sizes in whole store px (a square
+  // rounded up), half px discs — dpr 2 on a 1× store: 2 store px (4 device: the 3 rounded up), r 1 (2 device, as at 2×)
+  eq([W.gridSizes(1, 1), W.gridSizes(1, 2), W.gridSizes(1, 3), W.gridSizes(2, 1.5)], [{ side: 2, r: 1.5 }, { side: 2, r: 1 }, { side: 2, r: 1 }, { side: 4, r: 2.5 }]);
   const R = rng(5);
-  for (let i = 0; i < 60; i++) {
-    const d = [1, 2, 3][i % 3], c = { tx: (R() - 0.5) * 3000, ty: (R() - 0.5) * 3000, k: 0.25 + R() * 1.75 }, w = Math.round((300 + R() * 1200) * d), h = Math.round((200 + R() * 900) * d);
-    const x = recCtx(), n = W.gridDraw(x, c, w, h, d), Z = W.gridSizes(d), o = Z.side >> 1, cc = Z.side / 2 - o, sp = 32 * c.k * d, a = W.gridBg(c).minor.a;
+  for (let i = 0; i < 80; i++) {
+    const d = [1, 2, 3][i % 3], q = i % 4 === 3 ? 2 : 1, c = { tx: (R() - 0.5) * 3000, ty: (R() - 0.5) * 3000, k: 0.25 + R() * 1.75 }, w = Math.round((300 + R() * 1200) * d), h = Math.round((200 + R() * 900) * d);
+    const x = recCtx(), n = W.gridDraw(x, c, w, h, d, q), Z = W.gridSizes(d, q), o = Z.side >> 1, cc = Z.side / 2 - o, sp = 32 * c.k * d, a = W.gridBg(c).minor.a;
     eq(x.calls[0], ['setTransform', 1, 0, 0, 1, 0, 0]); eq(x.calls[1], ['clearRect', 0, 0, w, h], 'cleared first');
     // the dot whose world point is (I·32, J·32): round((I·32·k + t)·d)
     const idx = (p, t) => (p / d - t) / (32 * c.k);
@@ -127,7 +130,7 @@ test('1g gridDraw: every dot on a whole device px of one origin (the major ones 
     }
     eq([n.minor, n.major], [x.rects.length, x.arcs.length]);
     ok(n.minor + n.major <= W.GRID_MAX_DOTS, 'bounded');
-    const want = a > 0 && sp >= W.GRID_MIN_DPX;
+    const want = a > 0 && sp * q >= W.GRID_MIN_DPX;
     eq(n.minor > 0, want && (w / sp) * (h / sp) > 16, 'the fine layer only while it shows (alpha) and ≥ 6 device px apart');
     if (n.minor) eq(x.fills[0], 'rgba(233, 231, 226, ' + Math.round(0.15 * a * 1000) / 1000 + ')', 'its alpha: gridBg\'s fade');
     eq(x.fills.at(-1), 'rgba(233, 231, 226, 0.24)', 'the major dots always');
@@ -211,7 +214,7 @@ test('createWorld: the transform string, the dot grid, --ik written only at a zo
   eq(w.style.transform, 'translate(0px, 0px) scale(1)');
   const gc = vp.childNodes[0];
   eq([gc.localName, gc.className, gc.getAttribute('aria-hidden'), vp.childNodes[1] === w, gc.width, gc.height, gc.style.width, gc.style.height],
-    ['canvas', 'cv-grid', 'true', true, 1256, 856, '1256px', '856px'], '1g: the grid canvas under #world, device px (dpr 1; hotfix: + GRID_OVER)');
+    ['canvas', 'cv-grid', 'true', true, 2256, 1456, '2256px', '1456px'], '1g: the grid canvas under #world, device px (dpr 1; hotfix 2: vw / GRID_REACH + GRID_OVER)');
   eq(w.style['--ik'], '1');
   world.setCamera({ tx: 10.25, ty: -4, k: 0.5 });
   eq(names(events.splice(0)), ['movestart', 'camera', 'camera', 'cameraend', 'lod'].slice(0, 4), 'one jump: movestart, the frame, the rounded rest, cameraend');
@@ -234,7 +237,7 @@ test('createWorld: the transform string, the dot grid, --ik written only at a zo
 });
 
 test('hotfix gridFollow: the transform keeps every world point where the camera puts it (wrapped by whole MAJOR periods), covers the viewport at s ≥ 1; the store constants', () => {
-  eq([W.GRID_OVER, W.GRID_MAX_PX, W.GRID_MAX_S, W.GRID_ZOOM_F, W.GRID_GAP_MS, W.GRID_AHEAD], [256, 8e6, 2, 2, 250, 1.25]);
+  eq([W.GRID_OVER, W.GRID_MAX_PX, W.GRID_MAX_S, W.GRID_REACH], [256, 8e6, 2, 0.5]);
   const R = rng(19), vw = 1000, vh = 600, cw = vw + 256, ch = vh + 256;
   for (let i = 0; i < 300; i++) {
     const c0 = { tx: (R() - 0.5) * 3000, ty: (R() - 0.5) * 3000, k: 0.25 + R() * 1.75 };
@@ -272,7 +275,7 @@ test('hotfix: the grid canvas is drawn at rest only — boot, a burst\'s end, a 
   const m0 = world.gridStats().moves, c0 = world.cam, N = 12;
   for (let i = 0; i < N; i++) { world.panBy(7.3, -3.1); frame(); }
   eq([draws(), world.gridStats().moves - m0, reads, world.busy], [n0, N, 0, true], 'a pan: no draw, a transform a frame, no layout read');
-  const f = W.gridFollow(c0, world.cam, 1256, 856, 1000, 600), st = world.gridStats();
+  const f = W.gridFollow(c0, world.cam, 2256, 1456, 1000, 600), st = world.gridStats();
   eq([st.tf, gc.style.transform], ['translate(' + f.x + 'px, ' + f.y + 'px) scale(1)', st.tf], 'the transform: gridFollow from the drawn camera');
   // the dot drawn for world (0, 0) (at rest: store px = round(t0·d)) lands, moved by the transform, on world (0, 0)'s
   // screen px after the pan — or on a dot one MAJOR period away from it (the wrap): the pattern is where the camera puts it
@@ -290,9 +293,9 @@ test('hotfix: the grid canvas is drawn at rest only — boot, a burst\'s end, a 
   world.resize(); frame(2);
   eq(draws(), n1, 'a resize that changes nothing: no draw');
   place(vp, 0, 100, 900, 600); world.resize();
-  eq([gc.width, gc.height, gc.style.width, draws()], [1156, 856, '1156px', n1 + 1], 'a resize: sized (+ GRID_OVER) and drawn once');
+  eq([gc.width, gc.height, gc.style.width, draws()], [2056, 1456, '2056px', n1 + 1], 'a resize: sized (vw / GRID_REACH + GRID_OVER) and drawn once');
   win.devicePixelRatio = 2; world.resize();
-  eq([gc.width, gc.height, gc.style.width, gc.style.height, draws()], [2312, 1712, '1156px', '856px', n1 + 2], 'dpr 2: device px, CSS-sized');
+  eq([gc.width, gc.height, gc.style.width, gc.style.height, world.gridStats().s, draws()], [2056, 1456, '2056px', '1456px', 1, n1 + 2], 'dpr 2: over GRID_MAX_PX at 2× — the overscan wins, the store at 1× (CSS-sized)');
   // a resize inside a burst: drawn at once (the store was cleared), at the camera — no transform
   world.panBy(50, 0); frame();
   place(vp, 0, 100, 900, 500); world.resize();
@@ -308,47 +311,54 @@ test('hotfix: the grid canvas is drawn at rest only — boot, a burst\'s end, a 
   void w;
 });
 
-test('hotfix: inside a burst a zoom past GRID_ZOOM_F redraws once, never within GRID_GAP_MS of the last draw; a zoom out redraws GRID_AHEAD further out; the store cap', () => {
+test('hotfix 2: inside a burst nothing is drawn, whatever the zoom (in ×8, out past GRID_REACH: the store only scales, bare strips accepted), one draw at rest; the store: overscan over scale under GRID_MAX_PX', () => {
   const { vp, world, frame, win } = setup();
-  frame(); world.setCamera({ tx: 0, ty: 0, k: 0.3 }); frame(); adv(400); frame();
+  frame(); world.setCamera({ tx: 0, ty: 0, k: 0.25 }); frame(); adv(400); frame();
   const gc = vp.childNodes[0], ctx = gc.getContext('2d'), draws = () => ctx.calls.filter(c => c[0] === 'clearRect').length;
   const step = (f, n = 1) => { for (let i = 0; i < n; i++) { if (f) world.zoomAt(f, 500, 400); else world.panBy(0.01, 0); frame(); adv(0); } };
-  const n0 = draws();
-  step(1.25, 3); // ×1.95: covered, under ×2
-  eq([draws(), world.busy], [n0, true], 'a zoom in under ×2: no draw');
-  step(1.25); // ×2.44
-  const n1 = n0;
-  eq(draws(), n1 + 1, 'past ×2: one draw (the last was long ago)');
   const scaleOf = () => { const m = /scale\(([^)]+)\)/.exec(world.gridStats().tf); return m ? +m[1] : 1; };
-  step(1.5, 2); // ×2.25 again, < 250 ms after that draw
-  eq(draws(), n1 + 1, 'rate-limited');
-  ok(scaleOf() > 2, 'meanwhile it stretches: ' + world.gridStats().tf);
-  step(0, 6); // ≈ 100 ms more: still in the window
-  eq(draws(), n1 + 1, 'still rate-limited');
-  step(0, 10); // past GRID_GAP_MS
-  eq(draws(), n1 + 2, 'then one draw');
+  const n0 = draws();
+  step(1.25, 3); // ×1.95
+  eq([draws(), world.busy], [n0, true], 'a zoom in under ×2: no draw');
+  step(1.3, 6); // ×8 (K_MAX)
+  eq([draws(), world.k], [n0, 2], 'past ×2, to ×8: no draw (the store stretches)');
+  near(scaleOf(), 8, 1e-9, 'stretched ×8: ' + world.gridStats().tf);
+  step(0, 20); // ≈ 330 ms more of the burst: no timed redraw either
+  eq(draws(), n0, 'never in the burst');
   adv(200); frame(2);
-  eq([world.busy, draws()], [false, n1 + 3], 'the end: one draw at rest');
-  // a zoom out: uncovered at once → drawn GRID_AHEAD further out (it starts scaled up by 1.25)
+  eq([world.busy, draws(), world.gridStats().tf], [false, n0 + 1, ''], 'the end: one draw at rest, the transform gone');
+  // a zoom out: covered to GRID_REACH (the store's overscan), then bare strips at the right / bottom — still no draw
   adv(400); frame();
-  const n2 = draws();
+  const n2 = draws(), st = world.gridStats(), c0 = world.cam, cov = () => W.gridFollow(c0, world.cam, st.w / st.s, st.h / st.s, 1000, 600).ok;
   step(0.6);
-  eq(draws(), n2 + 1, 'a zoom out by 0.6: uncovered, drawn');
-  near(scaleOf(), W.GRID_AHEAD, 1e-9, 'scaled up by GRID_AHEAD');
-  step(0.9); // 1.125: still covered, no draw
-  eq(draws(), n2 + 1);
+  eq([draws(), cov()], [n2, true], 'out ×0.6: covered by the overscan, no draw');
+  step(0.6);
+  eq([draws(), cov()], [n2, false], 'out ×0.36 (past GRID_REACH): uncovered strips, no draw');
+  near(scaleOf(), 0.36, 1e-9);
   adv(200); frame(2);
-  eq([draws(), world.gridStats().tf], [n2 + 2, ''], 'rest: drawn at the camera');
-  // the store cap: a 13" iPad (1376 × 1032 at dpr 2) keeps the full scale (the overscan gives way); a 4K window at dpr 2
-  // and a dpr-3 screen stay ≤ GRID_MAX_PX, ≤ GRID_MAX_S
-  for (const [vw2, vh2, d, sWant] of [[1376, 1032, 2, 2], [3840, 2160, 2, null], [1000, 700, 3, 2]]) {
+  eq([draws(), world.gridStats().tf], [n2 + 1, ''], 'rest: drawn at the camera, full coverage');
+  // the store (gridStore): a small window keeps 2×; a 13" iPad (1376 × 1032 at dpr 2) and a dpr-3 screen drop to 1×
+  // (a whole device ratio) for the full reach; a 2560 × 1400 window at dpr 2 at 1× gives way on the reach; a 4K window
+  // at dpr 2 keeps the old cap (reach 1, the overscan, then the scale below 1). Always ≤ GRID_MAX_PX, ≤ GRID_MAX_S.
+  const R = rng(23);
+  for (const [vw2, vh2, d, sWant, rWant] of [[400, 300, 2, 2, 0.5], [1376, 1032, 2, 1, 0.5], [1000, 700, 3, 1, 0.5], [2560, 1400, 2, 1, null], [3840, 2160, 2, null, 1]]) {
     place(vp, 0, 100, vw2, vh2); win.devicePixelRatio = d; world.resize();
-    const g = world.gridStats();
-    ok(g.w * g.h <= W.GRID_MAX_PX && g.s <= W.GRID_MAX_S, JSON.stringify([vw2, vh2, d, g.w, g.h, g.s]));
-    if (sWant) eq(g.s, sWant, 'full scale kept'); else ok(g.s < 1, 'scale capped (8.3 M CSS px: below 1) ' + g.s);
+    const g = world.gridStats(), tag = JSON.stringify([vw2, vh2, d, g.w, g.h, g.s, g.r]);
+    eq(W.gridStore(vw2, vh2, d), { w: g.w, h: g.h, s: g.s, r: g.r }, 'gridStore: ' + tag);
+    ok(g.w * g.h <= W.GRID_MAX_PX && g.s <= W.GRID_MAX_S, tag);
+    if (sWant) eq(g.s, sWant, 'scale ' + tag); else ok(g.s < 1, 'scale capped (8.3 M CSS px: below 1) ' + tag);
+    if (rWant) eq(g.r, rWant, 'reach ' + tag); else ok(g.r > 0.5 && g.r < 1, 'the reach gives way ' + tag);
     ok(g.w >= vw2 * g.s - 1 && g.h >= vh2 * g.s - 1, 'covers the viewport');
-    const xs = ctx.calls.slice(ctx.calls.findLastIndex(c => c[0] === 'clearRect')).filter(c => c[0] === 'rect');
+    // a zoom out to (just inside) the reach, from any rest camera, stays covered
+    if (g.r < 1) for (let i = 0; i < 40; i++) {
+      const a = { tx: (R() - 0.5) * 4000, ty: (R() - 0.5) * 4000, k: 0.25 + R() * 1.75 }, f = g.r * 1.01;
+      const b = W.zoomAbout(a, f, R() * vw2, R() * vh2);
+      ok(W.gridFollow(a, b, g.w / g.s, g.h / g.s, vw2, vh2).ok, 'covered to the reach ' + tag);
+    }
+    const last = ctx.calls.slice(ctx.calls.findLastIndex(c => c[0] === 'clearRect')), xs = last.filter(c => c[0] === 'rect');
     ok(xs.every(c => Number.isInteger(c[1]) && Number.isInteger(c[2])), 'whole store px under the cap too');
+    const Z = W.gridSizes(g.s, d / g.s);
+    ok(xs.every(c => c[3] === Z.side && c[4] === Z.side) && last.filter(c => c[0] === 'arc').every(c => c[3] === Z.r), 'the device-sized dots in store px ' + JSON.stringify(Z));
   }
   world.destroy();
 });
@@ -403,6 +413,32 @@ test('items: never a view(); onScreen from cached rects — once per crossing of
   far.x = 9000; world.update('far'); frame();
   eq(far.log.at(-1), 'off');
   eq([world.onScreen('a'), world.onScreen('far')], [true, false]);
+});
+
+test('hotfix 2: a zoom burst writes no DOM but the camera\'s two transforms and the zoom text — its on-screen plan (data-cv-off, the screen event) and the % button\'s label wait for its end; a pan burst plans live as before', () => {
+  const { vp, world, frame, item, events, tb } = setup();
+  const a = item('a', 400, 200, 200, 200, 100), far = item('far', 1400, 0, 100, 100, 100);
+  world.add(a); world.add(far);
+  frame(); adv(400); frame();
+  const pct = all(tb).find(n => n.classList && n.classList.contains('cv-tb-pct'));
+  ok(!!pct, 'the % button');
+  const lab0 = pct.getAttribute('aria-label');
+  eq([far.log, lab0], [['off'], 'Zoom 100% — reset to 100 %']);
+  // a pinch-like zoom out about the centre, 1 → 0.4 in 12 frames: far comes into view mid-burst (planScreen) …
+  events.length = 0;
+  for (let i = 0; i < 12; i++) { world.zoomAt(Math.pow(0.4, 1 / 12), 500, 400); frame(); }
+  ok(world.busy && W.planScreen([{ id: 'far', rect: { x: 1400, y: 0, w: 100, h: 100 } }], world.cam, 1000, 600).on.length === 1, 'far is in view now');
+  eq([far.log, far.el.hasAttribute('data-cv-off'), events.filter(e => e[0] === 'screen').length], [['off'], true, 0], '… but its plan waits (no attribute, no event mid-zoom)');
+  eq([pct.textContent, pct.getAttribute('aria-label')], ['40%', lab0], 'the text follows the frames, the label waits');
+  adv(200); frame(2);
+  eq([world.busy, far.log, far.el.hasAttribute('data-cv-off'), events.filter(e => e[0] === 'screen').map(e => e[1])], [false, ['off', 'on'], false, [{ on: ['far'], off: [] }]], 'at rest: planned once');
+  eq(pct.getAttribute('aria-label'), 'Zoom 40% — reset to 100 %', 'the label at rest');
+  // a pan burst at that zoom still plans every frame (displays resume CULL_MARGIN early while panning)
+  far.x = 3400; world.update('far'); frame();
+  eq(far.log.at(-1), 'off');
+  for (let i = 0; i < 20 && far.log.at(-1) === 'off'; i++) { world.panBy(-60, 0); frame(); }
+  eq([world.busy, far.log.at(-1)], [true, 'on'], 'a pan: on mid-burst');
+  void vp;
 });
 
 test('Z1: a zoom sweep 2 → 0.25 → 1 leaves every item\'s attributes and children as they were (but data-cv-off / -sel / -edit); the DOM budget is a warning (budget event), nothing hidden', () => {

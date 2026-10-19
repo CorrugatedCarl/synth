@@ -1049,8 +1049,9 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 /* body: the existing panel, framed by the module's ring */
 .cv-body { position: relative; contain: layout paint style; overflow: clip; border-radius: 0 0 12px 12px; }
 .cv-mod[data-cv-fold] .cv-body { display: none; }
-/* off screen (cv-world's plan): nothing visible changes — CSS animations pause (Z1: no cards, nothing hidden at any zoom) */
-.cv-mod[data-cv-off] * { animation-play-state: paused; }
+/* off screen (cv-world's plan): nothing visible changes — CSS animations pause (Z1: no cards, nothing hidden at any zoom).
+   Hotfix 2: the module's animations by name, not `*` (a toggle restyled its whole subtree); a new one joins the list */
+.cv-mod[data-cv-off] .fxr-flash { animation-play-state: paused; }
 .cv-body > .inst { border-radius: 0 0 12px 12px; box-shadow: none; }
 .cv-body > .inst.wood { margin: 0 22px; border-radius: 0; }
 .cv-body > .inst.custom .sx-root { border-radius: 0 0 12px 12px; box-shadow: none; }
