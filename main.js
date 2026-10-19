@@ -1199,28 +1199,28 @@ function fitBars() {
 // kept when its model changes": the primary's rack, when the primary is the same device and its rack moved between its
 // panel and the Serum (classic ↔ Serum: one track's FX device is not in the other)
 // (stage 2a) Save with preset / Keep on canvas move a row between track.mods (History) and the Serum's matrix (a knob
-// tweak's state, kept): undoing / redoing one of them (modMove) takes the performance slots of the matrix from the
-// snapshot too — a slot both sides hold empty or with a wheel / velo / at / bend row; every other row stays as it is now
+// tweak's state, kept): their step carries the move (entry.meta {trackId, dev, slot, row}, kept by History across undo /
+// redo) and undoing / redoing it moves that row alone — out of its slot while the slot still holds it, back in while the
+// slot is free; else the matrix stays as it is and the notice says so. The step is the one History really undid (its
+// no-op steps skipped): read after hist.undo / hist.redo
 const MOD_MOVE = /^(Save with preset|Keep on canvas)$/;
-let modMove = false;
-function modMoveBack(was, now) {
-  const A = was && was.s && Array.isArray(was.s.matrix) ? was.s.matrix : null, B = now && now.s && Array.isArray(now.s.matrix) ? now.s.matrix : null;
-  if (!A || !B) return;
-  const perf = r => !r || !r.src || !!CMOD.SRC_MOD[r.src];
-  let M = null;
-  for (let i = 0; i < Math.min(A.length, B.length); i++) {
-    if (!perf(A[i]) || !perf(B[i]) || JSON.stringify(A[i]) === JSON.stringify(B[i])) continue;
-    if (!M) M = B.slice();
-    M[i] = A[i];
-  }
-  if (M) now.s.matrix = M;
+let modMove = null; // { mv: the step's meta, put: the row goes back into its slot }
+function modMoveBack(p, { mv, put }) {
+  const t = p.tracks.find(x => x.id === mv.trackId), d = t && t.dev ? t.dev[mv.dev] : null;
+  const s = d && d.kind === 'synth' && d.model === 'serum' && d.vals ? d.vals.s : null, M = s && Array.isArray(s.matrix) ? s.matrix : null;
+  if (!M || !(mv.slot >= 0 && mv.slot < M.length)) return;
+  const r = M[mv.slot], free = !r || !r.src, same = JSON.stringify(r) === JSON.stringify(mv.row);
+  if (put ? same : free) return; // (already so)
+  if (put ? free : same) { const N = M.slice(); N[mv.slot] = put ? JSON.parse(JSON.stringify(mv.row)) : core.normRow(null); s.matrix = N; return; }
+  notice(`${cvDevName(t, mv.dev)}’s mod slot ${mv.slot + 1} ${put ? 'is in use: the row was not put back' : 'changed since: left as it is'}`, 5000);
 }
+const modMoveOf = (e, put) => (e && e.meta && MOD_MOVE.test(e.label) ? { mv: e.meta, put: put.test(e.label) } : null);
 function keepDevs(t, cur) {
   if (!cur || !t.dev || !cur.dev) return;
   for (const id of Object.keys(t.dev)) {
     const d = t.dev[id], c = cur.dev[id];
     if (!d || !c || typeof d !== 'object' || typeof c !== 'object' || d.kind !== c.kind) continue;
-    if (d.kind === 'synth') { if (d.model === c.model) { const was = modMove ? d.vals : null; d.vals = c.vals; if (c.fx) d.fx = c.fx; if (was) modMoveBack(was, c.vals); } if (c.seq) d.seq = c.seq; }
+    if (d.kind === 'synth') { if (d.model === c.model) { d.vals = c.vals; if (c.fx) d.fx = c.fx; } if (c.seq) d.seq = c.seq; }
     else if (d.kind === 'panel' && c.fx) d.fx = c.fx;
   }
   const fa = CMOD.fxDevOf(t), fb = CMOD.fxDevOf(cur);
@@ -1231,7 +1231,7 @@ function applyRestore(p, keepSound = false) {
   CMOD.adopt(p); // (History snapshots and loads are plain objects: the accessors first)
   // undo / redo never revert knob tweaks (per device) — within one project: an undo of Open / New brings back another project
   // (1f review: track ids repeat across projects; its sound is its own)
-  if (keepSound && p.uid === project.uid) for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id));
+  if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); if (modMove) modMoveBack(p, modMove); }
   else for (const t of p.tracks) seedPend.add(t.id); // a loaded project re-seeds the racks' LFO phases
   for (const t of p.tracks) fxOf(t);
   const prevSel = project.selTrack;
@@ -1245,8 +1245,8 @@ function applyRestore(p, keepSound = false) {
   persist();
   cvModSync(); // (stage 2a: the open inspector / Mod list re-read the project)
 }
-function undo() { modMove = MOD_MOVE.test(hist.undoLabel); try { applyRestore(hist.undo(project), true); } finally { modMove = false; } updateUndoUI(); }
-function redo() { modMove = MOD_MOVE.test(hist.redoLabel); try { applyRestore(hist.redo(project), true); } finally { modMove = false; } updateUndoUI(); }
+function undo() { const p = hist.undo(project); modMove = p && modMoveOf(hist.r[hist.r.length - 1], /^Keep/); try { applyRestore(p, true); } finally { modMove = null; } updateUndoUI(); }
+function redo() { const p = hist.redo(project); modMove = p && modMoveOf(hist.u[hist.u.length - 1], /^Save/); try { applyRestore(p, true); } finally { modMove = null; } updateUndoUI(); }
 let undoT = 0;
 function updateUndoUI() { // canUndoFrom may serialise the project, so coalesce bursts of calls into one per frame
   if (undoT) return;
@@ -1623,8 +1623,12 @@ function setTrackModel(tr0, id, o = null) {
   seqToggle(tr, false, true, dev);
   postTo(tr, { t: 'panic' });
   if (prim && new RegExp('^' + old.name.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '( \\d+)?$').test(tr.name)) tr.name = m.name + ' ' + (project.tracks.indexOf(tr) + 1);
+  const n0 = CG.modRowsFor(tr, dev).length, nm = (tr.dev && tr.dev[dev] && tr.dev[dev].name) || 'the Serum';
   if (prim) { tr.model = id; tr.vals = loadVals(m); tr.preset = null; } // tr.fx (the track's rack) is kept
   else CMOD.setModel(tr, dev, id, { vals: loadVals(m) });
+  // (stage 2a) a Serum's cables to a classic one are dropped (the model setter / setModel): said (cv-model setModel's text)
+  const gone = n0 - CG.modRowsFor(tr, dev).length, why = gone > 0 ? `${gone} modulation cable${gone > 1 ? 's' : ''} to ${nm} removed: classic knobs take modulation from stage 2b` : '';
+  if (why) notice(why, 6000);
   if (ui === 'flow' || (ui === 'hw' && instUi(tr, dev) === 'flow')) layUi(tr, ui, dev); // (Hardware on an untouched track: no lay key)
   if (tr.id === project.selTrack) {
     if (dev === curOf(tr)) { bind(); settings.model = id; renderNav(); history.replaceState(null, '', '#' + id); }
@@ -1634,6 +1638,7 @@ function setTrackModel(tr0, id, o = null) {
   if (id === 'tb303') { if (prim) seqSend(tr); else seqSend(tr, dev); }
   if (ctx) rateText();
   renderHeads(); persist(); updateUndoUI();
+  return why;
 }
 function selectTrack(id) {
   if (id === project.selTrack && model.id === curView(trk()).model) return;
@@ -2590,12 +2595,15 @@ function sxExtra(t, dev, destId) {
   return mine.filter(r => on.has(r.id)).map(r => ({ id: r.id, src: CMOD.MOD_SRC[r.src], amt: r.amt, bi: r.bi, byp: r.byp, out: r.out }));
 }
 // a Serum module's "mods n/64" (stage 2a, IMPL-2a §2.4; cvBadge): null without canvas rows to it (the badge keeps the
-// safeguard's text); else cv-graph modBudget { preset, canvas, left, max } and text 'mods <preset + canvas>/64'
+// safeguard's text); else cv-graph modBudget { preset, canvas, left, max } and text 'mods <preset + canvas>/64', ' · N not
+// compiled' while rows find no slot (as the Mod list). modLeftN: the count last seen per Serum (cvModReload tells a rise)
+const modLeftN = new Map(); // '<track id>/<dev>' → rows not compiled
 function modCount(t, dev = t && CMOD.primId(t)) {
   const d = t && t.dev && t.dev[dev];
   if (!d || d.model !== 'serum' || !CG.modRowsFor(t, dev).length) return null;
-  const b = CG.modBudget(t, dev);
-  return Object.assign(b, { text: 'mods ' + Math.min(b.max, b.preset + b.canvas) + '/' + b.max });
+  const b = CG.modBudget(t, dev), n = b.left.length;
+  modLeftN.set(t.id + '/' + dev, n);
+  return Object.assign(b, { text: 'mods ' + Math.min(b.max, b.preset + b.canvas) + '/' + b.max + (n ? ' · ' + n + ' not compiled' : '') });
 }
 // the Serum panel's host (§8.8, RULINGS host additions, SPEC-serum2 §11.15); bound to a track id, reading the live
 // project each call. Stage 1e: bound to one Serum instrument of the track (dv, default the primary): its state, own FX,
@@ -3001,6 +3009,7 @@ function duplicateTrack(t) {
     for (const k of ['model', 'vals', 'preset', 'seq', 'fx']) delete c[k];
     Object.assign(c, { prim: t.prim, nid: t.nid, dev: clone(t.dev), wires: clone(t.wires) });
     if (t.mods) c.mods = clone(t.mods);
+    if (t.mid !== undefined) c.mid = t.mid; // (2a: row ids never reused)
   } else { if (t.seq) c.seq = clone(t.seq); c.fx = clone(fxOf(t)); }
   if (t.lay) c.lay = clone(t.lay); // (the canvas layout, view only)
   project.tracks.splice(project.tracks.indexOf(t) + 1, 0, c);
@@ -4770,12 +4779,12 @@ function cvDropInstrument(modelId, at, o = null, v0 = null) {
   const t = trk(), v = v0 || curView(t), dev = dvOf(v) || CMOD.primId(t), m = MODELS.find(x => x.id === modelId);
   if (!m || m.id === v.model) return false;
   const old = modelById(v.model), id = t.id;
-  setTrackModel(v, m.id, o); // (renderPanel → cvPanelDone: the FX module and the titles follow)
+  const why = setTrackModel(v, m.id, o); // (renderPanel → cvPanelDone: the FX module and the titles follow; why: its cables dropped, 2a)
   // the step the replacement left on top of History (or the equal one it kept): the tap undoes it only while it is still
   // the newest — after a later step (a move, a knob, a note) the old instrument comes back as a step of its own instead,
   // never undoing that later edit (an undo / redo makes a new entry object: the safe branch too)
   const step = hist.u[hist.u.length - 1];
-  cvUndoNotice(`Replaced ${old.name} with ${m.name} · tap to undo`, step, () => {
+  cvUndoNotice(`Replaced ${old.name} with ${m.name}${why ? ' · ' + why : ''} · tap to undo`, step, () => {
     const tr = project.tracks.find(x => x.id === id), d = tr && CMOD.instOf(tr, dev);
     return d && d.model === m.id ? () => setTrackModel(instView(tr, dev), old.id) : null; // (null: already undone, or replaced again)
   });
@@ -5162,8 +5171,8 @@ function modConnect(src, dst) {
   const t = trk(), D = modSplit(dst), ok = modCan(src, dst);
   if (!ok.ok) { notice(ok.why, 4000); return null; }
   hist.record(project, 'Modulate ' + modLabel(dst) + ' with ' + modLabel(src));
-  const r = CMOD.addMod(t, src, dst, { project, name: cvDevName(t, D.dev) });
-  if (!r.ok) { notice(r.why || modRefusal(r.code), 4000); updateUndoUI(); return null; }
+  const r = CMOD.addMod(t, src, dst, { project, name: cvDevName(t, D.dev), limit: prefs.limitDrop }); // (the Serum's "Limit mod depth on drop")
+  if (!r.ok) { hist.prune(project); notice(r.why || modRefusal(r.code), 4000); updateUndoUI(); return null; }
   modPend = null;
   cvModAfter(t);
   modSelect(r.row.id);
@@ -5214,14 +5223,20 @@ function modCableAct(id, a) { // Disconnect (the menu, the Delete key): a canvas
   cvModSync();
 }
 /* ---- the mod layer's host */
+// (a no-op step on top, which record keeps, is this state too: it becomes the gesture's step.) A refusal (modUnpre) or a
+// gesture that changed nothing (modStep) leaves no step behind (History.prune)
 function modPre() { // a canvas row is about to change: the gesture's step (once; its label at modStep)
   if (modPend && modPend.e && hist.u[hist.u.length - 1] === modPend.e) return;
-  modPend = { e: hist.record(project, 'Modulation') ? hist.u[hist.u.length - 1] : null };
+  hist.record(project, 'Modulation');
+  modPend = { e: hist.u[hist.u.length - 1] || null };
 }
+function modUnpre() { const P = modPend; if (P && P.e && hist.u[hist.u.length - 1] === P.e && hist.prune(project)) modPend = null; updateUndoUI(); }
+// Save with preset / Keep on canvas: the move on its step (undo / redo move that row alone)
+function modMeta(t, dev, slot, row) { if (modPend && modPend.e) modPend.e.meta = { trackId: t.id, dev, slot, row: JSON.parse(JSON.stringify(row)) }; }
 function modStep(label) {
   const P = modPend, t = trk();
   modPend = null;
-  if (P && P.e && hist.u[hist.u.length - 1] === P.e) P.e.label = label;
+  if (P && P.e && hist.u[hist.u.length - 1] === P.e) { P.e.label = label; hist.prune(project); }
   cvModAfter(t);
   sxRefresh(); // (a preset row's edit: the Serum's matrix page)
 }
@@ -5262,15 +5277,19 @@ function modToPreset(id) {
   if (!D || !isSerumDev(t, D.dev)) return { ok: false, why: 'No such cable' };
   modPre();
   const v = instView(t, D.dev), r = CMOD.toPreset(t, id, v.vals.s);
-  if (r.ok) sxEdit(v, s => { s.matrix = r.matrix; });
+  if (!r.ok) { modUnpre(); return r; }
+  sxEdit(v, s => { s.matrix = r.matrix; });
+  modMeta(t, D.dev, r.slot, r.matrix[r.slot]);
   return r;
 }
 function modFromPreset(dev, slot) {
   const t = trk();
   if (!isSerumDev(t, dev)) return { ok: false, why: 'No such Serum' };
   modPre();
-  const r = CMOD.fromPreset(t, dev, slot, { project });
-  if (r.ok) sxEdit(instView(t, dev), s => { s.matrix = r.matrix; });
+  const v = instView(t, dev), row = v.vals.s.matrix[slot], r = CMOD.fromPreset(t, dev, slot, { project });
+  if (!r.ok) { modUnpre(); return r; }
+  sxEdit(v, s => { s.matrix = r.matrix; });
+  modMeta(t, dev, slot, row);
   return r;
 }
 // a Serum's destinations as its matrix menu groups them (serum-core destMenu: the sections, one group per FX instance)
@@ -5299,8 +5318,8 @@ function initModLayer() {
         const ok = modCan(src, dst);
         if (!ok.ok) return { ok: false, why: ok.why };
         modPre();
-        const t = trk(), D = modSplit(dst), r = CMOD.addMod(t, src, dst, { project, name: cvDevName(t, D.dev) });
-        if (r.ok) queuePatch(t);
+        const t = trk(), D = modSplit(dst), r = CMOD.addMod(t, src, dst, { project, name: cvDevName(t, D.dev), limit: prefs.limitDrop });
+        if (r.ok) queuePatch(t); else modUnpre();
         return r;
       },
       select: modSelect, notice: txt => notice(txt, 4000), labelOf: modLabel, step: modStep, confirm: q => confirm(q),
@@ -5311,7 +5330,17 @@ function initModLayer() {
 function modList() { const t = trk(); if (modLayer) modLayer.openList(t.name, serumIds(t).map(id => ({ id, label: cvDevName(t, id) }))); }
 // undo / redo / a load (applyRestore), a preset load (sxLoad): the open inspector and Mod list re-read; no gesture open
 function cvModSync() { modPend = null; if (modLayer) modLayer.sync(); }
-function cvModReload(t) { if (t === trk()) cvRender(); cvModSync(); }
+// (a preset load: canvas rows it leaves without a slot are said — "Serum's mod rows are full (64/64): 1 modulation cable not compiled")
+function cvModReload(t) {
+  for (const dev of serumIds(t)) {
+    if (!CG.modRowsFor(t, dev).length) continue;
+    const k = t.id + '/' + dev, was = modLeftN.get(k) || 0, b = CG.modBudget(t, dev), n = b.left.length;
+    modLeftN.set(k, n);
+    if (n > was) notice(modRefusal('full', { dev: cvDevName(t, dev), used: b.preset + b.canvas, max: b.max }) + `: ${n} modulation cable${n > 1 ? 's' : ''} not compiled`, 6000);
+  }
+  if (t === trk()) cvRender();
+  cvModSync();
+}
 // a Serum page switch (its ui edits): the knob ends of its module measured again (next frame: the page is built)
 let modMeasT = 0;
 const modMeasQ = new Set();

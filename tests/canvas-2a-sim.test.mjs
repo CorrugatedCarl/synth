@@ -14,6 +14,7 @@ import { fakeStorage } from './fakes.mjs';
 import * as CG from '../cv-graph.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
 import * as core from '../serum-core.js?v=9';
+import { dropRow } from '../serum-ui.js?v=9';
 import { MODELS } from '../models.js?v=9';
 import { cpOf } from './fixtures/mods-2a.mjs';
 
@@ -104,15 +105,15 @@ test('a mod drag from the wheel onto a Serum knob: canMod / markDests from cv-mo
   assert.deepEqual([rows(), hsteps(), V().cables.selected()], ['r1:wheel>i1:f.cutoff', n0 + 1, 'r1']);
   assert.match(cv.hist.undoLabel, /^Modulate .+ with Mod Wheel$/);
   assert.equal(modCables(), 'r1:wheel.out>i1:f.cutoff');
-  const r = Object.assign({}, T().mods[0]), cp = lastCP(T());
+  const cp = lastCP(T());
   assert.deepEqual(cp, cpOf(api.buildPatch(T())), 'the posted patch is the injected compile');
   const b = CG.modBudget(T(), 'i1');
   assert.equal(badge('i1'), 'mods ' + (b.preset + 1) + '/64', 'the Serum module\'s badge');
-  // the same row through the Serum's own matrix (its WHEEL tile's addMod)
+  // the same row through the Serum's own matrix (its WHEEL tile's dropRow, the "Limit mod depth on drop" preference)
   cv.undo(); sim.raf();
   assert.deepEqual([rows(), modCables()], ['', '']);
   let slot = -1;
-  api.sxHost(T()).edit(s => { slot = core.addMod(s, T().fx, 'wheel', 'f.cutoff', { amt: r.amt, bi: r.bi }); }); sim.raf();
+  api.sxHost(T()).edit(s => { const d = dropRow(s, T().fx, 'wheel', 'f.cutoff', { limit: api.prefs().limitDrop }); slot = d ? d.slot : -1; }); sim.raf();
   assert.ok(slot >= 0);
   assert.deepEqual(lastCP(T()), cp, 'canvas cable ≡ the Serum\'s own row');
   api.sxHost(T()).edit(s => { s.matrix[slot] = core.normRow(null); }); sim.raf();
@@ -309,4 +310,180 @@ test('visibility: the toolbar ∿ mode reaches the view', () => {
   assert.equal(V().cables.modsVisible(), 'never');
   W.setModsMode('always');
   assert.equal(V().cables.modsVisible(), 'always');
+});
+
+// host fixes (the 2a review round, findings H1–H9: History of Save with preset / Keep on canvas, refusals, the limit on
+// drop, Replace, the budget, slots, Duplicate, the render paths)
+const perfOf = t => t.dev.i1.vals.s.matrix.map((r, i) => (r && r.src && CMOD.SRC_MOD[r.src] ? i + ':' + r.src + '>' + r.dst + '@' + r.amt : null)).filter(Boolean).join(' ');
+const byId = id => P().tracks.find(x => x.id === id);
+const pick = t => { api.selectTrack(t.id); sim.raf(); cv.renderViews(); sim.raf(); };
+const wheelOn = () => { if (!CMOD.hasWheel(P())) { M.add('wheel', null); sim.raf(); } };
+const compiled = (t, src, dst) => { const c = cpOf(api.buildPatch(t)); let n = 0; for (let i = 0; i < c.mN; i++) if (c.mSrc[i] === src && c.mDst[i] === dst) n++; return n; };
+
+test('H1: undo / redo of Save with preset / Keep on canvas move only that row in its slot — Serum edits since (its own matrix, another track\'s) stay', () => {
+  wheelOn();
+  const a = fresh(), b = fresh();
+  api.sxHost(b).edit(s => { core.addMod(s, b.fx, 'wheel', 'f.res', { amt: 0.3 }); }); sim.raf();
+  pick(a);
+  M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf();
+  const id = T().mods[0].id, H = M.host();
+  assert.equal(H.toPreset(id).ok, true); H.step('Save with preset'); sim.raf();
+  const saved = perfOf(T());
+  assert.match(saved, /^0:wheel>f\.cutoff@/);
+  assert.equal(rows(), '');
+  api.sxHost(T()).edit(s => { core.addMod(s, T().fx, 'wheel', 'a.level', { amt: 0.4 }); }); sim.raf();
+  api.sxHost(byId(b.id)).edit(s => { const i = s.matrix.findIndex(r => r.src === 'wheel' && r.dst === 'f.res'); s.matrix[i] = Object.assign({}, s.matrix[i], { amt: 0.9 }); }); sim.raf();
+  assert.deepEqual([perfOf(T()), perfOf(byId(b.id))], [saved + ' 1:wheel>a.level@0.4', '0:wheel>f.res@0.9']);
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), perfOf(T()), perfOf(byId(b.id))], [id + ':wheel>i1:f.cutoff', '1:wheel>a.level@0.4', '0:wheel>f.res@0.9'], 'undo: the saved row back on the canvas, nothing else');
+  assert.equal(compiled(T(), 1, 42), 1, 'compiled once');
+  cv.redo(); sim.raf();
+  assert.deepEqual([rows(), perfOf(T()), perfOf(byId(b.id))], ['', saved + ' 1:wheel>a.level@0.4', '0:wheel>f.res@0.9'], 'redo');
+  // Keep on canvas: its undo puts the row back into its slot while that is free
+  assert.equal(H.fromPreset('i1', 0).ok, true); H.step('Keep on canvas'); sim.raf();
+  const kid = T().mods[0].id;
+  assert.deepEqual([rows(), perfOf(T())], [kid + ':wheel>i1:f.cutoff', '1:wheel>a.level@0.4']);
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), perfOf(T())], ['', saved + ' 1:wheel>a.level@0.4']);
+  cv.redo(); sim.raf();
+  assert.deepEqual([rows(), perfOf(T()), compiled(T(), 1, 42)], [kid + ':wheel>i1:f.cutoff', '1:wheel>a.level@0.4', 1]);
+  // its slot taken since (a Serum edit): the undo leaves the matrix alone and says so
+  api.sxHost(T()).edit(s => { core.addMod(s, T().fx, 'wheel', 'f.res', { amt: 0.2 }); }); sim.raf();
+  assert.equal(perfOf(T()), '0:wheel>f.res@0.2 1:wheel>a.level@0.4');
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), perfOf(T())], ['', '0:wheel>f.res@0.2 1:wheel>a.level@0.4']);
+  assert.match(note(), /slot 1\b/);
+});
+
+test('H1: Save with preset, another preset loaded, Undo — the loaded preset\'s matrix untouched; the cable back on the canvas', () => {
+  wheelOn();
+  pick(fresh());
+  const L = api.sxHost(T()).presets.list().filter(p => !p.user), mx = p => api.sxPreset(p.key).v.s.matrix || [];
+  const pW = L.find(p => mx(p).some(r => r && r.src === 'wheel' && r.dst));
+  const ks = mx(pW).map((r, i) => (r && r.src && CMOD.SRC_MOD[r.src] ? i : -1)).filter(i => i >= 0);
+  const pN = L.find(p => p !== pW && ks.some(k => !(mx(p)[k] && mx(p)[k].src)));
+  api.sxLoad(T(), pW.key); sim.raf();
+  M.opts.onMod('wheel', 'i1:f.res'); sim.raf();
+  const id = T().mods[0].id;
+  M.host().toPreset(id); M.host().step('Save with preset'); sim.raf();
+  api.sxLoad(T(), pN.key); sim.raf();
+  const N = JSON.stringify(T().dev.i1.vals.s.matrix);
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), JSON.stringify(T().dev.i1.vals.s.matrix) === N], [id + ':wheel>i1:f.res', true]);
+});
+
+test('H2: the move is read from the step actually undone (a no-op step above Save with preset); refusals and edits that changed nothing leave no step', () => {
+  wheelOn();
+  pick(fresh());
+  M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf();
+  const H = M.host(), id = T().mods[0].id;
+  H.toPreset(id); H.step('Save with preset'); sim.raf();
+  cv.hist.record(P(), 'Tidy'); // (a step that changed nothing: Tidy on a tidy canvas)
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), perfOf(T()), compiled(T(), 1, 42)], [id + ':wheel>i1:f.cutoff', '', 1], 'the slot taken back: compiled once');
+  cv.redo(); sim.raf();
+  assert.deepEqual([rows(), compiled(T(), 1, 42)], ['', 1]);
+  assert.match(perfOf(T()), /^0:wheel>f\.cutoff@/);
+  // refusals after the step was opened: none left behind
+  const n0 = hsteps(), top = cv.hist.undoLabel;
+  assert.equal(H.fromPreset('i1', 5).ok, false, 'no row there');
+  assert.equal(H.toPreset('r99').ok, false);
+  const pf = P().perf; P().perf = { wheel: null }; // (the wheel gone: canMod passes, addMod refuses the source)
+  try {
+    assert.equal(H.connect('wheel', 'i1:f.res').ok, false);
+    assert.equal(M.connect('wheel', 'i1:f.res'), null);
+  } finally { P().perf = pf; }
+  assert.deepEqual([hsteps(), cv.hist.undoLabel], [n0, top], 'no step from a refusal');
+  // a gesture that changed nothing
+  M.opts.onMod('wheel', 'i1:f.res'); sim.raf();
+  const n1 = hsteps(), lab = cv.hist.undoLabel, rid = T().mods[0].id;
+  H.edit(rid, { amt: T().mods[0].amt }); H.step('Mod amount'); sim.raf();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel], [n1, lab]);
+});
+
+test('H7: a canvas drop follows the Serum\'s "Limit mod depth on drop" — off: the row its WHEEL tile writes with limit 0 (the drag and the parameter list)', () => {
+  wheelOn();
+  pick(fresh());
+  const fx = T().fx, amt = (dst, limit) => { const s = Object.assign({}, T().dev.i1.vals.s, { matrix: [{ src: '' }] }); core.addMod(s, fx, 'wheel', dst, { limit }); return s.matrix[0].amt; };
+  const dst = ['a.level', 'f.cutoff', 'a.vol', 'f.res', 'f.drive'].find(d => { try { return amt(d, true) !== amt(d, false); } catch { return false; } });
+  assert.ok(dst, '(a knob whose limited drop amount differs)');
+  const was = api.store.get('synth.sx.prefs', null);
+  api.store.set('synth.sx.prefs', Object.assign({}, was || {}, { limitDrop: 0 })); api.prefsChanged();
+  try {
+    assert.equal(api.prefs().limitDrop, 0);
+    M.opts.onMod('wheel', 'i1:' + dst); sim.raf();
+    const cp = lastCP(T());
+    cv.undo(); sim.raf();
+    let slot = -1;
+    api.sxHost(T()).edit(s => { slot = dropRow(s, T().fx, 'wheel', dst, { limit: 0 }).slot; }); sim.raf();
+    assert.deepEqual(lastCP(T()), cp, 'the drag ≡ the WHEEL tile, limit off');
+    api.sxHost(T()).edit(s => { s.matrix[slot] = core.normRow(null); }); sim.raf();
+    assert.equal(M.host().connect('wheel', 'i1:' + dst).ok, true); M.host().step('Modulate'); sim.raf();
+    assert.deepEqual(lastCP(T()), cp, 'the parameter list ≡ the WHEEL tile, limit off');
+    cv.undo(); sim.raf();
+  } finally { api.store.set('synth.sx.prefs', was || {}); api.prefsChanged(); }
+});
+
+test('H4: replacing a Serum that has cables with a classic synth says the cables went (Replace with…, setTrackModel); undo brings them back', () => {
+  wheelOn();
+  pick(fresh());
+  M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf(); M.opts.onMod('wheel', 'i1:f.res'); sim.raf();
+  const r0 = rows(), TXT = '2 modulation cables to the Serum removed: classic knobs take modulation from stage 2b';
+  assert.equal(r0.split(',').length, 2);
+  cv.drop('minimoog', null); sim.raf();
+  assert.deepEqual([T().model, rows()], ['minimoog', '']);
+  assert.ok(note().includes(TXT), note());
+  cv.undo(); sim.raf();
+  assert.deepEqual([T().model, rows()], ['serum', r0]);
+  cv.setTrackModel(T(), 'juno60'); sim.raf();
+  assert.deepEqual([T().model, rows(), note()], ['juno60', '', TXT]);
+  cv.undo(); sim.raf();
+  assert.deepEqual([T().model, rows()], ['serum', r0]);
+});
+
+test('H8: a preset of 64 rows loaded over a canvas cable — the badge says "1 not compiled" as the Mod list and the compile do; the load says so', () => {
+  wheelOn();
+  pick(fresh());
+  const X = api.sxHost(T());
+  X.edit(s => { for (let k = 0; k < 64; k++) s.matrix[k] = core.normRow({ src: 'lfo1', amt: (k + 1) / 100, dst: 'f.cutoff' }); }); sim.raf();
+  X.presets.save({ name: 'Full 64', cat: 'User' });
+  X.edit(s => { for (let k = 0; k < 64; k++) s.matrix[k] = core.normRow(null); }); sim.raf();
+  M.opts.onMod('wheel', 'i1:f.res'); sim.raf();
+  const id = T().mods[0].id;
+  assert.equal(badge('i1'), 'mods 1/64');
+  api.sxLoad(T(), 'u:Full 64'); sim.raf();
+  const b = CG.modBudget(T(), 'i1'), cp = lastCP(T());
+  assert.deepEqual([b.preset, b.canvas, b.left, rows()], [64, 0, [id], id + ':wheel>i1:f.res']);
+  assert.deepEqual([cp.mN, cp.mSrc.includes(1)], [64, false], 'the compile: the preset\'s 64 rows, not the cable');
+  assert.equal(badge('i1'), 'mods 64/64 · 1 not compiled');
+  assert.match(note(), /full \(64\/64\).*1 modulation cable not compiled/);
+  cv.menu('i1').find(x => x.label === 'Modulation list…').action();
+  const sheet = walk(sim.$('#ov'), c => /\bcv-ml-list\b/.test(c.className || '')).pop();
+  assert.deepEqual(walk(sheet, c => /\bcv-ml-b\b/.test(c.className || '')).map(c => c.textContent), ['64/64 · 1 not compiled'], 'the Mod list agrees');
+  M.layer().close();
+});
+
+test('H6: Duplicate track copies the row-id counter (mid) — a deleted row\'s id is never reused on the copy', () => {
+  wheelOn();
+  pick(fresh());
+  M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf(); M.opts.onMod('wheel', 'i1:f.res'); sim.raf();
+  const [r1, r2] = T().mods.map(r => r.id), mid = T().mid;
+  M.host().remove(r2); M.host().step('Disconnect'); sim.raf();
+  assert.deepEqual(T().mods.map(r => r.id), [r1]);
+  cv.duplicateTrack(T()); sim.raf();
+  const c = P().tracks[P().tracks.indexOf(T()) + 1];
+  assert.deepEqual([c.mods.map(r => r.id), c.mid], [[r1], mid]);
+  assert.notEqual(CMOD.addMod(c, 'wheel', 'i1:a.level', { project: P() }).row.id, r2);
+});
+
+test('H9: a panel\'s knob (the effects a classic synth feeds) is refused "…from stage 2b": no row, no step', () => {
+  wheelOn();
+  const c = fresh('juno60'), n0 = hsteps(), pid = Object.keys(c.dev).find(k => c.dev[k].kind === 'panel');
+  assert.ok(pid, '(a classic track: its panel)');
+  const why = M.opts.canMod('wheel', pid + ':fx.dly.mix');
+  assert.equal(why.ok, false);
+  assert.match(why.why, /^Mod Wheel → .+: this knob can be modulated from stage 2b$/);
+  assert.equal(M.marks()(pid, 'fx.dly.mix'), false, 'not lit');
+  M.opts.onMod('wheel', pid + ':fx.dly.mix'); sim.raf();
+  assert.deepEqual([rows(), hsteps(), note()], ['', n0, why.why]);
 });

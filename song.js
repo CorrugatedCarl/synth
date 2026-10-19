@@ -430,7 +430,8 @@ export class History {
     e.n++; return e.s;
   }
   _unref(s) { const e = this.pool.get(s); if (e && !--e.n) { this.pool.delete(s); this.size -= s.length; } }
-  _hold(sn, label) { return { m: this._ref(sn.m), t: sn.t && sn.t.map(s => this._ref(s)), label }; }
+  // meta: a step's own data (a caller sets entry.meta after record), carried with its label across undo / redo
+  _hold(sn, label, meta) { const e = { m: this._ref(sn.m), t: sn.t && sn.t.map(s => this._ref(s)), label }; if (meta !== undefined) e.meta = meta; return e; }
   _drop(e) { this._unref(e.m); if (e.t) for (const s of e.t) this._unref(s); }
   _load(e) { const p = JSON.parse(e.m); if (e.t) p.tracks = e.t.map(s => JSON.parse(s)); return p; }
   _trim() {
@@ -455,7 +456,7 @@ export class History {
     while (this.u.length && snapSame(this.u[this.u.length - 1], cur)) this._drop(this.u.pop());   // skip snapshots of edits that changed nothing
     if (!this.u.length) return null;
     const e = this.u.pop(), out = this._load(e);
-    this.r.push(this._hold(cur, e.label)); this._drop(e);
+    this.r.push(this._hold(cur, e.label, e.meta)); this._drop(e);
     this._trim();
     return out;
   }
@@ -464,9 +465,16 @@ export class History {
     while (this.r.length && snapSame(this.r[this.r.length - 1], cur)) this._drop(this.r.pop());
     if (!this.r.length) return null;
     const e = this.r.pop(), out = this._load(e);
-    this.u.push(this._hold(cur, e.label)); this._drop(e);
+    this.u.push(this._hold(cur, e.label, e.meta)); this._drop(e);
     this._trim();
     return out;
+  }
+  // drops the newest steps equal to project (edits that changed nothing: a refusal after record); how many
+  prune(project) {
+    const cur = this._snap(project);
+    let n = 0;
+    while (this.u.length && snapSame(this.u[this.u.length - 1], cur)) { this._drop(this.u.pop()); n++; }
+    return n;
   }
   // canUndo/canRedo only look at the stacks: right after record() the top snapshot may turn out to be a
   // no-op (the edit changed nothing), and undo() then returns null. The *From(project) forms are exact.

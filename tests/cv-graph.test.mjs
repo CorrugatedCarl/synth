@@ -300,3 +300,21 @@ test('2a modRowsFor / nativeRow: rows by device (not by prefix), the native row,
   for (const r of [{ src: 'lfo1', dst: 'i1:f.cutoff' }, { src: 'wheel', dst: 'f.cutoff' }, { src: 'wheel', dst: 'i1:nope' }, { src: 'wheel', dst: 'i1:a.level', aux: 'nope' }, null])
     assert.equal(G.nativeRow(r), null, JSON.stringify(r));
 });
+
+// host fixes (2a review H5)
+test('2a review H5: a placed row keeps its slot while that slot stays free — an earlier row removed; a native row in its slot moves that one alone', () => {
+  const t = F2.tracks()[0], d = t.dev.i1, at = () => G.injectMods(d, G.modRowsFor(t, 'i1')).placed.map(x => x.id + '@' + x.slot).join(' ');
+  assert.equal(at(), 'r1@0 r2@1');
+  t.mods = t.mods.filter(r => r.id !== 'r1');
+  assert.equal(at(), 'r2@1', 'r2 stays in slot 1');
+  assert.deepEqual(G.modBudget(t, 'i1'), { preset: 0, canvas: 1, left: [], max: 64 });
+  t.mods.push(Object.assign({}, F2.tracks()[0].mods[0], { id: 'r3' }));
+  assert.equal(at(), 'r2@1 r3@0', 'a new row: the first free slot');
+  const M = d.vals.s.matrix.slice(); M[0] = C.normRow({ src: 'lfo1', amt: 0.2, dst: 'f.res' }); d.vals.s.matrix = M; // (the Serum's own tile: its first empty slot)
+  assert.equal(at(), 'r2@1 r3@2', 'r3 moves, r2 stays');
+  d.vals.s = Object.assign({}, d.vals.s, { matrix: d.vals.s.matrix.slice() }); // (a preset load: a new s in the same vals)
+  assert.equal(at(), 'r2@1 r3@2');
+  assert.deepEqual(F2.cpOf(G.instPatch(d, { sr: 48000, bpm: 120 }, G.modRowsFor(t, 'i1'))).mSlot, [0, 1, 2], 'the compile');
+  const u = F2.tracks()[0];
+  assert.equal(G.injectMods(u.dev.i1, u.mods).placed.map(x => x.id + '@' + x.slot).join(' '), 'r1@0 r2@1', 'another device: its own slots');
+});

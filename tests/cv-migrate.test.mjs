@@ -816,3 +816,15 @@ test('2a splitTracks: rows follow the instrument they end on (a new track\'s as 
   assert.deepEqual(back.tracks.map(x => x.mods.map(y => y.id)), [['r1'], ['r2', 'r3']], 'song.js reads them');
   assert.equal('mid' in M.toV1(r.p).p.tracks[0], false, 'toV1: no v2 field');
 });
+
+// host fixes (2a review H3)
+test('2a review H3: Save as classic project names the modulation cables, modulators and the Mod Wheel of canonical one-instrument tracks', async () => {
+  const F = await import('./fixtures/mods-2a.mjs');
+  const T = F.tracks();
+  assert.deepEqual(T.map(t => G.compileTrack(t).canonical), [true, true, true], '(each one canonical Serum)');
+  const r = M.toV1({ schema: 5, perf: { wheel: { v: 1 } }, tracks: T });
+  assert.deepEqual(r.lost, ['the Mod Wheel', '“Mods 1”: 2 modulation cables', '“Mods 1”: its Velocity module', '“Mods 2”: 1 modulation cable',
+    '“Mods 2”: its Aftertouch module', '“Mods 3”: 1 modulation cable']);
+  assert.deepEqual([r.p.tracks.length, 'perf' in r.p, r.p.tracks.some(t => 'mods' in t || 'mid' in t || 'dev' in t)], [3, false, false]);
+  assert.deepEqual(M.toV1({ schema: 5, perf: { wheel: null }, tracks: [Object.assign(F.tracks()[2], { mods: [] })] }).lost, [], 'nothing of 2a: nothing named');
+});

@@ -58,6 +58,7 @@
 import { schemaOf } from './appstore.js?v=9';
 import { compileTrack, kindOf, port, powered, zoneOf } from './cv-graph.js?v=9';
 import { defaultFx2 } from './serum-core.js?v=9';
+import { MOD_LABEL } from './cv-mods.js?v=9';
 
 export { schemaOf };
 export const SCHEMA = 5;
@@ -170,6 +171,7 @@ const plainCopy = x => (x === undefined ? undefined : JSON.parse(JSON.stringify(
 export function toV1(p0) {
   const p = plainCopy(p0), lost = [];
   if (!isObj(p) || !Array.isArray(p.tracks)) return { p, lost };
+  if (isObj(p.perf) && p.perf.wheel) lost.push('the Mod Wheel');
   delete p.schema; delete p.newerSchema; delete p.perf;
   const out = [], ids = new Set(p.tracks.map(t => isObj(t) && t.id));
   let n = 0;
@@ -177,6 +179,10 @@ export function toV1(p0) {
   for (const t of p.tracks) {
     if (!isObj(t) || !isObj(t.dev)) { out.push(t); continue; }
     const c = compileTrack(t), ins = Object.keys(t.dev).filter(k => kindOf(t.dev[k]) === 'inst');
+    // (2a, every shape — a canonical track too) its modulation cables and modulator modules
+    if (Array.isArray(t.mods) && t.mods.length) lost.push(`“${t.name}”: ${t.mods.length} modulation cable${t.mods.length > 1 ? 's' : ''}`);
+    const mods = Object.keys(t.dev).filter(k => kindOf(t.dev[k]) === 'mod').map(k => MOD_LABEL[t.dev[k].kind] || t.dev[k].kind);
+    if (mods.length) lost.push(`“${t.name}”: its ${mods.join(', ')} module${mods.length > 1 ? 's' : ''}`);
     if (c.canonical && ins.length === 1) { const v = Object.assign({}, c.v1); if (v.seq == null) delete v.seq; out.push(Object.assign(coreOf(t), v)); continue; }
     // not today's shape: each instrument its own track (the primary first, keeping the track's id), notes copied
     const W = t.wires.filter(isObj);
@@ -198,7 +204,6 @@ export function toV1(p0) {
       out.push(tr);
     });
     if (ins.some(k => t.dev[k].solo)) lost.push(`“${t.name}”: solo in track`);
-    if (Array.isArray(t.mods) && t.mods.length) lost.push(`“${t.name}”: ${t.mods.length} modulation cable${t.mods.length > 1 ? 's' : ''}`);
   }
   p.tracks = out;
   return { p, lost: [...new Set(lost)] };
