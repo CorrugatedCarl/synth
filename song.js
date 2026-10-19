@@ -2,7 +2,10 @@
  * SYNTH Studio — song data model and pure editing logic (no DOM).
  * Ticks are integers at PPQ resolution. Note: { id, t, d, n, v }; controller event: { t, k, v }.
  * Note edit operations work in place on the array they are given and return it.
+ * (SYNTH Canvas 2b: the modulator modules' LFO / ENV / chaos states are bounded by serum-core's own normalisers — the one
+ * import of this module; song.js stays the base of everything else.)
  */
+import { normLfoMod, normEnvMod, normChaosMod } from './serum-core.js?v=9';
 
 export const PPQ = 960;
 export const TRACK_COLORS = ['#f2a33a', '#3b82c4', '#e2402f', '#3fae5a', '#b06ad9', '#2bb3a3', '#f5d22e', '#ff6a13', '#58b2ff', '#e86aa8', '#9bd16a', '#c9a227'];
@@ -553,7 +556,7 @@ export function normDev(r) {
       if (isObj(d.fx)) o.fx = d.fx;
       if (typeof d.name === 'string' && d.name) o.name = str(d.name, null, 100);
     } else if (d.kind === 'out') o = { kind: 'out' };
-    else o = Object.assign(plain(d), { kind: d.kind }); // (later stages' modulator modules: plain data)
+    else o = normModDev(d); // (the modulator modules, 2a / 2b: their states bounded; an unknown kind: plain data)
     dev[k] = o; n++;
     const m = /(\d+)$/.exec(k); if (m) top = Math.max(top, +m[1]);
   }
@@ -574,6 +577,28 @@ export function normDev(r) {
   if (mods.length) out.mods = mods;
   if (mods.length || (finN(r.mid) && r.mid >= 1)) out.mid = clamp(Math.max(R(num(r.mid, 1)), ...mods.map(x => +x.id.slice(1) + 1), 1), 1, 1e6);
   return out;
+}
+// Stage 2b (IMPL-2b §1.1, §1.4): a modulator module's device record, its state bounded — lfo { kind, lfo: normLfo's
+// object, rate, rise, delay, smooth, phase } (serum-core normLfoMod), env { kind, env: { bpm, legInv, stealRe }, att, hold,
+// dec, sus, rel, crv: [a, d, r], start, end } (normEnvMod), chaos { kind, chaos: { mono, sh }, rate, bpm, smooth }
+// (normChaosMod), macro { kind, v: [8 × 0…1], names: [8 strings ≤ 16] }, cc { kind, cc: 0…127, ch: 0 (omni) … 16, v:
+// 0…1 }, note / velo / at / bend { kind }; a name (≤ 32) is kept on any of them; an unknown kind stays plain data (a later
+// stage's module reads as it was saved)
+const MOD_KINDS = ['lfo', 'env', 'macro', 'cc', 'chaos', 'note', 'velo', 'at', 'bend'];
+export function normModDev(d) {
+  if (!isObj(d) || typeof d.kind !== 'string') return null;
+  if (!MOD_KINDS.includes(d.kind)) return Object.assign(plain(d), { kind: d.kind });
+  const o = { kind: d.kind }, v01 = x => clamp(num(x, 0), 0, 1);
+  if (d.kind === 'lfo') Object.assign(o, normLfoMod(d));
+  else if (d.kind === 'env') Object.assign(o, normEnvMod(d));
+  else if (d.kind === 'chaos') Object.assign(o, normChaosMod(d));
+  else if (d.kind === 'macro') {
+    const v = Array.isArray(d.v) ? d.v : [], nm = Array.isArray(d.names) ? d.names : [];
+    o.v = Array.from({ length: 8 }, (_, k) => v01(v[k]));
+    o.names = Array.from({ length: 8 }, (_, k) => (typeof nm[k] === 'string' ? nm[k].slice(0, 16) : ''));
+  } else if (d.kind === 'cc') { o.cc = clamp(R(num(d.cc, 1)), 0, 127); o.ch = clamp(R(num(d.ch, 0)), 0, 16); o.v = v01(d.v); }
+  if (typeof d.name === 'string' && d.name) o.name = str(d.name, null, 32);
+  return o;
 }
 // Stage 2a: a track's mod cables (SPEC-canvas §5.1, IMPL-2a §1): { id: 'r<n>', src, dst, then serum-core normRow's fields in
 // its order and by its rules (amt / curve / acurve −1…1, out / rise / fall 0…1 (fall = rise when slink), bits, crv: ≤ 64

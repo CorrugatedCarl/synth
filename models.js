@@ -717,7 +717,7 @@ const serum = {
   // G.fx = the track's FX state: compileSerum resolves the matrix rows that target FX parameters against its layout
   // (SPEC-serum2 §4.1; without it those rows are inactive); qr = quality-reduction caps, the rest app preferences
   map(P, v, G) {
-    return compileSerum(v && v.s, { bpm: G.bpm, smooth: G.smooth, fx: G.fx, qr: G.qr, ultra: G.ultra, mpeBendX: G.mpeBendX, mpeYBi: G.mpeYBi });
+    return compileSerum(v && v.s, { bpm: G.bpm, smooth: G.smooth, fx: G.fx, qr: G.qr, ultra: G.ultra, mpeBendX: G.mpeBendX, mpeYBi: G.mpeYBi, ext: G.ext });
   },
   presets: FACTORY_PRESETS,
 };
@@ -743,8 +743,10 @@ for (const m of MODELS) {
 // bounces, the render farm and the tests call it as it is.
 //   model  model id or MODELS entry          vals  the track's panel values ({s} for Serum)
 //   fx     the track's FX state (any version; default defaultFx())
-//   opts   {sr = 48000, bpm = 120, drift = 0, hiss = 0, qr = null, prefs = {}, seed = false}; prefs: smooth (1),
-//          silenceTails (1), ultra, mpeBendX, mpeYBi (the app preferences, §13.10)
+//   opts   {sr = 48000, bpm = 120, drift = 0, hiss = 0, qr = null, prefs = {}, seed = false, ext = false}; prefs: smooth (1),
+//          silenceTails (1), ultra, mpeBendX, mpeYBi (the app preferences, §13.10); ext: the matrix holds canvas ext rows
+//          (SYNTH Canvas 2b, IMPL-2b §3.2: compileSerum's ctx.ext — never set on a path without them, so every other
+//          compile is the bytes it was)
 export function patchFor(model, vals, fx, opts) {
   const m = typeof model === 'string' ? MODELS.find(x => x.id === model) : model;
   if (!m || !m.map) throw new Error('patchFor: unknown model ' + model);
@@ -753,7 +755,7 @@ export function patchFor(model, vals, fx, opts) {
   for (const c of m.controls) P[c.id] = c.conv ? c.conv(v[c.id]) : v[c.id];
   const rack = fx || SC.defaultFx();
   const patch = m.map(P, v, { drift: o.drift || 0, hiss: o.hiss || 0, sr, bpm, smooth, fx: rack, qr: o.qr || null,
-    ultra: pr.ultra ? 1 : 0, mpeBendX: pr.mpeBendX ? 1 : 0, mpeYBi: pr.mpeYBi ? 1 : 0 });
+    ultra: pr.ultra ? 1 : 0, mpeBendX: pr.mpeBendX ? 1 : 0, mpeYBi: pr.mpeYBi ? 1 : 0, ext: o.ext ? true : undefined });
   // Serum's master volume, Bypass and output levels belong to the rack's output stage (FX-context [0…4], §4.2)
   const s = m.custom && v.s ? v.s : null, sp = s && s.p ? s.p : null;
   patch.fxr = SC.compileFx(rack, {

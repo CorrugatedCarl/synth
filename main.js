@@ -319,19 +319,36 @@ function legacyOk(tr, c = CG.compileTrack(tr)) {
   const ids = CMOD.instIds(tr), f = CMOD.fxDevOf(tr);
   return ids.length === 1 && c.inst === ids[0] && Object.keys(tr.dev).every(k => !tr.dev[k] || tr.dev[k].kind !== 'panel' || (!!f && !f.own && k === f.id));
 }
+// Stage 2b (IMPL-2b §3.1): the track's {t: 'mods'} payload — cv-graph compileMods (memoised there by content: a knob turn
+// on an uncabled instrument rebuilds nothing; `key` is the content key the poster compares), or { off: true } when
+// nothing is left for ModCore to evaluate (no rows, ext slots or value sources: a track whose modules were deleted, or
+// a 2a-only track) — the posting from queuePatch's path and into processorOptions is the integrator's (lane D)
+function buildMods(tr) {
+  const pay = tr && tr.dev ? CG.compileMods(tr, project, { smooth: prefs.smooth, qr: null, ultra: 0 }) : null;
+  return pay && (pay.rows.length || pay.ext.length || pay.vals.length) ? pay : { t: 'mods', i: tr && tr.id, off: true, key: 'off' };
+}
+const modsExt = tr => { const p = buildMods(tr); return p.off ? [] : p.ext; }; // (the track's ext slots, for the injections)
 // Stage 2a (IMPL-2a §2.1, D11): a Serum's vals with its track's canvas mod rows injected into free matrix slots ({ s:
-// merged }: compileSerum and fxModded2 both see them; vals.s untouched) — no rows: vals itself (the same bytes as before)
+// merged }: compileSerum and fxModded2 both see them; vals.s untouched) — no rows: vals itself (the same bytes as before).
+// 2b: with the track's ext slots and modules (ext rows, PER NOTE slot injection); a merged vals holding ext rows carries a
+// non-enumerable `ext` mark so buildPatch compiles it with the ext flag (IMPL-2b §3.2; the merged copy is transient)
 function modVals(tr, id, vals, m) {
   if (!m.custom || !tr.dev || !id || !vals || !vals.s) return vals;
-  const inj = CG.injectMods({ vals }, CG.modRowsFor(tr, id));
-  return inj.s === vals.s ? vals : Object.assign({}, vals, { s: inj.s });
+  const rows = CG.modRowsFor(tr, id);
+  if (!rows.length) return vals; // (no rows: nothing compiled — the track's payload is not even built)
+  const inj = CG.injectMods({ vals }, rows, modsExt(tr), tr);
+  if (inj.s === vals.s) return vals;
+  const v = Object.assign({}, vals, { s: inj.s });
+  if (inj.placed.some(x => /^ext\d+$/.test(x.src))) Object.defineProperty(v, 'ext', { value: true });
+  return v;
 }
 function buildPatch(tr, sr, offline = false) {
   fxOf(tr); // (a v1 rack reaching the track is migrated in place first, as before)
   const c = CG.compileTrack(tr), V = c.canonical ? c.v1 : CM.primV1(tr);
   const m = modelById(V.model), s = m.custom && V.vals.s ? V.vals.s : null;
-  const patch = patchFor(m, modVals(tr, c.canonical ? c.inst : CMOD.primId(tr), V.vals, m), V.fx, {
-    sr: sr || (ctx ? ctx.sampleRate : 48000), bpm: project.bpm, drift: settings.drift / 10, hiss: 1,
+  const mv = modVals(tr, c.canonical ? c.inst : CMOD.primId(tr), V.vals, m);
+  const patch = patchFor(m, mv, V.fx, {
+    sr: sr || (ctx ? ctx.sampleRate : 48000), bpm: project.bpm, drift: settings.drift / 10, hiss: 1, ext: mv.ext === true, // (2b: ext rows injected)
     // offline: no quality caps (the CP defaults; the touch-device stream / grain pools differ by ≈ 1 MB and a render has no
     // deadline); live: the device defaults and the safeguard's step
     qr: offline ? null : qrOf(qrStep), prefs: offline || !prefs.ultra ? prefs : Object.assign({}, prefs, { ultra: 0 }), seed: seedPend.has(tr.id),
@@ -350,7 +367,7 @@ const liveOpts = (tr, sr, offline) => ({ sr: sr || (ctx ? ctx.sampleRate : 48000
   qr: offline ? null : qrOf(qrStep), prefs: offline || !prefs.ultra ? prefs : Object.assign({}, prefs, { ultra: 0 }), seed: seedPend.has(tr.id) });
 function buildInstPatch(tr, id, sr, offline = false) {
   const d = tr.dev[id], m = modelById(d.model);
-  const patch = CG.instPatch({ model: m.id, vals: d.vals, fx: m.custom ? fxOfDev(tr, id) : undefined }, liveOpts(tr, sr, offline), m.custom ? CG.modRowsFor(tr, id) : null); // (2a: its mod rows)
+  const patch = CG.instPatch({ model: m.id, vals: d.vals, fx: m.custom ? fxOfDev(tr, id) : undefined }, liveOpts(tr, sr, offline), m.custom ? CG.modRowsFor(tr, id) : null, m.custom ? modsExt(tr) : null, tr); // (2a / 2b: its mod rows, the track's ext slots)
   if (m.custom) {
     patch.osCap = offline ? 0 : sxCap;
     if (!offline) capQ4(patch);
@@ -358,7 +375,7 @@ function buildInstPatch(tr, id, sr, offline = false) {
   if (!offline && id === CMOD.primId(tr)) voiceSeen(tr, patch);
   return patch;
 }
-const buildChain = (tr, id, sr, offline = false) => CG.chainPatch(fxOfDev(tr, id), liveOpts(tr, sr, offline));
+const buildChain = (tr, id, sr, offline = false) => CG.chainPatch(fxOfDev(tr, id), liveOpts(tr, sr, offline)); // (2b: unchanged — a cabled chain takes its vector from ModCore at run time)
 // a track's whole graph form (c: its compileTrack): {graph, patches: {id: patch}, chains: {id: {fxr, fxrT}}, seqs: {id: s},
 // needs} — the processorOptions of a node / an offline render (offline: no caps; a 303 only when synced, not running)
 function graphParts(tr, sr, offline = false, c = CG.compileTrack(tr)) {
@@ -5642,6 +5659,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
     held, kbRange, kbMaxH, app: () => app, kb: () => ({ h: kbH, kw: kbSize.kw, hSet: kbSize.h, lo: kbLo, hi: kbHi, w: kbW, px: kbPx, notes: [...keyEls.keys()], ptrs: new Map(ptrs) }),
     roll: () => roll, arr: () => arr,
     ctl, wheelTracks, perfValue, lastVel, modCount, sxExtra, injectMods: CG.injectMods, // (stage 2a host)
+    buildMods, compileMods: CG.compileMods, // (stage 2b, lane B: the {t: 'mods'} payload)
   };
 }
 boot();

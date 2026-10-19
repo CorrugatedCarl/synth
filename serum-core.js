@@ -1673,6 +1673,29 @@ export function normRow(r) {
     out: num(r.out, 1, 0, 1), acurve: num(r.acurve, 0, -1, 1), crv: normPts(r.crv, null, false, MAX_CRV_PTS), rise,
     fall: slink ? rise : num(r.fall, 0, 0, 1), slink };
 }
+// (exported for SYNTH Canvas 2b, IMPL-2b §1.1 / §1.4: a modulator module's device record holds one Serum slot's state
+// object plus the slot's knobs as device-level fields in normalised 0…1 param units (the p values of l<k>.* / e<k>.* /
+// c<k>.*): an LFO module { lfo: normLfo's object, rate, rise, delay, smooth, phase }, an ENV module { env: { bpm, legInv,
+// stealRe }, att, hold, dec, sus, rel, crv: [attack, decay, release curves], start, end }, a chaos module { chaos: { mono,
+// sh }, rate, bpm, smooth } (smooth: the module's own, no Serum param). song.normDev and cv-model keep them through
+// these; the compile writes them back into s.lfo[k] / s.env[k] / s.chaos[c] and p)
+export { normLfo };
+const LFO_MOD_KNOBS = ['rate', 'rise', 'delay', 'smooth', 'phase'], ENV_MOD_KNOBS = ['att', 'hold', 'dec', 'sus', 'rel', 'start', 'end'], ENV_MOD_CRV = ['ca', 'cd', 'cr'];
+export function normLfoMod(x) {
+  const S = objOf(x), o = { lfo: normLfo(S.lfo) };
+  for (const k of LFO_MOD_KNOBS) o[k] = num(S[k], DESTS[DEST_MAP.get('l1.' + k)].def, 0, 1);
+  return o;
+}
+export function normEnvMod(x) {
+  const S = objOf(x), E = objOf(S.env), c = arrOf(S.crv), o = { env: { bpm: bit(E.bpm, 0), legInv: bit(E.legInv, 0), stealRe: bit(E.stealRe, 0) } };
+  for (const k of ENV_MOD_KNOBS) o[k] = num(S[k], DESTS[DEST_MAP.get('e2.' + k)].def, 0, 1);
+  o.crv = ENV_MOD_CRV.map((k, i) => num(c[i], DESTS[DEST_MAP.get('e2.' + k)].def, 0, 1));
+  return o;
+}
+export function normChaosMod(x) {
+  const S = objOf(x), C = objOf(S.chaos);
+  return { chaos: { mono: bit(C.mono, 1), sh: bit(C.sh, 0) }, rate: num(S.rate, DESTS[DEST_MAP.get('c1.rate')].def, 0, 1), bpm: bit(S.bpm, 0), smooth: num(S.smooth, 0, 0, 1) };
+}
 function normVc(x) {
   const S = objOf(x), st = arrOf(S.steps), sel = arrOf(S.sel);
   return {

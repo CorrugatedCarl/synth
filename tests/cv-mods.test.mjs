@@ -99,7 +99,7 @@ test('descriptors: classic, Serum, FX racks, by device', () => {
   const S = V.serumDescs();
   assert.equal(S.length, C.DESTS.length);
   assert.ok(S.length >= 529);
-  assert.deepEqual(Object.keys(S[0]), ['id', 'label', 'law', 'lo', 'hi', 'def', 'fmt', 'scope', 'cls', 'nomod']);
+  assert.deepEqual(Object.keys(S[0]), ['id', 'label', 'law', 'lo', 'hi', 'def', 'fmt', 'scope', 'cls', 'nomod', 'ctr']); // (ctr: 2b, the centred flag on every descriptor)
   // a rack: reverb, a 3-band splitter with an EQ in its middle branch, a Convolve (its non-modulatable rows marked)
   const fx = C.defaultFx2(), rev = C.newInstance(fx, 'rev', { rack: 0 }), sp = C.newInstance(fx, 'split3', { rack: 0 });
   const eq = C.newInstance(fx, 'eq', { rack: 0, splitter: sp, branch: 1 }), cv = C.newInstance(fx, 'conv', { rack: 0 });
@@ -122,28 +122,105 @@ test('2a descs: a 1c panel holds its whole FX state (fx) — every rack read; th
   assert.deepEqual(V.descs({ kind: 'panel', rack: fx.racks[0] }).map(d => d.id), V.rackDescs(fx.racks[0]).map(d => d.id));
 });
 
-test('2a destOk: Serum DESTS and own-FX ids (not nomod); classic and panel knobs from stage 2b; structural never', () => {
+test('2a / 2b destOk: Serum DESTS and own-FX ids (not nomod); classic sm / apply / proc and panel knobs open (2b), chunk from stage 5; structural never', () => {
   const fx = C.defaultFx2(), rev = C.newInstance(fx, 'rev', { rack: 0 }), cv = C.newInstance(fx, 'conv', { rack: 0 });
-  const sx = { kind: 'synth', model: 'serum', vals: { s: C.defaultSerum() }, fx }, ok = { ok: true, why: '', stage: null };
+  const sx = { kind: 'synth', model: 'serum', vals: { s: C.defaultSerum() }, fx }, ok = { ok: true, why: '', stage: null }, NO = { ok: false, why: 'This knob can’t be modulated', stage: null };
   for (const id of ['f.cutoff', 'a.level', 'g.master', 'm1', `fx.${rev}.mix`]) assert.deepEqual(V.destOk(sx, id), ok, id);
   const nomodId = V.rackDescs(fx).find(d => d.id.startsWith(`fx.${cv}.`) && d.nomod).id;
-  for (const id of ['nope', 'fx.zz.mix', nomodId, '', null]) assert.deepEqual(V.destOk(sx, id), { ok: false, why: 'This knob can’t be modulated', stage: null }, String(id));
+  for (const id of ['nope', 'fx.zz.mix', nomodId, '', null]) assert.deepEqual(V.destOk(sx, id), NO, String(id));
   const mm = { kind: 'synth', model: 'minimoog', vals: {} };
-  assert.deepEqual(V.destOk(mm, 'fc'), { ok: false, why: 'Classic knobs take modulation from stage 2b', stage: '2b' });
+  assert.deepEqual(V.destOk(mm, 'fc'), ok, 'sm: the cutoff');
   assert.deepEqual(V.destOk(mm, 'mm').stage, null, 'a knob that changes nothing: never');
   assert.deepEqual(V.destOk({ kind: 'synth', model: 'prophet5', vals: {} }, 'un').ok, false, 'Unison: structural');
-  assert.deepEqual(V.destOk({ kind: 'panel', fx }, `fx.${rev}.mix`), { ok: false, why: 'FX panel knobs take modulation from stage 2b', stage: '2b' });
+  assert.deepEqual(V.destOk({ kind: 'panel', fx }, `fx.${rev}.mix`), ok, 'a panel knob (2b)');
+  assert.deepEqual(V.destOk({ kind: 'panel', fx }, nomodId), NO);
+  assert.deepEqual(V.destOk({ kind: 'panel', rack: fx.racks[0] }, `fx.${rev}.mix`), ok, 'the single-rack form');
   assert.equal(V.destOk({ kind: 'velo' }, 'x').ok, false);
   assert.equal(V.destOk(null, 'f.cutoff').ok, false);
+});
+
+/* ------------------------------------------------------------------ stage 2b: every class, every source (IMPL-2b §1.1, §1.2, §7.5) */
+test('2b destOk per class (the §7.5 matrix): sm / apply / proc ok; chunk → stage 5; struct / none → never; a switched-off oscillator\'s level', () => {
+  const ok = { ok: true, why: '', stage: null }, NO = { ok: false, why: 'This knob can’t be modulated', stage: null }, S5 = { ok: false, why: 'This knob takes modulation from stage 5', stage: '5' };
+  const by = cls => Object.entries(V.CLASS_TABLE).flatMap(([m, t]) => Object.keys(t).filter(k => t[k] === cls).map(k => [m, k]));
+  const dev = m => ({ kind: 'synth', model: m, vals: {} });
+  const n = { ok: 0, no: 0 };
+  for (const cls of ['sm', 'apply', 'proc']) for (const [m, k] of by(cls)) { const r = V.destOk(dev(m), k); if (r.ok) n.ok++; else { n.no++; assert.equal(r.stage, null, m + '.' + k); } }
+  assert.ok(n.ok > 220 && n.no < 12, JSON.stringify(n) + ' (a handful of knobs move nothing at the default panel: a mixer switch off, no pulse wave)');
+  for (const [m, k] of by('chunk')) assert.deepEqual(V.destOk(dev(m), k), S5, m + '.' + k);
+  for (const [m, k] of [...by('struct'), ...by('none')]) assert.deepEqual(V.destOk(dev(m), k), NO, m + '.' + k);
+  // the level of a switched-off oscillator: the Minimoog's mixer switch, the Modular's level at 0
+  const OFF = { ok: false, why: 'Switch the oscillator on to modulate its level', stage: null };
+  assert.deepEqual([V.destOk({ kind: 'synth', model: 'minimoog', vals: { m1: 0 } }, 'v1'), V.destOk({ kind: 'synth', model: 'minimoog', vals: { m1: 1 } }, 'v1')], [OFF, ok]);
+  assert.deepEqual([V.destOk({ kind: 'synth', model: 'modular', vals: { l1: 0 } }, 'l1'), V.destOk({ kind: 'synth', model: 'modular', vals: { l1: 5 } }, 'l1')], [OFF, ok]);
+  assert.deepEqual(V.destOk({ kind: 'synth', model: 'juno60', vals: {} }, 'pwm'), S5);
+  assert.deepEqual(V.destOk({ kind: 'synth', model: 'juno60', vals: {} }, 'nope'), NO);
+});
+
+test('2b classicTarget: the engine-side target of a classic knob — smTargets slots (the oscillator resolved), apply / proc fields; SM_SLOT mirrors engine.js', () => {
+  const tg = (m, k, v) => V.classicTarget(m, v || {}, k);
+  assert.deepEqual([tg('juno60', 'cf').slot, tg('juno60', 'rs').slot, tg('juno60', 'lv').slot, tg('juno60', 'hp').slot, tg('juno60', 'nz').slot, tg('juno60', 'sb').slot], [0, 3, 11, 5, 22, 21]);
+  assert.deepEqual([tg('minimoog', 'v1').slot, tg('minimoog', 'v2').slot, tg('minimoog', 'v3').slot, tg('minimoog', 'tune').slot, tg('minimoog', 'r1').slot], [12, 13, 14, 18, 18]);
+  assert.deepEqual([tg('cs80', 'br').slot, tg('cs80', 'pw1').slot, tg('cs80', 'lp2').slot, tg('cs80', 'hp1').slot], [0, 15, 7, 5]);
+  assert.deepEqual([tg('juno60', 'lr'), tg('juno60', 'a').field, tg('juno60', 'ch').field, tg('prophet5', 'ud').field], [{ cls: 'proc', slot: -1, field: 'lfo.rate', fields: ['lfo.rate'], on: true }, 'fenv.a', 'fx.chorus', 'unisonDetune']);
+  assert.deepEqual(tg('minimoog', 'v1', { m1: 0 }), { cls: 'sm', slot: -1, field: null, fields: ['osc.lev', 'osc.on'], on: false }, 'the switch off: the evidence over the bases, on false');
+  assert.deepEqual([tg('juno60', 'nope'), tg('serum', 'f.cutoff'), tg('juno60', 'pwm').cls], [null, null, 'chunk']);
+  assert.deepEqual(V.SM_SLOT, { 'vcf.oct': 0, 'vcf.envOff': 1, 'vcf.env': 2, 'vcf.res': 3, 'vcf.drive': 4, 'hpf.oct': 5, 'hpf.res': 6, 'dual.oct': 7, 'dual.res': 8, 'dual.hoct': 9, 'dual.hres': 10, level: 11, 'osc.lev': 12, 'osc.on': 12, 'osc.pw': 15, 'osc.oct': 18, 'osc.fine': 18, sub: 21, noise: 22, ring: 23, ext: 24, 'rm.depth': 25 });
+  for (const m of CLASSIC) for (const c of m.controls) { // every sm / apply / proc knob resolves on the default panel, bar the few that move nothing there
+    const cls = V.classOf(m.id, c.id);
+    if (cls !== 'sm' && cls !== 'apply' && cls !== 'proc') continue;
+    const r = tg(m.id, c.id);
+    assert.ok(r && (cls === 'sm' ? r.slot >= 0 && r.slot < 26 : typeof r.field === 'string') || !r.fields.some(x => x.includes('.')) || r.on === false || ['minimoog.ext', 'minimoog.me', 'minimoog.nz', 'minimoog.mn', 'arp2600.ara', 'arp2600.arr', 'ms20.pw1'].includes(m.id + '.' + c.id), m.id + '.' + c.id);
+  }
+});
+
+test('2b descriptors carry the centred flag and the class: classic (law / lo / hi / def / fmt / cls / ctr from models.js), a panel from its fx', () => {
+  const J = V.descs({ kind: 'synth', model: 'juno60', vals: {} }), cf = J.find(d => d.id === 'cf'), ch = J.find(d => d.id === 'ch');
+  assert.deepEqual([cf.law, cf.lo, cf.hi, cf.def, cf.cls, cf.nomod, cf.ctr, typeof cf.fmt], ['lin', 0, 10, 6, 'sm', false, 0, 'function']);
+  assert.deepEqual([ch.law, ch.opts, ch.cls, ch.lo, ch.hi], ['enum', ['Off', 'I', 'II', 'I+II'], 'proc', 0, 3]);
+  const M = V.descs({ kind: 'synth', model: 'minimoog', vals: {} });
+  assert.deepEqual([M.find(d => d.id === 'tune').ctr, M.find(d => d.id === 'f2').ctr, M.find(d => d.id === 'v1').ctr], [1, 1, 0], 'a −x…x knob is centred');
+  const fx = C.defaultFx2(), rev = C.newInstance(fx, 'rev', { rack: 0 }), P = V.descs({ kind: 'panel', fx }), mix = P.find(d => d.id === `fx.${rev}.mix`);
+  assert.deepEqual([mix.law, mix.lo, mix.hi, mix.scope, mix.cls, mix.nomod, mix.ctr], ['lin', 0, 1, 'G', null, false, 0]);
+  assert.equal(V.descs({ kind: 'synth', model: 'serum', fx }).find(d => d.id === 'a.pan').ctr, 1, 'Serum\'s ctr flag');
+});
+
+test('2b modulator ids, labels, sources: kindOfId / modLabelOf / modDevs / srcOf / perNoteOf; sourcesOf over every module (a macro: 8 knobs); linkSources', () => {
+  assert.deepEqual(['l1', 'e12', 'm1', 'c3', 'h2', 'nt', 've', 'at', 'bd', 'i1', 'fx1', 'l0', 'x', null].map(V.kindOfId), ['lfo', 'env', 'macro', 'cc', 'chaos', 'note', 'velo', 'at', 'bend', null, null, null, null, null]);
+  assert.deepEqual([V.modLabelOf('l3'), V.modLabelOf('m1', { kind: 'macro' }), V.modLabelOf('ve'), V.modLabelOf('h2', { kind: 'chaos' }), V.modLabelOf('i1')], ['LFO 3', 'Macro 1', 'Velocity', 'Chaos 2', 'i1']);
+  assert.deepEqual(V.MOD_LABEL, { wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend', note: 'Note', lfo: 'LFO', env: 'ENV', macro: 'Macro', cc: 'CC', chaos: 'Chaos' });
+  assert.deepEqual([V.srcOf('wheel'), V.srcOf('m1.k3'), V.srcOf('i2/lfo10.out'), V.srcOf('i2/env2.out'), V.srcOf('i2/lfo11.out'), V.srcOf('x'), V.srcOf(null)],
+    [{ dev: 'wheel', port: '', link: '' }, { dev: 'm1', port: 'k3', link: '' }, { dev: 'i2', port: 'out', link: 'lfo10' }, { dev: 'i2', port: 'out', link: 'env2' }, null, null, null]);
+  const s = C.normalizeSerum(C.defaultSerum());
+  s.lfo[0].mono = 1; s.matrix[0] = C.normRow({ src: 'lfo1', amt: 0.1, dst: 'a.pan' }); s.matrix[1] = C.normRow({ src: 'env3', amt: 0.1, dst: 'a.pan' });
+  const t = { dev: { i1: { kind: 'synth', model: 'serum', name: 'Lead', vals: { s } }, i2: { kind: 'synth', model: 'juno60', vals: {} }, l1: { kind: 'lfo', lfo: { mono: 1 } }, l3: { kind: 'lfo', lfo: { mono: 0 } }, e1: { kind: 'env', env: {} },
+    m1: { kind: 'macro', v: [], names: ['Cut', '', 'Mix'] }, m2: { kind: 'macro', v: [], names: [] }, c1: { kind: 'cc' }, h1: { kind: 'chaos', chaos: { mono: 1 } }, h2: { kind: 'chaos', chaos: { mono: 0 } }, nt: { kind: 'note' }, ve: { kind: 'velo' }, at: { kind: 'at' }, bd: { kind: 'bend' },
+    x9: { kind: 'lfo', lfo: {} }, l2: { kind: 'env', env: {} } } };
+  assert.deepEqual(V.modDevs(t).map(x => x.id), ['ve', 'at', 'bd', 'nt', 'l1', 'l3', 'e1', 'm1', 'm2', 'c1', 'h1', 'h2'], 'Tidy order; an id of the wrong kind is no module');
+  const S = V.sourcesOf(t, { perf: { wheel: { v: 1 } } });
+  assert.deepEqual(S.map(x => x.id + (x.perNote ? '*' : '')), ['wheel', 've.out*', 'at.out', 'bd.out', 'nt.out*', 'l1.out', 'l3.out*', 'e1.out*', 'm1.k1', 'm1.k2', 'm1.k3', 'm1.k4', 'm1.k5', 'm1.k6', 'm1.k7', 'm1.k8',
+    'm2.k1', 'm2.k2', 'm2.k3', 'm2.k4', 'm2.k5', 'm2.k6', 'm2.k7', 'm2.k8', 'c1.out', 'h1.out', 'h2.out*']);
+  assert.deepEqual(S.filter(x => x.dev === 'm1').slice(0, 3).map(x => [x.label, x.port, x.kind]), [['Cut', 'k1', 'macro'], ['Macro 1 · 2', 'k2', 'macro'], ['Mix', 'k3', 'macro']]);
+  assert.deepEqual(S[0], { id: 'wheel', label: 'Mod Wheel', scope: 'project', kind: 'wheel', dev: 'wheel', port: '', perNote: false });
+  assert.deepEqual(S[5], { id: 'l1.out', label: 'LFO 1', scope: 'track', kind: 'lfo', dev: 'l1', port: 'out', perNote: false });
+  assert.deepEqual(V.sourcesOf(t, {}).length, S.length - 1, 'no wheel');
+  assert.deepEqual([V.perNoteOf(t, 'l1.out'), V.perNoteOf(t, 'l3.out'), V.perNoteOf(t, 'e1.out'), V.perNoteOf(t, 'm1.k2'), V.perNoteOf(t, 'c1.out'), V.perNoteOf(t, 'h1.out'), V.perNoteOf(t, 'h2.out'), V.perNoteOf(t, 'nt.out'), V.perNoteOf(t, 'wheel')],
+    [false, true, true, false, false, false, true, true, false]);
+  assert.deepEqual([V.perNoteOf(t, 'i1/lfo1.out'), V.perNoteOf(t, 'i1/lfo2.out'), V.perNoteOf(t, 'i1/env3.out'), V.perNoteOf(t, 'i2/lfo1.out'), V.perNoteOf(t, 'l1.k2'), V.perNoteOf(t, 'm1.out'), V.perNoteOf(t, 'x9.out'), V.perNoteOf(t, 'l2.out')],
+    [false, true, true, null, null, null, null, null], 'a MONO Serum LFO is global; only a Serum links; the right port of the right kind');
+  const L = V.linkSources(t);
+  assert.deepEqual([L.length, L[0], L.filter(x => x.used).map(x => x.link)], [14, { id: 'i1/lfo1.out', label: 'Lead LFO 1', scope: 'track', kind: 'link', dev: 'i1', port: 'out', link: 'lfo1', perNote: false, used: true }, ['lfo1', 'env1', 'env3']]);
+  assert.deepEqual(V.srcDev(t, 'm1.k3'), { q: { dev: 'm1', port: 'k3', link: '' }, dev: t.dev.m1, kind: 'macro' });
+  assert.deepEqual([V.MOD_SRC['nt.out'], V.SRC_MOD.note, V.MOD_DEV.note, V.MOD_PREFIX.chaos, V.MOD_MULTI, V.MOD_ORDER[4]], ['note', 'nt.out', 'nt', 'h', ['lfo', 'env', 'macro', 'cc', 'chaos'], 'note']);
 });
 
 test('2a sourcesOf / wheelTracks: the project wheel when placed, the track\'s modulators; the tracks the live wheel reaches', () => {
   const t = { dev: { i1: { kind: 'synth', model: 'serum' }, ve: { kind: 'velo' }, bd: { kind: 'bend' }, at: { kind: 'velo' } }, mods: [{ id: 'r1', src: 'wheel', dst: 'i1:f.cutoff' }] };
   const p = { perf: { wheel: { v: 1 } }, tracks: [t, { dev: {}, mods: [{ id: 'r1', src: 've.out', dst: 'i1:a.level' }] }, { dev: {} }] };
   assert.deepEqual(V.sourcesOf(t, p), [
-    { id: 'wheel', label: 'Mod Wheel', scope: 'project', kind: 'wheel' },
-    { id: 've.out', label: 'Velocity', scope: 'track', kind: 'velo' },
-    { id: 'bd.out', label: 'Bend', scope: 'track', kind: 'bend' }, // ('at' holding another kind is not Aftertouch)
+    { id: 'wheel', label: 'Mod Wheel', scope: 'project', kind: 'wheel', dev: 'wheel', port: '', perNote: false },
+    { id: 've.out', label: 'Velocity', scope: 'track', kind: 'velo', dev: 've', port: 'out', perNote: true },
+    { id: 'bd.out', label: 'Bend', scope: 'track', kind: 'bend', dev: 'bd', port: 'out', perNote: false }, // ('at' holding another kind is not Aftertouch)
   ]);
   assert.deepEqual(V.sourcesOf(t, { perf: { wheel: null } }).map(x => x.id), ['ve.out', 'bd.out']);
   assert.deepEqual(V.wheelTracks(p), [t]);

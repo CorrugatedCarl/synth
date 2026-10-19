@@ -4205,7 +4205,7 @@ test('2a injectMods: a canvas wheel row in a free slot compiles exactly as the s
   Object.assign(o.matrix[k1], { curve: 0.3, out: 0.8, crv: clone(crv), rise: 0.2, fall: 0.1 });
   const k2 = addMod(o, fx, 'velo', 'a.level', { amt: -0.3, bi: 1 });
   assert.equal(k1, 1, 'the first free slot (the gap)');
-  assert.deepEqual(inj.placed, [{ id: 'r1', slot: k1 }, { id: 'r2', slot: k2 }]);
+  assert.deepEqual(inj.placed, [{ id: 'r1', slot: k1, src: 'wheel' }, { id: 'r2', slot: k2, src: 'velo' }]); // (2b: with the Serum source each reads)
   assert.deepEqual(inj.left, []);
   assert.deepEqual(inj.s.matrix, o.matrix);
   assert.notEqual(inj.s, s);
@@ -4250,8 +4250,8 @@ test('2a injectMods: 64 rows in use → every canvas row is left (not compiled);
   assert.deepEqual([inj.placed, inj.left], [[], ['r1']]);
   s.matrix[63] = row();
   inj = G.injectMods(d, [crow({ aux: 'nope' }), crow({ id: 'r2', src: 'xx.out' }), crow({ id: 'r3' }), crow({ id: 'r4', byp: 1 })]);
-  assert.deepEqual([inj.placed, inj.left], [[{ id: 'r3', slot: 63 }], ['r4']]);
+  assert.deepEqual([inj.placed, inj.left], [[{ id: 'r3', slot: 63, src: 'wheel' }], ['r4']]);
   const t = { dev: { i1: d }, mods: [crow({ id: 'r3' }), crow({ id: 'r4' }), crow({ id: 'r5', dst: 'i9:f.cutoff' })] };
-  assert.deepEqual(G.modBudget(t, 'i1'), { preset: 63, canvas: 1, left: ['r4'], max: 64 });
+  assert.deepEqual((b => [b.preset, b.canvas, b.left])(G.modBudget(t, 'i1')), [63, 1, ['r4']]);
   assert.deepEqual(G.modBudget(t, d), G.modBudget(t, 'i1'), 'by device object');
 });
