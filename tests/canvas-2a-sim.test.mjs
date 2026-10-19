@@ -423,3 +423,20 @@ test('H7: a canvas drop follows the Serum\'s "Limit mod depth on drop" — off: 
     cv.undo(); sim.raf();
   } finally { api.store.set('synth.sx.prefs', was || {}); api.prefsChanged(); }
 });
+
+test('H4: replacing a Serum that has cables with a classic synth says the cables went (Replace with…, setTrackModel); undo brings them back', () => {
+  wheelOn();
+  pick(fresh());
+  M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf(); M.opts.onMod('wheel', 'i1:f.res'); sim.raf();
+  const r0 = rows(), TXT = '2 modulation cables to the Serum removed: classic knobs take modulation from stage 2b';
+  assert.equal(r0.split(',').length, 2);
+  cv.drop('minimoog', null); sim.raf();
+  assert.deepEqual([T().model, rows()], ['minimoog', '']);
+  assert.ok(note().includes(TXT), note());
+  cv.undo(); sim.raf();
+  assert.deepEqual([T().model, rows()], ['serum', r0]);
+  cv.setTrackModel(T(), 'juno60'); sim.raf();
+  assert.deepEqual([T().model, rows(), note()], ['juno60', '', TXT]);
+  cv.undo(); sim.raf();
+  assert.deepEqual([T().model, rows()], ['serum', r0]);
+});

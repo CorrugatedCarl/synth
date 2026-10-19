@@ -1623,8 +1623,12 @@ function setTrackModel(tr0, id, o = null) {
   seqToggle(tr, false, true, dev);
   postTo(tr, { t: 'panic' });
   if (prim && new RegExp('^' + old.name.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '( \\d+)?$').test(tr.name)) tr.name = m.name + ' ' + (project.tracks.indexOf(tr) + 1);
+  const n0 = CG.modRowsFor(tr, dev).length, nm = (tr.dev && tr.dev[dev] && tr.dev[dev].name) || 'the Serum';
   if (prim) { tr.model = id; tr.vals = loadVals(m); tr.preset = null; } // tr.fx (the track's rack) is kept
   else CMOD.setModel(tr, dev, id, { vals: loadVals(m) });
+  // (stage 2a) a Serum's cables to a classic one are dropped (the model setter / setModel): said (cv-model setModel's text)
+  const gone = n0 - CG.modRowsFor(tr, dev).length, why = gone > 0 ? `${gone} modulation cable${gone > 1 ? 's' : ''} to ${nm} removed: classic knobs take modulation from stage 2b` : '';
+  if (why) notice(why, 6000);
   if (ui === 'flow' || (ui === 'hw' && instUi(tr, dev) === 'flow')) layUi(tr, ui, dev); // (Hardware on an untouched track: no lay key)
   if (tr.id === project.selTrack) {
     if (dev === curOf(tr)) { bind(); settings.model = id; renderNav(); history.replaceState(null, '', '#' + id); }
@@ -1634,6 +1638,7 @@ function setTrackModel(tr0, id, o = null) {
   if (id === 'tb303') { if (prim) seqSend(tr); else seqSend(tr, dev); }
   if (ctx) rateText();
   renderHeads(); persist(); updateUndoUI();
+  return why;
 }
 function selectTrack(id) {
   if (id === project.selTrack && model.id === curView(trk()).model) return;
@@ -4770,12 +4775,12 @@ function cvDropInstrument(modelId, at, o = null, v0 = null) {
   const t = trk(), v = v0 || curView(t), dev = dvOf(v) || CMOD.primId(t), m = MODELS.find(x => x.id === modelId);
   if (!m || m.id === v.model) return false;
   const old = modelById(v.model), id = t.id;
-  setTrackModel(v, m.id, o); // (renderPanel → cvPanelDone: the FX module and the titles follow)
+  const why = setTrackModel(v, m.id, o); // (renderPanel → cvPanelDone: the FX module and the titles follow; why: its cables dropped, 2a)
   // the step the replacement left on top of History (or the equal one it kept): the tap undoes it only while it is still
   // the newest — after a later step (a move, a knob, a note) the old instrument comes back as a step of its own instead,
   // never undoing that later edit (an undo / redo makes a new entry object: the safe branch too)
   const step = hist.u[hist.u.length - 1];
-  cvUndoNotice(`Replaced ${old.name} with ${m.name} · tap to undo`, step, () => {
+  cvUndoNotice(`Replaced ${old.name} with ${m.name}${why ? ' · ' + why : ''} · tap to undo`, step, () => {
     const tr = project.tracks.find(x => x.id === id), d = tr && CMOD.instOf(tr, dev);
     return d && d.model === m.id ? () => setTrackModel(instView(tr, dev), old.id) : null; // (null: already undone, or replaced again)
   });
