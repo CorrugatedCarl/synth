@@ -2037,7 +2037,7 @@ const roleOf = o => (o.role ? o.role : Array.isArray(o.parts) && o.parts.length 
 const monitors = {
   subs: new Set(), on: new Map(),
   sub(trackId, dev, o) {
-    const S = { trackId, dev, role: roleOf(o), live: o.live, deliver: o.deliver, cur: [] };
+    const S = { trackId, dev, role: roleOf(o), live: o.live, deliver: o.deliver, cur: [], mods: !!o.mods }; // (mods: the 'mods' monitor id — the ModCore's live meters, IMPL-2b)
     this.subs.add(S);
     this.sync();
     return () => { if (this.subs.delete(S)) this.sync(); };
@@ -2048,7 +2048,7 @@ const monitors = {
     const N = N0 || nodes.get(id), t = project.tracks.find(x => x.id === id);
     for (const S of this.subs) if (S.trackId === id) {
       S.cur = partsOf(t, N, S.dev, S.role);
-      try { if (S.live()) for (const q of S.cur) w.add(q); } catch (err) { console.warn(err); }
+      try { if (S.live()) { for (const q of S.cur) w.add(q); if (S.mods) w.add('mods'); } } catch (err) { console.warn(err); }
     }
     return [...w].sort();
   },
@@ -2065,6 +2065,7 @@ const monitors = {
   },
   deliver(id, d) {
     const part = typeof d.i === 'string' ? d.i : typeof d.c === 'string' ? d.c : null;
+    if (part === null && d.mc) { for (const S of [...this.subs]) if (S.trackId === id && S.mods && S.deliver) S.deliver(d); return; } // (the meters' own message: never a part's snapshot)
     for (const S of [...this.subs]) if (S.trackId === id && S.deliver && (part === null || S.cur.includes(part) || (d.i === part && S.cur.includes(part + '/fx')))) S.deliver(d);
   },
   // the meters and phases of an FX part arrive (N.fxph fresh): dev's (default: the primary's FX)
@@ -5211,7 +5212,7 @@ function mcMonitor(tid) {
   if (mcMons.has(tid)) { monitors.sync(); return; }
   const t = project.tracks.find(x => x.id === tid), dev = t && CMOD.primId(t);
   if (!dev) return;
-  mcMons.set(tid, monitors.sub(tid, dev, { role: 'inst',
+  mcMons.set(tid, monitors.sub(tid, dev, { role: 'inst', mods: true, // ('mods' in the node's monitor ids: the Track posts {t: 'smon', mc})
     live: () => { if (project.selTrack !== tid || !mcAny()) return false; for (const [k, B] of modBodies) if (MC_KINDS.has(B.kind) && (!cvView || cvView.live(k))) return true; return false; },
     deliver: d => { if (d.mc) mcSnap(tid, d.mc); } }));
 }
