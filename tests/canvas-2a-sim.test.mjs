@@ -440,3 +440,25 @@ test('H4: replacing a Serum that has cables with a classic synth says the cables
   cv.undo(); sim.raf();
   assert.deepEqual([T().model, rows()], ['serum', r0]);
 });
+
+test('H8: a preset of 64 rows loaded over a canvas cable — the badge says "1 not compiled" as the Mod list and the compile do; the load says so', () => {
+  wheelOn();
+  pick(fresh());
+  const X = api.sxHost(T());
+  X.edit(s => { for (let k = 0; k < 64; k++) s.matrix[k] = core.normRow({ src: 'lfo1', amt: (k + 1) / 100, dst: 'f.cutoff' }); }); sim.raf();
+  X.presets.save({ name: 'Full 64', cat: 'User' });
+  X.edit(s => { for (let k = 0; k < 64; k++) s.matrix[k] = core.normRow(null); }); sim.raf();
+  M.opts.onMod('wheel', 'i1:f.res'); sim.raf();
+  const id = T().mods[0].id;
+  assert.equal(badge('i1'), 'mods 1/64');
+  api.sxLoad(T(), 'u:Full 64'); sim.raf();
+  const b = CG.modBudget(T(), 'i1'), cp = lastCP(T());
+  assert.deepEqual([b.preset, b.canvas, b.left, rows()], [64, 0, [id], id + ':wheel>i1:f.res']);
+  assert.deepEqual([cp.mN, cp.mSrc.includes(1)], [64, false], 'the compile: the preset\'s 64 rows, not the cable');
+  assert.equal(badge('i1'), 'mods 64/64 · 1 not compiled');
+  assert.match(note(), /full \(64\/64\).*1 modulation cable not compiled/);
+  cv.menu('i1').find(x => x.label === 'Modulation list…').action();
+  const sheet = walk(sim.$('#ov'), c => /\bcv-ml-list\b/.test(c.className || '')).pop();
+  assert.deepEqual(walk(sheet, c => /\bcv-ml-b\b/.test(c.className || '')).map(c => c.textContent), ['64/64 · 1 not compiled'], 'the Mod list agrees');
+  M.layer().close();
+});

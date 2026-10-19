@@ -2595,12 +2595,15 @@ function sxExtra(t, dev, destId) {
   return mine.filter(r => on.has(r.id)).map(r => ({ id: r.id, src: CMOD.MOD_SRC[r.src], amt: r.amt, bi: r.bi, byp: r.byp, out: r.out }));
 }
 // a Serum module's "mods n/64" (stage 2a, IMPL-2a §2.4; cvBadge): null without canvas rows to it (the badge keeps the
-// safeguard's text); else cv-graph modBudget { preset, canvas, left, max } and text 'mods <preset + canvas>/64'
+// safeguard's text); else cv-graph modBudget { preset, canvas, left, max } and text 'mods <preset + canvas>/64', ' · N not
+// compiled' while rows find no slot (as the Mod list). modLeftN: the count last seen per Serum (cvModReload tells a rise)
+const modLeftN = new Map(); // '<track id>/<dev>' → rows not compiled
 function modCount(t, dev = t && CMOD.primId(t)) {
   const d = t && t.dev && t.dev[dev];
   if (!d || d.model !== 'serum' || !CG.modRowsFor(t, dev).length) return null;
-  const b = CG.modBudget(t, dev);
-  return Object.assign(b, { text: 'mods ' + Math.min(b.max, b.preset + b.canvas) + '/' + b.max });
+  const b = CG.modBudget(t, dev), n = b.left.length;
+  modLeftN.set(t.id + '/' + dev, n);
+  return Object.assign(b, { text: 'mods ' + Math.min(b.max, b.preset + b.canvas) + '/' + b.max + (n ? ' · ' + n + ' not compiled' : '') });
 }
 // the Serum panel's host (§8.8, RULINGS host additions, SPEC-serum2 §11.15); bound to a track id, reading the live
 // project each call. Stage 1e: bound to one Serum instrument of the track (dv, default the primary): its state, own FX,
@@ -5326,7 +5329,17 @@ function initModLayer() {
 function modList() { const t = trk(); if (modLayer) modLayer.openList(t.name, serumIds(t).map(id => ({ id, label: cvDevName(t, id) }))); }
 // undo / redo / a load (applyRestore), a preset load (sxLoad): the open inspector and Mod list re-read; no gesture open
 function cvModSync() { modPend = null; if (modLayer) modLayer.sync(); }
-function cvModReload(t) { if (t === trk()) cvRender(); cvModSync(); }
+// (a preset load: canvas rows it leaves without a slot are said — "Serum's mod rows are full (64/64): 1 modulation cable not compiled")
+function cvModReload(t) {
+  for (const dev of serumIds(t)) {
+    if (!CG.modRowsFor(t, dev).length) continue;
+    const k = t.id + '/' + dev, was = modLeftN.get(k) || 0, b = CG.modBudget(t, dev), n = b.left.length;
+    modLeftN.set(k, n);
+    if (n > was) notice(modRefusal('full', { dev: cvDevName(t, dev), used: b.preset + b.canvas, max: b.max }) + `: ${n} modulation cable${n > 1 ? 's' : ''} not compiled`, 6000);
+  }
+  if (t === trk()) cvRender();
+  cvModSync();
+}
 // a Serum page switch (its ui edits): the knob ends of its module measured again (next frame: the page is built)
 let modMeasT = 0;
 const modMeasQ = new Set();
