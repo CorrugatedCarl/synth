@@ -310,3 +310,92 @@ test('visibility: the toolbar ∿ mode reaches the view', () => {
   W.setModsMode('always');
   assert.equal(V().cables.modsVisible(), 'always');
 });
+
+// host fixes (the 2a review round, findings H1–H9: History of Save with preset / Keep on canvas, refusals, the limit on
+// drop, Replace, the budget, slots, Duplicate, the render paths)
+const perfOf = t => t.dev.i1.vals.s.matrix.map((r, i) => (r && r.src && CMOD.SRC_MOD[r.src] ? i + ':' + r.src + '>' + r.dst + '@' + r.amt : null)).filter(Boolean).join(' ');
+const byId = id => P().tracks.find(x => x.id === id);
+const pick = t => { api.selectTrack(t.id); sim.raf(); cv.renderViews(); sim.raf(); };
+const wheelOn = () => { if (!CMOD.hasWheel(P())) { M.add('wheel', null); sim.raf(); } };
+const compiled = (t, src, dst) => { const c = cpOf(api.buildPatch(t)); let n = 0; for (let i = 0; i < c.mN; i++) if (c.mSrc[i] === src && c.mDst[i] === dst) n++; return n; };
+
+test('H1: undo / redo of Save with preset / Keep on canvas move only that row in its slot — Serum edits since (its own matrix, another track\'s) stay', () => {
+  wheelOn();
+  const a = fresh(), b = fresh();
+  api.sxHost(b).edit(s => { core.addMod(s, b.fx, 'wheel', 'f.res', { amt: 0.3 }); }); sim.raf();
+  pick(a);
+  M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf();
+  const id = T().mods[0].id, H = M.host();
+  assert.equal(H.toPreset(id).ok, true); H.step('Save with preset'); sim.raf();
+  const saved = perfOf(T());
+  assert.match(saved, /^0:wheel>f\.cutoff@/);
+  assert.equal(rows(), '');
+  api.sxHost(T()).edit(s => { core.addMod(s, T().fx, 'wheel', 'a.level', { amt: 0.4 }); }); sim.raf();
+  api.sxHost(byId(b.id)).edit(s => { const i = s.matrix.findIndex(r => r.src === 'wheel' && r.dst === 'f.res'); s.matrix[i] = Object.assign({}, s.matrix[i], { amt: 0.9 }); }); sim.raf();
+  assert.deepEqual([perfOf(T()), perfOf(byId(b.id))], [saved + ' 1:wheel>a.level@0.4', '0:wheel>f.res@0.9']);
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), perfOf(T()), perfOf(byId(b.id))], [id + ':wheel>i1:f.cutoff', '1:wheel>a.level@0.4', '0:wheel>f.res@0.9'], 'undo: the saved row back on the canvas, nothing else');
+  assert.equal(compiled(T(), 1, 42), 1, 'compiled once');
+  cv.redo(); sim.raf();
+  assert.deepEqual([rows(), perfOf(T()), perfOf(byId(b.id))], ['', saved + ' 1:wheel>a.level@0.4', '0:wheel>f.res@0.9'], 'redo');
+  // Keep on canvas: its undo puts the row back into its slot while that is free
+  assert.equal(H.fromPreset('i1', 0).ok, true); H.step('Keep on canvas'); sim.raf();
+  const kid = T().mods[0].id;
+  assert.deepEqual([rows(), perfOf(T())], [kid + ':wheel>i1:f.cutoff', '1:wheel>a.level@0.4']);
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), perfOf(T())], ['', saved + ' 1:wheel>a.level@0.4']);
+  cv.redo(); sim.raf();
+  assert.deepEqual([rows(), perfOf(T()), compiled(T(), 1, 42)], [kid + ':wheel>i1:f.cutoff', '1:wheel>a.level@0.4', 1]);
+  // its slot taken since (a Serum edit): the undo leaves the matrix alone and says so
+  api.sxHost(T()).edit(s => { core.addMod(s, T().fx, 'wheel', 'f.res', { amt: 0.2 }); }); sim.raf();
+  assert.equal(perfOf(T()), '0:wheel>f.res@0.2 1:wheel>a.level@0.4');
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), perfOf(T())], ['', '0:wheel>f.res@0.2 1:wheel>a.level@0.4']);
+  assert.match(note(), /slot 1\b/);
+});
+
+test('H1: Save with preset, another preset loaded, Undo — the loaded preset\'s matrix untouched; the cable back on the canvas', () => {
+  wheelOn();
+  pick(fresh());
+  const L = api.sxHost(T()).presets.list().filter(p => !p.user), mx = p => api.sxPreset(p.key).v.s.matrix || [];
+  const pW = L.find(p => mx(p).some(r => r && r.src === 'wheel' && r.dst));
+  const ks = mx(pW).map((r, i) => (r && r.src && CMOD.SRC_MOD[r.src] ? i : -1)).filter(i => i >= 0);
+  const pN = L.find(p => p !== pW && ks.some(k => !(mx(p)[k] && mx(p)[k].src)));
+  api.sxLoad(T(), pW.key); sim.raf();
+  M.opts.onMod('wheel', 'i1:f.res'); sim.raf();
+  const id = T().mods[0].id;
+  M.host().toPreset(id); M.host().step('Save with preset'); sim.raf();
+  api.sxLoad(T(), pN.key); sim.raf();
+  const N = JSON.stringify(T().dev.i1.vals.s.matrix);
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), JSON.stringify(T().dev.i1.vals.s.matrix) === N], [id + ':wheel>i1:f.res', true]);
+});
+
+test('H2: the move is read from the step actually undone (a no-op step above Save with preset); refusals and edits that changed nothing leave no step', () => {
+  wheelOn();
+  pick(fresh());
+  M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf();
+  const H = M.host(), id = T().mods[0].id;
+  H.toPreset(id); H.step('Save with preset'); sim.raf();
+  cv.hist.record(P(), 'Tidy'); // (a step that changed nothing: Tidy on a tidy canvas)
+  cv.undo(); sim.raf();
+  assert.deepEqual([rows(), perfOf(T()), compiled(T(), 1, 42)], [id + ':wheel>i1:f.cutoff', '', 1], 'the slot taken back: compiled once');
+  cv.redo(); sim.raf();
+  assert.deepEqual([rows(), compiled(T(), 1, 42)], ['', 1]);
+  assert.match(perfOf(T()), /^0:wheel>f\.cutoff@/);
+  // refusals after the step was opened: none left behind
+  const n0 = hsteps(), top = cv.hist.undoLabel;
+  assert.equal(H.fromPreset('i1', 5).ok, false, 'no row there');
+  assert.equal(H.toPreset('r99').ok, false);
+  const pf = P().perf; P().perf = { wheel: null }; // (the wheel gone: canMod passes, addMod refuses the source)
+  try {
+    assert.equal(H.connect('wheel', 'i1:f.res').ok, false);
+    assert.equal(M.connect('wheel', 'i1:f.res'), null);
+  } finally { P().perf = pf; }
+  assert.deepEqual([hsteps(), cv.hist.undoLabel], [n0, top], 'no step from a refusal');
+  // a gesture that changed nothing
+  M.opts.onMod('wheel', 'i1:f.res'); sim.raf();
+  const n1 = hsteps(), lab = cv.hist.undoLabel, rid = T().mods[0].id;
+  H.edit(rid, { amt: T().mods[0].amt }); H.step('Mod amount'); sim.raf();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel], [n1, lab]);
+});
