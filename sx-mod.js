@@ -30,7 +30,7 @@
  * are neutral — run the Phase-1 instruction sequence (the Phase-1 functions below are kept verbatim as fast paths).
  *
  * API (§11.6; [+] = beyond the §11.6 list):
- *   VER 1 · NSV 429 · NSRC 62 · NROW 64 · MAXCH 32 · MAXFX 1160 · DEF_CT (the built-in CT v2 fields this file reads)
+ *   VER 1 · NSV 429 · NSRC 78 (62 + 16 canvas ext inputs, IMPL-2b §3.2) · NROW 64 · MAXCH 32 · MAXFX 1160 · DEF_CT (the built-in CT v2 fields this file reads)
  *   attach(sx, proc) → sx.mod (per-processor state, idempotent; null when SxBase is missing)
  *   [+] sync(proc, sx, cp)          copy the modulation fields of a new CP (once per CP object)
  *   [+] syncCT(proc, sx, ct, gen)   adopt a full CT; gen changes when the same CT object was rewritten in place
@@ -119,7 +119,8 @@
     const exp = Math.exp, floor = Math.floor, ceil = Math.ceil, round = Math.round, mlog2 = Math.log2, pow = Math.pow;
 
     const VER = 1;
-    const NSV = 429, NSRC = 62, NROW = 64, MAXCH = 32, MAX_PTS = 480, MAXFX = 8 + 48 * 24;
+    const NSV = 429, NSRC = 78, NROW = 64, MAXCH = 32, MAX_PTS = 480, MAXFX = 8 + 48 * 24;
+    const S_EXT0 = 62, S_EXT_END = 78;                          // canvas ext inputs ext1…16 (g rows written by the Track, IMPL-2b §3.2)
     const N_LFO = 10, N_ENV = 4, N_MACRO = 8, LFO_ALL = (1 << N_LFO) - 1;
     const SKIP_MAX = 4096;                                      // owed chunks a skipped LFO replays exactly (advance)
     const CURVE_K = 10, ENV_K = 10, PORTA_K = 6;
@@ -671,7 +672,7 @@
       // feature gates (CP.use, §4.1), S1 mode, Voice Control, MPE, tuning
       this.use = 0; this.x4On = 1; this.s1 = 0; this.vcOn = 0; this.vcLen = 1; this.vcLMode = 0; this.vcSteps = new Float64Array(48); this.vcRates = new Float64Array(11);
       this.vcRL = new Float64Array(11); this.mpeOn = 0; this.mpeBendX = 0; this.mpeWheelY = 0; this.mpeBend = 48; this.mpeMac = new Int8Array(N_MACRO);
-      this.mpeMacAny = 0; this.tunOn = 0; this.tune = new Float64Array(128);
+      this.mpeMacAny = 0; this.tunOn = 0; this.tune = new Float64Array(128); this.extOn = 0;
       // current CT (§4.1)
       this.ct = null; this.ctGen = -1; this.ctWarn = ''; this.lfoTab = DEF_CT.lfoTab; this.lfoPtsOff = DEF_CT.lfoPtsOff; this.lfoPts = DEF_CT.lfoPts;
       this.lfoPm = DEF_CT.lfoPm; this.lfoPmAny = DEF_CT.lfoPmAny; this.lfoStart = DEF_CT.lfoStart; this.lfoLoop = DEF_CT.lfoLoop;
@@ -776,7 +777,7 @@
       m.use = 0; m.x4On = 1; m.s1 = 0; m.vcOn = 0; m.vcLen = 1; m.vcLMode = 0; m.vcSteps.fill(0); m.vcRates.set(VC_RATES0);
       for (let i = 0; i < 11; i++) m.vcRL[i] = mlog2(m.vcRates[i]);
       m.mpeOn = 0; m.mpeBendX = 0; m.mpeWheelY = 0; m.mpeBend = 48; m.mpeMac.fill(-1); m.mpeMacAny = 0;
-      m.tunOn = 0; for (let k = 0; k < 128; k++) m.tune[k] = k;
+      m.tunOn = 0; m.extOn = 0; for (let k = 0; k < 128; k++) m.tune[k] = k;
       m.ct = null; m.ctGen = -1; m.ctWarn = '';
       m.lfoTab = DEF_CT.lfoTab; m.lfoPtsOff = DEF_CT.lfoPtsOff; m.lfoPts = DEF_CT.lfoPts; m.lfoPm = DEF_CT.lfoPm;
       m.lfoPmAny = DEF_CT.lfoPmAny; m.lfoStart = DEF_CT.lfoStart; m.lfoLoop = DEF_CT.lfoLoop;
@@ -912,7 +913,7 @@
       // feature gates; LFO 9/10 run on every voice only when some row reads them or ENV 4 (use & 2048, or a row here;
       // ENV 4 itself always runs: lifetime rule (b))
       const use = cp.use | 0;
-      m.use = use; m.s1 = cp.s1 ? 1 : 0;
+      m.use = use; m.s1 = cp.s1 ? 1 : 0; m.extOn = (use & 32768) !== 0 ? 1 : 0;   // (ext rows: the voices copy g rows 62–77)
       const su = m.srcUsed;
       m.x4On = (use & 2048) !== 0 || su[ESRC[3]] || su[LSRC[8]] || su[LSRC[9]] || su[LYSRC[8]] || su[LYSRC[9]] ? 1 : 0;
       let lu = 0;
@@ -1397,6 +1398,7 @@
         if (k === K_OFF || k === K_MONO) { ms[LSRC[l]] = g[LSRC[l] * MAXCH + last]; ms[LYSRC[l]] = g[LYSRC[l] * MAXCH + last]; }
       }
       for (let k = 0; k < 2; k++) if (m.chaosMono[k]) ms[S_CHAOS1 + k] = g[(S_CHAOS1 + k) * MAXCH + last];
+      if (m.extOn !== 0) for (let k = S_EXT0; k < S_EXT_END; k++) ms[k] = g[k * MAXCH + last];   // (ext rows: as the G sources, one span behind)
       if (actOn) ms[S_ACTV] = m.act;
     }
     // n base frames of silence in spans of ≤ 128 frames (LFOs, clocks and smoothers keep time); CP/CT synced by the caller
@@ -1706,6 +1708,7 @@
         if (m.mpeMacAny !== 0) for (let i = 0; i < N_MACRO; i++) if (m.mpeMac[i] >= 0) src[MSRC[i]] = this.xpMacSrc(i);
         src[S_RELVEL] = 0.5;
         src[S_ACTV] = g[S_ACTV * MAXCH + gc];
+        if (m.extOn !== 0) for (let k = S_EXT0; k < S_EXT_END; k++) src[k] = g[k * MAXCH + gc];
         src[S_VIDX] = this.vIdx; src[S_VMOD1] = this.vM1; src[S_VMOD2] = this.vM2;
         if (!wasActive) for (let k = S_OSCA; k < S_ACTV; k++) src[k] = 0;     // audio taps: 0 at a fresh voice
         // pre-restart pass (§6.2, header): rows into lN.phase, eN.start, vc.* (and the rate of Hz-HOST LFOs) from this
@@ -1920,6 +1923,7 @@
         // MPE → macro maps per voice (§6.17); a voice without expression maps its zero expression
         if (m.mpeMacAny !== 0) for (let i = 0; i < N_MACRO; i++) if (m.mpeMac[i] >= 0) s[MSRC[i]] = this.xpMacSrc(i);
         if (used[S_ACTV]) s[S_ACTV] = g[S_ACTV * MAXCH + gc];
+        if (m.extOn !== 0) for (let k = S_EXT0; k < S_EXT_END; k++) s[k] = g[k * MAXCH + gc];
       }
       // LFO l source value at the chunk start (Phase-1 §6.12 + §6.15)
       lfoSrc(l, gc) {

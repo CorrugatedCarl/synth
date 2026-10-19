@@ -276,7 +276,7 @@ const abortErr = () => { const e = new Error('Measuring was cancelled'); e.name 
 export function workerMain(G) {
   'use strict';
   const DSP = ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
-    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js'];
+    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'mod-core.js'];
   const SR = 48000, Q = 128;
   let Proc = null;
   function load(base, sfx) {

@@ -115,6 +115,83 @@ function trackR() {
     patches: { i1: cl('prophet5', 'Poly Strings'), i2: cl('juno60', null), i3: sx(() => {}).patch },
     chains: { fx1: { fxr: core.compileFx(fx, { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx) } }, notes: chord(4, 48, 4) };
 }
+/* ------------------------------------------------------------------ ModCore rows (IMPL-2b §8 N4, lane A1) */
+// mc0 / mc / mt: a Juno-60 (one held note: the cheapest sounding track) with a {t: 'mods'} payload — the row's load minus
+// the same track without it (base) = ModCore's cost. The payload's synthetic CP is compiled here as the host does (§3.1:
+// every oscillator off, OS 1, one voice, unused LFO slots parked FREE + MONO), its rows into scratch V-scope destinations
+// of the Juno's slots (Inst.modSpan: lane A2's adapter — a stub until the merge, so these rows measure ModCore alone;
+// row mk measures the Inst side). me: row d's Serum with an ext1 → f.cutoff row fed by one GLOBAL LFO vs the same Serum
+// reading `fixed`: the ext hand-off (SerumDSP.extIn + the voices' 16-entry copies) + a one-LFO ModCore.
+const hzN = hz => Math.pow(hz / 100, 0.25), timeN = sec => Math.pow(sec / 32, 0.2);
+const SCRATCH = ['a.pan', 'a.level', 'b.level', 'a.wt', 'a.warp', 'b.wt', 'a.fine', 'a.crs', 'b.pan', 'b.warp', 'b.fine', 'b.crs', 'a.det', 'b.det', 'a.blend', 'b.blend'];
+const SRCI = { lfo1: 5, lfo2: 6, lfo3: 7, lfo4: 8, lfo5: 9, lfo6: 10, lfo7: 11, lfo8: 12, lfo9: 35, lfo10: 36, env2: 3, env3: 4, env4: 34, velo: 13, note: 14, rand1: 20 };
+function synthState(fn) {
+  const s = core.defaultSerum();
+  for (const id of ['a.on', 'b.on', 'c.on', 'n.on', 's.on', 'f.on', 'f2.on']) if (id in s.p) s.p[id] = 0;
+  s.global.os = 1; s.voicing.poly = 1;
+  for (let l = 0; l < 10; l++) s.lfo[l] = { ...s.lfo[l], mode: 'free', mono: 1 };
+  fn(s);
+  return core.normalizeSerum(s);
+}
+const globalLfo = (s, l, hz) => { s.lfo[l] = { ...s.lfo[l], mode: 'free', mono: 1, bpm: 0, anchor: 0 }; s.p[`l${l + 1}.rate`] = hzN(hz); };
+function modsOf(fn, rowsFn) {
+  const st = synthState(fn), P = core.compileSerum(st, { bpm: 120 }), cp = P.serum, ct = core.assembleCT(P.serumT);
+  const r = rowsFn(st);
+  return { t: 'mods', bpm: 120, cp, ct, rows: r.rows, ext: r.ext, vals: [], keep: r.keep || [] };   // (rows' vi: resolved at prepare through the scope's SxBase)
+}
+// the 10 GLOBAL LFOs of spike variant A (7 FREE of every kind + 3 MONO RETRIG), 3 ENVs
+function tenLfos(s) {
+  for (let l = 0; l < 3; l++) globalLfo(s, l, 0.5 + l);
+  s.lfo[3] = { ...s.lfo[3], mode: 'free', mono: 1, bpm: 1, anchor: 1 }; s.p['l4.rate'] = 0.45;
+  s.lfo[4] = { ...s.lfo[4], mode: 'free', mono: 1, bpm: 0, anchor: 0, type: 'sh' }; s.p['l5.rate'] = hzN(6);
+  s.lfo[5] = { ...s.lfo[5], mode: 'free', mono: 1, bpm: 0, anchor: 0, type: 'path' }; s.p['l6.rate'] = hzN(0.8);
+  s.lfo[6] = { ...s.lfo[6], mode: 'free', mono: 1, bpm: 0, anchor: 0, dir: 'pingpong' }; s.p['l7.rate'] = hzN(2.5); s.p['l7.smooth'] = 0.2;
+  for (let l = 7; l < 10; l++) { s.lfo[l] = { ...s.lfo[l], mode: 'retrig', mono: 1, bpm: 0, anchor: 0 }; s.p[`l${l + 1}.rate`] = hzN(1 + l); }
+}
+const envs = s => Object.assign(s.p, { 'e2.att': timeN(0.1), 'e2.dec': timeN(0.3), 'e2.sus': 0.5, 'e2.rel': timeN(0.4), 'e3.att': timeN(0.5), 'e3.rel': timeN(0.2),
+  'e4.att': 0, 'e4.dec': timeN(0.2), 'e4.sus': 0, 'e4.rel': timeN(0.1) });
+function junoTrack(mods) {
+  const m = MODELS.find(x => x.id === 'juno60'), v = Object.fromEntries(m.controls.map(c => [c.id, c.def]));
+  const p = patchFor(m, v, core.defaultFx2(), { sr: SR, bpm: 120 });
+  delete p.fxr; delete p.fxrT;
+  const fx = core.defaultFx2(), Z = { lo: 0, hi: 127, xp: 0 };
+  return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: 'mc' },
+    patches: { i1: p }, chains: { fx1: { fxr: core.compileFx(fx, { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx) } }, notes: [[48, 0.8]], mods };
+}
+// rows: every source into its own scratch destination of the synthetic CP (the keep-alive for the ext ones), cls rows on
+// the Juno's first slots (vi resolved at prepare through the scope's SxBase)
+function rowsTo(st, srcs, kinds) {
+  srcs.forEach((src, j) => { st.matrix[j] = row(src, SCRATCH[j], 0.5, j % 4 === 1 ? { curve: 0.4 } : j % 4 === 2 ? { rise: 0.2, fall: 0.2 } : j % 4 === 3 ? { bi: 1 } : {}); });
+  return srcs.map((src, j) => ({ id: 'r' + j, src: SRCI[src], dstId: SCRATCH[j], dst: kinds === 'ext' ? null : { kind: 'cls', inst: 'i1', slot: j % 24 }, xfer: { a: 0, b: 1, x0: 0.5 } }));
+}
+function mcRows(variant) {
+  if (variant === 'mc0') return modsOf(tenLfos, st => { const r = rowsTo(st, ['lfo1', 'lfo2', 'lfo3', 'lfo4', 'lfo5', 'lfo6', 'lfo7', 'lfo8', 'lfo9', 'lfo10'], 'ext');
+    return { rows: [], ext: r.map((x, k) => ({ k: k + 1, src: x.src })), keep: r.map(x => x.src) }; });
+  if (variant === 'mc') return modsOf(s => { tenLfos(s); envs(s); }, st => ({ rows: rowsTo(st, ['lfo1', 'lfo2', 'lfo3', 'lfo4', 'lfo5', 'lfo6', 'lfo7', 'lfo8', 'lfo9', 'lfo10', 'env2', 'env3', 'env4', 'velo', 'note', 'rand1']), ext: [] }));
+  return modsOf(s => {                                                                      // mt: the typical track
+    globalLfo(s, 0, 1.5);
+    s.lfo[1] = { ...s.lfo[1], mode: 'free', mono: 1, bpm: 1, anchor: 1 }; s.p['l2.rate'] = 0.45;
+    s.lfo[2] = { ...s.lfo[2], mode: 'retrig', mono: 0, bpm: 0, anchor: 0 }; s.p['l3.rate'] = hzN(4);
+    Object.assign(s.p, { 'e2.att': timeN(0.1), 'e2.dec': timeN(0.3), 'e2.sus': 0.5, 'e2.rel': timeN(0.4) });
+  }, st => ({ rows: rowsTo(st, ['lfo1', 'lfo2', 'lfo3', 'env2']), ext: [] }));
+}
+// me: row d's Serum (8 voices) with `ext1 → f.cutoff` (the CP compiled with ctx.ext, as the injected copy is) + a one-LFO
+// ModCore feeding ext1; base: the same Serum with the row reading `fixed` (the row itself costs the same)
+function extTrack(ext) {
+  const s = core.defaultSerum();
+  Object.assign(s.p, { 'a.rand': 0, 'b.rand': 0, 'c.rand': 0 });
+  s.global.os = 2;
+  rowD(s);
+  s.matrix[4] = row(ext ? 'ext1' : 'fixed', 'f.cutoff', 0.3);
+  const st = core.normalizeSerum(s), fx = core.defaultFx2();
+  const patch = patchFor('serum', { s: st }, fx, { sr: SR, bpm: 120 });
+  if (ext) Object.assign(patch, core.compileSerum(st, { bpm: 120, smooth: 1, fx, qr: null, ultra: 0, mpeBendX: 0, mpeYBi: 0, ext: true }));
+  const Z = { lo: 0, hi: 127, xp: 0 };
+  const mods = ext ? modsOf(s2 => { globalLfo(s2, 0, 2); }, st2 => { st2.matrix[0] = row('lfo1', 'a.level', 0.01); return { rows: [], ext: [{ k: 1, src: 5 }], keep: [5] }; }) : null;
+  return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [], edges: [['i1', 'out', 1]], out: 'out', key: 'me' },
+    patches: { i1: patch }, chains: {}, notes: chord(8), mods };
+}
+
 function fxScn(make) {
   const fx = core.defaultFx2(), extra = make(fx) || {};
   const fxp = core.compileFx(fx, { bpm: 120, rate: SR }), fxt = core.compileFxT(fx);
@@ -181,6 +258,15 @@ export function scenarios() {
     // load is the slowest quantum of the first chord on the new preset (≤ 1 = within the deadline)
     { id: 'r', label: 'Track: Prophet-5 Poly Strings + Juno-60 + default Serum → one EQ / chorus / delay panel, a 4-note chord on all three',
       node: 0.15, ipad: 0.12, kind: 'track', build: trackR },
+    // IMPL-2b §8 N4 (lane A1): ModCore's cost over the same track without it (base)
+    { id: 'mc0', label: 'ModCore, begin only: 10 GLOBAL LFOs into 10 ext slots, no rows (a Juno-60 note sounds; minus the same track without ModCore)',
+      node: 0.002, ipad: 0.002, kind: 'track', base: () => junoTrack(null), build: () => junoTrack(mcRows('mc0')) },
+    { id: 'mc', label: 'ModCore: 10 GLOBAL LFOs + the gated pseudo-voice with 3 ENVs + 16 rows on a Juno-60 (minus the track without)',
+      node: 0.004, ipad: 0.004, kind: 'track', base: () => junoTrack(null), build: () => junoTrack(mcRows('mc')) },
+    { id: 'mt', label: 'ModCore, the typical track: 2 GLOBAL + 1 PER NOTE LFO + 1 ENV + 4 rows on a Juno-60 (minus the track without)',
+      node: 0.0025, ipad: 0.0025, kind: 'track', base: () => junoTrack(null), build: () => junoTrack(mcRows('mt')) },
+    { id: 'me', label: "ext hand-off: row d's Serum with ext1 → f.cutoff fed by a one-LFO ModCore (minus the same Serum reading `fixed`)",
+      node: 0.004, ipad: 0.003, kind: 'track', base: () => extTrack(false), build: () => extTrack(true) },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',
@@ -218,6 +304,12 @@ function prepare(B, kind, env, now) {
     p.msg(B.graph);
     for (const [id, patch] of Object.entries(B.patches)) { p.msg({ t: 'patch', i: id, p: patch }); sendTables(p, patch); }
     for (const [id, c] of Object.entries(B.chains)) p.msg(Object.assign({ t: 'chain', c: id }, c));
+    if (B.mods) { // (IMPL-2b: the track's ModCore payload; its rows' scratch destinations resolved through the scope's SxBase)
+      const DI = env.SxBase.DIDX2, m = B.mods;
+      for (const r of m.rows) if (r.dstId) r.vi = DI[r.dstId.toUpperCase().replace('.', '_')];
+      p.msg(m);
+      if (!p.mc) throw new Error('bench ' + (B.graph.key || '') + ': the ModCore payload was refused');
+    }
     for (const [n, v] of B.notes) p.msg({ t: 'on', n, v });
     const L = new Float32Array(128), R = new Float32Array(128), out = [[L, R]];
     return api(() => { p.process([], out); env.advance(128); track(L, 128); }, () => -1);

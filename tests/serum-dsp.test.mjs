@@ -593,7 +593,7 @@ SRC_IDS.forEach((id, i) => { if (id) SI[id] = i; });
 const CTX_OF = { V: 1, 'V*': 1, 'V*M': 3, G: 2, M: 4 };
 const ON_DESTS = ['a.uni', 'b.uni', 'a.phase', 'b.phase', 'a.rand', 'b.rand', 'n.phase', 'n.rand'];
 const BI_SRC = new Set(['chaos1', 'chaos2', 'noise', 'bend', 'mpex']);
-const NSV = 429, NSRC2 = 62, MAXFX = 8 + 48 * 24, N_LFO = 10;
+const NSV = 429, NSRC2 = 78, MAXFX = 8 + 48 * 24, N_LFO = 10;   // (NSRC2: 62 sources + 16 canvas ext inputs, IMPL-2b §3.2)
 // FX-context index (§4.2) of a v1 FX destination in the stand-in layout of these tests: g.master 0, g.bypass 1, the v1
 // FX parameter rows in their v1 order from index 8 (row idx 149 + j → 8 + j)
 const fxk = (id) => (id === 'g.master' ? 0 : id === 'g.bypass' ? 1 : 8 + DI[id] - 149);

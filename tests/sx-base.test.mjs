@@ -81,8 +81,9 @@ test('a throwing copy leaves SxBase null without throwing out of the script; re-
 
 test('destinations by vi: DIDX2, DIDS2, IDX_OF_VI and LAW_TAB2 equal serum-core v2 and dests2.json', () => {
   const { B } = base();
-  for (const k of ['NS', 'NV1', 'NF1', 'ND', 'NSV', 'NSRC']) assert.equal(B[k], core[k], k);
-  assert.equal(B.ND, 529); assert.equal(B.NSV, 429); assert.equal(B.NSRC, 62);
+  for (const k of ['NS', 'NV1', 'NF1', 'ND', 'NSV']) assert.equal(B[k], core[k], k);
+  assert.equal(B.NSRC, core.NSRC + core.N_EXT, 'NSRC: the 62 sources + 16 canvas ext inputs (IMPL-2b §3.2)');
+  assert.equal(B.ND, 529); assert.equal(B.NSV, 429); assert.equal(B.NSRC, 78);
   assert.equal(B.MAXCH, 32);
   assert.equal(B.MAXFX, 8 + 48 * 24);
   assert.equal(B.MIDI0, core.MIDI0);
@@ -136,11 +137,16 @@ test('v1 prefix: LAW_TAB2 0–147, DIDX2, SIDX2 and SRC_POL2 extend the Phase-1 
 test('sources: SRC_IDS2, SIDX2 and SRC_POL2 equal serum-core SOURCES / SIDX and sources2.json', () => {
   const { B } = base();
   const fx = fixture('sources2.json');
-  assert.deepEqual(arr(B.SRC_IDS2), core.SOURCES.map(s => s.id));
-  assert.deepEqual(arr(B.SRC_IDS2), fx.SOURCES.map(s => s.id));
-  assert.deepEqual(plain(B.SIDX2), plain(core.SIDX));
-  assert.deepEqual(arr(B.SRC_POL2), core.SOURCES.map(s => (s.pol === 'bi' ? 1 : 0)));
-  assert.deepEqual(arr(B.SRC_POL2), fx.SOURCES.map(s => (s.pol === 'bi' ? 1 : 0)));
+  // (IMPL-2b §3.2: the DSP table carries the 16 canvas ext inputs after the 62 sources, unipolar; SOURCES stays at 62)
+  assert.deepEqual(arr(B.SRC_IDS2).slice(0, core.NSRC), core.SOURCES.map(s => s.id));
+  assert.deepEqual(arr(B.SRC_IDS2).slice(0, core.NSRC), fx.SOURCES.map(s => s.id));
+  assert.deepEqual(arr(B.SRC_IDS2).slice(core.NSRC), [...core.EXT_IDS]);
+  assert.equal(B.SIDX2.EXT1, core.S_EXT0); assert.equal(B.SIDX2.EXT16, core.S_EXT0 + 15);
+  const sidx = plain(B.SIDX2); for (const id of core.EXT_IDS) delete sidx[id.toUpperCase()];
+  assert.deepEqual(sidx, plain(core.SIDX));
+  assert.deepEqual(arr(B.SRC_POL2).slice(0, core.NSRC), core.SOURCES.map(s => (s.pol === 'bi' ? 1 : 0)));
+  assert.deepEqual(arr(B.SRC_POL2).slice(0, core.NSRC), fx.SOURCES.map(s => (s.pol === 'bi' ? 1 : 0)));
+  assert.ok(arr(B.SRC_POL2).slice(core.NSRC).every(x => x === 0), 'ext inputs unipolar');
 });
 
 test('warps, oscillator types and filter families equal serum-core (WARPS2, WARP_AVAIL, OSC_TYPES, FILTERS)', () => {
@@ -419,9 +425,9 @@ test('asset store: invalid entries are refused with one warning per id, nothing 
 
 test('dsp-scope: the §0.3 list in table order, null/false/string/function overrides, missing files, Math.random, engine', () => {
   assert.deepEqual(DSP_FILES, ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js',
-    'sx-seq.js', 'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js']);
+    'sx-seq.js', 'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'mod-core.js']);
   assert.deepEqual(DSP_TABLE.map(e => e[1]), ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP',
-    'FXMods2', 'FXDSP']);
+    'FXMods2', 'FXDSP', 'ModCore']);
   // order: replacement scripts record their evaluation; `files` given in reverse is still loaded in table order
   const rec = f => `globalThis.__order = (globalThis.__order || []).concat(${JSON.stringify(f)}); globalThis.${DSP_GLOBALS[f]} = 1;`;
   const S = dspScope({ files: DSP_FILES.slice().reverse(), overrides: Object.fromEntries(DSP_FILES.map(f => [f, rec(f)])) });

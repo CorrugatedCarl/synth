@@ -9,11 +9,13 @@
     "h'": { "node": 0.5, "ipad": 0.35 }, "i": { "node": 0.1, "ipad": 0.06 }, "j": { "node": 0.08, "ipad": 0.05 }, "k": { "node": 0.05, "ipad": 0.03 },
     "l": { "node": 0.03, "ipad": 0.02 }, "m": { "node": 0.04, "ipad": 0.03 }, "o": { "node": 0.003, "ipad": 0.002 }, "p": { "node": 0.002 },
     "q1": { "node": 0.8, "ipad": 0.6 }, "q2": { "node": 0.8, "ipad": 0.6 },
-    "r": { "node": 0.15, "ipad": 0.12 }
+    "r": { "node": 0.15, "ipad": 0.12 },
+    "mc0": { "node": 0.002, "ipad": 0.002 }, "mc": { "node": 0.004, "ipad": 0.004 }, "mt": { "node": 0.0025, "ipad": 0.0025 }, "me": { "node": 0.004, "ipad": 0.003 }
   },
   "node": { "date": "2026-10-13", "machine": "Apple M4 Max, node v24.21.0, tests/bench-scenarios.mjs (looping sample rows, every timed run audible; worst = slowest quantum / its real time; q rows: slowest quantum of a live processor's first 1.5 s after a preset change), uncalibrated (= reference machine); after the M4 performance pass",
     "rows": { "d": 0.4, "e": 0.083, "f": 0.164, "f'": 0.124, "g": 0.094, "g'": 0.171, "g\"": 0.435, "h": 0.046, "h'": 0.085, "i": 0.063, "r": 0.1,
-      "j": 0.026, "k0": 0.008, "k1": 0.005, "k2": 0.006, "k3": 0.009, "k4": 0.007, "l": 0.003, "m": 0.004, "q1": 0.4, "q2": 0.76 },
+      "j": 0.026, "k0": 0.008, "k1": 0.005, "k2": 0.006, "k3": 0.009, "k4": 0.007, "l": 0.003, "m": 0.004, "q1": 0.4, "q2": 0.76,
+      "mc0": 0.0012, "mc": 0.0019, "mt": 0.0008, "me": 0.0 },
     "worst": { "d": 0.47, "e": 0.42, "f": 0.32, "f'": 0.43, "g": 0.23, "g'": 0.37, "g\"": 0.57, "h": 0.1, "h'": 0.21, "i": 0.21 },
     "before": { "about": "the same machine and harness before the M4 performance pass (q rows with the 1.5 s window)",
       "rows": { "d": 0.459, "e": 0.099, "f": 0.177, "f'": 0.146, "g": 0.098, "g'": 0.172, "g\"": 0.444, "h": 0.049, "h'": 0.091, "i": 0.069, "q1": 0.51, "q2": 1.91 },

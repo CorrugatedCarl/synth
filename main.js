@@ -659,7 +659,7 @@ const trackOS = (tr, sr) => (isSx(tr) ? sxOSFor(tr, sr) : osFor(sr));
 // broken one only degrades its feature (Serum tracks silent, FX racks bypassed, …). The same list, in this order, is
 // injected on the main thread (wk.loadDSP) for the panels' displays.
 const DSP_FILES = ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
-  'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js'];
+  'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'mod-core.js'];
 const DSP_URLS = DSP_FILES.map(f => f + '?v=' + VERSION);
 async function addModules(c) {
   const res = await Promise.allSettled(DSP_URLS.map(u => addModule(c, u)));

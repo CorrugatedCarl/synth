@@ -153,7 +153,8 @@
 
     const VER = 2;
     const NS = 148, NF = 100, ND = 248, NSRC = 34, MAXCH = 32, TAP_N = 1024, NTYPES = 96, MAX_PTS = 480;
-    const NSV = 429, NSRC2 = 62, NROW = 64, MAXFX = 8 + 48 * 24, N_LFO = 10, N_ENV = 4, N_OSC = 3;   // CP v2 shapes (§4.1)
+    const NSV = 429, NSRC2 = 78, NROW = 64, MAXFX = 8 + 48 * 24, N_LFO = 10, N_ENV = 4, N_OSC = 3;   // CP v2 shapes (§4.1; NSRC2 62 + 16 canvas ext inputs, IMPL-2b §3.2)
+    const S_EXT0 = 62, N_EXT = 16;
     const CURVE_K = 10;
     const MIDI0 = 440 * pow(2, -69 / 12);                   // 8.175798915643707 Hz (MIDI note 0)
     const MIDI128 = 440 * pow(2, 59 / 12);                  // 13289.75 Hz (MIDI note 128)
@@ -1700,6 +1701,9 @@
         // fields the type scripts own (SxGran, SxSpec, SxSample: created there when absent), declared here so the first
         // Granular / Spectral / Multisample note does not change the map of sx (V8: code depending on it deoptimised)
         granLast: null, granStarve: 0, granQ: null, specPool: null, msRR: null,
+        // IMPL-2b §4: ModCore's offsets for this Serum's own FX (the Track sets mcFx / mcHi per span while rows exist; fxMods
+        // then returns fxSum = SxMod's vector + mcFx — without rows SxMod's vector itself, byte for byte)
+        mcFx: null, mcHi: 0, fxSum: new Float64Array(MAXFX),
       };
       proc.sx = sx;
       initSx(sx, proc);
@@ -1902,7 +1906,33 @@
     const FX0 = new Float64Array(MAXFX);                      // FX offsets without SxMod (all 0)
     function fxMods(proc) {
       const sx = proc.sx || attach(proc);
-      return sx.M !== null ? sx.M.fxMods(proc, sx) : FX0;
+      const o = sx.M !== null ? sx.M.fxMods(proc, sx) : FX0, x = sx.mcFx;
+      if (x === null) return o;
+      const s = sx.fxSum, hi = sx.mcHi;                       // (IMPL-2b §4: + ModCore's rows on this Serum's own FX)
+      s.set(o);
+      for (let k = 0; k < hi; k++) s[k] += x[k];
+      return s;
+    }
+    // IMPL-2b §3.2: the Track's ext hand-off, once per span before begin — the 16 ext rows of g (ext k, chunk c at
+    // ext[k·32 + c]); begin's step (4) copies their last chunk into monoSrc as it does the G sources (the mono context one
+    // span behind, fxMods this span: exactly a processor LFO's timing, N2); extOff clears them (the rows left)
+    function extIn(proc, ext, nCh) {
+      const sx = proc.sx, m = sx !== null ? sx.mod : null;
+      if (m === null) return;
+      m.g.set(ext, S_EXT0 * MAXCH);
+    }
+    function extOff(proc) {
+      const sx = proc.sx, m = sx !== null ? sx.mod : null;
+      if (m === null) return;
+      m.g.fill(0, S_EXT0 * MAXCH); m.monoSrc.fill(0, S_EXT0);
+    }
+    // the CP / CT sync without a span (ModCore's shim after a new synthetic CP: a note-on may come before its first span)
+    function sync(proc) {
+      const sx = attach(proc), p = proc.p, cp = p && p.serum;
+      if (sx.M === null || !cpOk(cp)) { sx.ok = 0; return false; }
+      syncCP(proc, sx, cp);
+      syncCT(proc, sx);
+      return true;
     }
     // the pitch (MIDI float, gliding, tuned) of the most recent voice, else the last one played, else 60 (FX key tracking,
     // §12.5)
@@ -4427,6 +4457,7 @@
       get epoch() { return epoch; },
       storeWT, storeWTFrame, dropWT,
       attach, reset, idle, transport, begin, fxMods, snapshot, mergeCT, recentPitch, warmUp, warmStart, warmTick, warmEnd, warmKey,
+      sync, extIn, extOff,
       allocate,
       SerumVoice, SFilter, bend, evalPts, renderWarp, filterImpulse,
     });

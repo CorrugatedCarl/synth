@@ -487,6 +487,14 @@ export const SOURCES = deepFreeze((() => {
   return S;
 })());
 export const NSRC = SOURCES.length;                     // 62
+// IMPL-2b §3.2: the canvas ext inputs ext1…16 — DSP source indices S_EXT0 + k − 1 (sx-base NSRC 78), never in SOURCES
+// (cpKey / srcUsed / every fixture untouched) and never in a stored row (normRow / song.normMods reject them): only
+// compileSerum(s, { ext: true }) names them, in the injected copy of a Serum's matrix (CP.use bit 32768)
+export const S_EXT0 = 62, N_EXT = 16;
+export const EXT_IDS = deepFreeze(Array.from({ length: N_EXT }, (_, k) => 'ext' + (k + 1)));
+const EXT_RE = /^ext([1-9]|1[0-6])$/;
+export const extIndex = id => { const m = typeof id === 'string' ? EXT_RE.exec(id) : null; return m ? +m[1] : 0; };
+export const extLabel = id => { const k = extIndex(id); return k ? 'Ext ' + k + ' (canvas)' : ''; };
 const SRC_MAP = new Map(SOURCES.map((s, i) => [s.id, i]));
 const SRC_MAP_V1 = new Map(SOURCES.slice(0, V1.NSRC).map((s, i) => [s.id, i]));
 export const SRC_INDEX = deepFreeze(SOURCES.reduce((o, s, i) => { o[s.id] = i; return o; }, {}));
@@ -2156,11 +2164,13 @@ function compileCore(s, ctx) {
   // followed by the inactive slots in slot order — a permutation of 0–63, so a CP without active rows maps r → r
   const mSlot = new Uint8Array(NR), idle = [];
   const srcUsed = new Uint8Array(NSRC), modded = new Uint8Array(NSV), targeted = new Uint8Array(ND);
-  let mN = 0, curved = 0;
+  let mN = 0, curved = 0, extOn = 0;
   for (let r = 0; r < NR; r++) {
     const row = s.matrix[r];
     if (!rowActive(row)) { idle.push(r); continue; }
-    const si = SRC_MAP.get(row.src), ai = row.aux ? SRC_MAP.get(row.aux) : 0;
+    let si = SRC_MAP.get(row.src), ext = 0;
+    const ai = row.aux ? SRC_MAP.get(row.aux) : 0;
+    if (!si && c.ext) { const k = extIndex(row.src); if (k) { si = S_EXT0 + k - 1; ext = 1; } }   // (IMPL-2b §3.2)
     if (!si || ai === undefined) { idle.push(r); continue; }
     let amt = clamp(row.amt, -1, 1) * clamp(row.out, 0, 1), alias = 0, dv = -1, fk = -1, cx = 0, on = 0;
     if (own(FXCTX, row.dst)) {
@@ -2199,7 +2209,7 @@ function compileCore(s, ctx) {
     mRd[mN] = si === S_RANDD || ai === S_RANDD ? 1 : 0;
     mAlias[mN] = alias;
     if (mCrv[mN] >= 0 || mRise[mN] > 0 || mFall[mN] > 0 || mAK[mN] !== 0) curved = 1;
-    srcUsed[si] = 1;
+    if (ext) extOn = 1; else srcUsed[si] = 1;                     // (an ext source: no srcUsed mark — the array stays 62)
     if (ai) srcUsed[ai] = 1;
     if (dv >= 0 && (cx & 1)) modded[dv] = 1;
     mN++;
@@ -2355,6 +2365,7 @@ function compileCore(s, ctx) {
   if (curved) use |= 4096;
   if (seqOn) use |= 8192;
   if (s1) use |= 16384;
+  if (extOn) use |= 32768;                                        // ext rows (IMPL-2b §3.2): the voices copy g rows 62–77
   const outMask = 1 | (anyDirect ? 2 : 0) | (anyBus(1) ? 4 : 0) | (anyBus(2) ? 8 : 0);
   const poly = intIn(vo.poly, 8, 1, 32);
   const CP = {
