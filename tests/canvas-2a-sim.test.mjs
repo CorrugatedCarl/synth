@@ -462,3 +462,16 @@ test('H8: a preset of 64 rows loaded over a canvas cable — the badge says "1 n
   assert.deepEqual(walk(sheet, c => /\bcv-ml-b\b/.test(c.className || '')).map(c => c.textContent), ['64/64 · 1 not compiled'], 'the Mod list agrees');
   M.layer().close();
 });
+
+test('H6: Duplicate track copies the row-id counter (mid) — a deleted row\'s id is never reused on the copy', () => {
+  wheelOn();
+  pick(fresh());
+  M.opts.onMod('wheel', 'i1:f.cutoff'); sim.raf(); M.opts.onMod('wheel', 'i1:f.res'); sim.raf();
+  const [r1, r2] = T().mods.map(r => r.id), mid = T().mid;
+  M.host().remove(r2); M.host().step('Disconnect'); sim.raf();
+  assert.deepEqual(T().mods.map(r => r.id), [r1]);
+  cv.duplicateTrack(T()); sim.raf();
+  const c = P().tracks[P().tracks.indexOf(T()) + 1];
+  assert.deepEqual([c.mods.map(r => r.id), c.mid], [[r1], mid]);
+  assert.notEqual(CMOD.addMod(c, 'wheel', 'i1:a.level', { project: P() }).row.id, r2);
+});

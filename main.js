@@ -3009,6 +3009,7 @@ function duplicateTrack(t) {
     for (const k of ['model', 'vals', 'preset', 'seq', 'fx']) delete c[k];
     Object.assign(c, { prim: t.prim, nid: t.nid, dev: clone(t.dev), wires: clone(t.wires) });
     if (t.mods) c.mods = clone(t.mods);
+    if (t.mid !== undefined) c.mid = t.mid; // (2a: row ids never reused)
   } else { if (t.seq) c.seq = clone(t.seq); c.fx = clone(fxOf(t)); }
   if (t.lay) c.lay = clone(t.lay); // (the canvas layout, view only)
   project.tracks.splice(project.tracks.indexOf(t) + 1, 0, c);
