@@ -4,7 +4,8 @@ import './v8-guard.mjs';
 // at any zoom), the soft DOM budget, sleeping controls below READ_K, native-zoom hand-over, momentum guard, late-finger
 // pinch, wheel + veto, edit state, edge auto-pan, ghost re-projection, localPoint under the world transform. Fake DOM: tests/wk-dom.mjs. Never pass fake-DOM nodes to assert.*
 // (compare ids / strings / numbers). Stage 1e: the jack hook (a press on a jack is the cable drag's; a second finger
-// cancels it and pinches; a two-finger cancel, Escape, setActive(false) cancel it). Run alone: node --max-old-space-size=2048 --test tests/cv-world.test.mjs
+// cancels it and pinches; a two-finger cancel, Escape, setActive(false) cancel it). Stage 2a: the ∿ cycle (Always / On
+// select / Never, synth.cv.mods, 'mods' events). Run alone: node --max-old-space-size=2048 --test tests/cv-world.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as dom from './wk-dom.mjs';
@@ -868,11 +869,11 @@ test('wk.localPoint inside a module under the world transform: layout px at k = 
   }
 });
 
-test('toolbar: − / % / + / fit / tidy / ∿ (disabled) / the native chip; ⊕ ⊖ step the zoom about the band centre, % resets to 100 %; folds behind one ⊕ button', () => {
+test('toolbar: − / % / + / fit / tidy / ∿ (2a: the mod cables\' visibility) / the native chip; ⊕ ⊖ step the zoom about the band centre, % resets to 100 %; folds behind one ⊕ button', () => {
   const { tb, world, frame, tidy, item } = setup();
   const btn = n => all(tb).find(x => x.getAttribute && x.getAttribute('data-cv-tb') === n);
   eq(['out', 'pct', 'in', 'fit', 'tidy', 'mods', 'native', 'tools'].map(n => !!btn(n)), [true, true, true, true, true, true, true, true]);
-  eq([btn('mods').disabled, btn('mods').getAttribute('aria-label'), btn('pct').textContent], [true, 'Modulation cables arrive in a later stage', '100%']);
+  eq([btn('mods').disabled, btn('mods').getAttribute('aria-label'), btn('pct').textContent], [false, 'Modulation cables: Always', '100%']);
   world.add(item('a', 0, 0, 500, 300)); frame();
   btn('in').click(); frame(30);
   eq([world.k, btn('pct').textContent], [1.25, '125%']);
@@ -924,6 +925,31 @@ test('Snap to grid: the toolbar toggle (aria-pressed, remembered in synth.cv.sna
   S2.frame();
   const b2 = all(S2.tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'snap');
   eq([S2.world.snapOn(), b2.getAttribute('aria-pressed')], [false, 'false'], 'restored off');
+});
+
+test('∿ (2a): the toolbar cycles the mod cables\' visibility Always → On select → Never → Always (data-mode, title, aria-label), remembered in synth.cv.mods, a \'mods\' event per change; setModsMode; a saved mode restores; anything else is Always', () => {
+  const { tb, world, prefs, frame } = setup();
+  frame();
+  const b = all(tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'mods');
+  eq([W.MODS_PREF, W.MODS_MODES], ['synth.cv.mods', ['always', 'select', 'never']]);
+  eq([b.disabled, b.hasAttribute('aria-disabled'), b.getAttribute('data-mode'), world.modsMode(), b.title], [false, false, 'always', 'always', 'Modulation cables: Always (tap: On select)']);
+  const told = [];
+  world.on('mods', m => told.push(m));
+  b.click();
+  eq([b.getAttribute('data-mode'), b.getAttribute('aria-label'), b.title, world.modsMode(), prefs.get('synth.cv.mods')], ['select', 'Modulation cables: On select', 'Modulation cables: On select (tap: Never)', 'select', 'select']);
+  b.click();
+  eq([b.getAttribute('data-mode'), world.modsMode(), prefs.get('synth.cv.mods')], ['never', 'never', 'never']);
+  b.click();
+  eq([b.getAttribute('data-mode'), world.modsMode(), prefs.get('synth.cv.mods')], ['always', 'always', 'always']);
+  eq(told, ['select', 'never', 'always'], 'one event per change');
+  world.setModsMode('never'); world.setModsMode('never'); world.setModsMode('bogus');
+  eq([told.slice(3), world.modsMode(), b.getAttribute('data-mode')], [['never'], 'never', 'never'], 'the same mode or an unknown one: no event');
+  const S2 = setup({ prefs: [['synth.cv.mods', 'select']] });
+  S2.frame();
+  const b2 = all(S2.tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'mods');
+  eq([S2.world.modsMode(), b2.getAttribute('data-mode')], ['select', 'select'], 'restored');
+  const S3 = setup({ prefs: [['synth.cv.mods', 42]] });
+  eq(S3.world.modsMode(), 'always', 'a bad pref: Always');
 });
 
 /* ------------------------------------------------------------------ stage 1c: selection, marquee, minimap */

@@ -4,13 +4,18 @@ import './v8-guard.mjs';
 // Stage 1e: jackPort / portJack, cablesOf (wires, a Serum's own route, colour, grey when silent, levels), editable cables
 // (tap select, the floating ×, menu, Escape / Delete, a tap elsewhere), createCableDrag (glow / dim with the reason, snap,
 // a module body, refuse, backwards from an input, re-patch, "Connect to…", cancels).
+// Stage 2a: modSrcKey / modSrcOf / amtText / perfRows, cablesOf's mod cables (track.mods rows, preset rows with their module,
+// colours, the badge text, dashed), the mod layers (the body under, the last 24 screen px over, the badge in the world;
+// rezoom), the badge's tap / menu / keys, visibility Always / On select / Never, the 24+ fade and its hint, the mod drag
+// (knobs through elementFromPoint → [data-dest] → [data-dev], glow / dim, refusals, bar drop, jack tap, no audio ↔ mod
+// cross targets, cancels).
 // Never passes fake-DOM nodes to assert.* (ids, strings and numbers only).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-cables.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as C from '../cv-cables.js?v=9';
 import * as core from '../serum-core.js?v=9';
-import { fresh, all, ptr, fire, key, Ev } from './wk-dom.mjs';
+import { fresh, all, ptr, fire, key, Ev, place } from './wk-dom.mjs';
 
 const nums = d => d.match(/-?[\d.]+/g).map(Number);
 
@@ -439,4 +444,321 @@ test('createCables (U13): the press takes no pointer capture (the canvas pans fr
   fire(R.hit('w4'), 'contextmenu', { clientX: 300, clientY: 200 });
   assert.equal(R.L.selected(), 'w4', 'a right-click still opens it');
   R.L.destroy();
+});
+
+/* ---------------------------------------------------------------- stage 2a: modulation cables (IMPL-2a §3) */
+// a v2 track with modulators (ve: Velocity; no Aftertouch), canvas rows and a Serum (i2) whose own matrix holds performance rows
+function v2m(o = {}) {
+  const t = v2();
+  t.dev.ve = { kind: 'velo' };
+  t.dev.i2.vals.s.matrix[3] = Object.assign({}, t.dev.i2.vals.s.matrix[3], { src: 'wheel', dst: 'a.level', amt: 0.5 });
+  t.dev.i2.vals.s.matrix[7] = Object.assign({}, t.dev.i2.vals.s.matrix[7], { src: 'velo', dst: 'fx.r1.mix', amt: -0.2, bi: 1 });
+  t.dev.i2.vals.s.matrix[9] = Object.assign({}, t.dev.i2.vals.s.matrix[9], { src: 'at', dst: 'a.pan', amt: 1 });
+  t.dev.i2.vals.s.matrix[11] = Object.assign({}, t.dev.i2.vals.s.matrix[11], { src: 'lfo1', dst: 'a.pan', amt: 1 }); // (not a performance source)
+  t.mods = [{ id: 'r1', src: 'wheel', dst: 'i2:a.semi', amt: 0.5, bi: 0, byp: 0 }, { id: 'r2', src: 've.out', dst: 'i2:fx.r1.mix', amt: -0.25, bi: 1, byp: 1 },
+    { id: 'r3', src: 'zz', dst: 'i2:a.pan' }, { src: 'wheel', dst: 'i2:a.pan' }, { id: 'r4', src: 'wheel', dst: 'nocolon' }, { id: 'r5', src: 'bd.out', dst: 'i2:a.fine', amt: 1 }];
+  return Object.assign(t, o);
+}
+
+test('modSrcKey / modSrcOf / amtText / perfRows (2a): row src ↔ module key ↔ jack; the badge text; a Serum\'s performance rows', () => {
+  assert.deepEqual(['wheel', 've.out', 'at.out', 'bd.out', 'i1.out', 'lfo1', 'x.y.out', '', null].map(C.modSrcKey), ['wheel', 've', 'at', 'bd', 'i1', null, null, null, null]);
+  assert.deepEqual(['wheel.out', 've.out', 'at.out'].map(C.modSrcOf), ['wheel', 've.out', 'at.out']);
+  assert.deepEqual([C.amtText(0.5), C.amtText(-0.254), C.amtText(0.5, 1), C.amtText(0), C.amtText(3), C.amtText(NaN), C.amtText(-1, true)], ['+50%', '−25%', '±50%', '+0%', '+100%', '+0%', '±100%']);
+  assert.deepEqual(C.perfRows(v2m().dev.i2).map(r => [r.slot, r.src, r.dst, r.amt]), [[3, 'wheel', 'a.level', 0.5], [7, 'velo', 'fx.r1.mix', -0.2], [9, 'at', 'a.pan', 1]]);
+  assert.deepEqual([C.perfRows(null), C.perfRows({ vals: {} })], [[], []]);
+  assert.deepEqual([C.END_PX, C.MOD_FADE_N, C.MOD_MODES, C.MOD_HINT, C.MOD_KEY], [24, 24, ['always', 'select', 'never'], '24+ mod cables, tap ∿ to filter', { wheel: 'wheel', velo: 've', at: 'at', bend: 'bd' }]);
+});
+
+test('cablesOf (2a): one mod cable per valid track.mods row after the audio ones (a: the source module\'s out, b: \'<dev>:<param>\', amt / bi / byp, the badge, the source\'s colour); preset rows only with presetRows and only when their module exists', () => {
+  const t = v2m(), base = C.cablesOf(v2());
+  const L = C.cablesOf(t);
+  assert.deepEqual(L.slice(0, base.length), base, 'the audio cables unchanged, first');
+  const M = L.slice(base.length);
+  assert.deepEqual(M.map(c => [c.id, c.kind, c.a, c.b, c.amt, c.bi, c.byp, c.preset, c.dashed, c.badge, c.color, c.src]), [
+    ['r1', 'mod', 'wheel.out', 'i2:a.semi', 0.5, false, false, false, false, '+50%', C.MOD_COLOR.wheel, 'wheel'],
+    ['r2', 'mod', 've.out', 'i2:fx.r1.mix', -0.25, true, true, false, false, '±25%', C.MOD_COLOR.velo, 've.out'],
+    ['r5', 'mod', 'bd.out', 'i2:a.fine', 1, false, false, false, false, '+100%', '#3b82c4', 'bd.out']], 'invalid rows dropped; a source module that is not there: the track colour (the cable hides: no port)');
+  assert.ok(M.every(c => !c.readonly && !c.label), 'editable, no midpoint label (the badge)');
+  t.dev.ve.color = '#123456';
+  assert.equal(C.cablesOf(t).find(c => c.id === 'r2').color, '#123456', 'the module\'s own colour');
+  // preset rows: the wheel's needs project.perf.wheel; Velocity's the ve device; Aftertouch's none here
+  const P = C.cablesOf(t, { presetRows: true, project: { perf: { wheel: { v: 1 } } } }).filter(c => c.preset);
+  assert.deepEqual(P.map(c => [c.id, c.a, c.b, c.dev, c.slot, c.badge, c.src]), [['p:i2:3', 'wheel.out', 'i2:a.level', 'i2', 3, '+50%', 'wheel'], ['p:i2:7', 've.out', 'i2:fx.r1.mix', 'i2', 7, '±20%', 'velo']]);
+  assert.deepEqual(C.cablesOf(t, { presetRows: true, project: { perf: { wheel: null } } }).filter(c => c.preset).map(c => c.id), ['p:i2:7'], 'no wheel in the project');
+  assert.deepEqual(C.cablesOf(t, { project: { perf: { wheel: { v: 1 } } } }).filter(c => c.preset), [], 'without presetRows: none');
+  const seen = [];
+  const F = C.cablesOf(t, { presetRows: (id, dev) => { seen.push(id + ':' + dev.model); return [{ slot: 1, src: 'velo', dst: 'a.oct', amt: 0.1 }, { slot: 2, src: 'nope', dst: 'a.oct' }]; } }).filter(c => c.preset);
+  assert.deepEqual([seen, F.map(c => c.id + ' ' + c.b)], [['i2:serum'], ['p:i2:1 i2:a.oct']], 'a host function per Serum');
+  assert.deepEqual(C.cablesOf(t, { dashed: r => r.id === 'r1' }).filter(c => c.dashed).map(c => c.id), ['r1'], 'the dashed flag (a per-note source on a last-note target)');
+  assert.deepEqual(C.cablesOf({ model: 'serum', mods: [{ id: 'r1', src: 'wheel', dst: 'i1:a.semi' }] }).map(c => c.kind), ['audio', 'audio'], 'a v1 track: no mod cables');
+});
+
+// layers with mod cables: ports for the jacks and the knob ends; k from a variable
+function modLayers(o = {}) {
+  const doc = fresh(), W = doc.createElement('div');
+  doc.body.append(W);
+  const sel = [], acts = [], hints = [], z = { k: 1 };
+  const L = C.createCables(W, Object.assign({ doc, onSelect: id => sel.push(id), onAction: (id, a) => acts.push(id + ' ' + a), menu: id => [{ label: 'Inspect ' + id }],
+    onHint: t => hints.push(t), k: () => z.k }, o));
+  const t = v2m();
+  const P = new Map([['i1.out', { x: 1000, y: 68 }], ['i2.out', { x: 1200, y: 668 }], ['i2/fx.in', { x: 1376, y: 668 }], ['i2/fx.out', { x: 2136, y: 668 }], ['i3.out', { x: 1000, y: 1500 }],
+    ['fx1.in', { x: 2400, y: 68 }], ['fx1.out', { x: 3160, y: 68 }], ['out.in', { x: 3500, y: 68 }], ['wheel.out', { x: -176, y: 68 }], ['ve.out', { x: -176, y: 356 }],
+    ['i2:a.semi', { x: 300, y: 800 }], ['i2:fx.r1.mix', { x: 1600, y: 900 }], ['i2:a.level', { x: 260, y: 760 }]]);
+  L.set(C.cablesOf(t, { presetRows: true, project: { perf: { wheel: { v: 1 } } } }));
+  L.layout(P);
+  const g = id => all(L.under).find(n => n.getAttribute && n.getAttribute('data-cable') === id) || null;
+  const og = id => all(L.over).find(n => n.getAttribute && n.getAttribute('data-cable') === id) || null;
+  const badge = id => all(W).find(n => n.getAttribute && n.getAttribute('class') && /cv-mbadge/.test(n.getAttribute('class')) && n.getAttribute('data-cable') === id) || null;
+  const cl = n => n.getAttribute('class');
+  return { doc, W, L, t, P, z, sel, acts, hints, g, og, badge, cl };
+}
+// the arc length of a cubic path 'M x y C …' (sampled)
+function arcLen(d) {
+  const v = nums(d), at = s => { const u = 1 - s; return [0, 1].map(i => u * u * u * v[i] + 3 * u * u * s * v[2 + i] + 3 * u * s * s * v[4 + i] + s * s * s * v[6 + i]); };
+  let L = 0, p = at(0);
+  for (let i = 1; i <= 200; i++) { const q = at(i / 200); L += Math.hypot(q[0] - p[0], q[1] - p[1]); p = q; }
+  return L;
+}
+
+test('createCables (2a): a mod cable — its body under the modules (g[data-kind="mod"], no hit: CSS), its last 24 screen px in the over layer, its amount badge (a button in the world) at their start; preset: thin + the "preset" tag; bypassed: cv-off everywhere; dashed; a zoom re-cuts the end', () => {
+  const R = modLayers();
+  assert.deepEqual(R.L.list().filter(c => c.kind === 'mod').map(c => c.id), ['r1', 'r2', 'r5', 'p:i2:3', 'p:i2:7']);
+  const g1 = R.g('r1'), o1 = R.og('r1'), b1 = R.badge('r1');
+  assert.deepEqual([g1.getAttribute('data-kind'), g1.childNodes.map(R.cl), o1.getAttribute('data-kind'), o1.childNodes.map(R.cl)], ['mod', ['cv-cable-hit', 'cv-cable'], 'mod', ['cv-cable cv-mend']]);
+  assert.equal(g1.childNodes[1].getAttribute('d'), C.cablePath(-176, 68, 300, 800), 'the body: the whole cable');
+  const end = o1.childNodes[0].getAttribute('d'), e = nums(end);
+  assert.deepEqual(e.slice(-2), [300, 800], 'the end lands on the knob');
+  assert.ok(Math.abs(arcLen(end) - 24) < 0.5, 'its last 24 px at k 1: ' + arcLen(end));
+  assert.deepEqual([b1.tagName, b1.parentNode === R.W, b1.style.left, b1.style.top, b1.hidden], ['BUTTON', true, e[0] + 'px', e[1] + 'px', false], 'the badge at the end\'s start (world px)');
+  assert.deepEqual([b1.textContent, b1.getAttribute('aria-label'), g1.style['--cc'], o1.style['--cc'], b1.style['--cc']], ['+50%', 'Modulation +50% — tap to edit', C.MOD_COLOR.wheel, C.MOD_COLOR.wheel, C.MOD_COLOR.wheel]);
+  assert.deepEqual(['r2', 'p:i2:3'].map(id => [R.cl(R.g(id)), R.cl(R.og(id)), R.cl(R.badge(id))]), [
+    ['cv-cable-g cv-off', 'cv-cable-g cv-off', 'cv-mbadge cv-off'], ['cv-cable-g cv-preset', 'cv-cable-g cv-preset', 'cv-mbadge cv-preset']], 'bypassed grey; a preset row thin');
+  assert.deepEqual([R.badge('p:i2:3').textContent, R.badge('p:i2:3').childNodes[1].hidden, R.badge('r1').childNodes[1].hidden, R.badge('r2').getAttribute('aria-label')],
+    ['+50%preset', false, true, 'Modulation ±25%, bypassed — tap to edit'], 'the "preset" tag');
+  assert.deepEqual([R.g('r5').style.display, R.og('r5').style.display, R.badge('r5').hidden], ['none', 'none', true], 'no source module (bd): hidden, badge too');
+  // a zoom: the end is 24 screen px again (12 world px at k 2); nothing else changes
+  R.z.k = 2;
+  assert.equal(R.L.rezoom(), true);
+  assert.ok(Math.abs(arcLen(R.og('r1').childNodes[0].getAttribute('d')) - 12) < 0.5, '12 world px at k 2');
+  assert.equal(R.g('r1').childNodes[1].getAttribute('d'), C.cablePath(-176, 68, 300, 800));
+  assert.equal(R.L.rezoom(), false, 'the same zoom: nothing');
+  // dashed; a cable turning from mod to audio under the same id is made again
+  R.L.set(C.cablesOf(R.t, { dashed: r => r.id === 'r1' }));
+  assert.equal(R.cl(R.g('r1')), 'cv-cable-g cv-dash');
+  R.L.set([{ id: 'r1', a: 'i1.out', b: 'fx1.in', kind: 'audio' }]);
+  assert.deepEqual([R.g('r1').getAttribute('data-kind'), R.og('r1'), R.badge('r1')], ['audio', null, null]);
+  R.L.destroy();
+  assert.equal(all(R.W).filter(n => n.getAttribute && /cv-mbadge/.test(n.getAttribute('class') || '')).length, 0, 'the badges go with the layers');
+});
+
+test('createCables (2a): the badge is the handle — a tap selects (onSelect; again: onSelect again — the inspector), no ×; its press is never the world\'s; long-press / right-click → the menu; Escape clears, Delete disconnects', () => {
+  const R = modLayers(), b = R.badge('r1');
+  const p = ptr(b, 'pointerdown', 10, 10, { pointerId: 3 });
+  assert.equal(p._stop, true, 'never the world\'s press');
+  b.click();
+  assert.deepEqual([R.sel, R.L.selected(), R.cl(R.g('r1')), R.cl(R.og('r1')), R.cl(b)], [['r1'], 'r1', 'cv-cable-g cv-sel', 'cv-cable-g cv-sel', 'cv-mbadge cv-sel']);
+  const xb = all(R.W).find(n => n.getAttribute && n.getAttribute('class') === 'cv-cable-x');
+  assert.equal(!xb || xb.hidden, true, 'no floating × on a mod cable');
+  b.click();
+  assert.deepEqual(R.sel, ['r1', 'r1'], 'a tap on the selected one: the inspector again');
+  key(R.doc.body, 'Escape');
+  assert.deepEqual([R.L.selected(), R.cl(b)], [null, 'cv-mbadge']);
+  fire(R.badge('p:i2:7'), 'contextmenu', { clientX: 50, clientY: 60 });
+  assert.deepEqual([R.L.selected(), menuLabels(R.doc)], ['p:i2:7', ['Disconnect', 'Inspect p:i2:7']]);
+  key(R.doc.body, 'Escape');
+  R.L.select('r2');
+  key(R.doc.body, 'Delete');
+  assert.equal(R.acts.at(-1), 'r2 disconnect');
+  // an audio cable's selection still shows its ×
+  R.L.select('w1');
+  assert.equal(all(R.W).find(n => n.getAttribute && n.getAttribute('class') === 'cv-cable-x').hidden, false);
+  R.L.destroy();
+});
+
+test('createCables (2a): visibility — Never hides every mod cable (badges too; a selected one is let go), On select shows those touching the selection (highlight, the selected cable), Always all; audio cables always', () => {
+  const R = modLayers({ mods: 'select' });
+  const shown = () => R.L.list().filter(c => c.kind === 'mod').filter(c => !R.g(c.id).classList.contains('cv-hide') && !R.badge(c.id).hidden).map(c => c.id);
+  assert.deepEqual([R.L.modsVisible(), shown()], ['select', []], 'On select, nothing selected: none');
+  R.L.highlight(['r1', 'p:i2:3', 'w2']);
+  assert.deepEqual([shown(), R.og('r1').classList.contains('cv-hide'), R.og('r2').classList.contains('cv-hide')], [['r1', 'p:i2:3'], false, true]);
+  R.L.select('r2');
+  assert.deepEqual(shown(), ['r1', 'r2', 'p:i2:3'], 'the selected cable shows');
+  assert.equal(R.L.setModsVisible('never'), 'never');
+  assert.deepEqual([shown(), R.L.selected(), R.g('w2').classList.contains('cv-hide')], [[], null, false], 'Never: none, the selection let go; audio stays');
+  assert.equal(R.L.setModsVisible('bogus'), 'never', 'unknown: unchanged');
+  R.L.setModsVisible('always');
+  R.L.highlight(null);
+  assert.deepEqual(shown(), ['r1', 'r2', 'p:i2:3', 'p:i2:7'], 'Always: every laid-out one (r5 has no source module)');
+  assert.deepEqual([R.hints, R.L.list().some(c => R.g(c.id).classList.contains('cv-fade'))], [[], false], '≤ 24: no fade, no hint');
+  R.L.destroy();
+});
+
+test('createCables (2a): Always with more than 24 visible mod cables — those not touching the selection fade to 30 % (cv-fade), the hint once; under the limit again: no fade', () => {
+  const R = modLayers();
+  const many = Array.from({ length: 26 }, (_, i) => ({ id: 'm' + i, kind: 'mod', a: 'wheel.out', b: 'i2:a.semi', amt: 0.1 }));
+  R.L.set(many);
+  const faded = (L = many) => L.filter(c => R.g(c.id).classList.contains('cv-fade')).length;
+  assert.deepEqual([faded(), R.hints], [26, ['24+ mod cables, tap ∿ to filter']], 'nothing selected: all fade');
+  assert.deepEqual([R.og('m0').classList.contains('cv-fade'), R.badge('m0').classList.contains('cv-fade')], [true, true]);
+  R.L.highlight(['m1', 'm2']);
+  R.L.select('m3');
+  assert.deepEqual([faded(), R.g('m1').classList.contains('cv-fade'), R.g('m3').classList.contains('cv-fade')], [23, false, false], 'the ones touching the selection stay');
+  R.L.layout(R.P); R.L.set(many.slice());
+  assert.equal(R.hints.length, 1, 'the hint once');
+  R.L.set(many.slice(0, 24));
+  assert.equal(faded(many.slice(0, 24)), 0, '24: no fade');
+  R.L.destroy();
+});
+
+// the mod-drag rig: a scripted world, a wheel module (its mod jack), Velocity, a Serum (knobs under [data-dev], a top
+// bar), a classic module (refused knobs: stage 2b), audio jacks; elementFromPoint from a table of client rects
+function modRig(o = {}) {
+  const doc = fresh(), el = doc.createElement('div');
+  doc.body.append(el);
+  const subs = {}, ptrs = [];
+  const world = {
+    el, k: 1, hooks: {}, jack: null, jackCancel: null,
+    toClient: (x, y) => ({ x, y: y + 100 }), toWorld: (x, y) => ({ x, y: y - 100 }),
+    dragPointer: p => ptrs.push(p ? p.x + ',' + p.y : null),
+    on: (t, f) => { (subs[t] || (subs[t] = [])).push(f); return () => { subs[t] = subs[t].filter(g => g !== f); }; },
+    setJackHook(f, c) { world.jack = f; world.jackCancel = c; return () => { world.jack = null; }; },
+  };
+  const mk = (tag, attrs, parent) => { const n = doc.createElement(tag); for (const k in attrs) n.setAttribute(k, attrs[k]); (parent || el).append(n); return n; };
+  const modEl = (key, color) => { const m = mk('div', { 'data-cv-mod': key, class: 'cv-mod' }); if (color) m.style.setProperty('--mc', color); return m; };
+  const wheel = modEl('wheel', '#4fb3d9'), ve = modEl('ve', '#e8a33d'), sx = modEl('i2'), cl = modEl('i1'), fx = modEl('fx1');
+  const J = {
+    'wheel.out': mk('span', { 'data-cv-jack': 'wheel.out', 'data-kind': 'mod', 'aria-label': 'Mod Wheel out', title: 'Mod Wheel out', role: 'button' }, wheel),
+    've.out': mk('span', { 'data-cv-jack': 've.out', 'data-kind': 'mod', 'aria-label': 'Velocity out', title: 'Velocity out' }, ve),
+    'i1.out': mk('span', { 'data-cv-jack': 'i1.out', 'data-kind': 'audio', title: 'i1 out' }, cl),
+    'fx1.in': mk('span', { 'data-cv-jack': 'fx1.in', 'data-kind': 'audio', title: 'fx1 in' }, fx),
+  };
+  const bar = mk('div', { 'data-cv-bar': '', class: 'cv-bar' }, sx), wbar = mk('div', { 'data-cv-bar': '', class: 'cv-bar' }, wheel);
+  const panel = mk('div', { 'data-dev': 'i2', class: 'sx-root' }, sx), ownFx = mk('div', { 'data-dev': 'i2', class: 'fxr-root' }, sx);
+  const K = {
+    semi: mk('div', { 'data-dest': 'a.semi', class: 'knob' }, panel), pan: mk('div', { 'data-dest': 'a.pan', class: 'knob' }, panel),
+    ir: mk('div', { 'data-dest': 'fx.r1.ir', 'data-nomod': '1', class: 'knob' }, ownFx), mix: mk('div', { 'data-dest': 'fx.r1.mix', class: 'knob' }, ownFx),
+    cut: mk('div', { 'data-dest': 'cutoff', class: 'knob' }, mk('div', { 'data-dev': 'i1' }, cl)),
+  };
+  const knobInner = mk('span', { class: 'cap' }, K.semi);
+  place(K.semi, 290, 890, 20, 20); // client rects (the world's client = world + (0, 100))
+  // what lies under a client point
+  const zones = [[K.semi, 280, 880, 40, 40], [K.pan, 400, 880, 40, 40], [K.ir, 600, 880, 40, 40], [K.mix, 700, 880, 40, 40], [K.cut, 1000, 880, 40, 40],
+    [bar, 200, 600, 400, 40], [wbar, -400, 100, 240, 40], [J['fx1.in'], 2390, 160, 20, 20]];
+  doc.elementFromPoint = (x, y) => { if (x === 285 && y === 885) return knobInner; for (const [n, l, t, w, h] of zones) if (x >= l && x < l + w && y >= t && y < t + h) return n; return el; };
+  const P = new Map([['wheel.out', { x: -176, y: 68 }], ['ve.out', { x: -176, y: 356 }], ['i1.out', { x: 1000, y: 68 }], ['fx1.in', { x: 2400, y: 68 }]]);
+  const cables = C.createCables(el, { doc });
+  const log = [], asked = [];
+  const D = C.createCableDrag(world, Object.assign({
+    ports: () => P, cables, doc, port: j => (j === 'wheel.out' ? null : j),
+    jacks: () => Object.keys(J).map(id => ({ id, el: J[id] })),
+    canConnect: (a, b) => ({ ok: true }),
+    canMod: (src, dst) => { asked.push(src + ' ' + dst); return dst.startsWith('i1:') ? { ok: false, why: 'Classic knobs: from stage 2b' } : dst === 'i2:a.pan' ? { ok: false } : { ok: true }; },
+    markDests: src => [{ dev: 'i2', ids: ['a.semi', 'fx.r1.mix'] }],
+    onConnect: (a, b) => log.push('connect ' + a + ' ' + b), onRepatch: () => log.push('repatch'),
+    onMod: (src, dst) => log.push('mod ' + src + ' ' + dst), onRefuse: (a, b, why) => log.push('refuse ' + a + ' ' + b + ': ' + why),
+    onBarDrop: (src, k) => log.push('bar ' + src + ' ' + k), onJackTap: (src, je) => log.push('tap ' + src + ' ' + je.getAttribute('data-cv-jack')),
+  }, o));
+  const press = (id, x, y, o2 = {}) => world.jack(new Ev('pointerdown', Object.assign({ bubbles: true, cancelable: true, clientX: x, clientY: y, pointerId: 1, pointerType: 'touch', button: 0 }, o2)), J[id]);
+  const mv = (x, y, o2 = {}) => ptr(doc.body, 'pointermove', x, y, Object.assign({ pointerId: 1, pointerType: 'touch' }, o2));
+  const upAt = (x, y, o2 = {}) => ptr(doc.body, 'pointerup', x, y, Object.assign({ pointerId: 1, pointerType: 'touch' }, o2));
+  const live = () => all(cables.over).find(n => n.getAttribute && /cv-cable-live/.test(n.getAttribute('class') || '')) || null;
+  const cls = n => n.getAttribute('class') || '';
+  return { doc, el, world, J, K, bar, wbar, mods: { wheel, ve, sx, cl, fx }, P, cables, D, log, asked, ptrs, press, mv, upAt, live, cls };
+}
+
+test('createCableDrag (2a): a mod drag from the wheel — #world[data-cv-patching="mod"], the knobs markDests names glow (cv-ok), the modules without one dim (cv-nodest), every jack cv-no; over an accepted knob it lights (cv-hot) and the live cable (the mod look, the module\'s colour) ends on it; release → onMod(src, \'<dev>:<param>\'); every trace cleared', () => {
+  const R = modRig();
+  const h = R.press('wheel.out', -176, 168);
+  assert.equal(typeof h.cancel, 'function', 'taken (a mod jack: whatever o.port says)');
+  R.mv(-170, 170);
+  assert.equal(R.el.hasAttribute('data-cv-patching'), false, 'within the tap slop: nothing yet');
+  R.mv(100, 500);
+  assert.equal(R.el.getAttribute('data-cv-patching'), 'mod');
+  assert.deepEqual(Object.entries(R.K).map(([k, n]) => k + ':' + R.cls(n)), ['semi:knob cv-ok', 'pan:knob', 'ir:knob', 'mix:knob cv-ok', 'cut:knob'], 'the named knobs glow ([data-nomod] never)');
+  assert.deepEqual(Object.entries(R.mods).map(([k, n]) => k + ':' + R.cls(n)), ['wheel:cv-mod', 've:cv-mod cv-nodest', 'sx:cv-mod', 'cl:cv-mod cv-nodest', 'fx:cv-mod cv-nodest'], 'modules without a target dim (not the source)');
+  assert.deepEqual(Object.keys(R.J).map(id => R.cls(R.J[id])), ['cv-from', 'cv-no', 'cv-no', 'cv-no'], 'no jack is a target');
+  assert.deepEqual([R.J['i1.out'].title, R.J['ve.out'].title], ['Drag a modulation cable onto a knob', 'Drag a modulation cable onto a knob']);
+  assert.deepEqual([R.cls(R.live()), R.live().style['--cc'], R.live().getAttribute('d')], ['cv-cable cv-cable-live cv-mlive', '#4fb3d9', C.cablePath(-176, 68, 100, 400)], 'the mod look, to the pointer');
+  assert.equal(R.ptrs.at(-1), '100,500', 'edge auto-pan follows');
+  R.mv(285, 885); // on the knob's cap: closest [data-dest]
+  assert.deepEqual([R.cls(R.K.semi), R.cls(R.live())], ['knob cv-ok cv-hot', 'cv-cable cv-cable-live cv-mlive cv-snap']);
+  assert.equal(R.live().getAttribute('d'), C.cablePath(-176, 68, 300, 800), 'snapped to the knob\'s centre (world px)');
+  R.upAt(285, 885);
+  assert.deepEqual(R.log, ['mod wheel i2:a.semi']);
+  assert.deepEqual([...Object.values(R.K), ...Object.values(R.mods), ...Object.values(R.J)].map(R.cls).filter(c => /cv-(ok|no|hot|from|nodest)/.test(c)), [], 'every mark gone');
+  assert.deepEqual([R.J['i1.out'].title, R.el.hasAttribute('data-cv-patching'), R.live(), R.ptrs.at(-1)], ['i1 out', false, null, null]);
+  // Velocity: its src is 've.out'; a Serum's own FX knob under the same [data-dev]
+  R.press('ve.out', -176, 456); R.mv(300, 600); R.mv(705, 885); R.upAt(705, 885);
+  assert.equal(R.log.at(-1), 'mod ve.out i2:fx.r1.mix');
+  R.D.destroy();
+});
+
+test('createCableDrag (2a): refusals — a knob the host refuses (onRefuse with its reason: "…from stage 2b"), one it refuses without a reason, a [data-nomod] one (never asked); the knob shows cv-no while hovered; a module\'s top bar → onBarDrop (not the source\'s own); nothing / an audio jack → nothing', () => {
+  const R = modRig();
+  const drag = (x, y) => { R.press('wheel.out', -176, 168); R.mv(0, 400); R.mv(x, y); };
+  drag(1010, 890);
+  assert.equal(R.cls(R.K.cut), 'knob cv-no', 'refused: marked while hovered');
+  R.upAt(1010, 890);
+  drag(410, 890); R.upAt(410, 890);
+  drag(610, 890);
+  R.mv(611, 891);
+  R.upAt(611, 891);
+  assert.deepEqual(R.log, ['refuse wheel i1:cutoff: Classic knobs: from stage 2b', 'refuse wheel i2:a.pan: This knob can’t be modulated', 'refuse wheel i2:fx.r1.ir: This knob can’t be modulated']);
+  assert.deepEqual(R.asked, ['wheel i1:cutoff', 'wheel i2:a.pan'], 'the nomod knob is refused without asking; one ask per knob per drag');
+  assert.equal(R.cls(R.K.cut), 'knob', 'cleared');
+  R.log.length = 0;
+  drag(300, 610);
+  assert.equal(R.cls(R.bar), 'cv-bar cv-hot', 'a module\'s top bar lights');
+  R.upAt(300, 610);
+  drag(-300, 110); R.upAt(-300, 110); // the wheel's own bar
+  drag(2400, 170); R.upAt(2400, 170); // an audio jack: never a mod target
+  drag(5000, 5000); R.upAt(5000, 5000); // the canvas
+  assert.deepEqual([R.log, R.cls(R.bar)], [['bar wheel i2'], 'cv-bar']);
+  R.D.destroy();
+});
+
+test('createCableDrag (2a): a tap on a mod jack, Enter / Space or a right-click → onJackTap(src) (the host\'s "Connect to…"); Escape, a pointercancel and cancel() (two fingers) abandon a mod drag; markDests as a predicate or \'<dev>:<param>\' strings; without it no knob is marked', () => {
+  const R = modRig();
+  R.press('wheel.out', -176, 168); R.upAt(-174, 169);
+  key(R.J['ve.out'], 'Enter');
+  fire(R.J['wheel.out'], 'contextmenu', { clientX: 1, clientY: 1 });
+  assert.deepEqual(R.log, ['tap wheel wheel.out', 'tap ve.out ve.out', 'tap wheel wheel.out']);
+  assert.equal(menuLabels(R.doc).length, 0, 'no "Connect to…" menu of its own');
+  R.log.length = 0;
+  for (const end of [() => key(R.doc.body, 'Escape'), () => ptr(R.doc.body, 'pointercancel', 0, 0, { pointerId: 1 }), () => R.world.jackCancel()]) {
+    R.press('wheel.out', -176, 168); R.mv(0, 400); R.mv(285, 885);
+    assert.equal(R.D.active(), true);
+    end();
+    assert.deepEqual([R.D.active(), R.cls(R.K.semi), R.cls(R.mods.ve), R.el.hasAttribute('data-cv-patching'), R.live()], [false, 'knob', 'cv-mod', false, null]);
+    R.upAt(285, 885);
+  }
+  assert.deepEqual(R.log, [], 'nothing connected');
+  R.D.destroy();
+  const R2 = modRig({ markDests: () => (dev, id) => dev === 'i2' && id === 'a.pan' });
+  R2.press('wheel.out', -176, 168); R2.mv(0, 400);
+  assert.deepEqual(Object.values(R2.K).map(R2.cls), ['knob', 'knob cv-ok', 'knob', 'knob', 'knob'], 'a predicate');
+  R2.D.cancel();
+  R2.D.destroy();
+  const R3 = modRig({ markDests: () => ['i2:fx.r1.mix', 'i1:cutoff'] });
+  R3.press('wheel.out', -176, 168); R3.mv(0, 400);
+  assert.deepEqual(Object.values(R3.K).map(R3.cls), ['knob', 'knob', 'knob', 'knob cv-ok', 'knob cv-ok'], 'strings');
+  R3.D.cancel();
+  R3.D.destroy();
+  const R4 = modRig({ markDests: undefined, onMod: undefined });
+  R4.press('wheel.out', -176, 168); R4.mv(0, 400);
+  assert.deepEqual(Object.values(R4.K).map(R4.cls), ['knob', 'knob', 'knob', 'knob', 'knob'], 'no markDests: none marked');
+  R4.mv(285, 885); R4.upAt(285, 885);
+  assert.equal(R4.log.at(-1), 'connect wheel i2:a.semi', 'no onMod: onConnect');
+  R4.D.destroy();
+});
+
+test('createCableDrag (2a): an audio drag never targets a mod jack (cv-no with the reason; no snap, no "near" refusal) and "Connect to…" never lists one', () => {
+  const R = modRig({ canConnect: () => ({ ok: true }) });
+  R.press('fx1.in', 2400, 168); R.mv(1000, 300); // backwards from an input: outputs are its targets
+  assert.deepEqual([R.cls(R.J['wheel.out']), R.J['wheel.out'].title, R.cls(R.J['i1.out'])], ['cv-no', 'A modulation output: drag it onto a knob', 'cv-ok']);
+  R.mv(-176, 168); R.upAt(-176, 168);
+  assert.deepEqual(R.log, [], 'released on the mod jack: nothing');
+  fire(R.J['fx1.in'], 'contextmenu', { clientX: 1, clientY: 1 });
+  assert.deepEqual(menuLabels(R.doc), ['Connect fx1 in to…', 'i1 out']);
+  R.D.destroy();
 });

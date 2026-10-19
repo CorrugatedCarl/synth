@@ -2,7 +2,8 @@ import './v8-guard.mjs';
 // cv-tray.js (stage 1b SHELL lane; docs/canvas/IMPL-1b.md §8.1): budget(), topSnaps(), trayGrip (drag, two-finger
 // rollback, keys, double-tap, ARIA), sideTray (tap opens, grip inset, stays open on a press outside, never closes itself), sourcesTray
 // drag verdicts (out / along / hold) and drop routing, menuPop, sheet; (1e) effectsTray (tiles, groups, costs, drops into
-// a panel / onto the canvas, never closing the tray), the Effects tray markup and the 1e styles. Fake DOM: tests/wk-dom.mjs; never pass fake-DOM
+// a panel / onto the canvas, never closing the tray), the Effects tray markup and the 1e styles; (2a) the Modulators section
+// (tiles, picks, drags onto the canvas, setPlaced), its markup and the 2a styles. Fake DOM: tests/wk-dom.mjs; never pass fake-DOM
 // nodes to assert.* (ids, strings and numbers only).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-tray.test.mjs
 import test from 'node:test';
@@ -655,4 +656,123 @@ test('effectsTray (U11): over an instrument module (overOf → {over: \'inst\', 
   go('rev', 200, 300);
   assert.equal(L.at(-1), 'drop rev canvas:-:-', 'empty canvas: no module near');
   assert.equal(R.S.isOpen(), true);
+});
+
+/* ---------------------------------------------------------------- stage 2a: the Modulators section (IMPL-2a §3) */
+const MODS = [{ id: 'wheel', name: 'Mod Wheel', scope: 'project' }, { id: 'velo', name: 'Velocity', scope: 'track' }, { id: 'at', name: 'Aftertouch', scope: 'track' }, { id: 'bend', name: 'Bend', scope: 'track' }];
+function modRig(o = {}) {
+  const d = fresh();
+  raf.install();
+  const tray = mkEl(d, 'aside', 'srcTray'), list = d.createElement('div'), sec = d.createElement('section'), box = d.createElement('div'), layer = mkEl(d, 'div', 'ov');
+  sec.hidden = true; sec.append(box);
+  tray.append(list, sec);
+  place(tray, 0, 100, 284, 600);
+  const log = [], picks = [];
+  let leaves = 0;
+  const S = T.sourcesTray(list, Object.assign({
+    models: MODELS, tray, layer, pick: (id, mode) => picks.push(id + ':' + mode), mods: MODS, modsEl: box, modsSec: sec,
+    overOf: (t, x, y) => (y < 100 ? 'tracks' : x > 300 ? 'canvas' : null), canvasGhost: () => true, onLeave: () => { leaves++; },
+    toWorld: (x, y) => ({ x: x * 2, y: y - 100 }),
+    drag: {
+      begin: (id, i) => log.push('begin ' + id + ' ' + i.over + (i.mod ? ' mod' : '')),
+      move: (id, i) => log.push('move ' + i.over),
+      drop: (id, i) => { log.push('drop ' + id + ' ' + i.over + (i.mod ? ' mod' : '') + (i.at ? ' @' + i.at.x + ',' + i.at.y : '')); return !!i.over; },
+      cancel: id => log.push('cancel ' + id),
+    },
+  }, o));
+  return { d, tray, list, sec, box, layer, S, log, picks, get leaves() { return leaves; } };
+}
+const mtile = (R, id) => R.S.modTile(id);
+
+test('sourcesTray (2a): the Modulators section — one tile per modulator (an original glyph, its name, a hidden reason) in its own box, the section shown; tiles() stays the synths\'; a tap picks in the tray\'s mode; without modsEl a heading and the tiles follow the synths; without o.mods nothing changes', () => {
+  const R = modRig();
+  assert.deepEqual([R.sec.hidden, R.S.modTiles().map(b => b.getAttribute('data-mod')), R.box.children.length], [false, ['wheel', 'velo', 'at', 'bend'], 4]);
+  assert.equal(R.S.tiles().length, MODELS.length, 'tiles(): the synths only');
+  const w = mtile(R, 'wheel');
+  assert.deepEqual([w.tagName, w.className, w.type, w.getAttribute('data-scope'), w.children.map(c => c.className), w.children[1].textContent, w.children[2].hidden],
+    ['BUTTON', 'cv-tile cv-mtile', 'button', 'project', ['cv-mglyph', 'cv-tname', 'cv-treason'], 'Mod Wheel', true]);
+  assert.ok(/<svg /.test(w.children[0].innerHTML) && w.children[0].getAttribute('aria-hidden') === 'true', 'a glyph (inline SVG, monochrome: currentColor in CSS)');
+  assert.equal(new Set(R.S.modTiles().map(b => b.children[0].innerHTML)).size, 4, 'one glyph each');
+  assert.equal(w.title, 'Mod Wheel — tap to add it (one for the whole project), or drag it onto the canvas');
+  mtile(R, 'velo').click();
+  R.S.setMode('track');
+  mtile(R, 'at').click();
+  assert.deepEqual(R.picks, ['velo:replace', 'at:track']);
+  R.S.destroy();
+  assert.equal(R.box.children.length, 0, 'destroy takes the tiles');
+  // modPick / modDrag win; no modsEl: a heading after the synths in the list
+  const d = fresh(), list = d.createElement('div'), mp = [];
+  d.body.append(list);
+  const S2 = T.sourcesTray(list, { models: MODELS.slice(0, 2), mods: MODS.slice(0, 2), pick: () => mp.push('synth pick'), modPick: id => mp.push('mod ' + id), drag: {} });
+  assert.deepEqual(list.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-model') || n.getAttribute('data-mod'))), [MODELS[0].id, MODELS[1].id, '#Modulators', 'wheel', 'velo']);
+  S2.modTile('wheel').click();
+  assert.deepEqual(mp, ['mod wheel']);
+  S2.destroy();
+  const list3 = d.createElement('div');
+  const S3 = T.sourcesTray(list3, { models: MODELS.slice(0, 2), pick() {}, drag: {} });
+  assert.deepEqual([list3.children.length, S3.modTiles().length, S3.modTile('wheel')], [2, 0, null], 'no o.mods: the 1e tray');
+  S3.destroy();
+});
+
+test('sourcesTray (2a): a modulator tile drags out as a synth tile — over the canvas only (never \'tracks\'), info.mod, info.at in world px (toWorld); the ghost stays (no canvas outline for it unless modCanvasGhost); the tray stays open', () => {
+  const R = modRig(), t = mtile(R, 'velo'), tp = { pointerType: 'touch' };
+  ptr(t, 'pointerdown', 100, 300, at(tp)); ptr(t, 'pointermove', 112, 302, at(tp));
+  assert.deepEqual([R.log, R.layer.children[0].className], [['begin velo null mod', 'move null'], 'cv-tghost touch cv-mghost']);
+  ptr(t, 'pointermove', 400, 300, at(tp));
+  assert.deepEqual([R.leaves, R.log.at(-1), R.layer.children[0].classList.contains('off'), R.layer.children[0].children[1].textContent], [1, 'move canvas', false, '+ Add Velocity']);
+  TS += 150;
+  ptr(t, 'pointermove', 402, 301, at(tp)); ptr(t, 'pointerup', 402, 301, at(tp));
+  assert.equal(R.log.at(-1), 'drop velo canvas mod @804,201');
+  assert.equal(R.layer.children.length, 0, 'the ghost gone');
+  // over the track list: no target (a modulator is no new track); a flick: a cancel
+  R.log.length = 0;
+  ptr(t, 'pointerdown', 100, 300, at(tp)); ptr(t, 'pointermove', 120, 300, at(tp)); ptr(t, 'pointermove', 200, 50, at(tp));
+  TS += 200;
+  ptr(t, 'pointerup', 200, 50, at(tp));
+  assert.deepEqual(R.log.slice(-2), ['move null', 'cancel velo']);
+  R.log.length = 0;
+  ptr(t, 'pointerdown', 100, 300, at(tp)); ptr(t, 'pointermove', 120, 300, at(tp)); ptr(t, 'pointermove', 500, 300, at(tp)); ptr(t, 'pointerup', 500, 300, at(tp));
+  assert.deepEqual(R.log.slice(-1), ['cancel velo'], 'flicked');
+  R.S.destroy();
+  // modCanvasGhost: the world draws it
+  const R2 = modRig({ modCanvasGhost: () => true }), t2 = mtile(R2, 'at');
+  ptr(t2, 'pointerdown', 100, 300, at(tp)); ptr(t2, 'pointermove', 112, 302, at(tp)); ptr(t2, 'pointermove', 400, 300, at(tp));
+  assert.equal(R2.layer.children[0].classList.contains('off'), true);
+  ptr(t2, 'pointercancel', 400, 300, at(tp));
+  R2.S.destroy();
+});
+
+test('sourcesTray (2a): setPlaced greys a tile with its reason (aria-disabled, cv-placed, the reason shown, the title) — then it neither picks nor drags; null makes it available again', () => {
+  const R = modRig(), w = mtile(R, 'wheel'), tp = { pointerType: 'touch' };
+  R.S.setPlaced('wheel', 'already in this project');
+  assert.deepEqual([w.classList.contains('cv-placed'), w.getAttribute('aria-disabled'), w.children[2].hidden, w.children[2].textContent, w.title, R.S.placed('wheel')],
+    [true, 'true', false, 'already in this project', 'Mod Wheel — already in this project', 'already in this project']);
+  w.click();
+  ptr(w, 'pointerdown', 100, 300, at(tp)); ptr(w, 'pointermove', 112, 302, at(tp)); ptr(w, 'pointermove', 400, 300, at(tp));
+  TS += 150;
+  ptr(w, 'pointermove', 402, 301, at(tp)); ptr(w, 'pointerup', 402, 301, at(tp));
+  assert.deepEqual([R.picks, R.log, R.layer.children.length], [[], [], 0], 'no pick, no drag, no ghost');
+  R.S.setPlaced('velo', 'already on this track');
+  R.S.setPlaced('wheel', null);
+  assert.deepEqual([w.classList.contains('cv-placed'), w.hasAttribute('aria-disabled'), w.children[2].hidden, w.title, R.S.placed('wheel'), R.S.placed('velo')],
+    [false, false, true, 'Mod Wheel — tap to add it (one for the whole project), or drag it onto the canvas', null, 'already on this track']);
+  w.click();
+  assert.deepEqual(R.picks, ['wheel:replace']);
+  R.S.setPlaced('nope', 'x');
+  R.S.destroy();
+});
+
+test('index.html (2a): the Sources tray scrolls as one (#srcScroll) holding #srcList and the Modulators section (#srcModSec hidden until the tray fills it, #srcMods) — every id main.js binds kept; style.css: the section, the tiles, the placed state, the ∿ modes, the mod jack, mod cables, the badge, the patching states, the bodies', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  for (const id of ['srcTray', 'srcRail', 'srcPanel', 'srcClose', 'srcMode', 'srcLayout', 'srcList', 'srcGrip', 'srcScroll', 'srcModSec', 'srcMods']) assert.match(html, new RegExp('id="' + id + '"'), id);
+  assert.match(html, /<div id="srcScroll" class="cv-tscroll">\s*<div id="srcList" class="cv-tiles"><\/div>\s*<section id="srcModSec" class="cv-tsec" aria-label="Modulators" hidden>\s*<h3 class="cv-tgrp">Modulators<\/h3>\s*<div id="srcMods" class="cv-tiles cv-mtiles" data-tray="mods"><\/div>/);
+  assert.ok(!/modulators arrive here in later stages/.test(html), 'the old note went');
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  for (const sel of ['.cv-tscroll', '.cv-tsec[hidden]', '.cv-mglyph', '.cv-treason', '.cv-tile.cv-placed', '.cv-tb-btn[data-cv-tb="mods"][data-mode="never"]', '.cv-jack[data-kind="mod"]',
+    '.cv-cable-g[data-kind="mod"] .cv-cable', '.cv-cable-g[data-kind="mod"] .cv-cable-hit', '.cv-cable-g[data-kind="mod"].cv-preset .cv-cable', '.cv-cable-g.cv-hide', '.cv-mbadge', '.cv-mbadge::before', '.cv-ptag',
+    '#world[data-cv-patching="mod"] [data-dest]:not(.cv-ok)', '#world[data-cv-patching="mod"] .cv-mod.cv-nodest > .cv-body', '#world[data-cv-patching="mod"] [data-dest].cv-ok', '.cv-mw', '.cv-mw-slot', '.cv-mothers', '.cv-mbar']) assert.ok(css.includes(sel + ' '), sel);
+  assert.match(css, /\.cv-cable-g\[data-kind="mod"\] \.cv-cable \{ stroke-width: calc\(2px \* var\(--ik, 1\)\)/, 'mod cables 2 px on screen');
+  assert.match(css, /\.cv-mbadge::before \{[^}]*calc\(44px \* var\(--ik, 1\)\)/, 'the badge\'s 44 px hit area');
+  assert.match(css, /\.cv-mw \{[^}]*touch-action: none/, 'the wheel takes the finger');
+  assert.match(css, /\.cv-tscroll \{[^}]*overflow-y: auto/);
 });
