@@ -336,7 +336,8 @@ test('(U2 / P4) a cabled classic knob\'s drag reposts the payload at most every 
   assert.deepEqual([/^r1:l1\.out>i1:cf,r2:l1\.out>fx\d+:fx\.rev\.mix$/.test(rows(j)), N.modsKey === api.buildMods(j).key], [true, true], rows(j));
   const c = MOD('juno60').controls.find(x => x.id === 'cf');
   clearPosted(j);
-  for (let i = 1; i <= 15; i++) { Pn.set('cf', +(c.min + (c.max - c.min) * (0.2 + 0.04 * i)).toFixed(3), 'move'); sim.raf(); }
+  const spin = ms => { const t0 = performance.now(); while (performance.now() - t0 < ms) { /* (real time: the throttle window) */ } };
+  for (let i = 1; i <= 15; i++) { Pn.set('cf', +(c.min + (c.max - c.min) * (0.2 + 0.04 * i)).toFixed(3), 'move'); if (i === 8) spin(70); sim.raf(); } // (the build is fast: without the spin the whole drag fits one window)
   const mid = posted(j, 'mods').length;
   assert.ok(mid >= 1 && mid <= 2, 'held while dragging: ' + mid);
   assert.equal(posted(j, 'patch').length >= 15, true, 'the knob\'s own value went with every frame');
@@ -398,10 +399,11 @@ test('(live meters) a mounted LFO / ENV / chaos body subscribes the track\'s mon
   const e = dropNew('env', { x: -600, y: 1500 });
   const B = M.bodies.get('l1'), E = M.bodies.get(e);
   const mc = new Float32Array(16); mc[0] = 0.62; mc[10] = 0.31;
-  const v0 = B.value();
+  const v0 = B.value(), pay = api.buildMods(j), real = pay.slots;
+  assert.deepEqual([real && real.l1 && real.l1.i, real && real[e]], [0, undefined], 'the compile maps the cabled LFO to slot 0; an uncabled ENV is not evaluated (no slot)');
+  delete pay.slots;
   cv.monitors.deliver(j.id, { t: 'smon', i: 'i1', s: {}, mc });
-  assert.equal(Object.is(B.value(), v0), true, 'no slots yet (fixer B\'s): nothing moves');
-  const pay = api.buildMods(j);
+  assert.equal(Object.is(B.value(), v0), true, 'no slots: nothing moves');
   pay.slots = { l1: { kind: 'lfo', i: 0 }, [e]: { kind: 'env', i: 10 } };
   try {
     cv.monitors.deliver(j.id, { t: 'smon', i: 'i1', s: {}, mc });
@@ -409,7 +411,7 @@ test('(live meters) a mounted LFO / ENV / chaos body subscribes the track\'s mon
     mc[0] = 0.1;
     cv.monitors.deliver(j.id, { t: 'smon', i: 'i1', s: {}, mc });
     assert.equal(+B.value().toFixed(2), 0.1);
-  } finally { delete pay.slots; }
+  } finally { pay.slots = real; }
   M.del(e); sim.raf();
   assert.equal(U.mcMons.has(j.id), true, 'the LFO still mounted');
   M.del('l1'); sim.raf();
