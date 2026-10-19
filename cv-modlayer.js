@@ -1,0 +1,520 @@
+// cv-modlayer.js — the canvas mod layer (SPEC-canvas §2.9 Editing, §2.11 Mod list, §2.13 refusals, §7.7 items 6–7; contract:
+// docs/canvas/IMPL-2a.md §4). Owner: lane C (stage 2a). Three surfaces over one host:
+//   · the inspector (openInspector): a popover editing one modulation row — a canvas cable (track.mods) or a Serum preset row
+//     (s.matrix, D11) — with the matrix row's vocabulary (serum-ui matrixRow): amount, bipolar, curve, output, aux + invert,
+//     slew rise / fall / link, bypass, Save with preset / Keep on canvas, Disconnect; the header "<source> → <knob>" and the
+//     Serum's budget "n/64";
+//   · the Mod list (openList): a sheet (cv-tray sheet) of every row of the track grouped by destination device, the budget per
+//     Serum, preset rows tagged "preset", rows the compile could not place tagged "not compiled: matrix full", tap → inspector,
+//     Disconnect all per device (confirmed);
+//   · the parameter list (openDestList): a device's destinations by group (the host's descs groups: destMenu's sections + one
+//     per FX instance), nomod entries greyed (a tap says why), pick → host.connect.
+// History: the host records nothing inside edit / remove / toPreset / fromPreset / connect; this layer calls host.step(label)
+// once per gesture end (slider lift, key step, toggle, pick, button), never per move — edits are live (host.edit per move).
+// Popovers live in host.layer (#ov) or the body, position: fixed at client px; Escape, a press outside (wk popup lists
+// excepted: the aux menu's) and a camera move (wk.addTransient → closeTransient) close them, so nothing strands after a pan.
+// Rules: plain ES module, no DOM at module top level (node imports it), survives tests/main-sim.mjs's DOM stub (keeps
+// references, never queries the DOM back); imports carry ?v=9; styles ship as STYLE (the host injects it once).
+import * as wk from './wk.js?v=9';
+import { sheet } from './cv-tray.js?v=9';
+import { SRC_INDEX } from './serum-core.js?v=9';
+
+/** A Serum's matrix size (serum-core N_MATRIX): the "n/64" budget's denominator when the host gives none. */
+export const MAX_ROWS = 64;
+/** Canvas source id ↔ Serum-native id (IMPL-2a §2.1's injection map; preset rows carry the native one). */
+export const NATIVE = Object.freeze({ wheel: 'wheel', 've.out': 'velo', 'at.out': 'at', 'bd.out': 'bend' });
+export const CANVAS = Object.freeze({ wheel: 'wheel', velo: 've.out', at: 'at.out', bend: 'bd.out' });
+const SRC_LABEL = { wheel: 'Mod Wheel', 've.out': 'Velocity', 'at.out': 'Aftertouch', 'bd.out': 'Bend' };
+// the row fields a gesture can change (a gesture whose end leaves them as they were records no step)
+const FIELDS = ['amt', 'bi', 'curve', 'aux', 'inv', 'byp', 'out', 'rise', 'fall', 'slink'];
+
+const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
+const clamp = (x, a, b) => x < a ? a : x > b ? b : x;
+const r4 = v => Math.round(v * 1e4) / 1e4 + 0; // + 0: never -0
+const num = (v, d) => typeof v === 'number' && isFinite(v) ? v : d;
+/** Signed percent of an amount −1…1 ("+25%", "-40%", "0%"; serum-ui's matrix format). */
+export const pct = a => { const k = Math.round(num(a, 0) * 100) + 0; return (k > 0 ? '+' : '') + k + '%'; };
+/** Typed percent → −1…1 (or 0…1 with uni): "25", "+25%", "-40 %", "−40" (U+2212); null when not a number. */
+export function parsePct(t, uni) {
+  const m = /^\s*([+\-−]?\d+(?:[.,]\d+)?)\s*%?\s*$/.exec(String(t == null ? '' : t));
+  if (!m) return null;
+  const v = parseFloat(m[1].replace('−', '-').replace(',', '.')) / 100;
+  return isFinite(v) ? clamp(v, uni ? 0 : -1, 1) : null;
+}
+
+/**
+ * The refusal / notice texts (SPEC §2.13). code: 'nomod' (a structural knob), 'stage' | '2b' (a destination a later stage
+ * opens: classic knobs, shared panels), 'full' (the Serum's 64 rows); anything else → ctx.why or a generic line.
+ * @param {string} code @param {{src?: string, dst?: string, dev?: string, stage?: string, used?: number, max?: number, why?: string}} [ctx]
+ *   names, not ids (the host's labels) @returns {string}
+ */
+export function refusal(code, ctx) {
+  const c = isObj(ctx) ? ctx : {};
+  if (code === 'nomod') return 'This knob can\'t be modulated';
+  if (code === 'stage' || code === '2b' || (code == null && c.stage)) {
+    const st = c.stage || '2b';
+    return (c.src && c.dst ? c.src + ' → ' + c.dst + ': this knob' : 'This knob') + ' can be modulated from stage ' + st;
+  }
+  if (code === 'full') {
+    const max = num(c.max, MAX_ROWS);
+    return (c.dev || 'This Serum') + '\'s mod rows are full (' + Math.min(max, num(c.used, max)) + '/' + max + ')';
+  }
+  return c.why ? String(c.why) : 'Can\'t connect that';
+}
+
+/** The styles of the layer (the host injects them once; the lead moves them into style.css at integration). Classes:
+ * .cv-ml-pop[data-kind=insp|dest] (the popover), .cv-ml-h / .cv-ml-t / .cv-ml-b / .cv-ml-tag[data-tag] / .cv-ml-x (header,
+ * title, budget, tags, ✕), .cv-ml-sec / .cv-ml-lab (a control row and its label), .cv-ml-amt, .cv-ml-tg (toggle row),
+ * .cv-ml-foot / .cv-ml-btn[data-act] / .cv-ml-why (actions and the reason a disabled one gives), .cv-ml-grp / .cv-ml-item /
+ * .cv-ml-back (the parameter list), .cv-ml-list / .cv-ml-dev / .cv-ml-dh / .cv-ml-line / .cv-ml-empty (the Mod list sheet). */
+export const STYLE = `
+.cv-ml-pop { position: fixed; z-index: 70; width: min(340px, calc(100vw - 16px)); max-height: calc(100dvh - 16px); overflow-y: auto; overscroll-behavior: contain;
+  display: flex; flex-direction: column; gap: 10px; padding: 10px 12px 12px; border-radius: 12px; border: 1px solid var(--line2, #33363d);
+  background: var(--pop, #1a1c21); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.62); color: var(--text, #e9e7e2); font: 13px/1.3 var(--ui, system-ui, sans-serif); }
+.cv-ml-h { display: flex; align-items: center; gap: 8px; }
+.cv-ml-t { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-ml-b { font: 600 11px/1 var(--mono, ui-monospace, monospace); color: var(--mute, #8d8b86); white-space: nowrap; }
+.cv-ml-b[data-full] { color: var(--hot, #f2a33a); }
+.cv-ml-tag { padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line, #24262b); font: 600 10.5px/1.2 var(--ui, system-ui, sans-serif); color: var(--mute, #8d8b86); white-space: nowrap; }
+.cv-ml-tag[data-tag="left"] { border-color: #5a4320; color: var(--hot, #f2a33a); }
+.cv-ml-x { position: relative; flex: none; width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: var(--mute, #8d8b86); font-size: 16px; }
+.cv-ml-x::before { content: ''; position: absolute; inset: -6px; }
+.cv-ml-x:hover, .cv-ml-x:focus-visible { background: #24262c; color: var(--text, #e9e7e2); outline: none; }
+.cv-ml-sec { display: flex; align-items: center; gap: 10px; }
+.cv-ml-sec > .wk-sl { flex: 1; min-width: 0; }
+.cv-ml-lab { flex: none; width: 52px; color: var(--mute, #8d8b86); font-size: 12px; }
+.cv-ml-amt .wk-nb { flex: none; width: 72px; }
+.cv-ml-amt .wk-nb .wk-lab { display: none; }
+.cv-ml-tg { display: flex; flex-wrap: wrap; gap: 8px; }
+.cv-ml-sec .wk-menu { flex: 1; min-width: 0; }
+.cv-ml-foot { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px; border-top: 1px solid var(--line, #24262b); }
+.cv-ml-btn, .cv-ml-grp, .cv-ml-item, .cv-ml-back, .cv-ml-line { display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 12px; border-radius: 8px;
+  border: 1px solid var(--line, #24262b); background: #17181c; color: var(--text, #e9e7e2); font: 500 13px var(--ui, system-ui, sans-serif); text-align: left; -webkit-tap-highlight-color: transparent; }
+.cv-ml-btn { flex: 1 1 auto; justify-content: center; }
+.cv-ml-btn[data-act="disconnect"], .cv-ml-btn[data-act="all"] { color: #ff8a73; }
+.cv-ml-btn:hover, .cv-ml-btn:focus-visible, .cv-ml-grp:hover, .cv-ml-grp:focus-visible, .cv-ml-item:hover, .cv-ml-item:focus-visible,
+.cv-ml-back:hover, .cv-ml-back:focus-visible, .cv-ml-line:hover, .cv-ml-line:focus-visible { border-color: #5a4320; outline: none; }
+.cv-ml-btn:disabled { opacity: 0.45; border-color: var(--line, #24262b); }
+.cv-ml-why { width: 100%; font-size: 11.5px; color: var(--mute, #8d8b86); }
+.cv-ml-grps, .cv-ml-items { display: flex; flex-direction: column; gap: 4px; }
+.cv-ml-grp > span:first-child, .cv-ml-item > span:first-child, .cv-ml-line > span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-ml-grp > span + span { color: var(--mute, #8d8b86); font-size: 11.5px; }
+.cv-ml-item[aria-disabled="true"] { opacity: 0.45; }
+.cv-ml-list { display: flex; flex-direction: column; gap: 18px; }
+.cv-ml-dev { display: flex; flex-direction: column; gap: 4px; }
+.cv-ml-dh { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--text, #e9e7e2); }
+.cv-ml-dh > span:first-child { flex: 1; min-width: 0; }
+.cv-ml-dh > .cv-ml-btn { flex: none; }
+.cv-ml-line[data-byp] > span:first-child { color: var(--mute, #8d8b86); }
+.cv-ml-empty { margin: 0; color: var(--mute, #8d8b86); }
+`;
+
+/**
+ * @typedef {{id: string, label: string, law?: string, lo?: number, hi?: number, def?: number, fmt?: *, nomod?: boolean, group?: string}} Desc
+ * @typedef {{id?: string, slot?: number, src: string, dst: string, amt: number, bi: number, curve: number, aux: string, inv: number,
+ *   byp: number, out: number, rise: number, fall: number, slink: number}} Row  a canvas row (id, dst '<dev>:<param>', src canvas id)
+ *   or a preset row (slot, dst the param id, src native)
+ * @typedef {string | {preset: string, slot: number}} Key  what edit / remove get: a row id, or a preset row's {preset: devId, slot}
+ * @typedef {{
+ *   doc: Document, layer?: HTMLElement,
+ *   descs: (dev: string) => Desc[], sources: (dev?: string) => Array<{id: string, label: string, scope?: string, group?: string}>,
+ *   rowsOf: (dev?: string) => Row[], presetRows: (dev: string) => Row[],
+ *   budget: (dev: string) => {preset: number, canvas: number, left: string[] | number, max: number},
+ *   edit: (key: Key, fields: object) => Row | null, remove: (key: Key) => *,
+ *   toPreset: (rowId: string) => *, fromPreset: (dev: string, slot: number) => *,
+ *   connect: (src: string, dst: string) => {ok: boolean, why?: string, code?: string, stage?: string},
+ *   select?: (id: string | null) => void, notice: (text: string) => void, labelOf?: (id: string) => string,
+ *   step: (label: string) => void, confirm?: (text: string) => boolean, row?: (id: string) => Row | null,
+ * }} ModHost  rowsOf() with no device → every canvas row of the track (the inspector finds a bare row id there); labelOf gets
+ *   canvas-form ids: a source ('wheel', 've.out'), a knob ('<dev>:<param>') or a device ('i2' → "Serum 1")
+ */
+
+/** @param {ModHost} host */
+export function createModLayer(host) {
+  const H = host || {};
+  const call = (fn, ...a) => { try { return typeof H[fn] === 'function' ? H[fn](...a) : undefined; } catch (err) { console.error(err); return undefined; } };
+  const D = () => H.doc || globalThis.document;
+  const mk = (tag, cls, txt) => { const e = D().createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+  const button = (cls, txt, act, fn) => {
+    const b = mk('button', cls, txt);
+    b.type = 'button';
+    if (act) b.setAttribute('data-act', act);
+    b.addEventListener('click', e => { if (e && e.stopPropagation) e.stopPropagation(); fn(e); });
+    return b;
+  };
+  const layerOf = () => H.layer || D().body;
+  const notice = t => { if (t) call('notice', t); };
+  // one History step per gesture; the open Mod list follows (amounts, bypass, rows gone or moved)
+  const step = label => { call('step', label); syncList(); };
+
+  /* ---------------------------------------------------------------- labels, rows, budgets */
+  const label = id => { const t = call('labelOf', id); return t ? String(t) : ''; };
+  const devName = dev => label(dev) || dev;
+  const srcName = src => label(src) || SRC_LABEL[src] || src;
+  const knobName = (dev, pid) => {
+    const t = label(dev + ':' + pid);
+    if (t) return t;
+    const d = (call('descs', dev) || []).find(x => x && x.id === pid);
+    return d && d.label ? String(d.label) : pid;
+  };
+  const splitDst = dst => { const i = String(dst || '').indexOf(':'); return i < 0 ? ['', String(dst || '')] : [dst.slice(0, i), dst.slice(i + 1)]; };
+  // a target → { key (what the host gets), dev, preset (bool), id | slot }
+  function targetOf(t) {
+    if (typeof t === 'string' && t) return { key: t, id: t, dev: null, preset: false };
+    if (isObj(t) && typeof t.preset === 'string' && Number.isInteger(t.slot)) return { key: { preset: t.preset, slot: t.slot }, dev: t.preset, slot: t.slot, preset: true };
+    if (isObj(t) && typeof t.id === 'string') return { key: t.id, id: t.id, dev: typeof t.dev === 'string' ? t.dev : null, preset: false };
+    return null;
+  }
+  // the row as it is now (null: gone); a canvas row's device comes from its dst
+  function readRow(T) {
+    if (T.preset) { const r = (call('presetRows', T.dev) || []).find(x => isObj(x) && x.slot === T.slot); return r ? Object.assign({}, r) : null; }
+    let r = typeof H.row === 'function' ? call('row', T.id) : null;
+    if (!isObj(r)) r = (call('rowsOf', T.dev || undefined) || []).find(x => isObj(x) && x.id === T.id) || null;
+    if (!r) return null;
+    if (!T.dev) T.dev = splitDst(r.dst)[0] || null;
+    return Object.assign({}, r);
+  }
+  // { used, max, left: Set of row ids not compiled, full } — budget.left an id list, or a count: the last canvas rows in
+  // track.mods order are the ones that found no slot (injectMods fills first-come)
+  function budgetOf(dev, rows) {
+    const b = call('budget', dev) || {}, max = num(b.max, MAX_ROWS);
+    const used = num(b.preset, 0) + num(b.canvas, 0);
+    let left = new Set();
+    if (Array.isArray(b.left)) left = new Set(b.left.map(String));
+    else if (num(b.left, 0) > 0) { const rs = rows || call('rowsOf', dev) || []; left = new Set(rs.slice(Math.max(0, rs.length - b.left)).map(r => r.id)); }
+    return { used, max, left, full: used >= max || left.size > 0 };
+  }
+  const budgetText = B => B.used + '/' + B.max + (B.left.size ? ' · ' + B.left.size + ' not compiled' : '');
+  const srcOfRow = (R, preset) => preset ? (CANVAS[R.src] || R.src) : R.src;
+  const pidOfRow = (R, preset) => preset ? String(R.dst) : splitDst(R.dst)[1];
+  const lineOf = (R, preset, dev) => srcName(srcOfRow(R, preset)) + ' → ' + knobName(dev, pidOfRow(R, preset)) + ' · ' + pct(R.amt) + (R.byp ? ' · bypassed' : '');
+
+  /* ---------------------------------------------------------------- the popover shell (inspector, parameter list) */
+  let P = null; // { box, kind, offs, widgets, sync, T? }
+  const inPopupList = n => { for (; n && n.nodeType === 1; n = n.parentNode) if (n.classList && (n.classList.contains('wk-pop') || n.classList.contains('wk-ctx'))) return true; return false; };
+  function popover(kind, aria, x, y) {
+    closePop();
+    const d = D(), box = mk('div', 'cv-ml-pop');
+    box.setAttribute('data-kind', kind);
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-label', aria);
+    box.tabIndex = -1;
+    const prev = d.activeElement || null;
+    const onDown = e => { const t = e.target; if (P && P.box === box && !box.contains(t) && !inPopupList(t)) closePop(); };
+    const onKey = e => {
+      if (e.key !== 'Escape') return;
+      if (e.preventDefault) e.preventDefault();
+      if (e.stopPropagation) e.stopPropagation();
+      closePop(true);
+    };
+    // Escape with the focus nowhere (the body): the box's own handler has not seen it
+    const onDocKey = e => { if (e.key === 'Escape' && (e.target === d.body || e.target === d.documentElement)) onKey(e); };
+    d.addEventListener('pointerdown', onDown, { capture: true, passive: true });
+    d.addEventListener('keydown', onDocKey);
+    box.addEventListener('keydown', onKey);
+    const tOff = wk.addTransient(() => closePop());
+    P = { box, kind, widgets: [], sync: null, prev,
+      off() { d.removeEventListener('pointerdown', onDown, { capture: true, passive: true }); d.removeEventListener('keydown', onDocKey); box.removeEventListener('keydown', onKey); tOff(); } };
+    return P;
+  }
+  // after the content is in: fixed at (x, y) client px, kept inside the window (flips above y when it would run off the bottom)
+  function place(box, x, y) {
+    const d = D(), win = d.defaultView || globalThis, vw = win.innerWidth || 1024, vh = win.innerHeight || 768;
+    box.style.left = '0px'; box.style.top = '0px';
+    layerOf().appendChild(box);
+    const r = box.getBoundingClientRect(), w = r.width || 340, h = r.height || 0;
+    const px = num(x, (vw - w) / 2), py = num(y, vh / 3);
+    let top = py;
+    if (top + h > vh - 8) top = py - h - 8 >= 8 ? py - h - 8 : Math.max(8, vh - 8 - h);
+    box.style.left = Math.round(clamp(px, 8, Math.max(8, vw - 8 - w))) + 'px';
+    box.style.top = Math.round(Math.max(8, top)) + 'px';
+  }
+  function closePop(focusBack) {
+    if (!P) return false;
+    const p = P;
+    P = null;
+    p.off();
+    for (const w of p.widgets) { try { w.destroy(); } catch (err) { /* gone */ } }
+    p.box.remove();
+    if (focusBack && p.prev && p.prev.focus && p.prev !== D().body) { try { p.prev.focus({ preventScroll: true }); } catch (err) { /* gone */ } }
+    return true;
+  }
+  const head = (title, tags, budget) => {
+    const h = mk('div', 'cv-ml-h'), t = mk('span', 'cv-ml-t', title);
+    t.title = title;
+    h.append(t);
+    for (const [k, txt] of tags) { const g = mk('span', 'cv-ml-tag', txt); g.setAttribute('data-tag', k); h.append(g); }
+    let b = null;
+    if (budget) { b = mk('span', 'cv-ml-b'); h.append(b); }
+    const x = button('cv-ml-x', '✕', 'close', () => closePop(true));
+    x.setAttribute('aria-label', 'Close');
+    x.title = 'Close (Esc)';
+    h.append(x);
+    return { el: h, t, b };
+  };
+  const sec = (lab, ...kids) => { const s = mk('div', 'cv-ml-sec'); if (lab) s.append(mk('span', 'cv-ml-lab', lab)); s.append(...kids); return s; };
+
+  /* ---------------------------------------------------------------- the inspector */
+  /**
+   * Edit one modulation row. target: a canvas row id ('r3'), {id, dev} (the Mod list's: rowsOf(dev) finds it), or a preset
+   * row {preset: devId, slot}. x, y: client px of its top-left (the badge, the list line). → false when the row is unknown.
+   */
+  function openInspector(target, x, y) {
+    const T = targetOf(target);
+    if (!T) return false;
+    let R = readRow(T);
+    if (!R || !T.dev) return false;
+    const dev = T.dev, pre = T.preset, src = srcOfRow(R, pre), pid = pidOfRow(R, pre);
+    const title = srcName(src) + ' → ' + knobName(dev, pid);
+    const p = popover('insp', 'Modulation: ' + title, x, y);
+    const box = p.box, W = p.widgets;
+    const tags = pre ? [['preset', 'preset']] : [];
+    const hd = head(title, tags, true);
+    const leftTag = mk('span', 'cv-ml-tag', 'not compiled: matrix full');
+    leftTag.setAttribute('data-tag', 'left');
+    hd.el.insertBefore(leftTag, hd.b);
+    box.append(hd.el);
+    const snapKey = () => FIELDS.map(k => R[k]).join('|');
+    function edit(fields) {
+      const got = call('edit', T.key, fields);
+      R = Object.assign({}, R, fields, isObj(got) ? got : null);
+      refresh();
+    }
+    const changes = f => Object.keys(f).some(k => R[k] !== f[k]);
+    // a widget's set(n, phase): live edits per move, one step at the gesture's end when the row changed ('set': a key, a
+    // typed value, the wheel, a toggle — a gesture of its own)
+    const live = (lab, toFields) => {
+      let g0 = null;
+      return (n, ph) => {
+        if (ph === 'start') { g0 = snapKey(); return; }
+        const f = toFields(n), ch = changes(f);
+        if (ch) edit(f);
+        if (ph === 'set') { if (ch) step(lab); }
+        else if (ph === 'end') { const was = g0; g0 = null; if (was !== null && was !== snapKey()) step(lab); }
+      };
+    };
+    const w = o => { W.push(o); return o; };
+    // amount: the bipolar slider and its number box (1 % steps; typed "25", "-40%")
+    const amtN = () => (num(R.amt, 0) + 1) / 2, amtF = n => ({ amt: r4(clamp(2 * n - 1, -1, 1)) });
+    const amtParse = t => { const a = parsePct(t); return a == null ? null : (a + 1) / 2; };
+    const amt = w(wk.slider({ label: 'Amount', get: amtN, def: 0.5, bipolar: true, orient: 'h', fmt: n => pct(2 * n - 1), parse: amtParse, set: live('Mod amount', amtF) }));
+    const amtB = w(wk.numBox({ label: 'Amount %', steps: 200, get: amtN, def: 0.5, fmt: n => pct(2 * n - 1), parse: amtParse, set: live('Mod amount', amtF) }));
+    const sA = sec('', amt.el, amtB.el);
+    sA.classList.add('cv-ml-amt');
+    // bipolar, bypass
+    const tog = (lab, k, stepLab, extra) => w(wk.toggle({ label: lab, kind: 'led', get: () => (R[k] ? 1 : 0), disabled: extra && extra.disabled,
+      set: v => { const f = extra && extra.fields ? extra.fields(v) : { [k]: v ? 1 : 0 }; if (changes(f)) { edit(f); step(stepLab); } } }));
+    const bi = tog('Bipolar', 'bi', 'Mod polarity'), byp = tog('Bypass', 'byp', 'Mod bypass');
+    const tg = mk('div', 'cv-ml-tg');
+    tg.append(bi.el, byp.el);
+    // curve (the matrix's curve, −1…1), output (0…1)
+    const curve = w(wk.slider({ label: 'Curve', get: () => (num(R.curve, 0) + 1) / 2, def: 0.5, bipolar: true, orient: 'h', fmt: n => pct(2 * n - 1), parse: amtParse,
+      set: live('Mod curve', n => ({ curve: r4(clamp(2 * n - 1, -1, 1)) })) }));
+    const out = w(wk.slider({ label: 'Output', get: () => num(R.out, 1), def: 1, bipolar: false, orient: 'h', fmt: n => Math.round(n * 100) + '%', parse: t => parsePct(t, true),
+      set: live('Mod output', n => ({ out: r4(clamp(n, 0, 1)) })) }));
+    // aux source (Serum-native ids normRow accepts) and aux invert
+    const auxItems = () => {
+      const seen = new Set(['']), list = [{ v: '', label: '(none)' }];
+      for (const s of call('sources', dev) || []) {
+        if (!isObj(s)) continue;
+        const id = NATIVE[s.id] || s.id;
+        if (typeof id !== 'string' || seen.has(id) || !Object.prototype.hasOwnProperty.call(SRC_INDEX, id)) continue;
+        seen.add(id);
+        list.push(Object.assign({ v: id, label: String(s.label || srcName(CANVAS[id] || id)) }, s.group ? { group: String(s.group) } : null));
+      }
+      if (R.aux && !seen.has(R.aux)) list.push({ v: R.aux, label: srcName(CANVAS[R.aux] || R.aux) });
+      return list;
+    };
+    const aux = w(wk.menu({ label: 'Aux source', items: auxItems, get: () => R.aux || '', arrows: false, wheel: false,
+      set: v => { const f = { aux: String(v || '') }; if (changes(f)) { edit(f); step('Mod aux'); } } }));
+    const inv = tog('Invert aux', 'inv', 'Mod aux invert', { disabled: () => !R.aux });
+    // slew: rise, fall (= rise while linked), link
+    const rise = w(wk.slider({ label: 'Rise', get: () => num(R.rise, 0), def: 0, orient: 'h', fmt: n => Math.round(n * 100) + '%', parse: t => parsePct(t, true),
+      set: live('Mod slew', n => R.slink ? { rise: r4(n), fall: r4(n) } : { rise: r4(n) }) }));
+    const fall = w(wk.slider({ label: 'Fall', get: () => num(R.slink ? R.rise : R.fall, 0), def: 0, orient: 'h', fmt: n => Math.round(n * 100) + '%', parse: t => parsePct(t, true),
+      disabled: () => !!R.slink, set: live('Mod slew', n => ({ fall: r4(n) })) }));
+    const link = tog('Link', 'slink', 'Mod slew link', { fields: v => v ? { slink: 1, fall: num(R.rise, 0) } : { slink: 0 } });
+    // Save with preset (canvas) / Keep on canvas (preset); Disconnect
+    const foot = mk('div', 'cv-ml-foot'), why = mk('span', 'cv-ml-why');
+    const move = pre
+      ? button('cv-ml-btn', 'Keep on canvas', 'keep', () => moveRow())
+      : button('cv-ml-btn', 'Save with preset', 'save', () => moveRow());
+    move.title = pre ? 'Move this row out of the preset onto the canvas (a cable of this track)' : 'Move this cable into the Serum\'s preset (its matrix)';
+    const disc = button('cv-ml-btn', 'Disconnect', 'disconnect', () => {
+      call('remove', T.key);
+      closePop();
+      step('Disconnect');
+    });
+    foot.append(move, disc, why);
+    function moveRow() {
+      if (move.disabled) return;
+      const res = pre ? call('fromPreset', dev, T.slot) : call('toPreset', T.id);
+      if (res === false || (isObj(res) && res.ok === false)) {
+        const B = budgetOf(dev);
+        notice(isObj(res) && res.why ? res.why : refusal(isObj(res) && res.code ? res.code : 'full', { dev: devName(dev), used: B.used, max: B.max }));
+        return;
+      }
+      closePop();
+      step(pre ? 'Keep on canvas' : 'Save with preset');
+    }
+    box.append(sA, tg, sec('', curve.el), sec('', out.el), sec('', aux.el, inv.el), sec('', rise.el), sec('', fall.el, link.el), foot);
+    function refresh() {
+      for (const x of W) x.update();
+      const B = budgetOf(dev), left = !pre && B.left.has(T.id);
+      hd.b.textContent = B.used + '/' + B.max;
+      hd.b.title = devName(dev) + '\'s mod rows: ' + B.used + ' of ' + B.max + ' used' + (B.left.size ? ', ' + B.left.size + ' not compiled' : '');
+      if (B.full) hd.b.setAttribute('data-full', ''); else hd.b.removeAttribute('data-full');
+      leftTag.hidden = !left;
+      // Save with preset needs a free matrix slot (a row that found none has no slot to move into) and a performance source
+      let no = '';
+      if (!pre && !NATIVE[R.src]) no = 'Only Mod Wheel, Velocity, Aftertouch and Bend cables can be saved with a preset';
+      else if (!pre && (left || B.used >= B.max)) no = refusal('full', { dev: devName(dev), used: B.used, max: B.max });
+      move.disabled = !!no;
+      why.textContent = no;
+      why.hidden = !no;
+      if (no) move.title = no;
+    }
+    p.sync = () => { const r = readRow(T); if (!r) { closePop(); return; } R = r; refresh(); };
+    refresh();
+    place(box, x, y);
+    if (!pre) call('select', T.id);
+    try { amt.focus(); } catch (err) { /* no focus */ }
+    return true;
+  }
+
+  /* ---------------------------------------------------------------- the parameter list */
+  /**
+   * The destinations of `dev` for a cable from `src` (a canvas source id), by the descs' groups; nomod entries greyed (a tap
+   * says why); a pick → host.connect(src, '<dev>:<id>'), one step "Modulate <knob> with <source>", or the refusal as a notice.
+   */
+  function openDestList(src, dev, x, y) {
+    const list = (call('descs', dev) || []).filter(x => isObj(x) && typeof x.id === 'string');
+    const groups = new Map();
+    for (const d of list) { const g = d.group ? String(d.group) : 'Other'; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(d); }
+    const sn = srcName(src), title = 'Modulate ' + devName(dev) + ' with ' + sn;
+    const p = popover('dest', title, x, y), box = p.box;
+    const hd = head(title, [], true), B = budgetOf(dev);
+    hd.b.textContent = B.used + '/' + B.max;
+    if (B.full) hd.b.setAttribute('data-full', '');
+    const view = mk('div', 'cv-ml-grps');
+    box.append(hd.el, view);
+    const pick = d => {
+      if (d.nomod) { notice(refusal('nomod')); return; }
+      const knob = d.label ? String(d.label) : d.id, r = call('connect', src, dev + ':' + d.id);
+      if (isObj(r) && r.ok) { closePop(); step('Modulate ' + knob + ' with ' + sn); return; }
+      notice(isObj(r) && r.why ? String(r.why) : refusal(isObj(r) ? r.code || (r.stage ? 'stage' : '') : '', { src: sn, dst: knob, dev: devName(dev), stage: isObj(r) ? r.stage : '', used: B.used, max: B.max }));
+    };
+    const showItems = (g, back) => {
+      view.textContent = '';
+      view.className = 'cv-ml-items';
+      if (back) {
+        const b = button('cv-ml-back', '‹ ' + g, 'back', () => showGroups());
+        b.setAttribute('aria-label', 'Back to the groups');
+        view.append(b);
+      }
+      for (const d of groups.get(g)) {
+        const it = button('cv-ml-item', null, null, () => pick(d));
+        it.append(mk('span', null, d.label ? String(d.label) : d.id));
+        it.setAttribute('data-dest', d.id);
+        if (d.nomod) { it.setAttribute('aria-disabled', 'true'); it.title = refusal('nomod'); }
+        view.append(it);
+      }
+      focusFirst();
+    };
+    const showGroups = () => {
+      view.textContent = '';
+      view.className = 'cv-ml-grps';
+      for (const [g, ds] of groups) {
+        const b = button('cv-ml-grp', null, null, () => showItems(g, true));
+        b.setAttribute('data-group', g);
+        b.append(mk('span', null, g), mk('span', null, String(ds.length)));
+        view.append(b);
+      }
+      focusFirst();
+    };
+    const focusFirst = () => { const f = view.children[0]; if (f && P === p) { try { f.focus({ preventScroll: true }); } catch (err) { /* no focus */ } } };
+    if (!groups.size) view.append(mk('p', 'cv-ml-empty', devName(dev) + ' has no knobs to modulate'));
+    else if (groups.size === 1) showItems(groups.keys().next().value, false);
+    else showGroups();
+    p.sync = () => {};
+    place(box, x, y);
+    focusFirst();
+    return true;
+  }
+
+  /* ---------------------------------------------------------------- the Mod list */
+  let L = null; // { S, body, title, devs }
+  /**
+   * The track's Mod list: a sheet, one section per destination device (devs: ids or {id, label}) — its budget "n/64",
+   * its canvas rows then its preset rows ("<source> → <knob> · amount · bypassed", tags "preset" / "not compiled: matrix
+   * full"); a tap → the inspector; Disconnect all (canvas rows; confirmed) per device.
+   */
+  function openList(trackLabel, devs) {
+    closeList();
+    const body = mk('div', 'cv-ml-list');
+    const S = sheet({ title: 'Modulation · ' + (trackLabel || 'Track'), body, layer: H.layer, doc: D(), onClose: () => { if (L && L.S === S) { L = null; closePop(); } } });
+    L = { S, body, devs: (devs || []).map(d => typeof d === 'string' ? { id: d, label: '' } : isObj(d) && typeof d.id === 'string' ? { id: d.id, label: d.label ? String(d.label) : '' } : null).filter(Boolean) };
+    renderList();
+    return true;
+  }
+  function renderList() {
+    if (!L) return;
+    const body = L.body;
+    body.textContent = '';
+    let n = 0;
+    for (const { id: dev, label: lab } of L.devs) {
+      const rows = (call('rowsOf', dev) || []).filter(isObj), pres = (call('presetRows', dev) || []).filter(isObj);
+      const B = budgetOf(dev, rows), name = lab || devName(dev);
+      const grp = mk('section', 'cv-ml-dev'), dh = mk('div', 'cv-ml-dh'), b = mk('span', 'cv-ml-b', budgetText(B));
+      grp.setAttribute('data-dev', dev);
+      grp.setAttribute('aria-label', name + ', ' + B.used + ' of ' + B.max + ' mod rows');
+      if (B.full) b.setAttribute('data-full', '');
+      dh.append(mk('span', null, name), b);
+      if (rows.length) {
+        const all = button('cv-ml-btn', 'Disconnect all', 'all', () => {
+          const k = rows.length, q = 'Disconnect ' + k + ' canvas cable' + (k === 1 ? '' : 's') + ' from ' + name + '? Rows saved with the preset stay.';
+          const ok = typeof H.confirm === 'function' ? call('confirm', q) : typeof globalThis.confirm === 'function' ? globalThis.confirm(q) : true;
+          if (!ok) return;
+          for (const r of rows) call('remove', r.id);
+          closePop();
+          step('Disconnect all');
+        });
+        dh.append(all);
+      }
+      grp.append(dh);
+      const line = (R, pre) => {
+        const t = lineOf(R, pre, dev), left = !pre && B.left.has(R.id);
+        const el = button('cv-ml-line', null, null, () => {
+          const r = el.getBoundingClientRect();
+          openInspector(pre ? { preset: dev, slot: R.slot } : { id: R.id, dev }, r.left, r.bottom + 4);
+        });
+        el.append(mk('span', null, t));
+        if (pre) { const g = mk('span', 'cv-ml-tag', 'preset'); g.setAttribute('data-tag', 'preset'); el.append(g); }
+        if (left) { const g = mk('span', 'cv-ml-tag', 'not compiled: matrix full'); g.setAttribute('data-tag', 'left'); el.append(g); }
+        if (R.byp) el.setAttribute('data-byp', '');
+        el.setAttribute(pre ? 'data-slot' : 'data-row', pre ? String(R.slot) : R.id);
+        el.setAttribute('aria-label', t + (pre ? ', saved with the preset' : '') + (left ? ', not compiled: matrix full' : ''));
+        grp.append(el);
+        n++;
+      };
+      for (const R of rows) line(R, false);
+      for (const R of pres) line(R, true);
+      if (!rows.length && !pres.length) grp.append(mk('p', 'cv-ml-empty', 'No modulation'));
+      body.append(grp);
+    }
+    if (!n && !L.devs.length) body.append(mk('p', 'cv-ml-empty', 'No modulation cables on this track yet. Drag a modulator\'s jack onto a Serum knob.'));
+  }
+  const syncList = () => { if (L && L.S.isOpen()) renderList(); };
+  function closeList() { if (!L) return false; const l = L; L = null; l.S.close(); return true; }
+
+  return {
+    openInspector, openDestList, openList,
+    /** Close everything (the popover and the Mod list). */
+    close() { const a = closePop(), b = closeList(); return a || b; },
+    isOpen: () => !!P || !!(L && L.S.isOpen()),
+    /** Re-read the host after an outside change (undo / redo, a preset load): the open inspector follows its row (closes
+     * when it is gone), the Mod list re-renders. */
+    sync() { if (P && P.sync) P.sync(); syncList(); },
+    refusal, STYLE,
+  };
+}
