@@ -3,11 +3,14 @@
 // a mipmapped base texture at L0 = min(dpr, 3) device px per world px (k ≤ 1) and, above k = 1, a finer window of the
 // visible part — both composited by cv-gl under #world, which draws FACES.quads(rectOf, cam) every frame, so nothing of a
 // face re-rasters at a zoom end (G1) and a face is never sampled below 1 device px per on-screen px (G2).
-// Modes: 'gl' (the textures; the SVG visibility: hidden, no .hw-bm), 'dom' (the 1g faceTier: the 2D fallback, a folded or an
-// overlapping module — §3.5), 'svg' (the SVG: at home / the base pending; the tier itself shows the SVG at k ≥ 1 on the 2D
-// path). Rules: no layout read in a burst (the deco's offset measured at mount / refresh / a rest), one paint + upload per
-// animation frame at a rest, nearest the viewport centre first, cancelled by a burst; textures under FACE_BUDGET_BYTES,
-// freed on unmount (wk.releaseCanvases through a 0 × 0 sentinel canvas), context loss (FACES.lost) and destroy (G6).
+// Modes: 'gl' (the textures; the SVG visibility: hidden, no .hw-bm; a folded module keeps it and draws no quad), 'dom' (the 1g
+// faceTier: the 2D fallback, a module intersecting any other world item — §3.5; from 'gl' below 100 % only once the tier's
+// bitmap shows: the quad stays until then, never the raw SVG), 'svg' (the SVG: at home / the base pending; the tier itself
+// shows the SVG at k ≥ 1). data-cv-face on the module = the mode. Rules: no layout read in a burst (the deco's offset measured
+// at mount / refresh / a rest), one paint + upload per animation frame at a rest, nearest the viewport centre first, none in a
+// burst; one onChange a frame; textures under FACE_BUDGET_BYTES, freed on unmount (wk.releaseCanvases through a 0 × 0 sentinel
+// canvas, at once), context loss (FACES.lost) and destroy (G6). The quads sit on the module's own left / top (+ a drag's
+// translate3d) and carry the body's dim (alpha / gray: [data-off], a mod drag's .cv-nodest).
 // Plain ES module; node imports it (tests: a fake gl of the §2 surface, a fake world of rectOf / on / onScreen / ids / cam).
 import * as wk from './wk.js?v=9';
 import { K_MAX, visibleRect, intersects, toWorld } from './cv-world.js?v=9';
@@ -25,8 +28,9 @@ export const BASE_L_MAX = 3, BASE_MAX_PX = 16e6;
 export const WIN_MAX_PX = 16e6, TEX_MAX_DIM = 8192;
 /** The module body's bottom radii (world px; style.css .cv-body) the quads are clipped to. */
 export const BODY_R = 12;
-/** A powered-off module's body is drawn at this opacity (style.css [data-off] > .cv-body); the quads take it as alpha. */
-export const OFF_ALPHA = 0.45;
+/** A powered-off module's body is drawn at this opacity and grayscale (style.css [data-off] > .cv-body); the quads take them as
+ * alpha / gray. A mod-cable drag (#world[data-cv-patching="mod"]) dims a module without a destination (.cv-nodest) harder. */
+export const OFF_ALPHA = 0.45, OFF_GRAY = 0.7, NODEST_ALPHA = 0.35, NODEST_GRAY = 0.8;
 
 const fin = v => typeof v === 'number' && isFinite(v);
 const msNow = () => (globalThis.performance && typeof globalThis.performance.now === 'function' ? globalThis.performance.now() : Date.now());
@@ -118,8 +122,13 @@ const faces = []; // registration order (the z tie-break)
 let seq = 0, GL = null, WD = null, HOOK = null, ATT = null, CAM = null, VP = { w: 0, h: 0 }, bytes = 0, scratch = null, LOST = false, BURST = false;
 const subs = new Set(), S = { paints: 0, paintMs: 0, paintMax: 0 };
 let Q = [], pumping = false, pumpGen = 0, QUAD = []; // the paint queue (one job per frame); the reused quad list
-const emit = () => { for (const f of [...subs]) { try { f(); } catch (err) { console.error(err); } } };
+let ORD = [], ordDirty = true; // the drawn faces in order (z, then registration): re-sorted on a registration / mode / z / fold change only
+let WEL = null, WMO = null; // #world (the deco's [data-cv-world]) and the observer of its data-cv-patching
 const raf = f => (HOOK && typeof HOOK.raf === 'function' ? HOOK.raf(f) : wk.frame(f));
+// onChange: one call a frame however many textures land / windows go / modes change in a task (the world draws per call)
+let emDue = false;
+const fire = () => { for (const f of [...subs]) { try { f(); } catch (err) { console.error(err); } } };
+const emit = () => { if (emDue) return; emDue = true; raf(() => { emDue = false; fire(); }); };
 const now = () => (HOOK && typeof HOOK.now === 'function' ? HOOK.now() : msNow());
 const dprOf = F => Math.max(1, +((F.env && F.env.win) || F.wnd || {}).devicePixelRatio || 1);
 function size() { // the viewport (CSS px): a layout read at a rest only
@@ -131,11 +140,24 @@ function size() { // the viewport (CSS px): a layout read at a rest only
   try { const r = v.getBoundingClientRect(); return { w: +r.width || 0, h: +r.height || 0 }; } catch (err) { return { w, h }; }
 }
 const cam = () => CAM || (WD && WD.cam) || { tx: 0, ty: 0, k: 1 };
-// mounted and showing: connected, in the world, no [hidden] ancestor (#cvParts at home) — no layout read (as the tier)
-function live(deco) {
-  if (deco.isConnected === false) return false;
-  for (let n = deco; n && n.nodeType === 1; n = n.parentNode) { if (n.hasAttribute && n.hasAttribute('hidden')) return false; if (n.hasAttribute && n.hasAttribute('data-cv-world')) return true; }
-  return false;
+// mounted and showing: connected, in the world, no [hidden] ancestor (#cvParts at home) — no layout read (as the tier);
+// the world element, or null
+function worldOf(deco) {
+  if (deco.isConnected === false) return null;
+  for (let n = deco; n && n.nodeType === 1; n = n.parentNode) { if (n.hasAttribute && n.hasAttribute('hidden')) return null; if (n.hasAttribute && n.hasAttribute('data-cv-world')) return n; }
+  return null;
+}
+const patching = () => !!(WEL && typeof WEL.getAttribute === 'function' && WEL.getAttribute('data-cv-patching') === 'mod'); // (a getAttribute: no layout)
+function watchWorld(el, F) { // #world's data-cv-patching (a mod-cable drag): every face's dim re-read
+  if (WEL === el) return;
+  if (WMO) { try { WMO.disconnect(); } catch (err) { /* gone */ } WMO = null; }
+  WEL = el;
+  const MO = ((F.env && F.env.win) || F.wnd || globalThis).MutationObserver || globalThis.MutationObserver;
+  if (!el || typeof MO !== 'function') return;
+  try {
+    WMO = new MO(() => { let ch = false; for (const G of faces) if (!G.dead && G.el && attrs(G).vis) ch = true; if (ch) emit(); });
+    WMO.observe(el, { attributes: true, attributeFilter: ['data-cv-patching'] });
+  } catch (err) { WMO = null; }
 }
 function modEl(deco) { for (let n = deco; n && n.nodeType === 1; n = n.parentNode) if (n.hasAttribute && n.hasAttribute('data-cv-mod')) return n; return null; }
 const rectOf = id => { if (!WD || typeof WD.rectOf !== 'function') return null; const r = WD.rectOf(id); return r && fin(r.x) && fin(r.y) && fin(r.w) && fin(r.h) ? r : null; };
@@ -146,27 +168,32 @@ function dist2(F) { // the face's centre to the viewport's, world px²; off-scre
   const c = cam(), p = toWorld(c, VP.w / 2, VP.h / 2), dx = R.x + R.w / 2 - p.x, dy = R.y + R.h / 2 - p.y;
   return dx * dx + dy * dy + (onScreen(F) ? 0 : 1e18);
 }
-// the module element's attributes the quads depend on (no layout read): z, fold, power, the live drag offset, the position
+// the module element's attributes the quads depend on (no layout read): z, fold, power / the patching dim (alpha, gray), the
+// live drag offset (translate3d), the committed position (left / top: the world's cached rect lags a drag, cv-module's rect()
+// leads it — the style is what the module shows)
 function attrs(F) {
   const el = F.el, st = (el && el.style) || {}, has = k => !!(el && el.hasAttribute && el.hasAttribute(k));
-  const z = parseFloat(st.zIndex), m = /translate3d\(\s*([-+\d.e]+)px\s*,\s*([-+\d.e]+)px/.exec(st.transform || '');
-  const n = { z: fin(z) ? z : 0, folded: has('data-cv-fold'), alpha: has('data-off') ? OFF_ALPHA : 1, dx: m ? +m[1] || 0 : 0, dy: m ? +m[2] || 0 : 0, pos: (st.left || '') + '|' + (st.top || '') };
-  const o = F.a, moved = o && o.pos !== n.pos, vis = !o || o.z !== n.z || o.alpha !== n.alpha || o.dx !== n.dx || o.dy !== n.dy, fold = !o || o.folded !== n.folded;
+  const z = parseFloat(st.zIndex), m = /translate3d\(\s*([-+\d.e]+)px\s*,\s*([-+\d.e]+)px/.exec(st.transform || ''), lx = parseFloat(st.left), ly = parseFloat(st.top);
+  const off = has('data-off'), nd = patching() && !!(el && el.classList && el.classList.contains('cv-nodest'));
+  const n = { z: fin(z) ? z : 0, folded: has('data-cv-fold'), alpha: nd ? NODEST_ALPHA : off ? OFF_ALPHA : 1, gray: nd ? NODEST_GRAY : off ? OFF_GRAY : 0, dx: m ? +m[1] || 0 : 0, dy: m ? +m[2] || 0 : 0, x: fin(lx) ? lx : null, y: fin(ly) ? ly : null };
+  const o = F.a, moved = !!o && (o.x !== n.x || o.y !== n.y), drag = !!o && (o.dx !== n.dx || o.dy !== n.dy), fold = !o || o.folded !== n.folded;
+  const vis = !o || o.z !== n.z || o.alpha !== n.alpha || o.gray !== n.gray || drag;
+  if (!o || o.z !== n.z || fold) ordDirty = true;
   F.a = n;
-  return { moved, vis, fold };
+  return { moved, drag, vis, fold };
 }
 function observe(F, el) {
   if (F.mo) { try { F.mo.disconnect(); } catch (err) { /* gone */ } F.mo = null; }
   const MO = ((F.env && F.env.win) || F.wnd || globalThis).MutationObserver || globalThis.MutationObserver;
   if (!el || typeof MO !== 'function') return;
   try {
-    F.mo = new MO(() => { // a drag frame (transform), a drop (left / top), z, fold, power
+    F.mo = new MO(() => { // a drag frame (transform), a drop (left / top), z, fold, power, the patching class
       if (F.dead || F.el !== el) return;
       const c = attrs(F);
-      if (c.fold) sync(F, 'attrs'); else if (c.vis) emit();
-      if (c.moved) recheckLater();
+      if (c.fold) sync(F, 'attrs'); else if (c.vis && !BURST) emit(); // (in a camera burst the world draws every frame anyway)
+      if (c.moved || c.drag) recheckLater(); // (the overlap rule follows the drag live)
     });
-    F.mo.observe(el, { attributes: true, attributeFilter: ['style', 'data-cv-fold', 'data-off'] });
+    F.mo.observe(el, { attributes: true, attributeFilter: ['style', 'class', 'data-cv-fold', 'data-off'] });
   } catch (err) { F.mo = null; }
 }
 let rcDue = false;
@@ -175,6 +202,7 @@ function free(F, which) {
   const t = F[which];
   if (!t) return;
   F[which] = null;
+  if (which === 'base') ordDirty = true;
   bytes -= t.tex.bytes || 0;
   if (GL && typeof GL.free === 'function') { try { GL.free(t.tex); } catch (err) { /* dead context */ } }
   if (bytes < 0) bytes = 0;
@@ -183,21 +211,28 @@ function unqueue(F, kind) { Q = Q.filter(j => j.F !== F || (kind && j.kind !== k
 function setMode(F, m) {
   if (F.mode === m && F.attrEl === F.el) return false;
   const was = F.mode;
-  F.mode = m;
-  // the SVG: hidden under a GL face; shown in 'svg' and when the tier takes over from 'gl' (it hides it again once its
-  // bitmap lands; in 'dom' it owns the visibility)
-  try { if (m === 'gl') F.svg.style.visibility = 'hidden'; else if (m === 'svg' || was === 'gl') F.svg.style.visibility = ''; } catch (err) { /* inert */ }
+  F.mode = m; ordDirty = true;
+  // the SVG: hidden under a GL face; shown in 'svg' and when the tier takes over from 'gl' at k ≥ 1 (below, the tier's bitmap
+  // replaces the quad: the SVG stays hidden — never the raw vector under 1:1; in 'dom' the tier owns the visibility)
+  try { if (m === 'gl') F.svg.style.visibility = 'hidden'; else if (m === 'svg' || (was === 'gl' && !(F.tier && F.tier.shown))) F.svg.style.visibility = ''; } catch (err) { /* inert */ }
   if (F.attrEl && F.attrEl !== F.el) { try { F.attrEl.removeAttribute('data-cv-face'); } catch (err) { /* gone */ } }
   F.attrEl = F.el;
   if (F.el) { try { F.el.setAttribute('data-cv-face', m); } catch (err) { /* inert */ } }
   return true;
 }
-function tierOn(F) { if (F.tier || typeof F.mkTier !== 'function') return; try { F.tier = F.mkTier(F.deco, F.svg, F.markup, F.w, F.h, F.env); } catch (err) { console.warn('cv-face: no tier', err); F.tier = null; } }
+// the 1g tier's zoom (wk.canvasScale: the k at the last zoom end; the test env's scale): at k ≥ 1 it shows the SVG at once
+const tierK = F => { try { const s = F.env && typeof F.env.scale === 'function' ? F.env.scale() : wk.canvasScale(F.deco); return +s || 1; } catch (err) { return 1; } };
+function tierOn(F) {
+  if (F.tier || typeof F.mkTier !== 'function') return;
+  const env = Object.assign({}, F.env, { onChange: () => { if (!F.dead && F.tier) sync(F, 'tier'); } }); // (its bitmap landed / its load failed: the held quad goes)
+  try { F.tier = F.mkTier(F.deco, F.svg, F.markup, F.w, F.h, env); } catch (err) { console.warn('cv-face: no tier', err); F.tier = null; }
+}
 function tierOff(F) { if (!F.tier) return; const t = F.tier; F.tier = null; try { t.destroy(); } catch (err) { /* gone */ } }
-// the state machine: mounted? → 'gl' (attached, unfolded, no overlap, the base landed) | 'svg' (the base pending) | 'dom'
+// the state machine: mounted? → 'gl' (attached, no overlap (or folded: nothing of the body shows), the base landed) | 'svg'
+// (the base pending) | 'dom' (the tier; from 'gl' below 100 % only once its bitmap shows: the quad stays until then)
 function sync(F, why) {
   if (F.dead) return;
-  const mid = F.moduleOf(), el = mid != null ? modEl(F.deco) : null, mounted = mid != null && !!el && live(F.deco);
+  const mid = F.moduleOf(), el = mid != null ? modEl(F.deco) : null, wel = mid != null && el ? worldOf(F.deco) : null, mounted = !!wel;
   let ch = false;
   if (!mounted) { // at home or detached: the textures go, the tier too; the SVG shows (hidden with its ancestors)
     if (F.el) { observe(F, null); F.el = null; F.a = null; }
@@ -208,6 +243,7 @@ function sync(F, why) {
     if (ch) emit();
     return;
   }
+  if (WEL !== wel) watchWorld(wel, F);
   if (F.el !== el) { F.el = el; F.a = null; observe(F, el); F.bg = null; why = 'mount'; }
   F.mid = String(mid); F.mounted = true;
   if (attrs(F).vis) ch = true;
@@ -216,14 +252,15 @@ function sync(F, why) {
     const ox = o && fin(o.x) ? o.x : 0, oy = o && fin(o.y) ? o.y : BAR_H;
     if (ox !== F.ox || oy !== F.oy) { F.ox = ox; F.oy = oy; ch = true; }
   }
-  const glOk = !!GL && !F.a.folded && !F.overlap && !F.failed;
-  if (glOk && F.base) { tierOff(F); if (setMode(F, 'gl')) ch = true; }
-  else if (glOk) { tierOff(F); if (setMode(F, 'svg')) ch = true; needBase(F); }
+  const glOk = !!GL && !F.failed && (!F.overlap || F.a.folded);
+  if (glOk && F.base) { tierOff(F); if (setMode(F, 'gl')) ch = true; if (F.a.folded && F.win) { ch = true; free(F, 'win'); unqueue(F, 'win'); } }
+  else if (glOk) { tierOff(F); if (setMode(F, 'svg')) ch = true; if (F.a.folded) unqueue(F); else needBase(F); } // (folded: the base waits for the unfold)
   else {
     if (!GL) { if (F.base || F.win) ch = true; free(F, 'base'); free(F, 'win'); unqueue(F); }
-    else if (F.a.folded) { if (F.win) ch = true; free(F, 'win'); unqueue(F, 'win'); }
-    if (setMode(F, 'dom')) ch = true;
+    else { if (F.win) ch = true; free(F, 'win'); unqueue(F, 'win'); }
     tierOn(F);
+    const hold = F.mode === 'gl' && !!F.base && !!F.tier && !F.tier.shown && !F.tier.failed && tierK(F) < 1 - 1e-6;
+    if (!hold && setMode(F, 'dom')) ch = true;
   }
   if (ch) emit();
 }
@@ -240,6 +277,7 @@ function pump() {
   raf(() => {
     if (g !== pumpGen) return; // a detach in between (its frame never ran in a test's manual queue)
     pumping = false;
+    if (BURST) return; // never a paint in a burst: the rest's plan rebuilds the queue
     const j = Q.shift();
     if (j) { try { run(j); } catch (err) { console.error(err); } }
     if (Q.length) pump(); else if (scratch) { scratch.width = 0; scratch.height = 0; } // released when the queue drains
@@ -280,8 +318,9 @@ function fail(F, err) { // no texture for this face while mounted: the 1g tier t
 function run(j) {
   const F = j.F;
   if (F.dead || !F.mounted || !GL || LOST || F.failed) return;
-  if (j.kind === 'base' && F.base) return;
-  if (!F.img) { loadImg(F, () => { if (!F.dead && F.mounted && GL && !LOST) { Q.unshift(j); pump(); } }); return; } // (this frame starts the load)
+  if (j.kind === 'base' ? !!F.base : !F.base) return; // (a window before its base: never — the base's landing plans it)
+  // (this frame starts the load; the job returns to the queue when it lands — not in a burst: the rest's plan re-adds it)
+  if (!F.img) { loadImg(F, () => { if (!F.dead && F.mounted && !F.base && GL && !LOST && !BURST) { Q.push(j); pump(); } }); return; }
   const d = dprOf(F), doc = F.doc;
   if (!F.bg) { F.bg = bgOf(F.root, (F.env && F.env.win) || F.wnd); F.bg.faceW = F.w; }
   const t0 = now();
@@ -298,7 +337,7 @@ function run(j) {
   try { tex = GL.upload(c, { mips: !win }); } catch (err) { tex = null; }
   const ms = now() - t0; S.paints++; S.paintMs += ms; S.paintMax = Math.max(S.paintMax, ms);
   if (!tex) { fail(F, 'upload failed'); return; }
-  if (win) { free(F, 'win'); F.win = { tex, x: win.x, y: win.y, w: win.w, h: win.h, L }; } else { free(F, 'base'); F.base = { tex, L }; }
+  if (win) { free(F, 'win'); F.win = { tex, x: win.x, y: win.y, w: win.w, h: win.h, L }; } else { free(F, 'base'); F.base = { tex, L }; ordDirty = true; }
   bytes += tex.bytes || 0;
   sync(F, 'paint'); // (the base landing: 'svg' → 'gl')
   emit();
@@ -329,8 +368,8 @@ function plan(c) {
     if (F.dead) continue;
     sync(F, 'plan');
     if (!F.mounted) continue;
-    const d = dprOf(F), glOk = !!GL && !F.a.folded && !F.overlap && !F.failed;
-    if (glOk && !F.base) jobs.push({ F, kind: 'base', dist: dist2(F) });
+    const d = dprOf(F), glOk = !!GL && !F.failed && !F.a.folded && !F.overlap; // (a folded face: no base, no window — its unfold brings them)
+    if (glOk && !F.base) { jobs.push({ F, kind: 'base', dist: dist2(F) }); continue; } // (its window once the base lands: run() plans again)
     const R = faceRect(F);
     if (!glOk || !R || !onScreen(F) || !(C.k > WIN_K0) || !(VP.w > 0 && VP.h > 0)) { if (F.win) { free(F, 'win'); emit(); } continue; }
     const vis = visPart(R, C, VP.w, VP.h), wr = vis ? winRect(R, C, VP.w, VP.h) : null;
@@ -349,12 +388,26 @@ function plan(c) {
   Q = jobs;
   pump();
 }
-/* ---- overlap (§3.5): a mounted hardware module intersecting another's rect uses the DOM face while they intersect */
+/* ---- overlap (§3.5): a mounted hardware module intersecting any other mounted world item's rect (OUT / FX / Serum / simple /
+   mod modules too: in front or behind, its DOM would show through the GL face) uses the DOM face while they intersect. A
+   face's rect is live (the committed left / top + a drag's translate3d: the world's cached rect lags a drag), the others'
+   the world's cached ones; run at a rest, on 'screen' and once a frame of a module drag — never per camera frame */
+function liveRect(F) {
+  const r = rectOf(F.mid); if (!r) return null;
+  const a = F.a || {};
+  return { x: (a.x != null ? a.x : r.x) + (a.dx || 0), y: (a.y != null ? a.y : r.y) + (a.dy || 0), w: r.w, h: r.h };
+}
 function recheck() {
-  const M = faces.filter(F => !F.dead && F.mounted && F.mid != null && !!rectOf(F.mid));
+  const M = faces.filter(F => !F.dead && F.mounted && F.mid != null), live = new Map();
+  let ch = false;
+  for (const F of M) { if (F.el && attrs(F).vis) ch = true; const r = liveRect(F); if (r) live.set(F.mid, r); } // (the style read now: a drop's left / top before its observer delivers; node has none)
+  if (ch) emit();
+  const ids = WD && typeof WD.ids === 'function' ? WD.ids() : [...live.keys()];
   for (const F of M) {
-    const r = rectOf(F.mid);
-    const ov = M.some(G => G !== F && G.mid !== F.mid && intersects(r, rectOf(G.mid)));
+    const r = live.get(F.mid);
+    if (!r) continue;
+    let ov = false;
+    for (const id of ids) { const k = String(id); if (k === F.mid) continue; const o = live.get(k) || rectOf(k); if (o && intersects(r, o)) { ov = true; break; } }
     if (ov !== F.overlap) { F.overlap = ov; sync(F, 'overlap'); }
   }
 }
@@ -376,16 +429,25 @@ export const FACES = {
       img: o.img || null, imgCb: null, moduleOf: typeof o.moduleOf === 'function' ? o.moduleOf : () => (modEl(deco) ? modEl(deco).getAttribute('data-cv-mod') : null),
       offset: typeof o.offset === 'function' ? o.offset : () => ({ x: 0, y: BAR_H }), tip: o.tip || null, mkTier: typeof o.tier === 'function' ? o.tier : null,
       el: null, attrEl: null, mid: null, mounted: false, a: null, ox: 0, oy: BAR_H, overlap: false, failed: false, mode: '', tier: null, base: null, win: null, bg: null, mo: null, dead: false,
-      q0: { tex: null, x: 0, y: 0, w: 0, h: 0, clip: null, alpha: 1 }, q1: { tex: null, x: 0, y: 0, w: 0, h: 0, clip: null, alpha: 1 }, clip: { x: 0, y: 0, w: 0, h: 0, r: [0, 0, BODY_R, BODY_R] },
+      q0: { tex: null, x: 0, y: 0, w: 0, h: 0, clip: null, alpha: 1, gray: 0 }, q1: { tex: null, x: 0, y: 0, w: 0, h: 0, clip: null, alpha: 1, gray: 0 }, clip: { x: 0, y: 0, w: 0, h: 0, r: [0, 0, BODY_R, BODY_R] },
     };
-    // unmount reaches us through wk.releaseCanvases (cv-module unmount): a 0 × 0 sentinel canvas inside the deco
+    // unmount reaches us through wk.releaseCanvases (cv-module unmount): a 0 × 0 sentinel canvas inside the deco. The hook
+    // runs while the body is still connected (the element goes home after): the textures go now, the mode follows next
+    // frame — at home 'svg'; re-homed into a new module by then (main.js cvKeep, no event) the base is re-made there
+    const release = () => {
+      if (F.dead) return;
+      const had = !!(F.base || F.win);
+      free(F, 'base'); free(F, 'win'); unqueue(F);
+      if (setMode(F, 'svg') || had) emit();
+      raf(() => sync(F, 'release'));
+    };
     let offR = () => {};
     try {
       const s = doc.createElement('canvas');
       s.width = 0; s.height = 0; s.hidden = true; s.className = 'hw-rel'; s.setAttribute('aria-hidden', 'true');
       deco.append(s);
       F.sentinel = s;
-      offR = typeof wk.onRelease === 'function' ? wk.onRelease(s, () => sync(F, 'release')) : () => {};
+      offR = typeof wk.onRelease === 'function' ? wk.onRelease(s, release) : () => {};
     } catch (err) { /* a stub DOM */ }
     const offS = typeof wk.onRescale === 'function' ? wk.onRescale(deco, () => { sync(F, 'rescale'); }) : () => {}; // (a zoom end: a re-mount at home → here)
     faces.push(F);
@@ -405,8 +467,8 @@ export const FACES = {
         const i = faces.indexOf(F); if (i >= 0) faces.splice(i, 1);
         if (had) emit();
       },
-      /** 'gl' | 'dom' (the 1g tier; its bitmap or, at k ≥ 1, the SVG) | 'svg' */
-      get mode() { return F.mode === 'dom' && F.tier && !F.tier.shown ? 'svg' : F.mode; },
+      /** 'gl' | 'dom' (the 1g tier: its bitmap below 100 %, the SVG at / above — `shown` tells) | 'svg'; = data-cv-face */
+      get mode() { return F.mode; },
       get tier() { return F.tier; },
       /** the SVG is replaced (a texture or the tier's bitmap shows): a data-tip tap hit-tests the SVG for that one point */
       get shown() { return F.mode === 'gl' || !!(F.tier && F.tier.shown); },
@@ -422,10 +484,10 @@ export const FACES = {
     if (GL) this.detach();
     o = o || {};
     ATT = o;
-    GL = o.gl || null; WD = o.world || null; LOST = false;
+    GL = o.gl || null; WD = o.world || null; LOST = false; emDue = false; rcDue = false; // (a frame queue dropped between: nothing owed)
     HOOK = { raf: o.raf, size: o.size, now: o.now, offs: [] };
     if (WD && typeof WD.on === 'function') {
-      HOOK.offs.push(WD.on('cameraend', e => { BURST = false; plan(e && e.cam); }));
+      HOOK.offs.push(WD.on('cameraend', e => { BURST = false; recheck(); plan(e && e.cam); })); // (a drop inside an edge pan: the overlap at its rest)
       HOOK.offs.push(WD.on('screen', () => { recheck(); plan(); }));
       HOOK.offs.push(WD.on('movestart', () => { BURST = true; Q = []; }));
     }
@@ -440,7 +502,7 @@ export const FACES = {
     GL = null; WD = null; HOOK = null; ATT = null; CAM = null; LOST = false; BURST = false;
     if (scratch) { scratch.width = 0; scratch.height = 0; }
     for (const F of faces) sync(F, 'detach');
-    emit();
+    emDue = false; rcDue = false; emit();
   },
   /** Context loss: every texture is dead (nothing goes through the GL); the faces show their SVG until restored() rebuilds
    * the bases lazily (one per frame, nearest first). */
@@ -458,16 +520,16 @@ export const FACES = {
    */
   quads(rectOf2, c) {
     QUAD.length = 0;
-    const list = faces.filter(F => !F.dead && F.mode === 'gl' && F.base).sort((a, b) => a.a.z - b.a.z || a.seq - b.seq);
-    for (const F of list) {
+    if (ordDirty) { ordDirty = false; ORD = faces.filter(F => !F.dead && F.mode === 'gl' && !!F.base && !(F.a && F.a.folded)).sort((a, b) => a.a.z - b.a.z || a.seq - b.seq); }
+    for (const F of ORD) {
       const R = typeof rectOf2 === 'function' ? rectOf2(F.mid) : null;
       if (!R) continue;
-      const x = R.x + F.a.dx, y = R.y + F.a.dy, cl = F.clip;
+      const a = F.a, x = (a.x != null ? a.x : R.x) + a.dx, y = (a.y != null ? a.y : R.y) + a.dy, cl = F.clip; // (the module's own left / top: a drag's recache never doubles the delta)
       cl.x = x; cl.y = y + BAR_H; cl.w = R.w; cl.h = Math.max(0, R.h - BAR_H);
       const fx = x + F.ox, fy = y + F.oy, q = F.q0;
-      q.tex = F.base.tex; q.x = fx; q.y = fy; q.w = F.w; q.h = F.h; q.clip = cl; q.alpha = F.a.alpha;
+      q.tex = F.base.tex; q.x = fx; q.y = fy; q.w = F.w; q.h = F.h; q.clip = cl; q.alpha = a.alpha; q.gray = a.gray;
       QUAD.push(q);
-      if (F.win && c && c.k > 1) { const w = F.q1, W2 = F.win; w.tex = W2.tex; w.x = fx + W2.x; w.y = fy + W2.y; w.w = W2.w; w.h = W2.h; w.clip = cl; w.alpha = F.a.alpha; QUAD.push(w); }
+      if (F.win && c && c.k > 1) { const w = F.q1, W2 = F.win; w.tex = W2.tex; w.x = fx + W2.x; w.y = fy + W2.y; w.w = W2.w; w.h = W2.h; w.clip = cl; w.alpha = a.alpha; w.gray = a.gray; QUAD.push(w); }
     }
     return QUAD;
   },

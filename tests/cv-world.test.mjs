@@ -1610,3 +1610,64 @@ test('U13: a press on an editable cable pans the camera like the canvas around i
   eq(MOD.isBackground(hit), false, 'read-only: not a press target at all (CSS pointer-events: none)');
   L.destroy();
 });
+
+
+/* ------------------------------------------------------------------ (1h fixes A) a lost context never restored; a drop reaches the overlap rule */
+test('1h fix 8: a context loss the browser never restores — after GL_LOST_MS the layer is given up as dead: the 2D grid built live (G4), FACES stays detached; a restore inside the window cancels that', () => {
+  const log = [];
+  let glObj = null;
+  const S = setup({ opts: { createGL: (v, o) => (glObj = fakeGL(log)(v, o)) } });
+  S.frame();
+  eq(W.GL_LOST_MS, 3000);
+  // restored in time: nothing happens later
+  glObj.hooks.onLost(false);
+  adv(1000); glObj.hooks.onRestored();
+  adv(5000); S.frame();
+  eq([S.world.glStats() !== null, dom.byCls(S.vp, 'cv-grid').length, !!FACES.attachment()], [true, 0, true], 'restored at 1 s: the GL path stays');
+  // lost for good: the 2D grid after GL_LOST_MS, drawn at the camera; no GL draw ever again
+  glObj.hooks.onLost(false);
+  adv(2900); S.frame();
+  eq([S.world.glStats() !== null, dom.byCls(S.vp, 'cv-grid').length], [true, 0], 'at 2.9 s: still waiting');
+  const d0 = draws(log);
+  adv(200); S.frame();
+  const gc = S.vp.childNodes[0];
+  eq([S.world.glStats(), gc.className, dom.byCls(S.vp, 'cv-gl').length, FACES.attachment(), S.world.gridStats().n, glObj.alive], [null, 'cv-grid', 0, null, 1, false], 'at 3 s: dead — the 2D grid canvas built and drawn, the GL destroyed');
+  S.world.panBy(5, 0); S.frame(); adv(200); S.frame(2);
+  eq([draws(log), S.world.gridStats().n], [d0, 2], 'the 2D path from here on');
+  S.world.destroy();
+});
+
+test('1h fix R2: world.update(id) at a drop (cv-module onMove end / cancel, a fold, a size) reaches the overlap rule on the GL path (FACES.recheck) outside a burst — a module dropped onto a hardware module switches its face to the DOM tier at once, before any observer or rest', () => {
+  const log = [];
+  const { d, win, w, world, frame, item } = setup({ opts: { createGL: fakeGL(log) } });
+  frame();
+  // a hardware face in the world: .cv-mod[data-cv-mod=a] > .cv-body > .inst.hw > .hw-decor > svg, registered with cv-face
+  // (the fake GL's upload gives nothing: the face stays 'svg' — the overlap rule's modes are what this test reads)
+  const A = item('a', 0, 0, 400, 240), B = item('b', 1000, 0, 300, 100);
+  const root = d.createElement('div'), deco = d.createElement('div'), svg = d.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  root.className = 'inst hw'; deco.className = 'hw-decor'; deco.append(svg); root.append(deco); A.body.append(root);
+  A.el.style.left = '0px'; A.el.style.top = '0px'; B.el.style.left = '1000px'; B.el.style.top = '0px';
+  class Img { constructor() { this.onload = null; } set src(u) { this._src = u; } get src() { return this._src; } }
+  const face = FACES.register(deco, { markup: '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"></svg>', w: 400, h: 200, offset: () => ({ x: 0, y: 40 }), env: { win, doc: d, Image: Img, Blob: class { constructor() {} }, URL: { createObjectURL: () => 'blob:1', revokeObjectURL: () => {} } } });
+  world.add(A); world.add(B);
+  frame(2);
+  eq([face.mode, A.el.getAttribute('data-cv-face')], ['svg', 'svg'], 'apart: the GL mode (its base pending on a fake upload)');
+  // B dropped onto A: cv-module writes left / top (lx / ly: rect()), then onMove 'end' → world.update('b')
+  B.x = 200; B.y = 50; B.el.style.left = '200px'; B.el.style.top = '50px';
+  world.update('b');
+  eq([face.mode, A.el.getAttribute('data-cv-face')], ['dom', 'dom'], 'the overlap rule ran in update(): the DOM tier');
+  B.x = 1000; B.y = 0; B.el.style.left = '1000px'; B.el.style.top = '0px';
+  world.update('b');
+  eq([face.mode, A.el.getAttribute('data-cv-face')], ['svg', 'svg'], 'apart: back');
+  // inside a burst (an edge pan still running at the drop): no layout read then — the burst's end runs it
+  world.panBy(3, 0); frame();
+  ok(world.busy, 'a burst');
+  B.x = 200; B.y = 50; B.el.style.left = '200px'; B.el.style.top = '50px';
+  world.update('b');
+  eq(face.mode, 'svg', 'not in the burst');
+  adv(200); frame(2);
+  eq(face.mode, 'dom', 'at its end (cameraend → recheck)');
+  face.destroy();
+  world.destroy();
+  void w;
+});

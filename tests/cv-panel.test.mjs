@@ -615,7 +615,7 @@ test('1h: render() registers a parsed face with cv-face (the Face stands as `tie
   const api = Object.assign(fakeApi(model, doc), { tier: env });
   const r = P.render(root, TB_FX, model, api), F = r.tier;
   assert.ok(F && typeof F.refresh === 'function' && typeof F.destroy === 'function', 'a Face');
-  eq1([F.mode, F.shown, !!F.tier, mod.getAttribute('data-cv-face')], ['svg', false, true, 'dom'], 'the 2D path at 100 %: the tier under it shows the SVG; the module says dom');
+  eq1([F.mode, F.shown, !!F.tier, mod.getAttribute('data-cv-face')], ['dom', false, true, 'dom'], 'the 2D path at 100 %: the tier under it shows the SVG (shown false); mode = data-cv-face = dom');
   const deco = root.childNodes.find(n => n.className === 'hw-decor');
   assert.ok(deco.childNodes.some(n => n.localName === 'canvas' && n.className === 'hw-rel'), 'the unmount sentinel in the deco');
   // 50 %: the tier's bitmap → shown; a tap on the deco hit-tests the SVG for that point (elementFromPoint) and tips

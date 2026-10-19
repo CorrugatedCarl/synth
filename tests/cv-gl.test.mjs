@@ -220,3 +220,18 @@ test('losses spread over more than a minute never give the layer up; destroy() r
   GL.destroy();
   eq(gl.ext.lost, 1, 'idempotent');
 });
+
+// ---- 1h fixes A: the quad's grayscale (a powered-off module's filter: grayscale(0.7); a mod drag's .cv-nodest: 0.8)
+test('1h fix 9: a Quad\'s `gray` goes into the quad block (alpha, clipOn, gray) and the face fragment mixes the luma in by it (mix(luma, rgb, 1 − gray) on the premultiplied sample — the CSS grayscale() matrix); absent: 0', () => {
+  const { gl, GL } = setup();
+  const fs = gl.calls.filter(c => c[0] === 'shaderSource').map(c => c[2])[3];
+  ok(/dot\(s\.rgb,vec3\(0\.2126,0\.7152,0\.0722\)\)/.test(fs) && /mix\(vec3\(l\),s\.rgb,1\.0-q\[3\]\.z\)/.test(fs), 'the luma mix by q[3].z');
+  GL.resize(400, 300, 1);
+  const a = GL.upload(src(10, 10));
+  const i0 = gl.calls.length;
+  GL.draw({ tx: 0, ty: 0, k: 1 }, 400, 300, 1, [{ tex: a, x: 0, y: 0, w: 10, h: 10, clip: null, alpha: 0.45, gray: 0.7 }, { tex: a, x: 0, y: 0, w: 10, h: 10, clip: null, alpha: 1 }, { tex: a, x: 0, y: 0, w: 10, h: 10, clip: null, alpha: 1, gray: 'x' }]);
+  const blocks = gl.calls.slice(i0).filter(c => c[0] === 'uniform4fv').map(c => c[2]);
+  eq(blocks[2].slice(12).map(v => Math.round(v * 1000) / 1000), [0.45, 0, 0.7, 0], 'alpha, clip off, gray 0.7');
+  eq(blocks[3].slice(12), [1, 0, 0, 0], 'no gray: 0');
+  eq(blocks[4].slice(12), [1, 0, 0, 0], 'garbage: 0');
+});

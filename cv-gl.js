@@ -60,11 +60,12 @@ const GRID_FS = '#version 300 es\nprecision highp float;\n'
   + 'float a=cm*u[2].y+cM*u[2].z;'
   + 'o=vec4(col*a,a);}';
 // the faces: the unit quad → the texture's world rect → the camera → device px → clip space; the fragment samples the
-// (premultiplied) texture and multiplies by the coverage of the clip rect's rounded-rect SDF (world px → device px by k·d:
-// a one-px ramp) and the quad's alpha.
+// (premultiplied) texture, mixes its luma in by the quad's gray (1h fixes: the CSS grayscale() of a powered-off / no-destination
+// module) and multiplies by the coverage of the clip rect's rounded-rect SDF (world px → device px by k·d: a one-px ramp) and
+// the quad's alpha.
 const FACE_VS = '#version 300 es\nlayout(location=0) in vec2 a;\n'
   + 'uniform vec4 c[2];\n' // [0] tx ty k d · [1] W H 0 0
-  + 'uniform vec4 q[4];\n' // [0] rect x y w h · [1] clip x y w h · [2] radii tl tr br bl · [3] alpha clipOn 0 0
+  + 'uniform vec4 q[4];\n' // [0] rect x y w h · [1] clip x y w h · [2] radii tl tr br bl · [3] alpha clipOn gray 0
   + 'out vec2 uv;out vec2 wp;\n'
   + 'void main(){uv=a;wp=q[0].xy+a*q[0].zw;'
   + 'vec2 dv=(wp*c[0].z+c[0].xy)*c[0].w;'
@@ -76,6 +77,7 @@ const FACE_FS = '#version 300 es\nprecision highp float;\n'
   + 'float r=p.x<0.0?(p.y<0.0?q[2].x:q[2].w):(p.y<0.0?q[2].y:q[2].z);r=min(r,min(h.x,h.y));'
   + 'vec2 d=abs(p)-h+r;float sd=length(max(d,0.0))+min(max(d.x,d.y),0.0)-r;'
   + 'cov=clamp(0.5-sd*c[0].z*c[0].w,0.0,1.0);}'
+  + 'float l=dot(s.rgb,vec3(0.2126,0.7152,0.0722));s.rgb=mix(vec3(l),s.rgb,1.0-q[3].z);' // (the quad's gray: CSS grayscale() on the premultiplied sample)
   + 'o=s*(cov*q[3].x);}';
 
 /**
@@ -246,7 +248,7 @@ export function createGL(viewport, o) {
           Q[8] = r ? +r[0] || 0 : 0; Q[9] = r ? +r[1] || 0 : 0; Q[10] = r ? +r[2] || 0 : 0; Q[11] = r ? +r[3] || 0 : 0;
           Q[13] = 1;
         } else { Q[4] = Q[5] = Q[6] = Q[7] = Q[8] = Q[9] = Q[10] = Q[11] = 0; Q[13] = 0; }
-        Q[12] = q.alpha == null ? 1 : +q.alpha; Q[14] = 0; Q[15] = 0;
+        Q[12] = q.alpha == null ? 1 : +q.alpha; Q[14] = +q.gray > 0 ? Math.min(1, +q.gray) : 0; Q[15] = 0;
         gl.uniform4fv(P.faceQ, Q);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       }

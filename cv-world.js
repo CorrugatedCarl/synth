@@ -247,6 +247,8 @@ export function gridDraw(ctx, cam, w, h, d, q) {
  * device ratio: the dots stay whole store px, sized for the device by gridSizes' q), then the reach gives way (to 1), then
  * the overscan (to 0), then the scale (below 1). Pure. @returns {{w: number, h: number, s: number, r: number}} store px */
 export const GRID_OVER = MAJOR * K_MAX, GRID_MAX_PX = 8e6, GRID_MAX_S = 2, GRID_REACH = 0.5;
+/** (1h) a lost GL context the browser has not restored after this long is given up: the 2D grid, live (G4). */
+export const GL_LOST_MS = 3000;
 export function gridStore(vw, vh, d) {
   vw = Math.max(0, +vw || 0); vh = Math.max(0, +vh || 0);
   const S = Math.min(Math.max(1, +d || 1), GRID_MAX_S), A = (u, g, s) => (vw * u + g) * (vh * u + g) * s * s;
@@ -355,7 +357,7 @@ export function createWorld(viewport, o) {
   let fid = 0, scrDirty = false, overBudget = false; // the frame, the on-screen plan owed, the soft DOM budget crossed
   let mapOn = true, mapDirty = true, MM = null; // the minimap: shown, a redraw owed, its parts { el, cv, btn, drag }
   let GC = null, dprMq = null; // (1g) the grid canvas { cv, ctx, w, h, d, s, r, cw, ch, c0, tf, n, ms, max, dots, moves }; the device-ratio watch
-  let GL = null, glOff = null, glDead = false; // (1h) the GL layer (cv-gl; the 2D grid canvas is not made then), its FACES.onChange remover, given up (G4)
+  let GL = null, glOff = null, glDead = false, glWait = 0; // (1h) the GL layer (cv-gl; the 2D grid canvas is not made then), its FACES.onChange remover, given up (G4), the restore timer of a loss
   let B = null; // the live burst: { hook, until, band, timer, last, k (the zoom written before it), zoom (it changed) }
   let G = null; // the world's own pointer gesture (pan / pinch)
   let J = null; // a press hooks.jack took: { id, type, x, y, cancel } until its pointer lifts
@@ -480,11 +482,12 @@ export function createWorld(viewport, o) {
     try { q = FACES.quads(rectById, cam); } catch (err) { console.error(err); q = null; }
     GL.draw(cam, vp.width, vp.height, dpr(), q);
   }
-  function glLost(dead) { // a context loss: FACES detached (its textures are dead); the third in a minute: the 2D grid, live
+  function glLost(dead) { // a context loss: FACES detached (its textures are dead); the third in a minute, or one not restored within GL_LOST_MS: the 2D grid, live
     if (destroyed || !GL) return;
     if (glOff) { glOff(); glOff = null; } // (the registry's detach emits a change: no draw on a lost context)
     try { FACES.detach(); } catch (err) { console.error(err); }
-    if (!dead) return;
+    unlater(glWait); glWait = 0;
+    if (!dead) { glWait = later(() => { glWait = 0; glLost(true); }, GL_LOST_MS); return; } // (no grid, no faces meanwhile: a short wait)
     glDead = true;
     const gl = GL;
     GL = null;
@@ -493,7 +496,7 @@ export function createWorld(viewport, o) {
     sizeGrid();
     gridAt();
   }
-  function glRestored() { if (!destroyed && GL) { try { FACES.attach({ gl: GL, world: api }); } catch (err) { console.error(err); } if (!glOff) glOff = FACES.onChange(() => { if (GL && !destroyed) glDraw(); }); glDraw(); } }
+  function glRestored() { unlater(glWait); glWait = 0; if (!destroyed && GL) { try { FACES.attach({ gl: GL, world: api }); } catch (err) { console.error(err); } if (!glOff) glOff = FACES.onChange(() => { if (GL && !destroyed) glDraw(); }); glDraw(); } }
   const rectById = id => { const r = items.get(String(id)); return r && r.rect ? r.rect : null; }; // (1h) the cached rect (null unknown)
   // the store (gridStore: the viewport, its overscan for a pan and a zoom out to GRID_REACH, ≤ GRID_MAX_PX) → true when it
   // changed (and was cleared)
@@ -810,7 +813,12 @@ export function createWorld(viewport, o) {
     budget();
   }
   function clear() { for (const id of [...items.keys()]) remove(id); selSet.clear(); sel = null; focusBack = null; editSup = false; pin = null; mapDirty = true; }
-  function update(id) { if (id == null) recache(); else if (items.has(String(id))) recache(String(id)); }
+  function update(id) {
+    if (id == null) recache(); else if (items.has(String(id))) recache(String(id)); else return;
+    // (1h) a drop / fold / resize: the faces' overlap rule over the new rect (IMPL-1h §3.5 "on update") — not in a burst
+    // (recheck reads the decos' offsets); the burst's end runs it
+    if (GL && !B) { try { FACES.recheck(); } catch (err) { console.error(err); } }
+  }
 
   /* ---- selection and edit state */
   // select(id): only it (null: nothing); {keep}: a member of a selection of several keeps them (a move of the group);
@@ -1664,6 +1672,7 @@ export function createWorld(viewport, o) {
       if (fid) caf(fid);
       fid = 0;
       if (B) unlater(B.timer);
+      unlater(glWait); glWait = 0;
       B = null; G = null; J = null; glide = null; anim = null; edge = null;
       for (const f of offs.splice(0)) { try { f(); } catch (err) { /* gone */ } }
       if (ro) { try { ro.disconnect(); } catch (err) { /* gone */ } }
