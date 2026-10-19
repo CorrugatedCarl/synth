@@ -510,6 +510,27 @@ uncovered (a zoom out), never within 250 ms of its last draw; a zoom-out redraw 
 next stretch. Slightly soft while it moves (as `#world`'s own cached raster), crisp at rest; the 1g guarantees hold at every
 draw. `world.gridStats()` counts draws and transform writes (`moves`); ui-bench shows the draws per phase.
 
+**Hotfix 2 (2026-10-19: "the grid is much better now and the performance is a bit better but there is a noticeable hitch while
+zooming in and out fast past around 60 % … panning felt smooth").** Two things ran mid-pinch, both gone. (1) The mid-burst
+grid redraws (past × 2 / × 0.5, or a zoom out uncovering the edge: a whole-store re-upload, the hitch itself): the grid is now
+never drawn inside a burst, whatever the scale — it only scales with the camera (soft dots zoomed in, tiny ones zoomed out,
+the fine layer fading there anyway), drawn once at rest; a resize in a burst still draws once (resizing cleared it). To keep a
+fast zoom out covered the store is sized for it (`gridStore`): (vw / GRID_REACH + 256) × (vh / GRID_REACH + 256) CSS px,
+GRID_REACH = 0.5 (a zoom out to half the rest zoom shows no edge; past it bare strips at the right / bottom until rest). Under
+the 8 Mpx cap the overscan wins over the scale: at dpr 2 the store drops to 1 px per CSS px (a whole device ratio — the 13"
+iPad: 3008 × 2320 at 1×, against ≈ 1620 × 1290 at 2× before) and the dots keep their device size in whole store px
+(`gridSizes(d, q)`: minor squares 2 store px = 4 device px, the 3 rounded up; major discs r 1 store px = 2 device px, as at
+2×); then the reach gives way (a big window), then the overscan, then the scale (a 4K window, as before). (2) The on-screen
+plan: modules coming into view as the zoom crossed ≈ 0.6 each toggled `[data-cv-off]` — a restyle of the whole module (the CSS
+rule was `.cv-mod[data-cv-off] *`; ≈ 1.5 ms per toggle for a 3700-node panel on the Mac) — and woke their monitors
+(`monitors.sync()` twice, worklet messages, live displays starting to draw). A burst whose zoom changed now plans at its end
+(endBurst → recache → schedule); pans still plan every frame (displays resume CULL_MARGIN early); the CSS rule names the one
+animation inside a module (`.fxr-flash`). The % button's text follows every frame, its aria-label only at rest. READ_K /
+EDIT_K change nothing mid-burst (the sleeper is read at a press, `computeEdit` runs at endBurst / select). Measured (Mac,
+five panels, a scripted 1 → 0.4 zoom in 600 ms, a MutationObserver on the body): 268 mutations before (2 grid draws, 2
+`data-cv-off`, 58 aria-labels), 205 after (73 `#world` + 73 grid transforms, 57 % texts, `data-cv-busy`, the tip) and 0 grid
+draws until the one at rest.
+
 **Review round (1f).** Each fix test-first; the split rules above are superseded where they differ:
 - R1 A Serum heard through a panel (every 1e add was auto-patched into the shared panel) keeps that sound: with no effects of its
   own, the panel's FX state becomes its own (reshape's 'moved' rule; also for a lone Serum → panel → OUT); with effects of its own
