@@ -2,7 +2,8 @@
 // skeleton). Pure ES module: no DOM, nothing at module top level but tables (node-tested: tests/cv-mods.test.mjs).
 //
 // Destination descriptors (§7.2), one shape for every module: { id, label, law, lo, hi, def, fmt, scope, cls, nomod }
-//   descs(dev)              dev = a device of track.dev (§5.1): { kind: 'synth', model, vals } | { kind: 'panel', rack }
+//   descs(dev)              dev = a device of track.dev (§5.1): { kind: 'synth', model, vals } | { kind: 'panel', fx } (1c:
+//                           the panel's whole FX state) | { kind: 'panel', rack } (§5.1's single rack)
 //   classicDescs(modelId)   models.js controls: knobs 'lin' over [min, max], selectors 'enum' (opts), toggles 'bool'; cls from
 //                           CLASS_TABLE; nomod for 'struct' and 'none'
 //   serumDescs()            serum-core DESTS (529 rows, scopes V / V* / V*M / G / M; the FX rows of a Serum's own FX are
@@ -191,9 +192,56 @@ export function rackDescs(rack) {
   else walk(isObj(rack) ? rack.mods : null);
   return out;
 }
+// (a panel: its FX state whole, as stage 1c keeps it, else §5.1's single-rack form)
 export function descs(dev) {
   if (!isObj(dev)) return [];
   if (dev.kind === 'synth') return dev.model === 'serum' ? serumDescs().concat(rackDescs(dev.fx)) : classicDescs(dev.model);
-  if (dev.kind === 'panel') return rackDescs(dev.rack);
+  if (dev.kind === 'panel') return rackDescs(isObj(dev.fx) ? dev.fx : dev.rack);
   return [];
+}
+
+/* ------------------------------------------------------------------ performance modulators (stage 2a, IMPL-2a §1, §2.2) */
+// A mod cable is a row of track.mods (§5.1): { id: 'r<n>', src, dst: '<dev>:<param>', …the matrix row's fields }. In 2a
+// its source is the project Mod Wheel ('wheel') or a track's Velocity / Aftertouch / Bend module ('ve.out' / 'at.out' /
+// 'bd.out'), its destination a Serum's knob (a DESTS id) or one of that Serum's own FX knobs (fx.<inst>.<pid>); the
+// compile injects it as a native row (§7.7 items 1–2, cv-graph injectMods: no DSP change).
+//   MOD_SRC / SRC_MOD        canvas source ↔ the Serum source its row compiles to (wheel / velo / at / bend)
+//   MOD_DEV                  the per-track singletons: kind → device id (velo → 've', at → 'at', bend → 'bd')
+//   destOk(dev, paramId)     { ok, why, stage }: a Serum's DESTS id or own-FX id (not nomod); classic / panel knobs:
+//                            stage '2b' (struct / none classic knobs: never); anything else refused
+//   sourcesOf(track, p)      [{ id, label, scope: 'project' | 'track', kind }] the sources a cable may start from on track
+//   wheelTracks(p)           the tracks holding at least one 'wheel' row while the project's wheel is placed (§7.10: the
+//                            live wheel reaches them too)
+export const MOD_SRC = Object.freeze({ wheel: 'wheel', 've.out': 'velo', 'at.out': 'at', 'bd.out': 'bend' });
+export const SRC_MOD = Object.freeze({ wheel: 'wheel', velo: 've.out', at: 'at.out', bend: 'bd.out' });
+export const MOD_DEV = Object.freeze({ velo: 've', at: 'at', bend: 'bd' });
+export const MOD_LABEL = Object.freeze({ wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend' });
+const SERUM_IDS = new Set(DESTS.filter(d => !/^fx\./.test(d.id)).map(d => d.id)); // (FX ids: the Serum's own rack, dynamic)
+const NOMOD = 'This knob can’t be modulated';
+export function destOk(dev, id) {
+  const no = (why, stage = null) => ({ ok: false, why, stage });
+  if (!isObj(dev) || typeof id !== 'string' || !id) return no(NOMOD);
+  if (dev.kind === 'panel') return no('FX panel knobs take modulation from stage 2b', '2b');
+  if (dev.kind !== 'synth') return no(NOMOD);
+  if (dev.model !== 'serum') {
+    const c = classOf(dev.model, id);
+    return c === null || c === 'struct' || c === 'none' ? no(NOMOD) : no('Classic knobs take modulation from stage 2b', '2b');
+  }
+  if (/^fx\./.test(id)) { const d = rackDescs(dev.fx).find(x => x.id === id); return d && !d.nomod ? { ok: true, why: '', stage: null } : no(NOMOD); }
+  return SERUM_IDS.has(id) ? { ok: true, why: '', stage: null } : no(NOMOD);
+}
+const wheelOn = p => isObj(p) && isObj(p.perf) && isObj(p.perf.wheel);
+export function sourcesOf(t, p) {
+  const out = [];
+  if (wheelOn(p)) out.push({ id: 'wheel', label: MOD_LABEL.wheel, scope: 'project', kind: 'wheel' });
+  const dev = isObj(t) && isObj(t.dev) ? t.dev : {};
+  for (const kind of Object.keys(MOD_DEV)) {
+    const id = MOD_DEV[kind];
+    if (isObj(dev[id]) && dev[id].kind === kind) out.push({ id: id + '.out', label: MOD_LABEL[kind], scope: 'track', kind });
+  }
+  return out;
+}
+export function wheelTracks(p) {
+  if (!wheelOn(p) || !Array.isArray(p.tracks)) return [];
+  return p.tracks.filter(t => isObj(t) && Array.isArray(t.mods) && t.mods.some(r => isObj(r) && r.src === 'wheel'));
 }

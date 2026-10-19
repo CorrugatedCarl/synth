@@ -16,6 +16,7 @@ import * as core from '../serum-core.js?v=9';
 import * as fxc from '../fx-core.js?v=9';
 import * as Q from '../seq-core.js?v=9';
 import * as M from '../midi.js?v=9';
+import * as MODS from '../cv-mods.js?v=9';
 
 const SRC = readFileSync(new URL('../midi.js', import.meta.url), 'utf8');
 const N = (/const VERSION = '(\d+)'/.exec(readFileSync(new URL('../main.js', import.meta.url), 'utf8')) || [])[1];
@@ -796,4 +797,24 @@ test('1e: several Serum instruments per track — learn / forget per instrument,
   log.length = 0;
   R.message([0xc0, 5], 0);
   assert.deepEqual(log.filter(e => e[0] === 'pc'), [['pc', [7, 8], 5]]);
+});
+
+test('2a §7.10: CC 1 reaches the host as ctl(\'wheel\') without a track list — main.js adds the Mod Wheel tracks to the posts (cv-mods wheelTracks) and records into the routed targets only', () => {
+  const log = [], T = timers(), project = project0(), E = world(project, log, T), r = v2(E);
+  r.message([0xb0, 1, 127], 5);    // channel 1
+  r.message([0xbf, 1, 0], 6);      // channel 16
+  const ctl = log.filter(x => x[0] === 'ctl');
+  assert.deepEqual(ctl.map(x => [x[1], x[2], x[3], x[4], x[5]]), [['wheel', 1, 1, 5, null], ['wheel', 0, 16, 6, null]]);
+  assert.ok(log.some(x => x[0] === 'modUI'), 'the on-screen wheel follows');
+  // the set main.js posts to: targets(src) ∪ wheelTracks(project) (targets first, no duplicates); recorded: targets(src)
+  const t2 = project.tracks[1], t3 = project.tracks[2];
+  t3.mods = [{ id: 'r1', src: 'wheel', dst: 'i1:f.cutoff' }];
+  t2.mods = [{ id: 'r1', src: 've.out', dst: 'i1:a.level' }];
+  const union = (src, P) => { const trs = E.targets(src); return trs.concat(MODS.wheelTracks(P).filter(t => !trs.includes(t))).map(t => t.id); };
+  assert.deepEqual(E.targets(1).map(t => t.id), [4]);
+  assert.deepEqual(union(1, project), [4], 'no wheel placed: today\'s targets');
+  project.perf = { wheel: { v: 1 } };
+  assert.deepEqual(union(1, project), [4, 3]);
+  t3.ch = 1;
+  assert.deepEqual(union(1, project), [3, 4], 'a target already: once');
 });

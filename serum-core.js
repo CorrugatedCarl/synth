@@ -1662,7 +1662,8 @@ function normLfo(x) {
     start: intIn(S.start, 0, 0, last),
   };
 }
-function normRow(r) {
+// (exported for SYNTH Canvas 2a: canvas mod rows take the matrix's field rules, cv-graph injectMods / cv-model addMod)
+export function normRow(r) {
   if (!isObj(r)) return emptyRow();
   const src = r.src === undefined ? '' : r.src, dst = r.dst === undefined ? '' : r.dst, aux = r.aux === undefined ? '' : r.aux;
   if (typeof src !== 'string' || typeof dst !== 'string' || typeof aux !== 'string') return emptyRow();
@@ -2415,8 +2416,8 @@ const lfoOk = l => Number.isInteger(l) && l >= 0 && l < N_LFO;
 const LFO_SRC_RE = /^lfo([1-9]|10)y?$/;
 const LFO_KNOBS = ['rate', 'rise', 'delay', 'smooth', 'phase'];
 
-// first slot whose source is empty (§5.8), −1 when the matrix is full
-function freeSlot(s) {
+// first slot whose source is empty (§5.8), −1 when the matrix is full (canvas 2a: injectMods' free-slot rule)
+export function freeSlot(s) {
   const M = rowsOf(s);
   for (let r = 0; r < M.length && r < N_MATRIX; r++) if (!isObj(M[r]) || M[r].src === '' || M[r].src === undefined) return r;
   return -1;
