@@ -173,13 +173,21 @@ export const classOf = (modelId, ctlId) => (CLASS_TABLE[modelId] && CLASS_TABLE[
 //   targetsOf(model, ctlId)         [{ kind: 'slot', slot, field } | { kind: 'field', field }] everything the knob lands on
 //                                   (its class sweep over the default panel and the factory presets, so a knob inert at the
 //                                   current values still has its targets); several for a knob that moves several (a master
-//                                   tune: three TU slots; a filter type switch: character fields and the drive slot)
+//                                   tune: three TU slots; a filter type switch: character fields and the drive slot).
+//                                   Pure: memoised per (model, ctl) — the same array every call (never mutate it)
 //   slotOf(model, ctlId)            the first of them (null: none)
+//   depsOf(model, ctlId, t?)        the controls the transfer of target t depends on: the knob itself and every neighbour
+//                                   whose change moves the knob's sweep (measured once per (model, ctl, target) over the
+//                                   default panel: each neighbour at its other values, a 7-point sweep compared; a mixer
+//                                   switch for an oscillator level, a filter revision for its character…); memoised
 //   xferOf(model, vals, ctlId, t?)  the transfer of target t (default: the first) at the current panel values: map() swept
 //                                   over the knob (129 points, the neighbours as they are) → { a, b, x0 } when linear within
 //                                   1e-9 (slot = a + b·x), else { tab: Float64Array(129), x0 } (linear interpolation; the
 //                                   exponential laws are within 0.1 % of the table's range between points); x0 = the knob's
-//                                   position in modulation space. The engine adds T(clamp(x0 + Σ)) − T(x0).
+//                                   position in modulation space. The engine adds T(clamp(x0 + Σ)) − T(x0). Cached per
+//                                   (model, ctl, target) on the depsOf values: the same object while none of them moved
+//                                   (never mutate it; 2b review C3 / P1 — a knob turn costs no sweep unless it is a
+//                                   dependency of a cabled knob)
 //   xferInv(xf, s) → x              the inverse (a table: its first crossing; outside it: the nearer end)
 //   knobOf(model, vals, ctlId, s, t?)  the knob value (panel units) of engine value s: the classic eff snapshot's halos
 //   slotValue(p, slot)              a slot's value in patch p as engine.js smTargets computes it
@@ -234,9 +242,14 @@ function targetOfField(path, engine) {
   return null;
 }
 const sameT = (a, b) => a.kind === b.kind && (a.kind === 'slot' ? a.slot === b.slot : a.field === b.field);
+const tKey = t => (t.kind === 'slot' ? 's' + t.slot : 'f' + t.field);
+const TARGETS = new Map(), DEPS = new Map(), XFER = new Map(); // (static: pure functions of the models; XFER per (model, ctl, target) on the dependency values)
 export function targetsOf(model, ctlId) {
-  const m = modelOf(model), c = m && ctlOf(m, ctlId), out = [];
-  if (!c || m.custom) return out;
+  const m = modelOf(model), c = m && ctlOf(m, ctlId);
+  if (!c || m.custom) return [];
+  const key = m.id + '|' + ctlId, hit = TARGETS.get(key);
+  if (hit) return hit;
+  const out = [];
   for (const b of basesOf(m)) {
     const p0 = patchOf(m, b);
     for (const x of sweepPoints(c)) {
@@ -245,23 +258,56 @@ export function targetsOf(model, ctlId) {
       for (const f of diffIx(p0, p1)) { const t = targetOfField(f, p1.engine || 'analog'); if (t && !out.some(y => sameT(y, t))) out.push(t); }
     }
   }
+  TARGETS.set(key, out);
   return out;
 }
 export const slotOf = (model, ctlId) => targetsOf(model, ctlId)[0] || null;
 const valueAt = (p, t) => (t.kind === 'slot' ? slotValue(p, t.slot) : z(t.field.split('.').reduce((o, k) => (isObj(o) ? o[k] : undefined), p)));
+// the other values a neighbour is probed at (a toggle flipped, a selector's other options, a knob's ends)
+const probesOf = (c, v) => (c.t === 'b' ? [v ? 0 : 1] : c.t === 's' ? c.opts.map((_, i) => i).filter(i => i !== v) : [c.min, c.max].filter(x => x !== v));
+export function depsOf(model, ctlId, target) {
+  const m = modelOf(model), c = m && ctlOf(m, ctlId);
+  if (!c || m.custom) return [];
+  const t = target || slotOf(m, ctlId);
+  if (!t) return [ctlId];
+  const key = m.id + '|' + ctlId + '|' + tKey(t), hit = DEPS.get(key);
+  if (hit) return hit;
+  const [lo, hi] = rangeOf(c), base = basesOf(m)[0], N = 7;
+  const sweep = v => { const o = new Float64Array(N); for (let k = 0; k < N; k++) { v[ctlId] = knobAt(c, lo, hi, k / (N - 1)); o[k] = +valueAt(patchOf(m, v), t) || 0; } return o; };
+  const ref = sweep(Object.assign({}, base)), out = [ctlId];
+  for (const n of m.controls) {
+    if (n.id === ctlId) continue;
+    for (const x of probesOf(n, base[n.id])) {
+      const s = sweep(Object.assign({}, base, { [n.id]: x }));
+      let diff = false;
+      for (let k = 0; k < N && !diff; k++) if (s[k] !== ref[k] && !(s[k] !== s[k] && ref[k] !== ref[k])) diff = true;
+      if (diff) { out.push(n.id); break; }
+    }
+  }
+  DEPS.set(key, out);
+  return out;
+}
 export function xferOf(model, vals, ctlId, target) {
   const m = modelOf(model), c = m && ctlOf(m, ctlId);
   if (!c || m.custom) return null;
   const t = target || slotOf(m, ctlId);
   if (!t) return null;
-  const [lo, hi] = rangeOf(c), v = Object.assign({}, vals || {});
+  const V = isObj(vals) ? vals : {}, deps = depsOf(m, ctlId, t);
+  let dk = m.id + '|' + ctlId + '|' + tKey(t);
+  for (const id of deps) { const x = V[id]; dk += '|' + (x === undefined || x === null ? '' : x); }
+  const hit = XFER.get(dk);
+  if (hit) return hit;
+  const [lo, hi] = rangeOf(c), v = Object.assign({}, V);
   const cur = v[ctlId] == null ? c.def : +v[ctlId], x0 = clamp01((cur - lo) / (hi - lo));
   const tab = new Float64Array(129);
   for (let k = 0; k <= 128; k++) { v[ctlId] = knobAt(c, lo, hi, k / 128); tab[k] = +valueAt(patchOf(m, v), t) || 0; }
   const a = tab[0], b = tab[128] - a;
   let lin = true;
   for (let k = 1; k < 128 && lin; k++) if (Math.abs(tab[k] - (a + b * k / 128)) > 1e-9) lin = false;
-  return lin ? { a, b, x0 } : { tab, x0 };
+  const xf = lin ? { a, b, x0 } : { tab, x0 };
+  if (XFER.size >= 4096) XFER.clear(); // (bounded: a drag through 129 values of each cabled knob fits many times over)
+  XFER.set(dk, xf);
+  return xf;
 }
 export function xferInv(xf, s) {
   if (!xf) return 0;
@@ -435,9 +481,8 @@ export function linkSources(t) {
   return out;
 }
 // engine.js smTargets slots (S_*): the field a classic knob changes → the smoothed slot an sm row offsets (per-oscillator
-// fields: + the oscillator index)
-export const SM_SLOT = Object.freeze({ 'vcf.oct': 0, 'vcf.envOff': 1, 'vcf.env': 2, 'vcf.res': 3, 'vcf.drive': 4, 'hpf.oct': 5, 'hpf.res': 6, 'dual.oct': 7, 'dual.res': 8,
-  'dual.hoct': 9, 'dual.hres': 10, level: 11, 'osc.lev': 12, 'osc.on': 12, 'osc.pw': 15, 'osc.oct': 18, 'osc.fine': 18, sub: 21, noise: 22, ring: 23, ext: 24, 'rm.depth': 25 });
+// fields: + the oscillator index) — SLOT's numbering by field path (one table: review C13)
+export const SM_SLOT = Object.freeze(Object.assign({}, SLOT_FIELD, { 'osc.lev': SLOT.OL, 'osc.on': SLOT.OL, 'osc.pw': SLOT.PW, 'osc.oct': SLOT.TU, 'osc.fine': SLOT.TU }));
 const SM_PRIO = ['osc.lev', 'osc.pw', 'osc.oct', 'osc.fine', 'vcf.oct', 'vcf.res', 'vcf.env', 'vcf.envOff', 'vcf.drive', 'hpf.oct', 'hpf.res', 'dual.oct', 'dual.res', 'dual.hoct', 'dual.hres',
   'sub', 'noise', 'ring', 'ext', 'rm.depth', 'level', 'osc.on'];
 // every path that differs between patches a and b, array indices kept ('osc.1.lev'); missing ≡ 0 ≡ false

@@ -581,7 +581,7 @@ export function normDev(r) {
 // Stage 2b (IMPL-2b §1.1, §1.4): a modulator module's device record, its state bounded — lfo { kind, lfo: normLfo's
 // object, rate, rise, delay, smooth, phase } (serum-core normLfoMod), env { kind, env: { bpm, legInv, stealRe }, att, hold,
 // dec, sus, rel, crv: [a, d, r], start, end } (normEnvMod), chaos { kind, chaos: { mono, sh }, rate, bpm, smooth }
-// (normChaosMod), macro { kind, v: [8 × 0…1], names: [8 strings ≤ 16] }, cc { kind, cc: 0…127, ch: 0 (omni) … 16, v:
+// (normChaosMod), macro { kind, v: [8 × 0…1], names: [8 strings ≤ 16; blank → 'Macro n'] }, cc { kind, cc: 0…127, ch: 0 (omni) … 16, v:
 // 0…1 }, note / velo / at / bend { kind }; a name (≤ 32) is kept on any of them; an unknown kind stays plain data (a later
 // stage's module reads as it was saved)
 const MOD_KINDS = ['lfo', 'env', 'macro', 'cc', 'chaos', 'note', 'velo', 'at', 'bend'];
@@ -595,7 +595,7 @@ export function normModDev(d) {
   else if (d.kind === 'macro') {
     const v = Array.isArray(d.v) ? d.v : [], nm = Array.isArray(d.names) ? d.names : [];
     o.v = Array.from({ length: 8 }, (_, k) => v01(v[k]));
-    o.names = Array.from({ length: 8 }, (_, k) => (typeof nm[k] === 'string' ? nm[k].slice(0, 16) : ''));
+    o.names = Array.from({ length: 8 }, (_, k) => (typeof nm[k] === 'string' && nm[k].trim() ? nm[k].slice(0, 16) : 'Macro ' + (k + 1))); // (an unnamed knob: the default name, review U8)
   } else if (d.kind === 'cc') { o.cc = clamp(R(num(d.cc, 1)), 0, 127); o.ch = clamp(R(num(d.ch, 0)), 0, 16); o.v = v01(d.v); }
   if (typeof d.name === 'string' && d.name) o.name = str(d.name, null, 32);
   return o;

@@ -230,3 +230,27 @@ test('2a sourcesOf / wheelTracks: the project wheel when placed, the track\'s mo
   for (const k of Object.keys(V.MOD_SRC)) assert.equal(V.SRC_MOD[V.MOD_SRC[k]], k, 'a round trip');
   for (const k of Object.values(V.MOD_SRC)) assert.ok(C.SRC_INDEX[k] > 0, k + ' is a Serum source');
 });
+
+test('2b fixer B (C3 / C13): targetsOf memoised per (model, ctl); depsOf names the neighbours a transfer depends on; xferOf cached per (model, ctl, target) on those values; SM_SLOT is SLOT', () => {
+  const T = V.targetsOf('juno60', 'cf');
+  assert.equal(V.targetsOf('juno60', 'cf'), T, 'the same array (pure: a static memo)');
+  assert.equal(V.targetsOf(MODELS.find(m => m.id === 'juno60'), 'cf'), T, 'by model object too');
+  assert.equal(V.depsOf('juno60', 'cf', T[0]).includes('cf'), true, 'the knob itself');
+  const dv2 = V.depsOf('minimoog', 'v2', V.targetsOf('minimoog', 'v2')[0]);
+  assert.ok(dv2.includes('v2') && dv2.includes('m2'), 'the Minimoog level knob depends on its mixer switch: ' + dv2.join(','));
+  assert.ok(!dv2.includes('fc') && !dv2.includes('vol'), 'not on the filter cutoff or the master volume: ' + dv2.join(','));
+  assert.equal(V.depsOf('minimoog', 'v2', V.targetsOf('minimoog', 'v2')[0]), dv2, 'memoised');
+  assert.deepEqual(V.depsOf('serum', 'f.cutoff'), []);
+  const x1 = V.xferOf('juno60', { cf: 3, rs: 2 }, 'cf', T[0]);
+  assert.equal(V.xferOf('juno60', { cf: 3, rs: 9 }, 'cf', T[0]), x1, 'an uncabled neighbour (not a dependency): the same transfer object');
+  const x2 = V.xferOf('juno60', { cf: 4, rs: 9 }, 'cf', T[0]);
+  assert.notEqual(x2, x1, 'the knob moved: a new transfer');
+  assert.equal(x2.x0 > x1.x0, true);
+  assert.equal(V.xferOf('juno60', { cf: 4 }, 'cf', T[0]), x2, 'cached by the dependency values, not the vals object');
+  const m2on = V.xferOf('minimoog', { v2: 5, m2: 1 }, 'v2'), m2off = V.xferOf('minimoog', { v2: 5, m2: 0 }, 'v2');
+  assert.notEqual(m2on, m2off, 'a dependency changed: recomputed');
+  assert.deepEqual([m2off.a, m2off.b], [0, 0], 'the switch off: inert');
+  assert.equal(V.SM_SLOT['vcf.oct'], V.SLOT.VO);
+  assert.equal(V.SM_SLOT['osc.pw'], V.SLOT.PW);
+  assert.equal(V.SM_SLOT['rm.depth'], V.SLOT.RM);
+});

@@ -28,7 +28,7 @@ test('2b addModDev / removeModDev for every kind: numbered ids per prefix (a rem
   assert.deepEqual(t.dev.l1, { kind: 'lfo', lfo: Object.assign(C.normLfo({}), { mono: 1 }), rate: 0.5, rise: 0, delay: 0, smooth: 0, phase: 0 }, 'an LFO: Serum\'s default LFO, GLOBAL, the slot knobs at device level');
   assert.deepEqual(t.dev.e1, Object.assign({ kind: 'env' }, C.normEnvMod({})));
   assert.deepEqual(t.dev.e1, { kind: 'env', env: { bpm: 0, legInv: 0, stealRe: 0 }, att: 0.11, hold: 0, dec: 0.5, sus: 1, rel: 0.215, start: 0, end: 0, crv: [0.5, 0.666, 0.666] }, 'Serum\'s ENV 2 defaults');
-  assert.deepEqual(t.dev.m1, { kind: 'macro', v: [0, 0, 0, 0, 0, 0, 0, 0], names: ['', '', '', '', '', '', '', ''] });
+  assert.deepEqual(t.dev.m1, { kind: 'macro', v: [0, 0, 0, 0, 0, 0, 0, 0], names: ['Macro 1', 'Macro 2', 'Macro 3', 'Macro 4', 'Macro 5', 'Macro 6', 'Macro 7', 'Macro 8'] }, '(U8: the default names)');
   assert.deepEqual([t.dev.c1, t.dev.h1, t.dev.nt], [{ kind: 'cc', cc: 1, ch: 0, v: 0 }, { kind: 'chaos', chaos: { mono: 1, sh: 0 }, rate: 0.2512, bpm: 0, smooth: 0 }, { kind: 'note' }]);
   for (const id of ['l1', 'l2', 'e1', 'm1', 'c1', 'h1', 'nt']) assert.equal(G.kindOf(t.dev[id]), 'mod', id);
   assert.equal(G.compileTrack(t).canonical, false, '(two instruments: the graph form; modules change no shape)');
@@ -52,6 +52,10 @@ test('2b setModState: fields merged and bounded by song.normModDev (nested one l
   assert.deepEqual([L.lfo.bpm, L.lfo.mode, L.rate], [0, 'free', 1], 'a partial slot object: merged over the old');
   assert.ok(MO.setModState(t, 'e1', { att: 0.5, sus: 3, env: { legInv: 1 }, crv: [0.1, 0.2] }).ok);
   assert.deepEqual([t.dev.e1.att, t.dev.e1.sus, t.dev.e1.env.legInv, t.dev.e1.dec, t.dev.e1.crv], [0.5, 1, 1, 0.5, [0.1, 0.2, 0.666]]);
+  assert.ok(MO.setModState(t, 'e1', { crv: [0.9] }).ok);
+  assert.deepEqual(t.dev.e1.crv, [0.9, 0.2, 0.666], 'C12: a partial array merges element-wise (the rest kept, not reset)');
+  assert.ok(MO.setModState(t, 'e1', { crv: [undefined, 0.3] }).ok);
+  assert.deepEqual(t.dev.e1.crv, [0.9, 0.3, 0.666]);
   assert.ok(MO.setModState(t, 'm1', { v: [0.2, 5], names: ['Cutoff', 'a name that is far too long'] }).ok);
   assert.deepEqual([t.dev.m1.v, t.dev.m1.names.slice(0, 2)], [[0.2, 1, 0, 0, 0, 0, 0, 0], ['Cutoff', 'a name that is f']]);
   assert.ok(MO.setModState(t, 'c1', { cc: 74, ch: 3, v: 0.4 }).ok && MO.setModState(t, 'h1', { chaos: { mono: 0 }, rate: 0.9, smooth: 2 }).ok);
@@ -79,12 +83,13 @@ test('2b addMod from every source to every destination: Serum (the Serum\'s drop
   assert.deepEqual([add('l1.out', mm + ':tune').row.bi, add('l1.out', mm + ':tune').row.amt, add('l1.out', mm + ':v1').row.bi], [1, 0.25, 0], 'a centred classic knob drops bipolar');
   for (const r of t.mods) assert.deepEqual(Object.keys(r), ROW_KEYS, r.id);
   const o = add('l1.out', i2 + ':rs', { amt: -0.4, bi: 1, curve: 0.3, aux: 'lfo2', rise: 0.2, slink: 1, crv: [[0, 0], [1, 1]] }).row;
-  assert.deepEqual([o.amt, o.bi, o.curve, o.aux, o.rise, o.fall, o.slink, o.crv], [-0.4, 1, 0.3, 'lfo2', 0.2, 0.2, 1, [[0, 0, 0], [1, 1, 0]]], 'overrides through normRow');
+  assert.deepEqual([o.amt, o.bi, o.curve, o.aux, o.rise, o.fall, o.slink, o.crv], [-0.4, 1, 0.3, '', 0.2, 0.2, 1, [[0, 0, 0], [1, 1, 0]]], 'overrides through normRow; C7: no aux on a classic / panel row (it would name the synthetic CP\'s slot)');
+  assert.equal(add('l1.out', 'i1:f.res', { aux: 'lfo2' }).row.aux, 'lfo2', 'a Serum row keeps its aux');
   // refusals
   const was = JSON.stringify(t), cases = [
     ['l9.out', 'i1:f.cutoff', 'src'], ['m1.k9', 'i1:f.cutoff', 'src'], ['m1.out', 'i1:f.cutoff', 'src'], ['l1.k1', 'i1:f.cutoff', 'src'], ['i2/lfo1.out', 'i1:f.cutoff', 'src'], ['i1/lfo11.out', 'i1:f.cutoff', 'src'], ['i9/lfo1.out', 'i1:f.cutoff', 'src'],
     ['l1.out', 'i9:f.cutoff', 'end'], ['l1.out', i2 + ':pwm', 'stage'], ['l1.out', i2 + ':nope', 'nomod'], ['l1.out', mm + ':mm', 'nomod'], ['l1.out', mm + ':v2', 'nomod'], ['l1.out', pid + ':fx.rev.nope', 'nomod'], ['l1.out', 'out:x', 'nomod'], ['l1.out', 'l1:x', 'nomod'],
-    ['l1.out', i2 + ':cf', 'aux', { aux: 'nope' }]];
+    ['l1.out', 'i1:f.cutoff', 'aux', { aux: 'nope' }]];
   for (const [src, dst, code, o] of cases) { const r = add(src, dst, o); assert.deepEqual([r.ok, r.code, r.row], [false, code, null], src + ' → ' + dst); }
   assert.equal(JSON.stringify(t), was, 'untouched');
   assert.equal(add('l1.out', mm + ':v2').why, 'Switch the oscillator on to modulate its level');
@@ -100,13 +105,14 @@ test('2b setMod on non-native rows (normRow\'s rules by proxy): fields, never th
   MO.addModDev(t, 'lfo'); MO.addModDev(t, 'macro');
   MO.addMod(t, 'l1.out', 'i1:f.cutoff'); MO.addMod(t, 'l1.out', i2 + ':cf'); MO.addMod(t, 'm1.k2', pid + ':fx.rev.mix'); MO.addMod(t, 'i1/env2.out', i2 + ':a');
   for (const id of ['r1', 'r2', 'r3', 'r4']) {
+    const sx = id === 'r1'; // (C7: an aux names a Serum source — on a classic / panel row it would name the synthetic CP's slot: cleared)
     assert.equal(MO.setMod(t, id, { amt: 2, bi: 1, src: 'x', dst: 'y', id: 'z', rise: 0.5, slink: 1, aux: 'lfo3', curve: -3, crv: [[0.5, 0.5]] }).ok, true, id);
     const r = t.mods.find(x => x.id === id);
-    assert.deepEqual([r.id, r.amt, r.bi, r.rise, r.fall, r.slink, r.aux, r.curve, r.crv], [id, 1, 1, 0.5, 0.5, 1, 'lfo3', -1, [[0, 0.5, 0], [1, 0.5, 0]]], id);
+    assert.deepEqual([r.id, r.amt, r.bi, r.rise, r.fall, r.slink, r.aux, r.curve, r.crv], [id, 1, 1, 0.5, 0.5, 1, sx ? 'lfo3' : '', -1, [[0, 0.5, 0], [1, 0.5, 0]]], id);
     assert.ok(r.src !== 'x' && r.dst !== 'y');
     const before = jclone(r);
-    assert.deepEqual(MO.setMod(t, id, { aux: 'nope' }), { ok: false, why: 'Unknown aux source' });
-    assert.deepEqual(r, before);
+    if (sx) { assert.deepEqual(MO.setMod(t, id, { aux: 'nope' }), { ok: false, why: 'Unknown aux source' }); assert.deepEqual(r, before); }
+    else { assert.deepEqual(MO.setMod(t, id, { aux: 'nope', inv: 1 }), { ok: true, why: '' }); assert.deepEqual([r.aux, r.inv], ['', 0], id + ': aux and its invert stay off'); }
   }
   assert.equal(MO.setMod(t, 'r9', { amt: 0 }).ok, false);
   assert.deepEqual(MO.removeMod(t, 'r4'), { ok: true, why: '' });
@@ -134,4 +140,31 @@ test('2b rows go with what they end on or start at: a model change keeps the row
   u.model = 'juno60'; // (the accessor: setTrackModel)
   assert.deepEqual([u.mods, 'l1' in u.dev], [[], true], 'no Serum knob survives; the module stays');
   assert.equal(MO.setModel(u, 'i1', 'minimoog', { vals: {} }).notice, '');
+});
+
+test('C8: removePanel drops the rows to the panel\'s knobs (their ids returned); pruneRows drops the rows whose knob went (an effect instance removed)', () => {
+  const { t, i2, pid } = duo(), p = { tracks: [t], perf: { wheel: { v: 1 } } };
+  MO.addModDev(t, 'lfo');
+  MO.addMod(t, 'l1.out', pid + ':fx.rev.mix', { project: p }); MO.addMod(t, 'l1.out', i2 + ':cf', { project: p }); MO.addMod(t, 'l1.out', pid + ':fx.rev.on', { project: p });
+  const id2 = C.newInstance(t.dev[pid].fx, 'rev', { rack: 0 });
+  MO.addMod(t, 'l1.out', pid + ':fx.' + id2 + '.mix', { project: p });
+  assert.deepEqual(t.mods.map(r => r.id), ['r1', 'r2', 'r3', 'r4']);
+  const rack = t.dev[pid].fx.racks[0];
+  rack.mods = rack.mods.filter(x => x.id !== id2); // (the effect instance removed, as the rack UI does)
+  assert.deepEqual(MO.pruneRows(t, pid), ['r4'], 'the removed effect\'s row');
+  assert.deepEqual(MO.pruneRows(t, pid), [], 'nothing twice');
+  assert.deepEqual(MO.pruneRows(t, i2), []);
+  assert.deepEqual(G.validate(t).ok, true);
+  assert.deepEqual(MO.removePanel(t, pid), { ok: true, why: '', rows: ['r1', 'r3'] });
+  assert.deepEqual([t.mods.map(r => r.id), G.validate(t).ok], [['r2'], true], 'no row ends on nothing');
+  assert.equal(MO.removePanel(t, pid).ok, false);
+});
+
+test('U8: a macro module is born with its knobs named "Macro 1"…"Macro 8"; an emptied name comes back as the default', () => {
+  const { t } = duo();
+  MO.addModDev(t, 'macro');
+  assert.deepEqual(t.dev.m1.names, Array.from({ length: 8 }, (_, k) => 'Macro ' + (k + 1)));
+  MO.setModState(t, 'm1', { names: ['Cut', ''] });
+  assert.deepEqual(t.dev.m1.names.slice(0, 3), ['Cut', 'Macro 2', 'Macro 3']);
+  assert.deepEqual(S.normModDev({ kind: 'macro', names: [7, '  ', 'x'] }).names.slice(0, 3), ['Macro 1', 'Macro 2', 'x']);
 });

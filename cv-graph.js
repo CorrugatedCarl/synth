@@ -97,11 +97,14 @@
 //                           destination: src → its own scratch V-scope destination SCRATCH[i], the cable's amt / bi /
 //                           curve / crv / aux / inv / rise / fall / out, evaluated by the pseudo-voice's matrix() and read
 //                           back from V.mod.off[vi]), then a KEEP-ALIVE row (amt 1 → the shared scratch KEEP_ID) per
-//                           evaluated LFO / ENV / chaos source no synthetic row reads (SxMod skips unreferenced sources)
+//                           evaluated LFO / ENV / chaos source no LIVE synthetic row reads (bypassed / amt-0 / out-0 rows
+//                           read nothing: serum-core rowActive; SxMod skips unreferenced sources) and per ext-listed one
+//                           regardless (review C1: a bypassed classic cable never starves a Serum's ext feed)
 //     rows                  [{ id, src, dst: { kind: 'cls', inst, slot } | { kind: 'set', inst, field } | { kind: 'fx',
 //                           chain, fx, key }, amt, bi, curve, crv, aux, inv, rise, fall, byp, out, perNote, vi, slot }] —
-//                           src / aux: the synthetic CP's source index (serum-core SRC_INDEX; a value source ext j is
-//                           62 + j − 1, serum-core's S_EXT0 of §3.2); vi: the scratch destination's voice-vector index
+//                           src: the synthetic CP's source index (serum-core SRC_INDEX; a value source ext j is 62 + j − 1,
+//                           serum-core's S_EXT0 of §3.2); aux / inv always 0 (review C7: an aux names a Serum source — on a
+//                           canvas row it would name the synthetic CP's slot); vi: the scratch destination's voice-vector index
 //                           (serum-core vi()); slot: the synthetic matrix slot (its 'crv<slot>' CT part); dst.slot: the
 //                           engine's smTargets S_* index (cv-mods SM_SLOT), dst.field the patch field ('lfo.rate'),
 //                           dst.fx the chain's fx-core flat parameter index with the layout key
@@ -112,18 +115,24 @@
 //                           8–23 further macro knobs and CC modules (initial values; MC.ctl(k, v) later)
 //     keep                  [src] the keep-alive sources;  left [{ id, why: 'slots' | 'ext' | 'full' }] the rows not
 //                           compiled;  dashed [ids] the rows drawn dashed (§1.3);  n { lfo, env, chaos, macro, vals,
-//                           ext, rows } the budgets used;  key: a content key (the payload without cp / ct, cpKey, ct key:
-//                           an instrument knob turn never changes it unless the knob's own transfer changes)
+//                           ext, rows } the budgets used (rows: distinct cables — a knob that moves two things counts
+//                           once, review C6);  slots { <moduleId | '<serum>/lfo<k>'>: { kind: 'lfo' | 'env' | 'chaos', i } }
+//                           each evaluated source's ModCore slot in the live-meter order (lfo 1…10 → 0…9, env 2 3 4 1 →
+//                           10…13, chaos 1 2 → 14 15);  key: a content key (the payload without cp / ct, cpKey, ct key; vals
+//                           by k / src / id without v: an instrument knob turn or a macro gesture never changes it, a
+//                           cabled classic knob's own transfer does)
 //                           ModCore slots go, in module id order, to the sources that need ModCore evaluation only (a
 //                           PER NOTE LFO injected into every Serum it feeds takes none); over capacity (10 LFO incl.
 //                           linked, 4 ENV, 2 chaos, 8 macros, 16 value sources, 16 ext, SCRATCH synthetic rows) the row
-//                           is left with its reason
+//                           is left with its reason. Memoised per track by a hash of what the compile reads (sigOf
+//                           below): an uncabled knob of a cabled instrument is a hit; a macro / CC value is a hit whose
+//                           vals are refreshed
 //   SCRATCH / KEEP_ID       the scratch destinations: V-scope rows of silent modules (oscillator / sub / noise / filter
 //                           knobs), never a note-on, LFO, ENV, chaos, porta or voice-control destination
 import * as CM from './cv-mods.js?v=9';
 import { classOf, MOD_SRC, srcDev, perNoteOf, classicTarget, modDevs, rackDescs } from './cv-mods.js?v=9';
 import { defaultFx2, compileFx, compileFxT, normRow, N_MATRIX, N_LFO, N_ENV, N_MACRO, normalizeSerum, defaultSerum, compileSerum, SRC_INDEX, vi, DESTS, DEST_INDEX,
-  NOTE_ON_DESTS, normLfo, lfoUsed } from './serum-core.js?v=9';
+  NOTE_ON_DESTS, normLfo, lfoUsed, extIndex } from './serum-core.js?v=9';
 import { fxLayout, fxDest } from './fx-core.js?v=9';
 import { patchFor } from './models.js?v=9';
 
@@ -323,7 +332,7 @@ export function compileGraph(t) {
 export function instPatch(d, opts, rows, ext, t) {
   const sx = d.model === 'serum', inj = sx && Array.isArray(rows) && rows.length ? injectMods(d, rows, ext, t) : null;
   const vals = inj && inj.s !== d.vals.s ? Object.assign({}, d.vals, { s: inj.s }) : d.vals;
-  const o = inj && inj.placed.some(x => EXT_RE.test(x.src)) ? Object.assign({}, opts, { ext: true }) : opts; // (ext rows: the compile accepts them, §3.2)
+  const o = inj && inj.placed.some(x => extIndex(x.src) > 0) ? Object.assign({}, opts, { ext: true }) : opts; // (ext rows: the compile accepts them, §3.2)
   const p = patchFor(d.model, vals, sx && d.fx ? d.fx : defaultFx2(), o);
   if (!sx) {
     const fn = p.fxr && Array.isArray(p.fxr.needs) ? p.fxr.needs : [];
@@ -347,11 +356,10 @@ export function modRowsFor(t, devId) {
   const pre = devId + ':';
   return isObj(t) && Array.isArray(t.mods) ? t.mods.filter(r => isObj(r) && typeof r.dst === 'string' && r.dst.length > pre.length && r.dst.startsWith(pre)) : [];
 }
-const EXT_RE = /^ext([1-9]|1[0-6])$/;
 export function nativeRow(r, src) {
   const sid = src !== undefined ? src : isObj(r) && typeof r.src === 'string' ? MOD_SRC[r.src] : undefined, i = sid && typeof r.dst === 'string' ? r.dst.indexOf(':') : -1;
   if (i < 1) return null;
-  const ext = EXT_RE.test(sid), n = normRow(Object.assign({}, r, { src: ext ? 'wheel' : sid, dst: r.dst.slice(i + 1) }));
+  const ext = extIndex(sid) > 0, n = normRow(Object.assign({}, r, { src: ext ? 'wheel' : sid, dst: r.dst.slice(i + 1) })); // (serum-core's ext ids, §3.2)
   if (!n.src || !n.dst) return null; // (normRow empties a row with an unknown source / aux / destination)
   if (ext) n.src = sid;
   return n;
@@ -494,12 +502,13 @@ export const SCRATCH = Object.freeze((() => {
   return out;
 })());
 export const KEEP_ID = SCRATCH[SCRATCH.length - 1], SYN_MAX = N_MATRIX - N_LFO - N_ENV - 2; // (48 synthetic rows: the keep-alives always fit)
-const SRC_IDX = id => { const m = EXT_RE.exec(id); return m ? S_EXT0 + (+m[1] - 1) : SRC_INDEX[id]; };
+const SRC_IDX = id => { const k = extIndex(id); return k ? S_EXT0 + k - 1 : SRC_INDEX[id]; };
 const fnv = (h, str) => { for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h; };
 const MEMO = new WeakMap(); // track → { sig, pay } (a knob turn elsewhere on the track recompiles nothing)
 const lfoSlot = k => 'lfo' + (k + 1), envSlot = k => 'env' + (k + 1);
 const ENV_ORDER = [1, 2, 3, 0]; // (ENV 2–4, then ENV 1)
-// every row of the track that can compile: its parts and class
+// every row of the track that can compile: its parts and class (a classic knob's target is the compile's: its transfer
+// says when the knob is inert — a switched-off oscillator's level keeps its cable with b 0, review C3)
 function validRows(t) {
   const out = [];
   for (const r of Array.isArray(t.mods) ? t.mods : []) {
@@ -509,9 +518,8 @@ function validRows(t) {
     const K = kindOf(d);
     if (K === 'inst' && d.model === 'serum') { out.push({ r, D, d, S, kind: 'serum' }); continue; }
     if (K === 'inst') {
-      const c = classOf(d.model, D.param), tg = c === 'sm' || c === 'apply' || c === 'proc' ? classicTarget(d.model, d.vals, D.param) : null;
-      if (!tg || !tg.on || (c === 'sm' ? tg.slot < 0 : tg.field === null)) continue;
-      out.push({ r, D, d, S, kind: c === 'sm' ? 'cls' : 'set', tg });
+      const c = classOf(d.model, D.param);
+      if (c === 'sm' || c === 'apply' || c === 'proc') out.push({ r, D, d, S, kind: c === 'sm' ? 'cls' : 'set' });
       continue;
     }
     if (K === 'panel') {
@@ -525,26 +533,76 @@ function validRows(t) {
   }
   return out;
 }
-// the signature of everything compileMods reads (the memo; the content key hashes the result)
-function sigOf(t, project, opts, V) {
-  const parts = [t.mods, modDevs(t).map(x => [x.id, x.dev]), project && project.bpm, opts.smooth, opts.qr, opts.ultra];
+/* the memo signature (review C2 / C3 / C5 / C9, P1): a 64-bit hash of everything the compile reads, walked without
+   stringifying — the rows (every field), the module states bar the macro / CC VALUES (the value table travels by
+   {t: 'mval'}; the payload's vals are refreshed on a hit), bpm and the compile options, and per destination: a classic
+   instrument's model and the values of the controls each cabled knob's transfer DEPENDS on (cv-mods depsOf: the knob and
+   its measured neighbours — so an uncabled knob of a cabled instrument is a HIT), a Serum's slot states / slot knobs /
+   matrix sources and fill (the free picture and 'full'), a panel's layout key, a linked slot's state. Numbers go in by
+   their bits, strings by their chars; two independent FNV streams make a false hit a 2⁻⁶⁴ event. */
+const F64 = new Float64Array(1), U32 = new Uint32Array(F64.buffer);
+let H1 = 0, H2 = 0;
+const mixU = u => { H1 = Math.imul(H1 ^ u, 16777619); H2 = Math.imul(H2 ^ u, 0x5bd1e995) + 0x27d4eb2f | 0; };
+const mixN = x => { F64[0] = x; mixU(U32[0]); mixU(U32[1]); };
+const mixS = s => { mixU(0x2c); for (let i = 0; i < s.length; i++) mixU(s.charCodeAt(i)); };
+function hv(v) {
+  if (typeof v === 'number') mixN(v);
+  else if (typeof v === 'string') mixS(v);
+  else if (v === true) mixU(0x54); else if (v === false) mixU(0x46); else if (v == null) mixU(0x4e);
+  else if (Array.isArray(v)) { mixU(0x5b); for (let i = 0; i < v.length; i++) hv(v[i]); mixU(0x5d); }
+  else if (typeof v === 'object') { mixU(0x7b); for (const k in v) { const x = v[k]; if (x !== undefined && typeof x !== 'function') { mixS(k); hv(x); } } mixU(0x7d); }
+}
+const FN_ID = new WeakMap(); let fnN = 0; // (a stubbed transfer in opts: its identity)
+const fnId = f => { if (typeof f !== 'function') return 0; let k = FN_ID.get(f); if (!k) FN_ID.set(f, (k = ++fnN)); return k; };
+function serumSig(d) {
+  const s = isObj(d.vals) ? d.vals.s : null;
+  if (!isObj(s)) { mixU(0x78); return; }
+  hv(s.lfo); hv(s.env);
+  const p = isObj(s.p) ? s.p : {};
+  for (let k = 1; k <= N_LFO; k++) for (const x of LFO_KNOBS) hv(p['l' + k + '.' + x]);
+  for (let k = 2; k <= N_ENV; k++) for (const x of ENV_ALL) hv(p['e' + k + '.' + x]);
+  const M = Array.isArray(s.matrix) ? s.matrix : [];
+  let n = 0;
+  for (let k = 0; k < N_MATRIX && k < M.length; k++) { const r = M[k]; if (isFree(r)) continue; n++; mixS(r.src); mixS(typeof r.aux === 'string' ? r.aux : ''); }
+  mixN(n);
+}
+function sigOf(t, project, o) {
+  H1 = 0x811c9dc5; H2 = 0x9747b28c;
+  mixN(isObj(project) && project.bpm > 0 ? +project.bpm : 120); mixN(o.smooth > 0 ? +o.smooth : 1); mixN(o.ultra ? 1 : 0); mixS(o.qr ? JSON.stringify(o.qr) : '');
+  mixN(fnId(o.xferOf)); mixN(fnId(o.targetsOf));
+  for (const { id, dev, kind } of modDevs(t)) { mixS(id); if (kind === 'macro') hv(dev.names); else if (kind === 'cc') { hv(dev.cc); hv(dev.ch); } else hv(dev); }
   const seen = new Set();
-  for (const x of V) {
-    if (seen.has(x.D.dev)) continue;
-    seen.add(x.D.dev);
-    if (x.kind === 'cls' || x.kind === 'set') parts.push([x.D.dev, x.d.vals]);
-    else if (x.kind === 'serum') { const s = isObj(x.d.vals) ? x.d.vals.s : null, f = []; for (let k = 0; k < N_LFO; k++) f.push(lfoFree(s, k) ? 1 : 0); for (let k = 1; k < N_ENV; k++) f.push(envFree(s, k) ? 1 : 0); parts.push([x.D.dev, f]); }
-    else parts.push([x.D.dev, x.key]);
+  for (const r of Array.isArray(t.mods) ? t.mods : []) {
+    if (!isObj(r)) continue;
+    mixU(0x7c); hv(r);
+    const D = splitDst(r.dst), d = D ? t.dev[D.dev] : null;
+    if (!isObj(d)) continue;
+    const K = kindOf(d);
+    if (K === 'inst' && d.model === 'serum') { if (!seen.has(D.dev)) { seen.add(D.dev); serumSig(d); } }
+    else if (K === 'inst') {
+      mixS(typeof d.model === 'string' ? d.model : '');
+      const v = isObj(d.vals) ? d.vals : {}, T = CM.targetsOf(d.model, D.param);
+      for (const x of T) for (const id of CM.depsOf(d.model, D.param, x)) { mixS(id); hv(v[id]); }
+    } else if (K === 'panel') { if (!seen.has(D.dev)) { seen.add(D.dev); const fx = isObj(d.fx) ? d.fx : null; let key = ''; try { key = fx ? fxLayout(fx).key : ''; } catch { key = '?'; } mixS(key); } }
+    if (typeof r.src === 'string' && r.src.indexOf('/') > 0) hv(slotState(t, r.src));
   }
-  for (const x of V) if (x.S.kind === 'link') parts.push([x.r.src, slotState(t, x.r.src)]);
-  return JSON.stringify(parts);
+  return (H1 >>> 0).toString(16) + (H2 >>> 0).toString(16);
+}
+// the value table's initial values follow the modules on a memo hit too (a repost then carries the latest, not the
+// values of the compile; k / src / id are the content — review C5)
+function refreshVals(t, pay) {
+  if (!pay) return;
+  for (const e of pay.vals) {
+    const S = srcDev(t, e.id), v = S && S.kind === 'macro' ? (Array.isArray(S.dev.v) ? S.dev.v[+/\.k(\d)$/.exec(e.id)[1] - 1] : 0) : S && S.kind === 'cc' ? S.dev.v : e.v;
+    e.v = typeof v === 'number' ? v : 0;
+  }
 }
 export function compileMods(t, project, opts) {
   if (!isObj(t) || !isObj(t.dev)) return null;
-  const o = isObj(opts) ? opts : {}, V = validRows(t), devs = modDevs(t);
-  if (!devs.length && !V.length) return null;
-  const sig = sigOf(t, project, o, V), memo = MEMO.get(t);
-  if (memo && memo.sig === sig) return memo.pay;
+  const o = isObj(opts) ? opts : {}, sig = sigOf(t, project, o), memo = MEMO.get(t);
+  if (memo && memo.sig === sig) { refreshVals(t, memo.pay); return memo.pay; }
+  const V = validRows(t), devs = modDevs(t);
+  if (!devs.length && !V.length) { MEMO.set(t, { sig, pay: null }); return null; }
   const pay = buildMods(t, project, o, V, devs);
   MEMO.set(t, { sig, pay });
   return pay;
@@ -609,38 +667,46 @@ function buildMods(t, project, o, V, devs) {
   // for a knob that moves several things: master tune → three TU slots, Juno Env A → fenv.a + aenv.a) and xferOf(model,
   // vals, ctl, target) → { a, b, x0 } | { tab, x0 }; a test stubs them through opts; absent: one target from
   // classicTarget and the identity transfer)
-  const rows = [], xfer = [], syn = [], xf = typeof o.xferOf === 'function' ? o.xferOf : typeof CM.xferOf === 'function' ? CM.xferOf : () => ({ a: 0, b: 1, x0: 0 });
-  const tgs = typeof o.targetsOf === 'function' ? o.targetsOf : typeof CM.targetsOf === 'function' ? CM.targetsOf : null;
-  const targetsOf = x => { const T = tgs ? tgs(x.d.model, x.D.param) : null; return Array.isArray(T) && T.length ? T : [x.kind === 'cls' ? { kind: 'slot', slot: x.tg.slot } : { kind: 'field', field: x.tg.field }]; };
-  const used = new Set();
+  const rows = [], xfer = [], syn = [], xf = typeof o.xferOf === 'function' ? o.xferOf : CM.xferOf, tgs = typeof o.targetsOf === 'function' ? o.targetsOf : CM.targetsOf;
+  const targetsOf = x => { // (the targets from the sweep; a stub that names none: the live patch's single target — an inert knob (a switched-off oscillator's level) then has none and its row is skipped, as before)
+    const T = tgs(x.d.model, x.D.param);
+    if (Array.isArray(T) && T.length) return T;
+    const tg = classicTarget(x.d.model, x.d.vals, x.D.param);
+    if (!tg || !tg.on || (x.kind === 'cls' ? tg.slot < 0 : tg.field === null)) return [];
+    return [x.kind === 'cls' ? { kind: 'slot', slot: tg.slot } : { kind: 'field', field: tg.field }];
+  };
+  const used = new Set(), live = r => !r.byp && r.amt !== 0 && r.out !== 0; // (serum-core rowActive: a bypassed / silent row reads nothing — review C1)
   for (const x of V) {
     if (x.kind === 'serum') continue;
     const a = alloc.get(x.r.src);
     if (!a) { left.push({ id: x.r.id, why: 'slots' }); continue; }
+    const T = x.kind === 'fx' ? null : targetsOf(x);
+    if (T && !T.length) continue;
     if (syn.length >= SYN_MAX) { left.push({ id: x.r.id, why: 'full' }); continue; }
-    const slot = syn.length, dstId = SCRATCH[slot], n0 = normRow(Object.assign({}, x.r, { src: EXT_RE.test(a.sid) ? 'wheel' : a.sid, dst: dstId }));
-    if (!n0.src) { left.push({ id: x.r.id, why: 'nomod' }); continue; } // (an aux normRow refuses)
+    const slot = syn.length, dstId = SCRATCH[slot], n0 = normRow(Object.assign({}, x.r, { src: extIndex(a.sid) ? 'wheel' : a.sid, dst: dstId, aux: '', inv: 0 })); // (no aux on a canvas row: it would name the synthetic CP's slot — review C7)
+    if (!n0.src) { left.push({ id: x.r.id, why: 'nomod' }); continue; }
     n0.src = a.sid;
-    if (n0.aux && !alloc.has(n0.aux) && SRC_INDEX[n0.aux] === undefined) n0.aux = '';
     syn.push(n0);
-    used.add(a.sid); if (n0.aux) used.add(n0.aux);
+    if (live(n0)) used.add(a.sid);
     if (a.perNote) dashed.add(x.r.id);
-    const base = { id: x.r.id, src: SRC_IDX(a.sid), dst: null, amt: n0.amt, bi: n0.bi, curve: n0.curve, crv: n0.crv, aux: n0.aux ? SRC_IDX(n0.aux) : 0, inv: n0.inv, rise: n0.rise, fall: n0.fall, byp: n0.byp, out: n0.out,
+    const base = { id: x.r.id, src: SRC_IDX(a.sid), dst: null, amt: n0.amt, bi: n0.bi, curve: n0.curve, crv: n0.crv, aux: 0, inv: 0, rise: n0.rise, fall: n0.fall, byp: n0.byp, out: n0.out,
       perNote: a.perNote, vi: vi(dstId), slot, tgt: 0 };
     if (x.kind === 'fx') { rows.push(Object.assign(base, { dst: { kind: 'fx', chain: x.D.dev, fx: x.fx, key: x.key } })); xfer.push(null); continue; }
-    targetsOf(x).forEach((T, j) => { // one payload row per target of the knob (the same synthetic row: the same vi), its own transfer
-      const dst = T.kind === 'slot' ? { kind: 'cls', inst: x.D.dev, slot: T.slot } : { kind: 'set', inst: x.D.dev, field: T.field };
+    T.forEach((tg, j) => { // one payload row per target of the knob (the same synthetic row: the same vi), its own transfer
+      const dst = tg.kind === 'slot' ? { kind: 'cls', inst: x.D.dev, slot: tg.slot } : { kind: 'set', inst: x.D.dev, field: tg.field };
       rows.push(Object.assign({}, base, { dst, tgt: j }));
-      xfer.push(xf(x.d.model, x.d.vals, x.D.param, T));
+      xfer.push(xf(x.d.model, x.d.vals, x.D.param, tg));
     });
   }
-  n.rows = rows.length;
+  n.rows = new Set(rows.map(r => r.id)).size; // (cables, not payload rows: a knob that moves two things counts once — review C6)
   // 6. the synthetic Serum: the slots filled, unused LFO slots parked, keep-alive rows for the LFO / ENV / chaos sources
-  //    no synthetic row reads
+  //    no live synthetic row reads and for every ext-listed one regardless (the Serums' ext feed never depends on a
+  //    classic row's bypass: review C1); slots: each evaluated module's ModCore slot in the live-meter order (lfo 0…9,
+  //    env2 env3 env4 env1 → 10…13, chaos 14…15)
   const sy = normalizeSerum(defaultSerum());
   sy.p['a.on'] = 0; sy.voicing.poly = 1;
   for (let k = 0; k < N_LFO; k++) Object.assign(sy.lfo[k], { mode: 'free', mono: 1 });
-  const keep = [];
+  const keep = [], extIds = new Set(ext.map(e => e.id)), slots = {}, keepOf = (id, a) => !used.has(a.sid) || extIds.has(id);
   let anyExt = false;
   for (const [id, a] of alloc) {
     if (!a) continue;
@@ -651,17 +717,20 @@ function buildMods(t, project, o, V, devs) {
     else if (m[1] === 'chaos') { const c = isObj(S.dev.chaos) ? S.dev.chaos : {}; sy.chaos[k] = { mono: c.mono ? 1 : 0, sh: c.sh ? 1 : 0 }; if (typeof S.dev.rate === 'number') sy.p['c' + (k + 1) + '.rate'] = S.dev.rate; sy.p['c' + (k + 1) + '.bpm'] = S.dev.bpm ? 1 : 0; }
     else if (m[1] === 'macro') { const nm = Array.isArray(S.dev.names) ? S.dev.names[k] : ''; sy.macros[k] = { name: (typeof nm === 'string' && nm) || 'Macro ' + (k + 1), v: typeof S.dev.v[k] === 'number' ? S.dev.v[k] : 0 }; }
     else anyExt = true;
-    if ((m[1] === 'lfo' || m[1] === 'env' || m[1] === 'chaos') && !used.has(a.sid)) keep.push(SRC_IDX(a.sid));
+    if (m[1] === 'lfo' || m[1] === 'env' || m[1] === 'chaos') {
+      slots[id.replace(/\.out$/, '')] = { kind: m[1], i: m[1] === 'lfo' ? k : m[1] === 'env' ? (k === 0 ? 13 : 9 + k) : 14 + k };
+      if (keepOf(id, a)) keep.push(SRC_IDX(a.sid));
+    }
   }
   syn.forEach((r, k) => { sy.matrix[k] = r; });
   let slot = syn.length;
-  for (const [id, a] of alloc) if (a && !used.has(a.sid) && /^(lfo|env|chaos)/.test(a.sid) && slot < N_MATRIX) sy.matrix[slot++] = normRow({ src: a.sid, amt: 1, dst: KEEP_ID });
+  for (const [id, a] of alloc) if (a && /^(lfo|env|chaos)/.test(a.sid) && keepOf(id, a) && slot < N_MATRIX) sy.matrix[slot++] = normRow({ src: a.sid, amt: 1, dst: KEEP_ID });
   const bpm = isObj(project) && project.bpm > 0 ? +project.bpm : 120;
   const P = compileSerum(sy, { bpm, smooth: o.smooth > 0 ? +o.smooth : 1, fx: null, qr: o.qr || null, ultra: o.ultra ? 1 : 0, ext: anyExt || undefined });
   const ord = new Map(V.map((x, i) => [x.r.id, i]));
   left.sort((a, b) => ord.get(a.id) - ord.get(b.id)); // (in track.mods order)
-  const pay = { t: 'mods', i: t.id, key: '', cp: P.serum, ct: P.serumT, rows, xfer, ext, vals, keep, left, dashed: [...dashed], n };
-  let h = fnv(0x811c9dc5, JSON.stringify([rows, xfer, ext, vals, keep, left, pay.dashed, n]));
+  const pay = { t: 'mods', i: t.id, key: '', cp: P.serum, ct: P.serumT, rows, xfer, ext, vals, keep, left, dashed: [...dashed], n, slots };
+  let h = fnv(0x811c9dc5, JSON.stringify([rows, xfer, ext, vals.map(v => [v.k, v.src, v.id]), keep, left, pay.dashed, n, slots])); // (vals without v: a macro gesture reposts nothing — review C5)
   h = fnv(h, P.serum.cpKey + P.serumT.key);
   pay.key = (h >>> 0).toString(16).padStart(8, '0');
   return pay;
@@ -673,10 +742,10 @@ export function modBudget(t, dev, project) {
   if (pay) for (const k of Object.keys(slots)) slots[k][0] = pay.n[k];
   if (isObj(d) && d.kind === 'synth' && d.model === 'serum') {
     const inj = injectMods(d, rows, pay ? pay.ext : [], t), left = inj.left.slice(), why = Object.assign({}, inj.why);
-    if (pay) for (const x of pay.left) if (rows.some(r => r.id === x.id) && !left.includes(x.id)) { left.push(x.id); why[x.id] = x.why; }
+    if (pay) for (const x of pay.left) if (rows.some(r => r.id === x.id)) { if (!left.includes(x.id)) left.push(x.id); why[x.id] = x.why; } // (the compile's reason wins: 'slots' over the injection's 'ext' — review U4)
     return { preset: inj.used, canvas: inj.placed.length, left, why, max: N_MATRIX, slots };
   }
   const mine = new Set(rows.map(r => r.id)), L = pay ? pay.left.filter(x => mine.has(x.id)) : [];
-  return { preset: 0, canvas: pay ? pay.rows.filter(r => mine.has(r.id)).length : 0, left: L.map(x => x.id), why: Object.fromEntries(L.map(x => [x.id, x.why])), max: N_MATRIX, slots };
+  return { preset: 0, canvas: pay ? new Set(pay.rows.filter(r => mine.has(r.id)).map(r => r.id)).size : 0, left: L.map(x => x.id), why: Object.fromEntries(L.map(x => [x.id, x.why])), max: N_MATRIX, slots }; // (canvas: cables — review C6 / U9)
 }
 

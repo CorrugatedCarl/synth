@@ -127,9 +127,12 @@ track at attach: the `sx` state, the CT store, the pseudo-voice).
 
 10 LFO slots (GLOBAL, PER NOTE and linked together), 4 ENV slots (ENV 2–4, then ENV 1 — its sustain law is n², Start / End 0; the lifetime uses `envsIdle()`), 2 chaos, 8 macros per track for non-Serum targets
 and `ext`. Beyond that a module still exists but its cables are **not compiled** ("ModCore slots full: 10/10 LFOs" in the
-inspector / Mod list / badge, like 2a's "not compiled: matrix full"). The **value table** (`MC.ctl(k, v)`) holds 32 entries: 8
-macros (k 0–7, the first macro module's knobs) and 24 "value sources" (k 8–31: CC modules and any further macro module's knobs),
-each a ModCore source read as a smoothed global like a macro.
+inspector / Mod list / badge, like 2a's "not compiled: matrix full"). The **value table** (`MC.ctl(k, v)`) is **24 wide** (review
+C10; `MC.ctl` stores 32 but only 24 have a source): 8 macros (k 0–7) and 16 "value sources" (k 8–23: CC modules and any further
+macro module's knobs, carried as the synthetic CP's `ext1…16`), each a ModCore source read as a smoothed global like a macro; a
+17th value source is left `'slots'`. **The first macro module WITH a cabled knob takes macros 1–8** (in module id order): cabling
+`m1` after `m2` was cabled alone moves `m2`'s knobs from the macro lane to value sources (a repost; the macro lane and the value
+sources are both `kM`-smoothed per chunk — the same glide, a different path).
 
 ### 2.4 Track integration (`engine.js`, lane A1 owns `Track`, `Chain`, the Serum ext hand-off)
 
@@ -830,3 +833,61 @@ a macro knob by keyboard (`v` 0.01, `vals` m1.k1:0), no console errors or warnin
 inputs); the bounce / render-last audio with a payload end to end (the items carry it, the engine's `po.mods` path is
 A1's test); a Serum's own FX knob from a module (lane B routes it through ext / injection — the sim covers the Serum's
 `f.cutoff` only); `modCan` cannot foresee a 'slots' refusal before the drop (the knob lights up, the release tells).
+### 9.2 Fixer B — compile / data (2026-10-19; review findings C1–C3, C5–C10, C12, C13, U4, U8, U9, U14, P1; `cv-graph.js`, `cv-mods.js`, `cv-model.js`, `song.js`; tests cv-graph 30 (+8), cv-mods 14 (+1), cv-model 7 (+2), `tests/cv-graph-engine.test.mjs` (new, the real engine: 1), the 2b fixture)
+
+**The memo rule (C2 / C3 / C5 / C9 / P1).** `compileMods` HITS unless something the compile reads changed, and the hit path
+is a hash walk, not a stringify: `sigOf` = two independent 32-bit FNV streams (numbers by their bits, strings by their
+chars; a false hit is a 2⁻⁶⁴ event) over bpm / smooth / qr / ultra / the stubs' identities, every module's state **bar the
+macro and CC values**, every row (every field) and, per destination: a classic instrument's **model** and the values of the
+controls the cabled knob's transfer **depends on** (`cv-mods.depsOf`, below), a Serum's `lfo[]` / `env[]` / their p
+knobs / the matrix's sources and fill count (the free picture and 'full': a preset that fills the matrix is a miss), a
+panel's `fxLayout` key, a linked slot's state. `validRows` (which no longer calls `classicTarget`) runs on a miss only.
+So: an uncabled knob of a cabled classic instrument is a HIT; a Serum knob is a HIT; the cabled knob or a neighbour its
+transfer depends on (the Minimoog mixer switch for its level knob) is a MISS; a macro / CC value is a HIT whose payload
+`vals[].v` is refreshed from the modules (`refreshVals`: a later repost carries the latest value, and the content `key`
+hashes `vals` as `[k, src, id]` — a macro gesture end reposts nothing, C5 / U14). The memo keeps `null` too.
+
+**The transfer caches (`cv-mods.js`, C3 / P1).** `targetsOf` is memoised per (model, ctl) (a static Map, the same array
+every call — never mutate it). **`depsOf(model, ctl, target)`** → the controls the transfer depends on: measured once per
+(model, ctl, target) over the default panel — every neighbour probed at its other values (a toggle flipped, a selector's
+other options, a knob's ends) with a 7-point sweep of the knob compared to the unprobed sweep; the knob itself always.
+Measured: 0.2–0.8 neighbours per knob·target on average (the Minimoog level knobs → their mixer switch, the CS-80 filter
+knobs → their type switches); the one-time cost 0.1–4.4 ms per knob·target (DX7 `dac` 8.9 ms: 91 controls), ≤ 90 ms for
+every knob of a model. `xferOf` is cached per (model, ctl, target) on the **dependency values** (a key of the deps' values
+from `vals`; the same object while none moved — never mutate it; 4096 entries then cleared). Lane D's `cpSnap` keeps its
+own per-vals cache; it now lands on this one underneath.
+
+**Timings** (M4 Max, node 24; the 28-row fixture trk_b3 + a Minimoog level row, real transfers; `scratchpad/fixb/t1.mjs`):
+before — hit 0.185 ms, any knob of the cabled Juno 17 ms (uncabled or cabled alike); after — **hit 0.035 ms**, an
+uncabled knob of the cabled Juno 0.039 ms (a hit), a cabled knob turn **1.1 ms** (one 129-point sweep + the synthetic CP;
+0.39 ms when the value was seen before), a row or module edit 0.38 ms, `modBudget` 0.04 / 0.07 ms (classic / Serum); the
+cold first compile of a track 12 ms (targets + deps + the first sweep of each cabled knob, once per session). The test
+holds hit < 0.4 ms and a cabled-knob miss < 24 ms (loose: CI-safe); the measured numbers print.
+
+**Keep-alive (C1).** `used` is decided from LIVE synthetic rows only (`!byp && amt !== 0 && out !== 0`, serum-core's
+`rowActive`), and every **ext-listed** LFO / ENV / chaos source gets a keep-alive row regardless — a bypassed / amt-0 /
+out-0 classic cable of a source that also feeds a Serum's ext row no longer starves the ext feed (probe3's rig is now
+`tests/cv-graph-engine.test.mjs`: ext1 moves 31/31 chunks in every variant). Fixture consequence: PAY1 `keep: [5]`, CP1
+`mN 3` (the keep-alive row after the synthetic rows), fixture 1 `keep [lfo1]`, `cp.mN 8`.
+
+**Payload changes.** `n.rows` and `modBudget().canvas` count **distinct row ids** (a Juno Env A cable = 1, C6 / U9; main.js
+`modCount` reads `b.canvas`). `modBudget` takes the compile's `why` over the injection's for every id in `pay.left`
+('slots' beats 'ext' for the 11th GLOBAL LFO on a Serum knob, U4). New **`pay.slots`**: `{ <moduleId | 'i1/lfo2'>: { kind:
+'lfo' | 'env' | 'chaos', i } }` for every source ModCore evaluates (a module by its id, a linked Serum slot by `'<serum>/lfo<k>'`),
+`i` in the live-meter order lane A exposes — lfo slots 1…10 → 0…9, env slots 2, 3, 4, 1 → 10…13, chaos 1, 2 → 14, 15
+(an injected PER NOTE LFO has no entry). `aux` / `inv` are always 0 on a ModCore row (C7: an aux names a Serum source; on a
+canvas row it would name the synthetic CP's slot) — `cv-model.addMod` / `setMod` clear them for classic / panel rows
+(`setMod(t, id, { aux: 'nope' })` on such a row is OK with aux ''), and the compile clears them for old data. `EXT_RE` is
+gone (serum-core `extIndex`); `SM_SLOT` is derived from `SLOT` (one table, C13).
+
+**Data.** `removePanel` returns `{ ok, why, rows }` and drops the rows to the panel's knobs (C8); **`pruneRows(t, devId)`**
+(exported `dropGone`) drops the rows whose knob the device no longer has — the host calls it after an effect instance is
+removed from a panel or a Serum's rack and tells ("n modulation cables removed with the effect"); `validate` never
+reports such rows today (they compile to nothing), so without the call they stay as inert rows. `setModState` merges
+arrays element-wise (`{ crv: [0.9] }` keeps the other two; `[undefined, x]` sets the second, C12). `song.normModDev` names a
+macro's blank knobs 'Macro n' (U8: addModDev and every load; cv-migrate's expectation updated). §2.3 corrected (C10).
+
+**For fixer A**: nothing in the engine changed; `pay.slots` is informational (ignore it as `keep`); the keep-alive rows
+still follow the synthetic rows. **For fixer C**: hide the inspector's Aux menu (and Invert aux) for rows whose destination
+is a classic instrument or a panel (`setMod` ignores them there); `pruneRows` + a notice after an effect removal;
+`modCount` / the Mod list's "n cables" need no change (`b.canvas` is distinct ids now); `buildMods`'s call shape is unchanged.

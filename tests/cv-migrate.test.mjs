@@ -310,7 +310,7 @@ test('1e cv-model: removeInst / removePanel re-cable; connect / disconnect valid
   assert.deepEqual(MO.removeInst(t, 'i3'), { ok: false, why: 'A track keeps at least one instrument' });
   assert.equal(MO.removeInst(t, 'fx1').ok, false);
   MO.addInst(t, 'juno60');
-  assert.deepEqual(MO.removePanel(t, 'fx1'), { ok: true, why: '' });
+  assert.deepEqual(MO.removePanel(t, 'fx1'), { ok: true, why: '', rows: [] }); // (2b: the rows to its knobs, as removeInst's)
   assert.deepEqual([Object.keys(t.dev).includes('fx1'), wires(t)], [false, ['i3.out>out.in', 'i4.out>out.in']], 'its sources into OUT (fan-in)');
   assert.equal(G.validate(t).ok, true);
   const p = MO.addPanel(t);
@@ -848,7 +848,7 @@ test('2b schema 6: additive (a 5 opens as before); song.normDev bounds every mod
   assert.deepEqual(Object.assign({ kind: 'lfo' }, C.normLfoMod(raw.dev.l1), { name: 'Wobble' }), d.dev.l1);
   assert.deepEqual(d.dev.e1, { kind: 'env', env: { bpm: 0, legInv: 1, stealRe: 0 }, att: 0.3, hold: 0, dec: 0.5, sus: 1, rel: 0.215, start: 0, end: 0, crv: [0.2, 0.666, 0.666] });
   assert.deepEqual(d.dev.h1, { kind: 'chaos', chaos: { mono: 0, sh: 1 }, rate: 0.4, bpm: 1, smooth: 0.5 });
-  assert.deepEqual(d.dev.m1, { kind: 'macro', v: [0.5, 1, 0, 0, 0, 0, 0, 0], names: ['A very long macr', '', 'B', '', '', '', '', ''] });
+  assert.deepEqual(d.dev.m1, { kind: 'macro', v: [0.5, 1, 0, 0, 0, 0, 0, 0], names: ['A very long macr', 'Macro 2', 'B', 'Macro 4', 'Macro 5', 'Macro 6', 'Macro 7', 'Macro 8'] }, '(U8: unnamed knobs take the default)');
   assert.deepEqual([d.dev.c1, d.dev.c2, d.dev.nt, d.dev.ve, d.dev.zz], [{ kind: 'cc', cc: 127, ch: 16, v: 0.5 }, { kind: 'cc', cc: 1, ch: 0, v: 0 }, { kind: 'note' }, { kind: 'velo' }, { kind: 'later', any: [1, 2] }]);
   assert.deepEqual(d.mods.map(r => r.src), ['m1.k3', 'i1/lfo3.out', 'l1.out', 'm1.k9'], 'any port: the shape is kept (the page checks what exists)');
   assert.deepEqual(S.normModDev({ kind: 'lfo' }), Object.assign({ kind: 'lfo' }, C.normLfoMod({})));

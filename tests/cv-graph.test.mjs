@@ -323,6 +323,7 @@ test('2a review H5: a placed row keeps its slot while that slot stays free — a
 /* ------------------------------------------------------------------ stage 2b: compileMods, ext rows, slot injection (IMPL-2b §3.1, §3.3) */
 import * as F3 from './fixtures/mods-2b.mjs';
 import { fxLayout, fxDest } from '../fx-core.js?v=9';
+import { normModDev } from '../song.js?v=9';
 const PRJ = { bpm: 120, perf: { wheel: { v: 1 } } };
 const cm = (t, o) => G.compileMods(t, PRJ, Object.assign({ xferOf: F3.XFER, targetsOf: F3.TARGETS }, o));
 const sans = p => { const o = Object.assign({}, p); delete o.cp; delete o.ct; delete o.key; delete o.t; delete o.i; return o; };
@@ -356,7 +357,7 @@ test('2b the three-row track (fixture 0): the payload as written — an ext row 
 
 test('2b every source kind (fixture 1): ext / slot injection / value source / cls / set (one row per target) / fx / linked / note / wheel / chaos / own-LFO native', () => {
   const t = F3.tracks()[1], pay = cm(t), d = t.dev.i1;
-  assert.deepEqual(pay.n, { lfo: 2, env: 1, chaos: 1, macro: 1, vals: 1, ext: 2, rows: 8 });
+  assert.deepEqual(pay.n, { lfo: 2, env: 1, chaos: 1, macro: 1, vals: 1, ext: 2, rows: 7 }, '(rows: distinct cables — the two-target knob counts once, C6)');
   assert.deepEqual(pay.ext, [{ k: 1, src: C.SRC_INDEX.lfo1, id: 'l1.out' }, { k: 2, src: G.S_EXT0, id: 'c1.out' }], 'ext: the GLOBAL LFO (lfo1 of the synthetic CP) and the CC (value source ext1 = index 62)');
   assert.deepEqual(pay.vals, [{ k: 2, src: C.SRC_INDEX.macro3, v: 0.25, id: 'm1.k3' }, { k: 8, src: G.S_EXT0, v: 0.5, id: 'c1.out' }], 'the value table: the macro knob at 2 (its value), the CC at 8');
   const sv = k => C.vi(G.SCRATCH[k]);
@@ -368,11 +369,12 @@ test('2b every source kind (fixture 1): ext / slot injection / value source / cl
   assert.deepEqual(pay.left, []);
   assert.deepEqual(pay.xfer.map(x => x && x.of), ['juno60.cf:0', 'juno60.a:fenv.a', 'juno60.a:aenv.a', null, 'juno60.rs:3', 'juno60.lv:11', 'juno60.cf:0', 'juno60.cf:0']);
   assert.ok(pay.xfer.every(x => x === null || x.x0 === 0.5), 'x0 travels with each transfer');
-  assert.deepEqual(pay.keep, [], 'every evaluated LFO / ENV / chaos is read by a synthetic row: no keep-alive');
+  assert.deepEqual(pay.keep, [C.SRC_INDEX.lfo1], 'the ext-listed LFO keeps alive regardless (C1); the ENV, the chaos and the linked LFO are read by live synthetic rows');
+  assert.deepEqual(pay.slots, { l1: { kind: 'lfo', i: 0 }, 'i1/lfo2': { kind: 'lfo', i: 1 }, e1: { kind: 'env', i: 10 }, h1: { kind: 'chaos', i: 14 } }, 'pay.slots: each evaluated module → its ModCore slot in the live-meter order');
   // the synthetic CP: lfo1 = l1 (GLOBAL, rate 0.3), lfo2 = the Serum's own LFO 2 copied (poly), env2 = e1, chaos1 = h1, macro3 = m1.k3
   const cp = pay.cp;
   assert.deepEqual([[...cp.lfoMono].slice(0, 3), cp.base[C.vi('l1.rate')], cp.base[C.vi('e2.att')], cp.base[C.vi('e2.dec')], cp.base[C.vi('e2.ca')], cp.base[C.vi('e2.cd')], cp.base[C.vi('c1.rate')], cp.macro[2]], [[1, 0, 1], 0.3, 0.2, 0.4, 0.4, 0.666, 0.4, 0.25]);
-  assert.equal(cp.mN, 7, 'seven synthetic rows (the two-target knob shares one)');
+  assert.equal(cp.mN, 8, 'seven synthetic rows (the two-target knob shares one) and l1\'s keep-alive');
   // the Serum: r1 → ext1, r2 → lfo1 injected (l2's state: ENVELOPE mode, its points, mono 0), r7 → ext2, r11 its own lfo1 as it is
   const inj = G.injectMods(d, G.modRowsFor(t, 'i1'), pay.ext, t);
   assert.deepEqual(inj.placed, [{ id: 'r1', slot: 0, src: 'ext1' }, { id: 'r2', slot: 1, src: 'lfo1' }, { id: 'r7', slot: 2, src: 'ext2' }, { id: 'r11', slot: 3, src: 'lfo1' }]);
@@ -505,4 +507,122 @@ test('2b the scratch destinations: V-scope rows of silent modules, never note-on
   assert.equal(G.KEEP_ID, G.SCRATCH[G.SCRATCH.length - 1]);
   assert.deepEqual([G.S_EXT0, G.EXT_N, G.VAL_N], [62, 16, 16]);
   assert.ok(G.MOD_KINDS.has('chaos') && G.kindOf({ kind: 'chaos' }) === 'mod');
+});
+
+/* ------------------------------------------------------------- stage 2b review fixes (fixer B; findings-2b C1…C13, U4, U8) */
+const byp = (t, id, f) => Object.assign(t.mods.find(r => r.id === id), f);
+test('C1: a bypassed / amt-0 / out-0 synthetic row does not starve its source — `used` from live rows only, and an ext-listed source keeps alive regardless', () => {
+  for (const f of [{ byp: 1 }, { amt: 0 }, { out: 0 }]) {
+    const t = F3.tracks()[0];
+    byp(t, 'r2', f); byp(t, 'r3', f);
+    const pay = cm(t);
+    assert.deepEqual([pay.keep, pay.ext.length, pay.cp.srcUsed[C.SRC_INDEX.lfo1]], [[C.SRC_INDEX.lfo1], 1, 1], JSON.stringify(f) + ': the Serum\'s ext1 source is evaluated');
+    assert.equal(pay.cp.mSrc[pay.cp.mN - 1], C.SRC_INDEX.lfo1, 'the keep-alive row is the last CP row');
+    assert.equal(pay.cp.mDst[pay.cp.mN - 1], C.vi(G.KEEP_ID));
+  }
+  // no ext at all: the LFO feeds a bypassed Juno row only → still evaluated (the row may be un-bypassed by the next edit; nothing else reads it)
+  const u = F3.tracks()[0];
+  u.mods = [byp(u, 'r2', { byp: 1 })];
+  const q = cm(u);
+  assert.deepEqual([q.keep, q.rows.length, q.cp.srcUsed[C.SRC_INDEX.lfo1]], [[C.SRC_INDEX.lfo1], 1, 1]);
+  // a live row and no ext: no keep-alive (as before)
+  const w = F3.tracks()[0];
+  w.mods = [w.mods[1]];
+  assert.deepEqual(cm(w).keep, []);
+});
+
+test('C2: the memo signature carries the instrument\'s model — a model change with the same vals JSON rebuilds (new targets, new transfer)', () => {
+  const t = F3.tracks()[0], pay = cm(t);
+  t.dev.i2.model = 'obxa';
+  const q = cm(t);
+  assert.notEqual(q, pay);
+  assert.deepEqual([q.xfer[0].of, q.rows[0].dst.inst], ['obxa.cf:0', 'i2']);
+  assert.notEqual(q.key, pay.key);
+});
+
+test('C3 / P1: the hit / miss rule — an uncabled knob of a cabled instrument is a memo HIT; a cabled knob or one of its transfer\'s neighbours a MISS; module values (macro / CC v) never miss; timings (loose)', () => {
+  const t = F3.tracks()[2]; // (28 rows: 11 LFOs → Juno cf, 8 macro knobs + 8 CCs → the Serum, l1 → the Serum)
+  t.dev.i3 = { kind: 'synth', model: 'minimoog', vals: { v2: 5, m2: 1 }, preset: null };
+  t.wires.push({ id: 'w4', a: 'i3.out', b: 'out.in' });
+  t.mods.push(Object.assign({}, t.mods[0], { id: 'r90', dst: 'i3:v2' }));
+  const o = { smooth: 1 }, run = () => G.compileMods(t, PRJ, o); // (the real transfers)
+  const p0 = run();
+  assert.equal(run(), p0, 'hit');
+  t.dev.i2.vals.rs = 7; t.dev.i2.vals.ch = 2; t.dev.i3.vals.fc = 3; t.dev.i1.vals.s.p['f.res'] = 0.9;
+  assert.equal(run(), p0, 'uncabled knobs of the cabled Juno / Minimoog, a Serum knob: HIT');
+  t.dev.i2.vals.cf = 2;
+  const p1 = run();
+  assert.notEqual(p1, p0, 'the cabled Juno cutoff: MISS');
+  assert.notEqual(p1.key, p0.key, 'its transfer (x0) is in the key');
+  t.dev.i3.vals.m2 = 0;
+  const p2 = run();
+  assert.notEqual(p2, p1, 'the Minimoog mixer switch — a neighbour the level knob\'s transfer depends on: MISS');
+  const xm = p2.xfer[p2.rows.findIndex(r => r.id === 'r90')];
+  assert.deepEqual([xm.a, xm.b], [0, 0], 'the switch off: an inert transfer (b 0), the cable kept');
+  assert.equal(run(), p2);
+  assert.equal(p2.rows.filter(r => r.id === 'r90').length, 1, 'the row stays compiled while the switch is off');
+  t.dev.m1.v[0] = 0.77; t.dev.c1.v = 0.33;
+  assert.equal(run(), p2, 'macro / CC values: HIT (C5) …');
+  assert.deepEqual([p2.vals.find(v => v.id === 'm1.k1').v, p2.vals.find(v => v.id === 'c1.out').v], [0.77, 0.33], '… and the payload\'s vals carry the latest value');
+  t.dev.m1.names[0] = 'Cut';
+  assert.notEqual(run(), p2, 'a macro name: MISS (the synthetic CP names it)');
+  t.mods[0].byp = 1;
+  const p3 = run();
+  assert.notEqual(p3, p2, 'a row edit: MISS');
+  // timings: the hit path is a hash of what the compile reads; the miss recompiles with the transfers cached (loose bounds: ≤ 8 × the targets)
+  const med = a => a.slice().sort((x, y) => x - y)[a.length >> 1];
+  const hits = [], misses = [];
+  for (let k = 0; k < 40; k++) { const t0 = performance.now(); run(); hits.push(performance.now() - t0); }
+  for (let k = 0; k < 12; k++) { t.dev.i2.vals.cf = 1 + (k % 9); const t0 = performance.now(); run(); misses.push(performance.now() - t0); }
+  console.log(`    compileMods (29 rows): hit ${med(hits).toFixed(3)} ms, miss (a cabled knob) ${med(misses).toFixed(2)} ms`);
+  assert.ok(med(hits) < 0.4, 'hit ' + med(hits));
+  assert.ok(med(misses) < 24, 'miss ' + med(misses));
+});
+
+test('C5: the content key excludes macro / CC values (k, src, id stay): no repost at a macro gesture end', () => {
+  const t = F3.tracks()[1], pay = cm(t);
+  t.dev.m1.v[2] = 0.9; t.dev.c1.v = 0.1;
+  const q = cm(t);
+  assert.equal(q.key, pay.key);
+  assert.deepEqual(q.vals.map(v => [v.k, v.id, v.v]), [[2, 'm1.k3', 0.9], [8, 'c1.out', 0.1]]);
+  t.dev.m1.v[0] = 0.5; // (an uncabled knob of the macro)
+  assert.equal(cm(t).key, pay.key);
+});
+
+test('C6 / U9: n.rows and modBudget.canvas count distinct cables, not payload rows (a knob that moves two things)', () => {
+  const t = F3.tracks()[1], pay = cm(t);
+  assert.equal(pay.rows.length, 8);
+  assert.equal(pay.n.rows, 7);
+  assert.deepEqual([G.modBudget(t, 'i2', PRJ).canvas, G.modBudget(t, 'fx1', PRJ).canvas, G.modBudget(t, 'i1', PRJ).canvas], [6, 1, 4]);
+});
+
+test('C9: a preset that fills the Serum\'s matrix is seen by the memo — left / why \'full\' never stale', () => {
+  const t = F3.tracks()[0], pay = cm(t);
+  assert.deepEqual(pay.left, []);
+  for (let k = 0; k < C.N_MATRIX; k++) t.dev.i1.vals.s.matrix[k] = C.normRow({ src: 'lfo2', amt: 0.1, dst: 'a.wt' });
+  const q = cm(t);
+  assert.notEqual(q, pay);
+  assert.deepEqual([q.left, G.modBudget(t, 'i1', PRJ).why], [[{ id: 'r1', why: 'full' }], { r1: 'full' }]);
+  t.dev.i1.vals.s.matrix[63] = C.normRow(null);
+  assert.deepEqual(cm(t).left, []);
+});
+
+test('U4: modBudget prefers the payload\'s reason — the 11th GLOBAL LFO on a Serum knob is \'slots\', not \'ext\'', () => {
+  const t = F3.tracks()[2];
+  t.mods.push(Object.assign({}, t.mods[0], { id: 'r99', src: 'l11.out', dst: 'i1:f.res' }));
+  const pay = cm(t), b = G.modBudget(t, 'i1', PRJ);
+  assert.deepEqual(pay.left.find(x => x.id === 'r99'), { id: 'r99', why: 'slots' });
+  assert.deepEqual([b.why.r99, b.why.r28, b.left.includes('r99')], ['slots', 'ext', true]);
+});
+
+test('pay.slots: lfo slots 0…9, ENV 2 3 4 1 → 10…13, chaos 14…15; only evaluated modules (an injected PER NOTE LFO has none)', () => {
+  const t = F3.tracks()[0];
+  for (const k of [1, 2, 3, 4]) t.dev['e' + k] = normModDev({ kind: 'env' });
+  t.dev.h1 = normModDev({ kind: 'chaos' }); t.dev.h2 = normModDev({ kind: 'chaos' }); t.dev.l2 = normModDev({ kind: 'lfo', lfo: { mono: 0 } });
+  let n = 10;
+  for (const id of ['e1', 'e2', 'e3', 'e4', 'h1', 'h2']) t.mods.push(Object.assign({}, t.mods[1], { id: 'r' + n++, src: id + '.out' }));
+  t.mods.push(Object.assign({}, t.mods[0], { id: 'r' + n++, src: 'l2.out' })); // (PER NOTE → the Serum: injected, no ModCore slot)
+  const pay = cm(t);
+  assert.deepEqual(pay.slots, { l1: { kind: 'lfo', i: 0 }, e1: { kind: 'env', i: 10 }, e2: { kind: 'env', i: 11 }, e3: { kind: 'env', i: 12 }, e4: { kind: 'env', i: 13 }, h1: { kind: 'chaos', i: 14 }, h2: { kind: 'chaos', i: 15 } });
+  assert.deepEqual(pay.n.env, 4);
 });
