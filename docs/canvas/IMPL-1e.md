@@ -484,3 +484,22 @@ aliased thin lines the user saw. The candidate for milestone 3: a smoothed low-r
 threshold — a rendering tier, not a DOM change (SPEC §2.11's "modules render identically at every zoom" stays) — plus the two
 switches ui-bench already tries (per-module compositing layers while moving; off-screen bodies not rendered). Several synths per
 track can come back once that is measured on the iPad.
+
+**Review round (1f).** Each fix test-first; the split rules above are superseded where they differ:
+- R1 A Serum heard through a panel (every 1e add was auto-patched into the shared panel) keeps that sound: with no effects of its
+  own, the panel's FX state becomes its own (reshape's 'moved' rule; also for a lone Serum → panel → OUT); with effects of its own
+  they stay and the notice says the panel after it was not kept.
+- R2 The notice lists, per affected track (single-instrument tracks too), what did not survive: switched off / not connected /
+  soloed out (now muted), a key zone / transpose, a cable level, the panel after a Serum, unconnected panels with effects (30 s).
+  The autosave as it was is kept once under `synth.project.pre1f` before the first save (HANDOVER §6).
+- R3 Undo / redo keep knob tweaks (`keepDevs`) only within one project (`p.uid === project.uid`): an undo of Open / New brings
+  the other project back with its own sound.
+- R4 `tests/ui-bench.html` snapshots the project and puts it back (`applyRestore`, saved) after the run; its tracks are deleted by
+  object first (it passed ids, which threw silently).
+- R5 The first instrument that sounded keeps the track (id, name, selection, its lay), not an off primary.
+- R6 The boot's notices (storage, the split, the platform) are joined into one line; a recovered project's notice carries them.
+- R7 A classic straight into OUT is no longer kept as canonical by the split: it gets an empty panel `fx<n>` (an empty rack: the
+  same sound), so every classic has a panel and `cvPanelFor` / `cvBelow` are gone (`cv.add` without a place leaves it to Tidy; an
+  Effects drop on a hook-made classic without a panel does nothing).
+- R8 `setCur` returns at once unless given the primary; a new track's base name is cut so " · Model" fits 100 characters; a copy
+  of a shared panel does not take its name.

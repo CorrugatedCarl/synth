@@ -455,25 +455,30 @@ const fxW = type => { const fx = C.defaultFx2(); C.newInstance(fx, type, { rack:
 const shape = t => Object.keys(t.dev).sort().join(',') + ' | ' + t.wires.map(w => w.a + '>' + w.b + (w.g !== undefined ? '@' + w.g : '')).sort().join(' ');
 const NAME = { juno60: 'Juno-60', minimoog: 'Minimoog', serum: 'Serum', dx7: 'DX7' };
 const split = p => M.splitTracks(p, { name: id => NAME[id] || id });
+const fxMods = fx => fx.racks.flatMap(r => r.mods.map(m => m.type));
 
-test('1f splitTracks: a single-instrument project (and a canonical track) comes back as it is — the same objects, no notice', () => {
+test('1f splitTracks: a single-instrument project (canonical tracks) comes back as it is — the same objects, no notice; a classic straight into OUT (a 1e project) gets an empty panel of its own (the same sound: an empty rack), silently', () => {
   const p = { schema: M.SCHEMA, tracks: [v2({ id: 'trk_1', model: 'juno60' }), v2({ id: 'trk_2', model: 'serum' })] };
   p.tracks[0].lay = { i1: { x: 0, y: 0 } };
   const r = split(p);
   assert.equal(r.p, p, 'the project itself');
   assert.deepEqual(r.notices, []);
-  // a classic straight into OUT (a 1e project whose panel went) is canonical: kept too
-  const q = { tracks: [v2({ id: 'trk_1', model: 'dx7' })] };
-  delete q.tracks[0].dev.fx1; q.tracks[0].wires = [{ id: 'w1', a: 'i1.out', b: 'out.in' }];
-  assert.equal(split(q).p, q);
   // project-p1 (main's file, through the steps): untouched
   const up = M.upgrade(JSON.parse(P1)).p;
   assert.equal(split(up).p, up);
   assert.deepEqual([split(null).p, split({}).notices], [null, []]);
+  // a DX7 whose panel was deleted in 1e: i1 → out — a panel of its own (fx<nid>), no notice
+  const q = { tracks: [v2({ id: 'trk_1', model: 'dx7' })] };
+  delete q.tracks[0].dev.fx1; q.tracks[0].wires = [{ id: 'w1', a: 'i1.out', b: 'out.in' }]; q.tracks[0].nid = 2; q.tracks[0].lay = { i1: { x: 0, y: 0 }, out: { x: 900, y: 0 } };
+  const rq = split(q), a = rq.p.tracks[0];
+  assert.deepEqual([shape(a), a.nid, fxMods(a.dev.fx2.fx), Object.keys(a.lay).sort().join(','), rq.notices], ['fx2,i1,out | fx2.out>out.in i1.out>fx2.in', 3, [], 'i1,out', []]);
+  assert.equal(G.compileTrack(a).canonical, true);
+  assert.equal(split(rq.p).p, rq.p, 'stable: split again, nothing changes');
 });
 
-test('1f splitTracks: two classics into one panel → two tracks — the primary keeps the track (id, name, lay, device ids), the other a new one "<track> · <model>" with the panel\'s FX copied and the notes; one notice', () => {
+test('1f splitTracks: two classics into one panel → two tracks — the first sounding instrument keeps the track (id, name, lay, device ids), the other a new one "<track> · <model>" with the panel\'s FX copied (its name not) and the notes; one notice', () => {
   const t = v2({ id: 'trk_3', name: 'Pad', model: 'juno60', fx: fxW('cho') });
+  t.dev.fx1.name = 'Shared';
   t.dev.i2 = { kind: 'synth', model: 'minimoog', vals: { cutoff: 3 }, preset: 'Bass' };
   t.wires.push({ id: 'w3', a: 'i2.out', b: 'fx1.in' });
   t.nid = 3;
@@ -484,9 +489,9 @@ test('1f splitTracks: two classics into one panel → two tracks — the primary
   assert.deepEqual(r.p.tracks.map(x => x.id), ['trk_1', 'trk_3', 'trk_10', 'trk_9'], 'the new track right after its source, a fresh id');
   assert.equal(r.p.tracks[0], p.tracks[0], 'the other tracks: the same objects');
   const [a, b] = [r.p.tracks[1], r.p.tracks[2]];
-  assert.deepEqual([a.name, a.prim, a.nid, shape(a), a.dev.i1.model, Object.keys(a.lay).sort().join(',')], ['Pad', 'i1', 3, 'fx1,i1,out | fx1.out>out.in i1.out>fx1.in', 'juno60', 'fx1,i1,out'], 'its lay without i2');
-  assert.deepEqual([b.name, b.prim, b.nid, shape(b), b.dev.i1.model, b.dev.i1.vals, b.dev.i1.preset, 'lay' in b], ['Pad · Minimoog', 'i1', 2, 'fx1,i1,out | fx1.out>out.in i1.out>fx1.in', 'minimoog', { cutoff: 3 }, 'Bass', false]);
-  assert.deepEqual([a.dev.fx1.fx.racks[0].mods.map(m => m.type), b.dev.fx1.fx.racks[0].mods.map(m => m.type)], [['cho'], ['cho']], 'the shared panel copied for each');
+  assert.deepEqual([a.name, a.prim, a.nid, shape(a), a.dev.i1.model, Object.keys(a.lay).sort().join(','), a.dev.fx1.name], ['Pad', 'i1', 3, 'fx1,i1,out | fx1.out>out.in i1.out>fx1.in', 'juno60', 'fx1,i1,out', 'Shared'], 'its lay without i2');
+  assert.deepEqual([b.name, b.prim, b.nid, shape(b), b.dev.i1.model, b.dev.i1.vals, b.dev.i1.preset, 'lay' in b, 'name' in b.dev.fx1], ['Pad · Minimoog', 'i1', 2, 'fx1,i1,out | fx1.out>out.in i1.out>fx1.in', 'minimoog', { cutoff: 3 }, 'Bass', false, false]);
+  assert.deepEqual([fxMods(a.dev.fx1.fx), fxMods(b.dev.fx1.fx)], [['cho'], ['cho']], 'the shared panel copied for each');
   assert.equal(a.dev.fx1.fx === b.dev.fx1.fx, false, 'not the same object');
   assert.deepEqual([b.notes, b.cc, b.color, b.ch, b.vol, b.mute], [t.notes, t.cc, t.color, t.ch, t.vol, false], 'the notes and the rest of the track copied');
   assert.equal(b.notes === a.notes, false);
@@ -494,6 +499,7 @@ test('1f splitTracks: two classics into one panel → two tracks — the primary
   assert.deepEqual(r.notices, ['Track “Pad” held 2 instruments: now 2 tracks']);
   assert.deepEqual(r.p.tracks.map(x => G.compileTrack(x).canonical), [true, true, true, true], 'every track canonical');
   assert.equal(r.p.selTrack, 'trk_3');
+  assert.equal(split(r.p).p, r.p, 'stable');
   // song.js reads them; adopt accepts them
   const s = S.deserialize(JSON.stringify(r.p));
   assert.deepEqual(s.tracks.map(x => x.dev && Object.keys(x.dev).sort().join(',')), ['fx1,i1,out', 'fx1,i1,out', 'fx1,i1,out', 'i1,out']);
@@ -501,37 +507,76 @@ test('1f splitTracks: two classics into one panel → two tracks — the primary
   assert.deepEqual(s.tracks.map(x => x.model), ['dx7', 'juno60', 'minimoog', 'serum']);
 });
 
-test('1f splitTracks: a Serum beside a classic (both into a panel, the Serum primary and soloed) — the Serum keeps its own FX (the panel is not its), the classic takes the panel; silent instruments come in muted; zones and levels dropped', () => {
+test('1f splitTracks (review 1): a Serum heard through a panel — its own FX empty: the panel\'s FX become its own (the same sound, reshape\'s rule, no notice line); its own FX holding effects: kept, and the notice says the panel after it was not kept', () => {
+  // 1e: a Serum added to a Minimoog track (auto-patched into the shared panel fx1: a reverb)
+  const t = v2({ id: 'trk_a', name: 'Lead', model: 'minimoog', fx: fxW('rev') });
+  t.dev.i2 = { kind: 'synth', model: 'serum', vals: {}, preset: null, fx: C.defaultFx2() };
+  t.wires.push({ id: 'w3', a: 'i2.out', b: 'fx1.in' }); t.nid = 3;
+  const r = split({ tracks: [t] }), [a, b] = r.p.tracks;
+  assert.deepEqual([shape(a), fxMods(a.dev.fx1.fx), b.name, shape(b), fxMods(b.dev.i1.fx)], ['fx1,i1,out | fx1.out>out.in i1.out>fx1.in', ['rev'], 'Lead · Serum', 'i1,out | i1.out>out.in', ['rev']], 'the Serum keeps the reverb it was heard through');
+  assert.deepEqual(r.notices, ['Track “Lead” held 2 instruments: now 2 tracks']);
+  // its own FX hold a delay: kept; the panel after it (the chorus) is not
+  const u = v2({ id: 'trk_b', name: 'Mix', model: 'minimoog', fx: fxW('cho') });
+  u.dev.i2 = { kind: 'synth', model: 'serum', vals: {}, preset: null, fx: fxW('dly') };
+  u.wires.push({ id: 'w3', a: 'i2.out', b: 'fx1.in' }); u.nid = 3;
+  const r2 = split({ tracks: [u] });
+  assert.deepEqual(fxMods(r2.p.tracks[1].dev.i1.fx), ['dly']);
+  assert.deepEqual(r2.notices, ['Track “Mix” held 2 instruments: now 2 tracks — Serum: the panel after it was not kept']);
+  // one Serum → a panel → OUT alone (1e: replace with Serum on a shared track, then the other deleted): the moved rule too
+  const w = v2({ id: 'trk_c', name: 'Solo', model: 'serum', fx: C.defaultFx2() });
+  w.dev.fx2 = { kind: 'panel', fx: fxW('dly') };
+  w.wires = [{ id: 'w1', a: 'i1.out', b: 'fx2.in' }, { id: 'w2', a: 'fx2.out', b: 'out.in' }]; w.nid = 3;
+  const r3 = split({ tracks: [w] }), c = r3.p.tracks[0];
+  assert.deepEqual([shape(c), fxMods(c.dev.i1.fx), r3.notices, G.compileTrack(c).canonical], ['i1,out | i1.out>out.in', ['dly'], [], true]);
+});
+
+test('1f splitTracks (review 2): what does not survive is in the notice — one line per affected track, single-instrument tracks too: off / not connected / soloed out (muted), a key zone, a cable level, unconnected panels with effects', () => {
   const t = v2({ id: 'trk_a', name: 'Mix', model: 'serum', fx: fxW('rev') });
   t.dev.i1.solo = true;
   t.dev.fx2 = { kind: 'panel', fx: fxW('dly') };
   t.dev.i3 = { kind: 'synth', model: 'juno60', vals: {}, preset: null, zone: { lo: 48, hi: 72, xp: 12 } };
-  t.wires = [{ id: 'w1', a: 'i1.out', b: 'fx2.in' }, { id: 'w2', a: 'i3.out', b: 'fx2.in', g: 0.5 }, { id: 'w3', a: 'fx2.out', b: 'out.in' }];
+  t.wires = [{ id: 'w1', a: 'i1.out', b: 'out.in' }, { id: 'w2', a: 'i3.out', b: 'fx2.in', g: 0.5 }, { id: 'w3', a: 'fx2.out', b: 'out.in' }];
   t.nid = 4;
   t.lay = { i1: { x: 0, y: 0 }, 'i1/fx': { x: 1300, y: 0 }, fx2: { x: 2200, y: 0 } };
   const r = split({ tracks: [t] }), [a, b] = r.p.tracks;
-  assert.deepEqual([a.id, a.prim, shape(a), JSON.stringify(a.dev.i1.fx).includes('"rev"'), 'solo' in a.dev.i1, Object.keys(a.lay).sort().join(','), a.mute], ['trk_a', 'i1', 'i1,out | i1.out>out.in', true, false, 'i1,i1/fx', false]);
-  assert.deepEqual([b.name, shape(b), b.dev.fx1.fx.racks[0].mods.map(m => m.type), 'zone' in b.dev.i1, b.mute], ['Mix · Juno-60', 'fx1,i1,out | fx1.out>out.in i1.out>fx1.in', ['dly'], false, true], 'the Juno-60 was silent (the Serum soloed): muted');
-  assert.deepEqual(r.notices, ['Track “Mix” held 2 instruments: now 2 tracks']);
+  assert.deepEqual([a.id, a.prim, shape(a), fxMods(a.dev.i1.fx), 'solo' in a.dev.i1, Object.keys(a.lay).sort().join(','), a.mute], ['trk_a', 'i1', 'i1,out | i1.out>out.in', ['rev'], false, 'i1,i1/fx', false]);
+  assert.deepEqual([b.name, shape(b), fxMods(b.dev.fx1.fx), 'zone' in b.dev.i1, b.mute], ['Mix · Juno-60', 'fx1,i1,out | fx1.out>out.in i1.out>fx1.in', ['dly'], false, true], 'the Juno-60 was silent (the Serum soloed): muted');
+  assert.deepEqual(r.notices, ['Track “Mix” held 2 instruments: now 2 tracks — Juno-60: was silent, another one soloed (now muted); its key zone / transpose was dropped; its cable level was dropped']);
+  // single-instrument tracks: an unconnected panel with effects (1e: the own FX a Serum → classic replace kept); one switched off
+  const u = v2({ id: 'trk_1', name: 'Keys', model: 'juno60', fx: fxW('eq') });
+  u.dev.fx4 = { kind: 'panel', fx: fxW('rev') }; u.dev.fx5 = { kind: 'panel', fx: C.defaultFx2() }; u.nid = 6;
+  const v = v2({ id: 'trk_2', name: 'Off', model: 'juno60' });
+  v.dev.i1.on = false;
+  const r2 = split({ tracks: [u, v] });
+  assert.deepEqual(r2.p.tracks.map(x => shape(x)), ['fx1,i1,out | fx1.out>out.in i1.out>fx1.in', 'fx1,i1,out | fx1.out>out.in i1.out>fx1.in'], 'the unconnected panels dropped');
+  assert.deepEqual([fxMods(r2.p.tracks[0].dev.fx1.fx), 'on' in r2.p.tracks[1].dev.i1, r2.p.tracks[1].mute], [['eq'], false, true], 'powered, the track muted');
+  assert.deepEqual(r2.notices, ['Track “Keys”: 1 unconnected FX panel with effects was dropped', 'Track “Off”: was switched off (now muted)']);
 });
 
-test('1f splitTracks: one instrument with an unconnected panel, or switched off — reshaped in place (no new track, no notice); a classic primary cabled to nothing gets a panel of its own (a new id)', () => {
-  const t = v2({ id: 'trk_1', model: 'juno60', fx: fxW('eq') });
-  t.dev.fx2 = { kind: 'panel', fx: fxW('dly') }; t.nid = 3;
-  const r = split({ tracks: [t] });
-  assert.deepEqual([r.p.tracks.length, shape(r.p.tracks[0]), r.p.tracks[0].dev.fx1.fx.racks[0].mods.map(m => m.type), r.notices], [1, 'fx1,i1,out | fx1.out>out.in i1.out>fx1.in', ['eq'], []], 'the unconnected panel dropped');
-  const u = v2({ id: 'trk_1', model: 'juno60' });
-  u.dev.i1.on = false;
-  const r2 = split({ tracks: [u] });
-  assert.deepEqual([shape(r2.p.tracks[0]), 'on' in r2.p.tracks[0].dev.i1, r2.p.tracks[0].mute], ['fx1,i1,out | fx1.out>out.in i1.out>fx1.in', false, true], 'powered, the track muted');
-  // two instruments, the primary (a classic) cabled to nothing: a new panel of its own; the other into fx1
+test('1f splitTracks (review 5, nits): the first sounding instrument keeps the track — an off primary moves out (muted); a long track name is cut so " · Model" fits; a primary cabled to nothing gets a panel of its own', () => {
+  // the primary off, the second on
+  const t = v2({ id: 'trk_2', name: 'W', model: 'dx7', fx: fxW('eq') });
+  t.dev.i1.on = false;
+  t.dev.i2 = { kind: 'synth', model: 'juno60', vals: {}, preset: null };
+  t.wires.push({ id: 'w3', a: 'i2.out', b: 'fx1.in' }); t.nid = 3;
+  t.lay = { i1: { x: 0, y: 0 }, i2: { x: 0, y: 700 }, fx1: { x: 1400, y: 0 } };
+  const r = split({ selTrack: 'trk_2', tracks: [t] }), [a, b] = r.p.tracks;
+  assert.deepEqual([a.id, a.name, a.prim, a.dev[a.prim].model, a.mute, Object.keys(a.lay).sort().join(','), shape(a)], ['trk_2', 'W', 'i2', 'juno60', false, 'fx1,i2', 'fx1,i2,out | fx1.out>out.in i2.out>fx1.in'], 'the Juno-60 sounded: it keeps the track (its ids, its place)');
+  assert.deepEqual([b.name, b.dev.i1.model, b.mute, fxMods(b.dev.fx1.fx)], ['W · DX7', 'dx7', true, ['eq']]);
+  assert.deepEqual([r.p.selTrack, r.notices], ['trk_2', ['Track “W” held 2 instruments: now 2 tracks — DX7: was switched off (now muted)']]);
+  // 100 characters of name: the base is cut, the suffix kept
+  const long = 'L'.repeat(100), u = v2({ id: 'trk_5', name: long, model: 'juno60' });
+  u.dev.i2 = { kind: 'synth', model: 'minimoog', vals: {}, preset: null }; u.wires.push({ id: 'w3', a: 'i2.out', b: 'fx1.in' }); u.nid = 3;
+  const n = split({ tracks: [u] }).p.tracks[1].name;
+  assert.deepEqual([n.length <= 100, n.endsWith(' · Minimoog'), n.startsWith('LLL')], [true, true, true], n);
+  // two instruments, the primary (a classic) cabled to nothing: muted, a new panel of its own; the other keeps the track
   const w = v2({ id: 'trk_1', name: 'W', model: 'dx7' });
   w.dev.i2 = { kind: 'synth', model: 'juno60', vals: {}, preset: null };
   w.wires = [{ id: 'w2', a: 'fx1.out', b: 'out.in' }, { id: 'w3', a: 'i2.out', b: 'fx1.in' }];
   w.nid = 3;
-  const r3 = split({ tracks: [w] }), [a, b] = r3.p.tracks;
-  assert.deepEqual([shape(a), a.nid, a.mute, shape(b), b.mute], ['fx3,i1,out | fx3.out>out.in i1.out>fx3.in', 4, true, 'fx1,i1,out | fx1.out>out.in i1.out>fx1.in', false]);
-  assert.deepEqual(r3.notices, ['Track “W” held 2 instruments: now 2 tracks']);
+  const r3 = split({ tracks: [w] }), [c, d] = r3.p.tracks;
+  assert.deepEqual([c.id, c.prim, shape(c), c.mute, d.name, shape(d), d.mute], ['trk_1', 'i2', 'fx1,i2,out | fx1.out>out.in i2.out>fx1.in', false, 'W · DX7', 'fx1,i1,out | fx1.out>out.in i1.out>fx1.in', true]);
+  assert.deepEqual(r3.notices, ['Track “W” held 2 instruments: now 2 tracks — DX7: was not connected (now muted)']);
 });
 
 test('1f page: an autosave whose track holds two instruments opens as two tracks with the notice (loadProject at boot); the split is saved', async () => {
@@ -544,11 +589,20 @@ test('1f page: an autosave whose track holds two instruments opens as two tracks
   t.nid = 3; t.notes = [{ id: 1, t: 0, d: 480, n: 60, v: 100 }];
   p.tracks[0] = t;
   seed.saveProject(p); await seed.flush(); await seed.close();
-  const s1 = await bootMain({ idb, ls: fakeStorage({}) });
+  const css = globalThis.CSS;
+  globalThis.CSS = { supports: () => false }; // (an old browser: the platform notice at boot too — review 6: both shown, joined)
+  let s1;
+  try { s1 = await bootMain({ idb, ls: fakeStorage({}) }); } finally { if (css === undefined) delete globalThis.CSS; else globalThis.CSS = css; }
   const tr = s1.api.project().tracks;
   assert.deepEqual(tr.map(x => x.name + ':' + x.model + ':' + Object.keys(x.dev).sort().join('/') + ':' + x.notes.length), ['Duo:juno60:fx1/i1/out:1', 'Duo · Minimoog:minimoog:fx1/i1/out:1']);
-  assert.equal(s1.$('#notice').textContent, 'Track “Duo” held 2 instruments: now 2 tracks');
+  const nt = s1.$('#notice').textContent;
+  assert.ok(nt.startsWith('Track “Duo” held 2 instruments: now 2 tracks · ') && /some parts may not work in this browser$/.test(nt), nt);
+  // (review 2b) the autosave as it was before the split, kept once under synth.project.pre1f (recoverable by hand)
+  const pre = () => JSON.parse(s1.api.store.raw('synth.project.pre1f') || 'null');
+  assert.deepEqual([pre() && pre().tracks.length, pre() && Object.keys(pre().tracks[0].dev).sort().join(',')], [1, 'fx1,i1,i2,out']);
   s1.api.save(); await s1.api.store.flush();
   const s2 = await bootMain({ idb, ls: fakeStorage({}) });
   assert.deepEqual([s2.api.project().tracks.length, s2.$('#notice').textContent.includes('held')], [2, false], 'saved split: no notice the next time');
+  const pre2 = JSON.parse(s2.api.store.raw('synth.project.pre1f') || 'null');
+  assert.deepEqual([pre2 && pre2.tracks.length, pre2 && Object.keys(pre2.tracks[0].dev).length], [1, 4], 'never overwritten');
 });

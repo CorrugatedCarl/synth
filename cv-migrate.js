@@ -33,16 +33,18 @@
 //                           exactly, else one track per instrument), lost: [what main cannot hold] }
 //   splitTracks(p, {name})  (stage 1f: one instrument per track in the UI) a parsed project at SCHEMA → { p, notices }: each
 //                           track holding several instruments, extra panels or a shape that is not today's (power off,
-//                           a key zone, a cable level, a Serum into a panel, no cable to OUT) becomes one v2 track per
-//                           instrument, by toV1's per-instrument rule (instRoutes) but in v2 form — prim → its panel → OUT
-//                           (the panel it fed: its FX state, a shared one copied for each) or a Serum (its own FX) → OUT:
-//                           the primary keeps the track (id, name, lay of the devices kept, its device ids: the panel it
-//                           fed or a new id), the others are new tracks after it ('trk_<n>', "<track> · <model name>"
-//                           via name(modelId), i1 [→ fx1] → out, no lay), notes and the rest of the track copied; an
-//                           instrument that did not sound (off, not cabled to OUT, another one soloed) comes in muted;
-//                           zones, solo, cable levels, unconnected panels and modulation rows are dropped. notices: one
-//                           line per track that held several instruments. A canonical one-instrument track (and a
-//                           project of them: the same object) is returned as it is
+//                           a key zone, a cable level, a Serum into a panel, no cable to OUT, a classic straight into
+//                           OUT) becomes one v2 track per instrument, by toV1's per-instrument rule (instRoutes) in v2
+//                           form — a classic → its panel (the one it fed: its FX state, a shared one copied for each;
+//                           none: an empty one) → OUT, a Serum (its own FX; heard through a panel with none of its own:
+//                           the panel's, reshape's rule) → OUT. The first instrument that sounded keeps the track (id,
+//                           name, selection, its device ids, the lay of what it keeps); the others are new tracks after
+//                           it ('trk_<n>', "<track> · <model name>" via name(modelId), the base cut to fit 100
+//                           characters, i1 [→ fx1] → out, no lay), notes and the rest of the track copied; one that did
+//                           not sound (off, not cabled to OUT, another one soloed) comes in muted; zones, solo, cable
+//                           levels, unconnected panels and modulation rows are dropped. notices: one line per track that
+//                           held several instruments or lost something audible (what, per instrument). A canonical
+//                           one-instrument track (and a project of them: the same object) is returned as it is
 //   primV1(t)               a v2 track's primary instrument as v1 fields { model, vals, preset, seq?, fx }
 //   mirror(o)               a saved FILE's tracks get primV1 at track level (§5.8: main opens it as each track's primary
 //                           instrument with its FX); autosave and History never carry it, the canvas reader ignores it
@@ -194,37 +196,57 @@ export function toV1(p0) {
   return { p, lost: [...new Set(lost)] };
 }
 /* ---------------------------------------------------------------- stage 1f: one instrument per track in the UI */
-// a canonical one-instrument track (cv-graph §5.5) and nothing beside it but its panel and OUT: kept as it is
+// a canonical one-instrument track (cv-graph §5.5) and nothing beside it but its panel and OUT — a classic one into a
+// panel (one straight into OUT is given an empty panel: the same sound, and the Effects tray always finds one): kept as is
 function single(t) {
   const ins = Object.keys(t.dev).filter(k => kindOf(t.dev[k]) === 'inst');
   if (ins.length !== 1) return false;
   let c = null;
   try { c = compileTrack(t); } catch { return false; }
   if (!c.canonical) return false;
-  const pid = t.dev[ins[0]].model === 'serum' ? null : panelOf(t, ins[0]);
-  return Object.keys(t.dev).every(k => k === ins[0] || k === pid || kindOf(t.dev[k]) === 'out');
+  const sx = t.dev[ins[0]].model === 'serum', pid = sx ? null : panelOf(t, ins[0]);
+  return (sx || !!pid) && Object.keys(t.dev).every(k => k === ins[0] || k === pid || kindOf(t.dev[k]) === 'out');
 }
+const hasFx = fx => isObj(fx) && Array.isArray(fx.racks) && fx.racks.some(r => isObj(r) && Array.isArray(r.mods) && r.mods.length > 0); // (= cv-model's)
 const maxTrk = ids => { let n = 0; for (const id of ids) { const m = /^trk_(\d{1,9})$/.exec(id); if (m) n = Math.max(n, +m[1]); } return n; };
+const NAME_MAX = 100; // (song.js: a track name's length)
 export function splitTracks(p, o = {}) {
   if (!isObj(p) || !Array.isArray(p.tracks)) return { p, notices: [] };
   const name = typeof o.name === 'function' ? o.name : m => m, notices = [], out = [];
   const ids = new Set(p.tracks.map(t => isObj(t) && t.id)), unseen = id => !ids.has(id);
   let n = maxTrk(ids), changed = false;
   const freshId = () => { let id; do id = 'trk_' + ++n; while (!unseen(id)); ids.add(id); return id; };
+  const lvl = g => g !== undefined && g !== 1;
   for (const t0 of p.tracks) {
     if (!isObj(t0) || !isObj(t0.dev) || single(t0)) { out.push(t0); continue; }
-    const t = plainCopy(t0), R = instRoutes(t), on = powered(t);
+    const t = plainCopy(t0), on = powered(t);
+    let R = instRoutes(t);
     if (!R.length) { out.push(t0); continue; } // (no instrument: song.js / adopt deal with it)
     changed = true;
-    const outId = Object.keys(t.dev).find(k => kindOf(t.dev[k]) === 'out') || 'out';
-    R.forEach(({ id, d, v, via, end }, i) => {
-      const tr = coreOf(t), dv = Object.assign({}, d), sx = d.model === 'serum';
+    // what sounded: on, cabled (through at most one panel) to OUT, not soloed out
+    const outId = Object.keys(t.dev).find(k => kindOf(t.dev[k]) === 'out') || 'out', many = R.length > 1;
+    for (const r of R) r.heard = r.d.on !== false && !!r.end && kindOf(t.dev[r.end.id]) === 'out' && on.includes(r.id);
+    const k0 = R.findIndex(r => r.heard); // the first sounding instrument keeps the track (else the primary)
+    if (k0 > 0) R = [R[k0], ...R.slice(0, k0), ...R.slice(k0 + 1)];
+    const used = new Set(R.map(r => r.via).filter(Boolean)), why = [];
+    R.forEach(({ id, d, v, to, via, end, heard }, i) => {
+      const tr = coreOf(t), dv = Object.assign({}, d), sx = d.model === 'serum', lost = [];
       for (const k of ['on', 'solo', 'zone', 'fx']) delete dv[k];
-      if (sx) dv.fx = plainCopy(v.fx); else delete dv.fxId;
-      const silent = d.on === false || !end || kindOf(t.dev[end.id]) !== 'out' || !on.includes(id);
-      if (silent) tr.mute = true; // (it did not sound: it stays quiet until unmuted)
+      if (!heard) {
+        tr.mute = true; // (it did not sound: it stays quiet until unmuted)
+        lost.push(d.on === false ? 'was switched off (now muted)' : !end || kindOf(t.dev[end.id]) !== 'out' ? 'was not connected (now muted)' : 'was silent, another one soloed (now muted)');
+      }
+      const z = zoneOf(d);
+      if (z.lo !== 0 || z.hi !== 127 || z.xp !== 0) lost.push('its key zone / transpose was dropped');
+      if ((to && lvl(to.g)) || (via && end && lvl(end.g))) lost.push('its cable level was dropped');
+      if (sx) { // a Serum heard through a panel: with no effects of its own, the panel's become its own (reshape's 'moved': the same sound)
+        const pfx = via && isObj(t.dev[via]) ? t.dev[via].fx : undefined;
+        if (via && !hasFx(v.fx) && pfx !== undefined) dv.fx = plainCopy(pfx);
+        else { dv.fx = plainCopy(v.fx); if (via && hasFx(pfx)) lost.push('the panel after it was not kept'); }
+      } else delete dv.fxId;
+      if (lost.length) why.push((many ? (d.name || name(d.model)) + ': ' : '') + lost.join('; '));
       const P = { kind: 'panel', fx: plainCopy(v.fx) };
-      if (i === 0) { // the primary keeps the track: its ids, the lay of what it keeps
+      if (i === 0) { // the keeper: the track's id, name, selection, its device ids, the lay of what it keeps
         let pid = null;
         tr.nid = t.nid;
         if (!sx) {
@@ -238,9 +260,10 @@ export function splitTracks(p, o = {}) {
         tr.dev[outId] = { kind: 'out' };
         tr.wires = pid ? [{ id: 'w1', a: id + '.out', b: pid + '.in' }, { id: 'w2', a: pid + '.out', b: outId + '.in' }] : [{ id: 'w1', a: id + '.out', b: outId + '.in' }];
         if (isObj(t.lay)) { const L = {}; for (const k of [id, id + '/fx', pid, outId]) if (k && isObj(t.lay[k])) L[k] = t.lay[k]; if (Object.keys(L).length) tr.lay = L; else delete tr.lay; }
-      } else { // a new track: i1 [→ fx1] → out (stage 1d's shape), Tidy
+      } else { // a new track: i1 [→ fx1] → out (stage 1d's shape), Tidy; its name cut so " · Model" fits
         delete dv.fxId;
-        Object.assign(tr, { id: freshId(), name: (t.name || 'Track') + ' · ' + (d.name || name(d.model)), prim: 'i1', nid: 2, dev: { i1: dv } });
+        const sfx = ' · ' + (d.name || name(d.model)), base = (t.name || 'Track').slice(0, Math.max(1, NAME_MAX - sfx.length));
+        Object.assign(tr, { id: freshId(), name: (base + sfx).slice(0, NAME_MAX), prim: 'i1', nid: 2, dev: { i1: dv } });
         delete tr.lay;
         if (sx) { tr.dev.out = { kind: 'out' }; tr.wires = [{ id: 'w1', a: 'i1.out', b: 'out.in' }]; }
         else { tr.dev.fx1 = P; tr.dev.out = { kind: 'out' }; tr.wires = [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }]; }
@@ -248,7 +271,10 @@ export function splitTracks(p, o = {}) {
       }
       out.push(tr);
     });
-    if (R.length > 1) notices.push(`Track “${t.name}” held ${R.length} instruments: now ${R.length} tracks`);
+    const loose = Object.keys(t.dev).filter(k => kindOf(t.dev[k]) === 'panel' && !used.has(k) && hasFx(t.dev[k].fx)).length;
+    if (loose) why.push(`${loose} unconnected FX panel${loose > 1 ? 's' : ''} with effects ${loose > 1 ? 'were' : 'was'} dropped`);
+    const head = many ? `Track “${t.name}” held ${R.length} instruments: now ${R.length} tracks` : `Track “${t.name}”`;
+    if (many || why.length) notices.push(head + (why.length ? (many ? ' — ' : ': ') + why.join('; ') : ''));
   }
   return changed ? { p: Object.assign({}, p, { tracks: out }), notices } : { p, notices };
 }
