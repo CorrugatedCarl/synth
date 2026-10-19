@@ -8,9 +8,12 @@
 // layout reads). Widgets register in main.js's `ui` map through the api (main.js hwApi, IMPL-panels §4.4).
 // Stage 1g: below native resolution (camera k < 1 at a zoom end) the face SVG is shown as a bitmap at that zoom's device
 // resolution, filtered down from a finer vector raster (faceTier): no aliased thin lines, no per-frame vector raster in a pinch.
+// Stage 1h: on the GL path the face is a texture (cv-face FACES.register: a mipmapped base, a finer window above k = 1)
+// drawn under #world every frame; faceTier stays as the 'dom' mode (an overlapping / folded module) and the 2D fallback.
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
 import { BAR_H } from './cv-module.js?v=9';
+import { FACES } from './cv-face.js?v=9';
 import { LAYOUTS, HW_IDS, layoutOf } from './panels/index.js?v=9';
 
 export { LAYOUTS, HW_IDS, layoutOf };
@@ -1367,9 +1370,24 @@ export function render(root, L, model, api) {
     dxRefresh();
   }
   for (const f of post) f();
-  // (1g) the face's bitmap below native resolution (api.tier: false → none; an object → faceTier's env)
-  const face = deco.firstChild, tier = api && api.tier === false || !face ? null : faceTier(deco, face, art, geo.W, geo.body.h, api && typeof api.tier === 'object' ? api.tier : null);
-  // a tap on a dimmed (inert) control says it is not emulated (under the bitmap: the SVG is hit-tested for that one point)
+  // (1h) the face registered with cv-face (api.tier: false → none; an object → the tier's / the loader's env): a GPU
+  // texture on the GL path ('gl'), else the 1g bitmap tier ('dom', faceTier). moduleOf: the .cv-mod ancestor's id;
+  // offset: the deco's top-left inside the module (world px) — offsetLeft / offsetTop up the offset parents, a layout
+  // read cv-face makes at mount / refresh / a rest only (a stub DOM without offsets: 0, BAR_H)
+  const face = deco.firstChild;
+  const moduleOf = () => { for (let n = deco; n && n.nodeType === 1; n = n.parentNode) if (n.hasAttribute && n.hasAttribute('data-cv-mod')) return n.getAttribute('data-cv-mod'); return null; };
+  const offset = () => {
+    let x = 0, y = 0, n = deco;
+    for (; n && n.nodeType === 1 && !(n.hasAttribute && n.hasAttribute('data-cv-mod')); n = n.offsetParent) {
+      const l = +n.offsetLeft, t = +n.offsetTop;
+      if (l !== l || t !== t) return { x: 0, y: BAR_H };
+      x += l; y += t;
+    }
+    return n && n.nodeType === 1 ? { x, y } : { x: 0, y: BAR_H };
+  };
+  const tier = api && api.tier === false || !face ? null : FACES.register(deco, { markup: art, w: geo.W, h: geo.body.h, moduleOf, offset, tier: faceTier, env: api && typeof api.tier === 'object' ? api.tier : null });
+  // a tap on a dimmed (inert) control says it is not emulated (under the bitmap or the GL face — the SVG visibility:
+  // hidden — the SVG is hit-tested for that one point, in every mode)
   deco.addEventListener('click', e => {
     let t = e.target;
     if (tier && tier.shown && t === deco && typeof doc.elementFromPoint === 'function') {
