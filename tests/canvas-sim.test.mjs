@@ -504,11 +504,16 @@ test('project v2 (1c): every track adopted after loads, undo / redo, add and dup
 
 test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / replaces a classic synth in its Simple layout inside that one step; Hardware brings it back (a tap on the current model\'s tile switches its layout both ways); Serum ignores it; the choice persists; the tray never closes itself', async () => {
   const sh = globalThis.__synthTest.shell, tiles = sh.shell.tiles;
-  assert.equal(tiles.layout(), 'hw', 'Hardware by default');
-  const simple = sim.$('#srcLayout').children[0].children[1]; // the switch's Simple button
-  assert.deepEqual([simple.textContent, simple.getAttribute('aria-pressed')], ['Simple', 'false']);
-  simple.dispatchEvent({ type: 'click', target: simple, preventDefault() {}, stopPropagation() {} });
-  assert.deepEqual([tiles.layout(), simple.getAttribute('aria-pressed'), api.store.get('synth.cv.trayLayout', null)], ['flow', 'true', 'flow'], 'remembered');
+  assert.deepEqual([tiles.layout(), tiles.view()], ['hw', 'hw'], 'Hardware by default');
+  // (2026-10-19) the switch is a dropdown: #srcView opens #srcViewMenu, its Simple item picks (was: the segmented pair's
+  // Simple button, aria-pressed; now the item's aria-checked and the button's label)
+  const vb = sim.$('#srcView'), vm = sim.$('#srcViewMenu'), simple = vm.children[1], serum = vm.children[2];
+  const tap = t => t.dispatchEvent({ type: 'click', target: t, detail: 1, preventDefault() {}, stopPropagation() {} });
+  assert.deepEqual([vb.children[0].textContent, vm.children.map(b => b.children[0].textContent), simple.getAttribute('aria-checked')], ['Hardware', ['Hardware', 'Simple', 'Serum'], 'false']);
+  tap(vb);
+  assert.deepEqual([tiles.viewOpen(), vb.getAttribute('aria-expanded')], [true, 'true']);
+  tap(simple); // (a pick closes it)
+  assert.deepEqual([tiles.layout(), simple.getAttribute('aria-checked'), vb.children[0].textContent, tiles.viewOpen(), api.store.get('synth.cv.trayLayout', null)], ['flow', 'true', 'Simple', false, 'flow'], 'remembered');
   // a tap in track mode: a new track, its instrument Simple, one step
   let n = hsteps();
   const nT = P().tracks.length;
@@ -523,9 +528,21 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   n = hsteps();
   assert.equal(sh.srcDrag.drop('obxa', { over: 'canvas' }), true); sim.raf();
   assert.deepEqual([T().model, cv.instUi(T()), hsteps()], ['obxa', 'flow', n + 1]);
-  // Serum: no hardware panel — the switch does nothing to it
+  // (2026-10-19) the Serum view: the Serum tile and the Modulators only (remembered); the classics' layout stays Simple
+  tap(vb); tap(serum);
+  const shownIds = () => tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
+  assert.deepEqual([tiles.view(), tiles.layout(), api.store.get('synth.cv.trayLayout', null), shownIds(), sim.$('#srcModSec').hidden, tiles.modTiles().length],
+    ['serum', 'flow', 'serum', ['serum'], false, 4]);
+  // Serum: no hardware panel — the view's layout does nothing to it; in track mode its tile adds a Serum track
+  sh.cvOpenSources('track'); sim.raf();
+  assert.deepEqual([tiles.mode(), tiles.view()], ['track', 'serum'], '+ Track opens the view last used');
   sh.srcPick('serum', 'track'); sim.raf();
-  assert.deepEqual([T().model, !!(T().lay && T().lay.i1 && T().lay.i1.ui)], ['serum', false]);
+  assert.deepEqual([T().model, !!(T().lay && T().lay.i1 && T().lay.i1.ui), tiles.mode()], ['serum', false, 'replace']);
+  // Escape: the dropdown first, the tray stays open
+  tap(vb);
+  assert.deepEqual([sh.cvShellEscape(), tiles.viewOpen(), sh.shell.src.isOpen()], [true, false, true]);
+  tiles.setLayout('flow');
+  assert.deepEqual([shownIds().length, sim.$('#srcModSec').hidden], [12, true], 'Simple: the classics, no Modulators');
   // Hardware: a new track as before (no ui written)
   tiles.setLayout('hw');
   sh.srcDrag.drop('dx7', { over: 'tracks' }); sim.raf();

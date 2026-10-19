@@ -4104,11 +4104,12 @@ function instChip(t) {
 function srcModeUI(mode) {
   if (!shell.tiles) return;
   shell.tiles.setMode(mode);
-  const p = $('#srcMode');
+  const p = $('#srcMode'), v = shell.tiles.view(), one = v === 'serum' ? 'Serum' : 'one'; // (the intro follows the view)
   p.innerHTML = '';
-  if (mode === 'track') p.append('Tap one for ', h('b', null, 'a new track'), ', or drag it onto the track list.');
-  else p.append('Tap one to use it in place of the ', h('b', null, model.name), ' on ', h('b', null, '“' + trk().name + '”'),
-    ', or drag it onto the canvas. Drag it onto the track list for a new track.');
+  if (mode === 'track') p.append('Tap ' + one + ' for ', h('b', null, 'a new track'), ', or drag it onto the track list.');
+  else p.append('Tap ' + one + ' to use it' + (v === 'flow' ? ' (simple panel)' : '') + ' in place of the ', h('b', null, model.name), ' on ',
+    h('b', null, '“' + trk().name + '”'), ', or drag it onto the canvas. Drag it onto the track list for a new track.',
+    ...(v === 'serum' ? [' A modulator: tap it, or drag it onto the canvas.'] : []));
 }
 function srcOver(t) {
   if (!t || typeof t.closest !== 'function') return null;
@@ -4116,9 +4117,11 @@ function srcOver(t) {
   if (!$('#tab-inst').hidden && t.closest('#viewport')) return 'canvas';
   return null;
 }
-// the Sources tray's "Hardware | Simple" switch (stage 1c, the user's request): a classic synth picked or dropped comes in
-// that layout (lay.<dev>.ui = 'flow' or none, as the module's ⋯ → Simple / Hardware layout), inside the add's / replace's
-// own undo step; a tap on the current model's tile switches its layout to the tray's (both ways: Simple and back to Hardware)
+// the Sources tray's views (the dropdown, 2026-10-19; stage 1c's "Hardware | Simple" switch before it): Hardware and Simple
+// show the classic synths, Serum the Serum tile, the Modulators and what comes for Serum. A classic synth picked or dropped
+// comes in the view's layout (lay.<dev>.ui = 'flow' or none, as the module's ⋯ → Simple / Hardware layout), inside the add's
+// / replace's own undo step; a tap on the current model's tile switches its layout to the tray's (both ways). The pref
+// holds the view ('hw' | 'flow' | 'serum')
 const TRAY_LAYOUT = 'synth.cv.trayLayout';
 const srcUi = id => (!shell.tiles || modelById(id).custom ? null : shell.tiles.layout() === 'flow' ? 'flow' : 'hw');
 function srcPick(id, mode) {
@@ -4163,7 +4166,7 @@ const srcDrag = {
   cancel() { srcDragEnd(); },
 };
 function sideChanged(which, on) {
-  if (!on) return;
+  if (!on) { if (which === 'src' && shell.tiles) shell.tiles.closeView(); return; } // (no dropdown left over a closed tray)
   if (which === 'src') { if (!shell.srcAsk) srcModeUI('replace'); shell.srcAsk = false; }
   // a narrow window (portrait, Stage Manager): the tray not in use folds to its rail
   const other = which === 'src' ? shell.fx : shell.src; // (null while initShell restores the first one)
@@ -4233,7 +4236,8 @@ function initShell() {
   $('#fxClose').onclick = () => shell.fx.close();
   shell.tiles = cvTray.sourcesTray($('#srcList'), { models: MODELS, tray: $('#srcTray'), layer: $('#ov'), pick: srcPick, drag: srcDrag,
     overOf: srcOver, canvasGhost: () => !!world && !$('#tab-inst').hidden, // (a drag out of the tray leaves it open: the user's rule)
-    layoutEl: $('#srcLayout'), layout: store.get(TRAY_LAYOUT, 'hw'), onLayout: l => store.set(TRAY_LAYOUT, l),
+    layoutEl: $('#srcLayout'), viewBtn: $('#srcView'), viewMenu: $('#srcViewMenu'), secEl: $('#srcScroll'), noteEl: $('#srcNote'),
+    view: store.get(TRAY_LAYOUT, 'hw'), onView: v => { store.set(TRAY_LAYOUT, v); srcModeUI(shell.tiles.mode()); },
     // (stage 2a) the Modulators section: a tap adds one where Tidy would, a drop where it lands (modPick / modTileDrag)
     mods: MOD_TILES, modsEl: $('#srcMods'), modsSec: $('#srcModSec'), modPick: id => modAdd(id, null), modDrag: modTileDrag,
     modCanvasGhost: () => !!world && !$('#tab-inst').hidden, toWorld: (x, y) => { const W = cvW(); return W && typeof W.toWorld === 'function' ? W.toWorld(x, y) : null; } });
@@ -4270,6 +4274,7 @@ function cvShellEscape() { // Escape: closes an open ≡ / ⚙ popover, side tra
   if (shell.sheet) { shell.sheet.close(); return true; }
   for (const m of shell.menus) if (m.close()) return true;
   if (shell.meter && shell.meter.close()) return true;
+  if (shell.tiles && shell.tiles.closeView()) return true; // (the Sources view dropdown before its tray)
   if (shell.src && shell.src.close()) return true;
   return !!(shell.fx && shell.fx.close());
 }
