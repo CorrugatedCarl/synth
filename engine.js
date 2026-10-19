@@ -1504,6 +1504,7 @@ class Inst {
     this.sxMask = 1; this.sxBusOn = 0; this.sxReal = 1; this.sxRel = 0; this.sxRelN = 0; this.sxRelT = 0;
     this.setOS(os);
     this.dacHold = this.dacT = this.dacPend = 0; this.osPend = 0; this.osR = 1; this.osHold = 0; this.quietF = 0;
+    this.modRows(null);
     this.setPatch(DEFAULT_PATCH);
   }
   init(os, rack) {
@@ -1516,6 +1517,13 @@ class Inst {
     this.ctl = 0;
     this.smT = new Float64Array(S_N); this.smS = new Float64Array(S_N); this.smA = new Float64Array(S_N);
     this.smB = new Float64Array(S_N); this.smD = new Float64Array(S_N); this.smMv = false;
+    // canvas modulation of a classic Inst (IMPL-2b §5, modRows): the cabled slots (moN of moSlots), their start / end
+    // offsets of the span (moPrev / moEnd, swapped after it), the saved smB values (moU), the cabled apply / proc fields
+    // (moF records, moMap by path, moVK with a voice setter), the generation of the voice setters per voice (moVG), the
+    // eff snapshot per row (moEff, moRow). Nothing of it runs while moN and moFN are 0.
+    this.moN = 0; this.moFN = 0; this.moSlots = new Int32Array(S_N); this.moF = []; this.moMap = null; this.moVK = 0;
+    this.moPrev = new Float64Array(S_N); this.moEnd = new Float64Array(S_N); this.moU = new Float64Array(S_N);
+    this.moVG = new Uint32Array(64); this.moGen = 1; this.moEff = null; this.moRow = null;
     // Serum host fields (§8.4.1, §11.2): sx belongs to SerumDSP (attach), ct = last curve tables, pat = poly pressure
     this.sx = null; this.ct = null; this.pat = new Float64Array(128); this.patSeen = false;
     // sxW: the hidden-voice warm-up runs (SerumDSP.warmStart); sxWK: the patch shape it last warmed (SerumDSP.warmKey);
@@ -1651,6 +1659,199 @@ class Inst {
     }
     this.smMv = mv;
   }
+  /* ---- canvas modulation: the classic adapter (IMPL-2b §5, SPEC-canvas §7.8) ----
+   * Tier 1 (sm knobs): ModCore's offsets in slot units are added to the smoothed slots after smStep and taken off again
+   * after chorus / ensemble, so the voices read modulated SA / SD / SB for one span (needNoise, the sync start, the
+   * de-click tails see them) while smStep's exact-settle and smTargets' range-switch tests see today's numbers. Span
+   * setters (apply / proc knobs): the effective field value is written into this.p every span — the processor and its
+   * voices read most of these fields from the patch per span, chunk or note-on — and, for the fields with a setter, applied
+   * to the active voices (Env.set / setDecay, the filter character) when the value quantised to 1/512 of its range changed.
+   * The Track calls modRows from {t: 'mods'} and modSpan right before renderSpan; with no rows nothing here runs. */
+  // rows (one per cable; null / []: none): { slot: S_* } a slot offset, { field, lo?, hi?, xfer? } a span setter on the
+  // patch path `field` (cv-mods FIELD_CLASS: 'lfo.rate', 'fenv.a', 'reg.bass', …). [lo, hi] = the quantisation grid of the
+  // field, given or taken from the row's transfer ({a, b}: a…a+b; {tab}: its range); without one every change applies.
+  // Fields that go are written back to their bases. Allocation here (between quanta).
+  modRows(rows) {
+    if (this.moFN !== 0) { // (every voice: an idle one would otherwise keep the cabled coefficients)
+      for (const r of this.moF) if (r.q === r.q) this.moWrite(r, r.base);
+      if (this.moVK !== 0 && this.kind === 'analog') for (const v of this.voices) this.moVoice(v);
+    }
+    const S = this.moSlots, F = [], map = Object.create(null), n = rows ? rows.length : 0, row = new Int32Array(n);
+    let ns = 0;
+    for (let k = 0; k < n; k++) {
+      const r = rows[k];
+      row[k] = -1;
+      if (!r) continue;
+      if (r.slot >= 0 && r.slot < S_BEND) {
+        const i = r.slot | 0;
+        let j = 0; while (j < ns && S[j] !== i) j++;
+        if (j === ns) S[ns++] = i;
+        row[k] = i;
+        continue;
+      }
+      if (typeof r.field !== 'string') continue;
+      let rec = map[r.field];
+      if (rec === undefined) {
+        rec = this.moRec(r.field, r);
+        if (rec === null) continue;
+        if (this.p === DEFAULT_PATCH) this.p = new PatchP(DEFAULT_PATCH); // (never write into the shared default)
+        map[r.field] = rec; F.push(rec);
+      }
+      row[k] = 32 + F.indexOf(rec);
+    }
+    this.moN = ns; this.moFN = F.length; this.moF = F; this.moMap = map; this.moRow = row;
+    this.moVK = 0; for (const r of F) if (r.k >= 1 && r.k <= 7) this.moVK++;
+    this.moPrev.fill(0); this.moEnd.fill(0);
+    this.moEff = n ? new Float32Array(n) : null;
+    this.moGen++;
+    if (this.voices && this.moVG.length < this.voices.length) this.moVG = new Uint32Array(this.voices.length);
+  }
+  // a field record: where the field lives in the patch (sub-object, key), its base, grid and setter kind
+  // (1 fenv times / levels → Env.set, 2 fenv.d → setDecay, 3 / 4 the amp EG, 5 envOv → both, 6 the LP character → cfg,
+  // 7 hpf.clip; 8 unison detune, 9 bend range, 10 bandwidth, 11 chorus / ensemble / hiss; 0 the patch field only)
+  moRec(field, r) {
+    const d = field.indexOf('.'), sub = d < 0 ? '' : field.slice(0, d), key = d < 0 ? field : field.slice(d + 1);
+    const o = sub === '' ? this.p : this.p[sub];
+    if (o === null || o === undefined || typeof o[key] !== 'number') return null;
+    let k = 0;
+    switch (field) {
+      case 'fenv.a': case 'fenv.s': case 'fenv.r': k = 1; break;
+      case 'fenv.d': k = 2; break;
+      case 'aenv.a': case 'aenv.s': case 'aenv.r': k = 3; break;
+      case 'aenv.d': k = 4; break;
+      case 'envOv': k = 5; break;
+      case 'vcf.comp': case 'vcf.fbSat': case 'vcf.poles': case 'vcf.mode': case 'vcf.morph': case 'vcf.sat': case 'vcf.clip': k = 6; break;
+      case 'hpf.clip': k = 7; break;
+      case 'unisonDetune': k = 8; break;
+      case 'bendRange': k = 9; break;
+      case 'bw': k = 10; break;
+      case 'fx.chorus': case 'fx.ensemble': case 'fx.hiss': k = 11; break;
+    }
+    let lo = +r.lo, hi = +r.hi;
+    const x = r.xfer;
+    if (!(hi > lo) && x) {
+      if (x.tab) { lo = Infinity; hi = -Infinity; for (let i = 0; i < x.tab.length; i++) { const y = x.tab[i]; if (y < lo) lo = y; if (y > hi) hi = y; } }
+      else if (x.b !== undefined) { lo = Math.min(x.a, x.a + x.b); hi = Math.max(x.a, x.a + x.b); }
+    }
+    const ik = hi > lo ? 512 / (hi - lo) : 0;
+    return { field, sub, key, k, base: o[key], lo: ik !== 0 ? lo : 0, ik, q: NaN, v: o[key] };
+  }
+  // the span's offsets and field values (ModCore, IMPL-2b §2.1): c0 / c1 = Float64Array(S_N) span-start / span-end offsets
+  // in slot units (c0 null: the previous span's end; c1 null: none), sv = [{ field, v }] effective values of the cabled
+  // fields (null: none). modSpan(off, sv) is the two-argument form (off = span-end offsets).
+  modSpan(c0, c1, sv) {
+    if (this.moN === 0 && this.moFN === 0) return;
+    if (sv === undefined && (c1 === undefined || Array.isArray(c1))) { sv = c1 === undefined ? null : c1; c1 = c0; c0 = null; }
+    if (this.moN !== 0) {
+      const S = this.moSlots, P = this.moPrev, E = this.moEnd, ns = this.moN;
+      if (c0) for (let k = 0; k < ns; k++) { const i = S[k], x = c0[i]; P[i] = x === x ? x : 0; }
+      if (c1) for (let k = 0; k < ns; k++) { const i = S[k], x = c1[i]; E[i] = x === x ? x : 0; }
+      else for (let k = 0; k < ns; k++) E[S[k]] = 0;
+    }
+    if (this.moFN !== 0) this.moFields(sv);
+  }
+  moApply() { // after smStep: the voices read modulated slots this span (smMv: interpolated per chunk)
+    const S = this.moSlots, a = this.smA, b = this.smB, d = this.smD, u = this.moU, P = this.moPrev, E = this.moEnd;
+    for (let k = 0; k < this.moN; k++) { const i = S[k]; u[i] = b[i]; a[i] += P[i]; b[i] += E[i]; d[i] = b[i] - a[i]; }
+    this.smMv = true;
+  }
+  moRestore() { // after chorus / ensemble: smB back by copy; this span's end offsets become the next span's start
+    const S = this.moSlots, b = this.smB, u = this.moU;
+    for (let k = 0; k < this.moN; k++) { const i = S[k]; b[i] = u[i]; }
+    const t = this.moPrev; this.moPrev = this.moEnd; this.moEnd = t;
+  }
+  moFields(sv) {
+    const M = this.moMap;
+    let gen = this.moGen;
+    if (sv) for (let k = 0; k < sv.length; k++) {
+      const e = sv[k];
+      if (!e) continue;
+      const r = M[e.field];
+      if (r === undefined) continue;
+      const v = +e.v;
+      if (v !== v) continue;
+      const q = r.ik !== 0 ? Math.round((v - r.lo) * r.ik) : v;
+      if (q === r.q) continue;
+      r.q = q; r.v = v;
+      if (this.moWrite(r, v)) gen++;
+    }
+    this.moGen = gen;
+    // the voice setters: every active voice whose coefficients date from an older generation (a voice that went active
+    // since takes its note-on from the modulated patch, but its envelope / filter coefficients from the last apply)
+    if (this.moVK !== 0 && this.kind === 'analog') {
+      const V = this.voices, G = this.moVG, n = V.length;
+      for (let i = 0; i < n; i++) { const v = V[i]; if (v.active && G[i] !== gen) { G[i] = gen; this.moVoice(v); } }
+    }
+  }
+  // writes field value v into the patch and runs the Inst-level setter; true when the field has a voice setter
+  moWrite(r, v) {
+    const p = this.p, o = r.sub === '' ? p : p[r.sub];
+    if (o === null || o === undefined) return false;
+    o[r.key] = v;
+    switch (r.k) {
+      case 8: { // a new unison spread reaches sounding notes (as setPatch)
+        const V = this.voices, n = V.length;
+        for (let i = 0; i < n; i++) V[i].det = p.mode === 'unison' && n > 1 ? (i / (n - 1) - 0.5) * 2 * p.unisonDetune / 100 : 0;
+        for (let i = 0; i < n; i++) { const x = V[i]; if (x.note >= 0) { const nt = x.note + (x.det || 0); x.pitch += nt - x.target; x.target = nt; } }
+        return false;
+      }
+      case 9: this.bend = this.bendRaw * (p.bendRange || 2); return false;
+      case 10: this.recalc(); return false;
+      case 11: this.chorus.mode = p.fx.ensemble ? 0 : p.fx.chorus | 0; this.chorus.hiss = p.fx.hiss || 0; this.ens.on = p.fx.ensemble | 0; return false;
+    }
+    return r.k !== 0;
+  }
+  // the narrowest setters of AVoice.apply for the cabled fields, on one voice
+  moVoice(v) {
+    const p = this.p, R = this.moF, fs = this.fs, cr = fs / this.CH, tf = 1 + 0.07 * v.tolE * p.drift;
+    for (let k = 0; k < this.moFN; k++) {
+      const r = R[k];
+      switch (r.k) {
+        case 1: case 5: {
+          const F = p.fenv;
+          v.fenv.set(F.a * tf, F.d * tf, F.s, F.r * tf, cr, p.envOv);
+          if (p.tb) v.fenv.setDecay(v.acc ? 0.2 : F.d * tf, cr);
+          if (r.k === 1) break;
+        }
+        // falls through (envOv: both envelopes)
+        case 3: { const A = p.aenv; v.aenv.set(A.a * tf, A.d * tf, A.s, A.r * tf, fs, p.envOv); break; }
+        case 2: v.fenv.setDecay(p.tb && v.acc ? 0.2 : p.fenv.d * tf, cr); break;
+        case 4: v.aenv.setDecay(p.aenv.d * tf, fs); break;
+        case 6: this.moChar(v.f, p.vcf); if (p.dual) this.moChar(v.f2, p.vcf); break;
+        case 7: if (v.h instanceof SKHigh) v.h.clip = p.hpf.clip || 1.6; break;
+      }
+    }
+  }
+  moChar(f, c) { // cfgLP without its setRes (the smoothed slot owns the resonance)
+    if (f instanceof Ladder) { f.comp = c.comp || 0; f.fbSat = c.fbSat || 0; f.tap2 = c.poles < 3; }
+    else if (f instanceof SVF) { f.mode = c.mode === undefined ? 0 : c.mode; f.morph = c.morph || 0; f.sat = c.sat || 0.5; }
+    else if (f instanceof SKLow) f.clip = c.clip || 1.6;
+  }
+  moRefresh() { // setPatch: the bases are the new patch's; the next span re-applies the cabled values to every voice
+    const p = this.p;
+    for (let k = 0; k < this.moFN; k++) {
+      const r = this.moF[k], o = r.sub === '' ? p : p[r.sub];
+      r.base = o !== null && o !== undefined && typeof o[r.key] === 'number' ? o[r.key] : r.base;
+      r.q = NaN;
+    }
+    this.moGen++;
+    if (this.moVG.length < this.voices.length) this.moVG = new Uint32Array(this.voices.length);
+  }
+  // the eff snapshot (IMPL-2b §2.4): per row of modRows, the modulated value in engine units — a slot row its slot's
+  // smoothed value plus this span's end offset, a field row the effective field value — for the host's inverse transfer
+  // (cv-mods knobOf); null without rows. Allocation-free (the array is modRows').
+  modEff() {
+    const E = this.moEff;
+    if (E === null) return null;
+    const R = this.moRow, b = this.smB, P = this.moPrev, F = this.moF;
+    for (let k = 0; k < R.length; k++) {
+      const c = R[k];
+      if (c < 0) E[k] = 0;
+      else if (c < 32) E[k] = b[c] + P[c];
+      else { const r = F[c - 32]; E[k] = r.q === r.q ? r.v : r.base; }
+    }
+    return E;
+  }
   anyActive() {
     if (this.kind === 'divide') return !!(this.div && this.div.list.length);
     for (const v of this.voices) if (v.active) return true;
@@ -1705,6 +1906,7 @@ class Inst {
       this.sxMask = 1; this.sxReal = 1; this.sxRel = 0; this.sxRelN = 0;
       this.reqOS(this.hostOS);
     }
+    if (this.moFN !== 0) this.moRefresh(); // the cabled fields' bases are the new patch's (IMPL-2b §5.2)
     if (keep) for (const [kn, kv] of keep) this.noteOn(kn, kv);
   }
   // Serum patch (§11.3): 32 voices built once on the kind change and never rebuilt (POLY and mono / poly changes
@@ -1878,6 +2080,7 @@ class Inst {
     if (this.lfoBuf.length < nCh) this.lfoBuf = new Float64Array(nCh);
     this.lfoBuf.fill(this.lfoLast, 0, nCh);
     this.smA.set(this.smB); this.smD.fill(0);
+    if (this.moN !== 0) { const S = this.moSlots, A = this.smA, P = this.moPrev; for (let k = 0; k < this.moN; k++) A[S[k]] += P[S[k]]; } // the tail keeps the modulated timbre (IMPL-2b §5.1)
     if (this.p.dac !== 0 && this.kind === 'fm' && per >= 1.5) {
       // Vintage DAC at the DAC rate: the held sample still carries these voices, so their fade is rendered at the
       // coming DAC instants and goes out through the stream (quantiser and hold included) instead of beside it
@@ -2450,6 +2653,7 @@ class Inst {
     if (this.lfoBuf.length < nCh) this.lfoBuf = new Float64Array(nCh);
     this.runLFO(nCh);
     this.smStep(n);
+    if (this.moN !== 0) this.moApply(); // canvas cables on the smoothed slots (IMPL-2b §5.1)
     this.gdrift += (this.rnd() * 3.5 - this.gdrift) * this.gouB * 0.02 * (n / 128);
     let act = 0;
     // DX7 Vintage DAC: once the grid is well above 49.096 kHz the operators run at the DAC rate itself (as on the
@@ -2484,6 +2688,7 @@ class Inst {
     for (let i = 0; i < n; i++) Lb[i] = Rb[i] = mono[i];
     this.chorus.process(mono, Lb, Rb, n);
     this.ens.process(mono, Lb, Rb, n);
+    if (this.moN !== 0) this.moRestore(); // (smStep / smTargets see today's numbers)
     if (this.rack) this.rack.setNote(this.lastNote); // the track's FX rack (bypass-cheap when every module is off): its process, Track.renderSpan (§6.2)
     return 1;
   }

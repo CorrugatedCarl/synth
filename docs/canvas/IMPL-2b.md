@@ -369,3 +369,70 @@ iPad bench.
   `serum-core.SOURCES` would change `cpKey` / `srcUsed` of every CP (fixture churn) → the compile-ctx route of §3.2.
 - **Q6** No `{t:'mods'}` → nothing runs (the harness lists are explicit); 200 spans of begin + pseudo-voice under throwing
   constructors: **no allocation**; attach ≈ 0.4 MB per track.
+
+### 9.1 Lane A2 — the classic adapter (2026-10-19; `engine.js` Inst, `cv-mods.js` transfer maths, `tests/classic-mod.test.mjs`, bench rows `mk` / `ms`)
+
+**Inst interface** (engine.js, the `/* ---- canvas modulation` block after `smStep`; the Track — lane A1 — calls these):
+- `I.modRows(rows)` from `{t:'mods'}` (and `null` when the Inst's rows go): `rows = [{ slot: S_* } | { field, lo?, hi?, xfer? }]`,
+  one entry per cable of this Inst in payload order (the same `dst.slot` / `dst.field` strings as §2.2, so a payload row can
+  be passed as it is with its `xfer` attached). `slot` must be `< S_BEND` (26); duplicates share the slot. A field row is
+  the FIELD_CLASS path (`'lfo.rate'`, `'fenv.a'`, `'reg.bass'`, `'tb.accent'` …); its quantisation grid is `[lo, hi]`, or the
+  range of `xfer` (`{a, b}` → a…a+b, `{tab}` → min…max), or none (every change applies). Fields that are not numbers in the
+  live patch (`prio`, `legato`, `glideLegato`, a `tb.*` / `fenvIL.*` / `dual.*` field on a model without that section) are
+  ignored — never written. Allocation happens here (between quanta). Fields that go are written back to their bases and
+  every voice gets the base coefficients again.
+- `I.modSpan(cls0, cls1, setv)` right before `I.renderSpan(n)`: `cls0` / `cls1` = `Float64Array(S_N)` span-start / span-end
+  offsets **in slot units** (ModCore's rows read at chunk 0 and chunk nCh−1 with the transfer applied: `T(clamp(x0 + Σ)) −
+  T(x0)`); `cls0 = null` keeps the previous span's end as the start (the first span after `modRows` then ramps from 0);
+  `cls1 = null` = no offsets this span; NaN → 0. `setv = [{ field, v }] | null`, `v` the effective field value in field
+  units (`T(clamp(x0 + Σ))`, not an offset). The two-argument form `modSpan(off, setv)` (contract §5.1) is accepted
+  (`off` = span-end offsets). With no rows it returns at once; `golden-classic` / `golden-random` / `golden-graph` are
+  unchanged (the only additions on the neutral path are `if (this.moN !== 0)` tests in `renderSpan` and `fadeOut`).
+- `I.modEff()` → `Float32Array(rows.length)` **in engine units**, one entry per row of `modRows` in order: a slot row its
+  smoothed value plus this span's end offset, a field row its effective value (the base while none was applied); `null`
+  without rows; allocation-free (the array is `modRows`'). Decision for §2.4: the host converts to knob units with
+  `cv-mods.knobOf(model, vals, ctlId, eff[k], target)` (it has the vals and the sweep; the payload stays forward-only).
+  `postMon`'s `s: { eff }` is lane A1's: `{ t:'smon', i, s: { eff: I.modEff() } }` for a classic Inst with rows.
+- Internals: `moSlots` (Int32Array, the distinct cabled slots), `moPrev` / `moEnd` (swapped after every span — after the
+  swap `moPrev` holds the latest offsets, which `fadeOut` adds to `smA` after its `smA.set(smB)`), `moU` (saved `smB`),
+  `moApply` after `smStep` / `moRestore` after chorus–ensemble (§5.1 steps 1–4 as written), the field records `moF` /
+  `moMap` with setter kinds 1–11 (see `moRec`), the per-voice generation `moVG` (a voice that went active since the last
+  change gets the cabled coefficients at the next span, before it renders), `moRefresh` from `setPatch` (bases from the
+  new patch, every voice re-applied at the next span). The shared `DEFAULT_PATCH` is copied before a field is written.
+
+**Span setters as built** (§5.2): `this.p.<field> = v` for every cabled field. Voice setters, active voices only, when the
+value quantised to 1/512 of the grid changed: `fenv.a/s/r` → `Env.set` (+ the 303 accent decay as `apply`), `fenv.d` →
+`setDecay`, `aenv.a/s/r` → `Env.set`, `aenv.d` → `setDecay`, `envOv` → both, `vcf.comp/fbSat/poles/mode/morph/sat/clip` →
+`moChar` (= `cfgLP` without `setRes`: the smoothed slot owns the resonance; `poles < 3` is the 2-pole tap so a value between
+options still resolves), `hpf.clip` → the SKHigh clip. Inst setters (any change): `unisonDetune` → `v.det` + re-target as
+`setPatch`, `bendRange` → `bend = bendRaw·range`, `bw` → `recalc()`, `fx.chorus/ensemble/hiss` → chorus mode / hiss /
+ensemble on. Patch-only (read by the processor or the voices from `p`): `lfo.rate/wave`, `glide*`, `dac`, `reg.*`,
+`attack/release/tone`, `tb.accent/chg/dis/latch`, `fenvIL.il/al`, `bpm`, `osCap`.
+
+**Transfer tables** (cv-mods.js, pure): `SLOT` mirrors engine.js `S_*` (pinned by a test); `targetsOf(model, ctlId)` →
+`[{ kind:'slot', slot, field } | { kind:'field', field }]` from the class sweep over the default panel and every factory
+preset (so a knob inert at the current values — the Minimoog Noise with its mixer switch off — keeps its target;
+`xferOf` then reports `b: 0`); **one row per target**: a knob may move several (Minimoog / MS-20 master tune → three TU
+slots, CS-80 Brilliance → VO and DO, Prophet-5 Filter revision → the DRV slot and `vcf.comp` / `vcf.fbSat`, TB-303
+Resonance → VR and `tb.chg` / `tb.dis`, Juno Env A → `fenv.a` and `aenv.a`); `slotOf` = the first. `xferOf(model, vals,
+ctlId, target?)` → `{ a, b, x0 }` | `{ tab: Float64Array(129), x0 }`, `x0` = the knob's position in modulation space
+(added to the contract's shape so ModCore can clamp `x0 + Σ`); selectors sweep their options rounded, toggles 0 / 1 (stepped
+tables: exact at the points, the step inside one 1/128 cell — ModCore's interpolation yields in-between values in that cell
+only). Linear within 1e-9 for the `lg(ex())` cutoffs, resonances, levels, PWs, tunes, env amounts …; tables for every
+T(lo, hi) time, the exponential LFO rates, glide, the 303 accent slews and the selectors. **Error bound** of the engine's
+linear interpolation between table points for an exponential law `lo·(hi/lo)^x`: `(ln(hi/lo))² / (8·128²)` of the value —
+0.063 % for the widest time law (0.004…35 s); the test holds every table to 0.1 % of its range at the mid-points (worst
+measured 6.3e-4; the glide law's "off below 0.05" jump sits in cell 0 and is exempt). `xferInv(xf, s)` / `knobOf(model,
+vals, ctlId, s, target?)` invert (a table by its first crossing, outside it the nearer end; an inert linear transfer returns
+the knob's own position).
+
+**Measured** (Apple M4 Max, node v24): N3 oracle max |A − B| = 0 over 2 s (bit-identical: the oracle's `t + off` is the
+adapter's `b + off`); noise-from-zero and the fade-out tail bit-identical to the knob at the modulated value; a 0.1 s
+swing on a 3 s envelope-time field over 2 s: 32–48 `Env.set` calls per voice over 750 spans; `mk` +3.4 % (measure(), 5 ×
+1 s; 1.057–1.068 with interleaved pairs in classic-mod) of the 8-voice Juno-60 row without (gate 8 %); `ms` 0.025–0.05 µs
+per `Env.set` call per voice (gate 1 µs); no allocation per span (`noAlloc` over 60 quanta with slots and fields cabled).
+Deviations from the contract: `modSpan` takes the start offsets too (`cls0`; the two-argument form still works);
+`modRows` is the Inst's row setter (the contract names it only as "from setRows"); `xfer` carries `x0`; `targetsOf`
+yields several targets per knob (the contract's single `slot?` / `field?` per row holds per target: lane B emits one row
+per target). `tests/bench-scenarios.mjs` gained an optional `prep(p)` hook for voice rows (the cable on the live
+processor).
