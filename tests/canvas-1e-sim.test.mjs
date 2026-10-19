@@ -257,25 +257,16 @@ const MOD = id => MODELS.find(m => m.id === id);
 const fresh = (id = 'minimoog') => { const t = api.addTrack(MOD(id)); sim.raf(); cv.renderViews(); sim.raf(); return t; }; // (the switch's mounting completed at once)
 const at = k => { const m = V().modules.get(k); return m ? Math.round(m.x) + ',' + Math.round(m.y) : null; };
 
-test('1f Effects tray on single-instrument tracks: a Serum\'s canvas drop goes into its own FX; a classic cabled straight into OUT (a 1e project) gets a panel of its own between it and OUT — one step, never a free panel', () => {
+test('1f Effects tray on single-instrument tracks: a Serum\'s canvas drop goes into its own FX; a classic always has its panel (the split gives one straight into OUT an empty one) — a hook-made shape without one takes nothing, never a free panel', () => {
   fresh('serum');
   const n = hsteps();
   assert.equal(cv.fx.drag.drop('dly', { over: 'canvas', at: { x: 3000, y: 3000 } }), true); sim.raf();
   assert.deepEqual([keys(), JSON.stringify(T().dev.i1.fx.racks[0].mods.map(x => x.type)), hsteps()], ['i1,i1/fx,out', '["dly"]', n]);
-  // a DX7 whose panel was deleted in 1e (cv-model removePanel: straight into OUT)
   const t = fresh('dx7');
-  CMOD.removePanel(t, 'fx1'); api.sendPatch(t); cv.render(); sim.raf();
-  assert.deepEqual([keys(), panels()], ['i1,out', '']);
+  CMOD.removePanel(t, 'fx1'); api.sendPatch(t); cv.render(); sim.raf(); // (cv-model directly: no 1f UI does this)
   const m = hsteps();
   cv.fx.pick('eq'); sim.raf();
-  const p = T().wires.find(w => w.a === 'i1.out').b.split('.')[0];
-  assert.deepEqual([T().dev[p].kind, fxMods(p), T().wires.find(w => w.a === p + '.out').b, hsteps(), CG.compileTrack(T()).canonical], ['panel', 'eq', 'out.in', m + 1, true]);
-  const R = V().rects(), ov = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-  assert.deepEqual(Object.keys(R).filter(k => k !== p && ov(R[k], R[p])), [], 'overlapping nothing');
-  cv.fx.pick('dly'); sim.raf();
-  assert.deepEqual([panels(), fxMods(p), hsteps()], [p, 'eq,dly', m + 1], 'the next one into that panel');
-  cv.undo(); sim.raf();
-  assert.equal(panels(), '', 'undo: the panel goes');
+  assert.deepEqual([keys(), panels(), hsteps()], ['i1,out', '', m]);
 });
 
 test('U1: a Serum primary next to a shared panel fx1 — i1/fx and fx1 keep places of their own (Tidy separates them; moving one never drops the other\'s entry)', () => {

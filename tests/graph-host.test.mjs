@@ -501,3 +501,19 @@ test('H13 / 1f: the current instrument is always the primary (setCur changes not
   cv.undo(); sim.raf();
   assert.equal(P().tracks.length > 2, true, 'the project before the Open');
 });
+
+test('1f review 3: an undo of File › Open brings the previous project back with its own sound — keepDevs only within one project (uid), never across projects whose track ids repeat', async () => {
+  await page();
+  const core = await import('../serum-core.js?v=9');
+  sim.api.selectTrack(P().tracks[0].id); sim.raf();
+  const t = P().tracks[0], fxs = x => x.dev.fx1.fx.racks[0].mods.map(m => m.type).join(',');
+  t.dev.fx1.fx.racks[0].mods = []; core.newInstance(t.dev.fx1.fx, 'rev', { rack: 0 }); t.dev.i1.vals.zz = 0.111;
+  const o = clone(P()); o.uid = 'p_otherother1';
+  const f1 = o.tracks[0].dev.fx1.fx; f1.racks[0].mods = []; core.newInstance(f1, 'dly', { rack: 0 }); o.tracks[0].dev.i1.vals.zz = 0.999;
+  await sim.$('#fFile').onchange({ target: { files: [{ name: 'x.synth.json', type: 'application/json', text: async () => JSON.stringify(o) }], value: '' } });
+  await sim.settle(10); sim.raf();
+  assert.deepEqual([P().uid, fxs(P().tracks[0]), P().tracks[0].dev.i1.vals.zz], ['p_otherother1', 'dly', 0.999], 'opened');
+  P().tracks[0].dev.i1.vals.zz = 0.5; // (a knob tweak in the opened project: within one project, kept through undo as before)
+  globalThis.__synthTest.cv.undo(); sim.raf();
+  assert.deepEqual([P().uid === 'p_otherother1', fxs(P().tracks[0]), P().tracks[0].dev.i1.vals.zz], [false, 'rev', 0.111], 'the old project with its own sound');
+});

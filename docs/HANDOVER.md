@@ -123,3 +123,9 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
 - Pages checks: `gh api repos/CorrugatedCarl/<repo>/pages/builds/latest --jq '.status + " " + .commit[0:7]'`; live BUILD:
   `curl -s https://<site>/sw.js | grep BUILD`.
 - Commit messages: descriptive subject + body; end with your harness's co-author attribution line.
+- 1f pre-split copy: when the canvas build splits an autosave whose tracks held several instruments (stage 1f), the stored
+  project as it was is kept once under the store key `synth.project.pre1f` (database `synth-canvas`, object store `kv`, key
+  `synthc.project.pre1f`; localStorage `synthc.project.pre1f` in the fallback mode), written before the first save and never
+  overwritten. Recovery is by hand, on the same origin (canvas.domlavin.com: Safari's Web Inspector from the Mac with the iPad
+  connected → Storage → IndexedDB): copy the record's text into a `.synth.json` file; a stage-1e build opens it as it was, this
+  build opens it split.

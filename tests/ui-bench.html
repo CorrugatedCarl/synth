@@ -10,8 +10,8 @@
   user reported as laggy (OB-Xa, Jupiter-8, MS-20, CS-80, Prophet-5, all hardware panels) — and drives the camera the way a finger
   does (world.panBy / zoomAt every frame, the app's own busy / settle path), recording every frame interval: idle, a 2 s pan, a 2 s
   pinch, and the re-raster after the pinch settles (--ik, canvases). Rows = median / p95 / max frame ms and the count of frames over
-  33 ms (two missed vsyncs at 60 Hz). Nothing is saved: the app runs on this page's own storage prefix? No — it shares the site's,
-  so the two tracks are added to the project in storage and removed again at the end (a crash leaves them: delete by hand).
+  33 ms (two missed vsyncs at 60 Hz). The app shares the site's storage, so the project is
+  snapshotted first and put back whole at the end (applyRestore, then saved); a crash mid-run leaves the two tracks: delete by hand.
   ?run=1 runs at once (the iOS Simulator / a device without a keyboard); results draw large enough to read from a screenshot.
 -->
 <style>
@@ -102,6 +102,9 @@
     await sleep(800);
     const R = { date: new Date().toISOString().slice(0, 10), ua: navigator.userAgent, dpr: devicePixelRatio, viewport: innerWidth + '×' + innerHeight, sets: {}, nodes: {}, k: {} };
     const made = [];
+    // the user's project as it was (the bench adds two tracks to it, one with five synths: 1f would split it at the next load):
+    // put back whole afterwards (applyRestore), the bench tracks also deleted by object first in case the restore fails
+    const snap = JSON.stringify(api.project());
     try {
       for (const set of Object.keys(SETS)) {
         status('building ' + set + '…');
@@ -130,7 +133,8 @@
       }
     } finally {
       status('cleaning up…');
-      for (const id of made) { try { api.deleteTrack(id); } catch (e) {} }
+      for (const id of made) { try { const t = api.project().tracks.find(x => x.id === id); if (t) { t.notes = []; api.deleteTrack(t); } } catch (e) { console.error(e); } }
+      try { api.applyRestore(JSON.parse(snap)); api.save(); await api.store.flush(); } catch (e) { console.error('ui-bench: the project could not be put back', e); }
       await sleep(300);
     }
     $('#out').value = JSON.stringify(R);

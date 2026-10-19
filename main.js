@@ -174,15 +174,18 @@ function fxLoad(fx, refs) {
 // or, saved by a newer build, opened read-only: an autosave for the session (goReadOnly, once it parsed); a file (o.file)
 // as itself (p.newerSchema: roNow while it is the current project). Stage 1f: a track holding several instruments (a 1e
 // project: autosave or file) opens as one track per instrument (cv-migrate splitTracks), with one notice for the project
+let splitFrom = null; // the last loadProject's input when splitTracks changed it (boot keeps an autosave's: PRE_1F)
 function loadProject(json, lo = {}) {
+  splitFrom = null;
   let o = json;
   if (typeof json === 'string') { try { o = JSON.parse(json); } catch { throw new Error('Not a valid project file'); } }
   const up = CM.upgrade(o);
   o = up.p;
   if (!up.readOnly) {
     const sp = CM.splitTracks(o, { name: id => modelById(id).name });
+    if (sp.p !== o) splitFrom = json;
     o = sp.p;
-    if (sp.notices.length) { const txt = sp.notices.join(' · '); if (booted) notice(txt, 15000); else early.push([txt, 15000]); }
+    if (sp.notices.length) { const txt = sp.notices.join(' · '); if (booted) notice(txt, 30000); else early.push([txt, 30000]); }
   }
   const p = S.deserialize(o);
   CM.stamp(p, o);
@@ -212,12 +215,16 @@ function freshProject(m) {
   for (const t of p.tracks) { t.fx = newFx(m); seedPend.add(t.id); }
   return CMOD.adopt(p);
 }
+const PRE_1F = 'synth.project.pre1f'; // (stored as synthc.project.pre1f)
 const seedPend = new Set(); // tracks whose next patch re-seeds the FX rack's LFO phases (§4.2: loads, track creation)
 let project;
 {
   const raw = store.loadProject();
   if (store.info().readOnly) goReadOnly(store.info().newer); // (a newer autosave, even an unreadable one, is never replaced)
   try { project = raw ? loadProject(raw) : null; } catch { project = null; }
+  // (1f) an autosave split into one track per instrument: the stored project as it was, kept once under PRE_1F before the
+  // first save replaces it — never overwritten, recoverable by hand (HANDOVER §6)
+  if (project && splitFrom && !store.raw(PRE_1F)) store.setRaw(PRE_1F, typeof splitFrom === 'string' ? splitFrom : JSON.stringify(splitFrom));
   if (!project) {
     const fromHash = MODELS.find(m => '#' + m.id === location.hash);
     project = freshProject(fromHash || modelById(settings.model));
@@ -1193,7 +1200,9 @@ function keepDevs(t, cur) {
 function applyRestore(p, keepSound = false) {
   if (!p) return;
   CMOD.adopt(p); // (History snapshots and loads are plain objects: the accessors first)
-  if (keepSound) for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); // undo/redo never reverts knob tweaks (per device)
+  // undo / redo never revert knob tweaks (per device) — within one project: an undo of Open / New brings back another project
+  // (1f review: track ids repeat across projects; its sound is its own)
+  if (keepSound && p.uid === project.uid) for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id));
   else for (const t of p.tracks) seedPend.add(t.id); // a loaded project re-seeds the racks' LFO phases
   for (const t of p.tracks) fxOf(t);
   const prevSel = project.selTrack;
@@ -1583,7 +1592,7 @@ function selectTrack(id) {
 // the current instrument of track t (a tap on its module, a press in its panel, its module menu): the globals and the
 // panel services follow (bind, cpanel), the Sources tray's tile and its replace text
 function setCur(t, dev) {
-  if (!t || !CMOD.instOf(t, dev) || curOf(t) === dev) return;
+  if (!t || dev !== CMOD.primId(t) || curOf(t) === dev) return; // (1f: only the primary — the cv.setCur hook)
   if (t === trk()) flush(); // (the outgoing model's values: save writes synth.v.<model> from vals)
   curDevs.set(t.id, dev);
   if (t !== trk()) return;
@@ -4733,23 +4742,10 @@ function cvPinned(t) {
   if (cvView && cvView.trackId === t.id) for (const [k, m] of cvView.modules) if (!lay[k]) { const e = { x: Math.round(m.x), y: Math.round(m.y) }; if (m.fold) e.fold = 1; lay[k] = e; }
   return lay;
 }
-// a free place for a new module of `kind`: under the lowest one of that kind (VGAP), else right of the instruments
-function cvBelow(t, kind) {
-  if (!cvView || cvView.trackId !== t.id) return null;
-  let x = null, y = 0, right = 0;
-  for (const m of cvView.modules.values()) {
-    const r = m.rect();
-    if (m.kind === 'inst') right = Math.max(right, r.x + r.w);
-    if (m.kind !== kind || (kind === 'fx' && /\/fx$/.test(m.id))) continue;
-    if (x === null) x = r.x;
-    y = Math.max(y, r.y + r.h + cvModule.VGAP);
-  }
-  return x !== null ? { x, y: cvDot(y) } : kind === 'fx' ? { x: cvDot(right + cvModule.GAP), y: 0 } : null;
-}
 // the device-speed factor (⚙ → Measure this device; 1 = the reference machine) in the device prefs
 const DEV_FACTOR = 'synth.' + COSTM.PREF;
 const devFactor = () => { const f = +store.get(DEV_FACTOR, 0); return Number.isFinite(f) && f > 0 ? f : 1; };
-// (hook __synthTest.cv.add: no UI adds an instrument since 1f) a new instrument at `at` (else under the others),
+// (hook __synthTest.cv.add: no UI adds an instrument since 1f) a new instrument at `at` (else where Tidy puts it),
 // auto-patched (cv-model addInst: to the panel most instruments share, else OUT), one History step, the notice "Added
 // Juno-60 · tap to undo". The soft caps of §9.2 (cv-cost softCap, touch devices) are kept: a second heavy Serum asks
 // first, the 4th instrument warns in the notice
@@ -4763,8 +4759,7 @@ function cvAddInstrument(modelId, at, o = null) {
   hist.record(project, 'Add ' + m.name);
   const lay = cvPinned(t), ui = o && o.ui === 'flow' && !m.custom ? 'flow' : null;
   const id = CMOD.addInst(t, m.id, { vals, fx: m.custom ? newFx(m) : undefined });
-  const p = at && Number.isFinite(at.x) && Number.isFinite(at.y) ? at : cvBelow(t, 'inst');
-  if (p) lay[id] = Object.assign({ x: cvDot(p.x), y: cvDot(p.y) }, ui ? { ui } : null);
+  if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) lay[id] = Object.assign({ x: cvDot(at.x), y: cvDot(at.y) }, ui ? { ui } : null);
   else if (ui) lay[id] = { x: 0, y: 0, ui };
   t.lay = lay;
   seedPend.add(t.id);
@@ -4820,30 +4815,6 @@ function fxAddInst(fx, type) {
   if (nid) { fx.ui = fx.ui && typeof fx.ui === 'object' ? fx.ui : {}; fx.ui.sel = nid; }
   return nid;
 }
-// an effect for a classic instrument cabled straight into OUT (a 1e project: no panel): a panel of its own holding the
-// effect, between it and OUT (the track's canonical shape again — never a free panel), one History step; the modules it
-// then overlaps move right (cvModule.makeRoom)
-function cvPanelFor(t, src, type) {
-  hist.record(project, 'New panel with ' + fxName(type));
-  const lay = cvPinned(t), fx = core.defaultFx2();
-  fxAddInst(fx, type);
-  const id = CMOD.addPanel(t, { fx }), out = Object.keys(t.dev).find(k => kindOfKey(t, k) === 'out') || 'out';
-  CMOD.connect(t, id + '.out', out + '.in');
-  CMOD.connect(t, src + '.out', id + '.in');
-  const p = cvBelow(t, 'fx');
-  if (p) lay[id] = { x: cvDot(p.x), y: cvDot(p.y) };
-  t.lay = lay;
-  seedPend.add(t.id);
-  cvAfter(t);
-  const mv = cvView && cvView.modules.has(id) ? cvModule.makeRoom(cvView.rects(), id) : null;
-  if (mv) {
-    const L = Object.assign({}, t.lay);
-    for (const k of Object.keys(mv)) L[k] = Object.assign({}, L[k] || {}, { x: mv[k].x, y: mv[k].y });
-    t.lay = L; persist(); cvView.sync(t);
-  }
-  cvUndoNotice(`Added ${cvTitle(id).title} with ${fxName(type)} · tap to undo`, hist.u[hist.u.length - 1], () => null);
-  return id;
-}
 // an effect tile into a panel module (or a Serum's own FX): the instance at the end of its Main rack as the rack's "+"
 // menu adds it — an FX edit, so the knob-tweak policy holds (§11.8: FX rack edits are not History steps; its ⋯ removes it)
 function cvAddEffect(t, key, type) {
@@ -4873,16 +4844,16 @@ function fxOver(target) {
   const M = cvModUnder(target);
   return M && M.kind === 'fx' ? { over: 'panel', key: M.key } : M && M.kind === 'inst' ? { over: 'inst', key: M.key } : 'canvas';
 }
-// an effect into instrument dev's FX (its panel, a Serum's own), else (a classic one straight into OUT) into a panel of
-// its own made for it
+// an effect into instrument dev's FX (its panel, a Serum's own). Since 1f a classic instrument always feeds a panel (the
+// split gives one cabled straight into OUT an empty panel; no UI removes it): without one (a hook-made shape) nothing
 function fxInto(t, dev, id) {
   const d = t.dev[dev], k = d && d.model === 'serum' ? dev + '/fx' : CMOD.destOf(t, dev);
-  return k && kindOfKey(t, k) === 'fx' ? cvAddEffect(t, k, id) : cvPanelFor(t, dev, id);
+  return k && kindOfKey(t, k) === 'fx' ? cvAddEffect(t, k, id) : null;
 }
 // a tap on an Effects tile: the effect goes into the track's FX
 function fxPick(id) { const t = trk(); fxInto(t, curOf(t), id); }
 // the module an Effects drop goes into: a panel module or an instrument under the pointer (its FX), else (empty canvas)
-// the track's FX module — its panel, a Serum's own FX — or, without one, its instrument (a panel is made for it)
+// the track's FX module — its panel, a Serum's own FX
 function fxTarget(t, i) {
   if ((i.over === 'panel' || i.over === 'inst') && i.key && cvView && cvView.modules.has(i.key)) return i.key;
   return i.over === 'canvas' || i.over === 'panel' || i.over === 'inst' ? cvHomeKeys(t).fx || CMOD.primId(t) : null;
@@ -5103,22 +5074,26 @@ function boot() {
   const why = audioProblem(); if (why) audioFail(why);
   powerUI();
   booted = true;
-  for (const [txt, ms] of early.splice(0)) notice(txt, ms); // storage notices raised while the page was starting
-  const old = platformProblem(); if (old) notice(old, 20000); // (SPEC-canvas §9.4)
-  recoveredNotice();
+  // the notices raised while the page was starting (storage, the 1f split) and the platform one (SPEC-canvas §9.4): one line
+  // (1f review: each replaced the one before); a recovered project's tap-to-download notice carries them before it
+  const E = early.splice(0), old = platformProblem();
+  if (old) E.push([old, 20000]);
+  const pre = E.map(x => x[0]).join(' · ');
+  if (E.length) notice(pre, Math.max(...E.map(x => x[1])));
+  recoveredNotice(pre);
   if (readOnly) goReadOnly(readOnly); // a newer project met while starting: Save disabled, the notice (SPEC-canvas §5.8)
   requestAnimationFrame(frame);
 }
 // §12.6 storage: a project autosaved by a session that could not open the database (it ran on the older localStorage copy)
 // was kept separately by this run's re-sync (appstore '#rec:'): offered as a project file to download (open it with
 // File › Open to continue from it)
-function recoveredNotice() {
+function recoveredNotice(pre = '') {
   const inf = store.info(), txt = inf.conflicts.includes(PROJECT_KEY) && store.recovered ? store.recovered('synth.project') : null;
   if (!txt) return;
   let ok = false;
   try { ok = !!S.deserialize(txt); } catch { ok = false; }
   if (!ok) return;
-  const msg = 'A project saved while the stored data could not be opened was kept separately — tap to download it';
+  const msg = (pre ? pre + ' · ' : '') + 'A project saved while the stored data could not be opened was kept separately — tap to download it';
   noticeActs.set(msg, () => { download(new Blob([txt], { type: 'application/json' }), 'recovered-project.synth.json'); noticeActs.delete(msg); notice('', 0); });
   notice(msg, 30000);
 }
