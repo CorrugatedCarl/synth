@@ -475,3 +475,15 @@ test('H6: Duplicate track copies the row-id counter (mid) — a deleted row\'s i
   assert.deepEqual([c.mods.map(r => r.id), c.mid], [[r1], mid]);
   assert.notEqual(CMOD.addMod(c, 'wheel', 'i1:a.level', { project: P() }).row.id, r2);
 });
+
+test('H9: a panel\'s knob (the effects a classic synth feeds) is refused "…from stage 2b": no row, no step', () => {
+  wheelOn();
+  const c = fresh('juno60'), n0 = hsteps(), pid = Object.keys(c.dev).find(k => c.dev[k].kind === 'panel');
+  assert.ok(pid, '(a classic track: its panel)');
+  const why = M.opts.canMod('wheel', pid + ':fx.dly.mix');
+  assert.equal(why.ok, false);
+  assert.match(why.why, /^Mod Wheel → .+: this knob can be modulated from stage 2b$/);
+  assert.equal(M.marks()(pid, 'fx.dly.mix'), false, 'not lit');
+  M.opts.onMod('wheel', pid + ':fx.dly.mix'); sim.raf();
+  assert.deepEqual([rows(), hsteps(), note()], ['', n0, why.why]);
+});

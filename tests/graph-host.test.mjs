@@ -517,3 +517,35 @@ test('1f review 3: an undo of File › Open brings the previous project back wit
   globalThis.__synthTest.cv.undo(); sim.raf();
   assert.deepEqual([P().uid === 'p_otherother1', fxs(P().tracks[0]), P().tracks[0].dev.i1.vals.zz], [false, 'rev', 0.111], 'the old project with its own sound');
 });
+
+// host fixes (2a review H9)
+test('2a review H9: render-last and a bounce compile a Serum track\'s canvas mod rows (the offline patch holds the injected row)', async () => {
+  await page();
+  const { cpOf } = await import('./fixtures/mods-2a.mjs');
+  const api = sim.api, before = new Set(P().tracks.map(t => t.id));
+  api.addTrack(MODELS.find(m => m.id === 'serum')); sim.raf();
+  const t = P().tracks.find(x => !before.has(x.id));
+  CMOD.placeWheel(P());
+  assert.equal(CMOD.addMod(t, 'wheel', 'i1:f.cutoff', { project: P(), amt: 0.4 }).ok, true);
+  api.sendPatch(t); api.selectTrack(t.id);
+  const row = c => { for (let i = 0; i < c.mN; i++) if (c.mSrc[i] === 1 && c.mDst[i] === 42) return c.mAmt[i]; return null; }; // (wheel → f.cutoff)
+  assert.equal(row(cpOf(api.buildPatch(t))), 0.4, '(live)');
+  const T0 = 3e6;
+  api.noteOn(60, 100 / 127, 0, T0); api.noteOff(60, 0, T0 + 250);
+  await api.renderLast(t, {});
+  const po = sim.lastOffline.nodes[0].po;
+  assert.deepEqual([po.offline, po.trackId, row(cpOf(po.patch))], [true, t.id, 0.4], 'render-last');
+  t.notes.push({ id: 'n1', t: 0, d: 480, n: 60, v: 100 });
+  for (const x of P().tracks) x.mute = x !== t;
+  P().bars = 1;
+  Object.assign(sim.$('#bRange'), { value: 'song' }); Object.assign(sim.$('#bSr'), { value: String(sim.ctx().sampleRate) }); Object.assign(sim.$('#bBits'), { value: '32' });
+  Object.assign(sim.$('#bTail'), { value: '0' }); Object.assign(sim.$('#bNorm'), { checked: false }); Object.assign(sim.$('#bOs'), { value: '2' });
+  const was = sim.lastOffline;
+  await sim.$('#bGo').onclick();
+  for (let i = 0; i < 400 && sim.lastOffline === was; i++) await sim.settle(10);
+  const off = sim.lastOffline.nodes.map(n => n.po).find(x => x.trackId === t.id);
+  assert.ok(off && off !== po, 'bounced');
+  assert.deepEqual([off.offline, row(cpOf(off.patch))], [true, 0.4], 'the bounce');
+  for (const x of P().tracks) x.mute = false;
+  CMOD.removeWheel(P()); api.sendPatch(t);
+});
