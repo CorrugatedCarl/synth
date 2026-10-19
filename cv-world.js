@@ -482,10 +482,10 @@ export function createWorld(viewport, o) {
   }
   function glLost(dead) { // a context loss: FACES detached (its textures are dead); the third in a minute: the 2D grid, live
     if (destroyed || !GL) return;
+    if (glOff) { glOff(); glOff = null; } // (the registry's detach emits a change: no draw on a lost context)
     try { FACES.detach(); } catch (err) { console.error(err); }
     if (!dead) return;
     glDead = true;
-    if (glOff) { glOff(); glOff = null; }
     const gl = GL;
     GL = null;
     try { gl.destroy(); } catch (err) { /* gone */ }
@@ -493,7 +493,7 @@ export function createWorld(viewport, o) {
     sizeGrid();
     gridAt();
   }
-  function glRestored() { if (!destroyed && GL) { try { FACES.attach({ gl: GL, world: api }); } catch (err) { console.error(err); } glDraw(); } }
+  function glRestored() { if (!destroyed && GL) { try { FACES.attach({ gl: GL, world: api }); } catch (err) { console.error(err); } if (!glOff) glOff = FACES.onChange(() => { if (GL && !destroyed) glDraw(); }); glDraw(); } }
   const rectById = id => { const r = items.get(String(id)); return r && r.rect ? r.rect : null; }; // (1h) the cached rect (null unknown)
   // the store (gridStore: the viewport, its overscan for a pan and a zoom out to GRID_REACH, ≤ GRID_MAX_PX) → true when it
   // changed (and was cleared)

@@ -433,7 +433,7 @@ test('1h GL path: no .cv-grid canvas (the GL one before #world instead); one GL.
   eq([log.filter(e => e[0] === 'resize').pop().slice(1), draws(log), log.filter(e => e[0] === 'draw').pop()[6], world.gridStats().s], [[900, 600, 2], n1 + 6, 2, 2], 'dpr 2: the buffer at 2×, drawn with d 2');
   // glStats: GL.stats() + FACES.stats() (its bytes / gl renamed faceBytes / glFaces)
   const n2 = draws(log), gs = world.glStats();
-  eq(Object.keys(gs).sort(), ['base', 'bytes', 'd', 'dom', 'faceBytes', 'faces', 'frames', 'gl', 'glFaces', 'h', 'lost', 'max', 'ms', 'paintMax', 'paintMs', 'paints', 'texes', 'w', 'windows'].sort());
+  eq(Object.keys(gs).sort(), ['base', 'bytes', 'd', 'dom', 'faceBytes', 'faces', 'frames', 'gl', 'glFaces', 'h', 'lost', 'max', 'ms', 'paintMax', 'paintMs', 'paints', 'queued', 'texes', 'w', 'windows'].sort());
   eq([gs.gl, gs.frames, gs.w, gs.h, gs.faces, gs.faceBytes, gs.bytes], [true, n2, 1800, 1200, 0, 0, 0]);
   eq(world.glStats(true).frames, n2); eq(world.glStats().frames, 0, 'reset');
   eq(world.gridStats(true).n, 0, 'gridStats resets the same counters');

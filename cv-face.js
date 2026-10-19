@@ -485,3 +485,8 @@ export const FACES = {
   /** The { gl, world } object attach() was given; null while detached. */
   attachment() { return ATT; },
 };
+// (integration) the same surface as named exports: cv-world imports the namespace (`import * as FACES`), cv-panel the object
+export const register = (deco, o) => FACES.register(deco, o), attach = o => FACES.attach(o), detach = () => FACES.detach(),
+  lost = () => FACES.lost(), restored = () => FACES.restored(), quads = (rectOf, cam) => FACES.quads(rectOf, cam),
+  onChange = fn => FACES.onChange(fn), stats = reset => FACES.stats(reset), attachment = () => FACES.attachment();
+export { recheck };
