@@ -54,3 +54,4 @@ The user's Mac crashed twice from test memory blowups (one full run peaked at 47
   sizes (1366×1024, 1024×1366); reset viewport emulation afterwards.
 - Long background work stops if the Mac sleeps (closed lid): ask the user to keep it plugged in with the lid open.
 - "Push it live when it's done" is the user's standing expectation for finished, tested work.
+- Process (the user's decision, 2026-10-19, after the week's Fable budget went in one day): the **leaner** multi-agent shape — cheaper models for mapping, mechanical lanes and fixers; two reviewers (one with the real engine, one in headless Chrome), not four; one sweep; short briefs. Keep: a contract first, builders in worktrees reset to the base, failing-test-first fixes, goldens bit-identical, one test file at a time.
