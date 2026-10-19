@@ -56,14 +56,14 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
 | 1c Instances + project v2 (schema 3, `cv-model.js` adopt(), canonical compile, classic-panel.js, multi-instance Serum UI, minimap, box-select, Save as classic project) | done |
 | UI fixes (no resizing, Lock view, Hardware/Simple round trip, trays stay open) | done (3cd4509) |
 | 1d Track engine (`engine.js` → Track / Inst / Chain, bit-identical; per-module CPU) | done (8094026); iPad bench after 1d PASSED (bench.json `"ipad1d"`) |
-| 1e Several synths per track (completes milestone 1): graph engine, N instruments → shared / separate panels → OUT, editable cables, Effects tray, power, key zones, per-instrument MIDI learn / render-last / CPU, Measure this device, soft caps | done (IMPL-1e.md: contract §1–7, notes §8); **iPad bench after 1e pending** |
+| 1e Several synths per track (completes milestone 1): graph engine, N instruments → shared / separate panels → OUT, editable cables, Effects tray, power, key zones, per-instrument MIDI learn / render-last / CPU, Measure this device, soft caps | done (IMPL-1e.md: contract §1–7, notes §8); iPad bench after 1e PASSED (bench.json `"ipad1e"`, row r 0.081) |
 | **2a Performance modulators** (project Mod Wheel, Velocity, Aftertouch, Bend; mod list; cable inspector) + retiring the 1e transition accessors (IMPL-1e §8.3) | **NEXT** — SPEC §10 2a, §7.10 |
 | 2b Modulation everywhere (LFO GLOBAL/PER NOTE, ENV, Macro, CC, Chaos on any Serum/FX knob + 237 classic controls) | planned |
 | 3 Serum taken apart (VOICE hub + parts as modules) | planned |
 | 4–6 later (full patching, per-voice classic modulation, polish) | later |
 
 **Immediate next actions**
-1. Ask the user to run the iPad bench after 1e: `https://canvas.domlavin.com/tests/bench.html` in Safari on the iPad (plugged in, other
+1. (Done 2026-10-19: `"ipad1e"` passed.) For the next engine stage, ask the user to run the iPad bench: `https://canvas.domlavin.com/tests/bench.html` in Safari on the iPad (plugged in, other
    apps closed), Run 5 passes, Copy results, paste. Check the JSON says `"stale": false` and names the deployed build (a browser whose
    service worker has not applied the update measures the previous build). Record it as `tests/bench.json` `"ipad1e"`: every row within
    5 % of `"ipad1d"`, the new row r ≤ 0.12 and within 25 % of the device factor (⚙ → Measure this device on the iPad shows it). Then the
