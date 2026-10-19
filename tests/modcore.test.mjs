@@ -268,7 +268,7 @@ test('N5: two Tracks given the same frames and the same payload produce identica
 });
 
 /* ------------------------------------------------------------------ protocol */
-test('protocol: {t: mods, off} and an empty payload drop the ModCore (ext rows cleared on every Serum); a malformed payload is ignored (no throw, no ModCore); {t: mval} with a bad index is ignored; processorOptions.mods builds it for a bounce', () => {
+test('protocol: {t: mods, off} and an empty payload drop the ModCore (ext rows cleared on every Serum); a malformed payload is refused (no throw; the previous ModCore kept — review E6, none built from a first one); {t: mval} with a bad index is ignored; processorOptions.mods builds it for a bounce', () => {
   const S = scope();
   const sm = synth(s => { s.lfo[0] = { ...s.lfo[0], mode: 'free', mono: 1 }; s.p['l1.rate'] = hzN(2); s.matrix[0] = row('lfo1', 'a.level', 0.01); });
   const good = payload(sm, { ext: [{ k: 1, src: S_LFO1 }] });
@@ -292,8 +292,11 @@ test('protocol: {t: mods, off} and an empty payload drop the ModCore (ext rows c
   p.msg(good); assert.ok(p.mc !== null && p.mc !== MC, 'a new ModCore after off');
   p.msg(Object.assign({}, good, { rows: [], ext: [] })); assert.equal(p.mc, null, 'empty payload: none');
   p.msg(good); assert.ok(p.mc !== null);
-  assert.doesNotThrow(() => p.msg({ t: 'mods', cp: null, rows: [{}] })); assert.equal(p.mc, null, 'malformed: ignored');
-  assert.doesNotThrow(() => p.msg({ t: 'mods', cp: { ver: 99 }, rows: [{ id: 'x', src: 5, dst: { kind: 'cls', inst: 'i1', slot: 0 } }] })); assert.equal(p.mc, null, 'a rejected CP');
+  const MC2 = p.mc;   // (never an engine object in an assert: an AssertionError would walk the cyclic graph)
+  assert.doesNotThrow(() => p.msg({ t: 'mods', cp: null, rows: [{}] })); assert.equal(p.mc === MC2, true, 'malformed after a good one: the previous ModCore kept');
+  assert.doesNotThrow(() => p.msg({ t: 'mods', cp: { ver: 99 }, rows: [{ id: 'x', src: 5, dst: { kind: 'cls', inst: 'i1', slot: 0 } }] })); assert.equal(p.mc === MC2 && MC2.ok === 1, true, 'a rejected CP: kept too');
+  p.msg({ t: 'mods', off: true });
+  assert.doesNotThrow(() => p.msg({ t: 'mods', cp: { ver: 99 }, rows: [{ id: 'x', src: 5, dst: { kind: 'cls', inst: 'i1', slot: 0 } }] })); assert.equal(p.mc, null, 'a rejected first payload: none built');
   p.msg(good);
   assert.doesNotThrow(() => { p.msg({ t: 'mval', k: 99, v: 0.5 }); p.msg({ t: 'mval', k: -1, v: 0.5 }); p.msg({ t: 'mval', k: 'x', v: NaN }); p.msg({ t: 'mval' }); });
   // rows the payload cannot place are skipped, the rest kept
@@ -366,7 +369,7 @@ test('xfer (lane A2\'s transfer): {a, b, x0} linear or {tab (129 over mod space 
   p.msg(mods);
   const MC = p.mc;
   assert.equal(MC.rows.length, 9); assert.equal(MC.tgts.length, 8, 'groups = target × transfer: slot 0 × 2, slot 1, glide × 2, slot 2, slot 4 × 2 (the fx row is no target)');
-  assert.deepEqual(got, [[['a', 0, undefined, 0], ['a2', 0, undefined, undefined], ['b', 1, undefined, 0.5], ['c', undefined, 'glide', 0.25], ['d', undefined, 'glide', undefined], ['z', 2, undefined, 0.8], ['g1', 4, undefined, 0], ['g2', 4, undefined, 0.5]]], 'Inst.modRows: the Inst\'s classic rows in payload order with xfer attached');
+  assert.deepEqual(got, [[['a', 0, undefined, 0], ['a2', 0, undefined, undefined], ['b', 1, undefined, 0.5], ['c', -1, 'glide', 0.25], ['d', -1, 'glide', undefined], ['z', 2, undefined, 0.8], ['g1', 4, undefined, 0], ['g2', 4, undefined, 0.5]]], 'Inst.modRows: the Inst\'s classic rows in payload order with xfer attached (a set row with slot −1: lane B\'s synthetic slot never reaches the Inst, review U3)');
   let c1 = null, sv = null; p.insts[0].modSpan = (a, b, s) => { c1 = Float64Array.from(b.subarray(0, 5)); sv = s.map(e => [e.field, e.v]); };
   S.run(p, 5);
   assert.ok(Math.abs(c1[0] - 1) < 1e-12, 'slot 0: T(0.5) − T(0) = 1 (the table) + 0 (a2: identity, clamp01(−0.25) = 0): ' + c1[0]);
@@ -479,4 +482,243 @@ test('N4: bench rows mc0 (10 GLOBAL LFOs, no note), mc (10 GLOBAL LFOs + gated p
     t.diagnostic(`row ${id}: ${best.load.toFixed(5)} (target ${target}; runs ${best.loads.map(x => x.toFixed(4)).join(' ')})`);
     assert.ok(best.load <= 1.5 * target, `row ${id}: ${best.load.toFixed(5)} > 1.5 × ${target}`);
   }
+});
+
+/* ------------------------------------------------------------------ the review round (findings-2b: E1–E8, E10, P2, P3, U3, the live meters) */
+const classicPatch = (id, o) => { const m = MODELS.find(x => x.id === id), v = Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), o || {}); const p = patchFor(m, v, C.defaultFx2(), { sr: SR, bpm: 120 }); delete p.fxr; delete p.fxrT; return p; };
+// a Track with one classic Inst i1 (zone z) into panel fx1
+function classicTrack(S, id, mods, z = null) {
+  const p = S.mk(); S.graph(p, ['i1']);
+  if (z) p.msg({ t: 'graph', insts: [{ id: 'i1', on: true, zone: z, salt: 0 }], chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: 'k' });
+  p.msg({ t: 'patch', i: 'i1', p: classicPatch(id) }); p.msg(Object.assign({ t: 'chain', c: 'fx1' }, S.chainMsg));
+  if (mods) p.msg(mods);
+  return p;
+}
+
+test('E1 / E4: a slewed row (rise / fall) on a ModCore target reaches its target in SLEW_T whatever the span length (4 / 16 / 64 / 128-frame spans, the half lever on and off), continuous across spans; the span-end read is chunk nCh − 1 with the half lever on', () => {
+  const S = scope(), vi = S.vi;
+  // a wheel step through a cls row with rise 0.5 = SLEW_T 0.5 s (the wheel's own 1.5 ms smoother aside): 0.99 at 0.495 s
+  const sm = synth(s => { s.matrix[0] = row('wheel', 'a.level', 1, { rise: 0.5, fall: 0.5 }); });
+  const mods = () => payload(sm, { rows: [{ id: 'r', src: S_WHEEL, vi: vi('a.level'), dst: { kind: 'cls', inst: 'i1', slot: 0 }, xfer: { a: 0, b: 1, x0: 0 } }] });
+  for (const [n, nCh, half] of [[128, 32, true], [128, 32, false], [64, 16, true], [16, 4, true], [4, 1, true]]) {
+    const p = junoTrack(S, mods()), MC = p.mc;
+    if (!half) { MC.half = false; MC.setRows(mods()); }
+    for (let k = 0; k < 20; k++) MC.span(k * n, n, nCh);
+    p.wheel = 1;
+    let F = 0, t99 = -1, jump = 0, prev = -1;
+    for (let k = 0; k < 400000 && t99 < 0; k++) {
+      MC.span(F, n, nCh); F += n;
+      const c0 = MC.cls0.i1[0], c1 = MC.cls1.i1[0];
+      if (prev >= 0 && Math.abs(c0 - prev) > jump) jump = Math.abs(c0 - prev);
+      prev = c1;
+      if (c1 >= 0.99) t99 = F / SR;
+    }
+    assert.ok(Math.abs(t99 - 0.495) < 0.01, `span ${n} half ${half}: 0.99 reached at ${t99} s (SLEW_T 0.5 s)`);
+    // (a one-chunk span is one evaluation: its start reads its end — one tick of slew past the last span's end)
+    assert.ok(jump <= (nCh === 1 ? n / SR / 0.5 + 1e-12 : 1e-9), `span ${n} half ${half}: continuous across spans (cls0 of a span = cls1 of the last: jump ${jump})`);
+  }
+  // E4: a 20 Hz GLOBAL LFO into ext1 and a cls row: with the half lever on, cls1 is the chunk-31 value, not chunk 30
+  const sm2 = synth(s => { s.lfo[0] = { ...s.lfo[0], mode: 'free', mono: 1, bpm: 0, anchor: 0 }; s.p['l1.rate'] = hzN(20); s.matrix[0] = row('lfo1', 'a.level', 1); });
+  const p = junoTrack(S, payload(sm2, { ext: [{ k: 1, src: S_LFO1 }], rows: [{ id: 'r', src: S_LFO1, vi: vi('a.level'), dst: { kind: 'cls', inst: 'i1', slot: 0 }, xfer: { a: 0, b: 1, x0: 0 } }] })), MC = p.mc;
+  assert.equal(MC.halfOn, 1);
+  let at31 = 0, at30 = 0;
+  for (let k = 0; k < 200; k++) { MC.span(k * 128, 128, 32); if (k > 10) { if (Math.abs(MC.cls1.i1[0] - MC.ext[31]) < 1e-12) at31++; if (Math.abs(MC.cls1.i1[0] - MC.ext[30]) < 1e-12) at30++; } }
+  assert.ok(at31 >= 185 && at30 === 0, `cls1 = ext chunk 31 in ${at31} spans, chunk 30 in ${at30}`);
+});
+
+test('E2: the pseudo-voice gate with zones — a key no Inst takes neither holds the gate nor makes the next note legato; its note-off reaches ModCore when it was counted (the four orderings)', () => {
+  const S = scope(), vi = S.vi, Z = { lo: 60, hi: 127, xp: 0 };
+  const sm = synth(s => { Object.assign(s.p, { 'e2.att': timeN(0.01), 'e2.dec': timeN(0.1), 'e2.sus': 0.5, 'e2.rel': timeN(0.05) }); s.matrix[0] = row('env2', 'a.pan', 1); });
+  const mods = () => payload(sm, { rows: [{ id: 'r', src: S_ENV2, vi: vi('a.pan'), dst: { kind: 'cls', inst: 'i1', slot: 0 }, xfer: { a: 0, b: 1 } }] });
+  const mk = () => { const p = classicTrack(S, 'juno60', mods(), Z); return [p, p.mc.V]; };
+  // (a) in zone, out of zone, off in, off out
+  let [p, V] = mk();
+  p.msg({ t: 'on', n: 60, v: 0.8 }); S.run(p, 2); assert.ok(V.gate && p.nHeld === 1);
+  p.msg({ t: 'on', n: 40, v: 0.8 }); S.run(p, 2); assert.equal(p.nHeld, 1, 'key 40: no Inst took it — not counted');
+  p.msg({ t: 'off', n: 60 }); S.run(p, 2); assert.equal(V.gate, false, 'the last counted key lifted: released');
+  p.msg({ t: 'off', n: 40 }); S.run(p, 2); assert.equal(p.nHeld, 0);
+  S.run(p, 200); assert.equal(V.active, false, 'ended');
+  // (b) out of zone first, then in zone: the in-zone note is NOT legato, its release ends the gate
+  [p, V] = mk();
+  p.msg({ t: 'on', n: 40, v: 0.8 }); S.run(p, 2); assert.ok(!V.active && p.nHeld === 0);
+  p.msg({ t: 'on', n: 60, v: 0.8 }); S.run(p, 1); assert.ok(V.gate && (V.mod.eSt[1] === 1 || V.mod.eSt[1] === 2 || V.mod.eSt[1] === 3), 'a fresh attack');
+  p.msg({ t: 'off', n: 60 }); S.run(p, 2); assert.equal(V.gate, false);
+  p.msg({ t: 'on', n: 62, v: 0.8 }); S.run(p, 1); assert.ok(V.mod.eSt[1] === 1 || V.mod.eSt[1] === 2 || V.mod.eSt[1] === 3, 'restarted, not legato (the out-of-zone key does not count)');
+  p.msg({ t: 'off', n: 62 }); p.msg({ t: 'off', n: 40 }); S.run(p, 2); assert.ok(!V.gate && p.nHeld === 0);
+  // (c) in, in, off the first, off the second: legato then release; (d) the reverse release order
+  for (const order of [[60, 64], [64, 60]]) {
+    [p, V] = mk();
+    p.msg({ t: 'on', n: 60, v: 0.8 }); S.run(p, 2); p.msg({ t: 'on', n: 64, v: 0.8 }); S.run(p, 2);
+    assert.equal(p.nHeld, 2);
+    p.msg({ t: 'off', n: order[0] }); S.run(p, 2); assert.ok(V.gate && p.nHeld === 1, 'one key still held');
+    p.msg({ t: 'off', n: order[1] }); S.run(p, 2); assert.ok(!V.gate && p.nHeld === 0, 'released at the last');
+  }
+  // a key-on with velocity 0 counts as nothing; a repeated key-on is counted once; panic clears
+  [p, V] = mk();
+  p.msg({ t: 'on', n: 60, v: 0 }); assert.equal(p.nHeld, 0);
+  p.msg({ t: 'on', n: 60, v: 0.5 }); p.msg({ t: 'on', n: 60, v: 0.6 }); assert.equal(p.nHeld, 1);
+  p.msg({ t: 'panic' }); assert.ok(p.nHeld === 0 && !V.gate);
+});
+
+test('E3 / P8: postMon posts the eff snapshot for a span-setter-only Inst too (moFN > 0); U3: a set row in lane B\'s shape (slot = the synthetic slot) registers as a field row — eff = the base with a macro at 0, moves within the transfer\'s range under an LFO', async () => {
+  const S = scope(), vi = S.vi, V = await import('../cv-mods.js?v=9');
+  const vals = id => Object.fromEntries(MODELS.find(x => x.id === id).controls.map(c => [c.id, c.def]));
+  const xfA = V.xferOf('juno60', vals('juno60'), 'a', { kind: 'field', field: 'fenv.a' });
+  const sm = synth(s => { s.lfo[0] = { ...s.lfo[0], mode: 'free', mono: 1, bpm: 0, anchor: 0 }; s.p['l1.rate'] = hzN(2); s.matrix[0] = row('lfo1', 'a.level', 1); s.matrix[1] = row('macro1', 'a.pan', 0.25); });
+  // lane B's row shape: slot (the synthetic matrix slot), tgt, perNote … beside dst
+  const B = (id, src, d, xfer, j) => ({ id, src, dst: d, amt: 0.25, bi: 0, curve: 0, crv: null, aux: 0, inv: 0, rise: 0, fall: 0, byp: 0, out: 1, perNote: false, vi: vi(j ? 'a.pan' : 'a.level'), slot: j, tgt: 0, xfer });
+  const p = junoTrack(S, payload(sm, { rows: [B('r1', S_LFO1, { kind: 'set', inst: 'i1', field: 'fenv.a' }, xfA, 0)] })), I = p.insts[0];
+  assert.deepEqual([I.moN, I.moFN], [0, 1], 'a field row, not a slot row');
+  const posts = [];
+  p.port.postMessage = d => { if (d.t === 'smon' && d.i === 'i1' && d.s && d.s.eff) posts.push(Float32Array.from(d.s.eff)); };
+  p.msg({ t: 'mon', ids: ['i1'] });
+  p.msg({ t: 'on', n: 60, v: 0.8 }); S.run(p, 60);
+  assert.ok(posts.length >= 3, 'eff posted for a setter-only Inst: ' + posts.length);
+  const lo = Math.min(...xfA.tab), hi = Math.max(...xfA.tab);
+  assert.ok(posts.every(e => e[0] >= lo && e[0] <= hi), 'eff within the transfer\'s domain (field units)');
+  assert.ok(new Set(posts.map(e => e[0])).size > 1, 'the eff moves with the LFO');
+  // a macro at 0 on the Juno LFO rate (a table transfer): eff = the base = T(x0)
+  const xfL = V.xferOf('juno60', vals('juno60'), 'lr', { kind: 'field', field: 'lfo.rate' });
+  const q = junoTrack(S, payload(sm, { rows: [B('r2', S_MACRO1, { kind: 'set', inst: 'i1', field: 'lfo.rate' }, xfL, 1)], vals: [{ k: 0, src: S_MACRO1, v: 0, id: 'm1.k1' }] })), J = q.insts[0];
+  const base = J.p.lfo.rate;
+  q.msg({ t: 'on', n: 60, v: 0.8 }); S.run(q, 20);
+  assert.ok(Math.abs(J.modEff()[0] - base) < 1e-3 * base && Math.abs(J.p.lfo.rate - base) < 1e-9, `macro at 0: eff ${J.modEff()[0]} = base ${base}`);
+  q.msg({ t: 'mval', k: 0, v: 1 }); S.run(q, 100);
+  assert.ok(J.modEff()[0] > base && J.modEff()[0] <= Math.max(...xfL.tab) + 1e-9, 'macro at 1: eff above the base, within the table: ' + J.modEff()[0]);
+});
+
+test('E5: the TB-303 sequencer\'s steps and the Serum ARP\'s generated notes gate the pseudo-voice (a track ENV on a 303 knob follows the pattern; the ARP\'s steps restart it)', () => {
+  const S = scope(), vi = S.vi;
+  const sm = synth(s => { Object.assign(s.p, { 'e2.att': timeN(0.01), 'e2.dec': timeN(0.2), 'e2.sus': 0.3, 'e2.rel': timeN(0.1) }); s.matrix[0] = row('env2', 'a.pan', 1); });
+  const mods = () => payload(sm, { rows: [{ id: 'r', src: S_ENV2, vi: vi('a.pan'), dst: { kind: 'cls', inst: 'i1', slot: 0 }, xfer: { a: 0, b: 1 } }] });
+  const p = classicTrack(S, 'tb303', mods()), I = p.insts[0], V = p.mc.V;
+  const pat = Array.from({ length: 16 }, (_, k) => ({ g: k % 2 === 0 ? 1 : 0, n: (k * 5) % 12, o: 0, a: k % 4 === 0 ? 1 : 0, s: k === 4 ? 1 : 0 }));
+  p.msg({ t: 'seq', i: 'i1', s: { run: true, sync: false, pat, len: 16, bpm: 140, root: 36 } });
+  let gated = 0, sounding = 0, maxOff = 0, starts = 0, wasGate = false;
+  const ms = I.modSpan.bind(I);
+  I.modSpan = (c0, c1, sv) => { if (Math.abs(c1[0]) > maxOff) maxOff = Math.abs(c1[0]); ms(c0, c1, sv); };
+  for (let q = 0; q < 750; q++) { S.run(p, 1); if (V.gate) gated++; if (V.gate && !wasGate) starts++; wasGate = V.gate; if (I.anyActive()) sounding++; }
+  assert.ok(sounding > 200, 'the pattern plays');
+  assert.ok(gated > 150 && gated < sounding + 50, `the pseudo-voice gated with the steps (${gated} of ${sounding} sounding quanta)`);
+  assert.ok(starts >= 6, `restarted per struck step (${starts} gate starts; the tied step keeps it)`);
+  assert.ok(maxOff > 0.5, 'the ENV row drives the cutoff offset: ' + maxOff);
+  p.msg({ t: 'seq', i: 'i1', s: { run: false } }); S.run(p, 100);
+  assert.equal(V.gate, false, 'stopping the pattern releases');
+  // the Serum ARP: a held key feeds the arpeggiator; its generated notes retrigger the ENV per step
+  const ss = C.normalizeSerum(C.defaultSerum()); ss.p['arp.on'] = 1;
+  const q = S.mk(); S.graph(q, ['i1']);
+  q.msg({ t: 'patch', i: 'i1', p: serumPatch(ss) }); q.msg(Object.assign({ t: 'chain', c: 'fx1' }, S.chainMsg)); q.msg(mods());
+  const J = q.insts[0], W = q.mc.V;
+  assert.equal(J.sqOn, 1);
+  q.msg({ t: 'on', n: 60, v: 0.8 }); q.msg({ t: 'on', n: 64, v: 0.8 });
+  let att = 0, st = 0;
+  for (let k = 0; k < 400; k++) { S.run(q, 1); const e = W.mod.eSt[1]; if (e === 1 && st !== 1) att++; st = e; }
+  assert.ok(att >= 4, `the ARP's steps restart the ENV (${att} attacks over 400 quanta)`);
+  q.msg({ t: 'off', n: 60 }); q.msg({ t: 'off', n: 64 }); S.run(q, 300);
+  assert.equal(W.gate, false, 'keys up, the ARP stops: released');
+});
+
+test('E6: a malformed payload after a good one keeps the previous ModCore state (validated before anything is written) and posts {t: modsErr, i, key}; a malformed first payload builds nothing and posts it too', () => {
+  const S = scope(), vi = S.vi, posts = [];
+  const sm = synth(s => { s.lfo[0] = { ...s.lfo[0], mode: 'free', mono: 1 }; s.p['l1.rate'] = hzN(2); s.matrix[0] = row('lfo1', 'a.level', 1); });
+  const good = payload(sm, { i: 'trk', key: 'k1', ext: [{ k: 1, src: S_LFO1 }], rows: [{ id: 'r', src: S_LFO1, vi: vi('a.level'), dst: { kind: 'cls', inst: 'i1', slot: 0 }, xfer: { a: 0, b: 1 } }] });
+  const p = junoTrack(S, null);
+  p.port.postMessage = d => { if (d.t === 'modsErr') posts.push(d); };
+  p.msg({ t: 'mods', i: 'trk', key: 'bad0', cp: { ver: 99 }, rows: [{ id: 'x', src: 5, dst: { kind: 'cls', inst: 'i1', slot: 0 } }] });
+  assert.equal(p.mc, null, 'a first bad payload: nothing');
+  assert.deepEqual(posts.map(x => [x.t, x.i, x.key]), [['modsErr', 'trk', 'bad0']]);   // (plain values: the scope's objects are another realm's)
+  p.msg(good);
+  const MC = p.mc, cp = MC.cp;
+  p.msg({ t: 'on', n: 60, v: 0.8 }); S.run(p, 20);
+  const seen = [];
+  p.insts[0].modSpan = (a, b) => { seen.push(b[0]); };
+  for (const bad of [{ t: 'mods', i: 'trk', key: 'bad1', cp: { ver: 99 }, rows: [{ id: 'x', src: 5, dst: { kind: 'cls', inst: 'i1', slot: 0 } }] }, { t: 'mods', i: 'trk', key: 'bad2', cp: null, rows: [{}] }, { t: 'mods', i: 'trk', key: 'bad3', cp: 'x', ext: [{ k: 1, src: 5 }] }]) {
+    assert.doesNotThrow(() => p.msg(bad));
+    assert.ok(p.mc === MC && MC.ok === 1 && MC.cp === cp && MC.rows.length === 1 && MC.extN === 1, 'the previous state kept');
+    assert.equal(MC.shim.p.serum, cp, 'the shim still on the good CP');
+  }
+  assert.deepEqual(posts.slice(1).map(x => x.key), ['bad1', 'bad2', 'bad3']);
+  S.run(p, 30);
+  assert.ok(seen.length === 30 && seen.some(x => x !== 0) && new Set(seen).size > 5, 'the rows keep running after the rejected payloads');
+  assert.ok(p.mc.ext.some(x => x !== 0), 'ext too');
+  p.msg({ t: 'mods', off: true }); assert.equal(p.mc, null);
+});
+
+test('E7 / P3: no allocation on the Track\'s own paths with a ModCore (modPre → modSpan with cls-only rows, chainMods, notes) — 100 quanta of process under throwing constructors', () => {
+  const S = scope(), vi = S.vi;
+  const sm = synth(s => { s.lfo[0] = { ...s.lfo[0], mode: 'free', mono: 1 }; s.p['l1.rate'] = hzN(2); s.matrix[0] = row('lfo1', 'a.level', 1); s.matrix[1] = row('fixed', 'a.pan', 0.5); });
+  const p = junoTrack(S, payload(sm, { ext: [{ k: 1, src: S_LFO1 }], rows: [{ id: 'a', src: S_LFO1, vi: vi('a.level'), dst: { kind: 'cls', inst: 'i1', slot: 0 }, xfer: { a: 0, b: 1 } },
+    { id: 'c', src: S_FIXED, vi: vi('a.pan'), dst: { kind: 'fx', chain: 'fx1', fx: 0, key: S.chainMsg.fxr.key } }] }));
+  assert.ok(p.mc !== null && p.insts[0].moN === 1 && p.insts[0].moFN === 0, 'cls-only rows: the Track passes null for setv');
+  p.msg({ t: 'on', n: 60, v: 0.8 }); S.run(p, 40);
+  const o = [[new Float32Array(Q), new Float32Array(Q)]];
+  noAlloc(S.D, () => { for (let k = 0; k < 100; k++) { if (k % 20 === 5) p.noteOn(64 + (k % 7), 0.7, 0, 0, 0); if (k % 20 === 15) p.noteOff(64 + ((k - 10) % 7), 0.5, 0, 0, 0); p.process([], o); S.D.ctx.currentFrame += Q; } });
+  assert.ok(Math.max(...o[0][0].map(Math.abs)) > 1e-4);
+});
+
+test('E10: MC.stats() → {lfos, envs, rows, ext, spans, half} (no timer in a worklet scope)', () => {
+  const S = scope();
+  const p = junoTrack(S, payload(synth(s => { s.lfo[0] = { ...s.lfo[0], mode: 'free', mono: 1 }; s.matrix[0] = row('lfo1', 'a.level', 0.01); }), { ext: [{ k: 1, src: S_LFO1 }] }));
+  S.run(p, 7);
+  const st = p.mc.stats();
+  assert.deepEqual(Object.keys(st).sort(), ['envs', 'ext', 'half', 'lfos', 'rows', 'spans']);
+  assert.ok(st.spans >= 7 && st.lfos === 1 && st.ext === 1 && st.half === 1);
+});
+
+test('live meters: MC.live = Float32Array(16) [lfo 1…10, env 2, 3, 4, 1, chaos 1, 2] 0…1 updated per span at no allocation; the Track posts {t: smon, mc} to a \'mods\' monitor subscription while a ModCore exists', () => {
+  const S = scope(), vi = S.vi;
+  const sm = synth(s => {
+    s.lfo[0] = { ...s.lfo[0], mode: 'free', mono: 1, bpm: 0, anchor: 0 }; s.p['l1.rate'] = hzN(3);
+    s.lfo[1] = { ...s.lfo[1], mode: 'retrig', mono: 1, bpm: 0, anchor: 0 }; s.p['l2.rate'] = hzN(1);
+    s.lfo[4] = { ...s.lfo[4], mode: 'retrig', mono: 0, bpm: 0, anchor: 0 }; s.p['l5.rate'] = hzN(2);
+    Object.assign(s.p, { 'e2.att': timeN(0.05), 'e2.dec': timeN(0.3), 'e2.sus': 0.5, 'e2.rel': timeN(0.2) });
+    s.chaos[0] = { ...s.chaos[0], mono: 1 };
+    s.matrix[0] = row('lfo1', 'a.level', 0.01); s.matrix[1] = row('lfo2', 'a.pan', 0.01); s.matrix[2] = row('lfo5', 'b.level', 1); s.matrix[3] = row('env2', 'b.pan', 1); s.matrix[4] = row('chaos1', 'a.wt', 0.5);
+  });
+  const rows = [{ id: 'a', src: 9, vi: vi('b.level'), dst: { kind: 'cls', inst: 'i1', slot: 0 }, xfer: { a: 0, b: 1 } }, { id: 'b', src: S_ENV2, vi: vi('b.pan'), dst: { kind: 'cls', inst: 'i1', slot: 1 }, xfer: { a: 0, b: 1 } },
+    { id: 'c', src: 17, vi: vi('a.wt'), dst: { kind: 'cls', inst: 'i1', slot: 2 }, xfer: { a: 0, b: 1 } }];
+  const p = junoTrack(S, payload(sm, { rows, ext: [{ k: 1, src: S_LFO1 }, { k: 2, src: S_LFO1 + 1 }] })), MC = p.mc, L = MC.live;
+  assert.equal(L.length, 16, 'Float32Array(16)');
+  assert.equal(S.M.NLIVE, 16);
+  const posts = [];
+  p.port.postMessage = d => { if (d.t === 'smon' && d.mc) posts.push(Float32Array.from(d.mc)); };
+  p.msg({ t: 'mon', ids: ['mods'] });
+  assert.ok(p.mon && p.mcMon, 'a mods subscription alone turns the monitor on');
+  const l0 = [], l1 = [], e2 = [], c1 = [], l5 = [];
+  const ev = (q, P) => { if (q === 10) P.msg({ t: 'on', n: 60, v: 0.8 }); if (q === 60) P.msg({ t: 'off', n: 60 }); };
+  for (let q = 0; q < 160; q++) { S.run(p, 1, (_, P) => ev(q, P)); l0.push(L[0]); l1.push(L[1]); l5.push(L[4]); e2.push(L[10]); c1.push(L[14]); }
+  const moves = a => new Set(a).size, within = a => a.every(x => x >= 0 && x <= 1);
+  assert.ok(moves(l0) > 50 && within(l0), 'lfo1 (GLOBAL FREE) moves in 0…1');
+  assert.ok(moves(l1) > 50 && within(l1), 'lfo2 (GLOBAL RETRIG) moves');
+  assert.ok(moves(l5.slice(11, 60)) > 20 && within(l5), 'lfo5 (PER NOTE) moves while gated');
+  assert.ok(e2.slice(0, 10).every(x => x === 0) && Math.max(...e2.slice(11, 60)) > 0.4 && e2[159] < 0.05, 'env2 at 0 before the note, up while gated, back down after the release');
+  assert.ok(moves(c1) > 20 && within(c1), 'chaos1 (mono) moves, mapped to 0…1');
+  assert.ok(L[13] === 0 && L[11] === 0 && L[12] === 0, 'env 3, 4, 1 idle');
+  assert.ok(posts.length >= 3 && posts.every(x => x.length === 16) && posts.some(x => x[0] !== posts[0][0]), 'posted at the monitor rate with changing values');
+  assert.ok(Math.abs(L[0] - MC.ext[31]) < 1e-6, 'lfo1 = ext1\'s last chunk (float32)');
+  noAlloc(S.D, () => { for (let k = 0; k < 50; k++) MC.span(k * 128, 128, 32); });
+  p.msg({ t: 'mon', ids: [] }); assert.equal(p.mcMon, false);
+});
+
+test('P2: Track.warmUp\'s ModCore round (warmMods: a payload on a hand-built CP with cls / set / fx rows and ext on the warm graph) runs and leaves nothing — mc null, the Insts without rows, the panel unmodulated, nHeld 0; a fresh scope\'s first Track is clean after its warm-up', () => {
+  const S = scope(), p = S.mk({ offline: true });
+  // the round itself on an explicit warm graph (offline: no warm-up ran in the constructor)
+  const z = { lo: 0, hi: 127, xp: 0 };
+  p.msg({ t: 'graph', insts: [{ id: 'w1', on: true, zone: z, salt: 0 }, { id: 'w2', on: true, zone: z, salt: 1 }, { id: 'w3', on: true, zone: z, salt: 2 }], chains: [{ id: 'wa' }], edges: [['w1', 'wa', 1], ['w2', 'wa', 1], ['w3', 'out', 1], ['wa', 'out', 1]], out: 'out', key: 'w' });
+  p.msg({ t: 'patch', i: 'w1', p: junoPatch() }); p.msg({ t: 'patch', i: 'w2', p: classicPatch('prophet5') });
+  const io = [[new Float32Array(Q), new Float32Array(Q)]], seen = { mc: 0, spans: 0, rows: 0, ext: 0, moN: 0, moFN: 0, mcOn: 0, serumExt: 0 };
+  const run = k => { for (let b = 0; b < k; b++) { p.process(null, io); S.D.ctx.currentFrame += Q; if (p.mc) { seen.mc++; seen.spans = p.mc.stats().spans; seen.rows = p.mc.rows.length; seen.ext = p.mc.extN; const w1 = p.instOf('w1'); seen.moN = Math.max(seen.moN, w1.moN); seen.moFN = Math.max(seen.moFN, w1.moFN); seen.mcOn = Math.max(seen.mcOn, p.chainOf('wa').mcOn); const w3 = p.instOf('w3'); if (w3.sx && w3.p.serum && (w3.p.serum.use & 32768) !== 0 && w3.sx.g[S_EXT0 * 32 + 5] !== 0) seen.serumExt++; } } };
+  p.warmMods(run, p.instOf('w3'));
+  assert.ok(seen.mc >= 80 && seen.spans >= 80, 'the round ran ≈ 90 spans with a ModCore: ' + JSON.stringify(seen));
+  assert.ok(seen.rows === 8 && seen.ext === 2 && seen.moN >= 3 && seen.moFN === 3 && seen.mcOn === 1, 'cls / set / fx rows and ext slots exercised: ' + JSON.stringify(seen));
+  assert.ok(seen.serumExt > 10, 'the Serum read ext1 from ModCore: ' + seen.serumExt);
+  assert.ok(p.mc === null && p.instOf('w1').moN === 0 && p.instOf('w1').moFN === 0 && p.instOf('w2').moN === 0 && p.nHeld === 0, 'nothing left');
+  run(2);
+  assert.equal(p.chainOf('wa').mcOn, 0, 'the panel\'s rack unmodulated again');
+  p.restore(4);
+  assert.ok(p.mc === null && p.i0.moN === 0 && p.i0.moFN === 0 && p.c0.mcOn === 0 && p.nHeld === 0 && !p.mcMon, 'restore() finds nothing of it');
+  // a fresh scope: the first (online) Track's constructor warm-up includes the round and restores
+  const D2 = dspScope({ fast: true, engine: true }), q = new D2.Proc({ processorOptions: { os: 4, hostOS: 4 } });
+  assert.ok(q.mc === null && q.i0.moN === 0 && q.i0.moFN === 0 && q.c0.mcOn === 0 && q.nHeld === 0 && q.insts.length === 1 && q.chains.length === 1, 'clean after the warm-up');
+  assert.equal(D2.global('ModCore').warmPayload(D2.global('SxBase'), false).rows.length, 8);
 });

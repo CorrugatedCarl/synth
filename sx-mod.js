@@ -47,7 +47,7 @@
  *     matrix(fr), advance(gc), envVal(e), lfoVal(l), [+] post(), [+] stop(), [+] setDt(dt, changed), [+] rnd2(),
  *     [+] envsIdle() (§6.19 rule b: every envelope has finished its release — stage 0, whatever End level it holds, inv
  *     B13 "terminates after the longest release"; all four, ENV 4 included),
- *     fields eff (429), off, src (62), eV/eSt/eT/eQ/eV0/eVR/eOn (4), lPh/lVal/lY/lSm/lSmY/lCy/lRp/… (10), ch/cOut/cHold/cTim
+ *     fields eff (429), off, src (78: the 62 of §4.1 + ext1…16), eV/eSt/eT/eQ/eV0/eVR/eOn (4), lPh/lVal/lY/lSm/lSmY/lCy/lRp/… (10), ch/cOut/cHold/cTim
  *     (S1 chaos), vVelo, vNote, vR1, vR2, vAlt, patS, relvel, nP/gS/gTg/gQ (portamento; nP is the TUNED gliding pitch
  *     when `use & 512`: serum-dsp must not apply CP.tune again), tau, rd (64, randd per matrix slot), slew (64),
  *     Voice Control: vcOn (0/1 for this note), vc = Float64Array(4) [panO (bipolar pan units), detO (cents), cutO (cutoff

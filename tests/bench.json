@@ -10,14 +10,14 @@
     "l": { "node": 0.03, "ipad": 0.02 }, "m": { "node": 0.04, "ipad": 0.03 }, "o": { "node": 0.003, "ipad": 0.002 }, "p": { "node": 0.002 },
     "q1": { "node": 0.8, "ipad": 0.6 }, "q2": { "node": 0.8, "ipad": 0.6 },
     "r": { "node": 0.15, "ipad": 0.12 },
-    "mc0": { "node": 0.002, "ipad": 0.002 }, "mc": { "node": 0.004, "ipad": 0.004 }, "mt": { "node": 0.0025, "ipad": 0.0025 }, "me": { "node": 0.004, "ipad": 0.003 },
-    "mk": { "node": 0.0035, "ipad": 0.003 }, "ms": { "node": 0.012, "ipad": 0.012 }
+    "mc0": { "node": 0.002, "ipad": 0.003 }, "mc": { "node": 0.004, "ipad": 0.006 }, "mt": { "node": 0.0025, "ipad": 0.004 }, "me": { "node": 0.004, "ipad": 0.004 },
+    "mk": { "node": 0.0035, "ipad": 0.005 }, "ms": { "node": 0.012, "ipad": 0.012 }
   },
-  "mods2b": "Stage 2b classic adapter rows (lane A2, 2026-10-19, Apple M4 Max, node v24, measure() 5 × 1 s, OS 2): mk = an 8-voice Juno-60 with one cutoff cable minus the same row without: 0.0012 (loads 0.0010-0.0023; the row without 0.035, so +3.4 %, gate 8 % — tests/classic-mod.test.mjs measures the ratio with interleaved pairs: 1.057-1.068); ms = four envelope-time fields cabled and changing every span minus the row without: 0.0006 (loads 0.0005-0.0014) = 0.05 µs per Env.set call per voice (the direct timing in classic-mod: 0.025 µs calibrated; gate 1 µs = a load of 0.012). Targets: mk 0.0035 (8 % of the Juno row), ms 0.012.",
+  "mods2b": "Stage 2b ModCore / classic adapter rows, re-recorded on the merged tree after the review round (fixer A, 2026-10-19, Apple M4 Max, node v24, measure() 5 x 1 s, OS 4 track rows / OS 2 voice rows, one process at a time; the lanes' records were taken with the other lane stubbed): mc0 0.0014 (loads 0.0008-0.0075), mc 0.0025 (0.0020-0.0042), mt 0.0013 (0.0008-0.0013), me 0.0011 (-0.0023-0.0019: the ext hand-off is below row d's jitter), mk 0.0025 (0.0021-0.0037; tests/classic-mod.test.mjs interleaved ratio 1.065, gate 1.08), ms 0.0002 (-0.0007-0.0013; 0.025 us per Env.set call per voice, gate 1 us). iPad targets as the perf reviewer recommended (mc0 0.003, mc 0.006, mt 0.004, me 0.004, mk 0.005, ms 0.012; the JSC shell measured mc0 0.0013-0.0019, mc 0.0021, mt 0.0011-0.0014, me 0.0006-0.0037, mk 0.0016-0.0019, ms 0.0002-0.0004): on the iPad rows under 0.003 are informational — WebKit's 1 ms timer quantizes them unless timed over 5 s. Node targets unchanged (mc0 0.002, mc 0.004, mt 0.0025, me 0.004, mk 0.0035, ms 0.012; the modcore / classic-mod gates: load <= 1.5 x target)",
   "node": { "date": "2026-10-13", "machine": "Apple M4 Max, node v24.21.0, tests/bench-scenarios.mjs (looping sample rows, every timed run audible; worst = slowest quantum / its real time; q rows: slowest quantum of a live processor's first 1.5 s after a preset change), uncalibrated (= reference machine); after the M4 performance pass",
     "rows": { "d": 0.4, "e": 0.083, "f": 0.164, "f'": 0.124, "g": 0.094, "g'": 0.171, "g\"": 0.435, "h": 0.046, "h'": 0.085, "i": 0.063, "r": 0.1,
       "j": 0.026, "k0": 0.008, "k1": 0.005, "k2": 0.006, "k3": 0.009, "k4": 0.007, "l": 0.003, "m": 0.004, "q1": 0.4, "q2": 0.76,
-      "mc0": 0.0012, "mc": 0.0019, "mt": 0.0008, "me": 0.0, "mk": 0.0012, "ms": 0.0006 },
+      "mc0": 0.0014, "mc": 0.0025, "mt": 0.0013, "me": 0.0011, "mk": 0.0025, "ms": 0.0002 },
     "worst": { "d": 0.47, "e": 0.42, "f": 0.32, "f'": 0.43, "g": 0.23, "g'": 0.37, "g\"": 0.57, "h": 0.1, "h'": 0.21, "i": 0.21, "mk": 0.34, "ms": 0.09 },
     "before": { "about": "the same machine and harness before the M4 performance pass (q rows with the 1.5 s window)",
       "rows": { "d": 0.459, "e": 0.099, "f": 0.177, "f'": 0.146, "g": 0.098, "g'": 0.172, "g\"": 0.444, "h": 0.049, "h'": 0.091, "i": 0.069, "q1": 0.51, "q2": 1.91 },
