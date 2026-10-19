@@ -959,3 +959,92 @@ classic-panel +1, cv-modlayer +1, serum-ui +2, fx-ui +1, cv-mods-ui +assertions,
   reviewer's CDP driver over a worktree server): fc1 / fc2 above, no console errors or warnings, no page errors.
 - Open: the meters end to end once A and B merge (the `mc` field's message, `slots`); the iPad's touch on the badge
   hand-off (the long-press is the control's now: same path as a direct press); `pruneRows` wiring once merged.
+
+### 9.2 Fixer A — the engine round (2026-10-19; `mod-core.js`, `engine.js` Track / Inst regions, `tests/modcore.test.mjs` +9, `tests/classic-mod.test.mjs` +1, `tests/bench.json`, `tests/bench-scenarios.mjs`; findings-2b E1–E8, E10, P2, P3, P6, P8, U3 and lane D's open item, every one with its failing test first)
+
+**What changed, per finding.**
+- **E1** (slewed rows 8–16× slow, span-length dependent): `MC.span` evaluates the rows with SxMod's mono-context slew
+  convention — before the chunk-0 `matrix()` the pseudo-voice's `dt` is set to 0 (the span starts exactly where the last
+  one ended: `cls0[k+1] === cls1[k]`), before the span-end one to the whole span `nCh·dtC`, restored to the tick after each
+  (two field writes; `RXD` reads `this.dt` inside `matrix` only, so no SxMod change). A rise 0.5 row now reaches 0.99 of a
+  wheel step at 0.495 s for 128 / 64 / 16 / 4-frame spans, half lever on or off (was 3.96 / 7.92 / 1.98 s). A one-chunk
+  span is one evaluation: its start reads its end (one tick past the last span's end). Cost: nil (row `mc` 0.0025, as
+  before).
+- **E4 / P6**: the span-end sources are read at chunk `nCh − 1` whatever the tick (`sources(last ? nCh − 1 : c)`): with the
+  half lever on `cls1` equals ext chunk 31 in every span (was chunk 30, a two-chunk boundary jump). The setDt refill on a
+  span-parity change (a sequencer splitting spans 32 / 31: `lKs.fill(−1)`, the LFO smoothing coefficients re-derived,
+  ≈ +10 % on such spans) is documented in the mod-core.js header and stays.
+- **E2** (the gate stuck by a key no Inst takes): `Track.holdM` (Uint8Array(NK)) marks the keys COUNTED in `nHeld` — a
+  recorded key an Inst took with velocity > 0 (`holdCount`); `nHeld` is derived from it alone (a repeated key-on counts
+  once, velocity 0 nothing, out-of-zone keys never); a note-off reaches `MC.noteOff` when its key was counted or an Inst
+  released it. The four orderings of the reviewer's r2-gate are the test (zone 60…127, key 40): the out-of-zone key
+  neither holds the gate nor makes the next note legato.
+- **E3 / P8**: `postMon` posts `s: { eff }` for `moN > 0 || moFN > 0` (setter-only Insts too).
+- **U3** (the live dot wrong for proc / apply rows — "lr eff 0 while base 5", "glide 9.3048 constant"): the root cause was
+  in `MC.setRows`'s `instRows`: lane B's payload rows carry `slot` = the SYNTHETIC matrix slot, and a `set` row kept it →
+  `Inst.modRows` took every set row as a SLOT row on `S_VO` (cutoff: 10.44 / 9.30 are the cutoff octaves of the Juno / the
+  Minimoog) — no field record at all, the setter never ran, the eff was the cutoff. Set rows now reach `modRows` with
+  `slot: −1` (the xfer test pins it). With it `modEff`'s field branch is right as it was: the effective field value in
+  field units = the units of `cv-mods.xferOf`'s table (`valueAt(patchOf(…))`), updated at every 1/512 grid step of the
+  setter (test: a macro at 0 on the Juno `lr` → eff = base = T(x0) 1.414; an LFO on `fenv.a` → eff moves within the
+  table's 0.0015…3; `knobOf` / `xferInv` invert it unchanged — the host converts as lane D built it).
+- **E5**: the TB-303 steps gate the pseudo-voice through `this.T.mc` — a struck step `MC.noteOff(prev, 0)` +
+  `MC.noteOn(n, vel, 0)` (a restart), a tied step `MC.noteOn(n, vel, 1)` (legato), a rest / `seqGateOff` / `seqRelease`
+  `MC.noteOff(n, T.nHeld)` (a release unless the player holds keys). A Serum's generated notes (the ARP's, a clip's: `gen`
+  in `sxNote`) gate it with the OTHER generated notes sounding as the held count (`Inst.genOn`: gated voices with an
+  expression record, mono: the held entries flagged gen) — a step restarts it when none is, a chord's notes are legato,
+  the last note-off releases. The player's keys feeding the ARP still gate it through `Track.noteOn` (the Serum took
+  them); the ARP's steps dominate (r7-seq's rig: gated 0/750 quanta → with the steps; the ARP test counts ≥ 4 ENV attacks
+  over 400 quanta of two held keys).
+- **E6**: `setRows` validates before it writes — the CP first (`SD.sync` refuses through `cpOk` before touching the
+  state; on a refusal the shim's `p / ct / bpm` go back and `sx.ok` is restored), the value table and the rows only
+  after; `Track.modsMsg` keeps the previous ModCore on a throw (a first bad payload builds nothing) and posts
+  **`{ t: 'modsErr', i, key }`** (`i` / `key` from the payload, `i` falling back to the track id) so the host can clear
+  its `N.modsKey` and repost. The protocol test now reads: a malformed payload after a good one keeps the rows running.
+- **E7 / P3**: `modPre` passes `MC.cls0[id] || null, MC.cls1[id] || null, MC.setv[id] || null` (never `undefined`: the
+  `Array.isArray` sniff is for the two-argument callers) and the `typeof x.modSpan` hoist is gone (every Inst has it).
+  New Track-level `noAlloc` test: 100 quanta of `process` with notes, a cls-only Inst, an fx row and a Serum ext row
+  under throwing constructors (the stub's `Array` has no `isArray`: the old path threw there).
+- **E8**: `AVoice.cfgLP` reads the 2-pole tap as `c.poles < 3` like `moChar` (identical for every patch value a model
+  emits — undefined / 2 / 4 — and a cabled in-between value resolves alike on a new voice and a running one; goldens
+  unchanged). Test in classic-mod on the Jupiter-8's slope switch.
+- **E10**: `MC.stats()` → `{ lfos, envs, rows, ext, spans, half }` (`us` and the timer dropped: `spans` counts the spans
+  evaluated since the payload); the sx-mod.js header already read "src (62)" for the voice's own vector, left as is.
+- **P2** (no ModCore warm-up on JSC): `Track.warmMods(run, serumInst)`, called from `warmGraph` on the warm graph (w1 /
+  w2 classic, w3 the Serum, panel wa): `ModCore.warmPayload(SxBase, perNote)` hand-builds a CP v2 (the DSP readers default
+  every missing field) with lfo1 RETRIG GLOBAL, lfo2 FREE GLOBAL BPM-anchored, lfo3 RETRIG PER NOTE, ENV 2, chaos 1,
+  macro 1, the value source ext1, `use` 32768; 8 payload rows — cls (a linear and a table transfer) on w1 and w2, set
+  (`fenv.a`, `lfo.rate`, `vcf.comp`), fx on wa — and ext1 ← lfo1; the Serum gets the same CP (every oscillator off) so
+  `SD.extIn` and its voices' ext copies run. ≈ 90 spans with notes, `MC.ctl`, a transport, then the per-chunk variant
+  (ext2 ← env2: half off), then `modsOff()` — `restore()` finds `mc` null, `moN / moFN` 0, `c0.mcOn` 0, `nHeld` 0
+  (tested, plus a fresh scope's first Track). **Then the WARM patches twice more on w1**: JSC keeps `AVoice.render`
+  tuned to whichever mode it saw last — with the round last, a PLAIN Juno track ran 3.5× slow (0.05) for 3 s after the
+  warm-up (the reviewer's P2 mirrored); with the plain rounds after it both start fast. jsc shell numbers (the reviewer's
+  rows.json, `scratchpad/fixA/warm2b.js`, M4 Max; loads per second, row − base): a87cec6 row `mc` 0.015 / 0.040 / 0.040 /
+  0.031 / 0.001 … (the pathology); fixed engine `mc` **0.007 / 0.0027 / 0.0022 / 0.002 …**, the plain Juno base
+  **0.0136 from its first second** (0.0129 steady), `mt` 0.001; the scope warm-up 0.36 → **0.71 s** on the jsc shell (the
+  ModCore round ≈ 0.07 s, the repeated WARM rounds ≈ 0.28 s — the lever if the iPad's start-up matters: `warmGraph`'s
+  `round < 2`). N1 holds: every golden shard, canonical-stream and the bench rows unchanged (the sweep below).
+- **Live meters** (lane D's open item): `MC.live` = Float32Array(16), `[lfo 1…10, env 2, 3, 4, 1, chaos 1, 2]`, the last
+  chunk's value of each source slot, 0…1 (a chaos source is bipolar: `(x + 1) / 2`), written per span at no allocation
+  (a processor LFO — kinds K_OFF / K_MONO — and mono chaos from `g[… + nCh − 1]`, per-voice LFOs / chaos and the ENVs
+  from the pseudo-voice's source vector, read at chunk nCh − 1 whether or not it is active; an unreferenced source reads
+  0 — the compile's keep-alive rows make every cabled one referenced). The Track posts **`{ t: 'smon', mc: MC.live }`**
+  at the monitor rate (≈ 30 Hz) while a ModCore exists, for a **`'mods'` id in the monitor subscription**
+  (`{ t: 'mon', ids: [...ids, 'mods'] }` → `Track.mcMon`; the id alone turns the monitor on; `ids: []` off). The host
+  maps modules to entries through the payload's slots (fixer B's `pay.slots`: module id → `{ kind, i }`, i = the slot's
+  index in its kind: lfo i → `mc[i]`, env i (0-based over the ENV_ORDER 2, 3, 4, 1) → `mc[10 + i]`, chaos i →
+  `mc[14 + i]`); fixer C wires the bodies' `update(v)`.
+- **Bench** re-recorded on the merged tree (node v24, M4 Max, one process, 5 × 1 s): mc0 0.0014, mc 0.0025, mt 0.0013,
+  me 0.0011, mk 0.0025, ms 0.0002 (`tests/bench.json` node rows + the `mods2b` note); iPad targets as the perf reviewer
+  recommended: mc0 0.003, mc 0.006, mt 0.004, me 0.004, mk 0.005, ms 0.012 (bench.json + bench-scenarios agree; rows under
+  0.003 are informational on the iPad's 1 ms timer); node targets unchanged; modcore's N4 gate 0.00125 / 0.00236 /
+  0.00123 / 0.00022, classic-mod's mk ratio 1.065, ms 0.025 µs.
+
+**Interfaces for the other fixers.** Fixer C (host): `{ t: 'modsErr', i, key }` → clear `N.modsKey` for track `i` (a
+minimal handler: `if (d.t === 'modsErr') { const N = nodeOf(d.i); if (N && N.modsKey === d.key) N.modsKey = null; }`, so
+the next `postMods` reposts); the live meters: subscribe `'mods'` with the track's monitor ids and read `d.mc`
+(Float32Array(16)) on `smon` messages with no `i` / `c`. Fixer B (compile): expose `pay.slots` (module id → `{ kind, i }`)
+for the mapping above; the set-row `slot` field may stay (ModCore overrides it to −1 for the Inst). Nothing else in the
+payload changed. `MC.stats().us` is gone (`spans` instead) — the fixture check's `stats()` reads `{lfos, envs, rows, ext}`
+only.

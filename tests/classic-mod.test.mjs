@@ -355,3 +355,22 @@ test('N4 row ms: span setters ≤ 1 µs per call per voice (4 envelope fields ×
   t.diagnostic(`row ms: ${best.toFixed(3)} µs per call per voice (calibrated ×${kBest.toFixed(2)})`);
   assert.ok(best <= 1, `ms: ${best.toFixed(3)} µs > 1 µs`);
 });
+
+test('E8: cfgLP (a voice\'s apply) and moChar (the cabled character setter) agree on the ladder\'s 2-pole tap — poles < 3 — so a value between the options resolves alike on a new voice and a running one', () => {
+  const D = fresh('poles'), P = proc(D, patch('jupiter8', { sl: 0 })), I = P.i0;   // (the Jupiter-8's 12 dB slope: poles 2)
+  assert.equal(I.p.vcf.poles, 2);
+  I.modRows([{ field: 'vcf.poles', lo: 2, hi: 4 }]);
+  for (const n of [48, 55]) P.msg({ t: 'on', n, v: 0.8 });
+  run(D, P, 128, null, 0);
+  const v = I.voices.find(x => x.active), f = v.f;
+  assert.ok(f && 'tap2' in f, 'a ladder');
+  for (const [val, tap] of [[2, true], [2.6, true], [2.99, true], [3, false], [3.5, false], [4, false]]) {
+    I.modSpan(null, null, [{ field: 'vcf.poles', v: val }]);
+    assert.equal(f.tap2, tap, `moChar at poles ${val}`);
+    const g = Object.create(Object.getPrototypeOf(f)); g.setRes = () => {}; g.tap2 = !tap;
+    v.cfgLP(g, I.p.vcf, 0.2);   // (AVoice.cfgLP: apply's path for a new voice)
+    assert.equal(g.tap2, tap, `cfgLP at poles ${val}`);
+  }
+  I.modRows(null);
+  assert.equal(I.p.vcf.poles, 2);
+});

@@ -52,27 +52,37 @@
  *                           (a payload with no rows and no per-note ext source never ticks the pseudo-voice: begin alone)
  *                           MC.instRows[inst]   that Inst's payload rows ({…row, slot | field, xfer}) in payload order —
  *                                          the Track hands them to Inst.modRows (lane A2) after setRows, null when gone
- *   MC.stats() → {lfos, envs, rows, ext, us, half}
+ *   MC.live               Float32Array(16): the last chunk's value of the ModCore source slots, [lfo 1…10, env 2, 3, 4, 1,
+ *                         chaos 1, 2], 0…1 (a chaos source is bipolar: (x + 1) / 2), written per span (the Track posts it
+ *                         as {t: 'smon', mc} to a 'mods' monitor subscription: the modules' live meters)
+ *   MC.stats() → {lfos, envs, rows, ext, spans, half}   (spans: the spans evaluated since the payload)
+ *   ModCore.warmPayload(SxBase) → a {t: 'mods'} payload on a hand-built CP (2 GLOBAL LFOs, a PER NOTE LFO, an ENV, chaos,
+ *                         a macro, a value source; cls / set / fx rows, one ext slot) for Track.warmUp's ModCore round
  *
  * Levers (IMPL-2b §9.0 Q4 → N4): the host parks unused LFO slots FREE + MONO (one offSkip per span); rows are read at the
- * span ends only (matrix at chunks 0 and nCh − 1); MC.half (default on): while no ext slot carries a per-note source the
- * pseudo-voice ticks every second chunk (dt doubled, spans with an odd chunk count tick every chunk); with no rows and no
- * per-note ext source it is not ticked at all (MC.pvOn 0: the ext slots read g — begin alone). Nothing allocates
- * in span / noteOn / noteOff / ctl (tests/modcore.test.mjs, the noAlloc technique).
+ * span ends only (matrix at chunks 0 and nCh − 1 — with the mono-context slew convention: the chunk-0 evaluation advances
+ * no slew time (dt 0: the span starts where the last one ended), the span-end one the whole span (dt nCh·dtC), so a
+ * rise / fall row reaches its target in SLEW_T whatever the span length, review E1); MC.half (default on): while no ext
+ * slot carries a per-note source the pseudo-voice ticks every second chunk (dt doubled, spans with an odd chunk count
+ * tick every chunk; the span-end sources are read at chunk nCh − 1 whatever the tick, review E4; a span-parity change
+ * costs one setDt — its lKs refill re-derives the LFO smoothing coefficients, ≈ +10 % on a sequencer splitting spans
+ * 32 / 31, review P6); with no rows and no per-note ext source it is not ticked at all (MC.pvOn 0: the ext slots read g —
+ * begin alone). Nothing allocates in span / noteOn / noteOff / ctl (tests/modcore.test.mjs, the noAlloc technique).
+ * A payload setRows rejects (no cp, a CP the DSP refuses) leaves the previous state untouched (validated before anything
+ * is written, review E6).
  */
 (() => {
   'use strict';
   try {
-    const VER = 1, NEXT = 16, NVAL = 32, MAXCH = 32, NSRC = 78, N_LFO = 10, N_MACRO = 8, MAXFX = 8 + 48 * 24;
+    const VER = 1, NEXT = 16, NVAL = 32, MAXCH = 32, NSRC = 78, N_LFO = 10, N_MACRO = 8, MAXFX = 8 + 48 * 24, NLIVE = 16;
     const S_EXT0 = 62, S_CHAOS1 = 17, S_N_DEF = 32;
     const ESRC = Int8Array.of(2, 3, 4, 34), LSRC = Int8Array.of(5, 6, 7, 8, 9, 10, 11, 12, 35, 36);
     const LYSRC = Int8Array.of(37, 38, 39, 40, 41, 42, 43, 44, 45, 46);
-    const K_VOICE = 0, K_FREE = 2;
+    const K_VOICE = 0, K_FREE = 2, K_MONO = 3;
     // sources whose value lives on the pseudo-voice (never in g): ENV 1–4, velo, note, pat, noise, rand 1/2, alt 1/2,
     // mpe x/y/z, relvel, randd, the audio taps, vidx, vmod 1/2 (per-voice LFOs and per-voice chaos: by the CP, setRows)
     const PER = new Uint8Array(NSRC);
     for (const k of [2, 3, 4, 34, 13, 14, 16, 19, 20, 21, 22, 23, 29, 30, 31, 32, 51, 52, 53, 54, 55, 56, 57, 59, 60, 61]) PER[k] = 1;
-    const now = typeof performance === 'object' && performance !== null && typeof performance.now === 'function' ? () => performance.now() : () => Date.now();
     const clamp01 = x => (x > 0 ? (x < 1 ? x : 1) : 0);     // NaN → 0
     function xorshift(s) { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return s >>> 0; }
     function fnv1a32(str) { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); } return h >>> 0; }
@@ -132,16 +142,20 @@
         this.fxv = Object.create(null); this.fxHi = Object.create(null); this.fxKey = Object.create(null);
         this.clsIds = []; this.fxIds = [];
         this.half = true; this.halfOn = 0; this.pvOn = 0;
-        this.us = 0; this.spans = 0;
+        this.live = new Float32Array(NLIVE); this.spans = 0;
       }
-      /* ---- the payload (allocation here only) ---- */
+      /* ---- the payload (allocation here only; a rejected one leaves the previous state as it was) ---- */
       setRows(m) {
         if (!m || typeof m !== 'object' || !m.cp || typeof m.cp !== 'object') throw new Error('ModCore: no cp');
         const SD = globalThis.SerumDSP, shim = this.shim, sx = this.sx, mod = sx.mod;
         const rows = Array.isArray(m.rows) ? m.rows : [], ext = Array.isArray(m.ext) ? m.ext : [], vals = Array.isArray(m.vals) ? m.vals : null;
         const bpm = fin(m.bpm) && m.bpm > 0 ? +m.bpm : 120;
+        // the CP first: SD.sync refuses before it touches the state (cpOk), so a refusal puts the shim back as it was
+        const p0 = shim.p, ct0 = shim.ct, bpm0 = shim.bpm;
         shim.p = { serum: m.cp, seq: null, bpm }; shim.bpm = bpm;
         shim.ct = m.ct && typeof m.ct === 'object' ? m.ct : null;
+        if (!SD.sync(shim)) { shim.p = p0; shim.ct = ct0; shim.bpm = bpm0; if (this.ok !== 0) sx.ok = 1; throw new Error('ModCore: the CP was rejected'); }
+        this.cp = m.cp;
         // the value table: macros 0–7 as the CP's macro lane (NaN = the CP's own base), 8–31 as ModCore's smoothed inputs
         if (vals) {
           for (let j = 0; j < vals.length; j++) {
@@ -151,8 +165,6 @@
           }
         }
         if (this.ok === 0) this.vS.set(this.vT);                 // (a first payload starts at its values; later ones glide)
-        this.cp = m.cp;
-        if (!SD.sync(shim)) { this.ok = 0; throw new Error('ModCore: the CP was rejected'); }
         // ext slots
         const es = this.extSrc, pk = this.extPerK, vu = this.vUse;
         es.fill(0); vu.fill(0);
@@ -225,7 +237,8 @@
             }
             e.tgt = tg;
             has[e.id] = 1;
-            (instRows[e.id] || (instRows[e.id] = [])).push(Object.assign({}, row, kind === 0 ? { slot } : { field }, { xfer: x }));
+            // (lane B's `slot` is the synthetic matrix slot: a set row must not reach Inst.modRows with it — slot −1, review U3)
+          (instRows[e.id] || (instRows[e.id] = [])).push(Object.assign({}, row, kind === 0 ? { slot } : { slot: -1, field }, { xfer: x }));
           }
           if (src >= S_EXT0) vu[8 + src - S_EXT0] = 1;
           R.push(e);
@@ -268,7 +281,7 @@
       /* ---- the span (no allocation) ---- */
       span(F, n, nCh) {
         if (this.ok === 0) return;
-        const t0 = now(), SD = globalThis.SerumDSP, shim = this.shim, sx = this.sx, m = sx.mod, V = this.V, mv = V.mod;
+        const SD = globalThis.SerumDSP, shim = this.shim, sx = this.sx, m = sx.mod, V = this.V, mv = V.mod;
         SD.begin(shim, n);
         if (sx.ok === 0) return;
         if (nCh > MAXCH) nCh = MAXCH;
@@ -284,8 +297,10 @@
           vS[8 + j] = x;
         }
         // (2) the pseudo-voice: its chunk loop (every second chunk when it feeds no per-chunk target: halfOn), the rows at
-        // the span ends, the per-note ext slots per chunk
-        const half = this.halfOn !== 0 && nCh >= 2 && (nCh & 1) === 0 ? 2 : 1, dt = half * m.dtC;
+        // the span ends (the span-end sources read at chunk nCh − 1 whatever the tick; the slew of a rise / fall row
+        // advanced by the whole span at the end and not at all at chunk 0: the mono-context convention, RXD = this.dt),
+        // the per-note ext slots per chunk
+        const half = this.halfOn !== 0 && nCh >= 2 && (nCh & 1) === 0 ? 2 : 1, dt = half * m.dtC, dtS = nCh * m.dtC, cE = nCh - 1;
         if (mv.dt !== dt) mv.setDt(dt, true);
         const R = this.rows, nR = R.length, off = mv.off, O0 = this.off0, ext = this.ext, es = this.extSrc, pk = this.extPerK, npk = this.extPerN, vs = mv.src;
         let act = V.active, wrote = 0;
@@ -293,8 +308,8 @@
           const last = c + half >= nCh, fr = (c + half) / nCh;
           if (act && !V.gate && V.fresh === 0 && mv.envsIdle()) { V.active = false; act = false; mv.stop(); }
           if (act) mv.follow(fr);
-          if (act || c === 0 || last) mv.sources(c);
-          if (c === 0 || last) { mv.matrix(fr); if (c === 0) for (let r = 0; r < nR; r++) O0[r] = off[R[r].vi]; }
+          if (act || c === 0 || last) mv.sources(last ? cE : c);
+          if (c === 0 || last) { mv.dt = last ? dtS : 0; mv.matrix(fr); mv.dt = dt; if (c === 0) for (let r = 0; r < nR; r++) O0[r] = off[R[r].vi]; }
           if (act) {
             mv.advance(c); V.fresh = 0;
             if (npk !== 0) { for (let j = 0; j < npk; j++) { const k = pk[j]; ext[k * MAXCH + c] = vs[es[k]]; } wrote = c + 1; }
@@ -309,6 +324,13 @@
           for (let c = 0; c < nCh; c++) ext[o + c] = g[gs + c];
         }
         if (npk !== 0) for (let j = 0; j < npk; j++) { const k = pk[j], x = vs[es[k]], o = k * MAXCH; for (let c = wrote; c < nCh; c++) ext[o + c] = x; }
+        // the live meters: the last chunk of every source slot — a processor LFO (kinds K_OFF / K_MONO: odd) / mono chaos
+        // from g, a per-voice one and the ENVs from the pseudo-voice's source vector (its last read: chunk nCh − 1,
+        // whether or not it is active; a per-voice source is only ever read when the pseudo-voice runs, pvOn)
+        const LV = this.live, lk = m.lKind, ev = mv.eV;
+        for (let l = 0; l < N_LFO; l++) { const s = LSRC[l]; LV[l] = (lk[l] & 1) !== 0 ? g[s * MAXCH + cE] : vs[s]; }
+        LV[10] = ev[1]; LV[11] = ev[2]; LV[12] = ev[3]; LV[13] = ev[0];
+        for (let k = 0; k < 2; k++) { const s = S_CHAOS1 + k, x = m.chaosMono[k] !== 0 ? g[s * MAXCH + cE] : vs[s]; LV[14 + k] = 0.5 * (x + 1); }
         // (4) the rows: the sums per target, then slot offsets (start / end) and setter values through the transfer,
         // FX-context offsets as they are
         const TG = this.tgts, nT = TG.length, C0 = this.cls0, C1 = this.cls1, ids = this.clsIds;
@@ -327,7 +349,6 @@
           if (tg.kind === 0) { C0[tg.id][tg.slot] += xf(tg, clamp01(tg.x0 + tg.s0)) - tg.t0; C1[tg.id][tg.slot] += d1; } else tg.fe.v += d1;
         }
         this.spans++;
-        this.us = (now() - t0) * 1000;
       }
       stats() {
         const m = this.sx.mod;
@@ -336,8 +357,52 @@
           for (let l = 0; l < N_LFO; l++) if ((m.lUse & (1 << l)) !== 0) lfos++;
           for (let e = 0; e < 4; e++) if (m.srcUsed[ESRC[e]] !== 0) envs++;
         }
-        return { lfos, envs, rows: this.rows.length, ext: this.extN, us: this.us, half: this.halfOn };
+        return { lfos, envs, rows: this.rows.length, ext: this.extN, spans: this.spans, half: this.halfOn };
       }
+    }
+    // Track.warmUp's ModCore round (review P2): a payload on a hand-built CP v2 (the readers default every missing field) —
+    // lfo1 RETRIG GLOBAL, lfo2 FREE GLOBAL BPM-anchored, lfo3 RETRIG PER NOTE, ENV 2, chaos 1 (mono), macro 1, the value
+    // source ext1; rows into scratch V-scope destinations with a curve, a slew and a bipolar one; cls rows (a linear and a
+    // table transfer) on two Insts, set rows (an envelope time, lfo.rate, a filter character), an fx row, ext1 ← lfo1
+    // (+ ext2 ← env2 for the per-chunk variant, `perNote`). B = SxBase (the destination / source indices, NSV)
+    function warmPayload(B, perNote) {
+      const D = B.DIDX2, NSV = B.NSV, NROW = 64, U8 = n => new Uint8Array(n), F64 = n => new Float64Array(n);
+      const base = F64(NSV);
+      base[D.L1_RATE] = 0.45; base[D.L2_RATE] = 0.4; base[D.L3_RATE] = 0.5; base[D.L3_SMOOTH] = 0.2;
+      base[D.E2_ATT] = 0.1; base[D.E2_DEC] = 0.4; base[D.E2_SUS] = 0.7; base[D.E2_REL] = 0.3;
+      base[D.C1_RATE] = 0.5; base[D.G_AMP] = 1;
+      // rows: [src, dst, amt, bi, curve, rise, fall]
+      const S_LFO1 = 5, S_ENV2 = 3, S_VELO = 13, S_MACRO1 = 24, rows = [
+        [S_LFO1, D.A_PAN, 0.5, 0, 0, 0, 0], [S_LFO1 + 1, D.A_LEVEL, 0.5, 0, 0.4, 0, 0], [S_ENV2, D.B_LEVEL, 1, 0, 0, 0.2, 0.2],
+        [S_VELO, D.A_WT, 1, 0, 0, 0, 0], [S_CHAOS1, D.B_PAN, 0.3, 1, 0, 0, 0], [S_EXT0, D.A_WARP, 0.5, 0, 0, 0, 0],
+        [S_MACRO1, D.B_WT, 1, 0, 0, 0, 0], [S_LFO1 + 2, D.A_FINE, 0.5, 0, 0, 0, 0]];
+      const nr = rows.length, mSrc = new Int8Array(NROW), mDst = new Int16Array(NROW), mAmt = F64(NROW), mBi = U8(NROW), mK = F64(NROW);
+      const mRise = F64(NROW), mFall = F64(NROW), mCtx = U8(NROW), srcUsed = U8(NSRC), modded = U8(NSV);
+      for (let q = 0; q < nr; q++) {
+        const w = rows[q];
+        mSrc[q] = w[0]; mDst[q] = w[1]; mAmt[q] = w[2]; mBi[q] = w[3]; mK[q] = 6 * w[4]; mRise[q] = w[5]; mFall[q] = w[6]; mCtx[q] = 1;
+        srcUsed[w[0]] = 1; modded[w[1]] = 1;
+      }
+      const lfoLad = F64(N_LFO * 43);
+      for (let l = 0; l < N_LFO; l++) for (let j = 0; j < 15; j++) lfoLad[l * 43 + j] = 128 * Math.pow(2, -j);
+      const cp = { ver: 2, NSV, NSRC, NROW, base, mN: nr, mSrc, mDst, mAmt, mBi, mK, mAux: new Int8Array(NROW), mInv: U8(NROW), mCtx, mOn: U8(NROW),
+        mRise, mFall, srcUsed, modded, use: 32768, wt: ['', '', ''], outMask: 1,
+        lfoMode: Uint8Array.from([0, 2, 0, 2, 2, 2, 2, 2, 2, 2]), lfoMono: Uint8Array.from([1, 1, 0, 1, 1, 1, 1, 1, 1, 1]),
+        lfoBpm: Uint8Array.from([0, 1, 0, 0, 0, 0, 0, 0, 0, 0]), lfoAnchor: Uint8Array.from([0, 1, 0, 0, 0, 0, 0, 0, 0, 0]), lfoLad, lfoLadN: U8(N_LFO).fill(15),
+        chaosMono: Uint8Array.from([1, 0]), chaosSh: Uint8Array.from([0, 1]), macro: F64(N_MACRO).fill(0.5),
+        mono: 0, legato: 0, poly: 1, always: 0, scaled: 0, oneNote: 1, os: 1, s1: 0, smooth: 1, ctKey: '' };
+      const tab = F64(129), tabT = F64(129);
+      for (let i = 0; i <= 128; i++) { tab[i] = 2 * Math.pow(i / 128, 2); tabT[i] = 0.0015 * Math.pow(2000, i / 128); }
+      return { t: 'mods', bpm: 120, cp, ct: null, vals: [{ k: 0, src: S_MACRO1, v: 0.5, id: 'm1.k1' }, { k: 8, src: S_EXT0, v: 0.3, id: 'c1.out' }], keep: [],
+        ext: perNote ? [{ k: 1, src: S_LFO1 }, { k: 2, src: S_ENV2 }] : [{ k: 1, src: S_LFO1 }],
+        rows: [{ id: 'w0', src: S_LFO1, vi: D.A_PAN, dst: { kind: 'cls', inst: 'w1', slot: 0 }, xfer: { a: 0, b: 2, x0: 0.5 } },
+          { id: 'w1', src: S_LFO1 + 1, vi: D.A_LEVEL, dst: { kind: 'cls', inst: 'w1', slot: 3 }, xfer: { tab, x0: 0.3 } },
+          { id: 'w2', src: S_ENV2, vi: D.B_LEVEL, dst: { kind: 'set', inst: 'w1', field: 'fenv.a' }, xfer: { tab: tabT, x0: 0.05 } },
+          { id: 'w3', src: S_VELO, vi: D.A_WT, dst: { kind: 'set', inst: 'w1', field: 'lfo.rate' }, xfer: { a: 0.1, b: 10, x0: 0.5 } },
+          { id: 'w4', src: S_CHAOS1, vi: D.B_PAN, dst: { kind: 'fx', chain: 'wa', fx: 0 } },
+          { id: 'w5', src: S_EXT0, vi: D.A_WARP, dst: { kind: 'cls', inst: 'w1', slot: 12 }, xfer: { a: 0, b: 0.5, x0: 0 } },
+          { id: 'w6', src: S_MACRO1, vi: D.B_WT, dst: { kind: 'set', inst: 'w1', field: 'vcf.comp' }, xfer: { a: 0, b: 0.5, x0: 0.3 } },
+          { id: 'w7', src: S_LFO1 + 2, vi: D.A_FINE, dst: { kind: 'cls', inst: 'w2', slot: 1 }, xfer: { a: 0, b: 1, x0: 0.5 } }] };
     }
     // the transfer T over the knob's mod space 0…1: a + b·x, or the 129-point table (linear interpolation, clamped)
     function xf(e, x) {
@@ -351,7 +416,7 @@
     }
     function create(T, base, sN) { return new ModCore(T, base, sN); }
 
-    globalThis.ModCore = Object.freeze({ VER, NEXT, NVAL, create, ModCore, PseudoVoice });
+    globalThis.ModCore = Object.freeze({ VER, NEXT, NVAL, NLIVE, create, warmPayload, ModCore, PseudoVoice });
   } catch (err) {
     globalThis.ModCore = null;                                  // a load failure never throws out of the script
     if (typeof console !== 'undefined') console.error('mod-core: load failed', err);

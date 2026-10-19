@@ -400,7 +400,7 @@ class AVoice {
   rnd01() { return (this.rnd() + 1) * 0.5; }
   cfgLP(f, c, res) {
     f.setRes(res);
-    if (f instanceof Ladder) { f.comp = c.comp || 0; f.fbSat = c.fbSat || 0; f.tap2 = c.poles === 2; }
+    if (f instanceof Ladder) { f.comp = c.comp || 0; f.fbSat = c.fbSat || 0; f.tap2 = c.poles < 3; } // (< 3 as moChar: a cabled value between the options resolves alike, review E8)
     if (f instanceof SVF) { f.mode = c.mode === undefined ? 0 : c.mode; f.morph = c.morph || 0; f.sat = c.sat || 0.5; }
     if (f instanceof SKLow) f.clip = c.clip || 1.6;
   }
@@ -2309,8 +2309,8 @@ class Inst {
   // itself). The rack's RETRIG modules restart at every voice note-on (§8.1). a: a preview (R7 B5, poly): its own voice
   // (sxAud), never one the allocator would take from the song or the keys; its note-off (a 1 / 2, noteOff) as sxOff
   sxNote(on, n, vel, ch, x, y, z, gen, a) {
-    const vs = this.voices;
-    if (!on) { this.sxOff(n, vel, ch, a); return; }
+    const vs = this.voices, MC = gen ? this.T.mc : null;
+    if (!on) { this.sxOff(n, vel, ch, a); if (MC !== null) MC.noteOff(n, this.genOn(null)); return; } // (a generated note's off: review E5)
     if (this.rack) this.rack.trigger();
     if (!vs || !vs.length) return; // SerumDSP missing: a silent track
     if (this.sxW) { const SD = globalThis.SerumDSP; if (SD) SD.warmEnd(this); this.sxW = 0; } // real notes now
@@ -2321,6 +2321,7 @@ class Inst {
       h.push(n); hc.push(c);
       if (gen) he.push(1, x, y, z); else he.push(0, 0, 0, 0);
       this.monoPlay(vel, true);
+      if (MC !== null) MC.noteOn(n, vel, this.genOn(null) - 1, c);
       return;
     }
     const SD = globalThis.SerumDSP, nUse = this.sxUse < vs.length ? this.sxUse : vs.length;
@@ -2344,6 +2345,17 @@ class Inst {
     if (gen) { ex = this.sxExA[vc.i >= 0 && vc.i < SXV ? vc.i : 0]; ex[0] = x; ex[1] = y; ex[2] = z; }
     if (c === 0 && ex === null) vc.noteOn(n, vel, false, 1);
     else vc.noteOn(n, vel, false, 1, c, ex);
+    // (IMPL-2b review E5: a generated note — the ARP's, a clip's — gates the track's pseudo-voice with the OTHER generated
+    // notes sounding as its held count: a step restarts it when none is, legato over a chord's notes; its note-off releases
+    // it when it was the last)
+    if (MC !== null) MC.noteOn(n, vel, this.genOn(vc), c);
+  }
+  // the generated notes sounding (gated voices with an expression record; mono: the held entries flagged gen), except x
+  genOn(x) {
+    let k = 0;
+    if (this.p.mode !== 'poly') { const he = this.heldE; for (let i = 0; i < he.length; i += 4) if (he[i] === 1) k++; return k; }
+    for (const v of this.voices) if (v !== x && v.gate && v.ex !== null) k++;
+    return k;
   }
   // Serum note-off (rv = release velocity): mono as Phase 1; poly releases the gated voices of (note, channel) its owner
   // holds (a as noteOff: 0 the song / keys, 1 a preview, 2 a preview whose note the song does not hold)
@@ -2527,30 +2539,33 @@ class Inst {
     if ((!q.run && wasRun) || (!q.sync && wasSync)) this.seqRelease();
     if (q.sync && !wasSync) q.syncStep = null;
   }
+  // (IMPL-2b review E5: the steps gate the track's pseudo-voice too — a tied step legato, a struck one a restart, a rest /
+  // the gate-off a release unless the player holds keys — so a track ENV / PER NOTE LFO / velo / note on a 303 knob follows
+  // the pattern)
   seqRelease() {
-    const q = this.sq;
-    if (q && q.cur >= 0 && this.voices) this.noteOff(q.cur);
+    const q = this.sq, MC = this.T.mc;
+    if (q && q.cur >= 0 && this.voices) { this.noteOff(q.cur); if (MC !== null) MC.noteOff(q.cur, this.T.nHeld); }
     if (q) { q.cur = -1; q.tie = false; q.syncStep = null; }
   }
   seqFire(step) {
-    const q = this.sq;
+    const q = this.sq, MC = this.T.mc;
     const s = q.pat[step];
     if (s && s.g) {
       const n = q.root + s.n + 12 * s.o;
       const vel = s.a ? 1 : 0.62;
       const legato = q.tie && q.cur >= 0;
-      if (legato) { for (const v of this.voices) v.noteOn(n, vel, true, this.glc(true)); this.held = [n]; }
-      else { if (q.cur >= 0) this.noteOff(q.cur); this.noteOn(n, vel); }
+      if (legato) { for (const v of this.voices) v.noteOn(n, vel, true, this.glc(true)); this.held = [n]; if (MC !== null) MC.noteOn(n, vel, 1, 0); }
+      else { if (q.cur >= 0) { this.noteOff(q.cur); if (MC !== null) MC.noteOff(q.cur, 0); } this.noteOn(n, vel); if (MC !== null) MC.noteOn(n, vel, 0, 0); }
       q.cur = n; q.tie = !!s.s;
     } else {
-      if (q.cur >= 0) this.noteOff(q.cur);
+      if (q.cur >= 0) { this.noteOff(q.cur); if (MC !== null) MC.noteOff(q.cur, this.T.nHeld); }
       q.cur = -1; q.tie = false;
     }
     this.port.postMessage(this.T.graphed === 1 ? { t: 'step', s: step, i: this.id } : { t: 'step', s: step });
   }
   seqGateOff() {
-    const q = this.sq;
-    if (q.cur >= 0 && !q.tie) { this.noteOff(q.cur); q.cur = -1; }
+    const q = this.sq, MC = this.T.mc;
+    if (q.cur >= 0 && !q.tie) { this.noteOff(q.cur); if (MC !== null) MC.noteOff(q.cur, this.T.nHeld); q.cur = -1; }
   }
   seqEvents(F) { // returns frames until the next sequencer event
     const q = this.sq;
@@ -2910,8 +2925,9 @@ class Track extends Facade {
     this.holdR = new Uint8Array(NK); this.holdP = new Int16Array(MAX_I * NK); this.holdV = new Float64Array(NK);
     this.slots = [null, null, null, null, null, null, null, null]; this.wI = null; this.wC = null;
     // IMPL-2b §2.4: the track's controller state (what the broadcasts and the song cc lanes write into every Inst; ModCore's
-    // shim reads them), the keys the player holds (ModCore's legato / last-release rule), the ModCore (null: no rows)
-    this.wheel = 0; this.at = 0; this.bendRaw = 0; this.nHeld = 0; this.mc = null;
+    // shim reads them), the keys the player holds that an Inst took (holdM, counted in nHeld: ModCore's legato /
+    // last-release rule, review E2), the ModCore (null: no rows), its live meters subscribed (mcMon: a 'mods' monitor id)
+    this.wheel = 0; this.at = 0; this.bendRaw = 0; this.nHeld = 0; this.holdM = new Uint8Array(NK); this.mc = null; this.mcMon = false;
     this.c0 = new Chain(this.base); this.chains = [this.c0];
     this.i0 = new Inst(this, po.os || 4, this.c0); this.insts = [this.i0];
     this.legacy(this.i0, this.c0);
@@ -2994,8 +3010,36 @@ class Track extends Facade {
     run(20);
     this.power(x2, 0); run(4); this.power(x2, 1); run(10);
     this.noteOff(48); this.noteOff(55); this.noteOff(31); run(4);
+    this.warmMods(run, x3);
+    // the WARM patches twice more on w1 after the ModCore round: JSC keeps AVoice.render tuned to whichever mode it saw
+    // last (cabled slots moving every span, or not) and runs the other one ≈ 3.5× slow for 3 s — the reviewer's P2 on a
+    // first cabled track, a plain track's first seconds after the round without this (scratchpad warm2b.js: with it both
+    // start within 2.5× for one second; + 0.2 s of warm-up)
+    for (let round = 0; round < 2; round++) for (const w of WARM) { this.patchI(x1, w); this.noteOn(48, 0.9); this.noteOn(67, 0.6); run(30); this.noteOff(48); this.noteOff(67); run(10); }
     this.graphMsg({ t: 'graph', insts: [{ id: 'w1', on: true, zone: z, salt: 0 }], chains: [{ id: 'wa' }], edges: e1, out: 'out' });
     run(6);
+  }
+  // IMPL-2b review P2: the ModCore paths once, on the warm graph (w1 / w2 classic, w3 the Serum, the panel wa): a hand-built
+  // payload (ModCore.warmPayload — 2 GLOBAL LFOs, a PER NOTE LFO, an ENV, chaos, a macro, a value source; cls / set / fx
+  // rows, ext1 ← lfo1) through modsMsg: begin on the shim, the pseudo-voice (follow / sources / matrix / advance on its own
+  // receiver shape), the rows' transfers, Inst.modSpan / moApply / moRestore / moFields with their setters, chainMods /
+  // setMods, SD.extIn into the Serum (given the same CP: ext use, every oscillator off) — ≈ 90 spans with notes, the
+  // value table, a transport; then the per-chunk variant (an ENV on an ext slot: every chunk, half off); then the ModCore
+  // dropped (modsOff) — restore() finds nothing of it (the warm graph goes with it). Bounded; a failure only costs speed
+  warmMods(run, sx) {
+    const MCM = globalThis.ModCore, B = globalThis.SxBase;
+    if (!MCM || !B || typeof MCM.warmPayload !== 'function') return;
+    const pay = MCM.warmPayload(B, false);
+    if (sx !== null) this.patchI(sx, { engine: 'serum', mode: 'poly', poly: 2, level: 0.31, serum: pay.cp });
+    this.modsMsg(pay);
+    const MC = this.mc;
+    if (MC === null) return;
+    this.noteOn(52, 0.8); run(20); this.noteOn(59, 0.6); run(10);
+    MC.ctl(0, 0.9); MC.ctl(8, 0.7); MC.transport(true); run(10); MC.transport(false);
+    this.noteOff(52); run(5); this.noteOff(59); run(15);
+    this.modsMsg(MCM.warmPayload(B, true));
+    this.noteOn(55, 0.7); run(20); this.noteOff(55); run(10);
+    this.modsOff();
   }
   // back to the freshly built state after the warm-up (Inst.restore: in place), in the legacy structure
   restore(os) {
@@ -3003,8 +3047,8 @@ class Track extends Facade {
     this.loadT = 0; this.statN = 0; this.c0.t = 0; this.c0.mon = false;
     this.lim.reset(); this.dcx.fill(0); this.dcy.fill(0);
     this.mon = false; this.monF = 0; this.spanF = 0; this.pnN = 0; this.extN = 0; this.inSpan = 0; this.frames = 0;
-    this.nOnK = 0; this.holdR.fill(0); this.holdV.fill(0);
-    this.wheel = 0; this.at = 0; this.bendRaw = 0; this.nHeld = 0; this.mc = null;
+    this.nOnK = 0; this.holdR.fill(0); this.holdV.fill(0); this.holdM.fill(0);
+    this.wheel = 0; this.at = 0; this.bendRaw = 0; this.nHeld = 0; this.mc = null; this.mcMon = false; this.c0.mcOn = 0;
     this.i0.restore(os);
   }
   msg(d) {
@@ -3068,8 +3112,11 @@ class Track extends Facade {
     return this.c0.rack;
   }
   // {t: 'mods', cp, ct, rows, xfer, ext, vals, keep, bpm} (IMPL-2b §2.2): the track's ModCore takes the payload (built on
-  // the first one); {off: true}, an empty payload (no rows, no ext) or one it rejects → no ModCore (N1: nothing on the audio
-  // path). Leaving: every Serum's ext rows and own-FX sums are cleared, every cabled panel's rack unmodulated next span
+  // the first one); {off: true}, an empty payload (no rows, no ext) → no ModCore (N1: nothing on the audio path). A payload
+  // the ModCore rejects (no cp, a CP the DSP refuses) is reported as {t: 'modsErr', i, key} — the host clears its posted
+  // key and may repost — and leaves what was there: the previous rows keep running (setRows validates before it writes,
+  // review E6), a first payload builds nothing. Leaving: every Serum's ext rows and own-FX sums are cleared, every cabled
+  // panel's rack unmodulated next span
   modsMsg(d) {
     const MCM = globalThis.ModCore;
     const empty = !d || d.off === true || !MCM || ((!Array.isArray(d.rows) || d.rows.length === 0) && (!Array.isArray(d.ext) || d.ext.length === 0));
@@ -3078,7 +3125,11 @@ class Track extends Facade {
     try {
       if (MC === null) MC = MCM.create(this, this.base, S_N);
       MC.setRows(d);
-    } catch (err) { this.modsOff(); return; }  // (a malformed payload: ignored, as any protocol error)
+    } catch (err) {
+      if (this.mc === null || this.mc.ok === 0) this.modsOff();
+      this.port.postMessage({ t: 'modsErr', i: typeof d.i === 'string' ? d.i : this.trackId, key: typeof d.key === 'string' ? d.key : '' });
+      return;
+    }
     this.mc = MC;
     this.handRows(MC);
   }
@@ -3109,15 +3160,16 @@ class Track extends Facade {
   // 'iN/fx' a Serum's own FX, a panel)
   watch(all, ids) {
     const has = id => all || (Array.isArray(ids) && ids.indexOf(id) >= 0);
+    this.mcMon = has('mods'); // (the modulator modules' meters, IMPL-2b review: {t: 'smon', mc} while a ModCore exists)
     if (this.graphed === 0) {
       const I = this.i0, c = this.c0;
       I.mon = has(I.id); c.mon = has(c.id);
-      this.mon = I.mon || c.mon; this.monF = 0;
+      this.mon = I.mon || c.mon || this.mcMon; this.monF = 0;
       if (I.sx) I.sx.mon = I.mon ? 1 : 0;
       if (this.mon) this.postMon();
       return;
     }
-    let m = false;
+    let m = this.mcMon;
     for (const I of this.insts) {
       I.mon = has(I.id); I.fxc.mon = I.kind === 'serum' && has(I.fxc.id);
       if (I.sx) I.sx.mon = I.mon ? 1 : 0;
@@ -3365,14 +3417,16 @@ class Track extends Facade {
   // ext / live note. The receivers and their pitches are kept per held key: a note-off reaches exactly them, whatever the
   // zones are now. aud (a preview) targets one Inst: i, else insts[0]
   // IMPL-2b §2.4: ModCore hears every note a powered Inst took, with the count of the OTHER keys the player holds (its
-  // legato / last-release rule; nHeld follows holdV: the recorded keys, previews excluded)
+  // legato / last-release rule; nHeld counts the recorded keys an Inst TOOK — holdM — previews excluded: a key outside
+  // every zone neither holds the gate nor makes the next note legato, and its note-off reaches ModCore when it was
+  // counted, review E2)
   noteOn(n, v, ch, ext, aud, i) {
     const k = n >= 0 && n <= 127 && n === Math.floor(n) ? (ch > 0 && ch <= 16 ? ch | 0 : 0) * 128 + n : -1;
-    const MC = this.mc, rec = k >= 0 && !aud, was = rec && this.holdV[k] > 0 ? 1 : 0;
+    const MC = this.mc, rec = k >= 0 && !aud;
     if (this.graphed === 0) {
       this.i0.noteOn(n, v, ch, ext, aud);
-      if (rec) { this.holdR[k] = 1; this.holdP[k] = n; this.holdV[k] = v > 0 ? v : 0; this.nHeld += (v > 0 ? 1 : 0) - was; }
-      if (MC !== null) MC.noteOn(n, v, this.nHeld - (rec && v > 0 ? 1 : 0), ch);
+      if (rec) { this.holdR[k] = 1; this.holdP[k] = n; this.holdV[k] = v > 0 ? v : 0; this.holdCount(k, v > 0 ? 1 : 0); }
+      if (MC !== null) MC.noteOn(n, v, this.nHeld - (rec ? this.holdM[k] : 0), ch);
       return;
     }
     if (aud) { const x = this.instOf(i); if (x !== null && x.on === 1) { x.noteOn(n, v, ch, ext, aud); if (MC !== null) MC.noteOn(n, v, this.nHeld, ch); } return; }
@@ -3390,13 +3444,15 @@ class Track extends Facade {
       const c = x.feed;
       if (c !== null && c.drive === 1 && c.rack !== null) c.rack.trigger(); // (Hyper RETRIG of a panel no Inst holds)
     }
-    this.holdR[k] = bits; this.holdV[k] = v > 0 ? v : 0; this.nHeld += (v > 0 ? 1 : 0) - was;
-    if (MC !== null && took === 1) MC.noteOn(n, v, this.nHeld - (v > 0 ? 1 : 0), ch);
+    this.holdR[k] = bits; this.holdV[k] = v > 0 ? v : 0; this.holdCount(k, took === 1 && v > 0 ? 1 : 0);
+    if (MC !== null && took === 1) MC.noteOn(n, v, this.nHeld - this.holdM[k], ch);
   }
+  // key k counted in nHeld (c 1) or not (c 0)
+  holdCount(k, c) { const was = this.holdM[k]; if (c !== was) { this.holdM[k] = c; this.nHeld += c - was; } }
   noteOff(n, rv, ch, ext, aud, i) {
     const k = n >= 0 && n <= 127 && n === Math.floor(n) ? (ch > 0 && ch <= 16 ? ch | 0 : 0) * 128 + n : -1;
-    const MC = this.mc;
-    if (k >= 0 && !aud && this.holdV[k] > 0) this.nHeld--;
+    const MC = this.mc, cnt = k >= 0 && !aud ? this.holdM[k] : 0;
+    if (cnt !== 0) this.holdCount(k, 0);
     if (this.graphed === 0) {
       this.i0.noteOff(n, rv, ch, ext, aud);
       if (k >= 0 && !aud) { this.holdR[k] = 0; this.holdV[k] = 0; }
@@ -3415,7 +3471,7 @@ class Track extends Facade {
       const m = n + x.zxp; // (a key with no record — struck before the graph took its note-on: the zones as they are now)
       if (x.on === 1 && n >= x.zlo && n <= x.zhi && m >= 0 && m <= 127) { x.noteOff(m, rv, ch, ext, 0); got = 1; }
     }
-    if (MC !== null && got === 1) MC.noteOff(n, this.nHeld);
+    if (MC !== null && (got === 1 || cnt !== 0)) MC.noteOff(n, this.nHeld);
   }
   // R7 B5: the song holds note n (its note-off is still due)
   songHas(n) { const on = this.seqOn; for (let i = 0; i < on.length; i += 2) if (on[i] === n) return true; return false; }
@@ -3425,7 +3481,7 @@ class Track extends Facade {
     const I = this.insts, D = this.dyI;
     for (let k = 0; k < I.length; k++) { const x = I[k]; x.allOff(true); if (x.sq) x.sq.run = false; }
     for (let k = 0; k < D.length; k++) D[k].allOff(true);
-    this.seqOn = []; this.extN = 0; this.holdR.fill(0); this.holdV.fill(0); this.nHeld = 0;
+    this.seqOn = []; this.extN = 0; this.holdR.fill(0); this.holdV.fill(0); this.holdM.fill(0); this.nHeld = 0;
     if (this.mc !== null) this.mc.noteOff(0, 0);
     let quiet = D.length === 0 && this.dyC.length === 0;
     for (let k = 0; k < I.length; k++) { const x = I[k]; x.panicSx(); if (!x.isQuiet()) quiet = false; }
@@ -3788,7 +3844,7 @@ class Track extends Facade {
         if (MC.extN !== 0) { const cp = x.p.serum; if (cp && (cp.use & 32768) !== 0) SD.extIn(x, MC.ext, nCh); }
         const v = MC.fxv[x.fxc.id];
         if (v !== undefined) { sx.mcFx = v; sx.mcHi = MC.fxHi[x.fxc.id]; } else if (sx.mcFx !== null) { sx.mcFx = null; sx.mcHi = 0; }
-      } else if (MC.has[x.id] === 1 && typeof x.modSpan === 'function') x.modSpan(MC.cls0[x.id], MC.cls1[x.id], MC.setv[x.id]);
+      } else if (MC.has[x.id] === 1) x.modSpan(MC.cls0[x.id] || null, MC.cls1[x.id] || null, MC.setv[x.id] || null); // (null, never undefined: modSpan's argument sniff is for callers, review E7)
     }
   }
   // a panel's rack: ModCore's FX-context vector for this span (the layout key the rows were compiled against: a stale key
@@ -3846,13 +3902,15 @@ class Track extends Facade {
       I.mixPk.fill(0);
       const ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null;
       this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
+      if (this.mcMon && this.mc !== null) this.port.postMessage({ t: 'smon', mc: this.mc.live });
       return;
     }
     for (const I of this.insts) {
       const sx = I.kind === 'serum', r = sx ? I.rack : null;
       if (I.mon) {
-        // (IMPL-2b §2.4: a classic Inst with cables posts its modulated values in engine units, Inst.modEff — lane A2)
-        const s = SD && sx && I.sx ? SD.snapshot(I) : !sx && this.mc !== null && I.moN > 0 && typeof I.modEff === 'function' ? { eff: I.modEff() } : null;
+        // (IMPL-2b §2.4: a classic Inst with cables — slot rows or span-setter rows, review E3 — posts its modulated values
+        // in engine units, Inst.modEff — lane A2)
+        const s = SD && sx && I.sx ? SD.snapshot(I) : !sx && this.mc !== null && (I.moN > 0 || I.moFN > 0) ? { eff: I.modEff() } : null;
         if (s && s.mix && s.mix.length >= 11) {
           const pk = I.mixPk;
           for (let k = 0; k < 4; k++) s.mix[7 + k] = pk[k] > 1e-6 ? 20 * Math.log10(pk[k]) : -120;
@@ -3870,6 +3928,10 @@ class Track extends Facade {
       const r = c.rack, ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null;
       this.port.postMessage({ t: 'smon', c: c.id, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
     }
+    // the modulator modules' live meters (IMPL-2b review, lane D's open item): ModCore's source slots, [lfo 1…10, env 2, 3,
+    // 4, 1, chaos 1, 2] 0…1, for a 'mods' monitor subscription ({t: 'mon', ids: [… 'mods']}); the host maps modules to
+    // entries through the payload's slots
+    if (this.mcMon && this.mc !== null) this.port.postMessage({ t: 'smon', mc: this.mc.live });
   }
   // output stage: DC block, stereo-linked peak limiter, final safety clip
   outStage(Lo, Ro, off, n) {
