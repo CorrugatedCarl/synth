@@ -39,32 +39,96 @@
 //                            chains  { id: FX state } (a panel's state, or its single rack as a Main rack: fxOfPanel)
 //   saltOf(id, prim)       an Inst's seed salt: 0 for the primary, else (devNum(id) * 0x9E3779B9) >>> 0 (§6.2.1)
 //   zoneOf(dev)            { lo, hi, xp } (absent: 0…127, 0)          devNum('fx12') → 12
-//   instPatch(dev, opts, rows)  one Inst's patch ({t: 'patch', i, p}): patchFor of the instrument with its own FX (a Serum)
-//                          or an empty rack, a classic one without fxr / fxrT (its sound goes to the shared chains); a
-//                          Serum with its track's mod rows (modRowsFor) injected (stage 2a)
+//   instPatch(dev, opts, rows, ext, track)  one Inst's patch ({t: 'patch', i, p}): patchFor of the instrument with its own
+//                          FX (a Serum) or an empty rack, a classic one without fxr / fxrT (its sound goes to the shared
+//                          chains); a Serum with its track's mod rows (modRowsFor) injected (2a; 2b: ext and slot rows
+//                          with the track's compileMods ext list and the track — opts.ext set for patchFor only then)
+//   chainPatch(fx, opts)   one shared chain ({t: 'chain', c, fxr, fxrT}): patchFor's rack compile for a classic track (no
+//                          Serum gains), so a canonical classic track's chain is its legacy patch's rack (2b: unchanged —
+//                          a cabled chain takes its vector from ModCore at run time, IMPL-2b §4)
 // Stage 2a (IMPL-2a §2.1, SPEC §7.7 items 1–2, D11): the canvas mod cables of a track (track.mods rows, cv-mods.js) compile
 // into each Serum's own matrix at compile time — vals.s is never mutated, so a preset load keeps every cable:
 //   modRowsFor(track, devId)  the rows whose dst names device devId ('<devId>:<param>'), in track.mods order
-//   nativeRow(row)            the Serum row a canvas row compiles to (src wheel / velo / at / bend, dst the param id, the
-//                             other fields through serum-core normRow), or null (an unknown source, a refused field)
-//   injectMods(dev, rows)     { s, placed: [{ id, slot }], left: [ids] }: no rows (or none placed) → dev.vals.s itself (the
-//                             compile is byte-identical); else a shallow copy of s whose matrix (a copied 64-slot array)
-//                             holds each row, in order, in the first free slot (src '': serum-core freeSlot's rule) — so
-//                             buildSerumT keys its custom curve 'crv<slot>' and mSlot / slew / mOut work per slot as
-//                             today. left: the rows that found no free slot (not compiled: "mod rows are full (64/64)").
-//                             A row keeps the slot it last took while that slot is free (per device: its vals object,
-//                             which undo / redo and preset loads keep; review H5) — removing an earlier row or a native
-//                             row in another's slot moves no other row (per-slot slew / mOut state stays put)
-//   modBudget(track, dev)     { preset, canvas, left, max: 64 }: the slots the Serum's own rows hold, the canvas rows
-//                             placed, the ids left out (dev: a device id or object) — "23/64" = preset + canvas
-//   chainPatch(fx, opts)   one shared chain ({t: 'chain', c, fxr, fxrT}): patchFor's rack compile for a classic track (no
-//                          Serum gains), so a canonical classic track's chain is its legacy patch's rack
-import { classOf, MOD_SRC } from './cv-mods.js?v=9';
-import { defaultFx2, compileFx, compileFxT, normRow, N_MATRIX } from './serum-core.js?v=9';
+//   nativeRow(row, src)       the Serum row a canvas row compiles to (src wheel / velo / at / bend / note, dst the param id,
+//                             the other fields through serum-core normRow), or null (an unknown source, a refused field);
+//                             src: the Serum source id to write instead (2b: 'lfo3', 'ext2' — an ext id passes normRow's
+//                             source check by proxy)
+//   injectMods(dev, rows, ext, track)  { s, placed: [{ id, slot, src }], left: [ids], why: { id: reason }, dashed: [ids],
+//                             inj: [{ id, kind, k }] }: no rows (or none placed) → dev.vals.s itself (the compile is
+//                             byte-identical); else a shallow copy of s whose matrix (a copied 64-slot array) holds each
+//                             row, in order, in the first free slot (src '': serum-core freeSlot's rule) — so buildSerumT
+//                             keys its custom curve 'crv<slot>' and mSlot / slew / mOut work per slot as today. left: the
+//                             rows that found no free slot (not compiled: "mod rows are full (64/64)") or, 2b, no ext slot
+//                             (why 'full' / 'ext' / 'slots'). A row keeps the slot it last took while that slot is free
+//                             (per device: its vals object, which undo / redo and preset loads keep; review H5) — removing
+//                             an earlier row or a native row in another's slot moves no other row (per-slot slew / mOut
+//                             state stays put). 2b (IMPL-2b §3.1 / §3.3): ext = the track's ext list (compileMods'
+//                             payload.ext: [{ k, src, id }], id the canvas source) and track its devices — a row from a
+//                             GLOBAL ModCore source becomes { src: 'ext<k>' }; a row from a PER NOTE source (a PER NOTE
+//                             LFO, an ENV, a linked POLY Serum LFO / ENV of another Serum) is injected into a free LFO /
+//                             ENV slot of the copy (s.lfo[k] / s.env[k] and the slot's p knobs receive the module's
+//                             state, the row reads 'lfo<k>' / 'env<k>'; a slot is free while it is the default state and
+//                             no row of the Serum reads it; the slot hint map keeps it stable), else falls back to its ext
+//                             entry (dashed: "follows the most recent note"); a Serum's own LFO / ENV cabled to its own
+//                             knob is a native row ('lfo3'). Without ext / track (2a callers): non-native sources are
+//                             neither placed nor left, as before
+//   modBudget(track, dev, project)  { preset, canvas, left, why, max: 64, slots }: the slots the Serum's own rows hold,
+//                             the canvas rows placed, the ids left out (dev: a device id or object) — "23/64" = preset +
+//                             canvas; slots (2b): the track's ModCore budgets { lfo: [n, 10], env: [n, 4], chaos: [n, 2],
+//                             macro: [n, 8], vals: [n, 16], ext: [n, 16] } (a classic / panel device: its rows'
+//                             left / why from the same compile, preset 0)
+// Stage 2b (IMPL-2b §3.1, §3.3, §4; SPEC §7.6–7.9): everything a track's cables need beyond a Serum's own matrix is ONE
+// message per track, {t: 'mods'}, built here from the track alone:
+//   compileMods(track, project, opts) → payload | null   null with no modulator module and no row (N1: nothing posted;
+//                             a track whose modules were all deleted posts { t: 'mods', off: true } — the host's
+//                             buildMods makes that of null when a payload was posted before). opts { smooth, qr, ultra,
+//                             xferOf } (the compile context of the synthetic Serum; xferOf: cv-mods' transfer, lane A2 —
+//                             a test stub, or the identity { a: 0, b: 1 } while it is absent). The payload:
+//                             { t: 'mods', i: trackId, key, cp, ct, rows, xfer, ext, vals, keep, left, dashed, n }
+//     cp / ct               the SYNTHETIC Serum: normalizeSerum of a default (voice section off: a.on 0, poly 1) whose
+//                           slots hold the track's modules — LFO modules and linked Serum LFOs in lfo1…10 (a GLOBAL one
+//                           mono 1; the knobs on p l<k>.*; unused slots PARKED free + mono: not evaluated, spike §9.0),
+//                           ENV modules / linked ENVs in env2…4 then env1 (sustain n²; Start / End none), chaos in
+//                           chaos1…2, the first macro module's knobs in macros 1…8 (value table 0–7), further macro knobs
+//                           and CC modules as the synthetic CP's ext1…16 sources (value table 8–23: ModCore writes them
+//                           into the shim's g rows 62 + j before SxMod.begin; the compile passes ctx.ext when one is
+//                           used) — compiled with compileSerum(sy, { bpm, smooth, fx: null, qr, ultra }) → cp = patch.serum,
+//                           ct = patch.serumT. Its matrix: the SYNTHETIC ROWS (one per row to a classic / panel
+//                           destination: src → its own scratch V-scope destination SCRATCH[i], the cable's amt / bi /
+//                           curve / crv / aux / inv / rise / fall / out, evaluated by the pseudo-voice's matrix() and read
+//                           back from V.mod.off[vi]), then a KEEP-ALIVE row (amt 1 → the shared scratch KEEP_ID) per
+//                           evaluated LFO / ENV / chaos source no synthetic row reads (SxMod skips unreferenced sources)
+//     rows                  [{ id, src, dst: { kind: 'cls', inst, slot } | { kind: 'set', inst, field } | { kind: 'fx',
+//                           chain, fx, key }, amt, bi, curve, crv, aux, inv, rise, fall, byp, out, perNote, vi, slot }] —
+//                           src / aux: the synthetic CP's source index (serum-core SRC_INDEX; a value source ext j is
+//                           62 + j − 1, serum-core's S_EXT0 of §3.2); vi: the scratch destination's voice-vector index
+//                           (serum-core vi()); slot: the synthetic matrix slot (its 'crv<slot>' CT part); dst.slot: the
+//                           engine's smTargets S_* index (cv-mods SM_SLOT), dst.field the patch field ('lfo.rate'),
+//                           dst.fx the chain's fx-core flat parameter index with the layout key
+//     xfer                  per row (aligned; null for fx rows) the knob → slot / field transfer (cv-mods xferOf, §5.3)
+//     ext                   [{ k: 1…16, src, id }] the ext slots: ModCore source → ext k, shared by every Serum of the
+//                           track (id: the canvas source id the injected rows name 'ext<k>' for)
+//     vals                  [{ k: 0…23, src, v, id }] the value table: macros 0–7 (the first macro module's knobs),
+//                           8–23 further macro knobs and CC modules (initial values; MC.ctl(k, v) later)
+//     keep                  [src] the keep-alive sources;  left [{ id, why: 'slots' | 'ext' | 'full' }] the rows not
+//                           compiled;  dashed [ids] the rows drawn dashed (§1.3);  n { lfo, env, chaos, macro, vals,
+//                           ext, rows } the budgets used;  key: a content key (the payload without cp / ct, cpKey, ct key:
+//                           an instrument knob turn never changes it unless the knob's own transfer changes)
+//                           ModCore slots go, in module id order, to the sources that need ModCore evaluation only (a
+//                           PER NOTE LFO injected into every Serum it feeds takes none); over capacity (10 LFO incl.
+//                           linked, 4 ENV, 2 chaos, 8 macros, 16 value sources, 16 ext, SCRATCH synthetic rows) the row
+//                           is left with its reason
+//   SCRATCH / KEEP_ID       the scratch destinations: V-scope rows of silent modules (oscillator / sub / noise / filter
+//                           knobs), never a note-on, LFO, ENV, chaos, porta or voice-control destination
+import * as CM from './cv-mods.js?v=9';
+import { classOf, MOD_SRC, srcDev, perNoteOf, classicTarget, modDevs, rackDescs } from './cv-mods.js?v=9';
+import { defaultFx2, compileFx, compileFxT, normRow, N_MATRIX, N_LFO, N_ENV, N_MACRO, normalizeSerum, defaultSerum, compileSerum, SRC_INDEX, vi, DESTS, DEST_INDEX,
+  NOTE_ON_DESTS, normLfo, lfoUsed } from './serum-core.js?v=9';
+import { fxLayout, fxDest } from './fx-core.js?v=9';
 import { patchFor } from './models.js?v=9';
 
 export const LIMITS = Object.freeze({ inst: 8, panels: 16, fxPerPanel: 48 });
-const MOD_KINDS = new Set(['lfo', 'env', 'velo', 'at', 'bend', 'note', 'macro', 'cc']);
+export const MOD_KINDS = new Set(['lfo', 'env', 'velo', 'at', 'bend', 'note', 'macro', 'cc', 'chaos']);
 const PORTS = { inst: ['out'], panel: ['in', 'out'], out: ['in'] };
 const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 
@@ -256,10 +320,11 @@ export function compileGraph(t) {
 }
 // the patch of one Inst (a classic one: no rack of its own on a graph node, IMPL-1e §2.1 sharedRack); a Serum's mod rows
 // injected: { s: merged } reaches both compileSerum and fxModded2 (patchFor)
-export function instPatch(d, opts, rows) {
-  const sx = d.model === 'serum', inj = sx && Array.isArray(rows) && rows.length ? injectMods(d, rows) : null;
+export function instPatch(d, opts, rows, ext, t) {
+  const sx = d.model === 'serum', inj = sx && Array.isArray(rows) && rows.length ? injectMods(d, rows, ext, t) : null;
   const vals = inj && inj.s !== d.vals.s ? Object.assign({}, d.vals, { s: inj.s }) : d.vals;
-  const p = patchFor(d.model, vals, sx && d.fx ? d.fx : defaultFx2(), opts);
+  const o = inj && inj.placed.some(x => EXT_RE.test(x.src)) ? Object.assign({}, opts, { ext: true }) : opts; // (ext rows: the compile accepts them, §3.2)
+  const p = patchFor(d.model, vals, sx && d.fx ? d.fx : defaultFx2(), o);
   if (!sx) {
     const fn = p.fxr && Array.isArray(p.fxr.needs) ? p.fxr.needs : [];
     delete p.fxr; delete p.fxrT;
@@ -277,46 +342,341 @@ export function chainPatch(fx, opts) {
   return { fxr, fxrT: compileFxT(fx) };
 }
 
-/* ------------------------------------------------------------- mod rows into a Serum's matrix (stage 2a, IMPL-2a §2.1) */
+/* ------------------------------------------------------------- mod rows into a Serum's matrix (stage 2a, IMPL-2a §2.1; 2b §3.3) */
 export function modRowsFor(t, devId) {
   const pre = devId + ':';
   return isObj(t) && Array.isArray(t.mods) ? t.mods.filter(r => isObj(r) && typeof r.dst === 'string' && r.dst.length > pre.length && r.dst.startsWith(pre)) : [];
 }
-export function nativeRow(r) {
-  const src = isObj(r) && typeof r.src === 'string' ? MOD_SRC[r.src] : undefined, i = src && typeof r.dst === 'string' ? r.dst.indexOf(':') : -1;
+const EXT_RE = /^ext([1-9]|1[0-6])$/;
+export function nativeRow(r, src) {
+  const sid = src !== undefined ? src : isObj(r) && typeof r.src === 'string' ? MOD_SRC[r.src] : undefined, i = sid && typeof r.dst === 'string' ? r.dst.indexOf(':') : -1;
   if (i < 1) return null;
-  const n = normRow(Object.assign({}, r, { src, dst: r.dst.slice(i + 1) }));
-  return n.src && n.dst ? n : null; // (normRow empties a row with an unknown aux / destination)
+  const ext = EXT_RE.test(sid), n = normRow(Object.assign({}, r, { src: ext ? 'wheel' : sid, dst: r.dst.slice(i + 1) }));
+  if (!n.src || !n.dst) return null; // (normRow empties a row with an unknown source / aux / destination)
+  if (ext) n.src = sid;
+  return n;
 }
 const isFree = r => !isObj(r) || r.src === '' || r.src === undefined;
+const splitDst = dst => { const i = typeof dst === 'string' ? dst.indexOf(':') : -1; return i > 0 ? { dev: dst.slice(0, i), param: dst.slice(i + 1) } : null; };
+const LFO_KNOBS = ['rate', 'rise', 'delay', 'smooth', 'phase'], ENV_KNOBS = ['att', 'hold', 'dec', 'sus', 'rel', 'start', 'end'], ENV_CRV = ['ca', 'cd', 'cr'];
+const ENV_ALL = ENV_KNOBS.concat(ENV_CRV);
+const DEF_LFO = JSON.stringify(normLfo({}));
+const knobDef = id => DESTS[DEST_INDEX[id]].def;
+const sameJ = (a, b) => JSON.stringify(a) === b;
+// a Serum's LFO slot k (0-based) is free while its state is the default (shape, mode, knobs) and no row reads it
+function lfoFree(s, k) {
+  if (!isObj(s) || !Array.isArray(s.lfo) || !isObj(s.lfo[k]) || lfoUsed(s, k)) return false;
+  const p = isObj(s.p) ? s.p : {};
+  return sameJ(s.lfo[k], DEF_LFO) && LFO_KNOBS.every(x => { const id = 'l' + (k + 1) + '.' + x, v = p[id]; return v === undefined || v === knobDef(id); });
+}
+// ENV slot k (0-based, 1…3 = ENV 2–4): default knobs and flags, no row reads it (ENV 1 is the amp envelope: never)
+function envFree(s, k) {
+  if (k < 1 || k >= N_ENV || !isObj(s) || !Array.isArray(s.env) || !isObj(s.env[k])) return false;
+  const id = 'env' + (k + 1), M = Array.isArray(s.matrix) ? s.matrix : [], p = isObj(s.p) ? s.p : {}, E = s.env[k];
+  if (M.some(r => isObj(r) && (r.src === id || r.aux === id))) return false;
+  if (E.bpm || E.legInv || E.stealRe) return false;
+  return ENV_ALL.every(x => { const q = 'e' + (k + 1) + '.' + x, v = p[q]; return v === undefined || v === knobDef(q); });
+}
+// the module state a source carries into a Serum / ModCore slot: { kind: 'lfo' | 'env', state } in the module's device
+// shape (song.normModDev: { lfo, rate, … } / { env, att, …, crv }) — a module's own device, or a linked Serum's slot read
+// back into that shape; null for anything else
+function slotState(t, src) {
+  const S = srcDev(t, src);
+  if (!S) return null;
+  if (S.kind === 'lfo' || S.kind === 'env') return { kind: S.kind, state: S.dev };
+  if (S.kind === 'link') {
+    const s = isObj(S.dev.vals) ? S.dev.vals.s : null, p = isObj(s) && isObj(s.p) ? s.p : {}, m = /^(lfo|env)(\d+)$/.exec(S.q.link), k = +m[2];
+    if (m[1] === 'lfo') { const st = { lfo: isObj(s) && Array.isArray(s.lfo) ? s.lfo[k - 1] : null }; for (const x of LFO_KNOBS) st[x] = p['l' + k + '.' + x]; return { kind: 'lfo', state: st }; }
+    const st = { env: isObj(s) && Array.isArray(s.env) ? s.env[k - 1] : null };
+    for (const x of ENV_KNOBS) { const q = 'e' + k + '.' + x; st[x] = DEST_INDEX[q] !== undefined ? p[q] : knobDef('e2.' + x); }
+    st.crv = ENV_CRV.map(x => p['e' + k + '.' + x]);
+    if (k === 1 && typeof st.sus === 'number') st.sus = st.sus * st.sus; // (ENV 1's sustain law n² → the fraction)
+    return { kind: 'env', state: st };
+  }
+  return null;
+}
+// the LFO / ENV slot's state written into a copy of Serum state s (k 0-based): s.lfo[k] / s.env[k] and the p knobs
+function writeSlot(s, kind, k, state) {
+  if (kind === 'lfo') { s.lfo[k] = normLfo(state.lfo); for (const x of LFO_KNOBS) if (typeof state[x] === 'number') s.p['l' + (k + 1) + '.' + x] = state[x]; return; }
+  const E = isObj(state.env) ? state.env : {};
+  s.env[k] = { bpm: E.bpm ? 1 : 0, legInv: E.legInv ? 1 : 0, stealRe: E.stealRe ? 1 : 0 };
+  for (const x of ENV_KNOBS) { const q = 'e' + (k + 1) + '.' + x; if (DEST_INDEX[q] !== undefined && typeof state[x] === 'number') s.p[q] = k === 0 && x === 'sus' ? Math.sqrt(state[x]) : state[x]; }
+  const c = Array.isArray(state.crv) ? state.crv : [];
+  ENV_CRV.forEach((x, i) => { if (typeof c[i] === 'number') s.p['e' + (k + 1) + '.' + x] = c[i]; });
+}
+// how each row of a Serum compiles: { r, src: the Serum source id | null, inj: { kind, k } | null, dashed, why, extId }
+// — native sources as they are; the Serum's own LFO / ENV as 'lfo<k>' / 'env<k>'; a PER NOTE module into a free slot of
+// the Serum (one per source, the hint map first); the rest (or a fallback) through the ext list (extId: the canvas
+// source; no ext entry → why 'ext'); unknown sources: neither (src null, why null)
+const lastSlots = new WeakMap(); // a Serum's vals → Map(row id → the matrix slot injectMods last gave it)
+const lastInj = new WeakMap(); // a Serum's vals → Map(canvas source id → the LFO / ENV slot it was injected into)
+function planSerum(t, dev, rows, ext) {
+  const s = isObj(dev) && isObj(dev.vals) ? dev.vals.s : null, devId = isObj(t) && isObj(t.dev) ? Object.keys(t.dev).find(k => t.dev[k] === dev) : undefined;
+  const E = new Map(Array.isArray(ext) ? ext.map(e => [e.id, e.k]) : []), hint = isObj(dev) && isObj(dev.vals) ? lastInj.get(dev.vals) : null;
+  const freeL = [], freeE = [];
+  if (t) for (let k = 0; k < N_LFO; k++) if (lfoFree(s, k)) freeL.push(k);
+  if (t) for (let k = 1; k < N_ENV; k++) if (envFree(s, k)) freeE.push(k);
+  const taken = new Map(), out = [];
+  const slotFor = (id, kind) => {
+    if (taken.has(id)) return taken.get(id);
+    const free = kind === 'lfo' ? freeL : freeE, h = hint ? hint.get(id) : undefined;
+    let k = free.includes(h) ? h : free.length ? free[0] : -1;
+    if (k >= 0) free.splice(free.indexOf(k), 1);
+    taken.set(id, k);
+    return k;
+  };
+  for (const r of rows) {
+    const o = { r, src: null, inj: null, dashed: false, why: null, extId: null };
+    out.push(o);
+    if (!isObj(r) || typeof r.src !== 'string') continue;
+    if (MOD_SRC[r.src] !== undefined) { o.src = MOD_SRC[r.src]; continue; }
+    if (!t) continue; // (2a caller: nothing else compiles)
+    const S = srcDev(t, r.src);
+    if (!S) continue;
+    if (S.kind === 'link' && S.q.dev === devId) { o.src = S.q.link; continue; } // (its own LFO / ENV)
+    const pn = perNoteOf(t, r.src), st = pn ? slotState(t, r.src) : null;
+    if (st) {
+      const k = slotFor(r.src, st.kind);
+      if (k >= 0) { o.src = (st.kind === 'lfo' ? 'lfo' : 'env') + (k + 1); o.inj = { kind: st.kind, k, state: st.state }; continue; }
+      o.dashed = true; // (no free slot: the ext fallback follows the most recent note)
+    } else if (pn) o.dashed = true; // (a poly chaos: always ModCore's; dashed)
+    o.extId = r.src;
+    const k = E.get(r.src);
+    if (k !== undefined) o.src = 'ext' + k; else o.why = 'ext';
+  }
+  return out;
+}
 // the slots rows take in s: a row its last slot (hint: row id → slot) while free, then the rest in order the free slots
 // left, one per valid row (invalid rows: neither placed nor left); placed in rows order
-const lastSlots = new WeakMap(); // a Serum's vals → Map(row id → the slot injectMods last gave it)
-function place(s, rows, hint) {
-  const M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], free = new Set(), V = [], at = new Map(), placed = [], left = [], N = [];
+function place(s, rows, hint, plan) {
+  const M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], free = new Set(), V = [], at = new Map(), placed = [], left = [], why = {}, N = [];
   for (let k = 0; k < N_MATRIX; k++) if (isFree(M[k])) free.add(k);
   const used = N_MATRIX - free.size;
-  for (const r of rows) { const n = nativeRow(r); if (n) V.push([r, n]); }
-  if (hint) for (const [r] of V) { const k = hint.get(r.id); if (free.has(k)) { at.set(r, k); free.delete(k); } }
-  const rest = [...free];
-  for (const [r, n] of V) {
-    const k = at.has(r) ? at.get(r) : rest.length ? rest.shift() : -1;
-    if (k >= 0) { placed.push({ id: r.id, slot: k }); N.push(n); } else left.push(r.id);
+  for (const o of plan) {
+    if (o.why) { left.push(o.r.id); why[o.r.id] = o.why; continue; }
+    const n = o.src ? nativeRow(o.r, o.src) : null;
+    if (n) V.push([o, n]);
   }
-  return { placed, left, N, used };
+  if (hint) for (const [o] of V) { const k = hint.get(o.r.id); if (free.has(k)) { at.set(o, k); free.delete(k); } }
+  const rest = [...free];
+  for (const [o, n] of V) {
+    const k = at.has(o) ? at.get(o) : rest.length ? rest.shift() : -1;
+    if (k >= 0) { placed.push({ id: o.r.id, slot: k, src: n.src }); N.push([n, o]); } else { left.push(o.r.id); why[o.r.id] = 'full'; }
+  }
+  return { placed, left, why, N, used };
 }
-export function injectMods(dev, rows) {
-  const s = isObj(dev) && isObj(dev.vals) ? dev.vals.s : undefined;
-  if (!Array.isArray(rows) || !rows.length || !isObj(s)) return { s, placed: [], left: [] };
-  const P = place(s, rows, lastSlots.get(dev.vals));
+export function injectMods(dev, rows, ext, t) {
+  const s = isObj(dev) && isObj(dev.vals) ? dev.vals.s : undefined, M0 = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [];
+  const none = { s, placed: [], left: [], why: {}, dashed: [], inj: [], used: Math.min(N_MATRIX, M0.length) - M0.slice(0, N_MATRIX).filter(isFree).length };
+  if (!Array.isArray(rows) || !rows.length || !isObj(s)) return none;
+  const plan = planSerum(isObj(t) ? t : null, dev, rows, ext), P = place(s, rows, lastSlots.get(dev.vals), plan);
   lastSlots.set(dev.vals, new Map(P.placed.map(x => [x.id, x.slot])));
-  if (!P.placed.length) return { s, placed: [], left: P.left };
+  const injs = P.N.filter(([, o]) => o.inj), dashed = P.N.filter(([, o]) => o.dashed).map(([, o]) => o.r.id);
+  lastInj.set(dev.vals, new Map(injs.map(([, o]) => [o.r.src, o.inj.k])));
+  if (!P.placed.length) return Object.assign(none, { left: P.left, why: P.why, used: P.used });
   const M = Array.isArray(s.matrix) ? s.matrix : [], m = Array.from({ length: N_MATRIX }, (_, k) => (k < M.length ? M[k] : normRow(null)));
-  P.placed.forEach((x, i) => { m[x.slot] = P.N[i]; });
-  return { s: Object.assign({}, s, { matrix: m }), placed: P.placed, left: P.left };
+  P.N.forEach(([n], i) => { m[P.placed[i].slot] = n; });
+  const out = Object.assign({}, s, { matrix: m }), inj = [];
+  if (injs.length) { // (the slots: copies of the arrays and p, the module states written in)
+    out.lfo = Array.isArray(s.lfo) ? s.lfo.slice() : []; out.env = Array.isArray(s.env) ? s.env.slice() : []; out.p = Object.assign({}, s.p);
+    const done = new Set();
+    for (const [, o] of injs) { const key = o.inj.kind + o.inj.k; if (done.has(key)) continue; done.add(key); writeSlot(out, o.inj.kind, o.inj.k, o.inj.state); inj.push({ id: o.r.id, kind: o.inj.kind, k: o.inj.k, src: o.r.src }); }
+  }
+  return { s: out, placed: P.placed, left: P.left, why: P.why, dashed, inj, used: P.used };
 }
-export function modBudget(t, dev) {
+
+/* ------------------------------------------------------------- the track's {t: 'mods'} payload (stage 2b, IMPL-2b §3.1) */
+export const EXT_N = 16, VAL_N = 16, S_EXT0 = 62; // ext slots per track; value sources beyond the macros; ext1's source index
+const NOTE_ON = new Set(NOTE_ON_DESTS);
+export const SCRATCH = Object.freeze((() => {
+  const out = [], want = [/^[abc]\.(pan|fine|crs|det|blend|wt|warp|uniw|uniwarp|uniwt|level|oct|semi)$/, /^s\.(level|pan|oct|crs)$/, /^n\.(level|pan|pitch|fine)$/, /^f2?\.(cutoff|res|drive|var|pan|mix|level)$/];
+  for (const re of want) for (const d of DESTS) if (re.test(d.id) && d.scope === 'V' && vi(d.id) >= 0 && !NOTE_ON.has(d.id)) out.push(d.id);
+  return out;
+})());
+export const KEEP_ID = SCRATCH[SCRATCH.length - 1], SYN_MAX = N_MATRIX - N_LFO - N_ENV - 2; // (48 synthetic rows: the keep-alives always fit)
+const SRC_IDX = id => { const m = EXT_RE.exec(id); return m ? S_EXT0 + (+m[1] - 1) : SRC_INDEX[id]; };
+const fnv = (h, str) => { for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); } return h; };
+const MEMO = new WeakMap(); // track → { sig, pay } (a knob turn elsewhere on the track recompiles nothing)
+const lfoSlot = k => 'lfo' + (k + 1), envSlot = k => 'env' + (k + 1);
+const ENV_ORDER = [1, 2, 3, 0]; // (ENV 2–4, then ENV 1)
+// every row of the track that can compile: its parts and class
+function validRows(t) {
+  const out = [];
+  for (const r of Array.isArray(t.mods) ? t.mods : []) {
+    if (!isObj(r) || typeof r.id !== 'string' || typeof r.src !== 'string') continue;
+    const D = splitDst(r.dst), d = D ? t.dev[D.dev] : null, S = srcDev(t, r.src);
+    if (!isObj(d) || !S) continue;
+    const K = kindOf(d);
+    if (K === 'inst' && d.model === 'serum') { out.push({ r, D, d, S, kind: 'serum' }); continue; }
+    if (K === 'inst') {
+      const c = classOf(d.model, D.param), tg = c === 'sm' || c === 'apply' || c === 'proc' ? classicTarget(d.model, d.vals, D.param) : null;
+      if (!tg || !tg.on || (c === 'sm' ? tg.slot < 0 : tg.field === null)) continue;
+      out.push({ r, D, d, S, kind: c === 'sm' ? 'cls' : 'set', tg });
+      continue;
+    }
+    if (K === 'panel') {
+      const fx = isObj(d.fx) ? d.fx : null, desc = rackDescs(fx || d.rack).find(x => x.id === D.param);
+      if (!desc || desc.nomod || !fx) continue;
+      let fd = null, key = '';
+      try { fd = fxDest(D.param, fx); key = fxLayout(fx).key; } catch { fd = null; }
+      if (!fd || fd.nomod) continue;
+      out.push({ r, D, d, S, kind: 'fx', fx: fd.flat, key });
+    }
+  }
+  return out;
+}
+// the signature of everything compileMods reads (the memo; the content key hashes the result)
+function sigOf(t, project, opts, V) {
+  const parts = [t.mods, modDevs(t).map(x => [x.id, x.dev]), project && project.bpm, opts.smooth, opts.qr, opts.ultra];
+  const seen = new Set();
+  for (const x of V) {
+    if (seen.has(x.D.dev)) continue;
+    seen.add(x.D.dev);
+    if (x.kind === 'cls' || x.kind === 'set') parts.push([x.D.dev, x.d.vals]);
+    else if (x.kind === 'serum') { const s = isObj(x.d.vals) ? x.d.vals.s : null, f = []; for (let k = 0; k < N_LFO; k++) f.push(lfoFree(s, k) ? 1 : 0); for (let k = 1; k < N_ENV; k++) f.push(envFree(s, k) ? 1 : 0); parts.push([x.D.dev, f]); }
+    else parts.push([x.D.dev, x.key]);
+  }
+  for (const x of V) if (x.S.kind === 'link') parts.push([x.r.src, slotState(t, x.r.src)]);
+  return JSON.stringify(parts);
+}
+export function compileMods(t, project, opts) {
+  if (!isObj(t) || !isObj(t.dev)) return null;
+  const o = isObj(opts) ? opts : {}, V = validRows(t), devs = modDevs(t);
+  if (!devs.length && !V.length) return null;
+  const sig = sigOf(t, project, o, V), memo = MEMO.get(t);
+  if (memo && memo.sig === sig) return memo.pay;
+  const pay = buildMods(t, project, o, V, devs);
+  MEMO.set(t, { sig, pay });
+  return pay;
+}
+function buildMods(t, project, o, V, devs) {
+  const left = [], why = new Map(), dashed = new Set();
+  // 1. the sources ModCore must evaluate: every non-Serum row's, and every Serum row's that needs an ext slot (a plan
+  //    without the ext list says which: GLOBAL sources, per-note sources with no free slot)
+  const need = new Set(), extNeed = [];
+  const serums = new Set(V.filter(x => x.kind === 'serum').map(x => x.D.dev));
+  for (const id of serums) {
+    for (const p of planSerum(t, t.dev[id], modRowsFor(t, id), [])) if (p.extId) { need.add(p.extId); if (!extNeed.includes(p.extId)) extNeed.push(p.extId); }
+  }
+  for (const x of V) if (x.kind !== 'serum') need.add(x.r.src);
+  // 2. ModCore slots in module id order (links after the modules, by their id): lfo1…10, env2…4 then env1, chaos1…2,
+  //    the first macro module's knobs → macros 1…8 (value table 0–7), further macro knobs and CCs → value sources 8…23
+  //    (the synthetic CP's ext1…16); the performance sources are the shim's own
+  const alloc = new Map(), n = { lfo: 0, env: 0, chaos: 0, macro: 0, vals: 0, ext: 0, rows: 0 }, vals = [];
+  let macroDev = null, valN = 0;
+  const take = (id, kind, perNote) => {
+    if (!need.has(id) || alloc.has(id)) return;
+    let sid = null, k = -1;
+    if (kind === 'lfo') { if (n.lfo < N_LFO) sid = lfoSlot(n.lfo++); } else if (kind === 'env') { if (n.env < N_ENV) sid = envSlot(ENV_ORDER[n.env++]); } else if (kind === 'chaos') { if (n.chaos < 2) sid = 'chaos' + ++n.chaos; } else if (kind === 'val') { if (valN < VAL_N) { k = N_MACRO + valN++; sid = 'ext' + (k - N_MACRO + 1); n.vals++; } } else if (kind === 'macro') { sid = 'macro' + k0(id); k = k0(id) - 1; n.macro++; } else sid = kind;
+    alloc.set(id, sid ? { sid, k, perNote: !!perNote } : null);
+  };
+  const k0 = id => +/\.k(\d)$/.exec(id)[1];
+  for (const { id, dev, kind } of devs) {
+    if (kind === 'macro') {
+      if (macroDev === null && [...need].some(x => x.startsWith(id + '.k'))) macroDev = id;
+      for (let k = 1; k <= 8; k++) take(id + '.k' + k, macroDev === id ? 'macro' : 'val');
+      continue;
+    }
+    const src = id + '.out';
+    if (kind === 'lfo') take(src, 'lfo', !dev.lfo.mono);
+    else if (kind === 'env') take(src, 'env', true);
+    else if (kind === 'chaos') take(src, 'chaos', !dev.chaos.mono);
+    else if (kind === 'cc') take(src, 'val');
+    else take(src, MOD_SRC[src], kind === 'velo' || kind === 'note');
+  }
+  take('wheel', 'wheel');
+  for (const id of [...need].filter(x => /\//.test(x)).sort()) { const S = srcDev(t, id); if (S && S.kind === 'link') take(id, /^lfo/.test(S.q.link) ? 'lfo' : 'env', !!perNoteOf(t, id)); }
+  for (const id of need) if (!alloc.has(id) || alloc.get(id) === null) { alloc.set(id, null); }
+  // the value table: macros (the first macro module) and the value sources, initial values from the modules
+  for (const [id, a] of alloc) {
+    if (!a || a.k < 0) continue;
+    const S = srcDev(t, id), v = S.kind === 'macro' ? (Array.isArray(S.dev.v) ? S.dev.v[k0(id) - 1] : 0) : S.kind === 'cc' ? S.dev.v : 0;
+    vals.push({ k: a.k, src: SRC_IDX(a.sid), v: typeof v === 'number' ? v : 0, id });
+  }
+  vals.sort((a, b) => a.k - b.k);
+  // 3. ext slots, in the order the Serums need them
+  const ext = [];
+  for (const id of extNeed) { const a = alloc.get(id); if (a && ext.length < EXT_N) ext.push({ k: ext.length + 1, src: SRC_IDX(a.sid), id }); }
+  n.ext = ext.length;
+  // 4. the Serum rows: placed / left per Serum with the ext list (the plan decides dashed and the fallback)
+  for (const id of serums) {
+    const inj = injectMods(t.dev[id], modRowsFor(t, id), ext, t);
+    for (const rid of inj.left) { const r = V.find(x => x.r.id === rid); const w = inj.why[rid] === 'ext' && r && alloc.get(r.r.src) === null ? 'slots' : inj.why[rid]; left.push({ id: rid, why: w }); }
+    for (const rid of inj.dashed) dashed.add(rid);
+  }
+  // 5. the synthetic rows (classic / panel destinations) and their ModCore rows
+  // (lane A2's transfer maths, by name: targetsOf(model, ctl) → [{ kind: 'slot', slot } | { kind: 'field', field }] (several
+  // for a knob that moves several things: master tune → three TU slots, Juno Env A → fenv.a + aenv.a) and xferOf(model,
+  // vals, ctl, target) → { a, b, x0 } | { tab, x0 }; a test stubs them through opts; absent: one target from
+  // classicTarget and the identity transfer)
+  const rows = [], xfer = [], syn = [], xf = typeof o.xferOf === 'function' ? o.xferOf : typeof CM.xferOf === 'function' ? CM.xferOf : () => ({ a: 0, b: 1, x0: 0 });
+  const tgs = typeof o.targetsOf === 'function' ? o.targetsOf : typeof CM.targetsOf === 'function' ? CM.targetsOf : null;
+  const targetsOf = x => { const T = tgs ? tgs(x.d.model, x.D.param) : null; return Array.isArray(T) && T.length ? T : [x.kind === 'cls' ? { kind: 'slot', slot: x.tg.slot } : { kind: 'field', field: x.tg.field }]; };
+  const used = new Set();
+  for (const x of V) {
+    if (x.kind === 'serum') continue;
+    const a = alloc.get(x.r.src);
+    if (!a) { left.push({ id: x.r.id, why: 'slots' }); continue; }
+    if (syn.length >= SYN_MAX) { left.push({ id: x.r.id, why: 'full' }); continue; }
+    const slot = syn.length, dstId = SCRATCH[slot], n0 = normRow(Object.assign({}, x.r, { src: EXT_RE.test(a.sid) ? 'wheel' : a.sid, dst: dstId }));
+    if (!n0.src) { left.push({ id: x.r.id, why: 'nomod' }); continue; } // (an aux normRow refuses)
+    n0.src = a.sid;
+    if (n0.aux && !alloc.has(n0.aux) && SRC_INDEX[n0.aux] === undefined) n0.aux = '';
+    syn.push(n0);
+    used.add(a.sid); if (n0.aux) used.add(n0.aux);
+    if (a.perNote) dashed.add(x.r.id);
+    const base = { id: x.r.id, src: SRC_IDX(a.sid), dst: null, amt: n0.amt, bi: n0.bi, curve: n0.curve, crv: n0.crv, aux: n0.aux ? SRC_IDX(n0.aux) : 0, inv: n0.inv, rise: n0.rise, fall: n0.fall, byp: n0.byp, out: n0.out,
+      perNote: a.perNote, vi: vi(dstId), slot, tgt: 0 };
+    if (x.kind === 'fx') { rows.push(Object.assign(base, { dst: { kind: 'fx', chain: x.D.dev, fx: x.fx, key: x.key } })); xfer.push(null); continue; }
+    targetsOf(x).forEach((T, j) => { // one payload row per target of the knob (the same synthetic row: the same vi), its own transfer
+      const dst = T.kind === 'slot' ? { kind: 'cls', inst: x.D.dev, slot: T.slot } : { kind: 'set', inst: x.D.dev, field: T.field };
+      rows.push(Object.assign({}, base, { dst, tgt: j }));
+      xfer.push(xf(x.d.model, x.d.vals, x.D.param, T));
+    });
+  }
+  n.rows = rows.length;
+  // 6. the synthetic Serum: the slots filled, unused LFO slots parked, keep-alive rows for the LFO / ENV / chaos sources
+  //    no synthetic row reads
+  const sy = normalizeSerum(defaultSerum());
+  sy.p['a.on'] = 0; sy.voicing.poly = 1;
+  for (let k = 0; k < N_LFO; k++) Object.assign(sy.lfo[k], { mode: 'free', mono: 1 });
+  const keep = [];
+  let anyExt = false;
+  for (const [id, a] of alloc) {
+    if (!a) continue;
+    const S = srcDev(t, id), m = /^(lfo|env|chaos|macro|ext)(\d+)$/.exec(a.sid);
+    if (!m) continue;
+    const k = +m[2] - 1;
+    if (m[1] === 'lfo' || m[1] === 'env') { const st = slotState(t, id); if (st) writeSlot(sy, st.kind, k, st.state); }
+    else if (m[1] === 'chaos') { const c = isObj(S.dev.chaos) ? S.dev.chaos : {}; sy.chaos[k] = { mono: c.mono ? 1 : 0, sh: c.sh ? 1 : 0 }; if (typeof S.dev.rate === 'number') sy.p['c' + (k + 1) + '.rate'] = S.dev.rate; sy.p['c' + (k + 1) + '.bpm'] = S.dev.bpm ? 1 : 0; }
+    else if (m[1] === 'macro') { const nm = Array.isArray(S.dev.names) ? S.dev.names[k] : ''; sy.macros[k] = { name: (typeof nm === 'string' && nm) || 'Macro ' + (k + 1), v: typeof S.dev.v[k] === 'number' ? S.dev.v[k] : 0 }; }
+    else anyExt = true;
+    if ((m[1] === 'lfo' || m[1] === 'env' || m[1] === 'chaos') && !used.has(a.sid)) keep.push(SRC_IDX(a.sid));
+  }
+  syn.forEach((r, k) => { sy.matrix[k] = r; });
+  let slot = syn.length;
+  for (const [id, a] of alloc) if (a && !used.has(a.sid) && /^(lfo|env|chaos)/.test(a.sid) && slot < N_MATRIX) sy.matrix[slot++] = normRow({ src: a.sid, amt: 1, dst: KEEP_ID });
+  const bpm = isObj(project) && project.bpm > 0 ? +project.bpm : 120;
+  const P = compileSerum(sy, { bpm, smooth: o.smooth > 0 ? +o.smooth : 1, fx: null, qr: o.qr || null, ultra: o.ultra ? 1 : 0, ext: anyExt || undefined });
+  const ord = new Map(V.map((x, i) => [x.r.id, i]));
+  left.sort((a, b) => ord.get(a.id) - ord.get(b.id)); // (in track.mods order)
+  const pay = { t: 'mods', i: t.id, key: '', cp: P.serum, ct: P.serumT, rows, xfer, ext, vals, keep, left, dashed: [...dashed], n };
+  let h = fnv(0x811c9dc5, JSON.stringify([rows, xfer, ext, vals, keep, left, pay.dashed, n]));
+  h = fnv(h, P.serum.cpKey + P.serumT.key);
+  pay.key = (h >>> 0).toString(16).padStart(8, '0');
+  return pay;
+}
+export function modBudget(t, dev, project) {
   const D = isObj(t) && isObj(t.dev) ? t.dev : {}, id = typeof dev === 'string' ? dev : Object.keys(D).find(k => D[k] === dev);
-  const d = id !== undefined ? D[id] : null, P = place(isObj(d) && isObj(d.vals) ? d.vals.s : null, id !== undefined ? modRowsFor(t, id) : [], isObj(d) && isObj(d.vals) ? lastSlots.get(d.vals) : null);
-  return { preset: P.used, canvas: P.placed.length, left: P.left, max: N_MATRIX };
+  const d = id !== undefined ? D[id] : null, pay = isObj(d) ? compileMods(t, project) : null, rows = id !== undefined ? modRowsFor(t, id) : [];
+  const slots = { lfo: [0, N_LFO], env: [0, N_ENV], chaos: [0, 2], macro: [0, N_MACRO], vals: [0, VAL_N], ext: [0, EXT_N] };
+  if (pay) for (const k of Object.keys(slots)) slots[k][0] = pay.n[k];
+  if (isObj(d) && d.kind === 'synth' && d.model === 'serum') {
+    const inj = injectMods(d, rows, pay ? pay.ext : [], t), left = inj.left.slice(), why = Object.assign({}, inj.why);
+    if (pay) for (const x of pay.left) if (rows.some(r => r.id === x.id) && !left.includes(x.id)) { left.push(x.id); why[x.id] = x.why; }
+    return { preset: inj.used, canvas: inj.placed.length, left, why, max: N_MATRIX, slots };
+  }
+  const mine = new Set(rows.map(r => r.id)), L = pay ? pay.left.filter(x => mine.has(x.id)) : [];
+  return { preset: 0, canvas: pay ? pay.rows.filter(r => mine.has(r.id)).length : 0, left: L.map(x => x.id), why: Object.fromEntries(L.map(x => [x.id, x.why])), max: N_MATRIX, slots };
 }
+

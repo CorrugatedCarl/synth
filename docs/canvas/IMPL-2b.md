@@ -529,3 +529,119 @@ Deviations from the contract: `modSpan` takes the start offsets too (`cls0`; the
 yields several targets per knob (the contract's single `slot?` / `field?` per row holds per target: lane B emits one row
 per target). `tests/bench-scenarios.mjs` gained an optional `prep(p)` hook for voice rows (the cable on the live
 processor).
+### 9.1 Lane B — compile / data (2026-10-19; `cv-graph.js`, `cv-mods.js`, `cv-model.js`, `song.js`, `cv-migrate.js`, `main.js` buildMods / modVals / buildInstPatch / buildChain, `models.js` patchFor's `ext` flag, `serum-core.js` normaliser exports; tests cv-graph 22, cv-mods 13, cv-migrate 37, cv-model 5 (new), fixtures `tests/fixtures/mods-2b.mjs`)
+
+**Data (§1.1 / §1.4, as lane C's bodies read them).** Device records `{ kind, …state }` bounded by `song.normModDev` (song.js imports
+serum-core's `normLfo` / `normLfoMod` / `normEnvMod` / `normChaosMod` — its one import): lfo `{ lfo: normLfo's object (mono 1 =
+GLOBAL), rate, rise, delay, smooth, phase }` (the slot knobs as device-level fields in normalised p units: `l<k>.rate` etc.);
+env `{ env: { bpm, legInv, stealRe }, att, hold, dec, sus, rel, crv: [attack, decay, release curves], start, end }`; chaos
+`{ chaos: { mono, sh }, rate, bpm, smooth }` (smooth: the module's own, no Serum param — stored, not compiled); macro `{ v: [8 ×
+0…1], names: [8 strings ≤ 16] }`; cc `{ cc: 0…127 (default 1), ch: 0…16, v: 0…1 }`; note / velo / at / bend `{ kind }`; an
+optional `name` (≤ 32) on any. Ids `l<n> e<n> m<n> c<n> h<n>` (`cv-mods.MOD_PREFIX`), the singletons `ve at bd nt`;
+`addModDev` numbers past the highest of the prefix (a removed number comes round: its rows went with it); an LFO is born
+GLOBAL (`normModDev({ kind: 'lfo', lfo: { mono: 1 } })`), an ENV with Serum's ENV 2 defaults, a chaos global at Serum's rate.
+`setModState(t, id, fields)` merges device-level keys and the slot objects (a whole one replaces; a partial one merges over
+the old), normalises, writes back into the same object. `SCHEMA = 6`, `STEPS[5]` additive; `MSRC` / `MAUX` unchanged (any
+port, the linked `'<serum>/lfo<k>.out'` / `'/env<k>.out'` already fit MSRC); `splitTracks.rowsTo` keeps rows from any port
+of a modulator and from the instrument's own LFO / ENV (renamed with it), drops rows from another instrument's; `toV1`
+names modules in Tidy order through `modLabelOf` ("its LFO 1, Macro 1, Chaos 2 modules"). `cv-mods.sourcesOf` lists every
+module (`{ id, label, scope, kind, dev, port, perNote }`; a macro: 8 entries `m1.k1…k8` labelled by their names);
+`linkSources(t)` the Serums' LFO 1–10 / ENV 1–4 (`used` when the Serum's own rows read one); `perNoteOf`, `srcOf`,
+`srcDev`, `kindOfId`, `modLabelOf`, `modDevs` (Tidy order), `MOD_LABEL` (+ Note / LFO / ENV / Macro / CC / Chaos),
+`MOD_SRC['nt.out'] = 'note'` (a Note module on a Serum knob is a native row). `destOk` opens classic sm / apply / proc and
+panel knobs, chunk → `{ ok: false, stage: '5' }`, struct / none / unknown nomod, a switched-off oscillator's level "Switch
+the oscillator on to modulate its level" (`classicTarget` sweeps the live patch two-point; with the mixer switch off the
+class evidence over the bases says `osc.lev`); `descs` carry `ctr` (a centred −x…x classic knob, Serum's flag, an FX row's).
+`cv-model.addMod`: Serum destinations as 2a (serum-core addMod's drop rules with a native stand-in source, the 64-row
+budget — rows left for 'slots' / 'ext' never fill it); classic / panel: `bi` = the descriptor's `ctr`, amount 0.25, a bool
+knob ±1 by its live value, no limit; `setMod` validates non-native rows by proxy (a wheel → cutoff row through normRow).
+`setModel` / the model accessor / `removeInst` drop the rows whose knob the new model has not (`destOk` on the new
+model: "… removed: the new model has no such knobs"); `removeInst` drops rows linked from the instrument's LFOs / ENVs.
+
+**The payload (§3.1).** `compileMods(t, project, opts) → { t: 'mods', i, key, cp, ct, rows, xfer, ext, vals, keep, left,
+dashed, n } | null`, memoised per track by a signature (rows, module states, bpm, the cabled classic instruments' vals,
+each cabled Serum's free-slot picture, the linked slots' states), `key` = FNV-1a of the payload sans cp / ct + `cpKey` +
+the CT key: a knob turn on an uncabled instrument or on a Serum never changes it; a cabled classic knob does (its transfer,
+A2's `x0`). The three-row track of the fixture (a GLOBAL LFO `l1` → Serum cutoff, Juno cutoff, the panel reverb's mix):
+```
+{ t: 'mods', i: 'trk_b1', key: '…',
+  cp: <synthetic CP: lfo1 = l1 (mono 1, RETRIG), lfo2…10 parked FREE + MONO, a.on 0, poly 1, two matrix rows lfo1 → a.level (vi 0) / a.pan (vi 1)>,
+  ct: <its serumT { key, parts }>,
+  rows: [{ id: 'r2', src: 5, dst: { kind: 'cls', inst: 'i2', slot: 0 }, amt: 0.25, bi: 1, curve: 0.3, crv: null, aux: 0, inv: 0, rise: 0, fall: 0, byp: 0, out: 1, perNote: false, vi: 0, slot: 0, tgt: 0 },
+         { id: 'r3', src: 5, dst: { kind: 'fx', chain: 'fx1', fx: 21, key: '<fxLayout key>' }, amt: -0.2, bi: 0, …, rise: 0.1, fall: 0.1, perNote: false, vi: 1, slot: 1, tgt: 0 }],
+  xfer: [{ a, b, x0 } (A2's xferOf for the Juno cutoff), null],
+  ext: [{ k: 1, src: 5, id: 'l1.out' }], vals: [], keep: [], left: [], dashed: [],
+  n: { lfo: 1, env: 0, chaos: 0, macro: 0, vals: 0, ext: 1, rows: 2 } }
+```
+- `src` / `aux` are the synthetic CP's source indices (`serum-core.SRC_INDEX`): lfo1…8 = 5–12, lfo9…10 = 35–36, env1…3
+  = 2–4, env4 = 34, chaos 17–18, macro1…4 = 24–27, macro5…8 = 47–50, velo 13, note 14, wheel 1, at 15, bend 28; a value source `ext<j>`
+  = `S_EXT0 + j − 1` = 62 + j − 1 (the index A1's `ctx.ext` compile gives `ext<j>`). `vi` = `serum-core.vi(scratch id)`
+  (voice-vector index: the readback slot `V.mod.off[vi]`); `slot` the synthetic matrix slot (`'crv<slot>'` CT part,
+  slew / mOut state per slot); `tgt` the target index of a knob that moves several things (A2's `targetsOf`: one payload
+  row per target on the SAME synthetic row — same `vi`, each with its own `xfer`); `dst.slot` = engine.js S_* (cv-mods
+  `SM_SLOT`), `dst.field` the FIELD_CLASS path ('fenv.a', 'lfo.rate'), `dst.fx` the chain's fx-core flat index + the
+  layout `key` (checked against the `{t:'chain'}` in force).
+- **Slots** in module id order (Tidy), to the sources that need ModCore evaluation only: non-Serum rows' sources and the
+  Serum rows' sources that go through ext (globals; per-note sources with no free Serum slot). LFO modules and linked
+  Serum LFOs → lfo1…10 (`mono` as the module / the Serum's slot); ENV modules and linked ENVs → env2, env3, env4, then
+  env1 (its sustain written as √sus: the n² law; Start / End none); chaos → chaos1…2; the first macro module with a cabled
+  knob → macros 1–8 (value table k = knob − 1); further macro knobs and CC modules → value sources k 8…23 as the synthetic
+  CP's `ext1…16` (ModCore writes the smoothed table value into the shim's `g[(62 + j − 1)·32 + c]` before `SxMod.begin`;
+  `compileSerum` of the synthetic state gets `ctx.ext: true` only when one is used). Over capacity → `left` `'slots'`
+  (10 LFO, 4 ENV, 2 chaos, 16 value sources), `'ext'` (16 ext per track, allocated in the order the Serums need them),
+  `'full'` (`SYN_MAX = 48` synthetic rows: 64 − 10 − 4 − 2 so the keep-alives always fit after them). `n` counts the slots
+  in use (macro: knobs), `modBudget(t, dev, project).slots` = `{ lfo: [n, 10], env: [n, 4], chaos: [n, 2], macro: [n, 8],
+  vals: [n, 16], ext: [n, 16] }`, its `left` ids with `why`.
+- **Scratch destinations** (`cv-graph.SCRATCH`, 61 ids; `KEEP_ID` = the last, 'f2.level'): V-scope rows of silent modules
+  only — the a / b / c oscillators' pan, fine, crs, det, blend, wt, warp, uniw, uniwarp, uniwt, level, oct, semi, the sub's
+  level / pan / oct / crs, the noise's level / pan / pitch / fine, the filters' cutoff / res / drive / var / pan / mix /
+  level — scope 'V' (never 'V*M': no mono-context evaluation), `vi ≥ 0`, none in `NOTE_ON_DESTS`, no `*.on` / `*.w2` /
+  `*.fbal` / `*.bus<n>` (the compile's `isT` tests), no LFO / ENV / chaos / porta / voice-control / macro row. With the
+  voice section off (`a.on` 0 — b / c / sub / noise / filters are off by default; `voicing.poly` 1) an offset on any of
+  them changes nothing the pseudo-voice computes (it has no oscillator, no filter, no amp output). Synthetic rows take
+  `SCRATCH[0…]` in row order; every keep-alive row targets `KEEP_ID` (nobody reads it).
+- **Keep-alive rows**: `amt: 1` from each evaluated LFO / ENV / chaos source no synthetic row reads (an ext-only
+  source) to `KEEP_ID` (serum-core's `rowActive` needs a non-zero amount; the spike's "amt 0" would not count); `keep`
+  lists their source indices. Macros / value sources / the performance sources need none (begin smooths macros always;
+  the ext slots and the shim's fields are ModCore's own).
+- **Serum rows** (`injectMods(dev, rows, ext, track)`): native sources as 2a (`wheel velo at bend note`); the Serum's own
+  LFO / ENV cabled to its own knob → the native id (`lfo3`, `env2`); a GLOBAL ModCore source → `{ src: 'ext<k>' }` from
+  the ext list (`nativeRow(r, 'ext<k>')` normalises by proxy); a PER NOTE source (a PER NOTE LFO, an ENV, a linked POLY
+  LFO / ENV of another Serum) → slot injection: a free `s.lfo[k]` (k any of the 10: the default state, default knobs,
+  no row reads it) / `s.env[k]` (k 2–4: default knobs and flags, no row reads it) of a copy (`lfo` / `env` arrays and
+  `p` copied; the other slots by identity) receives the module (`normLfo(state.lfo)` + `l<k>.*`, or `env` + `e<k>.*` +
+  the curves), one slot per source per Serum, the hint map `lastInj` (per vals) keeps the slot while free; no free slot →
+  the ext fallback with `dashed` (the inspector's "no free LFO slot: follows the most recent note" is the UI's text).
+  `placed` entries carry `src` (the Serum source each reads: the 2a fixture / tests updated), plus `why`, `dashed`, `inj`,
+  `used`. `instPatch(d, opts, rows, ext, track)` passes `opts.ext: true` to patchFor only when an ext row was placed
+  (`models.js` → `compileSerum` ctx.ext; every other compile is the bytes it was: the 2a fixture and every factory preset
+  compile identically with or without the new arguments). `chainPatch` unchanged.
+- **main.js**: `buildMods(tr)` → `compileMods(tr, project, { smooth: prefs.smooth, qr: null, ultra: 0 })` (the memo is
+  cv-graph's), or `{ t: 'mods', i, off: true, key: 'off' }` when null or nothing is left to evaluate (no rows / ext / vals:
+  a 2a-only track, a track whose modules went) — the poster compares `key` per track and posts `off` once after a posted
+  payload; on `__synthTest.api` as `buildMods` / `compileMods`. `modVals` / `buildInstPatch` inject with the track's ext
+  list; a merged vals with ext rows carries a non-enumerable `ext` mark that `buildPatch` turns into `ext: true` (one
+  token in buildPatch's options — the only edit outside the four functions; the smpgen test extracts `modVals` /
+  `buildPatch` by source, so `modVals` returns before any 2b reference when the Serum has no rows).
+
+**Deviations / notes for the other lanes.**
+- The contract's `env: n/3` reads 4 here (§2.3's four ENV slots; env1 last).
+- A chaos module always evaluates in ModCore (a `mono: 0` chaos is per-note there and dashed; it is never injected into
+  a Serum's chaos slot). A Serum's own FX knob from a ModCore source goes through ext / injection like any Serum knob
+  (the Serum's matrix carries FX-context rows): no `fx` ModCore rows ever target a Serum — §4's "sum into fxMods" path
+  stays unused by this compile.
+- The value table is 24 wide in practice (8 macros + 16 value sources reachable as the synthetic CP's ext1…16); entries
+  24–31 of §2.3 would have no source in the CP and are left 'slots'.
+- `vals[i].src` for macros 0–7 is the macro source index (A1: `MC.ctl(k < 8)` sets the synthetic CP's macro base as a
+  `{t:'macro'}` would); for k ≥ 8 it is 62 + (k − 8) (A1 writes the smoothed value into the shim's g row).
+- A1: the synthetic CP arrives with `use` bits of a voiceless default (no needs); rows with `src ≥ 62` compile only with
+  `ctx.ext` (today they are idle in the CP — the payload carries them regardless).
+- A2's `targetsOf` / `xferOf(model, vals, ctl, target)` are called by name from `CM` (cv-mods' namespace import); absent
+  (this branch) `classicTarget`'s single target and the identity `{ a: 0, b: 1, x0: 0 }` stand in; tests stub both
+  through `compileMods` opts (`xferOf`, `targetsOf`).
+- D: `canvas-2a-sim` has 5 failures that are the stage flip (classic and panel knobs now connect — 'refusals' and 'H9'
+  assert the 2b refusal; the three in between cascade from the first test's now-successful cable); `modCan` / `modDests` /
+  `modMarks` / `sxExtra` (its `MOD_SRC[r.src]` label) / `modDescs` are Serum-only there. `modLeftN` / `cvBadge` read
+  `modBudget(...).left` as before; `why[id]` gives the reason text key.
+- C: an edit `{ lfo: whole }` replaces the slot object; `{ rate }` alone is a device-level key; `setModState` never
+  changes `kind`.

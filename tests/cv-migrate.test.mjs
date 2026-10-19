@@ -20,7 +20,7 @@ const P1 = readFileSync(new URL('./ref-p1/project-p1.json', import.meta.url), 'u
 const deepFreeze = o => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); for (const v of Object.values(o)) deepFreeze(v); } return o; };
 
 test('constants: SCHEMA, one step per schema, the read-only notice (§2.13)', () => {
-  assert.equal(M.SCHEMA, 5, '1a: uid; 1b: track.lay; 1c: project v2 tracks; 1e: several instruments per track; 2a: performance modulators');
+  assert.equal(M.SCHEMA, 6, '1a: uid; 1b: track.lay; 1c: project v2 tracks; 1e: several instruments per track; 2a: performance modulators; 2b: modulation everywhere');
   assert.equal(M.STEPS.length, M.SCHEMA, 'STEPS[n] turns schema n into n + 1');
   assert.equal(M.READ_ONLY_NOTICE, 'Opened read-only: saved by a newer SYNTH Canvas · Reload');
   assert.equal(M.schemaOf, A.schemaOf, 'one definition of a project\'s schema (the store\'s gate uses it)');
@@ -614,7 +614,7 @@ const OPT2 = { sr: 48000, bpm: 120 };
 
 test('2a schema 5: additive (a 4 opens as before); song.normDev keeps mod rows by normRow\'s rules and mid, drops invalid ones; perf', () => {
   const p4 = Object.assign(M.toV2(mainProject()), { schema: 4, uid: 'p_abc123xyz0' }), up = M.upgrade(deepFreeze(jclone(p4)));
-  assert.deepEqual([up.from, up.readOnly, up.p.schema], [4, false, 5]);
+  assert.deepEqual([up.from, up.readOnly, up.p.schema], [4, false, M.SCHEMA]);
   assert.deepEqual(Object.assign({}, up.p, { schema: 4 }), p4, 'nothing converted');
   assert.deepEqual(M.STEPS[4]({ schema: 4, tracks: [1] }), { schema: 5, tracks: [1] });
   const raw2 = { id: 'r2', src: 've.out', dst: 'i1:a.level', amt: 3, bi: true, curve: -9, aux: 'lfo2', inv: 1, byp: 0.7, out: 2, acurve: 0.5, crv: [[0.5, 2, 9], 'x', [0, 0]], rise: 0.3, fall: 0.9, slink: 1, extra: 1 };
@@ -662,7 +662,7 @@ test('2a schema 5: additive (a 4 opens as before); song.normDev keeps mod rows b
 
 test('2a cv-model: the modulator singletons and the project Mod Wheel (place, list its cables everywhere, remove)', () => {
   const t = sxTrack('trk_1'), t2 = sxTrack('trk_2'), p = { tracks: [t, t2] };
-  assert.deepEqual([MO.addModDev(t, 'velo'), MO.addModDev(t, 'velo'), MO.addModDev(t, 'at'), MO.addModDev(t, 'bend'), MO.addModDev(t, 'lfo'), MO.addModDev(null, 'at')], ['ve', null, 'at', 'bd', null, null]);
+  assert.deepEqual([MO.addModDev(t, 'velo'), MO.addModDev(t, 'velo'), MO.addModDev(t, 'at'), MO.addModDev(t, 'bend'), MO.addModDev(t, 'x'), MO.addModDev(null, 'at')], ['ve', null, 'at', 'bd', null, null]);
   assert.deepEqual([t.dev.ve, t.dev.at, t.dev.bd], [{ kind: 'velo' }, { kind: 'at' }, { kind: 'bend' }]);
   assert.equal(G.compileTrack(t).canonical, true);
   assert.deepEqual(MO.sourcesOf(t, p).map(x => x.id), ['ve.out', 'at.out', 'bd.out']);
@@ -715,19 +715,19 @@ test('2a cv-model addMod: serum-core addMod\'s drop rules, overrides through nor
     [t, 'wheel', 'i9:f.cutoff', {}, 'end'], [t, 'wheel', 'nope', {}, 'end'],
     [t, 'wheel', 'i1:nope', {}, 'nomod'], [t, 'wheel', `i1:fx.${cv}.${nomodId.pid}`, {}, 'nomod'],
     [t, 'wheel', 'i1:f.cutoff', { aux: 'nope' }, 'aux'],
-    [j, 'wheel', 'i1:cf', {}, 'stage'], [j, 'wheel', 'fx1:fx.x.mix', {}, 'stage'],
+    [j, 'wheel', 'i1:pwm', {}, 'stage'], [j, 'wheel', 'fx1:fx.x.mix', {}, 'nomod'], [j, 'wheel', 'i1:nope', {}, 'nomod'], // (2b: a chunk knob is stage 5; a knob that is not there)
   ];
   for (const [tr, src, dst, opt, code] of cases) {
     const was = JSON.stringify(tr), r = MO.addMod(tr, src, dst, opt);
     assert.deepEqual([r.ok, r.code, r.row], [false, code, null], src + ' → ' + dst);
     assert.equal(JSON.stringify(tr), was, 'untouched');
   }
-  assert.equal(MO.addMod(j, 'wheel', 'i1:cf').why, 'Classic knobs take modulation from stage 2b');
+  assert.equal(MO.addMod(j, 'wheel', 'i1:pwm').why, 'This knob takes modulation from stage 5');
   assert.deepEqual(t.mods, before);
   assert.deepEqual(jclone(t), J);
   // the 64-row budget: the Serum's own rows count
   for (let k = 0; k < 64 - t.mods.length; k++) s.matrix[k] = C.normRow({ src: 'lfo2', amt: 0.1, dst: 'a.wt' });
-  assert.deepEqual(G.modBudget(t, 'i1'), { preset: 64 - t.mods.length, canvas: t.mods.length, left: [], max: 64 });
+  assert.deepEqual([G.modBudget(t, 'i1').preset, G.modBudget(t, 'i1').canvas, G.modBudget(t, 'i1').left], [64 - t.mods.length, t.mods.length, []]);
   const f = MO.addMod(t, 'wheel', 'i1:f.cutoff', { name: 'Serum 1' });
   assert.deepEqual([f.ok, f.code, f.why], [false, 'full', 'Serum 1’s mod rows are full (64/64)']);
   assert.equal(MO.addMod(t, 'wheel', 'i1:f.cutoff').why, 'Serum’s mod rows are full (64/64)');
@@ -744,7 +744,7 @@ test('2a cv-model: preset rows, Save with preset (toPreset) and Keep on canvas (
   MO.addMod(t, 'wheel', 'i1:f.cutoff', { amt: 0.3, curve: 0.2 });
   MO.addMod(t, 've.out', 'i1:a.pan', { amt: -0.5, rise: 0.1, fall: 0.3 });
   const pat = () => G.instPatch(d, OPT2, G.modRowsFor(t, 'i1')), P0 = pat();
-  assert.deepEqual(G.injectMods(d, t.mods).placed, [{ id: 'r1', slot: 2 }, { id: 'r2', slot: 4 }]);
+  assert.deepEqual(G.injectMods(d, t.mods).placed, [{ id: 'r1', slot: 2, src: 'wheel' }, { id: 'r2', slot: 4, src: 'velo' }]);
   // canvas → preset: r2 goes into the slot it compiles to (the caller applies the matrix through sxEdit)
   const r2 = jclone(t.mods[1]), a = MO.toPreset(t, 'r2', s);
   assert.deepEqual([a.ok, a.slot, t.mods.map(r => r.id)], [true, 4, ['r1']]);
@@ -781,7 +781,7 @@ test('2a cv-model: removeInst, setModel (Serum → classic) and the model access
   MO.addModDev(t, 'velo');
   MO.addMod(t, 'wheel', 'i1:f.cutoff'); MO.addMod(t, 've.out', i2 + ':a.level'); MO.addMod(t, 'wheel', i2 + ':f.res');
   const r = MO.setModel(t, i2, 'minimoog', { vals: {} });
-  assert.deepEqual([r.ok, r.rows, r.notice], [true, ['r2', 'r3'], '2 modulation cables to the Serum removed: classic knobs take modulation from stage 2b']);
+  assert.deepEqual([r.ok, r.rows, r.notice], [true, ['r2', 'r3'], '2 modulation cables to the Serum removed: the new model has no such knobs']);
   assert.deepEqual(t.mods.map(x => x.id), ['r1']);
   assert.deepEqual(MO.setModel(t, i2, 'serum', { vals: { s: C.normalizeSerum(C.defaultSerum()) } }).rows, [], 'classic → Serum: nothing to drop');
   MO.addMod(t, 'wheel', i2 + ':f.res');
@@ -827,4 +827,61 @@ test('2a review H3: Save as classic project names the modulation cables, modulat
     '“Mods 2”: its Aftertouch module', '“Mods 3”: 1 modulation cable']);
   assert.deepEqual([r.p.tracks.length, 'perf' in r.p, r.p.tracks.some(t => 'mods' in t || 'mid' in t || 'dev' in t)], [3, false, false]);
   assert.deepEqual(M.toV1({ schema: 5, perf: { wheel: null }, tracks: [Object.assign(F.tracks()[2], { mods: [] })] }).lost, [], 'nothing of 2a: nothing named');
+});
+
+/* ------------------------------------------------------------------ stage 2b: schema 6, every module's state, any port (IMPL-2b §1.4) */
+test('2b schema 6: additive (a 5 opens as before); song.normDev bounds every module kind\'s state through serum-core\'s normalisers; round trips', () => {
+  const p5 = Object.assign(M.toV2(mainProject()), { schema: 5, uid: 'p_abc123xyz0' }), up = M.upgrade(deepFreeze(jclone(p5)));
+  assert.deepEqual([up.from, up.readOnly, up.p.schema], [5, false, 6]);
+  assert.deepEqual(Object.assign({}, up.p, { schema: 5 }), p5, 'nothing converted');
+  assert.deepEqual(M.STEPS[5]({ schema: 5, tracks: [1] }), { schema: 6, tracks: [1] });
+  assert.equal(M.STEPS.length, 6);
+  const raw = { dev: { i1: { kind: 'synth', model: 'serum' }, out: { kind: 'out' },
+    l1: { kind: 'lfo', lfo: { mono: 1, mode: 'env', pts: [[0, 0, 0], [1, 1, 0]], junk: 1 }, rate: 2, rise: -1, name: 'Wobble', junk: 2 },
+    e1: { kind: 'env', env: { legInv: true, junk: 1 }, att: 0.3, sus: 7, crv: [0.2, 'x'] },
+    h1: { kind: 'chaos', chaos: { mono: 0, sh: 1 }, rate: 0.4, bpm: 1, smooth: 0.5 },
+    m1: { kind: 'macro', v: [0.5, 2, -1, 'x'], names: ['A very long macro name indeed', 7, 'B'] },
+    c1: { kind: 'cc', cc: 300, ch: 17, v: 0.5 }, c2: { kind: 'cc' }, nt: { kind: 'note', junk: 1 }, ve: { kind: 'velo' }, zz: { kind: 'later', any: [1, 2] } }, wires: [],
+    mods: [{ id: 'r1', src: 'm1.k3', dst: 'i1:f.cutoff' }, { id: 'r2', src: 'i1/lfo3.out', dst: 'i1:a.wt' }, { id: 'r3', src: 'l1.out', dst: 'i2:cf' }, { id: 'r4', src: 'm1.k9', dst: 'i1:f.res' }] };
+  const d = S.normDev(raw);
+  assert.deepEqual(d.dev.l1, { kind: 'lfo', lfo: C.normLfo({ mode: 'env', mono: 1, pts: [[0, 0, 0], [1, 1, 0]] }), rate: 1, rise: 0, delay: 0, smooth: 0, phase: 0, name: 'Wobble' });
+  assert.deepEqual(Object.assign({ kind: 'lfo' }, C.normLfoMod(raw.dev.l1), { name: 'Wobble' }), d.dev.l1);
+  assert.deepEqual(d.dev.e1, { kind: 'env', env: { bpm: 0, legInv: 1, stealRe: 0 }, att: 0.3, hold: 0, dec: 0.5, sus: 1, rel: 0.215, start: 0, end: 0, crv: [0.2, 0.666, 0.666] });
+  assert.deepEqual(d.dev.h1, { kind: 'chaos', chaos: { mono: 0, sh: 1 }, rate: 0.4, bpm: 1, smooth: 0.5 });
+  assert.deepEqual(d.dev.m1, { kind: 'macro', v: [0.5, 1, 0, 0, 0, 0, 0, 0], names: ['A very long macr', '', 'B', '', '', '', '', ''] });
+  assert.deepEqual([d.dev.c1, d.dev.c2, d.dev.nt, d.dev.ve, d.dev.zz], [{ kind: 'cc', cc: 127, ch: 16, v: 0.5 }, { kind: 'cc', cc: 1, ch: 0, v: 0 }, { kind: 'note' }, { kind: 'velo' }, { kind: 'later', any: [1, 2] }]);
+  assert.deepEqual(d.mods.map(r => r.src), ['m1.k3', 'i1/lfo3.out', 'l1.out', 'm1.k9'], 'any port: the shape is kept (the page checks what exists)');
+  assert.deepEqual(S.normModDev({ kind: 'lfo' }), Object.assign({ kind: 'lfo' }, C.normLfoMod({})));
+  assert.deepEqual([S.normModDev(null), S.normModDev({ kind: 'env' }).sus, S.normModDev({ kind: 'chaos' }).chaos.mono, C.normChaosMod({}).rate], [null, 1, 1, 0.2512]);
+  // the full round trip: a track with every kind, serialised, History
+  const t = sxTrack(), p = { name: 'P', tracks: [t], perf: { wheel: { v: 1 } } };
+  for (const k of ['lfo', 'env', 'macro', 'cc', 'chaos', 'note', 'velo']) MO.addModDev(t, k);
+  MO.setModState(t, 'l1', { lfo: { mono: 0 }, rate: 0.7 });
+  MO.setModState(t, 'm1', { v: [0.3], names: ['Cut'] });
+  MO.addMod(t, 'm1.k1', 'i1:f.cutoff'); MO.addMod(t, 'l1.out', 'i1:a.wt'); MO.addMod(t, 'i1/lfo2.out', 'i1:a.pan');
+  const back = S.deserialize(S.serialize(p)), u = back.tracks[0];
+  assert.deepEqual([u.dev, u.mods, u.mid], [jclone(t.dev), jclone(t.mods), t.mid]);
+  assert.deepEqual(u.dev.l1.lfo.mono, 0);
+  const H = new S.History(), q = { perf: { wheel: { v: 1 } }, tracks: [jclone(t)] };
+  H.record(q);
+  q.tracks[0].dev.l1.rate = 0.1; q.tracks[0].mods = [];
+  assert.deepEqual(H.undo(q).tracks[0], jclone(t));
+});
+
+test('2b splitTracks: rows from any port (a macro knob), the instrument\'s own LFO (renamed with it); another instrument\'s LFO does not survive; toV1 names every module', () => {
+  const t = v2({ id: 'trk_3', name: 'Duo', model: 'serum', vals: { s: C.normalizeSerum(C.defaultSerum()) } });
+  t.dev.i2 = { kind: 'synth', model: 'serum', vals: { s: C.normalizeSerum(C.defaultSerum()) }, preset: null, fx: C.defaultFx2() };
+  t.wires.push({ id: 'w2', a: 'i2.out', b: 'out.in' });
+  t.dev.m1 = S.normModDev({ kind: 'macro' }); t.dev.l1 = S.normModDev({ kind: 'lfo' }); t.dev.h2 = S.normModDev({ kind: 'chaos' }); t.nid = 3;
+  t.mods = [mrow({ id: 'r1', src: 'm1.k3' }), mrow({ id: 'r2', src: 'm1.k4', dst: 'i2:a.level' }), mrow({ id: 'r3', src: 'i2/lfo3.out', dst: 'i2:f.res' }), mrow({ id: 'r4', src: 'i1/env2.out', dst: 'i2:a.wt' }),
+    mrow({ id: 'r5', src: 'l1.out', dst: 'i2:a.pan' }), mrow({ id: 'r6', src: 'i1/lfo1.out', dst: 'i1:a.pan' })];
+  t.mid = 7;
+  const r = split({ schema: M.SCHEMA, tracks: [t] }), [A, B] = r.p.tracks;
+  assert.deepEqual([A.mods.map(x => x.id + ':' + x.src), Object.keys(A.dev).sort()], [['r1:m1.k3', 'r6:i1/lfo1.out'], ['h2', 'i1', 'l1', 'm1', 'out']]);
+  assert.deepEqual([B.mods.map(x => x.id + ':' + x.src + '>' + x.dst), Object.keys(B.dev).sort()], [['r2:m1.k4>i1:a.level', 'r3:i1/lfo3.out>i1:f.res', 'r5:l1.out>i1:a.pan'], ['i1', 'l1', 'm1', 'out']], 'its own LFO renamed with it; the modules it reads copied');
+  assert.match(r.notices[0], /1 modulation cable to nothing that survives was dropped/);
+  assert.deepEqual(r.p.tracks.map(x => G.compileTrack(x).canonical), [true, true]);
+  assert.deepEqual(S.deserialize(JSON.stringify(r.p)).tracks.map(x => x.mods.map(y => y.id)), [['r1', 'r6'], ['r2', 'r3', 'r5']]);
+  const v = M.toV1({ schema: M.SCHEMA, perf: { wheel: null }, tracks: [A] });
+  assert.deepEqual(v.lost, ['“Duo”: 2 modulation cables', '“Duo”: its LFO 1, Macro 1, Chaos 2 modules']);
 });

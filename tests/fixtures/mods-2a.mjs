@@ -7,7 +7,8 @@
 //     1  'trk_m2'  a Serum whose own matrix (its preset) already holds a wheel row → f.res (slot 0) + Aftertouch (at): a
 //                  canvas aftertouch row → its own reverb's mix (fx.rev.mix) — slot 1
 //     2  'trk_m3'  a Serum with 64 preset rows (lfo1 → f.cutoff) and one canvas wheel row → left (not compiled)
-//   MERGED[i]  { placed, left, rows: { slot: native row } } — the slots the canvas rows take and the rows there
+//   MERGED[i]  { placed, left, rows: { slot: native row } } — the slots the canvas rows take (2b: with the Serum source each
+//              reads) and the rows there
 //   CP[i]      the compiled matrix fields of the merged state (p.serum: mN; mSlot / mSrc / mDst / mAmt / mBi / mCtx / mCrv
 //              over the first mN entries) at { sr: 48000, bpm: 120 }
 //   cpOf(p)    those fields of a compiled patch (p.serum), as plain arrays, for a deepEqual with CP[i]
@@ -41,11 +42,11 @@ export function tracks() {
 }
 
 export const MERGED = [
-  { placed: [{ id: 'r1', slot: 0 }, { id: 'r2', slot: 1 }], left: [], rows: {
+  { placed: [{ id: 'r1', slot: 0, src: 'wheel' }, { id: 'r2', slot: 1, src: 'velo' }], left: [], rows: {
     0: row({ src: 'wheel', amt: 0.5, dst: 'f.cutoff' }),
     1: row({ src: 'velo', amt: 0.35, dst: 'a.level', curve: -0.4, crv: [[0, 0, 0], [0.6, 0.25, 0.3], [1, 1, 0]] }),
   } },
-  { placed: [{ id: 'r1', slot: 1 }], left: [], rows: {
+  { placed: [{ id: 'r1', slot: 1, src: 'at' }], left: [], rows: {
     0: row({ src: 'wheel', amt: 0.3, dst: 'f.res' }), // (the preset's own row, untouched)
     1: row({ src: 'at', amt: 0.6, dst: 'fx.rev.mix', rise: 0.25, fall: 0.25, slink: 1 }),
   } },

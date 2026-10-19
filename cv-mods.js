@@ -1,7 +1,8 @@
 // cv-mods.js — what each knob of SYNTH Canvas is, and when it can be modulated (SPEC-canvas §7.2, §7.4, §7.8; stage 1a
 // skeleton). Pure ES module: no DOM, nothing at module top level but tables (node-tested: tests/cv-mods.test.mjs).
 //
-// Destination descriptors (§7.2), one shape for every module: { id, label, law, lo, hi, def, fmt, scope, cls, nomod }
+// Destination descriptors (§7.2), one shape for every module: { id, label, law, lo, hi, def, fmt, scope, cls, nomod, ctr }
+//   (ctr: a centred knob — Serum's ctr flag, a classic −x…x knob, an FX row's ctr — bipolar drop defaults, 2b)
 //   descs(dev)              dev = a device of track.dev (§5.1): { kind: 'synth', model, vals } | { kind: 'panel', fx } (1c:
 //                           the panel's whole FX state) | { kind: 'panel', rack } (§5.1's single rack)
 //   classicDescs(modelId)   models.js controls: knobs 'lin' over [min, max], selectors 'enum' (opts), toggles 'bool'; cls from
@@ -291,12 +292,13 @@ export function classicDescs(modelId) {
   if (!m || m.custom) return [];
   return m.controls.map(c => {
     const cls = classOf(m.id, c.id);
-    return { id: c.id, label: c.label, law: LAW[c.t], lo: c.t === 'k' ? c.min : 0, hi: c.t === 'k' ? c.max : c.t === 's' ? c.opts.length - 1 : 1,
-      def: c.def, fmt: c.fmt || null, opts: c.t === 's' ? c.opts.slice() : null, scope: null, cls, nomod: cls === 'struct' || cls === 'none' };
+    const lo = c.t === 'k' ? c.min : 0, hi = c.t === 'k' ? c.max : c.t === 's' ? c.opts.length - 1 : 1;
+    return { id: c.id, label: c.label, law: LAW[c.t], lo, hi, def: c.def, fmt: c.fmt || null, opts: c.t === 's' ? c.opts.slice() : null, scope: null, cls,
+      nomod: cls === 'struct' || cls === 'none', ctr: c.t === 'k' && lo < 0 && hi > 0 && lo === -hi ? 1 : 0 }; // (ctr: a centred knob, −x…x: bipolar drops)
   });
 }
 export function serumDescs() {
-  return DESTS.map(d => ({ id: d.id, label: d.label, law: d.law, lo: d.lo, hi: d.hi, def: d.def, fmt: d.fmt, scope: d.scope, cls: null, nomod: false }));
+  return DESTS.map(d => ({ id: d.id, label: d.label, law: d.law, lo: d.lo, hi: d.hi, def: d.def, fmt: d.fmt, scope: d.scope, cls: null, nomod: false, ctr: d.ctr }));
 }
 // a rack ({mods}) or a v2 FX state ({racks}) → its effects' rows, splitter branches included
 export function rackDescs(rack) {
@@ -305,7 +307,7 @@ export function rackDescs(rack) {
     for (const I of list || []) {
       if (!isObj(I)) continue;
       const tab = FXP_TAB[I.type], rows = tab ? tab[String(I.v)] || tab['2'] || tab['1'] || [] : [];
-      for (const r of rows) out.push({ id: `fx.${I.id}.${r.pid}`, label: r.label, law: r.law, lo: r.lo, hi: r.hi, def: r.def, fmt: r.fmt, scope: 'G', cls: null, nomod: !!r.nomod });
+      for (const r of rows) out.push({ id: `fx.${I.id}.${r.pid}`, label: r.label, law: r.law, lo: r.lo, hi: r.hi, def: r.def, fmt: r.fmt, scope: 'G', cls: null, nomod: !!r.nomod, ctr: r.ctr ? 1 : 0 });
       if (Array.isArray(I.br)) for (const b of I.br) walk(b);
     }
   };
@@ -321,48 +323,181 @@ export function descs(dev) {
   return [];
 }
 
-/* ------------------------------------------------------------------ performance modulators (stage 2a, IMPL-2a §1, §2.2) */
-// A mod cable is a row of track.mods (§5.1): { id: 'r<n>', src, dst: '<dev>:<param>', …the matrix row's fields }. In 2a
-// its source is the project Mod Wheel ('wheel') or a track's Velocity / Aftertouch / Bend module ('ve.out' / 'at.out' /
-// 'bd.out'), its destination a Serum's knob (a DESTS id) or one of that Serum's own FX knobs (fx.<inst>.<pid>); the
-// compile injects it as a native row (§7.7 items 1–2, cv-graph injectMods: no DSP change).
-//   MOD_SRC / SRC_MOD        canvas source ↔ the Serum source its row compiles to (wheel / velo / at / bend)
-//   MOD_DEV                  the per-track singletons: kind → device id (velo → 've', at → 'at', bend → 'bd')
-//   destOk(dev, paramId)     { ok, why, stage }: a Serum's DESTS id or own-FX id (not nomod); classic / panel knobs:
-//                            stage '2b' (struct / none classic knobs: never); anything else refused
-//   sourcesOf(track, p)      [{ id, label, scope: 'project' | 'track', kind }] the sources a cable may start from on track
-//   wheelTracks(p)           the tracks holding at least one 'wheel' row while the project's wheel is placed (§7.10: the
-//                            live wheel reaches them too)
-export const MOD_SRC = Object.freeze({ wheel: 'wheel', 've.out': 'velo', 'at.out': 'at', 'bd.out': 'bend' });
-export const SRC_MOD = Object.freeze({ wheel: 'wheel', velo: 've.out', at: 'at.out', bend: 'bd.out' });
-export const MOD_DEV = Object.freeze({ velo: 've', at: 'at', bend: 'bd' });
-export const MOD_LABEL = Object.freeze({ wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend' });
-const SERUM_IDS = new Set(DESTS.filter(d => !/^fx\./.test(d.id)).map(d => d.id)); // (FX ids: the Serum's own rack, dynamic)
-const NOMOD = 'This knob can’t be modulated';
-export function destOk(dev, id) {
-  const no = (why, stage = null) => ({ ok: false, why, stage });
-  if (!isObj(dev) || typeof id !== 'string' || !id) return no(NOMOD);
-  if (dev.kind === 'panel') return no('FX panel knobs take modulation from stage 2b', '2b');
-  if (dev.kind !== 'synth') return no(NOMOD);
-  if (dev.model !== 'serum') {
-    const c = classOf(dev.model, id);
-    return c === null || c === 'struct' || c === 'none' ? no(NOMOD) : no('Classic knobs take modulation from stage 2b', '2b');
+/* ------------------------------------------------------------------ modulators (stage 2a IMPL-2a §1, §2.2; stage 2b IMPL-2b §1) */
+// A mod cable is a row of track.mods (§5.1): { id: 'r<n>', src, dst: '<dev>:<param>', …the matrix row's fields }. Its source
+// is the project Mod Wheel ('wheel'), a modulator module's jack ('<devId>.out'; a macro's '<devId>.k1'…'k8') or a Serum's
+// own LFO / ENV ('<serumId>/lfo3.out', '<serumId>/env2.out': a linked modulator, §7.7.5); its destination a Serum knob
+// (a DESTS id or one of that Serum's own FX knobs), a classic knob (2b: the sm / apply / proc classes) or a shared panel's
+// knob. The compile (cv-graph compileMods / injectMods) turns them into native Serum rows, ext rows, injected slots and
+// ModCore rows.
+//   MOD_SRC / SRC_MOD        canvas source ↔ the native Serum source a row compiles to as it is (wheel / velo / at / bend / note)
+//   MOD_DEV                  the per-track singletons: kind → device id (velo 've', at 'at', bend 'bd', note 'nt')
+//   MOD_LABEL                kind → label; MOD_PREFIX kind → id prefix ('l', 'e', 'm', 'c', 'h' numbered; the singletons'
+//                            ids); MOD_MULTI the kinds a track may hold several of; MOD_ORDER the Tidy order of kinds
+//   kindOfId(id)             the kind an id spells ('l3' → 'lfo', 'nt' → 'note'); null for anything else
+//   modLabelOf(id, dev)      'LFO 3', 'Macro 1', 'Velocity' (dev: the device, its kind; no kind: the id)
+//   modDevs(track)           [{ id, dev, kind }] the modulator devices of a track in Tidy order (by kind, then by number)
+//   srcOf(src)               'wheel' → { dev: 'wheel', port: '', link: '' }; '<dev>.<port>' → { dev, port, link: '' };
+//                            '<serum>/lfo3.out' → { dev: serum, port: 'out', link: 'lfo3' }; null for anything else
+//   srcDev(track, src)       { q: srcOf(src), dev, kind } the device the source names on this track (kind 'wheel' / 'link'
+//                            / the module's); null when nothing of that kind is there
+//   perNoteOf(track, src)    true for a source that follows the note: velo, note, a PER NOTE lfo (mono 0), an env, a poly
+//                            chaos, a linked POLY Serum LFO / ENV; false for the globals; null for an unknown source
+//   sourcesOf(track, p)      [{ id, label, scope: 'project' | 'track', kind, dev, port, perNote }] the sources a cable may
+//                            start from on this track: the wheel when placed, then every module (a macro: 8 entries k1…k8)
+//   linkSources(track)       the linked sources: every Serum's LFO 1–10 and ENV 1–4 ({ id, label, scope: 'track', kind:
+//                            'link', dev, port: 'out', link, perNote, used }; used: the Serum's own rows read it)
+//   destOk(dev, paramId)     { ok, why, stage }: a Serum's DESTS / own-FX id (not nomod); a classic sm / apply / proc knob
+//                            (chunk: stage '5'; struct / none: never; a switched-off oscillator's level: "Switch the
+//                            oscillator on…"); a panel's effect knob (not nomod)
+//   classicTarget(model, vals, ctlId) → { cls, slot, field, fields, on } | null   the engine-side target of a classic knob
+//                            on the live panel values: sm → smTargets' slot index (SM_SLOT; the oscillator resolved by a
+//                            two-point sweep of the live patch), apply / proc → the patch field ('lfo.rate'); fields: every
+//                            changed path; on: false for the level of a switched-off oscillator
+//   wheelTracks(p)           the tracks holding at least one 'wheel' row while the project's wheel is placed (§7.10)
+export const MOD_SRC = Object.freeze({ wheel: 'wheel', 've.out': 'velo', 'at.out': 'at', 'bd.out': 'bend', 'nt.out': 'note' });
+export const SRC_MOD = Object.freeze({ wheel: 'wheel', velo: 've.out', at: 'at.out', bend: 'bd.out', note: 'nt.out' });
+export const MOD_DEV = Object.freeze({ velo: 've', at: 'at', bend: 'bd', note: 'nt' });
+export const MOD_LABEL = Object.freeze({ wheel: 'Mod Wheel', velo: 'Velocity', at: 'Aftertouch', bend: 'Bend', note: 'Note', lfo: 'LFO', env: 'ENV', macro: 'Macro', cc: 'CC', chaos: 'Chaos' });
+export const MOD_PREFIX = Object.freeze({ lfo: 'l', env: 'e', macro: 'm', cc: 'c', chaos: 'h', velo: 've', at: 'at', bend: 'bd', note: 'nt' });
+export const MOD_MULTI = Object.freeze(['lfo', 'env', 'macro', 'cc', 'chaos']);
+export const MOD_ORDER = Object.freeze(['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos']);
+const ID_KIND = { l: 'lfo', e: 'env', m: 'macro', c: 'cc', h: 'chaos' };
+export function kindOfId(id) {
+  if (typeof id !== 'string') return null;
+  const m = /^([lemch])([1-9]\d{0,5})$/.exec(id);
+  if (m) return ID_KIND[m[1]];
+  for (const k of Object.keys(MOD_DEV)) if (MOD_DEV[k] === id) return k;
+  return null;
+}
+const numOf = id => { const m = /(\d+)$/.exec(id); return m ? +m[1] : 0; };
+export function modLabelOf(id, dev) {
+  const kind = isObj(dev) && typeof dev.kind === 'string' ? dev.kind : kindOfId(id), L = MOD_LABEL[kind];
+  if (!L) return String(id);
+  return MOD_MULTI.includes(kind) ? L + ' ' + (numOf(id) || 1) : L;
+}
+export function modDevs(t) {
+  const D = isObj(t) && isObj(t.dev) ? t.dev : {}, out = [];
+  for (const id of Object.keys(D)) { const d = D[id]; if (isObj(d) && MOD_LABEL[d.kind] && d.kind !== 'wheel' && kindOfId(id) === d.kind) out.push({ id, dev: d, kind: d.kind }); }
+  return out.sort((a, b) => MOD_ORDER.indexOf(a.kind) - MOD_ORDER.indexOf(b.kind) || numOf(a.id) - numOf(b.id));
+}
+export function srcOf(src) {
+  if (src === 'wheel') return { dev: 'wheel', port: '', link: '' };
+  const m = typeof src === 'string' ? /^([a-z][a-z0-9]{0,15})(?:\/(lfo(?:[1-9]|10)|env[1-4]))?\.([a-z][a-z0-9]{0,7})$/.exec(src) : null;
+  return m ? { dev: m[1], port: m[3], link: m[2] || '' } : null;
+}
+export function srcDev(t, src) {
+  const q = srcOf(src), D = isObj(t) && isObj(t.dev) ? t.dev : {};
+  if (!q) return null;
+  if (q.dev === 'wheel') return { q, dev: null, kind: 'wheel' };
+  const d = D[q.dev];
+  if (!isObj(d)) return null;
+  if (q.link) return d.kind === 'synth' && d.model === 'serum' && q.port === 'out' ? { q, dev: d, kind: 'link' } : null;
+  if (d.kind === 'macro') return /^k[1-8]$/.test(q.port) && kindOfId(q.dev) === 'macro' ? { q, dev: d, kind: 'macro' } : null;
+  return MOD_LABEL[d.kind] && d.kind !== 'wheel' && kindOfId(q.dev) === d.kind && q.port === 'out' ? { q, dev: d, kind: d.kind } : null;
+}
+export function perNoteOf(t, src) {
+  const x = srcDev(t, src);
+  if (!x) return null;
+  if (x.kind === 'link') {
+    const s = isObj(x.dev.vals) ? x.dev.vals.s : null, m = /^lfo(\d+)$/.exec(x.q.link);
+    if (!m) return true; // (an envelope)
+    const L = isObj(s) && Array.isArray(s.lfo) ? s.lfo[+m[1] - 1] : null;
+    return !(isObj(L) && L.mono);
   }
-  if (/^fx\./.test(id)) { const d = rackDescs(dev.fx).find(x => x.id === id); return d && !d.nomod ? { ok: true, why: '', stage: null } : no(NOMOD); }
-  return SERUM_IDS.has(id) ? { ok: true, why: '', stage: null } : no(NOMOD);
+  if (x.kind === 'lfo') return !(isObj(x.dev.lfo) && x.dev.lfo.mono);
+  if (x.kind === 'chaos') return !(isObj(x.dev.chaos) && x.dev.chaos.mono);
+  return x.kind === 'velo' || x.kind === 'note' || x.kind === 'env';
 }
 const wheelOn = p => isObj(p) && isObj(p.perf) && isObj(p.perf.wheel);
 export function sourcesOf(t, p) {
   const out = [];
-  if (wheelOn(p)) out.push({ id: 'wheel', label: MOD_LABEL.wheel, scope: 'project', kind: 'wheel' });
-  const dev = isObj(t) && isObj(t.dev) ? t.dev : {};
-  for (const kind of Object.keys(MOD_DEV)) {
-    const id = MOD_DEV[kind];
-    if (isObj(dev[id]) && dev[id].kind === kind) out.push({ id: id + '.out', label: MOD_LABEL[kind], scope: 'track', kind });
+  if (wheelOn(p)) out.push({ id: 'wheel', label: MOD_LABEL.wheel, scope: 'project', kind: 'wheel', dev: 'wheel', port: '', perNote: false });
+  for (const { id, dev, kind } of modDevs(t)) {
+    const label = modLabelOf(id, dev);
+    if (kind === 'macro') {
+      const names = Array.isArray(dev.names) ? dev.names : [];
+      for (let k = 1; k <= 8; k++) out.push({ id: id + '.k' + k, label: (typeof names[k - 1] === 'string' && names[k - 1]) || label + ' · ' + k, scope: 'track', kind, dev: id, port: 'k' + k, perNote: false });
+    } else out.push({ id: id + '.out', label, scope: 'track', kind, dev: id, port: 'out', perNote: !!perNoteOf(t, id + '.out') });
   }
   return out;
+}
+export function linkSources(t) {
+  const D = isObj(t) && isObj(t.dev) ? t.dev : {}, out = [];
+  for (const id of Object.keys(D)) {
+    const d = D[id];
+    if (!isObj(d) || d.kind !== 'synth' || d.model !== 'serum') continue;
+    const s = isObj(d.vals) ? d.vals.s : null, M = isObj(s) && Array.isArray(s.matrix) ? s.matrix : [], name = d.name || 'Serum';
+    const used = x => M.some(r => isObj(r) && r.dst && (r.src === x || r.src === x + 'y' || r.aux === x));
+    for (let l = 1; l <= 10; l++) out.push({ id: `${id}/lfo${l}.out`, label: `${name} LFO ${l}`, scope: 'track', kind: 'link', dev: id, port: 'out', link: 'lfo' + l, perNote: !!perNoteOf(t, `${id}/lfo${l}.out`), used: used('lfo' + l) });
+    for (let e = 1; e <= 4; e++) out.push({ id: `${id}/env${e}.out`, label: `${name} ENV ${e}`, scope: 'track', kind: 'link', dev: id, port: 'out', link: 'env' + e, perNote: true, used: e === 1 || used('env' + e) });
+  }
+  return out;
+}
+// engine.js smTargets slots (S_*): the field a classic knob changes → the smoothed slot an sm row offsets (per-oscillator
+// fields: + the oscillator index)
+export const SM_SLOT = Object.freeze({ 'vcf.oct': 0, 'vcf.envOff': 1, 'vcf.env': 2, 'vcf.res': 3, 'vcf.drive': 4, 'hpf.oct': 5, 'hpf.res': 6, 'dual.oct': 7, 'dual.res': 8,
+  'dual.hoct': 9, 'dual.hres': 10, level: 11, 'osc.lev': 12, 'osc.on': 12, 'osc.pw': 15, 'osc.oct': 18, 'osc.fine': 18, sub: 21, noise: 22, ring: 23, ext: 24, 'rm.depth': 25 });
+const SM_PRIO = ['osc.lev', 'osc.pw', 'osc.oct', 'osc.fine', 'vcf.oct', 'vcf.res', 'vcf.env', 'vcf.envOff', 'vcf.drive', 'hpf.oct', 'hpf.res', 'dual.oct', 'dual.res', 'dual.hoct', 'dual.hres',
+  'sub', 'noise', 'ring', 'ext', 'rm.depth', 'level', 'osc.on'];
+// every path that differs between patches a and b, array indices kept ('osc.1.lev'); missing ≡ 0 ≡ false
+function diffIdx(a, b, path = '', out = []) {
+  if (isObj(a) && isObj(b)) { for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) diffIdx(a[k], b[k], path ? path + '.' + k : k, out); return out; }
+  if (isObj(a) !== isObj(b)) { out.push(path + '?'); return out; }
+  if (z(a) !== z(b) && !(a !== a && b !== b)) out.push(path);
+  return out;
+}
+const fullVals = (m, vals) => { const v = {}; for (const c of m.controls) v[c.id] = isObj(vals) && vals[c.id] !== undefined ? vals[c.id] : c.def; return v; };
+// the other value a control is swept to from its live one (the far end; a selector: the next option; a toggle: flipped)
+const altOf = (c, v) => (c.t === 'b' ? (v ? 0 : 1) : c.t === 's' ? (v + 1) % c.opts.length : v !== c.max ? c.max : c.min);
+const normPath = f => f.replace(/\.\d+(?=\.|$)/g, '');
+export function classicTarget(model, vals, ctlId) {
+  const m = modelOf(model), c = m && !m.custom ? m.controls.find(x => x.id === ctlId) : null;
+  if (!c) return null;
+  const cls = classOf(m.id, c.id), v0 = fullVals(m, vals), p0 = patchOf(m, v0), p1 = patchOf(m, Object.assign({}, v0, { [c.id]: altOf(c, v0[c.id]) }));
+  const fields = diffIdx(p0, p1), engine = p0.engine || 'analog', out = { cls, slot: -1, field: null, fields, on: true };
+  if ((cls === 'sm' || cls === 'apply' || cls === 'proc') && !fields.some(x => fieldClass(normPath(x), engine) === cls)) {
+    // the live patch does not move (a mixer switch off, a wave that has no PW…): the class's evidence over the factory
+    // bases says what it would move — an oscillator level behind its switch: "Switch the oscillator on…"
+    const ev = sweepControl(m, c).fields;
+    out.fields = ev;
+    out.on = !(ev.includes('osc.lev') || ev.includes('osc.on'));
+    return out;
+  }
+  if (cls === 'sm') {
+    const f = fields.filter(x => fieldClass(normPath(x), engine) === 'sm').sort((a, b) => SM_PRIO.indexOf(normPath(a)) - SM_PRIO.indexOf(normPath(b)))[0];
+    if (f !== undefined) {
+      const k = /^osc\.(\d)\./.exec(f), n = normPath(f);
+      out.slot = SM_SLOT[n] + (k ? +k[1] : 0);
+      if (k && (n === 'osc.lev' || n === 'osc.on')) out.on = !!(p0.osc && p0.osc[+k[1]] && p0.osc[+k[1]].on);
+    }
+  } else if (cls === 'apply' || cls === 'proc') {
+    const f = fields.map(normPath).find(x => fieldClass(x, engine) === cls);
+    if (f !== undefined) out.field = f;
+  }
+  return out;
+}
+const SERUM_IDS = new Set(DESTS.filter(d => !/^fx\./.test(d.id)).map(d => d.id)); // (FX ids: the Serum's own rack, dynamic)
+const NOMOD = 'This knob can’t be modulated';
+export function destOk(dev, id) {
+  const no = (why, stage = null) => ({ ok: false, why, stage }), ok = { ok: true, why: '', stage: null };
+  if (!isObj(dev) || typeof id !== 'string' || !id) return no(NOMOD);
+  if (dev.kind === 'panel') { const d = rackDescs(isObj(dev.fx) ? dev.fx : dev.rack).find(x => x.id === id); return d && !d.nomod ? ok : no(NOMOD); }
+  if (dev.kind !== 'synth') return no(NOMOD);
+  if (dev.model !== 'serum') {
+    const c = classOf(dev.model, id);
+    if (c === null || c === 'struct' || c === 'none') return no(NOMOD);
+    if (c === 'chunk') return no('This knob takes modulation from stage 5', '5');
+    const tg = classicTarget(dev.model, dev.vals, id);
+    if (tg && !tg.on) return no('Switch the oscillator on to modulate its level');
+    if (!tg || (c === 'sm' ? tg.slot < 0 : tg.field === null)) return no(NOMOD); // (the live patch does not move: nothing to offset)
+    return ok;
+  }
+  if (/^fx\./.test(id)) { const d = rackDescs(dev.fx).find(x => x.id === id); return d && !d.nomod ? ok : no(NOMOD); }
+  return SERUM_IDS.has(id) ? ok : no(NOMOD);
 }
 export function wheelTracks(p) {
   if (!wheelOn(p) || !Array.isArray(p.tracks)) return [];
   return p.tracks.filter(t => isObj(t) && Array.isArray(t.mods) && t.mods.some(r => isObj(r) && r.src === 'wheel'));
 }
+

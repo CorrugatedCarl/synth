@@ -17,6 +17,9 @@
 //   5  stage 2a: performance modulators — track.mods rows (§5.1, cv-mods.js), track.mid (the next row number), the
 //      modulator devices ve / at / bd (kind velo / at / bend), project.perf ({ wheel: { v: 1 } | null }, the one Mod
 //      Wheel, D9): additive, nothing to convert (a 4 opens as before; a 5 in a 1e / 1f build opens read-only)
+//   6  stage 2b: modulation everywhere — the modulator modules lfo / env / macro / cc / chaos / note with their states
+//      (song.normModDev), rows from any module port ('m1.k3') and from a Serum's own LFO / ENV ('i1/lfo3.out'), to classic
+//      and panel knobs (IMPL-2b §1): additive, nothing to convert (a 5 opens as before; a 6 in a 2a build opens read-only)
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
@@ -58,10 +61,10 @@
 import { schemaOf } from './appstore.js?v=9';
 import { compileTrack, kindOf, port, powered, zoneOf } from './cv-graph.js?v=9';
 import { defaultFx2 } from './serum-core.js?v=9';
-import { MOD_LABEL } from './cv-mods.js?v=9';
+import { modLabelOf, modDevs } from './cv-mods.js?v=9';
 
 export { schemaOf };
-export const SCHEMA = 5;
+export const SCHEMA = 6;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -90,6 +93,9 @@ export const STEPS = Object.freeze([
   p => Object.assign({}, p, { schema: 4 }),
   // 4 → 5: performance modulators (stage 2a, IMPL-2a §2.3: track.mods / mid, ve / at / bd, project.perf) — additive
   p => Object.assign({}, p, { schema: 5 }),
+  // 5 → 6: modulation everywhere (stage 2b, IMPL-2b §1.4: the modulator modules' states, any source port, classic and
+  // panel destinations) — additive
+  p => Object.assign({}, p, { schema: 6 }),
 ]);
 
 export function upgrade(o) {
@@ -181,7 +187,7 @@ export function toV1(p0) {
     const c = compileTrack(t), ins = Object.keys(t.dev).filter(k => kindOf(t.dev[k]) === 'inst');
     // (2a, every shape — a canonical track too) its modulation cables and modulator modules
     if (Array.isArray(t.mods) && t.mods.length) lost.push(`“${t.name}”: ${t.mods.length} modulation cable${t.mods.length > 1 ? 's' : ''}`);
-    const mods = Object.keys(t.dev).filter(k => kindOf(t.dev[k]) === 'mod').map(k => MOD_LABEL[t.dev[k].kind] || t.dev[k].kind);
+    const mods = modDevs(t).map(x => modLabelOf(x.id, x.dev)); // (Tidy order)
     if (mods.length) lost.push(`“${t.name}”: its ${mods.join(', ')} module${mods.length > 1 ? 's' : ''}`);
     if (c.canonical && ins.length === 1) { const v = Object.assign({}, c.v1); if (v.seq == null) delete v.seq; out.push(Object.assign(coreOf(t), v)); continue; }
     // not today's shape: each instrument its own track (the primary first, keeping the track's id), notes copied
@@ -220,16 +226,18 @@ function single(t) {
   const sx = t.dev[ins[0]].model === 'serum', pid = sx ? null : panelOf(t, ins[0]);
   return (sx || !!pid) && Object.keys(t.dev).every(k => k === ins[0] || k === pid || kindOf(t.dev[k]) === 'out' || kindOf(t.dev[k]) === 'mod');
 }
-// (2a) the rows of t that end on instrument id and start at the project wheel or a modulator of t — as they go to the
-// track that instrument becomes (as: its id there); the modulator devices they need
+// (2a / 2b) the rows of t that end on instrument id and start at the project wheel, any port of a modulator of t or the
+// instrument's own LFO / ENV ('<id>/lfo3.out': a Serum linked to itself) — as they go to the track that instrument becomes
+// (as: its id there); the modulator devices they need. A row from another instrument's LFO / ENV does not survive.
 function rowsTo(t, id, as) {
   const R = [], devs = {};
   for (const r of Array.isArray(t.mods) ? t.mods : []) {
     if (!isObj(r) || typeof r.dst !== 'string' || r.dst.slice(0, r.dst.indexOf(':')) !== id) continue;
-    const m = typeof r.src === 'string' ? /^([a-z][a-z0-9]{0,15})\.out$/.exec(r.src) : null;
-    if (r.src !== 'wheel' && !(m && kindOf(t.dev[m[1]]) === 'mod')) continue;
-    if (m) devs[m[1]] = plainCopy(t.dev[m[1]]);
-    R.push(Object.assign({}, r, { dst: as + r.dst.slice(id.length) }));
+    const m = typeof r.src === 'string' ? /^([a-z][a-z0-9]{0,15})(\/(?:lfo\d+|env\d))?\.[a-z][a-z0-9]{0,7}$/.exec(r.src) : null;
+    const own = m && m[2] && m[1] === id, mod = m && !m[2] && kindOf(t.dev[m[1]]) === 'mod';
+    if (r.src !== 'wheel' && !own && !mod) continue;
+    if (mod) devs[m[1]] = plainCopy(t.dev[m[1]]);
+    R.push(Object.assign({}, r, { dst: as + r.dst.slice(id.length) }, own ? { src: as + r.src.slice(id.length) } : null));
   }
   return { R, devs };
 }
