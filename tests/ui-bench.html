@@ -20,7 +20,9 @@
   texture bytes), and two probes on the first track: G1 "consistency" (the GL canvas's pixels at a camera at rest, then at
   the same camera inside a burst — a pan away, a 2× zoom in and out, the pan back — then at rest again: byte-equal,
   equalPx) and G3 "precision" (20 random cameras: the alpha-weighted centroid of a few major dots in the readPixels buffer
-  within 0.5 device px of (i·MAJOR·k + tx)·d).
+  within 0.5 device px of (i·MAJOR·k + tx)·d; a dot whose window lands on a face — alpha 255 texels, no centroid — is skipped
+  and counted, the probe runs on the first track which has a face on screen). The GL stats also carry the faces' windows
+  (`windows`, `soft`: sampled below 1:1 after the raster ceilings, `winPx`: the adaptive window cap, `paintMax`).
 -->
 <style>
   :root { color-scheme: dark; }
@@ -97,7 +99,7 @@
       if (fs) fs.max = 0;
       r[name] = q(await frames(win, run));
       if (gs) { const g = world.gridStats(); r[name].grid = { n: g.n, mean: g.n ? +(g.ms / g.n).toFixed(3) : 0, max: +g.max.toFixed(2), dots: g.dots, moves: g.moves, gl: !!g.gl }; }
-      if (gl) { const g = world.glStats(); r[name].gl = { n: g.frames, mean: g.frames ? +(g.ms / g.frames).toFixed(3) : 0, max: +g.max.toFixed(2), bytes: g.bytes, texes: g.texes, faces: g.faces, windows: g.windows, paints: g.paints, paintMax: +(g.paintMax || 0).toFixed(1) }; }
+      if (gl) { const g = world.glStats(); r[name].gl = { n: g.frames, mean: g.frames ? +(g.ms / g.frames).toFixed(3) : 0, max: +g.max.toFixed(2), bytes: g.bytes, texes: g.texes, faces: g.faces, windows: g.windows, soft: g.soft, winPx: g.winPx, paints: g.paints, paintMax: +(g.paintMax || 0).toFixed(1) }; }
       if (fs) { r[name].faces = { n: fs.n - f0.n, max: +fs.max.toFixed(1) }; fs.max = Math.max(fs.max, f0.max); }
     };
     await phase('idle', () => sleep(1000));
@@ -132,8 +134,9 @@
     const same = c.tx === C.tx && c.ty === C.ty && c.k === C.k && c2.tx === C.tx && c2.ty === C.ty && c2.k === C.k;
     out.g1 = { busyMid: busy, sameCam: same, equalPx: same && dMid === 0 && dRest === 0, diffMid: dMid, diffRest: dRest, bytes: A.length, w: W(), h: H() };
     // G3: 20 random cameras at rest; a few major dots each: the alpha-weighted centroid of a window around the expected centre
+    // (a window with a face pixel in it — alpha above the dots' 0.24 — is skipped: a face's texels have no dot centroid)
     const R = rng(42), rr = WM.gridSizes(d).r, Rg = Math.ceil(rr + 1.5), M = WM.MAJOR;
-    let n = 0, maxErr = 0, sumErr = 0;
+    let n = 0, maxErr = 0, sumErr = 0, skipped = 0;
     const worst = [];
     for (let t = 0; t < 20; t++) {
       world.setCamera({ tx: (R() - 0.5) * 800, ty: (R() - 0.5) * 600, k: 0.25 + R() * 1.75 }); await sleep(220);
@@ -143,7 +146,9 @@
         const ex = (i * M * cm.k + cm.tx) * d, ey = (j * M * cm.k + cm.ty) * d;
         if (ex + Rg + 1 >= W() || ey + Rg + 1 >= H() || ex - Rg < 0 || ey - Rg < 0) continue;
         const x0 = Math.floor(ex) - Rg, y0 = Math.floor(ey) - Rg, w = 2 * Rg + 2, h = 2 * Rg + 2, b = read(x0, y0, w, h);
-        let sw = 0, sx = 0, sy = 0;
+        let sw = 0, sx = 0, sy = 0, face = false;
+        for (let p = 3; p < b.length; p += 4) if (b[p] > 128) { face = true; break; }
+        if (face) { skipped++; continue; }
         for (let q = 0; q < h; q++) for (let xx = 0; xx < w; xx++) { const a = b[(q * w + xx) * 4 + 3]; if (!a) continue; sw += a; sx += a * (x0 + xx + 0.5); sy += a * (y0 + h - 1 - q + 0.5); }
         if (!sw) { worst.push({ cam: cm, i, j, ex, ey, err: Infinity }); n++; maxErr = Infinity; continue; }
         const err = Math.hypot(sx / sw - ex, sy / sw - ey);
@@ -151,7 +156,7 @@
         if (err > 0.5) worst.push({ cam: cm, i, j, ex: +ex.toFixed(3), ey: +ey.toFixed(3), cx: +(sx / sw).toFixed(3), cy: +(sy / sw).toFixed(3), err: +err.toFixed(3) });
       }
     }
-    out.g3 = { cams: 20, dots: n, maxErr: +maxErr.toFixed(4), meanErr: n ? +(sumErr / n).toFixed(4) : 0, ok: n > 0 && maxErr <= 0.5, worst: worst.slice(0, 5) };
+    out.g3 = { cams: 20, dots: n, skipped, maxErr: +maxErr.toFixed(4), meanErr: n ? +(sumErr / n).toFixed(4) : 0, ok: n > 0 && maxErr <= 0.5, worst: worst.slice(0, 5) };
     return out;
   }
   function cell(v, bad, warn) { return '<td class="' + (v > bad ? 'bad' : v > warn ? 'warn' : 'ok') + '">' + v + '</td>'; }
@@ -165,7 +170,7 @@
     }
     const nk = k => (R.nodes[k] == null ? '–' : R.nodes[k]) + ' (k ' + (R.k[k] == null ? '–' : R.k[k]) + ')';
     const P = R.probes, pr = !P ? '' : !P.gl ? '<p>grid: the 2D path (no GL canvas)</p>'
-      : '<p>GL probes — G1 consistency: <b class="' + (P.g1.equalPx ? 'ok' : 'bad') + '">equalPx ' + P.g1.equalPx + '</b> (mid-burst diff ' + P.g1.diffMid + ', rest diff ' + P.g1.diffRest + ' of ' + P.g1.bytes + ' bytes, busy ' + P.g1.busyMid + ', same camera ' + P.g1.sameCam + ') · G3 precision: <b class="' + (P.g3.ok ? 'ok' : 'bad') + '">' + P.g3.dots + ' major dots over ' + P.g3.cams + ' cameras, max err ' + P.g3.maxErr + ' px</b> (mean ' + P.g3.meanErr + ')</p>';
+      : '<p>GL probes — G1 consistency: <b class="' + (P.g1.equalPx ? 'ok' : 'bad') + '">equalPx ' + P.g1.equalPx + '</b> (mid-burst diff ' + P.g1.diffMid + ', rest diff ' + P.g1.diffRest + ' of ' + P.g1.bytes + ' bytes, busy ' + P.g1.busyMid + ', same camera ' + P.g1.sameCam + ') · G3 precision: <b class="' + (P.g3.ok ? 'ok' : 'bad') + '">' + P.g3.dots + ' major dots over ' + P.g3.cams + ' cameras, max err ' + P.g3.maxErr + ' px</b> (mean ' + P.g3.meanErr + '; ' + P.g3.skipped + ' on a face skipped)</p>';
     return h + '</table>' + pr + '<p>nodes: one ' + nk('one') + ' · five ' + nk('five') + ' · dpr ' + R.dpr + ' · viewport ' + R.viewport + ' · grid ' + (R.gl || '?') + '</p>';
   }
   const draw = R => { $('#res').innerHTML = table(R); };

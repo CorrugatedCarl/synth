@@ -119,11 +119,28 @@ budget level = `sqrt(WIN_BUDGET_PX / Σ visible world area)` so all windows toge
 ≈ 160 MB) with `drawImage(img, sx, sy, sw, sh, 0, 0, dw, dh)` from the same Image (the browsers paint the SVG with a clip: the
 cost is the elements', not the whole panel's pixels — **measure it**, §7), uploaded **without** mips (it is only sampled at
 `d·k ≤ Lw`, ≤ 2× minification; below `d·k < L0` the base quad alone shows: the window quad is not emitted when `k ≤ 1`).
-- A window is **kept** while it still covers the face's visible part and its level ≥ `d·k` (zooming out never rebuilds; panning
-  inside the margin never rebuilds). It is **rebuilt** when the visible part leaves it or `d·cam.k > Lw` at a rest; **freed**
-  when the face leaves the screen (plus `CULL_MARGIN`), when k ≤ `WIN_K0` at a rest, on unmount, on context loss.
-- Scheduling: never in a burst; at a rest, one window per animation frame (`raf`), the faces nearest the viewport centre first,
-  each paint + upload measured (`paints`, `paintMs`, `paintMax`). A new burst cancels the rest of the queue (the base shows).
+- A window is **kept** while it still covers the face's visible part and its level ≥ `min(d·k, Lw)` — `Lw` the level the
+  planner would make *now*, so a window the raster ceilings capped below `d·k` is not remade for a level it cannot get (it is
+  reported `soft` in `stats()`, with the worst `L / d·k` as `softMin`); panning inside the margin never rebuilds. It is
+  **rebuilt** when the visible part leaves it or `d·cam.k > Lw` at a rest **above k = 1**; at a rest with `d·k ≤ L0` (k ≤ 1 at
+  dpr 2) the base is ≥ 1:1 and a window the view left is *not* remade just for coverage — a zoom-out past the margin at k > 1
+  (1.6 → 1 and a pan, say) therefore leaves a stale window that the next rest above k = 1 rebuilds (one paint then, for the
+  region the zoom-in needs). It is **freed** when the face leaves the screen (plus `CULL_MARGIN`), when k ≤ `WIN_K0` at a rest,
+  when its level would not beat the base by `WIN_GAIN` (below), on unmount, on context loss.
+- A window is only **planned** when `Lw > L0 · WIN_GAIN` (1.5): at dpr 2 none until k > 0.75 (a window at level 2.4 against a
+  base at 2 was two paints for 10 % more); nothing visible changes, the base is ≥ 1:1 to k = 1. Its edges snap to `WIN_SNAP`
+  (64 world px, face-local) so a rebuilt window keeps the sampling phase of the region it shares with the old one (exact when
+  `WIN_SNAP · L` is whole — the level-4 windows above 100 %; at a capped fractional level the phase is as before).
+- Raster cost: the effective per-window cap starts at `WIN_MAX_PX` (16 M px) and **halves** — to `WIN_MIN_PX` = 4 M px — whenever
+  a window paint (raster + upload, the `paintMs` number) takes over `PAINT_SLOW_MS` = 30 ms *and* the halved cap would have
+  bound that window (a slow small window is not the cap's fault); it is kept in `localStorage['synth.cv.winpx']` (read at
+  `attach`; a throwing storage is ignored) so a slow device settles there once. `stats().winPx` reports it. At 4 M px on an
+  iPad viewport (dpr 2) the big faces get no window below k ≈ 2.5 (the gain rule) — the base shows, soft above 1:1: the
+  graceful end of the scale. A window over `WIN_SPLIT_PX` (8 M px) rasters on one frame and uploads on the next (the scratch
+  waits in between; a burst in between drops it, the next rest re-plans) — still one job per animation frame.
+- Scheduling: never in a burst; at a rest, one job per animation frame (`raf`), the faces nearest the viewport centre first,
+  each paint + upload measured (`paints`, `paintMs`, `paintMax`; a split window counts once, both parts summed). A new burst
+  cancels the rest of the queue (the base shows).
 - While a window is missing or stale at k > 1, the base quad shows under it (soft above 1:1 — G2's documented residual); when
   the window lands, `onChange` → one redraw: the region sharpens. It is the only visible change at rest, and only at k > 1.
 
@@ -192,7 +209,8 @@ reads for leaks and the fallbacks. 4. Fixers (failing test first). 5. Docs, depl
   `(i·MAJOR·k + tx)·d`.
 - ui-bench (Mac, 1440 × 900, dpr 2, five panels): no frame over 33 ms in pan / zoom / deep; `glStats`: draw mean ≤ 1 ms;
   window paints ≤ 30 ms each, ≤ 1 per frame; `bytes` ≤ the budget.
-- Memory: `glStats().bytes` with five hardware panels at k = 1 on the iPad-sized viewport ≤ 384 MB; freed to 0 after `clear()`.
+- Memory: `glStats().bytes` with five hardware panels at k = 1 on the iPad-sized viewport ≤ 384 MB; freed to 0 after unmount
+  (the track deleted / the view destroyed — `world.clear()` is registry-only by design, the DOM stays mounted).
 - The user's iPad: the pinch past 60 % and up to 200 % with 5 panels — no snap on the grid or the faces, no hitch.
 
 ## 8. Notes (the builders fill in)
@@ -299,15 +317,19 @@ or the tier at k ≥ 1); `Face.shown` (the SVG is replaced) drives cv-panel's on
   juno60 20.7, dx7 22.3. So every base and window raster is first filled: the `.inst.hw`'s computed `background-color`
   (fallback: the inline `--hw-case` / `--hw-panel`), and for the four wood cases (modular, minimoog, solina, prophet5: a
   gradient background, computed colour transparent) the stripes of `.inst.hw.hw-wood` are painted from `--hw-wood`
-  (color-mix as maths, a 14 px period pattern rotated 3° through `CanvasPattern.setTransform`, then the 90° sheen).
+  (color-mix as maths, a 14 px period as rects in a frame rotated 3° about the face's origin — review fix R4: the first
+  build's pattern tile was bilinear-blurred — then the 90° sheen with its stops pre-sampled in premultiplied space,
+  `sheenStops()`: a 2D gradient lerps unpremultiplied where CSS lerps premultiplied — review fix R3: the GL wood sat 10
+  levels lighter on average, 17 at the peak, before; ≤ 0.3 after, measured GL vs `?nogl` over the uncovered face parts).
 - **CSS:** `.cv-mod[data-cv-face="gl"] { background: transparent }` is needed as well as the `.inst.hw` rule — `.cv-mod`
   paints `#101216` under its body, which would hide the GL face. The bar's own gradient, the ring box-shadow and the
   selection ring stay.
 - **Raster ceilings (added):** `WIN_MAX_PX = 16e6` px per window (the iOS 2D canvas ceiling — a whole CS-80 width at level
-  4 would be 8200 × 2912 = 24 M px) and `TEX_MAX_DIM = 8192` a side (base and window): the level drops to fit
-  (`winLevelOf`). The budget level uses Σ of the *window* areas (the visible parts grown by the margin — what is rastered),
-  the conservative reading of §3.3 that keeps Σ ≤ WIN_BUDGET_PX true. A window is also planned when a base lands at a
-  rest (a face mounted while zoomed in) and at a rest at `k = 1` (level 4: the next 2× zoom-in stays ≥ 1:1).
+  4 would be 8200 × 2912 = 24 M px; adaptive since the review round, §3.3) and `TEX_MAX_DIM = 8192` a side (base and
+  window): the level drops to fit (`winLevelOf`). The budget level uses Σ of the *window* areas (the visible parts grown by
+  the margin — what is rastered), the conservative reading of §3.3 that keeps Σ ≤ WIN_BUDGET_PX true. A window is also
+  planned when a base lands at a rest (a face mounted while zoomed in) and at a rest at `k = 1` (level 4: the next 2×
+  zoom-in stays ≥ 1:1) — but never below k = 0.75 at dpr 2 (`WIN_GAIN`, §3.3).
 - **Budget order:** off-screen windows (farthest first), then off-screen bases farthest from the viewport centre; an
   off-screen face only evicts faces farther out than itself (no thrash) and is skipped (its SVG) when it still would not
   fit; an on-screen face is always painted.
@@ -343,3 +365,34 @@ iPad's numbers are the user's run (§7).
   at zoom ends for their 1g bitmap — keep those calls on the GL path.
 - The patching dim (`#world[data-cv-patching="mod"] .cv-mod.cv-nodest > .cv-body { opacity: .35 }`) does not reach a GL
   face (only `[data-off]` is mirrored as alpha).
+
+### Review round (2026-10-19; three reviews on fd6f5b1, two fixers)
+
+**Fixer B** (the window policy, the wood fill, ui-bench, this file; every fix with its failing test first in
+tests/cv-face.test.mjs `// ---- 1h fixes B`):
+- code 4 — a window the ceilings capped below d·k was re-rastered + re-uploaded at every rest (a CS-80 at k = 2, dpr 2, 1920 ×
+  1080: a 16 M px paint and a 64 MB upload per tap). `winKeep` now takes the level the planner would make (§3.3); `stats()`
+  reports `soft` / `softMin`.
+- M1 — the adaptive cap (`winPx`, 16 → 8 → 4 M px on paints over 30 ms, persisted) and the raster / upload split over two
+  frames above 8 M px (§3.3). The iPad numbers decide whether 16 M px ever survives there: `paintMax` in ui-bench.
+- M2 / M3 — `WIN_GAIN` (no window until k > 0.75 at dpr 2; the k ≈ 0.5–0.6 windows were 47 MB never drawn) and no rebuild for
+  coverage at d·k ≤ L0 (§3.3). A single CS-80 at rest at 100 % still holds base + window (R6: 38 + 64 MB) — the window is
+  what keeps the next 2× zoom-in ≥ 1:1.
+- R3 / R4 — the wood sheen in premultiplied space, the stripes as rotated rects (above). Measured in headless Chrome (GL vs
+  `?nogl`, the face's parts outside the SVG's top-level bboxes, k 1 and 1.6): see the fixer's report in the commit.
+- R5 — `WIN_SNAP` (§3.3).
+- M6 — ui-bench's G3 probe skips a dot window that holds a face pixel (alpha 255) and counts it (`skipped`).
+- M7 — §7 reads "freed to 0 after unmount" (`clear()` is registry-only).
+- M8 — the budget (`FACE_BUDGET_BYTES` 384 MB) is unreachable in the app: `LIMITS.inst = 8` per track, the eight biggest
+  bases ≈ 207 MB + windows ≤ 160 MB; measured ≤ 257 MB with 8 panels. Eviction is a safety net (tested).
+
+**Residuals** (documented, not fixed here): the base shows at k > 1 until a window lands (G2's residual, ≤ 4 ms paints on the
+Mac); a window at a ceiling-capped level is `soft` (dpr 3 sooner: a CS-80 strip at k = 1.5 on a dpr 3 device is 3.9 of 4.5);
+the grayscale of a powered-off / non-destination body is not mirrored on a GL face; the window's sampling phase at a capped
+fractional level; one layout per burst frame from the toolbar's zoom text (M9, pre-existing, both paths).
+
+**Recommended iPad constants, pending the user's run** (the memory review's WebKit reading: a 16 M px 2D canvas is above the
+accelerated threshold → a CPU raster + readback per window): `WIN_MAX_PX` 8e6 as the start if `paintMax` on the iPad is over
+30 ms at 16 M px (the adaptive cap gets there by itself after one slow paint and remembers), `FACE_BUDGET_BYTES` 256e6,
+`BASE_L_MAX` 2 (dpr 2 on every iPad: no change in effect). `canvas.domlavin.com/tests/ui-bench.html` → Copy results gives
+`paintMax`, `winPx`, `soft` and `bytes` per phase.

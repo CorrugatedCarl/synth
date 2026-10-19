@@ -122,12 +122,13 @@ test('1h maths: the base level (min(dpr, 3), ≤ BASE_MAX_PX), the window level 
   const cam = { tx: 0, ty: 0, k: 1 }, R = { x: 1000, y: 500, w: 2432, h: 728 };
   eq1(visPart(R, cam, 1366, 1024), { x: 0, y: 0, w: 366, h: 524 }, 'the visible part, face-local');
   eq1(visPart({ x: 2000, y: 0, w: 100, h: 100 }, cam, 1366, 1024), null, 'off screen');
-  eq1(winRect(R, cam, 1366, 1024), { x: 0, y: 0, w: 708, h: 728 }, 'grown by WIN_MARGIN · the viewport (341.5, 256), clipped to the face, whole px');
+  const S = CF.WIN_SNAP, up = v => Math.ceil(v / S) * S;
+  eq1(winRect(R, cam, 1366, 1024), { x: 0, y: 0, w: up(708), h: 728 }, 'grown by WIN_MARGIN · the viewport (341.5, 256) to the WIN_SNAP stride, clipped to the face');
   const z = { tx: -1500, ty: -700, k: 1.6 }; // the view at world (937.5, 437.5), 853.75 × 640: the face's top-left corner region
   const v2 = visPart(R, z, 1366, 1024);
   near(v2.x, 0); near(v2.w, (1500 + 1366) / 1.6 - 1000); near(v2.y, 0); near(v2.h, (700 + 1024) / 1.6 - 500);
   const wr = winRect(R, z, 1366, 1024);
-  eq1([wr.x, wr.y, wr.w, wr.h], [0, 0, Math.ceil((1500 + 1366) / 1.6 + WIN_MARGIN * 1366 / 1.6) - 1000, Math.min(728, Math.ceil((700 + 1024) / 1.6 + WIN_MARGIN * 1024 / 1.6) - 500)], 'grown by the margin (213.4, 160 world px) past the visible part, clipped to the face');
+  eq1([wr.x, wr.y, wr.w, wr.h], [0, 0, up((1500 + 1366) / 1.6 + WIN_MARGIN * 1366 / 1.6 - 1000), Math.min(728, up((700 + 1024) / 1.6 + WIN_MARGIN * 1024 / 1.6 - 500))], 'grown by the margin (213.4, 160 world px) past the visible part, on the stride, clipped to the face');
   const win = { x: 0, y: 0, w: 708, h: 728, L: 4 };
   eq1([winKeep(win, { x: 10, y: 10, w: 600, h: 700 }, 2, 1.6), winKeep(win, { x: 10, y: 10, w: 700, h: 700 }, 2, 1.6), winKeep(win, { x: 10, y: 10, w: 600, h: 700 }, 2, 2.1), winKeep(null, { x: 0, y: 0, w: 1, h: 1 }, 2, 1), winKeep(win, null, 2, 1)],
     [true, false, false, false, false], 'kept while it covers the visible part and L ≥ dpr · k');
@@ -276,30 +277,37 @@ test('1h quads: base quads in the modules\' z order then registration, each clip
 });
 
 /* ---- windows */
-test('1h windows: at a zoom end above WIN_K0 an on-screen gl face gets the visible part grown by WIN_MARGIN rastered from the same Image (source rect) at min(dpr·K_MAX, dpr·WIN_HEAD·k, budget) without mips; its quad above the base only at k > 1; kept while it covers the visible part at L ≥ dpr·k; rebuilt when the view leaves it; freed below WIN_K0, off screen, on unmount, on loss; one per frame, nearest first; a burst cancels', () => {
+test('1h windows: at a zoom end above WIN_K0 an on-screen gl face gets the visible part grown by WIN_MARGIN rastered from the same Image (source rect) at min(dpr·K_MAX, dpr·WIN_HEAD·k, budget) without mips, only when that beats the base by WIN_GAIN; a big one over two frames (raster, upload); its quad above the base only at k > 1; kept while it covers the visible part at L ≥ min(dpr·k, the level planned now); rebuilt when the view leaves it; freed below WIN_K0, off screen, on unmount, on loss; one job per frame, nearest first; a burst cancels', () => {
   const g = rig({ vw: 1366, vh: 1024 });
   const last = () => g.G.ups.at(-1);
   try {
     const A = g.panel('a', { w: 2432, h: 728 }); // the CS-80's face at (0, BAR_H)
+    const R = { x: 0, y: BAR_H, w: 2432, h: 728 }, wrAt = () => winRect(R, g.W.cam, 1366, 1024), big = w => Math.round(w.w * w.L) * Math.round(w.h * w.L) > WIN_SPLIT_PX;
     g.attach(); landBase(g);
     eq1([g.G.ups.length, FACES.stats().windows], [1, 0]);
-    // 60 %: the whole face is visible; Lw = min(4, 2 · 2 · 0.6, budget) = 2.4 > L0 = 2: made for the next zoom-in
-    g.W.end({ k: 0.6 });
+    // 60 %: Lw = min(4, 2 · 2 · 0.6, budget) = 2.4 ≤ L0 · WIN_GAIN = 3: the base is as fine already — no window (M2)
+    g.W.end({ k: 0.6 }); g.frames(2);
+    eq1([g.G.ups.length, FACES.stats().windows], [1, 0], '60 %: no near-duplicate of the base');
+    // 80 %: the visible 1707 × 1280 world px grown by the margin: a 2176 × 728 window (the stride) at the 16 M px cap (3.18 > 3)
+    g.W.end({ k: 0.8 });
     eq1(g.G.ups.length, 1, 'never in the event: next frame');
+    let wr = wrAt(), L1 = winLevelOf(2, 0.8, wr.w * wr.h, wr.w, wr.h);
+    eq1([wr.x, wr.y, wr.w, wr.h, L1 > 3 && L1 < 3.2, big({ w: wr.w, h: wr.h, L: L1 })], [0, 0, 2176, 728, true, true], 'the window rect and level (' + L1.toFixed(3) + '); over WIN_SPLIT_PX');
+    g.frames();
+    eq1([g.G.ups.length, FACES.stats().queued, FACES.stats().windows], [1, 1, 0], 'frame 1: rastered, the upload waits');
     g.frames();
     let t = last();
-    eq1([g.G.ups.length, FACES.stats().windows, t.mips, t.w, t.h], [2, 1, false, Math.round(2432 * 2.4), Math.round(728 * 2.4)], 'the window: the whole face (grown past it), level 2.4, no mips');
+    eq1([g.G.ups.length, FACES.stats().windows, t.mips, t.w, t.h], [2, 1, false, Math.round(wr.w * L1), Math.round(wr.h * L1)], 'frame 2: the window uploaded, no mips');
     let di = t.calls.filter(c => c[0] === 'drawImage')[0];
-    eq1([di[1] === g.R.imgs[0], di.slice(2)], [true, [0, 0, 2432, 728, 0, 0, t.w, t.h]], 'a source rect of the same Image');
+    eq1([di[1] === g.R.imgs[0], di.slice(2)], [true, [0, 0, wr.w, wr.h, 0, 0, t.w, t.h]], 'a source rect of the same Image');
     eq1(FACES.quads(g.W.rectOf, g.W.cam).length, 1, 'at k ≤ 1 only the base quad');
     g.W.setCam({ k: 1.2 });
     const q = FACES.quads(g.W.rectOf, g.W.cam);
-    eq1([q.length, q[1].x, q[1].y, q[1].w, q[1].h, q[1].tex === t, q[1].clip === q[0].clip], [2, 0, BAR_H, 2432, 728, true, true], 'above 1: the window quad over the base, the same clip');
-    // 160 %, the view at the face's top-left: Lw = min(4, 6.4, budget) = 4 → rebuilt (2.4 < dpr · k = 3.2)
-    g.W.end({ k: 1.6 }); g.frames();
-    t = last();
-    const R = { x: 0, y: BAR_H, w: 2432, h: 728 }, wr = winRect(R, g.W.cam, 1366, 1024);
-    eq1([g.G.ups.length, FACES.stats().windows, g.G.frees, t.w, t.h], [3, 1, 1, Math.round(wr.w * 4), Math.round(wr.h * 4)], 'rebuilt at level 4, the old one freed');
+    eq1([q.length, q[1].x, q[1].y, q[1].w, q[1].h, q[1].tex === t, q[1].clip === q[0].clip], [2, 0, BAR_H, wr.w, wr.h, true, true], 'above 1: the window quad over the base, the same clip');
+    // 160 %, the view at the face's top-left: Lw = min(4, 6.4, budget) = 4 → rebuilt (3.18 < min(dpr · k = 3.2, 4)); two frames
+    g.W.end({ k: 1.6 }); g.frames(2);
+    t = last(); wr = wrAt();
+    eq1([g.G.ups.length, FACES.stats().windows, g.G.frees, t.w, t.h, wr.w, wr.h], [3, 1, 1, Math.round(wr.w * 4), Math.round(wr.h * 4), 1088, 728], 'rebuilt at level 4, the old one freed');
     di = t.calls.filter(c => c[0] === 'drawImage')[0];
     eq1(di.slice(2, 6), [wr.x, wr.y, wr.w, wr.h], 'the source rect = the window (face-local world px)');
     eq1(FACES.stats().bytes, g.G.ups[0].bytes + t.bytes);
@@ -319,38 +327,38 @@ test('1h windows: at a zoom end above WIN_K0 an on-screen gl face gets the visib
     eq1([g.G.ups.length, FACES.stats().windows, FACES.stats().base], [n0, 0, 1], 'k ≤ WIN_K0: freed, the base stays');
     g.W.end({ k: 1.6 }); g.W.emit('movestart', {}); g.frames(3);
     eq1([g.G.ups.length, FACES.stats().queued], [n0, 0], 'a new burst cancels the queue');
-    g.W.end({ k: 1.6 }); g.frames();
+    g.W.end({ k: 1.6 }); g.frames(2);
     eq1(FACES.stats().windows, 1, 'the next rest makes it');
     // off screen: freed; unmount: freed; context loss: dropped
     g.W.set('a', { x: 0, y: 0, w: 2432, h: 728 + BAR_H }, false); g.W.emit('screen', { on: [], off: ['a'] }); g.frames();
     eq1([FACES.stats().windows, FACES.stats().base], [0, 1], 'off screen: the window goes, the base stays');
-    g.W.set('a', { x: 0, y: 0, w: 2432, h: 728 + BAR_H }, true); g.W.emit('screen', { on: ['a'], off: [] }); g.frames();
+    g.W.set('a', { x: 0, y: 0, w: 2432, h: 728 + BAR_H }, true); g.W.emit('screen', { on: ['a'], off: [] }); g.frames(2);
     eq1(FACES.stats().windows, 1, 'back on screen at a rest: made again');
     const s0 = FACES.stats();
-    eq1([s0.paints, s0.paintMs >= 0, s0.paintMax >= 0], [g.G.ups.length, true, true], 'every paint measured');
+    eq1([s0.paints, s0.paintMs >= 0, s0.paintMax >= 0], [g.G.ups.length, true, true], 'every paint measured (a split one once)');
     FACES.lost(); eq1([FACES.stats().windows, FACES.stats().base, FACES.stats().bytes], [0, 0, 0]);
-    FACES.restored(); g.frames(); g.frames();
-    eq1([FACES.stats().base, FACES.stats().windows], [1, 1], 'restored: the base, then the window');
+    FACES.restored(); g.frames(); eq1([FACES.stats().base, FACES.stats().windows], [1, 0], 'restored: the base first'); g.frames(2);
+    eq1([FACES.stats().base, FACES.stats().windows], [1, 1], 'then the window');
     A.mod.remove(); wk.releaseCanvases(A.sentinel());
     eq1([FACES.stats().windows, FACES.stats().base, FACES.stats().bytes], [0, 0, 0], 'unmount frees both');
-    // several faces (three CS-80s stacked): one window per frame, the nearest the viewport centre first; the budget
+    // several faces (three CS-80s stacked): one job per frame, the nearest the viewport centre first; the budget
     // level over their window areas
     g.world.append(A.mod);
     const B = g.panel('b', { y: 800, w: 2432, h: 728 }), C = g.panel('c', { y: 1600, w: 2432, h: 728 });
     g.W.end({ k: 0.3, tx: 0, ty: 0 }); settle(g); // the three bases (C, B, A: nearest the view centre first); no windows at 30 %
     eq1([FACES.stats().base, FACES.stats().windows], [3, 0]);
-    // 80 % with the view centred on B: windows for every visible face; B first (nearest), then A, then C
-    const k = 0.8, cx = 1216, cy = 800 + BAR_H + 364;
+    // 90 % with the view centred on B: windows for every visible face; B first (nearest), then A, then C — each two frames
+    const k = 0.9, cx = 1216, cy = 800 + BAR_H + 364;
     g.W.end({ k, tx: 1366 / 2 - cx * k, ty: 1024 / 2 - cy * k });
     const cam = g.W.cam, rects = { a: { x: 0, y: BAR_H, w: 2432, h: 728 }, b: { x: 0, y: 800 + BAR_H, w: 2432, h: 728 }, c: { x: 0, y: 1600 + BAR_H, w: 2432, h: 728 } };
     const wins = Object.fromEntries(Object.entries(rects).map(([id, r]) => [id, winRect(r, cam, 1366, 1024)]));
     const sum = Object.values(wins).reduce((a, w) => a + w.w * w.h, 0), Lw = winLevel(2, k, sum), Lof = w => winLevelOf(2, k, sum, w.w, w.h);
-    assert.ok(Lw < 2 * WIN_HEAD * k && Lw > 2, 'three CS-80 faces in view at 80 %: the budget level binds (' + Lw.toFixed(3) + ')');
-    assert.ok(Lof(wins.b) < Lw && Lof(wins.b) > 2.9, 'B (the whole face in its window) also meets the 16 M px raster ceiling (' + Lof(wins.b).toFixed(3) + ')');
+    assert.ok(Lw < 2 * WIN_HEAD * k && Lw > 3, 'three CS-80 faces in view at 90 %: the budget level binds (' + Lw.toFixed(3) + ')');
+    assert.ok(Lof(wins.b) < Lw && Lof(wins.b) > 3, 'B (the whole face in its window) also meets the 16 M px raster ceiling, above the gain (' + Lof(wins.b).toFixed(3) + ')');
     const n1 = g.G.ups.length;
-    g.frames(); eq1([g.G.ups.length, last().w, last().h], [n1 + 1, Math.round(wins.b.w * Lof(wins.b)), Math.round(wins.b.h * Lof(wins.b))], 'frame 1: B (nearest the centre) at the budget level');
-    g.frames(); eq1([g.G.ups.length, last().w], [n1 + 2, Math.round(wins.a.w * Lof(wins.a))], 'frame 2: A');
-    g.frames(); eq1([g.G.ups.length, last().w, FACES.stats().windows], [n1 + 3, Math.round(wins.c.w * Lof(wins.c)), 3], 'frame 3: C');
+    g.frames(2); eq1([g.G.ups.length, last().w, last().h], [n1 + 1, Math.round(wins.b.w * Lof(wins.b)), Math.round(wins.b.h * Lof(wins.b))], 'frames 1–2: B (nearest the centre) at the budget level');
+    g.frames(2); eq1([g.G.ups.length, last().w], [n1 + 2, Math.round(wins.a.w * Lof(wins.a))], 'frames 3–4: A');
+    g.frames(2); eq1([g.G.ups.length, last().w, FACES.stats().windows], [n1 + 3, Math.round(wins.c.w * Lof(wins.c)), 3], 'frames 5–6: C');
     let px = 0; for (const t2 of g.G.ups.slice(-3)) px += t2.w * t2.h;
     assert.ok(px <= WIN_BUDGET_PX * 1.001, 'all windows together ≤ WIN_BUDGET_PX device px (' + px + ')');
     void B; void C;
@@ -679,4 +687,168 @@ test('1h fix 9: the patching dim — #world[data-cv-patching="mod"] + .cv-nodest
     g.world.removeAttribute('data-cv-patching'); A.face.refresh();
     eq1(quadsOf(g)[0], [0, BAR_H, 1, 0], 'the class alone (no mod drag): nothing');
   } finally { g.done(); }
+});
+
+// ---- 1h fixes B (review round: code 4, M1, M2, M3, R3, R4, R5)
+const { WIN_GAIN, WIN_SNAP, WIN_MIN_PX, WIN_SPLIT_PX, PAINT_SLOW_MS, WIN_PX_KEY, sheenStops, woodBands } = CF;
+const CS80 = { x: 0, y: BAR_H, w: 2432, h: 728 };
+// a fake storage on the rig's window (the cap pref), and a `now` that advances `step` ms per call (a paint = 2 calls per frame)
+const storage = (init = {}) => ({ d: Object.assign({}, init), getItem(k) { return k in this.d ? this.d[k] : null; }, setItem(k, v) { this.d[k] = String(v); } });
+const clock = () => { const c = { t: 0, step: 0, now() { c.t += c.step; return c.t; } }; return c; };
+
+test('1h fix code 4: a window whose level the raster ceilings cap below dpr·k is kept — winKeep compares against min(dpr·k, the level the planner would make now); three rests at one camera → one raster; stats report the soft windows (L < dpr·k) and the worst ratio', () => {
+  const g = rig({ vw: 1920, vh: 1080 });
+  try {
+    const A = g.panel('a', { w: 2432, h: 728 });
+    g.attach(); landBase(g); g.frames(2);
+    g.W.setCam({ k: 2, tx: -1000, ty: -300 });
+    const wr = winRect(CS80, g.W.cam, 1920, 1080), Lw = winLevelOf(2, 2, wr.w * wr.h, wr.w, wr.h), vis = visPart(CS80, g.W.cam, 1920, 1080);
+    assert.ok(Lw < 4 && Lw > 3.5, 'the 16 M px ceiling caps the level below dpr · k = 4: ' + Lw.toFixed(3));
+    g.W.end(); settle(g);
+    const n0 = g.G.ups.length, f0 = g.G.frees;
+    eq1([FACES.stats().windows, g.G.ups.length], [1, 2]);
+    const w = L => Object.assign({}, wr, { L });
+    eq1([winKeep(w(Lw), vis, 2, 2), winKeep(w(Lw), vis, 2, 2, Lw), winKeep(w(Lw - 0.1), vis, 2, 2, Lw), winKeep(w(4), vis, 2, 2, Lw), winKeep(w(Lw), vis, 2, 1.5, 4)],
+      [false, true, false, true, true], 'kept at L ≥ min(dpr · k, the level the planner would make now)');
+    for (let i = 0; i < 3; i++) { g.W.end(); settle(g); } // three rests at the same camera (a tap, a selection…)
+    eq1([g.G.ups.length - n0, g.G.frees - f0, FACES.stats().windows], [0, 0, 1], 'no re-raster at the same camera');
+    const s = FACES.stats();
+    eq1([s.soft, +s.softMin.toFixed(4)], [1, +(Lw / 4).toFixed(4)], 'one soft window: L / (dpr · k)');
+    g.W.end({ k: 1.5 }); settle(g); // dpr · k = 3 ≤ the level of whatever window covers now
+    eq1([FACES.stats().soft, FACES.stats().softMin, FACES.stats().windows], [0, 1, 1], 'not soft at 150 %');
+    void A;
+  } finally { g.done(); }
+});
+
+test('1h fix M1: the window cap adapts — a window paint (raster + upload) over PAINT_SLOW_MS halves the effective cap (stats().winPx) down to WIN_MIN_PX when the halved cap would have bound it, persisted in localStorage; read at attach (clamped; a throwing storage ignored); base paints never halve it', () => {
+  const g = rig({ vw: 1366, vh: 1024 });
+  const ls = storage(), ck = clock();
+  g.win.localStorage = ls;
+  try {
+    eq1([WIN_MIN_PX, WIN_SPLIT_PX, PAINT_SLOW_MS, WIN_PX_KEY], [4e6, 8e6, 30, 'synth.cv.winpx']);
+    const A = g.panel('a', { w: 2432, h: 728 }), B = g.panel('b', { x: 10000, w: 1000, h: 500 }), C = g.panel('c', { x: 20000, w: 600, h: 300 });
+    ck.step = 20; // every paint measures 40 ms (two now() calls per frame)
+    FACES.attach({ gl: g.G, world: g.W, now: ck.now, win: g.win });
+    settle(g);
+    eq1([FACES.stats().base, FACES.stats().winPx, ls.getItem(WIN_PX_KEY), FACES.stats().paintMax >= 40], [3, WIN_MAX_PX, null, true], 'three slow base paints: the cap untouched');
+    // A at 100 %: the whole face at the 16 M px cap → slow → 8e6, persisted
+    g.W.end({ k: 1, tx: 0, ty: 0 }); settle(g);
+    eq1([FACES.stats().windows, g.G.ups.at(-1).w * g.G.ups.at(-1).h > 15e6, FACES.stats().winPx, ls.getItem(WIN_PX_KEY)], [1, true, 8e6, '8000000'], 'halved after a 40 ms 16 M px window, persisted');
+    // B at 100 %: 4000 × 2000 = 8 M px under the new cap, slow again → 4e6 (the floor)
+    g.W.end({ k: 1, tx: -10000 + 100, ty: 0 }); settle(g);
+    const tb = g.G.ups.at(-1);
+    eq1([tb.w, tb.h, FACES.stats().winPx, ls.getItem(WIN_PX_KEY)], [4000, 2000, 4e6, '4000000'], 'halved again to the floor');
+    // C at 100 %: 2400 × 1200 (under the cap), slow: the floor holds
+    g.W.end({ k: 1, tx: -20000 + 100, ty: 0 }); settle(g);
+    eq1([g.G.ups.at(-1).w, FACES.stats().winPx, ls.getItem(WIN_PX_KEY)], [2400, 4e6, '4000000'], 'the floor');
+    // a fast paint never raises it; a fresh attach reads the pref (clamped), a throwing storage is ignored
+    ck.step = 0;
+    FACES.attach({ gl: g.G, world: g.W, now: ck.now, win: g.win }); eq1(FACES.stats().winPx, 4e6, 'read at attach');
+    ls.d[WIN_PX_KEY] = '1e6'; FACES.attach({ gl: g.G, world: g.W, win: g.win }); eq1(FACES.stats().winPx, WIN_MIN_PX, 'clamped up');
+    ls.d[WIN_PX_KEY] = '9e9'; FACES.attach({ gl: g.G, world: g.W, win: g.win }); eq1(FACES.stats().winPx, WIN_MAX_PX, 'clamped down');
+    ls.d[WIN_PX_KEY] = 'x'; FACES.attach({ gl: g.G, world: g.W, win: g.win }); eq1(FACES.stats().winPx, WIN_MAX_PX, 'garbage: the start value');
+    g.win.localStorage = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); } };
+    FACES.attach({ gl: g.G, world: g.W, win: g.win }); eq1(FACES.stats().winPx, WIN_MAX_PX, 'a throwing storage: ignored');
+    eq1(winLevelOf(2, 1, 0, 2432, 728, 8e6) < winLevelOf(2, 1, 0, 2432, 728, 16e6), true, 'winLevelOf takes the cap');
+    void A; void B; void C;
+  } finally { g.win.localStorage = ls; g.done(); }
+});
+
+test('1h fix M1 split: a window over WIN_SPLIT_PX px rasters on one frame (the scratch kept) and uploads on the next — still one job per frame, nearest first; a burst between the two frames drops it (the next rest re-plans); the stats count one paint with both parts', () => {
+  const g = rig({ vw: 1366, vh: 1024 });
+  const ck = clock();
+  try {
+    const A = g.panel('a', { w: 2432, h: 728 }), B = g.panel('b', { x: 2000, y: 800, w: 400, h: 200 });
+    FACES.attach({ gl: g.G, world: g.W, now: ck.now, win: g.win }); settle(g);
+    FACES.stats(true);
+    // 100 %, both on screen (the view at world 1000..2366 × 0..1024): A's window (16 M px) is the nearer: raster, then upload; B's (1.28 M px) in one frame
+    g.W.end({ k: 1, tx: -1000, ty: 0 });
+    ck.step = 5;
+    g.frames(); eq1([g.G.ups.length, FACES.stats().queued, FACES.stats().paints], [2, 2, 0], 'frame 1: A rastered, not uploaded (the job waits at the front)');
+    g.frames(); let t = g.G.ups.at(-1);
+    eq1([g.G.ups.length, t.w * t.h > WIN_SPLIT_PX, t.calls.filter(c => c[0] === 'drawImage').length, FACES.stats().paints, FACES.stats().paintMs], [3, true, 1, 1, 10], 'frame 2: uploaded from the retained scratch; one paint of raster + upload (5 ms each)');
+    g.frames(); t = g.G.ups.at(-1);
+    eq1([g.G.ups.length, t.w, t.h, FACES.stats().queued, FACES.stats().paints], [4, 1600, 800, 0, 2], 'frame 3: B in one frame');
+    // a burst between A's two frames: the staged raster is dropped, the next rest makes it again (B off screen now: its window freed)
+    g.W.end({ k: 1.2, tx: -200, ty: 0 }); // (the view at 167..1305, above 100 %: past A's window's margin → rebuilt; at k = 1 M3 would keep the stale one)
+    g.frames(); eq1([g.G.ups.length, FACES.stats().queued, FACES.stats().windows], [4, 1, 1], 'rastered');
+    g.W.emit('movestart', {}); g.frames(2);
+    eq1([g.G.ups.length, FACES.stats().queued], [4, 0], 'the burst dropped the upload');
+    g.W.end(); g.frames(2);
+    eq1([g.G.ups.length, FACES.stats().windows], [5, 1], 'the next rest: two frames again');
+    void A; void B;
+  } finally { g.done(); }
+});
+
+test('1h fix M2: no near-duplicate window — planned only when its level beats the base by WIN_GAIN (at dpr 2 none until k > 0.75); M3: at a rest with dpr·k ≤ L0 the base is ≥ 1:1 and a stale window (the view left it) is not rebuilt for coverage; the next rest above k = 1 rebuilds it', () => {
+  const g = rig({ vw: 1366, vh: 1024 });
+  try {
+    eq1(WIN_GAIN, 1.5);
+    const A = g.panel('a', { w: 400, h: 200 });
+    g.attach(); landBase(g);
+    g.W.end({ k: 0.6 }); g.frames(2); eq1([g.G.ups.length, FACES.stats().windows], [1, 0], '60 %: level 2.4 ≤ 2 × 1.5 — no window');
+    g.W.end({ k: 0.75 }); g.frames(2); eq1(FACES.stats().windows, 0, '75 %: level 3 — not yet');
+    g.W.end({ k: 0.76 }); g.frames(2); eq1([FACES.stats().windows, +g.G.ups.at(-1).w.toFixed(0)], [1, Math.round(400 * 2 * WIN_HEAD * 0.76)], '76 %: level 3.04 — made');
+    A.face.destroy(); g.W.del('a'); // (fix R2: a lingering world item would count as an overlap)
+    // M3 on a CS-80: the window at 160 % at the top-left; out to 100 % and past the margin: kept (stale, undrawn), no paint
+    const B = g.panel('b', { w: 2432, h: 728 });
+    landBase(g);
+    g.W.end({ k: 1.6, tx: 0, ty: 0 }); settle(g);
+    const n0 = g.G.ups.length, w0 = g.G.ups.at(-1);
+    eq1([FACES.stats().windows, w0.w < 2432 * 4], [1, true], 'a strip window at 160 %');
+    g.W.end({ k: 1, tx: -1500, ty: 0 }); settle(g);
+    eq1([g.G.ups.length, FACES.stats().windows, g.G.texes.has(w0), FACES.quads(g.W.rectOf, g.W.cam).length], [n0, 1, true, 1], '100 % past the margin: the base is 1:1 — the stale window stays, undrawn, nothing painted');
+    g.W.end({ k: 1.6, tx: -2000, ty: 0 }); settle(g);
+    eq1([g.G.ups.length, FACES.stats().windows, g.G.texes.has(w0)], [n0 + 1, 1, false], 'back above 100 % where it does not cover: rebuilt');
+    void B;
+  } finally { g.done(); }
+});
+
+test('1h fix R3: the wood sheen composites as CSS does (premultiplied interpolation): the gradient stops fillBg draws, lerped unpremultiplied as a 2D gradient does, match the CSS result over the wood within 2 levels at every band centre (the 3-stop gradient was ~17 levels too light)', () => {
+  const K = [[0, 0, 0.32], [0.45, 255, 0.05], [1, 0, 0.28]]; // style.css .inst.hw.hw-wood: 90deg black .32 → white .05 at 45 % → black .28
+  const seg = t => { const s = t <= 0.45 ? 0 : 1, [t0, c0, a0] = K[s], [t1, c1, a1] = K[s + 1]; return { f: (t - t0) / (t1 - t0), c0, a0, c1, a1 }; };
+  const css = t => { const { f, c0, a0, c1, a1 } = seg(t); return { p: c0 * a0 + (c1 * a1 - c0 * a0) * f, a: a0 + (a1 - a0) * f }; }; // premultiplied lerp
+  const old = t => { const { f, c0, a0, c1, a1 } = seg(t); const a = a0 + (a1 - a0) * f; return { p: (c0 + (c1 - c0) * f) * a, a }; }; // the 2D gradient's lerp of the 3 stops
+  const stops = sheenStops();
+  assert.ok(Array.isArray(stops) && stops.length >= 20 && stops[0][0] === 0 && stops.at(-1)[0] === 1, 'stops [t, grey, alpha] from 0 to 1');
+  const drawn = t => { let i = 0; while (i + 1 < stops.length && stops[i + 1][0] <= t) i++; const [t0, v0, a0] = stops[i], [t1, v1, a1] = stops[Math.min(i + 1, stops.length - 1)], f = t1 > t0 ? (t - t0) / (t1 - t0) : 0; const a = a0 + (a1 - a0) * f; return { p: (v0 + (v1 - v0) * f) * a, a }; };
+  const wood = [0x5a, 0x32, 0x18], over = (c, w) => c.p + (1 - c.a) * w;
+  let worst = 0, worstOld = 0;
+  for (const t of [...[0, 200, 400, 600, 800, 1000, 1200].map(x => (x + 75) / 1400), ...Array.from({ length: 701 }, (_, i) => i / 700)]) {
+    for (const w of wood) { worst = Math.max(worst, Math.abs(over(css(t), w) - over(drawn(t), w))); worstOld = Math.max(worstOld, Math.abs(over(css(t), w) - over(old(t), w))); }
+  }
+  assert.ok(worst <= 2, 'within 2 levels of CSS: ' + worst.toFixed(2));
+  assert.ok(worstOld > 10, 'the old 3-stop gradient was off by ' + worstOld.toFixed(1));
+  for (const [, v, a] of stops) assert.ok(Number.isInteger(v) && v >= 0 && v <= 255 && a > 0 && a <= 1, 'whole grey levels, alpha (0, 1]');
+});
+
+test('1h fix R4: the wood stripes are rotated rects (crisp edges), not a bilinear pattern tile — the 14 world px period at the raster level, the four bands of --hw-wood, rotated 3°; the sheen after them', () => {
+  const g = rig();
+  try {
+    const Wd = g.panel('w', { wood: true, w: 400, h: 200 });
+    g.attach(); landBase(g);
+    const t = g.G.ups[0], L = 2, c = t.calls, names = c.map(x => x[0]);
+    eq1([t.w, t.h, names.includes('createPattern'), names.includes('rotate'), names.includes('save'), names.includes('restore')], [800, 400, false, true, true, true]);
+    const rot = c.find(x => x[0] === 'rotate');
+    near(rot[1], -3 * Math.PI / 180, 'rotated −3° (177deg)');
+    const fr = c.filter(x => x[0] === 'fillRect'), bands = woodBands('#5a3218');
+    eq1(bands.map(b => [b[0], b[1]]), [[0, 3], [3, 7], [7, 9], [9, 14]], 'the bands');
+    eq1(bands.map(b => b[2]), ['#4d2b15', '#6e4b34', '#432512', '#5a3218'], 'color-mix as maths (86 % + black, 88 % + white, 74 % + black, the wood)');
+    const hs = new Set(fr.slice(1).map(x => x[4])); // the stripe rects (after the fill): heights = the band heights + the overlap
+    const rows = Math.ceil(400 / (14 * L)) + 2;
+    assert.ok(fr.length >= 1 + 4 * (rows - 2) && fr.length <= 2 + 4 * (rows + 2), 'a rect per band per row: ' + fr.length);
+    eq1([...hs].sort((a, b) => a - b).length, 4, 'four band heights');
+    const ri = names.indexOf('restore'), si = names.indexOf('createLinearGradient');
+    assert.ok(si > ri && names.lastIndexOf('fillRect') < ri, 'the sheen (a gradient; the stub makes none, so no fill) after the stripes');
+    void Wd;
+  } finally { g.done(); }
+});
+
+test('1h fix R5: the window origin snaps to WIN_SNAP world px (face-local) so a rebuilt window keeps the texel phase of the kept region; clipped to the face', () => {
+  eq1(WIN_SNAP, 64);
+  const cam = { tx: -1500, ty: -700, k: 1.6 }, w1 = winRect(CS80, cam, 1366, 1024), w2 = winRect(CS80, { tx: -1700, ty: -800, k: 1.6 }, 1366, 1024);
+  eq1([w1.x % WIN_SNAP, w1.y % WIN_SNAP, (w1.x + w1.w) % WIN_SNAP, w1.y + w1.h, w2.x % WIN_SNAP, w2.y % WIN_SNAP, (w2.x - w1.x) % WIN_SNAP], [0, 0, 0, 728, 0, 0, 0], 'edges on the stride, clipped to the face');
+  const v = visPart(CS80, cam, 1366, 1024);
+  assert.ok(w1.x <= v.x && w1.y <= v.y && w1.x + w1.w >= v.x + v.w && w1.y + w1.h >= v.y + v.h, 'covers the visible part');
+  assert.ok(w1.x <= v.x - WIN_MARGIN * 1366 / 1.6 + 1e-9 && w1.x + w1.w >= v.x + v.w + WIN_MARGIN * 1366 / 1.6 - 1e-9, 'and the margin');
 });
