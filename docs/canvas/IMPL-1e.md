@@ -496,6 +496,20 @@ switches, LEDs) still re-raster in a pinch and shimmer below 100 %; Serum / FX p
 (their own canvases already follow k through `fitCanvas`); the touch path on the iPad (ui-bench drives the camera by code) and
 whether five panels now pinch at 60 fps there.
 
+**Hotfix (2026-10-19, after the 1g + 2a deploy: "the canvas is still very laggy, even worse and with only one synth on the
+board").** The 1g grid canvas covered the viewport at device px (≈ 7.7 Mpx on the iPad Pro) and was redrawn on every written
+camera frame: a cheap 2D draw (≈ 0.1 ms on the Mac), but each draw re-uploads the whole store to the GPU (≈ 30 MB a frame). It
+is now drawn at rest only — boot, a burst's end, a write outside a burst (a jump, a tray's edge), a resize / device-ratio
+change. During a burst it moves by a CSS transform (cv-world `gridFollow`, one style write a frame, no layout read):
+translate + scale from the drawn camera c0 onto the camera c, s = k / k0, x = tx − tx0·s (every world point where the camera
+puts it), wrapped into (−P, 0] by whole periods P = 128·k (the pattern repeats every MAJOR world px); `will-change: transform`
+while `[data-cv-busy]`, as `#world`. The store reaches GRID_OVER = 256 CSS px past the viewport's right / bottom (one period at
+K_MAX: a pan never runs out of canvas), ≤ 2 × the CSS size and ≤ 8 Mpx (the overscan gives way first, then the scale; the dots
+stay on whole store px). Mid-burst it is redrawn only when the transform would scale it past × 2 / × 0.5 or leave the viewport
+uncovered (a zoom out), never within 250 ms of its last draw; a zoom-out redraw is made 1.25 × further out, so it covers the
+next stretch. Slightly soft while it moves (as `#world`'s own cached raster), crisp at rest; the 1g guarantees hold at every
+draw. `world.gridStats()` counts draws and transform writes (`moves`); ui-bench shows the draws per phase.
+
 **Review round (1f).** Each fix test-first; the split rules above are superseded where they differ:
 - R1 A Serum heard through a panel (every 1e add was auto-patched into the shared panel) keeps that sound: with no effects of its
   own, the panel's FX state becomes its own (reshape's 'moved' rule; also for a lone Serum → panel → OUT); with effects of its own
