@@ -540,6 +540,7 @@ export class ClassicPanel {
       presetNo: () => (H.presetNo ? H.presetNo(tr) : null), // the factory number (1-based)
       seq: m.id === 'tb303' ? this.seqHw() : null,
       dx: m.id === 'dx7' && H.dx ? H.dx(tr) : null,
+      perf: H.perf ? H.perf.api(tr) : null, // (1i, IMPL-1i §6.1: every model's keys and controllers; null: drawn, silent)
     };
   }
   // the TB-303's hardware step entry (IMPL-panels §6.2): a step cursor and PITCH / TIME mode per track (session only: the

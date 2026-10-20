@@ -4,11 +4,14 @@
 // Units: mm in the research frame of scratchpad/canvas/panels/research/modular.json (origin: the cabinet face's top-left,
 // walnut included; 1 MU = 53.975 mm; module row y 16–238.25, console row 238.25–381.1; ±2–3 mm). The 951 keyboard plate
 // (research y 411–513) is an aux area under the cabinet, trimmed to its PORTAMENTO row.
+// (1i, IMPL-1i §1.1–§1.2; thin: stage 9 takes the modular apart) The 951 keyboard, a separate case on the real setup, is
+// drawn under the cabinet as one module: its walnut case (x 0–1087), the left-end plate whole (SCALE, RANGE, GLIDE inert;
+// PORTAMENTO live as before) and the 61-key bed (C2–C7, MIDI 36–96) right of it; no wheels (the 951 has none).
 
 export default {
   v: 1,
   id: 'modular',
-  hw: 'a walnut cabinet of the genuine 900-series modules this voice uses, in System 55 order (option B), + the 951 keyboard plate',
+  hw: 'a walnut cabinet of the genuine 900-series modules this voice uses, in System 55 order (option B), + the 951 keyboard below it',
   case: 'wood',
   scheme: {
     panel: '#121212',
@@ -19,11 +22,16 @@ export default {
     font: 'sans',
     knob: { skirt: '#101010', cap: '#c9c9c4', ptr: '#f4f2ea', ptrStyle: 'line', knurl: true, capR: 0.56 },
     jack: { nut: '#d4d4cf', hole: '#080808' },
+    keys: { white: '#f3f1ea', whiteEdge: '#c4c0b5', black: '#121212', blackTop: '#2b2b2b', gap: '#060606' },
   },
   areas: [
     { id: 'main', src: [0, 0, 853.6, 397.1], at: [0, 0], fill: 'none' },
     { id: 'bay', src: [22, 16, 809.6, 365.1], at: [22, 16], fill: '#a3a39e' },
-    { id: 'kbd', src: [22, 458, 197, 45], at: [22, 405.1], fill: '#141414', frame: 'line', r: 1 },
+    // (1i) the 951's walnut case under the cabinet (its frame x 0–1087, y 450–616 → offset −52.9), the bed on it, and the
+    // left-end plate whole (its research frame y 411–513, at the bed's back edge)
+    { id: 'case951', src: [0, 450, 1087, 166], at: [0, 397.1], fill: 'wood' },
+    { id: 'keys', src: [219, 458, 846, 150], at: [219, 405.1], fill: '#0a0a0a' },
+    { id: 'kbd', src: [22, 411.1, 197, 102], at: [22, 405.1], fill: '#141414', frame: 'line', r: 1 },
   ],
   sections: [
     { id: 'osc1', label: '921 OSCILLATOR 1', x: 22, y: 16, w: 107.95, h: 222.25, frame: 'none', title: 'none' },
@@ -39,7 +47,8 @@ export default {
     { id: 'cp3a', label: 'CP3A', x: 22, y: 238.25, w: 215.9, h: 142.88, frame: 'none', title: 'none' },
     { id: 'blank', label: 'blank panels', x: 237.9, y: 238.25, w: 485.78, h: 142.88, frame: 'none', title: 'none' },
     { id: 'cp8a', label: 'CP8A', x: 723.68, y: 238.25, w: 107.95, h: 142.88, frame: 'none', title: 'none' },
-    { id: 'kbd', label: '951 KEYBOARD CONTROLLER', a: 'kbd', x: 22, y: 458, w: 197, h: 45, frame: 'none', title: 'none' },
+    { id: 'kbd', label: '951 KEYBOARD CONTROLLER', a: 'kbd', x: 22, y: 411.1, w: 197, h: 102, frame: 'none', title: 'none' },
+    { id: 'keys', label: 'KEYBOARD', a: 'keys', x: 219, y: 458, w: 846, h: 150, frame: 'none', title: 'none' },
   ],
   controls: [
     // 921 oscillator 1: FREQUENCY, RANGE (6 detents, 1' not ours), RECTANGULAR WIDTH, AUX. OUT WAVEFORM (6 detents, ours are 4); the rest not emulated
@@ -196,9 +205,13 @@ export default {
     { kind: 'lamp', x: 808.5, y: 271.4, d: 11, inert: true, color: '#b22a1d', label: '1½ AMP SLOW BLOW fuse (A.C.)', lab: 'none' },
     { kind: 'lamp', x: 761.6, y: 331.8, d: 6, inert: true, lit: true, color: '#d8261b', label: 'POWER lamp', lab: 'none' },
     { kind: 'switch', style: 'paddle', orient: 'v', x: 799.6, y: 331.8, w: 8, h: 16, color: '#161616', inert: true, label: 'POWER', lab: 'none', p: 1 },
-    // 951 keyboard controller plate (aux, its bottom row only): NO GLIDE / GLIDE (not emulated: ours always glides), PORTAMENTO (gl)
+    // 951 keyboard controller plate (1i: whole): SCALE, RANGE and NO GLIDE / GLIDE (not emulated: ours always glides), PORTAMENTO (gl)
+    { kind: 'knob', a: 'kbd', x: 135, y: 434.8, d: 26, sweep: 300, inert: true, label: 'SCALE', lab: 'none', p: 0.5 },
+    { kind: 'knob', a: 'kbd', x: 185, y: 434.8, d: 26, sweep: 300, inert: true, label: 'RANGE', lab: 'none', p: 0.5 },
     { kind: 'switch', style: 'slide', orient: 'h', a: 'kbd', x: 134.6, y: 484.6, w: 15, h: 6.5, inert: true, label: 'NO GLIDE / GLIDE', lab: 'none', p: 1 },
     { id: 'gl', kind: 'knob', a: 'kbd', x: 185, y: 482.3, d: 26, sweep: 300, label: 'PORTAMENTO', lab: 'none' },
+    // (1i) the 61-key bed: felt 2 mm, keys 146 mm; in front, 2 mm of keybed and the case's 8 mm walnut rim
+    { id: 'perf:keys', kind: 'keys', a: 'keys', x: 642, y: 533, n: 61, lo: 36, pitch: 23.5, len: 146 },
   ],
   decor: [
     // the module panels (black, inset from the silver frame strips) and their screws
@@ -518,14 +531,24 @@ export default {
     { t: 'text', a: 'kbd', x: 31, y: 471.6, s: 'KEYBOARD', size: 2, weight: 700, anchor: 'start', ls: 0.2 },
     { t: 'text', a: 'kbd', x: 31, y: 474.6, s: 'CONTROLLER', size: 2, weight: 700, anchor: 'start', ls: 0.2 },
     { t: 'text', a: 'kbd', x: 31, y: 495.4, s: '951', size: 3.6, weight: 700, anchor: 'start', ls: 0.3 },
-    { t: 'screws', a: 'kbd', pts: [[27.5, 462.5], [213.5, 462.5], [27.5, 498.5], [213.5, 498.5]], d: 3 },
+    { t: 'screws', a: 'kbd', pts: [[27.5, 416.6], [213.5, 416.6], [27.5, 507.6], [213.5, 507.6]], d: 3 },
+    // (1i) the plate's SCALE and RANGE dials; the 951 case: the cabinet's shadow on its rear rim, the bed's felt and front
+    { t: 'scale', a: 'kbd', x: 135, y: 434.8, d: 25, sweep: 300, n: 11, labels: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], size: 1.9 },
+    { t: 'scale', a: 'kbd', x: 185, y: 434.8, d: 25, sweep: 300, n: 11, labels: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'], size: 1.9 },
+    { t: 'text', a: 'kbd', x: 135, y: 416.8, s: 'SCALE', size: 1.9, weight: 600, anchor: 'middle' },
+    { t: 'text', a: 'kbd', x: 185, y: 416.8, s: 'RANGE', size: 1.9, weight: 600, anchor: 'middle' },
+    { t: 'rect', a: 'case951', x: 0, y: 450, w: 1087, h: 2.5, fill: '#1c120b' },
+    { t: 'rect', a: 'keys', x: 219, y: 458, w: 846, h: 2, fill: '#3a1212' },
+    { t: 'rect', a: 'keys', x: 219, y: 606, w: 846, h: 2, fill: '#141414' },
   ],
-  extras: { ids: ['kb'], at: [227, 405.1, 200, 40] },
+  extras: { ids: ['kb'] },
   notes: [
     "Option B of the research: the genuine modules this voice uses, at true size, in System 55 order (15 MU over a 22 MU-wide console row: CP3A, blanks, CP8A), in a walnut cabinet; the 951 keyboard's left-end plate below it as an aux area (its PORTAMENTO row only). kb is the one extra (keyboard CV into the 904A is a patch cord).",
     '921 RANGE is the 6-detent winged rotary (32\' 16\' 8\' 4\' 2\' 1\'; 1\' not ours: map [0, 1, 2, 3, 4, null]); AUX. OUT WAVEFORM the 6-detent rotary (sine, triangle, saw, inverted saw, rectangular, inverted rectangular; map [0, 1, 2, null, 3, null]). The inverted-rectangular icon uses the "wave:rect" glyph as a stand-in (no inverted-pulse glyph in the set).',
     'nc is a jack-select on the 903A WHITE / PINK NOISE OUTPUT pairs (the left jack of each pair); ea is 995 ATTENUATOR 1 (envelope → filter amount); 911 order top to bottom T1, T2, T3, E SUS; vol is the CP3A MASTER GAIN.',
     'Dials print the hardware legends (FREQUENCY −6…+6, RECTANGULAR WIDTH 10…90, FIXED CONTROL VOLTAGE −6…+6) linearly over our ranges (§3.4.2). Names and dials are decor (the dial ring just outside each skirt, as on the panels), so the rule lines of the 921 stay clear.',
-    'Inert: 921 SCALE / COARSE RANGE toggles, CLAMPING POINT, AUX. OUT LEVEL; 904B / 904A FREQUENCY RANGE; the whole 902; 995 attenuators 2–3; CP3A switches, ATTENUATOR, TRUNK LINES, MULTIPLE, OUTPUTS; CP8A; 951 NO GLIDE / GLIDE; every jack and S-trigger socket. No wordmark: module titles at the top, model numbers in plain type at the bottom.',
+    'Inert: 921 SCALE / COARSE RANGE toggles, CLAMPING POINT, AUX. OUT LEVEL; 904B / 904A FREQUENCY RANGE; the whole 902; 995 attenuators 2–3; CP3A switches, ATTENUATOR, TRUNK LINES, MULTIPLE, OUTPUTS; CP8A; 951 SCALE, RANGE, NO GLIDE / GLIDE; every jack and S-trigger socket. No wordmark: module titles at the top, model numbers in plain type at the bottom.',
+    '(1i, thin: stage 9 replaces this instrument) The 951 keyboard: 61 keys C2–C7 (MIDI 36–96) — decided in IMPL-1i §1.1 from a secondary source\'s "five octaves" (no primary source read). Its case is drawn under the cabinet as one module (§1.2: x 0–1087, y 450–616, offset −52.9; the module\'s walnut), the bed x 219–1065 (36 × 23.5 mm), y 458–608: 2 mm felt + 146 mm white keys (the contract\'s 150 less 4 mm so the front band is a clean 8 mm) + 2 mm keybed, then the case\'s 8 mm walnut rim (the band\'s room). No wheels, no ribbon (the 951 has none); no velocity.',
+    '(1i) The left-end plate is drawn whole now (research x 22–219, y 411.1–513.1, at the bed\'s back edge: offset −6): SCALE and RANGE (inert, research y 434.8), NO GLIDE / GLIDE (inert), PORTAMENTO (gl, live). kb moves from the plate\'s side (its old extras.at lay in the bed) to the default strip below.',
   ],
 };

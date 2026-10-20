@@ -3,6 +3,7 @@ import './v8-guard.mjs';
 // unmount / loss / destroy), the quads (z order, the body clip, the window above k = 1), the windows (level maths incl.
 // the budget level, keep / rebuild / free, one per frame nearest first, cancelled by a burst), the budget eviction order,
 // the overlap rule, the stats. Fake DOM (wk-dom), fake gl (the §2 surface), fake world (rectOf / on / onScreen / cam).
+// (1i, IMPL-1i §3.3) the keyboard faces: 1:1 at dpr 2, ≤ 58 MB each, the recorded exemption at dpr 2.5 / 3 pinned.
 // Only strings / numbers / booleans go into assert (never a fake-DOM node).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -105,6 +106,28 @@ function rig(o = {}) {
 const landBase = g => { g.frames(); g.land(); g.frames(); };
 // every queued job (nearest the viewport centre first): frames and landed loads until nothing is pending
 const settle = (g, max = 40) => { for (let i = 0; i < max && (FACES.stats().queued || raf.pending); i++) { g.frames(); g.landAll(); } };
+
+/* ---- (1i, IMPL-1i §3.3) the keyboard faces: the §1.2 module sizes (outer px, the 40 px bar included) */
+const FACES_1I = { modular: [2176, 1280], minimoog: [1408, 736], arp2600: [1856, 1344], solina: [1984, 448], cs80: [2432, 1024], prophet5: [1920, 864],
+  ms20: [1120, 704], tb303: [608, 608], obxa: [2048, 928], jupiter8: [2144, 928], juno60: [2144, 800], dx7: [2048, 800] };
+// the recorded exemption above dpr 2 (the 16 M px base ceiling, iOS's 2D canvas limit): baseLevel / dpr, three decimals
+const BELOW_1 = { 2.5: { modular: 0.974 }, 3: { modular: 0.812, arp2600: 0.857, cs80: 0.862, jupiter8: 0.966, obxa: 0.989 } };
+test('1i faces: every keyboard face ≤ 10.8 M px at dpr 2 (< BASE_MAX_PX) — baseLevel(2) = 2, 1:1 at rest to k = 1 — and ≤ 58 MB of base + mips; at dpr 2.5 the modular 0.974 of 1:1, the rest 1.000; at dpr 3 the §3.3 numbers (pinned: a change is visible); the authored layouts with a bed too', async () => {
+  const P = await import('../cv-panel.js?v=9'), { MODELS } = await import('../models.js?v=9');
+  for (const [id, [w, H]] of Object.entries(FACES_1I)) {
+    const h = H - BAR_H;
+    assert.ok(w * h * 4 <= 10.8e6 + 5e4 && w * h * 4 < BASE_MAX_PX, id + ': ' + w * h * 4 + ' px');
+    eq1(baseLevel(2, w, h), 2, id + ': L0 = 2 at dpr 2');
+    assert.ok(w * h * 4 * 4 * 4 / 3 <= 58e6, id + ': base + mips ' + (w * h * 4 * 4 * 4 / 3 / 1e6).toFixed(1) + ' MB');
+    for (const d of [2.5, 3]) eq1(Math.round(baseLevel(d, w, h) / d * 1000) / 1000, BELOW_1[d][id] || 1, `${id} at dpr ${d}`);
+  }
+  for (const id of P.HW_IDS) { // (lane K2's layouts: once a model has its bed, its real face)
+    const L = P.layoutOf(id), m = MODELS.find(x => x.id === id);
+    if (!L || !(L.controls || []).some(c => c && c.id === 'perf:keys')) continue;
+    const s = P.sizeOf(L, m);
+    eq1(baseLevel(2, s.w, s.h - BAR_H), 2, id + ' (authored): L0 = 2 at dpr 2');
+  }
+});
 
 /* ---- the maths */
 test('1h maths: the base level (min(dpr, 3), ≤ BASE_MAX_PX), the window level (dpr·K_MAX, dpr·WIN_HEAD·k, the budget level), the visible part, the window rect, keep', () => {

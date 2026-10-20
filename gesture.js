@@ -17,9 +17,12 @@
 //     too) are physical: CSS px at scale 1, divided by the browser's own pinch-zoom (visualViewport.scale); the edge is
 //     the visual viewport's (a zoomed page panned sideways). A touch on
 //     [data-gesture="music"] (the keys) pairs by the time rule only, never with a q on [data-gesture="perf"] (octave,
-//     hold, the grip … then a key: both work). A touch whose press opened a menu (contextmenu: a long-press) or a
-//     widget's hold chooser (a bubbling 'wk-hold' event at the widget) is FREED: it never pairs, so the other hand can
-//     pick from what it opened. Otherwise both are independent touches (two hands: hold a note or a knob, play or tweak);
+//     hold, the grip … then a key: both work); a perf touch (the tray, a hardware wheel / lever / ribbon / pad) never
+//     pairs with another perf touch and with anything else by the time rule only (1i G1: two wheels with thumb and
+//     finger; a controller held while the other hand turns a knob). A touch whose press opened a menu (contextmenu: a
+//     long-press) or a widget's hold chooser (a bubbling 'wk-hold' event at the widget) is FREED: it never pairs, so the
+//     other hand can pick from what it opened. Otherwise both are independent touches (two hands: hold a note or a
+//     knob, play or tweak);
 //   · both inside one [data-gesture="own"] element (piano roll, arrangement, zoomPan canvases) → session 'own':
 //     every event reaches the owner's pinch / pan; only the click suppression below applies;
 //   · else session 'nav': q's owner is asked to ROLL BACK — claim() callbacks, a range input under q gets its value
@@ -147,13 +150,17 @@ export function installGestures(win, opts) {
     return q.x0 <= L + m || q.y0 <= T + m || (W > 0 && q.x0 >= L + W - m) || (H > 0 && q.y0 >= T + H - m);
   }
   function partner(p, t) { // the newest touch p pairs with, or null
-    const music = p.zone.kind === 'music', f = perPt();
+    const music = p.zone.kind === 'music', perf = p.zone.kind === 'perf', f = perPt();
     let best = null;
     for (const q of pts.values()) {
       if (q === p || q.spent || q.cancelled || q.free || q.zone.kind === 'music') continue;
+      // (1i G1) a perf touch never pairs with a perf one (two wheels, two levers, a lever and a pad: thumb and finger), and
+      // with anything else by the time rule only (a held controller + a knob of the other hand: two hands)
+      const qp = q.zone.kind === 'perf';
+      if (perf && qp) continue;
       const age = t - q.t0, d = dist(q, { x: p.x0, y: p.y0 }), timely = age <= PAIR_MS && d <= PAIR_DIST * f;
-      if (music) { if (timely && q.zone.kind !== 'perf') best = q; continue; }
-      if (timely || (age <= LATE_MS && d <= LATE_PX * f && dist(q, { x: q.x0, y: q.y0 }) <= STILL_PX * f && !atEdge(q, f))) best = q;
+      if (music) { if (timely && !qp) best = q; continue; }
+      if (timely || (!perf && !qp && age <= LATE_MS && d <= LATE_PX * f && dist(q, { x: q.x0, y: q.y0 }) <= STILL_PX * f && !atEdge(q, f))) best = q;
     }
     return best;
   }

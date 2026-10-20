@@ -4,9 +4,12 @@
 // extras counts, the smallest hit box and any overlap, and the per-section control list (in Tab order). With out-dir
 // (use the scratchpad) it writes <model>.svg: the decor SVG with every live control drawn as an outline of its kind and
 // its hit box dashed — a quick visual check against the research photos without starting the app. Exit code 1 on problems.
+// (1i, IMPL-1i §2) A keyboard: its MIDI range, the bed's edges (area frame, content mm, body px) and its front band; in the
+// SVG every white / black key outlined from geometry's o.bed and the band hatched; a controller's slot and hit box as above.
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import * as P from '../cv-panel.js?v=9';
+import { noteName } from '../cv-keys.js?v=9';
 import { MODELS } from '../models.js?v=9';
 
 const [id, out] = process.argv.slice(2);
@@ -34,6 +37,22 @@ if (hb.length) {
   const outside = hb.filter(r => r.x < 0 || r.y < 0 || r.x + r.w > geo.body.w || r.y + r.h > geo.body.h).map(r => r.id);
   if (outside.length) console.log('outside the body: ' + outside.join(', '));
 }
+// (1i) the keyboard and the performance controls
+const f3 = v => (Math.round(v * 1000) / 1000).toFixed(3);
+for (const o of geo.controls) {
+  const c = L.controls[o.i];
+  if (o.kind === 'keys' && o.bed) {
+    const b = o.bed, m = b.mm, ar = (L.areas || []).find(a => a.id === o.a) || { src: [0, 0], at: [0, 0] }, l = c.x - m.w / 2, t = c.y - m.h / 2;
+    const want = c.front != null ? c.front : 8, dx = ar.at[0] - ar.src[0], dy = ar.at[1] - ar.src[1];
+    console.log(`\nkeys ${o.id || '(inert)'}: ${b.n} keys ${noteName(b.lo)}–${noteName(b.hi)} (MIDI ${b.lo}–${b.hi}, ${b.whites} white), pitch ${f3(m.pitch)} × len ${m.len} mm, black ${f3(m.bw)} × ${f3(m.bl)}${b.at ? ', aftertouch' : ''}`);
+    console.log(`  bed (area "${o.a}" frame, mm): left ${f3(l)} · right ${f3(l + m.w)} · back ${f3(t)} · front ${f3(t + m.h)}`);
+    console.log(`  bed (content mm): left ${f3(l + dx)} · right ${f3(l + m.w + dx)} · back ${f3(t + dy)} · front ${f3(t + m.h + dy)}`);
+    console.log(`  bed (body px): x ${b.x} → ${f3(b.x + b.w)} · y ${b.y} → ${f3(b.y + b.h)}; front band ${f3(m.front)} mm (${b.front} px)${o.live && m.front < Math.min(8, want) - 1e-9 ? `, clamped from ${want} mm (the room below the keys)` : ''}`);
+  } else if (['wheel', 'lever', 'ribbon', 'pad'].includes(o.kind)) {
+    const more = o.kind === 'lever' ? `; axis ${c.axis}, up ${c.up}` : o.kind === 'ribbon' ? `; span ${c.span != null ? c.span : 12} st` : o.kind === 'pad' ? `; rise ${c.rise != null ? c.rise : 0.25} s` : `; orient ${c.orient || 'v'}${c.detent ? ', detent' : ''}`;
+    console.log(`${o.kind} ${o.id || '(inert)'}: slot ${c.w} × ${c.h} mm at (${c.x}, ${c.y}) in "${o.a}"; hit ${o.hit.w} × ${o.hit.h} px${more}`);
+  }
+}
 console.log('\nsections (Tab order):');
 const bySec = new Map();
 for (const i of geo.order) { const o = geo.controls[i], k = o.sec >= 0 ? (L.sections[o.sec] || {}).id : '(none)'; if (!bySec.has(k)) bySec.set(k, []); bySec.get(k).push(o.id || o.kind); }
@@ -46,6 +65,13 @@ if (out) {
   // overlay in body px: a second <svg> over the first in one file (a wrapper with both)
   const ov = [];
   for (const o of geo.controls) {
+    if (o.bed) { // (1i) every key from o.bed (white: outlined; black: filled, outlined) and the front band hatched
+      for (const k of o.bed.keys) ov.push(`<rect x="${k.x}" y="${k.y}" width="${k.w}" height="${k.h}" fill="${k.black ? 'rgba(20,20,20,0.6)' : 'none'}" stroke="${k.black ? '#ff9f3f' : '#3fd0ff'}" stroke-width="${k.black ? 1 : 0.75}"/>`);
+      const bd = o.bed.band;
+      if (bd.h > 0) ov.push(`<rect x="${bd.x}" y="${bd.y}" width="${bd.w}" height="${bd.h}" fill="rgba(255,79,163,0.18)" stroke="#ff4fa3" stroke-width="1" stroke-dasharray="4 3"/>`);
+      ov.push(`<text x="${o.bed.x + 4}" y="${o.bed.y - 4}" font-size="11" fill="#3fd0ff" font-family="monospace">${o.id || 'keys (inert)'} ${noteName(o.bed.lo)}–${noteName(o.bed.hi)} · band ${o.bed.front} px</text>`);
+      continue;
+    }
     if (!o.live && !o.show) continue;
     const col = o.live ? '#3fd0ff' : '#ffd23f', r = o.own || o.box;
     if (o.kind === 'knob' || o.kind === 'rotary') ov.push(`<circle cx="${r.x + r.w / 2}" cy="${r.y + r.h / 2}" r="${r.w / 2}" fill="none" stroke="${col}" stroke-width="1.5"/>`);

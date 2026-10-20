@@ -4,6 +4,8 @@
 // research frame of scratchpad/canvas/panels/research/minimoog.json (fact-checked twice; ±2 mm): the 689 × 176.2 mm face,
 // and the left-hand controller plate below it (an aux area, R3: only its GLIDE / DECAY rows; the wheels are the keyboard
 // tray's). Printed legends sit above their controls as on the hardware; dial numbers follow the printed dials.
+// (1i, IMPL-1i §1.2) The left-hand controller plate full depth (offset −7.8 kept) with the PITCH and MOD wheels live in
+// front of its rockers, and the 44-key bed (F1–C5, MIDI 29–72) right of it, in the keybed row below the panel.
 const N10 = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
 const TIME = ['10', '200', '600', '1', '5', '10']; // the contour dials: 10 / 200 / 600 M-SEC · 1 / 5 / 10 SEC
 const RANGE = ['LO', "32'", "16'", "8'", "4'", "2'"];
@@ -13,17 +15,22 @@ const FREQ = ['-7', '-6', '-5', '-4', '-3', '-2', '-1', '0', '1', '2', '3', '4',
 export default {
   v: 1,
   id: 'minimoog',
-  hw: 'Minimoog Model D (1970–81 panel) + the left-hand controller plate',
+  hw: 'Minimoog Model D (1970–81 panel) + the left-hand controller plate and the 44-key bed',
   case: 'wood',
   scheme: {
     panel: '#141414', legend: '#f2efe6', rule: '#e9e6dc', accent: '#e8321a', wood: '#5a3218', font: 'sans',
     knob: { skirt: '#121212', cap: '#b9b9b6', ptr: '#f6f4ee', ptrStyle: 'line', knurl: true, capR: 0.56 },
     rocker: { blue: '#4585b5', orange: '#e8321a', cream: '#e9e1c8', black: '#1b1b1b' },
     jack: { nut: '#c9c9c4', hole: '#060606' },
+    keys: { white: '#f2efe4', whiteEdge: '#c4bfb0', black: '#131313', blackTop: '#2b2b2b', gap: '#060606' },
+    wheel: { slot: '#050505', surface: '#1a1a1a', ridge: '#2e2e2e', mark: '#e9e1c8' },
   },
   areas: [
     { id: 'main', src: [0, 0, 689, 176.2], at: [0, 0], frame: 'metal' },
-    { id: 'lefthand', src: [0, 192, 84, 36], at: [0, 184.2], fill: '#111111', frame: 'line' },
+    // (1i) the keybed row (y 192–342, offset −7.8): the left-hand controller plate full depth (x 0–98.7, the CONTROLLERS
+    // section's width) and the bed (x 98.7–696.7: 26 whites × 23 mm, 7.7 mm past the panel's right edge, inside the cheeks)
+    { id: 'lefthand', src: [0, 192, 98.7, 150], at: [0, 184.2], fill: '#111111', frame: 'line' },
+    { id: 'keys', src: [98.7, 192, 598, 150], at: [98.7, 184.2], fill: '#0a0a0a' },
   ],
   sections: [
     { id: 'controllers', label: 'CONTROLLERS', x: 0, y: 0, w: 98.7, h: 176.2, frame: 'none', title: 'none' },
@@ -32,7 +39,8 @@ export default {
     { id: 'modifiers', label: 'MODIFIERS', x: 423.4, y: 0, w: 148.7, h: 176.2, frame: 'none', title: 'none' },
     { id: 'output', label: 'OUTPUT', x: 572.1, y: 0, w: 83.6, h: 176.2, frame: 'none', title: 'none' },
     { id: 'power', label: 'POWER', x: 655.7, y: 0, w: 33.3, h: 176.2, frame: 'none', title: 'none' },
-    { id: 'lefthand', label: 'LEFT-HAND CONTROLLER', a: 'lefthand', x: 0, y: 192, w: 84, h: 36, frame: 'none', title: 'none' },
+    { id: 'lefthand', label: 'LEFT-HAND CONTROLLER', a: 'lefthand', x: 0, y: 192, w: 98.7, h: 150, frame: 'none', title: 'none' },
+    { id: 'keys', label: 'KEYBOARD', a: 'keys', x: 98.7, y: 192, w: 598, h: 150, frame: 'none', title: 'none' },
   ],
   controls: [
     // CONTROLLERS: TUNE alone on top, GLIDE and MODULATION MIX below; the OSCILLATOR MODULATION rocker straddles the rule
@@ -90,6 +98,11 @@ export default {
     { kind: 'switch', style: 'rocker', orient: 'h', a: 'lefthand', x: 47, y: 202, w: 15, h: 8, color: 'cream', inert: true, label: 'GLIDE', lab: 'w', p: 1 },
     { kind: 'jack', a: 'lefthand', x: 14, y: 219, d: 9, inert: true, label: 'DECAY switch input', lab: 'none' },
     { id: 'dk', kind: 'switch', style: 'rocker', orient: 'h', a: 'lefthand', x: 47, y: 219, w: 15, h: 8, color: 'cream', label: 'DECAY', lab: 'w' },
+    // (1i) the wheels in front of the rockers: PITCH (left, centre detent drawn) and MOD (right); then the 44-key bed:
+    // felt 3 mm, keys 137 mm, the 10 mm walnut front rail
+    { id: 'perf:bend', kind: 'wheel', a: 'lefthand', x: 34, y: 284, w: 22, h: 64, orient: 'v', detent: true, label: 'PITCH', labSize: 2.4 },
+    { id: 'perf:mod', kind: 'wheel', a: 'lefthand', x: 66, y: 284, w: 22, h: 64, orient: 'v', label: 'MOD', labSize: 2.4 },
+    { id: 'perf:keys', kind: 'keys', a: 'keys', x: 397.7, y: 263.5, n: 44, lo: 29, pitch: 23, len: 137 },
   ],
   decor: [
     // the section rules (printed lines): CONTROLLERS | OSC BANK broken by the OSCILLATOR MODULATION legend and rocker,
@@ -127,6 +140,12 @@ export default {
     { t: 'text', a: 'lefthand', x: 58, y: 203, s: 'ON', size: 2.4, anchor: 'start' },
     { t: 'text', a: 'lefthand', x: 58, y: 220, s: 'ON', size: 2.4, anchor: 'start' },
     { t: 'text', x: 672.3, y: 168, s: 'Minimoog', size: 3.4, anchor: 'middle', weight: 600 },
+    // (1i) the bed's felt where the keys run under the panel's hinge, the walnut front rail along the bed and the plate
+    { t: 'rect', a: 'keys', x: 98.7, y: 192, w: 598, h: 3, fill: '#3e1414' },
+    { t: 'rect', a: 'keys', x: 98.7, y: 332, w: 598, h: 10, fill: 'wood' },
+    { t: 'rect', a: 'lefthand', x: 0, y: 332, w: 98.7, h: 10, fill: 'wood' },
+    { t: 'line', a: 'keys', x1: 98.7, y1: 332.2, x2: 696.7, y2: 332.2, stroke: '#2a1a10', sw: 0.4 },
+    { t: 'line', a: 'lefthand', x1: 0, y1: 332.2, x2: 98.7, y2: 332.2, stroke: '#2a1a10', sw: 0.4 },
   ],
   extras: { ids: [] },
   notes: [
@@ -135,5 +154,7 @@ export default {
     'TUNE prints the hardware -2…+2 and CUTOFF -4…4 (our ±1 st and 0…10, linear in the knob travel: §3.4.2).',
     'Rockers carry no parallax correction (they sit on their printed legends); knobs are dial-legend centres (research).',
     'Inert: MAIN OUTPUT ON, A-440, phones VOLUME and jack, POWER lamp and rocker, OVERLOAD lamp, GLIDE rocker and the two switch-input jacks.',
+    '(1i) The bed: 44 keys F1–C5 (MIDI 29–72: F0…C4 in the maker\'s naming, C3 = middle C there; middle C = 60 here as on every synth), white pitch 23 mm derived ((697 mm inside the cheeks − the 98.7 mm plate) / 26 whites = 23.0: 598 mm), the keybed row 150 mm = 3 mm felt + 137 mm white keys + a 10 mm walnut front rail (the contract default: no photo here reads the rail; it carries the 8 mm front band). The bed runs 7.7 mm past the panel\'s right edge (x 696.7: the inside of the right cheek). Not touch-sensitive on the original.',
+    '(1i) The left-hand controller plate full depth (x 0–98.7, y 192–342 at the kept offset −7.8; its width = the CONTROLLERS section above it, the bed\'s left edge): GLIDE / DECAY rows as before, then the two wheels in front of them — PITCH left (perf:bend, centre detent drawn; it springs to centre on glass, the 1970s original only detents; ±2 st), MOD right (perf:mod, stays). Windows 22 × 64 mm (the contract default: the photos here do not resolve the slots), centres x 34 / 66, y 284.',
   ],
 };

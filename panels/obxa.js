@@ -4,11 +4,14 @@
 // scratchpad/canvas/panels/research/obxa.json (origin: the rear-left corner seen from above; the striped panel is
 // 960 × 209 mm between 28 mm wood cheeks; ±3 mm in x, ±6 mm in y). Full-height MANUAL | CONTROL | MODULATION columns, then
 // OSCILLATORS | FILTER | ENVELOPES over KEYBOARD | PROGRAMMER; black gutters between the sections, no boxes.
+// (1i, IMPL-1i §1.2) Below the badge strip at their real place: the modulation panel (its MODULATION and PITCH BEND
+// levers live: front–back paddles, perf:mod / perf:bend; the rest inert) and the 61-key bed (C2–C7, MIDI 36–96); the wood
+// cheeks run on to the front edge.
 
 export default {
   v: 1,
   id: 'obxa',
-  hw: 'OB-Xa (1981): wood end cheeks, the lid band cropped to 18 mm, the blue-pinstriped panel, the black strip below it (extras)',
+  hw: 'OB-Xa (1981): wood end cheeks, the lid band cropped to 18 mm, the blue-pinstriped panel, the black strip below it (extras), the modulation panel and the 61-key bed',
   case: '#0f1013',
   scheme: {
     panel: '#0c0e13',
@@ -19,12 +22,18 @@ export default {
     font: 'sans',
     knob: { skirt: '#3b3e44', cap: '#151515', ptr: '#f2f2f2', ptrStyle: 'triangle', knurl: false, capR: 0.52 },
     button: { cap: '#1c1d20', led: '#e0201a', ledOff: '#3a0e0c', text: '#f2f2f2' },
+    keys: { white: '#f3f2ee', whiteEdge: '#c0bdb5', black: '#121212', blackTop: '#2a2a2b', gap: '#050505' },
+    lever: { slot: '#030304', cap: '#2a2c31' },
   },
   areas: [
     { id: 'main', src: [28, 82, 960, 209], at: [28, 82] },
     { id: 'lid', src: [28, 64, 960, 18], at: [28, 64], fill: '#111214' },
-    { id: 'cheekL', src: [0, 64, 28, 267], at: [0, 64], fill: 'wood' },
-    { id: 'cheekR', src: [988, 64, 28, 267], at: [988, 64], fill: 'wood' },
+    { id: 'cheekL', src: [0, 64, 28, 444], at: [0, 64], fill: 'wood' },
+    { id: 'cheekR', src: [988, 64, 28, 444], at: [988, 64], fill: 'wood' },
+    // (1i) the modulation panel (research x 28–142, y 333–470) and the bed (x 142–988, y 333–508), offset 0; the cheeks
+    // run to the front edge (y 508); in front of the modulation panel (y 470–508) the case
+    { id: 'modpanel', src: [28, 333, 114, 137], at: [28, 333], fill: '#0c0e13' },
+    { id: 'keys', src: [142, 333, 846, 175], at: [142, 333], fill: '#0a0a0b' },
   ],
   sections: [
     { id: 'manual', label: 'MANUAL', x: 28, y: 82, w: 120.6, h: 209, frame: 'none', title: 'none' },
@@ -35,6 +44,8 @@ export default {
     { id: 'envelopes', label: 'ENVELOPES', x: 751, y: 82, w: 237, h: 116, frame: 'none', title: 'none' },
     { id: 'keyboard', label: 'KEYBOARD', x: 370.2, y: 198, w: 135.9, h: 93, frame: 'none', title: 'none' },
     { id: 'programmer', label: 'PROGRAMMER', x: 506.1, y: 198, w: 481.9, h: 93, frame: 'none', title: 'none' },
+    { id: 'modpanel', label: 'MODULATION PANEL', a: 'modpanel', x: 28, y: 333, w: 114, h: 137, frame: 'none', title: 'none' },
+    { id: 'keys', label: 'KEYBOARD', a: 'keys', x: 142, y: 333, w: 846, h: 175, frame: 'none', title: 'none' },
   ],
   controls: [
     // MANUAL: VOLUME (ours: per patch), BALANCE, AUTO / HOLD / CHORD, MASTER TUNE
@@ -110,6 +121,22 @@ export default {
     { kind: 'button', x: 869.5, y: 247, w: 16, h: 12, led: 'cap', inert: true, label: 'PROGRAM 8', lab: 'none' },
     { kind: 'button', x: 909.5, y: 247, w: 16, h: 12, led: 'cap', inert: true, label: 'WRITE', lab: 'none' },
     { kind: 'lamp', x: 567.5, y: 274.4, d: 2.6, inert: true, color: '#e0201a', label: 'CASSETTE', lab: 'none' },
+    // (1i) the modulation panel (manual pp. 16–17): RATE and DEPTH, the OSC 1 / OSC 2 modulation switches, OSC 2 ONLY and
+    // NARROW for the bend, TRANSPOSE DOWN / UP, LOWER / UPPER — not emulated; the two paddle levers live: MODULATION (pull
+    // toward you = more, springs back to none) and PITCH BEND (push away = up, springs to centre)
+    { kind: 'knob', a: 'modpanel', x: 56, y: 352, d: 16, sweep: 300, inert: true, label: 'RATE', labSize: 2.2, p: 0.5 },
+    { kind: 'knob', a: 'modpanel', x: 114, y: 352, d: 16, sweep: 300, inert: true, label: 'DEPTH', labSize: 2.2, p: 0.3 },
+    { kind: 'button', a: 'modpanel', x: 46, y: 381, w: 13, h: 10, led: 'cap', inert: true, label: 'OSC 1', labSize: 2, lit: true },
+    { kind: 'button', a: 'modpanel', x: 66, y: 381, w: 13, h: 10, led: 'cap', inert: true, label: 'OSC 2', labSize: 2, lit: true },
+    { kind: 'button', a: 'modpanel', x: 104, y: 381, w: 13, h: 10, led: 'cap', inert: true, label: 'OSC 2 ONLY', labSize: 1.8 },
+    { kind: 'button', a: 'modpanel', x: 124, y: 381, w: 13, h: 10, led: 'cap', inert: true, label: 'NARROW', labSize: 1.8 },
+    { kind: 'button', a: 'modpanel', x: 46, y: 405, w: 13, h: 10, led: 'cap', inert: true, label: 'DOWN', labSize: 2 },
+    { kind: 'button', a: 'modpanel', x: 66, y: 405, w: 13, h: 10, led: 'cap', inert: true, label: 'UP', labSize: 2 },
+    { kind: 'button', a: 'modpanel', x: 104, y: 405, w: 13, h: 10, led: 'cap', inert: true, label: 'LOWER', labSize: 2, lit: true },
+    { kind: 'button', a: 'modpanel', x: 124, y: 405, w: 13, h: 10, led: 'cap', inert: true, label: 'UPPER', labSize: 2, lit: true },
+    { id: 'perf:mod', kind: 'lever', a: 'modpanel', x: 56, y: 443, w: 16, h: 44, axis: 'y', up: '+y', hit: [22, 44], label: 'MODULATION', labSize: 2 },
+    { id: 'perf:bend', kind: 'lever', a: 'modpanel', x: 114, y: 443, w: 16, h: 44, axis: 'y', up: '-y', hit: [22, 44], label: 'PITCH BEND', labSize: 2 },
+    { id: 'perf:keys', kind: 'keys', a: 'keys', x: 565, y: 417, n: 61, lo: 36, pitch: 23.5, len: 162 },
   ],
   decor: [
     // the blue pinstripes (one block per section; the gutters stay black) and the dotted gutter rules
@@ -224,6 +251,13 @@ export default {
     { t: 'text', x: 550, y: 263.99, s: 'CASSETTE', size: 2.2, weight: 600, anchor: 'middle', ls: 0.2 },
     // the lid band (cropped): the model name in plain type, no logotype
     { t: 'text', a: 'lid', x: 40, y: 76.6, s: 'OB-Xa', size: 7, weight: 600, anchor: 'start', ls: 0.5, fill: '#d9dbe0' },
+    // (1i) the modulation panel's pinstripes and its group names; the bed's felt and front lip
+    { t: 'stripes', a: 'modpanel', x: 30, y: 335, w: 110, h: 133, pitch: 5.6, sw: 0.55, stroke: '#2d52a8' },
+    { t: 'line', a: 'modpanel', x1: 85, y1: 372, x2: 85, y2: 465, stroke: '#0c0e13', sw: 2.2 },
+    { t: 'text', a: 'modpanel', x: 56, y: 391.2, s: 'TRANSPOSE', size: 1.9, weight: 700, anchor: 'middle', ls: 0.2 },
+    { t: 'rect', a: 'keys', x: 142, y: 333, w: 846, h: 3, fill: '#3c1214' },
+    { t: 'rect', a: 'keys', x: 142, y: 498, w: 846, h: 10, fill: '#121316' },
+    { t: 'line', a: 'keys', x1: 142, y1: 498.2, x2: 988, y2: 498.2, stroke: '#34363c', sw: 0.4 },
   ],
   extras: { ids: ['lc', 'ud'], at: [34, 291, 200, 40] },
   notes: [
@@ -234,5 +268,8 @@ export default {
     'No printed dials (the OB-Xa has none): a grey 25 mm skirt with a printed white triangle and a black 13 mm cap. Legends sit in the gaps of the 5.6 mm pinstripe grid. The lid band is cropped to 18 mm (R2) so the module lands on the §10 target; the modulation panel left of the keys is not drawn (none of our controls).',
     'pw turns the other way on the hardware (fully CCW = square); ours runs 5 → 50 % clockwise. Same control, flagged only.',
     'Legends use scheme.font "sans": the OB-Xa\'s wide rounded caps would be "rounded", but that stack painted no SVG text in the preview browser (text laid out, nothing drawn; reported to the lead).',
+    '(1i) The bed: 61 keys C2–C7 (MIDI 36–96, 5 octaves C…C, manual p.27), pitch 23.5 mm, research x 142–988, y 333–508 (175 mm) = 3 mm felt + 162 mm white keys + a 10 mm front lip (the contract default: the one photo does not read the lip; it carries the 8 mm front band). Not touch-sensitive on the original. The cheeks run on to the front edge (y 508).',
+    '(1i) The modulation panel (research x 28–142, y 333–470, offset 0; manual pp. 16–17): the two paddle levers live, front–back as the manual describes them — MODULATION (perf:mod: "pull toward the front" = more LFO, nothing pushed to the rear; springs back to none, a paddle) and PITCH BEND (perf:bend: away from the player = up, springs to centre; ±2 st here, ±1 octave / NARROW ±1 whole step on the original). Slots 16 × 44 mm (the contract\'s 16 × 52 default, shortened to fit under the switch rows; hit 22 × 44) at x 56 / 114, y 443. RATE, DEPTH, OSC 1 / OSC 2, OSC 2 ONLY, NARROW, TRANSPOSE DOWN / UP, LOWER / UPPER are inert (LEDs as our engine has them: the LFO reaches both oscillators, both halves assigned); their placement in rows is an estimate (the manual has text only, the photo does not resolve the panel). y 470–508 in front of the panel is the case.',
+    '(1i) lc / ud stay on the badge strip above the bed (extras.at y 291–331: no overlap).',
   ],
 };

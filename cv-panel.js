@@ -10,10 +10,13 @@
 // resolution, filtered down from a finer vector raster (faceTier): no aliased thin lines, no per-frame vector raster in a pinch.
 // Stage 1h: on the GL path the face is a texture (cv-face FACES.register: a mipmapped base, a finer window above k = 1)
 // drawn under #world every frame; faceTier stays as the 'dom' mode (an overlapping / folded module) and the 2D fallback.
+// Stage 1i: the keyboards and the performance controls (IMPL-1i §2–§3): kinds keys / wheel / lever / ribbon / pad, live
+// with the shared perf: tokens of every model; a bed's geometry (o.bed, unrounded) from cv-keys.bedLayout.
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
 import { BAR_H } from './cv-module.js?v=9';
 import { FACES } from './cv-face.js?v=9';
+import * as KY from './cv-keys.js?v=9';
 import { LAYOUTS, HW_IDS, layoutOf } from './panels/index.js?v=9';
 
 export { LAYOUTS, HW_IDS, layoutOf };
@@ -39,6 +42,7 @@ export const MAKERS = Object.freeze(['Moog', 'ARP', 'Eminent', 'Yamaha', 'Sequen
 export const KINDS = Object.freeze({
   knob: ['k'], slider: ['k', 's'], rotary: ['s', 'k'], switch: ['b', 's', 'k'], button: ['b', 's', 'k'], buttons: ['s', 'k'], jacks: ['s'],
   led: [], display: [], jack: [], lamp: [], screw: [], fuse: [], strig: [], slot: [],
+  keys: [], wheel: [], lever: [], ribbon: [], pad: [], // (1i) live only with a perf: token; drawn at rest when inert
 });
 /** Waveform / arrow pictograms (path data in a −1…1 box, stroked). */
 export const GLYPHS = Object.freeze({
@@ -70,8 +74,11 @@ export const TOKENS = Object.freeze({
     extras: [], multi: ['dx:btn'],
   },
 });
+/** (1i, IMPL-1i §2) The performance tokens of every model: the bed and its controllers (the id names the target, the kind
+ * the widget: one of its list). Each at most once per layout; never in the extras. */
+export const PERF_TOKENS = Object.freeze({ kind: Object.freeze({ 'perf:keys': ['keys'], 'perf:bend': ['wheel', 'lever', 'ribbon'], 'perf:mod': ['wheel', 'lever', 'pad'] }) });
 /** Tokens this build renders (a layout using another one falls back to the Simple panel, §4.5). */
-export const RENDERED_TOKENS = new Set([...Object.keys(TOKENS.tb303.kind), ...TOKENS.tb303.extras, ...Object.keys(TOKENS.dx7.kind)]);
+export const RENDERED_TOKENS = new Set([...Object.keys(TOKENS.tb303.kind), ...TOKENS.tb303.extras, ...Object.keys(TOKENS.dx7.kind), ...Object.keys(PERF_TOKENS.kind)]);
 /** The DX7's buttons 1–32 (§6.3): the parameter each live one selects in edit mode (op: per operator; eg: per EG step),
  * the function-mode one, and its LCD names. */
 export const DX_EDIT = Object.freeze({ 7: 'alg', 8: 'fb', 10: 'ls', 18: 'r', 19: 'f', 20: 'd', 21: 'R', 22: 'L', 26: 's', 27: 'l', 28: 'v', 31: 'tr' });
@@ -115,7 +122,8 @@ const fin = x => typeof x === 'number' && isFinite(x);
 const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
 const r05 = v => Math.round(v * 2) / 2;
 const ceil32 = v => Math.max(DOT, Math.ceil(v / DOT - 1e-9) * DOT);
-const n3 = v => String(Math.round(v * 1000) / 1000);
+const q3 = v => Math.round(v * 1000) / 1000;
+const n3 = v => String(q3(v));
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const colorOk = c => typeof c === 'string' && /^(#[0-9a-fA-F]{3,8}|[a-z]+|rgba?\([0-9., %]+\))$/.test(c);
 
@@ -127,12 +135,18 @@ function ctlsOf(model) {
   if (!m) { m = new Map(); for (const c of (model && model.controls) || []) m.set(c.id, c); ctlMaps.set(model, m); }
   return m;
 }
+const isPerf = id => typeof id === 'string' && Object.prototype.hasOwnProperty.call(PERF_TOKENS.kind, id);
 const tokOf = (model, id) => { const T = model && TOKENS[model.id]; return T && typeof id === 'string' && id.includes(':') ? T : null; };
-const isTok = (model, id) => { const T = tokOf(model, id); return !!T && (id in T.kind || T.extras.includes(id)); };
+const isTok = (model, id) => { if (isPerf(id)) return true; const T = tokOf(model, id); return !!T && (id in T.kind || T.extras.includes(id)); };
+/** The kinds a token may take (the model's table: its one kind; a perf token: its list), null for a non-token. */
+const tokKinds = (model, id) => { if (isPerf(id)) return PERF_TOKENS.kind[id]; const T = tokOf(model, id); return T && id in T.kind ? [T.kind[id]] : null; };
+/** (1i) The perf kinds; a lever's raising directions per axis (§5.1: away from the player −y, toward +y, right +x). */
+const PERF_K = ['keys', 'wheel', 'lever', 'ribbon', 'pad'], LEVER_UP = { x: ['+x'], y: ['-y', '+y'] };
 const capOf = c => (Array.isArray(c.cap) && fin(c.cap[0]) && fin(c.cap[1]) ? c.cap : [10, 6]);
 /** A control's own size (mm, w × h). */
 function ownOf(c) {
   switch (c.kind) {
+    case 'keys': { const B = bedOk(c) ? KY.bedLayout(c) : null; return B ? [B.w, B.h] : [0, 0]; } // (the keys' rectangle: whites · pitch × len)
     case 'knob': case 'rotary': case 'jack': case 'lamp': case 'led': case 'screw': return [+c.d || 0, +c.d || 0];
     case 'slider': { const cap = capOf(c), t = (+c.len || 0) + cap[1]; return c.orient === 'h' ? [t, cap[0]] : [cap[0], t]; }
     default: return [+c.w || 0, +c.h || 0];
@@ -156,6 +170,8 @@ export function positionsOf(c, mc) {
   if (mc.t === 's') return mc.opts.map((o, i) => i);
   return null;
 }
+/** (1i) A keys control whose numbers make a bed (the full rules: validate). */
+const bedOk = c => Number.isInteger(c.n) && c.n >= 1 && c.n <= 88 && Number.isInteger(c.lo) && fin(c.pitch) && c.pitch > 0 && fin(c.len) && c.len > 0;
 const valOk = (mc, v) => (mc.t === 'b' ? v === 0 || v === 1 : mc.t === 's' ? Number.isInteger(v) && v >= 0 && v < mc.opts.length : fin(v) && v >= Math.min(mc.min, mc.max) - 1e-9 && v <= Math.max(mc.min, mc.max) + 1e-9);
 /** Where a live control's section is: `sec` by id, else the first section (of its area) holding its centre. */
 function secIndex(L, c) {
@@ -186,6 +202,7 @@ export function validate(L, model) {
   const S = isObj(L.scheme) ? L.scheme : {};
   if (S.font != null && !(S.font in FONTS)) bad('scheme.font: one of ' + Object.keys(FONTS).join(', '));
   if (isObj(S.knob) && S.knob.ptrStyle != null && !PTRS.includes(S.knob.ptrStyle)) bad('scheme.knob.ptrStyle: one of ' + PTRS.join(', '));
+  for (const f of PERF_K) if (S[f] != null) { if (!isObj(S[f])) bad(`scheme.${f}: not an object`); else for (const [k, v] of Object.entries(S[f])) if (!colorOk(v)) bad(`scheme.${f}.${k}: not a colour`); }
   // areas
   const A = new Map();
   if (!Array.isArray(L.areas) || !L.areas.length) bad('areas: at least one');
@@ -256,13 +273,39 @@ export function validate(L, model) {
     if (k === 'jacks' && !entriesOf(c).every(e => (e.d || c.d) > 0)) bad(w + ': d > 0');
     if (k === 'buttons' && !entriesOf(c).every(e => (e.w || c.w) > 0 && (e.h || c.h) > 0)) bad(w + ': w, h > 0');
     if (k === 'switch' && c.positions != null && !(Number.isInteger(c.positions) && c.positions >= 2 && c.positions <= 4)) bad(w + ': positions 2–4');
+    // (1i) the bed and the controllers (IMPL-1i §2): a bed's numbers; a controller's slot; skins are colours
+    if (k === 'keys') {
+      if (!(Number.isInteger(c.n) && c.n >= 1 && c.n <= 88)) bad(w + ': n an integer 1–88');
+      if (!Number.isInteger(c.lo)) bad(w + ': lo an integer');
+      else if (Number.isInteger(c.n) && !(c.lo >= 0 && c.lo + c.n - 1 <= 127 && KY.isWhite(c.lo) && KY.isWhite(c.lo + c.n - 1))) bad(w + ': lo and lo + n − 1 white keys within 0–127');
+      if (!(fin(c.pitch) && c.pitch >= 18 && c.pitch <= 26)) bad(w + ': pitch 18–26 mm');
+      if (!(fin(c.len) && c.len >= 80 && c.len <= 200)) bad(w + ': len 80–200 mm');
+      if (c.black != null && !isObj(c.black)) bad(w + ': black { w, len }');
+      else if (c.black != null) {
+        if (c.black.w != null && !(fin(c.black.w) && c.black.w > 0 && c.black.w < c.pitch)) bad(w + ': black.w > 0, < pitch');
+        if (c.black.len != null && !(fin(c.black.len) && c.black.len > 0 && c.black.len < c.len)) bad(w + ': black.len > 0, < len');
+      }
+      if (c.front != null && !(fin(c.front) && c.front >= 0 && c.front <= KY.FRONT_MM)) bad(w + `: front 0–${KY.FRONT_MM} mm`);
+      if (c.at != null && typeof c.at !== 'boolean') bad(w + ': at true | false');
+    } else if (PERF_K.includes(k)) {
+      if (!(c.w > 0) || !(c.h > 0)) bad(w + ': w, h > 0');
+      if (k === 'wheel' && c.detent != null && typeof c.detent !== 'boolean') bad(w + ': detent true | false');
+      if (k === 'lever' && !(Object.prototype.hasOwnProperty.call(LEVER_UP, c.axis) && LEVER_UP[c.axis].includes(c.up))) bad(w + ': axis x (up +x) | y (up -y | +y)');
+      if (k === 'ribbon' && c.span != null && !(fin(c.span) && c.span > 0)) bad(w + ': span > 0');
+      if (k === 'pad' && c.rise != null && !(fin(c.rise) && c.rise > 0)) bad(w + ': rise > 0 s');
+    }
+    if (PERF_K.includes(k) && c.skin != null) {
+      if (!isObj(c.skin)) bad(w + ': skin');
+      else for (const [f, v] of Object.entries(c.skin)) { words(`${w}.skin.${f}`, v); if (!colorOk(v)) bad(`${w}: skin.${f} not a colour`); }
+    }
     // inside the area
     const parts = k === 'buttons' || k === 'jacks' ? entriesOf(c).map(e => ({ x: e.x, y: e.y, o: entryOwn(c, e) })) : [{ x: c.x, y: c.y, o: ownOf(c) }];
     for (const p of parts) inArea(c.a, p.x - p.o[0] / 2, p.y - p.o[1] / 2, p.o[0], p.o[1], w);
     if (c.inert) { if (c.id != null && !(typeof c.id === 'string' && c.id.startsWith('#'))) bad(w + ': an inert control has no id'); return; }
     // displays
+    const tk = tokKinds(model, c.id); // (a token's kinds: the model's one, a perf token's list)
     if (k === 'led' || k === 'display') {
-      if (c.id != null && !(T && T.kind[c.id] === k)) bad(w + ': a display carries no id (or its token)');
+      if (c.id != null && !(tk && tk.includes(k))) bad(w + ': a display carries no id (or its token)');
       if (k === 'led' && c.id == null) {
         if (!M.has(c.of)) bad(w + `: of "${c.of}" is not a control of the model`);
         if (!Array.isArray(c.when) || !['ne', 'eq', 'ge', 'in'].includes(c.when[0])) bad(w + ': when [op, value]');
@@ -271,12 +314,15 @@ export function validate(L, model) {
       if (c.id != null) count(c.id);
       return;
     }
-    if (!(KINDS[k].length || (T && T.kind[c.id] === k))) { bad(w + `: a ${k} is decoration only (inert: true)`); return; }
+    if (!(KINDS[k].length || (tk && tk.includes(k)))) { // (a token of another kind; a token-like id we do not know: say so)
+      bad(w + (tk ? `: ${c.id} must be a ${tk.join(' | ')}` : typeof c.id === 'string' && c.id.includes(':') ? `: "${c.id}" is not a control of the model` : `: a ${k} is decoration only (inert: true)`));
+      return;
+    }
     if (typeof c.id !== 'string' || !c.id) { bad(w + ': a live control needs an id (or inert: true)'); return; }
     const mc = M.get(c.id);
     if (!mc) {
-      if (!T || !(c.id in T.kind)) { bad(w + `: "${c.id}" is not a control of the model`); return; }
-      if (T.kind[c.id] !== k) bad(w + `: ${c.id} must be a ${T.kind[c.id]}`);
+      if (!tk) { bad(w + `: "${c.id}" is not a control of the model`); return; }
+      if (!tk.includes(k)) bad(w + `: ${c.id} must be a ${tk.join(' | ')}`);
       if (c.id === 'seq:key' && !(Number.isInteger(c.note) && c.note >= 0 && c.note <= 12)) bad(w + ': note 0–12');
       if (c.id === 'dx:btn' && !(Number.isInteger(c.n) && c.n >= 1 && c.n <= 32)) bad(w + ': n 1–32');
       if (c.id === 'seq:key' || c.id === 'dx:btn') { const f = c.id === 'seq:key' ? 'note' : 'n', key = c.id + '#' + c[f]; if (seen.has(key)) bad(w + `: ${f} ${c[f]} twice`); seen.set(key, 1); }
@@ -309,7 +355,7 @@ export function validate(L, model) {
     if (A.has(c.a || 'main')) {
       const ar = A.get(c.a || 'main'), dx = ar.at[0] - ar.src[0], dy = ar.at[1] - ar.src[1];
       for (const p of parts) {
-        const hb = hitOf(c, p.o);
+        const hb = k === 'keys' ? p.o : hitOf(c, p.o); // (1i) a bed: the keys' rectangle (its band, clamped by geometry to the room the others leave, never overlaps one)
         if (hb[0] < HIT_MIN_MM - 1e-9 || hb[1] < HIT_MIN_MM - 1e-9) bad(`${w}: hit box ${n3(hb[0])} × ${n3(hb[1])} mm < ${HIT_MIN_MM} mm`);
         hits.push({ w, x: p.x + dx - hb[0] / 2, y: p.y + dy - hb[1] / 2, ww: hb[0], hh: hb[1] });
       }
@@ -350,7 +396,8 @@ export function validate(L, model) {
     if (n === 0 && !(dxAddr && id !== 'vol' && id !== 'dac')) bad(`${id}: not placed (a live control or extras.ids)`);
     if (n > 1) bad(`${id}: placed ${n} times`);
   }
-  if (T) for (const [id, n] of seen) if (!M.has(id) && !id.includes('#') && n > 1 && !T.multi.includes(id)) bad(`${id}: placed ${n} times`);
+  // tokens: at most once (seq:key / dx:btn may repeat); the perf tokens on every model, whether it has a table or not
+  for (const [id, n] of seen) if (!M.has(id) && !id.includes('#') && n > 1 && (isPerf(id) || (T && !T.multi.includes(id)))) bad(`${id}: placed ${n} times`);
   // decor
   if (L.decor != null && !Array.isArray(L.decor)) bad('decor: an array');
   else if (Array.isArray(L.decor)) {
@@ -413,6 +460,8 @@ export function usable(id, model) {
 const geoC = new WeakMap();
 /**
  * The panel in module-body px (origin: the body's top-left, under the 40 px bar), pure maths (cached per layout).
+ * (1i) A keys control's o.bed: { lo, hi, n, whites, at, x, y, w, h (the keys' rectangle), front, band, box (keys + band),
+ * keys: [{ note, black, x, y, w, h }], mm (the cv-keys layout with the clamped front) } — body px, unrounded (three decimals).
  * @returns {{W: number, H: number, body: {w: number, h: number}, content: {x: number, y: number, w: number, h: number},
  *   mm: {x0: number, y0: number, offX: number}, areas: object[], sections: object[], controls: object[], order: number[],
  *   extras: {x: number, y: number, w: number, h: number, cells: object[], over: boolean, note: boolean} | null}}
@@ -431,6 +480,7 @@ export function geometry(L, model) {
   const px = x => r05(offX + (x - x0) * X), py = y => r05((y - y0) * X);
   const toC = (a, x, y) => { const r = A.get(a || 'main') || A.get('main'); return [x - r.src[0] + r.at[0], y - r.src[1] + r.at[1]]; };
   const rectPx = (cx, cy, w, h) => ({ x: r05(offX + (cx - x0 - w / 2) * X), y: r05((cy - y0 - h / 2) * X), w: r05(w * X), h: r05(h * X) });
+  const rectQ = (cx, cy, w, h) => ({ x: q3(offX + (cx - x0 - w / 2) * X), y: q3((cy - y0 - h / 2) * X), w: q3(w * X), h: q3(h * X) }); // (1i: unrounded)
   const M = ctlsOf(model);
   // controls
   const controls = (L.controls || []).map((c, i) => {
@@ -443,6 +493,7 @@ export function geometry(L, model) {
     } else {
       const ow = ownOf(c), bx = boxOf(c), hb = hitOf(c, ow);
       o.box = rectPx(cx, cy, bx[0], bx[1]); o.own = rectPx(cx, cy, ow[0], ow[1]); o.hit = rectPx(cx, cy, hb[0], hb[1]);
+      if (PERF_K.includes(c.kind) && c.kind !== 'keys') o.box = o.own = rectQ(cx, cy, ow[0], ow[1]); // (1i) a controller's DOM window exactly over its slot's art
     }
     if (live && M.has(c.id)) o.mc = M.get(c.id);
     return o;
@@ -477,6 +528,25 @@ export function geometry(L, model) {
     extras = Object.assign(r, { cells, over, note: inert, caption: ids.length ? (typeof ex.caption === 'string' ? ex.caption : 'EXTRAS · not on the original') : '' });
   }
   const H = ceil32(BAR_H + ch * X + exH);
+  // (1i) a bed: cv-keys.bedLayout in body px, unrounded (mm × 2, three decimals — never rectPx: its half-px steps would
+  // offset the pressed-key shades from the art), the one source for the art, the overlays, the hit test and the tests. The
+  // front band (c.front, default FRONT_MM) is clamped to the room below the keys inside the body: never over the extras
+  // strip or another live hit box, 0 where the keys end at the body's edge (an inert bed: none). Box and hit = keys + band.
+  for (const o of controls) {
+    const c = L.controls[o.i];
+    if (o.kind !== 'keys' || !bedOk(c)) continue;
+    const B0 = KY.bedLayout(c), bx = offX + (o.cx - B0.w / 2 - x0) * X, by = (o.cy - B0.h / 2 - y0) * X, bot = by + B0.h * X, rt = bx + B0.w * X;
+    let lim = H - BAR_H;
+    const under = r => r.y + r.h > bot + 1e-6 && r.x < rt - 1e-6 && bx < r.x + r.w - 1e-6; // reaches below the keys' front, across the bed
+    if (o.live && extras && under(extras)) lim = Math.min(lim, extras.y);
+    if (o.live) for (const q of controls) if (q.live && q !== o) for (const r of q.entries ? q.entries.map(e => e.hit) : [q.hit]) if (under(r)) lim = Math.min(lim, r.y);
+    const B = KY.bedLayout(c, o.live ? Math.max(0, Math.min(B0.front * X, lim - bot)) / X : 0);
+    const R = (x, y, w, h) => ({ x: q3(x), y: q3(y), w: q3(w), h: q3(h) });
+    const kr = R(bx, by, B.w * X, B.h * X), band = R(bx, bot, B.w * X, B.front * X), box = R(bx, by, B.w * X, (B.h + B.front) * X);
+    o.bed = Object.assign({ lo: B.lo, hi: B.hi, n: B.n, whites: B.whites, at: c.at === true, front: band.h, band, box }, kr,
+      { keys: B.keys.map(k => Object.assign({ note: k.note, black: k.black }, R(bx + k.x * X, by + k.y * X, k.w * X, k.h * X))), mm: B });
+    o.own = kr; o.box = box; o.hit = box;
+  }
   const geo = {
     W, H, body: { w: W, h: H - BAR_H }, content: { x: offX, y: 0, w: r05(cw * X), h: r05(ch * X) }, mm: { x0, y0, offX },
     areas: [...A.values()].map(a => { const [cx, cy] = [a.at[0], a.at[1]]; return { id: a.id, x: px(cx), y: py(cy), w: r05(a.src[2] * X), h: r05(a.src[3] * X) }; }),
@@ -488,7 +558,8 @@ export function geometry(L, model) {
 }
 /** The module's outer size (world px; the 40 px bar included): multiples of DOT. @returns {{w: number, h: number}} */
 export function sizeOf(L, model) { const g = geometry(L, model); return { w: g.W, h: g.H }; }
-/** The live hit boxes in body px (each buttons / jacks entry its own). @returns {{id: string, x: number, y: number, w: number, h: number}[]} */
+/** The live hit boxes in body px (each buttons / jacks entry its own; a bed once, its front band included).
+ * @returns {{id: string, x: number, y: number, w: number, h: number}[]} */
 export function hitBoxes(L, model) {
   const out = [];
   for (const o of geometry(L, model).controls) {
@@ -596,7 +667,8 @@ function buildSvg(L, model) {
       else if (lab === 's') q += text(c.x, c.y + ey + ls * 0.85, c.label, Object.assign(t, { anchor: 'middle' }));
       else q += text(c.x + (lab === 'e' ? exx : -exx), c.y + ls * 0.36 - (lines.length - 1) * lh / 2, c.label, Object.assign(t, { anchor: lab === 'e' ? 'start' : 'end' }));
     }
-    if (c.inert) q += inertSvg(c, { K, SL, BT, JK, LEG, named, M });
+    if (PERF_K.includes(c.kind) && !c.inert) q += perfSvg(c, S); // (1i) the keys / a controller at rest
+    if (c.inert) q += inertSvg(c, { K, SL, BT, JK, LEG, named, M, S });
     if (q) o.push(inA(c.a, q));
   }
   o.push('</svg>');
@@ -698,6 +770,69 @@ function decorItem(d, C) {
     default: return '';
   }
 }
+/* ---- (1i, IMPL-1i §3) the keys and the controllers: drawn at rest in the face (the GL texture); the moving parts of a live
+   controller are DOM over their own window, from the same numbers (perfParts: mm from the slot's top-left, × 2 in the DOM) */
+/** The skins' defaults (layout `scheme.<kind>`, then the control's `skin`, override them). */
+export const PERF_SKIN = Object.freeze({
+  keys: { white: '#f0ece1', whiteEdge: '#cbc4b2', black: '#141414', blackTop: '#2b2b2b', gap: '#090909' },
+  wheel: { slot: '#050505', surface: '#2b2b2b', ridge: '#161616', mark: '#dcdcdc' },
+  lever: { slot: '#050505', cap: '#cfcfcf' },
+  ribbon: { felt: '#1b1b1b', edge: '#8c8c8c' },
+  pad: { face: '#3a3a3a', lit: '#ff6a3a' },
+});
+export const skinOfPerf = (c, S) => Object.assign({}, PERF_SKIN[c.kind], isObj(S) && isObj(S[c.kind]) ? S[c.kind] : {}, isObj(c.skin) ? c.skin : {});
+/** Wheel / lever constants (mm): the wheel's window inset, ridge pitch and width, its mark, the share of the surface the
+ * mark travels; a white key's front-edge band; a black key's top-face inset. */
+export const WHEEL = Object.freeze({ inset: 1.5, ridgeP: 3, ridgeW: 0.6, mark: 1.2, travel: 0.84 }), KEY_EDGE = 2.5, BLACK_TOP = { side: 0.9, front: 5 };
+/**
+ * A controller's moving part at v (mm, from the slot's top-left): a wheel's surface window, its ridge phase (`roll`, mm the
+ * ridges moved from rest along the raising direction) and its mark; a lever's cap. kind: 'bend' | 'wheel'.
+ */
+export function perfParts(c, kind, v) {
+  const w = +c.w, h = +c.h;
+  if (c.kind === 'wheel') {
+    const hz = c.orient === 'h', I = WHEEL.inset, sw = w - 2 * I, sh = h - 2 * I, L = hz ? sw : sh;
+    const roll = (KY.partAt(kind, v) - KY.partAt(kind, 0)) * WHEEL.travel * L, at = (0.5 + (KY.partAt(kind, v) - 0.5) * WHEEL.travel) * L; // (the mark along the raising direction)
+    const mark = hz ? { x: I + at - WHEEL.mark / 2, y: I, w: WHEEL.mark, h: sh } : { x: I, y: I + L - at - WHEEL.mark / 2, w: sw, h: WHEEL.mark };
+    return { surf: { x: I, y: I, w: sw, h: sh }, roll, mark };
+  }
+  if (c.kind === 'lever') {
+    const ax = c.axis === 'x', len = ax ? w : h, across = ax ? h : w, cl = Math.max(6, Math.min(14, 0.22 * len)), T = len - cl - 2, p = 1 + KY.partAt(kind, v) * T;
+    const along = c.up === '-y' ? len - p - cl : p; // (from the start end along the raising direction)
+    return { cap: ax ? { x: along, y: 1, w: cl, h: across - 2 } : { x: 1, y: along, w: across - 2, h: cl } };
+  }
+  return {};
+}
+// the art of a keys / wheel / lever / ribbon / pad control at rest, in its area frame (mm)
+function perfSvg(c, S) {
+  const k = skinOfPerf(c, S), R = (x, y, w, h, f, more) => `<rect x="${n3(x)}" y="${n3(y)}" width="${n3(w)}" height="${n3(h)}" fill="${esc(f)}"${more || ''}/>`;
+  if (c.kind === 'keys') {
+    if (!bedOk(c)) return '';
+    const B = KY.bedLayout(c), bx = c.x - B.w / 2, by = c.y - B.h / 2;
+    let q = R(bx, by, B.w, B.h, k.gap), wp = '', ep = '', bp = '', tp = '';
+    const P = (x, y, w, h) => `M${n3(x)} ${n3(y)}h${n3(w)}v${n3(h)}h${n3(-w)}z`;
+    for (const key of B.keys) {
+      const x = bx + key.x, y = by + key.y;
+      if (!key.black) { wp += P(x, y, key.w, key.h); ep += P(x, y + key.h - KEY_EDGE, key.w, KEY_EDGE); }
+      else { bp += P(x, y, key.w, key.h); tp += P(x + BLACK_TOP.side, y, key.w - 2 * BLACK_TOP.side, key.h - BLACK_TOP.front); }
+    }
+    return q + `<path d="${wp}" fill="${esc(k.white)}"/><path d="${ep}" fill="${esc(k.whiteEdge)}"/><path d="${bp}" fill="${esc(k.black)}"/><path d="${tp}" fill="${esc(k.blackTop)}"/>`;
+  }
+  if (!(c.w > 0 && c.h > 0)) return '';
+  const x0 = c.x - c.w / 2, y0 = c.y - c.h / 2, kind = KY.ctlKind(c.id) || (c.kind === 'pad' ? 'wheel' : 'bend');
+  if (c.kind === 'wheel') {
+    const { surf, mark } = perfParts(c, kind, 0), hz = c.orient === 'h';
+    let rp = '';
+    if (hz) for (let x = surf.x; x < surf.x + surf.w - 1e-9; x += WHEEL.ridgeP) rp += `M${n3(x0 + x)} ${n3(y0 + surf.y)}h${n3(Math.min(WHEEL.ridgeW, surf.x + surf.w - x))}v${n3(surf.h)}h${n3(-Math.min(WHEEL.ridgeW, surf.x + surf.w - x))}z`;
+    else for (let y = surf.y; y < surf.y + surf.h - 1e-9; y += WHEEL.ridgeP) rp += `M${n3(x0 + surf.x)} ${n3(y0 + y)}h${n3(surf.w)}v${n3(Math.min(WHEEL.ridgeW, surf.y + surf.h - y))}h${n3(-surf.w)}z`;
+    return R(x0, y0, c.w, c.h, k.slot) + R(x0 + surf.x, y0 + surf.y, surf.w, surf.h, k.surface) + `<path d="${rp}" fill="${esc(k.ridge)}"/>`
+      + (c.detent ? R(x0 + mark.x, y0 + mark.y, mark.w, mark.h, k.mark) : '');
+  }
+  if (c.kind === 'lever') { const { cap } = perfParts(c, kind, 0); return R(x0, y0, c.w, c.h, k.slot) + R(x0 + cap.x, y0 + cap.y, cap.w, cap.h, k.cap, ' rx="0.5"'); }
+  if (c.kind === 'ribbon') return R(x0, y0, c.w, c.h, k.felt) + `<path d="M${n3(x0)} ${n3(y0 + 0.3)}h${n3(c.w)}M${n3(x0)} ${n3(y0 + c.h - 0.3)}h${n3(c.w)}" stroke="${esc(k.edge)}" stroke-width="0.6" fill="none"/>`;
+  if (c.kind === 'pad') return R(x0, y0, c.w, c.h, k.face, ' rx="2"');
+  return '';
+}
 // an inert (not emulated) control: drawn with the model's skin at opacity 0.55, titled "LABEL — not emulated"
 function inertSvg(c, C) {
   const name = String(c.label || c.kind).replace(/\n/g, ' '), tip = name + ' — not emulated', p = fin(c.p) ? Math.max(0, Math.min(1, c.p)) : 0.5;
@@ -744,6 +879,7 @@ function inertSvg(c, C) {
     case 'fuse': case 'strig': q = `<rect x="${n3(x - c.w / 2)}" y="${n3(y - c.h / 2)}" width="${n3(c.w)}" height="${n3(c.h)}" rx="${n3(Math.min(c.w, c.h) / 2)}" fill="#1a1a1a" stroke="#888" stroke-width="0.3"/>`; break;
     case 'slot': q = `<rect x="${n3(x - c.w / 2)}" y="${n3(y - c.h / 2)}" width="${n3(c.w)}" height="${n3(c.h)}" rx="0.6" fill="#070707" stroke="#3a3a3a" stroke-width="0.4"/>`; break;
     case 'buttons': case 'jacks': for (const e of entriesOf(c)) q += c.kind === 'jacks' ? jackSvg(e.x, e.y, e.d || c.d, C.JK) : `<rect x="${n3(e.x - (e.w || c.w) / 2)}" y="${n3(e.y - (e.h || c.h) / 2)}" width="${n3(e.w || c.w)}" height="${n3(e.h || c.h)}" rx="0.8" fill="${esc(C.named(e.color || c.color) || C.BT.cap)}"/>`; break;
+    case 'keys': case 'wheel': case 'lever': case 'ribbon': case 'pad': q = perfSvg(c, C.S); break;
     default: break;
   }
   return `<g class="hw-inert" opacity="0.55" data-tip="${esc(tip)}"><title>${esc(tip)}</title>${q}</g>`;
@@ -1086,6 +1222,7 @@ export function render(root, L, model, api) {
   /* ---- the special areas (§6.2 TB-303, §6.3 DX7): widgets bound to api.seq / api.dx, not to one models.js id */
   const post = []; // run once every widget is built (watchers chained after today's widgets set their own updater)
   const SQ = api.seq || null, DX = api.dx || null;
+  const PF = api.perf || null, perfs = []; // (1i) the host's performance api (main.js PERF.api); every bed / controller / audition: {release, destroy}
   const tapBtn = (label, fn, cls) => { const b = mk('button', 'hw-btn' + (cls ? ' ' + cls : '')); b.type = 'button'; b.setAttribute('aria-label', label); b.append(mk('span', 'hw-led')); api.tap(b, fn); return b; };
   const lit = (el, on) => el.setAttribute('data-lit', on === 'dim' ? 'dim' : on ? 'on' : 'off');
   function seqWidget(c, o) {
@@ -1130,6 +1267,22 @@ export function render(root, L, model, api) {
     const KEYS = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B', 'C′'];
     const b = tapBtn(id === 'seq:key' ? 'Key ' + KEYS[c.note] : NAMES[id], keyFn);
     if (c.onCap) { const t = mk('span', 'hw-cap'); t.textContent = String(c.onCap); b.append(t); }
+    if (id === 'seq:key' && PF) { // (1i §6.4) PITCH mode: a press also sounds the note while held (the cursor step's octave and accent)
+      b.setAttribute('data-gesture', 'music'); // (two fingers on two cells: two notes, never a pinch; the cell released last writes)
+      const held = new Map(); // pointerId → note
+      b.addEventListener('pointerdown', e => {
+        if (st.mode !== 'pitch' || e.button !== 0 || e.ctrlKey || held.has(e.pointerId)) return;
+        const s0 = step(), n = KY.seqNote({ n: c.note, o: s0.o });
+        try { b.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
+        held.set(e.pointerId, n);
+        PF.on(n, KY.seqVel(s0), e.timeStamp);
+      });
+      const end = e => { const n = held.get(e.pointerId); if (n == null) return; held.delete(e.pointerId); PF.off(n, e.timeStamp); };
+      for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(t, end);
+      const rel = () => { for (const [pid, n] of [...held]) { held.delete(pid); try { b.releasePointerCapture(pid); } catch (err) { /* released */ } PF.off(n); } };
+      const offBed = PF.bed(rel);
+      perfs.push({ release: rel, destroy: () => { offBed(); rel(); } });
+    }
     b.setAttribute('data-led', c.led || 'cap');
     const ledOf = {
       'seq:key': () => st.mode === 'pitch' && step().g && step().n === c.note, 'seq:pitch': () => st.mode === 'pitch', 'seq:time': () => st.mode === 'time',
@@ -1262,10 +1415,99 @@ export function render(root, L, model, api) {
     }
     return null;
   }
+  /* ---- (1i, IMPL-1i §3.2, §4, §5) the keys and the controllers, bound to api.perf (null: the same nodes, silent) */
+  const tipOn = (el, text) => {
+    el.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse' && api.tip) api.tip(el, text); });
+    el.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse' && api.untip) api.untip(); });
+  };
+  function bedWidget(c, o) {
+    const ob = o.bed, el = mk('div', 'hw-keys'), shades = new Map();
+    if (!ob) return null;
+    const note = KY.velNote(model.id);
+    el.setAttribute('data-gesture', 'music'); el.setAttribute('role', 'group'); el.setAttribute('aria-roledescription', 'keyboard');
+    el.setAttribute('aria-label', `${model.name || model.id} keyboard, ${ob.n} keys, ${KY.noteName(ob.lo)}–${KY.noteName(ob.hi)}; ${note}`);
+    for (const k of ob.keys) { // a pressed key's dip: at its art, unrounded (o.bed), hidden until pressed
+      const s = mk('div', 'hw-kd');
+      s.setAttribute('data-note', String(k.note)); s.setAttribute('hidden', '');
+      place(s, { x: q3(k.x - ob.box.x), y: q3(k.y - ob.box.y), w: k.w, h: k.h });
+      if (!k.black) { // (a white key's full rectangle runs under its black neighbours, which the art draws over it: clip the shade to what shows, static, in its own px)
+        let lx = 0, rx = k.w, bl = 0;
+        for (const b of ob.keys) {
+          if (!b.black || !(b.x < k.x + k.w - 1e-6 && b.x + b.w > k.x + 1e-6)) continue;
+          if (b.x + b.w / 2 < k.x + k.w / 2) lx = Math.max(lx, b.x + b.w - k.x); else rx = Math.min(rx, b.x - k.x);
+          bl = Math.max(bl, b.y + b.h - k.y);
+        }
+        if (bl > 0) { const pt = (x, y) => n3(x) + 'px ' + n3(y) + 'px'; s.style.clipPath = `polygon(${[pt(lx, 0), pt(rx, 0), pt(rx, bl), pt(k.w, bl), pt(k.w, k.h), pt(0, k.h), pt(0, bl), pt(lx, bl)].join(', ')})`; }
+      }
+      el.append(s); shades.set(k.note, s);
+    }
+    if (!PF) { el.setAttribute('aria-disabled', 'true'); return el; }
+    const shade = (n, on) => { const s = shades.get(n); if (s) { if (on) s.removeAttribute('hidden'); else s.setAttribute('hidden', ''); } };
+    const E = KY.bed(el, ob.mm, { on: (n, v, ts) => PF.on(n, v, ts), off: (n, ts) => PF.off(n, ts), at: ob.at ? v => PF.at(v) : null, shade });
+    const offLit = PF.lit((n, on) => E.lit(n, on)), offBed = PF.bed(() => E.release());
+    for (const n of PF.held() || []) E.lit(n, true); // (a bed mounts lit)
+    tipOn(el, 'Keyboard: ' + note);
+    perfs.push({ release: () => E.release(), destroy: () => { offLit(); offBed(); E.destroy(); } });
+    return el;
+  }
+  const CTL_NAME = { bend: { wheel: 'Pitch bend wheel', lever: 'Pitch bend lever', ribbon: 'Ribbon controller (pitch bend)' }, wheel: { wheel: 'Modulation wheel', lever: 'Modulation lever', pad: 'Modulation pad' } };
+  function ctlWidget(c, o) {
+    const kind = KY.ctlKind(c.id), K = c.kind, sk = skinOfPerf(c, S), r = o.own, el = mk('div', 'hw-' + K);
+    el.setAttribute('data-gesture', 'perf');
+    const name = (CTL_NAME[kind] && CTL_NAME[kind][K]) || c.id;
+    el.setAttribute('aria-label', name);
+    if (K === 'pad') { el.setAttribute('role', 'button'); el.setAttribute('aria-pressed', 'false'); }
+    else {
+      el.setAttribute('role', 'slider'); el.setAttribute('aria-valuemin', kind === 'bend' ? '-1' : '0'); el.setAttribute('aria-valuemax', '1');
+      el.setAttribute('aria-orientation', K === 'ribbon' || (K === 'lever' && c.axis === 'x') || (K === 'wheel' && c.orient === 'h') ? 'horizontal' : 'vertical');
+    }
+    if (K === 'wheel') el.setAttribute('data-orient', c.orient === 'h' ? 'h' : 'v');
+    if (K === 'lever') el.setAttribute('data-axis', c.axis === 'x' ? 'x' : 'y');
+    for (const [k, v] of [['--pf-slot', sk.slot], ['--pf-surface', sk.surface], ['--pf-ridge', sk.ridge], ['--pf-mark', sk.mark], ['--pf-cap', sk.cap], ['--pf-lit', sk.lit]]) prop(el, k, v);
+    const X2 = PX_PER_MM, rect = (n, m) => place(n, { x: q3(m.x * X2), y: q3(m.y * X2), w: q3(m.w * X2), h: q3(m.h * X2) });
+    let upd = () => {};
+    if (K === 'wheel') {
+      const hz = c.orient === 'h', ws = mk('i', 'hw-ws'), wm = c.detent ? mk('b', 'hw-wm') : null;
+      prop(el, '--pf-dir', hz ? '90deg' : '180deg'); prop(el, '--pf-rp', n3(WHEEL.ridgeP * X2) + 'px'); prop(el, '--pf-rw', n3(WHEEL.ridgeW * X2) + 'px');
+      el.append(ws); if (wm) el.append(wm);
+      upd = v => {
+        const p = perfParts(c, kind, v), off = n3(-p.roll * X2) + 'px'; // (the ridges move with the finger: up / right raises)
+        rect(ws, p.surf); ws.style.backgroundPosition = hz ? `${n3(p.roll * X2)}px 0` : `0 ${off}`;
+        if (wm) rect(wm, p.mark);
+      };
+    } else if (K === 'lever') {
+      const cap = mk('b', 'hw-lc');
+      el.append(cap);
+      upd = v => rect(cap, perfParts(c, kind, v).cap);
+    } else if (K === 'ribbon') {
+      const m = mk('b', 'hw-rm');
+      m.setAttribute('hidden', '');
+      el.append(m);
+      upd = (v, t) => { if (t == null) m.setAttribute('hidden', ''); else { m.removeAttribute('hidden'); m.style.left = n3(Math.max(0, Math.min(c.w, t)) * X2) + 'px'; } };
+    } else if (K === 'pad') {
+      const l = mk('b', 'hw-pl');
+      el.append(l); el.style.borderRadius = n3(2 * X2) + 'px';
+      upd = v => { l.style.opacity = n3(Math.max(0, Math.min(1, v))); };
+    }
+    const show = (v, t) => {
+      upd(v, t);
+      if (K !== 'pad') { el.setAttribute('aria-valuenow', n3(v)); el.setAttribute('aria-valuetext', KY.ctlText(kind, v)); }
+    };
+    if (!PF) { show(0, null); el.setAttribute('aria-disabled', 'true'); el.tabIndex = -1; return el; }
+    el.tabIndex = 0;
+    show(PF.value(kind), null);
+    const C = KY.controller(el, c, { perf: PF, track: typeof api.track === 'function' ? api.track : null, show, pressed: on => el.setAttribute('aria-pressed', on ? 'true' : 'false') });
+    const offBed = PF.bed(() => C.release());
+    const orig = typeof c.tip === 'string' && c.tip ? c.tip : kind === 'bend' && KY.BEND_ORIG[model.id] ? 'the original: ' + KY.BEND_ORIG[model.id] : '';
+    tipOn(el, name + (kind === 'bend' ? ' · ±' + KY.BEND_ST + ' semitones' : '') + (orig ? (kind === 'bend' ? ' (' + orig + ')' : ' · ' + orig) : ''));
+    perfs.push({ release: () => C.release(), destroy: () => { offBed(); C.destroy(); } });
+    return el;
+  }
+  const perfWidget = (c, o) => { KY.ensureCSS(doc); return c.kind === 'keys' ? bedWidget(c, o) : ctlWidget(c, o); };
   function liveWidget(c, o) {
     const mc = M.get(c.id);
-    if (!mc) { // a token (TB-303 / DX7 special areas)
-      const w = mk('div', 'hw-c'), el = c.id.startsWith('seq:') && SQ ? seqWidget(c, o) : c.id.startsWith('dx:') && DX ? dxWidget(c, o, w) : null;
+    if (!mc) { // a token (TB-303 / DX7 special areas; 1i: the keys and the controllers)
+      const w = mk('div', 'hw-c'), el = c.id.startsWith('seq:') && SQ ? seqWidget(c, o) : c.id.startsWith('dx:') && DX ? dxWidget(c, o, w) : c.id.startsWith('perf:') ? perfWidget(c, o) : null;
       if (!el) return null;
       w.setAttribute('data-ctl', c.id); w.setAttribute('data-kind', c.kind);
       // (2b, IMPL-2b §6.2) no data-dest: a seq: / dx: token is no models.js control (cv-mods CLASS_TABLE has no class for
@@ -1408,5 +1650,7 @@ export function render(root, L, model, api) {
       if (t) { if (api.tip) api.tip(n, t); if (api.untip) api.untip(1200); return; }
     }
   });
-  return { w: geo.W, h: geo.H, tier, destroy() { if (tier) tier.destroy(); /* every listener is on the panel's own nodes */ } };
+  // destroy: the face; every bed, controller and audition released (a held note ends, a spring posts its rest) and unhooked
+  // from the host (every listener is on the panel's own nodes)
+  return { w: geo.W, h: geo.H, tier, destroy() { if (tier) tier.destroy(); for (const p of perfs.splice(0)) { try { p.destroy(); } catch (err) { console.error(err); } } } };
 }

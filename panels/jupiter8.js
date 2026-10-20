@@ -5,11 +5,14 @@
 // aluminium end pieces with its louvred rear band cut to 24 mm (R2; the model name in plain type), the upper control area
 // (red-orange header bars), the coloured lower button row, and the PERFORMANCE panel left of the keys trimmed to its
 // PORTAMENTO row (an aux area, R3: our Portamento).
+// (1i, IMPL-1i §1.2) The PERFORMANCE panel full depth at its real place (offset −42.5 = main's) with the BENDER lever
+// (perf:bend, left–right) and the LFO MODULATION touch pad (perf:mod) live, and the 61-key bed (C2–C7, MIDI 36–96, 834 mm)
+// right of it; the black rail between the plate and the keys carries the extras.
 
 export default {
   v: 1,
   id: 'jupiter8',
-  hw: 'Jupiter-8 (1981): the top plate (rear band cut to 24 mm) + the PERFORMANCE panel trimmed to PORTAMENTO',
+  hw: 'Jupiter-8 (1981): the top plate (rear band cut to 24 mm) + the black rail + the PERFORMANCE panel and the 61-key bed',
   case: '#141414',
   scheme: {
     panel: '#121212',
@@ -21,10 +24,18 @@ export default {
     slider: { cap: '#151515', line: '#e0e0e0', groove: '#050505', capShape: 'flat' },
     button: { cap: '#f2f2f2', led: '#ff2a1a', ledOff: '#3a1210', text: '#141414' },
     switch: { chrome: '#d8d8d4', red: '#e2402f', orange: '#ff7a1c', yellow: '#f5c518', white: '#f2f2f2', green: '#3fbf3f', lightblue: '#3b9be0', blue: '#2c62d0', tape: '#3b8fe0' },
+    keys: { white: '#f4f4f1', whiteEdge: '#c3c1ba', black: '#111111', blackTop: '#2a2a2a', gap: '#050505' },
+    lever: { slot: '#050505', cap: '#1c1c1c' },
+    pad: { face: '#2a2a2c', lit: '#e2402f' },
   },
   areas: [
     { id: 'main', src: [0, 42.5, 1063, 214.5], at: [0, 0] },
-    { id: 'performance', src: [9.7, 299, 179.4, 61.5], at: [9.7, 222.5], frame: 'line' },
+    // (1i) below the black rail (y 257–299, case colour: the extras sit on it) at offset −42.5 (main's): the PERFORMANCE
+    // panel full depth and the bed (research x 190.6–1024.6, y 299–485)
+    { id: 'performance', src: [9.7, 299, 179.4, 126.5], at: [9.7, 256.5], frame: 'line' },
+    { id: 'keys', src: [190.6, 299, 834, 186], at: [190.6, 256.5], fill: '#0a0a0a' },
+    { id: 'endL', src: [0, 257, 6.6, 228], at: [0, 214.5], fill: '#5f6266' },
+    { id: 'endR', src: [1056.5, 257, 6.5, 228], at: [1056.5, 214.5], fill: '#5f6266' },
   ],
   sections: [
     { id: 'master', label: 'VOLUME / BALANCE / ARPEGGIO', x: 6.6, y: 66.5, w: 136.5, h: 114.1, frame: 'none', title: 'none' },
@@ -45,7 +56,8 @@ export default {
     { id: 'patchNumber', label: 'PATCH NUMBER / MANUAL', x: 624.9, y: 180.6, w: 168.2, h: 66.5, frame: 'box', title: 'none' },
     { id: 'patchPreset', label: 'PATCH PRESET / WRITE', x: 793.1, y: 180.6, w: 177.1, h: 66.5, frame: 'box', title: 'none' },
     { id: 'tape', label: 'TAPE MEMORY', x: 970.2, y: 180.6, w: 86.3, h: 66.5, frame: 'box', title: 'none' },
-    { id: 'performance', label: 'PERFORMANCE', a: 'performance', x: 9.7, y: 299, w: 179.4, h: 61.5, frame: 'none', title: 'none' },
+    { id: 'performance', label: 'PERFORMANCE', a: 'performance', x: 9.7, y: 299, w: 179.4, h: 126.5, frame: 'none', title: 'none' },
+    { id: 'keys', label: 'KEYBOARD', a: 'keys', x: 190.6, y: 299, w: 834, h: 186, frame: 'none', title: 'none' },
   ],
   controls: [
     // upper area, left (no header): VOLUME, BALANCE, the ARPEGGIO RATE slider and its INT / EXT switch (not emulated)
@@ -158,6 +170,16 @@ export default {
     { kind: 'knob', x: 122.6, y: 330.6, d: 22, sweep: 300, label: 'LFO MOD RISE TIME', lab: 'none', scale: { n: 11, labels: ['0', '', '', '', '', '5', '', '', '', '', '10'], size: 1.9 }, a: 'performance', inert: true, p: 0.3 },
     { id: 'gl', kind: 'knob', x: 161.3, y: 330.6, d: 22, sweep: 300, label: 'PORTAMENTO', lab: 'none', scale: { n: 11, labels: ['0', '', '', '', '', '5', '', '', '', '', '10'], size: 1.9 }, a: 'performance' },
     { kind: 'switch', style: 'bat', orient: 'v', x: 158.5, y: 351.5, w: 7, h: 14, color: 'chrome', label: 'PORTAMENTO MODE (UPPER ONLY / OFF / ON)', lab: 'none', a: 'performance', inert: true, p: 1 },
+    // (1i) the rest of the PERFORMANCE panel (manual p.14): the BEND (VCO, VCF) and LFO MOD (VCO, VCF) sensitivity sliders
+    // (not emulated), the LFO MODULATION touch pad under RISE TIME (live: modulation fades in while touched), the BENDER
+    // lever (live: left–right, right = up, centre-sprung); then the bed: keys 176 mm, the 10 mm front rail
+    { kind: 'slider', a: 'performance', x: 33.9, y: 376, len: 34, cap: [10, 6], inert: true, label: 'VCO', lab: 's', labSize: 1.8, p: 0.6 },
+    { kind: 'slider', a: 'performance', x: 55.7, y: 376, len: 34, cap: [10, 6], inert: true, label: 'VCF', lab: 's', labSize: 1.8, p: 0.4 },
+    { kind: 'slider', a: 'performance', x: 71.5, y: 376, len: 34, cap: [10, 6], inert: true, label: 'VCO', lab: 's', labSize: 1.8, p: 0.5 },
+    { kind: 'slider', a: 'performance', x: 89.3, y: 376, len: 34, cap: [10, 6], inert: true, label: 'VCF', lab: 's', labSize: 1.8, p: 0.3 },
+    { id: 'perf:mod', kind: 'pad', a: 'performance', x: 124, y: 361, w: 30, h: 20, rise: 0.25, label: 'LFO MODULATION', lab: 's', labSize: 1.8 },
+    { id: 'perf:bend', kind: 'lever', a: 'performance', x: 140, y: 404, w: 44, h: 10, axis: 'x', up: '+x', hit: [46, 16], label: 'BENDER', lab: 's', labSize: 1.9 },
+    { id: 'perf:keys', kind: 'keys', a: 'keys', x: 607.6, y: 387, n: 61, lo: 36, pitch: 834 / 36, len: 176 },
   ],
   decor: [
     // the aluminium end pieces; the rear band cut to 24 mm: louvres and the model name in plain type (no wordmark, no logo)
@@ -475,8 +497,17 @@ export default {
     { t: 'text', x: 163.4, y: 346.8, s: 'UPPER ONLY', size: 1.5, weight: 600, anchor: 'start', ls: 0.1, a: 'performance' },
     { t: 'text', x: 163.4, y: 352.2, s: 'OFF', size: 1.5, weight: 600, anchor: 'start', ls: 0.1, a: 'performance' },
     { t: 'text', x: 163.4, y: 357.4, s: 'ON', size: 1.5, weight: 600, anchor: 'start', ls: 0.1, a: 'performance' },
+    // (1i) the sliders' links to their switches, their BEND / LFO MOD groups, the bed's front rail
+    { t: 'path', a: 'performance', d: 'M26.7 341V349H41V341M33.9 349V357M55.7 341V357M71.5 341V357M89.3 341V357', stroke: '#a8a8a8', sw: 0.25 },
+    { t: 'ladder', a: 'performance', x: 33.9, y: 376, len: 34, n: 11, side: 'l', gap: 5.5 },
+    { t: 'ladder', a: 'performance', x: 89.3, y: 376, len: 34, n: 11, side: 'r', gap: 5.5 },
+    { t: 'path', a: 'performance', d: 'M29 401.5V403H60.6V401.5M66.6 401.5V403H94.2V401.5', stroke: '#a8a8a8', sw: 0.25 },
+    { t: 'text', x: 44.8, y: 406.2, s: 'BEND', size: 1.8, weight: 600, anchor: 'middle', ls: 0.1, a: 'performance' },
+    { t: 'text', x: 80.4, y: 406.2, s: 'LFO MOD', size: 1.8, weight: 600, anchor: 'middle', ls: 0.1, a: 'performance' },
+    { t: 'rect', a: 'keys', x: 190.6, y: 475, w: 834, h: 10, fill: '#161616' },
+    { t: 'line', a: 'keys', x1: 190.6, y1: 475.2, x2: 1024.6, y2: 475.2, stroke: '#3a3a3a', sw: 0.4 },
   ],
-  extras: { ids: ['pw'], at: [200, 228, 340, 40], caption: 'EXTRAS · not on the original · PW = the PULSE WIDTH slider at MANUAL' },
+  extras: { ids: ['pw'], at: [200, 215, 340, 40], caption: 'EXTRAS · not on the original · PW = the PULSE WIDTH slider at MANUAL' },
   notes: [
     'Upper area left to right as on the instrument: VOLUME / BALANCE / ARPEGGIO RATE │ LFO · VCO MODULATOR · VCO-1 · VCO-2 │ SOURCE MIX · HPF · VCF · VCA │ ENV-1 · ENV-2; lower row: MASTER TUNE + TUNE │ ARPEGGIO · ASSIGN MODE · HOLD │ KEY / PANEL MODE │ display │ PATCH NUMBER + MANUAL │ PATCH PRESET + WRITE │ TAPE MEMORY.',
     'Every slide pot has the black cap with one light line (the original\'s; today\'s per-section coloured caps are not authentic); rotary selectors and knobs are black with a red pointer; on / off and source choices are chrome bat switches.',
@@ -486,7 +517,11 @@ export default {
     'Upper-area legends are printed in one row under the header bars (lab "none" + decor), each with its up-arrow to the bar; the red source tags (LFO, ENV-1, VCO-2, KYBD…) sit under the controls they feed.',
     'The PATCH NUMBER display\'s UPPER pair shows the factory-preset number (read-only, "--" for a custom sound); the LOWER pair is dark (no split / dual here).',
     'Inert: VOLUME, BALANCE, ARPEGGIO RATE and INT / EXT, the LFO LEDs, the VCF ENV source switch (parked ENV-1), ENV-1 KEY FOLLOW / POLARITY, ENV-2 KEY FOLLOW, the whole lower row but ASSIGN MODE SOLO / UNISON / POLY 1 (caps kept in colour: the row is the instrument\'s identity), and on the PERFORMANCE panel the five bend / mod switches, LFO MOD RISE TIME and the portamento mode switch (parked ON); the bend / LFO MOD sliders, the LFO MODULATION pad and the BENDER lie outside the trimmed row.',
-    'pw (our static pulse width) is the extra: on the hardware the one PULSE WIDTH MOD slider sets the width at MANUAL; ours keeps width (pw), depth (pwm) and source (pws) apart. The extras box sits right of the PERFORMANCE panel in the empty keybed band (extras.at).',
+    'pw (our static pulse width) is the extra: on the hardware the one PULSE WIDTH MOD slider sets the width at MANUAL; ours keeps width (pw), depth (pwm) and source (pws) apart. The extras box sits on the black rail between the plate and the keys (extras.at).',
     'Original artwork: the maker logo with its model badge and the model wordmark are not copied; "Jupiter-8" in plain type where the wordmark sits.',
+    '(1i) The bed: 61 keys C2–C7 (MIDI 36–96; 5 octaves, spec p.29), white pitch 834 / 36 (= 23.1667, written as the division: 36 × 23.17 overruns the 834 mm area), research x 190.6–1024.6, y 299–485 (186 mm incl. the rail) = 176 mm white keys (the contract\'s ≈ 176) + a 10 mm front rail (the contract default; it carries the 8 mm front band). No felt strip: the keys meet the black rail. Not touch-sensitive (spec: no / no).',
+    '(1i) The PERFORMANCE panel full depth (research x 9.7–189.1, y 299–425.5, offset −42.5 = main\'s): the BENDER lever (perf:bend, kind lever, axis x, right = up: "the left and right extremes bend by the same amount in opposite directions", centre-sprung, manual p.14; ±2 st, the BEND switches and sliders inert), slot 44 × 10 mm at x 140, y 404 (hit 46 × 16); the LFO MODULATION touch pad (perf:mod, kind pad: modulation fades in over 0.25 s while touched, back to 0 at once; RISE TIME inert), 30 × 20 mm at x 124, y 361, directly under the RISE TIME knob as the manual says. Positions read off the manual\'s panel drawing (p.14: not to scale) and fitted to the research\'s switch / knob row; the four sensitivity sliders (BEND VCO / VCF, LFO MOD VCO / VCF) are drawn inert under their switches.',
+    '(1i) The aluminium end pieces run on beside the rail and the keys to the front edge (areas endL / endR).',
+    '(1i) pw: its extras box moves up 13 mm onto the black rail (y 215–255, the 42 mm band between the plate and the keys).',
   ],
 };

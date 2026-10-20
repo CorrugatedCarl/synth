@@ -14,6 +14,8 @@ import { MODELS } from '../models.js?v=9';
 import * as core from '../serum-core.js?v=9';
 import * as S from '../song.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
+import * as cvPanel from '../cv-panel.js?v=9';
+import * as KY from '../cv-keys.js?v=9';
 
 const peak = x => { let m = 0; for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > m) m = a; } return m; };
 const maxDiff = (x, y, n = Math.min(x.length, y.length)) => { let m = 0; for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(x[i] - y[i])); return m; };
@@ -1098,4 +1100,49 @@ test('milestone 3 lane D: a Serum in parts view compiles as the whole panel (the
   const back = t === sxTrack(s) ? t.dev.i1.vals.s : sxTrack(s).dev.i1.vals.s;
   assert.equal(JSON.stringify(back), s0, 'undo: the fields written back');
   assert.deepEqual(api.partsOf(t, api.nodes.get(t.id), null, 'none'), [], 'role none: the \'mods\' id alone');
+});
+
+test('1i (IMPL-1i §6.2): the hardware keys in the page (the real world) — a Prophet-5 key → noteOn → {t: on} on the selected track\'s node; its mod wheel → ctl(\'wheel\') and the tray\'s; keyVis lights a mounted bed; PERF.live only for a ctl that reached the selected track', async () => {
+  const s = await bootMain({ hash: '#prophet5' });
+  await s.power(); await s.settle(5); s.raf();
+  const api = s.api, cv = globalThis.__synthTest.cv, a = api.project().tracks[0], na = s.nodeOf(a.id);
+  assert.equal(I(a).model, 'prophet5');
+  const find = (n, f) => { if (f(n)) return n; for (const c of n.children || []) { const r = find(c, f); if (r) return r; } return null; };
+  const wrap = id => find(instBody(), x => !!x.attrs && x.attrs['data-ctl'] === id), shown = n => !('hidden' in find(wrap('perf:keys'), x => !!x.attrs && x.attrs['data-note'] === String(n)).attrs);
+  const m = modelOf('prophet5'), geo = cvPanel.geometry(cvPanel.usable('prophet5', m), m), B = geo.controls.find(o => o.id === 'perf:keys').bed.mm;
+  const bed = wrap('perf:keys').children[0];
+  bed.getBoundingClientRect = () => ({ left: 0, top: 0, width: B.w * 2, height: (B.h + B.front) * 2 }); // (2 px / mm)
+  const ev = (el, type, x, y, o) => el.dispatchEvent(Object.assign({ type, target: el, button: 0, buttons: type === 'pointerup' ? 0 : 1, pointerId: 41, pointerType: 'touch',
+    clientX: x, clientY: y, timeStamp: performance.now(), ctrlKey: false, preventDefault() {}, stopPropagation() {} }, o));
+  const k60 = B.keys[60 - B.lo], x = (k60.x + k60.w / 2) * 2, y = B.len * 0.8 * 2;
+  na.posted.length = 0;
+  ev(bed, 'pointerdown', x, y);
+  const on = na.posted.filter(p => p.m.t === 'on').map(p => p.m);
+  assert.deepEqual(on, [{ t: 'on', n: 60, v: KY.velOf(B, 60, B.len * 0.8) }]);
+  assert.deepEqual([[...api.held.keys()], shown(60)], [['0:60'], true]);
+  ev(bed, 'pointerup', x, y);
+  assert.deepEqual([na.posted.filter(p => p.m.t === 'off').map(p => p.m.n), [...api.held.keys()], shown(60)], [[60], [], false]);
+  // keyVis (any source) lights the mounted bed
+  api.noteOn(64, 0.5, 0); assert.equal(shown(64), true);
+  api.noteOff(64, 0); assert.equal(shown(64), false);
+  // the mod wheel: a drag up → ctl('wheel') (≤ once a frame) and the tray's wheel view, kept at the lift
+  const c = cvPanel.usable('prophet5', m).controls.find(q => q.id === 'perf:mod'), wh = wrap('perf:mod').children[0];
+  wh.getBoundingClientRect = () => ({ left: 0, top: 0, width: c.w * 2, height: c.h * 2 });
+  na.posted.length = 0;
+  ev(wh, 'pointerdown', 10, 100, { pointerId: 42 }); ev(wh, 'pointermove', 10, 100 - c.h, { pointerId: 42 }); s.raf();
+  assert.deepEqual(na.posted.filter(p => p.m.t === 'wheel').map(p => p.m.v), [0.5], 'half the wheel\'s height: 0.5');
+  ev(wh, 'pointerup', 10, 100 - c.h, { pointerId: 42 });
+  assert.equal(api.perfValue('wheel', a), 0.5, 'a mod wheel stays');
+  // PERF.live: only for a ctl whose targets hold the selected track
+  const b = api.addTrack(modelOf('juno60')); s.raf(); api.selectTrack(a.id); s.raf();
+  const lives = [], was = cv.perf.live;
+  cv.perf.live = (k, v) => { lives.push(k + ':' + v); was(k, v); };
+  try {
+    api.ctl('bend', 0.25, 0, performance.now(), [b]);
+    api.ctl('at', 0.5, 0, performance.now(), [b]);
+    api.ctl('sus', 1, 0);
+    assert.deepEqual(lives, [], 'another track\'s ctl, sustain: none');
+    api.ctl('bend', 0.25, 0); api.ctl('wheel', 0.75, 0); api.ctl('bend', 0, 0);
+    assert.deepEqual(lives, ['bend:0.25', 'wheel:0.75', 'bend:0'], 'the selected track\'s');
+  } finally { cv.perf.live = was; api.ctl('sus', 0, 0); }
 });

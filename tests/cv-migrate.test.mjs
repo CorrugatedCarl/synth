@@ -945,7 +945,7 @@ test('3 schema 7: STEPS[6] moves stored modulator places only — the content an
 
 test('3 growMods (IMPL-3 §2.2): with Serum\'s widths each LFO / ENV / Macro / Chaos keeps its right edge and grows left; overlaps move on left; other kinds and Tidy-placed ones stay', () => {
   const t = MB.tracks()[1];
-  t.lay = { l1: { x: -320, y: 0 }, l2: { x: -320, y: 320 }, e1: { x: -320, y: 640 }, m1: { x: -320, y: 960 }, h1: { x: -640, y: 0 }, c1: { x: -320, y: 1344 }, nt: { x: 1600, y: 1600 } };
+  t.lay = { l1: { x: -320, y: 0 }, l2: { x: -320, y: 320 }, e1: { x: -320, y: 640 }, m1: { x: -320, y: 960 }, h1: { x: -640, y: 0 }, c1: { x: -320, y: 1344 }, nt: { x: 1600, y: 1824 } };   // (nt below the Juno-60 at 1i's size: i2 Tidy-placed at y 928, 800 tall)
   const g = M.growMods({ tracks: [t] }, W3).tracks[0], L = g.lay;
   assert.deepEqual([L.l2.x, L.e1.x, L.m1.x], [-80 - 416, -80 - 320, -80 - 256], 'right edges kept at −MOD_GAP');
   assert.deepEqual([L.c1, L.nt], [t.lay.c1, t.lay.nt], 'a CC / Note module: as it was');

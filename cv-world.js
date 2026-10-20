@@ -45,9 +45,13 @@
 // over the same canvas): exact dot centres every frame, nothing rasterised at a zoom end. No 2D grid canvas then (no
 // gridStore / gridFollow); `?nogl` or the pref synth.cv.gl = 'off' (and no WebGL2, or three context losses in a minute)
 // keep the hotfix-2 2D grid exactly as it was. The world attaches FACES once the GL exists, detaches on loss / destroy.
+// Stage 1i (IMPL-1i §4.3): a finger resting on the art or the canvas (an unmoved pan older than gesture.js's PAIR_MS)
+// never takes a later press on an awake module's keys ([data-gesture=music]) or controllers ([data-gesture=perf]) as its
+// pinch (G2: the key plays, the wheel rolls, the pan stays); a tap on sleeping keys or a sleeping controller ([data-gesture=perf]) emits 'sleeptap' { id } (main.js: a hint).
 import * as wk from './wk.js?v=9';
 import { createGL } from './cv-gl.js?v=9';
 import * as FACES from './cv-face.js?v=9';
+import { PAIR_MS } from './gesture.js?v=9'; // (1i G2: a key pressed later than the two-finger layer's time rule)
 
 /** Smallest / largest camera zoom. */
 export const K_MIN = 0.25, K_MAX = 2;
@@ -1095,6 +1099,7 @@ export function createWorld(viewport, o) {
       }
       lastTap = { t: T, x: e.clientX, y: e.clientY, id: g.sleep };
       select(g.sleep);
+      if (zoneIn(t, 'music') || zoneIn(t, 'perf')) emit('sleeptap', { id: g.sleep }); // (1i §4.3: keys / a controller: a hint)
       return;
     }
     if (t === viewport || t === W) {
@@ -1141,6 +1146,11 @@ export function createWorld(viewport, o) {
     if (native) return;
     if (G && (e.pointerType === 'touch' ? e.isPrimary === true : G.type !== 'touch')) endGesture(true); // a stale pan (its lift was lost)
     if (G && e.pointerType === 'touch' && G.type === 'touch') { // a further touch while the world's touch pan runs
+      // (1i G2) a finger resting on the art or the canvas (a pan not moved, past the layer's time rule) never silences the
+      // keys or the controllers: an awake bed's / wheel's press is its own, the pan stays (two fingers landing together, or a
+      // moving pan: the pinch)
+      if (G.kind === 'pan' && !G.moved && !G.sleep && now() - G.t0 > PAIR_MS && (zoneIn(e.target, 'music') || zoneIn(e.target, 'perf'))
+        && !(cam.k < READ_K - 1e-9 && sleeper(e.target))) return;
       take(e);
       if (pinchMode !== 'canvas') { endGesture(true); clickUntil = now() + 350; return; } // 'Zoom page': the pan stops, the browser's pinch has both (no click)
       if (G.kind === 'marquee' && e.pointerId !== G.id) { // two fingers win over a finger's marquee: it ends, unapplied, and pinches
@@ -1174,6 +1184,14 @@ export function createWorld(viewport, o) {
   function jackStop(j) { // cancel a cable drag (the hook's answer, else hooks.jackCancel); idempotent on the hook's side
     const f = j && j.cancel ? j.cancel : typeof hooks.jackCancel === 'function' ? hooks.jackCancel : null;
     if (f) { try { f(); } catch (err) { console.error(err); } }
+  }
+  function zoneIn(t, kind) { // (1i) t inside a module's [data-gesture=kind] (music: its keys; perf: its controllers)
+    let z = false;
+    for (let n = t; n && n !== viewport && typeof n.getAttribute === 'function'; n = n.parentNode) {
+      if (n.getAttribute('data-gesture') === kind) z = true;
+      if (n.getAttribute('data-cv-mod') != null) return z;
+    }
+    return false;
   }
   function sleeper(t) { // the module whose body t lies in, unless t is in its bar or a jack, or the module is in edit state
     for (let n = t; n && n !== viewport && typeof n.getAttribute === 'function'; n = n.parentNode) {

@@ -5,7 +5,9 @@ import './v8-guard.mjs';
 // pinch, wheel + veto, edit state, edge auto-pan, ghost re-projection, localPoint under the world transform. Fake DOM: tests/wk-dom.mjs. Never pass fake-DOM nodes to assert.*
 // (compare ids / strings / numbers). Stage 1e: the jack hook (a press on a jack is the cable drag's; a second finger
 // cancels it and pinches; a two-finger cancel, Escape, setActive(false) cancel it). Stage 2a: the ∿ cycle (Always / On
-// select / Never, synth.cv.mods, 'mods' events). Run alone: node --max-old-space-size=2048 --test tests/cv-world.test.mjs
+// select / Never, synth.cv.mods, 'mods' events). Stage 1i (IMPL-1i §4.3), with the real gesture.js on the same window: two
+// fingers on a sleeping bed pinch, G2 (a resting finger never silences an awake bed), the 'sleeptap' event.
+// Run alone: node --max-old-space-size=2048 --test tests/cv-world.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as dom from './wk-dom.mjs';
@@ -14,6 +16,7 @@ import * as wk from '../wk.js?v=9';
 import * as MOD from '../cv-module.js?v=9';
 import * as CAB from '../cv-cables.js?v=9';
 import * as FACES from '../cv-face.js?v=9';
+import * as G from '../gesture.js?v=9';
 
 const { Ev, ptr, fire, place, layout, all } = dom;
 // never hand a fake-DOM node to assert (its AssertionError walks the cyclic tree): primitives, or JSON
@@ -1755,4 +1758,136 @@ test('H5 the world: storeDensity follows the zoom at rest; Σ past CANVAS_BUDGET
     wk.setCanvasScale(1);
   }
   eq(wk.storeCap(b.cv), undefined, 'destroy cleared the caps');
+});
+
+/* ------------------------------------------------------------------ 1i: the hardware keys with the real gesture.js (IMPL-1i §4.3) */
+// the two-finger layer on the same fake window (its capture listeners before the viewport's, as main.js boot installs it),
+// its frames and the world's in one queue (flushed after each touch); a module with panel art (a background) and a bed
+// ([data-gesture=music], touch-action none: cv-keys) and a controller ([data-gesture=perf]); notes: the bed's pointerdowns
+function keysWorld(k) {
+  const d = dom.fresh(), win = d.defaultView, rq = [];
+  win.document = d; T = 1000; timers.length = 0;
+  win.requestAnimationFrame = f => { rq.push(f); return rq.length; }; win.cancelAnimationFrame = () => {};
+  win.getComputedStyle = n => ({ touchAction: n._ta || 'auto', overflowX: 'visible', overflowY: 'visible' });
+  const ref = {}, frame = () => { for (const f of rq.splice(0)) f(T); };
+  const g = G.installGestures(win, { now: () => T, event: (t, i) => new Ev(t, i), setTimeout: setT, clearTimeout: clearT,
+    pan: (a, b, c) => ref.world.hooks.pan(a, b, c), zoom: (a, b, c, e) => ref.world.hooks.zoom(a, b, c, e) });
+  const vp = d.createElement('div'), w = d.createElement('div'), ov = d.createElement('div');
+  vp.id = 'viewport'; vp._ta = 'none'; w.setAttribute('data-cv-world', '');
+  vp.append(w); d.body.append(vp, ov);
+  place(vp, 0, 0, 1280, 800); place(ov, 0, 0, 1280, 800);
+  const env = { win, doc: d, now: () => T, raf: f => win.requestAnimationFrame(f), caf: () => {}, setTimeout: setT, clearTimeout: clearT };
+  const world = ref.world = W.createWorld(vp, { world: w, overlay: ov, env, isBackground: el => !!el && el.classList.contains('bg') });
+  const mod = d.createElement('div'), body = d.createElement('div'), art = d.createElement('div'), keys = d.createElement('div'), wheel = d.createElement('div');
+  mod.setAttribute('data-cv-mod', 'm'); body.className = 'bg'; art.className = 'bg';
+  keys._ta = 'none'; keys.setAttribute('data-gesture', 'music'); wheel._ta = 'none'; wheel.setAttribute('data-gesture', 'perf');
+  body.append(art, keys, wheel); mod.append(body); w.append(mod);
+  world.add({ id: 'm', el: mod, body, rect: () => ({ x: 0, y: 0, w: 1800, h: 700 }), onScreen() {} });
+  world.setCamera({ tx: 0, ty: 0, k }); frame();
+  place(art, 100, 100, 800, 150); place(keys, 100, 300, 800, 200); place(wheel, 20, 300, 44, 128);
+  const notes = []; keys.addEventListener('pointerdown', e => notes.push(e.pointerId));
+  const rolls = []; wheel.addEventListener('pointerdown', e => rolls.push(e.pointerId));
+  const sleeptaps = []; world.on('sleeptap', e => sleeptaps.push(e && e.id));
+  const touch = (el, type, x, y, id, o = {}) => { const e = ptr(el, type, x, y, Object.assign({ pointerType: 'touch', pointerId: id, isPrimary: id === 1 }, o)); frame(); return e; };
+  return { g, world, art, keys, wheel, notes, rolls, sleeptaps, touch, frame };
+}
+
+test('1i: k 0.4 — two fingers on a sleeping bed are the camera\'s pinch: no note, no two-finger session (the regression S1 became)', () => {
+  const { g, world, keys, notes, touch } = keysWorld(0.4);
+  touch(keys, 'pointerdown', 400, 400, 1); T += 40; touch(keys, 'pointerdown', 600, 400, 2, { isPrimary: false });
+  T += 20; touch(keys, 'pointermove', 380, 400, 1); touch(keys, 'pointermove', 620, 400, 2);
+  T += 20; touch(keys, 'pointermove', 300, 400, 1); touch(keys, 'pointermove', 700, 400, 2);
+  eq([notes.length, g.state().session], [0, null], 'no key pressed, no session');
+  ok(world.k > 0.6, 'the world pinched: ' + world.k);
+});
+
+test('1i G2: k 0.8 — a finger resting on the panel art, a key 400 ms later: the key gets its pointerdown, no session, the camera unchanged (the resting finger may still pan); 100 ms later: a nav pinch; a moving pan then a key: the world\'s pinch; a key first then the art: both', () => {
+  { // resting finger, then a key after PAIR_MS
+    const { g, world, art, keys, notes, touch } = keysWorld(0.8), c0 = JSON.stringify(world.cam);
+    touch(art, 'pointerdown', 300, 150, 1); T += 400;
+    const e = touch(keys, 'pointerdown', 400, 400, 2, { isPrimary: false });
+    eq([notes.join(), g.state().session, JSON.stringify(world.cam), !!e._imm], ['2', null, c0, false], 'the key plays, nothing else');
+    T += 16; touch(art, 'pointermove', 340, 150, 1); T += 16; touch(art, 'pointermove', 380, 150, 1);
+    eq([Math.round(world.cam.tx), world.k], [80, 0.8], 'the resting finger pans on; no zoom');
+    touch(keys, 'pointerup', 400, 400, 2); touch(art, 'pointerup', 380, 150, 1);
+  }
+  { // within PAIR_MS: gesture.js pairs (the time rule) — a nav pinch, the key never pressed
+    const { g, art, keys, notes, touch } = keysWorld(0.8);
+    touch(art, 'pointerdown', 300, 150, 1); T += 100; touch(keys, 'pointerdown', 400, 400, 2, { isPrimary: false });
+    eq([notes.length, g.state().session], [0, 'nav']);
+  }
+  { // a pan already moving: the world takes the late finger as its pinch
+    const { g, world, art, keys, notes, touch } = keysWorld(0.8);
+    touch(art, 'pointerdown', 300, 150, 1); T += 16; touch(art, 'pointermove', 340, 150, 1); T += 400;
+    const e = touch(keys, 'pointerdown', 400, 400, 2, { isPrimary: false });
+    eq([notes.length, g.state().session, !!e._imm], [0, null, true], 'taken by the world');
+    T += 16; touch(art, 'pointermove', 300, 150, 1); touch(keys, 'pointermove', 440, 400, 2);
+    T += 16; touch(art, 'pointermove', 250, 150, 1); touch(keys, 'pointermove', 500, 400, 2);
+    ok(world.k > 0.8, 'pinched: ' + world.k);
+  }
+  { // the key first, then the art (either delay): both — the note held, the art finger pans
+    for (const gap of [100, 400]) {
+      const { g, world, art, keys, notes, touch } = keysWorld(0.8);
+      touch(keys, 'pointerdown', 400, 400, 1); T += gap; touch(art, 'pointerdown', 300, 150, 2, { isPrimary: false });
+      T += 16; touch(art, 'pointermove', 340, 150, 2); T += 16; touch(art, 'pointermove', 380, 150, 2);
+      eq([notes.join(), g.state().session, Math.round(world.cam.tx), world.k], ['1', null, 80, 0.8], 'key then the art ' + gap + ' ms later');
+    }
+  }
+  { // asleep (k 0.4): a resting finger then a key is the pinch, as below READ_K any key is
+    const { g, world, art, keys, notes, touch } = keysWorld(0.4);
+    touch(art, 'pointerdown', 300, 150, 1); T += 400;
+    const e = touch(keys, 'pointerdown', 400, 400, 2, { isPrimary: false });
+    eq([notes.length, g.state().session, !!e._imm], [0, null, true], 'k 0.4: the world\'s');
+    void world;
+  }
+});
+
+test('1i G2 (review 1 F5): the hardware controllers too — a finger resting on the art, a wheel pressed 400 ms later: it gets its pointerdown (no session, the camera unchanged, the resting finger may still pan); 100 ms later: a nav pinch; a moving pan: the world\'s pinch; asleep (k 0.4): the pinch', () => {
+  { // resting finger, then a controller after PAIR_MS: its press, never the world's late pinch finger
+    const { g, world, art, wheel, rolls, touch } = keysWorld(0.8), c0 = JSON.stringify(world.cam);
+    touch(art, 'pointerdown', 300, 150, 1); T += 400;
+    const e = touch(wheel, 'pointerdown', 40, 360, 2, { isPrimary: false });
+    T += 16; touch(art, 'pointermove', 300, 150, 1); touch(wheel, 'pointermove', 40, 300, 2); // (the thumb rolls the wheel up)
+    T += 16; touch(wheel, 'pointermove', 40, 250, 2);
+    eq([rolls.join(), g.state().session, !!e._imm, JSON.stringify(world.cam) === c0, world.k], ['2', null, false, true, 0.8], 'the wheel gets its press, the camera stays');
+    T += 16; touch(art, 'pointermove', 340, 150, 1); T += 16; touch(art, 'pointermove', 380, 150, 1);
+    eq([Math.round(world.cam.tx), world.k], [80, 0.8], 'the resting finger pans on; no zoom');
+    touch(wheel, 'pointerup', 40, 250, 2); touch(art, 'pointerup', 380, 150, 1);
+  }
+  { // within PAIR_MS: gesture.js pairs — a nav pinch, the wheel never pressed
+    const { g, art, wheel, rolls, touch } = keysWorld(0.8);
+    touch(art, 'pointerdown', 300, 150, 1); T += 100; touch(wheel, 'pointerdown', 40, 360, 2, { isPrimary: false });
+    eq([rolls.length, g.state().session], [0, 'nav']);
+  }
+  { // a pan already moving: the world takes the late finger as its pinch
+    const { g, art, wheel, rolls, touch } = keysWorld(0.8);
+    touch(art, 'pointerdown', 300, 150, 1); T += 16; touch(art, 'pointermove', 340, 150, 1); T += 400;
+    const e = touch(wheel, 'pointerdown', 40, 360, 2, { isPrimary: false });
+    eq([rolls.length, g.state().session, !!e._imm], [0, null, true], 'taken by the world');
+  }
+  { // asleep (k 0.4): a resting finger then a controller is the pinch, as below READ_K any control is
+    const { g, art, wheel, rolls, touch } = keysWorld(0.4);
+    touch(art, 'pointerdown', 300, 150, 1); T += 400;
+    const e = touch(wheel, 'pointerdown', 40, 360, 2, { isPrimary: false });
+    eq([rolls.length, g.state().session, !!e._imm], [0, null, true], 'k 0.4: the world\'s');
+  }
+});
+
+test('1i: a tap on a sleeping bed or controller emits the world event sleeptap (main.js hints once); a tap on the art does not, nor the double-tap that focuses the module, nor a tap on awake keys', () => {
+  const { world, art, keys, wheel, notes, sleeptaps, touch, frame } = keysWorld(0.4);
+  touch(art, 'pointerdown', 300, 150, 1); touch(art, 'pointerup', 300, 150, 1);
+  eq(sleeptaps, [], 'the art: no');
+  adv(600);
+  touch(keys, 'pointerdown', 400, 400, 1); touch(keys, 'pointerup', 400, 400, 1);
+  eq([sleeptaps, notes.length, world.selected], [['m'], 0, 'm'], 'a tap on the sleeping keys: selected, the hint event, no note');
+  adv(100);
+  touch(keys, 'pointerdown', 402, 400, 1); touch(keys, 'pointerup', 402, 400, 1);
+  eq(sleeptaps, ['m'], 'the second tap of a double-tap focuses the module: no event');
+  for (let i = 0; i < 30; i++) { adv(16); frame(); }
+  ok(world.k >= W.READ_K, 'focused: ' + world.k);
+  touch(keys, 'pointerdown', 400, 400, 1); touch(keys, 'pointerup', 400, 400, 1);
+  eq([sleeptaps.length, notes.length], [1, 1], 'awake: the key plays, no event');
+  world.setCamera({ tx: 0, ty: 0, k: 0.4 }); world.select(null); frame(); adv(600);
+  touch(wheel, 'pointerdown', 40, 360, 1); touch(wheel, 'pointerup', 40, 360, 1);
+  eq(sleeptaps, ['m', 'm'], 'a sleeping controller (perf) too');
 });

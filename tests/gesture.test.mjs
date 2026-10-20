@@ -6,7 +6,8 @@
 // moves, native mode wherever the browser pans by itself: left to the browser, swallowed only; ruling Z1), passive
 // move / lift / touch listeners (nothing of the browser's scroll, pinch or taps waits for the layer), physical pairing
 // distances under the browser's pinch-zoom (visualViewport), freed touches (a long-press menu / hold chooser),
-// GestureEvents, destroy. The prototype's
+// GestureEvents, destroy; stage 1i's G1 with the real cv-keys controllers (two controllers never pair; a controller pairs
+// with anything else by the time rule only). The prototype's
 // checks (ipad-inv/two-finger/check.mjs, 19) and the critique's cases A–I (skeptic.mjs) are here as assertions.
 // Run: node --max-old-space-size=2048 --test tests/gesture.test.mjs
 import './v8-guard.mjs';
@@ -19,6 +20,7 @@ import * as S from '../song.js?v=9';
 import { PianoRoll } from '../roll.js?v=9';
 import { Arrangement } from '../arrange.js?v=9';
 import * as CW from '../cv-world.js?v=9';
+import * as KY from '../cv-keys.js?v=9';
 
 const { Ev, ptr, fire, place } = dom;
 // never hand a fake-DOM node to assert (its AssertionError walks the cyclic tree: tens of GB): primitives, or JSON
@@ -961,4 +963,93 @@ test('canvas: the momentum guard\'s consumed touch (the viewport\'s capture list
   T += 16; touch(vp, 'pointermove', 300, 330, 3); touch(vp, 'pointermove', 420, 330, 4);
   ok(world.cam.ty > 0, 'the session pans the camera');
   void e1;
+});
+
+/* ------------------------------------------------------------------ 1i G1: the hardware keys and controllers (IMPL-1i §4.3) */
+// a hardware controller in a canvas module: cv-keys.controller (the real pointer logic over trackLocal: the flagged
+// pointercancel is its abort) bound to a fake api.perf — log: every value it posted; v0: the value at its press
+function hwCtl(d, win, parent, c0, x, y, v0 = 0) {
+  const c = Object.assign({ w: 22, h: 64, orient: 'v' }, c0), el = d.createElement('div');
+  el.setAttribute('data-gesture', 'perf'); el._ta = 'none';
+  parent.append(el); place(el, x, y, c.w * 2, c.h * 2); // (2 px / mm)
+  const log = [], P = { value: () => v0, view: () => () => {}, bend: v => log.push(v), mod: v => log.push(v) };
+  KY.controller(el, c, { perf: P, show: () => {}, raf: f => win.requestAnimationFrame(f), now: () => T });
+  return { el, log, downs: counter(el, 'pointerdown') };
+}
+const hwModule = d => { const m = d.createElement('div'); m.setAttribute('data-cv-mod', 'i1'); d.body.append(m); return m; };
+const WHEEL_B = { id: 'perf:bend', kind: 'wheel', detent: true }, WHEEL_M = { id: 'perf:mod', kind: 'wheel' };
+
+test('1i G1: two fingers on a canvas module\'s keys are a chord (no session; a wheel and a key in either order never pair either); a finger on the panel art then a key within 250 ms pairs (a pinch starts off the keys), 600 ms later it does not', () => {
+  {
+    const { d, g } = setup(), mod = hwModule(d);
+    const keys = d.createElement('div'); keys.setAttribute('data-gesture', 'music'); keys._ta = 'none'; mod.append(keys); place(keys, 100, 400, 800, 200);
+    const got = []; keys.addEventListener('pointerdown', e => got.push(e.pointerId));
+    touch(keys, 'pointerdown', 200, 500, 1); T = 30; touch(keys, 'pointerdown', 260, 500, 2, { isPrimary: false });
+    eq([got.join(), g.state().session], ['1,2', null], 'a chord');
+  }
+  for (const keyFirst of [false, true]) {
+    const { d, win, g } = setup(), mod = hwModule(d);
+    const keys = d.createElement('div'); keys.setAttribute('data-gesture', 'music'); keys._ta = 'none'; mod.append(keys); place(keys, 200, 400, 800, 200);
+    const notes = counter(keys, 'pointerdown'), w = hwCtl(d, win, mod, WHEEL_B, 100, 400);
+    if (keyFirst) { touch(keys, 'pointerdown', 400, 500, 1); T = 40; touch(w.el, 'pointerdown', 120, 460, 2, { isPrimary: false }); }
+    else { touch(w.el, 'pointerdown', 120, 460, 1); T = 40; touch(keys, 'pointerdown', 400, 500, 2, { isPrimary: false }); }
+    eq([notes.n, w.downs.n, g.state().session], [1, 1, null], (keyFirst ? 'key then wheel' : 'wheel then key') + ': both');
+  }
+  for (const [gap, want] of [[100, 'nav'], [600, null]]) {
+    const { d, g } = setup(), mod = hwModule(d);
+    const art = d.createElement('div'); art.className = 'bg'; mod.append(art); place(art, 100, 100, 800, 200);
+    const keys = d.createElement('div'); keys.setAttribute('data-gesture', 'music'); keys._ta = 'none'; mod.append(keys); place(keys, 100, 400, 800, 200);
+    const notes = counter(keys, 'pointerdown');
+    touch(art, 'pointerdown', 300, 200, 1); T = gap; touch(keys, 'pointerdown', 400, 450, 2, { isPrimary: false });
+    eq([g.state().session, notes.n], [want, want ? 0 : 1], 'the art, a key ' + gap + ' ms later');
+  }
+});
+
+test('1i G1: two controllers never pair — a second wheel within 250 ms (the first moving or still) or after the first held still 600 ms: no session, both get their pointerdown, the first is never rolled back; the OB-Xa\'s two levers, the JP-8\'s lever + pad, the tray\'s wheel (#perf) + a hardware wheel the same', () => {
+  const LEVER_B = { id: 'perf:bend', kind: 'lever', w: 16, h: 52, axis: 'y', up: '-y' }, LEVER_M = { id: 'perf:mod', kind: 'lever', w: 16, h: 52, axis: 'y', up: '+y' };
+  const BENDER = { id: 'perf:bend', kind: 'lever', w: 52, h: 16, axis: 'x', up: '+x' }, PAD = { id: 'perf:mod', kind: 'pad', w: 30, h: 22 };
+  for (const [name, A, B] of [['wheel + wheel', WHEEL_B, WHEEL_M], ['lever + lever (OB-Xa)', LEVER_B, LEVER_M], ['lever + pad (JP-8)', BENDER, PAD]]) {
+    for (const [gap, moved] of [[100, true], [600, false], [100, false]]) {
+      const { d, win, g } = setup(), mod = hwModule(d);
+      const a = hwCtl(d, win, mod, A, 100, 400), b = hwCtl(d, win, mod, B, 300, 400);
+      const ax = 100 + (A.w || 22), ay = 400 + (A.h || 64), bx = 300 + (B.w || 22), by = 400 + (B.h || 64); // (their centres)
+      const up = (c, x, y, d0) => (c.axis === 'x' ? [x + d0, y] : c.up === '+y' ? [x, y + d0] : [x, y - d0]); // (the raising way)
+      touch(a.el, 'pointerdown', ax, ay, 1);
+      if (moved) { T = 20; touch(a.el, 'pointermove', ...up(A, ax, ay, 20), 1); }
+      T = gap; touch(b.el, 'pointerdown', bx, by, 2, { isPrimary: false });
+      const what = `${name}, ${gap} ms${moved ? ', the first moving' : ''}`;
+      eq([g.state().session, a.downs.n, b.downs.n], [null, 1, 1], what + ': no session, both pressed');
+      if (moved) ok(a.log.length && a.log.at(-1) > 0, what + ': the first kept its value ' + a.log.join());
+      T += 20; touch(b.el, 'pointermove', ...up(B, bx, by, 20), 2);
+      if (B.kind !== 'pad') ok(b.log.length && b.log.at(-1) > 0, what + ': the second moves its own ' + b.log.join());
+      T += 300; touch(a.el, 'pointerup', ax, ay, 1); touch(b.el, 'pointerup', bx, by, 2);
+    }
+  }
+  // the bottom tray: one perf zone (#perf) — its wheels and a hardware wheel on the canvas
+  const { d, win, g } = setup(), mod = hwModule(d);
+  const tray = d.createElement('div'); tray.id = 'perf'; tray.setAttribute('data-gesture', 'perf'); d.body.append(tray);
+  const slot = d.createElement('div'); slot._ta = 'none'; tray.append(slot); place(slot, 20, 700, 30, 90);
+  const sd = counter(slot, 'pointerdown'), w = hwCtl(d, win, mod, WHEEL_B, 300, 300);
+  touch(slot, 'pointerdown', 35, 740, 1); T = 80; touch(w.el, 'pointerdown', 322, 364, 2, { isPrimary: false });
+  eq([g.state().session, sd.n, w.downs.n], [null, 1, 1], 'the tray\'s wheel + a hardware wheel');
+});
+
+test('1i G1: a controller and a knob (or the panel art) pair by the time rule only — landing together (≤ 250 ms) is a pinch: the wheel rolls back (bend 0, the mod wheel the value at its press); a wheel held still 600 ms then a knob, or a knob held still then a wheel 600 ms later: two hands', () => {
+  for (const [C, v0] of [[WHEEL_B, 0], [WHEEL_M, 0.3]]) {
+    const { d, win, g } = setup(), mod = hwModule(d);
+    const w = hwCtl(d, win, mod, C, 100, 400, v0), knob = d.createElement('div'); knob._ta = 'none'; mod.append(knob); place(knob, 400, 400, 40, 40);
+    const kd = counter(knob, 'pointerdown');
+    touch(w.el, 'pointerdown', 122, 464, 1); T = 20; touch(w.el, 'pointermove', 122, 434, 1);
+    ok(w.log.at(-1) > v0, C.id + ' moved: ' + w.log.join());
+    T = 120; touch(knob, 'pointerdown', 420, 420, 2, { isPrimary: false });
+    eq([g.state().session, kd.n, w.log.at(-1)], ['nav', 0, v0], C.id + ' + a knob 120 ms later: a pinch, the wheel rolled back');
+  }
+  for (const wheelFirst of [true, false]) {
+    const { d, win, g } = setup(), mod = hwModule(d);
+    const w = hwCtl(d, win, mod, WHEEL_B, 100, 400), knob = d.createElement('div'); knob._ta = 'none'; mod.append(knob); place(knob, 300, 400, 40, 40);
+    const kd = counter(knob, 'pointerdown');
+    if (wheelFirst) { touch(w.el, 'pointerdown', 122, 464, 1); T = 600; touch(knob, 'pointerdown', 320, 420, 2, { isPrimary: false }); }
+    else { touch(knob, 'pointerdown', 320, 420, 1); T = 600; touch(w.el, 'pointerdown', 122, 464, 2, { isPrimary: false }); }
+    eq([g.state().session, kd.n, w.downs.n], [null, 1, 1], (wheelFirst ? 'a wheel held still 600 ms, then a knob' : 'a knob held still, a wheel 600 ms later') + ': independent');
+  }
 });

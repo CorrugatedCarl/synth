@@ -280,13 +280,13 @@ What today's code does (reproduced by the review's scripts on the real gesture.j
   is an independent touch. Two lines in `partner()` (`perf` = p's or q's zone): skip when both are perf; drop the late clause when
   either is. The bottom tray is one `perf` zone (`#perf`): its bend and mod wheels now work together too, and a finger resting on
   the tray's chrome no longer pairs late with a finger elsewhere (two fingers landing together still pinch).
-- **G2 (fix, lane H, cv-world `onDownCap`): a resting finger never silences the keys.** Today a finger already down on module art or
+- **G2 (fix, lane H, cv-world `onDownCap`): a resting finger never silences the keys or the controllers** (review 1 F5: the controllers too). Today a finger already down on module art or
   empty canvas holds the world's one-finger pan (`G`), and a key pressed later is taken as that pan's pinch finger at any delay
   (`s1.test.mjs`, k 0.8, 400 ms: no pointerdown on the keys, no session); gesture.js's edge-thumb protection does not reach the
   world's `G`. A thumb resting on the canvas while holding the iPad would silence every bed key. In the branch for a further touch
   while the world's touch pan runs, before `take(e)`: when `G.kind === 'pan' && !G.moved && !G.sleep && now() − G.t0 > PAIR_MS`
-  (imported from gesture.js) and the touch is in an **awake music zone** (an ancestor `[data-gesture="music"]` inside a
-  `[data-cv-mod]`, and `cam.k ≥ READ_K`), return: the key gets its press and `G` stays (the resting finger may still pan; a held key
+  (imported from gesture.js) and the touch is in an **awake music or perf zone** (an ancestor `[data-gesture="music"]` or `"perf"` inside a
+  `[data-cv-mod]`, and `cam.k ≥ READ_K`), return: the key (or the wheel) gets its press and `G` stays (the resting finger may still pan; a held key
   keeps its note while the bed moves under it, §4.1). Landing within PAIR_MS, or a pan already moving: today's pinch (gesture.js
   pairs by the time rule; the world takes the late finger of a moving pan). Key first, background second: both work, unchanged.
 - **A finger on the panel art or the canvas joined by a key finger within 250 ms** pairs and pinches (as on the tray: keep). Two
@@ -317,7 +317,8 @@ What today's code does (reproduced by the review's scripts on the real gesture.j
 The bed is one `role="group"` (not focusable: 61 tab stops would be a trap); the computer keys (`CODEMAP`) play through `noteOn`
 and light the bed (§6.2). Controllers are focusable sliders (`aria-valuenow`, `aria-valuetext` "+1.2 st" / "45 %"): arrows ±0.1,
 Home / End; a springing control returns to centre on `keyup` and on `blur`. The pad is a button (`aria-pressed`, Space / Enter
-held = touched).
+held = touched). **Only a controller focused from the keyboard (Tab) acts on keys**: one a pointer press focused gives Space, Home /
+End and the arrows back to the page (the transport, the seek; main.js's `kbFocus` rule for pointer-focused controls; review 1 F6).
 
 ## 5. Controllers
 
@@ -416,7 +417,10 @@ either file. No `t.model` / `t.vals` / `fxOf(t)` in any of these lines (lane A's
   `release`); a Hardware ↔ Simple switch, a model replace, a module delete or a re-render: `ClassicPanel.destroy` →
   `cv-panel render().destroy()` → every bed and controller `release()` (cv-panel's destroy gains that, lane K); `panic`, power
   off, a hidden page, a window blur: `PERF.release()` (the bed drops its pointers so a still-pressed finger cannot leave a count
-  that silences the next press). A springing controller released this way posts its rest value.
+  that silences the next press). A springing controller released this way posts its rest value. Review 1: the beds and controllers
+  also let go **while their track is still the selected one** — `PERF.release()` at the top of `applyRestore` (Undo / Redo / a load
+  replace every track object, and the old panels' offs fail `sel()`), in `selectTrack` (after its early return) and in `deleteTrack`
+  (the selected track, before the splice); a blur or a hidden page keeps the bed lit for a MIDI / tray note still held (`perfLetGo`).
 - **The bottom tray stays** as it is; its keys and the beds light each other through `keyVis`.
 
 ### 6.4 TB-303
@@ -442,7 +446,10 @@ note** (the mouse: the last press). Code in cv-panel's `seqWidget` (lane K1); th
   overlap rule). The modulator column at x −320 (milestone 3 makes it grow left) is unaffected: instruments grow right and down only.
   The user is told (§10).
 - Nothing stored changes (sizes derive from the layouts): no schema bump, no migration. An older canvas build shows the old sizes.
-- The default camera keeps its `READ_K` floor (a CS-80 fits an iPad landscape canvas at k ≈ 0.53, a Prophet-5 at ≈ 0.68).
+- The default camera keeps its `READ_K` floor (a CS-80 fits an iPad landscape canvas at k ≈ 0.53, a Prophet-5 at ≈ 0.68). **Review 2
+  (P2-1): an instrument with hardware keys fits its height into the band too (down to `READ_K`); below that the camera slides up / left
+  the least that puts the whole bed in the band (§11 "Fixes (review 2)").** The band is the viewport less the toolbar / minimap box, so on
+  an iPad landscape canvas (≈ 432 px) most faces open at `READ_K` with the keys in view and the top of the face above the fold.
 - The Simple layout and the Sources tray tiles are unchanged.
 
 ## 8. Lanes and the schedule
@@ -609,6 +616,149 @@ unchanged and lights up with the synth's keys; on the Mac, only if you zoom the 
 **Answers (the user, 2026-10-20):** 1 velocity — no, the nine stay as the originals (CS-80, DX7, TB-303 respond to where the key is touched); 2 aftertouch — Apple Pencil only; 3 bend range — keep ±2 st for now; 4 timing — **schedule A**: 1i ships on its own right after the user's S0 iPad session (built now on the holding branch `wt-1i`; lane A was already merged at 44d1623, so H edits `main.js` without an exception).
 
 ## 11. Notes (the builders fill in)
+
+### Lane K1 (cv-keys.js, cv-panel.js, tools/panel-check.mjs, the K1 tests)
+
+**K1a (the validator and the pure maths; lane K2's base)** — readings taken where §2 left a detail open:
+- `ribbon.span` and `pad.rise` are optional (defaults 12 st and 0.25 s, validated > 0 when given); a lever's `axis` / `up` are
+  required and must agree: `axis: 'x'` with `up: '+x'`, `axis: 'y'` with `up: '-y' | '+y'` (§2's three directions).
+- Every field of a perf `skin` and of `scheme.keys / wheel / lever / ribbon / pad` must be a colour (`colorOk`, as area and
+  decor fills): the skins hold colours only, so "no maker name in a skin label" is also checked but cannot fire on a valid one.
+- The front band is clamped in `geometry` against the *rounded* body-px hit boxes of the other live controls and the extras
+  strip (so `hitBoxes` stays exactly disjoint); `validate` checks the keys' rectangle alone for overlaps — the band, clamped
+  by the others, can never overlap one. An inert bed (no id) gets `o.bed` for the art but no band and no hit box.
+- A token-like id this build does not know (`perf:pitch`) is reported as "not a control of the model" (was "decoration only").
+- `tests/cv-panel.test.mjs`: the per-model bed test (§1.2 range, `o.bed` = `bedLayout` × 2 + the offset, one hit box, the band)
+  is a node:test **todo** until a model's layout has its `perf:keys` (then it is a real test); once a layout has its bed the
+  size test uses the §1.2 1i targets (± a dot; `PINNED_1I` from K2's hand-back), the ARP's extras lose `gl`, and the pinned
+  §10 section order allows the added sections.
+- At s = 1.06 px/mm (a CS-80 at k 0.53) 20 px would be 18.9 mm: the 0.8 · pitch cap (18.8 mm, 19.9 px) binds there.
+
+**K1 (phase 2: the engine, the controllers, perfHost, the art and the DOM, the audition, the bench)** — on top of K2's
+a8ceaf6 (merged, fast-forward); `PINNED_1I` = K2's hand-back (every model on its §1.2 target), so the per-model bed tests are
+real tests now (no todo). Readings and choices:
+- **Shades**: a key's dip shows while a pointer of the bed itself holds it (an immediate dip, also on a stale panel that plays
+  nothing) or the host lights it (`perf.lit`: keyVis, every source); `release()` clears both. A bed mounts lit (`perf.held()`).
+- **Controllers**: the end of a drag posts its final / rest value at once, except a touch that moved nothing (the ribbon's
+  "a touch without moving does nothing": no post at all). The pad's ramp posts from its frame callbacks (≤ one a frame).
+  `perfHost`'s `sel` gates every post (keys, bend, mod, at); `on` clamps v to 0…1. A controller's window (`o.box` / `o.own`) is
+  unrounded like the bed (its hit box stays `rectPx`), so the DOM part sits exactly over its slot's art.
+- **Art** (one source, `perfParts`, mm from the slot): a white key = white + a 2.5 mm front edge (`whiteEdge`); a black key =
+  black with a lighter top face inset 0.9 mm and short of its front 5 mm (`blackTop`); the gap colour under the keys. A wheel:
+  slot, the surface inset 1.5 mm, 0.6 mm ridges every 3 mm, the centre mark when `detent`; its DOM surface is an opaque CSS
+  gradient of the same numbers rolled by `background-position`. A lever: a cap 22 % of the slot's length (6–14 mm), centred
+  (bend) or at its rest end (mod). Ribbon: felt and two edges (the DOM adds a touch marker only). Pad: a rounded face (the DOM
+  adds its light, opacity = the value). Inert controllers draw the same, dimmed and titled. Defaults `PERF_SKIN`.
+- **Tooltips** (mouse hover only): the bed "Keyboard: <the velocity note>"; a pitch control "… · ±2 semitones (the original:
+  …)" where §5.3 states the original's range (Prophet-5, OB-Xa, CS-80, DX7, MS-20: `BEND_ORIG`), else "±2 semitones"; a
+  control's `tip` (none in K2's layouts) wins.
+- **TB-303**: the cells become music zones only when the host has `api.perf` (without it they stay plain buttons, as today).
+- **No host** (`api.perf` null: today's main.js until lane H): the same nodes, no listeners, `aria-disabled`, and CSS
+  `pointer-events: none` (the bed is then panel art: a finger there pans, as on any art).
+- `tests/ui-bench-1i.html` / `.mjs`: `hw5` comes from `?base=<folder with the 1h panels/<id>.js>` (the 1h layouts through
+  `__synthTest.panels` in this same app, so only the faces differ); the Mac harness serves an export of 5129c60's panels. On
+  the deployed site there is no base: the iPad session gets `hw5k` (first and last), `one`, `paint`, `keys`, the probes. The
+  first scene starts with an unmeasured pan and pinch: without it the first measured pan showed one 130–150 ms frame on the
+  Mac in both runs (a cold first burst; `hw5` and the last `hw5k` never did). The key latency is the engine alone (a stand-in
+  over the bed) until lane H gives the app `api.perf`; reviewer 2 re-measures it on the host path.
+- After the merge with K2, `tests/canvas-sim.test.mjs` fails 3 tests on the Minimoog's size only (1408 × 512 pinned there, now
+  1408 × 736): lane H's size updates (§8.1). No other change in the sims; `main.test` and `classic-panel.test` pass.
+
+**"ui-1i-mac"** (informational: headless Chrome, `--use-angle=metal`, dpr 2, M4 Max; `ui-bench-1i.html?base=…` at 1440 × 900
+and 1366 × 1024, the app 1416 × 558 / 1342 × 635; K2's layouts a8ceaf6; three runs at 1440 × 900 (the frames from the one with
+the warm-up), one at 1366 × 1024; ranges over the runs):
+| measure | result | gate |
+|---|---|---|
+| `hw5k` pan / zoom / deep (and the last `hw5k`) | median 16.7 ms, p95 ≤ 16.8, max 16.8, 0 frames > 33 ms; drift 0 | no frame > 33 ms ✓ |
+| GL draw (`hw5k`, pan / zoom / deep) | mean 0.015–0.031 ms, max 0.2 | mean ≤ 1 ms ✓ |
+| `glStats().bytes` | `hw5k` 180.1 MB (`hw5`, the 1h faces: 116.2 MB) — the §3.3 estimate exactly | ≤ 384 MB ✓ |
+| one CS-80 face (base + mips) | 51.05 MB | ≤ 58 MB ✓ |
+| first base paint (raster + upload) | modular 5.7–5.8 ms, CS-80 4.0–4.4, ARP 2.9–3.2, Juno-60 1.7–3.2, OB-Xa 1.5–2.4, JP-8 1.8–2.5, DX7 1.6–2.5, MS-20 2.0–2.3, Minimoog 1.8–1.9, Prophet-5 1.7–1.8, Solina 0.8–0.9 | B1 on the iPad (> 100 ms) |
+| key press (pointerdown dispatch; the engine alone) | median 0.1 ms, p95 0.2, max 0.2 (40 presses after 4 warm-up) | ≤ 1 ms ✓ |
+| G1 `equalPx` (CS-80, Prophet-5, JP-8 faces, k 0.6 and 1.6, the window landed) | equal, 0 bytes differ (mid-burst and rest) | ✓ |
+| shades vs their keys' art (GL pixels: black keys' sides and fronts, E–F / B–C gaps) | CS-80 max 0.098 / 0.109 / 0.155–0.20 device px at k 0.5 / 1 / 1.6; Prophet-5 0.099 / 0.107 / 0.14–0.149; JP-8 0.107 / 0.126 / 0.19 (85, 68–71, 41–44 edges each) — the GL path offsets nothing | ≤ 0.5 px ✓ |
+| wheel / lever windows vs their art | Prophet-5 wheel surfaces ≤ 0.036 device px, the JP-8 bender's cap ≤ 0.027 (k 1, 1.6); the DOM and the art side by side at k 1–1.5 (Prophet-5 PITCH, OB-Xa MODULATION, JP-8 BENDER): identical to the eye | exactly over ✓ |
+| the bed region, GL vs `?nogl` (CS-80, Prophet-5; k 0.5 and 1; the same camera) | 100.000 % of pixels within 8 / 255 (max difference 0–1) | ≥ 99 % ✓ |
+| console errors | none | ✓ |
+
+### Lane H (main.js §6.2, classic-panel `api().perf`, gesture.js G1, cv-world G2 + `sleeptap`, the host sims)
+
+On `wt-1i` e424c76 (K1 + K2 + canvas with lane A's R7). No K file touched. Readings and choices:
+- **main.js**: the §6.2 sites only (+19 / −6 lines): the import; `PERF` beside `classicHost` with exactly §6.2's deps, and
+  `classicHost.perf`; `keyVis` → `PERF.lit`; `ctl` → `PERF.live` when the selected track is in `to` (trs + `wheelTracks()` for
+  'wheel'; never 'sus'); the `noteOn` guard; `seqPayload` `root: cvKeys.SEQ_ROOT`, `seqToRoll` `cvKeys.seqNote(s)` (bytes
+  unchanged); `PERF.release()` in `panic` (before its held-note loop: the beds' offs go through `noteOff` like the rest),
+  `powerOff` (beside its held-note clearing), the hidden page and the window blur — at those two sites, not inside
+  `releaseKeys` (a Meta keyup calls that one: it would end the notes held on the beds); the `sleeptap` hint wired with the
+  world's other events in `initModules` (a flag per session); `__synthTest.cv.perf`. No accessor read added (the ratchet holds).
+- **gesture.js G1**: in `partner()`, `qp` (q is perf): `perf && qp` → skip; the late clause needs neither p nor q perf; a music
+  p keeps its rule (time only, never a perf q). The header says so.
+- **cv-world G2**: in `onDownCap`'s further-touch branch, before `take(e)`: `G.kind 'pan' && !G.moved && !G.sleep && now() −
+  G.t0 > PAIR_MS` and the target inside a module's `[data-gesture=music]` that is awake — `!(k < READ_K && sleeper(t))`, i.e.
+  sleeper's own rule (a module in edit state is awake below READ_K too). `PAIR_MS` is imported from gesture.js (it imports
+  nothing: no cycle). It sits before the 'Zoom page' branch as §4.3 places it, so in that mode a late key plays too (the bed is
+  touch-action none: the browser could not pinch there anyway). `sleeptap { id }` is emitted on a sleeping module's single tap
+  whose target is in a music or perf zone — a double-tap's first tap emits it, its second (focusing) tap does not. Nothing in
+  `canvasStats` / the budget (lane C's).
+- **Failing tests first**: G1 (gesture.test: perf + perf ≤ 250 ms → a nav session, the second press eaten; a wheel held still
+  600 ms + a knob → a session), G2 and the hint (cv-world.test: no pointerdown on the key 400 ms after a resting finger; no
+  event), `noteOn(NaN)` (canvas-1i-sim with the old guard: NaN posted and held). Each failed before its fix.
+- **The sims**: `tests/canvas-1i-sim.test.mjs` boots `#cs80` with the Chromium clock (a press's timeStamp is the recording's
+  clock) and canvas-sim's scripted world, whose factory also makes the tray wheels' `.slot` / `.thumb` stable nodes (the stub's
+  `querySelector` makes a new node per call) so a test drives the tray's wheel and reads its view. The tray's keys are reached
+  as the computer keys (the same `noteOn(n, v, 0)` path; the stub's tray key elements are not reachable). A stale panel is a
+  panel whose track is no longer `selTrack` before the view is rebuilt. Accessor-free: under the strict accessor hook it
+  records one site, `cv-module.js:733` (`T.model` in a try — lane C's; canvas-sim records the same), none in tests/.
+- **Sizes**: canvas-sim's Minimoog 1408 × 512 → 1408 × 736 (7 places); cv-fixes-sim needs no change (its default-camera test
+  fits the instrument's actual width; no size pinned). `sw.js` precache rebuilt (this lane's commit carries it).
+
+**Host / sims gates** (one file at a time): canvas-1i-sim 12 / 12, gesture 53 / 53 (+3), cv-world 58 / 58 (+3), main 38 / 38
+(+1), classic-panel 9 / 9 (+1), canvas-sim 22 / 22, cv-fixes-sim 5 / 5, lint 127, pwa 22, cv-keys 19, cv-panel 72, cv-face 26,
+canvas-1e-sim 24, canvas-2a-sim 26, canvas-2b-sim 23, cv-shell-sim 16, accessors 30 — all pass. Sound (I1), once at the end:
+golden-classic 8, golden-fx 3, golden-presets 8, golden-random 1, golden-graph 6, canonical-stream 1 — bit-identical; no DSP /
+compile / `models.js` file in the diff.
+
+**The host path in headless Chrome** (`--use-angle=metal`, dpr 2, M4 Max; this worktree served on its own port):
+| measure | result | gate |
+|---|---|---|
+| key press, `ui-bench-1i.html?only=keys` (now `host: true`: pointerdown → `perf.on` → `noteOn` → `postTo`) | 1440 × 900: median 0.1 ms, p95 0.3, max 0.3 (two runs); 1024 × 1366: 0.1 / 0.2 / 0.3 | ≤ 1 ms ✓ |
+| the same press with the node's `port.postMessage` wrapped (smoke) | the `{t: 'on'}` posted inside the dispatch 40 / 40; median 0.1, max 0.2–0.3 ms | same task ✓ |
+| the full bench at 1440 × 900 (no base) | `hw5k` and the last `hw5k` median 16.7, max 16.8, 0 > 33 ms, drift 0; GL mean ≤ 0.023 ms; 180.1 MB; one CS-80 51.05 MB; paints ≤ 5.4 ms (modular); G1 equal; shades ≤ 0.19 px; slots ≤ 0.036 px; no error | every gate ✓ |
+| smoke, 1440 × 900 and 1024 × 1366 (synthetic multi-touch, `Input.dispatchTouchEvent`) | a CS-80 chord of three fingers 40 ms apart at k 0.54 / 0.5: on 60 / 64 / 67 at v 0.9 (80 % deep), all off at the lift, no shade left; the ribbon +80 px → bend 0.913 / 0.98, 0 at the lift, the tray's wheel back at centre; a pinch over the keys at k 0.4 → k 0.76, no note; a tap on the sleeping bed → the hint; the Prophet-5 pitch wheel while a key is held (bend 0.563, the note kept), both wheels at once 80 ms apart (bend 0.563 + mod 0.281, both shown on the hardware wheels; bend 0 and mod kept at the lift); no console error | ✓ |
+
+### Fixes (review 1)
+
+Reviewer 1 (real host: `scratchpad/1i/review-1.md`, against a5d9157). Each was reproduced, a failing test added, then fixed; the
+reproductions `r1-sim` / `r1-world` / `r1-sweep` (its F6 check is synchronous: Space's play is async, the repo test settles) pass.
+
+| finding | cause | fix | test (failed first) |
+|---|---|---|---|
+| F1 P0 stuck note: Undo / Redo / a load / the Undo of a Replace with a bed key held | `applyRestore` swaps in new track objects; the old panel's destroy → `perf.off` fails `sel()` (`trOf(v) === trk()`) | `PERF.release()` right after `applyRestore`'s `if (!p) return` | canvas-1i-sim "review 1 F1" ×2 (off posted, nothing held / lit, silent) |
+| F1b P0 stuck bend / aftertouch: Undo with a wheel or a Pencil held | the spring's `bend(0)` / `at(0)` dropped by the same gate | the same release | "review 1 F1b" (bend 0, `perfValue` 0, the new wheel at rest; `at` 0) |
+| F2 P1: a track switch with a wheel / Pencil held leaves the old track bent / under aftertouch | beds released only when the old view is destroyed, after `selTrack` moved | `PERF.release()` in `selectTrack` after its early return, before `selTrack` changes | "review 1 F2" (A's last bend 0, B never bent, `at` 0) |
+| F3 P1 stuck lit key: deleting the selected track with a bed key held | `deleteTrack` moves the selection before the views go | `if (project.selTrack === t.id) PERF.release()` before the splice | "review 1 F3" (nothing held / lit; another track's delete leaves the key) |
+| F4 P2 wrong light: a blur / hidden page darkens the bed of a MIDI / tray note still sounding | `PERF.release()` → each bed's `host.clear()` | `perfLetGo()` (main.js): `PERF.release()`, then `PERF.lit(n, true)` for every note still in `held`; cv-keys' pinned `host.clear()` kept | "review 1 F4" (blur and hidden page: only `1:62` held and lit) |
+| F5 P1: a finger resting on the canvas silences the hardware wheels / levers / ribbon / pad (G2 covered keys only) | cv-world `onDownCap`'s G2 test: `zoneIn(…, 'music')` | `zoneIn(…, 'music') \|\| zoneIn(…, 'perf')` (still asleep below READ_K) | cv-world "1i G2 (review 1 F5)" (wheel after 400 ms plays; 100 ms: nav pinch; a moving pan and k 0.4: the world's) |
+| F6 P2: a pointer-focused controller takes Space / Home / the arrows | `controller`'s keydown ignored how it was focused | `byPtr` (set at a press that focuses it, cleared at blur): the keydown returns first; a Tab focus, or a press on an already keyboard-focused one, keeps the keys | cv-keys "controllers (review 1 F6)"; canvas-1i-sim "review 1 F6" (Space starts the transport, the Mod Wheel keeps 0.6, Home reaches the page) |
+
+Left as it was (out of 1i's scope, reviewer's note): the tray's own bend wheel held across a track switch springs to the new
+track (pre-1i); a computer / MIDI note held on a track that is deleted ends at its own lift (no stuck state).
+
+### Fixes (review 2)
+
+Reviewer 2 (headless Chrome: `scratchpad/1i/review-2.md`, against a5d9157). P1-1 (a resting finger silences the controllers) is review 1's
+F5 above (d3b86b8). Fixer B's rows, each with its test written and seen failing first (P2-3's is the new `tests/ui-bench-1i.test.mjs`):
+
+| finding | cause | fix | test (failed first) |
+|---|---|---|---|
+| P1-2 low contrast: a pressed white key's shade darkens half of each neighbouring black key (CS-80 k 1: 18.4 px of D♯4, luma 43 → 35) | `bedWidget`'s `.hw-kd` of a white key is the key's full rectangle, which runs under the black keys the art draws over it | each white shade gets a static `clip-path: polygon(…)` (px, shade-local, built once from the neighbouring black keys of `o.bed`): the narrow top between the blacks + the full-width front; the black shades are not clipped | cv-panel "review 2 P1-2" (every model's bed: 358 white keys, 347 clipped; the polygon inside its key, leaving out every overlapped black rect, its area = the visible white). Headless: black neighbours' luma 43 → 43 at k 0.5 / 1 / 1.6 (CS-80, Prophet-5); the shade alignment gate (bench probes) max 0.2 device px (CS-80, Prophet-5, JP-8 at k 0.5 / 1 / 1.6) |
+| P2-1 the default camera opens tall instruments with the keyboard below the fold (ARP 0 % of its bed at 1366 × 1024 and 1440 × 900, modular 0 % at 1440 × 900, MS-20 18 %, Minimoog 34 %, …) | `cvCamRestore` fitted the width only and anchored the top-left; the band is the viewport less the toolbar / minimap box at its foot (1278 × 432 px at 1366 × 1024, 1352 × 308 at 1440 × 900) | an instrument with a hardware bed (`cvBedBox`: its `o.bed.box` from `cv-panel.geometry`) also fits its height into the band (`k = max(READ_K, min(1, kw, kh))`, the side-by-side FX test too); when it still does not fit (READ_K floor) the camera slides up / left the least that puts the whole bed inside the band, its top / left edge first. A model without keys (TB-303), Serum, the Simple layout: today's width-only fit; a saved or moved camera is untouched; the U14 reserved-box loop is as it was | canvas-1i-sim "review 2 P2-1" (the 11 models × the 3 measured bands: the whole bed in the band, k as the formula, the fitting ones top-left, the others slid up / left, the TB-303 and a saved camera unchanged; 33 cases: 27 slid, 6 fit). Headless defcam at 1366 × 1024, 1440 × 900, 1024 × 1366: every model 100 % of its bed in the viewport and in the band (was 0–100 %) |
+| P2-2 the Solina's extras box covers 14 mm of the left walnut cheek | `extras.at [8, 55, 205, 42]` over the cheek decor x 0–22 | `at: [22, 55, 191, 42]` (the box starts at the cheek's inner edge; the caption still fits, `over` false); the panel's note updated | cv-panel "review 2 P2-2" (the extras at or right of the cheek's edge, valid, no `over`, size 1984 × 448 as pinned); `panel-check solina` clean |
+| P2-3 the bench's warm-up hid the first pan (a cold 130–150 ms frame once on the Mac, not reproducible in 13 fresh-profile runs) | the first scene's pan / pinch ran unmeasured | `firstBurst` (ui-bench-1i.mjs): the page's first pan and pinch are measured as their own phases (frames, median / p95 / max / > 33 ms, the worst three, the GL draws) into `R.firstPan` — before anything is warm, never a gate (`gates()` ignores it); the table shows "first, unwarmed · pan / zoom" rows. The iPad session reads whether WebKit hitches on first use | tests/ui-bench-1i.test.mjs (firstBurst: a pan then a pinch, each measured; gates: a 500 ms first pan fails nothing). Headless 1366 × 1024: first pan / pinch 16.7 / 16.8 ms max, 0 over 33 |
+
+Existing sims that encoded the old width-only fit: canvas-sim / canvas-1e-sim / cv-fixes-sim script a band 160–300 px taller (860 / 860 /
+1000: a 1i Minimoog is 736 px, a Prophet-5 864) so their k = 1 assertions stay as they were; cv-fixes-sim's portrait-band case, where the
+instrument cannot fit at READ_K, now asserts the slide (top-left anchor when it fits; else slid left only, the whole bed in the band).
 
 ## 12. Review log (revision 2, 2026-10-20: the skeptic review against e9cd1b9)
 

@@ -4,11 +4,13 @@
 // scratchpad/canvas/panels/research/prophet5.json (origin: the rear-left corner of the walnut case; the black face is
 // 927 × 179 mm inside an 11.5 mm top rail and 12.5 mm cheeks; ±2 mm in x, ±5 % in y). White rounded section outlines with
 // the title breaking the top line; one knob size with a printed 0–10 dial; latching switches with an LED in the cap.
+// (1i, IMPL-1i §1.2) Below the wood strip: the 61-key bed (C2–C7, MIDI 36–96) at its real place and the PITCH / MOD wheel
+// block left of it, full depth, live (perf:bend, perf:mod); the felt, the keybed and the front lip are decor.
 
 export default {
   v: 1,
   id: 'prophet5',
-  hw: 'Prophet-5 Rev 3 (Rev 3.3 panel artwork, 1982) in its walnut frame + the strip below the panel (extras, model name)',
+  hw: 'Prophet-5 Rev 3 (Rev 3.3 panel artwork, 1982) in its walnut frame + the strip below the panel (extras, model name) + its 61-key bed and wheel block',
   case: 'wood',
   scheme: {
     panel: '#121212',
@@ -19,11 +21,17 @@ export default {
     font: 'sans',
     knob: { skirt: '#141414', cap: '#202020', ptr: '#f0f0f0', ptrStyle: 'line', knurl: false, capR: 0.8 },
     button: { cap: '#1c1c1c', led: '#ff2a1a', ledOff: '#3a100c', text: '#f0f0f0', grey: '#9a9a9a', orange: '#e8612c' },
+    keys: { white: '#f2f0ea', whiteEdge: '#bdb9ae', black: '#131313', blackTop: '#2b2b2b', gap: '#060606' },
+    wheel: { slot: '#050505', surface: '#1b1b1b', ridge: '#303030', mark: '#e6e6e2' },
   },
   areas: [
     { id: 'main', src: [12.5, 11.5, 927, 179], at: [12.5, 11.5] },
     { id: 'frame', src: [0, 0, 952, 191], at: [0, 0], fill: 'none' },
     { id: 'badge', src: [812, 199, 108, 22], at: [812, 199], fill: '#101010', r: 1.2, frame: 'line' },
+    // (1i) the wheel block and the keybed, at their real place below the wood strip (offset 0): the cheeks either side are
+    // the walnut case; the bed is 846 mm (36 × 23.5), the research's 845 ± 2 mm
+    { id: 'wheels', src: [12.5, 250, 82, 150], at: [12.5, 250], fill: '#111111' },
+    { id: 'keys', src: [94.5, 250, 846, 156], at: [94.5, 250], fill: '#0a0a0a' },
   ],
   sections: [
     { id: 'polymod', label: 'POLY-MOD', x: 20.6, y: 27.5, w: 169.8, h: 47.1, frame: 'outline', title: 'break', titleSize: 2.8 },
@@ -39,6 +47,8 @@ export default {
     { id: 'glide', label: 'GLIDE · UNISON', x: 204.5, y: 130.2, w: 110, h: 47.5, frame: 'none', title: 'none' },
     { id: 'programmer', label: 'PROGRAMMER', x: 355.2, y: 129.3, w: 386.6, h: 47.1, frame: 'outline', title: 'break', titleSize: 2.8 },
     { id: 'master', label: 'RELEASE · VOLUME · TUNE', x: 752.5, y: 130.2, w: 178, h: 47.5, frame: 'none', title: 'none' },
+    { id: 'wheels', label: 'PITCH · MOD', a: 'wheels', x: 12.5, y: 250, w: 82, h: 150, frame: 'none', title: 'none' },
+    { id: 'keys', label: 'KEYBOARD', a: 'keys', x: 94.5, y: 250, w: 846, h: 156, frame: 'none', title: 'none' },
   ],
   controls: [
     // POLY-MOD: SOURCE AMOUNT (FILT ENV, OSC B) → DESTINATION (FREQ A, PW A, FILTER); names beside the dial ends, group words under
@@ -115,6 +125,11 @@ export default {
     { kind: 'button', x: 774.8, y: 150.8, w: 10.5, h: 16, led: 'cap', inert: true, label: 'RELEASE', lab: 'none', color: '#1c1c1c', lit: true },
     { id: 'vol', kind: 'knob', x: 843, y: 152, d: 16, sweep: 300, label: 'VOLUME', lab: 'none', skin: { skirt: '#a4a4a1', cap: '#d2d2ce', ptr: '#1a1a1a' } },
     { kind: 'button', x: 908.7, y: 150.8, w: 10.5, h: 16, led: 'cap', inert: true, label: 'TUNE', lab: 'none', color: '#9a9a9a' },
+    // (1i) the wheels (PITCH with its centre detent, MOD) side by side in their block, and the 61-key bed: felt at the back
+    // (y 250–254), keys 142 mm, the 10 mm front lip (the 8 mm front band of the hit box)
+    { id: 'perf:bend', kind: 'wheel', a: 'wheels', x: 36.5, y: 320, w: 22, h: 64, orient: 'v', detent: true, label: 'PITCH', labSize: 2.6 },
+    { id: 'perf:mod', kind: 'wheel', a: 'wheels', x: 70.5, y: 320, w: 22, h: 64, orient: 'v', label: 'MOD', labSize: 2.6 },
+    { id: 'perf:keys', kind: 'keys', a: 'keys', x: 517.5, y: 325, n: 61, lo: 36, pitch: 23.5, len: 142 },
   ],
   decor: [
     { t: 'line', x1: 197.5, y1: 26.6, x2: 197.5, y2: 177.7, sw: 0.6 },
@@ -221,6 +236,11 @@ export default {
     { t: 'text', x: 843, y: 174.6, s: 'VOLUME', size: 2.4, weight: 600, anchor: 'middle', ls: 0.15 },
     { t: 'text', x: 908.7, y: 173.4, s: 'TUNE', size: 2.4, weight: 600, anchor: 'middle', ls: 0.15 },
     { t: 'text', a: 'badge', x: 866, y: 212.6, s: 'Prophet-5', size: 6.4, weight: 600, anchor: 'middle', ls: 0.6, fill: '#e6e6e2' },
+    // (1i) the bed: the felt strip where the keys run under the wood strip, the walnut front lip; the wheel block's slots
+    // are the wheels' own art, its front 6 mm the case
+    { t: 'rect', a: 'keys', x: 94.5, y: 250, w: 846, h: 4, fill: '#4a1717' },
+    { t: 'rect', a: 'keys', x: 94.5, y: 396, w: 846, h: 10, fill: 'wood' },
+    { t: 'line', a: 'keys', x1: 94.5, y1: 396.2, x2: 940.5, y2: 396.2, stroke: '#2a1a10', sw: 0.4 },
   ],
   extras: { ids: ['li', 'ud', 'rev'], at: [20, 191, 200, 40] },
   notes: [
@@ -229,5 +249,8 @@ export default {
     "Dials are printed as on the artwork: 0–10 numbers on a ~31 mm ring around a 16 mm knob (decor scale d 28), 0 at 7 o'clock and 10 at 5 o'clock (sweep 300); names under the dial at the box's bottom line.",
     'Inert: WHEEL-MOD SOURCE MIX (parked at LFO), MASTER TUNE, A-440, CASSETTE SAVE / LOAD, the PROGRAMMER switches, RELEASE (parked on, lit) and TUNE. The programmer display is live (factory preset number).',
     "Rows from the manual's to-scale Rev 3.3 artwork: x ±2 mm, y ±5 %.",
+    '(1i) The bed: 61 keys C2–C7 (MIDI 36–96), white pitch 23.5 mm (36 × 23.5 = 846: the research keyboard area x 95–940 is 845 ± 2 mm, so the bed runs 94.5–940.5 and the wheel block is 82 mm, 12.5–94.5), white length 142 mm = the research bed depth 156 mm (y 250–406, incl. the lip) − 4 mm felt at the back − a 10 mm front lip (the contract default: no photo here reads the lip; it carries the 8 mm front band). Not touch-sensitive on the original (Rev 3).',
+    '(1i) The wheels: PITCH (perf:bend, centre detent drawn; springs to centre on glass, the original only detents; ±2 st here, ± a fifth on the original) and MOD (perf:mod, stays) side by side in the 82 × 150 mm block left of the keys (research x 12.5–95, y 250–400). Windows 22 × 64 mm (the contract default: the photos do not resolve the slots), centres 34 mm apart at y 320 (mid-block); PITCH left, MOD right as on the instrument (manual §1-4).',
+    '(1i) The extras (li ud rev) stay on the wood strip above the bed (y 191–231: no overlap with the keys).',
   ],
 };

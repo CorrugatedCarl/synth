@@ -10,8 +10,10 @@ import { bootMain } from './main-sim.mjs';
 import { fakeStorage } from './fakes.mjs';
 import * as cvWorld from '../cv-world.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
+import * as cvPanel from '../cv-panel.js?v=9';
+import { MODELS } from '../models.js?v=9';
 
-const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1400, bottom: 700 };
+const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1400, bottom: 1000 }; // (the bottom: tall enough for a 1i instrument with keys, 864 px, at k 1: its height fit is canvas-1i-sim's)
 function scriptedWorld(root) {
   const L = {};
   const W = {
@@ -106,7 +108,14 @@ test('default camera: k = 1 when the instrument fits the band; a portrait band (
       api.addTrack(); sim.raf();
       const m = V().modules.get('i1'), k = Math.max(cvWorld.READ_K, Math.min(1, (bw - 48) / m.w)); // (the module's actual width: fixed in its Hardware layout)
       assert.ok(Math.abs(W.cam.k - k) < 1e-9, `band ${bw}: k ${W.cam.k} ≠ ${k} (instrument ${m.w} px)`);
-      assert.deepEqual([W.cam.tx, W.cam.ty], [BAND.left - VP.left + 24 - Math.round(m.x * k), BAND.top - VP.top + 24 - Math.round(m.y * k)]);
+      const home = [BAND.left - VP.left + 24 - Math.round(m.x * k), BAND.top - VP.top + 24 - Math.round(m.y * k)];
+      if (m.w * k <= bw - 48 + 1e-6) assert.deepEqual([W.cam.tx, W.cam.ty], home, `band ${bw}: the instrument fits: the top-left anchor`);
+      else { // (1i, review 2 P2-1: below READ_K the instrument cannot fit: the camera slides left the least that shows the whole keyboard bed — or its left edge, a bed wider than the band)
+        const mdl = MODELS.find(x => x.id === I(T()).model), bx = cvPanel.geometry(cvPanel.usable(mdl.id, mdl), mdl).controls.find(o => o.bed).bed.box;
+        const L = VP.left + (m.x + bx.x) * k + W.cam.tx, R = L + bx.w * k;
+        assert.deepEqual([W.cam.ty, W.cam.tx <= home[0]], [home[1], true], `band ${bw}: slid left only`);
+        assert.ok(L >= BAND.left + 24 - 1 && (R <= BAND.right - 24 + 1 || Math.abs(L - (BAND.left + 24)) <= 1), `band ${bw}: the bed [${Math.round(L)}, ${Math.round(R)}] in the band, else its left edge at the margin`);
+      }
       if (k > cvWorld.READ_K) assert.ok(VP.left + (m.x + m.w) * k + W.cam.tx <= BAND.right - 24 + 0.5, 'the whole instrument (its bar\'s right end) inside the band');
     }
   } finally { BAND.right = r0; }
