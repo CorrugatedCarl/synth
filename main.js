@@ -6223,19 +6223,20 @@ function modAdd(kind, at) {
 const modTileDrag = { // a Modulators tile dragged out: its true-size outline under the pointer over the canvas
   move(id, i) {
     if (!world) return;
-    if (i.over === 'canvas') shell.drop = world.ghost({ x: i.x, y: i.y, w: cvModule.modW(id), h: modHt(id), label: '+ ' + (CMOD.MOD_LABEL[id] || id) }); // ((3) its kind's width; its measured height, review 2 P1-4)
+    if (i.over === 'canvas') shell.drop = world.ghost({ x: i.x, y: i.y, w: cvModule.modW(id), h: modTileDrag.h || modHt(id), label: '+ ' + (CMOD.MOD_LABEL[id] || id) }); // ((3) its kind's width; its measured height, read once per drag, review 2 P1-4)
     else { world.ghost(null); shell.drop = null; }
     world.dragPointer(!i.left ? null : { x: i.x, y: i.y, pointerType: i.pointerType });
   },
-  begin(id, i) { if (world) world.setDragging(true); modTileDrag.move(id, i); },
+  begin(id, i) { modTileDrag.h = modHt(id); if (world) world.setDragging(true); modTileDrag.move(id, i); },
   drop(id, i) {
-    const r = shell.drop, h = modHt(id);
+    const r = shell.drop, h = modTileDrag.h || modHt(id);
+    modTileDrag.h = 0;
     srcDragEnd();
     if (i.over !== 'canvas') return false;
     modAdd(id, r || (i.at ? { x: i.at.x - cvModule.modW(id) / 2, y: i.at.y - h / 2 } : null));
     return true;
   },
-  cancel() { srcDragEnd(); },
+  cancel() { modTileDrag.h = 0; srcDragEnd(); },
 };
 // ⋯ → Delete: a modulator and its cables, one step (the wheel: from every track, asked first when it has cables)
 function modDelete(key, quiet) {
