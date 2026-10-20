@@ -684,6 +684,20 @@ A/A control reads 1–3 % low on its second slot, once 10 % on mc0, so only medi
 noise. Tried and dropped: the `mread` call in `Track.modPre` after `MC.span` instead of inside `span` (JSC mt +3 … +4.7 % in all three
 four-slot processes, the extra branch there costs more than the one in `span`). Harness (scratchpad `ab/`, `jsc/`; not in the repo).
 
+
+### 9.x Amendments from IMPL-1i §8.3 (the lead, 2026-10-20)
+
+1. **The five-panel reference after 1i**: once 1i is on `canvas` the five panels carry keyboards (≈ 55 % more base texture, 116 → 180 MB).
+   `ui-m3b`'s validity scene is **`hw5k`**, judged against its own envelope (recorded at the 1i iPad session as `"ui-1i"`, or within
+   `ui-m3b` itself: `hw5k` first and last, drift ≤ 1.0 ms) — never against 1h's `hw5` envelope. S0's phase-0 run is unaffected (1i is not
+   on `canvas` then: 1i deploys only after the user's S0 session).
+2. **Decision table**: if `hwm-real` fails P+ while `hw5k` alone fails P+ in the same session, the cost is the keyboard faces: 1i's B1
+   (banded bases) or option C (a keys shader), re-measured; **D-R5 does not flip for it**. D-R5 flips only when `p1x-real` fails, or
+   `hwm-real` fails while `hw5k` passes.
+3. **Schedule as it ran**: lane A merged before 1i started (44d1623), so 1i's host lane edits `main.js` / `classic-panel.js` without an
+   exception; lanes B and C started from e9cd1b9 before S0 (their work does not depend on S0's numbers; S0 decides D-R5 / H6 / H7 only);
+   1i's small `cv-world.js` change (G2) is merged after lane C.
+
 ## 10. Review log (revision 2, 2026-10-19: the contract review, 25 points)
 
 All 25 points were checked against the code (and the review's "checked and confirmed" items, Chaos compile and the ENV slot round
