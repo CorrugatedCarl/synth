@@ -2121,8 +2121,8 @@ function sxMonitor(t, on, dev = curOf(t)) { // (R6: dev default the current inst
   if (!on) { if (off) { sxMons.delete(key); off(); } return; }
   if (off) { monitors.sync(); return; }
   sxMons.set(key, monitors.sub(id, dev, { role: 'both', // (its snapshot, and its FX page's meters; stage 1e: that device's panel)
-    live: () => { const r = sxRecOf(id, dev); return !!r && r.trackId === id && (r.mode === 'parts' && r.ui && typeof r.ui.anyShown === 'function' ? r.ui.anyShown() : cvLive(dev)); }, // ((3, H4) parts: while any of its views is shown)
-    deliver: d => { const r = sxRecOf(id, dev); if (r && r.ui && r.trackId === id) { r.ui.setSnapshot(d); zoneWarm(id, dev, d.s); } }, // (R2: every Serum's zones)
+    live: () => { const r = sxRecOf(id, dev); return !!r && r.trackId === id && ((r.mode === 'parts' && r.ui && typeof r.ui.anyShown === 'function' ? r.ui.anyShown() : cvLive(dev)) || sxInjLive(id, dev)); }, // ((3, H4) parts: while any of its views is shown; review 2: or a canvas ENV injected into it)
+    deliver: d => { const r = sxRecOf(id, dev); if (r && r.ui && r.trackId === id) { r.ui.setSnapshot(d); zoneWarm(id, dev, d.s); } sxInjSnap(id, dev, d && d.s); }, // (R2: every Serum's zones; review 2: a canvas ENV injected into it)
   }));
 }
 // "Switch to Single Sample" (host.smp.saveFrom → zoneOf): the zone sample the panel's recent voice plays, from the
@@ -5968,6 +5968,36 @@ function mcSnap(tid, mc, mcx) {
     try { B.update(v); } catch (err) { console.warn(err); }
   }
 }
+// (review 2 P2) a canvas ENV cabled to a Serum knob is injected into a free ENV slot of that Serum (cv-graph injectMods: no
+// ModCore slot, mcSnap never feeds it): [{ key, dev, k }] per payload; the Serum's own snapshot of slot k drives its body
+const injEnvMemo = new WeakMap(); // the track's payload → the list
+function sxInjEnv(t) {
+  const pay = t ? modsPay(t) : null; // (off when every row is native or injected: nothing for ModCore — the list may still hold one)
+  if (!pay) return [];
+  let L = injEnvMemo.get(pay);
+  if (L) return L;
+  L = [];
+  for (const dev of serumIds(t)) {
+    const rows = CG.modRowsFor(t, dev);
+    if (!rows.length) continue;
+    for (const x of CG.injectMods(t.dev[dev], rows, pay.off ? [] : pay.ext || [], t).inj) {
+      const key = String(x.src || '').split('.')[0];
+      if (x.kind === 'env' && t.dev[key] && !L.some(y => y.key === key && y.dev === dev)) L.push({ key, dev, k: x.k });
+    }
+  }
+  injEnvMemo.set(pay, L);
+  return L;
+}
+const sxInjLive = (tid, dev) => project.selTrack === tid && modBodies.size > 0 && sxInjEnv(project.tracks.find(x => x.id === tid)).some(q => q.dev === dev && modBodies.has(q.key) && (!cvView || cvView.live(q.key)));
+function sxInjSnap(tid, dev, s) {
+  if (project.selTrack !== tid || !modBodies.size || !s || !s.envStage) return;
+  const t = project.tracks.find(x => x.id === tid);
+  for (const q of sxInjEnv(t)) {
+    const B = q.dev === dev ? modBodies.get(q.key) : null;
+    if (!B || B.kind !== 'env' || (cvView && !cvView.live(q.key))) continue;
+    try { B.update({ v: s.env ? s.env[q.k] : 0, stage: s.envStage[q.k], t: s.envT ? s.envT[q.k] : 0 }); } catch (err) { console.warn(err); }
+  }
+}
 // a value was sent (ctl: the wheel, aftertouch, bend; inputNote: a velocity, (2b) a note): the modules of that kind redraw
 // (a dragged wheel ignores it)
 function cvModLive(kind) { if (modBodies.size) for (const B of modBodies.values()) if (B.kind === kind) B.update(modValue(kind)); }
@@ -6769,7 +6799,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     isParts: dev => sxParts(trk(), dev), connect: sxConnect, can: sxCan, act: sxCableAct, pick: sxPartPick, drop: sxPartDrop, drag: sxPartDrag, replace: sxReplaceWithSerum,
     newView: sxNewView, VIEW_DEFAULT: SX_VIEW_DEFAULT, VIEW_PREF: SX_VIEW, own: sxOwnSrc, hidden: modHidden, settle: sxSettle, spot: sxSpot, decor: sxPartsDecor,
     module: () => SXMOD, widths: () => SXW, setModule: m => { SXMOD = m || null; SXW = m ? m.PART_W || null : null; }, live: modLive, cancel: modCancel, rowsOps: modRowsOps,
-    views: modViews, modSpot, modClear, mcSnap, presetRows: dev => modPresetRows(trk(), dev),
+    views: modViews, modSpot, modClear, mcSnap, injEnv: sxInjEnv, presetRows: dev => modPresetRows(trk(), dev),
   });
 }
 

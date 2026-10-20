@@ -526,6 +526,34 @@ test('review 2 P1-7: a row into a knob no mounted view shows ends at VOICE\'s to
   assert.deepEqual([!!q.hid, q.x, q.y], [true, v.x, v.y]);
 });
 
+test('review 2 P2: a canvas ENV cabled to a Serum knob (injected into that Serum\'s ENV slot: no ModCore slot) moves its playhead from the Serum\'s own snapshot of that slot', async () => {
+  api.selectTrack(ID.a); cv.renderViews(); await settle();
+  const t = T(), e = M.add('env'); await settle(); await settle();
+  M.connect(e + '.out', 'i1:a.level'); await settle(); await settle();
+  const pay = api.buildMods(t);
+  assert.equal(!!(pay.slots && pay.slots[e]), false, 'no ModCore slot: injected into the Serum');
+  const inj = PT.injEnv ? PT.injEnv(t) : [];
+  const q = inj.find(x => x.key === e);
+  assert.deepEqual([!!q, q && q.dev], [true, 'i1'], 'injected into i1\'s ENV slot');
+  const N = 4, s = { env: new Float32Array(N), envStage: new Uint8Array(N), envT: new Float32Array(N) };
+  s.env[q.k] = 0.6; s.envStage[q.k] = 3; s.envT[q.k] = 0.42;
+  cv.monitors.deliver(t.id, { t: 'smon', i: 'i1', s });
+  const H = M.bodies.get(e).host();
+  assert.deepEqual([H.snap && H.snap.envStage[1], H.snap && +H.snap.envT[1].toFixed(2), +H.liveV.toFixed(2)], [3, 0.42, 0.6], 'the canvas ENV\'s slot (ENV 2\'s layout) moves');
+  // the track's only row that ENV's: nothing for ModCore (the payload off) — still listed, still fed
+  const keep = t.mods;
+  t.mods = keep.filter(r => r.src === e + '.out');
+  try {
+    assert.equal(!!api.buildMods(t).off, true, 'off'); // (a rebuild: a new payload object, the list memo misses)
+    const q3 = PT.injEnv(t).find(x => x.key === e);
+    assert.equal(!!q3, true, 'listed');
+    s.envStage[q3.k] = 2; s.envT[q3.k] = 0.1;
+    cv.monitors.deliver(t.id, { t: 'smon', i: 'i1', s });
+    assert.equal(H.snap.envStage[1], 2);
+  } finally { t.mods = keep; api.buildMods(t); }
+  M.del(e, true); await settle();
+});
+
 test('review 2 P1-4: a modulator dropped near an instrument is cleared by its kind\'s measured height (never the guess: an OB-Xa face would leave GL) and of every module — a drop onto the instrument never lands on another modulator; a drop settles as a tap does', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
   const t = T(), hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
