@@ -5400,20 +5400,54 @@ function sxLayBundle(t, dev) {
   lay[dev] = e;
   return lay;
 }
-// a part's place by Tidy's rule beside its Serum as it stands (VOICE's place the anchor), clear of every module there: below
-// what it covers in its column (own ENV / LFO / MACROS: above, the stack grows upwards)
+// a part's place by Tidy's rule beside its Serum as it stands (lay: the copy being written, the modules Tidy still placed
+// pinned in it): its column — note tools · sources · filters (left to right, then VOICE), or the own ENV / LFO / MACROS stack
+// above VOICE — under (the stack: above) the column's last member; a column of its own goes between its neighbours on
+// VOICE's row, what stands right of it (VOICE, its stack, its own FX, panels, OUT; never a modulator) moving right to make
+// room; then clear of every module there (below what it covers; the stack: above)
+const SX_COL = { arp: 0, clip: 0, osc: 1, sub: 1, noise: 1, filter: 2 };
 function sxSpot(t, lay, dev, part) {
-  const V = cvView && cvView.trackId === t.id ? cvView : null, shown = new Set(sxPartList(t, dev).concat(part));
-  const devs = [{ key: dev, kind: 'inst', model: 'serum' }].concat([...shown].map(p => ({ key: dev + '/' + p, kind: 'part', dev, part: p, model: 'serum' })));
-  const sz = {};
-  for (const d of devs) { const mm = V ? V.modules.get(d.key) : null; sz[d.key] = mm ? { w: mm.w, h: mm.rect().h } : { w: sxPartW(d.kind === 'inst' ? 'voice' : SE.kindOf(d.part)) }; }
-  const td = cvModule.tidy(t, sz, devs), k = dev + '/' + part, v = lay[dev] || { x: td[dev].x, y: td[dev].y };
-  const r = { x: cvDot(td[k].x + v.x - td[dev].x), y: cvDot(td[k].y + v.y - td[dev].y), w: sz[k].w, h: sz[k].h || sxPartH(SE.kindOf(part)) };
-  // (the modules there — a bundled Serum's own rect is the whole panel's, not VOICE's: left out — and its parts laid out
-  // but not yet modules)
-  const R = V ? Object.entries(V.rects()).filter(([q]) => q !== k && (q !== dev || sxParts(t, dev))).map(([, q]) => q) : [];
-  for (const q of Object.keys(lay)) { const z = CMOD.partOf(q); if (z && z.dev === dev && q !== k && !(V && V.modules.has(q)) && lay[q] && Number.isFinite(lay[q].x)) R.push({ x: lay[q].x, y: lay[q].y, w: sxPartW(SE.kindOf(z.part)), h: sxPartH(SE.kindOf(z.part)) }); }
-  const up = sxAbove(part), D = cvWorld.DOT, G = cvModule.VGAP;
+  const V = cvView && cvView.trackId === t.id ? cvView : null, k = dev + '/' + part, D = cvWorld.DOT, G = cvModule.VGAP, GAP = cvModule.GAP;
+  const kind = SE.kindOf(part), w = V && V.modules.has(k) ? V.modules.get(k).w : sxPartW(kind), h0 = sxPartH(kind), up = sxAbove(part);
+  const okE = e => !!e && Number.isFinite(e.x) && Number.isFinite(e.y);
+  const rectOf = q => { // a module's rect at its place in `lay` (a part laid out but not yet a module: its guessed size)
+    const m = V ? V.modules.get(q) : null, e = lay[q], z = CMOD.partOf(q);
+    if (!okE(e) && !m) return null;
+    const r = m ? m.rect() : { x: e.x, y: e.y, w: z ? sxPartW(SE.kindOf(z.part)) : cvModule.W_FX, h: z ? sxPartH(SE.kindOf(z.part)) : 420 };
+    return { x: okE(e) ? e.x : r.x, y: okE(e) ? e.y : r.y, w: r.w, h: r.h > cvModule.BAR_H ? r.h : z ? sxPartH(SE.kindOf(z.part)) : r.h };
+  };
+  const v = rectOf(dev) || { x: 0, y: 0, w: sxPartW('voice'), h: sxPartH('voice') };
+  const mine = Object.keys(lay).filter(q => { const z = CMOD.partOf(q); return !!z && z.dev === dev && q !== k && okE(lay[q]); })
+    .map(q => ({ q, part: CMOD.partOf(q).part, r: rectOf(q) })).filter(x => x.r);
+  const colOf = p => (sxAbove(p) ? -1 : SX_COL[SE.kindOf(p)] != null ? SX_COL[SE.kindOf(p)] : 1);
+  const r = { x: v.x, y: v.y, w, h: h0 };
+  if (up) { // the stack above VOICE: on top of its highest member
+    const st = mine.filter(x => sxAbove(x.part));
+    r.x = st.length ? Math.min(...st.map(x => x.r.x)) : v.x;
+    r.y = Math.floor(((st.length ? Math.min(...st.map(x => x.r.y)) : v.y) - G - h0) / D) * D;
+  } else {
+    const c = colOf(part), col = mine.filter(x => colOf(x.part) === c);
+    if (col.length) { r.x = Math.min(...col.map(x => x.r.x)); r.y = Math.ceil(Math.max(...col.map(x => x.r.y + x.r.h + G)) / D) * D; }
+    else { // a column of its own, between its neighbours, on VOICE's row
+      const left = mine.filter(x => colOf(x.part) >= 0 && colOf(x.part) < c), right = mine.filter(x => colOf(x.part) > c);
+      const nextX = right.length ? Math.min(...right.map(x => x.r.x)) : v.x, prevR = left.length ? Math.max(...left.map(x => x.r.x + x.r.w)) : null;
+      r.x = Math.floor((nextX - GAP - w) / D) * D;
+      r.y = v.y;
+      if (prevR !== null && r.x < prevR + GAP) { // no room: what stands at or right of nextX moves right by the difference
+        const x1 = Math.ceil((prevR + GAP) / D) * D, d = x1 - r.x;
+        r.x = x1;
+        for (const q of new Set(Object.keys(lay).concat(V ? [...V.modules.keys()] : []))) {
+          const m = V ? V.modules.get(q) : null;
+          if (q === k || (m && m.kind === 'mod') || cvModule.modKind(q)) continue;
+          const z = rectOf(q);
+          if (z && z.x >= nextX) lay[q] = Object.assign({}, lay[q] || {}, { x: z.x + d, y: z.y });
+        }
+      }
+    }
+  }
+  // clear of the modules there (a bundled Serum's own rect is the whole panel's: left out), its own laid parts included
+  const R = [];
+  for (const q of new Set(Object.keys(lay).concat(V ? [...V.modules.keys()] : []))) { if (q === k || (q === dev && !sxParts(t, dev))) continue; const z = rectOf(q); if (z) R.push(z); }
   for (let i = 0; i < 32; i++) {
     const o = R.find(q => sxHits(r, q));
     if (!o) break;
@@ -5431,7 +5465,7 @@ function sxPlaceNew(t) {
     for (const p of sxPartList(t, dev)) {
       const k = dev + '/' + p;
       if ((lay || t.lay)[k]) continue;
-      lay = lay || Object.assign({}, t.lay);
+      lay = lay || cvPinned(t);
       lay[k] = sxSpot(t, lay, dev, p);
       sxFresh.add(t.id + '\n' + k);
     }
@@ -6033,6 +6067,7 @@ function modAdd(kind, at) {
   if (multi) hist.u[hist.u.length - 1].label = 'Add ' + label; // ("Add LFO 2")
   lay[key] = at2;
   t.lay = lay;
+  if (tap) sxFresh.add(t.id + '\n' + key); // ((3) its height measured once its panel is up: clear of the column (sxSettle))
   cvAfter(t);
   if (tap) modShow(key);
   const step = hist.u[hist.u.length - 1], tid = t.id;
