@@ -3574,9 +3574,8 @@ function importMidiFile(bytes, fname) {
   const r = S.importMIDI(bytes);
   if (!r.tracks.length) { alert('That MIDI file has no notes.'); return; }
   hist.record(project);
-  const empty = project.tracks.every(t => !t.notes.length && !t.cc.length);
+  const empty = project.tracks.every(t => !t.notes.length && !t.cc.length), m = curModel(); // (the model before an empty project's tracks go: read after, there is no track)
   if (empty) { project.tracks = []; project.bpm = r.bpm; project.sig = r.sig; if (r.name) project.name = r.name; else project.name = fname.replace(/\.midi?$/i, ''); }
-  const m = curModel();
   for (const it of r.tracks) {
     const t = S.newTrack(project, { model: m.id, vals: loadVals(m), name: it.name || `${m.name} ${project.tracks.length + 1}` });
     seedPend.add(t.id);
