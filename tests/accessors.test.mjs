@@ -67,6 +67,7 @@ const sxT = PJ().tracks.find(t => P(t).model === 'serum'); // the boot's Serum t
 const lfoFx = fx => { const id = core.newInstance(fx, 'cho', { rack: 0 }); const I = fx.racks[0].mods.find(x => x.id === id); I.p.on = 1; return id; };
 const choPh = fx => { const I = fx.racks[0].mods.find(x => x.type === 'cho'); return I ? I.ph : undefined; };
 const fxOfK = (t, k) => t.dev[k].fx; // (a rack by its key: a Serum's own FX, a panel's)
+const VK = (t, dev = CMOD.primId(t)) => t.id + '/' + dev; // (R4: every session map's key — trackId/dev, the primary's too)
 
 test('R0 presets (classic, the module ⋯ menu): Save sound… stores the values under the model and names the preset; Delete saved sound removes it', () => {
   const t = fresh('juno60'), d = P(t), prim = CMOD.primId(t);
@@ -235,10 +236,10 @@ test('R0 the track list and the instrument menu name each track\'s instrument mo
   acc.trkListUI();
   const pop = sim.$('#trkPop'), txt = [];
   for (const b of pop.children) { const tx = b.children && b.children[2]; if (tx && tx.children && tx.children[1]) txt.push(tx.children[1].textContent); }
-  const want = PJ().tracks.map(t => MOD(P(t).model).name + ' · ' + (acc.voiceShown.get(t.id) || acc.trackVoice(P(t)).label));
+  const want = PJ().tracks.map(t => MOD(P(t).model).name + ' · ' + (acc.voiceShown.get(VK(t)) || acc.trackVoice(P(t)).label));
   assert.deepEqual(txt, want);
   const items = sh.instItems(sxT), it = items.find(x => x.value === 'serum');
-  assert.equal(it.label, 'Serum · ' + (acc.voiceShown.get(sxT.id) || acc.trackVoice(P(sxT)).label));
+  assert.equal(it.label, 'Serum · ' + (acc.voiceShown.get(VK(sxT)) || acc.trackVoice(P(sxT)).label));
 });
 
 test('R0 the multisample zone: zoneWarm reads the shown Serum\'s multisample records, zoneOf gives the recent voice\'s zone sample', async () => {
@@ -340,6 +341,44 @@ test('R5 a load normalises every device, the primary and its FX too: a classic\'
   assert.equal(a.dev.i1.vals.cf, cf.def + 1, 'its own value kept');
   assert.deepEqual([a.dev.fx1.fx.v, b.dev.i1.fx.v, typeof b.dev.i1.vals.s.global], [2, 2, 'object'], 'the v1 rack migrated; the Serum normalised with its own rack');
   assert.deepEqual(p.tracks.map(t => Object.keys(t).filter(k => CM.V1_KEYS.includes(k))), [[], []], 'no own v1 field on a track');
+});
+
+test('R4 the session maps are keyed trackId/dev, the primary\'s too: two Serums keep their own preset key, dirty mark and current preset; a rename follows the one that loaded it', () => {
+  const { t, id } = duo('serum', 'serum'), prim = CMOD.primId(t), H1 = api.sxHost(t, prim), H2 = api.sxHost(t, id);
+  acc.sxDirty.clear();
+  assert.equal(H2.presets.save({ name: 'Acc Two' }), 'u:Acc Two');
+  assert.deepEqual([acc.sxKeys.get(VK(t, id)), acc.sxKeys.has(VK(t)), acc.sxKeys.has(t.id)], ['u:Acc Two', false, false], 'the second Serum\'s key only');
+  assert.deepEqual([H2.presets.current(), H1.presets.current() === 'u:Acc Two'], ['u:Acc Two', false]);
+  H1.edit(s => { s.p['f.cutoff'] = 0.3; });
+  assert.deepEqual([acc.sxDirty.has(VK(t)), acc.sxDirty.has(VK(t, id)), acc.sxDirty.has(t.id)], [true, false, false], 'the edited Serum alone is dirty');
+  assert.equal(H2.presets.rename('u:Acc Two', 'Acc Deux'), 'u:Acc Deux');
+  assert.deepEqual([t.dev[id].preset, t.dev[prim].preset === 'Acc Deux'], ['Acc Deux', false]);
+  H1.presets.save({ name: 'Acc One' });
+  assert.deepEqual([acc.sxKeys.get(VK(t)), acc.sxKeys.get(VK(t, id))], ['u:Acc One', 'u:Acc Deux']);
+});
+
+test('R4 a classic\'s preset key and its hardware state (DX7 select-and-set, TB-303 step entry) are per instrument; the primary\'s key is trackId/dev', () => {
+  const { t, id } = duo('dx7', 'dx7'), prim = CMOD.primId(t), a = acc.instView(t, prim), b = acc.instView(t, id);
+  assert.deepEqual([a.id, b.id], [VK(t), VK(t, id)]);
+  acc.hwDx(a).state.op = 3;
+  assert.deepEqual([acc.hwDx(b).state.op, acc.hwDx(a).state.op, acc.dxHw.has(t.id)], [1, 3, false]);
+  const was = globalThis.prompt;
+  globalThis.prompt = () => 'Acc DX';
+  try { acc.presetSave(b); } finally { globalThis.prompt = was; }
+  assert.deepEqual([acc.presetKeys.has(VK(t, id)), acc.presetKeys.has(VK(t)), t.dev[id].preset, t.dev[prim].preset === 'Acc DX'], [true, false, 'Acc DX', false]);
+  assert.equal(acc.presetCur(b).name, 'Acc DX');
+  acc.presetDelete(b);
+});
+
+test('R4 the asset manager reads every Serum and panel (states()): a sample a second Serum plays is in use; a relink edits that Serum', async () => {
+  const { t, id } = duo('juno60', 'serum');
+  t.dev[id].vals.s.osc[0].type = 'sample'; t.dev[id].vals.s.osc[0].smp = 'smp:accuser1';
+  const S0 = api.tables.host.smp;
+  assert.deepEqual(S0.users('smp:accuser1'), [t.name], 'in use (named by its track)');
+  await api.tables.relink('smp:accuser1', 'smp:accuser2');
+  assert.equal(t.dev[id].vals.s.osc[0].smp, 'smp:accuser2', 'relinked in the second Serum');
+  assert.equal(acc.sxDirty.has(VK(t, id)), true, 'through its own edit (sxEdit on its view)');
+  t.dev[id].vals.s.osc[0].type = 'wt'; t.dev[id].vals.s.osc[0].smp = '';
 });
 
 test('R2 Resample to on a second Serum: rendered alone through its own patch (buildInstPatch), into its own oscillator', async () => {

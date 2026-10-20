@@ -250,13 +250,13 @@ const curDevs = new Map(); // track id → its current instrument
 // the cv.add / cv.setCur hooks and milestone 3's parts, unread here)
 const curOf = t => CMOD.primId(t);
 // (milestone 3, R1) every instrument has its view, the primary too (instView never hands out the track): dvOf(x) its device
-// (a bare track: its primary), isPrim(x) the track's primary; a view's id is its track's for the primary until R4 re-keys
-// every session map to 'trackId/dev'
+// (a bare track: its primary), isPrim(x) the track's primary. (R4) A view's id is 'trackId/dev' for every instrument, the
+// primary too: the key of every session map (presetKeys, sxKeys, sxDirty, voiceShown, voiceOpt, seqHw, dxHw; none saved)
 const trOf = x => (x && x.track) || x, dvOf = x => (x && x.track ? x.devId : x && x.dev ? CMOD.primId(x) : null);
 const isPrim = x => !x || !x.track || x.devId === CMOD.primId(x.track);
 const VIEW = {
   get d() { return (this.track.dev && this.track.dev[this.devId]) || {}; },
-  get id() { return this.devId === CMOD.primId(this.track) ? this.track.id : this.track.id + '/' + this.devId; },
+  get id() { return this.track.id + '/' + this.devId; },
   get name() { return this.track.name; }, get color() { return this.track.color; }, get notes() { return this.track.notes; },
   get prim() { return this.devId; },
   get model() { return this.d.model; },
@@ -278,7 +278,7 @@ function instView(t, dev) {
   return v;
 }
 const curView = (t = trk()) => instView(t, curOf(t));
-// a session map's key — the track id (its primary: R1–R3) or 'trackId/dev' — → that instrument's view | null
+// a session map's key 'trackId/dev' (R4; a bare track id: its primary) → that instrument's view | null
 const viewOfKey = k => { const i = typeof k === 'string' ? k.indexOf('/') : -1, t = project.tracks.find(x => x.id === (i < 0 ? k : k.slice(0, i))); return t ? instView(t, i < 0 ? null : k.slice(i + 1)) : null; };
 let model, vals;
 function bind() { // (R5: reads only — every device is normalised as it enters, normDevs; the state objects kept: panel, undo)
@@ -414,7 +414,7 @@ function buildInstPatch(tr, id, sr, offline = false) {
     patch.osCap = offline ? 0 : sxCap;
     if (!offline) capQ4(patch);
   }
-  if (!offline && id === CMOD.primId(tr)) voiceSeen(tr, id, patch);
+  if (!offline) voiceSeen(tr, id, patch); // (R4: every instrument's voice label)
   return patch;
 }
 const buildChain = (tr, id, sr, offline = false) => CG.chainPatch(fxOfDev(tr, id), liveOpts(tr, sr, offline)); // (2b: unchanged — a cabled chain takes its vector from ModCore at run time)
@@ -483,27 +483,29 @@ function modelVoice(m) {
   if (!voiceDef.has(m.id)) voiceDef.set(m.id, m.custom ? voiceInfo({ engine: 'serum', mode: 'poly', poly: 8 }) : trackVoice({ model: m.id, vals: defaults(m) }));
   return voiceDef.get(m.id);
 }
-// what the instrument menu entry of each track's model and the track tab show (track id → label, option); a patch that
-// changes a mode (an assign-mode knob, Serum's voicing, the CPU cap or its lifting) updates them (buildPatch)
+// what the instrument menu entry of each instrument's model and the track tab show ('trackId/dev' → label, option; the
+// row chip and the tab: the primary's, vkey(t)); a patch that changes a mode (an assign-mode knob, Serum's voicing, the CPU
+// cap or its lifting) updates them (buildPatch, buildInstPatch: R4 — every instrument's)
 const voiceShown = new Map(), voiceOpt = new Map();
-function voiceSeen(tr, dev, patch) { // (R2: instrument dev's patch; its label keyed by the track until R4)
-  const d = instOf(tr, dev), l = voiceInfo(patch, isSerum(d) ? d.vals.s : null).label;
-  if (!voiceShown.has(tr.id) || voiceShown.get(tr.id) === l) return;
-  voiceShown.set(tr.id, l);
-  const o = voiceOpt.get(tr.id), sp = o && o.lastChild, b = o && o.parentNode;
+const vkey = (t, dev = CMOD.primId(t)) => t.id + '/' + dev;
+function voiceSeen(tr, dev, patch) {
+  const d = instOf(tr, dev), k = vkey(tr, dev), l = voiceInfo(patch, isSerum(d) ? d.vals.s : null).label;
+  if (!voiceShown.has(k) || voiceShown.get(k) === l) return;
+  voiceShown.set(k, l);
+  const o = voiceOpt.get(k), sp = o && o.lastChild, b = o && o.parentNode;
   if (o && o.value === d.model) { // the row chip's voice span (its model name gives way to it, never the other way)
     if (sp && sp.className === 'hiv') sp.textContent = l; else o.textContent = modelById(d.model).name + ' · ' + l;
     if (b && b.className === 'hinst') b.title = instTitle(modelById(d.model).name, l);
   }
-  if (tr.id === project.selTrack) tabTrackUI();
+  if (tr.id === project.selTrack && dev === CMOD.primId(tr)) tabTrackUI();
 }
 // (stage 1e) a track of several instruments says so where one names its model / voice mode: "2 instruments"
 const instN = t => (t && t.dev ? CMOD.instIds(t).length : 1);
 const instsTxt = t => instN(t) + ' instruments';
 function tabTrackUI() {
   const t = trk();
-  if (!voiceShown.has(t.id)) voiceShown.set(t.id, trackVoice(instOf(t)).label);
-  $('#tabTrack').textContent = `Track: ${t.name} · ${instN(t) > 1 ? instsTxt(t) : voiceShown.get(t.id)}`;
+  if (!voiceShown.has(vkey(t))) voiceShown.set(vkey(t), trackVoice(instOf(t)).label);
+  $('#tabTrack').textContent = `Track: ${t.name} · ${instN(t) > 1 ? instsTxt(t) : voiceShown.get(vkey(t))}`;
   trkChipUI(); // (the top row's track chip shows the same: name, model · voice)
 }
 const patchQ = new Set();
@@ -1822,9 +1824,9 @@ function renderPanels(t = trk()) {
 const syncPresetSel = k => { if (cpanel) cpanel.syncPreset(k); else cvChipSync(); };
 // the TB-303's hardware step entry state (IMPL-panels §6.2): a step cursor and PITCH / TIME mode per track (session only, never
 // in the project)
-const seqHw = new Map(); // track id → { cur, mode }
+const seqHw = new Map(); // 'trackId/dev' (the 303's view id, R4) → { cur, mode }
 // the DX7's select-and-set workflow (IMPL-panels §6.3): {op, param (the button), eg, mode} per track, session only
-const dxHw = new Map(); // track id → { op, param, eg, mode }
+const dxHw = new Map(); // 'trackId/dev' (the DX7's view id, R4) → { op, param, eg, mode }
 function hwDx(iv) { // (iv: the DX7 panel's device view)
   let st = dxHw.get(iv.id);
   if (!st) dxHw.set(iv.id, st = { op: 1, param: 7, eg: 1, mode: 'edit' });
@@ -1923,7 +1925,7 @@ function applyPreset(iv, p) { // (iv: a device view, stage 1e)
 // Init: the Hardware panel has no plate; IMPL-panels §7.4), each on a track (default: the selected one). The current
 // entry: the one last loaded on that track (presetKeys), else the first with the track's preset name. Stage 1e: each on
 // an instrument (a device view: its id 'trackId/dev'; default the selected track's current instrument)
-const presetKeys = new Map(); // track id (a view's id) → the key of the entry last loaded
+const presetKeys = new Map(); // 'trackId/dev' (a view's id, R4) → the key of the entry last loaded
 function presetCur(iv = curView()) { const l = presetList(modelById(iv.model)), k = presetKeys.get(iv.id); return l.find(x => x.key === k && x.name === iv.preset) || l.find(x => x.name === iv.preset) || null; }
 function presetLoad(key, iv = curView()) { const p = presetList(modelById(iv.model)).find(x => x.key === key); if (p) applyPreset(iv, p); return !!p; }
 function presetStep(d, iv = curView()) { // ◀ ▶: from the blank / Custom entry, ▶ the first, ◀ the last
@@ -1987,9 +1989,12 @@ function kitPrefs(wk) { if (wk && wk.setPrefs) wk.setPrefs({ tooltips: prefs.too
 const tables = createAssetManager({
   ctxOf: () => ctx,
   post: portPoster(nodes),
-  tracks: () => project.tracks,
-  edit: (t, fn, o) => sxEdit(t, fn, o),
-  editFx: (t, fn, o) => fxEdit(t, fn, o),
+  // (R4) the sound states it reads and edits: every Serum instrument (its state, its own FX) and every FX panel of every
+  // track — another Serum's samples and IRs are in use too
+  states: () => project.tracks.flatMap(t => Object.keys(t.dev).filter(k => isSerumDev(t, k) || (t.dev[k] && t.dev[k].kind === 'panel'))
+    .map(k => ({ track: t, dev: k, s: isSerumDev(t, k) ? t.dev[k].vals.s : null, fx: t.dev[k].fx }))),
+  edit: (x, fn, o) => sxEdit(instView(x.track, x.dev), fn, o),
+  editFx: (x, fn, o) => fxEditDev(x.track, x.dev, fn, o),
   defaultState: () => core.defaultSerum(),
   refresh: () => sxRefresh(),
   notify: txt => notice(txt, 5000),
@@ -2151,7 +2156,7 @@ function fxPrune(t, dev) {
   if (n > 0) { notice(`${n} modulation cable${n > 1 ? 's' : ''} removed with the effect`, 5000); modHalos(t); cvRender(); }
   return n;
 }
-const sxDirty = new Set(); // Serum tracks edited since their preset was loaded / saved (program change asks, §9.10)
+const sxDirty = new Set(); // Serums ('trackId/dev', R4) edited since their preset was loaded / saved (program change asks, §9.10)
 function sxEdit(x, fn, o) { // (x: a device view, stage 1e; a bare track — the asset manager's —: its primary)
   const iv = x && instView(trOf(x), dvOf(x)), s = iv && iv.vals && iv.vals.s;
   if (!s) return;
@@ -2247,7 +2252,7 @@ async function restoreEmbedded(o) {
    name, presets, wts, smps}, also as pack.json inside a ZIP, §9.8); user assets are always embedded (deviation 14). */
 const SXM = MODELS.find(m => m.id === 'serum');
 const sxUser = () => { const l = store.get('synth.user.serum', []); return Array.isArray(l) ? l.filter(p => p && typeof p.name === 'string' && p.v && p.v.s) : []; };
-const sxKeys = new Map(); // track id → key of the preset it was loaded from
+const sxKeys = new Map(); // 'trackId/dev' (R4) → key of the preset that Serum was loaded from
 function sxPresetList() {
   const row = (p, user) => {
     const s = p.v.s || {}, m = p.meta && typeof p.meta === 'object' ? p.meta : {};
@@ -2425,7 +2430,8 @@ const midi = createMidi({
   bendUI: v => { if (setBendUI) setBendUI(v, false); },
   track: id => project.tracks.find(x => x.id === id),
   fxSet: (t, id, n, dev) => fxSet(t, id, n, dev),
-  changed: (t, patch, refresh) => { sxDirty.add(t.id); if (patch) queuePatch(t); persist(); if (refresh) sxRefresh(); },
+  // (R4: the Serum learned / forgotten — dev —, else every Serum of the track a mapped controller may have written)
+  changed: (t, patch, refresh, dev) => { for (const k of dev ? [dev] : serumIds(t)) sxDirty.add(vkey(t, k)); if (patch) queuePatch(t); persist(); if (refresh) sxRefresh(); },
   notice: (txt, ms) => notice(txt, ms),
   button: () => $('#midi'),
   modCC: (ch, cc, v) => modCC(ch, cc, v), // (2b: the canvas CC modules, CC learn)
@@ -2440,7 +2446,7 @@ function wheelToWt(v) {
   const t = project.tracks.find(x => x.id === wtEdit.id), iv = t && (!t.dev || CMOD.instOf(t, wtEdit.dev)) ? instView(t, wtEdit.dev) : null;
   if (!iv || !isSerum(iv)) return;
   iv.vals.s.p[['a', 'b', 'c'][wtEdit.osc] + '.wt'] = clamp(+v || 0, 0, 1);
-  sxDirty.add(t.id);
+  sxDirty.add(iv.id);
   queuePatch(t); persist(); sxRefresh();
 }
 
@@ -3097,7 +3103,7 @@ function renderHeads() {
     const bot = h('div', 'hrow');
     // the instrument chip (its drawing, model · voice mode, R6: as its patch plays); the preset select lives on the
     // instrument module's bar now (cv-module), the other models in the chip's menu (instItems)
-    voiceShown.set(t.id, trackVoice(instOf(t)).label);
+    voiceShown.set(vkey(t), trackVoice(instOf(t)).label);
     const ichip = instChip(t);
     const ch = h('select', 'hch'); ch.title = 'MIDI input channel'; ch.setAttribute('aria-label', 'MIDI input channel');
     for (let c = 0; c <= 16; c++) { const o = h('option', null, c ? 'Ch ' + c : 'Omni'); o.value = c; ch.append(o); }
@@ -4165,7 +4171,7 @@ function trkChipUI() {
   c.style.setProperty('--tc', t.color);
   $('#trkChip .cv-cn').textContent = t.name;
   const d = instOf(t);
-  $('#trkChip .cv-cv').textContent = instN(t) > 1 ? instsTxt(t) : modelById(d.model).name + ' · ' + (voiceShown.get(t.id) || trackVoice(d).label);
+  $('#trkChip .cv-cv').textContent = instN(t) > 1 ? instsTxt(t) : modelById(d.model).name + ' · ' + (voiceShown.get(vkey(t)) || trackVoice(d).label);
   if (shell.chipModel !== d.model) { shell.chipModel = d.model; $('#trkChip .cv-cart').innerHTML = cvArt.chip(d.model); }
   c.setAttribute('aria-label', `Track “${t.name}” (${modelById(d.model).name}) — the track list`);
   for (const d of shell.dots) { const on = d.dataset.id === t.id; d.classList.toggle('on', on); d.setAttribute('aria-pressed', on ? 'true' : 'false'); }
@@ -4193,7 +4199,7 @@ function trkListUI() {
     const b = h('button', 'cv-tpi' + (t.id === project.selTrack ? ' on' : '')); b.type = 'button'; b.setAttribute('role', 'menuitem');
     b.style.setProperty('--tc', t.color);
     const d = instOf(t), art = h('span', 'cv-cart'); art.innerHTML = cvArt.chip(d.model); art.setAttribute('aria-hidden', 'true');
-    const tx = h('span', 'cv-tpt'); tx.append(h('b', null, t.name), h('small', null, instN(t) > 1 ? instsTxt(t) : modelById(d.model).name + ' · ' + (voiceShown.get(t.id) || trackVoice(d).label)));
+    const tx = h('span', 'cv-tpt'); tx.append(h('b', null, t.name), h('small', null, instN(t) > 1 ? instsTxt(t) : modelById(d.model).name + ' · ' + (voiceShown.get(vkey(t)) || trackVoice(d).label)));
     b.append(h('span', 'cv-sw'), art, tx);
     b.onclick = () => selectTrack(t.id);
     pop.append(b);
@@ -4205,7 +4211,7 @@ function trkListUI() {
 // the track rows' instrument chip: tap → the instrument on the canvas; long-press / right-click → its menu
 function instItems(t) { // every model, named with its voice mode (R6: the track's own as its patch plays)
   const d = instOf(t);
-  return MODELS.map(m => ({ value: m.id, label: m.name + ' · ' + (m.id === d.model ? voiceShown.get(t.id) || trackVoice(d).label : modelVoice(m).label) }));
+  return MODELS.map(m => ({ value: m.id, label: m.name + ' · ' + (m.id === d.model ? voiceShown.get(vkey(t)) || trackVoice(d).label : modelVoice(m).label) }));
 }
 function instMenu(t, x, y) {
   shell.instT = performance.now();
@@ -4222,7 +4228,7 @@ function instMenu(t, x, y) {
 function instShow(t) { selectTrack(t.id); if ($('#tab-inst').hidden) openTab('canvas'); cvReveal(t.id); }
 function instTitle(name, tv) { return `${name} · ${tv} — tap: show it on the canvas · hold or right-click: change the instrument, open the roll`; }
 function instChip(t) {
-  const d = instOf(t), m = modelById(d.model), tv = voiceShown.get(t.id) || trackVoice(d).label;
+  const d = instOf(t), m = modelById(d.model), tv = voiceShown.get(vkey(t)) || trackVoice(d).label;
   const b = h('button', 'hinst'); b.type = 'button';
   b.title = instTitle(m.name, tv);
   b.setAttribute('aria-label', `Instrument ${m.name}: show it on the canvas (menu: change it)`);
@@ -4232,7 +4238,7 @@ function instChip(t) {
   const lab = h('span', 'hil'), many = instN(t) > 1;
   if (many) lab.append(h('span', 'hin', instsTxt(t))); else lab.append(h('span', 'hin', m.name), h('span', 'his', ' · '), h('span', 'hiv', tv));
   lab.value = many ? '' : d.model; // (voiceSeen relabels its .hiv while it names the model)
-  voiceOpt.set(t.id, lab);
+  voiceOpt.set(vkey(t), lab);
   b.append(art, lab);
   b.onclick = () => { if (performance.now() - shell.instT > 700) instShow(t); }; // (not the release of a long-press)
   cvTray.menuSource(b);

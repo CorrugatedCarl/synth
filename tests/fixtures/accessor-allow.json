@@ -32,10 +32,6 @@
         }
       ]
     },
-    "assets.js": {
-      "n": 6,
-      "why": "R0 baseline: the asset manager reads the primary Serum and the primary's FX (R4: the host's states())"
-    },
     "cv-migrate.js": {
       "n": 9,
       "sites": [
