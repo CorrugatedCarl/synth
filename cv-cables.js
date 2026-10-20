@@ -36,7 +36,7 @@
 // badge carries the tag ('OSC B · LEVEL · hidden'). [data-twin] controls are never a drag's target.
 import { DESTS, DEST_INDEX, moduleOf } from './serum-core.js?v=9';
 import * as wk from './wk.js?v=9';
-import { routeLabel, serumEdges, jackOf, partLabel } from './sx-edges.js?v=9';
+import { routeLabel, serumEdges, jackOf, partLabel, partOn } from './sx-edges.js?v=9';
 /** (milestone 3) a stub's length (world px) */
 export const STUB_PX = 56;
 /** (review 2 P1-5) below k = 1 a stub keeps STUB_PX screen px (its out jack's touch circle is 22 screen px at any zoom), at
@@ -262,7 +262,7 @@ export function cablesOf(track, opts) {
     if (typeof w.g === 'number' && isFinite(w.g) && w.g !== 1) { o.g = w.g; o.label = dB(w.g); }
     out.push(mk(o, srcs.get(devOf(w.a)) || []));
   }
-  for (const id of Object.keys(D)) if (serumDev(D, id) && partsView(t, id, opts)) out.push(...internal(id, D[id], tc, on));
+  for (const id of Object.keys(D)) if (serumDev(D, id) && partsView(t, id, opts)) out.push(...internal(id, D[id], tc, on, isObj(t.lay) ? t.lay : {}));
   return out.concat(modCables(t, D, opts));
 }
 /** (milestone 3) Is Serum `id` of this track shown as parts? opts.parts: false (never), a function (id) → bool, else the
@@ -275,12 +275,16 @@ export function partsView(track, id, opts) {
   return isObj(L) && L.ui === 'parts';
 }
 // (milestone 3) a Serum's internal cables in parts view (sx-edges: views of its state); VOICE → own FX is the read-only
-// cable above already (VOICE keeps the device key: 'iN.out → iN/fx.in')
-function internal(id, dev, tc, on) {
+// cable above already (VOICE keeps the device key: 'iN.out → iN/fx.in'). (review 2 P1-6, the lead's decision) a source
+// routed into a filter that is off and has no module (I1: no lay entry) is a dimmed stub "→ Filter 1 (off)" — the default
+// Serum's OSC A, else drawn to nothing; its edge stays (a tap: the routing, the filter's offer; Disconnect as before)
+function internal(id, dev, tc, on, lay) {
   const s = isObj(dev.vals) ? dev.vals.s : null, color = typeof dev.color === 'string' && dev.color ? dev.color : tc, out = [];
   for (const e of serumEdges(s, dev.fx)) {
     if (e.kind === 'fx') continue;
     const o = { id: 'x:' + id + ':' + e.id, kind: 'audio', int: e.kind, dev: id, edge: { a: e.a, b: e.b }, a: jackOf(id, e.a), b: e.b ? jackOf(id, e.b) : null, src: [id] };
+    const fb = e.kind === 'audio' && /^filter2?\.in$/.test(e.b || '') && /^(osc[ABC]|sub|noise)\.out$/.test(e.a) ? e.b.split('.')[0] : null;
+    if (fb && !partOn(s, fb) && !lay[id + '/' + fb]) { o.b = null; o.stub = true; o.off = fb; o.label = '→ Filter ' + (fb === 'filter2' ? 2 : 1) + ' (off)'; o.dim = true; }
     if (e.stub) { o.stub = true; o.label = e.label; }
     if (e.fork) o.fork = true;
     if (fin(e.share)) o.share = e.share;

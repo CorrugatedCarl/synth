@@ -1037,6 +1037,30 @@ test('review 2 P1-1: a touch tap selects a cable and its × appears under the fi
   R.L.destroy();
 });
 
+test('review 2 P1-6 (the lead\'s decision): a source routed into a filter that is off and has no module is drawn as a dimmed stub "→ Filter 1 (off)" (its id and edge kept: the tap, Disconnect, the routing as a stub\'s); the filter on, or off with a module (a lay entry): the cable to it as before', () => {
+  const t = partsTrack(), s = t.dev.i1.vals.s;
+  s.p['f.on'] = 0;
+  const I = C.cablesOf(t).filter(c => c.int), a = I.find(c => c.id === 'x:i1:oscA.out>filter.in');
+  assert.deepEqual([a.a, a.b, !!a.stub, a.off, a.label, !!a.dim, JSON.stringify(a.edge)], ['i1/oscA.out', null, true, 'filter', '→ Filter 1 (off)', true, JSON.stringify({ a: 'oscA.out', b: 'filter.in' })]);
+  const f = I.filter(c => c.id === 'x:i1:oscB.out>filter.in' || c.id === 'x:i1:oscB.out>filter2.in').map(c => [c.id, c.b, !!c.stub, c.label || '']);
+  assert.deepEqual(f, [['x:i1:oscB.out>filter.in', null, true, '→ Filter 1 (off)'], ['x:i1:oscB.out>filter2.in', 'i1/filter2.in', false, '']], 'a fork\'s branch into the off filter too');
+  s.p['f2.on'] = 0;
+  assert.equal(C.cablesOf(t).find(c => c.id === 'x:i1:oscB.out>filter2.in').label, '→ Filter 2 (off)');
+  t.lay['i1/filter'] = { x: 640, y: 0 }; // (off, with its module: dimmed there, the cable to it)
+  const a2 = C.cablesOf(t).find(c => c.id === 'x:i1:oscA.out>filter.in');
+  assert.deepEqual([a2.b, !!a2.stub, a2.off || null], ['i1/filter.in', false, null]);
+  // drawn as a stub, its label the cable's
+  const doc = fresh(), W = doc.createElement('div'); doc.body.append(W);
+  const L = C.createCables(W, { doc, onSelect() {}, onAction() {}, menu: () => [] });
+  delete t.lay['i1/filter'];
+  L.set(C.cablesOf(t));
+  L.layout(new Map([['i1/oscA.out', { x: 288, y: 68 }]]));
+  const g = all(L.under).find(n => n.getAttribute && n.getAttribute('data-cable') === 'x:i1:oscA.out>filter.in');
+  assert.deepEqual([g.style.display, g.hasAttribute('data-stub'), /\bcv-off\b/.test(g.getAttribute('class')), g.childNodes[1].getAttribute('d')], ['', true, true, C.cablePath(288, 68, 288 + C.STUB_PX, 68)]);
+  assert.equal(all(g).find(n => n.getAttribute && n.getAttribute('class') === 'cv-cable-lab').textContent, '→ Filter 1 (off)');
+  L.destroy();
+});
+
 test('review 2 P1-5: a stub stays reachable at low zoom — STUB_PX screen px out of its out jack (whose touch circle is 22 screen px) up to STUB_MAX world px; a zoom re-lays it; a pointer tap tells onSelect its pointer type (the host opens the routing popover after the tap\'s click), a programmatic select tells none', () => {
   let k = 0.4;
   const doc = fresh(), W = doc.createElement('div');

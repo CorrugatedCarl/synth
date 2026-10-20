@@ -493,6 +493,31 @@ test('review 2 P1-2: a part view a paint skipped while its module was off screen
   host().edit(s => { s.macros[0].name = 'Macro 1'; }, { label: 'name' }); await settle();
 });
 
+test('review 2 P1-6 (the lead\'s decision): OSC A routed into an off FILTER 1 with no module (the default Serum as parts) is a dimmed stub "→ Filter 1 (off)"; its tap opens OSC A\'s routing and offers turning FILTER 1 on (one step: the module, the ⏻, the cable to it)', async () => {
+  api.selectTrack(ID.a); cv.renderViews(); await settle();
+  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
+  if (V().modules.has('i1/filter')) { PT.remove('i1/filter'); await settle(); await settle(); }
+  host().edit(s => { s.p['f.on'] = 0; s.p['a.on'] = 1; s.osc[0].route = 0; s.p['f.routeA'] = 1; s.p['a.fbal'] = 0; }, { label: 'default routing' }); await settle(); await settle();
+  assert.equal(partKeys().split(',').includes('i1/filter'), false);
+  const c = V().cables.list().find(x => x.id === 'x:i1:oscA.out>filter.in');
+  assert.deepEqual([!!c, c && c.b, c && !!c.stub, c && c.off, c && c.label, c && !!c.dim], [true, null, true, 'filter', '→ Filter 1 (off)', true]);
+  const Va = rec().views.get('i1/oscA').V, b = (Va.panel.panel || Va.panel).route.btn; // (the stub DOM's click() runs onclick only)
+  b.click = () => b.dispatchEvent({ type: 'click', target: b, currentTarget: b, preventDefault() {}, stopPropagation() {} });
+  if (host().pop) host().pop.close();
+  const n0 = hsteps();
+  M.sel(c.id); await settle(); await settle();
+  assert.deepEqual([host().pop ? host().pop.o : null, note()], ['route0', 'FILTER 1 is off · tap to turn it on']);
+  host().pop.close();
+  sim.$('#notice').click(); await settle(); await settle();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, partKeys().split(',').includes('i1/filter'), base('f.on') >= 0.5], [n0 + 1, 'Add FILTER 1', true, true]);
+  const c2 = V().cables.list().find(x => x.id === 'x:i1:oscA.out>filter.in');
+  assert.deepEqual([c2.b, !!c2.stub], ['i1/filter.in', false], 'the cable into FILTER 1 now');
+  assert.deepEqual(M.cmenu(c.id).map(i => i.label), [], 'not a stub any more: no stub menu');
+  cv.undo(); await settle(); await settle();
+  const c3 = V().cables.list().find(x => x.id === 'x:i1:oscA.out>filter.in');
+  assert.deepEqual([c3.off, M.cmenu(c3.id).map(i => i.label)], ['filter', ['Routing…', 'Turn FILTER 1 on']], 'undone: the stub again; its menu');
+});
+
 test('review 2 P1-4: a modulator dropped near an instrument is cleared by its kind\'s measured height (never the guess: an OB-Xa face would leave GL) and of every module — a drop onto the instrument never lands on another modulator; a drop settles as a tap does', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
   const t = T(), hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;

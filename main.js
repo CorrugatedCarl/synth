@@ -5741,6 +5741,13 @@ function sxCableAct(c, a) {
   if (a === 'balance') { if (!sxRouteOpen(t, key)) notice('Open ' + SE.partLabel(part) + '’s routing (its panel’s route button) to set the balance', 4000); return; }
   if (a === 'tap') { cvReveal(t.id, dev + '/' + String(c.edge.b || c.edge.a || '').split('.')[0]); notice(SE.WHY.ro, 4000); } // (the oscillator that reads it)
 }
+// (review 2 P1-6) a stub into a filter that is off with no module: "FILTER 1 is off · tap to turn it on" (Add FILTER 1: its
+// module, its ⏻, the cable to it — one step); the offer is for this track's Serum
+function sxOffOffer(c) {
+  const t = trk(), tid = t.id, dev = c.dev, part = c.off, msg = SE.partLabel(part) + ' is off · tap to turn it on';
+  noticeActs.set(msg, () => { noticeActs.delete(msg); notice('', 0); if (trk().id === tid && isSerumDev(trk(), dev)) sxAddPart(dev, 'filter', null, part); });
+  notice(msg, 8000);
+}
 // the routing popover of a source part (its panel's route button: OSC / SUB / NOISE)
 function sxRouteOpen(t, key) {
   const V = sxViewOf(t, key), P = V && V.panel ? V.panel.panel || V.panel : null, b = P && P.route && P.route.btn;
@@ -6311,7 +6318,10 @@ function modCableSel(id, by) {
   if (c0 && c0.int && c0.stub) { // ((3, §2.5) a stub "→ Filter (off)": a tap opens the source's routing popover — after the tap (review 2 P1-5)
     (by ? afterTap : f => Promise.resolve().then(f))(() => {
       const c = cvView && cvView.cables.list().find(x => x.id === id);
-      if (c && c.stub && modMenuId !== id && !sxRouteOpen(trk(), c.dev + '/' + String(c.edge && c.edge.a || '').split('.')[0])) notice(SE.STUB_LABEL + ': its routing is in the panel’s route button', 3500);
+      if (!c || !c.stub || modMenuId === id) return;
+      const ok = sxRouteOpen(trk(), c.dev + '/' + String(c.edge && c.edge.a || '').split('.')[0]);
+      if (c.off) sxOffOffer(c); // ((P1-6) into an off filter: the routing, and the offer to turn it on)
+      else if (!ok) notice(SE.STUB_LABEL + ': its routing is in the panel’s route button', 3500);
     });
     return;
   }
@@ -6325,7 +6335,8 @@ function modCableSel(id, by) {
 function modCableMenu(id) {
   modMenuId = id;
   const c = cvView && cvView.cables.list().find(x => x.id === id);
-  if (c && c.int && (c.fork || c.stub)) return [{ label: c.fork ? 'Balance…' : 'Routing…', action: () => sxCableAct(c, 'balance') }]; // ((3) a forked internal cable, a stub: the source's routing popover)
+  if (c && c.int && (c.fork || c.stub)) return [{ label: c.stub ? 'Routing…' : 'Balance…', action: () => sxCableAct(c, 'balance') }] // ((3) a forked internal cable, a stub: the source's routing popover
+    .concat(c.off ? [{ label: 'Turn ' + SE.partLabel(c.off) + ' on', action: () => sxAddPart(c.dev, 'filter', null, c.off) }] : []); // ((P1-6) a stub into an off filter)
   if (!c || c.kind !== 'mod') return [];
   return [{ label: 'Edit…', action: () => { const p = modAt(cvView && cvView.cables.badge(id)); if (modLayer) modLayer.openInspector(c.preset || c.own ? { preset: c.dev, slot: c.slot } : id, p.x, p.y); } },
     { label: 'Bypass', checked: !!c.byp, action: () => modBypass(id) }]; // (U15, SPEC §2.9; the amount stays the inspector's)
