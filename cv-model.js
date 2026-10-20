@@ -4,15 +4,16 @@
 // adopt(project) is the ONE point every track passes on its way into the project: main.js loadProject, freshProject,
 // applyRestore (undo / redo / New / Open / MIDI import), addTrack, duplicateTrack. A v1 track (model / vals / preset / seq /
 // fx as own fields: song.js newTrack, an old record) is converted in place (cv-migrate trackToV2: the same object, so
-// references held elsewhere stay good); every track then gets the transition accessors (§5.4, stages 1c–1e):
-//   track.model, vals, preset, seq   → dev[prim].<same>
-//   track.fx                         → a Serum primary's own FX (dev[prim].fx), else the panel the primary feeds (its fx);
-//                                      none (a classic primary straight into OUT): undefined, a write does nothing
-// They are non-enumerable, so JSON (autosave, History snapshots, files) carries only the v2 form, and the ~120 main.js
-// sites that read t.model / t.vals / fxOf(t) keep working until they move to instOf(t, id) (the accessors go in 2a).
-// Assigning track.model across classic ↔ Serum reshapes the graph by the kept-FX rules of setModel (§2.5: a track's rack
-// is kept when its model changes; on a canonical track exactly stage 1c's reshape).
-//   adopt(p) → p   isAdopted(t)   instOf(t, id = prim)   primId(t)   fxDevOf(t) → { id, dev, own } | null
+// references held elsewhere stay good; a v2 record's file mirror is dropped) and a track without a primary repaired. A
+// track has no v1 fields after it: its instruments are read as devices — instOf(t, id), fxDevOf(t) — and changed through
+// the editing API (setModel …). (Milestone 3, R7: the 1c–1e transition accessors are gone; 'model' in t === false.)
+//   adopt(p, { guard }) → p   guard (for one stage: the sims, dev builds ?dev=1, node tests): every adopted track gets
+//        throwing non-enumerable V1-key accessors (track.model / vals / preset / seq / fx: a stray read or `t.model = …`
+//        throws instead of reading undefined or creating an enumerable field autosave and History would serialise);
+//        each call is told to the accessor recorder first (tests/accessor-hook.mjs)
+//   isAdopted(t)   instOf(t, id = prim)   primId(t)   fxDevOf(t) → { id, dev, own } | null
+//   (milestone 3) dropLay(t, id): the layout entries of device id and of every 'id/…' module; PARTS, partOf(key) →
+//   { dev, part } | null: a Serum part's module key 'iN/oscA' (IMPL-3 §2.1, §3)
 //
 // The editing API (stage 1e, IMPL-1e §3.2): every call edits the live track in place (History is the caller's: one
 // snapshot around the call); a refusal leaves it untouched.
@@ -75,8 +76,8 @@
 //   fromPreset(t, dev, slot, o) → { ok, why, row, slot, matrix }   the preset row becomes a track.mods row (placed where
 //        it lands in the slot it left whenever the canvas rows before it allow) and a copy of s.matrix without it. The
 //        caller applies matrix through sxEdit (the panel's undo, queuePatch). o.project as addMod's
-//   removeInst / setModel / the model accessor drop the rows to an instrument that is gone or whose knob is not on the
-//        new model (the same param id, modulatable there — else dropped): removeInst → rows, setModel → rows and notice
+//   removeInst / setModel drop the rows to an instrument that is gone or whose knob is not on the new model (the same
+//        param id, modulatable there — else dropped): removeInst → rows, setModel → rows and notice
 //        (a line for the caller; '' when none)
 import { trackToV2, panelOf, V1_KEYS } from './cv-migrate.js?v=9';
 import { validate, compileTrack, kindOf, port, devNum, zoneOf, LIMITS, modRowsFor, nativeRow, injectMods, modBudget } from './cv-graph.js?v=9';
@@ -121,7 +122,21 @@ const inWires = (t, id) => t.wires.filter(w => isObj(w) && typeof w.b === 'strin
 export function destOf(t, id) { const w = isObj(t) && Array.isArray(t.wires) ? outWire(t, id) : null, b = w && port(w.b); return b && b.dev in t.dev ? b.dev : null; }
 const wire = (t, a, b, g) => { const w = { id: wireId(t), a, b }; if (g !== undefined && g !== 1) w.g = g; t.wires.push(w); return w; };
 const hasFx = fx => isObj(fx) && Array.isArray(fx.racks) && fx.racks.some(r => isObj(r) && Array.isArray(r.mods) && r.mods.length > 0);
-const dropLay = (t, id) => { if (isObj(t.lay)) { delete t.lay[id]; delete t.lay[id + '/fx']; } };
+// (milestone 3, schema 7) a device's layout entries: its own and every 'id/…' module of it (a Serum's own FX 'iN/fx', its
+// parts 'iN/oscA' …); the track's lay object itself is edited (History is the caller's)
+export function dropLay(t, id) {
+  if (!isObj(t) || !isObj(t.lay) || typeof id !== 'string' || !id) return;
+  for (const k of Object.keys(t.lay)) if (k === id || k.startsWith(id + '/')) delete t.lay[k];
+}
+// (milestone 3, IMPL-3 §2.1) the parts of a Serum that are modules in its parts view, keyed 'iN/<part>' (serum-core module
+// names; MACROS new): VOICE is the device key iN itself, its own FX stays 'iN/fx' (not a part)
+export const PARTS = Object.freeze(['oscA', 'oscB', 'oscC', 'sub', 'noise', 'filter', 'filter2', 'env2', 'env3', 'env4',
+  ...Array.from({ length: 10 }, (_, i) => 'lfo' + (i + 1)), 'macros', 'arp', 'clip']);
+/** a module key 'iN/<part>' → { dev, part } | null (a device, its own FX, anything else) */
+export function partOf(key) {
+  const m = typeof key === 'string' ? /^([a-z][a-z0-9]{0,15})\/([a-z][a-zA-Z0-9]{0,15})$/.exec(key) : null;
+  return m && PARTS.includes(m[2]) ? { dev: m[1], part: m[2] } : null;
+}
 // classic ↔ Serum: the FX state moves with the instrument's kind (setModel's kept-FX rules)
 function reshape(t, id, toSerum) {
   const d = t.dev[id], out = outId(t) || (t.dev.out = { kind: 'out' }, 'out'), w = outWire(t, id), dst = w && port(w.b);
@@ -155,34 +170,14 @@ function reshape(t, id, toSerum) {
   if (w) wire(t, np + '.out', w.b, w.g);
   return 'moved';
 }
-const prim = t => {
-  const d = instOf(t);
-  if (!d) throw new Error('cv-model: a track without an instrument');
-  return d;
-};
-const ACC = {
-  model: {
-    get() { return prim(this).model; },
-    set(v) {
-      const d = prim(this), was = d.model;
-      if (v === was) return;
-      d.model = v;
-      if ((v === 'serum') !== (was === 'serum')) reshape(this, primId(this), v === 'serum');
-      dropGone(this, primId(this)); // (2a / 2b: the rows to knobs the new model has not — setModel reports them)
-    },
-  },
-  vals: { get() { return prim(this).vals; }, set(v) { prim(this).vals = v; } },
-  preset: { get() { return prim(this).preset; }, set(v) { prim(this).preset = v; } },
-  seq: { get() { return prim(this).seq; }, set(v) { const d = prim(this); if (v === undefined) delete d.seq; else d.seq = v; } },
-  fx: {
-    get() { const f = fxDevOf(this); return f ? f.dev.fx : undefined; },
-    set(v) { // (a classic primary straight into OUT, or silent, has no FX device: nothing — never a panel the user deleted)
-      const f = fxDevOf(this);
-      if (!f) return;
-      if (v === undefined) delete f.dev.fx; else f.dev.fx = v;
-    },
-  },
-};
+// (milestone 3, R0 / R7) the dynamic accessor recorder (tests/accessor-hook.mjs sets globalThis.__synthAccess): every call
+// of a guard accessor is told (key, 'get' | 'set') before it throws; nothing else reads it
+const told = (k, op) => { const f = globalThis.__synthAccess; if (typeof f === 'function') f(k, op); };
+const GUARD = k => ({
+  get() { told(k, 'get'); throw new Error(`cv-model: track.${k} read — a track has no v1 fields (read its device: instOf(t, dev), fxDevOf(t))`); },
+  set() { told(k, 'set'); throw new Error(`cv-model: track.${k} written — a track has no v1 fields (write its device, or setModel)`); },
+  enumerable: false, configurable: true,
+});
 // a v2 track whose primary is missing gets one (a hand-made or damaged record: a Minimoog, as song.js defaults one)
 function repair(t) {
   if (!Array.isArray(t.wires)) t.wires = [];
@@ -194,8 +189,9 @@ function repair(t) {
   wire(t, i + '.out', (outId(t) || (t.dev.out = { kind: 'out' }, 'out')) + '.in');
   reshape(t, i, false);
 }
-export function adopt(p) {
+export function adopt(p, o = {}) {
   if (!isObj(p) || !Array.isArray(p.tracks)) return p;
+  const guard = !!(o && o.guard);
   for (const t of p.tracks) {
     if (!isObj(t) || done.has(t)) continue;
     if (!isObj(t.dev)) { // a v1 track: the same object becomes its v2 form (key order: the v2 fields last)
@@ -204,7 +200,7 @@ export function adopt(p) {
       for (const k of ['prim', 'nid', 'dev', 'wires']) { delete t[k]; t[k] = v2[k]; }
     } else for (const k of V1_KEYS) if (Object.prototype.hasOwnProperty.call(t, k)) delete t[k]; // (a mirror: the devices win)
     repair(t);
-    for (const k of V1_KEYS) Object.defineProperty(t, k, { get: ACC[k].get, set: ACC[k].set, enumerable: false, configurable: true });
+    if (guard) for (const k of V1_KEYS) Object.defineProperty(t, k, GUARD(k));
     done.add(t);
   }
   return p;

@@ -24,6 +24,8 @@ async function page() {
   return sim;
 }
 const P = () => sim.api.project();
+// (milestone 3 R7: a track has no v1 fields — its instrument and its FX rack are read as devices)
+const I = t => CMOD.instOf(t), FXR = t => { const f = CMOD.fxDevOf(t); return f ? f.dev.fx : undefined; };
 const N = t => sim.api.nodes.get(t.id);
 const sent = (t, from = 0) => sim.nodeOf(t.id).posted.slice(from).map(x => x.m).filter(m => !['mon', 'smon', 'fxph', 'transport', 'song'].includes(m.t));
 const tag = m => m.t + (m.i !== undefined ? ':' + m.i : '') + (m.c !== undefined ? ':' + m.c : '');
@@ -38,12 +40,12 @@ function addJuno() {
 test('a canonical track posts no graph message: today\'s options and stream (no i / c), its node never graphed', async () => {
   await page();
   const t = P().tracks[0], node = sim.nodeOf(t.id);
-  assert.equal(t.model, 'juno60');
+  assert.equal(I(t).model, 'juno60');
   assert.equal(CG.compileTrack(t).canonical, true);
   assert.deepEqual(['graph', 'patches', 'chains', 'seqs'].map(k => k in node.po), [false, false, false, false]);
   assert.equal(typeof node.po.patch, 'object');
   const n0 = node.posted.length;
-  t.vals.lr = 7; sim.api.sendPatch(t);
+  I(t).vals.lr = 7; sim.api.sendPatch(t);
   const m = sent(t, n0);
   assert.deepEqual(m.map(tag), ['patch'], 'today\'s {t: patch, p}');
   assert.equal(!!N(t).graphed, false);
@@ -54,7 +56,7 @@ test('a canonical track posts no graph message: today\'s options and stream (no 
   CMOD.setPower(u, i2, false);
   assert.equal(CG.compileTrack(u).canonical, true);
   const n1 = nu.posted.length;
-  u.vals.lr = 8; sim.api.sendPatch(u);
+  I(u).vals.lr = 8; sim.api.sendPatch(u);
   const m1 = sent(u, n1);
   assert.deepEqual([m1[0].t, m1[0].insts.map(x => x.id + ':' + x.on), m1.some(x => x.t === 'patch' && x.i === undefined), N(u).graphed],
     ['graph', ['i1:true', i2 + ':false'], false, true]);
@@ -91,7 +93,7 @@ test('a live track given two instruments: graph (i0 / c0 adopted), patch i per I
   // the panel's rack: {t: chain, c} with its tables, then only what changed
   k = node.posted.length;
   const core = await import('../serum-core.js?v=9');
-  core.newInstance(t.fx, 'cho', { rack: 0 }); sim.api.sendPatch(t);
+  core.newInstance(FXR(t), 'cho', { rack: 0 }); sim.api.sendPatch(t);
   const ch = sent(t, k), want = sim.api.graphParts(t).chains.fx1;
   assert.deepEqual(ch.map(tag), ['chain:fx1']);
   assert.deepEqual(ch[0].fxr, want.fxr, 'the panel compiled as a classic track\'s rack (cv-graph chainPatch)');
@@ -276,9 +278,9 @@ test('H4: a classic primary cabled straight to OUT has no rack — a patch, t.fx
   assert.deepEqual([devs(t), cables(t)], ['i1,out', 'i1.out>out.in']);
   sim.api.sendPatch(t); sim.api.buildPatch(t);
   assert.deepEqual([devs(t), cables(t)], ['i1,out', 'i1.out>out.in'], 'a patch (buildPatch fxOf)');
-  assert.equal(t.fx, undefined);
-  t.fx = core.defaultFx2();
-  assert.deepEqual([devs(t), cables(t)], ['i1,out', 'i1.out>out.in'], 't.fx = … without an FX device: nothing');
+  assert.equal(CMOD.fxDevOf(t), null, 'no FX device (R7: a track has no fx field to read or write)');
+  sim.api.sendPatch(t); sim.api.buildPatch(t);
+  assert.deepEqual([devs(t), cables(t)], ['i1,out', 'i1.out>out.in'], 'a patch again: nothing inserted');
   const was = globalThis.confirm; globalThis.confirm = () => true;
   try { await globalThis.__synthTest.cv.classicFile(); } finally { globalThis.confirm = was; }
   assert.deepEqual([devs(byId(t.id)), cables(byId(t.id))], ['i1,out', 'i1.out>out.in'], 'a save (projectFile)');
@@ -322,18 +324,18 @@ test('H1: undo / redo keep the sound per device id — a re-patch, Make primary,
   // (regression) a one-instrument track's rack across a model change is still kept (stage 1c: classic → Serum moves it into
   // the Serum, an effect added there, the undo brings it back to the panel; the redo to the Serum)
   let u = addJuno();
-  core.newInstance(u.fx, 'cho', { rack: 0 });
+  core.newInstance(FXR(u), 'cho', { rack: 0 });
   const s0 = clone(P());
   CMOD.setModel(u, 'i1', 'serum', { vals: { s: core.normalizeSerum(core.defaultSerum()) } }); sim.api.sendPatch(u);
   assert.deepEqual([devs(u), CMOD.fxDevOf(u).own], ['i1,out', true]);
-  core.newInstance(u.fx, 'eq', { rack: 0 });
+  core.newInstance(FXR(u), 'eq', { rack: 0 });
   const s1 = clone(P());
   sim.api.applyRestore(s0, true);
   u = byId(u.id);
-  assert.deepEqual([devs(u), u.fx.racks[0].mods.map(m => m.type).join(',')], ['fx1,i1,out', 'cho,eq'], 'undo: the panel holds the rack as edited');
+  assert.deepEqual([devs(u), FXR(u).racks[0].mods.map(m => m.type).join(',')], ['fx1,i1,out', 'cho,eq'], 'undo: the panel holds the rack as edited');
   sim.api.applyRestore(s1, true);
   u = byId(u.id);
-  assert.deepEqual([devs(u), u.fx.racks[0].mods.map(m => m.type).join(',')], ['i1,out', 'cho,eq']);
+  assert.deepEqual([devs(u), FXR(u).racks[0].mods.map(m => m.type).join(',')], ['i1,out', 'cho,eq']);
 });
 
 const rec = (id, o) => Object.assign({ id, name: id, color: '#e8a23a', ch: 0, mute: false, solo: false, arm: false, vol: 0.8, pan: 0, notes: [], cc: [] }, o);
@@ -470,7 +472,7 @@ test('H4 ids: delete fx1, classic → Serum → classic, undo past the delete �
   await page();
   const core = await import('../serum-core.js?v=9');
   let t = addJuno();
-  core.newInstance(t.fx, 'cho', { rack: 0 }); sim.api.sendPatch(t);
+  core.newInstance(FXR(t), 'cho', { rack: 0 }); sim.api.sendPatch(t);
   const S0 = clone(P());
   CMOD.removePanel(t, 'fx1'); sim.api.sendPatch(t);
   CMOD.setModel(t, 'i1', 'serum', { vals: { s: core.normalizeSerum(core.defaultSerum()) } }); sim.api.sendPatch(t);
@@ -478,7 +480,7 @@ test('H4 ids: delete fx1, classic → Serum → classic, undo past the delete �
   assert.deepEqual([devs(t), CMOD.destOf(t, 'i1'), t.dev.fx2.fx.racks[0].mods.length], ['fx2,i1,out', 'fx2', 0]);
   sim.api.applyRestore(S0, true);
   t = byId(t.id);
-  assert.deepEqual([devs(t), t.fx.racks[0].mods.map(m => m.type).join(',')], ['fx1,i1,out', 'cho']);
+  assert.deepEqual([devs(t), FXR(t).racks[0].mods.map(m => m.type).join(',')], ['fx1,i1,out', 'cho']);
 });
 
 test('H13 / 1f: the current instrument is always the primary (setCur changes nothing); a file whose track holds two instruments opens split (one track each, the primary keeping the id), New and Open undone after', async () => {
@@ -491,7 +493,7 @@ test('H13 / 1f: the current instrument is always the primary (setCur changes not
   const file = { name: 'same-ids.synth.json', type: 'application/json', text: async () => JSON.stringify(o) };
   await sim.$('#fFile').onchange({ target: { files: [file], value: '' } });
   await sim.settle(10); sim.raf();
-  assert.deepEqual([P().selTrack, P().tracks.map(t => t.id + ':' + t.model).join(','), cv.cur()], ['trk_a', 'trk_a:juno60,trk_1:minimoog', 'i1'], 'Open: split, on the primary');
+  assert.deepEqual([P().selTrack, P().tracks.map(t => t.id + ':' + I(t).model).join(','), cv.cur()], ['trk_a', 'trk_a:juno60,trk_1:minimoog', 'i1'], 'Open: split, on the primary');
   assert.equal(sim.$('#notice').textContent, 'Track “Juno + Moog” held 2 instruments: now 2 tracks');
   const was = globalThis.confirm; globalThis.confirm = () => true;
   try { sim.$('#fNew').onclick(); } finally { globalThis.confirm = was; }

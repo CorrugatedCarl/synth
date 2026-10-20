@@ -504,20 +504,23 @@ export function serialize(project) { return JSON.stringify(project); }
 // presets): { [module id]: { x, y, fold?: 1, z?, ui?: 'flow' } } in world px. Invalid entries are dropped; nothing valid →
 // undefined (deserialize then adds no key: an old track's History snapshot stays byte-identical). A width (w, from before
 // the no-resizing rule of 2026-10-18) is dropped: every module has one fixed width now; no schema bump.
-const LAY_KEY = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-z0-9]{0,15})?$/;
+// Milestone 3 (schema 7, IMPL-3 §3): a Serum's parts are modules 'iN/<part>' (serum-core module names: 'oscA', 'filter2' —
+// the key's second part as PORT_ID's), up to LAY_MAX entries (a Serum in parts is up to 25 modules), and a Serum's entry
+// may say ui 'parts' (its parts view; absent = the whole panel, as 'flow' marks a classic's Simple layout)
+const LAY_KEY = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-zA-Z0-9]{0,15})?$/, LAY_MAX = 256, LAY_UI = ['flow', 'parts'];
 const finN = x => typeof x === 'number' && Number.isFinite(x);
 export function normLay(lay) {
   if (!isObj(lay)) return undefined;
   const out = {};
   let n = 0;
   for (const k of Object.keys(lay)) {
-    if (n >= 64) break;
+    if (n >= LAY_MAX) break;
     const e = lay[k];
     if (k === '__proto__' || !LAY_KEY.test(k) || !isObj(e) || !finN(e.x) || !finN(e.y)) continue;
     const o = { x: clamp(R(e.x), -1e6, 1e6), y: clamp(R(e.y), -1e6, 1e6) };
     if (e.fold) o.fold = 1;
     if (finN(e.z)) o.z = clamp(R(e.z), 1, 1e6);
-    if (e.ui === 'flow') o.ui = 'flow'; // a classic instrument's Simple layout (IMPL-panels §7.1; absent = Hardware); view only, no schema bump
+    if (LAY_UI.includes(e.ui)) o.ui = e.ui; // a classic instrument's Simple layout (IMPL-panels §7.1; absent = Hardware), a Serum's parts view (schema 7); view only
     out[k] = o; n++;
   }
   return n ? out : undefined;
@@ -753,6 +756,12 @@ function midiNotes(notes) {
   }
   return out;
 }
+// the instrument name a track's MIDI file chunk carries: its primary instrument's model (cv-model instOf's rule — the prim
+// device, else the first instrument; song.js cannot import cv-model); a track without devices (main's): its own
+function instModel(tr) {
+  const D = isObj(tr.dev) ? tr.dev : null, d = D ? (isObj(D[tr.prim]) && D[tr.prim].kind === 'synth' ? D[tr.prim] : Object.values(D).find(x => isObj(x) && x.kind === 'synth')) : tr;
+  return d && typeof d.model === 'string' ? d.model : '';
+}
 export function exportMIDI(project, { trackIds = null } = {}) {
   const trs = pickTracks(project, trackIds);
   const sn = clamp(R(project.sig[0]), 1, 255), sd = project.sig[1], us = clamp(R(60e6 / project.bpm), 1, 0xFFFFFF);
@@ -766,7 +775,7 @@ export function exportMIDI(project, { trackIds = null } = {}) {
   out.push(trackChunk(cond, end));
   trs.forEach((tr, i) => {
     const ch = tr.ch >= 1 && tr.ch <= 16 ? tr.ch - 1 : AUTO_CH[i % AUTO_CH.length];
-    const evs = [{ t: 0, p: -1, b: metaEv(0x03, utf8(tr.name)) }, { t: 0, p: -1, b: metaEv(0x04, utf8(tr.model)) }];
+    const evs = [{ t: 0, p: -1, b: metaEv(0x03, utf8(tr.name)) }, { t: 0, p: -1, b: metaEv(0x04, utf8(instModel(tr))) }];
     for (const x of midiNotes(tr.notes)) evs.push({ t: x.t, p: 2, b: [0x90 | ch, x.n, x.v] }, { t: x.e, p: 0, b: [0x80 | ch, x.n, 64] });
     for (const c of tr.cc) evs.push({ t: clamp(R(c.t), 0, MAXT), p: 1, b: ccBytes(c, ch) });
     evs.sort((a, b) => a.t - b.t || a.p - b.p);

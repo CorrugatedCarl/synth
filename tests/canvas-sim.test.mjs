@@ -20,6 +20,7 @@ import * as CM from '../cv-migrate.js?v=9';
 import { MODELS } from '../models.js?v=9';
 import * as cvPanel from '../cv-panel.js?v=9';
 import * as cvModule from '../cv-module.js?v=9';
+import * as CMOD from '../cv-model.js?v=9';
 
 /* ---------------------------------------------------------------- a scripted world (cv-world's World surface) */
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 }; // (a 1408 px Minimoog fits at k 1)
@@ -48,6 +49,8 @@ const sim = await bootMain({ ls, synthTest: { cvWorld: root => scriptedWorld(roo
 const api = sim.api, cv = globalThis.__synthTest.cv, W = cv.world();
 sim.raf(); await sim.settle(5);
 const P = () => api.project(), T = () => P().tracks.find(t => t.id === P().selTrack);
+// (milestone 3 R7: a track has no v1 fields — its instrument and its FX rack are read as devices)
+const I = t => CMOD.instOf(t), FXR = t => { const f = CMOD.fxDevOf(t); return f ? f.dev.fx : undefined; };
 const V = () => cv.view();
 const nameOf = id => MODELS.find(m => m.id === id).name;
 const hsteps = () => cv.hist.u.length;
@@ -66,19 +69,20 @@ function drag(m, dx, dy) {
 // a drag by world px at the camera's zoom (a wide fixed-size instrument's reveal zooms the camera out)
 const dragW = (m, dx, dy) => drag(m, dx * W.k, dy * W.k);
 
-test('boot: the selected track\'s three modules hold #inst, #fxrack and the scope; #cvParts hidden; Tidy without lay', () => {
+test('boot: the selected track\'s three modules hold their devices\' own elements and the scope; #cvParts hidden; Tidy without lay', () => {
   assert.equal(W.items.size, 3);
   assert.deepEqual([...V().modules.keys()], ['i1', 'fx1', 'out']);
   assert.equal(V().trackId, T().id);
   assert.equal(cv.parts.home.hidden, true);
-  assert.equal(cv.parts.inst.parentNode === V().modules.get('i1').body, true, '#inst in the instrument body');
-  assert.equal(cv.parts.fx.parentNode === V().modules.get('fx1').body, true, '#fxrack in the FX body');
+  // (milestone 3 R6: the primary and its FX have elements of their own, as every device — no #inst / #fxrack homes)
+  assert.equal(cv.bodyEl('i1').parentNode === V().modules.get('i1').body, true, 'the instrument\'s element in its body');
+  assert.equal(cv.bodyEl('fx1').parentNode === V().modules.get('fx1').body, true, 'the FX panel\'s element in its body');
   assert.equal(cv.parts.scope.parentNode === V().modules.get('out').body, true, 'the scope in OUT');
   assert.equal('lay' in T(), false, 'no lay written by just looking');
   // the Minimoog's Hardware layout: a fixed 1408 × 512 module (cv-panel sizeOf), Tidy places the FX panel after it
-  assert.equal(T().model, 'minimoog');
+  assert.equal(I(T()).model, 'minimoog');
   assert.deepEqual([...V().modules.values()].map(m => [m.id, m.x, m.y]), [['i1', 0, 0], ['fx1', 1568, 0], ['out', 2496, 0]]);
-  const ttl = nameOf(T().model);
+  const ttl = nameOf(I(T()).model);
   assert.deepEqual([...V().modules.values()].map(m => m.title), [ttl, 'FX Panel', 'OUT']);
   const menu = cv.menu('inst', 'i1').filter(x => !x.sep);
   assert.deepEqual(menu.map(x => x.label), ['About the ' + ttl + '…', 'Replace with…', 'Hardware layout', 'Simple layout', 'Save sound…', 'Delete saved sound', 'Init sound', 'Fold', 'Bring to front', 'Tidy the canvas'],
@@ -88,15 +92,15 @@ test('boot: the selected track\'s three modules hold #inst, #fxrack and the scop
   assert.deepEqual(cv.menu('out', 'out').map(x => x.label), ['Fold']);
 });
 
-test('the Hardware layout: #inst is the hardware panel; the module is fixed at cv-panel sizeOf (no grip, no measuring)', () => {
+test('the Hardware layout: the instrument\'s element is the hardware panel; the module is fixed at cv-panel sizeOf (no grip, no measuring)', () => {
   const m = V().modules.get('i1'), mdl = MODELS.find(x => x.id === 'minimoog'), sz = cvPanel.sizeOf(cvPanel.layoutOf('minimoog'), mdl);
   assert.deepEqual(sz, { w: 1408, h: 512 });
   assert.deepEqual(m.fixed, sz);
   assert.deepEqual([m.rect().w, m.rect().h], [1408, 512], 'rect() = the fixed size');
   assert.equal(m.el.hasAttribute('data-cv-fixed'), true, 'the grip hides');
   assert.equal(cv.instUi(T()), 'hw');
-  assert.ok(cv.hw() && cv.hw().w === 1408, 'cv-panel rendered #inst');
-  assert.match(cv.parts.inst.className, /\binst hw\b/);
+  assert.ok(cv.hw() && cv.hw().w === 1408, 'cv-panel rendered the instrument');
+  assert.match(cv.bodyEl('i1').className, /\binst hw\b/);
 });
 
 test('default camera: k = 1, the instrument 24 px inside the visible band (no saved camera)', () => {
@@ -115,16 +119,16 @@ test('a top-bar move: track.lay written, one History step; undo restores the pla
   const port = V().ports().get('fx1.in');
   assert.deepEqual([port.x, port.y], [1728, 96 + 68], 'the cable follows');
   // a knob tweak after the move: undo keeps it (knob undo = today's policy)
-  const k = Object.keys(T().vals).find(x => typeof T().vals[x] === 'number');
-  T().vals[k] = 0.123;
+  const k = Object.keys(I(T()).vals).find(x => typeof I(T()).vals[x] === 'number');
+  I(T()).vals[k] = 0.123;
   cv.undo();
   assert.equal(T() !== t0, true, 'History brings new track objects');
-  assert.equal(T().vals[k], 0.123, 'knob value kept');
+  assert.equal(I(T()).vals[k], 0.123, 'knob value kept');
   assert.deepEqual(T().lay.fx1, { x: 1568, y: 0, z: 2 }, 'lay back to before the move (bring-to-front is not a step)');
   assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [1568, 0], 'the module went back');
   cv.redo();
   assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [1728, 96]);
-  assert.equal(V().modules.get('fx1').body === cv.parts.fx.parentNode, true, 'no remount through undo / redo');
+  assert.equal(V().modules.get('fx1').body === cv.bodyEl('fx1').parentNode, true, 'no remount through undo / redo');
 });
 
 test('fold and Tidy: one History step each; Tidy keeps widths and folds', () => {
@@ -170,7 +174,7 @@ test('track switch: the view is rebuilt for the new track (cards first: world cl
   assert.equal(V().trackId, t2.id);
   assert.ok(W.log.includes('clear'));
   assert.deepEqual(W.cam, { tx: 68, ty: 24, k: 1 }, 'a new track: the default camera');
-  assert.equal(cv.parts.inst.parentNode === V().modules.get('i1').body, true, 'the parts moved to the new view');
+  assert.equal(cv.bodyEl('i1').parentNode === V().modules.get('i1').body, true, 'the new track\'s own element in its view');
   cv.camFlush();
   assert.ok(!api.store.get('synth.cam', null).e.some(e => e[0] === CM.camKey(P().uid, t2.id)), 'an untouched default camera is not stored');
   W.cam = { tx: 10, ty: 20, k: 1.5 }; W.k = 1.5;
@@ -198,7 +202,7 @@ test('cvReveal: selects the track, focuses the module (k 1 below READ_K); cvModu
   cv.reveal(other.id, 'out');
   assert.equal(W.log.at(-1), 'focus out {"k":0.8,"edit":false}');
   assert.deepEqual(cv.size('serum'), { w: 1200, h: 840 }, 'unseen: the default outline');
-  const s = cv.size(T().model);
+  const s = cv.size(I(T()).model);
   assert.equal(s.w, V().modules.get('i1').w);
   assert.deepEqual(cv.size('minimoog'), { w: 1408, h: 512 }, 'a model with a hardware panel: its fixed size (the Hardware layout)');
 });
@@ -207,12 +211,13 @@ test('monitors ({t: mon, ids}) follow the module: on while the Serum module is o
   await sim.power(); sim.raf(); await sim.settle(5);
   const t = api.addTrack(undefined); // a classic track; switched to a Serum below
   api.setTrackModel(t, 'serum'); sim.raf(); await sim.settle(5);
-  assert.equal(T().model, 'serum');
+  assert.equal(I(T()).model, 'serum');
   assert.deepEqual([...V().modules.keys()].sort(), ['i1', 'i1/fx', 'out']);
   // the SerumUI does not load in the simulation: a stand-in panel for this track
   const refresh = { sx: 0, fx: 0 };
-  cv.sxPanel.ui = { refresh() { refresh.sx++; }, destroy() {}, setSnapshot() {}, confirmChange: () => true, snap: null };
-  cv.sxPanel.trackId = t.id; cv.sxPanel.vals = T().vals;
+  const sxR = cv.sxRec(T(), 'i1'), fxR = cv.fxRec(T(), 'i1/fx'); // (R6: the Serum's and its FX module's records, per device)
+  sxR.ui = { refresh() { refresh.sx++; }, destroy() {}, setSnapshot() {}, confirmChange: () => true, snap: null };
+  sxR.trackId = t.id; sxR.vals = I(T()).vals;
   const mons = () => api.nodes.get(t.id).node.posted.filter(x => x.m && x.m.t === 'mon').map(x => x.m.ids);
   const smon = () => mons().map(ids => ids.length > 0); // (on: any part subscribed)
   api.sxHost(T()).monitor(true);
@@ -241,7 +246,7 @@ test('monitors ({t: mon, ids}) follow the module: on while the Serum module is o
   cv.undo(); cv.undo();
   assert.deepEqual([smon().slice(-1), V().live('i1'), V().live('i1/fx')], [[true], true, true], 'both unfolded');
   // peer refresh: a Serum edit refreshes the FX module, an FX edit the Serum panel — never the editor itself
-  cv.fxTab.ui = { refresh() { refresh.fx++; }, destroy() {} }; cv.fxTab.trackId = t.id; cv.fxTab.fx = T().fx; cv.fxTab.sx = true;
+  fxR.ui = { refresh() { refresh.fx++; }, destroy() {} }; fxR.trackId = t.id; fxR.fx = FXR(T()); fxR.sx = true;
   sim.raf(); await sim.settle(5); sim.raf(); // (an outside refresh still queued: sxRefresh)
   refresh.sx = 0; refresh.fx = 0;
   api.sxHost(T()).edit(s => { s.p['a.level'] = 0.5; }, { label: 'x' });
@@ -262,15 +267,15 @@ test('monitors ({t: mon, ids}) follow the module: on while the Serum module is o
   V().toggleFold('i1/fx');
   sim.raf();
   assert.equal(refresh.fx, 2, 'refreshed once it shows');
-  cv.sxPanel.ui = null; cv.sxPanel.trackId = null; cv.fxTab.ui = null; cv.fxTab.trackId = null;
+  sxR.ui = null; sxR.trackId = null; fxR.ui = null; fxR.trackId = null;
 });
 
 test('drop / replace: the instrument is replaced in place (one History step), the notice action undoes it', () => {
   const t = T(), id = t.id, n0 = hsteps(), x0 = V().modules.get('i1').x;
-  const to = t.model === 'juno60' ? 'prophet5' : 'juno60', from = t.model;
+  const to = I(t).model === 'juno60' ? 'prophet5' : 'juno60', from = I(t).model;
   assert.equal(cv.drop(from, null), false, 'the same model: nothing');
   assert.equal(cv.drop(to, { x: 900, y: 900, w: 1080, h: 500 }), true);
-  assert.equal(T().model, to);
+  assert.equal(I(T()).model, to);
   assert.equal(hsteps(), n0 + 1);
   assert.equal(V().modules.get('i1').x, x0, 'in place');
   assert.equal(V().modules.get('i1').title, nameOf(to), 're-titled');
@@ -278,19 +283,19 @@ test('drop / replace: the instrument is replaced in place (one History step), th
   const note = sim.$('#notice');
   assert.match(note.textContent, /^Replaced .+ with .+ · tap to undo$/);
   note.onclick();
-  assert.equal(P().tracks.find(x => x.id === id).model, from, 'undone');
+  assert.equal(I(P().tracks.find(x => x.id === id)).model, from, 'undone');
 });
 
 test('the instrument chip (a classic track\'s preset select) follows a preset load and a knob tweak (renderHeads → cvChipSync)', () => {
-  if (MODELS.find(m => m.id === T().model).custom) api.setTrackModel(T(), 'juno60');
+  if (MODELS.find(m => m.id === I(T()).model).custom) api.setTrackModel(T(), 'juno60');
   const chip = V().modules.get('i1').bar.children.find(c => c.className === 'cv-chip');
   const sel = () => chip.children[chip.children.length - 1].children[1]; // (the stub's textContent = '' keeps old children: the last is the chip: ◀ select ▶)
   const first = () => sel().children[0].textContent;
   const opt = sel().children.find(c => c.tagName === 'OPTGROUP').children[0]; // the first preset of the first group
   sel().value = opt.value; sel().onchange();
-  assert.equal(T().preset, opt.textContent);
+  assert.equal(I(T()).preset, opt.textContent);
   assert.equal(first(), opt.textContent, 'the chip names the loaded preset');
-  T().preset = null; cv.heads(); // (what a knob tweak does: main.js setVal)
+  I(T()).preset = null; cv.heads(); // (what a knob tweak does: main.js setVal)
   assert.equal(first(), 'Custom', 'a knob tweak: Custom');
 });
 
@@ -320,7 +325,7 @@ test('About: the model text and the DX7 diagram in a sheet; they go back when it
 
 test('a classic → Serum → classic change keeps the FX module where the user last put it: track.lay holds one FX entry (cvLay, Tidy)', () => {
   api.addTrack(undefined); sim.raf();
-  if (MODELS.find(m => m.id === T().model).custom) { api.setTrackModel(T(), 'juno60'); sim.raf(); }
+  if (MODELS.find(m => m.id === I(T()).model).custom) { api.setTrackModel(T(), 'juno60'); sim.raf(); }
   const x1 = V().modules.get('fx1').x + 320;
   dragW(V().modules.get('fx1'), 320, 0);
   assert.deepEqual([T().lay.fx1.x, T().lay.fx1.y], [x1, 0]);
@@ -341,11 +346,11 @@ test('a classic → Serum → classic change keeps the FX module where the user 
 
 test('the ⋯ toggle Hardware ↔ Simple (the user\'s report: "i switched to the simple one and i cant switch back"): each switch one History step from the module menu, the panel re-rendered in that layout at its fixed size, the check mark on it, values and the preset kept — several round trips, undo / redo both ways, a move, Tidy, reload and duplicate', () => {
   const t0 = api.addTrack(MODELS.find(m => m.id === 'minimoog')); sim.raf();
-  assert.equal(T().model, 'minimoog');
+  assert.equal(I(T()).model, 'minimoog');
   assert.equal(cv.instUi(T()), 'hw');
   api.selectTrack(t0.id); sim.raf();
-  T().vals.fc = 7.25; T().vals.r1 = 1; T().preset = 'Fat Bass';
-  const vals = JSON.stringify(T().vals), n0 = hsteps(), m = () => V().modules.get('i1'), FW = cvModule.FLOW_W.minimoog;
+  I(T()).vals.fc = 7.25; I(T()).vals.r1 = 1; I(T()).preset = 'Fat Bass';
+  const vals = JSON.stringify(I(T()).vals), n0 = hsteps(), m = () => V().modules.get('i1'), FW = cvModule.FLOW_W.minimoog;
   assert.ok(m().fixed && !('lay' in T() && T().lay.i1), 'fixed, no lay yet');
   const ids = () => [...cv.panel().ui.keys()].filter(k => k[0] !== '@').sort().join(','), ids0 = ids();
   const pick = label => { const it = cv.menu('inst', 'i1').find(x => x.label === label); assert.ok(it && !it.disabled, label + ': in the menu, enabled'); it.action(); sim.raf(); };
@@ -356,12 +361,12 @@ test('the ⋯ toggle Hardware ↔ Simple (the user\'s report: "i switched to the
     pick('Simple layout');
     assert.deepEqual(flowState(), ['flow', null, FW, FW, 0, true], 'Simple: today\'s flowing panel at the Minimoog\'s fixed width (the height measured)');
     assert.deepEqual([hsteps(), cv.hist.undoLabel, checks()], [n0 + 2 * i + 1, 'Simple layout', 'Hardware layout:false Simple layout:true'], 'one step; the check mark');
-    assert.deepEqual([JSON.stringify(T().vals), T().preset, ids()], [vals, 'Fat Bass', ids0], 'values, the preset name and every control kept');
+    assert.deepEqual([JSON.stringify(I(T()).vals), I(T()).preset, ids()], [vals, 'Fat Bass', ids0], 'values, the preset name and every control kept');
     if (!i) { assert.deepEqual([T().lay.i1.x, T().lay.i1.y], [m().x, m().y], 'lay.i1 created from the module\'s place'); assert.ok(T().lay.fx1 && T().lay.out, 'the Tidy-placed modules pinned where they stand'); }
     pick('Hardware layout');
     assert.deepEqual(hwState(), ['hw', true, 1408, 1408, 512], 'Hardware: the hardware panel at its size, back from Simple');
     assert.deepEqual([hsteps(), cv.hist.undoLabel, checks(), 'ui' in T().lay.i1, 'w' in T().lay.i1], [n0 + 2 * i + 2, 'Hardware layout', 'Hardware layout:true Simple layout:false', false, false]);
-    assert.deepEqual([JSON.stringify(T().vals), T().preset, ids()], [vals, 'Fat Bass', ids0]);
+    assert.deepEqual([JSON.stringify(I(T()).vals), I(T()).preset, ids()], [vals, 'Fat Bass', ids0]);
     const fx = V().modules.get('fx1');
     assert.ok(fx.x >= m().x + m().w + cvModule.GAP - 1 || fx.y >= m().y + m().rect().h, 'never overlapped: room made for the wider panel');
     assert.deepEqual(V().ports().get('i1.out'), { x: m().x + m().w, y: m().y + cvModule.BAR_H + cvModule.JACK_Y }, 'the out jack (and its cable) at the new edge');
@@ -377,7 +382,7 @@ test('the ⋯ toggle Hardware ↔ Simple (the user\'s report: "i switched to the
   pick('Hardware layout');
   assert.deepEqual(hwState(), ['hw', true, 1408, 1408, 512], 'from the menu after an undo / redo: Hardware again');
   cv.undo(); sim.raf();
-  assert.deepEqual([JSON.stringify(T().vals), T().preset, ids()], [vals, 'Fat Bass', ids0], 'values still kept');
+  assert.deepEqual([JSON.stringify(I(T()).vals), I(T()).preset, ids()], [vals, 'Fat Bass', ids0], 'values still kept');
   // in Simple: a move keeps the choice and writes no width; Tidy moves modules only (never a width, never the layout)
   drag(m(), 64, 0);
   assert.deepEqual([T().lay.i1.ui, 'w' in T().lay.i1], ['flow', false]);
@@ -399,7 +404,7 @@ test('Hardware ↔ Simple round trips on several models (Minimoog, TB-303, Juno-
   for (const id of ['minimoog', 'tb303', 'juno60', 'dx7', 'arp2600']) {
     const mdl = MODELS.find(x => x.id === id), t = api.addTrack(mdl); sim.raf();
     api.selectTrack(t.id); sim.raf();
-    const m = () => V().modules.get('i1'), hw = cvPanel.sizeOf(cvPanel.layoutOf(id), mdl), seq = JSON.stringify(T().seq || null);
+    const m = () => V().modules.get('i1'), hw = cvPanel.sizeOf(cvPanel.layoutOf(id), mdl), seq = JSON.stringify(I(T()).seq || null);
     const ids = () => [...cv.panel().ui.keys()].filter(k => k[0] !== '@').sort().join(',');
     const hwIds = ids();
     cv.setLayout('flow'); sim.raf();
@@ -415,7 +420,7 @@ test('Hardware ↔ Simple round trips on several models (Minimoog, TB-303, Juno-
     assert.deepEqual([cv.instUi(T()), m().w], ['hw', hw.w], id + ': undo');
     cv.redo(); sim.raf();
     assert.deepEqual([cv.instUi(T()), m().w], ['flow', cvModule.FLOW_W[id]], id + ': redo');
-    assert.equal(JSON.stringify(T().seq || null), seq, id + ': the pattern kept');
+    assert.equal(JSON.stringify(I(T()).seq || null), seq, id + ': the pattern kept');
   }
 });
 
@@ -462,22 +467,23 @@ test('track switch (1c): the frames and the camera at once, the bodies over the 
   assert.equal(vp.hasAttribute('data-cv-mounting'), false);
   api.selectTrack(a.id);
   assert.deepEqual([V().trackId, vp.hasAttribute('data-cv-mounting')], [a.id, true], 'the new frames now, hidden');
-  assert.notEqual(cv.panel() && cv.panel().track, a, 'its panel not built yet (the next frame)');
+  const ptr = () => cv.panel() && cv.panel().track.track; // (milestone 3 R1: a panel's track is its instrument's view)
+  assert.notEqual(ptr(), a, 'its panel not built yet (the next frame)');
   sim.raf();
-  if (a.model !== 'serum') assert.equal(cv.panel().track, a, 'the first frame: the nearest body (the instrument) built');
+  if (I(a).model !== 'serum') assert.equal(ptr() === a, true, 'the first frame: the nearest body (the instrument) built');
   await done();
   assert.equal(vp.hasAttribute('data-cv-mounting'), false, 'shown once every body is in');
-  if (a.model !== 'serum') assert.equal(cv.panel().track, a, 'the panel is the new track\'s');
+  if (I(a).model !== 'serum') assert.equal(ptr() === a, true, 'the panel is the new track\'s');
   // an edit while mounting completes the switch at once
   api.selectTrack(b.id);
   assert.equal(vp.hasAttribute('data-cv-mounting'), true);
   api.setTrackModel(b, 'prophet5');
-  assert.deepEqual([vp.hasAttribute('data-cv-mounting'), cv.panel().track === T(), T().model], [false, true, 'prophet5']);
+  assert.deepEqual([vp.hasAttribute('data-cv-mounting'), ptr() === T(), I(T()).model], [false, true, 'prophet5']);
 });
 
 test('project v2 (1c): every track adopted after loads, undo / redo, add and duplicate; the canonical compile; Save as classic project', async () => {
   const MO = await import('../cv-model.js?v=9'), G = await import('../cv-graph.js?v=9');
-  const all = () => P().tracks.every(t => MO.isAdopted(t) && t.prim === 'i1' && typeof t.model === 'string');
+  const all = () => P().tracks.every(t => MO.isAdopted(t) && t.prim === 'i1' && typeof I(t).model === 'string');
   assert.ok(all(), 'boot');
   const t = api.addTrack(MODELS.find(m => m.id === 'dx7')); sim.raf();
   assert.ok(all(), 'add');
@@ -487,9 +493,9 @@ test('project v2 (1c): every track adopted after loads, undo / redo, add and dup
   assert.deepEqual([Object.keys(T().dev).sort(), G.compileTrack(T()).shape], [['i1', 'out'], 'serum']);
   cv.undo(); sim.raf();
   assert.ok(all(), 'undo');
-  assert.deepEqual([T().model, Object.keys(T().dev).sort(), G.compileTrack(T()).shape], ['dx7', ['fx1', 'i1', 'out'], 'classic']);
+  assert.deepEqual([I(T()).model, Object.keys(T().dev).sort(), G.compileTrack(T()).shape], ['dx7', ['fx1', 'i1', 'out'], 'classic']);
   cv.redo(); sim.raf();
-  assert.ok(all() && T().model === 'serum', 'redo');
+  assert.ok(all() && I(T()).model === 'serum', 'redo');
   for (const x of P().tracks) assert.equal(G.compileTrack(x).canonical, true, x.name);
   const json = JSON.parse(JSON.stringify(P()));
   assert.ok(json.tracks.every(x => !('model' in x) && x.dev), 'the autosave / History form: v2 only');
@@ -497,9 +503,9 @@ test('project v2 (1c): every track adopted after loads, undo / redo, add and dup
   const txt = await cv.classicFile();
   const v1 = JSON.parse(txt);
   assert.equal('schema' in v1, false);
-  assert.deepEqual(v1.tracks.map(x => [x.id, x.model, !!x.fx, 'dev' in x]), P().tracks.map(x => [x.id, x.model, true, false]));
+  assert.deepEqual(v1.tracks.map(x => [x.id, x.model, !!x.fx, 'dev' in x]), P().tracks.map(x => [x.id, I(x).model, true, false]));
   const back = S.deserialize(v1);
-  assert.deepEqual(back.tracks.map(x => x.model), P().tracks.map(x => x.model), 'main\'s song.js reads each track\'s instrument');
+  assert.deepEqual(back.tracks.map(x => x.model), P().tracks.map(x => I(x).model), 'main\'s song.js reads each track\'s instrument');
 });
 
 test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / replaces a classic synth in its Simple layout inside that one step; Hardware brings it back (a tap on the current model\'s tile switches its layout both ways); Serum ignores it; the choice persists; the tray never closes itself', async () => {
@@ -518,16 +524,16 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   let n = hsteps();
   const nT = P().tracks.length;
   sh.srcPick('juno60', 'track'); sim.raf();
-  assert.deepEqual([T().model, T().lay && T().lay.i1 && T().lay.i1.ui, cv.instUi(T()), hsteps()], ['juno60', 'flow', 'flow', n + 1]);
+  assert.deepEqual([I(T()).model, T().lay && T().lay.i1 && T().lay.i1.ui, cv.instUi(T()), hsteps()], ['juno60', 'flow', 'flow', n + 1]);
   cv.undo(); sim.raf();
   assert.equal(P().tracks.length, nT, 'one undo takes the add away');
   // a replace (tap in replace mode / a canvas drop): the same, in the replace's step
   n = hsteps();
   sh.srcPick('prophet5', 'replace'); sim.raf();
-  assert.deepEqual([T().model, cv.instUi(T()), hsteps()], ['prophet5', 'flow', n + 1]);
+  assert.deepEqual([I(T()).model, cv.instUi(T()), hsteps()], ['prophet5', 'flow', n + 1]);
   n = hsteps();
   assert.equal(sh.srcDrag.drop('obxa', { over: 'canvas' }), true); sim.raf();
-  assert.deepEqual([T().model, cv.instUi(T()), hsteps()], ['obxa', 'flow', n + 1]);
+  assert.deepEqual([I(T()).model, cv.instUi(T()), hsteps()], ['obxa', 'flow', n + 1]);
   // (2026-10-19) the Serum view: the Serum tile and the Modulators only (remembered); the classics' layout stays Simple
   tap(vb); tap(serum);
   const shownIds = () => tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
@@ -537,7 +543,7 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   sh.cvOpenSources('track'); sim.raf();
   assert.deepEqual([tiles.mode(), tiles.view()], ['track', 'serum'], '+ Track opens the view last used');
   sh.srcPick('serum', 'track'); sim.raf();
-  assert.deepEqual([T().model, !!(T().lay && T().lay.i1 && T().lay.i1.ui), tiles.mode()], ['serum', false, 'replace']);
+  assert.deepEqual([I(T()).model, !!(T().lay && T().lay.i1 && T().lay.i1.ui), tiles.mode()], ['serum', false, 'replace']);
   // Escape: the dropdown first, the tray stays open
   tap(vb);
   assert.deepEqual([sh.cvShellEscape(), tiles.viewOpen(), sh.shell.src.isOpen()], [true, false, true]);
@@ -546,23 +552,23 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   // Hardware: a new track as before (no ui written)
   tiles.setLayout('hw');
   sh.srcDrag.drop('dx7', { over: 'tracks' }); sim.raf();
-  assert.deepEqual([T().model, cv.instUi(T()), !!(T().lay && T().lay.i1 && T().lay.i1.ui)], ['dx7', 'hw', false]);
+  assert.deepEqual([I(T()).model, cv.instUi(T()), !!(T().lay && T().lay.i1 && T().lay.i1.ui)], ['dx7', 'hw', false]);
   // the user's report ("i switched to the simple one and i cant switch back"): Simple, a tap on the current model's tile …
   tiles.setLayout('flow');
   n = hsteps();
   sh.srcPick('dx7', 'replace'); sim.raf();
-  assert.deepEqual([T().model, cv.instUi(T()), cv.hw(), hsteps(), cv.hist.undoLabel], ['dx7', 'flow', null, n + 1, 'Simple layout'], 'Simple: its own step');
+  assert.deepEqual([I(T()).model, cv.instUi(T()), cv.hw(), hsteps(), cv.hist.undoLabel], ['dx7', 'flow', null, n + 1, 'Simple layout'], 'Simple: its own step');
   // … then Hardware and the same tile: back to the hardware panel, one step
   tiles.setLayout('hw');
   sh.srcPick('dx7', 'replace'); sim.raf();
-  assert.deepEqual([T().model, cv.instUi(T()), !!cv.hw(), hsteps(), cv.hist.undoLabel], ['dx7', 'hw', true, n + 2, 'Hardware layout'], 'Hardware again');
+  assert.deepEqual([I(T()).model, cv.instUi(T()), !!cv.hw(), hsteps(), cv.hist.undoLabel], ['dx7', 'hw', true, n + 2, 'Hardware layout'], 'Hardware again');
   // a replace in Hardware on a Simple track: the new synth in Hardware (the tray's switch decides), in the replace's step
   cv.setLayout('flow'); sim.raf();
   n = hsteps();
   sh.srcPick('juno60', 'replace'); sim.raf();
-  assert.deepEqual([T().model, cv.instUi(T()), !!cv.hw(), hsteps()], ['juno60', 'hw', true, n + 1]);
+  assert.deepEqual([I(T()).model, cv.instUi(T()), !!cv.hw(), hsteps()], ['juno60', 'hw', true, n + 1]);
   cv.undo(); sim.raf();
-  assert.deepEqual([T().model, cv.instUi(T())], ['dx7', 'flow'], 'one undo: the DX7 in Simple again');
+  assert.deepEqual([I(T()).model, cv.instUi(T())], ['dx7', 'flow'], 'one undo: the DX7 in Simple again');
   // the tray stays open through picks and drops (only its rail, its ✕ or Escape close it)
   sh.shell.src.open(); sim.raf();
   sh.srcPick('prophet5', 'replace'); sim.raf();
@@ -577,7 +583,7 @@ test('module CPU (1d): the engine\'s stats per Inst / Chain reach the shown trac
   const t = T(), cpu = key => { const m = V().modules.get(key); return m ? (m.bar.children.find(c => c.className === 'cv-cpu') || {}).textContent : null; };
   sim.run(Math.round(sim.ctx().sampleRate * 0.6));
   assert.match(cpu(cvModule.ID.inst), /%$/, 'the instrument module: Inst i0');
-  assert.match(cpu(cvModule.fxKey(t.model)), /%$/, 'the FX module: Chain c0');
+  assert.match(cpu(cvModule.fxKey(I(t).model)), /%$/, 'the FX module: Chain c0');
   assert.equal(cpu(cvModule.ID.out), '', 'OUT: no engine part');
 });
 

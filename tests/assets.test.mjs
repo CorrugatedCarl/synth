@@ -40,9 +40,10 @@ function rig(opts = {}) {
   const edits = [], refreshes = [];
   const st = wtstore.memoryStore();
   const M = A.createAssetManager(Object.assign({
-    ctxOf: () => ctx, post: A.portPoster(nodes), tracks: () => tracks, now: () => clock.t, timers,
+    // (milestone 3 R4: the host hands the sound states — here each plain track is one, its Serum state and rack)
+    ctxOf: () => ctx, post: A.portPoster(nodes), states: () => tracks.map(t => ({ track: t, dev: 'i1', s: t.vals ? t.vals.s || null : null, fx: t.fx })), now: () => clock.t, timers,
     worker: () => null, stores: { wt: () => st, smp: () => smpstore.memoryStore() }, wt: () => Promise.resolve(wt),
-    edit: (t, fn, o) => { fn(t.vals.s); edits.push([t.id, o.label]); }, editFx: (t, fn, o) => { fn(t.fx); edits.push([t.id, o.label]); },
+    edit: (x, fn, o) => { fn(x.s); edits.push([x.track.id, o.label]); }, editFx: (x, fn, o) => { fn(x.fx); edits.push([x.track.id, o.label]); },
     defaultState: () => ({ osc: [{ wt: 'factory:Default', smp: '' }, { wt: 'factory:Default', smp: '' }, { wt: 'factory:Default', smp: '' }], noise: { src: 'noise:White', oneshot: 0 } }),
     refresh: () => refreshes.push(1), persist: () => Promise.resolve(true),
   }, opts));

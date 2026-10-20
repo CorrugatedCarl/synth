@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { bootMain } from './main-sim.mjs';
 import { fakeStorage } from './fakes.mjs';
 import * as cvWorld from '../cv-world.js?v=9';
+import * as CMOD from '../cv-model.js?v=9';
 
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1400, bottom: 700 };
 function scriptedWorld(root) {
@@ -35,6 +36,8 @@ const sim = await bootMain({ ls: fakeStorage({}), hash: '#minimoog', synthTest: 
 const api = sim.api, cv = globalThis.__synthTest.cv, W = cv.world();
 sim.raf(); await sim.settle(5);
 const P = () => api.project(), T = () => P().tracks.find(t => t.id === P().selTrack), V = () => cv.view();
+// (milestone 3 R7: a track has no v1 fields — its instrument and its FX rack are read as devices)
+const I = t => CMOD.instOf(t), FXR = t => { const f = CMOD.fxDevOf(t); return f ? f.dev.fx : undefined; };
 let pid = 300;
 const pe = (el, type, x, y) => el.dispatchEvent({ type, target: el, currentTarget: el, button: 0, buttons: type === 'pointerup' || type === 'pointercancel' ? 0 : 1, pointerId: pid,
   pointerType: 'mouse', isPrimary: true, clientX: x, clientY: y, timeStamp: performance.now(), shiftKey: false, altKey: false, ctrlKey: false, metaKey: false,
@@ -49,25 +52,25 @@ function drag(m, dx, dy, end = 'pointerup') {
 const pos = k => { const m = V().modules.get(k); return [m.x, m.y]; };
 
 test('the replace notice undoes only its own step: tapped at once it is Undo; after a later step (a move) the old instrument comes back as a step of its own and the move stays', () => {
-  const id = T().id, from = T().model;
+  const id = T().id, from = I(T()).model;
   assert.equal(cv.drop('prophet5', null), true);
   const note = sim.$('#notice');
   assert.match(note.textContent, /^Replaced Minimoog with Prophet-5 · tap to undo$/);
   const n1 = cv.hist.u.length;
   note.onclick();
-  assert.deepEqual([P().tracks.find(x => x.id === id).model, cv.hist.u.length], [from, n1 - 1], 'at once: the replacement undone (its step popped)');
+  assert.deepEqual([I(P().tracks.find(x => x.id === id)).model, cv.hist.u.length], [from, n1 - 1], 'at once: the replacement undone (its step popped)');
   assert.equal(cv.drop('prophet5', null), true);
   drag(V().modules.get('i1'), 0, 40);
   assert.deepEqual(pos('i1'), [0, 32], 'moved after the replacement (onto the dots)');
   assert.equal(cv.hist.undoLabel, 'Move Prophet-5');
   sim.$('#notice').onclick();
-  assert.equal(T().model, from, 'the old instrument is back');
+  assert.equal(I(T()).model, from, 'the old instrument is back');
   assert.deepEqual(pos('i1'), [0, 32], 'and the later move is not undone');
   assert.equal(sim.$('#notice').hidden, true, 'the notice cleared');
   cv.undo();
-  assert.deepEqual([T().model, pos('i1')[1]], ['prophet5', 32], 'its own step: Undo brings the Prophet-5 back, still moved');
+  assert.deepEqual([I(T()).model, pos('i1')[1]], ['prophet5', 32], 'its own step: Undo brings the Prophet-5 back, still moved');
   cv.undo();
-  assert.deepEqual([T().model, pos('i1')[1]], ['prophet5', 0], 'then the move');
+  assert.deepEqual([I(T()).model, pos('i1')[1]], ['prophet5', 0], 'then the move');
 });
 
 test('a cancelled drag (pointercancel: a second finger) and a drop on the cell it left record nothing — the redo stack survives; Tidy of a tidy canvas: no step', () => {

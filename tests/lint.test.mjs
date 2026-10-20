@@ -87,6 +87,31 @@ test('§0.4: the tests\' versioned imports, index.html and sw.js carry ?v=' + N,
   assert.equal((/const VERSION = '(\d+)'/.exec(read(ROOT, 'assets.js')) || [])[1], N, 'assets.js VERSION');
 });
 
+// The accessor ratchet (milestone 3, IMPL-3 §4.3 R0; N5): per root file, the code lines that read a track's v1 fields
+// (`t.model`, `tr.vals`, `x.fx` … with the names the 1e code gave tracks and track views), `trk().preset` / `curView().seq`,
+// `fxOf(` and `isSx(` — comment lines and trailing ` // …` comments left out. Each file's count is held in
+// tests/fixtures/accessor-allow.json: above it fails (a new site: read the device — instOf(t, dev), a device view —
+// instead), below it asks to lower the file's count (shrink-only). A file's `sites` (when listed) name each kept line by a
+// fragment of it (`has`) with the reason it stays (`why`: a v1 branch, a device record, a device view …); the dynamic
+// proof is tests/accessor-hook.mjs over the sims.
+const ACC_RE = [/\b(?:t|tr|x|T|v|V)\.(?:model|vals|preset|seq|fx)\b/, /\b(?:trk|curView)\(\)\.(?:model|vals|preset|seq|fx)\b/, /\bfxOf\(/, /\bisSx\(/];
+const codeOf = l => (/^\s*(\/\/|\*|\/\*)/.test(l) ? '' : l.replace(/\s\/\/\s.*$/, ''));
+const accLines = src => src.split('\n').map(codeOf).filter(l => ACC_RE.some(r => r.test(l))).map(l => l.trim());
+test('N5: the accessor ratchet — each root file at its allowlisted count of v1 track-field sites (tests/fixtures/accessor-allow.json)', () => {
+  const allow = JSON.parse(readFileSync(new URL('./fixtures/accessor-allow.json', import.meta.url), 'utf8')).files, bad = [];
+  for (const f of SITE) {
+    const L = accLines(read(ROOT, f)), A = allow[f] || { n: 0 };
+    if (L.length > A.n) bad.push(`${f}: ${L.length} sites, allowed ${A.n} — a new one reads a track's v1 field (use the device: instOf(t, dev) / a device view): ${L.slice(0, 3).join(' | ')}`);
+    else if (L.length < A.n) bad.push(`${f}: ${L.length} sites, allowed ${A.n} — lower its count in accessor-allow.json to ${L.length}`);
+    if (Array.isArray(A.sites)) {
+      if (A.sites.length !== A.n) bad.push(`${f}: ${A.sites.length} listed sites for a count of ${A.n}`);
+      for (const s of A.sites) if (!s || !s.why || !L.some(l => l.includes(s.has))) bad.push(`${f}: the kept site “${s && s.has}” ${s && s.why ? 'is gone (remove it)' : 'has no reason'}`);
+    } else if (!A.why && A.n) bad.push(`${f}: no reason for its ${A.n} sites`);
+  }
+  for (const f of Object.keys(allow)) if (!SITE.includes(f)) bad.push(`${f}: listed, not a root file`);
+  assert.deepEqual(bad, []);
+});
+
 // every test file imports tests/v8-guard.mjs first (the node 24 / V8 crash guard of the parallel suite)
 test('tests: every test file imports ./v8-guard.mjs as its first import', () => {
   const T = new URL('./', import.meta.url);

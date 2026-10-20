@@ -286,11 +286,11 @@ export class ClassicPanel {
     return {
       id: c.id, label: c.label, min: c.min, max: c.max, step: c.step, def: c.def, axis: c.orient === 'h' ? 'x' : 'y', invert: !!c.invert,
       get: () => this.vals[c.id], set: (v, ph) => this.set(c.id, v, ph), end: () => this.gestureEnd(c.id), fmt: v => fmt(c, v),
-      snap: () => ({ tr: this.track, v0: this.vals[c.id], pre0: this.track.preset }),
+      snap: () => ({ iv: this.track, v0: this.vals[c.id], pre0: this.track.preset }),
       restore: k => {
-        if (this.dead || this.track !== k.tr) return;
+        if (this.dead || this.track !== k.iv) return;
         if (this.vals[c.id] !== k.v0) this.set(c.id, k.v0);
-        if (k.tr.preset !== k.pre0) { k.tr.preset = k.pre0; if (this.host.presetTouched) this.host.presetTouched(k.tr); }
+        if (k.iv.preset !== k.pre0) { k.iv.preset = k.pre0; if (this.host.presetTouched) this.host.presetTouched(k.iv); } // (its device view's preset name)
       },
     };
   }

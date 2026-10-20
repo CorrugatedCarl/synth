@@ -18,13 +18,17 @@ import * as CMOD from '../cv-model.js?v=9';
 const peak = x => { let m = 0; for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > m) m = a; } return m; };
 const maxDiff = (x, y, n = Math.min(x.length, y.length)) => { let m = 0; for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(x[i] - y[i])); return m; };
 const KB = 1024;
+// the selected track's current instrument's body element (canvas milestone 3 R6: its own element — no #inst home)
+const instBody = () => globalThis.__synthTest.cv.bodyEl(globalThis.__synthTest.cv.cur());
+// (milestone 3 R7: a track has no v1 fields — its instrument and its FX rack are read as devices)
+const I = t => CMOD.instOf(t), FXR = t => { const f = CMOD.fxDevOf(t); return f ? f.dev.fx : undefined; };
 
 let sim = null;
 async function page() {
   if (!sim) { sim = await bootMain({ hash: '#serum' }); await sim.power(); await sim.settle(30); sim.raf(); }
   return sim;
 }
-const sxTrack = s => s.api.project().tracks.find(t => t.model === 'serum');
+const sxTrack = s => s.api.project().tracks.find(t => I(t).model === 'serum');
 // one edit of the panel (host.edit), the animation frame that posts it, and the messages it posted to the track's node
 async function editFrame(s, t, fn, label = 'Edit') {
   const node = s.nodeOf(t.id);
@@ -37,7 +41,7 @@ async function editFrame(s, t, fn, label = 'Edit') {
 test('§12.6: the page boots on the IndexedDB-less fallback, a Serum track plays from the keyboard, new racks are v2', async () => {
   const s = await page(), t = sxTrack(s);
   assert.ok(t, 'a Serum track (#serum)');
-  assert.equal(t.fx.v, 2, 'v2 FX state for a new track (§2.5)');
+  assert.equal(FXR(t).v, 2, 'v2 FX state for a new track (§2.5)');
   assert.equal(s.api.store.mode, 'ls', 'no IndexedDB here: the Phase-1 localStorage store');
   const c = s.ctx();
   assert.equal(c.modules.length, 13, '§0.3: 12 DSP scripts (mod-core.js last) + engine.js');
@@ -88,8 +92,8 @@ test('§4.1/§4.4/§12.6: CT and seqT travel by part — one drag frame of an LF
 
 test('§12.6/§13.10: prefsChanged recompiles every Serum track (MPE preferences reach CP); other tracks only for rack preferences', async () => {
   const s = await page(), api = s.api;
-  if (!api.project().tracks.some(t => t.model !== 'serum')) api.addTrack(MODELS.find(m => m.id === 'minimoog'));
-  const tracks = api.project().tracks, sx = tracks.filter(t => t.model === 'serum'), other = tracks.filter(t => t.model !== 'serum');
+  if (!api.project().tracks.some(t => I(t).model !== 'serum')) api.addTrack(MODELS.find(m => m.id === 'minimoog'));
+  const tracks = api.project().tracks, sx = tracks.filter(t => I(t).model === 'serum'), other = tracks.filter(t => I(t).model !== 'serum');
   s.raf(); await s.settle(5);
   for (const t of tracks) s.nodeOf(t.id).posted.length = 0;
   api.store.set('synth.sx.prefs', Object.assign({}, api.store.get('synth.sx.prefs', {}), { mpeBendX: 1, mpeYBi: 1 }));
@@ -181,7 +185,7 @@ test('§13.2.5: render-last — the recorded input group renders exactly as a bo
   api.noteOff(60, 0, T0 + 500); api.noteOff(64, 0, T0 + 750);
   const g = api.lastIn.get(t.id);
   assert.deepEqual(g.notes.map(x => [x.n, x.on, x.off]), [[60, 0, 0.5], [64, 0.25, 0.75]]);
-  await assert.rejects(api.renderLast(api.project().tracks.find(x => x.model !== 'serum') || { model: 'minimoog' }, {}));
+  await assert.rejects(api.renderLast(api.project().tracks.find(x => I(x).model !== 'serum') || { model: 'minimoog' }, {}));
   const r = await api.renderLast(t, {});
   assert.match(r.name, /^.+ C4\.wav$/, 'named after the preset and the lowest note (C4 = 60)');
   const RL = { L: s.lastOffline.L, R: s.lastOffline.R, sr: s.lastOffline.ctx.sampleRate };
@@ -232,7 +236,7 @@ test('§14.3: the CPU safeguard — Serum oversampling cap, then quality steps Q
 test('§12.6: MIDI through midi.js — an MPE track gets channelled notes and CC10 as Expression X; others the Phase-1 messages', async () => {
   const s = await page(), api = s.api, t = sxTrack(s), node = s.nodeOf(t.id);
   api.selectTrack(t.id);
-  t.vals.s.global.mpe.on = 1;
+  I(t).vals.s.global.mpe.on = 1;
   node.posted.length = 0;
   api.midi.message([0x91, 62, 100], 1);          // note-on, channel 2
   api.midi.message([0xb1, 10, 127], 2);           // CC10 on member channel 2
@@ -243,7 +247,7 @@ test('§12.6: MIDI through midi.js — an MPE track gets channelled notes and CC
   assert.deepEqual(m.find(x => x.t === 'mpe' && x.k === 'x'), { t: 'mpe', ch: 2, k: 'x', v: 1 });
   assert.ok(m.some(x => x.t === 'mpe' && x.k === 'b'));
   assert.deepEqual(m.find(x => x.t === 'off'), { t: 'off', n: 62, rv: 64 / 127, ch: 2 });
-  t.vals.s.global.mpe.on = 0;
+  I(t).vals.s.global.mpe.on = 0;
   node.posted.length = 0;
   api.midi.message([0x91, 62, 100], 5);
   assert.deepEqual(node.posted.map(x => x.m).find(x => x.t === 'on'), { t: 'on', n: 62, v: 100 / 127 }, 'MPE off: Phase-1 message');
@@ -344,9 +348,9 @@ test('§9.1/§12.6: Resample to a Sample / Granular / Spectral / Multisample osc
   const s = await page(), api = s.api, t = sxTrack(s), H = api.sxHost(t);
   H.edit(st => { st.osc[0].type = 'gran'; st.osc[0].smpo.ops.trim = [0.1, 0.9]; st.osc[1].type = 'wt'; }, { label: 'types' });
   s.raf(); await s.settle(5);
-  const keepS = JSON.stringify(t.vals.s.osc[0].smpo);
+  const keepS = JSON.stringify(I(t).vals.s.osc[0].smpo);
   await api.resampleTo(t, 'AB');
-  const [A, B] = t.vals.s.osc;
+  const [A, B] = I(t).vals.s.osc;
   assert.equal(A.type, 'gran', 'Granular kept');
   assert.match(A.smp, /^smp:/, 'a user sample');
   assert.equal(A.smpo.ops.trim, null, 'the previous sample\'s trim dropped');
@@ -357,8 +361,8 @@ test('§9.1/§12.6: Resample to a Sample / Granular / Spectral / Multisample osc
   assert.ok(row && /^Resample \d+ L$/.test(row.name) && row.folder === 'Renders', 'stored in Renders: ' + JSON.stringify(row && { name: row.name, folder: row.folder }));
   H.edit(st => { st.osc[0].type = 'multi'; }, { label: 'multi' });
   await api.resampleTo(t, 'A');
-  assert.equal(t.vals.s.osc[0].type, 'sample', 'Multisample → Sample');
-  assert.match(t.vals.s.osc[0].smp, /^smp:/);
+  assert.equal(I(t).vals.s.osc[0].type, 'sample', 'Multisample → Sample');
+  assert.match(I(t).vals.s.osc[0].smp, /^smp:/);
   H.edit(st => { st.osc[0].type = 'wt'; st.osc[0].smp = ''; }, { label: 'back' });
   s.raf(); await s.settle(5);
 });
@@ -776,14 +780,14 @@ const modelOf = id => MODELS.find(m => m.id === id);
 function menuOf(s, tr) {
   const row = s.$('#heads').children.find(r => r.dataset && r.dataset.id === tr.id);
   const lab = row.children[1].children[0].children[1], text = lab.children.length ? lab.children.map(c => c.textContent).join('') : lab.textContent; // (.hin + .his + .hiv)
-  return globalThis.__synthTest.shell.instItems(tr).map(o => o.value + '=' + (o.value === tr.model ? text : o.label));
+  return globalThis.__synthTest.shell.instItems(tr).map(o => o.value + '=' + (o.value === I(tr).model ? text : o.label));
 }
 const noteAt = (id, t, n, d = 480) => ({ id, t, d, n, v: 100 });
 
 test('R6: the instrument menu and the track tab name each track\'s voice mode; a chord a track cannot play asks once (tap: a polyphonic model, undoable; Serum: its instrument); legato lines never ask', async () => {
   const s = await bootMain({ hash: '#minimoog' });
   const api = s.api, t = api.project().tracks[0], host = api.roll().host, note = () => s.$('#notice');
-  assert.equal(t.model, 'minimoog');
+  assert.equal(I(t).model, 'minimoog');
   assert.equal(s.$('#tabTrack').textContent, `Track: ${t.name} · Mono`);
   const menu = menuOf(s, t);
   for (const e of ['minimoog=Minimoog · Mono', 'tb303=TB-303 · Mono', 'prophet5=Prophet-5 · Poly 5', 'juno60=Juno-60 · Poly 6', 'jupiter8=Jupiter-8 · Poly 8',
@@ -802,12 +806,12 @@ test('R6: the instrument menu and the track tab name each track\'s voice mode; a
   api.notice(`“${t.name}” is monophonic — its chords play one note. Tap to switch it to the Prophet-5 (5 voices; Undo restores it)`, 0);
   note().onclick();
   const t2 = api.project().tracks[0];
-  assert.equal(t2.model, 'prophet5');
+  assert.equal(I(t2).model, 'prophet5');
   assert.equal(s.$('#tabTrack').textContent, `Track: ${t2.name} · Poly 5`);
   assert.ok(menuOf(s, t2).includes('prophet5=Prophet-5 · Poly 5'));
   assert.equal(note().hidden, true);
   s.$('#tUndo').onclick();
-  assert.equal(api.project().tracks[0].model, 'minimoog', 'undone');
+  assert.equal(I(api.project().tracks[0]).model, 'minimoog', 'undone');
   assert.equal(s.$('#tabTrack').textContent, `Track: ${api.project().tracks[0].name} · Mono`);
   // a poly track: only a chord beyond its voices asks — the Juno-60 (6): 6 notes no, 8 notes yes → the Jupiter-8 (8)
   const j = api.addTrack(modelOf('juno60'));
@@ -817,12 +821,12 @@ test('R6: the instrument menu and the track tab name each track\'s voice mode; a
   assert.equal(note().textContent, `“${j.name}” has 6 voices — a chord of 8 notes drops some. Tap to switch it to the Jupiter-8 (8 voices; Undo restores it)`);
   // a mono Serum patch: the tap opens its instrument (the voicing lives in its panel) instead of replacing the sound
   const x = api.addTrack(modelOf('serum'));
-  x.vals.s.voicing.mono = 1; // (as the panel's Voicing › Mono sets it)
+  I(x).vals.s.voicing.mono = 1; // (as the panel's Voicing › Mono sets it)
   host.edit('Draw', () => x.notes.push(noteAt('x1', 0, 60), noteAt('x2', 0, 63)));
   assert.equal(note().textContent, `“${x.name}” is monophonic — its chords play one note. Tap to open its instrument`);
   note().onclick();
   assert.equal(api.project().selTrack, x.id, 'its track selected');
-  assert.equal(x.model, 'serum', 'the sound is kept');
+  assert.equal(I(x).model, 'serum', 'the sound is kept');
   assert.equal(s.$('#tab-inst').hidden, false, 'the CANVAS view (and the Sources tray to replace it)');
 });
 
@@ -847,7 +851,7 @@ test('R7: Piano Roll previews post aud (B5); the song is sent sorted mid-gesture
   s.$('#tPlay').click();
   // R7 cap display: a Serum track at POLY 16 through Q4 (≤ 8) and Q6 (≤ 4), then a Quality choice
   const x = api.addTrack(modelOf('serum'));
-  x.vals.s.voicing.poly = 16;
+  I(x).vals.s.voicing.poly = 16;
   api.queuePatch(x); s.raf();
   assert.equal(s.$('#tabTrack').textContent, `Track: ${x.name} · Poly 16`);
   const lower = () => { for (const N of api.nodes.values()) N.load = 0; api.nodes.get(x.id).load = 1.2; api.lowerOS(); s.raf(); };
@@ -872,21 +876,21 @@ test('G2 two-finger rollback (gesture.js\'s pointercancel flagged e.gesture === 
   const fire = (el, type, o) => el.dispatchEvent(ev(type, Object.assign({ target: el }, o)));
   const TWO = { gesture: 'two-finger' };
   // classic knob: the first change made the preset "Custom" (null) — the rollback puts the value and the name back
-  const t = api.project().tracks[0], knob = find(s.$('#inst'), n => n.className === 'knob');
+  const t = api.project().tracks[0], knob = find(instBody(), n => n.className === 'knob');
   assert.ok(knob, 'a classic knob');
-  t.preset = 'Fat Bass';
-  const v0 = JSON.stringify(t.vals);
+  I(t).preset = 'Fat Bass';
+  const v0 = JSON.stringify(I(t).vals);
   fire(knob, 'pointerdown'); fire(knob, 'pointermove', { clientY: 200 });
-  assert.notEqual(JSON.stringify(t.vals), v0, 'dragged');
-  assert.equal(t.preset, null, 'Custom while dragging');
+  assert.notEqual(JSON.stringify(I(t).vals), v0, 'dragged');
+  assert.equal(I(t).preset, null, 'Custom while dragging');
   fire(knob, 'pointercancel', Object.assign({ clientY: 200 }, TWO));
-  assert.equal(JSON.stringify(t.vals), v0, 'the value back');
-  assert.equal(t.preset, 'Fat Bass', 'the preset name back');
+  assert.equal(JSON.stringify(I(t).vals), v0, 'the value back');
+  assert.equal(I(t).preset, 'Fat Bass', 'the preset name back');
   fire(knob, 'pointermove', { clientY: 100 });
-  assert.equal(JSON.stringify(t.vals), v0, 'the drag is over');
+  assert.equal(JSON.stringify(I(t).vals), v0, 'the drag is over');
   fire(knob, 'pointerdown'); fire(knob, 'pointermove', { clientY: 200 }); fire(knob, 'pointercancel', { clientY: 200 });
-  assert.notEqual(JSON.stringify(t.vals), v0, 'a plain cancel keeps the value');
-  assert.equal(t.preset, null);
+  assert.notEqual(JSON.stringify(I(t).vals), v0, 'a plain cancel keeps the value');
+  assert.equal(I(t).preset, null);
   // track header rows: a finger selects on its tap's release; a two-finger cancel or a 30 px slide selects nothing
   api.addTrack();
   const [t0, t1] = api.project().tracks.map(x => x.id);
@@ -926,28 +930,28 @@ test('G2 two-finger rollback: the step sequencer\'s Tempo (a knob in the Hardwar
     preventDefault() {}, stopPropagation() {} }, o);
   const fire = (el, type, o) => el.dispatchEvent(ev(type, Object.assign({ target: el }, o)));
   const t = api.project().tracks[0];
-  assert.equal(t.model, 'tb303');
+  assert.equal(I(t).model, 'tb303');
   const cv = globalThis.__synthTest.cv;
   for (const layout of ['hw', 'flow']) {
     if (layout === 'flow') cv.setLayout('flow');
     assert.equal(cv.instUi(api.project().tracks[0]), layout);
-    const tempo = find(s.$('#inst'), n => n.attrs && n.attrs.role === 'slider' && n.attrs['aria-label'] === 'Tempo');
-    const step = find(s.$('#inst'), n => n.className === 'snote' && n.attrs && n.attrs['aria-label'] === 'Step 2 note');
+    const tempo = find(instBody(), n => n.attrs && n.attrs.role === 'slider' && n.attrs['aria-label'] === 'Tempo');
+    const step = find(instBody(), n => n.className === 'snote' && n.attrs && n.attrs['aria-label'] === 'Step 2 note');
     assert.ok(tempo && step, layout + ': Tempo and a step note');
     assert.equal(tempo.className, layout === 'hw' ? 'knob hw-tempo' : 'num', layout + ': the hardware TEMPO knob / today\'s number box');
-    const tr = api.project().tracks[0], bpm0 = tr.seq.bpm;
+    const tr = api.project().tracks[0], bpm0 = I(tr).seq.bpm;
     fire(tempo, 'pointerdown'); fire(tempo, 'pointermove', { clientY: 260 });
-    assert.notEqual(tr.seq.bpm, bpm0, layout);
+    assert.notEqual(I(tr).seq.bpm, bpm0, layout);
     fire(tempo, 'pointercancel', { gesture: 'two-finger' });
-    assert.equal(tr.seq.bpm, bpm0, layout);
-    tr.seq.pat[1].g = 0;
-    const n0 = tr.seq.pat[1].n;
+    assert.equal(I(tr).seq.bpm, bpm0, layout);
+    I(tr).seq.pat[1].g = 0;
+    const n0 = I(tr).seq.pat[1].n;
     fire(step, 'pointerdown'); fire(step, 'pointermove', { clientY: 250 });
-    assert.deepEqual([tr.seq.pat[1].g, tr.seq.pat[1].n !== n0], [1, true], layout + ': the drag made the rest a note');
+    assert.deepEqual([I(tr).seq.pat[1].g, I(tr).seq.pat[1].n !== n0], [1, true], layout + ': the drag made the rest a note');
     fire(step, 'pointercancel', { gesture: 'two-finger' });
-    assert.deepEqual([tr.seq.pat[1].g, tr.seq.pat[1].n], [0, n0], layout + ': a rest again');
+    assert.deepEqual([I(tr).seq.pat[1].g, I(tr).seq.pat[1].n], [0, n0], layout + ': a rest again');
     fire(step, 'pointerdown'); fire(step, 'pointermove', { clientY: 250 }); fire(step, 'pointercancel');
-    assert.equal(tr.seq.pat[1].g, 1, layout + ': a plain cancel keeps');
+    assert.equal(I(tr).seq.pat[1].g, 1, layout + ': a plain cancel keeps');
   }
 });
 
@@ -958,26 +962,26 @@ test('Hardware panels in the page: a DX7 (fixture) — button 18 + OPERATOR SELE
     preventDefault() {}, stopPropagation() {} }, o);
   const fire = (el, type, o) => el.dispatchEvent(ev(type, Object.assign({ target: el }, o)));
   const t = api.project().tracks[0], cv = globalThis.__synthTest.cv;
-  assert.equal(t.model, 'dx7');
+  assert.equal(I(t).model, 'dx7');
   assert.ok(cv.hw(), 'the hardware panel rendered');
-  const btn = n => find(s.$('#inst'), x => x.attrs && x.attrs['data-n'] === String(n));
+  const btn = n => find(instBody(), x => x.attrs && x.attrs['data-n'] === String(n));
   fire(btn(18), 'pointerdown');
-  const opsel = find(s.$('#inst'), x => x.attrs && x.attrs['aria-label'] === 'Operator select');
+  const opsel = find(instBody(), x => x.attrs && x.attrs['aria-label'] === 'Operator select');
   fire(opsel, 'pointerdown');
   assert.equal(btn(18).parentNode.attrs['data-ctl'], 'r2', 'button 18 addresses operator 2\'s coarse frequency');
-  const data = find(s.$('#inst'), x => x.attrs && x.attrs['aria-label'] === 'Data entry'), r0 = t.vals.r2;
-  t.preset = 'X';
+  const data = find(instBody(), x => x.attrs && x.attrs['aria-label'] === 'Data entry'), r0 = I(t).vals.r2;
+  I(t).preset = 'X';
   fire(data, 'pointerdown', { clientY: 300 }); fire(data, 'pointermove', { clientY: 200 }); fire(data, 'pointerup', { clientY: 200, buttons: 0 });
-  assert.ok(t.vals.r2 > r0, 'DATA ENTRY raised r2');
-  assert.equal(t.preset, null, 'Custom');
-  const lcd = find(s.$('#inst'), x => x.className === 'hw-lcd');
+  assert.ok(I(t).vals.r2 > r0, 'DATA ENTRY raised r2');
+  assert.equal(I(t).preset, null, 'Custom');
+  const lcd = find(instBody(), x => x.className === 'hw-lcd');
   assert.match(lcd.children[1].textContent, /^OP2 COARSE=/);
   // the TB-303: a key in PITCH mode writes the cursor step (step 1), its grid follows
   api.setTrackModel(t, 'tb303');
-  const tb = api.project().tracks[0], key = find(s.$('#inst'), x => x.attrs && x.attrs['aria-label'] === 'Key E');
-  tb.seq.pat[0].g = 0;
+  const tb = api.project().tracks[0], key = find(instBody(), x => x.attrs && x.attrs['aria-label'] === 'Key E');
+  I(tb).seq.pat[0].g = 0;
   fire(key, 'pointerdown');
-  assert.deepEqual([tb.seq.pat[0].n, tb.seq.pat[0].g], [4, 1]);
+  assert.deepEqual([I(tb).seq.pat[0].n, I(tb).seq.pat[0].g], [4, 1]);
 });
 
 test('R6: the chord notice judges a switch on the model\'s last-used values — a saved Unison Prophet-5 is skipped for the Juno-60 (6 voices); the tap gives a polyphonic track', async () => {
@@ -988,7 +992,7 @@ test('R6: the chord notice judges a switch on the model\'s last-used values — 
   assert.equal(note().textContent, txt);
   note().onclick();
   const t2 = api.project().tracks[0];
-  assert.equal(t2.model, 'juno60');
+  assert.equal(I(t2).model, 'juno60');
   assert.equal(s.$('#tabTrack').textContent, `Track: ${t2.name} · Poly 6`);
 });
 
@@ -1056,9 +1060,9 @@ test('2a §7.10: the live wheel also reaches every track with a Mod Wheel cable 
   // the patch: the row compiles into b's Serum exactly as the same row written into its matrix
   const P = api.buildPatch(b);
   b.mods = [];
-  const P0 = api.buildPatch(b), sb = b.vals.s;
+  const P0 = api.buildPatch(b), sb = I(b).vals.s;
   assert.equal(P.serum.mN, P0.serum.mN + 1, 'one more active row');
-  const k = core.addMod(sb, b.fx, 'wheel', 'f.cutoff', { amt: r.row.amt, bi: r.row.bi });
+  const k = core.addMod(sb, FXR(b), 'wheel', 'f.cutoff', { amt: r.row.amt, bi: r.row.bi });
   assert.deepEqual(api.buildPatch(b), P, 'canvas row ≡ the Serum\'s own row (its WHEEL tile)');
   sb.matrix[k] = core.normRow(null);
   b.mods = [r.row];

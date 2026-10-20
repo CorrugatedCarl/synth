@@ -39,10 +39,18 @@ export function decode(data) {
   return null;
 }
 
-// A track receives MPE (§6.17, §12.6): a Serum track whose state has global.mpe.on
+// A track receives MPE (§6.17, §12.6): a Serum whose state has global.mpe.on — (canvas, milestone 3) any Serum instrument of
+// the track (its devices); a track without devices (main's, the tests' plain ones): its own state
 export function isMpe(t) {
-  const s = t && t.model === 'serum' && t.vals && t.vals.s, g = s && s.global;
-  return !!(g && g.mpe && g.mpe.on);
+  const on = d => { const g = d && d.vals && d.vals.s && d.vals.s.global; return !!(g && g.mpe && g.mpe.on); };
+  return !!t && sxInsts(t).some(on);
+}
+// a track's Serum instrument devices (canvas: its dev records; a track without devices — main's, the tests' plain ones —:
+// itself when it is a Serum)
+export function sxInsts(t) {
+  if (!t) return [];
+  if (t.dev && typeof t.dev === 'object') return Object.keys(t.dev).map(k => t.dev[k]).filter(d => d && d.kind === 'synth' && d.model === 'serum' && d.vals);
+  return t.model === 'serum' && t.vals ? [t] : [];
 }
 
 // The tracks an input plays (Phase 1): src 0 = on-screen / computer keyboard → the selected track and the armed tracks;
@@ -164,13 +172,14 @@ export function writeCC(s, dest, val, fxSet, fx) {
 //   heldNotes(src) → note numbers             notes held from input src (All Notes Off / All Sound Off)
 //   programChange(trs, n)                     MIDI program change (the preset browser's list, §9.10)
 //   modUI(v), bendUI(v01)                     the on-screen wheels follow the controller (no callback)
-//   track(id) → track | undefined, isSx(t)
-//   instsOf(t) → [{id, s, fx, prim}]          optional (stage 1e): the track's Serum instruments, the primary first —
-//                                               each has its own learn map (s.midi) and FX state; absent: the track
-//                                               itself when isSx (its id null, prim)
+//   track(id) → track | undefined
+//   instsOf(t) → [{id, s, fx, prim}]          (stage 1e) the track's Serum instruments, the primary first — each has its
+//                                               own learn map (s.midi) and FX state; absent (the tests' plain v1 tracks):
+//                                               the track itself when it is a Serum (its id null, prim)
 //   fxSet(t, id, n, dev)                      an FX destination's base value in the FX state of track t's instrument dev
 //                                               (null: the primary's)
-//   changed(t, patch, refresh)                a Serum state was edited by MIDI: dirty mark, (queue a patch), persist,
+//   changed(t, patch, refresh, dev?)          a Serum state was edited by MIDI (dev: the instrument learned / forgotten;
+//                                               none: a mapped controller, any Serum of the track): dirty mark, (queue a patch), persist,
 //                                               (repaint the panel), in this order
 //   notice(text, ms)
 //   modCC(ch, cc, v01, ts)                    optional (canvas 2b): every control change (0–127 → 0…1) for the track's CC
@@ -187,7 +196,8 @@ export function createMidi(host) {
   const navOf = () => ('nav' in H ? H.nav : globalThis.navigator);
   const onmidimessage = e => message(e.data, e.timeStamp);
   // a track's Serum instruments (stage 1e), and the one a learn / forget names (dev null: the primary)
-  const instsOf = t => (typeof H.instsOf === 'function' ? H.instsOf(t) : H.isSx(t) ? [{ id: null, s: t.vals.s, fx: t.fx, prim: true }] : []);
+  // (no host instsOf: a v1 track — the tests' — is its own one Serum)
+  const instsOf = t => (typeof H.instsOf === 'function' ? H.instsOf(t) : t && !t.dev ? sxInsts(t).map(d => ({ id: null, s: d.vals.s, fx: d.fx, prim: true })) : []);
   const instOf = (t, dev) => instsOf(t).find(x => (dev == null ? x.prim : x.id === dev)) || null;
 
   /* ---- MIDI Learn (§11.8): the next controller 0–119 is stored in s.midi; learned controllers write their destinations.

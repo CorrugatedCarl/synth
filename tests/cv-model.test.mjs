@@ -14,7 +14,7 @@ import * as C from '../serum-core.js?v=9';
 const jclone = x => JSON.parse(JSON.stringify(x));
 // an adopted Serum track with a Juno beside it feeding a panel (a reverb), as the fixture of cv-graph's 2b tests
 function duo() {
-  const t = MO.adopt({ tracks: [Object.assign(S.newTrack(null, { model: 'serum' }), { vals: { s: C.normalizeSerum(C.defaultSerum()) }, fx: C.defaultFx2() })] }).tracks[0];
+  const t = MO.adopt({ tracks: [Object.assign(S.newTrack(null, { model: 'serum' }), { vals: { s: C.normalizeSerum(C.defaultSerum()) }, fx: C.defaultFx2() })] }, { guard: true }).tracks[0]; // (R7: the guard)
   const i2 = MO.addInst(t, 'juno60', { vals: {} }), fx = MO.addPanel(t, {});
   C.newInstance(t.dev[fx].fx, 'rev', { rack: 0 });
   MO.connect(t, i2 + '.out', fx + '.in');
@@ -119,7 +119,7 @@ test('2b setMod on non-native rows (normRow\'s rules by proxy): fields, never th
   assert.deepEqual(t.mods.map(r => r.id), ['r1', 'r2', 'r3']);
 });
 
-test('2b rows go with what they end on or start at: a model change keeps the rows whose knob the new model has, removeInst drops its linked rows, the accessor too', () => {
+test('2b rows go with what they end on or start at: a model change keeps the rows whose knob the new model has, removeInst drops its linked rows, the primary\'s setModel too', () => {
   const { t, i2 } = duo();
   MO.addModDev(t, 'lfo'); MO.addModDev(t, 'note');
   MO.addMod(t, 'l1.out', i2 + ':cf'); MO.addMod(t, 'l1.out', i2 + ':lr'); MO.addMod(t, 'nt.out', i2 + ':hp'); MO.addMod(t, 'l1.out', i2 + ':ch');
@@ -137,7 +137,7 @@ test('2b rows go with what they end on or start at: a model change keeps the row
   const u = duo().t;
   MO.addModDev(u, 'lfo');
   MO.addMod(u, 'l1.out', 'i1:f.cutoff'); MO.addMod(u, 'i1/lfo2.out', 'i1:a.wt');
-  u.model = 'juno60'; // (the accessor: setTrackModel)
+  MO.setModel(u, 'i1', 'juno60', { vals: {} }); // (the primary: setTrackModel's setModel, R5)
   assert.deepEqual([u.mods, 'l1' in u.dev], [[], true], 'no Serum knob survives; the module stays');
   assert.equal(MO.setModel(u, 'i1', 'minimoog', { vals: {} }).notice, '');
 });

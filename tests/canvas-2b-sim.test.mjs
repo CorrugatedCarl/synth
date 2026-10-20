@@ -16,6 +16,7 @@ import * as CG from '../cv-graph.js?v=9';
 import * as C from '../serum-core.js?v=9';
 import * as CM from '../cv-mods.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import * as CMOD from '../cv-model.js?v=9';
 
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 };
 function scriptedWorld(root) {
@@ -42,6 +43,8 @@ const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { c
 const api = sim.api, cv = globalThis.__synthTest.cv, sh = globalThis.__synthTest.shell, M = cv.mod, U = globalThis.__synthTest.modUI;
 await sim.power(); sim.raf(); await sim.settle(20); sim.raf();
 const P = () => api.project(), T = () => P().tracks.find(t => t.id === P().selTrack), V = () => cv.view();
+// (milestone 3 R7: a track has no v1 fields — its instrument and its FX rack are read as devices)
+const I = t => CMOD.instOf(t), FXR = t => { const f = CMOD.fxDevOf(t); return f ? f.dev.fx : undefined; };
 const hsteps = () => cv.hist.u.length;
 const keys = () => [...V().modules.keys()].sort().join(',');
 const note = () => sim.$('#notice').textContent;
@@ -316,7 +319,7 @@ test('(U5) a Serum\'s OWN FX knob with a canvas cable: the FX module\'s rack is 
   assert.equal(iid, 'rev');
   M.opts.onMod('l1.out', 'i1:fx.rev.mix'); sim.raf();
   assert.deepEqual(rows(a), 'r1:l1.out>i1:f.cutoff,r2:l1.out>i1:fx.rev.mix');
-  const rec = cv.fxTab, was = { ui: rec.ui, trackId: rec.trackId, dev: rec.dev, key: rec.key, sx: rec.sx };
+  const rec = cv.fxRec(a, 'i1/fx'), was = { ui: rec.ui, trackId: rec.trackId, dev: rec.dev, key: rec.key, sx: rec.sx }; // (R6: its FX module's record)
   Object.assign(rec, { ui: { paintMods: f => calls.push(f('fx.rev.mix').map(r => r.id + ':' + r.src + ':' + r.label).join('|') + ' / ' + f('fx.rev.size').length), refresh() {}, destroy() {} }, trackId: a.id, dev: 'i1', key: 'i1/fx', sx: true });
   try {
     U.modHalos(a);
@@ -449,10 +452,10 @@ test('(U10, U11) setTrackModel names the device being replaced and drops the hal
   assert.deepEqual([rows(j).split(',').length, U.mons.has(k)], [2, true]);
   const why = cv.setTrackModel(j, 'minimoog'); sim.raf();
   assert.equal(why, '1 modulation cable to the Juno-60 removed: the new model has no such knobs');
-  assert.deepEqual([T().model, rows(T()).split(',').length, U.mons.has(k)], ['minimoog', 1, false]);
+  assert.deepEqual([I(T()).model, rows(T()).split(',').length, U.mons.has(k)], ['minimoog', 1, false]);
   cv.undo(); sim.raf();
   for (let i = 0; i < 40 && cv.mount && cv.mount(); i++) sim.raf();
-  assert.deepEqual([T().model, rows(T()).split(',').length], ['juno60', 2]);
+  assert.deepEqual([I(T()).model, rows(T()).split(',').length], ['juno60', 2]);
   U.halos(T());
   assert.equal(U.mons.has(k), true);
 });
@@ -484,7 +487,7 @@ test('(2b halos) a shared panel\'s knob with a canvas cable: modHalos paints the
   const pid = Object.keys(j.dev).find(k => j.dev[k].kind === 'panel'), iid = cv.fx.addEffect(pid, 'rev'), dst = pid + ':fx.' + iid + '.mix';
   sim.raf();
   M.opts.onMod('l1.out', dst); sim.raf();
-  const rec = cv.fxTab, was = { ui: rec.ui, trackId: rec.trackId, dev: rec.dev, key: rec.key, sx: rec.sx };
+  const rec = cv.fxRec(j, pid), was = { ui: rec.ui, trackId: rec.trackId, dev: rec.dev, key: rec.key, sx: rec.sx }; // (R6: the panel module's record)
   const calls = [], lives = [];
   const showRows = f => ['fx.' + iid + '.mix', 'fx.' + iid + '.size'].map(id => f(id).map(r => [r.id, r.src, r.label, r.pol, r.amt].join(':')).join('|')).join(' / ');
   Object.assign(rec, { ui: { paintMods: f => calls.push(showRows(f)), setLive: f => lives.push(f === null ? 'off' : f('fx.' + iid + '.mix', 0.5) + '/' + f('fx.' + iid + '.size', 0.5)), refresh() {}, destroy() {} }, trackId: j.id, dev: pid, key: pid, sx: false });

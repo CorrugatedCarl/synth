@@ -5,7 +5,7 @@
 // main.js (`tables`, SPEC-serum §7.5, §11.8) and its panel host (`wtHost`, §8.8) and generalises them to every asset
 // kind of §9.1 (samples, multisamples, spectral analyses, wavetables played as samples, shaped impulse responses).
 //
-//   const tables = createAssetManager({ ctxOf, post, worker, stores, tracks, edit, defaultState, refresh, … });
+//   const tables = createAssetManager({ ctxOf, post, worker, stores, states, edit, defaultState, refresh, … });
 //
 // Options (all optional; defaults = the browser behaviour):
 //   ctxOf()                           the live AudioContext or null (main.js `ctx`)
@@ -20,12 +20,13 @@
 //   stores {wt, smp}                  () → Promise<store>: the wtstore / smpstore instances (default: IndexedDB, else the
 //                                     in-memory store)
 //   wt(), smp(), gen()                → Promise<module>: wt.js / smp.js / smpgen.js (default: dynamic imports)
-//   tracks()                          the project's tracks: objects with `id`, `name`, `vals.s` (Serum state, when the
-//                                     track is a Serum track) and `fx` (its FX state); every track, so that Convolve
-//                                     IRs of classic-model racks are found too
-//   edit(track, fn, {label})          a Serum-state edit of a track: fn(s) (main.js sxEdit; a user table deleted, a sample
-//                                     relinked)
-//   editFx(track, fn, {label})        an FX-state edit of a track: fn(fx) (a relinked Convolve IR; without it Convolve
+//   states()                          the project's sound states (canvas milestone 3, R4): [{ track, dev, s, fx }] — every
+//                                     Serum instrument of every track (s its Serum state, fx its own FX state) and every
+//                                     FX panel (s null, fx its state), `track` its track ({ id, name }); every one, so
+//                                     that a second Serum's samples and Convolve IRs of classic-model racks count too
+//   edit(state, fn, {label})          a Serum-state edit of one of them: fn(s) (main.js sxEdit on its device; a user table
+//                                     deleted, a sample relinked)
+//   editFx(state, fn, {label})        an FX-state edit of one of them: fn(fx) (a relinked Convolve IR; without it Convolve
 //                                     instances keep the missing id)
 //   defaultState()                    a default Serum state (serum-core defaultSerum; the replacement sources)
 //   refresh()                         the user rows changed or the sample modules loaded (main.js sxRefresh)
@@ -47,8 +48,8 @@
 // `entry`, `entries`, `build`, `source`, `gc`, `gcSoon`, `trim`, `update`, `list`, `embed`, `restore`, `drop`) with
 //   ensure(needs, {trackId, node, s, fx, convMax}?) → Promise   resolves once every id is posted or has failed (never
 //                                     rejects); `s` / `fx` (the states the needs were compiled from) are REQUIRED for
-//                                     `~opsKey` / non-default `~shapeKey` ids of anything that is not a track (tracks
-//                                     are also found through tracks()); `convMax` (s, FXP.convMax: the §14.3 Q3 cap)
+//                                     `~opsKey` / non-default `~shapeKey` ids of anything that is not a project state
+//                                     (those are also found through states()); `convMax` (s, FXP.convMax: the §14.3 Q3 cap)
 //                                     rebuilds the posted shaped IRs at that length when it changes. The
 //                                     preset-preview node passes trackId 'preview', its node and the preset's states:
 //                                     ensure(needs, {trackId: 'preview', node, s: preset.v.s, fx: preset.fx}); it is
@@ -390,7 +391,8 @@ const errText = err => String((err && err.message) || err);
 export function createAssetManager(o = {}) {
   const ctxOf = typeof o.ctxOf === 'function' ? o.ctxOf : () => null;
   const post = typeof o.post === 'function' ? o.post : () => false;
-  const tracks = typeof o.tracks === 'function' ? o.tracks : () => [];
+  const states = () => { const L = typeof o.states === 'function' ? o.states() : null; return Array.isArray(L) ? L.filter(x => x && typeof x === 'object') : []; };
+  const names = L => [...new Set(L.map(x => (x.track && x.track.name) || ''))]; // (the tracks a list of states belongs to, once each)
   const refresh = typeof o.refresh === 'function' ? o.refresh : () => {};
   const notify = typeof o.notify === 'function' ? o.notify : () => {};
   const progress = typeof o.progress === 'function' ? o.progress : () => {};
@@ -542,7 +544,7 @@ export function createAssetManager(o = {}) {
     if (at.s) learnState(at.s);
     if (at.fx) learnFx(at.fx);
   }
-  const learnTracks = () => { for (const t of tracks()) { if (t && t.vals && t.vals.s) learnState(t.vals.s); if (t && t.fx) learnFx(t.fx); } };
+  const learnTracks = () => { for (const st of states()) { if (st.s) learnState(st.s); if (st.fx) learnFx(st.fx); } };
   function opsFor(base, key) {
     if (!key) return null;
     const k = base + '~' + key;
@@ -1294,14 +1296,13 @@ export function createAssetManager(o = {}) {
     // editFx()) and every user multisample whose zones did now uses `to` (the content-addressed id of the new file)
     async relink(from, to) {
       if (!from || !to || from === to) return;
-      for (const t of tracks()) {
-        if (!t) continue;
-        const s = t.vals && t.vals.s;
+      for (const st of states()) {
+        const s = st.s;
         if (s && Array.isArray(s.osc) && s.osc.some(O => O && (O.smp === from || O.multi === from)) && typeof o.edit === 'function') {
-          o.edit(t, x => { for (const O of x.osc) if (O) { if (O.smp === from) O.smp = to; if (O.multi === from) O.multi = to; } }, { label: 'Relink sample' });
+          o.edit(st, x => { for (const O of x.osc) if (O) { if (O.smp === from) O.smp = to; if (O.multi === from) O.multi = to; } }, { label: 'Relink sample' });
         }
-        if (convIrs(t.fx).includes(from) && typeof o.editFx === 'function') {
-          o.editFx(t, fx => { for (const I of convInstances(fx)) if (I.sub && I.sub.ir === from) I.sub.ir = to; }, { label: 'Relink impulse response' });
+        if (convIrs(st.fx).includes(from) && typeof o.editFx === 'function') {
+          o.editFx(st, fx => { for (const I of convInstances(fx)) if (I.sub && I.sub.ir === from) I.sub.ir = to; }, { label: 'Relink impulse response' });
         }
       }
       if (idKind(from) !== 'smp') return;
@@ -1363,7 +1364,7 @@ export function createAssetManager(o = {}) {
       return id;
     },
     // the tracks of this project whose Serum state uses a user table / noise (the panel names them before a delete)
-    users: id => tracks().filter(t => t.vals && t.vals.s && userIdsOf(t.vals.s).includes(id)).map(t => t.name),
+    users: id => names(states().filter(x => x.s && userIdsOf(x.s).includes(id))),
     // deletes a user table / noise from this browser's store; every sound of the project that used it switches to the
     // default source (Phase-1 §8.8: a missing table would play silence) — OSC A/B/C tables to the default table, a
     // table played as a sample (§9.4.8) to the default sample source, a spectral filter made from it keeps its curve
@@ -1374,9 +1375,9 @@ export function createAssetManager(o = {}) {
       await (await wtStore()).del(id);
       M.user.delete(id);
       const d = typeof o.defaultState === 'function' ? o.defaultState() : null;
-      for (const t of d && typeof o.edit === 'function' ? tracks() : []) {
-        if (!t.vals || !t.vals.s || !userIdsOf(t.vals.s).includes(id)) continue;
-        o.edit(t, s => {
+      for (const st of d && typeof o.edit === 'function' ? states() : []) {
+        if (!st.s || !userIdsOf(st.s).includes(id)) continue;
+        o.edit(st, s => {
           const dO = k => (d.osc && (d.osc[k] || d.osc[0])) || {};
           (Array.isArray(s.osc) ? s.osc : []).forEach((O, k) => {
             if (!O) return;
@@ -1735,7 +1736,7 @@ export function createAssetManager(o = {}) {
     users: id => {
       const multis = M.smpRows.filter(r => r.kind === 'multi' && Array.isArray(r.smps) && r.smps.includes(id)).map(r => r.id);
       const uses = O => O && (O.smp === id || O.multi === id || (O.multi && multis.includes(O.multi)));
-      return tracks().filter(t => t && ((t.vals && t.vals.s && Array.isArray(t.vals.s.osc) && t.vals.s.osc.some(uses)) || convIrs(t.fx).includes(id))).map(t => t.name);
+      return names(states().filter(st => (st.s && Array.isArray(st.s.osc) && st.s.osc.some(uses)) || convIrs(st.fx).includes(id)));
     },
     // "Switch to Single Sample": the recent voice's zone sample as a user sample of its own
     saveFrom: async (osc, kind) => {
