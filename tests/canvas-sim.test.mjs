@@ -462,17 +462,18 @@ test('track switch (1c): the frames and the camera at once, the bodies over the 
   assert.equal(vp.hasAttribute('data-cv-mounting'), false);
   api.selectTrack(a.id);
   assert.deepEqual([V().trackId, vp.hasAttribute('data-cv-mounting')], [a.id, true], 'the new frames now, hidden');
-  assert.notEqual(cv.panel() && cv.panel().track, a, 'its panel not built yet (the next frame)');
+  const ptr = () => cv.panel() && cv.panel().track.track; // (milestone 3 R1: a panel's track is its instrument's view)
+  assert.notEqual(ptr(), a, 'its panel not built yet (the next frame)');
   sim.raf();
-  if (a.model !== 'serum') assert.equal(cv.panel().track, a, 'the first frame: the nearest body (the instrument) built');
+  if (a.model !== 'serum') assert.equal(ptr() === a, true, 'the first frame: the nearest body (the instrument) built');
   await done();
   assert.equal(vp.hasAttribute('data-cv-mounting'), false, 'shown once every body is in');
-  if (a.model !== 'serum') assert.equal(cv.panel().track, a, 'the panel is the new track\'s');
+  if (a.model !== 'serum') assert.equal(ptr() === a, true, 'the panel is the new track\'s');
   // an edit while mounting completes the switch at once
   api.selectTrack(b.id);
   assert.equal(vp.hasAttribute('data-cv-mounting'), true);
   api.setTrackModel(b, 'prophet5');
-  assert.deepEqual([vp.hasAttribute('data-cv-mounting'), cv.panel().track === T(), T().model], [false, true, 'prophet5']);
+  assert.deepEqual([vp.hasAttribute('data-cv-mounting'), ptr() === T(), T().model], [false, true, 'prophet5']);
 });
 
 test('project v2 (1c): every track adopted after loads, undo / redo, add and duplicate; the canonical compile; Save as classic project', async () => {

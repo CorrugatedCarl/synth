@@ -252,10 +252,14 @@ const curDevs = new Map(); // track id → its current instrument
 // (stage 1f: one instrument per track in the UI — the current instrument is always the primary; curDevs / setCur stay for
 // the cv.add / cv.setCur hooks and milestone 3's parts, unread here)
 const curOf = t => CMOD.primId(t);
-const trOf = x => (x && x.track) || x, dvOf = x => (x && x.track ? x.devId : null);
+// (milestone 3, R1) every instrument has its view, the primary too (instView never hands out the track): dvOf(x) its device
+// (a bare track: its primary), isPrim(x) the track's primary; a view's id is its track's for the primary until R4 re-keys
+// every session map to 'trackId/dev'
+const trOf = x => (x && x.track) || x, dvOf = x => (x && x.track ? x.devId : x && x.dev ? CMOD.primId(x) : null);
+const isPrim = x => !x || !x.track || x.devId === CMOD.primId(x.track);
 const VIEW = {
   get d() { return (this.track.dev && this.track.dev[this.devId]) || {}; },
-  get id() { return this.track.id + '/' + this.devId; },
+  get id() { return this.devId === CMOD.primId(this.track) ? this.track.id : this.track.id + '/' + this.devId; },
   get name() { return this.track.name; }, get color() { return this.track.color; }, get notes() { return this.track.notes; },
   get prim() { return this.devId; },
   get model() { return this.d.model; },
@@ -268,7 +272,8 @@ const VIEW = {
 };
 const views = new WeakMap(); // track → Map(dev → its view)
 function instView(t, dev) {
-  if (!t || !t.dev || dev == null || dev === CMOD.primId(t) || !CMOD.instOf(t, dev)) return t;
+  if (dev == null && t && t.dev) dev = CMOD.primId(t);
+  if (!t || !t.dev || dev == null || !CMOD.instOf(t, dev)) return t;
   let M = views.get(t);
   if (!M) views.set(t, M = new Map());
   let v = M.get(dev);
@@ -660,7 +665,7 @@ function valChanged(t, id, ph) { // (t: a device view, stage 1e; ph (2b U2): a d
   if (ph === 'end') { if (N) N.modsHold = false; queuePatch(tr); return; } // (the gesture's end writes no value: the held repost goes with the frame — a rollback's preset name stays)
   if (id === 'alg') drawAlgo();
   if (t.preset) { t.preset = null; renderHeads(); }
-  const k = tr.id + '/' + (dvOf(t) || CMOD.primId(tr));
+  const k = tr.id + '/' + dvOf(t);
   if (N && ph === 'move') N.modsHold = true; // (postMods: the transfer reposts of a cabled knob's drag coalesced)
   cpVer.set(k, (cpVer.get(k) || 0) + 1); // ((C4) the halo transfers' cache key: the instrument's values moved)
   queuePatch(tr); persist();
@@ -1682,7 +1687,7 @@ function renderNav() {
 // switches its layout (its own step), so the tray's switch goes both ways. Stage 1e: tr0 a device view — that instrument
 // is replaced (cv-model setModel: its kept-FX rules); the track's primary as before (tr.model: the 1c reshape)
 function setTrackModel(tr0, id, o = null) {
-  const tr = trOf(tr0), dev = dvOf(tr0) || CMOD.primId(tr), v = instView(tr, dev), prim = dev === CMOD.primId(tr);
+  const tr = trOf(tr0), dev = dvOf(tr0), v = instView(tr, dev), prim = dev === CMOD.primId(tr);
   const ui = o && (o.ui === 'flow' || o.ui === 'hw') && !modelById(id).custom ? o.ui : null;
   if (id === v.model) { if (ui && tr === trk() && instUi(tr, dev) !== ui) cvSetLayout(ui, dev); return; }
   flush(); // a pending save of the outgoing model's values must not be dropped
@@ -1759,14 +1764,14 @@ const classicHost = {
   // (2b, IMPL-2b §6.2) the press-and-hold / right-click mod menu of a classic control: its canvas rows (Bypass / Disconnect,
   // one step each), Connect to… (the source picker); the panel's `track` is a device view
   modMenu: {
-    rows: (v, ctl) => { const t = trOf(v), dev = dvOf(v) || CMOD.primId(t); return t === trk() ? CG.modRowsFor(t, dev).filter(r => r.dst === dev + ':' + ctl).map(r => ({ id: r.id, src: r.src, label: modLabel(r.src), byp: !!r.byp })) : []; },
+    rows: (v, ctl) => { const t = trOf(v), dev = dvOf(v); return t === trk() ? CG.modRowsFor(t, dev).filter(r => r.dst === dev + ':' + ctl).map(r => ({ id: r.id, src: r.src, label: modLabel(r.src), byp: !!r.byp })) : []; },
     bypass: (v, id, on) => { const t = trOf(v); if (t !== trk()) return; hist.record(project, 'Mod bypass'); CMOD.setMod(t, id, { byp: on ? 1 : 0 }); cvModAfter(t); cvModSync(); },
     disconnect: (v, id) => { const t = trOf(v); if (t !== trk()) return; hist.record(project, 'Disconnect'); CMOD.removeMod(t, id); cvModAfter(t); cvModSync(); },
-    connect: (v, ctl, el) => { const t = trOf(v), dev = dvOf(v) || CMOD.primId(t); if (t === trk()) modSrcPick(dev + ':' + ctl, el); },
-    canMod: (v, ctl) => { const t = trOf(v), dev = dvOf(v) || CMOD.primId(t); return !!(t.dev && t.dev[dev]) && CMOD.destOk(t.dev[dev], ctl).ok; },
+    connect: (v, ctl, el) => { const t = trOf(v), dev = dvOf(v); if (t === trk()) modSrcPick(dev + ':' + ctl, el); },
+    canMod: (v, ctl) => { const t = trOf(v), dev = dvOf(v); return !!(t.dev && t.dev[dev]) && CMOD.destOk(t.dev[dev], ctl).ok; },
   },
 };
-const panelKey = v => { const t = trOf(v); return t ? t.id + '/' + (dvOf(v) || CMOD.primId(t)) : ''; };
+const panelKey = v => { const t = trOf(v); return t ? t.id + '/' + dvOf(v) : ''; };
 const classicOf = v => { const P = v && classicPanels.get(panelKey(v)); return P && !P.dead && P.track === v ? P : null; };
 function cpSync() { const t = trk(), P = classicPanels.get(t.id + '/' + curOf(t)); cpanel = P && !P.dead ? P : null; }
 function aboutUI(m) { $('#about-title').textContent = `${m.maker} ${m.name} (${m.year})`; $('#about').textContent = m.about; }
@@ -2272,7 +2277,7 @@ function sxSaveUser(up) { store.set('synth.user.serum', up); }
 function sxSave(t, name, cat) { // (t: a device view; the FX phase memory is the primary's alone, N.fxph)
   name = String(name || '').trim().slice(0, 64);
   if (!name || !isSx(t)) return null;
-  const N = dvOf(t) ? null : nodes.get(t.id);
+  const N = isPrim(t) ? nodes.get(trOf(t).id) : null; // (R1: the primary's view — its patch path and phase memory as before)
   if (N && N.fxph) setPhases(t, N.fxph); // the rack's current LFO phases (phase memory)
   const up = sxUser(), i = up.findIndex(p => p.name === name);
   const entry = { name, cat: String(cat || 'User').trim().slice(0, 32) || 'User', v: { s: clone(t.vals.s) }, fx: clone(fxOf(t)) };
@@ -2483,7 +2488,7 @@ const noteName = n => NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1
 async function resampleTo(t, target) { // (t: a device view — a Serum besides the primary renders alone, buildInstPatch)
   if (!isSx(t)) return;
   const W = await wtMod(), sr = 44100, s = t.vals.s, bt = S.barTicks(project), fpt = sr * 60 / (project.bpm * S.PPQ);
-  const gate = Math.round(bt * fpt), patch = dvOf(t) ? buildInstPatch(trOf(t), dvOf(t), sr, true) : buildPatch(t, sr, true);
+  const gate = Math.round(bt * fpt), patch = isPrim(t) ? buildPatch(trOf(t), sr, true) : buildInstPatch(trOf(t), dvOf(t), sr, true); // (R1: the primary through buildPatch, its bytes)
   const buf = await renderOffline(sr, gate + 2 * sr, [{ tr: null, patch, os: sxOSFor(t, sr, true), hostOS: osCap(sr),
     song: { notes: [0, bt, 60, 127], cc: [] }, transport: { play: true, frame: 0, tick: 0, fpt, loop: false } }], { s, fx: fxOf(t) });
   const chs = [buf.getChannelData(0), buf.getChannelData(1)];
@@ -4899,7 +4904,7 @@ function cvRelabel() { // titles, chips, badges and the Serum's route label afte
 // Sources tray's replace mode: replaces the instrument (v: its device view; default the current one = the primary) in
 // place (SPEC §2.7), one History step, an undo notice
 function cvDropInstrument(modelId, at, o = null, v0 = null) {
-  const t = trk(), v = v0 || curView(t), dev = dvOf(v) || CMOD.primId(t), m = MODELS.find(x => x.id === modelId);
+  const t = trk(), v = v0 || curView(t), dev = dvOf(v), m = MODELS.find(x => x.id === modelId);
   if (!m || m.id === v.model) return false;
   const old = modelById(v.model), id = t.id;
   const why = setTrackModel(v, m.id, o); // (renderPanel → cvPanelDone: the FX module and the titles follow; why: its cables dropped, 2a)
