@@ -3125,6 +3125,7 @@ class Track extends Facade {
     try {
       if (MC === null) MC = MCM.create(this, this.base, S_N);
       MC.setRows(d);
+      if (this.mc === null) MC.watch(this.mcMon);                          // (a first payload while 'mods' is subscribed: the monitor fields on)
     } catch (err) {
       if (this.mc === null || this.mc.ok === 0) this.modsOff();
       this.port.postMessage({ t: 'modsErr', i: typeof d.i === 'string' ? d.i : this.trackId, key: typeof d.key === 'string' ? d.key : '' });
@@ -3160,7 +3161,8 @@ class Track extends Facade {
   // 'iN/fx' a Serum's own FX, a panel)
   watch(all, ids) {
     const has = id => all || (Array.isArray(ids) && ids.indexOf(id) >= 0);
-    this.mcMon = has('mods'); // (the modulator modules' meters, IMPL-2b review: {t: 'smon', mc} while a ModCore exists)
+    this.mcMon = has('mods'); // (the modulator modules' meters, IMPL-2b review: {t: 'smon', mc} while a ModCore exists; track-level: with no part id beside it the message below is all that posts, IMPL-3 §2.9)
+    if (this.mc !== null) this.mc.watch(this.mcMon);
     if (this.graphed === 0) {
       const I = this.i0, c = this.c0;
       I.mon = has(I.id); c.mon = has(c.id);
@@ -3894,15 +3896,18 @@ class Track extends Facade {
   postMon() {
     const SD = globalThis.SerumDSP;
     if (this.graphed === 0) {
-      const I = this.i0, c = this.c0, r = c.mon ? c.rack : null, s = I.mon && SD && I.kind === 'serum' && I.sx ? SD.snapshot(I) : null;
-      if (s && s.mix && s.mix.length >= 11) {
-        const pk = I.mixPk;
-        for (let k = 0; k < 4; k++) s.mix[7 + k] = pk[k] > 1e-6 ? 20 * Math.log10(pk[k]) : -120;
+      const I = this.i0, c = this.c0;
+      if (I.mon || c.mon) { // (the 'mods' meters alone: no part message — it would reach every subscriber of the track with an empty snapshot)
+        const r = c.mon ? c.rack : null, s = I.mon && SD && I.kind === 'serum' && I.sx ? SD.snapshot(I) : null;
+        if (s && s.mix && s.mix.length >= 11) {
+          const pk = I.mixPk;
+          for (let k = 0; k < 4; k++) s.mix[7 + k] = pk[k] > 1e-6 ? 20 * Math.log10(pk[k]) : -120;
+        }
+        I.mixPk.fill(0);
+        const ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null;
+        this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
       }
-      I.mixPk.fill(0);
-      const ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null;
-      this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
-      if (this.mcMon && this.mc !== null) this.port.postMessage({ t: 'smon', mc: this.mc.live });
+      if (this.mcMon && this.mc !== null) this.port.postMessage({ t: 'smon', mc: this.mc.live, mcx: this.mc.mcx });
       return;
     }
     for (const I of this.insts) {
@@ -3931,8 +3936,10 @@ class Track extends Facade {
     }
     // the modulator modules' live meters (IMPL-2b review, lane D's open item): ModCore's source slots, [lfo 1…10, env 2, 3,
     // 4, 1, chaos 1, 2] 0…1, for a 'mods' monitor subscription ({t: 'mon', ids: [… 'mods']}); the host maps modules to
-    // entries through the payload's slots
-    if (this.mcMon && this.mc !== null) this.port.postMessage({ t: 'smon', mc: this.mc.live });
+    // entries through the payload's slots. Track-level (no part id needed beside 'mods'). mcx (IMPL-3 §2.9): the LFO phase /
+    // Path Y and ENV stage / time fields {ph: Float32Array(20), env: Float32Array(8)} — written by the ModCore, and posted,
+    // only while this subscription is on (MC.mon)
+    if (this.mcMon && this.mc !== null) this.port.postMessage({ t: 'smon', mc: this.mc.live, mcx: this.mc.mcx });
   }
   // output stage: DC block, stereo-linked peak limiter, final safety clip
   outStage(Lo, Ro, off, n) {

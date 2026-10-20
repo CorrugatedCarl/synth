@@ -56,6 +56,18 @@
  *   MC.live               Float32Array(16): the last chunk's value of the ModCore source slots, [lfo 1…10, env 2, 3, 4, 1,
  *                         chaos 1, 2], 0…1 (a chaos source is bipolar: (x + 1) / 2), written per span (the Track posts it
  *                         as {t: 'smon', mc} to a 'mods' monitor subscription: the modules' live meters)
+ *   MC.mon / MC.watch(on) the monitor-fields flag (IMPL-3 §2.9; 0 = off, the default; the Track sets it from its 'mods' monitor
+ *                         id). While it is on, MC.mread() writes the two fields below at every span end (and once at the moment
+ *                         it goes on, so the first post is fresh); off: no write at all (N1 literally: no read, no store,
+ *                         `sx.mon` stays 0 — LFO slots nothing reads stay unevaluated and keep their last phase)
+ *   MC.mcx                {ph: MC.livePh, env: MC.liveEnv} — the monitor fields, the same two arrays every call (the Track posts
+ *                         it as {t: 'smon', mc, mcx} beside mc = MC.live). The reads are the LFO / ENV ones SerumDSP's snapshot
+ *                         makes (sx-mod snap): of the most recent voice (the pseudo-voice once a note has played), else the
+ *                         processor's. MC.livePh Float32Array(20): [l] the phase of LFO l (0…1, l = the live slot 0…9),
+ *                         [10 + l] its Path-LFO Y output (the playhead's second coordinate; 0 for any other type; the X output
+ *                         is MC.live[l]). MC.liveEnv Float32Array(8): [j] the stage of ENV j (SxMod's eSt: 0 idle, 1 attack, 2
+ *                         hold, 3 decay, 4 sustain, 5 release), [4 + j] its stage time in seconds; j in the live order (0…3 = ENV
+ *                         2, 3, 4, 1: MC.live[10 + j])
  *   MC.stats() → {lfos, envs, rows, ext, spans, half}   (spans: the spans evaluated since the payload)
  *   ModCore.warmPayload(SxBase) → a {t: 'mods'} payload on a hand-built CP (2 GLOBAL LFOs, a PER NOTE LFO, an ENV, chaos,
  *                         a macro, a value source; cls / set / fx rows, one ext slot) for Track.warmUp's ModCore round
@@ -79,7 +91,7 @@
     const S_EXT0 = 62, S_CHAOS1 = 17, S_N_DEF = 32;
     const ESRC = Int8Array.of(2, 3, 4, 34), LSRC = Int8Array.of(5, 6, 7, 8, 9, 10, 11, 12, 35, 36);
     const LYSRC = Int8Array.of(37, 38, 39, 40, 41, 42, 43, 44, 45, 46);
-    const K_VOICE = 0, K_FREE = 2, K_MONO = 3;
+    const K_VOICE = 0, K_OFF = 1, K_FREE = 2, K_MONO = 3, N_ENV = 4, EORD = Int8Array.of(1, 2, 3, 0);   // (EORD: the live ENV order → SxMod's e)
     // sources whose value lives on the pseudo-voice (never in g): ENV 1–4, velo, note, pat, noise, rand 1/2, alt 1/2,
     // mpe x/y/z, relvel, randd, the audio taps, vidx, vmod 1/2 (per-voice LFOs and per-voice chaos: by the CP, setRows)
     const PER = new Uint8Array(NSRC);
@@ -144,6 +156,30 @@
         this.clsIds = []; this.fxIds = [];
         this.half = true; this.halfOn = 0; this.pvOn = 0;
         this.live = new Float32Array(NLIVE); this.spans = 0;
+        this.mon = 0; this.livePh = new Float32Array(2 * N_LFO); this.liveEnv = new Float32Array(2 * N_ENV); this.mcx = { ph: this.livePh, env: this.liveEnv };
+      }
+      // the monitor fields on / off (the Track, from its 'mods' monitor id; IMPL-3 §2.9): going on reads them once, from the
+      // state the last span left (a post right after the subscription is as fresh as one a span later); going off leaves
+      // them as they were (nothing posts them)
+      watch(on) {
+        on = on ? 1 : 0;
+        if (on !== 0 && this.mon === 0 && this.ok !== 0) this.mread();
+        this.mon = on;
+      }
+      // the two monitor fields (no allocation): SerumDSP's snapshot reads of the LFOs and ENVs (sx-mod snap) — the recent
+      // voice's (the pseudo-voice once a note has played), else the processor's — phase and Path Y per LFO, stage and stage
+      // time per ENV in the live order (ENV 2, 3, 4, 1)
+      mread() {
+        const m = this.sx.mod, v = m.recent, mv = v && v.mod, lk = m.lKind, PH = this.livePh, EV = this.liveEnv;
+        for (let l = 0; l < N_LFO; l++) {
+          const k = lk[l];
+          PH[l] = k === K_VOICE ? (mv ? (m.lExt[l] === 0 ? mv.lPh[l] : mv.lRp[l]) : m.oPh[l]) : k === K_FREE && mv ? mv.lRp[l] : m.oRp[l];
+          PH[N_LFO + l] = mv ? mv.lY[l] : k === K_MONO ? m.oValY[l] : k === K_OFF ? m.oSmY[l] : 0;
+        }
+        for (let j = 0; j < N_ENV; j++) {
+          const e = EORD[j];
+          if (mv) { EV[j] = mv.eSt[e]; EV[N_ENV + j] = mv.eT[e]; } else { EV[j] = 0; EV[N_ENV + j] = 0; }
+        }
       }
       /* ---- the payload (allocation here only; a rejected one leaves the previous state as it was) ---- */
       setRows(m) {
@@ -335,6 +371,7 @@
         for (let l = 0; l < N_LFO; l++) { const s = LSRC[l]; LV[l] = (lk[l] & 1) !== 0 ? g[s * MAXCH + cE] : vs[s]; }
         LV[10] = ev[1]; LV[11] = ev[2]; LV[12] = ev[3]; LV[13] = ev[0];
         for (let k = 0; k < 2; k++) { const s = S_CHAOS1 + k, x = m.chaosMono[k] !== 0 ? g[s * MAXCH + cE] : vs[s]; LV[14 + k] = 0.5 * (x + 1); }
+        if (this.mon !== 0) this.mread();                       // (the monitor fields, IMPL-3 §2.9: only while subscribed)
         // (4) the rows: the sums per target, then slot offsets (start / end) and setter values through the transfer,
         // FX-context offsets as they are
         const TG = this.tgts, nT = TG.length, C0 = this.cls0, C1 = this.cls1, ids = this.clsIds;

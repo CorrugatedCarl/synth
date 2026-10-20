@@ -718,6 +718,151 @@ test('live meters: MC.live = Float32Array(16) [lfo 1…10, env 2, 3, 4, 1, chaos
   p.msg({ t: 'mon', ids: [] }); assert.equal(p.mcMon, false);
 });
 
+/* ------------------------------------------------------------------ IMPL-3 §2.9: the monitor fields (lane E) */
+// MC.livePh Float32Array(20) [phase l, Path Y 10 + l], MC.liveEnv Float32Array(8) [stage j, stage time 4 + j] (j = the live
+// ENV order 2, 3, 4, 1), MC.mcx = {ph, env}: written at the span end and posted beside mc only while the track's 'mods'
+// monitor id is subscribed; the values are the reads SerumDSP's snapshot makes (SxMod.snap) of the same state
+function mcxSynth() {
+  return synth(s => {
+    s.lfo[0] = { ...s.lfo[0], mode: 'free', mono: 1, bpm: 0, anchor: 0 }; s.p['l1.rate'] = hzN(3);
+    s.lfo[1] = { ...s.lfo[1], mode: 'retrig', mono: 1, bpm: 0, anchor: 0 }; s.p['l2.rate'] = hzN(1);
+    s.lfo[4] = { ...s.lfo[4], mode: 'retrig', mono: 0, bpm: 0, anchor: 0 }; s.p['l5.rate'] = hzN(2);
+    s.lfo[5] = { ...s.lfo[5], mode: 'free', mono: 1, bpm: 0, anchor: 0, type: 'path' }; s.p['l6.rate'] = hzN(2);
+    Object.assign(s.p, { 'e2.att': timeN(0.02), 'e2.dec': timeN(0.05), 'e2.sus': 0.5, 'e2.rel': timeN(0.1), 'e3.att': timeN(0.02), 'e3.rel': timeN(0.1) });
+    s.matrix[0] = row('lfo1', 'a.level', 0.01); s.matrix[1] = row('lfo2', 'a.pan', 0.01); s.matrix[2] = row('lfo5', 'b.level', 1); s.matrix[3] = row('env2', 'b.pan', 1);
+    s.matrix[4] = row('lfo6', 'a.wt', 0.5); s.matrix[5] = row('env3', 'b.wt', 0.5);
+  });
+}
+const mcxRows = vi => [{ id: 'a', src: 9, vi: vi('b.level'), dst: { kind: 'cls', inst: 'i1', slot: 0 }, xfer: { a: 0, b: 1 } }, { id: 'b', src: S_ENV2, vi: vi('b.pan'), dst: { kind: 'cls', inst: 'i1', slot: 1 }, xfer: { a: 0, b: 1 } },
+  { id: 'c', src: 10, vi: vi('a.wt'), dst: { kind: 'cls', inst: 'i1', slot: 2 }, xfer: { a: 0, b: 1 } }, { id: 'd', src: 4, vi: vi('b.wt'), dst: { kind: 'cls', inst: 'i1', slot: 3 }, xfer: { a: 0, b: 1 } }];
+const mcxEv = (q, P) => { if (q === 10) P.msg({ t: 'on', n: 60, v: 0.8 }); if (q === 60) P.msg({ t: 'off', n: 60 }); };
+
+test('IMPL-3 §2.9 monitor fields: written and posted only while the \'mods\' monitor id is subscribed (sentinels untouched otherwise; no mcx in any post; sx.mon stays 0); on at the subscription (fresh at once), off again at the unsubscription', () => {
+  const S = scope(), vi = S.vi;
+  const p = junoTrack(S, payload(mcxSynth(), { rows: mcxRows(vi), ext: [{ k: 1, src: S_LFO1 }, { k: 2, src: S_LFO1 + 1 }] })), MC = p.mc;
+  assert.equal(MC.livePh.length, 20); assert.equal(MC.liveEnv.length, 8);
+  assert.ok(MC.mcx.ph === MC.livePh && MC.mcx.env === MC.liveEnv, 'mcx = {ph, env}, the same two arrays');
+  assert.equal(MC.mon, 0, 'off by default');
+  const posts = [];
+  p.port.postMessage = d => { if (d.t === 'smon') posts.push({ i: d.i, c: d.c, mc: d.mc ? Float32Array.from(d.mc) : null, mcx: d.mcx ? { ph: Float32Array.from(d.mcx.ph), env: Float32Array.from(d.mcx.env) } : null }); };
+  const sentinel = () => { MC.livePh.fill(NaN); MC.liveEnv.fill(NaN); };
+  const untouched = () => MC.livePh.every(x => x !== x) && MC.liveEnv.every(x => x !== x);
+  // (1) unsubscribed: the spans run (the live meters move) and nothing is written
+  sentinel();
+  S.run(p, 80, (q, P) => mcxEv(q, P));
+  assert.ok(untouched(), 'no write at all while unsubscribed');
+  assert.ok(MC.live.some(x => x !== 0), 'the ModCore itself ran');
+  assert.equal(MC.sx.mon, 0);
+  assert.equal(posts.length, 0, 'no post');
+  // (2) a subscription to other parts only, without 'mods': still off
+  p.msg({ t: 'mon', ids: ['i1', 'fx1'] });
+  S.run(p, 5);
+  assert.ok(untouched(), 'a part subscription without \'mods\' does not turn the fields on');
+  assert.ok(posts.every(x => x.mc === null && x.mcx === null), 'no mc / mcx posted without \'mods\'');
+  // (3) subscribe: fresh at once (read from the state the last span left), then written every span and posted beside mc
+  posts.length = 0;
+  p.msg({ t: 'mon', ids: [] });
+  p.msg({ t: 'on', n: 60, v: 0.8 }); S.run(p, 8);
+  sentinel();
+  p.msg({ t: 'mon', ids: ['mods'] });
+  assert.equal(MC.mon, 1);
+  assert.ok(MC.livePh.every(x => x === x) && MC.liveEnv.every(x => x === x), 'written once at the subscription (no NaN left)');
+  assert.ok(posts.length === 1 && posts[0].mc !== null && posts[0].mcx !== null && posts[0].i === undefined && posts[0].c === undefined, 'the first post is the track-level one: mc + mcx, no part id');
+  assert.equal(posts[0].mcx.ph.length, 20); assert.equal(posts[0].mcx.env.length, 8);
+  assert.ok(posts[0].mcx.env[0] > 0 && posts[0].mcx.env[0] <= 5, 'ENV 2 is in a stage while the note is held');
+  sentinel();
+  S.run(p, 1);
+  assert.ok(MC.livePh.every(x => x === x) && MC.liveEnv.every(x => x === x), 'rewritten at the next span end');
+  // (4) over a note: the fields track SxMod.snap's reads of the same state, quantum by quantum
+  const SX = S.D.global('SxMod'), ref = { eff: new Float32Array(SX.NSV + SX.MAXFX), lfoPh: new Float32Array(10), lfoOut: new Float32Array(10), lfoY: new Float32Array(10),
+    env: new Float32Array(4), envStage: new Uint8Array(4), envT: new Float32Array(4), mOut: null };
+  const ORD = [1, 2, 3, 0], seenStage = new Set(), ph = [[], [], []];
+  const nst = [];
+  for (let q = 0; q < 200; q++) {
+    S.run(p, 1, (_, P) => { if (q === 20) P.msg({ t: 'off', n: 60 }); if (q === 70) P.msg({ t: 'on', n: 64, v: 0.7 }); if (q === 120) P.msg({ t: 'off', n: 64 }); });
+    SX.snap(MC.shim, MC.sx, ref);
+    for (let l = 0; l < 10; l++) { assert.equal(MC.livePh[l], ref.lfoPh[l], 'lfo' + (l + 1) + ' phase = snap.lfoPh at q' + q); assert.equal(MC.livePh[10 + l], ref.lfoY[l], 'lfo' + (l + 1) + ' Path Y = snap.lfoY at q' + q); }
+    for (let j = 0; j < 4; j++) { assert.equal(MC.liveEnv[j], ref.envStage[ORD[j]], 'env slot ' + j + ' stage at q' + q); assert.equal(MC.liveEnv[4 + j], ref.envT[ORD[j]], 'env slot ' + j + ' time at q' + q); }
+    seenStage.add(MC.liveEnv[0]); ph[0].push(MC.livePh[0]); ph[1].push(MC.livePh[1]); ph[2].push(MC.livePh[4]); nst.push(MC.liveEnv[4]);
+  }
+  for (const st of [0, 1, 3, 4, 5]) assert.ok(seenStage.has(st), 'ENV 2 passed stage ' + st + ' (saw ' + [...seenStage] + ')');
+  const mv = a => new Set(a).size;
+  assert.ok(mv(ph[0]) > 50 && ph[0].every(x => x >= 0 && x <= 1), 'lfo1 (GLOBAL FREE) phase moves in 0…1: ' + mv(ph[0]));
+  assert.ok(mv(ph[1]) > 30 && mv(ph[2]) > 30, 'lfo2 (GLOBAL RETRIG) and lfo5 (PER NOTE: the pseudo-voice\'s) phases move');
+  assert.ok(Math.max(...nst) > 0.03, 'the stage time of ENV 2 advances');
+  // the posts carry the same fields at the monitor rate (a copy: the arrays are reused)
+  assert.ok(posts.length >= 10 && posts.every(x => x.mcx && x.mc && x.i === undefined && x.c === undefined), 'every post is mc + mcx with no part: ' + posts.length);
+  assert.ok(posts.some(x => x.mcx.ph[0] !== posts[1].mcx.ph[0]), 'the posted fields change');
+  // (5) unsubscribe: no write, no post
+  p.msg({ t: 'mon', ids: [] });
+  assert.equal(MC.mon, 0); assert.equal(p.mcMon, false);
+  posts.length = 0; sentinel();
+  S.run(p, 60, (q, P) => { if (q === 5) P.msg({ t: 'on', n: 62, v: 0.8 }); if (q === 30) P.msg({ t: 'off', n: 62 }); });
+  assert.ok(untouched(), 'no write after the unsubscription');
+  assert.equal(posts.length, 0, 'no post after the unsubscription');
+});
+
+test('IMPL-3 §2.9: the \'mods\' subscription is track-level — it works with no part id beside it, a ModCore built after the subscription starts with the fields on, a payload swap keeps them, {mods: off} then a new payload re-arms them, and the legacy (un-graphed) track posts only mc + mcx', () => {
+  const S = scope(), vi = S.vi;
+  const sm = mcxSynth(), pay = () => payload(sm, { rows: mcxRows(vi), ext: [{ k: 1, src: S_LFO1 }] });
+  // subscribed before the first payload
+  const p = S.mk();
+  S.graph(p, ['i1']);
+  p.msg({ t: 'patch', i: 'i1', p: junoPatch() }); p.msg(Object.assign({ t: 'chain', c: 'fx1' }, S.chainMsg));
+  const posts = [];
+  p.port.postMessage = d => { if (d.t === 'smon') posts.push(d); };
+  p.msg({ t: 'mon', ids: ['mods'] });
+  assert.ok(p.mcMon && p.mc === null && posts.length === 0, 'subscribed, no ModCore yet: nothing to post');
+  p.msg(pay());
+  assert.equal(p.mc.mon, 1, 'a ModCore built while subscribed has the fields on');
+  S.run(p, 50, (q, P) => { if (q === 3) P.msg({ t: 'on', n: 60, v: 0.8 }); });
+  assert.ok(posts.length >= 2 && posts.every(d => d.mc && d.mcx && d.mcx.ph.length === 20 && d.mcx.env.length === 8 && d.i === undefined && d.c === undefined), 'only the track-level message posts: ' + posts.length);
+  const MC0 = p.mc; p.msg(pay());
+  assert.ok(p.mc === MC0 && MC0.mon === 1, 'a payload swap keeps the ModCore and the flag');
+  p.msg({ t: 'mods', off: true });
+  assert.equal(p.mc, null); posts.length = 0;
+  S.run(p, 20);
+  assert.equal(posts.length, 0, 'no ModCore: no mc, no mcx');
+  p.msg(pay());
+  assert.equal(p.mc.mon, 1, 're-armed by the next payload while still subscribed');
+  p.msg({ t: 'smon', on: false });
+  assert.equal(p.mc.mon, 0, '{t: smon, on: false} (all parts off) turns them off');
+  p.msg({ t: 'smon', on: true });
+  assert.equal(p.mc.mon, 1, '{t: smon, on: true} (every part, \'mods\' included) turns them on');
+  // the legacy structure (no {t: graph}): the meters alone post {t: smon, mc, mcx} — not an empty part snapshot first
+  const q = S.mk();
+  q.msg({ t: 'patch', p: junoPatch() });
+  q.msg(Object.assign({}, pay(), { rows: [], ext: [{ k: 1, src: S_LFO1 }] }));
+  assert.ok(q.mc !== null && q.graphed === 0);
+  const lp = [];
+  q.port.postMessage = d => { if (d.t === 'smon') lp.push(d); };
+  q.msg({ t: 'mon', ids: ['mods'] });
+  S.run(q, 50);
+  assert.ok(lp.length >= 2 && lp.every(d => d.mc && d.mcx && !('s' in d) && !('gr' in d)), 'legacy: mc + mcx only: ' + JSON.stringify(lp.slice(0, 2).map(d => Object.keys(d))));
+  q.msg({ t: 'mon', ids: ['i0'] });
+  assert.ok(lp.some(d => 's' in d), 'the part\'s own message is unchanged');
+});
+
+test('IMPL-3 §2.9: with the monitor fields on, MC.span / mread / watch allocate nothing (200 spans with notes, a transport, a toggle)', () => {
+  const S = scope(), vi = S.vi;
+  const p = junoTrack(S, payload(mcxSynth(), { rows: mcxRows(vi), ext: [{ k: 1, src: S_LFO1 }, { k: 2, src: S_ENV2 }] })), MC = p.mc;
+  p.msg({ t: 'mon', ids: ['mods'] });
+  p.msg({ t: 'on', n: 60, v: 0.8 }); S.run(p, 30);
+  let st = 0;
+  noAlloc(S.D, () => {
+    for (let k = 0; k < 200; k++) {
+      if (k % 50 === 10) MC.noteOn(50 + k % 12, 0.7, k % 100 === 60 ? 1 : 0, 0);
+      if (k % 50 === 40) MC.noteOff(50 + k % 12, 0);
+      if (k === 120) MC.transport(true);
+      if (k % 60 === 59) { MC.watch(false); MC.watch(true); }
+      MC.span(k * 128, 128, 32);
+      st += MC.liveEnv[0];
+    }
+    MC.mread();
+  });
+  assert.ok(MC.mon === 1 && MC.livePh.some(x => x !== 0) && st > 0, 'ran with the fields on');
+});
+
 test('P2: Track.warmUp\'s ModCore round (warmMods: a payload on a hand-built CP with cls / set / fx rows and ext on the warm graph) runs and leaves nothing — mc null, the Insts without rows, the panel unmodulated, nHeld 0; a fresh scope\'s first Track is clean after its warm-up', () => {
   const S = scope(), p = S.mk({ offline: true });
   // the round itself on an explicit warm graph (offline: no warm-up ran in the constructor)
