@@ -644,6 +644,8 @@ Only genuine decisions; each has the default the plan uses until answered. Q1 is
 
 **Answers (the user, 2026-10-19):** Q3 — leave both out of milestone 3 (recommended). Q4 — yes: the top ↶ undoes canvas cable edits inside a Serum (recommended). Q5 — not now (recommended). Also: the Serum filter S / A / B / C / N switches stay non-modulatable but **get MIDI learn and lock back** (the 2b fix 645a996 had dropped them with `data-dest`; restored by a separate marker before phase 1). Q1 and Q2 are answered in the S0 session.
 
+**Answer (the user, 2026-10-20), Q1:** "I'd rather they not look soft if we can help it" — **no**. §1.5's "Q1 no" row applies: phase 1 (merged on `wt-m3`) is 3R's hit layer; **stage 3R (the GPU module painter, RM option b) is decided now** and contracted before phase 2 ([IMPL-3R.md](IMPL-3R.md)); phase 2 builds parts **opt-in** (D-R5's constant `bundled`) until 3R lands. The S0 session still runs (it measures the DOM floor, `opacity0` = probe P4, P1 / P2) and 3R's own probes / spikes (P3, S-B1–3) join the same iPad session where ready. Q2 waits for 3R.
+
 **Things you will notice (no decision needed)**: the Chaos module loses its "smooth" knob and little scope (the knob never changed the
 sound — Serum has no such control); the knobs on LFO / ENV / Macro / Chaos modules can't themselves be modulated by other modules (in
 Serum an LFO can modulate another LFO's rate; on the canvas not yet); an LFO that is shaped but not connected to anything doesn't get
