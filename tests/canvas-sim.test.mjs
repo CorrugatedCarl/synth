@@ -23,7 +23,7 @@ import * as cvModule from '../cv-module.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
 
 /* ---------------------------------------------------------------- a scripted world (cv-world's World surface) */
-const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 }; // (a 1408 px Minimoog fits at k 1)
+const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 860 }; // (a 1408 × 736 px Minimoog fits at k 1: 1i fits an instrument with keys by its height too)
 function scriptedWorld(root) {
   const L = {};
   const W = {
@@ -79,7 +79,7 @@ test('boot: the selected track\'s three modules hold their devices\' own element
   assert.equal(cv.bodyEl('fx1').parentNode === V().modules.get('fx1').body, true, 'the FX panel\'s element in its body');
   assert.equal(cv.parts.scope.parentNode === V().modules.get('out').body, true, 'the scope in OUT');
   assert.equal('lay' in T(), false, 'no lay written by just looking');
-  // the Minimoog's Hardware layout: a fixed 1408 × 512 module (cv-panel sizeOf), Tidy places the FX panel after it
+  // the Minimoog's Hardware layout: a fixed 1408 × 736 module (cv-panel sizeOf; 1i: its keys), Tidy places FX after it
   assert.equal(I(T()).model, 'minimoog');
   assert.deepEqual([...V().modules.values()].map(m => [m.id, m.x, m.y]), [['i1', 0, 0], ['fx1', 1568, 0], ['out', 2496, 0]]);
   const ttl = nameOf(I(T()).model);
@@ -94,9 +94,9 @@ test('boot: the selected track\'s three modules hold their devices\' own element
 
 test('the Hardware layout: the instrument\'s element is the hardware panel; the module is fixed at cv-panel sizeOf (no grip, no measuring)', () => {
   const m = V().modules.get('i1'), mdl = MODELS.find(x => x.id === 'minimoog'), sz = cvPanel.sizeOf(cvPanel.layoutOf('minimoog'), mdl);
-  assert.deepEqual(sz, { w: 1408, h: 512 });
+  assert.deepEqual(sz, { w: 1408, h: 736 }); // (1i: the keyboard and its wheels below the panel)
   assert.deepEqual(m.fixed, sz);
-  assert.deepEqual([m.rect().w, m.rect().h], [1408, 512], 'rect() = the fixed size');
+  assert.deepEqual([m.rect().w, m.rect().h], [1408, 736], 'rect() = the fixed size');
   assert.equal(m.el.hasAttribute('data-cv-fixed'), true, 'the grip hides');
   assert.equal(cv.instUi(T()), 'hw');
   assert.ok(cv.hw() && cv.hw().w === 1408, 'cv-panel rendered the instrument');
@@ -204,7 +204,7 @@ test('cvReveal: selects the track, focuses the module (k 1 below READ_K); cvModu
   assert.deepEqual(cv.size('serum'), { w: 1200, h: 840 }, 'unseen: the default outline');
   const s = cv.size(I(T()).model);
   assert.equal(s.w, V().modules.get('i1').w);
-  assert.deepEqual(cv.size('minimoog'), { w: 1408, h: 512 }, 'a model with a hardware panel: its fixed size (the Hardware layout)');
+  assert.deepEqual(cv.size('minimoog'), { w: 1408, h: 736 }, 'a model with a hardware panel: its fixed size (the Hardware layout)');
 });
 
 test('monitors ({t: mon, ids}) follow the module: on while the Serum module is on screen, off in ROLL, folded or off screen', async () => {
@@ -364,7 +364,7 @@ test('the ⋯ toggle Hardware ↔ Simple (the user\'s report: "i switched to the
     assert.deepEqual([JSON.stringify(I(T()).vals), I(T()).preset, ids()], [vals, 'Fat Bass', ids0], 'values, the preset name and every control kept');
     if (!i) { assert.deepEqual([T().lay.i1.x, T().lay.i1.y], [m().x, m().y], 'lay.i1 created from the module\'s place'); assert.ok(T().lay.fx1 && T().lay.out, 'the Tidy-placed modules pinned where they stand'); }
     pick('Hardware layout');
-    assert.deepEqual(hwState(), ['hw', true, 1408, 1408, 512], 'Hardware: the hardware panel at its size, back from Simple');
+    assert.deepEqual(hwState(), ['hw', true, 1408, 1408, 736], 'Hardware: the hardware panel at its size, back from Simple');
     assert.deepEqual([hsteps(), cv.hist.undoLabel, checks(), 'ui' in T().lay.i1, 'w' in T().lay.i1], [n0 + 2 * i + 2, 'Hardware layout', 'Hardware layout:true Simple layout:false', false, false]);
     assert.deepEqual([JSON.stringify(I(T()).vals), I(T()).preset, ids()], [vals, 'Fat Bass', ids0]);
     const fx = V().modules.get('fx1');
@@ -375,12 +375,12 @@ test('the ⋯ toggle Hardware ↔ Simple (the user\'s report: "i switched to the
   cv.undo(); sim.raf();
   assert.deepEqual(flowState(), ['flow', null, FW, FW, 0, true], 'undo: Simple');
   cv.undo(); sim.raf();
-  assert.deepEqual(hwState(), ['hw', true, 1408, 1408, 512], 'undo: Hardware');
+  assert.deepEqual(hwState(), ['hw', true, 1408, 1408, 736], 'undo: Hardware');
   cv.redo(); sim.raf();
   assert.deepEqual(flowState(), ['flow', null, FW, FW, 0, true], 'redo: Simple');
   assert.equal(checks(), 'Hardware layout:false Simple layout:true');
   pick('Hardware layout');
-  assert.deepEqual(hwState(), ['hw', true, 1408, 1408, 512], 'from the menu after an undo / redo: Hardware again');
+  assert.deepEqual(hwState(), ['hw', true, 1408, 1408, 736], 'from the menu after an undo / redo: Hardware again');
   cv.undo(); sim.raf();
   assert.deepEqual([JSON.stringify(I(T()).vals), I(T()).preset, ids()], [vals, 'Fat Bass', ids0], 'values still kept');
   // in Simple: a move keeps the choice and writes no width; Tidy moves modules only (never a width, never the layout)

@@ -16,7 +16,7 @@ import * as CG from '../cv-graph.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
 import { MODELS } from '../models.js?v=9';
 
-const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 };
+const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 860 }; // (860: a 1i Minimoog, 736 px with its keys, fits at k 1)
 function scriptedWorld(root) {
   const L = {};
   const W = {

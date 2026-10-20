@@ -76,6 +76,11 @@ const controls = [
     onCap: String(i + 1), hit: [20, 22], label: nameOf(i + 1), lab: 'none' })),
   // the cartridge slot (not ours)
   { kind: 'slot', x: 912, y: 104.3, w: 55, h: 13.8, inert: true, label: 'CARTRIDGE slot', lab: 'none' },
+  // (1i) the wheel block left of the keys: PITCH BEND (spring-centred, detent drawn) and MODULATION, side by side; the
+  // 61-key bed (velocity and channel aftertouch on the original: at), felt 3 mm, keys 144 mm, the 10 mm front lip
+  { id: 'perf:bend', kind: 'wheel', a: 'wheels', x: 58, y: 252, w: 22, h: 64, orient: 'v', detent: true, label: 'PITCH BEND', labSize: 2.2 },
+  { id: 'perf:mod', kind: 'wheel', a: 'wheels', x: 96, y: 252, w: 22, h: 64, orient: 'v', label: 'MODULATION', labSize: 2.2 },
+  { id: 'perf:keys', kind: 'keys', a: 'keys', x: 573, y: 247, n: 61, lo: 36, pitch: 23.5, len: 144, at: true },
 ];
 
 const decor = [
@@ -115,20 +120,35 @@ const decor = [
   // the 32 buttons' EDIT / FUNCTION legends and group rules; the cartridge slot's name
   ...legends,
   T(912, 92.6, 'CARTRIDGE', 2, { fill: INK }),
+  // (1i) the keybed: the dark felt where the keys run under the control strip, the body's front lip; the wheel block's
+  // front edge in the body colour
+  { t: 'rect', a: 'keys', x: 150, y: 172, w: 846, h: 3, fill: '#0d0b0a' },
+  { t: 'rect', a: 'keys', x: 150, y: 319, w: 846, h: 10, fill: '#2c2623' },
+  { t: 'line', a: 'keys', x1: 150, y1: 319.2, x2: 996, y2: 319.2, stroke: '#4a423d', sw: 0.4 },
+  { t: 'rect', a: 'wheels', x: 0, y: 319, w: 150, h: 10, fill: '#2c2623' },
+  { t: 'line', a: 'wheels', x1: 0, y1: 319.2, x2: 150, y2: 319.2, stroke: '#4a423d', sw: 0.4 },
 ];
 
 export default {
   v: 1,
   id: 'dx7',
-  hw: 'DX7 (1983): the graphics panel and control strip behind the keys',
+  hw: 'DX7 (1983): the graphics panel and control strip behind the keys + the 61-key bed and the wheel block',
   case: '#1b1715',
   scheme: {
     panel: '#2c2623', legend: INK, rule: '#d8d1c6', accent: '#47c4b0', font: 'sans',
     slider: { cap: '#151515', line: '#e6e6e6', groove: '#050505' },
     button: { cap: '#47c4b0', text: '#f7f3ea', led: '#ff3b2a', ledOff: '#3a1512' },
     switch: { teal: '#47c4b0', coral: '#e8675f', lavender: '#a99cdc', tan: '#c98e5a', cream: '#e6dcc2' },
+    keys: { white: '#f3f1ec', whiteEdge: '#c2beb5', black: '#141212', blackTop: '#2e2a28', gap: '#070606' },
+    wheel: { slot: '#080706', surface: '#1d1a19', ridge: '#35302d', mark: '#e6e2da' },
   },
-  areas: [{ id: 'main', src: [0, 0, 1018, 172], at: [0, 0] }],
+  areas: [
+    { id: 'main', src: [0, 0, 1018, 172], at: [0, 0] },
+    // (1i) below the strip at their real place (offset 0): the wheel block (x 0–150) and the bed (150–996); the 22 mm
+    // right end cap (996–1018) is the case
+    { id: 'wheels', src: [0, 172, 150, 157], at: [0, 172], fill: '#231e1c' },
+    { id: 'keys', src: [150, 172, 846, 157], at: [150, 172], fill: '#0a0909' },
+  ],
   sections: [
     { id: 'graphics', label: 'GRAPHICS PANEL', x: 0, y: 0, w: 1018, h: 78, frame: 'none', title: 'none' },
     { id: 'sliders', label: 'VOLUME · DATA ENTRY', x: 77.5, y: 78, w: 133.5, h: 94, frame: 'none', title: 'none' },
@@ -136,6 +156,8 @@ export default {
     { id: 'display', label: 'LED · LCD', x: 340.5, y: 78, w: 131.5, h: 94, frame: 'none', title: 'none' },
     { id: 'params', label: 'BUTTONS 1–32', x: 488.5, y: 78, w: 343.5, h: 94, frame: 'none', title: 'none' },
     { id: 'cartridge', label: 'CARTRIDGE', x: 866.5, y: 78, w: 89, h: 94, frame: 'none', title: 'none' },
+    { id: 'wheels', label: 'PITCH BEND · MODULATION', a: 'wheels', x: 0, y: 172, w: 150, h: 157, frame: 'none', title: 'none' },
+    { id: 'keys', label: 'KEYBOARD', a: 'keys', x: 150, y: 172, w: 846, h: 157, frame: 'none', title: 'none' },
   ],
   controls,
   decor,
@@ -146,5 +168,7 @@ export default {
     'Graphics panel kept whole (R2 exception): the algorithm chart box spans the 32 buttons below it; the EG and keyboard-level-scaling diagrams are plain-line sketches, not copies.',
     'Cap characters (1–9, 0, A–V, W X Y Z …) are not drawn: a button carries one centred cap text (its number).',
     'Vintage DAC (dac) is the only extra.',
+    '(1i) The bed: 61 keys C2–C7 (MIDI 36–96), pitch 23.5 mm; the keybed depth 157 mm (the whole instrument 329 mm − the 172 mm top surface) = 3 mm felt + 144 mm white keys + a 10 mm front lip (the contract default: no photo here reads the lip; it carries the 8 mm front band). Velocity and channel aftertouch on the original (at: true: the Pencil pressure sends aftertouch; the engine does not read it, it is recorded and sent).',
+    '(1i) The wheel block (x 0–150, the contract split; the right end cap 996–1018 is the case): PITCH BEND (perf:bend, spring-centred on the original, its detent drawn) and MODULATION (perf:mod, stays), windows 22 × 64 mm (the contract default) side by side, centres x 58 / 96, y 252 (mid-block), each named above. The breath / foot controller jacks (rear panel) are not drawn.',
   ],
 };

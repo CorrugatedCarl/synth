@@ -4,11 +4,14 @@
 // scratchpad/canvas/panels/research/juno60.json (fact-checked twice; x ±3 mm): the top panel between the walnut cheeks
 // with its rear vent band cut to 24 mm (R2; the model name in plain type), the eleven header-band sections left to
 // right, and the bender panel left of the keys trimmed to its OCTAVE TRANSPOSE row (an aux area, R3: our Range).
+// (1i, IMPL-1i §1.2) The bender panel full depth at its real place (offset −49 = main's: rg where the hardware has it) with
+// the BENDER lever live (perf:bend, left–right), and the 61-key bed (C2–C7, MIDI 36–96) right of it; the walnut cheeks
+// run on to the front edge.
 
 export default {
   v: 1,
   id: 'juno60',
-  hw: 'Juno-60 (1982): the top panel (vent band cut to 24 mm) + the bender panel trimmed to OCTAVE TRANSPOSE',
+  hw: 'Juno-60 (1982): the top panel (vent band cut to 24 mm) + the bender panel and the 61-key bed',
   case: '#151516',
   scheme: {
     panel: '#2a2a2c',
@@ -21,10 +24,17 @@ export default {
     slider: { cap: '#141414', line: '#f0f0f0', groove: '#0c0c0c', capShape: 'flat' },
     button: { cap: '#ecdba6', led: '#ff2a1a', ledOff: '#3a1210', text: '#2a2a2a' },
     switch: { cream: '#ecdba6', yellow: '#ecd060', orange: '#e9962f', khaki: '#b8ad8b', chrome: '#d6d6d2', black: '#1a1a1a' },
+    keys: { white: '#f4f3ee', whiteEdge: '#c4c1b8', black: '#121212', blackTop: '#2a2a2a', gap: '#060606' },
+    lever: { slot: '#050505', cap: '#1e1e1e' },
   },
   areas: [
     { id: 'main', src: [0, 49, 1060, 146], at: [0, 0] },
-    { id: 'bender', src: [32, 256, 150, 34], at: [32, 154], frame: 'line' },
+    // (1i) the bender panel full depth and the bed (research x 186–1032, y 204–378), both at offset −49 (main's); the
+    // walnut cheeks below the top panel's own (the 9 mm row under the panel edge is the case)
+    { id: 'bender', src: [32, 204, 150, 174], at: [32, 155], fill: '#252527' },
+    { id: 'keys', src: [186, 204, 846, 174], at: [186, 155], fill: '#0a0a0a' },
+    { id: 'cheekL', src: [0, 195, 30, 183], at: [0, 146], fill: 'wood' },
+    { id: 'cheekR', src: [1032, 195, 28, 183], at: [1032, 146], fill: 'wood' },
   ],
   sections: [
     { id: 'power', label: 'POWER', x: 34, y: 73, w: 52, h: 96, frame: 'none', title: 'none' },
@@ -38,7 +48,8 @@ export default {
     { id: 'env', label: 'ENV', x: 672, y: 73, w: 74, h: 96, frame: 'none', title: 'none' },
     { id: 'chorus', label: 'CHORUS', x: 748, y: 73, w: 66, h: 96, frame: 'none', title: 'none' },
     { id: 'memory', label: 'MEMORY', x: 815, y: 73, w: 214, h: 96, frame: 'none', title: 'none' },
-    { id: 'bender', label: 'BENDER PANEL', a: 'bender', x: 32, y: 256, w: 150, h: 34, frame: 'none', title: 'none' },
+    { id: 'bender', label: 'BENDER PANEL', a: 'bender', x: 32, y: 204, w: 150, h: 174, frame: 'none', title: 'none' },
+    { id: 'keys', label: 'KEYBOARD', a: 'keys', x: 186, y: 204, w: 846, h: 174, frame: 'none', title: 'none' },
   ],
   controls: [
     // POWER: the rocker (not emulated)
@@ -117,6 +128,13 @@ export default {
     // the bender panel (aux), trimmed to its OCTAVE TRANSPOSE row: LFO TRIG (not emulated) and OCTAVE TRANSPOSE = our Range
     { kind: 'button', a: 'bender', x: 111, y: 272, w: 31, h: 16, color: 'cream', inert: true, label: 'LFO TRIG', lab: 'none', led: 'none' },
     { id: 'rg', kind: 'switch', style: 'slide', orient: 'h', a: 'bender', x: 157, y: 273, w: 22, h: 8, color: 'chrome', label: 'OCTAVE TRANSPOSE', lab: 'none' },
+    // (1i) the rest of the bender panel: the DCO / VCF bend sensitivity sliders and VOLUME (not emulated), the BENDER
+    // lever (live: left–right, right = up, springs to centre); then the bed: felt 2 mm, keys 162 mm, the 10 mm front lip
+    { kind: 'slider', a: 'bender', x: 47.5, y: 256, len: 30, cap: [9, 5], inert: true, label: 'DCO', labSize: 2.1, p: 0 },
+    { kind: 'slider', a: 'bender', x: 66, y: 256, len: 30, cap: [9, 5], inert: true, label: 'VCF', labSize: 2.1, p: 0 },
+    { kind: 'knob', a: 'bender', x: 130, y: 236, d: 16, sweep: 300, inert: true, label: 'VOLUME', labSize: 2.1, p: 0.7, scale: { n: 11, labels: ['0', '', '', '', '', '5', '', '', '', '', '10'], size: 1.8 } },
+    { id: 'perf:bend', kind: 'lever', a: 'bender', x: 125.5, y: 325, w: 58, h: 11, axis: 'x', up: '+x', hit: [60, 18], label: 'BENDER', labSize: 2.1 },
+    { id: 'perf:keys', kind: 'keys', a: 'keys', x: 609, y: 287, n: 61, lo: 36, pitch: 23.5, len: 162 },
   ],
   decor: [
     // the walnut cheeks and the gaps beside the top panel
@@ -319,8 +337,17 @@ export default {
     { t: 'text', x: 157, y: 283.6, s: 'NORMAL', size: 1.7, weight: 700, anchor: 'middle', ls: 0.1, a: 'bender' },
     { t: 'text', x: 146, y: 286.4, s: 'DOWN', size: 1.7, weight: 700, anchor: 'middle', ls: 0.1, a: 'bender' },
     { t: 'text', x: 168, y: 286.4, s: 'UP', size: 1.7, weight: 700, anchor: 'middle', ls: 0.1, a: 'bender' },
+    // (1i) the bender panel's printed scales and the lines from the two sensitivity sliders to the BENDER; its screws
+    { t: 'ladder', a: 'bender', x: 47.5, y: 256, len: 30, n: 11, side: 'l', gap: 4.5, labels: ['0', '', '', '', '', '', '', '', '', '', '10'], size: 1.6 },
+    { t: 'ladder', a: 'bender', x: 66, y: 256, len: 30, n: 11, side: 'r', gap: 4.5 },
+    { t: 'path', a: 'bender', d: 'M47.5 276V325H95M66 276V320H95', stroke: '#e8e8e8', sw: 0.25 },
+    { t: 'screws', a: 'bender', pts: [[98.7, 312.5], [153.5, 312.5]], d: 3 },
+    // (1i) the bed: the shadow where the keys run under the panel edge, the 10 mm front lip of the keybed
+    { t: 'rect', a: 'keys', x: 186, y: 204, w: 846, h: 2, fill: '#030303' },
+    { t: 'rect', a: 'keys', x: 186, y: 368, w: 846, h: 10, fill: '#161617' },
+    { t: 'line', a: 'keys', x1: 186, y1: 368.2, x2: 1032, y2: 368.2, stroke: '#3a3a3c', sw: 0.4 },
   ],
-  extras: { ids: ['hs'], at: [196, 148, 222, 40] },
+  extras: { ids: ['hs'] },
   notes: [
     'Sections left to right as on the instrument: POWER · KEY TRANSPOSE / HOLD · ARPEGGIO · LFO · DCO · HPF · VCF · VCA · ENV · CHORUS · MEMORY, each with its coloured header band and bottom band; the bender panel (aux, R3) carries OCTAVE TRANSPOSE = our Range (the Juno-60 has no DCO footage switch).',
     'Slide pots: black caps with one light line, 11 tick lines running across each group, 10 / 5 / 0 at both ends; HPF prints 0–3 (a 4-step slider on the hardware, ours continuous: not quantised); VCA LEVEL prints +5 / 0 / −5 over our 0–10 (linear).',
@@ -330,5 +357,8 @@ export default {
     'Inert: POWER, KEY TRANSPOSE, HOLD, ARPEGGIO (ON/OFF, MODE, RANGE, RATE), LFO TRIG MODE, the DCO SUB on/off button (we have only its level), the MEMORY section (BANK, PATCH NUMBER, TAPE SAVE / VERIFY / LOAD, MANUAL, WRITE), LFO TRIG; the bend sensitivity sliders, the VOLUME knob and the BENDER lever lie outside the trimmed bender row (not drawn).',
     'hs (BBD hiss) has no hardware control: the extras box sits right of the bender panel, in the empty keybed band (extras.at).',
     'Original artwork: the maker logo and the outlined model wordmark are not copied; "Juno-60" in plain type where the wordmark sits.',
+    '(1i) The bed: 61 keys C2–C7 (MIDI 36–96), pitch 23.5 mm, research x 186–1032, y 204–378 (174 mm) = 2 mm shadow under the panel edge + 162 mm white keys + a 10 mm front lip. Measured on the top-down photo (Roland_Juno-60_6935222973.jpg, ≈ 0.61 mm/px locally): white keys ≈ 160–167 mm visible, black ≈ 99 mm (≈ the 0.62 default: 100.4), the keys\' front ≈ 5 mm short of the case front; the lip is drawn at 10 mm (the contract default) so it carries the full 8 mm front band. Not touch-sensitive on the original.',
+    '(1i) The bender panel (x 32–182, full depth, research y 204–378, offset −49 = main\'s: rg sits at its real place, measured on the same photo at x ≈ 158, y ≈ 278): the DCO / VCF bend sensitivity sliders (x ≈ 47.5 / 66, y ≈ 256, inert), VOLUME (x ≈ 130, y ≈ 236, inert: we have no Juno volume), LFO TRIG (inert), and the BENDER lever (perf:bend, kind lever, axis x, right = up, springs to centre; ±2 st, the sensitivity sliders inert): its slot measured ≈ 58 × 11 mm at x ≈ 125.5, y ≈ 325 (hit 60 × 18 mm).',
+    '(1i) hs moves from the empty keybed band (now the bed) to the default extras strip below; the walnut cheeks continue below the top panel to the front edge (areas cheekL / cheekR).',
   ],
 };

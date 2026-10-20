@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SYNTH Canvas — keyboards bench (1i)</title>
+<!--
+  Stage 1i's UI bench (docs/canvas/IMPL-1i.md §9; the logic in ui-bench-1i.mjs): the five hardware panels of ui-bench WITH their
+  keyboards (hw5k: ui-bench's drive, first and last), the one-face scene's bytes, every keyboard model's first base paint,
+  the key path's latency, and the probes on the CS-80, the Prophet-5 and the Jupiter-8 (G1 at k 0.6 / 1.6, the pressed-key shades on their
+  art at k 0.5 / 1 / 1.6, the wheel / lever windows on theirs), and the page's first pan and pinch before anything is warm (the
+  "first, unwarmed" rows: a record for the iPad, not a gate). ?base=<folder> also measures hw5 (the 1h faces); ?gl=off the
+  2D path; ?run=1 runs at once; ?only=hw5k,one,… a subset. Results → Copy results → tests/bench.json "ui-1i" (the iPad) /
+  "ui-1i-mac" (the Mac harness). The project is snapshotted first and put back whole at the end.
+-->
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 12px; font: 14px/1.4 -apple-system, "Helvetica Neue", Arial, sans-serif; background: #0d0e11; color: #e6e6e6; }
+  h1 { font-size: 18px; margin: 0 0 6px; }
+  p { margin: 4px 0; color: #aaa; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid #444; background: #1a1c22; color: #fff; }
+  button:disabled { opacity: 0.5; }
+  table { border-collapse: collapse; margin: 10px 0; font-variant-numeric: tabular-nums; font-size: 15px; }
+  th, td { border: 1px solid #333; padding: 4px 10px; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .bad { color: #ff6b5a; font-weight: 600; } .ok { color: #7bd88f; }
+  #frame { display: block; width: 100%; height: 62vh; border: 1px solid #333; border-radius: 8px; background: #000; margin-top: 10px; }
+  #out { width: 100%; height: 120px; margin-top: 8px; background: #111; color: #ccc; border: 1px solid #333; font: 12px monospace; }
+  #status { color: #ffb347; }
+</style>
+</head>
+<body>
+<h1>SYNTH Canvas — keyboards bench (1i)</h1>
+<p>Pan and pinch with the five hardware synths and their keyboards, the faces' memory and first paints, the key latency, and the keyboard probes. Leave the page alone while it runs (≈ 90 s).</p>
+<p><button id="run" type="button">Run</button> <button id="copy" type="button" disabled>Copy results</button> <span id="status"></span></p>
+<iframe id="frame" title="SYNTH Canvas"></iframe>
+<div id="res"></div>
+<textarea id="out" readonly></textarea>
+<script type="module">
+  import { run, GATE } from './ui-bench-1i.mjs?v=9';
+  const $ = s => document.querySelector(s), arg = k => new URLSearchParams(location.search).get(k);
+  const status = t => { $('#status').textContent = t; };
+  const ok = v => (v == null ? '–' : '<b class="' + (v ? 'ok' : 'bad') + '">' + (v ? 'pass' : 'FAIL') + '</b>');
+  function draw(R) {
+    let h = '<table><tr><th>scene · phase</th><th>frames</th><th>median</th><th>p95</th><th>max</th><th>&gt; 33 ms</th><th>gl ms mean / max</th><th>MB (all / faces)</th></tr>';
+    for (const [name, S] of Object.entries(R.scenes)) for (const ph of ['idle', 'pan', 'zoom', 'settle', 'deep', 'deepSettle']) {
+      const x = S[ph]; if (!x) continue;
+      h += `<tr><td>${name} · ${ph}</td><td>${x.n}</td><td>${x.med}</td><td>${x.p95}</td><td class="${x.max > GATE.frameMs && /pan|zoom|deep$/.test(ph) ? 'bad' : ''}">${x.max}</td><td>${x.over33}</td><td>${x.gl ? x.gl.mean + ' / ' + x.gl.max : '–'}</td><td>${x.gl ? (x.gl.bytes / 1e6).toFixed(1) + ' / ' + (x.gl.faceBytes / 1e6).toFixed(1) : '–'}</td></tr>`;
+    }
+    if (R.firstPan) for (const ph of ['pan', 'zoom']) { // (the page's first burst, unwarmed: a record, never a gate)
+      const x = R.firstPan[ph]; if (!x) continue;
+      h += `<tr><td>first, unwarmed · ${ph}</td><td>${x.n}</td><td>${x.med}</td><td>${x.p95}</td><td>${x.max} <small>(worst ${x.worst.join(', ')})</small></td><td>${x.over33}</td><td>${x.gl ? x.gl.mean + ' / ' + x.gl.max : '–'}</td><td>–</td></tr>`;
+    }
+    h += '</table><table><tr><th>first base paint</th>' + Object.keys(R.paint).map(k => '<th>' + k + '</th>').join('') + '</tr><tr><td>ms</td>' + Object.values(R.paint).map(p => '<td>' + (p ? p.ms : '–') + '</td>').join('') + '</tr></table>';
+    const pr = Object.values(R.probes).map(p => `${p.id}: G1 ${Object.entries(p.g1 || {}).map(([k, g]) => 'k ' + k + ' ' + (g.equalPx ? 'equal' : 'DIFF ' + g.diffMid + '/' + g.diffRest)).join(', ')}; shades ${Object.entries(p.align || {}).map(([k, a]) => 'k ' + k + ' ' + a.n + ' edges ≤ ' + a.maxErr).join(', ')}; slots ${Object.entries(p.slots || {}).map(([k, a]) => 'k ' + k + ' ' + a.n + ' ≤ ' + a.maxErr).join(', ')}`).join('<br>');
+    h += `<p>one CS-80: ${R.one ? (R.one.faceBytes / 1e6).toFixed(1) + ' MB of face' : '–'} · keys: ${R.keys ? (R.keys.skipped || (R.keys.host ? 'host' : 'engine only') + ' med ' + R.keys.med + ' / max ' + R.keys.max + ' ms') : '–'} · drift ${R.drift == null ? '–' : R.drift + ' ms'} · errors ${R.errors ? R.errors.length : '–'}</p><p>${pr}</p>`;
+    h += '<p>gates: ' + Object.entries(R.gates).map(([k, v]) => k + ' ' + ok(v)).join(' · ') + '</p><p>dpr ' + R.dpr + ' · viewport ' + R.viewport + ' · app ' + R.frame + ' · ' + R.gl + '</p>';
+    $('#res').innerHTML = h;
+  }
+  async function go() {
+    $('#run').disabled = true; $('#copy').disabled = true; $('#res').textContent = '';
+    const R = await run({ frame: $('#frame'), status, base: arg('base'), glMode: arg('gl') === 'off' ? 'off' : 'test', only: arg('only') ? arg('only').split(',') : null });
+    window.__bench1i = R;
+    draw(R);
+    $('#out').value = JSON.stringify(R);
+    $('#copy').disabled = false; $('#run').disabled = false;
+    status('done — Copy results');
+  }
+  $('#run').onclick = () => go().catch(e => { status('failed: ' + e.message); window.__bench1iError = String(e && e.stack || e); $('#run').disabled = false; });
+  $('#copy').onclick = async () => { try { await navigator.clipboard.writeText($('#out').value); status('copied'); } catch (e) { $('#out').select(); status('select the text and copy it'); } };
+  if (arg('run') === '1') $('#run').click();
+</script>
+</body>
+</html>

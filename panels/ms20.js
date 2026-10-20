@@ -85,6 +85,11 @@ const controls = [
   { kind: 'lamp', x: 524, y: 124, d: 3.5, inert: true, color: '#d8261c', label: 'ESP TRIG LED', lab: 'none' },
   K(null, 338, 164.5, 18, 'SIGNAL LEVEL'), K(null, 368.5, 164.5, 18, 'LOW CUT FREQ'), K(null, 399.5, 164.5, 18, 'HIGH CUT FREQ'),
   K(null, 430, 164.5, 18, 'CV ADJUST'), K(null, 460.5, 164.5, 18, 'THRESHOLD LEVEL'),
+  // (1i) the manual controller left of the keys: the CONTROL WHEEL (centre click drawn; here it bends the pitch, its usual
+  // patch: perf:bend) over the MOMENTARY SWITCH (inert); the 37-key bed, felt 3 mm, keys 117 mm, the 10 mm front lip
+  { id: 'perf:bend', kind: 'wheel', a: 'wheel', x: 27.5, y: 245, w: 20, h: 56, orient: 'v', detent: true, label: 'CONTROL WHEEL', labSize: 2 },
+  { kind: 'button', a: 'wheel', x: 27.5, y: 296, w: 14, h: 12, inert: true, color: '#5c5c5c', label: 'MOMENTARY SW', labSize: 2, lab: 's' },
+  { id: 'perf:keys', kind: 'keys', a: 'keys', x: 297, y: 254.5, n: 37, lo: 48, pitch: 22, len: 117 },
 ];
 // the hardware's own legends around the PW knob, in OUR direction (our PW narrows anticlockwise: the hardware's turns the
 // other way, so its printed square-at-CCW would lie)
@@ -175,19 +180,35 @@ const decor = [
   S(527, 128.7, 'TRIG OUT'), S(480.5, 128.4, 'PEAK', 1.6),
   // the model name in plain type where the hardware has its badge
   T(502.5, 172, 'MS-20', 8, { weight: 700, ls: 0.4 }),
+  // (1i) the keybed frame below the hinge gap: the felt where the keys run under the face, the front lip; the wheel's
+  // + / − ends
+  { t: 'rect', a: 'keys', x: 55, y: 193, w: 484, h: 3, fill: '#1a0d0d' },
+  { t: 'rect', a: 'keys', x: 55, y: 313, w: 484, h: 10, fill: '#141414' },
+  { t: 'line', a: 'keys', x1: 55, y1: 313.2, x2: 539, y2: 313.2, stroke: '#3a3a3a', sw: 0.4 },
+  { t: 'rect', a: 'wheel', x: 0, y: 313, w: 55, h: 10, fill: '#141414' },
+  { t: 'line', a: 'wheel', x1: 0, y1: 313.2, x2: 55, y2: 313.2, stroke: '#3a3a3a', sw: 0.4 },
+  T(42, 219, '+', 3, { a: 'wheel', weight: 700 }), T(42, 273.5, '−', 3, { a: 'wheel', weight: 700 }),
 ];
 
 export default {
   v: 1,
   id: 'ms20',
-  hw: 'MS-20 (1978–83 panel): the sloped face between the end cheeks',
+  hw: 'MS-20 (1978–83 panel): the sloped face between the end cheeks + the manual controller and the 37-key bed below it',
   case: '#0b0b0b',
   scheme: {
     panel: '#161616', legend: '#e6e6e6', rule: '#dedede', accent: '#d8261c', font: 'sans',
     knob: { skirt: '#0d0d0d', cap: '#1b1b1b', ptr: '#f2f2f2', ptrStyle: 'line', knurl: true, capR: 0.78 },
     jack: { nut: '#c9c9c6', hole: '#050505' },
+    keys: { white: '#f1f0ec', whiteEdge: '#bebbb3', black: '#121212', blackTop: '#2a2a2a', gap: '#050505' },
+    wheel: { slot: '#050505', surface: '#1a1a1a', ridge: '#303030', mark: '#e6e6e6' },
   },
-  areas: [{ id: 'main', src: [0, 0, 545, 185], at: [0, 0] }],
+  areas: [
+    { id: 'main', src: [0, 0, 545, 185], at: [0, 0] },
+    // (1i) the keybed frame continuing below the face after the 8 mm hinge gap (case colour): the manual controller block
+    // (x 0–55) and the bed (55–539, 22 × 22 mm); the 6 mm right end (539–545) is the case
+    { id: 'wheel', src: [0, 193, 55, 130], at: [0, 193], fill: '#161616' },
+    { id: 'keys', src: [55, 193, 484, 130], at: [55, 193], fill: '#0a0a0a' },
+  ],
   sections: [
     { id: 'vco1', label: 'VOLTAGE CONTROLLED OSCILLATOR 1', x: 0, y: 0, w: 46, h: 136, frame: 'none', title: 'none' },
     { id: 'vco2', label: 'VOLTAGE CONTROLLED OSCILLATOR 2', x: 46, y: 0, w: 41.5, h: 136, frame: 'none', title: 'none' },
@@ -205,6 +226,8 @@ export default {
     { id: 'eg2', label: 'ENVELOPE GENERATOR 2', x: 278.5, y: 0, w: 37.5, h: 185, frame: 'none', title: 'none' },
     { id: 'patch', label: 'PATCH PANEL', x: 316, y: 0, w: 229, h: 119.5, frame: 'none', title: 'none' },
     { id: 'esp', label: 'EXTERNAL SIGNAL PROCESSOR', x: 316, y: 119.5, w: 229, h: 65.5, frame: 'none', title: 'none' },
+    { id: 'manual', label: 'MANUAL CONTROLLER', a: 'wheel', x: 0, y: 193, w: 55, h: 130, frame: 'none', title: 'none' },
+    { id: 'keys', label: 'KEYBOARD', a: 'keys', x: 55, y: 193, w: 484, h: 130, frame: 'none', title: 'none' },
   ],
   controls,
   decor: decor.concat(lab),
@@ -217,5 +240,7 @@ export default {
     'Inert (dimmed, "not emulated"): FM EG1/EXT, HPF MG/T.EXT, EG 1 (3 knobs), EG 2 HOLD, the MG rate and trigger LEDs, all 29 patch jacks, SIGNAL OUT / PHONES, the ESP (6 jacks, 2 LEDs, 5 knobs). No cables.',
     'VCA triangle measured on Korg_MS-20.jpg at ≈ 240 mm (the research note said 226.5): drawn where the photo shows it.',
     'Knob names are decor text (lab: none) so they sit as close under the knob as printed; a renderer label would collide with the next knob\'s dial in the EG 2 column.',
+    '(1i) The bed: 37 keys C3–C6 (MIDI 48–84: the kit spec\'s "C…C", centred on middle C), white pitch 22 mm derived ((545 mm face − the ≈ 55 mm controller block) / 22 whites → 22 × 22 = 484 mm), the 130 mm keybed = 3 mm felt + 117 mm white keys + a 10 mm front lip (the contract default; it carries the 8 mm front band). The keybed frame sits below the face after an 8 mm hinge gap (case colour), as §1.2 plans. Not touch-sensitive (original and reissues).',
+    '(1i) The manual controller (x 0–55): the CONTROL WHEEL (perf:bend, centre click drawn, + away from the player) — on the original a patch source only (CONTROL WHEEL OUT, not normalled); here it bends the pitch ±2 st, its usual patch, and springs to centre — over the MOMENTARY SWITCH (inert). Window 20 × 56 mm and the switch 14 × 12 mm are estimates (no photo here resolves the block: narrower than the contract\'s 22 × 64 default because the block is 55 mm wide).',
   ],
 };

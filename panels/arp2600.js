@@ -4,11 +4,14 @@
 // scratchpad/canvas/panels/research/arp2600.json (origin: the panel face's top-left; 780 × 398 mm; ±3 mm). Upper band: the
 // modules with their horizontal setting sliders, name boxes, signal-flow lines and the shared input-attenuator / jack /
 // normal-tag rows; lower band: KBD CV, grilles, NOISE, VOLTAGE PROCESSORS, S&H, ELECTRONIC SWITCH, POWER.
+// (1i, IMPL-1i §1.1–§1.2) The 3620 keyboard, a separate case on the real setup, drawn below the console after a 16 mm gap
+// of case colour, left edges aligned (one module): its rear strip, the left control block (PORTAMENTO live: gl leaves the
+// extras; the rest inert; no pitch-bend control, decided) and the 49-key bed (C2–C6, MIDI 36–84).
 
 export default {
   v: 1,
   id: 'arp2600',
-  hw: '2600 grey-face console (2600P v2–v4, 1972–77 layout): the whole 780 × 398 mm panel',
+  hw: '2600 grey-face console (2600P v2–v4, 1972–77 layout): the whole 780 × 398 mm panel + the 3620 keyboard case below it',
   case: '#141414',
   scheme: {
     panel: '#45494c',
@@ -19,9 +22,12 @@ export default {
     knob: { skirt: '#141414', cap: '#c4c4c2', ptr: '#ffffff', ptrStyle: 'line', knurl: false, capR: 0.58 },
     slider: { cap: '#121212', line: '#f2f2f2', groove: '#0b0b0c' },
     jack: { nut: '#c8cacb', hole: '#0a0a0a' },
+    keys: { white: '#f4f3ef', whiteEdge: '#c3c1bb', black: '#121212', blackTop: '#2b2b2b', gap: '#060606' },
   },
   areas: [
     { id: 'main', src: [0, 0, 780, 398], at: [0, 0], frame: 'metal' },
+    // (1i) the 3620 keyboard case in its own frame (x 0–914, y 500–682), 16 mm below the console (y 414 in content mm)
+    { id: 'kb3620', src: [0, 500, 914, 182], at: [0, 414], fill: '#1c1c1e', r: 2 },
   ],
   sections: [
     { id: 'preamp', label: 'PREAMPLIFIER', x: 0, y: 0, w: 122.2, h: 104.6, frame: 'none', title: 'none' },
@@ -45,6 +51,8 @@ export default {
     { id: 'spkrvol', label: 'RIGHT SPEAKER', x: 553.7, y: 276, w: 34.3, h: 122, frame: 'none', title: 'none' },
     { id: 'spkr', label: 'right speaker grille', x: 588, y: 276, w: 152.6, h: 122, frame: 'none', title: 'none' },
     { id: 'power', label: 'POWER · PHONES', x: 740.6, y: 276, w: 39.4, h: 122, frame: 'none', title: 'none' },
+    { id: 'kbctl', label: '3620 CONTROLS', a: 'kb3620', x: 12, y: 524, w: 200, h: 148, frame: 'none', title: 'none' },
+    { id: 'keys', label: 'KEYBOARD', a: 'kb3620', x: 212, y: 524, w: 681.5, h: 158, frame: 'none', title: 'none' },
   ],
   controls: [
     // PREAMPLIFIER · ENVELOPE FOLLOWER · RING MODULATOR (none emulated: drawn for the face)
@@ -201,6 +209,14 @@ export default {
     { kind: 'slider', x: 566.4, y: 324.6, len: 56, cap: [9, 13], label: 'RIGHT SPEAKER volume', lab: 'none', scale: { n: 6, side: 'r' }, inert: true, p: 0.6 },
     { kind: 'switch', style: 'paddle', orient: 'v', x: 751.2, y: 314.1, w: 7, h: 14, color: '#161616', inert: true, label: 'POWER', lab: 'none', p: 0 },
     { kind: 'jack', x: 751.4, y: 354.8, d: 13, inert: true, label: 'STEREO PHONES', lab: 'none' },
+    // (1i) the 3620's left control block: PORTAMENTO (ours: gl), VIBRATO DEPTH / DELAY, LFO SPEED (not emulated), the
+    // TRANSPOSE switch (not emulated: the bed is fixed); then the 49-key bed, keys 148 mm behind the 10 mm front lip
+    { id: 'gl', kind: 'slider', a: 'kb3620', x: 40, y: 602, len: 56, cap: [9, 13], label: 'PORTAMENTO', lab: 'none', scale: { n: 6, side: 'r' } },
+    { kind: 'slider', a: 'kb3620', x: 72, y: 602, len: 56, cap: [9, 13], label: 'VIBRATO DEPTH', lab: 'none', scale: { n: 6, side: 'r' }, inert: true, p: 0 },
+    { kind: 'slider', a: 'kb3620', x: 104, y: 602, len: 56, cap: [9, 13], label: 'VIBRATO DELAY', lab: 'none', scale: { n: 6, side: 'r' }, inert: true, p: 0 },
+    { kind: 'slider', a: 'kb3620', x: 136, y: 602, len: 56, cap: [9, 13], label: 'LFO SPEED', lab: 'none', scale: { n: 6, side: 'r' }, inert: true, p: 0.5 },
+    { kind: 'switch', style: 'bat', orient: 'v', a: 'kb3620', x: 180, y: 602, w: 8, h: 20, color: '#d6d6d2', positions: 3, inert: true, label: 'TRANSPOSE', lab: 'none', p: 0.5 },
+    { id: 'perf:keys', kind: 'keys', a: 'kb3620', x: 552.75, y: 598, n: 49, lo: 36, pitch: 23.5, len: 148 },
   ],
   decor: [
     // module rules
@@ -673,13 +689,36 @@ export default {
     { t: 'text', x: 751.2, y: 326.4, s: 'OFF', size: 1.6, weight: 600, anchor: 'middle', ls: 0.08 },
     { t: 'text', x: 751.4, y: 366.2, s: 'STEREO', size: 1.6, weight: 600, anchor: 'middle', ls: 0.08 },
     { t: 'text', x: 751.4, y: 368.3, s: 'PHONES', size: 1.6, weight: 600, anchor: 'middle', ls: 0.08 },
+    // (1i) the 3620 case: its rear strip with the model name in plain type, the grey control plate and its legends, the
+    // keybed recess and the front lip
+    { t: 'rect', a: 'kb3620', x: 0, y: 500, w: 914, h: 24, fill: '#2a2b2d' },
+    { t: 'line', a: 'kb3620', x1: 0, y1: 523.8, x2: 914, y2: 523.8, stroke: '#0c0c0c', sw: 0.6 },
+    { t: 'text', a: 'kb3620', x: 20, y: 514.6, s: 'MODEL 3620 KEYBOARD', size: 3.4, weight: 700, anchor: 'start', ls: 0.3 },
+    { t: 'rect', a: 'kb3620', x: 12, y: 527, w: 196, h: 142, r: 1, fill: '#45494c', stroke: '#9a9c9e', sw: 0.4 },
+    { t: 'rect', a: 'kb3620', x: 212, y: 524, w: 681.5, h: 148, fill: '#0a0a0a' },
+    { t: 'rect', a: 'kb3620', x: 0, y: 672, w: 914, h: 10, fill: '#232325' },
+    { t: 'line', a: 'kb3620', x1: 0, y1: 672.2, x2: 914, y2: 672.2, stroke: '#3c3c3f', sw: 0.4 },
+    { t: 'rect', a: 'kb3620', x: 24, y: 538, w: 128, h: 14, stroke: '#f4f4f0', sw: 0.35 },
+    { t: 'text', a: 'kb3620', x: 40, y: 546.2, s: 'PORTAMENTO', size: 2, weight: 600, anchor: 'middle', ls: 0.08 },
+    { t: 'text', a: 'kb3620', x: 88, y: 543.6, s: 'VIBRATO', size: 2, weight: 600, anchor: 'middle', ls: 0.08 },
+    { t: 'text', a: 'kb3620', x: 72, y: 549, s: 'DEPTH', size: 2, weight: 600, anchor: 'middle', ls: 0.08 },
+    { t: 'text', a: 'kb3620', x: 104, y: 549, s: 'DELAY', size: 2, weight: 600, anchor: 'middle', ls: 0.08 },
+    { t: 'text', a: 'kb3620', x: 136, y: 543.6, s: 'LFO', size: 2, weight: 600, anchor: 'middle', ls: 0.08 },
+    { t: 'text', a: 'kb3620', x: 136, y: 549, s: 'SPEED', size: 2, weight: 600, anchor: 'middle', ls: 0.08 },
+    { t: 'text', a: 'kb3620', x: 180, y: 579, s: 'TRANSPOSE', size: 2, weight: 600, anchor: 'middle', ls: 0.08 },
+    { t: 'text', a: 'kb3620', x: 186, y: 592.6, s: '+2 OCT', size: 1.7, weight: 600, anchor: 'start', ls: 0.08 },
+    { t: 'text', a: 'kb3620', x: 186, y: 602.6, s: '0', size: 1.7, weight: 600, anchor: 'start', ls: 0.08 },
+    { t: 'text', a: 'kb3620', x: 186, y: 612.6, s: '−2 OCT', size: 1.7, weight: 600, anchor: 'start', ls: 0.08 },
   ],
-  extras: { ids: ['sy', 'kb', 'lw', 'src', 'gl'] },
+  extras: { ids: ['sy', 'kb', 'lw', 'src'] },
   notes: [
     "31 of our 36 controls sit on hardware: the horizontal top-row slide pots (c f pw2, fc rs), the vertical input attenuators (lp fe2 fm, rm l1 l2 l3 nz ea lf, vol), ADSR / AR, the S&H RATE (lr), the NOISE colour slider (nc: snaps to WHITE / PINK, LOW FREQ not emulated) and w1 w2 w3 as jack-selects on each VCO's output jacks (tap the jack you would patch).",
-    "Extras (no hardware control): sy (sync is not stock), kb (the VCF KBD CV input is a normalled jack), lw (no single LFO shape control), src (the VCA picks AR / ADSR with its LINEAR / EXP'L sliders), gl (portamento lives on the keyboard).",
+    "Extras (no hardware control): sy (sync is not stock), kb (the VCF KBD CV input is a normalled jack), lw (no single LFO shape control), src (the VCA picks AR / ADSR with its LINEAR / EXP'L sliders). (1i) gl (portamento lives on the keyboard) is now the 3620's PORTAMENTO slider.",
     'All 57 slide pots and every jack are drawn (the 2600\'s look): 31 live, the rest dimmed, "not emulated". lp drives all three VCOs (mapped to VCO-1 FM 2; VCO-2 FM 2 stays inert); lf is our clock / S&H LFO on the VCF CONTROL 3 slider (the hardware normal is VCO-2 sine, as printed).',
     'The frequency sliders print the hardware 10 Hz–10 kHz legend over our −24…+24 semitones (linear in the travel, §3.4.2). Lower-band vertical slots are 56 mm (photo), not the research 64.5, so LEVEL / RATE clear the INTERNAL CLOCK box; slide-pot caps 9 × 13 mm (photo).',
     "Positions ±3 mm (straight-on photo, two fact-check passes); size ±3 %. Trimmer holes, screws and the maker logo are omitted; the right grille's middle row carries MODEL 2600 SYNTHESIZER in plain type.",
+    '(1i) The 3620 keyboard: one module with the console (IMPL-1i §1.1: the real setup on a table), its case 914 mm wide (the reissue\'s published 914 mm; the console is 780) drawn 16 mm below the console, left edges aligned, in its own frame (x 0–914, y 500–682): a 24 mm rear strip (MODEL 3620 KEYBOARD in plain type), the grey left control block (x 12–212), the bed (x 212–893.5) and a 10 mm front lip across the case (the contract default; it carries the 8 mm front band). Depth 182 mm = 24 rear + 148 keys + 10 lip (the contract\'s 150 mm keys less 2 mm to fit the planned frame).',
+    '(1i) The bed: 49 keys C2–C6 (MIDI 36–84), pitch 23.5 mm (29 whites = 681.5 mm). Not touch-sensitive (the 1970s 3620; the reissue adds aftertouch). No pitch control: decided (IMPL-1i §1.1: the ±1 oct bend is the reissue\'s; the tray\'s bend wheel bends the ARP).',
+    '(1i) The control block: PORTAMENTO is live (gl, moved out of the extras), VIBRATO DEPTH / DELAY, LFO SPEED and TRANSPOSE (±2 oct) are drawn inert — the block\'s contents follow the reissue\'s published 3620 controls minus its bend (no readable 1970s source; MAP §1.4); slider size and spacing as the console\'s lower band (9 × 13 mm caps, 56 mm travel, 32 mm apart), positions estimated.',
   ],
 };

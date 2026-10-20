@@ -101,6 +101,33 @@ test('every classic model renders in both layouts with one data-dest per control
   }
 });
 
+test('1i (IMPL-1i §6.2): api().perf is the host\'s perf.api(track) on every model (not gated like seq / dx); a host without perf → api().perf null and the Hardware panel builds the same nodes — its bed and controllers drawn, aria-disabled, silent', () => {
+  const doc = fresh(), log = [], sig = root => all(root).map(n => [n.localName, n.getAttribute('class'), n.getAttribute('data-ctl'), n.getAttribute('data-note')].join('|'));
+  for (const id of ['cs80', 'prophet5', 'jupiter8', 'tb303']) {
+    const m = modelOf(id), L = cvPanel.usable(id, m), seen = [], calls = [];
+    const P = { on: n => calls.push('on' + n), off: n => calls.push('off' + n), bend: v => calls.push('bend' + v), mod: v => calls.push('mod' + v), at() {},
+      value: () => 0, view: () => () => {}, lit: () => () => {}, held: () => [], bed: () => () => {} };
+    const mk = perf => {
+      const root = doc.createElement('div'), h = host(doc, log);
+      doc.body.append(root);
+      if (perf) h.perf = { api: tv => { seen.push(tv.id); return P; } };
+      return new ClassicPanel(root, { track: track('trk_' + id, id), model: m, layout: L, host: h });
+    };
+    const A = mk(true), B = mk(false);
+    assert.equal(A.api().perf === P, true, id + ': forwarded');
+    assert.equal(B.api().perf, null, id + ': none');
+    assert.equal(seen[0], 'trk_' + id, id + ': for the panel\'s own track (view)');
+    assert.deepEqual(sig(B.root), sig(A.root), id + ': the same nodes');
+    const perfs = r => all(r).filter(n => /^perf:/.test(n.getAttribute('data-ctl') || '')).map(n => n.getAttribute('data-ctl') + ':' + n.childNodes[0].getAttribute('aria-disabled'));
+    assert.deepEqual([perfs(A.root).length > 0, perfs(B.root).length], [id !== 'tb303', perfs(A.root).length], id + ': ' + perfs(A.root).join());
+    assert.equal(perfs(A.root).every(s => s.endsWith(':null')) && perfs(B.root).every(s => s.endsWith(':true')), true, id + ': live / aria-disabled');
+    const bedB = all(B.root).find(n => n.getAttribute('data-gesture') === 'music' || (n.getAttribute('class') || '').split(' ').includes('hw-keys'));
+    if (bedB) { ptr(bedB, 'pointerdown', 1, 1, { pointerId: 3 }); ptr(bedB, 'pointerup', 1, 1, { pointerId: 3 }); }
+    assert.deepEqual(calls, [], id + ': nothing posted without the host\'s perf');
+    A.destroy(); B.destroy();
+  }
+});
+
 /* ---------------------------------------------------------------- stage 2b (IMPL-2b §6.2): halos and the mod menu */
 import { haloRanges, dialArc, dialPt } from '../classic-panel.js?v=9';
 import { MOD_COLOR } from '../cv-cables.js?v=9';

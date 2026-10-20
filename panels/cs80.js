@@ -5,11 +5,15 @@
 // cheeks with its grille band cut to 24 mm (R2), the block-diagram lid, the programmable panel (Channel I row above
 // Channel II), the front strip; the nameplate strip cut to 24 mm around the ribbon (R2); and the left cheek panel trimmed
 // to its lever row (an aux area, R3: PORTAMENTO).
+// (1i, IMPL-1i §1.2) The RIBBON in the nameplate strip is live (perf:bend, kind ribbon); below the strip at their real
+// place (offset −167 = the strip's: no collapse between the ribbon and the keys) the 61-key bed (C2–C7, MIDI 36–96:
+// velocity and aftertouch on the original), the left cheek panel full depth and the right end block; the walnut cheeks
+// run on to the front edge.
 
 export default {
   v: 1,
   id: 'cs80',
-  hw: 'CS-80 (1977): top + lid + programmable panel + front strip (grille band cut to 24 mm), nameplate strip cut to the ribbon, left cheek panel trimmed to its lever row',
+  hw: 'CS-80 (1977): top + lid + programmable panel + front strip (grille band cut to 24 mm), nameplate strip with the ribbon, the 61-key bed, the left cheek panel and the right end block',
   case: '#121212',
   scheme: {
     panel: '#2a2927',
@@ -22,11 +26,19 @@ export default {
     slider: { cap: '#ece8dc', line: 'rgba(0, 0, 0, 0.22)', groove: '#0a0a0a', capShape: 'flat' },
     button: { cap: '#ece8dc', led: '#ff3b2a', ledOff: '#3a1512', text: '#2a2622' },
     switch: { white: '#ece8dc', green: '#2f8f4e', red: '#d42a14', black: '#1b1b1b', yellow: '#e9cc2a', grey: '#b3b0a8' },
+    keys: { white: '#f3f1ea', whiteEdge: '#c6c2b7', black: '#111111', blackTop: '#2b2b2b', gap: '#060606' },
+    ribbon: { felt: '#141414', edge: '#a9a8a2' },
   },
   areas: [
     { id: 'main', src: [0, 131, 1205, 260], at: [0, 0] },
     { id: 'name', src: [0, 427, 1205, 24], at: [0, 260] },
-    { id: 'left', src: [22, 468, 204, 64], at: [22, 292], fill: '#1f1e1d', frame: 'line' },
+    // (1i) the keyboard row (research y 465–640) at the strip's offset −167: the left cheek panel full depth, the bed
+    // (x 232–1078), the right end block (1078–1183, art), the walnut cheeks from the strip to the front edge
+    { id: 'left', src: [22, 465, 204, 175], at: [22, 298], fill: '#1f1e1d', frame: 'line' },
+    { id: 'keys', src: [232, 465, 846, 175], at: [232, 298], fill: '#0a0a0a' },
+    { id: 'right', src: [1078, 465, 105, 175], at: [1078, 298], fill: '#1f1e1d' },
+    { id: 'cheekL', src: [0, 451, 22, 189], at: [0, 284], fill: 'wood' },
+    { id: 'cheekR', src: [1183, 451, 22, 189], at: [1183, 284], fill: 'wood' },
   ],
   sections: [
     { id: 'vcoI', label: 'VCO (CHANNEL I)', x: 370, y: 155, w: 170, h: 75, frame: 'none', title: 'none' },
@@ -47,7 +59,9 @@ export default {
     { id: 'touchfront', label: 'TOUCH RESPONSE', x: 893, y: 311, w: 102, h: 75, frame: 'none', title: 'none' },
     { id: 'kbdctl', label: 'KEYBOARD CONTROL', x: 1003, y: 311, w: 102, h: 75, frame: 'none', title: 'none' },
     { id: 'volume', label: 'VOLUME', x: 1110, y: 311, w: 55, h: 75, frame: 'none', title: 'none' },
-    { id: 'leftPanel', label: 'LEFT CHEEK PANEL', x: 22, y: 468, w: 204, h: 64, frame: 'none', title: 'none', a: 'left' },
+    { id: 'ribbon', label: 'RIBBON CONTROLLER', a: 'name', x: 228, y: 428, w: 498, h: 23, frame: 'none', title: 'none' },
+    { id: 'leftPanel', label: 'LEFT CHEEK PANEL', x: 22, y: 465, w: 204, h: 175, frame: 'none', title: 'none', a: 'left' },
+    { id: 'keys', label: 'KEYBOARD', a: 'keys', x: 232, y: 465, w: 846, h: 175, frame: 'none', title: 'none' },
   ],
   controls: [
     // the programmable panel: Channel I (row I, top), then Channel II (row II); our global controls live in row I, their row-II copies are inert
@@ -168,8 +182,9 @@ export default {
     { kind: 'slider', x: 1087, y: 351, len: 24, cap: [19, 10], color: 'grey', lab: 'none', inert: true, label: 'KEYBOARD CONTROL LEVEL HIGH', p: 0.5 },
     // VOLUME
     { id: 'vol', kind: 'knob', x: 1130, y: 341, d: 26, sweep: 300, label: 'VOLUME', lab: 'none', scale: { n: 11, size: 1.8 } },
-    // the nameplate strip: the ribbon controller (not emulated)
-    { kind: 'strig', a: 'name', x: 477, y: 443, w: 490, h: 9, inert: true, label: 'RIBBON CONTROLLER', lab: 'none' },
+    // (1i) the nameplate strip: the RIBBON (live: a relative slide from the first touch, ≈ 1 octave over its 490 mm on the
+    // original, ±2 st here; springs to 0; a touch without moving does nothing)
+    { id: 'perf:bend', kind: 'ribbon', a: 'name', x: 477, y: 443, w: 490, h: 12, span: 12, hit: [490, 16], label: 'RIBBON CONTROLLER', lab: 'none' },
     // the left cheek panel (aux), trimmed to its lever row: FOOT PEDAL SELECTOR, SUSTAIN, the tremolo / chorus SPEED and DEPTH (not emulated); PORTAMENTO GLISSANDO = ours
     { kind: 'button', a: 'left', x: 41, y: 498, w: 16, h: 10, color: 'grey', inert: true, label: 'FOOT PEDAL SELECTOR EXP', lab: 'none', led: 'none' },
     { kind: 'button', a: 'left', x: 41, y: 512, w: 16, h: 10, color: 'grey', inert: true, label: 'FOOT PEDAL SELECTOR EXP WAH', lab: 'none', led: 'none' },
@@ -177,6 +192,21 @@ export default {
     { id: 'gl', kind: 'slider', a: 'left', x: 114, y: 494, len: 21, cap: [19, 9], color: 'white', label: 'PORTAMENTO GLISSANDO', lab: 'none', scale: { n: 6, side: 'both' } },
     { kind: 'knob', a: 'left', x: 151, y: 490, d: 14, sweep: 300, inert: true, label: 'TREMOLO / CHORUS SPEED', lab: 'none', p: 0.5 },
     { kind: 'knob', a: 'left', x: 189, y: 490, d: 14, sweep: 300, inert: true, label: 'TREMOLO / CHORUS DEPTH', lab: 'none', p: 0.5 },
+    // (1i) the left panel's rocker row (not emulated): the SUSTAIN / PORTAMENTO GLISSANDO foot-switch ONs, I / II,
+    // PORTAMENTO / GLISSANDO; TREMOLO · CHORUS · OFF / ON
+    { kind: 'switch', style: 'rocker', orient: 'v', a: 'left', x: 40, y: 548, w: 13, h: 22, color: 'black', inert: true, label: 'SUSTAIN FOOT SWITCH ON', lab: 'none', p: 1 },
+    { kind: 'switch', style: 'rocker', orient: 'v', a: 'left', x: 64, y: 548, w: 13, h: 22, color: 'black', inert: true, label: 'PORTAMENTO GLISSANDO FOOT SWITCH ON', lab: 'none', p: 1 },
+    { kind: 'switch', style: 'rocker', orient: 'v', a: 'left', x: 88, y: 548, w: 13, h: 22, color: 'black', inert: true, label: 'CHANNEL I / II', lab: 'none', p: 0 },
+    { kind: 'switch', style: 'rocker', orient: 'v', a: 'left', x: 112, y: 548, w: 13, h: 22, color: 'black', inert: true, label: 'PORTAMENTO / GLISSANDO', lab: 'none', p: 0 },
+    { kind: 'switch', style: 'rocker', orient: 'v', a: 'left', x: 136, y: 548, w: 20, h: 26, color: 'black', inert: true, label: 'TREMOLO', lab: 'none', p: 1 },
+    { kind: 'switch', style: 'rocker', orient: 'v', a: 'left', x: 158, y: 548, w: 20, h: 26, color: 'black', inert: true, label: 'CHORUS', lab: 'none', p: 1 },
+    { kind: 'switch', style: 'rocker', orient: 'v', a: 'left', x: 180, y: 548, w: 20, h: 26, color: 'black', inert: true, label: 'TREMOLO / CHORUS OFF / ON', lab: 'none', p: 1 },
+    // (1i) the right end block: the pilot lamp and the POWER rocker (not emulated)
+    { kind: 'lamp', a: 'right', x: 1130, y: 500, d: 6, inert: true, color: '#d42a14', lit: true, label: 'POWER LAMP', lab: 'none' },
+    { kind: 'switch', style: 'rocker', orient: 'v', a: 'right', x: 1130, y: 540, w: 14, h: 22, color: 'white', inert: true, label: 'POWER', labSize: 2, p: 1 },
+    // (1i) the 61-key bed: keys 165 mm, the 10 mm front lip; velocity and per-key pressure on the original (at: the Pencil
+    // pressure → channel aftertouch, the engine's After → Brill)
+    { id: 'perf:keys', kind: 'keys', a: 'keys', x: 655, y: 547.5, n: 61, lo: 36, pitch: 23.5, len: 165, at: true },
   ],
   decor: [
     // the walnut cheeks; the black top with its four vent grilles (band cut to 24 mm) and the bar behind the programmable panel
@@ -488,6 +518,24 @@ export default {
     { t: 'text', x: 151, y: 504, s: 'SPEED', size: 1.9, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
     { t: 'text', x: 189, y: 504, s: 'DEPTH', size: 1.9, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
     { a: 'left', t: 'path', d: 'M144.4 497.4L143.2 498.6M157.6 497.4L158.8 498.6M182.4 497.4L181.2 498.6M195.6 497.4L196.8 498.6', stroke: '#e9e3d3', sw: 0.3 },
+    // (1i) the rocker row's legends; the bed's front lip
+    { t: 'text', x: 40, y: 563, s: 'ON', size: 1.8, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
+    { t: 'text', x: 64, y: 563, s: 'ON', size: 1.8, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
+    { t: 'text', x: 40, y: 567, s: 'SUSTAIN', size: 1.8, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
+    { t: 'text', x: 64, y: 567, s: 'PORTAMENTO', size: 1.8, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
+    { t: 'text', x: 64, y: 569.6, s: 'GLISSANDO', size: 1.8, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
+    { a: 'left', t: 'path', d: 'M34 571.5V573H70V571.5', stroke: '#e9e3d3', sw: 0.25 },
+    { t: 'text', x: 52, y: 576, s: 'FOOT SWITCH', size: 1.8, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
+    { t: 'text', x: 88, y: 535, s: 'I', size: 1.9, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
+    { t: 'text', x: 88, y: 563, s: 'II', size: 1.9, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
+    { t: 'text', x: 112, y: 535, s: 'PORTAMENTO', size: 1.8, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
+    { t: 'text', x: 112, y: 563, s: 'GLISSANDO', size: 1.8, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
+    { t: 'text', x: 136, y: 541, s: 'TREMOLO', size: 1.8, weight: 700, anchor: 'middle', ls: 0.08, a: 'left', fill: '#f2f2f2' },
+    { t: 'text', x: 158, y: 541, s: 'CHORUS', size: 1.8, weight: 700, anchor: 'middle', ls: 0.08, a: 'left', fill: '#f2f2f2' },
+    { t: 'text', x: 180, y: 533, s: 'OFF', size: 1.8, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
+    { t: 'text', x: 180, y: 565, s: 'ON', size: 1.8, weight: 700, anchor: 'middle', ls: 0.08, a: 'left' },
+    { t: 'rect', a: 'keys', x: 232, y: 630, w: 846, h: 10, fill: '#1a1918' },
+    { t: 'line', a: 'keys', x1: 232, y1: 630.2, x2: 1078, y2: 630.2, stroke: '#3c3a37', sw: 0.4 },
   ],
   extras: { ids: [] },
   notes: [
@@ -497,8 +545,11 @@ export default {
     'pw1 / pw2 run inverted so the printed 90 % (top) / 50 % (bottom) stay true (our 0.5 = square at the bottom). IL and AL print our −5 … +5 (the hardware prints 0 … −5 and 0 … +5).',
     'Front strip: every amount / speed lever is minimum UP, maximum towards the player (owner\'s manual): rms, rmd, ss, sv, sfl, sa, br and dt run inverted. BRILLIANCE: −5 up, 0 at the centre mark, +5 (brighter) down. DETUNE CH II prints our 0 (up) … + (down) — the hardware\'s centre-zero − / + would not say what you hear.',
     'sf FUNCTION and ft1 / ft2 FEET are detented levers: FUNCTION\'s EXT. and FEET\'s 5⅓′, 2⅔′, 2′ are drawn and never selected (map null). FUNCTION prints words where the hardware prints pictograms (a ladder legend has no glyphs yet).',
-    'gl = PORTAMENTO GLISSANDO on the left cheek panel, drawn below the face at its real x (aux, R3), trimmed to its lever row.',
-    'Inert: PWM SPEED / depth, VCF LEVEL, AFTER LEVEL (both rows), the row-II copies of our global controls, PITCH, ring-mod ATTACK / DECAY / DEPTH, the TONE SELECTOR (28 buttons), MIX, RESONANCE, touch PITCHBEND and SUB OSC AFTER, KEYBOARD CONTROL, the ribbon, and on the left panel FOOT PEDAL SELECTOR, SUSTAIN, tremolo / chorus SPEED and DEPTH; the left panel\'s rockers, the memory panel under the lid and the POWER block are not drawn.',
+    'gl = PORTAMENTO GLISSANDO on the left cheek panel, at its real place left of the keys (1i: the panel full depth).',
+    'Inert: PWM SPEED / depth, VCF LEVEL, AFTER LEVEL (both rows), the row-II copies of our global controls, PITCH, ring-mod ATTACK / DECAY / DEPTH, the TONE SELECTOR (28 buttons), MIX, RESONANCE, touch PITCHBEND and SUB OSC AFTER, KEYBOARD CONTROL, and on the left panel FOOT PEDAL SELECTOR, SUSTAIN, tremolo / chorus SPEED and DEPTH and (1i) its rocker row; (1i) the right end block\'s lamp and POWER rocker. The memory panel under the lid is not drawn.',
     'The lid carries our own simplified block diagram of the voice (original artwork); "CS-80" in plain type on the nameplate strip where the maker wordmark sits.',
+    '(1i) The bed: 61 keys C2–C7 (MIDI 36–96; owner\'s manual spec p.48), pitch 23.5 mm, research x 232–1078, y 465–640 (175 mm incl. the lip) = 165 mm white keys (the contract\'s ≈ 165) + a 10 mm front lip (the photos show the keys running almost to the front edge; drawn at the contract\'s 10 mm default, it carries the 8 mm front band). Velocity (INITIAL) and per-key pressure (AFTER) on the original: at: true — the Pencil\'s pressure becomes channel aftertouch (the engine\'s vcf.at).',
+    '(1i) The RIBBON (perf:bend, kind ribbon) replaces the inert strig: the research rectangle x 232–722, y 437–449 (490 × 12 mm, centre 477, 443), hit 490 × 16 mm; span 12 (≈ one octave over the full length per the owner\'s manual; we clamp at ±2 st), relative to the first touch, springs to 0.',
+    '(1i) The left cheek panel full depth (x 22–226, y 465–640; offset −167): its back row as before (gl live) and the rocker row read off the side photo (crops/cs_left.jpg: foot-switch SUSTAIN / PORTAMENTO GLISSANDO ON, I / II, PORTAMENTO / GLISSANDO, then the wide TREMOLO · CHORUS · OFF / ON rockers), y 548 and the x spacing estimated (the photo is oblique), all inert. The right end block (x 1078–1183) carries the pilot lamp and the POWER rocker (inert, positions estimated). The walnut cheeks run on below the strip (areas cheekL / cheekR); the 14 mm between the strip and the keyboard row is the case.',
   ],
 };

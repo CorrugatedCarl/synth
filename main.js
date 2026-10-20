@@ -24,6 +24,7 @@ import * as cvCables from './cv-cables.js?v=9';
 import * as COSTM from './cv-cost.js?v=9';
 // the hardware front panels (docs/canvas/IMPL-panels.md, ENGINE lane): fixed-size classic instruments, Hardware / Simple
 import * as cvPanel from './cv-panel.js?v=9';
+import * as cvKeys from './cv-keys.js?v=9'; // (1i, IMPL-1i §6) the hardware keyboards' host (perfHost), the 303's pitch root
 import { FACES } from './cv-face.js?v=9'; // (1h) the hardware faces' registry: a re-mounted panel is told (cvMountBody)
 // stage 1c: the classic panel as an instance (renderPanel, controls, preset plate, TB-303 sequencer with their track passed in)
 import { ClassicPanel, fmt, SEQ_DEF } from './classic-panel.js?v=9';
@@ -913,6 +914,7 @@ function powerOff() {
   if (cvView) for (const m of cvView.modules.values()) if (m.setCpu) m.setCpu(null); // (no engine: no module CPU)
   if (readyF) readyF(); // a power-on waiting for the engine's 'ready' gives up now (no nodes left)
   seqRun.clear(); for (const P of classicPanels.values()) if (!P.dead && P.model.id === 'tb303') P.seqRunUI(false); // (every 303 shown: RUN off)
+  PERF.release(); // (1i: every bed and controller lets go)
   for (const k of [...held.keys()]) held.delete(k);
   hk.clear();
   for (const n of [...keyEls.keys()]) keyVis(n, false);
@@ -1327,6 +1329,7 @@ function keepDevs(t, cur) {
 }
 function applyRestore(p, keepSound = false) {
   if (!p) return;
+  PERF.release(); // (1i review F1: every bed and controller lets go while its track is still the selected one: the restored track is a new object, the old panels' offs would be dropped)
   adopt(p); // (History snapshots and loads are plain objects: adopted first)
   // undo / redo never revert knob tweaks (per device) — within one project: an undo of Open / New brings back another project
   // (1f review: track ids repeat across projects; its sound is its own)
@@ -1591,7 +1594,7 @@ function replaceSweep(t) { // replace mode: wipe what the playhead passes on arm
 const held = new Map(); // `${src}:${n}` -> [[track id, ch]] (ch: midi.js noteCh of the note-on; its note-off carries it)
 function targets(src) { return midiTargets(project.tracks, project.selTrack, src); } // src 0 = on-screen/computer keyboard; 1..16 = MIDI channel
 function noteOn(n, v, src = 0, ts = performance.now()) {
-  if (n < 0 || n > 127) return;
+  if (!(n >= 0 && n <= 127)) return; // (1i: NaN too — it was held, lit, recorded and posted)
   const key = src + ':' + n;
   if (held.has(key)) noteOff(n, src, ts);
   const trs = targets(src);
@@ -1633,6 +1636,7 @@ function ctl(kind, v, src = 0, ts = performance.now(), trs = targets(src)) {
     postTo(t, m);
     if (kind !== 'sus') { const L = perfLive.get(t.id) || perfLive.set(t.id, {}).get(t.id); L[kind] = v; }
   }
+  if (kind !== 'sus' && to.includes(trk())) PERF.live(kind, v); // (1i §5.2: the hardware wheels show what reached the selected track)
   recCC(trs, kind, kind === 'sus' ? (v ? 1 : 0) : v, ts);
   if (kind === 'wheel') wheelToWt(v);
   if (kind !== 'sus') cvModLive(kind); // (lane D: the canvas Mod Wheel / Aftertouch / Bend module follows)
@@ -1684,6 +1688,7 @@ function inputNote(t, on, n, v, ts, audition) {
 }
 function panic() {
   for (const t of project.tracks) seqToggle(t, false); // not quiet: the Run button and step lights must show it stopped
+  PERF.release(); // (1i: the beds drop their pointers — a finger still down leaves no count — and the springs go home)
   for (const k of [...held.keys()]) { const [src, n] = k.split(':'); noteOff(+n, +src); }
   hk.clear();
   setSustain(false);
@@ -1743,6 +1748,7 @@ function setTrackModel(tr0, id, o = null) {
 function selectTrack(id) {
   const iv = curView(trk());
   if (id === project.selTrack && bound === iv.id + ':' + iv.model) return;
+  PERF.release(); // (1i review F2: the springs and the Pencil's aftertouch go home on the track they moved, before the selection moves)
   for (const k of [...held.keys()]) { const [src, n] = k.split(':'); noteOff(+n, +src); }
   flush();
   project.selTrack = id;
@@ -1798,6 +1804,14 @@ const classicHost = {
     canMod: (v, ctl) => { const t = trOf(v), dev = dvOf(v); return !!(t.dev && t.dev[dev]) && CMOD.destOk(t.dev[dev], ctl).ok; },
   },
 };
+// (1i, IMPL-1i §6.1) the hardware keys and controllers: the on-screen keyboard's note path and the tray wheels' ctl, for the
+// selected track's panels only (a stale panel plays nothing); held(): the notes lit now (a bed mounts lit)
+const PERF = cvKeys.perfHost({ noteOn: (n, v, ts) => noteOn(n, v, 0, ts), noteOff: (n, ts) => noteOff(n, 0, ts), ctl: (k, v) => ctl(k, v, 0),
+  live: k => (perfLive.get(trk().id) || {})[k] || 0, held: () => [...new Set([...held.keys()].map(k => +k.split(':')[1]))],
+  bendUI: v => setBendUI && setBendUI((v + 1) / 2, false), modUI: v => setModUI && setModUI(v, false), sel: v => trOf(v) === trk() });
+classicHost.perf = PERF;
+// a window blur / a hidden page: the beds and controllers let go, but a MIDI or tray note still sounds — its bed light stays (1i review F4)
+function perfLetGo() { PERF.release(); for (const n of new Set([...held.keys()].map(k => +k.split(':')[1]))) PERF.lit(n, true); }
 const panelKey = v => { const t = trOf(v); return t ? t.id + '/' + dvOf(v) : ''; };
 const classicOf = v => { const P = v && classicPanels.get(panelKey(v)); return P && !P.dead && P.track === v ? P : null; };
 function aboutUI(m) { $('#about-title').textContent = `${m.maker} ${m.name} (${m.year})`; $('#about').textContent = m.about; }
@@ -3047,7 +3061,7 @@ function seqOf(tr, dev) {
 const devArgs = (a, b) => (typeof a === 'string' ? [a, b] : a == null ? [null, b] : [null, a]); // (dev?, extra?)
 function seqPayload(tr, a, b) {
   const [dev, extra] = devArgs(a, b), q = seqOf(tr, dev);
-  return Object.assign({ pat: q.pat, len: 16, bpm: q.bpm, swing: q.swing / 100 * 0.5, root: 48, sync: !!q.sync, run: seqRun.has(dev ? tr.id + '/' + dev : tr.id) && !q.sync }, extra || {});
+  return Object.assign({ pat: q.pat, len: 16, bpm: q.bpm, swing: q.swing / 100 * 0.5, root: cvKeys.SEQ_ROOT, sync: !!q.sync, run: seqRun.has(dev ? tr.id + '/' + dev : tr.id) && !q.sync }, extra || {});
 }
 function seqSend(tr, a, b) { let [dev, extra] = devArgs(a, b); if (tr.track) { dev = tr.devId; tr = tr.track; } postTo(tr, { t: 'seq', s: seqPayload(tr, dev, extra) }, dev); persist(); }
 function seqToggle(tr, on, quiet, dev = null) { // (tr: a track with dev, or a device view: the 303 page's)
@@ -3071,7 +3085,7 @@ function seqToRoll(tr0, q) {
     let prev = null;
     q.pat.forEach((s, i) => {
       if (!s.g) { prev = null; return; }
-      const n = 48 + s.n + 12 * s.o, t = at + i * 240;
+      const n = cvKeys.seqNote(s), t = at + i * 240; // (1i: the 303's one root, its keys' audition too)
       if (prev && prev.slide) { prev.note.d = t - prev.note.t + 60; }
       const note = { id: S.newId(), t, d: 120, n, v: s.a ? 127 : 80 };
       tr.notes.push(note);
@@ -3174,6 +3188,7 @@ function deleteTrack(t) {
   if (t.notes.length && !confirm(`Delete “${t.name}” and its ${t.notes.length} notes?`)) return;
   hist.record(project);
   const i = project.tracks.indexOf(t);
+  if (project.selTrack === t.id) PERF.release(); // (1i review F3: its beds' keys end while it is still the selected track)
   project.tracks.splice(i, 1);
   seqRun.delete(t.id); inputSubs.delete(t.id); lastIn.delete(t.id);
   if (project.selTrack === t.id) { project.selTrack = project.tracks[Math.max(0, i - 1)].id; bind(); renderNav(); renderViews(); roll && roll.setTrack(); }
@@ -3814,7 +3829,7 @@ function setKbHidden(on, save = true) {
   applyKbHeight(); // (the top tray may take the room the keys leave)
   if (!on) buildKeys(); // laid out for the width they now have
 }
-function keyVis(n, on) { const k = keyEls.get(n); if (k) k.classList.toggle('down', on); }
+function keyVis(n, on) { const k = keyEls.get(n); if (k) k.classList.toggle('down', on); PERF.lit(n, on); } // (1i: and the hardware beds)
 function keyAt(x, y) {
   const el = document.elementFromPoint(x, y);
   const k = el && el.closest && el.closest('.key');
@@ -3993,7 +4008,7 @@ function initKeys() {
     if (hk.has(code)) { noteOff(hk.get(code), 0, e.timeStamp); hk.delete(code); }
     if (e.key === 'Meta' || e.key === 'OS') releaseKeys(); // macOS sends no keyup for keys released while Cmd is held
   });
-  window.addEventListener('blur', releaseKeys);
+  window.addEventListener('blur', () => { releaseKeys(); perfLetGo(); }); // (1i: the hardware beds and controllers too)
   // a select/slider/checkbox changed with the mouse gives focus back to the page, so the computer keyboard plays again
   let ptrT = -1, keyT = 0;
   window.addEventListener('pointerdown', () => { ptrT = performance.now(); }, true);
@@ -4503,6 +4518,8 @@ function initModules() {
     W.on('screen', () => monitors.sync()); // (a module went on / off screen: its live displays follow, CULL_MARGIN early)
     W.on('resize', e => cvCamResized(e)); // (the keyboard tray sized after boot, a rotation: an untouched default follows)
     W.on('mods', m => { if (cvView) cvView.setModsVisible(m); }); // (stage 2a: the toolbar ∿ — Always / On select / Never)
+    let slept = false; // (1i §4.3) a tap on sleeping keys / a controller: the hint, once per session
+    W.on('sleeptap', () => { if (!slept) { slept = true; notice('Zoom in, or double-tap the synth, to play it', 2500); } });
   }
   window.addEventListener('pagehide', cvCamFlush);
   document.addEventListener('visibilitychange', () => { if (document.hidden) cvCamFlush(); });
@@ -4598,6 +4615,12 @@ function cvRender() {
   }
   if (cvBodiesDue() && cvView) { cvView.sync(trk()); cvRoom(false); }
   cvModDecor();
+}
+// (1i) the keyboard bed of an instrument's Hardware layout: its box in the module's body px (null: none — the Simple layout,
+// Serum, a model without hardware keys). The default camera keeps it on screen
+function cvBedBox(t, dev = curOf(t)) {
+  const m = modelById(instView(t, dev).model), L = m.custom || instUi(t, dev) === 'flow' ? null : hwLayoutOf(m), g = L && cvPanel.geometry(L, m), o = g && g.controls.find(c => c.bed && c.live);
+  return o ? o.bed.box : null;
 }
 // an instrument's size — always fixed, nothing is resizable (the user's rule, 2026-10-18): a classic one in its Hardware
 // layout its panel's (cv-panel sizeOf), in its Simple layout (or a model whose panel is not drawn yet) its model's
@@ -4874,13 +4897,16 @@ function cvCamRestore(t) {
   const b = W.band();
   if ($('#tab-inst').hidden || !(b.right > b.left && b.bottom > b.top)) { cvCamDef = key; return; } // (ROLL: a 0 × 0 viewport)
   cvCamDef = null;
-  const o = W.toClient(0, 0), cam = W.cam, r = m.rect(), P = 24, bw = b.right - b.left - 2 * P;
+  const o = W.toClient(0, 0), cam = W.cam, r = m.rect(), P = 24, bw = b.right - b.left - 2 * P, bh = b.bottom - b.top - 2 * P;
   // (U3) the left edge framed is the key-zone pill's (outside the instruments' left edge: Tidy stacks them at one x), so it
   // never sits under the rail; the instrument alone fits with it (its bar's ⋯ / ▾ stay inside the band)
   const x0 = r.x - Math.max(0, ...CMOD.instIds(t).map(id => { const q = cvView.modules.get(id); return q && Math.abs(q.x - r.x) < 1 ? q.zoneW || 0 : 0; }));
   const fm = fk && cvView.modules.get(fk), f = fm && fm.rect();
-  const kAll = f ? bw / Math.max(1, f.x + f.w - r.x) : 0; // the instrument and the FX module side by side
-  let k = kAll >= cvWorld.EDIT_K ? Math.min(1, kAll) : Math.max(cvWorld.READ_K, Math.min(1, bw / Math.max(1, r.x + r.w - x0)));
+  // (1i, review 2 P2-1) an instrument with hardware keys also fits its height into the band (the keys are what one plays: a tall
+  // face used to open with its bed under the fold); never below READ_K — below it the camera slides to the bed instead (d, below)
+  const bed = cvBedBox(t), kH = bed ? bh / Math.max(1, r.h) : Infinity;
+  const kAll = f ? Math.min(bw / Math.max(1, f.x + f.w - r.x), kH) : 0; // the instrument and the FX module side by side
+  let k = kAll >= cvWorld.EDIT_K ? Math.min(1, kAll) : Math.max(cvWorld.READ_K, Math.min(1, bw / Math.max(1, r.x + r.w - x0), kH));
   const ox = o.x - cam.tx, oy = o.y - cam.ty, camAt = kk => ({ k: kk, tx: Math.round(b.left - ox + P - x0 * kk), ty: Math.round(b.top - oy + P - r.y * kk) });
   // no module's top bar (nor an instrument's key-zone pill under it) under the floating toolbar or the minimap (U14:
   // world.reserved, client px): a lower k, never below READ_K, lifts a stacked instrument's bar above them
@@ -4896,6 +4922,13 @@ function cvCamRestore(t) {
     k = want;
   }
   const d = camAt(k);
+  if (bed) { // the instrument does not fit at READ_K: the least slide (up / left) that puts the whole bed inside the band, its top / left edge winning
+    const L0 = ox + d.tx + (r.x + bed.x) * k, T0 = oy + d.ty + (r.y + cvModule.BAR_H + bed.y) * k;
+    let sx = Math.min(0, b.right - P - (L0 + bed.w * k)), sy = Math.min(0, b.bottom - P - (T0 + bed.h * k));
+    if (L0 + sx < b.left + P) sx = b.left + P - L0;
+    if (T0 + sy < b.top + P) sy = b.top + P - T0;
+    d.tx += Math.round(sx); d.ty += Math.round(sy);
+  }
   cvCamLast = { key, cam: d }; // (the default is not stored until the user moves away from it)
   W.setCamera(d, { animate: false });
 }
@@ -5950,6 +5983,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     classicPanels, serumPanels, fxPanels, bodyEl: key => cvBodyEl(trk(), key), measure: cvMeasure, costLabels, devFactor, setTrackModel, renderPanels,
     touch: (t0 => v => { touchDev = v == null ? t0 : !!v; })(touchDev), // (the soft caps' touch rule; null: back to this device's)
     wheelToWt, chordCheck, mount: () => (cvMount ? { jobs: cvMount.jobs.map(j => j.key) } : null), // (a switch's mounting: the bodies still to build)
+    perf: PERF, // (1i: tests/canvas-1i-sim)
 
     // (stage 2a, tests/canvas-2a-sim)
     mod: { add: modAdd, drag: modTileDrag, del: modDelete, opts: modDragOpts, connect: modConnect, can: modCan, marks: modMarks, layer: () => modLayer, host: () => modHostO,
@@ -6000,7 +6034,7 @@ function boot() {
   // hidden: iOS may never send pagehide after this, so an IndexedDB save starts now (an unchanged project writes no
   // record); localStorage: a pending save is written (Phase 1)
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { releaseKeys(); if (store.mode !== 'ls' || saveT) saveNow(); } else wake();
+    if (document.hidden) { releaseKeys(); perfLetGo(); if (store.mode !== 'ls' || saveT) saveNow(); } else wake();
     monitors.sync();
   });
   window.addEventListener('scroll', () => { pageScrollT = performance.now(); }, { capture: true, passive: true });

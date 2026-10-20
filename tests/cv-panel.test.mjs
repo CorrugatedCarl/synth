@@ -5,6 +5,11 @@ import './v8-guard.mjs';
 // control in section order, ui registration, redraws, null positions skipped, level rockers, combos, the two-finger
 // rollback, no renderer widget classed as a plain knob / slider) and determinism (the hardware layout always comes back
 // exactly). Models whose layout is still null are skipped, each by name. Never pass fake-DOM nodes to assert.*.
+// Stage 1i (IMPL-1i §2, §9): the keys / wheel / lever / ribbon / pad kinds and the shared perf: tokens (one mutation per
+// rule, a model without a token table, the DX7's mixed dx: / perf: tokens), o.bed unrounded and its clamped front band,
+// the bed as one hit box; per model: the §1.2 bed, the 1i sizes (pinned from lane K2's hand-back); render with a fake
+// api.perf (the nodes, zones, roles, shades at the art, a press's velocity, the velocity note, the tips, destroy → release)
+// and without one (the same nodes, silent), the keys' and controllers' art, the TB-303's audition (§6.4).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-panel.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,9 +17,10 @@ import * as P from '../cv-panel.js?v=9';
 import { MODELS } from '../models.js?v=9';
 import { BAR_H } from '../cv-module.js?v=9';
 import { DOT } from '../cv-world.js?v=9';
-import { fresh, all, ptr, fire, key } from './wk-dom.mjs';
+import { fresh, all, ptr, fire, key, place as placeEl, raf as rafQ } from './wk-dom.mjs';
 import { TB_FX, DX_FX } from './fixtures/panels.mjs';
 import * as wk from '../wk.js?v=9';
+import { bedLayout, seqNote, seqVel, velOf } from '../cv-keys.js?v=9';
 
 const modelOf = id => MODELS.find(m => m.id === id);
 const clone = x => JSON.parse(JSON.stringify(x));
@@ -28,6 +34,16 @@ const EXTRAS = {
 const TARGET = { modular: [1728, 960], minimoog: [1408, 512], arp2600: [1568, 928], solina: [1984, 256], cs80: [2432, 768], prophet5: [1920, 512],
   ms20: [1120, 416], tb303: [608, 608], obxa: [2048, 576], jupiter8: [2144, 608], juno60: [2144, 416], dx7: [2048, 480] };
 const PINNED = { minimoog: [1408, 512] };
+// (1i, IMPL-1i §1.2) once a model has its bed: the sizes with the keyboards (± a dot until K2's hand-back pins them), the
+// ARP's PORTAMENTO on its 3620 slider (out of the extras), each bed's range [lo, n]; the TB-303 has none
+const TARGET_1I = { modular: [2176, 1280], minimoog: [1408, 736], arp2600: [1856, 1344], solina: [1984, 448], cs80: [2432, 1024], prophet5: [1920, 864],
+  ms20: [1120, 704], tb303: [608, 608], obxa: [2048, 928], jupiter8: [2144, 928], juno60: [2144, 800], dx7: [2048, 800] };
+const PINNED_1I = { modular: [2176, 1280], minimoog: [1408, 736], arp2600: [1856, 1344], solina: [1984, 448], cs80: [2432, 1024], prophet5: [1920, 864],
+  ms20: [1120, 704], tb303: [608, 608], obxa: [2048, 928], jupiter8: [2144, 928], juno60: [2144, 800], dx7: [2048, 800] }; // (lane K2's hand-back, a8ceaf6)
+const EXTRAS_1I = { arp2600: ['sy', 'kb', 'lw', 'src'] };
+const BED = { modular: [36, 61], minimoog: [29, 44], arp2600: [36, 49], solina: [36, 49], cs80: [36, 61], prophet5: [36, 61], ms20: [48, 37],
+  obxa: [36, 61], jupiter8: [36, 61], juno60: [36, 61], dx7: [36, 61] };
+const bedOf = L => (L.controls || []).find(c => c && c.id === 'perf:keys') || null;
 // §10 section order where it is pinned (the reference layout)
 const SECTIONS = { minimoog: ['controllers', 'oscbank', 'mixer', 'modifiers', 'output', 'power', 'lefthand'] };
 
@@ -147,14 +163,167 @@ test('geometry: mm → body px at 2 px/mm, content centred, W / H on the dots, t
   assert.equal(hb.filter(h => h.id === 'cho').length, 3, 'a buttons control: one hit box per button');
 });
 
+/* ---------------------------------------------------------------- (1i) the keyboards and the performance controls */
+// the fixture with a bed (13 keys C4…C5 under a 10 mm lip) and two wheels on plates of their own (FX_MODEL has no token table)
+const FX_KEYS = (() => {
+  const L = clone(FX_LAYOUT);
+  L.areas.push({ id: 'ctl', src: [0, 0, 60, 110], at: [0, 146] }, { id: 'keys', src: [0, 0, 200, 110], at: [62.3, 146] });
+  L.sections.push({ id: 'wh', label: '', a: 'ctl', x: 0, y: 0, w: 60, h: 110, frame: 'none', title: 'none' }, { id: 'kb', label: '', a: 'keys', x: 0, y: 0, w: 200, h: 110, frame: 'none', title: 'none' });
+  L.controls.push(
+    { id: 'perf:bend', kind: 'wheel', a: 'ctl', x: 18, y: 50, w: 20, h: 60, orient: 'v', detent: true, skin: { slot: '#0a0a0a', surface: '#222' } },
+    { id: 'perf:mod', kind: 'wheel', a: 'ctl', x: 42, y: 50, w: 20, h: 60 },
+    { id: 'perf:keys', kind: 'keys', a: 'keys', x: 100, y: 50, n: 13, lo: 60, pitch: 23.5, len: 100, at: true, skin: { white: '#f4efe2', black: '#151515' } });
+  L.scheme.keys = { white: '#f0ebe0', black: '#111', gap: '#000' };
+  return L;
+})();
+const KEYS_I = FX_KEYS.controls.findIndex(c => c.id === 'perf:keys');
+const isQ3 = v => typeof v === 'number' && Math.abs(v * 1000 - Math.round(v * 1000)) < 1e-6;
+// a bed's geometry: bedLayout × 2 + its area's offset, unrounded (three decimals); one hit box (keys + band); the band
+// within 0…FRONT_MM, clear of the extras strip and every other live hit box, inside the body
+function bedChecks(L, model, name) {
+  const g = P.geometry(L, model), i = L.controls.findIndex(c => c && c.id === 'perf:keys'), c = L.controls[i], o = g.controls[i], ob = o.bed;
+  assert.ok(ob && o.live, name + ': o.bed');
+  const ar = L.areas.find(a => a.id === (c.a || 'main')), B = bedLayout(c, ob.front / 2);
+  const bx = g.mm.offX + (c.x - ar.src[0] + ar.at[0] - B.w / 2 - g.mm.x0) * 2, by = (c.y - ar.src[1] + ar.at[1] - B.h / 2 - g.mm.y0) * 2, q = v => Math.round(v * 1000) / 1000;
+  assert.deepEqual([ob.lo, ob.hi, ob.n, ob.whites, ob.x, ob.y, ob.w, ob.h], [B.lo, B.hi, B.n, B.whites, q(bx), q(by), q(B.w * 2), q(B.h * 2)], name + ': the keys\' rectangle');
+  assert.equal(ob.keys.length, c.n);
+  let off = 0;
+  ob.keys.forEach((k, j) => { const b = B.keys[j]; if (k.note !== b.note || k.black !== b.black || k.x !== q(bx + b.x * 2) || k.y !== q(by + b.y * 2) || k.w !== q(b.w * 2) || k.h !== q(b.h * 2)) off++; });
+  assert.equal(off, 0, name + ': every key = bedLayout × 2 + the offset (three decimals)');
+  const nums = [ob.x, ob.y, ob.w, ob.h, ob.front, ...ob.keys.flatMap(k => [k.x, k.y, k.w, k.h])];
+  assert.equal(nums.filter(v => !isQ3(v)).length, 0, name + ': three decimals');
+  assert.ok(ob.front >= 0 && ob.front <= 16, name + ': front ' + ob.front);
+  assert.deepEqual([ob.band.x, ob.band.y, ob.band.w, ob.band.h], [ob.x, q(by + B.h * 2), ob.w, ob.front], name + ': the band in front of the keys');
+  assert.deepEqual([ob.box.x, ob.box.y, ob.box.w, ob.box.h], [ob.x, ob.y, ob.w, q((B.h + B.front) * 2)], name + ': box = keys + band');
+  const hb = P.hitBoxes(L, model), mine = hb.filter(h => h.id === 'perf:keys');
+  assert.equal(mine.length, 1, name + ': the bed is one hit box');
+  assert.deepEqual([mine[0].x, mine[0].y, mine[0].w, mine[0].h], [ob.box.x, ob.box.y, ob.box.w, ob.box.h]);
+  assert.ok(ob.box.y + ob.box.h <= g.body.h + 1e-9, name + ': inside the body');
+  const X = g.extras, across = r => r.x < ob.x + ob.w - 1e-6 && ob.x < r.x + r.w - 1e-6;
+  if (X && across(X) && X.y + X.h > ob.y + ob.h + 1e-6) assert.ok(ob.box.y + ob.box.h <= Math.max(X.y, ob.y + ob.h) + 1e-6, name + ': the band stops at the extras strip');
+  for (const h of hb) if (h.id !== 'perf:keys' && across(h) && h.y + h.h > ob.y + ob.h + 1e-6) assert.ok(ob.box.y + ob.box.h <= Math.max(h.y, ob.y + ob.h) + 1e-6, `${name}: the band stops at ${h.id}`);
+  return { g, o, ob, B };
+}
+
+test('1i validate: the keys / wheel / lever / ribbon / pad kinds with the perf: tokens validate on a model without a token table; usable(); one mutation per §2 rule, naming the field', () => {
+  assert.deepEqual(P.validate(FX_KEYS, FX_MODEL), []);
+  assert.deepEqual(Object.keys(P.PERF_TOKENS.kind), ['perf:keys', 'perf:bend', 'perf:mod']);
+  for (const t of ['perf:keys', 'perf:bend', 'perf:mod']) assert.ok(P.RENDERED_TOKENS.has(t), t + ' rendered');
+  for (const k of ['keys', 'wheel', 'lever', 'ribbon', 'pad']) assert.deepEqual(P.KINDS[k], [], k + ': no models.js type');
+  const bad = (f, re, m) => {
+    const L = clone(FX_KEYS);
+    f(L, L.controls.find(c => c.id === 'perf:keys'), L.controls.find(c => c.id === 'perf:bend'), L.controls.find(c => c.id === 'perf:mod'));
+    const p = P.validate(L, FX_MODEL);
+    assert.ok(p.some(x => re.test(x)), (m || re) + ' → ' + JSON.stringify(p));
+  };
+  // tokens and kinds
+  bad((L, k, b, md) => { md.kind = 'ribbon'; md.hit = [20, 60]; }, /perf:mod must be a wheel \| lever \| pad/, 'a perf:mod of kind ribbon');
+  bad((L, k, b) => { b.kind = 'pad'; }, /perf:bend must be a wheel \| lever \| ribbon/);
+  bad((L, k) => { k.kind = 'wheel'; k.w = 20; k.h = 20; }, /perf:keys must be a keys/);
+  bad(L => { L.controls.push({ id: 'perf:bend', kind: 'lever', a: 'keys', x: 100, y: 105, w: 16, h: 8, axis: 'x', up: '+x', hit: [16, 14] }); }, /perf:bend: placed 2 times/, 'a perf token twice on a model with no token table');
+  bad(L => { L.extras.ids.push('perf:mod'); }, /extras: "perf:mod" is not a control of the model/);
+  bad(L => { L.controls.push({ id: 'perf:pitch', kind: 'wheel', a: 'ctl', x: 30, y: 100, w: 10, h: 10 }); }, /"perf:pitch" is not a control of the model/);
+  bad(L => { L.controls.push({ kind: 'keys', a: 'keys', x: 100, y: 50, n: 13, lo: 60, pitch: 23.5, len: 100 }); }, /a keys is decoration only/);
+  bad((L, k) => { k.inert = true; }, /an inert control has no id/);
+  // the bed's numbers
+  bad((L, k) => { k.n = 89; }, /n an integer 1–88/); bad((L, k) => { k.n = 12.5; }, /n an integer 1–88/);
+  bad((L, k) => { k.lo = 60.5; }, /lo an integer/);
+  bad((L, k) => { k.lo = 61; }, /lo and lo \+ n − 1 white keys within 0–127/, 'lo black');
+  bad((L, k) => { k.n = 11; }, /lo and lo \+ n − 1 white keys/, 'the top key black (A♯4)');
+  bad((L, k) => { k.lo = 120; }, /within 0–127/, 'past 127');
+  bad((L, k) => { k.pitch = 17.9; }, /pitch 18–26 mm/); bad((L, k) => { k.pitch = 26.1; }, /pitch 18–26 mm/);
+  bad((L, k) => { k.len = 79; }, /len 80–200 mm/); bad((L, k) => { k.len = 201; }, /len 80–200 mm/);
+  bad((L, k) => { k.black = { w: 23.5 }; }, /black.w > 0, < pitch/); bad((L, k) => { k.black = { len: 100 }; }, /black.len > 0, < len/);
+  bad((L, k) => { k.black = 13; }, /black \{ w, len \}/);
+  bad((L, k) => { k.front = 8.5; }, /front 0–8 mm/); bad((L, k) => { k.front = -1; }, /front 0–8 mm/);
+  bad((L, k) => { k.at = 'yes'; }, /at true \| false/);
+  bad((L, k) => { k.x = 110; }, /\(perf:keys\): outside its area "keys"/, 'the keys\' rectangle inside its area');
+  // the controllers
+  bad((L, k, b) => { b.w = 0; }, /\(perf:bend\): w, h > 0/);
+  bad((L, k, b) => { b.w = 10; b.hit = [10, 60]; }, /hit box 10 × 60 mm < 14 mm/, 'a controller\'s hit ≥ HIT_MIN_MM');
+  bad((L, k, b) => { b.detent = 1; }, /detent true \| false/);
+  bad((L, k, b) => { b.kind = 'lever'; b.axis = 'x'; b.up = '-y'; }, /axis x \(up \+x\) \| y \(up -y \| \+y\)/);
+  bad((L, k, b) => { b.kind = 'lever'; delete b.orient; }, /axis x/, 'a lever needs its axis');
+  bad((L, k, b) => { b.kind = 'ribbon'; b.span = 0; }, /span > 0/);
+  bad((L, k, b, md) => { md.kind = 'pad'; md.rise = -0.1; }, /rise > 0 s/);
+  bad((L, k) => { k.skin.white = 'var(--x)'; }, /skin.white not a colour/);
+  bad((L, k) => { k.skin.label = 'Moog'; }, /a maker name/, 'no maker name in a skin');
+  bad(L => { L.scheme.wheel = { surface: 'url(#x)' }; }, /scheme.wheel.surface: not a colour/);
+  bad(L => { L.scheme.keys = '#fff'; }, /scheme.keys: not an object/);
+  bad(L => { L.sections = L.sections.filter(x => x.id !== 'wh'); }, /\(perf:bend\): not inside a section/, 'a perf control inside a section');
+  bad(L => { const m = L.controls.find(c => c.id === 'perf:mod'); m.a = 'keys'; m.x = 150; }, /\(perf:mod\) and controls\[\d+\] \(perf:keys\): hit boxes overlap|\(perf:keys\) and controls\[\d+\] \(perf:mod\): hit boxes overlap/, 'the bed counts as one hit box');
+  bad(L => { L.areas.find(a => a.id === 'keys').at = [1900, 146]; }, /content: 2100 × 256 mm > 2000 × 1000/);
+  // inert controllers are drawn (no id, no token): valid
+  const L2 = clone(FX_KEYS);
+  L2.controls.push({ kind: 'lever', a: 'keys', x: 100, y: 106, w: 30, h: 6, axis: 'x', up: '+x', inert: true }, { kind: 'pad', a: 'ctl', x: 30, y: 100, w: 12, h: 8, inert: true });
+  assert.deepEqual(P.validate(L2, FX_MODEL), []);
+  // usable with or without a host (§2: no api.perf → the widgets render inert)
+  globalThis.__synthTest = { panels: { fixture: FX_KEYS } };
+  try { assert.equal(P.usable('fixture', FX_MODEL) === FX_KEYS, true); } finally { delete globalThis.__synthTest; }
+});
+
+test('1i validate: the DX7 mixes dx: and perf: tokens (its layout with both validates; a perf:bend twice, a dx:btn with a perf kind, a perf:mod of kind ribbon are reported)', () => {
+  const model = modelOf('dx7'), base = clone(DX_FX);
+  base.areas.push({ id: 'wheels', src: [0, 0, 150, 157], at: [0, 172] }, { id: 'keys', src: [0, 0, 846, 157], at: [150, 172] });
+  base.sections.push({ id: 'wh', label: '', a: 'wheels', x: 0, y: 0, w: 150, h: 157, frame: 'none', title: 'none' }, { id: 'kb', label: '', a: 'keys', x: 0, y: 0, w: 846, h: 157, frame: 'none', title: 'none' });
+  base.controls.push({ id: 'perf:bend', kind: 'wheel', a: 'wheels', x: 50, y: 70, w: 22, h: 64, detent: true }, { id: 'perf:mod', kind: 'wheel', a: 'wheels', x: 100, y: 70, w: 22, h: 64 },
+    { id: 'perf:keys', kind: 'keys', a: 'keys', x: 423, y: 75, n: 61, lo: 36, pitch: 23.5, len: 150, at: true });
+  assert.deepEqual(P.validate(base, model), []);
+  const bad = (f, re) => { const L = clone(base); f(L); const p = P.validate(L, model); assert.ok(p.some(x => re.test(x)), re + ' → ' + JSON.stringify(p)); };
+  bad(L => { L.controls.push({ id: 'perf:bend', kind: 'wheel', a: 'wheels', x: 130, y: 140, w: 15, h: 15 }); }, /perf:bend: placed 2 times/);
+  bad(L => { L.controls.find(c => c.id === 'dx:btn').kind = 'wheel'; }, /\(dx:btn\): dx:btn must be a button/);
+  bad(L => { L.controls.find(c => c.id === 'perf:mod').kind = 'ribbon'; }, /perf:mod must be a wheel \| lever \| pad/);
+  bad(L => { Object.assign(L.controls.find(c => c.id === 'perf:keys'), { kind: 'button', w: 20, h: 20 }); }, /perf:keys must be a keys/);
+  bad(L => { L.controls.find(c => c.id === 'dx:no').id = 'perf:mod'; }, /perf:mod: placed 2 times|perf:mod must be a wheel/);
+  const g = P.geometry(base, model);
+  assert.equal(g.controls.filter(o => o.live && /^perf:/.test(o.id)).length, 3, 'the perf controls are live');
+  assert.equal(g.controls.filter(o => o.live && o.id === 'dx:btn').length, 32, 'beside the dx: ones');
+  bedChecks(base, model, 'dx7 fixture');
+});
+
+test('1i geometry: o.bed = bedLayout × 2 + the area\'s offset, unrounded (not on the half-px grid); the front band 8 mm under a lip, clamped by the extras strip and by a live control below, 0 where the keys end at the body\'s edge; the bed is one hit box; the controllers\' boxes as any control', () => {
+  const { g, ob } = bedChecks(FX_KEYS, FX_MODEL, 'fixture');
+  // the keys area sits at x 62.3 mm: the bed's px are not multiples of 0.5 (rectPx would have rounded them)
+  assert.equal(ob.x, Math.round((4 + (62.3 + 6) * 2) * 1000) / 1000, 'bed left: offX 4 + 68.3 mm × 2');
+  assert.equal(ob.keys.some(k => Math.round(k.x * 2) !== k.x * 2), true, 'unrounded');
+  assert.deepEqual([ob.lo, ob.hi, ob.whites, ob.w, ob.h, ob.front, ob.at], [60, 72, 8, 376, 200, 16, true], 'a 10 mm lip: the full 8 mm band (16 px)');
+  assert.equal(g.controls[KEYS_I].box.h, 216);
+  const wh = g.controls.find(o => o.id === 'perf:bend');
+  assert.deepEqual([wh.own.w, wh.own.h, wh.hit.w, wh.hit.h], [40, 120, 40, 120], 'a 20 × 60 mm wheel: box = slot, hit = slot');
+  // a 3 mm lip: the band stops at the extras strip (the content's bottom)
+  const lip = (L, h) => { for (const [a, s] of [['keys', 'kb'], ['ctl', 'wh']]) { L.areas.find(x => x.id === a).src[3] = h; L.sections.find(x => x.id === s).h = h; } return L; };
+  const L3 = lip(clone(FX_KEYS), 103);
+  assert.deepEqual(P.validate(L3, FX_MODEL), []);
+  const b3 = bedChecks(L3, FX_MODEL, 'lip 3').ob;
+  assert.deepEqual([b3.front, P.geometry(L3, FX_MODEL).extras.y - (b3.y + b3.h)], [6, 6], 'clamped to the extras strip');
+  // no lip: 0
+  const L0 = lip(clone(FX_KEYS), 100);
+  assert.equal(bedChecks(L0, FX_MODEL, 'no lip').ob.front, 0, 'the keys end at the body\'s edge');
+  // a live control below the keys (a pad 5 mm under the front): the band stops at its hit box
+  const LP = clone(FX_KEYS); LP.areas.find(a => a.id === 'keys').src[3] = 130; LP.sections.find(x => x.id === 'kb').h = 130;
+  Object.assign(LP.controls.find(c => c.id === 'perf:mod'), { kind: 'pad', a: 'keys', x: 50, y: 112.5, w: 20, h: 10 });
+  assert.deepEqual(P.validate(LP, FX_MODEL), []);
+  const bp = bedChecks(LP, FX_MODEL, 'pad below').ob;
+  assert.deepEqual([bp.front, P.geometry(LP, FX_MODEL).controls.find(o => o.id === 'perf:mod').hit.y - (bp.y + bp.h)], [10, 10], 'clamped to the pad\'s hit box (15 mm high: its top 5 mm under the keys)');
+  // c.front: the author's band (≤ 8 mm)
+  const LF = clone(FX_KEYS); LF.controls[KEYS_I].front = 2.5;
+  assert.equal(bedChecks(LF, FX_MODEL, 'front 2.5').ob.front, 5);
+  // an inert bed: drawn, no band, no hit box
+  const LI = clone(FX_KEYS); delete LI.controls[KEYS_I].id; LI.controls[KEYS_I].inert = true;
+  assert.deepEqual(P.validate(LI, FX_MODEL), []);
+  const oi = P.geometry(LI, FX_MODEL).controls[KEYS_I];
+  assert.deepEqual([oi.live, oi.bed.front, oi.bed.keys.length, P.hitBoxes(LI, FX_MODEL).filter(h => h.id === 'perf:keys').length], [false, 0, 13, 0]);
+});
+
 /* ---------------------------------------------------------------- every authored model */
 for (const id of P.HW_IDS) {
   const L = P.layoutOf(id), model = modelOf(id);
   if (!L) { test(`panels/${id}.js: not drawn yet (null) — skipped`, { skip: 'null layout: the model offers its Resizable panel only' }, () => {}); continue; }
+  const bed = bedOf(L);
   test(`panels/${id}.js: valid; every models.js id exactly once; the §10 extras; every live control in a section`, () => {
     assert.deepEqual(P.validate(L, model), []);
     assert.equal(L.id, id);
-    assert.deepEqual([...L.extras.ids].sort(), [...EXTRAS[id]].sort(), 'extras (§10)');
+    assert.deepEqual([...L.extras.ids].sort(), [...((bed && EXTRAS_1I[id]) || EXTRAS[id])].sort(), 'extras (§10; 1i §1.2)');
     const live = new Map();
     for (const c of L.controls) if (!c.inert && typeof c.id === 'string') live.set(c.id, (live.get(c.id) || 0) + 1);
     for (const c of model.controls) {
@@ -162,7 +331,7 @@ for (const id of P.HW_IDS) {
       if (id === 'dx7' && live.has('dx:btn') && c.id !== 'vol' && c.id !== 'dac') continue; // (addressed by the DATA ENTRY buttons, §6.3)
       assert.equal(n, 1, c.id + ' placed once');
     }
-    if (SECTIONS[id]) assert.deepEqual(L.sections.map(s => s.id), SECTIONS[id], 'sections in the §10 order');
+    if (SECTIONS[id]) assert.deepEqual(L.sections.map(s => s.id).filter(s => !bed || SECTIONS[id].includes(s)), SECTIONS[id], 'sections in the §10 order (1i: the bed\'s and the plates\' added)');
     const g = P.geometry(L, model);
     for (const o of g.controls) if (o.live) assert.ok(o.sec >= 0, `${o.id} inside a section`);
     const shown = g.controls.filter(o => o.live || o.show).map(o => o.i), num = (a, b) => a - b;
@@ -174,13 +343,14 @@ for (const id of P.HW_IDS) {
       for (const c of model.controls) assert.ok(reach.has(c.id), c.id + ' reached through a DX7 button');
     } else assert.ok(g.order.length >= model.controls.length - L.extras.ids.length, 'every live control in the Tab order');
   });
-  test(`panels/${id}.js: the module size on the dots (bar included), ${PINNED[id] ? 'pinned' : 'the §10 target ± a dot'}; hit boxes ≥ 28 px, disjoint, inside the body`, () => {
+  const pin = bed || id === 'tb303' ? PINNED_1I[id] : PINNED[id];
+  test(`panels/${id}.js: the module size on the dots (bar included), ${pin ? 'pinned' : (bed ? 'the 1i' : 'the §10') + ' target ± a dot'}; hit boxes ≥ 28 px, disjoint, inside the body`, () => {
     const s = P.sizeOf(L, model), g = P.geometry(L, model);
     assert.equal(s.w % DOT, 0); assert.equal(s.h % DOT, 0);
     assert.equal(s.h, g.body.h + BAR_H);
-    if (PINNED[id]) assert.deepEqual([s.w, s.h], PINNED[id]);
+    if (pin) assert.deepEqual([s.w, s.h], pin);
     else {
-      const [tw, th] = TARGET[id];
+      const [tw, th] = (bed ? TARGET_1I : TARGET)[id];
       assert.ok(Math.abs(s.w - tw) <= DOT || (id === 'ms20' && Math.abs(s.w - 1152) <= DOT), `width ${s.w} vs ${tw}`);
       assert.ok(Math.abs(s.h - th) <= DOT, `height ${s.h} vs ${th}`);
     }
@@ -193,6 +363,14 @@ for (const id of P.HW_IDS) {
       const a = hb[i], b = hb[j];
       assert.ok(!(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h), `${a.id} × ${b.id} overlap`);
     }
+  });
+  // (1i) the bed of §1.2 (todo until lane K2's layout lands: then a real test), unrounded and one hit box; the TB-303 none
+  test(`panels/${id}.js: (1i) ${id === 'tb303' ? 'no keyboard (its 13 key cells)' : 'one perf:keys bed, MIDI ' + BED[id][0] + '–' + (BED[id][0] + BED[id][1] - 1) + ', its geometry unrounded'}`, { todo: !bed && id !== 'tb303' ? 'lane K2 (panels/' + id + '.js)' : false }, () => {
+    if (id === 'tb303') { assert.equal(L.controls.filter(c => typeof c.id === 'string' && c.id.startsWith('perf:')).length, 0); return; }
+    assert.equal(L.controls.filter(c => c.id === 'perf:keys').length, 1, 'one bed');
+    assert.deepEqual([bed.lo, bed.n], BED[id], 'the §1.2 range');
+    if (id === 'jupiter8') assert.equal(bed.pitch, 834 / 36, 'the JP-8 pitch: the division (36 × 23.17 overruns 834 mm)');
+    bedChecks(L, model, id);
   });
   test(`panels/${id}.js: original artwork — no image / href / xlink / foreignObject / script, no maker name, the model name only as plain text`, () => {
     const svg = P.decorSvg(L, model);
@@ -640,4 +818,242 @@ test('1g: the face SVG is self-contained (every fill / stroke / font / text-rend
     assert.ok(!/currentColor|var\(--|<style|<image|<foreignObject/.test(s), id + ': nothing from CSS, nothing external');
     assert.ok(!/<text(?![^>]*\sfill=)[^>]*>/.test(s), id + ': every text has its fill');
   }
+});
+
+/* ---------------------------------------------------------------- (1i) render: the keys, the controllers, the 303's audition */
+// a fake api.perf (main.js PERF.api's surface): its posts, the lit / view / bed registrations, the live values
+function fakePerf() {
+  const F = { log: [], lits: new Set(), views: { bend: new Set(), wheel: new Set(), at: new Set() }, beds: new Set(), live: { bend: 0, wheel: 0, at: 0 }, held: [] };
+  F.api = {
+    on: (n, v) => F.log.push(['on', n, Math.round(v * 1000) / 1000]), off: n => F.log.push(['off', n]),
+    bend: v => F.log.push(['bend', Math.round(v * 1000) / 1000]), mod: v => F.log.push(['mod', Math.round(v * 1000) / 1000]), at: v => F.log.push(['at', v]),
+    value: k => F.live[k] || 0, view: (k, f) => { F.views[k].add(f); return () => F.views[k].delete(f); },
+    lit: f => { F.lits.add(f); return () => F.lits.delete(f); }, held: () => F.held, bed: f => { F.beds.add(f); return () => F.beds.delete(f); },
+  };
+  return F;
+}
+const renderKeys = (perf, L = FX_KEYS, model = FX_MODEL) => {
+  const doc = fresh(), root = doc.createElement('div'), api = fakeApi(model, doc);
+  if (perf) api.perf = perf.api;
+  doc.body.append(root);
+  const r = P.render(root, L, model, api);
+  return { doc, root, api, r };
+};
+
+test('1i render: one .hw-c per perf token (data-nomod), the bed a music zone with n hidden shades at its keys\' art, the controllers perf zones over their slots (unrounded); a press reaches perf.on with the §4.2 velocity; the velocity note in the bed\'s label; the bed mounts lit', () => {
+  const F = fakePerf();
+  F.held = [62];
+  const { root, doc, r } = renderKeys(F), g = P.geometry(FX_KEYS, FX_MODEL), ob = g.controls[KEYS_I].bed;
+  for (const id of ['perf:keys', 'perf:bend', 'perf:mod']) {
+    const w = byCtl(root, id);
+    assert.ok(w, id);
+    assert.deepEqual([cls(w), w.getAttribute('data-nomod'), w.getAttribute('data-kind')], ['hw-c', '1', FX_KEYS.controls.find(c => c.id === id).kind], id);
+  }
+  const bw = byCtl(root, 'perf:keys'), keys = bw.childNodes[0];
+  assert.deepEqual([bw.style.left, bw.style.top, bw.style.width, bw.style.height], [ob.box.x + 'px', ob.box.y + 'px', ob.box.w + 'px', ob.box.h + 'px'], 'the wrapper: keys + band, unrounded');
+  assert.deepEqual([cls(keys), keys.getAttribute('data-gesture'), keys.getAttribute('role'), keys.getAttribute('aria-roledescription'), keys.getAttribute('aria-disabled')], ['hw-keys', 'music', 'group', 'keyboard', null]);
+  assert.equal(keys.getAttribute('aria-label'), 'Fixture keyboard, 13 keys, C4–C5; not touch-sensitive, like the original (velocity is recorded and sent)');
+  const sh = keys.childNodes.filter(n => cls(n) === 'hw-kd');
+  assert.equal(sh.length, 13);
+  let off = 0;
+  sh.forEach((s, i) => { const k = ob.keys[i]; if (s.getAttribute('data-note') !== String(k.note) || s.style.left !== Math.round((k.x - ob.box.x) * 1000) / 1000 + 'px' || s.style.top !== Math.round((k.y - ob.box.y) * 1000) / 1000 + 'px' || s.style.width !== k.w + 'px' || s.style.height !== k.h + 'px') off++; });
+  assert.equal(off, 0, 'every shade at its key\'s art (o.bed, unrounded)');
+  assert.deepEqual(sh.filter(s => !s.hasAttribute('hidden')).map(s => s.getAttribute('data-note')), ['62'], 'mounted lit: perf.held()');
+  // a press (k = 1: the element's rect = its box): the front of D4 (white) → velocity 1; the back of C♯ → 0.3 + …
+  placeEl(keys, 0, 0, ob.box.w, ob.box.h);
+  const kx = n => { const k = ob.keys.find(q => q.note === n); return k.x - ob.box.x + k.w / 2; };
+  fire(keys, 'pointerdown', { pointerId: 1, pointerType: 'touch', clientX: kx(62), clientY: 199, button: 0, buttons: 1 });
+  fire(keys, 'pointerdown', { pointerId: 2, pointerType: 'touch', clientX: kx(61), clientY: 20, button: 0, buttons: 1 });
+  const B = g.controls[KEYS_I].bed.mm;
+  assert.deepEqual(F.log, [['on', 62, Math.round(velOf(B, 62, 99.5) * 1000) / 1000], ['on', 61, Math.round(velOf(B, 61, 10) * 1000) / 1000]]);
+  assert.equal(sh.filter(s => !s.hasAttribute('hidden')).length, 2, 'pressed: shown');
+  for (const f of F.lits) f(64, true);
+  assert.equal(sh.find(s => s.getAttribute('data-note') === '64').hasAttribute('hidden'), false, 'perf.lit (keyVis) lights a key');
+  // the controllers: perf zones, sliders, over their slots exactly (unrounded)
+  for (const id of ['perf:bend', 'perf:mod']) {
+    const w = byCtl(root, id), el = w.childNodes[0], o = g.controls.find(q => q.id === id);
+    assert.deepEqual([cls(el), el.getAttribute('data-gesture'), el.getAttribute('role'), el.getAttribute('tabindex')], ['hw-wheel', 'perf', 'slider', '0'], id);
+    assert.deepEqual([w.style.left, w.style.top, w.style.width, w.style.height], [o.own.x + 'px', o.own.y + 'px', o.own.w + 'px', o.own.h + 'px'], id + ': the window over the slot');
+  }
+  assert.deepEqual([byCtl(root, 'perf:bend').childNodes[0].getAttribute('aria-label'), byCtl(root, 'perf:bend').childNodes[0].getAttribute('aria-valuetext'), byCtl(root, 'perf:mod').childNodes[0].getAttribute('aria-valuetext')], ['Pitch bend wheel', '0.0 st', '0 %']);
+  assert.ok(doc.getElementById('cv-keys-css'), 'the CSS injected once');
+  // destroy: the held keys off once each, unhooked from the host
+  r.destroy();
+  assert.deepEqual(F.log.slice(2).map(x => x.join(' ')).sort(), ['off 61', 'off 62']);
+  assert.deepEqual([F.lits.size, F.beds.size, F.views.bend.size, F.views.wheel.size], [0, 0, 0, 0], 'unhooked');
+});
+
+test('1i render: the controllers — a drag posts through perf (a spring\'s rest at the release), the host\'s release-all and destroy end a drag with its rest; the velocity note of a touch-sensitive model (DX7)', () => {
+  const F = fakePerf();
+  const { root, r } = renderKeys(F), el = byCtl(root, 'perf:bend').childNodes[0];
+  rafQ.install();
+  try {
+    placeEl(el, 0, 0, 40, 120);
+    fire(el, 'pointerdown', { pointerId: 3, pointerType: 'touch', clientX: 20, clientY: 60, button: 0, buttons: 1 });
+    fire(el, 'pointermove', { pointerId: 3, pointerType: 'touch', clientX: 20, clientY: 30, button: 0, buttons: 1 });
+    rafQ.flush();
+    assert.deepEqual(F.log, [['bend', 0.5]], '15 mm up of 60: +0.5, in the frame');
+    assert.deepEqual([el.getAttribute('aria-valuenow'), el.getAttribute('aria-valuetext')], ['0.5', '+1.0 st']);
+    fire(el, 'pointerup', { pointerId: 3, pointerType: 'touch', clientX: 20, clientY: 30, button: 0, buttons: 0 });
+    assert.deepEqual(F.log.at(-1), ['bend', 0], 'released: 0 at once');
+  } finally { rafQ.uninstall(); }
+  fire(el, 'pointerdown', { pointerId: 4, pointerType: 'touch', clientX: 20, clientY: 60, button: 0, buttons: 1 });
+  fire(el, 'pointermove', { pointerId: 4, pointerType: 'touch', clientX: 20, clientY: 90, button: 0, buttons: 1 });
+  for (const f of F.beds) f();
+  assert.deepEqual(F.log.at(-1), ['bend', 0], 'the host\'s release-all: the rest posted');
+  fire(el, 'pointerdown', { pointerId: 5, pointerType: 'touch', clientX: 20, clientY: 60, button: 0, buttons: 1 });
+  fire(el, 'pointermove', { pointerId: 5, pointerType: 'touch', clientX: 20, clientY: 40, button: 0, buttons: 1 });
+  const n = F.log.length;
+  r.destroy();
+  assert.deepEqual([F.log.length > n || F.log.at(-1).join(), F.log.at(-1)], [true, ['bend', 0]], 'destroy: the rest posted');
+  // the DX7 fixture with a bed: touch-sensitive
+  const D = clone(DX_FX);
+  D.areas.push({ id: 'keys', src: [0, 0, 846, 157], at: [150, 172] });
+  D.sections.push({ id: 'kb', label: '', a: 'keys', x: 0, y: 0, w: 846, h: 157, frame: 'none', title: 'none' });
+  D.controls.push({ id: 'perf:keys', kind: 'keys', a: 'keys', x: 423, y: 75, n: 61, lo: 36, pitch: 23.5, len: 150, at: true });
+  const model = modelOf('dx7'), doc = fresh(), root2 = doc.createElement('div'), api = fakeApi(model, doc);
+  api.dx = { state: { op: 1, param: 7, eg: 1, mode: 'edit' }, algs: Array.from({ length: 32 }, () => [[[2, 1]], [1], [6, 6]]), layout: algStub, presets: 5, load: () => {}, presetName: () => '' };
+  api.perf = fakePerf().api; doc.body.append(root2);
+  P.render(root2, D, model, api);
+  assert.equal(byCtl(root2, 'perf:keys').childNodes[0].getAttribute('aria-label'), 'DX7 keyboard, 61 keys, C2–C7; touch-sensitive: the front edge is loudest');
+});
+
+test('1i render (the real layouts): the hover tips — the bed\'s velocity note, a pitch control\'s ±2 st and its original\'s range (§5.3); every perf token of every model one .hw-c, its zone and role', () => {
+  const ROLE = { keys: 'group', wheel: 'slider', lever: 'slider', ribbon: 'slider', pad: 'button' };
+  for (const id of authored) {
+    const L = P.layoutOf(id), model = modelOf(id), F = fakePerf(), doc = fresh(), root = doc.createElement('div'), api = fakeApi(model, doc);
+    api.perf = F.api; doc.body.append(root);
+    if (id === 'tb303') api.seq = fakeSeq(doc, api);
+    if (id === 'dx7') api.dx = { state: { op: 1, param: 7, eg: 1, mode: 'edit' }, algs: Array.from({ length: 32 }, () => [[[2, 1]], [1], [6, 6]]), layout: algStub, presets: 5, load: () => {}, presetName: () => '' };
+    P.render(root, L, model, api);
+    for (const c of L.controls.filter(x => typeof x.id === 'string' && x.id.startsWith('perf:'))) {
+      const w = byCtl(root, c.id), el = w && w.childNodes[0];
+      assert.ok(el, `${id}: ${c.id}`);
+      assert.deepEqual([el.getAttribute('data-gesture'), el.getAttribute('role')], [c.kind === 'keys' ? 'music' : 'perf', ROLE[c.kind]], `${id}: ${c.id}`);
+    }
+  }
+  const { root, api } = (() => { const doc = fresh(), root = doc.createElement('div'), api = fakeApi(modelOf('prophet5'), doc); api.perf = fakePerf().api; doc.body.append(root); P.render(root, P.layoutOf('prophet5'), modelOf('prophet5'), api); return { root, api }; })();
+  fire(byCtl(root, 'perf:bend').childNodes[0], 'pointerenter', { pointerType: 'mouse' });
+  fire(byCtl(root, 'perf:mod').childNodes[0], 'pointerenter', { pointerType: 'mouse' });
+  fire(byCtl(root, 'perf:keys').childNodes[0], 'pointerenter', { pointerType: 'mouse' });
+  fire(byCtl(root, 'perf:keys').childNodes[0], 'pointerenter', { pointerType: 'touch' });
+  assert.deepEqual(api.state.tips, ['Pitch bend wheel · ±2 semitones (the original: about ± a fifth)', 'Modulation wheel', 'Keyboard: not touch-sensitive, like the original (velocity is recorded and sent)'], 'a finger shows no tip');
+});
+
+test('1i render (review 2 P1-2): a white key\'s shade is clipped to the white key\'s visible shape — it never covers a neighbouring black key (every model\'s bed: the polygon stays inside the key, leaves out every overlapped black rect, and its area = the visible white); the black shades are not clipped', () => {
+  const polyOf = s => { const m = /^polygon\((.*)\)$/.exec(s.style.clipPath || ''); return m ? m[1].split(',').map(t => t.trim().split(/\s+/).map(v => parseFloat(v))) : null; };
+  const inside = (P2, x, y) => { let c = false; for (let i = 0, j = P2.length - 1; i < P2.length; j = i++) { const [xi, yi] = P2[i], [xj, yj] = P2[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; } return c; };
+  const area = P2 => { let a = 0; for (let i = 0, j = P2.length - 1; i < P2.length; j = i++) a += P2[j][0] * P2[i][1] - P2[i][0] * P2[j][1]; return Math.abs(a) / 2; };
+  let whites = 0, clipped = 0, models = 0;
+  const bad = [];
+  for (const id of authored) {
+    const L = P.layoutOf(id);
+    if (!bedOf(L)) continue;
+    models++;
+    const model = modelOf(id), F = fakePerf(), doc = fresh(), root = doc.createElement('div'), api = fakeApi(model, doc);
+    api.perf = F.api; doc.body.append(root);
+    P.render(root, L, model, api);
+    const g = P.geometry(L, model), ob = g.controls.find(o => o.bed).bed, sh = byCtl(root, 'perf:keys').childNodes[0].childNodes.filter(n => cls(n) === 'hw-kd');
+    assert.equal(sh.length, ob.keys.length, id);
+    ob.keys.forEach((k, i) => {
+      const poly = polyOf(sh[i]);
+      if (k.black) { if (sh[i].style.clipPath) bad.push(`${id} ${k.note}: a black shade clipped`); return; }
+      whites++;
+      const under = ob.keys.filter(b => b.black && b.x < k.x + k.w - 1e-6 && b.x + b.w > k.x + 1e-6);
+      if (!under.length) { if (sh[i].style.clipPath) bad.push(`${id} ${k.note}: clipped with no black key over it`); return; }
+      clipped++;
+      if (!poly || poly.length < 4) { bad.push(`${id} ${k.note}: no polygon (${sh[i].style.clipPath})`); return; }
+      if (poly.some(([x, y]) => !(x >= -1e-6 && x <= k.w + 1e-6 && y >= -1e-6 && y <= k.h + 1e-6))) bad.push(`${id} ${k.note}: a point outside the key`);
+      let vis = k.w * k.h;
+      for (const b of under) {
+        const x0 = Math.max(b.x, k.x) - k.x, x1 = Math.min(b.x + b.w, k.x + k.w) - k.x, bh = b.h; // (the overlap, shade-local; the blacks hang from the same back edge)
+        vis -= (x1 - x0) * bh;
+        for (const [x, y] of [[(x0 + x1) / 2, bh / 2], [x0 + 0.05, 0.05], [x1 - 0.05, 0.05], [x0 + 0.05, bh - 0.05], [x1 - 0.05, bh - 0.05]]) if (inside(poly, x, y)) bad.push(`${id} ${k.note}: the shade covers black ${b.note} at ${x.toFixed(2)},${y.toFixed(2)}`);
+        if (!inside(poly, (x0 + x1) / 2, bh + 0.05)) bad.push(`${id} ${k.note}: not shaded under black ${b.note}`);
+      }
+      if (!inside(poly, 0.05, k.h - 0.05) || !inside(poly, k.w - 0.05, k.h - 0.05)) bad.push(`${id} ${k.note}: the front corners are not shaded`);
+      if (Math.abs(area(poly) - vis) > 0.01) bad.push(`${id} ${k.note}: area ${area(poly).toFixed(3)} vs the visible white ${vis.toFixed(3)}`);
+    });
+  }
+  assert.deepEqual(bad.slice(0, 8), []);
+  assert.ok(models >= 11 && whites > 300 && clipped > 0.9 * whites,`${models} models, ${whites} white keys, ${clipped} clipped`);
+});
+
+test('1i review 2 P2-2: the Solina\'s extras box starts at the walnut cheek\'s inner edge (not over the wood), stays inside the body, its caption still has the room, the size is the pinned one', () => {
+  const L = P.layoutOf('solina'), model = modelOf('solina'), g = P.geometry(L, model);
+  const cheeks = L.decor.filter(d => d.t === 'rect' && d.fill === 'wood' && d.x === 0);
+  assert.equal(cheeks.length, 1, 'the left walnut cheek');
+  const edge = g.content.x + cheeks[0].w * 2;
+  assert.ok(g.extras.x >= edge - 1e-6, `the extras box at ${g.extras.x} px, the cheek ends at ${edge}`);
+  assert.deepEqual([g.extras.over, P.validate(L, model)], [false, []], 'the caption fits');
+  assert.deepEqual([P.sizeOf(L, model).w, P.sizeOf(L, model).h], PINNED_1I.solina);
+});
+
+test('1i render without api.perf (a host without perf, the tests\' stub): the same nodes, no listener, aria-disabled; deterministic either way', () => {
+  const ser = n => n.localName + '.' + cls(n) + '[' + ['data-ctl', 'data-gesture', 'role', 'aria-label', 'data-note', 'hidden'].map(a => n.getAttribute(a)).join('|') + ']' + JSON.stringify(n.style) + '(' + n.childNodes.filter(c => c.nodeType === 1).map(ser).join(',') + ')';
+  const A = renderKeys(null), B = renderKeys(fakePerf());
+  const bed = A.root && byCtl(A.root, 'perf:keys').childNodes[0], wh = byCtl(A.root, 'perf:bend').childNodes[0];
+  assert.deepEqual([bed.getAttribute('aria-disabled'), wh.getAttribute('aria-disabled'), wh.getAttribute('tabindex'), bed.listenerCount('pointerdown'), wh.listenerCount('pointerdown'), wh.listenerCount('keydown')], ['true', 'true', '-1', 0, 0, 0]);
+  const strip = s => s.replace(/aria-disabled|tabindex/g, '');
+  assert.equal(strip(ser(byCtl(A.root, 'perf:keys'))), strip(ser(byCtl(B.root, 'perf:keys'))), 'the bed: the same nodes');
+  assert.equal(ser(A.root), ser(renderKeys(null).root), 'deterministic (no host)');
+  assert.equal(ser(B.root), ser(renderKeys(fakePerf()).root), 'deterministic (a host)');
+  A.r.destroy();
+});
+
+test('1i art: the face draws the keys (gap, whites, front edges, blacks, their tops), the wheels with ridges and the pitch wheel\'s centre mark, a lever\'s cap, the ribbon\'s felt, the pad; an inert controller dimmed and titled; self-contained', () => {
+  const L = clone(FX_KEYS);
+  L.controls.push({ kind: 'lever', a: 'keys', x: 100, y: 106, w: 30, h: 6, axis: 'x', up: '+x', inert: true, label: 'BEND' }, { kind: 'ribbon', a: 'ctl', x: 30, y: 100, w: 50, h: 6, inert: true }, { kind: 'pad', a: 'ctl', x: 30, y: 92, w: 12, h: 6, inert: true });
+  assert.deepEqual(P.validate(L, FX_MODEL), []);
+  const s = P.decorSvg(L, FX_MODEL), B = bedLayout(FX_KEYS.controls[KEYS_I]);
+  const paths = [...s.matchAll(/<path d="([^"]*)" fill="([^"]+)"\/>/g)].map(m => [m[2], (m[1].match(/M/g) || []).length]);
+  assert.deepEqual(paths.filter(p => ['#f4efe2', '#cbc4b2', '#151515', '#2b2b2b'].includes(p[0])), [['#f4efe2', 8], ['#cbc4b2', 8], ['#151515', 5], ['#2b2b2b', 5]], 'the skin\'s white / the default edge / the skin\'s black / the default top: 8 whites, 5 blacks');
+  assert.ok(s.includes(`<rect x="6" y="0" width="${B.w}" height="${B.h}" fill="#000"/>`), 'the gap colour (scheme.keys.gap) under the keys, in the area frame');
+  assert.equal((s.match(/fill="#dcdcdc"/g) || []).length, 1, 'the pitch wheel\'s centre mark (detent); the mod wheel has none');
+  assert.ok(/<path d="(M[^"]*z){19,}" fill="#161616"\/>/.test(s), 'the ridges every 3 mm');
+  const titled = [...s.matchAll(/<title>([^<]*) — not emulated<\/title>/g)].map(m => m[1]);
+  assert.deepEqual(titled, ['TUNE', 'OUT', 'BEND', 'ribbon', 'pad'], 'the inert controllers dimmed and titled like any inert control');
+  assert.ok(!/currentColor|var\(--|<style|<image|<foreignObject/.test(s), 'self-contained');
+});
+
+test('1i the TB-303\'s audition (§6.4): PITCH — a key cell sounds seqNote / seqVel of the cursor step while held (off at the release, at lostpointercapture after leaving the cell, at destroy); TIME — silent; two cells: two notes, the last tap writes; music zones', () => {
+  const F = fakePerf(), doc = fresh(), root = doc.createElement('div'), api = fakeApi(modelOf('tb303'), doc), S = api.seq = fakeSeq(doc, api);
+  api.perf = F.api;
+  doc.body.append(root);
+  const r = P.render(root, TB_FX, modelOf('tb303'), api);
+  const cells = all(root).filter(n => n.getAttribute && n.getAttribute('data-ctl') === 'seq:key').map(w => w.childNodes[0]);
+  const noteOf = b => TB_FX.controls.filter(c => c.id === 'seq:key')[cells.indexOf(b)].note;
+  assert.deepEqual(cells.map(b => b.getAttribute('data-gesture')), Array(13).fill('music'));
+  S.q.pat[0].o = 1; S.q.pat[0].a = 1;
+  const k4 = cells.find(b => noteOf(b) === 4), k7 = cells.find(b => noteOf(b) === 7);
+  const P1 = { pointerId: 1, pointerType: 'touch', button: 0, buttons: 1 }, P2 = { pointerId: 2, pointerType: 'touch', button: 0, buttons: 1 };
+  fire(k4, 'pointerdown', P1);
+  assert.deepEqual(F.log, [['on', seqNote({ n: 4, o: 1 }), seqVel({ a: 1 })]], 'C♯ … E an octave up, accented: 64 at 1');
+  assert.equal(F.log[0][1], 64);
+  fire(k7, 'pointerdown', P2);
+  assert.deepEqual(F.log.at(-1), ['on', 67, 1], 'a second finger on another cell: a second note');
+  fire(k4, 'pointerup', Object.assign({}, P1, { buttons: 0 }));
+  fire(k7, 'pointerup', Object.assign({}, P2, { buttons: 0 }));
+  assert.deepEqual(F.log.slice(2), [['off', 64], ['off', 67]]);
+  assert.equal(S.q.pat[0].n, 7, 'the cell released last is the step\'s note');
+  // lostpointercapture (the pointer left the cell; a mouse released elsewhere)
+  fire(k4, 'pointerdown', Object.assign({}, P1, { pointerType: 'mouse' }));
+  fire(k4, 'lostpointercapture', P1);
+  assert.deepEqual(F.log.at(-1), ['off', 64]);
+  // destroy ends a held one
+  fire(k7, 'pointerdown', P2);
+  S.q.pat[0].a = 0;
+  r.destroy();
+  assert.deepEqual(F.log.slice(-2), [['on', 67, 1], ['off', 67]]);
+  // TIME mode: silent
+  const F2 = fakePerf(), doc2 = fresh(), root2 = doc2.createElement('div'), api2 = fakeApi(modelOf('tb303'), doc2), S2 = api2.seq = fakeSeq(doc2, api2);
+  api2.perf = F2.api; doc2.body.append(root2);
+  P.render(root2, TB_FX, modelOf('tb303'), api2);
+  S2.state.mode = 'time';
+  const c2 = all(root2).filter(n => n.getAttribute && n.getAttribute('data-ctl') === 'seq:key').map(w => w.childNodes[0]);
+  fire(c2[0], 'pointerdown', P1); fire(c2[0], 'pointerup', Object.assign({}, P1, { buttons: 0 }));
+  assert.deepEqual(F2.log, [], 'TIME mode: nothing sounds');
+  S2.state.mode = 'pitch';
+  fire(c2[0], 'pointerdown', P1);
+  assert.deepEqual(F2.log, [['on', seqNote({ n: TB_FX.controls.filter(c => c.id === 'seq:key')[0].note, o: 0 }), 0.62]], 'an unaccented step: 0.62');
 });
