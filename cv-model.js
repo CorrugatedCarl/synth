@@ -45,7 +45,8 @@
 //        there already); 'lfo' | 'env' | 'macro' | 'cc' | 'chaos' → '<prefix><n>' (l / e / m / c / h; n = the highest of
 //        that prefix + 1 — a removed module's number comes round again, its rows went with it) with the module's default
 //        state (song.normModDev of nothing: an LFO = Serum's default LFO as GLOBAL (mono 1), an ENV = Serum's ENV 2
-//        defaults, a macro 8 knobs at 0 with empty names, a CC { cc: 1, ch: 0, v: 0 }, a chaos global at Serum's rate)
+//        defaults, a macro 8 knobs at 0 with empty names, a CC { cc: 1, ch: 0, v: 0 }, a chaos at Serum's rate with its
+//        own chaos row's MONO / S&H off — review 2, as the bundled GLOBAL page shows it; a record without them keeps MONO on)
 //   removeModDev(t, id) → { ok, rows }   the device and every row from it (any port); rows: the ids removed
 //   setModState(t, id, fields) → { ok, why }   the module's state fields merged in and bounded (song.normModDev: the
 //        device-level keys — rate, att…rel, crv, v, names, cc… — and the slot objects lfo / env / chaos, each replaced
@@ -375,7 +376,7 @@ export function addModDev(t, kind) {
     for (const k of Object.keys(t.dev)) { const m = new RegExp('^' + pre + '([1-9]\\d{0,5})$').exec(k); if (m) n = Math.max(n, +m[1]); }
     id = pre + (n + 1);
   } else if (id in t.dev) return null;
-  t.dev[id] = normModDev(kind === 'lfo' ? { kind, lfo: { mono: 1 } } : { kind });
+  t.dev[id] = normModDev(kind === 'lfo' ? { kind, lfo: { mono: 1 } } : kind === 'chaos' ? { kind, chaos: { mono: 0, sh: 0 } } : { kind }); // ((review 2) a chaos module: Serum's own chaos row defaults, MONO and S&H off)
   return id;
 }
 export function setModState(t, id, fields) {

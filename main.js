@@ -5142,7 +5142,16 @@ function cvZone(key, z) {
 // the badge on an instrument's bar: the CPU safeguard's cap (capsOf: 'OS 4→2' | 'Qn' | null) — 1f: nothing else (a
 // track's one instrument is cabled to OUT: no "not connected")
 // (stage 2a) a Serum with canvas mod rows: "mods n/64" (modCount) in its place
-function cvBadge(key) { const t = trk(), d = t.dev && t.dev[key]; if (!d || (d.kind !== 'synth' && d.kind !== 'panel')) return null; const m = modCount(t, key); return m ? m.text : capsOf(t, key); }
+function cvBadge(key) {
+  const t = trk(), d = t.dev && t.dev[key];
+  // ((review 2, §2.2) an LFO's GLOBAL / PER NOTE — its MONO: a canvas LFO's record, a Serum's own LFO part's slot)
+  const mode = on => ({ text: on ? 'GLOBAL' : 'PER NOTE', tone: 'mode' }), q = CMOD.partOf(key), ln = q && /^lfo(\d+)$/.exec(q.part);
+  if (d && d.kind === 'lfo' && d.lfo && typeof d.lfo === 'object') return mode(!!d.lfo.mono);
+  if (ln && isSerumDev(t, q.dev)) { const L = (t.dev[q.dev].vals.s.lfo || [])[+ln[1] - 1]; return mode(!!(L && L.mono)); }
+  if (!d || (d.kind !== 'synth' && d.kind !== 'panel')) return null;
+  const m = modCount(t, key);
+  return m ? m.text : capsOf(t, key);
+}
 // Effects tray (SPEC §2.4, §2.8): fx-ui's addMenuItems list — the rack's "+" menu: the 13 effects alphabetically, then the
 // 3 splitters — read from serum-core's FXTYPES (the same list, before fx-ui loads with the first rack)
 const FX_ITEMS = (() => {

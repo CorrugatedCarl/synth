@@ -560,12 +560,13 @@ export function createModule(o, env) {
     }
   };
   if (o.power) pow.addEventListener('click', e => { e.stopPropagation(); setPower(!pwr); if (o.power.onToggle) o.power.onToggle(pwr); });
-  const setBadge = text => { // "not connected – silent", "OS 4→2" (null: none); made on first use (no empty slot in the bar)
+  const setBadge = (text, tone) => { // "not connected – silent", "OS 4→2" (null: none); made on first use (no empty slot in the bar)
     const t = text == null || text === '' ? '' : String(text);
     if (!badgeEl) { if (!t) return; badgeEl = mk('span', 'cv-badge'); bar.insertBefore(badgeEl, chipEl); }
     if (badgeEl.textContent !== t) badgeEl.textContent = t;
     badgeEl.hidden = !t;
     badgeEl.title = t;
+    if (tone) badgeEl.setAttribute('data-tone', String(tone)); else badgeEl.removeAttribute('data-tone'); // ((review 2) 'mode': a state, not a warning — an LFO's GLOBAL / PER NOTE)
   };
   if (zv) {
     zpill = btn('cv-zone', 'Key zone');
@@ -827,7 +828,7 @@ export function createModule(o, env) {
  *   host.title(key) → {title, sub, chip}   host.menu(key) → items   host.size(key) → {fixed: {w, h?}} | null
  *   host.power(key, on)?  → instruments get the ⏻ button (dev.on !== false shows on)
  *   host.zone(key, {lo, hi, xp})?  → instruments get the key-zone pill (dev.zone)
- *   host.badge(key) → text | null   the bar badge ("not connected – silent", "OS 4→2"), read on every sync / refresh
+ *   host.badge(key) → text | { text, tone } | null   the bar badge ("not connected – silent", "OS 4→2"; tone 'mode': a state such as an LFO's GLOBAL / PER NOTE), read on every sync / refresh
  *   host.cables: {onSelect(id | null), onAction(id, 'disconnect' | …), menu(id) → items, dashed?(row) → bool,
  *                 dashedSet?() → Set<row id> (asked once per refresh: 2b C4)}   the editable cables (cablesOf)
  *   host.patch: false   (1f) read-only cables: every cable and jack data-ro (no press, focus or "Connect to…"; cableDrag
@@ -1020,7 +1021,8 @@ export function createTrackView(world, track, host) {
       m.setPower(!s || partOn(s, partOf(key).part));
       if (typeof H.powerEl === 'function') m.setPowerEl(call(H.powerEl, key) || null);
     }
-    m.setBadge(typeof H.badge === 'function' ? call(H.badge, key) || null : null);
+    const bd = typeof H.badge === 'function' ? call(H.badge, key) || null : null; // (text, or { text, tone })
+    m.setBadge(isObj(bd) ? bd.text : bd, isObj(bd) ? bd.tone : null);
     // a jack inside a Serum is its own route (data-ro): no press, no focus, no "Connect to…" (U12) — the patchable ones buttons;
     // (3) a Serum's internal ends in parts view are patchable (an edit through sx-edges: lane D's resolver), whatever host.patch
     for (const j of m.jackIds()) {

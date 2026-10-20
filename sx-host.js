@@ -894,8 +894,12 @@ const CSS = `
 .sx-dragging.sx-candrop, .sx-dragging.sx-candrop * { cursor: copy !important; }
 .sx-droptgt { outline: 2px solid var(--sx-accent) !important; outline-offset: 2px; border-radius: 6px; }
 .sx-macros { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
-.sx-macro { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px; background: var(--sx-panel2); border: 1px solid var(--sx-line); border-radius: 6px; min-width: 0; }
-.sx-macro .sx-tile { width: 100%; justify-content: center; min-height: 24px; padding: 2px 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; font-weight: 600; touch-action: pan-y; touch-action: pan-y pinch-zoom; }
+.sx-macro { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 2px; background: var(--sx-panel2); border: 1px solid var(--sx-line); border-radius: 6px; min-width: 0; }
+/* the name tiles fit "Macro 1" … "Macro 8" (review 2: 45–48 px names in 26 px were clipped at both ends, "acro 1"); a longer
+   name ends in an ellipsis (the label shrinks, the tile centres it); the destination count sits on the tile's corner */
+.sx-macro .sx-tile { width: 100%; justify-content: center; min-height: 24px; padding: 2px 1px; white-space: nowrap; text-transform: none; letter-spacing: 0; font-weight: 600; font-size: 9.5px; touch-action: pan-y; touch-action: pan-y pinch-zoom; }
+.sx-macro .sx-tile .sx-tl { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.sx-macro .sx-tile .sx-badge { position: absolute; top: -6px; right: -4px; z-index: 1; }
 .sx-macro input { width: 100%; padding: 2px 4px; color: var(--sx-ink); background: var(--sx-bg); border: 1px solid var(--sx-accent); border-radius: 4px; font: 600 11px var(--ui, system-ui, sans-serif); }
 .sx-macro .wk-knob { --wk-d: 30px; }
 .sx-edbox { position: relative; min-height: 120px; }

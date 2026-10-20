@@ -501,14 +501,16 @@ export class VoicingPanel {
 
 /* ================================================================ CHAOS (one source; the GLOBAL page's CHAOS (S1) rows) */
 // ChaosRow(root, kit, c): chaos source c (0 / 1) — RATE (c<n>.rate), BPM (c<n>.bpm), MONO, S&H (s.chaos[c].mono / sh) —
-// in a panel shell ('CHAOS n'; bare: no title, and the row's own label goes too: the canvas bar names the module)
+// in a panel shell ('CHAOS n'; bare: no title — the row keeps its own label, as the GLOBAL page's; args.label: its text, or
+// false for none)
 export class ChaosRow {
   constructor(root, kit, c, args) {
     const K = this.kit = kit, A = isObj(args) ? args : {};
     this.c = c ? 1 : 0;
     const shell = K.panel('CHAOS ' + (this.c + 1), null, null, '', A.bare !== undefined ? { bare: A.bare } : undefined);
     this.shell = shell;
-    shell.body.appendChild(ChaosRow.row(K, this.c, !(A.bare !== undefined ? A.bare : opt(K, 'bare', false))));
+    // (review 2) the row keeps its label as the bundled GLOBAL page draws it — a canvas Chaos module's its own number (A.label)
+    shell.body.appendChild(ChaosRow.row(K, this.c, A.label !== undefined ? A.label : true));
     this.el = shell.el;
     if (root) root.appendChild(this.el);
   }
@@ -517,7 +519,7 @@ export class ChaosRow {
     const d = K.doc, P = 'c' + (c + 1);
     const sw = (lab, k) => pToggle(K, { label: lab, kind: 'btn', get: () => K.s().chaos[c][k],
       set: v => K.edit(s => { s.chaos[c][k] = v ? 1 : 0; }, { label: 'Chaos ' + (c + 1) + ' ' + lab.toLowerCase() }) }).el;
-    return row(d, label === false ? null : mk(d, 'span', 'sx-txt', 'CHAOS ' + (c + 1)), K.knob(P + '.rate', { label: 'RATE', size: 'sm' }).el,
+    return row(d, label === false ? null : mk(d, 'span', 'sx-txt', typeof label === 'string' ? label : 'CHAOS ' + (c + 1)), K.knob(P + '.rate', { label: 'RATE', size: 'sm' }).el,
       K.toggle(P + '.bpm', { label: 'BPM', kind: 'btn' }).el, sw('MONO', 'mono'), sw('S&H', 'sh'));
   }
   menuItems() { const H = this.kit.sx; return H ? H.srcDestItems('chaos' + (this.c + 1)) : []; }
@@ -993,7 +995,7 @@ defineView('env', (root, K, A) => { const p = new EnvPanel(root, K, clamp(A.k | 
 defineView('lfo', (root, K, A) => { const p = new LfoPanel(root, K, clamp(A.k | 0, 0, 9)); return asView(p, p.shell, { menuItems: () => p.menuItems() }); });
 defineView('macros', (root, K) => { const p = new MacrosPanel(root, K); return asView(p, p.shell); });
 defineView('voicing', (root, K) => { const p = new VoicingPanel(root, K); return asView(p, p.shell); });
-defineView('chaos', (root, K, A) => { const p = new ChaosRow(root, K, A.k ? 1 : 0); return asView(p, p.shell, { menuItems: () => p.menuItems() }); });
+defineView('chaos', (root, K, A) => { const n = /^h(\d+)$/.exec(A.dev || ''), p = new ChaosRow(root, K, A.k ? 1 : 0, n ? { label: 'CHAOS ' + n[1] } : {}); return asView(p, p.shell, { menuItems: () => p.menuItems() }); }); // (a canvas Chaos module h<n>: its row "CHAOS <n>")
 defineView('curve', (root, K, A) => { const p = new CurvePanel(root, K, A.k === 'note' ? 'note' : 'velo'); return asView(p, p.shell); });
 defineView('arp', (root, K) => { const p = new seq.ArpPage(root, K); return asView(p, p.shell); });
 defineView('clip', (root, K) => { const p = new seq.ClipPage(root, K, { twins: true }); return asView(p, p.shell); });

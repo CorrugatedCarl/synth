@@ -371,10 +371,15 @@ test('slot host macro: Serum\'s 4 × 2 MACROS; each name tile is its jack (data-
   closeMenus(doc);
 });
 
-test('slot host chaos: one chaos row (RATE, BPM, MONO, S&H) without its label (the bar names it); the toggles edit the chaos object whole, BPM the bpm field', async () => {
+test('slot host chaos: one chaos row (RATE, BPM, MONO, S&H) with its label as the bundled GLOBAL page draws it ("CHAOS 1"; review 2: the module\'s number); the toggles edit the chaos object whole, BPM the bpm field', async () => {
   const { doc, V, calls } = slot('chaos', { chaos: { mono: 1, sh: 0 }, rate: 0.3 });
   await flush(doc);
-  assert.equal(V.root.querySelector('.sx-txt'), null);
+  assert.equal((V.root.querySelector('.sx-txt') || {}).textContent, 'CHAOS 1');
+  const doc2 = D.fresh(), box2 = doc2.createElement('div'); doc2.body.appendChild(box2);
+  const X2 = H.slotHost('chaos', { doc: doc2, get: () => song.normModDev({ kind: 'chaos' }), devKey: 'h2', live() {}, edit() {}, cancel() {} }), V2 = M.mountSlot(X2, box2);
+  await flush(doc2);
+  assert.equal((V2.root.querySelector('.sx-txt') || {}).textContent, 'CHAOS 2', 'Chaos 2\'s row');
+  V2.destroy(); X2.destroy();
   assert.ok(byDest(V.root, 'c1.rate') && byDest(V.root, 'c1.bpm'));
   const tog = t => V.root.querySelectorAll('.wk-tog').find(b => b.textContent.trim() === t);
   fire(tog('S&H'), 'click');

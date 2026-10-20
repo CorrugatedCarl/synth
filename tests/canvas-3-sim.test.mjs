@@ -575,6 +575,23 @@ test('review 2 P2 places: a preset load that turns OSC B / C and both filters on
   assert.deepEqual([!!R2['i1/noise'], Object.keys(R2).filter(z => z !== 'i1/noise' && hit(R2['i1/noise'], R2[z]))], [true, []]);
 });
 
+test('review 2 P2 (§2.2): an LFO\'s bar carries its GLOBAL / PER NOTE badge (its MONO) — a canvas LFO and a Serum\'s own LFO part; a mode badge, not a warning', async () => {
+  api.selectTrack(ID.a); cv.renderViews(); await settle();
+  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
+  const t = T(), l = [...V().modules.keys()].find(q => /^l\d+$/.test(q)) || M.add('lfo'); await settle();
+  const badge = k => { const m = V().modules.get(k), b = walk(m.bar, q => /\bcv-badge\b/.test(String(q.className || '')))[0]; return [m.badge, b && b.attrs ? b.attrs['data-tone'] || null : null]; };
+  globalThis.__synthTest.modUI.editState(l, { lfo: Object.assign({}, t.dev[l].lfo, { mono: 1 }) }); await settle(); await settle();
+  assert.deepEqual(badge(l), ['GLOBAL', 'mode']);
+  globalThis.__synthTest.modUI.editState(l, { lfo: Object.assign({}, t.dev[l].lfo, { mono: 0 }) }); await settle(); await settle();
+  assert.deepEqual(badge(l), ['PER NOTE', 'mode']);
+  const own = [...V().modules.keys()].find(q => /^i1\/lfo\d+$/.test(q)) || (PT.add('i1', 'lfo', null, 'lfo5') && 'i1/lfo5'); await settle(); await settle();
+  const n = +own.split('lfo')[1];
+  host().edit(s => { s.lfo[n - 1].mono = 1; }, { label: 'mono' }); await settle(); await settle();
+  assert.deepEqual(badge(own), ['GLOBAL', 'mode']);
+  host().edit(s => { s.lfo[n - 1].mono = 0; }, { label: 'mono' }); await settle(); await settle();
+  assert.deepEqual(badge(own), ['PER NOTE', 'mode']);
+});
+
 test('review 2 P1-4: a modulator dropped near an instrument is cleared by its kind\'s measured height (never the guess: an OB-Xa face would leave GL) and of every module — a drop onto the instrument never lands on another modulator; a drop settles as a tap does', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
   const t = T(), hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
