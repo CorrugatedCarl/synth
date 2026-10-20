@@ -55,6 +55,8 @@ export const SNAP_PX = 32, TAP_PX = 8;
 /** (2a) A mod cable's end drawn above the modules (screen px); past MOD_FADE_N visible mod cables (Always) the ones not
  * touching the selection fade and the hint shows once. */
 export const END_PX = 24, MOD_FADE_N = 24;
+/** (review 2 P1-7) Hidden-end badges at one end stack this many screen px apart (the badge's 18 + 4). */
+export const HID_STEP = 22;
 /** (2a) The modulator modules' colours (their cables' and their classic halos' too, SPEC §2.9 / §7.11): by mod kind;
  * (2b) the six stage-2b kinds. */
 export const MOD_COLOR = Object.freeze({ wheel: '#4fb3d9', velo: '#e8a33d', at: '#b98ae6', bend: '#63c98a',
@@ -550,6 +552,7 @@ export function createCables(worldEl, o) {
     ports = p || null;
     const at = k => (k == null || !ports ? null : typeof ports.get === 'function' ? ports.get(k) : ports[k]) || null;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const hidN = new Map(); // ((P1-7) hidden ends: the badges at each end point, counted)
     for (const it of items.values()) {
       const A = at(it.c.a), B = it.c.stub ? (A ? { x: A.x + stubLen(kNow), y: A.y } : null) : at(it.c.b), show = !!(A && B && fin(A.x) && fin(A.y) && fin(B.x) && fin(B.y));
       it.g.style.display = show ? '' : 'none';
@@ -562,6 +565,7 @@ export function createCables(worldEl, o) {
         tog(it, 'cv-hid', hid);
         if (it.htag.textContent !== tg) it.htag.textContent = tg;
         it.htag.hidden = !tg;
+        if (hid) { const q = B.x + ',' + B.y; it.hn = hidN.get(q) || 0; hidN.set(q, it.hn + 1); } else it.hn = 0;
       }
       if (it.og) ends(it, A, B);
       // the cubic's midpoint (t = ½) is the chord's midpoint for these symmetric tangents: the label sits above it, the × on it
@@ -583,10 +587,13 @@ export function createCables(worldEl, o) {
     vis();
   }
   // (2a) a mod cable's last END_PX screen px (the over layer) and its badge at their start (world px)
+  // ((review 2 P1-7) a hidden knob's end — VOICE's corner —: its tagged badge at the end itself, right of it and above
+  // (CSS .cv-hid), the n-th one at that end HID_STEP screen px higher: never left of the end, where FILTER 1's bar stands)
   function ends(it, A, B) {
     const T = tail(A.x, A.y, B.x, B.y, END_PX / kNow);
     if (T.d !== it.ed) { it.ed = T.d; it.end.setAttribute('d', T.d); }
-    if (T.x !== it.bx || T.y !== it.by) { it.bx = T.x; it.by = T.y; it.badge.style.left = T.x + 'px'; it.badge.style.top = T.y + 'px'; }
+    const bx = B.hid ? B.x : T.x, by = B.hid ? r2(B.y - (it.hn || 0) * HID_STEP / kNow) : T.y;
+    if (bx !== it.bx || by !== it.by) { it.bx = bx; it.by = by; it.badge.style.left = bx + 'px'; it.badge.style.top = by + 'px'; }
   }
   // (2a) after a zoom: the ends are END_PX screen px again (nothing else moves)
   function rezoom() {

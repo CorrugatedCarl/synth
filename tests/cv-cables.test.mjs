@@ -1061,6 +1061,26 @@ test('review 2 P1-6 (the lead\'s decision): a source routed into a filter that i
   L.destroy();
 });
 
+test('review 2 P1-7: a hidden knob end\'s badge (its tag) sits at the end, right of it and above (.cv-hid: CSS left-aligned, its bottom at the end) — never left of the end, where Tidy puts FILTER 1\'s bar; a shown end\'s badge as before (right edge at the end piece\'s start); several hidden badges at one end stack upwards', () => {
+  const doc = fresh(), W = doc.createElement('div');
+  doc.body.append(W);
+  const L = C.createCables(W, { doc, onSelect() {}, onAction() {}, menu: () => [] });
+  const t = partsTrack();
+  t.mods.push({ id: 'r2', src: 'i1/lfo3.out', dst: 'i1:c.level', amt: 0.25 });
+  L.set(C.cablesOf(t));
+  const P = new Map([['i1/lfo3.out', { x: -100, y: -300 }], ['i1/lfo1.out', { x: 1500, y: -400 }], ['i1:a.semi', { x: 1088, y: 0, hid: true, tag: 'OSC A · SEMI · hidden' }],
+    ['i1:c.level', { x: 1088, y: 0, hid: true, tag: 'OSC C · LEVEL · hidden' }], ['i1:a.wt', { x: 1300, y: 300 }]]);
+  L.layout(P);
+  const b1 = L.badge('r1'), b2 = L.badge('r2'), b0 = L.badge('o:i1:0');
+  assert.deepEqual([b1.classList.contains('cv-hid'), b1.style.left, b1.style.top], [true, '1088px', '0px'], 'at the end itself');
+  assert.deepEqual([b2.classList.contains('cv-hid'), b2.style.left, parseFloat(b2.style.top) < 0], [true, '1088px', true], 'the second one above the first');
+  assert.equal(b0.classList.contains('cv-hid'), false);
+  assert.equal(parseFloat(b0.style.left) < 1300, true, 'a shown end: left of the knob as before');
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /\.cv-mbadge\.cv-hid\s*\{[^}]*transform:\s*translate\(0,\s*-100%\)/, 'CSS: left-aligned at the end, its bottom there');
+  L.destroy();
+});
+
 test('review 2 P1-5: a stub stays reachable at low zoom — STUB_PX screen px out of its out jack (whose touch circle is 22 screen px) up to STUB_MAX world px; a zoom re-lays it; a pointer tap tells onSelect its pointer type (the host opens the routing popover after the tap\'s click), a programmatic select tells none', () => {
   let k = 0.4;
   const doc = fresh(), W = doc.createElement('div');

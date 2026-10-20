@@ -1326,6 +1326,9 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 #world[data-cv-patching] .cv-fork { pointer-events: none; }
 /* a modulation row into a knob no mounted view shows (§2.4): it ends at VOICE's bar, dashed, its badge tagged */
 .cv-cable-g.cv-hid .cv-cable { stroke-dasharray: calc(4px * var(--ik, 1)) calc(4px * var(--ik, 1)); }
+/* (review 2 P1-7) its end is VOICE's top-left corner: the tagged badge right of it and above VOICE's bar — never left of
+   the end, where Tidy puts FILTER 1's bar (its ⋯ stays reachable); several stack upwards (cv-cables HID_STEP) */
+.cv-mbadge.cv-hid { transform: translate(0, -100%); margin: calc(-4px * var(--ik, 1)) 0 0 calc(4px * var(--ik, 1)); }
 .cv-htag { padding: 0 calc(3px * var(--ik, 1)); border-radius: calc(3px * var(--ik, 1)); background: #1b1f26; color: #b9c0ca; font: 600 calc(8.5px * var(--ik, 1))/1.4 var(--ui); letter-spacing: 0.04em; }
 .cv-htag[hidden] { display: none; }
 /* (H6) the compositing policy S0 selects, one rule: none until it does — a variant switched on by its attribute on #world

@@ -518,6 +518,14 @@ test('review 2 P1-6 (the lead\'s decision): OSC A routed into an off FILTER 1 wi
   assert.deepEqual([c3.off, M.cmenu(c3.id).map(i => i.label)], ['filter', ['Routing…', 'Turn FILTER 1 on']], 'undone: the stub again; its menu');
 });
 
+test('review 2 P1-7: a row into a knob no mounted view shows ends at VOICE\'s top-left corner (its tagged badge right of it, above the bar: never over FILTER 1\'s bar left of VOICE)', async () => {
+  api.selectTrack(ID.a); cv.renderViews(); await settle();
+  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
+  if (V().modules.has('i1/oscC')) { PT.remove('i1/oscC'); await settle(); await settle(); }
+  const q = V().destPort('i1', 'c.pan'), v = V().modules.get('i1').rect();
+  assert.deepEqual([!!q.hid, q.x, q.y], [true, v.x, v.y]);
+});
+
 test('review 2 P1-4: a modulator dropped near an instrument is cleared by its kind\'s measured height (never the guess: an OB-Xa face would leave GL) and of every module — a drop onto the instrument never lands on another modulator; a drop settles as a tap does', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
   const t = T(), hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;

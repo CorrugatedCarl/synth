@@ -982,7 +982,7 @@ export function createTrackView(world, track, host) {
     let parked = null;
     for (const k of cand) { const m = mods.get(k), q = localDest(k, m, dk); if (q && !q.hid) return { x: m.x + q.x, y: m.y + q.y }; if (q && !parked) parked = { x: m.x + q.x, y: m.y + q.y }; }
     const own = /^fx\./.test(pid) && mods.get(dev + '/fx'), m = own || mods.get(dev); // (a knob not on the panel: the module's bar)
-    if (!own && m && isParts(dev)) return { x: m.x, y: m.y + BAR_H / 2, hid: true, tag: hiddenTag(pid) };
+    if (!own && m && isParts(dev)) return { x: m.x, y: m.y, hid: true, tag: hiddenTag(pid) }; // ((review 2 P1-7) VOICE's top-left corner: the tag above its bar)
     if (parked) return parked;
     return m ? { x: m.x, y: m.y + BAR_H / 2 } : null;
   }
