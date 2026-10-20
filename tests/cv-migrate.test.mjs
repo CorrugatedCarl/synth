@@ -18,6 +18,7 @@ import { fakeStorage, fakeIDB } from './fakes.mjs';
 
 const P1 = readFileSync(new URL('./ref-p1/project-p1.json', import.meta.url), 'utf8'); // a main (schema 0) project file
 const deepFreeze = o => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); for (const v of Object.values(o)) deepFreeze(v); } return o; };
+const G1 = { guard: true }; // (milestone 3 R7: node tests adopt with the guard — a stray track.model / vals / fx throws)
 
 test('constants: SCHEMA, one step per schema, the read-only notice (§2.13)', () => {
   assert.equal(M.SCHEMA, 7, '1a: uid; 1b: track.lay; 1c: project v2 tracks; 1e: several instruments per track; 2a: performance modulators; 2b: modulation everywhere; 3: Serum parts (lay)');
@@ -33,9 +34,9 @@ test('a main project (schema 0) is brought to SCHEMA: uid made, the input untouc
   assert.ok(M.isUid(up.p.uid), up.p.uid);
   assert.notEqual(up.p, o);
   assert.deepEqual(o, copy, 'never mutated');
-  const p = MO.adopt(M.stamp(S.deserialize(up.p), up.p));
+  const p = MO.adopt(M.stamp(S.deserialize(up.p), up.p), G1);
   assert.deepEqual([p.uid, p.schema], [up.p.uid, M.SCHEMA]);
-  assert.deepEqual(p.tracks.map(t => t.model), S.deserialize(copy).tracks.map(t => t.model));
+  assert.deepEqual(p.tracks.map(t => MO.instOf(t).model), S.deserialize(copy).tracks.map(t => t.model));
   assert.deepEqual(p.tracks.map(t => t.prim), p.tracks.map(() => 'i1'), 'v2 tracks (stage 1c): the instrument is device i1, the primary');
   // saved, the stamps travel with it (song.serialize keeps every field); main's deserialize ignores them (the file opens there)
   const back = JSON.parse(S.serialize(p));
@@ -188,58 +189,70 @@ test('toV1 of a shape main cannot hold: one track per instrument, notes copied, 
   assert.equal(r.lost.length, 3, r.lost.join(' | ')); // the shared panel, the switched-off instrument, the modulation cable
 });
 
-test('adopt: v1 tracks become v2 in place; the accessors read and write the primary; JSON carries only the v2 form', () => {
-  const p = mainProject(), tr = p.tracks[0], model = tr.model, vals = tr.vals, fx = tr.fx;
+test('adopt: v1 tracks become v2 in place — the primary and its FX are devices (instOf / fxDevOf: no v1 field, no accessor since milestone 3 R7); JSON carries only the v2 form; the guard throws on a stray read or write', () => {
+  const p = mainProject(), tr = p.tracks[0], model = tr.model, vals = tr.vals, fx = tr.fx; // (a v1 record: its own fields)
   assert.equal(MO.adopt(p), p);
   assert.equal(p.tracks[0], tr, 'the same object');
-  assert.deepEqual([tr.model, tr.vals, tr.fx, MO.isAdopted(tr)], [model, vals, fx, true]);
+  const D = () => MO.instOf(tr), F = () => MO.fxDevOf(tr).dev.fx;
+  assert.deepEqual([D().model, D().vals, F(), MO.isAdopted(tr)], [model, vals, fx, true]);
+  assert.deepEqual(M.V1_KEYS.map(k => k in tr), M.V1_KEYS.map(() => false), 'production adopt: no v1 field and no accessor (\'model\' in t === false)');
   const j = JSON.parse(JSON.stringify(tr));
   for (const k of M.V1_KEYS) assert.equal(k in j, false, k);
   assert.deepEqual(Object.keys(j).slice(-4), ['prim', 'nid', 'dev', 'wires']);
-  tr.vals = { x: 1 }; tr.preset = 'Y';
+  D().vals = { x: 1 }; D().preset = 'Y';
   assert.deepEqual([tr.dev.i1.vals, tr.dev.i1.preset], [{ x: 1 }, 'Y']);
-  const nf = C.defaultFx2(); tr.fx = nf;
-  assert.equal(MO.fxDevOf(tr).dev.fx, nf);
+  const nf = C.defaultFx2(); MO.fxDevOf(tr).dev.fx = nf;
   MO.adopt(p); // twice: nothing changes
-  assert.equal(tr.fx, nf);
+  assert.equal(F(), nf);
   // History snapshots are plain JSON: adopted again after undo
   const H = new S.History(10);
-  H.record(p); tr.vals = { x: 2 };
+  H.record(p); D().vals = { x: 2 };
   const u = H.undo(p);
   assert.equal(MO.isAdopted(u.tracks[0]), false);
-  MO.adopt(u);
-  assert.deepEqual([u.tracks[0].vals, u.tracks[0].model, u.tracks[0].fx.v], [{ x: 1 }, model, 2]);
+  MO.adopt(u, G1);
+  assert.deepEqual([MO.instOf(u.tracks[0]).vals, MO.instOf(u.tracks[0]).model, MO.fxDevOf(u.tracks[0]).dev.fx.v], [{ x: 1 }, model, 2]);
+  // the guard (the sims, dev builds, node tests — for one stage): every V1 key a throwing, non-enumerable accessor, told to the recorder
+  const g = u.tracks[0], told = [];
+  globalThis.__synthAccess = (k, op) => told.push(k + ':' + op);
+  try {
+    for (const k of M.V1_KEYS) {
+      assert.throws(() => g[k], /has no v1 fields/, k);
+      assert.throws(() => { g[k] = 1; }, /has no v1 fields/, k + ' =');
+      const ds = Object.getOwnPropertyDescriptor(g, k);
+      assert.deepEqual([typeof ds.get, ds.enumerable], ['function', false], k);
+    }
+  } finally { delete globalThis.__synthAccess; }
+  assert.deepEqual([told.length, Object.keys(g).filter(k => M.V1_KEYS.includes(k)), 'model' in JSON.parse(JSON.stringify(g))], [10, [], false]);
 });
 
-test('adopt: a model change across classic ↔ Serum keeps the FX state (moved between the panel and the Serum)', () => {
-  const p = MO.adopt({ tracks: [S.newTrack(null, { model: 'juno60' })] }), t = p.tracks[0], fx = C.defaultFx2();
-  t.fx = fx;
-  t.model = 'serum';
-  assert.deepEqual([Object.keys(t.dev).sort(), t.dev.i1.fx === fx, t.fx === fx, G.compileTrack(t).shape], [['i1', 'out'], true, true, 'serum']);
-  t.model = 'dx7';
-  assert.deepEqual([Object.keys(t.dev).sort(), t.dev.fx1.fx === fx, 'fx' in t.dev.i1, t.fx === fx, G.compileTrack(t).shape], [['fx1', 'i1', 'out'], true, false, true, 'classic']);
+test('setModel: a model change across classic ↔ Serum keeps the FX state (moved between the panel and the Serum) — R7: the primary as any instrument', () => {
+  const p = MO.adopt({ tracks: [S.newTrack(null, { model: 'juno60' })] }, G1), t = p.tracks[0], fx = C.defaultFx2(), F = () => MO.fxDevOf(t).dev.fx;
+  MO.fxDevOf(t).dev.fx = fx;
+  const to = id => MO.setModel(t, 'i1', id, { vals: MO.instOf(t).vals });
+  to('serum');
+  assert.deepEqual([Object.keys(t.dev).sort(), t.dev.i1.fx === fx, F() === fx, G.compileTrack(t).shape], [['i1', 'out'], true, true, 'serum']);
+  to('dx7');
+  assert.deepEqual([Object.keys(t.dev).sort(), t.dev.fx1.fx === fx, 'fx' in t.dev.i1, F() === fx, G.compileTrack(t).shape], [['fx1', 'i1', 'out'], true, false, true, 'classic']);
   assert.equal(G.validate(t).ok, true);
-  t.model = 'juno60'; // classic → classic: nothing reshaped
+  to('juno60'); // classic → classic: nothing reshaped
   assert.equal(t.dev.fx1.fx, fx);
-  t.seq = { pat: [] }; t.seq = undefined;
-  assert.equal('seq' in t.dev.i1, false);
 });
 
 test('song.js keeps v2 tracks (dev, wires, prim, nid) and ignores a file\'s mirror; main reads the mirror', () => {
-  const p = MO.adopt(mainProject()), file = M.mirror(JSON.parse(S.serialize(p)));
-  for (const t of file.tracks) assert.equal(t.model, p.tracks.find(x => x.id === t.id).model, 'mirror: the primary at track level');
+  const p = MO.adopt(mainProject(), G1), file = M.mirror(JSON.parse(S.serialize(p)));
+  for (const t of file.tracks) assert.equal(t.model, MO.instOf(p.tracks.find(x => x.id === t.id)).model, 'mirror: the primary at track level');
   const back = S.deserialize(file);
   for (const t of back.tracks) {
     assert.equal('model' in t, false, 'the devices win');
     const o = p.tracks.find(x => x.id === t.id);
     assert.deepEqual([t.prim, t.nid, Object.keys(t.dev), t.wires], [o.prim, o.nid, Object.keys(o.dev), o.wires]);
-    assert.deepEqual(t.dev.i1.vals, JSON.parse(JSON.stringify(o.vals)));
+    assert.deepEqual(t.dev.i1.vals, JSON.parse(JSON.stringify(MO.instOf(o).vals)));
   }
   // main's song.js knows no `dev`: what it reads is the mirror — each track's primary instrument and its FX (§5.8)
   const onMain = S.deserialize(Object.assign({}, file, { tracks: file.tracks.map(t => { const c = Object.assign({}, t); delete c.dev; return c; }) }));
-  for (const t of onMain.tracks) assert.equal(t.model, p.tracks.find(x => x.id === t.id).model);
+  for (const t of onMain.tracks) assert.equal(t.model, MO.instOf(p.tracks.find(x => x.id === t.id)).model);
   const raw = file.tracks.find(t => t.model === 'serum') || file.tracks[0];
-  assert.deepEqual(raw.fx, JSON.parse(JSON.stringify(p.tracks.find(x => x.id === raw.id).fx)), 'and its FX (loadProject reads the record\'s fx)');
+  assert.deepEqual(raw.fx, JSON.parse(JSON.stringify(MO.fxDevOf(p.tracks.find(x => x.id === raw.id)).dev.fx)), 'and its FX (loadProject reads the record\'s fx)');
   // damaged records: no instrument → read as v1; a bad primary → the first instrument; bad wires dropped
   assert.equal(S.normDev({ dev: { out: { kind: 'out' } } }), null);
   const d = S.normDev({ prim: 'zz', nid: 0, dev: { i3: { kind: 'synth', model: 'x y' }, out: { kind: 'out' }, 'B!': { kind: 'synth' } }, wires: [{ a: 'i3.out', b: 'out.in' }, { a: 'x', b: 'y' }] });
@@ -249,7 +262,7 @@ test('song.js keeps v2 tracks (dev, wires, prim, nid) and ignores a file\'s mirr
 /* ------------------------------------------------------------------ stage 1e: schema 4, the editing API (IMPL-1e §3.2) */
 const jclone = x => JSON.parse(JSON.stringify(x));
 // an adopted one-Juno track (i1 → fx1 → out), as addTrack makes it
-const juno = () => MO.adopt({ tracks: [Object.assign(S.newTrack(null, { model: 'juno60' }), { fx: C.defaultFx2() })] }).tracks[0];
+const juno = () => MO.adopt({ tracks: [Object.assign(S.newTrack(null, { model: 'juno60' }), { fx: C.defaultFx2() })] }, G1).tracks[0];
 const wires = t => t.wires.map(w => w.a + '>' + w.b + (w.g !== undefined ? '@' + w.g : ''));
 
 test('1e schema 4: additive (a 3 opens as before); song.normDev keeps on, solo, zone, name and the cable level', () => {
@@ -281,7 +294,7 @@ test('1e cv-model: addInst auto-patches (the panel most instruments share, else 
   const i2 = MO.addInst(t, 'minimoog', { vals: { a: 1 }, name: 'Lead', ui: 'flow' });
   assert.deepEqual([i2, t.dev.i2, t.lay.i2, wires(t)], ['i2', { kind: 'synth', model: 'minimoog', vals: { a: 1 }, preset: null, name: 'Lead' }, { x: 0, y: 0, ui: 'flow' },
     ['i1.out>fx1.in', 'fx1.out>out.in', 'i2.out>fx1.in']]);
-  assert.deepEqual([MO.instIds(t), MO.isGraphShape(t), G.validate(t).ok, MO.destOf(t, 'i2'), t.model], [['i1', 'i2'], true, true, 'fx1', 'juno60']);
+  assert.deepEqual([MO.instIds(t), MO.isGraphShape(t), G.validate(t).ok, MO.destOf(t, 'i2'), MO.instOf(t).model], [['i1', 'i2'], true, true, 'fx1', 'juno60']);
   // a second panel with one source: the new instrument still joins fx1 (two sources); a tie goes to the lowest id
   const fx2 = MO.addPanel(t, { name: 'B' });
   assert.deepEqual([fx2, t.dev[fx2].name, Object.keys(t.dev[fx2].fx).includes('racks')], ['fx3', 'B', true], 'ids from nid: never reused');
@@ -306,7 +319,7 @@ test('1e cv-model: removeInst / removePanel re-cable; connect / disconnect valid
   assert.deepEqual(MO.removeInst(t, 'i2'), { rows: ['r1'], ok: true, why: '' }, '(2a) the rows it removed');
   assert.deepEqual([Object.keys(t.dev), wires(t), t.mods.map(r => r.id), Object.keys(t.lay)], [['i1', 'fx1', 'out', 'i3'], ['i1.out>fx1.in', 'fx1.out>out.in', 'i3.out>fx1.in'], ['r2'], ['i1']]);
   assert.deepEqual(MO.removeInst(t, 'i1'), { rows: ['r2'], ok: true, why: '' });
-  assert.deepEqual([t.prim, t.model, MO.instIds(t)], ['i3', 'dx7', ['i3']], 'the lowest remaining instrument is the primary');
+  assert.deepEqual([t.prim, MO.instOf(t).model, MO.instIds(t)], ['i3', 'dx7', ['i3']], 'the lowest remaining instrument is the primary');
   assert.deepEqual(MO.removeInst(t, 'i3'), { ok: false, why: 'A track keeps at least one instrument' });
   assert.equal(MO.removeInst(t, 'fx1').ok, false);
   MO.addInst(t, 'juno60');
@@ -350,7 +363,7 @@ test('1e cv-model: power, solo, zone, primary — what the compile and the acces
   assert.equal('zone' in t.dev.i2, false, 'the default zone is no field');
   assert.deepEqual([MO.setPower(t, 'fx1', false).ok, MO.setZone(t, 'zz', {}).ok, MO.makePrimary(t, 'out').ok], [false, false, false]);
   assert.deepEqual(MO.makePrimary(t, 'i2'), { ok: true, why: '' });
-  assert.deepEqual([t.prim, t.model, MO.instIds(t), G.compileGraph(t).graph.insts.map(x => x.salt)], ['i2', 'minimoog', ['i2', 'i1'], [0, 0x9E3779B9]]);
+  assert.deepEqual([t.prim, MO.instOf(t).model, MO.instIds(t), G.compileGraph(t).graph.insts.map(x => x.salt)], ['i2', 'minimoog', ['i2', 'i1'], [0, 0x9E3779B9]]);
 });
 
 test('1e cv-model: setModel keeps the FX by the rules (classic ↔ Serum), sharedPanelFix', () => {
@@ -375,11 +388,11 @@ test('1e cv-model: setModel keeps the FX by the rules (classic ↔ Serum), share
   assert.deepEqual([wires(b), kept.length, b.dev[kept[0]].fx === own, 'fx' in b.dev.i2], [['i1.out>fx1.in', 'fx1.out>out.in', 'i2.out>fx1.in'], 1, true, false]);
   MO.setModel(b, 'i1', 'serum', { vals: { s: 1 } }); MO.setModel(b, 'i1', 'juno60', { vals: {} });
   assert.equal(Object.keys(b.dev).filter(k => b.dev[k].kind === 'panel').length, 2, 'an empty own rack leaves no panel');
-  // the primary accessor (setTrackModel) takes the same rules
-  const c = juno(); c.model = 'serum';
+  // the primary takes the same rules (main.js setTrackModel: setModel for every instrument since R5)
+  const c = juno(); MO.setModel(c, 'i1', 'serum', { vals: {} });
   assert.deepEqual([Object.keys(c.dev).sort(), G.compileTrack(c).shape], [['i1', 'out'], 'serum']);
   // sharedPanelFix: a Serum into OUT gets a panel after it, the refused source joins; a Serum feeding a panel: joins that
-  const d = juno(); d.model = 'serum'; MO.addInst(d, 'juno60');
+  const d = juno(); MO.setModel(d, 'i1', 'serum', { vals: {} }); MO.addInst(d, 'juno60');
   const no = MO.connect(d, 'i2.out', 'i1.in');
   assert.deepEqual([no.ok, no.code, no.fix], [false, 'own-fx', 'panel']);
   const pid = MO.sharedPanelFix(d, 'i1', 'i2');
@@ -391,15 +404,13 @@ test('1e cv-model: setModel keeps the FX by the rules (classic ↔ Serum), share
 });
 
 /* host fixes (the stage-1e review round) */
-test('H4: t.fx of a classic primary cabled straight to OUT (its panel deleted) reads undefined and a write inserts nothing', () => {
-  const p = MO.adopt({ tracks: [S.newTrack(null, { model: 'juno60' })] }), t = p.tracks[0];
+test('H4: a classic primary cabled straight to OUT (its panel deleted) has no FX device; a Serum there has its own (R7: no track.fx to read or write)', () => {
+  const p = MO.adopt({ tracks: [S.newTrack(null, { model: 'juno60' })] }, G1), t = p.tracks[0];
   assert.equal(MO.removePanel(t, 'fx1').ok, true);
   const shape = () => Object.keys(t.dev).sort().join(',') + ' | ' + t.wires.map(w => w.a + '>' + w.b).join(' ');
-  assert.deepEqual([shape(), t.fx, MO.fxDevOf(t)], ['i1,out | i1.out>out.in', undefined, null]);
-  t.fx = C.defaultFx2();
-  assert.equal(shape(), 'i1,out | i1.out>out.in', 'no panel re-inserted (no History step would hold it)');
-  t.model = 'serum'; t.fx = C.defaultFx2(); // (a Serum primary: its own FX, written)
-  assert.deepEqual([shape(), MO.fxDevOf(t).own], ['i1,out | i1.out>out.in', true]);
+  assert.deepEqual([shape(), MO.fxDevOf(t)], ['i1,out | i1.out>out.in', null]);
+  MO.setModel(t, 'i1', 'serum', { vals: {}, fx: C.defaultFx2() }); // (a Serum primary: its own FX)
+  assert.deepEqual([shape(), MO.fxDevOf(t).own, !!t.dev.i1.fx], ['i1,out | i1.out>out.in', true, true]);
 });
 
 test('H8: Save as classic project lists key zones, cable levels, solo, a Serum\'s shared panel and silent instruments that sound in main', () => {
@@ -423,27 +434,28 @@ test('H8: Save as classic project lists key zones, cable levels, solo, a Serum\'
 });
 
 test('H4 ids: a Serum unfolds the panel it folded in under that id (dev.fxId, saved); a deleted panel\'s id never comes back', () => {
-  const mk = () => MO.adopt({ tracks: [S.newTrack(null, { model: 'juno60' })] }).tracks[0];
+  const mk = () => MO.adopt({ tracks: [S.newTrack(null, { model: 'juno60' })] }, G1).tracks[0];
+  const to = (t, id) => MO.setModel(t, 'i1', id, { vals: MO.instOf(t).vals }); // (R7: the primary's model through setModel)
   const ids = t => Object.keys(t.dev).sort().join(',');
   // the canonical round trip classic → Serum → classic: fx1 again, its state; the id saved through song.js
-  const t = mk(), cho = C.defaultFx2(); C.newInstance(cho, 'cho', { rack: 0 }); t.fx = cho;
-  t.model = 'serum';
+  const t = mk(), cho = C.defaultFx2(); C.newInstance(cho, 'cho', { rack: 0 }); MO.fxDevOf(t).dev.fx = cho;
+  to(t, 'serum');
   assert.deepEqual([ids(t), t.dev.i1.fxId, t.dev.i1.fx === cho], ['i1,out', 'fx1', true]);
   const back = S.normDev(JSON.parse(JSON.stringify(t)));
   assert.equal(back.dev.i1.fxId, 'fx1', 'song.normDev keeps it');
   assert.equal(S.normDev({ dev: { i1: { kind: 'synth', model: 'serum', fxId: 'x<1' } } }).dev.i1.fxId, undefined, '(only an fx id)');
-  t.model = 'dx7';
+  to(t, 'dx7');
   assert.deepEqual([ids(t), t.dev.fx1.fx === cho, 'fxId' in t.dev.i1, MO.destOf(t, 'i1')], ['fx1,i1,out', true, false, 'fx1']);
   MO.setModel(t, 'i1', 'serum'); MO.setModel(t, 'i1', 'juno60'); // (setModel: the same rule)
   assert.deepEqual([ids(t), t.dev.fx1.fx === cho], ['fx1,i1,out', true]);
   // fx1 deleted, then classic → Serum → classic: a new panel fx2 (an undo past the delete keeps fx1 — the chorus — apart
   // from it: the device ids per track are never one another's)
-  const u = mk(); u.fx = cho;
+  const u = mk(); MO.fxDevOf(u).dev.fx = cho;
   const before = JSON.parse(JSON.stringify(u));
   MO.removePanel(u, 'fx1');
-  u.model = 'serum';
+  to(u, 'serum');
   assert.deepEqual([ids(u), 'fxId' in u.dev.i1], ['i1,out', false]);
-  u.model = 'juno60';
+  to(u, 'juno60');
   assert.deepEqual([ids(u), MO.destOf(u, 'i1')], ['fx2,i1,out', 'fx2']);
   assert.deepEqual([Object.keys(before.dev).filter(k => k in u.dev && before.dev[k].kind === 'panel'), before.dev.fx1.fx.racks[0].mods.map(m => m.type)], [[], ['cho']], 'no shared panel id: keepDevs keeps the snapshot\'s chorus');
 });
@@ -503,8 +515,8 @@ test('1f splitTracks: two classics into one panel → two tracks — the first s
   // song.js reads them; adopt accepts them
   const s = S.deserialize(JSON.stringify(r.p));
   assert.deepEqual(s.tracks.map(x => x.dev && Object.keys(x.dev).sort().join(',')), ['fx1,i1,out', 'fx1,i1,out', 'fx1,i1,out', 'i1,out']);
-  MO.adopt(s);
-  assert.deepEqual(s.tracks.map(x => x.model), ['dx7', 'juno60', 'minimoog', 'serum']);
+  MO.adopt(s, G1);
+  assert.deepEqual(s.tracks.map(x => MO.instOf(x).model), ['dx7', 'juno60', 'minimoog', 'serum']);
 });
 
 test('1f splitTracks (review 1): a Serum heard through a panel — its own FX empty: the panel\'s FX become its own (the same sound, reshape\'s rule, no notice line); its own FX holding effects: kept, and the notice says the panel after it was not kept', () => {
@@ -594,7 +606,7 @@ test('1f page: an autosave whose track holds two instruments opens as two tracks
   let s1;
   try { s1 = await bootMain({ idb, ls: fakeStorage({}) }); } finally { if (css === undefined) delete globalThis.CSS; else globalThis.CSS = css; }
   const tr = s1.api.project().tracks;
-  assert.deepEqual(tr.map(x => x.name + ':' + x.model + ':' + Object.keys(x.dev).sort().join('/') + ':' + x.notes.length), ['Duo:juno60:fx1/i1/out:1', 'Duo · Minimoog:minimoog:fx1/i1/out:1']);
+  assert.deepEqual(tr.map(x => x.name + ':' + MO.instOf(x).model + ':' + Object.keys(x.dev).sort().join('/') + ':' + x.notes.length), ['Duo:juno60:fx1/i1/out:1', 'Duo · Minimoog:minimoog:fx1/i1/out:1']);
   const nt = s1.$('#notice').textContent;
   assert.ok(nt.startsWith('Track “Duo” held 2 instruments: now 2 tracks · ') && /some parts may not work in this browser$/.test(nt), nt);
   // (review 2b) the autosave as it was before the split, kept once under synth.project.pre1f (recoverable by hand)
@@ -608,7 +620,7 @@ test('1f page: an autosave whose track holds two instruments opens as two tracks
 });
 
 /* ------------------------------------------------------------------ stage 2a: performance modulators (IMPL-2a §2.2, §2.3) */
-const sxTrack = id => { const t = MO.adopt({ tracks: [Object.assign(S.newTrack(null, { model: 'serum' }), { vals: { s: C.normalizeSerum(C.defaultSerum()) }, fx: C.defaultFx2() })] }).tracks[0]; if (id) t.id = id; return t; };
+const sxTrack = id => { const t = MO.adopt({ tracks: [Object.assign(S.newTrack(null, { model: 'serum' }), { vals: { s: C.normalizeSerum(C.defaultSerum()) }, fx: C.defaultFx2() })] }, G1).tracks[0]; if (id) t.id = id; return t; };
 const mrow = o => Object.assign({ id: 'r1', src: 'wheel', dst: 'i1:f.cutoff', amt: 0.5, bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 }, o);
 const OPT2 = { sr: 48000, bpm: 120 };
 
@@ -776,7 +788,7 @@ test('2a cv-model: preset rows, Save with preset (toPreset) and Keep on canvas (
   assert.deepEqual(MO.toPreset(t, 'r1', s), { ok: false, why: 'Serum’s mod rows are full (64/64)' }, 'not compiled: no slot to take');
 });
 
-test('2a cv-model: removeInst, setModel (Serum → classic) and the model accessor drop the rows to that instrument and say so', () => {
+test('2a cv-model: removeInst and setModel (Serum → classic; the primary too) drop the rows to that instrument and say so', () => {
   const t = sxTrack(), i2 = MO.addInst(t, 'serum', { vals: { s: C.normalizeSerum(C.defaultSerum()) } });
   MO.addModDev(t, 'velo');
   MO.addMod(t, 'wheel', 'i1:f.cutoff'); MO.addMod(t, 've.out', i2 + ':a.level'); MO.addMod(t, 'wheel', i2 + ':f.res');
@@ -787,7 +799,7 @@ test('2a cv-model: removeInst, setModel (Serum → classic) and the model access
   MO.addMod(t, 'wheel', i2 + ':f.res');
   assert.deepEqual(MO.removeInst(t, i2), { rows: ['r4'], ok: true, why: '' });
   assert.deepEqual(t.mods.map(x => x.id), ['r1']);
-  t.model = 'juno60'; // (the primary through the accessor: setTrackModel)
+  MO.setModel(t, 'i1', 'juno60', { vals: {} }); // (the primary: setTrackModel's setModel, R5)
   assert.deepEqual([t.mods, t.dev.ve], [[], { kind: 'velo' }], 'the rows go, the modulator stays');
 });
 

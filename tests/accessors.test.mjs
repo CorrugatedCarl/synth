@@ -7,7 +7,9 @@ import './v8-guard.mjs';
 // file's mirror, MIDI import, add / duplicate track, the track list, the instrument menu, the multisample zone — and,
 // as the steps make each primary-only path per device (§4.2), the same service on a non-primary device in the data
 // (the UI holds one instrument per track since 1f; the hook __synthTest.cv.add adds a second).
-// Every track is read through its devices here (P(t) = cv-model instOf), never through a track's v1 fields.
+// Every track is read through its devices here (P(t) = cv-model instOf), never through a track's v1 fields. Since R7 the
+// accessors are gone: the page simulation is a guard build (__synthTest set), its tracks hold throwing guard accessors —
+// a stray track.model read or write anywhere in the page fails the test that reaches it.
 // One boot (the page simulation, canvas-sim's scripted world); strings, numbers, booleans and plain data into assert —
 // never a stub DOM node. Run alone: node --max-old-space-size=2048 --test tests/accessors.test.mjs
 import test from 'node:test';
@@ -405,6 +407,31 @@ test('R6 homes and singletons: every instrument\'s body and panel record its own
     recs.forEach((r, k) => Object.assign(r, was[k]));
     for (const [k, dev] of [[0, prim], [1, id]]) { t.dev[dev].vals.s.osc[0].type = 'wt'; t.dev[dev].vals.s.osc[0].multi = ''; acc.msRecs.delete('smp:accz' + k); }
   }
+});
+
+test('R7 the accessors are gone: after a load, undo / redo, add / duplicate track and MIDI import no track has an own v1 field; the sim (a guard build) holds throwing guard accessors; production adopt installs nothing', async () => {
+  const V1 = CM.V1_KEYS, check = what => {
+    for (const t of PJ().tracks) {
+      assert.deepEqual(Object.keys(t).filter(k => V1.includes(k)), [], what + ': ' + t.id + ' has no own v1 field');
+      const ds = Object.getOwnPropertyDescriptor(t, 'model');
+      assert.deepEqual([!!ds && typeof ds.get, !!ds && ds.enumerable], ['function', false], what + ': the guard descriptor');
+      assert.throws(() => t.vals, /has no v1 fields/, what);
+      assert.throws(() => { t.fx = {}; }, /has no v1 fields/, what);
+    }
+  };
+  check('boot');
+  const t = fresh('juno60'); check('add track');
+  cv.duplicateTrack(t); sim.raf(); check('duplicate');
+  cv.undo(); sim.raf(); check('undo');
+  cv.redo(); sim.raf(); check('redo');
+  sxT.notes.push({ id: 'acc7', t: 0, d: 240, n: 52, v: 90 });
+  const src = S.newProject({ model: 'minimoog', vals: {} });
+  src.tracks[0].notes = [{ id: 'n1', t: 0, d: 480, n: 60, v: 100 }];
+  acc.importMidiFile(S.exportMIDI(src), 'acc7.mid'); sim.raf(); check('MIDI import');
+  const p = acc.loadProject(JSON.stringify(JSON.parse(await acc.projectFile())));
+  assert.deepEqual(p.tracks.map(x => Object.keys(x).filter(k => V1.includes(k))), p.tracks.map(() => []), 'a file (its v1 mirror at track level) loads without it');
+  const prod = CMOD.adopt(JSON.parse(JSON.stringify({ tracks: PJ().tracks })));
+  assert.deepEqual(prod.tracks.map(x => V1.some(k => k in x)), prod.tracks.map(() => false), 'production adopt: \'model\' in t === false');
 });
 
 test('R2 Resample to on a second Serum: rendered alone through its own patch (buildInstPatch), into its own oscillator', async () => {

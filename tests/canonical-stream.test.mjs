@@ -53,6 +53,7 @@ async function session(root) {
   const AWN = globalThis.AudioWorkletNode, born = new Map();
   globalThis.AudioWorkletNode = class extends AWN { constructor(c, n, o) { const h = sha(structuredClone((o && o.processorOptions) || {})); super(c, n, o); born.set(this, h); } };
   const api = s.api, $ = s.$, tr = id => api.project().tracks.find(t => t.id === id);
+  const I = t => (t.dev ? t.dev[t.prim] : t); // (a track's instrument: canvas milestone 3 R7 — no v1 fields — and main's v1 tracks alike)
   const step = async (n = 1024) => { s.raf(2); await s.settle(2); s.raf(); s.run(n); };
   const file = { name: 'project-p1.synth.json', type: 'application/json', text: async () => P1 };
   await $('#fFile').onchange({ target: { files: [file], value: '' } });
@@ -60,13 +61,13 @@ async function session(root) {
   await s.power(); await s.settle(30); await step(4096);
   $('#tPlay').onclick(); await step(24000);
   for (const id of ['trk_3', 'trk_1', 'trk_4', 'trk_5', 'trk_2']) { api.selectTrack(id); await step(2048); }
-  { const t = tr('trk_3'); for (const v of [2, 4.5, 7]) { t.vals.fc = v; api.queuePatch(t); await step(); } } // a classic knob
+  { const t = tr('trk_3'); for (const v of [2, 4.5, 7]) { I(t).vals.fc = v; api.queuePatch(t); await step(); } } // a classic knob
   { const t = tr('trk_1'); for (const v of [0.2, 0.6]) { api.sxHost(t).edit(st => { st.p['f.cutoff'] = v; }); await step(); } } // a Serum knob
   api.selectTrack('trk_5'); await step();
   s.key('KeyA', true); await step(2048); s.key('KeyA', false); await step(2048);
   { // a classic preset (applyPreset's data: the defaults with the preset's values, its name) and a Serum one
     const t = tr('trk_5'), m = MODELS.find(x => x.id === 'juno60'), p = m.presets[2];
-    t.vals = Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), p.v); t.preset = p.name; api.sendPatch(t); await step();
+    I(t).vals = Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), p.v); I(t).preset = p.name; api.sendPatch(t); await step();
     const sx = MODELS.find(x => x.id === 'serum');
     api.sxLoad(tr('trk_2'), 'f:' + sx.presets[3].name); await step();
   }

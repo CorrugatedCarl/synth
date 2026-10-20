@@ -16,6 +16,7 @@ import * as CG from '../cv-graph.js?v=9';
 import * as C from '../serum-core.js?v=9';
 import * as CM from '../cv-mods.js?v=9';
 import { MODELS } from '../models.js?v=9';
+import * as CMOD from '../cv-model.js?v=9';
 
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 };
 function scriptedWorld(root) {
@@ -42,6 +43,8 @@ const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { c
 const api = sim.api, cv = globalThis.__synthTest.cv, sh = globalThis.__synthTest.shell, M = cv.mod, U = globalThis.__synthTest.modUI;
 await sim.power(); sim.raf(); await sim.settle(20); sim.raf();
 const P = () => api.project(), T = () => P().tracks.find(t => t.id === P().selTrack), V = () => cv.view();
+// (milestone 3 R7: a track has no v1 fields — its instrument and its FX rack are read as devices)
+const I = t => CMOD.instOf(t), FXR = t => { const f = CMOD.fxDevOf(t); return f ? f.dev.fx : undefined; };
 const hsteps = () => cv.hist.u.length;
 const keys = () => [...V().modules.keys()].sort().join(',');
 const note = () => sim.$('#notice').textContent;
@@ -449,10 +452,10 @@ test('(U10, U11) setTrackModel names the device being replaced and drops the hal
   assert.deepEqual([rows(j).split(',').length, U.mons.has(k)], [2, true]);
   const why = cv.setTrackModel(j, 'minimoog'); sim.raf();
   assert.equal(why, '1 modulation cable to the Juno-60 removed: the new model has no such knobs');
-  assert.deepEqual([T().model, rows(T()).split(',').length, U.mons.has(k)], ['minimoog', 1, false]);
+  assert.deepEqual([I(T()).model, rows(T()).split(',').length, U.mons.has(k)], ['minimoog', 1, false]);
   cv.undo(); sim.raf();
   for (let i = 0; i < 40 && cv.mount && cv.mount(); i++) sim.raf();
-  assert.deepEqual([T().model, rows(T()).split(',').length], ['juno60', 2]);
+  assert.deepEqual([I(T()).model, rows(T()).split(',').length], ['juno60', 2]);
   U.halos(T());
   assert.equal(U.mons.has(k), true);
 });

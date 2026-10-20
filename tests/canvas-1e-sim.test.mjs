@@ -40,6 +40,8 @@ const sim = await bootMain({ ls: fakeStorage({}), hash: '#minimoog', synthTest: 
 const api = sim.api, cv = globalThis.__synthTest.cv, sh = globalThis.__synthTest.shell, W = cv.world();
 await sim.power(); sim.raf(); await sim.settle(20); sim.raf();
 const P = () => api.project(), T = () => P().tracks.find(t => t.id === P().selTrack), V = () => cv.view();
+// (milestone 3 R7: a track has no v1 fields — its instrument and its FX rack are read as devices)
+const I = t => CMOD.instOf(t), FXR = t => { const f = CMOD.fxDevOf(t); return f ? f.dev.fx : undefined; };
 const hsteps = () => cv.hist.u.length;
 const keys = () => [...V().modules.keys()].sort().join(',');
 const ID = {}; // device ids made by one test, read by the next (ids are never reused: track.nid)
@@ -110,7 +112,7 @@ test('1f: the current instrument is always the primary — setCur changes nothin
   sim.$('#notice').onclick(); sim.raf();
   assert.equal(insts(), 'i1:minimoog,i2:juno60', 'the notice undoes it');
   assert.equal(sh.srcDrag.drop('obxa', { over: 'canvas', target: V().modules.get('i2').bar }), true); sim.raf();
-  assert.deepEqual([insts(), T().model], ['i1:obxa,i2:juno60', 'obxa']);
+  assert.deepEqual([insts(), I(T()).model], ['i1:obxa,i2:juno60', 'obxa']);
   cv.undo(); sim.raf();
   assert.equal(insts(), 'i1:minimoog,i2:juno60');
 });

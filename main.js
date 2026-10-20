@@ -79,6 +79,11 @@ function readOnlyNotice() {
 }
 const store = await openAppStore({ onError: storeError, schema: CM.SCHEMA });
 const modelById = id => MODELS.find(m => m.id === id) || MODELS[1];
+// (milestone 3, R7) every track into the project through cv-model adopt — no transition accessors; for one stage the sims
+// (__synthTest) and dev builds (?dev=1) install the throwing guard accessors, so a stray track.model / vals / fx read or
+// write throws instead of reading undefined or adding an enumerable field autosave and History would save
+const GUARDS = !!globalThis.__synthTest || /[?&]dev=1(&|$)/.test((globalThis.location && location.search) || '');
+const adopt = p => CMOD.adopt(p, { guard: GUARDS });
 
 // lat: the user's "Output latency" offset in ms (header Latency control, R5) — playhead, recording and host.latency
 const settings = Object.assign({ sr: 0, os: 4, drift: 5, master: 0.8, model: 'minimoog', vel: 100, lat: 0 }, store.get('synth.settings', {}));
@@ -206,13 +211,13 @@ function loadProject(json, lo = {}) {
     if (r && r.seq && Array.isArray(r.seq.pat)) t.seq = r.seq;
     if (r && r.fx && typeof r.fx === 'object') t.fx = r.fx;
   }
-  CMOD.adopt(p); // (SPEC-canvas §5.4: v2 tracks, a v1 record converted in place)
+  adopt(p); // (SPEC-canvas §5.4: v2 tracks, a v1 record converted in place)
   for (const t of p.tracks) normDevs(t); // (SPEC-serum2 §12.6, §15.1 item 6: every device normalised; saved with v2 racks)
   if (up.readOnly) { if (lo.file) p.newerSchema = up.from; else goReadOnly(up.from); }
   return p;
 }
 function freshProject(m) {
-  const p = CMOD.adopt(CM.stamp(S.newProject({ model: m.id, vals: loadVals(m), name: 'Untitled', trackName: m.name + ' 1' })));
+  const p = adopt(CM.stamp(S.newProject({ model: m.id, vals: loadVals(m), name: 'Untitled', trackName: m.name + ' 1' })));
   for (const t of p.tracks) { newRack(t, m); seedPend.add(t.id); }
   p.perf = S.normPerf(null); // (stage 2a: no Mod Wheel module yet)
   return p;
@@ -1322,7 +1327,7 @@ function keepDevs(t, cur) {
 }
 function applyRestore(p, keepSound = false) {
   if (!p) return;
-  CMOD.adopt(p); // (History snapshots and loads are plain objects: the accessors first)
+  adopt(p); // (History snapshots and loads are plain objects: adopted first)
   // undo / redo never revert knob tweaks (per device) — within one project: an undo of Open / New brings back another project
   // (1f review: track ids repeat across projects; its sound is its own)
   if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); if (modMove) modMoveBack(p, modMove); }
@@ -3139,7 +3144,7 @@ function addTrack(m = curModel(), vals0 = null, o = null) {
   seedPend.add(t.id);
   if (o && o.ui === 'flow' && !m.custom) t.lay = { [cvModule.ID.inst]: { x: 0, y: 0, ui: 'flow' } }; // (the Sources tray's Simple)
   project.tracks.push(t);
-  CMOD.adopt(project);
+  adopt(project);
   newRack(t, m);
   syncNodes();
   selectTrack(t.id);
@@ -3159,7 +3164,7 @@ function duplicateTrack(t) {
   if (t.mid !== undefined) c.mid = t.mid; // (2a: row ids never reused)
   if (t.lay) c.lay = clone(t.lay); // (the canvas layout, view only)
   project.tracks.splice(project.tracks.indexOf(t) + 1, 0, c);
-  CMOD.adopt(project); // (the copy's devices keep their ids: they are per track)
+  adopt(project); // (the copy's devices keep their ids: they are per track)
   syncNodes(); sendSong(c, true);
   renderHeads(); persist(); updateUndoUI();
 }
@@ -3562,7 +3567,7 @@ function importMidiFile(bytes, fname) {
     t.notes = it.notes.map(n => ({ id: S.newId(), t: n.t, d: n.d, n: n.n, v: n.v }));
     t.cc = it.cc.slice(); t.ch = 0;
     project.tracks.push(t);
-    CMOD.adopt(project);
+    adopt(project);
     newRack(t, m);
   }
   project.selTrack = project.tracks[0].id;

@@ -12,9 +12,12 @@ import { fakeStorage } from './fakes.mjs';
 import { MODELS } from '../models.js?v=9';
 import * as cvTray from '../cv-tray.js?v=9';
 import * as CM from '../cv-migrate.js?v=9';
+import * as CMOD from '../cv-model.js?v=9';
 
 const HTML = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const shellOf = () => globalThis.__synthTest.shell;
+// (milestone 3 R7: a track has no v1 fields — its instrument and its FX rack are read as devices)
+const I = t => CMOD.instOf(t), FXR = t => { const f = CMOD.fxDevOf(t); return f ? f.dev.fx : undefined; };
 const fn = v => typeof v === 'function';
 const bound = (el, type) => fn(el['on' + type]) || ((el.listeners && el.listeners[type]) || []).length > 0;
 const resize = async (s, w, h) => { if (w) globalThis.innerWidth = w; if (h) globalThis.innerHeight = h; for (const f of s.dom.winL.resize || []) f({ type: 'resize' }); await s.settle(160); };
@@ -60,7 +63,7 @@ test('boot: today\'s controls keep their handlers in the shell (transport, ≡ f
   // the selected track in the top row
   const t = s.api.project().tracks[0];
   assert.equal(s.$('#trkChip .cv-cn').textContent, t.name);
-  assert.match(s.$('#trkChip .cv-cv').textContent, new RegExp('^' + MODELS.find(m => m.id === t.model).name + ' · '));
+  assert.match(s.$('#trkChip .cv-cv').textContent, new RegExp('^' + MODELS.find(m => m.id === I(t).model).name + ' · '));
   assert.equal(s.$('#tabTrack').textContent.startsWith('Track: ' + t.name), true);
   assert.equal(s.$('#trkDots').children.length, 1, 'one dot per track');
   s.api.addTrack(MODELS.find(m => m.id === 'juno60'));
@@ -103,7 +106,7 @@ test('+ Track opens the Sources tray in "new track" mode; a tile tap there adds 
   sh.srcPick('dx7', sh.shell.tiles.mode());
   const P = api.project();
   assert.equal(P.tracks.length, n0 + 1);
-  assert.equal(P.tracks.at(-1).model, 'dx7');
+  assert.equal(I(P.tracks.at(-1)).model, 'dx7');
   assert.equal(P.selTrack, P.tracks.at(-1).id, 'the new track selected');
   assert.deepEqual([sh.shell.src.isOpen(), sh.shell.tiles.mode()], [true, 'replace'], 'still open (only its rail, its ✕ or Escape close it); the next tap replaces');
   assert.match(s.$('#srcMode').children.map(c => c.textContent || '').join(''), /DX7/, 'on the new track');
@@ -137,19 +140,19 @@ test('Sources tray, replace mode: a tap replaces the selected track\'s instrumen
   const s = await bootMain({ hash: '#minimoog' }), sh = shellOf(), api = s.api;
   sh.cvOpenSources('replace');
   const t = api.project().tracks[0];
-  assert.equal(t.model, 'minimoog');
+  assert.equal(I(t).model, 'minimoog');
   sh.srcPick('prophet5', 'replace');
-  assert.equal(api.project().tracks[0].model, 'prophet5');
+  assert.equal(I(api.project().tracks[0]).model, 'prophet5');
   assert.equal(api.project().tracks.length, 1);
   assert.equal(sh.shell.src.isOpen(), true, 'the tray stays open (audition another)');
   assert.match(s.$('#notice').textContent, /^Replaced Minimoog with Prophet-5/);
   s.$('#tUndo').onclick(); s.raf();
-  assert.equal(api.project().tracks[0].model, 'minimoog', 'one undo step');
+  assert.equal(I(api.project().tracks[0]).model, 'minimoog', 'one undo step');
   s.$('#tUndo').onclick(); s.raf();
-  assert.equal(api.project().tracks[0].model, 'minimoog');
+  assert.equal(I(api.project().tracks[0]).model, 'minimoog');
   const n = api.project().tracks.length;
   sh.srcPick('minimoog', 'replace');
-  assert.deepEqual([api.project().tracks[0].model, api.project().tracks.length], ['minimoog', n], 'the same model: nothing');
+  assert.deepEqual([I(api.project().tracks[0]).model, api.project().tracks.length], ['minimoog', n], 'the same model: nothing');
 });
 
 test('Sources tray drags: over the top tray = the track list (a new track, one undo step), over the canvas = replace, elsewhere nothing; the zones', async () => {
@@ -165,14 +168,14 @@ test('Sources tray drags: over the top tray = the track list (a new track, one u
   const n0 = api.project().tracks.length, i = (over, x = 400, y = 300) => ({ over, x, y, pointerType: 'touch', t: 1 });
   sh.srcDrag.begin('juno60', i('tracks'));
   assert.equal(sh.srcDrag.drop('juno60', i('tracks')), true);
-  assert.deepEqual([api.project().tracks.length, api.project().tracks.at(-1).model], [n0 + 1, 'juno60']);
+  assert.deepEqual([api.project().tracks.length, I(api.project().tracks.at(-1)).model], [n0 + 1, 'juno60']);
   s.$('#tUndo').onclick(); s.raf();
   assert.equal(api.project().tracks.length, n0, 'one undo step');
   sh.srcDrag.move('dx7', i('canvas'));
   assert.equal(sh.srcDrag.drop('dx7', i('canvas')), true);
-  assert.equal(api.project().tracks[0].model, 'dx7', 'replaced in place');
+  assert.equal(I(api.project().tracks[0]).model, 'dx7', 'replaced in place');
   assert.equal(sh.srcDrag.drop('obxa', i(null)), false);
-  assert.equal(api.project().tracks[0].model, 'dx7', 'elsewhere: nothing');
+  assert.equal(I(api.project().tracks[0]).model, 'dx7', 'elsewhere: nothing');
   sh.srcDrag.cancel('obxa', i(null));
 });
 
@@ -342,7 +345,7 @@ test('a Sources tile dragged over the canvas: the true-size outline sits on the 
   assert.deepEqual([Math.round(g.x), Math.round(g.y), g.w], [Math.round(r0.x), Math.round(r0.y), cv.size('juno60').w], 'at the instrument\'s origin, the new size');
   assert.equal(sh.srcDrag.drop('juno60', { over: 'canvas', x: 900, y: 700 }), true);
   const r1 = cv.view().modules.get('i1').rect();
-  assert.deepEqual([s.api.project().tracks[0].model, r1.x, r1.y], ['juno60', r0.x, r0.y], 'replaced where the outline showed');
+  assert.deepEqual([I(s.api.project().tracks[0]).model, r1.x, r1.y], ['juno60', r0.x, r0.y], 'replaced where the outline showed');
 });
 
 test('a project file from a newer SYNTH Canvas: read-only while it is the current project (nothing saved, Save off, the notice); Undo brings the user\'s own back and it saves again — the store is never locked (§5.8)', async () => {
