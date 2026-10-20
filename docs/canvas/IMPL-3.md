@@ -644,6 +644,8 @@ Only genuine decisions; each has the default the plan uses until answered. Q1 is
 
 **Answers (the user, 2026-10-19):** Q3 — leave both out of milestone 3 (recommended). Q4 — yes: the top ↶ undoes canvas cable edits inside a Serum (recommended). Q5 — not now (recommended). Also: the Serum filter S / A / B / C / N switches stay non-modulatable but **get MIDI learn and lock back** (the 2b fix 645a996 had dropped them with `data-dest`; restored by a separate marker before phase 1). Q1 and Q2 are answered in the S0 session.
 
+**Answer (the user, 2026-10-20), Q1:** first "I'd rather they not look soft if we can help it", then, told that it means the GPU module painter (3R, a stage bigger than 1h), **"okay nvm it's not that big of a deal" — yes**. §1.5's table applies with Q1 yes: S0's numbers decide D-R1 / D-R5 (Q2 at the session); 3R is not built now (offered again only if S0 or `ui-m3b` call for it; research kept in [map-rendering.md](map-rendering.md)).
+
 **Things you will notice (no decision needed)**: the Chaos module loses its "smooth" knob and little scope (the knob never changed the
 sound — Serum has no such control); the knobs on LFO / ENV / Macro / Chaos modules can't themselves be modulated by other modules (in
 Serum an LFO can modulate another LFO's rate; on the canvas not yet); an LFO that is shaped but not connected to anything doesn't get
