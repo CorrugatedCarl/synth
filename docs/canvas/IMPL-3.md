@@ -648,7 +648,7 @@ Only genuine decisions; each has the default the plan uses until answered. Q1 is
    milestone 3 (each Serum already has its own VELO / NOTE curves inside its VOICE module, and a second curve on the canvas would
    stack on top of it for Serum knobs); a small later step if you want them.
 
-**Answers (the user, 2026-10-19):** Q3 — leave both out of milestone 3 (recommended). Q4 — yes: the top ↶ undoes canvas cable edits inside a Serum (recommended). Q5 — not now (recommended). Also: the Serum filter S / A / B / C / N switches stay non-modulatable but **get MIDI learn and lock back** (the 2b fix 645a996 had dropped them with `data-dest`; restored by a separate marker before phase 1). Q1 and Q2 are answered in the S0 session.
+**Answers (the user, 2026-10-19):** Q3 — leave both out of milestone 3 (recommended). Q4 — yes: the top ↶ undoes canvas cable edits inside a Serum (recommended). Q5 — not now (recommended). Also: the Serum filter S / A / B / C / N switches stay non-modulatable but **get MIDI learn and lock back** (the 2b fix 645a996 had dropped them with `data-dest`; restored by a separate marker before phase 1). Q1 and Q2 are answered in the S0 session. **Q2 (the user, after the S0 session, 2026-10-20): whole panel** — new Serums open bundled; ⋯ → Show parts and ⚙ → "New Serums open as" switch.
 
 **Answer (the user, 2026-10-20), Q1:** first "I'd rather they not look soft if we can help it", then, told that it means the GPU module painter (3R, a stage bigger than 1h), **"okay nvm it's not that big of a deal" — yes**. §1.5's table applies with Q1 yes: S0's numbers decide D-R1 / D-R5 (Q2 at the session); 3R is not built now (offered again only if S0 or `ui-m3b` call for it; research kept in [map-rendering.md](map-rendering.md)).
 
@@ -663,6 +663,22 @@ each scene (the first and last are the same five-panel scene, to catch the iPad 
 for, tap **Copy results** and paste them with the screenshots; then answer question 1.
 
 ## 9. Notes (the builders fill in)
+
+### 9.0 S0 on the iPad (the user, 2026-10-20; bench.json `"ui-m3"`) and the decision table
+
+Build bd6d7ca2ad50 (canvas a6633e0), iPad Pro, Chrome for iOS 155, stale false. Validity: hw5 first inside its envelope, hw5 last
+1 ms over (firstMove 81 vs 80, two steps skipped), drift 0, scale 1, every self-check ok — accepted as indicative (the user: "my
+zoom speed was really inconsistent"). M1 hand: sx1 **P+**, p1 **P**, hwm **P** (smoother than hw5 alone, 36 vs 83 ms burst max),
+p1x **fail by one settle frame** (106 vs 100; otherwise P), t2 and t3 **fail** (bursts to 198 / 116 ms), hw5 shows the 1h-era single
+50–90 ms frames. M0 auto: sx1 / p1 P+, p1x P. M2 on p1x: `layers`, `noWC`, `opacity0`, `none` P+ (the H6 candidate `layers`; not
+adopted while parts are opt-in — re-measured in `ui-m3b`); on hwm every variant fails incl. `opacity0` / `none` (the cost is not the
+modulators' DOM); on t2 only `opacity0` reaches P. M4: H5 keeps every store ≥ 1.0 at rest. M5: no tab loss. P1: a `data:`-URL
+foreignObject draws untainted into GL on iPadOS 26 (a DOM-snapshot route for a future 3R); P2: worker text 12 ms / 2125 strings.
+
+Applied (§1.5): Q1 yes (before the session) and p1x not P+ → **phases 1 and 2 as built; parts opt-in: D-R5's constant `bundled`**
+(Q2, the user: "Whole panel"); the touch notice past the largest P+ scene's count (sx1, 1866 painted; §9.9); **hwm P → the
+Serum-faithful modulators as specified**; **t2 / t3 fail → several instruments per track stay withdrawn (D-R4)**; 3R stays parked
+(the user, "save the soft pinching fix for later maybe"; P1's result makes it cheaper when it comes).
 
 ### 9.1 Lane E — monitor fields (2026-10-20; base e9cd1b9; `mod-core.js`, `engine.js` Track monitor region, `tests/modcore.test.mjs` +3, sw.js BUILD)
 
