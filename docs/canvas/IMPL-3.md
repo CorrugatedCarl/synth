@@ -946,7 +946,10 @@ m3-fixture 13, cv-cables 41 (+4), cv-module 57, cv-world 58 (+1), wk 100, main 3
 cv-shell-sim 16, cv-fixes-sim 5, cv-mods-ui 12, cv-mods 16, cv-tray 30, cv-model 8, cv-migrate 44, cv-modlayer 12, jackrules 13, accessors 30,
 graph-host 22, lint 131, pwa 22 (precache rebuilt); golden-classic 8, golden-fx 3, golden-presets 8, golden-random 1, golden-graph 6, canonical-stream 1:
 bit-identical. Headless Chrome: reviewer 2's life / cables / tray / hw / touch at 1440 × 900, 1366 × 1024 and 1024 × 1366, x6, x9, x10, x12, ghost,
-taps, stale, hidden, preset, parity, regress, macroclip: no console error or warning.
+taps, stale, hidden, preset, parity, regress, macroclip: no console error or warning. budget.mjs: Serum (complete) 705 / 4, fully opened 2557 / 16,
+LFO 120 / 2, ENV 126 / 2, Macro 103 / 0, Chaos 35 / 0; onMin 1 at every k. ui-bench (reviewer 2's bench-all, headless, dpr 2): `?m3=1` end to end —
+auto / hand / hold, 8 scenes, every self-check ok, hw5 first and last, 0 page errors; `?m3=1&real=1` end to end — hw5 → p1x-real (3277 painted, 26
+canvases) → hwm-real (5456 / 9) → hw5, self-checks ok, one build, 0 page errors (Mac headless timings informational only).
 
 ## 10. Review log (revision 2, 2026-10-19: the contract review, 25 points)
 
