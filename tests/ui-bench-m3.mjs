@@ -32,17 +32,29 @@
 //   rest test (everything live frozen, the burst held open, screenshots A / B / C, markers to locate the page in them);
 //   &diff=1: the M3 diff on the Mac (three screenshots per hold + the results JSON). One JSON for everything (Copy results).
 //   &auto=1 (the CDP harness): no taps; window.__m3 holds the state and the result.
+//   &real=1 (milestone 3 lane D; IMPL-3 §7's iPad gate, the session recorded as "ui-m3b"): the deployed app's OWN Serum parts
+//   and Serum-faithful modulators instead of the hand-built hosts — p1x-real (a fully opened Serum shown as parts through the
+//   app's Show parts: VOICE, 3 OSC, SUB, NOISE, 2 FILTER, its own ENV 2 / LFO 1–2 / MACROS (the rows read them), ARP, the own FX
+//   with 4 effects; + the 6 canvas modulators LFO ×2, ENV ×2, Macro, Chaos, cabled) and hwm-real (hw5's five panels + those 6
+//   modulators), made through the app's hooks (__synthTest.cv.parts, cv.mod) and laid out by the app's Tidy; the cables are
+//   the app's own (internal cables and mod cables). Order hw5 → p1x-real → hwm-real → hw5 (validity first and last) in every
+//   step; M2 on both real scenes, M5 on p1x-real, the holds on p1x-real; results kept apart (m3b.res, kind "ui-m3b").
+//   Without &real=1 every S0 scene and step is as before (the panels through lane B's sx-ui-mod classes on a milestone-3
+//   build; its H1 / H3 / H5 are then the app's own: no prune, no shim).
 const BASE = new URL('../', location.href).href;
 const Q = new URLSearchParams(location.search);
 const MODE = Q.get('hand') === '1' ? 'hand' : Q.get('hold') === '1' ? 'hold' : Q.get('diff') === '1' ? 'diff' : 'auto';
 const AUTO = Q.get('auto') === '1', H5ON = Q.get('h5') !== '0', PRUNE = Q.get('prune') !== '0';
 const ONLY = Q.get('scenes') ? Q.get('scenes').split(',') : null;
 const NO_M2 = Q.get('m2') === '0';
+const REAL = Q.get('real') === '1'; // (lane D: the deployed app's own parts and modulators — the ui-m3b session)
 const MiB = 1024 * 1024, CANVAS_BUDGET = 64 * MiB, CANVAS_MAX_PX = 16e6;
 // §1.4 budgets (painted elements, canvases)
 const BUDGET = { complete: { el: 1600, cv: 12 }, full: { el: 5000, cv: 40 }, mod: { el: 160, cv: 2 } };
-const AUTO_ORDER = ['hw5', 'sx1', 'p1', 'p1x', 'hwm', 't2', 't3', 'hw5'], HAND_ORDER = ['hw5', 'sx1', 'p1x', 'hwm', 't2', 't3', 'hw5'];
-const M2_SCENES = ['p1x', 'hwm', 't2'];
+const AUTO_ORDER = REAL ? ['hw5', 'p1x-real', 'hwm-real', 'hw5'] : ['hw5', 'sx1', 'p1', 'p1x', 'hwm', 't2', 't3', 'hw5'];
+const HAND_ORDER = REAL ? ['hw5', 'p1x-real', 'hwm-real', 'hw5'] : ['hw5', 'sx1', 'p1x', 'hwm', 't2', 't3', 'hw5'];
+const M2_SCENES = REAL ? ['p1x-real', 'hwm-real'] : ['p1x', 'hwm', 't2'];
+const M5_SCENE = REAL ? 'p1x-real' : 't2', HOLD_SCENE = REAL ? 'p1x-real' : 'p1x';
 const POLICIES = {
   base: '',
   contain: '#world .cv-mod > .cv-body { contain: content; }', // (= style.css's own .cv-body rule today: an A/A control)
@@ -62,6 +74,9 @@ const SCENES = {
   hwm: { title: 'Five hardware panels + 6 Serum modulators', kind: 'hw', models: ['obxa', 'jupiter8', 'ms20', 'cs80', 'prophet5'], slots: true },
   t2: { title: 'Two fully opened Serums as parts', kind: 'parts', parts: 'full', serums: 2 },
   t3: { title: 'Serum parts + OB-Xa, Jupiter-8, CS-80', kind: 'parts', parts: 'complete', hw: ['obxa', 'jupiter8', 'cs80'], fx4: true },
+  // (lane D) the app's own parts and modulators (§7's iPad gate)
+  'p1x-real': { title: 'The app’s own Serum as parts, fully opened, + 6 Serum modulators', kind: 'parts', parts: 'full', slots: true, real: true },
+  'hwm-real': { title: 'Five hardware panels + the app’s own 6 Serum modulators', kind: 'hw', models: ['obxa', 'jupiter8', 'ms20', 'cs80', 'prophet5'], slots: true, real: true },
 };
 // part widths: the panel's column in the 1200 px bundled Serum (§2.2) and the module's, rounded up to the 32 px grid
 const PART = {
@@ -151,7 +166,7 @@ async function applyUpdate(btn) { // as bench.html: the waiting worker takes ove
 }
 function envInfo(B) {
   return { date: new Date().toISOString(), page: location.origin + location.pathname, build: B.files, deployed: B.deployed, stale: B.stale,
-    ua: navigator.userAgent, dpr: devicePixelRatio, viewport: innerWidth + '×' + innerHeight, screen: screen.width + '×' + screen.height, h5: H5ON, prune: PRUNE,
+    ua: navigator.userAgent, dpr: devicePixelRatio, viewport: innerWidth + '×' + innerHeight, screen: screen.width + '×' + screen.height, h5: H5ON, h5app: !!(A.h5 && A.h5.app), prune: PRUNE && !(A.mod && A.mod.XM), real: REAL,
     canvas: A.W ? (r => Math.round(r.width) + '×' + Math.round(r.height))(A.W.viewport.getBoundingClientRect()) : null };
 }
 
@@ -168,6 +183,8 @@ const PATCHES = {
 };
 async function h5Map() {
   const imports = {}, done = [];
+  // (milestone 3 lane D) a build with H5 of its own (wk.storeDensity, lane C): nothing to patch — the app's rule is measured
+  if (/export function storeDensity\b/.test(await (await fetch(new URL('wk.js?v=9', BASE).href)).text())) return { map: '', files: [], app: true };
   for (const [f, [re, rep]] of Object.entries(PATCHES)) {
     const url = new URL(f + '?v=9', BASE).href;
     let src = await (await fetch(url)).text();
@@ -213,8 +230,8 @@ const HEAD_JS = `window.__synthTest = {};
 const A = {}; // the app: { win, doc, api, cv, shell, W, mod: {SU, OSC, SEQ, CORE, MOD, CAB, WK}, frame, h5 }
 async function boot(frame) {
   const html = await (await fetch('../index.html', { cache: 'no-store' })).text();
-  let map = '', h5files = [], h5err = null;
-  if (H5ON) { try { const m = await h5Map(); map = m.map; h5files = m.files; } catch (e) { h5err = String(e.message || e); } }
+  let map = '', h5files = [], h5err = null, h5app = false;
+  if (H5ON) { try { const m = await h5Map(); map = m.map; h5files = m.files; h5app = !!m.app; } catch (e) { h5err = String(e.message || e); } }
   frame.srcdoc = html.replace(/<head>/i, '<head><base href="' + BASE + '">' + map + '<script>' + HEAD_JS + '<\/script>');
   const up = async n => {
     for (let i = 0; i < n; i++) {
@@ -243,7 +260,10 @@ async function boot(frame) {
   const imp = u => win.Function('u', 'return import(u)')(new URL(u, BASE).href);
   A.mod = { SU: await imp('serum-ui.js?v=9'), OSC: await imp('sx-ui-osc.js?v=9'), SEQ: await imp('sx-ui-seq.js?v=9'), CORE: await imp('serum-core.js?v=9'),
     MOD: await imp('cv-module.js?v=9'), CAB: await imp('cv-cables.js?v=9'), WK: await imp('wk.js?v=9') };
-  A.h5 = { want: H5ON, files: (win.__m3patched || []).slice(), err: h5err, ok: H5ON && !h5err && h5files.every(f => (win.__m3patched || []).includes(f)) };
+  // (milestone 3 lane D) the Serum panels as classes (lane B's sx-ui-mod: SerumUI no longer builds them itself); null on a build
+  // from before them
+  try { A.mod.XM = await imp('sx-ui-mod.js?v=9'); } catch (e) { A.mod.XM = null; }
+  A.h5 = { want: H5ON, app: h5app, files: (win.__m3patched || []).slice(), err: h5err, ok: H5ON && !h5app && !h5err && h5files.every(f => (win.__m3patched || []).includes(f)) };
   installH5();
   // one layout on every device: the on-screen keys hidden, the top tray folded to its row (the canvas takes the height)
   try { const kr = A.doc.querySelector('#kbrow'), kh = A.doc.querySelector('#kbHide'); if (kr && !kr.hidden && kh) kh.click(); } catch (e) { console.error(e); }
@@ -258,6 +278,7 @@ async function boot(frame) {
   M.deliver = function (id, d) {
     const k = id + (d && d.mc && typeof d.i !== 'string' && typeof d.c !== 'string' ? ':mc' : ':' + (d && (d.i || d.c) || 'p'));
     A.mon.n.set(k, (A.mon.n.get(k) || 0) + 1);
+    if (d && d.mcx) A.mon.mcx = (A.mon.mcx || 0) + 1; // ((lane D) lane E's mcx reaching the app's own modulators: the real scenes)
     if (A.mon.still && A.W.busy) { A.mon.dropped++; return; }
     return deliver.call(this, id, d);
   };
@@ -378,7 +399,7 @@ function derived(ui, o) {
 // H1 / H3 emulated (prune): the OSC's inactive type views and an LFO panel's PATH (unless its type is path) and VELO / NOTE
 // areas leave the DOM; their canvases and editors leave the view's page
 function prune(v, kind, H) {
-  if (!PRUNE) return;
+  if (!PRUNE || A.mod.XM) return; // ((milestone 3) H1 / H3 are the app's own: OscPanel builds its active type view, a slot's LfoPanel no VELO / NOTE)
   const { root, page } = v;
   if (kind === 'osc' && v.made && v.made.views) {
     const t = A.mod.CORE.oscTypeOf(H.ui.s(), v.made.o);
@@ -392,22 +413,26 @@ function prune(v, kind, H) {
   page.canvases = page.canvases.filter(cv => root.contains(cv.el));
   page.editors = page.editors.filter(ed => { const r = ed && (ed.root || ed.el); const keep = !r || root.contains(r); if (!keep && ed.destroy) { try { ed.destroy(); } catch (e) { /* gone */ } } return keep; });
 }
+// (milestone 3 lane D) a build with sx-ui-mod: lane B's panel classes (VoicingPanel, EnvPanel(·, k), LfoPanel(·, k), MacrosPanel,
+// ChaosRow) over the host's kit — a build from before: SerumUI's own methods, a derived object per fixed slot
+const XP = (name, root, H, ...a) => new A.mod.XM[name](root, H.ui.kit, ...a);
 const PANELS = { // part → (root, H) → the panel (built under H.ui.bp)
   voice: (root, H) => {
     const { ui } = H, d = A.doc;
     if (ui.head) root.append(ui.head);
     const row = d.createElement('div'); row.style.cssText = 'display:flex;gap:8px;align-items:flex-start';
-    row.append(ui.voicingPanel(), derived(ui, { env: 0 }).envPanel());
+    if (A.mod.XM) { XP('VoicingPanel', row, H, { bare: false }); XP('EnvPanel', row, H, 0, { bare: false }); }
+    else row.append(ui.voicingPanel(), derived(ui, { env: 0 }).envPanel());
     root.append(row);
   },
   osc: (root, H, P) => new A.mod.OSC.OscPanel(root, H.ui.kit, P.o),
   sub: (root, H) => new A.mod.OSC.SubPanel(root, H.ui.kit),
   noise: (root, H) => new A.mod.OSC.NoisePanel(root, H.ui.kit),
   filter: (root, H, P) => new A.mod.OSC.FilterPanel(root, H.ui.kit, P.k),
-  env: (root, H, P) => { root.append(derived(H.ui, { env: P.env }).envPanel()); },
-  lfo: (root, H, P) => { root.append(derived(H.ui, { lfo: P.lfo }).lfoPanel()); },
-  macros: (root, H) => { root.append(H.ui.macrosPanel()); },
-  chaos: (root, H) => { root.append(H.ui.chaosPanel()); },
+  env: (root, H, P) => (A.mod.XM ? XP('EnvPanel', root, H, P.env, { bare: false }) : root.append(derived(H.ui, { env: P.env }).envPanel())),
+  lfo: (root, H, P) => (A.mod.XM ? XP('LfoPanel', root, H, P.lfo, { bare: false }) : root.append(derived(H.ui, { lfo: P.lfo }).lfoPanel())),
+  macros: (root, H) => (A.mod.XM ? XP('MacrosPanel', root, H, { bare: false }) : root.append(H.ui.macrosPanel())),
+  chaos: (root, H) => (A.mod.XM ? XP('ChaosRow', root, H, 0, { bare: false }) : root.append(H.ui.chaosPanel())),
   arp: (root, H) => new A.mod.SEQ.ArpPage(root, H.ui.kit),
 };
 const partKind = p => (/^osc/.test(p) ? 'osc' : /^filter/.test(p) ? 'filter' : /^env/.test(p) ? 'env' : /^lfo/.test(p) ? 'lfo' : p);
@@ -538,8 +563,8 @@ function addEffects(key, n) {
 // the real 2b modulators (ModCore traffic; on Serum scenes also the Mod Wheel and a Macro) and their rows onto knobs
 function realMods(S, hwDests) {
   const P = A.api.project(), M = A.cv.mod, made = {};
-  const at = i => ({ x: -320, y: i * 320 });
-  const kinds = [['l1', 'lfo'], ['l2', 'lfo'], ['e1', 'env'], ['h1', 'chaos'], ['m1', 'macro']].concat(S.D.slots ? [['e2', 'env']] : [], S.D.kind === 'hw' ? [] : [['wheel', 'wheel']]);
+  const at = i => (S.D.real ? null : { x: -320, y: i * 320 }); // ((lane D) a real scene: tapped — the app's left-growing column)
+  const kinds = [['l1', 'lfo'], ['l2', 'lfo'], ['e1', 'env'], ['h1', 'chaos'], ['m1', 'macro']].concat(S.D.slots ? [['e2', 'env']] : [], S.D.kind === 'hw' || S.D.real ? [] : [['wheel', 'wheel']]);
   kinds.forEach(([want, kind], i) => {
     if (kind === 'wheel' && P.perf && P.perf.wheel) { made.wheel = 'wheel'; return; }
     const k = M.add(kind, at(i));
@@ -648,7 +673,60 @@ function sceneLayout(S) {
   S.cab.layout(ports);
   S.ports = ports.size;
 }
+// (milestone 3 lane D, IMPL-3 §7's iPad gate) a real scene: the deployed app's own Serum taken apart (cv.parts.show: VOICE, the
+// parts that are on, its own ENV / LFO / MACROS the rows read; the own FX with 4 effects) and its own Serum-faithful modulators
+// (cv.mod.add: LFO ×2, ENV ×2, Macro, Chaos — Serum's panels on slot hosts), cabled onto knobs (ModCore and lane E's mcx keep
+// their displays moving), laid out by the app's Tidy (§2.7); the cables are the app's. Nothing here is hand-built
+async function buildReal(id) {
+  const D = SCENES[id], S = { id, D, hosts: [], mods: [], offs: [], hide: new Set(), rows: [], sdevs: [], t0: now(), info: {}, e0: A.win.__m3in.errs.length }; // (S.real: realMods' map of the modules it made, as S0's)
+  S0.cur = S;
+  const PT = A.cv.parts, CORE = A.mod.CORE;
+  if (!PT || typeof PT.show !== 'function') throw new Error('this build has no Serum parts view (__synthTest.cv.parts): the real scenes need milestone 3');
+  say('Building ' + id + ' — ' + D.title + '…');
+  const tb = now();
+  S.t = await newTrack(D.kind === 'hw' ? D.models[0] : 'serum');
+  S.color = S.t.color || '#ff9f43';
+  const more = D.kind === 'hw' ? D.models.slice(1) : [];
+  try { A.cv.touch(false); } catch (e) { /* older hooks */ }
+  try { for (const m of more) { A.cv.add(m, null); await sleep(300); } } finally { try { A.cv.touch(null); } catch (e) { /* older hooks */ } }
+  if (more.length) { A.cv.tidy(); await mounted(); }
+  S.sdevs = Object.keys(S.t.dev).filter(k => S.t.dev[k] && S.t.dev[k].kind === 'synth' && S.t.dev[k].model === 'serum').sort();
+  for (const dev of S.sdevs) { // the full Serum (§1.4's budget line): every part on, the ARP, rows reading LFO 1–2, ENV 2 and a macro (I2)
+    sxSetup(S.t, dev, 'full');
+    A.api.sxHost(S.t, dev).edit(s => { CORE.addMod(s, A.api.sxHost(S.t, dev).fx(), 'macro1', 'a.pan', { amt: 0.3 }); }, { label: 'ui-m3' });
+    addEffects(dev + '/fx', 4);
+  }
+  await sleep(200);
+  for (const dev of S.sdevs) PT.show(dev, true);
+  for (let i = 0; i < 160; i++) { if (S.sdevs.every(dev => { const r = PT.rec(dev); return !!r && r.mode === 'parts' && !!r.views && r.views.size > 1; })) break; await sleep(50); }
+  await mounted();
+  const hwDevs = Object.keys(S.t.dev).filter(k => S.t.dev[k] && S.t.dev[k].kind === 'synth' && S.t.dev[k].model !== 'serum').sort(), hwDests = [];
+  for (const k of hwDevs) { const el = A.W.el.querySelector('[data-cv-mod="' + k + '"]'); const L = el ? [...new Set([...el.querySelectorAll('[data-dest]')].map(e => e.getAttribute('data-dest')))] : []; hwDests.push(...L.filter((_, i) => i % 7 === 3).slice(0, 4).map(d => k + ':' + d)); }
+  const SX = ['a.pan', 'f.res', 'a.fine', 'f.drive', 'a.warp', 'f.mix', 'a.level', 'a.det', 'a.crs', 'a.semi', 'b.pan', 'f2.res'];
+  S.dests = D.kind === 'hw' ? hwDests : SX.map(d => 'i1:' + d);
+  realMods(S, D.kind === 'hw' ? hwDests : null);
+  await play(S);
+  // the modulators' panels (loaded on demand, then measured), then the app's Tidy over everything (the left-growing column,
+  // note tools, sources, filters, VOICE with its own stack, the own FX, OUT) — one History step, nothing stored
+  for (let i = 0; i < 80; i++) { const B = A.cv.mod.bodies; if ([...B.values()].every(b => typeof b.host !== 'function' || b.host())) break; await sleep(50); }
+  await raf(); await raf(); await sleep(300);
+  A.cv.tidy();
+  await raf(); await raf(); await sleep(500);
+  const V = A.cv.view();
+  S.fit = V ? [...V.modules.keys()] : [];
+  S.focus = S.fit;
+  S.groupOf = k => { for (const dev of S.sdevs) if (k === dev || (k.startsWith(dev + '/') && k !== dev + '/fx')) return dev + ':full'; return /^[lemh][1-9]\d*$/.test(k) && (k[0] !== 'h' || S.t.dev[k]) ? 'slot:' + k : 'app'; };
+  A.W.fit({ ids: S.fit, animate: false });
+  await sleep(500);
+  S.info = sceneInfo(S);
+  S.info.parts = S.sdevs.map(dev => dev + ': ' + PT.list(dev).join(' ')).join(' · ');
+  S.info.mods = Object.values(S.real || {}).join(' ');
+  S.info.buildMs = Math.round(now() - tb);
+  S.t0 = now();
+  return S;
+}
 async function build(id) {
+  if (SCENES[id].real) return buildReal(id);
   const D = SCENES[id], S = { id, D, hosts: [], mods: [], offs: [], hide: new Set(), rows: [], sdevs: [], t0: now(), info: {}, e0: A.win.__m3in.errs.length };
   S0.cur = S;
   say('Building ' + id + ' — ' + D.title + '…');
@@ -797,7 +875,7 @@ async function teardown(S) {
 function sceneMods(S) {
   const out = [];
   for (const r of S.mods) out.push({ key: r.key, el: r.m.el, group: r.group, slot: r.slot });
-  for (const m of A.W.el.querySelectorAll(':scope > .cv-mod[data-cv-mod]')) { const k = m.getAttribute('data-cv-mod'); if (!k.startsWith('m3:') && !S.hide.has(k)) out.push({ key: k, el: m, group: 'app' }); }
+  for (const m of A.W.el.querySelectorAll(':scope > .cv-mod[data-cv-mod]')) { const k = m.getAttribute('data-cv-mod'); if (!k.startsWith('m3:') && !S.hide.has(k)) out.push({ key: k, el: m, group: S.groupOf ? S.groupOf(k) : 'app' }); }
   return out;
 }
 function count(el) {
@@ -819,8 +897,9 @@ function sceneInfo(S) {
   // the own FX belongs to its Serum's parts group (§1.4: "own FX with 4 effects" is in the budget line)
   for (const dev of S.sdevs || []) {
     const fx = A.W.el.querySelector(':scope > .cv-mod[data-cv-mod="' + dev + '/fx"]'), g = Object.keys(groups).find(k => k.startsWith(dev + ':'));
-    if (fx && g && !S.hide.has(dev + '/fx')) { const c = count(fx); groups[g].n += c.n; groups[g].vis += c.vis; groups[g].cv += c.cvVis; groups[g].mods++; groups.app.n -= c.n; groups.app.vis -= c.vis; groups.app.cv -= c.cvVis; groups.app.mods--; }
+    if (fx && g && !S.hide.has(dev + '/fx') && groups.app && groups.app.mods > 0) { const c = count(fx); groups[g].n += c.n; groups[g].vis += c.vis; groups[g].cv += c.cvVis; groups[g].mods++; groups.app.n -= c.n; groups.app.vis -= c.vis; groups.app.cv -= c.cvVis; groups.app.mods--; }
   }
+  if (!groups.app) groups.app = { mods: 0, n: 0, vis: 0, cv: 0 };
   const all = [...A.W.el.querySelectorAll('canvas')].reduce((s, c) => s + c.width * c.height * 4, 0);
   const budgets = [];
   for (const [g, G] of Object.entries(groups)) {
@@ -854,7 +933,7 @@ async function selfCheck(S, ms = 2500) {
   const errors = I.errs.slice(e0);
   const budgets = sceneInfo(S).budgets, over = budgets.filter(b => !b.ok);
   const ok = !slow.length && !errors.length && !over.length;
-  return { ok, rates, ref, mcx: S.mcx || 0, onScreen: cvs.length, live: live.length, slow, liveList: live.slice(0, 40), errors: errors.slice(0, 8), over, why: [slow.length ? slow.length + ' slow displays' : '', errors.length ? errors.length + ' console errors' : '', over.length ? 'over budget: ' + over.map(b => b.group).join(', ') : ''].filter(Boolean).join('; ') };
+  return { ok, rates, ref, mcx: S.mcx || (S.D.real ? A.mon.mcx || 0 : 0), onScreen: cvs.length, live: live.length, slow, liveList: live.slice(0, 40), errors: errors.slice(0, 8), over, why: [slow.length ? slow.length + ' slow displays' : '', errors.length ? errors.length + ' console errors' : '', over.length ? 'over budget: ' + over.map(b => b.group).join(', ') : ''].filter(Boolean).join('; ') };
 }
 
 /* ------------------------------------------------------------------------------------------------ frames */
@@ -969,6 +1048,7 @@ async function m4(S) {
     if (r.width * r.height > big && r.left >= vp.left && r.right <= vp.right && r.top >= vp.top && r.bottom <= vp.bottom) { big = r.width * r.height; anchor = A.W.toWorld(r.left + r.width / 2, r.top + r.height / 2); }
   }
   out.anchor = big ? 'display' : 'centre';
+  if (A.h5.app) out.rule = 'today = the app’s own H5 (wk.storeDensity)';
   for (const rule of ['today', 'h5']) {
     if (rule === 'h5' && !A.h5.ok) { out.h5 = null; continue; }
     setH5(rule === 'h5');
@@ -1077,12 +1157,12 @@ async function probeP2() {
 }
 
 /* ------------------------------------------------------------------------------------------------ results */
-const RES_KEY = 'm3.res';
+const RES_KEY = REAL ? 'm3b.res' : 'm3.res', KIND = REAL ? 'ui-m3b' : 'ui-m3';
 function results() { return LS.get(RES_KEY, null) || {}; }
-function saveResult(part, data) { const R = results(); R[part] = data; R.kind = 'ui-m3'; if (!LS.set(RES_KEY, R)) say('Could not keep the results on this device (storage full?) — copy them now'); return R; }
+function saveResult(part, data) { const R = results(); R[part] = data; R.kind = KIND; if (!LS.set(RES_KEY, R)) say('Could not keep the results on this device (storage full?) — copy them now'); return R; }
 function merged() {
   const R = results(), last = R.hold || R.hand || R.auto || {};
-  const out = Object.assign({ kind: 'ui-m3', v: 1 }, last.env || {}, { valid: validity(R) }, R);
+  const out = Object.assign({ kind: KIND, v: 1 }, last.env || {}, { valid: validity(R) }, R);
   delete out.env;
   return out;
 }
@@ -1136,7 +1216,8 @@ async function header(steps, nowIdx) {
   if (hb && hb.phase) { const R = results(); R.lost = (R.lost || []).concat([{ phase: hb.phase, mode: hb.mode, at: new Date(hb.t).toISOString() }]); LS.set(RES_KEY, R); LS.del('m3.hb'); const w = h('p', 'bad', 'The last run stopped without finishing (during “' + hb.phase + '”): the tab was probably closed by iPadOS. It is noted in the results.'); top.append(w); }
   return { top, row };
 }
-const STEPS = ['Automatic runs (≈ 10 min, hands off)', 'Hand test (≈ 10 min: pinch and pan as the bar says)', 'Screenshots (≈ 5 min: three screenshots, twice)'];
+const STEPS = REAL ? ['Automatic runs (≈ 8 min, hands off)', 'Hand test (≈ 5 min: pinch and pan as the bar says)', 'Screenshots (≈ 5 min: three screenshots, twice)']
+  : ['Automatic runs (≈ 10 min, hands off)', 'Hand test (≈ 10 min: pinch and pan as the bar says)', 'Screenshots (≈ 5 min: three screenshots, twice)'];
 function frameEl(full) {
   const f = h('iframe'); f.id = 'm3frame'; f.title = 'SYNTH Canvas';
   f.style.height = full ? 'calc(100% - 104px)' : Math.max(420, innerHeight - 250) + 'px';
@@ -1173,7 +1254,7 @@ function bottomBar() {
 async function intro(stepIdx, extra) {
   const c = h('div', 'm3-cover'), d = h('div');
   d.style.textAlign = 'left';
-  d.append(h('h1', '', 'SYNTH Canvas — milestone 3 rendering test'));
+  d.append(h('h1', '', 'SYNTH Canvas — milestone 3 rendering test' + (REAL ? ' · the app’s own Serum parts (ui-m3b)' : '')));
   const ol = h('ol', 'm3-steps'); STEPS.forEach((s, i) => ol.append(h('li', i === stepIdx ? 'now' : '', s))); d.append(ol);
   if (extra) { const p = h('p'); p.innerHTML = extra; d.append(p); }
   const bl = h('p', 'm3-note', 'Checking which app build this page measures…'); d.append(bl);
@@ -1201,7 +1282,7 @@ async function pageAuto() {
   const frame = frameEl(true); document.body.append(frame);
   const ui = bottomBar(), go = h('button', 'go', 'Start'), p1 = h('button', '', 'P1'), p2 = h('button', '', 'P2'), next = h('a');
   p1.title = 'Probe P1: SVG foreignObject → canvas (taint)'; p2.title = 'Probe P2: OffscreenCanvas text in a Worker';
-  next.href = location.pathname + '?m3=1&hand=1' + (H5ON ? '' : '&h5=0'); next.textContent = 'Next: step 2 →'; next.style.cssText = 'color:#8cb8ff;font-weight:600;font-size:18px'; next.hidden = true;
+  next.href = location.pathname + '?m3=1&hand=1' + (H5ON ? '' : '&h5=0') + (REAL ? '&real=1' : ''); next.textContent = 'Next: step 2 →'; next.style.cssText = 'color:#8cb8ff;font-weight:600;font-size:18px'; next.hidden = true;
   ui.btns.append(go, p1, p2); const RP = resultsPanel(ui.btns); ui.btns.append(next);
   go.disabled = true;
   ui.sayEl.innerHTML = 'Step 1 of 3 — <b>automatic runs</b> (about 10 minutes). Hands off until the bar says Done.';
@@ -1209,7 +1290,7 @@ async function pageAuto() {
   say('Starting the app…');
   try { await boot(frame); } catch (e) { say('The app did not start: ' + e.message); window.__m3.state = 'error'; return; }
   A.W.on('camera', c => { ui.kEl.textContent = Math.round(c.k * 100) + ' %'; });
-  say(A.h5.ok ? '' : 'H5 shim off (' + (A.h5.err || 'h5=0') + ')');
+  say(A.h5.ok ? '' : A.h5.app ? 'H5: the app’s own (wk.storeDensity)' : 'H5 shim off (' + (A.h5.err || 'h5=0') + ')');
   window.__m3.state = 'ready'; window.__m3.fn = FN();
   p1.onclick = async () => { say('P1…'); const r = await probeP1(); const R = results(); R.probes = Object.assign(R.probes || {}, { p1: r }); LS.set(RES_KEY, R); say('P1: ' + JSON.stringify(r).slice(0, 200)); };
   p2.onclick = async () => { say('P2…'); const r = await probeP2(); const R = results(); R.probes = Object.assign(R.probes || {}, { p2: r }); LS.set(RES_KEY, R); say('P2: ' + JSON.stringify(r).slice(0, 200)); };
@@ -1239,7 +1320,7 @@ async function pageAuto() {
         const r4 = await m4(S);
         out.scenes[key] = { title: S.D.title, info: S.info, self, m0: r0, m4: r4 };
         if (!NO_M2 && M2_SCENES.includes(id) && !out.m2[id]) out.m2[id] = await m2(S);
-        if (id === 't2' && !out.m5) { say('M5: a 60 s zoom sweep on t2…'); out.m5 = await m5(S, Q.get('m5ms') ? +Q.get('m5ms') : 60000); }
+        if (id === M5_SCENE && !out.m5) { say('M5: a 60 s zoom sweep on ' + id + '…'); out.m5 = await m5(S, Q.get('m5ms') ? +Q.get('m5ms') : 60000); }
         const errs = A.win.__m3in.errs.slice(S.e0);
         if (errs.length > self.errors.length) { self.errors = errs.slice(0, 8); self.ok = false; self.why = [self.why, errs.length + ' console errors'].filter(Boolean).join('; '); }
         await teardown(S);
@@ -1303,7 +1384,7 @@ async function pageHand() {
   btns.append(bStart, bNext, bDone); resultsPanel(btns);
   bStart.disabled = bNext.disabled = bDone.disabled = true;
   sayEl.innerHTML = 'Step 2 of 3 — <b>the hand test</b>. Starting the app…';
-  const I0 = await intro(1, 'Seven short scenes. For each, the bar at the bottom says what to do — pinch out to 25 % and back, pinch in to 200 % and back, pan with two fingers and with one, drag a knob — with the zoom shown on the left. Steps tick themselves off; tap <b>Skip step</b> if one does not, <b>Done</b> to end a scene early.');
+  const I0 = await intro(1, (REAL ? 'Four' : 'Seven') + ' short scenes. For each, the bar at the bottom says what to do — pinch out to 25 % and back, pinch in to 200 % and back, pan with two fingers and with one, drag a knob — with the zoom shown on the left. Steps tick themselves off; tap <b>Skip step</b> if one does not, <b>Done</b> to end a scene early.');
   try { await boot(frame); } catch (e) { sayEl.textContent = 'The app did not start: ' + e.message; return; }
   A.W.on('camera', c => { kEl.textContent = Math.round(c.k * 100) + ' %'; });
   window.__m3.state = 'ready'; window.__m3.fn = FN();
@@ -1329,7 +1410,7 @@ async function pageHand() {
   }
   clearInterval(hb); LS.del('m3.hb');
   out.done = true; out.dialogs = A.dialogs.slice(0, 12); saveResult('hand', out);
-  const nx = location.pathname + '?m3=1&hold=1' + (H5ON ? '' : '&h5=0');
+  const nx = location.pathname + '?m3=1&hold=1' + (H5ON ? '' : '&h5=0') + (REAL ? '&real=1' : '');
   sayEl.innerHTML = 'Step 2 done. ' + Object.entries(out.scenes).map(([k, x]) => k + ' <b>' + x.verdict + '</b>').join(' · ') + ' — <a style="color:#8cb8ff" href="' + nx + '">Next: step 3, the screenshots →</a>';
   bStart.hidden = bNext.hidden = bDone.hidden = true;
   window.__m3.result = out; window.__m3.state = 'done';
@@ -1421,8 +1502,8 @@ async function pageHold() {
   window.__m3.state = 'ready'; window.__m3.fn = FN();
   await I0.ready('Start step 3');
   sayEl.innerHTML = 'Building the scene…';
-  const S = await build('p1x');
-  const out = { env: envInfo(B), h5: A.h5.ok, holds: [] };
+  const S = await build(HOLD_SCENE);
+  const out = { env: envInfo(B), h5: A.h5.ok, holds: [], scene: HOLD_SCENE };
   out.env.gl = A.W.glStats() ? 'gl' : '2d';
   // everything live frozen for the whole run: the transport stopped, the fan-out and the ModCore feed paused, CSS animations
   stopPlay();
@@ -1432,7 +1513,7 @@ async function pageHold() {
   const tap = label => new Promise(r => { bGo.textContent = label; bGo.disabled = false; bGo.onclick = () => { bGo.disabled = true; r(); }; if (AUTO) setTimeout(r, 50); });
   const shotWait = AUTO ? 300 : 0;
   for (const k1 of [0.5, 1.5]) {
-    const vp = A.W.viewport.getBoundingClientRect(), voice = byKey(S, 'i1/voice'), r = voice ? voice.m.rect() : { x: 0, y: 0, w: 600, h: 400 };
+    const vp = A.W.viewport.getBoundingClientRect(), voice = S.D.real ? appMod('i1') : byKey(S, 'i1/voice'), r = voice ? (voice.m || voice).rect() : { x: 0, y: 0, w: 600, h: 400 }; // ((lane D) real: the app's VOICE module)
     const cx = r.x + r.w / 2, cy = r.y + Math.min(r.h, 500) / 2;
     A.W.setCamera({ tx: vp.width / 2 - cx, ty: vp.height / 2 - cy, k: 1 });
     await sleep(800);
@@ -1485,10 +1566,12 @@ function holdRegions(S, frame) {
   const mods = sceneMods(S).map(m => {
     const c = clip(m.el.getBoundingClientRect());
     if (!c) return null;
-    const live = [...m.el.querySelectorAll('canvas, .wk-meter, [class*="meter"], [class*="gr"], svg')].filter(e => e.getClientRects().length && (e.tagName !== 'svg' || e.closest('[class*="meter"], [class*="gr"]'))).map(e => clip(e.getBoundingClientRect())).filter(Boolean).map(rr);
+    // ((lane D) the app's own modules: a bar's CPU reading and the voice counter are live too)
+    const live = [...m.el.querySelectorAll('canvas, .wk-meter, [class*="meter"], [class*="gr"], svg, .cv-cpu, .sx-vc')].filter(e => e.getClientRects().length && (e.tagName !== 'svg' || e.closest('[class*="meter"], [class*="gr"]'))).map(e => clip(e.getBoundingClientRect())).filter(Boolean).map(rr);
     return { key: m.key, r: rr(c), live: live.slice(0, 60) };
   }).filter(Boolean);
-  const avoid = [...A.W.el.querySelectorAll(':scope > .cv-mod, .m3-cables svg, .cv-mbadge')].filter(e => e.getClientRects().length && getComputedStyle(e).display !== 'none').map(e => e.getBoundingClientRect());
+  // ((lane D) a real scene draws the app's own cables: each cable's path, the badges, forks and × count as scene, not grid)
+  const avoid = [...A.W.el.querySelectorAll(':scope > .cv-mod, .m3-cables svg, .cv-mbadge, :scope > svg.cv-cables path, :scope > svg.cv-cable-ends path, .cv-fork, .cv-cable-x')].filter(e => e.getClientRects().length && getComputedStyle(e).display !== 'none').map(e => e.getBoundingClientRect());
   const tiles = [];
   for (let y = vp.top + 8; y + 48 < vp.bottom && tiles.length < 24; y += 64) for (let x = vp.left + 8; x + 48 < vp.right && tiles.length < 24; x += 64) {
     const hit = avoid.some(r => x < r.right + 8 && x + 48 > r.left - 8 && y < r.bottom + 8 && y + 48 > r.top - 8);
