@@ -656,6 +656,61 @@ for, tap **Copy results** and paste them with the screenshots; then answer quest
 
 ## 9. Notes (the builders fill in)
 
+### 9.3 Lane C — canvas widgets, internal routing, H5 (2026-10-20; base e9cd1b9; `sx-edges.js` new, cv-cables / cv-module / cv-mods / cv-tray / cv-world, wk.js, style.css, index.html, sw.js BUILD)
+
+**sx-edges** (pure). ENDs are dev-free `'<part>.<port>'` (`oscA.out`, `filter2.in`, `voice.main|direct|note|out|env1`, `fx.in`,
+`arp.out`, an oscillator's read-only `'<osc>.warp'`); `jackOf(dev, end)` / `endOf(dev, jack)` map them to canvas jacks (`i1/oscA.out`,
+`i1.main`, `i1/fx.in`). `serumEdges(s, fx)` → `{ id, a, b, kind: audio | note | fx | warp, src, share?, fork?, stub? (b null, label
+'→ Filter (off)'), ro?, dim? (source off), env?, field?, what? }`; the warp edges cover every WARPS2 mode reading another part (`_o1 / _o2`,
+Noise, Sub, Filter 1 / 2; spectral modes only on a spectral oscillator; S1 mode's v1 field) and ratio pitch sources. `setEdge` /
+`cutEdge` → `{ edit(s) | null, why, f: [[path, before, after] …] }` (path e.g. `['osc', 1, 'route']`, `['p', 'b.fbal']`; before = the
+effective value, a missing route sx-ui-mix's default) — D's History meta is `f` as it stands. Refusals: `WHY` (voice, ro, fx, self, dir,
+note, notes, same, none, bad). Off-route → filter k is exactly `toggleFilterRoute`'s branch (proved); a second filter cable forks at
+fbal ½ with both switches on; cutting a fork's branch moves the balance to the other filter; filter → filter sends the other to Main
+when it fed this one. `firstFree(s, kind, skip)` (`skip`: the parts already shown); `slotsUsed(s, used)` (point-modulation buses read
+their sources through matrix rows, so rows cover them); `partKeys` keeps any part with a `lay` entry (a laid-out part stays, dimmed).
+`routeLabel` moved here (cv-cables re-exports it).
+
+**cv-cables.** `cablesOf` adds, per Serum in parts view (`lay[iN].ui === 'parts'`; `opts.parts` false / a function overrides), the
+internal cables `{ id: 'x:<dev>:<edge id>', kind: 'audio', int: audio | note | warp, dev, edge: { a, b } (ENDs), a / b jacks, share,
+fork, stub, tap: 'open' (warp) }` — editable even under `host.patch: false`; the layer reports `onAction(id, 'disconnect' | 'balance' |
+'tap')` (D: `cutEdge` on `c.edge`, the routing popover, the warp / pitch menu); one BALANCE badge per forked source (`forkBadge(jack)`);
+a stub is `STUB_PX` (56) long. Own matrix rows from LFO / ENV / MACROS (`opts.ownRows` false disables): mod cables `'o:<dev>:<slot>'`
+(`own, dev, slot`), Serum colour; velo / note / random / bus rows stay the Mod list's. Link rows resolve through `modSrcJack`
+(`iN/env1.out` → `iN.env1`). A knob end with `hid` (cv-module) gets `.cv-hid` and the badge's third span `.cv-htag` (`hiddenTag(id)`).
+Twins are skipped by the mod drag; a jack's `data-dir` (VOICE's inputs) drives press / menu.
+
+**cv-module.** `MOD_W` = { 240 …, lfo 416, env 320, macro 256, chaos 416 } (chaos: a GLOBAL-page column ≈ 388 measured from the grid
+rule, not yet from B's `PART_W` — the parity gate re-measures), `modW`, `modX(kind)` (= −⌈(MOD_W + 80) / 32⌉·32), `roundW`, `SX_MODS`
+(their height measured; MOD_H stays the guess), `PART_W_DEF` / `PART_H_DEF` (fallbacks until `host.size(key)` gives B's PART_W),
+`partJacks(part)`, `voiceJacks()`. Device entries `kind: 'part'` (dev may be the id string); `host.powerEl(key)` → the element for the
+bar's power slot (D passes B's `View.power`); the chip defaults to `S<n>`; parts view from the device entry's `ui` or `lay`; a jack-set
+change rebuilds the module. Inline jacks: spec `side: 'inline'` (+ fallback `y`), the anchor `[data-jack]` becomes the jack. View
+additions: `intPort(jack)` (a cable drag's `port` for internal ends), `partsOf(dev)`, `jacks()` dir from the spec. `V.model` removed
+(lane A: it read the track accessor; nothing read it). Macro jacks are inline now and the LFO / ENV / Macro / Chaos modules MOD_W wide
+with measured heights: the 2b geometry assertions in cv-module.test were updated to the contract (§2.2).
+
+**H5.** `wk.storeDensity(el, w?, h?)`: in the world max(0.5, dpr·k) (no cap of 2), outside it the dpr capped at 2 (§13.1 kept), the
+budget's cap, the 16e6 px cap given a size; remembered per canvas (`storedDensity`). `wk.setStoreCaps(map)`, `CANVAS_BUDGET` = 64 MiB.
+cv-world plans at every rest and recache (`planStores`, pure, exported): projected Σ from each store's size over its handed-out
+density (no layout read); past the budget off-screen first, then the farthest on-screen (both to the dpr, never below); a changed cap
+→ `rescaleCanvases`. `world.canvasStats()` → `{ n, bytes, minDensity, onMin, offN, capped, budget, planned, k, dpr }`. A live canvas
+that is not repainting (the OUT scope with the engine off) keeps its last store until its next frame.
+
+**Other.** cv-mods `destOk` refuses every modulator kind with `NOMOD_MOD` (kept rows too). cv-tray `o.parts` (`PART_TILES`) with
+`partsEl / partsSec / notesEl / notesSec` (index.html `#srcPartSec #srcParts #srcNoteSec #srcNotes`), `partPick`, `partDrag` (info.part),
+`setPartPlaced`. style.css: part modules, members, the power slot, inline / note / warp jacks, internal cables, stubs, forks, hidden
+ends, and H6 as one hook (`#world[data-cv-h6="contain"]`, off until S0 picks it). `#inst` / `#fxrack` stay in index.html: lane A's
+cv-shell-sim still requires them and `#boot` lives in `#inst`.
+
+**For D.** main's `modSpot` / `modTap` / the drop ghost still place every modulator at x −320 with W_MOD: a tapped LFO (416) overlaps
+the instrument by 96 px until they use `cvModule.modX(kind)` / `modW(kind)` (seen in the browser check). Accessor ratchet: cv-module 6
+lines (the fixture's tModel and V.model sites go: n 8 → 6), cv-cables 7 (unchanged), the other lane-C files 0.
+
+**Tests.** jackrules 13 (new), cv-cables 37 (+4), cv-module 57 (+5), cv-mods 16 (+1), cv-tray 30 (+2), cv-world 57 (+2), wk 100
+(+1; the in-world "capped at 2" assertion now dpr·k); also run green: lint, pwa, main, canvas-sim, canvas-1e / 2a / 2b-sim, cv-shell-sim,
+cv-fixes-sim, cv-mods-ui, cv-migrate, cv-graph, cv-panel, cv-face, cv-gl, app.
+
 ## 10. Review log (revision 2, 2026-10-19: the contract review, 25 points)
 
 All 25 points were checked against the code (and the review's "checked and confirmed" items, Chaos compile and the ENV slot round

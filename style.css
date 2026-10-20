@@ -1295,3 +1295,41 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
   color: #0b0d0f; font: 700 9px/16px var(--ui); text-align: center; pointer-events: none; box-shadow: 0 0 0 1.5px #0b0d0f; }
 .cp-mbadge.cp-live { box-shadow: 0 0 0 1.5px #fff; }
 .inst.hw .hw-c > .cp-mbadge { left: auto; top: -6px; right: -6px; width: auto; height: 16px; }
+/* milestone 3 (IMPL-3 §2.2–2.7, lane C): Serum PART modules — the group colour stripe (--mc: the Serum's), the chip S1, a part's
+   own ⏻ (its panel's toggle) in the bar's power slot, dimmed while off ([data-off], as an instrument); a Serum's members
+   outlined while it is selected; MACROS' name tiles as inline jacks (the tile is the jack: cv-module .cv-jack-in) */
+.cv-mod[data-cv-kind="part"] { background: #0f1216; }
+.cv-mod[data-cv-member] { box-shadow: 0 0 0 calc(1.5px * var(--ik, 1)) var(--mc), 0 22px 56px -26px rgba(0, 0, 0, 0.9); }
+.cv-bar > .cv-pow.cv-powslot { flex: 0 0 auto; display: grid; place-items: center; min-width: 32px; height: 32px; margin-left: -8px; }
+.cv-bar > .cv-pow.cv-powslot > * { pointer-events: auto; }
+.cv-jack-in { cursor: crosshair; touch-action: none; }
+.cv-jack-in.cv-ok { box-shadow: 0 0 0 1.5px #0c0d0f, 0 0 0 calc(3px * var(--ik, 1)) rgba(111, 227, 161, 0.85); }
+.cv-jack-in.cv-from, .cv-jack-in.cv-hot { box-shadow: 0 0 0 1.5px #0c0d0f, 0 0 0 calc(3px * var(--ik, 1)) var(--hot); }
+#world[data-cv-patching] .cv-jack-in.cv-no { opacity: 0.45; }
+.cv-jack[data-kind="note"] { background: radial-gradient(circle, #0c0d0f 0 3px, var(--mc) 3.5px 6px, #2e333b 6.5px); }
+.cv-jack[data-kind="warp"] { background: radial-gradient(circle, #e8923a 0 3px, #0c0d0f 3.5px 5px, #4a3a28 5.5px); }
+/* a Serum's internal cables (sx-edges views; cv-cables data-int): per-voice audio 3 px in the group colour under the modules,
+   note cables dashed, the read-only warp / FM / pitch sources dotted orange (a tap opens the oscillator's menu), a source
+   routed to Filter that no filter takes a short dashed stub with its tag, a fork's BALANCE badge at the source */
+.cv-cable-g[data-int] .cv-cable { stroke-width: calc(3px * var(--ik, 1)); }
+.cv-cable-g[data-int].cv-hl .cv-cable { stroke-width: calc(4px * var(--ik, 1)); }
+.cv-cable-g[data-int="note"] .cv-cable { stroke-dasharray: calc(10px * var(--ik, 1)) calc(5px * var(--ik, 1)); }
+.cv-cable-g[data-int="warp"] .cv-cable { stroke: #e8923a; stroke-width: calc(2px * var(--ik, 1)); stroke-dasharray: 0 calc(6px * var(--ik, 1)); }
+.cv-cable-g[data-stub] .cv-cable { stroke-dasharray: calc(5px * var(--ik, 1)) calc(4px * var(--ik, 1)); opacity: 0.8; }
+.cv-cable-g[data-stub] .cv-cable-lab { font-size: 11px; }
+.cv-fork { position: absolute; z-index: 10001; transform: translate(0, -50%); height: calc(18px * var(--ik, 1)); padding: 0 calc(5px * var(--ik, 1));
+  border-radius: calc(9px * var(--ik, 1)); border: calc(1px * var(--ik, 1)) solid var(--mc, #8d8b86); background: #101215; color: #d9d6cf;
+  font: 700 calc(9px * var(--ik, 1))/1 var(--ui); letter-spacing: 0.06em; -webkit-tap-highlight-color: transparent; }
+.cv-fork[hidden] { display: none; }
+.cv-fork::before { content: ''; position: absolute; left: 50%; top: 50%; width: max(100%, calc(44px * var(--ik, 1))); height: calc(44px * var(--ik, 1)); transform: translate(-50%, -50%); }
+.cv-fork:hover, .cv-fork:focus-visible { background: #1d1810; outline: none; box-shadow: 0 0 0 calc(2px * var(--ik, 1)) var(--hot); }
+#world[data-cv-patching] .cv-fork { pointer-events: none; }
+/* a modulation row into a knob no mounted view shows (§2.4): it ends at VOICE's bar, dashed, its badge tagged */
+.cv-cable-g.cv-hid .cv-cable { stroke-dasharray: calc(4px * var(--ik, 1)) calc(4px * var(--ik, 1)); }
+.cv-htag { padding: 0 calc(3px * var(--ik, 1)); border-radius: calc(3px * var(--ik, 1)); background: #1b1f26; color: #b9c0ca; font: 600 calc(8.5px * var(--ik, 1))/1.4 var(--ui); letter-spacing: 0.04em; }
+.cv-htag[hidden] { display: none; }
+/* (H6) the compositing policy S0 selects, one rule: none until it does — a variant switched on by its attribute on #world
+   (ui-bench M2 / the lead), e.g. contain: the non-hardware bodies contain their paint */
+#world[data-cv-h6="contain"] .cv-mod:not([data-cv-face]) > .cv-body { contain: content; }
+/* the Sources tray's Serum parts and note tools (cv-tray o.parts) */
+.cv-ptiles { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }

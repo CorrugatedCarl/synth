@@ -856,3 +856,62 @@ test('sourcesTray (2b): MOD_TILES lists every kind in MOD_ORDER (the wheel proje
   const serum = T.SRC_VIEWS.find(v => v.id === 'serum');
   assert.deepEqual([serum.note, serum.sections.find(s => s.id === 'notes').note], ['Drop a modulator on the canvas and cable its jack to any knob.', 'Note tools: later.']);
 });
+
+/* ---------------------------------------------------------------- milestone 3 (IMPL-3 §2.6): Serum parts and note tools */
+test('sourcesTray (milestone 3): o.parts — the Serum view\'s "Serum parts" (OSC, SUB, NOISE, FILTER, MACROS) and "Note tools" (ARP, CLIP) tiles with original glyphs in the host\'s sections (shown in the Serum view only); a tap → partPick in the tray\'s mode; a drag → partDrag with info.part and the world point; setPartPlaced greys one; without o.parts the placeholders stay', () => {
+  assert.deepEqual(T.PART_TILES.map(p => p.id + ':' + p.group), ['osc:parts', 'sub:parts', 'noise:parts', 'filter:parts', 'macros:parts', 'arp:notes', 'clip:notes']);
+  const d0 = fresh(), pe = d0.createElement('div'), ps = d0.createElement('section'), ne = d0.createElement('div'), ns = d0.createElement('section');
+  const picks = [], log = [];
+  const R = modRig({ parts: T.PART_TILES, partsEl: pe, partsSec: ps, notesEl: ne, notesSec: ns, partPick: (id, mode) => picks.push('part ' + id + ':' + mode),
+    partDrag: { begin: (id, i) => log.push('begin ' + id + (i.part ? ' part' : '')), move() {}, drop: (id, i) => { log.push('drop ' + id + ' ' + i.over + (i.part ? ' part' : '') + ' @' + i.at.x + ',' + i.at.y); return true; }, cancel: id => log.push('cancel ' + id) } });
+  assert.deepEqual([pe.children.map(b => b.getAttribute('data-part')), ne.children.map(b => b.getAttribute('data-part')), R.S.partTiles().length], [['osc', 'sub', 'noise', 'filter', 'macros'], ['arp', 'clip'], 7]);
+  assert.deepEqual([ps.hidden, ns.hidden], [false, false], 'the Serum view');
+  R.S.setView('hw');
+  assert.deepEqual([ps.hidden, ns.hidden], [true, true], 'Hardware: none');
+  R.S.setView('serum');
+  const osc = R.S.partTile('osc');
+  assert.deepEqual([osc.className, osc.getAttribute('data-group'), osc.children.map(c => c.className), osc.children[1].textContent, osc.title],
+    ['cv-tile cv-ptile', 'parts', ['cv-mglyph', 'cv-tname', 'cv-treason'], 'OSC', 'OSC — tap to add it to this track\'s Serum, or drag it onto the canvas']);
+  assert.equal(new Set(R.S.partTiles().map(b => b.children[0].innerHTML)).size, 7, 'one original glyph each');
+  assert.ok(R.S.partTiles().every(b => /<svg /.test(b.children[0].innerHTML) && !/<text|<image|href/.test(b.children[0].innerHTML)));
+  osc.click(); R.S.setMode('track'); R.S.partTile('arp').click();
+  assert.deepEqual([picks, R.picks], [['part osc:replace', 'part arp:track'], []], 'partPick, not the synth pick');
+  // a drag onto the canvas: info.part, the world point
+  const f = R.S.partTile('filter'), tp = { pointerType: 'touch' };
+  ptr(f, 'pointerdown', 100, 300, at(tp)); ptr(f, 'pointermove', 112, 302, at(tp)); ptr(f, 'pointermove', 400, 300, at(tp));
+  assert.equal(R.layer.children[0].children[1].textContent, '+ Add FILTER');
+  TS += 150;
+  ptr(f, 'pointermove', 402, 301, at(tp)); ptr(f, 'pointerup', 402, 301, at(tp));
+  assert.deepEqual(log, ['begin filter part', 'drop filter canvas part @804,201']);
+  // setPartPlaced: greyed with the host's reason, no pick
+  R.S.setPartPlaced('osc', 'This Serum already has 3 oscillators');
+  osc.click();
+  assert.deepEqual([osc.classList.contains('cv-placed'), osc.getAttribute('aria-disabled'), osc.children[2].textContent, R.S.partPlaced('osc'), picks.length], [true, 'true', 'This Serum already has 3 oscillators', 'This Serum already has 3 oscillators', 2]);
+  R.S.setPartPlaced('osc', null);
+  assert.deepEqual([osc.classList.contains('cv-placed'), R.S.partPlaced('osc')], [false, null]);
+  R.S.destroy();
+  assert.equal(pe.children.length + ne.children.length, 0, 'destroy takes the tiles');
+  // in o.secEl when the host gives no elements (in place of the placeholders); without o.parts: the placeholders
+  const d = fresh(), list = d.createElement('div'), sec = d.createElement('div');
+  const S2 = T.sourcesTray(list, { models: MODELS.slice(0, 1), pick() {}, drag: {}, secEl: sec, parts: true, view: 'serum' });
+  assert.deepEqual(sec.children.map(s => s.getAttribute('data-sec') + ':' + s.className + ':' + s.children[0].textContent + ':' + s.children[1].children.length), ['parts:cv-tsec cv-psec:Serum parts:5', 'notes:cv-tsec cv-psec:Note tools:2']);
+  S2.setView('flow');
+  assert.deepEqual(sec.children.map(s => s.hidden), [true, true]);
+  S2.destroy();
+  const sec3 = d.createElement('div'), S3 = T.sourcesTray(d.createElement('div'), { models: MODELS.slice(0, 1), pick() {}, drag: {}, secEl: sec3, view: 'serum' });
+  assert.deepEqual(sec3.children.map(s => s.getAttribute('data-sec') + ':' + s.className), ['parts:cv-tsec cv-tsoon', 'notes:cv-tsec cv-tsoon'], 'the placeholders');
+  assert.equal(S3.partTiles().length, 0);
+  S3.destroy();
+});
+
+test('index.html / style.css (milestone 3): the Serum parts and note tools sections (hidden until the tray fills them) after the Modulators; the CSS of the part modules, the internal cables, stubs, forks, hidden ends, inline jacks, the H6 hook', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(html, /<section id="srcModSec"[\s\S]*?<\/section>\s*<!--[^>]*-->\s*<section id="srcPartSec" class="cv-tsec cv-psec" aria-label="Serum parts" hidden>\s*<h3 class="cv-tgrp">Serum parts<\/h3>\s*<div id="srcParts" class="cv-tiles cv-ptiles" data-tray="parts"><\/div>\s*<\/section>\s*<section id="srcNoteSec" class="cv-tsec cv-psec" aria-label="Note tools" hidden>\s*<h3 class="cv-tgrp">Note tools<\/h3>\s*<div id="srcNotes" class="cv-tiles cv-ptiles" data-tray="notes"><\/div>/);
+  for (const id of ['srcPartSec', 'srcParts', 'srcNoteSec', 'srcNotes']) assert.equal((html.match(new RegExp('\\sid="' + id + '"', 'g')) || []).length, 1, id);
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  for (const sel of ['.cv-mod[data-cv-kind="part"]', '.cv-mod[data-cv-member]', '.cv-bar > .cv-pow.cv-powslot', '.cv-jack-in', '.cv-jack[data-kind="note"]', '.cv-jack[data-kind="warp"]',
+    '.cv-cable-g[data-int] .cv-cable', '.cv-cable-g[data-int="note"] .cv-cable', '.cv-cable-g[data-int="warp"] .cv-cable', '.cv-cable-g[data-stub] .cv-cable', '.cv-fork', '.cv-fork::before',
+    '.cv-cable-g.cv-hid .cv-cable', '.cv-htag', '#world[data-cv-h6="contain"] .cv-mod:not([data-cv-face]) > .cv-body', '.cv-ptiles']) assert.ok(css.includes(sel + ' '), sel);
+  assert.match(css, /\.cv-cable-g\[data-int\] \.cv-cable \{ stroke-width: calc\(3px \* var\(--ik, 1\)\)/, 'per-voice audio 3 px on screen (SPEC §2.9)');
+  assert.match(css, /\.cv-fork::before \{[^}]*calc\(44px \* var\(--ik, 1\)\)/, 'the badge\'s 44 px hit area');
+});
