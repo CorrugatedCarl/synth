@@ -1001,6 +1001,27 @@ test('3 song.normLay keeps Serum part keys (iN/oscA, iN/filter2), ui \'parts\' a
   assert.deepEqual(u.lay, {});
 });
 
+test('3 (review 1): song.normLay keeps a part place\'s automatic mark (auto: 1, F2); History never skips a step carrying meta as a no-op — its ↶ / ↷ takes it alone and says noop (F3)', () => {
+  const n = S.normLay({ 'i1/oscB': { x: 0, y: 0, auto: 1 }, 'i1/lfo2': { x: 0, y: 0, auto: true }, 'i1/oscA': { x: 0, y: 0, auto: 0 } });
+  assert.deepEqual(n, { 'i1/oscB': { x: 0, y: 0, auto: 1 }, 'i1/lfo2': { x: 0, y: 0, auto: 1 }, 'i1/oscA': { x: 0, y: 0 } });
+  // a meta step that changed something: undone as before (noop false)
+  const h = new S.History(10), p = { uid: 'u', tracks: [{ id: 't1', v: 0 }] };
+  h.record(p, 'Show parts'); p.tracks[0].v = 1;
+  h.record(p, 'OSC B → FILTER 2'); h.u[h.u.length - 1].meta = { dev: 'i1', f: [] };
+  p.tracks[0].v = 2;
+  assert.deepEqual([h.undo(p).tracks[0].v, h.noop, h.undoLabel, h.redoLabel], [1, false, 'Show parts', 'OSC B → FILTER 2']);
+  // the same step a no-op (what it changed was put back outside History): taken alone — not the Show parts before it
+  const h2 = new S.History(10), r = { uid: 'u', tracks: [{ id: 't1', v: 0 }] };
+  h2.record(r, 'Show parts'); r.tracks[0].v = 1;
+  h2.record(r, 'OSC B → FILTER 2'); h2.u[h2.u.length - 1].meta = { dev: 'i1', f: [] };
+  assert.deepEqual([h2.canUndoFrom(r), h2.undo(r).tracks[0].v, h2.noop, h2.undoLabel, h2.redoLabel], [true, 1, true, 'Show parts', 'OSC B → FILTER 2']);
+  assert.deepEqual([h2.canRedoFrom(r), h2.redo(r).tracks[0].v, h2.noop, h2.undoLabel], [true, 1, true, 'OSC B → FILTER 2']);
+  // without meta: skipped, as before
+  const h3 = new S.History(10), w = { uid: 'u', tracks: [{ id: 't1', v: 0 }] };
+  h3.record(w, 'Show parts'); w.tracks[0].v = 1; h3.record(w, 'Plain');
+  assert.deepEqual([h3.undo(w).tracks[0].v, h3.redoLabel], [0, 'Show parts']);
+});
+
 test('3: a schema-7 project opens read-only in a schema-6 build (the store\'s gate) and loads at 7 here', async () => {
   const idb = fakeIDB(), seed = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null });
   seed.saveProject({ name: 'parts', schema: 7, uid: 'p_parts00001', tracks: [{ id: 'trk_1', lay: { i1: { x: 0, y: 0, ui: 'parts' }, 'i1/oscA': { x: 0, y: 0 } } }] });

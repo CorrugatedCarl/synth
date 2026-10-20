@@ -1813,9 +1813,16 @@ export class SerumHost {
     if (!el || !el.addEventListener) return el;
     if (!this.sats) this.sats = new Set();
     this.sats.add(el);
-    if (!quiet) this.offs.push(on(el, 'contextmenu', e => this.onCtx(e)), on(el, 'pointerdown', e => this.onCapDown(e), true), on(el, 'click', e => this.onCapClick(e), true));
+    const V = this.viewNow();
+    if (V) V.sats.push(el);
+    if (!quiet) this.offNow(on(el, 'contextmenu', e => this.onCtx(e)), on(el, 'pointerdown', e => this.onCapDown(e), true), on(el, 'click', e => this.onCapClick(e), true));
     return el;
   }
+  // the view being built (a lazy build under its page counts) — its widgets' disposers (drag sources, an adopted
+  // satellite's listeners) and its satellites go with it in unmount, never onto the host's own offs: one host serves both
+  // view sets for the session, so they would keep every discarded view set alive until it dies (review 1 F1)
+  viewNow() { const V = this.bp && this.bp.view; return V && !V.dead && V.offs ? V : null; }
+  offNow(...f) { const V = this.viewNow(); (V ? V.offs : this.offs).push(...f); }
   rootOf(n) { for (const r of this.roots) if (n && r.contains(n)) return r; return null; }
   viewOf(n) {
     let best = null;
@@ -1847,6 +1854,7 @@ export class SerumHost {
     const page = A.page || mkPage(el, opts), shown = typeof A.shown === 'function' ? A.shown : () => true;
     if (A.page) { page.el = page.el || el; if (!page.opts) page.opts = opts; }
     const V = { id: this.uid + '-v' + (++this.vn), kind: typeof kind === 'string' ? kind : A.kind || 'view', root: el, page, args: A, panel: null, power: null, dead: false,
+      offs: [], sats: [],   // (its own disposers and adopted satellites: run / released in unmount)
       shown: () => !V.dead && !this.dead && !!shown(),
       // the module menu for the canvas bar's ⋯ (a bare panel's name is gone): the panel's own items, else nothing
       menuItems: () => (V.panel && typeof V.panel.menuItems === 'function' ? arr(V.panel.menuItems()) : []),
@@ -1854,10 +1862,12 @@ export class SerumHost {
       // this module's label (data-modlabel, a drop target of the other parts' label drags of this host only)
       labelDrag: t => {
         const m = V.panel && V.panel.module;
-        if (!m || !t || !t.setAttribute) return;
+        if (!m || !t || !t.setAttribute || V.dead) return;
         t.setAttribute('data-modlabel', m);
-        this.adopt(t, true);
-        if (KIND_MEMBERS[modKind(m)] || audioSrcOf(m)) this.moduleDrag(t, m);
+        this.under(page, () => {   // (registered on this view: released with it)
+          this.adopt(t, true);
+          if (KIND_MEMBERS[modKind(m)] || audioSrcOf(m)) this.moduleDrag(t, m);
+        });
       },
       destroy: () => this.unmount(V) };
     page.view = V;
@@ -1885,6 +1895,9 @@ export class SerumHost {
     if (V.panel && typeof V.panel.destroy === 'function') { try { V.panel.destroy(); } catch (err) { /* gone */ } }
     if (this.ro) for (const cv of P.canvases) { try { this.ro.unobserve(cv.el); } catch (err) { /* gone */ } }
     P.binds.length = 0; P.canvases.length = 0; P.editors.length = 0; P.lives.length = 0;
+    for (const f of V.offs.splice(0)) { try { f(); } catch (err) { /* gone */ } }
+    // (a satellite another live view adopted too — a bar title re-used — stays the host's)
+    if (this.sats) for (const e of V.sats.splice(0)) if (!this.views.some(W => W.sats && W.sats.includes(e))) this.sats.delete(e);
     if (this.sats && V.power) { this.sats.delete(V.power); V.power.remove(); }
     this.modEls = this.modEls.filter(m => !V.root.contains(m.el) && m.el !== V.power);
     if (V.args.inner) V.root.textContent = ''; else this.dropRoot(V.root);
@@ -3265,7 +3278,7 @@ export class SerumHost {
         },
         cancel: () => { const D = mine; mine = null; if (D && this.drag === D) this.dragDone(null); },
       });
-      this.offs.push(() => ds.destroy());
+      this.offNow(() => ds.destroy());
       return;
     }
     let g = null;
@@ -3808,7 +3821,7 @@ export class SerumHost {
       },
       cancel: clear,
     });
-    this.offs.push(() => ds.destroy());
+    this.offNow(() => ds.destroy());
   }
 
   /* ---------------------------------------------------------------- OSC-side actions (sx-ui-osc, §11.14) */
@@ -4067,6 +4080,8 @@ export class SerumHost {
       V.dead = true;
       for (const ed of V.page.editors) if (ed && ed.destroy) { try { ed.destroy(); } catch (err) { /* gone */ } }
       if (V.panel && typeof V.panel.destroy === 'function') { try { V.panel.destroy(); } catch (err) { /* gone */ } }
+      for (const f of V.offs.splice(0)) { try { f(); } catch (err) { /* gone */ } }
+      V.sats.length = 0;
       if (V.power) V.power.remove();
     }
     for (const ed of this.headPage.editors) if (ed && ed.destroy) { try { ed.destroy(); } catch (err) { /* gone */ } }

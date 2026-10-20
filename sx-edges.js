@@ -25,7 +25,7 @@
 //                            matrix row (src or aux; a point-modulation bus's rows are matrix rows), or by `used` — link rows
 //                            '<dev>/lfo3.out' or slot names; MACROS when a macro row exists; ARP / CLIP when on; any part
 //                            with a lay entry '<dev>/<part>' stays). Shaped slots nothing reads get none
-//   slotsUsed(s, used)       Set of the env / lfo slots and 'macros' something reads
+//   slotsUsed(s, used)       Set of the env / lfo slots and 'macros' something reads (matrix rows with a destination)
 //   partOn(s, part), powerOf(part), partLabel(part), splitKey(key) → { dev, part } | null, routeLabel(s, fx)
 import { WARPS2, lawValue, destBase, filterFeeds } from './serum-core.js?v=9';
 
@@ -255,12 +255,14 @@ const KIND_OF = { osc: OSC, sub: ['sub'], noise: ['noise'], filter: FILTERS, env
 /** A part's kind: 'oscB' → 'osc', 'filter2' → 'filter', 'lfo7' → 'lfo', 'env3' → 'env'; null for anything else. */
 export function kindOf(part) { for (const k of Object.keys(KIND_OF)) if (KIND_OF[k].includes(part)) return k; return null; }
 const SLOT = /(?:^|\/)(lfo(?:10|[1-9])|env[2-4])(?:y)?(?:\.out)?$/;
-/** The env / lfo slots (and 'macros') something reads: s.matrix rows' src / aux (bypassed too, as serum-core lfoUsed; 'lfo3y'
- * is LFO 3), plus `used` — slot names or link-row sources ('i1/lfo3.out'). */
+/** The env / lfo slots (and 'macros') something reads: s.matrix rows' src / aux (bypassed too; 'lfo3y' is LFO 3) — rows with a
+ * destination only: one without (Serum's matrix keeps such a row) modulates nothing, so it neither gives a module (I2) nor
+ * keeps a slot from being free or removable (review 1 F4; main's Remove counts by the same rule) —, plus `used` — slot names
+ * or link-row sources ('i1/lfo3.out'). */
 export function slotsUsed(s, used) {
   const U = new Set();
   for (const r of isObj(s) ? arr(s.matrix) : []) {
-    if (!isObj(r)) continue;
+    if (!isObj(r) || !r.dst) continue;
     for (const x of [r.src, r.aux]) {
       if (typeof x !== 'string' || !x) continue;
       if (/^macro[1-8]$/.test(x)) U.add('macros');

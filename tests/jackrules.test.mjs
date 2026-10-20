@@ -276,6 +276,13 @@ test('partKeys: I1 (a power field on), I2 (a slot read by a row — src or aux, 
   assert.deepEqual([...E.slotsUsed(s)].sort(), ['env2', 'lfo3', 'lfo4', 'macros']);
   // order and keys are the PARTS list
   assert.deepEqual(E.PARTS.filter(p => K.includes(p)), K);
+  // (review 1 F4) a row without a destination (Serum's matrix keeps one) reads nothing: no module, a free slot — the rule
+  // main's Remove uses too
+  s.matrix[5] = Object.assign(s.matrix[5], { src: 'lfo5', aux: 'env3', dst: '', amt: 0.5 });
+  s.matrix[6] = Object.assign(s.matrix[6], { src: 'macro4', dst: '', amt: 0.5 });
+  assert.deepEqual([...E.slotsUsed(s)].sort(), ['env2', 'lfo3', 'lfo4', 'macros']);
+  assert.deepEqual(E.partKeys(s, lay, 'i1', ['i1/lfo7.out', 'env4']), K);
+  assert.deepEqual([E.firstFree(s, 'lfo', ['lfo1', 'lfo2']), E.firstFree(s, 'env')], ['lfo5', 'env3']);
 });
 
 test('firstFree: the lowest free slot of a kind (power off for sources / filters, not in use for ENV / LFO), skip respected, null when full', () => {

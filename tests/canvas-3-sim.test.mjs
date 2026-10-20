@@ -363,3 +363,97 @@ test('D-R5: ⚙ "New Serums open as" (a device pref, the shipped default the who
   api.selectTrack(t.id); cv.renderViews(); await settle(); await settle();
   assert.deepEqual([rec().mode, [...rec().views.keys()].sort().join(',')], ['parts', 'i1,i1/oscA']);
 });
+
+/* ---- review 1 (fixer A): F1 – F5 */
+let pid = 900;
+const pe = (el, type, x, y) => el.dispatchEvent({ type, target: el, currentTarget: el, button: 0, buttons: type === 'pointerup' ? 0 : 1, pointerId: pid,
+  pointerType: 'mouse', isPrimary: true, clientX: x, clientY: y, timeStamp: performance.now(), shiftKey: false, altKey: false, ctrlKey: false, metaKey: false,
+  preventDefault() {}, stopPropagation() {}, stopImmediatePropagation() {} });
+const dragBar = (m, dx, dy) => { pid++; pe(m.bar, 'pointerdown', 500, 70); pe(m.bar, 'pointermove', 500 + dx / 2, 70 + dy / 2); pe(m.bar, 'pointermove', 500 + dx, 70 + dy); pe(m.bar, 'pointerup', 500 + dx, 70 + dy); };
+const usedOf = (t = T(), dev = 'i1') => (t.mods || []).map(r => r && r.src).filter(x => typeof x === 'string' && x.startsWith(dev + '/'));
+const wantOf = (t = T()) => SE.partKeys(t.dev.i1.vals.s, null, 'i1', usedOf(t));
+const keysOf = L => [...new Set(L)].map(p => 'i1/' + p).sort().join(',');
+
+test('review 1 F1: Show parts / Bundle cycles release each discarded view set — the one host\'s disposers (offs) and adopted satellites (sats) stay level', async () => {
+  const H = host();
+  H.edit(s => { Object.assign(s.p, { 'b.on': 1, 'f.on': 1 }); }, { label: 'on' }); await settle();
+  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
+  PT.show('i1', false); await settle(); await settle();
+  const cyc = async () => { PT.show('i1', true); await settle(); await settle(); PT.show('i1', false); await settle(); await settle(); };
+  await cyc();
+  const o0 = H.offs.length, s0 = H.sats ? H.sats.size : 0;
+  for (let i = 0; i < 4; i++) await cyc();
+  assert.deepEqual([host() === H, rec().mode, H.offs.length, H.sats ? H.sats.size : 0], [true, 'bundled', o0, s0]);
+});
+
+test('review 1 F2 (the lead\'s rule): browsing every factory preset in parts view leaves the last preset\'s parts only — places the rule wrote are automatic and a load prunes those now neither on nor read; a part the user moved stays; no History step; the panel undo of the last load prunes likewise', async () => {
+  PT.show('i1', true); await settle(); await settle();
+  assert.equal(partKeys().includes('i1/oscB'), true);
+  assert.deepEqual([T().lay['i1/oscB'].auto, T().lay['i1/filter'].auto], [1, 1], 'placed by the rule (I1): automatic');
+  const n0 = hsteps();
+  dragBar(V().modules.get('i1/oscB'), 0, 64); await settle();
+  assert.deepEqual([hsteps(), /^Move /.test(cv.hist.undoLabel), T().lay['i1/oscB'].auto], [n0 + 1, true, undefined], 'a move: the user\'s place');
+  const names = C.FACTORY_PRESETS.map(p => p.name), n1 = hsteps();
+  for (const nm of names) { assert.equal(api.sxLoad(cv.view1e('i1'), 'f:' + nm), true); await settle(); }
+  await settle(); await settle();
+  const last = wantOf();
+  assert.deepEqual([names[names.length - 1], last.length, last.includes('oscB')], ['Laser Drop', 2, false]);
+  assert.deepEqual([partKeys(), hsteps()], [keysOf(last.concat('oscB')), n1], 'the last preset\'s parts, the moved OSC B (dimmed), nothing else; no step');
+  assert.equal(V().modules.get('i1/oscB').el.hasAttribute('data-off'), true);
+  host().undoRedo(false); await settle(); await settle();   // (the panel undo of the last load: the preset before it)
+  assert.deepEqual([partKeys(), hsteps()], [keysOf(wantOf().concat('oscB')), n1]);
+});
+
+test('review 1 F3: a canvas cable undone inside the Serum (its panel undo), then the top ↶ named for the cable: it consumes the cable step alone (said: already undone) — never the Show parts before it —; ↷ writes the cable again', async () => {
+  host().edit(s => { s.p['b.on'] = 1; s.p['f2.on'] = 1; s.osc[1].route = 1; }, { label: 'on' }); await settle();
+  PT.show('i1', false); await settle(); await settle();
+  PT.show('i1', true); await settle(); await settle();
+  const F = () => [T().dev.i1.vals.s.osc[1].route, base('b.fbal'), base('f2.routeB')];
+  const f0 = F(), n0 = hsteps();
+  assert.equal(cv.hist.undoLabel, 'Show parts');
+  assert.equal(PT.connect('i1/oscB.out', 'i1/filter2.in'), true); await settle(); await settle();
+  const f1 = F();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, f1[0]], [n0 + 1, 'OSC B → FILTER 2', 0]);
+  host().undoRedo(false); await settle(); await settle();   // (Cmd-Z with the focus in OSC B's part)
+  assert.deepEqual([F(), cv.hist.undoLabel], [f0, 'OSC B → FILTER 2'], 'the panel undid the cable; History\'s top still names it');
+  cv.undo(); await settle(); await settle();               // (the top ↶)
+  assert.deepEqual([uiOf(), rec().mode, F(), cv.hist.undoLabel, cv.hist.redoLabel, hsteps()], ['parts', 'parts', f0, 'Show parts', 'OSC B → FILTER 2', n0]);
+  assert.equal(/OSC B → FILTER 2.*already undone/.test(note()), true, note());
+  cv.redo(); await settle(); await settle();
+  assert.deepEqual([F(), cv.hist.undoLabel, uiOf()], [f1, 'OSC B → FILTER 2', 'parts'], '↷: the cable again');
+  cv.undo(); await settle(); await settle();
+  assert.deepEqual([F(), cv.hist.undoLabel, uiOf()], [f0, 'Show parts', 'parts'], 'a plain ↶ of it: written back');
+});
+
+test('review 1 F4: a matrix row without a destination reads nothing — its LFO gets no module (I2), and Add / Remove agree with what is shown (one step each, the module gone after Remove)', async () => {
+  const s = () => T().dev.i1.vals.s, U = SE.slotsUsed(s(), usedOf());
+  const L = Array.from({ length: 10 }, (_, l) => 'lfo' + (l + 1)).find(l => !U.has(l) && !T().lay['i1/' + l]);
+  const k = s().matrix.findIndex(r => !r.src && !r.dst && !r.aux);
+  assert.equal(!!L && k >= 0, true);
+  host().edit(st => { st.matrix[k] = C.normRow({ src: L, dst: '', amt: 0.5 }); }, { label: 'row' }); await settle(); await settle();
+  assert.deepEqual([s().matrix[k].src, partKeys().includes('i1/' + L), SE.slotsUsed(s()).has(L)], [L, false, false], 'a row with no destination: no module');
+  const n0 = hsteps();
+  assert.equal(PT.add('i1', 'lfo', null, L), L); await settle(); await settle();
+  assert.deepEqual([partKeys().includes('i1/' + L), hsteps()], [true, n0 + 1], 'Add ▸ ' + L);
+  assert.equal(PT.remove('i1/' + L), true); await settle(); await settle();
+  assert.deepEqual([partKeys().includes('i1/' + L), hsteps(), /^Remove LFO/.test(cv.hist.undoLabel)], [false, n0 + 2, true], 'Remove: gone, one step (not back at once)');
+  host().edit(st => { st.matrix[k] = C.normRow(null); }, { label: 'row' }); await settle();
+});
+
+test('review 1 F5: "Replace with Serum" acts on the track it was offered for — tapped after another track was selected, it replaces nothing', async () => {
+  const j = api.addTrack(MOD('juno60')); sim.raf(); cv.renderViews(); await settle();
+  const p = api.addTrack(MOD('prophet5')); sim.raf(); cv.renderViews(); await settle();
+  api.selectTrack(j.id); cv.renderViews(); await settle();
+  const n0 = hsteps(), model = id => I(P().tracks.find(t => t.id === id)).model;
+  PT.pick('osc');
+  assert.equal(note(), 'Serum parts belong to a Serum · Replace with Serum');
+  api.selectTrack(p.id); cv.renderViews(); await settle();
+  sim.$('#notice').click(); await settle(); await settle();
+  assert.deepEqual([model(j.id), model(p.id), hsteps()], ['juno60', 'prophet5', n0], 'nothing replaced');
+  // offered and tapped on the same track: replaced (one step)
+  PT.pick('osc');
+  sim.$('#notice').click(); await settle(); await settle();
+  assert.deepEqual([model(p.id), model(j.id), hsteps(), cv.hist.undoLabel], ['serum', 'juno60', n0 + 1, 'Replace Prophet-5 with Serum']);
+  cv.undo(); await settle();
+  assert.equal(model(p.id), 'prophet5');
+});
