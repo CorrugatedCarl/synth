@@ -26,6 +26,7 @@ const core = await import('../serum-core.js?v=9');
 const song = await import('../song.js?v=9');
 const gx = await import('../graph.js?v=9');
 const D = await import('./serum-ui-stubs/dom.js');
+const WK = await import('../wk.js?v=9');   // (the same instance sx-host imports)
 const assert = D.safeAssert(assertBase);
 const { fire, ptr, flush } = D;
 
@@ -443,11 +444,16 @@ test('CLIP as a part: its MACROS pane\'s knobs are twins (data-twin: no cable en
   X.destroy();
 });
 
-test('H5 fallback: without wk.storeDensity the pre-H5 store density (dpr ≤ 2 over the local scale, 0.5…2); CANVAS_MAX_PX 16e6', () => {
+test('H5: the store density is wk.storeDensity\'s (lane C, merged on wt-m3), whatever the local scale; CANVAS_MAX_PX 16e6', () => {
+  // (lane B's pre-H5 fallback — dpr ≤ 2 over the local scale, 0.5…2 — stays in sx-host for a non-positive answer; with C merged
+  //  wk.storeDensity always exists, so the delegation is what ships)
   const doc = D.fresh(), el = doc.createElement('canvas');
   doc.defaultView.devicePixelRatio = 2;
   assert.equal(H.CANVAS_MAX_PX, 16e6);
-  assert.deepEqual([H.storeDensity(doc, el, 1), H.storeDensity(doc, el, 0.5), H.storeDensity(doc, el, 4), H.storeDensity(doc, el, 2)], [2, 2, 0.5, 1]);
+  assert.equal(typeof WK.storeDensity, 'function');
+  const q = +WK.storeDensity(el);
+  assert.ok(q > 0 && isFinite(q));
+  assert.deepEqual([H.storeDensity(doc, el, 1), H.storeDensity(doc, el, 0.5), H.storeDensity(doc, el, 4), H.storeDensity(doc, el, 2)], [q, q, q, q]);
 });
 
 test('part CSS: a part root is container sxp without a frame, keeps its PART_W width in a flex body (flex: none); an empty bare title row hides; the O column\'s 30 px knobs restated for parts', () => {
