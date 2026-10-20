@@ -119,7 +119,13 @@ function loadVals(m) {
   if (m.custom) { const d = sxDefault(); return d ? { s: core.normalizeSerum(clone(d.v.s)) } : defaults(m); }
   return Object.assign(defaults(m), store.get('synth.v.' + m.id, {}));
 }
-const isSx = t => !!t && t.model === 'serum';
+// (milestone 3, R2) a track's instruments are read as devices — instOf(t, dev) (cv-model: the primary by default), a device
+// view (instView) — never through a track's v1 fields: isSerum(x) for a device or a view, isSerumDev(t, dev), the track's
+// Serum ids (serumIds, the primary first)
+const instOf = (t, dev) => CMOD.instOf(t, dev);
+const isSerum = d => !!d && d.model === 'serum';
+const isSerumDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && d.model === 'serum'; };
+const serumIds = t => (t && t.dev ? CMOD.instIds(t).filter(k => isSerumDev(t, k)) : []);
 // Every track owns an FX rack state (any model; kept when the model changes, §2.5). FX state v2 everywhere (RULINGS2 F1):
 // a track holds a v2 state (three racks of instances, §2.5); a v1 state reaching a track — an old project or autosave, a
 // preset, a chain, the default preset — is migrated where it enters (fx-core normalizeFx = migrateFx1 for v1 input: S1-variant
@@ -130,7 +136,7 @@ const fxOk = fx => !!fx && typeof fx === 'object' && (isV2Fx(fx) || (!!fx.p && t
 function fxOf(t) {
   if (isV2Fx(t.fx)) return t.fx;
   if (t.dev && !CMOD.fxDevOf(t)) return core.defaultFx2(); // (stage 1e: a classic primary cabled straight to OUT has no rack — an empty one, detached: nothing inserted)
-  t.fx =fxOk(t.fx) ? fxLoad(t.fx, isSx(t) && t.vals ? t.vals.s : undefined) : core.defaultFx2();
+  t.fx =fxOk(t.fx) ? fxLoad(t.fx, isSerum(t) && t.vals ? t.vals.s : undefined) : core.defaultFx2();
   return t.fx;
 }
 // the rack of a new track: a Serum track's from the default preset when it has one (migrated with its Serum state)
@@ -209,8 +215,8 @@ function loadProject(json, lo = {}) {
     // normalizeFx — a v1 rack (any model) is migrated, migrateFx1(normalizeFxV1(fx), refs), with the track's Serum state
     // as refs (the instances its rows / locks / MIDI map address are kept); the migrated rack renders bit-identically
     // (golden shard 4) and the project is saved with v2 racks (§15.1 item 6)
-    if (isSx(t)) t.vals = { s: core.normalizeSerum(t.vals && t.vals.s) };
-    if (CMOD.fxDevOf(t)) t.fx = t.fx && typeof t.fx === 'object' ? fxLoad(t.fx, isSx(t) ? t.vals.s : undefined) : core.defaultFx2(); // (no FX device: none)
+    if (isSerum(t)) t.vals = { s: core.normalizeSerum(t.vals && t.vals.s) };
+    if (CMOD.fxDevOf(t)) t.fx = t.fx && typeof t.fx === 'object' ? fxLoad(t.fx, isSerum(t) ? t.vals.s : undefined) : core.defaultFx2(); // (no FX device: none)
     normDevs(t); // (stage 1e: every other instrument and panel the same way)
   }
   if (up.readOnly) { if (lo.file) p.newerSchema = up.from; else goReadOnly(up.from); }
@@ -281,6 +287,8 @@ function instView(t, dev) {
   return v;
 }
 const curView = (t = trk()) => instView(t, curOf(t));
+// a session map's key — the track id (its primary: R1–R3) or 'trackId/dev' — → that instrument's view | null
+const viewOfKey = k => { const i = typeof k === 'string' ? k.indexOf('/') : -1, t = project.tracks.find(x => x.id === (i < 0 ? k : k.slice(0, i))); return t ? instView(t, i < 0 ? null : k.slice(i + 1)) : null; };
 let model, vals;
 function bind() {
   const t = trk(), v = curView(t); project.selTrack = t.id; model = modelById(v.model); v.model = model.id;
@@ -389,10 +397,10 @@ function modVals(tr, id, vals, m) {
 }
 function buildPatch(tr, sr, offline = false) {
   fxOf(tr); // (a v1 rack reaching the track is migrated in place first, as before)
-  const c = CG.compileTrack(tr), V = c.canonical ? c.v1 : CM.primV1(tr);
-  const m = modelById(V.model), s = m.custom && V.vals.s ? V.vals.s : null;
-  const mv = modVals(tr, c.canonical ? c.inst : CMOD.primId(tr), V.vals, m);
-  const patch = patchFor(m, mv, V.fx, {
+  const c = CG.compileTrack(tr), v1 = c.canonical ? c.v1 : CM.primV1(tr); // (the compile's plain v1 view of the primary)
+  const m = modelById(v1.model), s = m.custom && v1.vals.s ? v1.vals.s : null;
+  const mv = modVals(tr, c.canonical ? c.inst : CMOD.primId(tr), v1.vals, m);
+  const patch = patchFor(m, mv, v1.fx, {
     sr: sr || (ctx ? ctx.sampleRate : 48000), bpm: project.bpm, drift: settings.drift / 10, hiss: 1, ext: mv.ext === true, // (2b: ext rows injected)
     // offline: no quality caps (the CP defaults; the touch-device stream / grain pools differ by ≈ 1 MB and a render has no
     // deadline); live: the device defaults and the safeguard's step
@@ -402,7 +410,7 @@ function buildPatch(tr, sr, offline = false) {
     patch.osCap = offline ? 0 : sxCap;
     if (!offline) capQ4(patch);
   }
-  if (!offline) voiceSeen(tr, patch);
+  if (!offline) voiceSeen(tr, CMOD.primId(tr), patch);
   return patch;
 }
 // Stage 1e (IMPL-1e §3.3): one instrument device's patch on a graphed node — cv-graph instPatch (a Serum with its own FX;
@@ -417,7 +425,7 @@ function buildInstPatch(tr, id, sr, offline = false) {
     patch.osCap = offline ? 0 : sxCap;
     if (!offline) capQ4(patch);
   }
-  if (!offline && id === CMOD.primId(tr)) voiceSeen(tr, patch);
+  if (!offline && id === CMOD.primId(tr)) voiceSeen(tr, id, patch);
   return patch;
 }
 const buildChain = (tr, id, sr, offline = false) => CG.chainPatch(fxOfDev(tr, id), liveOpts(tr, sr, offline)); // (2b: unchanged — a cabled chain takes its vector from ModCore at run time)
@@ -467,10 +475,11 @@ function voiceInfo(patch, s = null) {
   const label = (mode === 'mono' ? 'Mono' : mode === 'unison' ? 'Unison' : div ? 'Poly' : 'Poly ' + n) + (cap ? ' (CPU cap)' : '') + (seq ? ' · ' + seq : '');
   return { mode, n, prio: patch.prio || 'last', cap, seq, label };
 }
-// a track's voice mode without building its patch (no FX rack, no Serum compile): the classic model's map (a few µs), the
-// Serum state's voicing as compileSerum reads it; capped as buildPatch caps a live patch
-function trackVoice(tr) {
-  const m = modelById(tr.model), v = tr.vals || {};
+// an instrument's voice mode without building its patch (no FX rack, no Serum compile): the classic model's map (a few µs),
+// the Serum state's voicing as compileSerum reads it; capped as buildPatch caps a live patch. d: a device ({ model, vals };
+// a track's: instOf(t))
+function trackVoice(d) {
+  const m = modelById(d.model), v = d.vals || {};
   if (m.custom) {
     const s = v.s && typeof v.s === 'object' ? v.s : null, vo = (s && s.voicing) || {}, mono = +vo.mono >= 0.5;
     const n = Number.isFinite(+vo.poly) ? clamp(Math.round(+vo.poly), 1, 32) : 8;
@@ -488,14 +497,14 @@ function modelVoice(m) {
 // what the instrument menu entry of each track's model and the track tab show (track id → label, option); a patch that
 // changes a mode (an assign-mode knob, Serum's voicing, the CPU cap or its lifting) updates them (buildPatch)
 const voiceShown = new Map(), voiceOpt = new Map();
-function voiceSeen(tr, patch) {
-  const l = voiceInfo(patch, isSx(tr) ? tr.vals.s : null).label;
+function voiceSeen(tr, dev, patch) { // (R2: instrument dev's patch; its label keyed by the track until R4)
+  const d = instOf(tr, dev), l = voiceInfo(patch, isSerum(d) ? d.vals.s : null).label;
   if (!voiceShown.has(tr.id) || voiceShown.get(tr.id) === l) return;
   voiceShown.set(tr.id, l);
-  const o = voiceOpt.get(tr.id), v = o && o.lastChild, b = o && o.parentNode;
-  if (o && o.value === tr.model) { // the row chip's voice span (its model name gives way to it, never the other way)
-    if (v && v.className === 'hiv') v.textContent = l; else o.textContent = modelById(tr.model).name + ' · ' + l;
-    if (b && b.className === 'hinst') b.title = instTitle(modelById(tr.model).name, l);
+  const o = voiceOpt.get(tr.id), sp = o && o.lastChild, b = o && o.parentNode;
+  if (o && o.value === d.model) { // the row chip's voice span (its model name gives way to it, never the other way)
+    if (sp && sp.className === 'hiv') sp.textContent = l; else o.textContent = modelById(d.model).name + ' · ' + l;
+    if (b && b.className === 'hinst') b.title = instTitle(modelById(d.model).name, l);
   }
   if (tr.id === project.selTrack) tabTrackUI();
 }
@@ -504,7 +513,7 @@ const instN = t => (t && t.dev ? CMOD.instIds(t).length : 1);
 const instsTxt = t => instN(t) + ' instruments';
 function tabTrackUI() {
   const t = trk();
-  if (!voiceShown.has(t.id)) voiceShown.set(t.id, trackVoice(t).label);
+  if (!voiceShown.has(t.id)) voiceShown.set(t.id, trackVoice(instOf(t)).label);
   $('#tabTrack').textContent = `Track: ${t.name} · ${instN(t) > 1 ? instsTxt(t) : voiceShown.get(t.id)}`;
   trkChipUI(); // (the top row's track chip shows the same: name, model · voice)
 }
@@ -565,7 +574,7 @@ function sendPatch(tr = trk()) {
   // §9.5: the assets the patch can play (Serum needs ∪ FX needs) are posted before it; a patch that replaces a posted
   // variant of an asset (trim / fade, Convolve shaping) waits for the new variant, so the old one keeps playing
   if (!p.needs || !p.needs.length) { tables.release(tr.id); N.waitP = null; postPatch(N, p); return; }
-  const at = { trackId: tr.id, s: isSx(tr) ? tr.vals.s : null, fx: fxOf(tr), convMax: p.fxr && p.fxr.convMax };
+  const d = instOf(tr), at = { trackId: tr.id, s: isSerum(d) ? d.vals.s : null, fx: fxOf(tr), convMax: p.fxr && p.fxr.convMax };
   const done = tables.ensure(p.needs, at);
   if (tables.ready(p.needs)) { N.waitP = null; postPatch(N, p); return; }
   N.waitP = p; // a newer patch of the track replaces a waiting one
@@ -660,12 +669,12 @@ function sendGraph(tr, N, c) {
 }
 function queueAll() { for (const t of project.tracks) queuePatch(t); }
 // a classic panel wrote a value (ClassicPanel set): its preset becomes Custom, the patch, autosave
-function valChanged(t, id, ph) { // (t: a device view, stage 1e; ph (2b U2): a drag's 'move' / 'end', else nothing)
-  const tr = trOf(t), N = nodes.get(tr.id);
+function valChanged(iv, id, ph) { // (iv: the panel's device view, stage 1e; ph (2b U2): a drag's 'move' / 'end', else nothing)
+  const tr = trOf(iv), N = nodes.get(tr.id);
   if (ph === 'end') { if (N) N.modsHold = false; queuePatch(tr); return; } // (the gesture's end writes no value: the held repost goes with the frame — a rollback's preset name stays)
   if (id === 'alg') drawAlgo();
-  if (t.preset) { t.preset = null; renderHeads(); }
-  const k = tr.id + '/' + dvOf(t);
+  if (iv.preset) { iv.preset = null; renderHeads(); }
+  const k = tr.id + '/' + dvOf(iv);
   if (N && ph === 'move') N.modsHold = true; // (postMods: the transfer reposts of a cabled knob's drag coalesced)
   cpVer.set(k, (cpVer.get(k) || 0) + 1); // ((C4) the halo transfers' cache key: the instrument's values moved)
   queuePatch(tr); persist();
@@ -708,8 +717,9 @@ const QR_STEPS = 6;
 const QR_NOTICE = ['', 'fewer grains and spectral frames', 'unison ≤ 4 voices, fewer grains and spectral streams',
   'Convolve tails ≤ 2 s, fewer spectral streams', 'polyphony ≤ 8 voices', 'unison ≤ 2 voices, fewer grains and spectral streams',
   'polyphony ≤ 4 voices'];
-const sxQuality = tr => { const o = tr.vals && tr.vals.s && tr.vals.s.global ? tr.vals.s.global.os : 2; return o === 1 || o === 4 ? o : 2; };
-const sxOSFor = (tr, sr, offline = false) => Math.min(offline && prefs.ultra ? 4 : sxQuality(tr), osCap(sr), offline ? 8 : sxCap);
+// (d: a Serum device or view — R2: never a track)
+const sxQuality = d => { const o = d.vals && d.vals.s && d.vals.s.global ? d.vals.s.global.os : 2; return o === 1 || o === 4 ? o : 2; };
+const sxOSFor = (d, sr, offline = false) => Math.min(offline && prefs.ultra ? 4 : sxQuality(d), osCap(sr), offline ? 8 : sxCap);
 // lifts every CPU-safeguard step (a Quality chosen on the GLOBAL page or the app's oversampling)
 function liftCaps() {
   hotT = 0;
@@ -721,7 +731,7 @@ function liftCaps() {
   if (ctx) rateText();
   cvRelabel(); // (the modules' safeguard badges go)
 }
-const trackOS = (tr, sr) => (isSx(tr) ? sxOSFor(tr, sr) : osFor(sr));
+const trackOS = (tr, sr) => { const d = instOf(tr); return isSerum(d) ? sxOSFor(d, sr) : osFor(sr); }; // (a node's OS: its primary's)
 // DSP scripts (classic scripts, one global scope per context; SPEC-serum2 §0.3, §12.1) load before the engine, all
 // requested at once (none reads another's global at load, so their evaluation order does not matter); a missing or
 // broken one only degrades its feature (Serum tracks silent, FX racks bypassed, …). The same list, in this order, is
@@ -916,7 +926,7 @@ function makeNode(tr) {
   const sr = ctx.sampleRate, c = CG.compileTrack(tr), G = legacyOk(tr, c) ? null : graphParts(tr, sr, false, c);
   const patch = G ? null : buildPatch(tr); // a new node always gets the curve tables (and a fresh rack)
   seedPend.delete(tr.id);
-  const po = { os: trackOS(tr, sr), hostOS: osFor(sr), patch, song: songData(tr), seq: !G && tr.model === 'tb303' ? seqPayload(tr) : null,
+  const po = { os: trackOS(tr, sr), hostOS: osFor(sr), patch, song: songData(tr), seq: !G && instOf(tr).model === 'tb303' ? seqPayload(tr) : null,
     trackId: tr.id }; // the MIDI OUT registry of the worklet scope (SPEC-serum2 §7.9)
   if (G) Object.assign(po, { graph: G.graph, patches: G.patches, chains: G.chains, seqs: G.seqs });
   const mods = G ? modsFor(tr) : null; // (2b: the ModCore payload with the parts, IMPL-2b §2.2; a legacy node has none)
@@ -955,7 +965,7 @@ function makeNode(tr) {
   };
   if (T.playing && T.a) node.port.postMessage(Object.assign({ t: 'transport', play: true, seek: true }, T.a));
   if (G) { if (G.needs.length) { learnStates(tr); tables.ensure(G.needs, { trackId: tr.id, node, convMax: convOf(G) }); } }
-  else if (patch.needs) tables.ensure(patch.needs, { trackId: tr.id, node, s: isSx(tr) ? tr.vals.s : null, fx: fxOf(tr), convMax: patch.fxr && patch.fxr.convMax });
+  else if (patch.needs) tables.ensure(patch.needs, { trackId: tr.id, node, s: isSerum(instOf(tr)) ? instOf(tr).vals.s : null, fx: fxOf(tr), convMax: patch.fxr && patch.fxr.convMax });
   const mw = monitors.wanted(id, N);
   if (mw.length) { node.port.postMessage({ t: 'mon', ids: mw }); monitors.on.set(id, mw.join()); }
   return N;
@@ -1062,9 +1072,10 @@ function rateText() {
   let s = `${kHz(sr)} kHz × ${os} = ${kHz(sr * os)} kHz · 64-bit`;
   if (os < settings.os) s += ` (${settings.os}× capped)`;
   if (devRate && sr !== devRate) s += ` · resampled to ${kHz(devRate)} kHz`;
-  // Serum tracks run at their own oversampling (Global quality, CPU cap)
-  const sx = [...new Set(project.tracks.filter(isSx).map(t => sxOSFor(t, sr)))].sort((a, b) => a - b);
-  const capped = project.tracks.some(t => isSx(t) && sxOSFor(t, sr) < Math.min(sxQuality(t), osCap(sr)));
+  // Serum instruments run at their own oversampling (Global quality, CPU cap) — (R2) every Serum of every track
+  const sxs = project.tracks.flatMap(t => serumIds(t).map(id => t.dev[id]));
+  const sx = [...new Set(sxs.map(d => sxOSFor(d, sr)))].sort((a, b) => a - b);
+  const capped = sxs.some(d => sxOSFor(d, sr) < Math.min(sxQuality(d), osCap(sr)));
   // (Q4 / Q6 cap Serum's polyphony: shown here and on the capped tracks' labels until a Quality choice lifts it, R7)
   if (sx.length) s += ` · Serum ${sx.map(x => kHz(sr * x)).join('/')} kHz${capped ? ' (CPU cap)' : ''}${qrStep ? ` · quality step Q${qrStep}${qrStep >= 4 ? `, polyphony ≤ ${qrStep >= 6 ? 4 : 8}` : ''} (CPU cap)` : ''}`;
   // (how far the heard audio trails the rendered: the Latency popover's readout — not here, where it widened the
@@ -1109,7 +1120,7 @@ function maxOS() { return Math.max(plainOS(), sxMaxOS()); }
 const qrLever = () => qrStep < QR_STEPS && project.tracks.some(hasSx);
 // a graphed node's load by group (its parts' smoothed loads, N.cpu); a legacy node's by its model
 function groupLoads(t, N) {
-  if (!N.graphed || !N.cpu) return isSx(t) ? [0, N.load] : [N.load, 0];
+  if (!N.graphed || !N.cpu) return isSerum(instOf(t)) ? [0, N.load] : [N.load, 0]; // (a legacy node: its one instrument)
   let lp = 0, ls = 0;
   for (const k of Object.keys(N.cpu)) { const d = t.dev[k.replace(/\/fx$/, '')]; if (d && d.model === 'serum') ls += N.cpu[k]; else lp += N.cpu[k]; }
   return [lp, ls];
@@ -1231,22 +1242,22 @@ function chordCheck(t) {
   // (U8) several instruments: the primary's voicing says little about what plays (zones split the keys) and the tap would
   // replace the primary — no notice
   if (chordWarned.has(t.id) || t.notes.length < 2 || instN(t) > 1) return;
-  const v = trackVoice(t), k = chordSize(t.notes);
-  if (v.seq || k <= (v.mode === 'poly' ? v.n : 1)) return;
+  const vi = trackVoice(instOf(t)), k = chordSize(t.notes);
+  if (vi.seq || k <= (vi.mode === 'poly' ? vi.n : 1)) return;
   chordWarned.add(t.id);
   // the voices a switch would really give: setTrackModel loads the model's last-used values (loadVals) — a saved Unison /
   // Solo plays one note
   const voiceTo = x => trackVoice({ model: x.id, vals: loadVals(x) });
-  const m = modelById(t.model), to = m.custom ? null : POLY_TO.map(modelById).find(x => x !== m && voiceTo(x).n >= k);
-  const what = v.mode !== 'poly' ? `is ${v.mode === 'unison' ? 'in unison mode' : 'monophonic'} — its chords play one note`
-    : `has ${v.n} voices${v.cap ? ' (CPU cap)' : ''} — a chord of ${k} notes drops some`;
+  const m = modelById(instOf(t).model), to = m.custom ? null : POLY_TO.map(modelById).find(x => x !== m && voiceTo(x).n >= k);
+  const what = vi.mode !== 'poly' ? `is ${vi.mode === 'unison' ? 'in unison mode' : 'monophonic'} — its chords play one note`
+    : `has ${vi.n} voices${vi.cap ? ' (CPU cap)' : ''} — a chord of ${k} notes drops some`;
   const txt = `“${t.name}” ${what}. Tap to ${to ? `switch it to the ${to.name} (${voiceTo(to).n} voices; Undo restores it)` : 'open its instrument'}`;
   noticeActs.set(txt, () => {
     noticeActs.delete(txt); notice('', 0);
     const tr = project.tracks.find(x => x.id === t.id); // (undo / redo replace the track objects)
     if (!tr) return;
     // (re-checked: the last-used values may have changed during the 15 s; flush lands a pending save first)
-    if (to && tr.model === m.id && (flush(), voiceTo(to).n >= k)) setTrackModel(tr, to.id); else instPicker(tr);
+    if (to && instOf(tr).model === m.id && (flush(), voiceTo(to).n >= k)) setTrackModel(tr, to.id); else instPicker(tr);
   });
   notice(txt, 15000);
 }
@@ -1687,11 +1698,11 @@ function renderNav() {
 // switches its layout (its own step), so the tray's switch goes both ways. Stage 1e: tr0 a device view — that instrument
 // is replaced (cv-model setModel: its kept-FX rules); the track's primary as before (tr.model: the 1c reshape)
 function setTrackModel(tr0, id, o = null) {
-  const tr = trOf(tr0), dev = dvOf(tr0), v = instView(tr, dev), prim = dev === CMOD.primId(tr);
+  const tr = trOf(tr0), dev = dvOf(tr0), iv = instView(tr, dev), prim = dev === CMOD.primId(tr);
   const ui = o && (o.ui === 'flow' || o.ui === 'hw') && !modelById(id).custom ? o.ui : null;
-  if (id === v.model) { if (ui && tr === trk() && instUi(tr, dev) !== ui) cvSetLayout(ui, dev); return; }
+  if (id === iv.model) { if (ui && tr === trk() && instUi(tr, dev) !== ui) cvSetLayout(ui, dev); return; }
   flush(); // a pending save of the outgoing model's values must not be dropped
-  const old = modelById(v.model), m = modelById(id);
+  const old = modelById(iv.model), m = modelById(id);
   hist.record(project, 'Replace ' + old.name);
   seqToggle(tr, false, true, dev);
   postTo(tr, { t: 'panic' });
@@ -1741,8 +1752,8 @@ function setCur(t, dev) {
 // whose hardware panel is not drawn yet (or fails validation) shows today's panel in either (IMPL-panels §7).
 const hwLayoutOf = m => (m && !m.custom ? cvPanel.usable(m.id, m) : null);
 function instUi(t, dev) { // (stage 1e: instrument dev, default the current one; its lay key is its device id)
-  const d = dev == null && t ? curOf(t) : dev, v = t ? instView(t, d) : null;
-  if (!t || isSx(v)) return 'flow';
+  const d = dev == null && t ? curOf(t) : dev;
+  if (!t || isSerumDev(t, d)) return 'flow';
   const e = t.lay && typeof t.lay === 'object' ? t.lay[d || cvModule.ID.inst] : null;
   return e && e.ui === 'flow' ? 'flow' : 'hw';
 }
@@ -1779,7 +1790,7 @@ function aboutUI(m) { $('#about-title').textContent = `${m.maker} ${m.name} (${m
 // DOM #inst for the current one
 const instEl = (t, dev) => (cvOn() ? cvBodyEl(t, dev) : dev === curOf(t) ? $('#inst') : null);
 function renderPanel(t = trk(), dev = curOf(t)) {
-  const v = instView(t, dev), m = modelById(v.model), key = t.id + '/' + dev, el = instEl(t, dev);
+  const iv = instView(t, dev), m = modelById(iv.model), key = t.id + '/' + dev, el = instEl(t, dev);
   const old = classicPanels.get(key);
   if (old) { old.destroy(); classicPanels.delete(key); }
   if (!el) { cpSync(); return; }
@@ -1790,7 +1801,7 @@ function renderPanel(t = trk(), dev = curOf(t)) {
   if (m.custom) { renderCustom(el, t, dev); cpSync(); cvPanelDone(); return; }
   sxDropEl(el);
   const L = instUi(t, dev) === 'hw' ? hwLayoutOf(m) : null;
-  classicPanels.set(key, new ClassicPanel(el, { track: v, model: m, layout: L, host: classicHost })); // (Hardware: presets through the chip and the ⋯ menu)
+  classicPanels.set(key, new ClassicPanel(el, { track: iv, model: m, layout: L, host: classicHost })); // (Hardware: presets through the chip and the ⋯ menu)
   cpSync();
   if (t.dev && CG.modRowsFor(t, dev).length) cpHalos(t, dev); // (2b: its halos, the monitor subscription)
   if (cur) { aboutUI(m); drawAlgo(); }
@@ -1810,14 +1821,14 @@ const syncPresetSel = k => { if (cpanel) cpanel.syncPreset(k); else cvChipSync()
 const seqHw = new Map(); // track id → { cur, mode }
 // the DX7's select-and-set workflow (IMPL-panels §6.3): {op, param (the button), eg, mode} per track, session only
 const dxHw = new Map(); // track id → { op, param, eg, mode }
-function hwDx(tr) {
-  let st = dxHw.get(tr.id);
-  if (!st) dxHw.set(tr.id, st = { op: 1, param: 7, eg: 1, mode: 'edit' });
-  const m = modelById(tr.model);
+function hwDx(iv) { // (iv: the DX7 panel's device view)
+  let st = dxHw.get(iv.id);
+  if (!st) dxHw.set(iv.id, st = { op: 1, param: 7, eg: 1, mode: 'edit' });
+  const m = modelById(iv.model);
   return {
     state: st, algs: DX_ALGS, layout: algoLayout, presets: m.presets.length,
-    load: n => { if (tr.model === m.id) presetLoad('f' + (n - 1), tr); },
-    presetName: () => tr.preset,
+    load: n => { if (iv.model === m.id) presetLoad('f' + (n - 1), iv); },
+    presetName: () => iv.preset,
   };
 }
 
@@ -1894,13 +1905,13 @@ function presetList(m) {
   return m.presets.map((p, i) => ({ key: 'f' + i, name: p.name, v: p.v, group: 'Factory' }))
     .concat(userPresets(m).map((p, i) => ({ key: 'u' + i, name: p.name, v: p.v, group: 'Saved' })));
 }
-function applyPreset(tr, p) { // (tr: a device view, stage 1e)
-  const m = modelById(tr.model), t = trOf(tr), cur = t.id === project.selTrack && panelKey(tr) === t.id + '/' + curOf(t);
-  tr.vals = Object.assign(defaults(m), p.v);
-  tr.preset = p.name;
-  presetKeys.set(tr.id, p.key || null);
+function applyPreset(iv, p) { // (iv: a device view, stage 1e)
+  const m = modelById(iv.model), t = trOf(iv), cur = t.id === project.selTrack && panelKey(iv) === t.id + '/' + curOf(t);
+  iv.vals = Object.assign(defaults(m), p.v);
+  iv.preset = p.name;
+  presetKeys.set(iv.id, p.key || null);
   if (cur) bind();
-  const P = classicOf(tr);
+  const P = classicOf(iv);
   if (P) { P.refresh(); if (cur) drawAlgo(); P.syncPreset(p.key); } else if (cur) { drawAlgo(); syncPresetSel(p.key); }
   sendPatch(t); renderHeads(); persist();
 }
@@ -1909,42 +1920,42 @@ function applyPreset(tr, p) { // (tr: a device view, stage 1e)
 // entry: the one last loaded on that track (presetKeys), else the first with the track's preset name. Stage 1e: each on
 // an instrument (a device view: its id 'trackId/dev'; default the selected track's current instrument)
 const presetKeys = new Map(); // track id (a view's id) → the key of the entry last loaded
-function presetCur(t = curView()) { const l = presetList(modelById(t.model)), k = presetKeys.get(t.id); return l.find(x => x.key === k && x.name === t.preset) || l.find(x => x.name === t.preset) || null; }
-function presetLoad(key, t = curView()) { const p = presetList(modelById(t.model)).find(x => x.key === key); if (p) applyPreset(t, p); return !!p; }
-function presetStep(d, t = curView()) { // ◀ ▶: from the blank / Custom entry, ▶ the first, ◀ the last
-  const keys = presetList(modelById(t.model)).map(p => p.key);
+function presetCur(iv = curView()) { const l = presetList(modelById(iv.model)), k = presetKeys.get(iv.id); return l.find(x => x.key === k && x.name === iv.preset) || l.find(x => x.name === iv.preset) || null; }
+function presetLoad(key, iv = curView()) { const p = presetList(modelById(iv.model)).find(x => x.key === key); if (p) applyPreset(iv, p); return !!p; }
+function presetStep(d, iv = curView()) { // ◀ ▶: from the blank / Custom entry, ▶ the first, ◀ the last
+  const keys = presetList(modelById(iv.model)).map(p => p.key);
   if (!keys.length) return;
-  const cur = presetCur(t);
+  const cur = presetCur(iv);
   let i = cur ? keys.indexOf(cur.key) : -1;
   i = i < 0 ? (d > 0 ? 0 : keys.length - 1) : (i + d + keys.length) % keys.length;
-  presetLoad(keys[i], t);
+  presetLoad(keys[i], iv);
 }
-function presetSave(t = curView()) {
-  const m = modelById(t.model), cur = presetCur(t);
-  const name = (prompt('Name this sound:', t.preset && cur && /^u\d+$/.test(cur.key) ? t.preset : 'My ' + m.name + ' sound') || '').trim();
+function presetSave(iv = curView()) {
+  const m = modelById(iv.model), cur = presetCur(iv);
+  const name = (prompt('Name this sound:', iv.preset && cur && /^u\d+$/.test(cur.key) ? iv.preset : 'My ' + m.name + ' sound') || '').trim();
   if (!name) return;
   const up = userPresets(m), i = up.findIndex(p => p.name === name);
   if (i >= 0 && !confirm(`Replace the saved sound “${name}”?`)) return;
-  if (i >= 0) up[i] = { name, v: Object.assign({}, t.vals) }; else up.push({ name, v: Object.assign({}, t.vals) });
+  if (i >= 0) up[i] = { name, v: Object.assign({}, iv.vals) }; else up.push({ name, v: Object.assign({}, iv.vals) });
   store.set('synth.user.' + m.id, up);
-  t.preset = name; presetKeys.set(t.id, 'u' + (i >= 0 ? i : up.length - 1));
-  presetShown(t); renderHeads(); persist();
+  iv.preset = name; presetKeys.set(iv.id, 'u' + (i >= 0 ? i : up.length - 1));
+  presetShown(iv); renderHeads(); persist();
 }
-const presetSaved = (t = curView()) => { const c = presetCur(t); return c && /^u\d+$/.test(c.key) ? c : null; }; // a saved sound is loaded
-function presetDelete(t = curView()) {
-  const c = presetSaved(t), mm = c && /^u(\d+)$/.exec(c.key), m = modelById(t.model);
+const presetSaved = (iv = curView()) => { const c = presetCur(iv); return c && /^u\d+$/.test(c.key) ? c : null; }; // a saved sound is loaded
+function presetDelete(iv = curView()) {
+  const c = presetSaved(iv), mm = c && /^u(\d+)$/.exec(c.key), m = modelById(iv.model);
   if (!mm) return;
   const up = userPresets(m), p = up[+mm[1]];
   if (!p || !confirm(`Delete the saved sound “${p.name}”?`)) return;
   up.splice(+mm[1], 1);
   store.set('synth.user.' + m.id, up);
-  if (t.preset === p.name) t.preset = null;
-  presetKeys.delete(t.id);
-  presetShown(t); renderHeads(); persist();
+  if (iv.preset === p.name) iv.preset = null;
+  presetKeys.delete(iv.id);
+  presetShown(iv); renderHeads(); persist();
 }
-function presetInit(t = curView()) { presetKeys.delete(t.id); applyPreset(t, { name: null, v: {} }); }
-// the track's preset name changed outside a load: its panel's plate and the chip follow
-function presetShown(t) { const P = classicOf(t); if (P) P.syncPreset(presetKeys.get(t.id)); else if (trOf(t) === trk()) cvChipSync(); }
+function presetInit(iv = curView()) { presetKeys.delete(iv.id); applyPreset(iv, { name: null, v: {} }); }
+// the instrument's preset name changed outside a load: its panel's plate and the chip follow
+function presetShown(iv) { const P = classicOf(iv); if (P) P.syncPreset(presetKeys.get(iv.id)); else if (trOf(iv) === trk()) cvChipSync(); }
 
 /* ------------------------------------------ Serum and the FX racks (SPEC-serum §11.8) */
 // The panel modules (serum-ui.js, fx-ui.js and their siblings) and wt.js / wtstore.js load on first use, so the other
@@ -2089,26 +2100,26 @@ function sxMonitor(t, on, dev = CMOD.primId(t)) {
   if (off) { monitors.sync(); return; }
   sxMons.set(key, monitors.sub(id, dev, { role: 'both', // (its snapshot, and its FX page's meters; stage 1e: that device's panel)
     live: () => { const r = sxRecOf(id, dev); return !!r && r.trackId === id && cvLive(dev); },
-    deliver: d => { const r = sxRecOf(id, dev); if (r && r.ui && r.trackId === id) { r.ui.setSnapshot(d); if (r === sxPanel) zoneWarm(id, d.s); } },
+    deliver: d => { const r = sxRecOf(id, dev); if (r && r.ui && r.trackId === id) { r.ui.setSnapshot(d); zoneWarm(id, dev, d.s); } }, // (R2: every Serum's zones)
   }));
 }
 // "Switch to Single Sample" (host.smp.saveFrom → zoneOf): the zone sample the panel's recent voice plays, from the
 // snapshot's zone index and the multisample's record (read once per multisample, cached)
 const msRecs = new Map();
-function zoneWarm(id, sn) {
-  const t = project.tracks.find(x => x.id === id);
-  if (!sn || !sn.zone || !isSx(t)) return;
+function zoneWarm(id, dev, sn) { // (R2: Serum dev of track id, the snapshot its panel got)
+  const t = project.tracks.find(x => x.id === id), d = t ? instOf(t, dev) : null;
+  if (!sn || !sn.zone || !isSerum(d)) return;
   for (let o = 0; o < 3; o++) {
-    const O = t.vals.s.osc[o], m = O && O.type === 'multi' ? O.multi : '';
+    const O = d.vals.s.osc[o], m = O && O.type === 'multi' ? O.multi : '';
     if (!m || sn.zone[o] < 0 || msRecs.has(m)) continue;
     msRecs.set(m, null);
     Promise.resolve(smpHost.record(m)).then(r => msRecs.set(m, r || null), () => msRecs.delete(m));
   }
 }
 function zoneOf(o) {
-  const t = project.tracks.find(x => x.id === sxPanel.trackId), sn = sxPanel.ui && sxPanel.ui.snap;
-  if (!isSx(t) || !sn || !sn.zone || !(o >= 0 && o < 3)) return null;
-  const O = t.vals.s.osc[o], r = O && O.multi ? msRecs.get(O.multi) : null, z = sn.zone[o];
+  const t = project.tracks.find(x => x.id === sxPanel.trackId), d = t ? instOf(t, sxPanel.dev) : null, sn = sxPanel.ui && sxPanel.ui.snap;
+  if (!isSerum(d) || !sn || !sn.zone || !(o >= 0 && o < 3)) return null;
+  const O = d.vals.s.osc[o], r = O && O.multi ? msRecs.get(O.multi) : null, z = sn.zone[o];
   return r && Array.isArray(r.zones) && z >= 0 && z < r.zones.length && r.zones[z] ? r.zones[z].smp || null : null;
 }
 
@@ -2123,7 +2134,7 @@ function fxEditDev(t, dev, fn, o) {
   fxPrune(t, dev);
   if (o && o.seed) seedPend.add(t.id);
   const d = dev && t.dev ? t.dev[dev] : null;
-  if (d ? d.model === 'serum' : isSx(t)) sxDirty.add(d ? instView(t, dev).id : t.id);
+  if (isSerum(d)) sxDirty.add(instView(t, dev).id); // (R1: every caller names the device)
   queuePatch(t); persist();
 }
 // (2b, fixer C ← fixer B) an effect instance removed from a rack takes the canvas cables on its knobs with it
@@ -2137,17 +2148,17 @@ function fxPrune(t, dev) {
   return n;
 }
 const sxDirty = new Set(); // Serum tracks edited since their preset was loaded / saved (program change asks, §9.10)
-function sxEdit(t, fn, o) { // (t: a device view, stage 1e)
-  const s = t && t.vals && t.vals.s;
+function sxEdit(x, fn, o) { // (x: a device view, stage 1e; a bare track — the asset manager's —: its primary)
+  const iv = x && instView(trOf(x), dvOf(x)), s = iv && iv.vals && iv.vals.s;
   if (!s) return;
   const os = s.global.os;
   fn(s);
   if (o && o.ui) { persist(); return; }
-  if (o && o.seed) seedPend.add(trOf(t).id);
-  sxDirty.add(t.id);
-  queuePatch(trOf(t)); persist();
+  if (o && o.seed) seedPend.add(trOf(iv).id);
+  sxDirty.add(iv.id);
+  queuePatch(trOf(iv)); persist();
   if (s.global.os !== os && ctx) rateText();
-  if (o && o.label === 'Init Preset') { t.preset = 'Init'; sxKeys.delete(t.id); sxDirty.delete(t.id); renderHeads(); } // the panel's menu
+  if (o && o.label === 'Init Preset') { iv.preset = 'Init'; sxKeys.delete(iv.id); sxDirty.delete(iv.id); renderHeads(); } // the panel's menu
 }
 let sxRefT = 0;
 function sxRefresh() { // repaint the mounted panel and rack (outside edits: MIDI, program change, wheel, new tables)
@@ -2161,7 +2172,7 @@ function prefsChanged() {
   const old = prefs;
   prefs = readPrefs();
   const all = old.smooth !== prefs.smooth || old.silenceTails !== prefs.silenceTails;
-  for (const t of project.tracks) if (all || isSx(t)) queuePatch(t);
+  for (const t of project.tracks) if (all || hasSx(t)) queuePatch(t);
   if (uiLoad) uiLoad.then(M => kitPrefs(M.wk), () => {});
 }
 // the latest LFO phases of a track's rack (FXRack.phases(): fxLayout order, NaN = no LFO) → the FX state (v2 inst.ph by
@@ -2195,10 +2206,7 @@ async function projectFile() {
   await syncPhases();
   const ids = new Set(), sm = new Set();
   for (const t of project.tracks) {
-    const s = isSx(t) && t.vals.s ? t.vals.s : null;
-    for (const id of userTables(s)) ids.add(id);
-    for (const id of userSmps(s, fxOf(t))) sm.add(id);
-    for (const k of Object.keys(t.dev || {})) { // (stage 1e: every other Serum and panel of the track)
+    for (const k of Object.keys(t.dev || {})) { // (every Serum and panel of the track, the primary's among them — R2)
       const d = t.dev[k], x = d && d.kind === 'synth' && d.model === 'serum' && d.vals ? d.vals.s : null;
       if (!d || (d.kind !== 'panel' && !x)) continue;
       for (const id of userTables(x)) ids.add(id);
@@ -2249,49 +2257,50 @@ function sxPreset(key) {
   if (key.startsWith('u:')) return sxUser().find(p => 'u:' + p.name === key) || null;
   return null;
 }
-function sxCurrent(t) {
-  const k = sxKeys.get(t.id);
+function sxCurrent(iv) { // (iv: a Serum's device view)
+  const k = sxKeys.get(iv.id);
   if (k && sxPreset(k)) return k;
-  if (!t.preset) return null;
-  return sxPreset('u:' + t.preset) ? 'u:' + t.preset : sxPreset('f:' + t.preset) ? 'f:' + t.preset : null;
+  if (!iv.preset) return null;
+  return sxPreset('u:' + iv.preset) ? 'u:' + iv.preset : sxPreset('f:' + iv.preset) ? 'f:' + iv.preset : null;
 }
 // applyPreset / applyPresetFx build new states (never Object.assign of preset objects: factory presets are frozen). FX: the
 // v2 rule (a v1 preset rack migrates with the new Serum state as refs; locked racks kept, the incoming Serum state's rows
 // follow renamed instances, locked parameters keep their values, §11.2)
-function sxLoad(t, key) { // (t: a device view, stage 1e)
-  const p = sxPreset(key);
-  if (!p || !isSx(t)) return false;
-  const s = core.applyPreset(t.vals.s, p, { midiFromPreset: prefs.midiFromPreset });
-  const cur = fxOf(t), pfx = p.fx && typeof p.fx === 'object' ? p.fx : null;
-  t.fx = core.applyPresetFx(cur, pfx || core.defaultFx2(), s);
-  t.vals.s = s;
-  t.preset = p.name; sxKeys.set(t.id, key); sxDirty.delete(t.id);
-  seedPend.add(trOf(t).id);
-  sendPatch(trOf(t));
+function sxLoad(x, key) { // (x: a device view, stage 1e; a bare track: its primary)
+  const p = sxPreset(key), iv = x && instView(trOf(x), dvOf(x));
+  if (!p || !isSerum(iv)) return false;
+  const s = core.applyPreset(iv.vals.s, p, { midiFromPreset: prefs.midiFromPreset });
+  const cur = fxOf(iv), pfx = p.fx && typeof p.fx === 'object' ? p.fx : null;
+  iv.fx = core.applyPresetFx(cur, pfx || core.defaultFx2(), s);
+  iv.vals.s = s;
+  iv.preset = p.name; sxKeys.set(iv.id, key); sxDirty.delete(iv.id);
+  seedPend.add(trOf(iv).id);
+  sendPatch(trOf(iv));
   renderHeads(); persist(); sxRefresh();
   if (ctx) rateText();
-  cvModReload(trOf(t)); // (stage 2a: the canvas cables stay — re-injected by that compile —; the preset cables re-derived)
+  cvModReload(trOf(iv)); // (stage 2a: the canvas cables stay — re-injected by that compile —; the preset cables re-derived)
   return true;
 }
 function sxSaveUser(up) { store.set('synth.user.serum', up); }
-function sxSave(t, name, cat) { // (t: a device view; the FX phase memory is the primary's alone, N.fxph)
+function sxSave(x, name, cat) { // (x: a device view, a bare track its primary; the FX phase memory is the primary's alone, N.fxph)
   name = String(name || '').trim().slice(0, 64);
-  if (!name || !isSx(t)) return null;
-  const N = isPrim(t) ? nodes.get(trOf(t).id) : null; // (R1: the primary's view — its patch path and phase memory as before)
-  if (N && N.fxph) setPhases(t, N.fxph); // the rack's current LFO phases (phase memory)
+  const iv = x && instView(trOf(x), dvOf(x));
+  if (!name || !isSerum(iv)) return null;
+  const N = isPrim(iv) ? nodes.get(trOf(iv).id) : null; // (R1: the primary's view — its patch path and phase memory as before)
+  if (N && N.fxph) setPhases(iv, N.fxph); // the rack's current LFO phases (phase memory)
   const up = sxUser(), i = up.findIndex(p => p.name === name);
-  const entry = { name, cat: String(cat || 'User').trim().slice(0, 32) || 'User', v: { s: clone(t.vals.s) }, fx: clone(fxOf(t)) };
+  const entry = { name, cat: String(cat || 'User').trim().slice(0, 32) || 'User', v: { s: clone(iv.vals.s) }, fx: clone(fxOf(iv)) };
   if (i >= 0 && up[i].meta) entry.meta = up[i].meta; // overwriting keeps its rating / tags / comments
   if (i >= 0) up[i] = entry; else up.push(entry);
   sxSaveUser(up);
-  t.preset = name; sxKeys.set(t.id, 'u:' + name); sxDirty.delete(t.id);
+  iv.preset = name; sxKeys.set(iv.id, 'u:' + name); sxDirty.delete(iv.id);
   renderHeads(); persist();
-  if (N && !monitors.fx(t.id)) { // monitoring off: ask the rack for its phases and complete the stored preset
+  if (N && !monitors.fx(trOf(iv).id)) { // monitoring off: ask the rack for its phases and complete the stored preset
     N.phWait.push(v => {
       if (!v) return;
-      setPhases(t, v);
+      setPhases(iv, v);
       const l = sxUser(), e = l.find(p => p.name === name);
-      if (e) { e.fx = clone(fxOf(t)); sxSaveUser(l); }
+      if (e) { e.fx = clone(fxOf(iv)); sxSaveUser(l); }
       persist();
     });
     N.node.port.postMessage({ t: 'fxph' });
@@ -2311,7 +2320,7 @@ function sxRename(key, name) {
   if (!name || sxPreset('u:' + name)) return null;
   const k = sxUserEdit(key, e => { e.name = name; return 'u:' + name; });
   if (!k) return null;
-  for (const [tid, x] of sxKeys) if (x === key) { sxKeys.set(tid, k); const t = project.tracks.find(y => y.id === tid); if (t) t.preset = name; }
+  for (const [vid, x] of sxKeys) if (x === key) { sxKeys.set(vid, k); const iv = viewOfKey(vid); if (iv) iv.preset = name; }
   renderHeads(); persist();
   return k;
 }
@@ -2374,18 +2383,20 @@ async function sxImport(file) {
   sxSaveUser(up);
   return key;
 }
-// MIDI program change n → the n-th entry of the browser's current filtered, sorted list (§9.10, §11.8)
+// MIDI program change n → the n-th entry of the browser's current filtered, sorted list (§9.10, §11.8): each target track's
+// primary instrument (named: CMOD.primId — R2), when it is a Serum; the confirm through that device's panel when it is up
 function programChange(trs, n) {
-  const sx = trs.filter(isSx);
+  const sx = trs.filter(t => isSerumDev(t, CMOD.primId(t)));
   if (!sx.length) return;
   uiMods().then(M => {
     const list = M.sx.browserList(sxPresetList(), store.get(M.sx.BROWSER_KEY, null)), p = list[n];
     if (!p) return;
     for (const t of sx) {
       if (!project.tracks.includes(t)) continue;
-      const ask = sxPanel.ui && sxPanel.trackId === t.id ? !sxPanel.ui.confirmChange()
-        : prefs.askPreset && sxDirty.has(t.id) && !confirm('Discard changes to “' + (t.preset || 'Init') + '”?');
-      if (!ask) sxLoad(t, p.key);
+      const dev = CMOD.primId(t), iv = instView(t, dev), r = sxRecOf(t.id, dev);
+      const ask = r && r.ui && r.trackId === t.id ? !r.ui.confirmChange()
+        : prefs.askPreset && sxDirty.has(iv.id) && !confirm('Discard changes to “' + (iv.preset || 'Init') + '”?');
+      if (!ask) sxLoad(iv, p.key);
     }
   }, () => {});
 }
@@ -2407,7 +2418,6 @@ const midi = createMidi({
   modUI: v => { if (setModUI) setModUI(v, false); },
   bendUI: v => { if (setBendUI) setBendUI(v, false); },
   track: id => project.tracks.find(x => x.id === id),
-  isSx: t => isSx(t),
   fxSet: (t, id, n, dev) => fxSet(t, id, n, dev),
   changed: (t, patch, refresh) => { sxDirty.add(t.id); if (patch) queuePatch(t); persist(); if (refresh) sxRefresh(); },
   notice: (txt, ms) => notice(txt, ms),
@@ -2421,9 +2431,9 @@ const midiForget = (t, dest, dev = null) => midi.forget(t, dest, dev);
 let wtEdit = null; // { id: track id, dev: its Serum (U7: the one whose editor is open, not always the primary), osc }
 function wheelToWt(v) {
   if (!prefs.wheelWt || !wtEdit) return;
-  const t = project.tracks.find(x => x.id === wtEdit.id), x = t && (!t.dev || CMOD.instOf(t, wtEdit.dev)) ? instView(t, wtEdit.dev) : null;
-  if (!x || !isSx(x)) return;
-  x.vals.s.p[['a', 'b', 'c'][wtEdit.osc] + '.wt'] = clamp(+v || 0, 0, 1);
+  const t = project.tracks.find(x => x.id === wtEdit.id), iv = t && (!t.dev || CMOD.instOf(t, wtEdit.dev)) ? instView(t, wtEdit.dev) : null;
+  if (!iv || !isSerum(iv)) return;
+  iv.vals.s.p[['a', 'b', 'c'][wtEdit.osc] + '.wt'] = clamp(+v || 0, 0, 1);
   sxDirty.add(t.id);
   queuePatch(t); persist(); sxRefresh();
 }
@@ -2445,24 +2455,24 @@ async function renderOffline(sr, frames, items, at) {
   const oc = new OfflineAudioContext({ numberOfChannels: 2, length: Math.max(128, Math.ceil(frames)), sampleRate: sr });
   await addModules(oc);
   const ids = new Set();
-  for (const x of items) {
-    for (const id of (x.patch && x.patch.needs) || x.needs || []) ids.add(id);
-    if (x.graph && x.tr) learnStates(x.tr);
+  for (const it of items) {
+    for (const id of (it.patch && it.patch.needs) || it.needs || []) ids.add(id);
+    if (it.graph && it.tr) learnStates(it.tr);
   }
   const ents = ids.size ? await tables.entries([...ids], sr, at) : [];
   const wts = ents.filter(e => idKind(e.id) === 'wt'), smps = ents.filter(e => idKind(e.id) !== 'wt');
   const bus = oc.createGain(); bus.connect(oc.destination);
-  items.forEach((x, n) => {
-    const po = { os: x.os, hostOS: x.hostOS || x.os, offline: true, patch: x.patch, wts: n === 0 && wts.length ? wts : null,
-      smps: n === 0 && smps.length ? smps : null, song: x.song, transport: x.transport, seq: x.seq || null, trackId: x.tr ? x.tr.id : '' };
-    if (x.graph) Object.assign(po, { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs });
-    if (x.mods) po.mods = x.mods; // (2b: the ModCore payload, handled after the parts)
+  items.forEach((it, n) => {
+    const po = { os: it.os, hostOS: it.hostOS || it.os, offline: true, patch: it.patch, wts: n === 0 && wts.length ? wts : null,
+      smps: n === 0 && smps.length ? smps : null, song: it.song, transport: it.transport, seq: it.seq || null, trackId: it.tr ? it.tr.id : '' };
+    if (it.graph) Object.assign(po, { graph: it.graph, patches: it.patches, chains: it.chains, seqs: it.seqs });
+    if (it.mods) po.mods = it.mods; // (2b: the ModCore payload, handled after the parts)
     const node = new AudioWorkletNode(oc, 'synth-engine', {
       numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
       processorOptions: po,
     });
     const g = oc.createGain(), pn = oc.createStereoPanner();
-    g.gain.value = x.gain === undefined ? 1 : x.gain; pn.pan.value = x.pan || 0;
+    g.gain.value = it.gain === undefined ? 1 : it.gain; pn.pan.value = it.pan || 0;
     node.connect(g); g.connect(pn); pn.connect(bus);
   });
   return oc.startRendering();
@@ -2485,12 +2495,13 @@ const noteName = n => NOTE_NAMES[((n % 12) + 12) % 12] + (Math.floor(n / 12) - 1
 // R → B) as its type takes it: a Wavetable oscillator gets a wavetable (the Phase-1 recipe); a Sample, Granular or
 // Spectral oscillator gets a user sample (§9.1 `smp:` origin "resample"; root 60, folder Renders) and keeps its type and
 // sample options (only the trim of the previous sample is dropped); a Multisample oscillator becomes a Sample oscillator.
-async function resampleTo(t, target) { // (t: a device view — a Serum besides the primary renders alone, buildInstPatch)
-  if (!isSx(t)) return;
-  const W = await wtMod(), sr = 44100, s = t.vals.s, bt = S.barTicks(project), fpt = sr * 60 / (project.bpm * S.PPQ);
-  const gate = Math.round(bt * fpt), patch = isPrim(t) ? buildPatch(trOf(t), sr, true) : buildInstPatch(trOf(t), dvOf(t), sr, true); // (R1: the primary through buildPatch, its bytes)
-  const buf = await renderOffline(sr, gate + 2 * sr, [{ tr: null, patch, os: sxOSFor(t, sr, true), hostOS: osCap(sr),
-    song: { notes: [0, bt, 60, 127], cc: [] }, transport: { play: true, frame: 0, tick: 0, fpt, loop: false } }], { s, fx: fxOf(t) });
+async function resampleTo(x, target) { // (x: a device view — a Serum besides the primary renders alone, buildInstPatch; a bare track: its primary)
+  const iv = x && instView(trOf(x), dvOf(x));
+  if (!isSerum(iv)) return;
+  const W = await wtMod(), sr = 44100, s = iv.vals.s, bt = S.barTicks(project), fpt = sr * 60 / (project.bpm * S.PPQ);
+  const gate = Math.round(bt * fpt), patch = isPrim(iv) ? buildPatch(trOf(iv), sr, true) : buildInstPatch(trOf(iv), dvOf(iv), sr, true); // (R1: the primary through buildPatch, its bytes)
+  const buf = await renderOffline(sr, gate + 2 * sr, [{ tr: null, patch, os: sxOSFor(iv, sr, true), hostOS: osCap(sr),
+    song: { notes: [0, bt, 60, 127], cc: [] }, transport: { play: true, frame: 0, tick: 0, fpt, loop: false } }], { s, fx: fxOf(iv) });
   const chs = [buf.getChannelData(0), buf.getChannelData(1)];
   const end = tailEnd(chs, gate, Math.pow(10, -90 / 20), Math.round(0.05 * sr), chs[0].length);
   const L = chs[0].slice(0, end), R = chs[1].slice(0, end);
@@ -2524,7 +2535,7 @@ async function resampleTo(t, target) { // (t: a device view — a Serum besides 
     const o = target === 'B' ? 1 : target === 'C' ? 2 : target === 'A' ? 0 : s.ui && s.ui.osc >= 0 && s.ui.osc < 3 ? s.ui.osc | 0 : 0;
     done = [await save(o, [L, R], `Resample ${n}`)];
   }
-  sxEdit(t, st => { for (const d of done) toOsc(st, d); }, { label: 'Resample' });
+  sxEdit(iv, st => { for (const d of done) toOsc(st, d); }, { label: 'Resample' });
   sxRefresh();
 }
 
@@ -2537,8 +2548,8 @@ async function resampleTo(t, target) { // (t: a device view — a Serum besides 
 // renders as before (buildPatch).
 async function renderLast(t, o) {
   const dev = (o && o.dev) || CMOD.primId(t), d = t.dev ? t.dev[dev] : null, legacy = dev === CMOD.primId(t) && legacyOk(t);
-  if (legacy ? !isSx(t) : !d || d.model !== 'serum') throw new Error('Rendering needs a Serum track');
-  const s = legacy ? t.vals.s : d.vals.s, fx = legacy ? fxOf(t) : fxOfDev(t, dev), pn = legacy ? t.preset : d.preset;
+  if (!isSerumDev(t, dev)) throw new Error('Rendering needs a Serum track');
+  const s = d.vals.s, fx = fxOfDev(t, dev), pn = d.preset; // (the primary's FX device is its own: fxOf's rack — R2)
   const name = (pn || 'Init').replace(/[\\/:*?"<>|]+/g, ' ').trim() || 'Init';
   if (o && o.shift) {
     const pre = Object.assign({ type: 'synth.serum.preset', name, v: { s: clone(s) }, fx: clone(fx) }, await presetAssets([{ v: { s }, fx }]));
@@ -2552,7 +2563,7 @@ async function renderLast(t, o) {
   const sr = ctx ? ctx.sampleRate : settings.sr || devRate || 48000, bpm = project.bpm;
   const song = groupSong(group, bpm), last = Math.max(...group.map(x => x.off)), fpt = sr * 60 / (bpm * S.PPQ);
   const patch = legacy ? buildPatch(t, sr, true) : buildInstPatch(t, dev, sr, true);
-  const buf = await renderOffline(sr, (last + 10.05) * sr, [{ tr: t, patch, os: sxOSFor(legacy ? t : d, sr, true), hostOS: osCap(sr), song,
+  const buf = await renderOffline(sr, (last + 10.05) * sr, [{ tr: t, patch, os: sxOSFor(d, sr, true), hostOS: osCap(sr), song,
     transport: { play: true, frame: 0, tick: 0, fpt, loop: false }, mods: modsFor(t) }], { s, fx }); // (2b: the Serum alone on a legacy node — its ext rows run; rows to other devices find no Inst there)
   const chs = [buf.getChannelData(0), buf.getChannelData(1)];
   const end = tailEnd(chs, Math.round(last * sr), Math.pow(10, -80 / 20), Math.round(0.05 * sr), Math.round((last + 10) * sr));
@@ -2771,7 +2782,7 @@ function sxHost(t0, dv) {
     renderLast: o => renderLast(T(), Object.assign({ dev }, o || {})),
     preview: (key, clip) => preview(key, clip),
     previewMacros: v => previewMacros(v),
-    tracks: () => project.tracks.filter(x => x.id !== id).map(x => ({ id: x.id, name: x.name, model: x.model })),
+    tracks: () => project.tracks.filter(q => q.id !== id).map(q => ({ id: q.id, name: q.name, model: instOf(q).model })), // (MIDI OUT targets: each track's instrument)
     seqCmd: (cmd, arg) => postTo(T(), { t: 'seqcmd', cmd, arg }, dev),
     onInput: fn => { // (per Serum of the track, U6)
       let S = inputSubs.get(id);
@@ -2793,7 +2804,7 @@ function sxHost(t0, dv) {
 // the rack of rec.dev — a Serum instrument (its own FX), a shared panel, or null (the primary's FX: fxOf)
 function fxHost(t0, rec = fxTab) {
   const id = t0.id, T = () => project.tracks.find(x => x.id === id) || t0;
-  const sx = () => { const t = T(), d = rec.dev && t.dev ? t.dev[rec.dev] : null; return d ? (d.kind === 'synth' && d.model === 'serum' ? rec.dev : null) : isSx(t) ? CMOD.primId(t) : null; };
+  const sx = () => { const t = T(), d = rec.dev && t.dev ? t.dev[rec.dev] : null; return d ? (d.kind === 'synth' && d.model === 'serum' ? rec.dev : null) : isSerumDev(t, CMOD.primId(t)) ? CMOD.primId(t) : null; };
   const own = () => { const k = sx(); return k ? instView(T(), k) : null; }; // (the Serum whose own FX this rack is)
   return {
     fx: () => fxOfDev(T(), rec.dev),
@@ -2801,14 +2812,14 @@ function fxHost(t0, rec = fxTab) {
     v2Fx: true,
     racks: () => (sx() ? 3 : 1),
     irs: smpHost,
-    state: () => { const v = own(); return v ? v.vals.s : null; },
-    edit: (fn, o) => { const v = own(); if (v) { sxEdit(v, fn, o); peerRefresh(id, 1, sx()); } },
+    state: () => { const iv = own(); return iv ? iv.vals.s : null; },
+    edit: (fn, o) => { const iv = own(); if (iv) { sxEdit(iv, fn, o); peerRefresh(id, 1, sx()); } },
     bpm: () => project.bpm,
     gr: () => (rec.trackId === id ? rec.gr : null),
     // the rack's monitor tap (§13.5 Delay spectrum overlay): instance id ('' off) → the node; the latest 1024 frames
     tap: () => (rec.trackId === id ? rec.ftap || null : null),
     setTap: inst => postTo({ id }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }, rec.dev), // (a panel: c; a Serum's own: i)
-    locked: dest => { const v = own(); return !!v && !!v.vals.s && v.vals.s.locks.p.includes(dest); },
+    locked: dest => { const iv = own(); return !!iv && !!iv.vals.s && iv.vals.s.locks.p.includes(dest); },
     storage: hostStore,
     notify: txt => notice(txt, 3500),
     extraRows: destId => { const k = sx(); return k ? sxExtra(T(), k, destId) : []; }, // ((2b U5) a Serum's own FX: the canvas cables on its knobs — the rack's control menu names them; modHalos paints them)
@@ -2841,9 +2852,9 @@ function sxRec(t, dev) {
 function sxRecOf(id, dev) { const t = project.tracks.find(x => x.id === id); return !t ? null : dev === CMOD.primId(t) ? sxPanel : serumPanels.get(id + '/' + dev) || null; }
 function sxDropEl(el) { for (const r of sxRecs()) if (r.el === el && (r.ui || r.box)) { sxDrop(r); r.box = null; } } // (a classic panel goes where it was)
 function renderCustom(el, t = trk(), dev = curOf(t)) {
-  const v = instView(t, dev), m = modelById(v.model), rec = sxRec(t, dev);
+  const iv = instView(t, dev), m = modelById(iv.model), rec = sxRec(t, dev);
   if (t === trk() && dev === curOf(t)) { aboutUI(m); drawAlgo(); }
-  if (rec.ui && rec.trackId === t.id && rec.vals === v.vals) { rec.ui.refresh(); return; }
+  if (rec.ui && rec.trackId === t.id && rec.vals === iv.vals) { rec.ui.refresh(); return; }
   sxDrop(rec);
   el.className = `inst custom m-${m.id}`;
   el.innerHTML = '';
@@ -2858,7 +2869,7 @@ function renderCustom(el, t = trk(), dev = curOf(t)) {
     if (gen !== rec.gen) return;
     box.innerHTML = '';
     try {
-      rec.trackId = t.id; rec.dev = dev; rec.vals = v.vals;
+      rec.trackId = t.id; rec.dev = dev; rec.vals = iv.vals;
       rec.ui = new M.sx.SerumUI(box, sxHost(t, dev));
     } catch (err) {
       console.error(err);
@@ -2903,9 +2914,9 @@ function renderFxTab(t = trk(), key = cvHomeKeys(t).fx) {
   if (!box) return;
   const own = key && /\/fx$/.test(key) ? key.slice(0, -3) : null, dev = own || key || null, rec = fxRec(t, key);
   const ft = home ? $('#fxtitle') : null; // (today's FX tab header; on the canvas the FX module's title says it)
-  if (ft) ft.textContent = `FX rack · track “${t.name}” (${modelById(t.model).name})`;
+  if (ft) ft.textContent = `FX rack · track “${t.name}” (${modelById(instOf(t).model).name})`;
   if (key) cvBuilt.set(t.id + '/' + key, box);
-  const fx = fxOfDev(t, dev), sx = own ? true : !dev && isSx(t);
+  const fx = fxOfDev(t, dev), sx = own ? true : !dev && isSerumDev(t, CMOD.primId(t));
   if (rec.ui && rec.trackId === t.id && rec.fx === fx && rec.sx === sx) { rec.ui.refresh(); if (key) fxHalos(t, key); return; } // (halos: the rows of the track as it is now, after an undo too)
   fxDrop(rec);
   box.innerHTML = '';
@@ -3121,7 +3132,7 @@ function addTrack(m = model, vals0 = null, o = null) {
 }
 function duplicateTrack(t) {
   hist.record(project);
-  const c = S.newTrack(project, { model: t.model, vals: JSON.parse(JSON.stringify(t.vals)), name: t.name + ' copy', preset: t.preset });
+  const d0 = instOf(t), c = S.newTrack(project, { model: d0.model, vals: JSON.parse(JSON.stringify(d0.vals)), name: t.name + ' copy', preset: d0.preset });
   c.notes = S.cloneNotes(t.notes); c.cc = t.cc.map(x => ({ t: x.t, k: x.k, v: x.v }));
   c.vol = t.vol; c.pan = t.pan; c.ch = t.ch;
   seedPend.add(c.id);
@@ -3436,7 +3447,7 @@ function initTransport() {
   $('#tCount').onchange = e => { project.metronome.countIn = +e.target.value; persist(); };
   $('#tRecMode').onchange = e => { project.rec.mode = e.target.value; persist(); };
   const numIn = (id, fn) => { const el = $('#' + id); el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') el.blur(); }); el.onchange = () => fn(el); };
-  numIn('tBpm', el => { project.bpm = clamp(+el.value || 120, 20, 300); el.value = project.bpm; reanchor(false); persist(); for (const t of project.tracks) if (t.model === 'tb303' && t.seq && t.seq.sync) seqSend(t); queueAll(); });
+  numIn('tBpm', el => { project.bpm = clamp(+el.value || 120, 20, 300); el.value = project.bpm; reanchor(false); persist(); for (const t of project.tracks) for (const id of CMOD.instIds(t)) { const d = t.dev[id]; if (d.model === 'tb303' && d.seq && d.seq.sync) seqSend(t, id); } queueAll(); });
   numIn('tSigN', el => { project.sig = [clamp(Math.round(+el.value) || 4, 1, 16), project.sig[1]]; el.value = project.sig[0]; reanchor(false); arr.render(); roll.render(); persist(); });
   $('#tSigD').onchange = e => { project.sig = [project.sig[0], +e.target.value]; reanchor(false); arr.render(); roll.render(); persist(); };
   numIn('tBars', el => { project.bars = clamp(Math.round(+el.value) || 1, 1, 999); el.value = project.bars; arr.fit(); persist(); });
@@ -3576,7 +3587,7 @@ function bounceSet(sr) {
   const P = new Map(), partsOf = tr => { if (!P.has(tr)) P.set(tr, offParts(tr, sr)); return P.get(tr); };
   const want = new Map();
   for (const tr of project.tracks) {
-    const synced = (tr.model === 'tb303' && tr.seq && tr.seq.sync) || syncedOf(tr);
+    const d = instOf(tr), synced = (d.model === 'tb303' && d.seq && d.seq.sync) || syncedOf(tr);
     if (audible(tr) && (tr.notes.length || synced)) want.set(tr, tr.vol);
   }
   for (const tr of project.tracks) {
@@ -3605,10 +3616,10 @@ async function bounce() {
     const f = sr * 60 / (project.bpm * S.PPQ);
     const items = [];
     for (const x of bounceSet(sr)) {
-      const { tr, patch, gain } = x, synced = tr.model === 'tb303' && tr.seq && tr.seq.sync;
+      const { tr, patch, gain } = x, d = instOf(tr), synced = d.model === 'tb303' && d.seq && d.seq.sync;
       // a Serum track renders at its own quality (Ultra with "Use Ultra quality when rendering") regardless of the
       // dialog (§11.4, SPEC-serum2 §12.6); every node carries its track id: MIDI OUT between the bounced tracks (§7.9)
-      items.push(Object.assign({ tr, patch, os: isSx(tr) ? sxOSFor(tr, sr, true) : os, hostOS: os, song: songData(tr, start, end),
+      items.push(Object.assign({ tr, patch, os: isSerum(d) ? sxOSFor(d, sr, true) : os, hostOS: os, song: songData(tr, start, end),
         transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, seq: patch && synced ? seqPayload(tr, { run: false }) : null, gain, pan: tr.pan, mods: x.graph ? modsFor(tr) : null },
       x.graph ? { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs, needs: x.needs } : null));
     }
@@ -4145,9 +4156,10 @@ function trkChipUI() {
   if (!c) return;
   c.style.setProperty('--tc', t.color);
   $('#trkChip .cv-cn').textContent = t.name;
-  $('#trkChip .cv-cv').textContent = instN(t) > 1 ? instsTxt(t) : modelById(t.model).name + ' · ' + (voiceShown.get(t.id) || trackVoice(t).label);
-  if (shell.chipModel !== t.model) { shell.chipModel = t.model; $('#trkChip .cv-cart').innerHTML = cvArt.chip(t.model); }
-  c.setAttribute('aria-label', `Track “${t.name}” (${modelById(t.model).name}) — the track list`);
+  const d = instOf(t);
+  $('#trkChip .cv-cv').textContent = instN(t) > 1 ? instsTxt(t) : modelById(d.model).name + ' · ' + (voiceShown.get(t.id) || trackVoice(d).label);
+  if (shell.chipModel !== d.model) { shell.chipModel = d.model; $('#trkChip .cv-cart').innerHTML = cvArt.chip(d.model); }
+  c.setAttribute('aria-label', `Track “${t.name}” (${modelById(d.model).name}) — the track list`);
   for (const d of shell.dots) { const on = d.dataset.id === t.id; d.classList.toggle('on', on); d.setAttribute('aria-pressed', on ? 'true' : 'false'); }
 }
 // one dot per track (tap selects); rebuilt with the track rows
@@ -4172,8 +4184,8 @@ function trkListUI() {
   for (const t of project.tracks) {
     const b = h('button', 'cv-tpi' + (t.id === project.selTrack ? ' on' : '')); b.type = 'button'; b.setAttribute('role', 'menuitem');
     b.style.setProperty('--tc', t.color);
-    const art = h('span', 'cv-cart'); art.innerHTML = cvArt.chip(t.model); art.setAttribute('aria-hidden', 'true');
-    const tx = h('span', 'cv-tpt'); tx.append(h('b', null, t.name), h('small', null, instN(t) > 1 ? instsTxt(t) : modelById(t.model).name + ' · ' + (voiceShown.get(t.id) || trackVoice(t).label)));
+    const d = instOf(t), art = h('span', 'cv-cart'); art.innerHTML = cvArt.chip(d.model); art.setAttribute('aria-hidden', 'true');
+    const tx = h('span', 'cv-tpt'); tx.append(h('b', null, t.name), h('small', null, instN(t) > 1 ? instsTxt(t) : modelById(d.model).name + ' · ' + (voiceShown.get(t.id) || trackVoice(d).label)));
     b.append(h('span', 'cv-sw'), art, tx);
     b.onclick = () => selectTrack(t.id);
     pop.append(b);
@@ -4184,14 +4196,15 @@ function trkListUI() {
 }
 // the track rows' instrument chip: tap → the instrument on the canvas; long-press / right-click → its menu
 function instItems(t) { // every model, named with its voice mode (R6: the track's own as its patch plays)
-  return MODELS.map(m => ({ value: m.id, label: m.name + ' · ' + (m.id === t.model ? voiceShown.get(t.id) || trackVoice(t).label : modelVoice(m).label) }));
+  const d = instOf(t);
+  return MODELS.map(m => ({ value: m.id, label: m.name + ' · ' + (m.id === d.model ? voiceShown.get(t.id) || trackVoice(d).label : modelVoice(m).label) }));
 }
 function instMenu(t, x, y) {
   shell.instT = performance.now();
   const tr = () => project.tracks.find(q => q.id === t.id);
   const change = id => { const q = tr(); if (!q) return; selectTrack(q.id); if (!cvDropInstrument(id, null)) setTrackModel(trk(), id); };
   cvTray.popupMenu(x, y, [
-    { label: 'Change instrument', sub: instItems(t).map(it => ({ label: it.label, checked: it.value === t.model, action: () => change(it.value) })) },
+    { label: 'Change instrument', sub: instItems(t).map(it => ({ label: it.label, checked: it.value === instOf(t).model, action: () => change(it.value) })) },
     { label: 'Show on canvas', action: () => { const q = tr(); if (q) instShow(q); } },
     { label: 'Open piano roll', action: () => { const q = tr(); if (q) { selectTrack(q.id); openTab('roll'); } } },
     { sep: true },
@@ -4201,16 +4214,16 @@ function instMenu(t, x, y) {
 function instShow(t) { selectTrack(t.id); if ($('#tab-inst').hidden) openTab('canvas'); cvReveal(t.id); }
 function instTitle(name, tv) { return `${name} · ${tv} — tap: show it on the canvas · hold or right-click: change the instrument, open the roll`; }
 function instChip(t) {
-  const m = modelById(t.model), tv = voiceShown.get(t.id) || trackVoice(t).label;
+  const d = instOf(t), m = modelById(d.model), tv = voiceShown.get(t.id) || trackVoice(d).label;
   const b = h('button', 'hinst'); b.type = 'button';
   b.title = instTitle(m.name, tv);
   b.setAttribute('aria-label', `Instrument ${m.name}: show it on the canvas (menu: change it)`);
-  const art = h('span', 'hia'); art.setAttribute('aria-hidden', 'true'); art.innerHTML = cvArt.chip(t.model);
+  const art = h('span', 'hia'); art.setAttribute('aria-hidden', 'true'); art.innerHTML = cvArt.chip(d.model);
   // model · voice mode: three spans, the model name ellipsised first (style.css .hin / .his / .hiv; ≤ 900 px only the voice
   // mode: the drawing names the model), the voice mode always whole
   const lab = h('span', 'hil'), many = instN(t) > 1;
   if (many) lab.append(h('span', 'hin', instsTxt(t))); else lab.append(h('span', 'hin', m.name), h('span', 'his', ' · '), h('span', 'hiv', tv));
-  lab.value = many ? '' : t.model; // (voiceSeen relabels its .hiv while it names the model)
+  lab.value = many ? '' : d.model; // (voiceSeen relabels its .hiv while it names the model)
   voiceOpt.set(t.id, lab);
   b.append(art, lab);
   b.onclick = () => { if (performance.now() - shell.instT > 700) instShow(t); }; // (not the release of a long-press)
@@ -4264,7 +4277,7 @@ const srcDrag = {
     // new size), not under the finger — the drop never moves it
     const t = trk(), k = cvHomeKeys(t).inst, im = i.over === 'canvas' && cvView ? cvView.modules.get(k) : null, ir = im ? im.rect() : null;
     if (i.over === 'canvas') {
-      const sz = cvModuleSize(id), was = t.model, label = modelById(id).name + (id === was ? '' : ' · replaces ' + modelById(was).name);
+      const sz = cvModuleSize(id), was = instOf(t).model, label = modelById(id).name + (id === was ? '' : ' · replaces ' + modelById(was).name);
       const c = ir ? world.toClient(ir.x, ir.y) : null;
       shell.drop = c ? world.ghost({ x: c.x, y: c.y, w: sz.w, h: sz.h, dx: 0, dy: 0, snap: false, label }) : world.ghost({ x: i.x, y: i.y, w: sz.w, h: sz.h, label });
     } else { world.ghost(null); shell.drop = null; }
@@ -4629,7 +4642,7 @@ function layUi(t, ui, dev = curOf(t)) {
 }
 function cvSetLayout(want, dev) {
   const t = trk(), K = dev || curOf(t);
-  if (isSx(instView(t, K)) || (want !== 'hw' && want !== 'flow') || instUi(t, K) === want) return;
+  if (isSerumDev(t, K) || (want !== 'hw' && want !== 'flow') || instUi(t, K) === want) return;
   hist.record(project, want === 'flow' ? 'Simple layout' : 'Hardware layout');
   const lay = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {}), m = cvView && cvView.modules.get(K);
   const e = lay[K] ? Object.assign({}, lay[K]) : m ? { x: Math.round(m.x), y: Math.round(m.y) } : { x: 0, y: 0 };
@@ -4684,11 +4697,11 @@ function cvTitle(key) {
 // an instrument module's chip: a classic one's ◀ preset select ▶ (the Hardware panel has no preset plate: the chip
 // loads, the ⋯ menu saves / deletes / inits) / a Serum's preset name
 function cvChip(t, dev = curOf(t)) {
-  const v = instView(t, dev), m = modelById(v.model), ck = t.id + '/' + dev, key = ck + '/' + m.id;
+  const iv = instView(t, dev), m = modelById(iv.model), ck = t.id + '/' + dev, key = ck + '/' + m.id;
   let C = cvChips.get(ck);
   if (!C || C.key !== key) {
     let el, sel;
-    const here = () => { const x = instView(trk(), dev); return x.model === m.id ? x : null; };
+    const here = () => { const iv = instView(trk(), dev); return iv.model === m.id ? iv : null; };
     if (m.custom) { el = sel = h('span', 'cv-pname'); el.title = 'Preset (change it in the panel’s browser)'; }
     else {
       sel = h('select', 'cv-psel');
@@ -4704,15 +4717,15 @@ function cvChip(t, dev = curOf(t)) {
   return C.el;
 }
 function cvChipFill(t, dev = curOf(t)) {
-  const v = instView(t, dev), m = modelById(v.model), C = cvChips.get(t.id + '/' + dev);
+  const iv = instView(t, dev), m = modelById(iv.model), C = cvChips.get(t.id + '/' + dev);
   if (!C || C.key !== t.id + '/' + dev + '/' + m.id) return;
-  if (m.custom) { const s = v.preset || 'Init'; if (C.el.textContent !== s) C.el.textContent = s; return; }
-  const list = presetList(m), sig = list.length + ':' + v.preset;
+  if (m.custom) { const s = iv.preset || 'Init'; if (C.el.textContent !== s) C.el.textContent = s; return; }
+  const list = presetList(m), sig = list.length + ':' + iv.preset;
   if (sig === C.sig) return;
   C.sig = sig;
   const sel = C.sel;
   sel.innerHTML = '';
-  const o0 = h('option', null, v.preset ? v.preset : v.preset === null ? 'Custom' : '—'); o0.value = ''; sel.append(o0);
+  const o0 = h('option', null, iv.preset ? iv.preset : iv.preset === null ? 'Custom' : '—'); o0.value = ''; sel.append(o0);
   let grp = null, gname = '';
   for (const p of list) {
     if (p.group !== gname) { grp = h('optgroup'); grp.label = p.group; gname = p.group; sel.append(grp); }
@@ -4735,7 +4748,7 @@ function cvMenu(a, b) {
   const front = { label: 'Bring to front', action: () => V.front(key) };
   const tidyI = { label: 'Tidy the canvas', action: () => cvTidy() };
   if (kind === 'inst') {
-    const v = instView(t, key), mdl = modelById(v.model), here = fn => () => { setCur(trk(), key); fn(); };
+    const iv = instView(t, key), mdl = modelById(iv.model), here = fn => () => { setCur(trk(), key); fn(); };
     const head = [{ label: 'About the ' + mdl.name + '…', action: here(cvAbout) }, { label: 'Replace with…', action: here(() => cvOpenSources('replace')) }];
     if (mdl.custom) return [...head, { label: 'Modulation list…', action: () => modList() }, { sep: true }, fold, front, { sep: true }, tidyI]; // (Serum: its own browser saves; 2a: its mod rows)
     // a classic synth: its real front panel (default) or today's simple panel; the sound actions of its preset plate
@@ -4744,7 +4757,7 @@ function cvMenu(a, b) {
       { label: hw ? 'Hardware layout' : 'Hardware layout (not drawn yet)', checked: u === 'hw', action: () => cvSetLayout('hw', key) },
       { label: 'Simple layout', checked: u === 'flow', action: () => cvSetLayout('flow', key) },
       { sep: true },
-      { label: 'Save sound…', action: () => presetSave(v) }, { label: 'Delete saved sound', action: () => presetDelete(v), disabled: !presetSaved(v) }, { label: 'Init sound', action: () => presetInit(v) },
+      { label: 'Save sound…', action: () => presetSave(iv) }, { label: 'Delete saved sound', action: () => presetDelete(iv), disabled: !presetSaved(iv) }, { label: 'Init sound', action: () => presetInit(iv) },
       { sep: true }, fold, front, { sep: true }, tidyI];
   }
   if (kind === 'mod') return [{ label: 'Delete', action: () => modDelete(key) }, { label: 'Modulation list…', action: () => modList() }, { sep: true }, fold, front, { sep: true }, tidyI];
@@ -4904,10 +4917,10 @@ function cvRelabel() { // titles, chips, badges and the Serum's route label afte
 // Sources tray's replace mode: replaces the instrument (v: its device view; default the current one = the primary) in
 // place (SPEC §2.7), one History step, an undo notice
 function cvDropInstrument(modelId, at, o = null, v0 = null) {
-  const t = trk(), v = v0 || curView(t), dev = dvOf(v), m = MODELS.find(x => x.id === modelId);
-  if (!m || m.id === v.model) return false;
-  const old = modelById(v.model), id = t.id;
-  const why = setTrackModel(v, m.id, o); // (renderPanel → cvPanelDone: the FX module and the titles follow; why: its cables dropped, 2a)
+  const t = trk(), iv = v0 || curView(t), dev = dvOf(iv), m = MODELS.find(x => x.id === modelId);
+  if (!m || m.id === iv.model) return false;
+  const old = modelById(iv.model), id = t.id;
+  const why = setTrackModel(iv, m.id, o); // (renderPanel → cvPanelDone: the FX module and the titles follow; why: its cables dropped, 2a)
   // the step the replacement left on top of History (or the equal one it kept): the tap undoes it only while it is still
   // the newest — after a later step (a move, a knob, a note) the old instrument comes back as a step of its own instead,
   // never undoing that later edit (an undo / redo makes a new entry object: the safe branch too)
@@ -5171,8 +5184,7 @@ const MOD_EDIT = new Set(['lfo', 'env', 'macro', 'cc', 'chaos', 'note']); // (2b
 const modSrcList = t => CMOD.sourcesOf(t, project).concat(CMOD.linkSources(t)); // (every source a cable may start from: the wheel, the modules, the Serums' own LFOs / ENVs)
 const modDestDevs = t => (t && t.dev ? Object.keys(t.dev).filter(k => t.dev[k] && (t.dev[k].kind === 'synth' || t.dev[k].kind === 'panel')) : []); // (the devices with knobs)
 const modSplit = dst => { const i = typeof dst === 'string' ? dst.indexOf(':') : -1; return i > 0 ? { dev: dst.slice(0, i), pid: dst.slice(i + 1) } : null; };
-const isSerumDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && d.model === 'serum'; };
-const serumIds = t => CMOD.instIds(t).filter(k => isSerumDev(t, k));
+// (isSerumDev, serumIds: R2's helpers, at the top)
 let modLayer = null, modHostO = null, modDrag = null, modPend = null, modSelHost = false, modMenuId = null;
 const modBodies = new Map(); // module key → its cv-mods-ui body (+ kind)
 // the view's devices: the track's (its modulators among them) and the project's wheel once placed
@@ -5750,9 +5762,9 @@ function modToPreset(id) {
   const t = trk(), r0 = (t.mods || []).find(x => x.id === id), D = r0 && modSplit(r0.dst);
   if (!D || !isSerumDev(t, D.dev)) return { ok: false, why: 'No such cable' };
   modPre();
-  const v = instView(t, D.dev), r = CMOD.toPreset(t, id, v.vals.s);
+  const iv = instView(t, D.dev), r = CMOD.toPreset(t, id, iv.vals.s);
   if (!r.ok) { modUnpre(); return r; }
-  sxEdit(v, s => { s.matrix = r.matrix; });
+  sxEdit(iv, s => { s.matrix = r.matrix; });
   modMeta(t, D.dev, r.slot, r.matrix[r.slot]);
   return r;
 }
@@ -5760,9 +5772,9 @@ function modFromPreset(dev, slot) {
   const t = trk();
   if (!isSerumDev(t, dev)) return { ok: false, why: 'No such Serum' };
   modPre();
-  const v = instView(t, dev), row = v.vals.s.matrix[slot], r = CMOD.fromPreset(t, dev, slot, { project });
+  const iv = instView(t, dev), row = iv.vals.s.matrix[slot], r = CMOD.fromPreset(t, dev, slot, { project });
   if (!r.ok) { modUnpre(); return r; }
-  sxEdit(v, s => { s.matrix = r.matrix; });
+  sxEdit(iv, s => { s.matrix = r.matrix; });
   modMeta(t, dev, slot, row);
   return r;
 }

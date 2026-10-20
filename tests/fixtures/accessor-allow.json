@@ -1,76 +1,268 @@
 {
   "about": "The accessor ratchet's allowlist (tests/lint.test.mjs, IMPL-3 §4.3): per root file the count n of code lines reading a track's v1 fields by the 1e names (t / tr / x / T / v / V . model / vals / preset / seq / fx; trk().x / curView().x; fxOf( / isSx( ). Shrink-only: above fails, below asks to lower n. `sites` name each kept line by a fragment (`has`) and its reason (`why`); a file without them gives one `why` for all (the R0 baseline, retired step by step).",
   "files": {
-    "main.js": { "n": 134, "why": "R0 baseline: the 1e transition accessors and the primary-only paths, retired in R1–R7" },
-    "classic-panel.js": { "n": 1, "why": "R0 baseline: the rollback's preset name on the panel's track (a device view from R1)" },
-    "midi.js": { "n": 2, "why": "R0 baseline: isMpe and the host-less instsOf read the primary (R2)" },
-    "song.js": { "n": 2, "why": "R0 baseline: deserialize's own record (kept) and exportMIDI's track model (R2)" },
-    "assets.js": { "n": 6, "why": "R0 baseline: the asset manager reads the primary Serum and the primary's FX (R4: the host's states())" },
-    "cv-migrate.js": { "n": 9, "sites": [
-      { "has": "const sx = t.model === 'serum';", "why": "trackToV2: a v1 track's own fields (the input of the v1 → v2 step)" },
-      { "has": "const i1 = { kind: 'synth', model: typeof t.model === 'string'", "why": "trackToV2: a v1 track's own fields" },
-      { "has": "if (t.seq != null) i1.seq = t.seq;", "why": "trackToV2: a v1 track's own fields" },
-      { "has": "if (t.fx != null) i1.fx = t.fx;", "why": "trackToV2: a v1 track's own fields" },
-      { "has": "if (t.fx != null) fx1.fx = t.fx;", "why": "trackToV2: a v1 track's own fields" },
-      { "has": "const v = Object.assign({}, c.v1); if (v.seq == null) delete v.seq;", "why": "toV1: cv-graph's v1 view (c.v1), a plain object" },
-      { "has": "if (via && !hasFx(v.fx) && pfx !== undefined)", "why": "splitTracks: instV1's plain v1 fields of a device" },
-      { "has": "else { dv.fx = plainCopy(v.fx);", "why": "splitTracks: instV1's plain v1 fields of a device" },
-      { "has": "const P = { kind: 'panel', fx: plainCopy(v.fx) };", "why": "splitTracks: instV1's plain v1 fields of a device" }
-    ] },
-    "cv-cables.js": { "n": 7, "sites": [
-      { "has": "const sx = t.model === 'serum', fx = sx ? 'i1/fx' : 'fx1';", "why": "deriveCables: the stage-1b v1 track (no dev)" },
-      { "has": "return [c('i1.out', fx + '.in', sx ? routeLabel(isObj(t.vals) ? t.vals.s : null, t.fx)", "why": "deriveCables: the stage-1b v1 track (no dev)" },
-      { "has": "if (sl > 0) return d.slice(sl + 1) === 'fx' && isSx(D, d.slice(0, sl))", "why": "isSx(D, id): cv-cables' own test of a device record, not main's isSx(t)" },
-      { "has": "return isSx(D, d) ? null : jack;", "why": "isSx(D, id): a device record" },
-      { "has": "return D && isSx(D, d) && port === d + '.out'", "why": "isSx(D, id): a device record" },
-      { "has": "if (!isSx(D, id)) continue;", "why": "isSx(D, id): a device record (two lines)" },
-      { "has": "if (!isSx(D, id)) continue;", "why": "isSx(D, id): a device record (two lines)" }
-    ] },
-    "cv-cost.js": { "n": 7, "sites": [
-      { "has": "else if (isObj(x) && x.kind === 'synth' && COST.synth[x.model]) {", "why": "estimate: a device record (x.kind 'synth')" },
-      { "has": "else if (x.model === 'serum') load = serumLoad(", "why": "estimate: a device record" },
-      { "has": "else load = COST.synth[x.model].base", "why": "estimate: a device record" },
-      { "has": "if (!t.model) return 0;", "why": "estimateTrack: the v1 branch (no dev)" },
-      { "has": "sx = t.model === 'serum';", "why": "estimateTrack: the v1 branch (no dev)" },
-      { "has": "return estimate({ kind: 'synth', model: t.model, vals: t.vals", "why": "estimateTrack: the v1 branch (no dev)" },
-      { "has": ": t.model ? [{ kind: 'synth', model: t.model, vals: t.vals, fx: t.fx }] : []);", "why": "instsOf: the v1 branch (no dev)" }
-    ] },
-    "cv-graph.js": { "n": 6, "sites": [
-      { "has": "return { canonical: true, shape: t.model === 'serum' ? 'serum' : 'classic', inst: null,", "why": "compileTrack: the v1 branch (!isV2)" },
-      { "has": "v1: { model: t.model, vals: t.vals, preset: t.preset, seq: t.seq, fx: t.fx } };", "why": "compileTrack: the v1 branch (!isV2)" },
-      { "has": "const i1 = { kind: 'synth', model: t.model, vals: t.vals, preset: t.preset, seq: t.seq };", "why": "v2View: a v1 track as devices" },
-      { "has": "if (t.model === 'serum') return { prim: 'i1', dev: { i1: Object.assign(i1, { fx: t.fx })", "why": "v2View: a v1 track as devices" },
-      { "has": "return { prim: 'i1', dev: { i1, fx1: { kind: 'panel', fx: t.fx }", "why": "v2View: a v1 track as devices" },
-      { "has": "dst: { kind: 'fx', chain: x.D.dev, fx: x.fx, key: x.key }", "why": "compileMods: a row record's fx index (x.fx), not a track" }
-    ] },
-    "cv-modlayer.js": { "n": 3, "sites": [
-      { "has": "if (isObj(t) && typeof t.preset === 'string' && Number.isInteger(t.slot))", "why": "a preset-row key { preset: dev, slot }, not a track" },
-      { "has": "if (T.preset) { const r = (call('presetRows', T.dev)", "why": "a resolved row target { dev, slot, preset }, not a track" },
-      { "has": "const dev = T.dev, pre = T.preset, B0 = budgetOf(dev)", "why": "a resolved row target, not a track" }
-    ] },
-    "cv-module.js": { "n": 8, "sites": [
-      { "has": "if (!D) return [{ key: ID.inst, kind: 'inst', model: t.model || null", "why": "devicesOf: the stage-1b v1 track (no dev)" },
-      { "has": "const tModel = () => { try { return T.model; }", "why": "lane C: the view's V.model (set, never read) — reached on v2 tracks (the accessor hook lists it); to read the host's devices" },
-      { "has": "const keys = () => (DEV ? DL.map(d => d.key) : [ID.inst, fxKey(T.model), ID.out]);", "why": "the 1b legacy path (no host.devices): module tests' v1 tracks" },
-      { "has": "const modelOf = key => (DEV ? (DM.get(key) || {}).model || null : kindOf(key) === 'inst' ? T.model : null);", "why": "the 1b legacy path (no host.devices)" },
-      { "has": "defaultW(ID.inst, T.model) } } : null;", "why": "the 1b legacy path (no host.devices)" },
-      { "has": "((DEV ? modelOf(key) : T.model) === 'serum' ? 3700 : 600)", "why": "the 1b legacy path (no host.devices)" },
-      { "has": "w: DEV ? kindW(kind, modelOf(key)) : defaultW(key, T.model)", "why": "the 1b legacy path (no host.devices)" },
-      { "has": "V.trackId = T.id; V.model = tModel();", "why": "lane C: the view's V.model (set, never read), through tModel" }
-    ] },
-    "fx-core.js": { "n": 1, "sites": [
-      { "has": "for (const v of FACTORY_CHAINS_V1.chains) if (v.name === c.name) return v.fx;", "why": "a v1 factory chain record, not a track" }
-    ] },
-    "serum-core.js": { "n": 1, "sites": [
-      { "has": "return { s: normalizeSerum(st), fx: isObj(x.fx) ? x.fx : null };", "why": "a preset record (x.fx), not a track" }
-    ] },
-    "smpgen.js": { "n": 6, "sites": [
-      { "has": "src === 'farm' ? { model: x.model, preset: x.preset || null", "why": "a render-farm job record, not a track" },
-      { "has": "notes.push({ rid: zoneId(id, root, vel), model: x.model, preset: x.preset", "why": "a render-farm job record" },
-      { "has": "return { id, kind: 'multi', name: x.name, model: x.model, preset: x.preset", "why": "a render-farm job record" },
-      { "has": "const base = { id, kind: 'sample', name: x.name, model: x.model", "why": "a render-farm job record" },
-      { "has": "if (x.model !== 'serum') {", "why": "a render-farm job record" },
-      { "has": "return Object.assign(base, { preset: x.preset, bpm: 120, mix: 'phrase'", "why": "a render-farm job record" }
-    ] }
+    "main.js": {
+      "n": 31,
+      "why": "R2 remainder: fxOf and its callers (R3), the load / new-track / model-change writes (R5), bind's globals (R5 / R6)"
+    },
+    "midi.js": {
+      "n": 1,
+      "sites": [
+        {
+          "has": "return t.model === 'serum' && t.vals ? [t] : [];",
+          "why": "sxInsts: a track without devices (main's file, midi.test's plain tracks) is its own Serum"
+        }
+      ]
+    },
+    "song.js": {
+      "n": 1,
+      "sites": [
+        {
+          "has": "if (v2) { delete tr.model; delete tr.vals; delete tr.preset; }",
+          "why": "deserialize's own new record: a v2 track keeps no v1 fields (no accessor exists yet)"
+        }
+      ]
+    },
+    "assets.js": {
+      "n": 6,
+      "why": "R0 baseline: the asset manager reads the primary Serum and the primary's FX (R4: the host's states())"
+    },
+    "cv-migrate.js": {
+      "n": 9,
+      "sites": [
+        {
+          "has": "const sx = t.model === 'serum';",
+          "why": "trackToV2: a v1 track's own fields (the input of the v1 → v2 step)"
+        },
+        {
+          "has": "const i1 = { kind: 'synth', model: typeof t.model === 'string'",
+          "why": "trackToV2: a v1 track's own fields"
+        },
+        {
+          "has": "if (t.seq != null) i1.seq = t.seq;",
+          "why": "trackToV2: a v1 track's own fields"
+        },
+        {
+          "has": "if (t.fx != null) i1.fx = t.fx;",
+          "why": "trackToV2: a v1 track's own fields"
+        },
+        {
+          "has": "if (t.fx != null) fx1.fx = t.fx;",
+          "why": "trackToV2: a v1 track's own fields"
+        },
+        {
+          "has": "const v = Object.assign({}, c.v1); if (v.seq == null) delete v.seq;",
+          "why": "toV1: cv-graph's v1 view (c.v1), a plain object"
+        },
+        {
+          "has": "if (via && !hasFx(v.fx) && pfx !== undefined)",
+          "why": "splitTracks: instV1's plain v1 fields of a device"
+        },
+        {
+          "has": "else { dv.fx = plainCopy(v.fx);",
+          "why": "splitTracks: instV1's plain v1 fields of a device"
+        },
+        {
+          "has": "const P = { kind: 'panel', fx: plainCopy(v.fx) };",
+          "why": "splitTracks: instV1's plain v1 fields of a device"
+        }
+      ]
+    },
+    "cv-cables.js": {
+      "n": 7,
+      "sites": [
+        {
+          "has": "const sx = t.model === 'serum', fx = sx ? 'i1/fx' : 'fx1';",
+          "why": "deriveCables: the stage-1b v1 track (no dev)"
+        },
+        {
+          "has": "return [c('i1.out', fx + '.in', sx ? routeLabel(isObj(t.vals) ? t.vals.s : null, t.fx)",
+          "why": "deriveCables: the stage-1b v1 track (no dev)"
+        },
+        {
+          "has": "if (sl > 0) return d.slice(sl + 1) === 'fx' && isSx(D, d.slice(0, sl))",
+          "why": "isSx(D, id): cv-cables' own test of a device record, not main's isSx(t)"
+        },
+        {
+          "has": "return isSx(D, d) ? null : jack;",
+          "why": "isSx(D, id): a device record"
+        },
+        {
+          "has": "return D && isSx(D, d) && port === d + '.out'",
+          "why": "isSx(D, id): a device record"
+        },
+        {
+          "has": "if (!isSx(D, id)) continue;",
+          "why": "isSx(D, id): a device record (two lines)"
+        },
+        {
+          "has": "if (!isSx(D, id)) continue;",
+          "why": "isSx(D, id): a device record (two lines)"
+        }
+      ]
+    },
+    "cv-cost.js": {
+      "n": 7,
+      "sites": [
+        {
+          "has": "else if (isObj(x) && x.kind === 'synth' && COST.synth[x.model]) {",
+          "why": "estimate: a device record (x.kind 'synth')"
+        },
+        {
+          "has": "else if (x.model === 'serum') load = serumLoad(",
+          "why": "estimate: a device record"
+        },
+        {
+          "has": "else load = COST.synth[x.model].base",
+          "why": "estimate: a device record"
+        },
+        {
+          "has": "if (!t.model) return 0;",
+          "why": "estimateTrack: the v1 branch (no dev)"
+        },
+        {
+          "has": "sx = t.model === 'serum';",
+          "why": "estimateTrack: the v1 branch (no dev)"
+        },
+        {
+          "has": "return estimate({ kind: 'synth', model: t.model, vals: t.vals",
+          "why": "estimateTrack: the v1 branch (no dev)"
+        },
+        {
+          "has": ": t.model ? [{ kind: 'synth', model: t.model, vals: t.vals, fx: t.fx }] : []);",
+          "why": "instsOf: the v1 branch (no dev)"
+        }
+      ]
+    },
+    "cv-graph.js": {
+      "n": 6,
+      "sites": [
+        {
+          "has": "return { canonical: true, shape: t.model === 'serum' ? 'serum' : 'classic', inst: null,",
+          "why": "compileTrack: the v1 branch (!isV2)"
+        },
+        {
+          "has": "v1: { model: t.model, vals: t.vals, preset: t.preset, seq: t.seq, fx: t.fx } };",
+          "why": "compileTrack: the v1 branch (!isV2)"
+        },
+        {
+          "has": "const i1 = { kind: 'synth', model: t.model, vals: t.vals, preset: t.preset, seq: t.seq };",
+          "why": "v2View: a v1 track as devices"
+        },
+        {
+          "has": "if (t.model === 'serum') return { prim: 'i1', dev: { i1: Object.assign(i1, { fx: t.fx })",
+          "why": "v2View: a v1 track as devices"
+        },
+        {
+          "has": "return { prim: 'i1', dev: { i1, fx1: { kind: 'panel', fx: t.fx }",
+          "why": "v2View: a v1 track as devices"
+        },
+        {
+          "has": "dst: { kind: 'fx', chain: x.D.dev, fx: x.fx, key: x.key }",
+          "why": "compileMods: a row record's fx index (x.fx), not a track"
+        }
+      ]
+    },
+    "cv-modlayer.js": {
+      "n": 3,
+      "sites": [
+        {
+          "has": "if (isObj(t) && typeof t.preset === 'string' && Number.isInteger(t.slot))",
+          "why": "a preset-row key { preset: dev, slot }, not a track"
+        },
+        {
+          "has": "if (T.preset) { const r = (call('presetRows', T.dev)",
+          "why": "a resolved row target { dev, slot, preset }, not a track"
+        },
+        {
+          "has": "const dev = T.dev, pre = T.preset, B0 = budgetOf(dev)",
+          "why": "a resolved row target, not a track"
+        }
+      ]
+    },
+    "cv-module.js": {
+      "n": 8,
+      "sites": [
+        {
+          "has": "if (!D) return [{ key: ID.inst, kind: 'inst', model: t.model || null",
+          "why": "devicesOf: the stage-1b v1 track (no dev)"
+        },
+        {
+          "has": "const tModel = () => { try { return T.model; }",
+          "why": "lane C: the view's V.model (set, never read) — reached on v2 tracks (the accessor hook lists it); to read the host's devices"
+        },
+        {
+          "has": "const keys = () => (DEV ? DL.map(d => d.key) : [ID.inst, fxKey(T.model), ID.out]);",
+          "why": "the 1b legacy path (no host.devices): module tests' v1 tracks"
+        },
+        {
+          "has": "const modelOf = key => (DEV ? (DM.get(key) || {}).model || null : kindOf(key) === 'inst' ? T.model : null);",
+          "why": "the 1b legacy path (no host.devices)"
+        },
+        {
+          "has": "defaultW(ID.inst, T.model) } } : null;",
+          "why": "the 1b legacy path (no host.devices)"
+        },
+        {
+          "has": "((DEV ? modelOf(key) : T.model) === 'serum' ? 3700 : 600)",
+          "why": "the 1b legacy path (no host.devices)"
+        },
+        {
+          "has": "w: DEV ? kindW(kind, modelOf(key)) : defaultW(key, T.model)",
+          "why": "the 1b legacy path (no host.devices)"
+        },
+        {
+          "has": "V.trackId = T.id; V.model = tModel();",
+          "why": "lane C: the view's V.model (set, never read), through tModel"
+        }
+      ]
+    },
+    "fx-core.js": {
+      "n": 1,
+      "sites": [
+        {
+          "has": "for (const v of FACTORY_CHAINS_V1.chains) if (v.name === c.name) return v.fx;",
+          "why": "a v1 factory chain record, not a track"
+        }
+      ]
+    },
+    "serum-core.js": {
+      "n": 1,
+      "sites": [
+        {
+          "has": "return { s: normalizeSerum(st), fx: isObj(x.fx) ? x.fx : null };",
+          "why": "a preset record (x.fx), not a track"
+        }
+      ]
+    },
+    "smpgen.js": {
+      "n": 6,
+      "sites": [
+        {
+          "has": "src === 'farm' ? { model: x.model, preset: x.preset || null",
+          "why": "a render-farm job record, not a track"
+        },
+        {
+          "has": "notes.push({ rid: zoneId(id, root, vel), model: x.model, preset: x.preset",
+          "why": "a render-farm job record"
+        },
+        {
+          "has": "return { id, kind: 'multi', name: x.name, model: x.model, preset: x.preset",
+          "why": "a render-farm job record"
+        },
+        {
+          "has": "const base = { id, kind: 'sample', name: x.name, model: x.model",
+          "why": "a render-farm job record"
+        },
+        {
+          "has": "if (x.model !== 'serum') {",
+          "why": "a render-farm job record"
+        },
+        {
+          "has": "return Object.assign(base, { preset: x.preset, bpm: 120, mix: 'phrase'",
+          "why": "a render-farm job record"
+        }
+      ]
+    }
   }
 }

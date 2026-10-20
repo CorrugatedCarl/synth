@@ -756,6 +756,12 @@ function midiNotes(notes) {
   }
   return out;
 }
+// the instrument name a track's MIDI file chunk carries: its primary instrument's model (cv-model instOf's rule — the prim
+// device, else the first instrument; song.js cannot import cv-model); a track without devices (main's): its own
+function instModel(tr) {
+  const D = isObj(tr.dev) ? tr.dev : null, d = D ? (isObj(D[tr.prim]) && D[tr.prim].kind === 'synth' ? D[tr.prim] : Object.values(D).find(x => isObj(x) && x.kind === 'synth')) : tr;
+  return d && typeof d.model === 'string' ? d.model : '';
+}
 export function exportMIDI(project, { trackIds = null } = {}) {
   const trs = pickTracks(project, trackIds);
   const sn = clamp(R(project.sig[0]), 1, 255), sd = project.sig[1], us = clamp(R(60e6 / project.bpm), 1, 0xFFFFFF);
@@ -769,7 +775,7 @@ export function exportMIDI(project, { trackIds = null } = {}) {
   out.push(trackChunk(cond, end));
   trs.forEach((tr, i) => {
     const ch = tr.ch >= 1 && tr.ch <= 16 ? tr.ch - 1 : AUTO_CH[i % AUTO_CH.length];
-    const evs = [{ t: 0, p: -1, b: metaEv(0x03, utf8(tr.name)) }, { t: 0, p: -1, b: metaEv(0x04, utf8(tr.model)) }];
+    const evs = [{ t: 0, p: -1, b: metaEv(0x03, utf8(tr.name)) }, { t: 0, p: -1, b: metaEv(0x04, utf8(instModel(tr))) }];
     for (const x of midiNotes(tr.notes)) evs.push({ t: x.t, p: 2, b: [0x90 | ch, x.n, x.v] }, { t: x.e, p: 0, b: [0x80 | ch, x.n, 64] });
     for (const c of tr.cc) evs.push({ t: clamp(R(c.t), 0, MAXT), p: 1, b: ccBytes(c, ch) });
     evs.sort((a, b) => a.t - b.t || a.p - b.p);

@@ -250,8 +250,59 @@ test('R0 the multisample zone: zoneWarm reads the shown Serum\'s multisample rec
   try {
     assert.deepEqual([acc.zoneOf(0), acc.zoneOf(1)], ['smp:z1', null]);
     acc.msRecs.delete('smp:accms');
-    acc.zoneWarm(sxT.id, { zone: [0, -1, -1] });
+    acc.zoneWarm(sxT.id, prim, { zone: [0, -1, -1] }); // (R2: per Serum device)
     assert.equal(acc.msRecs.has('smp:accms'), true, 'zoneWarm: the record asked for (once)');
     await sim.settle(5);
   } finally { r.ui = was.ui; r.trackId = was.trackId; d.vals.s.osc[0].type = 'wt'; d.vals.s.osc[0].multi = ''; acc.msRecs.delete('smp:accms'); }
+});
+
+/* ------------------------------------------------------------ the primary-only paths, with a second instrument (§4.2) */
+// (the UI holds one instrument per track since 1f: the hook __synthTest.cv.add puts a second one into the data)
+const duo = (prim, other) => { const t = fresh(prim), id = cv.add(other, null); sim.raf(); return { t, id }; };
+
+test('R2 MPE detection: any Serum of the track with MPE on (not only the primary); the MIDI routes follow', async () => {
+  const M = await import('../midi.js?v=9');
+  const { t, id } = duo('juno60', 'serum');
+  assert.equal(M.isMpe(t), false);
+  t.dev[id].vals.s.global.mpe.on = 1;
+  t.ch = 3;
+  assert.deepEqual([M.isMpe(t), M.noteCh(t, 5), M.targets(PJ().tracks, PJ().selTrack, 7).includes(t)], [true, 5, true], 'the second Serum\'s MPE');
+  t.dev[id].vals.s.global.mpe.on = 0;
+  assert.equal(M.isMpe(t), false);
+});
+
+test('R2 MIDI file export: a track\'s instrument name is its primary\'s model (a second instrument is not it)', () => {
+  const { t } = duo('dx7', 'serum');
+  const bytes = S.exportMIDI({ name: 'x', bpm: 120, sig: [4, 4], bars: 1, tracks: [t] }, {}), txt = new TextDecoder('latin1').decode(bytes);
+  assert.deepEqual([txt.includes('dx7'), txt.includes('serum')], [true, false]);
+});
+
+test('R2 program change: the primary, named — a Serum that is not the primary keeps its preset', async () => {
+  const SU = await import('../serum-ui.js?v=9');
+  const { t, id } = duo('minimoog', 'serum'), H = api.sxHost(t, id), was = acc.uiLoad(Promise.resolve({ sx: SU }));
+  const before = H.presets.current(), pre = t.dev[id].preset;
+  try { acc.programChange([t], 4); for (let k = 0; k < 10; k++) await sim.settle(2); } finally { acc.uiLoad(was); }
+  assert.deepEqual([H.presets.current(), t.dev[id].preset], [before, pre]);
+});
+
+test('R2 the rate line names every Serum\'s oversampling (a second Serum\'s too); the multisample zone records of any Serum', () => {
+  const { t, id } = duo('juno60', 'serum');
+  const all = () => PJ().tracks.flatMap(x => CMOD.instIds(x).filter(k => x.dev[k].model === 'serum').map(k => x.dev[k]));
+  for (const d of all()) d.vals.s.global.os = 1;
+  t.dev[id].vals.s.global.os = 4;
+  acc.rateText();
+  const sr = sim.ctx().sampleRate, kHz = x => (x / 1000).toFixed(1).replace(/\.0$/, ''), txt = sim.$('#rate').textContent;
+  for (const d of all()) d.vals.s.global.os = 2;
+  assert.equal(txt.includes('Serum ' + kHz(sr) + '/' + kHz(sr * 4) + ' kHz'), true, txt);
+  t.dev[id].vals.s.osc[1].type = 'multi'; t.dev[id].vals.s.osc[1].multi = 'smp:accms2';
+  acc.zoneWarm(t.id, id, { zone: [-1, 0, -1] });
+  assert.equal(acc.msRecs.has('smp:accms2'), true);
+  acc.msRecs.delete('smp:accms2'); t.dev[id].vals.s.osc[1].type = 'wt'; t.dev[id].vals.s.osc[1].multi = '';
+});
+
+test('R2 Resample to on a second Serum: rendered alone through its own patch (buildInstPatch), into its own oscillator', async () => {
+  const { t, id } = duo('juno60', 'serum');
+  const iv = acc.instView(t, id), want = sha(api.buildInstPatch(t, id, 44100, true)), prim = JSON.stringify(P(t).vals);
+  await api.resampleTo(iv, 'A');
+  assert.deepEqual([sha(sim.lastOffline.nodes[0].po.patch), /^user:/.test(t.dev[id].vals.s.osc[0].wt), JSON.stringify(P(t).vals) === prim], [want, true, true]);
 });
