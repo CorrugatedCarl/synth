@@ -12,8 +12,9 @@ Design inputs: [research-drums.md](research-drums.md) (the survey, cited **RD §
 [IMPL-panels.md](IMPL-panels.md) (the layout format, 2 px/mm); [IMPL-1i.md](IMPL-1i.md) (velocity from where a key is touched, the
 `perf` host, music zones); [IMPL-2b.md](IMPL-2b.md) (the classic adapter: drum knobs as modulation destinations); [IMPL-3.md](IMPL-3.md)
 (milestone 3, whose deploy this stage follows; `wk.storeDensity`). ROADMAP and its feedback rows win where they differ. Code
-references are to `canvas` at 5129c60 (they drift; the names do not). Sections 1–10 are the contract, §11 the lanes, §12 the gates,
-§13 the questions for the user, §14 the builders' notes.
+references are to `canvas` at 5129c60 (they drift; the names do not; the review's are at deed338). Sections 1–10 are the contract,
+§11 the lanes, §12 the gates, §13 the questions for the user (answered), §14 the builders' notes, §15 the review log (the fixes it
+lists are applied in the sections it names).
 
 **Every number is tagged**: **[R]** comes from research (with its RC / RD section; **[R?]** = a secondary or conflicting source that
 lane V pins from the service-note schematic, RC §14) and **[C]** is a choice made here (the builder may refine a [C] with a reason in
@@ -22,7 +23,8 @@ lane V pins from the service-note schematic, RC §14) and **[C]** is a choice ma
 **Invariants of the stage**
 - **D1 Old sound bit-identical**: every golden shard (`golden-classic`, `-fx`, `-presets`, `-random`, `-graph`), `canonical-stream`
   (fixture untouched), the cp2 / ct2 / 2b fixtures, the bench rows' outputs. `engine.js` gains branches reached only by
-  `kind === 'drums'`; `AVoice` / `FVoice` / Serum code untouched (`v8-guard` clean); no existing patch gains a key.
+  `kind === 'drums'`; `AVoice` / `FVoice` / Serum code untouched (not in the diff; `tests/v8-guard.mjs` only sets a V8 flag, it
+  checks no code — §15 #31); no existing patch gains a key.
 - **D2 New sound frozen**: the drum DSP is pinned at the acceptance commit by a new frozen reference set (`tests/ref-7a/`, §12.2), so
   7b (the 606 reuses these circuits) and every later stage keep the 808 bit-identical.
 - **D3 One instrument per track** (1f): the 808 is a track's instrument, fed into the track's FX panel and OUT like a classic synth;
@@ -32,8 +34,9 @@ lane V pins from the service-note schematic, RC §14) and **[C]** is a choice ma
   the circuits, not recordings" (§2.5, §7.5).
 - **D5 Both ways are one sound**: a pattern played by the 808's sequencer and the same pattern written to the piano roll ("→ Piano
   roll") and played as notes render **bit-identically** where the step frames are whole numbers (120 BPM at 48 kHz: 25 frames a
-  tick), and with every hit on the same 4-frame grid point or the next one at any other tempo (swing 50 %; §2.1 span invariance,
-  §4.4, gate §12.2).
+  tick), and with every hit on the same 4-frame grid point or the next one at any other tempo — at any swing, because both paths
+  put a swung step on the same whole tick (§3.5); with an empty FX panel and no cables on the 808 (§9, §15 #34); §2.1 span
+  invariance and the order-free trigger latch, §4.4, gate §12.2.
 - **D6 Budgets**: §2.6's rows on the Mac (V8), the JSC shell and the user's iPad; no allocation on the audio thread; a silent machine
   costs ≤ 0.0005 (SPEC §9.2's quiet-instrument budget).
 - **D7 Determinism**: hits fall on frames that are a function of the transport, the plan and the tempo only; noise is seeded per Inst
@@ -45,24 +48,39 @@ lane V pins from the service-note schematic, RC §14) and **[C]** is a choice ma
 
 - `models.js` gains `tr808` (`name 'TR-808'`, `model 'Rhythm Composer'`, `maker 'Roland'` — a model label as for every synth, never
   printed on the panel or the tile, D4 —, `year 1980`, **`family: 'drums'`**, `custom` falsy, `theme`, `sections` with the controls
-  of §2.3, `presets` (§2.5), `map(P, v, G)` → a patch `{ engine: 'drums', drum: {…§2.3…}, level, … }` built **without** `base(G)`'s
-  voice fields (an unknown key warns once: `PatchP` gains `drum` as a pass-through like `serum` / `seq` / `fxr`, engine.js:1369).
+  of §2.3, `presets` (§2.5), `map(P, v, G)` → a patch `{ engine: 'drums', drum: {…§2.3: flat knob positions and switches…}, level:
+  a constant, … }` built **without** `base(G)`'s voice fields (an unknown key warns once: `PatchP` gains `drum` as a pass-through like
+  `serum` / `seq` / `fxr`, engine.js:1369). The patch is a pure function of the panel values (as every model's: `patchFor`,
+  `buildPatch` and `CG.instPatch` see `vals` only — models.js:756, main.js:396, cv-graph.js:276); the device's memory, note map,
+  mute / solo and sample slots travel in the drum `{t: 'seq'}` payload instead (§3.5; §15 #2).
   `MODELS` = the 13 of today + `tr808`, **appended last** (after `serum`), so every index-based use of the 13 (`modelById`'s
   `MODELS[1]` fallback, the tests) is unchanged [C].
 - **Filters**: every `!m.custom` site that means "a classic keyboard synth" gains `&& m.family !== 'drums'` (cv-tray `CLASSIC`, the
-  Simple-layout paths `instUi` / `srcUi` / `cvSetLayout` / the ⋯ item, `POLY_TO`, chordCheck); the tests that iterate non-custom
-  `MODELS` are listed in §12.6 with the rule each gets.
+  Simple-layout paths `instUi` / `srcUi` / `cvSetLayout` / the ⋯ item and main's `o.ui === 'flow' && !m.custom` paths, the tile's
+  SIMPLE badge and aria text, `POLY_TO`, chordCheck — §8, §10.1); the tests that iterate non-custom `MODELS` are listed in §12.6 with
+  the rule each gets.
 - **Engine**: `Inst.kind = 'drums'` (from `p.engine`). The Inst owns one machine object `this.dm` (null for every other kind; built
   between quanta at the first drums `setPatch`: `globalThis.Dr808.create(this)`) and one sequencer `this.sq` (a `DrSeq`, §3.5 —
   the same field and duck type the TB-303's state uses, so `Track.process`'s `q.run || q.sync` gate and its `q.pos += len` need no
-  change). The kind's branches (engine.js; lane E): `setPatch` (kind change: `allOff(true)`, voices emptied, `dm.set(p.drum)`),
-  `anyActive`, `fadeOut` (the machine renders its own ≈ 3 ms raised-cosine tail like the voices), `noteOn` / `noteOff` (§1.4),
-  `transportHook` (→ `sq.transport`), `seqMsg` / `seqEvents` / `seqRelease` (→ `DrSeq`; a drum `seq` payload that arrives before the
-  drums patch is kept and applied when the kind becomes 'drums'; `seqEvents`' `kind !== 'analog'` early return comes after the drums
-  branch), `renderSpan` (§2.1), the idle rule, `os` (→ `dm.setOS`
-  through `reqOS` / `osFade`), `stats` (voices = sounding lanes), `postMon` (§3.5), `warmUp` (a drums entry **appended at the end** of
-  `WARM` — it is index-addressed), `restore` (machine and sequencer back to fresh), `setSalt` (the noise seed). The Track, Chain,
-  graph, ModCore and protocol code is unchanged.
+  change). The kind's branches (engine.js; lane E): `setPatch` (kind change: `allOff(true)`, voices emptied to `[]` — `moRefresh`
+  and the voice loops read `voices.length` —, `dm.set(p.drum)`, `moRefresh()` kept for cabled fields; a kind change **to or from**
+  'drums' first releases and then **drops `this.sq`** (`= null`): today `seqMsg` reuses whatever object is there,
+  `this.sq || (this.sq = {…})` + `Object.assign` (engine.js:2534–2536), so a 303 payload would write into a `DrSeq` and the reverse),
+  `anyActive` (→ `dm.live()`), `allOff(hard)` (hard: the tail of `fadeOut`, then `dm.reset()` — the voices' `kill()`), `fadeOut` (the
+  machine renders its own ≈ 3 ms raised-cosine tail like the voices), `isQuiet` (also `!dm.live()`), `panicClear` (`dm.reset()`: else
+  a ringing circuit resumes after the panic's 5 ms output fade, engine.js:3493 / 3519), `noteOn` / `noteOff` (§1.4), `transportHook`
+  (→ `sq.transport`), `seqMsg` / `seqEvents` / `seqRelease` (→ `DrSeq`; `seqMsg` routes by the **payload's shape** (`s.plan`
+  present: a drum payload), so a drum payload that arrives before the drums patch is kept and applied when the kind becomes 'drums',
+  and a 303 payload reaching a drums Inst is dropped; `seqEvents`' `kind !== 'analog'` early return comes after the drums branch),
+  `renderSpan` (§2.1), the idle rule, `os` (→ `dm.setOS` through `reqOS` / `osFade`), `stats` (voices = sounding lanes), `postMon`
+  (§3.5), `warmUp` (a **drums round of its own** after the `WARM` loop and before `SD.warmUp` / `warmGraph` — every sound at V_N and
+  V_A, a retrigger, the choke, a short synced plan through `DrSeq`, an OS change — so `warmGraph`'s re-warm of the classic paths
+  comes after it (the 2b JSC lesson); **not** a `WARM` entry: those are played with notes 48 / 67 only (engine.js:2983, = HT and an
+  unmapped key) and replayed twice more on a graphed Inst by `warmGraph` (3019); `WARM` stays as it is), `restore` (machine and
+  sequencer back to fresh: `dm.reset()`, `this.sq = null` — today's `restore` leaves `sq` alone, 1491–1508), `setSalt` (the noise
+  seed). The Track's own writes into `x.sq` stay: `run = false` (panic, retire, end: 3328, 3484, 3515 — a free machine stops) and
+  `syncStep = null` (power on, 3412: `DrSeq` declares a `syncStep` field and reads null as "re-anchor"), so `DrSeq`'s fixed shape is
+  `{ run, sync, pos, syncStep }` + methods. The Track, Chain, graph, ModCore and protocol code is unchanged.
 - **One DSP script, one sequencer script** (classic worklet scripts, IIFE publishing a frozen global, `try/catch` → null, as
   serum-dsp.js): **`dr-808.js`** → `globalThis.Dr808` (the circuits, §2) and **`dr-seq.js`** → `globalThis.DrSeq` (the clock, §3.5).
   Both join every DSP list (§10.2). The pure main-side model is **`drum-core.js`** (ES module, no DOM: memory, panel state machine,
@@ -89,9 +107,16 @@ lane V pins from the service-note schematic, RC §14) and **[C]** is a choice ma
   for that hit whatever the switch says — for a tom / conga or rim / claves pair through the same circuit (that hit restrikes the
   shared resonators with the other components switched in), for clap / maracas through the pair's other circuit (the two may then
   ring together, as their separate circuits would) [C].
-- **Choke**: a closed-hat trigger **discharges the open hat's envelope and holds it discharged for ≈ 155 ms** (an open-hat hit inside
-  that window is cut too: the circuit does not know whether the open hat sounds) [R RC §9]; no other chokes. A muted lane (§3.6)
-  neither triggers nor chokes.
+- **Choke**: a closed-hat trigger **discharges the open hat's envelope and holds it discharged while C63 keeps Q23 on** — C63 discharges
+  through R173 with **τ ≈ 155 ms**; the hold lasts until that falls below Q23's turn-on, so it is longer for an accented CH (an
+  open-hat hit inside it is cut too: the circuit does not know whether the open hat sounds) [R RC §9; the hold time is the model's,
+  §15 #11]; no other chokes. A muted lane (§3.6) neither triggers nor chokes.
+- **Hits in one chunk are order-free** [C]: `hit` / `trig` only **latch** a trigger for the chunk where they land; the chunk applies
+  the latched triggers in **lane order** (CH's choke after OH's trigger), **one trigger per circuit per chunk** (the highest V wins:
+  a step and a note, or two notes mapped to one sound, at one frame; both sounds of a one-circuit pair — tom / conga, RS / CL — in
+  one chunk: the panel switch's sound; CP and MA are two circuits and may both fire). So
+  a step mask and the same hits as notes — which reach the machine in the song's order, by tick then note number (song.js:112) — give
+  the same bytes (D5; §15 #6).
 
 ### 1.3 The trigger bus and accent (Roland's architecture, RD §2.2)
 
@@ -110,9 +135,10 @@ lane V pins from the service-note schematic, RC §14) and **[C]** is a choice ma
 
 ### 1.4 Notes into hits
 
-`Inst.noteOn(n, v, ch, ext, aud)` for kind 'drums': `s = map[n]` (the device's note map, carried in `p.drum.map` as a 128-entry
-sound index, −1 = none) → `dm.hit(s, round(v · 127))` at the event's frame (the machine turns the velocity into V by §1.3's law);
-unmapped notes do nothing. `noteOff` does
+`Inst.noteOn(n, v, ch, ext, aud)` for kind 'drums': `s = map[n]` (the device's note map, carried in the drum `{t: 'seq'}` payload
+as `s.map`, a 128-entry sound index, −1 = none; `DEFAULT_MAP` until one arrives — a render farm or a cost probe never sends one) →
+`dm.hit(s, round(v · 127))` latched at the event's frame (§1.2; the machine turns the velocity into V by §1.3's law); unmapped notes
+and notes on a muted sound (`s.mute`, the effective mute / solo mask) do nothing. `noteOff` does
 nothing to the sound (one-shots) but the Track's held-note bookkeeping runs as for any Inst. `sus`, `bend`, `wheel`, `at`, MPE
 channels are stored and ignored. An audition (`aud`) plays like a note. The map is applied **in the worklet**, so the song, live keys,
 MIDI in, the bottom keyboard tray and the pads all reach the drums through one path (D5, I2 of 1i).
@@ -121,14 +147,17 @@ MIDI in, the bottom keyboard tray and the pads all reach the drums through one p
 
 ### 2.1 Shared blocks and the render path
 
-- **Render** (Inst kind 'drums', `renderSpan(n)`): `dm.render(buf, n · OS)` adds every live circuit into the Inst's mono OS-rate
+- **Render** (Inst kind 'drums', `renderSpan(n)`): `dm.render(buf, n · OS, T.spanF)` adds every live circuit into the Inst's mono OS-rate
   `buf` (as the classic path); the Inst's existing decimator chain (`decChain(OS)`) → `monoBuf`; then `dm.post(Lb, Rb, mono, n)`:
   the sample lanes at the base rate (§5, stereo when a sample is), MASTER VOLUME, the output stage (RC §12: the mix amplifier's
   high-pass and level), `Lb` / `Rb` (dual mono when no stereo sample sounds). Then the track's FX panel and OUT as for any classic.
 - **Blocks** (each a small class in dr-808.js, Float64, preallocated, state in fields; every filter from its analog prototype by the
   bilinear transform **prewarped at the block's characteristic frequency** [C: so OS 4 → 2 → 1 (the CPU safeguard) keeps every
   centre frequency; Werner rendered at 4× without prewarp, RC §7], TDF-II or TPT (the lane's choice, stated in §14) with coefficients
-  recomputed per control chunk (`CH = 4 · OS` samples) and **per sample while a coefficient sweeps fast** (the BD attack):
+  recomputed per control chunk (`CH = 4 · OS` samples) and **per sample while a coefficient sweeps fast** (the BD attack). The blocks
+  whose coefficients move **every sample** (the BD's R_eff — the attack and the sigh's leakage law —, the toms' diode pair) use the
+  plain bilinear `K = 2 · fs` instead of a per-sample `tan`: their frequencies stay ≤ 500 Hz, where the warp is < 0.1 % even at
+  OS 1 (44.1 kHz) [C; §15 #23]:
   - `Trig` — a lane's 1 ms pulse of height V (4-frame-grid timing like every event) [R RC §1];
   - `Shaper` — the BD pulse shaper (passive low shelf + one-diode clamp of the falling edge, ≈ −0.71 V) [R RC §2];
   - `BridgedT` — the bridged-T band-pass in an op-amp loop with up to three inputs (shaped pulse, feedback buffer, retrigger pulse),
@@ -136,8 +165,10 @@ MIDI in, the bottom keyboard tray and the pads all reach the drums through one p
     band-pass use the same block with their own component values (the toms' with the diode pair in the shunt leg) [R RC §3–6];
   - `Metal` — the six Schmitt-trigger square oscillators (5 V, duty **47.98 %**) [R RC §7] with **polyBLEP edges** [C: Werner used
     naive edges at 4×; polyBLEP keeps OS 2 clean for ≈ 20 % more bank cost], summed by the passive network into the two band-passes
-    (≈ **3440 Hz**, ≈ **7100 Hz**) [R RC §7]; **runs only while a metal voice is live**; while idle its phases advance analytically
-    by the elapsed time at wake-up (exact: the frequencies are fixed), so it behaves as the free-running hardware;
+    (≈ **3440 Hz**, ≈ **7100 Hz**) [R RC §7]; **runs only while a metal voice is live**; each oscillator's phase is a **function of
+    the absolute OS-sample index** `n = spanF · OS + i` (`ph = frac(n · f / fs)`, the edges for polyBLEP from it), never an
+    accumulated sum, so a bank that slept or an Inst that idle-skipped wakes with **exactly** the phases a never-sleeping bank has
+    (an accumulated phase and an analytic jump would differ in rounding; §15 #16) and behaves as the free-running hardware;
   - `SwingVCA` — Werner's memoryless swing-type VCA (the common-emitter estimate, the lower-edge fit, the soft clip, α 3.5) [R RC §8];
   - `EG` — switched first-order envelopes (attack follows the input less a diode drop, release `dV/dt = −V / RC`), forward Euler at
     the OS rate [R RC §8];
@@ -149,8 +180,9 @@ MIDI in, the bottom keyboard tray and the pads all reach the drums through one p
     RS/CL, CP/MA 33 kΩ; CB, CY, CH 47 kΩ; OH 56 kΩ, against 33 kΩ feedback), MASTER VOLUME (50 kΩ A), the × 1.5 output stage [R RC §12].
 - **Span invariance** (D5): the machine does all its control-rate work — knob smoothing, coefficient updates, envelopes stepped per
   chunk, sleep checks — per **absolute 4-base-frame chunk** (spans start on 4-frame boundaries and are multiples of 4, so a chunk
-  never straddles a span), never per span (unlike the classic `smStep`); a hit lands at the chunk where its event fires. So the same
-  hits render the same bytes whatever splits the spans (a sequencer step with no hit, a song note, a quantum edge) [C].
+  never straddles a span: `Track.process` cuts at `max(4, ceil(d / 4) · 4)` inside 128-frame quanta, engine.js:3740), never per span
+  (unlike the classic `smStep`); a hit is latched at the chunk where its event fires (§1.2). So the same hits render the same bytes
+  whatever splits the spans (a sequencer step with no hit, a song note or note-off, a quantum edge) [C].
 - **Denormals**: every feedback state is flushed below 1e-30 at the chunk (the Serum scripts' rule) [C]; a circuit whose state and
   envelope are below 1e-7 (−140 dB) for 4 chunks is **asleep** and costs nothing until its next trigger [C].
 - **Seeds**: the noise seed `0x2545F491 ^ salt` [C]; reset by `restore` and by `setSalt`.
@@ -159,15 +191,15 @@ MIDI in, the bottom keyboard tray and the pads all reach the drums through one p
 
 | circuit | topology (RC section) | the numbers | knobs (§2.3) |
 |---|---|---|---|
-| **BD** | trigger AND → pulse shaper → bridged-T in a µPC4558 loop with the feedback buffer (high shelf, DECAY) and the retrigger pulse; Q43 shorts part of the network after the trigger (attack: centre and Q up > 1 octave); leakage into Q43's base = the slow pitch sigh; tone LPF → level → output HPF (RC §2) | centre ≈ **49.5 Hz** from the components, the table's **56 Hz** [R]; attack **R156 · C38 ≈ 4 ms** (Werner ≈ 6, a replica 6.2: the components decide, 4–7 ms) [R]; Q43 leakage fit **α 14.3150, V0 0.5560, m 1.4765e-5** [R]; the sigh ≈ 57 → 50 Hz over 0.3 s [R]; decay **50 / 300 / 800 ms** (knob short / mid / long) [R]; 3.5 / 10 Vp-p [R] | LEVEL (100 k A), TONE (10 k C), DECAY (500 k B) |
-| **SD** | two bridged-T resonators kicked by the gated trigger (≈ 0.7 % and 2.6 % of it); TONE cross-fades their outputs; white noise → a swing-type VCA whose envelope (Q47, the C51–C53 ladder) SNAPPY scales → Sallen-Key HPF → the summing amp (RC §3) | **≈ 173 / 336 Hz** (the schematic's production values [R]; the printed 250 / 499 and the table's 238 / 476 recorded, RC §3) [C: which revision]; HPF **≈ 2.75 kHz, Q 0.73** [R]; decay (mid) **60 ms** [R]; the low peak clips above ≈ 8.3 V of trigger [R] | LEVEL (100 k A), TONE (100 k B), SNAPPY (10 k B) |
+| **BD** | trigger AND → pulse shaper → bridged-T in a µPC4558 loop with the feedback buffer (high shelf, DECAY) and the retrigger pulse; Q43 shorts part of the network after the trigger (attack: centre and Q up > 1 octave); leakage into Q43's base = the slow pitch sigh; tone LPF → level → output HPF (RC §2) | centre ≈ **49.5 Hz** from the components, the table's **56 Hz** [R] (the table's figure is the early, sighing pitch: §12.1 checks it over 10–40 ms); attack: Q43 held on **≈ 4–7 ms** (the notes ≈ 4, Werner ≈ 6, a replica 6.2) — the time C38's discharge through R156 (**τ = 1 MΩ · 0.1 µF = 100 ms**, not 4 ms) takes to fall below Q43's turn-on after the 1 ms charge: the network decides [R; §15 #9]; Q43 leakage fit **α 14.3150, V0 0.5560, m 1.4765e-5** [R]; the sigh ≈ 57 → 50 Hz over 0.3 s [R]; decay **50 / 300 / 800 ms** (knob short / mid / long) [R]; 3.5 / 10 Vp-p [R] | LEVEL (100 k A), TONE (10 k C), DECAY (500 k B) |
+| **SD** | two bridged-T resonators kicked by the gated trigger (≈ 0.7 % and 2.6 % of it); TONE cross-fades their outputs; white noise → a swing-type VCA whose envelope (Q47, the C51–C53 ladder) SNAPPY scales → Sallen-Key HPF → the summing amp (RC §3) | **≈ 173 / 336 Hz** (the schematic's production values [R]; the printed 250 / 499 and the table's 238 / 476 recorded, RC §3) [C: which revision] — the table belongs to the printed revision, so the service-table check uses a measured later unit, **177 / 340 Hz** [R? S NG] (§12.1); HPF **≈ 2.75 kHz, Q 0.73** [R]; decay (mid) **60 ms** [R]; the low peak clips above ≈ 8.3 V of trigger [R] | LEVEL (100 k A), TONE (100 k B), SNAPPY (10 k B) |
 | **LT/LC, MT/MC, HT/HC** | a multi-feedback bridged-T with an **anti-parallel diode pair** in its shunt leg (the pitch falls as the ring decays); the switch adds capacitance (TOM ≈ an octave lower), lowers the drive ≈ 3.6 × (TOM) and enables the PN "reverb" gate (TOM; τ ≈ 86 ms, slightly longer than the body) (RC §4) | TUNING low / mid / high: **LT 80 / 90 / 100, MT 120 / 135 / 160, HT 165 / 185 / 220, LC 165 / 185 / 220, MC 250 / 280 / 310, HC 370 / 400 / 455 Hz**; decay **200 / 130 / 100 / 180 / 100 / 80 ms** [R]; no decay pot on the stock unit [R] | LEVEL (100 k A), TUNING (500 Ω B), TOM / CONGA |
 | **RS/CL** | two bridged-T generators (≈ 452 Hz; ≈ 2.5 kHz, ≈ 1.8 kHz with RIM SHOT's extra capacitor); CLAVES adds positive feedback (higher Q, longer ring) and drops the first; a swing-type VCA (≈ 5 ms envelope) → 2nd-order HPF ≈ 590 Hz, Q 2.9; muted outside the trigger (RC §5) | RS **455 + 1667 Hz**, CL **2500 Hz** (table) [R]; decay RS **10 ms**, CL **25 ms** [R] | LEVEL (100 k A), RS / CL |
 | **CP** | WN → bridged-T band-pass ≈ 1.1 kHz → two VCAs: the sawtooth envelope (≈ 30 ms gate, three ≈ 10 ms saws, a final ≈ 20 ms discharge, exponential) and the ≈ 100 ms "reverb" decay; accent also into the offset network (RC §6) | decay (mid) **100 ms** [R]; the saw timing from the comparator network's RC values, fitted where untraced [R?] | LEVEL (100 k A), CP / MA |
 | **MA** | WN → a gate → 2nd-order Sallen-Key HPF ≈ 10.6 kHz → a ≈ 15 ms-release envelope (RC §6) | decay **25 / 35 ms**; 3 / 5 Vp-p [R] | (CP's LEVEL) |
 | **CB** | oscillators **#5 (800 Hz)** and **#6 (540 Hz)** → two swing-type VCAs on **one** envelope (a fast droop to ≈ 1/3 in ≈ 10 ms, then a ≈ 150 ms tail) → a multiple-feedback band-pass **≈ 860 Hz, Q ≈ 6** (RC §10) | trim ranges 359.4–1149.9 / 254.3–627.2 Hz [R]; decay (mid) **50 ms**; 3.5 / 12 Vp-p [R] | LEVEL (5 k A) |
 | **CY** | all six oscillators → both band-passes → attack smoother (V − **0.7258**, τ **1.0244e-4 s**) → 3 EGs (Von **0.5899**, follower VBE **0.6195**; only the 3440 Hz band's EG follows DECAY) → 3 swing-type VCAs (Q18 on 3440 Hz, Q16 / Q17 on 7100 Hz) → 3 high-passes (≈ 2.5 kHz; two near 9–10.5 kHz, resonant) → the 5th-order tone network → level / output buffer (+6 dB/oct in band) (RC §8) | oscillators 205.3, 369.6, 304.4, 522.7, 800, 540 Hz, duty 47.98 % [R]; band-passes 3440 / 7100 Hz [R]; decay **350 / 800 / 1200 ms**, DECAY τ 0.47–2.47 s [R]; bus 7–14 V [R] | LEVEL (100 k A), TONE (20 k B), DECAY (2 M B) |
-| **OH** | the 7100 Hz band → swing-type VCA → Sallen-Key HPF **≈ 7.8 kHz, Q 2.5** → buffer; envelope with DECAY (RC §9) | decay **90 / 450 / 600 ms** [R]; held discharged ≈ 155 ms by a CH hit [R] | LEVEL (100 k A), DECAY (2 M B) |
+| **OH** | the 7100 Hz band → swing-type VCA → Sallen-Key HPF **≈ 7.8 kHz, Q 2.5** → buffer; envelope with DECAY (RC §9) | decay **90 / 450 / 600 ms** [R]; held discharged by a CH hit while C63 (τ ≈ 155 ms through R173) keeps Q23 on — the hold time is the model's [R; §15 #11] | LEVEL (100 k A), DECAY (2 M B) |
 | **CH** | the 7100 Hz band → its VCA → HPF **≈ 11.7 kHz, Q 2.5**; fixed decay; its trigger charges the choke hold (RC §9) | decay **≈ 50 ms**; 3 / 6 Vp-p [R] | LEVEL (100 k A) |
 | **mix** | 11 LEVEL pots → the mix resistors → the summing amp → MASTER VOLUME → × 1.5 → the output (RC §12) | master out **6 Vp-p** (HI) [R] | ACCENT (10 k B), MASTER VOLUME (50 k A) |
 
@@ -175,7 +207,10 @@ Ranges in the "numbers" column are the service table's knob short / mid / long (
 **re-reads every component value it uses** from a high-resolution scan (RC §14: the values in RC are one careful reading) and records
 the final table per voice in RC with designators and sources; where a value cannot be read it fits that one component to the table
 and tags it **[fit]**. Two targets per voice (RC §14): the model equals **its own analog prototype** (frequencies ± 1 %, time
-constants ± 2 %) and lands near **the service table** (frequencies ± 8 %, decays ± 25 %: ± 20 % capacitors, "typical" values). Every
+constants ± 2 %) and lands near **the service table** (frequencies ± 8 %, decays ± 25 %: ± 20 % capacitors, "typical" values) —
+with two stated exceptions, because the chosen components cannot meet ± 8 % of the table: the BD (49.5 Hz settled vs 56 Hz: the
+table is checked against the sigh's early pitch) and the SD (production values vs the printed revision's table: checked against
+NG's measured later unit) (§12.1; §15 #10). Every
 circuit is the analog topology with component values — never an envelope-on-oscillator stand-in — so accent, retriggering and the
 knobs behave as the circuit does.
 
@@ -185,17 +220,26 @@ knobs behave as the circuit does.
 BD level / tone / decay; **`sdl sdt sds`** SD level / tone / snappy; **`ltl ltt`**, **`mtl mtt`**, **`htl htt`** level / tuning;
 **`lts mts hts`** the tom / conga switches (`['Tom', 'Conga']`); **`rsl`**, **`rss`** (`['Rim Shot', 'Claves']`); **`cpl`**, **`cps`**
 (`['Hand Clap', 'Maracas']`); **`cbl`**; **`cyl cyt cyd`**; **`ohl ohd`**; **`chl`**; **`vol`** MASTER VOLUME. TEMPO / FINE and every
-sequencer control are not models.js controls (they are sequencer state, §3.2). `map` emits knob positions 0…1 and each pot's
-**taper** (`p.drum = { ac, bd: { lv, tn, dc }, …, sw: { lt, mt, ht, rs, cp }, vol, map, mute, smp }`); `dr-808` turns a position into
-the pot's resistance (`VRk = VR · taper(k)`) and the circuit's coefficients — one place, testable [C]. Pots and tapers as the parts
+sequencer control are not models.js controls (they are sequencer state, §3.2). `map` emits a **flat** `p.drum` keyed by the
+models.js ids — every knob's position 0…1 (`p.drum.bdd = v.bdd / 10`, …, `p.drum.ac`, `p.drum.vol`) and every switch's index
+(`p.drum.lts` …) — and nothing else: no nesting, no tapers, no map / mute / samples (those ride the drum `seq` payload, §3.5).
+Flat because the classic modulation adapter addresses a **one-level** field path: `Inst.moRec` splits `drum.bdd` into `p.drum` and
+`bdd` at the first dot only (engine.js:1713–1715), so a nested `drum.bd.dc` would return null and a cable on an 808 knob would
+silently do nothing — and `classic-mod.test`'s own probe walks any depth (tests/classic-mod.test.mjs:77), so no test would notice
+(§15 #1). `cv-mods.FIELD_CLASS` gains `drum.<id>`: the 23 knobs **proc**, the 5 switches **struct** (`classTable()` throws on a patch
+field it does not know, cv-mods.js:123). MASTER VOLUME lives in `p.drum.vol`, never in `level` (FIELD_CLASS `level` is an **sm**
+slot on every engine, which the drums branch does not read). `dr-808` holds the pot table by id (value, taper) and turns a position
+into the pot's resistance (`VRk = VR · taper(k)`) and the circuit's coefficients — one place, testable [C]. Pots and tapers as the parts
 list gives them (§2.2's last column: A = audio, B = linear, C = reverse audio) [R RC §2–12]. Defaults: every LEVEL **7**, TONE / DECAY / SNAPPY / TUNING **5**, ACCENT **5**, MASTER
 **7.5**, switches on the first sound [C]; the panel's red "standard" mark of the LEVEL knobs sits at ≈ 2 o'clock [R RC §13] — drawn,
 not a default.
 
 ### 2.4 Rates and oversampling
 
-- The Inst's OS (the model default **4** [C: Werner's cymbal rendering, RC §8]; the CPU safeguard may halve it, session-only, with
-  the "OS 4→2" badge as for classics). All circuits run at `fs = base · OS`; sample lanes at the base rate (§5).
+- The Inst's OS is **the app's oversampling, as for every classic** — there is no per-model default: a classic node runs at
+  `osFor(sr)` = `settings.os` (default **4**) capped at 384 kHz (main.js:89, 690, 734) and follows `{t: 'os'}` (engine.js:2222);
+  4 matches Werner's cymbal rendering (RC §8); the CPU safeguard may drop it a step, session-only, with the "OS 4→2" badge; at 8× the
+  machine costs ≈ 2× its rows (§15 #22). All circuits run at `fs = base · OS`; sample lanes at the base rate (§5).
 - 44.1 kHz and 48 kHz contexts are both first-class: every time constant and frequency is computed from `fs` (tests at both, §12.1).
 
 ### 2.5 Level, presets and labels
@@ -217,7 +261,10 @@ not a default.
   the cymbal chain 0.015, a whole machine ringing 0.06–0.10.
 - **Per circuit** (one circuit ringing continuously, OS 4, the M4 Max, node) [C]: BD, SD, each tom / conga, RS/CL, CP, MA ≤ **0.004**;
   the metal bank alone ≤ **0.008**; CB, OH, CH ≤ **0.006** each on top of the bank; CY ≤ **0.012** on top of the bank. Measured by
-  `dr-808.test`'s cost probe and recorded in §14 (informational: the gates are the rows below).
+  `dr-808.test`'s cost probe and recorded in §14 (informational: the gates are the rows below). Note: these ceilings summed over
+  the circuits d8p keeps awake (BD, SD, CP, two toms, CB, OH, CH + the bank ≈ 0.046) exceed d8p's 0.020 — with §2.1's −140 dB sleep
+  rule most of them never sleep at 120 BPM — so d8p needs the circuits near RD §1.3's measured spike (≈ 0.002–0.003 a resonator),
+  not at the ceilings (§15 #20).
 - **Per machine** — bench rows [C] (`jsc` = the macOS JSC shell, the lead's IMPL-2b §9 method; the iPad's targets equal the Mac's: the
   user's iPad Pro has measured at 0.7–1.0 × the node rows, `ipad2b`):
 
@@ -226,10 +273,14 @@ not a default.
 | **d8p** | 0.020 | 0.020 | 0.020 | a typical pattern: BD on quarters, SD on 2 / 4, CH eighths, OH on the off-beats, CP, two toms, CB, accent every 4th step, 120 BPM, the sequencer running (the whole track) |
 | **d8x** | 0.10 | 0.10 | 0.10 | every lane triggered every 250 ms, accented, every DECAY at 10 (the worst case) |
 | **d8m** | 0.035 | 0.035 | 0.035 | CY + OH + CB ringing (the metal bank and three VCAs: the diagnostic row) |
-| **d8i** | 0.0005 | 0.0005 | 0.001 | the machine powered, synced, the transport stopped, nothing sounding (minus an empty track; on the iPad informational, the 1 ms timer) |
+| **d8i** | 0.0005 | 0.0005 | 0.001 | the machine powered, synced, the transport stopped, nothing sounding (minus an empty track; on the iPad informational, the 1 ms timer) — **not a `scenarios()` row** (below) |
 | **d8s** | 0.012 | 0.012 | 0.012 | d8p with all 16 sounds as user samples (§5; the bench's own 1 s fixture) |
 
-`bench.json` `targets` get the five rows (`bench.test` requires both numbers ≤ 0.6); `cv-cost.js` `COST.synth.tr808 = C('d8p', 'drums',
+`bench.json` `targets` get the rows as `{ node, ipad }` (the only keys `bench.test` compares, tests/bench.test.mjs:83; every scenario
+needs `ipad ≤ 0.6`, line 23): the **jsc** column is the lead's A/B gate (IMPL-2b §9), not a stored target. **d8i** cannot be a
+`scenarios()` row: every timed scenario must be audible (`measure` throws on a silent run, tests/bench-scenarios.mjs:403; bench.test
+asserts a peak, line 22), so it is measured as row **p** is (tests/bench.test.mjs:91–106: an idle machine past the 2 s quiet window,
+`cpu-gate.gateLoad` against `targets.d8i.node`, in `tests/engine-track.test.mjs`), its iPad number informational (§15 #4). `cv-cost.js` `COST.synth.tr808 = C('d8p', 'drums',
 1, base, voice)` with lane E's measured d8p (base) and a per-hit term (voice) [C]; `bench.html`'s `CLASSIC` list adds `c7` (the 808 at
 the default pattern, `ipad: null`). JSC: the shell method of IMPL-2b §9 on d8p / d8x and, because `Inst` changed, on c1, d, e, mc0, mt
 (≤ 3 %). V8: every existing row within 2 % (`cpu-gate`). iPad: §12.8.
@@ -254,8 +305,8 @@ the default pattern, `ipad: null`). JSC: the shell method of IMPL-2b §9 on d8p 
   (rhythm track), 5 COMPOSE (rhythm track)); `inst` (the INSTRUMENT / TRACK rotary, 12 positions: AC … CH, also tracks 1–12) [R];
   `fill` (AUTO FILL IN: MANUAL, 16, 12, 8, 4, 2) [R]; `bvar` (BASIC VARIATION A / AB / B) [R]; `ifv` (I/F VARIATION A / B) [R]; `pre`
   (the PRE-SCALE selector 1–4) [R]; `sel` (the selected basic key 0–11), `ifk` (the selected I/F key 0–3); `intro` (armed: TAP at
-  stop in MANUAL PLAY) [R]; `tempo` (40–300 BPM [R], 40 click stops [R] on a log scale [C: ≈ 4.9 % a click]), `fine` (± half a click
-  [C]).
+  stop in MANUAL PLAY) [R]; `tempo` (40–300 BPM [R], 40 click stops [R] on a log scale [C: 39 steps of (300 / 40)^(1/39) ≈ **5.3 %**
+  a click]), `fine` (± half a click [C]).
 - Extras (`dev.drum.x`, saved, neutral defaults): `sync` (**on** for a new machine [C, question 1]), `swing` (50 %, off), `mute` /
   `solo` (12-bit masks, 0), `rec` (off), `part` (the grid's shown part).
 - Session only (never saved, as the 303's `seqRun`): running (free mode), the pending key, the TAP-fill request, the clear-undo copy.
@@ -276,11 +327,27 @@ The original's rules [R RC §13] and the gaps filled [C] (each row a test, §12.
 | **CLEAR, COMPOSE, stopped** | TRACK CLEAR of the selected track (the notice + undo as above) [R]/[C] |
 | **COMPOSE, running** | records, at each measure start, the key in effect into `rt` from the track's start; pattern keys pressed take effect (and are recorded) at the next measure [R]; STOP marks the measure it lands in as the last [R]; without a TRACK CLEAR first it **edits**: replaces measures, the length unchanged [R]; I/F keys write a fill into a measure [R]. Synced, the measure index is the song's (play from the song's start to compose from measure 1; a play from later records from there and leaves the earlier measures as they were) [C] |
 | **PLAY** | plays the selected track from measure 1 with the variation switches, **loops** at its end [R] |
-| **BASIC VARIATION** | A or B loops that one; **AB alternates A, B, …, always starting on A** (after an intro: intro, A, B) [R]; a change applies at the next measure [R]; the AB phase counts basic measures since START or the last key change, fills and the intro excluded [C] |
+| **BASIC VARIATION** | A or B loops that one; **AB alternates A, B, …, always starting on A** (after an intro: intro, A, B) [R]; a change applies at the next measure [R]; the AB phase counts basic measures since START or the last key, variation or AUTO FILL IN change (each a re-anchor, §3.5), fills and the intro excluded [C] |
 | **AUTO FILL IN** | MANUAL: fills only by TAP; N: the selected fill **replaces every N-th measure** (the intro not counted) [R]/[C: "replaces the N-th" is our reading of "plays once every N"]; back to MANUAL cancels [R] |
 | **INSTRUMENT / TRACK** | the instrument written by step keys and TAP; the track for PLAY / COMPOSE [R] |
 | **PRE-SCALE** | the scale of the next CLEAR-latched pattern (write modes) [R]; patterns keep their own |
 | **TEMPO / FINE** | free: the machine's tempo. Synced: the knobs **show and set the project tempo** (one gesture = one tempo edit, as the tempo box) [C, question 1] |
+
+**Inputs the table did not cover** (review §15 #25; each a test of §12.3; lane S may refine one with a reason in §14) [C]:
+- **Which part plays while writing**: the whole measure (1st part, then the 2nd when `l2 > 0`), as it will play; the step keys and
+  LEDs address the MODE's part, its playhead shown only while that part runs (with `l2 = 0`, 2nd PART mode plays the 1st part until
+  CLEAR + N gives the 2nd part a length).
+- **MODE while running**: the panel's rules change at once; the plan swaps at the next measure (`at: 'bar'`); WRITE 1st ↔ 2nd PART
+  keeps the pattern running (the hardware's write-the-1st-then-the-2nd workflow).
+- **INSTRUMENT / TRACK while running in PLAY / COMPOSE**: the next track starts at the next measure, from its measure 1.
+- **AB in PLAY**: the AB phase counts the track's basic measures from its measure 1 (a key change does not reset it there: with the
+  MANUAL PLAY rule a track that changes key every measure would never play a B).
+- **AUTO FILL IN in PLAY**: ignored (the track's own fills play). **TAP in PLAY**: one fill at the next measure, as in MANUAL PLAY;
+  **in COMPOSE**: that fill, recorded into the measure it plays in.
+- **CLEAR in a write mode, running**: PRE-SCALE latches on CLEAR's **release** when no step key was pressed while it was held (CLEAR
+  + N only sets the length).
+- Everything else not in the table (START in PATTERN CLEAR, step keys in PLAY or PATTERN CLEAR, TAP in PATTERN CLEAR …) does
+  nothing.
 
 LEDs [R RC §13]: the 16 step LEDs show, running in a write mode, the selected instrument's steps of the current part with the playhead
 **inverted**; in MANUAL PLAY / PLAY / COMPOSE the playing key (steady) and a pending one (flashing); stopped, the selected key
@@ -291,27 +358,40 @@ flashing. The **1st / 2nd PART** LEDs show the running part; the two **variation
 
 What the machine plays is compiled on the main thread into an explicit, cyclic list of **measures** (a measure = one pattern: its
 1st part then its 2nd part [R]): `plan = { key: string, n, intro: 0 | 1, loopFrom, mKey: Int8Array(n), mVar: Int8Array(n), mPre: Uint8Array(n),
-mOff: Int32Array(n + 1) (step offsets), st: Uint16Array(total steps) }` — MANUAL PLAY: [intro?] + one cycle of **lcm(AB ? 2 : 1,
-N or 1)** measures (≤ 48) with the fills in place; PLAY: the track's measures (≤ 768); write modes: the selected key (A, B or A + B);
-COMPOSE: as MANUAL PLAY. Steps carry the 12-bit mask after **mute / solo** (§3.6) — so muting re-compiles, never branches in the
-worklet. ≤ 24 576 steps (48 KB) [C bound]. `plan.key` is a content hash (FNV-1a over the arrays, as `seq-core` keys) so an unchanged
-plan is never re-posted.
+mOff: Int32Array(n + 1) (step offsets), st: Uint16Array(total steps), fill: { pre, l1, l2, st: Uint16Array } | null }` — MANUAL
+PLAY: [intro?] + one cycle of **`AB ? 2N : N`** measures with the auto fills in place (N = AUTO FILL IN's interval; MANUAL: N = 1
+with no fill, i.e. `AB ? 2 : 1`). N is even, so a fill cycle holds N − 1 basic measures — an odd number — and with §3.3's rule (the
+AB phase counts basic measures, fills excluded) AB returns to A only after two fill cycles: the earlier `lcm(AB ? 2 : 1, N)` would
+play A B A F **A** B A F for AB with fills every 4, against the rule's A B A F **B** A B F (§15 #7); ≤ 32 measures + the intro.
+PLAY: the track's measures (≤ 768); write modes: the selected key (A, B or A + B); COMPOSE: as MANUAL PLAY. `fill` = the selected
+I/F key's pattern at the I/F VARIATION, for **TAP** fills: `DrSeq` plays it at the next measure boundary **instead of** the cycle's
+next measure and then resumes the cycle where it was (the cycle index does not advance), so a TAP fill needs no plan swap and no
+AB phase or fill count has to cross threads; the payload's `tap` counter requests one (§3.5; §15 #8). Steps carry the 12-bit mask
+after **mute / solo** (§3.6) — so muting re-compiles, never branches in the worklet. ≤ 24 576 steps (48 KB) [C bound]. `plan.key` is
+a content hash (FNV-1a over the arrays, as `seq-core` keys) so an unchanged plan is never re-posted.
 
 ### 3.5 The clock (`dr-seq.js` `DrSeq`, lane S; wired by lane E)
 
-- **Payload** `{t:'seq', s, i?}` (the 303's message; `seqMsg` routes by kind): `s = { plan, sync, run, bpm, swing, at: 'now' | 'bar'
-  | 'beat2' }`.
+- **Payload** `{t:'seq', s, i?}` (the 303's message; `seqMsg` routes by the payload's shape, §1.1): `s = { plan, sync, run, bpm,
+  swing, at: 'now' | 'bar' | 'beat2', tap, map, mute, smp }` — `tap` a counter (one TAP fill per increment, §3.4), `map` the 128-entry
+  note → sound table (§4.1), `mute` the effective mute / solo mask of the 16 sounds (notes obey it; the plan's steps already do),
+  `smp` the 16 slots `{ id, on }` or null (§5). `drumSend` posts it when any of them changes (`plan.key` + a key of the rest).
 - **Sync** (`x.sync` on): the plan is anchored at **song tick 0** — the position of every step is a function of the song position, so a
-  start at bar 9, a seek or a loop wrap lands where the machine would be had it started at bar 1 (`tp`, `tickAt`, 960 PPQ). Stopped
-  transport → silent. **Free** (`sync` off): the machine's own clock from its START, at `bpm` (tempo + fine), `pos` advanced by
-  `Track.process` as the 303's (engine.js:3742).
+  start at bar 9, a seek or a loop wrap lands where the machine would be had it started at bar 1 (`tp`, `tickAt`, 960 PPQ). A loop
+  wrap calls no `transportHook` (engine.js:3598–3606 only re-seeks the song), so `DrSeq` re-anchors at tick 0 whenever the song
+  position goes back (§15 #27). Stopped transport → silent. **Free** (`sync` off): the machine's own clock from its START, at `bpm`
+  (tempo + fine), `pos` advanced by `Track.process` as the 303's (engine.js:3742).
 - **Live changes**: a new plan with `at: 'now'` and the same **shape** (measure lengths and tick sizes; a step toggle) replaces the steps
   in place, position kept; any other change (`at: 'bar'`: a key, a variation, a fill knob, a length) swaps at the **next measure
-  boundary B** and re-anchors there (the new plan's measure 0 starts at B); a stop, a seek or a fresh play re-anchors at tick 0 again
+  boundary B** and re-anchors there (the new plan's measure 0 starts at B; so a variation or AUTO FILL IN change restarts the AB
+  phase on A and the fill count, as a key change does [C]); a stop, a seek or a fresh play re-anchors at tick 0 again
   (sync) or at START (free) [C]. The beat-2 quirk (§3.3) is `at: 'beat2'`: swap at the current measure's second beat, the new plan
   entered at its own beat-2 step.
-- **Swing** (extras, 50–75 % [C: Linn's convention, RD §2.4]): the odd step of each pair starts `(2 · swing − 1) · stepTicks` late,
-  for PRE-SCALE 3 and 4 only (triplet scales are not swung) [C]; 50 % = off, bit-identical to no swing.
+- **Swing** (extras, 50–75 % [C: Linn's convention, RD §2.4]): the odd step of each pair starts **`round((2 · swing − 1) · stepTicks)`
+  whole ticks** late, for PRE-SCALE 3 and 4 only (triplet scales are not swung) [C]; 50 % = off, bit-identical to no swing. Whole
+  ticks because the roll's notes are whole ticks: "→ Piano roll" writes exactly these positions, so D5 holds at any swing (at 62 %
+  on sixteenths the exact offset is 57.6 ticks; a sequencer on 57.6 and a note on 58 would sit 0.4 tick = 10 frames — two or three
+  grid points — apart at 120 BPM / 48 kHz; the rounding moves a step by ≤ 0.26 ms there) (§15 #5).
 - **Hits**: at each step's start, `dm.trig(mask)` (the AC bit selects V_A, from the machine's own ACCENT knob, else V_N; muted lanes
   are already out of the mask); the frame is on the Track's 4-frame event
   grid (`seqEvents` returns frames to the next step, ≥ 1, as the 303's). A step is due when `tickAt(F) ≥` its tick and the distance is
@@ -321,7 +401,8 @@ plan is never re-posted.
   every step — ≤ 40 a second at 300 BPM in thirty-seconds; main shows a step at the **heard** time of `F` (audioclock), so the LEDs
   match what is heard on Bluetooth too [C]. COMPOSE recording reads the measure starts (`s === 0`).
 - **Monitor** (`postMon`, only while subscribed): `{ lit: sounds hit since the last post (16-bit mask), act: Float32Array(12) circuit
-  levels }` for the pad lights and meters.
+  levels, F: the frame of the post }` for the pad lights and meters; main lights the pads at the **heard** time of `F`, as the step
+  LEDs (a monitor post leads the sound by the output latency — ≈ 200 ms on Bluetooth — like an unshifted step post would; §15 #26).
 - Power off / panic / `bye`: the sequencer stops with the Inst (`seqRelease` analogue: nothing held, nothing to release for one-shots).
 
 ### 3.6 Extras helpers (start neutral)
@@ -332,11 +413,12 @@ plan is never re-posted.
   as DOM would cost ≈ 400 elements) at `wk.storeDensity` (milestone 3's H5 rule) [C].
 - **SYNC** (`dr:sync`), **SWING** (`dr:swing`), **→ PIANO ROLL** (`dr:toRoll`, §4.3), **REC** (`dr:rec`: pad hits write their lane
   at the nearest step while a write mode runs; off by default), **MAP…** (`dr:map`, §4.1), **SOUNDS…** (`dr:sounds`, §5), **DEMO**
-  (`dr:demo`: loads our own two example patterns into basic key 1 A / B and fill 1, after a confirm if they are not empty) [C].
+  (`dr:demo`: loads our own two example patterns into basic key 1 A / B and fill 1, after a confirm if they are not empty — written
+  for this project, not transcribed from a record or a manual's example, D4) [C].
 - **Pads** (`dr:pads`): 16 pads (4 × 4, one per sound) [C]; velocity from where the pad is touched — the 1i curve (`0.3 + 0.75 · f`,
   front edge loud; `cv-keys.js` `KEY_VEL`, which is main.js `velAt`'s curve); multi-touch; `data-gesture="music"` (two fingers are two hits, never a pinch; 1i §4.3);
   a press → `noteOn(map note, v, 0, ts)` (so recording, held keys and the Velocity module work as for keys); a pad lights on its own
-  press and on every hit of its sound (the monitor's `lit`).
+  press and on every hit of its sound (the monitor's `lit`, at its heard time, §3.5).
 
 ## 4. Both ways: notes and the piano roll
 
@@ -352,10 +434,14 @@ GM-based [C, question 4's alternative is Roland's TR-8S map]: **bd 36** (+35), *
 For a drum track (`host.drumRows(track) → [{ n, name }] | null`): the gutter shows the **sound names** on the mapped rows ("Kick 36",
 "Snare 38", "Closed hat 42" …: the primary of each sound) and dims unmapped rows; **compact drum rows** (on by default for a drum
 track, a toolbar toggle "Drum rows") show only the mapped primaries, in the map's order (kick at the bottom), every other note in one
-"other" row at the top [C, question 4]. The roll's row ↔ note conversions go through two methods (`n2y` / `y2n`, roll.js:109), five
-direct `127 − n` sites (197, 216, 300, 807, 930), the row-drawing loops over `nLo…nHi` (1010, 1173–1188, 1266) and the `noteName`
-labels (1087, 1188, 1205–1214): the lane routes all of them through a row table (`this.rows`: null = the piano; `rowOf(n)`, `noteAt(r)`,
-`label(n)`) so compact mode is a table, not a fork; a vertical note drag moves between drum rows. Transpose on a drum track asks first ("changes
+"other" row at the top [C, question 4]. The roll's row ↔ note conversions go through two methods (`n2y` / `y2n`, roll.js:109–110),
+the direct `127 − …` row sites (197, 216, 930), the 128-row assumptions — the scroll clamp `128 * rowH` (`clampY`, 122), the keyboard
+extent `n2y(127)` / `n2y(-1)` (1012, 1171) —, the note culls by note range `x.n < nLo || x.n > nHi` (1027, 1044: wrong in compact
+mode, where the visible rows are not a note range), the row-drawing loops over `nLo…nHi` (1010–1016, 1173–1188, 1266), the
+vertical-drag clamps in notes (300, 807 `127 − g.maxN`; the touch path `_rowsMoved`, 796 / 855; a compact drag moves by rows), the
+keys column (768) and the `noteName` labels (1087, 1188, 1205–1214): the lane routes all of them through a row table (`this.rows`:
+null = the piano; `rowOf(n)`, `noteAt(r)`, `label(n)`, `nRows`) so compact mode is a table, not a fork; a vertical note drag moves
+between drum rows (§15 #18). Transpose on a drum track asks first ("changes
 which drums play"). The velocity lane is unchanged (100 = normal, 127 = accent: two guide lines drawn).
 
 ### 4.3 → Piano roll (`drum-core.toNotes(plan, opts)`, one History step "Pattern to notes")
@@ -363,17 +449,24 @@ which drums play"). The velocity lane is unchanged (100 = normal, 127 = accent: 
 - Writes what the plan plays — the current mode's: the selected pattern (with AB, intro and fills as they would play), or the whole
   rhythm track — for **N bars** (a popover: 1, 2, 4, 8, 16, the track's length; default 4 [C]) from the playhead floored to a bar (the
   303's rule, main.js:3069). A hit becomes `{ t, d: 120, n: the sound's primary note, v: 100 | 127 }` (the lane's switch at the time
-  picks the sound); positions are the swung tick positions rounded to whole ticks [C].
+  picks the sound); positions are the sequencer's own whole-tick swung positions (§3.5), so nothing is rounded here [C].
 - Then **SYNC is switched off and the machine stopped** (so the pattern is not heard twice), with the notice "Written to the piano
-  roll · the 808's own sequencer is off so it isn't heard twice · tap to undo" (the undo restores both) [C, question 2].
+  roll · the 808's own sequencer is off so it isn't heard twice · tap to undo" (the undo restores both) [C, question 2]. **The
+  project's ↶ restores both too**: `keepDevs` keeps a same-model device's `drum` on every undo (§6), which would leave SYNC off while
+  the notes go — silence. So the History step "Pattern to notes" carries `meta: { drumSync: { track, dev, sync: true } }`, put back by
+  `applyRestore` after `keepDevs` (the `modMoveBack` precedent, main.js:1305–1316 / 1333); redo turns it off again (§15 #12).
 
 ### 4.4 Playing notes, recording, bounce
 
 - The track's notes reach the drums through `songEvents` → `Track.noteOn` → §1.4 (unchanged path). With SYNC on and notes in the roll,
   both play (they sum) [C, question 2].
-- **D5**: for any plan at swing 50 %, `toNotes` + the song path renders as the sequencer does — bit-identically where the step frames
-  are whole numbers, on the same or the next 4-frame grid point elsewhere (both fire at the first span start at or after the same tick;
-  the same V; the machine is span-invariant, §2.1). Gate §12.2.
+- **D5**: for any plan at any swing, `toNotes` + the song path renders as the sequencer does — bit-identically where the step frames
+  are whole numbers, on the same or the next 4-frame grid point elsewhere (both fire at the first span start at or after the same
+  whole tick, the distance computed by the same expression `(tick − tickAt(F)) · fpt` from the same last span start — a note-off of
+  `d: 120` lies ≥ 40 ticks (≥ 367 frames even at 300 BPM / 44.1 kHz) before the next hit, so it never adds a span start in the
+  hit's quantum; the same V; order-free latching, §1.2; the machine is span-invariant, §2.1). Scope: an empty FX panel and no
+  cables — a note also calls the panel's `rack.trigger()` / `lastNote` and ModCore (engine.js:2248–2261, 3431), a step does not
+  (§15 #34). Gate §12.2.
 - Recording: armed drum tracks record keys, pads and MIDI as notes (unchanged `recStart` / `recEnd`); the 808's own sequencer is never
   recorded as notes (→ Piano roll does that on request).
 - Bounce: `bounceSet` treats a drum track whose machine is synced and has any step as audible with no notes (the 303's `syncedOf`,
@@ -396,11 +489,16 @@ which drums play"). The velocity lane is unchanged (100 = normal, 127 = accent: 
   the name, ✕. A loaded slot shows a small dot on the pad and the grid row.
 - **Import**: the existing sample importer (`smp.js` / `assets.js importFiles`: WAV 8–32-bit int / float and AIFF natively; FLAC,
   OGG, MP3, M4A via `decodeAudioData`), the existing store (`synth-canvas-smp`, content-hash ids, dedup), the existing worklet entries
-  (`{t:'smp'}`, `SxBase.storeAsset`): the drum patch lists its ids in `patch.needs` (models.js:771) and `tables.ensure` delivers them;
-  dr-808 reads `SxBase.getAsset(id)` lazily (null → the circuit plays, as if `on` were off).
+  (`{t:'smp'}`, `SxBase.storeAsset`). The slots are **not** in the patch (it is a function of `vals` only, §1.1): `drumSend` calls
+  `tables.ensure(ids, { trackId, node })` for the slots that are on before it posts the payload naming them (as `sendPatch` does
+  for `patch.needs`, main.js:574–579), `makeNode` / `graphParts` add them to the node's needs, and the bounce adds them to its item's
+  `needs` (main.js:2480). dr-808 reads `SxBase.getAsset(id)` lazily (null → the circuit plays, as if `on` were off).
 - **Limits** [C]: ≤ **10 s** per slot (under `LIMITS` 60 s), mono or stereo (stereo plays stereo: the machine's only stereo source),
-  ≤ **32 MiB** of worklet entries per machine on touch devices, 64 MiB elsewhere (inside `assets.js`'s 128 / 192 MiB worklet budgets;
-  `fits()` refuses beyond with its message).
+  entries built with **2 playback levels** (TUNING's ± 1 octave needs one level down; `maxLevels` as `ZONE_HEADROOM.touch` — ≈ 1.5×
+  the level-0 bytes instead of ≈ 2×), ≤ **32 MiB** of worklet entries per machine on touch devices, 64 MiB elsewhere. That cap is
+  the machine's **own** accounting in SOUNDS… (the importer's estimate, assets.js:1455: a 10 s stereo slot ≈ 7.7 MB at 8 levels,
+  ≈ 5.8 MB at 2): `fits()` (assets.js:1326) checks only the project-wide worklet budget (128 / 192 MiB, assets.js:135) and refuses
+  beyond that with its message (§15 #19).
 - **What acts on a sample** [C]: LEVEL; the hit's voltage as gain (`g = V / V_N` below V_N, `1 + 0.6 · (V − V_N) / (14 − V_N)` above:
   +4 dB at full accent); TUNING (toms / congas) ± 1 octave over the knob, centre = as recorded (playback rate, the mip level by ratio);
   DECAY (BD, CY, OH) a fade-out whose time runs from 30 ms (0) to the whole sound (10, no fade); the CH → OH choke; mute / solo. TONE and
@@ -419,7 +517,11 @@ which drums play"). The velocity lane is unchanged (100 = normal, 127 = accent: 
   names ≤ 64 chars; unknown fields dropped; idempotent; never throws). `History` snapshots carry it.
 - **Undo** (keepDevs, main.js:1317): `drum` joins `seq` — **project undo never reverts the pattern memory** of a same-model device
   (the 303's policy: pattern edits are instrument tweaks), so an unrelated undo can never restore an old pattern [C, question 3]; the
-  destructive operations (PATTERN CLEAR, TRACK CLEAR, DEMO, → Piano roll's sync change) get the one-tap undo notice (§3.3).
+  destructive operations (PATTERN CLEAR, TRACK CLEAR, DEMO, → Piano roll's sync change) get the one-tap undo notice (§3.3), and
+  "Pattern to notes" also carries its SYNC in the History step's `meta` (§4.3).
+- **A model switch away from tr808 deletes `drum`** from the device: `cv-model.setModel` changes a device in place (cv-model.js:302–
+  309), so it would otherwise stay on the new model's device in memory and History while `normDev` drops it on the next load; the
+  "Replaced TR-808 with …" undo brings it back with the History snapshot (§15 #28).
 - **Schema 8** (`cv-migrate.SCHEMA = 8`, `STEPS[7]`: no change to stored data). A schema-7 build meeting a drum device would read
   `tr808` as a Minimoog (`modelById`'s fallback) and autosave the loss; with the bump it opens the project read-only (SPEC §5.8). If
   milestone 3 or 1i takes 8 first, 7a takes the next number (the lead names it at the merge).
@@ -446,7 +548,9 @@ which drums play"). The velocity lane is unchanged (100 = normal, 127 = accent: 
   staves above the **16 step keys** (red 1–4, orange 5–8, yellow 9–12, off-white 13–16 [R? RC §13]) each with its red LED, the 1–12
   BASIC RHYTHM / 1–4 INTRO / FILL IN legends, **I/F VARIATION** A / B, **TAP** (INTRO SET / FILL IN TRIGGER). The rear strip is not
   the top face: its jacks are drawn as a printed legend band along the top edge with ▲ marks, as the TB-303's (MASTER OUT, the 11
-  MULTI OUT jacks, TRIGGER OUT × 3, PEDAL × 2, DIN SYNC) [R RC §13].
+  MULTI OUT jacks, TRIGGER OUT × 3, PEDAL × 2, DIN SYNC) [R RC §13]; each MULTI OUT is also drawn as a small jack under its ▲ legend
+  (the `inert: 'later'` control below) — the TB-303's WAVEFORM precedent, a rear control drawn under its printed legend so the panel
+  stays complete without drawing the rear (panels/tb303.js:26, 157; §15 #24).
 - Title in **plain type** "TR-808 · Rhythm Composer · Computer Controlled" (no script logotype, no maker name; the 303 precedent) [C].
 - Inert (dimmed): the power switch, the rear legends' jacks; the **11 MULTI OUT jacks** are inert controls whose title reads
   "BD OUT — cable-able with full patching (stage 4)" (a new `inert: 'later'` form, §7.3) [C].
@@ -500,8 +604,9 @@ not emulated" [C]; row 1: grid + pads; row 2: SYNC · SWING · → PIANO ROLL ·
 
 1. **Drums view**: `SRC_VIEWS` gains `{ id: 'drums', label: 'Drums', tip: 'Drum machines with their real front panel', layout: 'hw',
    note: 'More machines later: TR-606, TR-909, then the Simmons SDS-V with the pad controller.', sections: [{ id: 'drums', models: m =>
-   m.family === 'drums' }] }`; `CLASSIC` excludes drums (Hardware and Simple list the twelve synths only). A stored view `'drums'` opens
-   Drums; the dropdown reads Hardware · Simple · Serum · Drums.
+   m.family === 'drums' }] }`; `CLASSIC` excludes drums (Hardware and Simple list the twelve synths only), and so do the tile's other
+   `!m.custom` sites — the hidden "SIMPLE" badge (cv-tray.js:372) and the "simple / hardware panel" aria-description (473). A stored
+   view `'drums'` opens Drums; the dropdown reads Hardware · Simple · Serum · Drums.
 2. **The tile**: `cv-art` `SIL.tr808 = { body: 'box', steps: 16 }` and `DRAW.tr808` — our own drawing: a wide low case, twelve knob
    columns, the four-colour run of sixteen keys, no text (cv-art.test's rules); the tile's cost label from `COST.synth.tr808`.
 3. **Tap / drop** as every instrument (1f): a drop anywhere on the canvas or a tap replaces the track's instrument ("Replaced X with
@@ -517,10 +622,12 @@ not emulated" [C]; row 1: grid + pads; row 2: SYNC · SWING · → PIANO ROLL ·
 
 ## 9. Modulation and controllers
 
-- Every **knob** of the 808 is a modulation destination of class **`proc`** (IMPL-2b §5.2): `cv-mods` / `tools/cv-classes.mjs` gain
-  `tr808` (the table's keys must equal the non-custom ids); the target is the field path `drum.<lane>.<field>` (`moRec` handles numeric
-  field paths, engine.js:1712); `Inst.modSpan(off, setv)` for kind 'drums' applies `setv` only (no slots) and `dm` reads its knob
-  fields per chunk. The five switches are `struct` (no modulation). Halos and the press-and-hold menu work through `data-dest` (models.js
+- Every **knob** of the 808 is a modulation destination of class **`proc`** (IMPL-2b §5.2): `cv-mods.FIELD_CLASS` gains the
+  `drum.<id>` paths and `CLASS_TABLE` gains `tr808` (regenerated: `node tools/cv-classes.mjs --write`; the table's keys must equal the
+  non-custom ids); the target is the **one-level** field path `drum.<id>` (`drum.bdd`: `moRec` splits at the first dot only,
+  engine.js:1713, §2.3); with proc rows only there are no slots (`moN = 0`), so today's `modSpan` / `moFields` / `moWrite` run
+  unchanged and write the value into `p.drum` — no drums branch in `modSpan` — and `dm` reads its knob fields from `p.drum` per
+  chunk. The five switches are `struct` (no modulation). Halos and the press-and-hold menu work through `data-dest` (models.js
   ids only; `dr:` tokens carry `data-nomod`, as the 303's `seq:`).
 - Controllers reach drum knobs through CC modules (2b's rule for classic knobs). `bend` / `wheel` / `at` do nothing on the 808.
 - ModCore delivers `setv` per span, so a cabled 808 knob is span-stepped like every classic `proc` field: D5's identity is stated (and
@@ -534,15 +641,16 @@ not emulated" [C]; row 1: grid + pads; row 2: SYNC · SWING · → PIANO ROLL ·
 |---|---|
 | imports | `drum-core.js?v=9`, `cv-drum.js?v=9` |
 | `classicHost` | `drum: DRUM.api` (from `cvDrum.drumHost({ press, send, toRoll, bpm, setBpm, play, stop, playing, heard, noteOn, noteOff, notice, persist, … })`); `classic-panel.js` `api()`: `drum: H.drum && m.family === 'drums' ? H.drum.api(tr) : null` |
-| `drumSend(tr, dev, at)` | `compilePlan` → if `plan.key` changed or `at` → `postTo(tr, { t: 'seq', s }, dev)`; `persist()` |
-| `makeNode` (929) | `seq` for drums: the drum payload |
-| the `{t:'step'}` handler (953) | a drum step (`d.m != null`) → `DRUM.step(t, dev, d)` (heard-time LEDs; COMPOSE recording at `s === 0`) |
+| `drumSend(tr, dev, at)` | `compilePlan` + the payload's `map` / `mute` / `smp` / `tap` (§3.5) → if their key changed or `at` → `tables.ensure` the slots that are on (§5), then `postTo(tr, { t: 'seq', s }, dev)`; `persist()` |
+| `buildPatch` / `buildInstPatch` / `CG.instPatch` | **unchanged**: the drum patch is `patchFor` of `vals` like every model's (smpgen.test's "buildPatch = patchFor" check stays, tests/smpgen.test.mjs:562–573) |
+| `makeNode` (922–929) / `graphParts` (431–440) | `seq` / `seqs[id]` for drums: the drum payload (offline: only when synced, `run: false`, as the 303's); its slot ids join the node's needs |
+| the `{t:'step'}` handler (948) | a drum step (`d.m != null`) → `DRUM.step(t, dev, d)` (heard-time LEDs; COMPOSE recording at `s === 0`) — **before** the 303 branch, whose `seqOf` would write a `seq` onto the drum device (main.js:3042–3046) |
 | transport `play` / `stop` / `reanchor` / the tempo box | synced drum machines need nothing (the worklet derives position from the transport); free machines are untouched by the transport; `setBpm` from TEMPO when synced = the tempo box's path |
-| `setTrackModel` | to tr808: `drum` from `normDrum(undefined)` (empty memory, defaults), `drumSend`; from tr808: the machine stops (`allOff`) |
-| `keepDevs` (1317) | `if (c.drum && d.model === c.model) d.drum = c.drum;` |
+| `setTrackModel` (1716) | to tr808: `drum` from `normDrum(undefined)` (empty memory, defaults), `drumSend` after `sendPatch`; from tr808: the machine stops (`allOff`) and the device's `drum` is deleted (§6) |
+| `keepDevs` (1317) / `applyRestore` (1333) | `if (c.drum && d.model === c.model) d.drum = c.drum;` then the "Pattern to notes" entry's `meta.drumSync` (§4.3) |
 | `voiceInfo` / `trackVoice` / `chordCheck` / `POLY_TO` | §8 item 6 |
-| `instUi` / `srcUi` / `cvSetLayout` / the ⋯ Simple item | drums: Hardware only |
-| `bounceSet` / `syncedOf` (3608) | §4.4 |
+| `instUi` / `srcUi` / `cvSetLayout` / the ⋯ Simple item, and the `o.ui === 'flow' && !m.custom` paths (1718, 3146, 5024) | drums: Hardware only |
+| `bounceSet` / `syncedOf` (3608) | §4.4; the item's `needs` gets the slot ids (2480) |
 | `importMidiFile` (3558) | §4.5 |
 | `userSmps` / `states()` (2041, assets.js) | §5 |
 | `panic` / `powerOff` / hidden page / blur | `DRUM.release()` (pads' pointers, a held CLEAR) |
@@ -552,12 +660,16 @@ No `t.model` / `t.vals` / `fxOf(t)` in any new line (the accessor ratchet, IMPL-
 
 ### 10.2 The DSP lists (lane E; every site from the engine map)
 
-`dr-808.js` and `dr-seq.js` join, in this order after `fx-dsp.js` and before `engine.js`: `main.js` `DSP_FILES` (739), `wk.js`
-`DSP_GLOBALS` (3151: `Dr808`, `DrSeq`), `smprender.js` (30), `cv-cost.js`'s worker list (279), `tests/golden-harness.mjs` `DSP_V2`
-(28), `tests/dsp-scope.mjs` `DSP_TABLE` (39), `tests/bench.html` (64–76); the tests that pin the list (`sx-base.test` 427, `wk.test`
-2233, `cv-cost.test` 299 / 305, `bench.test` 117, `pwa.test` 141, `smpgen.test` 371, `integration.test` 675, `main.test` 47,
-`app.test` 165); `sw.js` by the lead (`node tools/precache.mjs --write`). `engine.js` looks both globals up lazily (a missing script →
-the drum Inst renders silence and posts `drumsErr` once, as the optional-script isolation test expects).
+`dr-808.js` and `dr-seq.js` join, in this order, **between `fx-dsp.js` and `mod-core.js`** — `mod-core.js` stays last before
+`engine.js`, as `modcore.test` (86: "loaded last"), `main.test` (47) and `integration.test` (675) pin it (§15 #15): `main.js`
+`DSP_FILES` (739), `wk.js` `DSP_GLOBALS` (3151: `Dr808`, `DrSeq`), `smprender.js` (30), `cv-cost.js`'s worker list (279),
+`tests/golden-harness.mjs` `DSP_V2` (28), `tests/dsp-scope.mjs` `DSP_TABLE` (39), `tests/bench.html` (64–76); the tests that pin the
+list (`sx-base.test` 427, `wk.test` 28 (`DSP_GLOBAL_NAMES`) and 2233, `cv-cost.test` 299 / 305, `bench.test` 117, `pwa.test` 141,
+`smpgen.test` 371, `integration.test` 675, `main.test` 47 and `app.test` 165 — module counts 13 → 15); `sw.js` by the lead (`node
+tools/precache.mjs --write`). `engine.js` looks both globals up lazily (a missing script → the drum Inst renders silence and posts
+`drumsErr` once, as the optional-script isolation test expects; a missing `Dr808` must not throw inside `warmUp`, whose one
+`try` would skip every later warm-up step, engine.js:2936). Phase 0's tests (V, S) load their scripts through `dspScope(…).run(src)`
+(tests/dsp-scope.mjs:22–24) — `DSP_TABLE` is E's.
 
 ## 11. Lanes and the schedule (the leaner shape)
 
@@ -565,10 +677,10 @@ the drum Inst renders silence and posts `drumsErr` once, as the optional-script 
 |---|---|---|---|---|
 | **V** voices | 0 | `dr-808.js` (new), `tests/dr-808.test.mjs` (new), `docs/canvas/research-808-circuits.md` (the component tables, §14 rule) | §12.1 | **standard** (the stage's hardest code) |
 | **S** sequencer core | 0 | `drum-core.js` (new), `dr-seq.js` (new), `tests/drum-core.test.mjs`, `tests/dr-seq.test.mjs` (new) | §12.3, §12.4 | standard |
-| **E** engine + data plumbing | 1 | `engine.js` (the `kind === 'drums'` branches, `PatchP.drum`, `WARM` append, `restore`, `modSpan` for drums), `models.js` (`tr808`), the DSP lists of §10.2, `cv-cost.js`, `tests/bench-scenarios.mjs` + `tests/bench.json` (targets, rows), `tests/golden-drums.test.mjs` (new; its `ref-7a` is frozen by the lead, §12.2), the golden-graph / integration / smpgen / classic-mod rules of §12.6 | §12.2, §12.5, §12.6 | standard |
-| **P1** panel code | 1 | `cv-panel.js` (§7.2–7.3), `cv-drum.js` (new), `tools/panel-check.mjs`, `tests/cv-drum.test.mjs` (new), `tests/cv-panel.test.mjs` | §12.7 | standard |
+| **E** engine + data plumbing | 1 | `engine.js` (the `kind === 'drums'` branches of §1.1, `PatchP.drum`, the drums warm-up round, `restore`), `models.js` (`tr808`), **`cv-mods.js` (`FIELD_CLASS` `drum.*`, the regenerated `CLASS_TABLE`) + `tools/cv-classes.mjs` + `tests/cv-mods.test.mjs`** (§15 #3: `classTable()` throws on an unknown patch field the moment `tr808` exists, cv-mods.js:123), the DSP lists of §10.2, `cv-cost.js`, `tests/bench-scenarios.mjs` + `tests/bench.json` (targets, rows), `tests/golden-drums.test.mjs` (new; its `ref-7a` is frozen by the lead, §12.2), the golden-graph / integration / smpgen / classic-mod rules of §12.6 | §12.2, §12.5, §12.6 | standard |
+| **P1** panel code | 1 | `cv-panel.js` (§7.2–7.3), `cv-drum.js` (new), `tools/panel-check.mjs`, `tests/cv-drum.test.mjs` (new), `tests/cv-panel.test.mjs` (its pinned `HW_IDS` gains `tr808`, tests/cv-panel.test.mjs:92; `TARGET.tr808 = [1024, 1024]` — the 1016 × ≈ 1020 px box on the 32 px dots, §7.1 — written by P1 from this contract; P2 lands within a dot or hands its number to the lead) | §12.7 | standard |
 | **P2** panel data + art | 1 (from P1's first commit: the validator first) | `panels/tr808.js` (new), `panels/index.js`, `cv-art.js` (`SIL` / `DRAW`), `tests/cv-art.test.mjs` | `panel-check tr808`, cv-panel, cv-art | cheaper |
-| **H2** data + UI satellites | 1 | `song.js` (normDev, MIDI export), `cv-migrate.js` (schema), `cv-tray.js` (Drums view), `cv-mods.js` + `tools/cv-classes.mjs` (classes), `assets.js` (states), `roll.js` (§4.2), their tests (`song`, `cv-migrate`, `cv-tray`, `cv-mods`, `assets`, `roll`) | §12.6 | standard (roll.js); the rest mechanical |
+| **H2** data + UI satellites | 1 | `song.js` (normDev, MIDI export), `cv-migrate.js` (schema), `cv-tray.js` (Drums view), `assets.js` (states), `roll.js` (§4.2), their tests (`song`, `cv-migrate`, `cv-tray`, `assets`, `roll`) | §12.6 | standard (roll.js); the rest mechanical |
 | **H1** host | 2 | `main.js` (§10.1), `classic-panel.js` (`api().drum`), `tests/canvas-7a-sim.test.mjs` (new, accessor-free), additions to `tests/main.test.mjs`, `tests/classic-panel.test.mjs` | §12.6 | standard |
 | reviewers × 2 | 3 | (1) **real engine**: golden harness + `main-sim` with the real Track: D1, D2, D5, D7, every §3.3 row end to end, sync / seek / loop, the circuits against RC's numbers; (2) **headless Chrome** (CDP, `--headless=new --use-angle=metal --force-device-scale-factor=2`, 1440 × 900, 1366 × 1024, 1024 × 1366): the face, LEDs at heard time, pads multi-touch, the grid canvas density, the Drums view, the roll's drum rows, no console errors | — | standard |
 | fixers | after | the finding's files, failing test first | | cheaper |
@@ -576,11 +688,12 @@ the drum Inst renders silence and posts `drumsErr` once, as the optional-script 
 - **Phase 0** (V ∥ S): new files only — they may start beside milestone 3's last phase if the lead has room (the proposal's note; the
   user's answer starts 7a after milestone 3 ships, so by default they start then). Base: `canvas` at this contract's commit.
 - **Phase 1** (E ∥ P1 → P2 ∥ H2): after milestone 3's deploy (and 1i, which ships before it); base = that `canvas` commit + V + S merged
-  on the holding branch **`wt-7a`**. **E's first commit (E1a) is the `tr808` entry in `models.js`** (§2.3's ids, defaults and `map`) with
-  E's own test rules of §12.6 (golden-graph, integration, smpgen, cv-cost); P1, P2 and H2 branch from E1a (the panel validates against
-  the model's controls). Until the phase-1 merge, the MODELS-iterating tests that P2 and H2 own (cv-art, cv-mods, cv-tray,
-  classic-panel's model loop) fail on the branches that lack the owning lane's change — a known window on `wt-7a`, closed by the merge
-  order E → P1 → P2 → H2; each lane runs its own files. **Phase 2** (H1): base = `wt-7a` after phase 1's merge, and the lead's fixture
+  on the holding branch **`wt-7a`**. **E's first commit (E1a) is the `tr808` entry in `models.js`** (§2.3's ids, defaults and `map`)
+  **together with `FIELD_CLASS` / `CLASS_TABLE`** (cv-mods.js) and E's own test rules of §12.6 (golden-graph, integration, smpgen,
+  cv-cost, cv-mods, classic-mod); P1, P2 and H2 branch from E1a (the panel validates against the model's controls). Until the phase-1
+  merge, the MODELS-iterating tests that P1, P2 and H2 own (cv-panel's `HW_IDS`, cv-art, cv-tray) fail on the branches that lack the
+  owning lane's change — a known window on `wt-7a`, closed by the merge order E → P1 → P2 → H2; each lane runs its own files.
+  (classic-panel's model loop renders the 808's flowing panel until P2's layout lands and needs no edit.) **Phase 2** (H1): base = `wt-7a` after phase 1's merge, and the lead's fixture
   check first: a page sim with the real engine plays the demo pattern synced from bar 3 and posts the plan the panel shows.
 - **Phase 3**: the two reviewers → fixers → **one sweep** (every test file, one at a time, by the lead; `golden-*` and
   `canonical-stream` once) → the lead freezes `tests/ref-7a/` (§12.2) → docs (ROADMAP row 7, HANDOVER, §14) → **one squashed commit
@@ -592,8 +705,9 @@ the drum Inst renders silence and posts `drumsErr` once, as the optional-script 
   scans); **no lane commits `sw.js`**; commit on the worktree branch; report the commit hash and the gates measured. Briefs are short:
   the lane's row, the sections it implements, the base.
 - **Interfaces** (each lane stubs the other side): `Dr808.create(inst, 'tr808')` → `{ set(drum), setOS(os, fs), hit(sound, v127),
-  trig(mask), render(buf, N), post(L, R, mono, n), live(), reset(), mon() }` (V ↔ E); `DrSeq.create(inst)` → `{ set(s),
-  events(F), transport(play), release(), run, sync, pos }` (S ↔ E); `drum-core`'s `normDrum`, `press`, `compilePlan`, `toNotes`,
+  trig(mask), render(buf, N, F0), post(L, R, mono, n), live(), reset(), mon() }` (V ↔ E; `hit` / `trig` latch, §1.2; `F0` = the
+  span's absolute frame, for the metal phases, §2.1); `DrSeq.create(inst)` → `{ set(s), events(F), transport(play), release(), run,
+  sync, pos, syncStep }` (S ↔ E); `drum-core`'s `normDrum`, `press`, `compilePlan`, `toNotes`,
   `vTrig`, `DEFAULT_MAP`, `SOUNDS`, `PERS.tr808` (S ↔ P1 / H1 / H2); `api.drum = { state(), press(input), step(fn) → off, lit(fn) →
   off, pads: { on, off }, popover hooks }` (P1 ↔ H1); `host.drumRows(track)` (H2 ↔ H1).
 
@@ -604,23 +718,30 @@ the drum Inst renders silence and posts `drumsErr` once, as the optional-script 
 - **The two targets for every circuit** (§2.2, RC §14): against **its own analog prototype** (each block's frequency response from
   the chosen component values: centre frequencies ± 1 %, time constants ± 2 %, magnitude ± 0.2 dB to 5 kHz at OS 4) and against **the
   service table** (§2.2's numbers: frequencies ± 8 %, decays measured as the table does — to −20 dB [C] — ± 25 %), at the knob's three
-  table positions.
+  table positions. Two stated exceptions (§2.2; §15 #10): the **BD**'s 56 Hz is checked as the mean instantaneous frequency over
+  10–40 ms (the sigh's start, Werner fig. 11: 57 → 50 Hz), ± 8 %; the **SD**'s production values against the measured later unit,
+  177 / 340 Hz ± 8 % [R? S NG], not the printed revision's 238 / 476.
 - **BD**: instantaneous frequency (Hilbert, as Werner) at 100 ms near the prototype's centre (≈ 49.5 Hz) at DECAY 5; during the attack
-  above 2 × that, for R156 · C38 (4–7 ms); the sigh: the frequency at 20 ms exceeds the one at 250 ms by ≥ 3 Hz [R Werner fig. 11];
+  above 2 × that, for the time the model's Q43 stays on (C38 / R156 discharging, τ 100 ms, below Q43's turn-on), which must lie in
+  4–7 ms [R; §15 #9]; the sigh: the frequency at 20 ms exceeds the one at 250 ms by ≥ 3 Hz [R Werner fig. 11];
   the pulse shaper's falling edge clamps at −0.71 V ± 0.05; DECAY 0 → 10 lengthens the −40 dB time monotonically.
 - **Metal bank**: each oscillator's period within 0.1 % of RC §7; duty 47.98 % ± 0.1; the band-passes' centres within 2 % of 3440 /
   7100 Hz at OS 4, 2 and 1 (the prewarp); the bank asleep when no metal voice is live, and a hit after 1.3 s of sleep has the phases a
-  free-running bank would have (vs a never-sleeping reference: identical output).
+  free-running bank would have (vs a never-sleeping reference: identical output — exact because a phase is a function of the
+  absolute sample index, §2.1).
 - **Toms / congas**: the pitch falls during the ring (the diode pair): the frequency at 10 ms exceeds the one at 150 ms; TUNING sweeps the
   table's low → high; TOM has PN rumble, CONGA none; a per-hit flip (a note naming the other sound) restrikes the same circuit.
   **RS / CL**: the two tunings and the per-hit flip. **CP**: the envelope has three saw peaks ≈ 10 ms apart and a longer tail.
 - **Every circuit**: a retrigger while ringing continues the state (the output differs from a fresh hit's and from a reset-then-hit —
   no machine-gun); **accent is timbre**: the 14 V hit's spectrum, level-normalised, differs from the 4 V hit's (correlation of the
-  normalised magnitude spectra < 0.99) for BD, SD, CY, OH, RS; the CH choke (OH −40 dB within its discharge, and an OH hit 100 ms after a
-  CH is cut, 200 ms after is not); 44.1 vs 48 kHz frequencies equal within 0.5 %; no NaN / Inf, no denormal (states flushed);
+  normalised magnitude spectra < 0.99) for BD, SD, CY, OH, RS; the CH choke (OH −40 dB within its discharge; an OH hit inside the
+  model's own hold — computed from C63, R173 and Q23's turn-on, at V_N and at V_A, recorded in §14 — is cut, one after it is not; and
+  [R? common use] the classic figure, CH on the beat and OH on the off-beat eighth at 120 BPM (250 ms later), lets the OH sound within
+  6 dB of a free OH hit — §15 #11); 44.1 vs 48 kHz frequencies equal within 0.5 %; no NaN / Inf, no denormal (states flushed);
   determinism (two machines, same hits → identical bytes); **span invariance** (the same hits rendered with spans split at 4, 128 and
-  random multiples of 4 frames → identical bytes); `noAlloc` over 200 spans with hits; idle: an asleep machine runs no circuit code (a
-  counter).
+  random multiples of 4 frames → identical bytes); **order-free hits** (the same hits at one frame latched in two orders, and a step
+  mask vs the same hits one by one → identical bytes, §1.2); `noAlloc` over 200 spans with hits; idle: an asleep machine runs no
+  circuit code (a counter).
 
 ### 12.2 Golden refs (`tests/golden-drums.test.mjs`, lane E; frozen by the lead)
 
@@ -634,33 +755,39 @@ the drum Inst renders silence and posts `drumsErr` once, as the optional-script 
   bar 2 with a loop; a retrigger train; the choke; a per-hit tom / conga flip; OS 2; 44.1 kHz × 1; a sample slot (a fixture sample).
   Gate: `max |A − B| === 0`. Until the freeze the test compares B with itself twice (determinism) and is marked so in its header.
 - **D5 (B only)**: the demo pattern + a fill + AB through the sequencer vs `toNotes` of its plan through the song path (an empty FX
-  panel, no 2 s silence in the pattern so neither render idle-skips): **bit-identical** over 8 bars synced at 120 BPM / 48 kHz,
-  swing 50; at 97 BPM and at swing 62 % every hit fires on the same 4-frame grid point or the next (a hit log from `dm.hit`), and
+  panel, no 2 s silence in the pattern so neither render idle-skips — the skip starts at a span start, and the two renders' span
+  starts differ by the note-offs): **bit-identical** over 8 bars synced at 120 BPM / 48 kHz at swing 50 **and at swing 62 %** (whole-
+  tick swing, §3.5); at 97 BPM every hit fires on the same 4-frame grid point or the next (a hit log from `dm.hit` / `dm.trig`), and
   aligned at the hits the renders match.
 
 ### 12.3 drum-core (`tests/drum-core.test.mjs`, lane S)
 
 `normDrum` (idempotent, every bound, hostile input never throws, size bound); **one test per row of §3.3** through `press` (state +
 memory + commands), including the beat-2 quirk, AB from A, intro → A → B, fill every N not counting the intro, TAP fill on top,
-CLEAR + N, A / B sharing lengths, COMPOSE record / edit / STOP-as-last / overflow into the next track, PLAY loop; `compilePlan` for
-every mode × variation × fill × pre-scale × parts (lengths, offsets, the lcm cycle, mute / solo applied, the content key stable and
-sensitive); `toNotes` (positions, primary notes, the switch picks the sound, v 100 / 127, bars, swing rounding); `vTrig` (the table of
+CLEAR + N, A / B sharing lengths, COMPOSE record / edit / STOP-as-last / overflow into the next track, PLAY loop, and every input of
+§3.3's "not covered" list; `compilePlan` for every mode × variation × fill × pre-scale × parts (lengths, offsets, the `AB ? 2N : N`
+cycle — AB with fills every 4 plays A B A F B A B F —, the `fill` measure, mute / solo applied, the content key stable and
+sensitive); `toNotes` (positions = the sequencer's whole-tick swung ticks, primary notes, the switch picks the sound, v 100 / 127,
+bars); `vTrig` (the table of
 §1.3 at 1, 50, 99, 100, 113, 127 and ACCENT 0 / 5 / 10); `DEFAULT_MAP` (unique notes, GM numbers); the constants equal `dr-seq.js`'s.
 
 ### 12.4 dr-seq (`tests/dr-seq.test.mjs`, lane S; a fake Inst / Track clock)
 
 Sync: a start at bar 1, bar 9 and mid-measure plays the steps the plan says at the frames the ticks say; seek and a loop wrap; tempo
 change mid-measure (positions follow the ticks); stop → silent; free: START from step 1 at the knob's tempo, `pos` advance; `at: 'now'`
-keeps the position, `at: 'bar'` swaps at the boundary and re-anchors, `'beat2'`; swing at 50 / 62 / 75 %, triplet scales unswung;
-every pre-scale's tick length; the step posts carry the frame; `events(F)` ≥ 1; offline = live (the same frames from the same
-transport messages); no allocation in `events`.
+keeps the position, `at: 'bar'` swaps at the boundary and re-anchors, `'beat2'`; a loop wrap (the tick going back, no
+`transportHook`) re-anchors at tick 0; a `tap` increment plays the plan's `fill` at the next boundary and the cycle resumes where it
+was (AB phase kept); swing at 50 / 62 / 75 % on whole ticks, triplet scales unswung; every pre-scale's tick length; the step posts
+carry the frame; `events(F)` ≥ 1; offline = live (the same frames from the same transport messages); no allocation in `events`.
 
 ### 12.5 Engine (lane E; `tests/engine-track.test.mjs` additions)
 
 A drum Inst from `{t:'patch'}` and from `processorOptions` (live = offline); the 808 on a graphed node (`{t:'seq', i}` and `step` with
 `i`); power off stops the sequencer and splits no spans (the 303's test); the co-resident span-grid bound for a neighbour (as the 303's
 2e-3); `warmUp` + `restore` leave a fresh machine (a render after equals a fresh processor's); OS change through `osFade` (no click
-above −60 dB); `modSpan` with a `drum.bd.dc` row moves the decay; the bench rows of §2.6 (V8 gate; JSC by the lead).
+above −60 dB); a `modRows` row on `drum.bdd` (through the real `moRec`, not a test-side path walk) moves the decay; a kind change
+303 → 808 → 303 leaves each its own `sq` (a 303 payload never lands in a `DrSeq`); a panic while the BD rings is silent after the
+5 ms fade; the bench rows of §2.6 and **d8i** as row p's gate (V8; JSC by the lead).
 
 ### 12.6 Host, data and the tests that iterate models (H1, H2, E)
 
@@ -668,20 +795,29 @@ above −60 dB); `modSpan` with a `drum.bd.dc` row moves the decay; the bench ro
   starts the project; a step key in 1st PART (running) toggles and the posted plan changes in place; CLEAR + 4 sets length 4; the LEDs
   follow `{t:'step'}` at the heard time (a fake audioclock); COMPOSE records three measures; PLAY loops; TAP fill; a pad press posts
   `{t:'on', n: 38, v}` with the touch velocity and lights; MIDI note 36 plays the kick through the worklet; → Piano roll writes the
-  notes (v 100 / 127, primary notes), turns SYNC off and its notice's undo restores both; MAP… re-maps snare to 40; a sample loaded
-  into SD posts its `smp` entry and `needs`; Save embeds it; a project with an 808 reloads identically; History: an unrelated undo
-  keeps the pattern memory; Save as classic project lists the drum track; bounce includes a synced machine with no notes; the Simple
+  notes (v 100 / 127, primary notes), turns SYNC off and its notice's undo restores both — and so does the project's ↶ (the
+  `meta.drumSync`), redo turns it off again; MAP… re-maps snare to 40 (the payload's `map`); a sample loaded into SD is ensured
+  (`{t: 'smp'}` entry) before the payload naming it; Save embeds it; a project with an 808 reloads identically; History: an unrelated
+  undo keeps the pattern memory; replacing the 808 deletes `drum` and the notice's undo brings it back; Save as classic project lists
+  the drum track; bounce includes a synced machine with no notes (and its slot entries); the Simple
   layout is never offered; `noteOn(NaN)` nothing; panic stops a free-running machine and its START state / LEDs follow; SYNC off +
   START runs the machine alone at its TEMPO while the transport is stopped.
 - H2: `song` (normDev keeps `drum`; MIDI export ch 10; import ch 10 → tr808), `cv-migrate` (schema 8: a schema-8 project read-only in a
-  schema-7 gate test; STEPS[7] changes nothing stored), `cv-tray` (the Drums view; Hardware / Simple list 12 — its "asserts 12" stays
-  true), `cv-mods` (the class table has `tr808`: knobs `proc`, switches `struct`), `assets` (`states()` lists drum slots), `roll` (drum
-  rows: names, compact mode, drag between rows, the "other" row, the piano unchanged for synth tracks).
+  schema-7 gate test; STEPS[7] changes nothing stored), `cv-tray` (the Drums view; Hardware / Simple list the 12 classics — the test's
+  own `classic = MODELS.filter(m => !m.custom)` (tests/cv-tray.test.mjs:492) would count 13 and fail its `length === 12`: it filters
+  `family !== 'drums'` too; the menu's items and `S.views()` (494–496) gain `drums`; the 808 tile has no SIMPLE badge), `assets`
+  (`states()` lists drum slots), `roll` (drum rows: names, compact mode, drag between rows, the "other" row, the scroll extent of the
+  compact rows, the piano unchanged for synth tracks).
 - **Tests that iterate non-custom `MODELS`** (each gets its rule, none is weakened): `golden-graph:23` → `family !== 'drums'` (§12.2);
-  `integration:654 / 818` (every model sounds at note 60) → drums sound at note **36**; `smpgen.test:562-575` (farm patches) → drums
-  are not farm instruments (filtered, with the reason in a comment); `classic-mod.test` (every control has a target) → the 808's knobs
-  have `drum.*` targets; `classic-panel.test:93` → the 808 renders its hardware panel; `cv-art.test` → `SIL` / `DRAW` for tr808;
-  `cv-cost.test` → `COST.synth.tr808`; `cv-panel.test` → `HW_IDS` includes tr808, TARGET / PINNED from P2.
+  `integration:654 / 818` (every model sounds at note 60) → drums sound at note **36**; `smpgen.test:562-575` → the farm-patch check
+  skips drums (not farm instruments; the reason in a comment) while the "buildPatch = patchFor" check runs for the 808 too (the patch
+  is `vals`-only, §1.1); `classic-mod.test` (every control has a target) → the 808's knobs have `drum.<id>` field targets, and one
+  case checks the engine's `moRec` resolves each (its own probe walks any depth, line 77); `cv-mods.test:23–31` (E) → the counts
+  become 453 controls, proc 60, struct 12, the struct list + the five 808 switches; `classic-panel.test:93` → the 808 renders both
+  layouts with one `data-dest` per control (no edit); `cv-art.test` → `SIL` / `DRAW` for tr808; `cv-cost.test` → `COST.synth.tr808`;
+  `cv-panel.test` → `HW_IDS` includes tr808, `TARGET.tr808` (P1, §11); `cv-shell-sim:257` (the track chip lists every model) and
+  `cv-graph.test:20` (every model's v1 track compiles to today's patch) include the 808 with no edit; `golden-classic` / `golden-fx`
+  iterate the frozen ref-p1 list (tests/golden-classic.test.mjs:12, golden-fx.test.mjs:15) and are untouched.
 
 ### 12.7 Panel (P1 / P2)
 
@@ -735,4 +871,63 @@ is no hardware MIDI out in the app yet, so the 808 can't drive an external machi
 **And one request**: after the deploy, a 20-minute iPad session — `canvas.domlavin.com/tests/bench.html` (five passes, Copy results)
 and the hands-on list of §12.8.
 
+**Answers (the user, 2026-10-20):** all four as recommended. (1) The 808 **follows the song** by default (its START/STOP is the
+project's play button, TEMPO sets the project tempo); SYNC off in the extras strip runs one machine on its own. (2) **Both play**:
+roll notes and the machine's own pattern sum; "→ Piano roll" turns the pattern off after writing it, one undo restores both. (3)
+**Undo like the TB-303**: step edits are not undone by ↶; clearing a pattern or a rhythm track, the demo and "→ Piano roll" get a
+"tap to undo" notice. (4) **Named drum rows on the General MIDI numbers** (kick 36, snare 38, closed hat 42 …), with a toggle back to
+the full keyboard; the note map is editable per machine. Settled: the review (§15) does not reopen them.
+
 ## 14. Notes (the builders fill in)
+
+## 15. Review log (the skeptic review, 2026-10-20, against deed338)
+
+Every claim about existing code was read at `canvas` deed338 (= 5129c60 for the code; `wt-m3` b004627 and `wt-1i` 5129c60 for the
+lanes in flight). Scratch checks only (MODELS consumers, the bench rows, the research arithmetic); no test was run. The user's §13
+answers are settled and not reopened. **The D5 / 4-frame claim holds, with three repairs**: events are not sample-accurate — a song
+note and a sequencer step both fire at the first span start whose `tickAt(F)` reaches their tick, spans start on absolute multiples
+of 4 frames inside 128-frame quanta (engine.js:3740), and the distance is the same expression from the same last span start (a
+`d: 120` note-off lies ≥ 40 ticks ≥ 367 frames before the next hit, so it never adds a span start in that hit's quantum); the Limiter
+and DC block are per-sample (1223–1241, 3945–3959). What broke it: fractional swing ticks (#5), the order of hits at one frame (#6),
+and the side effects a note has and a step does not (#34, scope). Severity: P0 a silent failure or a broken build, P1 a contract
+contradiction or an impossible gate, P2 a gap a builder would trip on, P3 a correction.
+
+| # | point | evidence (file:line) | fix |
+|---|---|---|---|
+| 1 · P0 | Drum knobs addressed as `drum.<lane>.<field>` (`drum.bd.dc`): the classic adapter resolves a field path **one level deep**, so every cable on an 808 knob would silently do nothing; `classic-mod.test`'s own probe walks any depth and would not notice | engine.js:1713–1715 (`moRec`: split at the first dot, `this.p[sub][key]`); tests/classic-mod.test.mjs:77; IMPL §2.3 / §9 / §12.5 (as written) | **fixed in §2.3, §9, §12.5, §12.6**: a flat `p.drum` keyed by the models.js ids (`drum.bdd`); `FIELD_CLASS` `drum.<id>` (knobs proc, switches struct); MASTER VOLUME in `p.drum.vol`, never `level` (an sm slot on every engine); no drums branch in `modSpan` is needed (proc rows only: `moN = 0`); a test through the real `moRec` |
+| 2 · P0 | `map(P, v, G)` cannot see `dev.drum`: the note map, mute and sample slots were to be in `p.drum` and `patch.needs`, but `patchFor` / `buildPatch` / `CG.instPatch` receive `vals` only and the compiled v1 view carries `{model, vals, preset, seq}` | models.js:756–763; main.js:396–401, 418–421, 431–440; cv-graph.js:263, 276, 314; tests/smpgen.test.mjs:562–573 ("buildPatch = patchFor") | **fixed in §1.1, §1.4, §2.3, §3.5, §5, §10.1**: the patch stays a function of `vals` (knobs + switches); `map`, the effective `mute`, `smp` and `tap` ride the drum `{t:'seq'}` payload; `drumSend` ensures the slots' entries before posting (as `sendPatch`, main.js:574–579), node and bounce needs gain the ids (2480); no cv-graph change |
+| 3 · P0 | E1a (`tr808` in models.js) makes `cv-mods.classTable()` **throw** (an unknown patch field) and E's own classic-mod rule depends on H2's cv-mods.js; the counts are pinned | cv-mods.js:123, 133; tests/cv-mods.test.mjs:23–31 (425 controls, proc 37, struct 7, the struct list) | **fixed in §11, §12.6**: E1a carries `FIELD_CLASS` / the regenerated `CLASS_TABLE` / `tools/cv-classes.mjs` / cv-mods.test (453, proc 60, struct 12 + the five switches); H2 no longer owns cv-mods |
+| 4 · P1 | d8i (silent machine) as a bench scenario: every timed run must be audible, `measure` throws on silence and bench.test asserts a peak per scenario; bench.json targets hold only `{node, ipad}` | tests/bench-scenarios.mjs:401–404; tests/bench.test.mjs:18–23, 82–83; row p 91–106 | **fixed in §2.6, §12.5**: d8i is gated as row p is (`cpu-gate.gateLoad` on an idle machine past the 2 s window, in engine-track); the jsc column is the lead's A/B, not a stored target |
+| 5 · P1 | D5 at swing 62 %: "→ Piano roll" rounds swung positions to whole ticks, the sequencer would play 57.6 ticks — 0.4 tick = 10 frames (2–3 grid points) apart at 120 BPM / 48 kHz, not "same or next" | IMPL §3.5 / §4.3 (as written); roll notes are whole ticks (song.js:238; roll.js:837, 861) | **fixed in D5, §3.5, §4.3, §4.4, §12.2**: the sequencer's swing offset is `round((2·swing − 1)·stepTicks)` whole ticks; `toNotes` writes exactly those; D5 bit-identical at 62 % too |
+| 6 · P1 | Hits at one frame arrive in different orders on the two paths (one mask in lane order vs notes sorted by tick then note number); the CH→OH choke, a pair's two sounds on one circuit, a step + a note on one lane are order-dependent | song.js:112 (`sortNotes`); engine.js:3653–3661 | **fixed in §1.2, §1.4, §2.1, §12.1**: `hit` / `trig` latch per chunk, applied in lane order, one trigger per circuit per chunk (highest V; a pair in one chunk: the switch's sound); an order-free test |
+| 7 · P1 | MANUAL PLAY's cycle `lcm(AB ? 2 : 1, N)` contradicts §3.3's own rule (AB phase counts basic measures, fills excluded): AB + fills every 4 would play A B A F **A** B A F instead of A B A F **B** A B F; the "≤ 48" bound is unreachable | IMPL §3.3 BASIC VARIATION row vs §3.4 (as written) | **fixed in §3.4, §12.3**: cycle `AB ? 2N : N` (N even → N − 1 basics per fill cycle, odd), ≤ 32 + the intro |
+| 8 · P1 | A TAP fill (and the AB phase / fill count) cannot be carried by an `at: 'bar'` plan swap: `compilePlan` has no phase input, a re-anchored cycle restarts at A, and main's view of the measure is stale at a boundary race | IMPL §3.4 / §3.5 (as written) | **fixed in §3.4, §3.5, §12.4** (lead may revisit): the plan carries the selected `fill`; a `tap` counter makes `DrSeq` play it at the next boundary instead of the cycle's next measure, the cycle index not advancing — nothing crosses threads |
+| 9 · P1 | Research arithmetic: R156 1 MΩ · C38 0.1 µF = **100 ms**, not ≈ 4 ms; the 4–7 ms is how long Q43 stays on (a threshold crossing), and the BD test was written against the product | research-808-circuits.md §2 item 5 and §14 (as written); IMPL §2.2, §12.1 | **fixed in RC §2, §14, IMPL §2.2, §12.1**: the duration comes from the network (charge, R156 · C38, Q43's V_BE); 4–7 ms stays the test band |
+| 10 · P1 | "Lands within ± 8 % of the service table" is impossible for two voices with the chosen values: BD settled 49.5 Hz vs 56 Hz (−12 %); SD production 173 / 336 vs the table's 238 / 476 (−27 %, the printed revision's) | IMPL §2.2 rows BD / SD, §12.1; RC §2, §3 | **fixed in §2.2, §12.1, RC §14**: BD's 56 Hz checked as the 10–40 ms mean (the sigh's start); SD against NG's measured later unit 177 / 340 Hz [R? S] |
+| 11 · P1 | The choke "holds ≈ 155 ms": that is R173 · C63's τ, not the hold, which lasts until C63 drops below Q23's turn-on (longer when accented); the fixed 100 / 200 ms test could fail a correct model | RC §9 (as written); IMPL §1.2, §2.2 OH row, §12.1 | **fixed in §1.2, §2.2, §12.1, RC §9**: the test uses the model's own hold at V_N and V_A; [R?] the CH-on-beat / OH-off-beat-eighth figure (250 ms at 120 BPM) must let the OH sound |
+| 12 · P1 | Project ↶ after "→ Piano roll": `keepDevs` keeps a same-model device's `drum` (incl. `x.sync`) on every undo, so ↶ removes the notes and leaves SYNC off — silence | main.js:1317–1324, 1333 | **fixed in §4.3, §6, §10.1, §12.6**: the History step carries `meta.drumSync`, put back after `keepDevs` (the `modMoveBack` precedent, main.js:1305–1316) |
+| 13 · P1 | Engine branches missing or unsafe: `allOff` / `panicClear` / `isQuiet` (a ringing circuit would resume after the panic fade); `this.sq` is shared — `seqMsg` reuses whatever object `this.sq` holds and `Object.assign`s the payload into it, `restore` never resets it, a 303 ↔ 808 switch would write one sequencer's fields into the other; the Track writes `x.sq.run` / `x.sq.syncStep` directly | engine.js:2534–2549, 1491–1508, 2151–2157, 2236–2242, 3328, 3412, 3484, 3493, 3515, 3519 | **fixed in §1.1, §11, §12.5**: those branches; a kind change to / from drums drops `sq`; `seqMsg` routes by payload shape; `restore` resets `sq` and `dm`; `DrSeq`'s shape `{run, sync, pos, syncStep}` |
+| 14 · P2 | A `WARM` entry warms one circuit: the warm-up plays notes 48 / 67 (HT, unmapped) and `warmGraph` replays `WARM` twice more on a graphed Inst; a throw inside `warmUp`'s single `try` skips everything after it | engine.js:2978–2995, 3019, 2936 | **fixed in §1.1, §10.2**: a drums round of its own (every sound, V_N / V_A, a synced plan, an OS change) before `SD.warmUp` / `warmGraph`, `WARM` unchanged; a missing `Dr808` never throws there |
+| 15 · P2 | "After `fx-dsp.js`" is ambiguous: `mod-core.js` follows it and three tests pin "mod-core.js last"; `wk.test`'s `DSP_GLOBAL_NAMES` and the module counts were not listed; phase 0 cannot edit `DSP_TABLE` | tests/modcore.test.mjs:86; tests/main.test.mjs:47; tests/integration.test.mjs:675; tests/wk.test.mjs:28; tests/app.test.mjs:165; tests/dsp-scope.mjs:22–24, 36–40 | **fixed in §10.2, §11**: between `fx-dsp.js` and `mod-core.js`; counts 13 → 15; phase-0 tests load their script with `dspScope().run()` |
+| 16 · P1 | "A hit after 1.3 s of sleep has identical output vs a never-sleeping bank" is infeasible with phases "advanced analytically at wake-up": an accumulated phase and a jump differ in rounding | IMPL §2.1 Metal, §12.1 (as written) | **fixed in §2.1, §11, §12.1**: each phase is `frac(n · f / fs)` of the absolute OS-sample index (`render(buf, N, F0)`), exact through sleep and the idle skip |
+| 17 · P2 | cv-tray: "its asserts 12 stays true" is false — the test computes `classic = MODELS.filter(!custom)` (13 with the 808) and pins three views; the tile's SIMPLE badge and aria text are other `!m.custom` sites; main's `o.ui === 'flow' && !m.custom` paths too | tests/cv-tray.test.mjs:492–499; cv-tray.js:322, 372, 473; main.js:1718, 3146, 5024 | **fixed in §8, §10.1, §12.6** |
+| 18 · P2 | roll.js site list incomplete for compact rows: `clampY`'s 128 rows, the note culls by note range, the keyboard extent, the touch drag `_rowsMoved`; 807 is a clamp, not a `127 − n` site | roll.js:109–110, 122, 300, 768, 796, 807, 855, 930, 1012, 1027, 1044, 1171 | **fixed in §4.2** |
+| 19 · P2 | iPad sample memory: a 10 s stereo slot ≈ 7.7 MB (8 B / frame / channel), 16 slots far above the per-machine 32 MiB, and `fits()` checks only the project budget | assets.js:135, 1326, 1452–1458; smp.js:49 (`levels: 8`) | **fixed in §5**: 2 playback levels (± 1 octave), the per-machine cap as SOUNDS…'s own accounting; `fits()` stays the project gate |
+| 20 · P2 | d8p (0.020) is below the sum of the per-circuit ceilings of the circuits it keeps awake (≈ 0.046): with the −140 dB sleep rule they never sleep at 120 BPM | IMPL §2.6; RD §1.3 (spike ≈ 0.002–0.003 a resonator) | **noted in §2.6** (the rows win; lane V aims at the spike, not the ceilings); see #35 |
+| 21 · P3 | TEMPO: 40 click stops over 40–300 BPM are 39 steps of 5.3 %, not 4.9 % | (300 / 40)^(1/39) = 1.053 | **fixed in §3.2** |
+| 22 · P2 | "The model default OS 4" does not exist: a classic node runs at the app's `settings.os` (default 4) and follows `{t:'os'}` | main.js:89, 690, 734; engine.js:2222–2224 | **fixed in §2.4** (the 808 follows the app's oversampling; ≈ 2× at 8×) |
+| 23 · P2 | Prewarp on blocks whose coefficients move every sample (BD R_eff, the toms' diodes) means a `tan` per sample at 192 kHz for no gain (≤ 500 Hz: < 0.1 % warp even at OS 1) | IMPL §2.1 Blocks (as written) | **fixed in §2.1**: plain bilinear `K = 2·fs` for those; prewarp for the fixed-frequency blocks |
+| 24 · P3 | The rear MULTI OUT jacks were both a printed legend band and `inert: 'later'` jack controls | IMPL §7.1 / §7.3; panels/tb303.js:26, 157 | **fixed in §7.1**: small jacks under their ▲ legends (the 303's WAVEFORM precedent) |
+| 25 · P2 | Sequencer inputs the table did not cover: which part plays while writing, MODE / TRACK changes while running, AB and AUTO FILL in PLAY (the MANUAL PLAY reset rule would never play a B in a track that changes key every measure), TAP in PLAY / COMPOSE, CLEAR latch vs CLEAR + N, the rest | IMPL §3.3; RC §14 open points | **fixed in §3.3, §12.3**: [C] defaults listed after the table; lane S may refine with a reason |
+| 26 · P3 | Pad lights from `postMon` lead the sound by the output latency (≈ 200 ms on Bluetooth) while the step LEDs are at heard time | engine.js:3746, 3896–3911 | **fixed in §3.5, §3.6**: the monitor carries its frame; pads light at its heard time |
+| 27 · P2 | A loop wrap calls no `transportHook` (it only re-seeks the song), so a `DrSeq` re-anchored at a 'bar' swap would not return to tick 0 there | engine.js:3598–3606 vs 3588–3593 | **fixed in §3.5, §12.4**: re-anchor whenever the song position goes back |
+| 28 · P2 | `cv-model.setModel` changes the device in place, so a replaced 808's `drum` would ride on the next model's device (memory, History) while `normDev` drops it on load | cv-model.js:302–309; song.js:546–549 | **fixed in §6, §10.1, §12.6**: switching away deletes `drum`; the Replace undo restores it |
+| 29 · P3 | smpgen's loop does two things: the farm-patch check (skip drums) and "buildPatch = patchFor" (keep: the 808's patch is `vals`-only after #2) | tests/smpgen.test.mjs:559–577 | **fixed in §12.6** |
+| 30 · P2 | P1 owns cv-panel.test, which pins `HW_IDS` and each model's `TARGET`, but the 808's numbers come from P2's layout | tests/cv-panel.test.mjs:28–30, 92, 177–185; cv-panel.js:117, 430, 479 (`ceil32`) | **fixed in §11**: P1 writes `HW_IDS` + `TARGET.tr808 = [1024, 1024]` (1016 × ≈ 1020 on the dots); P2 within a dot or a number to the lead |
+| 31 · P3 | "`v8-guard` clean" checks nothing: the module only sets `--no-sparkplug` | tests/v8-guard.mjs:9–11 | **fixed in D1** |
+| 32 · P3 | The jsc column is not a bench.json field | tests/bench.json `targets`; tests/bench.test.mjs:83 | **fixed in §2.6** (with #4) |
+| 33 · P3 | DEMO patterns: say they are ours, not a record's or a manual's (D4) | IMPL §3.6 | **fixed in §3.6** |
+| 34 · proposal | A note also calls the panel's `rack.trigger()` (Hyper RETRIG), sets `lastNote` (FX key tracking) and reaches ModCore's pseudo-voice; a sequencer step through `dm.trig` does none of it, so a Hyper or a track ENV cabled to an 808 knob follows roll notes but not the pattern | engine.js:2248, 2261, 3425–3451; the 303 precedent 2550–2564 (its steps gate ModCore, IMPL-2b review E5) | **for the lead**: a step with hits calls `rack.trigger()` once, sets `lastNote` to its lowest sound's primary note and gates ModCore like the 303's `seqFire`; D5 is stated without cables / FX (done, D5 / §4.4) either way |
+| 35 · proposal | The −140 dB absolute sleep threshold (1e-7 V) keeps a CY at DECAY 10 (τ 2.47 s) awake ≈ 40 s after each hit; the classic voices stop at 1e-5 of their envelope (−100 dB) | IMPL §2.1 Denormals; engine.js:94, 696 | **for lane V / the lead**: sleep below 1e-5 · V_N of the circuit's own trigger scale (≈ −100 dB), recorded in §14 with the d8p number |
+| 36 · R? | RS / CL "muted outside the trigger" (Q74) cannot hold literally with 10 / 25 ms decays and a 1 ms trigger: the JFET's gate must follow something longer | RC §5; IMPL §2.2 RS/CL row | **for lane V**: read Q74's gate network from the scan; model what it gives |
+| 37 · fine | Checked and fine: `MODELS` appended last changes no index (`modelById`'s `MODELS[1]`, main.js:81; golden-classic / golden-fx draw from the frozen ref-p1 list, golden-classic.test.mjs:12, golden-fx.test.mjs:15; golden-random is Serum-only; no other indexed draw); schema 8 is free (`SCHEMA = 7` on canvas, wt-m3, wt-1i: cv-migrate.js:82); the code lines cited (PatchP 1369, nzW 1599, songEvents 3581, `q.pos` 3742, makeNode 922–929, the step handler 948, keepDevs 1317, AUTO_CH song.js:709, `importMIDI`'s channel song.js:888) are right; `MAKERS` has Roland and the 303 prints its model name and "Computer Controlled" (cv-panel.js:37; panels/tb303.js:111, 131); the research's derived values re-computed agree (SD 249.6 / 173.3 / 499 / 336 Hz; OH / CH / MA high-passes 7.83 / 11.75 / 10.6 kHz, Q 2.5 / 2.5 / 2.3; PN 273 Hz, Q 0.74; metal band-passes 3454 / 7117 Hz; toms 86 / 134 / 182 and congas 192 / 276 / 404 Hz; CB 0.32 in 10.5 ms then τ 147 ms; CY DECAY 0.47–2.47 s; tom reverb 86 ms; accent +10.9 dB; LO out −19.3 dB); the iPad has run at 0.75–0.9 × the node rows (bench.json `ipad2b`), so iPad targets equal to the node's leave margin; lanes: phase 0 is new files only (no overlap with milestone 3's lane D, which owns main.js now, or `wt-1i`'s K1 / K2 / H), phase 1 starts after milestone 3's deploy with 1i already shipped (schedule A), so no 7a lane shares a file with work in flight | as cited | — |

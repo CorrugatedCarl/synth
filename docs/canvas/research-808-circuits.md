@@ -78,9 +78,12 @@ Blocks (the paper's partition; values from the schematic, §14):
    the pulse ends; while high, Q43 grounds its collector so R_eff drops from R165 + R166 to R166 — centre frequency and Q rise by more
    than an octave for ≈ **6 ms** (shorter than one period at the raised frequency): the "punch". A retrigger pulse (C39, R161, D52: a
    high-pass with a diode clipper) is injected so the amplitude does not jump when the network returns to its normal tuning.
-   **Conflict**: the service notes' own time constant R156 (1 MΩ) · C38 (0.1 µF) gives ≈ 4 ms (the notes say ≈ 4 ms) [P SN p.5, P-sch];
-   Werner's ≈ 6 ms and a replica measured at 6.2 ms (the Wolfram article, RD §2.1) [S]. The model uses the component values; the
-   attack lasts what they give (4–7 ms is the test band).
+   **Durations**: the service notes say the attack lasts ≈ 4 ms [P SN p.5]; Werner ≈ 6 ms and a replica measured at 6.2 ms (the
+   Wolfram article, RD §2.1) [S]. **Correction (IMPL-7a review §15 #9)**: R156 (1 MΩ) · C38 (0.1 µF) is **τ = 100 ms**, not ≈ 4 ms
+   (an earlier reading of this appendix multiplied wrongly) — the 4–6 ms is how long C38, charged during the 1 ms trigger, takes to
+   discharge through R156 below Q43's turn-on, a threshold crossing early on a 100 ms decay. If a re-read finds other values, the
+   duration still comes from the network (charge path, R156 · C38, Q43's V_BE), never from the product alone. The model uses the
+   component values; the attack lasts what the network gives (4–7 ms is the test band).
 - Typical values [P SN p.14]: **56 Hz** (an 18 ms period) at the centre; decay short / mid / long **50 / 300 / 800 ms**; 3.5 / 10 Vp-p.
   Pots: TONE 10 kΩ (C taper), DECAY 500 kΩ B, LEVEL 100 kΩ A [P SN p.16, P-sch].
 6. **Pitch sigh**: leakage through R161 lifts Q43's base when the common node swings below about a diode drop; Q43's collector current
@@ -220,8 +223,12 @@ Blocks (the paper's partition; values from the schematic, §14):
 - **Closed hat**: its own VCA (Q30) → high-pass (Q31; C72 = C73 0.001 µF, the same resistors: **≈ 11.7 kHz, Q ≈ 2.5**, calc) → half of
   IC7; fixed decay **≈ 50 ms**; 3 / 6 Vp-p [P SN p.14; S BT].
 - **The choke**: a CH trigger charges C63 (0.47 µF) through Q28; through R173 (330 kΩ) that holds Q23 on, and Q23 discharges the open
-  hat's envelope capacitor — the open hat ends at once and **stays held for ≈ 155 ms** (calc), so an OH hit inside that window is cut
-  too; the circuit does not know whether OH is sounding [P SN p.6; P-sch].
+  hat's envelope capacitor — the open hat ends at once and stays held **while C63 keeps Q23 on**: R173 · C63 = **τ ≈ 155 ms** (calc),
+  which is the discharge's time constant, not the hold time — the hold ends when C63 falls below what turns Q23 on, so it depends on
+  the charge (the CH trigger's height: longer when accented) and on Q23's base network (a re-read should look for a base-to-ground
+  resistor) (IMPL-7a review §15 #11). An OH hit inside the hold is cut too; the circuit does not know whether OH is sounding [P SN
+  p.6; P-sch]. [R? common use] The usual figure — CH on the beat, OH on the off-beat eighth, 250 ms later at 120 BPM — plays its
+  open hats, which bounds the unaccented hold below ≈ 250 ms.
 - The gate threshold of the hats is ≈ 4.5 V in stock form [S WH] (the metal voices see the 7–14 V bus, §1).
 
 ## 10. Cowbell [P SN p.6, p.14; P-sch; S SOS, frisnit; P AES abstract]
@@ -319,8 +326,10 @@ Blocks (the paper's partition; values from the schematic, §14):
   within ± 8 %, decays within ± 25 %: the parts were ± 20 % capacitors and ± 5 % resistors, and the table is "typical"). Where a value
   cannot be read at all, the lane fits that one component to (b) and tags it **[fit]**.
 - **Decided for the build** (IMPL-7a): the snare uses the schematic's production values (≈ 173 / 336 Hz, §3), the earlier ones recorded
-  for a later "unit character" option; the BD attack follows R156 · C38 (§2); CB / CY / OH / CH envelopes from their RC networks, the
-  table's decays as the check.
+  for a later "unit character" option (the service table's SD tuning belongs to the printed revision; the check uses NG's measured
+  later unit, 177 / 340 Hz); the BD attack is what the C38 / R156 / Q43 network gives (τ 100 ms, Q43 on for ≈ 4–7 ms, §2); the BD's
+  56 Hz table figure is its early, sighing pitch (§2 item 6), the components' settled centre ≈ 49.5 Hz; CB / CY / OH / CH envelopes
+  from their RC networks, the table's decays as the check; the choke's hold from C63 / R173 / Q23 (§9).
 - Not fully traced (the lane reconstructs from the topology, then fits to the table): the snare's noise-envelope time constants (the
   C51–C53 ladder through Q47 / Q48 and D54: fit to the 60 ms typical decay); the clap's AN6912 comparator network (implement as the
   topology: a ≈ 30 ms gate, three sawtooth cycles of ≈ 10 ms, a final ≈ 20 ms discharge, an exponential converter, plus the ≈ 100 ms
