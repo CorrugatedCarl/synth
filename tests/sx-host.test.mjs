@@ -467,6 +467,36 @@ test('review 1 F1: a view\'s own disposers and satellites go with it — mountin
   X.destroy();
 });
 
+test('review 2 P1-2: a view mounted while hidden is painted fully the first time it shows (reshow — the canvas\' on-screen change — queues one full paint): MACROS\' names, the filter\'s type rows; a view a paint skipped is stale until shown again; nothing stale → no paint', async () => {
+  const { doc, box, X, s } = parts();
+  let on = false;
+  const Vm = M.mountPart(X, 'macros', box, { shown: () => on, opts: { tiles: 'jack' } }), Vf = M.mountPart(X, 'filter', box, { shown: () => on });
+  await flush(doc);
+  const names = () => Array.from(Vm.root.querySelectorAll('.sx-tile')).map(e => e.textContent).join('|');
+  const want = Array.from({ length: 8 }, (_, i) => 'Macro ' + (i + 1)).join('|');
+  assert.notEqual(names(), want, 'hidden at mount: not painted (H4)');
+  assert.equal(X.reshow(), false, 'still hidden: nothing to paint');
+  on = true;
+  assert.equal(X.reshow(), true, 'shown: one full paint queued');
+  await flush(doc);
+  assert.equal(names(), want);
+  assert.equal(X.reshow(), false, 'painted: nothing stale');
+  // hidden while an edit is painted: stale; shown again → the edit shows
+  on = false;
+  X.host.edit(st => { st.macros[0].name = 'Bright'; }, { label: 'name' }); X.paint(true);
+  assert.equal(names().split('|')[0], 'Macro 1', 'hidden: skipped');
+  on = true;
+  assert.equal(X.reshow(), true);
+  await flush(doc);
+  assert.equal(names().split('|')[0], 'Bright');
+  // a non-full paint that finds a stale shown view paints it fully (its editors too)
+  on = false; X.host.edit(st => { st.macros[1].name = 'Wide'; }, { label: 'name' }); X.paint(true);
+  on = true; X.paint(false);
+  assert.deepEqual([names().split('|')[1], X.reshow()], ['Wide', false]);
+  Vm.destroy(); Vf.destroy();
+  X.destroy();
+});
+
 test('H5: the store density is wk.storeDensity\'s (lane C, merged on wt-m3), whatever the local scale; CANVAS_MAX_PX 16e6', () => {
   // (lane B's pre-H5 fallback — dpr ≤ 2 over the local scale, 0.5…2 — stays in sx-host for a non-positive answer; with C merged
   //  wk.storeDensity always exists, so the delegation is what ships)

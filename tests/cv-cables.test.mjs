@@ -1017,3 +1017,46 @@ test('milestone 3 createCableDrag: a twin control ([data-twin]: CLIP\'s MACROS p
   R.D.cancel();
   R.D.destroy();
 });
+
+test('review 2 P1-1: a touch tap selects a cable and its × appears under the finger — the same tap\'s compatibility click on the × never disconnects; a new press then a click does; a mouse tap as before', () => {
+  const R = layers();
+  const other = R.doc.createElement('div'); R.doc.body.append(other);
+  ptr(R.hit('w1'), 'pointerdown', 500, 300, { pointerId: 3, pointerType: 'touch' }); ptr(other, 'pointerup', 501, 300, { pointerId: 3, pointerType: 'touch' });
+  assert.deepEqual([R.L.selected(), R.xb().hidden], ['w1', false], 'selected, the × shown');
+  R.xb().dispatchEvent(new Ev('click', { bubbles: true, cancelable: true })); // (the touch's click lands on the × now under the finger)
+  assert.deepEqual([R.acts, R.L.selected()], [[], 'w1'], 'the selecting tap never disconnects');
+  ptr(R.xb(), 'pointerdown', 1200, 484, { pointerId: 4, pointerType: 'touch' }); ptr(R.xb(), 'pointerup', 1200, 484, { pointerId: 4, pointerType: 'touch' });
+  R.xb().dispatchEvent(new Ev('click', { bubbles: true, cancelable: true }));
+  assert.deepEqual(R.acts, ['w1 disconnect'], 'a second tap on the × does');
+  // a mouse tap: its click targets the common ancestor; a click on the × after it disconnects as before
+  R.acts.length = 0; R.L.select(null);
+  ptr(R.hit('w4'), 'pointerdown', 500, 300, { pointerId: 5 }); ptr(R.hit('w4'), 'pointerup', 500, 300, { pointerId: 5 });
+  assert.equal(R.L.selected(), 'w4');
+  R.xb().click();
+  assert.deepEqual(R.acts, ['w4 disconnect']);
+  R.L.destroy();
+});
+
+test('review 2 P1-5: a stub stays reachable at low zoom — STUB_PX screen px out of its out jack (whose touch circle is 22 screen px) up to STUB_MAX world px; a zoom re-lays it; a pointer tap tells onSelect its pointer type (the host opens the routing popover after the tap\'s click), a programmatic select tells none', () => {
+  let k = 0.4;
+  const doc = fresh(), W = doc.createElement('div');
+  doc.body.append(W);
+  const sel = [];
+  const L = C.createCables(W, { doc, k: () => k, onSelect: (id, by) => sel.push(id + ' ' + by), onAction() {}, menu: () => [] });
+  L.set(C.cablesOf(partsTrack()));
+  L.layout(new Map([['i1/oscC.out', { x: 288, y: 900 }]]));
+  const id = 'x:i1:oscC.out>', g = () => all(L.under).find(n => n.getAttribute && n.getAttribute('data-cable') === id);
+  const d = () => g().childNodes[1].getAttribute('d');
+  assert.equal(C.STUB_MAX >= C.STUB_PX, true);
+  assert.equal(d(), C.cablePath(288, 900, 288 + Math.min(C.STUB_MAX, C.STUB_PX / 0.4), 900), 'k 0.4: longer than the jack\'s circle');
+  assert.equal(Math.min(C.STUB_MAX, C.STUB_PX / 0.4) * 0.4 > 22 + 8, true, 'at least 8 screen px clear of the jack\'s touch circle');
+  k = 0.5; L.rezoom();
+  assert.equal(d(), C.cablePath(288, 900, 288 + C.STUB_PX / 0.5, 900), 'a zoom re-lays it');
+  k = 2; L.rezoom();
+  assert.equal(d(), C.cablePath(288, 900, 288 + C.STUB_PX, 900), 'k ≥ 1: STUB_PX world px');
+  const hit = g().childNodes.find(n => n.getAttribute('class') === 'cv-cable-hit');
+  ptr(hit, 'pointerdown', 10, 10, { pointerId: 3, pointerType: 'touch' }); ptr(doc.body, 'pointerup', 10, 10, { pointerId: 3, pointerType: 'touch' });
+  L.select(null); L.select(id);
+  assert.deepEqual(sel, [id + ' touch', 'null undefined', id + ' undefined']);
+  L.destroy();
+});

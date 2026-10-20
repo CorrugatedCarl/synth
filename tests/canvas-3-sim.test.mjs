@@ -457,3 +457,38 @@ test('review 1 F5: "Replace with Serum" acts on the track it was offered for —
   cv.undo(); await settle();
   assert.equal(model(p.id), 'prophet5');
 });
+
+test('review 2 P1-5: a stub\'s tap opens the source\'s routing popover after the tap\'s click — never inside it (the world takes a click while its gesture lasts); a selection without a tap opens it at once', async () => {
+  api.selectTrack(ID.a); cv.renderViews(); await settle();
+  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
+  host().edit(s => { s.p['b.on'] = 1; s.osc[1].route = 0; s.p['f.routeB'] = 0; s.p['f2.routeB'] = 0; }, { label: 'stub' }); await settle(); await settle();
+  const c = V().cables.list().find(x => x.int && x.stub && x.a === 'i1/oscB.out');
+  assert.equal(!!c, true, 'OSC B\'s stub');
+  const open = () => (host().pop ? host().pop.o : null), shut = () => { if (host().pop) host().pop.close(); };
+  const Vb = rec().views.get('i1/oscB').V, b = (Vb.panel.panel || Vb.panel).route.btn; // (the stub DOM's click() runs onclick only: a browser's runs the listeners)
+  b.click = () => b.dispatchEvent({ type: 'click', target: b, currentTarget: b, preventDefault() {}, stopPropagation() {} });
+  shut();
+  M.sel(c.id); await settle();
+  assert.equal(open(), 'route1', 'no tap: at once');
+  shut();
+  M.sel(c.id, 'mouse'); await settle(); await settle();
+  assert.equal(open(), null, 'not inside the tap');
+  sim.win('click'); await settle(); await settle();
+  assert.equal(open(), 'route1', 'after its click: OSC B routing');
+  shut();
+});
+
+test('review 2 P1-2: a part view a paint skipped while its module was off screen is painted when the module comes back on screen — engine off (the module\'s on-screen change → the host\'s reshow)', async () => {
+  api.selectTrack(ID.a); cv.renderViews(); await settle();
+  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
+  if (!V().modules.has('i1/macros')) { PT.add('i1', 'macros'); await settle(); await settle(); }
+  const m = V().modules.get('i1/macros');
+  const name1 = () => (walk(m.el, q => /\bsx-tl\b/.test(String(q.className || '')))[0] || {}).textContent;
+  assert.equal(name1(), T().dev.i1.vals.s.macros[0].name || 'Macro 1');
+  m.onScreen(false); await settle();
+  host().edit(s => { s.macros[0].name = 'Bright'; }, { label: 'name' }); await settle(); await settle();
+  assert.notEqual(name1(), 'Bright', 'off screen: skipped (H4)');
+  m.onScreen(true); await settle(); await settle();
+  assert.equal(name1(), 'Bright', 'on screen again: painted');
+  host().edit(s => { s.macros[0].name = 'Macro 1'; }, { label: 'name' }); await settle();
+});

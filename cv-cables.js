@@ -39,6 +39,10 @@ import * as wk from './wk.js?v=9';
 import { routeLabel, serumEdges, jackOf, partLabel } from './sx-edges.js?v=9';
 /** (milestone 3) a stub's length (world px) */
 export const STUB_PX = 56;
+/** (review 2 P1-5) below k = 1 a stub keeps STUB_PX screen px (its out jack's touch circle is 22 screen px at any zoom), at
+ * most STUB_MAX world px (inside Tidy's GAP 160 to the next column) */
+export const STUB_MAX = 136;
+const stubLen = k => Math.min(STUB_MAX, Math.max(STUB_PX, STUB_PX / (k > 0 ? k : 1)));
 
 /** Minimum horizontal tangent length of a cable's cubic (world px). */
 export const TANGENT_MIN = 40;
@@ -387,8 +391,10 @@ export { routeLabel };
  * badge's own long-press never arms). No floating × for them. setModsVisible('always' | 'select' | 'never'): On select shows the mod cables touching
  * the selection (highlight ids, the selected cable), Never none; Always all, and past MOD_FADE_N visible ones those not
  * touching the selection fade (.cv-fade) and o.onHint(MOD_HINT) runs once.
+ * (review 2) A selection a pointer tap made calls o.onSelect(id, pointerType) (none otherwise): the tap's click is still to
+ * come — what the host opens waits for it. A touch tap's own click never reaches the × that appeared under the finger.
  * @param {HTMLElement} worldEl  #world
- * @param {{doc?: Document, onSelect?: (id: string | null) => void, onAction?: (id: string, action: string) => void,
+ * @param {{doc?: Document, onSelect?: (id: string | null, by?: string) => void, onAction?: (id: string, action: string) => void,
  *   menu?: (id: string) => Array<object>, k?: () => number, onHint?: (text: string) => void, mods?: string,
  *   ignore?: (target: Element) => boolean}} [o]  ignore (U5): a press / key there is not "elsewhere" (the host's overlays)
  */
@@ -407,6 +413,8 @@ export function createCables(worldEl, o) {
   const U = svg('cv-cables', 0), O = svg('cv-cable-ends', 10000);
   if (worldEl) { worldEl.append(U.e); worldEl.append(O.e); }
   let list = [], ports = null, hl = null, sel = null, xb = null, press = null, keyOff = null, liveP = null, dead = false;
+  let ghost = false; // (review 2 P1-1) a touch tap just selected: its compatibility click (no press of its own) may land on the × under the finger
+  let tapBy; // (P1-5) the pointer type of the tap being handled: onSelect(id, tapBy) — the host acts after that tap's click
   let mode = MOD_MODES.includes(O0.mods) ? O0.mods : 'always', hinted = false;
   const items = new Map(); // id → {c, g, vis, hit, lab, d, lx, ly, mx, my}; (2a) a mod cable: og (over twin), end, badge, amt, ptag; (3) htag
   const forks = new Map(); // (milestone 3) a forked source's jack → its BALANCE badge {id, b, x, y, off}
@@ -539,7 +547,7 @@ export function createCables(worldEl, o) {
     const at = k => (k == null || !ports ? null : typeof ports.get === 'function' ? ports.get(k) : ports[k]) || null;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const it of items.values()) {
-      const A = at(it.c.a), B = it.c.stub ? (A ? { x: A.x + STUB_PX, y: A.y } : null) : at(it.c.b), show = !!(A && B && fin(A.x) && fin(A.y) && fin(B.x) && fin(B.y));
+      const A = at(it.c.a), B = it.c.stub ? (A ? { x: A.x + stubLen(kNow), y: A.y } : null) : at(it.c.b), show = !!(A && B && fin(A.x) && fin(A.y) && fin(B.x) && fin(B.y));
       it.g.style.display = show ? '' : 'none';
       if (it.og) it.og.style.display = show ? '' : 'none';
       if (!show) { it.mx = NaN; continue; }
@@ -580,7 +588,9 @@ export function createCables(worldEl, o) {
   function rezoom() {
     const k = kOf();
     if (k === kNow) return false;
+    const re = stubLen(k) !== stubLen(kNow);
     kNow = k;
+    if (re && [...items.values()].some(it => it.c.stub)) { layout(ports); return true; } // ((3) P1-5: a stub's length follows the zoom below 1)
     const at = q => (!ports ? null : typeof ports.get === 'function' ? ports.get(q) : ports[q]) || null;
     for (const it of items.values()) if (it.og && fin(it.mx)) { const A = at(it.c.a), B = at(it.c.b); if (A && B) ends(it, A, B); }
     return true;
@@ -643,7 +653,7 @@ export function createCables(worldEl, o) {
         xb.className = 'cv-cable-x'; xb.type = 'button'; xb.textContent = '×';
         xb.setAttribute('aria-label', 'Disconnect cable'); xb.title = 'Disconnect (Delete)';
         xb.addEventListener('pointerdown', e => e.stopPropagation()); // (never the world's press)
-        xb.addEventListener('click', e => { e.stopPropagation(); act(sel, 'disconnect'); });
+        xb.addEventListener('click', e => { e.stopPropagation(); if (ghost) { ghost = false; return; } act(sel, 'disconnect'); }); // (the selecting tap's click: dropped)
         worldEl.append(xb);
       }
       if (!keyOff) {
@@ -657,14 +667,14 @@ export function createCables(worldEl, o) {
     } else if (keyOff) { keyOff(); keyOff = null; }
     placeX();
     vis();
-    if (typeof O0.onSelect === 'function') O0.onSelect(sel);
+    if (typeof O0.onSelect === 'function') O0.onSelect(sel, tapBy);
   }
   // (U4) a tap on a badge: selects it; on the selected one, onSelect again (the host's inspector)
   // ((3) a tap cable — a Serum's warp / pitch source — answers onAction(id, 'tap'): the host opens the oscillator's menu)
   function tapped(id, again) {
     const it = items.get(id);
     if (it && it.c.tap) { act(id, 'tap'); return; }
-    if (again && id === sel) { if (typeof O0.onSelect === 'function') O0.onSelect(sel); } else select(id);
+    if (again && id === sel) { if (typeof O0.onSelect === 'function') O0.onSelect(sel, tapBy); } else select(id);
   }
   const typing = t => !!t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || '') || t.isContentEditable === true);
   // (U5, U6) what edits the selected cable is not "elsewhere": the inspector (.cv-ml-pop), any dialog, a wk popup list,
@@ -705,12 +715,17 @@ export function createCables(worldEl, o) {
       if (!id || (e.button != null && e.button !== 0)) return;
       press = { id, pid: e.pointerId, x: e.clientX, y: e.clientY, ctx: false, moved: false };
     }),
+    listen(doc, 'pointerdown', () => { ghost = false; }, true), // (P1-1: a new press — the × answers its click)
     listen(doc, 'pointermove', e => { if (press && e.pointerId === press.pid && Math.hypot(e.clientX - press.x, e.clientY - press.y) > TAP_PX) press.moved = true; }, { capture: true, passive: true }),
     listen(doc, 'pointerup', e => {
       const P = press;
       if (!P || e.pointerId !== P.pid) return;
       press = null;
-      if (!P.ctx && !P.moved && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) tapped(P.id, P.badge);
+      if (!P.ctx && !P.moved && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) {
+        ghost = e.pointerType === 'touch' || e.pointerType === 'pen';
+        tapBy = String(e.pointerType || 'mouse');
+        try { tapped(P.id, P.badge); } finally { tapBy = undefined; }
+      }
     }, true),
     listen(doc, 'pointercancel', e => { if (press && e.pointerId === press.pid) press = null; }, true),
     listen(U.e, 'contextmenu', e => { // right-click, a touch long-press (wk.menuSource)

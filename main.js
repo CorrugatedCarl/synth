@@ -3322,6 +3322,7 @@ function openTab(name) {
   // a default camera owed since a track switch under ROLL: now, on the real band (setActive measured it)
   if (name === 'canvas' && cvCamDef && cvView && cvCamDef === CM.camKey(project.uid, cvView.trackId)) cvCamRestore(trk());
   monitors.sync();
+  if (name === 'canvas') sxReshow();
   store.set('synth.tab', name);
 }
 // the instrument panels, the FX racks (always mounted on the canvas; today's FX tab only while shown) and the canvas
@@ -4734,8 +4735,14 @@ function cvHost() {
     patch: false,
     select: key => { const t = trk(); if (CMOD.instOf(t, key)) setCur(t, key); },
     lay: cvLay,
-    shown: () => monitors.sync(),
+    shown: () => { monitors.sync(); sxReshow(); },
   };
+}
+// (review 2 P1-2) a part module on screen again (or unfolded, or the CANVAS tab back): a Serum view a paint skipped while it
+// was hidden — mounted off screen, an edit or a load since — is painted fully once (the host's reshow; engine off too)
+function sxReshow() {
+  const id = project && trk() ? trk().id : null;
+  for (const rec of serumPanels.values()) if (rec.trackId === id && rec.mode === 'parts' && rec.ui && typeof rec.ui.reshow === 'function') rec.ui.reshow();
 }
 const cvDevName = (t, key) => { const d = t.dev && t.dev[key]; return d && d.kind === 'synth' ? d.name || modelById(d.model).name : cvTitle(key).title; };
 function cvTitle(key) {
@@ -6269,14 +6276,32 @@ const modDragOpts = {
   onJackTap: (src, el) => { modJackTap(src, el); },
 };
 function modSelect(id) { if (!cvView) return; modSelHost = true; try { cvView.cables.select(id); } finally { modSelHost = false; } }
+// (review 2 P1-5) fn once the tap that called it is over: after its click (a mouse's comes in the same task, a touch's
+// compatibility click a little later), else after 600 ms. Inside the tap the world still holds its gesture and takes a
+// click (cv-world onClickCap): a synthetic click on a panel button there never arrives, and the tap's own click would
+// close what it opened.
+function afterTap(fn) {
+  let done = false, tm = 0;
+  const go = () => { if (done) return; done = true; clearTimeout(tm); fn(); };
+  const onC = () => { window.removeEventListener('click', onC, true); if (!done) setTimeout(go, 0); };
+  window.addEventListener('click', onC, true);
+  tm = setTimeout(() => { window.removeEventListener('click', onC, true); go(); }, 600);
+}
 /* ---- the mod cables' badges (cv-cables host.cables) */
 // a tap on a badge (selected or not): the inspector at it — after the event, so a long-press / right-click (its menu) does not
-function modCableSel(id) {
+function modCableSel(id, by) {
   if (modSelHost || !id || !modLayer) return;
   modMenuId = null;
+  const c0 = cvView && cvView.cables.list().find(x => x.id === id);
+  if (c0 && c0.int && c0.stub) { // ((3, §2.5) a stub "→ Filter (off)": a tap opens the source's routing popover — after the tap (review 2 P1-5)
+    (by ? afterTap : f => Promise.resolve().then(f))(() => {
+      const c = cvView && cvView.cables.list().find(x => x.id === id);
+      if (c && c.stub && modMenuId !== id && !sxRouteOpen(trk(), c.dev + '/' + String(c.edge && c.edge.a || '').split('.')[0])) notice(SE.STUB_LABEL + ': its routing is in the panel’s route button', 3500);
+    });
+    return;
+  }
   Promise.resolve().then(() => {
     const c = cvView && cvView.cables.list().find(x => x.id === id);
-    if (c && c.int && c.stub && modMenuId !== id) { if (!sxRouteOpen(trk(), c.dev + '/' + String(c.edge && c.edge.a || '').split('.')[0])) notice(SE.STUB_LABEL + ': its routing is in the panel’s route button', 3500); return; } // ((3, §2.5) a stub "→ Filter (off)": a tap opens the source's routing popover
     if (modMenuId === id || !c || c.kind !== 'mod') return;
     const p = modAt(cvView.cables.badge(id));
     modLayer.openInspector(c.preset || c.own ? { preset: c.dev, slot: c.slot } : id, p.x, p.y); // ((3) a Serum's own row: its matrix slot

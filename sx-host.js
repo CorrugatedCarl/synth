@@ -1855,6 +1855,7 @@ export class SerumHost {
     if (A.page) { page.el = page.el || el; if (!page.opts) page.opts = opts; }
     const V = { id: this.uid + '-v' + (++this.vn), kind: typeof kind === 'string' ? kind : A.kind || 'view', root: el, page, args: A, panel: null, power: null, dead: false,
       offs: [], sats: [],   // (its own disposers and adopted satellites: run / released in unmount)
+      stale: true,          // (never painted, or skipped by a paint while hidden: its next showing paints it fully — reshow)
       shown: () => !V.dead && !this.dead && !!shown(),
       // the module menu for the canvas bar's ⋯ (a bare panel's name is gone): the panel's own items, else nothing
       menuItems: () => (V.panel && typeof V.panel.menuItems === 'function' ? arr(V.panel.menuItems()) : []),
@@ -2326,6 +2327,13 @@ export class SerumHost {
   // `shown` in their live callbacks (H4: a view off screen per the world's plan costs nothing per frame)
   allPages() { return [this.headPage].concat(this.views.map(V => V.page)); }
   shownPages() { return [this.headPage].concat(this.views.filter(V => V.shown()).map(V => V.page)); }
+  // (review 2 P1-2) a view shown again after a paint skipped it (mounted off screen, hidden through an edit or a load):
+  // one full paint, queued → whether one was. The canvas calls it when a module goes on screen or unfolds.
+  reshow() {
+    if (this.dead || !this.views.some(V => V.stale && V.shown())) return false;
+    this.queue();
+    return true;
+  }
   // the bundled panel's FX page is the one view with an embedded rack (SerumUI: page 'fx' shown)
   rackShown() { return false; }
   paint(full) {
@@ -2336,7 +2344,12 @@ export class SerumHost {
     if (this.peeks.size) { const fx = this.fx(); for (const id of this.peeks) if (powerLive(s, fx, id)) this.peeks.delete(id); }
     this.fc = null;
     this.paintSeq = (this.paintSeq || 0) + 1;
-    const shown = this.shownPages();
+    // (review 2 P1-2) a view this paint skips (hidden) is stale; a stale one shown again makes the paint a full one —
+    // mounted off screen, it had no first bind / editor / halo pass at all
+    const vis = this.views.filter(V => V.shown());
+    if (!full && vis.some(V => V.stale)) full = true;
+    for (const V of this.views) V.stale = full ? !vis.includes(V) : V.stale || !vis.includes(V);
+    const shown = [this.headPage].concat(vis.map(V => V.page));
     for (const P of shown) for (const w of P.binds) w.update();
     if (full || this.edDirty) {   // graph editors redraw when their inputs changed (signature) or on demand
       const force = this.edDirty;
