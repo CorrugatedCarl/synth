@@ -6056,5 +6056,12 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
     buildMods, compileMods: CG.compileMods, // (stage 2b, lane B: the {t: 'mods'} payload)
     modVal, modCC, modBudget: (t, dev) => CG.modBudget(t, dev, project), postMods, modsFor, // (stage 2b, lane D)
   };
+  // (milestone 3, R0: tests/accessors.test.mjs) the services the accessor retirement touches that no other hook reaches
+  globalThis.__synthTest.acc = {
+    presetSave, presetDelete, presetCur, presetInit, sxCurrent, sxRename, programChange, wheelToWt, syncPhases, setPhases, projectFile,
+    importMidiFile, trkListUI, instItems, zoneOf, zoneWarm, msRecs, sxRecOf, fxRecOf, instView, curView, loadVals, trackVoice, rateText,
+    sxKeys, sxDirty, presetKeys, voiceShown, seqHw, dxHw, hwDx, classicPanels, primFx,
+    uiLoad: p => { const was = uiLoad; uiLoad = p; return was; }, // (the panel modules never finish loading in node: a test hands them in)
+  };
 }
 boot();

@@ -160,6 +160,9 @@ const prim = t => {
   if (!d) throw new Error('cv-model: a track without an instrument');
   return d;
 };
+// (milestone 3, R0) the dynamic accessor recorder (tests/accessor-hook.mjs sets globalThis.__synthAccess): every call of an
+// accessor is told (key, 'get' | 'set') before it runs; nothing else reads it
+const told = (k, op) => { const f = globalThis.__synthAccess; if (typeof f === 'function') f(k, op); };
 const ACC = {
   model: {
     get() { return prim(this).model; },
@@ -204,7 +207,10 @@ export function adopt(p) {
       for (const k of ['prim', 'nid', 'dev', 'wires']) { delete t[k]; t[k] = v2[k]; }
     } else for (const k of V1_KEYS) if (Object.prototype.hasOwnProperty.call(t, k)) delete t[k]; // (a mirror: the devices win)
     repair(t);
-    for (const k of V1_KEYS) Object.defineProperty(t, k, { get: ACC[k].get, set: ACC[k].set, enumerable: false, configurable: true });
+    for (const k of V1_KEYS) {
+      const A = ACC[k];
+      Object.defineProperty(t, k, { get() { told(k, 'get'); return A.get.call(this); }, set(v) { told(k, 'set'); A.set.call(this, v); }, enumerable: false, configurable: true });
+    }
     done.add(t);
   }
   return p;
