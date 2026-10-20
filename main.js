@@ -5477,18 +5477,26 @@ function sxPlaceNew(t) {
 }
 // part places written by a rule (Show parts, a tap, I1) used Tidy's height guesses: once the panels are laid out (the next
 // frame) a part that covers another module moves on below it (above: the upward stack) — no History step
-const sxFresh = new Set(); // 'trackId\nkey'
+const sxFresh = new Set(), sxTries = new Map(); // 'trackId\nkey'; the frames it waited for its panel
 let sxSetT = 0;
 function sxSettleSoon() { if (!sxSetT && sxFresh.size && typeof requestAnimationFrame === 'function') sxSetT = requestAnimationFrame(sxSettle); }
+// its panel is up (a part's view mounted; a Serum-faithful modulator's slot host built — its modules load on the first): its
+// height is the real one
+function sxReady(t, k) {
+  if (CMOD.partOf(k)) return !!sxViewOf(t, k);
+  const B = modBodies.get(k);
+  return !B || typeof B.host !== 'function' || !!B.host();
+}
 function sxSettle() {
   sxSetT = 0;
   const t = trk();
-  if (!cvView || cvView.trackId !== t.id || !t.lay) { sxFresh.clear(); return; }
+  if (!cvView || cvView.trackId !== t.id || !t.lay) { sxFresh.clear(); sxTries.clear(); return; }
   const R = cvView.rects(), D = cvWorld.DOT, G = cvModule.VGAP;
-  let moved = false;
+  let moved = false, wait = false;
   for (const fk of [...sxFresh]) {
-    sxFresh.delete(fk);
     const i = fk.indexOf('\n'), k = fk.slice(i + 1);
+    if (fk.slice(0, i) === t.id && R[k] && !sxReady(t, k) && (sxTries.get(fk) || 0) < 120) { sxTries.set(fk, (sxTries.get(fk) || 0) + 1); wait = true; continue; } // (not built yet: a frame later)
+    sxFresh.delete(fk); sxTries.delete(fk);
     if (fk.slice(0, i) !== t.id || !R[k] || !t.lay[k]) continue;
     const q = CMOD.partOf(k), up = !!q && sxAbove(q.part), r = Object.assign({}, R[k]);
     for (let n = 0; n < 32; n++) {
@@ -5499,6 +5507,7 @@ function sxSettle() {
     if (r.y !== R[k].y) { t.lay = Object.assign({}, t.lay, { [k]: Object.assign({}, t.lay[k], { y: r.y }) }); R[k] = r; moved = true; }
   }
   if (moved) { persist(); cvView.sync(t); }
+  if (wait) sxSettleSoon();
 }
 
 /* ---- adding and removing parts (§2.4, §2.6) */
@@ -6223,6 +6232,7 @@ function modCableSel(id) {
   modMenuId = null;
   Promise.resolve().then(() => {
     const c = cvView && cvView.cables.list().find(x => x.id === id);
+    if (c && c.int && c.stub && modMenuId !== id) { if (!sxRouteOpen(trk(), c.dev + '/' + String(c.edge && c.edge.a || '').split('.')[0])) notice(SE.STUB_LABEL + ': its routing is in the panel’s route button', 3500); return; } // ((3, §2.5) a stub "→ Filter (off)": a tap opens the source's routing popover
     if (modMenuId === id || !c || c.kind !== 'mod') return;
     const p = modAt(cvView.cables.badge(id));
     modLayer.openInspector(c.preset || c.own ? { preset: c.dev, slot: c.slot } : id, p.x, p.y); // ((3) a Serum's own row: its matrix slot
@@ -6231,7 +6241,7 @@ function modCableSel(id) {
 function modCableMenu(id) {
   modMenuId = id;
   const c = cvView && cvView.cables.list().find(x => x.id === id);
-  if (c && c.int && c.fork) return [{ label: 'Balance…', action: () => sxCableAct(c, 'balance') }]; // ((3) a forked internal cable)
+  if (c && c.int && (c.fork || c.stub)) return [{ label: c.fork ? 'Balance…' : 'Routing…', action: () => sxCableAct(c, 'balance') }]; // ((3) a forked internal cable, a stub: the source's routing popover)
   if (!c || c.kind !== 'mod') return [];
   return [{ label: 'Edit…', action: () => { const p = modAt(cvView && cvView.cables.badge(id)); if (modLayer) modLayer.openInspector(c.preset || c.own ? { preset: c.dev, slot: c.slot } : id, p.x, p.y); } },
     { label: 'Bypass', checked: !!c.byp, action: () => modBypass(id) }]; // (U15, SPEC §2.9; the amount stays the inspector's)
