@@ -1,0 +1,365 @@
+import './v8-guard.mjs';
+// Milestone 3 lane D (docs/canvas/IMPL-3.md §2.1–2.7, §7 "UI") in the page simulation: a Serum taken apart on the canvas.
+// Show parts / Bundle are one History step each (lay only: vals.s and fx byte-identical, N2) and they, their undo and redo
+// keep the Serum's one host (its panel undo); the part modules follow the state (I1 / I2) — a preset load adds modules,
+// a part off dims; add / remove a part (a tile on a Serum, a bundled Serum, a classic track) with the ⏻ written back on
+// undo / redo; the cable drag resolver's three destinations (an internal cable through sx-edges, a mod-out onto a knob, a
+// refusal); an internal cable edit then Cmd-Z undoes the cable, not an earlier Show parts; the Mod list in parts view lists
+// every matrix row; a row into a part with no module ends at VOICE with its tag; link rows from the parts' jacks; the slot
+// hosts' gestures (one step, rollback, N.modsHold, mval, menu edits, view edits); the bar ⏻ is an x.on cable end; the
+// modulator column grows leftwards (modX / modW); the track-level ModCore meters and mcx; D-R5's pref.
+// The real Serum panels (serum-ui / sx-host / sx-ui-mod) in main-sim's DOM stub; the FX rack a stand-in. The world is
+// canvas-sim's scripted one. Accessor-free (instruments read as devices). One boot per file; strings, numbers and booleans
+// only into assert (never a stub DOM node).
+// Run alone: node --max-old-space-size=2048 --test tests/canvas-3-sim.test.mjs
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { bootMain } from './main-sim.mjs';
+import { fakeStorage } from './fakes.mjs';
+import * as C from '../serum-core.js?v=9';
+import * as SE from '../sx-edges.js?v=9';
+import * as CMOD from '../cv-model.js?v=9';
+import * as CVM from '../cv-module.js?v=9';
+import { MODELS } from '../models.js?v=9';
+
+// every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once — a pending one would hold each
+// destroyed host for wk.js's give-up timer (the fixture check's lesson)
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'ModCore']) globalThis[g] = null;
+const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 };
+function scriptedWorld(root) {
+  const L = {};
+  const W = {
+    el: root, k: 1, cam: { tx: 0, ty: 0, k: 1 }, items: new Map(), selected: null, mode: 'always',
+    setCamera(c) { W.cam = { tx: c.tx, ty: c.ty, k: c.k }; W.k = c.k; W.emit('cameraend', { cam: W.cam, zoomed: true }); },
+    band: () => Object.assign({}, BAND),
+    toClient: (wx, wy) => ({ x: VP.left + wx * W.k + W.cam.tx, y: VP.top + wy * W.k + W.cam.ty }),
+    toWorld: (x, y) => ({ x: (x - VP.left - W.cam.tx) / W.k, y: (y - VP.top - W.cam.ty) / W.k }),
+    add(it) { W.items.set(it.id, it); return () => W.remove(it.id); },
+    remove(id) { W.items.delete(id); },
+    update() {}, clear() { W.items.clear(); },
+    select(id) { W.selected = id; W.emit('select', { id }); },
+    focusItem() {}, dragPointer() {}, ghost: g => (g ? { x: 0, y: 0, w: g.w, h: g.h } : null), setDragging() {},
+    modsMode: () => W.mode, setModsMode(m) { W.mode = m; W.emit('mods', m); },
+    on(t, fn) { (L[t] || (L[t] = [])).push(fn); return () => { L[t] = L[t].filter(f => f !== fn); }; },
+    emit(t, d) { for (const f of (L[t] || []).slice()) f(d); },
+  };
+  return W;
+}
+
+await (await import('../cv-mods-ui.js?v=9')).ready();
+const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { cvWorld: root => scriptedWorld(root) } });
+{ // (the panels' graph editors animate through wk.ticker, which asks getClientRects: the stub DOM's elements answer one box;
+  // a SerumUI finds its document as its root's ownerDocument; a view switch takes elements out of the tree — remove(), a
+  // cleared textContent and a move into another parent detach them here as in a browser, else a destroyed view's controls
+  // would still answer the modules' knob-end walks)
+  const D0 = globalThis.document, ce = D0.createElement, cn = D0.createElementNS;
+  const detach = x => { const p = x && x.parentNode; if (p && Array.isArray(p.children)) { const i = p.children.indexOf(x); if (i >= 0) p.children.splice(i, 1); } };
+  const fix = e => {
+    e.getClientRects = () => [{}]; e.ownerDocument = D0;
+    e.remove = () => { detach(e); e.parentNode = null; };
+    const ap = e.append;
+    e.append = (...n) => { for (const x of n) if (x && typeof x === 'object' && x.parentNode) detach(x); ap.apply(e, n); };
+    let tc = '';
+    Object.defineProperty(e, 'textContent', { get: () => tc, set: v => { tc = v == null ? '' : String(v); for (const c of e.children.splice(0)) if (c && typeof c === 'object') c.parentNode = null; }, configurable: true });
+    return e;
+  };
+  D0.createElement = tag => fix(ce(tag));
+  D0.createElementNS = (ns, tag) => fix(cn(ns, tag));
+}
+const api = sim.api, cv = globalThis.__synthTest.cv, acc = globalThis.__synthTest.acc, sh = globalThis.__synthTest.shell, M = cv.mod, PT = cv.parts;
+// the real Serum panels (the page's own modules); a stand-in FX rack (its UI is not under test here)
+class FXStub { constructor(box) { this.el = globalThis.document.createElement('div'); box.append(this.el); } refresh() {} destroy() {} paintMods() {} setLive() {} }
+acc.uiLoad(Promise.resolve({ sx: await import('../serum-ui.js?v=9'), fxui: { FXRackUI: FXStub }, wk: await import('../wk.js?v=9'), mod: await import('../sx-ui-mod.js?v=9') }));
+await sim.power(); sim.raf();
+cv.renderViews(); await sim.settle(10); sim.raf(); await sim.settle(5); sim.raf();
+
+const P = () => api.project(), T = () => P().tracks.find(t => t.id === P().selTrack), V = () => cv.view();
+const I = t => CMOD.instOf(t);
+const keys = () => [...V().modules.keys()].sort().join(',');
+const partKeys = (dev = 'i1') => [...V().modules.keys()].filter(k => k.startsWith(dev + '/') && k !== dev + '/fx').sort().join(',');
+const hsteps = () => cv.hist.u.length;
+const note = () => sim.$('#notice').textContent;
+const MOD = id => MODELS.find(m => m.id === id);
+const state = (t = T(), dev = 'i1') => JSON.stringify({ s: Object.assign({}, t.dev[dev].vals.s, { ui: undefined }), fx: t.dev[dev].fx });
+const rec = (dev = 'i1') => cv.sxRec(T(), dev);
+const host = (dev = 'i1') => rec(dev).ui;
+const settle = async () => { sim.raf(); await sim.settle(5); sim.raf(); };
+const walk = (n, f, out = []) => { for (const c of n.children || []) { if (f(c)) out.push(c); walk(c, f, out); } return out; };
+const base = (id, t = T(), dev = 'i1') => C.destBase(t.dev[dev].vals.s, null, id);
+const ID = {};
+const uiOf = (dev = 'i1', t = T()) => ((t.lay || {})[dev] || {}).ui;
+
+test('boot: the Serum is up as the whole panel (a real SerumUI host in its module); D-R5\'s shipped default is the whole panel', () => {
+  assert.equal(I(T()).model, 'serum');
+  assert.deepEqual([!!host(), host().bundled, rec().mode, PT.isParts('i1'), PT.VIEW_DEFAULT, PT.newView()], [true, true, 'bundled', false, 'bundled', 'bundled']);
+  assert.equal(keys(), 'i1,i1/fx,out');
+  ID.a = T().id;
+});
+
+test('Show parts / Bundle: one History step each, lay only (vals.s and fx byte-identical, N2); the host — its panel undo — survives both, their undo and their redo', async () => {
+  const t = T(), H0 = host(), s0 = state(), n0 = hsteps();
+  H0.edit(s => { s.p['f.res'] = 0.31; }, { label: 'RES' }); sim.raf(); // (a panel edit: the host's own undo step)
+  assert.equal(H0.undo.canUndo(), true);
+  const s1 = state();
+  assert.notEqual(s1, s0);
+  assert.equal(PT.show('i1'), true);
+  await settle();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, uiOf(), host() === H0, rec().mode, H0.bundled, H0.undo.canUndo(), state() === s1], [n0 + 1, 'Show parts', 'parts', true, 'parts', false, true, true]);
+  assert.deepEqual([partKeys(), V().modules.has('i1/fx'), base('a.on') >= 0.5, base('f.on') >= 0.5], ['i1/oscA', true, true, false], 'VOICE (i1), OSC A and the own FX: the default Serum\'s parts that are on (FILTER 1 is off there)');
+  assert.deepEqual([...rec().views.keys()].sort().join(','), 'i1,i1/oscA', 'each module\'s panel is a view of the one host');
+  ID.lay1 = JSON.stringify(T().lay);
+  assert.equal(PT.show('i1', false), true);
+  await settle();
+  assert.deepEqual([cv.hist.undoLabel, uiOf(), host() === H0, rec().mode, H0.bundled, state() === s1, partKeys()], ['Bundle', undefined, true, 'bundled', true, true, '']);
+  cv.undo(); await settle();
+  assert.deepEqual([uiOf(), host() === H0, rec().mode, partKeys(), state() === s1], ['parts', true, 'parts', 'i1/oscA', true], 'undo of Bundle: parts again, the same host');
+  cv.undo(); await settle();
+  assert.deepEqual([uiOf(), host() === H0, rec().mode, state() === s1], [undefined, true, 'bundled', true], 'undo of Show parts');
+  cv.redo(); await settle();
+  assert.deepEqual([uiOf(), host() === H0, rec().mode, JSON.stringify(T().lay) === ID.lay1], ['parts', true, 'parts', true], 'redo: the stored places');
+  // the panel undo survived every switch: it still undoes the RES edit
+  H0.undoRedo(false); sim.raf();
+  assert.equal(+base('f.res').toFixed(4) !== 0.31, true);
+  H0.undoRedo(true); sim.raf();
+  assert.equal(+base('f.res').toFixed(2), 0.31);
+  assert.equal(state(), s1, 'N2 after the round trips');
+  assert.equal(t.id, T().id);
+});
+
+test('the part modules follow the state (I1 / I2): a preset load adds the parts it turns on — placed, no History step —; a part switched off in its panel dims (its bar\'s ⏻ is the panel\'s own toggle: a data-dest="x.on" control, a cable end)', async () => {
+  assert.equal(uiOf(), 'parts');
+  const n0 = hsteps();
+  assert.equal(api.sxLoad(cv.view1e('i1'), 'f:Sub Foundation'), true);
+  await settle();
+  assert.deepEqual([partKeys(), hsteps()], ['i1/env2,i1/filter,i1/macros,i1/oscA,i1/oscB,i1/oscC', n0], 'OSC A–C and FILTER 1 are on in that preset (I1), its rows read ENV 2 and the macros (I2): modules, no step');
+  for (const k of ['i1/oscB', 'i1/oscC', 'i1/filter', 'i1/env2', 'i1/macros']) assert.equal(!!(T().lay[k] && Number.isFinite(T().lay[k].x)), true, k + ' laid out');
+  const m = V().modules.get('i1/oscC'), pw = walk(m.bar, c => !!c.attrs && c.attrs['data-dest'] === 'c.on');
+  assert.deepEqual([pw.length, m.el.hasAttribute('data-off')], [1, false], 'the bar holds OSC C\'s own power toggle');
+  const q = V().destPort('i1', 'c.on');
+  assert.deepEqual([!!q, !!(q && q.hid)], [true, false], 'the bar ⏻ is the c.on cable end');
+  host().edit(s => { s.p['c.on'] = 0; }, { label: 'OSC C on' }); await settle(); // (its ⏻ pressed in the panel: the Serum's own undo)
+  assert.deepEqual([partKeys().includes('i1/oscC'), V().modules.get('i1/oscC').el.hasAttribute('data-off'), hsteps()], [true, true, n0], 'laid out: stays, dimmed');
+});
+
+test('add / remove a part: one step each with the ⏻ written back on undo / redo; full → the count, no step; an own LFO something reads is not removable', async () => {
+  const n0 = hsteps();
+  assert.equal(base('c.on'), 0);
+  assert.equal(PT.add('i1', 'osc'), 'oscC', 'the first free oscillator: C (off, laid out)');
+  await settle();
+  assert.deepEqual([base('c.on'), hsteps(), cv.hist.undoLabel, V().modules.get('i1/oscC').el.hasAttribute('data-off')], [1, n0 + 1, 'Add OSC C', false]);
+  assert.deepEqual(cv.hist.u[cv.hist.u.length - 1].meta, { trackId: T().id, dev: 'i1', part: 'oscC', on: [0, 1], f: [[['p', 'c.on'], 0, 1]] });
+  cv.undo(); await settle();
+  assert.deepEqual([base('c.on'), partKeys().includes('i1/oscC')], [0, true], 'undo: off again (its place stays: it was laid out before)');
+  cv.redo(); await settle();
+  assert.equal(base('c.on'), 1);
+  const n1 = hsteps();
+  assert.equal(PT.add('i1', 'osc'), null);
+  assert.deepEqual([note(), hsteps()], ['This Serum already has 3 oscillators', n1], 'Q3: a 4th oscillator is refused with the count');
+  assert.equal(PT.remove('i1/oscC'), true);
+  await settle();
+  assert.deepEqual([base('c.on'), partKeys().includes('i1/oscC'), cv.hist.undoLabel], [0, false, 'Remove OSC C']);
+  cv.undo(); await settle();
+  assert.deepEqual([base('c.on'), partKeys().includes('i1/oscC')], [1, true], 'undo of Remove: on, its module back');
+  // an own LFO a matrix row reads (I2): a module; Remove refuses with the count
+  host().addModUI('lfo2', 'a.level'); await settle();
+  assert.equal(partKeys().includes('i1/lfo2'), true);
+  const n2 = hsteps();
+  assert.equal(PT.remove('i1/lfo2'), false);
+  assert.deepEqual([/LFO 2 modulates 1 knob/.test(note()), hsteps(), partKeys().includes('i1/lfo2')], [true, n2, true]);
+});
+
+test('Sources tray: a part tile on a parts Serum (its first free slot), on a bundled Serum (it shows its parts first — the same step), on a classic track (the offer, then Replace with Serum: one step, undone at once)', async () => {
+  let n = hsteps();
+  PT.pick('filter'); await settle();
+  assert.deepEqual([base('f2.on'), hsteps(), cv.hist.undoLabel, partKeys().includes('i1/filter2')], [1, n + 1, 'Add FILTER 2', true]);
+  assert.equal(PT.show('i1', false), true); await settle();
+  n = hsteps();
+  PT.pick('noise'); await settle();
+  assert.deepEqual([uiOf(), base('n.on'), hsteps(), cv.hist.undoLabel, partKeys().includes('i1/noise'), rec().mode], ['parts', 1, n + 1, 'Add NOISE', true, 'parts'], 'a bundled Serum: parts first, in the same step');
+  cv.undo(); await settle();
+  assert.deepEqual([uiOf(), base('n.on'), rec().mode], [undefined, 0, 'bundled'], 'one undo: the part and the view');
+  cv.redo(); await settle();
+  // greyed tiles (Q3): every oscillator on
+  M.decor();
+  const tiles = sh.shell.tiles;
+  assert.deepEqual([tiles.partTile('osc').getAttribute('aria-disabled'), tiles.partTile('osc').classList.contains('cv-placed'), tiles.partTile('sub').getAttribute('aria-disabled')], ['true', true, null]);
+  // a classic track: the offer, then its tap
+  const j = api.addTrack(MOD('juno60')); sim.raf(); cv.renderViews(); await settle();
+  ID.j = j.id;
+  n = hsteps();
+  PT.pick('osc');
+  assert.deepEqual([note(), hsteps(), I(T()).model], ['Serum parts belong to a Serum · Replace with Serum', n, 'juno60']);
+  sim.$('#notice').click(); await settle(); await settle();
+  assert.deepEqual([I(T()).model, uiOf(), base('b.on'), hsteps(), cv.hist.undoLabel], ['serum', 'parts', 1, n + 1, 'Replace Juno-60 with Serum'], 'Serum in parts view, OSC B added: one step');
+  assert.deepEqual(partKeys(), 'i1/oscA,i1/oscB');
+  cv.undo(); await settle();
+  assert.deepEqual([I(T()).model, uiOf()], ['juno60', undefined]);
+});
+
+test('the cable drag resolver (§2.5): an internal cable through sx-edges (one History step + meta), a mod-out onto a knob (a row), anything else refused with its reason; Cmd-Z after a canvas cable edit undoes the cable — not the earlier Show parts —, the fields written back; a panel edit since: they stay, said', async () => {
+  api.selectTrack(ID.a); cv.renderViews(); await settle();
+  assert.deepEqual([I(T()).model, uiOf(), rec().mode], ['serum', 'parts', 'parts']);
+  PT.show('i1', false); await settle();
+  PT.show('i1'); await settle();
+  const n0 = hsteps(), O = M.opts;
+  assert.equal(cv.hist.undoLabel, 'Show parts');
+  assert.deepEqual([O.port('i1/oscB.out'), O.port('i1/filter2.in'), O.port('i1.main'), O.port('i1/oscB.warp')], ['i1/oscB.out', 'i1/filter2.in', 'i1.main', null], 'internal ends are ports (a warp input is not)');
+  assert.deepEqual(O.canConnect('i1/oscB.out', 'i1/filter2.in'), { ok: true, why: '' });
+  assert.deepEqual(O.canConnect('i1/oscB.out', 'out.in'), { ok: false, why: 'Serum sources play through their VOICE' }, 'a source → OUT: refused with its reason');
+  assert.deepEqual(O.canConnect('i1/filter.out', 'i1/filter.in'), { ok: false, why: 'A filter cannot feed itself' });
+  const route = () => SE.serumEdges(T().dev.i1.vals.s, T().dev.i1.fx).filter(e => e.a === 'oscB.out').map(e => e.b).sort().join();
+  const F = () => [T().dev.i1.vals.s.osc[1].route, base('b.fbal'), base('f2.routeB')];
+  const r0 = route(), f0 = F(), E = SE.setEdge(T().dev.i1.vals.s, T().dev.i1.fx, 'oscB.out', 'filter2.in');
+  O.onConnect('i1/oscB.out', 'i1/filter2.in'); await settle();
+  const f1 = F();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, route().includes('filter2.in'), f1[0]], [n0 + 1, 'OSC B → FILTER 2', true, 0]);
+  assert.deepEqual(cv.hist.u[cv.hist.u.length - 1].meta, { trackId: T().id, dev: 'i1', f: E.f }, 'the step\'s meta: sx-edges\' f as it stands');
+  assert.equal(note(), 'OSC B → FILTER 2 · Undo');
+  assert.equal(V().cables.list().some(c => c.int && c.a === 'i1/oscB.out' && c.b === 'i1/filter2.in'), true, 'drawn as an internal cable');
+  // Cmd-Z with the focus on the canvas: History undoes the cable, the parts view stays
+  sim.key('KeyZ', true, { key: 'z', metaKey: true }); await settle();
+  assert.deepEqual([F(), route(), uiOf(), cv.hist.undoLabel], [f0, r0, 'parts', 'Show parts']);
+  sim.key('KeyZ', true, { key: 'z', metaKey: true, shiftKey: true }); await settle();
+  assert.deepEqual([F(), cv.hist.undoLabel], [f1, 'OSC B → FILTER 2'], 'redo: written again');
+  // changed since (a panel edit of the balance): the undo leaves the fields as they are and says so
+  host().edit(st => { st.p['b.fbal'] = 0.3; }, { label: 'BALANCE' }); await settle();
+  cv.undo(); await settle();
+  assert.deepEqual([T().dev.i1.vals.s.osc[1].route, +base('b.fbal').toFixed(2), /changed since/.test(note()), uiOf()], [0, 0.3, true, 'parts']);
+  cv.redo(); await settle();
+  // Disconnect on the cable (its × / menu): sx-edges cutEdge, one step
+  host().edit(st => { st.p['b.fbal'] = 1; }, { label: 'BALANCE' }); await settle();
+  const c = V().cables.list().find(x => x.int && x.a === 'i1/oscB.out' && x.b === 'i1/filter2.in');
+  assert.equal(!!c, true);
+  const n1 = hsteps();
+  M.act(c.id, 'disconnect'); await settle();
+  assert.deepEqual([hsteps(), /^Disconnect OSC B/.test(cv.hist.undoLabel), route().includes('filter2.in')], [n1 + 1, true, false]);
+  // the third destination: a mod-out onto a knob (a row of track.mods, its own step)
+  M.add('lfo'); await settle();
+  const n2 = hsteps();
+  O.onMod('l1.out', 'i1:f.cutoff'); await settle();
+  assert.deepEqual([hsteps(), (T().mods || []).map(r => r.src + '>' + r.dst).join()], [n2 + 1, 'l1.out>i1:f.cutoff']);
+});
+
+test('a Serum\'s own sources: an own LFO onto its own knob is a native matrix row (the Serum\'s panel undo, drawn from its module); the Mod list in parts view lists every matrix row (own rows tagged Serum); the inspector edits one, without Keep on canvas', async () => {
+  const O = M.opts, n0 = hsteps(), slots = () => T().dev.i1.vals.s.matrix.filter(r => r && r.src === 'lfo2').length;
+  const k0 = slots();
+  assert.deepEqual(O.canMod('i1/lfo2.out', 'i1:f.res'), { ok: true, why: '' });
+  assert.deepEqual(O.canMod('i1/macros.k1', 'i1:f.res'), { ok: true, why: '' });
+  O.onMod('i1/lfo2.out', 'i1:f.res'); await settle();
+  assert.deepEqual([slots(), hsteps()], [k0 + 1, n0], 'a native row: no History step (the panel\'s)');
+  const own = V().cables.list().filter(c => c.own && c.a === 'i1/lfo2.out').map(c => c.b);
+  assert.equal(own.includes('i1:f.res'), true, 'drawn from LFO 2\'s jack');
+  const L = PT.presetRows('i1');
+  assert.equal(L.some(r => r.src === 'lfo2' && r.dst === 'f.res' && r.own === true), true, 'every matrix row in parts view');
+  M.list(); await settle();
+  const lines = walk(sim.$('#ov'), q => /\bcv-ml-line\b/.test(String(q.className || '')));
+  const tagged = lines.filter(q => walk(q, z => !!z.attrs && z.attrs['data-tag'] === 'own').length > 0).length;
+  assert.equal(tagged >= 2, true, 'own rows tagged Serum (LFO 2 on A LEVEL and F RES)');
+  M.layer().close();
+  const c = V().cables.list().find(x => x.own && x.b === 'i1:f.res');
+  M.sel(c.id); await settle();
+  const pop = walk(sim.$('#ov'), q => /\bcv-ml-pop\b/.test(String(q.className || ''))).pop();
+  assert.equal(!!pop, true);
+  const kept = walk(pop, q => !!q.attrs && q.attrs['data-act'] === 'keep');
+  assert.deepEqual([kept.length ? !!kept[0].hidden : true, walk(pop, z => !!z.attrs && z.attrs['data-tag'] === 'own').length], [true, 1], 'no Keep on canvas for an own row; tagged Serum');
+  M.layer().close();
+});
+
+test('a row into a knob no mounted view shows ends at VOICE\'s bar, tagged "OSC C · FINE · hidden"; the inspector offers "Show OSC C" (a module, no sound change, one step); link rows leave from the parts\' jacks', async () => {
+  PT.remove('i1/oscC'); await settle();
+  assert.equal(partKeys().includes('i1/oscC'), false);
+  M.connect('l1.out', 'i1:c.fine'); await settle();
+  const q = V().destPort('i1', 'c.fine'), tag = 'OSC C · FINE · hidden';
+  assert.deepEqual([!!q.hid, q.tag], [true, tag]);
+  const h = PT.hidden('i1', 'c.fine');
+  assert.deepEqual([h.tag, h.show.label, PT.hidden('i1', 'a.level')], [tag, 'Show OSC C', null], 'OSC A LEVEL: on screen');
+  const n0 = hsteps(), on0 = base('c.on');
+  h.show.action(); await settle();
+  assert.deepEqual([partKeys().includes('i1/oscC'), base('c.on'), hsteps(), cv.hist.undoLabel, V().modules.get('i1/oscC').el.hasAttribute('data-off')], [true, on0, n0 + 1, 'Show OSC C', true]);
+  const t = T();
+  assert.equal(CMOD.addMod(t, 'i1/lfo3.out', 'i1:f.cutoff', { project: P() }).ok, true);
+  assert.equal(CMOD.addMod(t, 'i1/env1.out', 'i1:a.pan', { project: P() }).ok, true);
+  cv.render(); await settle();
+  const L = V().cables.list().filter(c => c.kind === 'mod' && !c.own && !c.preset).map(c => c.a + '>' + c.b);
+  assert.deepEqual([partKeys().includes('i1/lfo3'), L.includes('i1/lfo3.out>i1:f.cutoff'), L.includes('i1.env1>i1:a.pan')], [true, true, true]);
+});
+
+test('slot hosts (a canvas LFO / Macro module is Serum\'s own panel): a drag is one History step opened at its first live change (the payload reposted under N.modsHold), its undo the pre-drag record; a rollback leaves none; macro moves post mval; a menu edit is one step; a view edit none', async () => {
+  const t = T(), N = api.nodes.get(t.id), B = M.bodies.get('l1'), H = B.host();
+  assert.equal(!!H, true);
+  const r0 = JSON.stringify(t.dev.l1), n0 = hsteps(), x0 = H.getN('l1.rate');
+  H.setN('l1.rate', x0 + 0.05, 'start');
+  assert.deepEqual([hsteps(), N.modsHold, JSON.stringify(T().dev.l1) !== r0], [n0 + 1, true, true], 'the first live change: the step opened, the record written, the hold on');
+  H.setN('l1.rate', x0 + 0.1, 'move');
+  H.setN('l1.rate', x0 + 0.1, 'end'); await settle();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel, N.modsHold], [n0 + 1, 'Edit LFO 1', false]);
+  cv.undo(); await settle();
+  assert.equal(JSON.stringify(T().dev.l1), r0, 'undo: the record before the drag');
+  const n1 = hsteps();
+  H.setN('l1.rate', x0 + 0.2, 'start');
+  H.setN('l1.rate', x0, 'end'); await settle();
+  assert.deepEqual([hsteps(), JSON.stringify(T().dev.l1)], [n1, r0], 'a rollback: no step, the record as it was');
+  H.edit(s => { s.lfo[0].mono = s.lfo[0].mono ? 0 : 1; }, { label: 'MONO' }); await settle();
+  assert.deepEqual([hsteps(), cv.hist.undoLabel], [n1 + 1, 'Edit LFO 1']);
+  H.edit(s => { s.ui.lfoZoom = 2; }, { label: 'View', ui: true }); await settle();
+  assert.equal(hsteps(), n1 + 1, 'a view edit: no step');
+  M.add('macro'); await settle();
+  const mk = [...V().modules.keys()].find(k => /^m\d+$/.test(k));
+  M.connect(mk + '.k1', 'i1:f.drive'); await settle();
+  const Hm = M.bodies.get(mk).host(), node = sim.nodeOf(t.id), n2 = hsteps();
+  node.posted.length = 0;
+  Hm.setN('m1', 0.4, 'start'); Hm.setN('m1', 0.5, 'move'); Hm.setN('m1', 0.5, 'end'); await settle();
+  const mv = node.posted.map(x => x.m).filter(m => m.t === 'mval');
+  assert.deepEqual([mv.length >= 2, +mv[mv.length - 1].v.toFixed(2), hsteps(), +T().dev[mk].v[0].toFixed(2)], [true, 0.5, n2 + 1, 0.5]);
+  const ops = PT.rowsOps(mk), n3 = hsteps();
+  assert.equal(ops.count(), 1);
+  ops.bypass(true); await settle();
+  assert.deepEqual([ops.bypassed(), hsteps()], [true, n3 + 1]);
+  ops.remove(); await settle();
+  assert.deepEqual([ops.count(), hsteps()], [0, n3 + 2]);
+});
+
+test('the modulator column grows leftwards (modX / modW): a tapped LFO at x −512, 416 wide, never over the instrument; a drop over the instrument moves on left of it; the drop ghost is the kind\'s width', async () => {
+  const t = T();
+  assert.deepEqual([CVM.modX('lfo'), CVM.modW('lfo'), CVM.modX('env'), CVM.modX('wheel')], [-512, 416, -416, -320]);
+  const k = M.add('lfo'); await settle();
+  const r = V().modules.get(k).rect();
+  assert.deepEqual([r.x, r.w, r.x + r.w <= -CVM.MOD_GAP], [-512, 416, true]);
+  const I1 = V().modules.get('i1').rect(), p = PT.modClear(t, 'lfo', { x: I1.x + 20, y: I1.y + 20 });
+  assert.equal(p.x + 416 <= I1.x - CVM.MOD_GAP, true, 'a drop over VOICE: left of it');
+  const n0 = hsteps();
+  assert.equal(M.drag.drop('env', { over: 'canvas', x: 300, y: 300, at: { x: I1.x + 200, y: I1.y + 100 } }), true); await settle();
+  const e = [...V().modules.keys()].filter(q => /^e\d+$/.test(q)).pop(), re = V().modules.get(e).rect();
+  assert.deepEqual([hsteps(), re.w, re.x + re.w <= I1.x - CVM.MOD_GAP], [n0 + 1, 320, true], 'an ENV dropped onto VOICE lands left of it');
+});
+
+test('the ModCore meters are track-level (role none, no part: lane E\'s \'mods\' id); mcx moves an LFO\'s phase dot in Serum\'s panel', async () => {
+  const t = T();
+  const S = [...cv.monitors.subs].find(x => x.trackId === t.id && x.mods);
+  assert.deepEqual([!!S, S && S.dev, S && S.role], [true, null, 'none']);
+  globalThis.__synthTest.modUI.editState('l1', { lfo: Object.assign({}, t.dev.l1.lfo, { mono: 1 }) }); await settle(); // (GLOBAL: evaluated by ModCore)
+  const pay = api.buildMods(t), L1 = pay.slots && pay.slots.l1;
+  assert.equal(!!L1, true, 'the cabled LFO has a ModCore slot');
+  const mc = new Float32Array(16), mcx = { ph: new Float32Array(20), env: new Float32Array(8) };
+  mc[L1.i] = 0.4; mcx.ph[L1.i] = 0.25; mcx.ph[10 + L1.i] = 0.7;
+  cv.monitors.deliver(t.id, { t: 'smon', mc, mcx });
+  const H = M.bodies.get('l1').host();
+  assert.deepEqual([+H.snap.lfoPh[0].toFixed(2), +H.snap.lfoY[0].toFixed(2), +H.liveV.toFixed(2)], [0.25, 0.7, 0.4]);
+});
+
+test('D-R5: ⚙ "New Serums open as" (a device pref, the shipped default the whole panel): Parts — a new Serum track opens taken apart (VOICE, its parts, its own FX laid out by Tidy\'s rule); Tidy keeps the flag; a track switch away and back makes the host again in parts view', async () => {
+  const sel = sh.shell.sxView;
+  assert.deepEqual([!!sel, sel.value], [true, 'bundled']);
+  sel.value = 'parts'; sel.onchange();
+  assert.equal(PT.newView(), 'parts');
+  const t = api.addTrack(MOD('serum')); sim.raf(); cv.renderViews(); await settle(); await settle();
+  assert.deepEqual([uiOf('i1', t), rec().mode, partKeys()], ['parts', 'parts', 'i1/oscA']);
+  const L = t.lay;
+  assert.equal(L['i1/oscA'].x < L.i1.x && L.i1.x < L['i1/fx'].x, true, 'sources → VOICE → own FX');
+  cv.tidy(); await settle();
+  assert.equal(uiOf('i1', T()), 'parts', 'Tidy carries the parts flag');
+  sel.value = 'bundled'; sel.onchange();
+  api.selectTrack(ID.a); cv.renderViews(); await settle();
+  api.selectTrack(t.id); cv.renderViews(); await settle(); await settle();
+  assert.deepEqual([rec().mode, [...rec().views.keys()].sort().join(',')], ['parts', 'i1,i1/oscA']);
+});
