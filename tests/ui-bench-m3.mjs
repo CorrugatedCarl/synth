@@ -17,8 +17,8 @@
 //   snapshot (an app monitor subscription, live while one of their views is shown); real 2b modulators (LFO ×2, ENV, chaos,
 //   Macro; a second ENV under the Serum-faithful ones; the Mod Wheel on Serum tracks) cabled with track.mods rows keep ModCore
 //   running — visible where they are the scene's modulators,
-//   hidden (traffic only) where the Serum-faithful ones replace them, whose slot hosts take the real mc values (phase / stage:
-//   a time proxy until lane E's mcx). Cables: the real cv-cables layer from hand-made edges (internal ≈ 12 per Serum: a fork, a
+//   hidden (traffic only) where the Serum-faithful ones replace them, whose slot hosts take the real mc values and lane E's
+//   mcx phases / stages (§2.9). Cables: the real cv-cables layer from hand-made edges (internal ≈ 12 per Serum: a fork, a
 //   stub; 8–10 mod cables to knobs). The app's own modules a scene does not show are moved far off and hidden.
 //   H5 shim (h5=1, default): wk.fitCanvas and sx-ui-seq storeDpr are loaded as patched copies (an import map in the iframe:
 //   blob modules, their imports made absolute) and SerumUI.prototype.paintCanvas is replaced: an in-world canvas stores dpr·k
@@ -482,20 +482,28 @@ function slotMods(S) {
     root => (kind === 'lfo' ? PANELS.lfo(root, H, { lfo: 0 }) : kind === 'env' ? PANELS.env(root, H, { env: 1 }) : kind === 'macro' ? PANELS.macros(root, H) : PANELS.chaos(root, H)),
     kind === 'lfo' ? 'lfo' : null);
   }
-  // the real ModCore values (mc: lfo 0…9, env 10…13, chaos 14, 15) of the hidden 2b modules → each slot's snapshot
+  // the real ModCore feed of the hidden 2b modules (mc: lfo 0…9, env 10…13, chaos 14, 15; lane E's mcx, IMPL-3 §9.1: ph[l] the
+  // phase of LFO slot l, ph[10 + l] its Path Y; env[j] the stage of ENV slot j = mc[10 + j], env[4 + j] its stage time) → the
+  // slot's snapshot as §2.9 maps it (LFO 1: lfoPh / lfoOut / lfoY; ENV 2: envStage / envT); a build without mcx: a time proxy
   const prim = A.api.project().tracks.find(t => t.id === S.t.id).prim || 'i1';
   const slotsOf = () => { try { const p = A.modUI.pay(S.t); return p && !p.off && p.slots ? p.slots : {}; } catch (e) { return {}; } };
   let map = null;
   S.offs.push(A.api.monitors.sub(S.t.id, prim, { role: 'inst', mods: true, live: () => S.hosts.some(H => H.slot && H.anyShown()), deliver: d => {
     if (!d || !d.mc) return;
     S.mcN = (S.mcN || 0) + 1;
+    if (d.mcx) S.mcx = (S.mcx || 0) + 1;
     if (!map) map = slotsOf();
-    const tt = (now() - S.t0) / 1000;
+    const tt = (now() - S.t0) / 1000, X = d.mcx && d.mcx.ph && d.mcx.env ? d.mcx : null;
     for (const H of S.hosts) {
       if (!H.slot || !H.anyShown()) continue;
-      const e = map[H.slot.real], v = e && e.i >= 0 && e.i < d.mc.length ? d.mc[e.i] : 0, sn = H.slot.msg.s;
-      if (H.slot.kind === 'lfo') { sn.lfoPh[0] = (tt * (H.slot.real === 'l1' ? 0.5 : 0.8)) % 1; sn.lfoY[0] = v; sn.lfoOut[0] = sn.lfoPh[0]; }
-      else if (H.slot.kind === 'env') { sn.envStage[1] = 1 + (Math.floor(tt * 2) % 4); sn.envT[1] = (tt % 0.5) + v * 0.001; sn.env[1] = v; }
+      const e = map[H.slot.real], i = e && e.i >= 0 && e.i < d.mc.length ? e.i : -1, v = i >= 0 ? d.mc[i] : 0, sn = H.slot.msg.s;
+      if (H.slot.kind === 'lfo') {
+        if (X && i >= 0 && i < 10) { sn.lfoPh[0] = X.ph[i]; sn.lfoOut[0] = v; sn.lfoY[0] = X.ph[10 + i]; }
+        else { sn.lfoPh[0] = (tt * (H.slot.real === 'l1' ? 0.5 : 0.8)) % 1; sn.lfoY[0] = v; sn.lfoOut[0] = sn.lfoPh[0]; }
+      } else if (H.slot.kind === 'env') {
+        if (X && i >= 10 && i < 14) { sn.envStage[1] = X.env[i - 10]; sn.envT[1] = X.env[i - 6]; sn.env[1] = v; }
+        else { sn.envStage[1] = 1 + (Math.floor(tt * 2) % 4); sn.envT[1] = (tt % 0.5) + v * 0.001; sn.env[1] = v; }
+      }
       H.snapN++;
       H.ui.setSnapshot(H.slot.msg);
     }
@@ -846,7 +854,7 @@ async function selfCheck(S, ms = 2500) {
   const errors = I.errs.slice(e0);
   const budgets = sceneInfo(S).budgets, over = budgets.filter(b => !b.ok);
   const ok = !slow.length && !errors.length && !over.length;
-  return { ok, rates, ref, onScreen: cvs.length, live: live.length, slow, liveList: live.slice(0, 40), errors: errors.slice(0, 8), over, why: [slow.length ? slow.length + ' slow displays' : '', errors.length ? errors.length + ' console errors' : '', over.length ? 'over budget: ' + over.map(b => b.group).join(', ') : ''].filter(Boolean).join('; ') };
+  return { ok, rates, ref, mcx: S.mcx || 0, onScreen: cvs.length, live: live.length, slow, liveList: live.slice(0, 40), errors: errors.slice(0, 8), over, why: [slow.length ? slow.length + ' slow displays' : '', errors.length ? errors.length + ' console errors' : '', over.length ? 'over budget: ' + over.map(b => b.group).join(', ') : ''].filter(Boolean).join('; ') };
 }
 
 /* ------------------------------------------------------------------------------------------------ frames */
