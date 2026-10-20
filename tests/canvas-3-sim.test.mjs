@@ -492,3 +492,27 @@ test('review 2 P1-2: a part view a paint skipped while its module was off screen
   assert.equal(name1(), 'Bright', 'on screen again: painted');
   host().edit(s => { s.macros[0].name = 'Macro 1'; }, { label: 'name' }); await settle();
 });
+
+test('review 2 P1-4: a modulator dropped near an instrument is cleared by its kind\'s measured height (never the guess: an OB-Xa face would leave GL) and of every module — a drop onto the instrument never lands on another modulator; a drop settles as a tap does', async () => {
+  api.selectTrack(ID.a); cv.renderViews(); await settle();
+  const t = T(), hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  const l0 = [...V().modules.keys()].find(q => /^l\d+$/.test(q)) || M.add('lfo'); await settle();
+  const m0 = V().modules.get(l0), r0 = m0.rect;
+  m0.rect = () => Object.assign(r0(), { h: 451 }); // (a Serum-faithful LFO's measured height in Chrome; the guess MOD_H.lfo is 256)
+  try {
+    const I1 = V().modules.get('i1').rect(), at = { x: I1.x + 64, y: I1.y - CVM.MOD_H.lfo - 32 };
+    const p = PT.modClear(t, 'lfo', at), R = V().rects();
+    assert.equal(hit({ x: p.x, y: p.y, w: 416, h: 451 }, I1), false, 'clear of VOICE by 451 px, not 256');
+    assert.deepEqual(Object.keys(R).filter(k => hit({ x: p.x, y: p.y, w: 416, h: 451 }, R[k])), [], 'clear of every module');
+    // onto VOICE at the column's height: left of VOICE, then below the LFO standing there (the column stays one column)
+    const q = PT.modClear(t, 'lfo', { x: I1.x + 20, y: R[l0].y + 8 });
+    assert.deepEqual(Object.keys(R).filter(k => hit({ x: q.x, y: q.y, w: 416, h: 451 }, R[k])), [], 'never on another modulator');
+    assert.equal(q.x + 416 <= I1.x - CVM.MOD_GAP, true, 'left of VOICE');
+    // a tile dropped there: clear once settled
+    const n0 = hsteps();
+    assert.equal(M.drag.drop('lfo', { over: 'canvas', x: 300, y: 300, at: { x: I1.x + 220, y: R[l0].y + 200 } }), true); await settle(); await settle();
+    const k = [...V().modules.keys()].filter(z => /^l\d+$/.test(z)).pop(), R2 = V().rects();
+    assert.deepEqual([hsteps(), Object.keys(R2).filter(z => z !== k && hit(R2[k], R2[z]))], [n0 + 1, []]);
+    cv.undo(); await settle();
+  } finally { m0.rect = r0; }
+});

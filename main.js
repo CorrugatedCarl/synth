@@ -6080,10 +6080,21 @@ function cvModDecor() {
 // as Tidy stacks them) when nothing stands there, else below the column (U9); a drop: where it lands (on the dots).
 // (milestone 3, §2.2) the column grows leftwards: each kind at cv-module modX(kind) with its width modW(kind) (an LFO 416 px at
 // x −512: its right edge at −MOD_GAP), the heights the modules' measured ones (a Serum-faithful body's height is its content)
-const modH = (kind, key) => { const m = key && cvView ? cvView.modules.get(key) : null, h = m ? m.rect().h : 0; return h > cvModule.BAR_H ? h : cvModule.MOD_H[kind] || cvModule.MOD_H.at; };
+const modH = (kind, key) => { const m = key && cvView ? cvView.modules.get(key) : null, h = m ? m.rect().h : 0; return h > cvModule.BAR_H ? h : modHt(kind); };
+// (review 2 P1-4) a new module's height by kind: a Serum-faithful body (LFO / ENV / Macro / Chaos) is as tall as its panel —
+// a module of the kind on the canvas measured, else the last one measured, else Chrome's at 1200 px (MOD_H_SX; cv-module
+// MOD_H holds Tidy's guesses: LFO 256 for 451, which let a drop just above an OB-Xa cover its face)
+const MOD_H_SX = { lfo: 451, env: 371, macro: 250, chaos: 135 }, modHSeen = new Map();
+function modHt(kind) {
+  if (!cvModule.SX_MODS.has(kind)) return cvModule.MOD_H[kind] || cvModule.MOD_H.at;
+  let h = 0;
+  if (cvView) for (const [k, m] of cvView.modules) if (m.kind === 'mod' && CMOD.kindOfId(k) === kind) { const r = m.rect(); if (r.h > cvModule.BAR_H) h = Math.max(h, r.h); }
+  if (h) modHSeen.set(kind, h);
+  return h || modHSeen.get(kind) || MOD_H_SX[kind];
+}
 function modSpot(t, kind) {
   const D = cvWorld.DOT, up = v => Math.ceil(v / D) * D, G = cvModule.VGAP, w = cvModule.modW(kind), here = cvView && cvView.trackId === t.id;
-  const x = cvModule.modX(kind), h = cvModule.MOD_H[kind] || cvModule.MOD_H.at;
+  const x = cvModule.modX(kind), h = modHt(kind);
   const R = here ? Object.values(cvView.rects()).filter(r => r && r.x < x + w && r.x + r.w > x) : [];
   let y = 0;
   const ORD = cvModule.MOD_ORDER;
@@ -6096,12 +6107,16 @@ function modSpot(t, kind) {
 }
 // (§2.2) a modulator dropped over an instrument moves on left past it (its right edge MOD_GAP from the instrument's left):
 // no modulator covers an instrument (a hardware face never leaves GL)
+// (review 2 P1-4) by the kind's measured height; then clear of every other module too: below what it would cover (the
+// column stays one column — a drop onto the instrument never lands on another modulator). sxSettle checks again once its
+// panel is up.
 function modClear(t, kind, p) {
-  const w = cvModule.modW(kind), h = cvModule.MOD_H[kind] || cvModule.MOD_H.at, D = cvWorld.DOT;
+  const w = cvModule.modW(kind), h = modHt(kind), D = cvWorld.DOT, G = cvModule.VGAP;
   if (!cvView || cvView.trackId !== t.id) return p;
-  const I = CMOD.instIds(t).map(k => cvView.modules.get(k)).filter(Boolean).map(m => m.rect());
+  const R = cvView.rects(), inst = new Set(CMOD.instIds(t)), I = [...inst].map(k => R[k]).filter(Boolean), A = Object.values(R).filter(Boolean);
   const r = { x: p.x, y: p.y, w, h };
   for (let i = 0; i < 16; i++) { const o = I.find(q => sxHits(r, q)); if (!o) break; r.x = Math.floor((o.x - cvModule.MOD_GAP - w) / D) * D; }
+  for (let i = 0; i < 64; i++) { const o = A.find(q => sxHits(r, q)); if (!o) break; r.y = Math.ceil((o.y + o.h + G) / D) * D; }
   return { x: r.x, y: r.y };
 }
 // (U9) a tapped-in module off screen: the camera brings it in at the zoom it has (the trays stay as they are)
@@ -6127,7 +6142,7 @@ function modAdd(kind, at) {
   if (multi) hist.u[hist.u.length - 1].label = 'Add ' + label; // ("Add LFO 2")
   lay[key] = at2;
   t.lay = lay;
-  if (tap) sxFresh.add(t.id + '\n' + key); // ((3) its height measured once its panel is up: clear of the column (sxSettle))
+  sxFresh.add(t.id + '\n' + key); // ((3) its height measured once its panel is up: clear of the column (sxSettle); a drop too, review 2 P1-4)
   cvAfter(t);
   if (tap) modShow(key);
   const step = hist.u[hist.u.length - 1], tid = t.id;
@@ -6140,13 +6155,13 @@ function modAdd(kind, at) {
 const modTileDrag = { // a Modulators tile dragged out: its true-size outline under the pointer over the canvas
   move(id, i) {
     if (!world) return;
-    if (i.over === 'canvas') shell.drop = world.ghost({ x: i.x, y: i.y, w: cvModule.modW(id), h: cvModule.MOD_H[id] || cvModule.MOD_H.at, label: '+ ' + (CMOD.MOD_LABEL[id] || id) }); // ((3) its kind's width)
+    if (i.over === 'canvas') shell.drop = world.ghost({ x: i.x, y: i.y, w: cvModule.modW(id), h: modHt(id), label: '+ ' + (CMOD.MOD_LABEL[id] || id) }); // ((3) its kind's width; its measured height, review 2 P1-4)
     else { world.ghost(null); shell.drop = null; }
     world.dragPointer(!i.left ? null : { x: i.x, y: i.y, pointerType: i.pointerType });
   },
   begin(id, i) { if (world) world.setDragging(true); modTileDrag.move(id, i); },
   drop(id, i) {
-    const r = shell.drop, h = cvModule.MOD_H[id] || cvModule.MOD_H.at;
+    const r = shell.drop, h = modHt(id);
     srcDragEnd();
     if (i.over !== 'canvas') return false;
     modAdd(id, r || (i.at ? { x: i.at.x - cvModule.modW(id) / 2, y: i.at.y - h / 2 } : null));
