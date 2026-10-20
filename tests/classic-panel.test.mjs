@@ -128,6 +128,155 @@ test('1i (IMPL-1i §6.2): api().perf is the host\'s perf.api(track) on every mod
   }
 });
 
+/* ---------------------------------------------------------------- stage 7a (IMPL-7a §10.1): api().drum */
+import * as CD from '../cv-drum.js?v=9';
+import * as DC from '../drum-core.js?v=9';
+
+test('7a (IMPL-7a §10.1): api().drum is the host\'s drum.api(track) on a drum machine only (null on a classic synth); a host without drum → null and the 808\'s face builds the same nodes — its step keys, pads and dials drawn, aria-disabled, silent', () => {
+  const doc = fresh(), log = [], seen = [], calls = [];
+  let mem = DC.normDrum(undefined);
+  const H = CD.drumHost({ mem: () => mem, put: (tr, D) => { mem = D; }, send: (tr, D, S, at) => calls.push('send:' + at), noteOn: (tr, n) => calls.push('on' + n), raf: () => 0 });
+  const drum = { api: tv => { seen.push(tv.id); return H.api(tv); } };
+  const sig = root => all(root).map(n => [n.localName, n.getAttribute('class'), n.getAttribute('data-ctl'), n.getAttribute('data-n'), n.getAttribute('data-sound')].join('|'));
+  const mk = (id, withDrum) => {
+    const m = modelOf(id), root = doc.createElement('div'), h = host(doc, log);
+    doc.body.append(root);
+    if (withDrum) h.drum = drum;
+    return new ClassicPanel(root, { track: track('trk_' + id, id), model: m, layout: cvPanel.usable(id, m), host: h });
+  };
+  const S = mk('minimoog', true);
+  assert.deepEqual([S.api().drum, seen.length], [null, 0], 'a classic synth: none, never asked');
+  S.destroy();
+  const A = mk('tr808', true), B = mk('tr808', false);
+  assert.equal(!!A.hw && !!B.hw, true, 'the 808\'s Hardware panel');
+  assert.deepEqual([typeof A.api().drum.press, B.api().drum], ['function', null]);
+  assert.equal(seen.every(x => x === 'trk_tr808'), true, 'for the panel\'s own track (view)');
+  assert.deepEqual(sig(B.root), sig(A.root), 'the same nodes');
+  const keys = r => all(r).filter(n => (n.getAttribute('class') || '').split(' ').includes('dr-key'));
+  assert.deepEqual([keys(A.root).length, keys(B.root).length], [16, 16]);
+  assert.deepEqual([keys(A.root).filter(k => k.getAttribute('aria-disabled') === 'true').length, keys(B.root).filter(k => k.getAttribute('aria-disabled') === 'true').length], [0, 16], 'live / aria-disabled');
+  const pads = r => all(r).filter(n => n.getAttribute('data-sound'));
+  assert.deepEqual([pads(A.root).length, pads(B.root).every(p => p.getAttribute('aria-disabled') === 'true')], [16, true]);
+  const padB = pads(B.root).find(p => p.getAttribute('data-sound') === 'sd');
+  ptr(padB, 'pointerdown', 1, 1, { pointerId: 9 }); ptr(padB, 'pointerup', 1, 1, { pointerId: 9 });
+  assert.deepEqual(calls, [], 'nothing reaches a host without drum');
+  A.api().drum.press({ k: 'step', n: 3 }); // (stopped, MANUAL PLAY: selects key 3)
+  assert.deepEqual([mem.ui.sel, calls.join()], [2, 'send:now'], 'the live one runs drum-core through the host');
+  A.destroy(); B.destroy();
+});
+
+test('7a review 2 #7: an inverted control\'s arrow keys move it the way the pointer does (ArrowUp = towards the top) — the 808\'s PRE-SCALE (1 at the top), the CS-80\'s minimum-up levers, the ARP 2600\'s NOISE colour; a plain slider is unchanged', () => {
+  const doc = fresh(), log = [];
+  let mem = DC.normDrum(undefined);
+  const H = CD.drumHost({ mem: () => mem, put: (tr, D) => { mem = D; }, send() {}, raf: () => 0 });
+  const mk = id => { const m = modelOf(id), root = doc.createElement('div'), h = host(doc, log); h.drum = { api: tv => H.api(tv) }; doc.body.append(root); return new ClassicPanel(root, { track: track('trk_' + id, id), model: m, layout: cvPanel.usable(id, m), host: h }); };
+  const D8 = mk('tr808'), pre = widget(D8.root, 'dr:pre');
+  assert.equal(mem.ui.pre, 3);
+  key(pre, 'ArrowUp'); assert.equal(mem.ui.pre, 2, 'PRE-SCALE: ArrowUp moves the lever up (towards 1)');
+  key(pre, 'ArrowDown'); key(pre, 'ArrowDown'); assert.equal(mem.ui.pre, 4, 'ArrowDown: down (towards 4)');
+  D8.destroy();
+  const CS = mk('cs80'), t = CS.track;
+  for (const id of ['rms', 'br', 'pw1']) { // (inverted: the minimum at the top)
+    const c = modelOf('cs80').controls.find(x => x.id === id);
+    CS.set(id, +((c.min + c.max) / 2).toFixed(4));
+    const w = widget(CS.root, id), v0 = t.vals[id];
+    key(w, 'ArrowUp'); assert.ok(t.vals[id] < v0, id + ': ArrowUp moves the inverted lever up = towards its minimum');
+    key(w, 'ArrowDown'); key(w, 'ArrowDown'); assert.ok(t.vals[id] > v0, id + ': ArrowDown towards its maximum');
+  }
+  const plain = modelOf('cs80').controls.find(c => c.t === 'k' && !cvPanel.usable('cs80', modelOf('cs80')).controls.some(k => k.id === c.id && k.invert) && cvPanel.usable('cs80', modelOf('cs80')).controls.some(k => k.id === c.id && k.kind === 'slider'));
+  const wp = widget(CS.root, plain.id), p0 = t.vals[plain.id];
+  key(wp, 'ArrowUp'); assert.ok(t.vals[plain.id] > p0 || p0 === plain.max, plain.id + ': a plain slider still rises with ArrowUp');
+  CS.destroy();
+  const AR = mk('arp2600'), nc = widget(AR.root, 'nc'), ta = AR.track;
+  ta.vals.nc = 1; AR.set('nc', 1);
+  key(nc, 'ArrowUp'); assert.equal(ta.vals.nc, 0, 'NOISE colour: ArrowUp towards WHITE (the top)');
+  key(nc, 'ArrowDown'); assert.equal(ta.vals.nc, 1, 'ArrowDown towards PINK');
+  AR.destroy();
+});
+
+test('7a review 2 (the lead\'s decision): a hardware panel\'s vertical switch draws position 0 at the top, and a drag up / ArrowUp / PageUp moves it UP on screen (towards the position drawn above) on every panel; a horizontal one is unchanged (right / up = more); a switch\'s `invert` is not read (the art does not draw it)', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.ok(/\[data-orient="v"\] > \.hw-sw-k \{[^}]*top: calc\(var\(--kd, 12px\) \/ 2 \+ var\(--f, 0\)/.test(css), 'premise: a vertical switch knob sits at the top at --f 0');
+  const doc = fresh(), log = [];
+  let mem = DC.normDrum(undefined);
+  const H = CD.drumHost({ mem: () => mem, put: (tr, D) => { mem = D; }, send() {}, raf: () => 0 });
+  const mk = (id, L) => {
+    const m = modelOf(id), root = doc.createElement('div'), h = host(doc, log);
+    h.kit.track = (el, e, move, end) => { const mv = ev => move(ev), up = ev => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); end(ev); }; el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); };
+    if (id === 'tr808') h.drum = { api: tv => H.api(tv) };
+    doc.body.append(root);
+    return new ClassicPanel(root, { track: track('trk_' + id, id), model: m, layout: L || cvPanel.usable(id, m), host: h });
+  };
+  // (the 808's dr: switches paint on the next frame: their position is read from the machine's memory)
+  const dial = w => { const id = w.getAttribute('aria-label'); return Object.values(CD.DIAL).find(T => T.label === id); };
+  const posOf = w => { const T = w.className.includes('dr-sw') ? dial(w) : null; return T ? T.pos(mem) : +w.getAttribute('data-pos'); };
+  const knobF = w => { const k = w.childNodes.find(n => n.getAttribute && n.getAttribute('class') === 'hw-sw-k'); return k && !w.className.includes('dr-sw') ? +k.style['--f'] : null; };
+  let pid = 100;
+  const drag = (w, dx, dy) => { const p = { pointerId: ++pid }; ptr(w, 'pointerdown', 100, 100, p); ptr(w, 'pointermove', 100 + dx / 2, 100 + dy / 2, p); ptr(w, 'pointermove', 100 + dx, 100 + dy, p); ptr(w, 'pointerup', 100 + dx, 100 + dy, p); };
+  const from = (w, edge, how) => { key(w, edge); const p0 = posOf(w), f0 = knobF(w); how(); return [p0, posOf(w), f0, knobF(w)]; };
+  const seen = { v: [], h: [] };
+  // checks one switch: `dir` is the screen direction of "more" (v: down, h: right)
+  const check = (P, id, tag) => {
+    const w = widget(P.root, id), o = w.getAttribute('data-orient');
+    assert.ok(w && w.getAttribute('data-style') && (o === 'v' || o === 'h'), tag + ': a drawn switch');
+    const up = o === 'v' ? { more: 'ArrowDown', less: 'ArrowUp', moreP: 'PageDown', lessP: 'PageUp', dMore: [0, 100], dLess: [0, -100] } : { more: 'ArrowRight', less: 'ArrowLeft', moreP: 'PageUp', lessP: 'PageDown', dMore: [100, 0], dLess: [-100, 0] };
+    const less = (p0, p1, f0, f1, what) => { assert.ok(p1 < p0, `${tag} ${what}: position ${p0} → ${p1} (towards the top / left)`); if (f0 != null) assert.ok(f1 < f0, `${tag} ${what}: the knob drawn at ${f0} → ${f1}`); };
+    const more = (p0, p1, f0, f1, what) => { assert.ok(p1 > p0, `${tag} ${what}: position ${p0} → ${p1} (towards the bottom / right)`); if (f0 != null) assert.ok(f1 > f0, `${tag} ${what}: the knob drawn at ${f0} → ${f1}`); };
+    less(...from(w, 'End', () => key(w, up.less)), 'key ' + up.less);
+    more(...from(w, 'Home', () => key(w, up.more)), 'key ' + up.more);
+    if (o === 'v') {
+      less(...from(w, 'End', () => key(w, 'PageUp')), 'PageUp');
+      more(...from(w, 'Home', () => key(w, 'PageDown')), 'PageDown');
+    } else { // (unchanged: a horizontal switch's ArrowUp / ArrowDown / PageUp are "more" / "less" / "more")
+      more(...from(w, 'Home', () => key(w, 'ArrowUp')), 'key ArrowUp');
+      less(...from(w, 'End', () => key(w, 'ArrowDown')), 'key ArrowDown');
+    }
+    less(...from(w, 'End', () => drag(w, ...up.dLess)), 'drag ' + (o === 'v' ? 'up' : 'left'));
+    more(...from(w, 'Home', () => drag(w, ...up.dMore)), 'drag ' + (o === 'v' ? 'down' : 'right'));
+    seen[o].push(tag);
+  };
+  const live = L => L.controls.filter(c => c.kind === 'switch' && !c.level && !c.inert && typeof c.id === 'string' && c.id).map(c => c.id);
+  for (const m of MODELS) {
+    const L = cvPanel.usable(m.id, m);
+    if (!L) continue;
+    const P = mk(m.id);
+    for (const id of live(L)) check(P, id, m.id + ' ' + id);
+    P.destroy();
+  }
+  const V = ['minimoog o3k', 'minimoog nc', 'jupiter8 vd', 'jupiter8 pws', 'jupiter8 sy', 'jupiter8 lo', 'jupiter8 sl', 'jupiter8 vlf', 'juno60 pm', 'juno60 ep', 'juno60 vm',
+    'tr808 lts', 'tr808 mts', 'tr808 hts', 'tr808 rss', 'tr808 cps', 'tr808 dr:pre'];
+  assert.deepEqual(seen.v, V, 'every bound vertical switch of every panel is checked');
+  assert.ok(seen.h.length >= 14, 'horizontal: ' + seen.h.join(', '));
+  // an explicit invert on a switch changes nothing: the art does not draw it, so the gesture follows the art
+  for (const [mid, id] of [['minimoog', 'o3k'], ['minimoog', 'm1']]) {
+    const m = modelOf(mid), L0 = cvPanel.usable(mid, m), L = Object.assign({}, L0, { controls: L0.controls.map(c => (c.id === id ? Object.assign({}, c, { invert: true }) : c)) });
+    const P = mk(mid, L);
+    check(P, id, mid + ' ' + id + ' (invert: true)');
+    P.destroy();
+  }
+});
+
+test('7a review 2 #3: a hardware panel\'s knobs carry no tick ring or shine and its slide pots no printed ticks (style.css hides them there: the art prints its own dials); the Resizable panel keeps them', () => {
+  const doc = fresh(), log = [];
+  const knobs = r => all(r).filter(n => (n.getAttribute('class') || '') === 'knob');
+  const sliders = r => all(r).filter(n => (n.getAttribute('class') || '') === 'slider');
+  for (const id of ['tr808', 'minimoog', 'cs80']) {
+    const m = modelOf(id), H = mount(doc, track('trk_' + id, id), cvPanel.usable(id, m), log), F = mount(doc, track('trk_f' + id, id), null, log);
+    const hk = knobs(H.root), fk = knobs(F.root);
+    assert.ok(id === 'cs80' || (hk.length > 0 && fk.length > 0), id + ': knobs on both'); // (the CS-80's face: levers)
+    assert.deepEqual(hk.filter(k => /class="(ticks|shine)"/.test(k.innerHTML)).length, 0, id + ': no ticks / shine on the hardware panel');
+    assert.ok(hk.every(k => /class="skirt"/.test(k.innerHTML) && /class="rot"/.test(k.innerHTML) && /class="cap"/.test(k.innerHTML)), id + ': the skirt, the rotor and the cap stay');
+    assert.ok(fk.every(k => /class="ticks"/.test(k.innerHTML) && /class="shine"/.test(k.innerHTML)), id + ': the Resizable knobs keep theirs');
+    const hs = sliders(H.root);
+    assert.ok(hs.every(s => !s.childNodes.some(c => (c.getAttribute && c.getAttribute('class')) === 'sticks')), id + ': no printed ticks in a hardware slide pot');
+    if (id === 'cs80') assert.ok(hs.length > 10, 'the CS-80 has slide pots');
+    H.destroy(); F.destroy();
+  }
+  const F = mount(doc, track('trk_j', 'juno60'), null, log), fs = sliders(F.root);
+  assert.ok(fs.length && fs.every(s => s.childNodes.some(c => (c.getAttribute && c.getAttribute('class')) === 'sticks')), 'the Resizable slide pots keep their ticks');
+  F.destroy();
+});
+
 /* ---------------------------------------------------------------- stage 2b (IMPL-2b §6.2): halos and the mod menu */
 import { haloRanges, dialArc, dialPt } from '../classic-panel.js?v=9';
 import { MOD_COLOR } from '../cv-cables.js?v=9';

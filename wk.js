@@ -3182,7 +3182,7 @@ function refreshTip(el) { if (tipOwner === el && tipEl && tipEl.classList.contai
 // does not keep a node process alive (unref where the host has it).
 const DSP_GLOBALS = { 'sx-base.js': 'SxBase', 'sx-filt2.js': 'SxFilt2', 'sx-warp.js': 'SxWarp', 'sx-mod.js': 'SxMod',
   'sx-sample.js': 'SxSample', 'sx-gran.js': 'SxGran', 'sx-spec.js': 'SxSpec', 'sx-seq.js': 'SxSeq', 'serum-dsp.js': 'SerumDSP',
-  'fx-mods2.js': 'FXMods2', 'fx-dsp.js': 'FXDSP', 'mod-core.js': 'ModCore' };
+  'fx-mods2.js': 'FXMods2', 'fx-dsp.js': 'FXDSP', 'dr-808.js': 'Dr808', 'dr-seq.js': 'DrSeq', 'mod-core.js': 'ModCore' };
 const dspLoads = new WeakMap(); // document → Map(path → Promise)
 export function loadDSP(urls = loadDSP.URLS) {
   const d = D();

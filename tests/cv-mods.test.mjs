@@ -23,12 +23,17 @@ test('every classic control is classed; the counts (§7.8)', () => {
   assert.deepEqual(Object.keys(V.CLASS_TABLE), CLASSIC.map(m => m.id));
   for (const m of CLASSIC) assert.deepEqual(Object.keys(V.CLASS_TABLE[m.id]), m.controls.map(c => c.id), m.id);
   const n = V.counts();
-  assert.equal(Object.values(n).reduce((a, b) => a + b, 0), 425);
-  assert.deepEqual(n, { none: 2, sm: 129, apply: 70, proc: 37, chunk: 180, struct: 7 });
+  assert.equal(Object.values(n).reduce((a, b) => a + b, 0), 453);
+  assert.deepEqual(n, { none: 2, sm: 129, apply: 70, proc: 60, chunk: 180, struct: 12 });
   const of = cls => Object.entries(V.CLASS_TABLE).flatMap(([m, t]) => Object.keys(t).filter(k => t[k] === cls).map(k => m + '.' + k));
   // voice structure / filter path: P-5 and OB-Xa Unison, JP-8 Assign, OB-Xa filter slope, DX7 algorithm, the two HPF
-  // cutoffs that switch the HP type
-  assert.deepEqual(of('struct').sort(), ['dx7.alg', 'jupiter8.as', 'jupiter8.hp', 'modular.hp', 'obxa.pl', 'obxa.un', 'prophet5.un']);
+  // cutoffs that switch the HP type; the TR-808's five sound switches (a circuit's components, IMPL-7a §2.3)
+  assert.deepEqual(of('struct').sort(), ['dx7.alg', 'jupiter8.as', 'jupiter8.hp', 'modular.hp', 'obxa.pl', 'obxa.un', 'prophet5.un',
+    'tr808.cps', 'tr808.hts', 'tr808.lts', 'tr808.mts', 'tr808.rss']);
+  // the 808's 23 knobs are proc: one-level drum.<id> fields (IMPL-7a §2.3, §9)
+  const k808 = MODELS.find(m => m.id === 'tr808').controls.filter(c => c.t === 'k');
+  assert.equal(k808.length, 23);
+  for (const c of k808) { assert.equal(V.classOf('tr808', c.id), 'proc', c.id); assert.deepEqual(V.sweepControl('tr808', c).fields, ['drum.' + c.id], c.id); }
   assert.deepEqual(of('none').sort(), ['jupiter8.pws', 'minimoog.mm']);
   const spot = { 'minimoog.fc': 'sm', 'minimoog.em': 'sm', 'minimoog.fa': 'apply', 'minimoog.gl': 'proc', 'minimoog.w1': 'chunk', 'minimoog.m1': 'sm',
     'tb303.dc': 'apply', 'tb303.ac': 'apply', 'dx7.vol': 'sm', 'dx7.dac': 'proc', 'dx7.R1_1': 'chunk', 'solina.cb': 'proc', 'solina.vol': 'sm',
@@ -41,9 +46,9 @@ test('every classic control is classed; the counts (§7.8)', () => {
 test('FIELD_CLASS knows every patch field of the engine (engine.js patch tables)', () => {
   const src = readFileSync(new URL('../engine.js', import.meta.url), 'utf8');
   const PRE = { OscP: ['osc.'], HpfP: ['hpf.'], VcfP: ['vcf.'], EnvP: ['fenv.', 'aenv.'], LfoP: ['lfo.'], FxP: ['fx.'], DualP: ['dual.'], Mod3P: ['mod3.'],
-    TbP: ['tb.'], RmP: ['rm.'], IlP: ['fenvIL.'], RegP: ['reg.'], OpP: ['ops.'], PatchP: [''] };
+    TbP: ['tb.'], RmP: ['rm.'], IlP: ['fenvIL.'], RegP: ['reg.'], OpP: ['ops.'], DrumP: ['drum.'], PatchP: [''] };
   // PatchP members that are not classic panel fields: sub-objects (classed through their own tables), the Serum / FX / sequencer passthroughs
-  const SKIP = new Set(['osc', 'hpf', 'vcf', 'fenv', 'aenv', 'lfo', 'fx', 'reg', 'dual', 'mod3', 'tb', 'rm', 'fenvIL', 'ops', 'serum', 'serumT', 'fxr', 'fxrT', 'seq', 'seqT', 'needs']);
+  const SKIP = new Set(['osc', 'hpf', 'vcf', 'fenv', 'aenv', 'lfo', 'fx', 'reg', 'dual', 'mod3', 'tb', 'rm', 'fenvIL', 'ops', 'drum', 'serum', 'serumT', 'fxr', 'fxrT', 'seq', 'seqT', 'needs']);
   const missing = [];
   let seen = 0;
   for (const [cls, pres] of Object.entries(PRE)) {

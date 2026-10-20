@@ -1,6 +1,6 @@
 import { MODELS, DX_ALGS, patchFor, groupSong } from './models.js?v=9';
 import * as S from './song.js?v=9';
-import { PianoRoll } from './roll.js?v=9';
+import { PianoRoll, drumRowsOf } from './roll.js?v=9';
 import { Arrangement } from './arrange.js?v=9';
 import * as core from './serum-core.js?v=9';
 import { openAppStore, PROJECT_KEY, WT_DB, SMP_DB } from './appstore.js?v=9';
@@ -36,6 +36,10 @@ import { createModLayer, refusal as modRefusal, STYLE as MOD_STYLE } from './cv-
 // milestone 3 (IMPL-3 §2.4–2.7, lane D): a Serum taken apart — its parts as modules of one host (sx-host / sx-ui-mod, loaded
 // with the panels), its internal cables as views of its state (sx-edges)
 import * as SE from './sx-edges.js?v=9';
+// stage 7a (IMPL-7a §10): the drum machines — drum-core's pure model (memory, the panel's state machine, the {t: 'seq'}
+// payload, → Piano roll) and cv-drum's host (the panels' sessions, heard-time LEDs, pads), wired below (DRUM)
+import * as DC from './drum-core.js?v=9';
+import * as cvDrum from './cv-drum.js?v=9';
 
 const VERSION = '9';
 const $ = (s, el = document) => el.querySelector(s);
@@ -134,6 +138,27 @@ const instOf = (t, dev) => CMOD.instOf(t, dev);
 const isSerum = d => !!d && d.model === 'serum';
 const isSerumDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && d.model === 'serum'; };
 const serumIds = t => (t && t.dev ? CMOD.instIds(t).filter(k => isSerumDev(t, k)) : []);
+// (7a, IMPL-7a §1.1, §6) a drum machine (models.js family 'drums': the TR-808) is a device too: its record dev.drum (the
+// pattern memory, panel state, extras, note map, sample slots — drum-core normDrum) is made on first read when missing
+const isDrumDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && S.isDrum(d.model); };
+const drumDevs = t => (t && t.dev ? CMOD.instIds(t).filter(k => isDrumDev(t, k)) : []);
+function drumOf(t, dev) {
+  if (!isDrumDev(t, dev)) return null;
+  const d = t.dev[dev];
+  if (!d.drum || typeof d.drum !== 'object' || !Array.isArray(d.drum.keys)) d.drum = DC.normDrum(d.drum);
+  return d.drum;
+}
+// (§5) the sample slots that are on, of every drum machine of the track, each id once: the worklet entries its payloads
+// name — ensured (levels 2: TUNING's ± 1 octave plays level 0 or 1) with the patch's own needs, never instead of them
+const drumLv = t => (drumDevs(t).length && !serumIds(t).length ? 2 : 0); // (the playback levels a drum track's samples ask; 0: the default, full)
+function drumNeeds(t) {
+  const out = [];
+  for (const k of drumDevs(t)) {
+    const D = drumOf(t, k);
+    for (const s of DC.SOUNDS) { const e = D.smp && D.smp[s]; if (e && e.on && typeof e.id === 'string' && !out.includes(e.id)) out.push(e.id); }
+  }
+  return out;
+}
 // Every track owns an FX rack state (any model; kept when the model changes, §2.5). FX state v2 everywhere (RULINGS2 F1):
 // a track holds a v2 state (three racks of instances, §2.5); a v1 state reaching a track — an old project or autosave, a
 // preset, a chain, the default preset — is migrated where it enters (fx-core normalizeFx = migrateFx1 for v1 input: S1-variant
@@ -178,6 +203,7 @@ function normDevs(t) {
       d.model = m.id;
       if (m.custom) { d.vals = { s: core.normalizeSerum(d.vals && d.vals.s) }; d.fx = d.fx && typeof d.fx === 'object' ? fxLoad(d.fx, d.vals.s) : core.defaultFx2(); }
       else d.vals = Object.assign(defaults(m), d.vals);
+      if (S.isDrum(m.id) && !(d.drum && typeof d.drum === 'object')) d.drum = DC.normDrum(undefined); // (7a: a drum machine without its record — an empty memory, the defaults)
     } else if (d.kind === 'panel') d.fx = d.fx && typeof d.fx === 'object' ? fxLoad(d.fx) : core.defaultFx2();
   }
 }
@@ -432,14 +458,16 @@ function buildInstPatch(tr, id, sr, offline = false) {
 }
 const buildChain = (tr, id, sr, offline = false) => CG.chainPatch(fxOfDev(tr, id), liveOpts(tr, sr, offline)); // (2b: unchanged — a cabled chain takes its vector from ModCore at run time)
 // a track's whole graph form (c: its compileTrack): {graph, patches: {id: patch}, chains: {id: {fxr, fxrT}}, seqs: {id: s},
-// needs} — the processorOptions of a node / an offline render (offline: no caps; a 303 only when synced, not running)
+// needs} — the processorOptions of a node / an offline render (offline: no caps; a 303 only when synced, not running; a drum machine always, never running)
 function graphParts(tr, sr, offline = false, c = CG.compileTrack(tr)) {
   const g = c.canonical ? CG.compileGraph(tr) : c, patches = {}, chains = {}, seqs = {}, needs = new Set();
   for (const { id } of g.graph.insts) {
     const p = patches[id] = buildInstPatch(tr, id, sr, offline);
     for (const x of p.needs || []) needs.add(x);
     if (tr.dev[id].model === 'tb303' && (!offline || seqOf(tr, id).sync)) seqs[id] = seqPayload(tr, id, offline ? { run: false } : undefined);
+    else if (isDrumDev(tr, id)) seqs[id] = drumPayload(tr, id, offline); // (7a: a drum machine's plan and tables — offline too, SYNC off included: its notes play through its map, mutes and slots; a fresh session, never running)
   }
+  for (const x of drumNeeds(tr)) needs.add(x); // (7a §5: its sample slots that are on)
   for (const { id } of g.graph.chains) { const x = chains[id] = buildChain(tr, id, sr, offline); for (const n of x.fxr.needs || []) needs.add(n); }
   return { graph: Object.assign({}, g.graph), patches, chains, seqs, needs: [...needs] };
 }
@@ -469,6 +497,7 @@ function capQ4(patch) {
 // Solina's every key); prio; cap: the CPU safeguard's POLY cap (Q4 / Q6) lowered n; seq 'Arp' | 'Seq': a Serum
 // arpeggiator / clip player in front of the voices; label as shown ("Mono", "Poly 5", "Poly 4 (CPU cap) · Arp")
 function voiceInfo(patch, s = null) {
+  if (patch.engine === 'drums') return { mode: 'drums', n: 16, prio: 'last', cap: false, seq: '', label: 'Drums' }; // (7a §8: one circuit per sound, any chord)
   const div = patch.engine === 'divide', mode = div || patch.mode === 'poly' ? 'poly' : patch.mode === 'unison' ? 'unison' : 'mono';
   const n = div ? Infinity : mode === 'poly' ? Math.max(1, patch.poly | 0) : 1;
   const vo = s && s.voicing, sp = s && s.p;
@@ -577,10 +606,14 @@ function sendPatch(tr = trk()) {
   seedPend.delete(tr.id);
   // §9.5: the assets the patch can play (Serum needs ∪ FX needs) are posted before it; a patch that replaces a posted
   // variant of an asset (trim / fade, Convolve shaping) waits for the new variant, so the old one keeps playing
-  if (!p.needs || !p.needs.length) { tables.release(tr.id); N.waitP = null; postPatch(N, p); return; }
+  // (7a §5) a drum machine's track: its sample slots that are on join the patch's needs (ensure replaces a track's list)
+  const dn = drumNeeds(tr), needs = dn.length ? [...new Set([...(p.needs || []), ...dn])] : p.needs;
+  N.drIds = dn.join();
+  if (!needs || !needs.length) { tables.release(tr.id); N.waitP = null; postPatch(N, p); return; }
   const d = instOf(tr), at = { trackId: tr.id, s: isSerum(d) ? d.vals.s : null, fx: fxOfDev(tr, null), convMax: p.fxr && p.fxr.convMax };
-  const done = tables.ensure(p.needs, at);
-  if (tables.ready(p.needs)) { N.waitP = null; postPatch(N, p); return; }
+  if (drumLv(tr)) at.levels = drumLv(tr);
+  const done = tables.ensure(needs, at);
+  if (tables.ready(needs)) { N.waitP = null; postPatch(N, p); return; }
   N.waitP = p; // a newer patch of the track replaces a waiting one
   done.then(() => { if (N.waitP === p && nodes.get(tr.id) === N) { N.waitP = null; postPatch(N, p); } });
 }
@@ -595,7 +628,12 @@ function partCache(N, patch) {
 }
 // C: the part cache (a legacy node: the node record itself; a graphed node: its Inst's, N.insts), i: that Inst's id
 function postPatch(N, p, C = N, i) {
-  if (C.engine !== p.engine) { C.engine = p.engine; C.ctKey = ''; C.ctParts.clear(); C.sqParts.clear(); C.last = null; } // the engine drops its tables when the model changes
+  if (C.engine !== p.engine) { // the engine drops its tables when the model changes
+    // ((7a) leaving 'drums' the Inst drops its DrSeq (engine setPatch): the payload key held for it goes, so the machine's
+    // next drumSend — an undo / redo bringing it back — posts again, never deduped against a sequencer that is gone)
+    if (C.engine === 'drums' && N.drPk) { if (i === undefined) N.drPk.clear(); else N.drPk.delete(i); }
+    C.engine = p.engine; C.ctKey = ''; C.ctParts.clear(); C.sqParts.clear(); C.last = null;
+  }
   let ct = null, sq = null;
   if (p.serumT) { ct = ctDelta(C, p.serumT); if (ct) p.serumT = ct; else delete p.serumT; }
   if (p.seqT) { sq = partDelta(C.sqParts, p.seqT); if (sq) p.seqT = sq; else delete p.seqT; }
@@ -642,6 +680,7 @@ function postChain(N, id, x) {
 function sendGraph(tr, N, c) {
   const G = graphParts(tr, ctx.sampleRate, false, c), post = m => N.node.port.postMessage(m);
   seedPend.delete(tr.id);
+  N.drIds = drumNeeds(tr).join(); // ((7a) the drum slots its needs hold: drumSend asks again when they change)
   if (!N.graphed) graphCache(N, tr, G.graph);
   // the structure goes with its parts, after their assets (review H11: while a post waits the node keeps its last graph —
   // a new Inst never plays the default patch, a new panel never passes dry); a new TB-303 Inst gets its pattern as its graph
@@ -661,12 +700,16 @@ function sendGraph(tr, N, c) {
     }
     for (const id of Object.keys(G.patches)) postPatch(N, G.patches[id], instCache(N, id), id);
     for (const id of Object.keys(G.chains)) postChain(N, id, G.chains[id]);
-    for (const id of fresh) post({ t: 'seq', s: seqPayload(tr, id), i: id }); // (a new TB-303 Inst: its pattern, as a new node's options)
+    for (const id of fresh) { // (a new TB-303 Inst: its pattern, as a new node's options; (7a) a drum machine's payload, its content key kept)
+      if (isDrumDev(tr, id)) { const s = drumPayload(tr, id); drPkOf(N).set(id, s.pk); post({ t: 'seq', s, i: id }); } else post({ t: 'seq', s: seqPayload(tr, id), i: id });
+    }
     postMods(tr, N); // (2b: the ModCore payload after the parts it names; off once when the rows went)
   };
   if (!G.needs.length) { tables.release(tr.id); N.waitP = null; go(); return; }
   learnStates(tr);
-  const done = tables.ensure(G.needs, { trackId: tr.id, convMax: convOf(G) });
+  const gat = { trackId: tr.id, convMax: convOf(G) };
+  if (drumLv(tr)) gat.levels = drumLv(tr); // (7a §5: a drum machine's slots: 2 levels)
+  const done = tables.ensure(G.needs, gat);
   if (tables.ready(G.needs)) { N.waitP = null; go(); return; }
   N.waitP = go; // (a newer post of the track replaces a waiting one)
   done.then(() => { if (N.waitP === go && nodes.get(tr.id) === N) { N.waitP = null; go(); } });
@@ -741,7 +784,7 @@ const trackOS = (tr, sr) => { const d = instOf(tr); return isSerum(d) ? sxOSFor(
 // broken one only degrades its feature (Serum tracks silent, FX racks bypassed, …). The same list, in this order, is
 // injected on the main thread (wk.loadDSP) for the panels' displays.
 const DSP_FILES = ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
-  'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'mod-core.js'];
+  'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js'];
 const DSP_URLS = DSP_FILES.map(f => f + '?v=' + VERSION);
 async function addModules(c) {
   const res = await Promise.allSettled(DSP_URLS.map(u => addModule(c, u)));
@@ -918,6 +961,7 @@ function powerOff() {
   if (readyF) readyF(); // a power-on waiting for the engine's 'ready' gives up now (no nodes left)
   seqRun.clear(); for (const P of classicPanels.values()) if (!P.dead && P.model.id === 'tb303') P.seqRunUI(false); // (every 303 shown: RUN off)
   PERF.release(); // (1i: every bed and controller lets go)
+  DRUM.panic(); // ((7a) every drum machine's session stops, nothing queued or lit; their payload keys went with the nodes)
   for (const k of [...held.keys()]) held.delete(k);
   hk.clear();
   for (const n of [...keyEls.keys()]) keyVis(n, false);
@@ -931,7 +975,8 @@ function makeNode(tr) {
   const sr = ctx.sampleRate, c = CG.compileTrack(tr), G = legacyOk(tr, c) ? null : graphParts(tr, sr, false, c);
   const patch = G ? null : buildPatch(tr); // a new node always gets the curve tables (and a fresh rack)
   seedPend.delete(tr.id);
-  const po = { os: trackOS(tr, sr), hostOS: osFor(sr), patch, song: songData(tr), seq: !G && instOf(tr).model === 'tb303' ? seqPayload(tr) : null,
+  const pd = CMOD.primId(tr), dseq = !G && isDrumDev(tr, pd) ? drumPayload(tr, pd) : null; // ((7a) a drum machine's payload, §10.1)
+  const po = { os: trackOS(tr, sr), hostOS: osFor(sr), patch, song: songData(tr), seq: !G && instOf(tr).model === 'tb303' ? seqPayload(tr) : dseq,
     trackId: tr.id }; // the MIDI OUT registry of the worklet scope (SPEC-serum2 §7.9)
   if (G) Object.assign(po, { graph: G.graph, patches: G.patches, chains: G.chains, seqs: G.seqs });
   const mods = G ? modsFor(tr) : null; // (2b: the ModCore payload with the parts, IMPL-2b §2.2; a legacy node has none)
@@ -950,6 +995,9 @@ function makeNode(tr) {
     for (const id of Object.keys(G.patches)) N.insts.set(id, partCache({}, G.patches[id]));
     for (const id of Object.keys(G.chains)) N.chains.set(id, { xsKey: G.chains[id].fxrT ? G.chains[id].fxrT.key : '', last: G.chains[id].fxr });
   }
+  if (dseq) drPkOf(N).set(pd, dseq.pk); // ((7a) what its options hold: an unchanged payload is not posted again)
+  if (G) for (const k of Object.keys(G.seqs)) if (G.seqs[k] && G.seqs[k].pk) drPkOf(N).set(k, G.seqs[k].pk);
+  N.drIds = drumNeeds(tr).join();
   const id = tr.id;
   node.port.onmessage = e => {
     const d = e.data, t = project.tracks.find(x => x.id === id) || tr;
@@ -957,8 +1005,12 @@ function makeNode(tr) {
     else if (d.t === 'ready') { N.ready = true; if (readyF) readyF(); } // the processor is built (the first: warmed up)
     else if (d.t === 'step') { // (a graphed node names the 303: d.i; legacy: the primary)
       const dev = typeof d.i === 'string' ? d.i : CMOD.primId(t);
-      if (t.id === project.selTrack && (seqRun.has(t.id + '/' + dev) || (T.playing && seqOf(t, dev).sync))) seqStepTo(t, dev, d.s);
+      // (7a, IMPL-7a §3.5) a drum machine's post (d.m: its measure) — to its panel at the heard time, COMPOSE's recording;
+      // never the 303 branch, whose seqOf would write a 303 pattern onto the drum device
+      if (d.m != null) { if (isDrumDev(t, dev)) DRUM.step(instView(t, dev), dev, d); }
+      else if (t.id === project.selTrack && (seqRun.has(t.id + '/' + dev) || (T.playing && seqOf(t, dev).sync))) seqStepTo(t, dev, d.s);
     }
+    else if (d.t === 'drumsErr') drumsErr(t); // ((7a) dr-808.js / dr-seq.js missing in the worklet: that machine is silent)
     else if (d.t === 'smon') { if (d.fxph) { const k = rackKey(t, N, d); if (k) N.fxph.set(k, d.fxph); } monitors.deliver(id, d); }
     else if (d.t === 'modsErr') { N.modsKey = undefined; console.warn('ModCore rejected the payload' + (d.key ? ' ' + d.key : '') + ' of track ' + t.name); } // ((E6) the node dropped it: the next build reposts
     else if (d.t === 'fxph') { // (a rack's answer: its phase memory, its waiters)
@@ -973,8 +1025,9 @@ function makeNode(tr) {
     }
   };
   if (T.playing && T.a) node.port.postMessage(Object.assign({ t: 'transport', play: true, seek: true }, T.a));
-  if (G) { if (G.needs.length) { learnStates(tr); tables.ensure(G.needs, { trackId: tr.id, node, convMax: convOf(G) }); } }
-  else if (patch.needs) tables.ensure(patch.needs, { trackId: tr.id, node, s: isSerum(instOf(tr)) ? instOf(tr).vals.s : null, fx: fxOfDev(tr, null), convMax: patch.fxr && patch.fxr.convMax });
+  const lv = drumLv(tr) ? { levels: drumLv(tr) } : null, dn = drumNeeds(tr); // ((7a §5) a drum machine's slots that are on: 2 levels)
+  if (G) { if (G.needs.length) { learnStates(tr); tables.ensure(G.needs, Object.assign({ trackId: tr.id, node, convMax: convOf(G) }, lv)); } }
+  else if (patch.needs || dn.length) tables.ensure(dn.length ? [...new Set([...(patch.needs || []), ...dn])] : patch.needs, Object.assign({ trackId: tr.id, node, s: isSerum(instOf(tr)) ? instOf(tr).vals.s : null, fx: fxOfDev(tr, null), convMax: patch.fxr && patch.fxr.convMax }, lv));
   const mw = monitors.wanted(id, N);
   if (mw.length) { node.port.postMessage({ t: 'mon', ids: mw }); monitors.on.set(id, mw.join()); }
   return N;
@@ -1264,7 +1317,7 @@ function chordCheck(t) {
   // replace the primary — no notice
   if (chordWarned.has(t.id) || t.notes.length < 2 || instN(t) > 1) return;
   const vi = trackVoice(instOf(t)), k = chordSize(t.notes);
-  if (vi.seq || k <= (vi.mode === 'poly' ? vi.n : 1)) return;
+  if (vi.seq || vi.mode === 'drums' || k <= (vi.mode === 'poly' ? vi.n : 1)) return; // ((7a §8) a drum track: never)
   chordWarned.add(t.id);
   // the voices a switch would really give: setTrackModel loads the model's last-used values (loadVals) — a saved Unison /
   // Solo plays one note
@@ -1324,7 +1377,7 @@ function keepDevs(t, cur) {
   for (const id of Object.keys(t.dev)) {
     const d = t.dev[id], c = cur.dev[id];
     if (!d || !c || typeof d !== 'object' || typeof c !== 'object' || d.kind !== c.kind) continue;
-    if (d.kind === 'synth') { if (d.model === c.model) { d.vals = c.vals; if (c.fx) d.fx = c.fx; } if (c.seq) d.seq = c.seq; }
+    if (d.kind === 'synth') { if (d.model === c.model) { d.vals = c.vals; if (c.fx) d.fx = c.fx; if (c.drum) d.drum = c.drum; } if (c.seq) d.seq = c.seq; } // ((7a §6) a drum machine's pattern memory as the 303's)
     else if (d.kind === 'panel' && c.fx) d.fx = c.fx;
   }
   const fa = CMOD.fxDevOf(t), fb = CMOD.fxDevOf(cur);
@@ -1336,22 +1389,23 @@ function applyRestore(p, keepSound = false) {
   adopt(p); // (History snapshots and loads are plain objects: adopted first)
   // undo / redo never revert knob tweaks (per device) — within one project: an undo of Open / New brings back another project
   // (1f review: track ids repeat across projects; its sound is its own)
-  if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); if (modMove) modMoveBack(p, modMove); if (sxBack) sxBackApply(p, sxBack); } // ((3) a Serum's fields a canvas step wrote: back, §2.4 / §2.5)
+  if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); if (modMove) modMoveBack(p, modMove); if (sxBack) sxBackApply(p, sxBack); if (drBack) drBackApply(p, drBack); } // ((3) a Serum's fields a canvas step wrote: back, §2.4 / §2.5; (7a) → Piano roll's SYNC)
   else for (const t of p.tracks) seedPend.add(t.id); // a loaded project re-seeds the racks' LFO phases
   for (const t of p.tracks) fxOfDev(t, null); // (the primary's rack: a v1 one migrated in place)
   const prevSel = project.selTrack;
   project = p;
   bind();
   syncNodes();
-  for (const t of project.tracks) { sendPatch(t); sendSong(t, true); }
+  for (const t of project.tracks) { sendPatch(t); sendSong(t, true); for (const k of drumDevs(t)) drumSend(t, k); } // ((7a) its payload, when it changed)
+  DRUM.bpm(project.bpm); drumChanged(); // ((7a) the sessions: the tempo, the records the panels read)
   renderAll(!keepSound || prevSel !== project.selTrack);
   if (T.playing) reanchor(false);
   roUI(); // (a newer file's project read-only; Undo / New away from it: saved again)
   persist();
   cvModSync(); // (stage 2a: the open inspector / Mod list re-read the project)
 }
-function undo() { const p = hist.undo(project); modMove = p && modMoveOf(hist.r[hist.r.length - 1], /^Keep/); sxBack = p && sxBackOf(hist.r[hist.r.length - 1], false); try { applyRestore(p, true); } finally { modMove = null; sxBack = null; } updateUndoUI(); }
-function redo() { const p = hist.redo(project); modMove = p && modMoveOf(hist.u[hist.u.length - 1], /^Save/); sxBack = p && sxBackOf(hist.u[hist.u.length - 1], true); try { applyRestore(p, true); } finally { modMove = null; sxBack = null; } updateUndoUI(); }
+function undo() { const p = hist.undo(project); modMove = p && modMoveOf(hist.r[hist.r.length - 1], /^Keep/); sxBack = p && sxBackOf(hist.r[hist.r.length - 1], false); drBack = p && drBackOf(hist.r[hist.r.length - 1], false); try { applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; } updateUndoUI(); }
+function redo() { const p = hist.redo(project); modMove = p && modMoveOf(hist.u[hist.u.length - 1], /^Save/); sxBack = p && sxBackOf(hist.u[hist.u.length - 1], true); drBack = p && drBackOf(hist.u[hist.u.length - 1], true); try { applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; } updateUndoUI(); }
 let undoT = 0;
 function updateUndoUI() { // canUndoFrom may serialise the project, so coalesce bursts of calls into one per frame
   if (undoT) return;
@@ -1394,6 +1448,7 @@ async function play(from = T.pos, countBars = 0) {
   T.a = anchor(F, from - countBars * S.barTicks(project)); T.as = [T.a]; T.seekA = null;
   T.playing = true; T.startPos = from; T.lastClr = from;
   postTransport(true);
+  DRUM.transport(true); // ((7a) the synced drum machines' START state and LEDs follow the song)
   metroStart();
   transportUI();
 }
@@ -1406,6 +1461,7 @@ function stop() {
   T.pos = T.startPos;
   metroStop();
   for (const [k, P] of classicPanels) if (!seqRun.has(k) && !P.dead) P.seqStep(-1); // synced 303s stopped with the song
+  DRUM.transport(false); // ((7a) and the synced drum machines: their LEDs back to the flashing key)
   transportUI(); posUI();
 }
 function reanchor(seekTick) { // tempo/loop change (or a seek) while playing, applied in sync on every node
@@ -1692,10 +1748,12 @@ function inputNote(t, on, n, v, ts, audition) {
 function panic() {
   for (const t of project.tracks) seqToggle(t, false); // not quiet: the Run button and step lights must show it stopped
   PERF.release(); // (1i: the beds drop their pointers — a finger still down leaves no count — and the springs go home)
+  DRUM.panic(); // ((7a) the drum machines' sessions stop — a free machine's START —, their queued posts and lights go, the pads let go)
   for (const k of [...held.keys()]) { const [src, n] = k.split(':'); noteOff(+n, +src); }
   hk.clear();
   setSustain(false);
   postAll({ t: 'panic' });
+  for (const t of project.tracks) for (const k of drumDevs(t)) drumSend(t, k, 'now', null, true); // ((7a) their payloads say so: not running)
   if (T.playing) postAll(Object.assign({ t: 'transport', play: true, seek: true }, T.a)); // (not fresh: the old anchor replays nothing, R7 B1)
 }
 function setSustain(on) {
@@ -1723,7 +1781,7 @@ function renderNav() {
 // is replaced (cv-model setModel: its kept-FX rules); the track's primary as before (tr.model: the 1c reshape)
 function setTrackModel(tr0, id, o = null) {
   const tr = trOf(tr0), dev = dvOf(tr0), iv = instView(tr, dev), prim = dev === CMOD.primId(tr);
-  const ui = o && (o.ui === 'flow' || o.ui === 'hw') && !modelById(id).custom ? o.ui : null;
+  const ui = S.isDrum(id) ? 'hw' : o && (o.ui === 'flow' || o.ui === 'hw') && !modelById(id).custom ? o.ui : null; // ((7a §8) a drum machine: Hardware only)
   if (id === iv.model) { if (ui && tr === trk() && instUi(tr, dev) !== ui) cvSetLayout(ui, dev); return; }
   flush(); // a pending save of the outgoing model's values must not be dropped
   const old = modelById(iv.model), m = modelById(id);
@@ -1732,12 +1790,16 @@ function setTrackModel(tr0, id, o = null) {
   postTo(tr, { t: 'panic' });
   if (prim && new RegExp('^' + old.name.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '( \\d+)?$').test(tr.name)) tr.name = m.name + ' ' + (project.tracks.indexOf(tr) + 1);
   const n0 = CG.modRowsFor(tr, dev).length, nm = 'the ' + (tr.dev && tr.dev[dev] ? cvDevName(tr, dev) : 'Serum'); // ((U10) the device being replaced, by its name)
+  const wasDrum = isDrumDev(tr, dev);
   CMOD.setModel(tr, dev, id, { vals: loadVals(m) }); // (R5: the primary too — its rack kept by the kept-FX rules, the 1c reshape; (C11) the values with the model: the rows judged against the NEW model's values)
+  // (7a §6, §10.1) setModel changes the device in place: a drum machine leaves with its record (the Replace undo brings it
+  // back from History) and one arrives with an empty memory; the machine's session starts again either way
+  if (wasDrum || S.isDrum(id)) { const d = tr.dev[dev]; if (S.isDrum(id)) d.drum = DC.normDrum(undefined); else delete d.drum; drumForget(tr, dev); }
   // (stage 2a) a Serum's cables to a classic one are dropped (the model setter / setModel): said (cv-model setModel's text)
   const gone = n0 - CG.modRowsFor(tr, dev).length, why = gone > 0 ? `${gone} modulation cable${gone > 1 ? 's' : ''} to ${nm} removed: the new model has no such knobs` : ''; // (2b: rows whose param id survives stay)
   if (why) notice(why, 6000);
   if (n0) cpHalos(tr); // ((U11) the rows went or changed: the classic halos and the eff subscription follow, not the next edit)
-  if (ui === 'flow' || (ui === 'hw' && instUi(tr, dev) === 'flow')) layUi(tr, ui, dev); // (Hardware on an untouched track: no lay key)
+  if (ui === 'flow' || (ui === 'hw' && layFlow(tr, dev))) layUi(tr, ui, dev); // (Hardware on an untouched track: no lay key)
   sxModelLay(tr, dev, m, o); // ((3) the old Serum's part places go; a new Serum opens in the view D-R5 names (o.parts: the caller's))
   if (tr.id === project.selTrack) {
     if (dev === curOf(tr)) { bind(); settings.model = id; renderNav(); history.replaceState(null, '', '#' + id); }
@@ -1745,6 +1807,8 @@ function setTrackModel(tr0, id, o = null) {
   }
   sendPatch(tr);
   if (id === 'tb303') { if (prim) seqSend(tr); else seqSend(tr, dev); }
+  else if (S.isDrum(id)) drumSend(tr, dev, 'now', null, true); // ((7a) its plan and tables after the drums patch)
+  if (tr.id === project.selTrack && roll) { roll.refreshRows(); rollDrumUI(); } // ((7a) the roll's drum rows come and go with the model)
   if (ctx) rateText();
   renderHeads(); persist(); updateUndoUI();
   return why;
@@ -1753,12 +1817,14 @@ function selectTrack(id) {
   const iv = curView(trk());
   if (id === project.selTrack && bound === iv.id + ':' + iv.model) return;
   PERF.release(); // (1i review F2: the springs and the Pencil's aftertouch go home on the track they moved, before the selection moves)
+  DRUM.release(); // ((7a) a drum machine's pads and held CLEAR too)
   for (const k of [...held.keys()]) { const [src, n] = k.split(':'); noteOff(+n, +src); }
   flush();
   project.selTrack = id;
   bind();
   renderNav(); renderViews(); renderHeads();
   roll && roll.setTrack(); arr && arr.render();
+  rollDrumUI();
   tabTrackUI();
   persist();
 }
@@ -1780,9 +1846,11 @@ const hwLayoutOf = m => (m && !m.custom ? cvPanel.usable(m.id, m) : null);
 function instUi(t, dev) { // (stage 1e: instrument dev, default the current one; its lay key is its device id)
   const d = dev == null && t ? curOf(t) : dev;
   if (!t || isSerumDev(t, d)) return 'flow';
-  const e = t.lay && typeof t.lay === 'object' ? t.lay[d || cvModule.ID.inst] : null;
-  return e && e.ui === 'flow' ? 'flow' : 'hw';
+  if (isDrumDev(t, d)) return 'hw'; // ((7a §8) a drum machine: its real front panel only — no Simple layout)
+  return layFlow(t, d || cvModule.ID.inst) ? 'flow' : 'hw';
 }
+// the track's layout entry of instrument dev asks for the Simple layout (lay.<dev>.ui; what instUi reads for a classic one)
+const layFlow = (t, dev) => { const e = t && t.lay && typeof t.lay === 'object' ? t.lay[dev] : null; return !!e && e.ui === 'flow'; };
 // the page's services for a ClassicPanel (one per mounted classic instrument: its own track — a device view —, values and
 // updaters)
 const classicHost = {
@@ -1814,6 +1882,24 @@ const PERF = cvKeys.perfHost({ noteOn: (n, v, ts) => noteOn(n, v, 0, ts), noteOf
   live: k => (perfLive.get(trk().id) || {})[k] || 0, held: () => [...new Set([...held.keys()].map(k => +k.split(':')[1]))],
   bendUI: v => setBendUI && setBendUI((v + 1) / 2, false), modUI: v => setModUI && setModUI(v, false), sel: v => trOf(v) === trk() });
 classicHost.perf = PERF;
+// (7a, IMPL-7a §10.1) the drum machines' host (cv-drum drumHost; its deps in cv-drum.js's header): START/STOP synced is the
+// project's ▶ / ■ and TEMPO the project tempo (§13 answer 1), the pads the selected track's note path, posts and lights at
+// the heard time (outFrame); main's drum section below does the rest (drumSend, drumToRoll, drumLoad, drumLearn …)
+const DRUM = cvDrum.drumHost({
+  mem: x => { const t = drumTrack(x); return t ? drumOf(t, dvOf(x)) : null; },
+  put: (x, D) => drumPut(x, D),
+  send: (x, D, S0, at) => drumSend(x, null, at, S0),
+  play: () => { if (!T.playing) play(); }, stop: () => { if (T.playing) stop(); },
+  playing: () => T.playing, bpm: () => project.bpm, setBpm: (v, ph) => drumSetBpm(v, ph),
+  heard: ts => (ctx && ctx !== holdCtx ? outFrame(ts) : NaN), rate: () => (ctx ? ctx.sampleRate : 48000), barTicks: () => S.barTicks(project),
+  noteOn: (x, n, v, ts) => noteOn(n, v, 0, ts), noteOff: (x, n, ts) => noteOff(n, 0, ts),
+  sel: x => !!x && trOf(x).id === project.selTrack,
+  notice: (text, ms, onTap) => { if (onTap) noticeActs.set(text, () => { noticeActs.delete(text); notice('', 0); onTap(); }); notice(text, ms); },
+  toRoll: (x, bars) => drumToRoll(x, bars), confirm: text => confirm(text),
+  loadSample: (x, sound) => drumLoad(x, sound), learn: (x, fn) => drumLearn(x, fn), monitor: (x, on) => drumMonitor(x, on),
+  loop: () => loopInfo(), // ((7a review 2 #4) the extras' hint: a synced cycle longer than the song loop)
+});
+classicHost.drum = DRUM;
 // a window blur / a hidden page: the beds and controllers let go, but a MIDI or tray note still sounds — its bed light stays (1i review F4)
 function perfLetGo() { PERF.release(); for (const n of new Set([...held.keys()].map(k => +k.split(':')[1]))) PERF.lit(n, true); }
 const panelKey = v => { const t = trOf(v); return t ? t.id + '/' + dvOf(v) : ''; };
@@ -2017,10 +2103,12 @@ const tables = createAssetManager({
   post: portPoster(nodes),
   // (R4) the sound states it reads and edits: every Serum instrument (its state, its own FX) and every FX panel of every
   // track — another Serum's samples and IRs are in use too
-  states: () => project.tracks.flatMap(t => Object.keys(t.dev).filter(k => isSerumDev(t, k) || (t.dev[k] && t.dev[k].kind === 'panel'))
-    .map(k => ({ track: t, dev: k, s: isSerumDev(t, k) ? t.dev[k].vals.s : null, fx: t.dev[k].fx }))),
+  states: () => project.tracks.flatMap(t => Object.keys(t.dev).filter(k => isSerumDev(t, k) || (t.dev[k] && t.dev[k].kind === 'panel') || isDrumDev(t, k))
+    .map(k => (isDrumDev(t, k) ? { track: t, dev: k, s: null, fx: null, drum: drumOf(t, k) } // ((7a §5) a drum machine: its sample slots)
+      : { track: t, dev: k, s: isSerumDev(t, k) ? t.dev[k].vals.s : null, fx: t.dev[k].fx }))),
   edit: (x, fn, o) => sxEdit(instView(x.track, x.dev), fn, o),
   editFx: (x, fn, o) => fxEditDev(x.track, x.dev, fn, o),
+  editDrum: (x, fn) => drumEdit(x.track, x.dev, fn), // ((7a) a relinked slot)
   defaultState: () => core.defaultSerum(),
   refresh: () => sxRefresh(),
   notify: txt => notice(txt, 5000),
@@ -2056,7 +2144,7 @@ function genProgress(p) {
 }
 // the user assets (wavetables, noises; samples, multisamples, IRs) a track references (project / preset files, §9.8)
 const userTables = s => (s ? userIdsOf(s) : []);
-const userSmps = (s, fx) => userAssetIds(s || null, fx || null);
+const userSmps = (s, fx, drum) => userAssetIds(s || null, fx || null, drum || null); // ((7a) a drum machine's loaded slots too)
 
 // snapshot / FX meter subscriptions (smon, §11.6; SPEC-canvas §6.8, §6.9, §9.3): one per mounted module with live
 // displays, keyed by (track, device) — a Serum panel (its device), an FX panel (its device; a Serum's own FX: the
@@ -2247,10 +2335,10 @@ async function projectFile() {
   const ids = new Set(), sm = new Set();
   for (const t of project.tracks) {
     for (const k of Object.keys(t.dev || {})) { // (every Serum and panel of the track, the primary's among them — R2)
-      const d = t.dev[k], x = d && d.kind === 'synth' && d.model === 'serum' && d.vals ? d.vals.s : null;
-      if (!d || (d.kind !== 'panel' && !x)) continue;
+      const d = t.dev[k], x = d && d.kind === 'synth' && d.model === 'serum' && d.vals ? d.vals.s : null, dr = isDrumDev(t, k) ? drumOf(t, k) : null; // ((7a) a drum machine's slots)
+      if (!d || (d.kind !== 'panel' && !x && !dr)) continue;
       for (const id of userTables(x)) ids.add(id);
-      for (const id of userSmps(x, d.fx)) sm.add(id);
+      for (const id of userSmps(x, d.fx, dr)) sm.add(id);
     }
   }
   const o = CM.mirror(JSON.parse(S.serialize(project))); // (SPEC-canvas §5.8: main opens it as each track's primary + its FX)
@@ -2497,7 +2585,7 @@ async function renderOffline(sr, frames, items, at) {
   await addModules(oc);
   const ids = new Set();
   for (const it of items) {
-    for (const id of (it.patch && it.patch.needs) || it.needs || []) ids.add(id);
+    for (const id of [...((it.patch && it.patch.needs) || []), ...(it.needs || [])]) ids.add(id); // ((7a) a drum track's slots beside its patch's needs)
     if (it.graph && it.tr) learnStates(it.tr);
   }
   const ents = ids.size ? await tables.entries([...ids], sr, at) : [];
@@ -3109,6 +3197,193 @@ function seqToRoll(tr0, q) {
   }, [tr]);
 }
 
+/* ------------------------------------------------- drum machines (stage 7a) */
+// IMPL-7a §10.1: the page's drum machines run through cv-drum's drumHost (DRUM, below the classic host): each machine's
+// session (drum-core press(state, record, input); never saved), its step posts and monitor lights at their heard time,
+// the pads. A panel's `track` is a device view (id 'trackId/dev'); every dep resolves the track by that id (undo / load
+// replace the track objects). The record (dev.drum) is written back without a History step (the 303's policy, §6); the
+// machine hears of it through drumSend.
+const drumTrack = x => { const o = x ? trOf(x) : null, id = o && typeof o === 'object' ? o.id : null; return id == null ? null : project.tracks.find(t => t.id === id) || null; };
+const drumSess = (t, dev) => DRUM.api(instView(t, dev)).state().S;
+const drPkOf = N => N.drPk || (N.drPk = new Map()); // (dev → the content key of the payload the node holds)
+// the {t: 'seq'} payload (drum-core payload, §3.5): the plan, the clock, the note map, the mute mask, the slots — offline
+// (a bounce, a render; SYNC on or off — a machine's notes need its tables) from a fresh session: synced or silent, never running
+function drumPayload(t, dev, offline = false) { return DC.payload(drumOf(t, dev), offline ? DC.initState() : drumSess(t, dev), 'now'); }
+// drumSend(view | track, dev?, at, S?, force): the payload to the machine when its content key changed (or `at` asks for a
+// swap, or force). A slot switched on or off first re-sends the track's patch (its needs: the patch's and the slots', 2
+// levels); a payload naming a slot whose entry is still being built waits for it (§5: the {t: 'smp'} entry before the
+// payload naming it — the machine plays the circuit until then), a newer payload of the machine replacing a waiting one
+function drumSend(x, dev0, at = 'now', S0 = null, force = false) {
+  const t = drumTrack(x), dev = x && x.track ? x.devId : dev0 != null ? dev0 : t && CMOD.primId(t);
+  if (!t || !isDrumDev(t, dev)) return;
+  persist();
+  const N = nodes.get(t.id);
+  if (!N) return;
+  const s = DC.payload(drumOf(t, dev), S0 || drumSess(t, dev), at), pk = drPkOf(N);
+  if (!force && at === 'now' && pk.get(dev) === s.pk) return;
+  pk.set(dev, s.pk);
+  if (drumNeeds(t).join() !== (N.drIds || '')) sendPatch(t);
+  const W = N.drWait || (N.drWait = new Map()), post = () => { W.delete(dev); postTo(t, { t: 'seq', s }, dev); };
+  const wait = (s.smp || []).filter(e => e && e.on && !tables.sent.has(e.id) && tables.pend.has(e.id)).map(e => tables.pend.get(e.id));
+  if (!wait.length) { post(); return; }
+  W.set(dev, post);
+  const go = () => { if (W.get(dev) === post && nodes.get(t.id) === N) post(); };
+  Promise.all(wait).then(go, go);
+}
+// every drum machine's panel re-reads its record (undo / redo, a load: new track objects, the records kept or restored)
+function drumChanged() { for (const t of project.tracks) for (const k of drumDevs(t)) DRUM.changed(instView(t, k)); }
+// a machine leaves (its track deleted, its model replaced): its session, monitor and the node's payload key go
+function drumForget(t, dev) {
+  const iv = instView(t, dev);
+  drumMonitor(iv, false); DRUM.forget(iv);
+  const N = nodes.get(t.id);
+  if (N && N.drPk) N.drPk.delete(dev);
+}
+// the record written back by the panel's state machine (put): no History step; MAP… re-reads the roll's drum rows
+function drumPut(x, D) {
+  const t = drumTrack(x), dev = dvOf(x);
+  if (!t || !isDrumDev(t, dev) || !D) return;
+  const was = t.dev[dev].drum;
+  t.dev[dev].drum = D;
+  persist();
+  if (roll && t.id === project.selTrack && (!was || was.map !== D.map)) { roll.refreshRows(); rollDrumUI(); }
+}
+// the asset manager's edit of a machine's record (a relinked sample slot, §5): written, sent, its panel told
+function drumEdit(x, dev, fn) {
+  const t = drumTrack(x), D = t ? drumOf(t, dev) : null;
+  if (!D || typeof fn !== 'function') return;
+  const E = clone(D);
+  fn(E);
+  t.dev[dev].drum = DC.normDrum(E);
+  drumSend(t, dev); DRUM.changed(instView(t, dev));
+}
+// a synced machine with a step that sounds plays with no notes (the bounce's "audible", §4.4 — the 303's syncedOf)
+function drumAudible(t, dev) {
+  const D = drumOf(t, dev);
+  return !!D && D.x.sync && DC.compilePlan(D, D.ui, D.x).st.some(m => (m & 0xFFE) !== 0);
+}
+// TEMPO / FINE while synced set the project tempo (§13 answer 1) — the tempo box's path, one History step per gesture
+// (ph 'move' inside a drag: recorded at its first change; 'end' at its lift; none: one key / wheel step)
+let drBpmG = false;
+function setProjectBpm(v) {
+  project.bpm = clamp(+v || 120, 20, 300);
+  $('#tBpm').value = project.bpm;
+  reanchor(false); persist();
+  for (const t of project.tracks) for (const id of CMOD.instIds(t)) { const d = t.dev[id]; if (d.model === 'tb303' && d.seq && d.seq.sync) seqSend(t, id); }
+  queueAll();
+  DRUM.bpm(project.bpm); // ((7a) the synced machines' TEMPO shows it)
+}
+function drumSetBpm(v, ph) {
+  v = clamp(Math.round(+v * 100) / 100, 20, 300);
+  if (!(v > 0)) return;
+  const g = drBpmG;
+  if (ph === 'end') drBpmG = false;
+  if (v === project.bpm) { if (ph === 'end') updateUndoUI(); return; }
+  if (!(g && (ph === 'move' || ph === 'end'))) hist.record(project, 'Tempo');
+  if (ph === 'move') drBpmG = true;
+  setProjectBpm(v);
+  updateUndoUI();
+}
+// "→ Piano roll" (§4.3): what the plan plays for `bars` bars from the playhead floored to a bar, as notes (v 100 / 127,
+// the sounds' primaries, the sequencer's own whole-tick swung positions) — one History step "Pattern to notes" whose meta
+// puts SYNC back on its undo (keepDevs keeps the record with SYNC off: drBack) — then SYNC off and the machine stopped, so
+// the pattern is not heard twice; the notice's tap undoes both
+function drumToRoll(x, bars) {
+  const t = drumTrack(x), dev = dvOf(x), D = t ? drumOf(t, dev) : null;
+  if (!D) return;
+  const bt = S.barTicks(project), nb = clamp(Math.round(+bars) || 4, 1, 999), t0 = S.snapTick(T.playing ? curTick() : T.pos, bt, 'floor');
+  const notes = DC.toNotes(DC.compilePlan(D, D.ui, D.x), { t0, t1: t0 + nb * bt, swing: D.x.swing, sw: instOf(t, dev).vals, map: D.map });
+  if (!notes.length) { notice('Nothing to write: the pattern has no hits there', 4000); return; }
+  flush();
+  hist.record(project, 'Pattern to notes');
+  const step = hist.u[hist.u.length - 1], sync0 = !!D.x.sync, ids = [];
+  if (step) { step.label = 'Pattern to notes'; step.meta = { drumSync: { track: t.id, dev, sync: sync0 } }; } // (an equal top step is this one: its undo is this edit's)
+  for (const q of notes) { const id = S.newId(); ids.push(id); t.notes.push({ id, t: q.t, d: q.d, n: q.n, v: q.v }); }
+  changed([t]); sendSong(t, true); // (the notes now, not after changed()'s 60 ms: they reach the worklet with the SYNC-off payload, so a step due between is played once)
+  const iv = instView(t, dev);
+  DRUM.press(iv, { k: 'sync', v: false });
+  if (drumSess(t, dev).run) DRUM.press(iv, { k: 'start' }); // (a free machine running: stopped too)
+  DRUM.changed(iv);
+  const m = modelById(instOf(t, dev).model), short = m.name.replace(/^TR-/, ''); // ("the 808's own sequencer")
+  cvUndoNotice(`Written to the piano roll · the ${short}’s own sequencer is off so it isn’t heard twice · tap to undo`, step, () => {
+    const tr = project.tracks.find(y => y.id === t.id);
+    if (!tr || !isDrumDev(tr, dev) || !tr.notes.some(y => ids.includes(y.id))) return null; // (already undone, or replaced)
+    return () => { // (a later step on top: both put back as a step of their own)
+      hist.record(project, 'Undo pattern to notes');
+      tr.notes = tr.notes.filter(y => !ids.includes(y.id));
+      changed([tr]); sendSong(tr, true); // (with the SYNC-on payload: no step heard twice)
+      if (sync0) DRUM.press(instView(tr, dev), { k: 'sync', v: true });
+    };
+  });
+}
+let drBack = null; // { mv: the "Pattern to notes" step's meta.drumSync, redo } — read after hist.undo / hist.redo
+const drBackOf = (e, redo) => (e && e.meta && e.meta.drumSync && typeof e.meta.drumSync === 'object' ? { mv: e.meta.drumSync, redo } : null);
+function drBackApply(p, { mv, redo }) {
+  const t = p.tracks.find(x => x.id === mv.track), D = t ? drumOf(t, mv.dev) : null, y = redo ? false : !!mv.sync;
+  if (D && D.x.sync !== y) t.dev[mv.dev].drum = Object.assign({}, D, { x: Object.assign({}, D.x, { sync: y }) });
+}
+// MAP… learn (§4.1): the next note played into the machine's track (keys, pads, MIDI) → fn(n), once
+function drumLearn(x, fn) {
+  const t = drumTrack(x);
+  if (!t || typeof fn !== 'function') return () => {};
+  const id = t.id, key = 'learn/' + dvOf(x), M = inputSubs.get(id) || inputSubs.set(id, new Map()).get(id);
+  const off = () => { const L = inputSubs.get(id); if (L && L.get(key) === f) { L.delete(key); if (!L.size) inputSubs.delete(id); } };
+  const f = (on, n) => { if (!on) return; off(); fn(n); };
+  M.set(key, f);
+  return off;
+}
+// SOUNDS… Load… (§5): the file picker (or `files`: the tests) → the sample importer (assets.js: WAV / AIFF, FLAC / OGG /
+// MP3 / M4A decoded; the store's content-hash ids) → { id, name } | null — ≤ 10 s, within the machine's own memory (32 MiB
+// on touch devices, 64 MiB elsewhere: the importer's estimate at 2 playback levels, ≈ ¾ of 8 bytes a frame and channel)
+const DR_SLOT_S = 10, drMemCap = () => (touchDev ? 32 : 64) * 1048576;
+const drEst = r => 6 * (r.ch || 1) * Math.round((r.len || 0) * Math.min(1, 48000 / (r.rate || 48000)));
+function drumFiles() {
+  return new Promise(res => {
+    const inp = h('input');
+    inp.type = 'file'; inp.accept = 'audio/*,.wav,.wave,.aif,.aiff,.aifc,.flac,.ogg,.mp3,.m4a';
+    inp.onchange = () => res([...(inp.files || [])]);
+    inp.addEventListener('cancel', () => res(null));
+    inp.click();
+  });
+}
+async function drumLoad(x, sound, files = null) {
+  const fs = files || await drumFiles();
+  if (!fs || !fs.length) return null;
+  const id = await smpHost.import(fs.slice(0, 1), { kind: 'smp' });
+  const rec = id ? await smpHost.record(id) : null;
+  if (!rec) return null;
+  const sec = rec.len / rec.rate, name = String(rec.name || 'Sample').slice(0, 64);
+  if (!(sec <= DR_SLOT_S + 0.05)) { notice(`“${name}” is ${sec.toFixed(1)} s long — a drum slot takes up to ${DR_SLOT_S} s`, 6000); return null; }
+  const t = drumTrack(x), D = t ? drumOf(t, dvOf(x)) : null;
+  let bytes = drEst(rec);
+  for (const s of DC.SOUNDS) {
+    const e = D && D.smp ? D.smp[s] : null;
+    if (!e || !e.on || s === sound || e.id === id) continue;
+    const r = await smpHost.record(e.id);
+    if (r) bytes += drEst(r);
+  }
+  if (bytes > drMemCap()) { notice(`Not enough memory for “${name}” in this drum machine (${Math.round(bytes / 1048576)} of ${drMemCap() / 1048576} MB)`, 6000); return null; }
+  return { id, name };
+}
+// the drum monitor (§3.5: the pads' lights, the circuits' levels) while a panel's pads are mounted (cv-drum api.lit)
+const drMons = new Map(); // 'trackId/dev' → off
+function drumMonitor(x, on) {
+  const t = drumTrack(x), dev = dvOf(x);
+  if (!t || dev == null) return;
+  const id = t.id, key = id + '/' + dev, off = drMons.get(key);
+  if (!on) { if (off) { drMons.delete(key); off(); } return; }
+  if (off) return;
+  drMons.set(key, monitors.sub(id, dev, { role: 'inst', live: () => project.selTrack === id && cvLive(dev),
+    deliver: d => { const iv = d && d.dr ? viewOfKey(key) : null; if (iv && iv.track) DRUM.mon(iv, d.dr); } }));
+}
+let drErr = false;
+function drumsErr(t) { // (engine: dr-808.js or dr-seq.js missing in the worklet — once a session)
+  if (drErr) return;
+  drErr = true;
+  console.warn('SYNTH: the drum machine scripts did not load in the audio engine — “' + t.name + '” plays nothing');
+  notice('The drum machine’s sound engine did not load — reload the page to hear it', 8000);
+}
+
 /* ------------------------------------------------------ track headers */
 function renderHeads() {
   const el = $('#heads');
@@ -3172,9 +3447,10 @@ function addTrack(m = curModel(), vals0 = null, o = null) {
   hist.record(project);
   const t = S.newTrack(project, { model: m.id, vals: vals0 ? JSON.parse(JSON.stringify(vals0)) : loadVals(m), name: `${m.name} ${project.tracks.length + 1}` });
   seedPend.add(t.id);
-  if (o && o.ui === 'flow' && !m.custom) t.lay = { [cvModule.ID.inst]: { x: 0, y: 0, ui: 'flow' } }; // (the Sources tray's Simple)
+  if (o && o.ui === 'flow' && !m.custom && m.family !== 'drums') t.lay = { [cvModule.ID.inst]: { x: 0, y: 0, ui: 'flow' } }; // (the Sources tray's Simple)
   project.tracks.push(t);
   adopt(project);
+  if (m.family === 'drums') drumOf(t, CMOD.primId(t)); // ((7a) its record: an empty memory, the defaults)
   if (m.custom && (o && o.parts !== undefined ? o.parts : sxNewView() === 'parts')) { const id = CMOD.primId(t); if (id) t.lay = sxLayParts(t, id); } // ((3) D-R5: a new Serum in parts view)
   newRack(t, m);
   syncNodes();
@@ -3205,9 +3481,10 @@ function deleteTrack(t) {
   hist.record(project);
   const i = project.tracks.indexOf(t);
   if (project.selTrack === t.id) PERF.release(); // (1i review F3: its beds' keys end while it is still the selected track)
+  for (const k of drumDevs(t)) drumForget(t, k); // ((7a) its drum machines' sessions)
   project.tracks.splice(i, 1);
   seqRun.delete(t.id); inputSubs.delete(t.id); lastIn.delete(t.id);
-  if (project.selTrack === t.id) { project.selTrack = project.tracks[Math.max(0, i - 1)].id; bind(); renderNav(); renderViews(); roll && roll.setTrack(); }
+  if (project.selTrack === t.id) { project.selTrack = project.tracks[Math.max(0, i - 1)].id; bind(); renderNav(); renderViews(); roll && roll.setTrack(); rollDrumUI(); }
   syncNodes();
   renderHeads(); persist(); updateUndoUI();
 }
@@ -3291,6 +3568,9 @@ function initEditors() {
     // the toolbar's touch modifier latches (buildRollTools); a finger or pen on the roll shows them
     mods: e => { if (e && e.pointerType && e.pointerType !== 'mouse' && !rollFing) { rollFing = true; rollLatchUI(); } return rollMods(e); },
     consumeMods: () => rollConsume(),
+    // (7a, IMPL-7a §4.2) a drum track's named rows (its machine's mapped primaries, kick at the bottom) and the saved
+    // "Drum rows" choice (compact rows: on by default)
+    drumRows: t => drumRowsOf(instOf(t)), drumRowsOn: store.get(ROLL_DRUM, true) !== false,
   });
   $('#arrwrap').addEventListener('pointerdown', () => { lastArea = 'arr'; }, true);
   $('#rollwrap').addEventListener('pointerdown', () => { lastArea = 'roll'; }, true);
@@ -3422,8 +3702,9 @@ function buildRollTools() {
     chk('Starts', q.starts, 'Quantize note starts', v => { q.starts = v; persist(); }),
     chk('Ends', q.ends, 'Quantize note ends', v => { q.ends = v; persist(); }),
     btn('Quantize', 'Quantize the selection, or all notes when nothing is selected (Q)', quantizeNow, 'hot'));
-  grp('Transpose', btn('−12', 'Down an octave', () => transform('Transpose', ns => S.transpose(ns, -12))), btn('−1', 'Down a semitone', () => transform('Transpose', ns => S.transpose(ns, -1))),
-    btn('+1', 'Up a semitone', () => transform('Transpose', ns => S.transpose(ns, 1))), btn('+12', 'Up an octave', () => transform('Transpose', ns => S.transpose(ns, 12))));
+  // ((7a §4.2) on a drum track a transpose changes which drums play: asked first)
+  const xp = k => () => { if (roll.isDrum() && !confirm('Transposing a drum track changes which drums play. Transpose anyway?')) return; transform('Transpose', ns => S.transpose(ns, k)); };
+  grp('Transpose', btn('−12', 'Down an octave', xp(-12)), btn('−1', 'Down a semitone', xp(-1)), btn('+1', 'Up a semitone', xp(1)), btn('+12', 'Up an octave', xp(12)));
   const vm = h('select'); vm.title = 'Velocity operation';
   for (const [k, l] of [['set', 'Set to'], ['scale', 'Scale %'], ['add', 'Add'], ['compress', 'Compress %'], ['random', 'Randomise ±'], ['ramp', 'Ramp up'], ['rampd', 'Ramp down']]) { const o = h('option', null, l); o.value = k; vm.append(o); }
   const vv = num(100, -127, 400, 1, 'Value', () => {}, 56);
@@ -3445,15 +3726,23 @@ function buildRollTools() {
     btn('Duplicate', 'Duplicate selection after itself (Ctrl/⌘ D)', () => roll.duplicate()), btn('Delete', 'Delete selection (Del)', () => roll.deleteSelected()));
   const follow = chk('Follow', project.follow !== false, 'Scroll with the playhead', v => { project.follow = v; roll.setFollow(v); persist(); });
   const ghosts = chk('Ghosts', !!project.ghosts, 'Show other tracks’ notes faintly', v => { project.ghosts = v; roll.setGhosts(v); persist(); });
+  // ((7a §4.2) a drum track's compact named rows, or the full keyboard: kept on this device; shown on a drum track only)
+  rollDrumChk = chk('Drum rows', store.get(ROLL_DRUM, true) !== false, 'Show only the drum machine’s named rows (off: the whole keyboard)', v => { store.set(ROLL_DRUM, !!v); roll.setDrumRows(v); });
+  rollDrumChk.id = 'rollDrums';
   // Keys −/+: the row height (the keys' size; also pinch up / down, Alt-wheel), kept for this device
   const keyZ = (txt, label, d) => { const b = btn(txt, label + ' (row height, kept on this device)', () => roll.zoomRows(d)); b.setAttribute('aria-label', label); return b; };
   grp('View', btn('−', 'Zoom out', () => roll.zoomX(1 / 1.4)), btn('+', 'Zoom in', () => roll.zoomX(1.4)), btn('Fit', 'Fit notes', () => roll.fit()),
-    h('span', 'rlab', 'Keys'), keyZ('−', 'Smaller keys', -1), keyZ('+', 'Bigger keys', 1), follow, ghosts);
+    h('span', 'rlab', 'Keys'), keyZ('−', 'Smaller keys', -1), keyZ('+', 'Bigger keys', 1), follow, ghosts, rollDrumChk);
   const sel = h('span', 'rsel'); sel.id = 'rSel'; sel.textContent = 'No selection (edits apply to all notes)';
   bar.append(sel);
   roll.setFollow(project.follow !== false); roll.setGhosts(!!project.ghosts); roll.setDrawLength(project.drawLen || 0);
   setTool(tool);
+  rollDrumUI();
 }
+// (7a) the "Drum rows" toggle shows on a drum track only (the roll's isDrum: the track has named rows)
+const ROLL_DRUM = 'synth.roll.drumRows';
+let rollDrumChk = null;
+function rollDrumUI() { if (rollDrumChk && roll) rollDrumChk.hidden = !roll.isDrum(); }
 function setTool(k) {
   tool = k; roll.setTool(k);
   for (const b of document.querySelectorAll('#rolltools [data-tool]')) b.classList.toggle('on', b.dataset.tool === k);
@@ -3470,6 +3759,7 @@ function transportUI() {
   $('#tPlay').setAttribute('aria-label', T.playing ? 'Stop' : 'Play');
   $('#tRec').setAttribute('aria-pressed', T.rec ? 'true' : 'false');
   $('#tLoop').setAttribute('aria-pressed', project.loop.on ? 'true' : 'false');
+  DRUM.loop(); // ((7a review 2 #4) the loop may have changed: the drum panels' hint)
   $('#tMetro').setAttribute('aria-pressed', project.metronome.on ? 'true' : 'false');
   $('#tInQ').setAttribute('aria-pressed', project.rec.inputQuantize ? 'true' : 'false');
   document.body.classList.toggle('recording', T.rec);
@@ -3487,7 +3777,8 @@ function projectUI() {
 }
 function renderAll(newTrack = true) {
   renderNav(); renderViews(); renderHeads(); projectUI(); buildRollTools();
-  if (newTrack) { roll && roll.setTrack(); arr && arr.fit(); } else { roll && roll.render(); arr && arr.render(); }
+  if (newTrack) { roll && roll.setTrack(); arr && arr.fit(); } else { roll && (roll.refreshRows(), roll.render()); arr && arr.render(); } // ((7a) refreshRows: a drum map restored)
+  rollDrumUI();
   updateUndoUI(); rangeUI();
 }
 function initTransport() {
@@ -3500,7 +3791,7 @@ function initTransport() {
   $('#tCount').onchange = e => { project.metronome.countIn = +e.target.value; persist(); };
   $('#tRecMode').onchange = e => { project.rec.mode = e.target.value; persist(); };
   const numIn = (id, fn) => { const el = $('#' + id); el.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') el.blur(); }); el.onchange = () => fn(el); };
-  numIn('tBpm', el => { project.bpm = clamp(+el.value || 120, 20, 300); el.value = project.bpm; reanchor(false); persist(); for (const t of project.tracks) for (const id of CMOD.instIds(t)) { const d = t.dev[id]; if (d.model === 'tb303' && d.seq && d.seq.sync) seqSend(t, id); } queueAll(); });
+  numIn('tBpm', el => setProjectBpm(+el.value || 120)); // ((7a) the same path as a synced drum machine's TEMPO)
   numIn('tSigN', el => { project.sig = [clamp(Math.round(+el.value) || 4, 1, 16), project.sig[1]]; el.value = project.sig[0]; reanchor(false); arr.render(); roll.render(); persist(); });
   $('#tSigD').onchange = e => { project.sig = [project.sig[0], +e.target.value]; reanchor(false); arr.render(); roll.render(); persist(); };
   numIn('tBars', el => { project.bars = clamp(Math.round(+el.value) || 1, 1, 999); el.value = project.bars; arr.fit(); persist(); });
@@ -3591,9 +3882,13 @@ function importMidiFile(bytes, fname) {
   const r = S.importMIDI(bytes);
   if (!r.tracks.length) { alert('That MIDI file has no notes.'); return; }
   hist.record(project);
-  const empty = project.tracks.every(t => !t.notes.length && !t.cc.length), m = curModel(); // (the model before an empty project's tracks go: read after, there is no track)
+  const empty = project.tracks.every(t => !t.notes.length && !t.cc.length), m0 = curModel(); // (the model before an empty project's tracks go: read after, there is no track)
   if (empty) { project.tracks = []; project.bpm = r.bpm; project.sig = r.sig; if (r.name) project.name = r.name; else project.name = fname.replace(/\.midi?$/i, ''); }
+  let lost = 0;
   for (const it of r.tracks) {
+    // ((7a §4.5) a channel-10 track comes in as a TR-808 track: it.model, its notes as they are; it.unmapped counts the
+    // notes on keys the machine's map leaves silent)
+    const m = typeof it.model === 'string' && S.isDrum(it.model) ? modelById(it.model) : m0;
     const t = S.newTrack(project, { model: m.id, vals: loadVals(m), name: it.name || `${m.name} ${project.tracks.length + 1}` });
     seedPend.add(t.id);
     t.notes = it.notes.map(n => ({ id: S.newId(), t: n.t, d: n.d, n: n.n, v: n.v }));
@@ -3601,12 +3896,14 @@ function importMidiFile(bytes, fname) {
     project.tracks.push(t);
     adopt(project);
     newRack(t, m);
+    if (m.family === 'drums') { drumOf(t, CMOD.primId(t)); lost += it.unmapped | 0; }
   }
   project.selTrack = project.tracks[0].id;
   fitBars();
   const bt = S.barTicks(project);
   project.loop.start = 0; project.loop.end = Math.max(bt, Math.min(project.bars, 8) * bt);
   applyRestore(project);
+  if (lost) notice(`${lost} drum note${lost === 1 ? '' : 's'} on keys the TR-808 doesn’t map — kept in the roll, silent (MAP… on the 808 can give them a sound)`, 8000);
 }
 
 /* ------------------------------------------------------------ bounce */
@@ -3636,7 +3933,7 @@ function midiOutIds(p) {
 // even with no notes of its own, and every source with notes whose target is audible, a muted or soloed-out one at gain
 // 0 (live, its node keeps running at gain 0 and drives the target)
 // (stage 1e: a graph-shaped track's item carries its graph form, offParts; a synced 303 is any powered one of the track)
-const syncedOf = tr => (tr.dev ? CG.powered(tr) : []).some(id => tr.dev[id].model === 'tb303' && tr.dev[id].seq && tr.dev[id].seq.sync);
+const syncedOf = tr => (tr.dev ? CG.powered(tr) : []).some(id => (tr.dev[id].model === 'tb303' && tr.dev[id].seq && tr.dev[id].seq.sync) || (isDrumDev(tr, id) && drumAudible(tr, id))); // ((7a) a synced drum machine with a step)
 function bounceSet(sr) {
   const P = new Map(), partsOf = tr => { if (!P.has(tr)) P.set(tr, offParts(tr, sr)); return P.get(tr); };
   const want = new Map();
@@ -3670,12 +3967,12 @@ async function bounce() {
     const f = sr * 60 / (project.bpm * S.PPQ);
     const items = [];
     for (const x of bounceSet(sr)) {
-      const { tr, patch, gain } = x, d = instOf(tr), synced = d.model === 'tb303' && d.seq && d.seq.sync;
+      const { tr, patch, gain } = x, d = instOf(tr), synced = d.model === 'tb303' && d.seq && d.seq.sync, pd = CMOD.primId(tr), dr = patch && isDrumDev(tr, pd); // ((7a) a drum machine: its payload — synced or not: the notes play through its map, mutes and slots, as live —, its slots)
       // a Serum track renders at its own quality (Ultra with "Use Ultra quality when rendering") regardless of the
       // dialog (§11.4, SPEC-serum2 §12.6); every node carries its track id: MIDI OUT between the bounced tracks (§7.9)
       items.push(Object.assign({ tr, patch, os: isSerum(d) ? sxOSFor(d, sr, true) : os, hostOS: os, song: songData(tr, start, end),
-        transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, seq: patch && synced ? seqPayload(tr, { run: false }) : null, gain, pan: tr.pan, mods: x.graph ? modsFor(tr) : null },
-      x.graph ? { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs, needs: x.needs } : null));
+        transport: { play: true, frame: 0, tick: start, fpt: f, loop: false, end }, seq: patch && synced ? seqPayload(tr, { run: false }) : dr ? drumPayload(tr, pd, true) : null, gain, pan: tr.pan, mods: x.graph ? modsFor(tr) : null },
+      x.graph ? { graph: x.graph, patches: x.patches, chains: x.chains, seqs: x.seqs, needs: x.needs } : patch && isDrumDev(tr, pd) ? { needs: drumNeeds(tr) } : null));
     }
     if (!items.length) { note.textContent = 'No audible tracks with notes in that range.'; go.disabled = false; return; }
     const buf = await renderOffline(sr, Math.ceil(secs * sr), items);
@@ -4024,7 +4321,7 @@ function initKeys() {
     if (hk.has(code)) { noteOff(hk.get(code), 0, e.timeStamp); hk.delete(code); }
     if (e.key === 'Meta' || e.key === 'OS') releaseKeys(); // macOS sends no keyup for keys released while Cmd is held
   });
-  window.addEventListener('blur', () => { releaseKeys(); perfLetGo(); }); // (1i: the hardware beds and controllers too)
+  window.addEventListener('blur', () => { releaseKeys(); perfLetGo(); DRUM.release(); }); // (1i: the hardware beds and controllers too; 7a: the pads, a held CLEAR)
   // a select/slider/checkbox changed with the mouse gives focus back to the page, so the computer keyboard plays again
   let ptrT = -1, keyT = 0;
   window.addEventListener('pointerdown', () => { ptrT = performance.now(); }, true);
@@ -4309,7 +4606,7 @@ function srcOver(t) {
 // / replace's own undo step; a tap on the current model's tile switches its layout to the tray's (both ways). The pref
 // holds the view ('hw' | 'flow' | 'serum')
 const TRAY_LAYOUT = 'synth.cv.trayLayout';
-const srcUi = id => (!shell.tiles || modelById(id).custom ? null : shell.tiles.layout() === 'flow' ? 'flow' : 'hw');
+const srcUi = id => (!shell.tiles || modelById(id).custom ? null : modelById(id).family === 'drums' || shell.tiles.layout() !== 'flow' ? 'hw' : 'flow'); // ((7a) a drum machine: Hardware always)
 function srcPick(id, mode) {
   const ui = srcUi(id), v = curView();
   // the tray stays open (the user's rule: only its rail, its ✕ or Escape close it); after a new track it goes back to
@@ -4721,7 +5018,7 @@ function layUi(t, ui, dev = curOf(t)) {
 }
 function cvSetLayout(want, dev) {
   const t = trk(), K = dev || curOf(t);
-  if (isSerumDev(t, K) || (want !== 'hw' && want !== 'flow') || instUi(t, K) === want) return;
+  if (isSerumDev(t, K) || isDrumDev(t, K) || (want !== 'hw' && want !== 'flow') || instUi(t, K) === want) return; // ((7a) a drum machine: Hardware only)
   hist.record(project, want === 'flow' ? 'Simple layout' : 'Hardware layout');
   const lay = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {}), m = cvView && cvView.modules.get(K);
   const e = lay[K] ? Object.assign({}, lay[K]) : m ? { x: Math.round(m.x), y: Math.round(m.y) } : { x: 0, y: 0 };
@@ -4845,10 +5142,11 @@ function cvMenu(a, b) {
     }
     // a classic synth: its real front panel (default) or today's simple panel; the sound actions of its preset plate
     const u = instUi(t, key), hw = !!hwLayoutOf(mdl);
-    return [...head, { sep: true },
+    const lays = mdl.family === 'drums' ? [] : [ // ((7a §8) a drum machine: no layout items — Hardware only)
       { label: hw ? 'Hardware layout' : 'Hardware layout (not drawn yet)', checked: u === 'hw', action: () => cvSetLayout('hw', key) },
       { label: 'Simple layout', checked: u === 'flow', action: () => cvSetLayout('flow', key) },
-      { sep: true },
+      { sep: true }];
+    return [...head, { sep: true }, ...lays,
       { label: 'Save sound…', action: () => presetSave(iv) }, { label: 'Delete saved sound', action: () => presetDelete(iv), disabled: !presetSaved(iv) }, { label: 'Init sound', action: () => presetInit(iv) },
       { sep: true }, fold, front, { sep: true }, tidyI];
   }
@@ -5130,7 +5428,7 @@ function cvAddInstrument(modelId, at, o = null) {
   if (cap.confirm && !confirm(cap.confirm)) return null;
   flush();
   hist.record(project, 'Add ' + m.name);
-  const lay = cvPinned(t), ui = o && o.ui === 'flow' && !m.custom ? 'flow' : null;
+  const lay = cvPinned(t), ui = o && o.ui === 'flow' && !m.custom && m.family !== 'drums' ? 'flow' : null;
   const id = CMOD.addInst(t, m.id, { vals, fx: m.custom ? newFx(m) : undefined });
   if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) lay[id] = Object.assign({ x: cvDot(at.x), y: cvDot(at.y) }, ui ? { ui } : null);
   else if (ui) lay[id] = { x: 0, y: 0, ui };
@@ -6882,6 +7180,8 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     touch: (t0 => v => { touchDev = v == null ? t0 : !!v; })(touchDev), // (the soft caps' touch rule; null: back to this device's)
     wheelToWt, chordCheck, mount: () => (cvMount ? { jobs: cvMount.jobs.map(j => j.key) } : null), // (a switch's mounting: the bodies still to build)
     perf: PERF, // (1i: tests/canvas-1i-sim)
+    // (7a: tests/canvas-7a-sim) the drum machines' host and the page's drum section
+    drum: DRUM, drumSend, drumToRoll, drumLoad, drumOf, drumPayload, drumNeeds, drMons, srcUi, layFlow, setProjectBpm, panic, importMidiFile, projectFile,
 
     // (stage 2a, tests/canvas-2a-sim)
     mod: { add: modAdd, drag: modTileDrag, del: modDelete, opts: modDragOpts, connect: modConnect, can: modCan, marks: modMarks, layer: () => modLayer, host: () => modHostO,
@@ -6942,7 +7242,7 @@ function boot() {
   // hidden: iOS may never send pagehide after this, so an IndexedDB save starts now (an unchanged project writes no
   // record); localStorage: a pending save is written (Phase 1)
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { releaseKeys(); perfLetGo(); if (store.mode !== 'ls' || saveT) saveNow(); } else wake();
+    if (document.hidden) { releaseKeys(); perfLetGo(); DRUM.release(); if (store.mode !== 'ls' || saveT) saveNow(); } else wake(); // ((7a) the pads, a held CLEAR)
     monitors.sync();
   });
   window.addEventListener('scroll', () => { pageScrollT = performance.now(); }, { capture: true, passive: true });

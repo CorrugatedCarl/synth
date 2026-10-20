@@ -311,6 +311,9 @@ export function sideTray(el, o) {
 // is the classic synths': 'flow' (Simple) marks every classic tile SIMPLE, a tap or drop creates the synth in its Simple
 // layout (the caller's: lay.i1.ui = 'flow'); a view without one keeps the last (layout()); Serum has no hardware panel.
 // o.noteEl gets the view's note. A new family (drum machines, pad controllers) is a new entry, not a new tray.
+// (7a, IMPL-7a §8) Drums: the drum machines (family 'drums') with their real front panel — never in Hardware / Simple, no
+// SIMPLE badge, no Simple layout (the view's layout is 'hw'); a drum tile names no maker (D4) and says its sounds are our
+// model of the circuits.
 // (2a, IMPL-2a §3) o.mods: [{id: 'wheel' | 'velo' | 'at' | 'bend', name, scope?: 'project' | 'track'}] — the Modulators
 // section: one button.cv-tile.cv-mtile[data-mod] per item (an original monochrome glyph, the name, span.cv-treason) in
 // o.modsEl (its section o.modsSec shown in a view with 'mods'; without modsEl: an h3.cv-tgrp "Modulators" and the tiles
@@ -328,13 +331,15 @@ export function sideTray(el, o) {
 // null, info.at the world point; the ghost hides over the canvas while o.partCanvasGhost() says the world draws an outline.
 // setPartPlaced(id, reason | null) greys a tile with its reason (the host's: "This Serum already has 3 oscillators"); the
 // drop's own refusals are the host's (§2.6). Without o.parts the two sections stay placeholders.
-const CLASSIC = m => !m.custom, TO_SERUM = 'Serum and its modulators: the Serum view (the menu above).';
+const CLASSIC = m => !m.custom && m.family !== 'drums', DRUMS = m => m.family === 'drums', TO_SERUM = 'Serum and its modulators: the Serum view (the menu above).';
 export const SRC_VIEWS = [
   { id: 'hw', label: 'Hardware', tip: 'The classic synths with their real front panel', layout: 'hw', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
   { id: 'flow', label: 'Simple', tip: 'The classic synths with the simple panel', layout: 'flow', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
   { id: 'serum', label: 'Serum', tip: 'Serum and the modules made for it', note: 'Drop a modulator on the canvas and cable its jack to any knob.',
     sections: [{ id: 'serum', models: m => !!m.custom }, { id: 'mods' }, { id: 'parts', head: 'Serum parts', note: 'Arrive in milestone 3.' },
       { id: 'notes', head: 'Note tools', note: 'Note tools: later.' }] },
+  { id: 'drums', label: 'Drums', tip: 'Drum machines with their real front panel', layout: 'hw',
+    note: 'More machines later: TR-606, TR-909, then the Simmons SDS-V with the pad controller.', sections: [{ id: 'drums', models: DRUMS }] },
 ];
 /** (milestone 3, §2.6) The Serum parts and note tools tiles (id = the part kind sx-edges firstFree takes). */
 export const PART_TILES = Object.freeze([
@@ -389,13 +394,15 @@ export function sourcesTray(el, o) {
     const b = mk(d, 'button', 'cv-tile');
     b.type = 'button';
     b.setAttribute('data-model', m.id);
-    b.title = `${meta.label} (${meta.year} · ${meta.maker}) — tap to use it, or drag it onto the canvas or the track list`;
+    const dr = DRUMS(m); // ((7a) a drum machine: no maker name on its tile, D4)
+    b.title = dr ? `${meta.label} (${meta.year}) — our model of its circuits, not recordings — tap to use it, or drag it onto the canvas or the track list`
+      : `${meta.label} (${meta.year} · ${meta.maker}) — tap to use it, or drag it onto the canvas or the track list`;
     const pic = mk(d, 'span', 'cv-tart');
     pic.setAttribute('aria-hidden', 'true');
     pic.innerHTML = cvArt.art(m.id, cvArt.TILE);
-    const nm = mk(d, 'span', 'cv-tname', meta.label), mt = mk(d, 'span', 'cv-tmeta', `${meta.year} · ${meta.maker}`);
+    const nm = mk(d, 'span', 'cv-tname', meta.label), mt = mk(d, 'span', 'cv-tmeta', dr ? `${meta.year} · drum machine` : `${meta.year} · ${meta.maker}`);
     b.append(pic, nm, mt);
-    if (!m.custom) { const bd = mk(d, 'span', 'cv-tbadge', 'SIMPLE'); bd.setAttribute('aria-hidden', 'true'); b.append(bd); } // (shown in Simple: CSS)
+    if (CLASSIC(m)) { const bd = mk(d, 'span', 'cv-tbadge', 'SIMPLE'); bd.setAttribute('aria-hidden', 'true'); b.append(bd); } // (shown in Simple: CSS)
     offs.push(listen(b, 'click', e => { if (e && e.defaultPrevented) return; o.pick(m.id, mode); }));
     offs.push(tileDrag(d, o, b, m.id, { pic: () => cvArt.art(m.id, cvArt.TILE), label: over => labelOf(m.id, over) }));
     el.appendChild(b);
@@ -546,7 +553,7 @@ export function sourcesTray(el, o) {
       const b = tiles.get(m.id);
       if (!b) continue;
       b.hidden = !S.some(x => x && typeof x.models === 'function' && x.models(m));
-      if (!m.custom) b.setAttribute('aria-description', lay === 'flow' ? 'simple panel' : 'hardware panel');
+      if (CLASSIC(m)) b.setAttribute('aria-description', lay === 'flow' ? 'simple panel' : 'hardware panel');
     }
     const mods = has('mods') && mtiles.size > 0;
     if (o.modsSec) o.modsSec.hidden = !mods;
@@ -581,7 +588,7 @@ export function sourcesTray(el, o) {
     T.b.title = r ? T.name + ' — ' + r : T.tip;
   }
   return {
-    /** the view (an o.views id: 'hw' | 'flow' | 'serum'; setView is a restore: no callback); the dropdown's close (→ was it open) */
+    /** the view (an o.views id: 'hw' | 'flow' | 'serum' | 'drums'; setView is a restore: no callback); the dropdown's close (→ was it open) */
     setView, view: () => view, views: () => VIEWS.map(V => V.id), closeView: () => !!vpop && vpop.close(), viewOpen: () => !!vpop && vpop.isOpen(),
     /** the classic synths' layout: setLayout('hw' | 'flow') = that view; layout() the last one (kept through Serum) */
     setLayout: l => setView(l === 'flow' ? 'flow' : 'hw'), layout: () => lay,

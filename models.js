@@ -722,7 +722,47 @@ const serum = {
   presets: FACTORY_PRESETS,
 };
 
-export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum];
+/* ================================================================ 1980 */
+// The first drum machine (family 'drums', IMPL-7a §1.1, §2.3): Inst kind 'drums' (dr-808.js's circuits, dr-seq.js's clock).
+// The patch is the panel only — a flat p.drum keyed by these ids (knobs 0…1, switches their index: the classic modulation
+// adapter resolves one-level paths, drum.bdd) and a constant level the drums branch never reads; the pattern memory, note
+// map, mute / solo and sample slots ride the drum {t: 'seq'} payload (dev.drum, drum-core.js). Appended after Serum, so
+// every index into the first 13 MODELS is unchanged.
+const DR_LV = id => K(id, 'Level', 0, 10, 7);
+const tr808 = {
+  id: 'tr808', name: 'TR-808', model: 'Rhythm Composer', maker: 'Roland', year: 1980, family: 'drums',
+  tag: 'Drum machine · 16 sounds on 12 analog voice circuits · trigger-voltage accent · 16-step sequencer',
+  about: 'Our circuit-level model of the TR-808’s voice circuits — no recordings of any machine. Every sound is its analog circuit solved from the component values: bridged-T resonators rung by a 1 ms trigger, six square-wave oscillators through two band-passes for the metal voices, a noise source for the snare, clap and maracas. Accent raises the trigger voltage, so an accented hit changes the timbre, not just the level, and a new hit continues a ringing circuit from where it is, as the hardware does. Its own step sequencer (32 patterns, rhythm tracks, intro and fills) follows the song by default; piano-roll notes play it too, on the General MIDI drum keys.',
+  theme: { ctl: 'knob', knob: 'tr', panel: '#2a2927', face: '#1d1c1b', ink: '#ece7db', label: '#d4cdbd', accent: '#f0862a', font: 'helvetica' },
+  sections: [
+    { title: 'Accent', c: [K('ac', 'Accent', 0, 10, 5)] },
+    { title: 'Bass Drum', c: [DR_LV('bdl'), K('bdt', 'Tone', 0, 10, 5), K('bdd', 'Decay', 0, 10, 5)] },
+    { title: 'Snare Drum', c: [DR_LV('sdl'), K('sdt', 'Tone', 0, 10, 5), K('sds', 'Snappy', 0, 10, 5)] },
+    { title: 'Low Tom · Low Conga', c: [DR_LV('ltl'), K('ltt', 'Tuning', 0, 10, 5), S('lts', 'Tom / Conga', ['Tom', 'Conga'], 0)] },
+    { title: 'Mid Tom · Mid Conga', c: [DR_LV('mtl'), K('mtt', 'Tuning', 0, 10, 5), S('mts', 'Tom / Conga', ['Tom', 'Conga'], 0)] },
+    { title: 'Hi Tom · Hi Conga', c: [DR_LV('htl'), K('htt', 'Tuning', 0, 10, 5), S('hts', 'Tom / Conga', ['Tom', 'Conga'], 0)] },
+    { title: 'Rim Shot · Claves', c: [DR_LV('rsl'), S('rss', 'Rim Shot / Claves', ['Rim Shot', 'Claves'], 0)] },
+    { title: 'Hand Clap · Maracas', c: [DR_LV('cpl'), S('cps', 'Hand Clap / Maracas', ['Hand Clap', 'Maracas'], 0)] },
+    { title: 'Cowbell', c: [DR_LV('cbl')] },
+    { title: 'Cymbal', c: [DR_LV('cyl'), K('cyt', 'Tone', 0, 10, 5), K('cyd', 'Decay', 0, 10, 5)] },
+    { title: 'Open Hihat', c: [DR_LV('ohl'), K('ohd', 'Decay', 0, 10, 5)] },
+    { title: 'Closed Hihat', c: [DR_LV('chl')] },
+    { title: 'Master', c: [K('vol', 'Master Volume', 0, 10, 7.5)] },
+  ],
+  presets: [
+    { name: 'Init', v: {} },
+    { name: 'Long Boom', v: { bdd: 10, bdt: 2 } },
+    { name: 'Tight', v: { bdd: 2, sds: 7, cyd: 2, ohd: 1.5 } },
+    { name: 'Bright Metal', v: { cyt: 8, ohd: 6 } },
+  ],
+  map(P, v) {
+    const d = {};
+    for (const s of this.sections) for (const c of s.c) d[c.id] = c.t === 'k' ? v[c.id] / 10 : v[c.id] ? 1 : 0;
+    return { engine: 'drums', drum: d, level: 1 };
+  },
+};
+
+export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum, tr808];
 for (const m of MODELS) {
   m.controls = [];
   for (const s of m.sections) for (const c of s.c) m.controls.push(c);

@@ -1348,6 +1348,24 @@ class OpP {
     extra(this, o, 'ops.');
   }
 }
+// the TR-808's panel (IMPL-7a §2.3): a flat p.drum keyed by the models.js ids — knob positions 0…1, switch indices — the
+// Inst's own fixed-shape copy (dr-808 reads it per span; the classic adapter's span setters write into it, drum.<id>); a
+// missing knob is its panel default
+const dk = (v, d) => (v === undefined || v === null ? d : +v);
+class DrumP {
+  constructor(o) {
+    this.ac = this.bdl = this.bdt = this.bdd = this.sdl = this.sdt = this.sds = this.ltl = this.ltt = this.mtl = this.mtt = this.htl = 0.5;
+    this.htt = this.rsl = this.cpl = this.cbl = this.cyl = this.cyt = this.cyd = this.ohl = this.ohd = this.chl = this.vol = 0.5;
+    this.lts = this.mts = this.hts = this.rss = this.cps = 0.5;
+    this.ac = dk(o.ac, 0.5); this.bdl = dk(o.bdl, 0.7); this.bdt = dk(o.bdt, 0.5); this.bdd = dk(o.bdd, 0.5); this.sdl = dk(o.sdl, 0.7);
+    this.sdt = dk(o.sdt, 0.5); this.sds = dk(o.sds, 0.5); this.ltl = dk(o.ltl, 0.7); this.ltt = dk(o.ltt, 0.5); this.mtl = dk(o.mtl, 0.7);
+    this.mtt = dk(o.mtt, 0.5); this.htl = dk(o.htl, 0.7); this.htt = dk(o.htt, 0.5); this.rsl = dk(o.rsl, 0.7); this.cpl = dk(o.cpl, 0.7);
+    this.cbl = dk(o.cbl, 0.7); this.cyl = dk(o.cyl, 0.7); this.cyt = dk(o.cyt, 0.5); this.cyd = dk(o.cyd, 0.5); this.ohl = dk(o.ohl, 0.7);
+    this.ohd = dk(o.ohd, 0.5); this.chl = dk(o.chl, 0.7); this.vol = dk(o.vol, 0.75);
+    this.lts = nz(o.lts); this.mts = nz(o.mts); this.hts = nz(o.hts); this.rss = nz(o.rss); this.cps = nz(o.cps);
+    extra(this, o, 'drum.');
+  }
+}
 const EMPTY = {};
 class PatchP {
   constructor(o) {
@@ -1369,6 +1387,7 @@ class PatchP {
     this.serum = o.serum || null; this.serumT = o.serumT || null; this.fxr = o.fxr || null; this.fxrT = o.fxrT || null;
     this.seq = o.seq || null; this.seqT = o.seqT || null; // Serum's sequencer patch (SPEC-serum2 §4.4; read by SxSeq, M2)
     this.needs = o.needs || null;
+    this.drum = o.drum ? new DrumP(o.drum) : null; // a drum machine's panel (IMPL-7a §2.3; read by Dr808)
     const os = o.osc || [];
     this.osc = [new OscP(os[0] || EMPTY), new OscP(os[1] || EMPTY), new OscP(os[2] || EMPTY)];
     this.hpf = new HpfP(o.hpf || EMPTY); this.vcf = new VcfP(o.vcf || EMPTY);
@@ -1423,6 +1442,14 @@ const WARM = [
   ops: [1, 2, 3, 4, 5, 6].map(k => ({ ratio: k + 0.01, det: 1.001, out: 90, R: [90, 60, 50, 60], L: [99, 85, 70, 0], vel: 2.1, rs: 2.1 })) })), [{
   engine: 'divide', level: 0.31, attack: 0.011, release: 0.051, tone: 0.53, fx: { ensemble: 1 },
   reg: { bass: 1, cello: 0.9, viola: 0.8, violin: 1, trumpet: 0.7, horn: 0.6 } }]);
+// the drum machine's round (IMPL-7a §1.1, Track.warmDrums): two panels (switches at either sound; knobs off the integers),
+// the step masks of its plans (every lane, accents, the CH / OH choke), a stand-in port for the steps' posts
+const WDRUM = [0, 1].map(k => ({ engine: 'drums', level: 1, drum: { ac: 0.53 + 0.3 * k, bdl: 0.71, bdt: 0.47 - 0.2 * k, bdd: 0.53 + 0.4 * k, sdl: 0.69,
+  sdt: 0.51, sds: 0.47 + 0.2 * k, ltl: 0.71, ltt: 0.53 - 0.3 * k, mtl: 0.67, mtt: 0.49, htl: 0.73, htt: 0.51 + 0.3 * k, rsl: 0.69, cpl: 0.71,
+  cbl: 0.67, cyl: 0.73, cyt: 0.49 + 0.3 * k, cyd: 0.51 + 0.4 * k, ohl: 0.69, ohd: 0.53 + 0.3 * k, chl: 0.71, vol: 0.77 - 0.1 * k,
+  lts: k, mts: k, hts: k, rss: k, cps: k } }));
+const WMASK = [0xFFF, 0x802, 0x404, 0x039, 0x1C3, 0x600, 0x0C2, 0x000, 0x221, 0x812, 0x10C, 0x480];
+const WPORT = { postMessage() {} };
 let warmed = false;
 
 // Serum (serum-dsp.js and its helper scripts) and the FX rack (fx-dsp.js) are separate classic scripts loaded before
@@ -1485,12 +1512,17 @@ class Inst {
     this.r = ((this.r ^ d) >>> 0) || 1;
     this.chorus.seed = (22222 ^ s) >>> 0; this.chorus.r = ((this.chorus.r ^ d) >>> 0) || 1;
     if (this.voices && this.kind !== 'serum') for (const v of this.voices) if (typeof v.r === 'number') v.r = ((v.r ^ d) >>> 0) || 1;
+    if (this.dm !== null) this.dm.setSalt(s); // (a drum machine's noise: 0x2545F491 ^ salt, IMPL-7a §2.1)
   }
   // back to the freshly built state after the warm-up, resetting in place (fields that never change in normal use
   // are not reassigned, so the code compiled during the warm-up stays valid)
   restore(os) {
     this.setSalt(0); this.on = 1; this.zlo = 0; this.zhi = 127; this.zxp = 0; this.live = 0; this.t = 0; this.nOn = 0; this.overK = '';
     this.kind = ''; this.voices = null; this.div = null;
+    // the drum machine and its sequencer back to fresh (IMPL-7a §1.1): the machine kept (its code stays warm), silent, no
+    // sample slots; no sequencer, no payload waiting
+    if (this.dm !== null) { this.dm.reset(); this.dm.smp(null); }
+    this.sq = null; this.drPend = null; this.drCur = -1;
     this.bend = this.bendRaw = this.wheel = this.at = 0; this.sustain = false; this.clrHeld(); this.stamp = 0;
     this.lfoPh = this.lfoSH = this.lfoLast = this.gdrift = 0; this.r = (987654321 ^ this.salt) >>> 0; this.ctl = 0; this.act = 0;
     this.chorus.reset(); this.ens.reset();
@@ -1509,6 +1541,11 @@ class Inst {
   }
   init(os, rack) {
     this.voices = null; this.div = null; this.sq = null;
+    // the drum family (IMPL-7a §1.1): dm the machine (Dr808, built at the first drums patch, then kept — reset — across kind
+    // changes) and the OS it runs at (dmOS); sq a DrSeq while the kind is 'drums' (never the TB-303's object); drPend the
+    // DrSeq of a drum {t: 'seq'} payload that arrived before the drums patch (sq once the kind is 'drums'); drCur the note
+    // ModCore's gate holds for the sequencer's steps (#34); drErr: drumsErr posted; dmV the machine's circuits (stats)
+    this.dm = null; this.dmOS = 0; this.drPend = null; this.drCur = -1; this.drErr = 0; this.dmV = null;
     this.base = sampleRate;
     this.p = DEFAULT_PATCH;
     this.bend = 0; this.bendRaw = 0; this.wheel = 0; this.at = 0; this.sustain = false;
@@ -1617,6 +1654,7 @@ class Inst {
     this.tailD = new Float64Array(fM); this.fadeTau = new Float64Array(fM); this.fadeCnt = new Int32Array(this.fadeN / this.CH + 1);
     this.tailDN = 0; this.tailDP = 0; this.dacT = 0; this.dacHold = 0; this.dacPend = 0; this.dacLive = false;
     if (this.voices) { this.recalc(); for (const v of this.voices) v.apply(this.p); }
+    if (this.dm !== null && this.kind === 'drums') { this.dm.setOS(os, this.fs); this.dmOS = os; } // (its circuits at fs = base · OS)
   }
   recalc() {
     const p = this.p;
@@ -1854,6 +1892,7 @@ class Inst {
   }
   anyActive() {
     if (this.kind === 'divide') return !!(this.div && this.div.list.length);
+    if (this.kind === 'drums') return this.dm !== null && this.dm.live(); // (a circuit awake, a hit latched, a sample, the output settling)
     for (const v of this.voices) if (v.active) return true;
     return false;
   }
@@ -1861,8 +1900,14 @@ class Inst {
     p = normPatch(p);
     const old = this.p, kind = p.engine, was = this.kind;
     if (p.serumT) this.ct = p.serumT; // a live patch without serumT keeps the stored curve tables (§4.1)
+    // IMPL-7a §1.1: a kind change to or from 'drums' releases and drops the sequencer (a DrSeq and the TB-303's object never
+    // meet in sq); leaving, the machine's ≈ 3 ms tail is rendered and turned from bus volts into output units
+    if ((kind === 'drums') !== (was === 'drums')) {
+      this.seqRelease(); this.sq = null;
+      if (was === 'drums') { this.allOff(true); this.drUnits(this.drGain(old)); }
+    }
     if (kind === 'serum') { this.setSerum(p, old); return; }
-    const nv = kind === 'divide' ? 0 : p.mode === 'poly' ? p.poly : Math.max(1, p.unison || 1);
+    const nv = kind === 'divide' || kind === 'drums' ? 0 : p.mode === 'poly' ? p.poly : Math.max(1, p.unison || 1);
     const rebuild = kind !== this.kind || !this.voices || this.voices.length !== nv || old.mode !== p.mode;
     let keep = null;
     if (rebuild) {
@@ -1879,17 +1924,19 @@ class Inst {
       const salt = this.salt; // §6.2.1: an Inst other than the primary draws its own streams
       if (salt !== 0) for (const v of this.voices) if (typeof v.r === 'number') v.r = ((v.r ^ salt) >>> 0) || 1;
       if (kind === 'divide' && !this.div) this.div = new Divide(this);
+      if (kind === 'drums' && was !== 'drums') this.drOn(p);
       this.clrHeld();
     } else this.p = p;
+    if (kind === 'drums' && this.dm !== null) this.dm.set(p.drum); // (the panel: read by the machine once per span)
     const n = this.voices.length;
     for (let i = 0; i < n; i++) this.voices[i].det = p.mode === 'unison' && n > 1 ? (i / (n - 1) - 0.5) * 2 * p.unisonDetune / 100 : 0;
     // a new unison spread reaches notes that are already sounding (pitch and target move together: no glide)
     for (const v of this.voices) if (v.note >= 0) { const nt = v.note + (v.det || 0); v.pitch += nt - v.target; v.target = nt; }
     this.recalc();
     for (const v of this.voices) v.apply(p);
-    // back from Serum, which does not feed the chorus / ensemble lines: they hold the model played before it, so they
-    // start empty instead of replaying that audio
-    if (was === 'serum') { this.chorus.reset(); this.ens.reset(); }
+    // back from Serum (or a drum machine), which does not feed the chorus / ensemble lines: they hold the model played
+    // before it, so they start empty instead of replaying that audio
+    if (was === 'serum' || was === 'drums') { this.chorus.reset(); this.ens.reset(); }
     this.chorus.mode = p.fx.ensemble ? 0 : p.fx.chorus | 0; this.chorus.hiss = p.fx.hiss || 0;
     this.ens.on = p.fx.ensemble | 0;
     this.bend = this.bendRaw * (p.bendRange || 2);
@@ -2061,6 +2108,145 @@ class Inst {
     this.overK = k;
     if (k) this.port.postMessage(this.T.graphed === 1 ? { t: 'fxover', ids: o.slice(), i: this.id } : { t: 'fxover', ids: o.slice() });
   }
+  /* ---- the drum family (IMPL-7a §1.1, §1.4, §3.5): Inst kind 'drums' — the machine dm (dr-808.js), the sequencer sq (a
+   * DrSeq, dr-seq.js); both scripts looked up at use (a missing one: the Inst is silent and posts drumsErr once) ---- */
+  // entering kind 'drums' (setPatch, between quanta): the machine (built once), at this Inst's OS, silent; the DrSeq a
+  // payload left waiting and its sample slots; the old model's de-click tails and decimator history (output units) turned
+  // into bus volts, as everything this path renders ends in the machine's output stage
+  drOn(p) {
+    const D8 = globalThis.Dr808;
+    if (this.dm === null && D8) {
+      try { this.dm = D8.create(this, 'tr808'); } catch (err) { this.dm = null; }
+      if (this.dm !== null) { this.dmOS = this.OS; this.dmV = this.dm._v ? Object.values(this.dm._v) : null; }
+    }
+    this.sq = this.drPend; this.drPend = null;
+    const dm = this.dm;
+    if (dm === null) { this.drFail(); return; }
+    dm.reset();
+    if (this.dmOS !== this.OS) { dm.setOS(this.OS, this.fs); this.dmOS = this.OS; }
+    dm.smp(this.sq !== null ? this.sq.smp : null);
+    const g = this.drGain(p);
+    this.drUnits(g > 1e-3 ? 1 / g : 0);
+  }
+  drFail() {
+    if (this.drErr !== 0) return;
+    this.drErr = 1;
+    this.port.postMessage(this.T.graphed === 1 ? { t: 'drumsErr', i: this.id } : { t: 'drumsErr' });
+  }
+  // the machine's output stage gain at patch p (bus volts → full scale: MASTER VOLUME's 50 k A pot into R77 / R76, OUT_K;
+  // dr-808's post at rest) — a tail crossing a kind change keeps its level
+  drGain(p) {
+    const D8 = globalThis.Dr808, X = D8 ? D8.proto : null, d = p ? p.drum : null;
+    if (!X || !X.MIX || typeof X.tapA !== 'function' || !(D8.OUT_K > 0)) return 1;
+    const M = X.MIX, v = d && d.vol >= 0 ? (d.vol < 1 ? d.vol : 1) : 0.75, lv = X.tapA(v), rl = M.VR1 * lv, rw = rl * (M.VR1 - rl) / M.VR1;
+    return lv * M.R76 / (M.R77 + rw) * D8.OUT_K;
+  }
+  // the de-click tails still to be mixed and the decimators' history scaled by k (a kind change across the drum family)
+  drUnits(k) {
+    if (k === 1) return;
+    const sc = (a, o, n) => { for (let i = o, e = o + n; i < e; i++) a[i] *= k; };
+    if (this.tailN) sc(this.tail, this.tailP, this.tailN);
+    if (this.tailSN) {
+      const P = this.tailSP, n = this.tailSN;
+      sc(this.tailL, P, n); sc(this.tailR, P, n); sc(this.tailDL, P, n); sc(this.tailDR, P, n);
+      if (this.tailBus) { sc(this.tailB1L, P, n); sc(this.tailB1R, P, n); sc(this.tailB2L, P, n); sc(this.tailB2R, P, n); }
+    }
+    if (this.tailDN) sc(this.tailD, this.tailDP, this.tailDN);
+    this.dacHold *= k; this.dacPend *= k;
+    for (const h of this.dec) sc(h.buf, 0, h.buf.length);
+  }
+  // the machine's de-click fade (allOff(true)): what it would still play ≈ 3 ms ahead under a raised cosine, mixed into the
+  // next spans (bus volts at the OS rate, as the voices' tails); rendered a quantum at a time through the span buffer
+  fadeDrums() {
+    const dm = this.dm;
+    if (dm === null || !dm.live()) return;
+    const M = this.fadeN, OS = this.OS, PC = 128 * OS, b = this.buf, tl = this.tail, F0 = this.T.nowF();
+    if (!this.tailN) tl.fill(0); // a spent tail leaves its samples behind
+    else if (this.tailP) { tl.copyWithin(0, this.tailP, this.tailP + this.tailN); tl.fill(0, this.tailN); this.tailP = 0; }
+    for (let o = 0; o < M; o += PC) {
+      const n = Math.min(PC, M - o);
+      b.fill(0, 0, n);
+      dm.render(b, n, F0 + o / OS);
+      for (let i = 0; i < n; i++) tl[o + i] += b[i] * (0.5 + 0.5 * Math.cos(Math.PI * (o + i) / M));
+    }
+    if (this.tailN < M) this.tailN = M;
+  }
+  // §1.4: a note through the device's note map (the payload's; DrSeq.DEF_MAP until one arrives) to a hit of its sound,
+  // latched at this event's frame; unmapped notes, notes on a muted sound, a powered machine missing: nothing
+  drHit(n, v) {
+    const dm = this.dm, q = this.sq, DS = globalThis.DrSeq;
+    if (dm === null) return;
+    const map = q !== null ? q.map : DS ? DS.DEF_MAP : null, s = map !== null ? map[n] : -1;
+    if (!(s >= 0) || ((q !== null ? q.mute : 0) & (1 << s)) !== 0) return;
+    dm.hit(s, Math.round(v * 127));
+  }
+  // §3.5: a drum {t: 'seq'} payload — the DrSeq's (kept in drPend until the kind is 'drums'), its sample slots the machine's
+  drSeqMsg(s) {
+    const on = this.kind === 'drums';
+    let q = on ? this.sq : this.drPend;
+    if (q === null) {
+      const DS = globalThis.DrSeq;
+      if (!DS) { this.drFail(); return; }
+      q = DS.create(this);
+      if (on) this.sq = q; else this.drPend = q;
+    }
+    q.set(s);
+    if (on && this.dm !== null && 'smp' in s) this.dm.smp(s.smp);
+  }
+  // §15 #34 (DrSeq's hook): a step with sounds behaves as a note — the panel's RETRIG, the key tracking's note, ModCore's
+  // pseudo-voice restarted as by the TB-303's seqFire; n its lowest sound's primary note (−1: none mapped), v its velocity
+  // (1 accented, 100 / 127 else); drStep(−1, 0): the gate off at a stop / release / sync change
+  drStep(n, v) {
+    const MC = this.T.mc;
+    if (v === 0) { if (this.drCur >= 0) { if (MC !== null) MC.noteOff(this.drCur, this.T.nHeld); this.drCur = -1; } return; }
+    if (this.rack) this.rack.trigger();
+    const c = this.feed;
+    if (c !== null && c.drive === 1 && c.rack !== null) c.rack.trigger(); // (a panel no Inst holds, as Track.noteOn)
+    if (n >= 0) { this.lastNote = n; this.nOn = ++this.T.nOnK; }
+    if (MC !== null) { if (this.drCur >= 0) MC.noteOff(this.drCur, 0); MC.noteOn(this.lastNote, v, 0, 0); }
+    this.drCur = this.lastNote;
+  }
+  // §2.1: the span — the circuits (and any de-click tail) into the mono OS-rate buf in bus volts, the decimators, the
+  // oversampling fade, then the machine's post (sample lanes, MASTER VOLUME, the output stage) → Lb / Rb (dual mono unless
+  // a stereo sample sounds); no smoothing, no chorus / ensemble (the machine glides its knobs per absolute 4-frame chunk)
+  renderDrums(n) {
+    const OS = this.OS, N = n * OS, buf = this.buf, dm = this.dm;
+    buf.fill(0, 0, N);
+    if (this.tailN) {
+      const k = Math.min(N, this.tailN), tl = this.tail, P = this.tailP;
+      for (let i = 0; i < k; i++) buf[i] += tl[P + i];
+      this.tailP += k; this.tailN -= k; if (!this.tailN) this.tailP = 0;
+    }
+    if (this.tailSN) { // a Serum stopped by the switch to the drums: its stereo fade, folded to mono
+      const k = Math.min(N, this.tailSN), P = this.tailSP, tL = this.tailL, tR = this.tailR, tDL = this.tailDL, tDR = this.tailDR;
+      for (let i = 0; i < k; i++) buf[i] += 0.5 * (tL[P + i] + tR[P + i] + tDL[P + i] + tDR[P + i]);
+      if (this.tailBus) {
+        const t1L = this.tailB1L, t1R = this.tailB1R, t2L = this.tailB2L, t2R = this.tailB2R;
+        for (let i = 0; i < k; i++) buf[i] += 0.5 * (t1L[P + i] + t1R[P + i] + t2L[P + i] + t2R[P + i]);
+      }
+      this.tailSP += k; this.tailSN -= k; if (!this.tailSN) { this.tailSP = 0; this.tailBus = 0; }
+    }
+    if (this.tailDN) this.renderDac(buf, N, this.fs / 49096, false); // (a DX7 left mid-fade: its stream drains)
+    else this.dacHold = this.dacPend = 0;
+    if (!this.tailDN) this.dacLive = false;
+    if (dm !== null) dm.render(buf, N, this.T.spanF);
+    let src = buf, len = N;
+    for (let s = 0; s < this.dec.length; s++) {
+      const dst = s === this.dec.length - 1 ? this.monoBuf : this.tmp[s];
+      this.dec[s].process(src, dst, len >> 1);
+      src = dst; len >>= 1;
+    }
+    if (this.dec.length === 0) for (let i = 0; i < n; i++) this.monoBuf[i] = buf[i];
+    const mono = this.monoBuf, Lb = this.Lb, Rb = this.Rb, V = this.dmV;
+    if (this.osPend || this.osR < 1) this.osFade(n, mono);
+    if (dm !== null) dm.post(Lb, Rb, mono, n); else for (let i = 0; i < n; i++) Lb[i] = Rb[i] = mono[i];
+    let act = 0;
+    if (V !== null) { for (let k = 0; k < V.length; k++) if (V[k].on) act++; } else if (dm !== null && dm.live()) act = 1;
+    this.act = act;
+    if (this.rack) this.rack.setNote(this.lastNote);
+  }
+  // the monitor's drum part (§3.5): the sounds hit and the circuits' levels since the last post, at frame F
+  drMon(F) { const m = this.dm.mon(); return { lit: m.lit, act: m.act.slice(), F }; }
   // the frame an event handled now belongs to: the current span inside process(), else the next render quantum
   nowF() { return this.T.nowF(); } // (§6.2: the Track's)
   reqOS(v) { // while anything sounds the change waits behind a short fade (see osFade)
@@ -2072,6 +2258,7 @@ class Inst {
   fadeOut(vs) {
     const list = vs || this.voices || [];
     if (this.kind === 'serum') { this.fadeSerum(list); return; }
+    if (this.kind === 'drums') { if (!vs) this.fadeDrums(); return; }
     let any = false;
     for (const v of list) if (v.active) { any = true; break; }
     const dv = !vs && this.kind === 'divide' && this.div && this.div.list.length > 0;
@@ -2152,6 +2339,7 @@ class Inst {
     if (hard) this.fadeOut(null);
     if (this.voices) for (const v of this.voices) { v.noteOff(); v.sus = false; if (hard) v.kill(); }
     if (this.div) this.div.allOff(hard);
+    if (hard && this.kind === 'drums' && this.dm !== null) this.dm.reset(); // (its tail holds what it still played; IMPL-7a §1.1)
     this.audK.fill(0);
     this.clrHeld();
   }
@@ -2233,9 +2421,13 @@ class Inst {
     if (SD && this.sx) SD.reset(this);
   }
   // nothing of this Inst can sound: no de-click tail, quiet for 2 s, its FX idle (Track.panic)
-  isQuiet() { return !this.tailN && !this.tailDN && !this.tailSN && this.quietF > this.base * 2 && (!this.rack || this.rack.idle()); }
+  isQuiet() {
+    return !this.tailN && !this.tailDN && !this.tailSN && this.quietF > this.base * 2 && (!this.rack || this.rack.idle()) &&
+      (this.kind !== 'drums' || this.dm === null || !this.dm.live());
+  }
   panicClear() { // (Track.panicClear: after the output fade)
     this.tailN = this.tailP = this.tailSN = this.tailSP = this.tailDN = this.tailDP = 0; this.tailBus = 0;
+    if (this.kind === 'drums' && this.dm !== null) this.dm.reset(); // (else a ringing circuit resumes after the fade, IMPL-7a §1.1)
     this.dacHold = this.dacPend = 0; this.dacLive = false;
     this.chorus.reset(); this.chorus.snap(); this.ens.reset(); this.ens.snap();
     if (this.rack) this.rack.reset(false);
@@ -2259,6 +2451,7 @@ class Inst {
       return;
     }
     if (this.rack) this.rack.trigger(); // Hyper RETRIG
+    if (this.kind === 'drums') { this.drHit(n, v); return; } // (IMPL-7a §1.4: sus, bend, MPE stored and ignored)
     if (!this.anyActive()) { this.smTargets(); this.smSnap(); } // nothing sounding: start at the panel values
     if (this.kind === 'divide') { if (a) this.audK[n] = 1; this.div.noteOn(n); return; } // (a key: up when both let go)
     if (p.mode !== 'poly') {
@@ -2422,6 +2615,7 @@ class Inst {
   // aud (R7 B5): a preview's note-off releases the preview's poly voices of n; when it has none (never heard, or re-struck
   // by a patch change) any voice of n unless the song holds n — the song's and the keys' note-offs never release a preview
   noteOff(n, rv, ch, ext, aud) {
+    if (this.kind === 'drums') return; // one-shots: a note-off does nothing to the sound (the Track's key record runs as ever)
     const p = this.p, a = aud ? (this.songHas(n) ? 1 : 2) : 0;
     if (this.kind === 'divide') { // the key stays down while the other owner (preview / song) still holds it
       if (a) { if (!this.audK[n]) return; this.audK[n] = 0; if (a === 1) return; } else if (this.audK[n]) return;
@@ -2527,10 +2721,13 @@ class Inst {
     const SD = globalThis.SerumDSP;
     if (SD && this.kind === 'serum' && this.sx) SD.transport(this, playing);
     if (this.sxSeq !== null && this.kind === 'serum') this.sxSeq.transport(playing); // §7.8
+    if (this.kind === 'drums' && this.sq !== null) this.sq.transport(playing); // (a synced drum machine re-anchors / stops)
     if (playing && this.rack) this.rack.transport();
   }
   /* ---- TB-303 style step sequencer, clocked in the audio thread ---- */
   seqMsg(s) {
+    if (s && s.plan !== undefined) { this.drSeqMsg(s); return; } // a drum payload (IMPL-7a §3.5): routed by its shape
+    if (this.kind === 'drums') return;                             // (a TB-303 payload never lands in a DrSeq)
     const q = this.sq || (this.sq = { run: false, sync: false, pat: [], len: 16, bpm: 120, root: 36, step: -1, pos: 0, fired: true, offed: true, tie: false, cur: -1, swing: 0, syncStep: null });
     const wasRun = q.run, wasSync = q.sync;
     Object.assign(q, s);
@@ -2543,6 +2740,7 @@ class Inst {
   // the gate-off a release unless the player holds keys — so a track ENV / PER NOTE LFO / velo / note on a 303 knob follows
   // the pattern)
   seqRelease() {
+    if (this.kind === 'drums') { if (this.sq !== null) this.sq.release(); return; } // (DrSeq: the #34 gate off, re-anchor)
     const q = this.sq, MC = this.T.mc;
     if (q && q.cur >= 0 && this.voices) { this.noteOff(q.cur); if (MC !== null) MC.noteOff(q.cur, this.T.nHeld); }
     if (q) { q.cur = -1; q.tie = false; q.syncStep = null; }
@@ -2568,6 +2766,7 @@ class Inst {
     if (q.cur >= 0 && !q.tie) { this.noteOff(q.cur); if (MC !== null) MC.noteOff(q.cur, this.T.nHeld); q.cur = -1; }
   }
   seqEvents(F) { // returns frames until the next sequencer event
+    if (this.kind === 'drums') return this.sq !== null ? this.sq.events(F) : 1e9; // (DrSeq: the steps due at F, IMPL-7a §3.5)
     const q = this.sq;
     if (!q || !this.voices || !this.voices.length || this.kind !== 'analog') return 1e9;
     if (q.sync) { // locked to the song transport: one step per sixteenth
@@ -2649,6 +2848,7 @@ class Inst {
       return 0;
     }
     if (this.kind === 'serum') { this.renderSerum(n); return 1; }
+    if (this.kind === 'drums') { this.renderDrums(n); return 1; }
     buf.fill(0, 0, N);
     if (this.tailN) { // de-click fade of voices that were stopped hard
       const k = Math.min(N, this.tailN), tl = this.tail, P = this.tailP;
@@ -2988,11 +3188,50 @@ class Track extends Facade {
         I.osPend = 0; I.osR = 1; I.osHold = 0;
       }
     }
+    this.warmDrums(run, io);
     // Serum voices (every warp / filter family / LFO mode, §8.4.2) and every FX rack module and mode (§8.5.2)
     const SD = globalThis.SerumDSP;
     if (SD) SD.warmUp(I);
     if (I.rack) I.rack.warmUp();
     this.warmGraph(run);
+  }
+  // IMPL-7a §1.1: the drum machine's round, after the WARM loop and before Serum's and the graph's (warmGraph's re-warm of
+  // the classic paths comes last: the 2b JSC lesson) — on Inst 0, twice: every sound through the note map, plain and
+  // accented, a retrigger while ringing, the CH / OH choke, a one-circuit pair in one chunk, a free-running plan through
+  // DrSeq (its steps, the #34 hook, the knobs gliding to the second panel), an oversampling change, a synced plan on a
+  // stand-in clock (the warm-up's currentFrame stands still). The steps' posts go to a stand-in port; restore() returns the
+  // machine and the sequencer to fresh. Without dr-808.js or dr-seq.js: nothing (never a throw here: warmUp's one try)
+  warmDrums(run, io) {
+    const D8 = globalThis.Dr808, DS = globalThis.DrSeq, I = this.i0;
+    if (!D8 || !DS || typeof DS.simplePlan !== 'function') return;
+    const port = I.port, tp = I.tp, P = DS.DEF_PRIM, plan = DS.simplePlan(WMASK, 4);
+    I.port = WPORT;
+    try {
+      for (let round = 0; round < 2; round++) {
+        I.setPatch(WDRUM[round]);
+        if (I.dm === null) return;
+        for (let k = 0; k < 16; k++) this.noteOn(P[k], 0.79);
+        run(6);
+        for (let k = 0; k < 16; k++) { this.noteOff(P[k]); this.noteOn(P[k], 0.99); } // accented: each a retrigger of a ringing circuit
+        run(4);
+        this.noteOn(46, 0.87); run(2);
+        this.noteOn(42, 0.93); this.noteOn(64, 0.71); this.noteOn(41, 0.83); run(6);      // the choke; a tom / conga pair in one chunk
+        for (const n of [46, 42, 64, 41]) this.noteOff(n);
+        for (let k = 0; k < 16; k++) this.noteOff(P[k]);
+        I.seqMsg({ plan, sync: false, run: true, bpm: 287.3, swing: 62, at: 'now', tap: 0 });
+        run(20);
+        if (round === 0) I.reqOS(I.OS === 4 ? 2 : 4);
+        run(8);
+        I.osPend = 0; I.osR = 1; I.osHold = 0;
+        I.seqMsg({ plan, sync: false, run: false });
+        const ck = Object.assign({}, tp, { play: true, frame: this.nowF(), tick: 0, fpt: 2.03 });
+        I.tp = ck;
+        I.seqMsg({ plan, sync: true, run: false, tap: 1 });
+        for (let b = 0; b < 16; b++) { this.process(null, io); this.statN = 0; ck.frame -= 128; }
+        I.seqMsg({ plan, sync: false, run: false });
+        I.tp = tp;
+      }
+    } catch (err) { /* a failed round loses only its own warm-up: Serum's and the graph's still run */ } finally { I.port = port; I.tp = tp; }
   }
   // IMPL-1e §2.6: the graph paths once — two classic Insts (analog WARM patches only, never a Solina: Math.random is the
   // harness's) into one shared Chain at a gain, a Serum Inst through its own FX into a second one, zones and salts (the
@@ -3869,11 +4108,13 @@ class Track extends Facade {
   // stats (every 0.25 s of audio): the track's load, voices and oversampling (of insts[0]), and per part (§6.8 per — the
   // modules' CPU on the canvas). Legacy / simple: the Chain its own processing time, the Inst the rest of the track's;
   // otherwise every Inst its own spans (a Serum's own FX excluded), every panel and every Serum's own FX their processing
+  // (7a review 1 F6: the times are wall-clock (Date.now) differences — a clock stepped back inside a window (NTP after a
+  // wake) would make one negative; a CPU load never is: every load clamped at 0. A stat only: no audio reads it)
   stats() {
-    const X = this.insts, I = X[0], c = this.c0, ms = this.statN / this.base * 1000, load = this.loadT / ms;
+    const X = this.insts, I = X[0], c = this.c0, ms = this.statN / this.base * 1000, load = Math.max(0, this.loadT / ms);
     const voices = I.kind === 'serum' ? I.sxVoices() : I.act;
     if (this.simple === 1) {
-      const fl = c.t / ms;
+      const fl = Math.max(0, c.t / ms);
       this.port.postMessage({ t: 'stats', load, voices, os: I.OS, per: [{ id: I.id, load: Math.max(0, load - fl), voices, os: I.OS }, { id: c.id, load: fl }] });
       this.loadT = 0; this.statN = 0; c.t = 0; I.t = 0; I.fxc.t = 0;
       return;
@@ -3883,8 +4124,8 @@ class Track extends Facade {
       const x = X[k], sx = x.kind === 'serum', own = sx ? x.fxc.t : 0;
       per.push({ id: x.id, load: Math.max(0, (x.t - own) / ms), voices: k === 0 ? voices : sx ? x.sxVoices() : x.act, os: x.OS });
     }
-    for (const C of this.chains) { per.push({ id: C.id, load: C.t / ms }); C.t = 0; }
-    for (const x of X) { if (x.kind === 'serum') per.push({ id: x.fxc.id, load: x.fxc.t / ms }); x.t = 0; x.fxc.t = 0; }
+    for (const C of this.chains) { per.push({ id: C.id, load: Math.max(0, C.t / ms) }); C.t = 0; }
+    for (const x of X) { if (x.kind === 'serum') per.push({ id: x.fxc.id, load: Math.max(0, x.fxc.t / ms) }); x.t = 0; x.fxc.t = 0; }
     this.port.postMessage({ t: 'stats', load, voices, os: I.OS, per });
     this.loadT = 0; this.statN = 0;
   }
@@ -3905,7 +4146,9 @@ class Track extends Facade {
         }
         I.mixPk.fill(0);
         const ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null;
-        this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
+        if (I.mon && I.kind === 'drums' && I.dm !== null) { // (a drum machine: its pads' lights and meters, IMPL-7a §3.5)
+          this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap, dr: I.drMon(this.frames) });
+        } else this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
       }
       if (this.mcMon && this.mc !== null) this.port.postMessage({ t: 'smon', mc: this.mc.live, mcx: this.mc.mcx });
       return;
@@ -3921,7 +4164,8 @@ class Track extends Facade {
           for (let k = 0; k < 4; k++) s.mix[7 + k] = pk[k] > 1e-6 ? 20 * Math.log10(pk[k]) : -120;
         }
         const ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null;
-        this.port.postMessage({ t: 'smon', i: I.id, s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
+        if (I.kind === 'drums' && I.dm !== null) this.port.postMessage({ t: 'smon', i: I.id, s, gr: null, fxph: null, ftap, dr: I.drMon(this.frames) });
+        else this.port.postMessage({ t: 'smon', i: I.id, s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
       }
       if (sx && I.fxc.mon) {
         const ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null;

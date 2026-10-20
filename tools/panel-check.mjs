@@ -6,16 +6,26 @@
 // its hit box dashed — a quick visual check against the research photos without starting the app. Exit code 1 on problems.
 // (1i, IMPL-1i §2) A keyboard: its MIDI range, the bed's edges (area frame, content mm, body px) and its front band; in the
 // SVG every white / black key outlined from geometry's o.bed and the band hatched; a controller's slot and hit box as above.
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+// (7a, IMPL-7a §7.3) A model with a token table (tb303, dx7, tr808): every token placed or missing (a repeated one by its
+// index: the 808's step keys n 1–16), a detented one's positions, the extras cells with their sizes, the `inert: 'later'`
+// jacks. A layout not yet in panels/index.js (an author's first draft) is loaded from panels/<model>.js directly.
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import * as P from '../cv-panel.js?v=9';
 import { noteName } from '../cv-keys.js?v=9';
 import { MODELS } from '../models.js?v=9';
 
 const [id, out] = process.argv.slice(2);
 if (!id) { console.log('usage: node tools/panel-check.mjs <model> [out-dir]\nmodels: ' + P.HW_IDS.join(', ')); process.exit(2); }
-const model = MODELS.find(m => m.id === id), L = P.layoutOf(id);
+const model = MODELS.find(m => m.id === id);
 if (!model) { console.error(`unknown model "${id}"`); process.exit(2); }
+let L = P.layoutOf(id);
+const file = join(dirname(fileURLToPath(import.meta.url)), '..', 'panels', id + '.js');
+if (!L && !P.HW_IDS.includes(id) && /^[a-z0-9]+$/.test(id) && existsSync(file)) {
+  L = (await import(pathToFileURL(file).href + '?v=9')).default || null;
+  if (L) console.log(`(panels/${id}.js is not in panels/index.js yet: loaded directly — the app does not see it until it is listed there)`);
+}
 if (!L) { console.log(`${id}: no layout yet (panels/${id}.js exports null) — the model shows its Simple panel`); process.exit(0); }
 const probs = P.validate(L, model);
 console.log(`${id} — ${L.hw || ''}`);
@@ -26,7 +36,23 @@ try { geo = P.geometry(L, model); } catch (err) { console.log('\ngeometry failed
 const s = P.sizeOf(L, model), live = geo.controls.filter(o => o.live), inert = geo.controls.filter(o => o.inert);
 const ex = (L.extras && L.extras.ids) || [];
 console.log(`\nmodule ${s.w} × ${s.h} px (body ${geo.body.w} × ${geo.body.h}; content ${geo.content.w} × ${geo.content.h} at x ${geo.content.x})`);
-console.log(`live ${live.length} · displays ${geo.controls.filter(o => o.show).length} · inert ${inert.length} · extras ${ex.length}${ex.length ? ' (' + ex.join(' ') + ')' : ''} · decor ${(L.decor || []).length}`);
+const later = inert.filter(o => L.controls[o.i].inert === 'later').length;
+console.log(`live ${live.length} · displays ${geo.controls.filter(o => o.show).length} · inert ${inert.length}${later ? ` (${later} 'later': full contrast, cable-able with full patching)` : ''} · extras ${ex.length}${ex.length ? ' (' + ex.join(' ') + ')' : ''} · decor ${(L.decor || []).length}`);
+// (7a) the model's tokens: placed / missing; a repeated one by its index; a detented one's positions and legends
+const T = P.TOKENS[id];
+if (T) {
+  const on = new Map();
+  for (const c of L.controls || []) if (c && !c.inert && typeof c.id === 'string' && c.id in T.kind) { if (!on.has(c.id)) on.set(c.id, []); on.get(c.id).push(c); }
+  const miss = Object.keys(T.kind).filter(t => !on.has(t)), xmiss = T.extras.filter(t => !ex.includes(t));
+  console.log(`\ntokens on the face: ${on.size} of ${Object.keys(T.kind).length}${miss.length ? ' · missing: ' + miss.join(' ') : ''}`);
+  for (const [t, [f, lo, hi]] of Object.entries(T.idx || {})) {
+    const got = (on.get(t) || []).map(c => c[f]), gone = [];
+    for (let i = lo; i <= hi; i++) if (!got.includes(i)) gone.push(i);
+    console.log(`  ${t}: ${got.length} placed (${f} ${lo}–${hi})${gone.length ? ' · missing ' + f + ' ' + gone.join(', ') : ''}`);
+  }
+  for (const [t, n] of Object.entries(T.pos || {})) for (const c of on.get(t) || []) console.log(`  ${t}: a ${c.kind}, ${n} positions${Array.isArray(c.legends) ? ' · legends ' + c.legends.map(l => JSON.stringify(l)).join(' ') : ''}`);
+  if (T.extras.length) console.log(`tokens in the extras: ${T.extras.length - xmiss.length} of ${T.extras.length}${xmiss.length ? ' · missing: ' + xmiss.join(' ') : ''}`);
+}
 const hb = P.hitBoxes(L, model);
 if (hb.length) {
   const m = hb.reduce((a, b) => (Math.min(b.w, b.h) < Math.min(a.w, a.h) ? b : a));
@@ -53,9 +79,18 @@ for (const o of geo.controls) {
     console.log(`${o.kind} ${o.id || '(inert)'}: slot ${c.w} × ${c.h} mm at (${c.x}, ${c.y}) in "${o.a}"; hit ${o.hit.w} × ${o.hit.h} px${more}`);
   }
 }
+if (geo.extras) {
+  const X = geo.extras;
+  console.log(`\nextras strip ${X.w} × ${X.h} px at y ${X.y}${X.caption ? ` · caption "${X.caption}${X.note ? ' · Dimmed controls are not emulated' : ''}"` : ''}${X.over ? ' · THE CELLS DO NOT FIT' : ''}`);
+  for (const c of X.cells) console.log(`  ${c.id.padEnd(12)} ${c.w} × ${c.h} at (${c.x}, ${c.y})`);
+}
 console.log('\nsections (Tab order):');
 const bySec = new Map();
-for (const i of geo.order) { const o = geo.controls[i], k = o.sec >= 0 ? (L.sections[o.sec] || {}).id : '(none)'; if (!bySec.has(k)) bySec.set(k, []); bySec.get(k).push(o.id || o.kind); }
+for (const i of geo.order) {
+  const o = geo.controls[i], k = o.sec >= 0 ? (L.sections[o.sec] || {}).id : '(none)', ix = o.id && T && T.idx && T.idx[o.id] ? ' ' + L.controls[i][T.idx[o.id][0]] : '';
+  if (!bySec.has(k)) bySec.set(k, []);
+  bySec.get(k).push(o.id ? o.id + ix.replace(' ', '#') : o.kind);
+}
 for (const sct of L.sections || []) console.log(`  ${sct.id.padEnd(14)} ${(bySec.get(sct.id) || []).join(' ')}`);
 if (bySec.has('(none)')) console.log('  (none)         ' + bySec.get('(none)').join(' '));
 if (out) {
@@ -78,7 +113,8 @@ if (out) {
     else if (o.entries) for (const e of o.entries) ov.push(`<rect x="${e.box.x}" y="${e.box.y}" width="${e.box.w}" height="${e.box.h}" fill="none" stroke="${col}" stroke-width="1.5"/>`);
     else ov.push(`<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" fill="none" stroke="${col}" stroke-width="1.5"/>`);
     if (o.live) for (const h of o.entries ? o.entries.map(e => e.hit) : [o.hit]) ov.push(`<rect x="${h.x}" y="${h.y}" width="${h.w}" height="${h.h}" fill="none" stroke="#ff4fa3" stroke-width="1" stroke-dasharray="4 3"/>`);
-    if (o.id) ov.push(`<text x="${(o.box.x + o.box.w / 2)}" y="${o.box.y + o.box.h + 9}" font-size="9" text-anchor="middle" fill="#3fd0ff" font-family="monospace">${o.id}</text>`);
+    const ix = o.id && T && T.idx && T.idx[o.id] ? ' ' + L.controls[o.i][T.idx[o.id][0]] : ''; // (a repeated token: its index)
+    if (o.id) ov.push(`<text x="${(o.box.x + o.box.w / 2)}" y="${o.box.y + o.box.h + 9}" font-size="9" text-anchor="middle" fill="#3fd0ff" font-family="monospace">${o.id}${ix}</text>`);
   }
   if (geo.extras) {
     const X = geo.extras;

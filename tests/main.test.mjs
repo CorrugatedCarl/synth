@@ -46,8 +46,8 @@ test('§12.6: the page boots on the IndexedDB-less fallback, a Serum track plays
   assert.equal(FXR(t).v, 2, 'v2 FX state for a new track (§2.5)');
   assert.equal(s.api.store.mode, 'ls', 'no IndexedDB here: the Phase-1 localStorage store');
   const c = s.ctx();
-  assert.equal(c.modules.length, 13, '§0.3: 12 DSP scripts (mod-core.js last) + engine.js');
-  assert.ok(c.modules[12].startsWith('engine.js'));
+  assert.equal(c.modules.length, 15, '§0.3: 14 DSP scripts (mod-core.js last) + engine.js');
+  assert.ok(c.modules[14].startsWith('engine.js'));
   const node = s.nodeOf(t.id);
   assert.equal(node.po.trackId, t.id, 'processorOptions.trackId (§7.9)');
   s.key('KeyA', true); await s.settle(2);
@@ -1145,6 +1145,30 @@ test('1i (IMPL-1i §6.2): the hardware keys in the page (the real world) — a P
     api.ctl('bend', 0.25, 0); api.ctl('wheel', 0.75, 0); api.ctl('bend', 0, 0);
     assert.deepEqual(lives, ['bend:0.25', 'wheel:0.75', 'bend:0'], 'the selected track\'s');
   } finally { cv.perf.live = was; api.ctl('sus', 0, 0); }
+});
+
+test('7a (IMPL-7a §10.1): a TR-808 track — its node starts with the drum payload (processorOptions.seq: the plan, the note map, synced); a drum step post reaches its session, never the 303 branch (no seq on the device); drumsErr says so once; the track tab reads "Drums", a chord never asks; the tempo box reaches the synced machines\' knobs', async () => {
+  const s = await bootMain({ hash: '#tr808' }); // (a fresh project on the 808: its record made on first read)
+  await s.power(); await s.settle(5); s.raf();
+  const api = s.api, cv = globalThis.__synthTest.cv, t = api.project().tracks[0];
+  const d = I(t), N = s.nodeOf(t.id), dv = CMOD.primId(t), st = () => cv.drum.api(cv.view1e(dv)).state();
+  assert.deepEqual([d.model, !!d.drum && Array.isArray(d.drum.keys)], ['tr808', true], 'a drum machine with its record');
+  assert.deepEqual([!!N.po.seq && !!N.po.seq.plan, N.po.seq && N.po.seq.map.length, N.po.seq && N.po.seq.sync], [true, 128, true], 'its payload in its options');
+  assert.equal(s.$('#tabTrack').textContent, `Track: ${t.name} · Drums`);
+  s.run(24000);
+  N._fromProc({ t: 'step', s: 5, m: 0, k: 0, v: 0, p: 0, o: 1200, M: 0, f: 0, F: 0 }); s.raf(); s.raf();
+  assert.deepEqual(['seq' in d, st().S.pos && st().S.pos.s], [false, 5], 'its session at the heard post; no 303 pattern written');
+  N._fromProc({ t: 'drumsErr' });
+  assert.match(s.$('#notice').textContent, /^The drum machine’s sound engine did not load/);
+  s.$('#notice').textContent = '';
+  N._fromProc({ t: 'drumsErr' });
+  assert.equal(s.$('#notice').textContent, '', 'once a session');
+  api.roll().host.edit('Draw', () => t.notes.push(noteAt('d1', 0, 36, 120), noteAt('d2', 0, 38, 120), noteAt('d3', 0, 42, 120)));
+  assert.equal(/monophonic|voices/.test(s.$('#notice').textContent), false, 'a chord on a drum track: no notice');
+  const el = s.$('#tBpm');
+  el.value = '133'; el.onchange();
+  assert.deepEqual([api.project().bpm, st().S.bpm], [133, 133], 'the tempo box: the synced machine\'s TEMPO shows it');
+  el.value = '120'; el.onchange();
 });
 
 test('MIDI import into a project with no notes: the empty project\'s tracks go and the file\'s come in as the current instrument\'s model (curModel read before the tracks are cleared — no throw)', async () => {

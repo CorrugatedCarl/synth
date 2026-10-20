@@ -83,12 +83,17 @@ Blocks (the paper's partition; values from the schematic, §14):
    (an earlier reading of this appendix multiplied wrongly) — the 4–6 ms is how long C38, charged during the 1 ms trigger, takes to
    discharge through R156 below Q43's turn-on, a threshold crossing early on a 100 ms decay. If a re-read finds other values, the
    duration still comes from the network (charge path, R156 · C38, Q43's V_BE), never from the product alone. The model uses the
-   component values; the attack lasts what the network gives (4–7 ms is the test band).
+   component values; the attack lasts what the network gives (4–7 ms is the test band). **Lane V's reading (2026-10-20)**: the
+   trigger turns Q41 on (R157 8.2 kΩ, R158 2.7 kΩ), which *discharges* C38; R156 then recharges C38 from +15 V into Q42's base, and
+   Q42 (saturated at rest) releases the V_env node (R160 22 kΩ from +15 V, R159 100 kΩ into Q43's base, C39 0.033 µF through D52 /
+   R161 to V_comm) while C38 is low — so Q43 is on while C38 recharges past Q42's turn-on: **5.25 ms** in the model at any trigger
+   height (§16.1).
 - Typical values [P SN p.14]: **56 Hz** (an 18 ms period) at the centre; decay short / mid / long **50 / 300 / 800 ms**; 3.5 / 10 Vp-p.
   Pots: TONE 10 kΩ (C taper), DECAY 500 kΩ B, LEVEL 100 kΩ A [P SN p.16, P-sch].
 6. **Pitch sigh**: leakage through R161 lifts Q43's base when the common node swings below about a diode drop; Q43's collector current
    then lowers R_eff. Fitted memoryless law `iC = m · log(1 + e^{−α (Vcomm − V0)}) / α` (sign convention as the paper's figure 9:
-   current flows for negative Vcomm) with **α = 14.3150, V0 = 0.5560, m = 1.4765e-5**; and
+   current flows for negative Vcomm) with **α = 14.3150, V0 = −0.5560, m = 1.4765e-5** (lane V: the paper's V0 is negative — the
+   current starts as V_comm swings below ≈ −0.56 V; this appendix had dropped the sign); and
    `R_eff = Vcomm R166 (R165 + R166) / (Vcomm (R165 + R166) − R165 (Vcomm − R166 iC))` (= R165 + R166 when iC = 0). The instantaneous
    frequency glides from ≈ 57–58 Hz to ≈ 49–50 Hz over the first 0.3 s (figure 11). The sigh and the attack jump are different effects.
 7. **Tone, level, output**: a passive low-pass (R171 + R172 ∥ VR5 with C45: TONE), a divider with a high-pass (VR4 LEVEL, C47), an
@@ -136,8 +141,10 @@ Blocks (the paper's partition; values from the schematic, §14):
   **MT 120 / 135 / 160**, 3 / 11, 130 ms; **HT 165 / 185 / 220**, 3.5 / 12, 100 ms; **LC 165 / 185 / 220**, 3.5 / 12, 180 ms; **MC 250 /
   280 / 310**, 3 / 10, 100 ms; **HC 370 / 400 / 455**, 3.5 / 12, 80 ms. (FAN's 250 Hz mid conga is the bottom of MC's range.)
 - **The TOM / CONGA switch** (SW8 etc.) changes three things in one circuit: (a) adds series capacitance in TOM (≈ an octave lower);
-  (b) adds R224 / R253 / R280 (1.5–2.2 kΩ) across the trigger divider (R226 22 kΩ into 4.7 kΩ) in TOM, so toms are driven ≈ 3.6 × less;
-  (c) enables the noise path (CONGA grounds it) [P SN p.6 "C77 for frequency, R224 for level"; P-sch].
+  (b) adds R224 / R253 / R280 (1.5–2.2 kΩ) across the trigger divider (R226 22 kΩ into 4.7 kΩ) — **in CONGA** (lane V's re-read: the
+  switch section's grounded contact is the CONGA side; with R224 in TOM the toms came out ≈ 3 × too quiet and the congas ≈ 4.5 × too
+  loud against the table), so the congas are driven ≈ 3.6 × less; (c) enables the noise path (CONGA grounds it) [P SN p.6 "C77 for
+  frequency, R224 for level"; P-sch].
 - **Tom "reverb" noise** — on all three toms, not only the low one as the service text implies [P-sch]: pink noise (§11) → R216 15 kΩ /
   R217 3.3 kΩ, C71 0.047 µF → a gate (Q52 / Q55 / Q58; base R220 33 kΩ); its envelope: the gated trigger through D55 charges C72
   0.039 µF, which bleeds through R218 2.2 MΩ into the base (τ ≈ 86 ms: audible 150–260 ms) → C74 0.047 µF, R222 / R223 22 kΩ, R232
@@ -151,10 +158,15 @@ Blocks (the paper's partition; values from the schematic, §14):
   **≈ 2.5 kHz** (chart **2500**, the claves).
 - **RIM SHOT** adds C118 0.0022 µF on GEN2 → **≈ 1.8 kHz** (chart **1667**) and sums GEN1 and GEN2; **CLAVES** removes C118 and adds
   positive feedback R313 390 kΩ from the inverter IC20b (33 kΩ / 33 kΩ) for a higher Q and a longer ring; GEN1's part is negligible
-  then [P SN p.6; S SJ].
+  then [P SN p.6; S SJ]. **Lane V**: with R308 820 kΩ and C117 = C119, 390 kΩ gives GEN2 a loop gain of ≈ 1.05 — a self-oscillating
+  generator at any op-amp bandwidth — so the model fits R313 to the table's 25 ms: **491 kΩ [fit]** (real units sit on either side of
+  1 by their tolerances).
 - **Shaping**: the sum into a swing-type VCA (Q62) whose envelope is D61, R107 1 kΩ, C24 0.47 µF, R108 10 kΩ (≈ 5 ms); then a
-  passive + follower 2nd-order high-pass (Q63; C121 = C122 0.0047 µF, R322 10 kΩ, R325 330 kΩ): **≈ 590 Hz, Q ≈ 2.9** (calc). Q74 (a
-  JFET) mutes the output except during the trigger pulse (via Q61), keeping IC20's noise out.
+  passive + follower 2nd-order high-pass (Q63; C121 = C122 0.0047 µF, R322 10 kΩ, R325 330 kΩ): **≈ 590 Hz, Q ≈ 2.9** (calc) → R324
+  (its value is not printed: **68 kΩ [fit]** to the table's 3 Vp-p) → C125 into IC19. Q74 (a JFET across IC19's feedback) mutes the
+  output except **for ≈ 40–55 ms after** the trigger (lane V's reading, IMPL-7a §15 #36): Q61 pulls Q74's gate (C113 0.047 µF) to
+  −15 V while the trigger lasts; R305 1 MΩ ∥ R327 470 kΩ bring it back (τ ≈ 15 ms), and the channel conducts again — the mute — once
+  the gate passes the pinch-off (≈ −1 V, 2SK30A typical [typ]). The window keeps IC20's noise out between hits.
 - Typical: RS 3 / 10 Vp-p, decay **10 ms**; CL 2.5 / 8 Vp-p, decay **25 ms** [P SN p.14].
 
 ## 6. Hand clap and maracas [P SN p.6, p.14, p.15; P-sch; S BT; W]
@@ -170,6 +182,11 @@ Blocks (the paper's partition; values from the schematic, §14):
   (mid) **100 ms** [P SN p.14]. Accent reaches the clap also through D68, C143 1 µF, R362 330 kΩ into the Q69 / Q70 offset network.
 - Design changes [P SN p.15]: R346 1 kΩ → 680 Ω and R332 22 → 27 kΩ (the clap was too loud, from serial 010600); C201 on IC6 so the
   clap's highs do not disturb the other voices.
+- **Lane V's model** (§16.6): the comparator network is not fully read, so its thresholds are fits — the recharge threshold (the ≈ 10 ms
+  saws), the converter's offset and accent shift, the OTA's bias [fit]. The reverb stage Q70 as read (the band through R342 15 kΩ /
+  R346 680 Ω and C137 to its base; its bias C139 → R348 → C138 → R349 into the junction, no base resistor to ground) leaves the tail at
+  −35…−40 dB, a plateau (the junction drains C138 ever more slowly, a 1/t law) rather than an exponential; a gain of **4.5 [fit]** on
+  that path puts the tail where the table's 100 ms needs it (R346's divider is the suspect: 3.3 kΩ there would give the same).
 - **Maracas**: the gated trigger drives an envelope (Q67; C135 0.1 µF, R344 220 kΩ, R345 150 kΩ; R341 470 kΩ ∥ D66 with C134 0.033 µF at
   Q66's base: ≈ 15 ms release); white noise through C130 0.047 µF / R335 6.8 kΩ, a gate (Q65, Q66), a 2nd-order Sallen-Key high-pass
   (C132 = C133 0.001 µF, R339 3.3 kΩ, R340 68 kΩ: **≈ 10.6 kHz**, calc), Q68, IC19. Typical 3 / 5 Vp-p, decay **25 / 35 ms** [P SN p.14].
@@ -213,6 +230,8 @@ Blocks (the paper's partition; values from the schematic, §14):
   with R93 470 kΩ and C41 1 µF: τ ≈ 0.47–2.47 s, calc). HP #1 (Q25 follower; C48 = C59 1.5 nF, R124 22 kΩ, R127 82 kΩ) ≈ 2.5 kHz,
   Q ≈ 1 (calc); the two op-amp high-passes (3rd-order, gain ≈ 2.8; 2nd-order, gain 2) near 9–10.5 kHz, resonant. TONE = VR4 20 kΩ B
   mixing the bands. Typical decay short / mid / long **350 / 800 / 1200 ms**; 3.5 / 7 Vp-p (accent only ≈ 2 ×) [P SN p.14].
+- **Lane V**: C50 (VCA #2's node capacitor) is unreadable on the scan (".00?5"); taken as 1.5 nF like its neighbours [R?]. The model's
+  −20 dB times at TONE 5 are 26–29 % under the table, at TONE 2.5 within 15 % (the table does not say where TONE stood).
 
 ## 9. Open and closed hat [P SN p.6, p.14; P-sch; S BT]
 
@@ -229,6 +248,11 @@ Blocks (the paper's partition; values from the schematic, §14):
   resistor) (IMPL-7a review §15 #11). An OH hit inside the hold is cut too; the circuit does not know whether OH is sounding [P SN
   p.6; P-sch]. [R? common use] The usual figure — CH on the beat, OH on the off-beat eighth, 250 ms later at 120 BPM — plays its
   open hats, which bounds the unaccented hold below ≈ 250 ms.
+- **Lane V's reading** (2026-10-20): R134 100 kΩ sits in series with **both** Q22's and Q23's collectors (the DECAY drain and the
+  choke share it), so the choke drains C62 with τ = R134 · C62 ≈ **47 ms**, not at once; no base-to-ground resistor shows at Q23. C63
+  is also the closed hat's VCA supply (through R142 33 kΩ, Q30 switching on the band) — its own ≈ 50 ms decay — so the hold (C63
+  above Q23's turn-on) is **≈ 49 ms at 4 V, ≈ 58 / 61 ms accented** (ACCENT 5 / 10) in the model. A sounding OH falls ≈ 20 dB during
+  the hold and continues from there on its own decay; an OH hit inside the hold is cut ≈ 15 dB.
 - The gate threshold of the hats is ≈ 4.5 V in stock form [S WH] (the metal voices see the 7–14 V bus, §1).
 
 ## 10. Cowbell [P SN p.6, p.14; P-sch; S SOS, frisnit; P AES abstract]
@@ -242,7 +266,8 @@ Blocks (the paper's partition; values from the schematic, §14):
   C29 0.0033 µF to the output, C28 0.01 µF to the inverting input, R25 470 kΩ feedback: **≈ 860 Hz, Q ≈ 6** (calc); a rebuild measured
   ≈ 850 Hz, ≈ 200 Hz wide [S frisnit]. LEVEL pot 5 kΩ A.
 - Typical decay (mid) **50 ms**; 3.5 / 12 Vp-p [P SN p.14]. Design change: R44 / R45 and C6 values changed and TM1 / TM2's range widened
-  to keep the tuning in spec [P SN p.15]. Werner's AES 9207 analyses this band-pass (abstract only).
+  to keep the tuning in spec [P SN p.15]. Werner's AES 9207 analyses this band-pass (abstract only). **Lane V**: the network's −20 dB
+  point is ≈ 175 ms (0.32 in ≈ 10 ms, then τ ≈ 147 ms); the table's 50 ms matches the charge-sharing drop (≈ −10 dB), not −20 dB.
 
 ## 11. Noise [P SN p.14, p.16; P-sch; S SL]
 
@@ -334,7 +359,9 @@ Blocks (the paper's partition; values from the schematic, §14):
   C51–C53 ladder through Q47 / Q48 and D54: fit to the 60 ms typical decay); the clap's AN6912 comparator network (implement as the
   topology: a ≈ 30 ms gate, three sawtooth cycles of ≈ 10 ms, a final ≈ 20 ms discharge, an exponential converter, plus the ≈ 100 ms
   reverb VCA; band-pass ≈ 1.1 kHz); the tom diode pair (a Shockley model of 1S188FM); the OH / CH envelope resistances around Q29 / Q28;
-  the maracas' envelope.
+  the maracas' envelope. **Lane V (2026-10-20)**: the snare ladder is modelled from its values (no fit needed: 68 ms); the clap and the
+  maracas carry the fits listed in §16.6; the 1S188FM as I_s 6e-8 A, n 1.2 [typ]; the hats' envelopes as read (§9). §16 is the final
+  table.
 - Open sequencer points (IMPL-7a §3.3 decides each one, [C]): whether step keys toggle steps while stopped in a write mode (IO: they
   select the key); whether TAP quantises (TR-08: nearest step); whether the pre-scale CLEAR resets anything else; whether setting the 1st
   part resets the 2nd; TAP in COMPOSE; how a pending key shows while running; the PRE-SCALE control's form (rotary or slide) — the panel
@@ -345,3 +372,143 @@ Blocks (the paper's partition; values from the schematic, §14):
 A web table of total run times [W sequencer.de]: BD 242–1646 ms, SD 199, LT 455, MT 309, LC 341, MC 234, RS 15, CL 41, MA 33, CP 1964,
 CB 1157, CY 276–3956, OH 144–586, CH 112 ms. They measure the time to silence, not the service table's "decay", and disagree with it by
 design; the tests use the service table (§14).
+
+## 16. The component tables as modelled (lane V, 2026-10-20)
+
+The values `dr-808.js` uses, per voice (its frozen tables `BD`, `SD`, `TOM` / `TM`, `RS`, `CP`, `CB`, `MT`, `CY`, `HH`, `MIX`; exposed
+as `Dr808.proto` for the tests). Source of every value: the schematic scan of §0 (SCH), re-read by eye at high zoom [P-sch], except
+where tagged: **[fit]** fitted to the service table (§14 rule; the reason beside it), **[R?]** unreadable and assumed, **[typ]** a
+typical device parameter, **[P DAFX] / [P ICMC]** the papers' fitted laws. Devices: small-signal NPN / PNP β 300, I_ES 1e-14 A,
+V_BE 0.65 V, V_CE,sat 0.1 V [typ]; µPC4558 GBW 3 MHz, rails ± 15 V with a soft knee 11 → 13.5 V [typ]; pot end / wiper 50 Ω.
+Values read differently from §2–§12 are in **bold**.
+
+### 16.1 Bass drum
+| part | value | role |
+|---|---|---|
+| R162 / R163 / C40; D53 | 4.7 k / 100 k / 0.015 µ; clamp −0.71 V | pulse shaper, its falling-edge clamp |
+| R157 / R158 (Q41) | 8.2 k / 2.7 k | the trigger discharges C38 |
+| R156 / C38 (Q42) | 1 M / 0.1 µ | recharge into Q42's base; C38 at rest where R156's current meets the junction |
+| R160 / R159 / C39 / R161 (D52) | 22 k / 100 k / 0.033 µ / 1 M | V_env; Q43's base; the retrigger pulse into V_comm |
+| C41 / C42 / R167 | 0.015 µ / 0.015 µ / 1 M | the bridged-T's arms and bridge |
+| R165 / R166 (Q43) | 47 k / 6.8 k | the shunt leg; Q43 shorts R165 while on (≈ 5.25 ms) |
+| R170, R164 / R169 / C43, VR6 | 470 k, 47 k / 47 k / 33 µ, 500 k B | the feedback buffer; DECAY |
+| R171 / R172 / VR5 / C45 | 220 / 10 k / 10 k C / 0.1 µ | TONE low-pass |
+| C47 / VR4; C49 / R177 / R176 (Q44); C50 / R174 / R175 | 0.47 µ / 100 k A; 0.47 µ / 82 k / 100 k; 1 µ / 100 k / 1 k | LEVEL, output high-passes |
+| α / V0 / m | 14.3150 / **−0.5560 V** / 1.4765e-5 | Q43's leakage (the sigh) [P DAFX; the sign corrected, §2] |
+| mix | 22 k | to the bus |
+
+### 16.2 Snare (the production values, §3)
+| part | value | role |
+|---|---|---|
+| R189 ∥ C57 / R190 | 100 k ∥ 0.0068 µ / 680 | the low resonator's kick |
+| R191 / R192 | 10 k / 220 | the high resonator's kick |
+| C58 / C59 / R197 / R196 | 0.056 µ / 0.027 µ / 820 k / 680 | low bridged-T (173.3 Hz) |
+| C60 / C61 / R198 / R195 | 0.0068 µ / 0.015 µ / 1 M / 2.2 k | high bridged-T (336 Hz) |
+| C63 / C65 / VR8 / R204 | 0.047 µ / 0.047 µ / 100 k B / 100 k | TONE |
+| VR9 / R199; Q47 (≈ 430 Ω source) | 10 k B / 1 k | SNAPPY divider, the envelope's charger |
+| C51 / R184 / C52 / R185 / C53 | 0.47 µ / 15 k / 0.1 µ / 15 k / 0.001 µ | the envelope ladder, the VCA node |
+| C56 / R194 (Q48) | 0.022 µ / 2.2 M | the noise VCA's coupling and bias |
+| C66 / C67 / R201 / R202 (Q49) | 1.8 n / 1.8 n / 22 k / 47 k | Sallen-Key high-pass ≈ 2.75 kHz |
+| C69 / R205; R210 / C70 / VR7 | 0.01 µ / 27 k; 470 k / 220 p / 100 k A | into IC13; LEVEL |
+
+### 16.3 Toms / congas (LT designators; per circuit low / mid / high)
+| part | LT / LC | MT / MC | HT / HC | role |
+|---|---|---|---|---|
+| bridged-T Ca (+ TOM) | 0.056 µ | 0.027 µ (+ 0.0082 µ) | 0.027 µ | arm to the junction |
+| bridged-T Cb (+ TOM) | 0.012 µ (+ 0.047 µ) | 0.012 µ (+ 0.027 µ) | 0.0056 µ (+ 0.022 µ) | arm to the output |
+| trigger C_x | 0.0068 µ | 0.0027 µ | 0.0027 µ | into R226 22 k |
+| R225-class load / R224-class (**CONGA**) | 4.7 k / 1.5 k | 6.8 k / 2.2 k | 5.6 k / 1.5 k | the + input's divider (§4 corrected) |
+| C81-class / feedback C | 0.047 µ / 1 n | 0.039 µ / 1 n | 0.033 µ / 1 n | output coupling; IC13's cap |
+| C72-class / C71 / C74 / C75 | 0.039 / 0.047 / 0.047 / 0.018 µ | 0.033 / 0.047 / 0.033 / 0.015 µ | 0.033 / 0.047 / 0.027 / 0.01 µ | the rumble gate and its filters |
+- Shared: bridge and feedback 820 k (R229 / R230-class), shunt R231 1 k + TUNING 500 Ω B (+ 10 Ω each side), 1S188FM pair I_s 6e-8 A,
+  n 1.2 [typ], R233 / R232 100 k, R235 470 k with LEVEL 100 k A, the rumble path R219 4.7 k, R218 2.2 M, R216 15 k / R217 3.3 k, R220
+  33 k, R221 4.7 k, R222 / R223 22 k; mix 33 k.
+
+### 16.4 Rim shot / claves
+| part | value | role |
+|---|---|---|
+| C111 / R307 / D62 / R301 / R302 | 0.01 µ / 100 k / — / 47 k / 10 k | GEN1's excitation |
+| C116 / C115 / R316 / R315 | 0.0047 µ / 0.0047 µ / 1 M / 5.6 k | GEN1 (452 Hz) |
+| C114 / R306 / D64 / R310 / R311 | 0.001 µ / 22 k / — / 33 k / 10 k | GEN2's excitation |
+| C119 / C117 / C118 (RIM) / R308 / R312 | 2.2 n / 2.2 n / 2.2 n / 820 k / 1 k | GEN2 (≈ 1.8 kHz RIM, 2.5 kHz CLAVES) |
+| R313 (CLAVES) | **491 k [fit]** (reads 390 k: a loop gain of 1.05, §5) | GEN2's positive feedback |
+| R318 / R320 / R317; C120 / R321 (Q62) | 220 k / 22 k / 10 k; 10 µ / 2.2 M | the mix into Q62's base, its bias |
+| R107 / C24 / R108 | 1 k / 0.47 µ / 10 k | the VCA's envelope |
+| C121 / C122 / R322 / R325 (Q63) | 4.7 n / 4.7 n / 10 k / 330 k | high-pass ≈ 590 Hz |
+| R324 / R326 / C125; R319 (CLAVES) | **68 k [fit]** (unprinted) / 10 k / 0.01 µ; 220 k | into IC19 |
+| R330 / C153 / VR16 | 470 k / 22 p / 100 k A | IC19's feedback, LEVEL |
+| C113 / R305 / R327; Q74 | 0.047 µ / 1 M / 470 k; pinch-off −1 V, R_on 300 Ω [typ] | the mute (§5) |
+
+### 16.5 Cowbell
+| part | value | role |
+|---|---|---|
+| R62 / R63 (R64 / R65), C32 (C33) | 33 k / 2.2 k, 10 µ | oscillators #5 / #6 into the VCAs' bases |
+| R30 / R28 (R29) | 470 k / 100 k | base bias, collector (the VCA supply) |
+| R122 / C9 / R82 / C34 | 1 k / 0.47 µ / 33 k / 1 µ | the envelope, its charge sharing |
+| R26 (R27) / C30 (C31) / R24 / C29 / C28 / R25 | 10 k / 2.2 n / 2.2 k / 3.3 n / 0.01 µ / 470 k | band-pass ≈ 860 Hz |
+| C75 / R116 / VR5; C76 / R117 | 1 µ / 8.2 k / 5 k A; 0.022 µ / 22 k | LEVEL and the output high-passes |
+
+### 16.6 Hand clap / maracas
+| part | value | role |
+|---|---|---|
+| R332 ∥ C127 / R333 / C128 / C129 / R334 | 27 k ∥ 1.8 n / 10 k / 4.7 n / 4.7 n / 100 k | band-pass ≈ 1.25 kHz |
+| C144 / R365 / R367 (Q73); R368 / R371 | 0.47 µ / 82 k / 330; 470 k / 15 k | the sawtooth, the converter's divider |
+| the gate / the recharge threshold | 30 ms [S] / **11.57 V [fit]** (≈ 10 ms saws) | the comparator network |
+| converter offset / accent shift | **−0.444 V / 0.01 V per V [fit]** | Q71 / Q72 (through C143 / R362) |
+| C136 / R372 / R382; R383; OTA bias | 0.022 µ / 39 k / 1 k; 82 k; **0.40 mA [fit]** (2 Vp-p) | IC22 |
+| C150 / R378 | 0.001 µ / 100 k | into IC19 |
+| C139 / R348 / C138 / R349 (Q69, Q70) | 0.018 µ / 1 M / 0.047 µ / 1 M | the reverb's bias |
+| R342 / R346 / C137; R363 / R369 | 15 k / 680 / 0.033 µ; 10 k / 330 | the reverb stage |
+| C146; C152 / R376 | 0.018 µ; 0.0047 µ / 47 k | its output into IC19 |
+| the reverb path's gain | **× 4.5 [fit]** (§6) | the table's 100 ms |
+| R375 / C149 / VR17 | 470 k / 220 p / 100 k A | IC19, LEVEL |
+| MA: C135 / R345 / R344 (Q67) / R343; C134 / R341 (Q66) | 0.1 µ / 150 k / 220 k / 100 k; 0.033 µ / 470 k | the gate |
+| MA: the gate's span / noise level | **8 V / 6.4 [fit]** (25 / 35 ms, 3 / 5 Vp-p) | the least certain read (§6) |
+| MA: C131 / R338; C132 / C133 / R339 / R340 (Q68); C151 / R377 | 0.01 µ / 15 k; 1 n / 1 n / 3.3 k / 68 k; 0.01 µ / 100 k | high-passes ≈ 10.6 kHz |
+
+### 16.7 Metal bank
+| part | value | role |
+|---|---|---|
+| oscillators | 205.3, 369.6, 304.4, 522.7, 800, 540 Hz; duty 47.98 %; 0 / 5 V | §7 |
+| each through R (120 k) to R53 | 120 k / 1 k | the passive sum |
+| R52 / C10 / C13 / C14 / R56 / R57 | 33 k / 3.3 n / 6.8 n / 6.8 n / 560 / 82 k | band-pass #1 (3454 Hz analog peak) |
+| R55 / C11 / C15 / C16 / R58 / R59 | 22 k / 1 n / 3.3 n / 3.3 n / 560 / 82 k | band-pass #2 (7117 Hz analog peak) |
+| the VCAs' coupling / bias | 0.022 µ / 2 M from +15 V | the swing VCAs' bases (CY, OH, CH) |
+| the metal bus | 4 V trigger → 6.9 V, ceiling ≈ 13.8 V | R18 / R19 / D1 into a × 31.3 stage (§1) |
+
+### 16.8 Cymbal
+| part | value | role |
+|---|---|---|
+| smoother | V − 0.7258, τ 1.0244e-4 s | [P ICMC] |
+| EG1: C41 / R93 / VR2; V_on / V_F | 1 µ / 470 k / 2 M B; 0.5899 / 0.6195 V | DECAY [P ICMC] |
+| EG1.2: R105 / C45; VCA1 R104 | 33 k / 2.2 µ; 22 k | the 3440 Hz path |
+| EG1.3: R92 / R89 / R91 | 33 k / 10 k / 33 k | into VCA2's supply |
+| EG2: C40 / R88 / C39 / R90 | 1 µ / 33 k / 0.47 µ / 33 k | VCA2 (7100 Hz) |
+| EG3: C38 / R87 / C37 / R94 | 1 µ / 22 k / 2.2 µ / 39 k | VCA3 (7100 Hz) |
+| VCA node caps | C50 **1.5 n [R?]** + C43 1.5 n; C47 + C36 1.5 n each | VCA2, VCA3 |
+| HP1: C48 / C59 / R124 / R127 (Q25) | 1.5 n / 1.5 n / 22 k / 82 k | ≈ 2.5 kHz |
+| HP2: C51 / C52 / R107 / R113, gain 2 | 1 n / 1 n / 18 k / 18 k | IC5 |
+| HP3: C49 / R106 / C53 / R108 / C54 / R109, gain 1 + 39 / 22 | 3.3 n / 6.8 k / 1 n / 18 k / 1 n / 18 k | IC5 |
+| tone: C55 / R112, C56 / R120, C58 / R123, C57 / R121, R119 / R129 / R125, VR4 | 0.01 µ / 22 k, 0.01 µ / 10 k, 0.01 µ / 100 k, 3.3 n / 10 k, 22 k / 15 k / 2.2 k, 20 k B | the passive tone network |
+| C90 / R128 / C77 / VR6 | 0.01 µ / 470 k / 220 p / 100 k A | LEVEL stage (IC6) |
+
+### 16.9 Hats
+| part | value | role |
+|---|---|---|
+| R137 / C62 / R139 (Q24, Q29) | 470 / 0.47 µ / 1 M | OH envelope |
+| R130 / R131 (Q21); C60 / R132 / VR3 / R133 (Q22) | 10 k / 22 k; 10 µ / 100 k / 2 M B / 10 k | the DECAY timer |
+| R134 | 100 k, in series with Q22 **and** Q23 (§9) | the drain |
+| R144 / C64 + C65 (Q27); C66 / C68 / R147 / R146 (Q26) | 33 k / 1.5 n + 1.5 n; 1.5 n / 1.5 n / 2.7 k / 68 k | OH VCA, high-pass ≈ 7.8 kHz |
+| C80 / R160; R159 / C79 / VR7 | 470 p / 39 k; 470 k / 220 p / 100 k A | into IC7, OH LEVEL |
+| C63 (Q28) / R142; R173 (Q23) | 0.47 µ / 33 k; 330 k | CH envelope and VCA supply; the choke |
+| C69 + C70 (Q30); C72 / C73 / R153 / R155 (Q31) | 1.5 n + 1.5 n; 1 n / 1 n / 2.7 k / 68 k | CH VCA, high-pass ≈ 11.7 kHz |
+| C74 / R162; R161 / C82 / VR8 | 470 p / 33 k; 470 k / 220 p / 100 k A | into IC7, CH LEVEL |
+| mix OH / CH | 56 k / 47 k | to the bus |
+
+### 16.10 Mixer and output
+| part | value | role |
+|---|---|---|
+| R75 / C18 (IC4a) | 33 k / 220 p | the summing amp; each voice's bus gain 33 k / (1 k + R_mix) |
+| C19 / VR1 | 1 µ / 50 k A | MASTER VOLUME |
+| C23 / R77 / R76 / C22 (IC4b) | 1 µ / 22 k / 33 k / 220 p | the output amp; clipped at the rails |
+| full scale | 0.45 V at the output amp (`OUT_K` 2.2) | IMPL-7a §2.5 |

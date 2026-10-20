@@ -3,7 +3,7 @@ import './v8-guard.mjs';
 // rollback, keys, double-tap, ARIA), sideTray (tap opens, grip inset, stays open on a press outside, never closes itself), sourcesTray
 // drag verdicts (out / along / hold) and drop routing, menuPop, sheet; (1e) effectsTray (tiles, groups, costs, drops into
 // a panel / onto the canvas, never closing the tray), the Effects tray markup and the 1e styles; (2a) the Modulators section
-// (tiles, picks, drags onto the canvas, setPlaced), its markup and the 2a styles. Fake DOM: tests/wk-dom.mjs; never pass fake-DOM
+// (tiles, picks, drags onto the canvas, setPlaced), its markup and the 2a styles; (7a) the Drums view. Fake DOM: tests/wk-dom.mjs; never pass fake-DOM
 // nodes to assert.* (ids, strings and numbers only).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-tray.test.mjs
 import test from 'node:test';
@@ -489,21 +489,21 @@ test('sourcesTray (views): the dropdown — a button showing the view (aria-hasp
   const S = T.sourcesTray(list, { models: MODELS, pick() {}, drag: {}, layoutEl: host, secEl: sec, noteEl: note, layout: 'flow', onLayout: l => got.push(l) });
   const [btn, menu] = host.children, items = menu.children, shown = () => S.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
   const secs = () => sec.children.map(s => s.getAttribute('data-sec') + (s.hidden ? ':hidden' : ''));
-  const classic = MODELS.filter(m => !m.custom).map(m => m.id);
+  const classic = MODELS.filter(m => !m.custom && m.family !== 'drums').map(m => m.id); // ((7a) the drum machines: the Drums view)
   assert.deepEqual([btn.tagName, btn.className, btn.type, btn.getAttribute('aria-haspopup'), btn.getAttribute('aria-expanded'), btn.children[0].textContent, btn.getAttribute('aria-label')],
     ['BUTTON', 'cv-vbtn', 'button', 'menu', 'false', 'Simple', 'Sources view: Simple']);
   assert.deepEqual([menu.getAttribute('role'), menu.hidden, items.map(b => [b.getAttribute('role'), b.getAttribute('data-view'), b.children[0].textContent, b.getAttribute('aria-checked')])],
-    ['menu', true, [['menuitemradio', 'hw', 'Hardware', 'false'], ['menuitemradio', 'flow', 'Simple', 'true'], ['menuitemradio', 'serum', 'Serum', 'false']]]);
-  assert.deepEqual([S.view(), S.layout(), S.views(), list.getAttribute('data-layout'), list.getAttribute('data-view')], ['flow', 'flow', ['hw', 'flow', 'serum'], 'flow', 'flow']);
+    ['menu', true, [['menuitemradio', 'hw', 'Hardware', 'false'], ['menuitemradio', 'flow', 'Simple', 'true'], ['menuitemradio', 'serum', 'Serum', 'false'], ['menuitemradio', 'drums', 'Drums', 'false']]]);
+  assert.deepEqual([S.view(), S.layout(), S.views(), list.getAttribute('data-layout'), list.getAttribute('data-view')], ['flow', 'flow', ['hw', 'flow', 'serum', 'drums'], 'flow', 'flow']);
   assert.deepEqual(shown(), classic, 'Simple: the twelve classics, no Serum');
-  assert.ok(classic.length === 12 && !classic.includes('serum'));
+  assert.ok(classic.length === 12 && !classic.includes('serum') && !classic.includes('tr808'));
   assert.deepEqual([secs(), note.textContent], [['parts:hidden', 'notes:hidden'], 'Serum and its modulators: the Serum view (the menu above).']);
   // a tap opens; the Serum item picks (one call), closes it; the classics hide, the Serum tile and the placeholders show
   btn.click();
   assert.deepEqual([menu.hidden, btn.getAttribute('aria-expanded'), S.viewOpen()], [false, 'true', true]);
   items[2].click();
   assert.deepEqual([S.view(), got, menu.hidden, btn.getAttribute('aria-expanded'), btn.children[0].textContent, items.map(b => b.getAttribute('aria-checked')).join()],
-    ['serum', ['serum'], true, 'false', 'Serum', 'false,false,true']);
+    ['serum', ['serum'], true, 'false', 'Serum', 'false,false,true,false']);
   assert.deepEqual([shown(), secs(), sec.children[0].children.map(c => c.textContent), sec.children[1].children[1].textContent, list.getAttribute('data-layout'), S.layout()],
     [['serum'], ['parts', 'notes'], ['Serum parts', 'Arrive in milestone 3.'], 'Note tools: later.', 'flow', 'flow'], 'Serum: its tile, the placeholders; the classics\' layout kept');
   assert.equal(note.textContent, 'Drop a modulator on the canvas and cable its jack to any knob.');
@@ -544,14 +544,48 @@ test('sourcesTray (views): the dropdown — a button showing the view (aria-hasp
 
 test('sourcesTray (views): data-driven — o.views lists the views in order (a later family is one more entry); the given button / menu are used; a view with no layout keeps the classics\'', () => {
   const d = fresh(), list = mkEl(d), sec = mkEl(d), btn = mkEl(d, 'button'), menu = mkEl(d), got = [];
-  const views = [...T.SRC_VIEWS, { id: 'drums', label: 'Drums', tip: 'Drum machines', sections: [{ id: 'kits', head: 'Drum machines', note: 'Arrive later.' }] }];
+  // ((7a) Drums is an entry of SRC_VIEWS now: the later family here is the pad controllers)
+  const views = [...T.SRC_VIEWS, { id: 'pads', label: 'Pads', tip: 'Pad controllers', sections: [{ id: 'kits', head: 'Pad controllers', note: 'Arrive later.' }] }];
   const S = T.sourcesTray(list, { models: MODELS, pick() {}, drag: {}, viewBtn: btn, viewMenu: menu, secEl: sec, views, view: 'flow', onView: v => got.push(v) });
-  assert.deepEqual([menu.children.map(b => b.getAttribute('data-view')), btn.children.map(c => c.className), menu.getAttribute('role'), btn.children[0].textContent], [['hw', 'flow', 'serum', 'drums'], ['cv-vlab', 'cv-vcaret'], 'menu', 'Simple']);
-  btn.click(); menu.children[3].click();
+  assert.deepEqual([menu.children.map(b => b.getAttribute('data-view')), btn.children.map(c => c.className), menu.getAttribute('role'), btn.children[0].textContent], [['hw', 'flow', 'serum', 'drums', 'pads'], ['cv-vlab', 'cv-vcaret'], 'menu', 'Simple']);
+  btn.click(); menu.children[4].click();
   assert.deepEqual([S.view(), S.layout(), got, S.tiles().filter(b => !b.hidden).length, sec.children.map(s => s.getAttribute('data-sec') + (s.hidden ? ':hidden' : ''))],
-    ['drums', 'flow', ['drums'], 0, ['parts:hidden', 'notes:hidden', 'kits']]);
+    ['pads', 'flow', ['pads'], 0, ['parts:hidden', 'notes:hidden', 'kits']]);
   S.destroy();
   assert.deepEqual([btn.children.length, menu.children.length, sec.children.length], [2, 0, 0], 'the given button stays; the items go');
+});
+
+// (7a, IMPL-7a §8 item 1) the Drums view: the drum machines only, with their real front panel ('hw'); Hardware / Simple list
+// the twelve classic synths; a drum tile has no SIMPLE badge, no simple / hardware aria text and names no maker (D4); a
+// stored view 'drums' opens Drums; the dropdown reads Hardware · Simple · Serum · Drums
+test('sourcesTray (7a): the Drums view — the TR-808 alone, layout hw; no SIMPLE badge, no maker on its tile; Hardware / Simple without it; a stored "drums" view opens it', () => {
+  const d = fresh(), host = mkEl(d), list = mkEl(d), sec = mkEl(d), note = mkEl(d, 'p'), got = [], picks = [];
+  const S = T.sourcesTray(list, { models: MODELS, pick: (id, m) => picks.push([id, m]), drag: {}, layoutEl: host, secEl: sec, noteEl: note, view: 'drums', onView: v => got.push(v) });
+  const [btn, menu] = host.children, shown = () => S.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
+  const drums = MODELS.filter(m => m.family === 'drums').map(m => m.id), tile = S.tiles().find(b => b.getAttribute('data-model') === 'tr808');
+  assert.deepEqual(drums, ['tr808']);
+  assert.deepEqual([S.view(), S.layout(), shown(), list.getAttribute('data-view'), list.getAttribute('data-layout'), btn.children[0].textContent],
+    ['drums', 'hw', ['tr808'], 'drums', 'hw', 'Drums'], 'a stored view "drums" opens Drums (layout hw)');
+  assert.equal(note.textContent, 'More machines later: TR-606, TR-909, then the Simmons SDS-V with the pad controller.');
+  assert.deepEqual(menu.children.map(b => b.children[0].textContent), ['Hardware', 'Simple', 'Serum', 'Drums']);
+  assert.deepEqual(T.SRC_VIEWS.find(V => V.id === 'drums').tip, 'Drum machines with their real front panel');
+  // the tile: no SIMPLE badge, no aria-description in any view, no maker word (D4), "our model of its circuits"
+  assert.deepEqual([tile.children.map(c => c.className), tile.children[2].textContent, tile.getAttribute('aria-description')],
+    [['cv-tart', 'cv-tname', 'cv-tmeta'], '1980 · drum machine', null]);
+  assert.ok(!/roland/i.test(tile.title + tile.textContent) && /our model of its circuits, not recordings/.test(tile.title), tile.title);
+  const jun = S.tiles().find(b => b.getAttribute('data-model') === 'juno60');
+  assert.deepEqual([jun.children[3].className, jun.getAttribute('aria-description')], ['cv-tbadge', 'hardware panel'], 'a classic keeps its badge and aria text');
+  // Hardware / Simple: the twelve classics (the 808 hidden); back to Drums
+  for (const v of ['hw', 'flow']) {
+    S.setView(v);
+    assert.deepEqual([shown().length, shown().includes('tr808'), tile.hidden, tile.getAttribute('aria-description')], [12, false, true, null], v);
+  }
+  S.setView('serum'); assert.deepEqual(shown(), ['serum']);
+  btn.click(); menu.children[3].click();
+  assert.deepEqual([S.view(), S.layout(), got, shown()], ['drums', 'hw', ['drums'], ['tr808']], 'picked: layout hw (the 808 has no Simple layout)');
+  tile.click();
+  assert.deepEqual(picks, [['tr808', 'replace']], 'a tap picks it as any instrument');
+  S.destroy();
 });
 
 /* ---------------------------------------------------------------- the Effects tray (1e) */

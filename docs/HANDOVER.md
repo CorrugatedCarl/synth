@@ -65,7 +65,7 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
 | 1i Hardware keyboards — every hardware synth's real keyboard (key count, range, position) and working controllers (wheels, levers, ribbon, pad) baked into its GL face, DOM hit zones / shades on top (`cv-keys.js`); velocity only on CS-80 / DX7 / 303 accent; aftertouch by Apple Pencil; bend ±2 | done (IMPL-1i.md; squashed commit "1i" on `canvas`; 2 reviews, 11 findings fixed failing-first; goldens bit-identical); **deployed 2026-10-20 (95d117f)** after the user's S0 session; pending the user's hands-on |
 | 3 Serum taken apart (VOICE hub + parts as modules, Serum-faithful modulators, accessors retired) | **done, deployed 2026-10-20 (e75eff2)** (IMPL-3.md; S0 `"ui-m3"` §9.0; Q2 whole panel → parts opt-in; 2 reviews, 18 findings fixed; swept 85 files); pending the user's hands-on + `?m3=1&real=1` (`"ui-m3b"`) |
 | 3R GPU module painter (Serum parts drawn on the GPU, no soft look mid-pinch) | parked: the user accepted soft-while-pinching ("save the soft pinching fix for later maybe"); research `docs/canvas/map-rendering.md` |
-| 7a TR-808 (first drum machine) | contract IMPL-7a.md (reviewed, user's answers in §13); phase 0 (lanes V voices, S sequencer — new files) on holding branch `wt-7a`; phase 1 after milestone 3 ships |
+| 7a TR-808 (first drum machine) | **done, deployed 2026-10-20** (IMPL-7a.md; lanes V, S, E, P1, P2, H2, H1; 2 reviews → 16 findings fixed + the vertical-switch direction on every panel; `tests/ref-7a` frozen; swept 91 files / 2557 tests); pending the user's `bench.html` (`"ipad7a"`) + §12.8 hands-on |
 | 4–6 later (full patching, per-voice classic modulation, polish) | later |
 
 **Immediate next actions**

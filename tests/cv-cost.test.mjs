@@ -45,6 +45,15 @@ test('COST covers every model of models.js and every effect type of fx-core; eve
   assert.equal(C.estimate('nope'), 0); assert.equal(C.estimate({ kind: 'out' }), 0); assert.equal(C.estimate(null), 0);
 });
 
+test('IMPL-7a §2.6: the TR-808 is costed by its bench row d8p (base + one hit), as a mono instrument — the same at any chord, near the row\'s node target', () => {
+  const c = C.COST.synth.tr808, e = C.estimate('tr808');
+  assert.deepEqual([c.row, c.family, c.poly], ['d8p', 'drums', 1]);
+  near(e, BENCH.targets.d8p.node, 0.1, 'tr808 vs d8p');
+  assert.equal(C.estimate('tr808', 1, { notes: 8 }), e);
+  assert.equal(C.estimate(syn('tr808', {}), 2), 2 * e);
+  assert.equal(C.label(e), '~2 %');
+});
+
 test('estimates are monotone in voices, unison, oscillators, filters and effect count, and linear in the factor', () => {
   for (const m of MODELS.filter(x => x.id !== 'serum')) {
     let last = 0;
@@ -297,12 +306,12 @@ test('the Worker body renders the rows (vm worker): DSP scripts + engine.js load
   for (const [id, x] of Object.entries(last.loads)) assert.ok(Number.isFinite(x) && x > 0 && x < 5, id + ' ' + x);
   const files = W.urls.map(u => u.slice('https://synth.test/app/'.length, -4));
   assert.deepEqual(files, ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
-    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'mod-core.js', 'engine.js']);
+    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js', 'engine.js']);
   assert.equal(W.g.SxBase.getAsset('msmp:bench'), null, 'the row assets are dropped after the row');
   // a second run in the same worker loads nothing again; a silent row (no notes) is an error, not a load
   const c1 = C.deviceRows()[0];
   W.send({ t: 'run', rows: [Object.assign({}, c1, { notes: [] })], runs: 1, seconds: 0.02 });
-  assert.equal(W.urls.length, 13);
+  assert.equal(W.urls.length, 15);
   assert.equal(JSON.stringify(W.posted[W.posted.length - 1]), JSON.stringify({ t: 'error', err: 'row c1 rendered silence' }));
   const n = W.posted.length;
   W.g.onmessage({ data: { t: 'other' } });

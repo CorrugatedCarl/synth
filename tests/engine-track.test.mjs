@@ -4,7 +4,10 @@
 // the warm-up's restore. Stage 1e (IMPL-1e §2, §7): several Insts per track — adoption of i0 / c0 by the first graph,
 // the copy-first sum, the co-resident sequencer bound, salts, power (sequencers, clicks, load, controller state, restrike),
 // zones, MIDI OUT into a graph node, stats.per / smon / fxph / fxtap / fxover per part, removal, processorOptions = messages,
-// the warmed graph paths, row r. Bit-exactness against the pre-split engine: tests/golden-graph.test.mjs.
+// the warmed graph paths, row r. Bit-exactness against the pre-split engine: tests/golden-graph.test.mjs. Stage 7a (IMPL-7a
+// §12.5, lane E): the drum family — Inst kind 'drums' (patch / processorOptions, the warm-up's restore, a graph node, power,
+// the co-resident span grid, the OS fade, a cable on drum.bdd, kind changes and their sequencers, panic, #34, no allocation)
+// and the bench rows d8p / d8x / d8m / d8s and d8i through the CPU gate.
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,6 +16,7 @@ import * as core from '../serum-core.js?v=9';
 import * as W from '../wt.js?v=9';
 import { patchFor, MODELS } from '../models.js?v=9';
 import * as CPU from './cpu-gate.mjs';
+import * as DC from '../drum-core.js?v=9';
 
 const SR = 48000;
 const quiet = { log() {}, warn() {}, error() {}, info() {}, debug() {} };
@@ -523,6 +527,34 @@ test('1e stats.per and smon per part on a graph node: every Inst (its own spans,
   assert.deepEqual([p.chains[0].rack.tapId, x2.rack.tapId], [id, '']);
 });
 
+test('stats under a wall clock that steps backwards (7a review 1 F6: NTP after a wake, inside a rack\'s timing window): every load stays ≥ 0 — the track\'s, an Inst\'s, a panel\'s, a Serum\'s own FX\'s (golden-graph\'s tap asserts it)', () => {
+  const D = dspScope({ engine: true, console: quiet });
+  let clock = 0;
+  D.run('(function (f) { Date.now = function now() { return f(); }; })', 'clock.js')(() => clock);
+  // the clock steps back 1 s once, inside the wrapped call's window (call `at`); else 1 ms a call
+  const wrap = (o, k, at) => { const f = o[k]; let n = 0; o[k] = function (...a) { clock += ++n === at ? -1000 : 1; return f.apply(this, a); }; };
+  const bad = [], check = (name, sent) => {
+    const st = sent.filter(m => m.t === 'stats');
+    if (st.length !== 2) bad.push(`${name}: ${st.length} stats posts`);
+    for (const m of st) for (const e of [{ id: 'track', load: m.load }, ...m.per]) if (!(e.load >= 0 && Number.isFinite(e.load))) bad.push(`${name}: ${e.id} ${e.load}`);
+  };
+  { // a legacy node (the simple path): the panel's share
+    const { p, sent } = mk(D, { offline: true, os: 2 }, classic('prophet5', verb()));
+    wrap(p.c0.rack, 'process', 30);
+    for (const n of [48, 52, 55]) p.msg({ t: 'on', n, v: 0.8 });
+    run(D, p, 200);
+    check('legacy', sent);
+  }
+  { // a graph node: a shared panel and a Serum's own FX
+    const { p, sent } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: classic('prophet5'), i2: serum(null, verb()) }, { fx1: fxOf(verb()) }, { os: 2, hostOS: 4, offline: true });
+    wrap(p.chains[0].rack, 'process', 30); wrap(p.insts[1].rack, 'process', 130);
+    for (const n of [48, 52, 55]) p.msg({ t: 'on', n, v: 0.8 });
+    run(D, p, 200);
+    check('graph', sent);
+  }
+  assert.deepEqual(bad, []);
+});
+
 test('1e removal (§2.5): a removed Inst fades out (click-free) and is dropped; a removed panel\'s tail plays out into OUT, then it is dropped and the track returns to the alias shape', (t) => {
   const D = dspScope({ engine: true, fast: true, console: quiet });
   const { p } = gnode(D, graph(['i1', 'i2'], ['fx1', 'fx2'], [['i1', 'fx1', 1], ['i2', 'fx2', 1], ['fx1', 'out', 1], ['fx2', 'out', 1]]), { i1: SINE, i2: SINE }, { fx1: fxOf(), fx2: fxOf(verb()) });
@@ -827,4 +859,216 @@ test('§9.2 warm-up: the first quantum of the graph paths (first chord, power-on
     t.diagnostic(`first chord ${f1.toFixed(3)} ms / steady ${m1.toFixed(3)} ms (× ${(f1 / m1).toFixed(2)}), restrike ${f2.toFixed(3)} / ${m2.toFixed(3)} ms (× ${(f2 / m2).toFixed(2)})`);
   }
   assert.ok(best[0] <= 1.5 && best[1] <= 1.5, `first quantum × ${best.map(x => x.toFixed(2)).join(' / ')} of steady state`);
+});
+
+/* ------------------------------------------------------------------ stage 7a: the drum machine (IMPL-7a §12.5, lane E) */
+const drPatch = (o, fx) => { const m = MODELS.find(x => x.id === 'tr808'); return patchFor(m, Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), o || {}), fx || core.defaultFx2(), { sr: SR, bpm: 120 }); };
+// a dev.drum playing `rows` (key 1 A, MANUAL PLAY; x: the extras over a new machine's — SYNC on) and its {t: 'seq'} payload
+const drMem = (rows, x) => { const d = DC.normDrum(undefined); d.st[0] = rows.slice(); d.ui.mode = DC.M_MAN; Object.assign(d.x, x || {}); return d; };
+const drPay = (d, run) => DC.payload(d, Object.assign(DC.initState(), { run: !!run }), 'now');
+const FPT8 = SR * 60 / (120 * 960);
+const tpPlay = F => ({ t: 'transport', play: true, frame: F, tick: 0, fpt: FPT8, seek: true });
+const isDrSeq = q => !!q && typeof q.events === 'function' && typeof q.transport === 'function' && !('pat' in q);
+const steps = sent => sent.filter(m => m.t === 'step');
+
+test('7a: a drum Inst from {t: patch} + {t: seq} on the warmed first Track, on a later Track and from processorOptions offline — bit for bit (the warm-up restores the machine, live = offline)', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), P = drPatch({ bdd: 7 }), S = drPay(drMem(DC.DEMO.a));
+  const ev = [[30, { t: 'on', n: 38, v: 0.9 }], [31, { t: 'off', n: 38 }], [90, { t: 'on', n: 46, v: 1 }], [120, { t: 'on', n: 64, v: 0.5 }]];
+  const live = () => { D.ctx.currentFrame = 0; const { p } = mk(D, { os: 4, hostOS: 4 }, P); p.msg({ t: 'seq', s: S }); p.msg(tpPlay(0)); return { p, o: play(D, p, 300, ev) }; };
+  const a = live(), b = live();
+  D.ctx.currentFrame = 0;
+  const { p: c } = mk(D, { os: 4, hostOS: 4, offline: true, patch: P, seq: S, transport: tpPlay(0) });
+  const z = play(D, c, 300, ev);
+  assert.deepEqual([a.p.i0.kind, isDrSeq(a.p.i0.sq), !!a.p.i0.dm, c.i0.kind, isDrSeq(c.i0.sq)], ['drums', true, true, 'drums', true]);
+  assert.ok(peakOf(a.o.L) > 0.05, 'the pattern sounds');
+  assert.ok(sameBits(a.o.L, b.o.L) && sameBits(a.o.R, b.o.R), 'the warmed-up first Track = a later one');
+  assert.ok(sameBits(a.o.L, z.L) && sameBits(a.o.R, z.R), 'live = offline (processorOptions)');
+});
+
+test('7a: the 808 on a graph node — {t: seq, i}, steps posted with i, the machine audible through its panel; #34: a step with sounds triggers the panel, sets lastNote (its lowest primary) and gates ModCore', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const { p, sent } = gnode(D, graph(['i1'], ['fx1'], [['i1', 'fx1', 1], ['fx1', 'out', 1]]), { i1: drPatch() }, { fx1: fxOf() });
+  const x = p.insts[0], r = p.chains[0].rack, tr = r.trigger, mc = [];
+  let trig = 0;
+  r.trigger = function (...a) { trig++; return tr.apply(this, a); };
+  // a stand-in ModCore (the Track's calls only: its span, the notes' gate)
+  p.mc = { span() {}, extN: 0, fxv: {}, fxHi: {}, has: {}, transport() {}, noteOn(n, v, h) { mc.push(['on', n, v, h]); }, noteOff(n, h) { mc.push(['off', n, h]); } };
+  p.msg({ t: 'seq', i: 'i1', s: drPay(drMem(DC.DEMO.a)) });
+  p.msg(tpPlay(D.ctx.currentFrame));
+  const o = play(D, p, 120); // (steps 1–3: 6000 frames apart at 120 BPM)
+  const st = steps(sent);
+  assert.deepEqual([x.kind, isDrSeq(x.sq), st.length > 0, st.every(m => m.i === 'i1' && m.m === 0 && m.k === 0)], ['drums', true, true, true]);
+  assert.ok(peakOf(o.L) > 0.05, 'audible through the panel');
+  // DEMO a's step 1: AC + BD + CH → lowest primary 36, accented (v 1)
+  assert.equal(st[0].s, 0);
+  assert.deepEqual(mc[0], ['on', 36, 1, 0], 'ModCore gated by the first step: its lowest primary, accented');
+  assert.deepEqual([st.length, x.lastNote], [3, 42], 'lastNote: the last step\'s (step 3: CH alone)');
+  assert.ok(trig >= 1, 'the panel\'s RETRIG');
+  assert.ok(mc.filter(e => e[0] === 'on').length >= 2 && mc.some(e => e[0] === 'off' && e[2] === 0), 'each step restarts the gate (off then on)');
+  p.msg({ t: 'transport', play: false });
+  run(D, p, 2);
+  assert.equal(mc.at(-1)[0], 'off', 'a stop: the gate off');
+  p.mc = null;
+});
+
+test('7a power: a powered-off drum machine fires nothing and splits no spans; on again it re-anchors and plays', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const { p, sent } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: SINE, i2: drPatch() }, { fx1: fxOf() });
+  p.msg({ t: 'seq', i: 'i2', s: drPay(drMem(DC.DEMO.a)) });
+  p.msg(tpPlay(D.ctx.currentFrame));
+  const spans = [], rs = p.renderSpan, x2 = p.insts[1];
+  p.renderSpan = function (Lo, Ro, off, n) { spans.push(n); return rs.call(this, Lo, Ro, off, n); };
+  run(D, p, 200);
+  assert.ok(steps(sent).length >= 4 && spans.some(n => n < 128) && steps(sent).every(m => m.i === 'i2'), 'running: steps, split spans, {t: step, i}');
+  p.msg({ t: 'power', i: 'i2', on: false });
+  assert.equal(x2.on, 0);
+  run(D, p, 4); // (its 3 ms fade)
+  spans.length = 0; sent.length = 0;
+  run(D, p, 200);
+  assert.deepEqual([steps(sent).length, spans.every(n => n === 128), x2.act, x2.dm.live()], [0, true, 0, false], 'off: nothing fires, nothing splits, silent');
+  p.msg({ t: 'power', i: 'i2', on: true });
+  assert.equal(x2.sq.syncStep, null, 'power on: re-anchor');
+  run(D, p, 200);
+  assert.ok(steps(sent).length >= 4 && spans.some(n => n < 128), 'on: it plays again');
+});
+
+test('7a co-resident (§6.3): beside a running drum machine an instrument renders on its span grid — the difference is measured and stays below its recorded bound', (t) => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), A = classic('juno60');
+  const ev = chordEv(2, 140).concat([[20, { t: 'bend', v: 0.6 }], [40, { t: 'wheel', v: 0.8 }], [70, { t: 'bend', v: -0.3 }], [100, { t: 'wheel', v: 0 }]]);
+  // max |difference| / the instrument's peak alone, measured on the M4 Max: 3.9e-7 (−128 dB — the 808's steps split the
+  // spans only at its steps, 6000 frames apart at 120 BPM; the TB-303's gate-offs and Serum's ARP split more): the bound 25× above
+  const BOUND = 1e-5, S = drPay(drMem(DC.DEMO.b));
+  const one = (id, patch, seq) => {
+    const { p } = gnode(D, graph([id], ['fx1'], [[id, 'fx1', 1], ['fx1', 'out', 1]]), { [id]: patch }, { fx1: fxOf() });
+    if (seq) { p.msg({ t: 'seq', i: id, s: S }); p.msg(tpPlay(D.ctx.currentFrame)); }
+    const get = rackIn(p.chains[0].rack); play(D, p, 150, ev); return get();
+  };
+  D.ctx.currentFrame = 0; const a = one('i1', A, false);
+  D.ctx.currentFrame = 0; const b = one('i2', drPatch(), true);
+  D.ctx.currentFrame = 0;
+  const { p } = gnode(D, graph(['i1', 'i2'], ['fx1'], EDGES2), { i1: A, i2: drPatch() }, { fx1: fxOf() });
+  p.msg({ t: 'seq', i: 'i2', s: S }); p.msg(tpPlay(D.ctx.currentFrame));
+  const spans = []; const rs = p.renderSpan; p.renderSpan = function (Lo, Ro, off, n) { spans.push(n); return rs.call(this, Lo, Ro, off, n); };
+  const get = rackIn(p.chains[0].rack);
+  play(D, p, 150, ev);
+  const s = get();
+  assert.ok(spans.some(n => n < 128), 'its steps split the spans');
+  let d = 0;
+  for (let i = 0; i < s.L.length; i++) d = Math.max(d, Math.abs(s.L[i] - b.L[i] - a.L[i]), Math.abs(s.R[i] - b.R[i] - a.R[i]));
+  const rel = d / peakOf(a.L);
+  t.diagnostic(`808: max |sum − (A + B)| = ${d.toExponential(2)} (${rel.toExponential(2)} of A's peak, ${(20 * Math.log10(rel || 1e-30)).toFixed(1)} dB)`);
+  assert.ok(peakOf(b.L) > 1e-3 && peakOf(a.L) > 1e-3, 'both sound');
+  assert.ok(rel <= BOUND, `${rel} > ${BOUND}`);
+});
+
+test('7a OS change (§2.4): {t: os} while the bass drum rings goes through osFade — the machine follows (dm.setOS), no click above −60 dB, it rings on', (t) => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), { p } = mk(D, { os: 4, hostOS: 4, offline: true }, drPatch({ bdd: 10 }));
+  const I = p.i0;
+  p.msg({ t: 'on', n: 36, v: 0.8 });
+  const o = play(D, p, 120, [[40, { t: 'os', v: 2 }]]);
+  assert.deepEqual([I.OS, I.dmOS, I.osPend], [2, 2, 0], 'the machine at OS 2');
+  // the click measure: the output's second difference (a ringing 50 Hz drum's is ≈ 1e-5; a step is its own height)
+  const d2 = (a, q0, q1) => { let m = 0; for (let i = Math.max(2, q0 * 128); i < q1 * 128; i++) m = Math.max(m, Math.abs(a[i] - 2 * a[i - 1] + a[i - 2])); return m; };
+  const before = d2(o.L, 20, 40), change = d2(o.L, 40, 50);
+  t.diagnostic(`second difference: before ${(20 * Math.log10(before)).toFixed(1)} dB, over the change ${(20 * Math.log10(change)).toFixed(1)} dB`);
+  assert.ok(change < 1e-3, `second difference over the change ${(20 * Math.log10(change)).toFixed(1)} dB ≥ −60 dB`);
+  assert.ok(peakOf(o.L.subarray(60 * 128, 120 * 128)) > 0.02, 'it rings on after the change');
+});
+
+test('7a modulation (§9): a modRows row on drum.bdd through the real moRec moves the bass drum\'s decay; a switch row writes its field too (struct: the host never sends one)', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const tail = v => {
+    const { p } = mk(D, { os: 4, hostOS: 4, offline: true }, drPatch());
+    const I = p.i0, rs = I.renderSpan, sv = [{ field: 'drum.bdd', v }];
+    if (v !== null) { I.modRows([{ field: 'drum.bdd' }]); assert.deepEqual([I.moFN, I.moN], [1, 0]); I.renderSpan = function (n) { this.modSpan(null, null, sv); return rs.call(this, n); }; }
+    p.msg({ t: 'on', n: 36, v: 0.8 });
+    const o = play(D, p, 200);
+    let e = 0; for (let i = 100 * 128; i < 200 * 128; i++) e += o.L[i] * o.L[i];
+    return { e, bdd: I.p.drum.bdd };
+  };
+  const base = tail(null), long = tail(1), short = tail(0);
+  assert.deepEqual([base.bdd, long.bdd, short.bdd], [0.5, 1, 0], 'the effective value is in p.drum');
+  assert.ok(long.e > 4 * base.e && short.e < base.e / 4, `the decay follows the cable (${short.e.toExponential(2)} < ${base.e.toExponential(2)} < ${long.e.toExponential(2)})`);
+});
+
+test('7a kind changes (§1.1, §15 #13): 303 → 808 → 303 each keeps its own sq; a 303 payload never lands in a DrSeq; a drum payload before the drums patch is kept', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), { p } = mk(D, { os: 4, hostOS: 4, offline: true }, classic('tb303'));
+  const I = p.i0, S303 = Object.assign({}, SEQ, { sync: false, run: true });
+  p.msg({ t: 'seq', s: Object.assign({}, S303) });
+  assert.ok(I.sq && Array.isArray(I.sq.pat) && I.sq.run, 'the TB-303 sequencer');
+  run(D, p, 20);
+  const S = drPay(drMem(DC.DEMO.a, { sync: false }), true);
+  p.msg({ t: 'seq', s: S }); // (before the drums patch: kept)
+  assert.ok(!isDrSeq(I.sq) && isDrSeq(I.drPend), 'kept apart from the 303\'s');
+  p.msg({ t: 'patch', p: drPatch() });
+  assert.deepEqual([I.kind, isDrSeq(I.sq), I.drPend, I.sq.run, I.sq.pl && I.sq.pl.key], ['drums', true, null, true, S.plan.key], 'the waiting payload is the drum sequencer');
+  const D0 = I.sq;
+  p.msg({ t: 'seq', s: Object.assign({}, S303) }); // a 303 payload reaching a drums Inst: dropped
+  assert.ok(I.sq === D0 && !('pat' in D0) && !('root' in D0), 'nothing written into the DrSeq');
+  assert.ok(peakOf(play(D, p, 100).L) > 0.05, 'the free-running pattern plays');
+  p.msg({ t: 'patch', p: classic('tb303') });
+  assert.deepEqual([I.kind, I.sq], ['analog', null], 'back to the 303: the DrSeq dropped');
+  p.msg({ t: 'seq', s: Object.assign({}, S303) });
+  assert.ok(I.sq && Array.isArray(I.sq.pat) && !isDrSeq(I.sq), 'a fresh TB-303 sequencer');
+  assert.ok(peakOf(play(D, p, 100).L) > 1e-3);
+});
+
+test('7a panic (§1.1): a panic while the bass drum rings is silent after the 5 ms fade (the machine reset, no tail resumes)', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), { p } = mk(D, { os: 4, hostOS: 4, offline: true }, drPatch({ bdd: 10 }));
+  p.msg({ t: 'on', n: 36, v: 1 });
+  const a = play(D, p, 20);
+  assert.ok(peakOf(a.L.subarray(10 * 128)) > 0.05, 'ringing');
+  p.msg({ t: 'panic' });
+  // the output stage's input (as the 1e panic test: its DC block then decays what it held of a 50 Hz drum, its own 4 Hz memory)
+  const os = p.outStage;
+  let after = 0, k = 0;
+  p.outStage = function (Lo, Ro, off, n) { if (k >= 3) for (let i = 0; i < n; i++) after = Math.max(after, Math.abs(this.Lb[i]), Math.abs(this.Rb[i])); return os.call(this, Lo, Ro, off, n); };
+  for (; k < 40; k++) run(D, p, 1);
+  assert.ok(!p.i0.dm.live() && p.pnN === 0 && p.i0.tailN === 0, 'cleared');
+  assert.ok(after < 1e-6, `silent after the fade (${after})`);
+});
+
+test('7a: a drums Inst renders without allocating — the synced pattern, notes (DrSeq\'s step-post literal aside)', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), { p } = mk(D, { os: 4, hostOS: 4, offline: true }, drPatch());
+  p.msg({ t: 'seq', s: drPay(drMem(DC.DEMO.b)) }); p.msg(tpPlay(D.ctx.currentFrame));
+  const o = out();
+  run(D, p, 200, o);
+  let pk = 0;
+  noAlloc(D, () => { for (let k = 0; k < 400; k++) { if (k === 100) p.noteOn(38, 0.9); if (k === 101) p.noteOff(38); p.process([], o); D.ctx.currentFrame += 128; for (const v of o[0][0]) if (Math.abs(v) > pk) pk = Math.abs(v); } });
+  assert.ok(pk > 0.05, 'it played');
+});
+
+// IMPL-7a §2.6 / §12.5: the bench rows through the CPU gate (calibrated, ≤ 1.5 × the node target) and d8i — the machine
+// powered, synced, the transport stopped, nothing sounding, past the 2 s quiet window — gated as row p is
+test('7a bench rows (node gate): d8p, d8x, d8m, d8s ≤ 1.5 × their targets; d8i (an idle synced machine) ≤ 1.5 × 0.0005', async (t) => {
+  const { scenarios, drumTrack, DRUM_PATTERNS } = await import('./bench-scenarios.mjs');
+  const D = dspScope({ engine: true, fast: true, console: quiet }), SB = D.global('SxBase');
+  const node = B => {
+    if (B.assets) for (const [id, e] of Object.entries(B.assets)) SB.storeAsset(id, e);
+    const p = new D.Proc({ processorOptions: { os: 4, hostOS: 4, offline: true } });
+    p.msg(B.graph);
+    for (const [id, patch] of Object.entries(B.patches)) p.msg({ t: 'patch', i: id, p: patch });
+    for (const [id, c] of Object.entries(B.chains)) p.msg(Object.assign({ t: 'chain', c: id }, c));
+    for (const [id, s] of Object.entries(B.seqs)) p.msg({ t: 'seq', i: id, s });
+    return p;
+  };
+  for (const S of scenarios().filter(s => s.id.startsWith('d8'))) {
+    const B = S.build(), p = node(B);
+    p.msg(Object.assign({ t: 'transport' }, B.transport, { frame: D.ctx.currentFrame }));
+    const o = out(), sec = () => run(D, p, SR / 128, o);
+    sec();
+    assert.ok(peakOf(o[0][0]) > 0.01 && p.insts[0].kind === 'drums', S.id + ': audible');
+    assert.equal(CPU.BENCH.targets[S.id].node, S.node);
+    const best = await CPU.gateLoad(sec, S.node);
+    t.diagnostic(`row ${S.id}: ${best.load.toFixed(4)} calibrated (raw ${best.raw.toFixed(4)}, t(calib) ${best.calib.toFixed(0)} ms, attempt ${best.attempt})`);
+    assert.ok(best.load <= 1.5 * S.node, `row ${S.id}: ${best.load.toFixed(4)} > 1.5 × ${S.node}`);
+  }
+  // d8i: d8p's machine with the transport stopped
+  const p = node(drumTrack(DRUM_PATTERNS.d8p)), o = out(), sec = () => run(D, p, SR / 128, o);
+  sec(); sec(); sec();
+  const x = p.insts[0];
+  assert.ok(x.quietF > 2 * SR && x.act === 0 && isDrSeq(x.sq) && x.sq.sync && o[0][0].every(v => v === 0), 'd8i: the skip path, silent');
+  const target = CPU.BENCH.targets.d8i.node, best = await CPU.gateLoad(sec, target);
+  t.diagnostic(`row d8i: ${best.load.toFixed(5)} calibrated (raw ${best.raw.toFixed(5)}, attempt ${best.attempt})`);
+  assert.ok(best.load <= 1.5 * target, `row d8i: ${best.load.toFixed(5)} > 1.5 × ${target}`);
 });

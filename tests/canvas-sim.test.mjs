@@ -515,7 +515,7 @@ test('Sources "Hardware | Simple" (1c, the user\'s request): Simple adds / repla
   // Simple button, aria-pressed; now the item's aria-checked and the button's label)
   const vb = sim.$('#srcView'), vm = sim.$('#srcViewMenu'), simple = vm.children[1], serum = vm.children[2];
   const tap = t => t.dispatchEvent({ type: 'click', target: t, detail: 1, preventDefault() {}, stopPropagation() {} });
-  assert.deepEqual([vb.children[0].textContent, vm.children.map(b => b.children[0].textContent), simple.getAttribute('aria-checked')], ['Hardware', ['Hardware', 'Simple', 'Serum'], 'false']);
+  assert.deepEqual([vb.children[0].textContent, vm.children.map(b => b.children[0].textContent), simple.getAttribute('aria-checked')], ['Hardware', ['Hardware', 'Simple', 'Serum', 'Drums'], 'false']); // ((7a) Drums: the drum machines)
   tap(vb);
   assert.deepEqual([tiles.viewOpen(), vb.getAttribute('aria-expanded')], [true, 'true']);
   tap(simple); // (a pick closes it)

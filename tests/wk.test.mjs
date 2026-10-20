@@ -25,7 +25,7 @@ function mkKnob(extra = {}) {
 
 /* --------------------------------------------------------------- tests */
 // loadDSP resolves every global of the SPEC-serum2 §0.3 list; most checks look at the Phase-1 pair
-const DSP_GLOBAL_NAMES = ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'ModCore'];
+const DSP_GLOBAL_NAMES = ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore'];
 const two = r => ({ SerumDSP: r.SerumDSP, FXDSP: r.FXDSP });
 
 test('imports and degrades without a DOM', () => {
@@ -2229,13 +2229,13 @@ test('ticker: ≤ 30 fps (4 ms slack), 10 fps with reduced motion, skips hidden 
   }
 });
 
-test('loadDSP.URLS: files 1–12 of the §0.3 table, in table order (mod-core.js last, IMPL-2b)', () => {
+test('loadDSP.URLS: files 1–14 of the §0.3 table, in table order (the drum machine\'s two before mod-core.js, last: IMPL-2b, IMPL-7a §10.2)', () => {
   assert.deepEqual([...wk.loadDSP.URLS], ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js',
-    'sx-seq.js', 'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'mod-core.js']);
+    'sx-seq.js', 'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js']);
   assert.ok(Object.isFrozen(wk.loadDSP.URLS));
 });
 
-test('loadDSP(): the default list is files 1–12 in table order (§0.3 + mod-core.js, IMPL-2b); defined globals are skipped; the timer never holds node', async () => {
+test('loadDSP(): the default list is files 1–14 in table order (§0.3 + mod-core.js, IMPL-2b); defined globals are skipped; the timer never holds node', async () => {
   const G = DSP_GLOBAL_NAMES, saved = G.map(k => [k, Object.prototype.hasOwnProperty.call(globalThis, k), globalThis[k]]);
   const st = globalThis.setTimeout, timers = [], warn = console.warn, warned = [];
   globalThis.setTimeout = (fn, ms) => { const t = st(fn, ms); timers.push(t); return t; };
@@ -2251,14 +2251,14 @@ test('loadDSP(): the default list is files 1–12 in table order (§0.3 + mod-co
     assert.ok(timers.every(t => typeof t.hasRef !== 'function' || t.hasRef() === false), 'unref: a pending load keeps no node process alive');
     // a panel's default call after main.js loaded DSP_URLS (versioned paths): nothing new
     const again = wk.loadDSP(wk.loadDSP.URLS.map(u => u + '?v=9'));
-    assert.equal(d.scripts.length, 11);
+    assert.equal(d.scripts.length, 13);
     const vals = {};
     d.scripts.forEach((s, i) => { const g = G[wk.loadDSP.URLS.indexOf(s.src)]; vals[g] = Object.freeze({ id: g }); globalThis[g] = vals[g]; fire(s, i % 2 ? 'load' : 'error', { bubbles: false }); });
     const r = await p;
     assert.deepEqual(Object.keys(r), G);
     for (const g of G) assert.equal(r[g], g === 'SxSeq' ? null : vals[g]);
     assert.deepEqual(await again, r);
-    assert.equal(warned.length, 6);                               // the six scripts that fired 'error' (every other one of 11)
+    assert.equal(warned.length, 7);                               // the seven scripts that fired 'error' (every other one of 13)
   } finally {
     globalThis.setTimeout = st;
     console.warn = warn;

@@ -6,7 +6,7 @@
 <title>SYNTH CPU bench</title>
 <!--
   SPEC-serum2 §14.1 iPad gate (owner I) and SPEC-canvas §9.1 (the stage 1a iPad baseline, repeated at stages 1d, 1e, 2b
-  and 5): runs the benchmark scenarios d–q2 of tests/bench-scenarios.mjs, plus classic-engine rows c1–c6 (the default
+  and 5): runs the benchmark scenarios d–q2 of tests/bench-scenarios.mjs, plus classic-engine rows c1–c7 (the default
   panel of six models — the DX7's Brass Ensemble — at the app's default oversampling 4), in this browser through the real engine and DSP scripts,
   evaluated on this page's main thread with AudioWorklet stand-ins — the same code the worklet runs, timed with
   performance.now(). Nothing here changes the DSP.
@@ -72,6 +72,8 @@
 <script src="../serum-dsp.js?v=9"></script>
 <script src="../fx-mods2.js?v=9"></script>
 <script src="../fx-dsp.js?v=9"></script>
+<script src="../dr-808.js?v=9"></script>
+<script src="../dr-seq.js?v=9"></script>
 <script src="../mod-core.js?v=9"></script>
 <script src="../engine.js?v=9"></script>
 </head>
@@ -113,12 +115,13 @@
     <tbody id="rows"></tbody>
   </table>
 </div>
-<p class="note">Load: the median over the passes run so far (during a pass: that pass). Spread: lowest – highest pass. Red: over 0.6; amber: over the iPad target. Classic rows c1–c6 (six classic synths, 8 voices or mono, oversampling 4) have no target: they are the baseline for later engine stages.</p>
+<p class="note">Load: the median over the passes run so far (during a pass: that pass). Spread: lowest – highest pass. Red: over 0.6; amber: over the iPad target. Classic rows c1–c7 (six classic synths, 8 voices or mono, and the TR-808 playing its demo pattern; oversampling 4) have no target: they are the baseline for later engine stages. Rows d8p–d8s are the TR-808's (IMPL-7a §2.6).</p>
 <pre id="json" hidden></pre>
 </main>
 <script type="module">
-  import { scenarios, measure } from './bench-scenarios.mjs';
+  import { scenarios, measure, drumTrack } from './bench-scenarios.mjs';
   import { MODELS, patchFor } from '../models.js?v=9';
+  import { DEMO } from '../drum-core.js?v=9';
   import { defaultFx2 } from '../serum-core.js?v=9';
   const $ = id => document.getElementById(id);
   const tryLS = (fn, d) => { try { return fn(globalThis.localStorage); } catch { return d; } };
@@ -140,7 +143,8 @@
     ['c5', 'solina', null, 8], ['c6', 'jupiter8', null, 8]].map(([id, model, preset, n]) => {
     const m = MODELS.find(x => x.id === model);
     return { id, label: `Classic: ${m.name} ${preset || 'default'}, ${n > 1 ? n + ' voices' : 'mono'}, OS 4`, kind: 'voice', ipad: null, env: env4, build: () => classic(model, preset, n) };
-  });
+  }).concat([{ id: 'c7', label: 'Classic: TR-808 default panel, its demo pattern synced at 120 BPM (the whole track), OS 4', kind: 'track', ipad: null, env,
+    build: () => drumTrack(DEMO.a) }]); // (IMPL-7a §2.6)
   const list = scenarios().concat(CLASSIC), tb = $('rows'), cells = new Map();
   for (const s of list) {
     // (cells by reference: row ids such as g" cannot be element ids)

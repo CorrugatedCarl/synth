@@ -1,8 +1,16 @@
 // PianoRoll — canvas note editor for one track. All edits go through host.edit / host.beginEdit+changed+endEdit.
 // The specifier must match main.js's song import exactly: a different query string loads a second copy of song.js with its own note-id counter.
+// (7a, IMPL-7a §4.2) A drum track's rows: host.drumRows(track) → [{ n, name }] (its sounds' primary notes, kick first) |
+// null. The roll's row ↔ note conversions go through one row table — this.rows: null = the piano (row r = note 127 − r,
+// 128 rows); the compact drum rows (on by default: setDrumRows, the toolbar's "Drum rows"; host.drumRowsOn the saved
+// choice): row 0 "Other" (every note no row names), rows 1…K the named notes, kick at the bottom — so compact mode is a
+// table (_row, _noteAt, _rowN, _nRows, _lab), not a fork. On either layout the gutter (GUT_D wide) names the drum rows
+// and the piano dims the rows no sound plays; a vertical drag moves between drum rows; the velocity lane draws the
+// normal (100) and accent (127) lines. drumRowsOf(dev) builds the rows from a drum machine's device record (drum-core).
 import { PPQ, barTicks, beatTicks, fmtBBT, snapTick, sortNotes, songEnd, copyNotes, pasteNotes, newId } from './song.js?v=9';
+import { drumRows, PERS } from './drum-core.js?v=9';
 
-const GUT = 64, RUL = 24, VEL = 72, MAXPPT = 1.5, BW = 38;
+const GUT_P = 64, GUT_D = 120, RUL = 24, VEL = 72, MAXPPT = 1.5, BW = 38;
 const BG = '#0c0d0f', ACC = '#f2a33a', TEXT = '#e9e7e2', MUTE = '#8d8b86', LINE = '#24262b';
 const FONT = "'JetBrains Mono', ui-monospace, Menlo, monospace";
 const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -39,6 +47,12 @@ const TOOLS = ['select', 'draw', 'erase'];
 
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const noteName = n => NAMES[n % 12] + (Math.floor(n / 12) - 1);
+/** (7a) The drum rows of an instrument device ({ model, drum }): a drum machine's mapped primaries, kick first, as
+ * host.drumRows wants them ([{ n, name }]); null for any other model. */
+export function drumRowsOf(dev) {
+  if (!dev || typeof dev !== 'object' || typeof dev.model !== 'string' || !Object.prototype.hasOwnProperty.call(PERS, dev.model)) return null;
+  return drumRows(dev.drum && typeof dev.drum === 'object' ? dev.drum.map : undefined).map(e => ({ n: e.n, name: e.name }));
+}
 const isBlk = n => BLK[((n % 12) + 12) % 12] === 1;
 const rgb = s => {
   s = String(s || '').replace('#', '');
@@ -83,6 +97,8 @@ export class PianoRoll {
     this.rowBase = host.touch ? ROW_DEF_T : ROW_DEF; this.rowPref = Number.isFinite(r0) && r0 > 0 ? clamp(r0, ROW_MIN, ROW_MAX) : null;
     this.rowHf = this.rowPref || this.rowBase; this.rowH = Math.round(this.rowHf); this.sx = 0; this.sy = 0; this.syr = 0; this.tseen = false;
     this.tool = 'select'; this.drawLen = 0; this.lastLen = 0; this.follow = false; this.ghosts = true;
+    // (7a) the row table (null: the piano), the drum names (note → name; null: no drum rows), the compact choice, the key
+    this.rows = null; this.dn = null; this.dlist = null; this.dcomp = host.drumRowsOn !== false; this.rkey = ''; this.gut = GUT_P;
     this.coarse = !!host.touch; // the last pointer was a finger or pen (a touch device until then): handles on selected notes
     this.sel = new Set(); this.ins = null; this.ph = +host.getPlayhead() || 0;
     this.g = null; this.hover = null; this.keys = new Set(); this.touches = new Map(); this.lastTap = null;
@@ -97,17 +113,56 @@ export class PianoRoll {
     if (typeof ResizeObserver !== 'undefined') { this.ro = new ResizeObserver(() => this.resize()); this.ro.observe(container); }
     else { this.ro = null; this._wr = () => this.resize(); window.addEventListener('resize', this._wr); }
     try { document.fonts.ready.then(() => this.render()); } catch { /* no font loading API */ }
+    this._syncRows(true);
     this.resize();
   }
 
   /* ---------------------------------------------------------- geometry */
-  get gw() { return Math.max(0, this.W - GUT); }
+  get gw() { return Math.max(0, this.W - this.gut); }
   get gb() { return this.H - VEL - 1; }
   get gh() { return Math.max(0, this.gb - RUL); }
-  t2x(t) { return GUT + (t - this.sx) * this.ppt; }
-  x2t(x) { return this.sx + (x - GUT) / this.ppt; }
-  n2y(n) { return RUL + (127 - n) * this.rowH - this.syr; }
-  y2n(y) { return 127 - Math.floor((y - RUL + this.syr) / this.rowH); }
+  t2x(t) { return this.gut + (t - this.sx) * this.ppt; }
+  x2t(x) { return this.sx + (x - this.gut) / this.ppt; }
+  n2y(n) { return this.r2y(this._row(n)); }
+  y2n(y) { const r = this.y2r(y); return this.rows ? this._noteAt(clamp(r, 0, this.rows.at.length - 1)) : 127 - r; }
+  r2y(r) { return RUL + r * this.rowH - this.syr; }
+  y2r(y) { return Math.floor((y - RUL + this.syr) / this.rowH); }
+  // the row table: a note's row, a row's note (−1: "Other"), the note a press / drag on row r gives (the piano: 0…127; the
+  // drum rows: the nearest named row), the row count, a note's label (a drum row's name)
+  _row(n) { return this.rows ? this.rows.n[n] || 0 : 127 - n; }
+  _noteAt(r) { return this.rows ? (r >= 1 && r < this.rows.at.length ? this.rows.at[r] : -1) : 127 - r; }
+  _rowN(r) { return this.rows ? this.rows.at[clamp(r, 1, this.rows.at.length - 1)] : clamp(127 - r, 0, 127); }
+  _nRows() { return this.rows ? this.rows.at.length : 128; }
+  _lab(n) { return n < 0 ? 'Other' : this.dn && this.dn.has(n) ? this.dn.get(n) + ' ' + n : noteName(n); }
+  _nlab(n) { return this.dn && this.dn.has(n) ? this.dn.get(n) : noteName(n); } // (a note's body)
+  // a vertical move of whole drum rows dr (> 0: down) for notes ns, clamped: a note on a named row stays on them (1…K),
+  // one in "Other" may move onto them; _rowNote: a note dr rows away (0 rows: itself — "Other" keeps its pitch)
+  _rowClamp(ns, dr) {
+    const K = this._nRows() - 1;
+    let lo = -Infinity, hi = Infinity;
+    for (const n of ns) { const r = this._row(n); lo = Math.max(lo, (r ? 1 : 0) - r); hi = Math.min(hi, K - r); }
+    return lo > hi ? 0 : clamp(dr, lo, hi);
+  }
+  _rowNote(n, dr) { if (!dr) return n; const r = this._row(n) + dr; return r ? this._noteAt(r) : n; }
+  // (re)reads host.drumRows for the track: the table, the names, the gutter; → whether anything changed
+  _syncRows(force) {
+    const tr = this.host.getTrack(), L = tr && typeof this.host.drumRows === 'function' ? this.host.drumRows(tr) : null, list = [], seen = new Set();
+    if (Array.isArray(L)) for (const e of L) if (e && Number.isInteger(e.n) && e.n >= 0 && e.n <= 127 && !seen.has(e.n)) { seen.add(e.n); list.push({ n: e.n, name: String(e.name || noteName(e.n)).slice(0, 24) }); }
+    const key = list.length ? (this.dcomp ? 'c' : 'p') + list.map(e => e.n + ':' + e.name).join('|') : '';
+    if (!force && key === this.rkey) return false;
+    this.rkey = key;
+    this.dlist = list.length ? list : null;
+    this.dn = list.length ? new Map(list.map(e => [e.n, e.name])) : null;
+    if (list.length && this.dcomp) {
+      const K = list.length, n = new Int16Array(128), at = new Int16Array(K + 1);
+      at[0] = -1;
+      list.forEach((e, i) => { const r = K - i; at[r] = e.n; n[e.n] = r; }); // (kick at the bottom)
+      this.rows = { n, at };
+    } else this.rows = null;
+    this.gut = list.length ? GUT_D : GUT_P;
+    this.clampX(); this.clampY();
+    return true;
+  }
   v2y(v) { return this.H - VEL + 6 + (1 - v / 127) * (VEL - 12); }
   y2v(y) { return clamp(Math.round(127 * (1 - (y - (this.H - VEL + 6)) / (VEL - 12))), 1, 127); }
   _maxTick() {
@@ -119,48 +174,68 @@ export class PianoRoll {
   }
   _minPpt() { return Math.min(MAXPPT, Math.max(1e-4, this.gw / this._maxTick())); }
   clampX() { this.sx = clamp(this.sx, 0, Math.max(0, this._maxTick() - this.gw / this.ppt)); }
-  clampY() { this.sy = clamp(this.sy, 0, Math.max(0, 128 * this.rowH - this.gh)); this.syr = Math.round(this.sy); }
+  clampY() { this.sy = clamp(this.sy, 0, Math.max(0, this._nRows() * this.rowH - this.gh)); this.syr = Math.round(this.sy); }
   _snap() { return Math.max(0, +this.host.getSnap() || 0); }
   _len() { return Math.max(1, Math.round(this.drawLen || this._snap() || this.lastLen || PPQ / 4)); }
   _ids() { const s = new Set(), p = this.host.getProject(); if (p) for (const t of p.tracks) for (const x of t.notes || []) s.add(x.id); return s; }
   _pos(e) { const r = this.el.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
   _region(x, y) {
-    if (y < RUL) return x < GUT ? 'corner' : 'ruler';
-    if (y >= this.H - VEL) return x < GUT ? 'velg' : 'vel';
+    if (y < RUL) return x < this.gut ? 'corner' : 'ruler';
+    if (y >= this.H - VEL) return x < this.gut ? 'velg' : 'vel';
     if (y >= this.gb) return 'div';
-    return x < GUT ? 'keys' : 'grid';
+    return x < this.gut ? 'keys' : 'grid';
   }
 
   /* ------------------------------------------------------- public API */
   resize() {
     const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
-    const W = Math.round(this.box.clientWidth), H = Math.round(this.box.clientHeight);
+    const W = Math.round(this.box.clientWidth), H = Math.round(this.box.clientHeight), tall = H !== this.H;
     if (W !== this.W || H !== this.H || dpr !== this.dpr) {
       this.W = W; this.H = H; this.dpr = dpr;
       for (const cv of [this.el, this.back]) { cv.width = Math.max(1, Math.round(W * dpr)); cv.height = Math.max(1, Math.round(H * dpr)); }
     }
-    this._applyWant(); this.clampX(); this.clampY(); this.render();
+    this._applyWant();
+    if (tall && !this.g && this._drumFit()) this.sy = 0; // ((7a review 2 #8) the compact drum rows refit a new height)
+    this.clampX(); this.clampY(); this.render();
   }
   render() { this.dirty = true; this._req(); }
   _req() { if (!this.raf && !this.dead) this.raf = requestAnimationFrame(this._frame); }
   setTrack() {
     if (this.g) this._finish(false);
     this.sel.clear(); this.ins = null; this.lastTap = null; this.hover = null; this._notify();
+    this._syncRows(true); this._centre(); this.render();
+  }
+  _centre() {
     const tr = this.host.getTrack();
     let lo = 48, hi = 72;
     if (tr && tr.notes.length) { lo = 127; hi = 0; for (const x of tr.notes) { if (x.n < lo) lo = x.n; if (x.n > hi) hi = x.n; } }
-    this.want = { type: 'center', lo, hi }; this._applyWant(); this.render();
+    this.want = { type: 'center', lo, hi }; this._applyWant();
   }
+  // (7a) the drum rows: on = compact (the named rows only, "Other" on top), off = the full keyboard with the names — for
+  // every drum track; isDrum() — the track has drum rows (the toolbar shows its toggle, Transpose asks first); drumRows()
+  // the table shown ({ on, rows: [{ n, name }] } | null); refreshRows() re-reads host.drumRows (a map edit; a frame also
+  // notices a change)
+  setDrumRows(on) {
+    on = !!on;
+    if (on === this.dcomp) return;
+    this.dcomp = on;
+    if (!this.dlist) return; // (not a drum track: kept for the next one)
+    if (this.g) this._finish(false);
+    this._syncRows(true); this._centre(); this.render();
+  }
+  isDrum() { return !!this.dlist; }
+  drumRows() { return this.dlist ? { on: !!this.rows, rows: this.dlist.map(e => ({ n: e.n, name: e.name })) } : null; }
+  refreshRows() { if (this.g) return; if (this._syncRows()) { this._centre(); this.render(); } }
   setTool(name) { if (TOOLS.includes(name)) { this.tool = name; this.render(); } }
   setDrawLength(t) { this.drawLen = Math.max(0, Math.round(+t || 0)); this._req(); }
   zoomX(f, cx) {
     let ax;
     if (cx != null) ax = cx - this.el.getBoundingClientRect().left;
-    else { const px = this.t2x(this.ph); ax = px >= GUT && px <= this.W ? px : GUT; }
-    ax = clamp(ax, GUT, Math.max(GUT, this.W));
+    else { const px = this.t2x(this.ph); ax = px >= this.gut && px <= this.W ? px : this.gut; }
+    ax = clamp(ax, this.gut, Math.max(this.gut, this.W));
     const t = this.x2t(ax);
     this.ppt = clamp(this.ppt * (+f || 1), this._minPpt(), MAXPPT);
-    this.sx = t - (ax - GUT) / this.ppt; this.clampX();
+    this.sx = t - (ax - this.gut) / this.ppt; this.clampX();
     if (this.g) this._apply();
     this.render();
   }
@@ -183,6 +258,14 @@ export class PianoRoll {
     this.render();
   }
   _rowsChosen() { this.rowPref = this.rowHf; if (this.host.onRows) this.host.onRows(this.rowH); }
+  // (7a review 2 #8) the compact drum rows fill the grid's height (no chosen row height): up to Fit's caps (32 px with a
+  // mouse, 44 on touch), never below the touch minimum; → whether it applied (the piano: never)
+  _drumFit() {
+    if (!this.rows || this.rowPref || this.gh < 10) return false;
+    const tc = this._touch();
+    this.rowHf = clamp(Math.floor(this.gh / this._nRows()), tc ? ROW_AUTO_T : ROW_MIN, tc ? ROW_FIT_T : ROW_FIT); this.rowH = Math.round(this.rowHf);
+    return true;
+  }
   _touch() { return !!this.host.touch || this.tseen; } // a touch device, or a finger seen on the roll
   fit() { this.want = { type: 'fit' }; this._applyWant(); this.render(); }
   _applyWant() {
@@ -190,30 +273,34 @@ export class PianoRoll {
     if (!w || this.gw < 10 || this.gh < 10) return;
     this.want = null;
     if (w.type === 'center') {
-      // from the default size each time (rows grow back after a wide track); a chosen size is kept, the view scrolls
-      const rows = w.hi - w.lo + 1, b = this.rowBase;
-      this.rowHf = this.rowPref || clamp(rows * b > this.gh ? Math.floor(this.gh / (rows + 1)) : b, this._touch() ? ROW_AUTO_T : ROW_MIN, b);
-      this.rowH = Math.round(this.rowHf);
-      this.sy = (127 - (w.lo + w.hi) / 2 + 0.5) * this.rowH - this.gh / 2; this.clampY();
+      // from the default size each time (rows grow back after a wide track); a chosen size is kept, the view scrolls. The
+      // drum rows: all of them
+      const r0 = this.rows ? 0 : 127 - w.hi, r1 = this.rows ? this._nRows() - 1 : 127 - w.lo, rows = r1 - r0 + 1, b = this.rowBase;
+      if (!this._drumFit()) {
+        this.rowHf = this.rowPref || clamp(rows * b > this.gh ? Math.floor(this.gh / (rows + 1)) : b, this._touch() ? ROW_AUTO_T : ROW_MIN, b);
+        this.rowH = Math.round(this.rowHf);
+      }
+      this.sy = ((r0 + r1) / 2 + 0.5) * this.rowH - this.gh / 2; this.clampY();
       return;
     }
     const p = this.host.getProject(), tr = this.host.getTrack();
     if (!p) return;
-    let t0, t1, lo, hi;
+    let t0, t1, r0, r1; // (the rows of the notes: the piano's 127 − hi … 127 − lo)
     if (tr && tr.notes.length) {
-      t0 = Infinity; t1 = 0; lo = 127; hi = 0;
-      for (const x of tr.notes) { t0 = Math.min(t0, x.t); t1 = Math.max(t1, x.t + x.d); lo = Math.min(lo, x.n); hi = Math.max(hi, x.n); }
+      t0 = Infinity; t1 = 0; r0 = Infinity; r1 = -Infinity;
+      for (const x of tr.notes) { const r = this._row(x.n); t0 = Math.min(t0, x.t); t1 = Math.max(t1, x.t + x.d); r0 = Math.min(r0, r); r1 = Math.max(r1, r); }
     } else {
       const lp = p.loop || {};
-      t0 = +lp.start || 0; t1 = lp.end > t0 ? lp.end : t0 + barTicks(p) * 4; lo = 48; hi = 72;
+      t0 = +lp.start || 0; t1 = lp.end > t0 ? lp.end : t0 + barTicks(p) * 4;
+      r0 = this.rows ? 0 : 127 - 72; r1 = this.rows ? this._nRows() - 1 : 127 - 48;
     }
     t1 = Math.max(t1, t0 + beatTicks(p));
     const span = t1 - t0;
     this.ppt = clamp(this.gw / (span * 1.08), this._minPpt(), MAXPPT);
     this.sx = t0 - span * 0.04; this.clampX();
     const tc = this._touch();
-    this.rowHf = clamp(Math.floor(this.gh / (hi - lo + 5)), tc ? ROW_AUTO_T : ROW_MIN, tc ? ROW_FIT_T : ROW_FIT); this.rowH = Math.round(this.rowHf);
-    this.sy = (127 - (lo + hi) / 2 + 0.5) * this.rowH - this.gh / 2; this.clampY();
+    this.rowHf = clamp(Math.floor(this.gh / (r1 - r0 + 5)), tc ? ROW_AUTO_T : ROW_MIN, tc ? ROW_FIT_T : ROW_FIT); this.rowH = Math.round(this.rowHf);
+    this.sy = ((r0 + r1) / 2 + 0.5) * this.rowH - this.gh / 2; this.clampY();
   }
   setFollow(on) { this.follow = !!on; if (this.follow) this.setPlayhead(this.ph); }
   setGhosts(on) { this.ghosts = !!on; this.render(); }
@@ -223,7 +310,7 @@ export class PianoRoll {
     this.ph = +t || 0;
     if (this.follow && !this.g && this.gw > 0) {
       const x = this.t2x(this.ph);
-      if (x > this.W - 12 || x < GUT) { const o = this.sx; this.sx = this.ph - this.gw * 0.04 / this.ppt; this.clampX(); if (this.sx !== o) this.dirty = true; }
+      if (x > this.W - 12 || x < this.gut) { const o = this.sx; this.sx = this.ph - this.gw * 0.04 / this.ppt; this.clampX(); if (this.sx !== o) this.dirty = true; }
     }
     if (!sync || this.dead) { this._req(); return; }
     if (this.raf) { cancelAnimationFrame(this.raf); this.raf = 0; }
@@ -235,7 +322,7 @@ export class PianoRoll {
     t = Math.max(0, +t || 0);
     if (this.gw < 10) return;
     const x = this.t2x(t);
-    if (x >= GUT && x <= GUT + this.gw * 0.75) return;
+    if (x >= this.gut && x <= this.gut + this.gw * 0.75) return;
     this.sx = t - this.gw * 0.04 / this.ppt; this.clampX(); this.render();
   }
   _notes() { const tr = this.host.getTrack(); return tr ? tr.notes : []; }
@@ -244,6 +331,7 @@ export class PianoRoll {
   selectNone() { this._setSel([]); }
   invertSelection() { this._setSel(this._notes().filter(x => !this.sel.has(x.id)).map(x => x.id)); }
   selectPitch(n) { this._setSel(this._notes().filter(x => x.n === n).map(x => x.id)); }
+  _selRow(r) { this._setSel(this._notes().filter(x => this._row(x.n) === r).map(x => x.id)); } // ((7a) a drum row: "Other" holds many notes)
   getSelection() { return this.sel.size ? this._notes().filter(x => this.sel.has(x.id)) : []; }
   getTargetNotes() { const s = this.getSelection(); return s.length ? s : this._notes().slice(); }
   deleteSelected(label = 'Delete notes') {
@@ -297,9 +385,10 @@ export class PianoRoll {
     if (!s.length) return;
     let a = Infinity, lo = 127, hi = 0;
     for (const x of s) { a = Math.min(a, x.t); lo = Math.min(lo, x.n); hi = Math.max(hi, x.n); }
-    dt = Math.max(Math.round(+dt || 0), -a); dn = clamp(Math.round(+dn || 0), -lo, 127 - hi);
+    // (the drum rows: dn rows up)
+    dt = Math.max(Math.round(+dt || 0), -a); dn = this.rows ? 0 - this._rowClamp(s.map(x => x.n), -Math.round(+dn || 0)) : clamp(Math.round(+dn || 0), -lo, 127 - hi);
     if (!dt && !dn) return;
-    this.host.edit('Nudge notes', () => { for (const x of s) { x.t += dt; x.n += dn; } const tr = this.host.getTrack(); if (tr) sortNotes(tr.notes); });
+    this.host.edit('Nudge notes', () => { for (const x of s) { x.t += dt; x.n = this.rows ? this._rowNote(x.n, -dn) : x.n + dn; } const tr = this.host.getTrack(); if (tr) sortNotes(tr.notes); });
     if (dn && s.length === 1) this._blip(s[0].n, s[0].v);
     this.render();
   }
@@ -343,11 +432,11 @@ export class PianoRoll {
   _hit(x, y, z) {
     if (z) return this._hitZ(x, y, z);
     const tr = this.host.getTrack();
-    if (!tr || y < RUL || y >= this.gb || x < GUT) return null;
-    const n = this.y2n(y);
+    if (!tr || y < RUL || y >= this.gb || x < this.gut) return null;
+    const r = this.y2r(y);
     let best = null, bp = -1;
     for (const nt of tr.notes) {
-      if (nt.n !== n) continue;
+      if (this._row(nt.n) !== r) continue;
       const x0 = this.t2x(nt.t), x1 = Math.max(x0 + 2, this.t2x(nt.t + nt.d));
       if (x < x0 - 1 || x > x1 + 2) continue;
       const pr = (x >= x0 && x <= x1 ? 2 : 0) + (this.sel.has(nt.id) ? 1 : 0);
@@ -366,15 +455,16 @@ export class PianoRoll {
   // later note
   _hitZ(x, y, z) {
     const tr = this.host.getTrack();
-    if (!tr || y < RUL || y >= this.gb || x < GUT) return null;
+    if (!tr || y < RUL || y >= this.gb || x < this.gut) return null;
     const rh = this.rowH, room = Math.max(0, (TROW - rh) / 2), sy = Math.min(z.slopY, room), su = Math.min(z.slopU, room);
-    const nLo = this.y2n(Math.min(this.gb - 1, y + sy)), nHi = this.y2n(Math.max(RUL, y - sy));
+    const rTop = this.y2r(Math.max(RUL, y - sy)), rBot = this.y2r(Math.min(this.gb - 1, y + sy));
     // Draw: outside a note only from the grid cell(s) it ends / starts in; 3 px elsewhere and with snap Off
     const snap = this._snap(), cell = z === ZONES.touch.draw || z === ZONES.pen.draw ? (snap ? snapTick(this.x2t(x), snap, 'floor') : -1) : null;
     let best = null, bk = -1, bd = Infinity;
     for (const nt of tr.notes) {
-      if (nt.n < nLo || nt.n > nHi) continue;
-      const sel = this.sel.has(nt.id), ry = this.n2y(nt.n), dy = y < ry ? ry - y : y >= ry + rh ? y - (ry + rh) + 1 : 0;
+      const nr = this._row(nt.n);
+      if (nr < rTop || nr > rBot) continue;
+      const sel = this.sel.has(nt.id), ry = this.r2y(nr), dy = y < ry ? ry - y : y >= ry + rh ? y - (ry + rh) + 1 : 0;
       if (dy > (sel ? sy : su)) continue;
       const x0 = this.t2x(nt.t), x1 = Math.max(x0 + 2, this.t2x(nt.t + nt.d)), w = x1 - x0;
       let oR = sel ? z.outR : z.outU, oL = sel ? z.outL : 0;
@@ -401,18 +491,20 @@ export class PianoRoll {
   _loopEdge(x, reach = 5) {
     const p = this.host.getProject(), lp = p && p.loop;
     if (!lp || !(lp.end > lp.start)) return null;
-    const near = t => { const ex = this.t2x(t); return ex >= GUT && ex <= this.W && Math.abs(x - ex) <= reach; };
+    const near = t => { const ex = this.t2x(t); return ex >= this.gut && ex <= this.W && Math.abs(x - ex) <= reach; };
     return near(lp.end) ? 'end' : near(lp.start) ? 'start' : null;
   }
+  // the row under client y (r) and its note (n; −1: the drum rows' "Other")
+  _hrow(hv, y) { hv.r = clamp(this.y2r(y), 0, this._nRows() - 1); hv.n = this.rows && !hv.r ? -1 : this._rowN(hv.r); }
   // pk 'pen': a hovering Pencil sees the pen's zones
   _hover(x, y, quiet, pk) {
     const reg = this._region(x, y), hv = { reg, x, y, pk }, pen = pk === 'pen';
     let cur = 'default';
     if (reg === 'grid') {
-      hv.n = clamp(this.y2n(y), 0, 127); hv.t = Math.max(0, this.x2t(x));
+      this._hrow(hv, y); hv.t = Math.max(0, this.x2t(x));
       const h = this._hit(x, y, pen ? this._zones('pen', this.tool) : null); hv.hit = h;
       cur = this.tool === 'erase' ? ERASER : h ? (h.part === 'b' ? 'move' : 'ew-resize') : this.tool === 'draw' ? PENCIL : 'crosshair';
-    } else if (reg === 'keys') { hv.n = clamp(this.y2n(y), 0, 127); cur = 'pointer'; }
+    } else if (reg === 'keys') { this._hrow(hv, y); cur = 'pointer'; }
     else if (reg === 'ruler') { hv.t = Math.max(0, this.x2t(x)); cur = this._loopEdge(x, pen ? PLOOP : 5) ? 'ew-resize' : 'pointer'; }
     else if (reg === 'vel') { hv.t = Math.max(0, this.x2t(x)); hv.stem = this._stemAt(x, y, pen ? PSTEM : 5); cur = hv.stem ? 'ns-resize' : 'crosshair'; }
     this.hover = hv; this._cursor(cur);
@@ -456,7 +548,7 @@ export class PianoRoll {
     // deletes it; dn: the note a double-tap deletes
     const hit = reg === 'grid' && tr && tool !== 'erase' ? this._hit(x, y, z) : null, near = !!hit && (!z || hit.k >= 2);
     const ih = z && hit ? this._hitZ(x, y, { ...z, outR: 0, outL: 0, outU: 0, slopY: 0, slopU: 0 }) : near ? hit : null;
-    const tgt = reg === 'grid' ? (ih ? ih.note.id : 'empty') : reg === 'keys' ? 'k' + clamp(this.y2n(y), 0, 127) : reg;
+    const tgt = reg === 'grid' ? (ih ? ih.note.id : 'empty') : reg === 'keys' ? 'k' + (this.rows ? 'r' + clamp(this.y2r(y), 0, this._nRows() - 1) : clamp(this.y2n(y), 0, 127)) : reg;
     const t2 = reg === 'grid' && !ih && near ? hit.note.id : tgt;
     const dz = pk === 'touch' ? TDBL : pk === 'pen' ? PDBL : DBL;
     const dbl = !!lt && btn === 0 && ts - lt.ts < 350 && Math.abs(x - lt.x) < dz && Math.abs(y - lt.y) < dz && lt.reg === reg && (lt.tgt === tgt || lt.tgt === t2);
@@ -602,7 +694,7 @@ export class PianoRoll {
     g.items = list.map(o => [o, o.t, o.d, o.n]); g.mt = g.note.t; g.md = g.note.d;
     let a = Infinity, lo = 127, hi = 0;
     for (const o of list) { a = Math.min(a, o.t); lo = Math.min(lo, o.n); hi = Math.max(hi, o.n); }
-    g.minT = a; g.minN = lo; g.maxN = hi;
+    g.minT = a; g.minN = lo; g.maxN = hi; g.ns = list.map(o => o.n); // ((7a) the drum rows clamp by rows: _rowClamp)
   }
   // first real change of a move/resize: only now open the undo step (and make the Alt copies), so a jittery click stays a click
   _edit0() {
@@ -699,7 +791,7 @@ export class PianoRoll {
     if (!g || !g.moved || !AUTO_X.has(g.type)) return [0, 0];
     // a finger gets wider zones (it hides what it nears); one that pressed inside a zone scrolls only once it moves on
     // toward that edge (a resize grabbed near the right edge doesn't run off at once)
-    const t = g.touch, R = this.W - (t ? TEDGE : 6), L = GUT + (t ? 12 : 0), T = RUL + (t ? 10 : 0), B = this.gb - (t ? 10 : 0);
+    const t = g.touch, R = this.W - (t ? TEDGE : 6), L = this.gut + (t ? 12 : 0), T = RUL + (t ? 10 : 0), B = this.gb - (t ? 10 : 0);
     let vx = 0, vy = 0;
     if (g.x > R && (!t || g.x0 <= R || g.x > g.x0 + 4)) vx = g.x - R + 1; else if (g.x < L && (!t || g.x0 >= L || g.x < g.x0 - 4)) vx = g.x - L - 1;
     if (AUTO_Y.has(g.type)) {
@@ -728,7 +820,7 @@ export class PianoRoll {
   _pinchStart(prev) {
     const ids = [...this.touches.keys()].slice(0, 2), [a, b] = ids.map(i => this.touches.get(i)), r = a.reg;
     const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2, ang = Math.atan2(Math.abs(a.y - b.y), Math.abs(a.x - b.x)) * 180 / Math.PI;
-    const zone = mx < GUT + 16 && ang >= 45 ? 'keys' : r === 'ruler' || r === 'corner' || r === 'vel' || r === 'velg' ? 'time' : 'grid';
+    const zone = mx < this.gut + 16 && ang >= 45 ? 'keys' : r === 'ruler' || r === 'corner' || r === 'vel' || r === 'velg' ? 'time' : 'grid';
     this.lastTap = null; // its first finger is no first half of a double-tap
     this.g = { type: 'pinch', ids, zone, ax: zone === 'keys' || (zone === 'grid' && ang > 60) ? 'y' : 'x', on: false, pend: false,
       d0: Math.max(20, Math.hypot(a.x - b.x, a.y - b.y)), mx0: mx, my0: my, ppt0: this.ppt, rowHf0: this.rowHf, sx0: this.sx,
@@ -747,7 +839,7 @@ export class PianoRoll {
     if (g.kaud != null && (g.on || Math.hypot(mx - g.mx0, my - g.my0) >= PZ_ENGAGE)) { this._audOff(g.kaud); g.kaud = null; }
     if (g.on && g.ax === 'x') this.ppt = clamp(g.ppt0 * d / g.d0, this._minPpt(), MAXPPT);
     else if (g.on) { this.rowHf = clamp(g.rowHf0 * d / g.d0, ROW_MIN, ROW_MAX); this.rowH = Math.round(this.rowHf); }
-    this.sx = g.zone === 'keys' ? g.sx0 : g.tm - (mx - GUT) / this.ppt;
+    this.sx = g.zone === 'keys' ? g.sx0 : g.tm - (mx - this.gut) / this.ppt;
     this.sy = g.row * this.rowH - (my - RUL);
     this.clampX(); this.clampY(); this.dirty = true;
   }
@@ -765,13 +857,16 @@ export class PianoRoll {
     else g.type = 'ruler';
   }
   _keysDown(g, x, y, dbl) {
-    g.type = 'keys'; g.key = clamp(this.y2n(y), 0, 127); g.kv = clamp(Math.round(40 + 87 * x / (GUT - 8)), 1, 127);
-    this._aud(g.key, g.kv);
-    if (dbl) this.selectPitch(g.key);
+    // ((7a) the drum rows: "Other" sounds nothing; a double-tap selects the row)
+    const r = clamp(this.y2r(y), 0, this._nRows() - 1);
+    g.type = 'keys'; g.key = this._keyAt(y); g.kv = clamp(Math.round(40 + 87 * x / (this.gut - 8)), 1, 127);
+    if (g.key != null) this._aud(g.key, g.kv);
+    if (dbl) { if (this.rows) this._selRow(r); else this.selectPitch(g.key); }
   }
+  _keyAt(y) { const r = this.y2r(y); return this.rows && r < 1 ? null : this._rowN(r); }
   _keysApply() {
-    const g = this.g, n = clamp(this.y2n(g.y), 0, 127);
-    if (n !== g.key) { this._audOff(g.key); g.key = n; this._aud(n, g.kv); }
+    const g = this.g, n = this._keyAt(g.y);
+    if (n !== g.key) { this._audOff(g.key); g.key = n; if (n != null) this._aud(n, g.kv); }
   }
   _noteDown(g, hit, e) {
     const nt = hit.note, was = this.sel.has(nt.id);
@@ -784,7 +879,7 @@ export class PianoRoll {
     // pitch counts from the note's own row (a touch / pen press may land beside it: yo is that offset, 0 for a mouse);
     // touch: from the press's content row instead, with hysteresis (_rowsMoved)
     const ry = this.n2y(nt.n); g.yo = g.y0 - clamp(g.y0, ry, ry + this.rowH - 1);
-    g.ct0 = this.x2t(g.x0); g.n0 = clamp(this.y2n(g.y0 - g.yo), 0, 127); g.r0 = (g.y0 - RUL + this.syr) / this.rowH;
+    g.ct0 = this.x2t(g.x0); g.row0 = clamp(this.y2r(g.y0 - g.yo), 0, this._nRows() - 1); g.r0 = (g.y0 - RUL + this.syr) / this.rowH;
     g.aud = nt.n; this._aud(nt.n, nt.v);
     // a finger held still on the note selects its chord; not on a note of a larger selection (a pause to aim before
     // dragging it would drop the rest), unless Shift adds
@@ -804,11 +899,12 @@ export class PianoRoll {
     // time follows after 4 px (touch: 10 px of a mostly sideways move, so a pitch drag's drift keeps the start)
     if (g.dtOn || (g.touch ? ax >= 10 && ax >= 0.5 * Math.abs(g.y - g.y0) : ax >= 4)) { g.dtOn = true; dt = snap ? snapTick(g.mt + raw, snap) - g.mt : Math.round(raw); }
     dt = Math.max(dt, -g.minT);
-    const dn = clamp(g.touch ? this._rowsMoved(g) : this.y2n(g.y - g.yo) - g.n0, -g.minN, 127 - g.maxN);
+    // whole rows up from the press (the piano: semitones; the drum rows: rows, between named rows)
+    const k = g.touch ? this._rowsMoved(g) : g.row0 - this.y2r(g.y - g.yo), dn = this.rows ? 0 - this._rowClamp(g.ns, -k) : clamp(k, -g.minN, 127 - g.maxN);
     if ((!g.began && !dt && !dn) || (dt === g.dt && dn === g.dn)) return;
     this._edit0();
     g.dt = dt; g.dn = dn;
-    for (const [o, t, , n] of g.items) { o.t = t + dt; o.n = n + dn; }
+    for (const [o, t, , n] of g.items) { o.t = t + dt; o.n = this.rows ? this._rowNote(n, -dn) : n + dn; }
     if (g.note.n !== g.aud) { this._audOff(g.aud); g.aud = g.note.n; this._aud(g.aud, g.note.v); }
     this.host.changed(); this.render();
   }
@@ -833,15 +929,16 @@ export class PianoRoll {
     g.dd = dd; this.host.changed(); this.render();
   }
   _createStart(g, x, y) {
+    if (this.rows && this.y2r(y) < 1) { g.type = 'none'; return; } // ((7a) the drum rows' "Other": no pitch to draw at)
     const tr = this.host.getTrack(), snap = g.sh ? 0 : this._snap(), t0 = Math.max(0, this.x2t(x));
-    const t = Math.max(0, snap ? snapTick(t0, snap, 'floor') : Math.round(t0)), n = clamp(this.y2n(y), 0, 127);
+    const t = Math.max(0, snap ? snapTick(t0, snap, 'floor') : Math.round(t0)), n = this._rowN(this.y2r(y));
     this._begin('Draw note');
     const nt = { id: uid(this._ids()), t, d: this._len(), n, v: 100 };
     tr.notes.push(nt);
     this.sel = new Set([nt.id]); this._notify();
     this.lastTap = null; // a second click on the note just drawn mustn't count as a double-click (delete)
     g.type = 'create'; g.note = nt; g.t0 = t; g.aud = n; this._aud(n, nt.v);
-    g.n0 = n; g.r0 = (y - RUL + this.syr) / this.rowH;
+    g.row0 = this._row(n); g.r0 = (y - RUL + this.syr) / this.rowH;
     this._cursor(PENCIL); this.host.changed(); this.render();
   }
   _createApply() {
@@ -852,13 +949,14 @@ export class PianoRoll {
       const tt = this.x2t(g.x), end = snap ? snapTick(tt, snap, 'ceil') : Math.round(tt), d = Math.max(snap || 1, end - g.t0);
       if (d !== nt.d) { nt.d = d; ch = true; }
     }
-    const n = clamp(g.touch ? g.n0 + this._rowsMoved(g) : this.y2n(g.y), 0, 127);
+    const n = this._rowN(g.touch ? g.row0 - this._rowsMoved(g) : this.y2r(g.y));
     if (n !== nt.n) { nt.n = n; ch = true; this._audOff(g.aud); g.aud = n; this._aud(n, nt.v); }
     if (ch) { this.host.changed(); this.render(); }
   }
   _dblCreate(x, y, noSnap) {
+    if (this.rows && this.y2r(y) < 1) return; // ((7a) "Other": no pitch)
     const snap = noSnap ? 0 : this._snap(), t0 = Math.max(0, this.x2t(x));
-    const nt = { id: uid(this._ids()), t: Math.max(0, snap ? snapTick(t0, snap, 'floor') : Math.round(t0)), d: this._len(), n: clamp(this.y2n(y), 0, 127), v: 100 };
+    const nt = { id: uid(this._ids()), t: Math.max(0, snap ? snapTick(t0, snap, 'floor') : Math.round(t0)), d: this._len(), n: this._rowN(this.y2r(y)), v: 100 };
     this.host.edit('Add note', () => { const tr = this.host.getTrack(); if (tr) { tr.notes.push(nt); sortNotes(tr.notes); } });
     this.sel = new Set([nt.id]); this._notify(); this._blip(nt.n, nt.v); this.render();
   }
@@ -927,9 +1025,9 @@ export class PianoRoll {
     if (!tr) return;
     const t1 = this.x2t(g.x), cy1 = g.y - RUL + this.syr;
     const ta = Math.min(g.ct0, t1), tb = Math.max(g.ct0, t1);
-    const nTop = 127 - Math.floor(Math.min(g.cy0, cy1) / this.rowH), nBot = 127 - Math.floor(Math.max(g.cy0, cy1) / this.rowH);
+    const rTop = Math.floor(Math.min(g.cy0, cy1) / this.rowH), rBot = Math.floor(Math.max(g.cy0, cy1) / this.rowH);
     const s = new Set(g.base);
-    for (const nt of tr.notes) if (nt.n <= nTop && nt.n >= nBot && nt.t < tb && nt.t + nt.d > ta) s.add(nt.id);
+    for (const nt of tr.notes) { const r = this._row(nt.n); if (r >= rTop && r <= rBot && nt.t < tb && nt.t + nt.d > ta) s.add(nt.id); }
     const ch = s.size !== this.sel.size;
     this.sel = s;
     if (ch) this._notify();
@@ -965,6 +1063,7 @@ export class PianoRoll {
     const dpr = (typeof window !== 'undefined' && window.devicePixelRatio) || 1;
     if (dpr !== this.dpr) { this.resize(); return; }
     if (this.W < 2 || this.gh < 4) return;
+    if (this.dirty && !this.g && this._syncRows()) this._centre(); // ((7a) a drum map edited elsewhere)
     if (this.want) this._applyWant();
     if (this.dirty) {
       this.dirty = false;
@@ -977,7 +1076,7 @@ export class PianoRoll {
     this._overlay(c);
   }
   _vlines(c, y0, y1, bar, beat, snap, a) {
-    const ppt = this.ppt, t0 = Math.max(0, this.x2t(GUT)), t1 = this.x2t(this.W), h = y1 - y0;
+    const ppt = this.ppt, t0 = Math.max(0, this.x2t(this.gut)), t1 = this.x2t(this.W), h = y1 - y0;
     const lines = (step, skip, style) => {
       c.beginPath();
       for (let k = Math.ceil(t0 / step - 1e-9); k * step <= t1; k++) {
@@ -1000,21 +1099,31 @@ export class PianoRoll {
     c.fillStyle = BG; c.fillRect(0, 0, W, H);
     if (!p) return;
     const bar = barTicks(p), beat = beatTicks(p), snap = this._snap(), lp = p.loop || {};
-    const t0 = this.x2t(GUT), t1 = this.x2t(W);
-    const nHi = clamp(this.y2n(RUL), 0, 127), nLo = clamp(this.y2n(gb - 1), 0, 127);
+    const GUT = this.gut, t0 = this.x2t(GUT), t1 = this.x2t(W);
+    // the rows in view (the row table: the piano's 128 or the drum rows), bottom first — the piano's notes ascending; a
+    // drum row is shaded every other one ("Other" too); dn: the drum names (the piano dims the rows they leave out)
+    const nR = this._nRows(), D = this.rows, dn = this.dn, rTop = clamp(this.y2r(RUL), 0, nR - 1), rBot = clamp(this.y2r(gb - 1), 0, nR - 1);
+    const rowsIn = f => { for (let r = rBot; r >= rTop; r--) f(r, this._noteAt(r)); }, dshade = r => r === 0 || ((nR - 1 - r) & 1) === 1;
     const loopOk = lp.end > lp.start, lx0 = this.t2x(lp.start), lx1 = this.t2x(lp.end);
 
     // grid background, rows, loop tint, time lines
     c.save(); c.beginPath(); c.rect(GUT, RUL, gw, gb - RUL); c.clip();
     c.fillStyle = '#15161a'; c.fillRect(GUT, RUL, gw, gb - RUL);
-    c.beginPath(); for (let n = nLo; n <= nHi; n++) if (isBlk(n)) c.rect(GUT, this.n2y(n), gw, rowH);
+    c.beginPath(); rowsIn((r, n) => { if (D ? dshade(r) : isBlk(n)) c.rect(GUT, this.r2y(r), gw, rowH); });
     c.fillStyle = '#0f1013'; c.fill();
-    const yEnd = this.n2y(-1);
+    const yEnd = this.r2y(nR);
     if (yEnd < gb) { c.fillStyle = BG; c.fillRect(GUT, yEnd, gw, gb - yEnd); }
-    c.beginPath(); for (let n = nLo; n <= nHi; n++) if (n % 12 === 0) c.rect(GUT, this.n2y(n) + rowH - 1, gw, 1);
-    c.fillStyle = 'rgba(255,255,255,0.075)'; c.fill();
-    c.beginPath(); for (let n = nLo; n <= nHi; n++) if (n % 12 === 5) c.rect(GUT, this.n2y(n) + rowH - 1, gw, 1);
-    c.fillStyle = 'rgba(255,255,255,0.03)'; c.fill();
+    if (D) { // a line under every drum row, a brighter one under "Other"
+      c.beginPath(); rowsIn(r => { c.rect(GUT, this.r2y(r) + rowH - 1, gw, 1); });
+      c.fillStyle = 'rgba(255,255,255,0.05)'; c.fill();
+      c.fillStyle = 'rgba(255,255,255,0.14)'; c.fillRect(GUT, this.r2y(0) + rowH - 1, gw, 1);
+    } else {
+      c.beginPath(); rowsIn((r, n) => { if (n % 12 === 0) c.rect(GUT, this.r2y(r) + rowH - 1, gw, 1); });
+      c.fillStyle = 'rgba(255,255,255,0.075)'; c.fill();
+      c.beginPath(); rowsIn((r, n) => { if (n % 12 === 5) c.rect(GUT, this.r2y(r) + rowH - 1, gw, 1); });
+      c.fillStyle = 'rgba(255,255,255,0.03)'; c.fill();
+      if (dn) { c.beginPath(); rowsIn((r, n) => { if (!dn.has(n)) c.rect(GUT, this.r2y(r), gw, rowH); }); c.fillStyle = 'rgba(0,0,0,0.32)'; c.fill(); }
+    }
     if (loopOk && lp.on) { c.fillStyle = 'rgba(242,163,58,0.045)'; c.fillRect(lx0, RUL, lx1 - lx0, gb - RUL); }
     this._vlines(c, RUL, gb, bar, beat, snap, 1);
 
@@ -1024,9 +1133,10 @@ export class PianoRoll {
       for (const o of p.tracks) {
         if (o === tr || !o.notes) continue;
         for (const x of o.notes) {
-          if (x.t >= t1 || x.t + x.d <= t0 || x.n > nHi || x.n < nLo) continue;
+          const r = this._row(x.n);
+          if (x.t >= t1 || x.t + x.d <= t0 || r < rTop || r > rBot || (D && !r)) continue; // ((7a) not in "Other")
           const a = Math.max(GUT - 2, this.t2x(x.t)), b = Math.min(W + 2, this.t2x(x.t + x.d));
-          c.rect(Math.round(a), this.n2y(x.n) + 1, Math.max(1.5, Math.round(b) - Math.round(a)), rowH - 1);
+          c.rect(Math.round(a), this.r2y(r) + 1, Math.max(1.5, Math.round(b) - Math.round(a)), rowH - 1);
         }
       }
       c.fillStyle = 'rgba(141,139,134,0.25)'; c.fill();
@@ -1041,7 +1151,8 @@ export class PianoRoll {
       for (const x of tr.notes) {
         const s = sel.size > 0 && sel.has(x.id);
         if (s) present++;
-        if (x.t >= t1 || x.t + x.d <= t0 || x.n > nHi || x.n < nLo) continue;
+        const r = this._row(x.n);
+        if (x.t >= t1 || x.t + x.d <= t0 || r < rTop || r > rBot) continue;
         (s ? se : un)[Math.min(15, (x.v * 16 / 128) | 0)].push(x);
       }
       if (tr.mute) c.globalAlpha = 0.5;
@@ -1084,7 +1195,7 @@ export class PianoRoll {
           if (!sets[i].length) continue;
           c.fillStyle = pal.txt[i][k];
           for (const x of sets[i]) {
-            const [a, y, w] = rect(x), nm = noteName(x.n), vis = Math.min(a + w, W) - Math.max(a, GUT);
+            const [a, y, w] = rect(x), nm = this._nlab(x.n), vis = Math.min(a + w, W) - Math.max(a, GUT);
             if (vis >= nm.length * cw + 8) c.fillText(nm, Math.max(a, GUT) + 4, y + rowH / 2 + 0.5);
           }
         }
@@ -1109,6 +1220,7 @@ export class PianoRoll {
     this._vlines(c, vt, H, bar, beat, snap, 0.7);
     c.fillStyle = 'rgba(255,255,255,0.045)';
     for (const v of [32, 64, 96, 127]) c.fillRect(GUT, Math.round(this.v2y(v)), gw, 1);
+    if (dn) { c.fillStyle = 'rgba(242,163,58,0.3)'; for (const v of [100, 127]) c.fillRect(GUT, Math.round(this.v2y(v)), gw, 1); } // ((7a) normal, accent)
     if (tr) {
       const pal = this._pal(tr.color), y0 = Math.round(this.v2y(0)), us = [], ss = [];
       for (const x of tr.notes) {
@@ -1168,24 +1280,55 @@ export class PianoRoll {
     // key gutter
     c.save(); c.beginPath(); c.rect(0, RUL, GUT, gb - RUL); c.clip();
     c.fillStyle = BG; c.fillRect(0, RUL, GUT, gb - RUL);
-    const ky0 = Math.max(RUL, this.n2y(127)), ky1 = Math.min(gb, yEnd);
-    c.fillStyle = '#cfccc4'; c.fillRect(0, ky0, GUT - 1, ky1 - ky0);
-    c.beginPath(); for (let n = nLo; n <= nHi; n++) if (isBlk(n)) c.rect(0, this.n2y(n), BW, rowH);
-    c.fillStyle = '#1d1e22'; c.fill();
-    if (rowH >= 7) {
-      c.beginPath(); for (let n = nLo; n <= nHi; n++) if (isBlk(n)) c.rect(BW - 5, this.n2y(n) + 1, 3, rowH - 2);
-      c.fillStyle = '#35373d'; c.fill();
+    const ky0 = Math.max(RUL, this.r2y(0)), ky1 = Math.min(gb, yEnd);
+    if (D) { // (7a) the drum rows: a name per row ("Other" on top), its note at the right
+      c.fillStyle = '#1b1c20'; c.fillRect(0, ky0, GUT - 1, ky1 - ky0);
+      c.beginPath(); rowsIn(r => { if (dshade(r)) c.rect(0, this.r2y(r), GUT - 1, rowH); });
+      c.fillStyle = '#141518'; c.fill();
+      c.beginPath(); rowsIn(r => { c.rect(0, this.r2y(r) + rowH - 1, GUT - 1, 1); });
+      c.fillStyle = '#2a2c31'; c.fill();
+      if (rowH >= 8) {
+        c.font = `${clamp(Math.round(rowH * 0.45), 9, 12)}px ${FONT}`; c.textBaseline = 'middle';
+        rowsIn((r, n) => {
+          const y = this.r2y(r) + rowH / 2 + 0.5;
+          c.textAlign = 'left'; c.fillStyle = r ? '#d9d6ce' : MUTE; c.fillText(r ? dn.get(n) : 'Other', 6, y);
+          if (r) { c.textAlign = 'right'; c.fillStyle = '#7a776f'; c.fillText(String(n), GUT - 5, y); }
+        });
+      }
+    } else {
+      c.fillStyle = '#cfccc4'; c.fillRect(0, ky0, GUT - 1, ky1 - ky0);
+      c.beginPath(); rowsIn((r, n) => { if (isBlk(n)) c.rect(0, this.r2y(r), BW, rowH); });
+      c.fillStyle = '#1d1e22'; c.fill();
+      if (rowH >= 7) {
+        c.beginPath(); rowsIn((r, n) => { if (isBlk(n)) c.rect(BW - 5, this.r2y(r) + 1, 3, rowH - 2); });
+        c.fillStyle = '#35373d'; c.fill();
+      }
+      c.beginPath();
+      rowsIn((r, n) => {
+        const m = n % 12;
+        if (m === 4 || m === 11) c.rect(0, this.r2y(r), GUT - 1, 1);
+        else if (isBlk(n)) c.rect(BW, Math.round(this.r2y(r) + rowH / 2), GUT - 1 - BW, 1);
+      });
+      c.fillStyle = '#9f9c94'; c.fill();
+      // C labels; every white key once rows are 18 px (the touch default) or taller; (7a) a drum row's name instead
+      c.font = `${clamp(Math.round(rowH * 0.4), 9, 12)}px ${FONT}`; c.textAlign = 'right'; c.textBaseline = 'middle';
+      rowsIn((r, n) => { if (!(dn && dn.has(n)) && (n % 12 === 0 || (rowH >= 18 && !isBlk(n)))) { c.fillStyle = n === 60 ? '#b4721c' : n % 12 ? '#8a877f' : '#69665f'; c.fillText(noteName(n), GUT - 5, this.r2y(r) + rowH / 2 + 0.5); } });
+      if (dn) { // the rows no sound plays dimmed; the named ones on a plate right of the black keys (the number when it fits)
+        c.beginPath(); rowsIn((r, n) => { if (!dn.has(n)) c.rect(0, this.r2y(r), GUT - 1, rowH); });
+        c.fillStyle = 'rgba(12,13,15,0.38)'; c.fill();
+        c.beginPath(); rowsIn((r, n) => { if (dn.has(n)) c.rect(BW, this.r2y(r) + 1, GUT - 1 - BW, Math.max(1, rowH - 1)); });
+        c.fillStyle = '#26272c'; c.fill();
+        if (rowH >= 8) {
+          const fs = clamp(Math.round(rowH * 0.4), 9, 11), cw = fs * 5.6 / 9;
+          c.font = `${fs}px ${FONT}`; c.textAlign = 'left';
+          rowsIn((r, n) => {
+            if (!dn.has(n)) return;
+            const nm = dn.get(n), lab = (nm.length + 1 + String(n).length) * cw + 8 <= GUT - 1 - BW ? nm + ' ' + n : nm;
+            c.fillStyle = '#e2ded5'; c.fillText(lab, BW + 4, this.r2y(r) + rowH / 2 + 0.5);
+          });
+        }
+      }
     }
-    c.beginPath();
-    for (let n = nLo; n <= nHi; n++) {
-      const m = n % 12;
-      if (m === 4 || m === 11) c.rect(0, this.n2y(n), GUT - 1, 1);
-      else if (isBlk(n)) c.rect(BW, Math.round(this.n2y(n) + rowH / 2), GUT - 1 - BW, 1);
-    }
-    c.fillStyle = '#9f9c94'; c.fill();
-    // C labels; every white key once rows are 18 px (the touch default) or taller
-    c.font = `${clamp(Math.round(rowH * 0.4), 9, 12)}px ${FONT}`; c.textAlign = 'right'; c.textBaseline = 'middle';
-    for (let n = nLo; n <= nHi; n++) if (n % 12 === 0 || (rowH >= 18 && !isBlk(n))) { c.fillStyle = n === 60 ? '#b4721c' : n % 12 ? '#8a877f' : '#69665f'; c.fillText(noteName(n), GUT - 5, this.n2y(n) + rowH / 2 + 0.5); }
     c.restore();
     c.fillStyle = '#050506'; c.fillRect(GUT - 1, RUL, 1, gb - RUL);
 
@@ -1194,7 +1337,8 @@ export class PianoRoll {
     c.fillStyle = LINE; c.fillRect(GUT - 1, 0, 1, RUL); c.fillRect(GUT - 1, vt, 1, VEL);
     c.font = `9px ${FONT}`; c.textBaseline = 'middle'; c.textAlign = 'left'; c.fillStyle = MUTE; c.fillText('VEL', 8, vt + 12);
     c.textAlign = 'right'; c.fillStyle = '#4d4b47';
-    c.fillText('127', GUT - 6, this.v2y(127) + 1); c.fillText('64', GUT - 6, this.v2y(64));
+    c.fillText('127', GUT - 6, this.v2y(127) + 1);
+    if (dn) c.fillText('100', GUT - 6, this.v2y(100)); else c.fillText('64', GUT - 6, this.v2y(64)); // ((7a) normal / accent)
   }
   _info() {
     const p = this.host.getProject(), g = this.g, hv = this.hover;
@@ -1202,25 +1346,25 @@ export class PianoRoll {
     const bbt = t => { try { return fmtBBT(p, Math.max(0, Math.round(t))); } catch { return ''; } };
     const len = d => { const bar = barTicks(p), beat = beatTicks(p), b = Math.floor(d / bar), r = d - b * bar, k = Math.floor(r / beat); return `${b}.${k}.${String(Math.round(r - k * beat)).padStart(3, '0')}`; };
     if (g) {
-      if (g.note && (g.type === 'resizeR' || (g.type === 'create' && g.sized))) return [noteName(g.note.n), 'L ' + len(g.note.d)];
-      if (g.note && (g.type === 'move' || g.type === 'resizeL' || g.type === 'create')) return [noteName(g.note.n), bbt(g.note.t)];
-      if (g.type === 'keys') return [noteName(g.key), ''];
+      if (g.note && (g.type === 'resizeR' || (g.type === 'create' && g.sized))) return [this._lab(g.note.n), 'L ' + len(g.note.d)];
+      if (g.note && (g.type === 'move' || g.type === 'resizeL' || g.type === 'create')) return [this._lab(g.note.n), bbt(g.note.t)];
+      if (g.type === 'keys') return [g.key == null ? 'Other' : this._lab(g.key), ''];
       if (g.type === 'ruler' || g.type === 'loopEdge') return ['', bbt(this.x2t(g.x))];
       return null;
     }
     if (!hv) return null;
-    if (hv.hit) return [noteName(hv.hit.note.n) + ' ' + hv.hit.note.v, bbt(hv.hit.note.t)];
-    if (hv.reg === 'grid') return [noteName(hv.n), bbt(hv.t)];
-    if (hv.reg === 'keys') return [noteName(hv.n), ''];
+    if (hv.hit) return [this._lab(hv.hit.note.n) + ' ' + hv.hit.note.v, bbt(hv.hit.note.t)];
+    if (hv.reg === 'grid') return [this._lab(hv.n), bbt(hv.t)];
+    if (hv.reg === 'keys') return [this._lab(hv.n), ''];
     if (hv.reg === 'ruler' || hv.reg === 'vel') return ['', bbt(hv.t)];
     return null;
   }
   _overlay(c) {
-    const { W, H, rowH } = this, gb = this.gb, gw = this.gw, g = this.g, hv = this.hover, tr = this.host.getTrack();
+    const { W, H, rowH } = this, gb = this.gb, gw = this.gw, g = this.g, hv = this.hover, tr = this.host.getTrack(), GUT = this.gut;
     const pal = tr ? this._pal(tr.color) : this._pal(ACC);
     // grid overlays
     c.save(); c.beginPath(); c.rect(GUT, RUL, gw, gb - RUL); c.clip();
-    if (hv && !g && (hv.reg === 'grid' || hv.reg === 'keys')) { c.fillStyle = 'rgba(255,255,255,0.035)'; c.fillRect(GUT, this.n2y(hv.n), gw, rowH); }
+    if (hv && !g && (hv.reg === 'grid' || hv.reg === 'keys')) { c.fillStyle = 'rgba(255,255,255,0.035)'; c.fillRect(GUT, this.r2y(hv.r), gw, rowH); }
     if (this.ins != null) {
       const x = Math.round(this.t2x(this.ins));
       if (x >= GUT && x <= W) { c.fillStyle = 'rgba(233,231,226,0.28)'; for (let y = RUL; y < gb; y += 6) c.fillRect(x, y, 1, 3); }
@@ -1231,7 +1375,7 @@ export class PianoRoll {
         c.beginPath(); rr(c, a + 0.5, this.n2y(h.note.n) + 1.5, w - 1, rowH - 2, rowH >= 8 ? 2.5 : 1);
         c.lineWidth = 1; c.strokeStyle = this.tool === 'erase' ? '#ff5a45' : 'rgba(255,255,255,0.6)'; c.stroke();
         if (this.tool === 'erase') { c.fillStyle = 'rgba(226,64,47,0.25)'; c.fill(); }
-      } else if (this.tool === 'draw' && tr) {
+      } else if (this.tool === 'draw' && tr && hv.n >= 0) {
         const s = this._snap(), t = Math.max(0, s ? snapTick(hv.t, s, 'floor') : Math.round(hv.t)), a = Math.round(this.t2x(t));
         const w = Math.max(2, Math.round(this.t2x(t + this._len())) - a);
         c.beginPath(); rr(c, a + 0.5, this.n2y(hv.n) + 1.5, w - 1, rowH - 2, rowH >= 8 ? 2.5 : 1);
@@ -1263,9 +1407,9 @@ export class PianoRoll {
 
     // pressed / hovered keys
     c.save(); c.beginPath(); c.rect(0, RUL, GUT - 1, gb - RUL); c.clip();
-    const keyHi = (n, a) => { const y = this.n2y(n); c.fillStyle = `rgba(242,163,58,${a})`; if (isBlk(n)) c.fillRect(0, y, BW, rowH); else c.fillRect(0, y + 1, GUT - 1, rowH - 1); };
-    if (hv && !g && (hv.reg === 'grid' || hv.reg === 'keys')) keyHi(hv.n, 0.3);
-    for (const n of this.keys) keyHi(n, 0.85);
+    const keyHi = (r, a) => { const y = this.r2y(r); c.fillStyle = `rgba(242,163,58,${a})`; if (!this.rows && isBlk(this._noteAt(r))) c.fillRect(0, y, BW, rowH); else c.fillRect(0, y + 1, GUT - 1, rowH - 1); };
+    if (hv && !g && (hv.reg === 'grid' || hv.reg === 'keys')) keyHi(hv.r, 0.3);
+    for (const n of this.keys) keyHi(this._row(n), 0.85);
     c.restore();
 
     // velocity lane overlays
@@ -1307,7 +1451,7 @@ export class PianoRoll {
   _float(c, g, s) {
     if (!s) return;
     const fs = 12, w = Math.round(s.length * fs * 0.62) + 14, h = 22;
-    const x = clamp(g.x - w / 2, GUT + 4, Math.max(GUT + 4, this.W - w - 4));
+    const x = clamp(g.x - w / 2, this.gut + 4, Math.max(this.gut + 4, this.W - w - 4));
     let y = g.y - 64;
     if (y < RUL + 4) y = Math.min(this.H - h - 4, g.y + 40);
     c.beginPath(); rr(c, x, y, w, h, 6);

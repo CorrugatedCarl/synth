@@ -653,7 +653,7 @@ test('engine: smon / fxph messages, every model through the rack, direct out thr
   for (const md of MODELS) {
     if (md.custom) continue;
     const q = S.mk({ os: 2, patch: plainPatch(md.id, fx) });
-    q.msg({ t: 'on', n: 60, v: 0.8 });
+    q.msg({ t: 'on', n: md.family === 'drums' ? 36 : 60, v: 0.8 }); // (a drum machine: its kick, IMPL-7a §12.6)
     const [r] = run(S, [q], 4864);
     assert.ok(finite(r.L) && finite(r.R) && peak(r.L) > 1e-3, md.id);
   }
@@ -672,7 +672,7 @@ test('engine: smon / fxph messages, every model through the rack, direct out thr
 });
 
 /* ------------------------------------------------------------------ SPEC-serum2 M1a step 4: engine, script list, PROCS */
-test('§0.3: main.js, the golden harness and dsp-scope load the same 12 scripts in table order (mod-core.js last, IMPL-2b); every file exists', async () => {
+test('§0.3: main.js, the golden harness and dsp-scope load the same 14 scripts in table order (mod-core.js last, IMPL-2b; the drum machine’s two before it, IMPL-7a); every file exists', async () => {
   const main = SRC('main.js'), m = /const DSP_FILES = \[([^\]]*)\]/.exec(main);
   assert.ok(m, 'main.js DSP_FILES');
   assert.deepEqual(m[1].split(',').map(x => x.trim().replace(/^'|'$/g, '')).filter(Boolean), [...DSP_FILES]);

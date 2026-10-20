@@ -89,5 +89,14 @@ test('SIL describes every model; tileMeta() is models.js (Serum: "Serum (complet
   assert.equal(A.SIL.tb303.steps, 16);
   assert.equal(A.SIL.minimoog.cheeks, true);
   assert.equal(A.SIL.dx7.screen, true);
+  // (7a, IMPL-7a §8.2) the TR-808's tile: a wide low case with sixteen step keys, drawn without text (the rules above), its own drawing
+  assert.deepEqual([A.SIL.tr808.body, A.SIL.tr808.steps, A.SIL.tr808.keys], ['box', 16, undefined]);
+  const t808 = A.art('tr808'), chip808 = A.chip('tr808');
+  assert.match(t808, /data-art="tr808"/);
+  for (const col of ['e8402c', 'f4893c', 'f5dc4e', 'f4f3ee']) {
+    assert.equal(count(t808, new RegExp(`fill="#${col}"`, 'g')), 4, col + ': four step keys of the colour (red 1–4, orange 5–8, yellow 9–12, off-white 13–16)');
+    assert.ok(count(chip808, new RegExp(`fill="#${col}"`, 'g')) >= 1, col + ': kept at chip size');
+  }
+  assert.equal(count(t808, /r="2" fill="#0b0b0c"/g), 22, 'the 22 voice knobs of the twelve columns (MASTER VOLUME is not drawn)');
   assert.deepEqual(A.tileMeta('nope'), { id: 'nope', name: 'nope', year: 0, maker: '', label: 'nope' });
 });

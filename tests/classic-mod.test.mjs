@@ -267,6 +267,23 @@ test('span setters: proc fields (lfo.rate, bendRange, unisonDetune, fx.chorus) t
   assert.equal(base, patch('prophet5').lfo.rate);
 });
 
+// IMPL-7a §2.3 / §9 (§15 #1): the probe above walks any depth, the engine's moRec splits at the first dot only — so the 808's
+// knobs are checked against the real moRec: a nested drum.bd.dc would resolve to null and a cable would do nothing
+test('TR-808: every knob targets its one-level drum.<id> field and the engine\'s moRec resolves each; the span setter writes p.drum', () => {
+  const m = MODELS.find(x => x.id === 'tr808'), knobs = m.controls.filter(c => c.t === 'k');
+  assert.equal(knobs.length, 23);
+  for (const c of knobs) assert.deepEqual(V.targetsOf(m, c.id).map(t => t.kind + ':' + t.field), ['field:drum.' + c.id], c.id);
+  for (const c of m.controls.filter(x => x.t !== 'k')) assert.equal(V.classOf('tr808', c.id), 'struct', c.id);
+  const D = fresh('tr808'), P = proc(D, patch('tr808')), I = P.i0;
+  I.modRows(knobs.map(c => ({ field: 'drum.' + c.id })));
+  assert.equal(I.moFN, knobs.length, 'every row resolved');
+  assert.deepEqual([...I.moF.map(r => r.sub + '|' + r.key + '|' + r.base)], knobs.map(c => 'drum|' + c.id + '|' + c.def / 10));
+  I.modSpan(null, null, [{ field: 'drum.bdd', v: 0.9 }]);
+  assert.equal(I.p.drum.bdd, 0.9, 'the effective value is in p.drum');
+  I.modRows(null);
+  assert.equal(I.p.drum.bdd, 0.5, 'base restored when the rows go');
+});
+
 test('modSpan: the two-argument form, null offsets, NaN guarded; a Solina level cable and a DX7 level cable (level is their only slot)', () => {
   const D = fresh('forms'), P = proc(D, patch('juno60')), I = P.i0;
   I.modRows([{ slot: S.VO }, { slot: S.VO }, { slot: S.VR }, { slot: S.BEND }, null]);

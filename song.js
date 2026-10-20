@@ -3,9 +3,11 @@
  * Ticks are integers at PPQ resolution. Note: { id, t, d, n, v }; controller event: { t, k, v }.
  * Note edit operations work in place on the array they are given and return it.
  * (SYNTH Canvas 2b: the modulator modules' LFO / ENV / chaos states are bounded by serum-core's own normalisers — the one
- * import of this module; song.js stays the base of everything else.)
+ * import of this module; song.js stays the base of everything else. 7a: a drum machine's memory by drum-core's normDrum, a
+ * leaf module.)
  */
 import { normLfoMod, normEnvMod, normChaosMod } from './serum-core.js?v=9';
+import { normDrum, mapTable, DEFAULT_MAP, PERS } from './drum-core.js?v=9'; // (7a: a drum machine's record, its channel 10)
 
 export const PPQ = 960;
 export const TRACK_COLORS = ['#f2a33a', '#3b82c4', '#e2402f', '#3fae5a', '#b06ad9', '#2bb3a3', '#f5d22e', '#ff6a13', '#58b2ff', '#e86aa8', '#9bd16a', '#c9a227'];
@@ -540,6 +542,10 @@ export function normLay(lay) {
 // mirror, else the defaults). The in-memory accessors are cv-model.js adopt's (the page), never song.js's.
 // Stage 2a (schema 5, IMPL-2a §2.3): the track's mod cables `mods` (normMods) and the next row number `mid` (absent when
 // the track never had one: an old track's record and History snapshot stay byte-identical).
+// Stage 7a (IMPL-7a §6, schema 8): a drum machine (a model drum-core has a personality for: tr808) keeps its device's
+// `drum` — the pattern memory, panel state, extras, note map and sample slots — as normDrum bounds it (exact lengths,
+// every field in range, unknown ones dropped; idempotent); `drum` on any other model's device is dropped.
+export const isDrum = m => typeof m === 'string' && Object.prototype.hasOwnProperty.call(PERS, m);
 const DEV_ID = /^[a-z][a-z0-9]{0,15}$/, PORT_ID = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-zA-Z0-9]{0,15})?\.[a-z][a-z0-9]{0,7}$/;
 export function normDev(r) {
   if (!isObj(r) || !isObj(r.dev)) return null;
@@ -561,6 +567,7 @@ export function normDev(r) {
       if (z && (z.lo !== 0 || z.hi !== 127 || z.xp !== 0)) o.zone = z;
       if (typeof d.name === 'string' && d.name) o.name = str(d.name, null, 100);
       if (typeof d.fxId === 'string' && /^fx\d{1,6}$/.test(d.fxId)) o.fxId = d.fxId; // (a Serum's folded-in panel id, cv-model reshape)
+      if (isDrum(o.model) && d.drum != null) o.drum = normDrum(d.drum); // (7a: a drum machine's memory, map, slots — IMPL-7a §6; another model's is dropped)
     } else if (d.kind === 'panel') {
       o = { kind: 'panel' };
       if (isObj(d.fx)) o.fx = d.fx;
@@ -714,6 +721,7 @@ export function deserialize(json) {
 
 /* ------------------------------------------------ Standard MIDI File */
 const AUTO_CH = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15];
+let DRUM_KEYS = null; // (7a: the default note map's 128-entry table, made at the first channel-10 import)
 function vlq(out, n) {
   n = clamp(R(n), 0, MAXT);
   const b = [n & 0x7f];
@@ -769,6 +777,9 @@ function instModel(tr) {
   const D = isObj(tr.dev) ? tr.dev : null, d = D ? (isObj(D[tr.prim]) && D[tr.prim].kind === 'synth' ? D[tr.prim] : Object.values(D).find(x => isObj(x) && x.kind === 'synth')) : tr;
   return d && typeof d.model === 'string' ? d.model : '';
 }
+// 7a (IMPL-7a §4.5): a drum machine's track on omni goes out on channel 10 (AUTO_CH never hands it to another track); a
+// channel-10 track of a file comes in as a TR-808 track (`model: 'tr808'`, its notes as they are, `unmapped`: how many
+// of them sit on keys the default map leaves silent — the importer's notice)
 export function exportMIDI(project, { trackIds = null } = {}) {
   const trs = pickTracks(project, trackIds);
   const sn = clamp(R(project.sig[0]), 1, 255), sd = project.sig[1], us = clamp(R(60e6 / project.bpm), 1, 0xFFFFFF);
@@ -781,8 +792,8 @@ export function exportMIDI(project, { trackIds = null } = {}) {
   const out = [chunk('MThd', [0, 1, (trs.length + 1) >> 8, (trs.length + 1) & 255, PPQ >> 8, PPQ & 255])];
   out.push(trackChunk(cond, end));
   trs.forEach((tr, i) => {
-    const ch = tr.ch >= 1 && tr.ch <= 16 ? tr.ch - 1 : AUTO_CH[i % AUTO_CH.length];
-    const evs = [{ t: 0, p: -1, b: metaEv(0x03, utf8(tr.name)) }, { t: 0, p: -1, b: metaEv(0x04, utf8(instModel(tr))) }];
+    const im = instModel(tr), ch = tr.ch >= 1 && tr.ch <= 16 ? tr.ch - 1 : isDrum(im) ? 9 : AUTO_CH[i % AUTO_CH.length];
+    const evs = [{ t: 0, p: -1, b: metaEv(0x03, utf8(tr.name)) }, { t: 0, p: -1, b: metaEv(0x04, utf8(im)) }];
     for (const x of midiNotes(tr.notes)) evs.push({ t: x.t, p: 2, b: [0x90 | ch, x.n, x.v] }, { t: x.e, p: 0, b: [0x80 | ch, x.n, 64] });
     for (const c of tr.cc) evs.push({ t: clamp(R(c.t), 0, MAXT), p: 1, b: ccBytes(c, ch) });
     evs.sort((a, b) => a.t - b.t || a.p - b.p);
@@ -896,7 +907,9 @@ export function importMIDI(bytes) {
       const notes = sortNotes(o.raw.map(x => { const t0 = sc(x.t0); return { id: newId(), t: t0, d: Math.max(1, sc(x.t1) - t0), n: x.n, v: x.v }; }));
       const cc = sortCC(o.cc.map(c => ({ t: sc(c.t), k: c.k, v: c.v })));
       const nm = split ? (tname && fmt !== 0 ? `${tname} (Ch ${ch + 1})` : `Channel ${ch + 1}`) : tname || inst || `Track ${tracks.length + 1}`;
-      tracks.push({ name: nm, ch: ch + 1, inst, prog: o.prog, notes, cc });
+      const it = { name: nm, ch: ch + 1, inst, prog: o.prog, notes, cc };
+      if (ch === 9) { const M = DRUM_KEYS || (DRUM_KEYS = mapTable(DEFAULT_MAP)); it.model = 'tr808'; it.unmapped = notes.filter(x => M[x.n] < 0).length; }
+      tracks.push(it);
     }
   });
   const nearestDen = d => SIG_DEN.reduce((a, x) => (Math.abs(x - d) < Math.abs(a - d) ? x : a), 4);

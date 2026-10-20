@@ -8,7 +8,8 @@
 //              patch, autosave, the DX7 chart), presetTouched(track) (the rollback put a preset name back), kit (track,
 //              pressOrTap, noMenu, hoverable, wheelIn, wheelStep, tip, untip), presets (list / cur / load / step / save /
 //              del / init, each given the track), chip(key) (the module chip follows a preset change), presetNo(track),
-//              seq (of, send, running, toggle, toRoll, hw), dx(track), doc
+//              seq (of, send, running, toggle, toRoll, hw), dx(track), doc, perf (1i: perf.api(track)), drum (7a: a drum
+//              machine's drumHost — api().drum = drum.api(track) on a drums-family model only)
 //   .ui (id → updater), .hw (the rendered hardware panel or null), set(id, v), update(id), refresh(), syncPreset(key),
 //   seqStep(i), seqRunUI(on), destroy()
 // Every control carries data-ctl and data-dest = its models.js id (the module root carries data-dev: canvas modulation
@@ -203,10 +204,13 @@ export class ClassicPanel {
     el.setAttribute('aria-valuemin', c.min); el.setAttribute('aria-valuemax', c.max);
     el.setAttribute('aria-valuenow', v); el.setAttribute('aria-valuetext', fmt(c, v));
   }
-  knob(c) { // c.sweep (a hardware panel's printed dial, deg; default 270)
+  knob(c) { // c.sweep (a hardware panel's printed dial, deg; default 270); c.hw (a hardware panel's: no tick ring or shine — its
+    // art prints the dial and style.css hid them there: 13 elements a knob, 7a review 2 #3)
     const el = this.h('div', 'knob'), sw = c.sweep > 0 ? +c.sweep : 270;
     el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', c.label);
-    el.innerHTML = `<svg viewBox="0 0 64 64"><g class="ticks">${TICKS}</g><circle class="skirt" cx="32" cy="32" r="25"/><g class="rot"><circle class="cap" cx="32" cy="32" r="17.5"/><circle class="shine" cx="32" cy="32" r="17.5"/><line class="ind" x1="32" y1="9" x2="32" y2="21"/></g></svg>`;
+    el.innerHTML = c.hw
+      ? '<svg viewBox="0 0 64 64"><circle class="skirt" cx="32" cy="32" r="25"/><g class="rot"><circle class="cap" cx="32" cy="32" r="17.5"/><line class="ind" x1="32" y1="9" x2="32" y2="21"/></g></svg>'
+      : `<svg viewBox="0 0 64 64"><g class="ticks">${TICKS}</g><circle class="skirt" cx="32" cy="32" r="25"/><g class="rot"><circle class="cap" cx="32" cy="32" r="17.5"/><circle class="shine" cx="32" cy="32" r="17.5"/><line class="ind" x1="32" y1="9" x2="32" y2="21"/></g></svg>`;
     const rot = typeof el.querySelector === 'function' ? el.querySelector('.rot') : null; // (null in a node test DOM)
     const upd = () => {
       if (rot) rot.setAttribute('transform', `rotate(${(-sw / 2 + sw * toPos(c, this.vals[c.id])).toFixed(2)} 32 32)`);
@@ -217,16 +221,20 @@ export class ClassicPanel {
     this.drag(el, c);
     return el;
   }
-  slider(c, si) { // c.orient 'h' (the cap moves along x), c.invert (minimum at the top / right), c.capColor, c.hw (a hardware panel's)
+  slider(c, si) { // c.orient 'h' (the cap moves along x), c.invert (minimum at the top / right), c.capColor, c.hw (a hardware panel's:
+    // no printed ticks — the art has its own ladder and style.css hid them there, 7a review 2 #3)
     const th = this.model.theme, el = this.h('div', 'slider');
     el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', c.label);
     if (c.orient === 'h') el.setAttribute('data-orient', 'h');
-    const ticks = this.h('div', 'sticks');
-    for (let i = 0; i <= 10; i++) ticks.append(this.h('i'));
     const cap = this.h('div', 'cap');
     if (c.capColor) cap.style.background = c.capColor;
     else if (th.capColors && !c.hw) cap.style.background = th.capColors[si % th.capColors.length];
-    el.append(this.h('div', 'groove'), ticks, cap);
+    if (c.hw) el.append(this.h('div', 'groove'), cap);
+    else {
+      const ticks = this.h('div', 'sticks');
+      for (let i = 0; i <= 10; i++) ticks.append(this.h('i'));
+      el.append(this.h('div', 'groove'), ticks, cap);
+    }
     const upd = () => { // the cap's travel: the slot less the cap (--cap-h on a hardware panel, 14 px here)
       const p = toPos(c, this.vals[c.id]), q = (c.invert ? 1 - p : p).toFixed(4);
       if (c.orient === 'h') cap.style.left = `calc(${q} * (100% - var(--cap-h, 14px)))`; else cap.style.bottom = `calc(${q} * (100% - var(--cap-h, 14px)))`;
@@ -298,7 +306,8 @@ export class ClassicPanel {
   untip(ms) { if (this.kit.untip) this.kit.untip(ms); }
   drag(el, c) { this.dragB(el, this.binding(c)); }
   // relative travel along b.axis (y: up = more; x: right = more; b.invert flips it) accumulated per move, Shift = fine, the
-  // tip, double-click = b.def, the wheel (wheelIn / wheelStep with the canvas veto), arrow / Page / Home / End keys, a
+  // tip, double-click = b.def, the wheel (wheelIn / wheelStep with the canvas veto), arrow / Page / Home / End keys (b.invert
+  // flips the arrows and Page keys too, so ArrowUp moves an inverted lever up as the pointer does: 7a review 2 #7), a
   // two-finger pointercancel → b.restore. o.tap: a press that ends where it began (≤ 4 px mouse, 10 px touch) without a
   // change — a hardware switch steps on it.
   dragB(el, b, o = {}) {
@@ -342,11 +351,11 @@ export class ClassicPanel {
       this.tipB(el, b); this.untip(700);
     }, { passive: false });
     el.addEventListener('keydown', e => {
-      const stp = b.step ? b.step / ((b.max - b.min) || 1) : (e.shiftKey ? 0.002 : 0.02), k = e.key;
+      const sg = b.invert ? -1 : 1, stp = sg * (b.step ? b.step / ((b.max - b.min) || 1) : (e.shiftKey ? 0.002 : 0.02)), k = e.key;
       let v;
       if (k === 'ArrowUp' || k === 'ArrowRight') v = fromPosB(b, posB(b, b.get()) + stp);
       else if (k === 'ArrowDown' || k === 'ArrowLeft') v = fromPosB(b, posB(b, b.get()) - stp);
-      else if (k === 'PageUp' || k === 'PageDown') v = fromPosB(b, posB(b, b.get()) + (k === 'PageUp' ? 1 : -1) * Math.max(stp, 0.1));
+      else if (k === 'PageUp' || k === 'PageDown') v = fromPosB(b, posB(b, b.get()) + (k === 'PageUp' ? sg : -sg) * Math.max(Math.abs(stp), 0.1));
       else if (k === 'Home') v = b.min;
       else if (k === 'End') v = b.max;
       else if (o.tap && (k === 'Enter' || k === ' ')) { e.preventDefault(); o.tap(); return; }
@@ -541,6 +550,7 @@ export class ClassicPanel {
       seq: m.id === 'tb303' ? this.seqHw() : null,
       dx: m.id === 'dx7' && H.dx ? H.dx(tr) : null,
       perf: H.perf ? H.perf.api(tr) : null, // (1i, IMPL-1i §6.1: every model's keys and controllers; null: drawn, silent)
+      drum: H.drum && m.family === 'drums' ? H.drum.api(tr) : null, // (7a, IMPL-7a §10.1: a drum machine's sequencer and pads — cv-drum drumHost; null: drawn, silent)
     };
   }
   // the TB-303's hardware step entry (IMPL-panels §6.2): a step cursor and PITCH / TIME mode per track (session only: the

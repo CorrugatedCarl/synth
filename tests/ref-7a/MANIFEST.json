@@ -1,0 +1,15 @@
+{
+  "note": "Frozen TR-808 sound (IMPL-7a §12.2, D2): verbatim copies of dr-808.js, dr-seq.js and engine.js at the 7a acceptance commit. Never edit: tests/golden-drums.test.mjs renders them (side A, every other module current) against the current files, bit for bit.",
+  "commit": "8f82f4bb99897a132d14de42aaa21d03aa0582bf",
+  "files": {
+    "dr-808.js": {
+      "sha256": "a4098888d30d836778dc567c54aba0e9a5dc87a9b98ad37cf1c7cbcfd219c3a8"
+    },
+    "dr-seq.js": {
+      "sha256": "20f6d3b7a208bff855beedc5e8f4ee0d3e50fa2142e5b0853cc2d9215f5ed5c9"
+    },
+    "engine.js": {
+      "sha256": "da710f7eaa49c46c0f6437206a97fb2a18c844fa2d229cbb442a0e62ce5c7b0e"
+    }
+  }
+}

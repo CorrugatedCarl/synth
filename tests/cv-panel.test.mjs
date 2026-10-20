@@ -10,6 +10,8 @@ import './v8-guard.mjs';
 // the bed as one hit box; per model: the §1.2 bed, the 1i sizes (pinned from lane K2's hand-back); render with a fake
 // api.perf (the nodes, zones, roles, shades at the art, a press's velocity, the velocity note, the tips, destroy → release)
 // and without one (the same nodes, silent), the keys' and controllers' art, the TB-303's audition (§6.4).
+// Stage 7a (IMPL-7a §11, §12.7): HW_IDS gains tr808 (its layout is lane P2's panels/tr808.js), its §3.6 extras, TARGET
+// 1024 × 1024, no keyboard, its 'later' jacks titled "cable-able with full patching"; the dr: token rules: tests/cv-drum.test.mjs.
 // Run alone: node --max-old-space-size=2048 --test tests/cv-panel.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,9 +32,13 @@ const missing = P.HW_IDS.filter(id => !P.layoutOf(id));
 const EXTRAS = {
   modular: ['kb'], minimoog: [], arp2600: ['sy', 'kb', 'lw', 'src', 'gl'], solina: ['tn'], cs80: [], prophet5: ['li', 'rev', 'ud'], ms20: [],
   tb303: ['al', 'seq:sync', 'seq:swing', 'seq:random', 'seq:demo', 'seq:toRoll', 'seq:grid'], obxa: ['lc', 'ud'], jupiter8: ['pw'], juno60: ['hs'], dx7: ['dac'],
+  tr808: ['dr:grid', 'dr:pads', 'dr:sync', 'dr:swing', 'dr:toRoll', 'dr:rec', 'dr:map', 'dr:sounds', 'dr:demo'], // (7a §3.6, §7.5: every models.js control is on the face)
 };
+// (7a, IMPL-7a §11) TARGET.tr808: the 1016 × ≈ 1020 px box on the 32 px dots (± a dot until lane P2's hand-back pins it)
 const TARGET = { modular: [1728, 960], minimoog: [1408, 512], arp2600: [1568, 928], solina: [1984, 256], cs80: [2432, 768], prophet5: [1920, 512],
-  ms20: [1120, 416], tb303: [608, 608], obxa: [2048, 576], jupiter8: [2144, 608], juno60: [2144, 416], dx7: [2048, 480] };
+  ms20: [1120, 416], tb303: [608, 608], obxa: [2048, 576], jupiter8: [2144, 608], juno60: [2144, 416], dx7: [2048, 480], tr808: [1024, 1024] };
+// models without a keyboard (IMPL-1i §1.2: the TB-303's 13 key cells; 7a: the TR-808's step keys and pads)
+const NOKEYS = ['tb303', 'tr808'];
 const PINNED = { minimoog: [1408, 512] };
 // (1i, IMPL-1i §1.2) once a model has its bed: the sizes with the keyboards (± a dot until K2's hand-back pins them), the
 // ARP's PORTAMENTO on its 3620 slider (out of the extras), each bed's range [lo, n]; the TB-303 has none
@@ -105,7 +111,7 @@ test('format: PX_PER_MM = 2 and the contract constants; the fixture layout valid
   assert.deepEqual([P.selCellW(['Off', 'On']), P.selCellW(['Sine', 'Tri', 'Square', 'S&H'])], [120, 224]);
   assert.ok(P.selCellW(['Rev 2 · SSM', 'Rev 3 · CEM']) >= 16 + 2 * 87 + 3);
   assert.deepEqual(P.validate(FX_LAYOUT, FX_MODEL), []);
-  assert.deepEqual(P.HW_IDS, ['modular', 'minimoog', 'arp2600', 'solina', 'cs80', 'prophet5', 'ms20', 'tb303', 'obxa', 'jupiter8', 'juno60', 'dx7']);
+  assert.deepEqual(P.HW_IDS, ['modular', 'minimoog', 'arp2600', 'solina', 'cs80', 'prophet5', 'ms20', 'tb303', 'obxa', 'jupiter8', 'juno60', 'dx7', 'tr808']); // (7a: the 808 last, as in MODELS)
   if (missing.length) console.log('# cv-panel: not drawn yet (skipped, Resizable only): ' + missing.join(', '));
 });
 
@@ -365,8 +371,8 @@ for (const id of P.HW_IDS) {
     }
   });
   // (1i) the bed of §1.2 (todo until lane K2's layout lands: then a real test), unrounded and one hit box; the TB-303 none
-  test(`panels/${id}.js: (1i) ${id === 'tb303' ? 'no keyboard (its 13 key cells)' : 'one perf:keys bed, MIDI ' + BED[id][0] + '–' + (BED[id][0] + BED[id][1] - 1) + ', its geometry unrounded'}`, { todo: !bed && id !== 'tb303' ? 'lane K2 (panels/' + id + '.js)' : false }, () => {
-    if (id === 'tb303') { assert.equal(L.controls.filter(c => typeof c.id === 'string' && c.id.startsWith('perf:')).length, 0); return; }
+  test(`panels/${id}.js: (1i) ${NOKEYS.includes(id) ? 'no keyboard (' + (id === 'tb303' ? 'its 13 key cells' : 'its step keys and pads') + ')' : 'one perf:keys bed, MIDI ' + BED[id][0] + '–' + (BED[id][0] + BED[id][1] - 1) + ', its geometry unrounded'}`, { todo: !bed && !NOKEYS.includes(id) ? 'lane K2 (panels/' + id + '.js)' : false }, () => {
+    if (NOKEYS.includes(id)) { assert.equal(L.controls.filter(c => typeof c.id === 'string' && c.id.startsWith('perf:')).length, 0); return; }
     assert.equal(L.controls.filter(c => c.id === 'perf:keys').length, 1, 'one bed');
     assert.deepEqual([bed.lo, bed.n], BED[id], 'the §1.2 range');
     if (id === 'jupiter8') assert.equal(bed.pitch, 834 / 36, 'the JP-8 pitch: the division (36 × 23.17 overruns 834 mm)');
@@ -381,7 +387,7 @@ for (const id of P.HW_IDS) {
     for (const t of texts) assert.doesNotMatch(t, new RegExp('\\b(' + P.MAKERS.join('|') + ')\\b'), 'maker name in: ' + t);
     assert.doesNotMatch(svg.replace(/<text[\s\S]*?<\/text>/g, '').replace(/<title>[\s\S]*?<\/title>/g, '').replace(/data-tip="[^"]*"/g, ''), new RegExp('\\b' + model.name + '\\b'), 'the model name only in <text>');
     assert.ok(svg.startsWith('<svg') && svg.includes('aria-hidden="true"'));
-    for (const [, tip] of svg.matchAll(/<title>([^<]*)<\/title>/g)) assert.match(tip, / — not emulated$/, 'inert controls titled');
+    for (const [, tip] of svg.matchAll(/<title>([^<]*)<\/title>/g)) assert.match(tip, / — (not emulated|cable-able with full patching \(stage 4\))$/, 'inert controls titled (7a: an inert \'later\' jack, cable-able later)');
   });
 }
 
@@ -1056,4 +1062,63 @@ test('1i the TB-303\'s audition (§6.4): PITCH — a key cell sounds seqNote / s
   S2.state.mode = 'pitch';
   fire(c2[0], 'pointerdown', P1);
   assert.deepEqual(F2.log, [['on', seqNote({ n: TB_FX.controls.filter(c => c.id === 'seq:key')[0].note, o: 0 }), 0.62]], 'an unaccented step: 0.62');
+});
+
+/* ---------------------------------------------------------------- 7a review 2 (fixer B): the 808's face text, MODE's legends */
+// Helvetica's advance widths (em; the face's first font), for an estimate independent of the renderer's own
+const HW = { ' ': 0.278, "'": 0.191, '1': 0.556, '2': 0.556, A: 0.667, C: 0.722, E: 0.667, L: 0.556, M: 0.833, N: 0.722, O: 0.778, P: 0.667, R: 0.722, S: 0.667, T: 0.611, U: 0.722, Y: 0.667, s: 0.5, t: 0.278, n: 0.556, d: 0.556 };
+const textEls = s => [...s.matchAll(/<text ([^>]*)>(.*?)<\/text>/g)].map(m => {
+  const a = k => { const r = new RegExp(`(?:^| )${k}="([^"]*)"`).exec(m[1]); return r ? r[1] : null; };
+  const lines = [...m[2].matchAll(/<tspan[^>]*>([^<]*)<\/tspan>/g)].map(t => t[1]);
+  return { x: a('x'), y: +a('y'), size: +a('font-size'), anchor: a('text-anchor'), weight: a('font-weight'), variant: a('font-variant'), lines: lines.length ? lines : [m[2]], raw: m[0] };
+});
+test('7a review 2 #3 / #6: decor text takes xs (one x per character: a row of glyphs is one <text>) and variant small-caps; both validated; the 808\'s name plates are one centred <text> each (small caps: the code letters capitals, the rest small capitals, a space between words), the note-value staves one <text> per row; STEP NUMBER clear of the PATTERN CLEAR box', () => {
+  const bad = (f, re) => { const L = clone(FX_LAYOUT); f(L); const p = P.validate(L, FX_MODEL); assert.ok(p.some(x => re.test(x)), re + ' → ' + JSON.stringify(p)); };
+  bad(L => { L.decor.push({ t: 'text', x: 5, y: 5, s: 'ab', xs: [5] }); }, /decor\[\d+\]: xs/);
+  bad(L => { L.decor.push({ t: 'text', x: 5, y: 5, s: 'ab', xs: [5, 'x'] }); }, /decor\[\d+\]: xs/);
+  bad(L => { L.decor.push({ t: 'text', x: 5, y: 5, s: 'ab', xs: [5, 400] }); }, /decor\[\d+\]: outside its area/);
+  bad(L => { L.decor.push({ t: 'text', x: 5, y: 5, s: 'ab', variant: 'bogus' }); }, /decor\[\d+\]: variant/);
+  const L = clone(FX_LAYOUT); L.decor.push({ t: 'text', x: 5, y: 9, s: '♪♪♪', xs: [5, 10.25, 15.5] }, { t: 'text', x: 50, y: 9, s: 'Bass Drum', variant: 'small-caps' });
+  assert.deepEqual(P.validate(L, FX_MODEL), []);
+  const s = P.decorSvg(L, FX_MODEL);
+  assert.ok(s.includes('<text x="5 10.25 15.5" y="9" font-size="2.6"'), 'the x-list');
+  assert.ok(/<text x="50" y="9" font-size="2.6"[^>]* font-variant="small-caps"[^>]*>Bass Drum<\/text>/.test(s), 'small caps');
+  // the 808
+  const T8 = P.layoutOf('tr808'), svg = P.decorSvg(T8, modelOf('tr808')), els = textEls(svg);
+  const plates = els.filter(e => e.variant === 'small-caps');
+  assert.equal(plates.length, 17, 'one <text> per plate (12 voices + 5 switch plates)');
+  for (const e of plates) assert.equal(e.anchor, 'middle', e.raw);
+  const names = plates.map(e => e.lines[0].replace(/&#39;/g, "'"));
+  assert.deepEqual(names.slice().sort(), ['ACcent', 'Bass Drum', 'Snare Drum', 'Low Tom', 'Mid Tom', 'Hi Tom', 'Rim Shot', 'hand ClaP', 'Cow Bell', 'CYmbal', 'Open Hihat', "Cls'd Hihat",
+    'Low Conga', 'Mid Conga', 'Hi Conga', 'CLaves', 'MAracas'].sort());
+  const staves = els.filter(e => /^[♪♩]+$/.test(e.lines[0]));
+  assert.deepEqual(staves.map(e => [e.lines[0].length, e.x.split(' ').length]), [[16, 16], [8, 8], [4, 4], [2, 2]], 'the four rows, one x per note');
+  const step = els.find(e => e.lines[0] === 'STEP'), box = T8.decor.find(d => d.t === 'rect' && d.x === 48.1 && d.y === 97.4);
+  assert.ok(box && step.y - step.size * 0.72 >= box.y + box.h + 0.6, `STEP's cap top ${step.y - step.size * 0.72} ≥ the box's foot ${box.y + box.h} + 0.6 mm`);
+  assert.ok(els.length <= 230, 'the face\'s <text> count: ' + els.length);
+});
+test('7a review 2 #5: a dial with multi-line legends (the 808\'s MODE) lays each legend\'s block clear of the detent ticks and the knob; single-line dials are unchanged', () => {
+  const T8 = P.layoutOf('tr808'), c = T8.controls.find(x => x.id === 'dr:mode'), svg = P.decorSvg(T8, modelOf('tr808'));
+  const r0 = c.d / 2 + 0.6, r1 = r0 + 1.4 * 0.8, want = c.legends.map(l => l.split('\n')), rad = g => g * Math.PI / 180;
+  const ang = i => -c.sweep / 2 + c.sweep * i / (c.legends.length - 1), pt = (r, g) => [Math.sin(rad(g)) * r, -Math.cos(rad(g)) * r];
+  const ticks = c.legends.map((l, i) => [pt(r0, ang(i)), pt(r1, ang(i))]);
+  const els = textEls(svg).filter(e => e.size === 2.4 && want.some(w => w.join('|') === e.lines.join('|')));
+  assert.equal(els.length, 6, 'the six MODE legends');
+  for (const e of els) {
+    const xs = e.x.split(' ').map(Number), sz = e.size, lh = sz * 1.12, cap = 0.72 * sz;
+    const w = Math.max(...e.lines.map(l => [...l].reduce((a, ch) => a + (HW[ch] || 0.7), 0))) * sz;
+    const B = [xs[0] - w / 2 - c.x, e.y - cap - c.y, xs[0] + w / 2 - c.x, e.y + (e.lines.length - 1) * lh - c.y];
+    const dist = (x, y) => Math.hypot(Math.max(B[0] - x, 0, x - B[2]), Math.max(B[1] - y, 0, y - B[3]));
+    let gap = Infinity;
+    for (const [[ax, ay], [bx, by]] of ticks) for (let k = 0; k <= 40; k++) gap = Math.min(gap, dist(ax + (bx - ax) * k / 40, ay + (by - ay) * k / 40));
+    assert.ok(gap >= 0.3, `${e.lines.join(' ')}: ${gap.toFixed(2)} mm from the nearest detent tick`);
+    if (e.lines.length > 1) assert.ok(dist(0, 0) >= c.d / 2 + 0.3, `${e.lines.join(' ')}: ${(dist(0, 0) - c.d / 2).toFixed(2)} mm clear of the knob`);
+  }
+  // COMPOSE (single-line, clear of its tick) stays where it always was
+  const comp = els.find(e => e.lines[0] === 'COMPOSE'), [cx, cy] = pt(c.d / 2 + 3.9 + 0.4, ang(5));
+  assert.deepEqual([+(+comp.x).toFixed(2), +comp.y.toFixed(2)], [+(c.x + cx).toFixed(2), +(c.y + cy + 0.85).toFixed(2)]);
+  // a single-line dial (the 808's AUTO FILL IN): the legends at the label radius, as before (baseline + 0.85)
+  const f = T8.controls.find(x => x.id === 'dr:fill'), rl = f.d / 2 + 3.9 + 0.4;
+  const e16 = textEls(svg).find(e => e.size === 2.4 && e.lines[0] === '16'), a = (-f.sweep / 2 + f.sweep / 5) * Math.PI / 180;
+  assert.deepEqual([+(+e16.x).toFixed(2), +(e16.y).toFixed(2)], [+(f.x + Math.sin(a) * rl).toFixed(2), +(f.y - Math.cos(a) * rl + 0.85).toFixed(2)]);
 });

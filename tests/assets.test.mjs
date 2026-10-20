@@ -9,7 +9,8 @@
 // cache, cancel, the render farm in a vm "worker"), entries() for processorOptions, §9.8 files, host.smp, convMax;
 // review-round fixes: content-addressed relink, rows after a reload, v2 table references, sticky cancel / failure,
 // one build in flight per variant, gapless variant swaps (ready), budget memo, zone level caps, persistence, one-write
-// imports, IR rate in bounces, spectral cache keys and variants, zone-sample users.
+// imports, IR rate in bounces, spectral cache keys and variants, zone-sample users; (7a) a drum machine's sample slots
+// (states with `drum`, drumSmpIds, users, relink through editDrum, 2-level entries: ensure's `levels`).
 // Run: node --test tests/assets.test.mjs
 import './v8-guard.mjs';
 import test from 'node:test';
@@ -1131,4 +1132,56 @@ test('§9.9: users() names the tracks playing a sample through a user multisampl
   assert.deepEqual((await S.record(mid)).missing, []);
   await S.del(zid);
   assert.deepEqual((await S.record(mid)).missing, [zid], 'the panel can show the multisample\'s badge');
+});
+
+/* ------------------------------------------------------------------ 7a: a drum machine's sample slots (IMPL-7a §5; lane H2) */
+test('7a: a drum machine\'s slots — drumSmpIds / userAssetIds (Save embeds them), states() with `drum`: users() names the track, a relink reaches the slots (editDrum)', async () => {
+  const drum = { smp: { bd: { id: 'smp:00000000000000b1', name: 'Kick', on: true }, sd: { id: 'smp:00000000000000b2', name: 'Snare', on: false }, ch: { id: 'smp:00000000000000b1', name: 'Kick again', on: true } } };
+  assert.deepEqual(A.drumSmpIds(drum), ['smp:00000000000000b1', 'smp:00000000000000b2'], 'every loaded slot (on or off), each once');
+  for (const bad of [null, undefined, 7, {}, { smp: null }, { smp: { bd: null, sd: { id: 7 }, ch: { id: 'fsmp:Glass Bell' } } }]) assert.deepEqual(A.drumSmpIds(bad), [], JSON.stringify(bad));
+  assert.deepEqual(A.userAssetIds({ osc: [{ smp: 'smp:00000000000000b2' }] }, null, drum), ['smp:00000000000000b2', 'smp:00000000000000b1'], 'with a Serum state: each once');
+  assert.deepEqual(A.userAssetIds(null, null), [], 'no drum: as before');
+  const D = { id: 'd', name: 'Beat', drum: JSON.parse(JSON.stringify(drum)) }, edits = [];
+  const R = rig({ states: () => [{ track: D, dev: 'i1', s: null, fx: null, drum: D.drum }], editDrum: (x, fn, o) => { fn(x.drum); edits.push([x.track.id, o.label]); } });
+  assert.deepEqual([R.M.host.smp.users('smp:00000000000000b2'), R.M.host.smp.users('smp:00000000000000ff')], [['Beat'], []]);
+  await R.M.relink('smp:00000000000000b1', 'smp:00000000000000c1');
+  assert.deepEqual([D.drum.smp.bd.id, D.drum.smp.sd.id, D.drum.smp.ch.id, edits], ['smp:00000000000000c1', 'smp:00000000000000b2', 'smp:00000000000000c1', [['d', 'Relink sample']]]);
+  // without editDrum: the slot keeps the missing id (the circuit plays)
+  const Q = rig({ states: () => [{ track: D, dev: 'i1', s: null, fx: null, drum: D.drum }] });
+  await Q.M.relink('smp:00000000000000b2', 'smp:00000000000000c2');
+  assert.equal(D.drum.smp.sd.id, 'smp:00000000000000b2');
+});
+
+test('7a: ensure(needs, {levels: 2}) — a drum machine\'s slots are built with 2 playback levels; a track playing the sample directly gets it rebuilt in full; bounces get every level', async () => {
+  const R = rig(), { M } = R;
+  R.addNode('dr'); R.addNode('sx');
+  const z = await M.saveRecord(tone(48000, 220));
+  const posted = (c = null) => R.posts.filter(p => p.m.t === 'smp' && p.m.id === z && (c == null || p.ctx === c));
+  const lv = () => posted().map(p => p.m.levels.length);
+  await M.ensure([z], { trackId: 'dr', levels: 2 });
+  assert.deepEqual([lv(), M.want(z)], [[2], 2], 'the drum slot: levels 0 and 1 (TUNING ± 1 octave)');
+  await M.ensure([z], { trackId: 'dr', levels: 2 });
+  assert.equal(lv().length, 1, 'posted once');
+  await M.ensure([z], { trackId: 'sx' }); // a Serum's Sample oscillator on the same sample
+  assert.deepEqual([lv(), M.want(z)], [[2, 8], 8], 'played directly: rebuilt in full (it serves the slot too)');
+  await M.ensure([z], { trackId: 'dr', levels: 2 });
+  assert.equal(lv().length, 2, 'the drum asks less: kept');
+  M.release('sx');
+  assert.deepEqual([M.want(z), M.lv.get('dr'), M.lv.has('sx')], [2, 2, false]);
+  M.release('dr');
+  assert.equal(M.lv.has('dr'), false, 'release forgets the cap');
+  const es = await M.entries([z], 48000);
+  assert.equal(es[0].levels.length, 8, 'a bounce: every level');
+  // a new context: the drum alone builds 2 again — its levels 0 / 1 are the bounce's (the same sound offline)
+  R.ctx = { n: 2 };
+  await M.ensure([z], { trackId: 'dr', levels: 2 });
+  const p2 = posted(2);
+  assert.deepEqual(p2.map(p => p.m.levels.length), [2]);
+  const arr = l => Array.from(l.L || l.data || []);
+  for (let l = 0; l < 2; l++) {
+    const a = arr(p2[0].m.levels[l]), b = arr(es[0].levels[l]);
+    assert.ok(a.length > 0 && a.length === b.length && a.every((x, i) => x === b[i]), 'level ' + l + ': the same samples');
+  }
+  await M.ensure([z], { trackId: 'dr', levels: 8 });
+  assert.equal(M.lv.has('dr'), false, 'a cap of 8: full, no entry');
 });

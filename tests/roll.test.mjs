@@ -6,14 +6,17 @@
 // the same-target double-tap, drawing runs, handle resizes, pitch / time hysteresis, hold-then-drag select box, hold on
 // a note = its chord, modifier latches, thresholds, auto-scroll zones, stem / loop reach, the floating readout, reveal)
 // and the arrangement's touch taps; and — last, in the page simulation — the row height persisting (synth.rollView) into
-// the next session and the toolbar's touch modifier latches.
+// the next session and the toolbar's touch modifier latches. (7a, IMPL-7a §4.2) A drum track's rows: drumRowsOf, the
+// compact table (names, "Other", the scroll extent), drags / nudges / drawing / keys by rows, "Drum rows" off (the piano
+// with the names, the unplayed rows dimmed), the velocity lane's 100 / 127 lines, a map edit noticed.
 // Run: node --max-old-space-size=2048 --test tests/roll.test.mjs
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as dom from './wk-dom.mjs';
 import * as S from '../song.js?v=9';
-import { PianoRoll } from '../roll.js?v=9';
+import { PianoRoll, drumRowsOf } from '../roll.js?v=9';
+import * as DC from '../drum-core.js?v=9';
 import { Arrangement } from '../arrange.js?v=9';
 
 // never hand a fake-DOM node to assert (its AssertionError walks the cyclic tree: tens of GB): compare primitives, and
@@ -889,6 +892,186 @@ test('arrangement, two-finger takeover: the flagged pointercancel (gesture.js) a
   dom.fire(arr.el, 'lostpointercapture', { pointerId: PID, pointerType: 'touch' });
   eq([arr.g, log.join('|')], [null, ''], 'lost capture: ended, nothing committed');
   arr.destroy();
+});
+
+/* ------------------------------------------------------------------ 7a: drum rows (IMPL-7a §4.2; lane H2) */
+// a drum track's host: host.drumRows(track) → the drum machine's rows (drumRowsOf: the map's primaries, kick first) for
+// the tracks marked drum, null for the others (main.js wires it from the track's instrument device)
+const DMAP = () => JSON.parse(JSON.stringify(DC.DEFAULT_MAP));
+function mkDrum(o = {}) {
+  const map = o.map || DMAP(), dev = { model: 'tr808', drum: { map } };
+  const r = mk(Object.assign({}, o, { host: Object.assign({ drumRows: t => (t && t.drum !== false ? drumRowsOf(dev) : null) }, o.host) }));
+  r.dev = dev;
+  return r;
+}
+const rowY = (roll, r) => roll.r2y(r) + roll.rowH / 2;
+// the text the next frame draws (the back canvas's fillText calls)
+const frameTexts = roll => { roll.bctx.calls.length = 0; roll.render(); F(); return roll.bctx.calls.filter(c => c[0] === 'fillText').map(c => String(c[1])); };
+const MOUSE = { pointerType: 'mouse' };
+// the default map's rows from the bottom (row 16 … row 1): Kick 36, Snare 38, Low tom 41, Mid tom 45, Hi tom 48, Rim shot 37,
+// Hand clap 39, Cowbell 56, Cymbal 49, Open hat 46, Closed hat 42, Low conga 64, Mid conga 63, Hi conga 62, Claves 75, Maracas 70;
+// "Other" is row 0
+const ORDER = [36, 38, 41, 45, 48, 37, 39, 56, 49, 46, 42, 64, 63, 62, 75, 70];
+
+test('7a drumRowsOf: a drum machine\'s device → its mapped primaries, kick first ({ n, name }); null for any other model (and __proto__)', () => {
+  const rows = drumRowsOf({ model: 'tr808' });
+  eq(rows.map(e => e.n), ORDER, 'the default map\'s primaries');
+  eq(rows.slice(0, 3), [{ n: 36, name: 'Kick' }, { n: 38, name: 'Snare' }, { n: 41, name: 'Low tom' }], 'named');
+  const map = DMAP(); map.sd = [40, 38]; map.cb = [];
+  const r2 = drumRowsOf({ model: 'tr808', drum: { map } });
+  eq([r2.length, r2[1], r2.some(e => e.name === 'Cowbell')], [15, { n: 40, name: 'Snare' }, false], 'a re-mapped snare; an unmapped cowbell has no row');
+  for (const d of [null, undefined, 7, {}, { model: 'juno60', drum: { map } }, { model: '__proto__' }, { model: 'toString' }]) eq(drumRowsOf(d), null, JSON.stringify(d));
+});
+
+test('7a drum rows (compact, the default): the named rows only, kick at the bottom, "Other" on top; the gutter names them; the scroll extent is the table\'s; a synth track keeps the piano', () => {
+  const { roll, tr, setTrack } = mkDrum({ notes: [N(0, 120, 36), N(480, 120, 38), N(960, 120, 60)], rollRowH: 56 });
+  eq([roll.isDrum(), roll.drumRows().on, roll.drumRows().rows.length, roll._nRows(), roll.gut, roll.gw], [true, true, 16, 17, 120, 900 - 120]);
+  eq(ORDER.map(n => roll._row(n)), ORDER.map((_, i) => 16 - i), 'kick the bottom row (16), maracas row 1');
+  eq([roll._row(60), roll._row(35), roll._noteAt(0), roll._noteAt(16), roll._lab(36), roll._lab(60), roll._lab(-1)], [0, 0, -1, 36, 'Kick 36', 'C4', 'Other'], 'every other note (an alias too) in "Other"');
+  eq(roll.n2y(36) - roll.n2y(38), 56, 'one row apart');
+  // the scroll extent: 17 rows of 56 px, both ways
+  dom.fire(roll.el, 'wheel', { deltaY: 5000, clientX: 400, clientY: 200 });
+  eq(roll.sy, 17 * 56 - roll.gh, 'scrolled to the end of the rows, not of 128');
+  let tx = frameTexts(roll);
+  for (const s of ['Kick', 'Snare', 'Cowbell', '36', '38']) ok(tx.includes(s), 'the gutter names ' + s);
+  dom.fire(roll.el, 'wheel', { deltaY: -5000, clientX: 400, clientY: 200 });
+  eq(roll.sy, 0);
+  tx = frameTexts(roll);
+  for (const s of ['Other', 'Maracas', '70', 'Claves']) ok(tx.includes(s), 'the top: ' + s);
+  ok(!tx.includes('C2') && !tx.includes('C3'), 'no C labels in the gutter');
+  // a synth track: the piano, its 64 px gutter
+  setTrack({ id: 'S', drum: false, notes: [] });
+  eq([roll.isDrum(), roll.drumRows(), roll._nRows(), roll.gut, roll.n2y(60) - roll.n2y(61)], [false, null, 128, 64, 56]);
+  setTrack(tr);
+  eq([roll.isDrum(), roll._nRows(), roll.gut], [true, 17, 120], 'back on the drum track');
+  // the "Drum rows" choice set while a synth track shows: its view stays, the next drum track opens with it
+  setTrack({ id: 'S', drum: false, notes: [N(0, 480, 60)] });
+  const v0 = [roll.sy, roll.rowH, roll._nRows()];
+  roll.setDrumRows(false);
+  eq([roll.sy, roll.rowH, roll._nRows()], v0, 'a synth track: untouched');
+  setTrack(tr);
+  eq([roll.drumRows().on, roll._nRows()], [false, 128], 'the drum track: the full keyboard');
+});
+
+test('7a review 2 #8: the compact drum rows fill the grid\'s height (up to 32 px with a mouse, 44 px on touch; never below the touch minimum), and refit on a resize; a chosen row height wins; the piano keeps its default rows', () => {
+  for (const [w, h, touch] of [[1024, 700, true], [1440, 520, false], [900, 1200, true], [900, 1200, false], [600, 260, true]]) {
+    const { roll, setTrack } = mkDrum({ w, h, touch, notes: [N(0, 120, 36)] });
+    const want = Math.min(touch ? 44 : 32, Math.max(touch ? 14 : 5, Math.floor(roll.gh / 17)));
+    eq([roll._nRows(), roll.rowH], [17, want], `${w}×${h} ${touch ? 'touch' : 'mouse'}: grid ${roll.gh} px`);
+    if (want * 17 <= roll.gh) eq(roll.sy, 0, 'all the rows in view');
+    setTrack({ id: 'S', drum: false, notes: [] });
+    const ref = mk({ w, h, touch }); ref.setTrack({ id: 'S2', notes: [] });
+    eq(roll.rowH, ref.roll.rowH, 'a synth track: the piano\'s rows as on a roll that never showed drums');
+    if (h >= 520) eq(roll.rowH, touch ? 18 : 12, 'the default');
+  }
+  // a resize (the iPad turned): the rows refit
+  const { roll, doc } = mkDrum({ w: 1024, h: 400, touch: true });
+  const h0 = roll.rowH;
+  dom.place(roll.box, 0, 0, 1024, 800); dom.place(roll.el, 0, 0, 1024, 800); roll.resize(); F();
+  ok(roll.rowH > h0 && roll.rowH === Math.min(44, Math.floor(roll.gh / 17)), `refit: ${h0} → ${roll.rowH} (grid ${roll.gh})`);
+  void doc;
+  // a chosen row height wins
+  eq(mkDrum({ w: 1024, h: 700, touch: true, rollRowH: 20 }).roll.rowH, 20, 'the stored choice');
+});
+
+test('7a drum rows: a vertical drag moves between drum rows (mouse and touch) — never into "Other"; a note in "Other" moves onto the rows and back keeps its pitch; nudge by rows', () => {
+  for (const o of [MOUSE, {}]) {
+    const touch = !o.pointerType, at = touch ? 'touch' : 'mouse';
+    const { roll, tr } = mkDrum({ notes: [N(0, 480, 38), N(1920, 480, 60)], touch });
+    const sn = tr.notes.find(x => x.n === 38), ot = tr.notes.find(x => x.n === 60), x = roll.t2x(240), h = roll.rowH;
+    gest(roll, line(x, rowY(roll, 15), x, rowY(roll, 14)), o);
+    eq(sn.n, 41, at + ': the snare up one row: Low tom');
+    gest(roll, line(x, roll.n2y(41) + h / 2, x, roll.n2y(41) + h / 2 + 2 * h), o);
+    eq(sn.n, 36, at + ': down two rows: Kick');
+    gest(roll, line(x, roll.n2y(36) + h / 2, x, roll.n2y(36) + h / 2 + 5 * h), o);
+    eq(sn.n, 36, at + ': below the kick: stays');
+    gest(roll, line(x, roll.n2y(36) + h / 2, x, roll.n2y(36) + h / 2 - 30 * h, 12), o);
+    eq(sn.n, 70, at + ': up past the top named row: Maracas (row 1), never "Other"');
+    // "Other": 60 moved down one row (the top named row), then back up in the same drag → its own pitch again
+    const x2 = roll.t2x(2100), y0 = rowY(roll, 0);
+    gest(roll, [[x2, y0], [x2, y0 + 0.5 * h], [x2, y0 + h], [x2, y0 + 1.5 * h], [x2, y0 + 0.4 * h], [x2, y0]], o);
+    eq(ot.n, 60, at + ': down and back: 60');
+    gest(roll, line(x2, y0, x2, y0 + 3 * h), o);
+    eq(ot.n, 62, at + ': three rows down from "Other": Hi conga (row 3)');
+  }
+  const { roll, tr } = mkDrum({ notes: [N(0, 480, 38), N(480, 480, 60)] });
+  const ns = () => tr.notes.map(x => x.n);
+  roll.selectAll();
+  roll.nudge(0, 1);
+  eq(ns(), [38, 60], 'up one row: "Other" has nowhere up, so the selection stays (one clamp for all, as the piano\'s)');
+  roll.nudge(0, -1);
+  eq(ns(), [36, 70], 'down one row: the snare to Kick, 60 onto Maracas');
+  roll.nudge(0, -40);
+  eq(ns(), [36, 70], 'clamped at the kick');
+  roll.selectPitch(36);
+  roll.nudge(0, 2);
+  eq(ns(), [41, 70], 'the kick up two rows: Low tom');
+});
+
+test('7a drum rows: drawing / adding on a drum row writes its note (v 100); "Other" writes nothing; the key strip plays a row\'s note ("Other" none) and a double-tap selects the row', () => {
+  const { roll, tr, log } = mkDrum({ notes: [N(3840, 120, 60), N(4800, 120, 61)] });
+  const at = t => tr.notes.filter(n => n.t === t).map(n => [n.n, n.v]);
+  // a double-click on the snare row adds a snare; on "Other" nothing
+  const x = roll.t2x(960) + 2;
+  tap2(roll, x, rowY(roll, 15), x, rowY(roll, 15), MOUSE);
+  eq(at(960), [[38, 100]], 'double-click: a snare');
+  tap2(roll, roll.t2x(1920) + 2, rowY(roll, 0), roll.t2x(1920) + 2, rowY(roll, 0), MOUSE);
+  eq(at(1920), [], '"Other": nothing');
+  roll.setTool('draw');
+  tap(roll, roll.t2x(2880) + 2, rowY(roll, 16), MOUSE);
+  eq(at(2880), [[36, 100]], 'draw on the kick row');
+  tap(roll, roll.t2x(2400) + 2, rowY(roll, 0), MOUSE);
+  eq(at(2400), [], 'draw on "Other": nothing');
+  gest(roll, line(roll.t2x(1440) + 2, rowY(roll, 16), roll.t2x(1440) + 2, rowY(roll, 14)), MOUSE);
+  eq(at(1440), [[41, 100]], 'draw and drag up two rows: Low tom');
+  roll.setTool('select');
+  // the key strip
+  log.length = 0;
+  tap(roll, 30, rowY(roll, 16), MOUSE);
+  tap(roll, 30, rowY(roll, 0), MOUSE);
+  eq(log, ['on36', 'off36'], 'the kick sounds; "Other" sounds nothing');
+  tap2(roll, 30, rowY(roll, 0), 30, rowY(roll, 0), MOUSE);
+  eq([...roll.sel].map(id => tr.notes.find(n => n.id === id).n).sort(), [60, 61], 'a double-tap on "Other" selects its notes');
+  // the readout names the row
+  roll._hover(roll.t2x(100), rowY(roll, 16), true);
+  eq(roll._info()[0], 'Kick 36');
+  roll._hover(roll.t2x(100), rowY(roll, 0), true);
+  eq(roll._info()[0], 'Other');
+});
+
+test('7a "Drum rows" off: the full keyboard with the drum rows named in the gutter and the rows no sound plays dimmed; on again; the velocity lane\'s 100 / 127 lines; a map edit is noticed', () => {
+  const { roll, tr, dev } = mkDrum({ notes: [N(0, 120, 36), N(480, 120, 60)], rollRowH: 18 });
+  roll.setDrumRows(false);
+  eq([roll.isDrum(), roll.drumRows().on, roll._nRows(), roll.gut, roll.n2y(36) - roll.n2y(37)], [true, false, 128, 120, 18], 'the piano, the wide gutter');
+  eq([roll._row(60), roll._lab(36), roll._lab(60)], [67, 'Kick 36', 'C4']);
+  roll.sy += roll.n2y(60) - 30; roll.clampY();
+  const tx = frameTexts(roll);
+  ok(tx.includes('Kick 36') && tx.includes('Snare 38'), 'named plates');
+  const R = roll.rowH, G = roll.gut;
+  ok(roll.bctx.calls.some(c => c[0] === 'rect' && c[1] === 0 && c[3] === G - 1 && c[4] === R && Math.abs(c[2] - roll.n2y(40)) < 0.01), 'an unmapped row (40) dimmed in the gutter');
+  ok(!roll.bctx.calls.some(c => c[0] === 'rect' && c[1] === 0 && c[3] === G - 1 && c[4] === R && Math.abs(c[2] - roll.n2y(38)) < 0.01), 'a named row (38) not');
+  // a drag in the piano moves by semitones
+  const n0 = tr.notes.find(x => x.n === 60), x = roll.t2x(540);
+  gest(roll, line(x, yOf(roll, 60), x, yOf(roll, 60) - R), MOUSE);
+  eq(n0.n, 61, 'the piano: a semitone');
+  roll.setDrumRows(true);
+  eq([roll.drumRows().on, roll._nRows()], [true, 17], 'compact again');
+  // the velocity lane: the normal (100) and accent (127) lines on a drum track, and the corner label
+  frameTexts(roll);
+  const vline = v => roll.bctx.calls.some(c => c[0] === 'fillRect' && c[1] === roll.gut && c[2] === Math.round(roll.v2y(v)) && c[4] === 1);
+  eq(vline(100), true);
+  ok(roll.bctx.calls.some(c => c[0] === 'fillText' && c[1] === '100'), 'the 100 label');
+  // the map edited elsewhere (MAP…: snare to 40): the next frame re-reads the rows; refreshRows does it at once
+  dev.drum.map.sd = [40, 38];
+  frameTexts(roll);
+  eq([roll._row(40), roll._row(38), roll._lab(40)], [15, 0, 'Snare 40'], 'the snare row on 40, 38 in "Other"');
+  dev.drum.map.sd = [38];
+  roll.refreshRows();
+  eq(roll._row(38), 15);
+  // a synth track draws no 100 line
+  const s = mk();
+  s.roll.render(); F();
+  eq(s.roll.bctx.calls.some(c => c[0] === 'fillRect' && c[1] === 64 && c[2] === Math.round(s.roll.v2y(100)) && c[4] === 1), false);
 });
 
 /* ------------------------------------------------------------------ the page: synth.rollView */

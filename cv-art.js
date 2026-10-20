@@ -34,6 +34,7 @@ export const SIL = Object.freeze({
   juno60: Object.freeze({ body: 'keyboard', keys: 22 }),
   dx7: Object.freeze({ body: 'keyboard', keys: 25, screen: true }),
   serum: Object.freeze({ body: 'box', screen: true }),
+  tr808: Object.freeze({ body: 'box', steps: 16 }), // (7a) a drum machine: a wide low case, 12 knob columns, 16 step keys in four colours
 });
 
 const W0 = 96, H0 = 56; // the design box
@@ -278,6 +279,26 @@ const DRAW = {
     } else s += R(38, 13, 52, 3, '#2f8f83') + R(38, 19, 52, 3, '#8a3b3b');
     s += R(2, 30.6, 92, 1.4, '#000', OP(0.5));
     return s + keys(4.5, 32.4, 87, 18.6, lo ? 12 : 25) + R(2, 51, 92, 1.2, '#2c2725');
+  },
+  // a wide, low case with dark cheeks: twelve columns of knobs (orange level discs on top, white ones below), cream name plates,
+  // an orange rule, and the run of sixteen step keys in four colour groups (red, orange, yellow, white)
+  tr808(th, lo) {
+    let s = shadow(4, 92, 50.6) + R(4, 7, 88, 43, th.face) + R(4, 7, 5, 43, '#131315') + R(87, 7, 5, 43, '#131315') + R(9, 7, 78, 43, th.panel) + R(9, 7, 78, 0.9, '#fff', OP(0.1));
+    const A = th.accent || '#f0862a', cols = [1, 3, 3, 2, 2, 2, 1, 1, 1, 3, 2, 1], gap = 6.2, x0 = 11.4 + gap / 2;
+    if (!lo) {
+      for (let c = 0; c < 12; c++) for (let r = 0; r < cols[c]; r++) {
+        const cx = x0 + c * gap - gap / 2 + 0.2, cy = 12.2 + r * 6.6;
+        s += C(cx, cy, 2, '#0b0b0c') + C(cx, cy, 1.05, r ? '#f1efe8' : A);
+      }
+      s += buttonRow(11.2, 32.4, 74.4, 2.3, 12, ['#e6e2b6'], { fill: 0.82 }) + R(11.2, 36, 74.4, 0.45, A);
+      let led = '';
+      for (let i = 0; i < 16; i++) led += C(11.2 + 4.65 * (i + 0.5), 39, 0.5, '#1a0b09');
+      s += buttonRow(11.2, 37.8, 74.4, 8.2, 16, ['#e8402c', '#f4893c', '#f5dc4e', '#f4f3ee'], { fill: 0.7, pick: i => i >> 2 }) + led;
+    } else {
+      s += R(12, 11, 72, 2.6, '#0b0b0c') + R(12, 17, 72, 2.2, '#f1efe8', OP(0.8)) + R(12, 22, 72, 2.2, '#f1efe8', OP(0.8));
+      s += R(12, 11, 72, 1.6, A) + buttonRow(11.2, 34, 74.4, 9, 4, ['#e8402c', '#f4893c', '#f5dc4e', '#f4f3ee'], { fill: 0.9 });
+    }
+    return s + R(9, 46.4, 78, 3.6, '#17171a');
   },
   // an abstract software instrument: a stacked wavetable, knob rings and a filter curve on a dark panel
   serum(th, lo) {

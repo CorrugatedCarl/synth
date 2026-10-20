@@ -41,6 +41,9 @@
 //   arp2600   4072 ladder ≈ c3       —         1    0.0055  0.0059  0.0114
 //   ms20      Korg 35 SK ≈ c3        —         1    0.0055  0.0089  0.0144
 //   tb303     diode ladder + seq ≈ c3 —        1    0.0055  0.0137  0.0192
+//   tr808     12 voice circuits      d8p       1    0.0175  0.0030  0.0205   (IMPL-7a §2.6: the machine playing its typical
+//             pattern — "notes" do not apply, base + voice = bench row d8p, 0.0205 (the gate's 0.0211 calibrated); voice =
+//             one circuit retriggered (lane V's 0.003, RD §1.3); d8x 0.037, d8m 0.017, d8s 0.0055, idle d8i 0.0002)
 //
 // Serum (OS 2; ×0.68 at OS 1, ×1.59 at OS 4): base 0.0063 (default 1 / 4 / 8 voices = 0.0100 / 0.0209 / 0.0356) + per
 // voice 0.00245 + per oscillator on [first unison voice, each further one]: Wavetable [0.0012, 0.00042] · Multisample
@@ -78,6 +81,7 @@ export const COST = Object.freeze({
     solina: C('c5', 'divide-down + ensemble', Infinity, 0.0110, 0.0021), minimoog: C('c3', 'transistor ladder', 1, 0.0055, 0.0063),
     modular: C('c3', 'transistor ladder', 1, 0.0055, 0.0063), arp2600: C('c3', '4072 ladder', 1, 0.0055, 0.0059),
     ms20: C('c3', 'Korg 35 Sallen-Key', 1, 0.0055, 0.0089), tb303: C('c3', 'diode ladder + sequencer', 1, 0.0055, 0.0137),
+    tr808: C('d8p', 'drums', 1, 0.0175, 0.0030),
     serum: Object.freeze({ row: 'e', family: 'Serum (terms in COST.serum)', poly: 32, base: 0.0063, voice: 0.00245 }),
   }),
   serum: Object.freeze({
@@ -276,7 +280,7 @@ const abortErr = () => { const e = new Error('Measuring was cancelled'); e.name 
 export function workerMain(G) {
   'use strict';
   const DSP = ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
-    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'mod-core.js'];
+    'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js'];
   const SR = 48000, Q = 128;
   let Proc = null;
   function load(base, sfx) {

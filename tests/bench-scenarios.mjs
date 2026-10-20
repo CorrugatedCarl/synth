@@ -24,6 +24,7 @@ import { playbackEntry, specEntry, irEntry } from '../smpwork.js?v=9';
 import { convShapeOf } from '../assets.js?v=9';
 import { lawNorm as lawN } from '../laws.js?v=9';
 import { SLOT } from '../cv-mods.js?v=9';
+import * as DC from '../drum-core.js?v=9';
 
 export const SR = 48000;
 const W2 = id => core.WARPS2.findIndex(w => w.id === id) / (core.WARPS2.length - 1);
@@ -222,6 +223,45 @@ function msPrep(p) {
   I.renderSpan = function (n) { const v = 0.1 + 0.05 * ((j++) & 1); for (const e of sv) e.v = v; this.modSpan(null, null, sv); return rs.call(this, n); };
 }
 
+/* ------------------------------------------------------------------ drum machine rows (IMPL-7a §2.6, lane E) */
+// The TR-808 as a track (kind 'track', OS 4): its panel into an empty panel → OUT, its own pattern (basic key 1 A in
+// MANUAL PLAY, SYNC on: a new machine's default) clocked by the transport playing at 120 BPM from tick 0 at frame 0 (the
+// pattern loops, so every timed run has hits), no notes. d8p a typical pattern, d8x every lane every 250 ms accented with
+// every DECAY at 10, d8m the metal voices (the bank and three VCAs), d8s d8p with all 16 sounds as user samples (one 1 s
+// fixture, 2 playback levels). Rows as 16-character strings per lane, 'x' = a hit; each pattern's two halves alike (d8p:
+// but for its two toms, one a half), so every 1 s run (half a bar at 120 BPM) times the same load.
+export const DRUM_PATTERNS = Object.freeze({
+  d8p: { ac: 'x...x...x...x...', bd: 'x...x...x...x...', sd: '....x.......x...', cp: '....x.......x...', ch: 'x...x...x...x...', oh: '..x...x...x...x.',
+    mt: '......x.........', lt: '..............x.', cb: '...x.......x....' },
+  d8x: Object.fromEntries(DC.LANES.map(l => [l, 'x.x.x.x.x.x.x.x.'])),
+  d8m: { cy: 'x...x...x...x...', oh: 'x...x...x...x...', cb: 'x...x...x...x...' },
+});
+const drumSteps = o => { const st = new Array(32).fill(0); for (const [lane, r] of Object.entries(o)) { const l = DC.LANES.indexOf(lane); for (let k = 0; k < r.length; k++) if (r[k] === 'x') st[k] |= 1 << l; } return st; };
+let DRUM_SMP = null;
+// the bench's own 1 s drum sample (a decaying tone and noise burst, deterministic), its id a content-hash-shaped one
+function drumSample() {
+  if (DRUM_SMP) return DRUM_SMP;
+  const n = SR, r = W.mulberry32(W.fnv1a32('bench-drum')), L = new Float32Array(n);
+  for (let i = 0; i < n; i++) L[i] = 0.7 * Math.exp(-i / (0.12 * SR)) * Math.sin(2 * Math.PI * 70 * i / SR) + 0.3 * Math.exp(-i / (0.03 * SR)) * (2 * r() - 1);
+  const id = 'smp:0123456789abcdef';
+  DRUM_SMP = { id, entry: playbackEntry(id, rec(L, null, 60), null, 2) };
+  return DRUM_SMP;
+}
+/** A drum machine track (kind 'track'): pattern rows (DRUM_PATTERNS' form, or 32 step masks), panel values over the
+ *  defaults, samples on. */
+export function drumTrack(rows, vals, samples) {
+  const m = MODELS.find(x => x.id === 'tr808'), v = Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), vals || {});
+  const p = patchFor(m, v, core.defaultFx2(), { sr: SR, bpm: 120 });
+  delete p.fxr; delete p.fxrT; // (a classic Inst's patch on a graph node: its panel is a {t: 'chain'})
+  const d = DC.normDrum(undefined), fx = core.defaultFx2(), Z = { lo: 0, hi: 127, xp: 0 }, S = samples ? drumSample() : null;
+  d.st[0] = Array.isArray(rows) ? rows.slice() : drumSteps(rows); d.ui.mode = DC.M_MAN;
+  if (S) d.smp = Object.fromEntries(DC.SOUNDS.map(k => [k, { id: S.id, name: 'bench', on: true }]));
+  return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: 'd8' },
+    patches: { i1: p }, chains: { fx1: { fxr: core.compileFx(fx, { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx) } }, notes: [],
+    seqs: { i1: DC.payload(d, DC.initState(), 'now') }, transport: { play: true, frame: 0, tick: 0, fpt: SR * 60 / (120 * 960), seek: true },
+    assets: S ? { [S.id]: S.entry } : null };
+}
+
 export function scenarios() {
   const A = () => assets();
   const list = [
@@ -296,6 +336,15 @@ export function scenarios() {
       base: () => juno8(null), build: () => juno8(mkPrep) },
     { id: 'ms', label: 'Classic mod: 8-voice Juno-60 + 4 envelope-time cables changing every span — span-setter overhead (minus the row without)', node: 0.012, ipad: 0.012, kind: 'voice',
       base: () => juno8(null), build: () => juno8(msPrep) },
+    // IMPL-7a §2.6: the TR-808 (its own sequencer synced, the whole track; d8i, the idle machine, is gated as row p is)
+    { id: 'd8p', label: 'TR-808: a typical pattern (BD on the beats, SD + CP on 2 / 4, CH, OH off-beats, two toms, CB, accents), 120 BPM, synced', node: 0.02, ipad: 0.02,
+      kind: 'track', build: () => drumTrack(DRUM_PATTERNS.d8p) },
+    { id: 'd8x', label: 'TR-808: every lane every 250 ms, accented, every DECAY at 10 (the worst case)', node: 0.1, ipad: 0.1,
+      kind: 'track', build: () => drumTrack(DRUM_PATTERNS.d8x, { bdd: 10, cyd: 10, ohd: 10 }) },
+    { id: 'd8m', label: 'TR-808: CY + OH + CB every 500 ms (the metal bank and three VCAs)', node: 0.035, ipad: 0.035,
+      kind: 'track', build: () => drumTrack(DRUM_PATTERNS.d8m) },
+    { id: 'd8s', label: 'TR-808: d8p with all 16 sounds as user samples (a 1 s fixture)', node: 0.012, ipad: 0.012,
+      kind: 'track', build: () => drumTrack(DRUM_PATTERNS.d8p, null, true) },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',
@@ -333,6 +382,8 @@ function prepare(B, kind, env, now) {
     p.msg(B.graph);
     for (const [id, patch] of Object.entries(B.patches)) { p.msg({ t: 'patch', i: id, p: patch }); sendTables(p, patch); }
     for (const [id, c] of Object.entries(B.chains)) p.msg(Object.assign({ t: 'chain', c: id }, c));
+    if (B.seqs) for (const [id, s] of Object.entries(B.seqs)) p.msg({ t: 'seq', i: id, s }); // (a drum machine's payload)
+    if (B.transport) p.msg(Object.assign({ t: 'transport' }, B.transport));
     if (B.mods) { // (IMPL-2b: the track's ModCore payload; its rows' scratch destinations resolved through the scope's SxBase)
       const DI = env.SxBase.DIDX2, m = B.mods;
       for (const r of m.rows) if (r.dstId) r.vi = DI[r.dstId.toUpperCase().replace('.', '_')];

@@ -23,11 +23,16 @@
 //   states()                          the project's sound states (canvas milestone 3, R4): [{ track, dev, s, fx }] — every
 //                                     Serum instrument of every track (s its Serum state, fx its own FX state) and every
 //                                     FX panel (s null, fx its state), `track` its track ({ id, name }); every one, so
-//                                     that a second Serum's samples and Convolve IRs of classic-model racks count too
+//                                     that a second Serum's samples and Convolve IRs of classic-model racks count too;
+//                                     (7a, IMPL-7a §5) every drum machine too: { track, dev, s: null, fx: null, drum } —
+//                                     `drum` its record (dev.drum: the sample slots `smp`), so users() names it and a
+//                                     relink reaches its slots
 //   edit(state, fn, {label})          a Serum-state edit of one of them: fn(s) (main.js sxEdit on its device; a user table
 //                                     deleted, a sample relinked)
 //   editFx(state, fn, {label})        an FX-state edit of one of them: fn(fx) (a relinked Convolve IR; without it Convolve
 //                                     instances keep the missing id)
+//   editDrum(state, fn, {label})      (7a) a drum machine's record edit: fn(drum) (a relinked slot; without it the slot
+//                                     keeps the missing id — the circuit plays)
 //   defaultState()                    a default Serum state (serum-core defaultSerum; the replacement sources)
 //   refresh()                         the user rows changed or the sample modules loaded (main.js sxRefresh)
 //   now(), timers {set, clear}        clock (ms) and timers (default performance.now, setTimeout / clearTimeout)
@@ -53,7 +58,10 @@
 //                                     rebuilds the posted shaped IRs at that length when it changes. The
 //                                     preset-preview node passes trackId 'preview', its node and the preset's states:
 //                                     ensure(needs, {trackId: 'preview', node, s: preset.v.s, fx: preset.fx}); it is
-//                                     released like a track (§9.6: no assets in its processorOptions)
+//                                     released like a track (§9.6: no assets in its processorOptions). (7a, IMPL-7a §5)
+//                                     `levels`: the playback levels this track's samples need (a drum machine's slots: 2
+//                                     — TUNING's ± 1 octave plays level 0 or 1); a sample is built with the most any
+//                                     track playing it asks for (absent = 8, full), rebuilt in full when one asks more
 //   ready(needs) → boolean            false while an id of `needs` is being built to replace a posted variant of the
 //                                     same asset (a trim / fade / Convolve shaping edit): post such a patch when
 //                                     ensure(needs) resolves (re-check ready() with the newest patch then; a newer patch
@@ -197,13 +205,24 @@ export function userIdsOf(s) {
 
 /**
  * The user sample / multisample / IR ids a track's Serum state and FX state reference (§9.8: what project and preset
- * files embed; zone samples of the multisamples are added by embedSmps).
+ * files embed; zone samples of the multisamples are added by embedSmps); (7a) and a drum machine's record `drum`: its
+ * sample slots' ids (drumSmpIds).
  */
-export function userAssetIds(s, fx) {
+export function userAssetIds(s, fx, drum) {
   const out = [];
   const add = id => { if (isUserAsset(id) && !out.includes(id)) out.push(id); };
   if (s && Array.isArray(s.osc)) for (const O of s.osc) if (O && typeof O === 'object') { add(O.smp); add(O.multi); }
   for (const ir of convIrs(fx)) add(ir);
+  for (const id of drumSmpIds(drum)) add(id);
+  return out;
+}
+/**
+ * (7a, IMPL-7a §5) The user sample ids of a drum machine's record (dev.drum): every loaded slot (`smp[sound].id`, on or
+ * off — Save embeds what a later switch plays), each once, in the slots' key order.
+ */
+export function drumSmpIds(drum) {
+  const out = [], S = drum && typeof drum === 'object' && drum.smp && typeof drum.smp === 'object' ? drum.smp : null;
+  if (S) for (const k of Object.keys(S)) { const e = S[k], id = e && typeof e === 'object' ? e.id : null; if (typeof id === 'string' && /^smp:/.test(id) && !out.includes(id)) out.push(id); }
   return out;
 }
 // Convolve instances of an FX state (every rack and splitter branch) → their objects
@@ -776,15 +795,17 @@ export function createAssetManager(o = {}) {
   function capNotice(base) { if (!capped.has(base)) { capped.add(base); notify(TEXT.specCap); } }
   // opts: skip (ids not to build: zone samples already posted or built at full level elsewhere), convMax (s; the Q3 cap
   // the IR is shaped for), rate (Hz: build IRs for this rate under their ids, entries()), keep() (whether a spectral
-  // analysis is still wanted when it is done: only then is it cached), force (generate held factory ids: bounces)
+  // analysis is still wanted when it is done: only then is it cached), force (generate held factory ids: bounces),
+  // levels ((7a) a sample's level cap: M.want — absent = full)
   async function assetEntries(id, opts) {
     await smpMods();
     const kind = idKind(id), o2 = opts || {}, skip = o2.skip, rq = o2.force ? { force: true } : null;
     if (kind === 'smp') {
       const { base, key } = splitOps(id), ops = opsFor(base, key), rec = await record(base, rq);
       if (!rec) throw new Error('missing ' + base);
-      const r = recForWork(rec), e = (await must('entry', { id, rec: r, ops, maxLevels: SMP.LIMITS.levels }, recBufs(r))).entry;
-      capOf.set(e, SMP.LIMITS.levels);
+      const lv = o2.levels > 0 && o2.levels < SMP.LIMITS.levels ? o2.levels : SMP.LIMITS.levels; // ((7a) a drum slot's 2)
+      const r = recForWork(rec), e = (await must('entry', { id, rec: r, ops, maxLevels: lv }, recBufs(r))).entry;
+      capOf.set(e, lv);
       return [e];
     }
     if (kind === 'wtsmp') {
@@ -864,6 +885,7 @@ export function createAssetManager(o = {}) {
     bytes: new Map(), worker: null, wbad: false, wq: new Map(), wn: 0, saveT: new Map(), deps, convMax: 10, stale: new Set(),
     refused: new Map(), // id → bytes of an entry the §14.2 budget refused (not rebuilt while it would not fit)
     cap: new Map(),     // posted playback id → the level cap it was built with (a zone entry is rebuilt in full when played directly)
+    lv: new Map(),      // (7a) trackId → the level cap its sample ids ask for (< 8: a drum machine's slots; absent = full)
     flight: new Map(),  // variant base → the id being built (one build in flight per base, §8.4)
     queue: new Map(),   // variant base → [{id, trackId, node, res}] waiting for that build (newer targets replace older)
     get WT() { return WT; }, get SMP() { return SMP; }, get GEN() { return GEN; },
@@ -874,6 +896,7 @@ export function createAssetManager(o = {}) {
       learn(at);
       const prev = trackId != null ? this.needs.get(trackId) || [] : [];
       if (trackId != null) this.needs.set(trackId, list);
+      if (trackId != null) { const L = at && at.levels > 0 ? Math.round(at.levels) : 8; if (L < 8) this.lv.set(trackId, Math.max(1, L)); else this.lv.delete(trackId); }
       // held factory ids (cancelled / failed): a selection that adds one to this track retries it; one no track needs
       // any more is forgotten
       if (held.size) {
@@ -905,7 +928,7 @@ export function createAssetManager(o = {}) {
       for (const id of list) this.stale.delete(id);
       const waits = [];
       for (const id of list.concat(again)) {
-        if (this.sent.has(id) && !(idKind(id) === 'smp' && (this.cap.get(id) || 8) < 8 && list.includes(id))) continue;
+        if (this.sent.has(id) && !(idKind(id) === 'smp' && (this.cap.get(id) || 8) < this.want(id) && list.includes(id))) continue;
         if (this.pend.has(id)) { waits.push(this.pend.get(id)); continue; }
         if (this.refused.has(id) && this.meter().bytes + this.refused.get(id) > budget) continue; // still does not fit
         const f = factoryOf(id);
@@ -1000,7 +1023,7 @@ export function createAssetManager(o = {}) {
     },
     pushAsset(id, trackId, node) {
       const c = ctxOf(), cm = this.convMax;
-      return assetEntries(id, { skip: this.zoneSkip(), convMax: cm, keep: () => this.used().has(id) && !this.stale.has(id) }).then(list => {
+      return assetEntries(id, { skip: this.zoneSkip(), convMax: cm, keep: () => this.used().has(id) && !this.stale.has(id), levels: this.want(id) }).then(list => {
         if (this.pend.get(id)) this.pend.delete(id);
         const ctx = ctxOf();
         if (!ctx || c !== ctx || this.ctx !== ctx) return;
@@ -1106,7 +1129,13 @@ export function createAssetManager(o = {}) {
       return x;
     },
     gcSoon() { if (!this.gcT) this.gcT = setT(() => { this.gcT = 0; this.gc(); }, 2500); },
-    release(trackId) { if (this.needs.delete(trackId)) this.gcSoon(); }, // a track left Serum, was deleted, a preview ended
+    release(trackId) { this.lv.delete(trackId); if (this.needs.delete(trackId)) this.gcSoon(); }, // a track left Serum, was deleted, a preview ended
+    // (7a) the levels a sample id is built with: the most any track playing it directly asks for (8 = full)
+    want(id) {
+      let w = 0;
+      for (const [k, l] of this.needs) if (l.includes(id)) { const c = this.lv.get(k) || 8; if (c > w) w = c; }
+      return w || 8;
+    },
     drop(trackId) { this.release(trackId); },
     used() { // every id some track (or preview) needs, with the zone samples of the multisamples among them
       const used = new Set();
@@ -1303,6 +1332,9 @@ export function createAssetManager(o = {}) {
         }
         if (convIrs(st.fx).includes(from) && typeof o.editFx === 'function') {
           o.editFx(st, fx => { for (const I of convInstances(fx)) if (I.sub && I.sub.ir === from) I.sub.ir = to; }, { label: 'Relink impulse response' });
+        }
+        if (drumSmpIds(st.drum).includes(from) && typeof o.editDrum === 'function') { // (7a: a drum machine's slots)
+          o.editDrum(st, D => { for (const k of Object.keys(D.smp || {})) if (D.smp[k] && D.smp[k].id === from) D.smp[k].id = to; }, { label: 'Relink sample' });
         }
       }
       if (idKind(from) !== 'smp') return;
@@ -1732,11 +1764,11 @@ export function createAssetManager(o = {}) {
       return true;
     },
     // the tracks whose sounds use a user asset: oscillators (sample, multisample — also through a user multisample whose
-    // zones play this sample), Convolve IRs of any rack
+    // zones play this sample), Convolve IRs of any rack, (7a) a drum machine's sample slots
     users: id => {
       const multis = M.smpRows.filter(r => r.kind === 'multi' && Array.isArray(r.smps) && r.smps.includes(id)).map(r => r.id);
       const uses = O => O && (O.smp === id || O.multi === id || (O.multi && multis.includes(O.multi)));
-      return names(states().filter(st => (st.s && Array.isArray(st.s.osc) && st.s.osc.some(uses)) || convIrs(st.fx).includes(id)));
+      return names(states().filter(st => (st.s && Array.isArray(st.s.osc) && st.s.osc.some(uses)) || convIrs(st.fx).includes(id) || drumSmpIds(st.drum).includes(id)));
     },
     // "Switch to Single Sample": the recent voice's zone sample as a user sample of its own
     saveFrom: async (osc, kind) => {

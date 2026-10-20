@@ -20,7 +20,8 @@ import * as H from './golden-harness.mjs';
 const [, B] = await H.sides();
 const REF_URL = new URL('./ref-1c/engine.js', import.meta.url), REF_SHA = 'd5d0b375735736ed43015ef90671f9bf56208b85d8e12595d33d3bc55efbdd1d';
 const L = Object.assign({}, B, { name: 'legacy', engine: readFileSync(REF_URL, 'utf8'), entries: new Map(), user: new Map(), scopes: new Map() });
-const core = B.core, fxm = B.fxm, MODELS = B.models.MODELS.filter(m => !m.custom);
+// the 12 keyboard classics the legacy engine can render (IMPL-7a §12.2: the drum family has no legacy side; its refs are ref-7a)
+const core = B.core, fxm = B.fxm, MODELS = B.models.MODELS.filter(m => !m.custom && m.family !== 'drums');
 const SX_OS = H.FULL ? [1, 2, 4] : [2], CL_RATES = H.FULL ? [[48000, 4], [44100, 1]] : [[48000, 4]];
 const st = (n, o, a, s, g = 1) => ({ n, o, a, s, g });
 const SEQ303 = { pat: [st(0, 0, 1, 0), st(0, 0, 0, 0), st(12, 0, 0, 1), st(0, 0, 0, 0), st(3, 0, 1, 0), st(0, 0, 0, 1), st(10, 0, 0, 0), st(0, 0, 0, 0, 0),

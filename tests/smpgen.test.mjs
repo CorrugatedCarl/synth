@@ -572,7 +572,9 @@ test('§10.1: patchFor — main.js buildPatch adds only live-session fields; far
     const live2 = buildPatch(t2, 44100, true);
     delete live2.osCap;
     assert.deepEqual(live2, pure, m.id + ': the v2 track compiles to the same patch');
-    if (!m.custom) {
+    // (the farm renders keyboard instruments' notes into multisamples; a drum machine is not a farm instrument — its patch
+    // is still vals-only, so the two checks above hold for it, IMPL-7a §1.1, §12.6)
+    if (!m.custom && m.family !== 'drums') {
       const f = A.farmPatch(m.id, p.name, 97);
       assert.deepEqual(f.patch, models.patchFor(m.id, valsOf(m.id, p.name), null, { sr: 48000, bpm: 97, drift: 0, hiss: 0 }), m.id + ': farm patch');
       assert.deepEqual(f.wtIds, []);

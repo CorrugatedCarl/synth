@@ -24,6 +24,10 @@
 //      lay entries: song.normLay) and the LFO / ENV / Macro / Chaos modules show Serum's own panels, wider (cv-module
 //      MOD_W per kind, frozen here as MOD_W6): STEPS[6] moves stored modulator places only (growMods; content unchanged). A schema-6 build's
 //      normLay would drop the part keys and ui 'parts' and autosave the loss: there a 7 opens read-only
+//   8  stage 7a: drum machines (IMPL-7a §6) — a 'tr808' instrument device and its `drum` record (pattern memory, panel
+//      state, note map, sample slots: song.normDev → drum-core normDrum): additive, nothing to convert (a 7 opens as before;
+//      an 8 in a schema-7 build opens read-only — that build would read 'tr808' as a Minimoog, modelById's fallback, drop
+//      `drum` and autosave the loss). toV1 (Save as classic project) keeps a drum track's notes and names it in `lost`
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
@@ -77,9 +81,10 @@ import * as cvModule from './cv-module.js?v=9'; // (STEPS[6]: the module sizes, 
 import { usable as hwUsable, sizeOf as hwSizeOf } from './cv-panel.js?v=9';
 import { MODELS } from './models.js?v=9';
 import { DOT } from './cv-world.js?v=9';
+import { isDrum } from './song.js?v=9';
 
 export { schemaOf };
-export const SCHEMA = 7;
+export const SCHEMA = 8;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -113,6 +118,8 @@ export const STEPS = Object.freeze([
   p => Object.assign({}, p, { schema: 6 }),
   // 6 → 7: Serum taken apart (milestone 3, IMPL-3 §3): lay positions only — the wider modulator modules grow left
   p => Object.assign(growMods(p), { schema: 7 }),
+  // 7 → 8: drum machines (stage 7a, IMPL-7a §6: a 'tr808' device and its `drum` record) — additive
+  p => Object.assign({}, p, { schema: 8 }),
 ]);
 
 export function upgrade(o) {
@@ -228,6 +235,9 @@ export function toV1(p0) {
     });
     if (ins.some(k => t.dev[k].solo)) lost.push(`“${t.name}”: solo in track`);
   }
+  // (7a, IMPL-7a §6) a drum machine plays nothing in main (its model falls back to a Minimoog there): its notes are kept
+  const dr = out.filter(o => isObj(o) && isDrum(o.model)).map(o => `“${o.name}”`);
+  if (dr.length) lost.push(`TR-808 track${dr.length > 1 ? 's' : ''} ${dr.join(', ')}: the live site has no drum machine — ${dr.length > 1 ? 'their' : 'its'} piano-roll notes are kept`);
   p.tracks = out;
   return { p, lost: [...new Set(lost)] };
 }

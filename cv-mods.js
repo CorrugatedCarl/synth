@@ -32,8 +32,9 @@
 // every option; toggles: both) mapped through the model's map() on the default patch and on every factory preset, the
 // changed patch fields classed by FIELD_CLASS, the most demanding class kept. classTable() runs the sweep; CLASS_TABLE
 // is its checked-in result (regenerate: node tools/cv-classes.mjs --write; tests/cv-mods.test.mjs compares the two).
-// Counts (425 classic controls): sm 129, apply 70, proc 37, chunk 180, struct 7, none 2. (The spec's estimate had proc 38
-// / chunk 179: the CS-80 ring-modulator speed reads per span in the voice, AVoice.render, so it is chunk here.)
+// Counts (453 classic controls): sm 129, apply 70, proc 60, chunk 180, struct 12, none 2 — the TR-808's 23 knobs proc and
+// its 5 switches struct (IMPL-7a §2.3). (The spec's estimate had proc 38 / chunk 179: the CS-80 ring-modulator speed reads
+// per span in the voice, AVoice.render, so it is chunk here.)
 //
 //   classOf(modelId, ctlId) → class | null      counts(table) → { none, sm, apply, proc, chunk, struct }
 //   fieldClass(path, engine)                     classTable() → { modelId: { ctlId: class } }
@@ -63,6 +64,11 @@ export const FIELD_CLASS = Object.freeze(Object.fromEntries([
     'ops.ratio ops.det ops.fixed ops.hz ops.out ops.vel ops.rs ops.R ops.L'),
   // voice structure and filter paths (setPatch rebuild; makeLP / makeHP; ALGS)
   ...F('struct', 'engine mode poly unison vcf.type hpf.type dual? alg ops?'),
+  // the TR-808's flat p.drum (IMPL-7a §2.3, §9): dr-808 reads its knobs per span (Dr808.set, the span setters write them);
+  // the TOM / CONGA, RS / CL and CP / MA switches pick a circuit's components (never modulated)
+  ...F('proc', 'drum.ac drum.bdl drum.bdt drum.bdd drum.sdl drum.sdt drum.sds drum.ltl drum.ltt drum.mtl drum.mtt drum.htl drum.htt ' +
+    'drum.rsl drum.cpl drum.cbl drum.cyl drum.cyt drum.cyd drum.ohl drum.ohd drum.chl drum.vol'),
+  ...F('struct', 'drum.lts drum.mts drum.hts drum.rss drum.cps'),
 ]));
 // the slots smTargets fills on the analog engine only
 const SM_ANALOG = new Set(Object.keys(FIELD_CLASS).filter(k => FIELD_CLASS[k] === 'sm' && k !== 'level'));
@@ -159,6 +165,7 @@ export const CLASS_TABLE = Object.freeze({
   jupiter8: { lr: 'proc', ld: 'chunk', lw: 'proc', vl: 'chunk', ve: 'chunk', vd: 'chunk', xm: 'chunk', r1: 'sm', w1: 'chunk', sy: 'chunk', r2: 'sm', ft: 'sm', w2: 'chunk', lo: 'chunk', pw: 'sm', pwm: 'chunk', pws: 'none', mx: 'sm', hp: 'struct', cf: 'sm', rs: 'sm', sl: 'apply', fe: 'sm', fl: 'chunk', fk: 'chunk', vlf: 'chunk', lvl: 'sm', e1a: 'apply', e1d: 'apply', e1s: 'apply', e1r: 'apply', e2a: 'apply', e2d: 'apply', e2s: 'apply', e2r: 'apply', as: 'struct', gl: 'proc' },
   juno60: { lr: 'proc', ld: 'chunk', dl: 'chunk', pwm: 'chunk', pm: 'chunk', rg: 'sm', pu: 'chunk', sw: 'chunk', sb: 'sm', nz: 'sm', hp: 'sm', cf: 'sm', rs: 'sm', ep: 'sm', en: 'sm', fl: 'chunk', fk: 'chunk', vm: 'apply', lv: 'sm', a: 'apply', d: 'apply', s: 'apply', r: 'apply', ch: 'proc', hs: 'proc' },
   dx7: { alg: 'struct', fb: 'chunk', tr: 'chunk', dac: 'proc', ls: 'proc', pmd: 'chunk', vol: 'sm', r1: 'chunk', f1: 'chunk', d1: 'chunk', l1: 'chunk', R1_1: 'chunk', R2_1: 'chunk', R3_1: 'chunk', R4_1: 'chunk', L1_1: 'chunk', L2_1: 'chunk', L3_1: 'chunk', L4_1: 'chunk', v1: 'chunk', s1: 'chunk', r2: 'chunk', f2: 'chunk', d2: 'chunk', l2: 'chunk', R1_2: 'chunk', R2_2: 'chunk', R3_2: 'chunk', R4_2: 'chunk', L1_2: 'chunk', L2_2: 'chunk', L3_2: 'chunk', L4_2: 'chunk', v2: 'chunk', s2: 'chunk', r3: 'chunk', f3: 'chunk', d3: 'chunk', l3: 'chunk', R1_3: 'chunk', R2_3: 'chunk', R3_3: 'chunk', R4_3: 'chunk', L1_3: 'chunk', L2_3: 'chunk', L3_3: 'chunk', L4_3: 'chunk', v3: 'chunk', s3: 'chunk', r4: 'chunk', f4: 'chunk', d4: 'chunk', l4: 'chunk', R1_4: 'chunk', R2_4: 'chunk', R3_4: 'chunk', R4_4: 'chunk', L1_4: 'chunk', L2_4: 'chunk', L3_4: 'chunk', L4_4: 'chunk', v4: 'chunk', s4: 'chunk', r5: 'chunk', f5: 'chunk', d5: 'chunk', l5: 'chunk', R1_5: 'chunk', R2_5: 'chunk', R3_5: 'chunk', R4_5: 'chunk', L1_5: 'chunk', L2_5: 'chunk', L3_5: 'chunk', L4_5: 'chunk', v5: 'chunk', s5: 'chunk', r6: 'chunk', f6: 'chunk', d6: 'chunk', l6: 'chunk', R1_6: 'chunk', R2_6: 'chunk', R3_6: 'chunk', R4_6: 'chunk', L1_6: 'chunk', L2_6: 'chunk', L3_6: 'chunk', L4_6: 'chunk', v6: 'chunk', s6: 'chunk' },
+  tr808: { ac: 'proc', bdl: 'proc', bdt: 'proc', bdd: 'proc', sdl: 'proc', sdt: 'proc', sds: 'proc', ltl: 'proc', ltt: 'proc', lts: 'struct', mtl: 'proc', mtt: 'proc', mts: 'struct', htl: 'proc', htt: 'proc', hts: 'struct', rsl: 'proc', rss: 'struct', cpl: 'proc', cps: 'struct', cbl: 'proc', cyl: 'proc', cyt: 'proc', cyd: 'proc', ohl: 'proc', ohd: 'proc', chl: 'proc', vol: 'proc' },
 });
 // </cv-classes>
 
