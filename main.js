@@ -5693,9 +5693,9 @@ function sxPartDrop(kind, at) {
   return null;
 }
 function sxReplaceWithSerum(kind, at) {
-  const t = trk(), v = curView(t), dev = dvOf(v), old = modelById(v.model);
+  const t = trk(), iv = curView(t), dev = dvOf(iv), old = modelById(iv.model);
   if (old.custom) return sxAddPart(dev, kind, at);
-  setTrackModel(v, 'serum', { parts: true }); // (its step "Replace …": the part goes in the same one)
+  setTrackModel(iv, 'serum', { parts: true }); // (its step "Replace …": the part goes in the same one)
   const tr = trk();
   if (!isSerumDev(tr, dev)) return null;
   const st = hist.u[hist.u.length - 1];

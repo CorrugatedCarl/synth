@@ -957,6 +957,15 @@ test('3 growMods (IMPL-3 §2.2): with Serum\'s widths each LFO / ENV / Macro / C
   assert.equal(M.growMods({ tracks: [MB.tracks()[0]] }, W3).tracks[0].lay, undefined, 'no stored places: nothing to move');
 });
 
+test('3 STEPS[6]\'s widths are frozen in cv-migrate (MOD_W6: cv-module MOD_W at milestone 3 — a later width change never changes what a schema-6 project opens as); growMods grows to them by default', () => {
+  assert.deepEqual(M.MOD_W6, { lfo: 416, env: 320, macro: 256, chaos: 416 });
+  assert.equal(Object.isFrozen(M.MOD_W6), true);
+  for (const k of Object.keys(M.MOD_W6)) assert.equal(M.MOD_W6[k], CVM.MOD_W[k], k + ': equal to MOD_W today');
+  const t = MB.tracks()[1];
+  t.lay = { l1: { x: -320, y: 0 }, e1: { x: -320, y: 640 }, m1: { x: -320, y: 960 }, h1: { x: -640, y: 0 } };
+  assert.deepEqual(M.growMods({ tracks: [jclone(t)] }).tracks[0].lay, M.growMods({ tracks: [jclone(t)] }, k => M.MOD_W6[k]).tracks[0].lay);
+});
+
 test('3 gate: after STEPS[6] no modulator rect intersects an instrument in the fixtures — every stored place over the instruments, hardware and Simple, a folded one, the wheel', () => {
   for (const [i, t] of MB.tracks().entries()) {
     const keys = CVM.devicesOf(t).filter(d => d.kind === 'mod').map(d => d.key);

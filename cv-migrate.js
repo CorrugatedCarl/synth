@@ -22,7 +22,7 @@
 //      and panel knobs (IMPL-2b §1): additive, nothing to convert (a 5 opens as before; a 6 in a 2a build opens read-only)
 //   7  milestone 3: Serum taken apart (IMPL-3 §3) — a Serum's parts are modules ('iN/oscA' lay keys, ui 'parts', up to 256
 //      lay entries: song.normLay) and the LFO / ENV / Macro / Chaos modules show Serum's own panels, wider (cv-module
-//      MOD_W per kind): STEPS[6] moves stored modulator places only (growMods; content unchanged). A schema-6 build's
+//      MOD_W per kind, frozen here as MOD_W6): STEPS[6] moves stored modulator places only (growMods; content unchanged). A schema-6 build's
 //      normLay would drop the part keys and ui 'parts' and autosave the loss: there a 7 opens read-only
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
@@ -63,7 +63,7 @@
 //                           instrument with its FX); autosave and History never carry it, the canvas reader ignores it
 //   growMods(p, widthOf)    (STEPS[6], milestone 3, IMPL-3 §2.2) every LFO / ENV / Macro / Chaos module with a stored
 //                           place keeps its right edge and grows left from 2b's width (MOD_W0) to widthOf(kind) (default
-//                           cv-module MOD_W[kind], read-only; W_MOD while it has none); one that then overlaps another
+//                           MOD_W6[kind]: cv-module's MOD_W at milestone 3, frozen here); one that then overlaps another
 //                           module (an instrument, an FX panel, OUT, another modulator, at its stored place or where Tidy
 //                           puts it) moves on left past that module's left edge − MOD_GAP, on the dots — modulators only
 //                           move, nothing else, so no hardware face leaves the GL layer. → a new project (changed tracks
@@ -348,7 +348,10 @@ export const MOD_W0 = 240; // (stage 2b's modulator width, every kind: what a st
 const GROW = new Set(['lfo', 'env', 'macro', 'chaos']);
 const fin = x => typeof x === 'number' && Number.isFinite(x);
 const H_FX = 420, H_OUT = 260; // (cv-module's guessed heights of an FX panel and OUT: a migration measures nothing)
-const modW = kind => { const W = cvModule.MOD_W; return (isObj(W) && fin(W[kind]) && W[kind] > 0 && W[kind]) || cvModule.W_MOD; };
+// (lane D, §9.4 item 4) the widths STEPS[6] grows to, frozen: cv-module's MOD_W at milestone 3 (a later width change — the
+// parity gate's re-measure — never changes what a schema-6 project opens as)
+export const MOD_W6 = Object.freeze({ lfo: 416, env: 320, macro: 256, chaos: 416 });
+const modW = kind => MOD_W6[kind] || cvModule.W_MOD;
 // a module's rect at (x, y) by its device entry (cv-module devicesOf): an instrument its Hardware panel (unless its entry
 // says Simple) or its Simple / Serum size, a modulator its kind's, an FX panel and OUT the guesses; folded: its bar
 function rectOf(d, e, w) {

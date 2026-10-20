@@ -1078,3 +1078,24 @@ test('2a §7.10: the live wheel also reaches every track with a Mod Wheel cable 
   clear(); api.ctl('wheel', 0.1, 0);
   assert.deepEqual([sent(na, 'wheel'), sent(nb, 'wheel'), b.mods], [[0.1], [], []]);
 });
+
+test('milestone 3 lane D: a Serum in parts view compiles as the whole panel (the view is lay only, N2); a canvas cable edit writes exactly the fields sx-edges names (one History step, its patch posted) and its undo writes them back; a track-level meters subscription names no part', async () => {
+  const s = await bootMain({ hash: '#serum' }), api = s.api, cv = globalThis.__synthTest.cv, t = sxTrack(s), d = t.dev.i1, SE = await import('../sx-edges.js?v=9'); // (its own boot: cv is the latest boot's hook)
+  await s.power(); s.raf();
+  const p0 = JSON.stringify(api.buildPatch(t)), s0 = JSON.stringify(d.vals.s);
+  t.lay = Object.assign({}, t.lay || {}, { i1: Object.assign({}, (t.lay || {}).i1 || { x: 0, y: 0 }, { ui: 'parts' }) });
+  assert.equal(JSON.stringify(api.buildPatch(t)), p0, 'parts view: the same patch');
+  const want = JSON.parse(s0), E = SE.setEdge(want, d.fx, 'oscB.out', 'filter2.in');
+  assert.equal(typeof E.edit, 'function');
+  E.edit(want);
+  const n0 = cv.hist.u.length, node = s.nodeOf(t.id);
+  node.posted.length = 0;
+  assert.equal(cv.parts.connect('i1/oscB.out', 'i1/filter2.in'), true);
+  s.raf(); await s.settle(2);
+  assert.deepEqual([cv.hist.u.length, cv.hist.undoLabel, JSON.stringify(d.vals.s) === JSON.stringify(want)], [n0 + 1, 'OSC B → FILTER 2', true], 'the fields sx-edges names, and nothing else');
+  assert.equal(node.posted.some(x => x.m.t === 'patch' || x.m.t === 'ct'), true, 'its patch posted');
+  cv.undo(); s.raf();
+  const back = t === sxTrack(s) ? t.dev.i1.vals.s : sxTrack(s).dev.i1.vals.s;
+  assert.equal(JSON.stringify(back), s0, 'undo: the fields written back');
+  assert.deepEqual(api.partsOf(t, api.nodes.get(t.id), null, 'none'), [], 'role none: the \'mods\' id alone');
+});
