@@ -356,6 +356,117 @@ photograph; **calc** our arithmetic on those values. "= 808" / "≠ 808" mark wh
   with no D.C. bar; D.C. / segno after DEL / INS; whether chained tracks share one group; the TRACK selector while a track plays; D.S.
   at once or at the bar's end; the two slashes on keys 13–14 (no function documented); whether accent reaches the trigger outs.
 
-## 15. The component tables as modelled (lane V6 fills)
+## 15. The component tables as modelled (lane V6, 2026-10-20)
 
-(Lane V6, 2026-10-…: one table per voice with designators, values, sources and every [fit] / [C] — the 808's §16 format.)
+The values `dr-808.js` uses for the 606, per voice (its frozen tables `BD6`, `SD6`, `TM6`, `MT6`, `CY6`, `HH6`, `NZ6`, `MIX6`;
+exposed as `Dr808.proto.tr606` for the tests). **Source: §1–§10's reading of SN6 [P-sch].** Lane V6 did **not** re-read the scans:
+none is in the repo or the scratchpad, and fetching one is a download the user approves — so every value below is this
+appendix's reading, and the re-read §14 asks for is still open (for the lead: one pass over SN6 p5 with this table beside it).
+Tags as §0, plus **[C]** a modelling choice, **[R?]** a topology this appendix leaves ambiguous, decided here. Devices: NPN / PNP
+β 300, I_ES 1e-14 A, V_BE 0.65 V, V_CE,sat 0.1 V [typ] (the 808's); the gating and pick-off diodes V_D 0.6 V [C]; NJM2904 rails
+0 … 13.5 V on 15 V with a 1 V exponential knee [typ]; HD14584 at 5 V: f = 2.0698 / RC, duty 47.98 % (the 808's measured pair, §7);
+pot ends 50 Ω; the swing VCAs' bias resistors return to +15 V [C, §14's open point].
+
+### 15.0 Trigger, accent and what the review left to V6
+
+| item | value | basis |
+|---|---|---|
+| **V_N** (unaccented trigger) | **4.8 V** | +B from the +6 V regulator (Q42 + RD6.8EB ≈ 6.15 V) − D6 − Q11's V_BE [C] |
+| V_A(u) (ACCENT, VR2 10 k B rheostat + R43 4.7 k, Q9 from +15 V) | max(V_N, 15 · 4.7 k / (4.7 k + 10 k (1 − u) + 50) − 0.65): 4.80 / 6.58 / 14.19 V at 0 / 5 / 10 | §1 [P-sch, calc] |
+| **trigger pulse** | **1 ms** [C] (the 808's) | SN6 gives none; the CPU's 1.8 ms interrupt period is the alternative. The SD / toms see the pulse's two edges (C34, C301, C307 differentiate it): their drive scales by \|2 sin(π f T)\| — at 1.8 ms the SD and HT would be +3.7 dB, the LT +4.6 dB, the BD (C25 passes the whole pulse: area) +5.1 dB |
+| **the tempo clock's pulse** (IC1 pin 10 → D1 → R6 15 k → C41 56 n) | **TCK = 1.25 µs** [C]: C8 39 n across the Schmitt's 0.60 V hysteresis on Q2's β · I_B (R13 47 k from the gate's 5 V swing, R22 47 k across the junction: 78.7 µA → 23.6 mA) + 2 × 0.13 µs gate delays | each pulse adds ≈ 6.5 mV to an empty C41 (τ R6 · C41 = 0.84 ms); C41 reaches Q24's turn-on (0.5 V) after **84 pulses = 3.5 beats** at any tempo — measured 1.75 s at 120 BPM, 0.86 s at 240, past 3.5 s at 60 |
+| C46 0.47 µ / R136 100 k (Q24 / Q25's collectors) | **not modelled** [C] | their other ends are not read (§9); to ground in series they would take a third of C45's charge at every open hat (−3.3 dB in ≈ 60 ms) and hold it between hits — nothing in the descriptions of the 606's hat says so |
+| R179 (Q38's emitter in §8, IC12A's gain network in §9) | immaterial to the model | the VCAs' emitter resistors are outside Werner's memoryless model (as the 808's), and both IC12 stages are taken at gain 2 (§8, §9: equal 39 k pairs); the designator conflict stays for the re-read |
+| the tom rumble's envelope | **C303 through R337 onto C313** [R?] | §6's "the shared envelope": the two capacitors then decay together through the kick transistors' bases and Q310's (0.12–0.14 s — §6's ≈ 120 ms); the alternative (the gates' diode OR into C313) would give 70 ms and an accent-dependent rumble |
+| Q310's inputs | the envelope through R338 + R339 (1.03 M) into the base; the noise through C312 straight into the base, source R346 ∥ R347 [R?] | §6 ("C312 → the base of Q310"); the coupling's corner moves with Q310's current (r_π) |
+| the snare's ladder | C35 to ground (R100 / D26 charge it; R120 → C37 → R121 → D27) [R?] | as the 808's C51 / C52 (§5 names C37 "to ground" only) |
+| the hats' pick-offs | C67, C44 → R172 12 k to the bias (AC ground) → IC12A [R?] | §9 "summed into R172" read as the summing node's resistor |
+
+### 15.1 Bass drum (IC5)
+| part | value | role |
+|---|---|---|
+| R63 / R64; C25 | 10 k / 1 k; 0.47 µ | the gated trigger / 11; its coupling into the + inputs (τ 7.5 ms with R51 ∥ R65 + R63 ∥ R64) |
+| R52 / R51 / R65 (C18) | 10 k / 22 k / 47 k (47 µ) | the + inputs' bias 8.92 V; their AC load 15 k |
+| C19 = C20, R59, R58 | 56 n, 680 k, 3.3 k | IC5A's bridged-T: 60.0 Hz, Q 7.2, ring τ 38 ms |
+| C23 = C24, R61, R66 | 15 n, 560 k, 12 k | IC5B's: 129.4 Hz, Q 3.4, ring τ 8.4 ms |
+| R56 + C16; R60 + C22; C21 | 10 k + 1 µ; 18 k + 1 µ; 10 n | the sum at VR3's top |
+| VR3 → R57 | 50 k B → 47 k | LEVEL into IC14A |
+| TUNE `bdu` / DECAY `bdd` | R58, R66 × 4^−2(u−½); R59, R61 × 4^2(u−½) with R58, R66 × 4^−2(u−½) | both resonators (§2.3) |
+
+### 15.2 Snare (IC10A, Q16 / Q17, Q30, Q32)
+| part | value | role |
+|---|---|---|
+| R98 / R99; C34 | 10 k / 1 k; 3.3 n | the trigger / 11, differentiated (τ 52 µs into R113 ∥ R118) |
+| R101 / R113 / R118 (C28) | 100 k / 22 k / 47 k | the + input's bias 4.17 V |
+| C32 = C33, R112, R107 + R115 | 27 n, 820 k, 330 + 680 | the bridged-T: 204.8 Hz, Q 14.2, τ 22 ms; Q17 across R115 → 358 Hz |
+| R106 / R104 / C31 (Q16); R105 / R114 (Q17) | 100 k / 18 k / 0.47 µ; 27 k / 47 k | the kick: Q16 saturated against R104 charges C31 (≈ 1.7 V in the 1 ms gate, + its base current: a little more accented), C31 holds Q17 on ≈ 10–15 ms |
+| R100, D26, C35; R120, C37; R121, C38, D27, C39 | 1 k, 0.47 µ; 27 k, 56 n; 15 k, 1.5 n, 2.2 n | the noise VCA's supply ladder (DECAY `sdd`: R120 + R121 × 4^2(u−½)) |
+| C51 / R147 (Q30, R146) | 47 n / 1 M | the VCA's coupled base (the peak tracker's leak) |
+| C52 = C58, R153, R155 ∥ R152 (Q32) | 1.8 n, 22 k, 50 k | Sallen-Key high-pass 2.67 kHz, Q 0.75 |
+| C57 / R111; R110 (C30) | 10 n / 10 k; 68 k | the noise and the tone into VR4's top |
+| VR4 → R102 | 50 k B → 10 k | LEVEL |
+
+### 15.3 Toms (sub board: IC9, Q305–Q310)
+| part | value | role |
+|---|---|---|
+| R312 / R311, C301; R309 / R310, C307 | 10 k / 1 k, 4.7 n; 10 k / 1 k, 3.9 n | the LT / HT triggers / 11, differentiated (τ 75 / 62 µs) |
+| R320 / R329 (R322, C306) | 22 k / 47 k | the + inputs' AC load (bias 8.9 V) |
+| C304 = C305, R324 + R325, R323 + R318 (Q307) | 27 n, 2 M, 180 + 820 | LT: 131.8 Hz, Q 22.4, τ 54 ms; R318 shorted → ≈ 311 Hz |
+| C310 = C311, R335 + R336, R334 + R333 (Q308) | 18 n, 2 M, 100 + 820 | HT: 206.1 Hz, Q 23.3, τ 36 ms |
+| C302 / R321 → C303 (Q306) | 47 µ / 100 Ω → 0.47 µ | the shared envelope: dumped to ≈ 14.9 V at either tom's gate, whatever the accent |
+| R317 / R319 (Q307); R331 / R332 (Q308) | 680 k / 39 k; 680 k / 22 k | the kicks' bases: the LT's audible (≈ 250 Hz in its first 20 ms), the HT's slight (≈ 0.3 %) |
+| R337, C313; R338 + R339 | 2.2 k, 68 n; 1 M + 33 k | the rumble's envelope (15.0) and Q310's base drive |
+| R341 = R342, C314, C315 (Q309) | 22 k, 39 n, 18 n | the 273 Hz Sallen-Key low-pass (the 808's PN filter: the shell's pink source) |
+| R346 / R347, C312 | 10 k / 4.7 k, 47 n | the noise into Q310's base |
+| R350, R351 / C318 | 4.7 k, 10 k / 47 µ | Q310's collector supply (saturates at the envelope's top: the attack's thump, 15.0) |
+| C316 / R340; R348 / C317; R349 | 47 n / 22 k; 10 k / 10 n; 100 k | the rumble's band (154 Hz – 1.6 kHz) into the tom bus |
+| R326, R327 → VR5 → R108 | 15 k, 15 k → 50 k B → 22 k | the toms into one LEVEL |
+| TUNE / DECAY (`ltu ltd htu htd`) | each resonator's R2 (with its switched part) and R1, as the BD | the shared envelope and rumble stay |
+
+### 15.4 Noise (Q31, IC10B)
+| part | value | role |
+|---|---|---|
+| R116 ∥ C36 | 1 M ∥ 22 p | the pole: **7234 Hz** |
+| R117 + TM3 | 22 k + 10 k B | the gain, trimmed for **130 mV rms** at the test point: the model's density puts 130 mV rms through the pole (a π/2 · f_c noise bandwidth) |
+
+### 15.5 Metal bank (IC16 HD14584, IC15 µPC4558)
+| osc | R / C | f (2.0698 / RC) |
+|---|---|---|
+| A | R226 **330 k** / C99 15 n | **418.1 Hz** (the earlier metal, IMPL-7b §13 Q3; 680 k → 202.9 Hz recorded as `R226L`) |
+| B / C | R225 470 k / C98 10 n; R224 330 k / C97 10 n | 440.4; 627.2 Hz |
+| D / E / F | R244 560 k / C107 15 n; R245 560 k / C108 12 n; R246 470 k / C109 12 n | 246.4; 308.0; 367.0 Hz |
+| sum | each 150 k into R210 1 k | the summing node (± the band inputs' loads, as the 808's) |
+| IC15B / IC15A | the 808's band-passes value for value | 3454 / 7117 Hz (GBW 3 MHz) |
+| C76 / R202 (Q39); C65 / R180 (Q38), C66 / R173 (Q37) | 47 n / 1 M; 1 µ / 1 M | the coupled bases: the low band's tracker leaks 305 V/s, the high band's (shared by the cymbal's Q38 and the hats' Q37) 14.4 V/s — its memory window 64 ms (W = 12 210 samples at OS 4: a woken bank costs ≈ 0.16 ms, both bands ≈ 0.32 ms, warm, M4 Max) |
+
+### 15.6 Cymbal
+| part | value | role |
+|---|---|---|
+| R141; D28, D29 | 220 Ω | the gate into E1 and C47 |
+| C49, R163 + R164; Q35 (R183 + R184) | 1 µ, 2 M; 15 k + 15 k | E1 (τ 2 s bare, 1.64 s with Q35's input; DECAY `cyd` × 4^2(u−½)) |
+| R185, C61, R186, D35, C77 | 33 k, 2.2 µ, 33 k, 2.2 n | the low band's supply: C61 rises with ≈ 36 ms (R185 ∥ R186: Q39 draws as it charges), peaks ≈ 150 ms |
+| C59 = C60, R159, R195 ∥ R196 (Q40) | 2.2 n, 22 k, 50 k | Sallen-Key high-pass 2.18 kHz, Q 0.75 |
+| C79, R198 / C78, R200 | 10 n, 47 k / 3.3 n, 22 k | ≈ 1 kHz one pole into VR6's top |
+| C47 / R166; R165 / C48 (DECAY × 4^2(u−½)); R181 | 1 µ / 22 k; 68 k / 2.2 µ; 33 k | the high band's supply: the gate's charge, its tail, half of E1 |
+| C64 | 2.2 n | Q38's collector |
+| C62, C63 = C73, R203, R207 ∥ R208 (IC12B, gain 2) | 2.2 n, 1 n, 18 k, 19.5 k | 8.5 kHz, Q 1.13 |
+| R204 (C75); VR6 → R109 | 5.6 k; 50 k B → 10 k | into VR6, LEVEL |
+
+### 15.7 Hats, the choke, the tempo cut
+| part | value | role |
+|---|---|---|
+| R140, D30, C45, R167 | 220 Ω, 1 µ, 1 M | the open hat's supply (natural τ 1 s bare, 0.91 s with Q36's input; DECAY `ohd` × 4^2(u−½) on R167 **and** R6, P-2) |
+| Q36: R168 / R169; R170, D33 | 33 k / 33 k; 33 k | its follower into Q37's collector |
+| R133, D31, C42; R134, D32 | 220 Ω, 0.47 µ; 33 k | the closed hat's supply (DECAY `chd` on R134); C42 · R134 = 15.5 ms, towards Q37's lower edge + V_D (≈ 1 V) while it conducts — in a 7 kHz band only part of each cycle: C42 falls by 1 / e in ≈ 22 ms (8–20 ms after the gate) |
+| C43; C66 / R173 (Q37) | 2.2 n; 1 µ / 1 M | the shared VCA |
+| C67 = C44, R172; C69 = C70, R174, R175 ∥ R176 (IC12A, gain 2) | 2.2 n, 12 k; 1 n, 18 k, 19.5 k | the pick-offs and the 8.5 kHz high-pass |
+| VR7 → R149 | 50 k B → 22 k | one LEVEL for both |
+| R135 (Q25), R137 | 330 k, 100 k | the choke: C42 holds Q25 on until it falls below ≈ 0.65 V (≈ 0.2 s — Q25's base current is its slow drain), C45 drains with τ 90 ms (R137 ∥ R167 ∥ Q36) |
+| C41, R6, D1; R131 (Q24); Q23 | 56 n, 15 k; 100 k | the tempo cut (15.0); Q23 empties C41 during each open hat's gate |
+
+### 15.8 Mixer and output
+| part | value | role |
+|---|---|---|
+| R57, R102, R108, R109, R149 | 47 k, 10 k, 22 k, 10 k, 22 k | into IC14A (R189 47 k ∥ C86 220 p; 7.5 V bias: the bus clips at +7.5 / −6 V, the bus carrying its output inverted) |
+| C87 → VR8 → R191 (C83) → IC14B | 2.2 µ → 50 k A → 22 k → R190 33 k ∥ C88 220 p | VOLUME and the −1.5 output stage (rails +6 / −7.5 V about 7.5 V); the clamp diodes after it are not reached inside the rails |
+| OUT_K6 | 1.364 | full scale: the BD at the default panel, unaccented, at the 808's default BD (0.4284 / 0.4286 FS) |

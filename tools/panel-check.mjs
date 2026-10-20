@@ -9,6 +9,8 @@
 // (7a, IMPL-7a §7.3) A model with a token table (tb303, dx7, tr808): every token placed or missing (a repeated one by its
 // index: the 808's step keys n 1–16), a detented one's positions, the extras cells with their sizes, the `inert: 'later'`
 // jacks. A layout not yet in panels/index.js (an author's first draft) is loaded from panels/<model>.js directly.
+// (7b, IMPL-7b §7.3) The TR-606 the same way; a switch token's orientation (want / drawn), a rotary's sweep and `rot`, the
+// model's own extras cells and row breaks (TOKENS.<model>.cells / xbreak).
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -50,7 +52,12 @@ if (T) {
     for (let i = lo; i <= hi; i++) if (!got.includes(i)) gone.push(i);
     console.log(`  ${t}: ${got.length} placed (${f} ${lo}–${hi})${gone.length ? ' · missing ' + f + ' ' + gone.join(', ') : ''}`);
   }
-  for (const [t, n] of Object.entries(T.pos || {})) for (const c of on.get(t) || []) console.log(`  ${t}: a ${c.kind}, ${n} positions${Array.isArray(c.legends) ? ' · legends ' + c.legends.map(l => JSON.stringify(l)).join(' ') : ''}`);
+  const ori = c => c.orient || (c.h > c.w ? 'v' : 'h');
+  for (const [t, n] of Object.entries(T.pos || {})) for (const c of on.get(t) || []) {
+    const more = c.kind === 'switch' ? ` (${ori(c) === 'v' ? 'vertical: the first position at the top' : 'horizontal'}${T.orient && T.orient[t] ? ', must be ' + (T.orient[t] === 'v' ? 'vertical' : 'horizontal') : ''})`
+      : c.kind === 'rotary' ? ` (sweep ${c.sweep || 270}°${c.rot ? ', centred at ' + c.rot + '°' : ''})` : '';
+    console.log(`  ${t}: a ${c.kind}${more}, ${n} positions${Array.isArray(c.legends) ? ' · legends ' + c.legends.map(l => JSON.stringify(l)).join(' ') : ''}`);
+  }
   if (T.extras.length) console.log(`tokens in the extras: ${T.extras.length - xmiss.length} of ${T.extras.length}${xmiss.length ? ' · missing: ' + xmiss.join(' ') : ''}`);
 }
 const hb = P.hitBoxes(L, model);
@@ -83,6 +90,7 @@ if (geo.extras) {
   const X = geo.extras;
   console.log(`\nextras strip ${X.w} × ${X.h} px at y ${X.y}${X.caption ? ` · caption "${X.caption}${X.note ? ' · Dimmed controls are not emulated' : ''}"` : ''}${X.over ? ' · THE CELLS DO NOT FIT' : ''}`);
   for (const c of X.cells) console.log(`  ${c.id.padEnd(12)} ${c.w} × ${c.h} at (${c.x}, ${c.y})`);
+  console.log(`  rows: ${[...new Set(X.cells.map(c => c.y))].length} · a new row after ${P.xbreakOf(model).join(' ')} (or when a cell does not fit)`);
 }
 console.log('\nsections (Tab order):');
 const bySec = new Map();

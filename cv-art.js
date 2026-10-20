@@ -35,6 +35,7 @@ export const SIL = Object.freeze({
   dx7: Object.freeze({ body: 'keyboard', keys: 25, screen: true }),
   serum: Object.freeze({ body: 'box', screen: true }),
   tr808: Object.freeze({ body: 'box', steps: 16 }), // (7a) a drum machine: a wide low case, 12 knob columns, 16 step keys in four colours
+  tr606: Object.freeze({ body: 'desktop', steps: 16 }), // (7b) the TB-303's body family: a silver case, six knobs, a dark programming panel over 16 grey keys
 });
 
 const W0 = 96, H0 = 56; // the design box
@@ -299,6 +300,31 @@ const DRAW = {
       s += R(12, 11, 72, 1.6, A) + buttonRow(11.2, 34, 74.4, 9, 4, ['#e8402c', '#f4893c', '#f5dc4e', '#f4f3ee'], { fill: 0.9 });
     }
     return s + R(9, 46.4, 78, 3.6, '#17171a');
+  },
+  // a silver desktop box like the 303's (its partner): six knobs along the top; TEMPO, two selectors and VOLUME below them; a dark
+  // programming panel with the scale rows over sixteen grey keys (red LEDs above, the step numbers as a red rule), the run, group
+  // and tap keys round them. No text (a model name is a plain rule).
+  tr606(th, lo) {
+    let s = shadow(5, 91, 50.6) + RR(6, 13, 84, 36, 2.4, '#8f9292') + RR(6, 12, 84, 35, 2.4, th.panel) + R(8, 12.6, 80, 0.8, '#fff', OP(0.55));
+    const DK = '#1a1b1b', CAP = '#c9cbc8', STRIP = '#d9dad7';
+    s += RR(7.6, 31.6, 80.8, 14.4, 1, DK);
+    if (!lo) {
+      s += knobRow(27, 16.6, 48, 6, 2.5, { skirt: '#2a2c2d', cap: '#d3d5d5', ind: '#262626', seed: 31 }) + R(8, 21.6, 80, 0.5, '#8b8d8d');
+      s += C(15, 26.8, 3.3, '#2a2c2d') + C(15, 26.8, 2.5, '#d3d5d5') + S('M15 26.8L16.6 24.6', '#262626', 0.7);
+      s += C(34, 26.8, 3, '#a9abab') + C(34, 26.8, 1.1, '#7f8181') + S('M34 26.8L31.8 27.6', '#5b5d5d', 0.8);
+      s += C(48, 26.8, 3, '#a9abab') + C(48, 26.8, 1.1, '#7f8181') + S('M48 26.8L50.4 25.4', '#5b5d5d', 0.8);
+      s += R(58, 26, 14, 0.6, '#1a1a1a', OP(0.7)) + R(60, 28.2, 10, 0.4, '#1a1a1a', OP(0.5));
+      s += C(81, 26.8, 3.3, '#2a2c2d') + C(81, 26.8, 2.5, '#d3d5d5') + S('M81 26.8L79.6 24.8', '#262626', 0.7);
+      for (let i = 0; i < 4; i++) s += R(19.4, 32.6 + i * 0.9, 51.2, 0.45, '#e8e8e6', OP(0.8));
+      let led = '';
+      for (let i = 0; i < 16; i++) led += C(21 + 3.2 * i, 36.9, 0.5, i % 4 === 0 ? th.accent : '#5a1812');
+      s += led + R(19.4, 37.8, 51.2, 6.4, STRIP) + buttonRow(19.4, 38.6, 51.2, 4.8, 16, ['#a7a9a7'], { fill: 0.62 });
+      s += R(19.4, 44.5, 51.2, 0.6, th.accent, OP(0.9)) + R(19.4, 45.2, 51.2, 0.5, '#eee', OP(0.5));
+      s += RR(9, 33.2, 6.4, 2.4, 0.5, CAP) + C(12.2, 37.5, 0.6, th.accent) + RR(9, 39.6, 6.4, 5.2, 0.6, CAP);
+      s += R(16.9, 32.8, 0.9, 5.4, '#050505') + RR(16.5, 34.2, 1.7, 1.6, 0.4, '#c4c4c4') + RR(16.4, 39.6, 1.8, 5.2, 0.4, CAP);
+      s += C(76.4, 34.2, 0.7, th.accent) + C(80.2, 34.2, 0.7, '#5a1812') + RR(74.4, 35.8, 7.6, 2, 0.5, CAP) + RR(74.4, 39.6, 8.8, 5.2, 0.6, CAP);
+    } else s += R(27, 15, 48, 3.6, '#1a1a1a', OP(0.8)) + R(19.4, 36.5, 51.2, 6.6, STRIP) + R(9, 34, 8, 9, CAP) + R(74.4, 36.5, 9, 6.6, th.accent);
+    return s;
   },
   // an abstract software instrument: a stacked wavetable, knob rings and a filter curve on a dark panel
   serum(th, lo) {

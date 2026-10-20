@@ -12,6 +12,8 @@ import './v8-guard.mjs';
 // and without one (the same nodes, silent), the keys' and controllers' art, the TB-303's audition (§6.4).
 // Stage 7a (IMPL-7a §11, §12.7): HW_IDS gains tr808 (its layout is lane P2's panels/tr808.js), its §3.6 extras, TARGET
 // 1024 × 1024, no keyboard, its 'later' jacks titled "cable-able with full patching"; the dr: token rules: tests/cv-drum.test.mjs.
+// Stage 7b (IMPL-7b §7, §12.7): HW_IDS gains tr606 (lane X's panels/tr606.js), its extras (the eleven TUNE / DECAY knobs among
+// the §3.7 tokens), TARGET 608 × 864, no keyboard; a rotary's `rot` (its sweep's centre: the art and the widget turn by it).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-panel.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -33,12 +35,15 @@ const EXTRAS = {
   modular: ['kb'], minimoog: [], arp2600: ['sy', 'kb', 'lw', 'src', 'gl'], solina: ['tn'], cs80: [], prophet5: ['li', 'rev', 'ud'], ms20: [],
   tb303: ['al', 'seq:sync', 'seq:swing', 'seq:random', 'seq:demo', 'seq:toRoll', 'seq:grid'], obxa: ['lc', 'ud'], jupiter8: ['pw'], juno60: ['hs'], dx7: ['dac'],
   tr808: ['dr:grid', 'dr:pads', 'dr:sync', 'dr:swing', 'dr:toRoll', 'dr:rec', 'dr:map', 'dr:sounds', 'dr:demo'], // (7a §3.6, §7.5: every models.js control is on the face)
+  tr606: ['dr:grid', 'dr:pads', 'dr:sync', 'dr:swing', 'bdu', 'bdd', 'sdu', 'sdd', 'ltu', 'ltd', 'htu', 'htd', 'cyd', 'ohd', 'chd', 'dr:toRoll', 'dr:rec', 'dr:map',
+    'dr:sounds', 'dr:demo', 'dr:link'], // (7b §3.7, §7.5: the face's seven knobs; our eleven TUNE / DECAY in the strip)
 };
-// (7a, IMPL-7a §11) TARGET.tr808: the 1016 × ≈ 1020 px box on the 32 px dots (± a dot until lane P2's hand-back pins it)
+// (7a, IMPL-7a §11) TARGET.tr808: the 1016 × ≈ 1020 px box on the 32 px dots (± a dot until lane P2's hand-back pins it);
+// (7b §7.1) TARGET.tr606: 300 mm → 608 px; the face ≈ 290 + the strip 16 + 192 + 116 + 3 × 64 + 8 = 524 + the bar → 864
 const TARGET = { modular: [1728, 960], minimoog: [1408, 512], arp2600: [1568, 928], solina: [1984, 256], cs80: [2432, 768], prophet5: [1920, 512],
-  ms20: [1120, 416], tb303: [608, 608], obxa: [2048, 576], jupiter8: [2144, 608], juno60: [2144, 416], dx7: [2048, 480], tr808: [1024, 1024] };
-// models without a keyboard (IMPL-1i §1.2: the TB-303's 13 key cells; 7a: the TR-808's step keys and pads)
-const NOKEYS = ['tb303', 'tr808'];
+  ms20: [1120, 416], tb303: [608, 608], obxa: [2048, 576], jupiter8: [2144, 608], juno60: [2144, 416], dx7: [2048, 480], tr808: [1024, 1024], tr606: [608, 864] };
+// models without a keyboard (IMPL-1i §1.2: the TB-303's 13 key cells; 7a / 7b: the drum machines' step keys and pads)
+const NOKEYS = ['tb303', 'tr808', 'tr606'];
 const PINNED = { minimoog: [1408, 512] };
 // (1i, IMPL-1i §1.2) once a model has its bed: the sizes with the keyboards (± a dot until K2's hand-back pins them), the
 // ARP's PORTAMENTO on its 3620 slider (out of the extras), each bed's range [lo, n]; the TB-303 has none
@@ -111,7 +116,7 @@ test('format: PX_PER_MM = 2 and the contract constants; the fixture layout valid
   assert.deepEqual([P.selCellW(['Off', 'On']), P.selCellW(['Sine', 'Tri', 'Square', 'S&H'])], [120, 224]);
   assert.ok(P.selCellW(['Rev 2 · SSM', 'Rev 3 · CEM']) >= 16 + 2 * 87 + 3);
   assert.deepEqual(P.validate(FX_LAYOUT, FX_MODEL), []);
-  assert.deepEqual(P.HW_IDS, ['modular', 'minimoog', 'arp2600', 'solina', 'cs80', 'prophet5', 'ms20', 'tb303', 'obxa', 'jupiter8', 'juno60', 'dx7', 'tr808']); // (7a: the 808 last, as in MODELS)
+  assert.deepEqual(P.HW_IDS, ['modular', 'minimoog', 'arp2600', 'solina', 'cs80', 'prophet5', 'ms20', 'tb303', 'obxa', 'jupiter8', 'juno60', 'dx7', 'tr808', 'tr606']); // (7a / 7b: the drum machines last, as in MODELS)
   if (missing.length) console.log('# cv-panel: not drawn yet (skipped, Resizable only): ' + missing.join(', '));
 });
 
@@ -461,6 +466,29 @@ test('render (fixture): one .hw-c[data-ctl] per live control in the Tab order, s
   const svgG = doc.createElement('g'); svgG.setAttribute('data-tip', 'TUNE — not emulated'); root.childNodes[0].append(svgG);
   fire(svgG, 'click');
   assert.deepEqual(api.state.tips, ['TUNE — not emulated']);
+});
+
+test('(7b) a rotary\'s rot: its sweep centred there (the art\'s detent ticks and the widget turn by it; absent = 12 o\'clock, the art unchanged); a rotary only, −180…180°', () => {
+  const R = clone(FX_LAYOUT), rng = R.controls.find(c => c.id === 'rng');
+  assert.equal(P.decorSvg(clone(FX_LAYOUT), FX_MODEL), P.decorSvg(Object.assign(clone(FX_LAYOUT), { controls: FX_LAYOUT.controls.map(c => (c.id === 'rng' ? Object.assign({}, c, { rot: 0 }) : c)) }), FX_MODEL), 'rot 0 = none, byte for byte');
+  rng.rot = 30;
+  assert.deepEqual(P.validate(R, FX_MODEL), []);
+  const n3 = v => String(Math.round(v * 1000) / 1000), pol = (r, a) => [80 + Math.sin(a * Math.PI / 180) * r, 30 - Math.cos(a * Math.PI / 180) * r];
+  const tick = a => { const [ax, ay] = pol(10 + 0.6, a), [bx, by] = pol(10 + 0.6 + 1.4 * 0.8, a); return `M${n3(ax)} ${n3(ay)}L${n3(bx)} ${n3(by)}`; };
+  const svg = P.decorSvg(R, FX_MODEL), svg0 = P.decorSvg(FX_LAYOUT, FX_MODEL);
+  for (const a of [-45, -7.5, 30, 67.5, 105]) assert.ok(svg.includes(tick(a)), 'a detent tick at ' + a + '°');
+  assert.ok(svg0.includes(tick(-75)) && !svg.includes(tick(-75)), 'unturned without rot');
+  const doc = fresh(), root = doc.createElement('div'), api = fakeApi(FX_MODEL, doc);
+  doc.body.append(root);
+  P.render(root, R, FX_MODEL, api);
+  const rotOf = () => { const g = all(widgetOf(root, 'rng')).find(n => cls(n) === 'rot'); return g ? g.getAttribute('transform') : null; };
+  assert.equal(rotOf(), 'rotate(-7.5 32 32)', 'position 1 of 4 detents (map [0, 1, null, 2, 3]) at 30 − 75 + 37.5');
+  api.set('rng', 3);
+  assert.equal(rotOf(), 'rotate(105 32 32)');
+  const bad = (f, re) => { const L = clone(FX_LAYOUT); f(L); assert.ok(P.validate(L, FX_MODEL).some(x => re.test(x)), String(re)); };
+  bad(L => { L.controls.find(c => c.id === 'cut').rot = 10; }, /\(cut\): rot \(a rotary's sweep centre\)/);
+  bad(L => { L.controls.find(c => c.id === 'rng').rot = 181; }, /\(rng\): rot/);
+  bad(L => { L.controls.find(c => c.id === 'rng').rot = '30'; }, /\(rng\): rot/);
 });
 
 test('render (fixture): a set redraws its widget; null positions are skipped by taps, drags and keys; a level rocker toggles 0 ↔ its last level; a combo lights two; a two-finger cancel restores value and preset name', () => {

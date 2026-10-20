@@ -48,10 +48,11 @@ const TOOLS = ['select', 'draw', 'erase'];
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const noteName = n => NAMES[n % 12] + (Math.floor(n / 12) - 1);
 /** (7a) The drum rows of an instrument device ({ model, drum }): a drum machine's mapped primaries, kick first, as
- * host.drumRows wants them ([{ n, name }]); null for any other model. */
+ * host.drumRows wants them ([{ n, name }]); null for any other model. (7b) The TR-606's are its seven (Kick, Snare, Low tom,
+ * Hi tom, Cymbal, Open hat, Closed hat); a map without a `drum` record is the machine's default. */
 export function drumRowsOf(dev) {
   if (!dev || typeof dev !== 'object' || typeof dev.model !== 'string' || !Object.prototype.hasOwnProperty.call(PERS, dev.model)) return null;
-  return drumRows(dev.drum && typeof dev.drum === 'object' ? dev.drum.map : undefined).map(e => ({ n: e.n, name: e.name }));
+  return drumRows(dev.drum && typeof dev.drum === 'object' ? dev.drum.map : undefined, dev.model).map(e => ({ n: e.n, name: e.name })); // (7b: by the machine — the 606's seven sounds, the 808's sixteen)
 }
 const isBlk = n => BLK[((n % 12) + 12) % 12] === 1;
 const rgb = s => {

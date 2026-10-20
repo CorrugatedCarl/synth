@@ -496,7 +496,7 @@ test('sourcesTray (views): the dropdown — a button showing the view (aria-hasp
     ['menu', true, [['menuitemradio', 'hw', 'Hardware', 'false'], ['menuitemradio', 'flow', 'Simple', 'true'], ['menuitemradio', 'serum', 'Serum', 'false'], ['menuitemradio', 'drums', 'Drums', 'false']]]);
   assert.deepEqual([S.view(), S.layout(), S.views(), list.getAttribute('data-layout'), list.getAttribute('data-view')], ['flow', 'flow', ['hw', 'flow', 'serum', 'drums'], 'flow', 'flow']);
   assert.deepEqual(shown(), classic, 'Simple: the twelve classics, no Serum');
-  assert.ok(classic.length === 12 && !classic.includes('serum') && !classic.includes('tr808'));
+  assert.ok(classic.length === 12 && !classic.includes('serum') && !classic.includes('tr808') && !classic.includes('tr606'));
   assert.deepEqual([secs(), note.textContent], [['parts:hidden', 'notes:hidden'], 'Serum and its modulators: the Serum view (the menu above).']);
   // a tap opens; the Serum item picks (one call), closes it; the classics hide, the Serum tile and the placeholders show
   btn.click();
@@ -558,33 +558,38 @@ test('sourcesTray (views): data-driven — o.views lists the views in order (a l
 // (7a, IMPL-7a §8 item 1) the Drums view: the drum machines only, with their real front panel ('hw'); Hardware / Simple list
 // the twelve classic synths; a drum tile has no SIMPLE badge, no simple / hardware aria text and names no maker (D4); a
 // stored view 'drums' opens Drums; the dropdown reads Hardware · Simple · Serum · Drums
-test('sourcesTray (7a): the Drums view — the TR-808 alone, layout hw; no SIMPLE badge, no maker on its tile; Hardware / Simple without it; a stored "drums" view opens it', () => {
+test('sourcesTray (7a, 7b): the Drums view — the TR-808 and the TR-606, layout hw; no SIMPLE badge, no maker on their tiles; Hardware / Simple without them; a stored "drums" view opens it', () => {
   const d = fresh(), host = mkEl(d), list = mkEl(d), sec = mkEl(d), note = mkEl(d, 'p'), got = [], picks = [];
   const S = T.sourcesTray(list, { models: MODELS, pick: (id, m) => picks.push([id, m]), drag: {}, layoutEl: host, secEl: sec, noteEl: note, view: 'drums', onView: v => got.push(v) });
   const [btn, menu] = host.children, shown = () => S.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
-  const drums = MODELS.filter(m => m.family === 'drums').map(m => m.id), tile = S.tiles().find(b => b.getAttribute('data-model') === 'tr808');
-  assert.deepEqual(drums, ['tr808']);
+  const drums = MODELS.filter(m => m.family === 'drums').map(m => m.id), tile = S.tiles().find(b => b.getAttribute('data-model') === 'tr808'), tile6 = S.tiles().find(b => b.getAttribute('data-model') === 'tr606');
+  assert.deepEqual(drums, ['tr808', 'tr606']);
   assert.deepEqual([S.view(), S.layout(), shown(), list.getAttribute('data-view'), list.getAttribute('data-layout'), btn.children[0].textContent],
-    ['drums', 'hw', ['tr808'], 'drums', 'hw', 'Drums'], 'a stored view "drums" opens Drums (layout hw)');
-  assert.equal(note.textContent, 'More machines later: TR-606, TR-909, then the Simmons SDS-V with the pad controller.');
+    ['drums', 'hw', ['tr808', 'tr606'], 'drums', 'hw', 'Drums'], 'a stored view "drums" opens Drums (layout hw)');
+  assert.equal(note.textContent, 'More machines later: TR-909, then the Simmons SDS-V with the pad controller.');
   assert.deepEqual(menu.children.map(b => b.children[0].textContent), ['Hardware', 'Simple', 'Serum', 'Drums']);
   assert.deepEqual(T.SRC_VIEWS.find(V => V.id === 'drums').tip, 'Drum machines with their real front panel');
   // the tile: no SIMPLE badge, no aria-description in any view, no maker word (D4), "our model of its circuits"
   assert.deepEqual([tile.children.map(c => c.className), tile.children[2].textContent, tile.getAttribute('aria-description')],
     [['cv-tart', 'cv-tname', 'cv-tmeta'], '1980 · drum machine', null]);
   assert.ok(!/roland/i.test(tile.title + tile.textContent) && /our model of its circuits, not recordings/.test(tile.title), tile.title);
+  // (7b) the 606's tile: the same shape — its own art, "1981 · drum machine", no SIMPLE badge, no aria text, no maker word
+  assert.deepEqual([tile6.children.map(c => c.className), tile6.children[1].textContent, tile6.children[2].textContent, tile6.getAttribute('aria-description')],
+    [['cv-tart', 'cv-tname', 'cv-tmeta'], 'TR-606', '1981 · drum machine', null]);
+  assert.ok(!/roland|drumatix/i.test(tile6.title + tile6.textContent) && /our model of its circuits, not recordings/.test(tile6.title), tile6.title);
+  assert.match(tile6.children[0].innerHTML, /data-art="tr606"/);
   const jun = S.tiles().find(b => b.getAttribute('data-model') === 'juno60');
   assert.deepEqual([jun.children[3].className, jun.getAttribute('aria-description')], ['cv-tbadge', 'hardware panel'], 'a classic keeps its badge and aria text');
-  // Hardware / Simple: the twelve classics (the 808 hidden); back to Drums
+  // Hardware / Simple: the twelve classics (both drum machines hidden); back to Drums
   for (const v of ['hw', 'flow']) {
     S.setView(v);
-    assert.deepEqual([shown().length, shown().includes('tr808'), tile.hidden, tile.getAttribute('aria-description')], [12, false, true, null], v);
+    assert.deepEqual([shown().length, shown().includes('tr808'), shown().includes('tr606'), tile.hidden, tile6.hidden, tile6.getAttribute('aria-description')], [12, false, false, true, true, null], v);
   }
   S.setView('serum'); assert.deepEqual(shown(), ['serum']);
   btn.click(); menu.children[3].click();
-  assert.deepEqual([S.view(), S.layout(), got, shown()], ['drums', 'hw', ['drums'], ['tr808']], 'picked: layout hw (the 808 has no Simple layout)');
-  tile.click();
-  assert.deepEqual(picks, [['tr808', 'replace']], 'a tap picks it as any instrument');
+  assert.deepEqual([S.view(), S.layout(), got, shown()], ['drums', 'hw', ['drums'], ['tr808', 'tr606']], 'picked: layout hw (a drum machine has no Simple layout)');
+  tile.click(); tile6.click();
+  assert.deepEqual(picks, [['tr808', 'replace'], ['tr606', 'replace']], 'a tap picks either as any instrument');
   S.destroy();
 });
 

@@ -23,8 +23,8 @@ test('every classic control is classed; the counts (§7.8)', () => {
   assert.deepEqual(Object.keys(V.CLASS_TABLE), CLASSIC.map(m => m.id));
   for (const m of CLASSIC) assert.deepEqual(Object.keys(V.CLASS_TABLE[m.id]), m.controls.map(c => c.id), m.id);
   const n = V.counts();
-  assert.equal(Object.values(n).reduce((a, b) => a + b, 0), 453);
-  assert.deepEqual(n, { none: 2, sm: 129, apply: 70, proc: 60, chunk: 180, struct: 12 });
+  assert.equal(Object.values(n).reduce((a, b) => a + b, 0), 471);
+  assert.deepEqual(n, { none: 2, sm: 129, apply: 70, proc: 78, chunk: 180, struct: 12 });
   const of = cls => Object.entries(V.CLASS_TABLE).flatMap(([m, t]) => Object.keys(t).filter(k => t[k] === cls).map(k => m + '.' + k));
   // voice structure / filter path: P-5 and OB-Xa Unison, JP-8 Assign, OB-Xa filter slope, DX7 algorithm, the two HPF
   // cutoffs that switch the HP type; the TR-808's five sound switches (a circuit's components, IMPL-7a §2.3)
@@ -34,6 +34,13 @@ test('every classic control is classed; the counts (§7.8)', () => {
   const k808 = MODELS.find(m => m.id === 'tr808').controls.filter(c => c.t === 'k');
   assert.equal(k808.length, 23);
   for (const c of k808) { assert.equal(V.classOf('tr808', c.id), 'proc', c.id); assert.deepEqual(V.sweepControl('tr808', c).fields, ['drum.' + c.id], c.id); }
+  // the TR-606's 18 knobs, no switches (IMPL-7b §1.1, §9): proc, each its one-level drum.<id> field; the ids the 808 also
+  // has are one FIELD_CLASS entry each, the ten new ones proc; the patch's machine a kind boundary (struct, review #19)
+  const m606 = MODELS.find(m => m.id === 'tr606');
+  assert.deepEqual([m606.controls.length, m606.controls.every(c => c.t === 'k')], [18, true]);
+  for (const c of m606.controls) { assert.equal(V.classOf('tr606', c.id), 'proc', c.id); assert.deepEqual(V.sweepControl('tr606', c).fields, ['drum.' + c.id], c.id); }
+  assert.deepEqual(m606.controls.map(c => c.id).filter(id => !k808.some(c => c.id === id)), ['tml', 'hhl', 'bdu', 'sdu', 'sdd', 'ltu', 'ltd', 'htu', 'htd', 'chd']);
+  assert.deepEqual([V.FIELD_CLASS.machine, V.fieldClass('machine', 'drums'), V.patchOf('tr606', {}).machine, 'machine' in V.patchOf('tr808', {})], ['struct', 'struct', 'tr606', false]);
   assert.deepEqual(of('none').sort(), ['jupiter8.pws', 'minimoog.mm']);
   const spot = { 'minimoog.fc': 'sm', 'minimoog.em': 'sm', 'minimoog.fa': 'apply', 'minimoog.gl': 'proc', 'minimoog.w1': 'chunk', 'minimoog.m1': 'sm',
     'tb303.dc': 'apply', 'tb303.ac': 'apply', 'dx7.vol': 'sm', 'dx7.dac': 'proc', 'dx7.R1_1': 'chunk', 'solina.cb': 'proc', 'solina.vol': 'sm',
@@ -114,6 +121,7 @@ test('descriptors: classic, Serum, FX racks, by device', () => {
   assert.deepEqual(V.rackDescs(fx).map(d => d.id), R.map(d => d.id), 'a whole v2 FX state: its racks');
   assert.equal(V.descs({ kind: 'panel', rack: fx.racks[0] }).length, R.length);
   assert.equal(V.descs({ kind: 'synth', model: 'juno60' }).length, 25);
+  assert.deepEqual(V.descs({ kind: 'synth', model: 'tr606' }).map(d => d.cls + (d.nomod ? '!' : '')), Array(18).fill('proc'), 'TR-606: 18 proc destinations');
   assert.equal(V.descs({ kind: 'synth', model: 'serum', fx }).length, S.length + R.length);
   assert.deepEqual([V.descs(null), V.descs({ kind: 'out' })], [[], []]);
 });

@@ -65,7 +65,7 @@ test('the lead\'s fixture check (§11 phase 2): an 808 from the Sources tray\'s 
   const tiles = sh.shell.tiles;
   tiles.setView('drums');
   const shown = tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
-  assert.deepEqual(shown, ['tr808'], 'the Drums view lists the drum machines');
+  assert.deepEqual(shown, ['tr808', 'tr606'], 'the Drums view lists the drum machines (7b: the TR-606 beside the TR-808)');
   sh.srcPick('tr808', 'replace'); sim.raf(); await settle();
   const t = T(), d = I(t);
   assert.equal(d.model, 'tr808');
@@ -292,6 +292,24 @@ test('both ways (§4): the pattern synced and its "→ Piano roll" notes bounce 
   assert.deepEqual([T().notes.length, D().x.sync], [want.length, false], '↷: the notes and SYNC off again');
   cv.undo();
   assert.deepEqual([T().notes.length, D().x.sync, sent(T(), 'seq').at(-1).s.sync], [0, true, true], 'the project\'s ↶: both');
+});
+
+test('7b review 1 #4 (the lead\'s decision): → Piano roll writes the project tempo into the 808\'s own TEMPO + FINE (the machine left SYNC off reads what the synced pattern read); one undo with the rest', async () => {
+  const t = T(), bpm0 = P().bpm, ui0 = D().ui, k = DC.bpmTempo(100);
+  try {
+    cv.setProjectBpm(100);
+    assert.deepEqual([D().x.sync, D().ui.tempo, D().ui.fine], [true, ui0.tempo, ui0.fine], 'synced: its own knobs untouched');
+    DR().toRoll(1);
+    const s = sent(t, 'seq').at(-1).s;
+    assert.deepEqual([D().x.sync, D().ui.tempo, D().ui.fine, s.sync, s.bpm], [false, k.tempo, k.fine, false, DC.tempoBpm(k.tempo, k.fine)]);
+    assert.equal(Math.abs(s.bpm - 100) < 0.01, true, 'its TEMPO + FINE show 100 BPM (' + s.bpm + ')');
+    sim.$('#notice').onclick();
+    assert.deepEqual([T().notes.length, D().x.sync, D().ui.tempo, D().ui.fine, sent(T(), 'seq').at(-1).s.bpm], [0, true, ui0.tempo, ui0.fine, DC.tempoBpm(ui0.tempo, ui0.fine)], 'the notice: all back');
+    cv.redo();
+    assert.deepEqual([D().x.sync, D().ui.tempo, D().ui.fine], [false, k.tempo, k.fine], '↷');
+    cv.undo();
+    assert.deepEqual([D().x.sync, D().ui.tempo, D().ui.fine], [true, ui0.tempo, ui0.fine], '↶');
+  } finally { cv.setProjectBpm(bpm0); }
 });
 
 test('MAP… re-maps the snare to 40: the payload\'s note map (the worklet plays 40 as the snare, 38 nothing) and the roll\'s drum rows', async () => {

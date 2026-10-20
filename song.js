@@ -542,9 +542,9 @@ export function normLay(lay) {
 // mirror, else the defaults). The in-memory accessors are cv-model.js adopt's (the page), never song.js's.
 // Stage 2a (schema 5, IMPL-2a §2.3): the track's mod cables `mods` (normMods) and the next row number `mid` (absent when
 // the track never had one: an old track's record and History snapshot stay byte-identical).
-// Stage 7a (IMPL-7a §6, schema 8): a drum machine (a model drum-core has a personality for: tr808) keeps its device's
-// `drum` — the pattern memory, panel state, extras, note map and sample slots — as normDrum bounds it (exact lengths,
-// every field in range, unknown ones dropped; idempotent); `drum` on any other model's device is dropped.
+// Stage 7a (IMPL-7a §6, schema 8): a drum machine (a model drum-core has a personality for: tr808; 7b, schema 9: tr606) keeps
+// its device's `drum` — the pattern memory, panel state, extras, note map and sample slots — as normDrum(d, model) bounds it
+// (exact lengths, every field in range, unknown ones dropped; idempotent); `drum` on any other model's device is dropped.
 export const isDrum = m => typeof m === 'string' && Object.prototype.hasOwnProperty.call(PERS, m);
 const DEV_ID = /^[a-z][a-z0-9]{0,15}$/, PORT_ID = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-zA-Z0-9]{0,15})?\.[a-z][a-z0-9]{0,7}$/;
 export function normDev(r) {
@@ -567,7 +567,7 @@ export function normDev(r) {
       if (z && (z.lo !== 0 || z.hi !== 127 || z.xp !== 0)) o.zone = z;
       if (typeof d.name === 'string' && d.name) o.name = str(d.name, null, 100);
       if (typeof d.fxId === 'string' && /^fx\d{1,6}$/.test(d.fxId)) o.fxId = d.fxId; // (a Serum's folded-in panel id, cv-model reshape)
-      if (isDrum(o.model) && d.drum != null) o.drum = normDrum(d.drum); // (7a: a drum machine's memory, map, slots — IMPL-7a §6; another model's is dropped)
+      if (isDrum(o.model) && d.drum != null) o.drum = normDrum(d.drum, o.model); // (7a: a drum machine's memory, map, slots — IMPL-7a §6; another model's is dropped; 7b: by the model's own record shape)
     } else if (d.kind === 'panel') {
       o = { kind: 'panel' };
       if (isObj(d.fx)) o.fx = d.fx;

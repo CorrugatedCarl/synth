@@ -16,6 +16,9 @@
 // pads and small controls, TOK_CELL), the 16 step keys all present, detented tokens' positions (TOKENS.tr808.pos), the
 // `inert: 'later'` jack (full contrast, "cable-able with full patching"), a drum machine's extras caption; the dr: widgets
 // are cv-drum.js drumPanel's (over api.drum; null: the same nodes, silent).
+// Stage 7b: the TR-606 (IMPL-7b §7.2–§7.3): TOKENS.tr606 (its own cell sizes and extras row breaks, a token's required
+// orientation: SCALE vertical), a rotary's `rot` (its sweep's centre: the 606's MODE dial sits off 12 o'clock), cv-drum's
+// ctx.model (a stub-hosted 606 panel builds the 606's widgets).
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
 import { BAR_H } from './cv-module.js?v=9';
@@ -68,7 +71,9 @@ export const GLYPHS = Object.freeze({
 /** The special tokens of a model (§3.4.3): live ids the renderer binds itself (`multi`: may repeat, `idx`: the field that
  * tells the repeats apart [field, lo, hi], each value once; `full`: every value lo…hi present), extras-only ones, the kind
  * each must be (a list: any of them) and (`pos`) a detented token's hardware positions. Every token is validated;
- * `usable()` refuses a layout whose tokens this build cannot draw. */
+ * `usable()` refuses a layout whose tokens this build cannot draw. (7b) `orient`: a switch token's required orientation
+ * (v | h: its `orient`, else taller than wide = v); `cells`: the model's own extras cell sizes (over TOK_CELL); `xbreak`:
+ * its own extras row breaks (over XBREAK). */
 export const TOKENS = Object.freeze({
   tb303: {
     kind: { 'seq:tempo': 'knob', 'seq:runLed': 'led', 'seq:run': 'button', 'seq:clear': 'button', 'seq:key': 'button', 'seq:pitch': 'button', 'seq:time': 'button',
@@ -92,26 +97,47 @@ export const TOKENS = Object.freeze({
     multi: ['dr:step'], idx: { 'dr:step': ['n', 1, 16] }, full: ['dr:step'],
     pos: { 'dr:mode': 6, 'dr:inst': 12, 'dr:fill': 6, 'dr:bvar': 3, 'dr:ifv': 2, 'dr:pre': 4 },
   },
+  // (7b, IMPL-7b §7.2) the TR-606's sequencer (drum-core's 606 machine through api.drum, cv-drum.js): MODE (4) and TRACK /
+  // INSTRUMENT (8) rotaries, TEMPO (continuous), SCALE (a vertical slide switch: its first position, the top, is SCALE 4),
+  // RUN/STOP and its LED, CLEAR/RESET and FUNCTION (held states), PATTERN GROUP and its I / II LEDs, TAP, the 16 step keys
+  // (n 1–16, all present, each with its LED); the extras of §3.7 + SYNC 303s; a 608 px module's strip (592 inside, review
+  // #10): the grid 592 × 192 (a 48 px header + 16 × 34; a 32 px top + 8 × 20), the 2 × 4 pads 232 × 116; its rows (§7.5):
+  // the grid · the pads, SYNC, SWING · TUNE / DECAY 8 + 3 (models.js order: bdu … htd, then cyd ohd chd) · → PIANO ROLL …
+  // SYNC 303s
+  tr606: {
+    kind: { 'dr:mode': 'rotary', 'dr:inst': 'rotary', 'dr:tempo': 'knob', 'dr:sc': 'switch', 'dr:start': 'button', 'dr:runLed': 'led', 'dr:clear': 'button',
+      'dr:fn': 'button', 'dr:grp': 'button', 'dr:grpI': 'led', 'dr:grpII': 'led', 'dr:tap': 'button', 'dr:step': 'button' },
+    extras: ['dr:grid', 'dr:pads', 'dr:sync', 'dr:swing', 'dr:toRoll', 'dr:rec', 'dr:map', 'dr:sounds', 'dr:demo', 'dr:link'],
+    multi: ['dr:step'], idx: { 'dr:step': ['n', 1, 16] }, full: ['dr:step'],
+    pos: { 'dr:mode': 4, 'dr:inst': 8, 'dr:sc': 4 }, orient: { 'dr:sc': 'v' },
+    cells: { 'dr:grid': [592, 192], 'dr:pads': [232, 116] }, xbreak: ['dr:grid', 'dr:swing', 'htd', 'chd'],
+  },
 });
 /** (1i, IMPL-1i §2) The performance tokens of every model: the bed and its controllers (the id names the target, the kind
  * the widget: one of its list). Each at most once per layout; never in the extras. */
 export const PERF_TOKENS = Object.freeze({ kind: Object.freeze({ 'perf:keys': ['keys'], 'perf:bend': ['wheel', 'lever', 'ribbon'], 'perf:mod': ['wheel', 'lever', 'pad'] }) });
 /** Tokens this build renders (a layout using another one falls back to the Simple panel, §4.5). */
 export const RENDERED_TOKENS = new Set([...Object.keys(TOKENS.tb303.kind), ...TOKENS.tb303.extras, ...Object.keys(TOKENS.dx7.kind), ...Object.keys(PERF_TOKENS.kind),
-  ...Object.keys(TOKENS.tr808.kind), ...TOKENS.tr808.extras]);
+  ...Object.keys(TOKENS.tr808.kind), ...TOKENS.tr808.extras, ...Object.keys(TOKENS.tr606.kind), ...TOKENS.tr606.extras]);
 /** (7a) An inert control's title / tip: not emulated (dimmed), or `inert: 'later'` (a jack drawn at full contrast that
  * becomes cable-able with full patching, IMPL-7a §7.3). */
 export const INERT_TIP = ' — not emulated', LATER_TIP = ' — cable-able with full patching (stage 4)';
 /** The extras cells of the tokens (world px, w × h): the TB-303's parts and grid, the TR-808's (IMPL-7a §7.2: the step
- * grid, the 4 × 4 pads, the small controls); every other cell is a models.js control's (XCELL, selCellW) at XROW. */
+ * grid, the 4 × 4 pads, the small controls); every other cell is a models.js control's (XCELL, selCellW) at XROW. (7b) A
+ * model's own sizes (TOKENS.<model>.cells: the TR-606's grid and pads, DR6_GRID / DR6_PADS) win; SYNC 303s (dr:link). */
 export const DR_GRID = Object.freeze({ w: 640, h: 272 }), DR_PADS = Object.freeze({ w: 232, h: 232 });
+export const DR6_GRID = Object.freeze({ w: 592, h: 192 }), DR6_PADS = Object.freeze({ w: 232, h: 116 });
 export const TOK_CELL = Object.freeze({
   'seq:grid': [SEQ_GRID.w, SEQ_GRID.h], 'seq:sync': [128, XROW], 'seq:toRoll': [128, XROW], 'seq:random': [104, XROW],
   'dr:grid': [DR_GRID.w, DR_GRID.h], 'dr:pads': [DR_PADS.w, DR_PADS.h], 'dr:sync': [96, XROW], 'dr:swing': [104, XROW], 'dr:toRoll': [128, XROW],
-  'dr:rec': [72, XROW], 'dr:map': [88, XROW], 'dr:sounds': [104, XROW], 'dr:demo': [72, XROW],
+  'dr:rec': [72, XROW], 'dr:map': [88, XROW], 'dr:sounds': [104, XROW], 'dr:demo': [72, XROW], 'dr:link': [128, XROW],
 });
-/** Extras cells after which the full-width strip starts a new row (the 808: the grid and the pads, then the small controls, §7.5). */
+/** Extras cells after which the full-width strip starts a new row (the 808: the grid and the pads, then the small controls, §7.5;
+ * (7b) a model's TOKENS.<model>.xbreak replaces it). */
 export const XBREAK = Object.freeze(['dr:pads']);
+/** (7b) A model's extras cell (w × h, or null: a models.js control's own) and row breaks. */
+export const tokCell = (model, id) => { const T = model && TOKENS[model.id], c = T && T.cells && T.cells[id]; return c || TOK_CELL[id] || null; };
+export const xbreakOf = model => { const T = model && TOKENS[model.id]; return (T && T.xbreak) || XBREAK; };
 /** The default extras caption; a drum machine's says what its sounds are (IMPL-7a §2.5, §7.5: D4). */
 export const XCAPTION = 'EXTRAS · not on the original', XCAPTION_DRUMS = XCAPTION + ' · Sounds: our model of the circuits';
 /** The DX7's buttons 1–32 (§6.3): the parameter each live one selects in edit mode (op: per operator; eg: per EG step),
@@ -301,6 +327,8 @@ export function validate(L, model) {
     if (Array.isArray(c.legends)) c.legends.forEach(s => words(w + '.legends', s));
     if (c.style != null && !STYLES.includes(c.style)) bad(w + ': style one of ' + STYLES.join(', '));
     if (c.orient != null && c.orient !== 'v' && c.orient !== 'h') bad(w + ': orient v | h');
+    // (7b) a rotary's sweep centre (degrees clockwise from 12 o'clock; the 606's MODE detents sit at +37° … +127°)
+    if (c.rot != null && !(c.kind === 'rotary' && fin(c.rot) && Math.abs(c.rot) <= 180)) bad(w + ': rot (a rotary\'s sweep centre) −180…180°');
     if (isObj(c.skin) && c.skin.ptrStyle != null && !PTRS.includes(c.skin.ptrStyle)) bad(w + ': skin.ptrStyle');
     // sizes
     const k = c.kind;
@@ -379,6 +407,9 @@ export function validate(L, model) {
         if (Array.isArray(c.legends) ? c.legends.length !== np : k === 'rotary') bad(w + `: ${Array.isArray(c.legends) ? c.legends.length : 'no'} legends for ${np} positions`);
         if (k === 'switch' && c.positions != null && c.positions !== np) bad(w + `: positions ${c.positions} ≠ ${np}`);
       }
+      // (7b) a switch token's orientation (the 606's SCALE: vertical, its first position at the top)
+      const want = T && T.orient && T.orient[c.id];
+      if (want && k === 'switch' && (c.orient || (c.h > c.w ? 'v' : 'h')) !== want) bad(w + `: ${c.id} is a ${want === 'v' ? 'vertical' : 'horizontal'} switch (orient ${want})`);
       if (c.id === 'dr:step' && c.led === 'none') bad(w + ': a step key shows its LED (led cap | above | below)');
       count(c.id);
     } else {
@@ -578,8 +609,9 @@ export function geometry(L, model) {
   // (the "Dimmed controls are not emulated" note: the dimmed inert items; a 7a `inert: 'later'` jack is drawn at full contrast)
   const ids = Array.isArray(ex.ids) ? ex.ids.filter(id => typeof id === 'string') : [], inert = (L.controls || []).some(c => c && c.inert && c.inert !== 'later');
   let extras = null, exH = 0;
-  const cellW = id => { const mc = M.get(id); if (TOK_CELL[id]) return TOK_CELL[id][0]; return mc ? (mc.t === 's' ? selCellW(mc.opts) : XCELL[mc.t] || 72) : 72; };
-  const cellH = id => (TOK_CELL[id] ? TOK_CELL[id][1] : XROW);
+  const XB = xbreakOf(model);
+  const cellW = id => { const mc = M.get(id), tc = tokCell(model, id); if (tc) return tc[0]; return mc ? (mc.t === 's' ? selCellW(mc.opts) : XCELL[mc.t] || 72) : 72; };
+  const cellH = id => { const tc = tokCell(model, id); return tc ? tc[1] : XROW; };
   if (ids.length || inert) {
     const r = xat ? { x: px(xat[0]), y: py(xat[1]), w: r05(xat[2] * X), h: r05(xat[3] * X) } : { x: 0, y: r05(ch * X), w: W, h: 0 };
     const cells = [];
@@ -588,7 +620,7 @@ export function geometry(L, model) {
       const w = cellW(id), h = cellH(id);
       if (!xat && x > r.x + XPAD && (brk || x + w > r.x + r.w - XPAD)) { x = r.x + XPAD; y += rowH; rowH = 0; }
       cells.push({ id, x, y, w, h });
-      x += w; rowH = Math.max(rowH, h); brk = XBREAK.includes(id);
+      x += w; rowH = Math.max(rowH, h); brk = XB.includes(id);
       if (xat && (x > r.x + r.w + 1e-6 || y + h > r.y + r.h + 1e-6)) over = true;
     }
     if (!xat) { r.h = XCAP + (ids.length ? rowH + (y - r.y - XCAP) + XPAD : 0); exH = r.h; }
@@ -718,8 +750,9 @@ function buildSvg(L, model) {
     const ls = c.labSize > 0 ? c.labSize : 2.6, lab = c.lab || 'n';
     const dial = (c.kind === 'knob' || c.kind === 'rotary') && (isObj(c.scale) || Array.isArray(c.legends));
     // printed dial (a knob's scale) and rotary detents
-    if ((c.kind === 'knob' || c.kind === 'rotary') && isObj(c.scale)) q += scaleSvg(c.x, c.y, c.d, c.sweep || 270, c.scale, LEG);
-    if (c.kind === 'rotary' && Array.isArray(c.legends)) q += detentsSvg(c.x, c.y, c.d, c.sweep || 270, c.legends, LEG);
+    const rot = c.kind === 'rotary' && fin(c.rot) ? c.rot : 0; // (7b: a rotary's sweep centre)
+    if ((c.kind === 'knob' || c.kind === 'rotary') && isObj(c.scale)) q += scaleSvg(c.x, c.y, c.d, c.sweep || 270, c.scale, LEG, rot);
+    if (c.kind === 'rotary' && Array.isArray(c.legends)) q += detentsSvg(c.x, c.y, c.d, c.sweep || 270, c.legends, LEG, rot);
     if (c.kind === 'slider' && isObj(c.scale)) q += ladderSvg(Object.assign({ x: c.x, y: c.y, len: c.len, orient: c.orient, gap: capOf(c)[0] / 2 }, c.scale), LEG);
     if (c.kind === 'slider' && Array.isArray(c.legends)) q += ladderSvg({ x: c.x, y: c.y, len: c.len, orient: c.orient, gap: capOf(c)[0] / 2, n: c.legends.length, labels: c.legends, side: c.side || 'r', invert: c.invert }, LEG);
     if (c.kind === 'jacks') for (const e of entriesOf(c)) { q += jackSvg(e.x, e.y, (e.d || c.d), JK); if (e.label) q += text(e.x, e.y - (e.d || c.d) / 2 - 1.2, e.label, { size: ls, anchor: 'middle', fill: LEG }); }
@@ -755,17 +788,17 @@ function glyphSvg(g, x, y, size, colr, sw) {
   const s = size / 2;
   return `<path d="${GLYPHS[g]}" transform="translate(${n3(x)} ${n3(y)}) scale(${n3(s)})" fill="none" stroke="${esc(colr)}" stroke-width="${n3((sw || 0.32) / s)}" stroke-linejoin="round" stroke-linecap="round"/>`;
 }
-function scaleSvg(x, y, d, sweep, sc, LEG) {
+function scaleSvg(x, y, d, sweep, sc, LEG, rot = 0) {
   const n = Math.max(2, sc.n | 0 || 11), r0 = d / 2 + DIAL_IN, r1 = r0 + DIAL_TICK, rl = d / 2 + DIAL_LAB, sz = sc.size > 0 ? sc.size : 2.3;
   let p = '', q = '';
   for (let i = 0; i < n; i++) {
-    const a = -sweep / 2 + sweep * i / (n - 1), [ax, ay] = polar(x, y, r0, a), [bx, by] = polar(x, y, r1, a);
+    const a = rot - sweep / 2 + sweep * i / (n - 1), [ax, ay] = polar(x, y, r0, a), [bx, by] = polar(x, y, r1, a);
     p += `M${n3(ax)} ${n3(ay)}L${n3(bx)} ${n3(by)}`;
   }
   const labs = Array.isArray(sc.labels) ? sc.labels : [];
   labs.forEach((l, i) => {
     if (l == null || l === '') return;
-    const a = -sweep / 2 + sweep * (labs.length === n ? i / (n - 1) : i / Math.max(1, labs.length - 1)), [lx, ly] = polar(x, y, rl, a);
+    const a = rot - sweep / 2 + sweep * (labs.length === n ? i / (n - 1) : i / Math.max(1, labs.length - 1)), [lx, ly] = polar(x, y, rl, a);
     q += text(lx, ly + sz * 0.36, String(l), { size: sz, anchor: 'middle', fill: LEG });
   });
   return `<path d="${p}" stroke="${esc(LEG)}" stroke-width="0.32" fill="none"/>` + q;
@@ -781,9 +814,9 @@ function boxGap(bx, segs, r) { // the least distance from a box [x0, y0, x1, y1]
   for (const [ax, ay, cx, cy] of segs) for (let k = 0; k <= 16; k++) m = Math.min(m, d(ax + (cx - ax) * k / 16, ay + (cy - ay) * k / 16));
   return m;
 }
-function detentsSvg(x, y, d, sweep, legends, LEG) {
+function detentsSvg(x, y, d, sweep, legends, LEG, rot = 0) {
   const n = legends.length, r0 = d / 2 + DIAL_IN, r1 = r0 + DIAL_TICK * 0.8, rl = d / 2 + DIAL_LAB + 0.4, SZ = 2.4;
-  const blocks = legends.some(l => typeof l === 'string' && l.includes('\n')), ang = i => (n > 1 ? -sweep / 2 + sweep * i / (n - 1) : 0);
+  const blocks = legends.some(l => typeof l === 'string' && l.includes('\n')), ang = i => rot + (n > 1 ? -sweep / 2 + sweep * i / (n - 1) : 0);
   const ticks = blocks ? legends.map((l, i) => [...polar(0, 0, r0, ang(i)), ...polar(0, 0, r1, ang(i))]) : [];
   let p = '', q = '';
   legends.forEach((l, i) => {
@@ -931,7 +964,7 @@ function inertSvg(c, C) {
   const { x, y } = c;
   switch (c.kind) {
     case 'knob': case 'rotary': {
-      const r = c.d / 2, a = -(c.sweep || 270) / 2 + (c.sweep || 270) * p, [px1, py1] = polar(x, y, r * 0.94, a), [px2, py2] = polar(x, y, r * (sk.capR || 0.6) + 0.4, a);
+      const r = c.d / 2, a = (c.kind === 'rotary' && fin(c.rot) ? c.rot : 0) - (c.sweep || 270) / 2 + (c.sweep || 270) * p, [px1, py1] = polar(x, y, r * 0.94, a), [px2, py2] = polar(x, y, r * (sk.capR || 0.6) + 0.4, a);
       q = `<circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(r)}" fill="${esc(sk.skirt)}"/><circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(r * (sk.capR || 0.6))}" fill="${esc(sk.cap)}"/>`
         + `<line x1="${n3(px1)}" y1="${n3(py1)}" x2="${n3(px2)}" y2="${n3(py2)}" stroke="${esc(sk.ptr)}" stroke-width="${n3(Math.max(0.6, c.d * 0.05))}" stroke-linecap="round"/>`;
       break;
@@ -1175,7 +1208,7 @@ export function render(root, L, model, api) {
     if (rot && typeof rot.append === 'function') pointer(rot, sk);
   }
   function hwRotary(c, mc) {
-    const P = positionsOf(c, mc), stp = stepper(P), sweep = c.sweep || 270, N = P.length;
+    const P = positionsOf(c, mc), stp = stepper(P), sweep = c.sweep || 270, N = P.length, r0 = fin(c.rot) ? c.rot : 0;
     const el = mk('div', 'knob hw-rot');
     el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', mc.label);
     el.setAttribute('aria-valuemin', '0'); el.setAttribute('aria-valuemax', String(N - 1));
@@ -1184,7 +1217,7 @@ export function render(root, L, model, api) {
     el.append(svg);
     const upd = () => {
       const i = stp.posOf(api.get(mc.id));
-      rot.setAttribute('transform', `rotate(${n3(N > 1 ? -sweep / 2 + sweep * i / (N - 1) : 0)} 32 32)`);
+      rot.setAttribute('transform', `rotate(${n3(r0 + (N > 1 ? -sweep / 2 + sweep * i / (N - 1) : 0))} 32 32)`);
       el.setAttribute('aria-valuenow', String(i)); el.setAttribute('aria-valuetext', txtOf(c, mc, P, i));
     };
     api.watch(mc.id, upd); upd();
@@ -1596,9 +1629,9 @@ export function render(root, L, model, api) {
     return el;
   }
   const perfWidget = (c, o) => { KY.ensureCSS(doc); return c.kind === 'keys' ? bedWidget(c, o) : ctlWidget(c, o); };
-  // (7a, IMPL-7a §7.4) the TR-808's dr: widgets (cv-drum.js drumPanel) over api.drum (null: the same nodes, silent)
+  // (7a, IMPL-7a §7.4) the TR-808's dr: widgets (cv-drum.js drumPanel) over api.drum (null: the same nodes, silent); (7b) the 606's
   let DRP = null;
-  const drp = () => DRP || (DRP = CD.drumPanel(api.drum || null, { doc, api, root, mk, sv, place, prop, hitVars, named, knobSvg, skinVars, skinOf, n3, r05 }));
+  const drp = () => DRP || (DRP = CD.drumPanel(api.drum || null, { doc, api, root, model: model.id, mk, sv, place, prop, hitVars, named, knobSvg, skinVars, skinOf, n3, r05 })); // ((7b) model: the machine's widgets before a record exists)
   function liveWidget(c, o) {
     const mc = M.get(c.id);
     if (!mc) { // a token (TB-303 / DX7 special areas; 1i: the keys and the controllers; 7a: the 808's sequencer)

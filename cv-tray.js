@@ -339,7 +339,7 @@ export const SRC_VIEWS = [
     sections: [{ id: 'serum', models: m => !!m.custom }, { id: 'mods' }, { id: 'parts', head: 'Serum parts', note: 'Arrive in milestone 3.' },
       { id: 'notes', head: 'Note tools', note: 'Note tools: later.' }] },
   { id: 'drums', label: 'Drums', tip: 'Drum machines with their real front panel', layout: 'hw',
-    note: 'More machines later: TR-606, TR-909, then the Simmons SDS-V with the pad controller.', sections: [{ id: 'drums', models: DRUMS }] },
+    note: 'More machines later: TR-909, then the Simmons SDS-V with the pad controller.', sections: [{ id: 'drums', models: DRUMS }] },
 ];
 /** (milestone 3, §2.6) The Serum parts and note tools tiles (id = the part kind sx-edges firstFree takes). */
 export const PART_TILES = Object.freeze([

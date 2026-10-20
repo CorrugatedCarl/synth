@@ -44,6 +44,9 @@
 //   tr808     12 voice circuits      d8p       1    0.0175  0.0030  0.0205   (IMPL-7a §2.6: the machine playing its typical
 //             pattern — "notes" do not apply, base + voice = bench row d8p, 0.0205 (the gate's 0.0211 calibrated); voice =
 //             one circuit retriggered (lane V's 0.003, RD §1.3); d8x 0.037, d8m 0.017, d8s 0.0055, idle d8i 0.0002)
+//   tr606     5 voice circuits       d6p       1    0.0143  0.0030  0.0173   (IMPL-7b §2.6: as the 808, its row d6p — the
+//             gate's 0.0173 calibrated (measure() 0.0152–0.0165 beside d8p's 0.0177–0.0183); d6x 0.0192, d6m 0.0137, idle
+//             d6i 0.0002; JSC steady d6p 0.014, d6x 0.014, d6m 0.0096)
 //
 // Serum (OS 2; ×0.68 at OS 1, ×1.59 at OS 4): base 0.0063 (default 1 / 4 / 8 voices = 0.0100 / 0.0209 / 0.0356) + per
 // voice 0.00245 + per oscillator on [first unison voice, each further one]: Wavetable [0.0012, 0.00042] · Multisample
@@ -81,7 +84,7 @@ export const COST = Object.freeze({
     solina: C('c5', 'divide-down + ensemble', Infinity, 0.0110, 0.0021), minimoog: C('c3', 'transistor ladder', 1, 0.0055, 0.0063),
     modular: C('c3', 'transistor ladder', 1, 0.0055, 0.0063), arp2600: C('c3', '4072 ladder', 1, 0.0055, 0.0059),
     ms20: C('c3', 'Korg 35 Sallen-Key', 1, 0.0055, 0.0089), tb303: C('c3', 'diode ladder + sequencer', 1, 0.0055, 0.0137),
-    tr808: C('d8p', 'drums', 1, 0.0175, 0.0030),
+    tr808: C('d8p', 'drums', 1, 0.0175, 0.0030), tr606: C('d6p', 'drums', 1, 0.0143, 0.0030),
     serum: Object.freeze({ row: 'e', family: 'Serum (terms in COST.serum)', poly: 32, base: 0.0063, voice: 0.00245 }),
   }),
   serum: Object.freeze({

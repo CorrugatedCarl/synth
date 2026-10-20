@@ -4,7 +4,8 @@ import './v8-guard.mjs';
 // layouts (Hardware: cv-panel; Resizable: today's sections) carry data-ctl = data-dest = the models.js id under a
 // [data-dev] root; (2b lane C, IMPL-2b §6.2) haloRanges, setMods / setLive halos (knob rings, slider bars, badges), the
 // press-and-hold / right-click mod menu through host.modMenu, data-nomod on the hardware tokens. tests/wk-dom.mjs, a fake
-// host; never fake-DOM nodes in assert.*.
+// host; never fake-DOM nodes in assert.*. (7b review #9) The vertical-switch test hosts api.drum for the TR-606 too (its own
+// record and host): its SCALE ('tr606 dr:sc') is a bound vertical switch, read through cv-drum's UI.tr606 dials.
 // Run alone: node --max-old-space-size=2048 --test tests/classic-panel.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -198,18 +199,21 @@ test('7a review 2 (the lead\'s decision): a hardware panel\'s vertical switch dr
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
   assert.ok(/\[data-orient="v"\] > \.hw-sw-k \{[^}]*top: calc\(var\(--kd, 12px\) \/ 2 \+ var\(--f, 0\)/.test(css), 'premise: a vertical switch knob sits at the top at --f 0');
   const doc = fresh(), log = [];
-  let mem = DC.normDrum(undefined);
+  let mem = DC.normDrum(undefined), mem6 = DC.normDrum(undefined, 'tr606');
   const H = CD.drumHost({ mem: () => mem, put: (tr, D) => { mem = D; }, send() {}, raf: () => 0 });
+  const H6 = CD.drumHost({ mem: () => mem6, put: (tr, D) => { mem6 = D; }, send() {}, raf: () => 0 }); // (7b review #9: the 606's own)
   const mk = (id, L) => {
     const m = modelOf(id), root = doc.createElement('div'), h = host(doc, log);
     h.kit.track = (el, e, move, end) => { const mv = ev => move(ev), up = ev => { el.removeEventListener('pointermove', mv); el.removeEventListener('pointerup', up); end(ev); }; el.addEventListener('pointermove', mv); el.addEventListener('pointerup', up); };
     if (id === 'tr808') h.drum = { api: tv => H.api(tv) };
+    if (id === 'tr606') h.drum = { api: tv => H6.api(tv) };
     doc.body.append(root);
     return new ClassicPanel(root, { track: track('trk_' + id, id), model: m, layout: L || cvPanel.usable(id, m), host: h });
   };
   // (the 808's dr: switches paint on the next frame: their position is read from the machine's memory)
-  const dial = w => { const id = w.getAttribute('aria-label'); return Object.values(CD.DIAL).find(T => T.label === id); };
-  const posOf = w => { const T = w.className.includes('dr-sw') ? dial(w) : null; return T ? T.pos(mem) : +w.getAttribute('data-pos'); };
+  let six = false; // (the panel being checked is the 606's: its dials, its record)
+  const dial = w => { const id = w.getAttribute('aria-label'); return Object.values(six ? CD.UI.tr606.dial : CD.DIAL).find(T => T.label === id); };
+  const posOf = w => { const T = w.className.includes('dr-sw') ? dial(w) : null; return T ? T.pos(six ? mem6 : mem) : +w.getAttribute('data-pos'); };
   const knobF = w => { const k = w.childNodes.find(n => n.getAttribute && n.getAttribute('class') === 'hw-sw-k'); return k && !w.className.includes('dr-sw') ? +k.style['--f'] : null; };
   let pid = 100;
   const drag = (w, dx, dy) => { const p = { pointerId: ++pid }; ptr(w, 'pointerdown', 100, 100, p); ptr(w, 'pointermove', 100 + dx / 2, 100 + dy / 2, p); ptr(w, 'pointermove', 100 + dx, 100 + dy, p); ptr(w, 'pointerup', 100 + dx, 100 + dy, p); };
@@ -240,11 +244,13 @@ test('7a review 2 (the lead\'s decision): a hardware panel\'s vertical switch dr
     const L = cvPanel.usable(m.id, m);
     if (!L) continue;
     const P = mk(m.id);
+    six = m.id === 'tr606';
     for (const id of live(L)) check(P, id, m.id + ' ' + id);
+    six = false;
     P.destroy();
   }
   const V = ['minimoog o3k', 'minimoog nc', 'jupiter8 vd', 'jupiter8 pws', 'jupiter8 sy', 'jupiter8 lo', 'jupiter8 sl', 'jupiter8 vlf', 'juno60 pm', 'juno60 ep', 'juno60 vm',
-    'tr808 lts', 'tr808 mts', 'tr808 hts', 'tr808 rss', 'tr808 cps', 'tr808 dr:pre'];
+    'tr808 lts', 'tr808 mts', 'tr808 hts', 'tr808 rss', 'tr808 cps', 'tr808 dr:pre', 'tr606 dr:sc'];
   assert.deepEqual(seen.v, V, 'every bound vertical switch of every panel is checked');
   assert.ok(seen.h.length >= 14, 'horizontal: ' + seen.h.join(', '));
   // an explicit invert on a switch changes nothing: the art does not draw it, so the gesture follows the art

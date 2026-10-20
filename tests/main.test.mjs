@@ -1171,6 +1171,33 @@ test('7a (IMPL-7a §10.1): a TR-808 track — its node starts with the drum payl
   el.value = '120'; el.onchange();
 });
 
+test('7b (IMPL-7b §10, review #4): a TR-606 track — its record made on first read is a 606\'s (drumOf by the device\'s model); its node starts with the 606\'s payload (m, rst, its seven sounds\' map); a step post reaches a 606 session; a 606 loaded without its record (normDevs) and one holding an 808\'s get a 606\'s; SYNC 303s\' n303 counts the project\'s TB-303s', async () => {
+  const s = await bootMain({ hash: '#tr606' });
+  await s.power(); await s.settle(5); s.raf();
+  const api = s.api, cv = globalThis.__synthTest.cv, acc = globalThis.__synthTest.acc, t = api.project().tracks[0];
+  const d = I(t), N = s.nodeOf(t.id), dv = CMOD.primId(t), st = () => cv.drum.api(cv.view1e(dv)).state();
+  assert.deepEqual([d.model, d.drum.m, d.drum.keys.length, d.drum.st[0].length], ['tr606', 'tr606', 32, 16], 'a 606 with its own record');
+  const q = N.po.seq;
+  assert.deepEqual([!!q && !!q.plan, q && q.m, q && q.rst, q && q.sync, q && q.map[48], q && q.map[47], q && q.map[45], q && q.map[56]], [true, 'tr606', 0, true, 4, 4, 2, -1], 'its payload in its options: HT on 48 / 47, LT on 45, no cowbell');
+  s.run(24000);
+  N._fromProc({ t: 'step', s: 5, m: 0, k: 0, v: 0, p: 0, o: 1200, M: 0, f: 0, F: 0 }); s.raf(); s.raf();
+  assert.deepEqual([Array.isArray(st().S.held), st().S.pos && st().S.pos.s, 'seq' in d], [true, 5, false], 'a 606 session at the heard post; no 303 pattern written');
+  assert.equal(s.$('#tabTrack').textContent, `Track: ${t.name} · Drums`);
+  // normDevs: a 606 device without its record (a file, an autosave) → the 606's; drumOf: one holding an 808's → the 606's
+  const a = { dev: { i1: { kind: 'synth', model: 'tr606', vals: {} }, i2: { kind: 'synth', model: 'tr808', vals: {} } } };
+  acc.normDevs(a);
+  assert.deepEqual([a.dev.i1.drum.m, a.dev.i1.drum.keys.length, a.dev.i2.drum.m, a.dev.i2.drum.keys.length], ['tr606', 32, undefined, 16]);
+  t.dev[dv].drum = cv.drumOf({ dev: { x: { kind: 'synth', model: 'tr808' } } }, 'x');
+  assert.deepEqual([cv.drumOf(t, dv).m, cv.drumOf(t, dv).keys.length], ['tr606', 32], 'never an 808\'s record under a 606');
+  // n303: the project's TB-303s (none: the button hidden)
+  assert.deepEqual(cv.drum.api(cv.view1e(dv)).n303(), { n: 0, synced: true });
+  const b = api.addTrack(MODELS.find(m => m.id === 'tb303')); s.raf();
+  api.selectTrack(t.id); s.raf();
+  assert.deepEqual(cv.drum.api(cv.view1e(dv)).n303(), { n: 1, synced: false }, 'one 303, on its own clock');
+  api.seqOf(b).sync = true; api.seqSend(b);
+  assert.deepEqual(cv.drum.api(cv.view1e(dv)).n303(), { n: 1, synced: true });
+});
+
 test('MIDI import into a project with no notes: the empty project\'s tracks go and the file\'s come in as the current instrument\'s model (curModel read before the tracks are cleared — no throw)', async () => {
   const s = await bootMain({ hash: '#juno60' });
   await s.power(); await s.settle(5); s.raf();

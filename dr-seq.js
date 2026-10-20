@@ -42,6 +42,25 @@
  * a TAP fill), k key (−1 a silent PLAY hole), v variation, p part, o ticks into the measure, M measures since the anchor at
  * tick 0 / START (COMPOSE's index), f 1 in a TAP fill, F the frame (heard time on the main thread).
  * Allocation-free in events() but for the post literal (as the TB-303's seqFire); set() allocates nothing either.
+ * 7b (IMPL-7b §3.5; lane S6), two additions, inert for the 808's payloads (neither key):
+ *   rst            STEP RESET (the TR-606's TAP in PATTERN PLAY): a payload counter like `tap`; each increment while running
+ *                  restarts the playing measure at its step 1 at the cursor's next EVEN step — on the straight grid (an odd
+ *                  step's tick carries the swing offset, which a restart there would shift the whole grid by; the hardware
+ *                  restarts at once, ≤ two steps later keeps the grid): c0 = that tick, the measure count M continuing, a
+ *                  pending plan pending to the restarted measure's end; at a measure's step 1 nothing to do. Synced, the shift
+ *                  holds until the next re-anchor at tick 0; a loop wrap keeps a pending request (7a review 2 #1's rule), a
+ *                  start / seek / stop / power on drops it. The payload's `m` (the machine) is the engine's, not DrSeq's.
+ *   rstF           (review 2 #3) the press's heard frame (the frame leaving the speakers at the press; −1 none): the request is
+ *                  dropped when a measure's step 1 fired after it (the post frame of the last step 1, c0F > rstF) — the
+ *                  pattern already restarted after the press as heard, so a press heard in a bar's last steps never restarts
+ *                  it twice when the output latency puts the cursor past the bar line (an 808 payload has none: inert).
+ *   clock(F)       the 606's tempo clock at any frame F (its open hat's cut, read per absolute 4-frame chunk and ahead in a
+ *                  de-click tail) → a preallocated { t ticks, tpf ticks a frame }: free and running, the machine's own ticks
+ *                  (fT + (pos + F − sF − fP) / ffpt, pos taken at sF, the span start events() last saw — the Track adds to
+ *                  pos after the span); otherwise, the transport playing, the song's (tp.tick + (F − tp.frame) / tp.fpt:
+ *                  songEvents' expression, so the pattern and the roll paths read one clock, D5); otherwise F at the tempo
+ *                  the panel shows — free its TEMPO (bpm), synced the Inst's `bpm` getter (the project's; never tp.fpt, 1
+ *                  until a transport arrives). No allocation.
  */
 (function () {
   'use strict';
@@ -105,6 +124,9 @@
         this.bpm = 120; this.fT = 0; this.fP = 0; this.ffpt = this.fptOf(120); // free clock: tick fT at pos fP
         this.map = new Int8Array(DEF_MAP); this.prim = new Int8Array(DEF_PRIM); this.mute = 0; this.smp = null;
         this.tapN = null; this.tapReq = 0;
+        this.rstN = null; this.rstReq = 0;                // (7b) STEP RESET: the counter seen, a restart requested
+        this.rstF = -1; this.c0F = -INF;                  // (7b review 2 #3) the request's heard frame (−1 none); the frame the last measure (or restart) began
+        this.sF = -1; this.sP = 0; this.clk = { t: 0, tpf: 0 }; // (7b) the free clock's span start (−1: none since START) and its pos; clock()'s reply
         this.fresh = 0; this.lastT = NaN; this.gate = 0; this.warned = 0;
         // the cursor: the next step to fire — measure cm of pl (or the TAP fill fl, resuming at rm), step cs at tick ct;
         // the measure starts at tick c0, has cn steps of cT ticks (pre cp, 1st part cl1, swing offset cw, steps from cOff),
@@ -130,9 +152,9 @@
           this.fT += (this.pos - this.fP) / this.ffpt; this.fP = this.pos;
           this.bpm = s.bpm; this.ffpt = this.fptOf(s.bpm);
         }
-        if (this.sync !== wasSync) { this.gateOff(); this.syncStep = null; this.lastT = NaN; this.tapReq = 0; }
+        if (this.sync !== wasSync) { this.gateOff(); this.syncStep = null; this.lastT = NaN; this.tapReq = 0; this.rstReq = 0; }
         if (!this.sync && this.run && (!wasRun || wasSync)) { // free START: step 1 of measure 1, at the knob's tempo
-          this.pos = 0; this.fT = 0; this.fP = 0; this.syncStep = null; this.lastT = NaN; this.tapReq = 0;
+          this.pos = 0; this.fT = 0; this.fP = 0; this.syncStep = null; this.lastT = NaN; this.tapReq = 0; this.rstReq = 0; this.sF = -1;
         }
         if (!this.sync && !this.run && wasRun) this.gateOff();
         if (fin(s.swing)) {
@@ -143,6 +165,10 @@
         if (fin(s.tap)) { // TAP fills: one per increment while running
           if (this.tapN !== null && s.tap !== this.tapN && this.runningNow()) this.tapReq = 1;
           this.tapN = s.tap;
+        }
+        if (fin(s.rst)) { // (7b) STEP RESET: one restart per increment while running (the first payload's counter: none)
+          if (this.rstN !== null && s.rst !== this.rstN && this.runningNow()) { this.rstReq = 1; this.rstF = fin(s.rstF) && s.rstF >= 0 ? s.rstF : -1; }
+          this.rstN = s.rst;
         }
       }
       take(p, at) {
@@ -164,11 +190,11 @@
       /* ---- transport / power ---- */
       transport(play) {
         if (!this.sync) return;                           // (a free machine is untouched by the transport)
-        this.gateOff(); this.syncStep = null; this.lastT = NaN; this.tapReq = 0;
+        this.gateOff(); this.syncStep = null; this.lastT = NaN; this.tapReq = 0; this.rstReq = 0;
         const T = this.inst && this.inst.T;
         this.fresh = play && T && T.fresh ? 1 : 0;
       }
-      release() { this.gateOff(); this.syncStep = null; this.lastT = NaN; this.tapReq = 0; }
+      release() { this.gateOff(); this.syncStep = null; this.lastT = NaN; this.tapReq = 0; this.rstReq = 0; }
       gateOff() { if (this.gate) { this.gate = 0; const I = this.inst; if (I && typeof I.drStep === 'function') I.drStep(-1, 0); } }
 
       /* ---- the cursor ---- */
@@ -187,6 +213,7 @@
         if (this.nx !== null) { this.pl = this.nx; this.nx = null; this.nxAt = 0; } // (a discontinuity: the pending plan now)
         const tap = wrap && (this.tapReq || (this.fl !== null && this.lf < this.c0)) ? 1 : 0;
         this.fl = null; this.tapReq = tap; this.lf = -INF;
+        if (!wrap) this.rstReq = 0;                       // (7b: a STEP RESET request survives a loop wrap only)
         const p = this.pl;
         if (!p || p.n === 0) { this.ct = INF; this.cn = 0; return; }
         const T = p.mT, n = p.n, lf = p.loopFrom, cyc = T[n] - T[lf], t = t0 > 0 ? t0 : 0;
@@ -231,6 +258,7 @@
         const mask = f !== null ? f.st[s] & 0xFFF : this.pl.st[this.cOff + s] & 0xFFF;
         const k = f !== null ? f.k : this.pl.mKey[this.cm], v = f !== null ? f.v : this.pl.mVar[this.cm];
         this.lf = this.ct;
+        if (s === 0) this.c0F = F;                        // (7b: a measure's, a fill's or a restart's step 1 — STEP RESET's rstF reads it)
         if (mask & 0xFFE) {
           const dm = I.dm;
           if (dm) dm.trig(mask);
@@ -267,6 +295,7 @@
           }
         } else {
           if (!this.run) return 1e9;
+          this.sF = F; this.sP = this.pos;                // (7b: clock() at any frame of the span and ahead of it)
           fpt = this.ffpt; t = this.fT + (this.pos - this.fP) / fpt;
           if (this.syncStep === null) { this.locate(t); this.syncStep = 0; }
         }
@@ -274,12 +303,33 @@
         while (this.ct <= t) {
           if (this.nxAt === 2) this.beat2();
           if (this.ct > t) break;                         // (beat 2's entry step is never later; kept for safety)
+          if (this.rstReq !== 0 && (this.cs & 1) === 0) this.restart();
           this.fire(F);
           this.syncStep++;
           if (++this.cs < this.cn) this.ct = this.tickOf(this.cs); else this.boundary();
         }
         this.lastT = t;
         return this.ct === INF ? 1e9 : Math.max(1, (this.ct - t) * fpt);
+      }
+      // (7b) STEP RESET at the cursor's even step cs (its tick unswung: c0 + cs · cT): the measure (or fill) restarts there —
+      // unless (review 2 #3) a step 1 fired after the press was heard (c0F > rstF): the pattern already restarted after it
+      // (with output latency the cursor runs ahead of the ear: a press heard just before a bar line arrives after it)
+      restart() { this.rstReq = 0; if (this.cs > 0 && !(this.rstF >= 0 && this.c0F > this.rstF)) { this.c0 = this.ct; this.cs = 0; } }
+
+      /* ---- (7b) the 606's tempo clock: { t, tpf } at frame F (the header's three cases) ---- */
+      clock(F) {
+        const c = this.clk, I = this.inst;
+        if (!this.sync && this.run) {
+          const p = this.sF < 0 ? this.pos : this.sP + (F - this.sF);
+          c.t = this.fT + (p - this.fP) / this.ffpt; c.tpf = 1 / this.ffpt;
+          return c;
+        }
+        const tp = I && I.tp;
+        if (tp && tp.play) { c.t = tp.tick + (F - tp.frame) / tp.fpt; c.tpf = 1 / tp.fpt; return c; }
+        let fpt = this.ffpt;
+        if (this.sync) { const b = I ? I.bpm : 0; fpt = this.fptOf(fin(b) && b > 0 ? b : 120); }
+        c.t = F / fpt; c.tpf = 1 / fpt;
+        return c;
       }
     }
 

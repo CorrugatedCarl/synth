@@ -28,6 +28,9 @@
 //      state, note map, sample slots: song.normDev → drum-core normDrum): additive, nothing to convert (a 7 opens as before;
 //      an 8 in a schema-7 build opens read-only — that build would read 'tr808' as a Minimoog, modelById's fallback, drop
 //      `drum` and autosave the loss). toV1 (Save as classic project) keeps a drum track's notes and names it in `lost`
+//   9  stage 7b: the TR-606 (IMPL-7b §6) — a 'tr606' instrument device and its `drum` record (its own shape, `m: 'tr606'`: song.normDev
+//      → normDrum(d, model)): additive, nothing to convert (an 8 opens as before; a 9 in a schema-8 build opens read-only — that build
+//      would read 'tr606' as a Minimoog, modelById's fallback, drop `drum` and autosave the loss). toV1 names each drum track's model
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
@@ -84,7 +87,7 @@ import { DOT } from './cv-world.js?v=9';
 import { isDrum } from './song.js?v=9';
 
 export { schemaOf };
-export const SCHEMA = 8;
+export const SCHEMA = 9;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -120,6 +123,8 @@ export const STEPS = Object.freeze([
   p => Object.assign(growMods(p), { schema: 7 }),
   // 7 → 8: drum machines (stage 7a, IMPL-7a §6: a 'tr808' device and its `drum` record) — additive
   p => Object.assign({}, p, { schema: 8 }),
+  // 8 → 9: the TR-606 (stage 7b, IMPL-7b §6: a 'tr606' device and its `drum` record) — additive
+  p => Object.assign({}, p, { schema: 9 }),
 ]);
 
 export function upgrade(o) {
@@ -236,8 +241,10 @@ export function toV1(p0) {
     if (ins.some(k => t.dev[k].solo)) lost.push(`“${t.name}”: solo in track`);
   }
   // (7a, IMPL-7a §6) a drum machine plays nothing in main (its model falls back to a Minimoog there): its notes are kept
-  const dr = out.filter(o => isObj(o) && isDrum(o.model)).map(o => `“${o.name}”`);
-  if (dr.length) lost.push(`TR-808 track${dr.length > 1 ? 's' : ''} ${dr.join(', ')}: the live site has no drum machine — ${dr.length > 1 ? 'their' : 'its'} piano-roll notes are kept`);
+  // (7b: a line per drum model, named by it — the tracks' models in the order they first appear)
+  const dr = new Map();
+  for (const o of out) if (isObj(o) && isDrum(o.model)) { if (!dr.has(o.model)) dr.set(o.model, []); dr.get(o.model).push(`“${o.name}”`); }
+  for (const [id, names] of dr) lost.push(`${(MODELS.find(m => m.id === id) || { name: id }).name} track${names.length > 1 ? 's' : ''} ${names.join(', ')}: the live site has no drum machine — ${names.length > 1 ? 'their' : 'its'} piano-roll notes are kept`);
   p.tracks = out;
   return { p, lost: [...new Set(lost)] };
 }

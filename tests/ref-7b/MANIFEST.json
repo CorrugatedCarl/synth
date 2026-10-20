@@ -1,0 +1,15 @@
+{
+  "note": "Frozen TR-606 sound (IMPL-7b §12.2, D2): verbatim copies of dr-808.js, dr-seq.js and engine.js at the 7b acceptance commit. Never edit: tests/golden-606.test.mjs renders them (side A, every other module current) against the current files, bit for bit.",
+  "commit": "e69738718401f8d87de4429c578d33858656296d",
+  "files": {
+    "dr-808.js": {
+      "sha256": "7588143ff373211d1322f43176dd23c9018fe4e11c2c18eb8d8df4140228cbf2"
+    },
+    "dr-seq.js": {
+      "sha256": "c2b40e5009c2beff4339fae3d12dd26ff86bfabc159519b23ead5b4e190648e5"
+    },
+    "engine.js": {
+      "sha256": "4da58744a7fa6aea9071c816ab1292678252a7f3a8383be3bfc9b10b843c1e66"
+    }
+  }
+}

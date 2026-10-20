@@ -37,7 +37,8 @@ import { createModLayer, refusal as modRefusal, STYLE as MOD_STYLE } from './cv-
 // with the panels), its internal cables as views of its state (sx-edges)
 import * as SE from './sx-edges.js?v=9';
 // stage 7a (IMPL-7a §10): the drum machines — drum-core's pure model (memory, the panel's state machine, the {t: 'seq'}
-// payload, → Piano roll) and cv-drum's host (the panels' sessions, heard-time LEDs, pads), wired below (DRUM)
+// payload, → Piano roll) and cv-drum's host (the panels' sessions, heard-time LEDs, pads), wired below (DRUM); 7b (IMPL-7b
+// §10): the TR-606 beside the 808 — every record by its machine (normDrum(·, model)), SYNC 303s (link303 / n303)
 import * as DC from './drum-core.js?v=9';
 import * as cvDrum from './cv-drum.js?v=9';
 
@@ -138,14 +139,15 @@ const instOf = (t, dev) => CMOD.instOf(t, dev);
 const isSerum = d => !!d && d.model === 'serum';
 const isSerumDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && d.model === 'serum'; };
 const serumIds = t => (t && t.dev ? CMOD.instIds(t).filter(k => isSerumDev(t, k)) : []);
-// (7a, IMPL-7a §1.1, §6) a drum machine (models.js family 'drums': the TR-808) is a device too: its record dev.drum (the
-// pattern memory, panel state, extras, note map, sample slots — drum-core normDrum) is made on first read when missing
+// (7a, IMPL-7a §1.1, §6) a drum machine (models.js family 'drums': the TR-808, 7b the TR-606) is a device too: its record
+// dev.drum (the pattern memory, panel state, extras, note map, sample slots — drum-core normDrum) is made on first read when
+// missing — (7b §3.1, review #4) always by the device's model: a 606 never gets (or keeps) an 808's record, nor the reverse
 const isDrumDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && S.isDrum(d.model); };
 const drumDevs = t => (t && t.dev ? CMOD.instIds(t).filter(k => isDrumDev(t, k)) : []);
 function drumOf(t, dev) {
   if (!isDrumDev(t, dev)) return null;
   const d = t.dev[dev];
-  if (!d.drum || typeof d.drum !== 'object' || !Array.isArray(d.drum.keys)) d.drum = DC.normDrum(d.drum);
+  if (!d.drum || typeof d.drum !== 'object' || !Array.isArray(d.drum.keys) || (d.drum.m === 'tr606') !== (d.model === 'tr606')) d.drum = DC.normDrum(d.drum, d.model);
   return d.drum;
 }
 // (§5) the sample slots that are on, of every drum machine of the track, each id once: the worklet entries its payloads
@@ -203,7 +205,7 @@ function normDevs(t) {
       d.model = m.id;
       if (m.custom) { d.vals = { s: core.normalizeSerum(d.vals && d.vals.s) }; d.fx = d.fx && typeof d.fx === 'object' ? fxLoad(d.fx, d.vals.s) : core.defaultFx2(); }
       else d.vals = Object.assign(defaults(m), d.vals);
-      if (S.isDrum(m.id) && !(d.drum && typeof d.drum === 'object')) d.drum = DC.normDrum(undefined); // (7a: a drum machine without its record — an empty memory, the defaults)
+      if (S.isDrum(m.id) && !(d.drum && typeof d.drum === 'object')) d.drum = DC.normDrum(undefined, m.id); // (7a: a drum machine without its record — an empty memory, the defaults; 7b: its machine's)
     } else if (d.kind === 'panel') d.fx = d.fx && typeof d.fx === 'object' ? fxLoad(d.fx) : core.defaultFx2();
   }
 }
@@ -1479,7 +1481,7 @@ function reanchor(seekTick) { // tempo/loop change (or a seek) while playing, ap
 }
 function seek(tick) {
   tick = Math.max(0, Math.round(tick));
-  if (T.playing) { if (T.rec) finishRec(recTick()); reanchor(tick); T.startPos = tick; }
+  if (T.playing) { if (T.rec) finishRec(recTick()); reanchor(tick); T.startPos = tick; DRUM.transport(true); } // ((7b review 1 #1) a seek ends a synced 606's D.S. / heard key, as ▶ / ■)
   else T.pos = tick;
   posUI();
 }
@@ -1793,8 +1795,10 @@ function setTrackModel(tr0, id, o = null) {
   const wasDrum = isDrumDev(tr, dev);
   CMOD.setModel(tr, dev, id, { vals: loadVals(m) }); // (R5: the primary too — its rack kept by the kept-FX rules, the 1c reshape; (C11) the values with the model: the rows judged against the NEW model's values)
   // (7a §6, §10.1) setModel changes the device in place: a drum machine leaves with its record (the Replace undo brings it
-  // back from History) and one arrives with an empty memory; the machine's session starts again either way
-  if (wasDrum || S.isDrum(id)) { const d = tr.dev[dev]; if (S.isDrum(id)) d.drum = DC.normDrum(undefined); else delete d.drum; drumForget(tr, dev); }
+  // back from History) and one arrives with an empty memory; the machine's session starts again either way — (7b) 808 ↔ 606
+  // too: a switch away and to, the new machine's own record (normDrum(·, id)), its payload forced after the patch below (the
+  // engine keeps one that overtakes the patch in drPend: its m names the machine)
+  if (wasDrum || S.isDrum(id)) { const d = tr.dev[dev]; if (S.isDrum(id)) d.drum = DC.normDrum(undefined, id); else delete d.drum; drumForget(tr, dev); }
   // (stage 2a) a Serum's cables to a classic one are dropped (the model setter / setModel): said (cv-model setModel's text)
   const gone = n0 - CG.modRowsFor(tr, dev).length, why = gone > 0 ? `${gone} modulation cable${gone > 1 ? 's' : ''} to ${nm} removed: the new model has no such knobs` : ''; // (2b: rows whose param id survives stay)
   if (why) notice(why, 6000);
@@ -1808,6 +1812,7 @@ function setTrackModel(tr0, id, o = null) {
   sendPatch(tr);
   if (id === 'tb303') { if (prim) seqSend(tr); else seqSend(tr, dev); }
   else if (S.isDrum(id)) drumSend(tr, dev, 'now', null, true); // ((7a) its plan and tables after the drums patch)
+  if (id === 'tr606') offer303(iv); // ((7b §3.8) beside a free-running TB-303: the one-time offer, after the replace's notice)
   if (tr.id === project.selTrack && roll) { roll.refreshRows(); rollDrumUI(); } // ((7a) the roll's drum rows come and go with the model)
   if (ctx) rateText();
   renderHeads(); persist(); updateUndoUI();
@@ -1898,6 +1903,7 @@ const DRUM = cvDrum.drumHost({
   toRoll: (x, bars) => drumToRoll(x, bars), confirm: text => confirm(text),
   loadSample: (x, sound) => drumLoad(x, sound), learn: (x, fn) => drumLearn(x, fn), monitor: (x, on) => drumMonitor(x, on),
   loop: () => loopInfo(), // ((7a review 2 #4) the extras' hint: a synced cycle longer than the song loop)
+  link303: (x, s) => link303(x, s), n303: () => n303(), // ((7b §3.8) SYNC 303s: the 606's button, its state)
 });
 classicHost.drum = DRUM;
 // a window blur / a hidden page: the beds and controllers let go, but a MIDI or tray note still sounds — its bed light stays (1i review F4)
@@ -3166,7 +3172,7 @@ function seqPayload(tr, a, b) {
   const [dev, extra] = devArgs(a, b), q = seqOf(tr, dev);
   return Object.assign({ pat: q.pat, len: 16, bpm: q.bpm, swing: q.swing / 100 * 0.5, root: cvKeys.SEQ_ROOT, sync: !!q.sync, run: seqRun.has(dev ? tr.id + '/' + dev : tr.id) && !q.sync }, extra || {});
 }
-function seqSend(tr, a, b) { let [dev, extra] = devArgs(a, b); if (tr.track) { dev = tr.devId; tr = tr.track; } postTo(tr, { t: 'seq', s: seqPayload(tr, dev, extra) }, dev); persist(); }
+function seqSend(tr, a, b) { let [dev, extra] = devArgs(a, b); if (tr.track) { dev = tr.devId; tr = tr.track; } postTo(tr, { t: 'seq', s: seqPayload(tr, dev, extra) }, dev); persist(); link303Chk(); } // ((7b) its SYNC: the 606's SYNC 303s button)
 function seqToggle(tr, on, quiet, dev = null) { // (tr: a track with dev, or a device view: the 303 page's)
   if (tr.track) { dev = tr.devId; tr = tr.track; }
   const k = dev ? tr.id + '/' + dev : tr.id;
@@ -3208,7 +3214,7 @@ const drumSess = (t, dev) => DRUM.api(instView(t, dev)).state().S;
 const drPkOf = N => N.drPk || (N.drPk = new Map()); // (dev → the content key of the payload the node holds)
 // the {t: 'seq'} payload (drum-core payload, §3.5): the plan, the clock, the note map, the mute mask, the slots — offline
 // (a bounce, a render; SYNC on or off — a machine's notes need its tables) from a fresh session: synced or silent, never running
-function drumPayload(t, dev, offline = false) { return DC.payload(drumOf(t, dev), offline ? DC.initState() : drumSess(t, dev), 'now'); }
+function drumPayload(t, dev, offline = false) { return DC.payload(drumOf(t, dev), offline ? DC.initState(instOf(t, dev).model) : drumSess(t, dev), 'now'); } // ((7b) the machine's own fresh session)
 // drumSend(view | track, dev?, at, S?, force): the payload to the machine when its content key changed (or `at` asks for a
 // swap, or force). A slot switched on or off first re-sends the track's patch (its needs: the patch's and the slots', 2
 // levels); a payload naming a slot whose entry is still being built waits for it (§5: the {t: 'smp'} entry before the
@@ -3254,7 +3260,7 @@ function drumEdit(x, dev, fn) {
   if (!D || typeof fn !== 'function') return;
   const E = clone(D);
   fn(E);
-  t.dev[dev].drum = DC.normDrum(E);
+  t.dev[dev].drum = DC.normDrum(E, instOf(t, dev).model); // ((7b review #4) a 606's record stays a 606's: its patterns, chains and tracks)
   drumSend(t, dev); DRUM.changed(instView(t, dev));
 }
 // a synced machine with a step that sounds plays with no notes (the bounce's "audible", §4.4 — the 303's syncedOf)
@@ -3287,24 +3293,29 @@ function drumSetBpm(v, ph) {
 // "→ Piano roll" (§4.3): what the plan plays for `bars` bars from the playhead floored to a bar, as notes (v 100 / 127,
 // the sounds' primaries, the sequencer's own whole-tick swung positions) — one History step "Pattern to notes" whose meta
 // puts SYNC back on its undo (keepDevs keeps the record with SYNC off: drBack) — then SYNC off and the machine stopped, so
-// the pattern is not heard twice; the notice's tap undoes both
+// the pattern is not heard twice; the notice's tap undoes both. (7b review 1 #4, the lead's decision) The machine's own TEMPO
+// (the 808's TEMPO + FINE) is set to the project tempo with it — its stopped clock (the 606's open hat's cut after ■) then
+// reads what the synced pattern's read — and put back by the same undo (meta.drumSync k0 / k1)
 function drumToRoll(x, bars) {
   const t = drumTrack(x), dev = dvOf(x), D = t ? drumOf(t, dev) : null;
   if (!D) return;
   const bt = S.barTicks(project), nb = clamp(Math.round(+bars) || 4, 1, 999), t0 = S.snapTick(T.playing ? curTick() : T.pos, bt, 'floor');
-  const notes = DC.toNotes(DC.compilePlan(D, D.ui, D.x), { t0, t1: t0 + nb * bt, swing: D.x.swing, sw: instOf(t, dev).vals, map: D.map });
+  const d = instOf(t, dev); // ((7b review #5) the machine's own primaries: a 606's map read as a 606's — HT on 45 / 47 keeps them)
+  const notes = DC.toNotes(DC.compilePlan(D, D.ui, D.x), { t0, t1: t0 + nb * bt, swing: D.x.swing, sw: d.vals, prim: DC.primaries(D.map, d.model) });
   if (!notes.length) { notice('Nothing to write: the pattern has no hits there', 4000); return; }
   flush();
   hist.record(project, 'Pattern to notes');
-  const step = hist.u[hist.u.length - 1], sync0 = !!D.x.sync, ids = [];
-  if (step) { step.label = 'Pattern to notes'; step.meta = { drumSync: { track: t.id, dev, sync: sync0 } }; } // (an equal top step is this one: its undo is this edit's)
+  const step = hist.u[hist.u.length - 1], sync0 = !!D.x.sync, ids = [], D1 = DC.withTempo(D, project.bpm), k0 = drTempoOf(D), k1 = drTempoOf(D1);
+  if (step) { step.label = 'Pattern to notes'; step.meta = { drumSync: { track: t.id, dev, sync: sync0, k0, k1 } }; } // (an equal top step is this one: its undo is this edit's)
   for (const q of notes) { const id = S.newId(); ids.push(id); t.notes.push({ id, t: q.t, d: q.d, n: q.n, v: q.v }); }
   changed([t]); sendSong(t, true); // (the notes now, not after changed()'s 60 ms: they reach the worklet with the SYNC-off payload, so a step due between is played once)
   const iv = instView(t, dev);
+  if (D1 !== D) drumPut(iv, D1); // (first: the SYNC-off payload carries the tempo)
   DRUM.press(iv, { k: 'sync', v: false });
   if (drumSess(t, dev).run) DRUM.press(iv, { k: 'start' }); // (a free machine running: stopped too)
+  if (D1 !== D) drumSend(iv); // (a machine already SYNC off and stopped: no press sent — its tempo, once)
   DRUM.changed(iv);
-  const m = modelById(instOf(t, dev).model), short = m.name.replace(/^TR-/, ''); // ("the 808's own sequencer")
+  const m = modelById(d.model), short = m.name.replace(/^TR-/, ''); // ("the 808's own sequencer", "the 606's")
   cvUndoNotice(`Written to the piano roll · the ${short}’s own sequencer is off so it isn’t heard twice · tap to undo`, step, () => {
     const tr = project.tracks.find(y => y.id === t.id);
     if (!tr || !isDrumDev(tr, dev) || !tr.notes.some(y => ids.includes(y.id))) return null; // (already undone, or replaced)
@@ -3312,15 +3323,92 @@ function drumToRoll(x, bars) {
       hist.record(project, 'Undo pattern to notes');
       tr.notes = tr.notes.filter(y => !ids.includes(y.id));
       changed([tr]); sendSong(tr, true); // (with the SYNC-on payload: no step heard twice)
-      if (sync0) DRUM.press(instView(tr, dev), { k: 'sync', v: true });
+      const iv2 = instView(tr, dev), Dn = drumOf(tr, dev), Db = drTempoPut(Dn, k0);
+      if (Db !== Dn) drumPut(iv2, Db); // ((7b review 1 #4) its own TEMPO back)
+      if (sync0) DRUM.press(iv2, { k: 'sync', v: true });
+      if (Db !== Dn) { drumSend(iv2); DRUM.changed(iv2); }
     };
   });
+}
+// (7b review 1 #4) a machine's own tempo knobs { m, tempo, fine? } (→ Piano roll's undo), and a record with them put back —
+// the same machine's only (a Replace since: left alone); the same record when they are already so
+const drTempoOf = D => (D.m === 'tr606' ? { m: 'tr606', tempo: D.ui.tempo } : { m: 'tr808', tempo: D.ui.tempo, fine: D.ui.fine });
+function drTempoPut(D, k) {
+  if (!D || !k || typeof k !== 'object' || (D.m === 'tr606' ? 'tr606' : 'tr808') !== k.m) return D;
+  const u = k.m === 'tr606' ? { tempo: k.tempo } : { tempo: k.tempo, fine: k.fine };
+  return Object.keys(u).every(f => D.ui[f] === u[f]) ? D : DC.normDrum(Object.assign({}, D, { ui: Object.assign({}, D.ui, u) }), k.m);
 }
 let drBack = null; // { mv: the "Pattern to notes" step's meta.drumSync, redo } — read after hist.undo / hist.redo
 const drBackOf = (e, redo) => (e && e.meta && e.meta.drumSync && typeof e.meta.drumSync === 'object' ? { mv: e.meta.drumSync, redo } : null);
 function drBackApply(p, { mv, redo }) {
   const t = p.tracks.find(x => x.id === mv.track), D = t ? drumOf(t, mv.dev) : null, y = redo ? false : !!mv.sync;
   if (D && D.x.sync !== y) t.dev[mv.dev].drum = Object.assign({}, D, { x: Object.assign({}, D.x, { sync: y }) });
+  const D2 = t ? drumOf(t, mv.dev) : null, D3 = drTempoPut(D2, redo ? mv.k1 : mv.k0); // ((7b review 1 #4) its TEMPO (FINE) too)
+  if (D3 !== D2) t.dev[mv.dev].drum = D3;
+}
+// (7b §3.8, §10) SYNC 303s — the TR-606 was the TB-303's partner, but a new 303's sequencer runs on its own clock (SYNC off)
+// while a new 606 follows the song. n303() → { n, synced }: the project's TB-303s (every device) and whether all are on SYNC
+// (the 606's button: hidden with none, "303s synced" when all are); link303Chk tells the drum panels (DRUM.link303()) when that
+// changes — a 303's SYNC (seqSend), the project's 303s (renderHeads: an add, a delete, a Replace, an undo, a load)
+const tb303s = () => { const out = []; for (const t of project.tracks) for (const id of CMOD.instIds(t)) { const d = t.dev[id]; if (d && d.kind === 'synth' && d.model === 'tb303') out.push({ t, id }); } return out; };
+function n303() { const L = tb303s(); return { n: L.length, synced: L.every(({ t, id }) => !!(t.dev[id].seq && t.dev[id].seq.sync)) }; }
+let l303 = '';
+function link303Chk() { const r = n303(), k = r.n + ':' + r.synced; if (k !== l303) { l303 = k; DRUM.link303(); } }
+// an open TB-303 panel reads its SYNC / Run / SWING when it is built (classic-panel seqParts): rebuilt after someone else wrote them
+function seq303UI(L) { for (const { t, id } of L) { const P = classicPanels.get(t.id + '/' + id); if (P && !P.dead) renderPanel(t, id); } }
+// SYNC 303s (the drum panel's dr:link, or the offer's tap; s = drum-core swing303 of the machine's swing): every TB-303 to
+// SYNC (its free run stopped), its swing s — the 303's 0–50 is s / 200 of a 16th, the drum machines' 50–75 % whole ticks:
+// s = 4 · (P − 50), equal before rounding, clamped at 50 (62.5 %, said in the notice). Not a History step (a 303's pattern
+// state never is, keepDevs); the notice's tap puts each one's sync, swing and run back
+function link303(x, s) {
+  const L = tb303s();
+  if (!L.length) return;
+  const sw = clamp(Math.round(+s) || 0, 0, 50), t0 = drumTrack(x), D = t0 ? drumOf(t0, dvOf(x)) : null, cut = !!D && 4 * (D.x.swing - 50) > 50, back = [];
+  for (const { t, id } of L) {
+    const q = seqOf(t, id), run = seqRun.has(t.id + '/' + id);
+    back.push({ tid: t.id, id, sync: !!q.sync, swing: q.swing, run });
+    q.sync = true; q.swing = sw;
+    if (run) seqToggle(t, false, true, id); else seqSend(t, id); // (one payload each: SYNC, its swing, not running)
+  }
+  seq303UI(L); link303Chk();
+  const n = L.length, msg = `${n} TB-303${n > 1 ? 's now follow' : ' now follows'} the song${cut ? ', swung as far as the TB-303 swings' : ''} · tap to undo`;
+  noticeActs.set(msg, () => { noticeActs.delete(msg); notice('', 0); unlink303(back); });
+  notice(msg, 8000);
+}
+function unlink303(back) {
+  const L = [];
+  for (const b of back) {
+    const t = project.tracks.find(y => y.id === b.tid), d = t && t.dev ? t.dev[b.id] : null;
+    if (!d || d.kind !== 'synth' || d.model !== 'tb303') continue; // (gone, or replaced since)
+    const q = seqOf(t, b.id);
+    q.sync = b.sync; q.swing = b.swing;
+    if (b.run) seqToggle(t, true, true, b.id); else seqSend(t, b.id);
+    L.push({ t, id: b.id });
+  }
+  seq303UI(L); link303Chk();
+}
+// the one-time offer (§3.8): a 606 arrives (the Drums view's tap or drop, Replace with…, + Track) in a project with a TB-303
+// on its own clock — once per project in a session, after the arrival's own notice (a microtask: the caller's "Replaced … ·
+// tap to undo" first; ↶ still undoes it); its tap is the 606's SYNC 303s
+const offered303 = new Set(); // (project uids)
+function offer303(x) {
+  const tid = trOf(x).id, dev = dvOf(x);
+  queueMicrotask(() => {
+    const t = project.tracks.find(y => y.id === tid), key = project.uid || '';
+    if (!t || !isDrumDev(t, dev) || offered303.has(key)) return;
+    const free = tb303s().filter(({ t: u, id }) => !(u.dev[id].seq && u.dev[id].seq.sync));
+    if (!free.length) return;
+    offered303.add(key);
+    const names = [...new Set(free.map(({ t: u }) => '“' + u.name + '”'))].join(', ');
+    const msg = free.length > 1 ? `The TB-303s on ${names} run on their own clocks — sync them to the song so they play locked? · Sync`
+      : `The TB-303 on ${names} runs on its own clock — sync it to the song so the two play locked? · Sync`;
+    noticeActs.set(msg, () => {
+      noticeActs.delete(msg); notice('', 0);
+      const u = project.tracks.find(y => y.id === tid);
+      if (u && isDrumDev(u, dev)) DRUM.api(instView(u, dev)).link(); // (the 606's own press: its swing → the 303s')
+    });
+    notice(msg, 12000);
+  });
 }
 // MAP… learn (§4.1): the next note played into the machine's track (keys, pads, MIDI) → fn(n), once
 function drumLearn(x, fn) {
@@ -3386,6 +3474,7 @@ function drumsErr(t) { // (engine: dr-808.js or dr-seq.js missing in the worklet
 
 /* ------------------------------------------------------ track headers */
 function renderHeads() {
+  link303Chk(); // ((7b) the project's TB-303s may have changed — a track added, deleted, replaced, an undo, a load: SYNC 303s)
   const el = $('#heads');
   el.innerHTML = ''; voiceOpt.clear();
   el.append(h('div', 'hruler', `${project.tracks.length} track${project.tracks.length === 1 ? '' : 's'}`));
@@ -3450,12 +3539,13 @@ function addTrack(m = curModel(), vals0 = null, o = null) {
   if (o && o.ui === 'flow' && !m.custom && m.family !== 'drums') t.lay = { [cvModule.ID.inst]: { x: 0, y: 0, ui: 'flow' } }; // (the Sources tray's Simple)
   project.tracks.push(t);
   adopt(project);
-  if (m.family === 'drums') drumOf(t, CMOD.primId(t)); // ((7a) its record: an empty memory, the defaults)
+  if (m.family === 'drums') drumOf(t, CMOD.primId(t)); // ((7a) its record: an empty memory, the defaults; 7b: its machine's)
   if (m.custom && (o && o.parts !== undefined ? o.parts : sxNewView() === 'parts')) { const id = CMOD.primId(t); if (id) t.lay = sxLayParts(t, id); } // ((3) D-R5: a new Serum in parts view)
   newRack(t, m);
   syncNodes();
   selectTrack(t.id);
   renderHeads(); persist(); updateUndoUI();
+  if (m.id === 'tr606') offer303(instView(t, CMOD.primId(t))); // ((7b §3.8) the Drums view's + Track / a drop on the track list)
   return t;
 }
 function duplicateTrack(t) {
@@ -5437,6 +5527,7 @@ function cvAddInstrument(modelId, at, o = null) {
   sendPatch(t);
   if (m.id === 'tb303') seqSend(t, id);
   cvAfter(t);
+  if (m.id === 'tr606') offer303(instView(t, id)); // ((7b §3.8) after its "Added" notice)
   const step = hist.u[hist.u.length - 1], tid = t.id;
   cvUndoNotice((cap.warn ? cap.warn + ' · ' : '') + `Added ${m.name} · tap to undo`, step, () => {
     const tr = project.tracks.find(x => x.id === tid);

@@ -5,6 +5,7 @@
 // Stage 1f: splitTracks (one instrument per track in the UI: a several-instrument track opens as one track each).
 // Stage 7a (IMPL-7a §6, §4.5): schema 8 (additive; read-only in a schema-7 build), song.normDev's drum record, MIDI
 // channel 10 both ways, Save as classic project naming drum tracks.
+// Stage 7b (IMPL-7b §6): schema 9 (additive; read-only in a schema-8 build), song.normDev's 606 record, the lost-line by model.
 // Run: node --max-old-space-size=2048 --test tests/cv-migrate.test.mjs
 import './v8-guard.mjs';
 import { test } from 'node:test';
@@ -23,7 +24,7 @@ const deepFreeze = o => { if (o && typeof o === 'object' && !Object.isFrozen(o))
 const G1 = { guard: true }; // (milestone 3 R7: node tests adopt with the guard — a stray track.model / vals / fx throws)
 
 test('constants: SCHEMA, one step per schema, the read-only notice (§2.13)', () => {
-  assert.equal(M.SCHEMA, 8, '1a: uid; 1b: track.lay; 1c: project v2 tracks; 1e: several instruments per track; 2a: performance modulators; 2b: modulation everywhere; 3: Serum parts (lay); 7a: drum machines');
+  assert.equal(M.SCHEMA, 9, '1a: uid; 1b: track.lay; 1c: project v2 tracks; 1e: several instruments per track; 2a: performance modulators; 2b: modulation everywhere; 3: Serum parts (lay); 7a: drum machines; 7b: the TR-606');
   assert.equal(M.STEPS.length, M.SCHEMA, 'STEPS[n] turns schema n into n + 1');
   assert.equal(M.READ_ONLY_NOTICE, 'Opened read-only: saved by a newer SYNTH Canvas · Reload');
   assert.equal(M.schemaOf, A.schemaOf, 'one definition of a project\'s schema (the store\'s gate uses it)');
@@ -1047,16 +1048,16 @@ const drumTrack = (o = {}) => Object.assign(M.trackToV2({ id: 'trk_8', name: 'Be
 const withDrum = (t, drum) => { t.dev.i1.drum = drum; return t; };
 
 test('7a schema 8: additive — a 7 opens as before (STEPS[7] changes nothing stored); an 8 is read-only in a schema-7 build (the store\'s gate) and in this one\'s +1', async () => {
-  assert.deepEqual([M.SCHEMA, M.STEPS.length], [8, 8]);
+  assert.deepEqual([M.SCHEMA, M.STEPS.length], [9, 9], '(7b: the schema is 9 now; STEPS[7] is still 7a\'s)');
   const t = withDrum(drumTrack(), DC.normDrum({ st: [[1, 2]] })), p7 = deepFreeze({ name: 'D', schema: 7, uid: 'p_abc123xyz0', perf: { wheel: null }, tracks: [jclone(t)] });
   assert.deepEqual(M.STEPS[7](p7), Object.assign(jclone(p7), { schema: 8 }), 'nothing converted');
   const up = M.upgrade(p7);
-  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [7, false, 8, 'p_abc123xyz0']);
+  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [7, false, 9, 'p_abc123xyz0'], 'through 8 and 9 (7b: additive)');
   assert.deepEqual(Object.assign({}, up.p, { schema: 7 }), jclone(p7), 'content and every field as they were');
-  assert.deepEqual([M.upgrade({ schema: 8, tracks: [] }).readOnly, M.upgrade({ schema: 9, tracks: [] }).readOnly], [false, true]);
-  // a schema-7 build (its store's gate given 7) opens this build's projects read-only: it would read the 808 as a Minimoog
+  assert.deepEqual([M.upgrade({ schema: 8, tracks: [] }).readOnly, M.upgrade({ schema: 9, tracks: [] }).readOnly, M.upgrade({ schema: 10, tracks: [] }).readOnly], [false, false, true]);
+  // a schema-7 build (its store's gate given 7) opens a schema-8 project read-only: it would read the 808 as a Minimoog
   const idb = fakeIDB(), seed = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 8 });
-  seed.saveProject(Object.assign(jclone(up.p), { name: 'eight' })); await seed.flush(); await seed.close();
+  seed.saveProject(Object.assign(jclone(M.STEPS[7](p7)), { name: 'eight' })); await seed.flush(); await seed.close();
   const old = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 7 });
   assert.deepEqual([old.info().readOnly, old.info().newer], [true, 8], 'a schema-7 build: read-only');
   await old.close();
@@ -1130,4 +1131,90 @@ test('7a Save as classic project: a drum track keeps its notes (the 808 model, n
   two8.wires.push({ id: 'w3', a: 'i2.out', b: 'fx1.in' });
   const sp = split({ schema: 8, tracks: [two8] });
   assert.deepEqual(sp.p.tracks.map(x => x.dev[x.prim].drum.st[0][2]), [0, 6]);
+});
+
+/* ---------------------------------------------------------------- stage 7b: the TR-606 (IMPL-7b §6, §12.6; lane X) */
+// a 606 track as the page holds it: a tr606 instrument with its memory (drum-core normDrum(·, 'tr606')) into a panel, OUT
+const drumTrack6 = (o = {}) => Object.assign(M.trackToV2({ id: 'trk_6', name: 'Drums', color: '#c6c8c7', model: 'tr606', vals: { bdd: 5 }, preset: null, fx: C.defaultFx2(),
+  notes: [{ id: 1, t: 0, d: 120, n: 36, v: 127 }, { id: 2, t: 480, d: 120, n: 42, v: 100 }], cc: [] }), o);
+
+test('7b schema 9: additive — an 8 opens as before (STEPS[8] changes nothing stored); a 9 is read-only in a schema-8 build (the store\'s gate: it would read the 606 as a Minimoog) and in this one\'s +1', async () => {
+  assert.deepEqual([M.SCHEMA, M.STEPS.length], [9, 9]);
+  const t = withDrum(drumTrack6(), DC.normDrum({ st: [[1, 2]] }, 'tr606')), p8 = deepFreeze({ name: 'D', schema: 8, uid: 'p_abc123xyz0', perf: { wheel: null }, tracks: [jclone(t)] });
+  assert.deepEqual(M.STEPS[8](p8), Object.assign(jclone(p8), { schema: 9 }), 'nothing converted');
+  const up = M.upgrade(p8);
+  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [8, false, 9, 'p_abc123xyz0']);
+  assert.deepEqual(Object.assign({}, up.p, { schema: 8 }), jclone(p8), 'content and every field as they were');
+  assert.deepEqual([M.upgrade({ schema: 9, tracks: [] }).readOnly, M.upgrade({ schema: 10, tracks: [] }).readOnly], [false, true]);
+  // a schema-8 build (its store's gate given 8: the 7a build) opens this build's projects read-only
+  const idb = fakeIDB(), seed = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 9 });
+  seed.saveProject(Object.assign(jclone(up.p), { name: 'nine' })); await seed.flush(); await seed.close();
+  const old = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 8 });
+  assert.deepEqual([old.info().readOnly, old.info().newer], [true, 9], 'a schema-8 build: read-only');
+  await old.close();
+  const cur = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: M.SCHEMA });
+  assert.equal(cur.info().readOnly, false, 'this build: read-write');
+  await cur.close();
+});
+
+test('7b song.normDev: a tr606 device keeps its own `drum` shape through normDrum(·, \'tr606\') (bounded, idempotent, a hostile input never throws); the 808\'s record is untouched; a record under the other model is re-normalised as that model\'s', () => {
+  const raw = DC.normDrum(undefined, 'tr606');
+  raw.st[0][0] = 0x1FFF; raw.st[31][15] = 0xFFFF; raw.keys[2] = { sc: 9, l1: 0 }; raw.ui.tempo = 137.5; raw.ui.mode = 77; raw.x.mute = 0xFFFF; raw.junk = { a: 1 };
+  const t = drumTrack6();
+  t.dev.i1.drum = raw;
+  const rec = S.normDev(t), d = rec.dev.i1.drum;
+  assert.deepEqual(d, DC.normDrum(raw, 'tr606'), 'normDrum\'s 606 record');
+  assert.deepEqual(d, DC.normDrum(raw), 'the same with no model: the record\'s own `m`');
+  assert.deepEqual([d.m, d.keys.length, d.st.length, d.st[0][0], d.st[31][15], d.keys[2], d.ui.tempo, d.ui.mode, d.x.mute, 'junk' in d],
+    ['tr606', 32, 32, 0xE2F, 0xE2F, { sc: 4, l1: 1 }, 137.5, 3, 0xE2F, false], 'the 606\'s masks (0xE2F), lengths, a BPM tempo, a bounded mode (0–3), unknown fields dropped');
+  assert.deepEqual(S.normDev(rec).dev.i1.drum, d, 'idempotent');
+  assert.equal('drum' in S.normDev(drumTrack6()).dev.i1, false, 'absent stays absent');
+  for (const bad of [7, 'x', [], { keys: 'no', st: { 0: 1 }, rt: [1e9, -5, NaN], tg: [7], dc: [9999], ui: [], x: 1, map: { bd: [300, -1, 36.5] }, smp: [] }]) {
+    const r = S.normDev(withDrum(drumTrack6(), bad));
+    assert.deepEqual(r.dev.i1.drum, DC.normDrum(bad, 'tr606'), JSON.stringify(bad));
+    assert.equal(r.dev.i1.drum.m, 'tr606', 'always a 606 record under a 606 model');
+  }
+  const g = withDrum(drumTrack6(), {}); Object.defineProperty(g.dev.i1.drum, 'keys', { enumerable: true, get() { throw new Error('hostile'); } });
+  assert.deepEqual(S.normDev(g).dev.i1.drum, DC.normDrum(undefined, 'tr606'), 'a hostile getter: the defaults');
+  // an 808 device is the 808's, byte for byte (no `m`); a 606 record under an 808 model is the 808's (the model wins: a record for the other machine is re-normalised)
+  const r808 = DC.normDrum({ st: [[5]] }), t8 = withDrum(drumTrack(), jclone(r808));
+  assert.deepEqual([S.normDev(t8).dev.i1.drum, 'm' in S.normDev(t8).dev.i1.drum], [DC.normDrum(r808), false]);
+  assert.deepEqual(S.normDev(withDrum(drumTrack(), jclone(d))).dev.i1.drum, DC.normDrum(d, 'tr808'));
+  assert.equal('m' in S.normDev(withDrum(drumTrack(), jclone(d))).dev.i1.drum, false);
+  // a project round trip (serialize → deserialize) keeps a 606 byte for byte
+  const p = { name: 'D', bpm: 120, sig: [4, 4], bars: 4, tracks: [withDrum(drumTrack6(), DC.normDrum({ st: [[5]], ui: { tempo: 99.5 } }, 'tr606'))] };
+  const back = S.deserialize(S.serialize(p));
+  assert.equal(JSON.stringify(back.tracks[0].dev.i1.drum), JSON.stringify(p.tracks[0].dev.i1.drum));
+  assert.deepEqual([S.isDrum('tr606'), S.isDrum('tr606x'), S.isDrum('juno60')], [true, false, false]);
+});
+
+test('7b MIDI: a 606 track on omni exports on channel 10 like an 808\'s (a channel set by hand wins); a channel-10 track still imports as a TR-808 track', () => {
+  const syn = (id, ch = 0) => Object.assign(M.trackToV2({ id, name: id, model: 'juno60', vals: {}, preset: null, fx: C.defaultFx2(), notes: [{ id: 9, t: 0, d: 480, n: 60, v: 90 }], cc: [] }), { ch });
+  const p = { name: 'M', bpm: 120, sig: [4, 4], bars: 2, tracks: [syn('a'), drumTrack6({ ch: 0 }), syn('c')] };
+  const r = S.importMIDI(S.exportMIDI(p));
+  assert.deepEqual(r.tracks.map(x => [x.name, x.ch]), [['a', 1], ['Drums', 10], ['c', 3]], 'the 606 on 10; the synths take the auto channels by track index (as an 808 does)');
+  const dr = r.tracks[1];
+  assert.deepEqual([dr.model, dr.inst, dr.unmapped, dr.notes.map(x => [x.t, x.d, x.n, x.v])], ['tr808', 'tr606', 0, [[0, 120, 36, 127], [480, 120, 42, 100]]], 'a channel-10 import is an 808 track (§4); the file\'s instrument-name meta still says what exported it');
+  assert.equal(S.importMIDI(S.exportMIDI({ name: 'M', bpm: 120, sig: [4, 4], bars: 1, tracks: [drumTrack6({ ch: 3 })] })).tracks[0].ch, 3);
+});
+
+test('7b Save as classic project: each drum track is named by its model — "TR-606 track …" for a 606, the 808\'s line as before, one line per model in the order the tracks hold them', () => {
+  const t6 = withDrum(drumTrack6(), DC.normDrum(undefined, 'tr606')), t8 = withDrum(drumTrack(), DC.normDrum(undefined));
+  const one = M.toV1({ schema: 9, tracks: [t6] });
+  assert.deepEqual([one.p.tracks[0].model, one.p.tracks[0].notes.length, 'drum' in one.p.tracks[0], 'dev' in one.p.tracks[0]], ['tr606', 2, false, false]);
+  assert.deepEqual(one.lost, ['TR-606 track “Drums”: the live site has no drum machine — its piano-roll notes are kept']);
+  const name = (t, id, nm) => Object.assign(jclone(t), { id, name: nm });
+  assert.deepEqual(M.toV1({ tracks: [name(t6, 'trk_a', 'Kit'), name(t6, 'trk_b', 'Fill')] }).lost, ['TR-606 tracks “Kit”, “Fill”: the live site has no drum machine — their piano-roll notes are kept']);
+  assert.deepEqual(M.toV1({ tracks: [t8, t6] }).lost, ['TR-808 track “Beat”: the live site has no drum machine — its piano-roll notes are kept', 'TR-606 track “Drums”: the live site has no drum machine — its piano-roll notes are kept']);
+  assert.deepEqual(M.toV1({ tracks: [t6, name(t8, 'trk_c', 'Hits'), name(t6, 'trk_d', 'More')] }).lost,
+    ['TR-606 tracks “Drums”, “More”: the live site has no drum machine — their piano-roll notes are kept', 'TR-808 track “Hits”: the live site has no drum machine — its piano-roll notes are kept']);
+  assert.deepEqual(M.toV1({ tracks: [t8] }).lost, ['TR-808 track “Beat”: the live site has no drum machine — its piano-roll notes are kept'], 'an 808-only project: the 7a line exactly');
+  // the file mirror keeps the 606's model and vals; splitTracks keeps its memory with it
+  const m = M.mirror({ tracks: [jclone(t6)] }).tracks[0];
+  assert.deepEqual([m.model, m.vals, 'seq' in m, 'drum' in m, !!m.dev.i1.drum], ['tr606', { bdd: 5 }, false, false, true]);
+  const two = jclone(t6);
+  two.dev.i2 = { kind: 'synth', model: 'tr606', vals: {}, preset: null, drum: DC.normDrum({ st: [[0, 0, 6]] }, 'tr606') };
+  two.wires.push({ id: 'w3', a: 'i2.out', b: 'fx1.in' });
+  const sp = split({ schema: 9, tracks: [two] });
+  assert.deepEqual(sp.p.tracks.map(x => [x.dev[x.prim].drum.m, x.dev[x.prim].drum.st[0][2]]), [['tr606', 0], ['tr606', 6]]);
 });

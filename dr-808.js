@@ -1,13 +1,16 @@
 /*
- * dr-808.js — the TR-808 voice circuits (classic script, no imports/exports; stage 7a lane V, IMPL-7a §2).
+ * dr-808.js — the drum machines' voice circuits: the TR-808 (stage 7a lane V, IMPL-7a §2) and the TR-606 (stage 7b lane
+ * V6, IMPL-7b §2) — classic script, no imports/exports.
  *
  * Evaluated in the AudioWorkletGlobalScope (addModule), on the main thread and in node vm contexts (tests/dsp-scope.mjs
  * `run`). One IIFE publishes the frozen `globalThis.Dr808`; a failure inside leaves Dr808 = null without throwing.
- * Our own circuit-level model of the machine's voice board, written from the component values of the published
- * schematic (read for values only; the tables per voice are in docs/canvas/research-808-circuits.md §16) and the
- * published analyses cited there. No recording of any machine is used.
+ * Our own circuit-level models of the machines' voice boards, written from the component values of the published
+ * schematics (read for values only; the tables per voice: docs/canvas/research-808-circuits.md §16, research-606-circuits
+ * .md §15) and the published analyses cited there. No recording of any machine is used. One shell, a descriptor per
+ * machine (MACH): the 808's constants as 7a built them, the 606's knob table, sounds and lanes; Dr808.gain(kind, drum) the
+ * output stage's static gain, Dr808.mach[kind] { KNOB_IDS, KNOB_DEF, SOUNDS (16, by sound id), sids (the ones it has) }.
  *
- * Interface (IMPL-7a §11): Dr808.create(inst, 'tr808'[, opt]) → machine
+ * Interface (IMPL-7a §11, IMPL-7b §11): Dr808.create(inst, 'tr808' | 'tr606'[, opt]) → machine (another kind: null)
  *   set(drum)           the flat p.drum (knob positions 0…1, switch indices; models.js ids, §2.3), read once per span
  *   setOS(os, fs)       the Inst's oversampling (fs = base · os); rebuilds every rate-dependent coefficient
  *   hit(sound, v127)    latches a hit of sound 0…15 (SOUNDS) for the next render; v127 → trigger volts (§1.3)
@@ -15,8 +18,11 @@
  *   render(buf, N, F0)  adds every live circuit into buf[0…N) (OS rate, N = n·OS); F0 = the span's absolute base frame
  *   post(L, R, mono, n) base rate: the sample lanes, MASTER VOLUME, the output stage → L / R (full scale)
  *   live() · reset() · mon() → { lit, act } · smp(slots) (§5: the drum payload's 16 slots { id, on } | null) · setSalt(s)
- *   opt (tests): { noSleep: no circuit ever sleeps, bankOn: the metal bank free-running (never asleep) }
- * Units are volts, ohms, farads and seconds; the mix bus carries the summing amplifier's output (IC4a) in volts.
+ *   opt (tests): { noSleep: no circuit ever sleeps, bankOn: the metal bank free-running (never asleep), vcaOn (the 606):
+ *   the metal VCAs' bases held at their peak (fully on: the envelopes' discharge through their supply resistors) }
+ *   the 606 reads its open hat's tempo clock from inst.drClock(F) → { t, tpf } (song ticks at frame F, ticks per frame) at
+ *   absolute chunk starts while the hat sounds (a stand-in Inst without it: 120 BPM from frame 0)
+ * Units are volts, ohms, farads and seconds; the mix bus carries the summing amplifier's output (808 IC4a, 606 IC14A).
  *
  * Time base (D5, §2.1): control-rate work — knob glides, coefficients, the VCAs' supply constants, sleep — runs per
  * absolute 4-base-frame chunk (CH = 4·OS samples); a voice renders a whole span per call but takes those steps at its
@@ -1719,31 +1725,712 @@
       }
     }
 
+    /* ================================================================== the TR-606 (stage 7b lane V6, IMPL-7b §2) */
+    // Our circuit-level model of the 606's voice board (main board + the toms' sub board), from the component values of
+    // its service notes' schematic (read for values only; the tables as modelled: research-606-circuits.md §15). No
+    // negative rail: every op-amp sits on a bias and swings 0 … 13.5 V (NJM2904), so a stage clips (bias) down and
+    // (13.5 − bias) up; the swing-type VCAs and the noise are the 808's blocks with the 606's networks.
+    const V_N6 = 4.8;                                       // +B ≈ 6.15 V (RD6.8EB less V_BE) − D6 − Q11's V_BE [C, R6 §14]
+    const R189 = 47e3;                                      // IC14A's feedback: the voices add R189 · (their current) to the bus
+    // ACCENT (§1.3): Q9 saturated into VR2 (10 k B as a rheostat, u clockwise = more) and R43 4.7 k at Q11's base; below
+    // the unaccented path's height the accent is the plain trigger
+    const vAcc6 = u => { const r = 10e3 * (1 - clamp01(u)) + RW, v = 15 * 4.7e3 / (4.7e3 + r) - VBE; return v > V_N6 ? v : V_N6; };
+    const V_X6 = vAcc6(1);
+    function vTrig6(v127, ac) {
+      const VA = vAcc6(ac);
+      if (!(v127 >= 1)) v127 = 1;
+      if (v127 > 127) v127 = 127;
+      if (v127 >= 100) { const u = (v127 - 100) / 27; return (1 - u) * V_N6 + u * VA; }
+      return V_N6 * (0.6 + 0.4 * (v127 - 1) / 99);
+    }
+    const BIAS9 = 15 * 47 / 79, BIAS4 = 15 * 47 / 169;     // + inputs: 15 V · R65 / (R52 + R51 + R65); the snare's R118 / (R101 + R113 + R118)
+    const OA_HI = 13.5;                                     // the NJM2904's top on 15 V; its bottom is ground [R typ]
+    const VD = 0.6;                                         // a 1S2473's forward drop (the gating and pick-off diodes) [C]
+    const BD6 = Object.freeze({ R63: 10e3, R64: 1e3, C25: 0.47e-6, R51: 22e3, R65: 47e3, C19: 56e-9, R59: 680e3, R58: 3.3e3,
+      C23: 15e-9, R61: 560e3, R66: 12e3, R56: 10e3, C16: 1e-6, R60: 18e3, C22: 1e-6, C21: 0.01e-6, VR3: 50e3, R57: 47e3 });
+    const SD6 = Object.freeze({ R98: 10e3, R99: 1e3, C34: 3.3e-9, R113: 22e3, R118: 47e3, C32: 27e-9, R112: 820e3, R107: 330,
+      R115: 680, R106: 100e3, R104: 18e3, C31: 0.47e-6, R105: 27e3, R114: 47e3, R100: 1e3, C35: 0.47e-6, R120: 27e3,
+      C37: 0.056e-6, R121: 15e3, C38: 1.5e-9, C39: 2.2e-9, C51: 0.047e-6, R147: 1e6, C52: 1.8e-9, C58: 1.8e-9, R153: 22e3,
+      R155: 100e3, R152: 100e3, C57: 0.01e-6, R111: 10e3, R110: 68e3, VR4: 50e3, R102: 10e3 });
+    // the toms' sub board: LT (IC9A) / HT (IC9B); the pitch envelope C303 (Q305 / Q306 dump C302); the rumble Q309 → Q310
+    const TM6 = Object.freeze({ R312: 10e3, R311: 1e3, C301: 4.7e-9, R309: 10e3, R310: 1e3, C307: 3.9e-9, R320: 22e3,
+      R329: 47e3, C304: 27e-9, R1L: 2e6, R323: 180, R318: 820, C310: 18e-9, R1H: 2e6, R334: 100, R333: 820, C303: 0.47e-6,
+      R317: 680e3, R319: 39e3, R331: 680e3, R332: 22e3, R321: 100, C302: 47e-6, R337: 2.2e3, C313: 0.068e-6, R338: 1e6, R339: 33e3,
+      R346: 10e3, R347: 4.7e3, C312: 0.047e-6, R350: 4.7e3, R351: 10e3, C318: 47e-6, C316: 0.047e-6, R340: 22e3, R348: 10e3,
+      C317: 0.01e-6, R349: 100e3, R326: 15e3, R327: 15e3, VR5: 50e3, R108: 22e3 });
+    // the metal bank: six HD14584 oscillators f = 2.0698 / RC (the 808's two measured: RC §7) — A R226 330 k / C99 15 n
+    // (before the "84 lot": §13 Q3), B R225 / C98, C R224 / C97, D R244 / C107, E R245 / C108, F R246 / C109 — each through
+    // 150 k into R210 1 k; the band-passes IC15B / IC15A are the 808's value for value (MT's fields); the swing VCAs' bases
+    // C76 47 n / R202 1 M (the 3454 Hz band, Q39) and C65 / C66 1 µ / R180 / R173 1 M (the 7117 Hz band, Q38 / Q37), +15 V
+    const FRC = 2.0698;
+    const MT6 = Object.freeze(Object.assign({}, MT, { F: [FRC / (330e3 * 15e-9), FRC / (470e3 * 10e-9), FRC / (330e3 * 10e-9),
+      FRC / (560e3 * 15e-9), FRC / (560e3 * 12e-9), FRC / (470e3 * 12e-9)], RS: 150e3, R53: 1e3, CL: 0.047e-6, RL: 1e6,
+      CH: 1e-6, RH: 1e6, R226L: 680e3 }));
+    const CY6 = Object.freeze({ R141: 220, C49: 1e-6, R163: 1e6, R164: 1e6, R183: 15e3, R184: 15e3, R185: 33e3, C61: 2.2e-6,
+      R186: 33e3, C77: 2.2e-9, R202: 1e6, C59: 2.2e-9, C60: 2.2e-9, R159: 22e3, R195: 100e3, R196: 100e3, C79: 0.01e-6,
+      R198: 47e3, C78: 3.3e-9, R200: 22e3, C47: 1e-6, R165: 68e3, C48: 2.2e-6, R166: 22e3, R181: 33e3, C64: 2.2e-9,
+      R180: 1e6, C62: 2.2e-9, C63: 1e-9, C73: 1e-9, R203: 18e3, R207: 39e3, R208: 39e3, R204: 5.6e3, VR6: 50e3, R109: 10e3 });
+    // the hats: C45 (OH), C42 (CH), one VCA Q37; the choke Q25 (C42 → R135) and the tempo cut Q24 (C41 → R131), both
+    // draining C45 through R137 (C46 / R136 on their collectors: not modelled, R6 §15); the tempo clock's pulse (IC1 pin
+    // 10, 5 V) → D1 → R6 into C41
+    const HH6 = Object.freeze({ R140: 220, C45: 1e-6, R167: 1e6, R168: 33e3, R169: 33e3, R170: 33e3, R137: 100e3,
+      R131: 100e3, C41: 0.056e-6, R6: 15e3, R133: 220, C42: 0.47e-6, R134: 33e3, R135: 330e3,
+      C43: 2.2e-9, R173: 1e6, C67: 2.2e-9, C44: 2.2e-9, R172: 12e3, C69: 1e-9, C70: 1e-9, R174: 18e3, R175: 39e3,
+      R176: 39e3, VR7: 50e3, R149: 22e3,
+      // the tempo clock (IC1, Q2): its pin-10 pulse lasts while Q2 recharges C8 across the Schmitt's hysteresis (0.60 V:
+      // the 2.07 · RC constant's thresholds 2.10 / 2.70 V at 5 V) on β · I_B (R13 47 k from the 5 V gate's swing, R22 47 k
+      // across the junction), plus two HD14584 delays (≈ 0.13 µs each at 5 V) — ≈ 1.25 µs [C, R6 §14], far below a
+      // sample: a charge event of TCK into C41
+      VCK: 5, C8: 0.039e-6, HYS: 0.6, R13: 47e3, R22: 47e3, TPD: 0.13e-6 });
+    const TCK = HH6.C8 * HH6.HYS / (BETA * ((HH6.VCK - VBE) / HH6.R13 - VBE / HH6.R22)) + 2 * HH6.TPD;
+    // the noise (IC10B: gain 1 + R116 / (R117 + TM3) set by TM3 for 130 mV rms at the test point; C36 across R116: the
+    // pole FC) and the mixer / output (IC14A, VOLUME, IC14B: both at 7.5 V, the rails 0 … 13.5 V)
+    const NZ6 = Object.freeze({ R116: 1e6, C36: 22e-12, R117: 22e3, RMS: 0.13, FC: 1 / (TAU * 1e6 * 22e-12) });
+    const MIX6 = Object.freeze({ R189, C86: 220e-12, C56: 2.2e-6, C87: 2.2e-6, VR8: 50e3, R191: 22e3, C83: 2.2e-6, R190: 33e3,
+      C88: 220e-12, HI: OA_HI - 7.5, LO: 7.5 });
+    // the output's full-scale constant (volts at OUTPUT → 1.0): §2.5 — the BD at the default panel, unaccented, peaks at
+    // the 808's default BD (0.4286 at OS 4, 48 kHz; tests/dr-606.test.mjs)
+    const OUT_K6 = 1.364;
+    // a full-scale sample at LEVEL 10 ≈ the bass drum's peak on the bus at LEVEL 10, unaccented (§5)
+    const SMP_LEVEL6 = 1.68;
+
+    // 2 × 2 inverse of [[m00 m01] [m10 m11]] into c[o…o+3]
+    function inv2(c, o, m00, m01, m10, m11) { const d = 1 / (m00 * m11 - m01 * m10); c[o] = m11 * d; c[o + 1] = -m01 * d; c[o + 2] = -m10 * d; c[o + 3] = m00 * d; }
+    // the bridged-T in a non-inverting single-supply loop (BD, SD, toms): equal capacitors C, R1 bridging, the shunt leg
+    // G = 1/R2 (moved by the pitch kicks), trapezoidal in s-form (x = M⁻¹ (s + h/2·B u), s ← 2x − s: exact as A moves);
+    // V_J = u − a, Vo = u − a − b. At a rail the output is the rail and V− leaves u: the same network with J = Vo + b
+    // (A_s, the rail as input). c: [0…3] M⁻¹ in the loop, [4…7] M⁻¹ saturated, [8] h/2 · (−G/C)
+    function btDesign(c, C, R1, G, h) {
+      const h2 = 0.5 * h, p = 1 / (R1 * C), q2 = -1 / (R1 * C), g = G / C;
+      inv2(c, 0, 1 + h2 * p, h2 * p, -h2 * (g + q2), 1 - h2 * q2);
+      inv2(c, 4, 1 + h2 * p, h2 * p, -h2 * q2, 1 - h2 * (q2 - g));
+      c[8] = -h2 * g;
+    }
+    // a transistor's base fed from a Thevenin source (Vth behind Rth) through its junction: Ib with Vth = Ib·Rth +
+    // V_T·ln(1 + Ib / Is_b), Is_b = I_ES / β — tabulated once per Rth (0.5 mV steps to 2 V, then 10 mV; linear between)
+    const JQ1 = 4000, JQ2 = 1400, JTB = new Map();
+    function jTab(R) {
+      let T = JTB.get(R);
+      if (T) return T;
+      T = new Float64Array(JQ1 + JQ2 + 2);
+      const isb = IES / BETA;
+      let z = 0;
+      for (let k = 0; k < JQ1 + JQ2 + 2; k++) {
+        const v = k <= JQ1 ? k / 2000 : 2 + (k - JQ1) / 100;
+        for (let it = 0; it < 100; it++) {                  // Newton in z = ln(1 + Ib / Is_b), warm along v
+          const ez = Math.exp(z), st = (isb * (ez - 1) * R + VT * z - v) / (isb * ez * R + VT);
+          z -= st; if (z < 0) z = 0;
+          if (Math.abs(st) < 1e-12) break;
+        }
+        T[k] = isb * (Math.exp(z) - 1);
+      }
+      JTB.set(R, T);
+      return T;
+    }
+    function jIb(T, v) {
+      if (!(v > 0)) return 0;
+      let x, i;
+      if (v < 2) { x = v * 2000; i = x | 0; } else { x = JQ1 + (v - 2) * 100; i = x < JQ1 + JQ2 ? x | 0 : JQ1 + JQ2; }
+      return T[i] + (T[i + 1] - T[i]) * (x - i);
+    }
+    // a 50 k B level pot at position k as the divider into Rs (the mixer's virtual earth): o[0] the load the top node
+    // sees, o[1] the current into Rs per volt at the top (the pot's ends 50 Ω)
+    function pot6(k, R, Rs, o) { const rt = R * (1 - k) + RW, rb = R * k + RW, rl = par(rb, Rs); o[0] = 1 / (rt + rl); o[1] = rl / (rt + rl) / Rs; return o; }
+    // an op-amp output about its bias (single supply): linear, then a 1 V knee into the rails (lo below, hi above)
+    function rail6(v, lo, hi) {
+      if (v > hi - 1) return hi - Math.exp(hi - 1 - v);
+      if (v < 1 - lo) return Math.exp(v + lo - 1) - lo;
+      return v;
+    }
+    // the extras (§2.3): at 5 every factor is exactly 1 (4 ** 0)
+    const fUp = u => Math.pow(4, 2 * (clamp01(u) - 0.5)), fDn = u => Math.pow(4, -2 * (clamp01(u) - 0.5));
+
+    // the 606's knobs (models.js ids, IMPL-7b §1.1): the face, then the extras (5 = the stock circuit, §2.3)
+    const K6_IDS = Object.freeze(['ac', 'bdl', 'sdl', 'tml', 'cyl', 'hhl', 'vol', 'bdu', 'bdd', 'sdu', 'sdd', 'ltu', 'ltd', 'htu',
+      'htd', 'cyd', 'ohd', 'chd']);
+    const K6_DEF = Object.freeze([0.5, 0.7, 0.7, 0.7, 0.7, 0.7, 0.75, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
+    const K6 = Object.freeze(Object.fromEntries(K6_IDS.map((k, i) => [k, i])));
+    // knob → the circuits it retunes: 1 BD, 2 SD, 4 the tom pair, 8 CY, 16 the hat pair; 1 << 30 the output stage
+    const K6_CIR = Object.freeze([0, 1, 2, 4, 8, 16, 1 << 30, 1, 1, 2, 2, 4, 4, 4, 4, 8, 16, 16]);
+    // the sounds it has (the 808's ids, §1.2), its lanes (bits & 0xE2F) → sound; per sound its LEVEL / TUNE / DECAY knob
+    // (the samples' rules, §5; −1 none)
+    const S6 = Object.freeze([0, 1, 2, 4, 8, 9, 10]);
+    const HAS6 = Object.freeze(Array.from({ length: 16 }, (_, s) => S6.includes(s)));
+    const LANE_S6 = Object.freeze([-1, 0, 1, 2, -1, 4, -1, -1, -1, 8, 9, 10]);
+    const S6_LEV = Object.freeze([K6.bdl, K6.sdl, K6.tml, -1, K6.tml, -1, -1, -1, K6.cyl, K6.hhl, K6.hhl, -1, -1, -1, -1, -1]);
+    const S6_TUN = Object.freeze([K6.bdu, K6.sdu, K6.ltu, -1, K6.htu, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]);
+    const S6_DEC = Object.freeze([K6.bdd, K6.sdd, K6.ltd, -1, K6.htd, -1, -1, -1, K6.cyd, K6.ohd, K6.chd, -1, -1, -1, -1, -1]);
+
+    /* BASS DRUM (R6 §4, §15): the gated trigger / 11 (R63 / R64) through C25 into the + inputs (15 k to the decoupled
+     * bias) of two bridged-T loops in parallel — IC5A 60 Hz (C19 / C20, R59, R58) and IC5B 129 Hz (C23 / C24, R61, R66),
+     * each on its own rails — summed by R56 + C16 / R60 + C22 into VR3's top (C21), the wiper into R57. */
+    function bdNet6(c, x, u, dx) {                          // x = (C16, C22, the top of VR3), u = (IC5A, IC5B)
+      const P = BD6, i16 = (u[0] - x[0] - x[2]) / P.R56, i22 = (u[1] - x[1] - x[2]) / P.R60;
+      dx[0] = i16 / P.C16; dx[1] = i22 / P.C22; dx[2] = (i16 + i22 - x[2] * c.pt[0]) / P.C21;
+      return x[2] * c.pt[1] * R189;
+    }
+    class Bd6 extends Voice {
+      constructor(M) {
+        super(M, V_N6);
+        this.ca = new Float64Array(9); this.cb = new Float64Array(9); this.net = new Lin(3, 2); this.pt = new Float64Array(2);
+        this.ex = 0; this.exA = 0;
+        this.zero();
+      }
+      zero() { this.cx = 0; this.sa = 0; this.sb = 0; this.ta = 0; this.tb = 0; this.net.reset(); this.vo = 0; this.tN = 0; }
+      os() {
+        // C25 between the divider (R63 ∥ R64) and the + inputs' load (R51 ∥ R65): u = the load's share of (V − v_C25),
+        // its mean over the sample (exact exponential: a pulse's area is kept at every rate)
+        const P = BD6, h = this.M.h, rq = par(P.R51, P.R65), rs = par(P.R63, P.R64), tau = P.C25 * (rq + rs);
+        this.ex = Math.exp(-h / tau); this.exA = rq / (rq + rs) * tau / h * (1 - this.ex);
+        this.kn();
+      }
+      kn() {
+        const P = BD6, M = this.M, fs = M.fs, kv = M.kv;
+        // TUNE: both R2 × 4^−2(u−½); DECAY: R1 × 4^2(u−½), R2 × 4^−2(u−½) (constant pitch)
+        const t = fDn(kv[K6.bdu]), d = fUp(kv[K6.bdd]);
+        const r1a = P.R59 * d, r2a = P.R58 * t / d, r1b = P.R61 * d, r2b = P.R66 * t / d;
+        btDesign(this.ca, P.C19, r1a, 1 / r2a, 2 / kBil(1 / (TAU * P.C19 * Math.sqrt(r1a * r2a)), fs));
+        btDesign(this.cb, P.C23, r1b, 1 / r2b, 2 / kBil(1 / (TAU * P.C23 * Math.sqrt(r1b * r2b)), fs));
+        pot6(clamp01(kv[K6.bdl]), P.VR3, P.R57, this.pt);
+        this.net.design(bdNet6, this, 2 / kBil(2500, fs));
+      }
+      fire(V) { this.tV = V * BD6.R64 / (BD6.R63 + BD6.R64); this.tN = this.M.nP; this.on = true; this.qn = 0; }
+      run(mb, o, n) {
+        const M = this.M, CH = M.CH, e = o + n, ca = this.ca, cb = this.cb, L = this.net, Ad = L.Ad, Bd = L.Bd, x = L.x, up = L.up;
+        const a0 = ca[0], a1 = ca[1], a2 = ca[2], a3 = ca[3], a4 = ca[4], a5 = ca[5], a6 = ca[6], a7 = ca[7], ah = ca[8];
+        const b0 = cb[0], b1 = cb[1], b2 = cb[2], b3 = cb[3], b4 = cb[4], b5 = cb[5], b6 = cb[6], b7 = cb[7], bh = cb[8];
+        const A0 = Ad[0], A1 = Ad[1], A2 = Ad[2], A3 = Ad[3], A4 = Ad[4], A5 = Ad[5], A6 = Ad[6], A7 = Ad[7], A8 = Ad[8];
+        const B0 = Bd[0], B1 = Bd[1], B2 = Bd[2], B3 = Bd[3], B4 = Bd[4], B5 = Bd[5], C0 = L.C[0], C1 = L.C[1], C2 = L.C[2], D0 = L.D[0], D1 = L.D[1];
+        const VH = OA_HI - BIAS9, VL = -BIAS9, ex = this.ex, exA = this.exA, tV = this.tV;
+        let cx = this.cx, sa = this.sa, sb = this.sb, ta = this.ta, tb = this.tb, x0 = x[0], x1 = x[1], x2 = x[2], u0 = up[0], u1 = up[1];
+        let tN = this.tN, vo = this.vo;
+        for (let c = o; c < e; c += CH) {
+          let pk = 0;
+          for (let i = c, ie = c + CH; i < ie; i++) {
+            let u = 0;
+            if (tN > 0 || cx !== 0) {                      // C25: the pulse's mean over the sample (exact exponential)
+              const vd = tN > 0 ? tV : 0;
+              if (tN > 0) tN--;
+              u = (vd - cx) * exA; cx = vd - (vd - cx) * ex;
+            }
+            let q = sb + ah * u, A = a0 * sa + a1 * q, B = a2 * sa + a3 * q, ya = u - A - B;
+            if (ya > VH || ya < VL) { ya = ya > VH ? VH : VL; q = sb + ah * ya; A = a4 * sa + a5 * q; B = a6 * sa + a7 * q; }
+            sa = 2 * A - sa; sb = 2 * B - sb;
+            q = tb + bh * u; A = b0 * ta + b1 * q; B = b2 * ta + b3 * q;
+            let yb = u - A - B;
+            if (yb > VH || yb < VL) { yb = yb > VH ? VH : VL; q = tb + bh * yb; A = b4 * ta + b5 * q; B = b6 * ta + b7 * q; }
+            ta = 2 * A - ta; tb = 2 * B - tb;
+            const q0 = ya + u0, q1 = yb + u1; u0 = ya; u1 = yb;
+            const n0 = A0 * x0 + A1 * x1 + A2 * x2 + B0 * q0 + B1 * q1, n1 = A3 * x0 + A4 * x1 + A5 * x2 + B2 * q0 + B3 * q1;
+            x2 = A6 * x0 + A7 * x1 + A8 * x2 + B4 * q0 + B5 * q1; x0 = n0; x1 = n1;
+            vo = C0 * x0 + C1 * x1 + C2 * x2 + D0 * ya + D1 * yb;
+            mb[i] += vo;
+            pk = Math.max(pk, Math.abs(vo));
+          }
+          if (tN === 0 && Math.abs(cx) < 1e-12) cx = 0;
+          const act = Math.max(pk, Math.abs(sa) + Math.abs(sb), Math.abs(ta) + Math.abs(tb), Math.abs(x0) + Math.abs(x1), Math.abs(cx) * 30, tN > 0 ? 1 : 0);
+          if (this.quiet(act)) return;
+        }
+        this.cx = cx; this.sa = sa; this.sb = sb; this.ta = ta; this.tb = tb; x[0] = x0; x[1] = x1; x[2] = x2; up[0] = u0; up[1] = u1;
+        this.tN = tN; this.vo = vo;
+      }
+    }
+
+    /* SNARE (R6 §5, §15): the gated trigger / 11 through C34 (two edge spikes into 15 k) at IC10A's + input; one bridged-T
+     * (C32 / C33, R112, R107 + R115) whose R115 Q17 shorts while C31 holds its base up (Q16 charges C31 from the gate
+     * through R104's current limit, R105 / R114 drain it into the base): the pitch kick; the noise through C51 into the swing
+     * VCA Q30 (R147 from +15) on the ladder R100 → D26 → C35 → R120 → C37 → R121 → D27 (C38 / C39); Q32's Sallen-Key
+     * high-pass → C57 → R111, the tone → R110: both into VR4's top, the wiper into R102. */
+    function sdNet6(c, x, u, dx) {                          // x = (C57), u = (IC10A, Q32's emitter)
+      const P = SD6, g10 = 1 / P.R110, g11 = 1 / P.R111, vt = (u[0] * g10 + (u[1] - x[0]) * g11) / (g10 + g11 + c.pt[0]);
+      dx[0] = (u[1] - x[0] - vt) * g11 / P.C57;
+      return vt * c.pt[1] * R189;
+    }
+    class Sd6 extends Voice {
+      constructor(M) {
+        super(M, V_N6);
+        this.cr = new Float64Array(9); this.chp = new Float64Array(5); this.net = new Lin(1, 2); this.pt = new Float64Array(2);
+        this.ex = 0; this.exA = 0; this.T17 = jTab(par(SD6.R105, SD6.R114)); this.r1 = 0; this.s2 = 1; this.hb = 0; this.G = -1;
+        this.kd = 1; this.d30 = 0;
+        this.zero();
+      }
+      zero() {
+        this.cx = 0; this.sa = 0; this.sb = 0; this.v31 = 0; this.v35 = 0; this.v37 = 0; this.xn = 0; this.p = 0;
+        this.h1 = 0; this.h2 = 0; this.net.reset(); this.vo = 0; this.tN = 0; this.pre = 1; this.g17 = 0; this.kick();
+      }
+      os() {
+        const P = SD6, M = this.M, h = M.h, rq = par(P.R113, P.R118), rs = par(P.R98, P.R99), tau = P.C34 * (rq + rs);
+        this.ex = Math.exp(-h / tau); this.exA = rq / (rq + rs) * tau / h * (1 - this.ex);
+        skHP(this.chp, 0, P.C52, P.C58, P.R153, par(P.R155, P.R152), 1, kBil(2670, M.fs));
+        this.d30 = h * (B15 - VBE) / P.R147 / P.C51;        // the base's bias recharge per sample (the tracker's leak)
+        this.kn();
+      }
+      kn() {
+        const P = SD6, M = this.M, kv = M.kv, d = fUp(kv[K6.sdd]);
+        this.r1 = P.R112 * d; this.s2 = fDn(kv[K6.sdu]) / d; this.kd = d;
+        const r2 = P.R107 + P.R115;
+        this.hb = 2 / kBil(1 / (TAU * P.C32 * Math.sqrt(this.r1 * r2 * this.s2)), M.fs);
+        this.G = -1; this.kick();
+        pot6(clamp01(kv[K6.sdl]), P.VR4, P.R102, this.pt);
+        this.net.design(sdNet6, this, 2 / kBil(1000, M.fs));
+      }
+      // the shunt leg with Q17 (its base current from C31: a conductance β·Ib / V_CE,sat across R115, the 808 BD's Q43)
+      kick() {
+        if (!(this.r1 > 0)) return;
+        const P = SD6, G = 1 / ((P.R107 + 1 / (1 / P.R115 + this.g17)) * this.s2), dg = G - this.G;
+        if (dg > 1e-7 * G || dg < -1e-7 * G) { btDesign(this.cr, P.C32, this.r1, G, this.hb); this.G = G; }
+      }
+      fire(V) { this.tV = V; this.tN = this.M.nP; if (!this.on) this.pre = 1; this.on = true; this.qn = 0; }
+      run(mb, o, n) {
+        const P = SD6, M = this.M, CH = M.CH, h = M.h, wn = M.wn, e = o + n, cr = this.cr, chp = this.chp, L = this.net, x = L.x, up = L.up;
+        const VH = OA_HI - BIAS4, VL = -BIAS4, ex = this.ex, exA = this.exA, tV = this.tV, k11 = P.R99 / (P.R98 + P.R99);
+        const kd = this.kd, r120 = P.R120 * kd, r121 = P.R121 * kd, ion = BETA * KPK * (B15 - VBE) / P.R147, iVT = 1 / VT, d30 = this.d30;
+        const kx = 1 - Math.exp(-h / (r121 * (P.C38 + P.C39))), g120 = 1 / r120, g121 = 1 / r121, g100 = 1 / P.R100, h35 = h / P.C35, h37 = h / P.C37;
+        const H0 = chp[0], H1 = chp[1], H2 = chp[2], H3 = chp[3], H4 = chp[4], La = L.Ad[0], Lb0 = L.Bd[0], Lb1 = L.Bd[1], Lc = L.C[0], Ld0 = L.D[0], Ld1 = L.D[1];
+        const T17 = this.T17, kth = P.R114 / (P.R105 + P.R114), rth = par(P.R105, P.R114), g105 = 1 / P.R105, h31 = h / P.C31;
+        if (this.pre) { this.pre = 0; this.p = M.wnPeak; }
+        let cx = this.cx, sa = this.sa, sb = this.sb, v31 = this.v31, v35 = this.v35, v37 = this.v37, xn = this.xn, p = this.p;
+        let h1 = this.h1, h2 = this.h2, x0 = x[0], u0 = up[0], u1 = up[1], tN = this.tN, vo = this.vo;
+        for (let c = o; c < e; c += CH) {
+          // per chunk: Q17 from C31 (τ ≈ 13 ms), the VCA's supply (C37 behind R121 and D27)
+          const ib = jIb(T17, v31 * kth), i105 = (v31 - (v31 * kth - ib * rth)) * g105;
+          this.g17 = BETA * ib / VSAT; this.kick();
+          const r0 = cr[0], r1 = cr[1], r2 = cr[2], r3 = cr[3], r4 = cr[4], r5 = cr[5], r6 = cr[6], r7 = cr[7], rh = cr[8];
+          const vs = Math.max(v37 - VD, 0), sw = vs - vle(vs), lnK = sw > 1e-9 ? Math.log(r121 * ion / sw) : 0;
+          let pk = 0;
+          for (let i = c, ie = c + CH; i < ie; i++) {
+            let u = 0, vg = 0;
+            if (tN > 0 || cx !== 0) {
+              if (tN > 0) { vg = tV; tN--; }
+              const vd = vg * k11;
+              u = (vd - cx) * exA; cx = vd - (vd - cx) * ex;
+            }
+            if (vg > 0) {                                  // the gate: Q16 charges C31 (R104 limits), C35 through R100 / D26
+              const ib16 = Math.max(vg - VBE - v31, 0) / P.R106, ic16 = Math.min(BETA * ib16, Math.max(B15 - VSAT - v31, 0) / P.R104);
+              v31 += (ib16 + ic16 - i105) * h31;
+              v35 += Math.max(vg - VD - v35, 0) * g100 * h35;
+            }
+            let q = sb + rh * u, A = r0 * sa + r1 * q, B = r2 * sa + r3 * q, yt = u - A - B;
+            if (yt > VH || yt < VL) { yt = yt > VH ? VH : VL; q = sb + rh * yt; A = r4 * sa + r5 * q; B = r6 * sa + r7 * q; }
+            sa = 2 * A - sa; sb = 2 * B - sb;
+            // the noise VCA (Q30): base = clamp level + noise − tracked peak; the node pulled down at once, recharged via R121
+            const v = wn[i];
+            p = Math.max(p - d30, v);
+            const tgt = vs - sw * gT((v - p) * iVT + lnK);
+            xn = Math.min(tgt, xn + (tgt - xn) * kx);
+            const i37 = (v35 - v37) * g120;
+            v35 -= i37 * h35;
+            v37 += (i37 - Math.max(vs - xn, 0) * g121) * h37;
+            const yh = H0 * xn + h1; h1 = H1 * xn - H3 * yh + h2; h2 = H2 * xn - H4 * yh;
+            // VR4's top (R110 / C57 + R111) → R102
+            const q0 = yt + u0, q1 = yh + u1; u0 = yt; u1 = yh;
+            x0 = La * x0 + Lb0 * q0 + Lb1 * q1;
+            vo = Lc * x0 + Ld0 * yt + Ld1 * yh;
+            mb[i] += vo;
+            pk = Math.max(pk, Math.abs(vo));
+          }
+          if (tN === 0) { v31 = Math.max(v31 - i105 * CH * h31, 0); if (Math.abs(cx) < 1e-12) cx = 0; }
+          const act = Math.max(pk, Math.abs(sa) + Math.abs(sb), swing(Math.max(v35, v37) - VD), Math.abs(cx) * 30, tN > 0 ? 1 : 0);
+          if (this.quiet(act)) return;
+        }
+        this.cx = cx; this.sa = sa; this.sb = sb; this.v31 = v31; this.v35 = v35; this.v37 = v37; this.xn = xn; this.p = p;
+        this.h1 = h1; this.h2 = h2; x[0] = x0; up[0] = u0; up[1] = u1; this.tN = tN; this.vo = vo;
+      }
+    }
+
+    /* TOMS (R6 §6, §15; the sub board): one circuit for the pair. Each tom: the gated trigger / 11 through C301 / C307
+     * (spikes) into a bridged-T (IC9A 132 Hz / IC9B 206 Hz) whose R318 / R333 a transistor shorts; both transistors take
+     * their base from C303, which Q306 dumps C302 into at either tom's gate (≈ 15 V whatever the accent) and R317 / R331
+     * drain — so a hit on one bends the other while it rings. The rumble: the same envelope through R337 onto C313, then
+     * R338 + R339 into Q310's base, which takes the noise through C312 (Q309's 273 Hz low-pass, R346 / R347): a common-
+     * emitter stage (R350 from C318 / R351) → C316 / R340 → R348 / C317 → R349 into the tom bus — the envelope's two
+     * capacitors decay together through the kick transistors' and Q310's bases (≈ 0.12–0.14 s, R6 §6) [R? the envelope's
+     * source read as C303: R6 §15]; R326 / R327 from the toms; VR5 → R108. */
+    function tmRum6(c, x, u, dx) {                         // x = (C316, C317), u = (Q310's collector − its rest)
+      const P = TM6, vx = u[0] - x[0], i48 = (vx - x[1]) / P.R348;
+      dx[0] = (vx / P.R340 + i48) / P.C316; dx[1] = (i48 - x[1] / P.R349) / P.C317;
+      return x[1];
+    }
+    class Toms6 extends Voice {
+      constructor(M) {
+        super(M, V_N6);
+        this.cl = new Float64Array(9); this.ch = new Float64Array(9); this.rum = new Lin(2, 1); this.pt = new Float64Array(2);
+        this.exL = 0; this.exAL = 0; this.exH = 0; this.exAH = 0; this.kD = 0; this.e13 = 0; this.hpn = new Float64Array(3);
+        this.T7 = jTab(par(TM6.R317, TM6.R319)); this.T8 = jTab(par(TM6.R331, TM6.R332)); this.T10 = jTab(TM6.R338 + TM6.R339);
+        this.r1L = 0; this.r1H = 0; this.sL = 1; this.sH = 1; this.hL = 0; this.hH = 0; this.GL = -1; this.GH = -1;
+        this.kL = 0; this.kH = 0; this.kR = 0; this.actL = 0; this.actH = 0;
+        this.zero();
+      }
+      zero() {
+        this.cxL = 0; this.cxH = 0; this.saL = 0; this.sbL = 0; this.saH = 0; this.sbH = 0; this.v303 = 0; this.v313 = 0;
+        this.v318 = B15; this.hn = 0; this.rum.reset(); this.vo = 0; this.tN = 0; this.tNH = 0; this.vgL = 0; this.vgH = 0;
+        this.g7 = 0; this.g8 = 0; this.kick();
+      }
+      os() {
+        const P = TM6, M = this.M, h = M.h, rq = par(P.R320, P.R329);
+        let rs = par(P.R312, P.R311), tau = P.C301 * (rq + rs); this.exL = Math.exp(-h / tau); this.exAL = rq / (rq + rs) * tau / h * (1 - this.exL);
+        rs = par(P.R309, P.R310); tau = P.C307 * (rq + rs); this.exH = Math.exp(-h / tau); this.exAH = rq / (rq + rs) * tau / h * (1 - this.exH);
+        // Q306 saturated: C302 (47 µ, a reservoir) into C303 through R321 per sample of a gate; R337 between C303 and C313
+        // (their difference relaxes by e13 a chunk)
+        this.kD = 1 - Math.exp(-h / (P.R321 * P.C303)); this.e13 = Math.exp(-M.CH * h / (P.R337 * par(P.C303, P.C313)));
+        this.rum.design(tmRum6, null, 2 / kBil(1600, M.fs));
+        this.kn();
+      }
+      kn() {
+        const P = TM6, M = this.M, kv = M.kv, fs = M.fs, dL = fUp(kv[K6.ltd]), dH = fUp(kv[K6.htd]);
+        this.r1L = P.R1L * dL; this.sL = fDn(kv[K6.ltu]) / dL; this.r1H = P.R1H * dH; this.sH = fDn(kv[K6.htu]) / dH;
+        this.hL = 2 / kBil(1 / (TAU * P.C304 * Math.sqrt(this.r1L * (P.R323 + P.R318) * this.sL)), fs);
+        this.hH = 2 / kBil(1 / (TAU * P.C310 * Math.sqrt(this.r1H * (P.R334 + P.R333) * this.sH)), fs);
+        this.GL = this.GH = -1; this.kick();
+        // the tom bus: R326 / R327 / R349 into VR5's top → R108
+        pot6(clamp01(kv[K6.tml]), P.VR5, P.R108, this.pt);
+        const gt = 1 / P.R326 + 1 / P.R327 + 1 / P.R349 + this.pt[0], kb = this.pt[1] * R189 / gt;
+        this.kL = kb / P.R326; this.kH = kb / P.R327; this.kR = kb / P.R349;
+      }
+      kick() {
+        if (!(this.r1L > 0)) return;
+        const P = TM6;
+        let G = 1 / ((P.R323 + 1 / (1 / P.R318 + this.g7)) * this.sL), dg = G - this.GL;
+        if (dg > 1e-7 * G || dg < -1e-7 * G) { btDesign(this.cl, P.C304, this.r1L, G, this.hL); this.GL = G; }
+        G = 1 / ((P.R334 + 1 / (1 / P.R333 + this.g8)) * this.sH); dg = G - this.GH;
+        if (dg > 1e-7 * G || dg < -1e-7 * G) { btDesign(this.ch, P.C310, this.r1H, G, this.hH); this.GH = G; }
+      }
+      fire(V, hi) {
+        if (hi) { this.vgH = V; this.tNH = this.M.nP; } else { this.vgL = V; this.tN = this.M.nP; }
+        this.on = true; this.qn = 0;
+      }
+      run(mb, o, n) {
+        const P = TM6, M = this.M, CH = M.CH, h = M.h, pn = M.pn, e = o + n, cl = this.cl, chh = this.ch, R = this.rum;
+        const VH = OA_HI - BIAS9, VL = -BIAS9, exL = this.exL, exAL = this.exAL, exH = this.exH, exAH = this.exAH, k11L = P.R311 / (P.R312 + P.R311);
+        const k11H = P.R310 / (P.R309 + P.R310), kD = this.kD, VDMP = B15 - VSAT, kL = this.kL, kH = this.kH, kR = this.kR;
+        const RA0 = R.Ad[0], RA1 = R.Ad[1], RA2 = R.Ad[2], RA3 = R.Ad[3], RB0 = R.Bd[0], RB1 = R.Bd[1], RC0 = R.C[0], RC1 = R.C[1], RD0 = R.D[0];
+        const hp = this.hpn, kdv = P.R347 / (P.R346 + P.R347), rs = par(P.R346, P.R347), i33 = 1 / (P.C303 + P.C313), e13 = this.e13;
+        const k7 = P.R319 / (P.R317 + P.R319), r7 = par(P.R317, P.R319), k8 = P.R332 / (P.R331 + P.R332), r8 = par(P.R331, P.R332);
+        const T7 = this.T7, T8 = this.T8, T10 = this.T10, T = CH * h;
+        let cxL = this.cxL, cxH = this.cxH, saL = this.saL, sbL = this.sbL, saH = this.saH, sbH = this.sbH, v303 = this.v303;
+        let v313 = this.v313, v318 = this.v318, hn = this.hn, x0 = R.x[0], x1 = R.x[1], ru = R.up[0], tN = this.tN, tNH = this.tNH, vo = this.vo;
+        const vgL = this.vgL, vgH = this.vgH;
+        for (let c = o; c < e; c += CH) {
+          // per chunk: C303 → Q307 / Q308 (the kicks), C313 → Q310, C318
+          const ib7 = jIb(T7, v303 * k7), ib8 = jIb(T8, v303 * k8), ib10 = jIb(T10, v313);
+          if (tN === 0 && tNH === 0) {
+            v303 = Math.max(v303 - ((v303 - v303 * k7 + ib7 * r7) / P.R317 + (v303 - v303 * k8 + ib8 * r8) / P.R331) * T / P.C303, 0);
+            v313 = Math.max(v313 - ib10 * T / P.C313, 0);
+            const va = (P.C303 * v303 + P.C313 * v313) * i33, dd = (v303 - v313) * e13;   // R337: the two equalise
+            v303 = va + dd * P.C313 * i33; v313 = va - dd * P.C303 * i33;
+          }
+          this.g7 = BETA * ib7 / VSAT; this.g8 = BETA * ib8 / VSAT; this.kick();
+          const l0 = cl[0], l1 = cl[1], l2 = cl[2], l3 = cl[3], l4 = cl[4], l5 = cl[5], l6 = cl[6], l7 = cl[7], lh = cl[8];
+          const m0 = chh[0], m1 = chh[1], m2 = chh[2], m3 = chh[3], m4 = chh[4], m5 = chh[5], m6 = chh[6], m7 = chh[7], mh = chh[8];
+          // Q310: its envelope current, the noise current through C312 into the base (the source R346 ∥ R347 and r_π: the
+          // coupling's corner moves with the current, plain K = 2·fs below 1 kHz)
+          const imax = Math.max(v318 - VSAT, 0) / P.R350, ic0 = BETA * ib10, rin = rs + BETA * VT / Math.max(ic0, 1e-12), gn = BETA / rin;
+          bil1(hp, 0, 1, 0, 1, 1 / (P.C312 * rin), 2 * M.fs);
+          const p0 = hp[0], p1 = hp[1], p2 = hp[2];
+          let pk = 0, pL = 0, pH = 0, icm = 0;
+          for (let i = c, ie = c + CH; i < ie; i++) {
+            let uL = 0, uH = 0, vdo = 0;
+            if (tN > 0 || cxL !== 0) {
+              let vd = 0;
+              if (tN > 0) { vd = vgL * k11L; vdo = vgL; tN--; }
+              uL = (vd - cxL) * exAL; cxL = vd - (vd - cxL) * exL;
+            }
+            if (tNH > 0 || cxH !== 0) {
+              let vd = 0;
+              if (tNH > 0) { vd = vgH * k11H; if (vgH > vdo) vdo = vgH; tNH--; }
+              uH = (vd - cxH) * exAH; cxH = vd - (vd - cxH) * exH;
+            }
+            if (vdo > 0) v303 += (VDMP - v303) * kD;        // a gate: Q306 dumps C302 into C303
+            let q = sbL + lh * uL, A = l0 * saL + l1 * q, B = l2 * saL + l3 * q, yL = uL - A - B;
+            if (yL > VH || yL < VL) { yL = yL > VH ? VH : VL; q = sbL + lh * yL; A = l4 * saL + l5 * q; B = l6 * saL + l7 * q; }
+            saL = 2 * A - saL; sbL = 2 * B - sbL;
+            q = sbH + mh * uH; A = m0 * saH + m1 * q; B = m2 * saH + m3 * q;
+            let yH = uH - A - B;
+            if (yH > VH || yH < VL) { yH = yH > VH ? VH : VL; q = sbH + mh * yH; A = m4 * saH + m5 * q; B = m6 * saH + m7 * q; }
+            saH = 2 * A - saH; sbH = 2 * B - sbH;
+            // the rumble: the noise current through C312 on Q310's envelope current, its collector into the band-pass
+            const vn = kdv * pn[i], yn = p0 * vn + hn; hn = p1 * vn - p2 * yn;
+            let ic = ic0 + gn * yn; ic = ic > 0 ? (ic < imax ? ic : imax) : 0;
+            icm += ic;
+            const vc = v318 - B15 - P.R350 * ic, qr = vc + ru; ru = vc;
+            const n0 = RA0 * x0 + RA1 * x1 + RB0 * qr; x1 = RA2 * x0 + RA3 * x1 + RB1 * qr; x0 = n0;
+            const yr = RC0 * x0 + RC1 * x1 + RD0 * vc;
+            vo = kL * yL + kH * yH + kR * yr;
+            mb[i] += vo;
+            const aL = Math.abs(yL), aH = Math.abs(yH);
+            if (aL > pL) pL = aL; if (aH > pH) pH = aH;
+            pk = Math.max(pk, Math.abs(vo));
+          }
+          if (tN > 0 || tNH > 0) { const va = (P.C303 * v303 + P.C313 * v313) * i33, dd = (v303 - v313) * e13; v303 = va + dd * P.C313 * i33; v313 = va - dd * P.C303 * i33; }
+          v318 += ((B15 - v318) / P.R351 - icm / CH) * T / P.C318;
+          if (tN === 0 && Math.abs(cxL) < 1e-12) cxL = 0;
+          if (tNH === 0 && Math.abs(cxH) < 1e-12) cxH = 0;
+          pL *= kL; pH *= kH;
+          if (pL > this.actL) this.actL = pL; if (pH > this.actH) this.actH = pH;
+          // the rumble's share of the bus: its noise (≈ 0.2 V peaks at the base) and C318's recovery, whose slope reaches the
+          // bus through C316 · R340
+          const act = Math.max(pk, Math.abs(saL) + Math.abs(sbL), Math.abs(saH) + Math.abs(sbH), kR * (Math.abs(x1) + P.R350 * gn * 0.2),
+            kR * (B15 - v318) * P.C316 * P.R340 / (P.R351 * P.C318), Math.abs(cxL) * 30, Math.abs(cxH) * 30, tN > 0 || tNH > 0 ? 1 : 0);
+          if (this.quiet(act)) return;
+        }
+        this.cxL = cxL; this.cxH = cxH; this.saL = saL; this.sbL = sbL; this.saH = saH; this.sbH = sbH; this.v303 = v303;
+        this.v313 = v313; this.v318 = v318; this.hn = hn; R.x[0] = x0; R.x[1] = x1; R.up[0] = ru; this.tN = tN; this.tNH = tNH; this.vo = vo;
+      }
+    }
+
+    /* CYMBAL (R6 §8, §15): the gate through R141 charges E1 (C49, R163 + R164) by D28 and C47 (R165 / C48) by D29. Low
+     * band: Q35 follows E1, R185 → C61 (the ≈ 73 ms rise) → R186 → D35 → Q39 on the 3454 Hz band → Q40's Sallen-Key high-
+     * pass → C79 / R198 / C78 → R200; high band: C47 via R166 and half of E1 (R183 / R184) via R181 → D34 → Q38 on the
+     * 7117 Hz band → C62 + C63 / C73 into IC12B (gain 2) → R204; both into VR6's top, the wiper into R109. */
+    function cyHi6(c, x, u, dx) {                          // x = (C62 + C63 in series, C73), u = (D34's anode)
+      const P = CY6, va = u[0] - x[0], vp = va - x[1], i73 = vp / par(P.R207, P.R208), is = i73 + (va - 2 * vp) / P.R203;
+      dx[0] = is / (P.C62 * P.C63 / (P.C62 + P.C63)); dx[1] = i73 / P.C73;
+      return 2 * vp;
+    }
+    function cyNet6(c, x, u, dx) {                         // x = (C79, C78), u = (Q40's emitter, IC12B)
+      const P = CY6, g0 = 1 / P.R200, g4 = 1 / P.R204, vt = (x[1] * g0 + u[1] * g4) / (g0 + g4 + c.pt[0]), i98 = (u[0] - x[0] - x[1]) / P.R198;
+      dx[0] = i98 / P.C79; dx[1] = (i98 - (x[1] - vt) * g0) / P.C78;
+      return vt * c.pt[1] * R189;
+    }
+    class Cy6 extends Voice {
+      constructor(M) {
+        super(M, V_N6);
+        this.slo = new Float64Array(5); this.hi = new Lin(2, 1); this.net = new Lin(2, 2); this.pt = new Float64Array(2); this.r49 = 0; this.r165 = 0;
+        this.zero();
+      }
+      zero() {
+        this.v49 = 0; this.v61 = 0; this.v47 = 0; this.v48 = 0; this.xl = 0; this.xh = 0; this.s1 = 0; this.s2 = 0;
+        this.hi.reset(); this.net.reset(); this.vo = 0; this.tN = 0;
+      }
+      os() {
+        const P = CY6, fs = this.M.fs;
+        skHP(this.slo, 0, P.C59, P.C60, P.R159, par(P.R195, P.R196), 1, kBil(2180, fs));
+        this.hi.design(cyHi6, null, 2 / kBil(8500, fs));
+        this.kn();
+      }
+      kn() {
+        const P = CY6, kv = this.M.kv, d = fUp(kv[K6.cyd]);
+        this.r49 = (P.R163 + P.R164) * d; this.r165 = P.R165 * d;   // DECAY: E1's bleed and the high band's tail
+        pot6(clamp01(kv[K6.cyl]), P.VR6, P.R109, this.pt);
+        this.net.design(cyNet6, this, 2 / kBil(1000, this.M.fs));
+      }
+      fire(V) { this.tV = V; this.tN = this.M.nP; this.on = true; this.qn = 0; }
+      run(mb, o, n) {
+        const P = CY6, M = this.M, CH = M.CH, h = M.h, T = CH * h, lo = M.lo, hi = M.hi, e = o + n, iVT = 1 / VT, tV = this.tV;
+        const ionL = BETA * KPK * (B15 - VBE) / P.R202, ionH = BETA * KPK * (B15 - VBE) / P.R180, kxl = 1 - Math.exp(-h / (P.R186 * P.C77));
+        const RM = par(P.R183, P.R184), kM = P.R184 / (P.R183 + P.R184), RK = par(P.R166, P.R181 + RM), kG = P.R141 / h;
+        const kxh = 1 - Math.exp(-h / (RK * P.C64)), r49 = this.r49, r165 = this.r165, VF = CY.VF;
+        const S = this.slo, S0 = S[0], S1 = S[1], S2 = S[2], S3 = S[3], S4 = S[4], Hl = this.hi, Nt = this.net;
+        const HA0 = Hl.Ad[0], HA1 = Hl.Ad[1], HA2 = Hl.Ad[2], HA3 = Hl.Ad[3], HB0 = Hl.Bd[0], HB1 = Hl.Bd[1], HC0 = Hl.C[0], HC1 = Hl.C[1], HD0 = Hl.D[0];
+        const NA0 = Nt.Ad[0], NA1 = Nt.Ad[1], NA2 = Nt.Ad[2], NA3 = Nt.Ad[3], NB0 = Nt.Bd[0], NB1 = Nt.Bd[1], NB2 = Nt.Bd[2], NB3 = Nt.Bd[3];
+        const NC0 = Nt.C[0], NC1 = Nt.C[1], ND0 = Nt.D[0], ND1 = Nt.D[1], LO = -7.5, HI = OA_HI - 7.5;
+        let v49 = this.v49, v61 = this.v61, v47 = this.v47, v48 = this.v48, xl = this.xl, xh = this.xh, s1 = this.s1, s2 = this.s2;
+        let h0 = Hl.x[0], h1 = Hl.x[1], hu = Hl.up[0], n0 = Nt.x[0], n1 = Nt.x[1], nu0 = Nt.up[0], nu1 = Nt.up[1], tN = this.tN, vo = this.vo;
+        for (let c = o; c < e; c += CH) {
+          // per chunk: Q35's emitter, the two VCAs' supplies (the low: C61 behind R186; the high: the Thevenin of C47 via
+          // R166 and E1's half via R181)
+          const E = Math.max(v49 - VF, 0), vk = (v47 / P.R166 + E * kM / (P.R181 + RM)) * RK;
+          const vsL = Math.max(v61 - VD, 0), swL = swing(vsL), lkL = swL > 1e-9 ? Math.log(P.R186 * ionL / swL) : 0;
+          const vsH = Math.max(vk - VD, 0), swH = swing(vsH), lkH = swH > 1e-9 ? Math.log(RK * ionH / swH) : 0;
+          let pk = 0, aL = 0, aH = 0;
+          for (let i = c, ie = c + CH; i < ie; i++) {
+            if (tN > 0) {                                  // the gate: R141 into C49 (D28) and C47 (D29), backward Euler
+              tN--;
+              const top = tV - VD;
+              let on9 = v49 < top, on7 = v47 < top, vn = top;
+              for (let it = 0; it < 2; it++) {
+                const sc = (on9 ? P.C49 : 0) + (on7 ? P.C47 : 0);
+                if (sc === 0) break;
+                vn = (top + kG * ((on9 ? P.C49 * v49 : 0) + (on7 ? P.C47 * v47 : 0))) / (1 + kG * sc);
+                if (on9 && v49 >= vn) on9 = false; else if (on7 && v47 >= vn) on7 = false; else break;
+              }
+              if (on9) v49 = vn; if (on7) v47 = vn;
+            }
+            const tl = vsL - swL * gT(lo[i] * iVT + lkL); xl = Math.min(tl, xl + (tl - xl) * kxl);
+            const th = vsH - swH * gT(hi[i] * iVT + lkH); xh = Math.min(th, xh + (th - xh) * kxh);
+            aL += xl; aH += xh;
+            // the low band: Q40's high-pass; the high band: C62 + C63 / C73 into IC12B
+            const yl = S0 * xl + s1; s1 = S1 * xl - S3 * yl + s2; s2 = S2 * xl - S4 * yl;
+            const qh = xh + hu; hu = xh;
+            const m0 = HA0 * h0 + HA1 * h1 + HB0 * qh; h1 = HA2 * h0 + HA3 * h1 + HB1 * qh; h0 = m0;
+            let yh = HC0 * h0 + HC1 * h1 + HD0 * xh;
+            if (yh > HI - 1 || yh < 1 + LO) yh = rail6(yh, 7.5, HI);
+            const q0 = yl + nu0, q1 = yh + nu1; nu0 = yl; nu1 = yh;
+            const m1 = NA0 * n0 + NA1 * n1 + NB0 * q0 + NB1 * q1; n1 = NA2 * n0 + NA3 * n1 + NB2 * q0 + NB3 * q1; n0 = m1;
+            vo = NC0 * n0 + NC1 * n1 + ND0 * yl + ND1 * yh;
+            mb[i] += vo;
+            pk = Math.max(pk, Math.abs(vo));
+          }
+          // the envelopes per chunk on the chunk's mean VCA currents (every τ ≥ 15 ms)
+          const kb = aH / CH + VD, lb = aL / CH + VD, mN = E * kM + (kb - E * kM) * RM / (RM + P.R181);
+          const i66 = (v47 - kb) / P.R166, i65 = (v47 - v48) / r165, iE = (E - mN) / P.R183 + (E - v61) / P.R185;
+          v47 = Math.max(v47 - (i66 + i65) * T / P.C47, 0); v48 += i65 * T / P.C48;
+          v61 += ((E - v61) / P.R185 - Math.max(v61 - lb, 0) / P.R186) * T / P.C61;
+          v49 = Math.max(v49 - (v49 / r49 + (v49 > VF ? iE / (BETA + 1) : 0)) * T / P.C49, 0);
+          const act = Math.max(pk, swL, swH, swing(Math.max(v61, v47, v48, E * kM * RK / (P.R181 + RM)) - VD), tN > 0 ? 1 : 0);
+          if (this.quiet(act)) return;
+        }
+        this.v49 = v49; this.v61 = v61; this.v47 = v47; this.v48 = v48; this.xl = xl; this.xh = xh; this.s1 = s1; this.s2 = s2;
+        Hl.x[0] = h0; Hl.x[1] = h1; Hl.up[0] = hu; Nt.x[0] = n0; Nt.x[1] = n1; Nt.up[0] = nu0; Nt.up[1] = nu1; this.tN = tN; this.vo = vo;
+      }
+    }
+
+    /* HATS (R6 §9, §15): one circuit for the pair. OH: R140 charges C45 (bled by R167), Q36 follows it → R170 → D33; CH:
+     * R133 charges C42 → R134 → D32; both diodes into the collector of Q37 (C43) on the 7117 Hz band: one swing VCA whose
+     * pull-up is the higher supply. The pick-offs at the anodes (C67 / C44) → R172 → IC12A's Sallen-Key high-pass (gain 2)
+     * → VR7 → R149. The choke: C42 holds Q25 on through R135; the tempo cut: the clock's pulses charge C41 through D1 / R6,
+     * Q23 empties it at each OH gate, R131 → Q24; Q24 / Q25 drain C45 through R137. C41 matters only while the OH sounds:
+     * the clock is read per absolute chunk from the OH's hit on (the hats asleep, it costs nothing). */
+    function hhNet6(c, x, u, dx) {                         // x = (C67 ∥ C44, C69, C70), u = (the pick-offs' mean)
+      const P = HH6, vs = u[0] - x[0], va = vs - x[1], vp = va - x[2], i70 = vp / par(P.R175, P.R176), i69 = i70 + (va - 2 * vp) / P.R174;
+      dx[0] = (vs / P.R172 + i69) / (P.C67 + P.C44); dx[1] = i69 / P.C69; dx[2] = i70 / P.C70;
+      return 2 * vp;
+    }
+    class Hats6 extends Voice {
+      constructor(M) {
+        super(M, V_N6);
+        this.net = new Lin(3, 1); this.pt = new Float64Array(2); this.T24 = jTab(HH6.R131); this.T25 = jTab(HH6.R135);
+        this.r167 = 0; this.r134 = 0; this.kck = 0; this.ky = 0; this.actO = 0; this.actC = 0;
+        this.zero();
+      }
+      zero() {
+        this.v45 = 0; this.v41 = 0; this.v42 = 0; this.xc = 0; this.net.reset(); this.vo = 0; this.tN = 0; this.tNC = 0;
+        this.vgO = 0; this.vgC = 0; this.ohl = false; this.mute = false;
+      }
+      os() { this.net.design(hhNet6, null, 2 / kBil(8500, this.M.fs)); this.kn(); }
+      kn() {
+        const P = HH6, kv = this.M.kv, d = fUp(kv[K6.ohd]);
+        this.r167 = P.R167 * d; this.r134 = P.R134 * fUp(kv[K6.chd]);   // DECAY: R167 and the cut's R6 together (P-2); R134
+        this.kck = 1 - Math.exp(-TCK / (P.R6 * d * P.C41));
+        pot6(clamp01(kv[K6.hhl]), P.VR7, P.R149, this.pt); this.ky = this.pt[1] * R189;
+      }
+      fire(V, closed, mute) {
+        if (closed) { this.vgC = V; this.tNC = this.M.nP; this.mute = !!mute; } else { this.vgO = V; this.tN = this.M.nP; this.ohl = true; }
+        this.on = true; this.qn = 0;
+      }
+      run(mb, o, n) {
+        const P = HH6, M = this.M, CH = M.CH, h = M.h, T = CH * h, hi = M.hi, e = o + n, iVT = 1 / VT, VF = CY.VF, OS = M.OS;
+        const ion = BETA * KPK * (B15 - VBE) / P.R173, r167 = this.r167, r134 = this.r134, kck = this.kck, ky = this.ky;
+        const k40 = 1 - Math.exp(-h / (P.R140 * P.C45)), k33 = 1 - Math.exp(-h / (P.R133 * P.C42)), g37 = 1 / P.R137;
+        const L = this.net, A0 = L.Ad[0], A1 = L.Ad[1], A2 = L.Ad[2], A3 = L.Ad[3], A4 = L.Ad[4], A5 = L.Ad[5], A6 = L.Ad[6], A7 = L.Ad[7], A8 = L.Ad[8];
+        const B0 = L.Bd[0], B1 = L.Bd[1], B2 = L.Bd[2], C0 = L.C[0], C1 = L.C[1], C2 = L.C[2], D0 = L.D[0], T24 = this.T24, T25 = this.T25;
+        const vgO = this.vgO, vgC = this.vgC, mute = this.mute, HI = OA_HI - 7.5;
+        let v45 = this.v45, v41 = this.v41, v42 = this.v42, xc = this.xc, x0 = L.x[0], x1 = L.x[1], x2 = L.x[2], xu = L.up[0];
+        let tN = this.tN, tNC = this.tNC, vo = this.vo;
+        for (let c = o; c < e; c += CH) {
+          // the tempo clock at this chunk's own start: a pulse where floor(tick / 40) steps (24 a quarter note)
+          let jp = -1;
+          if (this.ohl) {
+            const ck = M.clock((M.n0 + c) / OS), t0 = ck.t, tp = ck.tpf;
+            if (tp > 0 && t0 === t0) {
+              const k0 = Math.floor(t0 / 40);
+              if (Math.floor((t0 + 4 * tp) / 40) > k0) { jp = Math.floor((40 * (k0 + 1) - t0) / tp * OS); if (jp > CH - 1) jp = CH - 1; }
+            }
+          }
+          // the supplies per chunk (the open one: Q36 follows C45; the closed one: C42), the higher one pulls the node up
+          const vo1 = Math.max(v45 - VF, 0), vs = Math.max(Math.max(vo1, v42) - VD, 0), rc = vo1 >= v42 ? P.R170 : r134;
+          const sw = swing(vs), lnK = sw > 1e-9 ? Math.log(rc * ion / sw) : 0, kx = 1 - Math.exp(-h / (rc * P.C43));
+          const tO = vo1 - VD, tC = v42 - VD;
+          let pk = 0, aO = 0, aC = 0, ge = tN > 0 ? (tN < CH ? tN : CH) : 0;
+          for (let i = c, ie = c + CH; i < ie; i++) {
+            if (tN > 0) { tN--; v45 += Math.max(vgO - VD - v45, 0) * k40; v41 = 0; }   // R140 / D30; Q23 empties C41
+            if (tNC > 0) { tNC--; v42 += Math.max(vgC - VD - v42, 0) * k33; }       // R133 / D31
+            const t = vs - sw * gT(hi[i] * iVT + lnK);
+            xc = Math.min(t, xc + (t - xc) * kx);
+            const oa = xc < tO ? xc : tO, ca = xc < tC ? xc : tC;
+            aO += tO - oa; aC += tC - ca;
+            const u = 0.5 * (oa + (mute ? tC : ca)), q = u + xu; xu = u;
+            const n0 = A0 * x0 + A1 * x1 + A2 * x2 + B0 * q, n1 = A3 * x0 + A4 * x1 + A5 * x2 + B1 * q;
+            x2 = A6 * x0 + A7 * x1 + A8 * x2 + B2 * q; x0 = n0; x1 = n1;
+            let y = C0 * x0 + C1 * x1 + C2 * x2 + D0 * u;
+            if (y > HI - 1 || y < -6.5) y = rail6(y, 7.5, HI);
+            vo = ky * y;
+            mb[i] += vo;
+            pk = Math.max(pk, Math.abs(vo));
+          }
+          // per chunk: Q24 (C41) and Q25 (C42) sink at the joined collectors; C45 drains through R137
+          let ib4 = jIb(T24, v41), w4 = CH;
+          if (jp >= ge) {                                   // the pulse (after the OH's gate): the leak up to it, the charge, the rest
+            v41 = Math.max(v41 - ib4 * jp * h / P.C41, 0);
+            v41 += (P.VCK - VD - v41) * kck;
+            const ib2 = jIb(T24, v41);
+            v41 = Math.max(v41 - ib2 * (CH - jp) * h / P.C41, 0);
+            ib4 = (ib4 * jp + ib2 * (CH - jp)) / CH; w4 = 0;
+          }
+          if (w4) v41 = Math.max(v41 - ib4 * T / P.C41, 0);
+          const ib5 = jIb(T25, v42), isk = BETA * (ib4 + ib5);
+          let vz = v45 - isk / g37;
+          if (vz < VSAT) vz = VSAT;
+          const i37 = v45 > vz ? (v45 - vz) * g37 : 0, ib36 = (vo1 / P.R169 + aO / (CH * P.R170)) / (BETA + 1);
+          v45 = Math.max(v45 - (v45 / r167 + i37 + (v45 > VF ? ib36 : 0)) * T / P.C45, 0);
+          v42 = Math.max(v42 - (aC / (CH * r134) + ib5) * T / P.C42, 0);
+          const pO = vo1 >= v42 ? pk : 0;
+          if (pO > this.actO) this.actO = pO; if (pk - pO > this.actC) this.actC = pk - pO;
+          // (the pick-off capacitors' charge is the anodes' DC: no sound once the VCA's supply cannot swing)
+          const act = Math.max(pk, sw, tN > 0 || tNC > 0 ? 1 : 0);
+          if (this.quiet(act)) return;
+        }
+        this.v45 = v45; this.v41 = v41; this.v42 = v42; this.xc = xc; L.x[0] = x0; L.x[1] = x1; L.x[2] = x2; L.up[0] = xu;
+        this.tN = tN; this.tNC = tNC; this.vo = vo;
+      }
+    }
+
+    /* ------------------------------------------------------------------ the machines (IMPL-7b §2.1) */
+    // One shell, a descriptor per machine: its knob table (ids, defaults, the circuits each retunes), the sounds it has (the
+    // 808's sound ids, IMPL-7b §1.2) and its lane → sound map; create() builds the voices, the sources, the latches, the
+    // output stage and the sample rules from it. MACH.tr808 is 7a's constants, moved, not changed (ref-7a checks the bytes).
+    const MACH = Object.freeze({
+      tr808: Object.freeze({ id: 'tr808', KNOB_IDS, KNOB_DEF, KNOB_CIR, NK, SOUNDS, sids: Object.freeze(SOUNDS.map((s, i) => i)), LANE_S }),
+      tr606: Object.freeze({ id: 'tr606', KNOB_IDS: K6_IDS, KNOB_DEF: K6_DEF, KNOB_CIR: K6_CIR, NK: K6_IDS.length, SOUNDS, sids: S6, LANE_S: LANE_S6 }),
+    });
+    // the output stage's static gain at a panel (bus volts → full scale; the engine's tail units across a kind or machine
+    // change: IMPL-7b §1.5): MASTER VOLUME / VOLUME (50 k A) into its amplifier, the full-scale constant — post at rest
+    function gain(kind, d) {
+      const v = d && d.vol >= 0 ? (d.vol < 1 ? d.vol : 1) : 0.75, lv = tapA(v);
+      if (kind === 'tr606') { const P = MIX6, rl = P.VR8 * lv, rw = rl * (P.VR8 - rl) / P.VR8; return lv * P.R190 / (P.R191 + rw) * OUT_K6; }
+      const P = MIX, rl = P.VR1 * lv, rw = rl * (P.VR1 - rl) / P.VR1;
+      return lv * P.R76 / (P.R77 + rw) * OUT_K;
+    }
+
     /* ------------------------------------------------------------------ the machine */
     const SPAN = 1024;                                      // the largest span in OS samples (128 frames × OS ≤ 8)
     function create(inst, kind, opt) {
-      if (kind !== undefined && kind !== 'tr808') return null;
+      const X = kind === undefined || kind === 'tr808' ? MACH.tr808 : kind === 'tr606' ? MACH.tr606 : null;
+      if (X === null) return null;
+      const is6 = X === MACH.tr606, NKX = X.NK, KDEF = X.KNOB_DEF, KCIR = X.KNOB_CIR, KIDS = X.KNOB_IDS, MTX = is6 ? MT6 : MT;
       const o = opt || {};
       const base = inst && inst.base > 0 ? inst.base : (typeof sampleRate === 'number' ? sampleRate : 48000);
       const M = {
-        base, OS: 1, fs: base, h: 1 / base, CH: 4, nP: 48, kv: new Float64Array(NK), kt: new Float64Array(NK), mv: 0,
+        base, OS: 1, fs: base, h: 1 / base, CH: 4, nP: 48, kv: new Float64Array(NKX), kt: new Float64Array(NKX), mv: 0,
         drum: null, snap: true, salt: 0x2545F491,
         wn: new Float64Array(SPAN), pn: new Float64Array(SPAN), lo: new Float64Array(SPAN), hi: new Float64Array(SPAN),
         s5: new Float64Array(SPAN), s6: new Float64Array(SPAN), v63: new Float64Array(SPAN), wnPeak: 0.3,
         lat: new Float64Array(16), latN: 0, lit: 0,       // latches: per sound the highest pending volts (0 = none)
-        noSleep: !!o.noSleep, bankOn: !!o.bankOn, count: 0,
+        noSleep: !!o.noSleep, bankOn: !!o.bankOn, vcaOn: !!o.vcaOn, count: 0,
+        n0: 0, clock: null,                               // the span's absolute OS index; the 606's tempo clock (below)
       };
-      M.kv.set(KNOB_DEF); M.kt.set(KNOB_DEF);
-      // the noise: white (a 20 kHz smoothing low-pass above 60 kHz) and pink (the PN low-pass of the same white)
-      const nz = { c: new Float64Array(5), p: new Float64Array(5), s1: 0, s2: 0, q1: 0, q2: 0, qp: 0, sig: 0, sigB: 0, won: false, pon: false };
-      const TB = []; for (let k = 0; k < 6; k++) TB.push({ lo: new Float64Array(TN + 1), hi: new Float64Array(TN + 1), sq: new Float64Array(TN + 1), f: MT.F[k], inc: 0 });
-      const bank = { lon: false, hon: false, pl: 0, ph: 0, p5: 0, p6: 0, lmax: 0, lmin: 0, hmax: 0, hmin: 0, dl: 0, W: 0 };
-      const bd = new BassDrum(M), sd = new Snare(M), tl = new Tom(M, 0), tmm = new Tom(M, 1), th = new Tom(M, 2), rs = new RimClaves(M);
-      const cp = new Clap(M), cb = new Cowbell(M), cy = new Cymbal(M), oh = new Hat(M, true), chh = new Hat(M, false), ma = new Maracas(M);
+      M.kv.set(KDEF); M.kt.set(KDEF);
+      if (is6) {
+        // the tempo clock (the 606's open hat, IMPL-7b §2.1): the Inst's drClock(F) → { t, tpf } (song ticks at frame F,
+        // ticks per frame), read at absolute chunk starts; a stand-in Inst without it: 120 BPM from frame 0 [C]
+        const ck = { t: 0, tpf: 0 }, tpf = 2 * 960 / base, own = inst && typeof inst.drClock === 'function' ? inst : null;
+        M.clock = F => { const c = own !== null ? own.drClock(F) : null; if (c) return c; ck.t = F * tpf; ck.tpf = tpf; return ck; };
+      }
+      // the noise: white (the 808: a 20 kHz smoothing low-pass above 60 kHz; the 606: IC10B's pole) and pink (the PN
+      // low-pass of the same density)
+      const nz = { c: new Float64Array(5), p: new Float64Array(5), w: new Float64Array(3), s1: 0, s2: 0, q1: 0, q2: 0, qp: 0, sig: 0, sigB: 0, won: false, pon: false };
+      const TB = []; for (let k = 0; k < 6; k++) TB.push({ lo: new Float64Array(TN + 1), hi: new Float64Array(TN + 1), sq: new Float64Array(TN + 1), f: MTX.F[k], inc: 0 });
+      const bank = { lon: false, hon: false, pl: 0, ph: 0, p5: 0, p6: 0, lmax: 0, lmin: 0, hmax: 0, hmin: 0, dl: 0, dlH: 0, W: 0 };
+      const bd = is6 ? null : new BassDrum(M), sd = is6 ? null : new Snare(M), tl = is6 ? null : new Tom(M, 0), tmm = is6 ? null : new Tom(M, 1);
+      const th = is6 ? null : new Tom(M, 2), rs = is6 ? null : new RimClaves(M), cp = is6 ? null : new Clap(M), cb = is6 ? null : new Cowbell(M);
+      const cy = is6 ? null : new Cymbal(M), oh = is6 ? null : new Hat(M, true), chh = is6 ? null : new Hat(M, false), ma = is6 ? null : new Maracas(M);
+      // the 606: five circuits (the tom pair and the hat pair one each, IMPL-7b §1.2)
+      const b6 = is6 ? new Bd6(M) : null, s6 = is6 ? new Sd6(M) : null, t6 = is6 ? new Toms6(M) : null, c6 = is6 ? new Cy6(M) : null, h6 = is6 ? new Hats6(M) : null;
       // render order: the closed hat before the open hat (its C63 trace drives the choke)
-      const V = [bd, sd, tl, tmm, th, rs, cp, cb, cy, chh, oh, ma];
-      const CIRV = [bd, sd, tl, tmm, th, rs, cp, cb, cy, oh, chh, ma];   // circuit index → voice
-      // the output stage (post): per channel the IC4a / IC4b 220 p low-passes, C19 into VR1, C23 into R77
+      const V = is6 ? [b6, s6, t6, c6, h6] : [bd, sd, tl, tmm, th, rs, cp, cb, cy, chh, oh, ma];
+      const CIRV = is6 ? null : [bd, sd, tl, tmm, th, rs, cp, cb, cy, oh, chh, ma];   // circuit index → voice
+      // the output stage (post): per channel the summing amplifier's and the output amplifier's 220 p low-passes, the
+      // coupling into MASTER VOLUME / VOLUME, the coupling into the output amplifier
       const ost = { c1: new Float64Array(3), c2: new Float64Array(3), c3: new Float64Array(3), c4: new Float64Array(3), s: new Float64Array(8), g: 0, live: 0 };
       // the sample slots (§5)
       const SL = []; for (let s = 0; s < 16; s++) SL.push({ id: '', on: false, e: null, pos: -1, inc: 1, g: 0, dk: 0, dg: 1, fP: -1, fG: 0, fN: 0, fK: 0 });
@@ -1753,29 +2440,50 @@
 
       function setRate(os) {
         M.OS = os; M.fs = base * os; M.h = 1 / M.fs; M.CH = 4 * os; M.nP = Math.max(1, Math.round(1e-3 * M.fs));
-        // white: the density that puts 130 mV rms in 0–20 kHz; pink: the unity-gain Sallen-Key low-pass (22 k, 22 k,
-        // 0.039 µ feedback, 0.018 µ to ground: ≈ 273 Hz, Q 0.74)
-        nz.sig = 0.13 * Math.sqrt(M.fs / 40000) / 37837.6; nz.sigB = 0.13 * Math.sqrt(base / 40000) / 37837.6;
-        if (M.fs > 60000) bil2(nz.c, 0, 0, 0, 1, 1 / ((TAU * 20000) * (TAU * 20000)), Math.SQRT2 / (TAU * 20000), 1, kBil(20000, M.fs));
+        if (is6) {
+          // white: the density that puts 130 mV rms through IC10B's pole (a noise bandwidth of π/2 · FC) at its test point
+          const dn = NZ6.RMS / Math.sqrt(0.5 * Math.PI * NZ6.FC);
+          nz.sig = dn * Math.sqrt(0.5 * M.fs) / 37837.6; nz.sigB = dn * Math.sqrt(0.5 * base) / 37837.6;
+          bil1(nz.w, 0, 0, 1, 1 / (TAU * NZ6.FC), 1, kBil(NZ6.FC, M.fs));
+        } else {
+          // white: the density that puts 130 mV rms in 0–20 kHz
+          nz.sig = 0.13 * Math.sqrt(M.fs / 40000) / 37837.6; nz.sigB = 0.13 * Math.sqrt(base / 40000) / 37837.6;
+          if (M.fs > 60000) bil2(nz.c, 0, 0, 0, 1, 1 / ((TAU * 20000) * (TAU * 20000)), Math.SQRT2 / (TAU * 20000), 1, kBil(20000, M.fs));
+        }
+        // pink: the unity-gain Sallen-Key low-pass (22 k, 22 k, 0.039 µ feedback, 0.018 µ to ground: ≈ 273 Hz, Q 0.74) —
+        // the 808's PN filter, the 606's tom rumble filter Q309 (the same values)
         const R = 22e3, C1 = 0.039e-6, C2 = 0.018e-6;
         bil2(nz.p, 0, 0, 0, 1, R * R * C1 * C2, 2 * R * C2, 1, kBil(273, base));
         nz.won = nz.pon = false;
         buildBank();
         for (const v of V) v.os();
-        const kb = kBil(1000, base);
-        bil1(ost.c1, 0, MIX.VR1 * MIX.C19, 0, MIX.VR1 * MIX.C19, 1, kb);
-        bil1(ost.c3, 0, 0, 1, MIX.R75 * MIX.C18, 1, kBil(Math.min(1 / (TAU * MIX.R75 * MIX.C18), 0.45 * base), base));
-        bil1(ost.c4, 0, 0, 1, MIX.R76 * MIX.C22, 1, kBil(Math.min(1 / (TAU * MIX.R76 * MIX.C22), 0.45 * base), base));
+        if (is6) {
+          const P = MIX6;
+          bil1(ost.c1, 0, P.VR8 * P.C87, 0, P.VR8 * P.C87, 1, kBil(1000, base));
+          bil1(ost.c3, 0, 0, 1, P.R189 * P.C86, 1, kBil(Math.min(1 / (TAU * P.R189 * P.C86), 0.45 * base), base));
+          bil1(ost.c4, 0, 0, 1, P.R190 * P.C88, 1, kBil(Math.min(1 / (TAU * P.R190 * P.C88), 0.45 * base), base));
+        } else {
+          const kb = kBil(1000, base);
+          bil1(ost.c1, 0, MIX.VR1 * MIX.C19, 0, MIX.VR1 * MIX.C19, 1, kb);
+          bil1(ost.c3, 0, 0, 1, MIX.R75 * MIX.C18, 1, kBil(Math.min(1 / (TAU * MIX.R75 * MIX.C18), 0.45 * base), base));
+          bil1(ost.c4, 0, 0, 1, MIX.R76 * MIX.C22, 1, kBil(Math.min(1 / (TAU * MIX.R76 * MIX.C22), 0.45 * base), base));
+        }
         knobOut();
       }
       function knobOut() {
+        if (is6) {                                           // VOLUME (VR8 50 k A) → R191 → IC14B (R190): gain(), at rest
+          const P = MIX6, lv = tapA(clamp01(M.kv[K6.vol])), rl = P.VR8 * lv, rw = rl * (P.VR8 - rl) / P.VR8;
+          bil1(ost.c2, 0, (P.R191 + rw) * P.C83, 0, (P.R191 + rw) * P.C83, 1, kBil(1000, base));
+          ost.g = lv * P.R190 / (P.R191 + rw);
+          return;
+        }
         const lv = tapA(clamp01(M.kv[K.vol])), rl = MIX.VR1 * lv, rw = rl * (MIX.VR1 - rl) / MIX.VR1;
         bil1(ost.c2, 0, (MIX.R77 + rw) * MIX.C23, 0, (MIX.R77 + rw) * MIX.C23, 1, kBil(1000, base));
         ost.g = lv * MIX.R76 / (MIX.R77 + rw);
       }
       // the bank's steady-state tables: per oscillator its band-limited square, its 3440 Hz and its 7100 Hz band output
       function buildBank() {
-        const fs = M.fs, fc = Math.min(0.45 * fs, 40000), P = MT, H = [0, 0];
+        const fs = M.fs, fc = Math.min(0.45 * fs, 40000), P = MTX, H = [0, 0];
         let lmax = 0, lmin = 0, hmax = 0, hmin = 0;
         for (let k = 0; k < 6; k++) {
           const tb = TB[k], f = tb.f, d = P.DUTY;
@@ -1788,7 +2496,8 @@
               const tt = TAU * hh * d, cr = P.VOH * Math.sin(tt) / (TAU * hh), ci = P.VOH * (Math.cos(tt) - 1) / (TAU * hh);
               let rr = cr, ri = ci;
               if (pass > 0) {
-                // the passive summing node: each oscillator through 120 k into R53 ∥ the other five ∥ both band inputs
+                // the passive summing node: each oscillator through RS (808 120 k, 606 150 k) into R53 / R210 ∥ the other
+                // five ∥ both band inputs
                 const w = TAU * hh * f;
                 const y1d = 1 + (w * P.R52 * P.C10) ** 2, y1r = (w * P.R52 * P.C10) * (w * P.C10) / y1d, y1i = (w * P.C10) / y1d;
                 const y2d = 1 + (w * P.R55 * P.C11) ** 2, y2r = (w * P.R55 * P.C11) * (w * P.C11) / y2d, y2i = (w * P.C11) / y2d;
@@ -1815,10 +2524,16 @@
           }
         }
         bank.lmax = lmax; bank.lmin = lmin; bank.hmax = hmax; bank.hmin = hmin;
-        // the coupled bases' leak (22 n, 2 M from 15 V) and the window that bounds the peak tracker's memory: an older peak
-        // has leaked by more than the band's whole range, so a tracker restarted that far back is the same bytes
-        bank.dl = M.h * (B15 - VBE) / MT.RB / MT.CC;
-        bank.W = Math.ceil(Math.max(lmax - lmin, hmax - hmin) / bank.dl) + 4;
+        // the coupled bases' leak (the 808: 22 n, 2 M from 15 V; the 606: the low band's 47 n / 1 M, the high band's 1 µ /
+        // 1 M) and the window that bounds the peak tracker's memory: an older peak has leaked by more than the band's whole
+        // range, so a tracker restarted that far back is the same bytes
+        if (is6) {
+          bank.dl = M.h * (B15 - VBE) / MT6.RL / MT6.CL; bank.dlH = M.h * (B15 - VBE) / MT6.RH / MT6.CH;
+          bank.W = Math.ceil(Math.max((lmax - lmin) / bank.dl, (hmax - hmin) / bank.dlH)) + 4;
+        } else {
+          bank.dl = bank.dlH = M.h * (B15 - VBE) / MT.RB / MT.CC;
+          bank.W = Math.ceil(Math.max(lmax - lmin, hmax - hmin) / bank.dl) + 4;
+        }
         bank.lon = bank.hon = false;
       }
       // the bands for OS samples [i0, i0 + n) of a span starting at absolute index n0 (need: 1 low band, 2 high band):
@@ -1850,14 +2565,14 @@
       // the peak trackers of the coupled bases, restarted over 2W samples before n0 (exact: see buildBank)
       const pre = new Float64Array(SPAN), pre2 = new Float64Array(SPAN);
       function bandWake(n0, need) {
-        const CH = M.CH, W = 2 * bank.W, dl = bank.dl;
+        const CH = M.CH, W = 2 * bank.W, dl = bank.dl, dlH = bank.dlH;
         let s = n0 - W; s -= ((s % CH) + CH) % CH;
         let pl = -1e9, ph = -1e9;
         while (s < n0) {
           const m = Math.min(SPAN, n0 - s);
           bandRange(s, 0, m, need, pre, pre2);
           if (need & 1) for (let i = 0; i < m; i++) pl = Math.max(pl - dl, pre[i]);
-          if (need & 2) for (let i = 0; i < m; i++) ph = Math.max(ph - dl, pre2[i]);
+          if (need & 2) for (let i = 0; i < m; i++) ph = Math.max(ph - dlH, pre2[i]);
           s += m;
         }
         if (need & 1) { bank.pl = pl; bank.lon = true; }
@@ -1867,9 +2582,9 @@
         const wk = (need & 1 && !bank.lon ? 1 : 0) | (need & 2 && !bank.hon ? 2 : 0);
         if (wk) bandWake(n0 + i0, wk);
         bandRange(n0, i0, n, need, M.lo, M.hi);
-        const dl = bank.dl, lo = M.lo, hi = M.hi;
+        const dl = bank.dl, dlH = bank.dlH, lo = M.lo, hi = M.hi;
         if (need & 1) { let pl = bank.pl; for (let i = i0, e = i0 + n; i < e; i++) { pl = Math.max(pl - dl, lo[i]); lo[i] -= pl; } bank.pl = pl; }
-        if (need & 2) { let ph = bank.ph; for (let i = i0, e = i0 + n; i < e; i++) { ph = Math.max(ph - dl, hi[i]); hi[i] -= ph; } bank.ph = ph; }
+        if (need & 2) { let ph = bank.ph; for (let i = i0, e = i0 + n; i < e; i++) { ph = Math.max(ph - dlH, hi[i]); hi[i] -= ph; } bank.ph = ph; }
       }
       function squares(n0, i0, n) {
         const S5 = TB[4].sq, S6 = TB[5].sq, o5 = M.s5, o6 = M.s6, d5 = TB[4].inc * TN, d6 = TB[5].inc * TN, CH = M.CH;
@@ -1884,7 +2599,7 @@
       }
       // white noise for samples [i0, i0 + n) of a span at absolute index n0: Irwin–Hall of four 16-bit uniforms from two
       // hashes of the index (chunk by chunk, so a span never straddles a 2^32 boundary of the index)
-      function whiteRange(n0, i0, n, wn) {
+      function white8(n0, i0, n, wn) {
         const sig = nz.sig, c = nz.c, sm = M.fs > 60000, CH = M.CH;
         let s1 = nz.s1, s2 = nz.s2;
         for (let cs = i0, ce = i0 + n; cs < ce; cs += CH) {
@@ -1897,6 +2612,21 @@
         }
         nz.s1 = s1; nz.s2 = s2;
       }
+      // the 606's: the same hashed density through IC10B's pole (≈ 7.2 kHz, prewarped)
+      function white6(n0, i0, n, wn) {
+        const sig = nz.sig, w = nz.w, w0 = w[0], w1 = w[1], w2 = w[2], CH = M.CH;
+        let s1 = nz.s1;
+        for (let cs = i0, ce = i0 + n; cs < ce; cs += CH) {
+          const a0 = n0 + cs, lo0 = a0 % 4294967296, sd = hash32(((a0 - lo0) / 4294967296 ^ M.salt) >>> 0);
+          for (let i = cs, e = cs + CH; i < e; i++) {
+            const a = hash32(((lo0 + i - cs) ^ sd) >>> 0), b = hash32((a ^ 0x9E3779B9) >>> 0);
+            const v = ((a & 0xffff) + (a >>> 16) + (b & 0xffff) + (b >>> 16) - 131070) * sig;
+            const y = w0 * v + s1; s1 = w1 * v - w2 * y; wn[i] = y;
+          }
+        }
+        nz.s1 = s1;
+      }
+      const whiteRange = is6 ? white6 : white8;
       // pink noise (the 273 Hz low-pass of the same density) at the base rate, from its own hash of the absolute frame,
       // interpolated to the OS samples (it has no content near the base Nyquist)
       function pinkRange(n0, i0, n, pn) {
@@ -1927,7 +2657,7 @@
         }
         if (white) M.wnPeak = pk;
       }
-      function sources(n0, i0, n) {
+      function sources8(n0, i0, n) {
         const pink = (tl.on && tl.var === 0) || (tmm.on && tmm.var === 0) || (th.on && th.var === 0);
         const white = sd.on || cp.on || ma.on;
         if ((white && !nz.won) || (pink && !nz.pon)) noiseWake(n0 + i0, white && !nz.won, pink && !nz.pon);
@@ -1939,27 +2669,47 @@
         M.v63.fill(0, i0, i0 + n);
       }
       // after the voices: a source with no live consumer left restarts from its pre-roll when one wakes
-      function sourcesOff() {
+      function sourcesOff8() {
         if (!(sd.on || cp.on || ma.on)) nz.won = false;
         if (!((tl.on && tl.var === 0) || (tmm.on && tmm.var === 0) || (th.on && th.var === 0))) nz.pon = false;
         if (M.bankOn) return;
         if (!cy.on) bank.lon = false;
         if (!(cy.on || oh.on || chh.on)) bank.hon = false;
       }
+      // the 606: the snare takes the white noise, the toms' rumble the pink, the cymbal both bands, the hats the high one
+      function sources6(n0, i0, n) {
+        const white = s6.on, pink = t6.on;
+        if ((white && !nz.won) || (pink && !nz.pon)) noiseWake(n0 + i0, white && !nz.won, pink && !nz.pon);
+        if (white) whiteRange(n0, i0, n, M.wn);
+        if (pink) pinkRange(n0, i0, n, M.pn);
+        const need = M.bankOn ? 3 : (c6.on ? 3 : 0) | (h6.on ? 2 : 0);
+        if (need) bands(n0, i0, n, need);
+        if (M.vcaOn) { M.lo.fill(0, i0, i0 + n); M.hi.fill(0, i0, i0 + n); }
+      }
+      function sourcesOff6() {
+        if (!s6.on) nz.won = false;
+        if (!t6.on) nz.pon = false;
+        if (M.bankOn) return;
+        if (!c6.on) bank.lon = false;
+        if (!(c6.on || h6.on)) bank.hon = false;
+      }
+      const sources = is6 ? sources6 : sources8, sourcesOff = is6 ? sourcesOff6 : sourcesOff8;
 
       // the knob targets, read once per span (set() and the modulation adapter write p.drum between spans)
       const kd = x => { const t = +x; return t === t ? (t < 0 ? 0 : t > 1 ? 1 : t) : -1; };
       function readTargets() {
         const d = M.drum, kt = M.kt;
-        if (d) {
+        if (d && is6) {
+          for (let i = 0; i < NKX; i++) { const t = kd(d[KIDS[i]]); kt[i] = t < 0 ? KDEF[i] : t; }
+        } else if (d) {
           kt[0] = kd(d.ac); kt[1] = kd(d.bdl); kt[2] = kd(d.bdt); kt[3] = kd(d.bdd); kt[4] = kd(d.sdl); kt[5] = kd(d.sdt);
           kt[6] = kd(d.sds); kt[7] = kd(d.ltl); kt[8] = kd(d.ltt); kt[9] = kd(d.mtl); kt[10] = kd(d.mtt); kt[11] = kd(d.htl);
           kt[12] = kd(d.htt); kt[13] = kd(d.rsl); kt[14] = kd(d.cpl); kt[15] = kd(d.cbl); kt[16] = kd(d.cyl); kt[17] = kd(d.cyt);
           kt[18] = kd(d.cyd); kt[19] = kd(d.ohl); kt[20] = kd(d.ohd); kt[21] = kd(d.chl); kt[22] = kd(d.vol);
           for (let i = 0; i < NK; i++) if (kt[i] < 0) kt[i] = KNOB_DEF[i];
-        } else kt.set(KNOB_DEF);
+        } else kt.set(KDEF);
         let mv = 0;
-        for (let i = 0; i < NK; i++) if (kt[i] !== M.kv[i]) { mv = 1; break; }
+        for (let i = 0; i < NKX; i++) if (kt[i] !== M.kv[i]) { mv = 1; break; }
         M.mv = mv;
       }
       // one chunk's glide (≈ 5 ms to the target; the first set() snaps); returns the circuits to retune
@@ -1967,27 +2717,32 @@
       function glide() {
         const kt = M.kt, kv = M.kv;
         let mask = 0, mv = 0;
-        for (let i = 0; i < NK; i++) {
+        for (let i = 0; i < NKX; i++) {
           const t = kt[i], v = kv[i];
           if (v === t) continue;
           let nv = M.snap ? t : v + (t - v) * kS;
           if (Math.abs(t - nv) < 1e-6) nv = t; else mv = 1;
-          kv[i] = nv; mask |= KNOB_CIR[i];
+          kv[i] = nv; mask |= KCIR[i];
         }
         M.snap = false; M.mv = mv;
         return mask;
       }
       function retune(mask) {
+        if (is6) {
+          if (mask & 1) b6.kn(); if (mask & 2) s6.kn(); if (mask & 4) t6.kn(); if (mask & 8) c6.kn(); if (mask & 16) h6.kn();
+          if (mask & (1 << 30)) knobOut();
+          return;
+        }
         if (mask & 1) bd.kn(); if (mask & 2) sd.kn(); if (mask & 4) tl.kn(); if (mask & 8) tmm.kn(); if (mask & 16) th.kn();
         if (mask & 32) rs.kn(); if (mask & 64) cp.kn(); if (mask & 128) cb.kn(); if (mask & 256) cy.kn();
         if (mask & 512) oh.kn(); if (mask & 1024) chh.kn(); if (mask & 2048) ma.kn(); if (mask & (1 << 30)) knobOut();
       }
       // the drum object's accent and switches now (hits and steps latch with the panel as it is at their frame)
-      function acNow() { const d = M.drum, t = d ? +d.ac : NaN; return t === t ? (t < 0 ? 0 : t > 1 ? 1 : t) : KNOB_DEF[K.ac]; }
+      function acNow() { const d = M.drum, t = d ? +d.ac : NaN; return t === t ? (t < 0 ? 0 : t > 1 ? 1 : t) : KDEF[0]; }
       function swNow(i) { const d = M.drum, s = d ? d[SW_IDS[i]] : 0; return s === 1 || s === '1' || s === true ? 1 : 0; }
       function latch(s, Vv) { if (Vv > M.lat[s]) M.lat[s] = Vv; M.latN = 1; }
       // the latched hits, in lane (sound) order; per circuit the highest volts; a one-circuit pair: the switch's sound
-      function apply() {
+      function apply8() {
         const lat = M.lat;
         for (let s = 0; s < 16; s++) {
           const Vv = lat[s];
@@ -2009,6 +2764,24 @@
         }
         lat.fill(0); M.latN = 0;
       }
+      // the 606's latched hits in lane order (BD SD LT HT CY OH CH: the CH's choke after the OH's trigger); the tom pair and
+      // the hat pair are one circuit each, both of a pair fire (the circuit decides what "together" sounds like)
+      function apply6() {
+        const lat = M.lat;
+        for (let k = 0; k < 7; k++) {
+          const s = S6[k], Vv = lat[s];
+          if (!(Vv > 0)) continue;
+          // the CH → OH choke whatever plays either (7a review 1 F3): a CH sample fires the closed hat's side muted (its
+          // C42 holds Q25 on, which drains C45) while an OH circuit can sound
+          if (s === 10) smpCut(SL[9]);
+          if (smpHit(s, Vv)) { if (s === 10 && (h6.on || !SL[9].on || SL[9].e === null)) h6.fire(Vv, true, true); continue; }
+          M.lit |= 1 << s;
+          if (s === 0) b6.fire(Vv); else if (s === 1) s6.fire(Vv); else if (s === 2 || s === 4) t6.fire(Vv, s === 4);
+          else if (s === 8) c6.fire(Vv); else h6.fire(Vv, s === 10, false);
+        }
+        lat.fill(0); M.latN = 0;
+      }
+      const apply = is6 ? apply6 : apply8;
       function anyOn() { for (let k = 0; k < V.length; k++) if (V[k].on) return true; return false; }
 
       // ---- the sample slots (§5): stored entries read lazily (SxBase.getAsset), played at the base rate in post()
@@ -2021,7 +2794,9 @@
         M.lit |= 1 << s;
         smpCut(sl);                                          // the old one fades over 2 ms
         sl.pos = 0; sl.dg = 1;
-        sl.g = (Vv <= V_N ? Vv / V_N : 1 + 0.6 * (Vv - V_N) / (V_X - V_N)) * SMP_LEVEL / (sl.e.peak > 1e-6 ? sl.e.peak : 1);
+        // the hit's volts as gain: 7a's law with the machine's V_N and accent ceiling (the 606: V_A at ACCENT 10)
+        const gv = is6 ? (Vv <= V_N6 ? Vv / V_N6 : 1 + 0.6 * (Vv - V_N6) / (V_X6 - V_N6)) * SMP_LEVEL6 : (Vv <= V_N ? Vv / V_N : 1 + 0.6 * (Vv - V_N) / (V_X - V_N)) * SMP_LEVEL;
+        sl.g = gv / (sl.e.peak > 1e-6 ? sl.e.peak : 1);
         smpAny = true;
         return true;
       }
@@ -2035,13 +2810,24 @@
           const sl = SL[s], e = sl.e;
           if (!e || (sl.pos < 0 && sl.fN === 0)) continue;
           any = true;
-          const c = S_CIR[s], lvl = tapA(clamp01(kv[LEVEL_OF[c]])) * mixG(MIX.R75);   // its LEVEL and its bus share
-          let tune = 0;
-          if (c >= 2 && c <= 4) tune = (clamp01(kv[c === 2 ? K.ltt : c === 3 ? K.mtt : K.htt]) - 0.5) * 2;
+          let lvl, tune = 0, dk;
+          if (is6) {
+            // the 606 (IMPL-7b §5): its LEVEL (a 50 k B pot: the pair's shared one), TUNE ± 1 octave at 5, DECAY a fade only
+            // below 5 (0 = 30 ms; 5 and up the whole sound)
+            const lk = S6_LEV[s], tk = S6_TUN[s], dk6 = S6_DEC[s];
+            lvl = lk >= 0 ? clamp01(kv[lk]) : 0;
+            if (tk >= 0) tune = (clamp01(kv[tk]) - 0.5) * 2;
+            const u = dk6 >= 0 ? clamp01(kv[dk6]) : 1;
+            dk = u >= 0.5 ? 0 : 1 / Math.max(1, (0.03 + u * 3) * base);
+          } else {
+            const c = S_CIR[s];
+            lvl = tapA(clamp01(kv[LEVEL_OF[c]])) * mixG(MIX.R75);   // its LEVEL and its bus share
+            if (c >= 2 && c <= 4) tune = (clamp01(kv[c === 2 ? K.ltt : c === 3 ? K.mtt : K.htt]) - 0.5) * 2;
+            const dkk = c === 0 ? kv[K.bdd] : c === 8 ? kv[K.cyd] : c === 9 ? kv[K.ohd] : 1;
+            dk = dkk >= 1 ? 0 : 1 / Math.max(1, (0.03 + dkk * 1.5) * base);   // DECAY: a fade from 30 ms (0) to none (10)
+          }
           const inc = e.rate / base * Math.pow(2, tune), lv = inc > 1.5 && e.levels.length > 1 ? 1 : 0, L = e.levels[lv];
           const Lb = L.L, Rb = L.R || L.L, len = L.len, sc = lv ? 0.5 : 1;
-          const dkk = c === 0 ? kv[K.bdd] : c === 8 ? kv[K.cyd] : c === 9 ? kv[K.ohd] : 1;
-          const dk = dkk >= 1 ? 0 : 1 / Math.max(1, (0.03 + dkk * 1.5) * base);   // DECAY: a fade from 30 ms (0) to none (10)
           for (let i = 0; i < n; i++) {
             if (sl.fN > 0) {                                   // the 2 ms fade of a restarted sound
               const x = sl.fP * sc, j = x | 0;
@@ -2060,6 +2846,60 @@
         return any;
       }
 
+      // the output stage: the summing amplifier's 220 p, the coupling into MASTER VOLUME, the output amplifier, its rails
+      function post8(L, R, mono, n) {
+        const st = smpAny ? (smpAny = smpRender(n)) : false;
+        const c1 = ost.c1, c2 = ost.c2, c3 = ost.c3, c4 = ost.c4, s = ost.s, g = ost.g, rail2 = MIX.RAIL;
+        let pk = 0;
+        for (let ch = 0; ch < (st ? 2 : 1); ch++) {
+          const out = ch === 0 ? L : R, sx = ch === 0 ? smpL : smpR, b = 4 * ch;
+          let s0 = s[b], s1 = s[b + 1], s2 = s[b + 2], s3 = s[b + 3];
+          for (let i = 0; i < n; i++) {
+            const x0 = st ? mono[i] + sx[i] : mono[i];
+            const y3 = c3[0] * x0 + s2; s2 = c3[1] * x0 - c3[2] * y3;        // IC4a's 220 p
+            const y1 = c1[0] * y3 + s0; s0 = c1[1] * y3 - c1[2] * y1;        // C19 into VR1
+            const y2 = c2[0] * y1 + s1; s1 = c2[1] * y1 - c2[2] * y2;        // C23 into R77
+            const x = y2 * g;
+            let v = c4[0] * x + s3; s3 = c4[1] * x - c4[2] * v;              // IC4b's 220 p
+            const a = v < 0 ? -v : v;
+            if (a > 9) { const e = a - 9, lim = rail2 - 9; v = (v < 0 ? -1 : 1) * (9 + lim * e / (lim + e)); }
+            out[i] = v * OUT_K;
+            if (a > pk) pk = a;
+          }
+          s[b] = s0; s[b + 1] = s1; s[b + 2] = s2; s[b + 3] = s3;
+        }
+        if (!st) { for (let i = 0; i < n; i++) R[i] = L[i]; s[4] = s[0]; s[5] = s[1]; s[6] = s[2]; s[7] = s[3]; }
+        ost.live = pk > 1e-5 ? 4 : ost.live > 0 ? ost.live - 1 : 0;
+      }
+      // the 606's (R6 §10): IC14A (R189 ∥ C86) on its 7.5 V bias — the bus carries its output inverted, so it clips at
+      // +7.5 / −6 V here —, C87 into VOLUME, R191 into IC14B (R190 ∥ C88, inverting again: the output's own sign) on its
+      // rails (+6 / −7.5 V about the bias); the clamp diodes after it are not reached inside the rails [C]
+      function post6(L, R, mono, n) {
+        const st = smpAny ? (smpAny = smpRender(n)) : false;
+        const c1 = ost.c1, c2 = ost.c2, c3 = ost.c3, c4 = ost.c4, s = ost.s, g = ost.g, LO = MIX6.LO, HI = MIX6.HI;
+        let pk = 0;
+        for (let ch = 0; ch < (st ? 2 : 1); ch++) {
+          const out = ch === 0 ? L : R, sx = ch === 0 ? smpL : smpR, b = 4 * ch;
+          let s0 = s[b], s1 = s[b + 1], s2 = s[b + 2], s3 = s[b + 3];
+          for (let i = 0; i < n; i++) {
+            const x0 = st ? mono[i] + sx[i] : mono[i];
+            let y3 = c3[0] * x0 + s2; s2 = c3[1] * x0 - c3[2] * y3;          // IC14A's 220 p
+            if (y3 > LO - 1 || y3 < 1 - HI) y3 = rail6(y3, HI, LO);
+            const y1 = c1[0] * y3 + s0; s0 = c1[1] * y3 - c1[2] * y1;        // C87 into VR8
+            const y2 = c2[0] * y1 + s1; s1 = c2[1] * y1 - c2[2] * y2;        // C83 into R191
+            const x = y2 * g;
+            let v = c4[0] * x + s3; s3 = c4[1] * x - c4[2] * v;              // IC14B's 220 p
+            if (v > HI - 1 || v < 1 - LO) v = rail6(v, LO, HI);
+            out[i] = v * OUT_K6;
+            const a = v < 0 ? -v : v;
+            if (a > pk) pk = a;
+          }
+          s[b] = s0; s[b + 1] = s1; s[b + 2] = s2; s[b + 3] = s3;
+        }
+        if (!st) { for (let i = 0; i < n; i++) R[i] = L[i]; s[4] = s[0]; s[5] = s[1]; s[6] = s[2]; s[7] = s[3]; }
+        ost.live = pk > 1e-5 ? 4 : ost.live > 0 ? ost.live - 1 : 0;
+      }
+
       const DM = {
         VER,
         set(drum) { M.drum = drum && typeof drum === 'object' ? drum : null; },
@@ -2067,12 +2907,19 @@
         hit(sound, v127) {
           const s = sound | 0;
           if (!(s >= 0 && s < 16) || sound !== sound) return;
+          if (is6 && !HAS6[s]) return;                      // a sound the 606 lacks (a hostile payload's): nothing
           const v = +v127;
           if (!(v > 0)) return;
-          latch(s, vTrig(v, acNow()));
+          latch(s, is6 ? vTrig6(v, acNow()) : vTrig(v, acNow()));
         },
         trig(mask) {
           const m = mask | 0;
+          if (is6) {
+            if ((m & 0xe2e) === 0) return;
+            const Vv = (m & 1) ? vAcc6(acNow()) : V_N6;
+            for (let lane = 1; lane < 12; lane++) if ((m & (1 << lane)) && LANE_S6[lane] >= 0) latch(LANE_S6[lane], Vv);
+            return;
+          }
           if ((m & 0xffe) === 0) return;
           const Vv = (m & 1) ? V_N + acNow() * (V_X - V_N) : V_N;
           for (let lane = 1; lane < 12; lane++) {
@@ -2083,6 +2930,7 @@
         },
         render(buf, N, F0) {
           const CH = M.CH, n0 = F0 * M.OS;
+          M.n0 = n0;
           readTargets();
           // nothing sounding and nothing latched: no circuit code runs (a turned knob lands on its target)
           if (!M.latN && !anyOn() && !M.bankOn) { if (M.mv) { M.snap = true; const mk = glide(); if (mk) retune(mk); } return; }
@@ -2103,43 +2951,29 @@
             }
           }
         },
-        post(L, R, mono, n) {
-          const st = smpAny ? (smpAny = smpRender(n)) : false;
-          const c1 = ost.c1, c2 = ost.c2, c3 = ost.c3, c4 = ost.c4, s = ost.s, g = ost.g, rail2 = MIX.RAIL;
-          let pk = 0;
-          for (let ch = 0; ch < (st ? 2 : 1); ch++) {
-            const out = ch === 0 ? L : R, sx = ch === 0 ? smpL : smpR, b = 4 * ch;
-            let s0 = s[b], s1 = s[b + 1], s2 = s[b + 2], s3 = s[b + 3];
-            for (let i = 0; i < n; i++) {
-              const x0 = st ? mono[i] + sx[i] : mono[i];
-              const y3 = c3[0] * x0 + s2; s2 = c3[1] * x0 - c3[2] * y3;        // IC4a's 220 p
-              const y1 = c1[0] * y3 + s0; s0 = c1[1] * y3 - c1[2] * y1;        // C19 into VR1
-              const y2 = c2[0] * y1 + s1; s1 = c2[1] * y1 - c2[2] * y2;        // C23 into R77
-              const x = y2 * g;
-              let v = c4[0] * x + s3; s3 = c4[1] * x - c4[2] * v;              // IC4b's 220 p
-              const a = v < 0 ? -v : v;
-              if (a > 9) { const e = a - 9, lim = rail2 - 9; v = (v < 0 ? -1 : 1) * (9 + lim * e / (lim + e)); }
-              out[i] = v * OUT_K;
-              if (a > pk) pk = a;
-            }
-            s[b] = s0; s[b + 1] = s1; s[b + 2] = s2; s[b + 3] = s3;
-          }
-          if (!st) { for (let i = 0; i < n; i++) R[i] = L[i]; s[4] = s[0]; s[5] = s[1]; s[6] = s[2]; s[7] = s[3]; }
-          ost.live = pk > 1e-5 ? 4 : ost.live > 0 ? ost.live - 1 : 0;
-        },
+        post: is6 ? post6 : post8,
         live() {
           if (M.latN || smpAny || ost.live > 0) return true;
           return anyOn();
         },
         reset() {
           for (const v of V) { v.on = false; v.qn = 0; v.zero(); v.act = 0; }
-          cp.rest();                                         // (the clap's bias capacitors too: a fresh machine)
+          if (cp !== null) cp.rest();                        // (the clap's bias capacitors too: a fresh machine)
+          if (is6) { t6.actL = t6.actH = 0; h6.actO = h6.actC = 0; }
           M.lat.fill(0); M.latN = 0; M.lit = 0; nz.won = nz.pon = false; bank.lon = bank.hon = false;
           ost.s.fill(0); ost.live = 0; for (const sl of SL) { sl.pos = -1; sl.fN = 0; }
           smpAny = false; M.snap = true;
         },
         mon() {
           MON.lit = M.lit; M.lit = 0;
+          if (is6) {
+            // the 606's circuits in the 808's slots (BD 0, SD 1, LT 2, HT 4, CY 8, OH 9, CH 10; IMPL-7b §2.1): the tom pair's
+            // resonators, the hat VCA's level on the slot of the supply that drives it
+            const a = MON.act;
+            a[0] = b6.act; a[1] = s6.act; a[2] = t6.actL; a[4] = t6.actH; a[8] = c6.act; a[9] = h6.actO; a[10] = h6.actC;
+            b6.act = s6.act = t6.act = c6.act = h6.act = 0; t6.actL = t6.actH = h6.actO = h6.actC = 0;
+            return MON;
+          }
           for (let c = 0; c < NCIR; c++) { const v = CIRV[c]; MON.act[c] = v.act; v.act = 0; }
           return MON;
         },
@@ -2152,20 +2986,27 @@
           }
         },
         setSalt(s) { M.salt = (0x2545F491 ^ (s >>> 0)) >>> 0; nz.won = nz.pon = false; },
-        // test access (lane V's checks): the shared state, the circuits, the bank
-        _M: M, _v: { bd, sd, tl, tm: tmm, th, rs, cp, ma, cb, cy, oh, ch: chh }, _bank: bank, _TB: TB,
+        // test access (lanes V / V6's checks): the shared state, the circuits, the bank
+        _M: M, _bank: bank, _TB: TB, _mach: X.id,
+        _v: is6 ? { bd: b6, sd: s6, tm: t6, cy: c6, hh: h6 } : { bd, sd, tl, tm: tmm, th, rs, cp, ma, cb, cy, oh, ch: chh },
       };
       DM.setSalt(inst && inst.seedSalt ? inst.seedSalt : 0);
       setRate(inst && inst.OS > 0 ? inst.OS | 0 : 1);
       return DM;
     }
 
+    // what the engine and the tests read of a machine (IMPL-7b §2.1): SOUNDS the 16 by sound id, sids the ones it has
+    const mach = Object.freeze(Object.fromEntries(Object.values(MACH).map(X => [X.id, Object.freeze({ KNOB_IDS: X.KNOB_IDS,
+      KNOB_DEF: X.KNOB_DEF, SOUNDS: X.SOUNDS, sids: X.sids })])));
+
     globalThis.Dr808 = Object.freeze({
-      VER, SOUNDS, S_CIR, S_VAR, KNOB_IDS, KNOB_DEF, SW_IDS, V_N, V_X, OUT_K, vTrig, vMetal, create,
+      VER, SOUNDS, S_CIR, S_VAR, KNOB_IDS, KNOB_DEF, SW_IDS, V_N, V_X, OUT_K, vTrig, vMetal, create, gain, mach,
       _kpk(k) { KPK = k; },
       _cpTail(t0 = 2.0, t1 = 2.9) { CP_T0 = t0; CP_T1 = t1; },  // (the clap's fade, F4: tests only)
-      // the analog prototypes, for the tests (RC §14 target (a))
-      proto: Object.freeze({ bandH, kBil, bil1, bil2, skHP, BD, SD, TOM, TM, RS, CP, CB, MT, CY, HH, MIX, tapA, tapC, vle, Lin, BT2, V38EQ }),
+      // the analog prototypes, for the tests (RC §14 target (a); the 606's: R6 §14)
+      proto: Object.freeze({ bandH, kBil, bil1, bil2, skHP, BD, SD, TOM, TM, RS, CP, CB, MT, CY, HH, MIX, tapA, tapC, vle, Lin, BT2, V38EQ,
+        tr606: Object.freeze({ BD6, SD6, TM6, MT6, CY6, HH6, NZ6, MIX6, K6, V_N6, V_X6, OUT_K6, SMP_LEVEL6, BIAS9, BIAS4, OA_HI, vAcc6, vTrig6,
+          btDesign, pot6, rail6, jTab, jIb, fUp, fDn }) }),
     });
   } catch (err) {
     globalThis.Dr808 = null;                                   // a load failure never throws out of the script

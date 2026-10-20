@@ -899,7 +899,7 @@ test('arrangement, two-finger takeover: the flagged pointercancel (gesture.js) a
 // the tracks marked drum, null for the others (main.js wires it from the track's instrument device)
 const DMAP = () => JSON.parse(JSON.stringify(DC.DEFAULT_MAP));
 function mkDrum(o = {}) {
-  const map = o.map || DMAP(), dev = { model: 'tr808', drum: { map } };
+  const map = o.map || (o.model === 'tr606' ? JSON.parse(JSON.stringify(DC.MAP606)) : DMAP()), dev = { model: o.model || 'tr808', drum: { map } };
   const r = mk(Object.assign({}, o, { host: Object.assign({ drumRows: t => (t && t.drum !== false ? drumRowsOf(dev) : null) }, o.host) }));
   r.dev = dev;
   return r;
@@ -921,6 +921,49 @@ test('7a drumRowsOf: a drum machine\'s device → its mapped primaries, kick fir
   const r2 = drumRowsOf({ model: 'tr808', drum: { map } });
   eq([r2.length, r2[1], r2.some(e => e.name === 'Cowbell')], [15, { n: 40, name: 'Snare' }, false], 'a re-mapped snare; an unmapped cowbell has no row');
   for (const d of [null, undefined, 7, {}, { model: 'juno60', drum: { map } }, { model: '__proto__' }, { model: 'toString' }]) eq(drumRowsOf(d), null, JSON.stringify(d));
+});
+
+// (7b, IMPL-7b §4) the TR-606's rows: its seven sounds' primaries, kick first — Kick 36, Snare 38, Low tom 41, Hi tom 48, Cymbal 49,
+// Open hat 46, Closed hat 42 (the 808's primaries: a pattern moved between the machines plays the same drums)
+const ORDER6 = [36, 38, 41, 48, 49, 46, 42], NAMES6 = ['Kick', 'Snare', 'Low tom', 'Hi tom', 'Cymbal', 'Open hat', 'Closed hat'];
+test('7b drumRowsOf: a TR-606\'s device → its seven rows, kick first; a re-mapped sound moves its row; an 808 map on a 606 gives no 808-only sound a row; the 808\'s sixteen are unchanged', () => {
+  const rows = drumRowsOf({ model: 'tr606' });
+  eq(rows, ORDER6.map((n, i) => ({ n, name: NAMES6[i] })), 'no record: the 606\'s default map');
+  eq(drumRowsOf({ model: 'tr606', drum: DC.normDrum(undefined, 'tr606') }), rows, 'a fresh 606 record: the same');
+  const map = JSON.parse(JSON.stringify(DC.MAP606)); map.sd = [40, 38]; map.lt = [41, 43]; map.ht = [45, 50, 47]; // (a key belongs to one sound: 45 leaves the low tom)
+  const r2 = drumRowsOf({ model: 'tr606', drum: { map } });
+  eq([r2.length, r2[1], r2[3], r2.map(e => e.name)], [7, { n: 40, name: 'Snare' }, { n: 45, name: 'Hi tom' }, NAMES6], 'a re-mapped snare and hi tom keep their rows (HT on 45: not the 808\'s mid tom)');
+  eq(drumRowsOf({ model: 'tr606', drum: { map: DMAP() } }).map(e => e.name), NAMES6, 'an 808\'s sixteen-sound map on a 606: its seven only');
+  eq([drumRowsOf({ model: 'tr808' }).length, drumRowsOf({ model: 'tr808' }).map(e => e.n)], [16, ORDER], 'the 808 is as it was');
+});
+
+test('7b drum rows on a TR-606: seven named rows + "Other", kick at the bottom, the gutter names them; a vertical drag moves between the seven — never into "Other"; the 808-only keys sit in "Other"', () => {
+  const { roll, tr } = mkDrum({ model: 'tr606', notes: [N(0, 120, 36), N(480, 120, 38), N(960, 120, 37), N(1440, 120, 45)], rollRowH: 56 });
+  eq([roll.isDrum(), roll.drumRows().on, roll.drumRows().rows.length, roll._nRows(), roll.gut], [true, true, 7, 8, 120]);
+  eq(ORDER6.map(n => roll._row(n)), [7, 6, 5, 4, 3, 2, 1], 'kick the bottom row (7), the closed hat row 1');
+  eq([roll._row(37), roll._row(45), roll._row(60), roll._noteAt(0), roll._noteAt(7), roll._lab(36), roll._lab(48), roll._lab(37)], [0, 0, 0, -1, 36, 'Kick 36', 'Hi tom 48', 'C#2'],
+    'the rim shot, the 808\'s mid tom, middle C: "Other" (an alias too)');
+  dom.fire(roll.el, 'wheel', { deltaY: -5000, clientX: 400, clientY: 200 });
+  const tx = frameTexts(roll);
+  for (const s of ['Other', ...NAMES6, '36', '42']) ok(tx.includes(s), 'the gutter names ' + s);
+  for (const s of ['Mid tom', 'Rim shot', 'Cowbell', 'Maracas']) ok(!tx.includes(s), 'no row for ' + s);
+  const sn = tr.notes.find(x => x.n === 38), x = roll.t2x(480 + 60), h = roll.rowH;
+  for (const o of [MOUSE, {}]) {
+    sn.n = 38;
+    gest(roll, line(x, rowY(roll, 6), x, rowY(roll, 5)), o);
+    eq(sn.n, 41, 'the snare up one row: Low tom');
+    gest(roll, line(x, roll.n2y(41) + h / 2, x, roll.n2y(41) + h / 2 + 2 * h), o);
+    eq(sn.n, 36, 'down two rows: Kick');
+    gest(roll, line(x, roll.n2y(36) + h / 2, x, roll.n2y(36) + h / 2 - 30 * h, 12), o);
+    eq(sn.n, 42, 'up past the top named row: Closed hat (row 1), never "Other"');
+  }
+  const d2 = mkDrum({ model: 'tr606', notes: [N(0, 480, 38), N(480, 480, 60)] });
+  const ns = () => d2.tr.notes.map(y => y.n);
+  d2.roll.selectAll();
+  d2.roll.nudge(0, -1);
+  eq(ns(), [36, 42], 'down one row: the snare to Kick, 60 onto the closed hat (the top named row)');
+  d2.roll.nudge(0, -40);
+  eq(ns(), [36, 42], 'clamped at the kick');
 });
 
 test('7a drum rows (compact, the default): the named rows only, kick at the bottom, "Other" on top; the gutter names them; the scroll extent is the table\'s; a synth track keeps the piano', () => {

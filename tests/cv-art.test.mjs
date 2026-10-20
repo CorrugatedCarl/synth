@@ -98,5 +98,14 @@ test('SIL describes every model; tileMeta() is models.js (Serum: "Serum (complet
     assert.ok(count(chip808, new RegExp(`fill="#${col}"`, 'g')) >= 1, col + ': kept at chip size');
   }
   assert.equal(count(t808, /r="2" fill="#0b0b0c"/g), 22, 'the 22 voice knobs of the twelve columns (MASTER VOLUME is not drawn)');
+  // (7b, IMPL-7b §8.2) the TR-606's tile: the TB-303's body family (a silver desktop case), six knobs, sixteen grey keys under red LEDs on a dark panel, no text
+  assert.deepEqual([A.SIL.tr606.body, A.SIL.tr606.steps, A.SIL.tr606.keys], ['desktop', 16, undefined]);
+  const t606 = A.art('tr606'), chip606 = A.chip('tr606');
+  assert.match(t606, /data-art="tr606"/);
+  assert.equal(count(t606, /r="2.5" fill="#2a2c2d"/g), 6, 'the six level knobs along the top');
+  assert.equal(count(t606, /fill="#a7a9a7"/g), 16, 'the sixteen step keys');
+  assert.equal(count(t606, /r="0.5" fill="(#d8371f|#5a1812)"/g), 16, 'a red LED over each key (every fourth lit)');
+  assert.ok(count(chip606, /fill="#d9dad7"/g) >= 1 && count(chip606, /<[a-z]+ /g) < count(t606, /<[a-z]+ /g), 'the chip keeps the key strip, with fewer elements');
+  assert.notEqual(t606, A.art('tb303'));
   assert.deepEqual(A.tileMeta('nope'), { id: 'nope', name: 'nope', year: 0, maker: '', label: 'nope' });
 });

@@ -6,7 +6,7 @@
 <title>SYNTH CPU bench</title>
 <!--
   SPEC-serum2 §14.1 iPad gate (owner I) and SPEC-canvas §9.1 (the stage 1a iPad baseline, repeated at stages 1d, 1e, 2b
-  and 5): runs the benchmark scenarios d–q2 of tests/bench-scenarios.mjs, plus classic-engine rows c1–c7 (the default
+  and 5): runs the benchmark scenarios d–q2 of tests/bench-scenarios.mjs, plus classic-engine rows c1–c8 (the default
   panel of six models — the DX7's Brass Ensemble — at the app's default oversampling 4), in this browser through the real engine and DSP scripts,
   evaluated on this page's main thread with AudioWorklet stand-ins — the same code the worklet runs, timed with
   performance.now(). Nothing here changes the DSP.
@@ -115,7 +115,7 @@
     <tbody id="rows"></tbody>
   </table>
 </div>
-<p class="note">Load: the median over the passes run so far (during a pass: that pass). Spread: lowest – highest pass. Red: over 0.6; amber: over the iPad target. Classic rows c1–c7 (six classic synths, 8 voices or mono, and the TR-808 playing its demo pattern; oversampling 4) have no target: they are the baseline for later engine stages. Rows d8p–d8s are the TR-808's (IMPL-7a §2.6).</p>
+<p class="note">Load: the median over the passes run so far (during a pass: that pass). Spread: lowest – highest pass. Red: over 0.6; amber: over the iPad target. Classic rows c1–c8 (six classic synths, 8 voices or mono, the TR-808 and the TR-606 playing their demo patterns; oversampling 4) have no target: they are the baseline for later engine stages. Rows d8p–d8s are the TR-808's (IMPL-7a §2.6), d6p–d6m the TR-606's (IMPL-7b §2.6).</p>
 <pre id="json" hidden></pre>
 </main>
 <script type="module">
@@ -144,7 +144,8 @@
     const m = MODELS.find(x => x.id === model);
     return { id, label: `Classic: ${m.name} ${preset || 'default'}, ${n > 1 ? n + ' voices' : 'mono'}, OS 4`, kind: 'voice', ipad: null, env: env4, build: () => classic(model, preset, n) };
   }).concat([{ id: 'c7', label: 'Classic: TR-808 default panel, its demo pattern synced at 120 BPM (the whole track), OS 4', kind: 'track', ipad: null, env,
-    build: () => drumTrack(DEMO.a) }]); // (IMPL-7a §2.6)
+    build: () => drumTrack(DEMO.a) }, { id: 'c8', label: 'Classic: TR-606 default panel, its DEMO (I-1 → I-2 chained) synced at 120 BPM (the whole track), OS 4',
+    kind: 'track', ipad: null, env, build: () => drumTrack('demo', null, false, 'tr606') }]); // (IMPL-7a §2.6, IMPL-7b §2.6)
   const list = scenarios().concat(CLASSIC), tb = $('rows'), cells = new Map();
   for (const s of list) {
     // (cells by reference: row ids such as g" cannot be element ids)

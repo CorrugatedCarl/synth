@@ -762,7 +762,40 @@ const tr808 = {
   },
 };
 
-export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum, tr808];
+/* ================================================================ 1981 (drums) */
+// The second drum machine (IMPL-7b §1.1, §2.3): the same Inst kind, its own machine in dr-808.js (Dr808.mach.tr606: these
+// ids in this order, these defaults). Knobs only: the face's ACCENT, five LEVELs (one for both toms, one for both hats)
+// and VOLUME, then our extras — TUNE / DECAY on the named components, 5 = the stock circuit (the user's answer, §13 Q2).
+// The patch names its machine (`machine`, absent on the 808's = 'tr808'): a switch between the two is a kind boundary.
+const DR6_X = (id, label) => K(id, label, 0, 10, 5);
+const tr606 = {
+  id: 'tr606', name: 'TR-606', model: 'Drumatix', maker: 'Roland', year: 1981, family: 'drums',
+  tag: 'Drum machine · 7 sounds on analog voice circuits · trigger-voltage accent · 16-step sequencer · the TB-303’s partner',
+  about: 'Our circuit-level model of the TR-606’s voice circuits — no recordings of any machine. Seven sounds from five analog circuits, solved from their component values: a kick of two bridged-T resonators, a snare and two toms whose pitch a transistor kicks up at the hit, and a cymbal and hi-hats from six square-wave oscillators through two band-passes. One knob sets both toms and one both hi-hats; the toms share one envelope, so a hit on one bends the other while it rings, and the open hat is cut by a circuit tied to the tempo clock — shorter at faster tempos. Accent raises the trigger voltage. Its own step sequencer (32 patterns in two groups, eight tracks) follows the song by default; piano-roll notes play it too, on the General MIDI drum keys. The tune and decay knobs are ours: at their centre, the original circuit.',
+  theme: { ctl: 'knob', knob: 'tb', panel: '#c6c8c7', face: '#d4d6d5', ink: '#1a1a1a', label: '#222', accent: '#d8371f', font: 'helvetica' },
+  sections: [
+    { title: 'Accent', c: [K('ac', 'Accent', 0, 10, 5)] },
+    { title: 'Level', c: [K('bdl', 'Bass Drum', 0, 10, 7), K('sdl', 'Snare Drum', 0, 10, 7), K('tml', 'L.H. Tom', 0, 10, 7),
+      K('cyl', 'Cymbal', 0, 10, 7), K('hhl', 'O.C. Hihat', 0, 10, 7)] },
+    { title: 'Volume', c: [K('vol', 'Volume', 0, 10, 7.5)] },
+    { title: 'Tune · Decay', c: [DR6_X('bdu', 'BD Tune'), DR6_X('bdd', 'BD Decay'), DR6_X('sdu', 'SD Tune'), DR6_X('sdd', 'SD Decay'),
+      DR6_X('ltu', 'LT Tune'), DR6_X('ltd', 'LT Decay'), DR6_X('htu', 'HT Tune'), DR6_X('htd', 'HT Decay'), DR6_X('cyd', 'CY Decay'),
+      DR6_X('ohd', 'OH Decay'), DR6_X('chd', 'CH Decay')] },
+  ],
+  presets: [
+    { name: 'Init', v: {} },
+    { name: 'Deep Kick', v: { bdu: 3.5, bdd: 7 } },
+    { name: 'Tight', v: { bdd: 3, sdd: 3, ohd: 3, chd: 4 } },
+    { name: 'Long Toms', v: { ltd: 8, htd: 8, tml: 8 } },
+  ],
+  map(P, v) {
+    const d = {};
+    for (const s of this.sections) for (const c of s.c) d[c.id] = v[c.id] / 10;
+    return { engine: 'drums', machine: 'tr606', drum: d, level: 1 };
+  },
+};
+
+export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum, tr808, tr606];
 for (const m of MODELS) {
   m.controls = [];
   for (const s of m.sections) for (const c of s.c) m.controls.push(c);
