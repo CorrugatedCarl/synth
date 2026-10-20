@@ -2517,7 +2517,7 @@ export class SerumHost {
       const ls = wk.localScale(cv.el), lw = cv.el.clientWidth || r.width * ls, lh = cv.el.clientHeight || r.height * ls;
       let q = storeDensity(this.d, cv.el, ls);
       if (lw * lh * q * q > CANVAS_MAX_PX) q = Math.sqrt(CANVAS_MAX_PX / (lw * lh));
-      const w = Math.max(1, Math.round(lw * q)), h = Math.max(1, Math.round(lh * q));
+      const w = Math.max(1, Math.ceil(lw * q - 1e-6)), h = Math.max(1, Math.ceil(lh * q - 1e-6)); // (rounded up, review 2: never below q)
       if (cv.el.width !== w || cv.el.height !== h) { cv.el.width = w; cv.el.height = h; }
       cv.w = w; cv.h = h; cv.dpr = q; cv.last = null;
     }

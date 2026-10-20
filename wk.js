@@ -2761,7 +2761,7 @@ export function setStoreCaps(map) {
 export function storeCap(el) { return el && typeof el === 'object' ? storeCaps.get(el) : undefined; }
 export function fitCanvas(cv, w, hgt) {
   const s = storeDensity(cv, Math.max(1, w), Math.max(1, hgt));
-  const Wd = Math.max(1, Math.round(w * s)), Hd = Math.max(1, Math.round(hgt * s));
+  const Wd = Math.max(1, Math.ceil(w * s - 1e-6)), Hd = Math.max(1, Math.ceil(hgt * s - 1e-6)); // (rounded up: never below s px per layout px)
   if (cv.width !== Wd) cv.width = Wd;
   if (cv.height !== Hd) cv.height = Hd;
   const ctx = cv.getContext ? cv.getContext('2d') : null;

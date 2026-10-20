@@ -1273,7 +1273,7 @@ class LaneView {
   denorm(L, u) { const v = L.lo === undefined ? u : L.lo + u * (L.hi - L.lo); return L.int ? Math.round(v) : r5(v); }
   draw(L, ob, v) {
     const { w, h } = this.size(), cv = this.cv, dpr = storeDpr(this.doc, cv);
-    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    cv.width = Math.ceil(w * dpr - 1e-6); cv.height = Math.ceil(h * dpr - 1e-6); // (rounded up: never below dpr, review 2)
     const g = cv.getContext ? cv.getContext('2d') : null;
     if (!g) return;
     if (g.setTransform) g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -2497,7 +2497,7 @@ export class PianoRoll {
   }
   ctx(cv) {
     const { w, h } = this.size(), dpr = storeDpr(this.doc, cv);
-    const W = Math.round(w * dpr), H = Math.round(h * dpr);
+    const W = Math.ceil(w * dpr - 1e-6), H = Math.ceil(h * dpr - 1e-6); // (rounded up: never below dpr, review 2)
     if (cv.width !== W) cv.width = W;
     if (cv.height !== H) cv.height = H;
     const g = cv.getContext ? cv.getContext('2d') : null;

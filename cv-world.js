@@ -846,7 +846,9 @@ export function createWorld(viewport, o) {
       const r = id != null ? items.get(id) : null, on = !r || r.on;
       if (!on) offN++;
       if (wk.storeCap(cv) !== undefined) capped++;
-      const lw = +cv.offsetWidth || 0, d = lw > 0 ? w0 / lw : wk.storedDensity(cv); // (the layout box when there is one: the truth)
+      // (the layout box when there is one: the truth — its content box, both ways: a canvas' border holds none of its store
+      // (review 2: a 1 px border read 0.99 for a 1:1 store))
+      const lw = +cv.clientWidth || 0, lh = +cv.clientHeight || 0, d = lw > 0 ? (lh > 0 ? Math.min(w0 / lw, h0 / lh) : w0 / lw) : wk.storedDensity(cv);
       if (d > 0) { const q = d / (raw * k); if (q < minD) minD = q; if (on && q < onMin) onMin = q; }
     }
     const R = v => (isFinite(v) ? Math.round(v * 1e4) / 1e4 : null);

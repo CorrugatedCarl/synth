@@ -1689,6 +1689,32 @@ test('H5 planStores (pure): no cap within the budget; past it the off-screen sto
   eq([...W.planStores([S('z', 100, 100, 0.5, false, 0)], 2, 1).caps], [], 'at k ≤ 1 nothing is above the dpr');
 });
 
+test('review 2 P2: canvasStats measures a canvas against its content box (a 1 px border is no layout of its store: 396 store px for a 198 px content box at dpr 2 is 1:1, not 0.99); stores round up — at k 0.4 (dpr · k 0.8: 198 → 158.4) no store falls below 1:1', () => {
+  const { d, win, world, frame, item } = setup();
+  wk.setCanvasScale(1); wk.setStoreCaps(null);
+  win.devicePixelRatio = 2; world.resize(); frame();
+  const A = item('a', 0, 0, 500, 400);
+  world.add(A);
+  const cv = d.createElement('canvas');
+  A.body.append(cv);
+  layout(cv, 198, 148);
+  Object.defineProperty(cv, 'offsetWidth', { get: () => 200, configurable: true });
+  Object.defineProperty(cv, 'offsetHeight', { get: () => 150, configurable: true });
+  const off = wk.onRescale(cv, () => wk.fitCanvas(cv, 198, 148));
+  wk.fitCanvas(cv, 198, 148);
+  frame(2);
+  try {
+    eq([cv.width, cv.height, world.canvasStats().onMin], [396, 296, 1], 'k 1: 1:1 against the content box');
+    world.setCamera({ tx: 0, ty: 0, k: 0.4 }); frame(2);
+    const st = world.canvasStats();
+    eq([cv.width, cv.height, st.onMin >= 1], [159, 119, true], 'k 0.4: ' + st.onMin);
+  } finally {
+    off();
+    world.destroy();
+    wk.setCanvasScale(1);
+  }
+});
+
 test('H5 the world: storeDensity follows the zoom at rest; Σ past CANVAS_BUDGET caps the off-screen store, then the farthest on-screen one (repainted once); canvasStats; a pan re-plans at its rest; destroy clears the caps', () => {
   const { d, win, world, frame, item } = setup();
   wk.setCanvasScale(1); wk.setStoreCaps(null); // (the kit's scale is global: an earlier test's world zoomed)
