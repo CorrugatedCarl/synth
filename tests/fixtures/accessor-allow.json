@@ -2,8 +2,8 @@
   "about": "The accessor ratchet's allowlist (tests/lint.test.mjs, IMPL-3 §4.3): per root file the count n of code lines reading a track's v1 fields by the 1e names (t / tr / x / T / v / V . model / vals / preset / seq / fx; trk().x / curView().x; fxOf( / isSx( ). Shrink-only: above fails, below asks to lower n. `sites` name each kept line by a fragment (`has`) and its reason (`why`); a file without them gives one `why` for all (the R0 baseline, retired step by step).",
   "files": {
     "main.js": {
-      "n": 31,
-      "why": "R2 remainder: fxOf and its callers (R3), the load / new-track / model-change writes (R5), bind's globals (R5 / R6)"
+      "n": 12,
+      "why": "R3 remainder: the load / new-track / model-change writes (R5), bind's globals (R5 / R6)"
     },
     "midi.js": {
       "n": 1,

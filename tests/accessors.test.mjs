@@ -66,6 +66,7 @@ const menuAct = (key, label) => { const it = cv.menu(key).find(x => x.label === 
 const sxT = PJ().tracks.find(t => P(t).model === 'serum'); // the boot's Serum track (#serum)
 const lfoFx = fx => { const id = core.newInstance(fx, 'cho', { rack: 0 }); const I = fx.racks[0].mods.find(x => x.id === id); I.p.on = 1; return id; };
 const choPh = fx => { const I = fx.racks[0].mods.find(x => x.type === 'cho'); return I ? I.ph : undefined; };
+const fxOfK = (t, k) => t.dev[k].fx; // (a rack by its key: a Serum's own FX, a panel's)
 
 test('R0 presets (classic, the module ⋯ menu): Save sound… stores the values under the model and names the preset; Delete saved sound removes it', () => {
   const t = fresh('juno60'), d = P(t), prim = CMOD.primId(t);
@@ -298,6 +299,33 @@ test('R2 the rate line names every Serum\'s oversampling (a second Serum\'s too)
   acc.zoneWarm(t.id, id, { zone: [-1, 0, -1] });
   assert.equal(acc.msRecs.has('smp:accms2'), true);
   acc.msRecs.delete('smp:accms2'); t.dev[id].vals.s.osc[1].type = 'wt'; t.dev[id].vals.s.osc[1].multi = '';
+});
+
+test('R3 the FX phase memory per rack: syncPhases asks each rack of a graphed track by part and stores each one\'s answer; a Serum\'s preset save takes its own rack\'s', async () => {
+  const { t, id } = duo('juno60', 'serum'), pid = CMOD.destOf(t, CMOD.primId(t));
+  lfoFx(t.dev[pid].fx); lfoFx(t.dev[id].fx); api.sendPatch(t); sim.raf();
+  api.selectTrack(sxT.id); sim.raf(); // (t not shown: its racks are asked)
+  const N = api.nodes.get(t.id), node = N.node, n0 = node.posted.length;
+  assert.equal(N.graphed, true);
+  await acc.syncPhases();
+  const asked = node.posted.slice(n0).map(x => x.m).filter(m => m.t === 'fxph').map(m => JSON.stringify(m)).sort();
+  assert.deepEqual(asked, [JSON.stringify({ t: 'fxph', c: pid }), JSON.stringify({ t: 'fxph', i: id })].sort(), 'each rack by its part');
+  for (const k of [pid, id]) { const ph = choPh(fxOfK(t, k)); assert.equal(typeof ph === 'number' && ph >= 0 && ph < 1, true, k + ': ' + ph); }
+  // a snapshot of the Serum's part carries its own rack's phases: its preset save takes them (not the panel's)
+  const L = core.fxLayout(t.dev[id].fx).inst.length, at = core.fxLayout(t.dev[id].fx).inst.findIndex(e => e.type === 'cho'), ph = new Array(L).fill(NaN);
+  ph[at] = 0.8125;
+  node.port.onmessage({ data: { t: 'smon', i: id, fxph: ph } });
+  node.port.onmessage({ data: { t: 'smon', c: pid, fxph: [0.25] } });
+  const post = node.port.postMessage, held = [];
+  node.port.postMessage = (m, tr) => { if (m && m.t === 'fxph') held.push(m); else post.call(node.port, m, tr); };
+  try { api.sxSave(acc.instView(t, id), 'Acc Ph2'); } finally { node.port.postMessage = post; }
+  assert.equal(choPh(api.store.get('synth.user.serum', []).find(x => x.name === 'Acc Ph2').fx), 0.8125);
+  assert.deepEqual(held.map(m => JSON.stringify(m)), [JSON.stringify({ t: 'fxph', i: id })], 'its own rack asked, by its part');
+  node.port.onmessage({ data: { t: 'fxph', c: pid, v: [0.5] } }); // (another rack's answer completes nothing here)
+  assert.equal(choPh(api.store.get('synth.user.serum', []).find(x => x.name === 'Acc Ph2').fx), 0.8125);
+  const v = ph.slice(); v[at] = 0.0625;
+  node.port.onmessage({ data: { t: 'fxph', i: id, v } });
+  assert.equal(choPh(api.store.get('synth.user.serum', []).find(x => x.name === 'Acc Ph2').fx), 0.0625);
 });
 
 test('R2 Resample to on a second Serum: rendered alone through its own patch (buildInstPatch), into its own oscillator', async () => {

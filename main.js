@@ -130,31 +130,27 @@ const serumIds = t => (t && t.dev ? CMOD.instIds(t).filter(k => isSerumDev(t, k)
 // a track holds a v2 state (three racks of instances, §2.5); a v1 state reaching a track — an old project or autosave, a
 // preset, a chain, the default preset — is migrated where it enters (fx-core normalizeFx = migrateFx1 for v1 input: S1-variant
 // instances that render bit-identically to the Phase-1 rack, §2.6.3), with the track's Serum state as refs so the instances
-// its rows / locks / MIDI map address are kept. fxOf() migrates anything that is still v1 (an object with `p`) the same way.
+// its rows / locks / MIDI map address are kept. fxOfDev() migrates anything that is still v1 (an object with `p`) the same way.
 const isV2Fx = fx => !!fx && typeof fx === 'object' && fx.v >= 2 && Array.isArray(fx.racks);
 const fxOk = fx => !!fx && typeof fx === 'object' && (isV2Fx(fx) || (!!fx.p && typeof fx.p === 'object'));
-function fxOf(t) {
-  if (isV2Fx(t.fx)) return t.fx;
-  if (t.dev && !CMOD.fxDevOf(t)) return core.defaultFx2(); // (stage 1e: a classic primary cabled straight to OUT has no rack — an empty one, detached: nothing inserted)
-  t.fx =fxOk(t.fx) ? fxLoad(t.fx, isSerum(t) && t.vals ? t.vals.s : undefined) : core.defaultFx2();
-  return t.fx;
-}
 // the rack of a new track: a Serum track's from the default preset when it has one (migrated with its Serum state)
 function newFx(m) { const d = m && m.custom ? sxDefault() : null; return d && fxOk(d.fx) ? fxLoad(clone(d.fx), d.v.s) : core.defaultFx2(); }
 // the base value n of FX destination `id` (static g.* ids live in the Serum state) in a track's FX state: the instance's
 // parameter (§3.16.4 fxDest; v1 ids of Hyper's Dimension rows resolve through RENAME1) — MIDI-learned controllers (midi.js writeCC)
-function fxSet(t, id, n, dev) {
-  const fx = dev ? fxOfDev(t, dev) : fxOf(t);
+function fxSet(t, id, n, dev) { // (dev: the instrument whose FX — null: the primary's)
+  const fx = fxOfDev(t, dev);
   const d = core.fxDest(id, fx);
   if (d && d.inst && d.inst.p && typeof d.inst.p === 'object') d.inst.p[d.pid] = n;
 }
 const clone = x => JSON.parse(JSON.stringify(x));
-// stage 1e (IMPL-1e §3.3): the FX state of device `id` — a Serum's own (dev.fx), a panel's — migrated in place as fxOf
-// does the primary's (a classic instrument: the panel it feeds; none: the primary's, fxOf)
+// stage 1e (IMPL-1e §3.3): the FX state of device `id` — a Serum's own (dev.fx), a panel's, a classic instrument's the panel
+// it feeds; id null: the primary's (R3: fxOf's job, fxOf gone) — migrated in place (a v1 rack: fxLoad with the Serum state
+// as refs). No such rack (a classic cabled straight to OUT): an empty one, detached — nothing is inserted
 function fxOfDev(t, id) {
+  if (id == null && t && t.dev) id = CMOD.primId(t);
   let d = t && t.dev ? t.dev[id] : null;
   if (d && d.kind === 'synth' && d.model !== 'serum') { const p = CMOD.destOf(t, id); d = p && t.dev[p].kind === 'panel' ? t.dev[p] : null; }
-  if (!d) return fxOf(t);
+  if (!d) return core.defaultFx2();
   if (isV2Fx(d.fx)) return d.fx;
   d.fx = fxOk(d.fx) ? fxLoad(d.fx, d.model === 'serum' && d.vals ? d.vals.s : undefined) : core.defaultFx2();
   return d.fx;
@@ -244,7 +240,7 @@ let project;
     const old303 = store.get('synth.seq303', null);
     if (old303 && project.tracks[0].model === 'tb303') project.tracks[0].seq = old303;
   }
-  for (const t of project.tracks) { if (!t.vals || typeof t.vals !== 'object') t.vals = loadVals(modelById(t.model)); fxOf(t); }
+  for (const t of project.tracks) { if (!t.vals || typeof t.vals !== 'object') t.vals = loadVals(modelById(t.model)); fxOfDev(t, null); }
 }
 const hist = new S.History(200);
 const trk = () => project.tracks.find(t => t.id === project.selTrack) || project.tracks[0];
@@ -396,7 +392,7 @@ function modVals(tr, id, vals, m) {
   return v;
 }
 function buildPatch(tr, sr, offline = false) {
-  fxOf(tr); // (a v1 rack reaching the track is migrated in place first, as before)
+  fxOfDev(tr, null); // (a v1 rack reaching the primary's FX device is migrated in place first, as before)
   const c = CG.compileTrack(tr), v1 = c.canonical ? c.v1 : CM.primV1(tr); // (the compile's plain v1 view of the primary)
   const m = modelById(v1.model), s = m.custom && v1.vals.s ? v1.vals.s : null;
   const mv = modVals(tr, c.canonical ? c.inst : CMOD.primId(tr), v1.vals, m);
@@ -574,7 +570,7 @@ function sendPatch(tr = trk()) {
   // §9.5: the assets the patch can play (Serum needs ∪ FX needs) are posted before it; a patch that replaces a posted
   // variant of an asset (trim / fade, Convolve shaping) waits for the new variant, so the old one keeps playing
   if (!p.needs || !p.needs.length) { tables.release(tr.id); N.waitP = null; postPatch(N, p); return; }
-  const d = instOf(tr), at = { trackId: tr.id, s: isSerum(d) ? d.vals.s : null, fx: fxOf(tr), convMax: p.fxr && p.fxr.convMax };
+  const d = instOf(tr), at = { trackId: tr.id, s: isSerum(d) ? d.vals.s : null, fx: fxOfDev(tr, null), convMax: p.fxr && p.fxr.convMax };
   const done = tables.ensure(p.needs, at);
   if (tables.ready(p.needs)) { N.waitP = null; postPatch(N, p); return; }
   N.waitP = p; // a newer patch of the track replaces a waiting one
@@ -938,7 +934,7 @@ function makeNode(tr) {
   const gain = ctx.createGain(), pan = ctx.createStereoPanner(), a = ctx.createAnalyser();
   a.fftSize = 512;
   node.connect(gain); gain.connect(pan); pan.connect(master); pan.connect(a);
-  const N0 = { node, gain, pan, an: a, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: null, phWait: [], waitP: null, modsKey: mods ? mods.key : undefined };
+  const N0 = { node, gain, pan, an: a, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: new Map(), phWait: new Map(), waitP: null, modsKey: mods ? mods.key : undefined };
   const N = G ? graphCache(N0, tr, G.graph) : partCache(N0, patch);
   if (G) { // (every part starts with its options: the caches hold them)
     N.gkey = G.graph.key; N.gon = new Map(G.graph.insts.map(x => [x.id, x.on]));
@@ -954,18 +950,22 @@ function makeNode(tr) {
       const dev = typeof d.i === 'string' ? d.i : CMOD.primId(t);
       if (t.id === project.selTrack && (seqRun.has(t.id + '/' + dev) || (T.playing && seqOf(t, dev).sync))) seqStepTo(t, dev, d.s);
     }
-    else if (d.t === 'smon') { if (d.fxph && primFx(t, N, d)) N.fxph = d.fxph; monitors.deliver(id, d); }
+    else if (d.t === 'smon') { if (d.fxph) { const k = rackKey(t, N, d); if (k) N.fxph.set(k, d.fxph); } monitors.deliver(id, d); }
     else if (d.t === 'modsErr') { N.modsKey = undefined; console.warn('ModCore rejected the payload' + (d.key ? ' ' + d.key : '') + ' of track ' + t.name); } // ((E6) the node dropped it: the next build reposts
-    else if (d.t === 'fxph') { if (d.v && primFx(t, N, d)) N.fxph = d.v; for (const f of N.phWait.splice(0)) f(d.v); }
+    else if (d.t === 'fxph') { // (a rack's answer: its phase memory, its waiters)
+      const k = rackKey(t, N, d), W = k ? N.phWait.get(k) : null;
+      if (d.v && k) N.fxph.set(k, d.v);
+      if (W) { N.phWait.delete(k); for (const f of W) f(d.v); }
+    }
     else if (d.t === 'fxover' && Array.isArray(d.ids)) { // §8.5: the rack's 32 MB cap left these instances bypassed
-      const part = typeof d.c === 'string' ? d.c : typeof d.i === 'string' ? d.i : null, fx = part ? fxOfDev(t, part.replace(/\/fx$/, '')) : fxOf(t);
+      const part = typeof d.c === 'string' ? d.c : typeof d.i === 'string' ? d.i : null, fx = fxOfDev(t, part ? part.replace(/\/fx$/, '') : null); // (a legacy node: the primary's rack)
       const names = d.ids.map(x => (isV2Fx(fx) && core.instLabel(fx, x)) || x);
       notice(`FX memory limit reached — ${names.join(', ')} bypassed (track “${t.name}”)`, 8000);
     }
   };
   if (T.playing && T.a) node.port.postMessage(Object.assign({ t: 'transport', play: true, seek: true }, T.a));
   if (G) { if (G.needs.length) { learnStates(tr); tables.ensure(G.needs, { trackId: tr.id, node, convMax: convOf(G) }); } }
-  else if (patch.needs) tables.ensure(patch.needs, { trackId: tr.id, node, s: isSerum(instOf(tr)) ? instOf(tr).vals.s : null, fx: fxOf(tr), convMax: patch.fxr && patch.fxr.convMax });
+  else if (patch.needs) tables.ensure(patch.needs, { trackId: tr.id, node, s: isSerum(instOf(tr)) ? instOf(tr).vals.s : null, fx: fxOfDev(tr, null), convMax: patch.fxr && patch.fxr.convMax });
   const mw = monitors.wanted(id, N);
   if (mw.length) { node.port.postMessage({ t: 'mon', ids: mw }); monitors.on.set(id, mw.join()); }
   return N;
@@ -991,11 +991,23 @@ function cvCpu(id, N, per) {
   if (!cvView || cvView.trackId !== id) return;
   for (const k of Object.keys(sm)) { const m = cvView.modules.get(k); if (m && m.setCpu) m.setCpu(sm[k]); }
 }
-// a smon / fxph from the primary's FX (its phases are N.fxph: phase memory, presets): a legacy node's every one
-function primFx(t, N, d) {
-  if (!N.graphed || (d.i === undefined && d.c === undefined)) return true;
-  const f = CMOD.fxDevOf(t);
-  return !!f && (f.own ? d.i === f.id || d.c === f.id + '/fx' : d.c === f.id);
+// (R3) the FX phase memory per rack: N.fxph and N.phWait are Maps by rack key — the device holding the rack: a Serum's id
+// for its own FX, a panel's id. The rack a smon / fxph message is about: a legacy node's every one is its track's one rack
+// (the primary's FX device: a Serum itself, a classic's panel); a graphed node names it ({i} a Serum's own FX, {c} a
+// panel, 'iN/fx' that Serum's). rackKeys: the racks a node holds (a legacy node: that one; graphed: every Serum and panel)
+function rackKey(t, N, d) {
+  if (!N.graphed || (d.i === undefined && d.c === undefined)) { const f = CMOD.fxDevOf(t); return f ? f.id : null; }
+  if (typeof d.c === 'string') return d.c.replace(/\/fx$/, '');
+  return typeof d.i === 'string' && isSerumDev(t, d.i) ? d.i : null;
+}
+function rackKeys(t, N) {
+  if (!N.graphed) { const f = CMOD.fxDevOf(t); return f ? [f.id] : []; }
+  return [...serumIds(t), ...Object.keys(t.dev).filter(k => t.dev[k] && t.dev[k].kind === 'panel')];
+}
+// ask rack k of track t's node for its phases (the engine answers per part: a legacy node's one rack, else {i} / {c}); f gets them
+function askPhases(t, N, k, f) {
+  (N.phWait.get(k) || N.phWait.set(k, []).get(k)).push(f);
+  postTo(t, { t: 'fxph' }, k);
 }
 function syncNodes() {
   if (!ctx) return;
@@ -1316,7 +1328,7 @@ function applyRestore(p, keepSound = false) {
   // (1f review: track ids repeat across projects; its sound is its own)
   if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); if (modMove) modMoveBack(p, modMove); }
   else for (const t of p.tracks) seedPend.add(t.id); // a loaded project re-seeds the racks' LFO phases
-  for (const t of p.tracks) fxOf(t);
+  for (const t of p.tracks) fxOfDev(t, null); // (the primary's rack: a v1 one migrated in place)
   const prevSel = project.selTrack;
   project = p;
   bind();
@@ -2177,7 +2189,7 @@ function prefsChanged() {
 }
 // the latest LFO phases of a track's rack (FXRack.phases(): fxLayout order, NaN = no LFO) → the FX state (v2 inst.ph by
 // instance, v1 fx.phase; fx-core storePhases): saved with presets and projects, no re-seed (§8.1, §11.8)
-function setPhases(t, v) { if (v) core.storePhases(fxOf(t), v); }
+function setPhases(fx, v) { if (v) core.storePhases(fx, v); } // (R3: a rack, not a track)
 const MODFX = ['fx.hyper.on', 'fx.flg.on', 'fx.phs.on', 'fx.cho.on'];
 const PH_TYPES = new Set(['hyper', 'flg', 'phs', 'cho', 'bode']);
 function hasLfoFx(fx) { // a rack whose phases are worth reading back (an enabled module with an LFO)
@@ -2186,17 +2198,20 @@ function hasLfoFx(fx) { // a rack whose phases are worth reading back (an enable
     return !!I && ((PH_TYPES.has(I.type) && !!I.p && I.p.on >= 0.5) || (Array.isArray(I.br) && I.br.some(b => Array.isArray(b) && b.some(on))));
   }));
 }
-function syncPhases() {
+function syncPhases() { // (R3: every rack of every track — its node's last phases while its monitor is on, else asked)
   const jobs = [];
   for (const t of project.tracks) {
-    const N = nodes.get(t.id), fx = fxOf(t);
-    if (!N || !hasLfoFx(fx)) continue;
-    if (monitors.fx(t.id) && N.fxph) { setPhases(t, N.fxph); continue; }
-    jobs.push(new Promise(res => {
-      const tm = setTimeout(res, 300);
-      N.phWait.push(v => { clearTimeout(tm); setPhases(t, v); res(); });
-      N.node.port.postMessage({ t: 'fxph' });
-    }));
+    const N = nodes.get(t.id);
+    if (!N) continue;
+    for (const k of rackKeys(t, N)) {
+      const fx = fxOfDev(t, k);
+      if (!hasLfoFx(fx)) continue;
+      if (monitors.fx(t.id, k) && N.fxph.get(k)) { setPhases(fx, N.fxph.get(k)); continue; }
+      jobs.push(new Promise(res => {
+        const tm = setTimeout(res, 300);
+        askPhases(t, N, k, v => { clearTimeout(tm); setPhases(fx, v); res(); });
+      }));
+    }
   }
   return Promise.all(jobs);
 }
@@ -2270,7 +2285,7 @@ function sxLoad(x, key) { // (x: a device view, stage 1e; a bare track: its prim
   const p = sxPreset(key), iv = x && instView(trOf(x), dvOf(x));
   if (!p || !isSerum(iv)) return false;
   const s = core.applyPreset(iv.vals.s, p, { midiFromPreset: prefs.midiFromPreset });
-  const cur = fxOf(iv), pfx = p.fx && typeof p.fx === 'object' ? p.fx : null;
+  const cur = iv.fx, pfx = p.fx && typeof p.fx === 'object' ? p.fx : null;
   iv.fx = core.applyPresetFx(cur, pfx || core.defaultFx2(), s);
   iv.vals.s = s;
   iv.preset = p.name; sxKeys.set(iv.id, key); sxDirty.delete(iv.id);
@@ -2282,28 +2297,27 @@ function sxLoad(x, key) { // (x: a device view, stage 1e; a bare track: its prim
   return true;
 }
 function sxSaveUser(up) { store.set('synth.user.serum', up); }
-function sxSave(x, name, cat) { // (x: a device view, a bare track its primary; the FX phase memory is the primary's alone, N.fxph)
+function sxSave(x, name, cat) { // (x: a device view, a bare track its primary; R3: its own rack's phase memory, N.fxph by rack)
   name = String(name || '').trim().slice(0, 64);
   const iv = x && instView(trOf(x), dvOf(x));
   if (!name || !isSerum(iv)) return null;
-  const N = isPrim(iv) ? nodes.get(trOf(iv).id) : null; // (R1: the primary's view — its patch path and phase memory as before)
-  if (N && N.fxph) setPhases(iv, N.fxph); // the rack's current LFO phases (phase memory)
+  const t = trOf(iv), dev = dvOf(iv), N = nodes.get(t.id), fx = fxOfDev(t, dev);
+  if (N && N.fxph.get(dev)) setPhases(fx, N.fxph.get(dev)); // the rack's current LFO phases (phase memory)
   const up = sxUser(), i = up.findIndex(p => p.name === name);
-  const entry = { name, cat: String(cat || 'User').trim().slice(0, 32) || 'User', v: { s: clone(iv.vals.s) }, fx: clone(fxOf(iv)) };
+  const entry = { name, cat: String(cat || 'User').trim().slice(0, 32) || 'User', v: { s: clone(iv.vals.s) }, fx: clone(fx) };
   if (i >= 0 && up[i].meta) entry.meta = up[i].meta; // overwriting keeps its rating / tags / comments
   if (i >= 0) up[i] = entry; else up.push(entry);
   sxSaveUser(up);
   iv.preset = name; sxKeys.set(iv.id, 'u:' + name); sxDirty.delete(iv.id);
   renderHeads(); persist();
-  if (N && !monitors.fx(trOf(iv).id)) { // monitoring off: ask the rack for its phases and complete the stored preset
-    N.phWait.push(v => {
+  if (N && !monitors.fx(t.id, dev)) { // monitoring off: ask the rack for its phases and complete the stored preset
+    askPhases(t, N, dev, v => {
       if (!v) return;
-      setPhases(iv, v);
+      setPhases(fx, v);
       const l = sxUser(), e = l.find(p => p.name === name);
-      if (e) { e.fx = clone(fxOf(iv)); sxSaveUser(l); }
+      if (e) { e.fx = clone(fx); sxSaveUser(l); }
       persist();
     });
-    N.node.port.postMessage({ t: 'fxph' });
   }
   return 'u:' + name;
 }
@@ -2501,7 +2515,7 @@ async function resampleTo(x, target) { // (x: a device view — a Serum besides 
   const W = await wtMod(), sr = 44100, s = iv.vals.s, bt = S.barTicks(project), fpt = sr * 60 / (project.bpm * S.PPQ);
   const gate = Math.round(bt * fpt), patch = isPrim(iv) ? buildPatch(trOf(iv), sr, true) : buildInstPatch(trOf(iv), dvOf(iv), sr, true); // (R1: the primary through buildPatch, its bytes)
   const buf = await renderOffline(sr, gate + 2 * sr, [{ tr: null, patch, os: sxOSFor(iv, sr, true), hostOS: osCap(sr),
-    song: { notes: [0, bt, 60, 127], cc: [] }, transport: { play: true, frame: 0, tick: 0, fpt, loop: false } }], { s, fx: fxOf(iv) });
+    song: { notes: [0, bt, 60, 127], cc: [] }, transport: { play: true, frame: 0, tick: 0, fpt, loop: false } }], { s, fx: iv.fx });
   const chs = [buf.getChannelData(0), buf.getChannelData(1)];
   const end = tailEnd(chs, gate, Math.pow(10, -90 / 20), Math.round(0.05 * sr), chs[0].length);
   const L = chs[0].slice(0, end), R = chs[1].slice(0, end);
@@ -2742,7 +2756,7 @@ function sxHost(t0, dv) {
   return {
     state: () => V().vals.s,
     edit: (fn, o) => { sxEdit(V(), fn, o); if (!(o && o.ui)) peerRefresh(id, 2, dev); else cvRemeasure(id, dev); cvChipSync(); }, // (the FX module follows: peerRefresh; (2a) a page switch: the knob ends re-measured)
-    fx: () => fxOf(V()),
+    fx: () => fxOfDev(T(), dev),
     editFx: (fn, o) => { fxEdit(V(), fn, o); peerRefresh(id, 2, dev); },
     v2Fx: true, // the FX state may become a v2 state in place (fx-ui / sx-ui-mix conversion, §2.6.3)
     bpm: () => project.bpm,
@@ -3136,12 +3150,11 @@ function duplicateTrack(t) {
   c.notes = S.cloneNotes(t.notes); c.cc = t.cc.map(x => ({ t: x.t, k: x.k, v: x.v }));
   c.vol = t.vol; c.pan = t.pan; c.ch = t.ch;
   seedPend.add(c.id);
-  if (t.dev) { // (stage 1e: every instrument, panel and cable with their fields — any shape; adopt reads the devices)
-    for (const k of ['model', 'vals', 'preset', 'seq', 'fx']) delete c[k];
-    Object.assign(c, { prim: t.prim, nid: t.nid, dev: clone(t.dev), wires: clone(t.wires) });
-    if (t.mods) c.mods = clone(t.mods);
-    if (t.mid !== undefined) c.mid = t.mid; // (2a: row ids never reused)
-  } else { if (t.seq) c.seq = clone(t.seq); c.fx = clone(fxOf(t)); }
+  // (stage 1e: every instrument, panel and cable with their fields — any shape; adopt reads the devices)
+  for (const k of ['model', 'vals', 'preset', 'seq', 'fx']) delete c[k];
+  Object.assign(c, { prim: t.prim, nid: t.nid, dev: clone(t.dev), wires: clone(t.wires) });
+  if (t.mods) c.mods = clone(t.mods);
+  if (t.mid !== undefined) c.mid = t.mid; // (2a: row ids never reused)
   if (t.lay) c.lay = clone(t.lay); // (the canvas layout, view only)
   project.tracks.splice(project.tracks.indexOf(t) + 1, 0, c);
   CMOD.adopt(project); // (the copy's devices keep their ids: they are per track)
@@ -6077,7 +6090,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
   globalThis.__synthTest.acc = {
     presetSave, presetDelete, presetCur, presetInit, sxCurrent, sxRename, programChange, wheelToWt, syncPhases, setPhases, projectFile,
     importMidiFile, trkListUI, instItems, zoneOf, zoneWarm, msRecs, sxRecOf, fxRecOf, instView, curView, loadVals, trackVoice, rateText,
-    sxKeys, sxDirty, presetKeys, voiceShown, seqHw, dxHw, hwDx, classicPanels, primFx,
+    sxKeys, sxDirty, presetKeys, voiceShown, seqHw, dxHw, hwDx, classicPanels, rackKey, rackKeys,
     uiLoad: p => { const was = uiLoad; uiLoad = p; return was; }, // (the panel modules never finish loading in node: a test hands them in)
   };
 }
