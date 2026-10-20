@@ -65,6 +65,7 @@ const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { c
   };
   D0.createElement = tag => fix(ce(tag));
   D0.createElementNS = (ns, tag) => fix(cn(ns, tag));
+  D0.querySelector('.scope').getClientRects = () => [{}]; // (the stub's one shared '.scope' element, which a module's body holds: a box too, for the painted count)
 }
 const api = sim.api, cv = globalThis.__synthTest.cv, acc = globalThis.__synthTest.acc, sh = globalThis.__synthTest.shell, M = cv.mod, PT = cv.parts;
 // the real Serum panels (the page's own modules); a stand-in FX rack (its UI is not under test here)
@@ -614,4 +615,59 @@ test('review 2 P1-4: a modulator dropped near an instrument is cleared by its ki
     assert.deepEqual([hsteps(), Object.keys(R2).filter(z => z !== k && hit(R2[k], R2[z]))], [n0 + 1, []]);
     cv.undo(); await settle();
   } finally { m0.rect = r0; }
+});
+
+test('S0 notice (IMPL-3 §9.9): on a touch device a track whose painted elements pass sx1\'s 1866 (the iPad session) says so once, at rest — after Show parts, Add part, a tray drop or a load; never on a desktop, under the count, mid-gesture or a second time; no History step', async () => {
+  const HEAVY = 'This many Serum parts may stutter when zooming on this device — Bundle (⋯) puts it back together.';
+  const WAIT = (PT.HEAVY_MS || 600) + 250, W = cv.world();
+  assert.equal(PT.HEAVY, 1866, 'sx1\'s painted count (bench.json "ui-m3")');
+  const t = api.addTrack(MOD('serum')); sim.raf(); cv.renderViews(); await settle(); await settle();
+  assert.deepEqual([PT.newView(), uiOf('i1', t)], ['bundled', undefined]);
+  api.notice('', 0);
+  // touch, under the count (VOICE, OSC A and the own FX): nothing
+  cv.touch(true);
+  assert.equal(PT.show('i1', true), true); await settle(); await settle();
+  await sim.settle(WAIT);
+  assert.deepEqual([PT.painted() <= PT.HEAVY, note() === HEAVY], [true, false]);
+  // a desktop: every part opened (a fully opened Serum is far past the count), nothing said
+  cv.touch(false);
+  const NS = { step: false }; // (no step, so no "Added … · tap to undo" notice either)
+  for (const k of ['osc', 'osc', 'sub', 'noise', 'filter', 'filter']) { assert.notEqual(PT.add('i1', k, null, undefined, NS), null, k); await settle(); }
+  for (const p of ['env2', 'env3', 'env4']) { assert.notEqual(PT.add('i1', 'env', null, p, NS), null, p); await settle(); }
+  for (let n = 1; n <= 4; n++) { assert.notEqual(PT.add('i1', 'lfo', null, 'lfo' + n, NS), null, 'lfo' + n); await settle(); }
+  for (const k of ['macros', 'arp', 'clip']) { assert.notEqual(PT.add('i1', k, null, undefined, NS), null, k); await settle(); }
+  await settle();
+  assert.equal(PT.painted() > PT.HEAVY, true, 'painted ' + PT.painted());
+  api.notice('', 0);
+  assert.equal(PT.show('i1', false), true); await settle(); await settle();
+  assert.equal(PT.show('i1', true), true); await settle(); await settle();
+  await sim.settle(WAIT);
+  assert.equal(note() === HEAVY, false, 'a desktop never');
+  // touch: Bundle says nothing; Show parts opens it again — while the camera moves, nothing; at rest, the notice, once, no step
+  cv.touch(true);
+  assert.equal(PT.show('i1', false), true); await settle(); await settle();
+  await sim.settle(WAIT);
+  assert.equal(note() === HEAVY, false, 'bundled: no parts to bundle');
+  const n0 = hsteps();
+  W.busy = true;
+  assert.equal(PT.show('i1', true), true); await settle(); await settle();
+  await sim.settle(WAIT);
+  assert.equal(note() === HEAVY, false, 'a gesture is under way');
+  W.busy = false;
+  await sim.settle(WAIT);
+  assert.deepEqual([note() === HEAVY, hsteps()], [true, n0 + 1], 'at rest: the notice; the one step is Show parts\'');
+  // once per session: the same again (Bundle, Show parts) says nothing more
+  api.notice('', 0);
+  assert.equal(PT.show('i1', false), true); await settle(); await settle();
+  assert.equal(PT.show('i1', true), true); await settle(); await settle();
+  await sim.settle(WAIT);
+  assert.equal(note(), '', 'a second time: nothing');
+  // Add part (the session's flag reset): the "Added … · tap to undo" notice is not overwritten — the stutter notice waits for it
+  PT.heavyReset();
+  assert.equal(PT.remove('i1/lfo4'), true); await settle(); await settle();
+  assert.equal(PT.add('i1', 'lfo', null, 'lfo4'), 'lfo4'); await settle(); await settle();
+  await sim.settle(WAIT);
+  assert.equal(/^Added LFO 4/.test(note()), true, note());
+  await sim.settle(8400);
+  assert.equal(note() === HEAVY, true, 'after the undo notice');
 });

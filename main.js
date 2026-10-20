@@ -4659,6 +4659,7 @@ function cvRender() {
   sxLabels(); // ((3) the part modules' titles carry their panels' label drags)
   cvPartsSig = sxPartsSig(trk()); // ((3) cvRelabel: a part set changed by an edit makes the modules again)
   sxSettleSoon(); // ((3) parts placed with Tidy's height guesses: moved clear once measured)
+  sxHeavySoon(); // ((3) touch: a Serum in parts past sx1's painted elements says so once, at rest)
 }
 // (1i) the keyboard bed of an instrument's Hardware layout: its box in the module's body px (null: none — the Simple layout,
 // Serum, a model without hardware keys). The default camera keeps it on screen
@@ -5614,6 +5615,35 @@ function sxSettle() {
     if (r.y !== R[k].y) { t.lay = Object.assign({}, t.lay, { [k]: Object.assign({}, t.lay[k], { y: r.y }) }); R[k] = r; moved = true; }
   }
   if (moved) { persist(); cvView.sync(t); }
+}
+
+/* ---- the S0 notice (IMPL-3 §9.9) */
+// touch devices only. The iPad session (bench.json "ui-m3") passed sx1 — one whole-panel Serum, 1866 painted elements — and failed
+// a Serum fully opened in parts with its modulators (3176): once per session, at rest after Show parts / Add part / a tray drop /
+// a load (cvRender), a track with a Serum in parts whose painted elements pass that says so. No History step; nothing while the
+// camera moves, a mounting runs, or over another timed notice ("Added … · tap to undo" keeps its tap); counted once per module set
+const SX_HEAVY = 1866, SX_HEAVY_MS = 600, SX_HEAVY_TXT = 'This many Serum parts may stutter when zooming on this device — Bundle (⋯) puts it back together.';
+let sxHeavyT = 0, sxHeavySig = '', sxHeavyDone = false;
+// ui-bench-m3's rule: an element with a layout box (a folded module's body, a hidden page have none: skipped whole)
+const sxPainted = el => { if (!el.getClientRects().length) return 0; let n = 1; for (const c of el.children) n += sxPainted(c); return n; };
+function sxHeavyCount() { let n = 0; if (cvView) for (const m of cvView.modules.values()) if (m.el) n += sxPainted(m.el); return n; }
+const sxHeavySigOf = t => t.id + ':' + (cvView ? [...cvView.modules.keys()].join() : '');
+function sxHeavySoon() {
+  const t = trk();
+  if (sxHeavyDone || sxHeavyT || !touchDev || !cvView || cvView.trackId !== t.id || sxHeavySigOf(t) === sxHeavySig || !serumIds(t).some(d => sxParts(t, d))) return;
+  sxHeavyT = setTimeout(sxHeavyRun, SX_HEAVY_MS);
+}
+function sxHeavyRun() {
+  sxHeavyT = 0;
+  const t = trk(), W = cvW();
+  if (sxHeavyDone || !touchDev || !cvOn() || !cvView || cvView.trackId !== t.id || !serumIds(t).some(d => sxParts(t, d))) return;
+  if ((W && W.busy) || cvMount || cvHold || noticeT) { sxHeavyT = setTimeout(sxHeavyRun, SX_HEAVY_MS); return; } // (not at rest: again)
+  sxHeavySig = sxHeavySigOf(t);
+  let n = 0;
+  try { n = sxHeavyCount(); } catch (err) { console.warn(err); }
+  if (n <= SX_HEAVY) return;
+  sxHeavyDone = true;
+  notice(SX_HEAVY_TXT, 9000);
 }
 
 /* ---- adding and removing parts (§2.4, §2.6) */
@@ -6865,6 +6895,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     newView: sxNewView, VIEW_DEFAULT: SX_VIEW_DEFAULT, VIEW_PREF: SX_VIEW, own: sxOwnSrc, hidden: modHidden, settle: sxSettle, spot: sxSpot, decor: sxPartsDecor,
     module: () => SXMOD, widths: () => SXW, setModule: m => { SXMOD = m || null; SXW = m ? m.PART_W || null : null; }, live: modLive, cancel: modCancel, rowsOps: modRowsOps,
     views: modViews, modSpot, modClear, mcSnap, injEnv: sxInjEnv, presetRows: dev => modPresetRows(trk(), dev),
+    painted: sxHeavyCount, heavyReset: () => { sxHeavyDone = false; sxHeavySig = ''; }, HEAVY: SX_HEAVY, HEAVY_MS: SX_HEAVY_MS, // (the S0 notice, §9.9)
   });
 }
 
