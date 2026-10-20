@@ -606,6 +606,8 @@ pitch-bend control (the tray's wheel bends it); the TB-303's keys now sound the 
 unchanged and lights up with the synth's keys; on the Mac, only if you zoom the browser itself to 125 % or more, the biggest panels
 (the Moog first) are drawn slightly below full sharpness — at normal browser zoom and on the iPad every panel stays full resolution.
 
+**Answers (the user, 2026-10-20):** 1 velocity — no, the nine stay as the originals (CS-80, DX7, TB-303 respond to where the key is touched); 2 aftertouch — Apple Pencil only; 3 bend range — keep ±2 st for now; 4 timing — **schedule A**: 1i ships on its own right after the user's S0 iPad session (built now on the holding branch `wt-1i`; lane A was already merged at 44d1623, so H edits `main.js` without an exception).
+
 ## 11. Notes (the builders fill in)
 
 ## 12. Review log (revision 2, 2026-10-20: the skeptic review against e9cd1b9)
