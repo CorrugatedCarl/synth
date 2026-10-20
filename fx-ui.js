@@ -2412,12 +2412,16 @@ export class FXRackUI {
   // (a canvas cable's row: Serum's haloArcs rule — a unipolar row [base, base + a], a bipolar row [base ± |a|/2], a bipolar
   // source (pol 'bi') [base ± |a|], a = amt·out; bypassed / zero rows none) — from the knob's normalised value; the MIX /
   // LEVEL knob under both ids (its setMod stashes per id). A knob whose rows went is cleared once (not repainted while empty).
+  // rowsOf is kept: refresh() repaints from it (a knob's base moved, a panel was built later); the host calls paintMods
+  // again whenever its rows change. (halos fix) the live dots stay across a repaint (setLive)
   paintMods(rowsOf) {
-    if (this.dead || typeof rowsOf !== 'function') return;
+    if (this.dead) return;
+    this.modRowsOf = typeof rowsOf === 'function' ? rowsOf : null;
+    if (!this.modRowsOf) return;
     for (const [id, w] of this.knobs) {
       const m = /^fx\.([a-z][a-z0-9]*)\.([A-Za-z0-9]+)$/.exec(id);
       let rows = [];
-      try { rows = m ? arr(rowsOf(id)) : []; } catch (err) { rows = []; }
+      try { rows = m ? arr(this.modRowsOf(id)) : []; } catch (err) { rows = []; }
       const arcs = [];
       if (rows.length) {
         const base = clamp01(this.val(m[1], m[2]));
@@ -2430,8 +2434,24 @@ export class FXRackUI {
           arcs.push({ from: clamp01(lo), to: clamp01(hi), kind: a < 0 ? 'neg' : 'other' });
         }
       }
-      if (arcs.length) { w.setMod({ arcs, live: null }); w.modded = true; }
-      else if (w.modded) { w.setMod(null); w.modded = false; }
+      if (arcs.length) { w.modArcs = arcs; w.setMod({ arcs, live: fin(w.modLive) ? w.modLive : null }); w.modded = true; }
+      else if (w.modded) { w.setMod(null); w.modded = false; w.modArcs = null; w.modLive = null; }
+    }
+  }
+  // (halos fix) the live dots: liveOf(destId, base) → the knob's effective normalised value or null (the host's: a Serum's
+  // snapshot eff, a panel's base + ModCore's offset), asked of the knobs that carry arcs only, at the monitor rate; a null
+  // takes the dot off. No host call → every dot off
+  setLive(liveOf) {
+    if (this.dead) return;
+    for (const [id, w] of this.knobs) {
+      if (!w.modded || !w.modArcs) continue;
+      const m = /^fx\.([a-z][a-z0-9]*)\.([A-Za-z0-9]+)$/.exec(id);
+      let v = null;
+      if (typeof liveOf === 'function' && m) { try { v = liveOf(id, clamp01(this.val(m[1], m[2]))); } catch (err) { v = null; } }
+      v = fin(v) ? clamp01(v) : null;
+      if (v === w.modLive) continue;
+      w.modLive = v;
+      w.setMod({ arcs: w.modArcs, live: v });
     }
   }
   // the control-specific items of a parameter's context menu (§13.5): Compressor RATIO ▸ Limiter Latency Comp (disabled,
@@ -2562,6 +2582,7 @@ export class FXRackUI {
       this.specId = ''; this.specD = null;
       if (typeof this.host.setTap === 'function') this.host.setTap('');
     }
+    if (this.modRowsOf) this.paintMods(this.modRowsOf); // (2b halos: the arcs follow the bases and the panels built just now)
     this.redraw();
     this.grLoop();
     this.specLoop();

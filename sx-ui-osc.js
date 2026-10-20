@@ -3092,9 +3092,10 @@ export class FilterPanel {
     const sw = mk(d, 'div', 'sxo-sw sx-route');
     sw.setAttribute('role', 'group');
     sw.setAttribute('aria-label', T + ' routing (S A B C N)');
+    // (canvas 2b) plain input switches, as in Serum: no `dest`, so no [data-dest] (the canvas mod layer's drop test, Serum's own
+    // tile drag, the halos and cable badges find nothing here); the sources' BALANCE knobs (routeControls, the MIX page) stay targets
     for (const [X] of FSRC) {
-      const id = F + 'route' + X;
-      const w = K.bind(wk.toggle({ dest: id, label: X, kind: 'btn', get: () => (filterLit(K.s(), k)[X] ? 1 : 0), set: () => this.routeTap(X) }));
+      const w = K.bind(wk.toggle({ label: X, kind: 'btn', get: () => (filterLit(K.s(), k)[X] ? 1 : 0), set: () => this.routeTap(X) }));
       w.el.title = ({ S: 'Sub', A: 'OSC A', B: 'OSC B', C: 'OSC C', N: 'Noise' })[X] + ' → ' + T;
       sw.appendChild(w.el);
     }

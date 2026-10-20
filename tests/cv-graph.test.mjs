@@ -375,19 +375,20 @@ test('2b every source kind (fixture 1): ext / slot injection / value source / cl
   const cp = pay.cp;
   assert.deepEqual([[...cp.lfoMono].slice(0, 3), cp.base[C.vi('l1.rate')], cp.base[C.vi('e2.att')], cp.base[C.vi('e2.dec')], cp.base[C.vi('e2.ca')], cp.base[C.vi('e2.cd')], cp.base[C.vi('c1.rate')], cp.macro[2]], [[1, 0, 1], 0.3, 0.2, 0.4, 0.4, 0.666, 0.4, 0.25]);
   assert.equal(cp.mN, 8, 'seven synthetic rows (the two-target knob shares one) and l1\'s keep-alive');
-  // the Serum: r1 → ext1, r2 → lfo1 injected (l2's state: ENVELOPE mode, its points, mono 0), r7 → ext2, r11 its own lfo1 as it is
+  // the Serum: r1 → ext1, r2 → lfo2 injected (l2's state: ENVELOPE mode, its points, mono 0 — the Serum's own LFO 1 is what r11
+  // reads, so the module takes the next free slot), r7 → ext2, r11 its own lfo1 as it is
   const inj = G.injectMods(d, G.modRowsFor(t, 'i1'), pay.ext, t);
-  assert.deepEqual(inj.placed, [{ id: 'r1', slot: 0, src: 'ext1' }, { id: 'r2', slot: 1, src: 'lfo1' }, { id: 'r7', slot: 2, src: 'ext2' }, { id: 'r11', slot: 3, src: 'lfo1' }]);
-  assert.deepEqual([inj.left, inj.dashed, inj.inj], [[], [], [{ id: 'r2', kind: 'lfo', k: 0, src: 'l2.out' }]]);
-  assert.deepEqual(inj.s.lfo[0], C.normLfo(t.dev.l2.lfo), 'the slot holds the module\'s LFO');
-  assert.deepEqual([inj.s.lfo[0].mono, inj.s.lfo[0].mode, inj.s.p['l1.rate']], [0, 'env', t.dev.l2.rate]);
-  assert.equal(inj.s.lfo[1], d.vals.s.lfo[1], 'the other slots by identity');
+  assert.deepEqual(inj.placed, [{ id: 'r1', slot: 0, src: 'ext1' }, { id: 'r2', slot: 1, src: 'lfo2' }, { id: 'r7', slot: 2, src: 'ext2' }, { id: 'r11', slot: 3, src: 'lfo1' }]);
+  assert.deepEqual([inj.left, inj.dashed, inj.inj], [[], [], [{ id: 'r2', kind: 'lfo', k: 1, src: 'l2.out' }]]);
+  assert.deepEqual(inj.s.lfo[1], C.normLfo(t.dev.l2.lfo), 'the slot holds the module\'s LFO');
+  assert.deepEqual([inj.s.lfo[1].mono, inj.s.lfo[1].mode, inj.s.p['l2.rate']], [0, 'env', t.dev.l2.rate]);
+  assert.equal(inj.s.lfo[0], d.vals.s.lfo[0], 'the other slots by identity (LFO 1: what r11 reads)');
   assert.notEqual(inj.s.p, d.vals.s.p);
-  assert.deepEqual(d.vals.s.lfo[0], C.normLfo({}), 'vals.s never mutated');
+  assert.deepEqual(d.vals.s.lfo[1], C.normLfo({}), 'vals.s never mutated');
   const P = G.instPatch(d, PO, G.modRowsFor(t, 'i1'), pay.ext, t);
   const used = [...P.serum.mSrc.slice(0, P.serum.mN)];
-  assert.ok(used.includes(C.SRC_INDEX.lfo1) && P.serum.lfoMono[0] === 0, 'the Serum evaluates the injected slot per voice');
-  assert.notDeepEqual(P.serumT.parts.lfo0, patchFor('serum', d.vals, d.fx, OPTS).serumT.parts.lfo0, 'the CT part of the injected LFO');
+  assert.ok(used.includes(C.SRC_INDEX.lfo2) && P.serum.lfoMono[1] === 0, 'the Serum evaluates the injected slot per voice');
+  assert.notDeepEqual(P.serumT.parts.lfo1, patchFor('serum', d.vals, d.fx, OPTS).serumT.parts.lfo1, 'the CT part of the injected LFO');
   assert.deepEqual(G.modBudget(t, 'i1', PRJ).slots, { lfo: [2, 10], env: [1, 4], chaos: [1, 2], macro: [1, 8], vals: [1, 16], ext: [2, 16] });
 });
 
@@ -625,4 +626,49 @@ test('pay.slots: lfo slots 0…9, ENV 2 3 4 1 → 10…13, chaos 14…15; only e
   const pay = cm(t);
   assert.deepEqual(pay.slots, { l1: { kind: 'lfo', i: 0 }, e1: { kind: 'env', i: 10 }, e2: { kind: 'env', i: 11 }, e3: { kind: 'env', i: 12 }, e4: { kind: 'env', i: 13 }, h1: { kind: 'chaos', i: 14 }, h2: { kind: 'chaos', i: 15 } });
   assert.deepEqual(pay.n.env, 4);
+});
+
+/* ------------------------------------------------------------------ PER NOTE injection never takes a slot a row reads or targets (stage 2b, bug: "a canvas LFO on LFO 1 Rate") */
+// a Serum (default state) with a canvas LFO module l1 (PER NOTE) and a Serum track around it, rows added by hand
+function slotTrack(rows, mono = 0) {
+  const s = C.normalizeSerum(C.defaultSerum());
+  const t = { id: 'trk_s', name: 'S', notes: [], cc: [], prim: 'i1', nid: 4, dev: { i1: { kind: 'synth', model: 'serum', vals: { s }, preset: null, fx: C.defaultFx2() }, out: { kind: 'out' } },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }], mods: [] };
+  t.dev.l1 = normModDev({ kind: 'lfo', lfo: { mono, mode: 'retrig' }, rate: 0.3 });
+  t.dev.e1 = normModDev({ kind: 'env' });
+  const R = (id, src, dst, x = {}) => ({ id, src, dst, amt: 0.5, bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0, ...x });
+  t.mods = rows.map(([id, src, dst, x]) => R(id, src, dst, x));
+  return t;
+}
+const injOf = t => { const pay = G.compileMods(t, PRJ, {}); return G.injectMods(t.dev.i1, G.modRowsFor(t, 'i1'), pay.ext, t); };
+
+test('slot injection never takes the LFO a row targets: a PER NOTE LFO on LFO 1 Rate goes to LFO 2, never into LFO 1 itself (LFO 1 would modulate its own rate); an ENV on ENV 2 Attack not into ENV 2', () => {
+  const a = injOf(slotTrack([['r1', 'l1.out', 'i1:l1.rate']]));
+  assert.deepEqual([a.placed, a.inj.map(x => [x.kind, x.k])], [[{ id: 'r1', slot: 0, src: 'lfo2' }], [['lfo', 1]]], 'LFO 2 carries the module; the row reads lfo2, not lfo1');
+  assert.deepEqual(a.s.lfo[0], C.normLfo({}), 'LFO 1 is the Serum\'s own, untouched');
+  const b = injOf(slotTrack([['r1', 'l1.out', 'i1:l2.rate'], ['r2', 'l1.out', 'i1:l1.smooth']]));
+  assert.deepEqual(b.placed.map(x => x.src), ['lfo3', 'lfo3'], 'both LFOs targeted (1 and 2): the module is in LFO 3, one slot per source');
+  const c = injOf(slotTrack([['r1', 'e1.out', 'i1:e2.att']]));
+  assert.deepEqual([c.placed, c.inj.map(x => [x.kind, x.k])], [[{ id: 'r1', slot: 0, src: 'env3' }], [['env', 2]]], 'ENV 3 carries the module, not ENV 2 whose attack the row moves');
+  // a native Serum matrix row aimed at a slot's parameter keeps that slot too
+  const t = slotTrack([['r1', 'l1.out', 'i1:f.cutoff']]);
+  t.dev.i1.vals.s.matrix[0] = C.normRow({ src: 'macro1', dst: 'l1.rate', amt: 0.3 });
+  const d = injOf(t);
+  assert.deepEqual(d.placed.find(x => x.id === 'r1').src, 'lfo2', 'the preset row macro1 → l1.rate keeps LFO 1 the Serum\'s own');
+});
+
+test('slot injection never takes an LFO / ENV a canvas row reads: the Serum\'s own LFO 1 cabled to its pan (link row) or an aux LFO 2 keeps its slot; the PER NOTE module goes to the next free one', () => {
+  const a = injOf(slotTrack([['r1', 'i1/lfo1.out', 'i1:a.pan'], ['r2', 'l1.out', 'i1:l1.rate']]));
+  assert.deepEqual(a.placed, [{ id: 'r1', slot: 0, src: 'lfo1' }, { id: 'r2', slot: 1, src: 'lfo2' }], 'r1 reads the Serum\'s own LFO 1; r2 the module in LFO 2');
+  assert.deepEqual(a.s.lfo[0], C.normLfo({}), 'LFO 1 untouched (what r1 reads)');
+  assert.equal(a.s.lfo[1].mono, 0);
+  const b = injOf(slotTrack([['r1', 'l1.out', 'i1:f.cutoff', { aux: 'lfo1' }]]));
+  assert.equal(b.placed[0].src, 'lfo2', 'a row\'s aux source lfo1 is a read of the Serum\'s LFO 1');
+  const c = injOf(slotTrack([['r1', 'i1/lfo2.out', 'i1:a.pan'], ['r2', 'i1/lfo1.out', 'i1:a.level'], ['r3', 'l1.out', 'i1:f.cutoff']]));
+  assert.deepEqual(c.placed.map(x => x.src), ['lfo2', 'lfo1', 'lfo3'], 'LFO 1 and 2 read: the module in LFO 3');
+});
+
+test('slot injection with nothing in the way is as before: the first free LFO (LFO 1) / ENV 2', () => {
+  const a = injOf(slotTrack([['r1', 'l1.out', 'i1:f.cutoff'], ['r2', 'e1.out', 'i1:a.pan']]));
+  assert.deepEqual(a.placed.map(x => x.src), ['lfo1', 'env2']);
 });

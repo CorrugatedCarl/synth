@@ -393,7 +393,8 @@ export function descs(dev) {
 //                            start from on this track: the wheel when placed, then every module (a macro: 8 entries k1…k8)
 //   linkSources(track)       the linked sources: every Serum's LFO 1–10 and ENV 1–4 ({ id, label, scope: 'track', kind:
 //                            'link', dev, port: 'out', link, perNote, used }; used: the Serum's own rows read it)
-//   destOk(dev, paramId)     { ok, why, stage }: a Serum's DESTS / own-FX id (not nomod); a classic sm / apply / proc knob
+//   destOk(dev, paramId, keep) { ok, why, stage }: a Serum's DESTS / own-FX id (not nomod; the filter's routing switches
+//                            f.route<X> / f2.route<X> are plain switches: refused unless `keep`, a row that exists); a classic sm / apply / proc knob
 //                            (chunk: stage '5'; struct / none: never; a switched-off oscillator's level: "Switch the
 //                            oscillator on…"); a panel's effect knob (not nomod)
 //   classicTarget(model, vals, ctlId) → { cls, slot, field, fields, on } | null   the engine-side target of a classic knob
@@ -524,7 +525,13 @@ export function classicTarget(model, vals, ctlId) {
 }
 const SERUM_IDS = new Set(DESTS.filter(d => !/^fx\./.test(d.id)).map(d => d.id)); // (FX ids: the Serum's own rack, dynamic)
 const NOMOD = 'This knob can’t be modulated';
-export function destOk(dev, id) {
+// (canvas 2b) the Serum filter's routing switches S A B C N (sx-ui-osc FilterPanel: f.route<X> / f2.route<X>) are plain input
+// switches in Serum, not modulation targets: no NEW cable ends on them (destOk without `keep`: the drop, the marks, the
+// parameter list); a row that already points there (a project, a preset) still compiles and edits (keep = true). The sources'
+// filter-balance destinations (x.fbal: the routing popover's BALANCE knob, the MIX page's) stay open.
+const PLAIN_SW = /^f2?\.route[A-Z]$/;
+export const plainSwitch = id => typeof id === 'string' && PLAIN_SW.test(id);
+export function destOk(dev, id, keep) {
   const no = (why, stage = null) => ({ ok: false, why, stage }), ok = { ok: true, why: '', stage: null };
   if (!isObj(dev) || typeof id !== 'string' || !id) return no(NOMOD);
   if (dev.kind === 'panel') { const d = rackDescs(isObj(dev.fx) ? dev.fx : dev.rack).find(x => x.id === id); return d && !d.nomod ? ok : no(NOMOD); }
@@ -539,7 +546,7 @@ export function destOk(dev, id) {
     return ok;
   }
   if (/^fx\./.test(id)) { const d = rackDescs(dev.fx).find(x => x.id === id); return d && !d.nomod ? ok : no(NOMOD); }
-  return SERUM_IDS.has(id) ? ok : no(NOMOD);
+  return SERUM_IDS.has(id) ? (!keep && PLAIN_SW.test(id) ? no('That is a plain switch, not a modulation target') : ok) : no(NOMOD);
 }
 export function wheelTracks(p) {
   if (!wheelOn(p) || !Array.isArray(p.tracks)) return [];

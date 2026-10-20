@@ -1147,7 +1147,8 @@ test('FILTER 1: type menus (S2 108 grouped / S1 96), display views and drag, rou
   const fl = new osc.FilterPanel(root, kit, 0);
   T.paint();
   const seen = destsIn(fl.el);
-  for (const x of ['on', 'type', 'type2', 'cutoff', 'res', 'drive', 'var', 'mix', 'pan', 'level', 'routeA', 'routeB', 'routeC', 'routeN', 'routeS']) assert.ok(seen.has('f.' + x), 'f.' + x);
+  for (const x of ['on', 'type', 'type2', 'cutoff', 'res', 'drive', 'var', 'mix', 'pan', 'level']) assert.ok(seen.has('f.' + x), 'f.' + x);
+  for (const X of 'ABCNS') assert.equal(seen.has('f.route' + X), false, 'f.route' + X + ' is a plain switch (canvas 2b), not a destination');
   assert.equal(byDest(fl.el, 'f.on').getAttribute('data-module'), 'filter');
   const t2 = byDest(fl.el, 'f.type2'), t1 = byDest(fl.el, 'f.type');
   assert.deepEqual([hidden(t2), hidden(t1)], [false, true]);
@@ -1178,7 +1179,7 @@ test('FILTER 1: type menus (S2 108 grouped / S1 96), display views and drag, rou
   assert.deepEqual([s.p['f.cutoff'], s.p['f.res']], [0.25, 0.75]);
   assert.deepEqual(T.log.filter(x => x[1] === 'Filter cutoff / res').map(x => x[2]), ['start', 'move', 'end']);
   // routing switches: lit = the source reaches this filter (route Filter, share > 0, switch on)
-  const sw = X => dom.all(fl.el).find(n => n.classList.contains('wk-tog') && n.getAttribute('data-dest') === 'f.route' + X);
+  const sw = X => dom.all(fl.el).find(n => n.classList.contains('wk-tog') && n.getAttribute('aria-label') === X);
   const lit = () => 'SABCN'.split('').filter(X => osc.filterLit(s, 0)[X]).join('');
   assert.equal(lit(), 'A');                                       // A → Filter (F1), the others Main
   dom.fire(sw('B'), 'click');                                     // B was on Main: routed to Filter with its balance at F1
@@ -1220,18 +1221,43 @@ test('FILTER 1: type menus (S2 108 grouped / S1 96), display views and drag, rou
   assert.equal(byLabel(fl.el, 'FILTER 1 routing').textContent, '→ F2');
 });
 
+test('(canvas 2b) FILTER 1 / 2: the routing switches S A B C N are plain input switches, not modulation targets — no data-dest on them or above them (the canvas mod layer and Serum\'s tile drag find no target: no drop, no halo, no badge), a tap still routes; the sources\' BALANCE knobs stay destinations', () => {
+  const { doc, s, kit, T, root } = mount();
+  const up = (n, a) => { for (let q = n; q; q = q.parentNode) if (q.getAttribute && q.getAttribute(a) != null) return q; return null; };
+  const names = { S: 'Sub', A: 'OSC A', B: 'OSC B', C: 'OSC C', N: 'Noise' };
+  for (const k of [0, 1]) {
+    const f = new osc.FilterPanel(root, kit, k), F = k ? 'f2.' : 'f.', TT = k ? 'FILTER 2' : 'FILTER 1';
+    T.paint();
+    for (const X of 'SABCN') {
+      const sw = dom.all(f.el).find(n => n.classList && n.classList.contains('wk-tog') && n.getAttribute('aria-label') === X);
+      assert.ok(sw, F + X + ' switch');
+      assert.equal(sw.getAttribute('data-dest'), null, F + 'route' + X + ': no data-dest');
+      assert.equal(up(sw, 'data-dest') === null, true, F + 'route' + X + ': nothing above it is a destination');
+      assert.equal(sw.title, names[X] + ' → ' + TT);
+    }
+    assert.equal(destsIn(f.el).has(F + 'routeS') || destsIn(f.el).has(F + 'routeA'), false, 'no route destination in the panel');
+    assert.equal(byDest(f.el, F + 'cutoff') !== undefined && byDest(f.el, F + 'on') !== undefined, true, 'the rest of the panel stays bound');
+  }
+  // the sources\' BALANCE knobs (the oscillator routing popover) keep their destinations
+  const o = new osc.OscPanel(root, kit, 0);
+  T.paint();
+  assert.equal(byDest(popBox(doc, openPop(T, root, 'OSC A routing')), 'a.fbal') !== undefined, true, 'a.fbal');
+  void s;
+});
+
 test('FILTER 2: f2.* bindings, the 108-type menu, its routing switches and display view', () => {
   const { doc, s, kit, T, root } = mount();
   const f2 = new osc.FilterPanel(root, kit, 1);
   T.paint();
   const seen = destsIn(f2.el);
-  for (const x of ['on', 'type', 'cutoff', 'res', 'drive', 'var', 'mix', 'pan', 'level', 'routeA', 'routeB', 'routeC', 'routeN', 'routeS']) assert.ok(seen.has('f2.' + x), 'f2.' + x);
+  for (const x of ['on', 'type', 'cutoff', 'res', 'drive', 'var', 'mix', 'pan', 'level']) assert.ok(seen.has('f2.' + x), 'f2.' + x);
+  for (const X of 'ABCNS') assert.equal(seen.has('f2.route' + X), false, 'f2.route' + X + ' is a plain switch (canvas 2b), not a destination');
   for (const id of seen) assert.ok(/^f2\./.test(id), id);
   assert.equal(byDest(f2.el, 'f2.on').getAttribute('data-module'), 'filter2');
   assert.equal(menuOpts(doc, byDest(f2.el, 'f2.type')).length, 108);
   closeMenus(doc);
   assert.deepEqual(osc.filterLit(s, 1), { S: false, A: false, B: false, C: false, N: false });
-  const sw = X => dom.all(f2.el).find(n => n.classList.contains('wk-tog') && n.getAttribute('data-dest') === 'f2.route' + X);
+  const sw = X => dom.all(f2.el).find(n => n.classList.contains('wk-tog') && n.getAttribute('aria-label') === X);
   // A is routed to Filter, all at F1: a tap toggles F2's switch only (serum-core toggleFilterRoute) — the balance never
   // moves, so A keeps feeding Filter 1 and a second tap restores the state
   const sw0 = s.p['f2.routeA'];
@@ -1470,7 +1496,7 @@ test('FILTER routing switch tap (serum-core toggleFilterRoute): an on-route sour
   const { s, kit, T, root } = mount();
   const F1 = new osc.FilterPanel(root, kit, 0);
   T.paint();
-  const sw = X => dom.all(F1.el).find(n => n.classList.contains('wk-tog') && n.getAttribute('data-dest') === 'f.route' + X);
+  const sw = X => dom.all(F1.el).find(n => n.classList.contains('wk-tog') && n.getAttribute('aria-label') === X);
   s.p['a.fbal'] = 1;                                                // OSC A on Filter, balance fully at F2
   const before = JSON.stringify(s);
   dom.fire(sw('A'), 'click');

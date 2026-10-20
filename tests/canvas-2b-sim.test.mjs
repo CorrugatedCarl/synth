@@ -456,3 +456,82 @@ test('(U10, U11) setTrackModel names the device being replaced and drops the hal
   U.halos(T());
   assert.equal(U.mons.has(k), true);
 });
+
+test('(canvas 2b) the Serum filter\'s routing switches S A B C N take no cable: canMod refuses, the drag marks nothing on them, a programmatic connect adds no row, the parameter list greys them; the sources\' filter-balance destinations stay open; a row that already points at one keeps compiling', () => {
+  const a = fresh('serum');
+  drop('lfo');
+  const SW = ['f.routeS', 'f.routeA', 'f.routeC', 'f2.routeN', 'f2.routeB'], BAL = ['a.fbal', 'b.fbal', 'c.fbal', 's.fbal', 'n.fbal'];
+  assert.deepEqual(SW.map(id => M.opts.canMod('l1.out', 'i1:' + id).ok), SW.map(() => false));
+  assert.deepEqual(SW.map(id => M.marks()('i1', id)), SW.map(() => false));
+  assert.deepEqual(BAL.map(id => [M.opts.canMod('l1.out', 'i1:' + id).ok, M.marks()('i1', id)]), BAL.map(() => [true, true]));
+  const n0 = hsteps();
+  M.opts.onMod('l1.out', 'i1:f.routeS'); sim.raf();
+  assert.deepEqual([rows(a), hsteps()], ['', n0], 'refused: no row, no step');
+  const D = M.descs('i1');
+  assert.deepEqual([D.filter(x => /^f2?\.route[A-Z]$/.test(x.id)).length > 0, D.filter(x => /^f2?\.route[A-Z]$/.test(x.id)).every(x => x.nomod), D.filter(x => /\.fbal$/.test(x.id)).length, D.filter(x => /\.fbal$/.test(x.id)).some(x => x.nomod)], [true, true, 5, false]);
+  // a row that exists already (a saved project): compiled as ever
+  a.mods = [{ id: 'r1', src: 'l1.out', dst: 'i1:f.routeS', amt: -1, bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 }];
+  a.mid = 2;
+  const pay = api.buildMods(a), cp = lastPatch(a, 'i1') || null;
+  assert.equal(pay.off || pay.rows.length === 0, true, 'the Serum row goes through ext (no ModCore row)');
+  assert.equal(pay.ext.length, 1, 'ext1 feeds the Serum\'s f.routeS');
+  void cp;
+});
+
+test('(2b halos) a shared panel\'s knob with a canvas cable: modHalos paints the panel\'s rack (fx-ui paintMods) with the row — its source label and polarity — and clears it with the row; the rack\'s monitor message carrying the ModCore offsets moves the live dot (base + mo), none without; a Serum\'s own FX rack takes its dot from the snapshot\'s eff at the knob\'s FX-context index', () => {
+  const j = fresh('juno60');
+  drop('lfo');
+  const pid = Object.keys(j.dev).find(k => j.dev[k].kind === 'panel'), iid = cv.fx.addEffect(pid, 'rev'), dst = pid + ':fx.' + iid + '.mix';
+  sim.raf();
+  M.opts.onMod('l1.out', dst); sim.raf();
+  const rec = cv.fxTab, was = { ui: rec.ui, trackId: rec.trackId, dev: rec.dev, key: rec.key, sx: rec.sx };
+  const calls = [], lives = [];
+  const showRows = f => ['fx.' + iid + '.mix', 'fx.' + iid + '.size'].map(id => f(id).map(r => [r.id, r.src, r.label, r.pol, r.amt].join(':')).join('|')).join(' / ');
+  Object.assign(rec, { ui: { paintMods: f => calls.push(showRows(f)), setLive: f => lives.push(f === null ? 'off' : f('fx.' + iid + '.mix', 0.5) + '/' + f('fx.' + iid + '.size', 0.5)), refresh() {}, destroy() {} }, trackId: j.id, dev: pid, key: pid, sx: false });
+  try {
+    U.modHalos(j);
+    assert.deepEqual(calls, ['r1:l1.out:LFO 1:uni:' + j.mods[0].amt + ' / '], 'the panel\'s rack painted with the cable\'s row');
+    // the ModCore offsets of the rack's monitor message → the live dot: base + mo[fx index], none for a knob without a cable
+    const fxr = lastMods(j).rows.find(r => r.dst.kind === 'fx'), mo = new Float32Array(fxr.dst.fx + 1);
+    mo[fxr.dst.fx] = 0.2;
+    U.fxLive(j.id, pid, rec, { t: 'smon', c: pid, mo });
+    assert.deepEqual(lives, [0.5 + Math.fround(0.2) + '/null'], 'base 0.5 + 0.2 (float32); the other knob has no cable');
+    lives.length = 0;
+    U.fxLive(j.id, pid, rec, { t: 'smon', c: pid });
+    assert.deepEqual(lives, ['off'], 'no offsets (no ModCore): the dots off');
+    // an edit of the row (bypass): the rack is painted again with it (fx-ui draws no arc for a bypassed row)
+    calls.length = 0;
+    U.bypass('r1'); sim.raf();
+    assert.deepEqual(calls, ['r1:l1.out:LFO 1:uni:' + j.mods[0].amt + ' / '], 'repainted by the row edit');
+    assert.equal(T().mods[0].byp, 1);
+    // fxHalos paints one rack on demand (when the rack is built, or refreshed after an undo)
+    U.fxHalos(T(), pid);
+    assert.equal(calls.length, 2);
+    U.fxHalos(T(), 'nope');
+    assert.equal(calls.length, 2, 'no such rack: nothing');
+  } finally { Object.assign(rec, was); }
+  // a Serum's own FX: the dot from the Serum snapshot's eff
+  const a = fresh('serum');
+  drop('lfo');
+  assert.equal(cv.fx.addEffect('i1/fx', 'rev'), 'rev'); sim.raf();
+  M.opts.onMod('l1.out', 'i1:fx.rev.mix'); sim.raf();
+  const rec2 = { ui: { setLive: f => lives.push(f === null ? 'off' : f('fx.rev.mix', 0.5)), paintMods() {}, refresh() {}, destroy() {} }, trackId: a.id, dev: 'i1', key: 'i1/fx', sx: true };
+  const fxs = a.dev.i1.fx || a.fx, flat = C.fxDest('fx.rev.mix', fxs).flat, eff = new Float32Array(C.NSV + 8 + flat + 1);
+  eff[C.NSV + 8 + flat] = 0.8;
+  lives.length = 0;
+  U.fxLive(a.id, 'i1/fx', rec2, { t: 'smon', i: 'i1', s: { eff } });
+  assert.deepEqual(lives, [Math.fround(0.8)], 'eff at NSV + 8 + flat');
+});
+
+test('(bug 2) a PER NOTE LFO cabled to the Serum\'s LFO 1 Rate is injected into LFO 2 — never into LFO 1, the LFO the row moves (it would modulate its own rate); a GLOBAL one reads ext1', () => {
+  const a = fresh('serum');
+  drop('lfo');
+  M.opts.onMod('l1.out', 'i1:l1.rate'); sim.raf();
+  let cp = lastPatch(a, 'i1').serum;
+  assert.deepEqual([Array.from(cp.mSrc).slice(0, cp.mN), Array.from(cp.mDst).slice(0, cp.mN), lastMods(a).ext.length], [[C.S_EXT0], [C.vi('l1.rate')], 1], 'GLOBAL: ext1 → LFO 1 Rate');
+  U.editState('l1', { lfo: Object.assign({}, a.dev.l1.lfo, { mono: 0 }) }); sim.raf();
+  cp = lastPatch(a, 'i1').serum;
+  assert.deepEqual([Array.from(cp.mSrc).slice(0, cp.mN), Array.from(cp.mDst).slice(0, cp.mN)], [[C.SRC_INDEX.lfo2], [C.vi('l1.rate')]], 'PER NOTE: LFO 2 → LFO 1 Rate');
+  assert.deepEqual(api.sxExtra(a, 'i1', 'l1.rate').map(r => [r.id, r.src]), [['r1', 'lfo2']], 'the Serum\'s halo / knob menu name the slot');
+  assert.deepEqual(api.sxHost(a).extraMatrix().map(r => [r.src, r.tag, r.dst]), [['lfo2', 'LFO 2', 'l1.rate']]);
+});

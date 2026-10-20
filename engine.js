@@ -3925,8 +3925,9 @@ class Track extends Facade {
       I.mixPk.fill(0);
     }
     for (const c of this.chains) if (c.mon) {
-      const r = c.rack, ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null;
-      this.port.postMessage({ t: 'smon', c: c.id, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
+      const r = c.rack, ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null, mo = this.mc !== null ? this.mc.fxMon(c.id) : null;
+      // (2b halos: a panel with ModCore fx rows also posts their FX-context offsets, mo — the host's live dot of a rack knob)
+      this.port.postMessage(mo !== null ? { t: 'smon', c: c.id, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap, mo } : { t: 'smon', c: c.id, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
     }
     // the modulator modules' live meters (IMPL-2b review, lane D's open item): ModCore's source slots, [lfo 1…10, env 2, 3,
     // 4, 1, chaos 1, 2] 0…1, for a 'mods' monitor subscription ({t: 'mon', ids: [… 'mods']}); the host maps modules to

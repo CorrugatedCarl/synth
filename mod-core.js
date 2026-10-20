@@ -48,6 +48,7 @@
  *                           MC.setv[inst]  [{field, v}] effective values of the cabled apply / proc fields (span end)
  *                           MC.fxv[chain]  Float64Array(MAXFX) FX-context offsets; MC.fxHi[chain] its high-water mark;
  *                                          MC.fxKey[chain] the layout key the rows were compiled against (or undefined)
+ *                           MC.fxMon(chain)   Float32Array(fxHi) copy of MC.fxv[chain] for the chain's monitor message (null without rows)
  *                           MC.has[inst]   1 for every classic Inst with cls / set rows (the Track's modSpan gate)
  *                           (a payload with no rows and no per-note ext source never ticks the pseudo-voice: begin alone)
  *                           MC.instRows[inst]   that Inst's payload rows ({…row, slot | field, xfer}) in payload order —
@@ -139,7 +140,7 @@
         this.vT = new Float64Array(NVAL); this.vS = new Float64Array(NVAL); this.vUse = new Uint8Array(NVAL);
         this.rows = []; this.tgts = []; this.off0 = new Float64Array(0);
         this.cls0 = Object.create(null); this.cls1 = Object.create(null); this.setv = Object.create(null); this.has = Object.create(null); this.instRows = Object.create(null);
-        this.fxv = Object.create(null); this.fxHi = Object.create(null); this.fxKey = Object.create(null);
+        this.fxv = Object.create(null); this.fxHi = Object.create(null); this.fxKey = Object.create(null); this.fxMo = Object.create(null);
         this.clsIds = []; this.fxIds = [];
         this.half = true; this.halfOn = 0; this.pvOn = 0;
         this.live = new Float32Array(NLIVE); this.spans = 0;
@@ -246,6 +247,9 @@
         this.rows = R; this.tgts = TG; this.off0 = new Float64Array(R.length);
         this.cls0 = cls0; this.cls1 = cls1; this.setv = setv; this.has = has; this.instRows = instRows; this.fxv = fxv; this.fxHi = fxHi; this.fxKey = fxKey;
         this.clsIds = Object.keys(cls0); this.fxIds = Object.keys(fxv);
+        const fxMo = Object.create(null);
+        for (let j = 0; j < this.fxIds.length; j++) fxMo[this.fxIds[j]] = new Float32Array(fxHi[this.fxIds[j]]);   // (the monitor's copy, fxMon)
+        this.fxMo = fxMo;
         this.halfOn = this.half && extPerN === 0 ? 1 : 0;
         this.ok = 1;
       }
@@ -349,6 +353,15 @@
           if (tg.kind === 0) { C0[tg.id][tg.slot] += xf(tg, clamp01(tg.x0 + tg.s0)) - tg.t0; C1[tg.id][tg.slot] += d1; } else tg.fe.v += d1;
         }
         this.spans++;
+      }
+      // (2b halos) the chain's FX-context offsets of the last span, for its monitor message: a Float32Array(fxHi) (the same
+      // array every call, filled here — postMessage copies it), or null for a chain without rows; the host's live dot of a
+      // rack knob = clamp(base + mo[fx index])
+      fxMon(id) {
+        const v = this.fxv[id], o = this.fxMo[id];
+        if (v === undefined || o === undefined) return null;
+        for (let k = 0; k < o.length; k++) o[k] = v[k];
+        return o;
       }
       stats() {
         const m = this.sx.mod;

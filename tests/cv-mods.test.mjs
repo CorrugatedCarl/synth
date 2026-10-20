@@ -139,6 +139,18 @@ test('2a / 2b destOk: Serum DESTS and own-FX ids (not nomod); classic sm / apply
   assert.equal(V.destOk(null, 'f.cutoff').ok, false);
 });
 
+test('(canvas 2b) the Serum filter\'s routing switches S A B C N (f.route<X> / f2.route<X>) are plain input switches, not modulation targets: destOk refuses a NEW cable; a row that exists (keep) still validates; the sources\' filter-balance destinations and the rest stay open', () => {
+  const sx = { kind: 'synth', model: 'serum', vals: { s: C.defaultSerum() }, fx: C.defaultFx2() };
+  for (const k of ['f', 'f2']) for (const X of 'ABCNS') {
+    const id = k + '.route' + X;
+    assert.equal(V.destOk(sx, id).ok, false, id);
+    assert.deepEqual(V.destOk(sx, id).stage, null, id);
+    assert.equal(V.destOk(sx, id, true).ok, true, id + ' (an existing row keeps working)');
+    assert.equal(V.plainSwitch(id), true, id);
+  }
+  for (const id of ['a.fbal', 'b.fbal', 'c.fbal', 's.fbal', 'n.fbal', 'f.cutoff', 'f2.cutoff', 'f.on', 'f2.on', 'f.mix']) { assert.equal(V.destOk(sx, id).ok, true, id); assert.equal(V.plainSwitch(id), false, id); }
+});
+
 /* ------------------------------------------------------------------ stage 2b: every class, every source (IMPL-2b §1.1, §1.2, §7.5) */
 test('2b destOk per class (the §7.5 matrix): sm / apply / proc ok; chunk → stage 5; struct / none → never; a switched-off oscillator\'s level', () => {
   const ok = { ok: true, why: '', stage: null }, NO = { ok: false, why: 'This knob can’t be modulated', stage: null }, S5 = { ok: false, why: 'This knob takes modulation from stage 5', stage: '5' };

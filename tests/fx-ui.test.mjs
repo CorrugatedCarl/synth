@@ -1659,3 +1659,40 @@ test('(2b fixer C, U5) FXRackUI.paintMods(rowsOf): a standalone rack (mod: false
   assert.equal(byCls(m, 'wk-ci').filter(n => n.getAttribute('aria-disabled') === 'true').length, 3, 'edited on the canvas, not here');
   rack.destroy();
 });
+
+test('(2b halos) FXRackUI.setLive(liveOf): the live dot on the modded knobs only (liveOf(id, base) → n | null), their arcs kept; refresh() repaints the arcs from the knob\'s new base through the host\'s rowsOf (kept by paintMods) and a panel built later is painted too; a knob whose rows went loses its dot', () => {
+  const { rack, st } = mkRack({ fx: fx2([inst('rev', 'rev'), inst('eq', 'eq')]) });
+  const I = st.fx.racks[0].mods.find(x => x.id === 'rev');
+  I.p.mix = 0.5;
+  rack.refresh();
+  let rows = { 'fx.rev.mix': [{ id: 'r1', src: 'ext1', amt: 0.25, bi: 0, byp: 0, out: 1 }], 'fx.rv2.mix': [{ id: 'r2', src: 'ext1', amt: 0.5, bi: 0, byp: 0, out: 1 }] };
+  const log = [];
+  const hook = () => { for (const [id, w] of rack.knobs) if (!w.hooked) { w.hooked = true; const o = w.setMod; w.setMod = m => { log.push([id, m ? [m.arcs.map(a => [+a.from.toFixed(3), +a.to.toFixed(3)]), m.live == null ? null : +m.live.toFixed(3)] : null]); return o.call(w, m); }; } };
+  const last = id => { for (let k = log.length - 1; k >= 0; k--) if (log[k][0] === id) return log[k][1]; return undefined; };
+  hook();
+  rack.paintMods(id => rows[id] || []);
+  const asked = [];
+  rack.setLive((id, base) => { asked.push(id); return id === 'fx.rev.mix' ? base + 0.1 : 0.9; });
+  assert.deepEqual(asked, ['fx.rev.mix'], 'asked for the modded knobs only');
+  assert.deepEqual(last('fx.rev.mix'), [[[0.5, 0.75]], 0.6], 'the arcs kept, the dot at the host\'s value');
+  assert.equal(last('fx.eq.gainL'), undefined, 'an unmodded knob is never touched');
+  assert.equal(rack.knobs.get('fx.rev.mix').el.classList.contains('wk-modded'), true);
+  // the base moves: the next refresh repaints the arcs (the dot stays until the next snapshot)
+  I.p.mix = 0.2;
+  rack.refresh();
+  assert.deepEqual(last('fx.rev.mix'), [[[0.2, 0.45]], 0.6]);
+  // a panel built later (a second reverb) is painted by the same refresh
+  st.fx.racks[0].mods.push(inst('rv2', 'rev'));
+  rack.refresh(); hook();
+  rack.refresh();
+  const rv2 = last('fx.rv2.mix');
+  assert.deepEqual([rv2 !== undefined, rv2 && rv2[0].length, rv2 && rv2[1]], [true, 1, null], 'the new panel\'s knob: an arc from its default base, no dot yet');
+  rack.setLive(() => null);
+  assert.equal(last('fx.rev.mix')[1], null, 'no live value: no dot');
+  // the rows went: cleared, and no dot is kept for it
+  rows = {};
+  rack.paintMods(id => rows[id] || []);
+  rack.setLive(() => 0.9);
+  assert.deepEqual([last('fx.rev.mix'), last('fx.rv2.mix')], [null, null]);
+  rack.destroy();
+});

@@ -2901,7 +2901,7 @@ function renderFxTab(t = trk(), key = cvHomeKeys(t).fx) {
   if (ft) ft.textContent = `FX rack · track “${t.name}” (${modelById(t.model).name})`;
   if (key) cvBuilt.set(t.id + '/' + key, box);
   const fx = fxOfDev(t, dev), sx = own ? true : !dev && isSx(t);
-  if (rec.ui && rec.trackId === t.id && rec.fx === fx && rec.sx === sx) { rec.ui.refresh(); return; }
+  if (rec.ui && rec.trackId === t.id && rec.fx === fx && rec.sx === sx) { rec.ui.refresh(); if (key) fxHalos(t, key); return; } // (halos: the rows of the track as it is now, after an undo too)
   fxDrop(rec);
   box.innerHTML = '';
   box.append(h('p', 'boot', 'Loading the FX rack…'));
@@ -2914,8 +2914,8 @@ function renderFxTab(t = trk(), key = cvHomeKeys(t).fx) {
       rec.trackId = t.id; rec.dev = dev; rec.key = key; rec.fx = fx; rec.sx = sx;
       rec.ui = new M.fxui.FXRackUI(box, fxHost(t, rec), { embedded: false, dsp: globalThis.FXDSP || null, racks: sx ? 3 : 1, v2Fx: true });
       if (rec.ui && rec.ui.el && dev) rec.ui.el.setAttribute('data-dev', dev); // (its fx.<inst>.<pid> dests: that device's)
-      if (own && typeof rec.ui.paintMods === 'function' && CG.modRowsFor(t, own).length) { try { rec.ui.paintMods(id => sxExtra(t, own, id)); } catch (err) { console.warn(err); } } // ((U5) a Serum's own FX: the canvas rows' halos from the start)
-      rec.mon = monitors.sub(t.id, dev, { role: 'fx', live: () => rec.trackId === t.id && !!rec.ui && cvLive(key), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; } });
+      if (key) fxHalos(t, key); // ((U5, halos fix) a Serum's own FX / a shared panel: the canvas rows' halos from the start)
+      rec.mon = monitors.sub(t.id, dev, { role: 'fx', live: () => rec.trackId === t.id && !!rec.ui && cvLive(key), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; if (key) fxLive(t.id, key, rec, d); } });
     } catch (err) {
       console.error(err);
       rec.ui = null; rec.trackId = null;
@@ -5586,10 +5586,66 @@ function modHalos(t) {
   for (const d of serumIds(t)) {
     const r = sxRecOf(t.id, d);
     if (r && r.ui && r.trackId === t.id && typeof r.ui.paintMods === 'function') { try { r.ui.paintMods(true); } catch (err) { console.warn(err); } }
-    const F = fxRecOf(t.id, d + '/fx'); // ((U5) the Serum's own FX module: its rack's knobs get the canvas rows too (fx-ui paintMods))
-    if (F && F.ui && F.trackId === t.id && typeof F.ui.paintMods === 'function') { try { F.ui.paintMods(id => sxExtra(t, d, id)); } catch (err) { console.warn(err); } }
   }
+  fxHalos(t); // ((U5, halos fix) the FX racks: a Serum's own FX module, a shared panel)
   cpHalos(t); // (2b: the classic panels' rings and range bars)
+}
+/* ---- (2b halos fix) the FX racks' halos: the canvas rows on a rack's knobs (fx-ui paintMods: Serum's arc rule) and their live
+   dots (setLive). The racks: 'iN/fx' a Serum's own FX (rows through sxExtra: the Serum source each compiles to), 'fxN' a shared
+   panel (rows straight from track.mods, like a classic panel's); the live value of a knob: a Serum's snapshot eff at its
+   FX-context index, a panel's base + the ModCore offsets its monitor message carries (mo, engine.js postMon). */
+const fxKeysOf = t => [...serumIds(t).map(d => d + '/fx'), ...Object.keys(t.dev || {}).filter(k => t.dev[k] && t.dev[k].kind === 'panel')];
+const rowPol = kind => (/^(bend|chaos)$/.test(kind) ? 'bi' : 'uni');
+function fxRowsOf(t, key) { // → rowsOf(destId) for fx-ui paintMods, or null (a rack that takes no canvas rows)
+  const own = /\/fx$/.test(key) ? key.slice(0, -3) : null, memo = new Map();
+  let by = null;
+  if (own ? !isSerumDev(t, own) : !t.dev || !t.dev[key] || t.dev[key].kind !== 'panel') return null;
+  return id => {
+    if (!memo.has(id)) {
+      if (own) memo.set(id, sxExtra(t, own, id));
+      else { by = by || cpRows(t, key); memo.set(id, (by[id] || []).map(r => Object.assign({}, r, { pol: rowPol(r.kind) }))); }
+    }
+    return memo.get(id);
+  };
+}
+function fxHalos(t, only) {
+  for (const key of fxKeysOf(t)) {
+    if (only && key !== only) continue;
+    const rec = fxRecOf(t.id, key), rowsOf = rec && rec.ui && rec.trackId === t.id && typeof rec.ui.paintMods === 'function' ? fxRowsOf(t, key) : null;
+    if (rowsOf) { try { rec.ui.paintMods(rowsOf); } catch (err) { console.warn(err); } }
+  }
+}
+// the knob id → its FX-context index in a panel's ModCore offsets (mo): the payload's fx rows of that chain (cached per payload)
+const fxMoIdx = new Map(); // '<track id>/<panel>' → { key, ix: { destId: fx index } }
+function fxMoIndex(t, key) {
+  const pay = modsPay(t), k = t.id + '/' + key;
+  if (pay.off) return null;
+  let c = fxMoIdx.get(k);
+  if (!c || c.key !== pay.key) {
+    const ix = {};
+    for (const r of pay.rows) {
+      if (!r.dst || r.dst.kind !== 'fx' || r.dst.chain !== key) continue;
+      const row = (t.mods || []).find(x => x.id === r.id), D = row && modSplit(row.dst);
+      if (D) ix[D.pid] = r.dst.fx;
+    }
+    fxMoIdx.set(k, c = { key: pay.key, ix });
+  }
+  return c.ix;
+}
+// a rack's monitor message → its knobs' live dots: a Serum's own FX from the snapshot's eff (NSV + the FX-context index), a
+// panel from base + mo (the ModCore's offsets, clamped 0…1); a panel message without mo (no ModCore rows): the dots off
+function fxLive(tid, key, rec, d) {
+  const t = project.tracks.find(x => x.id === tid), u = rec && rec.ui;
+  if (!t || !u || typeof u.setLive !== 'function') return;
+  let f = null;
+  if (/\/fx$/.test(key)) {
+    const eff = d && d.s && d.s.eff, fx = eff ? fxOfDev(t, key.slice(0, -3)) : null;
+    if (eff && fx) f = id => { let q = null; try { q = core.fxDest(id, fx); } catch (err) { q = null; } const i = q && Number.isFinite(q.flat) ? core.NSV + 8 + q.flat : -1; return i >= 0 && i < eff.length ? eff[i] : null; };
+  } else if (d && d.mo) {
+    const ix = fxMoIndex(t, key), mo = d.mo;
+    if (ix) f = (id, base) => { const i = ix[id]; return i !== undefined && i < mo.length ? clamp(base + mo[i], 0, 1) : null; };
+  }
+  try { u.setLive(f); } catch (err) { console.warn(err); }
 }
 /* ---- (2b) classic halos: the rows on each control and the engine's eff snapshot (IMPL-2b §2.4, §6.2) */
 // the rows on a classic instrument's controls as classic-panel setMods reads them ({ ctlId: [{ id, src, kind, amt, bi, byp,
@@ -5711,7 +5767,7 @@ function modFromPreset(dev, slot) {
 function modDescs(dev) {
   const t = trk(), d = dev && t.dev ? t.dev[dev] : null, out = [];
   if (!d) return out;
-  if (isSerumDev(t, dev)) { for (const g of core.destMenu(d.vals.s, d.fx, { matrix: true })) for (const it of g.items) out.push({ id: it.id, label: it.label, group: g.group, nomod: false }); return out; }
+  if (isSerumDev(t, dev)) { for (const g of core.destMenu(d.vals.s, d.fx, { matrix: true })) for (const it of g.items) out.push({ id: it.id, label: it.label, group: g.group, nomod: CMOD.plainSwitch(it.id) }); return out; } // ((canvas 2b) the filter's routing switches are plain switches: greyed)
   if (d.kind === 'synth') {
     const m = modelById(d.model), by = new Map(modDescsOf(d).map(x => [x.id, x])), seen = new Set();
     const put = (group, x) => { const r = CMOD.destOk(d, x.id); seen.add(x.id); out.push(Object.assign({ id: x.id, label: x.label, group, nomod: !r.ok && !r.stage }, r.stage ? { stage: r.stage } : null, !r.ok && !r.stage && r.why ? { why: r.why } : null)); };
@@ -5789,7 +5845,7 @@ function cvRemeasure(id, dev) {
 if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
   globalThis.__synthTest.modUI = { spot: modSpot, show: modShow, hint: modHint, lane: modLane, jumpItems: modJumpItems, jump: modJump, bypass: modBypass, unstep: modUnstep, aside: modAside,
     editState: modEditState, val: modVal, learn: modLearn, cc: modCC, halos: cpHalos, snap: cpSnap, rows: cpRows, mons: cpMons, live: cpLive, srcPick: modSrcPick, left: modLeftWhy, jackTap: modJackTap, srcList: modSrcList, destDevs: modDestDevs, // (2b)
-    pay: modsPay, built: () => modsBuilt, mcMons, mcSnap, matrixRows: sxMatrixRows, fxPrune, modHalos }; // (2b fixer C)
+    pay: modsPay, built: () => modsBuilt, mcMons, mcSnap, matrixRows: sxMatrixRows, fxPrune, modHalos, fxHalos, fxLive, fxRows: fxRowsOf }; // (2b fixer C; halos fix)
 }
 
 // Track switch (SPEC-canvas §2.12, stage 1c): the new track's module frames go up at once (their sizes from its layout, its

@@ -82,7 +82,7 @@ import { trackToV2, panelOf, V1_KEYS } from './cv-migrate.js?v=9';
 import { validate, compileTrack, kindOf, port, devNum, zoneOf, LIMITS, modRowsFor, nativeRow, injectMods, modBudget } from './cv-graph.js?v=9';
 import { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, MOD_PREFIX, MOD_MULTI, destOk, srcDev, descs, modLabelOf } from './cv-mods.js?v=9';
 // (the host's one namespace for the rows: cv-mods' tables and checks, re-exported)
-export { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, MOD_PREFIX, MOD_MULTI, MOD_ORDER, destOk, sourcesOf, linkSources, wheelTracks, kindOfId, modLabelOf, modDevs, srcOf, perNoteOf } from './cv-mods.js?v=9';
+export { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, MOD_PREFIX, MOD_MULTI, MOD_ORDER, destOk, plainSwitch, sourcesOf, linkSources, wheelTracks, kindOfId, modLabelOf, modDevs, srcOf, perNoteOf } from './cv-mods.js?v=9';
 import { normModDev } from './song.js?v=9';
 import { defaultFx2, addMod as sxAddMod, normRow, N_MATRIX } from './serum-core.js?v=9';
 import { fxDest } from './fx-core.js?v=9';
@@ -347,7 +347,7 @@ function dropRows(t, id, any) {
 function dropGone(t, id) {
   const d = isObj(t) && isObj(t.dev) ? t.dev[id] : null;
   if (!isObj(d) || !Array.isArray(t.mods)) return [];
-  const hit = r => isObj(r) && typeof r.dst === 'string' && r.dst.split(':')[0] === id && !destOk(d, r.dst.slice(id.length + 1)).ok;
+  const hit = r => isObj(r) && typeof r.dst === 'string' && r.dst.split(':')[0] === id && !destOk(d, r.dst.slice(id.length + 1), true).ok; // (keep: an existing row to a plain switch survives)
   const gone = t.mods.filter(hit).map(r => r.id);
   if (gone.length) t.mods = t.mods.filter(r => !hit(r));
   return gone;
@@ -511,7 +511,7 @@ export function fromPreset(t, dev, slot, o = {}) {
   const r = M && Number.isInteger(slot) && slot >= 0 && slot < Math.min(M.length, N_MATRIX) ? M[slot] : null, src = isObj(r) ? SRC_MOD[r.src] : undefined;
   if (!src || typeof r.dst !== 'string' || !r.dst) return NO('No performance row in that slot');
   if (!srcOk(t, src, o.project)) return NO('Add the ' + MOD_LABEL[r.src] + ' module first');
-  const k = destOk(d, r.dst);
+  const k = destOk(d, r.dst, true); // (a preset row moving to the canvas exists already)
   if (!k.ok) return NO(k.why);
   // where it goes in track.mods: after the canvas rows (of this Serum) that take the free slots before `slot`, so the
   // next compile puts it back into `slot` and every other row keeps its slot (exact while there are that many)

@@ -421,6 +421,24 @@ test('fx rows: a panel\'s rack gets setMods(MC.fxv[chain], key) before process (
   assert.equal(got.length, 1, 'no further setMods calls without rows');
 });
 
+test('(2b halos) a panel\'s monitor message carries its ModCore FX-context offsets: {t: smon, c, mo} with mo = Float32Array(fxHi) holding each fx row\'s summed offset at its index (the live dot of the rack\'s knob = base + mo); no mo for a chain without rows, none once the rows are gone', () => {
+  const S = scope(), vi = S.vi;
+  const sm = synth(s => { s.matrix[0] = row('fixed', 'a.level', 0.5); s.matrix[1] = row('fixed', 'a.pan', 0.25); });
+  const p = junoTrack(S, payload(sm, { rows: [{ id: 'e', src: S_FIXED, vi: vi('a.level'), dst: { kind: 'fx', chain: 'fx1', fx: 3 } },
+    { id: 'f', src: S_FIXED, vi: vi('a.pan'), dst: { kind: 'fx', chain: 'fx1', fx: 3 } }, { id: 'g', src: S_FIXED, vi: vi('a.pan'), dst: { kind: 'fx', chain: 'fx1', fx: 1 } }] }));
+  const posts = [];
+  p.port.postMessage = d => { if (d.t === 'smon' && d.c === 'fx1') posts.push(d.mo ? Float32Array.from(d.mo) : null); };
+  p.msg({ t: 'mon', ids: ['fx1'] });
+  S.run(p, 60);
+  const L = posts[posts.length - 1];
+  assert.ok(posts.length >= 3 && L !== null, 'posted at the monitor rate with mo');
+  assert.deepEqual([L.length, L[3], L[1], L[0], L[2]], [4, 0.75, 0.25, 0, 0], 'two rows on one knob sum (0.5 + 0.25); the high-water mark is the length');
+  posts.length = 0;
+  p.msg({ t: 'mods', off: true }); S.run(p, 60);
+  assert.ok(posts.length >= 3 && posts.every(x => x === null), 'no mo once the rows are gone');
+  noAlloc(S.D, () => { const MC = p.mc; if (MC) MC.fxMon('fx1'); });
+});
+
 /* ------------------------------------------------------------------ allocation, levers */
 test('no allocation in span / noteOn / noteOff / ctl (200 spans with notes, legato, releases, value changes, a transport) — and the half-rate lever: on with global ext sources, off when an ext slot carries a per-note source', () => {
   const S = scope(), vi = S.vi;

@@ -168,3 +168,18 @@ test('U8: a macro module is born with its knobs named "Macro 1"…"Macro 8"; an 
   assert.deepEqual(t.dev.m1.names.slice(0, 3), ['Cut', 'Macro 2', 'Macro 3']);
   assert.deepEqual(S.normModDev({ kind: 'macro', names: [7, '  ', 'x'] }).names.slice(0, 3), ['Macro 1', 'Macro 2', 'x']);
 });
+
+test('(canvas 2b) the Serum filter\'s routing switches take no NEW cable (addMod: nomod) while the balance destinations do; a row that already points there keeps validating, editing and compiling; pruneRows leaves it', () => {
+  const { t } = duo(), p = { tracks: [t], perf: { wheel: { v: 1 } } };
+  MO.addModDev(t, 'lfo');
+  for (const id of ['f.routeS', 'f.routeA', 'f2.routeN', 'f2.routeC']) { const r = MO.addMod(t, 'l1.out', 'i1:' + id, { project: p }); assert.deepEqual([r.ok, r.code], [false, 'nomod'], id); }
+  assert.deepEqual(t.mods || [], [], 'no row, no step');
+  for (const id of ['a.fbal', 's.fbal', 'n.fbal']) assert.equal(MO.addMod(t, 'l1.out', 'i1:' + id, { project: p }).ok, true, id);
+  // an existing row (a project saved before): kept, editable, compiled, never pruned
+  t.mods.push({ id: 'r9', src: 'l1.out', dst: 'i1:f.routeS', amt: -1, bi: 0, curve: 0, aux: '', inv: 0, byp: 0, out: 1, acurve: 0, crv: null, rise: 0, fall: 0, slink: 0 });
+  assert.deepEqual(MO.setMod(t, 'r9', { amt: -0.5 }).ok, true);
+  assert.deepEqual(MO.pruneRows(t, 'i1'), []);
+  assert.deepEqual(MO.setModel(t, 'i1', 'serum', {}).rows, [], 'the same model: nothing dropped');
+  assert.equal(t.mods.some(r => r.id === 'r9' && r.amt === -0.5), true);
+  assert.equal(G.compileMods(t, p) !== undefined, true);
+});

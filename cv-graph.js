@@ -418,12 +418,30 @@ function writeSlot(s, kind, k, state) {
 // source; no ext entry → why 'ext'); unknown sources: neither (src null, why null)
 const lastSlots = new WeakMap(); // a Serum's vals → Map(row id → the matrix slot injectMods last gave it)
 const lastInj = new WeakMap(); // a Serum's vals → Map(canvas source id → the LFO / ENV slot it was injected into)
+// the Serum LFO / ENV slots (0-based) a module must not be injected into although their state is the default and no preset
+// row reads them: the ones a CANVAS row reads (the Serum's own LFO / ENV as a linked source, or as a row's aux) and the ones
+// any row — canvas or preset — aims at through their parameters (l<k>.* / e<k>.*: a module written into LFO 1 to modulate
+// "LFO 1 Rate" would modulate itself, and replace what LFO 1 drives)
+function busySlots(t, devId, s, rows) {
+  const L = new Set(), E = new Set();
+  const read = id => { const m = typeof id === 'string' ? /^(lfo|env)(\d+)y?$/.exec(id) : null; if (m) (m[1] === 'lfo' ? L : E).add(+m[2] - 1); };
+  const aim = id => { const m = typeof id === 'string' ? /^(l|e)(\d+)\./.exec(id) : null; if (m) (m[1] === 'l' ? L : E).add(+m[2] - 1); };
+  for (const r of rows) {
+    if (!isObj(r)) continue;
+    read(r.aux);
+    const D = splitDst(r.dst), S = typeof r.src === 'string' ? srcDev(t, r.src) : null;
+    if (D) aim(D.param);
+    if (S && S.kind === 'link' && S.q.dev === devId) read(S.q.link);
+  }
+  for (const r of isObj(s) && Array.isArray(s.matrix) ? s.matrix : []) if (isObj(r)) aim(r.dst);
+  return { L, E };
+}
 function planSerum(t, dev, rows, ext) {
   const s = isObj(dev) && isObj(dev.vals) ? dev.vals.s : null, devId = isObj(t) && isObj(t.dev) ? Object.keys(t.dev).find(k => t.dev[k] === dev) : undefined;
   const E = new Map(Array.isArray(ext) ? ext.map(e => [e.id, e.k]) : []), hint = isObj(dev) && isObj(dev.vals) ? lastInj.get(dev.vals) : null;
-  const freeL = [], freeE = [];
-  if (t) for (let k = 0; k < N_LFO; k++) if (lfoFree(s, k)) freeL.push(k);
-  if (t) for (let k = 1; k < N_ENV; k++) if (envFree(s, k)) freeE.push(k);
+  const freeL = [], freeE = [], busy = t ? busySlots(t, devId, s, rows) : null;
+  if (t) for (let k = 0; k < N_LFO; k++) if (lfoFree(s, k) && !busy.L.has(k)) freeL.push(k);
+  if (t) for (let k = 1; k < N_ENV; k++) if (envFree(s, k) && !busy.E.has(k)) freeE.push(k);
   const taken = new Map(), out = [];
   const slotFor = (id, kind) => {
     if (taken.has(id)) return taken.get(id);
@@ -563,7 +581,7 @@ function serumSig(d) {
   for (let k = 2; k <= N_ENV; k++) for (const x of ENV_ALL) hv(p['e' + k + '.' + x]);
   const M = Array.isArray(s.matrix) ? s.matrix : [];
   let n = 0;
-  for (let k = 0; k < N_MATRIX && k < M.length; k++) { const r = M[k]; if (isFree(r)) continue; n++; mixS(r.src); mixS(typeof r.aux === 'string' ? r.aux : ''); }
+  for (let k = 0; k < N_MATRIX && k < M.length; k++) { const r = M[k]; if (isFree(r)) continue; n++; mixS(r.src); mixS(typeof r.aux === 'string' ? r.aux : ''); mixS(typeof r.dst === 'string' ? r.dst : ''); } // (dst: a preset row aimed at a slot's parameter keeps the slot out of the free picture)
   mixN(n);
 }
 function sigOf(t, project, o) {
