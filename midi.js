@@ -178,7 +178,8 @@ export function writeCC(s, dest, val, fxSet, fx) {
 //                                               the track itself when it is a Serum (its id null, prim)
 //   fxSet(t, id, n, dev)                      an FX destination's base value in the FX state of track t's instrument dev
 //                                               (null: the primary's)
-//   changed(t, patch, refresh)                a Serum state was edited by MIDI: dirty mark, (queue a patch), persist,
+//   changed(t, patch, refresh, dev?)          a Serum state was edited by MIDI (dev: the instrument learned / forgotten;
+//                                               none: a mapped controller, any Serum of the track): dirty mark, (queue a patch), persist,
 //                                               (repaint the panel), in this order
 //   notice(text, ms)
 //   modCC(ch, cc, v01, ts)                    optional (canvas 2b): every control change (0–127 → 0…1) for the track's CC

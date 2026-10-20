@@ -2146,12 +2146,13 @@ function zoneOf(o, dev) { // (R6: Serum dev of the selected track — default it
 // primary's FX)
 function fxEdit(t, fn, o) { fxEditDev(trOf(t), dvOf(t), fn, o); }
 function fxEditDev(t, dev, fn, o) {
+  if (dev == null && t.dev) { const f = CMOD.fxDevOf(t); dev = f ? f.id : null; } // (no device named: the primary's FX device — a Serum's own, a classic's panel)
   fn(fxOfDev(t, dev));
   if (o && o.ui) { persist(); return; }
   fxPrune(t, dev);
   if (o && o.seed) seedPend.add(t.id);
   const d = dev && t.dev ? t.dev[dev] : null;
-  if (isSerum(d)) sxDirty.add(instView(t, dev).id); // (R1: every caller names the device)
+  if (isSerum(d)) sxDirty.add(instView(t, dev).id); // (a Serum's own FX: that Serum edited since its preset)
   queuePatch(t); persist();
 }
 // (2b, fixer C ← fixer B) an effect instance removed from a rack takes the canvas cables on its knobs with it

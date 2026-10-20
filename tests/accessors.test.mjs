@@ -434,6 +434,23 @@ test('R7 the accessors are gone: after a load, undo / redo, add / duplicate trac
   assert.deepEqual(prod.tracks.map(x => V1.some(k => k in x)), prod.tracks.map(() => false), 'production adopt: \'model\' in t === false');
 });
 
+test('R4 voice labels per instrument: a second instrument\'s live patch updates its own label (trackId/dev), never the primary\'s or the row chip', () => {
+  const { t, id } = duo('juno60', 'prophet5');
+  acc.voiceShown.set(VK(t, id), 'stale');
+  const was = acc.voiceShown.get(VK(t)), tab = sim.$('#tabTrack').textContent;
+  api.buildInstPatch(t, id); // (live: its voice mode seen)
+  assert.deepEqual([acc.voiceShown.get(VK(t, id)) !== 'stale', acc.voiceShown.get(VK(t)), sim.$('#tabTrack').textContent], [true, was, tab]);
+  assert.equal(acc.voiceShown.get(VK(t, id)), acc.trackVoice(t.dev[id]).label);
+});
+
+test('R6 the FX host without a mounted rack record (its default, detached): its edits are the current instrument\'s FX — a Serum\'s own, marked edited', () => {
+  const t = fresh('serum'), prim = CMOD.primId(t);
+  api.selectTrack(sxT.id); sim.raf(); // (t not shown: no FX module record)
+  acc.sxDirty.clear();
+  api.fxHost(t).editFx(fx => { core.newInstance(fx, 'dly', { rack: 0 }); });
+  assert.deepEqual([acc.sxDirty.has(VK(t)), t.dev[prim].fx.racks[0].mods.some(x => x.type === 'dly')], [true, true]);
+});
+
 test('R2 Resample to on a second Serum: rendered alone through its own patch (buildInstPatch), into its own oscillator', async () => {
   const { t, id } = duo('juno60', 'serum');
   const iv = acc.instView(t, id), want = sha(api.buildInstPatch(t, id, 44100, true)), prim = JSON.stringify(P(t).vals);
