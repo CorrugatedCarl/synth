@@ -1232,6 +1232,7 @@ test('(canvas 2b) FILTER 1 / 2: the routing switches S A B C N are plain input s
       const sw = dom.all(f.el).find(n => n.classList && n.classList.contains('wk-tog') && n.getAttribute('aria-label') === X);
       assert.ok(sw, F + X + ' switch');
       assert.equal(sw.getAttribute('data-dest'), null, F + 'route' + X + ': no data-dest');
+      assert.equal(sw.getAttribute('data-pdest'), F + 'route' + X, F + 'route' + X + ': the parameter marker (MIDI learn, lock; never a drop target)');
       assert.equal(up(sw, 'data-dest') === null, true, F + 'route' + X + ': nothing above it is a destination');
       assert.equal(sw.title, names[X] + ' → ' + TT);
     }

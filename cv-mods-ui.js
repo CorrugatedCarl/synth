@@ -15,7 +15,7 @@
 //   lfo    { kind: 'lfo', lfo: <normLfo shape: mode, mono, bpm, dot, trip, pts, …>, rate: n }  rate = Serum's l<k>.rate n
 //          (pow4 0…100 Hz; BPM-synced: the ladder index over its length − 1, as Serum's p holds it)
 //   env    { kind: 'env', env: <serum-core env: bpm, legInv, stealRe>, att, hold, dec, sus, rel: n (Serum's e<k>.* laws:
-//          pow5 0…32 s, sus lin), crv: [a, d, r] (−1…1: the attack / decay / release segment curvature, laws.bend) }
+//          pow5 0…32 s, sus lin), crv: [a, d, r] (0…1, 0.5 linear: Serum's e<k>.ca / cd / cr, the attack / decay / release curvature bent by 10 · (2c − 1)) }
 //   macro  { kind: 'macro', v: [8 × 0…1], names: [8 × ≤ 16 chars] }
 //   cc     { kind: 'cc', cc: 0…127, ch: 0 (omni) | 1…16, v: 0…1 }
 //   chaos  { kind: 'chaos', chaos: <serum-core chaos: mono, sh>, rate: n (Serum's c<k>.rate: pow5 0…1000 Hz; BPM-synced:
@@ -27,7 +27,7 @@
 // iPad: the wheel (.cv-mw) is touch-action: none (style.css) and ends its drag on a pointercancel (a second finger:
 // gesture.js) or a lost capture; listeners are passive where they never prevent.
 import * as wk from './wk.js?v=9';
-import { evalPts, lawValue, fmtHz, fmtTime, bend } from './laws.js?v=9';
+import { evalPts, lawValue, fmtHz, fmtTime, bend, fmtCore, parseCore } from './laws.js?v=9';
 import { lfoLadder, LFO_LADDER, LFO_MODES2 } from './serum-core.js?v=9';
 import { pts as GPTS } from './graph.js?v=9';
 
@@ -406,9 +406,14 @@ export function lfoBody(o) {
 const ENV_T = n => lawValue('pow5', 0, 32, n);
 const ENV_DEF = { att: 0.11, hold: 0, dec: 0.5, sus: 1, rel: 0.215 };
 const ENV_SEGS = [['att', 'A'], ['hold', 'H'], ['dec', 'D'], ['sus', 'S'], ['rel', 'R']];
+// the curves are Serum's e<k>.ca / cd / cr: 0…1 with 0.5 = linear, defaults 0.5 / 0.666 / 0.666 (the engine bends the segment by
+// laws.bend(q, 10 · (2c − 1))); shown and typed as Serum's ENV panel does (the 'pct' format of the 0…1 value). Stage 2b read them as
+// −1…1 (the default showed +50 / +67 / +67 and a typed "0" stored an extreme curve): stored values were always the engine's, so kept
+const ENV_CRV_DEF = [0.5, 0.666, 0.666], PCT_CTX = { law: 'lin', lo: 0, hi: 1 };
 /**
  * (2b) The ENV body: A / H / D / S / R vertical sliders (n of Serum's e<k>.* laws), a curve numBox per shaped segment
- * (crv: [a, d, r], −1…1) and an AHDSR display (svg.cv-menvd, the segments bent by laws.bend); update(v): the live level.
+ * (crv: [a, d, r], 0…1, 0.5 linear — Serum's own values and % format) and an AHDSR display (svg.cv-menvd, the segments bent
+ * by laws.bend(t, 10 · (2c − 1)), as the engine); update(v): the live level.
  * @param {{get: () => object, edit: (fields: object) => void, doc?: Document}} o
  */
 export function envBody(o) {
@@ -418,7 +423,7 @@ export function envBody(o) {
   const frame = svgEl(d, 'rect', { class: 'cv-mframe', x: '0', y: '0', width: String(W), height: String(H) });
   const path = svgEl(d, 'path', { class: 'cv-mcrv', d: '' }), lvl = svgEl(d, 'path', { class: 'cv-mdrop', d: '' });
   sv.append(frame, path, lvl);
-  const crvOf = () => { const c = E.val('crv', null); return Array.isArray(c) ? [0, 1, 2].map(i => (fin(c[i]) ? clamp(c[i], -1, 1) : 0)) : [0, 0, 0]; };
+  const crvOf = () => { const c = E.val('crv', null); return [0, 1, 2].map(i => n01(Array.isArray(c) ? c[i] : null, ENV_CRV_DEF[i])); };
   const r1 = row(d, 'cv-mslds'), sl = {};
   for (const [k, t] of ENV_SEGS) {
     sl[k] = nField(E, k, ENV_DEF[k], { widget: 'slider', o: { label: t, orient: 'v', fmt: n => (k === 'sus' ? Math.round(n * 100) + '%' : fmtTime(ENV_T(n))) } });
@@ -427,8 +432,9 @@ export function envBody(o) {
   }
   const r2 = row(d, 'cv-mcrvs'), cv = [];
   [['A', 0], ['D', 1], ['R', 2]].forEach(([t, i]) => {
-    cv[i] = E.keep(wk.numBox({ label: t + ' curve', get: () => (crvOf()[i] + 1) / 2, def: 0.5, fmt: n => (Math.abs(n - 0.5) < 1e-9 ? '0' : (n > 0.5 ? '+' : '−') + Math.round(Math.abs(n * 2 - 1) * 100)),
-      set: (n, ph) => { const c = crvOf(); c[i] = r4(clamp(n * 2 - 1, -1, 1)); if (ph === 'end' || ph === 'set') E.commit({ crv: c }); else E.live('crv', c); } }));
+    // (1000 steps: 0.666 is on the grid, so a reset is exactly Serum's default; a drag still moves 1 % per 8 px)
+    cv[i] = E.keep(wk.numBox({ label: t + ' curve', get: () => crvOf()[i], def: ENV_CRV_DEF[i], steps: 1000, fmt: n => fmtCore('pct', n, n, PCT_CTX), parse: x => parseCore('pct', x, PCT_CTX),
+      set: (n, ph) => { const c = crvOf(); c[i] = r4(n01(n, ENV_CRV_DEF[i])); if (ph === 'end' || ph === 'set') E.commit({ crv: c }); else E.live('crv', c); } }));
     const box = mk(d, 'div', 'cv-mcrv1'); box.append(cv[i].el, lab(d, t + '∿'));
     r2.append(box);
   });
@@ -440,8 +446,8 @@ export function envBody(o) {
     const tot = Math.max(0.02, a + h + dc + r), sw = 0.18 * tot; // a sustain stretch of 18 % of the time span
     const sx = W / (tot + sw), y = lv => r1x(H - 2 - lv * (H - 4));
     let x = 0, dd = 'M0 ' + y(0);
-    const seg = (len, y0, y1, k) => { for (let i = 1; i <= 12; i++) { const t = i / 12; dd += 'L' + r1x((x + len * t) * sx) + ' ' + y(y0 + (y1 - y0) * bend(t, 10 * k)); } x += len; };
-    seg(a, 0, 1, c[0]); seg(h, 1, 1, 0); seg(dc, 1, s, c[1]); seg(sw, s, s, 0); seg(r, s, 0, c[2]);
+    const seg = (len, y0, y1, k) => { for (let i = 1; i <= 12; i++) { const t = i / 12; dd += 'L' + r1x((x + len * t) * sx) + ' ' + y(y0 + (y1 - y0) * bend(t, 10 * (2 * k - 1))); } x += len; };
+    seg(a, 0, 1, c[0]); seg(h, 1, 1, 0.5); seg(dc, 1, s, c[1]); seg(sw, s, s, 0.5); seg(r, s, 0, c[2]); // (0.5: straight)
     set1(path, 'd', dd);
   }
   function update(nv) { if (!fin(nv)) return; const c = clamp(nv, 0, 1); if (c === v) return; v = c; set1(lvl, 'd', `M0 ${r1x(H - 2 - c * (H - 4))}H${W}`); }

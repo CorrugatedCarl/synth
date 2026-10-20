@@ -932,6 +932,64 @@ test('SerumUI: knob right-click menu v2 (grouped Mod Source, Aux Source, Edit Cu
   u.destroy();
 });
 
+test('(canvas 2b) SerumUI + the real FILTER panel: the routing switches S A B C N (data-pdest, no data-dest) keep MIDI learn and the per-control lock but take no modulation — no Mod Source in the menu, no halo, a tile dropped on one finds no target, no Alt-drag depth', async () => {
+  const oscReal = await import('../sx-ui-osc.js?real');
+  const { doc, host, u, s } = await mount();
+  const F = new oscReal.FilterPanel(u.pages.osc.el, ui.makeKit(u), 0);
+  await flush(doc);
+  const sw = X => F.el.querySelectorAll('.wk-tog').find(n => n.getAttribute('aria-label') === X);
+  const S = sw('S'), A = sw('A');
+  assert.deepEqual([S.getAttribute('data-pdest'), S.getAttribute('data-dest'), A.getAttribute('data-pdest')], ['f.routeS', null, 'f.routeA']);
+  // right-click: Reset / Enter Value / MIDI Learn / Lock — but no Mod Source (the one way to add a row from the menu)
+  fire(S, 'contextmenu', { clientX: 20, clientY: 20 });
+  assert.deepEqual(menuLabels(ctxMenus(doc).at(-1)), ['Reset Control', 'Enter Value…', '', 'MIDI Learn', 'Lock']);
+  pick(doc, 'MIDI Learn');
+  await flush(doc);
+  assert.deepEqual([host.log.filter(x => x[0] === 'learn'), s().midi['33']], [[['learn', 'f.routeS']], 'f.routeS'], 'learn arms on the switch and maps the CC to f.routeS');
+  fire(S, 'contextmenu', { clientX: 20, clientY: 20 });
+  assert.deepEqual(menuLabels(ctxMenus(doc).at(-1)).slice(-3), ['MIDI Re-learn (CC 33)', 'Remove MIDI CC 33', 'Lock']);
+  pick(doc, 'Remove MIDI CC 33');
+  assert.deepEqual(s().midi, {});
+  // the lock: locks.p, the tint on the switch (not on its neighbour), Unlock back
+  fire(S, 'contextmenu', { clientX: 20, clientY: 20 });
+  pick(doc, 'Lock');
+  await flush(doc);
+  assert.deepEqual([s().locks.p, S.classList.contains('sx-locked-ctl'), A.classList.contains('sx-locked-ctl')], [['f.routeS'], true, false]);
+  fire(S, 'contextmenu', { clientX: 20, clientY: 20 });
+  assert.equal(menuLabels(ctxMenus(doc).at(-1)).at(-1), 'Unlock');
+  pick(doc, 'Unlock');
+  await flush(doc);
+  assert.deepEqual([s().locks.p, S.classList.contains('sx-locked-ctl')], [[], false]);
+  // a locked MODULE (the filter): the switch is a control in it — Unlock Control / Lock Control apply to it too
+  u.edit(st => { core.setModuleLock(st, 'filter', true); });
+  await flush(doc);
+  assert.equal(S.classList.contains('sx-locked-ctl'), true, 'inside a locked module');
+  fire(S, 'contextmenu', { clientX: 20, clientY: 20 });
+  assert.equal(menuLabels(ctxMenus(doc).at(-1)).at(-1), 'Unlock Control');
+  pick(doc, 'Unlock Control');
+  await flush(doc);
+  assert.deepEqual([s().locks.unp, S.classList.contains('sx-locked-ctl')], [['f.routeS'], false]);
+  // still no modulation target: a row a preset carries on the switch draws no halo; a tile dropped on it finds nothing, adds
+  // no row and marks nothing; Alt-drag edits no depth; the knob beside it stays a target (control)
+  u.edit(st => { st.matrix[0] = row({ src: 'lfo1', amt: 0.4, dst: 'f.routeS' }); });
+  await flush(doc);
+  assert.equal(S.classList.contains('wk-modded'), false, 'no halo');
+  const tile = u.el.querySelector('[data-src="lfo2"]'), res = byDest(u.el, 'f.res');
+  doc.pointAt = () => S;
+  assert.equal(u.hitTest(20, 20, 'lfo2', false), null, 'the switch is no drop target');
+  ptr(tile, 'pointerdown', 10, 10); ptr(tile, 'pointermove', 30, 30);
+  assert.equal(S.classList.contains('sx-droptgt'), false);
+  ptr(tile, 'pointerup', 30, 30);
+  await flush(doc);
+  assert.deepEqual(s().matrix.slice(0, 3).map(r => r.src), ['lfo1', '', ''], 'no row added');
+  const edits0 = host.log.filter(x => x[1] === 'Mod depth').length;
+  ptr(S, 'pointerdown', 100, 100, { altKey: true }); ptr(u.el, 'pointermove', 100, 50); ptr(u.el, 'pointerup', 100, 50);
+  assert.deepEqual([host.log.filter(x => x[1] === 'Mod depth').length, s().matrix[0].amt], [edits0, 0.4], 'no depth edit');
+  doc.pointAt = () => res;
+  assert.deepEqual(Object.assign({}, u.hitTest(20, 20, 'lfo2', false), { el: null }), { kind: 'dest', el: null, id: 'f.res' }, 'the knob beside it is still a target');
+  u.destroy();
+});
+
 test('SerumUI: module menus (Lock / Init / Copy / Copy (w/mods) / Paste / Swap), Unlock Control, module label drag', async () => {
   const { doc, u, s } = await mount();
   const pw = byDest(u.el, 'a.on');

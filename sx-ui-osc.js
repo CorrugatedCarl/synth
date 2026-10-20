@@ -60,7 +60,8 @@
 // Contract with serum-ui's drop layer: every oscillator display carries data-oscdisp="<o>" (Alt-drag of an LFO tile →
 // LFO to wavetable, which also makes the oscillator a wavetable one), the NOISE panel data-noisepanel (LFO tile → LFO
 // to noise), every destination widget data-dest; the granular / spectral X|Y dot carries data-xy, data-dest-x and
-// data-dest-y (Modulate X / Modulate Y) with data-dest = its X destination.
+// data-dest-y (Modulate X / Modulate Y) with data-dest = its X destination. A parameter that is no modulation target (the
+// FILTER routing switches S A B C N) carries data-pdest = its id instead: MIDI Learn and Lock only (serum-ui).
 // Per-control menus (SEM pitch modes, WT POS, PHASE, CUTOFF, DRIVE, SCAN, DENS, LENGTH, DIR, the warp menus, sub PHASE):
 // right-click / long-press shows the control's own items first, then "Modulation, MIDI, Lock…" opens the kit's
 // standard knob menu for that control.
@@ -3093,9 +3094,12 @@ export class FilterPanel {
     sw.setAttribute('role', 'group');
     sw.setAttribute('aria-label', T + ' routing (S A B C N)');
     // (canvas 2b) plain input switches, as in Serum: no `dest`, so no [data-dest] (the canvas mod layer's drop test, Serum's own
-    // tile drag, the halos and cable badges find nothing here); the sources' BALANCE knobs (routeControls, the MIX page) stay targets
+    // tile drag, the halos and cable badges find nothing here); the sources' BALANCE knobs (routeControls, the MIX page) stay targets.
+    // data-pdest = the parameter id: the one marker serum-ui reads for the knob menu's MIDI Learn and the per-control lock (no Mod
+    // Source item), the lock tint — and nothing that modulates (hitTest, depth drag, halos and the canvas look at data-dest only)
     for (const [X] of FSRC) {
       const w = K.bind(wk.toggle({ label: X, kind: 'btn', get: () => (filterLit(K.s(), k)[X] ? 1 : 0), set: () => this.routeTap(X) }));
+      w.el.setAttribute('data-pdest', F + 'route' + X);
       w.el.title = ({ S: 'Sub', A: 'OSC A', B: 'OSC B', C: 'OSC C', N: 'Noise' })[X] + ' → ' + T;
       sw.appendChild(w.el);
     }
