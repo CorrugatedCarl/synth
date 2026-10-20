@@ -554,6 +554,27 @@ test('review 2 P2: a canvas ENV cabled to a Serum knob (injected into that Serum
   M.del(e, true); await settle();
 });
 
+test('review 2 P2 places: a preset load that turns OSC B / C and both filters on lays them out in order once settled (OSC A · B · C, FILTER 1 · 2 top to bottom, whatever Tidy\'s guessed heights); a part tile dropped on VOICE lands clear of it', async () => {
+  api.selectTrack(ID.a); cv.renderViews(); await settle();
+  if (!PT.isParts('i1')) { PT.show('i1', true); await settle(); await settle(); }
+  for (const k of ['i1/oscB', 'i1/oscC', 'i1/filter', 'i1/filter2']) if (T().lay[k]) { PT.remove(k); await settle(); await settle(); }
+  const ks = ['i1/oscA', 'i1/oscB', 'i1/oscC', 'i1/filter', 'i1/filter2'], H = { 'i1/oscB': 700, 'i1/oscC': 700, 'i1/filter': 520, 'i1/filter2': 520 };
+  assert.equal(api.sxLoad(cv.view1e('i1'), 'f:Drift Machine'), true);
+  cv.renderViews();
+  for (const [k, h] of Object.entries(H)) { const m = V().modules.get(k); assert.equal(!!m, true, k); const r0 = m.rect; m.rect = () => Object.assign(r0(), { h }); } // (taller than Tidy's guesses, as in Chrome)
+  await settle(); await settle(); await settle();
+  const R = V().rects(), y = k => R[k].y;
+  assert.deepEqual([y('i1/oscA') < y('i1/oscB'), y('i1/oscB') < y('i1/oscC'), y('i1/filter') < y('i1/filter2')], [true, true, true], ks.map(k => k + ' ' + y(k)).join(' · '));
+  const hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+  assert.deepEqual(ks.flatMap((a, i) => ks.slice(i + 1).filter(b => hit(R[a], R[b])).map(b => a + '×' + b)), []);
+  // a part tile dropped on VOICE: clear of it
+  PT.remove('i1/noise'); await settle(); await settle();
+  const v = V().modules.get('i1').rect();
+  PT.drop('noise', { x: v.x + 40, y: v.y + 40 }); await settle(); await settle(); await settle();
+  const R2 = V().rects();
+  assert.deepEqual([!!R2['i1/noise'], Object.keys(R2).filter(z => z !== 'i1/noise' && hit(R2['i1/noise'], R2[z]))], [true, []]);
+});
+
 test('review 2 P1-4: a modulator dropped near an instrument is cleared by its kind\'s measured height (never the guess: an OB-Xa face would leave GL) and of every module — a drop onto the instrument never lands on another modulator; a drop settles as a tap does', async () => {
   api.selectTrack(ID.a); cv.renderViews(); await settle();
   const t = T(), hit = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;

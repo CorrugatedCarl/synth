@@ -5476,6 +5476,19 @@ function sxSpot(t, lay, dev, part) {
   }
   return { x: r.x, y: r.y };
 }
+// (review 2 P2) a part dropped at p (the tray): below what it would cover (the stack above VOICE: above it), its guessed size
+function sxDropClear(t, dev, part, p) {
+  const k = dev + '/' + part, V = cvView && cvView.trackId === t.id ? cvView : null, D = cvWorld.DOT, G = cvModule.VGAP, up = sxAbove(part), kind = SE.kindOf(part);
+  if (!V) return p;
+  const R = Object.entries(V.rects()).filter(([q, z]) => q !== k && z && !(q === dev && !sxParts(t, dev))).map(([, z]) => z);
+  const r = { x: p.x, y: p.y, w: V.modules.has(k) ? V.modules.get(k).w : sxPartW(kind), h: sxPartH(kind) };
+  for (let i = 0; i < 32; i++) {
+    const o = R.find(q => sxHits(r, q));
+    if (!o) break;
+    r.y = up ? Math.floor((o.y - G - r.h) / D) * D : Math.ceil((o.y + o.h + G) / D) * D;
+  }
+  return { x: r.x, y: r.y };
+}
 // (I1) a part shown without a place (on after a preset load, a ⏻ in the bundled panel …) gets one by sxSpot, no History step
 // (a view normalisation, as cvRoom's)
 // The places the rule writes (here, and the first Show parts' group) are automatic (auto: 1, kept by song.normLay, Tidy and
@@ -5530,27 +5543,36 @@ function sxReady(t, k) {
   const B = modBodies.get(k);
   return !B || typeof B.host !== 'function' || !!B.host();
 }
+// (review 2 P2) the batch settles together once every member's panel is up (or after 120 frames), top to bottom (the stack
+// above VOICE: bottom to top), each clear of what stands and of the members settled before it — never of one still to come —
+// so a column keeps its order (OSC A · B · C, FILTER 1 · 2) whatever Tidy's guessed heights were (a member that covered the
+// next one used to move below it)
 function sxSettle() {
   sxSetT = 0;
   const t = trk();
   if (!cvView || cvView.trackId !== t.id || !t.lay) { sxFresh.clear(); sxTries.clear(); return; }
-  const R = cvView.rects(), D = cvWorld.DOT, G = cvModule.VGAP;
-  let moved = false, wait = false;
-  for (const fk of [...sxFresh]) {
-    const i = fk.indexOf('\n'), k = fk.slice(i + 1);
-    if (fk.slice(0, i) === t.id && R[k] && !sxReady(t, k) && (sxTries.get(fk) || 0) < 120) { sxTries.set(fk, (sxTries.get(fk) || 0) + 1); wait = true; continue; } // (not built yet: a frame later)
-    sxFresh.delete(fk); sxTries.delete(fk);
-    if (fk.slice(0, i) !== t.id || !R[k] || !t.lay[k]) continue;
-    const q = CMOD.partOf(k), up = !!q && sxAbove(q.part), r = Object.assign({}, R[k]);
+  const R = cvView.rects(), D = cvWorld.DOT, G = cvModule.VGAP, keyOf = fk => fk.slice(fk.indexOf('\n') + 1);
+  const mine = [...sxFresh].filter(fk => fk.slice(0, fk.indexOf('\n')) === t.id);
+  let wait = false;
+  for (const fk of mine) { const k = keyOf(fk); if (R[k] && !sxReady(t, k) && (sxTries.get(fk) || 0) < 120) { sxTries.set(fk, (sxTries.get(fk) || 0) + 1); wait = true; } } // (not built yet: a frame later)
+  for (const fk of [...sxFresh]) if (!mine.includes(fk)) { sxFresh.delete(fk); sxTries.delete(fk); } // (another track's)
+  if (wait) { sxSettleSoon(); return; }
+  for (const fk of mine) { sxFresh.delete(fk); sxTries.delete(fk); }
+  const upOf = k => { const q = CMOD.partOf(k); return !!q && sxAbove(q.part); };
+  const keys = [...new Set(mine.map(keyOf))].filter(k => R[k] && t.lay[k]), todo = new Set(keys);
+  const order = keys.filter(k => !upOf(k)).sort((a, b) => R[a].y - R[b].y || R[a].x - R[b].x).concat(keys.filter(upOf).sort((a, b) => R[b].y - R[a].y || R[a].x - R[b].x));
+  let moved = false;
+  for (const k of order) {
+    todo.delete(k);
+    const up = upOf(k), r = Object.assign({}, R[k]);
     for (let n = 0; n < 32; n++) {
-      const o = Object.keys(R).find(z => z !== k && sxHits(r, R[z]));
+      const o = Object.keys(R).find(z => z !== k && !todo.has(z) && sxHits(r, R[z]));
       if (!o) break;
       r.y = up ? Math.floor((R[o].y - G - r.h) / D) * D : Math.ceil((R[o].y + R[o].h + G) / D) * D;
     }
     if (r.y !== R[k].y) { t.lay = Object.assign({}, t.lay, { [k]: Object.assign({}, t.lay[k], { y: r.y }) }); R[k] = r; moved = true; }
   }
   if (moved) { persist(); cvView.sync(t); }
-  if (wait) sxSettleSoon();
 }
 
 /* ---- adding and removing parts (§2.4, §2.6) */
@@ -5607,7 +5629,7 @@ function sxAddPart(dev, kind, at, part0, o) {
   const step = hist.u[hist.u.length - 1];
   const lay = P ? cvPinned(t) : sxLayParts(t, dev, part);
   const atOk = at && Number.isFinite(at.x) && Number.isFinite(at.y);
-  if (atOk) lay[k] = Object.assign({}, lay[k] || {}, { x: cvDot(at.x), y: cvDot(at.y) });
+  if (atOk) { lay[k] = Object.assign({}, lay[k] || {}, sxDropClear(t, dev, part, { x: cvDot(at.x), y: cvDot(at.y) })); sxFresh.add(t.id + '\n' + k); } // ((review 2 P2) a drop: clear of what it lands on, settled once measured)
   else if (!lay[k]) { lay[k] = sxSpot(t, lay, dev, part); sxFresh.add(t.id + '\n' + k); }
   if ((lay[k].fold && !atOk) || lay[k].auto) { lay[k] = Object.assign({}, lay[k]); if (!atOk) delete lay[k].fold; delete lay[k].auto; } // (added: the user's place)
   t.lay = lay;
