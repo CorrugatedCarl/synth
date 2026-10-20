@@ -1513,6 +1513,8 @@ const subMenu = (items, act) => arr(items).map(it => (it.sub ? { label: it.label
 //                             o.kind 'led' | 'btn' | 'power', o.module; seg o.items = labels of the steps)
 //   dropTarget(el, id)        any element as a modulation drop target and knob-menu host of destination id (right-click;
 //                             touch: a 500 ms long-press, iPad Safari sends no contextmenu); returns el
+//   data-pdest="<id>"         (an attribute, set by hand on a widget; canvas 2b) a parameter that is no modulation target: the
+//                             knob menu without Mod Source (MIDI Learn, Lock) and the lock tint — no drop, depth drag or halo
 //   edit(fn, o) / editFx(fn, o)   state edits (fn mutates the live state) through the panel's dirty state, undo,
 //                             repaint and host.edit / host.editFx; o = label string or { label, phase, ui }
 //   notify(text), prefs()     notices; the panel preferences (§9.7, §13.10)
@@ -2144,11 +2146,11 @@ export class SerumUI {
     this.modEls = [];
     for (const r of roots) {
       if (!r) continue;
-      for (const el of qsa(r, '[data-dest]')) {
-        const id = el.getAttribute('data-dest');
+      for (const el of qsa(r, '[data-dest], [data-pdest]')) {
+        const dd = el.getAttribute('data-dest'), id = dd || el.getAttribute('data-pdest');
         const dm = destModule(id), inLocked = !!(dm && lockedMod.has(dm) && !unp.has(id));
         el.classList.toggle('sx-locked-ctl', locked.has(id) || inLocked);
-        if (!el.wk || typeof el.wk.setMod !== 'function' || !rowOfDest(id, fx)) continue;
+        if (dd === null || !el.wk || typeof el.wk.setMod !== 'function' || !rowOfDest(id, fx)) continue;   // (a data-pdest control: the lock tint only, never a halo)
         this.modEls.push({ el, id, i: ei(id), arcs: null, had: true });
       }
     }
@@ -2845,19 +2847,22 @@ export class SerumUI {
       if (this.pages.matrix) this.pages.matrix.el.classList.toggle('sx-mxexp', this.mxExp);
     }
   }
+  // data-pdest (canvas 2b; sx-ui-osc's FILTER routing switches): a parameter that is no modulation target. The knob menu (MIDI Learn,
+  // Lock, Reset, Enter Value — no Mod Source) and the lock tint find it; hitTest, the depth drag, halos and the canvas read data-dest only
   onCtx(e) {
-    const t = e.target, host = closest(t, '[data-dest]');
+    const t = e.target, host = closest(t, '[data-dest], [data-pdest]');
     if (!host || !this.el.contains(host) || closest(t, '.sx-ov')) return;
     e.preventDefault();
-    this.destMenu(host.getAttribute('data-dest'), e.clientX, e.clientY, host);
+    this.destMenu(host.getAttribute('data-dest') || host.getAttribute('data-pdest'), e.clientX, e.clientY, host);
   }
   destMenu(id, x, y, el) {
     const fx = this.fx();
     if (!rowOfDest(id, fx)) return;
-    const s = this.s(), module = el && el.getAttribute ? el.getAttribute('data-module') : null;
+    const s = this.s(), module = el && el.getAttribute ? el.getAttribute('data-module') : null, plain = !!(el && el.hasAttribute && el.hasAttribute('data-pdest') && !el.hasAttribute('data-dest'));
     const caps = { midi: typeof this.host.midiLearn === 'function', module: module || undefined,
       paste: !!(module && CLIP && CLIP.kind === modKind(module)), recent: this.recentSlot.get(id), extra: this.host.extraRows ? this.host.extraRows(id) : null };
-    const items = knobMenuItems(s, fx, id, caps).filter(it => !(VIRT_RE.test(id) && (it.kind === 'lock' || it.kind === 'unlock')));
+    let items = knobMenuItems(s, fx, id, caps).filter(it => !(VIRT_RE.test(id) && (it.kind === 'lock' || it.kind === 'unlock')));
+    if (plain) items = items.filter(it => it.kind !== 'modsrc').filter((it, i, a) => !(it.kind === 'sep' && i && a[i - 1].kind === 'sep'));   // (no Mod Source; its two separators fold into one)
     const extra = this.extraKnobItems(id);
     const acts = this.menuActions(items, id, el, module);
     wk.contextMenu(x, y, extra.length ? extra.concat([{ sep: true }], acts) : acts, { anchor: focusable(el) });
@@ -3284,8 +3289,8 @@ export class SerumUI {
       if (ok(X) && ok(Y)) return { kind: 'xy', el: xy, x: X, y: Y };
       if (ok(X) || ok(Y)) return { kind: 'dest', el: xy, id: ok(X) ? X : Y };
     }
-    const dd = closest(t, '[data-dest]');
-    if (dd && rowOfDest(dd.getAttribute('data-dest'), this.fx())) {
+    const dd = closest(t, '[data-dest]'), pd = closest(t, '[data-pdest]');
+    if (dd && !(pd && dd.contains(pd)) && rowOfDest(dd.getAttribute('data-dest'), this.fx())) {   // (a data-pdest control is no target, even inside a destination's box)
       const id = dd.getAttribute('data-dest'), r = rowOfDest(id, this.fx());
       if (r.nomod || (mc && id === 'm' + mc)) return null;   // Convolve shaping (deviation 20); a macro on itself
       return { kind: 'dest', el: dd, id };

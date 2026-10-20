@@ -666,7 +666,8 @@ Built (`cv-mods-ui.js`, `cv-module.js`, `cv-cables.js`, `cv-tray.js`, `classic-p
   `song.normDev` should keep these fields): `lfo` `{ kind, lfo: <normLfo>, rate: n }` (`rate` = Serum's `l<k>.rate` n: pow4
   0…100 Hz; BPM-synced the ladder index over `length − 1`, exactly as Serum's `p['l1.rate']`); `env` `{ kind, env: { bpm,
   legInv, stealRe }, att, hold, dec, sus, rel: n (Serum's `e<k>.*` laws), crv: [a, d, r] }` (`crv` is the A / D / R segment
-  curvature −1…1 — new, for ModCore's ENV if A1 wants it; otherwise display-only); `macro` `{ kind, v: [8], names: [8] }`;
+  curvature in Serum's own `e<k>.ca / cd / cr` units, 0…1 with 0.5 linear — stage 2b first read it as −1…1, a bug fixed afterwards: the body shows
+  and edits the real 0…1 value in Serum's % format); `macro` `{ kind, v: [8], names: [8] }`;
   `cc` `{ kind, cc, ch, v }`; `chaos` `{ kind, chaos: { mono, sh }, rate: n (Serum's `c<k>.rate` pow5 0…1000 Hz; BPM-synced the
   LFO_LADDER index over 14), bpm: 0|1, smooth: 0…1 }` (`smooth` has no Serum counterpart: engine-optional); `note` `{ kind }`.
 - **Live values**: `update(v)` — lfo / env / chaos / cc a value 0…1 (the lfo also `{ v, ph }`: a dot on the shape at phase

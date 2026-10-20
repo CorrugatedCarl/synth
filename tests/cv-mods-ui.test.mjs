@@ -11,6 +11,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fresh, all, ptr, key, place, layout, Ev } from './wk-dom.mjs';
 import * as U from '../cv-mods-ui.js?v=9';
+import { normEnvMod } from '../serum-core.js?v=9';
 
 const cls = (root, c) => all(root).find(n => n.classList && n.classList.contains(c)) || null;
 
@@ -258,7 +259,7 @@ test('lfoBody (2b): the shape menu lists Serum\'s presets + Custom and matches t
 });
 
 test('envBody (2b): five vertical sliders (A H D S R: Serum\'s pow5 0…32 s laws, S in %), curve numBoxes for A / D / R (crv), the AHDSR display follows the values; update(v) the level line', () => {
-  const R = rig('env', { env: { bpm: 0, legInv: 0, stealRe: 0 }, att: 0.11, hold: 0, dec: 0.5, sus: 1, rel: 0.215, crv: [0, 0, 0] }), B = R.B;
+  const R = rig('env', { env: { bpm: 0, legInv: 0, stealRe: 0 }, att: 0.11, hold: 0, dec: 0.5, sus: 1, rel: 0.215, crv: [0.5, 0.666, 0.666] }), B = R.B;
   const sl = byCls(B.el, 'wk-sl');
   assert.deepEqual([B.el.className, sl.length, sl.map(s => s.getAttribute('aria-orientation')).join(), byCls(B.el, 'cv-mtag').map(n => n.textContent)],
     ['cv-mbody cv-menv cv-medit', 5, 'vertical,vertical,vertical,vertical,vertical', ['A', 'H', 'D', 'S', 'R', 'A∿', 'D∿', 'R∿']]);
@@ -268,12 +269,44 @@ test('envBody (2b): five vertical sliders (A H D S R: Serum\'s pow5 0…32 s law
   assert.deepEqual([R.edits.length, R.st.sus < 1, Object.keys(R.edits[0])], [1, true, ['sus']]);
   assert.notEqual(cls(B.el, 'cv-mcrv').getAttribute('d'), d0, 'the display redrawn');
   const nbs = byCls(B.el, 'wk-nb');
-  assert.deepEqual(nbs.map(n => n.getAttribute('aria-valuetext')), ['0', '0', '0']);
+  assert.deepEqual(nbs.map(n => n.getAttribute('aria-valuetext')), ['50%', '67%', '67%'], 'Serum\'s ENV panel format (pct of the 0…1 value)');
   key(nbs[0], 'ArrowUp');
-  assert.deepEqual([R.edits.length, R.st.crv[0] > 0, R.st.crv[1], nbs[0].getAttribute('aria-valuetext').startsWith('+')], [2, true, 0, true]);
+  assert.deepEqual([R.edits.length, R.st.crv[0] > 0.5, R.st.crv[0] < 0.52, R.st.crv[1], nbs[0].getAttribute('aria-valuetext')], [2, true, true, 0.666, '50%'], 'one fine step up, the others untouched');
   B.update(0.5);
   assert.equal(cls(B.el, 'cv-mdrop').getAttribute('d'), 'M0 28H190');
   B.destroy();
+});
+
+test('envBody: the curves are the state\'s 0…1 values (0.5 = linear, Serum\'s e<k>.ca / cd / cr): a fresh ENV module shows Serum\'s defaults 50 / 67 / 67 %, typed entry and reset round-trip, 0.5 draws straight segments', () => {
+  const R = rig('env', Object.assign({ kind: 'env' }, normEnvMod({}))), B = R.B;
+  const nbs = byCls(B.el, 'wk-nb'), shown = () => nbs.map(n => n.getAttribute('aria-valuetext')).join();
+  assert.deepEqual([R.st.crv, shown()], [[0.5, 0.666, 0.666], '50%,67%,67%'], 'the default module = Serum\'s default curves (not +50 / +67 / +67)');
+  // a typed entry stores what was typed: "0" is the 0 curve (hard), not a quirk of the old −1…1 mapping; "%" optional
+  const typed = (nb, t) => { nb.wk.edit(); const inp = byCls(nb, 'wk-in')[0]; inp.value = t; key(inp, 'Enter'); };
+  typed(nbs[0], '0');
+  assert.deepEqual([R.st.crv, nbs[0].getAttribute('aria-valuetext')], [[0, 0.666, 0.666], '0%']);
+  typed(nbs[1], '100%');
+  typed(nbs[2], '25');
+  assert.deepEqual([R.st.crv, shown(), R.edits.length], [[0, 1, 0.25], '0%,100%,25%', 3], 'one edit per entry, the others kept');
+  typed(nbs[0], 'nonsense');
+  assert.deepEqual([R.st.crv[0], R.edits.length], [0, 3], 'a bad entry changes nothing');
+  // the default back (reset) is exactly Serum's default, and a host edit / undo shows at once through sync()
+  nbs[2].wk.reset(); nbs[1].wk.reset(); nbs[0].wk.reset();
+  assert.deepEqual([R.st.crv, shown()], [[0.5, 0.666, 0.666], '50%,67%,67%'], 'reset = the exact defaults');
+  R.st.crv = [0.9, 0.2, 0.35]; B.sync();
+  assert.equal(shown(), '90%,20%,35%', 'sync follows the state');
+  B.destroy();
+  // the display: 0.5 is linear (the engine bends by 10 · (2c − 1)): equal rises up the attack; above 0.5 rises sooner, below later
+  const ys = c => {
+    const Q = rig('env', { env: {}, att: 0.5, hold: 0, dec: 0.5, sus: 0.5, rel: 0.5, crv: [c, 0.5, 0.5] });
+    const pts = cls(Q.B.el, 'cv-mcrv').getAttribute('d').split('L').slice(1, 13).map(p => +p.split(' ')[1]);
+    Q.B.destroy();
+    return pts;
+  };
+  const lin = ys(0.5), up = ys(0.9), dn = ys(0.1), step = lin[1] - lin[0];
+  assert.ok(lin.every((y, i) => i === 0 || Math.abs(lin[i] - lin[i - 1] - step) < 0.25), 'c = 0.5: equal steps (a straight attack)');
+  assert.ok(up[5] < lin[5] && dn[5] > lin[5], 'above 0.5 rises sooner (the engine\'s bend(q, +k)), below later');
+  assert.deepEqual([ys(-3).join() === ys(0).join(), ys(7).join() === ys(1).join()], [true, true], 'out-of-range values clamp to 0…1');
 });
 
 test('macroBody (2b): 8 rows (a knob, an editable name ≤ 16 chars, the value); a knob turn calls o.set(k, v) per move and edits v once at the lift; a key one edit; a name change edits names (trimmed, clipped, empty → the default); update([…]) lights the live dots', () => {

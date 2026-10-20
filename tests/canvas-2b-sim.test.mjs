@@ -535,3 +535,13 @@ test('(bug 2) a PER NOTE LFO cabled to the Serum\'s LFO 1 Rate is injected into 
   assert.deepEqual(api.sxExtra(a, 'i1', 'l1.rate').map(r => [r.id, r.src]), [['r1', 'lfo2']], 'the Serum\'s halo / knob menu name the slot');
   assert.deepEqual(api.sxHost(a).extraMatrix().map(r => [r.src, r.tag, r.dst]), [['lfo2', 'LFO 2', 'l1.rate']]);
 });
+
+test('(ENV curves) a dropped ENV module holds Serum\'s real curve values (0…1, 0.5 linear: 0.5 / 0.666 / 0.666) and its body shows them as Serum\'s ENV panel does — 50 / 67 / 67 %, not +50 / +67 / +67; values written to the device round-trip to the display', () => {
+  const a = fresh('serum');
+  const e = dropNew('env', { x: -600, y: 2300 }), B = M.bodies.get(e);
+  const nbs = walk(B.el, c => /\bwk-nb\b/.test(clsOf(c))), shown = () => nbs.map(n => n.attrs['aria-valuetext']).join();
+  assert.deepEqual([a.dev[e].crv, shown()], [[0.5, 0.666, 0.666], '50%,67%,67%']);
+  U.editState(e, { crv: [0, 1, 0.25] }); sim.raf();
+  B.sync();
+  assert.deepEqual([a.dev[e].crv, shown()], [[0, 1, 0.25], '0%,100%,25%'], 'the stored values round-trip to the display');
+});
