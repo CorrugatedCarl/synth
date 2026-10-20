@@ -633,7 +633,7 @@ export class SerumUI extends SerumHost {
       },
       cancel: clear,
     });
-    this.offs.push(() => ds.destroy());
+    this.offNow(() => ds.destroy());
   }
   mBtn(text, click, title) {
     const b = btn(this.d, 'sx-btn', '', null, click);

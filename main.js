@@ -2177,7 +2177,7 @@ function sxEdit(x, fn, o) { // (x: a device view, stage 1e; a bare track — the
   const os = s.global.os;
   fn(s);
   if (o && o.ui) { persist(); return; }
-  if (o && o.seed) seedPend.add(trOf(iv).id);
+  if (o && o.seed) { seedPend.add(trOf(iv).id); sxPruneAuto(trOf(iv), dvOf(iv)); } // ((3) a preset-like load in the panel — Init Preset, Hybridize, its undo / redo of a load: §3's prune)
   sxDirty.add(iv.id);
   queuePatch(trOf(iv)); persist();
   if (s.global.os !== os && ctx) rateText();
@@ -2300,6 +2300,7 @@ function sxLoad(x, key) { // (x: a device view, stage 1e; a bare track: its prim
   iv.fx = core.applyPresetFx(cur, pfx || core.defaultFx2(), s);
   iv.vals.s = s;
   iv.preset = p.name; sxKeys.set(iv.id, key); sxDirty.delete(iv.id);
+  sxPruneAuto(trOf(iv), dvOf(iv)); // ((3) the automatic part places it left off and unread go, §3)
   seedPend.add(trOf(iv).id);
   sendPatch(trOf(iv));
   renderHeads(); persist(); sxRefresh();
@@ -4846,7 +4847,16 @@ function cvLay(key, entry, phase, what) {
   }
   if (phase === 'cancel') { if (cvLayPend && cvLayPend.key === key) cvLayPend = null; return; }
   if (phase !== 'end' || !entry) return;
+  if (what === 'pin' && CMOD.partOf(key)) return; // ((3) a part is never pinned: cvPinned)
   const t = trk(), p = cvLayPend && cvLayPend.key === key && cvLayPend.what === what ? cvLayPend : null;
+  // ((3, review 1 F2) an automatic part place: a move / fold makes it the user's (the entry cv-module writes has no mark);
+  // a front, pin or room write keeps it, as does a drop on the cell it left — no step, as before)
+  const old = t.lay && typeof t.lay === 'object' ? t.lay[key] : null;
+  if (old && old.auto) {
+    const was = Object.assign({}, old);
+    delete was.auto;
+    if (!/^(move|group|fold)$/.test(what) || JSON.stringify(was) === JSON.stringify(entry)) entry = Object.assign({}, entry, { auto: 1 });
+  }
   if (p) {
     cvLayPend = null;
     const nx = cvOtherFx(key);
@@ -5033,6 +5043,7 @@ function cvTidy() {
     const e = { x: td[k].x, y: td[k].y }, ox = other(k), o = old[k] || (ox && old[ox]); // (the FX fold through a model change)
     if (o && o.fold) e.fold = 1;
     if (old[k] && (old[k].ui === 'flow' || old[k].ui === 'parts')) e.ui = old[k].ui; // (the instrument's layout choice stays: Tidy only moves modules, never a size; (3) a Serum's parts view too)
+    if (old[k] && old[k].auto) e.auto = 1; // ((3) an automatic part place stays automatic: Tidy is the rule too)
     lay[k] = e;
     if (ox) delete lay[ox]; // one FX entry at most (cvLay)
   }
@@ -5057,9 +5068,11 @@ function cvAfter(t) {
 }
 // the modules Tidy still places, pinned where they stand (a device added beside them must not re-tidy them: they would
 // jump), as a copy of track.lay for the edit's step to write
+// ((3) never a Serum part: its place is written before its module exists (sxPlaceNew); one without is a module a load just
+// pruned (§3) that the next render drops — pinned, it would come back as the user's)
 function cvPinned(t) {
   const lay = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {});
-  if (cvView && cvView.trackId === t.id) for (const [k, m] of cvView.modules) if (!lay[k]) { const e = { x: Math.round(m.x), y: Math.round(m.y) }; if (m.fold) e.fold = 1; lay[k] = e; }
+  if (cvView && cvView.trackId === t.id) for (const [k, m] of cvView.modules) if (!lay[k] && !CMOD.partOf(k)) { const e = { x: Math.round(m.x), y: Math.round(m.y) }; if (m.fold) e.fold = 1; lay[k] = e; }
   return lay;
 }
 // the device-speed factor (⚙ → Measure this device; 1 = the reference machine) in the device prefs
@@ -5350,6 +5363,7 @@ function sxLayParts(t, dev, extra) {
     const o = lay[d.key] || {}, n = { x: cvDot(td[d.key].x + ox), y: cvDot(td[d.key].y + oy) };
     if (d.key !== dev && o.fold) n.fold = 1;
     if (o.z != null) n.z = o.z;
+    if (d.kind === 'part' && d.part !== extra) n.auto = 1; // (the rule's: automatic, sxPlaceNew; a part being added is the user's)
     lay[d.key] = d.key === dev ? Object.assign(e, n) : n;
     if (d.kind === 'part') sxFresh.add(t.id + '\n' + d.key);
     R[d.key] = { x: n.x, y: n.y, w: sz[d.key].w, h: d.kind === 'fx' ? (fxM ? fxM.rect().h : 420) : sxPartH(d.kind === 'inst' ? 'voice' : SE.kindOf(d.part)) };
@@ -5457,6 +5471,10 @@ function sxSpot(t, lay, dev, part) {
 }
 // (I1) a part shown without a place (on after a preset load, a ⏻ in the bundled panel …) gets one by sxSpot, no History step
 // (a view normalisation, as cvRoom's)
+// The places the rule writes (here, and the first Show parts' group) are automatic (auto: 1, kept by song.normLay, Tidy and
+// the no-step moves): a load prunes the ones whose part it left neither on nor read (sxPruneAuto), so browsing presets never
+// piles modules up; a user act on the module (a move, a fold, Add, the tray, Show OSC C) makes the place the user's — never
+// pruned (§3's amendment, review 1 F2: the lead's rule)
 function sxPlaceNew(t) {
   if (!t || !t.dev || !t.lay) return false;
   let lay = null;
@@ -5466,9 +5484,27 @@ function sxPlaceNew(t) {
       const k = dev + '/' + p;
       if ((lay || t.lay)[k]) continue;
       lay = lay || cvPinned(t);
-      lay[k] = sxSpot(t, lay, dev, p);
+      lay[k] = Object.assign(sxSpot(t, lay, dev, p), { auto: 1 });
       sxFresh.add(t.id + '\n' + k);
     }
+  }
+  if (!lay) return false;
+  t.lay = lay;
+  persist();
+  return true;
+}
+// a load of Serum dev (a preset, a program change; a seeded panel edit — Init Preset, Hybridize, the panel's undo / redo of
+// one): its automatic part places whose part is now neither on (I1) nor read (I2) go, in bundled view too (the next Show
+// parts would show them), no History step (a view normalisation, as sxPlaceNew's). History's undo / redo bring their own lay
+function sxPruneAuto(t, dev) {
+  if (!t || !t.lay || typeof t.lay !== 'object' || !isSerumDev(t, dev)) return false;
+  const want = new Set(SE.partKeys(t.dev[dev].vals.s, null, dev, sxUsed(t, dev)));
+  let lay = null;
+  for (const k of Object.keys(t.lay)) {
+    const q = CMOD.partOf(k), e = t.lay[k];
+    if (!q || q.dev !== dev || !e || !e.auto || want.has(q.part)) continue;
+    lay = lay || Object.assign({}, t.lay);
+    delete lay[k];
   }
   if (!lay) return false;
   t.lay = lay;
@@ -5518,7 +5554,8 @@ function sxFullWhy(kind) {
     : kind === 'sub' || kind === 'noise' ? 'This Serum’s ' + SX_KIND[kind] + ' is already on' : kind === 'env' ? 'This Serum’s ENV 2–4 are all in use'
       : kind === 'lfo' ? 'This Serum’s 10 LFOs are all in use' : SX_KIND[kind] + ' is already on the canvas';
 }
-// the rows reading an own ENV / LFO slot (the Serum's matrix: src or aux; the canvas link rows from it) or the macros
+// the rows reading an own ENV / LFO slot (the Serum's matrix: src or aux, rows with a destination — sx-edges slotsUsed's rule;
+// the canvas link rows from it) or the macros
 function sxReads(t, dev, part) {
   const s = t.dev[dev].vals.s, M = Array.isArray(s.matrix) ? s.matrix : [];
   const mine = part === 'macros' ? x => /^macro[1-8]$/.test(x || '') : x => x === part || x === part + 'y';
@@ -5565,7 +5602,7 @@ function sxAddPart(dev, kind, at, part0, o) {
   const atOk = at && Number.isFinite(at.x) && Number.isFinite(at.y);
   if (atOk) lay[k] = Object.assign({}, lay[k] || {}, { x: cvDot(at.x), y: cvDot(at.y) });
   else if (!lay[k]) { lay[k] = sxSpot(t, lay, dev, part); sxFresh.add(t.id + '\n' + k); }
-  if (lay[k].fold && !atOk) { lay[k] = Object.assign({}, lay[k]); delete lay[k].fold; }
+  if ((lay[k].fold && !atOk) || lay[k].auto) { lay[k] = Object.assign({}, lay[k]); if (!atOk) delete lay[k].fold; delete lay[k].auto; } // (added: the user's place)
   t.lay = lay;
   if (pw && !(on0 >= 0.5)) { // (its kept settings, powered on: through the host — the panel's own undo step too)
     const f = [[['p', pw], on0, 1]];
@@ -5584,9 +5621,10 @@ function sxRemovePart(key) {
   const t = trk(), q = CMOD.partOf(key);
   if (!q || !isSerumDev(t, q.dev)) return false;
   const s = t.dev[q.dev].vals.s, pw = SE.powerOf(q.part), on0 = pw ? core.destBase(s, null, pw) : null;
-  if (!pw) {
-    const n = sxReads(t, q.dev, q.part);
-    if (n) { notice(`${SE.partLabel(q.part)} modulate${q.part === 'macros' ? '' : 's'} ${n} knob${n > 1 ? 's' : ''} · its ⋯ → Remove All Destinations first`, 5000); return false; }
+  if (!pw && SE.slotsUsed(s, sxUsed(t, q.dev)).has(q.part)) { // (in use by I2's own rule — the one that gave it its module: rows with a destination, link rows)
+    const n = Math.max(1, sxReads(t, q.dev, q.part));
+    notice(`${SE.partLabel(q.part)} modulate${q.part === 'macros' ? '' : 's'} ${n} knob${n > 1 ? 's' : ''} · its ⋯ → Remove All Destinations first`, 5000);
+    return false;
   }
   flush();
   hist.record(project, 'Remove ' + SE.partLabel(q.part));
@@ -5630,13 +5668,18 @@ const sxSame = (a, b) => a === b || (typeof a === 'number' && typeof b === 'numb
 // the layout; the fields — the Serum's, kept by keepDevs as knob tweaks are — are written back here: undo the before-values
 // while every field still holds its after-value, redo the after-values while every one holds its before-value; else they
 // stay as they are and a notice says so (a panel edit since: the Serum's own). Read after hist.undo / hist.redo
-let sxBack = null; // { mv: the step's meta, redo }
-const sxBackOf = (e, redo) => (e && e.meta && Array.isArray(e.meta.f) && e.meta.dev ? { mv: e.meta, redo } : null);
-function sxBackApply(p, { mv, redo }) {
+// A step whose fields were already put back inside the Serum (its panel undo / redo) is a no-op to History: it is still the
+// step its ↶ / ↷ names and takes (History never skips a meta step: song.js), alone, and says so (review 1 F3)
+let sxBack = null; // { mv: the step's meta, redo, label, noop: the step changed nothing History holds }
+const sxBackOf = (e, redo) => (e && e.meta && Array.isArray(e.meta.f) && e.meta.dev ? { mv: e.meta, redo, label: e.label, noop: !!hist.noop } : null);
+function sxBackApply(p, { mv, redo, label, noop }) {
   const t = p.tracks.find(x => x.id === mv.trackId), d = t && t.dev ? t.dev[mv.dev] : null, s = d && d.kind === 'synth' && isSerum(d) && d.vals ? d.vals.s : null;
   if (!s) return;
   const to = redo ? 2 : 1, from = redo ? 1 : 2;
-  if (mv.f.every(x => sxSame(sxField(s, x[0]), x[to]))) return; // (already so)
+  if (mv.f.every(x => sxSame(sxField(s, x[0]), x[to]))) { // (already so)
+    if (noop) notice(`${label || 'That step'} was already ${redo ? 'redone' : 'undone'} in ${cvDevName(t, mv.dev)}`, 4000);
+    return;
+  }
   if (!mv.f.every(x => sxSame(sxField(s, x[0]), x[from]))) { notice(`${cvDevName(t, mv.dev)} changed since: ${mv.part ? SE.partLabel(mv.part) + '’s power' : 'its routing'} left as it is`, 5000); return; }
   for (const x of mv.f) sxFieldSet(s, x[0], x[to]);
   sxDirty.add(t.id + '/' + mv.dev);
@@ -5730,8 +5773,9 @@ function sxPartPick(kind) { sxPartDrop(kind, null); }
 function sxPartDrop(kind, at) {
   const t = trk(), dev = curOf(t);
   if (isSerumDev(t, dev)) return sxAddPart(dev, kind, at);
-  const msg = 'Serum parts belong to a Serum · Replace with Serum';
-  noticeActs.set(msg, () => { noticeActs.delete(msg); notice('', 0); sxReplaceWithSerum(kind, at); });
+  const msg = 'Serum parts belong to a Serum · Replace with Serum', tid = t.id;
+  // (review 1 F5) the offer is for this track's instrument: tapped once another track (or instrument) is selected, it goes
+  noticeActs.set(msg, () => { noticeActs.delete(msg); notice('', 0); const u = trk(); if (u.id === tid && curOf(u) === dev) sxReplaceWithSerum(kind, at); });
   notice(msg, 8000);
   return null;
 }

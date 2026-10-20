@@ -444,6 +444,29 @@ test('CLIP as a part: its MACROS pane\'s knobs are twins (data-twin: no cable en
   X.destroy();
 });
 
+test('review 1 F1: a view\'s own disposers and satellites go with it — mounting and destroying bare parts (the ⏻ adopted, the bar titles\' label drags, MACROS\' tile drags) leaves the host\'s offs / sats where they were', async () => {
+  const { doc, box, X } = parts();
+  const set = () => ['oscA', 'filter', 'macros', 'lfo1'].map(p => {
+    const V = M.mountPart(X, p, box), t = doc.createElement('span');
+    doc.body.appendChild(t);
+    V.labelDrag(t);
+    return V;
+  });
+  for (const V of set()) V.destroy();
+  await flush(doc);
+  const o0 = X.offs.length, s0 = X.sats ? X.sats.size : 0;
+  for (let i = 0; i < 3; i++) { const L = set(); await flush(doc); for (const V of L) V.destroy(); }
+  assert.deepEqual([X.views.length, X.offs.length, X.sats ? X.sats.size : 0], [0, o0, s0]);
+  // while mounted, its satellites are the host's (owns: the bar ⏻ and the title)
+  const V = M.mountPart(X, 'oscA', box), t = doc.createElement('span');
+  doc.body.appendChild(t);
+  V.labelDrag(t);
+  assert.deepEqual([X.owns(V.power), X.owns(t)], [true, true]);
+  V.destroy();
+  assert.deepEqual([X.owns(t), X.offs.length, X.sats ? X.sats.size : 0], [false, o0, s0]);
+  X.destroy();
+});
+
 test('H5: the store density is wk.storeDensity\'s (lane C, merged on wt-m3), whatever the local scale; CANVAS_MAX_PX 16e6', () => {
   // (lane B's pre-H5 fallback — dpr ≤ 2 over the local scale, 0.5…2 — stays in sx-host for a non-positive answer; with C merged
   //  wk.storeDensity always exists, so the delegation is what ships)
