@@ -685,6 +685,34 @@ noise. Tried and dropped: the `mread` call in `Track.modPre` after `MC.span` ins
 four-slot processes, the extra branch there costs more than the one in `span`). Harness (scratchpad `ab/`, `jsc/`; not in the repo).
 
 
+### 9.2 Lane A — accessor retirement R0–R7, schema 7 (2026-10-20; merged 44d1623; the lead's summary of the lane's report)
+
+R0 safety net: the static ratchet in `lint.test` (+ `tests/fixtures/accessor-allow.json`, fragments checked), the dynamic recorder
+`tests/accessor-hook.mjs` (`ACCESS_STRICT=1`, `ACCESS_OUT=`), `accessors.test` (15 characterisation tests). Data: `SCHEMA` 7,
+`STEPS[6] growMods` (places only), `song.normLay` part keys (≤ 256 entries, `ui` flow | parts), `cv-model.dropLay` / `PARTS` /
+`partOf`. R1 `instView` for the primary, `isPrim`; R2 `isSx` → `instOf` / `isSerum` / `isSerumDev` / `serumIds`, MPE = any Serum; R3
+`fxOf` → `fxOfDev`, phase memory per rack (`N.fxph` / `N.phWait` Maps); R5 `normDevs` for every device; R4 VIEW.id `trackId/dev`
+(session maps re-keyed, `voiceSeen` per instrument, `assets.states()` per Serum / panel); R6 one record per device (`serumPanels` /
+`fxPanels`), no `#inst` / `#fxrack` homes, same-track changes are a view sync, `curModel()` / `curView()` / `curPanel()`; R7
+production `adopt` installs no accessors, guard builds throw (`__synthTest`, `?dev=1`, `adopt(p, {guard: true})`). Ratchet 193 → 52
+lines (lane A's files 145 → 13); the dynamic hook's last site (cv-module `tModel`) went in lane C. Sweep at R7: 78 files / 2199 tests;
+the lead's sweep after the merge: 78 files / 2207 tests, goldens and canonical-stream bit-identical. Behaviour changes (intended): a
+Serum-FX-page removal / IR relink prunes that rack's canvas rows; the tempo resend reaches every synced 303; a non-selected classic
+primary's vals merge with defaults at load; a track switch destroys the outgoing primary panel at the switch.
+
+### 9.4 Carried to lane D (the lead, from A's and C's reports)
+
+1. `modSpot` / `modTap` / the drop ghost place every modulator at x −320 with `W_MOD`: use `cvModule.modX(kind)` / `modW(kind)` (a
+   tapped LFO overlaps the instrument by 96 px until then).
+2. `cvTidy` / `cvRoom` copy only `ui: 'flow'`: carry `ui: 'parts'` too.
+3. `index.html`'s `#inst` / `#fxrack` are unused homes; `cv-shell-sim` still requires them (with `#boot` inside `#inst`): change the
+   sim first, then remove them.
+4. `STEPS[6]` reads `cvModule.MOD_W` live: freeze the widths it grows to (a constant in cv-migrate, equal to MOD_W at milestone 3's
+   deploy) so a later width change (e.g. B's parity re-measure of chaos, 416 today) never changes what a schema-6 project opens as.
+5. `mcMonitor` still rides the primary's part.
+6. Host interface from C: `host.devices` part entries carry `dev` as an id string; the power handover is `host.powerEl(key)` → B's
+   `View.power`; VOICE's parts view from the device entry's `ui` or `lay[iN].ui`; `firstFree(s, kind, skip)`.
+
 ### 9.x Amendments from IMPL-1i §8.3 (the lead, 2026-10-20)
 
 1. **The five-panel reference after 1i**: once 1i is on `canvas` the five panels carry keyboards (≈ 55 % more base texture, 116 → 180 MB).
