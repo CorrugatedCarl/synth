@@ -1394,9 +1394,9 @@ test('milestone 3 createTrackView: the internal cables (sx-edges views: A → Fi
   // own rows (s.matrix: LFO 1 → a.wt) and link rows from 'i1/lfo1.out' leave the LFO 1 part's jack
   const own = L.find(x => x.id === 'o:i1:0'), link = L.find(x => x.id === 'r2');
   assert.equal(sj([own.a, own.b, own.own, own.color, link.a, link.b]), sj(['i1/lfo1.out', 'i1:a.wt', true, '#ff00aa', 'i1/lfo1.out', 'i1:a.pan']));
-  // r1 → b.level: no mounted view shows it (OSC B's panel has no such knob here) → VOICE's bar, dashed, tagged
+  // r1 → b.level: no mounted view shows it (OSC B's panel has no such knob here) → VOICE's top-left corner (review 2 P1-7: its tag above the bar), dashed, tagged
   const vo = V.modules.get('i1'), q = V.destPort('i1', 'b.level');
-  assert.equal(sj(q), sj({ x: vo.x, y: vo.y + 20, hid: true, tag: 'OSC B · LEVEL · hidden' }));
+  assert.equal(sj(q), sj({ x: vo.x, y: vo.y, hid: true, tag: 'OSC B · LEVEL · hidden' }));
   V.remeasure();
   const b = V.cables.badge('r1');
   assert.equal(sj([b.classList.contains('cv-hid'), b.childNodes[2].textContent, b.childNodes[2].hidden]), sj([true, 'OSC B · LEVEL · hidden', false]));
