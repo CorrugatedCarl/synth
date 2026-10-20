@@ -266,3 +266,15 @@ test('2b fixer B (C3 / C13): targetsOf memoised per (model, ctl); depsOf names t
   assert.equal(V.SM_SLOT['osc.pw'], V.SLOT.PW);
   assert.equal(V.SM_SLOT['rm.depth'], V.SLOT.RM);
 });
+
+test('milestone 3 destOk: a modulator\'s own knobs (its body a Serum panel on a slot host: Serum ids) are never a cable\'s end, kept rows too; a Serum part\'s knobs are its Serum\'s', () => {
+  // the four Serum-faithful kinds carry the ids their slot uses (LFO 1 / ENV 2 / chaos 1 / the macros), the rest their own
+  const ids = { lfo: ['l1.rate', 'l1.rise'], env: ['e2.att', 'e2.ca'], macro: ['m1', 'm8'], chaos: ['c1.rate', 'c1.bpm'], cc: ['x'], velo: ['x'], at: ['x'], bend: ['x'], note: ['x'], wheel: ['x'] };
+  for (const kind of Object.keys(ids)) for (const id of ids[kind]) {
+    for (const keep of [false, true]) assert.deepEqual(V.destOk({ kind, lfo: {}, env: {} }, id, keep), { ok: false, why: V.NOMOD_MOD, stage: null }, kind + ' ' + id);
+  }
+  assert.equal(Object.keys(ids).sort().join(), Object.keys(V.MOD_LABEL).sort().join(), 'every modulator kind');
+  // a part's controls share their Serum's [data-dev]: the Serum device answers (OSC B's level, its ⏻ — the bar's x.on end)
+  const sx = { kind: 'synth', model: 'serum', vals: { s: C.normalizeSerum(C.defaultSerum()) }, fx: null };
+  for (const id of ['b.level', 'b.on', 'f2.cutoff', 'l3.rate', 'e2.att', 'm3', 'arp.on']) assert.equal(V.destOk(sx, id).ok, true, id);
+});

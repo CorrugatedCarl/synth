@@ -393,7 +393,8 @@ export function descs(dev) {
 //                            start from on this track: the wheel when placed, then every module (a macro: 8 entries k1…k8)
 //   linkSources(track)       the linked sources: every Serum's LFO 1–10 and ENV 1–4 ({ id, label, scope: 'track', kind:
 //                            'link', dev, port: 'out', link, perNote, used }; used: the Serum's own rows read it)
-//   destOk(dev, paramId, keep) { ok, why, stage }: a Serum's DESTS / own-FX id (not nomod; the filter's routing switches
+//   destOk(dev, paramId, keep) { ok, why, stage }: (3) a modulator device (any MOD_LABEL kind): never (NOMOD_MOD) — its
+//                            panel's knobs carry Serum ids on a slot host; a Serum's DESTS / own-FX id (not nomod; the filter's routing switches
 //                            f.route<X> / f2.route<X> are plain switches: refused unless `keep`, a row that exists); a classic sm / apply / proc knob
 //                            (chunk: stage '5'; struct / none: never; a switched-off oscillator's level: "Switch the
 //                            oscillator on…"); a panel's effect knob (not nomod)
@@ -531,9 +532,14 @@ const NOMOD = 'This knob can’t be modulated';
 // filter-balance destinations (x.fbal: the routing popover's BALANCE knob, the MIX page's) stay open.
 const PLAIN_SW = /^f2?\.route[A-Z]$/;
 export const plainSwitch = id => typeof id === 'string' && PLAIN_SW.test(id);
+// (milestone 3, IMPL-3 §2.3 nomod) a modulator module's own knobs — its body is a Serum panel on a slot host since stage 3, so
+// its controls carry data-dest ids like a Serum's — are never a cable's end: Serum lets an LFO modulate another LFO's rate,
+// the canvas keeps 2b's refusal (an allowed difference, told to the user)
+export const NOMOD_MOD = 'A modulator’s own knobs can’t be modulated';
 export function destOk(dev, id, keep) {
   const no = (why, stage = null) => ({ ok: false, why, stage }), ok = { ok: true, why: '', stage: null };
   if (!isObj(dev) || typeof id !== 'string' || !id) return no(NOMOD);
+  if (MOD_LABEL[dev.kind]) return no(NOMOD_MOD);
   if (dev.kind === 'panel') { const d = rackDescs(isObj(dev.fx) ? dev.fx : dev.rack).find(x => x.id === id); return d && !d.nomod ? ok : no(NOMOD); }
   if (dev.kind !== 'synth') return no(NOMOD);
   if (dev.model !== 'serum') {

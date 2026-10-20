@@ -3613,7 +3613,7 @@ test('edgePan2: dragSource\'s law per axis — touch zones of 72 px (quadratic),
   assert.equal(Math.round(at(40, 400, 'touch', 1120, r).vx), -600, 'half the ramp (120 of 240 ms)');
 });
 
-test('setCanvasScale / canvasScale: fitCanvas sizes in-world stores at clamp(dpr · k, 0.5, 2), outside the world at the dpr; every store ≤ 16e6 px', () => {
+test('setCanvasScale / canvasScale: fitCanvas sizes in-world stores at max(dpr · k, 0.5) (milestone 3 H5: the cap of 2 lifted), outside the world at the dpr; every store ≤ 16e6 px', () => {
   const d = fresh();
   d.defaultView.devicePixelRatio = 2;
   const w = d.createElement('div'); w.setAttribute('data-cv-world', ''); d.body.appendChild(w);
@@ -3625,7 +3625,7 @@ test('setCanvasScale / canvasScale: fitCanvas sizes in-world stores at clamp(dpr
     assert.equal(sj([inCv.width, inCv.height, outCv.width, outCv.height, wk.canvasScale(inCv), wk.canvasScale(outCv)]), sj([100, 50, 200, 100, 0.5, 1]));
     wk.setCanvasScale(2);
     const ctx = wk.fitCanvas(inCv, 100, 50);
-    assert.equal(sj([inCv.width, ctx.calls.at(-1)]), sj([200, ['setTransform', 2, 0, 0, 2, 0, 0]]), 'capped at 2');
+    assert.equal(sj([inCv.width, ctx.calls.at(-1)]), sj([400, ['setTransform', 4, 0, 0, 4, 0, 0]]), 'dpr · k: 1:1 on screen at 200 % (H5)');
     wk.setCanvasScale(0.1);
     wk.fitCanvas(inCv, 100, 50);
     assert.equal(inCv.width, 50, 'at least 0.5');
@@ -3633,6 +3633,42 @@ test('setCanvasScale / canvasScale: fitCanvas sizes in-world stores at clamp(dpr
     wk.fitCanvas(outCv, 4000, 3000);
     assert.ok(outCv.width * outCv.height <= 16e6 + 8000, 'the 16e6 px cap: ' + outCv.width + ' × ' + outCv.height);
   } finally { wk.setCanvasScale(1); }
+});
+
+test('storeDensity (milestone 3 H5): one rule — dpr · k in the world (≥ 1:1 at every zoom, ≥ 0.5), the dpr capped at 2 outside; the budget\'s caps; the 16e6 px cap given a size; the density handed out is remembered', () => {
+  const d = fresh();
+  const w = d.createElement('div'); w.setAttribute('data-cv-world', ''); d.body.appendChild(w);
+  const inCv = d.createElement('canvas'), outCv = d.createElement('canvas'), other = d.createElement('canvas');
+  w.appendChild(inCv); w.appendChild(other); d.body.appendChild(outCv);
+  try {
+    d.defaultView.devicePixelRatio = 2;
+    const R = [];
+    for (const k of [0.25, 0.5, 1, 1.5, 2]) { wk.setCanvasScale(k); R.push([wk.storeDensity(inCv), wk.storeDensity(outCv)]); }
+    assert.equal(sj(R), sj([[0.5, 2], [1, 2], [2, 2], [3, 2], [4, 2]]), 'R3: store px per on-screen device px = 1 for k ≥ 0.25 at dpr 2');
+    for (const k of [0.25, 0.5, 1, 1.5, 2]) { wk.setCanvasScale(k); assert.ok(wk.storeDensity(inCv) / (2 * k) >= 1 - 1e-12, 'k ' + k); }
+    d.defaultView.devicePixelRatio = 3;
+    wk.setCanvasScale(1);
+    assert.equal(sj([wk.storeDensity(inCv), wk.storeDensity(outCv), wk.deviceRatio()]), sj([3, 2, 3]), 'dpr 3: the world uncapped, the page still 2 (§13.1)');
+    d.defaultView.devicePixelRatio = 2;
+    wk.setCanvasScale(2);
+    // the budget's caps: a capped canvas takes min(rule, cap); a change is reported once
+    assert.equal(wk.setStoreCaps(new Map([[inCv, 2]])), true);
+    assert.equal(wk.setStoreCaps(new Map([[inCv, 2]])), false, 'the same caps: no change');
+    assert.equal(sj([wk.storeDensity(inCv), wk.storeDensity(other), wk.storeCap(inCv), wk.storeCap(other) === undefined]), sj([2, 4, 2, true]));
+    wk.fitCanvas(inCv, 100, 50);
+    assert.equal(sj([inCv.width, inCv.height, wk.storedDensity(inCv)]), sj([200, 100, 2]));
+    assert.equal(wk.setStoreCaps(null), true, 'cleared');
+    assert.equal(wk.storeDensity(inCv), 4);
+    assert.equal(wk.storedDensity(inCv), 4);
+    // a cap above the rule changes nothing; the per-canvas px cap given a layout size
+    wk.setStoreCaps(new Map([[inCv, 9]]));
+    assert.equal(wk.storeDensity(inCv), 4);
+    wk.setStoreCaps(null);
+    const s = wk.storeDensity(inCv, 2000, 1500);
+    assert.ok(2000 * 1500 * s * s <= wk.CANVAS_MAX_PX + 1 && s < 4, 'the 16e6 px cap: ' + s);
+    assert.equal(wk.CANVAS_BUDGET, 64 * 1024 * 1024);
+    assert.equal(wk.storedDensity(null), undefined);
+  } finally { wk.setCanvasScale(1); wk.setStoreCaps(null); d.defaultView.devicePixelRatio = 1; }
 });
 
 test('onRescale / rescaleCanvases: repaints of the static canvases inside the root (all without one; detached ones skipped); off() unregisters; releaseCanvases empties every canvas under a root', () => {
