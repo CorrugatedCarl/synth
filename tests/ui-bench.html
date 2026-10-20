@@ -23,6 +23,9 @@
   within 0.5 device px of (i·MAJOR·k + tx)·d; a dot whose window lands on a face — alpha 255 texels, no centroid — is skipped
   and counted, the probe runs on the first track which has a face on screen). The GL stats also carry the faces' windows
   (`windows`, `soft`: sampled below 1:1 after the raster ceilings, `winPx`: the adaptive window cap, `paintMax`).
+  Milestone 3 (IMPL-3 §1.5, the S0 spike): ?m3=1 loads tests/ui-bench-m3.mjs instead — real Serum panels as part modules and
+  the Serum-faithful modulators, scenes hw5 / sx1 / p1 / p1x / hwm / t2 / t3 with audio running, runs M0–M5, the P1 / P2
+  probes; &hand=1 the on-screen hand protocol, &hold=1 the rest test (screenshots), &diff=1 the screenshot diff (on the Mac).
 -->
 <style>
   :root { color-scheme: dark; }
@@ -50,6 +53,11 @@
 <div id="res"></div>
 <textarea id="out" readonly></textarea>
 <script type="module">
+  // (milestone 3, IMPL-3 §1.5 S0) ?m3=1: the rendering spike's page (tests/ui-bench-m3.mjs) replaces this one; the 1h bench
+  // below stays as it was. The module is loaded without ?v= (a test page: the service worker fetches it network first), a
+  // fresh URL per load (no HTTP-cached copy of an earlier deploy)
+  const M3 = /[?&]m3=1/.test(location.search);
+  if (M3) import('./ui-bench-m3.mjs?t=' + Date.now()).then(m => m.main(), e => { document.body.textContent = 'ui-bench-m3.mjs did not load: ' + (e && e.message); });
   const $ = s => document.querySelector(s);
   const SETS = { one: ['prophet5'], five: ['obxa', 'jupiter8', 'ms20', 'cs80', 'prophet5'] };
   // candidate fixes, tried as extra stylesheets on the five-synth track (SPEC §2.11: nothing visible changes)
@@ -230,7 +238,7 @@
   }
   $('#run').onclick = () => run().catch(e => { status('failed: ' + e.message); $('#run').disabled = false; });
   $('#copy').onclick = async () => { try { await navigator.clipboard.writeText($('#out').value); status('copied'); } catch (e) { $('#out').select(); status('select the text and copy it'); } };
-  if (/[?&]run=1/.test(location.search)) $('#run').click();
+  if (/[?&]run=1/.test(location.search) && !M3) $('#run').click();
 </script>
 </body>
 </html>
