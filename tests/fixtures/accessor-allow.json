@@ -2,8 +2,17 @@
   "about": "The accessor ratchet's allowlist (tests/lint.test.mjs, IMPL-3 §4.3): per root file the count n of code lines reading a track's v1 fields by the 1e names (t / tr / x / T / v / V . model / vals / preset / seq / fx; trk().x / curView().x; fxOf( / isSx( ). Shrink-only: above fails, below asks to lower n. `sites` name each kept line by a fragment (`has`) and its reason (`why`); a file without them gives one `why` for all (the R0 baseline, retired step by step).",
   "files": {
     "main.js": {
-      "n": 12,
-      "why": "R3 remainder: the load / new-track / model-change writes (R5), bind's globals (R5 / R6)"
+      "n": 2,
+      "sites": [
+        {
+          "has": "if (r && r.seq && Array.isArray(r.seq.pat)) t.seq = r.seq;",
+          "why": "loadProject: a record song.js read as v1 (no valid devices) gets its 303 pattern before adopt converts it (a plain field: no accessor exists yet)"
+        },
+        {
+          "has": "if (r && r.fx && typeof r.fx === 'object') t.fx = r.fx;",
+          "why": "loadProject: the same v1 record's rack before adopt"
+        }
+      ]
     },
     "midi.js": {
       "n": 1,

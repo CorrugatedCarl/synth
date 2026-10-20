@@ -328,6 +328,20 @@ test('R3 the FX phase memory per rack: syncPhases asks each rack of a graphed tr
   assert.equal(choPh(api.store.get('synth.user.serum', []).find(x => x.name === 'Acc Ph2').fx), 0.0625);
 });
 
+test('R5 a load normalises every device, the primary and its FX too: a classic\'s values over its model\'s defaults, a v1 rack migrated, a Serum\'s state', () => {
+  const juno = MOD('juno60'), cf = juno.controls.find(c => c.id === 'cf');
+  const raw = { name: 'R5', schema: CM.SCHEMA, uid: 'p_r5test0001', tracks: [
+    { id: 'trk_r1', name: 'J', prim: 'i1', nid: 3, dev: { i1: { kind: 'synth', model: 'juno60', vals: { cf: cf.def + 1 }, preset: null }, fx1: { kind: 'panel', fx: { p: { 'fx.cho.on': 1 } } }, out: { kind: 'out' } },
+      wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }] },
+    { id: 'trk_r2', name: 'S', prim: 'i1', nid: 2, dev: { i1: { kind: 'synth', model: 'serum', vals: {}, preset: null }, out: { kind: 'out' } }, wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }] },
+  ] };
+  const p = acc.loadProject(JSON.stringify(raw)), [a, b] = p.tracks;
+  assert.deepEqual(Object.keys(a.dev.i1.vals).sort(), juno.controls.map(c => c.id).sort(), 'every control of the model');
+  assert.equal(a.dev.i1.vals.cf, cf.def + 1, 'its own value kept');
+  assert.deepEqual([a.dev.fx1.fx.v, b.dev.i1.fx.v, typeof b.dev.i1.vals.s.global], [2, 2, 'object'], 'the v1 rack migrated; the Serum normalised with its own rack');
+  assert.deepEqual(p.tracks.map(t => Object.keys(t).filter(k => CM.V1_KEYS.includes(k))), [[], []], 'no own v1 field on a track');
+});
+
 test('R2 Resample to on a second Serum: rendered alone through its own patch (buildInstPatch), into its own oscillator', async () => {
   const { t, id } = duo('juno60', 'serum');
   const iv = acc.instView(t, id), want = sha(api.buildInstPatch(t, id, 44100, true)), prim = JSON.stringify(P(t).vals);

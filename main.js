@@ -155,14 +155,16 @@ function fxOfDev(t, id) {
   d.fx = fxOk(d.fx) ? fxLoad(d.fx, d.model === 'serum' && d.vals ? d.vals.s : undefined) : core.defaultFx2();
   return d.fx;
 }
-// the devices besides the primary and its FX (stage 1e: they enter from outside too): Serum states and FX states
-// normalised as loadProject does the primary's, a classic instrument's values over its model's defaults (bind)
+// every device of a track as it enters (a load: autosave, file, History's restore keeps the live states): Serum states
+// through normalizeSerum (v1 → v2, §2.6), FX states through §2.6.3's normalizeFx — a v1 rack (any model) migrated with
+// its Serum state as refs (the instances its rows / locks / MIDI map address are kept; the migrated rack renders
+// bit-identically, golden shard 4) —, a classic instrument's values over its model's defaults, an unknown model as
+// modelById reads it (R5: the primary and its FX too — loadProject's lines and bind's writes were this, for it alone)
 function normDevs(t) {
   if (!t || !t.dev) return;
-  const pid = CMOD.primId(t), f = CMOD.fxDevOf(t);
   for (const id of Object.keys(t.dev)) {
     const d = t.dev[id];
-    if (id === pid || (f && id === f.id) || !d || typeof d !== 'object') continue;
+    if (!d || typeof d !== 'object') continue;
     if (d.kind === 'synth') {
       const m = modelById(d.model);
       d.model = m.id;
@@ -205,25 +207,19 @@ function loadProject(json, lo = {}) {
     if (r && r.seq && Array.isArray(r.seq.pat)) t.seq = r.seq;
     if (r && r.fx && typeof r.fx === 'object') t.fx = r.fx;
   }
-  CMOD.adopt(p); // (SPEC-canvas §5.4: v2 tracks with their accessors; the code below reads the primary through them)
-  for (const t of p.tracks) {
-    // SPEC-serum2 §12.6: Serum states through normalizeSerum (v1 → v2 migration, §2.6), FX states through §2.6.3's
-    // normalizeFx — a v1 rack (any model) is migrated, migrateFx1(normalizeFxV1(fx), refs), with the track's Serum state
-    // as refs (the instances its rows / locks / MIDI map address are kept); the migrated rack renders bit-identically
-    // (golden shard 4) and the project is saved with v2 racks (§15.1 item 6)
-    if (isSerum(t)) t.vals = { s: core.normalizeSerum(t.vals && t.vals.s) };
-    if (CMOD.fxDevOf(t)) t.fx = t.fx && typeof t.fx === 'object' ? fxLoad(t.fx, isSerum(t) ? t.vals.s : undefined) : core.defaultFx2(); // (no FX device: none)
-    normDevs(t); // (stage 1e: every other instrument and panel the same way)
-  }
+  CMOD.adopt(p); // (SPEC-canvas §5.4: v2 tracks, a v1 record converted in place)
+  for (const t of p.tracks) normDevs(t); // (SPEC-serum2 §12.6, §15.1 item 6: every device normalised; saved with v2 racks)
   if (up.readOnly) { if (lo.file) p.newerSchema = up.from; else goReadOnly(up.from); }
   return p;
 }
 function freshProject(m) {
-  const p = CM.stamp(S.newProject({ model: m.id, vals: loadVals(m), name: 'Untitled', trackName: m.name + ' 1' }));
-  for (const t of p.tracks) { t.fx = newFx(m); seedPend.add(t.id); }
+  const p = CMOD.adopt(CM.stamp(S.newProject({ model: m.id, vals: loadVals(m), name: 'Untitled', trackName: m.name + ' 1' })));
+  for (const t of p.tracks) { newRack(t, m); seedPend.add(t.id); }
   p.perf = S.normPerf(null); // (stage 2a: no Mod Wheel module yet)
-  return CMOD.adopt(p);
+  return p;
 }
+// a new track's rack (R5: on its FX device once adopted — a Serum's own, a classic's panel): the default preset's (newFx)
+function newRack(t, m) { const f = CMOD.fxDevOf(t); if (f) f.dev.fx = newFx(m); }
 const PRE_1F = 'synth.project.pre1f'; // (stored as synthc.project.pre1f)
 const seedPend = new Set(); // tracks whose next patch re-seeds the FX rack's LFO phases (§4.2: loads, track creation)
 let project;
@@ -237,10 +233,9 @@ let project;
   if (!project) {
     const fromHash = MODELS.find(m => '#' + m.id === location.hash);
     project = freshProject(fromHash || modelById(settings.model));
-    const old303 = store.get('synth.seq303', null);
-    if (old303 && project.tracks[0].model === 'tb303') project.tracks[0].seq = old303;
+    const old303 = store.get('synth.seq303', null), d0 = instOf(project.tracks[0]);
+    if (old303 && d0.model === 'tb303') d0.seq = old303;
   }
-  for (const t of project.tracks) { if (!t.vals || typeof t.vals !== 'object') t.vals = loadVals(modelById(t.model)); fxOfDev(t, null); }
 }
 const hist = new S.History(200);
 const trk = () => project.tracks.find(t => t.id === project.selTrack) || project.tracks[0];
@@ -286,10 +281,8 @@ const curView = (t = trk()) => instView(t, curOf(t));
 // a session map's key — the track id (its primary: R1–R3) or 'trackId/dev' — → that instrument's view | null
 const viewOfKey = k => { const i = typeof k === 'string' ? k.indexOf('/') : -1, t = project.tracks.find(x => x.id === (i < 0 ? k : k.slice(0, i))); return t ? instView(t, i < 0 ? null : k.slice(i + 1)) : null; };
 let model, vals;
-function bind() {
-  const t = trk(), v = curView(t); project.selTrack = t.id; model = modelById(v.model); v.model = model.id;
-  if (model.custom) { if (!v.vals || !v.vals.s) v.vals = defaults(model); vals = v.vals; } // keeps the state object (panel, undo)
-  else vals = v.vals = Object.assign(defaults(model), v.vals);
+function bind() { // (R5: reads only — every device is normalised as it enters, normDevs; the state objects kept: panel, undo)
+  const t = trk(), iv = curView(t); project.selTrack = t.id; model = modelById(iv.model); vals = iv.vals;
 }
 bind();
 
@@ -1720,8 +1713,7 @@ function setTrackModel(tr0, id, o = null) {
   postTo(tr, { t: 'panic' });
   if (prim && new RegExp('^' + old.name.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '( \\d+)?$').test(tr.name)) tr.name = m.name + ' ' + (project.tracks.indexOf(tr) + 1);
   const n0 = CG.modRowsFor(tr, dev).length, nm = 'the ' + (tr.dev && tr.dev[dev] ? cvDevName(tr, dev) : 'Serum'); // ((U10) the device being replaced, by its name)
-  if (prim) { tr.vals = loadVals(m); tr.model = id; tr.preset = null; } // tr.fx (the track's rack) is kept; ((C11) the values first: the model setter judges the rows against the NEW model's values)
-  else CMOD.setModel(tr, dev, id, { vals: loadVals(m) });
+  CMOD.setModel(tr, dev, id, { vals: loadVals(m) }); // (R5: the primary too — its rack kept by the kept-FX rules, the 1c reshape; (C11) the values with the model: the rows judged against the NEW model's values)
   // (stage 2a) a Serum's cables to a classic one are dropped (the model setter / setModel): said (cv-model setModel's text)
   const gone = n0 - CG.modRowsFor(tr, dev).length, why = gone > 0 ? `${gone} modulation cable${gone > 1 ? 's' : ''} to ${nm} removed: the new model has no such knobs` : ''; // (2b: rows whose param id survives stay)
   if (why) notice(why, 6000);
@@ -3105,7 +3097,7 @@ function renderHeads() {
     const bot = h('div', 'hrow');
     // the instrument chip (its drawing, model · voice mode, R6: as its patch plays); the preset select lives on the
     // instrument module's bar now (cv-module), the other models in the chip's menu (instItems)
-    voiceShown.set(t.id, trackVoice(t).label);
+    voiceShown.set(t.id, trackVoice(instOf(t)).label);
     const ichip = instChip(t);
     const ch = h('select', 'hch'); ch.title = 'MIDI input channel'; ch.setAttribute('aria-label', 'MIDI input channel');
     for (let c = 0; c <= 16; c++) { const o = h('option', null, c ? 'Ch ' + c : 'Omni'); o.value = c; ch.append(o); }
@@ -3135,10 +3127,11 @@ function renderHeads() {
 function addTrack(m = model, vals0 = null, o = null) {
   hist.record(project);
   const t = S.newTrack(project, { model: m.id, vals: vals0 ? JSON.parse(JSON.stringify(vals0)) : loadVals(m), name: `${m.name} ${project.tracks.length + 1}` });
-  t.fx = newFx(m); seedPend.add(t.id);
+  seedPend.add(t.id);
   if (o && o.ui === 'flow' && !m.custom) t.lay = { [cvModule.ID.inst]: { x: 0, y: 0, ui: 'flow' } }; // (the Sources tray's Simple)
   project.tracks.push(t);
   CMOD.adopt(project);
+  newRack(t, m);
   syncNodes();
   selectTrack(t.id);
   renderHeads(); persist(); updateUndoUI();
@@ -3556,10 +3549,12 @@ function importMidiFile(bytes, fname) {
   const m = model;
   for (const it of r.tracks) {
     const t = S.newTrack(project, { model: m.id, vals: loadVals(m), name: it.name || `${m.name} ${project.tracks.length + 1}` });
-    t.fx = newFx(m); seedPend.add(t.id);
+    seedPend.add(t.id);
     t.notes = it.notes.map(n => ({ id: S.newId(), t: n.t, d: n.d, n: n.n, v: n.v }));
     t.cc = it.cc.slice(); t.ch = 0;
     project.tracks.push(t);
+    CMOD.adopt(project);
+    newRack(t, m);
   }
   project.selTrack = project.tracks[0].id;
   fitBars();
@@ -6092,6 +6087,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
     importMidiFile, trkListUI, instItems, zoneOf, zoneWarm, msRecs, sxRecOf, fxRecOf, instView, curView, loadVals, trackVoice, rateText,
     sxKeys, sxDirty, presetKeys, voiceShown, seqHw, dxHw, hwDx, classicPanels, rackKey, rackKeys,
     uiLoad: p => { const was = uiLoad; uiLoad = p; return was; }, // (the panel modules never finish loading in node: a test hands them in)
+    loadProject, normDevs,
   };
 }
 boot();
