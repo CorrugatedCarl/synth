@@ -642,6 +642,8 @@ Only genuine decisions; each has the default the plan uses until answered. Q1 is
    milestone 3 (each Serum already has its own VELO / NOTE curves inside its VOICE module, and a second curve on the canvas would
    stack on top of it for Serum knobs); a small later step if you want them.
 
+**Answers (the user, 2026-10-19):** Q3 — leave both out of milestone 3 (recommended). Q4 — yes: the top ↶ undoes canvas cable edits inside a Serum (recommended). Q5 — not now (recommended). Also: the Serum filter S / A / B / C / N switches stay non-modulatable but **get MIDI learn and lock back** (the 2b fix 645a996 had dropped them with `data-dest`; restored by a separate marker before phase 1). Q1 and Q2 are answered in the S0 session.
+
 **Things you will notice (no decision needed)**: the Chaos module loses its "smooth" knob and little scope (the knob never changed the
 sound — Serum has no such control); the knobs on LFO / ENV / Macro / Chaos modules can't themselves be modulated by other modules (in
 Serum an LFO can modulate another LFO's rate; on the canvas not yet); an LFO that is shaped but not connected to anything doesn't get
