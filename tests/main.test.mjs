@@ -1146,3 +1146,15 @@ test('1i (IMPL-1i §6.2): the hardware keys in the page (the real world) — a P
     assert.deepEqual(lives, ['bend:0.25', 'wheel:0.75', 'bend:0'], 'the selected track\'s');
   } finally { cv.perf.live = was; api.ctl('sus', 0, 0); }
 });
+
+test('MIDI import into a project with no notes: the empty project\'s tracks go and the file\'s come in as the current instrument\'s model (curModel read before the tracks are cleared — no throw)', async () => {
+  const s = await bootMain({ hash: '#juno60' });
+  await s.power(); await s.settle(5); s.raf();
+  const api = s.api, acc = globalThis.__synthTest.acc;
+  assert.equal(api.project().tracks.every(t => !t.notes.length && !t.cc.length), true, '(a fresh project: no notes)');
+  const src = S.newProject({ model: 'minimoog', vals: {} });
+  src.tracks[0].notes = [{ id: 'n1', t: 0, d: 480, n: 60, v: 100 }, { id: 'n2', t: 480, d: 480, n: 64, v: 90 }];
+  acc.importMidiFile(S.exportMIDI(src), 'empty.mid'); s.raf();
+  const ts = api.project().tracks;
+  assert.deepEqual([ts.length, ts[0].notes.length, I(ts[0]).model, api.project().name], [1, 2, 'juno60', src.name], '(the name stored in the MIDI file wins over the file name)');
+});
