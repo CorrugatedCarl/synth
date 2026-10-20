@@ -15,5 +15,17 @@ export class MixerPage {
   }
   destroy() { this.dead = true; this.el.remove(); }
 }
+// (milestone 3) the output strips alone: VOICE's outputs (a kit panel with the master section's destinations)
+export class OutputsPanel {
+  constructor(root, kit) {
+    this.kit = kit;
+    const P = kit.panel('OUTPUTS', null, null);
+    for (const id of ['g.master', 'g.direct', 'g.bus1v', 'g.bus2v']) P.body.appendChild(kit.knob(id, { label: id, size: 'sm' }).el);
+    this.el = P.el;
+    if (root) root.appendChild(this.el);
+    made.push(this);
+  }
+  destroy() { this.dead = true; this.el.remove(); }
+}
 export function channelStrips() { return []; }
 export function routeMenuItems() { return []; }

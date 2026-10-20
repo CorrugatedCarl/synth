@@ -133,6 +133,11 @@ test('OSC A: every destination of the panel, its views and popovers is bound (da
   const { doc, kit, T, root } = mount();
   const P = new osc.OscPanel(root, kit, 0);
   T.paint();
+  // H1 (milestone 3): only the active type's view is built; reading views.<type> builds the others (as a type switch does)
+  assert.deepEqual(Object.keys(P.built), ['wt']);
+  assert.equal(dom.byAttr(P.el, 'data-oscdisp', '0').length, 1);
+  void Object.values(P.views);
+  T.paint();
   const seen = destsIn(P.el);
   const body = ['on', 'level', 'pan', 'oct', 'semi', 'ratio', 'fine', 'crs', 'uni', 'det', 'blend', 'wt', 'phase', 'rand',
     'w1', 'w2', 'warpMode', 'warp', 'warp2', 'wvar1', 'wvar2', 'rwarp', 'rwarp2', 'mvel', 'mrand', 'timbre',
@@ -165,6 +170,7 @@ test('OSC A: every destination of the panel, its views and popovers is bound (da
 test('OSC B / C: b.* / c.* bindings, modules oscB / oscC, display markers; OSC C has no Phase-1 warp slot', () => {
   const { kit, T, root } = mount();
   const B = new osc.OscPanel(root, kit, 1), Cp = new osc.OscPanel(root, kit, 2);
+  void Object.values(B.views); void Object.values(Cp.views);   // (H1: every type's view built, as after visiting each type)
   T.paint();
   for (const [P, k, m] of [[B, 'b', 'oscB'], [Cp, 'c', 'oscC']]) {
     const seen = destsIn(P.el);
@@ -211,7 +217,12 @@ test('OscPanel: type menu, one view per type (the current one shown, its head in
   T.paint();
   assert.deepEqual(Object.keys(P.views), ['wt', 'multi', 'sample', 'gran', 'spec']);
   const body = dom.byCls(P.el, 'sx-pbody')[0], head = dom.byCls(P.el, 'sx-ptitle')[0];
-  assert.deepEqual(body.children.slice(0, 5), Object.values(P.views).map(v => v.el));
+  // H1: the active view alone at first, in its place (before the pitch row); the others, built later, keep the VIEWS order
+  assert.deepEqual(Object.keys(P.built), ['wt']);
+  assert.ok(body.children[0] === P.built.wt.el && !body.children[1].hasAttribute('data-otype'));
+  const all = Object.values(P.views);
+  assert.deepEqual(Object.keys(P.built).sort(), ['gran', 'multi', 'sample', 'spec', 'wt']);
+  assert.ok(body.children.slice(0, 5).every((n, i) => n === all[i].el), 'the views in VIEWS order');
   for (const [t, v] of Object.entries(P.views)) {
     assert.deepEqual([v.type, v.o, v.el.getAttribute('data-otype'), shown(v.el), v.active()], [t, 0, t, t === 'wt', t === 'wt']);
     for (const h of v.head) assert.equal(h.parentNode, head);

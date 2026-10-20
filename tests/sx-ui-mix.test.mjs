@@ -42,8 +42,28 @@ function choose(doc, menuEl, label) {
 }
 
 test('imports in node without a DOM; exports (§11.14)', () => {
-  assert.deepEqual(Object.keys(mix).sort(), ['MixerPage', 'channelStrips', 'routeMenuItems']);
+  assert.deepEqual(Object.keys(mix).sort(), ['MixerPage', 'OutputsPanel', 'channelStrips', 'routeMenuItems']);
   for (const k of Object.keys(mix)) assert.equal(typeof mix[k], 'function', k);
+});
+
+test('(milestone 3) OutputsPanel: VOICE\'s outputs — the MIX page\'s BUS 1 / BUS 2 / MAIN / DIRECT strips alone, their faders, routes, FX bypass and meters', () => {
+  const doc = dom.fresh(), s = fresh(), fx = core.defaultFx2(), kit = makeKit({ doc, s, fx });
+  const root = doc.createElement('div');
+  doc.body.appendChild(root);
+  const O = new mix.OutputsPanel(root, kit), T = stubOf(kit);
+  T.paint();
+  assert.ok(O instanceof mix.MixerPage && O.el.parentNode === root);
+  assert.deepEqual(O.strips.map(x => x.T.key), ['bus1', 'bus2', 'main', 'direct']);
+  assert.deepEqual(byCls(O.el, 'wk-fader').map(f => f.getAttribute('data-dest')), ['g.bus1v', 'g.bus2v', 'g.master', 'g.direct']);
+  assert.equal(byCls(O.el, 'sxm-route').length, 2);                               // the two bus routes
+  assert.equal(byCls(O.el, 'sxm-byp').length, 3);                                 // BUS 1, BUS 2, MAIN
+  fire(one(O.strips[0].el, 'sxm-byp'), 'click');
+  assert.equal(fx.racks[1].byp, 1);
+  assert.deepEqual(T.log.at(-1), ['editFx', 'BUS 1 FX bypass', undefined, false]);
+  T.setSnap({ mix: Float32Array.from([-6, -12, -60, -3, -20, -1, -9, -24, -30, -2, -50]) });
+  assert.deepEqual(O.strips.map(x => one(one(x.el, 'wk-fader'), 'wk-meter').wk.levels()[0]), [-24, -30, -2, -50]);
+  O.destroy();
+  assert.equal(O.el.parentNode, null);
 });
 
 test('channelStrips: order, destinations, routing rules, S1 filter type, bus routes and bypass', () => {
