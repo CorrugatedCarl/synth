@@ -13,6 +13,8 @@
 // Assigning track.model across classic ↔ Serum reshapes the graph by the kept-FX rules of setModel (§2.5: a track's rack
 // is kept when its model changes; on a canonical track exactly stage 1c's reshape).
 //   adopt(p) → p   isAdopted(t)   instOf(t, id = prim)   primId(t)   fxDevOf(t) → { id, dev, own } | null
+//   (milestone 3) dropLay(t, id): the layout entries of device id and of every 'id/…' module; PARTS, partOf(key) →
+//   { dev, part } | null: a Serum part's module key 'iN/oscA' (IMPL-3 §2.1, §3)
 //
 // The editing API (stage 1e, IMPL-1e §3.2): every call edits the live track in place (History is the caller's: one
 // snapshot around the call); a refusal leaves it untouched.
@@ -121,7 +123,21 @@ const inWires = (t, id) => t.wires.filter(w => isObj(w) && typeof w.b === 'strin
 export function destOf(t, id) { const w = isObj(t) && Array.isArray(t.wires) ? outWire(t, id) : null, b = w && port(w.b); return b && b.dev in t.dev ? b.dev : null; }
 const wire = (t, a, b, g) => { const w = { id: wireId(t), a, b }; if (g !== undefined && g !== 1) w.g = g; t.wires.push(w); return w; };
 const hasFx = fx => isObj(fx) && Array.isArray(fx.racks) && fx.racks.some(r => isObj(r) && Array.isArray(r.mods) && r.mods.length > 0);
-const dropLay = (t, id) => { if (isObj(t.lay)) { delete t.lay[id]; delete t.lay[id + '/fx']; } };
+// (milestone 3, schema 7) a device's layout entries: its own and every 'id/…' module of it (a Serum's own FX 'iN/fx', its
+// parts 'iN/oscA' …); the track's lay object itself is edited (History is the caller's)
+export function dropLay(t, id) {
+  if (!isObj(t) || !isObj(t.lay) || typeof id !== 'string' || !id) return;
+  for (const k of Object.keys(t.lay)) if (k === id || k.startsWith(id + '/')) delete t.lay[k];
+}
+// (milestone 3, IMPL-3 §2.1) the parts of a Serum that are modules in its parts view, keyed 'iN/<part>' (serum-core module
+// names; MACROS new): VOICE is the device key iN itself, its own FX stays 'iN/fx' (not a part)
+export const PARTS = Object.freeze(['oscA', 'oscB', 'oscC', 'sub', 'noise', 'filter', 'filter2', 'env2', 'env3', 'env4',
+  ...Array.from({ length: 10 }, (_, i) => 'lfo' + (i + 1)), 'macros', 'arp', 'clip']);
+/** a module key 'iN/<part>' → { dev, part } | null (a device, its own FX, anything else) */
+export function partOf(key) {
+  const m = typeof key === 'string' ? /^([a-z][a-z0-9]{0,15})\/([a-z][a-zA-Z0-9]{0,15})$/.exec(key) : null;
+  return m && PARTS.includes(m[2]) ? { dev: m[1], part: m[2] } : null;
+}
 // classic ↔ Serum: the FX state moves with the instrument's kind (setModel's kept-FX rules)
 function reshape(t, id, toSerum) {
   const d = t.dev[id], out = outId(t) || (t.dev.out = { kind: 'out' }, 'out'), w = outWire(t, id), dst = w && port(w.b);

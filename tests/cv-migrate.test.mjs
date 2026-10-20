@@ -20,7 +20,7 @@ const P1 = readFileSync(new URL('./ref-p1/project-p1.json', import.meta.url), 'u
 const deepFreeze = o => { if (o && typeof o === 'object' && !Object.isFrozen(o)) { Object.freeze(o); for (const v of Object.values(o)) deepFreeze(v); } return o; };
 
 test('constants: SCHEMA, one step per schema, the read-only notice (§2.13)', () => {
-  assert.equal(M.SCHEMA, 6, '1a: uid; 1b: track.lay; 1c: project v2 tracks; 1e: several instruments per track; 2a: performance modulators; 2b: modulation everywhere');
+  assert.equal(M.SCHEMA, 7, '1a: uid; 1b: track.lay; 1c: project v2 tracks; 1e: several instruments per track; 2a: performance modulators; 2b: modulation everywhere; 3: Serum parts (lay)');
   assert.equal(M.STEPS.length, M.SCHEMA, 'STEPS[n] turns schema n into n + 1');
   assert.equal(M.READ_ONLY_NOTICE, 'Opened read-only: saved by a newer SYNTH Canvas · Reload');
   assert.equal(M.schemaOf, A.schemaOf, 'one definition of a project\'s schema (the store\'s gate uses it)');
@@ -832,10 +832,10 @@ test('2a review H3: Save as classic project names the modulation cables, modulat
 /* ------------------------------------------------------------------ stage 2b: schema 6, every module's state, any port (IMPL-2b §1.4) */
 test('2b schema 6: additive (a 5 opens as before); song.normDev bounds every module kind\'s state through serum-core\'s normalisers; round trips', () => {
   const p5 = Object.assign(M.toV2(mainProject()), { schema: 5, uid: 'p_abc123xyz0' }), up = M.upgrade(deepFreeze(jclone(p5)));
-  assert.deepEqual([up.from, up.readOnly, up.p.schema], [5, false, 6]);
-  assert.deepEqual(Object.assign({}, up.p, { schema: 5 }), p5, 'nothing converted');
+  assert.deepEqual([up.from, up.readOnly, up.p.schema], [5, false, M.SCHEMA]);
+  assert.deepEqual(Object.assign({}, up.p, { schema: 5 }), p5, 'nothing converted (no stored modulator places: STEPS[6] moves none)');
   assert.deepEqual(M.STEPS[5]({ schema: 5, tracks: [1] }), { schema: 6, tracks: [1] });
-  assert.equal(M.STEPS.length, 6);
+  assert.equal(M.STEPS.length, M.SCHEMA);
   const raw = { dev: { i1: { kind: 'synth', model: 'serum' }, out: { kind: 'out' },
     l1: { kind: 'lfo', lfo: { mono: 1, mode: 'env', pts: [[0, 0, 0], [1, 1, 0]], junk: 1 }, rate: 2, rise: -1, name: 'Wobble', junk: 2 },
     e1: { kind: 'env', env: { legInv: true, junk: 1 }, att: 0.3, sus: 7, crv: [0.2, 'x'] },
@@ -884,4 +884,107 @@ test('2b splitTracks: rows from any port (a macro knob), the instrument\'s own L
   assert.deepEqual(S.deserialize(JSON.stringify(r.p)).tracks.map(x => x.mods.map(y => y.id)), [['r1', 'r6'], ['r2', 'r3', 'r5']]);
   const v = M.toV1({ schema: M.SCHEMA, perf: { wheel: null }, tracks: [A] });
   assert.deepEqual(v.lost, ['“Duo”: 2 modulation cables', '“Duo”: its LFO 1, Macro 1, Chaos 2 modules']);
+});
+
+/* ------------------------------------------------------------ milestone 3 (IMPL-3 §3): schema 7 */
+import * as MB from './fixtures/mods-2b.mjs?v=9';
+import * as CVM from '../cv-module.js?v=9';
+import * as CP from '../cv-panel.js?v=9';
+import { MODELS } from '../models.js?v=9';
+const W3 = k => ({ lfo: 416, env: 320, macro: 256, chaos: 256 })[k]; // (IMPL-3 §2.2's module widths, until cv-module's MOD_W holds them)
+// a module's rect as the canvas lays it (Tidy for an entry not stored): an instrument its hardware / Simple / Serum size
+function rects(t, widthOf, wheel) {
+  const devs = CVM.devicesOf(t);
+  if (wheel) devs.push({ key: 'wheel', kind: 'mod', mod: 'wheel' });
+  const td = CVM.tidy(t, {}, devs), out = {};
+  for (const d of devs) {
+    const e = (t.lay && t.lay[d.key]) || td[d.key], k = d.mod || CVM.modKind(d.key);
+    let w, h;
+    if (d.kind === 'inst') { const m = MODELS.find(x => x.id === d.model), L = m.custom || (e && e.ui === 'flow') ? null : CP.usable(m.id, m), z = L ? CP.sizeOf(L, m) : CVM.sizeFor(d.model); w = z.w; h = z.h; }
+    else if (d.kind === 'mod') { w = ['lfo', 'env', 'macro', 'chaos'].includes(k) ? widthOf(k) : M.MOD_W0; h = CVM.MOD_H[k]; }
+    else { w = d.kind === 'out' ? CVM.W_OUT : CVM.W_FX; h = d.kind === 'out' ? 260 : 420; }
+    out[d.key] = { x: e.x, y: e.y, w, h: e.fold ? CVM.BAR_H : h, kind: d.kind };
+  }
+  return out;
+}
+const over = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+test('3 schema 7: STEPS[6] moves stored modulator places only — the content and every other entry unchanged; a 6 opens as 7, a 7 as itself', () => {
+  const t = MB.tracks()[1], p6 = { name: 'M3', schema: 6, uid: 'p_abc123xyz0', perf: { wheel: { v: 1 } }, tracks: [t] };
+  t.lay = { i1: { x: 0, y: 0 }, l1: { x: -320, y: 0, fold: 1 }, l2: { x: -320, y: 320 }, e1: { x: -320, y: 640 }, m1: { x: -320, y: 960, z: 3 }, c1: { x: -320, y: 1344 },
+    nt: { x: -320, y: 1600 }, h1: { x: 200, y: 100 }, wheel: { x: -320, y: -320 } };
+  const frozen = deepFreeze(jclone(p6)), up = M.upgrade(frozen);
+  assert.deepEqual([up.from, up.readOnly, up.p.schema], [6, false, 7]);
+  const L = up.p.tracks[0].lay;
+  // (cv-module's widths today: every kind W_MOD — no growth; the chaos module laid over the Serum moves left past it)
+  assert.deepEqual(Object.assign({}, L, { h1: null }), Object.assign({}, t.lay, { h1: null }), 'every other entry as it was (folds, z kept)');
+  // (off the Serum: past its left edge − MOD_GAP (−320, on the dots), where it meets LFO 2 (y 320…): past that one too)
+  assert.deepEqual(L.h1, { x: Math.floor((Math.floor((0 - CVM.MOD_GAP - CVM.W_MOD) / 32) * 32 - CVM.MOD_GAP - CVM.W_MOD) / 32) * 32, y: 100 }, 'off the Serum, then off LFO 2');
+  assert.deepEqual(Object.assign({}, up.p.tracks[0], { lay: null }), Object.assign(jclone(t), { lay: null }), 'content unchanged');
+  assert.deepEqual(frozen, jclone(p6), 'the input untouched');
+  assert.equal(M.upgrade(up.p).p.tracks[0].lay.h1.x, L.h1.x, 'at 7: nothing moves again');
+  const p7 = deepFreeze({ name: 'x', schema: 7, uid: 'p_abc123xyz0', tracks: [] });
+  assert.deepEqual([M.upgrade(p7).readOnly, M.upgrade(p7).from], [false, 7]);
+});
+
+test('3 growMods (IMPL-3 §2.2): with Serum\'s widths each LFO / ENV / Macro / Chaos keeps its right edge and grows left; overlaps move on left; other kinds and Tidy-placed ones stay', () => {
+  const t = MB.tracks()[1];
+  t.lay = { l1: { x: -320, y: 0 }, l2: { x: -320, y: 320 }, e1: { x: -320, y: 640 }, m1: { x: -320, y: 960 }, h1: { x: -640, y: 0 }, c1: { x: -320, y: 1344 }, nt: { x: 1600, y: 1600 } };
+  const g = M.growMods({ tracks: [t] }, W3).tracks[0], L = g.lay;
+  assert.deepEqual([L.l2.x, L.e1.x, L.m1.x], [-80 - 416, -80 - 320, -80 - 256], 'right edges kept at −MOD_GAP');
+  assert.deepEqual([L.c1, L.nt], [t.lay.c1, t.lay.nt], 'a CC / Note module: as it was');
+  // h1 (−640…−384) overlaps l1 grown (−496…−80) at y 0: past l1's left edge − 80
+  assert.equal(L.l1.x, -496);
+  assert.equal(L.h1.x, Math.floor((-496 - 80 - 256) / 32) * 32);
+  const R = rects(g, W3, false), mods = Object.keys(R).filter(k => R[k].kind === 'mod');
+  for (const a of mods) for (const b of Object.keys(R)) if (a !== b && (R[b].kind !== 'mod' || ['l1', 'l2', 'e1', 'm1', 'h1'].includes(a))) assert.equal(over(R[a], R[b]), false, a + ' × ' + b);
+  assert.equal(M.growMods({ tracks: [MB.tracks()[0]] }, W3).tracks[0].lay, undefined, 'no stored places: nothing to move');
+});
+
+test('3 gate: after STEPS[6] no modulator rect intersects an instrument in the fixtures — every stored place over the instruments, hardware and Simple, a folded one, the wheel', () => {
+  for (const [i, t] of MB.tracks().entries()) {
+    const keys = CVM.devicesOf(t).filter(d => d.kind === 'mod').map(d => d.key);
+    t.lay = { i2: { x: 0, y: 900, ui: i % 2 ? 'flow' : undefined } };
+    keys.forEach((k, j) => { t.lay[k] = { x: 64 * j, y: 48 * j }; if (j === 1) t.lay[k].fold = 1; });
+    t.lay.wheel = { x: 300, y: 950 };
+    const g = M.growMods({ perf: { wheel: { v: 1 } }, tracks: [jclone(t)] }, W3).tracks[0], R = rects(g, W3, true);
+    for (const k of keys.filter(k => ['lfo', 'env', 'macro', 'chaos'].includes(CVM.modKind(k)))) {
+      for (const o of Object.keys(R)) if (R[o].kind === 'inst') assert.equal(over(R[k], R[o]), false, t.id + ': ' + k + ' × ' + o);
+    }
+  }
+});
+
+test('3 song.normLay keeps Serum part keys (iN/oscA, iN/filter2), ui \'parts\' and up to 256 entries; cv-model dropLay removes id and id/*; partOf', () => {
+  const lay = { i1: { x: 0, y: 0, ui: 'parts' }, 'i1/oscA': { x: 10, y: 20 }, 'i1/filter2': { x: 30, y: 40, fold: 1 }, 'i1/fx': { x: 1, y: 2 }, fx1: { x: 5, y: 5, ui: 'flow' },
+    'i1/Osc': { x: 0, y: 0 }, 'I1/oscA': { x: 0, y: 0 }, 'i1/oscA/x': { x: 0, y: 0 }, i2: { x: 0, y: 0, ui: 'other' } };
+  const n = S.normLay(lay);
+  assert.deepEqual(Object.keys(n), ['i1', 'i1/oscA', 'i1/filter2', 'i1/fx', 'fx1', 'i2']);
+  assert.deepEqual([n.i1.ui, n.fx1.ui, n.i2.ui, n['i1/filter2'].fold], ['parts', 'flow', undefined, 1]);
+  const big = {};
+  for (let k = 0; k < 300; k++) big['m' + k] = { x: k, y: 0 };
+  assert.equal(Object.keys(S.normLay(big)).length, 256, 'the cap: 256 entries (a Serum in parts is up to 25 modules)');
+  const t = { lay: { i1: { x: 0, y: 0 }, 'i1/oscA': { x: 1, y: 1 }, 'i1/fx': { x: 2, y: 2 }, i10: { x: 3, y: 3 }, 'i10/oscA': { x: 4, y: 4 }, fx1: { x: 5, y: 5 } } };
+  MO.dropLay(t, 'i1');
+  assert.deepEqual(Object.keys(t.lay), ['i10', 'i10/oscA', 'fx1']);
+  assert.deepEqual([MO.partOf('i1/oscA'), MO.partOf('i2/lfo10'), MO.partOf('i1/macros'), MO.partOf('i1/fx'), MO.partOf('i1/env1'), MO.partOf('i1'), MO.partOf('i1/lfo11'), MO.partOf(7)],
+    [{ dev: 'i1', part: 'oscA' }, { dev: 'i2', part: 'lfo10' }, { dev: 'i1', part: 'macros' }, null, null, null, null, null]);
+  assert.equal(MO.PARTS.length, 25 - 2, 'OSC A–C, SUB, NOISE, FILTER 1–2, ENV 2–4, LFO 1–10, MACROS, ARP, CLIP (VOICE is the device, its FX iN/fx)');
+  // a whole track: removeInst / removeModDev drop the parts' entries with the device
+  const u = MB.tracks()[0];
+  u.lay = { i2: { x: 0, y: 0 }, 'i2/oscA': { x: 0, y: 0 }, l1: { x: -320, y: 0 }, 'l1/x': { x: 0, y: 0 } };
+  MO.removeInst(u, 'i2'); MO.removeModDev(u, 'l1');
+  assert.deepEqual(u.lay, {});
+});
+
+test('3: a schema-7 project opens read-only in a schema-6 build (the store\'s gate) and loads at 7 here', async () => {
+  const idb = fakeIDB(), seed = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null });
+  seed.saveProject({ name: 'parts', schema: 7, uid: 'p_parts00001', tracks: [{ id: 'trk_1', lay: { i1: { x: 0, y: 0, ui: 'parts' }, 'i1/oscA': { x: 0, y: 0 } } }] });
+  await seed.flush(); await seed.close();
+  const old = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 6 });
+  assert.deepEqual([old.info().readOnly, old.info().newer], [true, 7], 'a schema-6 build: read-only (its normLay would drop the part keys)');
+  await old.close();
+  const now = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: M.SCHEMA });
+  assert.equal(now.info().readOnly, false);
+  const p = S.deserialize(M.upgrade(JSON.parse(now.loadProject())).p);
+  assert.deepEqual(p.tracks[0].lay, { i1: { x: 0, y: 0, ui: 'parts' }, 'i1/oscA': { x: 0, y: 0 } });
+  await now.close();
 });

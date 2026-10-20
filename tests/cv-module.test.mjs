@@ -624,8 +624,8 @@ test('song.normLay: valid entries kept (rounded, clamped), invalid ones dropped,
   assert.deepEqual(S.normLay(bad), { ok: { x: 0, y: 0 } });
   assert.equal(S.normLay(JSON.parse('{"__proto__": {"x": 1, "y": 1}}')), undefined);
   const many = {};
-  for (let i = 0; i < 80; i++) many['m' + i] = { x: i, y: 0 };
-  assert.equal(Object.keys(S.normLay(many)).length, 64);
+  for (let i = 0; i < 300; i++) many['m' + i] = { x: i, y: 0 };
+  assert.equal(Object.keys(S.normLay(many)).length, 256, '(milestone 3, schema 7: 256 entries — a Serum in parts is up to 25 modules)');
 });
 
 test('song.normLay: an instrument\'s layout choice — ui: \'flow\' (Simple) kept, anything else dropped (absent = Hardware); no schema bump', () => {

@@ -504,20 +504,23 @@ export function serialize(project) { return JSON.stringify(project); }
 // presets): { [module id]: { x, y, fold?: 1, z?, ui?: 'flow' } } in world px. Invalid entries are dropped; nothing valid →
 // undefined (deserialize then adds no key: an old track's History snapshot stays byte-identical). A width (w, from before
 // the no-resizing rule of 2026-10-18) is dropped: every module has one fixed width now; no schema bump.
-const LAY_KEY = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-z0-9]{0,15})?$/;
+// Milestone 3 (schema 7, IMPL-3 §3): a Serum's parts are modules 'iN/<part>' (serum-core module names: 'oscA', 'filter2' —
+// the key's second part as PORT_ID's), up to LAY_MAX entries (a Serum in parts is up to 25 modules), and a Serum's entry
+// may say ui 'parts' (its parts view; absent = the whole panel, as 'flow' marks a classic's Simple layout)
+const LAY_KEY = /^[a-z][a-z0-9]{0,15}(\/[a-z][a-zA-Z0-9]{0,15})?$/, LAY_MAX = 256, LAY_UI = ['flow', 'parts'];
 const finN = x => typeof x === 'number' && Number.isFinite(x);
 export function normLay(lay) {
   if (!isObj(lay)) return undefined;
   const out = {};
   let n = 0;
   for (const k of Object.keys(lay)) {
-    if (n >= 64) break;
+    if (n >= LAY_MAX) break;
     const e = lay[k];
     if (k === '__proto__' || !LAY_KEY.test(k) || !isObj(e) || !finN(e.x) || !finN(e.y)) continue;
     const o = { x: clamp(R(e.x), -1e6, 1e6), y: clamp(R(e.y), -1e6, 1e6) };
     if (e.fold) o.fold = 1;
     if (finN(e.z)) o.z = clamp(R(e.z), 1, 1e6);
-    if (e.ui === 'flow') o.ui = 'flow'; // a classic instrument's Simple layout (IMPL-panels §7.1; absent = Hardware); view only, no schema bump
+    if (LAY_UI.includes(e.ui)) o.ui = e.ui; // a classic instrument's Simple layout (IMPL-panels §7.1; absent = Hardware), a Serum's parts view (schema 7); view only
     out[k] = o; n++;
   }
   return n ? out : undefined;

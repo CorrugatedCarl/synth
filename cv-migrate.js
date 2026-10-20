@@ -20,6 +20,10 @@
 //   6  stage 2b: modulation everywhere — the modulator modules lfo / env / macro / cc / chaos / note with their states
 //      (song.normModDev), rows from any module port ('m1.k3') and from a Serum's own LFO / ENV ('i1/lfo3.out'), to classic
 //      and panel knobs (IMPL-2b §1): additive, nothing to convert (a 5 opens as before; a 6 in a 2a build opens read-only)
+//   7  milestone 3: Serum taken apart (IMPL-3 §3) — a Serum's parts are modules ('iN/oscA' lay keys, ui 'parts', up to 256
+//      lay entries: song.normLay) and the LFO / ENV / Macro / Chaos modules show Serum's own panels, wider (cv-module
+//      MOD_W per kind): STEPS[6] moves stored modulator places only (growMods; content unchanged). A schema-6 build's
+//      normLay would drop the part keys and ui 'parts' and autosave the loss: there a 7 opens read-only
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
@@ -57,14 +61,25 @@
 //   primV1(t)               a v2 track's primary instrument as v1 fields { model, vals, preset, seq?, fx }
 //   mirror(o)               a saved FILE's tracks get primV1 at track level (§5.8: main opens it as each track's primary
 //                           instrument with its FX); autosave and History never carry it, the canvas reader ignores it
+//   growMods(p, widthOf)    (STEPS[6], milestone 3, IMPL-3 §2.2) every LFO / ENV / Macro / Chaos module with a stored
+//                           place keeps its right edge and grows left from 2b's width (MOD_W0) to widthOf(kind) (default
+//                           cv-module MOD_W[kind], read-only; W_MOD while it has none); one that then overlaps another
+//                           module (an instrument, an FX panel, OUT, another modulator, at its stored place or where Tidy
+//                           puts it) moves on left past that module's left edge − MOD_GAP, on the dots — modulators only
+//                           move, nothing else, so no hardware face leaves the GL layer. → a new project (changed tracks
+//                           copied with a new lay; the input untouched)
 // The in-memory track (accessors onto the primary, one adopt point) is cv-model.js.
 import { schemaOf } from './appstore.js?v=9';
 import { compileTrack, kindOf, port, powered, zoneOf } from './cv-graph.js?v=9';
 import { defaultFx2 } from './serum-core.js?v=9';
 import { modLabelOf, modDevs } from './cv-mods.js?v=9';
+import * as cvModule from './cv-module.js?v=9'; // (STEPS[6]: the module sizes, read-only)
+import { usable as hwUsable, sizeOf as hwSizeOf } from './cv-panel.js?v=9';
+import { MODELS } from './models.js?v=9';
+import { DOT } from './cv-world.js?v=9';
 
 export { schemaOf };
-export const SCHEMA = 6;
+export const SCHEMA = 7;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -96,6 +111,8 @@ export const STEPS = Object.freeze([
   // 5 → 6: modulation everywhere (stage 2b, IMPL-2b §1.4: the modulator modules' states, any source port, classic and
   // panel destinations) — additive
   p => Object.assign({}, p, { schema: 6 }),
+  // 6 → 7: Serum taken apart (milestone 3, IMPL-3 §3): lay positions only — the wider modulator modules grow left
+  p => Object.assign(growMods(p), { schema: 7 }),
 ]);
 
 export function upgrade(o) {
@@ -325,4 +342,56 @@ export function mirror(o) {
     if (v) for (const k of V1_KEYS) if (v[k] !== undefined) t[k] = v[k];
   }
   return o;
+}
+/* ---------------------------------------------------------------- milestone 3: the modulator column grows left */
+export const MOD_W0 = 240; // (stage 2b's modulator width, every kind: what a stored place was made with)
+const GROW = new Set(['lfo', 'env', 'macro', 'chaos']);
+const fin = x => typeof x === 'number' && Number.isFinite(x);
+const H_FX = 420, H_OUT = 260; // (cv-module's guessed heights of an FX panel and OUT: a migration measures nothing)
+const modW = kind => { const W = cvModule.MOD_W; return (isObj(W) && fin(W[kind]) && W[kind] > 0 && W[kind]) || cvModule.W_MOD; };
+// a module's rect at (x, y) by its device entry (cv-module devicesOf): an instrument its Hardware panel (unless its entry
+// says Simple) or its Simple / Serum size, a modulator its kind's, an FX panel and OUT the guesses; folded: its bar
+function rectOf(d, e, w) {
+  const fold = !!(e && e.fold), H = cvModule.BAR_H;
+  let W, h;
+  if (d.kind === 'inst') {
+    const m = MODELS.find(x => x.id === d.model) || null, L = m && !m.custom && !(e && e.ui === 'flow') ? hwUsable(m.id, m) : null, z = L ? hwSizeOf(L, m) : cvModule.sizeFor(d.model);
+    W = z.w; h = z.h;
+  } else if (d.kind === 'mod') { W = w; h = cvModule.MOD_H[d.mod || cvModule.modKind(d.key)] || cvModule.MOD_H.at; }
+  else if (d.kind === 'out') { W = cvModule.W_OUT; h = H_OUT; } else { W = cvModule.W_FX; h = H_FX; }
+  return { x: e.x, y: e.y, w: W, h: fold ? H : h };
+}
+const hits = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+function growTrack(t, wheel, widthOf) {
+  if (!isObj(t) || !isObj(t.dev) || !isObj(t.lay)) return t;
+  const devs = cvModule.devicesOf(t);
+  if (wheel) devs.push({ key: 'wheel', kind: 'mod', mod: 'wheel', model: null, dev: null });
+  const tid = cvModule.tidy(t, {}, devs), L = t.lay, R = new Map();
+  const okE = e => isObj(e) && fin(e.x) && fin(e.y);
+  for (const d of devs) {
+    const e = okE(L[d.key]) ? L[d.key] : okE(tid[d.key]) ? tid[d.key] : { x: 0, y: 0 }, k = d.mod || cvModule.modKind(d.key);
+    const grow = d.kind === 'mod' && GROW.has(k) && okE(L[d.key]), w = d.kind === 'mod' ? (GROW.has(k) ? widthOf(k) : MOD_W0) : 0; // (a Tidy-placed one: Tidy's column already at its width)
+    const r = rectOf(d, e, w);
+    if (grow) r.x = e.x + MOD_W0 - w; // (its right edge kept)
+    R.set(d.key, { r, grow, w });
+  }
+  // the leftmost first: of two grown modulators that now overlap, the left one moves on (the column grows left, nothing
+  // jumps over its neighbour); each moves left past every module it overlaps until it overlaps none
+  const order = [...R].filter(([, q]) => q.grow).sort((a, b) => a[1].r.x - b[1].r.x || (a[0] < b[0] ? -1 : 1));
+  for (const [k, q] of order) {
+    for (let i = 0; i < 64; i++) {
+      let to = null;
+      for (const [o, z] of R) if (o !== k && hits(q.r, z.r)) { const x = Math.floor((z.r.x - cvModule.MOD_GAP - q.w) / DOT) * DOT; to = to === null ? x : Math.min(to, x); }
+      if (to === null) break;
+      q.r.x = to;
+    }
+  }
+  let lay = null;
+  for (const [k, q] of R) if (q.grow && q.r.x !== L[k].x) { lay = lay || Object.assign({}, L); lay[k] = Object.assign({}, L[k], { x: q.r.x }); }
+  return lay ? Object.assign({}, t, { lay }) : t;
+}
+export function growMods(p, widthOf = modW) {
+  if (!isObj(p) || !Array.isArray(p.tracks)) return Object.assign({}, p);
+  const wheel = isObj(p.perf) && isObj(p.perf.wheel);
+  return Object.assign({}, p, { tracks: p.tracks.map(t => growTrack(t, wheel, widthOf)) });
 }
