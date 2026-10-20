@@ -656,6 +656,34 @@ for, tap **Copy results** and paste them with the screenshots; then answer quest
 
 ## 9. Notes (the builders fill in)
 
+### 9.1 Lane E — monitor fields (2026-10-20; base e9cd1b9; `mod-core.js`, `engine.js` Track monitor region, `tests/modcore.test.mjs` +3, sw.js BUILD)
+
+**Format.** The Track posts `{ t: 'smon', mc: MC.live, mcx: MC.mcx }` while its `'mods'` monitor id is subscribed and a ModCore exists;
+`mcx = { ph: Float32Array(20), env: Float32Array(8) }` (the same two arrays every post; postMessage copies). `ph[l]` = the phase of LFO
+slot `l` (0…9 = `mc[l]`'s slot; 0…1; Float32 rounding may give exactly 1), `ph[10 + l]` = its Path-LFO Y output (0 for any other type;
+the X output is `mc[l]`, so the slot host maps `snap.lfoPh[l] = ph[l]`, `lfoOut[l] = mc[l]`, `lfoY[l] = ph[10 + l]`). `env[j]` = the stage of
+ENV slot `j` (SxMod's eSt: 0 idle, 1 attack, 2 hold, 3 decay, 4 sustain, 5 release), `env[4 + j]` = its stage time in seconds, `j` in the
+`live` order (0…3 = ENV 2, 3, 4, 1 = `mc[10 + j]`; `snap.envStage[j] = env[j]`, `envT[j] = env[4 + j]`). The reads are exactly SerumDSP's
+snapshot reads (`SxMod.snap`, cross-checked per quantum in the test): the most recent voice's (the pseudo-voice once a note has played),
+else the processor's. Slots nothing reads stay unevaluated (`sx.mon` is never set), so their phase is the parked one.
+
+**Gate.** `MC.mon` (0 default) is set by `MC.watch(on)`, which the Track calls from `watch()` (every `{t: 'mon'}` / `{t: 'smon'}`) and for a
+ModCore built while subscribed (`modsMsg`); going on reads the fields once (the first post is fresh), `span` writes them at its end only
+while `mon`; off: no read, no store, no post. Track-level: `ids: ['mods']` alone is enough (no part id; nothing but the `mc` / `mcx`
+message posts). Legacy (un-graphed) tracks no longer post an empty part snapshot first when only `'mods'` is subscribed. For lane D: the
+host's `mcMonitor` can drop the primary's part (`role` none; `partsOf` → `[]`) and `monitors.deliver`'s `part === null && d.mc` branch
+already routes the message; `mcx` rides the same `d`.
+
+**Gates measured.** Sound: golden-classic 8, golden-fx 3, golden-presets 8, golden-random 1, golden-graph 6, canonical-stream 1 pass,
+unchanged. `noAlloc` with the fields on (200 spans, notes, transport, watch toggles). Engine bands (the row track's absolute 1 s load,
+unsubscribed, vs e9cd1b9): **V8**, 8 interleaved process pairs, medians: mc0 +1.2 %, mc +0.5 %, mt −0.8 %, me −0.5 % (spread of the
+runs themselves ±2 %); **JSC shell**, base and new engine in two `$262` realms, 11 interleaved 1 s pairs after a 2 s warm-up, 9
+processes (3 + 3 with the realm order swapped + 3 in a four-slot run with an A/A control), median of the pair ratios: mc0 +0.4 %,
+mc +0.7 %, mt +0.6 %, me −0.9 % (single processes −1.2 … +1.3 % / −1.2 … +1.2 % / −1.6 … +4.1 % / −1.4 … −0.7 %; the harness' own
+A/A control reads 1–3 % low on its second slot, once 10 % on mc0, so only medians mean anything). Monitor on (V8, same tree): mc0 +1.7 %, mc −0.4 %, mt 0.0 % —
+noise. Tried and dropped: the `mread` call in `Track.modPre` after `MC.span` instead of inside `span` (JSC mt +3 … +4.7 % in all three
+four-slot processes, the extra branch there costs more than the one in `span`). Harness (scratchpad `ab/`, `jsc/`; not in the repo).
+
 ## 10. Review log (revision 2, 2026-10-19: the contract review, 25 points)
 
 All 25 points were checked against the code (and the review's "checked and confirmed" items, Chaos compile and the ENV slot round
