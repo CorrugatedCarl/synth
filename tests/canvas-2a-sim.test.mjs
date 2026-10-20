@@ -97,7 +97,7 @@ test('the project Mod Wheel: placed from one track (one step "Place Mod Wheel"),
   assert.equal(V().modules.get('wheel').kind, 'mod');
   assert.ok(M.bodies.get('wheel'), 'the wheel body');
   assert.deepEqual(cv.menu('wheel').filter(x => !x.sep).map(x => x.label), ['Delete', 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']);
-  assert.deepEqual(cv.menu('i1').filter(x => !x.sep).map(x => x.label), ['About the Serum…', 'Replace with…', 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']);
+  assert.deepEqual(cv.menu('i1').filter(x => !x.sep).map(x => x.label), ['About the Serum…', 'Replace with…', 'Show parts', 'Modulation list…', 'Fold', 'Bring to front', 'Tidy the canvas']); // ((milestone 3, IMPL-3 §2.7) Show parts / Bundle)
 });
 
 test('a mod drag from the wheel onto a Serum knob: canMod / markDests from cv-mods destOk; release → one step, a track.mods row, the cable selected; the posted patch\'s matrix equals the same row written by the Serum\'s own addMod', () => {

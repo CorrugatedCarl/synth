@@ -47,19 +47,62 @@ const loadMix = () => import('./sx-ui-mix.js?v=9');
 /* ================================================================ SerumUI */
 
 export class SerumUI extends SerumHost {
-  constructor(root, host) {
+  // o.parts (SYNTH Canvas milestone 3, IMPL-3 §2.4): a Serum shown as parts — the host alone, no shell; the app mounts its
+  // part views (sx-ui-mod mountPart). dropShell() / buildShell(root) switch the same host between the two view sets
+  // (never both): panel undo, dirty and view state survive a switch
+  constructor(root, host, o) {
     super(host, { doc: (root && root.ownerDocument) || globalThis.document });
     this.root = root;
+    this.footPage = mkPage(null, this.opts);   // the keyboard panel under every page (§13.2)
+    if (o && o.parts) { this.shellReset(); this.start(); return; }
+    this.buildShell(root);
+    this.start();
+  }
+  // (milestone 3) the shell's own fields, empty (no shell: the parts view)
+  shellReset() {
     this.pages = {};
     this.head = null;
-    this.footPage = mkPage(null, this.opts);   // the keyboard panel under every page (§13.2)
     this.page = '';
     this.mixer = null;
+    this.rack = null;
+    this.kbd = null;
+    this.oscPanels = null;
     this.seqPages = {};
     this.macPane = { arp: false, clip: false };
     this.mxExp = false;
+    this.pageBox = null;
+    this.footEl = null;
+    this.tabBtns = {};
+  }
+  // (milestone 3) the header's satellites (touch modifier bar, output meter) of a header that went (the shell's, VOICE's)
+  dropHeadKit() {
+    for (const k of ['mkeys', 'meter']) { const x = this[k]; this[k] = null; if (x && typeof x.destroy === 'function') { try { x.destroy(); } catch (err) { /* gone */ } } }
+    this.vcEl = null; this.vcText = null;
+  }
+  // (milestone 3) the shell's views go (header, pages, keyboard foot, the bundled root); the host stays for the parts view
+  dropShell() {
+    if (!this.pageBox || this.dead) return;
+    for (const V of this.views.slice()) if (V.kind === 'head' || V.kind === 'foot' || /^page:/.test(V.kind)) this.unmount(V);
+    this.destroyShell();
+    this.dropHeadKit();
+    if (this.browser) { this.browser.close(); this.browser = null; }   // (its overlay sat on the bundled root: the next view's root takes it)
+    if (this.statusEl && this.statusEl.remove) this.statusEl.remove();
+    this.statusEl = null;
+    const r = this.roots.find(x => x.id === this.uid);   // (the bundled root: the host's uid, a part root uid-r<n>)
+    if (r) this.dropRoot(r);
+    this.shellReset();
+    this.edDirty = true;
+  }
+  // the shell into root (the constructor's; milestone 3: again after dropShell — every part view unmounted first, the app's)
+  buildShell(root) {
+    if (this.dead) return;
+    if (root) this.root = root;
+    this.dropHeadKit();
+    this.shellReset();
+    if (this.browser) { this.browser.close(); this.browser = null; }   // (a parts view's: its overlay sat on a part's root)
     const s = this.s();
-    this.el = this.addRoot(root, { bundled: true });
+    this.el = this.addRoot(this.root, { bundled: true });
+    if (this.roots[0] !== this.el) { this.roots.splice(this.roots.indexOf(this.el), 1); this.roots.unshift(this.el); }
     this.buildHead();
     this.statusEl = mk(this.d, 'div', 'sx-status');
     this.statusEl.setAttribute('role', 'status');
@@ -75,12 +118,14 @@ export class SerumUI extends SerumHost {
     if (this.prefs.view3d && s && s.ui && arr(s.ui.view3d).every(v => !v) && isPristine(s)) this.uiEdit(st => { st.ui.view3d = arr(st.ui.view3d).map(() => 1); });
     this.syncPreset();
     this.showPage(s && s.ui && PAGES.includes(s.ui.page) ? s.ui.page : 'osc');
-    this.start();
   }
-  // the bundled panel paints its header, the shown page and the keyboard foot (in that order, as before)
-  allPages() { return [this.headPage, this.footPage].concat(PAGES.map(p => this.pages[p]).filter(Boolean)); }
-  shownPages() { const P = this.pages[this.page]; return [this.headPage].concat(P ? [P] : [], [this.footPage]); }
-  rackShown() { return this.page === 'fx'; }
+  // the bundled panel paints its header, the shown page and the keyboard foot (in that order, as before); (milestone 3)
+  // without its shell, the host's views (the parts)
+  allPages() { return this.pageBox ? [this.headPage, this.footPage].concat(PAGES.map(p => this.pages[p]).filter(Boolean)) : super.allPages(); }
+  shownPages() { if (!this.pageBox) return super.shownPages(); const P = this.pages[this.page]; return [this.headPage].concat(P ? [P] : [], [this.footPage]); }
+  rackShown() { return !!this.pageBox && this.page === 'fx'; }
+  // (milestone 3) the shell is built (the bundled view)
+  get bundled() { return !!this.pageBox; }
   destroyShell() {
     for (const x of [this.rack, this.mixer, this.kbd, this.seqPages.arp, this.seqPages.clip].concat(this.oscPanels || [])) {
       if (x && typeof x.destroy === 'function') { try { x.destroy(); } catch (err) { /* gone */ } }
