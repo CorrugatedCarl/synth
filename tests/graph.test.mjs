@@ -1431,6 +1431,15 @@ test('CurveEditor zoom: view geometry and inverse, edits in zoomed coordinates, 
   assert.ok(!plain.ed.menuItems(-1).some(it => it.label === 'Reset Zoom'));
 });
 
+test('(milestone 3) CurveEditor links: false — an LFO without point links (a canvas LFO module) lists no Modulate X / Y nor Remove Point Modulations; the rest unchanged', () => {
+  const opts = { pointMenu: () => [{ label: 'New bus', action() {} }], removePointMods() {}, fromWavetable: () => [] };
+  const L = o => o.ed.menuItems(1).filter(it => it.label).map(it => it.label);
+  const a = mkCurve({ opts }), b = mkCurve({ opts: Object.assign({ links: false }, opts) });
+  assert.deepEqual(L(a).filter(x => /^(Modulate|Remove Point)/.test(x)), ['Modulate X', 'Modulate Y', 'Remove Point Modulations']);
+  assert.deepEqual(L(b), L(a).filter(x => !/^(Modulate|Remove Point)/.test(x)));
+  a.ed.destroy(); b.ed.destroy();
+});
+
 test('CurveEditor zoom: two fingers pinch / pan; the second finger undoes the one-finger drag; Ctrl-wheel zooms', () => {
   const { root, ed, st } = mkCurve({ opts: { zoom: true } });
   const T = (type, id, x, y) => at(root, type, x, y, { pointerType: 'touch', pointerId: id });

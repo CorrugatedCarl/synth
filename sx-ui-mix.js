@@ -29,6 +29,7 @@
 // The SUB fader's dB scale follows the sub level law of the mode: n in S1 mode, n² in S2 mode (§6.11.1).
 //
 //   new MixerPage(root, kit)      builds the strips into root (.el = the mixer row); destroy()
+//   new OutputsPanel(root, kit)   (SYNTH Canvas milestone 3) the BUS 1 / BUS 2 / MAIN / DIRECT strips alone (VOICE's outputs)
 //   channelStrips(s, fx)          pure: the strip descriptors (ids, route, visibility rules) for a state
 //   routeMenuItems(s, ch, fx?)    pure: route menu items [{v, label, checked}] of strip key `ch` (fx needed for buses)
 //
@@ -564,5 +565,27 @@ export class MixerPage {
     this.dead = true;
     for (const f of this.offs) f();
     this.el.remove();
+  }
+}
+
+// OutputsPanel(root, kit): the MIX page's output strips alone — BUS 1 / BUS 2 (route, FX bypass, level), MAIN (Main FX
+// bypass, master), DIRECT — VOICE's outputs in a Serum's parts view (SYNTH Canvas milestone 3, IMPL-3 §2.2): the same
+// strips, edits and meters as the MIX page (one implementation: outStrip / bypassBtn / fader)
+export class OutputsPanel extends MixerPage {
+  build() {
+    const K = this.kit, d = this.doc, row = mk(d, 'div', 'sxm-mixer sxm-outs');
+    row.setAttribute('role', 'group');
+    row.setAttribute('aria-label', 'Outputs');
+    for (const T of STRIPS) {
+      if (T.kind !== 'bus' && T.kind !== 'main' && T.kind !== 'direct') continue;
+      if (T.key === 'main') row.appendChild(mk(d, 'span', 'sxm-gap'));
+      const S = this.outStrip(T);
+      S.el.setAttribute('data-strip', T.key);
+      S.el.style.setProperty('--sxm-c', 'var(' + T.color + ')');
+      this.strips.push(Object.assign(S, { T }));
+      row.appendChild(S.el);
+    }
+    K.live(shown => this.meterFrame(shown));
+    return row;
   }
 }

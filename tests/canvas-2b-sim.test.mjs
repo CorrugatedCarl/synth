@@ -38,7 +38,15 @@ function scriptedWorld(root) {
   return W;
 }
 
+// (milestone 3) the LFO / ENV / Macro / Chaos bodies are Serum's own panels: their modules (loaded on demand) first
+await (await import('../cv-mods-ui.js?v=9')).ready();
 const sim = await bootMain({ ls: fakeStorage({}), hash: '#serum', synthTest: { cvWorld: root => scriptedWorld(root) } });
+{ // (the panels' graph editors animate their playheads through wk.ticker, which asks getClientRects: the stub DOM's elements answer one box)
+  const ce = globalThis.document.createElement;
+  globalThis.document.createElement = tag => { const e = ce(tag); e.getClientRects = () => [{}]; return e; };
+  const cn = globalThis.document.createElementNS;
+  globalThis.document.createElementNS = (ns, tag) => { const e = cn(ns, tag); e.getClientRects = () => [{}]; return e; };
+}
 const api = sim.api, cv = globalThis.__synthTest.cv, sh = globalThis.__synthTest.shell, M = cv.mod, U = globalThis.__synthTest.modUI;
 await sim.power(); sim.raf(); await sim.settle(20); sim.raf();
 const P = () => api.project(), T = () => P().tracks.find(t => t.id === P().selTrack), V = () => cv.view();
@@ -78,13 +86,13 @@ test('an LFO tile drop adds l1 with Serum\'s default LFO state (GLOBAL, one step
   assert.deepEqual([keys(), cv.hist.undoLabel], ['i1,i1/fx,l1,l2,out', 'Add LFO 2']);
   cv.undo(); sim.raf();
   assert.equal(keys(), 'i1,i1/fx,l1,out');
-  // the badge: GLOBAL ↔ PER NOTE through the body's edit → setModState, one step
-  const B = M.bodies.get('l1'), bad = walk(B.el, c => /\bcv-mbadge2\b/.test(clsOf(c)))[0];
-  assert.equal(bad.textContent, 'GLOBAL');
-  bad.dispatchEvent(ev('click')); sim.raf();
-  assert.deepEqual([T().dev.l1.lfo.mono, hsteps(), cv.hist.undoLabel, bad.textContent], [0, n0 + 2, 'Edit LFO 1', 'PER NOTE']); // (T(): the undo above restored a snapshot)
+  // GLOBAL ↔ PER NOTE: (milestone 3) Serum's own MONO button in the LFO panel, through the body's edit → setModState, one step
+  const mono = () => walk(M.bodies.get('l1').el, c => !!c.attrs && c.attrs['aria-label'] === 'MONO')[0];
+  assert.equal(mono().getAttribute('aria-pressed'), 'true');
+  mono().dispatchEvent(ev('click', { bubbles: true })); sim.raf();
+  assert.deepEqual([T().dev.l1.lfo.mono, hsteps(), cv.hist.undoLabel, mono().getAttribute('aria-pressed')], [0, n0 + 2, 'Edit LFO 1', 'false']); // (T(): the undo above restored a snapshot)
   cv.undo(); sim.raf();
-  assert.deepEqual([T().dev.l1.lfo.mono, bad.textContent], [1, 'GLOBAL'], 'undo: the body re-reads its state (sync)');
+  assert.deepEqual([T().dev.l1.lfo.mono, mono().getAttribute('aria-pressed')], [1, 'true'], 'undo: the body shows the restored state');
 });
 
 test('a drag from l1.out to a Serum knob: canMod / marks, one step, a row; the node is graphed and gets a patch whose matrix reads ext1 and a {t: \'mods\'} with ext [{k: 1, src: lfo1}]; the badge "mods 1/64"; the Serum\'s halo rows name the ext source', () => {
@@ -539,7 +547,9 @@ test('(bug 2) a PER NOTE LFO cabled to the Serum\'s LFO 1 Rate is injected into 
 test('(ENV curves) a dropped ENV module holds Serum\'s real curve values (0…1, 0.5 linear: 0.5 / 0.666 / 0.666) and its body shows them as Serum\'s ENV panel does — 50 / 67 / 67 %, not +50 / +67 / +67; values written to the device round-trip to the display', () => {
   const a = fresh('serum');
   const e = dropNew('env', { x: -600, y: 2300 }), B = M.bodies.get(e);
-  const nbs = walk(B.el, c => /\bwk-nb\b/.test(clsOf(c))), shown = () => nbs.map(n => n.attrs['aria-valuetext']).join();
+  // (milestone 3: Serum's own ENV panel — its A / D / R CURVE knobs, e2.ca / cd / cr of the slot host)
+  const knob = id => walk(B.el, c => !!c.attrs && c.attrs['data-dest'] === id)[0];
+  const shown = () => ['e2.ca', 'e2.cd', 'e2.cr'].map(id => knob(id).attrs['aria-valuetext']).join();
   assert.deepEqual([a.dev[e].crv, shown()], [[0.5, 0.666, 0.666], '50%,67%,67%']);
   U.editState(e, { crv: [0, 1, 0.25] }); sim.raf();
   B.sync();

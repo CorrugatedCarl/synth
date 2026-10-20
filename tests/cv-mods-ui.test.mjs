@@ -3,15 +3,14 @@ import './v8-guard.mjs';
 // Wheel (#modw's look: a drag sets it from the slot's screen rect at any zoom, keys, update from the host, a two-finger
 // cancel / lost capture end the drag, the "+N on other tracks" chip and its tap), Velocity (the default curve, the last
 // velocity's dot / bar / value, a custom curve), Aftertouch and Bend (meters; Bend bipolar), bodyFor, destroy; (2b lane C,
-// IMPL-2b §6.1) the editing bodies — LFO (badge, mode, rate / BPM ladders, the shape menu and point editor), ENV, Macro,
-// CC, Chaos, Note: their DOM, one o.edit per gesture, update / sync. Never passes fake-DOM nodes to assert.* (strings and
-// numbers only).
+// IMPL-2b §6.1) the editing bodies CC and Note: their DOM, one o.edit per gesture, update / sync; (milestone 3 lane B)
+// LFO, ENV, Macro and Chaos as Serum's own panels over slot hosts (the body contract; the panels: tests/sx-host.test.mjs).
+// Never passes fake-DOM nodes to assert.* (strings and numbers only; the Serum-panel tests through safeAssert).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-mods-ui.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fresh, all, ptr, key, place, layout, Ev } from './wk-dom.mjs';
 import * as U from '../cv-mods-ui.js?v=9';
-import { normEnvMod } from '../serum-core.js?v=9';
 
 const cls = (root, c) => all(root).find(n => n.classList && n.classList.contains(c)) || null;
 
@@ -171,179 +170,85 @@ function rig(kind, st0, extra = {}) {
 }
 const txt = (root, c) => { const n = cls(root, c); return n ? n.textContent : null; };
 const byCls = (root, c) => all(root).filter(n => n.classList && n.classList.contains(c));
-const nbVal = root => { const n = cls(root, 'wk-nb'); return n ? n.getAttribute('aria-valuetext') : null; };
-const LFO0 = () => ({ mode: 'retrig', mono: 1, type: 'normal', dir: 'fwd', bpm: 0, dot: 0, trip: 0, anchor: 1, x10: 0, swing: 0, pts: [[0, 0, 0], [0.5, 1, 0], [1, 0, 0]], path: [], loop: -1, start: 0 });
 
-test('lfoBody (2b): the GLOBAL / PER NOTE badge toggles lfo.mono (one edit, the lfo object whole), the mode seg lfo.mode, BPM / dotted / triplet toggles; the rate numBox shows Hz (pow4 0…100) or the Serum ladder label in BPM mode and writes rate once per gesture', () => {
-  const R = rig('lfo', { lfo: LFO0(), rate: 0.5 }), B = R.B;
-  const badge = cls(B.el, 'cv-mbadge2');
-  assert.deepEqual([B.el.className, badge.textContent, badge.getAttribute('aria-pressed'), nbVal(B.el)], ['cv-mbody cv-mlfo cv-medit', 'GLOBAL', 'true', '6.25 Hz'], 'pow4: 0.5⁴ · 100 = 6.25 Hz');
-  badge.click();
-  assert.deepEqual([R.edits.length, R.st.lfo.mono, R.st.lfo.mode, badge.textContent], [1, 0, 'retrig', 'PER NOTE'], 'the lfo given whole, mono flipped');
-  const segs = byCls(B.el, 'wk-sb');
-  assert.deepEqual(segs.map(b => b.textContent), ['RETRIG', 'ENV', 'FREE']);
-  segs[2].click();
-  assert.deepEqual([R.edits.length, R.st.lfo.mode], [2, 'free']);
-  const togs = byCls(B.el, 'wk-tog');
-  assert.deepEqual(togs.map(b => b.textContent), ['BPM', '·', 'T']);
-  togs[0].click();
-  assert.deepEqual([R.st.lfo.bpm, nbVal(B.el)], [1, '1/4'], 'BPM on: the straight ladder (15 entries), n 0.5 → index 7 = 1/4');
-  togs[1].click();
-  assert.deepEqual([R.st.lfo.dot, nbVal(B.el)], [1, '1/4.'], 'dotted: the 29-entry ladder (index 14)');
-  togs[1].click(); togs[0].click();
-  assert.deepEqual([R.st.lfo.dot, R.st.lfo.bpm, R.edits.length], [0, 0, 6]);
-  // the rate: a key on the numBox = one 'set' edit; a drag edits once at its end
-  const nb = cls(B.el, 'wk-nb');
-  key(nb, 'ArrowUp');
-  assert.equal(R.edits.length, 7);
-  assert.ok(R.st.rate > 0.5 && R.edits[6].rate === R.st.rate, 'rate written');
-  const before = R.edits.length;
-  ptr(nb, 'pointerdown', 50, 50, { pointerId: 2 }); ptr(nb, 'pointermove', 50, 30, { pointerId: 2 }); ptr(nb, 'pointermove', 50, 10, { pointerId: 2 });
-  assert.equal(R.edits.length, before, 'moving: no edit yet (shown live)');
-  ptr(nb, 'pointerup', 50, 10, { pointerId: 2 });
-  assert.equal(R.edits.length, before + 1, 'one edit at the lift');
-  B.destroy();
-  assert.equal(B.el.parentNode, null);
+/* ---------------------------------------------------------------- milestone 3 (IMPL-3 §2.2–2.3): Serum's own panels */
+// the LFO / ENV / Macro / Chaos bodies are Serum's panels over a slot host (sx-host slotHost + sx-ui-mod mountSlot): on the
+// selector fake DOM (tests/serum-ui-stubs/dom.js; the panels query their own subtree), the Serum UI modules loaded first
+// (U.ready). The panel behaviour itself is tests/sx-host.test.mjs's; here the body contract main.js mounts.
+const SD = await import('./serum-ui-stubs/dom.js');
+const sweep = SD.safeAssert(assert);
+function srig(kind, st0, extra = {}) {
+  const d = SD.fresh(), calls = [], st = Object.assign({ kind }, st0);
+  const o = Object.assign({ doc: d, get: () => st, edit: f => { calls.push(['edit', JSON.parse(JSON.stringify(f))]); Object.assign(st, JSON.parse(JSON.stringify(f))); },
+    set: (k, v) => calls.push(['set', k, v]), live: f => calls.push(['live', Object.keys(f)]), cancel: () => calls.push(['cancel']), bpm: () => 120 }, extra);
+  const B = U.bodyFor(kind, o);
+  d.body.append(B.el);
+  return { d, B, st, calls };
+}
+const tag = n => n.tagName + '.' + n.className;
+
+test('(milestone 3) the LFO / ENV / Macro / Chaos bodies are Serum\'s own panels (LfoPanel 1, EnvPanel 2, MacrosPanel, ChaosRow): bodyFor by kind, the bundled panel\'s classes, bare, data-nomod; a body made before the modules load fills in when they do', async () => {
+  const early = U.bodyFor('lfo', { doc: SD.fresh(), get: () => ({ kind: 'lfo' }), edit() {} });
+  early.update(0.5);   // (a live value before the panel exists: kept for it)
+  await U.ready();
+  sweep.deepEqual(U.SLOT_KINDS, ['lfo', 'env', 'macro', 'chaos']);
+  sweep.ok(early.host() && early.el.querySelector('.sx-panel'), 'filled in');
+  early.destroy();
+  const want = { lfo: ['l1.rate', 'LFO 1'], env: ['e2.att', 'ENV 2'], macro: ['m1', 'MACROS'], chaos: ['c1.rate', 'CHAOS 1'] };
+  for (const [kind, [dest, title]] of Object.entries(want)) {
+    const { B } = srig(kind, {});
+    const root = B.el.querySelector('.sx-root');
+    sweep.deepEqual([B.el.className, root.className, root.getAttribute('data-nomod'), B.el.querySelector('.sx-panel').getAttribute('aria-label')],
+      ['cv-mbody cv-mslot cv-m' + kind, 'sx-root sx-part', '1', title], kind);
+    const ctl = B.el.querySelector('[data-dest="' + dest + '"]');
+    sweep.ok(ctl && ctl.getAttribute('data-nomod') === '1', kind + ' ' + dest);
+    sweep.equal(B.el.querySelectorAll('.sx-tname').length, 0, kind + ': no title (the module bar has it)');
+    sweep.equal(typeof B.sync, 'function');
+    B.destroy();
+    sweep.equal(B.el.parentNode, null);
+  }
+  // the other kinds keep their own bodies; unknown → null
+  const d = SD.fresh();
+  sweep.deepEqual(['cc', 'note', 'nope'].map(k => { const b = U.bodyFor(k, { doc: d, get: () => ({}), edit() {} }); const c = b ? b.el.className : null; if (b) b.destroy(); return c; }),
+    ['cv-mbody cv-mcc cv-medit', 'cv-mbody cv-mnote', null]);
 });
 
-test('lfoBody (2b): the shape menu lists Serum\'s presets + Custom and matches the points; the point editor — a tap adds a point, a drag moves one (the ends pinned to x 0 / 1), a second tap removes it, a vertical drag on a segment bends it; every gesture = one edit of lfo.pts; update({v, ph}) puts the dot on the shape', () => {
-  const R = rig('lfo', { lfo: LFO0(), rate: 0.5 }), B = R.B;
-  assert.deepEqual([txt(B.el, 'wk-mtxt'), U.LFO_SHAPES[0].name, U.LFO_SHAPES.length > 5], ['Triangle', 'Triangle', true]);
-  const sv = cls(B.el, 'cv-mshape');
-  place(sv, 0, 0, 190, 72); // 1 css px = 1 user unit
-  assert.deepEqual([byCls(sv, 'cv-mpt').length, cls(sv, 'cv-mcrv').getAttribute('d').slice(0, 6)], [3, 'M0 72L']);
-  // a tap at (95, 18) → a point at x 0.5, y 0.75 after the first segment's point… the triangle peak is at x 0.5: it lands after it
-  ptr(sv, 'pointerdown', 47.5, 36, { pointerId: 1 }); ptr(sv, 'pointerup', 47.5, 36, { pointerId: 1 });
-  assert.deepEqual([R.edits.length, R.st.lfo.pts], [1, [[0, 0, 0], [0.25, 0.5, 0], [0.5, 1, 0], [1, 0, 0]]], 'added, sorted into its segment');
-  assert.equal(txt(B.el, 'wk-mtxt'), 'Custom');
-  // drag the new point (index 1) to x 0.1, y 0.2 — the x stays between its neighbours
-  const pt = byCls(sv, 'cv-mpt')[1];
-  ptr(pt, 'pointerdown', 47.5, 36, { pointerId: 2 }); ptr(pt, 'pointermove', 19, 57.6, { pointerId: 2 });
-  assert.equal(R.edits.length, 1, 'moving: shown live, not written');
-  assert.equal(byCls(sv, 'cv-mpt')[1].getAttribute('cx'), '19', 'followed');
-  ptr(pt, 'pointermove', -40, 57.6, { pointerId: 2 }); ptr(pt, 'pointerup', -40, 57.6, { pointerId: 2 });
-  assert.deepEqual([R.edits.length, R.st.lfo.pts[1]], [2, [0, 0.2, 0]], 'clamped to its left neighbour (x 0), one edit');
-  // the ends: pinned at x 0 / 1
-  const p0 = byCls(sv, 'cv-mpt')[0];
-  ptr(p0, 'pointerdown', 0, 72, { pointerId: 3 }); ptr(p0, 'pointermove', 60, 40, { pointerId: 3 }); ptr(p0, 'pointerup', 60, 40, { pointerId: 3 });
-  assert.deepEqual(R.st.lfo.pts[0], [0, 0.4444, 0], 'x stays 0, y moved');
-  // a second tap on a point removes it (never an end)
-  const p1 = byCls(sv, 'cv-mpt')[1];
-  ptr(p1, 'pointerdown', 0, 57.6, { pointerId: 4, timeStamp: 1000 }); ptr(p1, 'pointerup', 0, 57.6, { pointerId: 4, timeStamp: 1000 });
-  ptr(p1, 'pointerdown', 0, 57.6, { pointerId: 5, timeStamp: 1200 }); ptr(p1, 'pointerup', 0, 57.6, { pointerId: 5, timeStamp: 1200 });
-  assert.deepEqual([R.edits.length, R.st.lfo.pts.length], [4, 3], 'removed');
-  const e0 = byCls(sv, 'cv-mpt')[0];
-  ptr(e0, 'pointerdown', 0, 40, { pointerId: 6, timeStamp: 2000 }); ptr(e0, 'pointerup', 0, 40, { pointerId: 6, timeStamp: 2000 });
-  ptr(e0, 'pointerdown', 0, 40, { pointerId: 7, timeStamp: 2100 }); ptr(e0, 'pointerup', 0, 40, { pointerId: 7, timeStamp: 2100 });
-  assert.equal(R.st.lfo.pts.length, 3, 'an end stays');
-  // a vertical drag on the first segment bends it: 60 px of travel = the full curvature (towards the drag)
-  ptr(sv, 'pointerdown', 30, 50, { pointerId: 8 }); ptr(sv, 'pointermove', 30, 20, { pointerId: 8 }); ptr(sv, 'pointerup', 30, 20, { pointerId: 8 });
-  assert.deepEqual([R.edits.length, R.st.lfo.pts[0][2]], [5, 0.5], 'the segment\'s curvature');
-  // the shape menu sets the points (one edit)
-  const W = cls(B.el, 'wk-menu').wk;
-  W.open();
-  const items = all(R.d.body).filter(n => n.getAttribute && n.getAttribute('role') === 'option');
-  assert.ok(items.length === U.LFO_SHAPES.length + 1 && items.at(-1).textContent === 'Custom', 'the presets and Custom');
-  items[1].dispatchEvent(new Ev('click', { bubbles: true }));
-  W.close();
-  assert.deepEqual([R.edits.length, R.st.lfo.pts.length, txt(B.el, 'wk-mtxt')], [6, U.LFO_SHAPES[1].pts.length, U.LFO_SHAPES[1].name]);
-  // live: the bar and the dot at the phase
-  const dot = cls(sv, 'cv-mdot');
-  B.update(0.25);
-  assert.deepEqual([cls(B.el, 'cv-mlive').childNodes[0].style.width, dot.getAttribute('display')], ['25%', 'none']);
-  B.update({ v: 0.5, ph: 0.25 });
-  assert.deepEqual([dot.hasAttribute('display'), dot.getAttribute('cx')], [false, '47.5']);
-  B.update({ v: 0.5 });
-  assert.equal(dot.getAttribute('display'), 'none');
-  B.destroy();
-});
-
-test('envBody (2b): five vertical sliders (A H D S R: Serum\'s pow5 0…32 s laws, S in %), curve numBoxes for A / D / R (crv), the AHDSR display follows the values; update(v) the level line', () => {
-  const R = rig('env', { env: { bpm: 0, legInv: 0, stealRe: 0 }, att: 0.11, hold: 0, dec: 0.5, sus: 1, rel: 0.215, crv: [0.5, 0.666, 0.666] }), B = R.B;
-  const sl = byCls(B.el, 'wk-sl');
-  assert.deepEqual([B.el.className, sl.length, sl.map(s => s.getAttribute('aria-orientation')).join(), byCls(B.el, 'cv-mtag').map(n => n.textContent)],
-    ['cv-mbody cv-menv cv-medit', 5, 'vertical,vertical,vertical,vertical,vertical', ['A', 'H', 'D', 'S', 'R', 'A∿', 'D∿', 'R∿']]);
-  assert.deepEqual(sl.map(s => s.getAttribute('aria-valuetext')), ['0.52 ms', '0.00 ms', '1.00 s', '100%', '14.7 ms'], 'laws: 0.11⁵ · 32 ≈ 0.52 ms, 0.5⁵ · 32 = 1 s, 0.215⁵ · 32 ≈ 14.7 ms');
-  const d0 = cls(B.el, 'cv-mcrv').getAttribute('d');
-  key(sl[3], 'ArrowDown');
-  assert.deepEqual([R.edits.length, R.st.sus < 1, Object.keys(R.edits[0])], [1, true, ['sus']]);
-  assert.notEqual(cls(B.el, 'cv-mcrv').getAttribute('d'), d0, 'the display redrawn');
-  const nbs = byCls(B.el, 'wk-nb');
-  assert.deepEqual(nbs.map(n => n.getAttribute('aria-valuetext')), ['50%', '67%', '67%'], 'Serum\'s ENV panel format (pct of the 0…1 value)');
-  key(nbs[0], 'ArrowUp');
-  assert.deepEqual([R.edits.length, R.st.crv[0] > 0.5, R.st.crv[0] < 0.52, R.st.crv[1], nbs[0].getAttribute('aria-valuetext')], [2, true, true, 0.666, '50%'], 'one fine step up, the others untouched');
-  B.update(0.5);
-  assert.equal(cls(B.el, 'cv-mdrop').getAttribute('d'), 'M0 28H190');
-  B.destroy();
-});
-
-test('envBody: the curves are the state\'s 0…1 values (0.5 = linear, Serum\'s e<k>.ca / cd / cr): a fresh ENV module shows Serum\'s defaults 50 / 67 / 67 %, typed entry and reset round-trip, 0.5 draws straight segments', () => {
-  const R = rig('env', Object.assign({ kind: 'env' }, normEnvMod({}))), B = R.B;
-  const nbs = byCls(B.el, 'wk-nb'), shown = () => nbs.map(n => n.getAttribute('aria-valuetext')).join();
-  assert.deepEqual([R.st.crv, shown()], [[0.5, 0.666, 0.666], '50%,67%,67%'], 'the default module = Serum\'s default curves (not +50 / +67 / +67)');
-  // a typed entry stores what was typed: "0" is the 0 curve (hard), not a quirk of the old −1…1 mapping; "%" optional
-  const typed = (nb, t) => { nb.wk.edit(); const inp = byCls(nb, 'wk-in')[0]; inp.value = t; key(inp, 'Enter'); };
-  typed(nbs[0], '0');
-  assert.deepEqual([R.st.crv, nbs[0].getAttribute('aria-valuetext')], [[0, 0.666, 0.666], '0%']);
-  typed(nbs[1], '100%');
-  typed(nbs[2], '25');
-  assert.deepEqual([R.st.crv, shown(), R.edits.length], [[0, 1, 0.25], '0%,100%,25%', 3], 'one edit per entry, the others kept');
-  typed(nbs[0], 'nonsense');
-  assert.deepEqual([R.st.crv[0], R.edits.length], [0, 3], 'a bad entry changes nothing');
-  // the default back (reset) is exactly Serum's default, and a host edit / undo shows at once through sync()
-  nbs[2].wk.reset(); nbs[1].wk.reset(); nbs[0].wk.reset();
-  assert.deepEqual([R.st.crv, shown()], [[0.5, 0.666, 0.666], '50%,67%,67%'], 'reset = the exact defaults');
-  R.st.crv = [0.9, 0.2, 0.35]; B.sync();
-  assert.equal(shown(), '90%,20%,35%', 'sync follows the state');
-  B.destroy();
-  // the display: 0.5 is linear (the engine bends by 10 · (2c − 1)): equal rises up the attack; above 0.5 rises sooner, below later
-  const ys = c => {
-    const Q = rig('env', { env: {}, att: 0.5, hold: 0, dec: 0.5, sus: 0.5, rel: 0.5, crv: [c, 0.5, 0.5] });
-    const pts = cls(Q.B.el, 'cv-mcrv').getAttribute('d').split('L').slice(1, 13).map(p => +p.split(' ')[1]);
-    Q.B.destroy();
-    return pts;
-  };
-  const lin = ys(0.5), up = ys(0.9), dn = ys(0.1), step = lin[1] - lin[0];
-  assert.ok(lin.every((y, i) => i === 0 || Math.abs(lin[i] - lin[i - 1] - step) < 0.25), 'c = 0.5: equal steps (a straight attack)');
-  assert.ok(up[5] < lin[5] && dn[5] > lin[5], 'above 0.5 rises sooner (the engine\'s bend(q, +k)), below later');
-  assert.deepEqual([ys(-3).join() === ys(0).join(), ys(7).join() === ys(1).join()], [true, true], 'out-of-range values clamp to 0…1');
-});
-
-test('macroBody (2b): 8 rows (a knob, an editable name ≤ 16 chars, the value); a knob turn calls o.set(k, v) per move and edits v once at the lift; a key one edit; a name change edits names (trimmed, clipped, empty → the default); update([…]) lights the live dots', () => {
-  const R = rig('macro', { v: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8], names: ['Cut', 'Res', 'C', 'D', 'E', 'F', 'G', 'H'] }), B = R.B;
-  const rows = byCls(B.el, 'cv-mmrow'), knobs = byCls(B.el, 'wk-knob'), names = byCls(B.el, 'cv-mname'), vals = byCls(B.el, 'cv-mmv');
-  assert.deepEqual([rows.length, knobs.length, names.map(n => n.value).join(), vals.map(v => v.textContent).join(), rows.map(r => r.getAttribute('data-k')).join()],
-    [8, 8, 'Cut,Res,C,D,E,F,G,H', '10%,20%,30%,40%,50%,60%,70%,80%', '1,2,3,4,5,6,7,8']);
-  assert.deepEqual([knobs[0].getAttribute('aria-label'), names[0].getAttribute('maxlength')], ['Cut', '16']);
-  ptr(knobs[2], 'pointerdown', 100, 100, { pointerId: 1 }); ptr(knobs[2], 'pointermove', 100, 60, { pointerId: 1 });
-  assert.deepEqual([R.sets.slice(-1)[0].startsWith('2:'), R.edits.length], [true, 0], 'live per move, no edit yet');
-  ptr(knobs[2], 'pointermove', 100, 40, { pointerId: 1 }); ptr(knobs[2], 'pointerup', 100, 40, { pointerId: 1 });
-  assert.deepEqual([R.edits.length, R.st.v[2] > 0.3, R.st.v[1], vals[2].textContent], [1, true, 0.2, Math.round(R.st.v[2] * 100) + '%'], 'one edit of the whole v');
-  key(knobs[7], 'ArrowDown');
-  assert.deepEqual([R.edits.length, R.st.v[7] < 0.8], [2, true]);
-  names[1].value = '  A very long macro name indeed ';
-  names[1].dispatchEvent(new Ev('change'));
-  assert.deepEqual([R.edits.length, R.st.names[1], names[1].value], [3, 'A very long macr', 'A very long macr']);
-  names[1].value = '';
-  names[1].dispatchEvent(new Ev('change'));
-  assert.deepEqual([R.edits.length, R.st.names[1]], [4, 'Macro 2']);
-  names[1].dispatchEvent(new Ev('change'));
-  assert.equal(R.edits.length, 4, 'unchanged: no edit');
-  const p = ptr(names[0], 'pointerdown', 1, 1);
-  assert.equal(!!p._stop, true, 'the name box keeps its press');
-  const dotOn = k => !cls(knobs[k], 'wk-live').hasAttribute('display');
-  B.update([0.9, null, R.st.v[2]]);
-  assert.deepEqual([dotOn(0), dotOn(1), dotOn(2)], [true, false, false], 'a live dot when it differs from the base (wk\'s 0.002 rule)');
-  B.update(null);
-  assert.equal(dotOn(0), false);
-  R.st.v[0] = 0.55; B.sync();
-  assert.equal(vals[0].textContent, '55%');
-  B.destroy();
-  // (fixer C, U8) blank names (normDev's '') show the default as a placeholder and label the knob "Macro n"
-  const R2 = rig('macro', { v: [0, 0, 0, 0, 0, 0, 0, 0], names: ['', 'Res', '', '', '', '', '', ''] }), N2 = byCls(R2.B.el, 'cv-mname'), K2 = byCls(R2.B.el, 'wk-knob');
-  assert.deepEqual([N2.map(n => n.getAttribute('placeholder')).join(), N2[0].value, N2[1].value, K2[0].getAttribute('aria-label'), K2[1].getAttribute('aria-label')],
-    ['Macro 1,Macro 2,Macro 3,Macro 4,Macro 5,Macro 6,Macro 7,Macro 8', '', 'Res', 'Macro 1', 'Res']);
-  R2.B.destroy();
+test('(milestone 3) body edits: a knob gesture → live per move, ONE edit at the end (main.js: one History step); without o.live only the edit; macro knobs → set(k, v) per move + edit {v}; a toggle → one edit; update(v) feeds the panel\'s live displays; sync re-reads the device', async () => {
+  await U.ready();
+  const L = srig('lfo', { lfo: { mono: 1 }, rate: 0.5 });
+  const rate = L.B.el.querySelector('[data-dest="l1.rate"]');
+  SD.ptr(rate, 'pointerdown', 10, 100); SD.ptr(rate, 'pointermove', 10, 80); SD.ptr(rate, 'pointermove', 10, 60); SD.ptr(rate, 'pointerup', 10, 60);
+  const kinds = L.calls.map(c => c[0]);
+  sweep.deepEqual([kinds[0], kinds.filter(k => k === 'edit').length, kinds.at(-1)], ['live', 1, 'edit']);
+  sweep.deepEqual(Object.keys(L.calls.at(-1)[1]), ['rate']);
+  sweep.equal(L.st.rate, L.calls.at(-1)[1].rate);
+  // without o.live (today's main.js): the moves stay in the panel, the end is the one edit
+  const N = srig('lfo', { lfo: { mono: 1 }, rate: 0.5 }, { live: undefined });
+  const r2 = N.B.el.querySelector('[data-dest="l1.rate"]');
+  SD.ptr(r2, 'pointerdown', 10, 100); SD.ptr(r2, 'pointermove', 10, 70); SD.ptr(r2, 'pointerup', 10, 70);
+  sweep.deepEqual(N.calls.map(c => c[0]), ['edit']);
+  // the MONO button = GLOBAL / PER NOTE: one edit, the lfo object whole
+  N.calls.length = 0;
+  N.B.el.querySelectorAll('.wk-tog').find(b => b.textContent.trim() === 'MONO').click();
+  sweep.deepEqual([N.calls.length, N.calls[0][1].lfo.mono, N.st.lfo.mono], [1, 0, 0]);
+  // the monitor: a level, or { v, ph } (the LFO's phase dot in its editor)
+  N.B.update({ v: 0.3, ph: 0.75 });
+  sweep.equal(N.B.host().snap.lfoPh[0], 0.75);
+  // an outside change (undo / redo): sync shows the device again
+  N.st.lfo = Object.assign({}, N.st.lfo, { mono: 1 });
+  N.B.sync();
+  sweep.equal(N.B.el.querySelectorAll('.wk-tog').find(b => b.textContent.trim() === 'MONO').getAttribute('aria-pressed'), 'true');
+  const Mc = srig('macro', { v: [0.5, 0, 0, 0, 0, 0, 0, 0] });
+  const k1 = Mc.B.el.querySelector('[data-dest="m1"]');
+  SD.ptr(k1, 'pointerdown', 10, 100); SD.ptr(k1, 'pointermove', 10, 80); SD.ptr(k1, 'pointerup', 10, 80);
+  sweep.ok(Mc.calls.some(c => c[0] === 'set' && c[1] === 0));
+  sweep.deepEqual(Mc.calls.filter(c => c[0] === 'edit').map(c => Object.keys(c[1])), [['v']]);
+  sweep.equal(Mc.calls.some(c => c[0] === 'live'), false);
+  sweep.deepEqual(Mc.B.el.querySelectorAll('[data-jack]').map(n => n.getAttribute('data-jack')), ['k1', 'k2', 'k3', 'k4', 'k5', 'k6', 'k7', 'k8']);
+  // the ENV: Serum's default curves (0…1, 0.5 linear) shown as Serum shows them: 50 / 67 / 67 %
+  const E = srig('env', {});
+  sweep.deepEqual(['e2.ca', 'e2.cd', 'e2.cr'].map(id => E.B.el.querySelector('[data-dest="' + id + '"]').getAttribute('aria-valuetext')), ['50%', '67%', '67%']);
+  for (const R of [L, N, Mc, E]) R.B.destroy();
 });
 
 test('ccBody (2b): the controller numBox (0…127, one edit per key), the channel menu (Omni / 1…16), Learn arms o.learn(true) and shows it (setLearn from the host), the value meter', () => {
@@ -372,18 +277,7 @@ test('ccBody (2b): the controller numBox (0…127, one edit per key), the channe
   B.destroy();
 });
 
-test('chaosBody (2b): the rate in Hz (pow5 0…1000) or the LFO ladder label with BPM, smoothing in %, a scope of the last 64 values; noteBody: the keyboard meter lights the last note and names it; bodyFor for every 2b kind', () => {
-  const R = rig('chaos', { chaos: { mono: 0, sh: 0 }, rate: 0.2512, bpm: 0, smooth: 0.25 }), B = R.B;
-  const nbs = byCls(B.el, 'wk-nb');
-  assert.deepEqual([B.el.className, nbs[0].getAttribute('aria-valuetext'), nbs[1].getAttribute('aria-valuetext'), cls(B.el, 'cv-mline').getAttribute('d')], ['cv-mbody cv-mchaos cv-medit', '1.00 Hz', '25%', '']);
-  cls(B.el, 'wk-tog').click();
-  assert.deepEqual([R.edits, nbs[0].getAttribute('aria-valuetext')], [[{ bpm: 1 }], '2 bar'], '0.2512 · 14 → index 4 of the straight ladder (32, 16, 8, 4, 2 bar)');
-  key(nbs[1], 'ArrowUp');
-  assert.deepEqual([R.edits.length, R.st.smooth > 0.25], [2, true]);
-  for (let i = 0; i < 70; i++) B.update(i % 2);
-  const dd = cls(B.el, 'cv-mline').getAttribute('d');
-  assert.deepEqual([dd.startsWith('M0 '), dd.split('L').length], [true, 64]);
-  B.destroy();
+test('noteBody: the keyboard meter lights the last note and names it', () => {
   const N = rig('note', {}), K = N.B, mark = cls(K.el, 'cv-mkeyon');
   assert.deepEqual([K.el.className, byCls(K.el, 'cv-mkey').length, byCls(K.el, 'cv-mblk').length, mark.getAttribute('display'), txt(K.el, 'cv-mval')], ['cv-mbody cv-mnote', 128, 53, 'none', '—']);
   K.update(60);
@@ -393,7 +287,4 @@ test('chaosBody (2b): the rate in Hz (pow5 0…1000) or the LFO ladder label wit
   K.update(null);
   assert.deepEqual([mark.getAttribute('display'), txt(K.el, 'cv-mval')], ['none', '—']);
   K.destroy();
-  const d = fresh();
-  assert.deepEqual(['lfo', 'env', 'macro', 'cc', 'chaos', 'note', 'nope'].map(k => { const b = U.bodyFor(k, { doc: d, get: () => ({}), edit() {} }); const c = b ? b.el.className : null; if (b) b.destroy(); return c; }),
-    ['cv-mbody cv-mlfo cv-medit', 'cv-mbody cv-menv cv-medit', 'cv-mbody cv-mmacro cv-medit', 'cv-mbody cv-mcc cv-medit', 'cv-mbody cv-mchaos cv-medit', 'cv-mbody cv-mnote', null], 'defaults without a state');
 });

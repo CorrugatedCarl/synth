@@ -656,6 +656,28 @@ for, tap **Copy results** and paste them with the screenshots; then answer quest
 
 ## 9. Notes (the builders fill in)
 
+**Lane B (Serum host + panels), 2026-10-20.** `sx-host.js` = SerumUI minus its shell: the state / edit / undo / kit / paint
+loop (shown views only, H4) / mod layer / popovers / shape library / browser, now multi-root (`addRoot`, `owns`, `rootOf`,
+`viewOf`, `adopt` for the handed-over power toggle) and a view registry (`defineView(kind, make)`, `mount(kind, root, args)` →
+View `{ id, kind, root, page, panel, power, shown(), menuItems(), labelDrag(el), destroy() }`). `serum-ui.js` is the shell only
+(head / 7 pages / foot are `mount` calls; every public name still exported, bundled DOM identical except H1 / H3).
+`sx-ui-mod.js`: the panels (MACROS, ENV, CURVE, LFO, VOICING, chaos row, VOICE + its fold-outs, QUALITY / TUNING / MPE / VOICE
+CONTROL, Preferences / Info) as classes, `PART_W` (measured in Chrome from a 1200 px bundled panel: osc 256.6, sub / noise
+163.7, filter 218.3, macros 237.3, env 316.4, lfo / curve 395.5, voicing 210.9, chaos / quality / tuning / mpe / vc 389.3,
+arp / clip 1184, voice / outputs 535.3), `partView`, `mountPart`, `mountSlot`, `panelDialog`. The slot host:
+`slotHost(dev | kind, o)` over a memoised default Serum (LFO → LFO 1, ENV → ENV 2, chaos → chaos 1, macro → macros 1–8).
+Additions to the interfaces: `o.storage / notify / view / devKey / doc`; the kit's `under(page, fn)`, `editor`, `bpm`,
+`tile`, `sx` and the getters `page` / `uiState` / `opts`; `host.editEnd` (a gesture that ends on its last move value still
+closes with one edit); `slotBody` bodies in cv-mods-ui load sx-host / sx-ui-mod on demand (`ready()`, the boot graph
+stays lean; the 2b `value()` / `knobs()` kept); `update(v)` also takes `{ v, ph, y, out }` / `{ v, stage, t }`; ClipPage
+`o.twins`; `OutputsPanel` in sx-ui-mix; graph `CurveEditor` `links: false`. `wk.storeDensity` is feature-detected (pre-H5
+rule without it). Part roots are `flex: none`: a module body narrower than `PART_W` clips the panel, it never re-flows —
+until C's `MOD_W` / heights land a 2b-sized LFO module shows its middle. **For D**: call `body.sync()` after undo / redo /
+load; wire `o.live` / `o.cancel` / `o.rows` / `o.view`. Counts (Chrome): slot LFO 125–128 el / 2 canvases, ENV 138 / 2,
+Macro 127 / 0, Chaos 30 / 0 (≤ 160 / ≤ 2); parts VOICE 433 / 2 (folds closed), OSC 339 / 1, FILTER 139 / 1, NOISE 126 / 1,
+SUB 89 / 0. Edited outside the row: tests/canvas-2b-sim (the bodies' async load, the MONO toggle for the old badge, ENV 2's
+curve knobs) and the new tests/serum-ui-stubs/dom.js (a selector fake DOM).
+
 ## 10. Review log (revision 2, 2026-10-19: the contract review, 25 points)
 
 All 25 points were checked against the code (and the review's "checked and confirmed" items, Chaos compile and the ENV slot round

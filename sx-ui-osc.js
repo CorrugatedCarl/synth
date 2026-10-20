@@ -2649,7 +2649,12 @@ export class OscPanel {
     this.o = oscIdx(o);
     this.P = OSC_P[this.o];
     this.D = oscData(kit);
+    // H1 (SYNTH Canvas milestone 3, IMPL-3 §1.4): only the active type's view is built; another one at its first switch
+    // (or first read of views.<type>), then kept — the four hidden views were ≈ 420 elements and 5 canvases per oscillator
+    this.built = {};
     this.views = {};
+    for (const V of VIEWS) Object.defineProperty(this.views, V.type, { enumerable: true, get: () => this.typeView(V.type) });
+    this.page = kit.page || null;   // (the page this panel is built on: a view built later registers there, kit.under)
     ensureCSS(kit.doc);
     this.el = this.build();
     if (root) root.appendChild(this.el);
@@ -2662,6 +2667,8 @@ export class OscPanel {
     const shell = K.panel(T, OSC_M[o], P + '.on', '', { items: () => this.menuItems(), collapse: true });
     const { el, head, body } = shell;
     this.shell = shell;
+    this.head = head;
+    this.body = body;
     el.classList.add('sxo-osc');
     if (el.style && el.style.setProperty) el.style.setProperty('--sxo-c', OSC_COL[o]);
     // type menu (§13.3 header): Wavetable · Multisample · Sample · Granular · Spectral
@@ -2669,21 +2676,37 @@ export class OscPanel {
       set: v => K.edit(s => { s.osc[o].type = v; }, { label: T + ' type' }) });
     type.el.classList.add('sxo-type');
     head.appendChild(type.el);
-    for (const V of VIEWS) {
-      const v = new V(body, K, o);
-      this.views[v.type] = v;
-      if (v.head.length) head.append(...v.head);
-    }
+    this.typeView(core.oscTypeOf(K.s(), o));
     const route = routeControls(K, { key: 'route' + o, title: T, obj: s => s.osc[o], routes: ['Filter', 'Main', 'Direct', 'None'], fbal: P + '.fbal', bus: [P + '.bus1', P + '.bus2'] });
     this.mapPane = mapPane(K, T, s => s.osc[o]);
     head.append(route.btn);
     this.route = route;
-    K.custom(() => { const t = core.oscTypeOf(K.s(), o); for (const V of VIEWS) { const v = this.views[V.type]; if (v.shown !== (V.type === t)) v.show(V.type === t); } });
-    body.append(this.pitchRow(), this.uniRow(), this.warpRow(0), this.warpRow(1), row(d, K.knob(P + '.pan', { label: 'PAN', size: 'sm' }).el, K.knob(P + '.level', { label: 'LEVEL' }).el));
+    K.custom(() => {
+      const t = core.oscTypeOf(K.s(), o);
+      this.typeView(t);
+      for (const ty of Object.keys(this.built)) { const v = this.built[ty]; if (v.shown !== (ty === t)) v.show(ty === t); }
+    });
+    const pitch = this.pitchRow();
+    this.anchor = pitch;
+    body.append(pitch, this.uniRow(), this.warpRow(0), this.warpRow(1), row(d, K.knob(P + '.pan', { label: 'PAN', size: 'sm' }).el, K.knob(P + '.level', { label: 'LEVEL' }).el));
     return el;
   }
+  // the type view of type t (built on first use under this panel's page: its binds, canvases and editors paint with the
+  // panel); its el goes before the pitch row, its head items before the routing button (VIEWS order kept among them)
+  typeView(t) {
+    const V = VIEWS.find(X => X.type === t) || VIEWS[0];
+    if (this.built[V.type]) return this.built[V.type];
+    const K = this.kit, make = () => new V(null, K, this.o);
+    const v = this.page && typeof K.under === 'function' ? K.under(this.page, make) : make();
+    this.built[V.type] = v;
+    const next = VIEWS.slice(VIEWS.indexOf(V) + 1).map(X => this.built[X.type]).find(Boolean);
+    this.body.insertBefore(v.el, next ? next.el : this.anchor || null);
+    const hRef = next && next.head.length ? next.head[0] : this.route ? this.route.btn : null;
+    for (const h of v.head) this.head.insertBefore(h, hRef);
+    return v;
+  }
   // the view of the oscillator's current type
-  view() { return this.views[core.oscTypeOf(this.kit.s(), this.o)] || this.views.wt; }
+  view() { return this.typeView(core.oscTypeOf(this.kit.s(), this.o)); }
 
   /* -------------------------------------------------- pitch row (inv B2, §6.3.3) */
   pitchRow() {
