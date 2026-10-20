@@ -4,7 +4,8 @@
 // their drag-out, the ≡ / ⚙ popovers and the sheets in #ov. Owner: SHELL lane. Stage 1e (IMPL-1e §4.3): the Effects
 // tray's tiles (effectsTray: the empty FX panel + the effect types, their cost; the same drag-out as a Sources tile).
 // Stage 2a (IMPL-2a §3): the Sources tray's Modulators section (sourcesTray o.mods: Mod Wheel, Velocity, Aftertouch, Bend;
-// setPlaced greys a singleton that is already there).
+// setPlaced greys a singleton that is already there). Milestone 3 (IMPL-3 §2.6): the Serum view's Serum parts (OSC, SUB,
+// NOISE, FILTER, MACROS) and Note tools (ARP, CLIP) tiles (sourcesTray o.parts: PART_TILES; the drops are the host's).
 // Rules: plain ES module, no DOM at module top level, survives tests/main-sim.mjs's DOM stub (it keeps references to the
 // nodes it makes or is given, never queries them back); imports carry ?v=9.
 import * as wk from './wk.js?v=9';
@@ -319,6 +320,14 @@ export function sideTray(el, o) {
 // setPlaced(id, reason | null): the tile greys out (aria-disabled, .cv-placed) with the reason ("already on this
 // track" / "already in this project"); a placed tile neither picks nor drags. modTiles() / modTile(id). (2b) an item with
 // multi: true (LFO, ENV, Macro, CC, Chaos — MOD_TILES) carries data-multi and ignores setPlaced.
+// (milestone 3, IMPL-3 §2.6) o.parts: [{id, name, group: 'parts' | 'notes'}] (PART_TILES: OSC, SUB, NOISE, FILTER, MACROS —
+// "Serum parts" —, ARP, CLIP — "Note tools") — one button.cv-tile.cv-ptile[data-part][data-group] each (an original glyph,
+// the name, span.cv-treason) in o.partsEl / o.notesEl (their sections o.partsSec / o.notesSec shown in a view with that
+// section; without the elements: a section of their own in o.secEl, in place of the placeholder). A tap: (o.partPick ||
+// o.pick)(id, mode); a drag as a modulator tile's through (o.partDrag || o.drag) with info.part = true, info.over 'canvas' or
+// null, info.at the world point; the ghost hides over the canvas while o.partCanvasGhost() says the world draws an outline.
+// setPartPlaced(id, reason | null) greys a tile with its reason (the host's: "This Serum already has 3 oscillators"); the
+// drop's own refusals are the host's (§2.6). Without o.parts the two sections stay placeholders.
 const CLASSIC = m => !m.custom, TO_SERUM = 'Serum and its modulators: the Serum view (the menu above).';
 export const SRC_VIEWS = [
   { id: 'hw', label: 'Hardware', tip: 'The classic synths with their real front panel', layout: 'hw', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
@@ -327,6 +336,23 @@ export const SRC_VIEWS = [
     sections: [{ id: 'serum', models: m => !!m.custom }, { id: 'mods' }, { id: 'parts', head: 'Serum parts', note: 'Arrive in milestone 3.' },
       { id: 'notes', head: 'Note tools', note: 'Note tools: later.' }] },
 ];
+/** (milestone 3, §2.6) The Serum parts and note tools tiles (id = the part kind sx-edges firstFree takes). */
+export const PART_TILES = Object.freeze([
+  { id: 'osc', name: 'OSC', group: 'parts' }, { id: 'sub', name: 'SUB', group: 'parts' }, { id: 'noise', name: 'NOISE', group: 'parts' },
+  { id: 'filter', name: 'FILTER', group: 'parts' }, { id: 'macros', name: 'MACROS', group: 'parts' },
+  { id: 'arp', name: 'ARP', group: 'notes' }, { id: 'clip', name: 'CLIP', group: 'notes' },
+].map(Object.freeze));
+// original monochrome glyphs: a wave in a frame, a low sine, a scatter, a low-pass slope, four dials, rising steps, a clip of notes
+const PART_GLYPH = {
+  osc: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="4.5" y="3.5" width="31" height="21" rx="3"/><path d="M8 14c3-7 6-7 8 0s5 7 8 0 5-7 8 0"/></svg>',
+  sub: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 14c6-11 10-11 16 0s10 11 16 0"/><path d="M4 24.5h32"/></svg>',
+  noise: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 15l3-6 2 11 3-14 2 12 3-8 2 9 3-12 2 13 3-9 2 7 3-10 2 6 2-2"/></svg>',
+  filter: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M4 9h17c4 0 5-3 7-3 2 0 3 6 8 18"/><path d="M4 24.5h32"/></svg>',
+  macros: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="5" y="4" width="13" height="9" rx="2"/><rect x="22" y="4" width="13" height="9" rx="2"/><rect x="5" y="16" width="13" height="9" rx="2"/><rect x="22" y="16" width="13" height="9" rx="2"/></svg>',
+  arp: '<svg viewBox="0 0 40 28" aria-hidden="true"><path d="M5 23h6v-5h6v-5h6v-5h6v-5h6"/><circle cx="8" cy="23" r="1.6"/><circle cx="14" cy="18" r="1.6"/><circle cx="20" cy="13" r="1.6"/><circle cx="26" cy="8" r="1.6"/></svg>',
+  clip: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="4.5" y="3.5" width="31" height="21" rx="2"/><path d="M9 9h7M19 14h9M12 19h6M24 9h6"/></svg>',
+};
+const partGlyph = id => PART_GLYPH[id] || PART_GLYPH.osc;
 /** (2b, IMPL-2b §1.1 / §6.1) The Modulators section's tiles, in MOD_ORDER: id = the mod kind, scope 'project' (the wheel)
  * or 'track', multi = any number per track (its tile never greys out: setPlaced ignores it). The host passes them as
  * o.mods (with its own names if it likes). */
@@ -411,10 +437,60 @@ export function sourcesTray(el, o) {
       offs.push(() => b.remove());
     }
   }
-  // the placeholder sections (a heading, a one-line note), once each, in o.secEl after the Modulators
+  // (milestone 3) the Serum parts and note tools: a section per group (the host's elements, else made in o.secEl / el)
+  const ptiles = new Map(), pplaced = new Map(), pbox = new Map(); // id → {b, rs, tip, name, group}; group → {sec, box, head}
+  const PT = Array.isArray(o.parts) ? o.parts : o.parts === true ? PART_TILES : null;
+  if (PT) {
+    const pick = o.partPick || o.pick, drag = o.partDrag || o.drag || {};
+    const at = i => { if (o.toWorld) { try { const p = o.toWorld(i.x, i.y); if (p && isFinite(p.x) && isFinite(p.y)) return { x: p.x, y: p.y }; } catch { /* no world */ } } return { x: i.x, y: i.y }; };
+    const HEAD = { parts: 'Serum parts', notes: 'Note tools' };
+    const boxOf = g => {
+      let B = pbox.get(g);
+      if (B) return B;
+      const own = g === 'notes' ? o.notesEl : o.partsEl;
+      if (own) B = { sec: (g === 'notes' ? o.notesSec : o.partsSec) || null, box: own, head: null };
+      else if (o.secEl) {
+        const sec = mk(d, 'section', 'cv-tsec cv-psec'), box = mk(d, 'div', 'cv-tiles cv-ptiles');
+        sec.setAttribute('data-sec', g); sec.setAttribute('aria-label', HEAD[g] || g);
+        sec.append(mk(d, 'h3', 'cv-tgrp', HEAD[g] || g), box);
+        o.secEl.appendChild(sec);
+        offs.push(() => sec.remove());
+        B = { sec, box, head: null };
+      } else { const hd = mk(d, 'h3', 'cv-tgrp cv-phead', HEAD[g] || g); el.appendChild(hd); offs.push(() => hd.remove()); B = { sec: null, box: el, head: hd }; }
+      pbox.set(g, B);
+      return B;
+    };
+    for (const m of PT) {
+      const id = m && typeof m.id === 'string' ? m.id : null;
+      if (!id || ptiles.has(id)) continue;
+      const g = m.group === 'notes' ? 'notes' : 'parts', name = String(m.name || id), b = mk(d, 'button', 'cv-tile cv-ptile');
+      b.type = 'button';
+      b.setAttribute('data-part', id); b.setAttribute('data-group', g);
+      const tip = `${name} — tap to add it to this track's Serum, or drag it onto the canvas`;
+      b.title = tip;
+      const pic = mk(d, 'span', 'cv-mglyph');
+      pic.setAttribute('aria-hidden', 'true');
+      pic.innerHTML = partGlyph(id);
+      const nm = mk(d, 'span', 'cv-tname', name), rs = mk(d, 'span', 'cv-treason');
+      rs.hidden = true;
+      b.append(pic, nm, rs);
+      const off = () => pplaced.has(id);
+      offs.push(listen(b, 'click', e => { if ((e && e.defaultPrevented) || off()) return; pick(id, mode); }));
+      const dd = { begin: (x, i) => { i.part = true; if (drag.begin) drag.begin(x, i); }, move: (x, i) => { i.part = true; if (drag.move) drag.move(x, i); },
+        drop: (x, i) => { i.part = true; return !!drag.drop && drag.drop(x, i); }, cancel: (x, i) => { i.part = true; if (drag.cancel) drag.cancel(x, i); } };
+      offs.push(tileDrag(d, Object.assign({}, o, { drag: dd, canvasGhost: o.partCanvasGhost }), b, id, { pic: () => partGlyph(id), picCls: 'cv-mglyph', cls: 'cv-mghost', off,
+        norm: r => ({ over: (r && typeof r === 'object' ? r.over : r) === 'canvas' ? 'canvas' : null, key: null, near: null }), at,
+        label: over => (over === 'canvas' ? '+ Add ' + name : '') }));
+      boxOf(g).box.appendChild(b);
+      ptiles.set(id, { b, rs, tip, name, group: g });
+      offs.push(() => b.remove());
+    }
+  }
+  // the placeholder sections (a heading, a one-line note), once each, in o.secEl after the Modulators ((3) not for a group
+  // the parts tiles fill)
   const secs = new Map();
   for (const V of VIEWS) for (const S of V.sections || []) {
-    if (!o.secEl || !S || S.models || S.id === 'mods' || !S.head || secs.has(S.id)) continue;
+    if (!o.secEl || !S || S.models || S.id === 'mods' || !S.head || secs.has(S.id) || pbox.has(S.id)) continue;
     const sec = mk(d, 'section', 'cv-tsec cv-tsoon');
     sec.setAttribute('data-sec', S.id); sec.setAttribute('aria-label', S.head);
     sec.append(mk(d, 'h3', 'cv-tgrp', S.head), mk(d, 'p', 'cv-tnote', S.note || ''));
@@ -476,6 +552,12 @@ export function sourcesTray(el, o) {
     if (o.modsSec) o.modsSec.hidden = !mods;
     if (mhead) { mhead.hidden = !mods; for (const T of mtiles.values()) T.b.hidden = !mods; }
     for (const [id, sec] of secs) sec.hidden = !has(id);
+    for (const [g, B] of pbox) { // ((3) the parts / note tools sections)
+      const on = has(g);
+      if (B.sec) B.sec.hidden = !on;
+      if (B.head) B.head.hidden = !on;
+      if (!B.sec) for (const T of ptiles.values()) if (T.group === g) T.b.hidden = !on;
+    }
     if (vbtn) {
       const lab = vbtn.children[0];
       if (lab && lab.textContent !== V.label) lab.textContent = V.label;
@@ -506,6 +588,19 @@ export function sourcesTray(el, o) {
     /** (2a) the Modulators section's tiles; greying one out with its reason (null: available again) */
     modTiles: () => [...mtiles.values()].map(T => T.b), modTile: id => (mtiles.get(id) || {}).b || null,
     setPlaced, placed: id => placed.get(id) || null,
+    /** (milestone 3) the Serum parts / note tools tiles; greying one out with its reason (null: available again) */
+    partTiles: () => [...ptiles.values()].map(T => T.b), partTile: id => (ptiles.get(id) || {}).b || null,
+    setPartPlaced(id, reason) {
+      const T = ptiles.get(id);
+      if (!T) return;
+      const r = reason == null || reason === '' ? null : String(reason);
+      if (r) pplaced.set(id, r); else pplaced.delete(id);
+      T.b.classList.toggle('cv-placed', !!r);
+      if (r) T.b.setAttribute('aria-disabled', 'true'); else T.b.removeAttribute('aria-disabled');
+      T.rs.textContent = r || ''; T.rs.hidden = !r;
+      T.b.title = r ? T.name + ' — ' + r : T.tip;
+    },
+    partPlaced: id => pplaced.get(id) || null,
     setCurrent(id) {
       cur = id;
       for (const [k, b] of tiles) {

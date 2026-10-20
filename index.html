@@ -193,13 +193,11 @@
   <div class="tab cv-view" id="tab-inst">
     <div id="viewport" class="cv-viewport" tabindex="0" aria-label="Track canvas">
       <div id="world" class="cv-world" data-cv-world>
-        <!-- today's parts: the canvas modules take them by reference (cv-module, IMPL-1b §5.3) -->
+        <!-- today's parts: the canvas modules take the scope and the About text by reference (cv-module, IMPL-1b §5.3); the boot
+             message shows until main.js hides #cvParts (milestone 3: every device body is its module's own element) -->
         <div id="cvParts" class="cv-parts">
-          <section id="inst" class="inst" aria-label="Instrument panel">
-            <p class="boot" id="boot">Loading the instruments… If this message stays, the page needs a current browser (iPadOS / Safari 16.4 or later; Chrome 108+, Firefox 110+ on a computer) with JavaScript enabled, opened over https:// rather than as a local file.</p>
-            <noscript><p class="boot">This instrument needs JavaScript.</p></noscript>
-          </section>
-          <section id="fxrack" class="fxtab" aria-label="Effects rack"></section>
+          <p class="boot" id="boot">Loading the instruments… If this message stays, the page needs a current browser (iPadOS / Safari 16.4 or later; Chrome 108+, Firefox 110+ on a computer) with JavaScript enabled, opened over https:// rather than as a local file.</p>
+          <noscript><p class="boot">This instrument needs JavaScript.</p></noscript>
           <div class="scope">
             <canvas id="scope" aria-label="Oscilloscope"></canvas>
             <div class="scope-ctl">
@@ -228,6 +226,15 @@
           <section id="srcModSec" class="cv-tsec" aria-label="Modulators" hidden>
             <h3 class="cv-tgrp">Modulators</h3>
             <div id="srcMods" class="cv-tiles cv-mtiles" data-tray="mods"></div>
+          </section>
+          <!-- milestone 3: the Serum view's parts and note tools (cv-tray o.parts fills them; hidden until it does) -->
+          <section id="srcPartSec" class="cv-tsec cv-psec" aria-label="Serum parts" hidden>
+            <h3 class="cv-tgrp">Serum parts</h3>
+            <div id="srcParts" class="cv-tiles cv-ptiles" data-tray="parts"></div>
+          </section>
+          <section id="srcNoteSec" class="cv-tsec cv-psec" aria-label="Note tools" hidden>
+            <h3 class="cv-tgrp">Note tools</h3>
+            <div id="srcNotes" class="cv-tiles cv-ptiles" data-tray="notes"></div>
           </section>
         </div>
         <p class="cv-pnote" id="srcNote"></p>

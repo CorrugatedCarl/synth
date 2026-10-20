@@ -3,7 +3,8 @@
 // (tests/serum-ui.test.mjs compares them), bound to a plain state instead of a SerumUI. Destination widgets are real wk
 // widgets carrying data-dest; virtual destinations (m1…m8, arp.*, clip.*) read and write their state bases as the real
 // kit does; panel(…, o) keeps o.items on the returned shell (P.items) and o.collapse as P.collapse; edits apply at once
-// and are logged; nothing is sent anywhere.
+// and are logged; nothing is sent anywhere. (Milestone 3 members: page / under / editor / bpm / uiState / srcUsed /
+// selectSrc / srcMenu / moduleMenu / lockModule / tile / opts (makeKit({ opts })) / sx (null: no host behind it).)
 //
 //   const kit = makeKit({ doc, s, fx, host, snap, wt, prefs });
 //   const T = stubOf(kit);   // { log, binds, canvases, lives, pops, prompts, held, paint(), setSnap(snap), destroy(), queued,
@@ -57,7 +58,31 @@ export function makeKit(o) {
   };
   const bind = w => { T.binds.push(w); return w; };
   const fmt = id => n => core.fmtParam(id, n, { s: s(), fx: fx() });
+  // (milestone 3) the host members: one page (T itself), the view state, the source / module menus logged, the options
+  T.uiState = { lfoTool: 'point', lfoSnap: false, lastLfo: 0, big: null, lfoGest: null };
+  T.opts = Object.assign({ bare: false, nomod: false, links: true, ghosts: true, learn: true, undo: true, lock: true, wt2lfo: true, osc: true,
+    nameMax: 24, tiles: 'drag', srcItems: null }, O.opts);
+  T.editors = [];
   const kit = {
+    get page() { return T; },
+    under: (page, fn) => fn(),
+    editor: (ed, sig) => { T.editors.push({ ed, sig }); return ed; },
+    bpm: () => (O.host && typeof O.host.bpm === 'function' ? +O.host.bpm() || 120 : 120),
+    get uiState() { return T.uiState; },
+    srcUsed: src => (s() && Array.isArray(s().matrix) ? s().matrix.some(r => r && (r.src === src || r.aux === src)) : false),
+    selectSrc: src => { if (s() && s().ui) s().ui.mod = src; T.log.push(['selectSrc', src]); },
+    srcMenu: (src, x, y) => { T.log.push(['srcMenu', src]); },
+    moduleMenu: (m, x, y) => { T.log.push(['moduleMenu', m]); },
+    lockModule: m => { T.log.push(['lockModule', m]); },
+    tile: (src, labelFn, cls) => {
+      const b = doc.createElement('button');
+      b.className = 'sx-tile' + (cls ? ' ' + cls : '');
+      b.setAttribute('data-src', src);
+      b.textContent = labelFn();
+      return b;
+    },
+    get opts() { return T.opts; },
+    sx: null,
     host: O.host || {},
     s, fx,
     snap: () => T.snap,

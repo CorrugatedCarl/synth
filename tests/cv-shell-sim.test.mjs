@@ -27,11 +27,11 @@ test('index.html: the shell of IMPL-1b §3.1 — every id of the tree and of tod
     'transport', 'tStart', 'tPlay', 'tRec', 'tBBT', 'tTime', 'tBpm', 'tSigN', 'tSigD', 'tLoop', 'tMetro', 'tCount', 'tUndo', 'tRedo', 'trkChip', 'trkDots', 'tabTrack',
     'engMore', 'engPop', 'power', 'master', 'masterG', 'rate', 'cpu', 'latL', 'lat', 'latPop', 'gearBtn', 'gearPop', 'sr', 'os', 'drift', 'tRecMode', 'tInQ', 'pinchMode',
     'arrbar', 'aAdd', 'aMulti', 'aRange', 'aCopy', 'aPaste', 'aDup', 'aClear', 'aDel', 'aIns', 'aLoopSel', 'tBars', 'studio', 'arrwrap', 'heads', 'lanes', 'topGrip',
-    'stage', 'tab-inst', 'viewport', 'world', 'cvParts', 'inst', 'boot', 'fxrack', 'scope', 'about-title', 'about', 'algo', 'overlay', 'cvToolbar',
+    'stage', 'tab-inst', 'viewport', 'world', 'cvParts', 'boot', 'scope', 'about-title', 'about', 'algo', 'overlay', 'cvToolbar',
     'srcTray', 'srcGrip', 'fxTray', 'tab-roll', 'rolltools', 'rollwrap', 'perf', 'kbGrip', 'notice', 'kbrow', 'keys', 'helpParts', 'ov',
     'modal', 'installSheet', 'update', 'tip'];
   for (const id of ids) assert.equal((HTML.match(new RegExp(`\\sid="${id}"`, 'g')) || []).length, 1, id);
-  for (const gone of ['id="models"', 'id="tab-fx"', 'id="fxtitle"', 'data-tab="inst"', 'data-tab="fx"', 'class="console"', '<footer']) assert.ok(!HTML.includes(gone), gone);
+  for (const gone of ['id="models"', 'id="tab-fx"', 'id="fxtitle"', 'data-tab="inst"', 'data-tab="fx"', 'class="console"', '<footer', 'id="inst"', 'id="fxrack"']) assert.ok(!HTML.includes(gone), gone); // ((milestone 3, R6 / lane D) every device body is its module's own element: no #inst / #fxrack homes)
   assert.match(HTML, /<div id="world" class="cv-world" data-cv-world>/);
   assert.match(HTML, /<div id="viewport" class="cv-viewport" tabindex="0" aria-label="Track canvas">/);
   assert.match(HTML, /<aside id="srcTray"[^>]*data-wk-inset="left"/);
@@ -39,7 +39,7 @@ test('index.html: the shell of IMPL-1b §3.1 — every id of the tree and of tod
   assert.match(HTML, /<button type="button" data-tab="canvas"[^>]*>Canvas<\/button>\s*<button type="button" data-tab="roll"/);
   // the parts the modules take: inside #world, not hidden
   const parts = HTML.slice(HTML.indexOf('id="cvParts"'), HTML.indexOf('id="overlay"'));
-  for (const id of ['inst', 'fxrack', 'scope']) assert.ok(parts.includes(`id="${id}"`), id + ' inside #cvParts');
+  for (const id of ['boot', 'scope']) assert.ok(parts.includes(`id="${id}"`), id + ' inside #cvParts'); // (the boot message shows there until main.js hides #cvParts)
   assert.doesNotMatch(/<div id="cvParts"[^>]*>/.exec(HTML)[0], /hidden/);
   // help kept for the ≡ → Help sheet
   assert.match(HTML.slice(HTML.indexOf('id="helpParts"')), /^[^]*?<p class="help"><b>Play:<\/b>[^]*installed app keeps its own projects[^]*<div class="foot">/);

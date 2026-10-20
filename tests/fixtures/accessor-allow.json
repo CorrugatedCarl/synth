@@ -186,15 +186,11 @@
       ]
     },
     "cv-module.js": {
-      "n": 8,
+      "n": 6,
       "sites": [
         {
           "has": "if (!D) return [{ key: ID.inst, kind: 'inst', model: t.model || null",
           "why": "devicesOf: the stage-1b v1 track (no dev)"
-        },
-        {
-          "has": "const tModel = () => { try { return T.model; }",
-          "why": "lane C: the view's V.model (set, never read) — reached on v2 tracks (the accessor hook lists it); to read the host's devices"
         },
         {
           "has": "const keys = () => (DEV ? DL.map(d => d.key) : [ID.inst, fxKey(T.model), ID.out]);",
@@ -215,10 +211,6 @@
         {
           "has": "w: DEV ? kindW(kind, modelOf(key)) : defaultW(key, T.model)",
           "why": "the 1b legacy path (no host.devices)"
-        },
-        {
-          "has": "V.trackId = T.id; V.model = tModel();",
-          "why": "lane C: the view's V.model (set, never read), through tModel"
         }
       ]
     },

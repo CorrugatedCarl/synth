@@ -103,7 +103,7 @@ test('export parity (§15.12): the sub-panel stubs export exactly the real modul
   }
   // sx-ui-mix (U3) is loaded on demand: its stub follows §11.14 until the module exists, then exactly its names
   const mixNames = new Set(Object.keys(mixStub).filter(k => k !== '__stub' && k !== 'made'));
-  assert.deepEqual([...mixNames].sort(), ['MixerPage', 'channelStrips', 'routeMenuItems']);
+  assert.deepEqual([...mixNames].sort(), ['MixerPage', 'OutputsPanel', 'channelStrips', 'routeMenuItems']);
   if (existsSync(fileURLToPath(new URL('sx-ui-mix.js', ROOT)))) assert.deepEqual([...exportNames('sx-ui-mix.js')].sort(), [...mixNames].sort());
   else t.diagnostic('sx-ui-mix.js not present yet: §11.14 names checked');
   // graph / fx-ui / wtedit / wt stubs are partial stand-ins shared with the sub-panel tests: every stub name is real
@@ -2033,9 +2033,10 @@ test('SerumUI: MIX (sx-ui-mix on demand), FX (FXRackUI v2: 3 racks, IRs), ARP / 
 });
 
 /* ================================================================ review round (U1): regressions of the verified findings */
-// the panel's stylesheet (the CSS template of serum-ui.js) as [{cond, sel, body}] rules; cond = the enclosing at-rule
+// the panel's stylesheet (the CSS template, since milestone 3 in sx-host.js: the host injects it for every view) as
+// [{cond, sel, body}] rules; cond = the enclosing at-rule
 function cssRules() {
-  const src = readFileSync(fileURLToPath(new URL('serum-ui.js', ROOT)), 'utf8');
+  const src = readFileSync(fileURLToPath(new URL('sx-host.js', ROOT)), 'utf8');
   const css = src.slice(src.indexOf('const CSS = `') + 13, src.indexOf('`;', src.indexOf('const CSS = `'))).replace(/\/\*[\s\S]*?\*\//g, '');
   const out = [];
   let i = 0, cond = '';

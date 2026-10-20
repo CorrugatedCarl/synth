@@ -19,6 +19,7 @@ import * as S from '../song.js?v=9';
 import * as CM from '../cv-migrate.js?v=9';
 import { fresh, all, byCls, one, ptr, fire, key, Ev, place, layout } from './wk-dom.mjs';
 import * as CB from '../cv-cables.js?v=9';
+import * as core from '../serum-core.js?v=9';
 
 /* ---------------------------------------------------------------- helpers */
 // a scripted cv-world World: k, a camera, toWorld, items, selection, focus, drag pointer, events
@@ -1255,11 +1256,13 @@ test('devicesOf / MOD_KINDS / mkOf / modJacks / modJackY / MOD_H (2b): every kin
     [['velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos'], ['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos'],
       ['wheel', 'velo', 'at', 'bend', 'note', 'lfo', 'env', 'macro', 'cc', 'chaos'], ['macro', 'note', null, null, 'wheel', null]]);
   assert.deepEqual([M.MOD_H.lfo, M.MOD_H.env, M.MOD_H.macro, M.MOD_H.cc, M.MOD_H.chaos, M.MOD_H.note, M.MACRO_ROW, M.MACRO_Y0], [256, 224, 288, 160, 224, 160, 28, 52]);
-  assert.deepEqual(M.modJacks('macro', 'Macro').map(j => j.id + '@' + j.y + ':' + j.side + ':' + j.kind + ':' + j.label), ['k1@66', 'k2@94', 'k3@122', 'k4@150', 'k5@178', 'k6@206', 'k7@234', 'k8@262'].map((s, i) => s + ':right:mod:Macro knob ' + (i + 1)));
+  // (milestone 3) inline: each name tile of the Serum MACROS panel is its jack; the y is the fallback (a 2b body: the right edge)
+  assert.deepEqual(M.modJacks('macro', 'Macro').map(j => j.id + '@' + j.y + ':' + j.side + ':' + j.kind + ':' + j.label), ['k1@66', 'k2@94', 'k3@122', 'k4@150', 'k5@178', 'k6@206', 'k7@234', 'k8@262'].map((s, i) => s + ':inline:mod:Macro knob ' + (i + 1)));
   assert.deepEqual([M.modJacks('lfo', 'LFO 1').map(j => j.id + ':' + j.label + ':' + j.y), M.modJackY('macro', 7), M.modJackY('lfo', 0), M.modJackY('env', 3)], [['out:LFO 1 out:undefined'], 262, 68, 68]);
   assert.ok(M.MOD_H.macro >= M.modJackY('macro', 7) + 14, 'the last jack inside the module');
   const xy = L => Object.entries(L).filter(([k]) => /^(bd|nt|l1|l2|l10|e1|m1|c1|h1)$/.test(k)).map(([k, v]) => k + '@' + v.x + ',' + v.y).join(' ');
-  assert.equal(xy(M.tidy(t, {})), 'bd@-320,0 nt@-320,192 l1@-320,416 l2@-320,736 l10@-320,1056 e1@-320,1376 m1@-320,1664 c1@-320,2016 h1@-320,2240', 'MOD_H + VGAP, on the dots, by MOD_ORDER then number');
+  // (milestone 3 §2.2) the column grows leftwards: each x = −⌈(MOD_W + MOD_GAP) / 32⌉·32 (LFO / chaos 416, ENV 320, Macro 256)
+  assert.equal(xy(M.tidy(t, {})), 'bd@-320,0 nt@-320,192 l1@-512,416 l2@-512,736 l10@-512,1056 e1@-416,1376 m1@-352,1664 c1@-320,2016 h1@-512,2240', 'MOD_H + VGAP, on the dots, by MOD_ORDER then number');
 });
 
 test('createTrackView (2b): a macro module carries jacks k1…k8 at its knob rows (ports() and jacks() hold each; a cable from \'m1.k3\' leaves there), folded all at the bar\'s middle outside the edge; an LFO one out jack; the cables coloured by the source kind', () => {
@@ -1268,17 +1271,173 @@ test('createTrackView (2b): a macro module carries jacks k1…k8 at its knob row
   t.mods = [{ id: 'r9', src: 'm1.k3', dst: 'i2:a.semi', amt: 0.5 }, { id: 'r8', src: 'l1.out', dst: 'i2:a.pan', amt: 0.2 }];
   const R = dview(t, W, doc, { bodies: { mount: (k, b) => { if (k === 'i2') { const p = doc.createElement('div'); p.setAttribute('data-dev', 'i2'); const q = doc.createElement('div'); q.setAttribute('data-dest', 'a.semi'); p.append(q); b.append(p); } }, unmount() {} } });
   const V = R.V, m = V.modules.get('m1'), l = V.modules.get('l1');
-  assert.deepEqual([m.kind, m.w, m.rect().h, m.jackIds().join(), l.jackIds().join(), l.rect().h], ['mod', 240, 288, 'k1,k2,k3,k4,k5,k6,k7,k8', 'out', 256]);
-  assert.deepEqual([m.port('k1'), m.port('k3'), m.port('k8'), l.port('out')], [{ x: 240, y: 66 }, { x: 240, y: 122 }, { x: 240, y: 262 }, { x: 240, y: 68 }]);
+  // (milestone 3) a Serum-faithful modulator: MOD_W wide (Macro 256, LFO 416), its height its content's (measured)
+  layout(m.el, 256, 300); layout(l.el, 416, 330);
+  assert.deepEqual([m.kind, m.w, m.rect().h, m.jackIds().join(), l.jackIds().join(), l.rect().h], ['mod', 256, 300, 'k1,k2,k3,k4,k5,k6,k7,k8', 'out', 330]);
+  assert.deepEqual([m.port('k1'), m.port('k3'), m.port('k8'), l.port('out')], [{ x: 256, y: 66 }, { x: 256, y: 122 }, { x: 256, y: 262 }, { x: 416, y: 68 }], 'no tiles (a 2b body): the right edge at the knob rows');
   assert.deepEqual([m.jack('k3').style.top, m.jack('k3').getAttribute('data-cv-jack'), m.jack('k3').getAttribute('data-kind'), m.jack('k3').getAttribute('role'), m.jack('k3').getAttribute('aria-label')], ['122px', 'm1.k3', 'mod', 'button', 'M1 knob 3']);
   const P = V.ports();
-  assert.deepEqual([P.get('m1.k3'), P.get('m1.k8'), P.get('l1.out')], [{ x: m.x + 240, y: m.y + 122 }, { x: m.x + 240, y: m.y + 262 }, { x: l.x + 240, y: l.y + 68 }]);
+  assert.deepEqual([P.get('m1.k3'), P.get('m1.k8'), P.get('l1.out')], [{ x: m.x + 256, y: m.y + 122 }, { x: m.x + 256, y: m.y + 262 }, { x: l.x + 416, y: l.y + 68 }]);
   assert.deepEqual(V.jacks().filter(J => J.mod === 'm1').map(J => J.id + ':' + J.dir + ':' + J.kind).slice(0, 3), ['m1.k1:out:mod', 'm1.k2:out:mod', 'm1.k3:out:mod']);
   assert.deepEqual(V.cables.list().filter(c => c.kind === 'mod').map(c => c.id + ' ' + c.a + ' ' + c.b + ' ' + c.color), ['r9 m1.k3 i2:a.semi ' + CB.MOD_COLOR.macro, 'r8 l1.out i2:a.pan ' + CB.MOD_COLOR.lfo]);
   assert.deepEqual([m.el.style['--mc'], l.el.style['--mc']], [CB.MOD_COLOR.macro, CB.MOD_COLOR.lfo]);
   V.toggleFold('m1');
-  assert.deepEqual([m.port('k1'), m.port('k8'), m.jack('k8').style.top], [{ x: 240 + M.JACK_OUT, y: 20 }, { x: 240 + M.JACK_OUT, y: 20 }, '20px'], 'folded: the bar\'s middle, outside the edge');
+  assert.deepEqual([m.port('k1'), m.port('k8'), m.jack('k8').style.top], [{ x: 256 + M.JACK_OUT, y: 20 }, { x: 256 + M.JACK_OUT, y: 20 }, '20px'], 'folded: the bar\'s middle, outside the edge');
   V.toggleFold('m1');
-  assert.deepEqual(m.port('k8'), { x: 240, y: 262 });
+  assert.deepEqual(m.port('k8'), { x: 256, y: 262 });
+  V.destroy();
+});
+
+/* ---------------------------------------------------------------- milestone 3 (IMPL-3 §2.1–2.2, §2.5, §2.7): Serum parts */
+test('milestone 3: MOD_W by kind (the Serum panels\' widths rounded to the dots), modX (right edges ≤ −MOD_GAP), PART_W_DEF, partJacks / voiceJacks', () => {
+  assert.deepEqual([M.MOD_W.lfo, M.MOD_W.env, M.MOD_W.macro, M.MOD_W.chaos, M.MOD_W.velo, M.MOD_W.cc], [416, 320, 256, 416, 240, 240]);
+  assert.deepEqual([393, 314, 236, 388, 209, 257].map(M.roundW), [416, 320, 256, 416, 224, 288], 'PART_W (lane B, measured from the 1200 px panel) → the module widths');
+  assert.deepEqual([...M.SX_MODS], ['lfo', 'env', 'macro', 'chaos']);
+  for (const k of M.MOD_ORDER) {
+    const x = M.modX(k);
+    assert.ok(x % 32 === 0 && x + M.modW(k) <= -M.MOD_GAP && x + M.modW(k) > -M.MOD_GAP - 32, k + ' at ' + x + ': its right edge just left of −MOD_GAP');
+  }
+  assert.deepEqual([M.modX('lfo'), M.modX('env'), M.modX('macro'), M.modX('velo'), M.modX('nope')], [-512, -416, -352, -320, -320]);
+  const J = p => M.partJacks(p).map(j => j.id + ':' + j.side + ':' + j.kind).join(' ');
+  assert.equal(J('oscB'), 'out:right:audio warp:left:warp');
+  assert.equal(J('noise'), 'out:right:audio');
+  assert.equal(J('filter2'), 'in:left:audio out:right:audio');
+  assert.equal(J('lfo7'), 'out:right:mod');
+  assert.equal(J('env3'), 'out:right:mod');
+  assert.equal(J('macros'), 'k1:inline:mod k2:inline:mod k3:inline:mod k4:inline:mod k5:inline:mod k6:inline:mod k7:inline:mod k8:inline:mod');
+  assert.equal(J('arp'), 'out:right:note');
+  assert.equal(M.voiceJacks().map(j => j.id + ':' + j.side + ':' + j.kind).join(' '), 'main:left:audio direct:left:audio note:left:note env1:inline:mod out:right:audio');
+  assert.equal(M.partJacks('oscA')[0].label, 'OSC A out');
+});
+
+test('milestone 3 tidy (§2.7): a Serum in parts view left to right — modulators (growing left) → note tools → sources → filters → VOICE (own ENV / LFO / MACROS stacked above it) → own FX → OUT, on the dots', () => {
+  const P = (part) => ({ key: 'i1/' + part, kind: 'part', dev: 'i1', part, model: 'serum' });
+  const devs = [{ key: 'i1', kind: 'inst', model: 'serum' }, P('oscB'), P('oscA'), P('filter'), P('lfo1'), P('macros'), P('arp'),
+    { key: 'i1/fx', kind: 'fx', model: 'serum', own: 'i1' }, { key: 'out', kind: 'out' }, { key: 'l1', kind: 'mod', mod: 'lfo' }, { key: 've', kind: 'mod', mod: 'velo' }];
+  const L = M.tidy({}, {}, devs), xy = k => L[k].x + ',' + L[k].y;
+  assert.deepEqual(['i1/arp', 'i1/oscA', 'i1/oscB', 'i1/filter', 'i1', 'i1/macros', 'i1/lfo1', 'i1/fx', 'out', 've', 'l1'].map(xy),
+    ['0,0', '640,0', '640,448', '1088,0', '1472,0', '1472,-288', '1472,-672', '2080,0', '3008,0', '-320,0', '-512,256']);
+  assert.ok(Object.values(L).every(v => v.x % 32 === 0 && v.y % 32 === 0), 'on the dots');
+  // measured sizes count; a Serum with no note tools starts with its sources
+  const L2 = M.tidy({}, { 'i1/oscA': { w: 300, h: 500 }, i1: { w: 480, h: 700 } }, devs.filter(d => d.key !== 'i1/arp'));
+  assert.deepEqual(['i1/oscA', 'i1/oscB', 'i1/filter', 'i1'].map(k => L2[k].x + ',' + L2[k].y), ['0,0', '0,576', '480,0', '864,0']);
+});
+
+// a parts-view host: a Serum i1 shown as parts (lay.i1.ui = 'parts'), its parts from the host's devices, a powerEl per part
+function pview(o = {}) {
+  const doc = fresh(), W = fakeWorld(1);
+  const s = core.normalizeSerum(core.defaultSerum());
+  Object.assign(s.p, { 'a.on': 1, 'b.on': 0, 'c.on': 1, 'f.on': 1, 'f.routeC': 0, 'f2.routeC': 0 });
+  s.osc[0].route = 0; s.osc[1].route = 1; s.osc[2].route = 0; // (A → Filter 1; B → Main (off: dimmed); C → Filter, lit nowhere: a stub)
+  for (const r of s.matrix) Object.assign(r, { src: '', aux: '', dst: '' });
+  s.matrix[0] = Object.assign(s.matrix[0], { src: 'lfo1', dst: 'a.wt', amt: 0.5 });
+  const t = { id: 'trk_9', name: 'Lead', color: '#3b82c4', prim: 'i1', nid: 3, lay: { i1: { x: 1472, y: 0, ui: 'parts' } },
+    dev: { i1: { kind: 'synth', model: 'serum', color: '#ff00aa', vals: { s } }, out: { kind: 'out' }, l1: { kind: 'lfo' } },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }],
+    mods: [{ id: 'r1', src: 'l1.out', dst: 'i1:b.level', amt: 0.4 }, { id: 'r2', src: 'i1/lfo1.out', dst: 'i1:a.pan', amt: 0.3 }] };
+  const parts = ['oscA', 'oscB', 'oscC', 'filter', 'lfo1', 'macros'];
+  const PW = {}, K = {}, tiles = [];
+  const R = dview(t, W, doc, Object.assign({
+    devices: tt => { const L = M.devicesOf(tt); return tt.lay && tt.lay.i1 && tt.lay.i1.ui === 'parts' ? L.concat(parts.map(p => ({ key: 'i1/' + p, kind: 'part', dev: 'i1', part: p, model: 'serum' }))) : L; },
+    title: k => (/\//.test(k) && k !== 'i1/fx' ? {} : { title: k.toUpperCase() }), size: () => null,
+    powerEl: k => { if (!PW[k]) { const b = doc.createElement('button'); b.setAttribute('data-dest', ({ 'i1/oscA': 'a.on', 'i1/oscB': 'b.on', 'i1/oscC': 'c.on', 'i1/filter': 'f.on' })[k] || 'x'); b.setAttribute('data-dev', 'i1'); PW[k] = b; } return /osc|filter/.test(k) ? PW[k] : null; },
+    bodies: { mount: (k, b) => {
+      b.setAttribute('data-body', k);
+      const knob = (id, dev) => { const e = doc.createElement('div'); e.setAttribute('data-dest', id); if (dev) e.setAttribute('data-dev', dev); b.append(e); K[k + ':' + id] = e; return e; };
+      if (k === 'i1/oscA') { knob('a.wt', 'i1'); knob('a.pan', 'i1'); }
+      if (k === 'i1/macros') for (let i = 1; i <= 8; i++) { const e = doc.createElement('div'); e.setAttribute('data-jack', 'k' + i); b.append(e); tiles.push(e); }
+      if (k === 'i1') { const tw = knob('m1', 'i1'); tw.setAttribute('data-twin', ''); }
+    }, unmount() {} },
+  }, o));
+  return Object.assign(R, { doc, W, t, PW, K, tiles });
+}
+const sj = v => JSON.stringify(v);
+
+test('milestone 3 createTrackView: part modules (kind part: PART_W_DEF wide, the Serum\'s colour, chip S1, the title OSC A, dimmed while off, the panel\'s ⏻ in the bar slot as the x.on end), VOICE\'s jacks in parts view (data-dir), the internal jacks patchable (not the warp input, not VOICE → own FX), intPort', () => {
+  const R = pview(), V = R.V, m = k => V.modules.get(k);
+  assert.deepEqual([...V.modules.keys()], ['i1', 'i1/fx', 'out', 'l1', 'i1/oscA', 'i1/oscB', 'i1/oscC', 'i1/filter', 'i1/lfo1', 'i1/macros']);
+  const A = m('i1/oscA');
+  assert.equal(sj([A.kind, A.el.getAttribute('data-cv-kind'), A.w, A.title, A.el.style['--mc'], A.el.hasAttribute('data-off')]), sj(['part', 'part', 288, 'OSC A', '#ff00aa', false]));
+  assert.equal(sj(['i1/oscB', 'i1/filter', 'i1/lfo1', 'i1/macros', 'i1'].map(k => [m(k).w, m(k).el.hasAttribute('data-off')])), sj([[288, true], [224, false], [416, false], [256, false], [448, false]]), 'OSC B off: dimmed; VOICE 448');
+  const chip = A.bar.childNodes.find(n => /cv-chip/.test(n.getAttribute('class') || ''));
+  assert.equal(chip.textContent, 'S1');
+  // the bar's power slot holds the panel's own toggle: a control of the bar (no move), the x.on cable end
+  const pw = A.bar.childNodes[0];
+  assert.equal(sj([pw.hidden, pw.childNodes[0] === R.PW['i1/oscA'], /cv-powslot/.test(pw.getAttribute('class'))]), sj([false, true, true]));
+  place(A.el, 640, 0, 288, 300); place(R.PW['i1/oscA'], 650, 10, 20, 20);
+  assert.equal(sj(V.destPort('i1', 'a.on')), sj({ x: A.x + 20, y: A.y + 20 }), 'the bar ⏻ is OSC A\'s a.on end');
+  // jacks: an oscillator's out patchable, its warp input read-only; VOICE in parts view
+  assert.equal(sj(['out', 'warp'].map(j => [A.jack(j).hasAttribute('data-ro'), A.jack(j).getAttribute('data-dir'), A.jack(j).getAttribute('data-kind')])), sj([[false, 'out', 'audio'], [true, 'in', 'warp']]));
+  assert.equal(m('i1').jackIds().join(), 'main,direct,note,env1,out');
+  assert.equal(sj(V.jacks().filter(J => J.mod === 'i1').map(J => J.id + ':' + J.dir + ':' + J.kind + ':' + J.el.hasAttribute('data-ro'))),
+    sj(['i1.main:in:audio:false', 'i1.direct:in:audio:false', 'i1.note:in:note:false', 'i1.env1:out:mod:false', 'i1.out:out:audio:true']));
+  assert.equal(sj(['i1/oscA.out', 'i1/oscA.warp', 'i1.out', 'i1.main', 'i1/filter.in', 'i1/fx.in', 'out.in', 'i1/lfo1.out'].map(V.intPort)),
+    sj(['i1/oscA.out', null, null, 'i1.main', 'i1/filter.in', null, null, null]));
+  assert.equal(sj(V.partsOf('i1')), sj(['i1/oscA', 'i1/oscB', 'i1/oscC', 'i1/filter', 'i1/lfo1', 'i1/macros']));
+  // a move of VOICE keeps the parts view flag in its lay entry
+  m('i1').nudge(32, 0);
+  assert.equal(sj(R.ref.t.lay.i1), sj({ x: 1504, y: 0, ui: 'parts' }));
+  V.destroy();
+});
+
+test('milestone 3 createTrackView: the internal cables (sx-edges views: A → Filter 1, the stub of C, the filter → VOICE), own rows from their module\'s jack, link rows from parts, a hidden destination ends at VOICE\'s bar tagged; a twin is no end; selecting VOICE outlines the members', () => {
+  const R = pview(), V = R.V;
+  const L = V.cables.list(), ids = L.map(c => c.id);
+  for (const id of ['x:i1:oscA.out>filter.in', 'x:i1:oscB.out>voice.main', 'x:i1:oscC.out>', 'x:i1:filter.out>voice.main']) assert.ok(ids.includes(id), id);
+  const c = L.find(x => x.id === 'x:i1:oscA.out>filter.in');
+  assert.equal(sj([c.a, c.b, c.int, c.kind, !!c.readonly, c.color]), sj(['i1/oscA.out', 'i1/filter.in', 'audio', 'audio', false, '#ff00aa']));
+  assert.equal(L.find(x => x.id === 'x:i1:oscC.out>').stub, true);
+  const P = V.ports();
+  assert.ok(P.get('i1/oscA.out') && P.get('i1/filter.in') && P.get('i1.main'), 'the jacks have ports');
+  const g = id => all(V.cables.under).find(n => n.getAttribute && n.getAttribute('data-cable') === id);
+  assert.equal(sj([g('x:i1:oscA.out>filter.in').style.display, g('x:i1:oscC.out>').style.display, g('x:i1:oscC.out>').hasAttribute('data-stub'), g('x:i1:oscA.out>filter.in').getAttribute('data-int')]), sj(['', '', true, 'audio']), 'drawn; the stub from its out jack');
+  // own rows (s.matrix: LFO 1 → a.wt) and link rows from 'i1/lfo1.out' leave the LFO 1 part's jack
+  const own = L.find(x => x.id === 'o:i1:0'), link = L.find(x => x.id === 'r2');
+  assert.equal(sj([own.a, own.b, own.own, own.color, link.a, link.b]), sj(['i1/lfo1.out', 'i1:a.wt', true, '#ff00aa', 'i1/lfo1.out', 'i1:a.pan']));
+  // r1 → b.level: no mounted view shows it (OSC B's panel has no such knob here) → VOICE's top-left corner (review 2 P1-7: its tag above the bar), dashed, tagged
+  const vo = V.modules.get('i1'), q = V.destPort('i1', 'b.level');
+  assert.equal(sj(q), sj({ x: vo.x, y: vo.y, hid: true, tag: 'OSC B · LEVEL · hidden' }));
+  V.remeasure();
+  const b = V.cables.badge('r1');
+  assert.equal(sj([b.classList.contains('cv-hid'), b.childNodes[2].textContent, b.childNodes[2].hidden]), sj([true, 'OSC B · LEVEL · hidden', false]));
+  // a knob on a part: its end there, not hidden (OSC A's a.pan)
+  place(V.modules.get('i1/oscA').el, 640, 0, 288, 300); place(R.K['i1/oscA:a.pan'], 700, 100, 20, 20); V.remeasure();
+  assert.equal(sj(V.destPort('i1', 'a.pan')), sj({ x: V.modules.get('i1/oscA').x + 70, y: V.modules.get('i1/oscA').y + 110 }));
+  // a twin (CLIP's MACROS pane) is never an end: m1 resolves hidden at VOICE, not on the twin
+  place(V.modules.get('i1').el, 1472, 0, 448, 600); place(R.K['i1:m1'], 1500, 100, 20, 20); V.remeasure();
+  assert.equal(V.destPort('i1', 'm1').hid, true);
+  // selecting VOICE outlines its members
+  R.W.select('i1');
+  assert.equal(sj([...V.modules.entries()].filter(([, m]) => m.el.hasAttribute('data-cv-member')).map(([k]) => k)), sj(['i1/fx', 'i1/oscA', 'i1/oscB', 'i1/oscC', 'i1/filter', 'i1/lfo1', 'i1/macros']));
+  R.W.select('l1');
+  assert.equal([...V.modules.values()].filter(m => m.el.hasAttribute('data-cv-member')).length, 0);
+  V.destroy();
+});
+
+test('milestone 3 inline jacks: MACROS\' name tiles ([data-jack="k<n>"]) are its jacks — measured module-local once per relayout, the tile itself the jack (data-cv-jack, a patchable mod-out), the dot hidden; re-rendered tiles re-anchored on remeasure; a bundled ↔ parts switch rebuilds VOICE', () => {
+  const R = pview(), V = R.V, mm = V.modules.get('i1/macros');
+  place(mm.el, 1472, -288, 256, 200);
+  R.tiles.forEach((e, i) => place(e, 1472 + 8 + (i % 4) * 60, -288 + 50 + Math.floor(i / 4) * 40, 56, 30));
+  V.remeasure('i1/macros');
+  assert.equal(sj([mm.port('k1'), mm.port('k6')]), sj([{ x: 36, y: 65 }, { x: 96, y: 105 }]), 'the tiles\' centres (module px)');
+  const t3 = R.tiles[2];
+  assert.equal(sj([t3.getAttribute('data-cv-jack'), t3.getAttribute('data-kind'), t3.getAttribute('role'), mm.jack('k3') === t3, mm.jackDot('k3').hidden]), sj(['i1/macros.k3', 'mod', 'button', true, true]));
+  assert.equal(sj(V.ports().get('i1/macros.k3')), sj({ x: mm.x + 156, y: mm.y + 65 }));
+  assert.equal(V.jacks().find(J => J.id === 'i1/macros.k3').el === t3, true, 'the cable drag sees the tile');
+  // reads: once per relayout
+  let reads = 0;
+  const gb = t3.getBoundingClientRect.bind(t3);
+  t3.getBoundingClientRect = () => { reads++; return gb(); };
+  V.ports(); V.ports(); mm.port('k3');
+  assert.equal(reads, 0, 'cached');
+  // the body re-rendered: a new tile for k3, the old one cleared on remeasure
+  const n3 = R.doc.createElement('div'); n3.setAttribute('data-jack', 'k3'); t3.parentNode.append(n3); t3.removeAttribute('data-jack'); t3.remove();
+  place(n3, 1472 + 200, -288 + 150, 40, 20);
+  V.remeasure('i1/macros');
+  assert.equal(sj([mm.port('k3'), n3.getAttribute('data-cv-jack'), t3.getAttribute('data-cv-jack')]), sj([{ x: 220, y: 160 }, 'i1/macros.k3', null]));
+  // the Serum back to the whole panel: VOICE made again with its one out jack, the parts gone
+  const t2 = clone(R.ref.t); delete t2.lay.i1.ui;
+  R.sync(t2);
+  assert.equal(sj([V.modules.get('i1').jackIds(), [...V.modules.keys()].filter(k => /^i1\//.test(k)), V.cables.list().filter(c => c.int).length]), sj([['out'], ['i1/fx'], 0]), 'bundled: no internal cables');
   V.destroy();
 });

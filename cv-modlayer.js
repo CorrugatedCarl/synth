@@ -13,6 +13,10 @@
 // once per gesture end (slider lift, key step, toggle, pick, button), never per move — edits are live (host.edit per move).
 // Popovers live in host.layer (#ov) or the body, position: fixed at client px; Escape, a press outside (wk popup lists
 // excepted: the aux menu's) and a camera move (wk.addTransient → closeTransient) close them, so nothing strands after a pan.
+// Milestone 3 (IMPL-3 §2.4–2.5, lane D): a Serum in parts view lists EVERY row of its matrix (the host's presetRows: own LFO /
+// ENV / macro rows own: true, tagged "Serum" — they stay in the matrix: no Keep on canvas) — the Mod list replaces MATRIX —,
+// named by host.nativeLabel(dev, src); a destination no mounted view shows (host.hidden(dev, pid) → { tag, show }) carries
+// its tag ("OSC B · LEVEL · hidden") in the list and the inspector, whose foot offers show.label ("Show OSC B").
 // Rules: plain ES module, no DOM at module top level (node imports it), survives tests/main-sim.mjs's DOM stub (keeps
 // references, never queries the DOM back); imports carry ?v=9; styles ship as STYLE (the host injects it once).
 import * as wk from './wk.js?v=9';
@@ -91,6 +95,7 @@ export const STYLE = `
 .cv-ml-b[data-full] { color: var(--hot, #f2a33a); }
 .cv-ml-tag { padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line, #24262b); font: 600 10.5px/1.2 var(--ui, system-ui, sans-serif); color: var(--mute, #8d8b86); white-space: nowrap; }
 .cv-ml-tag[data-tag="left"] { border-color: #5a4320; color: var(--hot, #f2a33a); }
+.cv-ml-tag[data-tag="hidden"] { border-style: dashed; }
 .cv-ml-x { position: relative; flex: none; width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: var(--mute, #8d8b86); font-size: 16px; }
 .cv-ml-x::before { content: ''; position: absolute; inset: -6px; }
 .cv-ml-x:hover, .cv-ml-x:focus-visible { background: #24262c; color: var(--text, #e9e7e2); outline: none; }
@@ -144,7 +149,8 @@ export const STYLE = `
  *   connect: (src: string, dst: string) => {ok: boolean, why?: string, code?: string, stage?: string},
  *   select?: (id: string | null) => void, notice: (text: string) => void, labelOf?: (id: string) => string,
  *   step: (label: string) => void, confirm?: (text: string) => boolean, row?: (id: string) => Row | null,
- *   cancel?: () => void,
+ *   cancel?: () => void, nativeLabel?: (dev: string, src: string) => string,
+ *   hidden?: (dev: string, pid: string) => ({tag: string, show?: {label: string, action: () => void}} | null),
  * }} ModHost  rowsOf() with no device → every canvas row of the track (the inspector finds a bare row id there); labelOf gets
  *   canvas-form ids: a source ('wheel', 've.out'), a knob ('<dev>:<param>') or a device ('i2' → "Serum 1"); cancel (U12):
  *   a gesture's live edits ended where they began — drop the step its first edit opened
@@ -171,7 +177,8 @@ export function createModLayer(host) {
   /* ---------------------------------------------------------------- labels, rows, budgets */
   const label = id => { const t = call('labelOf', id); return t ? String(t) : ''; };
   const devName = dev => label(dev) || dev;
-  const srcName = src => label(src) || SRC_LABEL[src] || src;
+  // ((milestone 3) a Serum's own source on a matrix row — 'lfo3', 'env1', 'macro2', 'velo' …: its name in that Serum, host.nativeLabel)
+  const srcName = (src, dev) => label(src) || (dev ? String(call('nativeLabel', dev, src) || '') : '') || SRC_LABEL[src] || src;
   const knobName = (dev, pid) => {
     const t = label(dev + ':' + pid);
     if (t) return t;
@@ -212,7 +219,11 @@ export function createModLayer(host) {
   const budgetText = B => (B.kind === 'serum' ? B.used + '/' + B.max : B.canvas + ' cable' + (B.canvas === 1 ? '' : 's') + (B.slots ? ' · ' + slotsText(B.slots, ['lfo', 'env', 'ext']) : '')) + (B.left.size ? ' · ' + B.left.size + ' not compiled' : '');
   const srcOfRow = (R, preset) => preset ? (CANVAS[R.src] || R.src) : R.src;
   const pidOfRow = (R, preset) => preset ? String(R.dst) : splitDst(R.dst)[1];
-  const lineOf = (R, preset, dev) => srcName(srcOfRow(R, preset)) + ' → ' + knobName(dev, pidOfRow(R, preset)) + ' · ' + amtText(R.amt, R.bi) + (R.byp ? ' · bypassed' : ''); // (U11: the badge's format)
+  const lineOf = (R, preset, dev) => srcName(srcOfRow(R, preset), preset ? dev : null) + ' → ' + knobName(dev, pidOfRow(R, preset)) + ' · ' + amtText(R.amt, R.bi) + (R.byp ? ' · bypassed' : ''); // (U11: the badge's format)
+  // ((milestone 3, §2.4) a destination no mounted view of its Serum shows: { tag: 'OSC B · LEVEL · hidden', show?: { label, action } })
+  const hiddenOf = (dev, pid) => { const h = call('hidden', dev, pid); return isObj(h) && typeof h.tag === 'string' ? h : null; };
+  // ((milestone 3) a row of a Serum's matrix whose source is its own LFO / ENV / macro … (the parts view's Mod list): own, not "preset")
+  const ownRow = (R, pre) => !!pre && !!R.own;
 
   /* ---------------------------------------------------------------- the popover shell (inspector, parameter list) */
   let P = null; // { box, kind, offs, widgets, sync, T? }
@@ -292,11 +303,13 @@ export function createModLayer(host) {
     let R = readRow(T);
     if (!R || !T.dev) return false;
     const dev = T.dev, pre = T.preset, B0 = budgetOf(dev), sx = B0.kind === 'serum';
-    const titleOf = () => srcName(srcOfRow(R, pre)) + ' → ' + knobName(dev, pidOfRow(R, pre)); // (U12: a preset slot can hold another row after a sync)
+    const titleOf = () => srcName(srcOfRow(R, pre), pre ? dev : null) + ' → ' + knobName(dev, pidOfRow(R, pre)); // (U12: a preset slot can hold another row after a sync)
     const title = titleOf();
     const p = popover('insp', 'Modulation: ' + title, x, y);
     const box = p.box, W = p.widgets;
-    const tags = pre ? [['preset', 'preset']] : [];
+    const own = ownRow(R, pre), hid = hiddenOf(dev, pidOfRow(R, pre)); // ((3) a Serum's own row; a hidden destination)
+    const tags = pre ? [own ? ['own', 'Serum'] : ['preset', 'preset']] : [];
+    if (hid) tags.push(['hidden', hid.tag]);
     const hd = head(title, tags, true);
     const leftTag = mk('span', 'cv-ml-tag', 'not compiled: matrix full');
     leftTag.setAttribute('data-tag', 'left');
@@ -406,6 +419,11 @@ export function createModLayer(host) {
       step('Disconnect');
     });
     foot.append(move, disc, why);
+    // ((milestone 3, §2.4) a hidden destination: "Show OSC B" — its part's module, or the module revealed)
+    if (hid && isObj(hid.show) && typeof hid.show.action === 'function') {
+      const sh = button('cv-ml-btn', String(hid.show.label || 'Show'), 'show', () => { closePop(); try { hid.show.action(); } catch (err) { console.error(err); } });
+      foot.insertBefore(sh, move);
+    }
     function moveRow() {
       if (move.disabled) return;
       const res = pre ? call('fromPreset', dev, T.slot) : call('toPreset', T.id);
@@ -420,6 +438,7 @@ export function createModLayer(host) {
     const sC = sec('', curve.el, crvBtn), sAux = sec('', aux.el, inv.el);
     sC.classList.add('cv-ml-curve');
     if (!sx) { move.hidden = true; sAux.hidden = true; } // ((2b) a classic / panel row has no preset to move into; (C7) its aux would name the synthetic CP's slot, not a canvas source — no Aux menu)
+    if (own) move.hidden = true; // ((3) a Serum's own LFO / ENV / macro row stays in its matrix: no canvas cable to move it to)
     box.append(sA, tg, sC, crvBox, sec('', out.el), sAux, sec('', rise.el), sec('', fall.el, link.el), foot);
     function refresh() {
       for (const x of W) x.update();
@@ -561,7 +580,9 @@ export function createModLayer(host) {
           openInspector(pre ? { preset: dev, slot: R.slot } : { id: R.id, dev }, r.left, r.bottom + 4);
         });
         el.append(mk('span', null, t));
-        if (pre) { const g = mk('span', 'cv-ml-tag', 'preset'); g.setAttribute('data-tag', 'preset'); el.append(g); }
+        if (pre) { const o = ownRow(R, pre), g = mk('span', 'cv-ml-tag', o ? 'Serum' : 'preset'); g.setAttribute('data-tag', o ? 'own' : 'preset'); el.append(g); } // ((3) parts view: its own rows)
+        const hz = hiddenOf(dev, pidOfRow(R, pre));
+        if (hz) { const g = mk('span', 'cv-ml-tag', hz.tag); g.setAttribute('data-tag', 'hidden'); el.append(g); } // ((3) no mounted view shows the knob
         if (left) { const g = mk('span', 'cv-ml-tag', leftText(B, R.id)); g.setAttribute('data-tag', 'left'); el.append(g); }
         if (R.byp) el.setAttribute('data-byp', '');
         el.setAttribute(pre ? 'data-slot' : 'data-row', pre ? String(R.slot) : R.id);

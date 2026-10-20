@@ -904,3 +904,203 @@ test('cablesOf (2b): rows from the new kinds — a: \'<dev>.out\', a macro\'s \'
     ['r10', 'nt.out', 'i2:a.fine', '+10%', C.MOD_COLOR.note, false],
     ['r11', 'e9.out', 'i2:a.fine', '+10%', '#3b82c4', false]], 'r12 (a k9 port) dropped; r9 / r11: no module of that key and kind → the track colour');
 });
+
+/* ---------------------------------------------------------------- milestone 3 (IMPL-3 §2.4–2.5): a Serum shown as parts */
+const sj = v => JSON.stringify(v); // (fake-DOM nodes never reach assert: primitives / JSON only)
+test('milestone 3 modSrcPort / modSrcJack / hiddenTag: part keys accepted ([a-z][a-z0-9]*(/[a-z][a-zA-Z0-9]*)?), resolved as the parts view lays them out (ENV 1 at VOICE); a hidden knob\'s tag', () => {
+  assert.deepEqual(['i1/lfo3.out', 'i2/env1.out', 'i2/env3.out', 'i1/macros.k2', 'i1/lfo3.k9', 'i1/x/y.out', 'I1/lfo3.out', 'l1.out', 'wheel'].map(C.modSrcPort),
+    [{ key: 'i1/lfo3', port: 'out' }, { key: 'i2/env1', port: 'out' }, { key: 'i2/env3', port: 'out' }, { key: 'i1/macros', port: 'k2' }, null, null, null, { key: 'l1', port: 'out' }, { key: 'wheel', port: 'out' }]);
+  assert.deepEqual(['i1/lfo3.out', 'i2/env1.out', 'i2/env3.out', 'i1/macros.k2', 'm1.k3', 'wheel', 'nope'].map(C.modSrcJack),
+    ['i1/lfo3.out', 'i2.env1', 'i2/env3.out', 'i1/macros.k2', 'm1.k3', 'wheel.out', null]);
+  assert.deepEqual(['b.level', 'f2.cutoff', 'l3.rate', 'e2.att', 'g.master', 'zz'].map(C.hiddenTag),
+    ['OSC B · LEVEL · hidden', 'FILTER 2 · CUTOFF · hidden', 'LFO 3 · RATE · hidden', 'ENV 2 · ATTACK · hidden', 'MASTER VOLUME · hidden', 'zz · hidden']);
+});
+
+// a track with a Serum i1 shown as parts: A → Filter 1, B → Filter 1 and 2 (a fork), C routed to Filter with no switch (a stub),
+// noise off, a warp (B's FM from A), LFO 1 → a.wt in its own matrix, a link row from its LFO 3
+function partsTrack() {
+  const s = core.normalizeSerum(core.defaultSerum());
+  Object.assign(s.p, { 'a.on': 1, 'b.on': 1, 'c.on': 1, 'n.on': 0, 's.on': 0, 'f.on': 1, 'f2.on': 1, 'f.routeC': 0, 'f2.routeC': 0, 'b.fbal': 0.5, 'f.routeB': 1, 'f2.routeB': 1 });
+  s.global.s1 = 0;
+  s.p['b.w1'] = core.WARPS2.findIndex(w => w.id === 'fm_o1') / 81;
+  s.osc[0].route = 0; s.osc[1].route = 0; s.osc[2].route = 0; s.noise.route = 3; s.sub.route = 3; s.filter[0].route = 1; s.filter[1].route = 2;
+  for (const r of s.matrix) Object.assign(r, { src: '', aux: '', dst: '' });
+  s.matrix[0] = Object.assign(s.matrix[0], { src: 'lfo1', dst: 'a.wt', amt: 0.5 });
+  s.matrix[1] = Object.assign(s.matrix[1], { src: 'velo', dst: 'a.pan', amt: 0.5 }); // (no module: the Mod list's)
+  s.matrix[2] = Object.assign(s.matrix[2], { src: 'macro2', dst: 'f.cutoff', amt: 0.25 });
+  s.matrix[3] = Object.assign(s.matrix[3], { src: 'lfo2', dst: 'bus3', amt: 0.25 }); // (a point-modulation bus: no knob)
+  return { id: 'trk_1', color: '#3b82c4', prim: 'i1', lay: { i1: { x: 0, y: 0, ui: 'parts' } },
+    dev: { i1: { kind: 'synth', model: 'serum', vals: { s }, fx: core.defaultFx2(), color: '#ff00aa' }, out: { kind: 'out' } },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }], mods: [{ id: 'r1', src: 'i1/lfo3.out', dst: 'i1:a.semi', amt: 0.2 }] };
+}
+
+test('milestone 3 cablesOf: a Serum in parts view draws its internal cables (sx-edges: sources → filters / VOICE, the fork, the stub, filters → VOICE, the read-only warp as a tap cable) and its own LFO / ENV / macro rows from their modules\' jacks; bundled (or opts.parts false): none', () => {
+  const t = partsTrack(), L = C.cablesOf(t), I = L.filter(c => c.int);
+  assert.deepEqual(I.map(c => [c.id, c.a, c.b, c.int, !!c.fork, !!c.stub, c.tap || '']), [
+    ['x:i1:oscA.out>filter.in', 'i1/oscA.out', 'i1/filter.in', 'audio', false, false, ''],
+    ['x:i1:oscB.out>filter.in', 'i1/oscB.out', 'i1/filter.in', 'audio', true, false, ''],
+    ['x:i1:oscB.out>filter2.in', 'i1/oscB.out', 'i1/filter2.in', 'audio', true, false, ''],
+    ['x:i1:oscC.out>', 'i1/oscC.out', null, 'audio', false, true, ''],
+    ['x:i1:filter.out>voice.main', 'i1/filter.out', 'i1.main', 'audio', false, false, ''],
+    ['x:i1:filter2.out>voice.direct', 'i1/filter2.out', 'i1.direct', 'audio', false, false, ''],
+    ['x:i1:oscA.out>oscB.warp#b.w1', 'i1/oscA.out', 'i1/oscB.warp', 'warp', false, false, 'open']]);
+  assert.ok(I.every(c => c.kind === 'audio' && !c.readonly && c.color === '#ff00aa' && c.dev === 'i1'));
+  assert.equal(I.find(c => c.stub).label, '→ Filter (off)');
+  assert.deepEqual(I.filter(c => c.fork).map(c => c.share), [0.5, 0.5]);
+  assert.deepEqual(I[0].edge, { a: 'oscA.out', b: 'filter.in' }, 'its sx-edges ENDs (lane D cuts / sets through them)');
+  assert.equal(L.filter(c => c.id === 'i1.out>i1/fx.in').length, 1, 'VOICE → own FX: the read-only cable as before (no duplicate)');
+  const own = L.filter(c => c.own);
+  assert.deepEqual(own.map(c => [c.id, c.a, c.b, c.color, c.preset]), [['o:i1:0', 'i1/lfo1.out', 'i1:a.wt', '#ff00aa', false], ['o:i1:2', 'i1/macros.k2', 'i1:f.cutoff', '#ff00aa', false]], 'velo (no module) and a bus row: the Mod list\'s');
+  assert.deepEqual(L.filter(c => c.id === 'r1').map(c => [c.a, c.color]), [['i1/lfo3.out', '#ff00aa']], 'a link row from the Serum\'s LFO 3 part');
+  const b = JSON.parse(JSON.stringify(t)); delete b.lay.i1.ui;
+  assert.deepEqual([C.cablesOf(b).filter(c => c.int || c.own).length, C.cablesOf(t, { parts: false }).filter(c => c.int || c.own).length, C.cablesOf(t, { parts: id => id === 'i1', ownRows: false }).filter(c => c.own).length], [0, 0, 0]);
+  assert.deepEqual([C.partsView(t, 'i1'), C.partsView(b, 'i1'), C.partsView(t, 'i1', { parts: () => false })], [true, false, false]);
+  // a powered-off source: its cables grey
+  t.dev.i1.vals.s.p['a.on'] = 0;
+  assert.equal(C.cablesOf(t).find(c => c.id === 'x:i1:oscA.out>filter.in').dim, true);
+});
+
+test('milestone 3 createCables: a stub drawn STUB_PX from its jack; one BALANCE badge per fork (→ onAction balance); a warp cable taps (→ onAction tap, never selected, its menu without Disconnect); a hidden knob end dashes its cable and tags the badge', () => {
+  const doc = fresh(), W = doc.createElement('div');
+  doc.body.append(W);
+  const sel = [], acts = [];
+  const L = C.createCables(W, { doc, onSelect: id => sel.push(id), onAction: (id, a) => acts.push(id + ' ' + a), menu: () => [] });
+  const t = partsTrack();
+  L.set(C.cablesOf(t));
+  const P = new Map([['i1/oscA.out', { x: 288, y: 68 }], ['i1/oscB.out', { x: 288, y: 516 }], ['i1/oscC.out', { x: 288, y: 900 }], ['i1/filter.in', { x: 640, y: 68 }],
+    ['i1/filter2.in', { x: 640, y: 468 }], ['i1/filter.out', { x: 864, y: 68 }], ['i1/filter2.out', { x: 864, y: 468 }], ['i1.main', { x: 1088, y: 68 }], ['i1.direct', { x: 1088, y: 108 }],
+    ['i1/oscB.warp', { x: 0, y: 516 }], ['i1.out', { x: 1536, y: 108 }], ['i1/fx.in', { x: 1700, y: 68 }], ['i1/lfo1.out', { x: 1500, y: -400 }],
+    ['i1:a.wt', { x: 1088, y: 20, hid: true, tag: 'OSC A · WT POS · hidden' }], ['i1/macros.k2', { x: 1300, y: -100 }], ['i1:f.cutoff', { x: 700, y: 200 }]]);
+  L.layout(P);
+  const g = id => all(L.under).find(n => n.getAttribute && n.getAttribute('data-cable') === id);
+  const st = g('x:i1:oscC.out>');
+  assert.deepEqual([st.style.display, st.hasAttribute('data-stub'), st.childNodes[1].getAttribute('d')], ['', true, C.cablePath(288, 900, 288 + C.STUB_PX, 900)]);
+  assert.equal(all(st).find(n => n.getAttribute && n.getAttribute('class') === 'cv-cable-lab').textContent, '→ Filter (off)');
+  const forks = all(W).filter(n => n.getAttribute && n.getAttribute('class') === 'cv-fork');
+  assert.deepEqual(forks.map(f => [f.getAttribute('data-cable'), f.style.left, f.style.top, f.textContent]), [['x:i1:oscB.out>filter.in', '310px', '516px', 'BAL']]);
+  assert.equal(L.forkBadge('i1/oscB.out') === forks[0], true);
+  fire(forks[0], 'click');
+  assert.deepEqual(acts, ['x:i1:oscB.out>filter.in balance']);
+  // the warp cable: a tap opens the oscillator's menu (the host's), never a selection
+  const wg = g('x:i1:oscA.out>oscB.warp#b.w1'), hit = wg.childNodes.find(n => n.getAttribute('class') === 'cv-cable-hit');
+  assert.equal(sj([wg.getAttribute('data-int'), wg.getAttribute('data-tap'), wg.hasAttribute('data-ro')]), sj(['warp', 'open', false]));
+  ptr(hit, 'pointerdown', 100, 100, { pointerId: 3, pointerType: 'mouse' }); ptr(doc.body, 'pointerup', 100, 100, { pointerId: 3, pointerType: 'mouse' });
+  assert.deepEqual([acts.at(-1), L.selected(), sel.length], ['x:i1:oscA.out>oscB.warp#b.w1 tap', null, 0]);
+  L.select('x:i1:oscA.out>oscB.warp#b.w1');
+  assert.equal(L.selected(), null, 'never selected');
+  L.openMenu('x:i1:oscA.out>oscB.warp#b.w1', 0, 0);
+  assert.deepEqual(menuLabels(doc), ['Open…'], 'read-only: no Disconnect');
+  // an editable internal cable selects as a wire does (× = Disconnect: lane D cuts through sx-edges)
+  const ah = g('x:i1:oscA.out>filter.in').childNodes.find(n => n.getAttribute('class') === 'cv-cable-hit');
+  ptr(ah, 'pointerdown', 10, 10, { pointerId: 4, pointerType: 'mouse' }); ptr(doc.body, 'pointerup', 10, 10, { pointerId: 4, pointerType: 'mouse' });
+  assert.equal(L.selected(), 'x:i1:oscA.out>filter.in');
+  L.select(null);
+  // the own row into a hidden knob: dashed, tagged
+  const b0 = L.badge('o:i1:0'), b2 = L.badge('o:i1:2');
+  assert.deepEqual([b0.classList.contains('cv-hid'), b0.childNodes[2].textContent, b0.childNodes[2].hidden, b2.classList.contains('cv-hid'), b2.childNodes[2].hidden], [true, 'OSC A · WT POS · hidden', false, false, true]);
+  L.destroy();
+  assert.equal(all(W).filter(n => n.getAttribute && n.getAttribute('class') === 'cv-fork').length, 0, 'the badges go with the layer');
+});
+
+test('milestone 3 createCableDrag: a twin control ([data-twin]: CLIP\'s MACROS pane) is never a mod drag\'s target nor marked; a jack\'s data-dir (VOICE\'s main / direct / note are inputs) drives the press', () => {
+  const R = modRig();
+  const tw = R.doc.createElement('div'); tw.setAttribute('data-dest', 'a.pan'); tw.setAttribute('data-twin', ''); tw.className = 'knob';
+  R.mods.sx.append(tw);
+  R.press('wheel.out', -176, 168); R.mv(100, 500);
+  assert.equal(R.cls(tw), 'knob', 'not marked');
+  R.D.cancel();
+  // a press on an input named without '.in' (VOICE's main): taken as an input through its data-dir
+  const vm = R.doc.createElement('span'); vm.setAttribute('data-cv-jack', 'i2.main'); vm.setAttribute('data-dir', 'in'); vm.setAttribute('data-kind', 'audio');
+  R.mods.sx.append(vm);
+  const h = R.world.jack(new Ev('pointerdown', { bubbles: true, cancelable: true, clientX: 10, clientY: 10, pointerId: 2, pointerType: 'mouse', button: 0 }), vm);
+  assert.equal(typeof h, 'object', 'taken (an input: a new cable from it)');
+  R.D.cancel();
+  R.D.destroy();
+});
+
+test('review 2 P1-1: a touch tap selects a cable and its × appears under the finger — the same tap\'s compatibility click on the × never disconnects; a new press then a click does; a mouse tap as before', () => {
+  const R = layers();
+  const other = R.doc.createElement('div'); R.doc.body.append(other);
+  ptr(R.hit('w1'), 'pointerdown', 500, 300, { pointerId: 3, pointerType: 'touch' }); ptr(other, 'pointerup', 501, 300, { pointerId: 3, pointerType: 'touch' });
+  assert.deepEqual([R.L.selected(), R.xb().hidden], ['w1', false], 'selected, the × shown');
+  R.xb().dispatchEvent(new Ev('click', { bubbles: true, cancelable: true })); // (the touch's click lands on the × now under the finger)
+  assert.deepEqual([R.acts, R.L.selected()], [[], 'w1'], 'the selecting tap never disconnects');
+  ptr(R.xb(), 'pointerdown', 1200, 484, { pointerId: 4, pointerType: 'touch' }); ptr(R.xb(), 'pointerup', 1200, 484, { pointerId: 4, pointerType: 'touch' });
+  R.xb().dispatchEvent(new Ev('click', { bubbles: true, cancelable: true }));
+  assert.deepEqual(R.acts, ['w1 disconnect'], 'a second tap on the × does');
+  // a mouse tap: its click targets the common ancestor; a click on the × after it disconnects as before
+  R.acts.length = 0; R.L.select(null);
+  ptr(R.hit('w4'), 'pointerdown', 500, 300, { pointerId: 5 }); ptr(R.hit('w4'), 'pointerup', 500, 300, { pointerId: 5 });
+  assert.equal(R.L.selected(), 'w4');
+  R.xb().click();
+  assert.deepEqual(R.acts, ['w4 disconnect']);
+  R.L.destroy();
+});
+
+test('review 2 P1-6 (the lead\'s decision): a source routed into a filter that is off and has no module is drawn as a dimmed stub "→ Filter 1 (off)" (its id and edge kept: the tap, Disconnect, the routing as a stub\'s); the filter on, or off with a module (a lay entry): the cable to it as before', () => {
+  const t = partsTrack(), s = t.dev.i1.vals.s;
+  s.p['f.on'] = 0;
+  const I = C.cablesOf(t).filter(c => c.int), a = I.find(c => c.id === 'x:i1:oscA.out>filter.in');
+  assert.deepEqual([a.a, a.b, !!a.stub, a.off, a.label, !!a.dim, JSON.stringify(a.edge)], ['i1/oscA.out', null, true, 'filter', '→ Filter 1 (off)', true, JSON.stringify({ a: 'oscA.out', b: 'filter.in' })]);
+  const f = I.filter(c => c.id === 'x:i1:oscB.out>filter.in' || c.id === 'x:i1:oscB.out>filter2.in').map(c => [c.id, c.b, !!c.stub, c.label || '']);
+  assert.deepEqual(f, [['x:i1:oscB.out>filter.in', null, true, '→ Filter 1 (off)'], ['x:i1:oscB.out>filter2.in', 'i1/filter2.in', false, '']], 'a fork\'s branch into the off filter too');
+  s.p['f2.on'] = 0;
+  assert.equal(C.cablesOf(t).find(c => c.id === 'x:i1:oscB.out>filter2.in').label, '→ Filter 2 (off)');
+  t.lay['i1/filter'] = { x: 640, y: 0 }; // (off, with its module: dimmed there, the cable to it)
+  const a2 = C.cablesOf(t).find(c => c.id === 'x:i1:oscA.out>filter.in');
+  assert.deepEqual([a2.b, !!a2.stub, a2.off || null], ['i1/filter.in', false, null]);
+  // drawn as a stub, its label the cable's
+  const doc = fresh(), W = doc.createElement('div'); doc.body.append(W);
+  const L = C.createCables(W, { doc, onSelect() {}, onAction() {}, menu: () => [] });
+  delete t.lay['i1/filter'];
+  L.set(C.cablesOf(t));
+  L.layout(new Map([['i1/oscA.out', { x: 288, y: 68 }]]));
+  const g = all(L.under).find(n => n.getAttribute && n.getAttribute('data-cable') === 'x:i1:oscA.out>filter.in');
+  assert.deepEqual([g.style.display, g.hasAttribute('data-stub'), /\bcv-off\b/.test(g.getAttribute('class')), g.childNodes[1].getAttribute('d')], ['', true, true, C.cablePath(288, 68, 288 + C.STUB_PX, 68)]);
+  assert.equal(all(g).find(n => n.getAttribute && n.getAttribute('class') === 'cv-cable-lab').textContent, '→ Filter 1 (off)');
+  L.destroy();
+});
+
+test('review 2 P1-7: a hidden knob end\'s badge (its tag) sits at the end, right of it and above (.cv-hid: CSS left-aligned, its bottom at the end) — never left of the end, where Tidy puts FILTER 1\'s bar; a shown end\'s badge as before (right edge at the end piece\'s start); several hidden badges at one end stack upwards', () => {
+  const doc = fresh(), W = doc.createElement('div');
+  doc.body.append(W);
+  const L = C.createCables(W, { doc, onSelect() {}, onAction() {}, menu: () => [] });
+  const t = partsTrack();
+  t.mods.push({ id: 'r2', src: 'i1/lfo3.out', dst: 'i1:c.level', amt: 0.25 });
+  L.set(C.cablesOf(t));
+  const P = new Map([['i1/lfo3.out', { x: -100, y: -300 }], ['i1/lfo1.out', { x: 1500, y: -400 }], ['i1:a.semi', { x: 1088, y: 0, hid: true, tag: 'OSC A · SEMI · hidden' }],
+    ['i1:c.level', { x: 1088, y: 0, hid: true, tag: 'OSC C · LEVEL · hidden' }], ['i1:a.wt', { x: 1300, y: 300 }]]);
+  L.layout(P);
+  const b1 = L.badge('r1'), b2 = L.badge('r2'), b0 = L.badge('o:i1:0');
+  assert.deepEqual([b1.classList.contains('cv-hid'), b1.style.left, b1.style.top], [true, '1088px', '0px'], 'at the end itself');
+  assert.deepEqual([b2.classList.contains('cv-hid'), b2.style.left, parseFloat(b2.style.top) < 0], [true, '1088px', true], 'the second one above the first');
+  assert.equal(b0.classList.contains('cv-hid'), false);
+  assert.equal(parseFloat(b0.style.left) < 1300, true, 'a shown end: left of the knob as before');
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /\.cv-mbadge\.cv-hid\s*\{[^}]*transform:\s*translate\(0,\s*-100%\)/, 'CSS: left-aligned at the end, its bottom there');
+  L.destroy();
+});
+
+test('review 2 P1-5: a stub stays reachable at low zoom — STUB_PX screen px out of its out jack (whose touch circle is 22 screen px) up to STUB_MAX world px; a zoom re-lays it; a pointer tap tells onSelect its pointer type (the host opens the routing popover after the tap\'s click), a programmatic select tells none', () => {
+  let k = 0.4;
+  const doc = fresh(), W = doc.createElement('div');
+  doc.body.append(W);
+  const sel = [];
+  const L = C.createCables(W, { doc, k: () => k, onSelect: (id, by) => sel.push(id + ' ' + by), onAction() {}, menu: () => [] });
+  L.set(C.cablesOf(partsTrack()));
+  L.layout(new Map([['i1/oscC.out', { x: 288, y: 900 }]]));
+  const id = 'x:i1:oscC.out>', g = () => all(L.under).find(n => n.getAttribute && n.getAttribute('data-cable') === id);
+  const d = () => g().childNodes[1].getAttribute('d');
+  assert.equal(C.STUB_MAX >= C.STUB_PX, true);
+  assert.equal(d(), C.cablePath(288, 900, 288 + Math.min(C.STUB_MAX, C.STUB_PX / 0.4), 900), 'k 0.4: longer than the jack\'s circle');
+  assert.equal(Math.min(C.STUB_MAX, C.STUB_PX / 0.4) * 0.4 > 22 + 8, true, 'at least 8 screen px clear of the jack\'s touch circle');
+  k = 0.5; L.rezoom();
+  assert.equal(d(), C.cablePath(288, 900, 288 + C.STUB_PX / 0.5, 900), 'a zoom re-lays it');
+  k = 2; L.rezoom();
+  assert.equal(d(), C.cablePath(288, 900, 288 + C.STUB_PX, 900), 'k ≥ 1: STUB_PX world px');
+  const hit = g().childNodes.find(n => n.getAttribute('class') === 'cv-cable-hit');
+  ptr(hit, 'pointerdown', 10, 10, { pointerId: 3, pointerType: 'touch' }); ptr(doc.body, 'pointerup', 10, 10, { pointerId: 3, pointerType: 'touch' });
+  L.select(null); L.select(id);
+  assert.deepEqual(sel, [id + ' touch', 'null undefined', id + ' undefined']);
+  L.destroy();
+});

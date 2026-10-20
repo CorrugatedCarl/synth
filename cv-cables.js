@@ -23,8 +23,26 @@
 // ([data-kind="mod"]) drags onto KNOBS: elementFromPoint → closest [data-dest] → closest [data-dev].
 // Each SVG sits at its cables' bounding box (+ PAD) with overflow visible: hit testing outside an SVG's own box is not
 // reliable across engines, and a box per layer keeps the painted area small. No viewBox: one user unit = one world px.
-import { DESTS, DEST_INDEX } from './serum-core.js?v=9';
+// Milestone 3 (IMPL-3 §2.5, lane C): a Serum in parts view (track.lay[iN].ui === 'parts'; opts.parts may say otherwise)
+// draws its INTERNAL cables, views of its state through sx-edges (the pasted STRIPS / routeOf are gone; routeLabel is
+// sx-edges'): cables {id: 'x:<dev>:<edge id>', kind: 'audio', int: 'audio' | 'note' | 'warp', dev, edge: {a, b} (sx-edges
+// ENDs), a / b canvas jacks (sx-edges jackOf), share?, fork?, stub?, readonly? (VOICE → own FX: drawn as before), tap?
+// ('open': a warp / pitch source — a tap is onAction(id, 'tap'), no Disconnect)}; a stub (b null) is STUB_PX long from its
+// out jack, dashed, with its tag; one BALANCE badge (button.cv-fork) per forked source → onAction(id, 'balance'). Its own
+// LFO / ENV / macro rows (s.matrix, the performance sources aside) are mod cables {id: 'o:<dev>:<slot>', own: true, dev,
+// slot} from their module's jack (modSrcJack: 'iN/lfo3.out', VOICE's 'iN.env1', MACROS' inline 'iN/macros.k2') in the
+// Serum's colour. A track.mods link row from 'iN/lfo3.out' / 'iN/env1.out' is drawn from the same jacks (no module in
+// bundled view: no cable, as before). A knob end the host marks hidden (cv-module ports(): {hid, tag}) is dashed and its
+// badge carries the tag ('OSC B · LEVEL · hidden'). [data-twin] controls are never a drag's target.
+import { DESTS, DEST_INDEX, moduleOf } from './serum-core.js?v=9';
 import * as wk from './wk.js?v=9';
+import { routeLabel, serumEdges, jackOf, partLabel, partOn } from './sx-edges.js?v=9';
+/** (milestone 3) a stub's length (world px) */
+export const STUB_PX = 56;
+/** (review 2 P1-5) below k = 1 a stub keeps STUB_PX screen px (its out jack's touch circle is 22 screen px at any zoom), at
+ * most STUB_MAX world px (inside Tidy's GAP 160 to the next column) */
+export const STUB_MAX = 136;
+const stubLen = k => Math.min(STUB_MAX, Math.max(STUB_PX, STUB_PX / (k > 0 ? k : 1)));
 
 /** Minimum horizontal tangent length of a cable's cubic (world px). */
 export const TANGENT_MIN = 40;
@@ -37,6 +55,8 @@ export const SNAP_PX = 32, TAP_PX = 8;
 /** (2a) A mod cable's end drawn above the modules (screen px); past MOD_FADE_N visible mod cables (Always) the ones not
  * touching the selection fade and the hint shows once. */
 export const END_PX = 24, MOD_FADE_N = 24;
+/** (review 2 P1-7) Hidden-end badges at one end stack this many screen px apart (the badge's 18 + 4). */
+export const HID_STEP = 22;
 /** (2a) The modulator modules' colours (their cables' and their classic halos' too, SPEC §2.9 / §7.11): by mod kind;
  * (2b) the six stage-2b kinds. */
 export const MOD_COLOR = Object.freeze({ wheel: '#4fb3d9', velo: '#e8a33d', at: '#b98ae6', bend: '#63c98a',
@@ -82,11 +102,40 @@ const text1 = (el, t) => { if (el.textContent !== t) el.textContent = t; };
  */
 
 /** (2b) A track.mods row's src → its module key and jack port: 'wheel' → {key: 'wheel', port: 'out'}, '<dev>.out' →
- * {key: dev, port: 'out'}, a macro's '<dev>.k3' → {key: dev, port: 'k3'} (else null). Pure. */
+ * {key: dev, port: 'out'}, a macro's '<dev>.k3' → {key: dev, port: 'k3'}; (milestone 3) a part key: 'i1/lfo3.out' →
+ * {key: 'i1/lfo3', port: 'out'} (else null). Pure. */
 export function modSrcPort(src) {
   if (src === 'wheel') return { key: 'wheel', port: 'out' };
-  const m = typeof src === 'string' ? /^([^.:/]+)\.(out|k[1-8])$/.exec(src) : null;
+  const m = typeof src === 'string' ? /^([a-z][a-z0-9]*(?:\/[a-z][a-zA-Z0-9]*)?)\.(out|k[1-8])$/.exec(src) : null;
   return m ? { key: m[1], port: m[2] } : null;
+}
+/** (milestone 3, §2.5) The jack a row's src leaves from: a part key resolved as the parts view lays them out — 'iN/env1.out'
+ * → VOICE's 'iN.env1', 'iN/lfo3.out' / 'iN/env2.out' → that module's 'out', 'iN/macros.k2' → MACROS' inline 'k2'; any other
+ * '<key>.<port>' as it is, the wheel 'wheel.out' (null: not a source). In bundled view no such module exists: no cable. */
+export function modSrcJack(src) {
+  const p = modSrcPort(src);
+  if (!p) return null;
+  const m = /^([a-z][a-z0-9]*)\/env1$/.exec(p.key);
+  return m && p.port === 'out' ? m[1] + '.env1' : p.key + '.' + p.port;
+}
+// (milestone 3) a Serum matrix source → its parts-view jack on Serum `dev` ('lfo3' / 'lfo3y' → 'dev/lfo3.out', 'env1' →
+// VOICE 'dev.env1', 'env2' → 'dev/env2.out', 'macro4' → 'dev/macros.k4'; anything else null: the Mod list lists it)
+function ownJack(dev, src) {
+  if (typeof src !== 'string') return null;
+  let m = /^(lfo(?:10|[1-9]))y?$/.exec(src);
+  if (m) return dev + '/' + m[1] + '.out';
+  if (src === 'env1') return dev + '.env1';
+  if ((m = /^(env[2-4])$/.exec(src))) return dev + '/' + m[1] + '.out';
+  if ((m = /^macro([1-8])$/.exec(src))) return dev + '/macros.k' + m[1];
+  return null;
+}
+/** (milestone 3, §2.4) A knob end's tag where no mounted view shows it: 'OSC B · LEVEL · hidden' (its part from serum-core
+ * moduleOf, its label without the group's words); a destination outside a part: its label alone. Pure. */
+export function hiddenTag(id) {
+  const i = DEST_INDEX[id], d = i === undefined ? null : DESTS[i];
+  if (!d) return String(id || '') + ' · hidden';
+  const g = typeof d.group === 'string' ? d.group : '', part = moduleOf(id), L = part && g && d.label.startsWith(g + ' ') ? d.label.slice(g.length + 1) : d.label;
+  return (part ? partLabel(part) + ' · ' : '') + L.toUpperCase() + ' · hidden';
 }
 /** (2a) A track.mods row's src → its module key: 'wheel' → 'wheel', '<dev>.out' → '<dev>', (2b) '<dev>.k3' → '<dev>' (else null). */
 export function modSrcKey(src) { const p = modSrcPort(src); return p ? p.key : null; }
@@ -148,6 +197,7 @@ export function deriveCables(track) {
 }
 
 const isSx = (D, id) => isObj(D[id]) && D[id].kind === 'synth' && D[id].model === 'serum';
+const serumDev = isSx; // ((3) the parts code's name for it: a device-record read, never a track accessor — isSx( is the ratchet's v1 name)
 const devOf = p => (typeof p === 'string' ? p.slice(0, p.lastIndexOf('.')) : '');
 /** (1e) The model port behind a canvas jack of a v2 track: a Serum's own-FX out ('i2/fx.out') is the Serum's 'i2.out'; the
  * jacks inside a Serum (its 'out' → its own FX's 'in') are not patchable (null); a jack of an unknown device: null.
@@ -214,7 +264,38 @@ export function cablesOf(track, opts) {
     if (typeof w.g === 'number' && isFinite(w.g) && w.g !== 1) { o.g = w.g; o.label = dB(w.g); }
     out.push(mk(o, srcs.get(devOf(w.a)) || []));
   }
+  for (const id of Object.keys(D)) if (serumDev(D, id) && partsView(t, id, opts)) out.push(...internal(id, D[id], tc, on, isObj(t.lay) ? t.lay : {}));
   return out.concat(modCables(t, D, opts));
+}
+/** (milestone 3) Is Serum `id` of this track shown as parts? opts.parts: false (never), a function (id) → bool, else the
+ * view flag track.lay[id].ui === 'parts'. Pure. */
+export function partsView(track, id, opts) {
+  const P = isObj(opts) ? opts.parts : undefined;
+  if (P === false) return false;
+  if (typeof P === 'function') { try { return !!P(id); } catch (err) { return false; } }
+  const L = isObj(track) && isObj(track.lay) ? track.lay[id] : null;
+  return isObj(L) && L.ui === 'parts';
+}
+// (milestone 3) a Serum's internal cables in parts view (sx-edges: views of its state); VOICE → own FX is the read-only
+// cable above already (VOICE keeps the device key: 'iN.out → iN/fx.in'). (review 2 P1-6, the lead's decision) a source
+// routed into a filter that is off and has no module (I1: no lay entry) is a dimmed stub "→ Filter 1 (off)" — the default
+// Serum's OSC A, else drawn to nothing; its edge stays (a tap: the routing, the filter's offer; Disconnect as before)
+function internal(id, dev, tc, on, lay) {
+  const s = isObj(dev.vals) ? dev.vals.s : null, color = typeof dev.color === 'string' && dev.color ? dev.color : tc, out = [];
+  for (const e of serumEdges(s, dev.fx)) {
+    if (e.kind === 'fx') continue;
+    const o = { id: 'x:' + id + ':' + e.id, kind: 'audio', int: e.kind, dev: id, edge: { a: e.a, b: e.b }, a: jackOf(id, e.a), b: e.b ? jackOf(id, e.b) : null, src: [id] };
+    const fb = e.kind === 'audio' && /^filter2?\.in$/.test(e.b || '') && /^(osc[ABC]|sub|noise)\.out$/.test(e.a) ? e.b.split('.')[0] : null;
+    if (fb && !partOn(s, fb) && !lay[id + '/' + fb]) { o.b = null; o.stub = true; o.off = fb; o.label = '→ Filter ' + (fb === 'filter2' ? 2 : 1) + ' (off)'; o.dim = true; }
+    if (e.stub) { o.stub = true; o.label = e.label; }
+    if (e.fork) o.fork = true;
+    if (fin(e.share)) o.share = e.share;
+    if (e.kind === 'warp') { o.tap = 'open'; o.label = e.what; o.field = e.field; }
+    if (e.dim || !on.has(id)) o.dim = true;
+    if (color) o.color = color;
+    out.push(o);
+  }
+  return out;
 }
 /**
  * (2a) The mod cables of a v2 track (IMPL-2a §3): one per track.mods row — {id: row id, kind: 'mod', a: '<module>.<port>' (the
@@ -238,10 +319,29 @@ function modCables(t, D, opts) {
     if (col) c.color = col;
     return c;
   };
+  const sxColor = k => { const d = D[k.split('/')[0]]; return serumDev(D, k.split('/')[0]) && typeof d.color === 'string' && d.color ? d.color : null; };
   for (const r of Array.isArray(t.mods) ? t.mods : []) {
     if (!isObj(r) || typeof r.id !== 'string' || typeof r.dst !== 'string' || r.dst.indexOf(':') < 1) continue;
-    const P = modSrcPort(r.src); // ((2b) a macro's cable leaves at its knob's jack: 'm1.k3')
-    if (P) out.push(mk(r.id, P.key + '.' + P.port, r.dst, r, P.key, { src: r.src }));
+    const P = modSrcPort(r.src); // ((2b) a macro's cable leaves at its knob's jack: 'm1.k3'; (3) a linked Serum LFO / ENV its part's)
+    if (!P) continue;
+    const c = mk(r.id, modSrcJack(r.src), r.dst, r, P.key, { src: r.src });
+    if (P.key.indexOf('/') > 0) { const k = sxColor(P.key); if (k) c.color = k; }
+    out.push(c);
+  }
+  // (milestone 3) a Serum in parts view: its own LFO / ENV / macro rows from their modules' jacks (the Serum's colour)
+  if (o.ownRows !== false) {
+    for (const id of Object.keys(D)) {
+      if (!serumDev(D, id) || !partsView(t, id, o)) continue;
+      const M = isObj(D[id].vals) && isObj(D[id].vals.s) && Array.isArray(D[id].vals.s.matrix) ? D[id].vals.s.matrix : [];
+      M.forEach((r, slot) => {
+        const a = isObj(r) ? ownJack(id, r.src) : null;
+        if (!a || typeof r.dst !== 'string' || !r.dst || /^bus\d+$/.test(r.dst)) return; // (a point-modulation bus: no knob)
+        const c = mk('o:' + id + ':' + slot, a, id + ':' + r.dst, r, id, { own: true, dev: id, slot, src: r.src });
+        const k = sxColor(id);
+        c.color = k || MOD_COLOR[/^lfo/.test(r.src) ? 'lfo' : /^env/.test(r.src) ? 'env' : 'macro'];
+        out.push(c);
+      });
+    }
   }
   const PR = o.presetRows;
   if (PR) {
@@ -275,34 +375,9 @@ function tail(x1, y1, x2, y2, L) {
   return { d: `M ${r2(s[0])} ${r2(s[1])} C ${r2(b2[0])} ${r2(b2[1])}, ${r2(c1[0])} ${r2(c1[1])}, ${r2(p3[0])} ${r2(p3[1])}`, x: r2(s[0]), y: r2(s[1]) };
 }
 
-// a Serum destination's base value (stored, else its default)
-function base(s, id) {
-  if (isObj(s.p) && fin(s.p[id])) return s.p[id];
-  const i = DEST_INDEX[id];
-  return i === undefined ? 0 : DESTS[i].def;
-}
-// a source / filter's route (sx-ui-mix routeOf: sources 0 Filter · 1 Main · 2 Direct · 3 None; filters 0 the other
-// filter · 1 Main · 2 Direct · 3 None; a missing route: OSC A → Filter, the rest → Main)
-function routeOf(o, dflt) { return isObj(o) && fin(o.route) ? Math.max(0, Math.min(3, Math.round(o.route))) : dflt; }
-const STRIPS = [['a', s => (Array.isArray(s.osc) ? s.osc[0] : null), 0], ['b', s => (Array.isArray(s.osc) ? s.osc[1] : null), 1],
-  ['c', s => (Array.isArray(s.osc) ? s.osc[2] : null), 1], ['s', s => s.sub, 1], ['n', s => s.noise, 1],
-  ['f', s => (Array.isArray(s.filter) ? s.filter[0] : null), 1], ['f2', s => (Array.isArray(s.filter) ? s.filter[1] : null), 1]];
-
-/** A Serum's own-FX route label: its non-empty racks and Direct, e.g. 'Main · Bus 1 · Direct' ('' for a classic
- * track). Reads the Serum state and its FX state only. Direct: a powered source or filter routed Direct, or a non-empty
- * bus routed Direct. @param {object|null} s @param {object|null} fx @returns {string} */
-export function routeLabel(s, fx) {
-  if (!isObj(s)) return '';
-  const racks = isObj(fx) && fx.v >= 2 && Array.isArray(fx.racks) ? fx.racks : [];
-  const full = k => isObj(racks[k]) && Array.isArray(racks[k].mods) && racks[k].mods.length > 0;
-  let direct = false;
-  for (const [P, get, dflt] of STRIPS) if (base(s, P + '.on') >= 0.5 && routeOf(get(s), dflt) === 2) { direct = true; break; }
-  for (const k of [1, 2]) if (full(k) && fin(racks[k].route) && Math.round(racks[k].route) === 1) direct = true;
-  const out = [];
-  ['Main', 'Bus 1', 'Bus 2'].forEach((n, k) => { if (full(k)) out.push(n); });
-  if (direct) out.push('Direct');
-  return out.join(' · ');
-}
+/** A Serum's own-FX route label: its non-empty racks and Direct, e.g. 'Main · Bus 1 · Direct' ('' for a classic track) —
+ * (milestone 3) sx-edges routeLabel, re-exported (one table of the routes: the pasted STRIPS / routeOf are gone). */
+export { routeLabel };
 
 /**
  * The two SVG layers in `worldEl` and their paths (a visible path plus a wider transparent hit path per cable;
@@ -322,8 +397,10 @@ export function routeLabel(s, fx) {
  * badge's own long-press never arms). No floating × for them. setModsVisible('always' | 'select' | 'never'): On select shows the mod cables touching
  * the selection (highlight ids, the selected cable), Never none; Always all, and past MOD_FADE_N visible ones those not
  * touching the selection fade (.cv-fade) and o.onHint(MOD_HINT) runs once.
+ * (review 2) A selection a pointer tap made calls o.onSelect(id, pointerType) (none otherwise): the tap's click is still to
+ * come — what the host opens waits for it. A touch tap's own click never reaches the × that appeared under the finger.
  * @param {HTMLElement} worldEl  #world
- * @param {{doc?: Document, onSelect?: (id: string | null) => void, onAction?: (id: string, action: string) => void,
+ * @param {{doc?: Document, onSelect?: (id: string | null, by?: string) => void, onAction?: (id: string, action: string) => void,
  *   menu?: (id: string) => Array<object>, k?: () => number, onHint?: (text: string) => void, mods?: string,
  *   ignore?: (target: Element) => boolean}} [o]  ignore (U5): a press / key there is not "elsewhere" (the host's overlays)
  */
@@ -342,8 +419,11 @@ export function createCables(worldEl, o) {
   const U = svg('cv-cables', 0), O = svg('cv-cable-ends', 10000);
   if (worldEl) { worldEl.append(U.e); worldEl.append(O.e); }
   let list = [], ports = null, hl = null, sel = null, xb = null, press = null, keyOff = null, liveP = null, dead = false;
+  let ghost = false; // (review 2 P1-1) a touch tap just selected: its compatibility click (no press of its own) may land on the × under the finger
+  let tapBy; // (P1-5) the pointer type of the tap being handled: onSelect(id, tapBy) — the host acts after that tap's click
   let mode = MOD_MODES.includes(O0.mods) ? O0.mods : 'always', hinted = false;
-  const items = new Map(); // id → {c, g, vis, hit, lab, d, lx, ly, mx, my}; (2a) a mod cable: og (over twin), end, badge, amt, ptag
+  const items = new Map(); // id → {c, g, vis, hit, lab, d, lx, ly, mx, my}; (2a) a mod cable: og (over twin), end, badge, amt, ptag; (3) htag
+  const forks = new Map(); // (milestone 3) a forked source's jack → its BALANCE badge {id, b, x, y, off}
   const isMod = it => !!it && !!it.og;
   const kOf = () => { let k = 1; try { k = typeof O0.k === 'function' ? +O0.k() : 1; } catch (err) { k = 1; } return k > 0 && isFinite(k) ? k : 1; };
   let kNow = kOf();
@@ -358,10 +438,11 @@ export function createCables(worldEl, o) {
     const og = node('g', 'cv-cable-g'), end = node('path', 'cv-cable cv-mend');
     og.append(end);
     O.g.append(og);
-    const b = doc.createElement('button'), amt = doc.createElement('span'), ptag = doc.createElement('span');
+    const b = doc.createElement('button'), amt = doc.createElement('span'), ptag = doc.createElement('span'), htag = doc.createElement('span');
     b.className = 'cv-mbadge'; b.type = 'button';
     amt.className = 'cv-mamt'; ptag.className = 'cv-ptag'; ptag.hidden = true;
-    b.append(amt, ptag);
+    htag.className = 'cv-htag'; htag.hidden = true; // ((3) a hidden knob's tag: 'OSC B · LEVEL · hidden')
+    b.append(amt, ptag, htag);
     const id = () => it.c.id;
     // (U2) a knob beneath the badge wins: the press is handed to it (the badge's own stops here); (U4) else it is the
     // canvas's press (cv-module isBackground: a pan) and a tap — its lift followed on the document — selects
@@ -406,7 +487,7 @@ export function createCables(worldEl, o) {
       wk.menuSource(b, { keys: false }),
     ];
     if (worldEl) worldEl.append(b);
-    Object.assign(it, { og, end, badge: b, amt, ptag, ed: '', bx: NaN, by: NaN, bOff: () => { for (const f of offs) f(); } });
+    Object.assign(it, { og, end, badge: b, amt, ptag, htag, ed: '', bx: NaN, by: NaN, bOff: () => { for (const f of offs) f(); } });
   }
   function set(cables) {
     list = Array.isArray(cables) ? cables.filter(c => isObj(c) && typeof c.id === 'string') : [];
@@ -426,6 +507,8 @@ export function createCables(worldEl, o) {
       it.g.setAttribute('data-cable', c.id);
       it.g.setAttribute('data-kind', c.kind || 'audio');
       if (c.readonly) it.g.setAttribute('data-ro', ''); else it.g.removeAttribute('data-ro');
+      // (milestone 3) a Serum's internal cable: its kind (audio / note / warp), a stub, a fork's branch
+      for (const [k, v] of [['data-int', c.int], ['data-stub', c.stub ? '' : null], ['data-fork', c.fork ? '' : null], ['data-tap', c.tap]]) { if (v != null) it.g.setAttribute(k, v); else it.g.removeAttribute(k); }
       if (c.color) it.g.style.setProperty('--cc', c.color); else if (it.g.style.removeProperty) it.g.style.removeProperty('--cc');
       tog(it, 'cv-off', !!(c.dim || (it.og && c.byp)));
       if (it.og) {
@@ -444,22 +527,46 @@ export function createCables(worldEl, o) {
         if (it.lab.textContent !== c.label) it.lab.textContent = c.label;
       } else if (it.lab) { it.lab.remove(); it.lab = null; }
     }
+    // (milestone 3) one BALANCE badge per forked source jack (the first branch's id answers)
+    const fk = new Map();
+    for (const c of list) if (c.fork && c.kind !== 'mod' && !fk.has(c.a)) fk.set(c.a, c.id);
+    for (const [a, F] of forks) if (fk.get(a) !== F.id) { F.off(); F.b.remove(); forks.delete(a); }
+    for (const [a, id] of fk) if (!forks.has(a) && worldEl) forks.set(a, forkBtn(a, id));
     paintHl();
     if (sel && !editable(sel)) select(null); // (disconnected, or now read-only)
     if (ports) layout(ports); else vis();
   }
-  // ports: Map | object 'mod.jack' → {x, y} (world px)
+  // (milestone 3) a fork's BALANCE badge: a tap is onAction(id, 'balance') (the host opens the source's routing popover)
+  function forkBtn(a, id) {
+    const b = doc.createElement('button');
+    b.className = 'cv-fork'; b.type = 'button'; b.textContent = 'BAL';
+    b.setAttribute('aria-label', 'Filter balance of this source'); b.title = 'Filter balance — tap to set it';
+    b.setAttribute('data-cable', id);
+    const offs = [listen(b, 'pointerdown', e => e.stopPropagation()), listen(b, 'click', e => { e.stopPropagation(); act(id, 'balance'); })];
+    worldEl.append(b);
+    return { id, b, x: NaN, y: NaN, off: () => { for (const f of offs) f(); } };
+  }
+  // ports: Map | object 'mod.jack' → {x, y} (world px); (milestone 3) a knob end with hid: true is hidden from every mounted
+  // view (its tag: the cable's badge)
   function layout(p) {
     ports = p || null;
-    const at = k => (!ports ? null : typeof ports.get === 'function' ? ports.get(k) : ports[k]) || null;
+    const at = k => (k == null || !ports ? null : typeof ports.get === 'function' ? ports.get(k) : ports[k]) || null;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    const hidN = new Map(); // ((P1-7) hidden ends: the badges at each end point, counted)
     for (const it of items.values()) {
-      const A = at(it.c.a), B = at(it.c.b), show = !!(A && B && fin(A.x) && fin(A.y) && fin(B.x) && fin(B.y));
+      const A = at(it.c.a), B = it.c.stub ? (A ? { x: A.x + stubLen(kNow), y: A.y } : null) : at(it.c.b), show = !!(A && B && fin(A.x) && fin(A.y) && fin(B.x) && fin(B.y));
       it.g.style.display = show ? '' : 'none';
       if (it.og) it.og.style.display = show ? '' : 'none';
       if (!show) { it.mx = NaN; continue; }
       const d = cablePath(A.x, A.y, B.x, B.y);
       if (d !== it.d) { it.d = d; it.vis.setAttribute('d', d); it.hit.setAttribute('d', d); }
+      if (it.og) {
+        const hid = !!B.hid, tg = hid ? String(B.tag || '') : '';
+        tog(it, 'cv-hid', hid);
+        if (it.htag.textContent !== tg) it.htag.textContent = tg;
+        it.htag.hidden = !tg;
+        if (hid) { const q = B.x + ',' + B.y; it.hn = hidN.get(q) || 0; hidN.set(q, it.hn + 1); } else it.hn = 0;
+      }
       if (it.og) ends(it, A, B);
       // the cubic's midpoint (t = ½) is the chord's midpoint for these symmetric tangents: the label sits above it, the × on it
       it.mx = r2((A.x + B.x) / 2); it.my = r2((A.y + B.y) / 2);
@@ -469,22 +576,32 @@ export function createCables(worldEl, o) {
       }
       x0 = Math.min(x0, A.x, B.x); y0 = Math.min(y0, A.y, B.y); x1 = Math.max(x1, A.x, B.x); y1 = Math.max(y1, A.y, B.y);
     }
+    for (const [a, F] of forks) { // (3) the BALANCE badge just right of the forked source's jack
+      const A = at(a), show = !!(A && fin(A.x) && fin(A.y));
+      F.b.hidden = !show;
+      if (show && (r2(A.x + 22) !== F.x || A.y !== F.y)) { F.x = r2(A.x + 22); F.y = A.y; F.b.style.left = F.x + 'px'; F.b.style.top = F.y + 'px'; }
+    }
     place(U, x0, y0, x1, y1);
     place(O, x0, y0, x1, y1);
     placeX();
     vis();
   }
   // (2a) a mod cable's last END_PX screen px (the over layer) and its badge at their start (world px)
+  // ((review 2 P1-7) a hidden knob's end — VOICE's corner —: its tagged badge at the end itself, right of it and above
+  // (CSS .cv-hid), the n-th one at that end HID_STEP screen px higher: never left of the end, where FILTER 1's bar stands)
   function ends(it, A, B) {
     const T = tail(A.x, A.y, B.x, B.y, END_PX / kNow);
     if (T.d !== it.ed) { it.ed = T.d; it.end.setAttribute('d', T.d); }
-    if (T.x !== it.bx || T.y !== it.by) { it.bx = T.x; it.by = T.y; it.badge.style.left = T.x + 'px'; it.badge.style.top = T.y + 'px'; }
+    const bx = B.hid ? B.x : T.x, by = B.hid ? r2(B.y - (it.hn || 0) * HID_STEP / kNow) : T.y;
+    if (bx !== it.bx || by !== it.by) { it.bx = bx; it.by = by; it.badge.style.left = bx + 'px'; it.badge.style.top = by + 'px'; }
   }
   // (2a) after a zoom: the ends are END_PX screen px again (nothing else moves)
   function rezoom() {
     const k = kOf();
     if (k === kNow) return false;
+    const re = stubLen(k) !== stubLen(kNow);
     kNow = k;
+    if (re && [...items.values()].some(it => it.c.stub)) { layout(ports); return true; } // ((3) P1-5: a stub's length follows the zoom below 1)
     const at = q => (!ports ? null : typeof ports.get === 'function' ? ports.get(q) : ports[q]) || null;
     for (const it of items.values()) if (it.og && fin(it.mx)) { const A = at(it.c.a), B = at(it.c.b); if (A && B) ends(it, A, B); }
     return true;
@@ -536,7 +653,7 @@ export function createCables(worldEl, o) {
     if (show) { xb.style.left = it.mx + 'px'; xb.style.top = it.my + 'px'; }
   }
   function select(id) {
-    const want = id && editable(id) ? id : null;
+    const want = id && editable(id) && !items.get(id).c.tap ? id : null; // ((3) a tap cable — a warp source — is never selected)
     if (want === sel) return;
     if (sel && items.get(sel)) tog(items.get(sel), 'cv-sel', false);
     sel = want;
@@ -547,7 +664,7 @@ export function createCables(worldEl, o) {
         xb.className = 'cv-cable-x'; xb.type = 'button'; xb.textContent = '×';
         xb.setAttribute('aria-label', 'Disconnect cable'); xb.title = 'Disconnect (Delete)';
         xb.addEventListener('pointerdown', e => e.stopPropagation()); // (never the world's press)
-        xb.addEventListener('click', e => { e.stopPropagation(); act(sel, 'disconnect'); });
+        xb.addEventListener('click', e => { e.stopPropagation(); if (ghost) { ghost = false; return; } act(sel, 'disconnect'); }); // (the selecting tap's click: dropped)
         worldEl.append(xb);
       }
       if (!keyOff) {
@@ -561,10 +678,15 @@ export function createCables(worldEl, o) {
     } else if (keyOff) { keyOff(); keyOff = null; }
     placeX();
     vis();
-    if (typeof O0.onSelect === 'function') O0.onSelect(sel);
+    if (typeof O0.onSelect === 'function') O0.onSelect(sel, tapBy);
   }
   // (U4) a tap on a badge: selects it; on the selected one, onSelect again (the host's inspector)
-  function tapped(id, again) { if (again && id === sel) { if (typeof O0.onSelect === 'function') O0.onSelect(sel); } else select(id); }
+  // ((3) a tap cable — a Serum's warp / pitch source — answers onAction(id, 'tap'): the host opens the oscillator's menu)
+  function tapped(id, again) {
+    const it = items.get(id);
+    if (it && it.c.tap) { act(id, 'tap'); return; }
+    if (again && id === sel) { if (typeof O0.onSelect === 'function') O0.onSelect(sel, tapBy); } else select(id);
+  }
   const typing = t => !!t && (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName || '') || t.isContentEditable === true);
   // (U5, U6) what edits the selected cable is not "elsewhere": the inspector (.cv-ml-pop), any dialog, a wk popup list,
   // o.ignore(t) — a tap there keeps the selection, its keys are its own
@@ -583,6 +705,8 @@ export function createCables(worldEl, o) {
   }
   function openMenu(id, x, y) {
     const extra = typeof O0.menu === 'function' ? O0.menu(id) || [] : [];
+    const it = items.get(id);
+    if (it && it.c.tap) return wk.contextMenu(x, y, extra.length ? extra : [{ label: 'Open…', action: () => act(id, 'tap') }]); // ((3) read-only: no Disconnect)
     const L = [{ label: 'Disconnect', action: () => act(id, 'disconnect') }];
     if (extra.length) L.push({ sep: true }, ...extra);
     return wk.contextMenu(x, y, L);
@@ -602,12 +726,17 @@ export function createCables(worldEl, o) {
       if (!id || (e.button != null && e.button !== 0)) return;
       press = { id, pid: e.pointerId, x: e.clientX, y: e.clientY, ctx: false, moved: false };
     }),
+    listen(doc, 'pointerdown', () => { ghost = false; }, true), // (P1-1: a new press — the × answers its click)
     listen(doc, 'pointermove', e => { if (press && e.pointerId === press.pid && Math.hypot(e.clientX - press.x, e.clientY - press.y) > TAP_PX) press.moved = true; }, { capture: true, passive: true }),
     listen(doc, 'pointerup', e => {
       const P = press;
       if (!P || e.pointerId !== P.pid) return;
       press = null;
-      if (!P.ctx && !P.moved && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) tapped(P.id, P.badge);
+      if (!P.ctx && !P.moved && Math.hypot(e.clientX - P.x, e.clientY - P.y) <= TAP_PX) {
+        ghost = e.pointerType === 'touch' || e.pointerType === 'pen';
+        tapBy = String(e.pointerType || 'mouse');
+        try { tapped(P.id, P.badge); } finally { tapBy = undefined; }
+      }
     }, true),
     listen(doc, 'pointercancel', e => { if (press && e.pointerId === press.pid) press = null; }, true),
     listen(U.e, 'contextmenu', e => { // right-click, a touch long-press (wk.menuSource)
@@ -645,6 +774,8 @@ export function createCables(worldEl, o) {
     /** (2a) the mod cables' visibility: 'always' | 'select' | 'never' (anything else: unchanged) → the mode; rezoom() after a
      * zoom (o.k changed: the ends cut again) → whether it changed; badge(id): a mod cable's badge (the inspector's anchor) */
     setModsVisible, modsVisible: () => mode, rezoom, badge: id => { const it = items.get(id); return it && it.badge ? it.badge : null; },
+    /** (milestone 3) a forked source's BALANCE badge by its jack ('i1/oscB.out'), null without one */
+    forkBadge: a => { const F = forks.get(a); return F ? F.b : null; },
     destroy() {
       if (dead) return;
       dead = true;
@@ -655,6 +786,8 @@ export function createCables(worldEl, o) {
       if (xb) xb.remove();
       if (liveP) liveP.remove();
       for (const it of items.values()) if (it.og) { it.bOff(); it.badge.remove(); }
+      for (const F of forks.values()) { F.off(); F.b.remove(); }
+      forks.clear();
       U.e.remove(); O.e.remove(); items.clear(); list = []; ports = null;
     },
   };
@@ -712,6 +845,8 @@ export function createCableDrag(world, o) {
   // drop target (its own FX input stands for the Serum: an output dropped there meets the own-FX refusal and its fix)
   const ro = el => !!el && typeof el.hasAttribute === 'function' && el.hasAttribute('data-ro');
   const dirOf = j => (/\.in$/.test(j) ? 'in' : /\.out$/.test(j) ? 'out' : null);
+  // ((3) a jack element's own direction — cv-module data-dir: VOICE's main / direct / note are inputs — else by its id)
+  const dirEl = (j, el) => { const d = el && typeof el.getAttribute === 'function' ? el.getAttribute('data-dir') : null; return d === 'in' || d === 'out' ? d : dirOf(j || ''); };
   const modOf = j => j.slice(0, j.lastIndexOf('.'));
   const at = (p, k) => (p && (typeof p.get === 'function' ? p.get(k) : p[k])) || null;
   const toClient = (x, y) => (W && typeof W.toClient === 'function' ? W.toClient(x, y) : { x, y });
@@ -724,7 +859,7 @@ export function createCableDrag(world, o) {
       const walk = n => { for (const c of n.children || []) { const id = c.getAttribute && c.getAttribute('data-cv-jack'); if (id) L.push({ id, el: c }); else walk(c); } };
       if (W && W.el) walk(W.el);
     }
-    return L.filter(j => j && typeof j.id === 'string').map(j => ({ id: j.id, el: j.el || null, dir: j.dir || dirOf(j.id), mod: j.mod || modOf(j.id), label: j.label,
+    return L.filter(j => j && typeof j.id === 'string').map(j => ({ id: j.id, el: j.el || null, dir: j.dir || dirEl(j.id, j.el), mod: j.mod || modOf(j.id), label: j.label,
       kind: j.kind || (j.el && typeof j.el.getAttribute === 'function' && j.el.getAttribute('data-kind')) || 'audio' }));
   }
   const labelOf = (j, d) => {
@@ -749,7 +884,7 @@ export function createCableDrag(world, o) {
   function press(e, el) {
     if (D || dead || !el || typeof el.getAttribute !== 'function' || ro(el) || (e.button != null && e.button !== 0)) return false;
     if (isModJack(el)) return pressMod(e, el);
-    const j = el.getAttribute('data-cv-jack'), dir = j && dirOf(j);
+    const j = el.getAttribute('data-cv-jack'), dir = j && dirEl(j, el);
     if (!dir || !portOf(j)) return false;
     const ws = dir === 'in' ? wires().filter(c => c.b === j) : [], w = ws.length ? ws[ws.length - 1] : null;
     D = { pid: e.pointerId, type: e.pointerType || 'mouse', el, grab: j, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, on: false,
@@ -842,7 +977,7 @@ export function createCableDrag(world, o) {
       while (st.length) {
         const [n, dv0, mk0] = st.pop();
         for (const c of n.children || []) {
-          if (!c || typeof c.getAttribute !== 'function') continue;
+          if (!c || typeof c.getAttribute !== 'function' || c.getAttribute('data-twin') != null) continue; // ((3) a twin — CLIP's MACROS pane — is never a target)
           const mk = c.getAttribute('data-cv-mod'), mkey = mk != null ? mk : mk0, dv = c.getAttribute('data-dev') || dv0 || (mk != null ? mk.split('/')[0] : null);
           if (mk != null) roots.set(mk, c);
           const id = c.getAttribute('data-dest');
@@ -861,7 +996,7 @@ export function createCableDrag(world, o) {
     const t = hitAt(D.x, D.y);
     let tg = null;
     const de = attrUp(t, 'data-dest');
-    if (de && de !== D.el) {
+    if (de && de !== D.el && !attrUp(de, 'data-twin')) { // ((3) a twin control: no cable end, no drop target)
       const dv = devAt(de), id = de.getAttribute('data-dest');
       if (dv && id) { const r = checkMod(dv + ':' + id, de); tg = { kind: 'knob', el: de, dst: dv + ':' + id, ok: r.ok, why: r.why }; }
     }
@@ -978,9 +1113,9 @@ export function createCableDrag(world, o) {
   function cancel() { finish(); }
   /* ---- "Connect to…": a tap, Enter / Space or a right-click on a jack */
   function menu(j, x, y) {
-    const dir = dirOf(j || '');
+    const L0 = dead ? [] : jacks(), me0 = L0.find(J => J.id === j), dir = me0 ? me0.dir : dirOf(j || '');
     if (!dir || !portOf(j) || dead) return null;
-    const L = jacks(), me = L.find(J => J.id === j) || { id: j, el: null };
+    const L = L0, me = me0 || { id: j, el: null };
     if (ro(me.el)) return null;
     const items = [{ label: 'Connect ' + labelOf(j, me) + ' to…', disabled: true }];
     let n = 0;

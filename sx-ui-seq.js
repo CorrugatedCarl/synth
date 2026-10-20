@@ -121,8 +121,11 @@ const fin = x => typeof x === 'number' && isFinite(x);
 const arr = x => (Array.isArray(x) ? x : []);
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const clamp01 = x => (x > 0 ? (x < 1 ? x : 1) : 0);
-// a canvas store's px per layout px: the device ratio (≤ 2) × the canvas world's zoom inside it (SPEC-canvas §4.4)
+// a canvas store's px per layout px: H5 (SYNTH Canvas milestone 3, IMPL-3 §1.4) — wk.storeDensity (dpr · k at rest, the
+// world's 64 MB budget, changed at a rest only); without it the pre-H5 rule, the device ratio (≤ 2) × the canvas world's
+// zoom inside it, clamped to 0.5…2 (SPEC-canvas §4.4)
 const storeDpr = (doc, cv) => {
+  if (typeof wk.storeDensity === 'function') { const q = +wk.storeDensity(cv); if (q > 0 && isFinite(q)) return q; }
   const w = doc && doc.defaultView, dpr = Math.min(2, Math.max(1, (w && w.devicePixelRatio) || 1)), k = wk.canvasScale ? wk.canvasScale(cv) : 1;
   return k === 1 ? dpr : clamp(dpr * k, 0.5, 2);
 };
@@ -819,7 +822,8 @@ export class ArpPage extends SeqPage {
   build() {
     const K = this.kit, d = this.doc;
     injectSeqStyles(d);
-    const { el, head, body } = K.panel('ARP', 'arp', 'arp.on', 'sx-seqpage sx-arp', { items: () => this.moduleItems() });
+    const shell = K.panel('ARP', 'arp', 'arp.on', 'sx-seqpage sx-arp', { items: () => this.moduleItems() }), { el, head, body } = shell;
+    this.shell = shell;   // (a bare part view hands its power and module menu to the canvas bar: IMPL-3 §2.2)
     this.el = el;
     this.sec = sections(d, body, ARP_SECS);
     const more = btn(d, 'sx-hbtn sx-seqmenu', '⋯', 'ARP menu', () => menuAt(more, this.menuItems()));
@@ -1269,7 +1273,7 @@ class LaneView {
   denorm(L, u) { const v = L.lo === undefined ? u : L.lo + u * (L.hi - L.lo); return L.int ? Math.round(v) : r5(v); }
   draw(L, ob, v) {
     const { w, h } = this.size(), cv = this.cv, dpr = storeDpr(this.doc, cv);
-    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+    cv.width = Math.ceil(w * dpr - 1e-6); cv.height = Math.ceil(h * dpr - 1e-6); // (rounded up: never below dpr, review 2)
     const g = cv.getContext ? cv.getContext('2d') : null;
     if (!g) return;
     if (g.setTransform) g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1438,8 +1442,11 @@ const MAX_NOTES_TEXT = room => (room < core.MAX_CLIP_NOTES ? 'At most ' + core.M
 const REC_WIN = 24, REC_JUMP_MS = 120;
 
 export class ClipPage extends SeqPage {
-  constructor(root, kit) {
+  // o.twins (SYNTH Canvas milestone 3, IMPL-3 §2.2: CLIP as a Serum part): the MACROS pane's knobs are twins of the MACROS
+  // module's (data-twin: no cable end, no drop target on the canvas; their halos still show)
+  constructor(root, kit, o) {
     super(kit);
+    this.twins = !!(o && o.twins);
     this.slots = null;
     this.roll = null;
     this.lanes = null;
@@ -1483,7 +1490,8 @@ export class ClipPage extends SeqPage {
   build() {
     const K = this.kit, d = this.doc;
     injectSeqStyles(d);
-    const { el, head, body } = K.panel('CLIP', 'clip', 'clip.on', 'sx-seqpage sx-clip', { items: () => [this.trigItem('clip')] });
+    const shell = K.panel('CLIP', 'clip', 'clip.on', 'sx-seqpage sx-clip', { items: () => [this.trigItem('clip')] }), { el, head, body } = shell;
+    this.shell = shell;
     this.el = el;
     this.sec = sections(d, body, CLIP_SECS);
     const more = btn(d, 'sx-hbtn sx-seqmenu', '⋯', 'CLIP menu', () => menuAt(more, [this.lockItem('clip'), this.trigItem('clip')]));
@@ -1738,7 +1746,9 @@ export class ClipPage extends SeqPage {
     for (let k = 0; k < 8; k++) {
       // the knob label follows the macro's name
       const name = () => { const m = arr(K.s().macros)[k]; return (m && m.name) || 'Macro ' + (k + 1); };
-      pane.appendChild(this.vKnob('m' + (k + 1), name, () => (arr(K.s().macros)[k] || {}).v, (n, ph) => this.setMacro(k, n, ph), { size: 'sm' }).el);
+      const w = this.vKnob('m' + (k + 1), name, () => (arr(K.s().macros)[k] || {}).v, (n, ph) => this.setMacro(k, n, ph), { size: 'sm' });
+      if (this.twins) w.el.setAttribute('data-twin', '1');
+      pane.appendChild(w.el);
     }
     this.fn(() => {
       if (secEl && secEl.classList) secEl.classList.toggle('sx-hide', !this.macrosOpen);
@@ -2487,7 +2497,7 @@ export class PianoRoll {
   }
   ctx(cv) {
     const { w, h } = this.size(), dpr = storeDpr(this.doc, cv);
-    const W = Math.round(w * dpr), H = Math.round(h * dpr);
+    const W = Math.ceil(w * dpr - 1e-6), H = Math.ceil(h * dpr - 1e-6); // (rounded up: never below dpr, review 2)
     if (cv.width !== W) cv.width = W;
     if (cv.height !== H) cv.height = H;
     const g = cv.getContext ? cv.getContext('2d') : null;

@@ -37,7 +37,7 @@
  */
 'use strict';
 const VERSION = '9';
-const BUILD = 'd4099d154f2d'; // (tools/precache.mjs --write: a hash of the precached files)
+const BUILD = '39179eba1c68'; // (tools/precache.mjs --write: a hash of the precached files)
 // (tools/precache.mjs --write rewrites these two lists from the sources)
 const ASSETS = [
   'appstore.js', 'arrange.js', 'assets.js', 'audioclock.js', 'classic-panel.js', 'cv-art.js', 'cv-cables.js',
@@ -48,9 +48,9 @@ const ASSETS = [
   'panels/juno60.js', 'panels/jupiter8.js', 'panels/minimoog.js', 'panels/modular.js', 'panels/ms20.js',
   'panels/obxa.js', 'panels/prophet5.js', 'panels/solina.js', 'panels/tb303.js', 'pwa.js', 'roll.js', 'seq-core.js',
   'serum-core.js', 'serum-dsp.js', 'serum-ui.js', 'smp.js', 'smpgen.js', 'smprender.js', 'smpstore.js', 'smpwork.js',
-  'song.js', 'style.css', 'sx-base.js', 'sx-filt2.js', 'sx-gran.js', 'sx-mod.js', 'sx-sample.js', 'sx-seq.js',
-  'sx-spec.js', 'sx-ui-mix.js', 'sx-ui-osc.js', 'sx-ui-seq.js', 'sx-warp.js', 'tuning.js', 'wk.js', 'wt.js',
-  'wtedit.js', 'wtstore.js', 'wtwork.js',
+  'song.js', 'style.css', 'sx-base.js', 'sx-edges.js', 'sx-filt2.js', 'sx-gran.js', 'sx-host.js', 'sx-mod.js',
+  'sx-sample.js', 'sx-seq.js', 'sx-spec.js', 'sx-ui-mix.js', 'sx-ui-mod.js', 'sx-ui-osc.js', 'sx-ui-seq.js',
+  'sx-warp.js', 'tuning.js', 'wk.js', 'wt.js', 'wtedit.js', 'wtstore.js', 'wtwork.js',
 ];
 const STATIC = [
   './', 'icons/apple-touch-icon-180.png', 'icons/favicon-32.png', 'icons/icon-192.png', 'icons/icon-512.png',

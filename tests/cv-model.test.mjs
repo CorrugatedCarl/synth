@@ -29,7 +29,7 @@ test('2b addModDev / removeModDev for every kind: numbered ids per prefix (a rem
   assert.deepEqual(t.dev.e1, Object.assign({ kind: 'env' }, C.normEnvMod({})));
   assert.deepEqual(t.dev.e1, { kind: 'env', env: { bpm: 0, legInv: 0, stealRe: 0 }, att: 0.11, hold: 0, dec: 0.5, sus: 1, rel: 0.215, start: 0, end: 0, crv: [0.5, 0.666, 0.666] }, 'Serum\'s ENV 2 defaults');
   assert.deepEqual(t.dev.m1, { kind: 'macro', v: [0, 0, 0, 0, 0, 0, 0, 0], names: ['Macro 1', 'Macro 2', 'Macro 3', 'Macro 4', 'Macro 5', 'Macro 6', 'Macro 7', 'Macro 8'] }, '(U8: the default names)');
-  assert.deepEqual([t.dev.c1, t.dev.h1, t.dev.nt], [{ kind: 'cc', cc: 1, ch: 0, v: 0 }, { kind: 'chaos', chaos: { mono: 1, sh: 0 }, rate: 0.2512, bpm: 0, smooth: 0 }, { kind: 'note' }]);
+  assert.deepEqual([t.dev.c1, t.dev.h1, t.dev.nt], [{ kind: 'cc', cc: 1, ch: 0, v: 0 }, { kind: 'chaos', chaos: { mono: 1, sh: 0 }, rate: 0.2512, bpm: 0, smooth: 0 }, { kind: 'note' }], '(a chaos module GLOBAL, as a canvas LFO)');
   for (const id of ['l1', 'l2', 'e1', 'm1', 'c1', 'h1', 'nt']) assert.equal(G.kindOf(t.dev[id]), 'mod', id);
   assert.equal(G.compileTrack(t).canonical, false, '(two instruments: the graph form; modules change no shape)');
   MO.addMod(t, 'l2.out', 'i1:f.cutoff'); MO.addMod(t, 'm1.k3', 'i1:a.wt'); MO.addMod(t, 'm1.k4', 'i1:a.pan'); MO.addMod(t, 'l1.out', 'i1:f.res');

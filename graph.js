@@ -534,7 +534,11 @@ function boxPoint(el, e) {
 function boxClient(el, lx, ly) { const r = boxOrigin(el), k = localScale(el); return { x: r.left + lx / k, y: r.top + ly / k }; }
 // §13.1: hidden pages are not painted — an editor that is detached or not rendered (on a display: none page) skips
 // drawing; its ResizeObserver fires when the page is shown again (0 × 0 → its size) and redraws it.
-const unrendered = el => !el.isConnected || (typeof el.getClientRects === 'function' && el.getClientRects().length === 0);
+const unrendered = el => {
+  if (!el.isConnected) return true;
+  const r = typeof el.getClientRects === 'function' ? el.getClientRects() : null;
+  return !!r && r.length === 0;   // (a host without rect lists — a page simulation's DOM — counts as rendered)
+};
 function observeSize(el, fn) {
   const RO = globalThis.ResizeObserver;
   if (typeof RO !== 'function') return () => {};
@@ -592,7 +596,8 @@ function slewParse(text, base) {
 /* ================================================================ CurveEditor */
 // Options (Phase 1): { kind: 'lfo' | 'remap' | 'xshape' | 'curve', get, set(pts, phase), grid?, label?, height?,
 // readOnly?, bipolar?, playhead?, shapes?, and for kind 'lfo' loop / setLoop / start / setStart / pointMenu /
-// removePointMods / fromWavetable }. Phase 2 (SPEC-serum2 §11.14):
+// removePointMods / fromWavetable, links? (false: no Modulate X / Y and no Remove Point Modulations items — an LFO
+// whose points take no modulation: SYNTH Canvas milestone 3's canvas LFO modules) }. Phase 2 (SPEC-serum2 §11.14):
 //   tool?: () => 'point' | 'flat' | 'rampUp' | 'rampDown' (LFO_TOOLS; any kind) — with a drawing tool a press on the
 //          background draws that shape per grid cell (as Shift-draw with Step / Ramp Up / Ramp Down); 'point' (default)
 //          keeps the point gestures. setTool(t) is the same for editors without the option.
@@ -925,7 +930,7 @@ export class CurveEditor {
     items.push({ sep: true },
       { label: 'Flip Horizontal', disabled: ro, action: () => this.flip('h') },
       { label: 'Flip Vertical', disabled: ro, action: () => this.flip('v') });
-    if (this.lfo) {
+    if (this.lfo && o.links !== false) {   // (links false: an LFO without point links — a canvas LFO module, IMPL-3 §2.3)
       const sub = (axis, list) => {
         if (ro || !o.pointMenu || !list.length) return null;
         const it = (o.pointMenu(list, axis) || []).map(x => ({ label: x.label, action: () => { x.action(); this.refresh(); }, checked: x.checked, disabled: x.disabled }));

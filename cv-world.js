@@ -26,6 +26,13 @@
 // whether it is on screen (planScreen over cached rects, after every written frame — a zoom burst's at its end: onScreen(on)
 // + a 'screen' event), so off-screen live displays can pause invisibly; below READ_K a press inside a module body pans
 // (its controls sleep).
+// Milestone 3 (IMPL-3 §1.4 H5): every display canvas stores wk.storeDensity's dpr · k px per layout px at rest (≥ 1:1 on
+// screen at every zoom; set at a zoom's rest, never in a burst) and Σ every store in #world, on and off screen, stays ≤
+// wk.CANVAS_BUDGET (64 MB): at each rest planStores projects every canvas to the rule's density and, past the budget, caps
+// the off-screen ones to the dpr first, then the on-screen ones farthest from the viewport centre (wk.setStoreCaps; the
+// static owners repaint through rescaleCanvases only when a cap changed). An off-screen canvas a pan brings into view at
+// k > 1 shows its dpr store until the next rest (1h's residual). world.canvasStats() → { n, bytes, minDensity, onMin, offN,
+// capped, budget, k, dpr } (density: store px per on-screen device px, 1 = 1:1).
 // Stage 1c: a selection of several items (Shift-click on a bar adds; ⌘/Ctrl-A; a marquee — Shift-drag on empty canvas
 // with the mouse, a 250 ms hold then a drag with a finger — selects what it touches; a mouse drag still pans), the
 // selected item that started a move carries the others (cv-module TrackView), and a minimap in the toolbar (item rects +
@@ -148,9 +155,37 @@ const TAP_PX = { touch: 8, pen: 4, mouse: 4 }, DTAP_MS = 320, DTAP_PX = 24, REVE
  *   escape: () => boolean,
  *   key: (e: KeyboardEvent) => boolean,
  *   on: (type: 'camera' | 'movestart' | 'cameraend' | 'screen' | 'budget' | 'native' | 'select' | 'edit' | 'snap' | 'lock' | 'mods', fn: (d: any) => void) => () => void,
+ *   canvasStats: () => {n: number, bytes: number, minDensity: number | null, onMin: number | null, offN: number, capped: number, budget: number, k: number, dpr: number},
  *   destroy: () => void,
  * }} World
  */
+
+/* ---------------------------------------------------------------- (milestone 3 H5) the canvas stores' budget (pure) */
+/**
+ * The budget's caps at a rest (IMPL-3 §1.4 H5). Each store: its canvas's layout size (w × h px), the rule's density t (dpr ·
+ * k, the 16e6 px cap given the size), on screen or not, its distance from the viewport centre (world px). While Σ 4·w·h·t²
+ * (+ fixed: stores the rule never sized, as they are) ≤ budget: no cap. Past it: the off-screen stores drop to the dpr first
+ * (any order: farthest first), then the on-screen ones farthest from the centre, until Σ fits (or every store is at the dpr:
+ * the dpr is the floor — never below 1:1). Pure.
+ * @param {Array<{key: any, w: number, h: number, t: number, on: boolean, dist: number}>} L @param {number} dpr
+ * @param {number} budget @param {number} [fixed] @returns {{caps: Map<any, number>, bytes: number}}
+ */
+export function planStores(L, dpr, budget, fixed) {
+  const caps = new Map();
+  let bytes = +fixed > 0 ? +fixed : 0;
+  const cand = [];
+  for (const x of Array.isArray(L) ? L : []) {
+    if (!x || !(x.w > 0 && x.h > 0 && x.t > 0)) continue;
+    const a = x.w * x.h, b = a * x.t * x.t * 4, low = Math.min(x.t, dpr);
+    bytes += b;
+    if (low < x.t) cand.push({ key: x.key, on: !!x.on, dist: +x.dist || 0, low, save: b - a * low * low * 4 });
+  }
+  if (bytes > budget) {
+    cand.sort((p, q) => (p.on === q.on ? q.dist - p.dist : p.on ? 1 : -1));
+    for (const c of cand) { if (bytes <= budget) break; caps.set(c.key, c.low); bytes -= c.save; }
+  }
+  return { caps, bytes };
+}
 
 /* ---------------------------------------------------------------- pure camera maths (node-tested) */
 /** k clamped to [K_MIN, K_MAX] (NaN → 1). @param {number} k @returns {number} */
@@ -359,6 +394,7 @@ export function createWorld(viewport, o) {
   const selSet = new Set(); // the selection (sel: its primary — the one tapped or moved last)
   let pin = null; // a bar double-tap's edit state { id, k }: it holds at the focus zoom even below EDIT_K (a large module's fit)
   let fid = 0, scrDirty = false, overBudget = false; // the frame, the on-screen plan owed, the soft DOM budget crossed
+  let planned = 0; // (H5) Σ of the canvas stores projected at the last plan (bytes)
   let mapOn = true, mapDirty = true, MM = null; // the minimap: shown, a redraw owed, its parts { el, cv, btn, drag }
   let GC = null, dprMq = null; // (1g) the grid canvas { cv, ctx, w, h, d, s, r, cw, ch, c0, tf, n, ms, max, dots, moves }; the device-ratio watch
   let GL = null, glOff = null, glDead = false, glWait = 0; // (1h) the GL layer (cv-gl; the 2D grid canvas is not made then), its FACES.onChange remover, given up (G4), the restore timer of a loss
@@ -622,11 +658,13 @@ export function createWorld(viewport, o) {
     if (zoomed) {
       ikK = cam.k;
       try { W.style.setProperty('--ik', String(1 / cam.k)); } catch (err) { /* inert */ }
-      try { wk.setCanvasScale(cam.k); wk.rescaleCanvases(W); } catch (err) { console.error(err); }
+      try { wk.setCanvasScale(cam.k); } catch (err) { console.error(err); }
     }
+    const capsMoved = stores(); // (H5: the budget at this rest, before the repaint it may ask for)
+    if (zoomed || capsMoved) { try { wk.rescaleCanvases(W); } catch (err) { console.error(err); } }
     emit('cameraend', { cam: copy(cam), zoomed });
     computeEdit();
-    recache();
+    recache(undefined, true);
   }
   function stopMotion() { glide = null; anim = null; }
 
@@ -757,11 +795,68 @@ export function createWorld(viewport, o) {
 
   /* ---- items: cached rects, on screen or not (Z1: never hidden, unmounted, swapped or resized) */
   function cacheRect(rec) { try { rec.rect = rec.item.rect(); } catch (err) { rec.rect = null; } }
-  function recache(id) { // a layout read: only outside a burst (add / update / resize / cameraend)
+  function recache(id, planned) { // a layout read: only outside a burst (add / update / resize / cameraend)
     for (const [k, r] of items) if (id == null || k === id) cacheRect(r);
     mapDirty = true;
     budget();
+    if (!planned && !B && stores()) { try { wk.rescaleCanvases(W); } catch (err) { console.error(err); } } // (H5: a new module's stores count)
     schedule();
+  }
+  /* ---- (milestone 3 H5) the canvas stores: Σ ≤ wk.CANVAS_BUDGET, planned at a rest only (no layout read: each store's
+   * layout size is its backing size over the density storeDensity gave it; a store the rule never sized counts as it is) */
+  function canvasList() { // [{ cv, id (its module's data-cv-mod) }] — the grid / GL canvases live outside #world
+    let L = null;
+    try { L = typeof W.querySelectorAll === 'function' ? Array.from(W.querySelectorAll('canvas')) : null; } catch (err) { L = null; }
+    if (!L) { // (a DOM without querySelectorAll: walk)
+      L = [];
+      const st = [W];
+      while (st.length) { const n = st.pop(); for (const c of n.children || []) { if (c.localName === 'canvas' || c.tagName === 'CANVAS') L.push(c); st.push(c); } }
+    }
+    return L.map(cv => {
+      let id = null;
+      for (let n = cv.parentNode; n && n !== W && n.nodeType === 1; n = n.parentNode) { const a = typeof n.getAttribute === 'function' ? n.getAttribute('data-cv-mod') : null; if (a != null) { id = a; break; } }
+      return { cv, id };
+    });
+  }
+  function onNow() { // the items on screen for the camera as it stands (the cached rects; a zoom burst's plan is owed at its end)
+    const list = [];
+    for (const [id, r] of items) list.push({ id, rect: r.rect });
+    return vp.width > 0 && vp.height > 0 ? new Set(planScreen(list, cam, vp.width, vp.height).on) : null;
+  }
+  function stores() { // → whether a cap changed
+    try {
+      const raw = dpr(), t0 = Math.max(0.5, raw * cam.k), c = toWorld(cam, vp.width / 2, vp.height / 2), ON = onNow(), L = [];
+      let fixed = 0;
+      for (const { cv, id } of canvasList()) {
+        const w0 = +cv.width || 0, h0 = +cv.height || 0, d0 = wk.storedDensity(cv);
+        if (!(w0 > 0 && h0 > 0)) continue;
+        if (!(d0 > 0)) { fixed += w0 * h0 * 4; continue; }
+        const w = w0 / d0, h = h0 / d0, r = id != null ? items.get(id) : null, R = r && r.rect;
+        const t = w * h * t0 * t0 > wk.CANVAS_MAX_PX ? Math.sqrt(wk.CANVAS_MAX_PX / (w * h)) : t0;
+        L.push({ key: cv, w, h, t, on: !r || !ON || ON.has(id), dist: R ? Math.hypot(R.x + R.w / 2 - c.x, R.y + R.h / 2 - c.y) : 0 });
+      }
+      const P = planStores(L, raw, wk.CANVAS_BUDGET, fixed);
+      planned = P.bytes;
+      return wk.setStoreCaps(P.caps);
+    } catch (err) { console.error(err); return false; }
+  }
+  function canvasStats() {
+    const raw = dpr(), k = cam.k;
+    let n = 0, bytes = 0, minD = Infinity, onMin = Infinity, offN = 0, capped = 0;
+    for (const { cv, id } of canvasList()) {
+      const w0 = +cv.width || 0, h0 = +cv.height || 0;
+      if (!(w0 > 0 && h0 > 0)) continue;
+      n++; bytes += w0 * h0 * 4;
+      const r = id != null ? items.get(id) : null, on = !r || r.on;
+      if (!on) offN++;
+      if (wk.storeCap(cv) !== undefined) capped++;
+      // (the layout box when there is one: the truth — its content box, both ways: a canvas' border holds none of its store
+      // (review 2: a 1 px border read 0.99 for a 1:1 store))
+      const lw = +cv.clientWidth || 0, lh = +cv.clientHeight || 0, d = lw > 0 ? (lh > 0 ? Math.min(w0 / lw, h0 / lh) : w0 / lw) : wk.storedDensity(cv);
+      if (d > 0) { const q = d / (raw * k); if (q < minD) minD = q; if (on && q < onMin) onMin = q; }
+    }
+    const R = v => (isFinite(v) ? Math.round(v * 1e4) / 1e4 : null);
+    return { n, bytes, minDensity: R(minD), onMin: R(onMin), offN, capped, budget: wk.CANVAS_BUDGET, planned, k, dpr: raw };
   }
   function schedule() { scrDirty = true; request(); }
   // which items are on screen: from the cached rects after each written frame, so off-screen live displays pause
@@ -1666,6 +1761,12 @@ export function createWorld(viewport, o) {
     },
     /** (1h) an item's cached rect { x, y, w, h } (world px), null unknown — never a layout read */
     rectOf: rectById,
+    /** (milestone 3 H5) the canvas stores in #world: { n, bytes (Σ now), minDensity / onMin (the least store px per on-screen
+     * device px, every canvas / the on-screen ones: ≥ 1 at rest is R3; null: none), offN (in off-screen modules), capped (by
+     * the budget), budget, planned (Σ projected at the last rest), k, dpr } — a diagnostic (one layout read per canvas) */
+    canvasStats,
+    /** (H5) re-plan the stores now (a test / bench hook; the world does it at every rest) → whether a cap changed */
+    planStores: () => { const ch = stores(); if (ch) { try { wk.rescaleCanvases(W); } catch (err) { console.error(err); } } return ch; },
     snapOn: () => snapping, setSnap, mapOn: () => mapOn, setMap, lockOn: () => locked, setLock,
     /** (2a) the mod cables' visibility: 'always' | 'select' | 'never' (toolbar ∿, MODS_PREF); a change emits 'mods' */
     modsMode: () => modsMode, setModsMode,
@@ -1700,6 +1801,7 @@ export function createWorld(viewport, o) {
       wk.setWheelVeto(null);
       if (typeof wk.setEdgeHook === 'function') wk.setEdgeHook(null);
       if (o.layer) wk.setLayer(null);
+      try { wk.setStoreCaps(null); } catch (err) { /* kit absent */ } // (H5: the caps were this world's)
       items.clear(); subs.clear();
     },
   };

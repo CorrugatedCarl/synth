@@ -14,7 +14,8 @@
 // edge auto-scroll speed), tooltip.textOf (a touch status line's text) and loadDSP.URLS (the §0.3 list, the default).
 // The canvas world (SPEC-canvas §4.4–4.7): localPoint / localScale (pointer maths under its CSS scale), closeTransient,
 // setWheelVeto, setEdgeHook, visibleBand, edgePan2, setLayer / layer (the top layer), setCanvasScale / canvasScale, onRescale /
-// rescaleCanvases, releaseCanvases / onRelease.
+// rescaleCanvases, releaseCanvases / onRelease; (milestone 3, H5) storeDensity / storedDensity / deviceRatio, setStoreCaps /
+// storeCap, CANVAS_MAX_PX / CANVAS_BUDGET.
 //
 // Conventions shared by every widget:
 //   · values are normalised n ∈ [0,1] unless the widget says otherwise (menu items carry their own `v`);
@@ -2716,18 +2717,51 @@ export function theme(el) {
   }
   return out;
 }
-// Size a canvas for its CSS (layout) box at the device pixel ratio, capped at 2 (§13.1); returns the 2D context in CSS px
-// (or null). Inside the canvas world (an ancestor [data-cv-world], scaled by the camera's k: setCanvasScale) the backing
-// store follows the zoom: clamp(dpr · k, 0.5, 2) (SPEC-canvas §4.4); every store stays ≤ CANVAS_MAX_PX device px.
-const CANVAS_MAX_PX = 16e6;
-let canvasK = 1;
+// Size a canvas for its CSS (layout) box at storeDensity's backing scale; returns the 2D context in CSS px (or null).
+// (milestone 3, IMPL-3 §1.4 H5) ONE density rule for every display canvas — fitCanvas, serum-ui paintCanvas, sx-ui-seq
+// storeDpr — storeDensity(el, w?, h?) → backing px per layout px:
+//   · outside the canvas world: the device pixel ratio, capped at 2 (§13.1, unchanged);
+//   · inside it (an ancestor [data-cv-world], scaled by the camera's k: setCanvasScale, written at a zoom's rest only, never
+//     in a burst): dpr · k — the cap of 2 lifted, so ≥ 1:1 on screen at every zoom (R3) — and at least 0.5;
+//   · the total budget's cap when cv-world set one for el (setStoreCaps: past CANVAS_BUDGET bytes the off-screen canvases
+//     drop to the dpr first, then the on-screen ones farthest from the viewport centre);
+//   · given its layout size w × h: ≤ CANVAS_MAX_PX device px (16e6) per canvas.
+// The density handed out is remembered per element (storedDensity: the budget's projection and canvasStats, no layout read).
+export const CANVAS_MAX_PX = 16e6;
+/** (H5) The cap on Σ every canvas store in the world, on and off screen (bytes, 4 per px; SPEC-canvas §9.3). */
+export const CANVAS_BUDGET = 64 * 1024 * 1024;
+let canvasK = 1, storeCaps = new WeakMap(), capped = []; // (capped: the canvases holding a cap, for the next diff)
+const handed = new WeakMap(); // canvas → the density storeDensity last gave it
 const inWorld = el => { for (let n = el; n && n.nodeType === 1; n = n.parentNode) if (n.hasAttribute && n.hasAttribute('data-cv-world')) return true; return false; };
+/** The device pixel ratio, uncapped (≥ 1). */
+export function deviceRatio() { const d = D(), win = d && d.defaultView || globalThis; return Math.max(1, +win.devicePixelRatio || 1); }
+export function storeDensity(el, w, hgt) {
+  const raw = deviceRatio();
+  let s = raw <= 2 && canvasK === 1 ? raw : inWorld(el) ? Math.max(0.5, raw * canvasK) : Math.min(2, raw); // (k 1 and dpr ≤ 2: no walk)
+  const cap = el && typeof el === 'object' ? storeCaps.get(el) : undefined;
+  if (cap > 0 && cap < s) s = cap;
+  const area = w > 0 && hgt > 0 ? w * hgt : 0;
+  if (area && area * s * s > CANVAS_MAX_PX) s = Math.sqrt(CANVAS_MAX_PX / area);
+  if (el && typeof el === 'object') handed.set(el, s);
+  return s;
+}
+/** The density storeDensity last gave el (undefined: none yet). */
+export function storedDensity(el) { return el && typeof el === 'object' ? handed.get(el) : undefined; }
+/** (H5) The total budget's caps: a Map canvas → density (null / empty clears them) → whether any cap changed. cv-world sets
+ * them at a rest only; a capped canvas takes its cap at its next paint (rescaleCanvases for the static owners). */
+export function setStoreCaps(map) {
+  const next = new WeakMap(), seen = [];
+  let changed = false;
+  if (map && typeof map.forEach === 'function') map.forEach((v, cv) => { if (cv && typeof cv === 'object' && v > 0 && isFinite(v)) { next.set(cv, +v); seen.push(cv); if (storeCaps.get(cv) !== +v) changed = true; } });
+  for (const cv of capped) if (!next.has(cv)) changed = true;
+  capped = seen; storeCaps = next;
+  return changed;
+}
+/** (H5) The cap the budget gave el (undefined: none). */
+export function storeCap(el) { return el && typeof el === 'object' ? storeCaps.get(el) : undefined; }
 export function fitCanvas(cv, w, hgt) {
-  const d = D(), win = d && d.defaultView || globalThis, dpr = Math.min(2, Math.max(1, +win.devicePixelRatio || 1));
-  let s = canvasK !== 1 && inWorld(cv) ? clamp(dpr * canvasK, 0.5, 2) : dpr;
-  const area = Math.max(1, w) * Math.max(1, hgt);
-  if (area * s * s > CANVAS_MAX_PX) s = Math.sqrt(CANVAS_MAX_PX / area);
-  const Wd = Math.max(1, Math.round(w * s)), Hd = Math.max(1, Math.round(hgt * s));
+  const s = storeDensity(cv, Math.max(1, w), Math.max(1, hgt));
+  const Wd = Math.max(1, Math.ceil(w * s - 1e-6)), Hd = Math.max(1, Math.ceil(hgt * s - 1e-6)); // (rounded up: never below s px per layout px)
   if (cv.width !== Wd) cv.width = Wd;
   if (cv.height !== Hd) cv.height = Hd;
   const ctx = cv.getContext ? cv.getContext('2d') : null;

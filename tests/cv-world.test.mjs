@@ -1675,6 +1675,91 @@ test('1h fix R2: world.update(id) at a drop (cv-module onMove end / cancel, a fo
   void w;
 });
 
+/* ------------------------------------------------------------------ milestone 3 H5: the canvas stores' budget */
+test('H5 planStores (pure): no cap within the budget; past it the off-screen stores drop to the dpr first, then the on-screen ones farthest from the centre; the dpr is the floor', () => {
+  const MB = 1024 * 1024, B = 64 * MB;
+  const S = (key, w, h, t, on, dist) => ({ key, w, h, t, on, dist });
+  eq([...W.planStores([S('a', 500, 400, 4, true, 0)], 2, B).caps], [], 'fits');
+  // 500 × 400 at t = 4 → 12.8e6 B; 1000 × 800 at 4 → 51.2e6 B each
+  const L = [S('near', 500, 400, 4, true, 50), S('far', 1000, 800, 4, true, 600), S('off', 1000, 800, 4, false, 10), S('mid', 1000, 800, 1, true, 0)];
+  const P = W.planStores(L, 2, B);
+  eq([...P.caps.entries()], [['off', 2], ['far', 2]], 'the off-screen one first, then the farthest on screen; mid already at ≤ the dpr: never a candidate');
+  ok(P.bytes <= B, 'Σ ' + P.bytes);
+  eq(W.planStores(L, 2, B, 40 * MB).caps.size, 3, 'fixed stores (never sized by the rule) count: one more drops');
+  const all = W.planStores([S('x', 4000, 4000, 4, true, 0), S('y', 4000, 4000, 4, false, 0)], 2, B);
+  eq([...all.caps.values()], [2, 2], 'everything at the dpr, never below (1:1 at k 1)');
+  ok(all.bytes > B, 'still over: measured, never below the dpr');
+  eq([...W.planStores([S('z', 100, 100, 0.5, false, 0)], 2, 1).caps], [], 'at k ≤ 1 nothing is above the dpr');
+});
+
+test('review 2 P2: canvasStats measures a canvas against its content box (a 1 px border is no layout of its store: 396 store px for a 198 px content box at dpr 2 is 1:1, not 0.99); stores round up — at k 0.4 (dpr · k 0.8: 198 → 158.4) no store falls below 1:1', () => {
+  const { d, win, world, frame, item } = setup();
+  wk.setCanvasScale(1); wk.setStoreCaps(null);
+  win.devicePixelRatio = 2; world.resize(); frame();
+  const A = item('a', 0, 0, 500, 400);
+  world.add(A);
+  const cv = d.createElement('canvas');
+  A.body.append(cv);
+  layout(cv, 198, 148);
+  Object.defineProperty(cv, 'offsetWidth', { get: () => 200, configurable: true });
+  Object.defineProperty(cv, 'offsetHeight', { get: () => 150, configurable: true });
+  const off = wk.onRescale(cv, () => wk.fitCanvas(cv, 198, 148));
+  wk.fitCanvas(cv, 198, 148);
+  frame(2);
+  try {
+    eq([cv.width, cv.height, world.canvasStats().onMin], [396, 296, 1], 'k 1: 1:1 against the content box');
+    world.setCamera({ tx: 0, ty: 0, k: 0.4 }); frame(2);
+    const st = world.canvasStats();
+    eq([cv.width, cv.height, st.onMin >= 1], [159, 119, true], 'k 0.4: ' + st.onMin);
+  } finally {
+    off();
+    world.destroy();
+    wk.setCanvasScale(1);
+  }
+});
+
+test('H5 the world: storeDensity follows the zoom at rest; Σ past CANVAS_BUDGET caps the off-screen store, then the farthest on-screen one (repainted once); canvasStats; a pan re-plans at its rest; destroy clears the caps', () => {
+  const { d, win, world, frame, item } = setup();
+  wk.setCanvasScale(1); wk.setStoreCaps(null); // (the kit's scale is global: an earlier test's world zoomed)
+  win.devicePixelRatio = 2; world.resize(); frame();
+  const mk = (it, w, h) => {
+    const cv = d.createElement('canvas'); it.body.append(cv);
+    const paint = { n: 0 };
+    const off = wk.onRescale(cv, () => { paint.n++; wk.fitCanvas(cv, w, h); });
+    wk.fitCanvas(cv, w, h);
+    return { cv, paint, off, w, h };
+  };
+  const A = item('a', 0, 0, 500, 400), B = item('b', 300, 0, 1000, 800), C = item('c', 3000, 0, 960, 800);
+  for (const it of [A, B, C]) world.add(it);
+  const a = mk(A, 500, 400), b = mk(B, 1000, 800), c = mk(C, 960, 800);
+  frame(2);
+  try {
+    eq([a.cv.width, b.cv.width, c.cv.width], [1000, 2000, 1920], 'k 1, dpr 2');
+    let st = world.canvasStats();
+    eq([st.n, st.bytes, st.minDensity, st.onMin, st.capped, st.budget, st.dpr], [3, (1000 * 800 + 2000 * 1600 + 1920 * 1600) * 4, 1, 1, 0, 64 * 1024 * 1024, 2], 'within the budget: 1:1, no cap');
+    world.setCamera({ tx: 0, ty: 0, k: 2 }); frame(2);
+    eq([a.cv.width, b.cv.width, c.cv.width], [2000, 2000, 1920], 'at rest k 2: dpr · k = 4 for the near one; the budget capped the off-screen and the far one at the dpr');
+    eq([wk.storeCap(a.cv), wk.storeCap(b.cv), wk.storeCap(c.cv)], [undefined, 2, 2]);
+    eq([a.paint.n, b.paint.n, c.paint.n], [1, 1, 1], 'one repaint at the zoom\'s rest');
+    st = world.canvasStats();
+    eq([st.n, st.capped, st.offN, st.onMin, st.minDensity], [3, 2, 1, 0.5, 0.5], 'the far on-screen store below 1:1 by the budget (measured)');
+    ok(st.bytes <= st.budget && st.planned <= st.budget, 'Σ ' + st.bytes);
+    // a pan to C: at its rest C is on screen and near, A off → the plan moves the caps (one repaint)
+    world.setCamera({ tx: -5600, ty: 0, k: 2 }); frame(2);
+    eq([wk.storeCap(c.cv), wk.storeCap(a.cv)], [undefined, 2], 'C (now on screen, centred) uncapped; A (off screen) capped');
+    eq(c.cv.width, 3840);
+    // a zoom out to 50 %: every store at dpr · k = 1, no cap
+    world.setCamera({ tx: 0, ty: 0, k: 0.5 }); frame(2);
+    eq([a.cv.width, b.cv.width, c.cv.width, wk.storeCap(b.cv)], [500, 1000, 960, undefined]);
+    eq(world.canvasStats().onMin, 1);
+  } finally {
+    for (const x of [a, b, c]) x.off();
+    world.destroy();
+    wk.setCanvasScale(1);
+  }
+  eq(wk.storeCap(b.cv), undefined, 'destroy cleared the caps');
+});
+
 /* ------------------------------------------------------------------ 1i: the hardware keys with the real gesture.js (IMPL-1i §4.3) */
 // the two-finger layer on the same fake window (its capture listeners before the viewport's, as main.js boot installs it),
 // its frames and the world's in one queue (flushed after each touch); a module with panel art (a background) and a bed

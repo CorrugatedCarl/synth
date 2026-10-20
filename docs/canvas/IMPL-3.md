@@ -466,6 +466,12 @@ saved. `o = { get, live, edit, cancel, set, bpm, rows }`.
 - **Presets**: whole-Serum, on VOICE (`sxLoad` / `sxSave`), locks honoured, canvas rows re-injected (D11). A load adds modules for parts
   now on (I1, no History step) and dims parts now off; it never touches other `lay` entries or `track.mods`. Per-part Copy / Paste /
   Init / Swap through the existing serum-core functions (same kind, same Serum).
+  **Amendment (the lead, 2026-10-20, review 1 F2)**: a part place written by the rule (`sxPlaceNew`, the first Show parts' group) is
+  automatic (`lay['iN/<part>'].auto = 1`, kept by `song.normLay`, Tidy and the no-step moves); a user act on the module (a move or
+  fold, Add, the tray, Show OSC C) clears the mark. A load — any `vals.s` replacement that is not a History undo / redo (those carry
+  their lay): `sxLoad` (the browser, VOICE ◀ ▶, a MIDI program change), and the panel's seeded edits (Init Preset, Hybridize, its
+  undo / redo of a load) — prunes the automatic entries whose part is now neither on (I1) nor read (I2), in either view, no step.
+  User-placed entries are never pruned, so "a load never touches other `lay` entries" holds for everything the user arranged.
 - **Save as classic project, the file mirror**: unchanged (the Serum state is the same; the parts layout is view-only and dropped); main
   opens such a file as a bundled Serum.
 - **The ENV curve bug** (XM §8.7): a canvas ENV whose curve was typed in the 2b body may hold an extreme curve; it is what the engine
@@ -642,7 +648,7 @@ Only genuine decisions; each has the default the plan uses until answered. Q1 is
    milestone 3 (each Serum already has its own VELO / NOTE curves inside its VOICE module, and a second curve on the canvas would
    stack on top of it for Serum knobs); a small later step if you want them.
 
-**Answers (the user, 2026-10-19):** Q3 — leave both out of milestone 3 (recommended). Q4 — yes: the top ↶ undoes canvas cable edits inside a Serum (recommended). Q5 — not now (recommended). Also: the Serum filter S / A / B / C / N switches stay non-modulatable but **get MIDI learn and lock back** (the 2b fix 645a996 had dropped them with `data-dest`; restored by a separate marker before phase 1). Q1 and Q2 are answered in the S0 session.
+**Answers (the user, 2026-10-19):** Q3 — leave both out of milestone 3 (recommended). Q4 — yes: the top ↶ undoes canvas cable edits inside a Serum (recommended). Q5 — not now (recommended). Also: the Serum filter S / A / B / C / N switches stay non-modulatable but **get MIDI learn and lock back** (the 2b fix 645a996 had dropped them with `data-dest`; restored by a separate marker before phase 1). Q1 and Q2 are answered in the S0 session. **Q2 (the user, after the S0 session, 2026-10-20): whole panel** — new Serums open bundled; ⋯ → Show parts and ⚙ → "New Serums open as" switch.
 
 **Answer (the user, 2026-10-20), Q1:** first "I'd rather they not look soft if we can help it", then, told that it means the GPU module painter (3R, a stage bigger than 1h), **"okay nvm it's not that big of a deal" — yes**. §1.5's table applies with Q1 yes: S0's numbers decide D-R1 / D-R5 (Q2 at the session); 3R is not built now (offered again only if S0 or `ui-m3b` call for it; research kept in [map-rendering.md](map-rendering.md)).
 
@@ -657,6 +663,22 @@ each scene (the first and last are the same five-panel scene, to catch the iPad 
 for, tap **Copy results** and paste them with the screenshots; then answer question 1.
 
 ## 9. Notes (the builders fill in)
+
+### 9.0 S0 on the iPad (the user, 2026-10-20; bench.json `"ui-m3"`) and the decision table
+
+Build bd6d7ca2ad50 (canvas a6633e0), iPad Pro, Chrome for iOS 155, stale false. Validity: hw5 first inside its envelope, hw5 last
+1 ms over (firstMove 81 vs 80, two steps skipped), drift 0, scale 1, every self-check ok — accepted as indicative (the user: "my
+zoom speed was really inconsistent"). M1 hand: sx1 **P+**, p1 **P**, hwm **P** (smoother than hw5 alone, 36 vs 83 ms burst max),
+p1x **fail by one settle frame** (106 vs 100; otherwise P), t2 and t3 **fail** (bursts to 198 / 116 ms), hw5 shows the 1h-era single
+50–90 ms frames. M0 auto: sx1 / p1 P+, p1x P. M2 on p1x: `layers`, `noWC`, `opacity0`, `none` P+ (the H6 candidate `layers`; not
+adopted while parts are opt-in — re-measured in `ui-m3b`); on hwm every variant fails incl. `opacity0` / `none` (the cost is not the
+modulators' DOM); on t2 only `opacity0` reaches P. M4: H5 keeps every store ≥ 1.0 at rest. M5: no tab loss. P1: a `data:`-URL
+foreignObject draws untainted into GL on iPadOS 26 (a DOM-snapshot route for a future 3R); P2: worker text 12 ms / 2125 strings.
+
+Applied (§1.5): Q1 yes (before the session) and p1x not P+ → **phases 1 and 2 as built; parts opt-in: D-R5's constant `bundled`**
+(Q2, the user: "Whole panel"); the touch notice past the largest P+ scene's count (sx1, 1866 painted; §9.9); **hwm P → the
+Serum-faithful modulators as specified**; **t2 / t3 fail → several instruments per track stay withdrawn (D-R4)**; 3R stays parked
+(the user, "save the soft pinching fix for later maybe"; P1's result makes it cheaper when it comes).
 
 ### 9.1 Lane E — monitor fields (2026-10-20; base e9cd1b9; `mod-core.js`, `engine.js` Track monitor region, `tests/modcore.test.mjs` +3, sw.js BUILD)
 
@@ -687,6 +709,34 @@ noise. Tried and dropped: the `mread` call in `Track.modPre` after `MC.span` ins
 four-slot processes, the extra branch there costs more than the one in `span`). Harness (scratchpad `ab/`, `jsc/`; not in the repo).
 
 
+### 9.2 Lane A — accessor retirement R0–R7, schema 7 (2026-10-20; merged 44d1623; the lead's summary of the lane's report)
+
+R0 safety net: the static ratchet in `lint.test` (+ `tests/fixtures/accessor-allow.json`, fragments checked), the dynamic recorder
+`tests/accessor-hook.mjs` (`ACCESS_STRICT=1`, `ACCESS_OUT=`), `accessors.test` (15 characterisation tests). Data: `SCHEMA` 7,
+`STEPS[6] growMods` (places only), `song.normLay` part keys (≤ 256 entries, `ui` flow | parts), `cv-model.dropLay` / `PARTS` /
+`partOf`. R1 `instView` for the primary, `isPrim`; R2 `isSx` → `instOf` / `isSerum` / `isSerumDev` / `serumIds`, MPE = any Serum; R3
+`fxOf` → `fxOfDev`, phase memory per rack (`N.fxph` / `N.phWait` Maps); R5 `normDevs` for every device; R4 VIEW.id `trackId/dev`
+(session maps re-keyed, `voiceSeen` per instrument, `assets.states()` per Serum / panel); R6 one record per device (`serumPanels` /
+`fxPanels`), no `#inst` / `#fxrack` homes, same-track changes are a view sync, `curModel()` / `curView()` / `curPanel()`; R7
+production `adopt` installs no accessors, guard builds throw (`__synthTest`, `?dev=1`, `adopt(p, {guard: true})`). Ratchet 193 → 52
+lines (lane A's files 145 → 13); the dynamic hook's last site (cv-module `tModel`) went in lane C. Sweep at R7: 78 files / 2199 tests;
+the lead's sweep after the merge: 78 files / 2207 tests, goldens and canonical-stream bit-identical. Behaviour changes (intended): a
+Serum-FX-page removal / IR relink prunes that rack's canvas rows; the tempo resend reaches every synced 303; a non-selected classic
+primary's vals merge with defaults at load; a track switch destroys the outgoing primary panel at the switch.
+
+### 9.4 Carried to lane D (the lead, from A's and C's reports)
+
+1. `modSpot` / `modTap` / the drop ghost place every modulator at x −320 with `W_MOD`: use `cvModule.modX(kind)` / `modW(kind)` (a
+   tapped LFO overlaps the instrument by 96 px until then).
+2. `cvTidy` / `cvRoom` copy only `ui: 'flow'`: carry `ui: 'parts'` too.
+3. `index.html`'s `#inst` / `#fxrack` are unused homes; `cv-shell-sim` still requires them (with `#boot` inside `#inst`): change the
+   sim first, then remove them.
+4. `STEPS[6]` reads `cvModule.MOD_W` live: freeze the widths it grows to (a constant in cv-migrate, equal to MOD_W at milestone 3's
+   deploy) so a later width change (e.g. B's parity re-measure of chaos, 416 today) never changes what a schema-6 project opens as.
+5. `mcMonitor` still rides the primary's part.
+6. Host interface from C: `host.devices` part entries carry `dev` as an id string; the power handover is `host.powerEl(key)` → B's
+   `View.power`; VOICE's parts view from the device entry's `ui` or `lay[iN].ui`; `firstFree(s, kind, skip)`.
+
 ### 9.x Amendments from IMPL-1i §8.3 (the lead, 2026-10-20)
 
 1. **The five-panel reference after 1i**: once 1i is on `canvas` the five panels carry keyboards (≈ 55 % more base texture, 116 → 180 MB).
@@ -699,6 +749,241 @@ four-slot processes, the extra branch there costs more than the one in `span`). 
 3. **Schedule as it ran**: lane A merged before 1i started (44d1623), so 1i's host lane edits `main.js` / `classic-panel.js` without an
    exception; lanes B and C started from e9cd1b9 before S0 (their work does not depend on S0's numbers; S0 decides D-R5 / H6 / H7 only);
    1i's small `cv-world.js` change (G2) is merged after lane C.
+### 9.3 Lane C — canvas widgets, internal routing, H5 (2026-10-20; base e9cd1b9; `sx-edges.js` new, cv-cables / cv-module / cv-mods / cv-tray / cv-world, wk.js, style.css, index.html, sw.js BUILD)
+
+**sx-edges** (pure). ENDs are dev-free `'<part>.<port>'` (`oscA.out`, `filter2.in`, `voice.main|direct|note|out|env1`, `fx.in`,
+`arp.out`, an oscillator's read-only `'<osc>.warp'`); `jackOf(dev, end)` / `endOf(dev, jack)` map them to canvas jacks (`i1/oscA.out`,
+`i1.main`, `i1/fx.in`). `serumEdges(s, fx)` → `{ id, a, b, kind: audio | note | fx | warp, src, share?, fork?, stub? (b null, label
+'→ Filter (off)'), ro?, dim? (source off), env?, field?, what? }`; the warp edges cover every WARPS2 mode reading another part (`_o1 / _o2`,
+Noise, Sub, Filter 1 / 2; spectral modes only on a spectral oscillator; S1 mode's v1 field) and ratio pitch sources. `setEdge` /
+`cutEdge` → `{ edit(s) | null, why, f: [[path, before, after] …] }` (path e.g. `['osc', 1, 'route']`, `['p', 'b.fbal']`; before = the
+effective value, a missing route sx-ui-mix's default) — D's History meta is `f` as it stands. Refusals: `WHY` (voice, ro, fx, self, dir,
+note, notes, same, none, bad). Off-route → filter k is exactly `toggleFilterRoute`'s branch (proved); a second filter cable forks at
+fbal ½ with both switches on; cutting a fork's branch moves the balance to the other filter; filter → filter sends the other to Main
+when it fed this one. `firstFree(s, kind, skip)` (`skip`: the parts already shown); `slotsUsed(s, used)` (point-modulation buses read
+their sources through matrix rows, so rows cover them); `partKeys` keeps any part with a `lay` entry (a laid-out part stays, dimmed).
+`routeLabel` moved here (cv-cables re-exports it).
+
+**cv-cables.** `cablesOf` adds, per Serum in parts view (`lay[iN].ui === 'parts'`; `opts.parts` false / a function overrides), the
+internal cables `{ id: 'x:<dev>:<edge id>', kind: 'audio', int: audio | note | warp, dev, edge: { a, b } (ENDs), a / b jacks, share,
+fork, stub, tap: 'open' (warp) }` — editable even under `host.patch: false`; the layer reports `onAction(id, 'disconnect' | 'balance' |
+'tap')` (D: `cutEdge` on `c.edge`, the routing popover, the warp / pitch menu); one BALANCE badge per forked source (`forkBadge(jack)`);
+a stub is `STUB_PX` (56) long. Own matrix rows from LFO / ENV / MACROS (`opts.ownRows` false disables): mod cables `'o:<dev>:<slot>'`
+(`own, dev, slot`), Serum colour; velo / note / random / bus rows stay the Mod list's. Link rows resolve through `modSrcJack`
+(`iN/env1.out` → `iN.env1`). A knob end with `hid` (cv-module) gets `.cv-hid` and the badge's third span `.cv-htag` (`hiddenTag(id)`).
+Twins are skipped by the mod drag; a jack's `data-dir` (VOICE's inputs) drives press / menu.
+
+**cv-module.** `MOD_W` = { 240 …, lfo 416, env 320, macro 256, chaos 416 } (chaos: a GLOBAL-page column ≈ 388 measured from the grid
+rule, not yet from B's `PART_W` — the parity gate re-measures), `modW`, `modX(kind)` (= −⌈(MOD_W + 80) / 32⌉·32), `roundW`, `SX_MODS`
+(their height measured; MOD_H stays the guess), `PART_W_DEF` / `PART_H_DEF` (fallbacks until `host.size(key)` gives B's PART_W),
+`partJacks(part)`, `voiceJacks()`. Device entries `kind: 'part'` (dev may be the id string); `host.powerEl(key)` → the element for the
+bar's power slot (D passes B's `View.power`); the chip defaults to `S<n>`; parts view from the device entry's `ui` or `lay`; a jack-set
+change rebuilds the module. Inline jacks: spec `side: 'inline'` (+ fallback `y`), the anchor `[data-jack]` becomes the jack. View
+additions: `intPort(jack)` (a cable drag's `port` for internal ends), `partsOf(dev)`, `jacks()` dir from the spec. `V.model` removed
+(lane A: it read the track accessor; nothing read it). Macro jacks are inline now and the LFO / ENV / Macro / Chaos modules MOD_W wide
+with measured heights: the 2b geometry assertions in cv-module.test were updated to the contract (§2.2).
+
+**H5.** `wk.storeDensity(el, w?, h?)`: in the world max(0.5, dpr·k) (no cap of 2), outside it the dpr capped at 2 (§13.1 kept), the
+budget's cap, the 16e6 px cap given a size; remembered per canvas (`storedDensity`). `wk.setStoreCaps(map)`, `CANVAS_BUDGET` = 64 MiB.
+cv-world plans at every rest and recache (`planStores`, pure, exported): projected Σ from each store's size over its handed-out
+density (no layout read); past the budget off-screen first, then the farthest on-screen (both to the dpr, never below); a changed cap
+→ `rescaleCanvases`. `world.canvasStats()` → `{ n, bytes, minDensity, onMin, offN, capped, budget, planned, k, dpr }`. A live canvas
+that is not repainting (the OUT scope with the engine off) keeps its last store until its next frame.
+
+**Other.** cv-mods `destOk` refuses every modulator kind with `NOMOD_MOD` (kept rows too). cv-tray `o.parts` (`PART_TILES`) with
+`partsEl / partsSec / notesEl / notesSec` (index.html `#srcPartSec #srcParts #srcNoteSec #srcNotes`), `partPick`, `partDrag` (info.part),
+`setPartPlaced`. style.css: part modules, members, the power slot, inline / note / warp jacks, internal cables, stubs, forks, hidden
+ends, and H6 as one hook (`#world[data-cv-h6="contain"]`, off until S0 picks it). `#inst` / `#fxrack` stay in index.html: lane A's
+cv-shell-sim still requires them and `#boot` lives in `#inst`.
+
+**For D.** main's `modSpot` / `modTap` / the drop ghost still place every modulator at x −320 with W_MOD: a tapped LFO (416) overlaps
+the instrument by 96 px until they use `cvModule.modX(kind)` / `modW(kind)` (seen in the browser check). Accessor ratchet: cv-module 6
+lines (the fixture's tModel and V.model sites go: n 8 → 6), cv-cables 7 (unchanged), the other lane-C files 0.
+
+**Tests.** jackrules 13 (new), cv-cables 37 (+4), cv-module 57 (+5), cv-mods 16 (+1), cv-tray 30 (+2), cv-world 57 (+2), wk 100
+(+1; the in-world "capped at 2" assertion now dpr·k); also run green: lint, pwa, main, canvas-sim, canvas-1e / 2a / 2b-sim, cv-shell-sim,
+cv-fixes-sim, cv-mods-ui, cv-migrate, cv-graph, cv-panel, cv-face, cv-gl, app.
+
+### 9.5 Lane B — Serum host + panels (2026-10-20; base e9cd1b9; `sx-host.js` / `sx-ui-mod.js` new, serum-ui / sx-ui-osc / sx-ui-mix / sx-ui-seq / graph / cv-mods-ui)
+
+**Lane B (Serum host + panels), 2026-10-20.** `sx-host.js` = SerumUI minus its shell: the state / edit / undo / kit / paint
+loop (shown views only, H4) / mod layer / popovers / shape library / browser, now multi-root (`addRoot`, `owns`, `rootOf`,
+`viewOf`, `adopt` for the handed-over power toggle) and a view registry (`defineView(kind, make)`, `mount(kind, root, args)` →
+View `{ id, kind, root, page, panel, power, shown(), menuItems(), labelDrag(el), destroy() }`). `serum-ui.js` is the shell only
+(head / 7 pages / foot are `mount` calls; every public name still exported, bundled DOM identical except H1 / H3).
+`sx-ui-mod.js`: the panels (MACROS, ENV, CURVE, LFO, VOICING, chaos row, VOICE + its fold-outs, QUALITY / TUNING / MPE / VOICE
+CONTROL, Preferences / Info) as classes, `PART_W` (measured in Chrome from a 1200 px bundled panel: osc 256.6, sub / noise
+163.7, filter 218.3, macros 237.3, env 316.4, lfo / curve 395.5, voicing 210.9, chaos / quality / tuning / mpe / vc 389.3,
+arp / clip 1184, voice / outputs 535.3), `partView`, `mountPart`, `mountSlot`, `panelDialog`. The slot host:
+`slotHost(dev | kind, o)` over a memoised default Serum (LFO → LFO 1, ENV → ENV 2, chaos → chaos 1, macro → macros 1–8).
+Additions to the interfaces: `o.storage / notify / view / devKey / doc`; the kit's `under(page, fn)`, `editor`, `bpm`,
+`tile`, `sx` and the getters `page` / `uiState` / `opts`; `host.editEnd` (a gesture that ends on its last move value still
+closes with one edit); `slotBody` bodies in cv-mods-ui load sx-host / sx-ui-mod on demand (`ready()`, the boot graph
+stays lean; the 2b `value()` / `knobs()` kept); `update(v)` also takes `{ v, ph, y, out }` / `{ v, stage, t }`; ClipPage
+`o.twins`; `OutputsPanel` in sx-ui-mix; graph `CurveEditor` `links: false`. `wk.storeDensity` is feature-detected (pre-H5
+rule without it). Part roots are `flex: none`: a module body narrower than `PART_W` clips the panel, it never re-flows —
+until C's `MOD_W` / heights land a 2b-sized LFO module shows its middle. **For D**: call `body.sync()` after undo / redo /
+load; wire `o.live` / `o.cancel` / `o.rows` / `o.view`. Counts (Chrome): slot LFO 125–128 el / 2 canvases, ENV 138 / 2,
+Macro 127 / 0, Chaos 30 / 0 (≤ 160 / ≤ 2); parts VOICE 433 / 2 (folds closed), OSC 339 / 1, FILTER 139 / 1, NOISE 126 / 1,
+SUB 89 / 0. Edited outside the row: tests/canvas-2b-sim (the bodies' async load, the MONO toggle for the old badge, ENV 2's
+curve knobs) and the new tests/serum-ui-stubs/dom.js (a selector fake DOM).
+
+### 9.6 Lane D — integration, phase 2 (2026-10-20; base b004627 + ed61ac3 + wt-m3's fixture check 53f119a; `main.js`, `cv-modlayer.js`, `cv-migrate.js` (`MOD_W6`), `index.html`, `serum-ui.js` (one change, below), `tests/canvas-3-sim.test.mjs` (new), main / cv-migrate / cv-shell-sim tests, sw.js BUILD)
+
+**Host records.** `serumPanels` `trackId/dev` → `{ ui (the host; getter `host`), views (Map module key → { V, el, lab }), mode 'bundled' |
+'parts', box, el, vals, gen }`. One host per Serum serves both views. **serum-ui.js (lane B's) took the smallest change that makes that
+possible**: `new SerumUI(root, host, { parts: true })` builds no shell; `dropShell()` / `buildShell(root)` switch the same host (the head /
+page / foot views unmounted, the bundled root dropped, the header's modifier bar and meter destroyed, the preset browser re-homed;
+`allPages` / `shownPages` / `rackShown` fall back to the views without a shell; `get bundled`). Why: SerumUI built its shell in the
+constructor only, so "the host — panel undo, dirty, view state — survives a switch" had no path; a second host with a transplanted undo
+stack was rejected. `sxViews(t, dev)` (idempotent: a part or Serum body mounting, renderCustom — built, or refreshed after undo / redo /
+a load) mounts the shell in the box (bundled) or VOICE (`mountPart 'voice'`) in the box and each mounted part body's panel (`mountPart`,
+`shown` = the module live, MACROS with `opts.tiles 'jack'`). A Serum's module made again in the same sync (VOICE ↔ whole panel: another
+jack set) keeps its element and host (cvUnmountBody); a removed device or another track drops them.
+
+**Modules.** `devices(T)` part entries `{ key, kind: 'part', dev, part, model: 'serum', title }` from `sx-edges partKeys(s, lay, dev,
+used)` (`used`: the track's link rows from that Serum); `kindOfKey` → `'part'`; `host.size` (PART_W rounded once sx-ui-mod has loaded,
+else cv-module's PART_W_DEF), `host.powerEl` (`View.power`), titles ('OSC B' · Serum; 'Serum · VOICE'), the ⋯ menus of §2.7 (VOICE: Show
+parts / Bundle, Add ▸ with ENV / LFO slots "· shaped", Modulation list…, Preferences… / Info…; a part: its panel's module items, Remove,
+Bundle), the panels' label drags on the bar titles (`sxLabels`; a mouse drag on the title still moves the module, checked in Chrome).
+Monitors: a parts host's subscription is live while any of its views is shown (`anyShown`).
+
+**Show parts / Bundle** (`sxSetView`): one step, `lay` only. The first Show parts lays the group (VOICE, its parts, its own FX) out by
+cv-module `tidy`, **its left edge where the bundled module stood, VOICE on its row** — VOICE itself at that place would put the sources over
+the modulator column at x < 0 —, and the modules right of it make room (`makeRoom`; never left, never a modulator). `lay[iN]` is shared by
+both views: later switches restore the stored places, the whole panel opens at VOICE's place and `cvRoom` makes room. Undo / redo of
+either switch views on the same host (canvas-3-sim: the host object and its panel undo across Show parts, Bundle, their undo and redo).
+
+**Places.** A part shown without a place (I1: a preset load, a ⏻ in the bundled panel — `sxPlaceNew` at every render, no step) or added by
+a tap (`sxSpot`) takes its column (note tools · sources · filters, or the own ENV / LFO / MACROS stack above VOICE) under its last member; a
+column of its own goes between its neighbours on VOICE's row, what stands right of it moving right. Tidy's heights are guesses, so places
+written by a rule — and tapped modulators — are settled once the module's panel is built and measured (`sxSettle`: moved clear of what they
+cover, no step; the headless-Chrome run showed four quick taps overlapping before it).
+
+**Add / remove** (`sxAddPart` / `sxRemovePart`, VOICE ⋯ → Add ▸, the tray): `firstFree`; the ⏻ written through the host (its panel undo
+too); full → the Q3 count, no step; an own ENV / LFO / MACROS something reads is not removable ("LFO 2 modulates 1 knob · its ⋯ → Remove All
+Destinations first"); "Show OSC C" (a hidden destination) = a `lay` entry only, no power. Step meta `{ trackId, dev, part, on, f }` —
+**`f` added to the contract's meta** so add / remove and canvas cable edits share one write-back (`sxBack`, applied in `applyRestore` after
+`keepDevs`): undo writes the before-values while every field holds its after-value, nothing when they already are, else a notice "…
+changed since: … left as it is" (redo likewise).
+
+**Cable drag resolver** (§2.5; `modDragOpts.port` = `intPort || port`, `canConnect` = `sxCan`, `onConnect` = `sxConnect`): internal ends
+through `setEdge` → one History step labelled 'OSC B → FILTER 2', meta `{ trackId, dev, f }` (sx-edges `f` as it stands), the fields
+through the host (its own labelled step), the notice '… · Undo' (History's undo); every other jack refuses with sx-edges' reason ("Serum
+sources play through their VOICE"); a mod-out onto a knob stays `modConnect`. `onAction`: disconnect → `cutEdge` (one step), BALANCE → the
+source part's routing popover (its panel's route button), a warp cable → the oscillator revealed + WHY.ro; a stub's tap → the routing
+popover; menus Balance… / Routing…. Keyboard: today's routing holds (a part root's keydown is its host's panel undo; the canvas → History):
+canvas-3-sim proves Cmd-Z after a canvas cable undoes the cable, not the earlier Show parts.
+
+**Own sources** (`sxOwnSrc`: 'iN/lfoK.out', VOICE's 'iN.env1', MACROS' 'iN/macros.kN'): onto its own Serum → `host.addModUI` (a native row:
+the Serum's undo, D11); elsewhere → a link row (2b); its macros elsewhere refused ("A Serum's macros modulate that Serum · use a Macro
+module"). Own cables ('o:…') open the inspector as matrix slots; bypass / disconnect through the Serum's edit.
+
+**cv-modlayer.** In parts view `presetRows` = every matrix row (own rows `own: true`: tag "Serum", no Keep on canvas) — the Mod list
+replaces MATRIX; `host.nativeLabel(dev, src)` names a Serum source; `host.hidden(dev, pid)` → `{ tag, show }` (`modHidden`: cv-module
+destPort's `hid`) — the tag in the list and the inspector, "Show OSC C" in its foot.
+
+**Slot hosts.** `modMount` gives `o.live` (`modLive`: `modPre` at the first live change with the record before kept; `setModState` per move;
+`N.modsHold`), `o.edit` (the hold released, `modEditState`), `o.cancel` (the record back in place, `modUnstep`), `o.rows` (Bypass / Remove
+All Destinations: one step each), `o.view` (`modViews`, by `trackId/key`, never saved), `storage`, `notify`, `devKey`; `body.sync()` after
+undo / redo / load is 2b's `cvModSync`. **Meters**: `mcMonitor` is track-level (dev null, role `'none'`: `partsOf` → []; `monitors.deliver`
+hands such a subscription any message carrying `mc`); `mcSnap` maps lane E's `mcx` — LFO `{ v, ph: ph[i], y: ph[10 + i], out }`, ENV `{ v,
+stage: env[i − 10], t: env[i − 6] }`.
+
+**Column, tray, D-R5.** `modSpot` / the drop ghost / a drop use `modX` / `modW` and measured heights; a drop over an instrument moves left
+of it (`modClear`). Tray: `parts: true` with `partPick` / `partDrag` (`sxPartDrop`): a Serum's first free slot (a bundled one shows its
+parts in the same step); on a classic track the notice "Serum parts belong to a Serum · Replace with Serum", its tap one step "Replace X
+with Serum" (the Serum in parts view + the part); tiles greyed with the Q3 counts (`sxPartsDecor`). D-R5: `SX_VIEW_DEFAULT = 'bundled'`,
+pref `synth.cv.sxView`, ⚙ → "New Serums open as" (`#sxView`, built in `initShell`); `setTrackModel` / `addTrack` apply it (`sxModelLay`
+also drops an old Serum's part places on a model change).
+
+**§9.4.** 1 done; 2 `cvTidy` / `cvRoom` (and its pin) carry `ui: 'parts'`; 3 cv-shell-sim changed first, then `#inst` / `#fxrack` gone
+(`#boot` and the noscript stay in `#cvParts`); 4 `cv-migrate.MOD_W6` frozen (+ a cv-migrate test); 5 done; 6 done (`powerEl` → `View.power`,
+`dev` as an id string, `firstFree(s, kind, skip)` with the shown ENV / LFO slots skipped).
+
+**Hook `__synthTest.cv.parts`**: cvParts' own fields stay (`home`, `root`, `scope`, `about`: canvas-sim and accessors read them) plus `show,
+add, remove, showPart, rec, list, isParts, connect, can, act, pick, drop, drag, replace, newView, VIEW_DEFAULT, VIEW_PREF, own, hidden,
+settle, spot, decor, module, widths, setModule, live, cancel, rowsOps, views, modSpot, modClear, mcSnap, presetRows`.
+
+**Other files.** tests/canvas-1e-sim and canvas-2a-sim: the Serum's ⋯ now lists Show parts (one assertion each). canvas-3-sim runs the real
+Serum panels in main-sim's DOM stub, given browser detach semantics (`remove`, a cleared `textContent`, a move into another parent) and an
+`ownerDocument` — without them a destroyed view's controls still answered the knob-end walks — and every DSP global null (the fixture
+check's lesson); peak RSS 0.71 GB.
+
+**Gates.** canvas-sim 22, canvas-1e-sim 24, canvas-2a-sim 26, canvas-2b-sim 23, cv-shell-sim 16, cv-fixes-sim 5, canvas-3-sim 12 (new),
+main 38 (+1), accessors 30, cv-modlayer 12, cv-migrate 43 (+1), lint 131 (the ratchet at its allowlist), pwa 22 (precache rebuilt), serum-ui
+60, sx-host 16, m3-fixture 13, app-ios 6, app 11, graph-host 22, keyboard 12, roll 42, presets 2, assets 36, midi 23; the accessor hook over
+canvas-3-sim: 0 calls; golden-classic 8, golden-fx 3, golden-presets 8, golden-random 1, golden-graph 6, canonical-stream 1: bit-identical.
+Headless Chrome (dpr 2, 1440 × 900 and 1024 × 1366): Show parts / Bundle and their undo / redo on one host; a pointer drag from OSC B's out to
+FILTER 2's in on the canvas = one step 'OSC B → FILTER 2' (route 0, b.fbal 1, f2.routeB 1), undone; a stub's tap opens 'OSC B routing'; a
+part's title drag moves it ('Move OSC B'); LFO / ENV / Macro / Chaos tapped at x −512 / −416 / −352 / −512 (416 / 320 / 256 / 416 wide),
+none over VOICE, clear of each other once settled; `canvasStats` minDensity 0.99; no console errors.
+
+**Open.** "Open UNISON" for a hidden unison destination is not built (it offers the oscillator, revealed); four modulators tapped in one go
+settle clear of each other but not in MOD_ORDER; the ui-bench real scenes `p1x-real` / `hwm-real` wait for the S0 builder's file.
+
+### 9.7 Fixes (review 1) (2026-10-20; fixer A; base 2ef9997; failing test first for each; F6 and note F7 left as they are, the lead's call)
+
+| # | finding | fix | test |
+|---|---|---|---|
+| F1 (P1) | the one host kept every view set it ever mounted: per-view disposers on the host's `offs` / `sats` (`tileDrag`, `moduleDrag`, `adopt`, serum-ui `rowDrag`), freed only at host destroy (≈ 10.7 MB per Show parts / Bundle) | each View has its own `offs` / `sats`; `viewNow()` = the page being built's view (a lazy build under its page counts), `offNow()` pushes there (else the host's); `labelDrag` registers under its view's page; `unmount(V)` runs `V.offs` and releases `V.sats` (one another live view also adopted stays); `dropShell` unmounts the shell views, so it runs them too; `destroy` runs every view's | sx-host "review 1 F1" (mount / destroy cycles: offs / sats level); canvas-3-sim "F1" (4 Show parts / Bundle cycles through main: offs / sats level). Reviewer's probes: p8b offs 1 → 1, sats 0 → 0; p8-leak (switch, `--expose-gc`) heap 67.1 → 68.1 MB over 50 switches (was 173.6 → 707.5) |
+| F2 (P1) | preset browsing in parts view piled modules up (17 for a 2-part preset) | the lead's rule, §3's amendment: `sxPlaceNew` and the first Show parts' group (`sxLayParts`, not the part being added) write `auto: 1`; `song.normLay`, Tidy, `cvRoom` / front / pin writes and the no-step settles keep it; a move / group move / fold (cvLay), `sxAddPart` (Add ▸, the tray), Show OSC C write the user's place. `sxPruneAuto(t, dev)` — automatic entries whose part `partKeys(s, null, …)` no longer wants — runs in `sxLoad` (browser, ◀ ▶, program change) and in `sxEdit` for a seeded edit (Init Preset, Hybridize, the panel's undo / redo of a load), in either view, no step. Found on the way: `cvPinned` (and cv-module's `'pin'` writes) re-pinned a just-pruned part's stale module without the mark — a part is never pinned now (its place is always written before its module exists) | canvas-3-sim "F2": all 86 factory presets in parts view → Laser Drop's 2 parts + the OSC B the user moved (dimmed), no step; the panel undo of the last load → that preset's parts + OSC B. Probe p5 (c): 2 modules (was 17). Heap over two passes of all 86 loads flat (68–86 MB) |
+| F3 (P2) | cable → Cmd-Z in the Serum → top ↶ undid Show parts while labelled the cable | `History` (song.js) never skips a step carrying `meta` as a no-op (undo, redo, `canUndoFrom` / `canRedoFrom`): what such a step did lives partly outside the snapshot (its Serum fields, written back from meta), so the ↶ that names it takes it alone; `hist.noop` says it changed nothing History holds, and `sxBackApply` then says "OSC B → FILTER 2 was already undone in Serum" (redone likewise). The smaller fix than a main-side pre-check of the top step (which would serialise the project per ↶ and reach into History's stacks); only meta steps (canvas cables, add / remove part, Save with preset / Keep on canvas) are affected, and their write-backs already handle "already so" | cv-migrate "3 (review 1)" (History unit: a no-op meta step taken alone, noop; without meta skipped as before); canvas-3-sim "F3" (↶ consumes the cable step, the view stays parts, the label then Show parts; ↷ writes the cable; a plain ↶ writes it back). Probe p11 passes |
+| F4 (P2) | an LFO read only by a row without a destination: a module (I2) Remove could not remove (a no-op step) | one rule — a row with no destination reads nothing: sx-edges `slotsUsed` skips rows without `dst` (so I2 / `partKeys`, `firstFree`, Add ▸ agree), and `sxRemovePart` refuses exactly when `slotsUsed(s, sxUsed(t, dev))` has the part (`sxReads` only counts for the message; both need a `dst`). Why not "refuse with the reason": the row modulates nothing, and the advice "Remove All Destinations" is disabled for it (srcDestItems counts rows with a `dst`) | jackrules partKeys test (dst-less src / aux / macro rows: no slot, no module, free for `firstFree`); canvas-3-sim "F4" (no module; Add ▸ LFO n then Remove: one step each, gone). Probe p5 (b) now fails on its premise only ("LFO 4 has a module") |
+| F5 (P2) | "Replace with Serum" acted on whatever track was selected when tapped | the offer captures the track id and its instrument; tapped once another track (or instrument) is selected, it only goes | canvas-3-sim "F5" (offered on a Juno-60 track, tapped on a Prophet-5 track: nothing replaced, no step; offered and tapped on the same track: replaced, one step). Probe p9 passes |
+
+**Gates** (each file alone): canvas-3-sim 17 (+5; peak RSS 1.4 GB, was 0.71: the 86-preset browse mounts panels per load — heap after GC flat), sx-host 17 (+1), serum-ui 60, m3-fixture 13, main 38,
+canvas-sim 22, canvas-1e-sim 24, canvas-2a-sim 26, canvas-2b-sim 23, cv-shell-sim 16, cv-fixes-sim 5, jackrules 13, cv-cables 37, cv-module 57,
+cv-migrate 44 (+1, the song.js test: there is no song.test file), cv-modlayer 12, accessors 30, appstore 25, lint 131, pwa 22 (precache
+rebuilt); golden-classic 8, golden-fx 3, golden-presets 8, golden-random 1, golden-graph 6, canonical-stream 1: bit-identical. Reviewer 1's
+probes on this tree: p8b, p9, p11 pass; p5 (a) (c) (d) pass, (b) as above; p7-walk seeds 7 / 29 / 101 pass.
+
+### 9.8 Fixes (review 2) (2026-10-20; fixer B; base 13bb225; a failing node test first wherever one can express it; each visual / interaction fix checked before and after with reviewer 2's headless-Chrome scripts, dpr 2)
+
+| # | finding | fix | test · Chrome |
+|---|---|---|---|
+| P1-1 | one touch tap on an internal cable disconnected it (the × appeared under the finger, the tap's own click hit it) | cv-cables: a touch / pen tap that selects arms `ghost`; the ×'s click drops the next click until a new press (the selecting tap's compatibility click); a mouse tap is unchanged (its click targets the common ancestor); mod cables unchanged (no ×) | cv-cables "review 2 P1-1"; ghost.mjs: route stays 0, no step (was "Disconnect OSC A → FILTER 1"); the mod cable unchanged |
+| P1-2 | a part mounted off screen was never painted until an edit (empty MACROS names, two filter menus, Rename, blank displays, an empty LFO grid; also after a reload with the engine off) | sx-host: every View is `stale` at mount and whenever a paint skips it hidden; a paint that finds a stale view shown is a full one; `host.reshow()` queues one; main's `sxReshow` calls it from cv-module's host.shown (a module on screen, unfolded) and when the CANVAS tab shows | sx-host "review 2 P1-2" (mounted hidden → shown → painted; hidden through an edit → shown → the edit); canvas-3-sim "P1-2" (a module off screen, an edit, on screen: painted, engine off); x6.mjs: names, one type menu + MAIN, OSC B's MAIN (no Rename), the displays drawn; stale.mjs: the LFO grid "8" after the fit with the engine off |
+| P1-3 | ui-bench `?m3=1` broken | fixed in the base (21b47ef, the real scenes too) | `?m3=1` and `?m3=1&real=1` run end to end here (below) |
+| P1-4 | a modulator dropped just above an instrument covered it (the OB-Xa face left GL); a drop over the instrument landed on another modulator | main `modHt(kind)`: the measured height of a module of the kind on the canvas, else the last measured, else Chrome's at 1200 px (`MOD_H_SX`: LFO 451, ENV 371, Macro 250, Chaos 135; cv-module's `MOD_H` stays Tidy's guess) — in `modSpot`, `modClear`, the drop ghost and the drop; `modClear` moves left of an instrument, then below whatever it would cover (one column); drops settle (`sxFresh`) as taps | canvas-3-sim "P1-4" (a measured 451 vs the 256 guess; onto VOICE at the column's height: clear of every module; a tile drop settles clear); x12.mjs: the LFO at (−512, −288), face gl, glFaces 1 (was over the face, dom, 0); hw.mjs at 3 sizes: no overlap, face gl |
+| P1-5 | a stub's tap opened and closed its routing popover in one tap; at k ≤ 0.5 the out jack covered the stub | cv-cables tells `onSelect(id, pointerType)` for a tap; main opens a stub's routing after the tap's click (`afterTap`: the window's capture click → a 0 ms timer, else 600 ms) — inside the tap the world still holds its gesture and takes a synthetic click (cv-world `onClickCap`); a selection without a tap opens at once. A stub keeps `STUB_PX` screen px below k 1, at most `STUB_MAX` 136 world px (Tidy's GAP 160), re-laid at a zoom's end | cv-cables "P1-5" (k 0.4 / 0.5 / 2, the pointer type); canvas-3-sim "P1-5" (nothing inside the tap; open after its click; at once without one); x10b.mjs mouse and touch at k 1 and 0.4: "OSC B routing", route 0; x9.mjs at 0.4: the hit is the cable; taps.mjs: stub and BAL by touch open "OSC B routing" |
+| P1-6 | the default Serum as parts: OSC A looked unconnected (FILTER 1 off, no module) | the lead's decision — cv-cables `internal()`: a source's edge into a filter that is off with no `lay` entry is a dimmed stub "→ Filter 1 (off)" (`off: 'filter'`, its id and edge kept: Disconnect cuts the route); main: its tap opens the source's routing and the offer "FILTER 1 is off · tap to turn it on" (`sxOffOffer` → Add FILTER 1: module, ⏻, the cable into it — one step, bound to the track); its menu Routing…, Turn FILTER 1 on | cv-cables "P1-6"; canvas-3-sim "P1-6" (offer → one step, undo → the stub and its menu again); x13b.mjs (touch): the dimmed stub, "OSC A routing" + the offer, its tap → "Add FILTER 1", the cable into it (`shots/p16-*.png`) |
+| P1-7 | the hidden-destination tag covered FILTER 1's bar (its ⋯ unreachable) | a hidden destination ends at VOICE's top-left corner (cv-module, was its bar's middle); its tagged badge sits right of the end and above the bar (CSS `.cv-mbadge.cv-hid`), several stacking upwards (`HID_STEP` 22 screen px) — never left of the end, where Tidy puts FILTER 1 | cv-cables "P1-7", canvas-3-sim "P1-7", cv-module's hidden-end expectation updated (the corner); hidden.mjs: badge 660–811 × 179–197 above VOICE, FILTER 1's ⋯ hit = `cv-more` (was `cv-mbadge`); "Show OSC C" as before |
+| P2 parity | 93.6–99.7 % within 8/255: text rastered at other sub-pixel origins | sx-ui-mod `PART_W` to the layout unit (1/64 px, the part root's width exact: 256.65625 for 256.6 …) and `PART_PH` (each panel body's world offset mod 1 px in the bundled panel); sx-host `alignPhase` moves a part's / canvas modulator's panel (relative, < 1 px) to that phase when the view shows (VOICE: VOICING and ENV 1 apart) — the world layer rasters text at each element's own fractional origin | sx-host "review 2 P2 parity"; parity.mjs bodies (≤ 8/255, k 1, dpr 2): OSC A 99.994, OSC B 99.940, OSC C 99.983, SUB 99.963, NOISE 99.928, FILTER 1 / 2 99.642, MACROS 99.868, ENV 1 100, ENV 2 100, LFO 1 99.827, VOICING 99.568; canvas LFO 98.887 (its MONO lit: the canvas default GLOBAL; 99.928 at MONO off, the same state), ENV 99.393, Macro 99.642, Chaos 99.820 (its one row against the GLOBAL page's two-row panel); knob diameters and `--wk-d` equal |
+| P2 density | `canvasStats().onMin` 0.99 (the border box; stores rounded down) | cv-world `canvasStats` measures the content box both ways; wk `fitCanvas`, sx-host's displays and sx-ui-seq's lanes round stores up (identical at k 1) | cv-world "review 2 P2" (a bordered canvas 1:1; k 0.4: 159 × 119, ≥ 1); dens.mjs (Serum fully opened + 4 modulators, VOICE / column / FX centred): onMin 1 at k 0.25 / 0.5 / 1 / 1.5 / 2 |
+| P2 ENV playhead | a canvas ENV cabled to a Serum knob never moved its playhead (injected into the Serum's ENV slot: no ModCore slot) | main `sxInjEnv(t)` (per payload, from cv-graph `injectMods().inj`, also when the payload is off) and `sxInjSnap` on the Serum's own snapshot: the body takes that slot's stage / time / level; the Serum's subscription stays live while such an ENV is on screen | canvas-3-sim "P2 ENV" (also with the payload off); envph.mjs, engine on, held note: stage 0 → 3 (t 0.13 … 0.89) → 4, bundled and parts |
+| P2 places | a tray part dropped on VOICE overlapped it; after a preset load OSC C above OSC B, FILTER 2 above FILTER 1 | `sxSettle` settles a batch together once every panel is up, top to bottom (the stack above VOICE bottom to top), each clear of what stands and of the members settled before it (a member covering the next one used to move below it); a part tile dropped on a module lands below it (`sxDropClear`; above for the stack) and settles | canvas-3-sim "P2 places" (heights taller than the guesses: A · B · C, 1 · 2, no overlap; a drop on VOICE clear); preset.mjs "Drift Machine": OSC A 0 · B 768 · C 1536, FILTER 1 0 · 2 512, no overlap; tray.mjs: FILTER dropped on VOICE at (608, 992), no overlap |
+| P2 small | no GLOBAL / PER NOTE badge; the canvas Chaos without "CHAOS 1", MONO on | `cvBadge`: an LFO's GLOBAL / PER NOTE (a canvas LFO's record, an own LFO part's slot), a neutral `tone: 'mode'` badge (cv-module `setBadge(text, tone)`); `ChaosRow` keeps its label in a slot host ("CHAOS <n>", the module's number); cv-model `addModDev`: a new Chaos starts at Serum's own chaos row (MONO, S&H off) — records without the fields keep MONO on (fixtures, goldens unchanged). Note: a new Chaos is now PER NOTE, so its cables draw dashed ("follows the most recent note") until MONO is on — **the lead kept the GLOBAL default** (mono 1, like a canvas LFO: a per-note chaos on a classic knob would restart at every note) | canvas-3-sim "P2 badge"; sx-host chaos (label, "CHAOS 2" for h2); cv-model 2b defaults |
+| MACROS names | "acro 1": 45–48 px names in 26 px, clipped at both ends (the whole panel too) | sx-host CSS: `.sx-macro` padding 4 px 2 px, its tile 2 px 1 px at 9.5 px; the label shrinks with an ellipsis; the destination count on the tile's corner — everywhere (whole panel, part, canvas Macro) | macroclip.mjs: 36–38 px in 42 px (was 45–48 in 26), "Brightness" → "Bright…"; regress.mjs vs canvas HEAD: OSC 99.769 %, MIX 99.765 %, FX 99.721 % — only the MACROS tiles —; MATRIX, ARP, CLIP, GLOBAL 100 % |
+| left | the panel label drag (swap / copy) from a part's title on the canvas | as it is (the lead's call): ⋯ → Swap with ▸ / Copy work | — |
+
+**Gates** (each file alone): canvas-3-sim 25 (+8; peak RSS 1.29 GB), sx-host 19 (+2), serum-ui 60, sx-ui-osc 52, sx-ui-mix 17, sx-ui-seq 51,
+m3-fixture 13, cv-cables 41 (+4), cv-module 57, cv-world 58 (+1), wk 100, main 38, canvas-sim 22, canvas-1e-sim 24, canvas-2a-sim 26, canvas-2b-sim 23,
+cv-shell-sim 16, cv-fixes-sim 5, cv-mods-ui 12, cv-mods 16, cv-tray 30, cv-model 8, cv-migrate 44, cv-modlayer 12, jackrules 13, accessors 30,
+graph-host 22, lint 131, pwa 22 (precache rebuilt); golden-classic 8, golden-fx 3, golden-presets 8, golden-random 1, golden-graph 6, canonical-stream 1:
+bit-identical. Headless Chrome: reviewer 2's life / cables / tray / hw / touch at 1440 × 900, 1366 × 1024 and 1024 × 1366, x6, x9, x10, x12, ghost,
+taps, stale, hidden, preset, parity, regress, macroclip: no console error or warning. budget.mjs: Serum (complete) 705 / 4, fully opened 2557 / 16,
+LFO 120 / 2, ENV 126 / 2, Macro 103 / 0, Chaos 35 / 0; onMin 1 at every k. ui-bench (reviewer 2's bench-all, headless, dpr 2): `?m3=1` end to end —
+auto / hand / hold, 8 scenes, every self-check ok, hw5 first and last, 0 page errors; `?m3=1&real=1` end to end — hw5 → p1x-real (3277 painted, 26
+canvases) → hwm-real (5456 / 9) → hw5, self-checks ok, one build, 0 page errors (Mac headless timings informational only).
+
+### 9.9 The S0 notice (2026-10-20; the user's iPad session, `tests/bench.json` `"ui-m3"`; `main.js`, `tests/canvas-3-sim.test.mjs`, sw.js BUILD)
+
+§1.5's row "`p1x` P (not P+) … a notice on touch devices when a track's painted elements pass the largest P+ scene's count", built. The session's
+numbers: `sx1` (one whole-panel Serum) P+ at **1866 painted elements**; `p1x` (a fully opened Serum in parts + modulators, 3176) failed (settle 106).
+So `SX_HEAVY = 1866`. **Where**: `cvRender`'s tail calls `sxHeavySoon()`, which every change of the module set goes through — Show parts, Add part, a
+tray drop, a preset / project load, a track switch. **When**: touch devices only (`touchDev`: the soft caps' rule), the track holds a Serum in
+parts, and its module key set is not the one last counted (`sxHeavySig`); a 600 ms timer then counts **once at rest** — it waits again while the
+camera moves (`cvW().busy`), a switch mounts (`cvMount` / `cvHold`) or a timed notice shows (an "Added OSC B · tap to undo" keeps its tap; the
+stutter notice follows it), and does nothing while the canvas is not home. **Count** = `ui-bench-m3`'s `painted`: elements of the track's modules
+(`cvView.modules`, on or off screen, off parts included: dimmed, still painted) with a layout box — a folded module's body or a hidden page has none
+and is skipped with its subtree (`sxPainted`). **Said** (`notice`, 9 s, `sxHeavyDone`: once per page load, never again): "This many Serum parts may
+stutter when zooming on this device — Bundle (⋯) puts it back together." No History step, nothing on a desktop, nothing for a bundled Serum.
+Hook: `cv.parts.painted()` / `heavyReset()` / `HEAVY` / `HEAVY_MS`. **Test** canvas-3-sim "S0 notice": a Serum with VOICE + OSC A + FX on touch (828 painted
+in the stub DOM) says nothing; fully opened (3880) on a desktop, nothing; touch, Bundle: nothing, Show parts mid-gesture: nothing, at rest: the
+notice, no extra step; Bundle / Show parts again: nothing; after `heavyReset` an Add part keeps its undo notice, the stutter notice follows it.
+The test's stub DOM answers `getClientRects` for every element but the shared `.scope` one, which the test now patches (stub only). **Gates** (each file
+alone): canvas-3-sim 26 (+1; the one test waits ~9 s on the real 8 s undo notice), main 40, canvas-sim 22, lint 133, pwa 22 (precache rebuilt).
 
 ## 10. Review log (revision 2, 2026-10-19: the contract review, 25 points)
 

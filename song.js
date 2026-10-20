@@ -419,7 +419,7 @@ const snapSame = (a, b) => a.m === b.m && (a.t === b.t || (!!a.t && !!b.t && a.t
 export class History {
   constructor(limit = 200, maxChars = 64e6) {
     this.limit = Math.max(1, R(num(limit, 200))); this.max = Math.max(0, num(maxChars, 64e6));
-    this.u = []; this.r = []; this.pool = new Map(); this.size = 0;
+    this.u = []; this.r = []; this.pool = new Map(); this.size = 0; this.noop = false;
   }
   _snap(project) {
     const js = x => { const s = JSON.stringify(x); return s === undefined ? 'null' : s; };
@@ -454,20 +454,26 @@ export class History {
     this._trim();
     return true;
   }
+  // A step carrying meta is never skipped as a no-op: what it did lives partly outside the snapshot (a canvas cable's
+  // Serum fields, written back from its meta — knob tweaks are kept across undo), so a step another undo already reverted
+  // there looks like nothing; the ↶ that names it consumes it alone (this.noop says so) instead of undoing the step
+  // before it (canvas milestone 3, review 1 F3)
   undo(project) {
     const cur = this._snap(project);
-    while (this.u.length && snapSame(this.u[this.u.length - 1], cur)) this._drop(this.u.pop());   // skip snapshots of edits that changed nothing
+    while (this.u.length && this.u[this.u.length - 1].meta === undefined && snapSame(this.u[this.u.length - 1], cur)) this._drop(this.u.pop());   // skip snapshots of edits that changed nothing
     if (!this.u.length) return null;
     const e = this.u.pop(), out = this._load(e);
+    this.noop = e.meta !== undefined && snapSame(e, cur);
     this.r.push(this._hold(cur, e.label, e.meta)); this._drop(e);
     this._trim();
     return out;
   }
   redo(project) {
     const cur = this._snap(project);
-    while (this.r.length && snapSame(this.r[this.r.length - 1], cur)) this._drop(this.r.pop());
+    while (this.r.length && this.r[this.r.length - 1].meta === undefined && snapSame(this.r[this.r.length - 1], cur)) this._drop(this.r.pop());
     if (!this.r.length) return null;
     const e = this.r.pop(), out = this._load(e);
+    this.noop = e.meta !== undefined && snapSame(e, cur);
     this.u.push(this._hold(cur, e.label, e.meta)); this._drop(e);
     this._trim();
     return out;
@@ -490,7 +496,7 @@ export class History {
     if (n > 1 && !snapSame(st[n - 1], st[n - 2])) return true;   // cheap: two different states can't both equal the current one
     if (!n) return false;
     const cur = this._snap(project);
-    return st.some(e => !snapSame(e, cur));
+    return st.some(e => e.meta !== undefined || !snapSame(e, cur));   // (a meta step is never skipped: undo / redo takes it)
   }
   get undoLabel() { return this.u.length ? this.u[this.u.length - 1].label : ''; }
   get redoLabel() { return this.r.length ? this.r[this.r.length - 1].label : ''; }
@@ -521,6 +527,7 @@ export function normLay(lay) {
     if (e.fold) o.fold = 1;
     if (finN(e.z)) o.z = clamp(R(e.z), 1, 1e6);
     if (LAY_UI.includes(e.ui)) o.ui = e.ui; // a classic instrument's Simple layout (IMPL-panels §7.1; absent = Hardware), a Serum's parts view (schema 7); view only
+    if (e.auto) o.auto = 1; // a Serum part's place written by the rule, not the user (a load prunes it once the part is off and unread; IMPL-3 §3)
     out[k] = o; n++;
   }
   return n ? out : undefined;

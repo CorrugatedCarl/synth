@@ -927,10 +927,15 @@ test('3 schema 7: STEPS[6] moves stored modulator places only — the content an
   const frozen = deepFreeze(jclone(p6)), up = M.upgrade(frozen);
   assert.deepEqual([up.from, up.readOnly, up.p.schema], [6, false, 7]);
   const L = up.p.tracks[0].lay;
-  // (cv-module's widths today: every kind W_MOD — no growth; the chaos module laid over the Serum moves left past it)
-  assert.deepEqual(Object.assign({}, L, { h1: null }), Object.assign({}, t.lay, { h1: null }), 'every other entry as it was (folds, z kept)');
-  // (off the Serum: past its left edge − MOD_GAP (−320, on the dots), where it meets LFO 2 (y 320…): past that one too)
-  assert.deepEqual(L.h1, { x: Math.floor((Math.floor((0 - CVM.MOD_GAP - CVM.W_MOD) / 32) * 32 - CVM.MOD_GAP - CVM.W_MOD) / 32) * 32, y: 100 }, 'off the Serum, then off LFO 2');
+  // (cv-module's MOD_W (lane C): LFO / ENV / Macro keep their right edge at −MOD_GAP and grow left from MOD_W0; the CC row, NOTE,
+  //  the wheel stay; the chaos module laid over the Serum moves left past it)
+  const g = k => -320 + M.MOD_W0 - CVM.modW(k), want = Object.assign(jclone(t.lay), { h1: null });
+  Object.assign(want.l1, { x: g('lfo') }); Object.assign(want.l2, { x: g('lfo') }); Object.assign(want.e1, { x: g('env') }); Object.assign(want.m1, { x: g('macro') });
+  assert.deepEqual(Object.assign({}, L, { h1: null }), want, 'every other entry as it was but the grown ones (folds, z kept)');
+  // (off the Serum: past its left edge − MOD_GAP (on the dots), where it meets the grown LFO 2 (y 320…): past that one's left edge too)
+  const wc = CVM.modW('chaos'), x0 = Math.floor((0 - CVM.MOD_GAP - wc) / 32) * 32;
+  assert.ok(x0 + wc > g('lfo'), 'the first step lands on LFO 2');
+  assert.deepEqual(L.h1, { x: Math.floor((g('lfo') - CVM.MOD_GAP - wc) / 32) * 32, y: 100 }, 'off the Serum, then off LFO 2');
   assert.deepEqual(Object.assign({}, up.p.tracks[0], { lay: null }), Object.assign(jclone(t), { lay: null }), 'content unchanged');
   assert.deepEqual(frozen, jclone(p6), 'the input untouched');
   assert.equal(M.upgrade(up.p).p.tracks[0].lay.h1.x, L.h1.x, 'at 7: nothing moves again');
@@ -950,6 +955,15 @@ test('3 growMods (IMPL-3 §2.2): with Serum\'s widths each LFO / ENV / Macro / C
   const R = rects(g, W3, false), mods = Object.keys(R).filter(k => R[k].kind === 'mod');
   for (const a of mods) for (const b of Object.keys(R)) if (a !== b && (R[b].kind !== 'mod' || ['l1', 'l2', 'e1', 'm1', 'h1'].includes(a))) assert.equal(over(R[a], R[b]), false, a + ' × ' + b);
   assert.equal(M.growMods({ tracks: [MB.tracks()[0]] }, W3).tracks[0].lay, undefined, 'no stored places: nothing to move');
+});
+
+test('3 STEPS[6]\'s widths are frozen in cv-migrate (MOD_W6: cv-module MOD_W at milestone 3 — a later width change never changes what a schema-6 project opens as); growMods grows to them by default', () => {
+  assert.deepEqual(M.MOD_W6, { lfo: 416, env: 320, macro: 256, chaos: 416 });
+  assert.equal(Object.isFrozen(M.MOD_W6), true);
+  for (const k of Object.keys(M.MOD_W6)) assert.equal(M.MOD_W6[k], CVM.MOD_W[k], k + ': equal to MOD_W today');
+  const t = MB.tracks()[1];
+  t.lay = { l1: { x: -320, y: 0 }, e1: { x: -320, y: 640 }, m1: { x: -320, y: 960 }, h1: { x: -640, y: 0 } };
+  assert.deepEqual(M.growMods({ tracks: [jclone(t)] }).tracks[0].lay, M.growMods({ tracks: [jclone(t)] }, k => M.MOD_W6[k]).tracks[0].lay);
 });
 
 test('3 gate: after STEPS[6] no modulator rect intersects an instrument in the fixtures — every stored place over the instruments, hardware and Simple, a folded one, the wheel', () => {
@@ -985,6 +999,27 @@ test('3 song.normLay keeps Serum part keys (iN/oscA, iN/filter2), ui \'parts\' a
   u.lay = { i2: { x: 0, y: 0 }, 'i2/oscA': { x: 0, y: 0 }, l1: { x: -320, y: 0 }, 'l1/x': { x: 0, y: 0 } };
   MO.removeInst(u, 'i2'); MO.removeModDev(u, 'l1');
   assert.deepEqual(u.lay, {});
+});
+
+test('3 (review 1): song.normLay keeps a part place\'s automatic mark (auto: 1, F2); History never skips a step carrying meta as a no-op — its ↶ / ↷ takes it alone and says noop (F3)', () => {
+  const n = S.normLay({ 'i1/oscB': { x: 0, y: 0, auto: 1 }, 'i1/lfo2': { x: 0, y: 0, auto: true }, 'i1/oscA': { x: 0, y: 0, auto: 0 } });
+  assert.deepEqual(n, { 'i1/oscB': { x: 0, y: 0, auto: 1 }, 'i1/lfo2': { x: 0, y: 0, auto: 1 }, 'i1/oscA': { x: 0, y: 0 } });
+  // a meta step that changed something: undone as before (noop false)
+  const h = new S.History(10), p = { uid: 'u', tracks: [{ id: 't1', v: 0 }] };
+  h.record(p, 'Show parts'); p.tracks[0].v = 1;
+  h.record(p, 'OSC B → FILTER 2'); h.u[h.u.length - 1].meta = { dev: 'i1', f: [] };
+  p.tracks[0].v = 2;
+  assert.deepEqual([h.undo(p).tracks[0].v, h.noop, h.undoLabel, h.redoLabel], [1, false, 'Show parts', 'OSC B → FILTER 2']);
+  // the same step a no-op (what it changed was put back outside History): taken alone — not the Show parts before it
+  const h2 = new S.History(10), r = { uid: 'u', tracks: [{ id: 't1', v: 0 }] };
+  h2.record(r, 'Show parts'); r.tracks[0].v = 1;
+  h2.record(r, 'OSC B → FILTER 2'); h2.u[h2.u.length - 1].meta = { dev: 'i1', f: [] };
+  assert.deepEqual([h2.canUndoFrom(r), h2.undo(r).tracks[0].v, h2.noop, h2.undoLabel, h2.redoLabel], [true, 1, true, 'Show parts', 'OSC B → FILTER 2']);
+  assert.deepEqual([h2.canRedoFrom(r), h2.redo(r).tracks[0].v, h2.noop, h2.undoLabel], [true, 1, true, 'OSC B → FILTER 2']);
+  // without meta: skipped, as before
+  const h3 = new S.History(10), w = { uid: 'u', tracks: [{ id: 't1', v: 0 }] };
+  h3.record(w, 'Show parts'); w.tracks[0].v = 1; h3.record(w, 'Plain');
+  assert.deepEqual([h3.undo(w).tracks[0].v, h3.redoLabel], [0, 'Show parts']);
 });
 
 test('3: a schema-7 project opens read-only in a schema-6 build (the store\'s gate) and loads at 7 here', async () => {
