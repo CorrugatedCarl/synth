@@ -244,7 +244,7 @@ test('R0 the track list and the instrument menu name each track\'s instrument mo
 
 test('R0 the multisample zone: zoneWarm reads the shown Serum\'s multisample records, zoneOf gives the recent voice\'s zone sample', async () => {
   api.selectTrack(sxT.id); sim.raf();
-  const d = P(sxT), prim = CMOD.primId(sxT), r = acc.sxRecOf(sxT.id, prim);
+  const d = P(sxT), prim = CMOD.primId(sxT), r = acc.sxRec(sxT, prim); // (its panel record: R6, one per Serum)
   d.vals.s.osc[0].type = 'multi'; d.vals.s.osc[0].multi = 'smp:accms';
   acc.msRecs.set('smp:accms', { zones: [{ smp: 'smp:z0' }, { smp: 'smp:z1' }] });
   const was = { ui: r.ui, trackId: r.trackId };
@@ -379,6 +379,32 @@ test('R4 the asset manager reads every Serum and panel (states()): a sample a se
   assert.equal(t.dev[id].vals.s.osc[0].smp, 'smp:accuser2', 'relinked in the second Serum');
   assert.equal(acc.sxDirty.has(VK(t, id)), true, 'through its own edit (sxEdit on its view)');
   t.dev[id].vals.s.osc[0].type = 'wt'; t.dev[id].vals.s.osc[0].smp = '';
+});
+
+test('R6 the per-model value memory is the current instrument\'s view (no globals): a second instrument\'s values are not written', () => {
+  const { t, id } = duo('juno60', 'dx7'), dx0 = JSON.stringify(api.store.get('synth.v.dx7', null));
+  P(t).vals.cf = 3.75; t.dev[id].vals.alg = 9;
+  api.save();
+  assert.deepEqual([api.store.get('synth.v.juno60', {}).cf, JSON.stringify(api.store.get('synth.v.dx7', null)) === dx0], [3.75, true]);
+  assert.equal(acc.curModel().id, 'juno60', 'the current instrument: the primary (1f)');
+  api.setTrackModel(acc.instView(t, id), 'prophet5'); sim.raf(); // (the second one replaced: the memory stays the current one's)
+  assert.equal(JSON.stringify(api.store.get('synth.v.dx7', null)) === dx0, true);
+});
+
+test('R6 homes and singletons: every instrument\'s body and panel record its own, the primary\'s too; zoneOf reads the asked Serum\'s record', () => {
+  const { t, id } = duo('serum', 'serum'), prim = CMOD.primId(t);
+  assert.deepEqual([cv.bodyEl(prim) === cv.bodyEl(id), 'inst' in cv.parts, 'fx' in cv.parts, cv.sxRec(t, prim) === cv.sxRec(t, id)], [false, false, false, false]);
+  assert.equal(cv.fxRec(t, prim + '/fx') === cv.fxRec(t, id + '/fx'), false);
+  const recs = [acc.sxRec(t, prim), acc.sxRec(t, id)], was = recs.map(r => ({ ui: r.ui, trackId: r.trackId }));
+  for (const [k, dev] of [[0, prim], [1, id]]) { const d = t.dev[dev]; d.vals.s.osc[0].type = 'multi'; d.vals.s.osc[0].multi = 'smp:accz' + k; acc.msRecs.set('smp:accz' + k, { zones: [{ smp: 'smp:z' + k + 'a' }, { smp: 'smp:z' + k + 'b' }] }); }
+  recs[0].ui = { refresh() {}, destroy() {}, snap: { zone: [0, -1, -1] } }; recs[1].ui = { refresh() {}, destroy() {}, snap: { zone: [1, -1, -1] } };
+  recs[0].trackId = recs[1].trackId = t.id;
+  try {
+    assert.deepEqual([acc.zoneOf(0), acc.zoneOf(0, prim), acc.zoneOf(0, id)], ['smp:z0a', 'smp:z0a', 'smp:z1b'], 'default: the current Serum\'s');
+  } finally {
+    recs.forEach((r, k) => Object.assign(r, was[k]));
+    for (const [k, dev] of [[0, prim], [1, id]]) { t.dev[dev].vals.s.osc[0].type = 'wt'; t.dev[dev].vals.s.osc[0].multi = ''; acc.msRecs.delete('smp:accz' + k); }
+  }
 });
 
 test('R2 Resample to on a second Serum: rendered alone through its own patch (buildInstPatch), into its own oscillator', async () => {

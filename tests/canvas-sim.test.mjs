@@ -66,13 +66,14 @@ function drag(m, dx, dy) {
 // a drag by world px at the camera's zoom (a wide fixed-size instrument's reveal zooms the camera out)
 const dragW = (m, dx, dy) => drag(m, dx * W.k, dy * W.k);
 
-test('boot: the selected track\'s three modules hold #inst, #fxrack and the scope; #cvParts hidden; Tidy without lay', () => {
+test('boot: the selected track\'s three modules hold their devices\' own elements and the scope; #cvParts hidden; Tidy without lay', () => {
   assert.equal(W.items.size, 3);
   assert.deepEqual([...V().modules.keys()], ['i1', 'fx1', 'out']);
   assert.equal(V().trackId, T().id);
   assert.equal(cv.parts.home.hidden, true);
-  assert.equal(cv.parts.inst.parentNode === V().modules.get('i1').body, true, '#inst in the instrument body');
-  assert.equal(cv.parts.fx.parentNode === V().modules.get('fx1').body, true, '#fxrack in the FX body');
+  // (milestone 3 R6: the primary and its FX have elements of their own, as every device — no #inst / #fxrack homes)
+  assert.equal(cv.bodyEl('i1').parentNode === V().modules.get('i1').body, true, 'the instrument\'s element in its body');
+  assert.equal(cv.bodyEl('fx1').parentNode === V().modules.get('fx1').body, true, 'the FX panel\'s element in its body');
   assert.equal(cv.parts.scope.parentNode === V().modules.get('out').body, true, 'the scope in OUT');
   assert.equal('lay' in T(), false, 'no lay written by just looking');
   // the Minimoog's Hardware layout: a fixed 1408 × 512 module (cv-panel sizeOf), Tidy places the FX panel after it
@@ -88,15 +89,15 @@ test('boot: the selected track\'s three modules hold #inst, #fxrack and the scop
   assert.deepEqual(cv.menu('out', 'out').map(x => x.label), ['Fold']);
 });
 
-test('the Hardware layout: #inst is the hardware panel; the module is fixed at cv-panel sizeOf (no grip, no measuring)', () => {
+test('the Hardware layout: the instrument\'s element is the hardware panel; the module is fixed at cv-panel sizeOf (no grip, no measuring)', () => {
   const m = V().modules.get('i1'), mdl = MODELS.find(x => x.id === 'minimoog'), sz = cvPanel.sizeOf(cvPanel.layoutOf('minimoog'), mdl);
   assert.deepEqual(sz, { w: 1408, h: 512 });
   assert.deepEqual(m.fixed, sz);
   assert.deepEqual([m.rect().w, m.rect().h], [1408, 512], 'rect() = the fixed size');
   assert.equal(m.el.hasAttribute('data-cv-fixed'), true, 'the grip hides');
   assert.equal(cv.instUi(T()), 'hw');
-  assert.ok(cv.hw() && cv.hw().w === 1408, 'cv-panel rendered #inst');
-  assert.match(cv.parts.inst.className, /\binst hw\b/);
+  assert.ok(cv.hw() && cv.hw().w === 1408, 'cv-panel rendered the instrument');
+  assert.match(cv.bodyEl('i1').className, /\binst hw\b/);
 });
 
 test('default camera: k = 1, the instrument 24 px inside the visible band (no saved camera)', () => {
@@ -124,7 +125,7 @@ test('a top-bar move: track.lay written, one History step; undo restores the pla
   assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [1568, 0], 'the module went back');
   cv.redo();
   assert.deepEqual([V().modules.get('fx1').x, V().modules.get('fx1').y], [1728, 96]);
-  assert.equal(V().modules.get('fx1').body === cv.parts.fx.parentNode, true, 'no remount through undo / redo');
+  assert.equal(V().modules.get('fx1').body === cv.bodyEl('fx1').parentNode, true, 'no remount through undo / redo');
 });
 
 test('fold and Tidy: one History step each; Tidy keeps widths and folds', () => {
@@ -170,7 +171,7 @@ test('track switch: the view is rebuilt for the new track (cards first: world cl
   assert.equal(V().trackId, t2.id);
   assert.ok(W.log.includes('clear'));
   assert.deepEqual(W.cam, { tx: 68, ty: 24, k: 1 }, 'a new track: the default camera');
-  assert.equal(cv.parts.inst.parentNode === V().modules.get('i1').body, true, 'the parts moved to the new view');
+  assert.equal(cv.bodyEl('i1').parentNode === V().modules.get('i1').body, true, 'the new track\'s own element in its view');
   cv.camFlush();
   assert.ok(!api.store.get('synth.cam', null).e.some(e => e[0] === CM.camKey(P().uid, t2.id)), 'an untouched default camera is not stored');
   W.cam = { tx: 10, ty: 20, k: 1.5 }; W.k = 1.5;
@@ -211,8 +212,9 @@ test('monitors ({t: mon, ids}) follow the module: on while the Serum module is o
   assert.deepEqual([...V().modules.keys()].sort(), ['i1', 'i1/fx', 'out']);
   // the SerumUI does not load in the simulation: a stand-in panel for this track
   const refresh = { sx: 0, fx: 0 };
-  cv.sxPanel.ui = { refresh() { refresh.sx++; }, destroy() {}, setSnapshot() {}, confirmChange: () => true, snap: null };
-  cv.sxPanel.trackId = t.id; cv.sxPanel.vals = T().vals;
+  const sxR = cv.sxRec(T(), 'i1'), fxR = cv.fxRec(T(), 'i1/fx'); // (R6: the Serum's and its FX module's records, per device)
+  sxR.ui = { refresh() { refresh.sx++; }, destroy() {}, setSnapshot() {}, confirmChange: () => true, snap: null };
+  sxR.trackId = t.id; sxR.vals = T().vals;
   const mons = () => api.nodes.get(t.id).node.posted.filter(x => x.m && x.m.t === 'mon').map(x => x.m.ids);
   const smon = () => mons().map(ids => ids.length > 0); // (on: any part subscribed)
   api.sxHost(T()).monitor(true);
@@ -241,7 +243,7 @@ test('monitors ({t: mon, ids}) follow the module: on while the Serum module is o
   cv.undo(); cv.undo();
   assert.deepEqual([smon().slice(-1), V().live('i1'), V().live('i1/fx')], [[true], true, true], 'both unfolded');
   // peer refresh: a Serum edit refreshes the FX module, an FX edit the Serum panel — never the editor itself
-  cv.fxTab.ui = { refresh() { refresh.fx++; }, destroy() {} }; cv.fxTab.trackId = t.id; cv.fxTab.fx = T().fx; cv.fxTab.sx = true;
+  fxR.ui = { refresh() { refresh.fx++; }, destroy() {} }; fxR.trackId = t.id; fxR.fx = T().fx; fxR.sx = true;
   sim.raf(); await sim.settle(5); sim.raf(); // (an outside refresh still queued: sxRefresh)
   refresh.sx = 0; refresh.fx = 0;
   api.sxHost(T()).edit(s => { s.p['a.level'] = 0.5; }, { label: 'x' });
@@ -262,7 +264,7 @@ test('monitors ({t: mon, ids}) follow the module: on while the Serum module is o
   V().toggleFold('i1/fx');
   sim.raf();
   assert.equal(refresh.fx, 2, 'refreshed once it shows');
-  cv.sxPanel.ui = null; cv.sxPanel.trackId = null; cv.fxTab.ui = null; cv.fxTab.trackId = null;
+  sxR.ui = null; sxR.trackId = null; fxR.ui = null; fxR.trackId = null;
 });
 
 test('drop / replace: the instrument is replaced in place (one History step), the notice action undoes it', () => {

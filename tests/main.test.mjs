@@ -18,6 +18,8 @@ import * as CMOD from '../cv-model.js?v=9';
 const peak = x => { let m = 0; for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > m) m = a; } return m; };
 const maxDiff = (x, y, n = Math.min(x.length, y.length)) => { let m = 0; for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(x[i] - y[i])); return m; };
 const KB = 1024;
+// the selected track's current instrument's body element (canvas milestone 3 R6: its own element — no #inst home)
+const instBody = () => globalThis.__synthTest.cv.bodyEl(globalThis.__synthTest.cv.cur());
 
 let sim = null;
 async function page() {
@@ -872,7 +874,7 @@ test('G2 two-finger rollback (gesture.js\'s pointercancel flagged e.gesture === 
   const fire = (el, type, o) => el.dispatchEvent(ev(type, Object.assign({ target: el }, o)));
   const TWO = { gesture: 'two-finger' };
   // classic knob: the first change made the preset "Custom" (null) — the rollback puts the value and the name back
-  const t = api.project().tracks[0], knob = find(s.$('#inst'), n => n.className === 'knob');
+  const t = api.project().tracks[0], knob = find(instBody(), n => n.className === 'knob');
   assert.ok(knob, 'a classic knob');
   t.preset = 'Fat Bass';
   const v0 = JSON.stringify(t.vals);
@@ -931,8 +933,8 @@ test('G2 two-finger rollback: the step sequencer\'s Tempo (a knob in the Hardwar
   for (const layout of ['hw', 'flow']) {
     if (layout === 'flow') cv.setLayout('flow');
     assert.equal(cv.instUi(api.project().tracks[0]), layout);
-    const tempo = find(s.$('#inst'), n => n.attrs && n.attrs.role === 'slider' && n.attrs['aria-label'] === 'Tempo');
-    const step = find(s.$('#inst'), n => n.className === 'snote' && n.attrs && n.attrs['aria-label'] === 'Step 2 note');
+    const tempo = find(instBody(), n => n.attrs && n.attrs.role === 'slider' && n.attrs['aria-label'] === 'Tempo');
+    const step = find(instBody(), n => n.className === 'snote' && n.attrs && n.attrs['aria-label'] === 'Step 2 note');
     assert.ok(tempo && step, layout + ': Tempo and a step note');
     assert.equal(tempo.className, layout === 'hw' ? 'knob hw-tempo' : 'num', layout + ': the hardware TEMPO knob / today\'s number box');
     const tr = api.project().tracks[0], bpm0 = tr.seq.bpm;
@@ -960,21 +962,21 @@ test('Hardware panels in the page: a DX7 (fixture) — button 18 + OPERATOR SELE
   const t = api.project().tracks[0], cv = globalThis.__synthTest.cv;
   assert.equal(t.model, 'dx7');
   assert.ok(cv.hw(), 'the hardware panel rendered');
-  const btn = n => find(s.$('#inst'), x => x.attrs && x.attrs['data-n'] === String(n));
+  const btn = n => find(instBody(), x => x.attrs && x.attrs['data-n'] === String(n));
   fire(btn(18), 'pointerdown');
-  const opsel = find(s.$('#inst'), x => x.attrs && x.attrs['aria-label'] === 'Operator select');
+  const opsel = find(instBody(), x => x.attrs && x.attrs['aria-label'] === 'Operator select');
   fire(opsel, 'pointerdown');
   assert.equal(btn(18).parentNode.attrs['data-ctl'], 'r2', 'button 18 addresses operator 2\'s coarse frequency');
-  const data = find(s.$('#inst'), x => x.attrs && x.attrs['aria-label'] === 'Data entry'), r0 = t.vals.r2;
+  const data = find(instBody(), x => x.attrs && x.attrs['aria-label'] === 'Data entry'), r0 = t.vals.r2;
   t.preset = 'X';
   fire(data, 'pointerdown', { clientY: 300 }); fire(data, 'pointermove', { clientY: 200 }); fire(data, 'pointerup', { clientY: 200, buttons: 0 });
   assert.ok(t.vals.r2 > r0, 'DATA ENTRY raised r2');
   assert.equal(t.preset, null, 'Custom');
-  const lcd = find(s.$('#inst'), x => x.className === 'hw-lcd');
+  const lcd = find(instBody(), x => x.className === 'hw-lcd');
   assert.match(lcd.children[1].textContent, /^OP2 COARSE=/);
   // the TB-303: a key in PITCH mode writes the cursor step (step 1), its grid follows
   api.setTrackModel(t, 'tb303');
-  const tb = api.project().tracks[0], key = find(s.$('#inst'), x => x.attrs && x.attrs['aria-label'] === 'Key E');
+  const tb = api.project().tracks[0], key = find(instBody(), x => x.attrs && x.attrs['aria-label'] === 'Key E');
   tb.seq.pat[0].g = 0;
   fire(key, 'pointerdown');
   assert.deepEqual([tb.seq.pat[0].n, tb.seq.pat[0].g], [4, 1]);

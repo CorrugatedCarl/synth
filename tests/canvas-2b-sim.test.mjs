@@ -316,7 +316,7 @@ test('(U5) a Serum\'s OWN FX knob with a canvas cable: the FX module\'s rack is 
   assert.equal(iid, 'rev');
   M.opts.onMod('l1.out', 'i1:fx.rev.mix'); sim.raf();
   assert.deepEqual(rows(a), 'r1:l1.out>i1:f.cutoff,r2:l1.out>i1:fx.rev.mix');
-  const rec = cv.fxTab, was = { ui: rec.ui, trackId: rec.trackId, dev: rec.dev, key: rec.key, sx: rec.sx };
+  const rec = cv.fxRec(a, 'i1/fx'), was = { ui: rec.ui, trackId: rec.trackId, dev: rec.dev, key: rec.key, sx: rec.sx }; // (R6: its FX module's record)
   Object.assign(rec, { ui: { paintMods: f => calls.push(f('fx.rev.mix').map(r => r.id + ':' + r.src + ':' + r.label).join('|') + ' / ' + f('fx.rev.size').length), refresh() {}, destroy() {} }, trackId: a.id, dev: 'i1', key: 'i1/fx', sx: true });
   try {
     U.modHalos(a);
@@ -484,7 +484,7 @@ test('(2b halos) a shared panel\'s knob with a canvas cable: modHalos paints the
   const pid = Object.keys(j.dev).find(k => j.dev[k].kind === 'panel'), iid = cv.fx.addEffect(pid, 'rev'), dst = pid + ':fx.' + iid + '.mix';
   sim.raf();
   M.opts.onMod('l1.out', dst); sim.raf();
-  const rec = cv.fxTab, was = { ui: rec.ui, trackId: rec.trackId, dev: rec.dev, key: rec.key, sx: rec.sx };
+  const rec = cv.fxRec(j, pid), was = { ui: rec.ui, trackId: rec.trackId, dev: rec.dev, key: rec.key, sx: rec.sx }; // (R6: the panel module's record)
   const calls = [], lives = [];
   const showRows = f => ['fx.' + iid + '.mix', 'fx.' + iid + '.size'].map(id => f(id).map(r => [r.id, r.src, r.label, r.pol, r.amt].join(':')).join('|')).join(' / ');
   Object.assign(rec, { ui: { paintMods: f => calls.push(showRows(f)), setLive: f => lives.push(f === null ? 'off' : f('fx.' + iid + '.mix', 0.5) + '/' + f('fx.' + iid + '.size', 0.5)), refresh() {}, destroy() {} }, trackId: j.id, dev: pid, key: pid, sx: false });

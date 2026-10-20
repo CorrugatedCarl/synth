@@ -85,8 +85,8 @@ test('the add hook (cv.add, host only since 1f): an instrument added where asked
   assert.deepEqual([m[0], m.includes('patch:i2'), m.includes('patch:i1'), m.includes('chain:fx1')], ['graph', true, true, true], m.join(' '));
   assert.deepEqual(lastGraph(t).insts.map(x => x.id + (x.on ? '' : ':off')), ['i1', 'i2']);
   assert.equal(api.nodes.get(t.id).graphed, true);
-  assert.deepEqual([cv.parts.inst.parentNode === bodyOf('i1'), cv.bodyEl('i2').parentNode === bodyOf('i2'), cv.bodyEl('i2') === cv.parts.inst],
-    [true, true, false], '#inst in the primary, its own element in the new one');
+  assert.deepEqual([cv.bodyEl('i1').parentNode === bodyOf('i1'), cv.bodyEl('i2').parentNode === bodyOf('i2'), cv.bodyEl('i2') === cv.bodyEl('i1')],
+    [true, true, false], 'each its own element (milestone 3 R6: the primary\'s too)');
   const cp = cv.classicPanels.get(t.id + '/i2');
   assert.deepEqual([!!cp, cp && cp.model.id, cp && cp.root === cv.bodyEl('i2'), cp && cp.track.id], [true, 'juno60', true, t.id + '/i2'], 'a ClassicPanel of the Juno-60 in its body');
   assert.deepEqual([cv.cur(), cv.panel() === cp, sim.$('#trkChip .cv-cv').textContent], ['i1', false, '2 instruments'], 'the primary stays the current one; the chip says how many');
