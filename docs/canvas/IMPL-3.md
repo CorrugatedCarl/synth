@@ -951,6 +951,24 @@ LFO 120 / 2, ENV 126 / 2, Macro 103 / 0, Chaos 35 / 0; onMin 1 at every k. ui-be
 auto / hand / hold, 8 scenes, every self-check ok, hw5 first and last, 0 page errors; `?m3=1&real=1` end to end — hw5 → p1x-real (3277 painted, 26
 canvases) → hwm-real (5456 / 9) → hw5, self-checks ok, one build, 0 page errors (Mac headless timings informational only).
 
+### 9.9 The S0 notice (2026-10-20; the user's iPad session, `tests/bench.json` `"ui-m3"`; `main.js`, `tests/canvas-3-sim.test.mjs`, sw.js BUILD)
+
+§1.5's row "`p1x` P (not P+) … a notice on touch devices when a track's painted elements pass the largest P+ scene's count", built. The session's
+numbers: `sx1` (one whole-panel Serum) P+ at **1866 painted elements**; `p1x` (a fully opened Serum in parts + modulators, 3176) failed (settle 106).
+So `SX_HEAVY = 1866`. **Where**: `cvRender`'s tail calls `sxHeavySoon()`, which every change of the module set goes through — Show parts, Add part, a
+tray drop, a preset / project load, a track switch. **When**: touch devices only (`touchDev`: the soft caps' rule), the track holds a Serum in
+parts, and its module key set is not the one last counted (`sxHeavySig`); a 600 ms timer then counts **once at rest** — it waits again while the
+camera moves (`cvW().busy`), a switch mounts (`cvMount` / `cvHold`) or a timed notice shows (an "Added OSC B · tap to undo" keeps its tap; the
+stutter notice follows it), and does nothing while the canvas is not home. **Count** = `ui-bench-m3`'s `painted`: elements of the track's modules
+(`cvView.modules`, on or off screen, off parts included: dimmed, still painted) with a layout box — a folded module's body or a hidden page has none
+and is skipped with its subtree (`sxPainted`). **Said** (`notice`, 9 s, `sxHeavyDone`: once per page load, never again): "This many Serum parts may
+stutter when zooming on this device — Bundle (⋯) puts it back together." No History step, nothing on a desktop, nothing for a bundled Serum.
+Hook: `cv.parts.painted()` / `heavyReset()` / `HEAVY` / `HEAVY_MS`. **Test** canvas-3-sim "S0 notice": a Serum with VOICE + OSC A + FX on touch (828 painted
+in the stub DOM) says nothing; fully opened (3880) on a desktop, nothing; touch, Bundle: nothing, Show parts mid-gesture: nothing, at rest: the
+notice, no extra step; Bundle / Show parts again: nothing; after `heavyReset` an Add part keeps its undo notice, the stutter notice follows it.
+The test's stub DOM answers `getClientRects` for every element but the shared `.scope` one, which the test now patches (stub only). **Gates** (each file
+alone): canvas-3-sim 26 (+1; the one test waits ~9 s on the real 8 s undo notice), main 40, canvas-sim 22, lint 133, pwa 22 (precache rebuilt).
+
 ## 10. Review log (revision 2, 2026-10-19: the contract review, 25 points)
 
 All 25 points were checked against the code (and the review's "checked and confirmed" items, Chaos compile and the ENV slot round
