@@ -927,10 +927,15 @@ test('3 schema 7: STEPS[6] moves stored modulator places only — the content an
   const frozen = deepFreeze(jclone(p6)), up = M.upgrade(frozen);
   assert.deepEqual([up.from, up.readOnly, up.p.schema], [6, false, 7]);
   const L = up.p.tracks[0].lay;
-  // (cv-module's widths today: every kind W_MOD — no growth; the chaos module laid over the Serum moves left past it)
-  assert.deepEqual(Object.assign({}, L, { h1: null }), Object.assign({}, t.lay, { h1: null }), 'every other entry as it was (folds, z kept)');
-  // (off the Serum: past its left edge − MOD_GAP (−320, on the dots), where it meets LFO 2 (y 320…): past that one too)
-  assert.deepEqual(L.h1, { x: Math.floor((Math.floor((0 - CVM.MOD_GAP - CVM.W_MOD) / 32) * 32 - CVM.MOD_GAP - CVM.W_MOD) / 32) * 32, y: 100 }, 'off the Serum, then off LFO 2');
+  // (cv-module's MOD_W (lane C): LFO / ENV / Macro keep their right edge at −MOD_GAP and grow left from MOD_W0; the CC row, NOTE,
+  //  the wheel stay; the chaos module laid over the Serum moves left past it)
+  const g = k => -320 + M.MOD_W0 - CVM.modW(k), want = Object.assign(jclone(t.lay), { h1: null });
+  Object.assign(want.l1, { x: g('lfo') }); Object.assign(want.l2, { x: g('lfo') }); Object.assign(want.e1, { x: g('env') }); Object.assign(want.m1, { x: g('macro') });
+  assert.deepEqual(Object.assign({}, L, { h1: null }), want, 'every other entry as it was but the grown ones (folds, z kept)');
+  // (off the Serum: past its left edge − MOD_GAP (on the dots), where it meets the grown LFO 2 (y 320…): past that one's left edge too)
+  const wc = CVM.modW('chaos'), x0 = Math.floor((0 - CVM.MOD_GAP - wc) / 32) * 32;
+  assert.ok(x0 + wc > g('lfo'), 'the first step lands on LFO 2');
+  assert.deepEqual(L.h1, { x: Math.floor((g('lfo') - CVM.MOD_GAP - wc) / 32) * 32, y: 100 }, 'off the Serum, then off LFO 2');
   assert.deepEqual(Object.assign({}, up.p.tracks[0], { lay: null }), Object.assign(jclone(t), { lay: null }), 'content unchanged');
   assert.deepEqual(frozen, jclone(p6), 'the input untouched');
   assert.equal(M.upgrade(up.p).p.tracks[0].lay.h1.x, L.h1.x, 'at 7: nothing moves again');
