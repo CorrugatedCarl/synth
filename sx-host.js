@@ -1783,7 +1783,7 @@ export class SerumHost {
     el.id = O.bundled ? this.uid : this.uid + '-r' + (this.roots.length + 1);
     el.setAttribute('data-dev', O.dev || this.dev);
     if (O.col) el.setAttribute('data-col', O.col);
-    if (fin(O.width) && O.width > 0 && el.style) el.style.width = Math.round(O.width * 10) / 10 + 'px';
+    if (fin(O.width) && O.width > 0 && el.style) el.style.width = Math.round(O.width * 64) / 64 + 'px'; // (to the layout unit: the bundled width exactly, review 2)
     if (O.nomod || this.opts.nomod) el.setAttribute('data-nomod', '1');
     if (container) container.appendChild(el);
     this.roots.push(el);
@@ -2331,6 +2331,27 @@ export class SerumHost {
   // `shown` in their live callbacks (H4: a view off screen per the world's plan costs nothing per frame)
   allPages() { return [this.headPage].concat(this.views.map(V => V.page)); }
   shownPages() { return [this.headPage].concat(this.views.filter(V => V.shown()).map(V => V.page)); }
+  // (review 2, look parity) V.args.phase = [[selector ('' = the view's panel), x, y]]: each panel moved (relative, < 1 px)
+  // so its body's world offset mod 1 layout px is x, y — the phase it has in the 1200 px bundled panel (sx-ui-mod PART_PH):
+  // the canvas world rasters text at each element's own fractional origin. Measured when the view shows (a layout read);
+  // the modules stand on the dots, so it holds wherever one is moved. Outside a canvas world: nothing
+  alignPhase(V) {
+    const L = V && !V.dead && V.args && Array.isArray(V.args.phase) ? V.args.phase : null;
+    const Wd = L && V.root && typeof V.root.closest === 'function' ? V.root.closest('[data-cv-world]') : null;
+    if (!Wd) return;
+    const ls = wk.localScale(Wd), wr = Wd.getBoundingClientRect(), q = v => Math.round(v * 64) / 64, md = v => q(((v % 1) + 1) % 1) % 1;
+    for (const [sel, px, py] of L) {
+      const sec = sel ? V.root.querySelector(sel) : V.panel && V.panel.el;
+      if (!sec || !sec.style) continue;
+      sec.style.left = ''; sec.style.top = '';
+      const body = [...(sec.childNodes || [])].find(c => c.classList && c.classList.contains('sx-pbody')) || sec, r = body.getBoundingClientRect();
+      if (!(r.width > 0)) continue;
+      const dx = md(px - (r.left - wr.left) * ls), dy = md(py - (r.top - wr.top) * ls);
+      sec.style.position = dx || dy ? 'relative' : '';
+      sec.style.left = dx ? dx + 'px' : '';
+      sec.style.top = dy ? dy + 'px' : '';
+    }
+  }
   // (review 2 P1-2) a view shown again after a paint skipped it (mounted off screen, hidden through an edit or a load):
   // one full paint, queued → whether one was. The canvas calls it when a module goes on screen or unfolds.
   reshow() {
@@ -2352,7 +2373,9 @@ export class SerumHost {
     // mounted off screen, it had no first bind / editor / halo pass at all
     const vis = this.views.filter(V => V.shown());
     if (!full && vis.some(V => V.stale)) full = true;
+    const fresh = vis.filter(V => V.stale && V.args && V.args.phase); // (shown again: its phase measured once more)
     for (const V of this.views) V.stale = full ? !vis.includes(V) : V.stale || !vis.includes(V);
+    for (const V of fresh) this.alignPhase(V);
     const shown = [this.headPage].concat(vis.map(V => V.page));
     for (const P of shown) for (const w of P.binds) w.update();
     if (full || this.edDirty) {   // graph editors redraw when their inputs changed (signature) or on demand

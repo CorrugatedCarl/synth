@@ -14,6 +14,7 @@
 //     PrefsPanel, InfoPanel (the GLOBAL page's; VOICE's ⋯ dialogs: panelDialog), VoicePanel (VOICE: the header, VOICING
 //     beside ENV 1, the outputs, the fold-outs)
 //   PART_W           each panel's width in the 1200 px bundled Serum (the look the user compares with), layout px
+//   PART_PH          each panel body's device-pixel phase there (look parity: a part's panel moved to it)
 //   partView(part)   'oscB' → { kind: 'osc', k: 1 } … (serum-core MODULE_FIELDS names, 'macros', 'voice')
 //   mountPart(host, part, root, args)   host.mount of a Serum part (args.bare default true: the canvas bar's chrome)
 //   mountSlot(slotHost, root, args)     the panel of a canvas modulator's slot host (cv-mods-ui's bodies)
@@ -42,11 +43,27 @@ const { DESTS, DEST_INDEX, MODULE_FIELDS } = core;
 // (MACROS / ENV / LFO / VOICING), the GLOBAL page's (QUALITY, TUNING, MPE, VOICE CONTROL, CHAOS), the ARP / CLIP pages
 // (the page width); VOICE = VOICING + gap + ENV 1 (its layout below). Measured 2026-10-20 in Chrome (1200 px root: 1184 of
 // content; row A 0.75 / 3.6 / 1 fr, row C 0.9 / 1.2 / 1.5 / 0.8 fr, the GLOBAL grid three columns), layout px; cv-module
-// rounds them up to the 32 px grid (MOD_W).
+// rounds them up to the 32 px grid (MOD_W). (Review 2: to the layout unit, 1/64 px — a panel 0.05 px narrower than its
+// bundled self lays its text out at other fractions.)
 export const PART_W = Object.freeze({
-  osc: 256.6, sub: 163.7, noise: 163.7, filter: 218.3, macros: 237.3, env: 316.4, lfo: 395.5, voicing: 210.9, curve: 395.5,
-  chaos: 389.3, quality: 389.3, tuning: 389.3, mpe: 389.3, vc: 389.3, arp: 1184, clip: 1184, voice: 535.3, outputs: 535.3,
+  osc: 256.65625, sub: 163.734375, noise: 163.734375, filter: 218.328125, macros: 237.265625, env: 316.375, lfo: 395.453125, voicing: 210.90625,
+  curve: 395.5, chaos: 389.34375, quality: 389.3, tuning: 389.3, mpe: 389.3, vc: 389.3, arp: 1184, clip: 1184, voice: 535.28125, outputs: 535.28125,
 });
+// (review 2, look parity) each panel BODY's device-pixel phase in the 1200 px bundled Serum: its world offset mod 1 layout px
+// [x, y] (the bundled module stands on the dots; Chrome, measured with PART_W — OSC B's column at .390625, row C at y
+// .765625 …). The world layer rasters text at each element's own fractional origin, so a part's or a canvas modulator's
+// panel is moved (< 1 px, relative: sx-host alignPhase) to the same phase — its text then rasters as in the whole panel.
+// VOICE: its VOICING and ENV 1 apart. Parts without an entry stay as laid out.
+export const PART_PH = Object.freeze({
+  oscA: [0.734375, 0], oscB: [0.390625, 0], oscC: [0.03125, 0], sub: [0, 0], noise: [0, 0.390625], filter: [0.6875, 0],
+  macros: [0, 0.765625], env: [0.265625, 0.765625], lfo: [0.640625, 0.765625], voicing: [0.09375, 0.765625], chaos: [0.328125, 0.078125],
+});
+// a view's phase spec (sx-host mount args.phase): [[selector ('' = the view's panel), x, y]]
+function phaseOf(part, kind) {
+  if (kind === 'voice') return [['.sx-vrow > section.sx-panel:nth-child(1)', ...PART_PH.voicing], ['.sx-vrow > section.sx-panel:nth-child(2)', ...PART_PH.env]];
+  const P = PART_PH[part] || PART_PH[kind];
+  return P ? [['', ...P]] : null;
+}
 // the bundled column a part comes from (the part root's data-col: the 1200 px rules restated for it, .sx-part[data-col])
 const COL = { osc: 'O', sub: 'SN', noise: 'SN', filter: 'F', macros: 'C', env: 'C', lfo: 'C', voicing: 'C', curve: 'C', voice: 'C',
   chaos: 'GL', quality: 'GL', tuning: 'GL', mpe: 'GL', vc: 'GL', outputs: 'C', arp: 'P', clip: 'P' };
@@ -961,14 +978,14 @@ export function partView(part) {
 export function mountPart(host, part, root, args) {
   const v = partView(part);
   if (!v) throw new Error('sx-ui-mod: no part ' + part);
-  return host.mount(v.kind, root, Object.assign({ k: v.k, bare: true, width: PART_W[v.kind], col: COL[v.kind], part }, args));
+  return host.mount(v.kind, root, Object.assign({ k: v.k, bare: true, width: PART_W[v.kind], col: COL[v.kind], part, phase: phaseOf(part, v.kind) }, args));
 }
 // a slot host's panel (sx-host slotHost: a canvas LFO / ENV / Chaos / Macro module): LfoPanel 0, EnvPanel 1 (ENV 2's
 // layout), ChaosRow 0, MacrosPanel — bare, at the bundled panel's width, in the column it comes from
 const SLOT_VIEW = { lfo: 'lfo', env: 'env', chaos: 'chaos', macro: 'macros' };
 export function mountSlot(H, root, args) {
   const kind = SLOT_VIEW[H.kind];
-  return H.mount(kind, root, Object.assign({ k: H.slot, bare: true, width: PART_W[kind], col: COL[kind], dev: H.dev }, args));
+  return H.mount(kind, root, Object.assign({ k: H.slot, bare: true, width: PART_W[kind], col: COL[kind], dev: H.dev, phase: phaseOf(kind, kind) }, args));
 }
 // the pressing / selection rules the bundled OSC page applies, for a mounted oscillator (s.ui.osc: the Render OSC Warp /
 // Resample target; its tab while expanded), and its look there (sx-opan / data-o: the colour rule and the selection ring)

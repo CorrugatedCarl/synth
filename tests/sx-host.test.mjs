@@ -80,9 +80,9 @@ test('exports: SerumHost, createHost, slotHost, the view registry, the slot help
   const P = p => { const v = M.partView(p); return v ? v.kind + ':' + v.k : null; };
   assert.deepEqual(['oscA', 'oscC', 'sub', 'noise', 'filter', 'filter2', 'env1', 'env4', 'lfo1', 'lfo10', 'macros', 'arp', 'clip', 'voice', 'velo', 'nope'].map(P),
     ['osc:0', 'osc:2', 'sub:0', 'noise:0', 'filter:0', 'filter:1', 'env:0', 'env:3', 'lfo:0', 'lfo:9', 'macros:0', 'arp:0', 'clip:0', 'voice:0', 'curve:velo', null]);
-  // the widths of the 1200 px bundled panel (measured; cv-module rounds them up to the grid), VOICE = VOICING + 8 + ENV
-  assert.deepEqual([M.PART_W.osc, M.PART_W.sub, M.PART_W.filter, M.PART_W.macros, M.PART_W.env, M.PART_W.lfo, M.PART_W.voicing], [256.6, 163.7, 218.3, 237.3, 316.4, 395.5, 210.9]);
-  assert.equal(Math.round((M.PART_W.voicing + 8 + M.PART_W.env) * 10) / 10, M.PART_W.voice);
+  // the widths of the 1200 px bundled panel (measured to the layout unit, review 2; cv-module rounds them up to the grid), VOICE = VOICING + 8 + ENV
+  assert.deepEqual([M.PART_W.osc, M.PART_W.sub, M.PART_W.filter, M.PART_W.macros, M.PART_W.env, M.PART_W.lfo, M.PART_W.voicing], [256.65625, 163.734375, 218.328125, 237.265625, 316.375, 395.453125, 210.90625]);
+  assert.equal(M.PART_W.voicing + 8 + M.PART_W.env, M.PART_W.voice);
   assert.throws(() => H.slotHost('wheel', {}), /no slot/);
 });
 
@@ -94,7 +94,7 @@ test('mount: a part root per view (div.sx-root.sx-part, data-dev, data-col, its 
   assert.equal(X.views.length, 2);
   assert.ok(a.id !== b.id && a.root.id !== b.root.id);
   for (const V of [a, b]) {
-    assert.deepEqual([V.root.className, V.root.getAttribute('data-dev'), V.root.getAttribute('data-col'), V.root.style.width, V.kind], ['sx-root sx-part', 'i2', 'C', '395.5px', 'lfo']);
+    assert.deepEqual([V.root.className, V.root.getAttribute('data-dev'), V.root.getAttribute('data-col'), V.root.style.width, V.kind], ['sx-root sx-part', 'i2', 'C', '395.453125px', 'lfo']);
     assert.ok(V.page.binds.length > 10 && V.page.el === V.root);
     assert.equal(V.root.querySelectorAll('.sx-etabs').length, 0);
   }
@@ -260,7 +260,7 @@ test('slot host: device ⇄ slot round trip for LFO, ENV, chaos and macro (overl
 test('slot host LFO: Serum\'s LFO panel, bare, every destination data-nomod (no cable end, no drop, no Mod Source); a knob gesture = live per move (before any edit) then ONE edit; a rollback = cancel; a toggle = one edit; a view edit (grid) none', async () => {
   const { doc, box, X, V, calls, dev } = slot('lfo', { lfo: { mono: 1 } });
   await flush(doc);
-  assert.deepEqual([V.root.className, V.root.getAttribute('data-nomod'), V.root.style.width, X.opts.undo, X.opts.nomod], ['sx-root sx-part', '1', '395.5px', false, true]);
+  assert.deepEqual([V.root.className, V.root.getAttribute('data-nomod'), V.root.style.width, X.opts.undo, X.opts.nomod], ['sx-root sx-part', '1', '395.453125px', false, true]);
   const dests = V.root.querySelectorAll('[data-dest]');
   assert.ok(dests.length >= 5 && dests.every(n => n.getAttribute('data-nomod') === '1'));
   assert.equal(V.root.querySelector('.sx-tname'), null);
@@ -404,7 +404,7 @@ test('VOICE: the header (preset, undo / redo, menu, MASTER), VOICING beside ENV 
   const V = M.mountPart(X, 'voice', box);
   await flush(doc);
   const r = V.root;
-  assert.deepEqual([r.style.width, r.getAttribute('data-col')], ['535.3px', 'C']);
+  assert.deepEqual([r.style.width, r.getAttribute('data-col')], ['535.28125px', 'C']);
   assert.ok(r.querySelector('.sx-head').querySelector('.sx-pname') && r.querySelector('.sx-undo') && byDest(r, 'g.master') && r.querySelector('.sx-status'));
   assert.ok(X.browser, 'the preset browser (a host service)');
   const env = r.querySelectorAll('.sx-panel').find(p => p.getAttribute('aria-label') === 'ENV 1');
@@ -500,6 +500,33 @@ test('review 2 P1-2: a view mounted while hidden is painted fully the first time
   assert.deepEqual([names().split('|')[1], X.reshow()], ['Wide', false]);
   Vm.destroy(); Vf.destroy();
   X.destroy();
+});
+
+test('review 2 P2 parity: PART_W are the 1200 px panel\'s widths to the layout unit (1/64 px) and a part root takes its width exactly; a part / slot panel moves (< 1 px, relative) so its body lands on the bundled panel\'s phase in world px (PART_PH) — text then rasters as in the whole panel', async () => {
+  assert.deepEqual([M.PART_W.osc, M.PART_W.sub, M.PART_W.noise, M.PART_W.filter, M.PART_W.macros, M.PART_W.env, M.PART_W.lfo, M.PART_W.voicing, M.PART_W.chaos],
+    [256.65625, 163.734375, 163.734375, 218.328125, 237.265625, 316.375, 395.453125, 210.90625, 389.34375]);
+  assert.equal(M.PART_W.voice, M.PART_W.voicing + 8 + M.PART_W.env);
+  assert.deepEqual([M.PART_PH.oscA, M.PART_PH.oscB, M.PART_PH.oscC, M.PART_PH.lfo], [[0.734375, 0], [0.390625, 0], [0.03125, 0], [0.640625, 0.765625]]);
+  const { doc, box, X } = parts();
+  const W = doc.createElement('div'); W.setAttribute('data-cv-world', ''); doc.body.appendChild(W); W.appendChild(box);
+  W._rect = { left: 100.3, top: 50.7, width: 4000, height: 4000 };
+  const V = M.mountPart(X, 'oscB', box);
+  assert.equal(V.root.style.width, '256.65625px', 'exact');
+  const body = [...V.panel.el.childNodes].find(c => c.classList && c.classList.contains('sx-pbody'));
+  body._rect = { left: 100.3 + 24.703125, top: 50.7 + 105, width: 256, height: 600 };
+  await flush(doc);
+  assert.deepEqual([V.panel.el.style.position, V.panel.el.style.left, V.panel.el.style.top || ''], ['relative', '0.6875px', ''], 'x .703125 → .390625 (OSC B\'s), y 0 kept');
+  // a slot host's LFO: its kind's phase
+  const S = slot('lfo', {});
+  S.doc.body.appendChild(S.box);
+  const W2 = S.doc.createElement('div'); W2.setAttribute('data-cv-world', ''); S.doc.body.appendChild(W2); W2.appendChild(S.box);
+  W2._rect = { left: 0, top: 0, width: 4000, height: 4000 };
+  const b2 = [...S.V.panel.el.childNodes].find(c => c.classList && c.classList.contains('sx-pbody'));
+  b2._rect = { left: -501.75, top: 59, width: 395, height: 380 };
+  for (const v of S.X.views) v.stale = true; // (shown again: its next full paint aligns it)
+  S.X.paint(true);
+  assert.deepEqual([S.V.panel.el.style.left, S.V.panel.el.style.top], ['0.390625px', '0.765625px'], 'x .25 → .640625, y 0 → .765625');
+  V.destroy(); X.destroy(); S.V.destroy(); S.X.destroy();
 });
 
 test('H5: the store density is wk.storeDensity\'s (lane C, merged on wt-m3), whatever the local scale; CANVAS_MAX_PX 16e6', () => {
