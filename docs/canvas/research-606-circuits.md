@@ -344,6 +344,13 @@ photograph; **calc** our arithmetic on those values. "= 808" / "≠ 808" mark wh
   constant and the 47.98 % duty from the 808's numbers); the NJM2904's swing (0 … 13.5 V on 15 V [typ]); the swing VCAs' bias
   returns (C51 / R147, C76 / R202, C65 / R180, C66 / R173: to which rail); C46 / R136's role at the Q24 / Q25 node; the LA4140
   headphone amp (not modelled).
+- **Read twice** (the skeptic review, 2026-10-20): **R179** is Q38's emitter resistor, 100 Ω, in §8 and half of IC12A's gain-2
+  network, 39 kΩ, in §9 — one designator is misread (IC12B's gain resistors, §8, are not given at all); V6 re-reads both
+  stages' feedback networks.
+- **Checked, no gap** (the skeptic review): the NJM2904's finite gain–bandwidth (0.6 MHz typ. [S datasheet]) barely moves the
+  bridged-T poles even where the peak gain nears 1000 — with a one-pole op-amp the resonances shift by ≤ 0.8 % at rest (LT 131.2,
+  HT 204.5, SD 203.8 Hz; τ + 1–2 %) and the transistor kicks' tops by ≈ − 2–3 % (LT 302.5, SD 353.1 Hz); the calc numbers of
+  §4–§6 stand as target (b). V6 may still model the GBW (as the 808's `bandH` does for the 4558).
 - **Sequencer points left open by OM6** (IMPL-7b §3.3 decides each one, [C]): TAP's rounding (nearest step, the 808's rule); how the
   PATTERN WRITE LEDs combine the scan and the steps; a pattern change during a chain (end of the pattern or of the chain); a track
   with no D.C. bar; D.C. / segno after DEL / INS; whether chained tracks share one group; the TRACK selector while a track plays; D.S.
