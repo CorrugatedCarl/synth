@@ -151,6 +151,14 @@ The pad controller (a resizable grid of lit pads with full custom mapping) is de
 - **No separate sync cable between machines.** Everything already follows the one project clock, so the 606 and the 303 stay locked.
 - **No hardware modifications.** Known 808 mods (wider accent, longer kick decay) are left out.
 
+## Answers (the user, 2026-10-20)
+
+1. Order: **TR-808 → TR-606 → TR-909 → Simmons SDS-V**, starting after milestone 3 ships (recommended).
+2. Recordings: **our own original sounds through the machine's real playback circuit, labelled as ours, plus "load your own sounds"** (recommended).
+3. **Authentic panel + extras strip** (modern helpers in the extras strip, starting neutral, like the 303) (recommended).
+4. **Mix output first**; per-drum jacks drawn, cable-able with full patching (stage 4) (recommended).
+5. Not asked separately: the recommended "both ways" (pattern in the machine, → Piano roll writes named drum rows, roll notes play the drums) stands unless the user says otherwise.
+
 ## Where the details are
 
 The full research (sources, circuit numbers, each machine's panel layout and sequencer rules, a difficulty table and the CPU test) is in [research-drums.md](research-drums.md).
