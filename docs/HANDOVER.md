@@ -67,6 +67,7 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
 | 3R GPU module painter (Serum parts drawn on the GPU, no soft look mid-pinch) | parked: the user accepted soft-while-pinching ("save the soft pinching fix for later maybe"); research `docs/canvas/map-rendering.md` |
 | 7a TR-808 (first drum machine) | **done, deployed 2026-10-20** (IMPL-7a.md; lanes V, S, E, P1, P2, H2, H1; 2 reviews → 16 findings fixed + the vertical-switch direction on every panel; `tests/ref-7a` frozen; swept 91 files / 2557 tests); pending the user's `bench.html` (`"ipad7a"`) + §12.8 hands-on |
 | 7b TR-606 | **done, deployed 2026-10-20** (IMPL-7b.md; lanes V6, S6, E6, P1, X, H1; 2 reviews → 12 findings fixed; `tests/ref-7b` frozen at e697387 (golden-606) beside ref-7a (golden-drums); swept 94 files / 2700 tests); pending the user's hands-on |
+| 7c TR-909 | **done, deployed 2026-10-21** (IMPL-7c.md; lanes V9, R9 (our ROM images), S9, E9, P1, X, H1; 2 reviews → 10 findings fixed; `tests/ref-7c` frozen at 31bb09a (golden-909) beside ref-7a / ref-7b; swept 98 files / 2873 tests); pending the user's hands-on and sound comparison (they will research the originals later) |
 | 4–6 later (full patching, per-voice classic modulation, polish) | later |
 
 **Immediate next actions**

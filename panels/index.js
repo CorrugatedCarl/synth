@@ -18,10 +18,11 @@ import juno60 from './juno60.js?v=9';
 import dx7 from './dx7.js?v=9';
 import tr808 from './tr808.js?v=9';
 import tr606 from './tr606.js?v=9';
+import tr909 from './tr909.js?v=9';
 
 /** model id → layout (null: not drawn yet), in models.js MODELS order. Every classic model has a physical counterpart;
- * Serum (custom) and the FX panels have none and are not listed. (7a) the TR-808 drum machine and (7b) the TR-606 come last, as in MODELS. */
-export const LAYOUTS = Object.freeze({ modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, tr808, tr606 });
+ * Serum (custom) and the FX panels have none and are not listed. (7a) the TR-808 drum machine, (7b) the TR-606 and (7c) the TR-909 come last, as in MODELS. */
+export const LAYOUTS = Object.freeze({ modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, tr808, tr606, tr909 });
 /** The classic models with a hardware layout slot, in MODELS order. */
 export const HW_IDS = Object.freeze(Object.keys(LAYOUTS));
 /** The layout of `id`, or null (not drawn yet, Serum, unknown). @param {string} id @returns {object|null} */

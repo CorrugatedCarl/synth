@@ -73,6 +73,9 @@ export const FIELD_CLASS = Object.freeze(Object.fromEntries([
   // machine is a kind boundary (engine setPatch: a new machine, a fresh DrSeq — never modulated)
   ...F('proc', 'drum.tml drum.hhl drum.bdu drum.sdu drum.sdd drum.ltu drum.ltd drum.htu drum.htd drum.chd'),
   ...F('struct', 'machine'),
+  // the TR-909's own (IMPL-7c §1.1, §9): BD ATTACK, MT TUNE / DECAY, the cymbals' LEVELs and TUNEs (a crash / ride TUNE cable
+  // moves its sample clock per chunk); its other ids are the 808's / 606's entries above
+  ...F('proc', 'drum.bda drum.mtu drum.mtd drum.crl drum.rdl drum.cru drum.rdu'),
 ]));
 // the slots smTargets fills on the analog engine only
 const SM_ANALOG = new Set(Object.keys(FIELD_CLASS).filter(k => FIELD_CLASS[k] === 'sm' && k !== 'level'));
@@ -171,6 +174,7 @@ export const CLASS_TABLE = Object.freeze({
   dx7: { alg: 'struct', fb: 'chunk', tr: 'chunk', dac: 'proc', ls: 'proc', pmd: 'chunk', vol: 'sm', r1: 'chunk', f1: 'chunk', d1: 'chunk', l1: 'chunk', R1_1: 'chunk', R2_1: 'chunk', R3_1: 'chunk', R4_1: 'chunk', L1_1: 'chunk', L2_1: 'chunk', L3_1: 'chunk', L4_1: 'chunk', v1: 'chunk', s1: 'chunk', r2: 'chunk', f2: 'chunk', d2: 'chunk', l2: 'chunk', R1_2: 'chunk', R2_2: 'chunk', R3_2: 'chunk', R4_2: 'chunk', L1_2: 'chunk', L2_2: 'chunk', L3_2: 'chunk', L4_2: 'chunk', v2: 'chunk', s2: 'chunk', r3: 'chunk', f3: 'chunk', d3: 'chunk', l3: 'chunk', R1_3: 'chunk', R2_3: 'chunk', R3_3: 'chunk', R4_3: 'chunk', L1_3: 'chunk', L2_3: 'chunk', L3_3: 'chunk', L4_3: 'chunk', v3: 'chunk', s3: 'chunk', r4: 'chunk', f4: 'chunk', d4: 'chunk', l4: 'chunk', R1_4: 'chunk', R2_4: 'chunk', R3_4: 'chunk', R4_4: 'chunk', L1_4: 'chunk', L2_4: 'chunk', L3_4: 'chunk', L4_4: 'chunk', v4: 'chunk', s4: 'chunk', r5: 'chunk', f5: 'chunk', d5: 'chunk', l5: 'chunk', R1_5: 'chunk', R2_5: 'chunk', R3_5: 'chunk', R4_5: 'chunk', L1_5: 'chunk', L2_5: 'chunk', L3_5: 'chunk', L4_5: 'chunk', v5: 'chunk', s5: 'chunk', r6: 'chunk', f6: 'chunk', d6: 'chunk', l6: 'chunk', R1_6: 'chunk', R2_6: 'chunk', R3_6: 'chunk', R4_6: 'chunk', L1_6: 'chunk', L2_6: 'chunk', L3_6: 'chunk', L4_6: 'chunk', v6: 'chunk', s6: 'chunk' },
   tr808: { ac: 'proc', bdl: 'proc', bdt: 'proc', bdd: 'proc', sdl: 'proc', sdt: 'proc', sds: 'proc', ltl: 'proc', ltt: 'proc', lts: 'struct', mtl: 'proc', mtt: 'proc', mts: 'struct', htl: 'proc', htt: 'proc', hts: 'struct', rsl: 'proc', rss: 'struct', cpl: 'proc', cps: 'struct', cbl: 'proc', cyl: 'proc', cyt: 'proc', cyd: 'proc', ohl: 'proc', ohd: 'proc', chl: 'proc', vol: 'proc' },
   tr606: { ac: 'proc', bdl: 'proc', sdl: 'proc', tml: 'proc', cyl: 'proc', hhl: 'proc', vol: 'proc', bdu: 'proc', bdd: 'proc', sdu: 'proc', sdd: 'proc', ltu: 'proc', ltd: 'proc', htu: 'proc', htd: 'proc', cyd: 'proc', ohd: 'proc', chd: 'proc' },
+  tr909: { ac: 'proc', bdu: 'proc', bdl: 'proc', bda: 'proc', bdd: 'proc', sdu: 'proc', sdl: 'proc', sdt: 'proc', sds: 'proc', ltu: 'proc', ltl: 'proc', ltd: 'proc', mtu: 'proc', mtl: 'proc', mtd: 'proc', htu: 'proc', htl: 'proc', htd: 'proc', rsl: 'proc', cpl: 'proc', hhl: 'proc', chd: 'proc', ohd: 'proc', crl: 'proc', rdl: 'proc', cru: 'proc', rdu: 'proc', vol: 'proc' },
 });
 // </cv-classes>
 

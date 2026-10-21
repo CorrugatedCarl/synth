@@ -139,25 +139,28 @@ const instOf = (t, dev) => CMOD.instOf(t, dev);
 const isSerum = d => !!d && d.model === 'serum';
 const isSerumDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && d.model === 'serum'; };
 const serumIds = t => (t && t.dev ? CMOD.instIds(t).filter(k => isSerumDev(t, k)) : []);
-// (7a, IMPL-7a §1.1, §6) a drum machine (models.js family 'drums': the TR-808, 7b the TR-606) is a device too: its record
-// dev.drum (the pattern memory, panel state, extras, note map, sample slots — drum-core normDrum) is made on first read when
-// missing — (7b §3.1, review #4) always by the device's model: a 606 never gets (or keeps) an 808's record, nor the reverse
+// (7a, IMPL-7a §1.1, §6) a drum machine (models.js family 'drums': the TR-808, 7b the TR-606, 7c the TR-909) is a device
+// too: its record dev.drum (the pattern memory, panel state, extras, note map, sample slots — drum-core normDrum) is made on
+// first read when missing — (7b §3.1, review #4) always by the device's model: a machine never gets (or keeps) another's
+// record ((7c §6) the record's m — an 808's has none — against the model: three ways, never the binary 606 test)
 const isDrumDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && S.isDrum(d.model); };
 const drumDevs = t => (t && t.dev ? CMOD.instIds(t).filter(k => isDrumDev(t, k)) : []);
 function drumOf(t, dev) {
   if (!isDrumDev(t, dev)) return null;
   const d = t.dev[dev];
-  if (!d.drum || typeof d.drum !== 'object' || !Array.isArray(d.drum.keys) || (d.drum.m === 'tr606') !== (d.model === 'tr606')) d.drum = DC.normDrum(d.drum, d.model);
+  if (!d.drum || typeof d.drum !== 'object' || !Array.isArray(d.drum.keys) || (d.drum.m || 'tr808') !== d.model) d.drum = DC.normDrum(d.drum, d.model);
   return d.drum;
 }
 // (§5) the sample slots that are on, of every drum machine of the track, each id once: the worklet entries its payloads
-// name — ensured (levels 2: TUNING's ± 1 octave plays level 0 or 1) with the patch's own needs, never instead of them
+// name — ensured (levels 2: TUNING's ± 1 octave plays level 0 or 1) with the patch's own needs, never instead of them;
+// (7c §1.2) by the machine's own sound keys (PERS[model].sounds: the 909's ride and crash are rd / cr on ids 7 / 8)
 const drumLv = t => (drumDevs(t).length && !serumIds(t).length ? 2 : 0); // (the playback levels a drum track's samples ask; 0: the default, full)
+const drumSnds = (t, dev) => DC.PERS[t.dev[dev].model].sounds;
 function drumNeeds(t) {
   const out = [];
   for (const k of drumDevs(t)) {
     const D = drumOf(t, k);
-    for (const s of DC.SOUNDS) { const e = D.smp && D.smp[s]; if (e && e.on && typeof e.id === 'string' && !out.includes(e.id)) out.push(e.id); }
+    for (const s of drumSnds(t, k)) { const e = D.smp && D.smp[s]; if (e && e.on && typeof e.id === 'string' && !out.includes(e.id)) out.push(e.id); }
   }
   return out;
 }
@@ -1398,8 +1401,10 @@ function applyRestore(p, keepSound = false) {
   project = p;
   bind();
   syncNodes();
+  // ((7a) the sessions: the records the panels read (a machine changed: a fresh session), the tempo — (7c review #1) before the
+  // payloads, which read them: a synced 909's flam ticks are its session's tempo's, so a stale one never goes first)
+  drumChanged(); DRUM.bpm(project.bpm);
   for (const t of project.tracks) { sendPatch(t); sendSong(t, true); for (const k of drumDevs(t)) drumSend(t, k); } // ((7a) its payload, when it changed)
-  DRUM.bpm(project.bpm); drumChanged(); // ((7a) the sessions: the tempo, the records the panels read)
   renderAll(!keepSound || prevSel !== project.selTrack);
   if (T.playing) reanchor(false);
   roUI(); // (a newer file's project read-only; Undo / New away from it: saved again)
@@ -3213,8 +3218,14 @@ const drumTrack = x => { const o = x ? trOf(x) : null, id = o && typeof o === 'o
 const drumSess = (t, dev) => DRUM.api(instView(t, dev)).state().S;
 const drPkOf = N => N.drPk || (N.drPk = new Map()); // (dev → the content key of the payload the node holds)
 // the {t: 'seq'} payload (drum-core payload, §3.5): the plan, the clock, the note map, the mute mask, the slots — offline
-// (a bounce, a render; SYNC on or off — a machine's notes need its tables) from a fresh session: synced or silent, never running
-function drumPayload(t, dev, offline = false) { return DC.payload(drumOf(t, dev), offline ? DC.initState(instOf(t, dev).model) : drumSess(t, dev), 'now'); } // ((7b) the machine's own fresh session)
+// (a bounce, a render; SYNC on or off — a machine's notes need its tables) from a fresh session: synced or silent, never
+// running; (7c review #1) at the project tempo, as the live session — a synced 909's flams are whole ticks at that tempo;
+// (7c review 1 F2) with the live session's plan inputs (DC.planSess: the 909's / 606's TRACK WRITE pointer and chosen key, the
+// 606's D.S.) — the bounce plays the measure heard, not the track's first; the 808's none
+function drumPayload(t, dev, offline = false) {
+  const D = drumOf(t, dev);
+  return DC.payload(D, offline ? Object.assign(DC.initState(instOf(t, dev).model), { bpm: project.bpm }, DC.planSess(D, drumSess(t, dev))) : drumSess(t, dev), 'now'); // ((7b) the machine's own fresh session)
+}
 // drumSend(view | track, dev?, at, S?, force): the payload to the machine when its content key changed (or `at` asks for a
 // swap, or force). A slot switched on or off first re-sends the track's patch (its needs: the patch's and the slots', 2
 // levels); a payload naming a slot whose entry is still being built waits for it (§5: the {t: 'smp'} entry before the
@@ -3300,8 +3311,11 @@ function drumToRoll(x, bars) {
   const t = drumTrack(x), dev = dvOf(x), D = t ? drumOf(t, dev) : null;
   if (!D) return;
   const bt = S.barTicks(project), nb = clamp(Math.round(+bars) || 4, 1, 999), t0 = S.snapTick(T.playing ? curTick() : T.pos, bt, 'floor');
-  const d = instOf(t, dev); // ((7b review #5) the machine's own primaries: a 606's map read as a 606's — HT on 45 / 47 keeps them)
-  const notes = DC.toNotes(DC.compilePlan(D, D.ui, D.x), { t0, t1: t0 + nb * bt, swing: D.x.swing, sw: d.vals, prim: DC.primaries(D.map, d.model) });
+  // ((7b review #5) the machine's own primaries: a 606's map read as a 606's — HT on 45 / 47 keeps them; (7c §4, §10) drum-core's
+  // rollPlan / rollOpts: the 808's / 606's today's plan and options, the 909's plan as the synced sequencer plays it at the
+  // project tempo — its flams' whole ticks — carrying its shuffle, flams and accents)
+  const d = instOf(t, dev);
+  const notes = DC.toNotes(DC.rollPlan(D, project.bpm, drumSess(t, dev)), Object.assign({ t0, t1: t0 + nb * bt }, DC.rollOpts(D, d))); // ((7c review 1 F2) the session: TRACK WRITE's measure heard)
   if (!notes.length) { notice('Nothing to write: the pattern has no hits there', 4000); return; }
   flush();
   hist.record(project, 'Pattern to notes');
@@ -3331,11 +3345,13 @@ function drumToRoll(x, bars) {
   });
 }
 // (7b review 1 #4) a machine's own tempo knobs { m, tempo, fine? } (→ Piano roll's undo), and a record with them put back —
-// the same machine's only (a Replace since: left alone); the same record when they are already so
-const drTempoOf = D => (D.m === 'tr606' ? { m: 'tr606', tempo: D.ui.tempo } : { m: 'tr808', tempo: D.ui.tempo, fine: D.ui.fine });
+// the same machine's only (a Replace since: left alone); the same record when they are already so. (7c) By the record's
+// machine, three ways: the 606's and the 909's TEMPO in BPM, the 808's TEMPO + FINE (a 909 read as an 808 came back an 808)
+const drMach = D => (D.m === 'tr606' || D.m === 'tr909' ? D.m : 'tr808');
+const drTempoOf = D => (drMach(D) === 'tr808' ? { m: 'tr808', tempo: D.ui.tempo, fine: D.ui.fine } : { m: D.m, tempo: D.ui.tempo });
 function drTempoPut(D, k) {
-  if (!D || !k || typeof k !== 'object' || (D.m === 'tr606' ? 'tr606' : 'tr808') !== k.m) return D;
-  const u = k.m === 'tr606' ? { tempo: k.tempo } : { tempo: k.tempo, fine: k.fine };
+  if (!D || !k || typeof k !== 'object' || drMach(D) !== k.m) return D;
+  const u = k.m === 'tr808' ? { tempo: k.tempo, fine: k.fine } : { tempo: k.tempo };
   return Object.keys(u).every(f => D.ui[f] === u[f]) ? D : DC.normDrum(Object.assign({}, D, { ui: Object.assign({}, D.ui, u) }), k.m);
 }
 let drBack = null; // { mv: the "Pattern to notes" step's meta.drumSync, redo } — read after hist.undo / hist.redo
@@ -3444,7 +3460,7 @@ async function drumLoad(x, sound, files = null) {
   if (!(sec <= DR_SLOT_S + 0.05)) { notice(`“${name}” is ${sec.toFixed(1)} s long — a drum slot takes up to ${DR_SLOT_S} s`, 6000); return null; }
   const t = drumTrack(x), D = t ? drumOf(t, dvOf(x)) : null;
   let bytes = drEst(rec);
-  for (const s of DC.SOUNDS) {
+  for (const s of D ? drumSnds(t, dvOf(x)) : []) { // ((7c) the machine's own slots: the 909's ride and crash counted)
     const e = D && D.smp ? D.smp[s] : null;
     if (!e || !e.on || s === sound || e.id === id) continue;
     const r = await smpHost.record(e.id);

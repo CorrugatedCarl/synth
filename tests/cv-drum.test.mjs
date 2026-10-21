@@ -362,6 +362,193 @@ test('7b art: MODE\'s detents at +37° … +127° (rot 82, sweep 90), TRACK / IN
   assert.ok(!/currentColor|var\(--|<style|<image|<foreignObject|href/.test(svg), 'self-contained');
 });
 
+/* ================================================================ 7c: the TR-909's tokens, validator and geometry (IMPL-7c §7.1–§7.3, §12.8) */
+const M909 = MODELS.find(m => m.id === 'tr909');
+const DR9_FACE = ['dr:start', 'dr:stop', 'dr:disp', 'dr:tempo', 'dr:trk', 'dr:pat', 'dr:tkey', 'dr:back', 'dr:fwd', 'dr:avail', 'dr:cyc', 'dr:enter',
+  'dr:last', 'dr:scale', 'dr:shuf', 'dr:clear', 'dr:isel', 'dr:shift', 'dr:step', 'dr:scl'];
+const DR9_EXTRAS = ['dr:grid', 'dr:pads', 'dr:sync', 'dr:toRoll', 'dr:rec', 'dr:map', 'dr:sounds', 'dr:demo'];
+const OUTS9 = ['BD', 'SD', 'LT', 'MT', 'HT', 'RS', 'HC', 'HH', 'CRASH', 'RIDE'];
+const SMALL9 = [192.8, 204.7, 216.6, 228.3, 247.0, 258.9, 270.9, 281.9, 299.8, 312.6, 324.7, 336.4, 350.4, 362.6]; // (R9 §13: the hardware's x)
+// a fixture TR-909 face (486 × 300 mm, R9 §13's positions): the knob band's nine blocks (rows at y 113.4 / 133.0), the middle
+// band (START, STOP/CONT, the display, TEMPO, the fourteen small keys — R9 §13's ≈ 11.9 mm inside a group is under the 14 mm
+// hit rule: here on a 14 mm pitch from x 186.6, none more than 6.2 mm from the hardware's (§7.1), hit [14, 15] —, ENTER,
+// VOLUME), the bottom band (the left cluster at its 14.9 × 17.7 mm pitch, hit boxes 14 wide; the four scale rows' LEDs; the
+// 16 step keys at a 23 mm pitch, an LED in each cap); EXT INST and TAPE SYNC dimmed, the ten MULTI OUT jacks inert 'later',
+// the cartridge slot print; the extras in §7.5's order, no caption of its own (the geometry supplies the 909's)
+const TR9_FX = (() => {
+  const knobs = [['bdu', 83.0, 0], ['bdl', 103.8, 0], ['bda', 83.0, 1], ['bdd', 103.8, 1], ['sdu', 129.1, 0], ['sdl', 150.0, 0], ['sdt', 129.1, 1], ['sds', 150.0, 1],
+    ['ltu', 175.1, 0], ['ltl', 196.2, 0], ['ltd', 175.1, 1], ['mtu', 221.3, 0], ['mtl', 242.3, 0], ['mtd', 221.3, 1], ['htu', 267.2, 0], ['htl', 288.3, 0], ['htd', 267.2, 1],
+    ['rsl', 313.2, 0], ['cpl', 334.5, 0], ['hhl', 380.6, 0], ['chd', 359.8, 1], ['ohd', 380.6, 1], ['crl', 406.0, 0], ['rdl', 426.8, 0], ['cru', 406.0, 1], ['rdu', 426.8, 1],
+    ['ac', 53.0, 1]].map(([id, x, r]) => ({ id, kind: 'knob', x, y: r ? 133.0 : 113.4, d: 12.3, sweep: 300, label: id.toUpperCase(), lab: 'none' }));
+  const small = [['dr:trk', 'TRACK 1', 1], ['dr:trk', 'TRACK 2', 2], ['dr:trk', 'TRACK 3', 3], ['dr:trk', 'TRACK 4', 4], ['dr:pat', 'PATTERN 1', 1], ['dr:pat', 'PATTERN 2', 2],
+    ['dr:pat', 'PATTERN 3', 3], [null, 'EXT INST'], ['dr:tkey', 'TEMPO'], ['dr:back', 'BACK'], ['dr:fwd', 'FWD'], ['dr:avail', 'AVAILABLE MEAS'], ['dr:cyc', 'CYCLE/GUIDE'], [null, 'TAPE SYNC']]
+    .map(([id, label, n], i) => Object.assign(id ? { id, hit: [14, 15] } : { inert: true }, { kind: 'button', x: 186.6 + 14 * i, y: 169, w: 7, h: 7, led: 'cap', color: '#d0c8b0', label, lab: 'none' }, n ? { n } : {}));
+  const cluster = [['dr:last', 44.5, 201.9, 'LAST STEP'], ['dr:scale', 59.4, 201.9, 'SCALE'], ['dr:shuf', 44.5, 219.6, 'SHUFFLE/FLAM'], ['dr:clear', 59.4, 219.6, 'CLEAR'],
+    ['dr:isel', 44.5, 237.2, 'INSTRUMENT SELECT'], ['dr:shift', 59.4, 237.2, 'SHIFT']].map(([id, x, y, label]) => ({ id, kind: 'button', x, y, w: 8, h: 8, hit: [14, 15], color: '#d0c8b0', label, lab: 'none' }));
+  const steps = Array.from({ length: 16 }, (_, i) => ({ id: 'dr:step', kind: 'button', n: i + 1, x: 81.7 + 23 * i, y: 236.4, w: 17, h: 19.5, led: 'cap', color: '#d0c8b0' }));
+  const scl = [194.0, 201.2, 208.4, 215.6].map((y, i) => ({ id: 'dr:scl', kind: 'led', n: i + 1, x: 71, y, d: 2.4 }));
+  return {
+    v: 1, id: 'tr909', hw: 'fixture', case: '#e8e8e2',
+    scheme: { panel: '#e8e8e2', legend: '#2c3550', accent: '#f28c28', knob: { skirt: '#2c3550', cap: '#2c3550', ptr: '#f28c28' } },
+    areas: [{ id: 'main', src: [0, 0, 486, 300], at: [0, 0] }],
+    sections: [
+      { id: 'knobs', label: 'VOICES', x: 30, y: 92, w: 420, h: 52, frame: 'none', title: 'none' },
+      { id: 'mid', label: 'TRANSPORT · TEMPO · KEYS', x: 30, y: 150, w: 420, h: 38, frame: 'none', title: 'none' },
+      { id: 'seq', label: 'SEQUENCER', x: 30, y: 188, w: 420, h: 80, frame: 'none', title: 'none' },
+    ],
+    controls: [
+      ...knobs,
+      { id: 'dr:start', kind: 'button', x: 49.4, y: 173.8, w: 19, h: 18, color: '#fffddc', label: 'START', lab: 'none' },
+      { id: 'dr:stop', kind: 'button', x: 74.0, y: 173.8, w: 19, h: 18, color: '#fffddc', label: 'STOP/CONT', lab: 'none' },
+      { id: 'dr:disp', kind: 'display', x: 113.85, y: 173.95, w: 39.1, h: 18.9, color: '#ff3b2a' },
+      { id: 'dr:tempo', kind: 'knob', x: 160.0, y: 171.1, d: 22, sweep: 300, label: 'TEMPO', lab: 'none' },
+      ...small,
+      { id: 'dr:enter', kind: 'button', x: 385.7, y: 173.8, w: 19, h: 18, led: 'cap', color: '#fffddc', label: 'ENTER', lab: 'none' },
+      { id: 'vol', kind: 'knob', x: 426.6, y: 171.5, d: 23, sweep: 300, label: 'VOLUME', lab: 'none' },
+      ...cluster, ...scl, ...steps,
+      ...OUTS9.map((s, i) => ({ kind: 'jack', x: 150 + 24 * i, y: 40, d: 6, inert: 'later', label: s + ' OUT', lab: 'none' })),
+      { kind: 'slot', x: 420, y: 40, w: 50, h: 6, inert: true, label: 'CARTRIDGE' },
+    ],
+    decor: [{ t: 'text', x: 88, y: 80, s: 'TR-909 · Rhythm Composer', size: 5, anchor: 'middle' }],
+    extras: { ids: DR9_EXTRAS.slice() },
+  };
+})();
+
+test('7c tokens: TOKENS.tr909 lists the §7.2 face tokens (their kinds: the display, the LED keys, the scale rows\' LEDs) and the §3.7 extras (no SWING, no knobs); TRACK n 1–4, PATTERN n 1–3, the step keys n 1–16, the scale LEDs n 1–4 — each repeats, all present; the LED keys; the display\'s 3 characters; the pads 232 × 184; the caption; every one rendered; the fixture validates on the real tr909 model and is usable()', () => {
+  const T = P.TOKENS.tr909;
+  assert.deepEqual(Object.keys(T.kind), DR9_FACE);
+  assert.deepEqual(T.extras, DR9_EXTRAS);
+  assert.deepEqual(DR9_FACE.map(t => T.kind[t]), ['button', 'button', 'display', 'knob', ...Array(14).fill('button'), 'button', 'led']);
+  assert.deepEqual([T.multi, T.idx, T.full], [['dr:step', 'dr:trk', 'dr:pat', 'dr:scl'], { 'dr:step': ['n', 1, 16], 'dr:trk': ['n', 1, 4], 'dr:pat': ['n', 1, 3], 'dr:scl': ['n', 1, 4] }, ['dr:step', 'dr:trk', 'dr:pat', 'dr:scl']]);
+  assert.deepEqual([T.led, T.digits, T.cells, T.xbreak, T.pos, T.orient], [['dr:trk', 'dr:pat', 'dr:tkey', 'dr:back', 'dr:fwd', 'dr:avail', 'dr:cyc', 'dr:enter'], { 'dr:disp': 3 }, { 'dr:pads': [232, 184] }, ['dr:pads'], undefined, undefined]);
+  assert.equal(T.caption, P.XCAPTION_DRUMS + ' · Hi-hats and cymbals: our own sounds through the 909’s chip circuit', 'D4: our cymbal sounds named');
+  for (const t of [...DR9_FACE, ...DR9_EXTRAS]) assert.ok(P.RENDERED_TOKENS.has(t), t + ' rendered');
+  assert.deepEqual([P.tokPos(M909, 'dr:step'), P.tokPos(M909, 'dr:inst'), P.dspMin(3), P.DSP_FONT], [0, 0, [20.6, 12], { px: 20, em: 0.62, pad: 2 }]);
+  assert.deepEqual([M909.family, M909.controls.length, M909.controls.every(c => c.t === 'k')], ['drums', 28, true], 'the 28 knobs of E9a, no switch');
+  assert.deepEqual(P.validate(TR9_FX, M909), []);
+  globalThis.__synthTest = { panels: { tr909: TR9_FX } };
+  try { assert.equal(P.usable('tr909', M909) === TR9_FX, true); } finally { delete globalThis.__synthTest; }
+  // the layout's own caption: exactly the model's
+  assert.deepEqual(P.validate(Object.assign(clone(TR9_FX), { extras: { ids: DR9_EXTRAS.slice(), caption: T.caption } }), M909), []);
+});
+
+test('7c validate: one mutation per rule, naming the field (§7.2, §7.3, §12.8)', () => {
+  const bad = (f, re, m) => {
+    const L = clone(TR9_FX);
+    f(L, (id, n) => L.controls.find(c => c.id === id && (n == null || c.n === n)));
+    const p = P.validate(L, M909);
+    assert.ok(p.some(x => re.test(x)), (m || re) + ' → ' + JSON.stringify(p));
+  };
+  // the step keys: n 1–16, each once, all 16, each with its LED; the TRACK / PATTERN keys and the scale LEDs the same way
+  bad((L, by) => { by('dr:step', 7).n = 5; }, /\(dr:step\): n 5 twice/);
+  bad(L => { L.controls = L.controls.filter(c => !(c.id === 'dr:step' && c.n === 16)); }, /dr:step: n 16 missing \(all 16 are on the panel\)/);
+  bad((L, by) => { by('dr:step', 9).led = 'none'; }, /\(dr:step\): a step key shows its LED/);
+  bad((L, by) => { by('dr:trk', 2).n = 5; }, /\(dr:trk\): n 1–4/);
+  bad((L, by) => { by('dr:trk', 2).n = 1; }, /\(dr:trk\): n 1 twice/);
+  bad((L, by) => { by('dr:trk', 2).n = 1; }, /dr:trk: n 2 missing \(all 4 are on the panel\)/);
+  bad((L, by) => { delete by('dr:pat', 3).n; }, /\(dr:pat\): n 1–3/, 'no n');
+  bad(L => { L.controls = L.controls.filter(c => !(c.id === 'dr:pat' && c.n === 3)); }, /dr:pat: n 3 missing \(all 3 are on the panel\)/);
+  bad((L, by) => { by('dr:scl', 4).n = 5; }, /\(dr:scl\): n 1–4/, 'an LED token\'s index');
+  bad((L, by) => { by('dr:scl', 4).n = 1; }, /\(dr:scl\): n 1 twice/);
+  bad(L => { L.controls = L.controls.filter(c => !(c.id === 'dr:scl' && c.n === 2)); }, /dr:scl: n 2 missing \(all 4 are on the panel\)/);
+  // the LED keys show their LED
+  for (const [id, n] of [['dr:trk', 3], ['dr:pat', 1], ['dr:tkey'], ['dr:back'], ['dr:fwd'], ['dr:avail'], ['dr:cyc'], ['dr:enter']]) bad((L, by) => { by(id, n).led = 'none'; }, new RegExp(`\\(${id}\\): ${id} shows its LED`), id + '\'s LED');
+  // the display: a display token, once, three characters at the display's font
+  bad((L, by) => { by('dr:disp').w = 20; }, /\(dr:disp\): 3 characters need a box ≥ 20\.6 × 12 mm \(the display's 20 px font\)/);
+  bad((L, by) => { by('dr:disp').h = 11.5; }, /\(dr:disp\): 3 characters need a box/);
+  bad((L, by) => { Object.assign(by('dr:disp'), { kind: 'button' }); }, /\(dr:disp\): dr:disp must be a display/);
+  bad((L, by) => { L.controls.push(Object.assign(clone(by('dr:disp')), { x: 113.85, y: 60 })); }, /dr:disp: placed 2 times/);
+  bad((L, by) => { Object.assign(by('dr:scl', 1), { kind: 'button', w: 15, h: 15 }); }, /\(dr:scl\): dr:scl must be a led/);
+  bad((L, by) => { delete by('dr:disp').w; }, /\(dr:disp\): w, h > 0/);
+  // kinds
+  for (const id of ['dr:start', 'dr:stop', 'dr:enter', 'dr:isel', 'dr:shift', 'dr:shuf']) bad((L, by) => { Object.assign(by(id), { kind: 'knob', d: 15 }); }, new RegExp(`\\(${id}\\): ${id} must be a button`));
+  bad((L, by) => { Object.assign(by('dr:tempo'), { kind: 'rotary', legends: ['1', '2'] }); }, /dr:tempo must be a knob/);
+  // the 14 mm hit rule: the hardware's ≈ 11.9 mm middle-band pitch and the left cluster's default 15 mm hit boxes overlap
+  bad(L => { L.controls.filter(c => c.y === 169).forEach((c, i) => { c.x = SMALL9[i]; }); }, /\(dr:(trk|pat)\) and controls\[\d+\] \(dr:(trk|pat)\): hit boxes overlap/, 'the 11.9 mm pitch');
+  bad((L, by) => { delete by('dr:last').hit; delete by('dr:scale').hit; }, /\(dr:last\) and controls\[\d+\] \(dr:scale\): hit boxes overlap/, 'the left cluster at 14.9 mm with 15 mm hit boxes');
+  bad((L, by) => { by('dr:back').hit = [13.5, 15]; }, /\(dr:back\): hit box 13.5 × 15 mm < 14 mm/);
+  // at most once; extras tokens only in the extras, face tokens only on the face; the caption the model's
+  bad((L, by) => { L.controls.push(Object.assign(clone(by('dr:isel')), { x: 400, y: 60 })); }, /dr:isel: placed 2 times/);
+  bad(L => { L.extras.ids.push('dr:pads'); }, /dr:pads: placed 2 times/);
+  bad(L => { L.controls.push({ id: 'dr:grid', kind: 'button', x: 400, y: 60, w: 15, h: 15 }); }, /\(dr:grid\): "dr:grid" is not a control of the model/, 'an extras token on the face');
+  bad(L => { L.extras.ids.push('dr:enter'); }, /extras: "dr:enter" is not a control of the model/, 'a face token in the extras');
+  bad(L => { L.extras.caption = P.XCAPTION_DRUMS; }, /extras\.caption: the tr909's is "EXTRAS · not on the original · Sounds: our model of the circuits · Hi-hats and cymbals: our own sounds/, 'D4: the caption names our cymbal sounds');
+  // the 808's and the 606's tokens are not the 909's, and the 909's not theirs
+  for (const t of ['dr:tap', 'dr:fn', 'dr:grp', 'dr:fine']) bad(L => { L.controls.push({ id: t, kind: t === 'dr:fine' ? 'knob' : 'button', x: 400, y: 60, d: 12, w: 15, h: 15 }); }, new RegExp(`"${t}" is not a control of the model`), t + ' on a 909');
+  bad(L => { L.controls.push({ id: 'dr:mode', kind: 'rotary', x: 400, y: 60, d: 12, legends: ['1', '2', '3', '4'] }); }, /"dr:mode" is not a control of the model/, 'a mode rotary on a 909');
+  bad(L => { L.controls.push({ id: 'dr:runLed', kind: 'led', x: 400, y: 60, d: 3 }); }, /\(dr:runLed\): a display carries no id/, 'the 606\'s RUN LED');
+  for (const t of ['dr:swing', 'dr:link']) bad(L => { L.extras.ids.push(t); }, new RegExp(`extras: "${t}" is not a control of the model`), t + ' in a 909\'s extras');
+  for (const t of ['dr:isel', 'dr:stop', 'dr:enter']) {
+    assert.ok(P.validate(Object.assign(clone(TR_FX), { controls: [...TR_FX.controls, { id: t, kind: 'button', x: 400, y: 160, w: 15, h: 15 }] }), M808).some(x => x.includes(`"${t}" is not a control of the model`)), t + ' on an 808');
+    assert.ok(P.validate(Object.assign(clone(TR6_FX), { controls: [...TR6_FX.controls, { id: t, kind: 'button', x: 150, y: 90, w: 15, h: 15 }] }), M606).some(x => x.includes(`"${t}" is not a control of the model`)), t + ' on a 606');
+  }
+  assert.ok(P.validate(Object.assign(clone(TR6_FX), { controls: [...TR6_FX.controls, { id: 'dr:disp', kind: 'display', x: 150, y: 90, w: 40, h: 19 }] }), M606).some(x => /\(dr:disp\): a display carries no id/.test(x)), 'the 909\'s display on a 606');
+  assert.ok(P.validate(Object.assign(clone(TR6_FX), { extras: { ids: TR6_FX.extras.ids.slice(), caption: P.TOKENS.tr909.caption } }), M606).length === 0, 'another model\'s caption is free (the 606 has none of its own)');
+  // every models.js id once: the 28 face knobs, none in the extras
+  bad(L => { L.controls = L.controls.filter(c => c.id !== 'bda'); }, /bda: not placed/);
+  bad(L => { L.extras.ids.push('cru'); }, /cru: placed 2 times/);
+  // original art: no maker word
+  bad(L => { L.decor[0].s = 'Roland TR-909'; }, /decor\[0\]: a maker name/);
+  bad((L, by) => { by('dr:enter').label = 'ENTER Roland'; }, /a maker name/);
+  // keys with no LED rule: the left cluster, START / STOP (the hardware's have none)
+  const N = clone(TR9_FX);
+  for (const id of ['dr:last', 'dr:scale', 'dr:shuf', 'dr:clear', 'dr:isel', 'dr:shift', 'dr:start', 'dr:stop']) N.controls.find(c => c.id === id).led = 'none';
+  assert.deepEqual(P.validate(N, M909), []);
+});
+
+test('7c geometry: 486 × 300 mm → a 992 px module (976 inside the strip); the extras rows (§7.5) — the grid 640 × 272 and the 4 × 3 pads 232 × 184 · SYNC · → PIANO ROLL · REC · MAP… · SOUNDS… · DEMO (560 px); 992 × 1024 on the dots; the 909\'s caption (D4) and the dimmed note; the 808\'s and the 606\'s cells unchanged', () => {
+  const g = P.geometry(TR9_FX, M909), s = P.sizeOf(TR9_FX, M909), X = g.extras;
+  assert.deepEqual([g.W, g.content.x, g.content.w, g.content.h], [992, 10, 972, 600]);
+  assert.deepEqual([P.DR9_PADS.w, P.DR9_PADS.h, P.tokCell(M909, 'dr:pads'), P.tokCell(M909, 'dr:grid'), P.tokCell(M909, 'dr:demo'), P.tokCell(M909, 'bdu'), P.xbreakOf(M909)],
+    [232, 184, [232, 184], [640, 272], [72, 64], null, ['dr:pads']]);
+  assert.deepEqual([P.tokCell(M808, 'dr:pads'), P.tokCell(M606, 'dr:pads'), P.tokCell(M606, 'dr:grid')], [[232, 232], [232, 116], [592, 192]], 'the 808\'s and the 606\'s cells');
+  const row = (y, ...cells) => { let x = 8; return cells.map(([id, w, h]) => { const c = [id, x, y, w, h || 64]; x += w; return c; }); };
+  assert.deepEqual(X.cells.map(c => [c.id, c.x, c.y, c.w, c.h]), [
+    ...row(616, ['dr:grid', 640, 272], ['dr:pads', 232, 184]),
+    ...row(888, ['dr:sync', 96], ['dr:toRoll', 128], ['dr:rec', 72], ['dr:map', 88], ['dr:sounds', 104], ['dr:demo', 72])]);
+  assert.equal(X.cells.slice(2).reduce((a, c) => a + c.w, 0), 560, 'row 2: 560 px (§7.5)');
+  for (const c of X.cells) assert.ok(c.x >= P.XPAD && c.x + c.w <= X.w - P.XPAD, c.id + ' inside the 976 px');
+  assert.deepEqual([X.x, X.y, X.w, X.h, X.over], [0, 600, 992, 16 + 272 + 64 + 8, false]);
+  assert.deepEqual([s.w, s.h, s.w % DOT, s.h % DOT, s.h - BAR_H], [992, 1024, 0, 0, g.body.h], 'TARGET.tr909 = 992 × 1024 (§7.1: ≈ 992 × 1024)');
+  assert.deepEqual([X.caption, X.note], [P.TOKENS.tr909.caption, true], 'the 909\'s caption (D4); EXT INST / TAPE SYNC dimmed: "Dimmed controls are not emulated"');
+  const C = clone(TR9_FX); C.extras.caption = P.TOKENS.tr909.caption;
+  assert.equal(P.geometry(C, M909).extras.caption, P.TOKENS.tr909.caption, 'the layout\'s own (the same)');
+  assert.equal(P.geometry(TR6_FX, M606).extras.caption, P.XCAPTION_DRUMS, 'the 606 keeps the drum caption');
+  // the caption with the dimmed note overruns the 976 px at 9 px (Chrome: 1047 px): 8 px, the tracking halved (Chrome: 887 px)
+  const full = P.TOKENS.tr909.caption + ' · Dimmed controls are not emulated';
+  assert.deepEqual([P.xcapFit(full, 976), P.xcapFit(P.TOKENS.tr909.caption, 976), P.xcapFit(P.XCAPTION_DRUMS + ' · Dimmed controls are not emulated', 1008), P.xcapFit(full, 700), P.xcapFit(full, 0)],
+    [{ fs: 8, ls: 0.04 }, null, null, { fs: 7, ls: 0.04 }, null]);
+  // a face a little shallower (≥ 284 mm) keeps the module within a dot of the pin
+  const sh = clone(TR9_FX); sh.areas[0].src[3] = 284;
+  assert.deepEqual([P.validate(sh, M909), P.sizeOf(sh, M909).w, P.sizeOf(sh, M909).h], [[], 992, 992]);
+  // every live hit box ≥ 28 px, disjoint, in the body; the step keys, TRACK and PATTERN in Tab order; the display and the
+  // scale LEDs shown (no hit boxes), the display's box 78 × 38 px
+  const hb = P.hitBoxes(TR9_FX, M909);
+  for (const h of hb) assert.ok(h.w >= 28 && h.h >= 28 && h.x >= 0 && h.y >= 0 && h.x + h.w <= g.body.w && h.y + h.h <= g.body.h, h.id);
+  for (let i = 0; i < hb.length; i++) for (let j = i + 1; j < hb.length; j++) { const a = hb[i], b = hb[j]; assert.ok(!(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h), a.id + ' × ' + b.id); }
+  assert.deepEqual([hb.length, hb.filter(h => h.id === 'dr:step').length, hb.filter(h => h.id === 'dr:trk').length, hb.filter(h => h.id === 'dr:pat').length, hb.some(h => /^dr:(disp|scl)$/.test(h.id))], [28 + 1 + 16 + 12 + 2 + 1 + 6, 16, 4, 3, false]);
+  const ord = id => g.order.map(i => TR9_FX.controls[i]).filter(c => c.id === id).map(c => c.n);
+  assert.deepEqual([ord('dr:step'), ord('dr:trk'), ord('dr:pat'), ord('dr:scl')], [Array.from({ length: 16 }, (_, i) => i + 1), [1, 2, 3, 4], [1, 2, 3], [1, 2, 3, 4]]);
+  assert.deepEqual(g.controls.filter(o => o.show).map(o => o.id), ['dr:disp', 'dr:scl', 'dr:scl', 'dr:scl', 'dr:scl']);
+  const d = g.controls.find(o => o.id === 'dr:disp');
+  assert.deepEqual([d.own.w, d.own.h, d.live, d.sec >= 0], [78, 38, false, true]);
+  // the middle band's caps: 14 mm apart, none more than 6.2 mm from the hardware's (§7.1)
+  const mid = TR9_FX.controls.filter(c => c.y === 169);
+  assert.ok(mid.every((c, i) => Math.abs(c.x - SMALL9[i]) <= 6.2 + 1e-9 && (!i || Math.round((c.x - mid[i - 1].x) * 1000) === 14000)), 'the minimax');
+});
+
+test('7c art: the ten MULTI OUT jacks at full contrast "— cable-able with full patching (stage 4)"; EXT INST, TAPE SYNC and the cartridge slot dimmed "— not emulated"; no maker word; the model name only as plain text; self-contained', () => {
+  const svg = P.decorSvg(TR9_FX, M909);
+  const groups = [...svg.matchAll(/<g class="(hw-inert[^"]*)"( opacity="[^"]*")? data-tip="([^"]*)"><title>([^<]*)<\/title>/g)].map(m => [m[1], !!m[2], m[3], m[4]]);
+  assert.deepEqual(groups.filter(x => x[0] === 'hw-inert hw-later').map(x => [x[1], x[3]]), OUTS9.map(s => [false, s + ' OUT — cable-able with full patching (stage 4)']));
+  assert.deepEqual(groups.filter(x => x[0] === 'hw-inert').map(x => [x[1], x[3]]), [[true, 'EXT INST — not emulated'], [true, 'TAPE SYNC — not emulated'], [true, 'CARTRIDGE — not emulated']]);
+  const texts = [...svg.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)].map(m => m[1].replace(/<[^>]+>/g, ' '));
+  for (const t of texts) assert.doesNotMatch(t, new RegExp('\\b(' + P.MAKERS.join('|') + ')\\b'), t);
+  assert.ok(texts.includes('TR-909 · Rhythm Composer'));
+  assert.doesNotMatch(svg.replace(/<text[\s\S]*?<\/text>/g, '').replace(/<title>[\s\S]*?<\/title>/g, '').replace(/data-tip="[^"]*"/g, ''), /\bTR-909\b/);
+  assert.ok(!/currentColor|var\(--|<style|<image|<foreignObject|href/.test(svg), 'self-contained');
+});
+
 /* ================================================================ phase 2: the host and the widgets (§7.4, §12.7) */
 const r3 = v => Math.round(v * 1000) / 1000;
 const cls = n => n.getAttribute('class') || '';
@@ -415,9 +602,9 @@ function fakeApi(doc, model = M808) {
     tip: (el, t) => tips.push(t), untip: () => {}, fmt: (c, v) => String(v), presetNo: () => null, tier: false,
   };
 }
-function mount(withHost, o = {}) { // (7b: o.six — the fixture 606 face on the real tr606 model, a 606 record)
-  const six = !!o.six, model = six ? M606 : M808, doc = fresh(), root = doc.createElement('div'), api = fakeApi(doc, model);
-  const g = withHost ? rig(six ? Object.assign({ model: 'tr606' }, o) : o) : null;
+function mount(withHost, o = {}) { // (7b: o.six — the fixture 606 face on the real tr606 model, a 606 record; 7c: o.nine — the 909's)
+  const six = !!o.six, nine = !!o.nine, model = nine ? M909 : six ? M606 : M808, doc = fresh(), root = doc.createElement('div'), api = fakeApi(doc, model);
+  const g = withHost ? rig(nine ? Object.assign({ model: 'tr909' }, o) : six ? Object.assign({ model: 'tr606' }, o) : o) : null;
   if (g) { // (every press the widgets make, TAP's included, recorded as JSON)
     api.drum = g.H.api(g.tr); g.presses = [];
     const p = api.drum.press, t = api.drum.tap;
@@ -425,7 +612,7 @@ function mount(withHost, o = {}) { // (7b: o.six — the fixture 606 face on the
     api.drum.tap = ts => { g.presses.push('{"k":"tap"}'); return t(ts); };
   }
   doc.body.append(root);
-  const r = P.render(root, six ? TR6_FX : TR_FX, model, api);
+  const r = P.render(root, nine ? TR9_FX : six ? TR6_FX : TR_FX, model, api);
   return Object.assign({ doc, root, api, r }, g || {});
 }
 const withRaf = f => { rafQ.install(); try { return f(); } finally { rafQ.uninstall(); } };
@@ -1244,4 +1431,524 @@ test('7b review 2 #4: the 606\'s pads 2 × 50 + 8 from top 8 (still 116 px — t
     assert.deepEqual([p8[0].style.top, p8[4].style.top, p8[12].style.top], ['0px', '60px', '180px'], 'the 808\'s pads unchanged');
     E.r.destroy();
   });
+});
+
+/* ================================================================ 7c phase 2: the TR-909's widgets and host (IMPL-7c §7.4, §12.8) */
+// the presses a 909 panel made, as short words ("hold shift down", "tap pat 2", "key 3 down shift", "release")
+const words9 = m => m.presses.splice(0).map(x => { const o = JSON.parse(x); return [o.k, o.b, o.n, o.down === true ? 'down' : o.down === false ? 'up' : '', o.shift ? 'shift' : ''].filter(v => v !== undefined && v !== '').join(' '); });
+const byN = (root, id) => byCtl(root, id).map(w => w.childNodes[0]);
+const dsp9 = root => all(root).find(n => cls(n) === 'hw-dsp dr-dsp');
+const scl9 = root => all(root).filter(n => cls(n) === 'hw-led hw-show dr-led');
+const tapEl = (el, id) => { dn(el, id); upP(el, id); };
+const pw9 = (A, tap) => { // free PATTERN WRITE of I-1-1 (TAP write when tap), running
+  A.press({ k: 'sync', v: false }); A.press({ k: 'hold', b: 'shift', down: true }); A.press({ k: 'tap', b: 'pat', n: 1 });
+  if (tap) A.press({ k: 'tap', b: 'back' });
+  A.press({ k: 'hold', b: 'shift', down: false }); A.press({ k: 'tap', b: 'start' });
+};
+
+test('7c drumHost: the session follows the record\'s machine three ways (a 909 session names itself); bpm(v) presses { k: \'bpm\' } for a 909 — a synced plan whose flams move is sent now, nothing when they do not (review #1), its own synced TEMPO too; a TAP-write key: f at its time, its note (the state\'s velocity) through the pads\' path, the off at its up, the sel() gate, the off when the session drops it; the demo\'s confirm names I-1-1 / I-1-2', () => {
+  const { tr, R, H } = rig({ model: 'tr909' }), A = H.api(tr);
+  assert.deepEqual([A.state().S.m, A.state().D.m, A.state().S.hold.shift, CD.machOf('tr909'), CD.machOf({ m: 'tr909' }), CD.machOf('tr999'), CD.machOf({ m: 'tr606' }), CD.machOf(null)],
+    ['tr909', 'tr909', false, 'tr909', 'tr909', 'tr808', 'tr606', 'tr808']);
+  R.playing = true; H.transport(true);
+  R.D = DC.normDrum(undefined); H.changed(tr);
+  assert.deepEqual([A.state().S.m, 'tap' in A.state().S, A.state().S.play], [undefined, true, true], 'an 808 record: a fresh 808 session, playing');
+  R.D = DC.normDrum(undefined, 'tr606'); H.changed(tr);
+  assert.equal(Array.isArray(A.state().S.held), true, 'a 606\'s');
+  R.D = DC.normDrum(undefined, 'tr909'); H.changed(tr);
+  assert.deepEqual([A.state().S.m, A.state().S.play], ['tr909', true], 'and the 909\'s');
+  const S0 = A.state().S; H.changed(tr);
+  assert.equal(A.state().S, S0, 'the same machine: the session kept');
+  // review #1: the DEMO (a snare flam, FLAM 11 = 18 ms) synced — the project tempo moves the flam's ticks
+  A.press({ k: 'demo' });
+  let n = R.sent.length;
+  H.bpm(100);
+  assert.deepEqual([R.sent.slice(n), A.state().S.bpm], [['now'], 100], '120 → 100 BPM: the flam 35 → 29 ticks, sent now');
+  n = R.sent.length; H.bpm(100); H.bpm(100.2);
+  assert.deepEqual([R.sent.slice(n), A.state().S.bpm], [[], 100.2], 'the same ticks: nothing sent (the session\'s tempo kept)');
+  A.press({ k: 'tempo', v: 90 });
+  assert.deepEqual([R.sent.slice(n), R.log.at(-1), A.state().S.bpm], [['now'], 'bpm 90 undefined', 90], 'its own TEMPO synced: the project tempo, the flams sent with it');
+  n = R.sent.length; H.bpm(90);
+  assert.deepEqual(R.sent.slice(n), [], 'main\'s echo (setProjectBpm → DRUM.bpm): nothing more');
+  const E = rig(); E.H.api(E.tr); E.H.bpm(100);
+  assert.deepEqual([E.R.sent.length, E.H.api(E.tr).state().S.bpm], [0, 100], 'the 808: its session\'s tempo only');
+  // TAP write (free, 120 BPM: 25 frames a tick, a sixteenth 6000): a key's press at its heard time — the nearest step, its note
+  const T = rig({ model: 'tr909' }), B = T.H.api(T.tr);
+  pw9(B, true);
+  assert.deepEqual([T.R.D.ui.mode, T.R.D.ui.wm, B.state().run], [DC.M9_PW, 1, true], 'PATTERN WRITE, TAP, running');
+  T.H.step(T.tr, 'i1', { s: 3, m: 0, k: 0, v: 0, p: 0, o: 720, M: 0, F: 48000 });
+  T.R.heard = 48000 + 2000; B.press({ k: 'key', n: 1, down: true, ts: 5 });
+  T.R.heard = 48000 + 4000; B.press({ k: 'key', n: 4, down: true, ts: 6 });
+  assert.deepEqual(T.R.notes, [['on', 36, r3(110 / 127)], ['on', 38, r3(100 / 127)]], 'two keys: two hits — the left key of the BD pair accented (110), the right of the SD pair normal (100)');
+  assert.deepEqual([(T.R.D.st[0][3] >> 1) & 1, (T.R.D.ac[0][3] >> 1) & 1, (T.R.D.st[0][4] >> 2) & 1, (T.R.D.ac[0][4] >> 2) & 1], [1, 1, 1, 0], '0.33 of step 4: BD accented there; 0.67: SD at step 5');
+  B.press({ k: 'key', n: 1, down: false }); B.press({ k: 'key', n: 4, down: false });
+  assert.deepEqual(T.R.notes.slice(2), [['off', 36], ['off', 38]], 'each off at its key\'s up');
+  T.R.sel = false; B.press({ k: 'key', n: 15, down: true }); B.press({ k: 'key', n: 15, down: false });
+  assert.equal(T.R.notes.length, 4, 'not the selected track: no note (sel())');
+  T.R.sel = true; B.press({ k: 'key', n: 16, down: true });
+  assert.deepEqual(T.R.notes.at(-1), ['on', 51, r3(100 / 127)], 'the ride: its own note (51)');
+  B.press({ k: 'release' });
+  assert.deepEqual(T.R.notes.at(-1), ['off', 51], 'a cancelled hold: the session drops the hit, the host ends its note');
+  B.press({ k: 'key', n: 13, down: true }); T.H.panic();
+  assert.deepEqual(T.R.notes.slice(-2), [['on', 42, r3(110 / 127)], ['off', 42]], 'a panic ends it too');
+  // the demo's confirm names the 909's patterns
+  T.R.confirm = false; const st0 = T.R.D.st; B.demo();
+  assert.deepEqual([T.R.D.st === st0, /patterns I-1-1 and I-1-2/.test(T.R.asked)], [true, true]);
+});
+
+test('7c render with api.drum (the fixture TR-909 face): the 16 step keys (stopped PATTERN PLAY: key 1 flashing; each names its voice), the held keys in music zones, the taps not, TRACK 1–4 / PATTERN 1–3 by n with their LEDs, the display\'s three characters, the scale LEDs, TEMPO 37–290; the extras (the 808\'s grid 640 × 272, the 4 × 3 pads, no SWING); the DOM budget', () => {
+  withRaf(() => {
+    const m = mount(true, { nine: true }), keys = stepKeys(m.root);
+    assert.deepEqual([keys.length, keys.map(k => k.getAttribute('data-lit')).join(' ')], [16, ['flash', ...Array(15).fill('off')].join(' ')]);
+    assert.deepEqual([keys[0].getAttribute('aria-label'), keys[13].getAttribute('aria-label'), keys[0].getAttribute('data-gesture'), keys[0].getAttribute('aria-keyshortcuts'), keys[3].getAttribute('data-led'), keys[0].getAttribute('aria-current'), cls(keys[0])],
+      ['Step 1 · Kick, accent', 'Step 14 · Closed hat', 'music', 'Shift+Enter Alt+Enter', 'cap', 'true', 'hw-btn dr-key']);
+    const lab = id => W(m.root, id).getAttribute('aria-label'), gest = id => W(m.root, id).getAttribute('data-gesture');
+    const HELD = ['dr:shift', 'dr:isel', 'dr:clear', 'dr:last', 'dr:shuf', 'dr:tkey', 'dr:avail'], TAPS = ['dr:start', 'dr:stop', 'dr:scale', 'dr:back', 'dr:fwd', 'dr:cyc', 'dr:enter'];
+    assert.deepEqual(HELD.map(lab), ['Shift', 'Instrument select', 'Clear', 'Last step', 'Shuffle / flam', 'Tempo · Shift: step write', 'Available measures · Shift: bank II']);
+    assert.deepEqual(TAPS.map(lab), ['Start', 'Stop / continue', 'Scale', 'Back · Shift: tap write', 'Forward · Shift: bank I', 'Cycle / guide · Shift: last measure', 'Enter']);
+    assert.deepEqual([HELD.map(gest).join(), TAPS.map(gest).every(g => g === null), HELD.map(id => W(m.root, id).getAttribute('aria-pressed')).join()], [Array(7).fill('music').join(), true, Array(7).fill('false').join()]);
+    for (const id of [...HELD, ...TAPS]) assert.equal(W(m.root, id).localName, 'button', id);
+    const trk = byN(m.root, 'dr:trk'), pat = byN(m.root, 'dr:pat');
+    assert.deepEqual([trk.map(b => b.getAttribute('data-n')).join(), trk[1].getAttribute('aria-label'), pat[2].getAttribute('aria-label'), pat.map(b => b.getAttribute('data-lit')).join(), pat[0].getAttribute('aria-pressed'), trk.map(b => b.getAttribute('data-lit')).join()],
+      ['1,2,3,4', 'Track 2 · Shift: track write', 'Pattern 3 · Shift: pattern write', 'on,off,off', 'true', 'off,off,off,off'], 'PATTERN PLAY, group 1: PATTERN 1 lit');
+    assert.deepEqual(['dr:tkey', 'dr:back', 'dr:fwd', 'dr:avail', 'dr:cyc', 'dr:enter'].map(id => W(m.root, id).getAttribute('data-lit') + '/' + W(m.root, id).getAttribute('data-led')).join(' '), 'off/cap off/cap off/cap off/cap off/cap off/cap');
+    const d = dsp9(m.root);
+    assert.deepEqual([d.textContent, d.getAttribute('aria-label'), d.getAttribute('role'), d.style.width, d.style.height, d.style.fontSize], ['120', 'Display: 120', 'status', '78px', '38px', '30px'], 'the project tempo (synced); its characters fill the window');
+    assert.deepEqual(scl9(m.root).map(n => n.getAttribute('aria-label')), ['Scale 16ths: lit', 'Scale 32nds: off', 'Scale 8th triplets: off', 'Scale 16th triplets: off']);
+    const tempo = W(m.root, 'dr:tempo');
+    assert.deepEqual([cls(tempo), tempo.getAttribute('aria-valuetext'), tempo.getAttribute('aria-valuemin'), tempo.getAttribute('aria-valuemax')], ['knob hw-tempo dr-tempo', '120 BPM', '37', '290']);
+    for (const id of DR9_FACE.filter(t => t !== 'dr:disp' && t !== 'dr:scl')) assert.ok(byCtl(m.root, id).length && byCtl(m.root, id).every(w => w.getAttribute('data-nomod') === '1'), id + ': rendered, no modulation target (§9)');
+    for (const id of DR9_EXTRAS) assert.equal(byCtl(m.root, id).length, 1, id);
+    assert.deepEqual([byCtl(m.root, 'dr:swing').length, byCtl(m.root, 'dr:link').length], [0, 0]);
+    const cv = W(m.root, 'dr:grid').childNodes[0], pads = W(m.root, 'dr:pads');
+    assert.deepEqual([cv.style.width, cv.style.height, pads.style.width, pads.style.height, pads.getAttribute('data-gesture')], ['640px', '272px', '232px', '184px', 'music']);
+    assert.deepEqual([pads.childNodes.map(p => p.getAttribute('data-sound')).join(' '), pads.childNodes.map(p => p.getAttribute('data-code')).join(' ')], [CD.PAD9.join(' '), 'CR RD OH CH LT MT HT AC BD SD RS HC']);
+    assert.deepEqual(['dr:sync', 'dr:toRoll', 'dr:rec', 'dr:map', 'dr:sounds', 'dr:demo'].map(id => W(m.root, id).textContent), ['Sync · song', '→ Piano roll', 'Rec', 'Map…', 'Sounds…', 'Demo']);
+    assert.match(W(m.root, 'dr:sync').title, /the 909 follows the song \(START and STOP\/CONT are ▶ and ■/);
+    assert.match(W(m.root, 'dr:sounds').title, /our own hi-hat and cymbal sounds through the 909’s chip circuit/);
+    assert.match(W(m.root, 'dr:toRoll').title, /the 909's own sequencer/);
+    const cap = all(m.root).find(n => cls(n) === 'hw-xcap'), cap8 = all(mount(false).root).find(n => cls(n) === 'hw-xcap');
+    assert.deepEqual([cap.textContent, cap.style.fontSize, cap.style.letterSpacing, cap8.style.fontSize, cap8.style.letterSpacing], [P.TOKENS.tr909.caption + ' · Dimmed controls are not emulated', '8px', '0.04em', undefined, undefined],
+      'the 909\'s caption (D4) in 8 px to fit its strip; the 808\'s as before');
+    // the DOM budget (§7.4: the module ≤ 1000): the live layer + the face SVG's elements (the fixture's face is spare: the
+    // authored face is measured in headless Chrome)
+    const face = (String(all(m.root).find(n => cls(n) === 'hw-decor').innerHTML).match(/<[a-z][^>]*>/g) || []).length, live = all(m.root).length;
+    assert.ok(live + face <= 1000 && live < 520, `${live} + ${face}`);
+    m.r.destroy();
+  });
+});
+
+test('7c widgets: SHIFT / INSTRUMENT SELECT held + a key → down, key down, key up, up in that order (SHIFT + PATTERN 2: PATTERN WRITE; INSTRUMENT SELECT + a key, a pair (flam write), ENTER (TOTAL ACCENT)); STEP write running: a key cycles off → normal (dim) → accented → off; LAST STEP + key; SCALE; SHUFFLE/FLAM + keys (its LEDs while held); two keys: a block; Shift / Alt with the mouse; Enter / Space held; TEMPO', () => {
+  withRaf(() => {
+    const m = mount(true, { nine: true }), keys = stepKeys(m.root), A = m.api.drum, el = id => W(m.root, id), pat = byN(m.root, 'dr:pat');
+    A.press({ k: 'sync', v: false }); m.presses.length = 0;
+    dn(el('dr:shift'), 1); tapEl(pat[1], 2); upP(el('dr:shift'), 1);
+    assert.deepEqual([words9(m), m.R.D.ui.mode, m.R.D.ui.grp], [['hold shift down', 'tap pat 2', 'hold shift up'], DC.M9_PW, 1], 'SHIFT + PATTERN 2: PATTERN WRITE, group 2');
+    tapEl(keys[2], 3);
+    assert.deepEqual([words9(m), m.R.D.ui.sel], [['key 3 down', 'key 3 up'], 2], 'stopped: the pattern to edit (I-2-3)');
+    dn(el('dr:isel'), 4); rafQ.flush();
+    assert.equal(el('dr:isel').getAttribute('aria-pressed'), 'true');
+    tapEl(keys[2], 5); upP(el('dr:isel'), 4);
+    assert.deepEqual([words9(m), m.R.D.ui.inst, m.R.D.ui.fw], [['hold isel down', 'key 3 down', 'key 3 up', 'hold isel up'], 2, false], 'the snare');
+    dn(el('dr:isel'), 6); dn(keys[0], 7); dn(keys[1], 8); upP(keys[1], 8); upP(keys[0], 7); upP(el('dr:isel'), 6);
+    assert.deepEqual([m.R.D.ui.inst, m.R.D.ui.fw], [1, true], 'both keys of the BD pair: flam write');
+    dn(el('dr:isel'), 9); tapEl(el('dr:enter'), 10); upP(el('dr:isel'), 9);
+    assert.deepEqual([words9(m).slice(-3), m.R.D.ui.inst, m.R.D.ui.fw], [['hold isel down', 'tap enter', 'hold isel up'], 0, false], '+ ENTER: TOTAL ACCENT');
+    dn(el('dr:isel'), 11); tapEl(keys[0], 12); upP(el('dr:isel'), 11);
+    tapEl(el('dr:start'), 13); rafQ.flush();
+    assert.deepEqual([A.state().run, m.R.D.ui.inst, el('dr:tkey').getAttribute('data-lit'), el('dr:start').getAttribute('aria-pressed')], [true, 1, 'on', 'true'], 'START (free); BD selected; STEP write: the TEMPO key lit');
+    const ed = 16 + 2, cyc = () => { tapEl(keys[4], 14); rafQ.flush(); return [(m.R.D.st[ed][4] >> 1) & 1, (m.R.D.ac[ed][4] >> 1) & 1, keys[4].getAttribute('data-lit')]; };
+    assert.deepEqual([cyc(), cyc(), cyc()], [[1, 0, 'dim'], [1, 1, 'on'], [0, 0, 'off']], 'off → normal (dim) → accented (on) → off');
+    words9(m);
+    dn(el('dr:last'), 15); tapEl(keys[11], 16); upP(el('dr:last'), 15);
+    assert.deepEqual([words9(m), m.R.D.keys[ed].l1], [['hold last down', 'key 12 down', 'key 12 up', 'hold last up'], 12], 'LAST STEP 12');
+    tapEl(el('dr:scale'), 17); rafQ.flush();
+    assert.deepEqual([m.R.D.keys[ed].sc, m.R.D.keys[ed].l1, scl9(m.root).map(n => n.getAttribute('data-lit')).join()], [2, 16, 'off,on,off,off'], 'SCALE: 32nds (its row lit), LAST STEP 16');
+    dn(el('dr:shuf'), 18); tapEl(keys[2], 19); tapEl(keys[11], 20); rafQ.flush();
+    assert.deepEqual([m.R.D.keys[ed].sh, m.R.D.keys[ed].fl, keys.map((k, j) => (k.getAttribute('data-lit') === 'on' ? j + 1 : 0)).filter(Boolean)], [3, 12, [3, 12]], 'SHUFFLE 3, FLAM 12, their keys lit while held');
+    upP(el('dr:shuf'), 18); words9(m);
+    // PATTERN PLAY, stopped: two keys held → block play; Shift-click the same with the mouse
+    A.press({ k: 'tap', b: 'start' }); tapEl(pat[0], 21); words9(m);
+    dn(keys[4], 22); dn(keys[6], 23); upP(keys[4], 22); upP(keys[6], 23);
+    assert.deepEqual([m.R.D.ui.mode, m.R.D.ui.sel, m.R.D.ui.bl], [DC.M9_PP, 4, 2], 'keys 5 and 7 held: the block 5–7');
+    const click = (k, id, o = {}) => { fire(k, 'pointerdown', Object.assign({ pointerId: id, button: 0, pointerType: 'mouse' }, o)); fire(k, 'pointerup', Object.assign({ pointerId: id, pointerType: 'mouse' }, o)); };
+    click(keys[8], 24); click(keys[10], 25, { shiftKey: true });
+    assert.deepEqual([m.R.D.ui.sel, m.R.D.ui.bl], [8, 2], 'Shift-click: 9–11');
+    words9(m);
+    click(keys[4], 26, { altKey: true });
+    assert.deepEqual(words9(m), ['hold shift down', 'key 5 down', 'key 5 up'], 'Alt still down: SHIFT held');
+    fire(m.doc, 'keyup', { key: 'Alt' });
+    assert.deepEqual(words9(m), ['hold shift up'], 'Alt let go');
+    fire(keys[5], 'pointerdown', { pointerId: 27, button: 0, pointerType: 'mouse', altKey: true }); fire(keys[5], 'pointerup', { pointerId: 27, pointerType: 'mouse' });
+    assert.deepEqual(words9(m), ['hold shift down', 'key 6 down', 'key 6 up', 'hold shift up'], 'Alt let go before the button: SHIFT up after the key');
+    dn(el('dr:shift'), 28); click(keys[1], 29, { altKey: true }); fire(m.doc, 'keyup', { key: 'Alt' }); upP(el('dr:shift'), 28);
+    assert.deepEqual(words9(m), ['hold shift down', 'key 2 down', 'key 2 up', 'hold shift up'], 'SHIFT held and Alt: one SHIFT');
+    key(keys[1], 'Enter'); key(keys[1], 'Enter', { repeat: true }); fire(keys[1], 'keyup', { key: 'Enter' });
+    key(el('dr:shift'), ' '); key(keys[2], ' ', { shiftKey: true }); fire(keys[2], 'keyup', { key: ' ' }); fire(el('dr:shift'), 'keyup', { key: ' ' });
+    assert.deepEqual(words9(m), ['key 2 down', 'key 2 up', 'hold shift down', 'key 3 down shift', 'key 3 up', 'hold shift up'], 'the keyboard: Enter / Space held (the repeat ignored)');
+    // TEMPO: free the machine's (whole BPM on the log law), synced the project's in one gesture
+    const tempo = el('dr:tempo');
+    key(tempo, 'ArrowUp');
+    assert.ok(m.R.D.ui.tempo > 120 && Number.isInteger(m.R.D.ui.tempo), 'free: ' + m.R.D.ui.tempo);
+    A.press({ k: 'sync', v: true });
+    ptr(tempo, 'pointerdown', 0, 100); ptr(tempo, 'pointermove', 0, 99); ptr(tempo, 'pointermove', 0, 98); ptr(tempo, 'pointerup', 0, 98);
+    assert.deepEqual(m.R.log.filter(x => x.startsWith('bpm ')).map(x => x.split(' ').pop()), ['move', 'move', 'end'], 'synced: the project tempo, one gesture');
+    m.r.destroy();
+  });
+});
+
+test('7c widgets: TAP write — the step keys are drum pads (two fingers = two hits at their states\' velocities, written where heard; the offs at the lifts; 13 + 14 the open hat); a cancelled hold sends { k: \'release\' } and does nothing (a pointercancel, a lost capture, a keyboard hold blurred, the host\'s release-all) and ends a key\'s note; the taps on A.tap (a pinch starting there presses nothing); destroy → release', () => {
+  withRaf(() => {
+    const m = mount(true, { nine: true }), keys = stepKeys(m.root), A = m.api.drum, el = id => W(m.root, id);
+    pw9(A, true); rafQ.flush();
+    assert.deepEqual([m.R.D.ui.wm, el('dr:back').getAttribute('data-lit'), A.state().run], [1, 'on', true], 'TAP write: BACK lit');
+    m.H.step(m.tr, 'i1', { s: 3, m: 0, k: 0, v: 0, p: 0, o: 720, M: 0, F: 48000 });
+    m.R.heard = 48000 + 1000; m.presses.length = 0;
+    dn(keys[0], 1); dn(keys[3], 2);
+    assert.deepEqual([m.R.notes, (m.R.D.st[0][3] >> 1) & 1, (m.R.D.st[0][3] >> 2) & 1, (m.R.D.ac[0][3] >> 1) & 1], [[['on', 36, r3(110 / 127)], ['on', 38, r3(100 / 127)]], 1, 1, 1], 'two fingers: two hits, both written at step 4');
+    assert.ok(m.presses.every(x => typeof JSON.parse(x).ts === 'number'), 'each key\'s press carries its time');
+    upP(keys[3], 2); upP(keys[0], 1);
+    assert.deepEqual(m.R.notes.slice(2), [['off', 38], ['off', 36]]);
+    dn(keys[12], 3); dn(keys[13], 4); upP(keys[13], 4); upP(keys[12], 3);
+    assert.deepEqual([m.R.notes.slice(4).map(x => x.slice(0, 2).join(' ')).join(), (m.R.D.st[0][3] >> 10) & 1, (m.R.D.st[0][3] >> 11) & 1], ['on 42,on 46,off 46,off 42', 1, 0], '13 + 14: the open hat (the closed one taken back off its step)');
+    // a cancel: the held key's note ends, one release
+    words9(m);
+    dn(keys[6], 5); fire(keys[6], 'pointercancel', { pointerId: 5 });
+    assert.deepEqual([words9(m), m.R.notes.at(-1)], [['key 7 down', 'release'], ['off', 45]], 'a pointercancel: release, the mid tom\'s note off');
+    upP(keys[6], 5);
+    assert.deepEqual(words9(m), [], 'its stale up: nothing');
+    // TRACK PLAY, stopped, a track of six measures: SHIFT + 5 typed, cancelled → no locate; released → ENTER locates measure 5
+    A.press({ k: 'tap', b: 'stop' }); m.R.D = Object.assign({}, m.R.D, { tk: [[0, 1, 2, 3, 4, 5], ...m.R.D.tk.slice(1)] }); tapEl(byN(m.root, 'dr:trk')[0], 6); words9(m);
+    const loc = () => A.state().S.loc, type = (id, end) => { dn(el('dr:shift'), id); tapEl(keys[4], id + 1); end(); tapEl(el('dr:enter'), id + 2); };
+    type(10, () => fire(el('dr:shift'), 'pointercancel', { pointerId: 10 }));
+    assert.deepEqual([words9(m), loc()], [['hold shift down', 'key 5 down', 'key 5 up', 'release', 'tap enter'], 0], 'a pointercancel: no locate');
+    type(20, () => fire(el('dr:shift'), 'lostpointercapture', { pointerId: 20 }));
+    assert.deepEqual([words9(m).at(-2), loc()], ['release', 0], 'a lost capture');
+    // (review 2 F2, the lead's: a key press on a held key latches it — focus may move on; Escape cancels it, nothing done)
+    key(el('dr:shift'), 'Enter'); fire(el('dr:shift'), 'keyup', { key: 'Enter' }); fire(el('dr:shift'), 'blur'); key(keys[4], 'Enter'); fire(keys[4], 'keyup', { key: 'Enter' }); fire(m.doc, 'keydown', { key: 'Escape' }); tapEl(el('dr:enter'), 30);
+    assert.deepEqual([words9(m).slice(-2), loc()], [['release', 'tap enter'], 0], 'a keyboard latch, Escape: no locate');
+    key(el('dr:shift'), 'Enter'); fire(el('dr:shift'), 'keyup', { key: 'Enter' }); fire(el('dr:shift'), 'blur'); key(keys[4], 'Enter'); fire(keys[4], 'keyup', { key: 'Enter' }); tapEl(el('dr:enter'), 31);
+    assert.deepEqual([words9(m).slice(-3), loc(), A.state().S.hold.shift], [['key 5 up', 'tap enter', 'hold shift up'], 4, false], 'the keyboard alone: SHIFT latched, 5, ENTER — measure 5 located');
+    A.press({ k: 'tap', b: 'back' }); A.press({ k: 'tap', b: 'back' }); A.press({ k: 'tap', b: 'back' }); A.press({ k: 'tap', b: 'back' }); words9(m);
+    dn(el('dr:shift'), 31); dn(keys[4], 32); m.H.release();
+    assert.deepEqual([words9(m).at(-1), A.state().S.hold.shift, A.state().S.keys.length], ['release', false, 0], 'the host\'s release-all');
+    upP(keys[4], 32); upP(el('dr:shift'), 31);
+    assert.deepEqual(words9(m), [], 'the lifts after it: nothing');
+    type(40, () => upP(el('dr:shift'), 40));
+    assert.equal(loc(), 4, 'released: SHIFT + 5, ENTER locates measure 5');
+    // the taps act at A.tap (the fake: the pointer's up): a press then a two-finger cancel (a pinch) presses nothing
+    words9(m);
+    for (const b of [el('dr:start'), byN(m.root, 'dr:trk')[1], el('dr:enter')]) { dn(b, 50); fire(b, 'pointercancel', { pointerId: 50, gesture: 'two-finger' }); }
+    assert.deepEqual([words9(m), m.R.D.ui.trk, A.state().run], [[], 0, false], 'a pinch starting on START, TRACK 2 or ENTER: nothing');
+    // destroy → release: a held SHIFT and a held key let go, once
+    dn(el('dr:shift'), 60); dn(keys[0], 61); words9(m);
+    m.r.destroy();
+    assert.deepEqual(words9(m), ['release']);
+    upP(el('dr:shift'), 60);
+    assert.deepEqual(words9(m), [], 'after destroy: nothing');
+  });
+});
+
+// review 2 F1: the taps act at a finger's release (A.tap), the held keys were read then — a held finger lifted first (or both in
+// one touchend: the held one is first) gave the plain key. Now a tap latches what is held at its own press and sends it with
+// the tap; drum-core ORs it in (7a review 2 #2's latch)
+test('review 2 F1: a held key + a tap key by touch reads the held keys at the tap\'s own press — whichever finger lifts first (SHIFT + PATTERN 2 / TRACK 2 / BACK, INSTRUMENT SELECT + ENTER, TEMPO + ENTER); keys 3 + 4 held + ENTER chains them, the keys lifted first; a cancelled tap latches nothing', () => {
+  withRaf(() => {
+    for (const first of ['held', 'tap']) {
+      const run = (held, tapB, check, msg) => {
+        const m = mount(true, { nine: true }), A = m.api.drum, el = id => W(m.root, id);
+        A.press({ k: 'sync', v: false });
+        const h = el(held), t = typeof tapB === 'string' ? el(tapB) : tapB(m.root);
+        dn(h, 1); dn(t, 2);
+        if (first === 'held') { upP(h, 1); upP(t, 2); } else { upP(t, 2); upP(h, 1); }
+        assert.deepEqual(check(m), true, `${msg}, the ${first} lifted first`);
+        assert.equal(A.state().S.hold.shift || A.state().S.hold.isel || A.state().S.hold.tkey, false, 'nothing left held');
+        m.r.destroy();
+      };
+      run('dr:shift', r => byN(r, 'dr:pat')[1], m => m.R.D.ui.mode === DC.M9_PW && m.R.D.ui.grp === 1, 'SHIFT + PATTERN 2: PATTERN WRITE');
+      run('dr:shift', r => byN(r, 'dr:trk')[1], m => m.R.D.ui.mode === DC.M9_TW && m.R.D.ui.trk === 1, 'SHIFT + TRACK 2: TRACK WRITE');
+      run('dr:shift', 'dr:back', m => m.R.D.ui.wm === 1, 'SHIFT + BACK: TAP write');
+      run('dr:isel', 'dr:enter', m => m.R.D.ui.inst === 0, 'INSTRUMENT SELECT + ENTER: TOTAL ACCENT');
+      run('dr:tkey', 'dr:enter', m => m.R.D.tt[0] === 120, 'TEMPO + ENTER: the track\'s tempo');
+    }
+    // the chain: PATTERN WRITE stopped, keys 3 + 4 held, ENTER — the keys lifted before ENTER's release
+    for (const first of ['keys', 'enter']) {
+      const m = mount(true, { nine: true }), A = m.api.drum, el = id => W(m.root, id), keys = stepKeys(m.root);
+      A.press({ k: 'sync', v: false }); A.press({ k: 'hold', b: 'shift', down: true }); A.press({ k: 'tap', b: 'pat', n: 1 }); A.press({ k: 'hold', b: 'shift', down: false });
+      dn(keys[2], 1); dn(keys[3], 2); dn(el('dr:enter'), 3);
+      if (first === 'keys') { upP(keys[2], 1); upP(keys[3], 2); upP(el('dr:enter'), 3); } else { upP(el('dr:enter'), 3); upP(keys[2], 1); upP(keys[3], 2); }
+      assert.deepEqual([m.R.D.keys[2].ch, m.R.D.keys[3].ch], [1, 0], `3 + 4 + ENTER: chained (the ${first} lifted first)`);
+      m.r.destroy();
+    }
+    // a tap pressed under SHIFT, then cancelled (a pinch): the next tap of it reads no stale latch
+    const m = mount(true, { nine: true }), A = m.api.drum, el = id => W(m.root, id), pat = byN(m.root, 'dr:pat');
+    A.press({ k: 'sync', v: false });
+    dn(el('dr:shift'), 1); dn(pat[1], 2); fire(pat[1], 'pointercancel', { pointerId: 2 }); upP(el('dr:shift'), 1);
+    dn(pat[1], 3); upP(pat[1], 3);
+    assert.deepEqual([m.R.D.ui.mode, m.R.D.ui.grp], [DC.M9_PP, 1], 'PATTERN 2 alone: PATTERN PLAY');
+    m.r.destroy();
+  });
+});
+
+// review 2 F2 (the lead's decision): desktop hold combinations — on a tap key Alt or Shift is SHIFT; a mouse click or a keyboard
+// press on a held key latches it (lit, aria-pressed, "latched" in its label) until the next key uses it (then it releases; SHIFT
+// stays through a SHIFT sequence — digits, COPY / INS / DEL — until ENTER), a second click or Escape cancels; touch holds as before
+test('review 2 F2: Alt- / Shift-click on PATTERN n, TRACK n, BACK = SHIFT +; a click / key press on a held key latches it until the next key uses it — INSTRUMENT SELECT + key 3 (the snare), + ENTER (TOTAL ACCENT), LAST STEP + key, TEMPO + ENTER, SHIFT + digits + ENTER (a locate); a second click or Escape cancels; touch keeps the hold', () => {
+  withRaf(() => {
+    const m = mount(true, { nine: true }), A = m.api.drum, el = id => W(m.root, id), keys = stepKeys(m.root), pat = byN(m.root, 'dr:pat'), trk = byN(m.root, 'dr:trk');
+    const click = (k, id, o = {}) => { fire(k, 'pointerdown', Object.assign({ pointerId: id, button: 0, pointerType: 'mouse' }, o)); fire(k, 'pointerup', Object.assign({ pointerId: id, button: 0, pointerType: 'mouse' }, o)); };
+    A.press({ k: 'sync', v: false }); words9(m);
+    click(pat[1], 1, { altKey: true });
+    assert.deepEqual([m.R.D.ui.mode, m.R.D.ui.grp], [DC.M9_PW, 1], 'Alt-click PATTERN 2: PATTERN WRITE');
+    click(pat[0], 2, { shiftKey: true });
+    assert.deepEqual([m.R.D.ui.mode, m.R.D.ui.grp], [DC.M9_PW, 0], 'Shift-click PATTERN 1: PATTERN WRITE group 1');
+    click(el('dr:back'), 3, { altKey: true });
+    assert.equal(m.R.D.ui.wm, 1, 'Alt-click BACK: TAP write');
+    click(trk[1], 4, { shiftKey: true });
+    assert.deepEqual([m.R.D.ui.mode, m.R.D.ui.trk], [DC.M9_TW, 1], 'Shift-click TRACK 2: TRACK WRITE');
+    assert.equal(A.state().S.hold.shift, false, 'no SHIFT left held');
+    m.r.destroy();
+    // the latch: INSTRUMENT SELECT clicked → lit and announced, then key 3 → the snare, released
+    const n = mount(true, { nine: true }), B = n.api.drum, e2 = id => W(n.root, id), k2 = stepKeys(n.root);
+    B.press({ k: 'sync', v: false }); B.press({ k: 'hold', b: 'shift', down: true }); B.press({ k: 'tap', b: 'pat', n: 1 }); B.press({ k: 'hold', b: 'shift', down: false });
+    words9(n);
+    click(e2('dr:isel'), 10); rafQ.flush();
+    assert.deepEqual([B.state().S.hold.isel, e2('dr:isel').getAttribute('aria-pressed'), e2('dr:isel').getAttribute('data-latch'), /latched/.test(e2('dr:isel').getAttribute('aria-label'))], [true, 'true', '', true], 'latched: held, lit, announced');
+    click(k2[2], 11); rafQ.flush();
+    assert.deepEqual([n.R.D.ui.inst, B.state().S.hold.isel, e2('dr:isel').getAttribute('data-latch'), words9(n)], [2, false, null, ['hold isel down', 'key 3 down', 'key 3 up', 'hold isel up']], 'used by key 3: the snare, released');
+    click(e2('dr:isel'), 12); click(e2('dr:enter'), 13);
+    assert.deepEqual([n.R.D.ui.inst, B.state().S.hold.isel], [0, false], '+ ENTER: TOTAL ACCENT, released');
+    click(e2('dr:isel'), 14); click(e2('dr:isel'), 15);
+    assert.deepEqual([B.state().S.hold.isel, words9(n).slice(-2)], [false, ['hold isel down', 'hold isel up']], 'a second click cancels');
+    key(e2('dr:isel'), 'Enter'); fire(e2('dr:isel'), 'keyup', { key: 'Enter' }); fire(e2('dr:isel'), 'blur');
+    assert.equal(B.state().S.hold.isel, true, 'a key press latches too (focus may move on)');
+    fire(n.doc, 'keydown', { key: 'Escape' });
+    assert.deepEqual([B.state().S.hold.isel, words9(n).slice(-1)], [false, ['release']], 'Escape cancels (nothing done)');
+    // LAST STEP + key (running: the edited pattern's)
+    B.press({ k: 'tap', b: 'start' });
+    click(e2('dr:last'), 16); click(k2[9], 17);
+    assert.deepEqual([n.R.D.keys[0].l1, B.state().S.hold.last], [10, false], 'LAST STEP + key 10');
+    B.press({ k: 'tap', b: 'stop' });
+    // TEMPO + ENTER: the track's tempo; SHIFT + digits + ENTER in TRACK PLAY: SHIFT stays latched through the digits
+    click(e2('dr:tkey'), 18); click(e2('dr:enter'), 19);
+    assert.deepEqual([n.R.D.tt[0], B.state().S.hold.tkey], [120, false], 'TEMPO + ENTER');
+    n.R.D = Object.assign({}, n.R.D, { tk: [[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], ...n.R.D.tk.slice(1)] }); click(byN(n.root, 'dr:trk')[0], 20);
+    click(e2('dr:shift'), 21); click(k2[0], 22); click(k2[1], 23);
+    assert.deepEqual([B.state().S.dig, B.state().S.hold.shift], ['12', true], 'SHIFT latched through the digits');
+    click(e2('dr:enter'), 24);
+    assert.deepEqual([B.state().S.loc, B.state().S.hold.shift], [11, false], 'ENTER: measure 12 located, SHIFT released');
+    // touch: the real hold (released at the lift, never latched)
+    dn(e2('dr:isel'), 30); upP(e2('dr:isel'), 30);
+    assert.deepEqual([B.state().S.hold.isel, e2('dr:isel').getAttribute('data-latch')], [false, null], 'touch: a hold');
+    n.r.destroy();
+  });
+});
+
+// review 2 F3: a pad flashes by flipping its data-hit (two keyframes: the animation restarts) — the parity was one counter for
+// every pad, so a pad flashed after an even number of others got the value it had (no restart, no flash). Each pad its own
+test('review 2 F3: every flash flips its own pad\'s data-hit — two pads lit alternately (the monitor, the pads), and together, each flash a change (the 808\'s, the 606\'s and the 909\'s pads: shared code)', () => {
+  withRaf(() => {
+    for (const o of [{}, { six: true }, { nine: true }]) {
+      const m = mount(true, o), g = W(m.root, 'dr:pads'), pad = s => g.childNodes.find(p => p.getAttribute('data-sound') === s);
+      assert.deepEqual([pad('bd').getAttribute('data-hit'), pad('sd').getAttribute('data-hit')], [null, null], 'at rest: no data-hit');
+      m.R.heard = NaN;
+      const lit = (bits, msg) => { const was = ['bd', 'sd'].map(s => pad(s).getAttribute('data-hit')); m.H.mon(m.tr, { lit: bits, F: 0 }); m.frame(); return ['bd', 'sd'].map((s, j) => (bits >> j) & 1 ? pad(s).getAttribute('data-hit') !== was[j] : pad(s).getAttribute('data-hit') === was[j]).every(Boolean) || msg; };
+      for (const [bits, msg] of [[1, 'BD'], [2, 'SD'], [1, 'BD again'], [2, 'SD again'], [3, 'both'], [3, 'both again'], [1, 'BD']]) assert.equal(lit(bits, msg), true, (o.nine ? '909' : o.six ? '606' : '808') + ': ' + msg);
+      m.r.destroy();
+    }
+  });
+});
+
+// review 2 F5: the grid drew its keyboard cursor (a yellow box) on any focus — a mouse / touch press focuses the canvas; now
+// only after keyboard navigation (a Tab focus or a key; :focus-visible's rule), a press hides it again (the three grids: shared)
+test('review 2 F5: the grid\'s keyboard cursor only after keyboard navigation — not after a mouse / touch press; a Tab focus or an arrow shows it, a press hides it, blur ends it (the 808\'s, 606\'s and 909\'s grids)', () => {
+  withRaf(() => {
+    for (const o of [{}, { six: true }, { nine: true }]) {
+      const m = mount(true, o), cv = W(m.root, 'dr:grid').childNodes[0], ctx = cv.getContext('2d'), tag = o.nine ? '909' : o.six ? '606' : '808';
+      placeEl(cv, 0, 0, 640, 272);
+      // (each step's own redraw: true / false the cursor drawn or not, null no redraw)
+      const step = f => { ctx.calls.length = 0; f(); rafQ.flush(); return ctx.calls.some(c => c[0] === 'fillRect') ? ctx.calls.some(c => c[0] === 'strokeRect') : null; };
+      for (const pt of ['mouse', 'touch']) {
+        assert.equal(step(() => { fire(cv, 'pointerdown', { pointerId: 1, button: 0, pointerType: pt, clientX: 2, clientY: 2 }); fire(cv, 'focus'); fire(cv, 'pointerup', { pointerId: 1, pointerType: pt, clientX: 2, clientY: 2 }); }) !== true, true, `${tag}: a ${pt} press focuses — no cursor drawn`);
+        assert.equal(step(() => key(cv, 'ArrowRight')), true, `${tag}: an arrow — the cursor`);
+        assert.equal(step(() => { fire(cv, 'pointerdown', { pointerId: 2, button: 0, pointerType: pt, clientX: 2, clientY: 2 }); fire(cv, 'pointerup', { pointerId: 2, pointerType: pt, clientX: 2, clientY: 2 }); }), false, `${tag}: a ${pt} press hides it`);
+        assert.notEqual(step(() => fire(cv, 'blur')), true, `${tag}: blurred`);
+      }
+      assert.equal(step(() => fire(cv, 'focus')), true, `${tag}: a Tab focus shows it`);
+      assert.equal(step(() => fire(cv, 'blur')), false, `${tag}: blur ends it`);
+      m.r.destroy();
+    }
+  });
+});
+
+test('7c the grid: 12 rows (AC … RD on the 808\'s lane bits) hit-tested at 3 zooms; a tap cycles a cell as its step key would (BD off → normal → accented → off; RS off ↔ on); a long press / Alt-click / right click / F on a BD … HT cell its flam; the marks (small normal, full accented, double flam); a header mutes / solos its lane bit; the cells past LAST STEP dimmed', () => {
+  for (const [x, y, want] of [[0, 0, '{"corner":true}'], [64, 10, '{"top":true,"s":0}'], [639, 271, '{"lane":8,"row":11,"s":15}'], [63, 32, '{"head":true,"lane":0,"row":0}'], [64 + 5 * 36 + 1, 32 + 8 * 20 + 1, '{"lane":11,"row":8,"s":5}']]) assert.equal(JSON.stringify(CD.gridAt909(x, y)), want, x + ',' + y);
+  assert.deepEqual([CD.gridAt909(-1, 5), CD.gridAt909(640, 5), CD.UI.tr909.lanes, CD.UI.tr909.codes, CD.UI.tr909.grid, Object.keys(CD.UI.tr909.dial).length], [null, null, DC.LANES909, DC.CODES909, CD.GRID, 0]);
+  assert.deepEqual([CD.PADS9.w, CD.PADS9.h, 4 * CD.PADS9.pad + 3 * CD.PADS9.gap, CD.PADS9.top + 3 * CD.PADS9.ph + 2 * CD.PADS9.gap].join(), [P.DR9_PADS.w, P.DR9_PADS.h, 232, 180].join(), 'the pads\' cell = cv-panel\'s');
+  withRaf(() => {
+    const m = mount(true, { nine: true }), cv = W(m.root, 'dr:grid').childNodes[0], A = m.api.drum;
+    layoutEl(cv, 640, 272);
+    const pat = () => DC.gridPat(A.state().S, m.R.D), bit = (f, l, s) => (m.R.D[f][pat()][s] >> l) & 1, st = (l, s) => [bit('st', l, s), bit('ac', l, s), bit('fm', l, s)].join('');
+    const hitAt = (k, row, s, up = 10) => {
+      placeEl(cv, 100, 50, 640 * k, 272 * k);
+      const X = 100 + (64 + s * 36 + 18) * k, Y = 50 + (32 + row * 20 + 10) * k;
+      fire(cv, 'pointerdown', { pointerType: 'touch', pointerId: 3, clientX: X, clientY: Y, button: 0, timeStamp: 0 });
+      fire(cv, 'pointerup', { pointerType: 'touch', pointerId: 3, clientX: X, clientY: Y, timeStamp: up });
+    };
+    for (const [k, row, s] of [[0.5, 1, 4], [1, 11, 15], [2, 6, 0]]) { hitAt(k, row, s); assert.equal(bit('st', DC.LANES909[row], s), 1, `k ${k}: row ${row} (lane ${DC.LANES909[row]}) step ${s + 1}`); }
+    assert.equal(st(1, 4), '100', 'BD normal');
+    hitAt(1, 1, 4); assert.equal(st(1, 4), '110', 'accented');
+    hitAt(1, 1, 4); assert.equal(st(1, 4), '000', 'off');
+    hitAt(1, 6, 0); assert.equal(st(6, 0), '000', 'RS: on ↔ off');
+    hitAt(1, 2, 8, 700); assert.equal(st(2, 8), '101', 'a long press on SD: a flam');
+    hitAt(1, 2, 8, 700); assert.equal(st(2, 8), '000', 'and back');
+    hitAt(1, 6, 9, 700); assert.equal(st(6, 9), '100', 'RS takes no flam: a long press is a tap');
+    placeEl(cv, 0, 0, 640, 272);
+    const C = (row, s) => ({ clientX: 64 + s * 36 + 18, clientY: 32 + row * 20 + 10 });
+    fire(cv, 'pointerdown', Object.assign({ pointerType: 'mouse', pointerId: 4, button: 0, altKey: true }, C(3, 2))); assert.equal(st(3, 2), '101', 'Alt-click: the LT flam');
+    fire(cv, 'contextmenu', C(4, 3)); assert.equal(st(4, 3), '101', 'a right click: the MT flam');
+    fire(cv, 'contextmenu', C(7, 3)); assert.equal(st(7, 3), '000', 'not on HC');
+    fire(cv, 'focus'); key(cv, 'ArrowDown'); key(cv, 'f');
+    assert.equal(st(5, 3), '101', 'F on the focused cell (from MT step 4 down: HT)');
+    rafQ.flush();
+    assert.match(cv.getAttribute('aria-label'), /^Step grid · pattern I-1-1 · HT step 4 flam$/);
+    key(cv, 'ArrowUp'); key(cv, ' '); rafQ.flush();
+    assert.match(cv.getAttribute('aria-label'), /· MT step 4 accented$/, 'Space: a flammed step\'s accent cycle, its flam dropped (S9\'s reading 8)');
+    const head = (row, up) => { placeEl(cv, 0, 0, 640, 272); const Y = 32 + row * 20 + 10; fire(cv, 'pointerdown', { pointerType: 'touch', pointerId: 5, clientX: 20, clientY: Y, button: 0, timeStamp: 0 }); fire(cv, 'pointerup', { pointerType: 'touch', pointerId: 5, clientX: 20, clientY: Y, timeStamp: up }); };
+    head(8, 100); assert.equal(m.R.D.x.mute, 1 << 11, 'CH (row 9): its lane bit 11 muted');
+    head(10, 700); assert.equal(m.R.D.x.solo, 1 << 9, 'held: CR (lane 9) soloed');
+    // the marks: a recording context sees each fill
+    const rec = [];
+    cv._ctx = new Proxy({ calls: [], canvas: cv }, { get(t, k) { if (k in t) return t[k]; if (k === 'measureText') return s => ({ width: String(s).length * 6 }); if (typeof k === 'symbol') return undefined; return (...a) => { if (k === 'fillRect') rec.push([t.fillStyle, ...a]); t.calls.push([k, ...a]); }; }, set(t, k, v) { t[k] = v; return true; } });
+    const st0 = m.R.D.st.slice(), ac0 = m.R.D.ac.slice(), fm0 = m.R.D.fm.slice();
+    st0[0] = Array(16).fill(0); ac0[0] = Array(16).fill(0); fm0[0] = Array(16).fill(0);
+    st0[0][0] = 2 | 1 << 6; st0[0][1] = 2; ac0[0][1] = 2; st0[0][2] = 4; fm0[0][2] = 4; st0[0][3] = 4; ac0[0][3] = 4; fm0[0][3] = 4;
+    m.R.D = Object.assign({}, m.R.D, { st: st0, ac: ac0, fm: fm0, x: Object.assign({}, m.R.D.x, { mute: 0, solo: 0 }), keys: m.R.D.keys.map((K, i) => (i ? K : Object.assign({}, K, { l1: 8 }))) }); m.H.changed(m.tr); rafQ.flush();
+    const X0 = s => 64 + s * 36, Y0 = row => 32 + row * 20;
+    const marks = (row, s) => rec.filter(r => r[1] >= X0(s) + 2 && r[1] < X0(s) + 34 && r[2] >= Y0(row) + 2 && r[2] < Y0(row) + 18 && r[3] < 34).map(r => r.slice(1).join(',')).join(' ');
+    assert.deepEqual([marks(1, 0), marks(1, 1), marks(2, 2), marks(2, 3), marks(6, 0)],
+      [`${X0(0) + 8},${Y0(1) + 6},20,8`, `${X0(1) + 4},${Y0(1) + 4},28,12`, `${X0(2) + 4},${Y0(2) + 6},12,8 ${X0(2) + 20},${Y0(2) + 6},12,8`, `${X0(3) + 4},${Y0(2) + 4},12,12 ${X0(3) + 20},${Y0(2) + 4},12,12`, `${X0(0) + 4},${Y0(6) + 4},28,12`],
+      'BD normal: a small mark; accented: a full one; SD flam: a double one (accented: full height); RS on: a full one');
+    const cell = (row, s) => rec.find(r => r[1] === X0(s) + 1 && r[2] === Y0(row) + 1);
+    assert.deepEqual([cell(2, 7)[0], cell(2, 8)[0], cell(2, 12)[0]], ['#1a1d22', '#121418', '#121418'], 'step 8 in, 9 and 13 past LAST STEP 8');
+    assert.deepEqual([cv.width, cv.height], [640, 272]);
+    m.r.destroy();
+  });
+});
+
+test('7c pads: 4 × 3 (CR RD OH CH / LT MT HT AC / BD SD RS HC) in a music zone, by the 909\'s sound keys (its ride / crash on ids 7 / 8); AC a hold (127: "both"); the monitor lights them by sound id; REC writes the state the velocity names', () => {
+  withRaf(() => {
+    const m = mount(true, { nine: true }), g = W(m.root, 'dr:pads'), pad = s => g.childNodes.find(p => p.getAttribute('data-sound') === s);
+    assert.deepEqual(g.childNodes.map(p => p.style.left + '/' + p.style.top + '/' + p.style.height).join(' '),
+      ['8px', '68px', '128px'].flatMap(t => ['0px', '60px', '120px', '180px'].map(l => l + '/' + t + '/52px')).join(' '));
+    assert.deepEqual([pad('rd').getAttribute('data-name'), pad('cr').getAttribute('aria-label'), pad('cp').getAttribute('data-code'), pad('cp').getAttribute('data-name'), pad('ac').getAttribute('data-name')], ['Ride', 'Crash pad', 'HC', 'Hand clap', 'Hold']);
+    m.R.heard = NaN; m.H.mon(m.tr, { lit: 1 << 7 | 1 << 8, F: 0 }); m.frame();
+    assert.deepEqual([pad('rd').getAttribute('data-hit'), pad('cr').getAttribute('data-hit'), pad('cy'), g.childNodes.filter(p => p.getAttribute('data-hit') != null).length], ['1', '1', undefined, 2], 'the monitor\'s sounds 7 / 8: the ride and the crash (the 909 has no cymbal pad; each pad its own parity, review 2 F3)');
+    for (const p of g.childNodes) placeEl(p, 0, 0, 52, 52);
+    fire(pad('rd'), 'pointerdown', { pointerId: 1, pointerType: 'touch', clientY: 52, button: 0 });
+    fire(pad('ac'), 'pointerdown', { pointerId: 2, pointerType: 'touch', clientY: 0, button: 0 });
+    fire(pad('cr'), 'pointerdown', { pointerId: 3, pointerType: 'touch', clientY: 0, button: 0 });
+    assert.deepEqual(m.R.notes, [['on', 51, 1], ['on', 49, 1]], 'the ride (51) at its front edge; AC held: the crash (49) at 127');
+    for (const [id, s] of [[1, 'rd'], [2, 'ac'], [3, 'cr']]) fire(pad(s), 'pointerup', { pointerId: id });
+    assert.deepEqual(m.R.notes.slice(2), [['off', 51], ['off', 49]]);
+    // REC in PATTERN WRITE (free, running): a pad at 127 writes "both" (its accent and TOTAL ACCENT)
+    const A = m.api.drum;
+    pw9(A, false); A.press({ k: 'rec', v: true });
+    m.H.step(m.tr, 'i1', { s: 5, m: 0, k: 0, v: 0, p: 0, o: 1200, M: 0, F: 48000 }); m.R.heard = 48000 + 100;
+    A.pads.on('bd', 1, 1);
+    assert.deepEqual([(m.R.D.st[0][5] >> 1) & 1, (m.R.D.ac[0][5] >> 1) & 1, m.R.D.st[0][5] & 1], [1, 1, 1], 'BD accented + TOTAL ACCENT at step 6');
+    m.r.destroy();
+  });
+});
+
+test('7c the LEDs and the display at the heard time, ≤ 1 paint a frame: STEP write running — the voice\'s steps dim (normal) / on (accented), the playhead inverted; flam write its flams; the display the tempo, TRACK PLAY running the heard measure; SHIFT digits as typed; AVAILABLE MEAS the free measures', () => {
+  withRaf(() => {
+    const m = mount(true, { nine: true }), keys = stepKeys(m.root), A = m.api.drum, lit = () => keys.map(k => k.getAttribute('data-lit'));
+    A.press({ k: 'hold', b: 'shift', down: true }); A.press({ k: 'tap', b: 'pat', n: 1 }); A.press({ k: 'hold', b: 'shift', down: false });
+    const st = m.R.D.st.slice(), ac = m.R.D.ac.slice(), fm = m.R.D.fm.slice();
+    st[0] = [2, 0, 2, 0, 2, ...Array(11).fill(0)]; ac[0] = [0, 0, 2, ...Array(13).fill(0)]; fm[0] = [0, 0, 0, 0, 2, ...Array(11).fill(0)];
+    m.R.D = Object.assign({}, m.R.D, { st, ac, fm });
+    m.R.playing = true; m.H.transport(true); m.R.heard = 0;
+    const p0 = CD.drumStats.paints;
+    for (let s = 0; s < 3; s++) m.H.step(m.tr, 'i1', { s: 2 * s, m: 0, k: 0, v: 0, p: 0, o: 480 * s, M: 0, F: 100 + s });
+    m.frame(); rafQ.flush(); rafQ.flush();
+    assert.equal(CD.drumStats.paints - p0, 1, 'three posts in a frame: one paint');
+    assert.deepEqual(lit().slice(0, 6), ['dim', 'off', 'on', 'off', 'head-off', 'off'], 'BD: step 1 normal (dim), 3 accented, 5 under the playhead (dark)');
+    A.press({ k: 'hold', b: 'isel', down: true }); A.press({ k: 'key', n: 1, down: true }); A.press({ k: 'key', n: 2, down: true });
+    A.press({ k: 'key', n: 2, down: false }); A.press({ k: 'key', n: 1, down: false }); rafQ.flush();
+    assert.deepEqual(lit().slice(0, 4), ['flash', 'flash', 'off', 'off'], 'INSTRUMENT SELECT held, flam write: both BD keys flashing');
+    A.press({ k: 'hold', b: 'isel', down: false }); rafQ.flush();
+    assert.deepEqual(lit().slice(0, 6), ['dim', 'off', 'dim', 'off', 'head-off', 'off'], 'flam write: the flams bright, the other steps dim');
+    assert.equal(dsp9(m.root).textContent, '120');
+    m.R.bpm = 97; m.H.bpm(97); rafQ.flush();
+    assert.equal(dsp9(m.root).textContent, ' 97', 'synced: the project tempo');
+    // TRACK PLAY running: the heard measure; SHIFT + digits as typed; AVAILABLE MEAS held
+    m.R.D = Object.assign({}, m.R.D, { tk: [[0, 1, 2, 3, 4, 5], ...m.R.D.tk.slice(1)] });
+    A.press({ k: 'tap', b: 'trk', n: 1 });
+    m.H.step(m.tr, 'i1', { s: 0, m: 3, k: 3, v: 0, p: 0, o: 0, M: 3, F: 200 }); m.frame(); rafQ.flush();
+    assert.deepEqual([dsp9(m.root).textContent, byN(m.root, 'dr:trk').map(b => b.getAttribute('data-lit')).join()], ['  4', 'on,off,off,off'], 'measure 4 heard; TRACK 1 lit');
+    m.H.transport(false); A.press({ k: 'hold', b: 'shift', down: true }); A.press({ k: 'key', n: 1, down: true }); A.press({ k: 'key', n: 1, down: false }); A.press({ k: 'key', n: 2, down: true }); rafQ.flush();
+    assert.deepEqual([dsp9(m.root).textContent, W(m.root, 'dr:enter').getAttribute('data-lit')], [' 12', 'flash'], 'SHIFT + 1, 2: "12", ENTER awaited');
+    A.press({ k: 'release' }); A.press({ k: 'hold', b: 'avail', down: true }); rafQ.flush();
+    assert.deepEqual([dsp9(m.root).textContent, W(m.root, 'dr:avail').getAttribute('data-lit')], ['890', 'on'], 'AVAILABLE MEAS held: the bank\'s free measures');
+    m.r.destroy();
+  });
+});
+
+test('7c without api.drum: the same nodes (the 909\'s, over its own fallback record), no listeners, aria-disabled; deterministic; the defaults painted; a record of another machine under a panel shows that panel\'s defaults', () => {
+  const ser = n => n.localName + '.' + cls(n) + '[' + ['data-ctl', 'data-n', 'data-sound', 'role', 'aria-label', 'data-gesture'].map(a => n.getAttribute(a)).join('|') + ']' + JSON.stringify(n.style) + '(' + n.childNodes.filter(c => c.nodeType === 1).map(ser).join(',') + ')';
+  withRaf(() => {
+    const A = mount(false, { nine: true }), B = mount(true, { nine: true });
+    assert.equal(ser(A.root), ser(B.root), 'the same nodes');
+    for (const id of ['dr:shift', 'dr:isel', 'dr:clear', 'dr:start', 'dr:stop', 'dr:enter', 'dr:tempo', 'dr:sync', 'dr:demo']) {
+      const el = W(A.root, id);
+      assert.deepEqual([el.getAttribute('aria-disabled'), el.listenerCount('pointerdown') + el.listenerCount('pointerup') + el.listenerCount('keydown')], ['true', 0], id);
+    }
+    const keys = stepKeys(A.root), g = W(A.root, 'dr:pads');
+    assert.deepEqual([keys.every(k => k.getAttribute('aria-disabled') === 'true' && k.listenerCount('pointerdown') === 0), byN(A.root, 'dr:trk').every(b => b.getAttribute('aria-disabled') === 'true'), g.listenerCount('pointerdown'), g.childNodes.every(p => p.getAttribute('aria-disabled') === 'true')], [true, true, 0, true]);
+    assert.deepEqual([keys[0].getAttribute('data-lit'), dsp9(A.root).textContent, W(A.root, 'dr:tempo').getAttribute('aria-valuetext')], ['flash', '120', '120 BPM'], 'the 909\'s defaults painted');
+    rafQ.flush(); // (B's first frame, before another mount's fresh document clears the queue)
+    assert.equal(ser(A.root), ser(mount(false, { nine: true }).root), 'deterministic');
+    // an 808 / 606 record under the 909's panel (a Replace undone before main re-renders the view): the 909's defaults, no throw
+    B.api.drum.press({ k: 'tap', b: 'trk', n: 2 }); rafQ.flush();
+    assert.equal(byN(B.root, 'dr:trk')[1].getAttribute('data-lit'), 'on');
+    B.R.D = DC.normDrum(undefined); B.H.changed(B.tr); rafQ.flush();
+    assert.deepEqual([byN(B.root, 'dr:trk')[1].getAttribute('data-lit'), byN(B.root, 'dr:pat')[0].getAttribute('data-lit')], ['off', 'on']);
+    B.R.D = DC.normDrum(undefined, 'tr606'); B.H.changed(B.tr); rafQ.flush();
+    assert.equal(dsp9(B.root).textContent, '120');
+    const C = mount(true); C.R.D = DC.normDrum(undefined, 'tr909'); C.H.changed(C.tr); rafQ.flush();
+    assert.deepEqual([W(C.root, 'dr:mode').getAttribute('aria-valuetext'), stepKeys(C.root)[0].getAttribute('data-lit')], ['Manual play', 'flash'], 'a 909 record under the 808\'s panel: the 808\'s defaults');
+    const D6 = mount(true, { six: true }); D6.R.D = DC.normDrum(undefined, 'tr909'); D6.H.changed(D6.tr); rafQ.flush();
+    assert.equal(W(D6.root, 'dr:mode').getAttribute('aria-valuetext'), 'Pattern play', 'and under the 606\'s: the 606\'s');
+    A.r.destroy(); B.r.destroy(); C.r.destroy(); D6.r.destroy();
+  });
+});
+
+test('7c the popovers: MAP… and SOUNDS… list the 909\'s eleven sounds by its names (the ride and crash on its own keys); SOUNDS… "circuit (ours)" for the analog voices, "our sound" and the chip swap for the hats, crash and ride', async () => {
+  rafQ.install();
+  try {
+    const m = mount(true, { nine: true }), tapB = el => ptr(el, 'pointerup', 0, 0);
+    const items = () => all(m.doc.body).filter(n => cls(n) === 'wk-ci' || /wk-ci /.test(cls(n)));
+    const label = n => n.childNodes[1].textContent;
+    const pick = text => { const it = items().find(n => label(n).startsWith(text)); assert.ok(it, text + ' in ' + items().map(label).join(' | ')); fire(it, 'pointerdown'); it.click(); };
+    tapB(W(m.root, 'dr:map'));
+    assert.deepEqual(items().map(label).slice(0, 11).map(t => t.split(' · ')[0]), ['Kick', 'Snare', 'Low tom', 'Mid tom', 'Hi tom', 'Rim shot', 'Hand clap', 'Ride', 'Crash', 'Open hat', 'Closed hat']);
+    assert.equal(label(items()[7]), 'Ride · 51 (D#3), 59 (B3)');
+    pick('Ride'); pick('No note');
+    assert.deepEqual([m.R.D.map.rd, m.R.D.map.cr], [[], [49, 57]]);
+    tapB(W(m.root, 'dr:sounds'));
+    assert.deepEqual(items().map(label).slice(0, 11), ['Kick · circuit (ours)', 'Snare · circuit (ours)', 'Low tom · circuit (ours)', 'Mid tom · circuit (ours)', 'Hi tom · circuit (ours)', 'Rim shot · circuit (ours)',
+      'Hand clap · circuit (ours)', 'Ride · our sound', 'Crash · our sound', 'Open hat · our sound', 'Closed hat · our sound']); // (review 2 F5: "ours" once)
+    pick('Crash'); pick('Load');
+    await new Promise(r => setTimeout(r, 0));
+    assert.deepEqual(m.R.D.smp.cr, { id: 'smp:0123456789abcdef', name: 'my cr', on: true });
+    tapB(W(m.root, 'dr:sounds'));
+    assert.equal(label(items()[8]), 'Crash · your sound: my cr (through the 909’s chip)');
+    pick('Crash');
+    assert.ok(items().some(n => label(n) === 'Your sound (through the 909’s chip): my cr') && items().some(n => label(n) === 'Our sound'), items().map(label).join(' | '));
+    rafQ.flush();
+    const cr = W(m.root, 'dr:pads').childNodes.find(p => p.getAttribute('data-sound') === 'cr');
+    assert.deepEqual([cr.getAttribute('data-smp'), cr.getAttribute('title')], ['', 'Crash · your sound: my cr']);
+    m.r.destroy();
+  } finally { rafQ.uninstall(); }
 });

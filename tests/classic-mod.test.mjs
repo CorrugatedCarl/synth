@@ -300,6 +300,23 @@ test('TR-606: every knob targets its one-level drum.<id> field and the engine\'s
   assert.equal(I.p.drum.tml, 0.7, 'base restored when the rows go');
 });
 
+// IMPL-7c §9, §12.7: the TR-909's 28 knobs (the face, no extras) the same way — a drum.<id> each through the real moRec (its
+// seven new ids are DrumP fields, never an unknown key), a crash TUNE cable (its sample clock) written and restored
+test('TR-909: every knob targets its one-level drum.<id> field and the engine\'s moRec resolves each; a drum.cru cable writes p.drum', () => {
+  const m = MODELS.find(x => x.id === 'tr909'), knobs = m.controls.filter(c => c.t === 'k');
+  assert.deepEqual([knobs.length, m.controls.length], [28, 28]);
+  for (const c of knobs) assert.deepEqual(V.targetsOf(m, c.id).map(t => t.kind + ':' + t.field), ['field:drum.' + c.id], c.id);
+  const D = fresh('tr909'), P = proc(D, patch('tr909')), I = P.i0;
+  assert.deepEqual([I.p.machine, Object.keys(I.p.drum).filter(k => !(k in new (I.p.drum.constructor)({})))], ['tr909', []], 'a fixed-shape DrumP');
+  I.modRows(knobs.map(c => ({ field: 'drum.' + c.id })));
+  assert.equal(I.moFN, knobs.length, 'every row resolved');
+  assert.deepEqual([...I.moF.map(r => r.sub + '|' + r.key + '|' + r.base)], knobs.map(c => 'drum|' + c.id + '|' + c.def / 10));
+  I.modSpan(null, null, [{ field: 'drum.cru', v: 0.9 }]);
+  assert.equal(I.p.drum.cru, 0.9, 'the effective value is in p.drum');
+  I.modRows(null);
+  assert.equal(I.p.drum.cru, 0.5, 'base restored when the rows go');
+});
+
 test('modSpan: the two-argument form, null offsets, NaN guarded; a Solina level cable and a DX7 level cable (level is their only slot)', () => {
   const D = fresh('forms'), P = proc(D, patch('juno60')), I = P.i0;
   I.modRows([{ slot: S.VO }, { slot: S.VO }, { slot: S.VR }, { slot: S.BEND }, null]);

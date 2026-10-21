@@ -31,6 +31,9 @@
 //   9  stage 7b: the TR-606 (IMPL-7b §6) — a 'tr606' instrument device and its `drum` record (its own shape, `m: 'tr606'`: song.normDev
 //      → normDrum(d, model)): additive, nothing to convert (an 8 opens as before; a 9 in a schema-8 build opens read-only — that build
 //      would read 'tr606' as a Minimoog, modelById's fallback, drop `drum` and autosave the loss). toV1 names each drum track's model
+//  10  stage 7c: the TR-909 (IMPL-7c §6) — a 'tr909' instrument device and its `drum` record (its own shape, `m: 'tr909'`: song.normDev
+//      → normDrum(d, model)): additive, nothing to convert (a 9 opens as before; a 10 in a schema-9 build opens read-only — that build
+//      would read 'tr909' as a Minimoog, modelById's fallback, drop `drum` and autosave the loss). toV1 names the TR-909 like the others
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
@@ -87,7 +90,7 @@ import { DOT } from './cv-world.js?v=9';
 import { isDrum } from './song.js?v=9';
 
 export { schemaOf };
-export const SCHEMA = 9;
+export const SCHEMA = 10;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -125,6 +128,8 @@ export const STEPS = Object.freeze([
   p => Object.assign({}, p, { schema: 8 }),
   // 8 → 9: the TR-606 (stage 7b, IMPL-7b §6: a 'tr606' device and its `drum` record) — additive
   p => Object.assign({}, p, { schema: 9 }),
+  // 9 → 10: the TR-909 (stage 7c, IMPL-7c §6: a 'tr909' device and its `drum` record) — additive
+  p => Object.assign({}, p, { schema: 10 }),
 ]);
 
 export function upgrade(o) {

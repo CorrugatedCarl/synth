@@ -74,7 +74,7 @@ test('the lead\'s fixture check (§11 phase 2): a 606 from the Sources tray\'s D
   const tiles = sh.shell.tiles;
   tiles.setView('drums');
   const shown = tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
-  assert.deepEqual(shown, ['tr808', 'tr606'], 'the Drums view lists both machines');
+  assert.deepEqual(shown, ['tr808', 'tr606', 'tr909'], 'the Drums view lists the three machines (7c: the TR-909 too)');
   sh.srcPick('tr606', 'replace'); sim.raf(); await settle();
   const t = T(), d = I(t);
   assert.equal(d.model, 'tr606');
@@ -295,6 +295,31 @@ test('TRACK WRITE (§3.3): three bars written by TAP while running (the key hear
   assert.deepEqual([D().ui.sel, D().ui.cl], [0, 1], 'Shift + a key: the chain I-1 … I-2 again');
 });
 
+// 7c review 1 F2 (the 606's TRACK WRITE, the same class as the 909's): the synced plan reads the session's bar pointer and the
+// key heard (bar6 / tw6); the bounce's fresh session and → Piano roll (no session) played the track's first bar
+test('7c review 1 F2: a synced 606 in TRACK WRITE — the bounce plays the bar the pointer is on (as live), → Piano roll writes it, not bar 1', async () => {
+  const t = T(), L0 = P().loop, ui0 = D().ui;
+  assert.equal(D().rt.slice(0, 3).join(), '0,1,0', '(the TRACK WRITE test\'s track 1: I-1, I-2, I-1)');
+  DR().press({ k: 'mode', v: DC.M6_TW }); DR().press({ k: 'inst', v: 0 });
+  DR().press({ k: 'fn', down: true }); key(2); DR().press({ k: 'fn', down: false }); await settle(); // (located on bar 2: I-2)
+  P().loop = Object.assign({}, L0, { on: true, start: 0, end: BAR });
+  try {
+    const S = DR().state().S, live = sent(t, 'seq').at(-1).s;
+    assert.deepEqual([S.bar, [...live.plan.mKey].join()], [1, '1'], 'live: bar 2 (I-2)');
+    api.transport().pos = 0;
+    await bounceL();
+    const po = sim.lastOffline.nodes[0].po.seq;
+    assert.deepEqual([[...po.plan.mKey].join(), po.plan.key], ['1', live.plan.key], 'the bounce\'s plan = the live one (its STEP RESET counter a fresh session\'s)');
+    const want = DC.toNotes(DC.compilePlan(D(), D().ui, D().x, S), { t0: 0, t1: BAR, swing: D().x.swing, sw: I(t).vals, prim: DC.primaries(D().map, 'tr606') });
+    DR().toRoll(1); await settle();
+    assert.equal(T().notes.slice().sort((a, b) => a.t - b.t || a.n - b.n).map(x => [x.t, x.n, x.v].join(':')).join(), want.map(x => [x.t, x.n, x.v].join(':')).join(), '→ Piano roll: bar 2\'s I-2');
+    assert.notEqual(want.map(x => x.n).join(), DC.toNotes(DC.compilePlan(D(), D().ui, D().x), { t0: 0, t1: BAR, prim: DC.primaries(D().map, 'tr606') }).map(x => x.n).join(), '(I-2 ≠ I-1)');
+    sim.$('#notice').onclick(); await settle();
+    assert.deepEqual([T().notes.length, D().x.sync], [0, true]);
+  } finally { P().loop = L0; }
+  DR().press({ k: 'mode', v: ui0.mode }); DR().press({ k: 'inst', v: ui0.inst });
+});
+
 test('review 1 #1: ■ / ▶ and a seek end a synced 606\'s D.S. and TRACK WRITE\'s heard key in the worklet too — the host carries the transport press\'s payload, main\'s seek reaches the drum host', async () => {
   const t = T(), back = noLoop(), ui0 = D().ui;
   try {
@@ -457,7 +482,7 @@ const slotOn = async (t, s, id) => { // (a slot switched on: its entry first, th
   for (let i = 0; i < 40 && !sent(t, 'seq').some(m => m.s.smp && m.s.smp[s] && m.s.smp[s].id === id && m.s.smp[s].on); i++) await sim.settle(5);
 };
 
-test('your own sound in the 606\'s SD slot (§5): its entry (2 levels) before the payload naming it, and it plays; relinked through the asset manager (tables.relink → drumEdit) the record stays a 606\'s — its patterns, chains and tracks kept (review #4); a project with an 808 and a 606 saved and reopened is the same two machines; schema 9 (an 8 build opens it read-only)', async () => {
+test('your own sound in the 606\'s SD slot (§5): its entry (2 levels) before the payload naming it, and it plays; relinked through the asset manager (tables.relink → drumEdit) the record stays a 606\'s — its patterns, chains and tracks kept (review #4); a project with an 808 and a 606 saved and reopened is the same two machines; the saved schema is the build\'s (an older build opens it read-only)', async () => {
   const t = T(), sr = sim.ctx().sampleRate;
   const r = await cv.drumLoad(view(), 'sd', [{ name: 'my snare.wav', data: wavFile({ ch: [ping(900)], rate: sr }) }]);
   assert.equal(!!r && /^smp:[0-9a-f]{16}$/.test(r.id), true, 'imported');
@@ -484,7 +509,7 @@ test('your own sound in the 606\'s SD slot (§5): its entry (2 levels) before th
   const t8 = api.addTrack(TR808); sim.raf(); await settle();
   DR().demo(); await settle();
   const txt = await cv.projectFile(), o = JSON.parse(txt);
-  assert.deepEqual([o.schema, CM.SCHEMA, !!(o.smps && o.smps[r2.id])], [9, 9, true], 'schema 9; the sample embedded');
+  assert.deepEqual([o.schema, CM.SCHEMA, !!(o.smps && o.smps[r2.id])], [CM.SCHEMA, CM.SCHEMA, true], 'the saved schema follows this build\'s (7c: 10); the sample embedded');
   const p = acc.loadProject(JSON.parse(txt), { file: true });
   const a = p.tracks.find(x => x.id === t.id), b = p.tracks.find(x => x.id === t8.id);
   assert.deepEqual([CMOD.instOf(a).model, CMOD.instOf(b).model], ['tr606', 'tr808']);

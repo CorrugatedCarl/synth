@@ -58,6 +58,20 @@
 // 303s. A cancelled hold (two-finger cancel, lost capture, blur, the host's release-all, destroy) sends { k: 'release' }:
 // every hold let go, nothing done. Host deps added: link303(tr, s) (SYNC 303s: every TB-303 to SYNC, s its swing), n303()
 // → { n, synced }; host method link303() (a 303 changed elsewhere: the panels repaint); api.drum gains link(), n303().
+//
+// 7c (IMPL-7c §7.4; lane P1): the TR-909. UI.tr909 (its twelve INSTRUMENT rows AC … RD on the 808's lane bits, drum-core
+// LANES909; the 4 × 3 pads CR RD OH CH / LT MT HT AC / BD SD RS HC with the AC hold; the 808's grid geometry; no dials); every
+// machine test three-way (machOf, the host's session, the panel's tables — a 909 never falls into the 808's grid, pads, texts
+// or cancel rule); the sounds' keys / names by PERS[machine] (its ids 7 / 8 the ride / crash). Its widgets: the held keys
+// (SHIFT, INSTRUMENT SELECT, CLEAR, LAST STEP, SHUFFLE/FLAM, the TEMPO key, AVAILABLE MEAS) and the step keys down / up in
+// music zones (two keys: a pair, a block, a chain; Shift + a key the mouse's; Alt + a key = SHIFT + key, held while Alt is),
+// the taps (START, STOP/CONT, SCALE, TRACK n, PATTERN n, BACK, FWD, CYCLE/GUIDE, ENTER: A.tap — a pinch starting there zooms),
+// TEMPO continuous (tempo909), the 3-digit display and the LEDs (LIT 'dim': a normal step) painted together; a cancelled hold
+// sends { k: 'release' } as the 606's. The host: a 909 key's press carries its time (`ts`) — in TAP write the host adds `f`,
+// the fraction of the heard step — and its { c: 'hit', sound, v } / { c: 'hit', sound, off } plays through the pads' note path
+// (the sel() gate, no REC write: the press wrote it; a note the session drops — release, panic, a fresh session — ends);
+// bpm(v) presses { k: 'bpm', v } for a 909 (review #1: its flams' ticks follow the project tempo — drum-core sends 'now' when
+// they move), and so does a synced 909's own TEMPO (its { c: 'bpm' } command).
 import * as DC from './drum-core.js?v=9';
 import * as wk from './wk.js?v=9';
 import { KEY_VEL, noteName } from './cv-keys.js?v=9';
@@ -82,8 +96,9 @@ export const GRID = Object.freeze({ w: 640, h: 272, head: 64, top: 32, col: 36, 
 export const PADS = Object.freeze({ w: 232, h: 232, pad: 52, gap: 8 });
 /** A long press on a lane's header (ms): solo instead of mute. A tap's slop (px): a finger's, the mouse's. */
 export const SOLO_MS = 500, SLOP = { touch: 10, mouse: 4 };
-/** drum-core leds() step codes → a step key's data-lit (§7.4: off / on / flash / the inverted playhead lit or dark). */
-export const LIT = Object.freeze(['off', 'on', 'flash', 'head-on', 'head-off']);
+/** drum-core leds() step codes → a step key's data-lit (§7.4: off / on / flash / the inverted playhead lit or dark; 7c: 5 dim, a
+ * normal step — style.css's .hw-btn[data-lit="dim"], steady with reduced motion). */
+export const LIT = Object.freeze(['off', 'on', 'flash', 'head-on', 'head-off', 'dim']);
 /** A pad's velocity from where it is touched (the 1i curve: cv-keys KEY_VEL, main.js velAt): f = 0 the back edge … 1 the front. */
 export const padVel = f => Math.min(1, KEY_VEL.lo + KEY_VEL.span * clamp(fin(f) ? f : 1, 0, 1));
 /** A keyboard press of a pad: an unaccented step's velocity (100 / 127, §1.3). */
@@ -128,14 +143,33 @@ export const DIAL6 = Object.freeze({
   'dr:inst': { k: 'inst', n: 8, label: 'Track / instrument', pos: D => D.ui.inst, val: i => i, text: (i, D) => (D.ui.mode < DC.M6_PP ? 'Track ' + (i + 1) : DC.ROWS606[i]), def: 1 },
   'dr:sc': { k: 'sc', n: 4, label: 'Scale', pos: D => 4 - D.ui.sc, val: i => 4 - i, text: i => SC6_TXT[4 - i], def: 3 },
 });
+/* ---- (7c) the TR-909's tables: the pads 4 × 3 from the top row (CR RD OH CH / LT MT HT AC / BD SD RS HC: the kick bottom-left,
+   §3.7; AC a hold), the pads' cell (= cv-panel DR9_PADS: 4 × 52 + 3 gaps of 8; 8 + 3 × 52 + 2 × 8), the pads' codes by sound id
+   (its ids 7 / 8 the ride / crash; 11–15 inert), the step keys' voices (the instrument boxes under them: the left key of a pair
+   the accented one; 13 + 14 the open hat) */
+export const PAD9 = Object.freeze(['cr', 'rd', 'oh', 'ch', 'lt', 'mt', 'ht', 'ac', 'bd', 'sd', 'rs', 'cp']);
+export const PADS9 = Object.freeze({ w: 232, h: 184, pad: 52, ph: 52, gap: 8, top: 8 });
+const SOUND_CODE9 = Object.freeze(['BD', 'SD', 'LT', 'MT', 'HT', 'RS', 'HC', 'RD', 'CR', 'OH', 'CH', '', '', '', '', '']);
+const KEY9 = ['Kick, accent', 'Kick', 'Snare, accent', 'Snare', 'Low tom, accent', 'Low tom', 'Mid tom, accent', 'Mid tom', 'Hi tom, accent', 'Hi tom',
+  'Rim shot', 'Hand clap', 'Closed hat, accent', 'Closed hat', 'Crash', 'Ride'];
 /** Each machine's panel tables (§7.4): the grid's rows (codes, the switch's other sound, the lane bit of each row), the pads,
- * the grid / pads geometry, the detented controls, the name the texts use. */
+ * the grid / pads geometry, the detented controls, the name the texts use; (7c) the pads' codes by sound id. */
 export const UI = Object.freeze({
   tr808: Object.freeze({ codes: LANE_CODE, alt: LANE_ALT, lanes: Object.freeze(LANE_CODE.map((x, l) => l)), pads: PAD_ORDER, grid: GRID, padG: PADS, dial: DIAL, name: '808' }),
   tr606: Object.freeze({ codes: DC.CODES606, alt: null, lanes: DC.LANES606, pads: PAD6, grid: GRID6, padG: PADS6, dial: DIAL6, name: '606' }),
+  tr909: Object.freeze({ codes: DC.CODES909, alt: null, lanes: DC.LANES909, pads: PAD9, grid: GRID, padG: PADS9, dial: Object.freeze({}), scode: SOUND_CODE9, name: '909' }),
 });
-/** A machine id from a model id or a record (absent / unknown: the 808). */
-export const machOf = x => (x === 'tr606' || (!!x && typeof x === 'object' && x.m === 'tr606') ? 'tr606' : 'tr808');
+/** A machine id from a model id or a record (absent / unknown: the 808; 7c: three-way, 'tr606' / 'tr909' the exact strings). */
+export const machOf = x => { const m = typeof x === 'string' ? x : !!x && typeof x === 'object' ? x.m : null; return m === 'tr606' || m === 'tr909' ? m : 'tr808'; };
+/** (7c) The 909's grid (the 808's geometry, its 12 rows AC … RD on their lane bits): a cell { lane, row, s }, a header { head,
+ * lane, row }, the step row { top, s }, the corner { corner }; null outside. */
+export function gridAt909(x, y) {
+  const G = GRID;
+  if (!(x >= 0 && y >= 0 && x < G.w && y < G.h)) return null;
+  if (y < G.top) return x < G.head ? { corner: true } : { top: true, s: Math.min(15, Math.floor((x - G.head) / G.col)) };
+  const row = Math.min(11, Math.floor((y - G.top) / G.row)), lane = DC.LANES909[row];
+  return x < G.head ? { head: true, lane, row } : { lane, row, s: Math.min(15, Math.floor((x - G.head) / G.col)) };
+}
 /** (7b) The 606's grid: a cell { lane, row, s } (lane: the row's 808 lane bit), a header { head, lane, row }, the step row
  * { top, s }, the corner { corner }; null outside. */
 export function gridAt606(x, y) {
@@ -155,7 +189,9 @@ export function loopHint(D, L) {
   const p = DC.compilePlan(D, D.ui, D.x), len = L.le - L.ls;
   let r = null;
   if (p && p.n - p.loopFrom >= 2 && p.mT[p.n] - p.mT[p.loopFrom] > len) {
-    r = machOf(D) === 'tr606' ? (D.ui.mode < DC.M6_PP ? 'Loop is shorter than the track — its end falls outside it' : 'Loop is shorter than the chain — its end falls outside it') // (7b)
+    const m = machOf(D);
+    r = m === 'tr606' ? (D.ui.mode < DC.M6_PP ? 'Loop is shorter than the track — its end falls outside it' : 'Loop is shorter than the chain — its end falls outside it') // (7b)
+      : m === 'tr909' ? (D.ui.mode >= DC.M9_TP ? 'Loop is shorter than the track — its end falls outside it' : 'Loop is shorter than the patterns played — the later ones fall outside it') // (7c)
       : D.ui.mode === DC.M_PLAY ? 'Loop is shorter than the rhythm track — its end falls outside it'
       : D.ui.fill > 0 ? 'Loop is shorter than the fill cycle — fills fall outside it' : 'Loop is shorter than the A / B cycle — B falls outside it';
   }
@@ -179,39 +215,79 @@ export function drumHost(deps) {
   const each = (S, ...a) => { for (const f of [...S]) { try { f(...a); } catch (err) { console.error(err); } } };
   // a fresh session of the record's machine (7b: initState(D.m); the transport and the project tempo as now)
   const fresh = tr => { const b = +call(deps.bpm), D = mem(tr); return Object.assign(DC.initState(D ? machOf(D) : undefined), { play: !!call(deps.playing), bpm: b > 0 ? b : 120 }); };
-  const sessOf = S => (Array.isArray(S.held) ? 'tr606' : 'tr808'); // (a 606 session holds its keys)
+  const sessOf = S => (S && S.m === 'tr909' ? 'tr909' : Array.isArray(S.held) ? 'tr606' : 'tr808'); // (a 606 session holds its keys; 7c: a 909's names itself)
   function entry(tr) {
     const k = idOf(tr);
     let e = E.get(k);
     if (!e) {
-      e = { tr, S: fresh(tr), q: [], mq: [], last: null, bpmT: null, on: new Set(), steps: new Set(), lits: new Set(), held: new Map() };
+      e = { tr, S: fresh(tr), q: [], mq: [], last: null, bpmT: null, on: new Set(), steps: new Set(), lits: new Set(), held: new Map(), kh: new Map() };
       E.set(k, e);
     }
     if (tr && typeof tr === 'object') e.tr = tr;
     return e;
   }
   const notify = e => each(e.on);
+  // (7c §7.4) a TAP-write step key's { c: 'hit' }: its sound's primary note into the track — the pads' note path (the sel()
+  // gate; no REC write: the press wrote it), e.kh (sound key → note) for the off its key's up sends
+  function hit(e, D, c, ts) {
+    const s = DC.PERS[machOf(D)].sounds[c.sound];
+    if (typeof s !== 'string') return;
+    if (c.off) { const n = e.kh.get(s); if (n != null) { e.kh.delete(s); call(deps.noteOff, e.tr, n, ts); } return; }
+    if (deps.sel && !call(deps.sel, e.tr)) return;
+    const n = (D.map[s] || [])[0];
+    if (!(Number.isInteger(n) && n >= 0 && n <= 127)) return;
+    e.kh.set(s, n);
+    call(deps.noteOn, e.tr, n, clamp(fin(c.v) ? c.v / 127 : KEY_PAD_V, 0, 1), ts);
+  }
+  // (7c) a key's note the session no longer sounds (a cancelled hold's release, a panic, a fresh session): its off
+  function khSync(e, ts) {
+    const S = e.S, K = S && S.m === 'tr909' && Array.isArray(S.hits) ? DC.PERS.tr909.sounds : null;
+    for (const [s, n] of [...e.kh]) if (!K || !S.hits.some(h => K[h[1]] === s)) { e.kh.delete(s); call(deps.noteOff, e.tr, n, ts); }
+  }
   // a press's result applied to its entry: the session, the record written back, its commands — the panel's presses and the
   // host's own alike (7b reviews 1 #1 / #2: 'transport' ends a 606's D.S. / heard key at ■, ▶ and a seek, a 'heard' post
-  // wipes CLEAR's steps: their sends reach the machine)
-  function exec(e, D, r, ph) {
+  // wipes CLEAR's steps: their sends reach the machine). (7c) ts: the press's time (a TAP-write key's note)
+  function exec(e, D, r, ph, ts) {
     e.S = r.state;
     if (r.mem !== D) call(deps.put, e.tr, r.mem);
     for (const c of r.cmds) {
       if (c.c === 'send') call(deps.send, e.tr, r.mem, e.S, c.at);
       else if (c.c === 'play') call(deps.play, e.tr);
       else if (c.c === 'stop') call(deps.stop, e.tr);
-      else if (c.c === 'bpm') { e.S = Object.assign({}, e.S, { bpm: c.v }); e.bpmT = ph === 'move' ? c.v : null; call(deps.setBpm, c.v, ph); }
+      else if (c.c === 'bpm') {
+        if (machOf(r.mem) === 'tr909') { // ((7c review #1) the session's tempo through drum-core: a synced plan whose flams move is sent now)
+          const q = DC.press(e.S, r.mem, { k: 'bpm', v: c.v });
+          e.S = q.state;
+          for (const k of q.cmds) if (k.c === 'send') call(deps.send, e.tr, r.mem, e.S, k.at);
+        } else e.S = Object.assign({}, e.S, { bpm: c.v });
+        e.bpmT = ph === 'move' ? c.v : null; call(deps.setBpm, c.v, ph);
+      }
       else if (c.c === 'notice') call(deps.notice, c.text, c.undo ? 8000 : 4000, c.undo ? () => press(e.tr, { k: 'undo' }) : null);
       else if (c.c === 'link303') call(deps.link303, e.tr, c.s); // (7b SYNC 303s: the host switches them, its notice undoes it)
+      else if (c.c === 'hit') hit(e, r.mem, c, ts); // (7c: a TAP-write key)
     }
+    if (e.kh.size) khSync(e, ts);
   }
   function press(tr, input, ph) {
-    const e = entry(tr), D = mem(e.tr);
+    const e = entry(tr);
+    let D = mem(e.tr);
     if (!D) return null;
+    // (7c) a 909 key down in TAP write: f, the fraction of the heard step at its time (the posts heard by then delivered first)
+    if (input && input.k === 'key' && input.down === true && machOf(D) === 'tr909' && D.ui.mode === DC.M9_PW && D.ui.wm === 1) {
+      input = Object.assign({}, input, { f: frac(e, D, input.ts) });
+      D = mem(e.tr);
+      if (!D) return null;
+    }
+    // (7c review 1 F4) a free 909's STOP: the steps it already played are heard (the output's latency) — their posts delivered
+    // first, so STOP/CONT continues after the last step played (the 808's / 606's queue is dropped as before)
+    if (input && (input.k === 'start' || (input.k === 'tap' && input.b === 'stop')) && machOf(D) === 'tr909' && !D.x.sync && DC.running(e.S, D)) {
+      deliver(e, NaN);
+      D = mem(e.tr);
+      if (!D) return null;
+    }
     let r = null;
     try { r = DC.press(e.S, D, input); } catch (err) { console.error(err); return null; }
-    exec(e, D, r, ph);
+    exec(e, D, r, ph, input && input.ts);
     if (!DC.running(e.S, r.mem)) { e.q.length = 0; e.mq.length = 0; } // (a stopped machine: nothing left to show)
     notify(e);
     return r;
@@ -269,7 +345,14 @@ export function drumHost(deps) {
         notify(e);
       }
     },
-    bpm(v) { if (!(v > 0)) return; for (const e of E.values()) { e.S = Object.assign({}, e.S, { bpm: +v }); notify(e); } },
+    bpm(v) { // the project tempo: the sessions' (7c review #1: a 909's through drum-core — a synced plan whose flams move is sent now)
+      if (!(v > 0)) return;
+      for (const e of E.values()) {
+        const D = mem(e.tr);
+        if (D && machOf(D) === 'tr909') exec(e, D, DC.press(e.S, D, { k: 'bpm', v: +v })); else e.S = Object.assign({}, e.S, { bpm: +v });
+        notify(e);
+      }
+    },
     panic() {
       for (const e of E.values()) { const D = mem(e.tr); if (D) exec(e, D, DC.press(e.S, D, { k: 'panic' })); e.q.length = 0; e.mq.length = 0; notify(e); }
       H.release();
@@ -280,12 +363,12 @@ export function drumHost(deps) {
       if (!e) return;
       if (tr && typeof tr === 'object') e.tr = tr;
       const D = mem(e.tr); // (7b review #16: an 808 ↔ 606 Replace undone / redone under the same view — the other machine's record)
-      if (D && machOf(D) !== sessOf(e.S)) { e.S = fresh(e.tr); e.q.length = 0; e.mq.length = 0; e.last = null; e.bpmT = null; }
+      if (D && machOf(D) !== sessOf(e.S)) { e.S = fresh(e.tr); e.q.length = 0; e.mq.length = 0; e.last = null; e.bpmT = null; if (e.kh.size) khSync(e); }
       notify(e);
     },
     loop() { for (const e of E.values()) notify(e); }, // (the song loop changed: the panels' hint)
     link303() { for (const e of E.values()) notify(e); }, // (7b: a TB-303's SYNC, the project's 303s: SYNC 303s repaints)
-    forget(tr) { E.delete(idOf(tr)); },
+    forget(tr) { const e = E.get(idOf(tr)); if (e && e.kh.size) { e.S = null; khSync(e); } E.delete(idOf(tr)); }, // ((7c) a key's note ends)
     api(tr) {
       const e = entry(tr), sel = () => !deps.sel || !!call(deps.sel, e.tr);
       const sub = (S, f) => { if (typeof f !== 'function') return () => {}; S.add(f); return () => S.delete(f); };
@@ -303,7 +386,7 @@ export function drumHost(deps) {
         },
         pads: {
           on(s, v, ts) { // a pad: its sound's primary note (§4.1) into the track; REC writes its lane at the nearest step
-            const D = mem(e.tr), i = DC.SOUNDS.indexOf(s);
+            const D = mem(e.tr), i = D ? DC.PERS[machOf(D)].sounds.indexOf(s) : -1; // ((7c) the machine's sound keys: the 909's rd / cr)
             if (!D || i < 0 || !sel()) return false;
             const n = (D.map[s] || [])[0];
             if (!(Number.isInteger(n) && n >= 0 && n <= 127)) return false;
@@ -316,17 +399,17 @@ export function drumHost(deps) {
           off(s, ts) { const n = e.held.get(s); if (n == null) return; e.held.delete(s); call(deps.noteOff, e.tr, n, ts); },
         },
         hold: rel => sub(holds, rel),
-        bars() { // the plan's length in bars (→ Piano roll's last choice)
+        bars() { // the plan's length in bars (→ Piano roll's last choice: rollPlan's, with the session — 7c review 1 F2)
           const D = mem(e.tr);
           if (!D) return 1;
-          const t = DC.planTicks(DC.compilePlan(D, D.ui, D.x)).total, bt = +call(deps.barTicks) > 0 ? +deps.barTicks() : 3840;
+          const t = DC.planTicks(DC.rollPlan(D, 120, e.S)).total, bt = +call(deps.barTicks) > 0 ? +deps.barTicks() : 3840;
           return Math.max(1, Math.ceil(t / bt));
         },
         toRoll: bars => call(deps.toRoll, e.tr, bars),
         demo() {
           const D = mem(e.tr);
           if (!D) return;
-          const q = machOf(D) === 'tr606' ? 'patterns I-1 and I-2' : 'pattern 1 A / B and fill 1';
+          const q = machOf(D) === 'tr606' ? 'patterns I-1 and I-2' : machOf(D) === 'tr909' ? 'patterns I-1-1 and I-1-2' : 'pattern 1 A / B and fill 1';
           if (!DC.demoFree(D) && deps.confirm && !call(deps.confirm, `Load the demo into ${q}? It replaces what is there (the notice can undo it).`)) return;
           press(e.tr, { k: 'demo' });
         },
@@ -357,8 +440,10 @@ export function drumPanel(DR, ctx) {
   ensureCSS(doc);
   const upds = [], offs = [], rels = [];
   let dead = false, due = false, recheck = null, clearHeld = false, clearUsed = false, demoB = null;
-  // (7b) the machine this panel draws (ctx.model: cv-panel's model id; absent: the 808) and its tables
-  const M = machOf(ctx.model), U = UI[M], six = M === 'tr606', SIDS = six ? DC.SIDS606 : DC.SOUNDS.map((x, i) => i);
+  // (7b) the machine this panel draws (ctx.model: cv-panel's model id; absent: the 808) and its tables; (7c) the 909's, and the
+  // machine's sound keys / names / pad codes by sound id (the 808's and the 606's: DC.SOUNDS / SOUND_NAMES, as before)
+  const M = machOf(ctx.model), U = UI[M], six = M === 'tr606', nine = M === 'tr909', SIDS = M === 'tr808' ? DC.SOUNDS.map((x, i) => i) : DC.PERS[M].sids;
+  const SND = DC.PERS[M].sounds, NAMES = DC.PERS[M].names, SCODE = U.scode || SOUND_CODE, PN9 = p => (p < 48 ? 'I' : 'II') + '-' + (((p % 48) >> 4) + 1) + '-' + ((p & 15) + 1);
   const hint = mk('div', 'dr-hint'); // (7a review 2 #4) SYNC on and a loop shorter than the cycle: one line after DEMO
   hint.hidden = true; hint.setAttribute('role', 'note');
   if (six) hint.setAttribute('data-m', M);
@@ -620,8 +705,186 @@ export function drumPanel(DR, ctx) {
     A.dragB(el, b);
     return el;
   }
+  /* ---- (7c) the TR-909's face (§7.4): the held keys (SHIFT, INSTRUMENT SELECT, CLEAR, LAST STEP, SHUFFLE/FLAM, the TEMPO key,
+     AVAILABLE MEAS) and the step keys send down / up — music zones: two fingers are two presses (SHIFT + a key, a pair, a
+     block, finger drumming in TAP write), never a pinch; the taps (START, STOP/CONT, SCALE, TRACK n, PATTERN n, BACK, FWD,
+     CYCLE/GUIDE, ENTER) on A.tap (a finger at its release: a pinch starting there zooms, 7b review 2 #1 / #2). H9: what this
+     panel holds — each held key's pointer ('kb': the keyboard), Alt (SHIFT while Alt is down: the mouse's keypad), the step
+     keys; a cancel (two-finger cancel, lost capture, blur, the host's release-all, destroy) lets go of it all with one
+     { k: 'release' } (nothing done). (review 2 F2, the lead's) a mouse / pen click or a key press on a held key LATCHES it — lit,
+     aria-pressed, "latched" in its label — until the next key uses it (a step key's up, a tap; SHIFT stays through a SHIFT
+     sequence: digits, COPY / INS / DEL, until its ENTER), a second click toggles it off, Escape cancels; a finger holds as before */
+  const H9 = { hold: {}, alt: false, keys: new Map() };
+  const shOn9 = () => !!H9.hold.shift || H9.alt;
+  const holdSet9 = (b, h) => { // a held key's state (SHIFT: its key or Alt) → down / up when it changes
+    if (b === 'shift') { const was = shOn9(); H9.hold.shift = h; if (shOn9() !== was) DR.press({ k: 'hold', b, down: shOn9() }); return; }
+    const was = !!H9.hold[b]; H9.hold[b] = h;
+    if (!!h !== was) DR.press({ k: 'hold', b, down: !!h });
+  };
+  const altKey9 = e => { if (e.key === 'Alt') altUp9(); };
+  let alt9Doc = null;
+  function altUp9() { if (alt9Doc) { alt9Doc.removeEventListener('keyup', altKey9, true); alt9Doc = null; } if (H9.alt) { const was = shOn9(); H9.alt = false; if (shOn9() !== was) DR.press({ k: 'hold', b: 'shift', down: false }); } }
+  function altDown9() {
+    if (H9.alt) return;
+    const was = shOn9(); H9.alt = true;
+    if (!was) DR.press({ k: 'hold', b: 'shift', down: true });
+    if (doc && typeof doc.addEventListener === 'function') { alt9Doc = doc; doc.addEventListener('keyup', altKey9, true); }
+  }
+  function cancel9() {
+    const hs = Object.values(H9.hold).filter(Boolean), any = hs.length > 0 || H9.alt || H9.keys.size > 0;
+    for (const h of [...hs, ...H9.keys.values()]) if (h.id !== 'kb' && h.id !== 'latch') { try { h.el.releasePointerCapture(h.id); } catch (err) { /* released */ } }
+    H9.hold = {}; H9.keys.clear();
+    if (alt9Doc) { alt9Doc.removeEventListener('keyup', altKey9, true); alt9Doc = null; }
+    H9.alt = false;
+    latchDoc9();
+    if (any && DR) DR.press({ k: 'release' });
+    dirty();
+  }
+  // (review 2 F2) the latches: Escape cancels them (a document listener while one is on); a press that used them lets them go
+  const latched9 = () => Object.keys(H9.hold).filter(b => H9.hold[b] && H9.hold[b].id === 'latch');
+  const esc9 = e => { if (e.key === 'Escape' && latched9().length) { e.preventDefault(); cancel9(); } };
+  let esc9Doc = null;
+  function latchDoc9() {
+    const on = latched9().length > 0 && !!doc && typeof doc.addEventListener === 'function';
+    if (on && !esc9Doc) { esc9Doc = doc; doc.addEventListener('keydown', esc9, true); }
+    else if (!on && esc9Doc) { esc9Doc.removeEventListener('keydown', esc9, true); esc9Doc = null; }
+  }
+  function consume9() {
+    const L = latched9();
+    if (!L.length || !DR) return;
+    const S = DR.state().S || {};
+    for (const b of L) if (!(b === 'shift' && (S.dig != null || S.op != null))) holdSet9(b, null); // (SHIFT: through its sequence)
+    latchDoc9(); dirty();
+  }
+  function latch9(b, el) { // a click / key press on a held key: latched, or (latched already) off
+    const h = H9.hold[b];
+    if (h && h.id === 'latch') { holdSet9(b, null); latchDoc9(); dirty(); return; }
+    if (h) return;                                                   // (a finger holds it)
+    const sh = latched9().includes('shift');
+    holdSet9(b, { el, id: 'latch' });
+    // a combination with a latched SHIFT (SHIFT + TEMPO: STEP write, + AVAILABLE MEAS: bank II) acts now: both used
+    if (b !== 'shift' && sh && DR && !(DR.state().S.hold || {})[b]) { H9.hold[b] = null; consume9(); }
+    latchDoc9(); dirty();
+  }
+  if (nine) rels.push(cancel9);
+  const cancelOn9 = (el, which) => { for (const t of ['pointercancel', 'lostpointercapture']) el.addEventListener(t, e => { const h = which(); if (h && h.id === e.pointerId) cancel9(); }); };
+  // a held key's pointer / keyboard plumbing (pointer capture; Enter / Space held; a blurred keyboard hold cancels)
+  function held9(el, down, up, which, latch) {
+    el.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || e.ctrlKey) return;
+      e.preventDefault();
+      if (latch && e.pointerType !== 'touch') { latch(); return; } // (review 2 F2: a mouse / pen latches a held key)
+      try { el.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
+      down(e.pointerId, e);
+    });
+    el.addEventListener('pointerup', e => up(e.pointerId, e));
+    cancelOn9(el, which);
+    el.addEventListener('keydown', e => { if (!isKey(e)) return; e.preventDefault(); if (e.repeat) return; if (latch) latch(); else down('kb', e); });
+    el.addEventListener('keyup', e => { if (isKey(e)) { e.preventDefault(); up('kb', e); } });
+    el.addEventListener('blur', () => { const h = which(); if (h && h.id === 'kb') cancel9(); });
+    el.addEventListener('contextmenu', e => e.preventDefault());
+  }
+  const HOLD9 = { 'dr:shift': ['shift', 'Shift'], 'dr:isel': ['isel', 'Instrument select'], 'dr:clear': ['clear', 'Clear'], 'dr:last': ['last', 'Last step'],
+    'dr:shuf': ['shuf', 'Shuffle / flam'], 'dr:tkey': ['tkey', 'Tempo · Shift: step write'], 'dr:avail': ['avail', 'Available measures · Shift: bank II'] };
+  function holdBtn9(c) { // a held key; the TEMPO key and AVAILABLE MEAS show their LEDs (leds()); (review 2 F2) latched: data-latch, its label
+    const [b, label] = HOLD9[c.id], lk = b === 'tkey' || b === 'avail';
+    const el = btn('dr-hold' + (lk ? ' dr-lk' : ''), label, lk ? Object.assign({}, c, { led: c.led || 'cap' }) : c);
+    el.setAttribute('data-gesture', 'music'); el.setAttribute('aria-pressed', 'false');
+    upds.push((s, led) => {
+      const lt = !!(H9.hold[b] && H9.hold[b].id === 'latch' && s.S.hold && s.S.hold[b]);
+      setA(el, 'aria-pressed', s.S.hold && s.S.hold[b] ? 'true' : 'false'); if (lk) setA(el, 'data-lit', LIT[led[b] | 0]);
+      setA(el, 'data-latch', lt ? '' : null); setA(el, 'aria-label', lt ? label + ' · latched: for the next key (click again or Escape to cancel)' : label);
+    });
+    if (!live) { disable(el); return el; }
+    held9(el, id => { if (!H9.hold[b]) holdSet9(b, { el, id }); }, id => { const h = H9.hold[b]; if (h && h.id === id) holdSet9(b, null); }, () => H9.hold[b], () => latch9(b, el));
+    return el;
+  }
+  function stepKey909(c) { // a step key: its LED (dim a normal step); down / up — its voice in TAP write (a drum pad), else the 909's key
+    const n = c.n, b = btn('dr-key', 'Step ' + n + ' · ' + (KEY9[n - 1] || ''), Object.assign({}, c, { led: c.led || 'cap' }));
+    b.setAttribute('data-n', String(n)); b.setAttribute('data-gesture', 'music'); b.setAttribute('aria-keyshortcuts', 'Shift+Enter Alt+Enter');
+    upds.push((s, led) => { const code = led.step[n - 1] | 0; setA(b, 'data-lit', LIT[code]); setA(b, 'aria-pressed', code === 1 || code === 4 || code === 5 ? 'true' : 'false'); setA(b, 'aria-current', code === 2 ? 'true' : null); });
+    if (!live) { disable(b); return b; }
+    held9(b, (id, e) => {
+      if (H9.keys.has(n)) return;
+      if (e.altKey) altDown9(); else if (H9.alt) altUp9(); // (Alt let go unseen — another window: SHIFT up first)
+      H9.keys.set(n, { el: b, id });
+      DR.press({ k: 'key', n, down: true, shift: !!e.shiftKey, ts: e.timeStamp }); // (ts: TAP write's heard fraction, the host's)
+    }, (id, e) => {
+      const h = H9.keys.get(n);
+      if (!h || h.id !== id) return;
+      H9.keys.delete(n);
+      DR.press({ k: 'key', n, down: false, ts: e.timeStamp });
+      if (H9.alt && !e.altKey) altUp9(); // (SHIFT + key: shift down, key down, key up, shift up)
+      consume9();                        // (review 2 F2: a latched hold used by this key: let go)
+    }, () => H9.keys.get(n));
+    return b;
+  }
+  const TAP9 = { 'dr:start': ['start', 'Start'], 'dr:stop': ['stop', 'Stop / continue'], 'dr:scale': ['scale', 'Scale'], 'dr:trk': ['trk', 'Track'], 'dr:pat': ['pat', 'Pattern'],
+    'dr:back': ['back', 'Back · Shift: tap write'], 'dr:fwd': ['fwd', 'Forward · Shift: bank I'], 'dr:cyc': ['cyc', 'Cycle / guide · Shift: last measure'], 'dr:enter': ['enter', 'Enter'] };
+  function tapBtn9(c) { // a tap (A.tap); TRACK n / PATTERN n by their n; the LED keys lit from leds() (TRACK / PATTERN: the mode's, flashing in a write mode)
+    const [b, name] = TAP9[c.id], n = b === 'trk' || b === 'pat' ? c.n : 0, lk = b !== 'start' && b !== 'stop' && b !== 'scale';
+    const label = n ? `${name} ${n} · Shift: ${b === 'trk' ? 'track' : 'pattern'} write` : name;
+    const el = btn(b === 'start' ? 'dr-start' : 'dr-tap9' + (lk ? ' dr-lk' : ''), label, lk ? Object.assign({}, c, { led: c.led || 'cap' }) : c);
+    if (n) el.setAttribute('data-n', String(n));
+    if (!live) disable(el);
+    else {
+      // (review 2 F1) what is held at this tap's own press — sent with the tap, so a held finger lifted before the tap's release
+      // (or with it: one touchend, the held one first) still counts; (review 2 F2) Alt / Shift on a desktop is SHIFT
+      let lt = null;
+      const heldNow = e => {
+        const h = {};
+        if (shOn9() || (e && (e.altKey || e.shiftKey))) h.shift = true;
+        for (const k of ['isel', 'clear', 'last', 'shuf', 'tkey', 'avail']) if (H9.hold[k]) h[k] = true;
+        return h;
+      };
+      el.addEventListener('pointerdown', e => { lt = e.button === 0 ? { id: e.pointerId, h: heldNow(e), k: [...H9.keys.keys()] } : null; });
+      el.addEventListener('pointercancel', e => { if (lt && lt.id === e.pointerId) lt = null; });
+      A.tap(el, e => {
+        const L = lt && (!e || e.pointerId == null || e.pointerId === lt.id) ? lt : null, h = Object.assign(heldNow(e), L ? L.h : null);
+        const k = [...new Set([...(L ? L.k : []), ...H9.keys.keys()])], inp = n ? { k: 'tap', b, n } : { k: 'tap', b };
+        lt = null;
+        if (Object.keys(h).length) inp.held = h;
+        if (k.length) inp.keys = k;
+        DR.press(inp);
+        consume9();
+      });
+      el.addEventListener('pointerup', () => { lt = null; }); // (after A.tap's: a press that made no tap leaves no latch)
+    }
+    if (b === 'start') upds.push(s => { setA(el, 'aria-pressed', s.run ? 'true' : 'false'); setA(el, 'data-run', s.run ? '' : null); });
+    else if (lk) upds.push((s, led) => {
+      const v = (n ? led[b][n - 1] : led[b]) | 0;
+      setA(el, 'data-lit', LIT[v]);
+      if (b === 'trk' || b === 'pat' || b === 'cyc') setA(el, 'aria-pressed', v ? 'true' : 'false');
+    });
+    return el;
+  }
+  function tempo909(c) { // TEMPO 37–290 BPM, whole, continuous on a log law (drum-core tempo909): the machine's, or the project's when synced
+    const sweep = c.sweep || 300, el = mk('div', 'knob hw-tempo dr-tempo');
+    el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', 'Tempo');
+    el.setAttribute('aria-valuemin', String(DC.TEMPO9_LO)); el.setAttribute('aria-valuemax', String(DC.TEMPO9_HI));
+    ctx.skinVars(el, c);
+    const { svg, rot } = ctx.knobSvg(ctx.skinOf(c));
+    el.append(svg);
+    const bpmOf = s => (s.D.x.sync ? s.S.bpm : s.D.ui.tempo), txt = v => r3(Math.round(v * 100) / 100) + ' BPM';
+    upds.push(s => { const v = bpmOf(s); setA(rot, 'transform', `rotate(${ctx.n3(-sweep / 2 + sweep * DC.tempo909Pos(v))} 32 32)`); setA(el, 'aria-valuenow', r3(v)); setA(el, 'aria-valuetext', txt(v)); });
+    if (!live) { disable(el); return el; }
+    const get = () => DC.tempo909Pos(bpmOf(st()));
+    const b = { label: 'Tempo', min: 0, max: 1, def: DC.tempo909Pos(120), axis: 'y', get,
+      set: (u, ph) => { const v = DC.tempo909(clamp(u, 0, 1)); if (v !== bpmOf(st())) DR.press({ k: 'tempo', v }, ph); },
+      fmt: u => txt(DC.tempo909(clamp(u, 0, 1))), end: () => DR.end(), snap: () => ({ v: bpmOf(st()) }),
+      restore: k => { if (k && k.v !== bpmOf(st())) { DR.press({ k: 'tempo', v: k.v }); DR.end(); } } };
+    A.dragB(el, b);
+    return el;
+  }
   function widget(c, o) {
     const id = c.id;
+    if (nine) { // (7c) the 909's
+      if (id === 'dr:step') return stepKey909(c);
+      if (HOLD9[id]) return holdBtn9(c);
+      if (TAP9[id]) return tapBtn9(c);
+      if (id === 'dr:tempo') return tempo909(c);
+      return null;
+    }
     if (six) { // (7b) the 606's
       if (id === 'dr:step') return stepKey606(c);
       if (id === 'dr:start') return start606(c);
@@ -644,7 +907,30 @@ export function drumPanel(DR, ctx) {
   // PATTERN CLEAR's flash)
   const SHOW = six ? { 'dr:runLed': ['run', -1, 'Run'], 'dr:grpI': ['grp', 0, 'Pattern group I'], 'dr:grpII': ['grp', 1, 'Pattern group II'] }
     : { 'dr:part1': ['part', 0, '1st part'], 'dr:part2': ['part', 1, '2nd part'], 'dr:varA': ['vari', 0, 'Variation A'], 'dr:varB': ['vari', 1, 'Variation B'] };
+  // (7c) the 909's 3-digit display (drum-core's disp: the DX7 LED's look, its characters filling the window) and the four scale
+  // rows' LEDs (n 1–4), painted with the keys
+  const SCL9 = ['16ths', '32nds', '8th triplets', '16th triplets'];
+  function show9(c, o) {
+    const r = o.own || o.box;
+    if (c.id === 'dr:disp') {
+      const el = mk('span', 'hw-dsp dr-dsp');
+      ctx.place(el, r);
+      ctx.prop(el, '--dsp-c', ctx.named(c.color) || c.color);
+      el.style.fontSize = Math.max(10, Math.floor(Math.min(r.h * 0.8, (r.w - 8) / (3 * 0.62)))) + 'px';
+      el.setAttribute('role', 'status'); el.setAttribute('aria-live', 'off');
+      upds.push((s, led) => { const t = typeof led.disp === 'string' ? led.disp : ''; if (el.textContent !== t) el.textContent = t; setA(el, 'aria-label', 'Display: ' + (t.trim() || 'blank')); });
+      return el;
+    }
+    if (c.id !== 'dr:scl' || !(c.n >= 1 && c.n <= 4)) return null;
+    const n = c.n, el = mk('span', 'hw-led hw-show dr-led');
+    ctx.place(el, r);
+    ctx.prop(el, '--led-c', ctx.named(c.color) || c.color);
+    el.setAttribute('role', 'img');
+    upds.push((s, led) => { const v = led.scl[n - 1] | 0, L = v === 2 ? 'flash' : v ? 'on' : 'off'; setA(el, 'data-lit', L); setA(el, 'aria-label', 'Scale ' + SCL9[n - 1] + (v === 2 ? ': flashing' : v ? ': lit' : ': off')); });
+    return el;
+  }
   function show(c, o) {
+    if (nine) return show9(c, o);
     const k = SHOW[c.id];
     if (!k) return null;
     const el = mk('span', 'hw-led hw-show dr-led');
@@ -662,30 +948,37 @@ export function drumPanel(DR, ctx) {
     if (!live) disable(b); else A.tap(b, fn);
     return b;
   };
-  function gridCell() { // (7b: the machine's rows — the 808's twelve lanes, the 606's eight rows on their lane bits — and geometry)
-    const G = U.grid, NR = U.lanes.length, laneOf = r => U.lanes[r], atG = six ? gridAt606 : gridAt;
+  function gridCell() { // (7b: the machine's rows — the 808's twelve lanes, the 606's eight rows on their lane bits — and geometry;
+    // 7c: the 909's twelve rows on theirs, its cells off / normal (a small mark) / accented (a full one) / flam (a double one))
+    const G = U.grid, NR = U.lanes.length, laneOf = r => U.lanes[r], atG = six ? gridAt606 : nine ? gridAt909 : gridAt;
+    const flamL = l => nine && ((DC.FL909 >> l) & 1) === 1; // (7c: BD … HT take a flam — a long press, Alt, a right click, F)
     const wrap = mk('div', 'dr-grid'), cv = mk('canvas');
     cv.setAttribute('role', 'application'); cv.setAttribute('aria-roledescription', 'step grid');
     cv.style.width = G.w + 'px'; cv.style.height = G.h + 'px';
     if (six) { wrap.style.width = G.w + 'px'; wrap.style.height = G.h + 'px'; }
     wrap.append(cv);
-    let sig = '', cur = { r: 1, s: 0 }, focus = false; // (cur.r: the row — the 808's lane)
+    let sig = '', cur = { r: 1, s: 0 }, focus = false, kbd = true, pd = false; // (cur.r: the row — the 808's lane; 7c review 2 F5: kbd the keyboard cursor's, pd a press under way)
     const view = () => { // what the grid shows: the pattern, its part, the switches, mute / solo, the playhead column
       const s = st(), D = s.D, p = DC.gridPat(s.S, D), P = s.S.pos;
-      if (six) { const K = D.keys[p]; return { s, D, p, part: 0, len: K.l1, l2: 0, head: s.run && P && !P.f && P.k === p ? P.s : -1, A: DC.audible(D.x) }; }
+      if (six || nine) { const K = D.keys[p]; return { s, D, p, part: 0, len: K.l1, l2: 0, head: s.run && P && !P.f && P.k === p ? P.s : -1, A: DC.audible(D.x) }; }
       const part = gridPart(D, p), K = D.keys[p >> 1];
       const head = s.run && P && !P.f && P.k * 2 + (P.v & 1) === p && P.p === part ? P.s - part * 16 : -1;
       return { s, D, p, part, len: part ? K.l2 : K.l1, l2: K.l2, head, A: DC.audible(D.x) };
     };
-    const swOf = l => (!six && LANE_ALT[l] && typeof A.get === 'function' && A.get(DC.LANE_SW[l]) ? 1 : 0);
+    const swOf = l => (M === 'tr808' && LANE_ALT[l] && typeof A.get === 'function' && A.get(DC.LANE_SW[l]) ? 1 : 0);
     const codeOf = r => (swOf(r) ? LANE_ALT : U.codes)[r];
-    const pLabel = V => (six ? 'pattern ' + (V.p >> 4 ? 'II' : 'I') + '-' + ((V.p & 15) + 1)
+    const pLabel = V => (six ? 'pattern ' + (V.p >> 4 ? 'II' : 'I') + '-' + ((V.p & 15) + 1) : nine ? 'pattern ' + PN9(V.p)
       : `${V.p >= DC.N_BASIC * 2 ? 'fill ' + ((V.p >> 1) - DC.N_BASIC + 1) : 'pattern ' + ((V.p >> 1) + 1)} ${'AB'[V.p & 1]}${V.l2 ? ' · ' + (V.part ? '2nd' : '1st') + ' part' : ''}`);
     const mounted = () => { if (cv.isConnected === false) return false; for (let n = cv; n && n.nodeType === 1; n = n.parentNode) if (n.hasAttribute && n.hasAttribute('hidden')) return false; return true; };
+    // (7c) a 909 cell's state: 0 off · 1 normal · 2 accented (or on, a voice without a per-voice accent) · | 4 a flam
+    const st9 = (V, l, s) => { const b = 1 << l, on = V.D.st[V.p][s] & b; return !on ? 0 : (!((DC.AC909 >> l) & 1) || V.D.ac[V.p][s] & b ? 2 : 1) | (V.D.fm[V.p][s] & b ? 4 : 0); };
+    const ST9 = ['off', 'normal', 'on', '', '', 'flam', 'accented flam'];
     function draw(force) {
       const V = view(), row = V.D.st[V.p], cl = laneOf(cur.r);
-      const key = [V.p, row.join(','), V.part, V.len, V.l2, V.head, V.A, V.D.x.mute, V.D.x.solo, six ? '' : LANE_CODE.map((x, l) => swOf(l)).join(''), focus ? cur.r + ':' + cur.s : ''].join('|');
-      setA(cv, 'aria-label', `Step grid · ${pLabel(V)} · ${codeOf(cur.r)} step ${cur.s + 1} ${(row[V.part * 16 + cur.s] >> cl) & 1 ? 'on' : 'off'}`);
+      const key = [V.p, row.join(','), V.part, V.len, V.l2, V.head, V.A, V.D.x.mute, V.D.x.solo, six || nine ? '' : LANE_CODE.map((x, l) => swOf(l)).join(''), focus && kbd ? cur.r + ':' + cur.s : '',
+        nine ? V.D.ac[V.p].join(',') + '/' + V.D.fm[V.p].join(',') : ''].join('|');
+      const cs = nine ? st9(V, cl, cur.s) : 0;
+      setA(cv, 'aria-label', `Step grid · ${pLabel(V)} · ${codeOf(cur.r)} step ${cur.s + 1} ${nine ? (cs === 2 && ((DC.AC909 >> cl) & 1) ? 'accented' : ST9[cs]) : (row[V.part * 16 + cur.s] >> cl) & 1 ? 'on' : 'off'}`);
       if (!force && key === sig) return;
       if (!mounted()) { sig = ''; retry(); return; } // (not mounted yet, or a body at home: its store stays released until it shows)
       sig = key;
@@ -702,7 +995,7 @@ export function drumPanel(DR, ctx) {
         g.fillText(String(V.part * 16 + s + 1), HX + s * CW + CW / 2, TY / 2);
       }
       if (V.l2) for (let q = 0; q < 2; q++) { g.fillStyle = q === V.part ? '#f0862a' : '#2a2e35'; g.fillRect(4 + q * 29, 7, 27, 18); g.fillStyle = q === V.part ? '#101216' : '#9aa1ad'; g.font = '700 9px system-ui, sans-serif'; g.fillText(q ? '2nd' : '1st', 4 + q * 29 + 13.5, 16); }
-      else { g.fillStyle = '#7d8592'; g.font = '600 9px system-ui, sans-serif'; g.fillText(six ? (V.p >> 4 ? 'II' : 'I') + '-' + ((V.p & 15) + 1) : (V.p >= DC.N_BASIC * 2 ? 'F' + ((V.p >> 1) - DC.N_BASIC + 1) : 'P' + ((V.p >> 1) + 1)) + ' ' + 'AB'[V.p & 1], HX / 2, TY / 2); }
+      else { g.fillStyle = '#7d8592'; g.font = '600 9px system-ui, sans-serif'; g.fillText(six ? (V.p >> 4 ? 'II' : 'I') + '-' + ((V.p & 15) + 1) : nine ? PN9(V.p) : (V.p >= DC.N_BASIC * 2 ? 'F' + ((V.p >> 1) - DC.N_BASIC + 1) : 'P' + ((V.p >> 1) + 1)) + ' ' + 'AB'[V.p & 1], HX / 2, TY / 2); }
       // the lanes: the header (the switch's sound; muted dim, soloed lit), the cells (7b: past LAST STEP dimmed), the playhead column
       for (let r = 0; r < NR; r++) {
         const l = laneOf(r), y = TY + r * RH, aud = (V.A >> l) & 1, solo = (V.D.x.solo >> l) & 1, mute = (V.D.x.mute >> l) & 1;
@@ -715,75 +1008,92 @@ export function drumPanel(DR, ctx) {
         g.textAlign = 'center';
         for (let s = 0; s < 16; s++) {
           const x = HX + s * CW, on = (row[V.part * 16 + s] >> l) & 1, inLen = s < V.len;
-          g.fillStyle = s === V.head ? '#2b2f37' : six && !inLen ? '#121418' : s % 4 ? '#1a1d22' : '#20242b';
+          g.fillStyle = s === V.head ? '#2b2f37' : (six || nine) && !inLen ? '#121418' : s % 4 ? '#1a1d22' : '#20242b';
           g.fillRect(x + 1, y + 1, CW - 2, RH - 2);
-          if (on) { g.fillStyle = !inLen || !aud ? '#6b4a2e' : l ? '#f0862a' : '#e0461f'; g.fillRect(x + 4, y + 4, CW - 8, RH - 8); }
+          if (on) {
+            g.fillStyle = !inLen || !aud ? '#6b4a2e' : l ? '#f0862a' : '#e0461f';
+            if (!nine) g.fillRect(x + 4, y + 4, CW - 8, RH - 8);
+            else { // (7c) normal a small mark, accented (or a voice without its own accent) a full one, a flam two side by side
+              const q = st9(V, l, s), h = q & 2 ? RH - 8 : RH - 12, w2 = (CW - 12) / 2;
+              if (q & 4) { g.fillRect(x + 4, y + (RH - h) / 2, w2, h); g.fillRect(x + CW - 4 - w2, y + (RH - h) / 2, w2, h); }
+              else if (q & 2) g.fillRect(x + 4, y + 4, CW - 8, RH - 8);
+              else g.fillRect(x + 8, y + 6, CW - 16, RH - 12);
+            }
+          }
         }
       }
-      if (focus) { g.strokeStyle = '#ffd36a'; g.lineWidth = 2; g.strokeRect(HX + cur.s * CW + 1, TY + cur.r * RH + 1, CW - 2, RH - 2); }
+      if (focus && kbd) { g.strokeStyle = '#ffd36a'; g.lineWidth = 2; g.strokeRect(HX + cur.s * CW + 1, TY + cur.r * RH + 1, CW - 2, RH - 2); } // (the keyboard's cursor only: :focus-visible's rule)
     }
     upds.push(() => draw(false));
     offs.push(wk.onRescale(cv, () => { if (!dead) draw(true); }), wk.onRelease(cv, () => { sig = ''; dirty(); })); // (a zoom end: the new density; an unmounted body: next frame)
     if (!live) { disable(cv); return wrap; }
     cv.tabIndex = 0;
     const rowOf = h => (h.row != null ? h.row : h.lane); // (the 808's lane is its row)
-    const act = (h, solo) => {
+    const act = (h, solo, flam) => { // ((7c) flam: a 909 flam lane's cell — the flam toggled)
       if (!h) return;
       const V = view();
-      if (h.corner) { if (!six && V.l2 && V.D.ui.mode !== DC.M_W1 && V.D.ui.mode !== DC.M_W2) DR.press({ k: 'part', v: V.part ? 0 : 1 }); return; }
+      if (h.corner) { if (M === 'tr808' && V.l2 && V.D.ui.mode !== DC.M_W1 && V.D.ui.mode !== DC.M_W2) DR.press({ k: 'part', v: V.part ? 0 : 1 }); return; }
       if (h.head) { DR.press({ k: solo ? 'solo' : 'mute', lane: h.lane }); return; }
       if (h.top) return;
       cur = { r: rowOf(h), s: h.s };
-      DR.press({ k: 'grid', lane: h.lane, s: V.part * 16 + h.s });
+      DR.press(flam && flamL(h.lane) ? { k: 'grid', lane: h.lane, s: h.s, flam: true } : { k: 'grid', lane: h.lane, s: V.part * 16 + h.s });
     };
     const at = e => { const p = wk.localPoint(cv, e); return atG(p.x, p.y); };
     const downs = new Map();
     cv.addEventListener('pointerdown', e => {
+      pd = true;
+      if (kbd) { kbd = false; if (focus) draw(false); } // ((7c review 2 F5) a press: no keyboard cursor until a key)
       if (e.button !== 0 || e.ctrlKey) return;
       const h = at(e);
       if (!h) return;
-      if (e.pointerType === 'mouse' && !h.head) { act(h, false); return; } // (the mouse at the press; a finger on its tap; a header waits: a long press solos)
+      if (e.pointerType === 'mouse' && !h.head) { act(h, false, !!e.altKey); return; } // (the mouse at the press; a finger on its tap; a header waits: a long press solos; 7c: Alt a flam)
       downs.set(e.pointerId, { h, x: e.clientX, y: e.clientY, t: e.timeStamp, slop: SLOP[e.pointerType] || SLOP.touch });
     });
     cv.addEventListener('pointerup', e => {
+      pd = false;
       const d = downs.get(e.pointerId);
       downs.delete(e.pointerId);
       if (!d || Math.hypot(e.clientX - d.x, e.clientY - d.y) > d.slop) return;
-      act(d.h, !!d.h.head && (e.altKey || e.timeStamp - d.t >= SOLO_MS));
+      const long = e.altKey || e.timeStamp - d.t >= SOLO_MS;
+      act(d.h, !!d.h.head && long, !d.h.head && long); // ((7c) a long press on a 909 flam lane's cell: its flam)
     });
-    cv.addEventListener('pointercancel', e => downs.delete(e.pointerId));
-    cv.addEventListener('contextmenu', e => { e.preventDefault(); const h = at(e); downs.clear(); if (h && h.head) act(h, true); });
+    cv.addEventListener('pointercancel', e => { pd = false; downs.delete(e.pointerId); });
+    cv.addEventListener('contextmenu', e => { e.preventDefault(); const h = at(e); downs.clear(); if (h && h.head) act(h, true); else if (h && h.lane != null && flamL(h.lane)) act(h, false, true); });
     cv.addEventListener('keydown', e => { // arrows move the cell, Space / Enter toggles it, M mutes its lane, S solos it
       const d = { ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0] }[e.key], cl = laneOf(cur.r);
       if (d) { cur = { r: clamp(cur.r + d[0], 0, NR - 1), s: clamp(cur.s + d[1], 0, 15) }; draw(false); }
       else if (isKey(e)) act({ lane: cl, row: cur.r, s: cur.s }, false);
       else if (e.key === 'm' || e.key === 'M') act({ head: true, lane: cl, row: cur.r }, false);
       else if (e.key === 's' || e.key === 'S') act({ head: true, lane: cl, row: cur.r }, true);
+      else if ((e.key === 'f' || e.key === 'F') && flamL(cl)) act({ lane: cl, row: cur.r, s: cur.s }, false, true); // ((7c) F: the 909 cell's flam)
       else return;
+      if (!kbd) { kbd = true; draw(false); }   // ((7c review 2 F5) keyboard navigation: the cursor)
       e.preventDefault(); e.stopPropagation();
     });
-    cv.addEventListener('focus', () => { focus = true; draw(false); });
+    cv.addEventListener('focus', () => { focus = true; if (!pd) kbd = true; draw(false); }); // (a Tab focus: the cursor; a press's: none)
     cv.addEventListener('blur', () => { focus = false; draw(false); });
     return wrap;
   }
-  function padsCell() { // 16 pads, 4 × 4 (7b: the 606's 8, 2 × 4): velocity from where a pad is touched, every finger its own hit, lit
-    // on every hit of its sound; (7b) the 606's AC pad is a hold — every hit plays at 127 while it is held, it plays nothing itself
+  function padsCell() { // 16 pads, 4 × 4 (7b: the 606's 8, 2 × 4; 7c: the 909's 12, 4 × 3): velocity from where a pad is touched, every
+    // finger its own hit, lit on every hit of its sound; (7b) the AC pad is a hold — every hit plays at 127 while it is held, it
+    // plays nothing itself (7c: the 909's "both" accents)
     const PG = U.padG, ORD = U.pads, ph = PG.ph || PG.pad, g = mk('div', 'dr-pads'), pads = new Map(), cnt = new Map(), ptrs = new Map();
     g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Pads'); g.setAttribute('data-gesture', 'music');
-    if (six) { g.setAttribute('data-m', M); g.style.width = PG.w + 'px'; g.style.height = PG.h + 'px'; }
+    if (M !== 'tr808') { g.setAttribute('data-m', M); g.style.width = PG.w + 'px'; g.style.height = PG.h + 'px'; }
     ORD.forEach((s, i) => {
-      const ac = s === 'ac', si = DC.SOUNDS.indexOf(s), p = mk('div', 'dr-pad'); // (one element: its code, name and slot dot are CSS — the DOM budget, review 2 #3)
-      p.setAttribute('data-sound', s); p.setAttribute('role', 'button'); p.setAttribute('aria-label', ac ? 'Accent pad (hold: every hit at full accent)' : DC.SOUND_NAMES[si] + ' pad');
-      p.setAttribute('data-code', ac ? 'AC' : SOUND_CODE[si]); p.setAttribute('data-name', ac ? 'Hold' : DC.SOUND_NAMES[si]); // ((7b review 2 #4) one line on a 52 px pad)
+      const ac = s === 'ac', si = SND.indexOf(s), p = mk('div', 'dr-pad'); // (one element: its code, name and slot dot are CSS — the DOM budget, review 2 #3)
+      p.setAttribute('data-sound', s); p.setAttribute('role', 'button'); p.setAttribute('aria-label', ac ? 'Accent pad (hold: every hit at full accent)' : NAMES[si] + ' pad');
+      p.setAttribute('data-code', ac ? 'AC' : SCODE[si]); p.setAttribute('data-name', ac ? 'Hold' : NAMES[si]); // ((7b review 2 #4) one line on a 52 px pad)
       p.style.left = (i % 4) * (PG.pad + PG.gap) + 'px'; p.style.top = (PG.top || 0) + Math.floor(i / 4) * (ph + PG.gap) + 'px';
-      if (six) p.style.height = ph + 'px';
+      if (M !== 'tr808') p.style.height = ph + 'px';
       if (ac) p.setAttribute('aria-pressed', 'false');
       if (!live) disable(p); else p.tabIndex = s === 'bd' ? 0 : -1;
       g.append(p); pads.set(s, p);
     });
-    let hitN = 0;
-    const flash = s => { const p = pads.get(s); if (p) p.setAttribute('data-hit', String(++hitN & 1)); }; // (two keyframes alternate: the animation restarts)
-    upds.push(s => { for (const [k, p] of pads) { const e = s.D.smp[k]; setA(p, 'data-smp', e && e.on ? '' : null); setA(p, 'title', e && e.on ? DC.SOUND_NAMES[DC.SOUNDS.indexOf(k)] + ' · your sound: ' + e.name : null); } });
+    // (two keyframes alternate: the animation restarts) — each pad its own parity (7c review 2 F3: one counter for every pad left
+    // a pad flashed after an even number of others at the value it had: no restart, no flash)
+    const flash = s => { const p = pads.get(s); if (p) p.setAttribute('data-hit', p.getAttribute('data-hit') === '1' ? '0' : '1'); };
+    upds.push(s => { for (const [k, p] of pads) { const e = s.D.smp[k]; setA(p, 'data-smp', e && e.on ? '' : null); setA(p, 'title', e && e.on ? NAMES[SND.indexOf(k)] + ' · your sound: ' + e.name : null); } });
     if (!live) return g;
     const padOf = t => { for (let n = t; n && n !== g; n = n.parentNode) if (n.getAttribute && n.getAttribute('data-sound')) return n; return null; };
     const hit = (s, v, ts) => {
@@ -822,7 +1132,7 @@ export function drumPanel(DR, ctx) {
       keyed.add(s); hit(s, KEY_PAD_V, e.timeStamp);
     });
     g.addEventListener('keyup', e => { const p = padOf(e.target), s = p && p.getAttribute('data-sound'); if (s && keyed.delete(s)) { e.preventDefault(); lift(s, e.timeStamp); } });
-    offs.push(DR.lit(mask => { if (dead || off()) return; for (let i = 0; i < 16; i++) if ((mask >> i) & 1) flash(DC.SOUNDS[i]); }));
+    offs.push(DR.lit(mask => { if (dead || off()) return; for (let i = 0; i < 16; i++) if ((mask >> i) & 1) flash(SND[i]); })); // ((7c) by the machine's sound ids: the 909's 7 / 8 its ride / crash)
     rels.push(() => { // every pointer and key ends (one off per sounding pad), captures dropped
       for (const [id, q] of [...ptrs]) { ptrs.delete(id); try { q.p.releasePointerCapture(id); } catch (err) { /* released */ } }
       keyed.clear();
@@ -849,24 +1159,25 @@ export function drumPanel(DR, ctx) {
   }
   function mapMenu(el) { // MAP…: per sound its notes (primary first): learn the next played note, type them, none; reset to GM
     const D = st().D, nm = n => n + ' (' + noteName(n) + ')';
-    const items = SIDS.map(i => { // (7b: the machine's sounds — the 606's seven)
-      const s = DC.SOUNDS[i], ns = D.map[s] || [];
-      return { label: DC.SOUND_NAMES[i] + ' · ' + (ns.length ? ns.map(nm).join(', ') : 'no note'), sub: [
+    const items = SIDS.map(i => { // (7b: the machine's sounds — the 606's seven; 7c: the 909's eleven, by its own keys and names)
+      const s = SND[i], ns = D.map[s] || [];
+      return { label: NAMES[i] + ' · ' + (ns.length ? ns.map(nm).join(', ') : 'no note'), sub: [
         { label: 'Learn: play a note…', disabled: !DR.canLearn, action: () => DR.learn(s) },
-        { label: 'Notes…', action: () => { const t = wk.ask(`Notes for ${DC.SOUND_NAMES[i]} (MIDI numbers, the primary first)`, ns.join(', ')); if (t != null) DR.press({ k: 'map', sound: s, notes: String(t).split(/[\s,;]+/).filter(Boolean).map(Number).filter(Number.isInteger) }); } },
+        { label: 'Notes…', action: () => { const t = wk.ask(`Notes for ${NAMES[i]} (MIDI numbers, the primary first)`, ns.join(', ')); if (t != null) DR.press({ k: 'map', sound: s, notes: String(t).split(/[\s,;]+/).filter(Boolean).map(Number).filter(Number.isInteger) }); } },
         { label: 'No note', disabled: !ns.length, action: () => DR.press({ k: 'map', sound: s, notes: [] }) },
       ] };
     });
     items.push({ sep: true }, { label: 'Reset to the General MIDI drum keys', action: () => DR.press({ k: 'mapReset' }) });
     return menuAt(el, items);
   }
-  function soundsMenu(el) { // SOUNDS…: per sound "Circuit (ours)" | your sound; Load…; remove (§5)
+  function soundsMenu(el) { // SOUNDS…: per sound "Circuit (ours)" | your sound; Load…; remove (§5). (7c) The 909's hi-hats, crash and
+    // ride: "Our sound" | "Your sound (through the 909's chip)" — a loaded sound becomes that voice's chip image (§5, Q2)
     const D = st().D;
     const items = SIDS.map(i => {
-      const s = DC.SOUNDS[i], e = D.smp[s];
-      return { label: DC.SOUND_NAMES[i] + ' · ' + (e && e.on ? 'your sound: ' + (e.name || 'sample') : 'circuit (ours)'), sub: [
-        { label: 'Circuit (ours)', checked: !(e && e.on), action: () => { if (e) DR.press({ k: 'smp', sound: s, slot: Object.assign({}, e, { on: false }) }); } },
-        { label: 'Your sound' + (e ? ': ' + (e.name || 'sample') : ''), checked: !!(e && e.on), disabled: !e, action: () => DR.press({ k: 'smp', sound: s, slot: Object.assign({}, e, { on: true }) }) },
+      const s = SND[i], e = D.smp[s], rom = nine && i >= 7 && i <= 10, chip = rom ? ' (through the 909’s chip)' : '';
+      return { label: NAMES[i] + ' · ' + (e && e.on ? 'your sound: ' + (e.name || 'sample') + chip : rom ? 'our sound' : 'circuit (ours)'), sub: [
+        { label: rom ? 'Our sound' : 'Circuit (ours)', checked: !(e && e.on), action: () => { if (e) DR.press({ k: 'smp', sound: s, slot: Object.assign({}, e, { on: false }) }); } },
+        { label: 'Your sound' + chip + (e ? ': ' + (e.name || 'sample') : ''), checked: !!(e && e.on), disabled: !e, action: () => DR.press({ k: 'smp', sound: s, slot: Object.assign({}, e, { on: true }) }) },
         { label: 'Load…', disabled: !DR.canLoad, action: () => DR.sample(s) },
         { label: '✕ Remove your sound', disabled: !e, action: () => DR.press({ k: 'smp', sound: s, slot: null }) },
       ] };
@@ -880,16 +1191,16 @@ export function drumPanel(DR, ctx) {
     if (id === 'dr:swing') return swingCell();
     let b = null;
     if (id === 'dr:sync') {
-      b = xbtn('Sync', `On: the ${U.name} follows the song (${six ? 'RUN/STOP' : 'START/STOP'} is ▶, TEMPO the project tempo). Off: it runs on its own at its TEMPO.`, () => DR.press({ k: 'sync', v: !st().D.x.sync }));
+      b = xbtn('Sync', `On: the ${U.name} follows the song (${six ? 'RUN/STOP is ▶' : nine ? 'START and STOP/CONT are ▶ and ■' : 'START/STOP is ▶'}, TEMPO the project tempo). Off: it runs on its own at its TEMPO.`, () => DR.press({ k: 'sync', v: !st().D.x.sync }));
       upds.push(s => { const t = s.D.x.sync ? 'Sync · song' : 'Sync · own'; setA(b, 'aria-pressed', s.D.x.sync ? 'true' : 'false'); if (b.textContent !== t) b.textContent = t; });
     } else if (id === 'dr:rec') {
-      b = xbtn('Rec', 'Pads write their sound at the nearest step while ' + (six ? 'PATTERN WRITE' : 'a write mode') + ' runs', () => DR.press({ k: 'rec', v: !st().D.x.rec }), 'dr-rec');
+      b = xbtn('Rec', 'Pads write their sound at the nearest step while ' + (six || nine ? 'PATTERN WRITE' : 'a write mode') + ' runs', () => DR.press({ k: 'rec', v: !st().D.x.rec }), 'dr-rec');
       upds.push(s => setA(b, 'aria-pressed', s.D.x.rec ? 'true' : 'false'));
     } else if (id === 'dr:toRoll') b = xbtn('→ Piano roll', `Write the pattern as notes in the piano roll (the ${U.name}'s own sequencer is switched off, so it isn't heard twice)`, () => toRollMenu(b));
     else if (id === 'dr:map') b = xbtn('Map…', 'Which notes play which drum (General MIDI by default)', () => mapMenu(b));
-    else if (id === 'dr:sounds') b = xbtn('Sounds…', 'Our model of each circuit, or your own sound in its place', () => soundsMenu(b));
+    else if (id === 'dr:sounds') b = xbtn('Sounds…', nine ? 'Our model of each circuit and our own hi-hat and cymbal sounds through the 909’s chip circuit, or your own sound in its place' : 'Our model of each circuit, or your own sound in its place', () => soundsMenu(b));
     else if (id === 'dr:demo') {
-      b = xbtn('Demo', six ? 'Load our two example patterns into patterns I-1 and I-2 (chained, in PATTERN PLAY)' : 'Load our two example patterns into pattern 1 A / B and fill 1', () => DR.demo());
+      b = xbtn('Demo', six ? 'Load our two example patterns into patterns I-1 and I-2 (chained, in PATTERN PLAY)' : nine ? 'Load our two example patterns into patterns I-1-1 and I-1-2 (block-played, in PATTERN PLAY)' : 'Load our two example patterns into pattern 1 A / B and fill 1', () => DR.demo());
       demoB = b; // (the loop hint goes beside it at start(), in its cell)
       upds.push(s => { const t = DR ? loopHint(s.D, DR.loop()) : null; if (hint.hidden !== !t) hint.hidden = !t; if (t && hint.textContent !== t) hint.textContent = t; });
     } else if (id === 'dr:link') { // (7b §3.8) SYNC 303s: every TB-303 to the song's clock and the 606's swing; hidden with no 303, "303s synced" when all are
@@ -962,6 +1273,13 @@ const CSS = `
 .inst.hw .dr-pad[data-sound="ac"] { background: linear-gradient(#3b2b22, #251b15); box-shadow: inset 0 0 0 1px #5a3d2a, 0 1px 2px rgba(0, 0, 0, 0.6); }
 .inst.hw .dr-pad[data-sound="ac"][data-held] { background: linear-gradient(#e0461f, #a83214); color: #fff; }
 .inst.hw .dr-xb[hidden] { display: none; }
+.inst.hw .dr-hold, .inst.hw .dr-tap9 { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+.inst.hw .dr-hold[aria-pressed="true"] { box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6); filter: brightness(0.88); }
+.inst.hw .dr-hold[data-latch] { box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6), 0 0 0 2px var(--hot, #f2a33a), 0 0 8px var(--hot, #f2a33a); }
+.inst.hw .dr-lk[data-lit="flash"] > .hw-led { animation: dr-flash 0.5s steps(1, end) infinite; }
+@media (prefers-reduced-motion: reduce) { .inst.hw .dr-lk[data-lit="flash"] > .hw-led { animation: none; background: color-mix(in srgb, var(--hw-led, #ff3b2a) 55%, #000); } }
+.inst.hw .dr-key[data-lit="dim"] > .hw-led { background: color-mix(in srgb, var(--hw-led, #ff3b2a) 55%, #2a0d0b); box-shadow: 0 0 3px color-mix(in srgb, var(--hw-led, #ff3b2a) 40%, transparent); }
+.inst.hw .dr-dsp { letter-spacing: 0.04em; text-shadow: 0 0 6px color-mix(in srgb, var(--dsp-c, #ff3b2a) 60%, transparent); }
 `;
 const styledDocs = new WeakSet();
 /** The drum widgets' CSS, injected once per document (style.css untouched this stage, §7.4). */

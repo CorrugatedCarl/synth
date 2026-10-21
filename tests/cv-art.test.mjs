@@ -107,5 +107,19 @@ test('SIL describes every model; tileMeta() is models.js (Serum: "Serum (complet
   assert.equal(count(t606, /r="0.5" fill="(#d8371f|#5a1812)"/g), 16, 'a red LED over each key (every fourth lit)');
   assert.ok(count(chip606, /fill="#d9dad7"/g) >= 1 && count(chip606, /<[a-z]+ /g) < count(t606, /<[a-z]+ /g), 'the chip keeps the key strip, with fewer elements');
   assert.notEqual(t606, A.art('tb303'));
+  // (7c, IMPL-7c §8.2) the TR-909's tile: the 808's body family (a wide low case, here light), nine blocks of dark knobs under slate bars, a red
+  // three-digit display, sixteen cream step keys under a red LED each (every fourth lit), no text; its meta is "1983 · drum machine" (cv-tray)
+  assert.deepEqual([A.SIL.tr909.body, A.SIL.tr909.steps, A.SIL.tr909.keys], ['box', 16, undefined]);
+  const t909 = A.art('tr909'), chip909 = A.chip('tr909');
+  assert.match(t909, /data-art="tr909"/);
+  assert.equal(count(t909, /r="1.55" fill="#2c3550"/g), 27, 'the 27 voice knobs of the nine blocks (TEMPO and VOLUME are the larger two)');
+  assert.equal(count(t909, /fill="#5b6580"/g), 9 + 1 + 4 + 1, 'nine header bars, the rule under the knobs, the four scale rows, the legend strip');
+  assert.equal(count(t909, /fill="#f3ebcf"/g), 16, 'the sixteen step keys');
+  assert.equal(count(t909, /r="0.5" fill="(#ff3b2a|#4b1812)"/g), 16, 'a red LED over each key (every fourth lit)');
+  assert.equal(count(t909, /fill="#fffddc"/g), 3, 'START, STOP/CONT and ENTER');
+  assert.ok(count(t909, /fill="#ff3b2a" opacity="0.9"/g) === 3, 'the three red digits');
+  assert.ok(count(chip909, /fill="#f3ebcf"/g) >= 1 && count(chip909, /<[a-z]+ /g) < count(t909, /<[a-z]+ /g), 'the chip keeps the step keys, with fewer elements');
+  assert.ok(!/roland/i.test(t909 + chip909), 'no maker name');
+  assert.notEqual(t909, A.art('tr808'));
   assert.deepEqual(A.tileMeta('nope'), { id: 'nope', name: 'nope', year: 0, maker: '', label: 'nope' });
 });

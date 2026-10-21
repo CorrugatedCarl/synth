@@ -36,6 +36,7 @@ export const SIL = Object.freeze({
   serum: Object.freeze({ body: 'box', screen: true }),
   tr808: Object.freeze({ body: 'box', steps: 16 }), // (7a) a drum machine: a wide low case, 12 knob columns, 16 step keys in four colours
   tr606: Object.freeze({ body: 'desktop', steps: 16 }), // (7b) the TB-303's body family: a silver case, six knobs, a dark programming panel over 16 grey keys
+  tr909: Object.freeze({ body: 'box', steps: 16 }), // (7c) the 808's body family: a wide low light case, nine blocks of dark knobs, a red display, 16 cream step keys
 });
 
 const W0 = 96, H0 = 56; // the design box
@@ -324,6 +325,45 @@ const DRAW = {
       s += R(16.9, 32.8, 0.9, 5.4, '#050505') + RR(16.5, 34.2, 1.7, 1.6, 0.4, '#c4c4c4') + RR(16.4, 39.6, 1.8, 5.2, 0.4, CAP);
       s += C(76.4, 34.2, 0.7, th.accent) + C(80.2, 34.2, 0.7, '#5a1812') + RR(74.4, 35.8, 7.6, 2, 0.5, CAP) + RR(74.4, 39.6, 8.8, 5.2, 0.6, CAP);
     } else s += R(27, 15, 48, 3.6, '#1a1a1a', OP(0.8)) + R(19.4, 36.5, 51.2, 6.6, STRIP) + R(9, 34, 8, 9, CAP) + R(74.4, 36.5, 9, 6.6, th.accent);
+    return s;
+  },
+  // a wide, low light case (the 808's body family): nine blocks of dark navy knobs under slate header bars, a middle band (two cream
+  // keys, a red three-digit display, TEMPO, a row of small keys, ENTER, VOLUME), the four scale rows over sixteen cream step keys with a
+  // red LED each (every fourth lit), a slate legend strip and the dark instrument boxes. No text (a model name is a plain rule).
+  tr909(th, lo) {
+    const A = th.accent || '#f28c28', INK = th.ink || '#2c3550', SLATE = th.label || '#5b6580', CREAM = '#fffddc', CAP = '#d9cca8', STEPC = '#f3ebcf', LIT = '#ff3b2a', DIM = '#4b1812';
+    let s = shadow(4, 92, 50.6) + R(4, 7, 88, 43, '#bdbdb4') + R(5, 7.6, 86, 41.8, th.panel) + R(5, 7.6, 86, 0.8, '#fff', OP(0.55));
+    if (!lo) {
+      const blk = [[0, 1], [2, 2], [2, 2], [2, 1], [2, 1], [2, 1], [2, 0], [1, 2], [2, 2]], bw = 84 / 9; // knobs [top row, bottom row] per block
+      let ind = '';
+      blk.forEach(([t, b], i) => {
+        const x0 = 6 + bw * i;
+        s += R(x0 + 0.3, 9, bw - 0.6, 1.5, SLATE);
+        [[t, 14.2], [b, 19.4]].forEach(([n, cy], r) => {
+          for (let k = 0; k < n; k++) {
+            const cx = n === 1 ? x0 + bw / 2 : x0 + bw * (0.3 + 0.4 * k), a = -2.4 + 4.8 * rnd(i * 4 + r * 2 + k, 9);
+            s += C(cx, cy, 1.55, INK);
+            ind += `M${f(cx)} ${f(cy)}L${f(cx + Math.sin(a) * 1.35)} ${f(cy - Math.cos(a) * 1.35)}`;
+          }
+        });
+      });
+      s += S(ind, A, 0.4) + R(6, 23.4, 84, 0.4, SLATE, OP(0.6));
+      s += RR(6.6, 25.8, 5.6, 6, 0.7, CREAM) + RR(13, 25.8, 5.6, 6, 0.7, CREAM) + RR(20, 25.4, 11, 6.8, 0.8, '#262b3d') + R(21.2, 26.6, 8.6, 4.4, '#140606');
+      for (let i = 0; i < 3; i++) s += R(22.3 + i * 2.8, 27.6, 1.7, 2.4, LIT, OP(0.9));
+      s += C(38.5, 29, 2.6, INK) + C(38.5, 29, 1.7, '#3b476b') + S('M38.5 29L39.6 27.2', A, 0.5);
+      let kd = '';
+      for (let i = 0; i < 14; i++) kd += C(46.6 + 2.2 * i, 27.5, 0.35, DIM);
+      s += buttonRow(45.4, 26.6, 31, 3.6, 14, [CAP], { fill: 0.66 }) + kd;
+      s += RR(78.4, 25.8, 5.4, 6, 0.7, CREAM) + C(88, 29, 2.4, INK) + C(88, 29, 1.6, '#3b476b') + S('M88 29L87 27.4', A, 0.5);
+      for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++) s += RR(7 + c * 5.2, 35 + r * 4.2, 3.6, 3, 0.5, CAP);
+      for (let i = 0; i < 4; i++) s += R(19, 34.6 + i * 1.1, 71.4, 0.8, SLATE);
+      let led = '';
+      for (let i = 0; i < 16; i++) led += C(19 + 4.46 * (i + 0.5), 41.5, 0.5, i % 4 === 0 ? LIT : DIM);
+      s += R(19, 39.6, 71.4, 6, '#b9b4a2') + buttonRow(19, 40.2, 71.4, 4.8, 16, [STEPC], { fill: 0.72 }) + led + R(19, 45.6, 71.4, 1, SLATE) + R(19, 46.9, 71.4, 1.3, INK);
+    } else {
+      s += R(6, 9, 84, 1.6, SLATE) + knobRow(8, 15, 80, 9, 1.6, { cap: INK }) + knobRow(8, 19.6, 80, 7, 1.6, { cap: INK });
+      s += RR(7, 25.8, 12, 6, 0.7, CREAM) + R(21, 25.6, 11, 6.4, '#262b3d') + R(19, 34.6, 71.4, 4, SLATE) + R(19, 39.6, 71.4, 6, '#b9b4a2') + buttonRow(19, 40.4, 71.4, 5, 8, [STEPC], { fill: 0.8 }) + R(19, 46.9, 71.4, 1.3, INK);
+    }
     return s;
   },
   // an abstract software instrument: a stacked wavetable, knob rings and a filter curve on a dark panel

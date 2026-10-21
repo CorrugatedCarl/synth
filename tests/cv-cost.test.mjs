@@ -67,6 +67,19 @@ test('IMPL-7b §2.6: the TR-606 is costed by its bench row d6p the same way — 
   assert.equal(C.label(e), '~2 %');
 });
 
+// (d9p's target 0.035 is a ceiling — review #9: its house pattern keeps nearly every circuit awake —, the row measures
+// 0.0171–0.0173 calibrated: the estimate is the measurement, between 0.4 × and 1 × the target)
+test('IMPL-7c §2.7: the TR-909 is costed by its bench row d9p the same way — mono, its measured row under the node target, under the 808', () => {
+  const c = C.COST.synth.tr909, e = C.estimate('tr909');
+  assert.deepEqual([c.row, c.family, c.poly], ['d9p', 'drums', 1]);
+  assert.ok(e >= 0.4 * BENCH.targets.d9p.node && e <= BENCH.targets.d9p.node, 'tr909 ' + e + ' vs d9p ' + BENCH.targets.d9p.node);
+  near(e, 0.0172, 0.02, 'tr909 vs the measured d9p');
+  assert.ok(e < C.estimate('tr808'), 'd9p under d8p (measured)');
+  assert.equal(C.estimate('tr909', 1, { notes: 8 }), e);
+  assert.equal(C.estimate(syn('tr909', {}), 2), 2 * e);
+  assert.equal(C.label(e), '~2 %');
+});
+
 test('estimates are monotone in voices, unison, oscillators, filters and effect count, and linear in the factor', () => {
   for (const m of MODELS.filter(x => x.id !== 'serum')) {
     let last = 0;

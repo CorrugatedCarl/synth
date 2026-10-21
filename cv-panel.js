@@ -19,6 +19,11 @@
 // Stage 7b: the TR-606 (IMPL-7b §7.2–§7.3): TOKENS.tr606 (its own cell sizes and extras row breaks, a token's required
 // orientation: SCALE vertical), a rotary's `rot` (its sweep's centre: the 606's MODE dial sits off 12 o'clock), cv-drum's
 // ctx.model (a stub-hosted 606 panel builds the 606's widgets).
+// Stage 7c: the TR-909 (IMPL-7c §7.2–§7.3): TOKENS.tr909 — a `display` token (the 3-digit display: its box holds `digits`
+// characters at the .hw-dsp font, DSP_FONT), repeated LED keys and LEDs (TRACK 1–4, PATTERN 1–3, the scale rows: `multi` /
+// `idx` / `full` as the step keys, an LED's index checked too), keys that must show their LED (`led`), the model's own
+// extras caption (`caption`: our own cymbal sounds named, D4 — the layout omits it or carries it exactly; too long for its
+// strip, its type steps down: xcapFit, estimated, never measured); its 4 × 3 pads.
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
 import { BAR_H } from './cv-module.js?v=9';
@@ -68,12 +73,20 @@ export const GLYPHS = Object.freeze({
   'arrow:down': 'M0-0.8V0.8M-0.5 0.3L0 0.8L0.5 0.3',
   'arrow:right': 'M-0.8 0H0.8M0.3-0.5L0.8 0L0.3 0.5',
 });
+/** The default extras caption; a drum machine's says what its sounds are (IMPL-7a §2.5, §7.5: D4). */
+export const XCAPTION = 'EXTRAS · not on the original', XCAPTION_DRUMS = XCAPTION + ' · Sounds: our model of the circuits';
+/** (7c) A display token's characters at the .hw-dsp font (style.css: 700 20px mono): px, a character's advance (em), the
+ * window's margin (mm) — a box of n characters is ≥ dspMin(n) mm (w × h). */
+export const DSP_FONT = Object.freeze({ px: 20, em: 0.62, pad: 2 });
+export const dspMin = n => [Math.round((n * DSP_FONT.em * DSP_FONT.px / PX_PER_MM + DSP_FONT.pad) * 100) / 100, DSP_FONT.px / PX_PER_MM + DSP_FONT.pad];
 /** The special tokens of a model (§3.4.3): live ids the renderer binds itself (`multi`: may repeat, `idx`: the field that
  * tells the repeats apart [field, lo, hi], each value once; `full`: every value lo…hi present), extras-only ones, the kind
  * each must be (a list: any of them) and (`pos`) a detented token's hardware positions. Every token is validated;
  * `usable()` refuses a layout whose tokens this build cannot draw. (7b) `orient`: a switch token's required orientation
  * (v | h: its `orient`, else taller than wide = v); `cells`: the model's own extras cell sizes (over TOK_CELL); `xbreak`:
- * its own extras row breaks (over XBREAK). */
+ * its own extras row breaks (over XBREAK). (7c) `led`: keys that show their LED (led cap | above | below, never none);
+ * `digits`: a display token's characters (its box ≥ dspMin); `caption`: the model's extras caption (the layout's own, if
+ * any, must equal it). */
 export const TOKENS = Object.freeze({
   tb303: {
     kind: { 'seq:tempo': 'knob', 'seq:runLed': 'led', 'seq:run': 'button', 'seq:clear': 'button', 'seq:key': 'button', 'seq:pitch': 'button', 'seq:time': 'button',
@@ -112,21 +125,42 @@ export const TOKENS = Object.freeze({
     pos: { 'dr:mode': 4, 'dr:inst': 8, 'dr:sc': 4 }, orient: { 'dr:sc': 'v' },
     cells: { 'dr:grid': [592, 192], 'dr:pads': [232, 116] }, xbreak: ['dr:grid', 'dr:swing', 'htd', 'chd'],
   },
+  // (7c, IMPL-7c §7.2) the TR-909's sequencer (drum-core's 909 machine through api.drum, cv-drum.js): START and STOP/CONT
+  // (taps), the 3-digit display, TEMPO (continuous), the small LED keys — TRACK 1–4 and PATTERN 1–3 (one token each, by
+  // n), the TEMPO key, BACK, FWD, AVAILABLE MEAS, CYCLE/GUIDE —, ENTER (its LED), the left cluster (LAST STEP, SCALE,
+  // SHUFFLE/FLAM, CLEAR, INSTRUMENT SELECT — a new id: dr:inst is a rotary —, SHIFT), the 16 step keys (n 1–16, each with its
+  // LED) and the four scale rows' LEDs (n 1–4); the extras of §3.7 (no SWING: the face's SHUFFLE; no knobs, §13 Q3): a 992
+  // px module's strip (976 inside), the 808's grid 640 × 272 and the 4 × 3 pads 232 × 184 (52 px pads, 8 px gaps, 8 px top)
+  // in one row, then SYNC · → PIANO ROLL · REC · MAP… · SOUNDS… · DEMO (560 px); its caption names our cymbal sounds (D4)
+  tr909: {
+    kind: { 'dr:start': 'button', 'dr:stop': 'button', 'dr:disp': 'display', 'dr:tempo': 'knob', 'dr:trk': 'button', 'dr:pat': 'button',
+      'dr:tkey': 'button', 'dr:back': 'button', 'dr:fwd': 'button', 'dr:avail': 'button', 'dr:cyc': 'button', 'dr:enter': 'button',
+      'dr:last': 'button', 'dr:scale': 'button', 'dr:shuf': 'button', 'dr:clear': 'button', 'dr:isel': 'button', 'dr:shift': 'button',
+      'dr:step': 'button', 'dr:scl': 'led' },
+    extras: ['dr:grid', 'dr:pads', 'dr:sync', 'dr:toRoll', 'dr:rec', 'dr:map', 'dr:sounds', 'dr:demo'],
+    multi: ['dr:step', 'dr:trk', 'dr:pat', 'dr:scl'], idx: { 'dr:step': ['n', 1, 16], 'dr:trk': ['n', 1, 4], 'dr:pat': ['n', 1, 3], 'dr:scl': ['n', 1, 4] },
+    full: ['dr:step', 'dr:trk', 'dr:pat', 'dr:scl'],
+    led: ['dr:trk', 'dr:pat', 'dr:tkey', 'dr:back', 'dr:fwd', 'dr:avail', 'dr:cyc', 'dr:enter'], digits: { 'dr:disp': 3 },
+    cells: { 'dr:pads': [232, 184] }, xbreak: ['dr:pads'],
+    caption: XCAPTION_DRUMS + ' · Hi-hats and cymbals: our own sounds through the 909’s chip circuit',
+  },
 });
 /** (1i, IMPL-1i §2) The performance tokens of every model: the bed and its controllers (the id names the target, the kind
  * the widget: one of its list). Each at most once per layout; never in the extras. */
 export const PERF_TOKENS = Object.freeze({ kind: Object.freeze({ 'perf:keys': ['keys'], 'perf:bend': ['wheel', 'lever', 'ribbon'], 'perf:mod': ['wheel', 'lever', 'pad'] }) });
 /** Tokens this build renders (a layout using another one falls back to the Simple panel, §4.5). */
 export const RENDERED_TOKENS = new Set([...Object.keys(TOKENS.tb303.kind), ...TOKENS.tb303.extras, ...Object.keys(TOKENS.dx7.kind), ...Object.keys(PERF_TOKENS.kind),
-  ...Object.keys(TOKENS.tr808.kind), ...TOKENS.tr808.extras, ...Object.keys(TOKENS.tr606.kind), ...TOKENS.tr606.extras]);
+  ...Object.keys(TOKENS.tr808.kind), ...TOKENS.tr808.extras, ...Object.keys(TOKENS.tr606.kind), ...TOKENS.tr606.extras, ...Object.keys(TOKENS.tr909.kind), ...TOKENS.tr909.extras]);
 /** (7a) An inert control's title / tip: not emulated (dimmed), or `inert: 'later'` (a jack drawn at full contrast that
  * becomes cable-able with full patching, IMPL-7a §7.3). */
 export const INERT_TIP = ' — not emulated', LATER_TIP = ' — cable-able with full patching (stage 4)';
 /** The extras cells of the tokens (world px, w × h): the TB-303's parts and grid, the TR-808's (IMPL-7a §7.2: the step
  * grid, the 4 × 4 pads, the small controls); every other cell is a models.js control's (XCELL, selCellW) at XROW. (7b) A
- * model's own sizes (TOKENS.<model>.cells: the TR-606's grid and pads, DR6_GRID / DR6_PADS) win; SYNC 303s (dr:link). */
+ * model's own sizes (TOKENS.<model>.cells: the TR-606's grid and pads, DR6_GRID / DR6_PADS) win; SYNC 303s (dr:link).
+ * (7c) The TR-909's 4 × 3 pads: DR9_PADS (its grid the 808's). */
 export const DR_GRID = Object.freeze({ w: 640, h: 272 }), DR_PADS = Object.freeze({ w: 232, h: 232 });
 export const DR6_GRID = Object.freeze({ w: 592, h: 192 }), DR6_PADS = Object.freeze({ w: 232, h: 116 });
+export const DR9_PADS = Object.freeze({ w: 232, h: 184 });
 export const TOK_CELL = Object.freeze({
   'seq:grid': [SEQ_GRID.w, SEQ_GRID.h], 'seq:sync': [128, XROW], 'seq:toRoll': [128, XROW], 'seq:random': [104, XROW],
   'dr:grid': [DR_GRID.w, DR_GRID.h], 'dr:pads': [DR_PADS.w, DR_PADS.h], 'dr:sync': [96, XROW], 'dr:swing': [104, XROW], 'dr:toRoll': [128, XROW],
@@ -135,11 +169,22 @@ export const TOK_CELL = Object.freeze({
 /** Extras cells after which the full-width strip starts a new row (the 808: the grid and the pads, then the small controls, §7.5;
  * (7b) a model's TOKENS.<model>.xbreak replaces it). */
 export const XBREAK = Object.freeze(['dr:pads']);
+/** (7c) The extras caption's type when its text would overrun `room` px at style.css's .hw-xcap (600 9px uppercase, 0.08 em
+ * tracking): 8 px, else 7 px, the tracking 0.04 em — or null (it fits: as before). Estimated from the characters (a letter
+ * or digit ≈ 0.72 em + the tracking, anything else 0.32 em + it: above Chrome's measure), never measured (the 909's caption
+ * names its cymbal sounds, D4, and with the dimmed note runs past its 976 px). (7c review 2 F4) "Does it fit at 9 px" reads
+ * the estimate calibrated on Chrome's measure (XCAP_K: the plain caption 379.9 px of an estimated 406.8 — the Prophet-5's /
+ * OB-Xa's 384 px room fits, the Solina's 366 does not); the smaller size is chosen on the plain (higher) estimate. render()
+ * applies it to every strip: one that fits keeps its type as before. */
+export const XCAP_K = 0.935;
+export function xcapFit(text, room) {
+  const est = (fs, ls) => [...String(text)].reduce((a, ch) => a + ((/[A-Za-z0-9]/.test(ch) ? 0.72 : 0.32) + ls) * fs, 0);
+  if (!(room > 0) || XCAP_K * est(9, 0.08) <= room) return null;
+  return { fs: est(8, 0.04) <= room ? 8 : 7, ls: 0.04 };
+}
 /** (7b) A model's extras cell (w × h, or null: a models.js control's own) and row breaks. */
 export const tokCell = (model, id) => { const T = model && TOKENS[model.id], c = T && T.cells && T.cells[id]; return c || TOK_CELL[id] || null; };
 export const xbreakOf = model => { const T = model && TOKENS[model.id]; return (T && T.xbreak) || XBREAK; };
-/** The default extras caption; a drum machine's says what its sounds are (IMPL-7a §2.5, §7.5: D4). */
-export const XCAPTION = 'EXTRAS · not on the original', XCAPTION_DRUMS = XCAPTION + ' · Sounds: our model of the circuits';
 /** The DX7's buttons 1–32 (§6.3): the parameter each live one selects in edit mode (op: per operator; eg: per EG step),
  * the function-mode one, and its LCD names. */
 export const DX_EDIT = Object.freeze({ 7: 'alg', 8: 'fb', 10: 'ls', 18: 'r', 19: 'f', 20: 'd', 21: 'R', 22: 'L', 26: 's', 27: 'l', 28: 'v', 31: 'tr' });
@@ -315,6 +360,15 @@ export function validate(L, model) {
   // controls
   const M = ctlsOf(model), seen = new Map(), T = TOKENS[model.id] || null, hits = [];
   const count = id => seen.set(id, (seen.get(id) || 0) + 1);
+  // a repeated token's index (seq:key note 0–12, dx:btn n 1–32, dr:step n 1–16; 7c: an LED's too, the 909's scale rows): in range, each value once
+  const idxOk = (c, w) => {
+    const ix = T && T.idx && T.idx[c.id];
+    if (!ix) return;
+    const [f, lo, hi] = ix, key = c.id + '#' + c[f];
+    if (!(Number.isInteger(c[f]) && c[f] >= lo && c[f] <= hi)) bad(w + `: ${f} ${lo}–${hi}`);
+    if (seen.has(key)) bad(w + `: ${f} ${c[f]} twice`);
+    seen.set(key, 1);
+  };
   if (!Array.isArray(L.controls)) bad('controls: an array');
   else L.controls.forEach((c, i) => {
     const w = `controls[${i}]` + (c && c.id ? ` (${c.id})` : '');
@@ -381,6 +435,11 @@ export function validate(L, model) {
         if (!Array.isArray(c.when) || !['ne', 'eq', 'ge', 'in'].includes(c.when[0])) bad(w + ': when [op, value]');
       }
       if (k === 'display' && c.id == null && c.show !== 'preset') bad(w + ': show "preset"');
+      if (c.id != null && tk && tk.includes(k)) { // (7c) a repeated LED token by its index; a display token's characters fit its box
+        idxOk(c, w);
+        const dg = T && T.digits && T.digits[c.id], mn = dg ? dspMin(dg) : null;
+        if (mn && k === 'display' && (c.w < mn[0] - 1e-9 || c.h < mn[1] - 1e-9)) bad(w + `: ${dg} characters need a box ≥ ${mn[0]} × ${mn[1]} mm (the display's ${DSP_FONT.px} px font)`);
+      }
       if (c.id != null) count(c.id);
       return;
     }
@@ -393,14 +452,7 @@ export function validate(L, model) {
     if (!mc) {
       if (!tk) { bad(w + `: "${c.id}" is not a control of the model`); return; }
       if (!tk.includes(k)) bad(w + `: ${c.id} must be a ${tk.join(' | ')}`);
-      // a repeated token's index (seq:key note 0–12, dx:btn n 1–32, dr:step n 1–16): in range, each value once
-      const ix = T && T.idx && T.idx[c.id];
-      if (ix) {
-        const [f, lo, hi] = ix, key = c.id + '#' + c[f];
-        if (!(Number.isInteger(c[f]) && c[f] >= lo && c[f] <= hi)) bad(w + `: ${f} ${lo}–${hi}`);
-        if (seen.has(key)) bad(w + `: ${f} ${c[f]} twice`);
-        seen.set(key, 1);
-      }
+      idxOk(c, w);
       // (7a) a detented token (the 808's rotaries and switches): its legends one per hardware position (a rotary prints them)
       const np = tokPos(model, c.id);
       if (np && tk.includes(k)) {
@@ -411,6 +463,7 @@ export function validate(L, model) {
       const want = T && T.orient && T.orient[c.id];
       if (want && k === 'switch' && (c.orient || (c.h > c.w ? 'v' : 'h')) !== want) bad(w + `: ${c.id} is a ${want === 'v' ? 'vertical' : 'horizontal'} switch (orient ${want})`);
       if (c.id === 'dr:step' && c.led === 'none') bad(w + ': a step key shows its LED (led cap | above | below)');
+      else if (T && T.led && T.led.includes(c.id) && c.led === 'none') bad(w + `: ${c.id} shows its LED (led cap | above | below)`); // (7c: the 909's LED keys)
       count(c.id);
     } else {
       if (!KINDS[k].includes(mc.t)) bad(w + `: a ${k} cannot carry a "${mc.t}" control`);
@@ -461,6 +514,8 @@ export function validate(L, model) {
       else bad(`extras: "${id}" is not a control of the model`);
     }
     if (ex.caption != null) { if (typeof ex.caption !== 'string') bad('extras.caption'); words('extras.caption', ex.caption); }
+    // (7c) a model's own caption (the 909's names our cymbal sounds, D4): the layout omits it (the geometry supplies it) or carries it exactly
+    if (ex.caption != null && T && T.caption && ex.caption !== T.caption) bad(`extras.caption: the ${model.id}'s is "${T.caption}" (or none: the geometry supplies it)`);
     if (ex.at != null) {
       if (!Array.isArray(ex.at) || ex.at.length !== 4 || !ex.at.every(fin) || !(ex.at[2] > 0) || !(ex.at[3] > 0)) bad('extras.at: [x, y, w, h]');
       else {
@@ -624,7 +679,8 @@ export function geometry(L, model) {
       if (xat && (x > r.x + r.w + 1e-6 || y + h > r.y + r.h + 1e-6)) over = true;
     }
     if (!xat) { r.h = XCAP + (ids.length ? rowH + (y - r.y - XCAP) + XPAD : 0); exH = r.h; }
-    extras = Object.assign(r, { cells, over, note: inert, caption: ids.length ? (typeof ex.caption === 'string' ? ex.caption : model && model.family === 'drums' ? XCAPTION_DRUMS : XCAPTION) : '' });
+    const T = model && TOKENS[model.id]; // ((7c) a model's own caption: the 909's)
+    extras = Object.assign(r, { cells, over, note: inert, caption: ids.length ? (typeof ex.caption === 'string' ? ex.caption : T && T.caption ? T.caption : model && model.family === 'drums' ? XCAPTION_DRUMS : XCAPTION) : '' });
   }
   const H = ceil32(BAR_H + ch * X + exH);
   // (1i) a bed: cv-keys.bedLayout in body px, unrounded (mm × 2, three decimals — never rectPx: its half-px steps would
@@ -1709,6 +1765,8 @@ export function render(root, L, model, api) {
     place(xs, X);
     const cap = mk('span', 'hw-xcap');
     cap.textContent = [X.caption, X.note ? 'Dimmed controls are not emulated' : ''].filter(Boolean).join(' · ');
+    const fit = xcapFit(cap.textContent, X.w - 2 * XPAD); // ((7c; review 2 F4: every strip) a caption that does not fit: smaller type, never measured; one that fits as before)
+    if (fit) { cap.style.fontSize = fit.fs + 'px'; cap.style.letterSpacing = fit.ls + 'em'; }
     xs.append(cap);
     const SEQX = SQ ? { 'seq:sync': SQ.sync, 'seq:swing': SQ.swing, 'seq:random': SQ.rnd, 'seq:demo': SQ.demo, 'seq:toRoll': SQ.toRoll, 'seq:grid': SQ.steps } : {};
     for (const cell of X.cells) {

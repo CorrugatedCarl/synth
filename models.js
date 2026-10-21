@@ -795,7 +795,46 @@ const tr606 = {
   },
 };
 
-export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum, tr808, tr606];
+/* ================================================================ 1983 (drums) */
+// The third drum machine (IMPL-7c §1.1, §2): the same Inst kind, its own machine in dr-808.js (Dr808.mach.tr909: these ids
+// in this order, these defaults). 28 knobs, no switches: the face's nine blocks and VOLUME, every TUNE / DECAY on the face
+// (no extras knobs, §13 Q3). The ids the 808 / 606 already have mean the same; bda mtu mtd crl rdl cru rdu are its own.
+// TEMPO, SHUFFLE / FLAM and every key are sequencer state (drum-core), not controls. The default LEVELs (review 1 F1, the
+// lead: every drum machine at about the same loudness, the circuit's mix weights kept): the kick 9, snare and hats 4,
+// clap 1.5, crash 3, ride 3.5, the rest 7 — the default groove's RMS through the Track within 1 dB of the 808's with the
+// limiter untouched, every sound alone ≤ 0.8 FS (accented ≤ 1.0) — IMPL-7c §14
+const DR9_LV = (id, d = 7) => K(id, 'Level', 0, 10, d);
+const tr909 = {
+  id: 'tr909', name: 'TR-909', model: 'Rhythm Composer', maker: 'Roland', year: 1983, family: 'drums',
+  tag: 'Drum machine · 11 sounds: 7 analog voice circuits, hi-hats and cymbals from 6-bit chips (our own sounds) · per-voice and total accent · 16-step sequencer with shuffle and flam',
+  about: 'Our circuit-level model of the TR-909’s analog voice circuits — no recordings of any machine; its hi-hats, crash and ride play our own cymbal sounds through a model of its 6-bit chip playback circuit. The kick, snare, three toms, rim shot and hand clap are their analog circuits solved from the component values: triangle oscillators reset at every hit and swept by their pitch envelopes, a digital noise source the snare, toms and clap share, three bridged-T resonators into a diode clipper for the rim shot. The hi-hats, crash and ride are struck metal plates modelled by our own tool and stored as the 909’s chips stored their sounds — six bits a word —, then played through its address counter, converter, filters and decay circuits: turning a cymbal’s TUNE up plays it faster and shorter, and the closed hat cuts the open one (one voice, as on the original). Accent is a held level per voice plus the total accent, so an accented hit changes the timbre as well as the level. Its own step sequencer (patterns with shuffle and flam, tracks of up to 896 measures) follows the song by default; piano-roll notes play it too, on the General MIDI drum keys.',
+  theme: { ctl: 'knob', knob: 'tr9', panel: '#e8e8e2', face: '#f0efe9', ink: '#2c3550', label: '#5b6580', accent: '#f28c28', font: 'helvetica' },
+  sections: [
+    { title: 'Total Accent', c: [K('ac', 'Total Accent', 0, 10, 5)] },
+    { title: 'Bass Drum', c: [K('bdu', 'Tune', 0, 10, 5), DR9_LV('bdl', 9), K('bda', 'Attack', 0, 10, 5), K('bdd', 'Decay', 0, 10, 5)] },
+    { title: 'Snare Drum', c: [K('sdu', 'Tune', 0, 10, 5), DR9_LV('sdl', 4), K('sdt', 'Tone', 0, 10, 5), K('sds', 'Snappy', 0, 10, 5)] },
+    { title: 'Low Tom', c: [K('ltu', 'Tune', 0, 10, 5), DR9_LV('ltl'), K('ltd', 'Decay', 0, 10, 5)] },
+    { title: 'Mid Tom', c: [K('mtu', 'Tune', 0, 10, 5), DR9_LV('mtl'), K('mtd', 'Decay', 0, 10, 5)] },
+    { title: 'Hi Tom', c: [K('htu', 'Tune', 0, 10, 5), DR9_LV('htl'), K('htd', 'Decay', 0, 10, 5)] },
+    { title: 'Rim Shot · Hand Clap', c: [K('rsl', 'Rim Shot Level', 0, 10, 7), K('cpl', 'Hand Clap Level', 0, 10, 1.5)] },
+    { title: 'Hi Hat', c: [DR9_LV('hhl', 4), K('chd', 'CH Decay', 0, 10, 5), K('ohd', 'OH Decay', 0, 10, 5)] },
+    { title: 'Cymbal', c: [K('crl', 'Crash Level', 0, 10, 3), K('rdl', 'Ride Level', 0, 10, 3.5), K('cru', 'Crash Tune', 0, 10, 5), K('rdu', 'Ride Tune', 0, 10, 5)] },
+    { title: 'Volume', c: [K('vol', 'Volume', 0, 10, 7.5)] },
+  ],
+  presets: [
+    { name: 'Init', v: {} },
+    { name: 'Long Kick', v: { bdd: 9, bda: 3, bdu: 3 } },
+    { name: 'Tight', v: { bdd: 3, sdt: 3, chd: 3, ohd: 3, ltd: 3, mtd: 3, htd: 3 } },
+    { name: 'Bright Cymbals', v: { cru: 7, rdu: 6, crl: 4 } },
+  ],
+  map(P, v) {
+    const d = {};
+    for (const s of this.sections) for (const c of s.c) d[c.id] = v[c.id] / 10;
+    return { engine: 'drums', machine: 'tr909', drum: d, level: 1 };
+  },
+};
+
+export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum, tr808, tr606, tr909];
 for (const m of MODELS) {
   m.controls = [];
   for (const s of m.sections) for (const c of s.c) m.controls.push(c);

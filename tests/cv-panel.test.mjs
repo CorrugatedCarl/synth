@@ -14,6 +14,8 @@ import './v8-guard.mjs';
 // 1024 × 1024, no keyboard, its 'later' jacks titled "cable-able with full patching"; the dr: token rules: tests/cv-drum.test.mjs.
 // Stage 7b (IMPL-7b §7, §12.7): HW_IDS gains tr606 (lane X's panels/tr606.js), its extras (the eleven TUNE / DECAY knobs among
 // the §3.7 tokens), TARGET 608 × 864, no keyboard; a rotary's `rot` (its sweep's centre: the art and the widget turn by it).
+// Stage 7c (IMPL-7c §7, §12.7–§12.8): HW_IDS gains tr909 (lane X's panels/tr909.js), its extras (the §3.7 tokens: no SWING, no
+// knobs — every models.js control on the face), TARGET 992 × 1024, no keyboard; its token rules: tests/cv-drum.test.mjs.
 // Run alone: node --max-old-space-size=2048 --test tests/cv-panel.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -37,13 +39,15 @@ const EXTRAS = {
   tr808: ['dr:grid', 'dr:pads', 'dr:sync', 'dr:swing', 'dr:toRoll', 'dr:rec', 'dr:map', 'dr:sounds', 'dr:demo'], // (7a §3.6, §7.5: every models.js control is on the face)
   tr606: ['dr:grid', 'dr:pads', 'dr:sync', 'dr:swing', 'bdu', 'bdd', 'sdu', 'sdd', 'ltu', 'ltd', 'htu', 'htd', 'cyd', 'ohd', 'chd', 'dr:toRoll', 'dr:rec', 'dr:map',
     'dr:sounds', 'dr:demo', 'dr:link'], // (7b §3.7, §7.5: the face's seven knobs; our eleven TUNE / DECAY in the strip)
+  tr909: ['dr:grid', 'dr:pads', 'dr:sync', 'dr:toRoll', 'dr:rec', 'dr:map', 'dr:sounds', 'dr:demo'], // (7c §3.7, §7.5: the 28 knobs on the face, §13 Q3)
 };
 // (7a, IMPL-7a §11) TARGET.tr808: the 1016 × ≈ 1020 px box on the 32 px dots (± a dot until lane P2's hand-back pins it);
-// (7b §7.1) TARGET.tr606: 300 mm → 608 px; the face ≈ 290 + the strip 16 + 192 + 116 + 3 × 64 + 8 = 524 + the bar → 864
+// (7b §7.1) TARGET.tr606: 300 mm → 608 px; the face ≈ 290 + the strip 16 + 192 + 116 + 3 × 64 + 8 = 524 + the bar → 864;
+// (7c §7.1) TARGET.tr909: 486 mm → 992 px; the face 600 + the strip 16 + 272 + 64 + 8 = 360 + the bar → 1024 (P1a's geometry)
 const TARGET = { modular: [1728, 960], minimoog: [1408, 512], arp2600: [1568, 928], solina: [1984, 256], cs80: [2432, 768], prophet5: [1920, 512],
-  ms20: [1120, 416], tb303: [608, 608], obxa: [2048, 576], jupiter8: [2144, 608], juno60: [2144, 416], dx7: [2048, 480], tr808: [1024, 1024], tr606: [608, 864] };
+  ms20: [1120, 416], tb303: [608, 608], obxa: [2048, 576], jupiter8: [2144, 608], juno60: [2144, 416], dx7: [2048, 480], tr808: [1024, 1024], tr606: [608, 864], tr909: [992, 1024] };
 // models without a keyboard (IMPL-1i §1.2: the TB-303's 13 key cells; 7a / 7b: the drum machines' step keys and pads)
-const NOKEYS = ['tb303', 'tr808', 'tr606'];
+const NOKEYS = ['tb303', 'tr808', 'tr606', 'tr909'];
 const PINNED = { minimoog: [1408, 512] };
 // (1i, IMPL-1i §1.2) once a model has its bed: the sizes with the keyboards (± a dot until K2's hand-back pins them), the
 // ARP's PORTAMENTO on its 3620 slider (out of the extras), each bed's range [lo, n]; the TB-303 has none
@@ -116,7 +120,7 @@ test('format: PX_PER_MM = 2 and the contract constants; the fixture layout valid
   assert.deepEqual([P.selCellW(['Off', 'On']), P.selCellW(['Sine', 'Tri', 'Square', 'S&H'])], [120, 224]);
   assert.ok(P.selCellW(['Rev 2 · SSM', 'Rev 3 · CEM']) >= 16 + 2 * 87 + 3);
   assert.deepEqual(P.validate(FX_LAYOUT, FX_MODEL), []);
-  assert.deepEqual(P.HW_IDS, ['modular', 'minimoog', 'arp2600', 'solina', 'cs80', 'prophet5', 'ms20', 'tb303', 'obxa', 'jupiter8', 'juno60', 'dx7', 'tr808', 'tr606']); // (7a / 7b: the drum machines last, as in MODELS)
+  assert.deepEqual(P.HW_IDS, ['modular', 'minimoog', 'arp2600', 'solina', 'cs80', 'prophet5', 'ms20', 'tb303', 'obxa', 'jupiter8', 'juno60', 'dx7', 'tr808', 'tr606', 'tr909']); // (7a / 7b / 7c: the drum machines last, as in MODELS)
   if (missing.length) console.log('# cv-panel: not drawn yet (skipped, Resizable only): ' + missing.join(', '));
 });
 
@@ -561,6 +565,24 @@ test('render: deterministic — the same layout renders the same DOM (tags, clas
   const once = (L, model) => { const doc = fresh(), root = doc.createElement('div'); doc.body.append(root); P.render(root, L, model, fakeApi(model, doc)); return ser(root); };
   assert.equal(once(FX_LAYOUT, FX_MODEL), once(FX_LAYOUT, FX_MODEL));
   for (const id of authored) assert.equal(once(P.layoutOf(id), modelOf(id)), once(P.layoutOf(id), modelOf(id)), id);
+});
+
+// 7c review 2 F4: the extras caption's type steps down on every strip whose caption does not fit (xcapFit, calibrated on
+// Chrome's measure: the plain caption is 379.9 px at 9 px, ≈ 0.934 of its estimate) — the Solina's 382 px strip (5.9 px over
+// in Chrome) at 8 px; the Prophet-5's and OB-Xa's 400 (12 px inside) and every other strip as they were
+test('7c review 2 F4: the extras caption steps down where it does not fit — the Solina\'s at 8 px; the Prophet-5\'s, the OB-Xa\'s and every other strip that fits at 9 px unchanged; the 909\'s at 8 px as before', () => {
+  const plain = P.XCAPTION + ' · Dimmed controls are not emulated';
+  assert.deepEqual([P.xcapFit(plain, 382 - 16), P.xcapFit(plain, 400 - 16), P.xcapFit(plain, 1000)], [{ fs: 8, ls: 0.04 }, null, null], 'calibrated: the Solina\'s room 366 over, 384 fits');
+  const sizes = {};
+  for (const id of authored) {
+    const L = P.layoutOf(id), model = modelOf(id), doc = fresh(), root = doc.createElement('div');
+    doc.body.append(root); P.render(root, L, model, fakeApi(model, doc));
+    const cap = all(root).find(n => cls(n) === 'hw-xcap');
+    if (cap) sizes[id] = cap.style.fontSize || '';
+  }
+  assert.equal(sizes.solina, '8px', 'the Solina\'s caption fits its strip at 8 px');
+  assert.deepEqual([sizes.prophet5, sizes.obxa, sizes.tr909], ['', '', '8px'], 'the Prophet-5 / OB-Xa as before (they fit), the 909 at 8 px');
+  assert.deepEqual(Object.keys(sizes).filter(k => sizes[k] !== '').sort(), ['solina', 'tr909'], 'no other strip changed');
 });
 
 test('render (every authored model): every live models.js id has one .hw-c (or an extras cell) and a ui entry; controls in the section order', () => {

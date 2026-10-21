@@ -234,6 +234,7 @@ function msPrep(p) {
 // pattern — BD on the quarters, SD on 2 / 4, CH sixteenths with OH on the off-beats, LT / HT (one a half), CY once a bar
 // (accented on step 1, it never sleeps inside the bar: both halves keep its circuit awake), accents every fourth step; d6x
 // every lane every 250 ms accented, every DECAY at 10; d6m CY + OH every 500 ms (the bank, three VCAs, the tempo cut).
+// IMPL-7c §2.7, the TR-909 (pattern I-1-1 in PATTERN PLAY, SYNC on): d9p, d9x, d9m below.
 export const DRUM_PATTERNS = Object.freeze({
   d8p: { ac: 'x...x...x...x...', bd: 'x...x...x...x...', sd: '....x.......x...', cp: '....x.......x...', ch: 'x...x...x...x...', oh: '..x...x...x...x.',
     mt: '......x.........', lt: '..............x.', cb: '...x.......x....' },
@@ -243,8 +244,33 @@ export const DRUM_PATTERNS = Object.freeze({
     lt: '.....x..........', ht: '.............x..', cy: 'x...............' },
   d6x: Object.fromEntries(['ac', 'bd', 'sd', 'lt', 'ht', 'cy', 'oh', 'ch'].map(l => [l, 'x.x.x.x.x.x.x.x.'])),
   d6m: { cy: 'x...x...x...x...', oh: 'x...x...x...x...' },
+  // IMPL-7c §2.7, the TR-909 (pattern I-1-1 in PATTERN PLAY, SYNC on, SHUFFLE 3, FLAM 11 = 18 ms; rows by its codes, 'X' a
+  // per-voice accent, 'f' a flam, 'F' both): d9p a house pattern — BD on the quarters, CH sixteenths with OH on the off-beat
+  // eighths, HC + SD on 2 / 4 (the SD flammed), the ride in eighths, a crash once a bar, LT / MT / HT once a half, both
+  // accents; d9x every lane every 250 ms, both accents, flams on all five (every DECAY / TONE at 10, the cymbals' TUNE at 0:
+  // the vals); d9m the ROM voices — crash + ride + OH every 500 ms
+  d9p: { ac: 'x.......x.......', bd: 'X...x...X...x...', sd: '....f.......F...', hc: '....x.......x...', ch: 'xX.xxX.xxX.xxX.x',
+    oh: '..x...x...x...x.', rd: 'x.x.x.x.x.x.x.x.', cr: 'x...............', lt: '.x.......x......', mt: '...x.......x....', ht: '.....x.......x..' },
+  d9x: Object.fromEntries(DC.CODES909.map(c => c.toLowerCase()).map(l => [l, (DC.FL909 >> DC.LANES909[DC.CODES909.indexOf(l.toUpperCase())]) & 1
+    ? 'F.F.F.F.F.F.F.F.' : 'X.X.X.X.X.X.X.X.'])),
+  d9m: { cr: 'x...x...x...x...', rd: 'x...x...x...x...', oh: 'x...x...x...x...' },
 });
 const drumSteps = o => { const st = new Array(32).fill(0); for (const [lane, r] of Object.entries(o)) { const l = DC.LANES.indexOf(lane); for (let k = 0; k < r.length; k++) if (r[k] === 'x') st[k] |= 1 << l; } return st; };
+// (7c) a 909 pattern's three rows of 16 masks: the voices, their per-voice accents (& 0x83E), their flams (& 0x03E)
+export const drumSteps9 = o => {
+  const st = new Array(16).fill(0), ac = new Array(16).fill(0), fm = new Array(16).fill(0);
+  for (const [code, r] of Object.entries(o)) {
+    const b = 1 << DC.LANES909[DC.CODES909.indexOf(code.toUpperCase())];
+    for (let k = 0; k < 16; k++) {
+      const c = r[k];
+      if (c === '.' || c === undefined) continue;
+      st[k] |= b;
+      if (c === 'X' || c === 'F') ac[k] |= b & DC.AC909;
+      if (c === 'f' || c === 'F') fm[k] |= b & DC.FL909;
+    }
+  }
+  return { st, ac, fm };
+};
 let DRUM_SMP = null;
 // the bench's own 1 s drum sample (a decaying tone and noise burst, deterministic), its id a content-hash-shaped one
 function drumSample() {
@@ -255,22 +281,28 @@ function drumSample() {
   DRUM_SMP = { id, entry: playbackEntry(id, rec(L, null, 60), null, 2) };
   return DRUM_SMP;
 }
-/** A drum machine track (kind 'track'): pattern rows (DRUM_PATTERNS' form, or 32 step masks), panel values over the
- *  defaults, samples on; model 'tr808' (key 1 A in MANUAL PLAY) or 'tr606' (7b: pattern I-1 in PATTERN PLAY, 16 steps;
- *  rows 'demo' = its DEMO, I-1 → I-2 chained, as the DEMO button leaves it). */
+/** A drum machine track (kind 'track'): pattern rows (DRUM_PATTERNS' form, or step masks), panel values over the
+ *  defaults, samples on; model 'tr808' (key 1 A in MANUAL PLAY), 'tr606' (7b: pattern I-1 in PATTERN PLAY, 16 steps) or
+ *  'tr909' (7c: pattern I-1-1 in PATTERN PLAY, 16 steps, SHUFFLE 3, FLAM 11); rows 'demo' = the 606's / 909's DEMO, as the
+ *  DEMO button leaves it (606: I-1 → I-2 chained; 909: I-1-1 / I-1-2 block-played). */
 export function drumTrack(rows, vals, samples, model = 'tr808') {
-  const six = model === 'tr606', m = MODELS.find(x => x.id === model), v = Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), vals || {});
+  const m8 = model === 'tr808', six = model === 'tr606', m = MODELS.find(x => x.id === model), v = Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), vals || {});
   const p = patchFor(m, v, core.defaultFx2(), { sr: SR, bpm: 120 });
   delete p.fxr; delete p.fxrT; // (a classic Inst's patch on a graph node: its panel is a {t: 'chain'})
-  let d = DC.normDrum(undefined, six ? model : undefined);
+  let d = DC.normDrum(undefined, m8 ? undefined : model);
   const fx = core.defaultFx2(), Z = { lo: 0, hi: 127, xp: 0 }, S = samples ? drumSample() : null;
-  if (!six) { d.st[0] = Array.isArray(rows) ? rows.slice() : drumSteps(rows); d.ui.mode = DC.M_MAN; }
+  if (m8) { d.st[0] = Array.isArray(rows) ? rows.slice() : drumSteps(rows); d.ui.mode = DC.M_MAN; }
   else if (rows === 'demo') d = DC.press(DC.initState(model), d, { k: 'demo' }).mem;
-  else d.st[0] = (Array.isArray(rows) ? rows : drumSteps(rows)).slice(0, DC.N_STEP6);
-  if (S) d.smp = Object.fromEntries((six ? DC.SIDS606.map(k => DC.SOUNDS[k]) : DC.SOUNDS).map(k => [k, { id: S.id, name: 'bench', on: true }]));
-  return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: six ? 'd6' : 'd8' },
+  else if (six) d.st[0] = (Array.isArray(rows) ? rows : drumSteps(rows)).slice(0, DC.N_STEP6);
+  else {
+    const r = drumSteps9(rows), keys = d.keys.slice();
+    keys[0] = Object.assign({}, keys[0], { sh: 3, fl: 11 });
+    d = Object.assign({}, d, { keys, st: [r.st].concat(d.st.slice(1)), ac: [r.ac].concat(d.ac.slice(1)), fm: [r.fm].concat(d.fm.slice(1)) });
+  }
+  if (S) d.smp = Object.fromEntries((m8 ? DC.SOUNDS : DC.PERS[model].sids.map(k => DC.PERS[model].sounds[k])).map(k => [k, { id: S.id, name: 'bench', on: true }]));
+  return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: m8 ? 'd8' : six ? 'd6' : 'd9' },
     patches: { i1: p }, chains: { fx1: { fxr: core.compileFx(fx, { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx) } }, notes: [],
-    seqs: { i1: DC.payload(d, DC.initState(six ? model : undefined), 'now') }, transport: { play: true, frame: 0, tick: 0, fpt: SR * 60 / (120 * 960), seek: true },
+    seqs: { i1: DC.payload(d, DC.initState(m8 ? undefined : model), 'now') }, transport: { play: true, frame: 0, tick: 0, fpt: SR * 60 / (120 * 960), seek: true },
     assets: S ? { [S.id]: S.entry } : null };
 }
 
@@ -364,6 +396,13 @@ export function scenarios() {
       kind: 'track', build: () => drumTrack(DRUM_PATTERNS.d6x, { bdd: 10, sdd: 10, ltd: 10, htd: 10, cyd: 10, ohd: 10, chd: 10 }, false, 'tr606') },
     { id: 'd6m', label: 'TR-606: CY + OH every 500 ms (the metal bank, three VCAs, the tempo-clocked cut)', node: 0.025, ipad: 0.025,
       kind: 'track', build: () => drumTrack(DRUM_PATTERNS.d6m, null, false, 'tr606') },
+    // IMPL-7c §2.7: the TR-909 (the same way; d9i, the idle machine, is gated as row p is)
+    { id: 'd9p', label: 'TR-909: a house pattern (BD on the quarters, CH sixteenths, OH off-beats, HC + SD on 2 / 4 with a flam, ride eighths, a crash a bar, three toms, both accents, SHUFFLE 3), 120 BPM, synced',
+      node: 0.035, ipad: 0.035, kind: 'track', build: () => drumTrack(DRUM_PATTERNS.d9p, null, false, 'tr909') },
+    { id: 'd9x', label: 'TR-909: every lane every 250 ms, both accents, flams on all five, every DECAY / TONE at 10, the cymbals\' TUNE at 0 (the worst case)', node: 0.08, ipad: 0.08,
+      kind: 'track', build: () => drumTrack(DRUM_PATTERNS.d9x, { bdd: 10, sdt: 10, ltd: 10, mtd: 10, htd: 10, chd: 10, ohd: 10, cru: 0, rdu: 0 }, false, 'tr909') },
+    { id: 'd9m', label: 'TR-909: crash + ride + OH every 500 ms (the ROM voices: three staircases, filters, envelopes)', node: 0.025, ipad: 0.025,
+      kind: 'track', build: () => drumTrack(DRUM_PATTERNS.d9m, null, false, 'tr909') },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',

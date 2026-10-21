@@ -1,0 +1,15 @@
+{
+  "note": "Frozen TR-909 sound (IMPL-7c §12.6, D2): verbatim copies of dr-808.js (its circuits and the ROM909 block), dr-seq.js and engine.js at the 7c acceptance commit. Never edit: tests/golden-909.test.mjs renders them (side A, every other module current) against the current files, bit for bit.",
+  "commit": "31bb09acf4cbba45debc7da46fc296ad77b90b99",
+  "files": {
+    "dr-808.js": {
+      "sha256": "e95df2d5fbce84e9b2cd65fb47ccd6baaec705c8306ef4186a7bd6a5eb34f9fa"
+    },
+    "dr-seq.js": {
+      "sha256": "40d28b7d6584ddc2fc5983d07b1a25c8c0a57020a4d9f5004b3a84fb124050d3"
+    },
+    "engine.js": {
+      "sha256": "8035d9f71b63e99b891f620ddccce4e666c106f1e64ced9737e3d8dbf0db33c9"
+    }
+  }
+}

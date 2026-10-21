@@ -542,7 +542,7 @@ export function normLay(lay) {
 // mirror, else the defaults). The in-memory accessors are cv-model.js adopt's (the page), never song.js's.
 // Stage 2a (schema 5, IMPL-2a §2.3): the track's mod cables `mods` (normMods) and the next row number `mid` (absent when
 // the track never had one: an old track's record and History snapshot stay byte-identical).
-// Stage 7a (IMPL-7a §6, schema 8): a drum machine (a model drum-core has a personality for: tr808; 7b, schema 9: tr606) keeps
+// Stage 7a (IMPL-7a §6, schema 8): a drum machine (a model drum-core has a personality for: tr808; 7b, schema 9: tr606; 7c, schema 10: tr909) keeps
 // its device's `drum` — the pattern memory, panel state, extras, note map and sample slots — as normDrum(d, model) bounds it
 // (exact lengths, every field in range, unknown ones dropped; idempotent); `drum` on any other model's device is dropped.
 export const isDrum = m => typeof m === 'string' && Object.prototype.hasOwnProperty.call(PERS, m);

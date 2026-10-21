@@ -899,7 +899,7 @@ test('arrangement, two-finger takeover: the flagged pointercancel (gesture.js) a
 // the tracks marked drum, null for the others (main.js wires it from the track's instrument device)
 const DMAP = () => JSON.parse(JSON.stringify(DC.DEFAULT_MAP));
 function mkDrum(o = {}) {
-  const map = o.map || (o.model === 'tr606' ? JSON.parse(JSON.stringify(DC.MAP606)) : DMAP()), dev = { model: o.model || 'tr808', drum: { map } };
+  const map = o.map || (o.model === 'tr606' ? JSON.parse(JSON.stringify(DC.MAP606)) : o.model === 'tr909' ? JSON.parse(JSON.stringify(DC.MAP909)) : DMAP()), dev = { model: o.model || 'tr808', drum: { map } };
   const r = mk(Object.assign({}, o, { host: Object.assign({ drumRows: t => (t && t.drum !== false ? drumRowsOf(dev) : null) }, o.host) }));
   r.dev = dev;
   return r;
@@ -964,6 +964,43 @@ test('7b drum rows on a TR-606: seven named rows + "Other", kick at the bottom, 
   eq(ns(), [36, 42], 'down one row: the snare to Kick, 60 onto the closed hat (the top named row)');
   d2.roll.nudge(0, -40);
   eq(ns(), [36, 42], 'clamped at the kick');
+});
+
+// (7c, IMPL-7c §4) the TR-909's rows: its eleven sounds' primaries, kick first — Kick 36, Snare 38, Low tom 41, Mid tom 45, Hi tom 48, Rim shot 37,
+// Hand clap 39, **Ride 51, Crash 49** (sound ids 7 and 8: the 808's cowbell and cymbal slots, the 909 has neither), Open hat 46, Closed hat 42
+const ORDER9 = [36, 38, 41, 45, 48, 37, 39, 51, 49, 46, 42], NAMES9 = ['Kick', 'Snare', 'Low tom', 'Mid tom', 'Hi tom', 'Rim shot', 'Hand clap', 'Ride', 'Crash', 'Open hat', 'Closed hat'];
+test('7c drumRowsOf: a TR-909\'s device → its eleven rows, kick first, Ride and Crash on sound ids 7 and 8; a re-mapped sound moves its row; the 808\'s sixteen and the 606\'s seven are unchanged', () => {
+  const rows = drumRowsOf({ model: 'tr909' });
+  eq(rows, ORDER9.map((n, i) => ({ n, name: NAMES9[i] })), 'no record: the 909\'s default map (the 808\'s id 7 is a Cowbell, 8 a Cymbal: not here)');
+  eq(drumRowsOf({ model: 'tr909', drum: DC.normDrum(undefined, 'tr909') }), rows, 'a fresh 909 record: the same');
+  const map = JSON.parse(JSON.stringify(DC.MAP909)); map.sd = [40, 38]; map.rd = [53, 51]; map.ch = [];
+  const r2 = drumRowsOf({ model: 'tr909', drum: { map } });
+  eq([r2.length, r2[1], r2[7], r2.some(e => e.name === 'Closed hat'), r2.map(e => e.name).join()], [10, { n: 40, name: 'Snare' }, { n: 53, name: 'Ride' }, false, NAMES9.slice(0, 10).join()],
+    'a re-mapped snare and ride keep their rows; an unmapped closed hat has none');
+  eq(drumRowsOf({ model: 'tr909', drum: { map: DMAP() } }).map(e => e.name), NAMES9, 'an 808\'s sixteen-sound map on a 909: its eleven only (no 808-only sound gets a row)');
+  eq([drumRowsOf({ model: 'tr808' }).length, drumRowsOf({ model: 'tr808' }).map(e => e.n), drumRowsOf({ model: 'tr606' }).map(e => e.n)], [16, ORDER, ORDER6], 'the 808 and the 606 are as they were');
+  eq([drumRowsOf({ model: 'tr808' })[7].name, drumRowsOf({ model: 'tr808' })[8].name, drumRowsOf({ model: 'tr606' })[4].name], ['Cowbell', 'Cymbal', 'Cymbal'], 'ids 7 / 8 keep the 808\'s names there');
+});
+
+test('7c drum rows on a TR-909: eleven named rows + "Other", kick at the bottom, the gutter names them (Ride, Crash); a vertical move steps between the eleven — Ride up is Crash, never an 808-only row; the 808-only keys sit in "Other"', () => {
+  const { roll } = mkDrum({ model: 'tr909', notes: [N(0, 120, 36), N(480, 120, 51), N(960, 120, 49), N(1440, 120, 56)], rollRowH: 32 });
+  eq([roll.isDrum(), roll.drumRows().on, roll.drumRows().rows.length, roll._nRows(), roll.gut], [true, true, 11, 12, 120]);
+  eq(ORDER9.map(n => roll._row(n)), [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1], 'kick the bottom row (11), the closed hat row 1; ride row 4 under crash row 3');
+  eq([roll._row(56), roll._row(59), roll._row(57), roll._row(35), roll._row(60), roll._noteAt(0), roll._noteAt(4), roll._noteAt(3), roll._lab(36), roll._lab(51), roll._lab(49), roll._lab(56)],
+    [0, 0, 0, 0, 0, -1, 51, 49, 'Kick 36', 'Ride 51', 'Crash 49', 'G#3'], 'the 808\'s cowbell key, the ride and crash aliases (59, 57), middle C: "Other"');
+  dom.fire(roll.el, 'wheel', { deltaY: -5000, clientX: 400, clientY: 200 });
+  const tx = frameTexts(roll);
+  for (const s of ['Other', ...NAMES9, '36', '51', '49']) ok(tx.includes(s), 'the gutter names ' + s);
+  for (const s of ['Cowbell', 'Cymbal', 'Low conga', 'Claves', 'Maracas']) ok(!tx.includes(s), 'no row for ' + s);
+  const d2 = mkDrum({ model: 'tr909', notes: [N(0, 480, 36), N(480, 480, 51), N(960, 480, 49)] });
+  const ns = () => d2.tr.notes.map(y => y.n);
+  d2.roll.selectAll();
+  d2.roll.nudge(0, 1);
+  eq(ns(), [38, 49, 46], 'up one row: kick to snare, ride to crash, crash to open hat');
+  d2.roll.nudge(0, -1);
+  eq(ns(), [36, 51, 49], 'and back down');
+  d2.roll.nudge(0, -40);
+  eq(ns(), [36, 51, 49], 'clamped at the kick');
 });
 
 test('7a drum rows (compact, the default): the named rows only, kick at the bottom, "Other" on top; the gutter names them; the scroll extent is the table\'s; a synth track keeps the piano', () => {

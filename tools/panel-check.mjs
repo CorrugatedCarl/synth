@@ -11,6 +11,8 @@
 // jacks. A layout not yet in panels/index.js (an author's first draft) is loaded from panels/<model>.js directly.
 // (7b, IMPL-7b §7.3) The TR-606 the same way; a switch token's orientation (want / drawn), a rotary's sweep and `rot`, the
 // model's own extras cells and row breaks (TOKENS.<model>.cells / xbreak).
+// (7c, IMPL-7c §7.3) The TR-909 the same way; a display token's box against its characters' minimum (dspMin), the keys that
+// show their LED (TOKENS.<model>.led) and the LED each one has, the model's own caption.
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -58,7 +60,17 @@ if (T) {
       : c.kind === 'rotary' ? ` (sweep ${c.sweep || 270}°${c.rot ? ', centred at ' + c.rot + '°' : ''})` : '';
     console.log(`  ${t}: a ${c.kind}${more}, ${n} positions${Array.isArray(c.legends) ? ' · legends ' + c.legends.map(l => JSON.stringify(l)).join(' ') : ''}`);
   }
+  // (7c) a display token's box vs its characters; the LED keys and their LEDs
+  for (const [t, n] of Object.entries(T.digits || {})) for (const c of on.get(t) || []) {
+    const [mw, mh] = P.dspMin(n);
+    console.log(`  ${t}: a ${c.kind} ${c.w} × ${c.h} mm (${n} characters need ≥ ${mw} × ${mh} mm${c.w >= mw && c.h >= mh ? '' : ' — TOO SMALL'})`);
+  }
+  if (T.led) {
+    const ls = T.led.flatMap(t => (on.get(t) || []).map(c => t + (T.idx && T.idx[t] ? '#' + c[T.idx[t][0]] : '') + ' ' + (c.led || 'cap')));
+    console.log(`  LED keys (each shows its LED): ${ls.join(', ') || '—'}`);
+  }
   if (T.extras.length) console.log(`tokens in the extras: ${T.extras.length - xmiss.length} of ${T.extras.length}${xmiss.length ? ' · missing: ' + xmiss.join(' ') : ''}`);
+  if (T.caption) console.log(`the model's caption: ${L.extras && L.extras.caption != null ? (L.extras.caption === T.caption ? 'the layout carries it' : 'THE LAYOUT\'S DIFFERS') : 'supplied by the geometry (the layout has none)'}`);
 }
 const hb = P.hitBoxes(L, model);
 if (hb.length) {

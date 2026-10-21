@@ -1198,6 +1198,40 @@ test('7b (IMPL-7b §10, review #4): a TR-606 track — its record made on first 
   assert.deepEqual(cv.drum.api(cv.view1e(dv)).n303(), { n: 1, synced: true });
 });
 
+test('7c (IMPL-7c §10): a TR-909 track — its record made on first read is a 909\'s; its node starts with the 909\'s payload (m; its map: 51 the ride on id 7, 49 the crash on id 8, nothing on the 808\'s cowbell 56); a step post reaches a 909 session; drumOf re-normalises any record of another machine by the model (the binary 606 test let a 909 under an 808 and the reverse through); drumNeeds reads the machine\'s own sound keys (the 909\'s rd / cr); the offline payload\'s session runs at the project tempo (a bounce\'s flams = live)', async () => {
+  const s = await bootMain({ hash: '#tr909' });
+  await s.power(); await s.settle(5); s.raf();
+  const api = s.api, cv = globalThis.__synthTest.cv, acc = globalThis.__synthTest.acc, t = api.project().tracks[0];
+  const d = I(t), N = s.nodeOf(t.id), dv = CMOD.primId(t), A = () => cv.drum.api(cv.view1e(dv)), st = () => A().state();
+  assert.deepEqual([d.model, d.drum.m, d.drum.keys.length, d.drum.st[0].length, d.drum.ac.length], ['tr909', 'tr909', 96, 16, 96], 'a 909 with its own record');
+  const q = N.po.seq;
+  assert.deepEqual([!!q && !!q.plan, q && q.m, q && q.sync, q && q.map[36], q && q.map[51], q && q.map[49], q && q.map[56], q && !!q.plan.mSh], [true, 'tr909', true, 0, 7, 8, -1, true], 'its payload in its options');
+  s.run(24000);
+  N._fromProc({ t: 'step', s: 5, m: 0, k: 0, v: 0, p: 0, o: 1200, M: 0, f: 0, F: 0 }); s.raf(); s.raf();
+  assert.deepEqual([st().S.m, st().S.pos && st().S.pos.s, 'seq' in d], ['tr909', 5, false], 'a 909 session at the heard post; no 303 pattern written');
+  assert.equal(s.$('#tabTrack').textContent, `Track: ${t.name} · Drums`);
+  // normDevs: a 909 device without its record → the 909's; drumOf: a record of another machine → the model's (three ways)
+  const a = { dev: { i1: { kind: 'synth', model: 'tr909', vals: {} } } };
+  acc.normDevs(a);
+  assert.deepEqual([a.dev.i1.drum.m, a.dev.i1.drum.keys.length], ['tr909', 96]);
+  const rec = m => cv.drumOf({ dev: { x: { kind: 'synth', model: m } } }, 'x'), under = (m, D) => cv.drumOf({ dev: { x: { kind: 'synth', model: m, drum: D } } }, 'x');
+  assert.deepEqual([under('tr909', rec('tr808')).m, under('tr909', rec('tr606')).m, under('tr808', rec('tr909')).m, under('tr606', rec('tr909')).m, under('tr808', rec('tr909')).keys.length],
+    ['tr909', 'tr909', undefined, 'tr606', 16], 'never another machine\'s record under a model');
+  t.dev[dv].drum = rec('tr808');
+  assert.deepEqual([cv.drumOf(t, dv).m, cv.drumOf(t, dv).keys.length], ['tr909', 96], 'the track\'s 909 holding an 808\'s: a 909\'s again');
+  // drumNeeds: the slots that are on, by the machine's own keys (the 909's ride and crash are rd / cr, ids 7 / 8)
+  const smp = { rd: { id: 'smp:00000000000000a1', name: 'r', on: true }, cr: { id: 'smp:00000000000000a2', name: 'c', on: false }, oh: { id: 'smp:00000000000000a3', name: 'o', on: true }, cb: { id: 'smp:00000000000000a4', name: 'x', on: true } };
+  const t2 = { id: 'x', dev: { i1: { kind: 'synth', model: 'tr909', drum: Object.assign(rec('tr909'), { smp }) }, i2: { kind: 'synth', model: 'tr808', drum: Object.assign(rec('tr808'), { smp: { cb: smp.cb } }) } }, lay: {} };
+  assert.deepEqual(cv.drumNeeds(t2), ['smp:00000000000000a1', 'smp:00000000000000a3', 'smp:00000000000000a4'], 'the 909\'s ride and open hat (its crash off), the 808\'s cowbell');
+  // the offline payload (a bounce): a fresh session at the project tempo — the synced flams' ticks the live one's
+  A().demo(); s.raf();
+  cv.setProjectBpm(97);
+  const off = cv.drumPayload(t, dv, true), live = cv.drumPayload(t, dv);
+  assert.deepEqual([off.sync, off.run, [...off.plan.mFl].join(), off.plan.key === live.plan.key, off.pk === live.pk], [true, false, '0,28', true, true], 'the bounce\'s payload: the live one at 97 BPM');
+  cv.setProjectBpm(120);
+  assert.equal([...cv.drumPayload(t, dv, true).plan.mFl].join(), '0,35');
+});
+
 test('MIDI import into a project with no notes: the empty project\'s tracks go and the file\'s come in as the current instrument\'s model (curModel read before the tracks are cleared — no throw)', async () => {
   const s = await bootMain({ hash: '#juno60' });
   await s.power(); await s.settle(5); s.raf();

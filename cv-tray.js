@@ -331,6 +331,7 @@ export function sideTray(el, o) {
 // null, info.at the world point; the ghost hides over the canvas while o.partCanvasGhost() says the world draws an outline.
 // setPartPlaced(id, reason | null) greys a tile with its reason (the host's: "This Serum already has 3 oscillators"); the
 // drop's own refusals are the host's (§2.6). Without o.parts the two sections stay placeholders.
+const DR_TIP = { tr909: 'our model of its analog circuits; its hi-hats and cymbals are our own sounds through its playback circuit, not recordings' }; // (7c, IMPL-7c §8.2)
 const CLASSIC = m => !m.custom && m.family !== 'drums', DRUMS = m => m.family === 'drums', TO_SERUM = 'Serum and its modulators: the Serum view (the menu above).';
 export const SRC_VIEWS = [
   { id: 'hw', label: 'Hardware', tip: 'The classic synths with their real front panel', layout: 'hw', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
@@ -339,7 +340,7 @@ export const SRC_VIEWS = [
     sections: [{ id: 'serum', models: m => !!m.custom }, { id: 'mods' }, { id: 'parts', head: 'Serum parts', note: 'Arrive in milestone 3.' },
       { id: 'notes', head: 'Note tools', note: 'Note tools: later.' }] },
   { id: 'drums', label: 'Drums', tip: 'Drum machines with their real front panel', layout: 'hw',
-    note: 'More machines later: TR-909, then the Simmons SDS-V with the pad controller.', sections: [{ id: 'drums', models: DRUMS }] },
+    note: 'More machines later: the Simmons SDS-V with the pad controller.', sections: [{ id: 'drums', models: DRUMS }] },
 ];
 /** (milestone 3, §2.6) The Serum parts and note tools tiles (id = the part kind sx-edges firstFree takes). */
 export const PART_TILES = Object.freeze([
@@ -394,8 +395,8 @@ export function sourcesTray(el, o) {
     const b = mk(d, 'button', 'cv-tile');
     b.type = 'button';
     b.setAttribute('data-model', m.id);
-    const dr = DRUMS(m); // ((7a) a drum machine: no maker name on its tile, D4)
-    b.title = dr ? `${meta.label} (${meta.year}) — our model of its circuits, not recordings — tap to use it, or drag it onto the canvas or the track list`
+    const dr = DRUMS(m); // ((7a) a drum machine: no maker name on its tile, D4; (7c) the 909 says what is ours: its hi-hats and cymbals)
+    b.title = dr ? `${meta.label} (${meta.year}) — ${DR_TIP[m.id] || 'our model of its circuits, not recordings'} — tap to use it, or drag it onto the canvas or the track list`
       : `${meta.label} (${meta.year} · ${meta.maker}) — tap to use it, or drag it onto the canvas or the track list`;
     const pic = mk(d, 'span', 'cv-tart');
     pic.setAttribute('aria-hidden', 'true');

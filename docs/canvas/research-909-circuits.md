@@ -355,7 +355,121 @@ our arithmetic. Component designators are the service notes'.
   velocity's effect (ours: IMPL-7c §1.3).
 - **Never**: the ROM contents (not even their levels or lengths beyond the counts above), recordings of a 909, Roland's demo patterns.
 
-## 16. The component tables as modelled (lane V9 fills in)
+## 16. The component tables as modelled (lane V9, 2026-10-21)
 
-(V9: the component tables per voice, designators and values as used, every [fit] and [C], the early-revision values beside the late
-ones. The source-material recipes as built are lane R9's notes in IMPL-7c §14 — one owner per file.)
+As built in `dr-808.js` (`Dr808.proto.tr909`: `BD9 SD9 TOM9 TM9 RS9 HC9 ROMC9 HH9 CY9 MIX9 ACC9 ENV9`); gated by
+`tests/dr-909.test.mjs`. The source-material recipes are lane R9's notes in IMPL-7c §14 — one owner per file.
+
+**16.0 Reading and conventions.** The values are this appendix's reading (MW1–MW3, CF, ED, SN9's text) — **not re-read from the
+schematic images**: no scan is in the repo or the scratchpad, and fetching one is a download for the user to approve (7b lane V6's
+note). For the lead: one pass over SN9's schematic with this table beside it. Tags as above, plus **[fit]** = a constant fitted to a
+named measured number of §2–§10 and **[C]** = this build's choice. Pots: **A** = `tapA9` (the JIS "A" curve, 15 % at mid travel
+[C]: MW1's BD DECAY times fit it within 15 % at 0 / 50 / 75 / 100 %; the app's `tapA`, 9 %, misses 25 % and 50 % by 18–25 %), **B**
+linear; every pot end 50 Ω. Every value is the **late revision** (§14), the early ones in 16.10. Accent voltages: V_acc = the
+voice's DAC code · 5/63 V · 3.13, the envelopes' starts from V_acc − 1.2 V (MW1).
+
+**16.1 The accent DACs** (§1, §8). Eight 6-bit latches: BD SD LT MT HT HH, RS + HC, CR + RD; code · 5/63 V (RM-0621 binary
+[R?]); × (1 + 10 k / 4.7 k) = 3.128 in each analog voice, linear to 12.5 V, a 1 V knee into 13.5 V [C: MW3's clip near codes 52–56
+falls there]. Codes [fit]: **N0 21** (normal), **L 11** (per-voice), **TMAX 22** (TOTAL ACCENT 10; T = round(22 u)) — TMAX gives
+the toms' linear span +7.46 dB (MW3: 7.3–7.7), L the CH's +4.4 dB, and both at full TOTAL ACCENT = code **54**, at the buffer's
+knee ("may not be noticed", OM9). Velocities (P-1): 100 / 110 / 119 / 127 = normal / per-voice / total / both; between them the
+code interpolated and rounded; below 100 round(21 (0.6 + 0.4 (v − 1) / 99)). Power-up codes N0 [C]. A shared DAC latched twice in
+one 4-frame chunk takes the higher code; the held level is read by the cymbals' and the hats' converters every chunk and by the
+clap at each burst onset (an RS hit moves the clap's later bursts; a ride hit a ringing crash's level).
+
+**16.2 The noise** (§7). 31 stages, feedback stages 31 ⊕ 13, filled with ones; the bit stream e[k] = e[k − 13] ⊕ e[k − 31]
+(characteristic x³¹ + x¹⁸ + 1, the reciprocal of the tap polynomial; period 2³¹ − 1). Clock **300 kHz** (R184 10 k / C47 100 p)
+[R?]. Bits 0 / 15 V; each OS sample the exact mean of the bits inside it less 7.5 V; positions are integers (f_clk / fs reduced),
+the salt a hashed offset into the period (two salts ≈ 2³⁰ bits apart) [C]. One stream for the BD's click, the SD, the toms, HC.
+
+**16.3 Bass drum** (§2).
+
+| part | as modelled | tag |
+|---|---|---|
+| VCO IC13a / b, IC12b, Q10 | triangle state machine; reset to 0 V (rising) and held while the 2 ms trigger is high; f = 49.5 + 230 · v_C9 Hz | [R] 49.5 measured; Δf [C] between MW1's 216 derived and 225–247 measured |
+| shaper R52 10 k → 1SS133 pair ∥ 2.2 k + 47 Ω | the diode equation tabulated (I_s 2.52 nA, n 1.752 [C]); the triangle's peak into it 3.05 V | [fit] H3 −25.7 dB (built: H2 −27.8, H3 −24.7, H5 −43.7) |
+| Q12 (emitter-fed) | e1 · (e^{κ s} − 1) / κ, κ 0.35 / V; a 10 mV threshold ends the tail | [fit] H2 −28 dB; threshold [C] |
+| C9 0.33 µ, D7 / R21, R57, VR2 100 k A | charged at the trigger through 1 k [C]; discharged through (22 k + VR2) ∥ 330 k | [fit] 22 k / 330 k → τ 6.8 / 29.4 ms (built 7.5 / 11.3 / 29.5 at TUNE 0 / 5 / 10; MW1 measured 7.6 / 29.1) |
+| ENV1 C8 0.33 µ, D9, D8 / R36 / R22, Q3 hold | charged (0.2 ms [C]) to 0.306 · (V_acc − 1.2) under a soft clamp at 2.6 V (knee from 2.2 V); held 61 ms from the trigger; then (R58 47 k + VR5 1 M A) ∥ R54 470 k | 0.306 [fit]: the clamp met at 80 % TOTAL ACCENT; hold [R measured]; R58 / R54 [R] |
+| the click | the trigger's edges through C2 3.3 n into 10 k [C] → unity Sallen-Key 3.7 kHz Q 3.1 × 0.02 [C], + noise / 3.6 → 26 Hz HP → 513 Hz LP; × ENV2 (C12: 0.7 ms up and down [R? MW1]) | the click's gain [fit]: its peak −7 dB re the hit's (mean of 8 salts; at 1.35 ms) |
+| Q6, ATTACK VR3 500 Ω rheostat | the click's gain (365 + 250) / (365 + 500 (1 − u)) | RE 365 Ω [fit]: 7.5 dB of range |
+| IC11a, LEVEL VR4 100 k B | output = u · (1.087 body + 0.26 · ATTACK · click) | [fit] 0.61 Vp-p at LEVEL 5, unaccented (built 0.606; accented 1.26, +6.35 dB vs MW3's +6.2) |
+
+DECAY's −20 dB, built: 89 / 159 / 281 ms at 0 / 5 / 10 (MW1 96 / 173 / 298; at 2.5: 110 vs 143, the one point outside 15 %).
+
+**16.4 Snare** (§3).
+
+| part | as modelled | tag |
+|---|---|---|
+| VCO-1 / VCO-2 (C69 0.01 µ / C71 0.0068 µ) | two triangle machines reset and held by the trigger; f1 = 117.4 + 113.3 u (TUNE VR6 linear), f2 = 1.500 f1 | [R measured] (built within 1 % at the five points) |
+| the bend C66 0.01 µ, D56 / R247 47 k, 470 k + 100 k | charged through 47 k at the trigger, τ 5.7 ms, + 216 Hz on VCO-1 | [R] |
+| Q50 / Q51 | ENV3 24 ms (VCO-1), ENV2 21 ms (VCO-2, × 0.355 = −9 dB) | [R] |
+| envelope starts | V_acc − 1.2 + 3.4 V (all four) | D 3.4 [fit]: +4.8 dB span (built +4.79) |
+| noise | / 4 → 48 Hz HP → unity SK LP 8.5 kHz Q 1.9 → (a) 1.52 kHz HP → Q48 × ENV4, (b) SK HP 4.05 kHz Q 1.31 → Q47 × ENV5 | [R]; ENV5's 2 ms crack: charged with the trigger, 0.3 ms fall [C] |
+| ENV4 / TONE VR7 500 k B | held 24 ms; then C4 0.747 µ drains to ground through 124 k and to −V_neg through 65.5 k + VR7 (V_neg 0.162 of the unaccented start); the VCA passes it above 0 V | [fit]: one network gives MW1's τ 32 / 76 ms and the cut (−40 dB) at 99 / 295 ms (built 94 / 262); accent longer by itself (a fixed V_neg under a higher start) |
+| SNAPPY VR9 10 k | IC39b's feedback: the noise × u, silent at 0 | [R] |
+| gains | tone 1, branch (a) 0.55, crack 0.275 (the noise's peak ≈ +3 dB over the tone's at SNAPPY 5 [C]); voice 0.1307 | [fit] +3.6 dB re BD at LEVEL 5 (built +3.76) |
+
+**16.5 Toms** (§4).
+
+| part | LT | MT | HT | tag |
+|---|---|---|---|---|
+| VCO-1 at TUNE 0 / 5 / 10 (Hz; the quadratic through them) | 57.0 / 85.8 / 117.2 | 71.9 / 106.6 / 141.3 | 82.8 / 125.4 / 166.7 | [R measured] |
+| ENV1 / ENV3 τ (ms) | 103 / 26 | 70.5 / 26 | 70.5 / 22 | [R] |
+| DECAY's capacitor C2 (56 k + 500 k B) | 0.22 µ | 0.12 µ | 0.18 µ | [fit] MW1's −20 dB at DECAY 0 / 10 (built 167 / 202, 111 / 134, 113 / 160 ms vs 165 / 213, 103 / 138, 108 / 160) |
+| output gain | 0.1639 | 0.1824 | 0.1824 | [fit] −0.6 / +0.3 / +0.4 dB re BD (built −0.54 / +0.36 / +0.48) |
+
+Shared: VCO-2 = 0.667 · f1 (× 0.6), VCO-3 = 1.8 · f1 (× 0.5) [R ratios; gains fit with C2]; the negative supply's two capacitors
+(0.047 µ · 470 k = 22 ms, 0.1 µ · 2.2 M = 220 ms) charged at the trigger: +0.24 and +0.07 of f1 [fit: 25–38 % sharp, ≈ 7 % droop]
+(built +31 %); VCO-1's overdrive: the timer 0.01 µ · 1 M, × 10 drive at full, relaxing below 0.3 of its charge [C: near-square to
+≈ 12 ms, a rounded triangle by ≈ 40 ms]; the noise band (600 Hz HP, 1.6 kHz LP [C]) into VCO-3's frequency — the tick (Q33 / C54
+0.0047 µ, its 68 k [C]: 0.32 ms) × 0.6 and the steady part (R194 100 k) × 0.08 per unit rms, gated by ENV3 **relative to its own
+start** [C: the accent stays a level, §8]. Accent: ENV1–3, no clamp (built +7.46 dB, a level within 2 %).
+
+**16.6 Rim shot** (§5). Three bridged-T resonators (the 606's `btDesign`), C 0.01 µ, R1 = τ / C, G = ω² τ C: 220 Hz / 9.6 ms
+(960 k, 5.45 k), 488 / 4.6 (460 k, 2.31 k), 1036 / 2.9 (290 k, 814 Ω) [R f and τ; the R's derived]; rung by the trigger's edges
+(C_X into 10 k: 0.1 ms [C]) each through its drive — 3.3 k for the 220 / 488 Hz ones [C], **R417 3.3 k** for the 1 kHz one (so the
+1 kHz rings strongest: its g the largest) —, the sum × 0.01 [C: ≈ 1.8 V peak into the clip] into the anti-parallel diodes (DSH:
+± 0.61 V); Q65 on its envelope (20 ms [C]) from V_acc − 1.2 + 5.6 [fit D: +3.9 dB; built +3.91, a level]; the SK high-pass 10 n,
+22 k / 220 k (229 Hz, Q 1.58 — the R's recovered from MW1's f and Q); LEVEL 100 k B ∥ 220 p; gain 0.292 [fit +0.3 dB re BD; built
++0.36]. The output's spectral peaks: 219 / 484 / 1039 Hz.
+
+**16.7 Hand clap** (§6). The noise → MFB band-pass 963 Hz Q 2.1 → (bursts) 181 Hz HP → the OTA → 1.94 kHz HP, the burst timer's
+onsets 0 / 9.8 / 21.5 / 31.4 ms [R measured], each burst an exponential fall (2.4 ms; the last 6 ms [C]) of the exp converter on
+the timer's ramp, its height V_acc − 1.2 + 8 V read from the RS + HC DAC at its onset [fit D: +2.7 dB; built +3.31]; (tail) 440 Hz
+LP → Q37 on the two-pole swell: 11.8 ms in, 90 ms out (peak 27.9 ms) [R 25–30 / 90 ms], the tail × 4 re the bursts [C: −20 dB at
+60–90 ms re the peak]; gain 0.306 [fit 2 Vp-p at LEVEL 5, the trimmer; built 2.03 Vp-p = +10.5 dB re BD vs MW3's +9.0].
+
+**16.8 The ROM path** (§9).
+
+| part | as modelled | tag |
+|---|---|---|
+| word clock IC72c / d ÷ IC73 | f_osc = K / (R_t · C), K = 0.3384 (60 kHz on the hats' R492 12 k, C160 470 p); words f_osc / 2; started at the trigger (word 0 at the latch's chunk start), the word phase in word units | K [fit] to SN9's 30 kHz |
+| crash / ride timing | R443 / R441 6.8 k + VR25 / VR27 10 k B (clockwise = less: faster) on 470 p, × 2^(0.4 / 12) for R442 / R440 10 k (late) | [R]; the late shift [R? §14]; built 21.86 / 31.09 / 53.78 kHz at TUNE 0 / 5 / 10 (× 2.46) |
+| counters | regions: hats open 0–24 575 / closed 24 576–32 767, cymbals 0–32 767; stop at the end, the latch holds the last word (kept across sleep) | [R] |
+| DAC RA9 / RA10 / RA12 | code · 5 / 63 V | [R?] binary |
+| the staircase | each word's step at its fractional time, 2-point polyBLEP (engine.js renderDac's method) one sample late, then the kernel's sinc² droop compensated by [−1, 14, −1] / 12 (unity at DC, exact at rest) | [C]: the error against the exact band-limited staircase in 0–20 kHz (OS 4) −61…−74 dB on R9's images and our stand-ins (naive hold −12…−22); the aliasing alone −65…−77 dB |
+| C157 / C127 / C128 10 µ | into the VCA's 10 k [C] (1.6 Hz) | |
+| hats VCA (Q73, C135 1 µ, Q84 / Q85) | C135 charged to 10 V (0.1 ms [C]) while the trigger is high, from its level; drained by R452 100 k + VR23 1 M A, CLOSED also R451 10 k + VR21 100 k B; gain ∝ v135 · e^{KX V_dac} | KX 0.581 / V [fit: the CH's per-voice +4.4 dB]; gain 0.2314 [fit: ±28 codes → 1.2 Vp-p OH at LEVEL 5] |
+| cymbal VCAs (RA11 / RA13, R432 270 k / R439 470 k, Q70 / Q68, Q71 / Q69) | gain ∝ e^{−AL · (R432 / R) · step / 63 + KX V_dac}, step = word >> 9 (A9–A14), AL 1.905; the crash / ride gains 0.446 / 0.424 | AL [fit]: the crash's −14 dB at 0.91 s on a flat image (its data pre-compensated, SN9); the ride: RA11's map over its own R439 (§15) → −16.6 / −9.5 dB over the image; gains [fit] 2.3 / 2.2 Vp-p at LEVEL 5 |
+| reconstruction | two unity Sallen-Keys: 5.6 k / 5.6 k, 1200 p / 1000 p (25.9 kHz, Q 0.548) and 2700 p / 390 p (27.7 kHz, Q 1.316), prewarped, capped at 0.45 fs | [R] |
+| output | 22 k in, LEVEL 50 k B the feedback (≤ 2.27); the hats' C134 0.01 µ into the mixer's 22 k (723 Hz) | [R], C134 late |
+
+`ENV9.cr` / `.rd` (lane R9's pre-compensation reads them): e^{−1.905 k / 63} and e^{−1.905 · 270 / 470 · k / 63}, k = 0…63.
+
+**16.9 Mixer and output** (§10). The MONO jack: each voice's share 6 k · (1 / R_L + 1 / R_R) of its mix resistors (BD SD MT RS HC
+1; LT, RIDE, HT, HH 1.132; CRASH 1.100) [R? the readings conflict only on the side]; IC66 with VR28 50 k B over 12 k [C]; the rails
+± 13.5 V (the 808's knee); the jack's late 0.01 µ behind 1 k (15.9 kHz, prewarped mid-band); `OUT_K9` 0.3029 [C §2.6: the BD at the
+default panel, unaccented, 0.4286 FS = the 808's]. **Left out** (§15: re-read first): MW3's ≈ 130 Hz first-order high-pass of the
+master's input coupling (−8.9 dB at the BD's 49.5 Hz — a large claim from one reading) and the late ≈ 6.6 kHz master low-pass; a
+3 Hz DC coupling stands for the first [C].
+
+**16.10 The early revision** (for a later "unit character" option): C9 0.22 µ (the sweep's τ 4.5–19.6 ms); R442 / R440 33 k (LATE
+= 1); R417 12 k (the 1 kHz ring's drive / 3.6); the hats' C134 10 µ (no 723 Hz high-pass); no 0.01 µ at the jacks; the toms' C54
+0.0022 µ, R194 47 k (a shorter tick, a stronger steady noise).
+
+**16.11 Not in the sources, decided here** (each [C] or [fit] above): the accent codes and the per-voice offsets D (SD 3.4, RS 5.6,
+HC 8 V) that turn the one linear law into MW3's spans; the BD shaper's drive and Q12's κ; the click's split (pulse × 0.02, the
+noise path) and ENV2; the snare's ENV4 network; the toms' DECAY capacitors, gains, overdrive timer and noise FM; the RS drives,
+envelope and clip depth; the clap's burst falls and tail share; the ROM VCAs' gains, KX, AL, VHH; the multi-out levels follow MW1 /
+MW2 / MW3 (the cymbals' and the hats' from the service notes' scope drawings [S-u]).

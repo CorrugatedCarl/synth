@@ -8,6 +8,10 @@
 // swing 50 / 62, the re-anchors, a pending swap, with a TAP fill), the TR-606's plans (SCALE 1–4, a chain of four lengths,
 // track 8's 256 bars, a free pre-roll, the D.S. swap) and the tempo clock `clock(F)` (free at any frame, the song's ticks
 // bit-identical to tickAt, stopped at the panel's tempo — synced the Inst's bpm, never tp.fpt), no allocation.
+// 7c (IMPL-7c §12.4, lane S9; after the 26 tests of 7b, unchanged — the fake machine logs trig's arguments as given): the raised
+// bounds, the TR-909's accents (trig(mask, acc); the 808's / 606's one argument), per-measure shuffle, flams (every spacing, the
+// clamp, re-anchors inside a spacing against the song path, a stop), valid(), once, the guide, simplePlan's x, no allocation,
+// and D5 — its sequencer against → Piano roll's notes through the song path, fixed and random patterns.
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -34,13 +38,14 @@ const every = l => 'x'.repeat(32);
 /* ------------------------------------------------------------------ the fake Track (engine.js's span loop) */
 
 // (7b: pbpm the patch's bpm — the Inst's `bpm` getter, engine.js's: the transport's while it plays, else the patch's — and
-// T.onSpan(F, len), called where the Track renders the span: after the events, before pos += len)
+// T.onSpan(F, len), called where the Track renders the span: after the events, before pos += len; 7c: T.targs logs every
+// dm.trig call with its arguments as given — [F, mask] for trig(mask), [F, mask, acc] for trig(mask, acc))
 function rig({ base = 48000, sw = {}, pbpm = 120 } = {}) {
   const tp = { play: false, frame: 0, tick: 0, fpt: 1, loop: false, ls: 0, le: 0, wrap: false, pend: null, end: null };
   const T = { base, tp, fresh: false, anch: false, reseek: false, graphed: 0, frames: 0, spanF: 0, lastT: NaN, sn: [], ni: 0, on: [],
-    posts: [], trigs: [], notes: [], steps: [], spans: [], onSpan: null };
+    posts: [], trigs: [], targs: [], notes: [], steps: [], spans: [], onSpan: null };
   const inst = { T, tp, base, id: 'i7', on: 1, p: { drum: { lts: 0, mts: 0, hts: 0, rss: 0, cps: 0, ...sw } },
-    port: { postMessage: m => T.posts.push({ ...m }) }, dm: { trig: mask => T.trigs.push([T.spanF, mask]) },
+    port: { postMessage: m => T.posts.push({ ...m }) }, dm: { trig(...a) { T.trigs.push([T.spanF, a[0]]); T.targs.push([T.spanF, ...a]); } },
     drStep: (n, v) => T.steps.push([T.spanF, n, v]),
     get bpm() { return tp.play ? 60 * base / (tp.fpt * 960) : pbpm; } };
   const q = DrSeq.create(inst);
@@ -802,4 +807,355 @@ test('7b clock(F), synced (§3.5, D5): playing, the song\'s ticks — tickAt(F)\
   // synced with no bpm on the Inst (a stand-in): 120
   const q3 = DrSeq.create({ base: 48000, tp: { play: false, frame: 0, tick: 0, fpt: 1 } }); q3.set({ sync: true });
   assert.deepEqual([q3.clock(4800).t, q3.clock(4800).tpf], [192, 1 / 25]);
+});
+
+/* ================================================================== 7c: the TR-909's plans (IMPL-7c §12.4) */
+
+// a TR-909 record (drum-core's third personality): ui / x replaced, patterns from code strings ('x' a hit, 'X' accented, 'f' a
+// flam, 'F' both), keys { sc, l1, sh, fl, ch }, tracks; its sessions; its reference events, independent of DrSeq — every step
+// [tick, 's', mask, acc] and every flam's second hit [tick, 'f', lanes | AC, acc & lanes] of a plan anchored at tick 0
+const b9 = code => 1 << C.LANES909[C.CODES909.indexOf(code)];
+function drum9(ui = {}, x = {}, pats = {}, keys = {}, tk = {}) {
+  const d = clone(C.normDrum(undefined, 'tr909'));
+  Object.assign(d.ui, ui); Object.assign(d.x, x);
+  for (const [p, o] of Object.entries(pats)) {
+    const st = new Array(16).fill(0), ac = st.slice(), fm = st.slice();
+    for (const [code, r] of Object.entries(o)) for (let s = 0; s < r.length; s++) {
+      const c = r[s], b = b9(code.toUpperCase());
+      if (c === '.') continue;
+      st[s] |= b; if (c === 'X' || c === 'F') ac[s] |= b; if (c === 'f' || c === 'F') fm[s] |= b;
+    }
+    d.st[+p] = st; d.ac[+p] = ac; d.fm[+p] = fm;
+  }
+  for (const [k, o] of Object.entries(keys)) d.keys[+k] = { ...d.keys[+k], ...o };
+  for (const [t, L] of Object.entries(tk)) d.tk[+t] = L;
+  return C.normDrum(d, 'tr909');
+}
+const S9 = o => ({ ...C.initState('tr909'), ...o });
+function ref9(p, tEnd) {
+  const out = [];
+  let m = 0, start = 0;
+  while (start < tEnd && p.n) {
+    const T = C.STEP_T[p.mPre[m]];
+    for (let s = 0, o = p.mOff[m]; o < p.mOff[m + 1]; s++, o++) {
+      const t = start + s * T + (s & 1 ? p.mSh[m] : 0), mask = p.st[o];
+      if (!(mask & 0xFFE)) continue;
+      out.push([t, 's', mask, p.ac[o]]);
+      if (p.fl[o]) out.push([t + p.mFl[m], 'f', p.fl[o] | (mask & 1), p.ac[o] & p.fl[o]]);
+    }
+    start += p.mT[m + 1] - p.mT[m];
+    if (m + 1 >= p.n && p.once) break;
+    m = m + 1 < p.n ? m + 1 : p.loopFrom;
+  }
+  return out.filter(e => e[0] < tEnd).sort((a, b) => a[0] - b[0]);
+}
+// a 909 hit list: [F, sound, velocity] — the sequencer's triggers (the AC bit and the per-voice accents → the state's VEL9) or
+// the song path's notes (velocity as written, the sound through the map), sorted
+const VEL = [100, 110, 119, 127];
+const trigHits = T => T.targs.flatMap(([F, mask, acc]) => { const o = []; for (let l = 1; l < 12; l++) if (mask & (1 << l)) { const z = (0x83E >> l) & 1 ? (mask & 1) * 2 + ((acc >> l) & 1) : (mask & 1) * 3; o.push([F, C.LANE_SOUND[l][0], VEL[z]]); } return o; })
+  .sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+const noteHits = (T, tab) => T.notes.filter(e => e[1] >= 0).map(e => [e[0], tab[e[1]], e[2]]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+
+test('7c the raised plan bounds (§3.4): 1 793 measures and 28 688 steps valid, one more refused; the longest 909 plan (an 896-measure track with a free 895-measure pre-roll) inside them', () => {
+  const big = (n, len = 16) => {
+    const mOff = new Int32Array(n + 1), mT = new Int32Array(n + 1);
+    for (let i = 0; i < n; i++) { mOff[i + 1] = mOff[i] + len; mT[i + 1] = mT[i] + len * 240; }
+    return { key: 'b' + n, shape: 'b', n, intro: 0, loopFrom: 0, mKey: new Int8Array(n), mVar: new Int8Array(n), mPre: new Uint8Array(n).fill(3), mL1: new Uint8Array(n).fill(Math.min(16, len)), mOff, mT, st: new Uint16Array(mOff[n]), fill: null };
+  };
+  assert.deepEqual([DrSeq.MAX_MEAS, DrSeq.MAX_STEPS], [1793, 28688]);
+  assert.ok(DrSeq.valid(big(1793)), '1 793 × 16 = 28 688 steps');
+  assert.ok(!DrSeq.valid(big(1794)), 'one measure more');
+  assert.ok(DrSeq.valid(big(896, 32)) && !DrSeq.valid(big(897, 32)), '28 672 steps; 28 704 refused');
+  const D = drum9({ mode: 2 }, { sync: false }, {}, {}, { 0: new Array(896).fill(5) });
+  const p = C.compilePlan(D, D.ui, D.x, S9({ loc: 1 }));
+  assert.deepEqual([p.n, p.loopFrom, p.st.length], [1791, 895, 1791 * 16]);
+  assert.ok(DrSeq.valid(p));
+});
+
+test('7c accents (§3.5): a 909 plan\'s steps reach dm.trig(mask, acc) — the AC bit the TOTAL ACCENT, acc its per-voice accents; the 808\'s and the 606\'s plans call trig(mask), one argument, as before; the #34 hook gets the highest state velocity / 127', () => {
+  const D = drum9({}, {}, { 0: { ac: '..x.x', bd: 'X.x.X', sd: '.x', ch: 'xX..x', rs: '..x' } });
+  const p = C.compilePlan(D), T = rig();
+  T.q.set({ plan: p, sync: true, prim: C.primaries(D.map, 'tr909') }); T.play(0, 0, 120); T.run(3840 * 25);
+  assert.deepEqual(T.targs.slice(0, 4).map(e => e.slice(1)), [
+    [b9('BD') | b9('CH'), b9('BD')], [b9('SD') | b9('CH'), b9('CH')], [1 | b9('BD') | b9('RS'), 0], [1 | b9('BD') | b9('CH'), b9('BD')]]);
+  assert.deepEqual(T.steps.slice(0, 4).map(e => e.slice(1)), [[36, 110 / 127], [38, 110 / 127], [36, 127 / 127], [36, 127 / 127]], 'BD per-voice 110; SD normal + CH per-voice 110; BD total 119 + RS total 127; both 127');
+  const T2 = rig(); T2.q.set({ plan: C.compilePlan(drum9({}, {}, { 0: { ac: 'x', sd: 'x' } })), sync: true }); T2.play(0, 0, 120); T2.run(800);
+  assert.deepEqual(T2.steps[0].slice(1), [38, 119 / 127], 'total accent alone: 119');
+  for (const q of [plan({}, {}, PAT), C.compilePlan(C.normDrum({ ...clone(C.normDrum(undefined, 'tr606')), st: [row({ ac: 'x', bd: 'xxxx' }).slice(0, 16)] }, 'tr606'))]) {
+    const R = rig(); R.q.set({ plan: q, sync: true }); R.play(0, 0, 120); R.run(3840 * 25);
+    assert.ok(R.targs.length > 3 && R.targs.every(e => e.length === 2), 'trig(mask): one argument');
+  }
+});
+
+test('7c shuffle per measure (§3.4, §3.5): the even-numbered steps of a measure late by its own mSh — every level on 16ths (20 · (sh − 1)) and 32nds (20 · ⌊(sh − 1) / 2⌋), triplets unswung, the payload\'s swing ignored; a measure change moves the shuffle at its boundary; a live \'now\' plan with another shuffle is a new shape (swapped at the boundary)', () => {
+  for (const [sc, sh] of [[1, 1], [1, 2], [1, 4], [1, 7], [2, 3], [2, 7], [3, 7], [4, 7]]) {
+    const D = drum9({ sel: 0, bl: 1 }, {}, { 0: { bd: 'xxxxxxxxxxxxxxxx' }, 1: { sd: 'xxxxxxxxxxxxxxxx' } }, { 0: { sc, sh, l1: 8 }, 1: { sc: 1, sh: 1, l1: 4 } });
+    const p = C.compilePlan(D), T = rig(), cyc = p.mT[2];
+    T.q.set({ plan: p, sync: true, swing: 75 }); T.play(0, 0, 120); T.run(cyc * 2 * 25 + 128);
+    const ref = ref9(p, cyc * 2), w = sc === 1 ? 20 * (sh - 1) : sc === 2 ? 20 * ((sh - 1) >> 1) : 0;
+    assert.equal(p.mSh[0], w);
+    assert.equal(T.targs.length >= ref.length, true);
+    ref.forEach((e, j) => near4(T.targs[j][0], e[0] * 25, `SCALE ${sc} SHUFFLE ${sh} hit ${j}`));
+    assert.deepEqual(ref.slice(0, 3).map(e => e[0]), [0, C.STEP_T[C.SC_CODE[sc]] + w, 2 * C.STEP_T[C.SC_CODE[sc]]]);
+    assert.deepEqual(ref.slice(8, 12).map(e => e[0] - p.mT[1]), [0, 240, 480, 720], 'the next measure its own (none)');
+  }
+  // a live plan with another shuffle: a new shape — the measure under way keeps its own, the next takes it
+  const A = drum9({}, {}, { 0: { bd: 'xxxxxxxxxxxxxxxx' } }, { 0: { sh: 1 } }), B = drum9({}, {}, { 0: { bd: 'xxxxxxxxxxxxxxxx' } }, { 0: { sh: 7 } });
+  const pa = C.compilePlan(A), pb = C.compilePlan(B);
+  assert.equal(DrSeq.sameShape(pa, pb), false);
+  assert.equal(DrSeq.sameShape(pa, C.compilePlan(drum9({}, {}, { 0: { bd: 'X.xxxxxxxxxxxxxx' } }, { 0: { sh: 1 } }))), true, 'an accent: the same shape');
+  const T = rig(); T.q.set({ plan: pa, sync: true }); T.play(0, 0, 120); T.run(1200 * 25);
+  T.q.set({ plan: pb, at: 'now' }); T.run((3840 * 2 - 1200) * 25 + 128);
+  const ticks = T.targs.map(e => Math.floor(e[0] / 25));
+  assert.deepEqual(ticks.slice(0, 16), Array.from({ length: 16 }, (_, s) => s * 240), 'the measure under way unshuffled');
+  assert.deepEqual(ticks.slice(16, 20), [3840, 3840 + 360, 3840 + 480, 3840 + 840], 'the next: SHUFFLE 7 (+120)');
+});
+
+test('7c flams (§3.5): each flammed lane\'s second hit at the plan\'s spacing — every spacing level, at a swung step, at a measure\'s last step (inside the measure: the clamp) —, trig(lanes | AC, acc & lanes), no post; events(F) returns the frames to the pending hit; free and synced', () => {
+  for (let fl = 9; fl <= 16; fl++) for (const free of [false, true]) {
+    const D = drum9({ tempo: 133 }, { sync: !free }, { 0: { ac: '...x', bd: 'f..F', sd: '.x.f', ch: '...x' } }, { 0: { fl, sh: 5 } });
+    const S = S9({ bpm: 133 }), p = C.compilePlan(D, D.ui, D.x, S), T = rig(), fpt = T.fptOf(133);
+    const d = Math.round((10 + 4 * (fl - 9)) * 133 * 960 / 60000);
+    assert.equal(p.mFl[0], d);
+    let F0 = 0;
+    if (free) { T.q.set({ plan: p, sync: false, run: false, bpm: 133 }); T.run(256); T.q.set({ run: true }); F0 = T.frames; }
+    else { T.q.set({ plan: p, sync: true }); T.play(0, 0, 133); }
+    T.until(F0 + 3840 * fpt + 128);
+    const ref = ref9(p, 3840), got = T.targs.slice(0, ref.length);
+    assert.deepEqual(got.map(e => e.slice(1)), ref.map(e => [e[2], e[3]]), `FLAM ${fl}${free ? ' free' : ''}: the hits`);
+    got.forEach((e, j) => near4(e[0], F0 + ref[j][0] * fpt, `FLAM ${fl} hit ${j}`));
+    assert.deepEqual(ref.filter(e => e[1] === 'f').map(e => [e[0], e[2], e[3]]), [[d, b9('BD'), 0], [720 + 80 + d, 1 | b9('BD') | b9('SD'), b9('BD')]], 'step 1 BD, step 4 (swung +80) BD (accented) + SD, with TOTAL ACCENT');
+    assert.equal(T.stepPosts().filter(q => q.F < F0 + 3840 * fpt - 4).length, 16, 'a post per step, none for a second hit');
+  }
+  // the last step of a measure: the clamp keeps its second hit before the next measure's step 1 (32nds at SHUFFLE 7, 38 ms at 300 BPM)
+  const L = drum9({ sel: 0, bl: 1 }, {}, { 0: { sd: '.......f' }, 1: { sd: 'x' } }, { 0: { sc: 2, sh: 7, fl: 16, l1: 8 }, 1: { sc: 1 } });
+  const pl = C.compilePlan(L, L.ui, L.x, S9({ bpm: 300 })), T = rig(), fpt = T.fptOf(300);
+  assert.equal(pl.mFl[0], 59);
+  T.q.set({ plan: pl, sync: true }); T.play(0, 0, 300); T.run(Math.ceil(pl.mT[2] * fpt) + 128);
+  const ticks = T.targs.slice(0, 3).map(e => e[0]);
+  [7 * 120 + 60, 7 * 120 + 60 + 59, 960].forEach((t, j) => near4(ticks[j], t * fpt, 'hit ' + j));
+  assert.ok(ticks[1] < ticks[2]);
+  // events(F) returns the frames to the pending hit
+  const E = rig(), p1 = C.compilePlan(drum9({}, {}, { 0: { bd: 'f' } }, { 0: { fl: 16 } }));
+  E.q.set({ plan: p1, sync: true }); E.play(0, 0, 120); E.songEvents(0);
+  assert.equal(E.q.events(0), 73 * 25, 'to the second hit (73 ticks), not the next step (240)');
+  assert.equal(E.q.events(73 * 25), 167 * 25);
+});
+
+test('7c a flam\'s second hit across a re-anchor (§3.5): a seek / start / loop wrap inside its spacing plays it exactly when the song path plays its note (the step\'s tick before t0, its second hit at or after) — across a measure\'s end too (locate looks one step back); a stop drops it; the pending hit always due before the next step at the clamp\'s limit', () => {
+  const D = drum9({ sel: 0, bl: 1 }, {}, { 0: { bd: 'x..............F', sd: '.f' }, 1: { ht: 'x', bd: '.x' } }, { 0: { fl: 16, sh: 4 }, 1: { fl: 9 } });
+  const p = C.compilePlan(D), o = C.rollOpts(D), tab = C.mapTable(D.map, 'tr909'), fpt = 25, cyc = p.mT[2];
+  assert.equal(p.mFl[0], 73);
+  const both = (t0, play) => {
+    const A = rig(); A.q.set({ plan: p, sync: true, prim: C.primaries(D.map, 'tr909') }); A.run(1280); play(A); A.run(cyc * fpt * 2);
+    const B = rig(); B.setNotes(C.toNotes(C.rollPlan(D, 120), { t0: 0, t1: cyc * 4, ...o })); B.run(1280); play(B); B.run(cyc * fpt * 2);
+    return [trigHits(A), noteHits(B, tab)];
+  };
+  // seeks around step 2's flam (tick 240 + 60, its second at 373) and step 16's (3600, 3673): the step before t0, across the measure end
+  for (const t0 of [300, 301, 340, 373, 374, 3601, 3673, 3674, 3840, 3841]) {
+    const [a, b] = both(t0, X => X.play(1280, t0, 120, { fresh: false }));
+    assert.deepEqual(a.slice(0, 6), b.slice(0, 6), 'seek to ' + t0);
+    assert.ok(a.length > 6);
+  }
+  const [a1] = both(3700, X => X.play(1280, 3700, 120, { fresh: false }));
+  assert.ok(a1.every(h => h[0] >= 1280));
+  // a loop wrap whose loop start lies inside a spacing: the second hit after each wrap, as the note's
+  for (const ls of [301, 3601]) {
+    const [a, b] = both(0, X => X.play(1280, 0, 120, { loop: true, ls, le: ls + 600, fresh: true }));
+    assert.deepEqual(a.slice(0, 20), b.slice(0, 20), 'loop from ' + ls);
+    assert.ok(a.filter(h => h[0] > 1280 + 600 * fpt).length > 3);
+  }
+  // a stop between the two hits: dropped
+  const S = rig(); S.q.set({ plan: p, sync: true }); S.play(0, 0, 120); S.run(320 * fpt);
+  S.transport({ play: false }); S.run(cyc * fpt);
+  assert.deepEqual(S.targs.map(e => Math.floor(e[0] / fpt)), [0, 300], 'step 2\'s second hit (373) dropped at the stop');
+  // the clamp's limit: a spacing of g − 1 still fires before the next step, every scale and shuffle
+  for (let sc = 1; sc <= 4; sc++) for (let sh = 1; sh <= 7; sh += 3) {
+    const q = C.compilePlan(drum9({}, {}, { 0: { bd: 'ffffffffffffffff' } }, { 0: { sc, sh, fl: 16, l1: sc > 2 ? 12 : 16 } }), undefined, undefined, S9({ bpm: 300 }));
+    const R = rig(); R.q.set({ plan: q, sync: true }); R.play(0, 0, 300); R.run(Math.ceil(q.mT[1] * R.fptOf(300)) * 2 + 256);
+    const ref = ref9(q, q.mT[1] * 2);
+    assert.deepEqual(R.targs.slice(0, ref.length).map(e => e[1]), ref.map(e => e[2]), `${sc}/${sh}: every first and second hit, in order`);
+  }
+});
+
+test('7c valid() (§3.5): a 909 plan with a short ac / fl / mSh / mFl, one of the four missing, or a shuffle / spacing not under a step is refused; set() keeps the playing one', () => {
+  const p = C.compilePlan(drum9({}, {}, { 0: { bd: 'f' } }));
+  assert.ok(DrSeq.valid(p));
+  const bad = [{ ...p, ac: new Uint16Array(3) }, { ...p, fl: new Uint16Array(3) }, { ...p, mSh: new Uint8Array(0) }, { ...p, mFl: new Uint16Array(0) }, { ...p, ac: undefined },
+    { ...p, mFl: undefined }, { ...p, mSh: new Uint8Array([240]) }, { ...p, mFl: new Uint16Array([240]) }, { ...p, mFl: [NaN] }, { ...p, mSh: [-1] }];
+  for (const b of bad) assert.equal(DrSeq.valid(b), false);
+  const T = rig(); T.q.set({ plan: p }); for (const b of bad) T.q.set({ plan: b, at: 'now' });
+  assert.equal(T.q.pl, p);
+});
+
+test('7c once (§3.4, §3.5, review #17): TRACK PLAY with CYCLE off falls silent after the plan\'s end; a re-anchor before it plays from there to the end, at or past it stays silent (a seek, a loop wrap landing there) — never wrapped; a free once with a located start ends with the track; CYCLE back on in place before the end loops', () => {
+  const D = drum9({ mode: 2, cyc: false }, {}, { 0: { bd: 'x...x...x...x...' }, 1: { sd: 'x.......x.......' } }, {}, { 0: [0, 1, 0] });
+  const p = C.compilePlan(D), end = p.mT[3];
+  assert.equal(p.once, 1);
+  let T = rig(); T.q.set({ plan: p, sync: true }); T.play(0, 0, 120); T.run(end * 25 * 3);
+  assert.equal(T.targs.length, 10); assert.equal(T.stepPosts().length, 48, 'three measures, then silent');
+  assert.ok(T.targs.every(e => e[0] < end * 25));
+  T.play(T.frames, 3840 * 2 + 1, 120); T.run(end * 25);
+  assert.deepEqual(T.targs.slice(10).map(e => e[1]), [b9('BD'), b9('BD'), b9('BD')], 'a seek into the last measure: its rest');
+  T.play(T.frames, end, 120); T.run(end * 25); assert.equal(T.targs.length, 13, 'a seek to the end: silent');
+  T.play(T.frames, end * 5 + 3, 120); T.run(end * 25); assert.equal(T.targs.length, 13, 'past it: silent (never wrapped into the track)');
+  T = rig(); T.q.set({ plan: p, sync: true }); T.play(0, 0, 120, { loop: true, ls: end + 960, le: end + 1920 }); T.run(end * 25 * 2);
+  assert.equal(T.targs.length, 10, 'a loop wrap landing past the end: silent');
+  T = rig(); T.q.set({ plan: p, sync: true }); T.play(0, 0, 120, { loop: true, ls: 3840, le: end + 1920 }); T.run(end * 25 * 3);
+  assert.ok(T.targs.length > 14, 'a loop wrap landing before the end: from there again');
+  // free, a located start: the pre-roll is the track's rest — once ends there
+  const pf = C.compilePlan(D, D.ui, { ...D.x, sync: false }, S9({ loc: 1 }));
+  assert.deepEqual([Array.from(pf.mKey), pf.loopFrom, pf.once], [[1, 0, 0, 1, 0], 2, 1]);
+  T = rig(); T.q.set({ plan: pf, sync: false, run: false, bpm: 120 }); T.run(256); T.q.set({ run: true }); T.run(end * 25 * 2);
+  assert.equal(T.stepPosts().length, 32, 'measures 2 and 3, then silent');
+  // CYCLE on again ('now', the same shape) before the end: it loops
+  const pc = C.compilePlan(drum9({ mode: 2, cyc: true }, {}, { 0: { bd: 'x...x...x...x...' }, 1: { sd: 'x.......x.......' } }, {}, { 0: [0, 1, 0] }));
+  T = rig(); T.q.set({ plan: p, sync: true }); T.play(0, 0, 120); T.run(3840 * 25); T.q.set({ plan: pc, at: 'now' }); T.run(end * 25 * 2);
+  assert.ok(T.stepPosts().length > 64, 'looping');
+});
+
+test('7c guide (§3.5): TAP write\'s click — the RS (bit 6) at each step on a beat of its measure (o % 960 = 0), unaccented (a trigger of its own on a TOTAL ACCENT step), never in st and never with drStep; never on an 808 / 606 plan', () => {
+  const D = drum9({ mode: 1, wm: 1, guide: true }, {}, { 0: { ac: '....x', bd: 'x...x...x', ch: '..x' } });
+  const p = C.compilePlan(D), T = rig();
+  assert.equal(p.guide, 1); assert.equal(p.st[0] & 0x40, 0, 'never in st');
+  T.q.set({ plan: p, sync: true }); T.play(0, 0, 120); T.run(3840 * 25);
+  assert.deepEqual(T.targs.map(e => [Math.floor(e[0] / 25), e[1], e[2]]), [[0, b9('BD') | 0x40, 0], [480, b9('CH'), 0], [960, 1 | b9('BD'), 0], [960, 0x40, 0], [1920, b9('BD') | 0x40, 0], [2880, 0x40, 0]]);
+  assert.equal(T.steps.length, 4, 'the hook for the step\'s sounds only');
+  const W = drum9({ mode: 1, wm: 1, guide: true }, {}, { 0: { bd: 'x' } }, { 0: { sc: 3, l1: 12 } }), T2 = rig();
+  T2.q.set({ plan: C.compilePlan(W), sync: true }); T2.play(0, 0, 120); T2.run(3840 * 25);
+  assert.deepEqual(T2.targs.map(e => Math.floor(e[0] / 25)), [0, 960, 1920, 2880], '8th triplets: steps 1, 4, 7, 10');
+  for (const q of [plan({ mode: 1 }, {}, PAT), C.compilePlan(drum9({ mode: 1, wm: 1, guide: false }, {}, { 0: { bd: 'x' } }))]) {
+    const R = rig(); R.q.set({ plan: q, sync: true }); R.play(0, 0, 120); R.run(3840 * 25);
+    assert.ok(R.targs.length >= 1 && R.targs.every(e => !(e[1] & 0x40)), 'no click');
+  }
+});
+
+test('7c simplePlan(masks, pre, x) (§1.5, review #15): a one-measure 909 plan for the engine\'s warm-up — accents and flams & the step and their lanes, the shuffle (16ths / 32nds) and the spacing in ticks (clamped), once / guide; valid; without x today\'s plan', () => {
+  const p0 = DrSeq.simplePlan([3, 4, 5], 4);
+  assert.ok(!('ac' in p0) && !('mSh' in p0) && DrSeq.valid(p0));
+  const masks = [b9('BD') | b9('SD') | 1, b9('CH'), b9('SD'), b9('RS')];
+  const p = DrSeq.simplePlan(masks, 3, { ac: [0xFFF, 0xFFF, 0, 0xFFF], fl: [0xFFF, 0xFFF, b9('SD'), 0xFFF], sh: 60, fm: 500, once: true, guide: 1 });
+  assert.deepEqual([Array.from(p.ac), Array.from(p.fl), Array.from(p.mSh), Array.from(p.mFl), p.once, p.guide], [[b9('BD') | b9('SD'), b9('CH'), 0, 0], [b9('BD') | b9('SD'), 0, b9('SD'), 0], [60], [179], 1, 1]);
+  assert.ok(DrSeq.valid(p));
+  assert.notEqual(p.key, DrSeq.simplePlan(masks, 3, { sh: 60 }).key); assert.notEqual(p.shape, DrSeq.simplePlan(masks, 3, { sh: 40 }).shape);
+  assert.deepEqual([Array.from(DrSeq.simplePlan(masks, 1, { sh: 60 }).mSh), Array.from(DrSeq.simplePlan(masks, 3, {}).mFl)], [[0], [19]], 'triplets unswung; 19 ticks (10 ms at 120) by default');
+  const T = rig(); T.q.set({ plan: DrSeq.simplePlan(masks, 3, { ac: [0xFFF, 0xFFF, 0, 0xFFF], fl: [0xFFF, 0xFFF, b9('SD'), 0xFFF], sh: 60, fm: 500, once: true }), sync: true });
+  T.play(0, 0, 120); T.run(960 * 25 * 2);
+  assert.deepEqual(T.targs.map(e => [Math.floor(e[0] / 25), e[1], e[2]]), [[0, masks[0], b9('BD') | b9('SD')], [179, b9('BD') | b9('SD') | 1, b9('BD') | b9('SD')], [300, b9('CH'), b9('CH')], [480, b9('SD'), 0], [659, b9('SD'), 0], [780, b9('RS'), 0]], 'once: one measure');
+});
+
+test('7c no allocation in events() with a 909 plan (accents, shuffle, flams, guide, once) over many spans, swaps and re-anchors', () => {
+  const D = drum9({ mode: 1, wm: 1, guide: true }, {}, { 0: { ac: 'x...x', bd: 'F.f.x.f.', sd: '.x.f', ch: 'xXxXxXxX' } }, { 0: { sh: 5, fl: 14 } });
+  const T = rig(); T.q.set({ plan: C.compilePlan(D), sync: true }); T.play(0, 0, 137);
+  T.run(256);
+  const p2 = C.compilePlan(drum9({ mode: 2, cyc: false }, {}, { 1: { bd: 'ffff' } }, { 1: { sh: 7, sc: 2 } }, { 0: [1, 1, 1] }));
+  noAlloc(SCOPE, () => {
+    T.run(48000 * 2);
+    T.q.set({ plan: p2, at: 'bar' });
+    T.run(48000 * 2);
+    T.play(T.frames + 64, 3840 + 7, 140); T.run(48000);
+  });
+  assert.ok(T.targs.length > 25, String(T.targs.length));
+});
+
+test('7c D5 (§4, §12.6\'s shape): the 909\'s pattern through its sequencer vs → Piano roll\'s notes through the song path — the same hits (sound and state velocity) on the same frames at 120 BPM / 48 kHz at SHUFFLE off and two levels, with flams and every accent state; at 97 BPM on the same 4-frame grid point or the next', () => {
+  const pats = {
+    0: { ac: 'x.......x...x...', bd: 'X...x...F...x..x', sd: '....x.......f..x', ch: 'xX.xxX.xx.xxX.x.', oh: '..x.......x.....', cr: 'x...............', hc: '....x.......x...' },
+    1: { ac: '....x.......x..x', bd: 'x..x..f.x.x.....', sd: '....F...x...f.xx', lt: '..........x..f..', mt: '...........F....', ht: '............f...', rd: 'x.x.x.x.x.x.x.x.', rs: '.x.....x..x.....', ch: 'X..x....X..x....' },
+  };
+  for (const [sh0, sh1, sc1] of [[1, 1, 1], [3, 5, 1], [7, 7, 2]]) for (const [bpm, exact] of [[120, true], [97, false]]) {
+    const D = drum9({ sel: 0, bl: 1 }, {}, pats, { 0: { sh: sh0, fl: 12 }, 1: { sh: sh1, fl: 16, sc: sc1 } });
+    const s = C.payload(D, S9({ bpm })), bars = 8, t1 = 3840 * bars, Fend = Math.floor((t1 * (48000 * 60 / (bpm * 960))) / 128 - 1) * 128;
+    const A = rig(); A.q.set(s); A.play(0, 0, bpm); A.until(Fend);
+    const notes = C.toNotes(C.rollPlan(D, bpm), { t0: 0, t1, ...C.rollOpts(D, { model: 'tr909', vals: {} }) });
+    const B = rig(); B.setNotes(notes); B.play(0, 0, bpm); B.until(Fend);
+    const a = trigHits(A), b = noteHits(B, C.mapTable(D.map, 'tr909')), msg = `${bpm} BPM, SHUFFLE ${sh0} / ${sh1} (${sc1 === 2 ? '32nds' : '16ths'})`;
+    assert.ok(a.length > 200 && A.targs.some(e => e[1] === ((e[1] & 0x03E) | (e[1] & 1)) && e[1] & 0x03E), msg + ': a busy pattern with flams');
+    assert.ok(new Set(a.map(h => h[2])).size === 4, msg + ': every state velocity');
+    assert.equal(b.length, a.length, msg + ': the same number of hits');
+    if (exact) assert.deepEqual(b, a, msg + ': bit-identical frames');
+    else b.forEach((h, j) => { const q = a[j]; assert.deepEqual([h[1], h[2]], [q[1], q[2]], msg); assert.ok(Math.abs(h[0] - q[0]) <= 4 && h[0] % 4 === 0 && q[0] % 4 === 0, `${msg} hit ${j}: ${h[0]} vs ${q[0]}`); });
+  }
+});
+
+test('7c property, D5 (§4): random 909 blocks — every SCALE, SHUFFLE and FLAM, accents of both kinds, flams on every flam lane — through the sequencer and through → Piano roll\'s notes: bit-identical at 120 BPM / 48 kHz, the same 4-frame grid point or the next at 97 and 133 BPM', () => {
+  let a0 = 0x909;
+  const r = () => { a0 = (a0 + 0x6D2B79F5) >>> 0; let t = a0; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  for (let round = 0; round < 12; round++) {
+    const d = clone(C.normDrum(undefined, 'tr909'));
+    for (let p = 0; p < 4; p++) {
+      d.keys[p] = { sc: 1 + Math.floor(r() * 4), l1: 1 + Math.floor(r() * 16), sh: 1 + Math.floor(r() * 7), fl: 9 + Math.floor(r() * 8), ch: 0 };
+      for (let s = 0; s < 16; s++) { d.st[p][s] = r() < 0.6 ? Math.floor(r() * 4096) : 0; d.ac[p][s] = Math.floor(r() * 4096); d.fm[p][s] = r() < 0.5 ? Math.floor(r() * 4096) : 0; }
+    }
+    Object.assign(d.ui, { mode: 0, sel: 0, bl: 3 });
+    const D = C.normDrum(d, 'tr909'), tab = C.mapTable(D.map, 'tr909');
+    for (const [bpm, exact] of [[120, true], [97, false], [133, false]]) {
+      const pl = C.compilePlan(D, D.ui, D.x, S9({ bpm })), t1 = Math.min(pl.mT[pl.n] * 2, 3840 * 6), Fend = Math.floor((t1 * (48000 * 60 / (bpm * 960))) / 128 - 1) * 128;
+      const A = rig(); A.q.set(C.payload(D, S9({ bpm }))); A.play(0, 0, bpm); A.until(Fend);
+      const B = rig(); B.setNotes(C.toNotes(C.rollPlan(D, bpm), { t0: 0, t1, ...C.rollOpts(D) })); B.play(0, 0, bpm); B.until(Fend);
+      const a = trigHits(A), b = noteHits(B, tab), msg = `round ${round}, ${bpm} BPM`;
+      assert.equal(b.length, a.length, msg + ': the same number of hits');
+      if (exact) assert.deepEqual(b, a, msg);
+      else b.forEach((h, j) => { const q = a[j]; assert.deepEqual([h[1], h[2]], [q[1], q[2]], msg); assert.ok(Math.abs(h[0] - q[0]) <= 4, `${msg} hit ${j}: ${h[0]} vs ${q[0]}`); });
+    }
+  }
+});
+
+test('7c the #34 hook of a flam\'s second hit: lastNote its lanes\' lowest primary, v their highest state velocity; a stop\'s gate off', () => {
+  const D = drum9({}, {}, { 0: { ac: 'x', bd: 'F', sd: 'f', ch: 'x' } }, { 0: { fl: 16 } });
+  const T = rig(); T.q.set({ plan: C.compilePlan(D), sync: true, prim: C.primaries(D.map, 'tr909') }); T.play(0, 0, 120); T.run(200 * 25);
+  assert.deepEqual(T.steps.map(e => [Math.floor(e[0] / 25), e[1], e[2]]), [[0, 36, 127 / 127], [73, 36, 127 / 127]], 'BD both 127, SD total 119: the highest; the second hit BD + SD with the step\'s TOTAL ACCENT');
+  assert.deepEqual(T.targs.map(e => e.slice(1)), [[1 | b9('BD') | b9('SD') | b9('CH'), b9('BD')], [1 | b9('BD') | b9('SD'), b9('BD')]]);
+  T.transport({ play: false }); T.run(128);
+  assert.deepEqual(T.steps.at(-1).slice(1), [-1, 0]);
+});
+
+// review 1 F4: STOP/CONT on a free 909 continues where it stopped (§3.3's [R] row) — drum-core sends the plan's tick after the
+// last step heard as the payload's `from`, and a free START begins its clock there (the cursor at the first step at or after
+// it, the cycle looping on); without it a START is step 1 of measure 1, as the 808's and the 606's always are
+test('7c review 1 F4: a free START at `from` — the cursor at the first step at or after that tick of the plan (posts m / s / k from there, at their ticks\' frames), then the cycle; without `from` step 1 of measure 1; a running machine ignores it', () => {
+  const D = drum9({ mode: 0, sel: 0, bl: 2 }, { sync: false }, { 0: { bd: 'x...x...x...x...' }, 1: { sd: 'x...x...x...x...' }, 2: { ch: 'xxxxxxxxxxxxxxxx' } });
+  const p = C.compilePlan(D), fpt = 25;
+  assert.deepEqual([p.n, Array.from(p.mKey)], [3, [0, 1, 2]]);
+  const from = p.mT[2] + 7 * 240 + 1;                    // (the third pattern's step 8 heard: from its next tick)
+  let T = rig(); T.q.set({ plan: p, sync: false, run: false, bpm: 120 }); T.run(256);
+  T.q.set({ run: true, from }); const F0 = T.frames; T.run(3840 * fpt * 2);
+  const ps = T.stepPosts();
+  assert.deepEqual(ps.slice(0, 3).map(q => [q.m, q.k, q.s]), [[2, 2, 8], [2, 2, 9], [2, 2, 10]], 'step 9 of the third pattern first');
+  near4(ps[0].F, F0 + (p.mT[2] + 8 * 240 - from) * fpt, 'at its tick from `from`');
+  const w = ps.findIndex(q => q.m === 0);
+  assert.deepEqual([w, ps[w].s, ps[w].k], [8, 0, 0], 'then the cycle from its first pattern');
+  T.q.set({ run: false }); T.run(4800); const n = T.stepPosts().length;
+  T.q.set({ run: true }); T.run(128);
+  assert.deepEqual([T.stepPosts()[n].m, T.stepPosts()[n].s], [0, 0], 'a START without `from`: step 1 of measure 1');
+  T.q.set({ plan: p, from: 5000 }); T.run(6000);
+  assert.ok(T.stepPosts().slice(n).every((q, j) => j === 0 || q.s === T.stepPosts()[n + j - 1].s + 1 || q.s === 0), 'running: `from` ignored (no jump)');
+  for (const bad of [-5, NaN, 'x', Infinity]) { T = rig(); T.q.set({ plan: p, sync: false, run: true, bpm: 120, from: bad }); T.run(128); assert.deepEqual([T.stepPosts()[0].m, T.stepPosts()[0].s], [0, 0], String(bad)); }
+});
+
+// review 1 F5: a synced CYCLE-off track that has ended is silent (its cursor at INF); CYCLE turned on then (a 'now' plan of the
+// same shape) was taken in place and the cursor stayed at INF until a re-anchor — now a once → cycling change after the end
+// re-locates at the song position (the wrapped one plays at once); before the end it swaps in place as before
+test('7c review 1 F5: synced, CYCLE on after a CYCLE-off track ended — the next events() re-locate at the song position and play its wrapped step; CYCLE on before the end: in place, looping at the end', () => {
+  const pats = { 0: { bd: 'x...x...x...x...' }, 1: { sd: 'x.......x.......' } };
+  const p = C.compilePlan(drum9({ mode: 2, cyc: false }, {}, pats, {}, { 0: [0, 1] })), pc = C.compilePlan(drum9({ mode: 2, cyc: true }, {}, pats, {}, { 0: [0, 1] }));
+  const end = p.mT[2], fpt = 25;
+  assert.deepEqual([p.once, pc.once, DrSeq.sameShape(p, pc)], [1, 0, true]);
+  let T = rig(); T.q.set({ plan: p, sync: true }); T.play(0, 0, 120);
+  T.run(end * fpt + 1900 * fpt);                         // (the song in bar 3: the track over, silent)
+  const n = T.stepPosts().length;
+  assert.equal(n, 32);
+  T.q.set({ plan: pc, at: 'now' });
+  const F1 = T.frames; T.run(3840 * fpt);
+  const ps = T.stepPosts().slice(n);
+  assert.ok(ps.length >= 8, 'it plays again (' + ps.length + ')');
+  assert.deepEqual([ps[0].m, ps[0].s], [0, 8], 'the wrapped position: bar 3 = the cycle\'s measure 1, its step 9');
+  near4(ps[0].F, (end + 8 * 240) * fpt, 'at its song tick\'s frame');
+  assert.ok(ps[0].F >= F1);
+  // before the end: in place (the cursor kept), then looping
+  T = rig(); T.q.set({ plan: p, sync: true }); T.play(0, 0, 120); T.run(3840 * fpt);
+  const m = T.stepPosts().length; T.q.set({ plan: pc, at: 'now' }); T.run(end * fpt * 2);
+  const q = T.stepPosts().slice(m);
+  assert.deepEqual([q[0].m, q[0].s], [1, 0], 'in place: measure 2 next');
+  assert.ok(q.length >= 48, 'looping');
 });
