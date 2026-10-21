@@ -85,8 +85,15 @@ cv-drum.js:138 (`machOf`), 182 (`sessOf`), 361 (`six`); main.js:150 (the record 
 tempo undo); tests/bench-scenarios.mjs:262 (`six`). engine.js has none (it carries the machine as a string). **And the global
 name tables** (the 808's sound codes read as every machine's — right for the 606, whose sounds are a subset, wrong for the 909's
 ids 7 / 8): drum-core.js:155–171 (`mapTable`, `primaries`, `drumRows`), 215–238 (`normMap`, `normSmp`), 535–537 (`slots`);
-cv-drum.js:76 (`SOUND_CODE`), 306 (`pads.on`), 775–777 (the pads' codes and names), 825 (the lit pads), 853–856 (MAP…), 866–867
-(SOUNDS…); main.js:160 (`drumNeeds`), 3447 (`drumLoad`'s memory sum) — each reads `PERS[machine].sounds` / `names` instead.
+cv-drum.js:76 (`SOUND_CODE`), 306 (`pads.on`), 775–777 (the pads' codes and names), 786 (a pad's slot title), 825 (the lit
+pads), 853–856 (MAP…), 866–867 (SOUNDS…); main.js:160 (`drumNeeds`), 3447 (`drumLoad`'s memory sum) — each reads
+`PERS[machine].sounds` / `names` instead. **Also binary (review #13, #14)**: cv-drum's `six` (361) feeds ≈ 20 `six ? 606 : 808`
+branches (158, 329, 364, 529, 625, 645, 666–733, 773–779, 883–892) — a 909 panel would take the 808's grid, pads, texts and
+cancel rule at each; tests/bench-scenarios.mjs:267 / 269 (the bench's slot names `DC.SOUNDS`, the graph key `'d6' : 'd8'`);
+**and two tests use `'tr909'` as the unknown machine** — tests/drum-core.test.mjs:1001 (`normDrum({ m: 'tr909' })` must read
+as the 808's) and tests/engine-track.test.mjs:1163 (a `machine: 'tr909'` patch must build no machine and post `drumsErr`):
+both fail the day `PERS.tr909` / `MACH.tr909` exist; their owners swap the id for another unknown one (`'tr999'`: the same
+check, not weakened — §11).
 
 ## 1. The third machine in the family
 
@@ -128,8 +135,12 @@ ride and the crash** (the 808's cowbell and cymbal slots — the 909 has neither
   lanes `0x83E`, the flam lanes `0x03E`. **Names move into `PERS`**: `PERS.<m>.sounds` (the record's map / slot keys) and `.names`
   (the roll's rows, MAP…, SOUNDS…, the pads) — the 808's and the 606's exactly today's `SOUNDS` / `SOUND_NAMES` (their records and
   payloads unchanged), the 909's `['bd', 'sd', 'lt', 'mt', 'ht', 'rs', 'cp', 'rd', 'cr', 'oh', 'ch', …]` / `['Kick', 'Snare', 'Low
-  tom', 'Mid tom', 'Hi tom', 'Rim shot', 'Hand clap', 'Ride', 'Crash', 'Open hat', 'Closed hat', …]` (ids 11–15: none) [C]. The sites
-  that read the global tables are §0's list.
+  tom', 'Mid tom', 'Hi tom', 'Rim shot', 'Hand clap', 'Ride', 'Crash', 'Open hat', 'Closed hat', …]` [C]. **Ids 11–15 keep the
+  808's keys** (`lc mc hc cl ma` and their names: every `for (const s of sounds)` loop, `slots()`, `normMap` and `in` test stays
+  total — no `''` / `undefined` key in a record) and are inert as the 606's absent sounds are: `[]` in the 909's map, never a
+  slot, never a row, never in `sids` (review #12). The global exports (`SOUNDS`, `SOUND_NAMES`, `DEFAULT_MAP`, `LANE_SOUND`, …)
+  stay as they are (= `PERS.tr808`'s): golden-drums / golden-606 / the bench import them. The sites that read the global tables
+  are §0's list.
 - **Circuits**: BD, SD, LT, MT, HT, RS, HC (seven analog circuits), **the hats (one voice, two sounds** — R9 §9: one counter, ROM and
   VCA, a CLOSED / OPEN select), crash, ride (two ROM voices). Latching as 7a §1.2: one trigger per circuit per chunk, applied in lane
   order — so an OH and a CH latched in one chunk play the **closed** hat (its trigger last; they never sound together on the 909)
@@ -159,7 +170,9 @@ ride and the crash** (the 808's cowbell and cymbal slots — the 909 has neither
   below 100, ghosts: `round(N0 · (0.6 + 0.4 (v − 1) / 99))`. So a louder velocity is never a weaker code, and every state has an
   exact velocity: → Piano roll writes **100** (normal), **127** (both), and **110 / 119** for per-voice and total accent in the order
   their codes take at the knob (a voice without per-voice accent: 100 / 127) — `vel9(sound, state, u)` in drum-core, its inverse in
-  the machine; the two agree on a grid of u (a test, §12.3).
+  the machine; the two agree on a grid of u (a test, §12.3). **Open (review P-1, the lead's)**: this rank law makes a written
+  note's state depend on TOTAL ACCENT — notes written at one knob position swap per-voice and total accent when the knob (or a
+  cable on `drum.ac`) crosses `T(u) = L`, while the sequencer does not; the alternative is fixed velocities per state.
 - The 909's own MIDI receive treats a note as a trigger (velocity's effect undocumented, R9 §11) [R]: our law is ours, as 7a's.
 
 ### 1.4 Notes into hits
@@ -180,13 +193,15 @@ machine, `drGain` asks `Dr808.gain('tr909', …)`, `drSeqMsg` routes its payload
 - **`warmDrums`**: a 909 round after the 606's (engine.js:3318–3346's pattern): two panels with every knob off its integers, every
   sound plain / instrument-accented / total-accented / both (a retrigger), OH + CH in one chunk and the choke, the crash and the ride
   at both ends of TUNE (the clocks and the staircase at two ratios), a free plan through `DrSeq` with a shuffle and a flam on two
-  lanes, an OS change; the round **decodes the ROM images** (§2.4) if no 909 was built yet, so a later first 909 `create` costs ≈
+  lanes (built by `DrSeq.simplePlan(masks, pre, x)` with S9's optional `x = { ac, fl, sh, fm }` — today's `simplePlan` makes no
+  909 arrays, so the round could not reach the new DrSeq paths: review #15), an OS change; the round **decodes the ROM images** (§2.4) if no 909 was built yet, so a later first 909 `create` costs ≈
   the 606's (7b: ≈ 1–6 ms) and never a decode. Its cost recorded in §14 (node; the iPad's first-context ready time in the lead's
   session). A missing machine never throws there (7a §10.2).
 - **`drClock`** unchanged (the 909 reads no tempo clock: its hats are not tempo-linked, R9 §9).
 - **The flam's second hits** reach the machine through `DrSeq` (§3.5) — `seqEvents` returns frames to the next step **or** the next
   pending flam hit (engine.js:2849: unchanged code, DrSeq's `events` answers it); `drStep` (#34) runs for a flam's hit as for a
-  step (a note-like event: the rack's RETRIG, lastNote), so the scope note of 7a D5 (empty FX panel, no cables) is enough.
+  step (a note-like event: the rack's RETRIG, lastNote), so the scope note of 7a D5 (empty FX panel, no cables) is enough. A
+  flam's second hit posts no `{t:'step'}` (the step's post covers it: the LEDs and COMPOSE-like readers see steps only) [C].
 - Nothing else: `drHit` (a note's velocity → the machine's `hit`, which owns the 909's velocity law, §1.3), `renderDrums`, the
   monitor, `postMon`, the Track. **No DSP-list change.**
 
@@ -215,7 +230,7 @@ machine, `drGain` asks `Dr808.gain('tr909', …)`, `drSeqMsg` routes its payload
 
 | circuit | topology (R9) | the numbers | blocks |
 |---|---|---|---|
-| **noise** (shared) | a 31-stage shift register with XOR feedback (taps 31, 13: period 2³¹ − 1), filled with ones at power-up, clocked ≈ 300 kHz; 0 / +15 V bits (§7) | clock 300 kHz [R? ± 20 %: 0.3–0.46 MHz] | **new**: the register's bit stream as a function of absolute time — at a wake the state jumps to its absolute position by GF(2) polynomial powers (x^n mod the polynomial: a few dozen 31-bit multiplications), then steps; each OS sample takes the **mean of the bits** inside it (an exact box integral of the piecewise-constant stream: deterministic, alias-reduced); the salt an offset into the sequence [C]. **One stream** for SD, BD's click, the toms and HC: the snare / clap correlation is the hardware's [R] |
+| **noise** (shared) | a 31-stage shift register with XOR feedback (taps 31, 13: period 2³¹ − 1), filled with ones at power-up, clocked ≈ 300 kHz; 0 / +15 V bits (§7) | clock 300 kHz [R?: 0.3–0.46 MHz with the parts' spread, R9 §7 — not "± 20 %"] | **new**: the register's bit stream as a function of absolute time — at a wake the state jumps to its absolute position by GF(2) polynomial powers (x^n mod the polynomial: a few dozen 31-bit multiplications), then steps; each OS sample takes the **mean of the bits** inside it (an exact box integral of the piecewise-constant stream: deterministic, alias-reduced); the bit index of OS sample i is the integer `floor(i · f_clk / fs)` with `f_clk` a whole number of Hz (exact below 2⁵³ for days of frames — never a running sum of a rounded ratio, which drifts with the span splits at 44.1 kHz: review #24); the salt an offset into the sequence [C]. **One stream** for SD, BD's click, the toms and HC: the snare / clap correlation is the hardware's [R] |
 | **BD** | a triangle VCO (integrator + comparator + ± 1 switch, reset to one phase at each hit) → diode shaper → VCA Q12 with ENV1 (clamped ≈ 2.6 V, a hold ≈ 50–60 ms, then DECAY); a pitch envelope C9 into the VCO's control (TUNE = its decay); the click: a differentiated pulse through a Sallen-Key low-pass + the noise band-passed, its own VCA Q6 (ATTACK) and envelope; summed by IC11a, LEVEL its feedback (§2) | **f_base 49.5 Hz** [R measured; 56 Hz derived — R9 §15 decides], sweep Δf ≈ 216–247 Hz, **τ 6.8–29.4 ms** (TUNE 0–10, C9 0.33 µF), DECAY τ 14–107 ms after the hold; click LP 3.7 kHz Q 3.1, noise 26 Hz–513 Hz; harmonics re H1 −28 / −25.7 / −41 dB [R] | the VCO as a state machine at the OS rate (the comparator's switching instant placed by linear interpolation inside the sample, its ramp's corner band-limited by a polyBLAMP-type correction — 7a §2.1's rule: the alias-free choice is V9's [C]); the shaper a memoryless diode law (`jTab`-style table, 7b); envelopes switched first-order (7a); filters `bil2` / `skHP` |
 | **SD** | two triangle VCOs (1 : 1.5) on one CV generator, VCO-1 reset at the hit; a pitch bend on VCO-1 (≈ +216 Hz, τ ≈ 5.7 ms); two tone VCAs (ENV3, ENV2); noise → HP 48 Hz → SK LP 8.5 kHz → (a) HP 1.52 kHz → VCA Q48, ENV4 (TONE) and (b) SK HP 4.05 kHz → VCA Q47, ENV5 (a 2 ms crack); SNAPPY the summing feedback (§3) | VCO-1 117–231 Hz over TUNE (173.5 at 5), ratio 1.500; ENV3 τ 24, ENV2 21 ms; TONE τ 32–76 ms after a 24 ms hold [R] | the triangle VCO above ×2; `skHP` / `bil2`; switched envelopes |
 | **LT / MT / HT** | each: three triangle VCOs (1 : 0.667 : 1.8) on one TUNE supply, VCO-1 overdriven at the attack (≈ 32 ms), a two-capacitor pitch envelope on the negative supply (22 ms + 220 ms); DECAY sets VCO-2's bloom envelope; the noise band 0.6–1.6 kHz as a tick + a steady part gated into VCO-3 (§4) | VCO-1 at TUNE 0 / 5 / 10: LT 57.0 / 85.8 / 117.2, MT 71.9 / 106.6 / 141.3, HT 82.8 / 125.4 / 166.7 Hz; starts 25–38 % sharp; −20 dB 103–213 ms over DECAY [R] | one `Tom9` class × 3 (a table each); the VCO above ×3 |
@@ -301,7 +316,10 @@ fills our three images is **ours**, made by our own tool from our own recipes, i
   - **ride**: a heavier plate: a bell cluster of a few strong, long low-mid partials, a bright stick ping on every hit, a quieter wash.
 - **Stored as data** (D7): each image a string of one character per word (a 64-symbol alphabet: exactly 6 bits a character), in one
   generated block of `dr-808.js` (`/* ROM909 — generated by tools/rom909.mjs, do not edit */ … /* end ROM909 */`) — ≈ 96 KB of text,
-  precached with the script [C]; decoded once per scope into `Uint8Array`s (the first 909 `create` or the warm-up, ≤ 1 ms in node,
+  precached with the script [C] (dr-808.js 210 KB today → ≈ 380 KB with the 909: no lint rule bounds a line or a file, a
+  string literal parses in well under a millisecond, and the alphabet avoids the backslash, both quotes, the backquote, `$`
+  and `{`, so the block needs no escapes);
+  decoded once per scope into `Uint8Array`s (the first 909 `create` or the warm-up, ≤ 1 ms in node,
   recorded in §14) and shared by every 909 machine of the scope; never `Math.sin` at run time — the tool may use any maths, the
   worklet only reads codes, so the Mac's Chrome and the iPad's WebKit play the same bytes.
 - **Labelled** (D4): the about text, the tile's tip, the extras caption ("Hi-hats and cymbals: our own sounds through the 909's chip
@@ -345,12 +363,16 @@ fills our three images is **ours**, made by our own tool from our own recipes, i
 
 | row | node | jsc | ipad | what |
 |---|---|---|---|---|
-| **d9p** | 0.025 | 0.025 | 0.025 | a typical house pattern: BD on the quarters, CH sixteenths with OH on the off-beat eighths, HC + SD on 2 / 4 (a flam on the SD), the ride in eighths, a crash once a bar (never asleep), LT / MT / HT once a half, per-voice and total accents, SHUFFLE 3 |
+| **d9p** | **0.035** (review #9; was 0.025) | 0.035 | 0.035 | a typical house pattern: BD on the quarters, CH sixteenths with OH on the off-beat eighths, HC + SD on 2 / 4 (a flam on the SD), the ride in eighths, a crash once a bar (never asleep), LT / MT / HT once a half, per-voice and total accents, SHUFFLE 3 |
 | **d9x** | 0.08 | 0.08 | 0.08 | every lane every 250 ms, both accents, every DECAY / TONE at 10, crash / ride TUNE at 0 (the longest images), flams on all five |
 | **d9m** | 0.025 | 0.025 | 0.025 | the ROM voices: crash + ride + OH every 500 ms (three staircases, filters, envelopes) |
 | **d9i** | 0.0005 | 0.0005 | 0.001 | the machine powered, synced, stopped, silent — gated as row p / d8i / d6i (engine-track), not a `scenarios()` row |
 
-`bench.json` `targets` gain `{ node, ipad }` for d9p, d9x, d9m, d9i; `cv-cost` `COST.synth.tr909 = C('d9p', 'drums', 1, base, voice)`
+d9p's pattern keeps nearly every circuit awake (review #9: BD on the quarters never reaches −100 dB in 500 ms, HC's ≈ 90 ms
+tail and the toms' 103 ms ENV1 stay above it between their hits, the three ROM voices never sleep): with §2.7's own ceilings
+the machine is up to ≈ 0.032 + the Track's ≈ 0.007 (7b's d6p − machine), at the 606's measured share of its ceilings ≈ 0.026
+— so 0.025 would fail a correct build; 0.035 [C] (proposal P-2: or thin d9p to keep 0.025). `bench.json` `targets` gain
+`{ node, ipad }` for d9p, d9x, d9m, d9i; `cv-cost` `COST.synth.tr909 = C('d9p', 'drums', 1, base, voice)`
 from E9's measured d9p; `bench.html` adds **c9** (the 909 at its default panel playing its DEMO synced, `ipad: null`). JSC A/B (the
 lead, IMPL-2b §9's shell method): d9p / d9x and, because `DrSeq` and the shell changed, d8p, d6p, c1 within 3 %; V8: every existing
 row within 2 % (`cpu-gate`).
@@ -379,8 +401,10 @@ row within 2 % (`cpu-gate`).
   the tap-write click; **`tempo`** 37–290 BPM, whole numbers (the display's) [R; C: the knob's law `tempo909(u) = round(37 · (290 /
   37)^u)`, log over the travel, as 7b's].
 - `x`: as 7a's (sync **on** for a new machine, mute / solo 12-bit masks, rec) — **no `swing`**: SHUFFLE is the 909's, per pattern [C].
-- `normDrum(d, 'tr909')` (7a §6's contract): exact lengths, every value in range, masks `& 0x83E` / `& 0x03E`, each bank's tracks cut
-  so their sum ≤ 896, unknown fields dropped, idempotent, never throws; **the machine is `model ?? d.m`** — `'tr909'` only for the
+- `normDrum(d, 'tr909')` (7a §6's contract): exact lengths, every value in range, masks `& 0x83E` / `& 0x03E` **and each `ac` /
+  `fm` mask `& st` of its step** (an accent or a flam is a flag on a sounding voice: a hostile record's flam without its step
+  would play the second hit alone — review #22), each bank's tracks cut so their sum ≤ 896 (tracks 1 → 4 kept in order, the
+  later ones truncated [C]), unknown fields dropped, idempotent, never throws; **the machine is `model ?? d.m`** — `'tr909'` only for the
   exact string (7b §3.1's rule; an 808 / 606 record unchanged, their pins §12.3).
 - The **EXT INST layer** (the 909's MIDI-out pattern, R9 §12) is not stored: the app has no MIDI out yet (7a §4.5) [C].
 
@@ -412,11 +436,11 @@ combination needs it held (a pair, a block, a chain: the second key's down) [C].
 | **TRACK n**, no SHIFT | TRACK PLAY, track n of the bank; **TEMPO held**: also recalls its stored tempo (free: `ui.tempo`; synced: the project's, one tempo edit) |
 | **SHIFT + TRACK n** | TRACK WRITE, track n |
 | **SHIFT + FWD / SHIFT + AVAILABLE MEAS** | bank I / II (from a track mode only) |
-| **key, PATTERN PLAY** (stopped or running) | selects pattern `bank · 48 + grp · 16 + n − 1`; running: **queued to the end of the measure** (`at: 'bar'`); **two keys down together** (the second while the first is held): **block play** `sel … sel + bl`, in order, looping (any two keys of the group; Shift-click the second with a mouse [C]) |
+| **key, PATTERN PLAY** (stopped or running) | selects pattern `bank · 48 + grp · 16 + n − 1`; running: **queued to the end of the measure** (`at: 'bar'`); **two keys down together** (the second while the first is held): **block play** `sel … sel + bl`, in order, looping (any two keys of the group; Shift-click the second with a mouse [C]). **A chain counts as one pattern** (R9 §12): a key inside a chain selects the chain from its first pattern; a block walks its keys in order, each contributing its whole chain once, a key inside a chain already contributed skipped [C, review #18] |
 | **key, PATTERN WRITE / STEP, stopped** | selects the pattern to edit |
 | **key, PATTERN WRITE / STEP, running** | the selected instrument's step n of the edited pattern: **off → normal → accented → off** for BD SD LT MT HT CH, **off ↔ on** for the others and TOTAL ACCENT; in **flam write** (`fw`) **off ↔ flam** (a flammed step replaces a plain one and back) [R]; keys past LAST STEP nothing [C] |
 | **INSTRUMENT SELECT held + key(s)** | the instrument: keys 1 / 2 BD … 9 / 10 HT, 11 RS, 12 HC, 13 / 14 CH, 15 CRASH, 16 RIDE; **both keys of a pair**: flam write on BD … HT, **13 + 14: OH**; **+ ENTER**: TOTAL ACCENT; pressing one key of a flam pair again leaves flam write |
-| **key, PATTERN WRITE / TAP** (running or stopped) | **a drum pad**: plays its instrument (the left key of a pair accented, the right normal: §1.3's velocity of that state, through the host's note path, so recording and the keyboard tray behave as a pad); running, also **writes it at the nearest step** of the edited pattern (7a's TR-08 rule: R9 §12 leaves rounding open) [R; C nearest]; 13 + 14 down together: OH |
+| **key, PATTERN WRITE / TAP** (running or stopped) | **a drum pad**: plays its instrument (the left key of a pair accented, the right normal: §1.3's velocity of that state, through the host's note path, so recording and the keyboard tray behave as a pad); running, also **writes it at the nearest step** of the edited pattern (7a's TR-08 rule: R9 §12 leaves rounding open) [R; C nearest]; 13 + 14 down together: OH — key 13's down has already played and written an accented CH, so the second key's down **takes that CH back off its step** (the step it wrote, while 13 is held) and writes / plays the OH there; the CH already heard stays heard (the one hat voice: the OH retriggers it) [C, review #19] |
 | **CLEAR + a voice key, TAP, running** | erases that voice's steps as they pass while both are held (7b's wipe, at the heard post) [R] |
 | **CLEAR + key, PATTERN WRITE, stopped** | clears that pattern (steps, accents, flams; SCALE / LAST STEP / SHUFFLE / FLAM to the cleared values; out of its chain); ours: "Pattern I-2-5 cleared · tap to undo" (one level) [R; C undo] |
 | **LAST STEP + key** (PATTERN WRITE) | LAST STEP n of the edited pattern (`at: 'bar'` when it shortens the bar under the playhead, else 'now', 7b's rule) [R] |
@@ -439,7 +463,9 @@ combination needs it held (a pair, a block, a chain: the second key's down) [C].
 - Inputs not in the table do nothing [C]; **a cancelled hold** (two-finger cancel, lost capture, blur, the host's release-all) sends `{ k:
   'release' }` — every hold let go, nothing done (7b's rule).
 - **Synced TRACK PLAY with CYCLE off**: the track plays once from song tick 0 and the machine is silent after its end while the song
-  plays; a loop wrap / seek / start re-anchors it (7a §3.5) [C]. Free: at the heard last step the session stops (the RUN state, the
+  plays; a loop wrap / seek / start re-anchors it (7a §3.5) — **at the song position, never wrapped into the track**: a re-anchor
+  at or past the track's end stays silent, one before it plays from there (what the → Piano roll notes of the once-played track
+  do: review #17) [C]. Free: at the heard last step the session stops (the RUN state, the
   LEDs) [C].
 - **Tempo per track, synced**: recalling a stored tempo is a project tempo edit (one History step) [C].
 
@@ -449,7 +475,9 @@ combination needs it held (a pair, a block, a chain: the second key's down) [C].
 on the 808's and the 606's: their keys and shapes unchanged, D1; hashed into a 909 plan's key, `mSh` into its shape too): **`ac`**
 (Uint16Array, a step's per-voice accents), **`fl`** (Uint16Array, its flams), **`mSh`** (Uint8Array per measure: the shuffle in ticks),
 **`mFl`** (Uint16Array per measure: the flam spacing in ticks), and the flags **`once`** (TRACK PLAY with CYCLE off) and **`guide`**
-(the tap-write click). A measure per pattern (`mKey` 0–95, `mVar` 0, `mPre` the scale's step code — **SCALE 16 / 32 / 8T / 16T → codes
+(the tap-write click). The 909's memo signature and plan key carry **every** input its plan reads — `ui` (mode, bank, grp,
+sel, bl, trk, cyc, guide), the flam tempo, the session's `pend` / `ptr` / `loc` — since a change the key misses is a send
+`drumSend`'s `pk` dedupe drops (main.js:3223; 7b review #3's class) [review #8]. A measure per pattern (`mKey` 0–95, `mVar` 0, `mPre` the scale's step code — **SCALE 16 / 32 / 8T / 16T → codes
 3 / 4 / 1 / 2**, the 606's `SC_CODE`, drum-core.js:96 —, `mL1` its LAST STEP); `fill: null`. Per mode: PATTERN PLAY the selection (a
 pattern, its chain, or the block — each pattern expanded by its chain) looping; PATTERN WRITE the edited pattern alone, looping [C];
 TRACK PLAY the track's measures, `once` by CYCLE, free a located start a pre-roll (7b §3.4's mechanism); TRACK WRITE (running) `pend`
@@ -461,11 +489,23 @@ looping, else the pointer's measure [C]. Mute / solo mask `st`, `ac` and `fl` al
 - **Flam** (per pattern) [R W FLAM; C ticks]: the spacing **10 + 4 · (fl − 9) ms** (10 … 38 ms), **absolute time** (R9 §12: it does not
   follow the tempo), held in the plan as whole ticks at the plan's tempo: `mFl = round(ms · bpm · 960 / 60 000)` with `bpm` the tempo
   the machine runs at (synced: the session's project tempo; free: `ui.tempo`) — so a tempo change re-sends the plan ('now': the key
-  changes, the shape does not) and both D5 paths read one number [C].
+  changes, the shape does not) and both D5 paths read one number [C]. **The synced tempo must reach the plan (review #1)**: today
+  a project tempo change only sets the sessions' `bpm` (cv-drum.js:272 `bpm(v)` runs no press, sends nothing), the restore path
+  posts the payloads before it (main.js:1401–1402) and the offline payload takes a fresh session at 120 BPM (main.js:3217) — so
+  P1's `bpm(v)` runs drum-core's `{ k: 'bpm', v }` for a 909 entry, which returns `send('now')` when the plan's flam ticks change;
+  H1 calls `DRUM.bpm(project.bpm)` before the restore's `drumSend` loop and builds the offline payload's session with `bpm:
+  project.bpm` (D7: bounce = live at any tempo). The plan's memo signature includes that tempo. **The spacing is clamped**
+  [C, review #2]: `mFl[m] ≤ g_m − 1`, `g_m` the measure's smallest distance from a step to the next (or to the measure's end) —
+  `STEP_T − mSh` on a shuffled scale, else `STEP_T` — so a flam's second hit always fires before the lane's next step: 38 ms is
+  73 ticks at 120 BPM against 32nds at SHUFFLE 7 (`120 − 60 = 60` ticks), 182 ticks at 300 BPM against 16ths at SHUFFLE 7 (120);
+  unclamped, DrSeq's one pending hit would be overwritten (a hit lost) and → Piano roll's notes would overlap the next step's.
 - Bounds: ≤ 8 tracks × 896 measures + a pre-roll — inside 7a's `MAX_MEAS` 769? **No**: a 909 track may hold up to 896 measures, over
   `MAX_MEAS` (769, drum-core.js:74 = dr-seq.js) — the bound rises to **1 793** (896 + a 896 pre-roll + 1) and `MAX_STEPS` to **28 688**
   (1 793 × 16) for every machine (DrSeq's `valid` only refuses more; the 808's and the 606's plans never reach them: their bytes are
-  unchanged) [C]; the constants stay equal in both files (a test).
+  unchanged) [C]; the constants stay equal in both files (a test). **One 7b test pins the old constant**: drum-core.test.mjs:254
+  asserts the 808's longest plan has `C.MAX_STEPS` steps (768 × 32 = 24 576) — it becomes the literal `768 * 32` (the 808's own
+  bound, review #3). Memory: the longest 909 plan is ≈ 170 KB (`st` / `ac` / `fl` 57 KB each), cloned per payload — fine for
+  TRACK PLAY's rare sends.
 
 ### 3.5 The clock (`DrSeq`: three additions and two flags, each inert without the arrays)
 
@@ -474,7 +514,8 @@ Sync, free running, live plan changes, TAP fills, STEP RESET, the clock, the pos
 
 - **Accents**: `fire(F)` calls `dm.trig(mask, acc)` with `acc = pl.ac[cOff + s]` when the plan has `ac`, else `dm.trig(mask)` exactly as
   today [C]; the machine's `trig` reads the AC bit as TOTAL ACCENT and `acc` as the per-voice accents (§1.3). The #34 hook `drStep(n,
-  v)` gets the state's velocity (§1.3) / 127.
+  v)` gets the highest of the step's sounds' state velocities (§1.3) / 127 — a step mixing an accented and a plain voice has no
+  single state [C, review #7]; the notes path gates ModCore per note, so this stays inside D5's scope note (no cables).
 - **Shuffle**: `geo()` takes `cw = pl.mSh[cm]` when the plan has `mSh` (the measure's own), else today's `SWUNG[cp] ? swingTicks(sw, cT)
   : 0`; `sameShape` compares `mSh` when present (a shuffle change is a new shape: it swaps at the boundary, as a LAST STEP change does).
 - **Flams**: a step whose `fl` has lanes in its mask schedules **its second hit at `ct + mFl[cm]`** — one pending hit (preallocated
@@ -482,9 +523,14 @@ Sync, free running, live plan changes, TAP fills, STEP RESET, the clock, the pos
   (songEvents' expression for each: D5) and returns the frames to the nearer; the second hit calls `dm.trig(flanes | (mask & 1),
   acc & flanes)` and `drStep` like a step. A re-anchor (start, seek, loop wrap, power on) **inside a flam's spacing** still plays its
   second hit when the song path would play its note (the step's tick before `t0`, its second hit's at or after); a stop drops it [C].
-- **`once`**: at the plan's end the cursor goes to INF (silent) instead of `loopFrom`; a re-anchor starts it again [C].
+  That step may be the previous measure's last (or, after a wrap, the cycle's last): `locate` looks one step back across the
+  boundary, with that measure's `mFl` [C]. With §3.4's clamp the pending hit is always due before the next step, so one slot
+  suffices (no queue).
+- **`once`**: at the plan's end the cursor goes to INF (silent) instead of `loopFrom`; a re-anchor locates at the song position
+  **without wrapping** — `t0 ≥ mT[n]` stays silent (today's `locate` wraps `t0` into the cycle, dr-seq.js:221) [C, review #17].
 - **`guide`**: at each step whose tick is on a beat (`o % 960 === 0`) the RS lane (bit 6) joins the trig mask, unaccented — never in
-  `st`, so → Piano roll does not write it [C].
+  `st`, so → Piano roll does not write it [C]. D5 excludes it: its RS hits rewrite the RS + HC accent DAC a ringing clap reads
+  (§1.3), so a plan with `guide` and its notes differ by design (§12.6's D5 cases have it off).
 - `valid()` checks the arrays' lengths when present; `set()` allocates nothing; `events()` nothing but the post literal (7a).
 
 ### 3.6 LEDs and the display (`leds(S, D)` → the 909's; cv-drum `LIT` gains `'dim'`)
@@ -520,11 +566,14 @@ held: the tempo; AVAILABLE MEAS held: the free measures; SHIFT digits: as typed;
   606 exactly today's `{ swing, sw, prim }`; for the 909 its `prim`, the plan carrying its own shuffle (`mSh`), flam (`fl`, `mFl`)
   and accents (`ac` + the AC lane). A hit becomes `{ t, d, n: its sound's primary, v }`:
   - `t` the sequencer's own whole tick — the shuffled position of its step (§3.5), the flam's second hit at `t + mFl` (the plan's whole
-    ticks at its tempo, §3.4), the same velocity;
+    ticks at its tempo, §3.4), the same velocity; **each hit filtered by its own tick** against `[t0, t1)` (a flam whose step lies
+    before `t0` keeps its second note: today's `toNotes` skips by the step's tick, drum-core.js:519), and a `once` plan never
+    wrapped past `mT[n]` (`measureAt` / the loop at 528 wrap today) [C, review #17];
   - `v` the velocity that names its state exactly (§1.3: 100 normal, 127 both, 110 / 119 per-voice and total accent in the order
     their codes take at the panel's TOTAL ACCENT; `vel9`) [C];
   - `d` 120 ticks as 7a; a flam pair's first note ends where its second starts (`d` = the spacing: no overlap of one pitch, song.js
-    752–755's rule never acts) [C]. Where step frames are whole numbers (120 BPM / 48 kHz) every event of both paths lands on its own
+    752–755's rule never acts) [C]. (A `d: 120` note on a shuffled 32nd still overlaps the lane's next one — `120 − mSh` ticks
+    later — and is taken over there; harmless: a drum Inst's note-off does nothing, engine.js:2698.) Where step frames are whole numbers (120 BPM / 48 kHz) every event of both paths lands on its own
     frame, so the note-offs cannot move a hit; elsewhere 7a §4.4's "the same 4-frame grid point or the next" bounds both paths.
 - Then SYNC off and the machine stopped, the notice, the one undo (7a §4.3; 7b review 1 #4's `withTempo`: the 909's TEMPO set to
   the project's); its text "the 909's own sequencer is off …" (main.js:3318 takes the model's short name).
@@ -548,7 +597,14 @@ held: the tempo; AVAILABLE MEAS held: the free measures; SHIFT digits: as typed;
   slot id for a ROM voice: the entry's level 0 read once, resampled (linear, after a one-pole guard at the image's Nyquist) to the
   voice's nominal word rate, cut to its region's word count with a 2 ms fade, normalised like the tool's images, quantised to the word
   length — into the machine's **preallocated** image buffer of that voice (no allocation; ≈ 0.3 ms for 32 k words in node, recorded in
-  §14); the built-in image comes back when the slot goes off. The alternative of Q2 (7a's clean playback for these four too) is a flag
+  §14); the built-in image comes back when the slot goes off. **When** (review #20): the payload may arrive before its entry
+  (`drumSend` posts at once, the entry follows `sendPatch`'s wait — main.js:3228–3231; 7a reads a slot lazily at its first hit,
+  dr-808.js `smpHit`), so a ROM slot whose entry is missing is *pending*: one `getAsset` look per span while pending, the
+  conversion at the first span start that finds it (audio thread, between hits — never inside `hit` / `trig`), the built-in
+  image playing until then [C]. **Buffers**: the built-in images are shared per scope (§2.4); a machine owns three 32 768-word
+  buffers for its slots (≈ 96 KB, allocated at `create`), the hat's holding the built-in region a slot does not replace.
+  **"Normalised"** = peak-normalised with the tool's headroom, **not pre-compensated** — a chip swap: the staircase / RC envelope
+  acts on your sound as it acts on a swapped chip's (Q2's answer) [C]. The alternative of Q2 (7a's clean playback for these four too) is a flag
   on the machine, not a fork.
 - SOUNDS… (cv-drum's popover) lists the 909's eleven slots by its own names ("Kick", …, "Open hat", "Closed hat", "Crash", "Ride") with
   "Circuit (ours) | Your sound" for the analog ones and "Our sound | Your sound (through the 909's chip)" for the ROM ones.
@@ -565,8 +621,10 @@ held: the tempo; AVAILABLE MEAS held: the free measures; SHIFT digits: as typed;
   one-tap undo notice (7a §13 answer 3; the list is §3.3's).
 - **Schema 10** (`cv-migrate.SCHEMA = 10`, `STEPS[9]` additive, nothing stored changes): a schema-9 build (7b) reads `tr909` as a
   Minimoog (`modelById`'s fallback) and would autosave the loss; with the bump it opens the project read-only (7a / 7b's precedent).
-  The pins that move with it (none weakened): cv-migrate.test.mjs:27 (the constant and its message), canvas-7b-sim.test.mjs:487
-  (`[9, 9, true]` → the saved schema follows `CM.SCHEMA`) — X's (§11).
+  The pins that move with it (none weakened): cv-migrate.test.mjs:27 (the constant and its message), **:1051** (7a's test:
+  `[M.SCHEMA, M.STEPS.length]` `[9, 9]`), **:1057** and **:1148** (7a's and 7b's tests assert `upgrade({ schema: 10 })` is
+  read-only — with SCHEMA 10 it is not: they move to 11, as 7b moved 7a's, IMPL-7b §14 lane X), canvas-7b-sim.test.mjs:487
+  (`[9, 9, true]` → the saved schema follows `CM.SCHEMA`) — X's (§11; review #10).
 - Save as classic project: the lost-line names the model ("TR-909 track “Drums”: the live site has no drum machine — its piano-roll
   notes are kept"; cv-migrate's `toV1` already names each drum model since 7b).
 
@@ -629,13 +687,17 @@ mechanism). `TOKENS.tr909.cells`: `dr:pads` **232 × 184** (4 × 3 pads of 52, 8
 ### 7.4 The widgets (`cv-drum.js`, P1)
 
 - **Tables** `UI.tr909`: the grid's 12 rows (codes AC BD SD LT MT HT RS HC RD CR OH CH on their lane bits; the accent / flam marks), the
-  pads (§3.7), no dials (the 909 has no rotary), the name '909'; `machOf` / `sessOf` three-way (a 909 session carries `m`).
+  pads (§3.7), no dials (the 909 has no rotary), the name '909'; `machOf` / `sessOf` three-way (a 909 session carries `m`); every
+  `six` branch of §0 a lookup by `M` (a 909 panel must never fall into the 808's grid hit-test, pad sizes, texts or cancel rule).
 - **Held keys** (SHIFT, INSTRUMENT SELECT, CLEAR, LAST STEP, SHUFFLE/FLAM, the TEMPO key, AVAILABLE MEAS, the step keys) send down / up
   with pointer capture, Enter / Space held, 7b's cancel rule (`release`); **two step keys down together** = a pair / block / chain (Shift
   + a key does it with the mouse, 7b) [C]; **Alt + a key** = SHIFT + key (a mouse's keypad) [C].
 - **Taps** (START, STOP/CONT, SCALE, TRACK n, PATTERN n, BACK, FWD, CYCLE, ENTER): `A.tap` (7b review 2 #1).
-- **The step keys as drum pads** in TAP write: a key's down plays its instrument through `api.drum.pads`' path (the host's note on,
-  §1.3's velocity of its state), its up the note off; in the other modes they are the 909's keys. **The step keys and the held keys
+- **The step keys as drum pads** in TAP write: a key's down is a press (`{ k: 'key', n, down: true }`); drum-core decides the
+  instrument, its state and the write, and returns `{ c: 'hit', sound, v }` (its up `{ c: 'hit', sound, off: true }`); cv-drum's
+  `exec` plays it through the pads' note path (the primary note, `noteOn` / `noteOff` deps, `e.held` for the off, the `sel()`
+  gate) **without** the pads' REC write — the press already wrote it. One mechanism (§10 and §11 said `{ c: 'hit' }`, this line
+  said `api.drum.pads`: review #21); in the other modes they are the 909's keys. **The step keys and the held keys
   are `data-gesture="music"` zones** (7a's rule: two fingers on them are two presses — SHIFT + a key, a pair, a block, finger drumming —
   never a pinch); the taps are not (a pinch starting on one zooms, 7b review 2 #2) [C].
 - **The display**: a text box (three characters, the DX7 LED's look, `hw-dsp`), painted with the LEDs, once a frame at most.
@@ -680,6 +742,7 @@ clock is a function of its control voltage, read per absolute 4-frame chunk) —
 | `drumToRoll` (3299–3329) | `DC.toNotes(DC.rollPlan(D, project.bpm), DC.rollOpts(D, d))` — drum-core's `rollPlan` is today's `compilePlan(D, D.ui, D.x)` for the 808 / 606 (no session: the 606's track from its first bar, 7b) and, for the 909, its plan at the project's tempo (the flams' ticks: the synced sequencer's, §3.4); `rollOpts` builds the options per machine (§4: the 808 / 606's `swing`, `sw`, `prim` exactly as today; the 909's plan carries its shuffle, flams and accents, `rollOpts` adds its TOTAL ACCENT for `vel9`) [C]; the notice names "the 909's own sequencer" (its short name, 3318: no edit) |
 | `drumNeeds` (156–162), `drumLoad` (3447) | the record's sounds by `DC.PERS[model].sounds` (§0's name tables), not the 808's list |
 | `drTempoOf` / `drTempoPut` (3335–3339) | by the record's machine: `{ m, tempo }` for the 606 and the 909 (their TEMPO in BPM), `{ m: 'tr808', tempo, fine }` for the 808 |
+| `restore` (1401–1402), `drumPayload` offline (3217) | (review #1) `DRUM.bpm(project.bpm)` **before** the `drumSend` loop (a 909's synced flam ticks read the session's tempo); the offline session `Object.assign(DC.initState(model), { bpm: project.bpm })` (a bounce's flams at the project's tempo, D7) |
 | `offer303` (3394) and its three callers (1815, 3548, 5530) | unchanged (the 606 only: the 909 had no 303 pairing; the project clock locks it anyway) [C] |
 | `DRUM = cvDrum.drumHost(…)` (1893) | unchanged deps (the 909's display reads the project tempo through `bpm()`); drum-core's new command `{ c: 'hit' }` (a TAP-write key, §11) runs through the existing `noteOn` / `noteOff` deps inside cv-drum's `exec` |
 | `__synthTest` | unchanged (`cv.drum`) |
@@ -692,10 +755,10 @@ No `t.model` / `t.vals` / `fxOf(t)` in a new line (the accessor ratchet).
 |---|---|---|---|---|
 | **V9** voices | 0 | `dr-808.js` (§2: `MACH.tr909`, the third branch of the shell, the seven analog circuits and the shared noise, the ROM playback path, the accent DACs, `Dr808.gain('tr909', …)`, the generated ROM block's frame — its contents are R9's tool's output, never hand-edited), `tests/dr-909.test.mjs` (new), `docs/canvas/research-909-circuits.md` §16 (the component tables as modelled; R9 records its recipes in §14 below) | §12.1; runs `dr-808.test`, `dr-606.test`, `golden-drums`, `golden-606` unchanged | **standard** (the stage's hardest code) |
 | **R9** source material | 0 | `tools/rom909.mjs` (new: our recipes → the three ROM images → the block in dr-808.js, `--write` / `--check`; listening renders to the scratchpad), `tests/rom909.test.mjs` (new) | §12.2 | **standard** (sound design: the user hears it) |
-| **S9** sequencer | 0 | `drum-core.js` (§3, §4: `PERS.tr909`, the three-way dispatch, the name tables in `PERS`, the record, `press`, the plan, `leds`, `DEMO909`, the map, the velocity law, `toNotes` / `rollPlan` / `rollOpts`, the raised plan bounds, a 606 pin), `dr-seq.js` (§3.5: accents, shuffle, flams, `once`, `guide`, the bounds), `tests/drum-core.test.mjs`, `tests/dr-seq.test.mjs` | §12.3, §12.4; runs `golden-drums`, `golden-606` | standard |
-| **E9** engine + data | 1 (E9a first: `models.js` `tr909` + `FIELD_CLASS` / `CLASS_TABLE` + E9's test rules) | `engine.js` (§1.5), `models.js`, `cv-mods.js` + `tools/cv-classes.mjs` + `tests/cv-mods.test.mjs`, `tests/classic-mod.test.mjs`, `cv-cost.js` + `tests/cv-cost.test.mjs`, `tests/bench-scenarios.mjs` (`drumTrack(…, 'tr909')`, three-way; the d9 rows) + `tests/bench.json` + `tests/bench.html` (c9), `tests/engine-track.test.mjs` (additions), `tests/golden-909.test.mjs` (new; `ref-7c` frozen by the lead) | §12.5, §12.6 | standard |
-| **P1** panel code | 1 (after E9a) | `cv-panel.js` (§7.2–7.3), `cv-drum.js` (§7.4), `tools/panel-check.mjs`, `tests/cv-drum.test.mjs`, `tests/cv-panel.test.mjs` (`HW_IDS` + `tr909`, `TARGET.tr909`, `NOKEYS` + `tr909`, 43 / 46), `tests/classic-panel.test.mjs` (253: any vertical switch the 909's layout binds) | §12.8 | standard |
-| **X** satellites | 1 (from P1's first commit, the validator) | `panels/tr909.js` (new), `panels/index.js`, `cv-art.js`, `song.js` (if an edit is needed at all: §6), `cv-migrate.js` (schema 10), `cv-tray.js` (the note), `roll.js`, their tests (`cv-art`, `cv-migrate`, `cv-tray` 566 / 568 / 590, `roll`), `tests/canvas-7a-sim.test.mjs:68`, `tests/canvas-7b-sim.test.mjs:77` and `:487` | `panel-check tr909`, §12.7's data rows | **cheaper** (layout data from R9 §13's mm; mechanical edits) |
+| **S9** sequencer | 0 | `drum-core.js` (§3, §4: `PERS.tr909`, the three-way dispatch, the name tables in `PERS`, the record, `press`, the plan, `leds`, `DEMO909`, the map, the velocity law, `toNotes` / `rollPlan` / `rollOpts`, the raised plan bounds, a 606 pin, the `{ k: 'bpm' }` send of §3.4), `dr-seq.js` (§3.5: accents, shuffle, flams, `once`, `guide`, the bounds, `simplePlan`'s optional 909 arrays for E9's warm-up), `tests/drum-core.test.mjs` (incl. :254's literal and :1001's unknown id `'tr999'`, §0), `tests/dr-seq.test.mjs` | §12.3, §12.4; runs `golden-drums`, `golden-606` | standard |
+| **E9** engine + data | 1 (E9a first: `models.js` `tr909` + `FIELD_CLASS` / `CLASS_TABLE` + E9's test rules) | `engine.js` (§1.5), `models.js`, `cv-mods.js` + `tools/cv-classes.mjs` + `tests/cv-mods.test.mjs`, `tests/classic-mod.test.mjs`, `cv-cost.js` + `tests/cv-cost.test.mjs`, `tests/bench-scenarios.mjs` (`drumTrack(…, 'tr909')`, three-way — 262, 267, 269; the d9 rows) + `tests/bench.json` + `tests/bench.html` (c9; its note at 118 names the rows), `tests/engine-track.test.mjs` (additions; :1163's unknown machine `'tr909'` → `'tr999'`, §0), `tests/golden-909.test.mjs` (new; `ref-7c` frozen by the lead) | §12.5, §12.6 | standard |
+| **P1** panel code | 1 (after E9a) | `cv-panel.js` (§7.2–7.3), `cv-drum.js` (§7.4: incl. every `six` site, `bpm(v)`'s press for a 909, `exec`'s `{ c: 'hit' }`), `tools/panel-check.mjs`, `tests/cv-drum.test.mjs`, `tests/cv-panel.test.mjs` (`HW_IDS` + `tr909`, **`EXTRAS.tr909`** (:33–39: the per-model loop at :330–337 reads `EXTRAS[id]` for every `HW_IDS` entry — review #11), `TARGET.tr909`, `NOKEYS` + `tr909`, 43 / 46), `tests/classic-panel.test.mjs` (253: any vertical switch the 909's layout binds) | §12.8 | standard |
+| **X** satellites | 1 (from P1's first commit, the validator) | `panels/tr909.js` (new), `panels/index.js`, `cv-art.js`, `song.js` (if an edit is needed at all: §6), `cv-migrate.js` (schema 10), `cv-tray.js` (the note), `roll.js`, their tests (`cv-art`, `cv-migrate` 27 / 1051 / 1057 / 1148, `cv-tray` 566 / 568 / **569 (the note's text)** / 590, `roll`), `tests/canvas-7a-sim.test.mjs:68`, `tests/canvas-7b-sim.test.mjs:77` and `:487` | `panel-check tr909`, §12.7's data rows | **cheaper** (layout data from R9 §13's mm; mechanical edits) |
 | **H1** host | 2 | `main.js` (§10), `tests/canvas-7c-sim.test.mjs` (new, accessor-free), additions to `tests/main.test.mjs` | §12.7 | standard |
 | reviewers × 2 | 3 | (1) **real engine**: golden harness + `main-sim` with the real Track — D1 (ref-7a, ref-7b), D2, D5 with shuffle / flam / accents, D7 (the ROM's bytes, offline = live), every §3.3 row end to end, the circuits against R9's numbers, the ROM path against §2.3's prototypes; (2) **headless Chrome** (CDP, `--headless=new --use-angle=metal --force-device-scale-factor=2`; 1440 × 900, 1366 × 1024, 1024 × 1366): the face, the display, SHIFT / INSTRUMENT SELECT / CLEAR held by touch, step keys as tap pads with two fingers, the LEDs at the heard time, the Drums view, the roll's rows, no console errors | — | standard |
 | fixers | after | the finding's files, the failing test first | | cheaper |
@@ -713,7 +776,10 @@ No `t.model` / `t.vals` / `fxOf(t)` in a new line (the accessor ratchet).
 - **Known windows** on `wt-7c` until the phase-1 merge (merge order E9 → P1 → X): the MODELS-iterating tests owned by P1 / X
   (`cv-panel` `HW_IDS`, `cv-art`, `cv-tray`'s Drums list, `canvas-7a-sim:68`, `canvas-7b-sim:77`) fail on branches without the
   owner's change; `cv-migrate` / `canvas-7b-sim:487` until X's schema 10; `pwa.test`'s precache check until the lead's `node
-  tools/precache.mjs --write` (the new `panels/tr909.js`). Each lane runs its own files.
+  tools/precache.mjs --write` (the new `panels/tr909.js`). **Also (review #5, #14)**: `engine-track.test.mjs:1163` (its unknown
+  machine is `'tr909'`) from V9's merge until E9's edit; `rom909.test`'s `--check` on every branch until the lead's `--write`
+  at the phase-0 merge (R9 never commits dr-808.js; V9 commits the block's markers with R9's placeholder images — the tool's
+  output and V9's hand-written code never share lines). Each lane runs its own files.
 - **Rules for every builder** (7a §11, kept): `git reset --hard <base>` first (harness worktrees start from `main`; check `git log
   -1`); `?v=9` on every import; new test files `import './v8-guard.mjs'` first; never fake-DOM nodes in `assert.*`; one test file at a
   time (`node --max-old-space-size=2048 --test tests/<file>.test.mjs`); dense comments in the existing voice; **no Roland
@@ -726,7 +792,9 @@ No `t.model` / `t.vals` / `fxOf(t)` in a new line (the accessor ratchet).
   staircase and the hats' converter constants —, the clock law, the ROM decoder, the component tables) (V9 ↔ E9, S9, R9). **The ROM
   format** (R9 ↔ V9): `ROM909 = { hh, cr, rd }`, one character per 6-bit word (the alphabet fixed in the tool and the decoder), the hat
   regions 0–24 575 / 24 576–32 767, 30 kHz nominal; the block markers; the tool reads `ENV9` through `tests/dsp-scope.mjs`'s loader.
-  `DrSeq`: a plan's `ac`, `fl`, `mSh`, `mFl`, `once`, `guide`; `dm.trig(mask, acc)`; the raised `MAX_MEAS` / `MAX_STEPS` (S9 ↔ E9, V9).
+  `DrSeq`: a plan's `ac`, `fl`, `mSh`, `mFl`, `once`, `guide`; `dm.trig(mask, acc)`; the raised `MAX_MEAS` / `MAX_STEPS`;
+  `simplePlan(masks, pre, x?)` with `x = { ac, fl, sh, fm, once, guide }` making a one-measure 909 plan (E9's warm-up, the
+  tests) (S9 ↔ E9, V9).
   `drum-core`: `normDrum(d, 'tr909')` (`model ?? d.m`), `PERS.tr909` (`lanes codes rows sids mask acLanes flLanes sounds names map
   scales tempo cleared acc`), `initState('tr909')`, `compilePlan` / `press` / `leds` / `gridPat` / `stepLen` / `demoFree` / `payload`
   dispatching on `D.m`, `vel9(sound, state, u)` / `vTrig9(v127, sound, u)`, `rollPlan(D, bpm)` / `rollOpts(D, dev)`, `tempo909(u)` /
@@ -756,7 +824,12 @@ No `t.model` / `t.vals` / `fxOf(t)` in a new line (the accessor ratchet).
   couplings); the DAC's levels the code × LSB (exact); the band-limited staircase within −60 dB of a reference staircase rendered at
   64× and filtered, over 0–20 kHz at OS 4 (a naive hold fails it: a mutation test); the clock started at the trigger (the first word at
   the same OS sample whatever the span splits); the staircase's steps at their fractional times (span invariance and the OS change,
-  below); the reconstruction filter's response; the envelopes (OH / CH DECAY at 0 / 5 / 10, the crash's and the ride's) ± 2 % against
+  below); **the alias gate (review #4)**: the band-limited staircase against the *exact* band-limited staircase (an integrated
+  windowed sinc per step — not a 64× hold, whose own step jitter is ≈ −50 dB at 20 kHz), the error over 0–20 kHz at OS 4 on the
+  three images ≥ 15 dB below a naive hold's (the mutation) and ≤ −35 dB re the signal, the numbers recorded in §14 — the
+  "within −60 dB" first written here is beyond the 2-point polyBLEP: the review's scratch run of the DX7's method measured
+  −40.0 … −44.7 dB (content to 15 / 8 kHz; naive hold −22 / −25 dB), −65 dB only for content under 2 kHz; a 4-point BLEP is
+  V9's option if the lead wants more; the reconstruction filter's response; the envelopes (OH / CH DECAY at 0 / 5 / 10, the crash's and the ride's) ± 2 % against
   their RC; **the hats as one voice** (a CH during a ringing OH restarts the counter in the closed region and switches the decay path:
   the open sound gone within the CH's own envelope, the depth recorded in §14; OH + CH latched in one chunk = the closed hat); accent
   on the four sounds as R9 §8 reads it; **the shared DAC** (a ride hit during a ringing crash changes the crash's level as the held
@@ -780,11 +853,18 @@ No `t.model` / `t.vals` / `fxOf(t)` in a new line (the accessor ratchet).
   first 5 ms); the hat image's level 300 ms in ≥ 20 dB below its peak; the crash's spectral centroid rises over its first 100 ms
   (the cascade) and falls after; the ride's bell partials present over its whole length; DC below one LSB.
 - **D4 guard**: the tool reads no file but dr-808.js (`--check`, the shared constants) and fetches nothing (a static check: no other
-  `fs.read*`, no network module) — nothing of any machine's audio can reach it.
+  `fs.read*`, no network module) — nothing of any machine's audio can reach it. (The static check covers `tools/rom909.mjs`; the
+  constants come through `tests/dsp-scope.mjs`, which reads the repo's own DSP scripts only — dsp-scope.mjs:50 — said so in
+  the test, review #25.)
+- **Determinism**: two runs in one process and a fresh process byte-identical. The tool's maths (`Math.sin` / `exp` / `pow`) is
+  node's; a later node whose libm moves an ulp could flip a code that sat on a rounding tie (≈ 10⁻⁶ odds over 98 304 words) —
+  `--check` then fails loudly and the lead decides (`--write` + a new ref-7c), never a silent change; the worklet only reads
+  the stored codes (D7) [review #25].
 
 ### 12.3 drum-core (`tests/drum-core.test.mjs`, S9)
 
-The 79 tests of 7b unchanged; **pins**: the 808's (`04ba14f6…`, 902) unchanged, and **a 606 pin** of the same form (records — `tr606`
+The 79 tests of 7b unchanged **but two lines** (review #3, #14 — the same checks, not weakened): :254's `C.MAX_STEPS` → the
+literal `768 * 32` (the 808's longest plan), :1001's unknown `m` `'tr909'` → `'tr999'`; **pins**: the 808's (`04ba14f6…`, 902) unchanged, and **a 606 pin** of the same form (records — `tr606`
 with and without its `m`, a hostile one —, sessions, payloads at every `at`, plans, notes, the tables, `press` × 66 on 6 random records
 with LEDs and grid) computed on 7b297e5's module before any change and unchanged after. New: `normDrum(·, 'tr909')` (idempotent,
 bounds, hostile input, model wins over `m`); the three-way `machineOf` (`'tr909'` only for the exact string); the name tables
@@ -794,7 +874,10 @@ mute / solo on the accents too, the key stable and sensitive, the shape timing-o
 through `press`; `leds` (every row of §3.6); the display (§3.6); `toNotes` with `rollPlan` / `rollOpts` (the 808 / 606: today's calls'
 bytes) of a 909 plan (positions with shuffle, the flam's hits, the velocities of §1.3); `vel9` / `vTrig9` (the four states' velocities
 exact at 21 TOTAL ACCENT positions, monotone between, the drum-core and dr-808.js copies equal); the 909's tempo law; the constants
-equal `dr-seq.js`'s and dr-808.js's accent constants (`N0`, `L`, `T_max`).
+equal `dr-seq.js`'s and dr-808.js's accent constants (`N0`, `L`, `T_max`). Review additions: a synced 909's `{ k: 'bpm' }`
+sends 'now' when its flam ticks change (and nothing when they do not); `mFl` clamped below each measure's smallest step gap
+(32nds at SHUFFLE 7, 300 BPM); `ac` / `fm` masked by `st` in `normDrum`; `toNotes` keeps a flam's second note when its step
+lies before `t0` and never wraps a `once` plan; the block / chain expansion of §3.3.
 
 ### 12.4 dr-seq (`tests/dr-seq.test.mjs`, S9)
 
@@ -805,11 +888,13 @@ plan with another shuffle is a new shape); **flams**: each flammed lane gets its
 at a swung step; at the last step of a measure, crossing the boundary; a loop wrap / seek / stop between the two hits: the second is
 dropped exactly when a note's would be — the song path's rule); the frames returned by `events(F)` include the pending flam hit (≥ 1);
 `valid()` refuses a 909 plan with short `ac` / `fl` / `mSh` / `mFl`; **`once`** (silent after the plan's end, again after a re-anchor);
-**`guide`** (RS on the beats, never on a 808 / 606 plan); free and synced; no allocation.
+**`guide`** (RS on the beats, never on a 808 / 606 plan); free and synced; no allocation. Review additions: a `once` plan
+re-anchored at or past its end stays silent (a seek, a loop wrap landing there); a re-anchor one step after a measure's last
+(flammed) step still plays its second hit; the pending hit always due before the next step at the clamp's limit.
 
 ### 12.5 Engine (`tests/engine-track.test.mjs` additions, E9)
 
-A 909 Inst from `{t:'patch'}` and from `processorOptions` (live = offline); **808 → 606 → 909 → 808 on one Inst** (each its own
+(:1163's unknown machine becomes `'tr999'`, §0.) A 909 Inst from `{t:'patch'}` and from `processorOptions` (live = offline); **808 → 606 → 909 → 808 on one Inst** (each its own
 machine and a fresh DrSeq; a payload posted after its patch is kept, and one posted before it waits in `drPend` and plays; the
 tail crossing each switch keeps its level through each machine's `gain` and drains on its own chain: 7b review 1 #3's `drPost`); a
 909 on a graphed node; `warmUp` + `restore` leave a fresh 909 (its images decoded once: a second machine shares them); an OS change
@@ -842,7 +927,9 @@ moves); a panic while a crash rings; the bench rows d9p / d9x / d9m and **d9i** 
   rows, the velocities, the flams as notes) and its undo; MAP…; a sample in SD and one in the hats' slot (§5), relinked through the
   asset manager (the record stays a 909's); Save / reload identical (schema 10); **808 ↔ 606 ↔ 909 Replace** and undo / redo twice,
   plain and graphed, with an FX asset still building so the patch waits (each machine's synced steps play every time; the panel's
-  session follows the record); bounce includes a synced 909 with no notes.
+  session follows the record); bounce includes a synced 909 with no notes. Review #1: at a project tempo of 100 BPM a synced
+  DEMO with a flam bounces bit-identically to the live render (the offline session's tempo); a tempo edit while it plays moves
+  the flam's second hits (one 'now' payload), and its undo moves them back (the restore's order).
 - X: `song` (normDev keeps a 909's `drum` through `normDrum(·, 'tr909')`; an 808 / 606 record unchanged; export ch 10), `cv-migrate`
   (schema 10: a schema-10 project read-only in a schema-9 gate; STEPS[9] stores nothing new; the lost-line names the TR-909),
   `cv-tray` (the Drums view lists `['tr808', 'tr606', 'tr909']`; the note text; no SIMPLE badge), `roll` (a 909's rows by its
@@ -912,6 +999,12 @@ not working; there is no swing knob in the extras strip (the 909's own SHUFFLE d
 **And one request**: after the deploy, a 15-minute iPad session — `canvas.domlavin.com/tests/bench.html` (five passes, Copy results) and
 the hands-on list of §12.9.
 
+**Answers (the user, 2026-10-20):** all five as recommended — **Q1** we synthesise the hi-hats and cymbals (modelled struck
+plates by `tools/rom909.mjs`, rendered into the 6-bit chip format; the five listening files before the freeze, §2.4); **Q2**
+"load your own" on the hats and cymbals plays through the 909's circuit — a chip swap: reduced to 6 bits, through its tune /
+decay / filter (§5's default); **Q3** no extras knobs; **Q4** mono (already settled by the user's "mix output first" for every
+drum machine); **Q5** the late revision. Settled: the build's defaults above stand; the review (§15) does not reopen them.
+
 ## 14. Notes (the builders fill in)
 
 (One subsection per lane: as built, the [C] refinements with their reasons, the measured gates — 7a / 7b §14's format. V9 also fills
@@ -919,4 +1012,48 @@ R9 §16 with the component tables as modelled; R9 the recipes as built and the i
 
 ## 15. Review log
 
-(The skeptic review of this contract, then reviewers 1 and 2 and the fixers — 7b §15's format.)
+### The skeptic review (2026-10-20, against ce0ce80 = 7b297e5 + this contract)
+
+Every claim about existing code was read at ce0ce80 (its code = 7b297e5's); scratch arithmetic and one scratch measurement
+only (`scratchpad/r7c/blep.cjs`: the DX7's 2-point polyBLEP DAC against the exact band-limited staircase); no test was run. The
+user's §13 answers are settled and not reopened. **D1 holds as designed**: golden-drums / golden-606 render the three frozen
+files with every other module current (tests/golden-drums.test.mjs:44–51, golden-606.test.mjs:51–58), so drum-core's 808 / 606
+outputs are part of the guard — the 808 pin (drum-core.test.mjs:860–902: records with a hostile `m`, sessions, payloads, plans,
+notes, tables, 66 presses) and the 606 pin §12.3 adds cover them; `PERS.tr808` / `PERS.tr606` already carry `sounds` / `names`
+(drum-core.js:107, 116), so moving the readers onto them is additive. **What did not hold**: the synced flam tempo never reaches
+the worklet (#1), a flam can outlive its lane's next step (#2), two 7b tests contradict the raised bound and the new id (#3,
+#14), the staircase gate and d9p are beyond what the design can meet (#4, #9). Severity as 7a / 7b: P0 a silent failure or a
+broken build, P1 a contract contradiction or an impossible gate, P2 a gap a builder would trip on, P3 a correction.
+
+| # | point | evidence (file:line) | fix |
+|---|---|---|---|
+| 1 · P0 | **A synced 909's flam ticks never follow the project tempo**: §3.4 computes `mFl` at the session's `bpm` and says "a tempo change re-sends the plan", but a tempo change only writes the sessions' `bpm` — `DRUM.bpm(v)` runs no press and sends nothing; the restore posts every payload *before* it updates the sessions; the offline payload takes a fresh session at 120 BPM — so the flams keep the old spacing until the next edit, undo leaves them stale, and a bounce at 100 BPM has 120 BPM flams (D7) | cv-drum.js:272 (`bpm(v)`: sessions only); main.js:3274–3281 (`setProjectBpm` → `DRUM.bpm`), 1401–1402 (`drumSend` loop, then `DRUM.bpm`), 3217 (`initState(model)` offline); drum-core.js:579–581 (`bpm: 120`) | **fixed in §3.4, §10, §11, §12.3, §12.7**: P1's `bpm(v)` presses `{ k: 'bpm' }` for a 909 (drum-core sends 'now' when the ticks change); H1 orders the restore and gives the offline session the project's tempo; the memo signature carries the tempo |
+| 2 · P1 | **A flam can land after its lane's next step**: 38 ms is 73 ticks at 120 BPM, but 32nds at SHUFFLE 7 put the swung step's successor 60 ticks later (182 ticks at 300 BPM vs 16ths at SHUFFLE 7's 120) — DrSeq's one pending hit is overwritten by the next step's flam (a hit lost) and → Piano roll's first note (`d` = the spacing) overlaps the next one, against §4's "never acts" | §3.4–§3.5 (as written); STEP_T 120 / 240 (drum-core.js:67); 38 · bpm · 960 / 60 000 | **fixed in §3.4, §3.5, §12.3, §12.4**: `mFl[m] ≤ g_m − 1` (the measure's smallest step gap), so one pending slot suffices |
+| 3 · P1 | "The 79 tests of 7b unchanged" contradicts raising `MAX_STEPS`: a drum-core test pins the 808's longest plan to the constant | tests/drum-core.test.mjs:254 (`big.st.length === C.MAX_STEPS`, 768 × 32) | **fixed in §3.4, §12.3**: the literal `768 * 32` (the 808's bound), S9's |
+| 4 · P1 | **"Within −60 dB of a reference staircase rendered at 64×" is beyond the method §2.3 prescribes**: the DX7's 2-point polyBLEP, run on a 6-bit staircase at 21 / 32 / 53 kHz words, misses the exact band-limited staircase by −40.0 … −44.7 dB over 0–20 kHz at OS 4 for cymbal-like content (15 / 8 kHz; a naive hold −22 / −25 dB), −65 dB only under 2 kHz, −28 … −33 dB at OS 2; and a 64× hold is itself no −60 dB reference (its step jitter ≈ −50 dB at 20 kHz) | engine.js:2763–2790 (`renderDac`); scratchpad/r7c/blep.cjs (this review) | **fixed in §12.1**: the exact staircase as reference; ≥ 15 dB below a naive hold and ≤ −35 dB re the signal, the numbers in §14; a 4-point BLEP V9's option |
+| 5 · P2 | Two writers of dr-808.js and a gate no branch can pass in phase 0: the generated block's contents are R9's tool output, its frame V9's, the final `--write` the lead's — `rom909.test`'s `--check` fails on every lane branch until then, unlisted | §11 phase 0, §12.2 (as written) | **fixed in §11** (known windows: R9 never commits dr-808.js; V9 the markers with the placeholder) |
+| 6 · P1 → P-1 | **The rank velocity law ties a written note's state to the knob**: `vel9` gives per-voice / total accent 110 / 119 "in the order their codes take" at the panel's TOTAL ACCENT; turn the knob (or cable `drum.ac`) across `T(u) = L` after → Piano roll and v 110 / 119 now name the other state — the sequencer path does not swap, so the two ways diverge at any panel but the one written at (the 808's / 606's v 100 / 127 mean normal / accent at every knob) | §1.3, §4 (as written); engine.js `drHit` (2227: `dm.hit(s, round(v · 127))`) | **for the lead** (P-1); §1.3 says so |
+| 7 · P2 | "`drStep(n, v)` gets the state's velocity": a step mixing an accented and a plain voice has no single state | §3.5 (as written); dr-seq.js:265–274 | **fixed in §3.5**: the highest of its sounds' state velocities [C] |
+| 8 · P2 | The 909's plan reads more than 7b's (the flam tempo, `once` by CYCLE, `guide`, TRACK WRITE's `pend` / `ptr`, TRACK PLAY's `loc`); one missed by the key or the memo is a payload `drumSend`'s `pk` dedupe drops — 7b review #3's class | drum-core.js:388 / 461 (the memos' signatures), 562–567 (`pkOf`); main.js:3223 | **fixed in §3.4**: every input in the signature and the key |
+| 9 · P1 | **d9p 0.025 is below what its own pattern keeps awake**: BD on the quarters never reaches −100 dB in 500 ms, HC's tail and the toms' 103 ms ENV1 stay above it between their hits, the three ROM voices never sleep; §2.7's ceilings give a machine up to ≈ 0.032, the 606's measured share of its ceilings ≈ 0.019, plus the Track's ≈ 0.007 — 7b review #8's class | IMPL-7b §14 lane V6 (per circuit 0.0016–0.0056, d6p machine 0.0104) and lane E6 (d6p 0.0173); IMPL-7a §14 (d8p 0.0193, machine 0.0126); R9 §2, §4, §6 | **fixed in §2.7**: d9p 0.035 [C] — proposal P-2 |
+| 10 · P2 | Schema 10 moves three more cv-migrate pins than §6 listed: 7a's `[9, 9]` and two `upgrade({ schema: 10 }).readOnly === true` | tests/cv-migrate.test.mjs:1051, 1057, 1148 | **fixed in §6, §11** (X's: 10 → 11, as 7b moved 7a's) |
+| 11 · P2 | `cv-panel.test` reads `EXTRAS[id]` for every `HW_IDS` entry: a listed tr909 without an `EXTRAS.tr909` row throws | tests/cv-panel.test.mjs:33–39, 330–337 | **fixed in §11** (P1's) |
+| 12 · P2 | `PERS.tr909.sounds` "ids 11–15: none": every 16-loop over a machine's `sounds` (`normMap`, `normSmp`, `mapTable`, `slots`, `drumNeeds`) would write an `undefined` / `''` key into records and payloads | drum-core.js:157, 163, 169, 218, 233, 537; main.js:160 | **fixed in §1.2**: ids 11–15 keep the 808's keys, inert as the 606's absent sounds; the global exports stay |
+| 13 · P2 | §0 named cv-drum's `six` (361) once, but it feeds ≈ 20 binary branches a 909 panel would take as the 808's (grid hit-test, pad sizes, texts, the cancel rule); and 786 (a pad's slot title by `DC.SOUNDS`) | cv-drum.js:158, 329, 361, 364, 529, 625, 645, 666–733, 773–779, 786, 883–892 | **fixed in §0, §7.4, §11** |
+| 14 · P1 | **Two tests use `'tr909'` as "an unknown machine"**: normDrum must read `{ m: 'tr909' }` as the 808's, and a `machine: 'tr909'` patch must build nothing and post `drumsErr` — both break the day `PERS.tr909` / `MACH.tr909` exist (the second on wt-7c from V9's merge, owned by phase-1 E9); and the bench's `drumTrack` is binary at 267 / 269 too | tests/drum-core.test.mjs:1001; tests/engine-track.test.mjs:1163; tests/bench-scenarios.mjs:262, 267, 269 | **fixed in §0, §11, §12.3, §12.5**: their owners use `'tr999'` (the same check); the window listed |
+| 15 · P2 | The warm-up's 909 round "a free plan with a shuffle and a flam" cannot be built: `DrSeq.simplePlan` makes no `ac` / `fl` / `mSh` / `mFl`, and dr-seq.js is S9's | engine.js:3318 (`DS.simplePlan(WMASK6, 3)`); dr-seq.js:337–345 | **fixed in §1.5, §11**: `simplePlan(masks, pre, x?)` (S9) |
+| 16 · P3 | Two texts pinned elsewhere: the Drums view's note (its test) and bench.html's row note | tests/cv-tray.test.mjs:569; tests/bench.html:118 | **fixed in §11** (X's, E9's) |
+| 17 · P2 | `once` and re-anchors: DrSeq's `locate` and drum-core's `measureAt` / `toNotes` wrap a position past the plan's end into the cycle, so a seek past a CYCLE-off track's end would play mid-track while its notes are silent; and `toNotes` filters by the step's tick, dropping a flam's second note whose step lies before `t0` | dr-seq.js:219–224; drum-core.js:493–499, 519, 528 | **fixed in §3.3, §3.5, §4, §12.3, §12.4** |
+| 18 · P2 | Block play over chains was undefined ("each pattern expanded by its chain" would replay a chain's tail once per key inside it); R9 §12: a chain counts as one pattern | §3.3, §3.4 (as written); R9 §12 | **fixed in §3.3** [C] |
+| 19 · P2 | TAP write's 13 + 14 = OH: key 13's down has already played and written an accented CH | §3.3 (as written: "acts at its down unless a combination needs it held") | **fixed in §3.3**: the second key takes the CH back off its step [C] |
+| 20 · P2 | The chip swap's conversion "when a payload names a new slot id" can find no entry: payloads overtake their entries (7a reads a slot lazily at its first hit); the shared built-in images vs per-machine slot buffers; "normalised like the tool's" left pre-compensation open | main.js:3228–3231; dr-808.js `smpHit` (≈ 2789: `getAsset` at the hit) | **fixed in §5**: a pending slot converted at the first span that finds its entry, never in `hit`; per-machine buffers; peak-normalised, not pre-compensated (Q2's chip swap) |
+| 21 · P2 | The step keys as pads were two mechanisms: §7.4 "through `api.drum.pads`' path", §10 / §11 a drum-core command `{ c: 'hit' }` through `exec` (which has no 'hit' case; `pads.on` also REC-writes) | cv-drum.js:197–208 (`exec`), 305–316 (`pads.on`); §7.4 vs §10, §11 (as written) | **fixed in §7.4**: one — the press returns `{ c: 'hit' }`, `exec` plays it through the pads' note path without its REC write |
+| 22 · P3 | `ac` / `fm` were masked by lane only (a flam without its step plays the second hit alone); the 896 cut's order unstated | §3.1 (as written) | **fixed in §3.1** |
+| 23 · P3 | D5 and `guide`: the click's RS hits rewrite the RS + HC accent DAC a ringing clap reads, which no note does | §1.3 ("a held level acts between hits"), §3.5 | **fixed in §3.5** (D5 cases with it off) |
+| 24 · P3 | The noise clock's "± 20 %" is not R9 §7's 0.3–0.46 MHz; a bit index from a running sum of `f_clk / fs` (not exact at 44.1 kHz) breaks span invariance | R9 §7; §2.2 (as written) | **fixed in §2.2**: integer `floor(i · f_clk / fs)` |
+| 25 · P3 | The tool's D4 static check sees `rom909.mjs` only (its constants come through dsp-scope's own `readFileSync` of the DSP scripts); its determinism is node's libm | tests/dsp-scope.mjs:50; §12.2 (as written) | **fixed in §12.2** |
+| 26 · P3 | A flam's second hit: posted as a step or not was unstated (the LEDs and the heard-post readers count posts) | §1.5, §3.5 (as written); dr-seq.js:277–280 | **fixed in §1.5**: no post [C] |
+| 27 · P3 | A `d: 120` note on a shuffled 32nd overlaps the lane's next note (`120 − mSh` later) — taken over, harmless | engine.js:2697–2698 (a drum Inst's note-off returns) | **noted in §4** |
+| P-1 · proposal | **The velocity law** (#6): (a) as written — the four states sorted by code at the knob, louder never weaker, a written note's state knob-dependent; (b) **fixed velocities per state** — 100 normal, 110 per-voice, 119 total, 127 both (100 / 127 for a voice without per-voice accent), the codes between two states interpolated (non-monotone between 110 and 119 only while `T(u) < L`): a note means one state at any knob position and under a cable, so → Piano roll's notes and the sequencer stay one sound after the knob moves (D5 at every panel, as the 808's and the 606's). The review recommends (b) | #6 | **for the lead** |
+| P-2 · proposal | d9p's target: 0.035 as applied (#9, the honest load of the house pattern), or keep 0.025 and thin d9p (the toms once a bar, the crash out — d9m has it); 7b's P-1 chose the honest load | #9 | **for the lead** |
+| 28 · fine | Checked and fine: §0's line numbers (engine.js 1917–1950, 2137–2328, 3288–3348; dr-808.js 2382–2997 — the selections at 2398 / 2400 / 2413 / 2424–2431 / 2629 / 2696 / 2702 / 2731 / 2784 / 2907–2930 / 2954; drum-core.js 59–60, 105, 155–171, 200–284, 381, 455, 508, 544–567, 578, 593, 637, 840–852; cv-drum.js 133–138, 171–182, 355–365; main.js 147–151, 3217–3231, 3299–3339); the 909 on the 808's lane bits and sound ids — `LANE_SOUND[8] = [7, 7]`, `[9] = [8, 8]` and `SOUND_LANE` put RD on lane 8 / id 7 and CR on lane 9 / id 8 as §1.2's table (drum-core.js:63–64), `0x83E` = BD SD LT MT HT CH, `0x03E` = BD … HT; `pkOf` hashes `m` and `rst` whenever `m` is present (drum-core.js:566), so a 909 payload never shares an 808's or a 606's `pk`; the engine is machine-generic (`mch`, `drOn`'s cache, `drPend`, `drPost`, `drGain` by `p.machine`: engine.js:1924–1947, 2137–2250) and `drHit` passes v 100 / 110 / 119 / 127 exactly (`round(v · 127)` of the song's v / 127); a drum note-off does nothing (2698), so note overlaps never touch the sound; the synced flam and shuffle as whole ticks keep D5 bit-identical at 120 BPM / 48 kHz (25 frames a tick; shuffle 20 · (sh − 1) = 2 … 12 / 96 of a beat, the 32nds' key pairs as OM9's "1 = 2, 3 = 4, 5 = 6, 7"); x³¹ + x¹³ + 1 is a primitive trinomial (period 2³¹ − 1); the ROM clock arithmetic — the hat's 12 kΩ and the crash / ride's 6.8 kΩ + TUNE 5 kΩ give one nominal 30 kHz, TUNE 0–10 21–52 kHz (× 2.47), the late R442 / R440 a +0.4-semitone shift the tool's word-based pre-compensation does not see; the plan bound (a 909 track ≤ 896 measures, a free pre-roll ≤ 895: 1 791 ≤ 1 793; ≈ 170 KB the longest plan); the 14 mm minimax (14 keys at 14 mm need 182 mm against 169.8: ± 6.1–6.2 mm, the row's hit boxes 179.6–375.6 mm between TEMPO's edge at 171 and ENTER's at 376.2) and the 992 px module; the generated block's home — a separate script would cost a DSP-list entry (D8; dsp-scope.mjs:22–42, wk.test / app.test counts) and a fourth file in every ref, while in dr-808.js ref-7c freezes it with the circuits; no lint rule bounds a line or a file (tests/lint.test.mjs); schema 9 → 10 free and the Minimoog fallback precedent (cv-migrate.js SCHEMA 9; the 7a / 7b steps additive); `isDrum` by `PERS` (song.js:548) and `drumRowsOf` (roll.js:54) take the 909 with no edit; classic-panel's vertical-switch test needs no 909 entry while its layout binds no switch (tests/classic-panel.test.mjs:243–253); D4 — the maker only in models.js's label, the face's plain model print the TB-303 / 606 precedent, the tool's seeds from wt.js:50 / 58, no path by which ROM data could enter | as cited | — |
