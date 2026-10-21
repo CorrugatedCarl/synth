@@ -942,6 +942,24 @@ knobs, two trimmer memories edited in TRIM…), no sequencer — you play it fro
 the roll; hard hits change its tone (filter and bend), as the original; its individual outputs are drawn and become cable-able with
 full patching (stage 4). Before we lock its sound in, you get five short audio files.
 
+**Answers (the user, 2026-10-21):** all seven settled — the build follows them, no [C] left on them.
+1. **Grid size**: a new Pads module is **4 × 4**, medium pads; any size 1 × 1 … 8 × 8 and S / M / L from ⋯ → Grid… (§1.3).
+2. **Resizing** (the lead, from the user's rule of 2026-10-18 "modules shouldn't be resizable at all"): the grid's rows, columns
+   and pad size are a **setting** (⋯ → Grid…), the module redraws at the fixed size that fits — **no drag handle** (§1.3).
+3. **What a new module plays**: it **follows the track it is added on** — a drum machine's track: that machine's pad layout; a
+   synth's: chromatic from C3 (§3.5).
+4. **Targets** (the lead, from the user's "full custom mapping"): **drum hits, notes, chords and modulation, all now**; clips /
+   scenes wait for a studio clip launcher (§3.6).
+5. **Recording**: pad hits record into **each pad's target track, armed or not** (§4.3: `o.rec = 'target'`, the build's only
+   rule; the `'armed'` branch is not built).
+6. **Hardware** (the lead, from the user's "i do not have a midi controller at the moment"): **generic MIDI learn on the Mac**
+   (Chrome / Edge), and **one documented generic note-velocity light-back scheme** — no device-specific colour profiles (§8.4);
+   the hands-on hardware check waits until the user has a controller (reviewer 2's fake Web MIDI is the gate, §14.3, §15.11).
+7. **The SDS-V's hi-hat / cymbal modules**: **later**, with our own sounds through their loop circuit (the 909's way); the
+   five-drum kit now (RV §3).
+
 ## 17. Notes (the builders fill in)
 
 ## 18. Review log
+
+### The skeptic review (2026-10-21, against 3b9aee0 = 8815b14 + this contract) — in progress
