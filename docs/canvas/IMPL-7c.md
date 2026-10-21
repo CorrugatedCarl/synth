@@ -479,7 +479,7 @@ on the 808's and the 606's: their keys and shapes unchanged, D1; hashed into a 9
 sel, bl, trk, cyc, guide), the flam tempo, the session's `pend` / `ptr` / `loc` — since a change the key misses is a send
 `drumSend`'s `pk` dedupe drops (main.js:3223; 7b review #3's class) [review #8]. A measure per pattern (`mKey` 0–95, `mVar` 0, `mPre` the scale's step code — **SCALE 16 / 32 / 8T / 16T → codes
 3 / 4 / 1 / 2**, the 606's `SC_CODE`, drum-core.js:96 —, `mL1` its LAST STEP); `fill: null`. Per mode: PATTERN PLAY the selection (a
-pattern, its chain, or the block — each pattern expanded by its chain) looping; PATTERN WRITE the edited pattern alone, looping [C];
+pattern, its chain, or the block — a chain counts as one pattern, §3.3's rule) looping; PATTERN WRITE the edited pattern alone, looping [C];
 TRACK PLAY the track's measures, `once` by CYCLE, free a located start a pre-roll (7b §3.4's mechanism); TRACK WRITE (running) `pend`
 looping, else the pointer's measure [C]. Mute / solo mask `st`, `ac` and `fl` alike.
 
