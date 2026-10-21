@@ -74,26 +74,34 @@ The model's signal flow per channel (one monophonic voice, as the card):
 ```
  hit v127 ─▶ pad volts v_p ─▶ SENS gain + limiter ─▶ comparator ─▶ gates (trigger, click)
                                    └─▶ peak hold V_D (the hit's dynamics)
- TONE + BEND·EG_P (+ toms: k_b·V_D) ─▶ triangle VCO (reset at the hit) ─▶ passive RC² ─▶ VCA_T (EG_T·V_D) ─┐
- noise ─▶ gain ─▶ SSM2044 4-pole LP (NOISE + sweep·V_D·EG_N (bass, toms) , Q) ─┬▶ VCA_N (EG_N·V_D) ─┤ NOISE/TONE ─▶ drum ─┐
+ TONE + BEND·EG_P (+ toms: k_b·V_D) ─▶ triangle VCO (reset at the hit) ─▶ passive RC² ─▶ VCA_T (EG_T) ─────┐
+ noise ─▶ gain ─▶ SSM2044 4-pole LP (NOISE + sweep·V_D·EG_N (bass, toms) , Q) ─┬▶ VCA_N (EG_N) ─────┤ NOISE/TONE ─▶ drum ─┐
                                                                               └▶ VCA_C (EG_C)  ─────────────── click ──┤ CLICK/DRUM ─▶ LEVEL ─▶ mono mix
 ```
 
 - **Pad volts** [C on R]: `v_p = 0.005 · 15^((v − 1) / 126)` V (v 1 → 0.005 V, the input's floor; v 127 → 0.075 V, a pad's peak).
 - **Sensitivity** [C on R]: gain `G = 20 · 10^(1.5 · s)` (s 0…1: ×20 … ×632), then a soft limiter `V_D = V_L · tanh(G · v_p / V_L)`,
   `V_L` 10 V: at SENS 5 (×112) v 127 reaches 0.68 of `V_L` and v 40 0.13; at SENS 10 v 40 already 0.62 and v 127 1.00 (a ratio of 1.6 against 5.3) — the reduced dynamics
-  the review describes. The comparator fires above 0.2 V.
+  the review describes. The comparator fires above 0.2 V — a threshold: at SENS 0 nothing below v 34 fires, at SENS 1 below v 18,
+  at SENS 2 below v 2, above SENS ≈ 2.01 every velocity (IMPL-8 review #15; checked: the ratios above and §5's 6.3 / 2.8).
 - **V_D** sampled at the hit (a peak detector: the envelopes start from levels it sets, so it never shortens a long decay; a
-  retrigger takes the new hit's).
+  retrigger takes the new hit's). It scales the envelopes' peaks **once** — the VCAs read the envelopes (an earlier draft of the
+  diagram also multiplied the VCAs by V_D: a level ∝ V_D²; IMPL-8 review #25).
 - **EG_T** (tone VCA): attack 0.5 ms to a peak ∝ V_D, then an exponential decay whose time to −60 dB is DECAY's: `T60 = 0.03 ·
   167^d` s (d 0…1: 30 ms … 5 s, the [R] 5 s), τ_T = T60 / 6.91; a retrigger restarts the attack from the level it is at.
   **EG_N** (noise VCA): τ_N = 0.6 · τ_T. **EG_P** (bend): τ_P = 0.3 · τ_T, capped at 400 ms. **EG_C** (click): a 4 ms gate from the
   monostable, 1 ms release (the gate's length one of the trigger's: an external trigger's is shorter — not modelled: every hit is a
   pad's).
 - **VCO**: an integrator charged by the exponential converter's current, reversed by a comparator at ± 5 V (the 909 lane's triangle
-  state machine, dr-808.js `Tom9` 2829: the corner reflected inside the sample — exact in position; a sampled ideal triangle whose aliases at ≤ 520 Hz and OS ≥ 2 sit near −90 dB), **reset to its lower peak at each hit** (a consistent attack;
-  the card's behaviour unknown, [C]); pitch `f = f_TONE · 2^(BEND_oct · EG_P (+ toms: 0.5 · V_D / V_L))`; then two passive RC
-  sections at 1.5 · f_TONE's range top (fixed per card: the triangle's 3rd harmonic −28 dB).
+  state machine, dr-808.js `Tom9` 2829: the corner reflected inside the sample — exact in position; a sampled ideal triangle),
+  **reset to its lower peak at each hit** (a consistent attack; the card's behaviour unknown, [C]); pitch `f = f_TONE · 2^(BEND_oct
+  · EG_P (+ toms: 0.5 · V_D / V_L))`; then two passive RC sections at 1.5 · f_TONE's range top (fixed per card: the triangle's 3rd
+  harmonic, −19.1 dB raw, at −30 dB at TONE 10 and −20 … −21 dB at TONE 0 — a near-sine at the top of the range only). **Aliasing**
+  (IMPL-8 review #12, `scratchpad/8/rev/tri-alias.mjs`): unbent at ≤ 520 Hz the sampled triangle's aliases below 20 kHz sit at
+  −87 dB (OS 2) / −101 dB (OS 4) re the fundamental, but the bend lifts a tom up to 2.5 octaves at the hit (≈ 2.9 kHz on tom 1):
+  raw −57 / −71 dB, and after the RC² — which cuts the bent fundamental (−23 dB at 3.8 × its corner) more than a low alias — the
+  strongest is −46 / −55 dB re the tone. IMPL-8 §15.1 gates ≤ −60 dB at OS 4; a 2-point polyBLAMP at each corner (its fractional
+  time is the reflection's) is V5's means.
 - **Snare oscillator modulation** (R26): a 31 Hz triangle LFO moving the snare's VCO by ± 2.5 % (a slight shell roughness); 0 on
   the other cards [C on R? — the trimmer exists; what feeds it is not known here].
 - **Noise**: dr-808.js's hashed white noise (a function of the absolute sample, salted; RD / IMPL-7a §2.1) — one stream for the
@@ -101,7 +109,9 @@ The model's signal flow per channel (one monophonic voice, as the card):
 - **SSM2044**: a 4-stage OTA cascade with a saturating feedback (tanh per stage), zero-delay solved per sample — the method of
   engine.js `Ladder` (OTA branch, 110–164), re-written inside dr-808.js (an engine class is out of the machine's scope); cutoff
   exponential in its control: `f_c = f_NOISE · 2^(sweep · V_D / V_L · EG_N)` on bass and toms (the [R] dynamic noise pitch), sweep
-  1.5 octaves (bass), 2 (toms), 0.7 (snare, the trimmer R25 low); Q: 0 on bass and toms, k 2.2 on the snare (below oscillation).
+  1.5 octaves (bass), 2 (toms), **0 on the snare** (the [R lon] statement names bass and toms only; an earlier 0.7 contradicted it —
+  IMPL-8 review #25); f_c clamped at 0.46 of the OS rate (the engine's `gMax`: tom 1's 6 kHz × 2² = 24 kHz is past Nyquist at OS 1,
+  44.1 kHz); Q: 0 on bass and toms, k 2.2 on the snare (below oscillation).
 - **VCAs**: OTA law `y = I · tanh(x / (2 V_T))` with the input attenuated to ± 30 mV at full scale (a gentle compression of the
   hardest hits) [C].
 - **Mix**: NOISE / TONE an equal-power crossfade (m 0: tone only); CLICK / DRUM likewise (c 0: drum only); the channel's LEVEL an
@@ -112,7 +122,7 @@ The model's signal flow per channel (one monophonic voice, as the card):
 | card | TONE (Hz, 0 … 10) | NOISE f_c (Hz) | BEND (octaves at 10) | DECAY (T60) | Q | sweep (oct) | snare mod |
 |---|---|---|---|---|---|---|---|
 | bass drum | 30 – 120 | 60 – 3 000 | 0 – 1.5 | 30 ms – 5 s | 0 | 1.5 | 0 |
-| snare drum | 110 – 440 | 300 – 12 000 | 0 – 1 | 30 ms – 5 s | 2.2 | 0.7 | ± 2.5 % |
+| snare drum | 110 – 440 | 300 – 12 000 | 0 – 1 | 30 ms – 5 s | 2.2 | 0 | ± 2.5 % |
 | tom 1 (high) | 90 – 520 | 150 – 6 000 | 0 – 2 | 30 ms – 5 s | 0 | 2 | 0 |
 | tom 2 (mid) | 65 – 380 | 120 – 5 000 | 0 – 2 | 30 ms – 5 s | 0 | 2 | 0 |
 | tom 3 (low) | 45 – 260 | 90 – 4 000 | 0 – 2 | 30 ms – 5 s | 0 | 2 | 0 |
