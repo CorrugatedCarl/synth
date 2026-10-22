@@ -1730,7 +1730,7 @@ export class SerumHost {
     this.undoPend = null;             // label of the edit gesture whose snapshot is taken at the next paint
     this.restoring = false;
     this.touch = false;
-    this.statusEl = null;             // the touch tooltip line (the bundled panel's under its header; VOICE's in parts)
+    this.statusEl = null;             // the touch tooltip line (VOICE's, in the parts view; the bundled panel has none: nothing may shift under a finger)
     this.browser = null;
     this.kit = makeKit(this);         // the binding kit of the sub-panels (§11.14)
     this.oscd = this.opts.osc ? osc.oscData(this.kit) : NO_OSCD;   // their wavetable / noise data (table cache, imports, conversions)
@@ -2164,7 +2164,7 @@ export class SerumHost {
     if (this.lay) this.lay.classList.toggle('sx-touch', want);
     if (this.waveBtn) this.waveBtn.draggable = !this.touch;
   }
-  // touch has no hover: the tooltip of the touched control shows in the status line under the header (§13.1)
+  // touch has no hover: the tooltip of the touched control shows in VOICE's status line (§13.1; parts view only — no statusEl, no line)
   touchTip(t) {
     const host = closest(t, '[data-dest]'), tile = closest(t, '[data-src]');
     let text = '';

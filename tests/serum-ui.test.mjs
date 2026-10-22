@@ -1879,7 +1879,7 @@ test('SerumUI: panel undo / redo (§13.2.4) — header buttons, Cmd/Ctrl-Z, Shif
   u.destroy();
 });
 
-test('SerumUI: touch first-class (§13.1) — touch mode, status-line tooltips, modifier latches, double-tap typed entry', async () => {
+test('SerumUI: touch first-class (§13.1) — touch mode, no status line in the bundled panel, modifier latches, double-tap typed entry', async () => {
   const { doc, host, u, s } = await mount();
   assert.equal(u.el.classList.contains('sx-touch'), false);
   const wave = u.head.querySelector('.sx-wave');
@@ -1888,13 +1888,27 @@ test('SerumUI: touch first-class (§13.1) — touch mode, status-line tooltips, 
   ptr(k, 'pointerdown', 10, 10, { pointerType: 'touch' });
   assert.ok(u.el.classList.contains('sx-touch'));
   assert.equal(wave.draggable, false);                                       // touch: no HTML drag on the wave icon
-  assert.match(u.statusEl.textContent, /^Filter Cutoff: /);                // no hover on touch: the status line
+  // the bundled panel has no touch status line: nothing appears above the oscillators, nothing shifts (the user's decision;
+  // the parts view's VOICE keeps its line — sx-host.test)
+  assert.equal(u.statusEl, null);
+  assert.equal(u.el.querySelectorAll('.sx-status').length, 0);
+  assert.equal(u.el.querySelectorAll('[role="status"]').length, 0);
   ptr(k, 'pointerup', 10, 10, { pointerType: 'touch' });
-  assert.match(u.statusEl.textContent, /^Filter Cutoff: /);                // stays a moment after the touch ends
   const tile = u.el.querySelector('[data-src="lfo1"]');
   ptr(tile, 'pointerdown', 10, 10, { pointerType: 'touch' });
-  assert.match(u.statusEl.textContent, /^LFO 1\nDrag onto a control/);
   ptr(tile, 'pointerup', 10, 10, { pointerType: 'touch' });
+  // a touched control's drag + the repaints after it: the panel's children (the layout above the pages) stay exactly as they were
+  const kids = u.el.children.slice();
+  ptr(k, 'pointerdown', 10, 100, { pointerType: 'touch' });
+  ptr(k, 'pointermove', 10, 60, { pointerType: 'touch' });
+  await flush(doc);
+  ptr(k, 'pointerup', 10, 60, { pointerType: 'touch' });
+  await flush(doc);
+  assert.equal(u.el.children.length, kids.length);
+  assert.ok(u.el.children.every((c, i) => c === kids[i]));
+  assert.equal(u.el.querySelectorAll('.sx-status').length, 0);
+  const ch = u.el.childNodes;
+  assert.equal(ch.indexOf(u.pageBox), ch.indexOf(u.head) + 1);   // the pages sit right under the header
   // the modifier bar (header): Alt latched → the next gesture is an Alt gesture (wave icon: the Renders menu)
   const bar = u.head.querySelector('.sx-mkeys');
   fire(bar.querySelector('[data-mod="alt"]'), 'click');
@@ -1915,6 +1929,22 @@ test('SerumUI: touch first-class (§13.1) — touch mode, status-line tooltips, 
   inp.value = '432';
   fire(inp, 'keydown', { key: 'Enter' });
   assert.equal(s().global.a4, 432);
+  u.destroy();
+});
+
+test('SerumUI: the bundled shell has no status line after a parts round trip either (dropShell → buildShell); a stale VOICE line does not come back', async () => {
+  const { doc, root, u } = await mount();
+  u.dropShell();
+  assert.equal(u.statusEl, null);
+  u.statusEl = doc.createElement('div');   // (VOICE's line of the parts view, detached once its view went)
+  u.buildShell(root);
+  await flush(doc);
+  assert.equal(u.statusEl, null);
+  assert.equal(root.querySelectorAll('.sx-status').length, 0);
+  const k = byDest(u.el, 'f.cutoff');
+  ptr(k, 'pointerdown', 10, 10, { pointerType: 'touch' });
+  ptr(k, 'pointerup', 10, 10, { pointerType: 'touch' });
+  assert.equal(root.querySelectorAll('.sx-status').length, 0);
   u.destroy();
 });
 

@@ -437,6 +437,21 @@ test('VOICE: the header (preset, undo / redo, menu, MASTER), VOICING beside ENV 
   X.destroy();
 });
 
+test('VOICE (parts view) keeps its touch status line: a touched control\'s tip shows in it, and clears after the lift (the bundled panel has none — serum-ui.test)', async () => {
+  const { doc, box, X } = parts();
+  const V = M.mountPart(X, 'voice', box);
+  await flush(doc);
+  const line = V.root.querySelector('.sx-status');
+  assert.ok(line && X.statusEl === line, 'VOICE\'s line is the host\'s status line');
+  assert.equal(line.textContent, '');
+  const m = byDest(V.root, 'g.master');
+  ptr(m, 'pointerdown', 10, 10, { pointerType: 'touch' });
+  assert.match(line.textContent, /^Master/i);
+  ptr(m, 'pointerup', 10, 10, { pointerType: 'touch' });
+  assert.match(line.textContent, /^Master/i);   // stays a moment after the lift
+  X.destroy();
+});
+
 test('CLIP as a part: its MACROS pane\'s knobs are twins (data-twin: no cable end, no drop on the canvas); ARP alone (no MACROS pane); the part power in the bar', async () => {
   const { doc, box, X } = parts({ tracks: () => [], seqCmd() {} });
   const C = M.mountPart(X, 'clip', box), A = M.mountPart(X, 'arp', box);

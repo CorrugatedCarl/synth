@@ -86,8 +86,6 @@ export class SerumUI extends SerumHost {
     this.destroyShell();
     this.dropHeadKit();
     if (this.browser) { this.browser.close(); this.browser = null; }   // (its overlay sat on the bundled root: the next view's root takes it)
-    if (this.statusEl && this.statusEl.remove) this.statusEl.remove();
-    this.statusEl = null;
     const r = this.roots.find(x => x.id === this.uid);   // (the bundled root: the host's uid, a part root uid-r<n>)
     if (r) this.dropRoot(r);
     this.shellReset();
@@ -104,10 +102,9 @@ export class SerumUI extends SerumHost {
     this.el = this.addRoot(this.root, { bundled: true });
     if (this.roots[0] !== this.el) { this.roots.splice(this.roots.indexOf(this.el), 1); this.roots.unshift(this.el); }
     this.buildHead();
-    this.statusEl = mk(this.d, 'div', 'sx-status');
-    this.statusEl.setAttribute('role', 'status');
-    this.statusEl.setAttribute('aria-live', 'polite');
-    this.el.appendChild(this.statusEl);
+    // no touch status line in the bundled panel (a line that appears above the oscillators on every touch pushes the panel down);
+    // a stale one of VOICE's (parts view) goes too — the touch tip then does nothing here (sx-host touchTip)
+    this.statusEl = null;
     this.pageBox = mk(this.d, 'div', 'sx-pages');
     this.el.appendChild(this.pageBox);
     this.buildFoot();
