@@ -28,14 +28,15 @@ test('index.html: the shell of IMPL-1b §3.1 — every id of the tree and of tod
     'engMore', 'engPop', 'power', 'master', 'masterG', 'rate', 'cpu', 'latL', 'lat', 'latPop', 'gearBtn', 'gearPop', 'sr', 'os', 'drift', 'tRecMode', 'tInQ', 'pinchMode',
     'arrbar', 'aAdd', 'aMulti', 'aRange', 'aCopy', 'aPaste', 'aDup', 'aClear', 'aDel', 'aIns', 'aLoopSel', 'tBars', 'studio', 'arrwrap', 'heads', 'lanes', 'topGrip',
     'stage', 'tab-inst', 'viewport', 'world', 'cvParts', 'boot', 'scope', 'about-title', 'about', 'algo', 'overlay', 'cvToolbar',
-    'srcTray', 'srcGrip', 'fxTray', 'tab-roll', 'rolltools', 'rollwrap', 'perf', 'kbGrip', 'notice', 'kbrow', 'keys', 'helpParts', 'ov',
+    'srcTray', 'srcGrip', 'srcTab', 'tab-roll', 'rolltools', 'rollwrap', 'perf', 'kbGrip', 'notice', 'kbrow', 'keys', 'helpParts', 'ov',
     'modal', 'installSheet', 'update', 'tip'];
   for (const id of ids) assert.equal((HTML.match(new RegExp(`\\sid="${id}"`, 'g')) || []).length, 1, id);
   for (const gone of ['id="models"', 'id="tab-fx"', 'id="fxtitle"', 'data-tab="inst"', 'data-tab="fx"', 'class="console"', '<footer', 'id="inst"', 'id="fxrack"']) assert.ok(!HTML.includes(gone), gone); // ((milestone 3, R6 / lane D) every device body is its module's own element: no #inst / #fxrack homes)
   assert.match(HTML, /<div id="world" class="cv-world" data-cv-world>/);
   assert.match(HTML, /<div id="viewport" class="cv-viewport" tabindex="0" aria-label="Track canvas">/);
   assert.match(HTML, /<aside id="srcTray"[^>]*data-wk-inset="left"/);
-  assert.match(HTML, /<aside id="fxTray"[^>]*data-wk-inset="right"/);
+  // (2026-10-22, the user) no Effects tray: the right edge is the canvas's
+  for (const gone of ['id="fxTray"', 'id="fxRail"', 'id="fxPanel"', 'id="fxClose"', 'id="fxGrip"', 'id="fxList"', 'id="srcRail"', 'data-wk-inset="right"', 'cv-right', 'cv-rail']) assert.ok(!HTML.includes(gone), gone);
   assert.match(HTML, /<button type="button" data-tab="canvas"[^>]*>Canvas<\/button>\s*<button type="button" data-tab="roll"/);
   // the parts the modules take: inside #world, not hidden
   const parts = HTML.slice(HTML.indexOf('id="cvParts"'), HTML.indexOf('id="overlay"'));
@@ -49,15 +50,16 @@ test('index.html: the shell of IMPL-1b §3.1 — every id of the tree and of tod
 test('boot: today\'s controls keep their handlers in the shell (transport, ≡ file items, arrangement toolbar, ⚙ settings, engine), the menus are wired', async () => {
   const s = await bootMain({});
   const click = ['tStart', 'tPlay', 'tRec', 'tLoop', 'tMetro', 'tInQ', 'tUndo', 'tRedo', 'fNew', 'fOpen', 'fSave', 'fMidi', 'fBounce', 'aAdd', 'aMulti',
-    'aCopy', 'aPaste', 'aDup', 'aClear', 'aDel', 'aIns', 'aLoopSel', 'power', 'fullscreen', 'helpBtn', 'srcClose', 'fxClose', 'octdn', 'octup', 'panic', 'hold', 'kbHide'];
+    'aCopy', 'aPaste', 'aDup', 'aClear', 'aDel', 'aIns', 'aLoopSel', 'power', 'fullscreen', 'helpBtn', 'srcClose', 'octdn', 'octup', 'panic', 'hold', 'kbHide'];
   for (const id of click) assert.ok(bound(s.$('#' + id), 'click'), id + ' click');
   for (const id of ['tCount', 'tRecMode', 'tSigD', 'fFile', 'sr', 'os', 'pinchMode', 'tBpm', 'tSigN', 'tBars']) assert.ok(bound(s.$('#' + id), 'change'), id + ' change');
   for (const id of ['drift', 'master', 'masterG']) assert.ok(bound(s.$('#' + id), 'input'), id + ' input');
   // ⚙'s master level (shown where the top row's folds away, ≤ 1099 px) drives the master level through #master's handler
   s.$('#masterG').value = '0.42'; s.$('#masterG').oninput();
   assert.deepEqual([s.api.settings().master, s.$('#master').value], [0.42, '0.42'], 'the ⚙ mirror sets the master level');
-  for (const id of ['appMenuBtn', 'gearBtn', 'tMore', 'aBars', 'trkChip', 'engMore', 'srcRail', 'fxRail', 'meter', 'rollhelp']) assert.ok(bound(s.$('#' + id), 'click'), id + ' (menu / tray) click');
-  for (const id of ['topGrip', 'kbGrip', 'srcGrip']) assert.ok(bound(s.$('#' + id), 'pointerdown') && bound(s.$('#' + id), 'keydown') || bound(s.$('#' + id), 'pointerdown'), id + ' grip');
+  for (const id of ['appMenuBtn', 'gearBtn', 'tMore', 'aBars', 'trkChip', 'engMore', 'srcTab', 'meter', 'rollhelp']) assert.ok(bound(s.$('#' + id), 'click'), id + ' (menu / tray) click');
+  for (const id of ['topGrip', 'kbGrip', 'srcGrip', 'srcTab']) assert.ok(bound(s.$('#' + id), 'pointerdown') && bound(s.$('#' + id), 'keydown') || bound(s.$('#' + id), 'pointerdown'), id + ' grip');
+  for (const t of ['pointermove', 'pointerup', 'pointercancel']) assert.ok(bound(s.$('#srcTab'), t), 'the Sources tab pulls: ' + t);
   assert.equal(s.$('#topGrip').getAttribute('role'), 'slider');
   assert.equal(s.$('#topGrip').getAttribute('aria-valuenow'), '160', 'first run: one track row shown (the arrangement toolbar, the ruler, the row)');
   // the selected track in the top row
@@ -209,15 +211,18 @@ test('the height budget: kbMaxH keeps the canvas ≥ 240 px with the top tray at
   g.dispatchEvent({ type: 'keydown', key: 'End', shiftKey: false, preventDefault() {}, stopPropagation() {} });
   assert.equal(api.kb().h, api.kbMaxH(chrome));
   assert.equal(sh.shell.topShown, Math.max(48, 700 - 240 - chrome - api.kb().h), 'the top tray folds toward its row');
-  // fold toggle (double-tap): folded ↔ the last height
+  // fold toggle (2026-10-22: a tap on the tab, Enter / Space; no double-tap): folded ↔ the last height
   await resize(s, 1400, 900);
-  sh.topToggle();
-  assert.equal(sh.shell.topShown, 48);
+  const tg = s.$('#topGrip'), tp = (type, y, o) => Object.assign({ type, pointerId: 41, clientX: 600, clientY: y, button: 0, buttons: type === 'pointerup' ? 0 : 1, pointerType: 'touch', timeStamp: performance.now(), preventDefault() {} }, o);
+  tg.dispatchEvent(tp('pointerdown', 300)); tg.dispatchEvent(tp('pointerup', 302));
+  assert.equal(sh.shell.topShown, 48, 'a tap: folded');
   assert.equal(JSON.parse(ls.m.get('synthc.cv.trays')).top, 48);
-  sh.topToggle();
-  assert.equal(sh.shell.topShown, 272, 'the last height again');
+  tg.dispatchEvent({ type: 'keydown', key: 'Enter', shiftKey: false, preventDefault() {}, stopPropagation() {} });
+  assert.equal(sh.shell.topShown, 272, 'Enter: the last height again');
+  sh.topToggle(); sh.topToggle();
+  assert.equal(sh.shell.topShown, 272);
   sh.topSet(0, 'reset');
-  assert.equal(sh.shell.topShown, 48, 'reset (Enter) from open: folded');
+  assert.equal(sh.shell.topShown, 48, 'reset (Delete) from open: folded');
   sh.topSet(0, 'reset');
   assert.equal(sh.shell.topShown, 160, 'and from folded: one row');
   // a two-finger cancel of a drag: as it was, nothing saved
@@ -246,9 +251,7 @@ test('Escape: a sheet, then a menu, then the side trays close (cvShellEscape →
   assert.equal(sh.shell.menus[1].isOpen(), false);
   assert.equal(sh.cvShellEscape(), true, 'the Sources tray');
   assert.equal(sh.shell.src.isOpen(), false);
-  sh.shell.fx.open();
-  assert.equal(sh.cvShellEscape(), true, 'the Effects tray');
-  assert.equal(sh.cvShellEscape(), false, 'nothing left');
+  assert.equal(sh.cvShellEscape(), false, 'nothing left (no Effects tray)');
 });
 
 test('the instrument chip menu lists every model with its voice mode (R6); the track row\'s chip names the track\'s own', async () => {
@@ -267,22 +270,60 @@ test('the instrument chip menu lists every model with its voice mode (R6); the t
   assert.equal(cvTray.TRAY_PREF, 'synth.cv.trays');
 });
 
-test('side trays: both may stay open on a wide window; at portrait width (< 1100 px) the one not in use folds to its rail; their open state and width come back', async () => {
-  const ls = fakeStorage({});
-  const s = await bootMain({ ls }), sh = shellOf();
-  sh.shell.src.open(); sh.shell.fx.open();
-  assert.deepEqual([sh.shell.src.isOpen(), sh.shell.fx.isOpen()], [true, true], 'wide: both');
-  sh.shell.fx.close();
+test('the side tray (2026-10-22, the user: "remove it and move the estimates"; the Sources tray to a pull tab): no Effects tray in the shell (shell.fx, its tiles, its __synthTest hooks gone; the right edge free); the Sources tray\'s tab toggles it, a pull drags it out; its open state and width come back, an old Effects record ignored; Escape and ROLL close it', async () => {
+  const ls = fakeStorage({ 'synthc.cv.trays': JSON.stringify({ fx: { open: true, w: 300 } }) });
+  const s = await bootMain({ ls }), sh = shellOf(), cv = globalThis.__synthTest.cv;
+  assert.deepEqual(['fx' in sh.shell, 'fxTiles' in sh.shell, typeof cv.fx.pick, typeof cv.fx.drag, typeof cv.fx.over, typeof cv.fx.tiles], [false, false, 'undefined', 'undefined', 'undefined', 'undefined'], 'no Effects tray');
+  assert.deepEqual([typeof cv.fx.addEffect, typeof cv.fx.cost, cv.fx.items.length], ['function', 'function', 16], 'the effects (the "+" menu\'s list) and their estimates stay');
+  assert.equal(s.$('#fxTray').listeners && Object.keys(s.$('#fxTray').listeners).length, 0, 'nothing bound to a #fxTray');
+  assert.equal(sh.shell.src.isOpen(), false, 'an old Effects record opens nothing');
+  const tab = s.$('#srcTab');
+  assert.equal(tab.getAttribute('aria-expanded'), 'false');
+  tab.dispatchEvent({ type: 'click', detail: 1 });
+  assert.deepEqual([sh.shell.src.isOpen(), tab.getAttribute('aria-expanded'), s.$('#srcTray').classList.contains('open')], [true, 'true', true], 'a tap opens it');
+  assert.deepEqual(JSON.parse(ls.m.get('synthc.cv.trays')).src, { open: true, w: 240 });
+  // a pull back (a quick 150 px drag inward): shut, its click eaten
+  const pe = (type, x, o) => Object.assign({ type, pointerId: 51, clientX: x, clientY: 400, button: 0, buttons: type === 'pointerup' ? 0 : 1, pointerType: 'touch', timeStamp: performance.now(), preventDefault() {} }, o);
+  tab.dispatchEvent(pe('pointerdown', 250)); tab.dispatchEvent(pe('pointermove', 200)); tab.dispatchEvent(pe('pointermove', 100));
+  assert.deepEqual([s.$('#srcTray').classList.contains('pull'), s.$('#srcTray').style.transform], [true, 'translateX(-150px)'], 'the tray under the finger');
+  tab.dispatchEvent(pe('pointerup', 100)); tab.dispatchEvent({ type: 'click', detail: 1 });
+  assert.deepEqual([sh.shell.src.isOpen(), s.$('#srcTray').classList.contains('pull'), s.$('#srcTray').style.transform], [false, false, ''], 'past half in: shut (the click after it eaten)');
+  sh.shell.src.open(); sh.shell.src.setWidth(300);
   globalThis.innerWidth = 834;
-  sh.shell.fx.open();
-  assert.deepEqual([sh.shell.src.isOpen(), sh.shell.fx.isOpen()], [false, true], 'portrait: the other folds');
-  sh.shell.src.open();
-  assert.deepEqual([sh.shell.src.isOpen(), sh.shell.fx.isOpen()], [true, false]);
+  sh.cvOpenSources('track');
+  assert.equal(sh.shell.src.isOpen(), true, 'portrait: it opens as on a wide window (no other tray to fold)');
   globalThis.innerWidth = 1400;
-  assert.deepEqual(JSON.parse(ls.m.get('synthc.cv.trays')), { src: { open: true, w: 240 }, fx: { open: false, w: 240 } });
+  assert.deepEqual(JSON.parse(ls.m.get('synthc.cv.trays')), { fx: { open: true, w: 300 }, src: { open: true, w: 300 } }, 'the old record kept as it was, read by nobody');
   const s2 = await bootMain({ ls });
-  assert.deepEqual([shellOf().shell.src.isOpen(), shellOf().shell.fx.isOpen()], [true, false], 'restored');
+  assert.deepEqual([shellOf().shell.src.isOpen(), shellOf().shell.src.width()], [true, 300], 'restored');
+  shellOf().openTab('roll');
+  assert.equal(shellOf().shell.src.isOpen(), false, 'ROLL closes it (the canvas\'s tray)');
+  shellOf().openTab('canvas');
   void s; void s2;
+});
+
+test('the "+" menus\' load estimates (2026-10-22): an FX module\'s rack gets the host\'s cost (fx-ui opts.cost) — the cv-cost estimate of each effect type on this device, the same labels the Effects tray\'s tiles showed, following ⚙ → Measure this device; a Serum\'s FX page gets it through its host (fxCost)', async () => {
+  const s = await bootMain({}), sh = shellOf(), cv = globalThis.__synthTest.cv, api = s.api, acc = globalThis.__synthTest.acc;
+  const COSTM = await import('../cv-cost.js?v=9');
+  for (const x of cv.fx.items) assert.equal(cv.fx.cost(x.type), COSTM.label(COSTM.estimate(x.type, 0)), x.type);
+  assert.match(cv.fx.cost('rev'), /^~\d+ %$|^<1 %$/, 'an estimate: ' + cv.fx.cost('rev'));
+  const before = cv.fx.cost('conv');
+  api.store.set('synth.cv.devFactor', 4);
+  assert.notEqual(cv.fx.cost('conv'), before, 'a slower device: a higher estimate (' + before + ' → ' + cv.fx.cost('conv') + ')');
+  assert.equal(cv.fx.cost('conv'), COSTM.label(COSTM.estimate('conv', 4)));
+  api.store.set('synth.cv.devFactor', 0);
+  // the rack as built on the canvas: a stand-in FXRackUI records its options
+  const got = [];
+  class FXRec { constructor(box, host, opts) { got.push(opts); this.el = globalThis.document.createElement('div'); box.append(this.el); } refresh() {} destroy() {} paintMods() {} setLive() {} }
+  const was = acc.uiLoad(Promise.resolve({ sx: { SerumUI: class {} }, fxui: { FXRackUI: FXRec }, wk: await import('../wk.js?v=9'), mod: {} }));
+  try {
+    cv.renderViews(); await s.settle(10); s.raf(); await s.settle(5);
+    assert.ok(got.length > 0, 'an FX module built');
+    assert.deepEqual([typeof got[0].cost, got[0].cost('rev'), got[0].v2Fx], ['function', cv.fx.cost('rev'), true], 'its cost: the host\'s');
+  } finally { acc.uiLoad(was); }
+  const st = api.addTrack(MODELS.find(m => m.id === 'serum'));
+  assert.equal(api.sxHost(st, 'i1').fxCost('rev'), cv.fx.cost('rev'), 'a Serum\'s FX page: its host\'s fxCost');
+  void sh;
 });
 
 /* ---------------------------------------------------------- stage-1b review fixes (lane 1) */
@@ -319,7 +360,7 @@ test('narrow windows: "⏻ ▾" (#engMore) opens Power and the meter as a popove
 
 test('Escape with a module selected: focus elsewhere (Hold, a key, a tray) panics at once and keeps the selection; focus on the canvas deselects first (SPEC §4.8, as the roll)', async () => {
   const s = await bootMain({}), W = globalThis.__synthTest.cv.world(), doc = globalThis.document, hold = s.$('#hold'), sh = shellOf();
-  sh.shell.src.close(); sh.shell.fx.close();
+  sh.shell.src.close();
   const esc = () => { const ev = { type: 'keydown', key: 'Escape', code: 'Escape', keyCode: 27, target: doc.activeElement || s.$('#keys'), defaultPrevented: false, isComposing: false,
     metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, preventDefault() {}, stopPropagation() {} }; for (const f of s.dom.winL.keydown || []) f(ev); };
   try {

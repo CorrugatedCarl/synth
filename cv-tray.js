@@ -1,8 +1,10 @@
 // cv-tray.js — the shell's trays (SPEC-canvas §2.1–§2.4, §3 drag-in; contract: docs/canvas/IMPL-1b.md §4.6): the one
 // height budget of the top tray and the keyboard tray, the grip helper both use (lifted from main.js initKbView), the side
-// trays (Sources left, Effects right; opened by a tap on their rail, never an edge swipe), the Sources tray's tiles and
-// their drag-out, the ≡ / ⚙ popovers and the sheets in #ov. Owner: SHELL lane. Stage 1e (IMPL-1e §4.3): the Effects
-// tray's tiles (effectsTray: the empty FX panel + the effect types, their cost; the same drag-out as a Sources tile).
+// tray (Sources, at the left), the Sources tray's tiles and their drag-out, the ≡ / ⚙ popovers and the sheets in #ov.
+// Owner: SHELL lane. (2026-10-22, the user) The Effects tray (stage 1e's right side tray) is gone — its load estimates are in
+// the FX rack's "+" menu (fx-ui opts.cost) —, the Sources tray folds all the way to a pull tab on the canvas edge (no rail),
+// and every pull tab (the Sources tray's, the track list's, the keyboard's) works alike: a tap toggles, a pull drags the
+// tray like a drawer and its release snaps it open or shut (pullSnap: a flick goes its way, else past half opens).
 // Stage 2a (IMPL-2a §3): the Sources tray's Modulators section (sourcesTray o.mods: Mod Wheel, Velocity, Aftertouch, Bend;
 // setPlaced greys a singleton that is already there). Milestone 3 (IMPL-3 §2.6): the Serum view's Serum parts (OSC, SUB,
 // NOISE, FILTER, MACROS) and Note tools (ARP, CLIP) tiles (sourcesTray o.parts: PART_TILES; the drops are the host's).
@@ -24,14 +26,19 @@ import * as MG from './moog-core.js?v=9';
 export const TOP_ROW = 48, ARR_BAR = 32, RULER = 24, ROW_H = 56;
 /** The canvas never gets less than CANVAS_MIN px between the trays. */
 export const CANVAS_MIN = 240;
-/** Side trays: collapsed rail width, default open width, a grip's least distance from the screen edge (gesture.js EDGE_PX). */
-export const RAIL_W = 44, SIDE_W = 240, EDGE_INSET = 24;
+/** Side trays: the default open width, a grip's least distance from the screen edge (gesture.js EDGE_PX). No rail
+ * (2026-10-22): a closed tray is its pull tab on the canvas edge. */
+export const SIDE_W = 240, EDGE_INSET = 24;
 /** Side-tray panel widths a grip drag may give (px; the upper one also ≤ half the window). */
 export const SIDE_MIN = 200, SIDE_MAX = 440;
-/** Tray prefs (appstore): { top, topLast, src: {open, w}, fx: {open, w} }. */
+/** Tray prefs (appstore): { top, topLast, src: {open, w} } (an `fx` record of the gone Effects tray is ignored). */
 export const TRAY_PREF = 'synth.cv.trays';
 /** A quick touch drag (wk.dragSource info.quick: no hold) drops only on a zone it rested on this long (a flick is a cancel). */
 export const SETTLE_MS = 100;
+/** The pull tabs (the user, 2026-10-22: "tap the tab as well as pull it out like a physical tray"): a press that travels
+ * less than PULL_SLOP px is a tap (it toggles the tray), more a pull (the tray follows it); a release faster than FLICK_V
+ * px / s is a flick (it goes its way, however far it was pulled); SNAP_MS the snap's glide (none with reduced motion). */
+export const PULL_SLOP = 6, FLICK_V = 500, SNAP_MS = 220;
 /** The drag ghost's lift above a finger (serum-ui.js ghostAt). */
 export const GHOST_LIFT = 40;
 
@@ -61,6 +68,25 @@ export function nearestSnap(snaps, v, max = Infinity) {
   for (const s of L) if (Math.abs(s - v) < Math.abs(best - v)) best = s;
   return best;
 }
+/** Where a pulled tray settles: `out` px of its `full` travel pulled out, `v` its release speed (px / s, + outward) → open?
+ * A flick (|v| ≥ FLICK_V) goes its way; slower, past half its travel opens. Pure.
+ * @param {number} out @param {number} full @param {number} [v] @returns {boolean} */
+export function pullSnap(out, full, v = 0) {
+  if (v >= FLICK_V) return true;
+  if (v <= -FLICK_V) return false;
+  return full > 0 ? out >= full / 2 : out > 0;
+}
+/** A pull's release speed (px / s, + outward) from its samples [{t: ms, p: px outward}]: the travel over the last ≤ 100 ms
+ * (a finger that rested before lifting: 0). Pure. @param {Array<{t: number, p: number}>} S @returns {number} */
+export function pullSpeed(S) {
+  const n = S ? S.length : 0;
+  if (n < 2) return 0;
+  const b = S[n - 1];
+  let a = S[n - 2];
+  for (let i = n - 3; i >= 0 && b.t - S[i].t <= 100; i--) a = S[i];
+  const dt = b.t - a.t;
+  return dt > 0 ? ((b.p - a.p) / dt) * 1000 : 0;
+}
 /**
  * The one height budget (replaces main.js kbMaxH): the canvas keeps ≥ min px; the tray being dragged (`active`, default
  * 'bottom') gets its request, the other is pushed toward its fold (never below its own min); both at their mins → the
@@ -86,23 +112,33 @@ export function budget(s) {
 }
 
 /**
- * A tray grip (role=slider): pointer drag with capture (a two-finger pointercancel — e.gesture === 'two-finger' — puts
- * the height back unsaved: set(h0, 'cancel')), arrows / Page Up / Down / Home / End, Enter / Delete / Backspace reset,
- * double-click / double-tap (two taps < 450 ms and 16 px apart, each < 350 ms and < 4 px, no drag) → o.onDouble, ARIA
- * valuenow / valuemin / valuemax / valuetext. Up / Right = taller whatever the edge. A drag clamps to [min(), max()] and
- * snaps on release when o.snaps is given (keys step from snap to snap then).
+ * A tray grip — the pull tab on a top / bottom tray's edge (role=slider): pointer drag with capture (a two-finger
+ * pointercancel — e.gesture === 'two-finger' — puts the height back unsaved: set(h0, 'cancel'); the pinch is the page's /
+ * the canvas's), arrows / Page Up / Down / Home / End, Delete / Backspace reset, ARIA valuenow / valuemin / valuemax /
+ * valuetext. Up / Right = taller whatever the edge. A drag clamps to [min(), max()] and snaps on release when o.snaps is
+ * given (keys step from snap to snap then). (2026-10-22, the user: "tap the tab as well as pull it out like a physical
+ * tray") a tap — a press of any pointer that travels < PULL_SLOP px — and Enter / Space → o.onTap (the tray opens / folds;
+ * no double-tap any more); a release flicked inward (≤ −FLICK_V) folds the tray (set(min(), 'end')), one flicked outward
+ * from its fold opens it to o.open(); slower, the snaps decide (the first stop: past half its travel). o.fold: a tray that
+ * folds away past its least (the keyboard: nothing but this tab left). Folded (fold.closed()), a pull drags its drawer out
+ * — fold.begin() → its travel px, then fold.pull(out px) per move — and the release settles it (fold.done(open, 'end' |
+ * 'cancel'): pullSnap, a two-finger cancel shut again); open, a drag below min() goes on as that drawer closing (the height
+ * held at min(); fold.pull(null): back above it), released there by pullSnap again — folded away with its height set back
+ * to h0 (set(h0, 'cancel')), or open at min(); a flick inward from anywhere folds it away. Folded, the tab is a button
+ * (role, aria-expanded false, fold.label; no values) and only a tap / Enter / Space or a pull act on it.
  * @param {HTMLElement} grip
  * @param {{
  *   edge: 'top' | 'bottom', label: string,
  *   get: () => number, set: (px: number, phase: 'move' | 'end' | 'cancel' | 'key' | 'reset') => void,
  *   min: () => number, max: () => number, snaps?: () => number[], step?: number,
- *   onDouble?: () => void, start?: () => void, text?: (px: number) => string, doc?: Document,
+ *   onTap?: () => void, open?: () => number, start?: () => void, text?: (px: number) => string, doc?: Document,
+ *   fold?: {closed: () => boolean, begin: () => number, pull: (out: number | null) => void, done: (open: boolean, how: 'end' | 'cancel') => void, label?: string},
  * }} o
  * @returns {{sync: () => void, destroy: () => void, dragging: () => boolean}}
  */
 export function trayGrip(grip, o) {
   const sign = o.edge === 'top' ? 1 : -1; // a top tray grows downward, a bottom tray upward
-  const step = o.step > 0 ? +o.step : 10;
+  const step = o.step > 0 ? +o.step : 10, F = o.fold || null;
   const lo = () => +o.min() || 0, hi = () => Math.max(lo(), +o.max() || 0);
   const lim = v => clamp(Math.round(v), lo(), hi());
   const snapsOf = () => (typeof o.snaps === 'function' ? o.snaps() || null : null);
@@ -110,9 +146,16 @@ export function trayGrip(grip, o) {
   if (grip.getAttribute('tabindex') == null) grip.setAttribute('tabindex', '0');
   grip.setAttribute('aria-orientation', 'vertical');
   if (o.label) grip.setAttribute('aria-label', o.label);
-  let drag = null, moved = false, down = null, tap = null, type = 'mouse';
-  const dbl = () => { if (typeof o.onDouble === 'function') o.onDouble(); sync(); };
+  let drag = null, moved = false;
+  const tap = () => { if (typeof o.onTap === 'function') o.onTap(); sync(); };
   function sync() {
+    if (F) { // folded away the tab is a button (aria-expanded false, fold.label), else the height slider again
+      const shut = !!F.closed();
+      grip.setAttribute('role', shut ? 'button' : 'slider');
+      if (shut) { grip.setAttribute('aria-expanded', 'false'); grip.setAttribute('aria-label', F.label || (o.label || 'Tray') + ': show it'); for (const a of ['aria-orientation', 'aria-valuenow', 'aria-valuemin', 'aria-valuemax', 'aria-valuetext']) grip.removeAttribute(a); return; }
+      grip.removeAttribute('aria-expanded'); grip.setAttribute('aria-orientation', 'vertical');
+      if (o.label) grip.setAttribute('aria-label', o.label);
+    }
     const v = Math.round(+o.get() || 0);
     grip.setAttribute('aria-valuenow', String(v));
     grip.setAttribute('aria-valuemin', String(Math.round(lo())));
@@ -125,19 +168,26 @@ export function trayGrip(grip, o) {
     drag = null;
     grip.classList.remove('drag');
     try { grip.releasePointerCapture(D.id); } catch { /* released */ }
-    if (!moved) return;
-    if (roll) o.set(D.h0, 'cancel');
+    if (!moved) { if (!roll && e && e.type === 'pointerup') tap(); return; } // (a tap: the tray opens / folds)
+    if (e && isFinite(e.clientY)) D.S.push({ t: tOf(e), p: sign * (e.clientY - D.y0) });
+    const v = roll ? 0 : pullSpeed(D.S);
+    if (D.shut) F.done(!roll && pullSnap(D.out, D.full, v), roll ? 'cancel' : 'end'); // (folded: its drawer only)
+    else if (roll) { o.set(D.h0, 'cancel'); if (D.out >= 0) F.done(true, 'cancel'); }
+    else if (F && (D.out >= 0 || v <= -FLICK_V)) { // in its drawer, or flicked in: back at its least, or folded away (its height as it was)
+      if (D.out >= 0 && pullSnap(D.out, D.full, v)) { o.set(lo(), 'end'); F.done(true, 'end'); }
+      else { o.set(D.h0, 'cancel'); F.done(false, 'end'); }
+    } else if (v <= -FLICK_V) o.set(lo(), 'end'); // flicked in: folded to its least
+    else if (v >= FLICK_V && D.h0 <= lo() + 2 && typeof o.open === 'function') o.set(lim(o.open()), 'end'); // flicked out of its fold: open
     else { const S = snapsOf(); o.set(S ? nearestSnap(S, D.cur, hi()) : D.cur, 'end'); }
     sync();
   }
   const offs = [
     listen(grip, 'pointerdown', e => {
-      type = e.pointerType || 'mouse';
-      down = e.button > 0 || type === 'mouse' ? null : { t: tOf(e), x: e.clientX, y: e.clientY };
       if (e.button > 0 || drag) return;
       if (e.preventDefault) e.preventDefault(); // (a mouse press does not focus it: the arrow keys stay the page's)
       moved = false;
-      drag = { id: e.pointerId, y0: e.clientY, h0: +o.get() || 0, cur: +o.get() || 0 };
+      const h = +o.get() || 0;
+      drag = { id: e.pointerId, y0: e.clientY, h0: h, cur: h, shut: !!(F && F.closed()), out: -1, full: 0, S: [{ t: tOf(e), p: 0 }] };
       grip.classList.add('drag');
       try { grip.setPointerCapture(e.pointerId); } catch { /* pointer gone */ }
       if (typeof o.start === 'function') o.start();
@@ -146,27 +196,44 @@ export function trayGrip(grip, o) {
       const D = drag;
       if (!D || e.pointerId !== D.id) return;
       if (e.pointerType === 'mouse' && e.buttons === 0) { finish(e, false); return; } // a swallowed pointerup
-      const dy = e.clientY - D.y0;
-      if (!moved && Math.abs(dy) < 3) return; // a tap (or the first of a double tap) leaves it alone
+      const out = sign * (e.clientY - D.y0); // (+ outward: a top tray down, a bottom tray up)
+      D.S.push({ t: tOf(e), p: out });
+      if (D.S.length > 8) D.S.shift();
+      if (!moved && Math.abs(out) < PULL_SLOP) return; // a tap so far
       moved = true;
-      D.cur = lim(D.h0 + sign * dy);
+      if (D.shut) { // folded: its drawer follows the finger out
+        if (D.out < 0) D.full = Math.max(1, +F.begin() || 0);
+        D.out = clamp(out, 0, D.full);
+        F.pull(D.out);
+        return;
+      }
+      const v = D.h0 + out;
+      if (F && v < lo()) { // below its least: the drawer closes under the finger
+        if (D.out < 0) { D.cur = lo(); o.set(lo(), 'move'); D.full = Math.max(1, +F.begin() || 0); }
+        D.out = clamp(D.full - (lo() - v), 0, D.full);
+        F.pull(D.out);
+        sync();
+        return;
+      }
+      if (D.out >= 0) { D.out = -1; F.pull(null); } // (back above it: the tray in its place)
+      D.cur = lim(v);
       o.set(D.cur, 'move');
       sync();
     }),
-    listen(grip, 'pointerup', e => {
-      const d = down; down = null;
-      const wasDrag = moved;
-      finish(e, false);
-      if (!d || tOf(e) - d.t > 350 || Math.hypot(e.clientX - d.x, e.clientY - d.y) >= 4 || wasDrag) { tap = null; return; }
-      if (tap && d.t - tap.t < 450 && Math.hypot(d.x - tap.x, d.y - tap.y) < 16) { tap = null; dbl(); } else tap = { t: tOf(e), x: d.x, y: d.y };
-    }),
-    listen(grip, 'pointercancel', e => { down = null; tap = null; finish(e, !!e && e.gesture === 'two-finger'); }),
+    listen(grip, 'pointerup', e => finish(e, false)),
+    listen(grip, 'pointercancel', e => finish(e, !!e && e.gesture === 'two-finger')),
     listen(grip, 'lostpointercapture', e => { if (drag && e.pointerId === drag.id) finish(e, false); }),
-    listen(grip, 'dblclick', () => { if (type === 'mouse') dbl(); }),
     listen(grip, 'contextmenu', e => { if (e.preventDefault) e.preventDefault(); }),
     listen(grip, 'keydown', e => {
       const k = e.key, S = snapsOf(), cur = +o.get() || 0;
       let v = null, phase = 'key';
+      if ((k === 'Enter' || k === ' ' || k === 'Spacebar') && typeof o.onTap === 'function') { // (2026-10-22) open / fold, as a tap
+        if (e.preventDefault) e.preventDefault();
+        if (e.stopPropagation) e.stopPropagation(); // (not the page's Space: play / stop)
+        tap();
+        return;
+      }
+      if (F && F.closed()) return; // (folded away: nothing to size)
       if (S && /^(Arrow(Up|Down|Left|Right)|Page(Up|Down))$/.test(k)) {
         const up = k === 'ArrowUp' || k === 'ArrowRight' || k === 'PageUp', L = S.filter(s => s <= hi() + 0.5);
         v = up ? (L.find(s => s > cur + 0.5) ?? Math.max(...L, lo())) : ([...L].reverse().find(s => s < cur - 0.5) ?? lo());
@@ -190,34 +257,42 @@ export function trayGrip(grip, o) {
 }
 
 /**
- * A side tray: a RAIL_W rail (a tap opens), the panel (SIDE_W, resizable by a grip on its inner edge ≥ EDGE_INSET from
- * the screen edge), closes only on its rail, its ✕ and Escape (the caller's chain) — never by itself: not on a press
- * outside it (a tap on the canvas keeps it open), a tile's tap, a drag leaving it or a drop (the user's rule).
- * o.rail / o.panel / o.grip: the tray's nodes (index.html); missing ones are made. o.key: its part of the TRAY_PREF record.
- * @param {HTMLElement} el  #srcTray | #fxTray
- * @param {{side: 'left' | 'right', store?: {get: Function, set: Function}, key?: string, rail?: HTMLElement,
- *   panel?: HTMLElement, grip?: HTMLElement, label?: string, onChange?: (open: boolean) => void,
- *   keepOpen?: (target: Element) => boolean, doc?: Document}} o
- * @returns {{open: (section?: string) => void, close: () => boolean, toggle: () => void, isOpen: () => boolean,
- *   width: () => number, setWidth: (px: number) => void, el: HTMLElement, panel: HTMLElement, rail: HTMLElement,
+ * A side tray (2026-10-22, the user: "collapse all the way down to the same pull tab that the track list and keyboard have";
+ * no rail): closed, only its pull tab shows, on the canvas edge; open, the panel (SIDE_W, resizable by a grip on its inner
+ * edge ≥ EDGE_INSET from the screen edge) with the tab riding that edge. The tab (a button: aria-expanded, aria-controls,
+ * its label): a tap / Enter / Space toggles; a pull past PULL_SLOP drags the tray with the finger (class `pull`, a
+ * translateX on el — no layout), its release snaps it open or shut (pullSnap: a flick goes its way, else past half opens;
+ * the glide is the stylesheet's transition) and a two-finger cancel puts it back as it was (the pinch is the canvas's).
+ * It closes only on its tab, its ✕ and Escape (the caller's chain) — never by itself: not on a press outside it (a tap on
+ * the canvas keeps it open), a tile's tap, a drag leaving it or a drop (the user's rule). Closed = el without `open`: the
+ * stylesheet slides it out and hides it (visibility: the panel leaves the tab order), never `hidden` (it would cut the glide).
+ * o.tab (o.rail: the older name) / o.panel / o.grip: the tray's nodes (index.html); missing ones are made. o.key: its part of
+ * the TRAY_PREF record.
+ * @param {HTMLElement} el  #srcTray
+ * @param {{side: 'left' | 'right', store?: {get: Function, set: Function}, key?: string, tab?: HTMLElement, rail?: HTMLElement,
+ *   panel?: HTMLElement, grip?: HTMLElement, label?: string, onChange?: (open: boolean) => void, doc?: Document}} o
+ * @returns {{open: () => void, close: () => boolean, toggle: () => void, isOpen: () => boolean, pulling: () => boolean,
+ *   width: () => number, setWidth: (px: number) => void, el: HTMLElement, panel: HTMLElement, tab: HTMLElement,
  *   grip: HTMLElement, destroy: () => void}}
  */
 export function sideTray(el, o) {
-  const d = docOf(o, el), side = o.side === 'right' ? 'right' : 'left', key = o.key || (side === 'left' ? 'src' : 'fx');
-  const rail = o.rail || el.appendChild(mk(d, 'button', 'cv-rail'));
+  const d = docOf(o, el), side = o.side === 'right' ? 'right' : 'left', key = o.key || (side === 'left' ? 'src' : 'fx'), dir = side === 'left' ? 1 : -1;
+  const tab = o.tab || o.rail || el.appendChild(mk(d, 'button', 'cv-stab'));
   const panel = o.panel || el.appendChild(mk(d, 'div', 'cv-panel'));
   const grip = o.grip || el.appendChild(mk(d, 'div', 'cv-sgrip'));
-  if (rail.tagName === 'BUTTON' && !rail.getAttribute('type')) rail.setAttribute('type', 'button');
-  rail.setAttribute('aria-expanded', 'false');
-  if (panel.id) rail.setAttribute('aria-controls', panel.id);
+  if (tab.tagName === 'BUTTON' && !tab.getAttribute('type')) tab.setAttribute('type', 'button');
+  tab.setAttribute('aria-expanded', 'false');
+  if (panel.id) tab.setAttribute('aria-controls', panel.id);
+  if (!tab.getAttribute('aria-label')) tab.setAttribute('aria-label', o.label || 'Tray');
   grip.setAttribute('role', 'separator');
   grip.setAttribute('aria-orientation', 'vertical');
   grip.setAttribute('aria-label', (o.label || 'Tray') + ' width');
   if (grip.getAttribute('tabindex') == null) grip.setAttribute('tabindex', '0');
+  panel.hidden = false; // (closed is the stylesheet's: el without `open`)
   const pref = () => { const p = o.store ? o.store.get(TRAY_PREF, null) : null; return p && typeof p === 'object' ? p : {}; };
   const saved = pref()[key] || {};
-  let w = clamp(+saved.w || SIDE_W, SIDE_MIN, SIDE_MAX), open = false, offDoc = null;
-  const maxW = () => { const win = d && d.defaultView, vw = win && win.innerWidth > 0 ? win.innerWidth : 1e4; return Math.max(SIDE_MIN, Math.min(SIDE_MAX, Math.floor(vw / 2) - RAIL_W)); };
+  let w = clamp(+saved.w || SIDE_W, SIDE_MIN, SIDE_MAX), open = false;
+  const maxW = () => { const win = d && d.defaultView, vw = win && win.innerWidth > 0 ? win.innerWidth : 1e4; return Math.max(SIDE_MIN, Math.min(SIDE_MAX, Math.floor(vw / 2))); };
   const save = () => { if (!o.store) return; const p = Object.assign({}, pref()); p[key] = { open, w }; o.store.set(TRAY_PREF, p); };
   // (1e, U15) the stage (the tray's parent) knows it too — class cv-<side>-open, --cv-<side>-w: the canvas toolbar moves
   // past the open tray (style.css)
@@ -232,12 +307,25 @@ export function sideTray(el, o) {
     open = on;
     el.classList.toggle('open', on);
     if (host()) host().classList.toggle('cv-' + side + '-open', on);
-    panel.hidden = !on;
-    rail.setAttribute('aria-expanded', on ? 'true' : 'false');
-    if (offDoc) { offDoc(); offDoc = null; }
-    // a press outside (the canvas, the top tray …) leaves it open (the user's call): only its rail, its ✕ and Escape close it
+    tab.setAttribute('aria-expanded', on ? 'true' : 'false');
+    // a press outside (the canvas, the top tray …) leaves it open (the user's call): only its tab, its ✕ and Escape close it
     if (persist) save();
     if (typeof o.onChange === 'function') o.onChange(on);
+  }
+  // the tab's pull: the tray follows the finger (translateX from shut, −w, to open, 0); its release snaps it
+  let P = null, eat = false;
+  const slide = out => { if (el.style) el.style.transform = out == null ? '' : 'translateX(' + Math.round(dir * (out - w)) + 'px)'; };
+  function pullEnd(e, roll) {
+    const D = P;
+    if (!D || (e && e.pointerId !== D.id)) return;
+    P = null;
+    try { tab.releasePointerCapture(D.id); } catch { /* released */ }
+    if (!D.moved) return; // (a tap: its click toggles)
+    if (e && e.type === 'pointerup') eat = true; // (the click a pull ends with is no tap)
+    if (e && isFinite(e.clientX)) D.S.push({ t: tOf(e), p: dir * (e.clientX - D.x0) });
+    el.classList.remove('pull');
+    slide(null); // (the stylesheet's transition glides it on from where it is)
+    setOpen(roll ? D.open0 : pullSnap(D.out, w, pullSpeed(D.S)));
   }
   // the grip: drag the inner edge (pointer capture; a two-finger cancel puts the width back), arrows ±16 px
   let g = null;
@@ -251,7 +339,7 @@ export function sideTray(el, o) {
     }),
     listen(grip, 'pointermove', e => {
       if (!g || e.pointerId !== g.id) return;
-      w = clamp(Math.round(g.w0 + (side === 'left' ? 1 : -1) * (e.clientX - g.x0)), SIDE_MIN, maxW());
+      w = clamp(Math.round(g.w0 + dir * (e.clientX - g.x0)), SIDE_MIN, maxW());
       applyW();
     }),
     listen(grip, 'pointerup', e => { if (g && e.pointerId === g.id) { g = null; grip.classList.remove('drag'); save(); } }),
@@ -261,25 +349,46 @@ export function sideTray(el, o) {
       g = null; grip.classList.remove('drag'); save();
     }),
     listen(grip, 'keydown', e => {
-      const dir = side === 'left' ? 1 : -1, dd = { ArrowRight: 16 * dir, ArrowLeft: -16 * dir }[e.key];
+      const dd = { ArrowRight: 16 * dir, ArrowLeft: -16 * dir }[e.key];
       if (!dd) return;
       if (e.preventDefault) e.preventDefault();
       w = clamp(w + dd, SIDE_MIN, maxW()); applyW(); save();
     }),
-    listen(rail, 'click', () => setOpen(!open)),
+    listen(tab, 'pointerdown', e => {
+      eat = false;
+      if (e.button > 0 || P) return;
+      P = { id: e.pointerId, x0: e.clientX, open0: open, out: open ? w : 0, moved: false, S: [{ t: tOf(e), p: 0 }] };
+      try { tab.setPointerCapture(e.pointerId); } catch { /* gone */ }
+    }),
+    listen(tab, 'pointermove', e => {
+      const D = P;
+      if (!D || e.pointerId !== D.id) return;
+      if (e.pointerType === 'mouse' && e.buttons === 0) { pullEnd(e, false); return; } // a swallowed pointerup
+      const dx = dir * (e.clientX - D.x0); // (+ outward)
+      D.S.push({ t: tOf(e), p: dx });
+      if (D.S.length > 8) D.S.shift();
+      if (!D.moved && Math.abs(dx) < PULL_SLOP) return; // a tap so far
+      if (!D.moved) { D.moved = true; el.classList.add('pull'); }
+      D.out = clamp((D.open0 ? w : 0) + dx, 0, w);
+      slide(D.out);
+    }),
+    listen(tab, 'pointerup', e => pullEnd(e, false)),
+    listen(tab, 'pointercancel', e => pullEnd(e, !!e && e.gesture === 'two-finger')),
+    listen(tab, 'lostpointercapture', e => { if (P && e.pointerId === P.id) pullEnd(e, false); }),
+    listen(tab, 'click', () => { if (eat) { eat = false; return; } setOpen(!open); }),
   ];
   applyW();
-  panel.hidden = true;
   if (saved.open) setOpen(true, false);
   return {
-    el, panel, rail, grip,
+    el, panel, tab, grip,
     open: () => setOpen(true),
     close: () => { if (!open) return false; setOpen(false); return true; },
     toggle: () => setOpen(!open),
     isOpen: () => open,
+    pulling: () => !!P && P.moved,
     width: () => w,
     setWidth: px => { w = clamp(Math.round(+px || SIDE_W), SIDE_MIN, maxW()); applyW(); save(); },
-    destroy() { for (const f of gOffs) f(); if (offDoc) offDoc(); offDoc = null; },
+    destroy() { for (const f of gOffs) f(); if (P) pullEnd(null, true); },
   };
 }
 
@@ -870,7 +979,7 @@ export function sourcesTray(el, o) {
   };
 }
 
-// A tray tile's drag-out (the Sources and the Effects tray): wk.dragSource {scrollAxis: 'y', autoScroll: false} — out of the
+// A tray tile's drag-out (the Sources tray's tiles): wk.dragSource {scrollAxis: 'y', autoScroll: false} — out of the
 // tray at once, along it a scroll, any way after a 250 ms hold; the ghost (T.pic() 40 px above a finger, beside a mouse)
 // in o.layer, hidden over the canvas while o.canvasGhost() says the world draws the outline; info.over / info.left on every
 // callback (T.norm(raw over) → {over, key} adds info.key; T.at(info) adds info.at); a quick touch drag drops only on a zone
@@ -942,97 +1051,6 @@ function tileDrag(d, o, b, id, T) {
     cancel: i => { if (!G) return; i.over = null; done(); if (o.drag.cancel) o.drag.cancel(id, i); },
   });
   return () => { ds.destroy(); done(); };
-}
-
-/** (1e) The Effects tray's panel tile id. */
-export const FX_PANEL = 'panel';
-// a tile's glyph: the empty panel a pedalboard outline, an effect its initials (original, no product art)
-const PANEL_SVG = '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="2.5" y="4.5" width="35" height="19" rx="3"/><rect x="7" y="9" width="7" height="10" rx="1.5"/><rect x="16.5" y="9" width="7" height="10" rx="1.5"/><rect x="26" y="9" width="7" height="10" rx="1.5"/></svg>';
-const initials = s => { const w = String(s || '').replace(/[^A-Za-z0-9 ]+/g, ' ').trim().split(/\s+/).filter(Boolean); return (w.length > 1 ? w[0][0] + w[1][0] : (w[0] || '?').slice(0, 2)).replace(/^./, c => c.toUpperCase()); };
-/**
- * (1e) The Effects tray's tiles (SPEC §2.4, §2.8; IMPL-1e §4.3), mirroring sourcesTray: the empty FX Panel tile first, then
- * one per effect type grouped as the rack's add menu (an h3.cv-tgrp before each group). o.items: [{id: 'panel'} | {id |
- * type: <effect type>, name | label, group}] (fx-ui addMenuItems gives the latter; disabled ones are skipped); o.cost(id) →
- * '~3 %' | '' on each tile (refresh() re-reads). Tiles: button.cv-tile.cv-ftile[data-fx]. A tap: o.pick(id). A drag (as a
- * Sources tile): every callback's info.over is 'canvas' | 'panel' | 'inst' | null and info.key the module's key, from
- * o.overOf(target, x, y) → 'canvas' | 'panel' | {over, key} | null (the panel tile over a panel or an instrument counts as
- * 'canvas' with info.near that module: a new panel beside it); info.at the point under the pointer (o.toWorld(x, y) when
- * given: world px; else client px);
- * drag.drop(id, info) → true when done (else drag.cancel). (1f) o.panel === false: no panel tile (nor a FX_PANEL item); an effect's
- * tile then says it goes into the track's effects. The tray never closes by itself — not as a drag leaves it, nor
- * on a drop (the user's rule, ROADMAP 2026-10-17 / 18: only its rail, ✕ or Escape): o.onLeave is a notice.
- * @param {HTMLElement} el  the tray panel's list container (#fxList)
- * @param {{
- *   items: Array<{id?: string, type?: string, name?: string, label?: string, group?: string, disabled?: boolean}>,
- *   pick: (id: string) => void,
- *   drag: {begin?: Function, move?: Function, drop: (id: string, info: {over: 'canvas' | 'panel' | 'inst', key?: string, near?: string, at: {x: number, y: number}}) => boolean, cancel?: Function},
- *   overOf?: (target: Element | null, x: number, y: number) => 'canvas' | 'panel' | {over: 'panel' | 'inst' | 'canvas', key?: string} | null,
- *   cost?: (id: string) => string, toWorld?: (x: number, y: number) => {x: number, y: number},
- *   canvasGhost?: () => boolean, tray?: HTMLElement, onLeave?: () => void, layer?: HTMLElement,
- *   label?: (id: string, over: string | null, key: string | null) => string, doc?: Document,
- * }} o
- * @returns {{tiles: () => HTMLElement[], tile: (id: string) => HTMLElement | null, refresh: () => void, destroy: () => void}}
- */
-export function effectsTray(el, o) {
-  const d = docOf(o, el), tiles = new Map(), costs = new Map(), offs = [], heads = [];
-  const L0 = Array.isArray(o.items) ? o.items : [];
-  const list = [];
-  const P = o.panel !== false;
-  if (P && !L0.some(it => it && (it.id || it.type) === FX_PANEL)) list.push({ id: FX_PANEL });
-  for (const it of L0) { const id = it && (it.id || it.type); if (typeof id === 'string' && !it.disabled && !list.some(x => x.id === id) && (P || id !== FX_PANEL)) list.push(Object.assign({}, it, { id })); }
-  const nameOf = it => (it.id === FX_PANEL ? it.name || it.label || 'FX Panel' : String(it.name || it.label || it.id));
-  const groupOf = it => (it.id === FX_PANEL ? it.group || 'Panel' : String(it.group || 'Effects'));
-  const costOf = id => { try { return o.cost ? String(o.cost(id) || '') : ''; } catch { return ''; } };
-  const labelOf = (id, over, key) => {
-    if (o.label) { try { return String(o.label(id, over, key) || ''); } catch { return ''; } }
-    return over === 'panel' ? '+ Add to the panel' : over === 'inst' ? '+ Add to its effects' : over === 'canvas' ? (id === FX_PANEL ? '+ New FX panel' : P ? '+ New panel with it' : '+ Add to the track’s effects') : '';
-  };
-  // (U11) 'inst' (an instrument module: the effect goes into its FX) beside 'canvas' / 'panel'; the empty panel over a
-  // module is a canvas drop beside that module (near), never into it
-  const norm = id => r => {
-    let over = r && typeof r === 'object' ? r.over || null : r || null, key = r && typeof r === 'object' && r.key != null ? String(r.key) : null, near = null;
-    if (over !== 'canvas' && over !== 'panel' && over !== 'inst') over = null;
-    if ((over === 'panel' || over === 'inst') && id === FX_PANEL) { over = 'canvas'; near = key; key = null; } // (an empty panel never goes into a module)
-    if (over !== 'panel' && over !== 'inst') key = null;
-    return { over, key, near };
-  };
-  const at = i => { if (o.toWorld) { try { const p = o.toWorld(i.x, i.y); if (p && isFinite(p.x) && isFinite(p.y)) return { x: p.x, y: p.y }; } catch { /* no world */ } } return { x: i.x, y: i.y }; };
-  let grp = null;
-  for (const it of list) {
-    const g = groupOf(it), id = it.id, name = nameOf(it), panel = id === FX_PANEL;
-    if (g !== grp) { grp = g; const hd = mk(d, 'h3', 'cv-tgrp', g); el.appendChild(hd); heads.push(hd); }
-    const b = mk(d, 'button', 'cv-tile cv-ftile');
-    b.type = 'button';
-    b.setAttribute('data-fx', id);
-    b.title = panel ? 'An empty FX panel — tap to add one, or drag it onto the canvas' : P ? `${name} — tap to add it, or drag it into an FX panel or onto the canvas (a new panel)` : `${name} — tap or drag it onto the canvas: it goes into the track’s effects`;
-    const pic = mk(d, 'span', 'cv-fglyph' + (panel ? ' cv-fpanel' : ''));
-    pic.setAttribute('aria-hidden', 'true');
-    if (panel) pic.innerHTML = PANEL_SVG; else pic.textContent = initials(name);
-    const nm = mk(d, 'span', 'cv-tname', panel ? 'Empty FX Panel' : name), cs = mk(d, 'span', 'cv-tcost');
-    b.append(pic, nm, cs);
-    costs.set(id, cs);
-    offs.push(listen(b, 'click', e => { if (e && e.defaultPrevented) return; o.pick(id); }));
-    offs.push(tileDrag(d, o, b, id, { pic: () => pic.innerHTML || '<b>' + initials(name) + '</b>', picCls: 'cv-fglyph' + (panel ? ' cv-fpanel' : ''), cls: 'cv-fghost',
-      norm: norm(id), at, label: (over, key) => labelOf(id, over, key) }));
-    el.appendChild(b);
-    tiles.set(id, b);
-  }
-  function refresh() {
-    for (const [id, cs] of costs) {
-      const c = costOf(id);
-      if (cs.textContent !== c) cs.textContent = c;
-      cs.hidden = !c;
-      cs.title = c ? 'Estimated DSP load on this device: ' + c : '';
-    }
-  }
-  refresh();
-  el.setAttribute('data-tray', 'fx');
-  return {
-    tiles: () => [...tiles.values()],
-    tile: id => tiles.get(id) || null,
-    refresh,
-    destroy() { for (const f of offs) f(); offs.length = 0; for (const b of tiles.values()) b.remove(); for (const h of heads) h.remove(); tiles.clear(); },
-  };
 }
 
 /** A button + popover pair (≡ app menu, ⚙ settings, the transport's ⋯): aria-expanded, Escape (the caller's chain) /

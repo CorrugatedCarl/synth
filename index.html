@@ -185,7 +185,7 @@
       <div class="lanes" id="lanes"></div>
     </div>
   </section>
-  <div id="topGrip" class="cv-tgrip" role="slider" tabindex="0" aria-label="Track list height" aria-orientation="vertical" aria-valuemin="48" aria-valuemax="160" aria-valuenow="48" aria-controls="studio" title="Drag down for the track list, up to fold it · double-click (double-tap) to fold / unfold"></div>
+  <div id="topGrip" class="cv-tgrip" role="slider" tabindex="0" aria-label="Track list height" aria-orientation="vertical" aria-valuemin="48" aria-valuemax="160" aria-valuenow="48" aria-controls="studio" title="Tap to show or fold the track list · pull it down for more rows, up to fold it"></div>
 </header>
 
 <main id="stage" class="cv-stage">
@@ -215,9 +215,9 @@
     </div>
     <div id="overlay" class="cv-overlay"></div>
     <div id="cvToolbar" class="cv-toolbar"></div>
+    <!-- the Sources tray (2026-10-22: no rail — closed, it is its pull tab on the canvas edge; cv-tray sideTray slides it) -->
     <aside id="srcTray" class="cv-side cv-left" data-wk-inset="left" aria-label="Sources">
-      <button id="srcRail" class="cv-rail" type="button" title="Sources: the instruments (tap to open)"><span class="cv-railico" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="2.5" y="5" width="15" height="10" rx="1.5"/><path d="M5.5 15V11M8.5 15V11M11.5 15V11M14.5 15V11"/><circle cx="6" cy="8" r="0.9"/><circle cx="10" cy="8" r="0.9"/><circle cx="14" cy="8" r="0.9"/></svg></span><span class="cv-raillab">Sources</span></button>
-      <div id="srcPanel" class="cv-panel" role="region" aria-label="Sources" hidden>
+      <div id="srcPanel" class="cv-panel" role="region" aria-label="Sources">
         <div class="cv-ph"><h2>Sources</h2><button id="srcClose" class="cv-x" type="button" aria-label="Close the Sources tray" title="Close (Esc)">✕</button></div>
         <div id="srcLayout" class="cv-srclay"><button id="srcView" class="cv-vbtn" type="button" aria-haspopup="menu"><span class="cv-vlab">Hardware</span><span class="cv-vcaret" aria-hidden="true">▾</span></button><div id="srcViewMenu" class="cv-pop cv-menupop cv-vmenu" role="menu" aria-label="Sources view" hidden></div></div>
         <p class="cv-pmode" id="srcMode"></p>
@@ -245,16 +245,7 @@
         <p class="cv-pnote" id="srcNote"></p>
       </div>
       <div id="srcGrip" class="cv-sgrip"></div>
-    </aside>
-    <aside id="fxTray" class="cv-side cv-right" data-wk-inset="right" aria-label="Effects">
-      <button id="fxRail" class="cv-rail" type="button" title="Effects (tap to open)"><span class="cv-railico" aria-hidden="true"><svg viewBox="0 0 20 20"><rect x="5" y="2.5" width="10" height="15" rx="2"/><circle cx="8" cy="7" r="1.4"/><circle cx="12" cy="7" r="1.4"/><rect x="7.5" y="11.5" width="5" height="3" rx="0.8"/></svg></span><span class="cv-raillab">Effects</span></button>
-      <div id="fxPanel" class="cv-panel" role="region" aria-label="Effects" hidden>
-        <div class="cv-ph"><h2>Effects</h2><button id="fxClose" class="cv-x" type="button" aria-label="Close the Effects tray" title="Close (Esc)">✕</button></div>
-        <p class="cv-pmode" id="fxMode">Tap an effect, or drag it onto the canvas: it goes into the track’s FX panel (a Serum’s own effects).</p>
-        <div id="fxList" class="cv-tiles cv-ftiles" data-tray="fx"></div>
-        <p class="cv-pnote">Inside a panel: drag ≡ to reorder, its power button bypasses an effect. Saved rack presets and chains arrive here in a later stage.</p>
-      </div>
-      <div id="fxGrip" class="cv-sgrip"></div>
+      <button id="srcTab" class="cv-stab" type="button" aria-label="Sources" title="Sources: the instruments — tap, or pull it out"></button>
     </aside>
   </div>
 
@@ -268,7 +259,7 @@
 <!-- data-gesture (gesture.js, the two-finger layer): "own" canvases pinch themselves, "music" fingers are never paired
      (chords), "perf" (the keyboard panel's controls) never pairs with a key that follows -->
 <section class="perf" id="perf" aria-label="Keyboard" data-wk-inset="bottom" data-gesture="perf">
-  <div id="kbGrip" class="kbgrip" role="slider" tabindex="0" aria-label="Keyboard height" aria-orientation="vertical" aria-valuemin="70" aria-valuemax="360" aria-valuenow="170" aria-controls="kbrow" title="Drag up / down to resize the keyboard · double-click (double-tap) to reset"></div>
+  <div id="kbGrip" class="kbgrip" role="slider" tabindex="0" aria-label="Keyboard height" aria-orientation="vertical" aria-valuemin="70" aria-valuemax="360" aria-valuenow="170" aria-controls="kbrow" title="Tap to fold the keyboard away · drag up / down to resize it (all the way down folds it)"></div>
   <p id="notice" class="notice" role="status" hidden></p>
   <div class="kbctl">
     <div class="grp">
@@ -282,7 +273,7 @@
     <button id="midi" type="button" class="midi" title="Ask the browser for access to your MIDI controllers">Enable MIDI</button>
     <button id="hold" type="button" class="hold" aria-pressed="false" title="Sustain pedal"><span class="led"></span>Hold</button>
     <button id="panic" type="button" title="All notes off (Esc)">Panic</button>
-    <button id="kbHide" type="button" class="kbhide" title="Hide the on-screen keyboard (the controls stay)" aria-expanded="true" aria-controls="kbrow"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg><span>Hide keys</span></button>
+    <button id="kbHide" type="button" class="kbhide" title="Fold the keyboard away to its tab (tap or pull the tab to bring it back)" aria-expanded="true" aria-controls="kbrow"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.25 6 7.75l3.5-3.5"/></svg><span>Hide keyboard</span></button>
   </div>
   <div class="kbrow" id="kbrow" data-gesture="music">
     <div class="wheels">
@@ -296,7 +287,7 @@
 
 <!-- ≡ → Help & about (cv-tray sheet in #ov): the help text and the footer, moved into the sheet while it is open -->
 <div id="helpParts" hidden>
-  <p class="help"><b>Play:</b> computer keys <kbd data-code="KeyA">A</kbd>–<kbd data-code="Semicolon">;</kbd> (white) and <kbd data-code="KeyW">W</kbd> <kbd data-code="KeyE">E</kbd> <kbd data-code="KeyT">T</kbd> <kbd data-code="KeyY">Y</kbd> <kbd data-code="KeyU">U</kbd> <kbd data-code="KeyO">O</kbd> <kbd data-code="KeyP">P</kbd> (black), <kbd data-code="KeyZ">Z</kbd>/<kbd data-code="KeyX">X</kbd> octave, <kbd data-code="KeyC">C</kbd>/<kbd data-code="KeyV">V</kbd> velocity. Click or touch the keyboard (lower on a key = louder); drag the tab on its top edge to make the keys taller or shorter, <b>Key size</b> for more or fewer keys, <b>Hide keys</b> to fold it down to its controls. Or plug in a MIDI controller (Chrome, Edge, Firefox) — each track listens on its MIDI channel. <b>Studio:</b> <kbd>Space</kbd> play/stop, <kbd data-code="KeyR">R</kbd> record, <kbd data-code="KeyM">M</kbd> metronome, <kbd>Home</kbd> to start, <kbd>Ctrl/⌘ Z</kbd> undo. Keys go by position, so any layout works: if R, M or Q is a note key on yours, use the key where it sits on a US keyboard. <b>Canvas:</b> the selected track's instrument, its effects and its output sit on the canvas: drag empty space to pan, pinch (or Ctrl/⌘-wheel) to zoom, drag a module by its top bar. The tab under the top row shows the track list; <b>Sources</b> at the left holds the instruments — tap one to use it, or drag it onto the canvas (replaces the instrument) or the track list (a new track). <b>Controls:</b> drag up/down, <kbd>Shift</kbd>-drag for fine, scroll wheel, double-click to reset. <b>App:</b> the full-screen button (in the ≡ menu, where the browser has one) hides the browser’s bars; <b>Install app</b> (on iPad / iPhone: Share → Add to Home Screen) puts SYNTH on your home screen or dock — it then opens full screen like an app and works offline after its first launch. On iPad the installed app is the better full screen: the browser’s keeps its own controls and may stop fast playing with a warning. On iPad and iPhone the installed app keeps its own projects, separate from the browser’s: Save a project in one (the app saves through the share sheet: Save to Files) and Open it in the other to move it across.</p>
+  <p class="help"><b>Play:</b> computer keys <kbd data-code="KeyA">A</kbd>–<kbd data-code="Semicolon">;</kbd> (white) and <kbd data-code="KeyW">W</kbd> <kbd data-code="KeyE">E</kbd> <kbd data-code="KeyT">T</kbd> <kbd data-code="KeyY">Y</kbd> <kbd data-code="KeyU">U</kbd> <kbd data-code="KeyO">O</kbd> <kbd data-code="KeyP">P</kbd> (black), <kbd data-code="KeyZ">Z</kbd>/<kbd data-code="KeyX">X</kbd> octave, <kbd data-code="KeyC">C</kbd>/<kbd data-code="KeyV">V</kbd> velocity. Click or touch the keyboard (lower on a key = louder); drag the tab on its top edge to make the keys taller or shorter, <b>Key size</b> for more or fewer keys; tap the tab (or pull it all the way down) to fold the keyboard away to its tab, and tap or pull it up to bring it back. Or plug in a MIDI controller (Chrome, Edge, Firefox) — each track listens on its MIDI channel. <b>Studio:</b> <kbd>Space</kbd> play/stop, <kbd data-code="KeyR">R</kbd> record, <kbd data-code="KeyM">M</kbd> metronome, <kbd>Home</kbd> to start, <kbd>Ctrl/⌘ Z</kbd> undo. Keys go by position, so any layout works: if R, M or Q is a note key on yours, use the key where it sits on a US keyboard. <b>Canvas:</b> the selected track's instrument, its effects and its output sit on the canvas: drag empty space to pan, pinch (or Ctrl/⌘-wheel) to zoom, drag a module by its top bar. The tab under the top row shows the track list (tap it, or pull it down); the tab at the left edge opens <b>Sources</b>, the instruments (tap it, or pull it out) — tap one to use it, or drag it onto the canvas (replaces the instrument) or the track list (a new track). <b>Controls:</b> drag up/down, <kbd>Shift</kbd>-drag for fine, scroll wheel, double-click to reset. <b>App:</b> the full-screen button (in the ≡ menu, where the browser has one) hides the browser’s bars; <b>Install app</b> (on iPad / iPhone: Share → Add to Home Screen) puts SYNTH on your home screen or dock — it then opens full screen like an app and works offline after its first launch. On iPad the installed app is the better full screen: the browser’s keeps its own controls and may stop fast playing with a warning. On iPad and iPhone the installed app keeps its own projects, separate from the browser’s: Save a project in one (the app saves through the share sheet: Save to Files) and Open it in the other to move it across.</p>
   <div class="foot">
     <p><b>How it works.</b> Every sound is generated in real time by a custom DSP engine running on the browser’s audio thread — no samples. Oscillators, filters, envelopes and effects are modelled from their circuits and computed in 64-bit floating point at up to 8× the output sample rate (at most 384 kHz internally), then band-limited back down with ~100 dB Kaiser half-band filters. Instrument and company names are trademarks of their respective owners and are used only to describe the instruments being emulated; this project is not affiliated with or endorsed by them. The instrument drawings are original illustrations.</p>
   </div>

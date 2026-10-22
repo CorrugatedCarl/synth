@@ -258,7 +258,7 @@ function mkRack(o = {}) {
   const parent = d.createElement('div');
   d.body.appendChild(parent);
   const dsp = o.dsp === undefined ? fakeDsp() : o.dsp;
-  const rack = new FXRackUI(parent, host, Object.assign({ embedded: !!o.embedded, dsp }, o.mod === undefined ? {} : { mod: o.mod }));
+  const rack = new FXRackUI(parent, host, Object.assign({ embedded: !!o.embedded, dsp }, o.mod === undefined ? {} : { mod: o.mod }, o.cost ? { cost: o.cost } : {}));
   return { d, st, rack, host, dsp, root: rack.el };
 }
 const panelOf = (rack, id) => rack.panels.get(id).el;
@@ -475,6 +475,33 @@ test('FXRackUI: formats follow the instance (a second delay’s own BPM, the S1 
   assert.equal(one(rack.knobs.get('fx.rev.t').el, 'wk-lab').textContent, 'PRE DELAY');
   assert.ok(byCls(panelOf(rack, 'rev'), 'fxr2-s1').length === 1);                     // S1 badge
   rack.destroy();
+});
+
+test('FXRackUI (2026-10-22, the Effects tray\'s estimates moved here): opts.cost — every "+" menu item carries the host\'s load estimate (a muted hint at its right end, its title), read as the menu opens (a measured device shows at once), a branch\'s "+" too; the labels and their order unchanged; no estimate (or a cost that throws): no hint; without opts.cost none at all', () => {
+  let f = 1;
+  const cost = t => { if (t === 'bode') throw new Error('no estimate'); return t === 'util' ? '' : '~' + t.length * f + ' %'; };
+  const { rack, root, d } = mkRack({ fx: fx2([inst('split2', 'split2')]), cost });
+  const items = () => byCls(byCls(d.body, 'wk-ctx').at(-1), 'wk-ci');
+  const hint = label => { const it = items().find(n => one(n, 'wk-cl').textContent === label), h = byCls(it, 'wk-ch')[0]; return h ? h.textContent + ' | ' + it.title : null; };
+  fire(one(root, 'fxr2-add'), 'click');
+  assert.deepEqual(menuLabels(d), ['Bode', 'Chorus', 'Compressor', 'Convolve', 'Delay', 'Distortion', 'Equalizer', 'Filter', 'Flanger', 'Hyper/Dimension', 'Phaser', 'Reverb', 'Utility',
+    'Splitter L/H', 'Splitter L/M/H', 'Splitter M/S'], 'the labels, in the menu\'s order');
+  assert.deepEqual([hint('Reverb'), hint('Hyper/Dimension'), hint('Splitter M/S')], ['~3 % | Estimated DSP load on this device: ~3 %', '~5 % | Estimated DSP load on this device: ~5 %', '~7 % | Estimated DSP load on this device: ~7 %']);
+  assert.deepEqual([hint('Utility'), hint('Bode')], [null, null], 'no estimate, a throwing cost: no hint');
+  assert.ok(items().every(n => byCls(n, 'wk-ch').length <= 1 && (byCls(n, 'wk-ch').length === 0 || n.childNodes.at(-1) === byCls(n, 'wk-ch')[0])), 'one hint, at the item\'s end');
+  key(byCls(d.body, 'wk-ctx').at(-1), 'Escape');
+  f = 4; // (⚙ → Measure this device: a slower device)
+  fire(byCls(byCls(root, 'fxr2-brow')[1], 'fxr2-plus')[0], 'click');
+  assert.equal(menuLabels(d).includes('Splitter L/H'), false, 'a branch: the effects only');
+  assert.equal(hint('Reverb'), '~12 % | Estimated DSP load on this device: ~12 %', 're-read as the menu opens');
+  pick(d, 'Reverb');
+  assert.equal(rack.panels.has('rev') || !!rowOf(rack, 'rev'), true, 'the item still adds its effect');
+  rack.destroy();
+  const b = mkRack();
+  fire(one(b.root, 'fxr2-add'), 'click');
+  assert.equal(byCls(byCls(b.d.body, 'wk-ctx').at(-1), 'wk-ch').length, 0, 'without opts.cost: no hints');
+  assert.equal(byCls(byCls(b.d.body, 'wk-ctx').at(-1), 'wk-ci').filter(n => n.title).length, 0, 'nor titles');
+  b.rack.destroy();
 });
 
 test('FXRackUI: splitters — branch rows with + and bypass, selected branch panels nested, add into a branch, no splitters inside', () => {

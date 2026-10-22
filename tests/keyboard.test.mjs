@@ -1,7 +1,8 @@
-// The on-screen keyboard's view in the page simulation (main.js, tests/main-sim.mjs): Hide / Show keys, the height grip
-// on the panel's top edge and the Key size slider — the key-count ↔ width math, the height clamp (70 px … the canvas
-// shell's one height budget, cv-tray budget: the canvas keeps 240 px), no stuck notes when the keys are rebuilt (or hidden) under a finger, and the preferences persisting
-// (synth.kbSize, synth.kbHidden) into the next session.
+// The on-screen keyboard's view in the page simulation (main.js, tests/main-sim.mjs): Hide keyboard and the tab (2026-10-22,
+// the user: the whole tray folds away to its tab — a tap, Enter / Space or a pull brings it back; it plays on folded), the
+// height grip on the panel's top edge and the Key size slider — the key-count ↔ width math, the height clamp (70 px … the
+// canvas shell's one height budget, cv-tray budget: the canvas keeps 240 px), no stuck notes when the keys are rebuilt (or
+// folded away) under a finger, and the preferences persisting (synth.kbSize, synth.kbHidden) into the next session.
 // Run: node --test tests/keyboard.test.mjs
 import './v8-guard.mjs';
 import test from 'node:test';
@@ -94,7 +95,7 @@ test('Key size slider: rebuilds the keys at the chosen width, hides labels on na
   fire(s.$('#kbw'), { type: 'dblclick' });
 });
 
-test('height grip: drag up / down sets the key height within 70 px … the height budget (the canvas keeps 240 px, the top tray folds to its row); keys, double-click / double-tap reset to the screen\'s default', async () => {
+test('height grip: drag up / down sets the key height within 70 px … the height budget (the canvas keeps 240 px, the top tray folds to its row); keys, Delete / Backspace reset to the screen\'s default', async () => {
   const s = await page(), { api } = s, g = s.$('#kbGrip');
   assert.equal(api.kb().h, 170, 'desktop default');
   assert.equal(g.getAttribute('aria-valuenow'), '170');
@@ -152,19 +153,22 @@ test('height grip: drag up / down sets the key height within 70 px … the heigh
   key('End'); assert.equal(api.kb().h, 360);
   assert.equal(key('KeyA').defaultPrevented, false, 'other keys stay the page\'s (notes)');
   assert.equal(JSON.parse(ls.m.get('synthc.kbSize')).h, 360);
-  for (const k of ['Enter', 'Delete', 'Backspace']) {
+  for (const k of ['Delete', 'Backspace']) {
     key('End');
     const e = key(k);
     assert.deepEqual([api.kb().h, api.kb().hSet, e.defaultPrevented, e.stopped], [170, 0, true, true], k + ': the default (and not the page\'s Delete)');
     assert.equal(JSON.parse(ls.m.get('synthc.kbSize')).h, 0);
   }
+  // (2026-10-22) Enter / Space and a tap are the tab's open / fold, no reset: the height kept through a fold and back
   key('End');
-  fire(g, { type: 'dblclick' });
-  assert.deepEqual([api.kb().h, api.kb().hSet], [170, 0], 'double-click: the default');
-  // double tap (iPad): two short taps in place
-  key('End');
+  key('Enter');
+  assert.equal(globalThis.__synthTest.shell.kbGone(), true, 'Enter: folded away');
+  key(' ');
+  assert.deepEqual([globalThis.__synthTest.shell.kbGone(), api.kb().h, api.kb().hSet], [false, 360, 360], 'Space: back, its height kept');
   for (let i = 0; i < 2; i++) { fire(g, ptr('pointerdown', 8 + i, 300, 10)); fire(g, ptr('pointerup', 8 + i, 301, 10)); }
-  assert.deepEqual([api.kb().h, api.kb().hSet], [170, 0], 'double tap: the default');
+  assert.deepEqual([globalThis.__synthTest.shell.kbGone(), api.kb().h, api.kb().hSet], [false, 360, 360], 'two taps: away and back — no double-tap reset any more');
+  key('Delete');
+  await s.settle(300);
   // a phone / portrait tablet width: its own default (style.css .keys 128 px)
   await resize(s, 800);
   assert.equal(api.kb().h, 128);
@@ -178,7 +182,6 @@ test('height grip: drag up / down sets the key height within 70 px … the heigh
   assert.deepEqual([api.kb().h, api.kb().hSet], [70, 0], 'at the limit already: asking for more changes nothing (the default is kept)');
   key('ArrowDown');
   assert.deepEqual([api.kb().h, api.kb().hSet], [70, 0], 'nor less: the least');
-  fire(g, { type: 'dblclick' });
   await resize(s, 1400, 900);
   assert.equal(api.kb().h, 170);
 });
@@ -229,59 +232,102 @@ test('rebuilding the keys under held fingers (key size, octave, resize) leaves n
   delete globalThis.document.elementFromPoint;
 });
 
-test('Hide keys: the toolbar stays, fingers on the keys are released, the keys come back laid out for their width', async () => {
-  const s = await page(), { api } = s, keys = s.$('#keys'), b = s.$('#kbHide');
+test('Hide keyboard (2026-10-22, the user: "collapse down to just the tab"): the whole tray — keys and controls — folds away (out of the grid, below the screen edge: .gone, gliding), fingers on the keys released; its tab is a button then; a tap on the tab (or Enter / Space) brings it back laid out for its width', async () => {
+  const s = await page(), { api } = s, keys = s.$('#keys'), b = s.$('#kbHide'), g = s.$('#kbGrip'), p = s.$('#perf'), sh = globalThis.__synthTest.shell;
   globalThis.document.elementFromPoint = x => ({ closest: () => ({ dataset: { n: String(60 + Math.floor(x / 10)) } }) });
   fire(keys, ptr('pointerdown', 4, 30, 50));
   assert.deepEqual([...api.held.keys()], ['0:63']);
   b.onclick();
-  assert.equal(s.$('#kbrow').hidden, true);
-  assert.ok(s.$('#perf').classList.contains('min'), 'the slim bar');
-  assert.equal(b.getAttribute('aria-expanded'), 'false');
+  assert.deepEqual([sh.kbGone(), p.classList.contains('gone'), p.classList.contains('glide'), s.$('#kbrow').hidden, b.getAttribute('aria-expanded')], [true, true, true, false, 'false'],
+    'folded away (gliding down; the keys stay laid out, the stylesheet hides them)');
+  assert.equal(p.classList.contains('min'), false, 'no slim bar');
   assert.equal(api.held.size, 0, 'the finger\'s note ended with the keys');
   fire(keys, ptr('pointerup', 4, 30, 50));
   assert.equal(api.held.size, 0);
   assert.equal(ls.m.get('synthc.kbHidden'), 'true');
-  s.$('#octup').onclick(); // the toolbar keeps working
+  assert.deepEqual([g.getAttribute('role'), g.getAttribute('aria-expanded'), g.getAttribute('aria-label'), g.hasAttribute('aria-valuenow')], ['button', 'false', 'Keyboard (folded away): show it', false], 'the tab: a button');
+  await s.settle(300);
+  assert.deepEqual([p.classList.contains('glide'), p.classList.contains('gone')], [false, true], 'the glide over');
+  s.$('#octup').onclick(); // (the octave keys still work)
   s.$('#keys').clientWidth = 1300;
-  b.onclick();
-  assert.equal(s.$('#kbrow').hidden, false);
-  assert.ok(!s.$('#perf').classList.contains('min'));
-  assert.equal(b.getAttribute('aria-expanded'), 'true');
+  fire(g, ptr('pointerdown', 5, 500, 896)); fire(g, ptr('pointermove', 5, 500, 893)); fire(g, ptr('pointerup', 5, 500, 893)); // (a tap: 3 px of travel)
+  assert.deepEqual([sh.kbGone(), p.classList.contains('gone'), p.classList.contains('glide'), b.getAttribute('aria-expanded'), g.getAttribute('role'), g.getAttribute('aria-label')],
+    [false, false, true, 'true', 'slider', 'Keyboard height'], 'a tap on the tab: back (gliding up, out of the grid until it lands)');
   assert.deepEqual([api.kb().w, api.kb().lo, api.kb().hi], [1300, 48, 108], 'five octaves for 1300 px, an octave up');
   assert.equal(ls.m.get('synthc.kbHidden'), 'false');
+  await s.settle(300);
+  assert.equal(p.classList.contains('glide'), false, 'in the grid again');
+  for (const [k, gone] of [['Enter', true], [' ', false]]) { const e = keydown(g, k); assert.deepEqual([sh.kbGone(), e.defaultPrevented, e.stopped], [gone, true, true], JSON.stringify(k)); }
   s.$('#octdn').onclick();
+  await s.settle(300);
   delete globalThis.document.elementFromPoint;
 });
 
-test('double tap (touch, pen) resets only after two taps in place that changed nothing; the mouse uses its own dblclick; Delete / Backspace reset the Key size slider', async () => {
-  const s = await page(), { api } = s, g = s.$('#kbGrip'), kw = s.$('#kbw'), at = (el, x, y, o) => { fire(el, ptr('pointerdown', 20, x, y, o)); };
+test('the keyboard\'s tab pulled (2026-10-22, the user: "pull it out like a physical tray"): from folded the tray follows the finger out of the grid (.pull, a translateY of what is left of its travel), its release snaps it — past half open, under half shut again, a second finger shut again (the pinch); open, dragged below its 70 px keys the drawer closes the same way, its height kept as it was', async () => {
+  const s = await page(), { api } = s, g = s.$('#kbGrip'), p = s.$('#perf'), sh = globalThis.__synthTest.shell, tf = () => p.style.transform || '';
+  sh.setKbHidden(true); await s.settle(300);
+  const h0 = api.kb().h, full = 64 + h0; // (the stub's chrome: 64 px)
+  fire(g, ptr('pointerdown', 6, 500, 900)); fire(g, ptr('pointermove', 6, 500, 850));
+  assert.deepEqual([p.classList.contains('pull'), p.classList.contains('gone'), tf()], [true, false, `translateY(${full - 50}px)`], '50 px out');
+  fire(g, ptr('pointermove', 6, 500, 820)); T += 400; fire(g, ptr('pointermove', 6, 500, 820)); T += 400; fire(g, ptr('pointerup', 6, 500, 820));
+  assert.deepEqual([sh.kbGone(), p.classList.contains('pull'), p.classList.contains('gone'), tf()], [true, false, true, ''], '80 of ' + full + ' px slowly: shut again');
+  fire(g, ptr('pointerdown', 7, 500, 900)); fire(g, ptr('pointermove', 7, 500, 700)); fire(g, ptr('pointercancel', 7, 500, 700, { gesture: 'two-finger' }));
+  assert.deepEqual([sh.kbGone(), p.classList.contains('gone'), ls.m.get('synthc.kbHidden')], [true, true, 'true'], 'a second finger: shut, nothing saved');
+  fire(g, ptr('pointerdown', 8, 500, 900)); fire(g, ptr('pointermove', 8, 500, 760)); T += 400; fire(g, ptr('pointermove', 8, 500, 760)); T += 400; fire(g, ptr('pointerup', 8, 500, 760));
+  assert.deepEqual([sh.kbGone(), p.classList.contains('glide'), tf(), ls.m.get('synthc.kbHidden'), api.kb().h], [false, true, '', 'false', h0], '140 px: past half — open at its height');
+  await s.settle(300);
+  // open: dragged down past the 70 px keys, the drawer closes under the finger
+  fire(g, ptr('pointerdown', 9, 500, 600)); fire(g, ptr('pointermove', 9, 500, 600 + (h0 - 70)));
+  assert.deepEqual([api.kb().h, p.classList.contains('pull')], [70, false], 'sized down to the least');
+  fire(g, ptr('pointermove', 9, 500, 600 + (h0 - 70) + 100));
+  assert.deepEqual([api.kb().h, p.classList.contains('pull'), tf()], [70, true, 'translateY(100px)'], 'then the drawer: 100 px in');
+  T += 400; fire(g, ptr('pointermove', 9, 500, 600 + (h0 - 70) + 100)); T += 400; fire(g, ptr('pointerup', 9, 500, 600 + (h0 - 70) + 100));
+  assert.deepEqual([sh.kbGone(), p.classList.contains('gone'), api.kb().hSet, ls.m.get('synthc.kbHidden')], [true, true, 0, 'true'], '100 of 134 px in: folded away, the height as it was');
+  sh.setKbHidden(false); await s.settle(300);
+  assert.equal(api.kb().h, h0, 'it opens at its height');
+});
+
+test('folded away, the keyboard plays on (2026-10-22): the computer keys and MIDI in, Hold (sustain kept), Escape is still Panic — the Panic button folded away with the tray (the tab brings it back)', async () => {
+  const s = await page(), { api } = s, sh = globalThis.__synthTest.shell, hold = s.$('#hold'), doc = globalThis.document;
+  hold.onclick();
+  assert.equal(hold.getAttribute('aria-pressed'), 'true');
+  sh.setKbHidden(true);
+  assert.equal(hold.getAttribute('aria-pressed'), 'true', 'Hold stays on');
+  const n0 = api.held.size;
+  s.key('KeyA', true);
+  assert.equal(api.held.size, n0 + 1, 'a computer key plays');
+  s.key('KeyA', false);
+  api.midi.message([0x90, 64, 100], performance.now());
+  assert.ok([...api.held.keys()].some(k => k.endsWith(':64')), 'MIDI in plays');
+  api.midi.message([0x80, 64, 0], performance.now());
+  const esc = { type: 'keydown', key: 'Escape', code: 'Escape', keyCode: 27, target: doc.body, defaultPrevented: false, isComposing: false,
+    metaKey: false, ctrlKey: false, shiftKey: false, altKey: false, preventDefault() {}, stopPropagation() {} };
+  doc.activeElement = null;
+  for (const f of s.dom.winL.keydown || []) f(esc);
+  assert.deepEqual([hold.getAttribute('aria-pressed'), api.held.size], ['false', 0], 'Escape: Panic (sustain off, every note ended)');
+  sh.setKbHidden(false); await s.settle(300);
+});
+
+test('the grip\'s taps (2026-10-22): a tap — touch, pen or mouse — folds the keyboard away and the next brings it back (no double-tap reset any more: Delete / Backspace reset the height); nudges of 6 px are drags; double tap on the Key size slider resets only after two taps in place that changed nothing; the mouse uses its own dblclick; Delete / Backspace reset the Key size slider', async () => {
+  const s = await page(), { api } = s, g = s.$('#kbGrip'), kw = s.$('#kbw'), sh = globalThis.__synthTest.shell, at = (el, x, y, o) => { fire(el, ptr('pointerdown', 20, x, y, o)); };
   const up = (el, x, y, o) => fire(el, ptr('pointerup', 20, x, y, o));
   const tap = (el, x, y, o) => { at(el, x, y, o); up(el, x, y, o); };
   s.$('#keys').clientWidth = 1000;
-  const keyH = () => keydown(g, 'End'); // a chosen height (360 px), so a reset shows
-  // the grip: two nudges of 5 px (a drag: the height moves) are not a double tap, even ending 2 px from where they began
-  keyH();
-  for (let i = 0; i < 2; i++) { at(g, 300, 300); fire(g, ptr('pointermove', 20, 300, 305)); up(g, 300, 302); }
-  assert.deepEqual([api.kb().h, api.kb().hSet], [350, 350], 'two nudges: moved, no reset');
-  // taps 4 px long, or 16 px apart, are not a double tap either
-  keyH();
-  tap(g, 300, 300); at(g, 300, 300); up(g, 304, 300);
-  tap(g, 300, 300); tap(g, 316, 300);
-  assert.equal(api.kb().hSet, 360, 'no reset');
-  tap(g, 300, 300, { pointerType: 'pen' }); tap(g, 303, 302, { pointerType: 'pen' });
-  assert.deepEqual([api.kb().h, api.kb().hSet], [170, 0], 'pen: a double tap');
-  // the mouse: presses in place are not a double tap (its dblclick is), and a touch browser's own dblclick is ignored
-  keyH();
-  tap(g, 300, 300, { pointerType: 'mouse' }); tap(g, 300, 300, { pointerType: 'mouse' });
-  assert.equal(api.kb().hSet, 360, 'mouse presses: no reset without a dblclick');
+  keydown(g, 'End'); // a chosen height (360 px)
+  // the grip: two nudges of 6 px (a drag: the height moves) fold nothing
+  for (let i = 0; i < 2; i++) { at(g, 300, 300); fire(g, ptr('pointermove', 20, 300, 306)); T += 400; up(g, 300, 306); }
+  assert.deepEqual([api.kb().h, api.kb().hSet, sh.kbGone()], [348, 348, false], 'two nudges: moved, still open');
+  for (const pt of ['touch', 'pen', 'mouse']) {
+    tap(g, 300, 300, { pointerType: pt });
+    assert.equal(sh.kbGone(), true, pt + ': a tap folds it away');
+    tap(g, 300, 300, { pointerType: pt });
+    assert.deepEqual([sh.kbGone(), api.kb().hSet], [false, 348], pt + ': the next brings it back, its height kept');
+  }
   fire(g, { type: 'dblclick' });
-  assert.equal(api.kb().hSet, 0, 'the mouse\'s dblclick');
-  keyH();
-  tap(g, 300, 300); fire(g, { type: 'dblclick' });
-  assert.equal(api.kb().hSet, 360, 'a dblclick after a touch press: not ours');
-  tap(g, 300, 300);
-  assert.equal(api.kb().hSet, 0, 'the second tap was');
+  assert.deepEqual([sh.kbGone(), api.kb().hSet], [false, 348], 'a dblclick is nothing of its own');
+  keydown(g, 'Delete');
+  assert.equal(api.kb().hSet, 0, 'Delete: the default height');
+  await s.settle(300);
   // the slider: a press that moved the thumb (Chrome's tap on the track, a nudge) is not a tap
   slide(s, 40);
   for (const v of [50, 51]) { at(kw, 40, 10); kw.value = String(v); fire(kw, { type: 'input', target: kw }); fire(kw, { type: 'change', target: kw }); up(kw, 41, 10); }
@@ -337,14 +383,14 @@ test('Key size slider range: from the widest key that still shows all 75 keys to
   keys.clientWidth = 1000; await resize(s);
 });
 
-test('index.html: the Key size slider is named by its label (no aria-label of its own); Hide keys keeps its text for screen readers', async () => {
+test('index.html: the Key size slider is named by its label (no aria-label of its own); Hide keyboard keeps its text for screen readers', async () => {
   const { readFileSync } = await import('node:fs');
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   const lab = /<label class="grp kbsize"[^>]*>(.*?)<\/label>/s.exec(html);
   assert.ok(lab, 'the Key size label');
   assert.match(lab[1], /<span class="lbl">Key size<\/span>\s*<input type="range" id="kbw"/);
   assert.doesNotMatch(lab[1], /aria-label/);
-  assert.match(html, /<button id="kbHide"[^>]*>.*<span>Hide keys<\/span><\/button>/);
+  assert.match(html, /<button id="kbHide"[^>]*>.*<span>Hide keyboard<\/span><\/button>/);
 });
 
 // the two-finger layer (gesture.js, tests/gesture.test.mjs): installed first in boot(), so its window listeners come
@@ -393,7 +439,7 @@ test('height grip: a two-finger gesture (flagged pointercancel) puts the height 
 });
 
 // (boots its own page: after the tests that share page())
-test('the keyboard view persists: key height, key width and Hide keys come back in the next session; bad stored values are ignored', async () => {
+test('the keyboard view persists: key height, key width and Hide keyboard (folded away) come back in the next session — without a glide; bad stored values are ignored', async () => {
   const s = await page(), g = s.$('#kbGrip');
   slide(s, 44);
   fire(g, ptr('pointerdown', 9, 500, 600, { pointerType: 'mouse' }));
@@ -405,12 +451,12 @@ test('the keyboard view persists: key height, key width and Hide keys come back 
   const K = s2.api.kb();
   assert.deepEqual([K.h, K.hSet, K.kw], [220, 220, 44], 'restored');
   assert.equal(s2.$('#kbw').value, '44');
-  assert.equal(s2.$('#kbGrip').getAttribute('aria-valuenow'), '220');
-  assert.equal(s2.$('#kbrow').hidden, true, 'still hidden');
-  assert.ok(s2.$('#perf').classList.contains('min'));
+  assert.equal(globalThis.__synthTest.shell.kbGone(), true);
+  assert.deepEqual([s2.$('#perf').classList.contains('gone'), s2.$('#perf').classList.contains('glide'), s2.$('#kbrow').hidden], [true, false, false], 'still folded away (no glide at boot)');
   assert.equal(s2.$('#kbHide').getAttribute('aria-expanded'), 'false');
+  assert.equal(s2.$('#kbGrip').getAttribute('role'), 'button');
   const s3 = await bootMain({ ls: fakeStorage({ 'synthc.kbSize': JSON.stringify({ h: 'tall', kw: 4000 }), 'synthc.kbHidden': 'false' }) });
   const K3 = s3.api.kb();
   assert.deepEqual([K3.h, K3.hSet, K3.kw], [170, 0, 96], 'a non-number is the default, a width beyond the range is clamped');
-  assert.equal(s3.$('#kbrow').hidden, false);
+  assert.equal(s3.$('#perf').classList.contains('gone'), false);
 });

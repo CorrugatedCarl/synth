@@ -3095,6 +3095,7 @@ function sxHost(t0, dv) {
     extraRows: destId => sxExtra(T(), dev, destId), // (stage 2a: the canvas cables on a knob — its halo, the knob menu)
     extraMatrix: () => sxMatrixRows(T(), dev), // ((2b U6) the matrix page: every canvas row compiled into this Serum, its slot tag)
     fxTap: inst => postTo({ id }, { t: 'fxtap', id: typeof inst === 'string' ? inst : '' }, dev),   // (the FX page's Delay overlay)
+    fxCost, // (the FX page's "+" menu: each effect's load estimate on this device)
     presets: {
       list: sxPresetList,
       get: key => sxPreset(key),
@@ -3274,7 +3275,7 @@ function renderFxTab(t = trk(), key = fxKeyOf(t)) {
     box.innerHTML = '';
     try {
       rec.trackId = t.id; rec.dev = dev; rec.key = key; rec.fx = fx; rec.sx = sx;
-      rec.ui = new M.fxui.FXRackUI(box, fxHost(t, rec), { embedded: false, dsp: globalThis.FXDSP || null, racks: sx ? 3 : 1, v2Fx: true });
+      rec.ui = new M.fxui.FXRackUI(box, fxHost(t, rec), { embedded: false, dsp: globalThis.FXDSP || null, racks: sx ? 3 : 1, v2Fx: true, cost: fxCost }); // (cost: the "+" menu's estimates)
       if (rec.ui && rec.ui.el && dev) rec.ui.el.setAttribute('data-dev', dev); // (its fx.<inst>.<pid> dests: that device's)
       if (key) fxHalos(t, key); // ((U5, halos fix) a Serum's own FX / a shared panel: the canvas rows' halos from the start)
       rec.mon = monitors.sub(t.id, dev, { role: 'fx', live: () => rec.trackId === t.id && !!rec.ui && cvLive(key), deliver: d => { rec.gr = d.gr || null; rec.ftap = d.ftap || null; if (key) fxLive(t.id, key, rec, d); } });
@@ -3950,7 +3951,7 @@ function openTab(name) {
   for (const b of document.querySelectorAll('.tabs button')) { const on = b.dataset.tab === name; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); }
   $('#tab-inst').hidden = name !== 'canvas';
   $('#tab-roll').hidden = name !== 'roll';
-  if (name === 'roll') { if (shell.src) { shell.src.close(); shell.fx.close(); } roll.resize(); roll.render(); } // (the side trays are the canvas's)
+  if (name === 'roll') { if (shell.src) shell.src.close(); roll.resize(); roll.render(); } // (the side tray is the canvas's)
   if (world) world.setActive(name === 'canvas');
   // a default camera owed since a track switch under ROLL: now, on the real band (setActive measured it)
   if (name === 'canvas' && cvCamDef && cvView && cvCamDef === CM.camKey(project.uid, cvView.trackId)) cvCamRestore(trk());
@@ -4435,12 +4436,16 @@ function setKeyWidth(px, save = true) {
   if (save) kbSave();
 }
 let kbH = 170; // the key height in use (px)
+// folded away (setKbHidden), a pull's drawer (kbPullBegin), the glide's timer; reduced motion: no glide
+let kbGone = false, kbGlideT = 0;
+const kbPull = { on: false, full: 0 };
+const kbStill = () => { try { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); } catch { return false; } };
 const kbDefH = () => (window.innerWidth <= 900 ? 128 : 170); // = style.css .keys
-// the panel's height besides the keys (toolbar, padding), measured while the keys are shown (a notice floats over the
-// canvas, out of flow: style.css .notice)
+// the panel's height besides the keys (toolbar, padding; a notice floats over the canvas, out of flow: style.css .notice) —
+// folded away the tray is still laid out (below the screen edge, hidden), so it measures the same
 function kbChrome() {
   const d = $('#perf').offsetHeight - $('#keys').offsetHeight;
-  return !$('#kbrow').hidden && d > 0 ? d : 64;
+  return d > 0 ? d : 64;
 }
 // The canvas shell's one height budget (cv-tray budget, replacing the 60 % rule): the canvas between the trays keeps
 // ≥ 240 px. kbMaxH: the most the keys may take when the keyboard tray leads (the top tray pushed to its one row).
@@ -4450,15 +4455,15 @@ const kbMaxH = (chrome = kbChrome()) => clamp(Math.floor(cvTray.budget({ vh: tra
 // default) and the top tray's wanted height, the tray dragged last (shell.lead) winning and the other pushed toward its
 // fold — never below one row / 70 px keys (a window too small for the rule: the canvas gets what is left)
 function applyKbHeight(chrome = kbChrome()) {
-  const max = kbMaxH(chrome), g = $('#kbGrip'), p = $('#perf'), keys = !$('#kbrow').hidden;
+  const max = kbMaxH(chrome), g = $('#kbGrip'), p = $('#perf'), keys = !kbGone || kbPull.on; // (folded away it takes no room; a pull out lays it out open)
   const want = kbSize.h ? clamp(kbSize.h, KB_H[0], max) : kbDefH();
-  const B = cvTray.budget({ vh: trayVh(), top: topWant(), bottom: chrome + (keys ? want : 0), active: shell.lead,
-    topMin: cvTray.TOP_ROW, bottomMin: chrome + (keys ? KB_H[0] : 0) });
+  const B = cvTray.budget({ vh: trayVh(), top: topWant(), bottom: keys ? chrome + want : 0, active: shell.lead,
+    topMin: cvTray.TOP_ROW, bottomMin: keys ? chrome + KB_H[0] : 0 });
   kbH = keys ? clamp(Math.floor(B.bottom - chrome), KB_H[0], Math.max(KB_H[0], want)) : want;
   p.style.setProperty('--kbh', kbH + 'px');
   p.classList.toggle('short', kbH < 100); // the wheels drop their labels
-  g.setAttribute('aria-valuenow', String(kbH)); g.setAttribute('aria-valuemax', String(Math.max(max, kbH)));
-  g.setAttribute('aria-valuetext', `${kbH} pixels${kbSize.h ? '' : ' (default)'}`);
+  if (shell.kb) shell.kb.sync(); // (its ARIA: a slider, or folded away a button — cv-tray trayGrip)
+  else { g.setAttribute('aria-valuenow', String(kbH)); g.setAttribute('aria-valuemax', String(Math.max(max, kbH))); g.setAttribute('aria-valuetext', `${kbH} pixels${kbSize.h ? '' : ' (default)'}`); }
   topShow(B.top);
 }
 // px: the key height (0 = the default for the screen), within 70 px … kbMaxH. Asking for that limit or more while the
@@ -4471,16 +4476,44 @@ function setKbHeight(px, save = true, chrome = kbChrome(), was = kbSize.h) {
   applyKbHeight(chrome);
   if (save) kbSave();
 }
-function setKbHidden(on, save = true) {
-  const b = $('#kbHide');
+// (2026-10-22, the user: "the keyboard at the bottom should collapse down to just the tab") folded away (kbGone,
+// synth.kbHidden): the whole tray — keys and controls — goes below the screen edge, its tab left (the canvas gets the
+// height; the computer keys, MIDI and Hold play on — Panic: Esc, or the tab then Panic). The tab (a tap, Enter / Space, a
+// pull: trayGrip o.fold below) and #kbHide fold it / bring it back. A change glides (.glide, cv-tray SNAP_MS; none with
+// reduced motion nor at boot); a pull's release glides on from where the finger left it (kbPull: its travel while pulled)
+function setKbHidden(on, save = true, glide = true) {
+  const p = $('#perf'), b = $('#kbHide'), g = $('#kbGrip'), was = kbGone, pulled = p.classList.contains('pull');
   if (on) releasePtrs(); // fingers on the keys as they go: their notes end now
-  $('#kbrow').hidden = on; $('#perf').classList.toggle('min', on);
+  kbGone = on; kbPull.on = false;
+  clearTimeout(kbGlideT); kbGlideT = 0;
+  const gl = glide && (on !== was || pulled) && !kbStill();
+  p.classList.remove('pull');
+  p.classList.toggle('glide', gl);
+  p.classList.toggle('gone', on);
+  p.style.transform = ''; // (a pull's: the glide goes on from it)
+  if (gl) kbGlideT = setTimeout(() => { kbGlideT = 0; p.classList.remove('glide'); }, cvTray.SNAP_MS + 40); // (open: back in the grid then)
   b.setAttribute('aria-expanded', on ? 'false' : 'true');
-  b.querySelector('span').textContent = on ? 'Show keys' : 'Hide keys';
-  b.title = on ? 'Show the on-screen keyboard' : 'Hide the on-screen keyboard (the controls stay)';
   if (save) store.set('synth.kbHidden', on);
-  applyKbHeight(); // (the top tray may take the room the keys leave)
+  applyKbHeight(); // (the top tray may take the room the keyboard leaves)
   if (!on) buildKeys(); // laid out for the width they now have
+  const a = document.activeElement;
+  if (on && a && a !== g && p.contains(a) && g.focus) g.focus(); // (focus on a control that hides: onto the tab)
+}
+// the tab's drawer (trayGrip o.fold): its travel — the tray laid out as it opens (from folded: the budget's height, the
+// top tray maybe pushed once) —, out of the grid under the finger (.pull: a translateY per move, no layout)
+function kbPullBegin() {
+  const p = $('#perf');
+  clearTimeout(kbGlideT); kbGlideT = 0; p.classList.remove('glide');
+  if (kbGone) { kbPull.on = true; applyKbHeight(); }
+  kbPull.full = Math.max(1, kbChrome() + kbH);
+  p.classList.remove('gone'); p.classList.add('pull');
+  return kbPull.full;
+}
+function kbPullTo(out) {
+  const p = $('#perf');
+  if (out == null) { p.classList.remove('pull'); p.style.transform = ''; return; } // (back above the keys' least: in the grid)
+  p.classList.add('pull');
+  p.style.transform = 'translateY(' + Math.round(kbPull.full - out) + 'px)';
 }
 function keyVis(n, on) { const k = keyEls.get(n); if (k) k.classList.toggle('down', on); PERF.lit(n, on); } // (1i: and the hardware beds)
 function keyAt(x, y) {
@@ -4518,17 +4551,17 @@ function onDouble(el, fn, still = () => true) {
     if (tap && d.t - tap.t < 450 && Math.hypot(d.x - tap.x, d.y - tap.y) < 16) { tap = null; fn(); } else tap = { t: e.timeStamp, x: d.x, y: d.y };
   });
 }
-// the keyboard's view controls: Hide / Show keys, the height grip (drag; arrows, Page Up / Down, Home / End when focused;
-// double-click / double-tap or Enter / Delete / Backspace resets) and the Key size slider (double-click / double-tap or
+// the keyboard's view controls: Hide keyboard (folds it away to its tab), the tab (a tap or Enter / Space folds it away /
+// brings it back; a drag sizes the keys — below their least, or from folded, it pulls the tray like a drawer; arrows, Page
+// Up / Down, Home / End when focused; Delete / Backspace resets) and the Key size slider (double-click / double-tap or
 // Delete / Backspace: fitted to the screen again)
 function initKbView() {
   const grip = $('#kbGrip'), kw = $('#kbw');
-  $('#kbHide').onclick = () => setKbHidden(!$('#kbrow').hidden);
+  $('#kbHide').onclick = () => setKbHidden(!kbGone);
   const hid = !!store.get('synth.kbHidden', false);
-  setKbHidden(hid, false); // (shown: sized and laid out for the width)
-  if (hid) applyKbHeight();
+  setKbHidden(hid, false, false); // (shown: sized and laid out for the width; no glide at boot)
   // the height grip on the shell's grip helper (cv-tray trayGrip, shared with the top tray): drag (up = taller), arrows ±10
-  // (Shift ±1), Page Up / Down ±40, Home / End, Enter / Delete / Backspace and double-click / double-tap = the default
+  // (Shift ±1), Page Up / Down ±40, Home / End, Delete / Backspace = the default; a tap / Enter / Space and o.fold: the drawer
   let d = null; // a drag's start: the panel's chrome and the height chosen before it
   shell.kb = cvTray.trayGrip(grip, {
     edge: 'bottom', label: 'Keyboard height', step: 10,
@@ -4542,7 +4575,8 @@ function initKbView() {
       else if (phase === 'reset') setKbHeight(0);
       else if (phase === 'key') setKbHeight(px);
     },
-    onDouble: () => setKbHeight(0),
+    onTap: () => setKbHidden(!kbGone),
+    fold: { label: 'Keyboard (folded away): show it', closed: () => kbGone, begin: kbPullBegin, pull: kbPullTo, done: (open, how) => setKbHidden(!open, how !== 'cancel') },
   });
   kw.addEventListener('input', () => setKeyWidth(+kw.value || KB_W[0], false));
   kw.addEventListener('change', kbSave);
@@ -4797,9 +4831,11 @@ function frame() {
 // The shell around the canvas (IMPL-1b §5.1, SPEC-canvas §2.1–§2.4): the top tray (one 48 px row; its grip reveals the
 // arrangement toolbar, the ruler and the track rows, heights snapped to whole rows), the keyboard tray on the same grip
 // helper (cv-tray trayGrip), one height budget for both (cv-tray budget: the canvas keeps ≥ 240 px, the tray dragged last
-// wins and pushes the other toward its fold), the side trays (Sources: the synth drawings, tap or drag; Effects), the
-// ≡ / ⚙ / ⋯ / Bars ▾ / track-list popovers and the Help sheet in #ov. Tray heights and widths persist in synth.cv.trays.
-const shell = { top: null, kb: null, src: null, fx: null, tiles: null, fxTiles: null, measure: null, menus: [], sheet: null, lead: 'bottom', leadWas: 'bottom',
+// wins and pushes the other toward its fold), the side tray (Sources: the synth drawings, tap or drag), the ≡ / ⚙ / ⋯ /
+// Bars ▾ / track-list popovers and the Help sheet in #ov. Tray heights and widths persist in synth.cv.trays. (2026-10-22,
+// the user) no Effects tray (its load estimates are in the FX rack's "+" menu: fxCost); every tray folds to its pull tab —
+// the keyboard's too, all the way (kbGone) — and a tab is tapped (toggles) or pulled like a drawer (cv-tray pullSnap).
+const shell = { top: null, kb: null, src: null, tiles: null, measure: null, menus: [], sheet: null, lead: 'bottom', leadWas: 'bottom',
   topH: 0, topLast: 0, topShown: 0, safeTop: 0, chrome: 0, srcAsk: false, drop: null, dropOn: null, chipModel: '', instT: 0, dots: [], nTr: 0 };
 const oneRow = () => cvTray.topSnaps(1)[1]; // the arrangement toolbar, the ruler and one track row
 const trayVh = () => Math.max(0, (window.innerHeight || 800) - shell.safeTop);
@@ -4809,7 +4845,7 @@ function trayPrefSave() { store.set(cvTray.TRAY_PREF, Object.assign({}, trayPref
 function topWant() { const S = cvTray.topSnaps(project.tracks.length); return clamp(shell.topH || cvTray.TOP_ROW, cvTray.TOP_ROW, S[S.length - 1]); }
 // the most the top tray may take when it leads (the keys pushed down to their least)
 function topMaxH() {
-  const S = cvTray.topSnaps(project.tracks.length), keys = !$('#kbrow').hidden, chrome = shell.chrome || kbChrome(), lo = chrome + (keys ? KB_H[0] : 0);
+  const S = cvTray.topSnaps(project.tracks.length), keys = !kbGone, chrome = shell.chrome || kbChrome(), lo = keys ? chrome + KB_H[0] : 0;
   const B = cvTray.budget({ vh: trayVh(), top: S[S.length - 1], bottom: lo, active: 'top', topMin: cvTray.TOP_ROW, bottomMin: lo });
   return Math.max(cvTray.TOP_ROW, Math.min(S[S.length - 1], Math.floor(B.top)));
 }
@@ -4836,7 +4872,7 @@ function topSet(px, phase) {
   shell.chrome = 0;
   if (phase !== 'cancel') trayPrefSave();
 }
-// double-tap / double-click on the top grip: folded ↔ the last height
+// a tap on the top grip (Enter / Space; 2026-10-22: no double-tap any more): folded ↔ the last height
 function topToggle() {
   if (shell.topShown > cvTray.TOP_ROW + 2) { shell.topLast = Math.max(shell.topH, oneRow()); shell.topH = cvTray.TOP_ROW; }
   else { shell.topH = Math.max(shell.topLast || 0, oneRow()); shell.lead = 'top'; }
@@ -4962,7 +4998,7 @@ const TRAY_LAYOUT = 'synth.cv.trayLayout';
 const srcUi = id => (!shell.tiles || modelById(id).custom ? null : modelById(id).family === 'drums' || modelById(id).family === 'patch' || shell.tiles.layout() !== 'flow' ? 'hw' : 'flow'); // ((7a) a drum machine: Hardware always; (9) a 900 Series too)
 function srcPick(id, mode) {
   const ui = srcUi(id), v = curView();
-  // the tray stays open (the user's rule: only its rail, its ✕ or Escape close it); after a new track it goes back to
+  // the tray stays open (the user's rule: only its tab, its ✕ or Escape close it); after a new track it goes back to
   // replacing the (new) selected track's instrument
   if (mode === 'track') { addTrack(modelById(id), null, { ui }); srcModeUI('replace'); return; }
   if (PT.isPatchModel(id) && ptSet()) return; // ((9, §1.4) the Model 15 tile on a 900 Series: Classic bass as a preset, never a same-model Replace)
@@ -5006,9 +5042,6 @@ const srcDrag = {
 function sideChanged(which, on) {
   if (!on) { if (which === 'src' && shell.tiles) shell.tiles.closeView(); return; } // (no dropdown left over a closed tray)
   if (which === 'src') { if (!shell.srcAsk) srcModeUI('replace'); shell.srcAsk = false; }
-  // a narrow window (portrait, Stage Manager): the tray not in use folds to its rail
-  const other = which === 'src' ? shell.fx : shell.src; // (null while initShell restores the first one)
-  if (other && (window.innerWidth || 1400) < 1100) other.close();
 }
 // the meter (rate · load · latency): a tap shows its whole text over the row
 function meterUI() {
@@ -5038,11 +5071,12 @@ function initShell() {
   const P = trayPref();
   shell.topH = P.top === 0 || P.top > 0 ? Math.max(cvTray.TOP_ROW, +P.top) : oneRow(); // (first run: one track row shown)
   shell.topLast = +P.topLast > cvTray.TOP_ROW ? +P.topLast : oneRow();
-  // the top tray's grip: drag (snaps to whole rows on release), keys, double-tap = folded ↔ the last height
+  // the top tray's grip, its pull tab: a drag follows the finger (snaps to whole rows on release; a flick folds it / opens
+  // it to the last height), keys; a tap (Enter / Space) = folded ↔ the last height
   shell.top = cvTray.trayGrip($('#topGrip'), {
     edge: 'top', label: 'Track list height', step: cvTray.ROW_H,
     get: () => shell.topShown || cvTray.TOP_ROW, set: topSet, min: () => cvTray.TOP_ROW, max: () => topMaxH(),
-    snaps: () => cvTray.topSnaps(project.tracks.length), onDouble: topToggle,
+    snaps: () => cvTray.topSnaps(project.tracks.length), onTap: topToggle, open: () => Math.max(shell.topLast || 0, oneRow()),
     start: () => { shell.leadWas = shell.lead; shell.lead = 'top'; shell.chrome = kbChrome(); },
     text: v => (v <= cvTray.TOP_ROW + 2 ? 'folded to one row' : `${Math.max(0, Math.round((v - oneRow()) / cvTray.ROW_H) + 1)} track rows`),
   });
@@ -5064,14 +5098,12 @@ function initShell() {
   pm.value = store.get('synth.cv.pinch', 'canvas') === 'page' ? 'page' : 'canvas';
   pm.onchange = () => { const v = pm.value === 'page' ? 'page' : 'canvas'; if (world) world.setPinchMode(v); else store.set('synth.cv.pinch', v); };
   $('#rollhelp').onclick = () => $('#rollhelp').classList.toggle('open');
-  // the side trays (a tap on the rail opens; the keyboard and the top row keep them open while played)
-  const keep = t => !!(t && t.closest && t.closest('#perf, #topRow, .wk-ctx, .wk-pop'));
-  shell.src = cvTray.sideTray($('#srcTray'), { side: 'left', key: 'src', store, rail: $('#srcRail'), panel: $('#srcPanel'), grip: $('#srcGrip'),
-    label: 'Sources', keepOpen: keep, onChange: on => sideChanged('src', on) });
-  shell.fx = cvTray.sideTray($('#fxTray'), { side: 'right', key: 'fx', store, rail: $('#fxRail'), panel: $('#fxPanel'), grip: $('#fxGrip'),
-    label: 'Effects', keepOpen: keep, onChange: on => sideChanged('fx', on) });
+  // the side tray (2026-10-22: no rail — its pull tab on the canvas edge: a tap toggles, a pull drags it out like a drawer;
+  // only the tab, its ✕ and Escape close it). The Effects tray of 1e is gone (the user): its effects are the FX rack's "+"
+  // menu, their load estimates with them (fxCost); an old `fx` record in synth.cv.trays is ignored
+  shell.src = cvTray.sideTray($('#srcTray'), { side: 'left', key: 'src', store, tab: $('#srcTab'), panel: $('#srcPanel'), grip: $('#srcGrip'),
+    label: 'Sources', onChange: on => sideChanged('src', on) });
   $('#srcClose').onclick = () => shell.src.close();
-  $('#fxClose').onclick = () => shell.fx.close();
   shell.tiles = cvTray.sourcesTray($('#srcList'), { models: MODELS, tray: $('#srcTray'), layer: $('#ov'), pick: srcPick, drag: srcDrag,
     overOf: srcOver, canvasGhost: () => !!world && !$('#tab-inst').hidden, // (a drag out of the tray leaves it open: the user's rule)
     layoutEl: $('#srcLayout'), viewBtn: $('#srcView'), viewMenu: $('#srcViewMenu'), secEl: $('#srcScroll'), noteEl: $('#srcNote'),
@@ -5092,18 +5124,12 @@ function initShell() {
     // (review 2 N1: the rack outline is pinned to the instrument, never under the finger — mostly off screen over the default Minimoog —, so the tile's own ghost stays with the finger over the canvas too)
     sets: cvTray.SET_TILES, setPick: (id, mode) => setPick(id, mode), setDrag, setCanvasGhost: () => false, setCost: id => setCost(id) });
   srcModeUI('replace');
-  // the Effects tray (stage 1e, IMPL-1e §4.3; 1f: no panel tile): the rack's effects — a tap or a drop anywhere on the
-  // canvas puts one into the track's FX (its panel, a Serum's own); the tray never closes by itself
-  const fxl = $('#fxList');
-  if (fxl) shell.fxTiles = cvTray.effectsTray(fxl, { items: FX_ITEMS, panel: false, pick: fxPick, drag: fxDrag, overOf: fxOver, tray: $('#fxTray'), layer: $('#ov'),
-    canvasGhost: () => !!world && !$('#tab-inst').hidden, // (over the canvas the world draws the target module's outline)
-    cost: id => COSTM.label(COSTM.estimate(id, devFactor())), toWorld: (x, y) => { const W = cvW(); return W && typeof W.toWorld === 'function' ? W.toWorld(x, y) : null; } });
   costLabels();
-  // ⚙ → Measure this device (its line in the Canvas section): the trays' load labels follow this device's speed
+  // ⚙ → Measure this device (its line in the Canvas section): the Sources tiles' and the "+" menus' load labels follow this device's speed
   const gp = $('#gearPop');
   if (gp) {
     const f = h('div', 'field'), b = h('button', 'tt', 'Measure this device'), st = h('span', 'cv-measure');
-    b.type = 'button'; b.title = 'Render a few standard voices off-line to learn this device’s speed: the trays’ load estimates and the instrument limits use it';
+    b.type = 'button'; b.title = 'Render a few standard voices off-line to learn this device’s speed: the load estimates (the Sources tray, the effects’ “+” menus) and the instrument limits use it';
     const fv = +store.get(DEV_FACTOR, 0);
     if (fv > 0) st.textContent = '×' + (Math.round(fv * 100) / 100);
     b.onclick = () => { cvMeasure(b, st); };
@@ -5120,12 +5146,11 @@ function initShell() {
     gp.append(vf);
     shell.sxView = vs;
   }
-  if ((window.innerWidth || 1400) < 1100 && shell.src.isOpen() && shell.fx.isOpen()) shell.fx.close();
   // the top tray animates its height from now on (not from the stylesheet's 48 px to the restored height at load)
   setTimeout(() => $('#topTray').classList.remove('still'), 80); // (a timer: a page opened in a background tab gets no frames)
   if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (tests/cv-shell-sim.test.mjs, main.test menus)
     globalThis.__synthTest.shell = { shell, openTab, instItems, instMenu, cvOpenSources, srcPick, srcDrag, srcOver, topSet, topToggle,
-      topWant, topMaxH, kbMaxH: c => kbMaxH(c), applyKbHeight, trkListUI, helpSheet, cvShellEscape };
+      topWant, topMaxH, kbMaxH: c => kbMaxH(c), applyKbHeight, trkListUI, helpSheet, cvShellEscape, setKbHidden, kbGone: () => kbGone, fxCost };
   }
 }
 function cvShellEscape() { // Escape: closes an open ≡ / ⚙ popover, side tray or sheet → true
@@ -5134,8 +5159,7 @@ function cvShellEscape() { // Escape: closes an open ≡ / ⚙ popover, side tra
   for (const m of shell.menus) if (m.close()) return true;
   if (shell.meter && shell.meter.close()) return true;
   if (shell.tiles && shell.tiles.closeView()) return true; // (the Sources view dropdown before its tray)
-  if (shell.src && shell.src.close()) return true;
-  return !!(shell.fx && shell.fx.close());
+  return !!(shell.src && shell.src.close());
 }
 function cvOpenSources(mode) { // opens the Sources tray; mode 'replace' (a tap replaces trk()'s instrument) | 'track' (a tap adds a track)
   if (!shell.src) return;
@@ -5801,10 +5825,11 @@ function cvTidy() {
   cvView.sync(t);
 }
 
-/* ---------------------------------------------- cv DEVICES (stage 1e, IMPL-1e §4.5; 1f: hooks and the Effects tray) */
+/* ---------------------------------------------- cv DEVICES (stage 1e, IMPL-1e §4.5; 1f: hooks; the effects' list and estimates) */
 // Stage 1f (the user's iPad report: five hardware panels on one canvas lag): one instrument per track in the UI again. The
 // engine graph, the model's editing API and per-device records stay (milestone 3); what is left here: the test hooks
-// (__synthTest.cv add / power / zone: a host-level several-instrument track for the graph tests) and the Effects tray.
+// (__synthTest.cv add / power / zone: a host-level several-instrument track for the graph tests) and the effects' list and
+// load estimates (the Effects tray that showed them is gone, 2026-10-22: they are the FX racks' "+" menus).
 // After every edit of the track's devices: the patch (a graph shape: {t: 'graph'} + its parts), the view, the track rows
 function cvAfter(t) {
   queuePatch(t);
@@ -5892,8 +5917,9 @@ function cvBadge(key) {
   const m = modCount(t, key);
   return m ? m.text : capsOf(t, key);
 }
-// Effects tray (SPEC §2.4, §2.8): fx-ui's addMenuItems list — the rack's "+" menu: the 13 effects alphabetically, then the
-// 3 splitters — read from serum-core's FXTYPES (the same list, before fx-ui loads with the first rack)
+// fx-ui's addMenuItems list — the rack's "+" menu: the 13 effects alphabetically, then the 3 splitters — read from
+// serum-core's FXTYPES (the same list, before fx-ui loads with the first rack): the effects' names in notices
+// ((2026-10-22) the Effects tray that showed them as tiles is gone; their load estimates are the "+" menu's: fxCost)
 const FX_ITEMS = (() => {
   const L = Array.isArray(core.FXTYPES) ? core.FXTYPES : [];
   return [...L.filter(x => !x.split).sort((a, b) => (a.id < b.id ? -1 : 1)), ...L.filter(x => x.split)].map(x => ({ type: x.id, label: x.label, group: x.split ? 'Splitters' : 'Effects' }));
@@ -5905,8 +5931,9 @@ function fxAddInst(fx, type) {
   if (nid) { fx.ui = fx.ui && typeof fx.ui === 'object' ? fx.ui : {}; fx.ui.sel = nid; }
   return nid;
 }
-// an effect tile into a panel module (or a Serum's own FX): the instance at the end of its Main rack as the rack's "+"
-// menu adds it — an FX edit, so the knob-tweak policy holds (§11.8: FX rack edits are not History steps; its ⋯ removes it)
+// an effect into a panel module (or a Serum's own FX; __synthTest cv.fx.addEffect — the Effects tray's tiles did it): the
+// instance at the end of its Main rack as the rack's "+" menu adds it — an FX edit, so the knob-tweak policy holds (§11.8:
+// FX rack edits are not History steps; its ⋯ removes it)
 function cvAddEffect(t, key, type) {
   const own = /\/fx$/.test(key) ? key.slice(0, -3) : null, dev = own || key;
   if (kindOfKey(t, key) !== 'fx') return null;
@@ -5920,58 +5947,10 @@ function cvAddEffect(t, key, type) {
   notice(`Added ${fxName(type)} to ${cvTitle(key).title}`, 3500);
   return nid;
 }
-// the module under a tray drag's pointer (any part of it) → {key, kind} | null
-function cvModUnder(el) {
-  for (let n = el, i = 0; n && i < 64 && typeof n.getAttribute === 'function'; n = n.parentNode, i++) {
-    const k = n.getAttribute('data-cv-mod');
-    if (k != null) return cvView && cvView.modules.has(k) ? { key: k, kind: n.getAttribute('data-cv-kind') } : null;
-  }
-  return null;
-}
-// the module under an Effects drag: an FX module (into its rack), an instrument (U11: into its FX), else empty canvas
-function fxOver(target) {
-  if (srcOver(target) !== 'canvas') return null;
-  const M = cvModUnder(target);
-  if (M && M.kind === 'part') return { over: 'inst', key: CMOD.partOf(M.key).dev }; // ((3) a Serum's part: into that Serum's own FX)
-  return M && M.kind === 'fx' ? { over: 'panel', key: M.key } : M && M.kind === 'inst' ? { over: 'inst', key: M.key } : 'canvas';
-}
-// an effect into instrument dev's FX (its panel, a Serum's own). Since 1f a classic instrument always feeds a panel (the
-// split gives one cabled straight into OUT an empty panel; no UI removes it): without one (a hook-made shape) nothing
-function fxInto(t, dev, id) {
-  const d = t.dev[dev], k = d && d.model === 'serum' ? dev + '/fx' : CMOD.destOf(t, dev);
-  return k && kindOfKey(t, k) === 'fx' ? cvAddEffect(t, k, id) : null;
-}
-// a tap on an Effects tile: the effect goes into the track's FX
-function fxPick(id) { const t = trk(); fxInto(t, curOf(t), id); }
-// the module an Effects drop goes into: a panel module or an instrument under the pointer (its FX), else (empty canvas)
-// the track's FX module — its panel, a Serum's own FX
-function fxTarget(t, i) {
-  if ((i.over === 'panel' || i.over === 'inst') && i.key && cvView && cvView.modules.has(i.key)) return i.key;
-  return i.over === 'canvas' || i.over === 'panel' || i.over === 'inst' ? fxKeyOf(t) || curOf(t) : null;
-}
-// an Effects tile dragged out (stage 1f: a drop anywhere on the canvas goes into the track's FX): the outline on the module
-// it goes into (pinned there: no edge pan), the toolbar and the minimap aside for the whole drag (U14)
-const fxDrag = {
-  move(id, i) {
-    const W = cvW(), t = trk(), k = fxTarget(t, i), M = k && cvView ? cvView.modules.get(k) : null;
-    if (!W || typeof W.ghost !== 'function') return;
-    if (!M) { W.ghost(null); return; }
-    const r = M.rect(), c = W.toClient(r.x, r.y);
-    W.ghost({ x: c.x, y: c.y, w: r.w, h: r.h, dx: 0, dy: 0, snap: false, label: fxName(id) + ' → ' + M.title });
-  },
-  begin(id, i) { if (world) world.setDragging(true); fxDrag.move(id, i); },
-  end() { const W = cvW(); if (W && typeof W.ghost === 'function') W.ghost(null); if (world) { world.dragPointer(null); world.setDragging(false); } },
-  drop(id, i) {
-    fxDrag.end();
-    const t = trk(), k = fxTarget(t, i);
-    if (!k) return false;
-    if (kindOfKey(t, k) === 'fx') cvAddEffect(t, k, id); else fxInto(t, k, id);
-    return true;
-  },
-  cancel() { fxDrag.end(); },
-};
-// the trays' load labels on this device (cv-cost estimates × the measured factor): the Sources tiles' and the Effects
-// tiles' (refreshed after a measurement)
+// an effect type's load estimate on this device (cv-cost × the measured factor): the FX racks' "+" menus (fx-ui opts.cost,
+// read as a menu opens — so a measurement shows at once), '' for none
+const fxCost = type => COSTM.label(COSTM.estimate(type, devFactor()));
+// the Sources tiles' load labels on this device (cv-cost estimates × the measured factor; refreshed after a measurement)
 function costLabels() {
   const f = devFactor();
   if (shell.tiles) for (const b of shell.tiles.tiles()) {
@@ -5981,7 +5960,6 @@ function costLabels() {
     if (c.textContent !== txt) c.textContent = txt;
     c.title = 'Estimated DSP load on this device: ' + txt;
   }
-  if (shell.fxTiles) shell.fxTiles.refresh();
   if (shell.tiles && typeof shell.tiles.refreshMoog === 'function') shell.tiles.refreshMoog(); // ((9) the Moog module tiles' labels)
 }
 // ⚙ → Measure this device (§9.1): a Worker renders three standard rows (cv-cost measureDevice), progress on the button's
@@ -7954,7 +7932,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     // (stage 1e; 1f: add / power / zone are hooks only — no UI reaches them — for the host and engine-protocol tests)
     add: cvAddInstrument, power: cvPower, zone: cvZone,
     badge: cvBadge, cur: () => curOf(trk()), setCur: key => setCur(trk(), key), view1e: k => instView(trk(), k),
-    fx: { pick: fxPick, drag: fxDrag, over: fxOver, items: FX_ITEMS, tiles: () => shell.fxTiles, addEffect: (key, type) => cvAddEffect(trk(), key, type) },
+    fx: { items: FX_ITEMS, cost: fxCost, addEffect: (key, type) => cvAddEffect(trk(), key, type) }, // ((2026-10-22) no Effects tray: no tiles, pick, drag)
     classicPanels, serumPanels, fxPanels, bodyEl: key => cvBodyEl(trk(), key), measure: cvMeasure, costLabels, devFactor, setTrackModel, renderPanels,
     touch: (t0 => v => { touchDev = v == null ? t0 : !!v; })(touchDev), // (the soft caps' touch rule; null: back to this device's)
     wheelToWt, chordCheck, mount: () => (cvMount ? { jobs: cvMount.jobs.map(j => j.key) } : null), // (a switch's mounting: the bodies still to build)

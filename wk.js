@@ -2963,7 +2963,8 @@ export function ask(msg, def) {
 }
 
 /* --------------------------------------------------------- context menu */
-// items: [{ label, action?, checked?, disabled?, sub?: items, sep? }]. Escape closes the innermost level
+// items: [{ label, action?, checked?, disabled?, sub?: items, sep?, hint?, title? }] (hint: a short muted note at the item's
+// right end — the FX rack's "+" menu: an effect's load estimate; title: its tooltip). Escape closes the innermost level
 // (the root level closes the menu); outside pointerdown, scroll, resize and window blur close everything.
 export function contextMenu(x, y, items, opts) {
   const d = D();
@@ -2996,6 +2997,8 @@ export function contextMenu(x, y, items, opts) {
       const ck = h('span', 'wk-ck', it.checked ? '✓' : '');
       ck.setAttribute('aria-hidden', 'true');
       e.append(ck, h('span', 'wk-cl', it.label));
+      if (it.hint) e.append(h('span', 'wk-ch', String(it.hint)));
+      if (it.title) e.title = String(it.title);
       if (it.sub) { const ar = h('span', 'wk-cs', '▸'); ar.setAttribute('aria-hidden', 'true'); e.append(ar); }
       e.addEventListener('pointerenter', () => hover(L, i));
       e.addEventListener('click', ev => { ev.stopPropagation(); if (armed) pick(L, i, false); });
@@ -3333,6 +3336,7 @@ const CSS = `
 .wk-ck { flex: 0 0 14px; color: var(--sx-accent, #4fb3ff); text-align: center; }
 .wk-cl { flex: 1 1 auto; }
 .wk-cs { color: var(--sx-mute, #7f8b98); font-size: 10px; }
+.wk-ch { padding-left: 14px; color: var(--sx-mute, #7f8b98); font: 500 10px/1.2 var(--mono, ui-monospace, monospace); }
 .wk-sep { height: 1px; margin: 4px 6px; background: var(--sx-line, #2a333d); }
 .wk-tog { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 22px; margin: 0; padding: 2px 7px; color: var(--sx-mute, #7f8b98); background: var(--sx-panel2, #1c232b); border: 1px solid var(--sx-line, #2a333d); border-radius: 4px; font: 600 10px/1 var(--ui, system-ui, sans-serif); letter-spacing: 0.05em; text-transform: uppercase; cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .wk-tog:hover { color: var(--sx-ink, #dfe6ee); }

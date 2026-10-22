@@ -99,7 +99,7 @@ test('index.html: manifest, Apple touch icon (180 px), PNG + SVG favicons, the a
   // the page itself never scrolls (no header scrolling away, so no backdrop under the status bar any more)
   assert.match(css, /\nbody \{ overflow: hidden; overscroll-behavior: none; \}\n/);
   assert.doesNotMatch(css, /body::before/);
-  for (const id of ['app', 'topTray', 'topRow', 'topGrip', 'stage', 'viewport', 'world', 'ov', 'appMenu', 'gearPop', 'srcTray', 'fxTray']) assert.match(HTML, new RegExp('id="' + id + '"'), id);
+  for (const id of ['app', 'topTray', 'topRow', 'topGrip', 'stage', 'viewport', 'world', 'ov', 'appMenu', 'gearPop', 'srcTray', 'srcTab']) assert.match(HTML, new RegExp('id="' + id + '"'), id);
   assert.match(HTML, /<header id="topTray"[^>]*data-wk-inset="top"/);
 });
 

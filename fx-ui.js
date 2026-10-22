@@ -10,7 +10,7 @@
 //     MID/SIDE) with their own "+" and bypass. Drag to reorder (yellow insertion line; dropping into a branch moves the
 //     instance there; splitters never enter branches), Alt-drag duplicates without mods, Shift-Alt-drag with mods;
 //     touch: long-press menu (Duplicate, Move to ▸ …); Alt+↑/↓ moves the focused row; "+" opens the add menu
-//     (13 effects + 3 splitters; inside a branch the effects only);
+//     (13 effects + 3 splitters; inside a branch the effects only; each with its load estimate when the host gives opts.cost);
 //   · the rack view (right): one panel per instance of the rack, a splitter followed by the panels of its selected
 //     branch. Panel header: title, S1 badge, "bypassed" chip (v1 temporary bypass `inst.byp`; a click clears it),
 //     ▾ module menu (Factory ▸, user presets, Save FX Preset…, Save as / Clear Default Preset, Duplicate, Remove,
@@ -34,10 +34,11 @@
 // Serum side of instance operations): s() (serum-ui's adapter) or state() → the Serum state, and edit(fn, opts)
 // (Serum-state edit) — without them Duplicate (w/mods) and Shift-Alt-drag are unavailable and a removed instance's
 // modulation rows stay (inactive, red in the matrix, §2.3).
-// Options: { embedded, dsp, racks: 1 | 3, mod, v2Fx } (mod: the controls are modulation destinations of the host's mod
+// Options: { embedded, dsp, racks: 1 | 3, mod, v2Fx, cost } (mod: the controls are modulation destinations of the host's mod
 // layer, which then owns their context menus and drops — default = embedded; without it the rack's own control menu
 // (Reset Control, Enter Value…, the control's own items: ctlExtras) answers a right-click / long-press on a control;
-// v2Fx: as the host member, the option wins).
+// v2Fx: as the host member, the option wins; cost(type) → '~2 %' | '': the host's load estimate of an effect type on this
+// device, shown at the right of its "+" menu item — read as the menu opens, so it follows the host's measurement).
 //
 // State version: the rack edits v2 states. A host that still holds a v1 state (transition) sees its migration
 // (normalizeFx2); edits the v1 shape can hold are written back into the v1 object (writeV1), and the first edit it
@@ -2020,8 +2021,13 @@ export class FXRackUI {
 
   /* ---------------------------------------------------------- instance actions */
   addItems(branch) {
-    const k = this.curRack();
-    return addMenuItems(this.fx(), k, branch).map(it => ({ label: it.label, disabled: it.disabled, group: it.group, action: () => this.addInst(it.type, branch) }))
+    const k = this.curRack(), cost = typeof this.opts.cost === 'function' ? this.opts.cost : null;
+    const est = t => { if (!cost) return ''; try { return String(cost(t) || ''); } catch (err) { return ''; } };
+    return addMenuItems(this.fx(), k, branch).map(it => {
+      const c = est(it.type), m = { label: it.label, disabled: it.disabled, group: it.group, action: () => this.addInst(it.type, branch) };
+      if (c) { m.hint = c; m.title = 'Estimated DSP load on this device: ' + c; } // (2026-10-22: the estimates the Effects tray's tiles carried)
+      return m;
+    })
       .reduce((out, it, i, all) => { if (i && all[i - 1].group !== it.group) out.push({ sep: true }); out.push(it); return out; }, []);
   }
   openAdd(anchor, branch) {

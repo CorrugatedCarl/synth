@@ -411,7 +411,9 @@ export class SerumUI extends SerumHost {
         s: () => this.s(),                   // rows / locks of the Serum state (instance removal, §11.2)
         edit: (fn, o) => this.edit(fn, o),
       };
-      try { this.rack = new R(box, adapter, { embedded: true, dsp: globalThis.FXDSP || null, racks: 3, mod: true }); }
+      const ro = { embedded: true, dsp: globalThis.FXDSP || null, racks: 3, mod: true };
+      if (typeof this.host.fxCost === 'function') ro.cost = t => this.host.fxCost(t); // (the "+" menu's load estimates: the host's)
+      try { this.rack = new R(box, adapter, ro); }
       catch (err) { console.error('serum-ui: FX rack', err); box.appendChild(mk(d, 'p', 'sx-placeholder', 'FX rack unavailable')); }
     } else box.appendChild(mk(d, 'p', 'sx-placeholder', 'FX rack unavailable'));
     el.append(box, this.tileStrip(), this.rowC());

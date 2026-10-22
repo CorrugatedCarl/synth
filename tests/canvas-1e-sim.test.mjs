@@ -167,33 +167,19 @@ test('power and key zones (hooks cv.power / cv.zone: host and engine protocol): 
   assert.equal(T().dev.i2.zone, undefined);
 });
 
-test('1f Effects tray: no panel tile (the effects and splitters, a cost each); a drop on empty canvas, on the panel, on an instrument and a tap all go into the track\'s FX — never a new panel, no History step, one notice each; the outline sits on the module it goes into', () => {
-  const t = T(), tiles = cv.fx.tiles().tiles();
-  assert.deepEqual([tiles.length, cv.fx.items.length, tiles.some(b => b.getAttribute('data-fx') === 'panel')], [16, 16, false]);
-  assert.match(cv.fx.tiles().tile('rev').children.find(c => c.className === 'cv-tcost').textContent, /%$/, 'a load estimate');
+test('(2026-10-22) no Effects tray — an effect goes in through its FX module\'s "+" (cvAddEffect, the instance at the end of the Main rack): the track\'s panel, a Serum\'s own FX — never a new panel, no History step, one notice each; an instrument module is no FX module (nothing added); each effect type\'s load estimate on this device is the "+" menu\'s (cv.fx.cost)', () => {
+  const t = T();
+  assert.deepEqual([cv.fx.items.length, typeof cv.fx.pick, typeof cv.fx.drag, typeof cv.fx.tiles], [16, 'undefined', 'undefined', 'undefined'], 'the rack\'s list stays; the tray\'s tiles, tap and drag went');
+  assert.match(cv.fx.cost('rev'), /%$/, 'a load estimate');
   const n = hsteps(), p0 = panels(), k = posted(t);
-  assert.equal(cv.fx.over({ closest: q => (/#viewport/.test(q) ? {} : null), getAttribute: () => null, parentNode: null }), 'canvas');
-  assert.equal(cv.fx.drag.drop('dly', { over: 'canvas', at: { x: 4000, y: 3000 } }), true); sim.raf();
-  assert.deepEqual([fxMods('fx1'), panels(), hsteps(), /^Added Delay to FX Panel/.test(note())], ['dly', p0, n, true], 'empty canvas: the track\'s panel');
+  assert.equal(typeof cv.fx.addEffect('fx1', 'dly'), 'string'); sim.raf();
+  assert.deepEqual([fxMods('fx1'), panels(), hsteps(), /^Added Delay to FX Panel/.test(note())], ['dly', p0, n, true], 'into the track\'s panel');
   assert.ok(tags(t, k).includes('chain:fx1'), 'its chain');
-  assert.equal(cv.fx.drag.drop('eq', { over: 'panel', key: 'fx1' }), true); sim.raf();
-  assert.equal(cv.fx.drag.drop('cho', { over: 'inst', key: 'i2' }), true); sim.raf();
-  cv.fx.pick('dist'); sim.raf();
-  assert.deepEqual([fxMods('fx1'), panels(), hsteps()], ['dly,eq,cho,dist', p0, n], 'the panel, an instrument, a tap: all into fx1');
-  assert.equal(cv.fx.drag.drop('rev', { over: 'inst', key: ID.sx }), true); sim.raf();
-  assert.match(JSON.stringify(T().dev[ID.sx].fx), /"rev"/, 'over a Serum: its own FX');
-  assert.equal(cv.fx.drag.drop('rev', { over: null }), false, 'off the canvas: nothing');
-  // the outline: the module the effect goes into (empty canvas: the track's panel), none elsewhere
-  const G = [];
-  W.ghost = g => { G.push(g ? (g.label || '') + '|' + g.w : null); return g ? { x: 0, y: 0, w: g.w, h: g.h } : null; };
-  try {
-    cv.fx.drag.begin('rev', { over: 'canvas', x: 900, y: 600, left: true, pointerType: 'mouse' });
-    cv.fx.drag.move('rev', { over: 'inst', key: 'i2', x: 900, y: 600, left: true, pointerType: 'mouse' });
-    cv.fx.drag.move('rev', { over: null, x: 900, y: 600, left: true, pointerType: 'mouse' });
-    cv.fx.drag.cancel('rev', {});
-  } finally { delete W.ghost; }
-  const rv = cv.fx.items.find(x => x.type === 'rev').label;
-  assert.deepEqual(G, [rv + ' → FX Panel|' + V().modules.get('fx1').w, rv + ' → Juno-60|' + V().modules.get('i2').w, null, null]);
+  cv.fx.addEffect('fx1', 'eq'); cv.fx.addEffect('fx1', 'cho'); cv.fx.addEffect('fx1', 'dist'); sim.raf();
+  assert.deepEqual([fxMods('fx1'), panels(), hsteps()], ['dly,eq,cho,dist', p0, n], 'in order, at the end of the Main rack');
+  assert.equal(cv.fx.addEffect('i2', 'rev'), null, 'an instrument module: nothing');
+  assert.equal(typeof cv.fx.addEffect(ID.sx + '/fx', 'rev'), 'string'); sim.raf();
+  assert.match(JSON.stringify(T().dev[ID.sx].fx), /"rev"/, 'a Serum\'s own FX');
   assert.equal(hsteps(), n);
 });
 
@@ -230,15 +216,17 @@ test('per instrument: Hardware / Simple of a second instrument (its lay key, its
   cv.undo(); sim.raf();
 });
 
-test('⚙ Measure this device: without a Worker here it fails with the reason in #notice and the button comes back; a stored factor scales the tray labels', async () => {
+test('⚙ Measure this device: without a Worker here it fails with the reason in #notice and the button comes back; a stored factor scales the Sources tray\'s labels and the "+" menus\' estimates', async () => {
   const sh0 = sh.shell.measure;
   assert.equal(sh0.btn.textContent, 'Measure this device');
   await cv.measure(sh0.btn, sh0.st);
   assert.deepEqual([sh0.btn.textContent, note().length > 0], ['Measure this device', true], note());
   const tile = () => sh.shell.tiles.tiles().find(b => b.getAttribute('data-model') === 'serum').children.find(c => c.className === 'cv-tcost').textContent;
   const before = tile();
+  const fx0 = cv.fx.cost('conv');
   api.store.set('synth.cv.devFactor', 4); cv.costLabels();
   assert.notEqual(tile(), before, 'a slower device: higher estimates (' + before + ' → ' + tile() + ')');
+  assert.notEqual(cv.fx.cost('conv'), fx0, 'the "+" menu\'s too (' + fx0 + ' → ' + cv.fx.cost('conv') + ')');
   assert.equal(cv.devFactor(), 4);
   api.store.set('synth.cv.devFactor', 0); cv.costLabels();
 });
@@ -260,15 +248,15 @@ const MOD = id => MODELS.find(m => m.id === id);
 const fresh = (id = 'minimoog') => { const t = api.addTrack(MOD(id)); sim.raf(); cv.renderViews(); sim.raf(); return t; }; // (the switch's mounting completed at once)
 const at = k => { const m = V().modules.get(k); return m ? Math.round(m.x) + ',' + Math.round(m.y) : null; };
 
-test('1f Effects tray on single-instrument tracks: a Serum\'s canvas drop goes into its own FX; a classic always has its panel (the split gives one straight into OUT an empty one) — a hook-made shape without one takes nothing, never a free panel', () => {
+test('(2026-10-22) single-instrument tracks: a Serum\'s "+" adds into its own FX; a classic always has its panel (the split gives one straight into OUT an empty one) — a hook-made shape without one has no FX module to add into, never a free panel', () => {
   fresh('serum');
   const n = hsteps();
-  assert.equal(cv.fx.drag.drop('dly', { over: 'canvas', at: { x: 3000, y: 3000 } }), true); sim.raf();
+  assert.equal(typeof cv.fx.addEffect('i1/fx', 'dly'), 'string'); sim.raf();
   assert.deepEqual([keys(), JSON.stringify(T().dev.i1.fx.racks[0].mods.map(x => x.type)), hsteps()], ['i1,i1/fx,out', '["dly"]', n]);
   const t = fresh('dx7');
   CMOD.removePanel(t, 'fx1'); api.sendPatch(t); cv.render(); sim.raf(); // (cv-model directly: no 1f UI does this)
   const m = hsteps();
-  cv.fx.pick('eq'); sim.raf();
+  assert.equal(cv.fx.addEffect('fx1', 'eq'), null); sim.raf();
   assert.deepEqual([keys(), panels(), hsteps()], ['i1,out', '', m]);
 });
 

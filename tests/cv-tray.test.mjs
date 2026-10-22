@@ -1,8 +1,9 @@
 import './v8-guard.mjs';
 // cv-tray.js (stage 1b SHELL lane; docs/canvas/IMPL-1b.md §8.1): budget(), topSnaps(), trayGrip (drag, two-finger
-// rollback, keys, double-tap, ARIA), sideTray (tap opens, grip inset, stays open on a press outside, never closes itself), sourcesTray
-// drag verdicts (out / along / hold) and drop routing, menuPop, sheet; (1e) effectsTray (tiles, groups, costs, drops into
-// a panel / onto the canvas, never closing the tray), the Effects tray markup and the 1e styles; (2a) the Modulators section
+// rollback, keys, ARIA), sideTray (grip inset, stays open on a press outside, never closes itself), sourcesTray
+// drag verdicts (out / along / hold) and drop routing, menuPop, sheet; (2026-10-22) the Effects tray gone (no effectsTray,
+// no markup, no styles), the pull tabs (pullSnap / pullSpeed; a tap toggles, a pull drags the tray and snaps it, a
+// two-finger cancel puts it back; the Sources tray's tab, the grips' taps, flicks and the keyboard's fold); (2a) the Modulators section
 // (tiles, picks, drags onto the canvas, setPlaced), its markup and the 2a styles; (7a) the Drums view; (8) the SDS-V tile and the Controllers view. Fake DOM: tests/wk-dom.mjs; never pass fake-DOM
 // nodes to assert.* (ids, strings and numbers only).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-tray.test.mjs
@@ -24,7 +25,9 @@ test('topSnaps(): the collapsed row, then the arrangement toolbar + ruler + whol
   assert.deepEqual(T.topSnaps(0), [48]);
   assert.deepEqual(T.topSnaps(1), [48, 160]);
   assert.deepEqual(T.topSnaps(3), [48, 160, 216, 272]);
-  assert.deepEqual([T.TOP_ROW, T.ARR_BAR, T.RULER, T.ROW_H, T.CANVAS_MIN, T.RAIL_W, T.SIDE_W, T.EDGE_INSET], [48, 32, 24, 56, 240, 44, 240, 24]);
+  assert.deepEqual([T.TOP_ROW, T.ARR_BAR, T.RULER, T.ROW_H, T.CANVAS_MIN, T.SIDE_W, T.EDGE_INSET], [48, 32, 24, 56, 240, 240, 24]);
+  assert.equal(T.RAIL_W, undefined, '(2026-10-22) no rail: a closed side tray is its pull tab');
+  assert.deepEqual([T.PULL_SLOP, T.FLICK_V, T.SNAP_MS], [6, 500, 220]);
   assert.equal(T.TRAY_PREF, 'synth.cv.trays');
   const S = T.topSnaps(4);
   assert.equal(T.nearestSnap(S, 110), 160);
@@ -67,12 +70,12 @@ test('budget(): the canvas keeps ≥ 240 px at iPad and desktop heights; the dra
 
 function gripRig(o = {}) {
   const d = fresh(), g = mkEl(d, 'div', 'grip'), log = [];
-  let h = o.h0 != null ? o.h0 : 160, dbl = 0, starts = 0;
+  let h = o.h0 != null ? o.h0 : 160, starts = 0;
   const G = T.trayGrip(g, Object.assign({
     edge: 'top', label: 'Track list height', get: () => h, set: (px, ph) => { log.push(ph + ' ' + px); if (ph !== 'reset') h = px; },
-    min: () => 48, max: () => 400, onDouble: () => { dbl++; }, start: () => { starts++; },
+    min: () => 48, max: () => 400, start: () => { starts++; },
   }, o.opts || {}));
-  return { d, g, G, log, get h() { return h; }, set h(v) { h = v; }, get dbl() { return dbl; }, get starts() { return starts; } };
+  return { d, g, G, log, get h() { return h; }, set h(v) { h = v; }, get starts() { return starts; } };
 }
 
 test('trayGrip: a drag sets the height (a top tray grows downward, a bottom one upward), clamped, snapped to whole rows on release; ARIA slider values', () => {
@@ -83,7 +86,7 @@ test('trayGrip: a drag sets the height (a top tray grows downward, a bottom one 
   ptr(g, 'pointerdown', 300, 200, at({ pointerType: 'touch' }));
   assert.equal(R.starts, 1);
   ptr(g, 'pointermove', 300, 202, at({ pointerType: 'touch' }));
-  assert.deepEqual(R.log, [], 'under 3 px: still a tap');
+  assert.deepEqual(R.log, [], 'under PULL_SLOP (6 px): still a tap');
   ptr(g, 'pointermove', 300, 245, at({ pointerType: 'touch' }));
   assert.deepEqual([R.h, R.log.at(-1)], [205, 'move 205'], 'down 45 px: taller');
   assert.ok(g.classList.contains('drag'));
@@ -148,48 +151,148 @@ test('trayGrip: keys — snaps step from stop to stop, Home / End, Enter / Delet
   assert.equal(B.g.getAttribute('aria-valuenow'), '70', 'ARIA follows');
 });
 
-test('trayGrip: double-tap (touch, pen) and the mouse\'s own dblclick call onDouble; drags, long or far taps and a touch browser\'s dblclick do not', () => {
-  const R = gripRig();
-  const tap = (x, y, o) => { ptr(R.g, 'pointerdown', x, y, at(Object.assign({ pointerType: 'touch' }, o))); ptr(R.g, 'pointerup', x, y, at(Object.assign({ pointerType: 'touch' }, o))); };
-  tap(300, 10); tap(302, 11);
-  assert.equal(R.dbl, 1, 'two taps in place');
-  tap(300, 10); tap(330, 10);
-  assert.equal(R.dbl, 1, '30 px apart: no');
-  for (let i = 0; i < 2; i++) { ptr(R.g, 'pointerdown', 300, 300, at({ pointerType: 'touch' })); ptr(R.g, 'pointermove', 300, 306, at({ pointerType: 'touch' })); ptr(R.g, 'pointerup', 300, 302, at({ pointerType: 'touch' })); }
-  assert.equal(R.dbl, 1, 'two nudges (drags): no');
-  ptr(R.g, 'pointerdown', 300, 10, at({ pointerType: 'pen' })); TS += 400; ptr(R.g, 'pointerup', 300, 10, at({ pointerType: 'pen' }));
-  ptr(R.g, 'pointerdown', 300, 10, at({ pointerType: 'pen' })); ptr(R.g, 'pointerup', 300, 10, at({ pointerType: 'pen' }));
-  assert.equal(R.dbl, 1, 'a long press is no tap');
-  tap(300, 10, { pointerType: 'pen' }); tap(300, 10, { pointerType: 'pen' });
-  assert.equal(R.dbl, 2, 'pen');
-  tap(300, 10, { pointerType: 'mouse' }); tap(300, 10, { pointerType: 'mouse' });
-  assert.equal(R.dbl, 2, 'mouse presses: no');
+test('pullSnap (the user, 2026-10-22: "pull it out like a physical tray"): a flick (|v| ≥ FLICK_V px/s) goes its way however far it was pulled; slower, past half the travel opens; pullSpeed: the travel over the last ≤ 100 ms (a finger that rested before lifting: 0)', () => {
+  assert.deepEqual([T.pullSnap(0, 240), T.pullSnap(119, 240), T.pullSnap(120, 240), T.pullSnap(240, 240)], [false, false, true, true], 'slow: past half opens');
+  assert.deepEqual([T.pullSnap(10, 240, 500), T.pullSnap(10, 240, 499), T.pullSnap(230, 240, -500), T.pullSnap(230, 240, -499)], [true, false, false, true], 'a flick goes its way');
+  assert.deepEqual([T.pullSnap(0, 0), T.pullSnap(3, 0)], [false, true], 'no travel: any pull opens');
+  assert.equal(T.pullSpeed([]), 0);
+  assert.equal(T.pullSpeed([{ t: 0, p: 0 }]), 0);
+  assert.equal(T.pullSpeed([{ t: 0, p: 0 }, { t: 40, p: 20 }, { t: 80, p: 60 }]), 750, '60 px in 80 ms');
+  assert.equal(T.pullSpeed([{ t: 0, p: 0 }, { t: 100, p: 10 }, { t: 160, p: 70 }, { t: 200, p: 90 }]), 800, 'the window: the last ≤ 100 ms (from t 100)');
+  assert.equal(T.pullSpeed([{ t: 0, p: 0 }, { t: 40, p: 120 }, { t: 400, p: 120 }]), 0, 'rested 360 ms, then lifted: no flick');
+  assert.equal(T.pullSpeed([{ t: 0, p: 100 }, { t: 40, p: 60 }, { t: 80, p: 20 }]), -1000, 'inward: negative');
+});
+
+test('trayGrip (2026-10-22): a tap — a press of any pointer travelling < PULL_SLOP px, however long — and Enter / Space call onTap (no double-tap any more); a drag, a two-finger cancel or a mouse press that loses its pointerup do not', () => {
+  let taps = 0;
+  const R = gripRig({ opts: { snaps: () => T.topSnaps(5), onTap: () => { taps++; } } });
+  const tap = (x, y, o) => { ptr(R.g, 'pointerdown', x, y, at(o)); ptr(R.g, 'pointermove', x + 3, y + 5, at(o)); ptr(R.g, 'pointerup', x + 3, y + 5, at(o)); };
+  tap(300, 10, { pointerType: 'touch' });
+  assert.deepEqual([taps, R.log], [1, []], 'a touch tap (5 px of travel): onTap, no height set');
+  tap(300, 10, { pointerType: 'mouse' }); tap(300, 10, { pointerType: 'pen' });
+  assert.equal(taps, 3, 'a mouse click and a pen tap too');
+  ptr(R.g, 'pointerdown', 300, 10, at({ pointerType: 'touch' })); TS += 900; ptr(R.g, 'pointerup', 300, 10, at({ pointerType: 'touch' }));
+  assert.equal(taps, 4, 'a long press that never moved is a tap');
+  ptr(R.g, 'pointerdown', 300, 100, at({ pointerType: 'touch' })); ptr(R.g, 'pointermove', 300, 106, at({ pointerType: 'touch' })); ptr(R.g, 'pointerup', 300, 106, at({ pointerType: 'touch' }));
+  assert.equal(taps, 4, 'PULL_SLOP (6 px) of travel: a drag, no tap');
+  ptr(R.g, 'pointerdown', 300, 100, at({ pointerType: 'touch', pointerId: 7 })); ptr(R.g, 'pointercancel', 300, 100, at({ pointerType: 'touch', pointerId: 7, gesture: 'two-finger' }));
+  assert.equal(taps, 4, 'a second finger: the pinch, no tap');
+  ptr(R.g, 'pointerdown', 300, 100, at({ pointerId: 8 })); ptr(R.g, 'pointermove', 300, 101, at({ pointerId: 8, buttons: 0 }));
+  assert.equal(taps, 4, 'a mouse whose pointerup was swallowed: no tap');
+  for (const k of ['Enter', ' ']) { const e = key(R.g, k); assert.deepEqual([e.defaultPrevented, taps], [true, k === 'Enter' ? 5 : 6], JSON.stringify(k)); }
+  const n = R.log.length;
+  key(R.g, 'Delete');
+  assert.equal(R.log.length, n + 1, 'Delete still resets');
+  assert.equal(R.log.at(-1), 'reset 0');
   fire(R.g, 'dblclick');
-  assert.equal(R.dbl, 3, 'the mouse\'s dblclick');
-  tap(300, 10); fire(R.g, 'dblclick');
-  assert.equal(R.dbl, 3, 'a dblclick after a touch press is not ours');
+  assert.equal(taps, 6, 'a dblclick is nothing of its own');
   R.G.destroy();
-  fire(R.g, 'dblclick');
-  assert.equal(R.dbl, 3, 'destroyed');
+});
+
+test('trayGrip (2026-10-22): a release flicked inward folds the tray to its least, one flicked outward from its fold opens it to o.open(); slower the snaps decide (the first stop past half its travel)', () => {
+  const R = gripRig({ h0: 272, opts: { snaps: () => T.topSnaps(5), open: () => 328 } });
+  const tp = { pointerType: 'touch' };
+  // flicked up (inward for a top tray): 60 px in 40 ms (the lift 40 ms later: 750 px/s over the last 80 ms)
+  ptr(R.g, 'pointerdown', 300, 300, at(tp)); ptr(R.g, 'pointermove', 300, 290, at(tp)); ptr(R.g, 'pointermove', 300, 230, at(tp)); ptr(R.g, 'pointerup', 300, 230, at(tp));
+  assert.deepEqual([R.h, R.log.at(-1)], [48, 'end 48'], 'flicked in from three rows: folded');
+  // flicked down out of the fold: to o.open()
+  ptr(R.g, 'pointerdown', 300, 40, at(tp)); ptr(R.g, 'pointermove', 300, 50, at(tp)); ptr(R.g, 'pointermove', 300, 110, at(tp)); ptr(R.g, 'pointerup', 300, 110, at(tp));
+  assert.deepEqual([R.h, R.log.at(-1)], [328, 'end 328'], 'flicked out: the last height');
+  // slow (the finger rests before lifting): the nearest stop
+  R.h = 48;
+  ptr(R.g, 'pointerdown', 300, 40, at(tp)); ptr(R.g, 'pointermove', 300, 100, at(tp)); TS += 300; ptr(R.g, 'pointermove', 300, 91, at(tp)); TS += 300; ptr(R.g, 'pointerup', 300, 91, at(tp));
+  assert.deepEqual([R.h, R.log.at(-1)], [48, 'end 48'], '51 px of the 112 to the first stop: under half — folded again');
+  ptr(R.g, 'pointerdown', 300, 40, at(tp)); ptr(R.g, 'pointermove', 300, 100, at(tp)); TS += 300; ptr(R.g, 'pointermove', 300, 97, at(tp)); TS += 300; ptr(R.g, 'pointerup', 300, 97, at(tp));
+  assert.deepEqual([R.h, R.log.at(-1)], [160, 'end 160'], '57 px: past half — the first stop');
+  R.G.destroy();
+});
+
+// a bottom tray that folds away past its least (the keyboard): o.fold's calls in a log
+function foldRig(o = {}) {
+  const F = { shut: !!o.shut, L: [] };
+  const R = gripRig({ h0: o.h0 || 170, opts: Object.assign({ edge: 'bottom', label: 'Keyboard height', min: () => 70, max: () => 360, onTap: () => { F.L.push('tap'); F.shut = !F.shut; },
+    fold: { label: 'Keyboard (folded away): show it', closed: () => F.shut, begin: () => { F.L.push('begin'); return 134; }, pull: out => F.L.push('pull ' + out),
+      done: (open, how) => { F.L.push('done ' + open + ' ' + how); F.shut = !open; } } }, o.opts || {}) });
+  R.F = F;
+  return R;
+}
+
+test('trayGrip fold (2026-10-22, the keyboard): folded, the tab is a button (aria-expanded false, its label, no values); a pull drags the drawer out (begin → its travel, pull per move) and its release snaps it — past half opens, a flick goes its way, a two-finger cancel shuts it again; open, the slider again', () => {
+  const R = foldRig({ shut: true }), g = R.g, tp = { pointerType: 'touch' };
+  assert.deepEqual([g.getAttribute('role'), g.getAttribute('aria-expanded'), g.getAttribute('aria-label'), g.hasAttribute('aria-valuenow'), g.hasAttribute('aria-orientation')],
+    ['button', 'false', 'Keyboard (folded away): show it', false, false]);
+  // a slow pull up to 50 of 134 px: back shut
+  ptr(g, 'pointerdown', 500, 900, at(tp)); ptr(g, 'pointermove', 500, 896, at(tp));
+  assert.deepEqual(R.F.L, [], 'under PULL_SLOP: nothing yet');
+  ptr(g, 'pointermove', 500, 870, at(tp)); ptr(g, 'pointermove', 500, 850, at(tp)); TS += 300; ptr(g, 'pointermove', 500, 850, at(tp)); TS += 300; ptr(g, 'pointerup', 500, 850, at(tp));
+  assert.deepEqual(R.F.L, ['begin', 'pull 30', 'pull 50', 'pull 50', 'done false end'], 'begin once, the drawer follows, under half: shut');
+  assert.deepEqual(R.log, [], 'the height untouched');
+  // past half: open — then the slider again
+  R.F.L.length = 0;
+  ptr(g, 'pointerdown', 500, 900, at(tp)); ptr(g, 'pointermove', 500, 820, at(tp)); ptr(g, 'pointermove', 500, 600, at(tp)); TS += 300; ptr(g, 'pointerup', 500, 600, at(tp));
+  assert.deepEqual(R.F.L, ['begin', 'pull 80', 'pull 134', 'done true end'], 'clamped to its travel; past half: open');
+  assert.deepEqual([g.getAttribute('role'), g.hasAttribute('aria-expanded'), g.getAttribute('aria-label'), g.getAttribute('aria-valuenow')], ['slider', false, 'Keyboard height', '170']);
+  // a quick flick from shut: 50 px (under half) in 40 ms opens
+  R.F.shut = true; R.F.L.length = 0;
+  ptr(g, 'pointerdown', 500, 900, at(tp)); ptr(g, 'pointermove', 500, 850, at(tp)); ptr(g, 'pointerup', 500, 850, at(tp));
+  assert.deepEqual(R.F.L, ['begin', 'pull 50', 'done true end'], 'a flick out opens');
+  // a second finger: shut again, nothing saved
+  R.F.shut = true; R.F.L.length = 0;
+  ptr(g, 'pointerdown', 500, 900, at(tp)); ptr(g, 'pointermove', 500, 800, at(tp)); ptr(g, 'pointercancel', 500, 800, at(Object.assign({ gesture: 'two-finger' }, tp)));
+  assert.deepEqual(R.F.L, ['begin', 'pull 100', 'done false cancel'], 'the pinch: shut');
+  // folded, the keys do not size it; Enter / Space and a tap open it
+  R.F.L.length = 0;
+  assert.equal(key(g, 'ArrowUp').defaultPrevented, false, 'folded: arrows are the page\'s');
+  key(g, 'Enter');
+  assert.deepEqual([R.F.L, R.F.shut], [['tap'], false]);
+  R.G.destroy();
+});
+
+test('trayGrip fold (2026-10-22): open, a drag below the least goes on as the drawer closing (the height held at min, fold.pull per move; back above: pull(null)); its release snaps — under half: folded away with the height as it was; past half: open at min; a flick inward from anywhere folds it away; a two-finger cancel puts all back', () => {
+  const R = foldRig({ h0: 170 }), g = R.g, tp = { pointerType: 'touch' };
+  // down 150 px: 100 to the least (70), then 50 of the drawer's 134
+  ptr(g, 'pointerdown', 500, 400, at(tp)); ptr(g, 'pointermove', 500, 460, at(tp));
+  assert.deepEqual([R.h, R.F.L], [110, []], 'sizing first');
+  ptr(g, 'pointermove', 500, 550, at(tp));
+  assert.deepEqual([R.h, R.F.L], [70, ['begin', 'pull 84']], 'past the least: held there, the drawer 50 px in');
+  ptr(g, 'pointermove', 500, 480, at(tp));
+  assert.deepEqual([R.h, R.F.L.at(-1)], [90, 'pull null'], 'back above it: the tray in place, sizing again');
+  ptr(g, 'pointermove', 500, 600, at(tp)); TS += 300; ptr(g, 'pointerup', 500, 600, at(tp));
+  assert.deepEqual(R.F.L.slice(-3), ['begin', 'pull 34', 'done false end'], '100 of 134 in: under half out — folded away');
+  assert.deepEqual([R.h, R.log.at(-1)], [170, 'cancel 170'], 'its height as it was (the keys open at it again)');
+  // past half out: open at the least
+  R.F.shut = false; R.F.L.length = 0; R.h = 170;
+  ptr(g, 'pointerdown', 500, 400, at(tp)); ptr(g, 'pointermove', 500, 520, at(tp)); TS += 300; ptr(g, 'pointerup', 500, 520, at(tp));
+  assert.deepEqual([R.F.L, R.h, R.log.at(-1)], [['begin', 'pull 114', 'done true end'], 70, 'end 70']);
+  // a flick down while sizing: folded away
+  R.F.L.length = 0; R.h = 200;
+  ptr(g, 'pointerdown', 500, 400, at(tp)); ptr(g, 'pointermove', 500, 410, at(tp)); ptr(g, 'pointermove', 500, 470, at(tp)); ptr(g, 'pointerup', 500, 470, at(tp));
+  assert.deepEqual([R.F.L, R.h], [['done false end'], 200], 'a flick in: folded away, its height kept');
+  // a two-finger cancel in the drawer: all back
+  R.F.shut = false; R.F.L.length = 0; R.h = 170;
+  ptr(g, 'pointerdown', 500, 400, at(tp)); ptr(g, 'pointermove', 500, 560, at(tp)); ptr(g, 'pointercancel', 500, 560, at(Object.assign({ gesture: 'two-finger' }, tp)));
+  assert.deepEqual([R.F.L, R.h, R.log.at(-1)], [['begin', 'pull 74', 'done true cancel'], 170, 'cancel 170']);
+  R.G.destroy();
 });
 
 function sideRig(o = {}) {
-  const d = fresh(), el = mkEl(d, 'aside', 'srcTray'), rail = d.createElement('button'), panel = d.createElement('div'), grip = d.createElement('div');
+  const d = fresh(), el = mkEl(d, 'aside', 'srcTray'), tab = d.createElement('button'), panel = d.createElement('div'), grip = d.createElement('div');
   panel.id = 'srcPanel';
-  el.append(rail, panel, grip);
+  el.append(panel, grip, tab);
   const outside = mkEl(d, 'div', 'canvas'), keep = mkEl(d, 'div', 'perf');
   const mem = new Map(Object.entries(o.pref || {}));
   const store = { get: (k, def) => (mem.has(k) ? JSON.parse(mem.get(k)) : def), set: (k, v) => mem.set(k, JSON.stringify(v)) };
   const changes = [];
-  const S = T.sideTray(el, Object.assign({ side: 'left', store, rail, panel, grip, label: 'Sources', onChange: on => changes.push(on), keepOpen: t => t === keep }, o.opts || {}));
-  return { d, el, rail, panel, grip, outside, keep, store, mem, changes, S };
+  const S = T.sideTray(el, Object.assign({ side: 'left', store, tab, panel, grip, label: 'Sources', onChange: on => changes.push(on) }, o.opts || {}));
+  return { d, el, tab, panel, grip, outside, keep, store, mem, changes, S };
 }
 
-test('sideTray: a tap on the rail opens and closes it (aria-expanded, the panel shown); a press outside (the canvas) leaves it open — the user\'s call; close() says whether it was open; state persisted', () => {
+test('sideTray (2026-10-22: no rail): a tap on its pull tab opens and closes it (a button: aria-expanded, aria-controls, its label; the tray\'s `open` class — closed is the stylesheet\'s, never `hidden`); a press outside (the canvas) leaves it open — the user\'s call; close() says whether it was open; state persisted', () => {
   const R = sideRig();
-  assert.deepEqual([R.S.isOpen(), R.panel.hidden, R.rail.getAttribute('aria-expanded'), R.rail.getAttribute('aria-controls')], [false, true, 'false', 'srcPanel']);
-  R.rail.click();
-  assert.deepEqual([R.S.isOpen(), R.panel.hidden, R.rail.getAttribute('aria-expanded'), R.el.classList.contains('open')], [true, false, 'true', true]);
+  assert.deepEqual([R.S.isOpen(), R.el.classList.contains('open'), R.panel.hidden, R.tab.getAttribute('type'), R.tab.getAttribute('aria-expanded'), R.tab.getAttribute('aria-controls'), R.tab.getAttribute('aria-label')],
+    [false, false, false, 'button', 'false', 'srcPanel', 'Sources']);
+  R.tab.click();
+  assert.deepEqual([R.S.isOpen(), R.panel.hidden, R.tab.getAttribute('aria-expanded'), R.el.classList.contains('open')], [true, false, 'true', true]);
   assert.deepEqual(R.changes, [true]);
   assert.deepEqual(JSON.parse(R.mem.get(T.TRAY_PREF)), { src: { open: true, w: 240 } });
   ptr(R.panel, 'pointerdown', 50, 50);
@@ -197,26 +300,67 @@ test('sideTray: a tap on the rail opens and closes it (aria-expanded, the panel 
   ptr(R.keep, 'pointerdown', 50, 50);
   assert.equal(R.S.isOpen(), true, 'the keyboard keeps it (playing while browsing)');
   ptr(R.outside, 'pointerdown', 500, 50);
-  assert.deepEqual([R.S.isOpen(), R.panel.hidden], [true, false], 'a press on the canvas leaves it open');
+  assert.deepEqual([R.S.isOpen(), R.el.classList.contains('open')], [true, true], 'a press on the canvas leaves it open');
   assert.equal(R.S.close(), true, 'close() closes it');
   assert.equal(R.S.close(), false, 'closed already');
   R.S.open();
   assert.equal(R.S.close(), true);
-  R.rail.click(); R.rail.click();
+  R.tab.click(); R.tab.click();
   assert.equal(R.S.isOpen(), false);
   assert.deepEqual(R.changes, [true, false, true, false, true, false]);
   // restored open from the prefs (onChange told, nothing written)
   const R2 = sideRig({ pref: { [T.TRAY_PREF]: JSON.stringify({ src: { open: true, w: 300 }, top: 160 }) } });
-  assert.deepEqual([R2.S.isOpen(), R2.S.width(), R2.panel.hidden, R2.changes], [true, 300, false, [true]]);
+  assert.deepEqual([R2.S.isOpen(), R2.S.width(), R2.el.classList.contains('open'), R2.changes], [true, 300, true, [true]]);
   R2.S.close();
   assert.deepEqual(JSON.parse(R2.mem.get(T.TRAY_PREF)), { src: { open: false, w: 300 }, top: 160 }, 'the other prefs kept');
+  // an old Effects tray record is ignored (kept as it was, read by nobody)
+  const R3 = sideRig({ pref: { [T.TRAY_PREF]: JSON.stringify({ fx: { open: true, w: 300 } }) } });
+  assert.deepEqual([R3.S.isOpen(), R3.S.width()], [false, 240]);
+});
+
+test('sideTray pull (2026-10-22, the user: "tap the tab as well as pull it out like a physical tray"): past PULL_SLOP the tray follows the finger (class pull, a translateX — no layout); its release snaps it (past half opens, a flick goes its way) and the click it ends with is no tap; dragged back from open it closes the same way; a two-finger cancel puts it back as it was', () => {
+  const R = sideRig(), tp = { pointerType: 'touch' }, tf = () => R.el.style.transform;
+  const pull = (x0, xs, o = {}) => { ptr(R.tab, 'pointerdown', x0, 300, at(Object.assign({}, tp, o))); for (const x of xs) { if (x === 'rest') { TS += 300; continue; } ptr(R.tab, 'pointermove', x, 300, at(Object.assign({}, tp, o))); } };
+  const lift = (x, o = {}) => { ptr(R.tab, 'pointerup', x, 300, at(Object.assign({}, tp, o))); R.tab.click(); }; // (the browser's click after a pointerup)
+  pull(10, [14]);
+  assert.deepEqual([R.el.classList.contains('pull'), tf() || ''], [false, ''], 'under PULL_SLOP: nothing moves');
+  ptr(R.tab, 'pointermove', 70, 300, at(tp));
+  assert.deepEqual([R.el.classList.contains('pull'), tf(), R.S.pulling()], [true, 'translateX(-180px)', true], '60 of 240 px out');
+  pull(0, [], {}); // (a second pointerdown mid-pull is ignored)
+  ptr(R.tab, 'pointermove', 100, 300, at(tp)); TS += 300; ptr(R.tab, 'pointermove', 100, 300, at(tp));
+  lift(100);
+  assert.deepEqual([R.S.isOpen(), R.el.classList.contains('pull'), tf(), R.changes], [false, false, '', []], '90 of 240 slowly: back shut (the click eaten)');
+  pull(10, [80, 150, 'rest', 150]); lift(150);
+  assert.deepEqual([R.S.isOpen(), R.tab.getAttribute('aria-expanded'), R.changes, JSON.parse(R.mem.get(T.TRAY_PREF)).src.open], [true, 'true', [true], true], 'past half: open (persisted)');
+  pull(250, [200, 120]); // (from open: dragged back 130 px quickly)
+  assert.equal(tf(), 'translateX(-130px)');
+  lift(120);
+  assert.deepEqual([R.S.isOpen(), R.changes], [false, [true, false]], 'flicked back: shut');
+  pull(10, [20, 80]); lift(80);
+  assert.deepEqual([R.S.isOpen(), R.changes.at(-1)], [true, true], 'a quick flick out (70 px, under half): open');
+  R.tab.click();
+  assert.equal(R.S.isOpen(), false, 'the next click is a tap again');
+  // a second finger: as it was
+  pull(10, [200], { pointerId: 9 });
+  ptr(R.tab, 'pointercancel', 200, 300, at({ pointerType: 'touch', pointerId: 9, gesture: 'two-finger' }));
+  assert.deepEqual([R.S.isOpen(), R.el.classList.contains('pull'), tf()], [false, false, ''], 'the pinch: shut again');
+  // pulled past its width: clamped (a mouse, buttons held)
+  ptr(R.tab, 'pointerdown', 10, 300, at()); ptr(R.tab, 'pointermove', 900, 300, at());
+  assert.equal(tf(), 'translateX(0px)', 'clamped at open');
+  ptr(R.tab, 'pointermove', 900, 300, at({ buttons: 0 }));
+  assert.deepEqual([R.S.isOpen(), R.S.pulling()], [true, false], 'a swallowed pointerup ends it where it is');
+  // a right tray pulls leftward
+  const L = sideRig({ opts: { side: 'right', key: 'fx' } });
+  ptr(L.tab, 'pointerdown', 1000, 300, at(tp)); ptr(L.tab, 'pointermove', 940, 300, at(tp));
+  assert.equal(L.el.style.transform, 'translateX(180px)');
+  R.S.destroy(); L.S.destroy();
 });
 
 test('sideTray: the width grip sits on the inner edge ≥ 24 px from the screen edge; a drag resizes (a two-finger cancel puts it back), arrows ±16, clamped', () => {
   const R = sideRig();
   R.S.open();
-  assert.ok(T.RAIL_W + R.S.width() - 12 >= T.EDGE_INSET, 'the grip\'s left edge clears the system edge-gesture band');
-  assert.ok(T.RAIL_W + T.SIDE_MIN - 12 >= T.EDGE_INSET, '… at the narrowest too');
+  assert.ok(R.S.width() - 12 >= T.EDGE_INSET, 'the grip\'s left edge clears the system edge-gesture band');
+  assert.ok(T.SIDE_MIN - 12 >= T.EDGE_INSET, '… at the narrowest too');
   assert.equal(R.el.style['--cv-side-w'], '240px');
   assert.deepEqual([R.grip.getAttribute('role'), R.grip.getAttribute('aria-orientation'), R.grip.getAttribute('aria-label')], ['separator', 'vertical', 'Sources width']);
   ptr(R.grip, 'pointerdown', 284, 300, at({ pointerType: 'touch' }));
@@ -227,7 +371,7 @@ test('sideTray: the width grip sits on the inner edge ≥ 24 px from the screen 
   ptr(R.grip, 'pointerdown', 284, 300, at());
   ptr(R.grip, 'pointermove', 2000, 300, at({ buttons: 1 }));
   ptr(R.grip, 'pointerup', 2000, 300, at());
-  assert.equal(R.S.width(), 440, 'at most SIDE_MAX (a 1280 px window allows 596)');
+  assert.equal(R.S.width(), 440, 'at most SIDE_MAX (half the window may be more)');
   assert.equal(JSON.parse(R.mem.get(T.TRAY_PREF)).src.w, 440, 'saved');
   key(R.grip, 'ArrowLeft');
   assert.equal(R.S.width(), 424);
@@ -243,7 +387,7 @@ test('sideTray: the width grip sits on the inner edge ≥ 24 px from the screen 
   assert.deepEqual(Object.keys(JSON.parse(L.mem.get(T.TRAY_PREF))), ['fx']);
 });
 
-test('sideTray + sourcesTray as main.js wires them (the user\'s rule): a tile\'s tap, a drag out of the tray onto the canvas and its drop never close the tray — only its rail, its ✕ or Escape', () => {
+test('sideTray + sourcesTray as main.js wires them (the user\'s rule): a tile\'s tap, a drag out of the tray onto the canvas and its drop never close the tray — only its tab, its ✕ or Escape', () => {
   const R = sideRig(), list = R.d.createElement('div'), layer = mkEl(R.d, 'div', 'ov');
   raf.install();
   R.panel.append(list);
@@ -609,127 +753,49 @@ test('sourcesTray (7a, 7b, 7c, 8): the Drums view — the TR-808, the TR-606, th
   S.destroy();
 });
 
-/* ---------------------------------------------------------------- the Effects tray (1e) */
-// the rack's add menu (fx-ui addMenuItems shape: type, label, group; a disabled one skipped)
-const FXI = [{ type: 'eq', label: 'EQ', group: 'Effects' }, { type: 'cho', label: 'Chorus', group: 'Effects' }, { type: 'rev', label: 'Hall Reverb', group: 'Effects' },
-  { type: 'dly', label: 'Delay', group: 'Effects', disabled: true }, { type: 'split2', label: 'Splitter 2', group: 'Splitters' }];
-function fxRig(o = {}) {
-  const R = sideRig({ opts: { side: 'right', key: 'fx' } }), list = R.d.createElement('div'), layer = mkEl(R.d, 'div', 'ov');
-  raf.install();
-  R.panel.append(list);
-  place(R.el, 1000, 100, 284, 600);
-  R.S.open();
-  const log = [], picks = [];
-  let leaves = 0;
-  // the canvas left of the tray; a panel module 'fx1' at x 400…700, y 200…500 (client px)
-  const over = (t, x, y) => (x >= 1000 ? null : x >= 400 && x <= 700 && y >= 200 && y <= 500 ? { over: 'panel', key: 'fx1' } : 'canvas');
-  const F = T.effectsTray(list, Object.assign({
-    items: FXI, tray: R.el, layer, pick: id => picks.push(id), overOf: over, onLeave: () => { leaves++; },
-    cost: id => (id === 'rev' ? '~3 %' : id === 'panel' ? '' : '~1 %'), toWorld: (x, y) => ({ x: (x - 100) * 2, y: (y - 50) * 2 }),
-    drag: {
-      begin: (id, i) => log.push('begin ' + id + ' ' + i.over),
-      move: (id, i) => log.push('move ' + i.over + (i.key ? ':' + i.key : '')),
-      drop: (id, i) => { log.push('drop ' + id + ' ' + i.over + ' ' + (i.key || '-') + ' @' + i.at.x + ',' + i.at.y); return true; },
-      cancel: id => log.push('cancel ' + id),
-    },
-  }, o));
-  R.list = list; R.layer = layer; R.F = F; R.log = log; R.picks = picks;
-  Object.defineProperty(R, 'leaves', { get: () => leaves });
-  return R;
-}
-const fxTile = (R, id) => R.F.tiles().find(t => t.getAttribute('data-fx') === id);
-
-test('effectsTray (1e): the empty FX Panel tile first, then one tile per effect grouped as the rack\'s add menu (a heading per group), its cost on this device; a tap picks', () => {
-  const R = fxRig();
-  assert.deepEqual(R.F.tiles().map(t => t.getAttribute('data-fx')), ['panel', 'eq', 'cho', 'rev', 'split2'], 'a disabled item has no tile');
-  assert.deepEqual(R.list.children.map(n => n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-fx')), ['#Panel', 'panel', '#Effects', 'eq', 'cho', 'rev', '#Splitters', 'split2']);
-  assert.ok(R.F.tiles().every(t => t.tagName === 'BUTTON' && t.className === 'cv-tile cv-ftile' && t.getAttribute('type') === 'button'));
-  const rev = fxTile(R, 'rev'), pan = fxTile(R, 'panel');
-  assert.deepEqual(rev.children.map(c => c.className), ['cv-fglyph', 'cv-tname', 'cv-tcost']);
-  assert.deepEqual([rev.children[0].textContent, rev.children[1].textContent, rev.children[2].textContent, rev.children[2].hidden], ['HR', 'Hall Reverb', '~3 %', false]);
-  assert.deepEqual([pan.children[0].className, pan.children[1].textContent, pan.children[2].hidden], ['cv-fglyph cv-fpanel', 'Empty FX Panel', true], 'no cost: hidden');
-  assert.equal(pan.children[0].getAttribute('aria-hidden'), 'true');
-  assert.equal(fxTile(R, 'eq').children[0].textContent, 'EQ');
-  rev.click(); pan.click();
-  assert.deepEqual(R.picks, ['rev', 'panel']);
-  assert.equal(R.S.isOpen(), true, 'a tap leaves it open');
-  // costs re-read (a measured device factor)
-  R.F.destroy();
-  let k = 1;
-  const F2 = T.effectsTray(R.list, { items: FXI, pick() {}, drag: {}, cost: () => '~' + k + ' %' });
-  k = 7; F2.refresh();
-  assert.equal(F2.tile('eq').children[2].textContent, '~7 %');
-  assert.equal(F2.tile('nope'), null);
-  assert.equal(R.list.children.filter(n => n.tagName === 'H3').length, 3, 'the first tray\'s headings went with it');
-  F2.destroy();
-});
-
-test('effectsTray (1f): panel: false — no Empty FX Panel tile (nor a \'panel\' item), the effects only; their titles say they go into the track\'s effects', () => {
-  const R = fxRig({ panel: false, items: [{ id: 'panel' }, ...FXI] });
-  assert.deepEqual(R.F.tiles().map(t => t.getAttribute('data-fx')), ['eq', 'cho', 'rev', 'split2']);
-  assert.deepEqual(R.list.children.map(n => n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-fx')), ['#Effects', 'eq', 'cho', 'rev', '#Splitters', 'split2']);
-  assert.match(fxTile(R, 'rev').getAttribute('title'), /goes into the track’s effects$/);
-  fxTile(R, 'rev').click();
-  assert.deepEqual(R.picks, ['rev']);
-  R.F.destroy();
-});
-
-test('effectsTray (1e): a tile drags out like a Sources tile — over a panel module (info.over \'panel\', info.key), over the canvas (\'canvas\'), info.at from toWorld; the tray never closes by itself (leaving it, dropping)', () => {
-  const R = fxRig(), t = fxTile(R, 'rev'), tp = { pointerType: 'touch' };
-  ptr(t, 'pointerdown', 1100, 300, at(tp));
-  ptr(t, 'pointermove', 1088, 302, at(tp)); // (outward: across the tray's scroll axis)
-  assert.deepEqual(R.log, ['begin rev null', 'move null']);
-  assert.equal(R.layer.children[0].className, 'cv-tghost touch cv-fghost', 'the ghost in the layer');
-  ptr(t, 'pointermove', 800, 300, at(tp));
-  assert.deepEqual([R.leaves, R.S.isOpen(), R.log.at(-1)], [1, true, 'move canvas'], 'left the tray: still open');
-  assert.equal(R.layer.children[0].children[1].textContent, '+ New panel with it');
-  ptr(t, 'pointermove', 500, 300, at(tp));
-  assert.equal(R.log.at(-1), 'move panel:fx1');
-  assert.equal(R.layer.children[0].children[1].textContent, '+ Add to the panel');
-  TS += 150;
-  ptr(t, 'pointermove', 501, 301, at(tp)); ptr(t, 'pointerup', 501, 301, at(tp));
-  assert.equal(R.log.at(-1), 'drop rev panel fx1 @802,502', 'dropped into the panel (world point)');
-  assert.deepEqual([R.S.isOpen(), R.layer.children.length], [true, 0], 'still open; the ghost gone');
-  // the empty panel tile over a panel module: a new panel there (never into a panel)
-  R.log.length = 0;
-  const p = fxTile(R, 'panel');
-  ptr(p, 'pointerdown', 1100, 300, at(tp)); ptr(p, 'pointermove', 1088, 300, at(tp)); ptr(p, 'pointermove', 500, 300, at(tp));
-  TS += 150;
-  ptr(p, 'pointerup', 500, 300, at(tp));
-  assert.deepEqual(R.log.slice(-2), ['move canvas', 'drop panel canvas - @800,500']);
-  // a flick is a cancel; still open
-  ptr(t, 'pointerdown', 1100, 300, at(tp)); ptr(t, 'pointermove', 1080, 300, at(tp)); ptr(t, 'pointermove', 300, 300, at(tp)); ptr(t, 'pointerup', 300, 300, at(tp));
-  assert.deepEqual([R.log.at(-1), R.S.isOpen()], ['cancel rev', true]);
-  // without toWorld: the client point
-  R.F.destroy();
-  const L2 = [];
-  const F2 = T.effectsTray(R.list, { items: FXI, tray: R.el, layer: R.layer, pick() {}, overOf: () => 'canvas', drag: { drop: (id, i) => { L2.push(i.at.x + ',' + i.at.y + ' ' + i.over); return true; } } });
-  const t2 = F2.tile('eq');
-  ptr(t2, 'pointerdown', 1100, 300, at(tp)); ptr(t2, 'pointermove', 1088, 300, at(tp)); ptr(t2, 'pointermove', 600, 320, at(tp));
-  TS += 150;
-  ptr(t2, 'pointerup', 600, 320, at(tp));
-  assert.deepEqual(L2, ['600,320 canvas']);
-  assert.equal(R.S.isOpen(), true);
-  F2.destroy();
-});
-
-test('index.html (1e): the Effects tray holds its list (#fxList, the tiles\' grid) — every id main.js binds kept; style.css: the tiles, ⏻, [data-off], the zone pill, the badge, cv-ok / cv-no, cv-off, the cable selection and its ×', () => {
+/* ---------------------------------------------------------------- the Effects tray (1e): gone (2026-10-22) */
+test('the Effects tray is gone (the user, 2026-10-22: "remove it and move the estimates"): no effectsTray / FX_PANEL in cv-tray, no #fxTray (rail, panel, grip, list) in index.html, none of its styles; style.css keeps the canvas styles of 1e (⏻, [data-off], the zone pill, the badge, cv-ok / cv-no, cv-off, the cable selection and its ×) and the tile cost the Sources tray shows', () => {
+  assert.deepEqual([typeof T.effectsTray, typeof T.FX_PANEL], ['undefined', 'undefined']);
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  for (const id of ['fxTray', 'fxRail', 'fxPanel', 'fxClose', 'fxGrip', 'fxList']) assert.match(html, new RegExp('id="' + id + '"'), id);
-  assert.match(html, /<div id="fxList" class="cv-tiles cv-ftiles"/);
-  assert.ok(!html.includes('Effect tiles you can drag onto the canvas or into a panel arrive'), 'the placeholder went');
+  for (const id of ['fxTray', 'fxRail', 'fxPanel', 'fxClose', 'fxGrip', 'fxList', 'fxMode']) assert.ok(!html.includes('id="' + id + '"'), id);
+  assert.ok(!/cv-right|cv-ftiles|data-wk-inset="right"/.test(html), 'no right side tray');
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
-  for (const sel of ['.cv-tgrp', '.cv-fglyph', '.cv-tcost', 'button.cv-pow', '.cv-mod[data-off] > .cv-body', '.cv-badge', '.cv-zone', '.cv-zpop', '.cv-jack.cv-ok',
+  for (const sel of ['.cv-right', '.cv-ftiles', '.cv-fglyph', '.cv-fghost', '.cv-rail', '.cv-railico', '.cv-raillab']) assert.ok(!css.includes(sel), sel + ' gone');
+  for (const sel of ['.cv-tgrp', '.cv-tcost', 'button.cv-pow', '.cv-mod[data-off] > .cv-body', '.cv-badge', '.cv-zone', '.cv-zpop', '.cv-jack.cv-ok',
     '#world[data-cv-patching] .cv-jack.cv-no', '.cv-cable-g.cv-off .cv-cable', '.cv-cable-g.cv-sel .cv-cable', '.cv-cable-x']) assert.ok(css.includes(sel + ' '), sel);
   assert.match(css, /\.cv-cable-x \{[^}]*width: calc\(30px \* var\(--ik, 1\)\)/, 'the × keeps its screen size');
   assert.match(css, /\.cv-zone::before \{[^}]*calc\(44px \* var\(--ik, 1\)\)/, 'the pill\'s hit area via ::before');
+});
+
+test('index.html / style.css (2026-10-22): the Sources tray\'s pull tab (#srcTab, a button with its label, after the panel and the grip) in place of the rail; the tray slides by a transform (hidden when closed, .pull without a glide, reduced motion: none); the tab is the keyboard\'s turned on its side (15 px, the ≡ mark), 32 px to touch, 44 on a coarse pointer; the keyboard\'s and the track list\'s tabs 44 px on a coarse pointer; the keyboard folds away out of the grid', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.ok(!html.includes('id="srcRail"'), 'no rail');
+  assert.match(html, /<div id="srcGrip" class="cv-sgrip"><\/div>\s*<button id="srcTab" class="cv-stab" type="button" aria-label="Sources" title="[^"]+"><\/button>\s*<\/aside>/);
+  assert.doesNotMatch(/<div id="srcPanel"[^>]*>/.exec(html)[0], /hidden/, 'the panel is never `hidden` (it would cut the glide)');
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  const rule = sel => { const i = css.indexOf('\n' + sel + ' {'); assert.ok(i >= 0, sel); return css.slice(i, css.indexOf('}', i)); };
+  assert.match(rule('.cv-side'), /width: var\(--cv-side-w\);[^]*transform: translateX\(-100%\); visibility: hidden; transition: transform 0\.22s/);
+  assert.match(rule('.cv-side.open'), /transform: none; visibility: visible/);
+  assert.match(rule('.cv-side.pull'), /visibility: visible; transition: none/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{ \.cv-side, \.cv-side\.open \{ transition: none; \} \}/);
+  assert.match(rule('.cv-stab'), /visibility: visible; pointer-events: auto; position: absolute; left: 100%; top: 50%;[^]*width: 32px; height: 88px;[^]*touch-action: none/);
+  assert.match(rule('.cv-stab::before'), /width: 15px;[^]*border-radius: 0 9px 9px 0/);
+  assert.match(rule('.cv-stab::after'), /height: 26px;[^]*border-left: 2px solid #55575e; border-right: 2px solid #55575e/);
+  assert.match(css, /@media \(pointer: coarse\) \{ \.cv-stab \{ width: 44px; \} \}/);
+  assert.match(css, /\.kbgrip \{ top: -32px; height: 44px; \}/);
+  assert.match(css, /\.cv-tgrip \{ bottom: -32px; height: 44px; \}/);
+  assert.match(rule('.perf.gone, .perf.pull, .perf.glide'), /position: absolute; left: 0; right: 0; bottom: 0/);
+  assert.match(rule('.perf.gone'), /transform: translateY\(100%\)/);
+  assert.match(css, /\.perf\.gone:not\(\.glide\) > :not\(\.kbgrip\):not\(\.notice\) \{ visibility: hidden; \}/, 'folded: only the tab and a notice show');
+  assert.match(css, /\.perf\.gone \.kbgrip \{ top: calc\(-20px - env\(safe-area-inset-bottom\)\); \}/, 'the tab clear of the home indicator');
+  assert.ok(!css.includes('.perf.min'), 'no slim bar any more');
 });
 
 /* ---------------------------------------------------------------- UI fixes (stage 1e review, fixer U) */
 test('U15: an open side tray tells its stage (the parent: class cv-left-open / cv-right-open, --cv-left-w / --cv-right-w) — the canvas toolbar moves right of the open Sources tray (style.css)', () => {
   const R = sideRig(), host = R.el.parentNode;
   assert.deepEqual([host.classList.contains('cv-left-open'), host.style['--cv-left-w']], [false, '240px'], 'closed: its width known, no class');
-  R.rail.click();
+  R.tab.click();
   assert.deepEqual([host.classList.contains('cv-left-open'), host.style['--cv-left-w']], [true, '240px']);
   R.S.setWidth(300);
   assert.equal(host.style['--cv-left-w'], '300px', 'a resize follows');
@@ -740,30 +806,6 @@ test('U15: an open side tray tells its stage (the parent: class cv-left-open / c
   assert.deepEqual([L.el.parentNode.classList.contains('cv-right-open'), L.el.parentNode.style['--cv-right-w']], [true, '240px']);
   const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
   assert.match(css, /\.cv-left-open > \.cv-toolbar \{[^}]*left: calc\(56px \+ var\(--cv-left-w, 240px\)\)/, 'the toolbar past the open Sources tray');
-});
-
-test('effectsTray (U11): over an instrument module (overOf → {over: \'inst\', key}) an effect goes into its FX (\'+ Add to its effects\'); the panel tile over a module is a canvas drop beside it (info.near: that module)', () => {
-  const L = [];
-  // the canvas left of the tray: a panel module 'fx1' at x 400…700, y 200…500, an instrument 'i2' at x 400…700, y 520…700
-  const over = (t, x, y) => (x >= 1000 ? null : x >= 400 && x <= 700 && y >= 200 && y <= 500 ? { over: 'panel', key: 'fx1' } : x >= 400 && x <= 700 && y >= 520 ? { over: 'inst', key: 'i2' } : 'canvas');
-  const R = fxRig({ overOf: over, drag: { move: (id, i) => L.push('move ' + i.over + ':' + (i.key || '-') + ':' + (i.near || '-')), drop: (id, i) => { L.push('drop ' + id + ' ' + i.over + ':' + (i.key || '-') + ':' + (i.near || '-')); return true; } } });
-  const tp = { pointerType: 'touch' }, go = (id, x, y) => {
-    const t = fxTile(R, id);
-    ptr(t, 'pointerdown', 1100, 300, at(tp)); ptr(t, 'pointermove', 1088, 302, at(tp)); ptr(t, 'pointermove', x, y, at(tp));
-    const lab = R.layer.children[0] ? R.layer.children[0].children[1].textContent : '';
-    TS += 150;
-    ptr(t, 'pointerup', x, y, at(tp));
-    return lab;
-  };
-  assert.equal(go('rev', 500, 600), '+ Add to its effects');
-  assert.deepEqual(L.slice(-2), ['move inst:i2:-', 'drop rev inst:i2:-']);
-  assert.equal(go('panel', 500, 600), '+ New FX panel');
-  assert.deepEqual(L.slice(-2), ['move canvas:-:i2', 'drop panel canvas:-:i2'], 'beside the instrument');
-  go('panel', 500, 300);
-  assert.equal(L.at(-1), 'drop panel canvas:-:fx1', 'beside the panel (never into it)');
-  go('rev', 200, 300);
-  assert.equal(L.at(-1), 'drop rev canvas:-:-', 'empty canvas: no module near');
-  assert.equal(R.S.isOpen(), true);
 });
 
 /* ---------------------------------------------------------------- stage 2a: the Modulators section (IMPL-2a §3) */
@@ -879,7 +921,7 @@ test('sourcesTray (2a): setPlaced greys a tile with its reason (aria-disabled, c
 
 test('index.html (2a): the Sources tray scrolls as one (#srcScroll) holding #srcList and the Modulators section (#srcModSec hidden until the tray fills it, #srcMods) — every id main.js binds kept; style.css: the section, the tiles, the placed state, the ∿ modes, the mod jack, mod cables, the badge, the patching states, the bodies', () => {
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
-  for (const id of ['srcTray', 'srcRail', 'srcPanel', 'srcClose', 'srcMode', 'srcLayout', 'srcList', 'srcGrip', 'srcScroll', 'srcModSec', 'srcMods', 'srcView', 'srcViewMenu', 'srcNote']) assert.match(html, new RegExp('id="' + id + '"'), id);
+  for (const id of ['srcTray', 'srcTab', 'srcPanel', 'srcClose', 'srcMode', 'srcLayout', 'srcList', 'srcGrip', 'srcScroll', 'srcModSec', 'srcMods', 'srcView', 'srcViewMenu', 'srcNote']) assert.match(html, new RegExp('id="' + id + '"'), id);
   // (2026-10-19) the view dropdown in #srcLayout: its button (the view, ▾) and its menu (the tray fills it)
   assert.match(html, /<div id="srcLayout" class="cv-srclay"><button id="srcView" class="cv-vbtn" type="button" aria-haspopup="menu"><span class="cv-vlab">Hardware<\/span><span class="cv-vcaret" aria-hidden="true">▾<\/span><\/button><div id="srcViewMenu" class="cv-pop cv-menupop cv-vmenu" role="menu" aria-label="Sources view" hidden><\/div><\/div>/);
   assert.match(html, /<div id="srcScroll" class="cv-tscroll">\s*<div id="srcList" class="cv-tiles"><\/div>\s*<section id="srcModSec" class="cv-tsec" aria-label="Modulators" hidden>\s*<h3 class="cv-tgrp">Modulators<\/h3>\s*<div id="srcMods" class="cv-tiles cv-mtiles" data-tray="mods"><\/div>/);
