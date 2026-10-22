@@ -1,0 +1,395 @@
+<title>Patch Cord Lab</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo+Narrow:wght@500;600;700&family=Archivo:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a rack-dark lab — the patch stage (canvas) beside a narrow tuning column; stacks to one column on a phone.
+   Single dark look on purpose (the synth app's world): every colour is set explicitly. */
+:root {
+  --bg: #111214;       /* the room behind the rack */
+  --rack: #17181a;     /* the stage */
+  --panel: #1f2023;    /* control column */
+  --line: #2c2e32;
+  --ink: #ebe6d8;      /* cream engraving */
+  --muted: #9c978a;
+  --accent: #e8a33d;   /* the app's amber */
+  --accent-ink: #1a1408;
+  --f-display: "Archivo Narrow", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --f-body: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { background: var(--bg); color: var(--ink); }
+body {
+  font-family: var(--f-body); font-size: 15px; line-height: 1.5;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 20px 28px;
+}
+.wrap { max-width: 1280px; margin: 0 auto; display: grid; gap: 16px; }
+header h1 {
+  font-family: var(--f-display); font-weight: 700; font-size: 26px; letter-spacing: 0.06em; text-transform: uppercase;
+  margin: 0; text-wrap: balance;
+}
+header p { margin: 4px 0 0; color: var(--muted); max-width: 68ch; }
+.lab { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; align-items: start; }
+@media (max-width: 860px) { .lab { grid-template-columns: minmax(0, 1fr); } }
+.stage { position: relative; min-width: 0; }
+#cv {
+  display: block; width: 100%; height: clamp(340px, 64vh, 700px); background: var(--rack);
+  border: 1px solid var(--line); border-radius: 6px; touch-action: none; cursor: grab;
+}
+.hud {
+  position: absolute; left: 10px; bottom: 8px; font-family: var(--f-mono); font-size: 11px; color: var(--muted);
+  font-variant-numeric: tabular-nums; pointer-events: none;
+}
+aside { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 14px; display: grid; gap: 14px; min-width: 0; }
+.grp { display: grid; gap: 10px; }
+.grp h2 {
+  font-family: var(--f-display); font-weight: 600; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--muted); margin: 0;
+}
+.row { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; align-items: baseline; }
+.row label { font-size: 14px; }
+.row output { font-family: var(--f-mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.row input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 0; height: 28px; }
+.hint { grid-column: 1 / -1; font-size: 12px; color: var(--muted); margin: -2px 0 0; }
+.btns { display: flex; flex-wrap: wrap; gap: 8px; }
+button {
+  font: inherit; font-size: 13px; color: var(--ink); background: transparent; border: 1px solid var(--line);
+  border-radius: 4px; padding: 7px 11px; cursor: pointer; min-height: 36px;
+}
+button:hover { border-color: var(--muted); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button.on, button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.checks { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.checks label { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; cursor: pointer; }
+.checks input { accent-color: var(--accent); width: 18px; height: 18px; margin: 0; }
+#copied { font-size: 12px; color: var(--muted); min-height: 1.5em; margin: 0; }
+#json {
+  font-family: var(--f-mono); font-size: 11px; background: var(--rack); border: 1px solid var(--line); border-radius: 4px;
+  padding: 8px; margin: 0; white-space: pre-wrap; word-break: break-all; user-select: all; color: var(--ink);
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Patch Cord Lab</h1>
+    <p>Drag a module and watch its cords swing. Pull a cord in the middle and let go, or drag a plug onto another jack. Tune the feel on the right, then Copy settings and paste them to Claude.</p>
+  </header>
+  <div class="lab">
+    <section class="stage">
+      <canvas id="cv" aria-label="Patch stage: five modules joined by patch cords. Drag modules, cords and plugs."></canvas>
+      <div class="hud" id="hud"></div>
+    </section>
+    <aside aria-label="Cord feel">
+      <div class="grp">
+        <h2>Feel</h2>
+        <div class="btns" id="presets">
+          <button type="button" data-p="taut">Taut</button>
+          <button type="button" data-p="studio" class="on">Studio</button>
+          <button type="button" data-p="floppy">Floppy</button>
+        </div>
+      </div>
+      <div class="grp">
+        <div class="row"><label for="slack">Slack</label><output id="slack-o"></output>
+          <input id="slack" type="range" min="0" max="0.4" step="0.01"><p class="hint">How much longer a cord is than the gap it spans.</p></div>
+        <div class="row"><label for="wobble">Wobble</label><output id="wobble-o"></output>
+          <input id="wobble" type="range" min="0" max="100" step="1"><p class="hint">How long a cord keeps swinging before it settles.</p></div>
+        <div class="row"><label for="weight">Weight</label><output id="weight-o"></output>
+          <input id="weight" type="range" min="1500" max="14000" step="100"><p class="hint">Gravity: heavier cords drop and swing faster.</p></div>
+        <div class="row"><label for="stiff">Stiffness</label><output id="stiff-o"></output>
+          <input id="stiff" type="range" min="1" max="12" step="1"><p class="hint">Low is stretchy and rubbery, high is a firm cord.</p></div>
+        <div class="row"><label for="segs">Points per cord</label><output id="segs-o"></output>
+          <input id="segs" type="range" min="5" max="24" step="1"><p class="hint">More points bend more smoothly and cost a little more.</p></div>
+      </div>
+      <div class="grp">
+        <h2>Stage</h2>
+        <div class="checks">
+          <label><input type="checkbox" id="snap"> Snap modules to grid</label>
+          <label><input type="checkbox" id="motion"> Motion</label>
+        </div>
+        <div class="btns">
+          <button type="button" id="pluck">Pluck all</button>
+          <button type="button" id="more">Add 10 cords</button>
+          <button type="button" id="reset">Reset</button>
+        </div>
+      </div>
+      <div class="grp">
+        <h2>Send to Claude</h2>
+        <div class="btns"><button type="button" class="primary" id="copy">Copy settings</button></div>
+        <p id="copied" role="status"></p>
+        <pre id="json" hidden></pre>
+      </div>
+    </aside>
+  </div>
+</div>
+
+<script>
+(() => {
+  // ---- settings (world units: px of a 960 × 560 stage) ----
+  const PRESETS = {
+    taut:   { slack: 0.04, wobble: 30, weight: 5000, stiff: 9, segs: 10 },
+    studio: { slack: 0.10, wobble: 62, weight: 6000, stiff: 5, segs: 10 },
+    floppy: { slack: 0.24, wobble: 82, weight: 7500, stiff: 3, segs: 14 },
+  };
+  const S = Object.assign({}, PRESETS.studio, { snap: false, motion: !matchMedia('(prefers-reduced-motion: reduce)').matches });
+  try { const s = JSON.parse(localStorage.getItem('cordlab') || 'null'); if (s && typeof s === 'object') for (const k of Object.keys(PRESETS.studio)) if (typeof s[k] === 'number') S[k] = s[k]; } catch (e) {}
+  const damping = () => 0.90 + 0.095 * (S.wobble / 100);      // velocity kept per step (120 steps / s)
+  const save = () => { try { localStorage.setItem('cordlab', JSON.stringify(S)); } catch (e) {} };
+
+  const W = 960, H = 560, DT = 1 / 120, EXTRA = 24, GRID = 32;
+  const COLORS = ['#d8432f', '#e6b83a', '#3f80d8', '#41a75c', '#e9e5da', '#e27c2f', '#9060c9', '#2f3033'];
+
+  // ---- modules (generic names; original look) ----
+  const START = [
+    { id: 'osc', name: 'Oscillator', x: 36, y: 70, w: 160, h: 300, knobs: [[80, 92, 'FREQUENCY']],
+      jacks: [['saw', 'SAW', 46, 196], ['sq', 'SQUARE', 114, 196], ['fm', 'FM IN', 46, 256], ['sync', 'SYNC', 114, 256]] },
+    { id: 'mix', name: 'Mixer', x: 226, y: 70, w: 130, h: 300, knobs: [[65, 92, 'LEVEL']],
+      jacks: [['i1', 'IN 1', 38, 170], ['i2', 'IN 2', 92, 170], ['i3', 'IN 3', 38, 232], ['out', 'OUT', 92, 232]] },
+    { id: 'vcf', name: 'Low-pass filter', x: 386, y: 70, w: 160, h: 300, knobs: [[52, 92, 'CUTOFF'], [112, 92, 'RES']],
+      jacks: [['in', 'IN', 46, 196], ['cv', 'CUTOFF CV', 114, 196], ['out', 'OUT', 80, 260]] },
+    { id: 'env', name: 'Envelope', x: 576, y: 70, w: 150, h: 300, knobs: [[48, 92, 'ATTACK'], [104, 92, 'DECAY']],
+      jacks: [['gate', 'GATE', 42, 196], ['out1', 'OUT', 108, 196], ['out2', 'OUT', 108, 256]] },
+    { id: 'vca', name: 'Amplifier', x: 756, y: 70, w: 160, h: 300, knobs: [[80, 92, 'GAIN']],
+      jacks: [['in', 'IN', 46, 196], ['cv', 'CV', 114, 196], ['out', 'OUT', 80, 260]] },
+  ];
+  const START_CORDS = [
+    ['osc', 'saw', 'mix', 'i1', 0], ['osc', 'sq', 'mix', 'i2', 1], ['mix', 'out', 'vcf', 'in', 2],
+    ['env', 'out1', 'vcf', 'cv', 3], ['vcf', 'out', 'vca', 'in', 4], ['env', 'out2', 'vca', 'cv', 5],
+  ];
+  let mods = [], cords = [];
+  const modOf = id => mods.find(m => m.id === id);
+  const jackOf = (m, j) => m.jacks.find(k => k[0] === j);
+  const endPos = e => e.free ? e.free : (m => { const k = jackOf(m, e.j); return { x: m.x + k[2], y: m.y + k[3] }; })(modOf(e.m));
+
+  // ---- the rope: verlet points, distance constraints, ends pinned to their jacks ----
+  class Cord {
+    constructor(a, b, color) { this.a = a; this.b = b; this.color = color; this.grab = null; this.seed(); }
+    seed() {
+      const A = endPos(this.a), B = endPos(this.b), n = S.segs, D = Math.hypot(B.x - A.x, B.y - A.y);
+      this.L = (1 + S.slack) * D + EXTRA;
+      const sag = Math.sqrt(Math.max(0, 3 * Math.max(D, 1) * (this.L - D) / 8)); // a parabola of length L
+      this.p = []; for (let i = 0; i < n; i++) {
+        const t = i / (n - 1), x = A.x + (B.x - A.x) * t, y = A.y + (B.y - A.y) * t + sag * 4 * t * (1 - t);
+        this.p.push({ x, y, px: x, py: y });
+      }
+      this.A0 = A; this.B0 = B; this.awake = true; this.quiet = 0;
+    }
+    step(A, B, dt) {
+      const p = this.p, n = p.length, D = Math.hypot(B.x - A.x, B.y - A.y);
+      this.L += ((1 + S.slack) * D + EXTRA - this.L) * Math.min(1, dt * 5);   // the cord's length follows the gap, slowly
+      const seg = this.L / (n - 1), k = damping(), g = S.weight * dt * dt;
+      let moved = 0;
+      for (let i = 1; i < n - 1; i++) {
+        const q = p[i], vx = (q.x - q.px) * k, vy = (q.y - q.py) * k;
+        q.px = q.x; q.py = q.y; q.x += vx; q.y += vy + g;
+      }
+      const pin = () => { p[0].x = A.x; p[0].y = A.y; p[n - 1].x = B.x; p[n - 1].y = B.y; if (this.grab) { const q = p[this.grab.i]; q.x = this.grab.x; q.y = this.grab.y; } };
+      pin();
+      for (let it = 0; it < S.stiff; it++) {
+        for (let i = 0; i < n - 1; i++) {
+          const u = p[i], v = p[i + 1], dx = v.x - u.x, dy = v.y - u.y, d = Math.hypot(dx, dy) || 1e-6;
+          if (d <= seg) continue;                                   // a cord goes slack, never pushes
+          const f = (d - seg) / d, wu = i === 0 ? 0 : 0.5, wv = i + 1 === n - 1 ? 0 : 0.5, s = wu + wv;
+          if (!s) continue;
+          u.x += dx * f * wu / s; u.y += dy * f * wu / s; v.x -= dx * f * wv / s; v.y -= dy * f * wv / s;
+        }
+        pin();
+      }
+      for (let i = 1; i < n - 1; i++) moved = Math.max(moved, Math.abs(p[i].x - p[i].px) + Math.abs(p[i].y - p[i].py));
+      if (moved < 0.02 && !this.grab) { if (++this.quiet > 30) this.awake = false; } else this.quiet = 0;
+    }
+  }
+
+  function reset() {
+    mods = START.map(m => Object.assign({}, m));
+    cords = START_CORDS.map(([m1, j1, m2, j2, c]) => new Cord({ m: m1, j: j1 }, { m: m2, j: j2 }, COLORS[c]));
+    draw(); kick();
+  }
+
+  // ---- canvas, camera (fit the 960 × 560 world) ----
+  const cv = document.getElementById('cv'), cx = cv.getContext('2d'), hud = document.getElementById('hud');
+  let dpr = 1, sc = 1, ox = 0, oy = 0;
+  function resize() {
+    const r = cv.getBoundingClientRect();
+    dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+    sc = Math.min(r.width / W, r.height / H); ox = (r.width - W * sc) / 2; oy = (r.height - H * sc) / 2;
+    draw();
+  }
+  const toWorld = (ev) => { const r = cv.getBoundingClientRect(); return { x: (ev.clientX - r.left - ox) / sc, y: (ev.clientY - r.top - oy) / sc }; };
+
+  // ---- drawing ----
+  function rr(x, y, w, h, r) { cx.beginPath(); cx.moveTo(x + r, y); cx.arcTo(x + w, y, x + w, y + h, r); cx.arcTo(x + w, y + h, x, y + h, r); cx.arcTo(x, y + h, x, y, r); cx.arcTo(x, y, x + w, y, r); cx.closePath(); }
+  function drawModule(m) {
+    const g = cx.createLinearGradient(0, m.y, 0, m.y + m.h); g.addColorStop(0, '#222326'); g.addColorStop(1, '#1a1b1d');
+    rr(m.x, m.y, m.w, m.h, 4); cx.fillStyle = g; cx.fill(); cx.strokeStyle = '#34363a'; cx.lineWidth = 1; cx.stroke();
+    cx.fillStyle = '#5f6266'; for (const [sx, sy] of [[8, 8], [m.w - 8, 8], [8, m.h - 8], [m.w - 8, m.h - 8]]) { cx.beginPath(); cx.arc(m.x + sx, m.y + sy, 2.6, 0, 7); cx.fill(); }
+    cx.fillStyle = '#ebe6d8'; cx.font = '600 12px "Archivo Narrow", "Arial Narrow", sans-serif'; cx.textAlign = 'center';
+    cx.fillText(m.name.toUpperCase(), m.x + m.w / 2, m.y + 30);
+    cx.fillStyle = '#3a3c40'; cx.fillRect(m.x + 12, m.y + 40, m.w - 24, 1);
+    for (const [kx, ky, lab] of m.knobs) {
+      const X = m.x + kx, Y = m.y + ky;
+      cx.fillStyle = '#9c978a'; cx.font = '500 9px "Archivo Narrow", sans-serif'; cx.fillText(lab, X, Y - 30);
+      cx.beginPath(); cx.arc(X, Y, 21, 0, 7); cx.fillStyle = '#0d0d0e'; cx.fill(); cx.strokeStyle = '#3b3d41'; cx.lineWidth = 2; cx.stroke();
+      cx.beginPath(); cx.moveTo(X, Y); cx.lineTo(X + 14 * Math.sin(-0.6), Y - 14 * Math.cos(-0.6)); cx.strokeStyle = '#ebe6d8'; cx.lineWidth = 2.2; cx.stroke();
+    }
+    for (const [, lab, jx, jy] of m.jacks) {
+      const X = m.x + jx, Y = m.y + jy;
+      cx.fillStyle = '#9c978a'; cx.font = '500 9px "Archivo Narrow", sans-serif'; cx.fillText(lab, X, Y + 25);
+      cx.beginPath(); cx.arc(X, Y, 10, 0, 7); cx.fillStyle = '#cfc9b9'; cx.fill();
+      cx.beginPath(); cx.arc(X, Y, 6.5, 0, 7); cx.fillStyle = '#7d7a72'; cx.fill();
+      cx.beginPath(); cx.arc(X, Y, 4.2, 0, 7); cx.fillStyle = '#050505'; cx.fill();
+    }
+  }
+  function cordPath(p) {
+    cx.beginPath(); cx.moveTo(p[0].x, p[0].y);
+    for (let i = 1; i < p.length - 1; i++) cx.quadraticCurveTo(p[i].x, p[i].y, (p[i].x + p[i + 1].x) / 2, (p[i].y + p[i + 1].y) / 2);
+    cx.lineTo(p[p.length - 1].x, p[p.length - 1].y);
+  }
+  function shade(hex, f) { const n = parseInt(hex.slice(1), 16), r = n >> 16, g = (n >> 8) & 255, b = n & 255, m = v => Math.max(0, Math.min(255, Math.round(f < 0 ? v * (1 + f) : v + (255 - v) * f))); return `rgb(${m(r)},${m(g)},${m(b)})`; }
+  function drawPlug(e, color) {
+    const P = endPos(e);
+    cx.beginPath(); cx.arc(P.x + 2, P.y + 3, 10, 0, 7); cx.fillStyle = 'rgba(0,0,0,0.35)'; cx.fill();
+    cx.beginPath(); cx.arc(P.x, P.y, 10, 0, 7); cx.fillStyle = shade(color, -0.35); cx.fill();
+    cx.beginPath(); cx.arc(P.x, P.y, 7, 0, 7); cx.fillStyle = color; cx.fill();
+    cx.beginPath(); cx.arc(P.x - 2.2, P.y - 2.2, 2.4, 0, 7); cx.fillStyle = 'rgba(255,255,255,0.35)'; cx.fill();
+  }
+  function draw() {
+    cx.setTransform(dpr, 0, 0, dpr, 0, 0); cx.clearRect(0, 0, cv.width, cv.height);
+    cx.setTransform(dpr * sc, 0, 0, dpr * sc, dpr * ox, dpr * oy);
+    cx.strokeStyle = 'rgba(255,255,255,0.025)'; cx.lineWidth = 1;
+    for (let x = 0; x <= W; x += GRID) { cx.beginPath(); cx.moveTo(x, 0); cx.lineTo(x, H); cx.stroke(); }
+    for (let y = 0; y <= H; y += GRID) { cx.beginPath(); cx.moveTo(0, y); cx.lineTo(W, y); cx.stroke(); }
+    for (const m of mods) drawModule(m);
+    cx.lineCap = 'round'; cx.lineJoin = 'round';
+    for (const c of cords) { const p = shown(c); cx.save(); cx.translate(3, 6); cordPath(p); cx.strokeStyle = 'rgba(0,0,0,0.32)'; cx.lineWidth = 8; cx.stroke(); cx.restore(); }
+    for (const c of cords) {
+      const p = shown(c);
+      cordPath(p); cx.strokeStyle = shade(c.color, -0.45); cx.lineWidth = 8; cx.stroke();
+      cordPath(p); cx.strokeStyle = c.color; cx.lineWidth = 5.6; cx.stroke();
+      cx.save(); cx.translate(-1.2, -1.4); cordPath(p); cx.strokeStyle = shade(c.color, 0.45); cx.globalAlpha = 0.55; cx.lineWidth = 1.6; cx.stroke(); cx.restore();
+    }
+    for (const c of cords) { drawPlug(c.a, c.color); drawPlug(c.b, c.color); }
+    for (const d of drags.values()) if (d.kind === 'plug' && d.target) { const P = endPos(d.target); cx.beginPath(); cx.arc(P.x, P.y, 15, 0, 7); cx.strokeStyle = '#e8a33d'; cx.lineWidth = 2; cx.stroke(); }
+  }
+  function shown(c) {                       // motion off: the settled parabola, recomputed from the ends
+    if (S.motion) return c.p;
+    const A = endPos(c.a), B = endPos(c.b), n = S.segs, D = Math.hypot(B.x - A.x, B.y - A.y), L = (1 + S.slack) * D + EXTRA;
+    const sag = Math.sqrt(Math.max(0, 3 * Math.max(D, 1) * (L - D) / 8)), p = [];
+    for (let i = 0; i < n; i++) { const t = i / (n - 1); p.push({ x: A.x + (B.x - A.x) * t, y: A.y + (B.y - A.y) * t + sag * 4 * t * (1 - t) }); }
+    return p;
+  }
+
+  // ---- the loop: 120 Hz fixed steps, anchors swept across the frame's steps, no frames when every cord sleeps ----
+  let running = false, last = 0, acc = 0, simMs = 0, hudAt = 0;
+  function kick() { if (!running && S.motion) { running = true; last = performance.now(); acc = 0; requestAnimationFrame(frame); } }
+  function frame(t) {
+    const dt = Math.min(0.05, (t - last) / 1000); last = t; acc += dt;
+    const steps = Math.min(8, Math.floor(acc / DT)); acc -= steps * DT; if (acc > DT) acc = 0;
+    const t0 = performance.now();
+    for (const c of cords) {
+      const A1 = endPos(c.a), B1 = endPos(c.b), A0 = c.A0 || A1, B0 = c.B0 || B1;
+      if (Math.abs(A1.x - A0.x) + Math.abs(A1.y - A0.y) + Math.abs(B1.x - B0.x) + Math.abs(B1.y - B0.y) > 0.01 || c.grab) c.awake = true;
+      if (c.awake) for (let s = 0; s < steps; s++) {
+        const f = (s + 1) / steps;
+        c.step({ x: A0.x + (A1.x - A0.x) * f, y: A0.y + (A1.y - A0.y) * f }, { x: B0.x + (B1.x - B0.x) * f, y: B0.y + (B1.y - B0.y) * f }, DT);
+      }
+      c.A0 = A1; c.B0 = B1;
+    }
+    simMs = simMs * 0.9 + (performance.now() - t0) * 0.1;
+    draw();
+    if (t - hudAt > 250) { hudAt = t; const aw = cords.filter(c => c.awake).length; hud.textContent = `${aw} of ${cords.length} cords moving · physics ${simMs.toFixed(2)} ms per frame`; }
+    if (S.motion && (cords.some(c => c.awake) || drags.size)) requestAnimationFrame(frame);
+    else { running = false; hud.textContent = `${cords.length} cords at rest · physics idle`; }
+  }
+
+  // ---- pointers: plugs first, then cords, then modules; every finger its own drag ----
+  const drags = new Map();
+  function nearestJack(P, skip) {
+    let best = null, bd = 24;
+    for (const m of mods) for (const k of m.jacks) { const d = Math.hypot(m.x + k[2] - P.x, m.y + k[3] - P.y); if (d < bd && !(skip && skip.m === m.id && skip.j === k[0])) { bd = d; best = { m: m.id, j: k[0] }; } }
+    return best;
+  }
+  cv.addEventListener('pointerdown', ev => {
+    const P = toWorld(ev); let d = null;
+    for (let ci = cords.length - 1; ci >= 0 && !d; ci--) for (const end of ['a', 'b']) {
+      const c = cords[ci], E = endPos(c[end]); if (Math.hypot(E.x - P.x, E.y - P.y) < 15) { d = { kind: 'plug', c, end, orig: c[end], target: null }; c[end] = { free: { x: P.x, y: P.y } }; break; }
+    }
+    if (!d) {
+      let best = null, bd = 14;
+      for (const c of cords) { const p = shown(c); for (let i = 1; i < p.length - 1; i++) { const dd = Math.hypot(p[i].x - P.x, p[i].y - P.y); if (dd < bd) { bd = dd; best = { c, i }; } } }
+      if (best && S.motion) { d = { kind: 'cord', c: best.c }; best.c.grab = { i: best.i, x: P.x, y: P.y }; }
+    }
+    if (!d) for (let i = mods.length - 1; i >= 0; i--) { const m = mods[i]; if (P.x >= m.x && P.x <= m.x + m.w && P.y >= m.y && P.y <= m.y + m.h) { d = { kind: 'mod', m, dx: P.x - m.x, dy: P.y - m.y }; mods.push(mods.splice(i, 1)[0]); break; } }
+    if (!d) return;
+    cv.setPointerCapture(ev.pointerId); drags.set(ev.pointerId, d); cv.style.cursor = 'grabbing'; ev.preventDefault(); draw(); kick();
+  });
+  cv.addEventListener('pointermove', ev => {
+    const d = drags.get(ev.pointerId); if (!d) return; const P = toWorld(ev);
+    if (d.kind === 'mod') {
+      let x = P.x - d.dx, y = P.y - d.dy; if (S.snap) { x = Math.round(x / GRID) * GRID; y = Math.round(y / GRID) * GRID; }
+      d.m.x = Math.max(-d.m.w + 40, Math.min(W - 40, x)); d.m.y = Math.max(-d.m.h + 40, Math.min(H - 40, y));
+    } else if (d.kind === 'cord') { d.c.grab.x = P.x; d.c.grab.y = P.y; }
+    else { d.c[d.end].free.x = P.x; d.c[d.end].free.y = P.y; d.target = nearestJack(P, d.c[d.end === 'a' ? 'b' : 'a']); }
+    if (!S.motion) draw(); kick();
+  });
+  const up = ev => {
+    const d = drags.get(ev.pointerId); if (!d) return; drags.delete(ev.pointerId);
+    if (d.kind === 'cord') d.c.grab = null;
+    if (d.kind === 'plug') { d.c[d.end] = d.target || d.orig; d.c.awake = true; }
+    if (!drags.size) cv.style.cursor = 'grab'; draw(); kick();
+  };
+  cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+
+  // ---- controls ----
+  const ui = {
+    slack: v => v.toFixed(2), wobble: v => `${v}`, weight: v => `${(v / 1000).toFixed(1)}k`, stiff: v => `${v} passes`, segs: v => `${v}`,
+  };
+  function syncUI() {
+    for (const k of Object.keys(ui)) { const el = document.getElementById(k); el.value = S[k]; document.getElementById(k + '-o').textContent = ui[k](S[k]); }
+    document.getElementById('snap').checked = S.snap; document.getElementById('motion').checked = S.motion;
+    const key = Object.keys(PRESETS).find(p => Object.keys(PRESETS[p]).every(k => PRESETS[p][k] === S[k]));
+    for (const b of document.querySelectorAll('#presets button')) b.classList.toggle('on', b.dataset.p === key);
+  }
+  for (const k of Object.keys(ui)) document.getElementById(k).addEventListener('input', e => {
+    S[k] = +e.target.value; syncUI(); save();
+    if (k === 'segs') for (const c of cords) c.seed();
+    for (const c of cords) c.awake = true; draw(); kick();
+  });
+  document.getElementById('presets').addEventListener('click', e => {
+    const p = e.target.closest('button'); if (!p) return; Object.assign(S, PRESETS[p.dataset.p]); syncUI(); save();
+    for (const c of cords) { if (c.p.length !== S.segs) c.seed(); c.awake = true; } draw(); kick();
+  });
+  document.getElementById('snap').addEventListener('change', e => { S.snap = e.target.checked; });
+  document.getElementById('motion').addEventListener('change', e => { S.motion = e.target.checked; for (const c of cords) c.seed(); draw(); kick(); if (!S.motion) hud.textContent = 'Motion off: cords hang still'; });
+  document.getElementById('pluck').addEventListener('click', () => {
+    if (!S.motion) return;
+    for (const c of cords) { const n = c.p.length; for (let i = 1; i < n - 1; i++) { const t = i / (n - 1), a = Math.sin(Math.PI * t) * (6 + Math.random() * 6); c.p[i].py += a; c.p[i].px += (Math.random() - 0.5) * a; } c.awake = true; }
+    kick();
+  });
+  document.getElementById('more').addEventListener('click', () => {
+    const all = []; for (const m of mods) for (const k of m.jacks) all.push({ m: m.id, j: k[0] });
+    for (let i = 0; i < 10 && cords.length < 60; i++) {
+      const a = all[Math.floor(Math.random() * all.length)]; let b; do b = all[Math.floor(Math.random() * all.length)]; while (b.m === a.m);
+      cords.push(new Cord(a, b, COLORS[cords.length % COLORS.length]));
+    }
+    draw(); kick();
+  });
+  document.getElementById('reset').addEventListener('click', reset);
+  document.getElementById('copy').addEventListener('click', () => {
+    const out = JSON.stringify({ slack: S.slack, wobble: S.wobble, damping: +damping().toFixed(4), weight: S.weight, stiffness: S.stiff, points: S.segs, snap: S.snap, cords: cords.length, physicsMs: +simMs.toFixed(3) });
+    const pre = document.getElementById('json'), msg = document.getElementById('copied');
+    pre.textContent = out; pre.hidden = false;
+    const done = ok => { msg.textContent = ok ? 'Copied. Paste it into your chat with Claude.' : 'Select the text below and copy it.'; };
+    try { navigator.clipboard.writeText(out).then(() => done(true), () => done(false)); } catch (e) { done(false); }
+  });
+
+  syncUI();
+  new ResizeObserver(resize).observe(cv);
+  reset();
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(draw);
+})();
+</script>
