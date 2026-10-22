@@ -600,3 +600,55 @@ test('OUT scope (1d review): drawn only while the OUT module is live — not off
     V().toggleFold(cvModule.ID.out); sim.raf(); assert.ok(n > 0, 'unfolded: drawn');
   } finally { sc.offsetParent = null; sc.getContext = gc; }
 });
+
+test('OUT scope (fix-scope): reads the shown track\'s own analyser (its chain after the FX rack, fader and pan) in wave and spectrum, never the master\'s; follows a track switch; flat without a node; meters and master tap kept', async () => {
+  await sim.power(); sim.raf(); await sim.settle(5);
+  while (P().tracks.length < 2) api.addTrack(MODELS.find(m => m.id === 'minimoog'));
+  sim.raf(8); await sim.settle(5);
+  const [A, B] = P().tracks, first = T().id;
+  // the analysers by what feeds them: a track's own (its pan node's: the meter's 512 + the scope's) and the master's (the gain every pan feeds)
+  const own = id => [...api.nodes.get(id).pan.outs].filter(n => n.kind === 'an'), scopeOf = id => own(id).find(n => n.fftSize >= 8192);
+  const masterAn = [...[...api.nodes.get(A.id).pan.outs].find(n => n.kind === 'gain').outs].find(n => n.kind === 'an');
+  const reads = [], tap = (n, who) => {
+    n.getFloatTimeDomainData = a => { reads.push('td ' + who + ':' + n.fftSize); a.fill(0); };
+    n.getFloatFrequencyData = a => { reads.push('fd ' + who + ':' + n.fftSize); a.fill(-200); };
+  };
+  tap(masterAn, 'master'); for (const [t, who] of [[A, 'A'], [B, 'B']]) for (const n of own(t.id)) tap(n, who);
+  const heard = () => [...new Set(reads.filter(r => +r.split(':')[1] >= 4096))].sort(); // (the scope-sized reads; a meter's 512 is another)
+  const sc = sim.$('#scope'), gc = sc.getContext, calls = [];
+  const g = new Proxy({}, { get: (o, k) => (k in o ? o[k] : (...a) => { calls.push([k, a]); }), set: (o, k, v) => { o[k] = v; return true; } });
+  sc.offsetParent = {}; sc.clientWidth = 300; sc.clientHeight = 100; sc.getContext = () => g;
+  const NB = api.nodes.get(B.id), look = (id, mode) => { api.scopeMode(mode); api.selectTrack(id); sim.raf(8); reads.length = 0; calls.length = 0; sim.raf(3); };
+  try {
+    assert.equal(masterAn.fftSize, 8192, 'the master analyser is kept (the Master canvas\'s tap)');
+    assert.ok(!!(scopeOf(A.id) && scopeOf(B.id)),'each track\'s node has an analyser sized for the scope');
+    assert.equal(scopeOf(A.id).smoothingTimeConstant, 0.75, 'smoothed as the master\'s was');
+    assert.deepEqual(own(A.id).map(n => n.fftSize).sort((x, y) => x - y), [512, 8192], 'the meter\'s own 512 analyser is untouched beside it');
+    look(A.id, 'wave');
+    assert.equal(V().trackId, A.id);
+    assert.deepEqual(heard(), ['td A:8192'], 'wave, track A: its own analyser');
+    assert.ok(reads.includes('td A:512') && reads.includes('td B:512'), 'the meters still read their own 512 analysers');
+    assert.equal(api.scopeSource() === scopeOf(A.id), true, 'the seam: scopeSource() is the shown track\'s analyser');
+    look(A.id, 'fft');
+    assert.deepEqual(heard(), ['fd A:8192'], 'spectrum, track A: its own analyser');
+    look(B.id, 'fft');
+    assert.equal(V().trackId, B.id);
+    assert.deepEqual(heard(), ['fd B:8192'], 'switched to B: the spectrum follows');
+    look(B.id, 'wave');
+    assert.deepEqual(heard(), ['td B:8192'], 'switched to B: the wave follows');
+    assert.equal(api.scopeSource() === scopeOf(B.id), true);
+    look(A.id, 'wave');
+    assert.deepEqual(heard(), ['td A:8192'], 'back to A');
+    // a track with no node (engine off, not built yet): the flat line as before, no analyser read at all
+    api.nodes.delete(B.id);
+    look(B.id, 'wave');
+    assert.deepEqual(heard(), [], 'no node: nothing read');
+    assert.equal(api.scopeSource() === null, true, 'no node: no source');
+    const trace = calls.slice(calls.map(c => c[0]).lastIndexOf('beginPath') + 1).filter(c => c[0] === 'moveTo' || c[0] === 'lineTo');
+    assert.deepEqual(trace.map(c => [c[0], ...c[1]]), [['moveTo', 0, 50], ['lineTo', 300, 50]], 'the flat line across the middle');
+    look(B.id, 'fft');
+    assert.deepEqual(heard(), [], 'no node, spectrum: nothing read');
+  } finally {
+    api.nodes.set(B.id, NB); sc.offsetParent = null; sc.getContext = gc; api.scopeMode('wave'); api.selectTrack(first); sim.raf(8);
+  }
+});

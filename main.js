@@ -788,7 +788,7 @@ function valChanged(iv, id, ph) { // (iv: the panel's device view, stage 1e; ph 
 function refreshAll() { const P = curPanel(); if (P) P.refresh(); drawAlgo(); }
 
 /* ------------------------------------------------------------- audio */
-const nodes = new Map(); // track id -> { node, gain, pan, an, load, voices }
+const nodes = new Map(); // track id -> { node, gain, pan, an (the meter's), sc (the OUT scope's), load, voices }
 const quiet = p => { if (p && p.catch) p.catch(() => {}); };
 // Internal rate cap: oversampling is a power of two with sampleRate × OS ≤ 384 kHz (more costs CPU for no audible gain)
 const MAX_INTERNAL = 384000;
@@ -986,7 +986,7 @@ async function powerOn() {
         powerUI();
       }
       master = c.createGain(); master.gain.value = settings.master;
-      an = c.createAnalyser(); an.fftSize = 8192; an.smoothingTimeConstant = 0.75;
+      an = c.createAnalyser(); an.fftSize = 8192; an.smoothingTimeConstant = 0.75; // (the final mix: no reader until the Master canvas's OUT — scopeSource returns it there)
       master.connect(c.destination); master.connect(an);
       metroBus = c.createGain(); metroBus.gain.value = 1; metroBus.connect(c.destination);
       ctx = c; pendCtx = null; failMsg = ''; hotT = 0;
@@ -1046,10 +1046,11 @@ function makeNode(tr) {
     numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2],
     processorOptions: po,
   });
-  const gain = ctx.createGain(), pan = ctx.createStereoPanner(), a = ctx.createAnalyser();
-  a.fftSize = 512;
-  node.connect(gain); gain.connect(pan); pan.connect(master); pan.connect(a);
-  const N0 = { node, gain, pan, an: a, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: new Map(), phWait: new Map(), waitP: null, modsKey: mods ? mods.key : undefined };
+  const gain = ctx.createGain(), pan = ctx.createStereoPanner(), a = ctx.createAnalyser(), sc = ctx.createAnalyser();
+  a.fftSize = 512; // (the meter: the last 512 samples — a bigger window would hand it the oldest ones)
+  sc.fftSize = 8192; sc.smoothingTimeConstant = 0.75; // (the OUT scope's own, the master's old size: scopeSource; the rack is in the node, so this is the chain after its FX, fader and pan)
+  node.connect(gain); gain.connect(pan); pan.connect(master); pan.connect(a); pan.connect(sc);
+  const N0 = { node, gain, pan, an: a, sc, load: 0, voices: 0, os: 0, buf: new Float32Array(512), peak: 0, fxph: new Map(), phWait: new Map(), waitP: null, modsKey: mods ? mods.key : undefined };
   const N = G ? graphCache(N0, tr, G.graph) : partCache(N0, patch);
   if (G) { // (every part starts with its options: the caches hold them)
     N.gkey = G.graph.key; N.gon = new Map(G.graph.insts.map(x => [x.id, x.on]));
@@ -4707,6 +4708,12 @@ let setBendUI, setModUI;
 /* ------------------------------------------------------------- scope */
 let scopeMode = 'wave';
 const td = new Float32Array(8192), fd = new Float32Array(4096);
+// the OUT scope's tap, read each frame: the shown track's own analyser (its chain after the FX rack, then fader / mute and pan — what the
+// track adds to the mix, as its meter), or null (the flat line) without a node (engine off, not built yet). A Master canvas returns `an` here
+function scopeSource() {
+  const id = cvView ? cvView.trackId : (trk() || {}).id, N = id && nodes.get(id);
+  return N ? N.sc : null;
+}
 function drawScope() {
   const cv = $('#scope');
   if (!cv.offsetParent || (cvView && !cvView.live(cvModule.ID.out))) return; // (canvas: only while OUT is live — on screen, not folded)
@@ -4721,10 +4728,11 @@ function drawScope() {
   for (let i = 1; i < 6; i++) { const y = Math.round(H * i / 6) + 0.5; g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
   g.strokeStyle = '#7cffb5'; g.lineWidth = 1.6; g.shadowColor = 'rgba(124,255,181,0.6)'; g.shadowBlur = 6;
   g.beginPath();
-  if (!an) { g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke(); g.shadowBlur = 0; return; }
+  const A = scopeSource();
+  if (!A) { g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke(); g.shadowBlur = 0; return; }
   if (scopeMode === 'wave') {
-    an.getFloatTimeDomainData(td);
-    const span = Math.min(2048, Math.round(an.context.sampleRate * 0.025));
+    A.getFloatTimeDomainData(td);
+    const span = Math.min(2048, Math.round(A.context.sampleRate * 0.025));
     let t0 = 0;
     for (let i = 1; i < 4096; i++) if (td[i - 1] <= 0 && td[i] > 0) { t0 = i; break; }
     for (let i = 0; i < span; i++) {
@@ -4732,8 +4740,8 @@ function drawScope() {
       i ? g.lineTo(x, y) : g.moveTo(x, y);
     }
   } else {
-    an.getFloatFrequencyData(fd);
-    const ny = an.context.sampleRate / 2, n = fd.length, lo = Math.log(20), hi = Math.log(Math.min(ny, 24000));
+    A.getFloatFrequencyData(fd);
+    const ny = A.context.sampleRate / 2, n = fd.length, lo = Math.log(20), hi = Math.log(Math.min(ny, 24000));
     for (let px = 0; px <= W; px += 1) {
       const f = Math.exp(lo + (hi - lo) * px / W), bin = Math.min(n - 1, Math.round(f / ny * n));
       const db = Math.max(-130, fd[bin]);
@@ -7959,6 +7967,7 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') {
     ctl, wheelTracks, perfValue, lastVel, modCount, sxExtra, injectMods: CG.injectMods, // (stage 2a host)
     buildMods, compileMods: CG.compileMods, // (stage 2b, lane B: the {t: 'mods'} payload)
     modVal, modCC, modBudget: (t, dev) => CG.modBudget(t, dev, project), postMods, modsFor, // (stage 2b, lane D)
+    scopeMode: m => { if (m) scopeMode = m; return scopeMode; }, scopeSource, // (the OUT scope: its Scope / Spectrum buttons are not wired in the sim's DOM stub)
   };
   // (milestone 3, R0: tests/accessors.test.mjs) the services the accessor retirement touches that no other hook reaches
   globalThis.__synthTest.acc = {
