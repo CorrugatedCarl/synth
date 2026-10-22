@@ -33,7 +33,18 @@
 //   the user's word on the feel. One JSON for everything (Copy results) → tests/bench.json "ui-m9". &auto=1: the CDP harness (no
 //   taps; window.__m9 holds the state, the steps and the results); &cordhold=1: the hold rule (no rope step in a burst frame after
 //   one over 24 ms); &gltest=1: the cord canvas keeps its drawing buffer (readPixels any time).
-// Node imports the pure part (STUDIO, seed, step, advance, shown, smooth, pluck, nearestOnPolyline): no DOM at module top level.
+//   Stage 9b (IMPL-9b §5 b2): ?m9=1&s55=1 is the System 55 set's own pair of pages — step 1 (automatic) and &hand=1 (step 2) — with
+//   its own store ('m9b.res', kind "ui-m9b": the stage 9 session's results and steps are untouched; Copy results holds the new part
+//   only). Scenes s55c (the tile loading: its 38 faces through the raster queue, cold — the time to every face a texture, the worst
+//   frame, the raster work), s55 (37 modules and the controller: stage 9's real faces for the 21 modules of its types and the
+//   controller, our stand-ins for the other 16 — 960 8 MU with 40 live controls, 12 event buttons, 10 lamps, 29 jack spans; seven
+//   console-height faces —, 40 cords asleep, the sequencer lamps toggling as Sequence runs them: the 960's ten at 8 Hz, the 962's
+//   three), s55w (a module drag — the 960's, eight cords — waking its cords, then all 40 swaying through a 25–200 % pinch with the
+//   lamps still toggling), s55h (s55 with the hidden face pictures dropped); step 2 the hand protocol on hw5, s55, s55w, hw5 (s55h
+//   joins when s55 or s55w is not P+). &lamps=solid: lit lamps without the blurred glow; &lamphold=1: lamp writes held while the
+//   camera moves (the decision table's follow-ups for a passing s55 and a failing s55w, to re-measure).
+// Node imports the pure part (STUDIO, seed, step, advance, shown, smooth, pluck, nearestOnPolyline, and the System 55's face55 /
+// rack55 / SYS55): no DOM at module top level.
 
 /* ------------------------------------------------------------------------------------------------ the Studio physics (pure) */
 /** The approved preset (LAB:132–143 `PRESETS.studio`, `damping()`, DT, EXTRA), world px. */
@@ -162,14 +173,177 @@ export const PALETTE = Object.freeze(['#d8432f', '#e6b83a', '#3f80d8', '#41a75c'
 /** A seeded random in [0, 1) (LCG). */
 export function rng(seed0) { let s = seed0 >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
 
+/* ------------------------------------------------------------------------------------------------ System 55 (stage 9b: IMPL-9b §5 b2; pure) */
+// The System 55 set's stand-in faces for the types stage 9 does not draw (904B, 914, 911A, 903A, 960, 962, 992, 993, 994, CP2,
+// CP3A, CP8A, 961, the Song clock): layouts of our own in the house treatment of panels/m900.js (black panel inset in a silver
+// frame, cream legends, the number at the foot; no photograph, no maker word), at the 9b sizes (IMPL-9b §2.1: 1 MU 128 · 2 MU 224
+// · 3 MU 352 · 4 MU 448 · 8 MU 864 px wide, 512 px tall; a console panel 352) with the control and jack counts of §2.2 / §2.3 —
+// every knob, rotary and switch live (a synthetic model, as stage 9's faces), every jack a patch jack (cv-panel's `port` form,
+// validated), the 960's and 962's event buttons and the lamps of the 960, 962 and the Song clock drawn in the art with a live
+// DOM span each (the page adds them; cv-panel here has no button / lamp control yet). Pure: node validates every layout.
+export const MU = 53.975, FACE_H = 222.25, CONS_H = 142.875;
+const FRAME = '#a3a39e', PANEL = '#121212', BAT = '#d2d2ce', FIN = { ptrStyle: 'fin', capR: 0.5 };
+const D10S = ['0', '', '', '', '', '5', '', '', '', '', '10'], RNG = ['0.1', '0.4', '1.6', '6.4', '26', '100', '410'];
+const m2 = x => Math.round(x * 100) / 100;
+/** The System 55's set (IMPL-9b §2.5): [type, count, row]; row 1 sources and sequencing, 2 modifiers and envelopes (Tidy's two
+ * cabinet rows, §4.4), 3 the console panels (the row above the controller). 21 modules of stage 9's types carry stage 9's real
+ * faces (REAL55); the other 16 the stand-ins below; the controller is the real console. */
+export const SYS55 = Object.freeze([['921', 1, 1], ['921a', 2, 1], ['921b', 6, 1], ['903a', 1, 1], ['995', 1, 1], ['994', 1, 1], ['960', 1, 1], ['962', 1, 1],
+  ['904a', 1, 2], ['904b', 1, 2], ['914', 1, 2], ['911', 5, 2], ['911a', 1, 2], ['902', 5, 2], ['992', 1, 2], ['993', 1, 2],
+  ['cp2', 1, 3], ['cp3a', 3, 3], ['961', 1, 3], ['clk', 1, 3], ['cp8a', 1, 3]]);
+export const REAL55 = Object.freeze(['921', '921a', '921b', '995', '904a', '911', '902']);
+export const NAME55 = Object.freeze({ '921': '921', '921a': '921A', '921b': '921B', '995': '995', '904a': '904A', '911': '911', '902': '902', '903a': '903A', '994': '994',
+  '960': '960', '962': '962', '904b': '904B', '914': '914', '911a': '911A', '992': '992', '993': '993', cp2: 'CP2', cp3a: 'CP3A', 961: '961', clk: 'Song clock', cp8a: 'CP8A', ctl: 'Controller' });
+/** Tidy's placement of the System 55 as §4.4 sets it (a console row flush above the controller at dy −352, the modifiers row
+ * above it, the sources row on top; every row flush left to right from x 0): the list's items { row (0 the controller, 1, 2, 3) }
+ * and size(item) → [w, h] give each position, in list order. */
+export function rack55(list, size) {
+  const pos = [], X = [0, 0, 0, 0], Y = [0, -1376, -864, -352];
+  for (const it of list) {
+    if (it.row === 0) { pos.push({ x: 0, y: 0 }); continue; }
+    pos.push({ x: X[it.row], y: Y[it.row] });
+    X[it.row] += size(it)[0];
+  }
+  return pos;
+}
+// the stand-ins' data: knobs, switches, rotaries, jacks, event buttons and lamps by mm position on the panel's own frame; each
+// draw(f) calls the builder; mu the panel width in MU, cons: console height; title: [legend lines]; num: the number at the foot
+const FACES55 = {
+  '904b': { name: '904B High Pass Filter', mu: 1, title: ['HIGH PASS', 'FILTER'], num: '904B', draw(f) {
+    f.knob('fc', 'FIXED CONTROL VOLTAGE', 27, 52, 22, -6, 6, 0); f.sw('rg', 'FREQUENCY RANGE', 27, 92, ['LOW', 'HIGH']);
+    f.jack('c1', 'CONTROL INPUT 1', 10, 130, 'in'); f.jack('c2', 'CONTROL INPUT 2', 27, 130, 'in'); f.jack('c3', 'CONTROL INPUT 3', 44, 130, 'in');
+    f.jack('in', 'SIGNAL INPUT', 27, 162, 'in'); f.jack('out', 'SIGNAL OUTPUT', 27, 194, 'out'); } },
+  '911a': { name: '911A Dual Trigger Delay', mu: 1, title: ['DUAL TRIGGER', 'DELAY'], num: '911A', draw(f) {
+    f.knob('d1', 'DELAY 1', 27, 46, 20, 0, 10, 3); f.knob('d2', 'DELAY 2', 27, 84, 20, 0, 10, 3); f.sw('md', 'MODE', 27, 122, ['OFF', 'PARALLEL', 'SERIES']);
+    f.jack('i1', 'INPUT 1', 13, 158, 'in', 's'); f.jack('o1', 'OUTPUT 1', 41, 158, 'out', 's'); f.jack('i2', 'INPUT 2', 13, 188, 'in', 's'); f.jack('o2', 'OUTPUT 2', 41, 188, 'out', 's'); } },
+  '903a': { name: '903A Random Signal Generator', mu: 1, title: ['RANDOM', 'SIGNAL'], num: '903A', draw(f) {
+    f.jack('wh1', 'WHITE', 13, 66, 'out'); f.jack('wh2', 'WHITE', 41, 66, 'out'); f.jack('pk1', 'PINK', 13, 132, 'out'); f.jack('pk2', 'PINK', 41, 132, 'out'); } },
+  '962': { name: '962 Sequential Switch', mu: 1, title: ['SEQUENTIAL', 'SWITCH'], num: '962', draw(f) {
+    for (let k = 1; k <= 3; k++) {
+      const y = 38 + 38 * (k - 1);
+      f.jack('i' + k, 'INPUT ' + k, 13, y, 'in'); f.jack('t' + k, 'TRIG IN ' + k, 41, y, 'in'); f.jack('o' + k, 'TRIG OUT ' + k, 41, y + 19, 'out');
+      f.lamp('l' + k, 13, y + 14); f.btn('e' + k, 'SET ' + k, 13, y + 27);
+    }
+    f.jack('q1', 'OUTPUT', 13, 162, 'out'); f.jack('q2', 'OUTPUT', 41, 162, 'out'); f.jack('sh', 'SHIFT', 27, 190, 'in'); } },
+  '992': { name: '992 Control Voltages', mu: 1, title: ['CONTROL', 'VOLTAGES'], num: '992', draw(f) {
+    [['s1', 'KEYBOARD'], ['s2', 'WHEEL'], ['s3', 'PRESSURE'], ['s4', 'EXT']].forEach(([id, l], i) => f.sw(id, l, 27, 36 + 25 * i, ['OFF', 'ON']));
+    f.knob('at', 'EXT ATTENUATOR', 27, 146, 20, -10, 10, 0); f.jack('x4', 'EXT IN', 27, 186, 'in'); } },
+  '993': { name: '993 Trigger and Envelope Voltages', mu: 1, title: ['TRIGGER AND', 'ENVELOPE'], num: '993', draw(f) {
+    [['f1', 'FROM 1'], ['f2', 'FROM 2'], ['t1', 'TRIG 1'], ['t2', 'TRIG 2'], ['t3', 'TRIG 3'], ['e1', 'ENV 1'], ['e2', 'ENV 2'], ['e3', 'ENV 3']]
+      .forEach(([id, l], i) => f.sw(id, l, i % 2 ? 41 : 13, 46 + 30 * (i >> 1), ['OFF', 'ON'], 0, true)); } },
+  '994': { name: '994 Dual Multiples', mu: 1, title: ['DUAL', 'MULTIPLES'], num: '994', draw(f) {
+    for (let i = 1; i <= 4; i++) { f.jack('a' + i, 'A ' + i, 13, 40 + 34 * (i - 1), 'any'); f.jack('b' + i, 'B ' + i, 41, 40 + 34 * (i - 1), 'any'); } } },
+  '914': { name: '914 Fixed Filter Bank', mu: 4, title: ['FIXED FILTER BANK'], num: '914', draw(f) {
+    const B = ['125', '175', '250', '350', '500', '700', '1k', '1.4k', '2k', '2.8k', '4k', '5.6k'];
+    const ks = [['lo', 'LOW'], ...B.map((b, i) => ['b' + (i + 1), b]), ['hi', 'HIGH']];
+    ks.forEach(([id, l], i) => f.knob(id, l, 22 + 28 * (i % 7), i < 7 ? 56 : 108, 18, 0, 10, 10));
+    f.jack('i1', 'SIGNAL INPUT 1', 40, 172, 'in'); f.jack('i2', 'SIGNAL INPUT 2', 68, 172, 'in'); f.jack('o1', 'SIGNAL OUTPUT 1', 148, 172, 'out'); f.jack('o2', 'SIGNAL OUTPUT 2', 176, 172, 'out'); } },
+  '960': { name: '960 Sequential Controller', mu: 8, title: ['SEQUENTIAL CONTROLLER'], num: '960', draw(f) {
+    // the clock column (x 0…52), nine stage columns of 37.8 mm (52 + 37.8 (k − 1) …), the row column (392…432)
+    f.lamp('lo', 26, 19); f.btn('on', 'OSC ON', 14, 35); f.btn('off', 'OSC OFF', 38, 35);
+    f.sw('os', 'CLOCK AT START', 26, 60, ['STOPPED', 'RUNNING'], 1); f.rot('rg', 'RANGE', 26, 90, RNG, 2, 24); f.knob('vn', 'VERNIER', 26, 118, 18, 0, 10, 2);
+    f.sw('cc', 'ROW C → CLOCK', 26, 142, ['OFF', 'ON']); f.btn('sh', 'SHIFT', 26, 157);
+    f.jack('on', 'OSC ON', 10, 172, 'in'); f.jack('off', 'OSC OFF', 26, 172, 'in'); f.jack('sh', 'SHIFT', 42, 172, 'in');
+    f.jack('ci', 'CONTROL INPUT', 18, 196, 'in'); f.jack('co', 'OUTPUT', 36, 196, 'out');
+    for (let k = 1; k <= 9; k++) {
+      const x = 70.9 + 37.8 * (k - 1);
+      f.lamp('l' + k, x, 17); f.btn('e' + k, 'SET', x, 33);
+      if (k < 9) { f.knob('a' + k, 'A', x, 56, 18, 0, 10, (k * 3) % 11); f.knob('b' + k, 'B', x, 82, 18, 0, 10, (k * 5) % 11); f.knob('c' + k, 'C', x, 108, 18, 0, 10, (k * 7) % 11); }
+      if (k < 9) f.sw('s' + k, 'S' + k, x, 134, ['STOP', 'NORMAL', 'SKIP'], 1); else f.sw('s9', 'S9', x, 134, ['STOP', 'SKIP'], 1);
+      f.jack('i' + k, 'IN ' + k, x, 172, 'in'); f.jack('o' + k, 'OUT ' + k, x, 196, 'out');
+    }
+    ['a', 'b', 'c'].forEach((r, i) => { const y = 56 + 26 * i; f.jack('r' + r + '1', 'ROW ' + r.toUpperCase(), 402, y, 'out'); f.jack('r' + r + '2', 'ROW ' + r.toUpperCase(), 422, y, 'out'); });
+    ['ga', 'gb', 'gc'].forEach((id, i) => f.sw(id, 'ROW ' + 'ABC'[i], 412, 136 + 22 * i, ['X1', 'X2', 'X4'])); } },
+  cp2: { name: 'CP2 Filters, Multiples and Keyboard Outputs', mu: 3, cons: true, title: ['FILTERS · MULTIPLES · OUTPUTS'], num: 'CP2', draw(f) {
+    f.knob('lp', 'LOW PASS', 24, 44, 18, 0, 10, 5); f.knob('hp', 'HIGH PASS', 72, 44, 18, 0, 10, 5);
+    f.jack('li', 'IN', 14, 86, 'in'); f.jack('lo', 'OUT', 36, 86, 'out'); f.jack('hi', 'IN', 62, 86, 'in'); f.jack('ho', 'OUT', 84, 86, 'out');
+    for (let i = 1; i <= 4; i++) f.jack('u' + i, 'MULT ' + i, i % 2 ? 122 : 146, i < 3 ? 40 : 66, 'any');
+    f.jack('po', 'PITCH OUT', 122, 100, 'out'); f.jack('so', 'S-TRIG OUT', 146, 100, 'out', 's'); } },
+  cp3a: { name: 'CP3A Mixer and Routing', mu: 4, cons: true, title: ['MIXER AND ROUTING'], num: 'CP3A', draw(f) {
+    for (let i = 1; i <= 4; i++) { const x = 20 + 26 * (i - 1); f.jack('m' + i, 'IN ' + i, x, 36, 'in'); f.knob('x' + i, 'LEVEL ' + i, x, 66, 18, 0, 10, 7); f.jack('a' + i, 'MULT ' + i, x, 118, 'any'); }
+    f.knob('ms', 'MASTER', 134, 66, 18, 0, 10, 5); f.jack('mo', 'MIX +', 122, 106, 'out'); f.jack('mn', 'MIX −', 148, 106, 'out');
+    [['r1', 'KBD'], ['r2', 'WHEEL'], ['r3', 'PRESS'], ['r4', 'EXT']].forEach(([id, l], i) => f.sw(id, l, i % 2 ? 196 : 172, i < 2 ? 36 : 62, ['OFF', 'ON']));
+    f.knob('ra', 'EXT LEVEL', 172, 98, 18, 0, 10, 10); f.jack('x4', 'EXT IN', 196, 98, 'in'); } },
+  cp8a: { name: 'CP8A Power', mu: 2, cons: true, title: ['POWER'], num: 'CP8A', draw(f) { f.plain(); } },
+  961: { name: '961 Interface', mu: 3, cons: true, title: ['INTERFACE'], num: '961', draw(f) {
+    for (let b = 0; b < 2; b++) {
+      const x = 12 + 54 * b;
+      for (let i = 1; i <= 6; i++) { const y = 30 + 15.5 * (i - 1); f.jack('a' + (b + 1) + i, 'A' + i, x, y, 'in'); f.jack('b' + (b + 1) + i, 'B' + i, x + 17, y, 'in'); }
+      f.jack('s' + (b + 1), 'S-TRIG OUT', x + 8, 126, 'out', 's');
+    }
+    f.knob('t1', 'ON TIME 1', 110, 32, 18, 0, 10, 5); f.knob('se', 'SENSITIVITY', 130, 32, 18, 0, 10, 5); f.knob('t2', 'ON TIME 2', 150, 32, 18, 0, 10, 5);
+    f.jack('v1i', 'S IN', 110, 68, 'in', 's'); f.jack('v1o', 'V OUT', 136, 68, 'out'); f.jack('v2i', 'S IN', 110, 92, 'in', 's'); f.jack('v2o', 'V OUT', 136, 92, 'out');
+    f.jack('ai', 'AUDIO IN', 110, 118, 'in'); f.jack('ao1', 'V OUT', 136, 110, 'out'); f.jack('ao2', 'V OUT', 152, 124, 'out'); } },
+  clk: { name: 'Song Clock', mu: 2, cons: true, title: ['SONG CLOCK'], num: 'CLOCK', note: ['OURS — THE SONG’S TEMPO', 'AS PULSES'], draw(f) {
+    f.rot('dv', 'STEP', 28, 56, ['1/4', '1/8', '1/16', '1/32', '1/8T', '1/16T'], 2, 24); f.sw('md', 'MODE', 80, 56, ['SONG', 'ALWAYS']); f.lamp('lr', 54, 30, 'RUN');
+    f.jack('ck', 'CLOCK', 20, 104, 'out'); f.jack('rn', 'RUN', 54, 104, 'out'); f.jack('rs', 'RESTART', 88, 104, 'out'); } },
+};
+/** The type ids of the stand-ins. */
+export const NEW55 = Object.freeze(Object.keys(FACES55));
+/** The stand-in face of a System 55 type: { L, model, mcs, ev: [{ id, label, x, y }], lamps: [{ id, x, y }], problems } — layout and
+ * synthetic model for cv-panel (PN: cv-panel's exports; theme and scheme: stage 9's, from a real module's model and face);
+ * problems = PN.validate (node checks every one is empty). */
+export function face55(type, PN, theme, scheme) {
+  const S = FACES55[type]; if (!S) return null;
+  const W = S.mu * MU, H = S.cons ? CONS_H : FACE_H, ctl = [], dec = [], prm = [], jks = [], evs = [], lamps = [];
+  const txt = (x, y, s, size = 1.85, weight = 600, ls = 0.12, anchor = 'middle') => dec.push({ t: 'text', x: m2(x), y: m2(y), s, size, weight, anchor, ls });
+  const line = (y, w = 0.35) => dec.push({ t: 'line', x1: 2.6, y1: y, x2: m2(W - 2.6), y2: y, sw: w });
+  const F = {
+    knob(id, label, x, y, d = 20, lo = 0, hi = 10, def = 5) {
+      prm.push({ t: 'k', id, label, min: lo, max: hi, def });
+      ctl.push({ id, kind: 'knob', x, y, d, sweep: 300, label, lab: 'none' });
+      dec.push({ t: 'scale', x, y, d: d + 1, sweep: 300, n: 11, labels: D10S, size: 1.6 });
+      txt(x, y - d / 2 - 4, label.length > 16 ? label.slice(0, 16) : label, 1.75);
+    },
+    sw(id, label, x, y, opts, def = 0, plain) { // 2 positions: a horizontal bat; 3: a vertical one
+      const n = opts.length, v = n > 2;
+      prm.push(n === 2 ? { t: 'b', id, label, def } : { t: 's', id, label, opts, def });
+      ctl.push({ id, kind: 'switch', style: 'bat', orient: v ? 'v' : 'h', x, y, w: v ? 6 : 10, h: v ? 14 : 6, color: BAT, label, lab: 'none' });
+      txt(x, y - 10, label, 1.7);
+      if (!plain) opts.forEach((o, i) => v ? txt(x + 6, y + 6.4 - 6.4 * i, o, 1.45, 600, 0.1, 'start') : txt(x + (i ? 9 : -9), y + 0.7, o, 1.45));
+    },
+    rot(id, label, x, y, opts, def = 0, d = 22) {
+      prm.push({ t: 's', id, label, opts, def });
+      ctl.push({ id, kind: 'rotary', x, y, d, sweep: 180, label, lab: 'none', legends: opts, skin: FIN });
+      txt(x, y - d / 2 - 6, label, 1.85);
+    },
+    jack(port, label, x, y, dir, sig = 'v') {
+      jks.push({ id: port, dir, sig, role: 'au', label, sec: 0 });
+      ctl.push(sig === 's' ? { kind: 'strig', port, x, y, w: 10, h: 8, label, lab: 'none' } : { kind: 'jack', port, x, y, d: 14, label, lab: 'none' });
+      txt(x, y - 8.6, label.length > 12 ? label.slice(0, 12) : label, 1.55);
+    },
+    btn(id, label, x, y) { evs.push({ id, label, x, y }); dec.push({ t: 'rect', x: m2(x - 5), y: m2(y - 3.5), w: 10, h: 7, r: 0.8, fill: BAT }); txt(x, y - 5.2, label, 1.5); },
+    lamp(id, x, y, label) { lamps.push({ id, x, y }); dec.push({ t: 'rect', x: m2(x - 3), y: m2(y - 3), w: 6, h: 6, r: 3, fill: '#2a2a2a', stroke: '#777', sw: 0.3 }); if (label) txt(x, y - 5, label, 1.5); },
+    plain() { // CP8A: drawn only — a power switch, a pilot lamp, two fuse holders (no live control: "not emulated")
+      dec.push({ t: 'rect', x: 20, y: 40, w: 20, h: 10, r: 5, fill: '#0c0c0c', stroke: '#555', sw: 0.3 }, { t: 'rect', x: 24, y: 41.5, w: 7, h: 7, r: 3.5, fill: '#cfcfcf' });
+      txt(30, 36, 'POWER', 1.9); dec.push({ t: 'rect', x: 66, y: 41, w: 8, h: 8, r: 4, fill: '#2a2a2a', stroke: '#777', sw: 0.3 }, { t: 'rect', x: 67.6, y: 42.6, w: 4.8, h: 4.8, r: 2.4, fill: '#e9a13a' });
+      txt(70, 36, 'PILOT', 1.9);
+      for (const x of [28, 78]) { dec.push({ t: 'rect', x: x - 7, y: 84, w: 14, h: 9, r: 4.5, fill: '#1a1a1a', stroke: '#888', sw: 0.3 }); txt(x, 80, 'FUSE', 1.7); }
+    },
+  };
+  S.draw(F);
+  const T = S.title.length;
+  dec.unshift({ t: 'rect', x: 1, y: 0.4, w: m2(W - 2), h: m2(H - 0.8), fill: PANEL }, { t: 'screws', pts: [[9, 4.6], [9, m2(H - 4.6)], [m2(W - 9), 4.6], [m2(W - 9), m2(H - 4.6)]], d: 3.4 });
+  S.title.forEach((s, i) => txt(W / 2, (T > 1 ? 9.4 : 12) + 3.6 * i, s, T > 1 || s.length > 22 ? 2.1 : 2.45, 700, 0.2)); line(T > 1 ? 18.2 : 16.4, 0.35);
+  txt(W / 2, m2(H - 6.2), S.num, 4, 700, 0.3);
+  if (S.note) S.note.forEach((s, i) => txt(W / 2, H - 14 - 2.8 * (S.note.length - 1 - i), s, 1.6));
+  const model = { id: 'pm-' + type, name: S.name, type, layout: type, patch: 'moog', theme, sections: [{ title: S.name, c: prm }], controls: prm, jacks: jks };
+  const L = { v: 1, id: 'pm-' + type, hw: 'a stand-in for the ' + S.name + ' (ours; stage 9b test page, IMPL-9b §5 b2)', case: PANEL, scheme,
+    areas: [{ id: 'main', src: [0, 0, m2(W), m2(H)], at: [0, 0], fill: FRAME }], sections: [{ id: 'p', label: S.name.toUpperCase(), x: 0, y: 0, w: m2(W), h: m2(H), frame: 'none', title: 'none' }],
+    controls: ctl, decor: dec, extras: { ids: [] } };
+  return { L, model, mcs: prm, ev: evs, lamps, problems: PN.validate(L, model) };
+}
+
 /* ------------------------------------------------------------------------------------------------ the page: constants */
 const IS_PAGE = typeof window !== 'undefined' && typeof document !== 'undefined' && typeof location !== 'undefined';
 const BASE = IS_PAGE ? new URL('../', location.href).href : '';
 const Q = new URLSearchParams(IS_PAGE ? location.search : '');
-const MODE = Q.get('hand') === '1' ? 'hand' : Q.get('cords') === '1' ? 'cords' : 'auto';
+const S55 = Q.get('s55') === '1'; // (stage 9b, IMPL-9b §5 b2: &s55=1 is the System 55 set's own pair of pages and its own store — nothing of the stage 9 session's)
+const MODE = Q.get('hand') === '1' ? 'hand' : Q.get('cords') === '1' && !S55 ? 'cords' : 'auto';
 const AUTO = Q.get('auto') === '1', ONLY = Q.get('scenes') ? Q.get('scenes').split(',') : null, HOLD = Q.get('cordhold') === '1', GLTEST = Q.get('gltest') === '1';
+const LAMP_SOLID = Q.get('lamps') === 'solid', LAMP_HOLD = Q.get('lamphold') === '1', KEEP55 = (LAMP_SOLID ? '&lamps=solid' : '') + (LAMP_HOLD ? '&lamphold=1' : ''); // (the decision table's follow-ups for s55w: lit lamps without the blurred glow; lamp deliveries held while the camera moves)
 const MiB = 1024 * 1024, BAR_H = 40, READ_K = 0.5, TAP_TOUCH = 8, TAP_MOUSE = 4, SNAP_PX = 32, HIT_PX = 10;
-const RES_KEY = 'm9.res', HB_KEY = 'm9.hb', KIND = 'ui-m9';
+const RES_KEY = S55 ? 'm9b.res' : 'm9.res', HB_KEY = S55 ? 'm9b.hb' : 'm9.hb', KIND = S55 ? 'ui-m9b' : 'ui-m9';
 // the stand-in art: a panels/modular.js section per type (§5 b: 921, 995, 903A, 904A, 902, 911, CP3A; 904B stands in for the
 // 907A); the Model 15 set (§2.2) as [module, its art, its row (0 the controller, 1 sources, 2 modifiers)]
 const ART = { osc1: '921', att: '995', noise: '903A', lpf: '904A', hpf: '904B', vca: '902', env1: '911', cp3a: 'CP3A' };
@@ -185,10 +359,15 @@ const SCENES = {
   m30: { title: '30 modules, 40 cords', kind: 'rack', n: 30, cords: 40 },
   m30h: { title: '30 modules, 40 cords, the hidden face pictures dropped', kind: 'rack', n: 30, cords: 40, dropSvg: true },
   m13s: { title: 'The Model 15 set with flat (SVG) cords', kind: 'rack', n: 13, cords: 20, svg: true },
+  // (stage 9b, §5 b2) the System 55: its 37 modules and the controller; the sequencer lamps toggling as Sequence runs them (the 960's ten at 8 Hz, the 962's)
+  s55c: { title: 'The System 55 tile loading: its 38 faces, cold', kind: 'rack', set: 55, cords: 0, cold: true },
+  s55: { title: 'The System 55 set: 38 faces, 40 cords at rest, the sequencer lamps running', kind: 'rack', set: 55, cords: 40, lamps: true },
+  s55w: { title: 'The System 55 set with its cords swinging and the lamps running', kind: 'rack', set: 55, cords: 40, lamps: true, wake: true, dragType: '960', dragCords: 8 },
+  s55h: { title: 'The System 55 set, the hidden face pictures dropped', kind: 'rack', set: 55, cords: 40, lamps: true, dropSvg: true },
 };
-const AUTO_ORDER = ['hw5', 'm13', 'm13w', 'm20', 'm30', 'm30h', 'm13s', 'hw5'];
-const HAND_ORDER = ['hw5', 'm13', 'm13w', 'm20', 'm30', 'hw5'];
-const STEPS = ['Automatic runs (about 7 minutes, hands off)', 'Hand test (about 10 minutes: pinch and pan as the bar says)', 'Cords (about 5 minutes: plug, move and pull out cords by their plugs, then tell us how they feel)'];
+const AUTO_ORDER = S55 ? ['s55c', 's55', 's55w', 's55h'] : ['hw5', 'm13', 'm13w', 'm20', 'm30', 'm30h', 'm13s', 'hw5'];
+const HAND_ORDER = S55 ? ['hw5', 's55', 's55w', 'hw5'] : ['hw5', 'm13', 'm13w', 'm20', 'm30', 'hw5'];
+const STEPS = S55 ? ['System 55: automatic runs (about 5 minutes, hands off)', 'System 55: hand test (about 5 minutes: pinch and pan as the bar says)'] : ['Automatic runs (about 7 minutes, hands off)', 'Hand test (about 10 minutes: pinch and pan as the bar says)', 'Cords (about 5 minutes: plug, move and pull out cords by their plugs, then tell us how they feel)'];
 
 /* ------------------------------------------------------------------------------------------------ small helpers */
 const $ = (s, r = document) => r.querySelector(s);
@@ -239,7 +418,7 @@ const CSS = `
   .m9-cover textarea { width: 100%; height: 70px; background: #111; color: #eee; border: 1px solid #444; border-radius: 8px; font: inherit; }
 `;
 function chrome() {
-  document.title = 'SYNTH Canvas — stage 9 modules and cords test';
+  document.title = S55 ? 'SYNTH Canvas — stage 9b System 55 test' : 'SYNTH Canvas — stage 9 modules and cords test';
   document.body.textContent = '';
   const st = h('style'); st.textContent = CSS; document.head.append(st);
 }
@@ -345,6 +524,10 @@ const FRAME_CSS = `
   #world .cv-mod > .cv-jack.cv-fjack.m9-hot { box-shadow: 0 0 0 calc(3px * var(--ik, 1)) #f2a33a, 0 0 calc(12px * var(--ik, 1)) rgba(242, 163, 58, 0.7); }
   #world .cv-mod > .cv-jack.cv-fjack.m9-name { box-shadow: 0 0 0 calc(3px * var(--ik, 1)) #5fb3ff, 0 0 calc(14px * var(--ik, 1)) rgba(95, 179, 255, 0.8); }
   #world[data-m9-sleep] .cv-fjack { pointer-events: none; }
+  #world .cv-mod > .m9-pev { position: absolute; width: 28px; height: 28px; margin: -14px 0 0 -14px; padding: 0; border: 0; background: none; pointer-events: none; }
+  #world .cv-mod > .m9-lamp { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; pointer-events: none; background: rgba(255, 98, 52, 0); }
+  #world .cv-mod > .m9-lamp[data-on] { background: #ff6a3a; box-shadow: 0 0 9px 3px rgba(255, 106, 58, 0.85); }
+  #world.m9-solid .cv-mod > .m9-lamp[data-on] { box-shadow: none; }
   #world .m9-ring { position: absolute; box-sizing: border-box; border: 3px solid #00ffff; border-radius: 50%; pointer-events: none; z-index: 10002; }
   .m9-chip { position: fixed; left: 0; top: 0; z-index: 9999; pointer-events: none; padding: 5px 10px; border-radius: 8px; background: rgba(20, 22, 27, 0.92);
     border: 1px solid #f2a33a; color: #fff; font: 600 14px/1.2 -apple-system, sans-serif; white-space: nowrap; will-change: transform; }
@@ -421,14 +604,15 @@ function cut(secId) {
 }
 // a stand-in module: cv-module's chrome (the compact bar: title, ⋯), its face through a ClassicPanel over the cut, a span per jack
 function standIn(S, key, spec, at) {
-  const C = cut(spec.art), { doc, W } = A, id = 'm9:' + key;
+  const C = spec.C || cut(spec.art), { doc, W } = A, id = 'm9:' + key; // (spec.C: a System 55 face, pack55's)
   const vals = {}; for (const c of C.mcs) vals[c.id] = c.def;
   const ftrack = { id: 'm9t-' + key, name: spec.title, prim: 'm9x', vals, preset: '' };
   const host = { doc, kit: S.kit, changed() {}, presets: { list: () => [], cur: () => null, load() {}, step() {}, save() {}, del() {}, init() {} } };
-  const rec = { key, id, spec, C, jacks: new Map(), panel: null };
+  if (spec.C) host.modMenu = { canMod: () => false }; // (a System 55 face, as stage 9's real faces: no canvas modulation into a module's knob)
+  const rec = { key, id, spec, C, jacks: new Map(), lamps: new Map(), panel: null };
   const m = A.MOD.createModule({
     id, kind: 'pm', title: spec.title, sub: spec.sub || '', color: '#d9d2bf', x: at.x, y: at.y, fixed: { w: C.w, h: C.h }, jacks: [], cost: 90,
-    body: { mount: body => { const root = doc.createElement('div'); body.append(root); rec.panel = new A.CP.ClassicPanel(root, { track: ftrack, model: C.model, layout: C.L, host }); }, unmount() {} },
+    body: { mount: body => { const root = doc.createElement('div'); body.append(root); rec.panel = new A.CP.ClassicPanel(root, { track: ftrack, model: C.model, layout: C.L, host }); if (spec.C) for (const e of root.querySelectorAll('[data-dest]')) e.setAttribute('data-nomod', '1'); }, unmount() {} },
     menu: () => [{ label: 'A stand-in module (stage 9 test page)', disabled: true }],
     onMove: (x, y, ph) => { if (ph === 'end') { S.modMoved = true; logEv('modmove', { mod: spec.title }); } if (S.cords) S.cords.moved(rec, ph); },
   }, { world: W, doc });
@@ -444,6 +628,15 @@ function standIn(S, key, spec, at) {
     m.el.append(sp);
     rec.jacks.set(j.id, Object.assign({ el: sp, mod: rec }, j));
   });
+  // (a System 55 face) the event buttons — a transparent button over the face, asleep to touches here — and the lamps — a span, lit by the page's timer
+  for (const e of C.ev || []) {
+    const b = doc.createElement('button'); b.type = 'button'; b.className = 'm9-pev'; b.setAttribute('aria-label', spec.title + ' · ' + e.label); b.tabIndex = -1;
+    b.style.left = e.bx + 'px'; b.style.top = e.by + 'px'; m.el.append(b);
+  }
+  for (const l of C.lamps || []) {
+    const sp = doc.createElement('span'); sp.className = 'm9-lamp'; sp.setAttribute('aria-hidden', 'true');
+    sp.style.left = l.bx + 'px'; sp.style.top = l.by + 'px'; m.el.append(sp); rec.lamps.set(l.id, sp);
+  }
   W.el.append(m.el);
   W.add(m);
   S.mods.push(rec); S.byKey.set(key, rec); S.byId.set(id, rec);
@@ -461,6 +654,99 @@ function rackLayout(list) {
     pos.push({ x: r.x, y: r.y }); r.x += C.w;
   }
   return pos;
+}
+
+/* ------------------------------------------------------------------------------------------------ System 55 (stage 9b, §5 b2: the page's part) */
+// a System 55 type's face as standIn() takes it (cut()'s shape): stage 9's real face (cv-panel moduleLayout / moduleModel, the
+// controller's console from layoutOf('m900')) or the stand-in of face55; its jacks from cv-panel's geometry (the face-jack spans
+// as stage 9's real build places them), the event buttons and lamps by their mm centres through the face's offset
+const c55C = new Map();
+function c55(type) {
+  if (c55C.has(type)) return c55C.get(type);
+  const PN = A.PN, ref = PN.moduleLayout('921');
+  let L, model, mcs, ev = [], lamps = [], problems = [], art = 'real';
+  if (type === 'ctl') { L = PN.layoutOf('m900'); model = A.MODELS.find(m => m.id === 'm900'); mcs = model && model.controls; }
+  else if (NEW55.includes(type)) { const f = face55(type, PN, PN.moduleModel('921').theme, ref.scheme); ({ L, model, mcs, ev, lamps, problems } = f); art = 'stand-in'; }
+  else { L = PN.moduleLayout(type); model = PN.moduleModel(type); mcs = model && model.controls; }
+  if (!L || !model) throw new Error('no face for the System 55 type ' + type);
+  const g = PN.geometry(L, model), sz = PN.sizeOf(L, model), mm = g.mm, at = e => ({ id: e.id, label: e.label, bx: r2(mm.offX + (e.x - mm.x0) * 2), by: r2(BAR_H + (e.y - mm.y0) * 2) });
+  const C = { type, art, L, model, mcs, problems, w: sz.w, h: sz.h, ev: ev.map(at), lamps: lamps.map(at),
+    jacks: g.jacks.map(j => ({ id: j.port, label: j.label, sig: j.sig, dir: j.dir || 'any', bx: j.x, by: j.y + BAR_H })), jp: Math.floor((g.jackPitch != null ? g.jackPitch : 40) - 2) };
+  c55C.set(type, C);
+  return C;
+}
+// the System 55 as the tile loads it: the controller, then the sources row, the modifiers row and the console row in the set's order
+function list55() {
+  const out = [{ type: 'ctl', row: 0, title: 'Controller' }];
+  for (const [type, n, row] of SYS55) for (let i = 1; i <= n; i++) out.push({ type, row, title: NAME55[type] + (n > 1 ? ' ' + i : '') });
+  return out;
+}
+// the patch: eight cords on the module the scene drags (the 960's rows to the oscillators and filter, its shift and its
+// inputs arriving), then seeded out → in pairs (a multiple pairs with either) 120 … 1 100 world px apart up to the count
+function makePatch55(S, D) {
+  const R = rng(5501), cords = [], used = new Set(), J = [];
+  for (const r of S.mods) for (const j of r.jacks.values()) J.push(j);
+  const wp = j => ({ x: j.mod.m.x + j.bx, y: j.mod.m.y + j.by }), key = j => j.mod.key + '.' + j.id, dist = (a, b) => Math.hypot(wp(a).x - wp(b).x, wp(a).y - wp(b).y);
+  const add = (a, b) => {
+    if (!a || !b || used.has(key(a)) || used.has(key(b)) || a.sig !== b.sig || a.mod === b.mod || (a.dir === b.dir && a.dir !== 'any') || a.dir === 'in' || b.dir === 'out') return false;
+    used.add(key(a)); used.add(key(b));
+    cords.push({ id: 'c' + cords.length, a: { m: a.mod.key, j: a.id }, b: { m: b.mod.key, j: b.id }, c: cords.length % PALETTE.length, s: a.sig === 's' });
+    return true;
+  };
+  const dm = D.dragType ? S.mods.find(r => r.spec.type === D.dragType) : null;
+  if (dm) {
+    let n = 0;
+    for (const id of ['ra1', 'sh', 'rb1', 'i1', 'rc1', 'ci', 'o1', 'i2']) {
+      const a = dm.jacks.get(id); if (!a || n >= (D.dragCords || 8)) continue;
+      for (let tries = 0; tries < 600; tries++) {
+        const b = J[Math.floor(R() * J.length)], d = b.mod === dm ? 0 : dist(a, b);
+        if (d < 120 || d > 1300) continue;
+        if (a.dir === 'out' ? add(a, b) : add(b, a)) { n++; break; }
+      }
+    }
+    for (const j of dm.jacks.values()) used.add(key(j)); // (exactly those on the dragged module)
+  }
+  for (let tries = 0; cords.length < D.cords && tries < 40000; tries++) {
+    const a = J[Math.floor(R() * J.length)], b = J[Math.floor(R() * J.length)], d = a && b ? dist(a, b) : 0;
+    if (d < 120 || d > 1100) continue;
+    add(a, b);
+  }
+  return cords;
+}
+// the sequencer's lamps as Sequence runs them (§5 b2, skeptic #10): the 960's stage lamps stepping at 8 Hz (1/16 at 120 BPM: the
+// running step's lit, the one before it dark), its OSC lamp and the Song clock's RUN lamp steady, the 962's three one a step; a lit
+// lamp is a span with a glow (&lamps=solid: a solid fill), written from a timer as the real ones are from the monitor's messages;
+// &lamphold=1: no write while the camera moves (the world's burst), the last state shown at its end (§5's decision table)
+function startLamps(S) {
+  const seq = S.mods.find(r => r.spec.type === '960'), sw = S.mods.find(r => r.spec.type === '962'), clk = S.mods.find(r => r.spec.type === 'clk');
+  const st = { mode: LAMP_SOLID ? 'solid' : 'glow', hold: LAMP_HOLD, ticks: 0, toggles: 0, held: 0, lamps: S.mods.reduce((n, r) => n + r.lamps.size, 0) };
+  let step = 0, held = false;
+  const set = (r, id, on) => { const e = r && r.lamps.get(id); if (e && e.hasAttribute('data-on') !== on) { if (on) e.setAttribute('data-on', ''); else e.removeAttribute('data-on'); st.toggles++; } };
+  const show = () => {
+    for (let i = 1; i <= 9; i++) set(seq, 'l' + i, i - 1 === step % 8);
+    for (let i = 1; i <= 3; i++) set(sw, 'l' + i, i - 1 === step % 3);
+  };
+  A.W.el.classList.toggle('m9-solid', LAMP_SOLID);
+  set(seq, 'lo', true); set(clk, 'lr', true); show();
+  const iv = A.win.setInterval(() => { st.ticks++; step++; if (LAMP_HOLD && A.W.busy) { st.held++; held = true; return; } held = false; show(); }, 125);
+  const off = A.W.on('cameraend', () => { if (held) { held = false; show(); } });
+  return { stats: () => Object.assign({}, st), stop() { A.win.clearInterval(iv); off(); A.W.el.classList.remove('m9-solid'); } };
+}
+// the cold load (s55c): every face a texture and the raster queue empty, polled each frame from the first module — the time, the
+// frames in between (the worst one), the raster work (cv-face's paints: count, total, longest ms) and the queue at its start
+async function coldWait(S, ms = 90000) {
+  const C = S.cold, t0 = C.t0;
+  let q0 = null, ok = false;
+  while (now() - t0 < ms) {
+    await raf();
+    const st = A.FACES.stats();
+    if (q0 == null) q0 = st.queued;
+    if (S.mods.every(r => r.m.el.getAttribute('data-cv-face') === 'gl') && !st.queued) { ok = true; break; }
+  }
+  C.ms = Math.round(now() - t0);
+  const R = C.rec.stop(), ds = [], st = A.FACES.stats();
+  for (let i = 0; i < R.f.length; i += 2) if (R.f[i + 1] >= t0) ds.push(R.f[i]);
+  C.res = { ok, ms: C.ms, createMs: C.createMs, queued0: q0, frames: q(ds), paints: st.paints, paintMs: r1(st.paintMs), paintMax: r1(st.paintMax), glFaces: st.gl, faces: st.faces, faceMB: r1((st.bytes || 0) / MiB) };
 }
 
 /* ------------------------------------------------------------------------------------------------ scenes */
@@ -507,25 +793,39 @@ async function build(id) {
   if (D.kind === 'rack') {
     S.kit = kitOf();
     if (!S.kit) throw new Error('no classic panel kit in the app (the stand-in faces need one)');
-    const list = M15.concat(MORE).slice(0, D.n), pos = rackLayout(list), num = new Map();
-    list.forEach((it, i) => {
-      const n = (num.get(it[0]) || 0) + 1; num.set(it[0], n);
-      const many = list.filter(x => x[0] === it[0]).length > 1, title = it[0] === 'CTL' ? 'Controller' : it[0] + (many ? ' ' + n : '');
-      const art = ART[it[1]], sub = it[0] === 'CTL' ? 'art: CP3A' : art !== it[0] ? 'art: ' + art : '';
-      standIn(S, 'k' + i, { art: it[1], title, sub, type: it[0], row: it[2] }, pos[i]);
-    });
-    await raf(); await sleep(200);
-    for (const r of S.mods) A.W.update(r.id);
-    S.patch = makePatch(S, D.cords);
-    S.cords = createCords(S, { svg: !!D.svg });
-    S.cords.set(S.patch);
-    S.fit = S.mods.map(r => r.id);
+    if (D.set === 55) { // (stage 9b) the System 55 as its tile loads it; s55c: the frames and the raster work counted from the first module
+      const list = list55(), pos = rack55(list, it => { const C = c55(it.type); return [C.w, C.h]; });
+      if (D.cold) { A.FACES.stats(true); S.cold = { t0: now(), rec: recorder() }; }
+      const tc = now();
+      list.forEach((it, i) => standIn(S, 'k' + i, { C: c55(it.type), title: it.title, sub: c55(it.type).art === 'stand-in' ? 'stand-in' : '', type: it.type, row: it.row }, pos[i]));
+      if (S.cold) S.cold.createMs = Math.round(now() - tc);
+      S.fit = S.mods.map(r => r.id);
+      A.W.fit({ ids: S.fit, animate: false });
+      if (!D.cold) { await raf(); await sleep(200); }
+      for (const r of S.mods) A.W.update(r.id);
+      if (D.cords) { S.patch = makePatch55(S, D); S.cords = createCords(S, {}); S.cords.set(S.patch); }
+    } else {
+      const list = M15.concat(MORE).slice(0, D.n), pos = rackLayout(list), num = new Map();
+      list.forEach((it, i) => {
+        const n = (num.get(it[0]) || 0) + 1; num.set(it[0], n);
+        const many = list.filter(x => x[0] === it[0]).length > 1, title = it[0] === 'CTL' ? 'Controller' : it[0] + (many ? ' ' + n : '');
+        const art = ART[it[1]], sub = it[0] === 'CTL' ? 'art: CP3A' : art !== it[0] ? 'art: ' + art : '';
+        standIn(S, 'k' + i, { art: it[1], title, sub, type: it[0], row: it[2] }, pos[i]);
+      });
+      await raf(); await sleep(200);
+      for (const r of S.mods) A.W.update(r.id);
+      S.patch = makePatch(S, D.cords);
+      S.cords = createCords(S, { svg: !!D.svg });
+      S.cords.set(S.patch);
+      S.fit = S.mods.map(r => r.id);
+    }
   } else S.fit = A.W.ids().filter(k => !S.hide.has(k));
   A.W.fit({ ids: S.fit, animate: false });
-  await facesReady(S, 6000);
+  if (S.cold) await coldWait(S); else await facesReady(S, D.set ? 40000 : 6000);
   if (D.dropSvg) { S.dropped = 0; for (const r of S.mods) { const s = r.m.el.querySelector('.hw-decor > svg'); if (s && r.m.el.getAttribute('data-cv-face') === 'gl') { s.remove(); S.dropped++; } } }
   sleepState(S);
   S.offs.push(A.W.on('cameraend', () => sleepState(S)));
+  if (D.lamps) S.lamps = startLamps(S);
   await sleep(300);
   S.info = sceneInfo(S);
   S.info.buildMs = Math.round(now() - tb);
@@ -548,6 +848,7 @@ async function teardown(S) {
   if (!S) return;
   stopPlay();
   dragEnd(true);
+  if (S.lamps) { S.lamps.stop(); S.lamps = null; }
   for (const f of S.offs.splice(0)) { try { f(); } catch (e) { console.error(e); } }
   if (S.cords) { S.cords.destroy(); S.cords = null; }
   for (const r of S.mods) {
@@ -616,9 +917,11 @@ function sceneInfo(S) {
   for (const T of Object.values(per)) { T.painted = Math.round(T.painted / T.mods); T.paintedVis = Math.round(T.paintedVis / T.mods); T.svg = Math.round(T.svg / T.mods); } // (per module)
   const g = A.W.glStats(), cs = S.cords ? S.cords.stats() : null;
   const faces = S.D.kind === 'rack' ? S.mods.filter(r => r.m.el.getAttribute('data-cv-face') === 'gl').length : g ? g.glFaces : null;
-  return { modules: mods.length, elements: n, painted: vis, paintedVis: vis - svgVis, faceSvg: svg, world: A.W.el.getElementsByTagName('*').length,
+  const out = { modules: mods.length, elements: n, painted: vis, paintedVis: vis - svgVis, faceSvg: svg, world: A.W.el.getElementsByTagName('*').length,
     perType: per, glFaces: faces, glMB: g ? r1((g.bytes || 0) / MiB) : null, faceMB: g ? r1((g.faceBytes || 0) / MiB) : null,
     cords: cs ? cs.cords : 0, cordMode: cs ? cs.mode : null, cordMB: cs ? r1(cs.bytes / MiB) : 0, k: r3(A.W.k), dropped: S.dropped || 0 };
+  if (S.D.set) out.lamps = S.lamps ? S.lamps.stats() : null; // (the System 55 scenes only: the old scenes' results keep their shape)
+  return out;
 }
 
 /* ------------------------------------------------------------------------------------------------ the prototype cord layer */
@@ -1233,7 +1536,7 @@ async function rest(S) {
 async function wake(S) {
   const C = S.cords, out = {};
   await fitScene(S);
-  const r = S.mods.find(x => x.spec.type === '921'), x0 = r.m.x, y0 = r.m.y;
+  const r = S.mods.find(x => x.spec.type === (S.D.dragType || '921')), x0 = r.m.x, y0 = r.m.y;
   const six = C.all().filter(c => c.a.m === r.key || c.b.m === r.key).length;
   C.stats(true);
   let rec = recorder(), a = now();
@@ -1287,6 +1590,9 @@ function selfCheck(S, rs) {
   if (notGl.length) why.push(notGl.length + ' faces not on the GL path');
   if (cs && cs.mode !== wantMode) why.push('cords on ' + cs.mode);
   if (cs && cs.lost) why.push('cord context lost ' + cs.lost + '×');
+  const bad55 = S.D.set ? S.mods.filter(r => r.C.problems && r.C.problems.length).map(r => r.key) : []; // (a stand-in layout cv-panel would refuse)
+  if (bad55.length) why.push(bad55.length + ' stand-in layouts with validation problems');
+  if (S.D.cold && S.cold && S.cold.res && !S.cold.res.ok) why.push('the faces were not all textures in ' + S.cold.res.ms + ' ms');
   if (rs && rs.cordRaf) why.push('the cord layer asked for ' + rs.cordRaf + ' frames at rest');
   return { ok: !why.length, why: why.join('; '), errors: errors.slice(0, 8), notGl };
 }
@@ -1298,6 +1604,23 @@ function merged() {
   const R = results(), last = R.cords || R.hand || R.auto || {};
   const out = Object.assign({ kind: KIND, v: 1 }, last.env || {}, { valid: validity(R) }, R);
   delete out.env;
+  if (S55) out.decision = decide55(R);
+  return out;
+}
+// IMPL-9b §5's (b2) decision table applied to what this page measured (the lead decides; rows that need stage 9's `ui-m9` — m20 /
+// m30 — are named, not computed)
+function decide55(R) {
+  const hs = (R.hand && R.hand.scenes) || {}, au = (R.auto && R.auto.scenes) || {}, v = k => (hs[k] ? hs[k].verdict : null), out = [];
+  const s = v('s55'), w = v('s55w'), h = v('s55h'), g1 = au.s55 && au.s55.glue, g2 = au.s55w && au.s55w.glue;
+  const glueOk = [g1, g2].filter(Boolean).every(g => g.ok !== false), glueBad = [g1, g2].some(g => g && g.ok === false);
+  if (s == null || w == null) return ['the hand test did not finish: no decision'];
+  const heavy = Math.max(...['s55', 's55w'].filter(k => v(k) === 'P+' && hs[k].info).map(k => hs[k].info.paintedVis || 0), 0);
+  if (s === 'P+' && w === 'P+' && glueOk) out.push('as contracted: s55 and s55w P+, glue within 1 device px; PT_HEAVY = the largest P+ scene\'s painted count (' + heavy + ' without the face pictures)');
+  if (s === 'P' && h === 'P+') out.push('s55 P, s55h P+: the hidden-SVG hygiene for the pm faces joins P9b / U9b');
+  if (s === 'fail' || (s !== 'P+' && s !== 'P')) out.push('s55 ' + s + ': if m30 passed in ui-m9, profile the 960 face\'s live layer (its painted elements) and cut it (lamps as one GL quad set?) before U9b; if m20 / m30 already failed, stop (the many-modules question)');
+  if (s === 'P+' && w !== 'P+') out.push('s55 P+, s55w ' + w + ': hold the lamp deliveries while the camera moves and draw them solid — re-measure with &lamps=solid&lamphold=1 (the hold rule of I9 §4.3)');
+  if (glueBad) out.push('glue fails: ?cords=under becomes the default (the look trade told to the user)');
+  if (!out.length) out.push('s55 ' + s + ', s55w ' + w + (h ? ', s55h ' + h : '') + ': no table row fits as it stands — read the numbers');
   return out;
 }
 // IMPL-3 §1.5's validity, here: hw5 first and last inside its envelope in the hand test (median ≤ 17.5, firstMove / settle ≤ 80,
@@ -1340,7 +1663,7 @@ function bottomBar() {
 // the first screen: the three steps, which build this page measures (an update not applied: Apply update), a lost tab
 async function intro(stepIdx, extra) {
   const c = h('div', 'm9-cover'), d = h('div');
-  d.append(h('h1', '', 'Stage 9 test: Moog modules and patch cords'));
+  d.append(h('h1', '', S55 ? 'Stage 9b test: the System 55 set' : 'Stage 9 test: Moog modules and patch cords'));
   const ol = h('ol', 'm9-steps'); STEPS.forEach((s, i) => ol.append(h('li', i === stepIdx ? 'now' : '', s))); d.append(ol);
   if (extra) { const p = h('p'); p.innerHTML = extra; d.append(p); }
   const bl = h('p', '', 'Checking which app build this page measures…'); d.append(bl);
@@ -1383,17 +1706,24 @@ function resultsPanel(btns) {
 function draw(el, R) { // the summary: per scene the scripted frames, the cords, the glue; the hand verdicts; the plugs
   let t = '<table><tr><th>scene</th><th>self-check</th><th>painted · modules · faces</th><th>pan med/p95/max</th><th>deep</th><th>first / settle</th><th>M0</th><th>cords awake: frame ms p95 / max</th><th>glue max px</th></tr>';
   for (const [k, s] of Object.entries((R.auto && R.auto.scenes) || {})) {
+    if (s.cold) { // (s55c: the load is the measure)
+      const c = s.cold;
+      t += '<tr><td>' + k + '</td><td class="' + (s.self.ok ? 'ok' : 'bad') + '">' + (s.self.ok ? 'ok' : s.self.why) + '</td><td>' + s.info.painted + ' · ' + s.info.modules + ' · ' + s.info.glFaces + '</td><td colspan="6">cold load: every face a texture in '
+        + c.ms + ' ms · worst frame ' + c.frames.max + ' ms (' + c.frames.over33 + ' over 33) · ' + c.paints + ' paints (' + c.paintMs + ' ms, longest ' + c.paintMax + ' ms)</td><td>–</td></tr>';
+      continue;
+    }
     const m = s.m0, f = x => (x ? x.med + ' / ' + x.p95 + ' / ' + x.max : '–'), cw = s.awake && s.awake.still, gl = s.glue;
     t += '<tr><td>' + k + '</td><td class="' + (s.self.ok ? 'ok' : 'bad') + '">' + (s.self.ok ? 'ok' : s.self.why) + '</td><td>' + s.info.painted + ' · ' + s.info.modules + ' · ' + s.info.glFaces + '</td><td>' + f(m.pan) + '</td><td>' + f(m.deep)
       + '</td><td>' + Math.max(m.pan.firstMove, m.deep.firstMove) + ' / ' + Math.max(m.settle.settle, m.deepSettle.settle) + '</td><td>' + m.total.verdict + '</td><td>' + (cw ? cw.frameP95 + ' / ' + cw.frameMax : '–') + '</td><td>' + (gl && gl.pan ? Math.max(gl.pan.maxErr || 0, gl.pinch.maxErr || 0, gl.sway.maxErr || 0) : '–') + '</td></tr>';
   }
   t += '</table>';
   if (R.hand && R.hand.scenes) t += '<p>Hand test: ' + Object.entries(R.hand.scenes).map(([k, x]) => k + ' <b>' + x.verdict + '</b>').join(' · ') + '</p>';
+  if (S55 && R.hand && R.hand.scenes) t += '<p>' + decide55(R).join('<br>') + '</p>';
   if (R.cords && R.cords.plugs) t += '<p>Plugs at 60 %: ' + R.cords.plugs.misses + ' missed of ' + R.cords.plugs.trials.length + '</p>';
   el.innerHTML = t;
 }
 if (IS_PAGE) window.__m9 = { state: 'loading', result: null, A, S0, merged: () => merged(), STUDIO, glueShot: null };
-const FN = () => ({ build, teardown, m0, cordsAwake, glue, rest, wake, m5, sceneInfo, selfCheck, probeJack, label, jwp, audioOn, glueShot, targets });
+const FN = () => ({ build, teardown, m0, cordsAwake, glue, rest, wake, m5, sceneInfo, selfCheck, probeJack, label, jwp, audioOn, glueShot, targets, c55, list55 });
 // (the Mac's CDP harness) the screenshot glue (G1's method): a cyan ring in #world (the DOM, under the cord canvas) around an
 // empty jack and the magenta disc the cord layer draws at its anchor; analyse(png) finds both centroids in one screenshot —
 // the composited frame — in device px (the screenshot's)
@@ -1442,11 +1772,12 @@ async function pageAuto() {
   document.body.classList.add('m9-full');
   const frame = frameEl(); document.body.append(frame);
   const ui = bottomBar(), go = h('button', 'go', 'Start'), next = h('a');
-  next.href = location.pathname + '?m9=1&hand=1'; next.textContent = 'Next: step 2 →'; next.style.cssText = 'color:#8cb8ff;font-weight:600;font-size:19px'; next.hidden = true;
+  next.href = location.pathname + '?m9=1' + (S55 ? '&s55=1' + KEEP55 : '') + '&hand=1'; next.textContent = 'Next: step 2 →'; next.style.cssText = 'color:#8cb8ff;font-weight:600;font-size:19px'; next.hidden = true;
   ui.btns.append(go); const RP = resultsPanel(ui.btns); ui.btns.append(next);
   go.disabled = true;
-  ui.sayEl.innerHTML = 'Step 1 of 3 — <b>automatic runs</b> (about 7 minutes). Hands off until the bar says Done.';
-  const I0 = await intro(0, 'Before you start: <b>plug the iPad in</b>, hold it the same way for all three steps, close the other apps and keep this tab in front. Your project in the app is not changed: the test works on a copy that is never saved.');
+  ui.sayEl.innerHTML = S55 ? 'Step 1 of 2 — <b>System 55: automatic runs</b> (about 5 minutes). Hands off until the bar says Done.' : 'Step 1 of 3 — <b>automatic runs</b> (about 7 minutes). Hands off until the bar says Done.';
+  const I0 = await intro(0, S55 ? 'This is the <b>new part only</b> (the System 55 set: its 38 faces loading, then at rest, then with its cords and sequencer lamps moving). Before you start: <b>plug the iPad in</b>, hold it the same way for both steps, close the other apps and keep this tab in front. Your project in the app is not changed: the test works on a copy that is never saved.'
+    : 'Before you start: <b>plug the iPad in</b>, hold it the same way for all three steps, close the other apps and keep this tab in front. Your project in the app is not changed: the test works on a copy that is never saved.');
   say('Starting the app…');
   try { await boot(frame); } catch (e) { say('The app did not start: ' + e.message); window.__m9.state = 'error'; return; }
   A.W.on('camera', c => { ui.kEl.textContent = Math.round(c.k * 100) + ' %'; });
@@ -1462,18 +1793,22 @@ async function pageAuto() {
       const order = AUTO_ORDER.filter(id => !ONLY || ONLY.includes(id)), seen = {};
       for (let i = 0; i < order.length; i++) {
         const id = order[i], key = seen[id] ? id + '#2' : id; seen[id] = 1;
-        ui.sayEl.innerHTML = 'Step 1 of 3 — automatic runs, hands off. Scene ' + (i + 1) + ' of ' + order.length + ': <b>' + SCENES[id].title + '</b>';
+        ui.sayEl.innerHTML = 'Step 1 of ' + (S55 ? 2 : 3) + ' — automatic runs, hands off. Scene ' + (i + 1) + ' of ' + order.length + ': <b>' + SCENES[id].title + '</b>';
         const S = await build(id);
         out.order.push(key);
         const sc = { title: S.D.title, info: S.info };
-        say(key + ': scripted pan and zoom…'); sc.m0 = await m0(S);
-        if (S.cords && S.cords.mode === 'gl') {
-          say(key + ': every cord swinging…'); sc.awake = await cordsAwake(S);
-          say(key + ': the glue probe…'); sc.glue = await glue(S);
-        } else if (S.cords) sc.glue = await glue(S);
-        if (S.D.wake) { say(key + ': a module dragged, then every cord plucked during a pinch…'); sc.wake = await wake(S); }
+        if (S.D.cold) sc.cold = S.cold.res; // (s55c: the load itself was the measure)
+        else {
+          say(key + ': scripted pan and zoom…'); sc.m0 = await m0(S);
+          if (S.cords && S.cords.mode === 'gl') {
+            say(key + ': every cord swinging…'); sc.awake = await cordsAwake(S);
+            say(key + ': the glue probe…'); sc.glue = await glue(S);
+          } else if (S.cords) sc.glue = await glue(S);
+          if (S.D.wake) { say(key + ': a module dragged, then every cord plucked during a pinch…'); sc.wake = await wake(S); }
+        }
         say(key + ': at rest…'); sc.rest = await rest(S);
-        if (id === 'm30' && !out.m5) { say('M5: a 60 s zoom sweep on m30 with the cords swinging…'); out.m5 = await m5(S, Q.get('m5ms') ? +Q.get('m5ms') : 60000); }
+        if (id === (S55 ? 's55' : 'm30') && !out.m5) { say('M5: a ' + (S55 ? 30 : 60) + ' s zoom sweep on ' + id + ' with the cords swinging…'); out.m5 = await m5(S, Q.get('m5ms') ? +Q.get('m5ms') : S55 ? 30000 : 60000); }
+        if (S.lamps) sc.lamps = S.lamps.stats(); // (the lamps' ticks and writes over the whole scene)
         sc.self = selfCheck(S, sc.rest);
         sc.info.after = sceneInfo(S).cordMB;
         out.scenes[key] = sc;
@@ -1514,10 +1849,10 @@ async function pageHand() {
   const frame = frameEl(); document.body.append(frame);
   const { kEl, sayEl, btns } = bottomBar();
   const bStart = h('button', 'go', 'Start'), bNext = h('button', '', 'Skip step'), bDone = h('button', '', 'Done');
-  btns.append(bStart, bNext, bDone); resultsPanel(btns);
+  btns.append(bStart, bNext, bDone); const RP = resultsPanel(btns);
   bStart.disabled = bNext.disabled = bDone.disabled = true;
-  sayEl.innerHTML = 'Step 2 of 3 — <b>the hand test</b>. Starting the app…';
-  const I0 = await intro(1, 'Six short scenes (a seventh or eighth only if one stutters). For each, the bar at the bottom says what to do — pinch out to 25 % and back, pinch in to 200 % and back, pan with two fingers and with one, turn a knob — with the zoom shown on the left. Steps tick themselves off; tap <b>Skip step</b> if one does not.');
+  sayEl.innerHTML = 'Step 2 of ' + (S55 ? 2 : 3) + ' — <b>the hand test</b>. Starting the app…';
+  const I0 = await intro(1, (S55 ? 'Four short scenes (a fifth only if the System 55 stutters). ' : 'Six short scenes (a seventh or eighth only if one stutters). ') + 'For each, the bar at the bottom says what to do — pinch out to 25 % and back, pinch in to 200 % and back, pan with two fingers and with one, turn a knob — with the zoom shown on the left. Steps tick themselves off; tap <b>Skip step</b> if one does not.');
   try { await boot(frame); } catch (e) { sayEl.textContent = 'The app did not start: ' + e.message; return; }
   A.W.on('camera', c => { kEl.textContent = Math.round(c.k * 100) + ' %'; });
   window.__m9.state = 'ready'; window.__m9.fn = FN();
@@ -1538,13 +1873,16 @@ async function pageHand() {
     const last = order.lastIndexOf('hw5');
     if ((id === 'm20' || id === 'm30') && r.verdict !== 'P+' && !order.includes('m30h')) order.splice(last, 0, 'm30h');
     if ((id === 'm13' || id === 'm13w') && r.verdict !== 'P+' && !order.includes('m13s')) order.splice(order.lastIndexOf('hw5'), 0, 'm13s');
+    if ((id === 's55' || id === 's55w') && r.verdict !== 'P+' && !order.includes('s55h')) order.splice(order.lastIndexOf('hw5'), 0, 's55h'); // (stage 9b)
     await teardown(S);
     saveResult('hand', out);
   }
   clearInterval(hb); LS.del(HB_KEY);
   out.done = true; out.dialogs = A.dialogs.slice(0, 12); saveResult('hand', out);
-  sayEl.innerHTML = 'Step 2 done. ' + Object.entries(out.scenes).map(([k, x]) => k + ' <b>' + x.verdict + '</b>').join(' · ') + ' — <a style="color:#8cb8ff;font-size:19px" href="' + location.pathname + '?m9=1&cords=1">Next: step 3, the cords →</a>';
+  sayEl.innerHTML = 'Step 2 done. ' + Object.entries(out.scenes).map(([k, x]) => k + ' <b>' + x.verdict + '</b>').join(' · ') + (S55 ? ' — <b>All done — thank you.</b> Tap <b>Results</b>, then <b>Copy results</b> and paste them into the chat.'
+    : ' — <a style="color:#8cb8ff;font-size:19px" href="' + location.pathname + '?m9=1&cords=1">Next: step 3, the cords →</a>');
   bStart.hidden = bNext.hidden = bDone.hidden = true;
+  if (S55) { RP.show(); draw(RP.tbl, results()); }
   window.__m9.result = out; window.__m9.state = 'done';
 }
 async function handScene(S, i, n, ui) {
@@ -1565,7 +1903,7 @@ async function handScene(S, i, n, ui) {
   if (C) C.stats(true);
   let swing = null;
   if (S.D.wake && C) { // (m13w: every cord plucked every 2.5 s, the 921 wiggled up and back every 5 s)
-    const R0 = rng(5), r9 = S.mods.find(x => x.spec.type === '921');
+    const R0 = rng(5), r9 = S.mods.find(x => x.spec.type === (S.D.dragType || '921'));
     let k = 0;
     swing = setInterval(() => {
       C.pluckAll(R0);
@@ -1619,7 +1957,7 @@ async function handScene(S, i, n, ui) {
   const R = rec.stop(), a = analyse(R), info = sceneInfo(S);
   ui.bNext.disabled = true; ui.bDone.disabled = true;
   return { title: S.D.title, a, verdict: verdict(a), kRange: [r3(R.kMin), r3(R.kMax)], vv: [r3(R.vv[0]), r3(R.vv[1])], steps: log, skipped: log.filter(x => x.why === 'skipped').length,
-    secs: r1((R.t1 - R.t0) / 1000), info: { painted: info.painted, paintedVis: info.paintedVis, modules: info.modules, glMB: info.glMB, k: info.k }, cords: C ? C.stats() : null };
+    secs: r1((R.t1 - R.t0) / 1000), info: { painted: info.painted, paintedVis: info.paintedVis, modules: info.modules, glMB: info.glMB, k: info.k }, cords: C ? C.stats() : null, lamps: S.lamps ? S.lamps.stats() : undefined };
 }
 
 /* ---- step 3: the cords (ten named plugs at 60 %, a free play, the feel) */
@@ -1732,7 +2070,7 @@ export async function main() {
   chrome();
   try {
     if (MODE === 'hand') await pageHand();
-    else if (MODE === 'cords') await pageCords();
+    else if (MODE === 'cords' && !S55) await pageCords();
     else await pageAuto();
   } catch (e) { console.error(e); say('Error: ' + (e && e.message)); window.__m9.state = 'error'; window.__m9.error = String(e && e.stack || e); }
 }
