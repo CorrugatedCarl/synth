@@ -916,7 +916,7 @@ export class VoicePanel {
     this.parts = [];
     this.header = new VoiceHeader(el, K, { lead: [] });
     if (H && !H.statusEl) {
-      H.statusEl = mk(d, 'div', 'sx-status');
+      H.statusEl = this.status = mk(d, 'div', 'sx-status');   // (the host's touch tip line; it goes with this VOICE)
       H.statusEl.setAttribute('role', 'status');
       H.statusEl.setAttribute('aria-live', 'polite');
       el.appendChild(H.statusEl);
@@ -956,7 +956,12 @@ export class VoicePanel {
     const H = this.kit.sx;
     return H ? [{ label: 'Preferences…', action: () => panelDialog(H, PrefsPanel, 'Preferences') }, { label: 'Info…', action: () => panelDialog(H, InfoPanel, 'Info') }] : [];
   }
-  destroy() { for (const p of this.parts) if (p && p.destroy) { try { p.destroy(); } catch (err) { /* gone */ } } this.header.destroy(); this.el.remove(); }
+  destroy() {
+    for (const p of this.parts) if (p && p.destroy) { try { p.destroy(); } catch (err) { /* gone */ } }
+    const H = this.kit.sx;
+    if (H && this.status && H.statusEl === this.status) H.statusEl = null;   // a remounted VOICE builds its own line (a stale one wrote to a detached element)
+    this.header.destroy(); this.el.remove();
+  }
 }
 
 /* ================================================================ the view kinds (sx-host mount) */

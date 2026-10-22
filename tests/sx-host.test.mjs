@@ -452,6 +452,26 @@ test('VOICE (parts view) keeps its touch status line: a touched control\'s tip s
   X.destroy();
 });
 
+test('VOICE unmounted and remounted (no shell switch): the new VOICE gets its own status line and the touch tip writes to the attached one', async () => {
+  const { doc, box, X } = parts();
+  const a = M.mountPart(X, 'voice', box);
+  await flush(doc);
+  const l1 = a.root.querySelector('.sx-status');
+  assert.ok(l1 && X.statusEl === l1);
+  a.destroy();
+  assert.equal(X.statusEl, null, 'the host drops a status line that went with its VOICE');
+  const b = M.mountPart(X, 'voice', box);
+  await flush(doc);
+  const l2 = b.root.querySelector('.sx-status');
+  assert.ok(l2 && l2 !== l1 && X.statusEl === l2, 'its own line');
+  const m = byDest(b.root, 'g.master');
+  ptr(m, 'pointerdown', 10, 10, { pointerType: 'touch' });
+  assert.match(l2.textContent, /^Master/i);   // the attached line
+  assert.equal(l1.textContent, '');
+  ptr(m, 'pointerup', 10, 10, { pointerType: 'touch' });
+  X.destroy();
+});
+
 test('CLIP as a part: its MACROS pane\'s knobs are twins (data-twin: no cable end, no drop on the canvas); ARP alone (no MACROS pane); the part power in the bar', async () => {
   const { doc, box, X } = parts({ tracks: () => [], seqCmd() {} });
   const C = M.mountPart(X, 'clip', box), A = M.mountPart(X, 'arp', box);
