@@ -420,7 +420,6 @@ const POW_SVG = '<svg viewBox="0 0 14 14" aria-hidden="true"><path d="M4.4 3.6a4
  * @param {ModuleOpts} o @param {{world?: object, doc?: Document}} [env] @returns {Module} */
 export function createModule(o, env) {
   const E = env || {}, doc = E.doc || globalThis.document, W = () => E.world || null;
-  const snapOn = () => { const wd = W(); return !(wd && typeof wd.snapOn === 'function') || wd.snapOn(); }; // the toolbar's toggle
   const mk = (tag, cls, txt) => { const e = doc.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
   const btn = (cls, label, html) => { const b = mk('button', cls); b.type = 'button'; b.setAttribute('aria-label', label); b.title = label; if (html) b.innerHTML = html; return b; };
   const id = String(o.id), kind = o.kind || 'inst';
@@ -695,7 +694,7 @@ export function createModule(o, env) {
     D.i = i;
     const p = W2(i.x, i.y);
     let nx = D.x0 + p.x - D.p0.x, ny = D.y0 + p.y - D.p0.y;
-    if (!i.fine && snapOn()) { nx = gsnap(nx); ny = gsnap(ny); }
+    nx = gsnap(nx); ny = gsnap(ny); // always on the dots (no toggle, no Shift / Fine escape)
     if (nx === lx && ny === ly) return;
     setPos(nx, ny, true);
     if (o.onMove) o.onMove(nx, ny, 'move');

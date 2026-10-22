@@ -5069,8 +5069,8 @@ const cvMounted = new Map(); // module key → {el, tid}: what the current view'
 const cvDue = new Set(); // module keys mounted without their panel (a new device, a kind change, the bodies re-homed): built after the sync
 const cvW = () => cvTestWorld || world;
 const cvOn = () => !!cvParts.home;
-// a new module's place on the dots — while the toolbar's Snap is on (U16: off, where it was put, in whole px)
-const cvDot = v => { const W = cvW(); return W && typeof W.snapOn === 'function' && !W.snapOn() ? Math.round(v) : Math.round(v / cvWorld.DOT) * cvWorld.DOT; };
+// a new module's place on the dots (always: the canvas has no Snap toggle)
+const cvDot = v => Math.round(v / cvWorld.DOT) * cvWorld.DOT;
 function initModules() {
   const home = $('#cvParts'), root = $('#world');
   if (!home || !root) return;

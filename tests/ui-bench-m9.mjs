@@ -1646,7 +1646,6 @@ async function pageCords() {
   const out = { env: envInfo(), plugs: null, play: null, feel: null };
   const S = await build('m13');
   window.__m9.S = S;
-  try { A.W.setSnap(true); } catch (e) { /* older world */ }
   // part A: ten plugs at k 0.6 onto named jacks (a source and a target near each other: the neighbours a fingertip misses)
   const C = S.cords, R0 = rng(60), trials = [], pairs = [];
   const all = []; for (const r of S.mods) for (const j of r.jacks.values()) all.push(j);

@@ -59,12 +59,11 @@ export const K_MIN = 0.25, K_MAX = 2;
  * it a press in a module body pans the camera unless the module is in edit state. At or above EDIT_K a selected module
  * is in edit state. */
 export const READ_K = 0.5, EDIT_K = 0.9;
-/** Fine step (world px): keyboard nudges. */
+/** The old fine step (world px); nothing uses it now: every move, drop and nudge is on the dots. */
 export const GRID = 8;
-/** The visible grid (world px): its dots are every DOT, brighter ones every MAJOR; modules snap to DOT. */
+/** The visible grid (world px): its dots are every DOT, brighter ones every MAJOR; modules always snap to DOT (no toggle:
+ * an old synth.cv.snap pref is never read). */
 export const DOT = 32, MAJOR = 128;
-/** The snap-to-grid pref (appstore; stored as synthc.cv.snap): on unless switched off in the toolbar. */
-export const SNAP_PREF = 'synth.cv.snap';
 /** The on-screen margin around the viewport (screen px, converted with k): an item this close counts as on screen (its
  * live displays resume before they show). */
 export const CULL_MARGIN = 256;
@@ -77,17 +76,18 @@ export const WHEEL_VETO_MS = 300;
 export const BUDGET_EL = 9000;
 /** The pinch engages once the finger spread changed this much (physical px; as gesture.js PINCH_PX). */
 export const PINCH_PX = 6;
-/** Toolbar zoom steps (⊖ / ⊕ go to the next one). */
-export const ZOOM_STEPS = Object.freeze([0.25, 1 / 3, 0.5, 2 / 3, 0.75, 1, 1.25, 1.5, 2]);
 /** The camera pinch-mode pref (appstore; stored as synthc.cv.pinch). */
 export const PINCH_PREF = 'synth.cv.pinch';
 /** The minimap pref (appstore; stored as synthc.cv.minimap): shown unless switched off in the toolbar. */
 export const MAP_PREF = 'synth.cv.minimap';
 /** The lock-view pref (appstore; stored as synthc.cv.lock): off unless switched on in the toolbar. While locked no
  * gesture on the canvas pans or zooms the camera (drags, two fingers, wheel / trackpad, momentum, Safari gesture*, the
- * 0 / 1 keys, double-tap fit / focus, focus reveal, a drag's edge pan); the minimap and the toolbar's zoom / fit buttons
+ * 0 / 1 keys, double-tap fit / focus, focus reveal, a drag's edge pan); the minimap and the toolbar's % / fit buttons
  * still move it, and the app's own moves (a track switch's camera, a reveal after an add) still happen. */
 export const LOCK_PREF = 'synth.cv.lock';
+/** The toolbar-collapsed pref (appstore; stored as synthc.cv.tbcollapsed): true = the toolbar is folded to its one button
+ * (the minimap steps aside with it); anything else = expanded (the default). Toggled by the first toolbar button. */
+export const TB_PREF = 'synth.cv.tbcollapsed';
 /** (2a) The mod-cable visibility pref (appstore; stored as synthc.cv.mods): the toolbar ∿ cycles Always (the default) →
  * On select → Never; each change emits 'mods' with the mode (the track view's setModsVisible). */
 export const MODS_PREF = 'synth.cv.mods';
@@ -154,7 +154,7 @@ const TAP_PX = { touch: 8, pen: 4, mouse: 4 }, DTAP_MS = 320, DTAP_PX = 24, REVE
  *   wheelVeto: () => boolean,
  *   escape: () => boolean,
  *   key: (e: KeyboardEvent) => boolean,
- *   on: (type: 'camera' | 'movestart' | 'cameraend' | 'screen' | 'budget' | 'native' | 'select' | 'edit' | 'snap' | 'lock' | 'mods', fn: (d: any) => void) => () => void,
+ *   on: (type: 'camera' | 'movestart' | 'cameraend' | 'screen' | 'budget' | 'native' | 'select' | 'edit' | 'lock' | 'mods' | 'toolbar', fn: (d: any) => void) => () => void,
  *   canvasStats: () => {n: number, bytes: number, minDensity: number | null, onMin: number | null, offN: number, capped: number, budget: number, k: number, dpr: number},
  *   destroy: () => void,
  * }} World
@@ -389,7 +389,7 @@ export function createWorld(viewport, o) {
   /* ---- state */
   let cam = { tx: 0, ty: 0, k: 1 }, shown = null, ikK = 1;
   let vp = { left: 0, top: 0, width: 0, height: 0 }, ovO = { left: 0, top: 0 }; // cached rects (resize)
-  let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, snapping = true, locked = false, modsMode = 'always';
+  let active = true, native = false, destroyed = false, pinchMode = 'canvas', movedAt = -1e9, tbOff = false, locked = false, modsMode = 'always';
   let sel = null, editId = null, editSup = false, focusBack = null;
   const selSet = new Set(); // the selection (sel: its primary — the one tapped or moved last)
   let pin = null; // a bar double-tap's edit state { id, k }: it holds at the focus zoom even below EDIT_K (a large module's fit)
@@ -449,7 +449,7 @@ export function createWorld(viewport, o) {
   function reserved() {
     const out = [], add = el => { const r = el ? rectOf(el) : null; if (r && r.width > 0 && r.height > 0) out.push({ left: r.left, top: r.top, right: r.left + r.width, bottom: r.top + r.height }); };
     if (o.toolbar && TB.bar) add(o.toolbar);
-    if (MM && mapOn) add(MM.el);
+    if (MM && mapOn && !tbOff) add(MM.el);
     return out;
   }
   // b less the reserved boxes at its foot (each overlaps it and reaches its lowest 200 px): its bottom over the highest
@@ -714,11 +714,6 @@ export function createWorld(viewport, o) {
   function zoomTo(k, opt) { // about the band's centre (toolbar, '1')
     const b = bandNow(), cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2, base = anim ? anim.c1 : cam;
     zoomAt(clampK(k) / base.k, cx, cy, opt);
-  }
-  function stepZoom(dir) {
-    const k = (anim ? anim.c1 : cam).k, e = 1e-3;
-    const next = dir > 0 ? ZOOM_STEPS.find(s => s > k + e) : [...ZOOM_STEPS].reverse().find(s => s < k - e);
-    zoomTo(next != null ? next : dir > 0 ? K_MAX : K_MIN, { animate: true });
   }
   function rectsOf(ids) {
     const out = [];
@@ -1399,7 +1394,7 @@ export function createWorld(viewport, o) {
     const g = gh.g, w = Math.max(0, +g.w || 0), h = Math.max(0, +g.h || 0);
     const p = toWorld(cam, g.x - vp.left, g.y - vp.top);
     let x = p.x - (g.dx != null ? +g.dx : w / 2), y = p.y - (g.dy != null ? +g.dy : h / 2);
-    if (g.snap !== false && snapping) { x = snap(x); y = snap(y); }
+    if (g.snap !== false) { x = snap(x); y = snap(y); } // (a ghost over a target says snap: false)
     const l = toLocal(cam, x, y), s = gh.el.style;
     s.transform = 'translate(' + (l.x + vp.left - ovO.left) + 'px, ' + (l.y + vp.top - ovO.top) + 'px)';
     s.width = w * cam.k + 'px'; s.height = h * cam.k + 'px';
@@ -1430,7 +1425,7 @@ export function createWorld(viewport, o) {
     if (!it) return false;
     if (typeof it.nudge === 'function') it.nudge(dx, dy);
     else if (typeof it.onMove === 'function') {
-      const q = it.rect(), x = (snapping ? snap(q.x) : q.x) + dx, y = (snapping ? snap(q.y) : q.y) + dy;
+      const q = it.rect(), x = snap(q.x) + dx, y = snap(q.y) + dy;
       if (typeof it.setPos === 'function') it.setPos(x, y);
       it.onMove(x, y, 'start'); it.onMove(x, y, 'end');
     } else return false;
@@ -1449,7 +1444,7 @@ export function createWorld(viewport, o) {
     if (k === '1') { e.preventDefault(); if (!locked) zoomTo(1, { animate: true }); return true; }
     const d = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[k];
     if (d && sel) {
-      const s = (snapping ? DOT : GRID) * (e.shiftKey ? 4 : 1); // a dot at a time while snapping, else the fine step
+      const s = DOT * (e.shiftKey ? 4 : 1); // a dot at a time (Shift: four)
       if (!nudge(sel, d[0] * s, d[1] * s)) return false;
       e.preventDefault();
       return true;
@@ -1464,16 +1459,15 @@ export function createWorld(viewport, o) {
     return false;
   }
 
-  /* ---- the floating toolbar (#cvToolbar): ⊖ 100% ⊕ · fit · tidy · snap · lock · map · ∿ (2a: mod cables) · the native-zoom chip */
+  /* ---- the floating toolbar (#cvToolbar): [fold] · 100% (a tap resets the zoom) · fit · tidy · lock · map · ∿ (2a: mod cables) · the
+   native-zoom chip. The first button folds the rest into itself (TB_PREF); zoom is the pinch, the wheel, the 0 / 1 keys and that % */
   const TB = {};
   const ICON = {
-    out: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10h10"/></svg>',
-    in: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 10h10M10 5v10"/></svg>',
     fit: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 7.5v-4h4M12.5 3.5h4v4M16.5 12.5v4h-4M7.5 16.5h-4v-4"/><rect x="7" y="7.5" width="6" height="5" rx="1"/></svg>',
     tidy: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="5" width="5" height="10" rx="1"/><rect x="9.5" y="5" width="3.5" height="7" rx="1"/><rect x="15" y="5" width="2.5" height="5" rx="0.8"/></svg>',
     mods: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2.5 10c2-5 4-5 5 0s3 5 5 0 4-5 5 0"/></svg>',
-    tools: '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.2 12.2 17 17M6 8.5h5M8.5 6v5"/></svg>',
-    snap: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 3.5v6.5a5 5 0 0 0 10 0V3.5M5 7h3M12 7h3"/><circle cx="4" cy="17" r="0.9"/><circle cx="10" cy="17" r="0.9"/><circle cx="16" cy="17" r="0.9"/></svg>',
+    tools: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5.5h2.3M8.7 5.5H17M3 10h8.3M14.7 10H17M3 14.5h3.8M10.2 14.5H17"/><circle cx="7" cy="5.5" r="1.7"/><circle cx="13" cy="10" r="1.7"/><circle cx="8.5" cy="14.5" r="1.7"/></svg>',
+    fold: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M12 5l-5 5 5 5"/></svg>',
     map: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="4" width="15" height="12" rx="1.5"/><rect x="5" y="6.5" width="4" height="3"/><rect x="10.5" y="8" width="4.5" height="5"/></svg>',
     lock: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4.5" y="9" width="11" height="8" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9M10 12.2v1.6"/></svg>',
     unlock: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4.5" y="9" width="11" height="8" rx="1.5"/><path d="M7 9V6.5a3 3 0 0 1 5.8-1.1M10 12.2v1.6"/></svg>',
@@ -1494,13 +1488,13 @@ export function createWorld(viewport, o) {
     const bar = mk('div', 'cv-tb');
     bar.setAttribute('role', 'toolbar');
     bar.setAttribute('aria-label', 'Canvas');
-    const fold = btn('tools', 'Canvas tools', ICON.tools, () => { const on = !bar.hasAttribute('data-open'); attr(bar, 'data-open', on); fold.setAttribute('aria-expanded', String(on)); });
-    fold.setAttribute('aria-expanded', 'false');
+    const fold = btn('tools', 'Collapse toolbar', ICON.fold, () => setToolbarCollapsed(!tbOff)); // (always the first thing in the corner: the same spot folds and unfolds)
     const row = mk('div', 'cv-tb-row');
+    row.id = 'cvToolbarRow';
+    fold.setAttribute('aria-controls', row.id);
     const pct = btn('pct', 'Zoom 100 %', '', () => zoomTo(1, { animate: true }));
     pct.classList.add('cv-tb-pct');
     pct.textContent = '100%';
-    const snapB = btn('snap', 'Snap to grid', ICON.snap, () => setSnap(!snapping));
     const lockB = btn('lock', 'Lock view', ICON.unlock, () => setLock(!locked));
     const mapB = btn('map', 'Minimap', ICON.map, () => setMap(!mapOn));
     const mods = btn('mods', 'Modulation cables', ICON.mods, () => setModsMode(MODS_MODES[(MODS_MODES.indexOf(modsMode) + 1) % MODS_MODES.length]));
@@ -1513,15 +1507,15 @@ export function createWorld(viewport, o) {
     let hintT = 0;
     listen(chip, 'click', () => { chip.textContent = 'pinch out to 1:1'; unlater(hintT); hintT = later(() => { chip.textContent = 'page zoomed · 1:1'; }, 2500); });
     row.append(
-      btn('out', 'Zoom out', ICON.out, () => stepZoom(-1)), pct, btn('in', 'Zoom in', ICON.in, () => stepZoom(1)), mk('span', 'cv-tb-sep'),
+      pct, mk('span', 'cv-tb-sep'),
       btn('fit', 'Fit all (0)', ICON.fit, () => fit({ animate: true })),
       btn('tidy', 'Tidy: lay the modules out again', ICON.tidy, () => { if (typeof o.onTidy === 'function') o.onTidy(); }),
-      snapB, lockB, mapB, mods);
+      lockB, mapB, mods);
     bar.append(fold, row, chip);
     host.append(bar);
-    Object.assign(TB, { bar, row, pct, chip, fold, snap: snapB, lock: lockB, map: mapB, mods });
+    Object.assign(TB, { bar, row, pct, chip, fold, lock: lockB, map: mapB, mods });
     buildMap(host);
-    snapUI(); lockUI(); mapUI(); modsUI();
+    toolbarUI(); lockUI(); mapUI(); modsUI();
     offs.push(() => { unlater(hintT); try { bar.remove(); } catch (err) { /* gone */ } });
   }
 
@@ -1550,7 +1544,7 @@ export function createWorld(viewport, o) {
     if (!!was !== !!awayB) attr(o.toolbar, 'data-cv-drag', !!awayB);
   }
   function mapUI() {
-    if (MM) attr(MM.el, 'hidden', !mapOn);
+    if (MM) attr(MM.el, 'hidden', !mapOn || tbOff); // (the minimap steps aside with a collapsed toolbar; its own pref stays)
     if (TB.map) { TB.map.setAttribute('aria-pressed', String(mapOn)); TB.map.title = 'Minimap: ' + (mapOn ? 'shown' : 'hidden'); TB.map.setAttribute('aria-label', TB.map.title); }
   }
   function setMap(on) {
@@ -1618,16 +1612,27 @@ export function createWorld(viewport, o) {
   }
 
   /* ---- setup */
-  // snap to grid (toolbar toggle, remembered): module moves, drops, nudges and the width grip land on the dots (DOT);
-  // Shift / Fine still moves freely while it is on
-  function snapUI() { if (TB.snap) { TB.snap.setAttribute('aria-pressed', String(snapping)); TB.snap.title = 'Snap to grid: ' + (snapping ? 'on' : 'off'); TB.snap.setAttribute('aria-label', TB.snap.title); } }
-  function setSnap(on) {
+  // the toolbar collapses to its first button and back (remembered: TB_PREF). The button stays put; the row (CSS: [data-collapsed])
+  // and the minimap go; the native-zoom chip is a notice, so it stays. Module moves, drops and nudges always land on the dots (no toggle)
+  function toolbarUI() {
+    attr(TB.bar, 'data-collapsed', tbOff);
+    const b = TB.fold;
+    if (!b) return;
+    b.setAttribute('aria-expanded', String(!tbOff));
+    b.title = tbOff ? 'Expand toolbar' : 'Collapse toolbar';
+    b.setAttribute('aria-label', b.title);
+    b.innerHTML = tbOff ? ICON.tools : ICON.fold;
+  }
+  function setToolbarCollapsed(on) {
     on = !!on;
-    if (on === snapping) return;
-    snapping = on;
-    snapUI();
-    if (store) { try { store.set(SNAP_PREF, on); } catch (err) { /* storage */ } }
-    emit('snap', on);
+    if (on === tbOff) return;
+    tbOff = on;
+    bandC = null; // (the toolbar's box changed)
+    toolbarUI();
+    mapUI();
+    if (store) { try { store.set(TB_PREF, on); } catch (err) { /* storage */ } }
+    if (!on && mapOn) { mapDirty = true; request(); }
+    emit('toolbar', on);
   }
   // (2a) the mod cables' visibility (toolbar ∿, remembered: MODS_PREF): Always → On select → Never → Always
   function modsUI() {
@@ -1645,7 +1650,7 @@ export function createWorld(viewport, o) {
     emit('mods', m);
   }
   // lock view (toolbar toggle, remembered): no gesture on the canvas moves the camera (LOCK_PREF); the minimap and the
-  // toolbar's zoom / fit buttons still do. Switching it on stops a glide and a drag's edge pan where they are
+  // toolbar's % / fit buttons still do. Switching it on stops a glide and a drag's edge pan where they are
   function lockUI() {
     attr(viewport, 'data-cv-locked', locked);
     const b = TB.lock;
@@ -1689,7 +1694,7 @@ export function createWorld(viewport, o) {
   }
 
   pinchMode = store && store.get && store.get(PINCH_PREF, 'canvas') === 'page' ? 'page' : 'canvas';
-  snapping = !(store && store.get && store.get(SNAP_PREF, true) === false);
+  tbOff = !!(store && store.get && store.get(TB_PREF, false) === true);
   mapOn = !(store && store.get && store.get(MAP_PREF, true) === false);
   locked = !!(store && store.get && store.get(LOCK_PREF, false) === true);
   { const m = store && store.get ? store.get(MODS_PREF, 'always') : 'always'; modsMode = MODS_MODES.includes(m) ? m : 'always'; }
@@ -1767,7 +1772,9 @@ export function createWorld(viewport, o) {
     canvasStats,
     /** (H5) re-plan the stores now (a test / bench hook; the world does it at every rest) → whether a cap changed */
     planStores: () => { const ch = stores(); if (ch) { try { wk.rescaleCanvases(W); } catch (err) { console.error(err); } } return ch; },
-    snapOn: () => snapping, setSnap, mapOn: () => mapOn, setMap, lockOn: () => locked, setLock,
+    mapOn: () => mapOn, setMap, lockOn: () => locked, setLock,
+    /** the toolbar folded to its one button (the first toolbar button, TB_PREF); a change emits 'toolbar' */
+    toolbarCollapsed: () => tbOff, setToolbarCollapsed,
     /** (2a) the mod cables' visibility: 'always' | 'select' | 'never' (toolbar ∿, MODS_PREF); a change emits 'mods' */
     modsMode: () => modsMode, setModsMode,
     /** (1e, U14) a drag the caller runs (a tray tile's): the toolbar and the minimap step aside until setDragging(false) */

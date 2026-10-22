@@ -366,15 +366,15 @@ test('U2: a piano-roll audition reaches every powered instrument whose key zone 
   cv.undo(); sim.raf();
 });
 
-test('U16: with the toolbar\'s Snap off, a new instrument (cv.add) lands where it was put (not on the dots); on, on the dots', () => {
+test('U16: a new instrument (cv.add) lands on the dots, always (no Snap toggle: a world still answering snapOn() = false is ignored)', () => {
   fresh('minimoog');
   W.snapOn = () => false;
   try {
     const id = cv.add('juno60', { x: 1001, y: 2003 }); sim.raf();
-    assert.deepEqual([T().lay[id].x, T().lay[id].y], [1001, 2003]);
+    assert.deepEqual([T().lay[id].x, T().lay[id].y], [992, 2016]);
   } finally { delete W.snapOn; }
   const id2 = cv.add('dx7', { x: 1001, y: 4003 }); sim.raf();
-  assert.deepEqual([T().lay[id2].x, T().lay[id2].y], [992, 4000], 'Snap on: the dots');
+  assert.deepEqual([T().lay[id2].x, T().lay[id2].y], [992, 4000], 'the dots');
 });
 
 test('U10 / 1f: the bar badge is the CPU safeguard\'s cap on its instrument and nothing else — no "not connected" badges (even for a hook-made silent route)', () => {

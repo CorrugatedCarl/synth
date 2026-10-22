@@ -830,7 +830,7 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
   white-space: nowrap; font: 700 11px/1.2 var(--ui); letter-spacing: 0.1em; text-transform: uppercase; color: var(--hot); }
 #overlay .cv-ghost-label:empty { display: none; }
 
-/* the floating toolbar (bottom-left of the canvas): ⊖ 100% ⊕ · fit · tidy · ∿ (later) · "page zoomed · 1:1" */
+/* the floating toolbar (bottom-left of the canvas): [fold] · 100% · fit · tidy · lock · map · ∿ · "page zoomed · 1:1" */
 #cvToolbar { pointer-events: none; }
 #cvToolbar .cv-tb { display: flex; align-items: center; gap: 8px; pointer-events: none; font-family: var(--ui); }
 #cvToolbar .cv-tb > * { pointer-events: auto; }
@@ -843,7 +843,7 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-tb-btn:hover:not(:disabled) { background: #22252b; }
 .cv-tb-btn:active:not(:disabled) { background: #2b2e35; }
 .cv-tb-btn:disabled { color: var(--mute); opacity: 0.4; cursor: default; }
-.cv-tb-btn[aria-pressed="true"] { color: var(--hot); background: rgba(242, 163, 58, 0.12); } /* a toggle that is on (Snap) */
+.cv-tb-btn[aria-pressed="true"] { color: var(--hot); background: rgba(242, 163, 58, 0.12); } /* a toggle that is on (Lock view, Minimap) */
 .cv-tb-btn[aria-pressed="false"] { color: var(--mute); }
 /* (2a) ∿ the mod cables' visibility: Always (lit), On select (plain), Never (struck through) */
 .cv-tb-btn[data-cv-tb="mods"] { position: relative; }
@@ -856,19 +856,17 @@ main.cv-stage { position: relative; z-index: 0; min-height: 0; min-width: 0; ove
 .cv-tb-chip { height: 30px; padding: 0 12px; border-radius: 15px; border: 1px solid #5a4320; background: #1d1810; color: var(--hot);
   font: 600 11px/1 var(--ui); letter-spacing: 0.02em; white-space: nowrap; -webkit-tap-highlight-color: transparent; }
 .cv-tb-chip[hidden] { display: none; }
-.cv-tb > [data-cv-tb="tools"] { display: none; }
+/* the first button: always there, its own box beside the row (the row's height); it folds the row and the minimap away to leave
+   itself alone in the corner (cv-world setToolbarCollapsed, remembered), and brings them back. The page-zoomed chip is a notice: it stays */
+.cv-tb > [data-cv-tb="tools"] { width: 42px; height: 42px; border: 1px solid #2b2e34; border-radius: 12px; background: rgba(19, 20, 23, 0.94);
+  box-shadow: 0 10px 28px -10px rgba(0, 0, 0, 0.7), inset 0 1px 0 rgba(255, 255, 255, 0.04); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+.cv-tb[data-collapsed] > .cv-tb-row { display: none; }
 @media (pointer: coarse) {
+  .cv-tb > [data-cv-tb="tools"] { width: 52px; height: 52px; border-radius: 14px; }
   .cv-tb-btn { width: 44px; height: 44px; border-radius: 11px; }
   .cv-tb-btn svg { width: 20px; height: 20px; }
   .cv-tb-pct { min-width: 62px; font-size: 13px; }
   .cv-tb-chip { height: 36px; border-radius: 18px; }
-}
-/* portrait / Stage Manager widths (SPEC §2.14): one ⊕ button that opens the row */
-@media (max-width: 900px) {
-  .cv-tb > [data-cv-tb="tools"] { display: inline-flex; border: 1px solid #2b2e34; border-radius: 12px; background: rgba(19, 20, 23, 0.94);
-    box-shadow: 0 10px 28px -10px rgba(0, 0, 0, 0.7); }
-  .cv-tb > [data-cv-tb="tools"][aria-expanded="true"] { color: var(--hot); border-color: #5a4320; }
-  .cv-tb:not([data-open]) > .cv-tb-row { display: none; }
 }
 /* stage 1c: the minimap above the toolbar (cv-world buildMap; drawn on a canvas) and the marquee in #overlay */
 #cvToolbar .cv-minimap { position: absolute; left: 0; bottom: calc(100% + 8px); width: 176px; height: 112px; pointer-events: auto;

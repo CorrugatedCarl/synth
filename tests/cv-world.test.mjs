@@ -10,6 +10,7 @@ import './v8-guard.mjs';
 // Run alone: node --max-old-space-size=2048 --test tests/cv-world.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import * as dom from './wk-dom.mjs';
 import * as W from '../cv-world.js?v=9';
 import * as wk from '../wk.js?v=9';
@@ -42,7 +43,7 @@ test('maths: clampK, toWorld ∘ toLocal = identity, panCam is a finger delta, s
     near(w.x, x, 1e-6, 'x'); near(w.y, y, 1e-6, 'y');
   }
   eq(W.panCam({ tx: 10, ty: 20, k: 0.5 }, 5, -7), { tx: 15, ty: 13, k: 0.5 }, 'content follows the finger');
-  eq([W.DOT, W.MAJOR, W.SNAP_PREF], [32, 128, 'synth.cv.snap'], 'the visible grid, its pref');
+  eq([W.DOT, W.MAJOR, ['SNAP_PREF', 'ZOOM_STEPS'].filter(k => k in W)], [32, 128, []], 'the visible grid; no snap pref (always on), no zoom steps (the toolbar has no ⊖ / ⊕)');
   eq([W.snap(13), W.snap(17), W.snap(48), W.snap(-3), W.snap(-20), W.snap(17, 16)], [0, 32, 64, 0, -32, 16], 'default: the dots (DOT)');
   ok(!Object.is(W.snap(-3), -0), 'no −0');
 });
@@ -683,6 +684,7 @@ test('native hand-over: visualViewport.scale 1.5 → hooks false, [data-cv-nativ
   world.on('native', x => got.push(x.on));
   const chip = all(tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'native');
   eq([world.native, chip.hidden], [false, true]);
+  world.setToolbarCollapsed(true); // the page-zoomed chip is a notice, not a tool: it shows beside the one button too
   vv.scale = 1.5; vv.dispatchEvent(new Ev('resize'));
   eq([world.native, vp.hasAttribute('data-cv-native'), chip.hidden, got], [true, true, false, [true]]);
   eq([world.hooks.pan(5, 5, { cx: 300, cy: 300 }), world.hooks.zoom(1.2, 300, 300, { cx: 300, cy: 300 })], [false, false], 'every hook hands back');
@@ -1026,7 +1028,7 @@ test('fit: the true fit with the 48 px margin — below 0.5 too (no card level a
   eq(world.k, W.K_MIN, 'clamped at K_MIN');
 });
 
-test('keys (focus in the viewport or on a module root / bar): 0 fits, 1 = 100 %, arrows nudge the selection one GRID (Shift ×4) through onMove start / end; form controls and play keys are not the canvas\'s', () => {
+test('keys (focus in the viewport or on a module root / bar): 0 fits, 1 = 100 %, arrows nudge the selection one dot (Shift ×4) through onMove start / end; form controls and play keys are not the canvas\'s', () => {
   const { vp, world, frame, item, d } = setup();
   const a = item('a', 16, 24, 300, 200), moves = [];
   a.onMove = (x, y, ph) => moves.push(ph + ':' + x + ',' + y);
@@ -1040,10 +1042,8 @@ test('keys (focus in the viewport or on a module root / bar): 0 fits, 1 = 100 %,
   eq(key('ArrowRight'), [true, true]);
   eq(key('ArrowDown', { shiftKey: true }), [true, true]);
   eq(moves, ['start:64,32', 'end:64,32', 'start:64,160', 'end:64,160'], 'snapping: onto the dots, a dot a time (Shift ×4); one start / end pair per press');
-  world.setSnap(false);
   eq(key('ArrowRight'), [true, true]);
-  eq(moves.slice(-2), ['start:72,160', 'end:72,160'], 'snap off: the fine step from where it is');
-  world.setSnap(true);
+  eq(moves.slice(-2), ['start:96,160', 'end:96,160'], 'always a dot: onto the dots first, then 32');
   eq(key('a'), [false, false], 'a play key');
   eq(key(' '), [false, false], 'Space');
   eq(key('a', { metaKey: true }), [true, true], '⌘A: select all (one selection in 1b)');
@@ -1134,26 +1134,83 @@ test('wk.localPoint inside a module under the world transform: layout px at k = 
   }
 });
 
-test('toolbar: − / % / + / fit / tidy / ∿ (2a: the mod cables\' visibility) / the native chip; ⊕ ⊖ step the zoom about the band centre, % resets to 100 %; folds behind one ⊕ button', () => {
+test('toolbar: % / fit / tidy / ∿ (2a: the mod cables\' visibility) / the native chip; no ⊖ / ⊕ (pinch, wheel and keys zoom), no Snap (always on); the % tap resets to 100 %; the tools button folds the rest', () => {
   const { tb, world, frame, tidy, item } = setup();
   const btn = n => all(tb).find(x => x.getAttribute && x.getAttribute('data-cv-tb') === n);
-  eq(['out', 'pct', 'in', 'fit', 'tidy', 'mods', 'native', 'tools'].map(n => !!btn(n)), [true, true, true, true, true, true, true, true]);
-  eq([btn('mods').disabled, btn('mods').getAttribute('aria-label'), btn('pct').textContent], [false, 'Modulation cables: Always', '100%']);
+  eq(['pct', 'fit', 'tidy', 'lock', 'map', 'mods', 'native', 'tools'].map(n => !!btn(n)), [true, true, true, true, true, true, true, true]);
+  eq(['out', 'in', 'snap'].map(n => !!btn(n)), [false, false, false], 'no ⊖, no ⊕, no Snap');
+  eq(all(tb).filter(n => n.getAttribute && n.getAttribute('data-cv-tb')).map(n => n.getAttribute('data-cv-tb')), ['tools', 'pct', 'fit', 'tidy', 'lock', 'map', 'mods', 'native'], 'the order');
+  eq([btn('mods').disabled, btn('mods').getAttribute('aria-label'), btn('pct').textContent, btn('pct').getAttribute('aria-label')], [false, 'Modulation cables: Always', '100%', 'Zoom 100% — reset to 100 %']);
   world.add(item('a', 0, 0, 500, 300)); frame();
-  btn('in').click(); frame(30);
-  eq([world.k, btn('pct').textContent], [1.25, '125%']);
-  btn('in').click(); btn('in').click(); frame(30);
-  eq(world.k, 2, 'steps compose while animating');
-  btn('out').click(); frame(30);
-  eq(world.k, 1.5);
+  world.setCamera({ tx: 0, ty: 0, k: 1.5 }); frame(30);
+  eq([world.k, btn('pct').textContent, btn('pct').getAttribute('aria-label')], [1.5, '150%', 'Zoom 150% — reset to 100 %'], 'the readout follows the zoom');
   btn('pct').click(); frame(30);
-  eq([world.k, btn('pct').textContent], [1, '100%']);
+  eq([world.k, btn('pct').textContent], [1, '100%'], 'a tap on the % resets to 100 %');
   btn('tidy').click();
   eq(tidy.n, 1);
   btn('fit').click(); frame(30);
   eq(cam(world.cam), cam(W.fitCam([{ x: 0, y: 0, w: 500, h: 300 }], 1000, 600)));
+});
+
+/* ------------------------------------------------------------------ Snap to grid is always on (the user: "remove the grid snap button") */
+test('snap to grid is always on: no toolbar button, no snapOn / setSnap, no pref; ghost drops and keyboard nudges land on the dots (a ghost that says snap: false still pins one); a saved synth.cv.snap = false is ignored', () => {
+  const { tb, vp, world, prefs, frame, item } = setup({ prefs: [['synth.cv.snap', false]] });
+  frame();
+  eq(all(tb).filter(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'snap').length, 0, 'no Snap button');
+  eq([typeof world.snapOn, typeof world.setSnap], ['undefined', 'undefined'], 'no toggle API');
+  const g = world.ghost({ x: 500, y: 400, w: 200, h: 100, label: 'x' });
+  eq([g.x, g.y], [416, 256], 'a saved "off" is ignored: the outline sits on the dots');
+  const f = world.ghost({ x: 500, y: 400, w: 200, h: 100, snap: false });
+  eq([f.x, f.y], [400, 250], 'a ghost that says snap: false (over a target) still follows the pointer');
+  const a = item('a', 20, 40, 100, 100), moves = [];
+  a.onMove = (x, y, ph) => moves.push(ph + ':' + x + ',' + y);
+  a.setPos = (x, y) => { a.x = x; a.y = y; };
+  world.add(a); frame(); world.select('a');
+  vp.focus();
+  world.key(new Ev('keydown', { key: 'ArrowRight', cancelable: true, bubbles: true }));
+  eq(moves, ['start:64,32', 'end:64,32'], 'a nudge from off the dots: onto them, a dot further');
+  eq(prefs.get('synth.cv.snap'), false, 'the stale pref is left alone: never read, never written');
+});
+
+/* ------------------------------------------------------------------ the toolbar collapses to one button (the user's request) */
+test('toolbar collapse: expanded by default; the tools button (aria-expanded, a label, always the first thing in the corner) folds the toolbar to that one button and back; remembered in synth.cv.tbcollapsed; a saved true starts collapsed, anything else expanded; the minimap steps aside while collapsed (its pref untouched)', () => {
+  const { tb, world, prefs, frame } = setup();
+  frame();
+  const btn = n => all(tb).find(x => x.getAttribute && x.getAttribute('data-cv-tb') === n);
+  const bar = btn('tools').parentNode, mm = tb.childNodes.find(n => n.className === 'cv-minimap'), row = bar.childNodes.find(n => n.className === 'cv-tb-row');
+  place(tb, 56, 640, 60, 44); place(mm, 56, 520, 176, 112);
+  eq(W.TB_PREF, 'synth.cv.tbcollapsed');
+  eq([btn('tools').tagName, btn('tools').type, btn('tools').className], ['BUTTON', 'button', 'cv-tb-btn'], 'a real button of the toolbar\'s own style (44 px on a coarse pointer: .cv-tb-btn)');
+  eq([bar.childNodes[0] === btn('tools'), row.contains(btn('tools'))], [true, false], 'the first thing in the corner, outside the row that hides');
+  eq([bar.hasAttribute('data-collapsed'), btn('tools').getAttribute('aria-expanded'), !!row.id && btn('tools').getAttribute('aria-controls') === row.id, btn('tools').getAttribute('aria-label'), btn('tools').title, world.toolbarCollapsed()],
+    [false, 'true', true, 'Collapse toolbar', 'Collapse toolbar', false], 'expanded');
+  const open = String(btn('tools').innerHTML);
+  ok(/<svg[^>]*aria-hidden="true"/.test(open), 'an icon');
+  eq([mm.hasAttribute('hidden'), world.reserved().length], [false, 2], 'the minimap shows; the band keeps clear of it and of the toolbar');
+  const told = [];
+  world.on('toolbar', c => told.push(c));
   btn('tools').click();
-  eq([btn('tools').getAttribute('aria-expanded'), btn('tools').parentNode.hasAttribute('data-open')], ['true', true]);
+  eq([bar.hasAttribute('data-collapsed'), btn('tools').getAttribute('aria-expanded'), btn('tools').getAttribute('aria-label'), btn('tools').title, world.toolbarCollapsed(), prefs.get('synth.cv.tbcollapsed'), told],
+    [true, 'false', 'Expand toolbar', 'Expand toolbar', true, true, [true]], 'collapsed');
+  ok(String(btn('tools').innerHTML) !== open, 'the icon changes: "tools" when collapsed, "fold" when open');
+  eq([mm.hasAttribute('hidden'), prefs.has(W.MAP_PREF), world.mapOn(), world.reserved().length], [true, false, true, 1], 'the minimap steps aside (its own pref not written, still on); the band keeps clear of the one button only');
+  btn('tools').click();
+  eq([bar.hasAttribute('data-collapsed'), btn('tools').getAttribute('aria-expanded'), String(btn('tools').innerHTML) === open, world.toolbarCollapsed(), prefs.get('synth.cv.tbcollapsed'), mm.hasAttribute('hidden'), told],
+    [false, 'true', true, false, false, false, [true, false]], 'expanded again');
+  world.setToolbarCollapsed(true); world.setToolbarCollapsed(true);
+  eq(told, [true, false, true], 'a repeat is no event');
+  eq(mm.hasAttribute('hidden'), true);
+  world.setMap(false); world.setToolbarCollapsed(false);
+  eq(mm.hasAttribute('hidden'), true, 'expanding does not bring back a minimap the user switched off');
+  for (const v of [true, 1, 'true', null, 'x', 0, false]) {
+    const S = setup({ prefs: [['synth.cv.tbcollapsed', v]] });
+    S.frame();
+    const b = all(S.tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'tools'), m2 = S.tb.childNodes.find(n => n.className === 'cv-minimap');
+    eq([S.world.toolbarCollapsed(), b.parentNode.hasAttribute('data-collapsed'), b.getAttribute('aria-expanded'), m2.hasAttribute('hidden')], v === true ? [true, true, 'false', true] : [false, false, 'true', false], 'saved ' + String(v));
+  }
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  ok(/\.cv-tb\[data-collapsed\] > \.cv-tb-row \{ display: none; \}/.test(css), 'style.css hides the row (and only the row: the page-zoomed chip is a notice and stays) when collapsed');
+  ok(!/\.cv-tb:not\(\[data-open\]\)/.test(css) && !/\[data-cv-tb="tools"\] \{ display: none; \}/.test(css), 'no width-bound fold left: the button is always there; the choice is the user\'s, remembered');
 });
 
 test('setPinchMode persists synth.cv.pinch and marks the viewport; setActive(false) stops everything and plans nothing; destroy() takes every listener off', () => {
@@ -1169,27 +1226,6 @@ test('setPinchMode persists synth.cv.pinch and marks the viewport; setActive(fal
   world.setActive(true); frame(2);
   world.destroy();
   eq([vp.listenerCount('pointerdown'), vp.listenerCount('wheel'), vp.listenerCount('pointermove'), w.listenerCount('focusin'), win.listenerCount('resize'), win.listenerCount('touchstart')], [0, 0, 0, 0, 0, 0]);
-});
-
-test('Snap to grid: the toolbar toggle (aria-pressed, remembered in synth.cv.snap, a snap event); off = free ghost drops; a saved off starts off', () => {
-  const { tb, world, prefs, frame } = setup();
-  frame();
-  const b = all(tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'snap');
-  ok(b, 'the Snap button');
-  eq([b.getAttribute('aria-pressed'), world.snapOn()], ['true', true], 'on by default');
-  const told = [];
-  world.on('snap', on => told.push(on));
-  b.click();
-  eq([b.getAttribute('aria-pressed'), world.snapOn(), prefs.get('synth.cv.snap')], ['false', false, false]);
-  eq(told, [false], 'a snap event');
-  const g = world.ghost({ x: 500, y: 400, w: 200, h: 100, label: 'x' });
-  eq([g.x % 32 !== 0 || g.y % 32 !== 0, g.x, g.y], [true, 400, 250], 'off: the outline follows the pointer exactly');
-  b.click();
-  eq([world.snapOn(), prefs.get('synth.cv.snap')], [true, true]);
-  const S2 = setup({ prefs: [['synth.cv.snap', false]] });
-  S2.frame();
-  const b2 = all(S2.tb).find(n => n.getAttribute && n.getAttribute('data-cv-tb') === 'snap');
-  eq([S2.world.snapOn(), b2.getAttribute('aria-pressed')], [false, 'false'], 'restored off');
 });
 
 test('∿ (2a): the toolbar cycles the mod cables\' visibility Always → On select → Never → Always (data-mode, title, aria-label), remembered in synth.cv.mods, a \'mods\' event per change; setModsMode; a saved mode restores; anything else is Always', () => {
@@ -1331,13 +1367,13 @@ test('minimap (1c): mapFit pure; drawn from cached rects only when the camera or
 });
 
 /* ------------------------------------------------------------------ the Lock view toggle (the user's iPad request) */
-test('lock view: the toolbar toggle next to Snap (a padlock, aria-pressed, "Lock view: on / off", remembered in synth.cv.lock, a lock event, [data-cv-locked]); a saved on starts locked', () => {
+test('lock view: the toolbar toggle after Tidy (a padlock, aria-pressed, "Lock view: on / off", remembered in synth.cv.lock, a lock event, [data-cv-locked]); a saved on starts locked', () => {
   const { tb, vp, world, prefs, frame } = setup();
   frame();
   const btns = all(tb).filter(n => n.getAttribute && n.getAttribute('data-cv-tb')), names = btns.map(n => n.getAttribute('data-cv-tb'));
   const b = btns.find(n => n.getAttribute('data-cv-tb') === 'lock');
   ok(b, 'the Lock button');
-  eq(names.indexOf('lock'), names.indexOf('snap') + 1, 'next to Snap');
+  eq(names.indexOf('lock'), names.indexOf('tidy') + 1, 'after Tidy (the Snap button is gone)');
   eq([W.LOCK_PREF, b.getAttribute('aria-pressed'), b.title, b.getAttribute('aria-label'), world.lockOn(), vp.hasAttribute('data-cv-locked')],
     ['synth.cv.lock', 'false', 'Lock view: off', 'Lock view: off', false, false], 'off by default');
   const open = String(b.innerHTML);
@@ -1419,17 +1455,14 @@ test('lock view: no gesture moves the camera — mouse / finger drags (empty can
   eq(cam(world.cam).tx, c0.tx + 50, 'unlocked: the same drag pans again');
 });
 
-test('lock view: the toolbar\'s + / − / % / fit and the minimap (a tap, a drag) still move the camera; box-select (Shift-drag, a held finger) still works; a second finger still ends a finger\'s marquee unapplied (two fingers win) without moving the camera', () => {
+test('lock view: the toolbar\'s % / fit and the minimap (a tap, a drag) still move the camera; box-select (Shift-drag, a held finger) still works; a second finger still ends a finger\'s marquee unapplied (two fingers win) without moving the camera', () => {
   const { tb, vp, ov, world, item, frame } = setup();
   const a = item('a', 0, 0, 200, 100), b = item('b', 400, 0, 200, 100);
   world.add(a); world.add(b); frame();
   world.setLock(true);
   const btn = n => all(tb).find(x => x.getAttribute && x.getAttribute('data-cv-tb') === n);
-  btn('in').click(); frame(30);
-  eq(world.k, 1.25, '+');
-  btn('out').click(); frame(30);
-  eq(world.k, 1, '−');
-  btn('in').click(); frame(30); btn('pct').click(); frame(30);
+  world.setCamera({ tx: 0, ty: 0, k: 1.5 }); frame(30);
+  btn('pct').click(); frame(30);
   eq(world.k, 1, '%');
   btn('fit').click(); frame(30);
   eq(cam(world.cam), cam(W.fitCam([a.rect(), b.rect()], 1000, 600)), 'fit');

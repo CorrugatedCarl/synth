@@ -296,23 +296,23 @@ test('top-bar move: world delta = screen delta / k, snap to the dots (32), one s
   assert.equal(moves.at(-1)[0], 'end', 'no re-projection after the drop');
 });
 
-test('top-bar move: with the canvas Snap toggle off the module follows the pointer freely (no Shift needed)', () => {
+test('top-bar move: always onto the dots — there is no Snap toggle, so a world that still answers snapOn() = false is ignored', () => {
   const doc = fresh(), W = fakeWorld(0.5);
   W.snapOn = () => false;
   const { m, moves } = mod({ x: 16, y: 24 }, { doc, world: W });
   ptr(m.bar, 'pointerdown', 500, 300, { pointerId: 1, pointerType: 'mouse' });
   ptr(m.bar, 'pointermove', 541, 311, { pointerId: 1, pointerType: 'mouse' });
-  assert.deepEqual(moves[1], ['move', 98, 46], 'unsnapped: 16 + 41 / 0.5, 24 + 11 / 0.5');
+  assert.deepEqual(moves[1], ['move', 96, 32], 'snapped: 16 + 41 / 0.5 = 98 → 96, 24 + 11 / 0.5 = 46 → 32');
   ptr(m.bar, 'pointerup', 541, 311, { pointerId: 1, pointerType: 'mouse' });
 });
 
-test('top-bar move: Shift = no snap; a two-finger pointercancel restores the start; Escape cancels', () => {
+test('top-bar move: Shift does not free it (always on the dots); a two-finger pointercancel restores the start; Escape cancels', () => {
   const doc = fresh(), W = fakeWorld(1);
   const { m, moves } = mod({ x: 0, y: 0 }, { doc, world: W });
   doc.body.append(m.el);
   ptr(m.bar, 'pointerdown', 100, 100, { pointerId: 3, pointerType: 'mouse', shiftKey: true });
-  ptr(m.bar, 'pointermove', 113, 105, { pointerId: 3, pointerType: 'mouse', shiftKey: true });
-  assert.deepEqual(moves.at(-1), ['move', 13, 5], 'free with Shift');
+  ptr(m.bar, 'pointermove', 120, 100, { pointerId: 3, pointerType: 'mouse', shiftKey: true });
+  assert.deepEqual(moves.at(-1), ['move', 32, 0], 'on the dots with Shift too');
   ptr(m.bar, 'pointermove', 140, 150, { pointerId: 3, pointerType: 'mouse', shiftKey: true });
   fire(m.bar, 'pointercancel', { pointerId: 3, gesture: 'two-finger' });
   assert.deepEqual(moves.at(-1), ['cancel', 0, 0], 'rolled back');

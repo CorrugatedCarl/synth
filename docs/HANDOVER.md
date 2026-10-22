@@ -28,8 +28,8 @@ concrete UX feedback, and expect finished work to be pushed live.
 - Trays slide and collapse; side trays (Sources/Effects) never close by themselves — only their rail, ✕ or Escape.
 - Canvas: modules are NOT resizable (fixed sizes that fit content); classic synths default to fixed, hardware-accurate front panels with a
   per-module "Simple layout" alternative (⋯ menu and the Sources tray's Hardware | Simple switch); modules render identically at every
-  zoom (no cards/LOD); grid fixed to the world (32 px dots, 128 px major) with snap-to-dots and a Snap toggle; Lock view toggle (minimap
-  and zoom/fit buttons still move the view); NO module collision (requested then withdrawn — modules move freely).
+  zoom (no cards/LOD); grid fixed to the world (32 px dots, 128 px major) with snap-to-dots ALWAYS on (no toggle since 2026-10-22); Lock view toggle (minimap
+  and %/fit buttons still move the view); the toolbar has no ⊖/⊕ and folds to one button; NO module collision (requested then withdrawn — modules move freely).
 - Canvas decisions from the spec questions: pinch on canvas zooms the canvas; FX panel = pedalboard of effects; start fresh on the canvas
   site (no library export/import, no change to main for it); mouse drag on empty canvas pans, Shift-drag box-selects; mod cables always
   shown; knob-turn undo keeps today's policy; Serum per instance: 3 OSC, 1 SUB, 1 NOISE, 2 FILTER; ONE mod wheel per project.
