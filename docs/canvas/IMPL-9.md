@@ -489,6 +489,8 @@ converters and MAIN OUT are the controller's other parts. Per-voice later: this 
 
 ### 3.8 CPU: rules and bench rows
 
+**Superseded by spike (a)'s measured numbers — §12 "Spike (a)" (the lead's decisions there win over this section's provisional values).**
+
 - Per module type alone, OS 4, M4 Max node, recorded in §12 by V9b (informational, feeds `cv-cost`): oscillators ≤ 0.0015, 904A ≤ 0.002,
   907A ≤ 0.01 (36 sections at the OS rate: ≈ 0.0097 measured, §3.4 — or ≤ 0.003 at the base rate if spike (a) picks it), the rest ≤
   0.0005 [C; spike (a) revises; review #8].
@@ -994,6 +996,47 @@ today's Moog Modular is still in Hardware, unchanged; knobs on the Moog modules 
 modulators yet (later).
 
 ## 12. Notes (the builders fill in)
+
+### Spike (a): the evaluator's CPU (lane A, 2026-10-21, base b2f3ecc; scripts and raw results in the lead's scratchpad `9/spike-a/`)
+
+Built: a typed-array prototype of §3.3 (nodes per (module, section), Tarjan SCCs, topological order, loop steps per sample with
+back-edges one sample late, CH = 4·OS chunks, 2 ms ramps, the engine's half-band decimators copied) over stand-in DSP of the right
+cost (polyBLEP / BLAMP cores with an `ex2` exponential converter, engine.js's `Ladder` maths copied with its second pass, 36 TPT
+sections for the 907A, the 911 / 902 / 995 / 923), against **c3 measured in the same harness** on V8 (node 24 + v8-guard) and
+JavaScriptCore (the macOS `jsc`, the IMPL-1d / 2b method); 3 processes per cell, × c3 = the median of 9 alternating 1 s pairs. All
+three evaluation modes render **bit-identical** output; `noAlloc` passes. A row ≈ the prototype + 0.0018 (Inst extras + Track).
+
+| graph (OS 4, 48 kHz) | V8 | JSC | iPad est. (× 0.88) |
+|---|---|---|---|
+| *Classic bass* — chunk + output mask (recommended) | 0.0180 (1.49 × c3) | 0.0138 (1.22 ×) | ≈ 0.014 with the Track share |
+| m9x (13 modules, a 4-node loop, sync, FM at k 4.4, the 907A) — chunk + fused 907A + mask | 0.0383 (3.14 ×) | 0.0358 (3.12 ×) | ≈ 0.033 |
+| *Drone* — chunk + fused 907A + mask | 0.0209 (1.72 ×) | 0.0184 (1.60 ×) | ≈ 0.017 |
+| per-sample interpretive (for comparison) | 1.8–2.2 × the chunk loop | 1.9–2.7 × | — |
+
+Per module alone (OS 4, V8 / JSC): 921 0.0027–0.0030 (masked 0.0016 / 0.0020) · 921B 0.0023 (masked 0.0016) · 921A 0.0004 / 0.0002 ·
+**904A 0.0055 / 0.0047** (0.0105 / 0.013 with its second pass, k > 2 and f_c > fs/35) · 907A fused 0.0078 / 0.0075 (plain 0.0155 / 0.0118)
+· 911 0.0005 · 902 0.0008 / 0.0005 · 995 0.0002 per section · 923 0.0005 / 0.0016 · decimators 0.0035 / 0.0024 · Track 0.0018. A loop
+member costs ≈ 6–9 ns per sample at OS 4 (1.5–1.9 × its block cost). Cold start: the first quantum of a cold patch takes 2.0–2.7 ms (of
+2.67); after a warm-up round on other graphs 0.12–0.15 ms. Recompile (one cord moved) 0.04–0.08 ms, max 0.43 ms; the first `graph()` in a
+cold scope 0.75–1 ms. Ramps ≤ 3 %. Denormals: no penalty on Apple silicon (flush kept for x86 and exact-zero tails).
+
+**The lead's decisions (2026-10-21), binding on V9a / V9b / E9 / K9:**
+1. §3.3 stands — **block per chunk; per-sample only inside loop steps** — plus: an **output mask** (`graph()` marks which outputs some
+   input reads; a module computes only those — bit-identical, −16–19 % on *Classic bass*); `ctl()` **once per module per chunk** (guarded
+   by the chunk number: the controller is up to 7 nodes, the 923 / 995 3); **ramps into loop members applied per sample** inside the loop
+   step; recursive-state **flush every 32nd absolute chunk** (keyed on the absolute chunk number so D7 holds); retiring nodes stay
+   scheduled until their ramps end (the spike's shortcut of reading their last buffers is not correct); per-class span helpers written out
+   in each class (a shared base method goes megamorphic).
+2. §3.4: the **907A fused per band at the OS rate** (sections share coefficients, state in registers; within 1e-15 of plain); the
+   base-rate option is **dropped** (as dear or dearer, ≈ 1.5 ms latency, can't be a loop member). Keep `ex2` and the rational `tan`
+   (`Math.pow` +7–17 %, `Math.tan` +4–8 %); per-sample g in the 904A (≈ free).
+3. §3.8 per-type limits (OS 4, node): oscillators ≤ 0.002 with the mask, **904A ≤ 0.006** (≤ 0.011 resonant and bright), 907A ≤ 0.009,
+   923 ≤ 0.002, the rest ≤ 0.001. **Rows (node / jsc / ipad): m9p 0.025 / 0.02 / 0.02 · m9x 0.05 / 0.045 / 0.045 · m9d 0.03 / 0.025 /
+   0.025** (≈ 1.25 × the estimates: the stand-ins lack V9b's real sync / clamp corrections, drift, glide). cv-cost's m900 base ≈ 0.0055
+   (decimators + Track) + the modules' costs.
+4. **`warmPatch` is mandatory** (§3.1): every class, a loop step and the ramps, at scope start after the drums' warm-up rounds.
+5. `graph()` runs on the audio thread: a drag must never post a graph per frame — throttled as 2b's posts (a cord's graph is posted on
+   plug / pull / re-patch, not while the plug is in the air).
 
 ## 13. Review log
 
