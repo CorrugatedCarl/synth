@@ -21,8 +21,9 @@
 //   shadow strips, the cords as one strip with rim / body / highlight bands anti-aliased by fwidth, ≥ 2.5 device px, the plugs as
 //   instanced SDF quads); no geometry upload on a camera-only frame; its own rAF only while a cord is awake, held or in flight (a
 //   frame where the camera also moves is drawn by the world's write: one draw). Free play: a plug dragged from an empty jack (a new
-//   cord), a plugged one pulled (re-patch, or away: out, "tap to undo"), a cord tapped (plucked, selected), held 350 ms (grabbed),
-//   a drag on a cord pans; two fingers cancel a drag; the snapped target named in a chip beside the finger.
+//   cord), a plugged one pulled (re-patch, or away: out, "tap to undo"); two fingers cancel a drag; the snapped target named in a
+//   chip beside the finger. Only the plug ends take presses (the user, 2026-10-21: "just the ends"): a cord's body is not
+//   interactive — a touch there goes to whatever is under it (the canvas pan, a knob, a jack); the page plucks cords by script only.
 //   Runs: step 1 (?m9=1) automatic — per scene a self-check, M0's scripted phases (idle / pan / zoom / settle / deep / deepSettle +
 //   firstMove / settle), the cords asleep under camera frames, all cords awake (plucked) still and in a deep pinch, the glue probe
 //   mid-pan and mid-pinch (a plug's centre vs its jack's DOM centre: the jack span's rect and the GL pixels read in the same
@@ -167,7 +168,7 @@ const BASE = IS_PAGE ? new URL('../', location.href).href : '';
 const Q = new URLSearchParams(IS_PAGE ? location.search : '');
 const MODE = Q.get('hand') === '1' ? 'hand' : Q.get('cords') === '1' ? 'cords' : 'auto';
 const AUTO = Q.get('auto') === '1', ONLY = Q.get('scenes') ? Q.get('scenes').split(',') : null, HOLD = Q.get('cordhold') === '1', GLTEST = Q.get('gltest') === '1';
-const MiB = 1024 * 1024, BAR_H = 40, READ_K = 0.5, TAP_TOUCH = 8, TAP_MOUSE = 4, SNAP_PX = 32, HOLD_MS = 350, HIT_PX = 10;
+const MiB = 1024 * 1024, BAR_H = 40, READ_K = 0.5, TAP_TOUCH = 8, TAP_MOUSE = 4, SNAP_PX = 32, HIT_PX = 10;
 const RES_KEY = 'm9.res', HB_KEY = 'm9.hb', KIND = 'ui-m9';
 // the stand-in art: a panels/modular.js section per type (§5 b: 921, 995, 903A, 904A, 902, 911, CP3A; 904B stands in for the
 // 907A); the Model 15 set (§2.2) as [module, its art, its row (0 the controller, 1 sources, 2 modifiers)]
@@ -187,7 +188,7 @@ const SCENES = {
 };
 const AUTO_ORDER = ['hw5', 'm13', 'm13w', 'm20', 'm30', 'm30h', 'm13s', 'hw5'];
 const HAND_ORDER = ['hw5', 'm13', 'm13w', 'm20', 'm30', 'hw5'];
-const STEPS = ['Automatic runs (about 7 minutes, hands off)', 'Hand test (about 10 minutes: pinch and pan as the bar says)', 'Cords (about 5 minutes: plug, pull, pluck, then tell us how they feel)'];
+const STEPS = ['Automatic runs (about 7 minutes, hands off)', 'Hand test (about 10 minutes: pinch and pan as the bar says)', 'Cords (about 5 minutes: plug, move and pull out cords by their plugs, then tell us how they feel)'];
 
 /* ------------------------------------------------------------------------------------------------ small helpers */
 const $ = (s, r = document) => r.querySelector(s);
@@ -546,7 +547,7 @@ function sleepState(S) { if (A.W.el) { if (A.W.k < READ_K - 1e-9) A.W.el.setAttr
 async function teardown(S) {
   if (!S) return;
   stopPlay();
-  dragEnd(true); bodyEnd();
+  dragEnd(true);
   for (const f of S.offs.splice(0)) { try { f(); } catch (e) { console.error(e); } }
   if (S.cords) { S.cords.destroy(); S.cords = null; }
   for (const r of S.mods) {
@@ -968,8 +969,7 @@ function createCords(S, o) {
 // cancels through jackStop): a new cord from an empty jack, a plugged one's plug pulled; the drag's free end follows the finger,
 // the nearest compatible empty jack within SNAP_PX screen px is the target (its name in the chip), release there → plug /
 // re-patch, elsewhere → a new cord vanishes, a pulled one comes out ("tap to undo"). Below READ_K the jacks sleep (CSS: a press
-// pans). A press on a cord's body (a module background or the empty canvas under it): a tap plucks and selects it, 350 ms still
-// grabs that point, a drag pans
+// pans). A cord's body takes no press at all (the layer is pointer-events: none and nothing listens for it): the ends only
 const D_ = { on: false, target: null };
 let HOOK = null, CHIP = null, NOTE = null, EVENTS = [];
 const logEv = (type, o) => { EVENTS.push(Object.assign({ type, t: Math.round(now()) }, o || {})); if (EVENTS.length > 400) EVENTS.shift(); if (ON_EVENT) ON_EVENT(type, o || {}); };
@@ -983,7 +983,6 @@ function installInput() {
   Object.defineProperty(H, 'jack', { configurable: true, enumerable: true, get: () => mine, set: f => { prev.jack = f; } });
   Object.defineProperty(H, 'jackCancel', { configurable: true, enumerable: true, get: () => myCancel, set: f => { prev.cancel = f; } });
   HOOK = prev;
-  A.win.addEventListener('pointerdown', bodyDown, true); // (after gesture.js's window listeners: two fingers stay theirs)
   CHIP = A.doc.createElement('div'); CHIP.className = 'm9-chip'; CHIP.hidden = true; A.doc.body.append(CHIP);
   NOTE = A.doc.createElement('div'); NOTE.className = 'm9-note'; NOTE.hidden = true; A.doc.body.append(NOTE);
 }
@@ -1039,9 +1038,8 @@ function dragFollow() {
 }
 function dragUp(e) {
   const G = DRG; if (!G || e.pointerId !== G.id) return;
-  if (!G.started) { // a tap: a plugged jack's cord plucked (the real build opens "Connect to…" here)
-    const p = G.S.cords.plugAt(G.j);
-    if (p) { G.S.cords.pluck(p.c.id, p.end === 'a' ? 2 : STUDIO.N - 3, 9); logEv('jacktap', { jack: label(G.j) }); }
+  if (!G.started) { // a tap on a jack: nothing here (the real build opens the cord's menu on a plug — colour, remove — or "Connect to…")
+    logEv('jacktap', { jack: label(G.j), plugged: !!G.S.cords.plugAt(G.j) });
     dragEnd(false); return;
   }
   const C = G.S.cords, t = G.target, release = { x: G.x, y: G.y };
@@ -1071,37 +1069,6 @@ function undoNote(text, fn) {
   NOTE.onclick = () => { NOTE.hidden = true; clearTimeout(NOTE_T); fn(); };
   clearTimeout(NOTE_T); NOTE_T = setTimeout(() => { NOTE.hidden = true; }, 5000);
 }
-let BD = null;
-function bodyDown(e) {
-  const S = S0.cur;
-  if (!S || !S.cords || BD || DRG || (e.button != null && e.button > 0) || (A.win.__m9in.touches > 1)) return;
-  const t = e.target, bg = t === A.W.viewport || t === A.W.el || A.MOD.isBackground(t);
-  if (!bg) return;
-  const p = A.W.toWorld(e.clientX, e.clientY), hit = S.cords.hit(p.x, p.y, HIT_PX / A.W.k);
-  if (!hit) { if (S.cords.selected) S.cords.sel(null); return; }
-  e.stopImmediatePropagation(); if (e.cancelable) e.preventDefault();
-  BD = { id: e.pointerId, type: e.pointerType || 'mouse', x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, hit, mode: 'press', S, t0: now() };
-  BD.timer = setTimeout(() => { if (BD && BD.mode === 'press') { BD.mode = 'grab'; S.cords.grab(hit.id, hit.i, A.W.toWorld(BD.x, BD.y)); S.cords.sel(hit.id); } }, HOLD_MS);
-  const d = A.doc;
-  BD.offs = [['pointermove', bodyMove], ['pointerup', bodyUp], ['pointercancel', bodyCancel]].map(([ty, f]) => { d.addEventListener(ty, f, true); return () => d.removeEventListener(ty, f, true); });
-}
-function bodyMove(e) {
-  const G = BD; if (!G || e.pointerId !== G.id) return;
-  const dx = e.clientX - G.x, dy = e.clientY - G.y;
-  G.x = e.clientX; G.y = e.clientY;
-  if (G.mode === 'press' && Math.hypot(G.x - G.x0, G.y - G.y0) > (G.type === 'touch' ? TAP_TOUCH : TAP_MOUSE)) { clearTimeout(G.timer); G.mode = 'pan'; A.W.panBy(G.x - G.x0, G.y - G.y0); return; }
-  if (G.mode === 'pan') A.W.panBy(dx, dy);
-  else if (G.mode === 'grab') G.S.cords.grabMove(G.hit.id, A.W.toWorld(G.x, G.y));
-}
-function bodyUp(e) {
-  const G = BD; if (!G || e.pointerId !== G.id) return;
-  if (G.mode === 'press') { G.S.cords.pluck(G.hit.id, G.hit.i, 9); G.S.cords.sel(G.hit.id); logEv('pluck', { cord: G.hit.id }); }
-  else if (G.mode === 'grab') { G.S.cords.release(G.hit.id); logEv('grab', { cord: G.hit.id, ms: Math.round(now() - G.t0) }); }
-  else logEv('cordpan', {});
-  bodyEnd();
-}
-function bodyCancel(e) { const G = BD; if (G && e.pointerId === G.id) { if (G.mode === 'grab') G.S.cords.release(G.hit.id); bodyEnd(); } }
-function bodyEnd() { const G = BD; if (!G) return; BD = null; clearTimeout(G.timer); for (const f of G.offs) f(); }
 
 /* ------------------------------------------------------------------------------------------------ frames (as m3) */
 function recorder() {
@@ -1660,10 +1627,8 @@ const PLAY = [
   { id: 'plug', say: '<b>Plug a new cord</b>: press an empty socket and drag to another one, then let go', ev: 'plug' },
   { id: 'repatch', say: '<b>Move a cord</b>: drag a plug from its socket to a different socket', ev: 'repatch' },
   { id: 'pull', say: '<b>Pull a cord out</b>: drag a plug away from the sockets and let go (tap the message to put it back, if you like)', ev: 'pull' },
-  { id: 'pluck', say: '<b>Tap a cord</b> (not a socket) to pluck it', ev: 'pluck' },
-  { id: 'grab', say: '<b>Press and hold a cord</b> for half a second, then move your finger around and let go', ev: 'grab' },
   { id: 'move', say: '<b>Drag a module</b> by its top bar (the strip with its name) and watch its cords swing', ev: 'modmove' },
-  { id: 'pinch', say: '<b>Pinch and pan</b> while some cords are swinging: do the plugs stay on their sockets?', ev: 'pinch' },
+  { id: 'pinch', say: '<b>Pinch and pan</b> while the cords swing (the page keeps them swinging): do the plugs stay on their sockets?', ev: 'pinch' },
 ];
 async function pageCords() {
   document.body.classList.add('m9-full');
@@ -1723,14 +1688,15 @@ async function pageCords() {
   const offP = A.W.on('cameraend', () => { if (S.cords && S.cords.stats().awake) pinched = true; });
   for (const P of PLAY) {
     sayEl.innerHTML = '<span class="m9-sub">Free play · ' + (PLAY.indexOf(P) + 1) + ' of ' + PLAY.length + '</span><br>' + P.say;
+    let iv = 0;
     const got = await new Promise(r => {
       bSkip.onclick = () => r('skipped');
       ON_EVENT = type => { if (type === P.ev) r('done'); };
-      if (P.ev === 'modmove') { const t = setInterval(() => { if (S.modMoved) { clearInterval(t); r('done'); } }, 200); }
-      if (P.ev === 'pinch') { const t = setInterval(() => { if (pinched) { clearInterval(t); r('done'); } }, 200); }
+      if (P.ev === 'modmove') iv = setInterval(() => { if (S.modMoved) r('done'); }, 200);
+      if (P.ev === 'pinch') { const R0 = rng(11); S.cords.pluckAll(R0); let n = 0; iv = setInterval(() => { if (pinched) r('done'); else if (++n % 12 === 0) S.cords.pluckAll(R0); }, 200); } // (the cords plucked by script every 2.4 s: the body takes no touch)
       if (AUTO) window.__m9.play = P.id;
     });
-    ON_EVENT = null;
+    ON_EVENT = null; clearInterval(iv);
     done[P.id] = got;
     await sleep(500);
   }
