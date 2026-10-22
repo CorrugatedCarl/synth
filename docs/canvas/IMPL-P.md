@@ -492,3 +492,9 @@ the view), and two host paths are quadratic (#8: 26 ms each at 512 on the M4, �
 | P-2 · proposal | **The 1g tier's ratio at Medium / Low** (#12). (a) As written: the tier (overlaps; the whole 2D path) stays at the screen's ratio — a device without WebGL2 gets nothing from the presets, an overlapped face looks sharper than its neighbours. (b) The tier at `dE · k` (cv-panel.js:1418, one line + a test; owner H or T): the 2D path gets Low's raster saving at every zoom end, overlaps match. The review recommends **(a)**: the 2D path is the rare fallback, an overlap is momentary, and cv-panel stays out of P (lean) — (b) is one line if the real-device pass meets a device without WebGL2 | cv-panel.js:1386–1471 | **for the lead** |
 
 **Counts**: 1 P1 · 9 P2 · 14 P3 · 1 fine · 2 proposals. Every P1–P3 is fixed in the text above; the proposals wait for the lead.
+
+**The lead's decisions on the skeptic's proposals (2026-10-22):** P-1 — **(c)**: each cord gets a fixed vertex range and only the
+cords that moved are rewritten / uploaded (High's pixels identical, tested against a full rebuild; lane C) — this stage makes 4096
+cords legal. P-2 — **(a)**: the 1g bitmap tier stays at the screen's ratio (a rare no-WebGL2 fallback; (b) stays a one-line option if the
+real-device pass meets such a device). O6 is a known limit, except lane B's two linearised host paths. Lanes T ∥ C ∥ B start now on the
+holding branch `wt-P`; lane H starts after the separate Effects-tray / pull-tab fix lands on `canvas` (it shares main.js and the shell).
