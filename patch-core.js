@@ -1,4 +1,4 @@
-// patch-core.js — patchable modules' pure model (IMPL-9 §1, §2.6, §3.2, §4.5, §7.4; lane K9). ES module whose only import is the
+// patch-core.js — patchable modules' pure model (IMPL-9 §1, §2.6, §3.2, §4.5, §7.4; lane K9 — IMPL-9b §1.2–§1.4, §4.4; lane K9b). ES module whose only import is the
 // family's table (its one import, registering FAMILIES — a family = its table, D5): no family's name, number or constant here, every type, jack and
 // reason word read from FAMILIES[f]; no DOM / timers / storage; node-tested (tests/patch-core.test.mjs).
 //
@@ -27,13 +27,20 @@
 //   setColor(rec, id, c) → { rec }      setDriver(rec, mid, drv | null) → { rec }      setName(rec, mid | null (the patch), name) → { rec }
 //   loadPreset(rec, vals, name | preset, { ensure?: [types] }) → { rec, vals, back, added, bound }   (the topology replaced, the
 //     bound modules' and the controller's knobs written, the rest kept; ensure: add modules until the patch holds that set)
-//   loadSet(rec, vals) = the family's starter on its full set (a full-set tile on the family's own instrument, §1.4)   initPatch(rec, vals) → { rec, vals, back }
-//   A refusal → { rec (the same), why }.
-// payload(rec, f) → { pg, pk } (§3.2): pg = { v: 1, f, mods: [[n, type, drvN | -1]] (0 = the controller), cords: [[aN, aPort, bN,
-//   bPort, g]] (port = the jack's index in its type; sorted) }; pk = FNV-1a of pg (colours, names, cord ids never in it).
-// live(rec) — the family's sink (the controller's output jack) patched; rackLayout(rec, f, sizes) → { mid: { x, y } } relative to the controller's
-// top-left (§4.5); freeSlot(rec, f, mid, placed, sizes); ordinal / title; jacksOf / targets / cordAt (the drag's lists);
-// nextColor (the least-used of PALETTE, ties in palette order); familyOf / isPatchModel; fresh.
+//   loadSet(rec, vals, id?) = a set's starter on its full set (FAMILY.sets[id]; none: the family's set — a set tile on the family's
+//     own instrument, §1.4; IMPL-9b §1.2)   setNeeds(rec, id) → the modules it would add   initPatch(rec, vals) → { rec, vals, back }
+//   A refusal → { rec (the same), why }. A preset writes every routing switch of the patch (IMPL-9b §1.4: its own panels' as
+//   written, the others' lit ones off) and puts them in back.
+// Rear terminals (a jack's `rear: 1`, IMPL-9b §1.3) are no cord's end: endOf / canPlug / jacksOf / normPatch treat them as absent.
+// Bus rows (a type's `bus`, IMPL-9b §1.4): routing switches' hidden connections, resolved from vals — busRows(rec, f, vals),
+//   busInfo(rec, f, vals, mid) (a panel's rows for its tips), isBusKnob(rec, mid, id).
+// payload(rec, f, vals?) → { pg, pk } (§3.2): pg = { v: 1, f, mods: [[n, type, drvN | -1]] (0 = the controller), cords: [[aN, aPort,
+//   bN, bPort, g]] (port = the jack's index in its type; the cords sorted, then the live bus rows sorted) }; pk = FNV-1a of pg
+//   (colours, names, cord ids never in it). vals absent → no bus rows (stage 9's payload).
+// live(rec, f, vals?) — the family's sink (the controller's output jack) patched; liveNodes(rec, f, vals?); rackLayout(rec, f, sizes)
+// → { mid: { x, y } } relative to the controller's top-left (§4.5; the console row, the wide rack: IMPL-9b §4.4); freeSlot(rec, f,
+// mid, placed, sizes); ordinal / title; jacksOf / targets / cordAt (the drag's lists); nextColor (the least-used of PALETTE, ties in
+// palette order); familyOf / isPatchModel; fresh.
 import * as MG from './moog-core.js?v=9';
 
 /* ---------------------------------------------------------------- bounds and tables */
@@ -81,8 +88,9 @@ export const isPatchModel = model => familyOf(model) !== null;
 export const fresh = f => ({ v: 1, f: famOf(f) ? f : MG.FAMILY.id, nid: 1, mods: {}, cid: 1, cords: [] });
 
 /* ---------------------------------------------------------------- ends */
-// '<mid>.<port>' → { end, mid, port, t, T (null: a type the family lacks), j, i } | null (malformed, no such module or jack)
-function endOf(fam, mods, end) {
+// '<mid>.<port>' → { end, mid, port, t, T (null: a type the family lacks), j, i } | null (malformed, no such module or jack; a rear
+// terminal unless `rear` — IMPL-9b §1.3: never a cord's end, bus rows only)
+function endOf(fam, mods, end, rear) {
   if (typeof end !== 'string') return null;
   const k = end.indexOf('.');
   if (k < 1) return null;
@@ -95,7 +103,7 @@ function endOf(fam, mods, end) {
   const T = typeOf(fam, t);
   if (!T) return { end, mid, port, t, T: null, j: null, i: -1 };
   const i = jackIx(T).get(port);
-  return i === undefined ? null : { end, mid, port, t, T, j: T.jacks[i], i };
+  return i === undefined || (T.jacks[i].rear === 1 && rear !== true) ? null : { end, mid, port, t, T, j: T.jacks[i], i };
 }
 const occupied = (cords, end) => cords.some(c => !c.via && (c.a === end || c.b === end));
 // a multiple group (the `any` jacks of E's section) is driven when some connection ends in it
@@ -273,13 +281,14 @@ export function cordAt(rec, end) {
   for (const c of (isObj(rec) && Array.isArray(rec.cords) ? rec.cords : [])) if (!c.via && (c.a === end || c.b === end)) return { id: c.id, which: c.a === end ? 'a' : 'b' };
   return null;
 }
-/** Every jack of the patch (the controller first, then by number): [{ end, mid, port, type, dir, sig, role, label, sec }]. */
+/** Every jack of the patch a cord can take (the controller first, then by number; rear terminals left out):
+ *  [{ end, mid, port, type, dir, sig, role, label, sec }]. */
 export function jacksOf(rec, f) {
   const fam = famOf(f) || famOf(rec && rec.f), out = [];
   if (!fam || !isObj(rec) || !isObj(rec.mods)) return out;
   for (const mid of [CTL, ...mids(rec)]) {
     const t = mid === CTL ? fam.ctl : rec.mods[mid].t, T = typeOf(fam, t);
-    if (T) for (const j of T.jacks) out.push({ end: mid + '.' + j.id, mid, port: j.id, type: t, dir: j.dir, sig: j.sig, role: j.role, label: j.label, sec: j.sec });
+    if (T) for (const j of T.jacks) if (j.rear !== 1) out.push({ end: mid + '.' + j.id, mid, port: j.id, type: t, dir: j.dir, sig: j.sig, role: j.role, label: j.label, sec: j.sec });
   }
   return out;
 }
@@ -461,13 +470,40 @@ export function loadPreset(rec, vals, which, opts) {
     for (const c of fam.types[t].params) e[c.id] = pval(c, q[c.id]);
     np[bound[role]] = e;
   }
+  // every routing switch of the patch (IMPL-9b §1.4, skeptic #6): the bound panels' as written above; an unbound panel's lit ones
+  // off — no hidden row into the preset's modules (a preset is a whole sound); in back with the rest
+  const ms = Object.values(bound), isB = new Set(ms);
+  for (const mid of mids(r)) {
+    const T = isB.has(mid) ? null : typeOf(fam, r.mods[mid].t);
+    if (!T || !Array.isArray(T.bus)) continue;
+    const e0 = isObj(np[mid]) && np[mid]._t === T.id ? np[mid] : null, lit = busSw(T).filter(c => (e0 ? pval(c, e0[c.id]) : c.def) !== 0);
+    if (!lit.length) continue;
+    const e = Object.assign({ _t: T.id }, e0);
+    for (const c of lit) e[c.id] = 0;
+    np[mid] = e; ms.push(mid);
+  }
   nv.p = np;
-  return { rec: r, vals: nv, back: { f: diffVals(v0, nv, ctlIds(fam), Object.values(bound)) }, added, bound };
+  return { rec: r, vals: nv, back: { f: diffVals(v0, nv, ctlIds(fam), ms) }, added, bound };
 }
-/** The family's starter on its full set (a full-set tile on the family's own instrument, §1.4): the missing modules added, one step. */
-export function loadSet(rec, vals) {
-  const fam = famRec(rec);
-  return fam ? loadPreset(rec, vals, fam.starter, { ensure: fam.set }) : { rec, vals, why: 'No patch' };
+// a set by id (IMPL-9b §1.2: FAMILY.sets), absent → the family's own set / starter (stage 9's)
+const setOf = (fam, id) => (id == null ? { set: fam.set, starter: fam.starter } : typeof id === 'string' && isObj(fam.sets) && own(fam.sets, id) ? fam.sets[id] : null);
+/** A set's starter on the full set (a set tile on the family's own instrument, §1.4; IMPL-9b §1.2): the missing modules added, the
+ *  topology replaced, one step. id: a FAMILY.sets key ('m15' = the stage-9 call without one). */
+export function loadSet(rec, vals, id) {
+  const fam = famRec(rec), S = fam ? setOf(fam, id) : null;
+  return S ? loadPreset(rec, vals, S.starter, { ensure: S.set }) : { rec, vals, why: fam ? 'No such set' : 'No patch' };
+}
+/** How many modules loadSet(rec, ·, id) would add (a set tile greys when the patch cannot hold them: count + this > MAX_MODS);
+ *  −1 for no such set / no patch. */
+export function setNeeds(rec, id) {
+  const fam = famRec(rec), S = fam ? setOf(fam, id) : null;
+  if (!S) return -1;
+  const have = {}, need = {};
+  for (const k of Object.keys(rec.mods)) if (isObj(rec.mods[k])) have[rec.mods[k].t] = (have[rec.mods[k].t] || 0) + 1;
+  for (const t of S.set) need[t] = (need[t] || 0) + 1;
+  let n = 0;
+  for (const t of Object.keys(need)) n += Math.max(0, need[t] - (have[t] || 0));
+  return n;
 }
 /** Init patch: every connection out, the name gone, the controller's and every module's knobs at their defaults (modules and
  *  drivers kept) → { rec, vals, back }. */
@@ -488,14 +524,94 @@ export function initPatch(rec, vals) {
   return { rec: r, vals: nv, back: { f: diffVals(v0, nv, ctlIds(fam), ms) } };
 }
 
+/* ---------------------------------------------------------------- bus rows (IMPL-9b §1.4) */
+// A type's `bus: [{ sw: [switch ids], a, b, g? }]`: a routing switch closing a hidden connection — a switch is a knob (vals, no
+// History step), the connection is no cord (no plug, no colour, outside the one-plug rule) and reaches rear terminals. A row is a
+// connection while every switch of it reads on (≠ 0) and both ends resolve: 'c.<port>' · '.<port>' (the panel's own jack) ·
+// '<t>|<t>…#<k>.<port>' (the k-th module of the listed types — each type's by number, in list order) · '#=' (k = the panel's
+// ordinal among its type). Rows are taken by panel number then row, after the cords, up to MAX_CONN connections in all. Two connections
+// of one source to one input are one (R2a F5: a duplicated lit panel, a switch closing a cord's own pair): a row whose (source, input)
+// is a cord's or an earlier row's is skipped — the first keeps its gain — and the bound counts the merged connections.
+export const MAX_CONN = 256;                                           // the evaluator's connections (cords + rows)
+const BUS_RE = /^([a-z0-9]{1,8}(?:\|[a-z0-9]{1,8})*)#([1-9]\d{0,2}|=)\.([a-z][a-z0-9]{0,7})$/;
+const BX = new WeakMap();                                              // TYPE → its bus switches (params, unique, table order)
+function busSw(T) {
+  let L = BX.get(T);
+  if (!L) { const ids = new Set(); for (const r of T.bus || []) for (const s of r.sw) ids.add(s); L = T.params.filter(c => ids.has(c.id)); BX.set(T, L); }
+  return L;
+}
+const knob = (fam, T, vals, mid, id) => {                              // getKnob with the family and type in hand
+  const c = paramOf(T, id), e = isObj(vals) && isObj(vals.p) && isObj(vals.p[mid]) ? vals.p[mid] : null;
+  return c ? (e && e._t === T.id ? pval(c, e[id]) : c.def) : 0;
+};
+// every row of every routing panel (by number), resolved: { panel, i, sw, on, a, b, g, A, B, why } — a / b the end strings
+// (null: unresolved), A / B endOf's (rear allowed), why '' for a connection, else the reason (off: 'Off')
+function busScan(fam, rec, vals, only) {
+  const out = [];
+  if (!isObj(vals) || !isObj(rec) || !isObj(rec.mods) || !Array.isArray(rec.cords)) return out;
+  const M = rec.mods, ms = mids(rec), byT = new Map(), ord = new Map();
+  for (const k of ms) { const t = M[k].t; if (!byT.has(t)) byT.set(t, []); ord.set(k, byT.get(t).push(k)); }
+  let room = MAX_CONN;
+  const held = new Map(), pair = (A, B) => A.mid + ':' + A.i + '>' + B.mid + ':' + B.i;   // pair → who holds it (null: a cord)
+  for (const c of rec.cords) { const A = isObj(c) ? endOf(fam, M, c.a) : null, B = isObj(c) ? endOf(fam, M, c.b) : null; if (A && B && A.T && B.T) { room--; if (!held.has(pair(A, B))) held.set(pair(A, B), null); } }
+  const end = (mid, e) => {
+    if (typeof e !== 'string') return [null, 'No such jack'];
+    if (e.startsWith(CTL + '.')) return [e, ''];
+    if (e[0] === '.') return [mid + e, ''];
+    const m = BUS_RE.exec(e);
+    if (!m) return [null, 'No such jack'];
+    const ts = m[1].split('|'), k = m[2] === '=' ? ord.get(mid) : +m[2], L = [];
+    for (const t of ts) for (const x of byT.get(t) || []) L.push(x);
+    if (k <= L.length) return [L[k - 1] + '.' + m[3], ''];
+    return [null, `No ${ts.map(t => (typeOf(fam, t) || { short: t.toUpperCase() }).short).join(' / ')} ${k} in this patch`];
+  };
+  for (const mid of ms) {
+    const T = typeOf(fam, M[mid].t);
+    if (!T || !Array.isArray(T.bus)) continue;
+    T.bus.forEach((r, i) => {
+      const on = r.sw.every(s => knob(fam, T, vals, mid, s) !== 0), [a, wa] = end(mid, r.a), [b, wb] = end(mid, r.b);
+      const A = a ? endOf(fam, M, a, true) : null, B = b ? endOf(fam, M, b, true) : null;
+      const g = typeof r.g === 'number' && isFinite(r.g) ? Math.max(0, Math.min(G_MAX, r.g)) : 1;
+      let why = !on ? 'Off' : wa || wb || (!A || !B || !A.T || !B.T || A.j.dir !== 'out' || B.j.dir !== 'in' || A.j.sig !== B.j.sig ? 'No such jack' : '');
+      if (!why) {
+        const k = pair(A, B), by = held.get(k);
+        if (by !== undefined) why = by === null ? 'Already patched by a cord' : by === mid ? 'Already routed by another row of this panel' : `Already routed by ${T.short} ${ord.get(by)}`;
+        else if (room > 0) { room--; held.set(k, mid); }
+        else why = `A patch holds at most ${MAX_CONN} connections`;
+      }
+      if (only === undefined || only === mid) out.push({ panel: mid, i, sw: r.sw.slice(), on, a, b, g, A, B, why });
+    });
+  }
+  return out;
+}
+/** The routing panels' live connections (resolved, for the payload, tips and tests): [{ a, b, g, panel, i, sw }] — a the source
+ *  end, b the destination ('<mid>.<port>' | 'c.<port>'), i the row's index in its type's `bus`. vals absent → [] (stage 9's callers). */
+export function busRows(rec, f, vals) {
+  const fam = famOf(f) || famOf(rec && rec.f);
+  return fam ? busScan(fam, rec, vals).filter(x => !x.why).map(x => ({ a: x.a, b: x.b, g: x.g, panel: x.panel, i: x.i, sw: x.sw })) : [];
+}
+/** A routing panel's rows for its switches' tips (IMPL-9b §1.4): [{ i, sw, on, a, b, ok, why }] — ok: a connection now; why: '' |
+ *  'Off' | 'No <short> <k> in this patch' (an ordinal past the patch's modules) | the bound's reason. */
+export function busInfo(rec, f, vals, mid) {
+  const fam = famOf(f) || famOf(rec && rec.f);
+  return fam ? busScan(fam, rec, isObj(vals) ? vals : {}, mid).map(x => ({ i: x.i, sw: x.sw, on: x.on, a: x.a, b: x.b, ok: !x.why, why: x.why })) : [];
+}
+/** Is (mid, id) a routing switch of its module's type (the host reposts the graph at once: a flip changes pk)? */
+export function isBusKnob(rec, mid, id) {
+  const fam = famOf(rec && rec.f), m = fam && mid !== CTL && isObj(rec.mods) && own(rec.mods, mid) ? rec.mods[mid] : null, T = m ? typeOf(fam, m.t) : null;
+  return !!T && busSw(T).some(c => c.id === id);
+}
+
 /* ---------------------------------------------------------------- the engine's graph */
 function fnv(s) {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); }
   return (h >>> 0).toString(16).padStart(8, '0');
 }
-/** The graph payload (§3.2): modules of a type the family lacks and their connections are left out (they play silent). */
-export function payload(rec, f) {
+/** The graph payload (§3.2): modules of a type the family lacks and their connections are left out (they play silent); with vals
+ *  (IMPL-9b §1.4) the routing panels' live rows follow the sorted cords as more 5-tuples (sorted alike) — a switch flip changes
+ *  pk; vals absent → stage 9's payload byte for byte. */
+export function payload(rec, f, vals) {
   const fam = famOf(f) || famOf(rec && rec.f) || MG.FAMILY;
   const M = isObj(rec) && isObj(rec.mods) ? rec.mods : {}, mods = [[0, fam.ctl, -1]];
   for (const mid of Object.keys(M).sort(byNum)) {
@@ -510,14 +626,19 @@ export function payload(rec, f) {
     if (!A || !B || !A.T || !B.T) continue;
     cords.push([num(A.mid), A.i, num(B.mid), B.i, typeof c.g === 'number' && isFinite(c.g) ? Math.max(0, Math.min(G_MAX, c.g)) : 1]);
   }
-  cords.sort((x, y) => x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || x[3] - y[3] || x[4] - y[4]);
+  const cmp = (x, y) => x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || x[3] - y[3] || x[4] - y[4];
+  cords.sort(cmp);
+  const rows = [];
+  for (const x of busScan(fam, rec, vals)) if (!x.why) rows.push([num(x.A.mid), x.A.i, num(x.B.mid), x.B.i, x.g]);
+  if (rows.length) { rows.sort(cmp); for (const x of rows) cords.push(x); }
   const pg = { v: 1, f: fam.id, mods, cords };
   return { pg, pk: fnv(JSON.stringify(pg)) };
 }
 // The wiring as the evaluator resolves it (the schedule's edges, §3.3): what feeds an input — its cords' sources (a multiple read as
 // the outputs driving its group, up a chain of multiples), else its normal — as output nodes 'mid:sec'. A cord of gain 0 carries
-// nothing (the evaluator drops it) but still breaks a normal. feeds(mid, T, jack, depth) → [node keys]
-function wiring(fam, rec) {
+// nothing (the evaluator drops it) but still breaks a normal; with vals, the routing panels' live rows are connections too (IMPL-9b
+// §1.4: a routed envelope makes its generator live). feeds(mid, T, jack, depth) → [node keys]
+function wiring(fam, rec, vals) {
   const M = isObj(rec.mods) ? rec.mods : {}, G = new Map(), IN = new Map();
   const gOf = (mid, sec) => { const k = mid + ':' + sec; let g = G.get(k); if (g === undefined) G.set(k, g = { n: [], up: [] }); return g; };
   for (const c of rec.cords) {
@@ -530,6 +651,7 @@ function wiring(fam, rec) {
     else if (A.j.dir === 'out') gOf(B.mid, B.j.sec).n.push(A.mid + ':' + A.j.sec);
     else gOf(B.mid, B.j.sec).up.push(gOf(A.mid, A.j.sec));              // a multiple driving another (P-3)
   }
+  for (const x of busScan(fam, rec, vals)) if (!x.why && x.g > 0) { const k = x.B.mid + '.' + x.B.port; if (!IN.has(k)) IN.set(k, []); IN.get(k).push(x.A); }
   const outs = (g, seen) => { if (seen.has(g)) return []; seen.add(g); const L = g.n.slice(); for (const u of g.up) for (const x of outs(u, seen)) L.push(x); return L; };
   const feeds = (mid, T, j, d) => {
     const l = IN.get(mid + '.' + j.id);
@@ -542,20 +664,21 @@ function wiring(fam, rec) {
 }
 const sinkEnd = (fam, M) => { const E = endOf(fam, M, CTL + '.' + fam.sink); return E !== null && E.T !== null && E.j.dir === 'in' ? E : null; };
 /** The sink patched (§3.6: the patch never goes quiet; the bounce takes it, §6) — as the evaluator reads it: from an output, or
- *  a multiple some output drives (directly or up a chain of multiples); an undriven multiple on the sink is silent (review 1 F4). */
-export function live(rec, f) {
+ *  a multiple some output drives (directly or up a chain of multiples); an undriven multiple on the sink is silent (review 1 F4).
+ *  vals: the routing panels' rows count (IMPL-9b §1.4); absent → cords only (stage 9's). */
+export function live(rec, f, vals) {
   const fam = famOf(f) || famOf(rec && rec.f);
   if (!fam || !isObj(rec) || !Array.isArray(rec.cords)) return false;
-  const w = wiring(fam, rec), E = sinkEnd(fam, w.M);
+  const w = wiring(fam, rec, vals), E = sinkEnd(fam, w.M);
   return E !== null && w.feeds(CTL, E.T, E.j, 0).length > 0;
 }
 /** The nodes the evaluator runs (§3.3; review 1 F5): the (module, section) pairs the sink is reachable from along cords (a multiple
- *  resolved into its drivers), normals and driver links, and the members of its loop steps (a cycle, or a node into itself) →
+ *  resolved into its drivers), bus rows (with vals), normals and driver links, and the members of its loop steps (a cycle, or a node into itself) →
  *  { sec: { <mid | 'c'>: [live sections] }, loop } | null while the sink is silent. cv-cost charges these and no others. */
-export function liveNodes(rec, f) {
+export function liveNodes(rec, f, vals) {
   const fam = famOf(f) || famOf(rec && rec.f);
   if (!fam || !isObj(rec) || !Array.isArray(rec.cords)) return null;
-  const w = wiring(fam, rec), M = w.M, E = sinkEnd(fam, M);
+  const w = wiring(fam, rec, vals), M = w.M, E = sinkEnd(fam, M);
   if (E === null || w.feeds(CTL, E.T, E.j, 0).length === 0) return null;
   const inn = new Map(), add = (to, from) => { if (!inn.has(to)) inn.set(to, []); inn.get(to).push(from); };
   for (const mid of [CTL, ...Object.keys(M)]) {
@@ -594,22 +717,32 @@ const sizeFn = (fam, rec, sizes) => mid => {
   const T = typeOf(fam, rec.mods[mid].t);
   return T ? [T.w, T.h] : [128, 512];
 };
-/** Tidy (§4.5): the family's rows stacked flush above the controller (the last row lowest), each row's modules by its type order then
- *  number, flush left to right from x 0, a module the rows lack appended to the shorter row, a line past `rackW` wrapping upward.
- *  → { mid: { x, y } } relative to the controller's top-left (every module above it: y < 0). */
+// the rows Tidy stacks (the cabinet rows, then the console row — IMPL-9b §4.4 — when the family has one: lowest, flush above the
+// controller); the rack's width: rackW while the patch holds ≤ rackN modules and no console module, else rackWide
+const rowsOf = fam => (Array.isArray(fam.console) && fam.console.length ? [...fam.rows, fam.console] : fam.rows);
+const isCon = (fam, t) => Array.isArray(fam.console) && fam.console.includes(t);
+function rackWidth(fam, rec) {
+  const ks = Object.keys(rec.mods);
+  return fam.rackWide > 0 && (ks.length > (fam.rackN > 0 ? fam.rackN : Infinity) || ks.some(k => isObj(rec.mods[k]) && isCon(fam, rec.mods[k].t))) ? fam.rackWide : fam.rackW;
+}
+/** Tidy (§4.5): the family's rows stacked flush above the controller (the last row lowest: the console row when the family has one,
+ *  an empty row taking no height), each row's modules by its type order then number, flush left to right from x 0, a module the
+ *  rows lack appended to the shorter cabinet row, a line past the rack's width (rackW, or rackWide for a large or console-holding
+ *  patch) wrapping upward. → { mid: { x, y } } relative to the controller's top-left (every module above it: y < 0). */
 export function rackLayout(rec, f, sizes) {
   const fam = famOf(f) || famOf(rec && rec.f), out = {};
   if (!fam || !isObj(rec) || !isObj(rec.mods)) return out;
-  const sz = sizeFn(fam, rec, sizes), rows = fam.rows.map(() => []), extra = [];
-  for (const mid of mids(rec)) { const r = fam.rows.findIndex(row => row.includes(rec.mods[mid].t)); (r < 0 ? extra : rows[r]).push(mid); }
-  rows.forEach((row, r) => row.sort((a, b) => fam.rows[r].indexOf(rec.mods[a].t) - fam.rows[r].indexOf(rec.mods[b].t) || byNum(a, b)));
+  const R = rowsOf(fam), nc = fam.rows.length, W = rackWidth(fam, rec);
+  const sz = sizeFn(fam, rec, sizes), rows = R.map(() => []), extra = [];
+  for (const mid of mids(rec)) { const r = R.findIndex(row => row.includes(rec.mods[mid].t)); (r < 0 ? extra : rows[r]).push(mid); }
+  rows.forEach((row, r) => row.sort((a, b) => R[r].indexOf(rec.mods[a].t) - R[r].indexOf(rec.mods[b].t) || byNum(a, b)));
   const width = row => row.reduce((w, mid) => w + sz(mid)[0], 0);
-  for (const mid of extra) { let s = 0; rows.forEach((row, r) => { if (width(row) < width(rows[s])) s = r; }); rows[s].push(mid); }
+  for (const mid of extra) { let s = 0; for (let r = 1; r < nc; r++) if (width(rows[r]) < width(rows[s])) s = r; rows[s].push(mid); }
   let y = 0;
   for (let r = rows.length - 1; r >= 0; r--) {
     const lines = [[]];
     let x = 0;
-    for (const mid of rows[r]) { const w = sz(mid)[0]; if (x > 0 && x + w > fam.rackW) { lines.push([]); x = 0; } lines[lines.length - 1].push(mid); x += w; }
+    for (const mid of rows[r]) { const w = sz(mid)[0]; if (x > 0 && x + w > W) { lines.push([]); x = 0; } lines[lines.length - 1].push(mid); x += w; }
     for (const line of lines) {
       if (!line.length) continue;
       y -= Math.max(...line.map(mid => sz(mid)[1]));
@@ -619,20 +752,23 @@ export function rackLayout(rec, f, sizes) {
   }
   return out;
 }
-/** A tapped tile's place (§4.5): the first free slot (32 px steps, ≤ rackW) on its row's line, else on a line above the rack,
- *  clear of `placed` ({ mid: { x, y } } relative to the controller, sized by `sizes`). */
+/** A tapped tile's place (§4.5): the first free slot (32 px steps, within the rack's width) on its row's line, else on a line above
+ *  the rack, clear of `placed` ({ mid: { x, y } } relative to the controller, sized by `sizes`). The lines follow Tidy's stacking
+ *  (IMPL-9b §4.4, skeptic #13): a console module's flush above the controller, the cabinet rows' above the console row's height
+ *  (none while the patch holds no console module: stage 9's lines). */
 export function freeSlot(rec, f, mid, placed, sizes) {
   const fam = famOf(f) || famOf(rec && rec.f);
   if (!fam || !isObj(rec) || !own(rec.mods, mid)) return { x: 0, y: 0 };
-  const sz = sizeFn(fam, rec, sizes), [w, h] = sz(mid), H = Math.max(...fam.order.map(t => fam.types[t].h));
-  const r = fam.rows.findIndex(row => row.includes(rec.mods[mid].t)), n = fam.rows.length;
+  const sz = sizeFn(fam, rec, sizes), [w, h] = sz(mid), H = Math.max(...fam.order.filter(t => !isCon(fam, t)).map(t => fam.types[t].h));
+  const t = rec.mods[mid].t, r = fam.rows.findIndex(row => row.includes(t)), n = fam.rows.length, W = rackWidth(fam, rec);
+  const con = mids(rec).filter(k => isCon(fam, rec.mods[k].t)), hc = con.length ? Math.max(...con.map(k => sz(k)[1])) : 0;
   const rects = Object.keys(isObj(placed) ? placed : {}).filter(k => k !== mid && own(rec.mods, k) && isObj(placed[k]))
     .map(k => { const [kw, kh] = sz(k); return [placed[k].x, placed[k].y, kw, kh]; });
   const free = (x, y) => rects.every(([rx, ry, rw, rh]) => x >= rx + rw || x + w <= rx || y >= ry + rh || y + h <= ry);
-  const lines = [r >= 0 ? -(n - r) * H : -n * H];
-  for (let k = 1; k <= 64; k++) lines.push(-(n + k) * H);
-  for (const y of lines) for (let x = 0; x + w <= Math.max(fam.rackW, w); x += 32) if (free(x, y)) return { x, y };
-  return { x: 0, y: -(n + 65) * H };
+  const lines = [isCon(fam, t) ? -hc : r >= 0 ? -hc - (n - r) * H : -hc - n * H];
+  for (let k = 1; k <= 64; k++) lines.push(-hc - (n + k) * H);
+  for (const y of lines) for (let x = 0; x + w <= Math.max(W, w); x += 32) if (free(x, y)) return { x, y };
+  return { x: 0, y: -hc - (n + 65) * H };
 }
 /** A module's ordinal among its type, by number (1…); 1 for the controller; 0 when absent. */
 export function ordinal(rec, mid) {

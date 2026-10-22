@@ -161,3 +161,78 @@ test('SIL describes every model; tileMeta() is models.js (Serum: "Serum (complet
   assert.deepEqual(A.tileMeta('m900'), { id: 'm900', name: '900 Series', year: 1973, maker: 'R.A. Moog', label: 'Model 15' });
   assert.deepEqual(A.tileMeta('nope'), { id: 'nope', name: 'nope', year: 0, maker: '', label: 'nope' });
 });
+
+// (9b, IMPL-9b §4.3) the set tiles beside the Model 15's: System 35 (one wood wedge: nine narrow faces over eight, a console strip of five panels, no cords) and System 55
+// (two wood-ended cabinets, the upper narrower: sixteen faces — one a sequencer — over fourteen, a console strip of seven panels, four coloured cords). Ours, no text, no logo.
+test('set tiles (IMPL-9b §4.3): SET_ART s35 / s55 — tile and chip render, their own drawings with the contract\'s module counts, distinct silhouettes, no text', () => {
+  const SIZES = [A.TILE, A.CHIP, { w: 300, h: 120 }, { w: 40, h: 40 }], IDS = ['s35', 's55'];
+  assert.deepEqual(Object.keys(A.SET_ART), IDS, 'one descriptor per set tile (SIL keys stay the MODELS ids)');
+  assert.ok(!('s35' in A.SIL) && !('s55' in A.SIL));
+  const mine = [A.SET_ART.s35.name, A.SET_ART.s35.modules, [...A.SET_ART.s35.rows], A.SET_ART.s35.console, A.SET_ART.s55.name, A.SET_ART.s55.modules, [...A.SET_ART.s55.rows], A.SET_ART.s55.console];
+  assert.deepEqual(mine, ['System 35', 22, [9, 8], 5, 'System 55', 37, [16, 14], 7], 'the labels\' counts: 17 + 5 = 22, 30 + 7 = 37 (the controller not counted)');
+  for (const id of IDS) {
+    const d = A.SET_ART[id];
+    assert.ok(Object.isFrozen(d) && Object.isFrozen(d.rows) && Object.isFrozen(d.outline) && d.outline.every(p => Object.isFrozen(p)), id + ': frozen');
+    assert.equal(d.rows.reduce((a, b) => a + b, 0) + d.console, d.modules, id + ': modules = faces + console panels');
+    // the tile: an <svg> of the requested size, well formed, cached per id + size, its own drawing, with the detail of a tile
+    const s = A.setArt(id);
+    assert.match(s, /^<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" viewBox="0 0 96 56" width="96" height="56" role="img" aria-hidden="true"/, id);
+    assert.ok(s.endsWith('</svg>') && balanced(s), id + ': closed, well formed');
+    assert.equal(A.setArt(id, { w: 96, h: 56 }), s, id + ': the same string again (TILE is the default, cached)');
+    assert.match(s, new RegExp(`data-art="${id}"`));
+    assert.match(A.setArt(id, { w: 288, h: 168 }), /viewBox="0 0 288 168" width="288" height="168"/, id + ': any size');
+    assert.ok(count(s, /<(rect|circle|path|polygon|ellipse)\b/g) >= 300, id + ': a tile with a module\'s worth of detail');
+    // the chip: CHIP size, simpler, well formed, cached
+    const c = A.setChip(id);
+    assert.match(c, /viewBox="0 0 28 18" width="28" height="18"/, id);
+    assert.equal(c, A.setArt(id, A.CHIP));
+    assert.ok(balanced(c) && count(c, /<[a-z]+ /g) < count(s, /<[a-z]+ /g) / 2, id + ': the chip has far fewer elements');
+    // no text, no logo, no maker, no model name (the data-art id is plain)
+    for (const sz of SIZES) {
+      const lo = A.setArt(id, sz).toLowerCase().replace(`data-art="${id}"`, ''), at = `${id} ${sz.w}×${sz.h}`;
+      for (const bad of ['<text', '<image', '<use', '<script', '<foreignobject', 'href', 'xlink', 'url(', 'font', '<lineargradient', '<pattern', ' id="', 'moog', 'system', 'model', '900']) assert.ok(!lo.includes(bad), at + ': no ' + bad);
+    }
+  }
+  const T = { s35: A.setArt('s35'), s55: A.setArt('s55') }, C = { s35: A.setChip('s35'), s55: A.setChip('s55') }, m15 = A.art('m900'), m15c = A.chip('m900');
+  // the faces and the console panels, counted: 17 + 5 on the wedge, 30 + 7 on the stack (the chip keeps them as blocks)
+  const faces = g => count(g, /<polygon points="[^"]*" fill="#2b2926"/g), panels = g => count(g, /<polygon points="[^"]*" fill="#383430"/g);
+  assert.deepEqual([faces(T.s35), panels(T.s35), faces(C.s35), panels(C.s35)], [17, 5, 17, 5], 's35: 9 + 8 faces, 5 console panels (tile and chip)');
+  assert.deepEqual([faces(T.s55), panels(T.s55), faces(C.s55), panels(C.s55)], [30, 7, 30, 7], 's55: 16 + 14 faces, 7 console panels (tile and chip)');
+  assert.equal(count(T.s55, /r="0.32" fill="#f2a33a"/g), 8, 's55: the sequencer\'s lamp row (eight)');
+  assert.equal(count(T.s55, /r="0.62" fill="#d4cfc4"/g), 24, 's55: the sequencer\'s three rows of eight dots');
+  assert.equal(count(T.s35, /r="0.62" fill="#d4cfc4"/g) + count(T.s35, /r="0.32" fill="#f2a33a"/g), 0, 's35: no sequencer');
+  assert.deepEqual([count(T.s35, /r="0.7" fill="#d4cfc4"/g), count(T.s55, /r="0.7" fill="#d4cfc4"/g)], [14, 14], 'a wide filter bank on each: two rows of seven small knobs');
+  // the cords: four on the System 55 (a plug at each end, kept at chip size), none on the System 35
+  for (const col of ['d8452f', 'e6b422', '3b82c4', '3fae5a']) {
+    assert.equal(count(T.s55, new RegExp(`stroke="#${col}"`, 'g')), 1, col + ': one cord');
+    assert.equal(count(T.s55, new RegExp(`r="0.72" fill="#${col}"`, 'g')), 2, col + ': a plug at each end');
+    assert.equal(count(C.s55, new RegExp(`stroke="#${col}"`, 'g')), 1, col + ': kept at chip size');
+    assert.equal(count(T.s35 + C.s35, new RegExp(`#${col}`, 'g')), 0, col + ': the wedge has no cords');
+  }
+  assert.equal(count(T.s55, /stroke="#b06ad9"/g), 0, 'the Model 15\'s fifth (purple) cord is not on the System 55');
+  assert.deepEqual([A.SET_ART.s35.cords, A.SET_ART.s55.cords], [0, 4]);
+  // wood: the System 35 is one wooden polygon (its outline, drawn), the System 55 two wooden cabinets (the outline's rectangles); the Model 15 is a dark case with no wood
+  const WOODFILL = '#74421f';
+  assert.ok(T.s35.includes(`<polygon points="${A.SET_ART.s35.outline.map(p => p.join(',')).join(' ')}" fill="${WOODFILL}"`), 's35: its outline is the wooden body');
+  assert.ok(T.s55.includes('<rect x="7" y="2" width="82" height="27.4" fill="#74421f"/>') && T.s55.includes('<rect x="3" y="29.4" width="90" height="23.6" fill="#74421f"/>'), 's55: its outline is the two cabinets');
+  assert.ok(!m15.includes(WOODFILL) && !m15c.includes(WOODFILL) && [T.s35, C.s35, T.s55, C.s55].every(g => g.includes(WOODFILL)), 'both sets are wood, the Model 15 is not');
+  // distinct silhouettes: the System 35 a wedge (wider at every step down), the System 55 a step (two cabinets, constant width within each, the upper a step narrower), four corners vs eight
+  const wAt = (poly, y) => { const xs = []; poly.forEach((p, i) => { const q = poly[(i + 1) % poly.length]; if ((p[1] - y) * (q[1] - y) < 0) xs.push(p[0] + (q[0] - p[0]) * (y - p[1]) / (q[1] - p[1])); }); return Math.max(...xs) - Math.min(...xs); };
+  const O = i => A.SET_ART[i].outline, bb = p => [Math.min(...p.map(q => q[0])), Math.min(...p.map(q => q[1])), Math.max(...p.map(q => q[0])), Math.max(...p.map(q => q[1]))];
+  assert.deepEqual([O('s35').length, O('s55').length], [4, 8], 'a wedge\'s four corners, a stack\'s eight');
+  assert.ok(wAt(O('s35'), 8) < wAt(O('s35'), 20) && wAt(O('s35'), 20) < wAt(O('s35'), 35) && wAt(O('s35'), 35) < wAt(O('s35'), 50), 's35: wider at every step down');
+  assert.ok(wAt(O('s35'), 8) / wAt(O('s35'), 50) < 0.85, 's35: the top is under 85 % of the foot');
+  assert.equal(wAt(O('s55'), 5), wAt(O('s55'), 25), 's55: the upper cabinet keeps its width');
+  assert.equal(wAt(O('s55'), 35), wAt(O('s55'), 50), 's55: the lower cabinet keeps its width');
+  const step = wAt(O('s55'), 25) / wAt(O('s55'), 35);
+  assert.ok(step < 0.95 && step > 0.85, 's55: the upper one a step narrower');
+  assert.ok(bb(O('s55'))[3] - bb(O('s55'))[1] > bb(O('s35'))[3] - bb(O('s35'))[1], 'the stack is the taller');
+  for (const i of IDS) { const b = bb(O(i)); assert.ok(b[0] >= 0 && b[1] >= 0 && b[2] <= 96 && b[3] <= 56, i + ': inside the design box'); }
+  // three tiles, three chips, all different from each other and from the other wooden cabinets
+  assert.equal(new Set([m15, T.s35, T.s55, A.art('modular'), A.art('minimoog')]).size, 5);
+  assert.equal(new Set([m15c, C.s35, C.s55]).size, 3);
+  // an unknown set id: the Model 15's tile (the 900 Series' own), not a new drawing; that tile is untouched (its fourteen faces, stage 9's pin)
+  assert.equal(A.setArt('nope'), m15);
+  assert.equal(A.setArt('m15', A.CHIP), m15c);
+  assert.equal(count(m15, /fill="#2b2926"/g), 14);
+});

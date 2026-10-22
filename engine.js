@@ -1538,9 +1538,16 @@ const PT_DIR = { in: 0, out: 1, any: 2 };
 // driven once; MAIN OUT summing every 1/4" output and the multiples' other jacks (× 0.031: every output computed), an S output
 // nothing reads summed into the last S input. → { a, b (a + each module's inputs fed by the one before it, a back cord to module
 // 1 and a self cord on the last module: loop steps, ramps inside them), c (b without its last module: a retiring one), v0 (the
-// defaults), v1 (every knob off its default, every switch moved up) } or null
-function ptWarm(F, f) {
-  const T = F && F.T, JA = F && F.JACKS, PA = (F && F.PARAMS) || {};
+// defaults), v1 (every knob off its default, every switch moved up) } or null. IMPL-9b §3.1 (skeptic #7): pick (a Set of
+// types, the controller always in) builds the same over those types only — ptWarms' parts
+function ptWarm(F, f, pick) {
+  const X = ptTab(F);
+  return X === null ? null : ptWarmOf(X, f, pick || null);
+}
+// the table read once (ptWarm, ptWarms) → { F, types, jk (per type: [{ id, d, s, sec }]), C (the controller), sk (its sink),
+// drvOf (a linked type's driver type) } or null
+function ptTab(F) {
+  const T = F && F.T, JA = F && F.JACKS;
   if (!T || typeof T !== 'object' || !JA || typeof JA !== 'object') return null;
   const types = Object.keys(T), jk = Object.create(null);
   for (const t of types) {
@@ -1550,7 +1557,7 @@ function ptWarm(F, f) {
     for (const j of J) {
       const d = j ? PT_DIR[j.dir] : undefined;
       if (d === undefined) return null;
-      L.push({ id: j.id, d, s: j.sig === 's' ? 1 : 0, sec: j.sec | 0 });
+      L.push({ id: j.id, d, s: j.sig === 's' ? 1 : 0, sec: j.sec | 0, nm: d === 0 && typeof j.norm === 'string' ? 1 : 0 });
     }
     jk[t] = L;
   }
@@ -1560,10 +1567,15 @@ function ptWarm(F, f) {
   if (C === undefined || !jk[C]) return null;
   const sk = sinkId ? jk[C].findIndex(j => j.id === sinkId) : F.SINK && F.SINK.port >= 0 ? F.SINK.port | 0 : -1;
   if (!(sk >= 0 && sk < jk[C].length)) return null;
-  const mods = [[0, C, -1]], drvOf = t => { const L = F.LINK && F.LINK[t]; return L ? L.from || L.to || '' : ''; };
+  const drvOf = t => { const L = F.LINK && F.LINK[t]; return L ? L.from || L.to || '' : ''; };
+  return { F, types, jk, C, sk, drvOf };
+}
+function ptWarmOf(X, f, pick) {
+  const { F, types, jk, C, sk, drvOf } = X, PA = F.PARAMS || {}, has = t => pick === null || pick.has(t);
+  const mods = [[0, C, -1]];
   let n = 1;
-  for (const t of types) if (t !== C && !drvOf(t)) mods.push([n++, t, -1]);
-  for (const t of types) if (t !== C && drvOf(t)) { const d = mods.find(m => m[1] === drvOf(t)); mods.push([n++, t, d ? d[0] : -1], [n++, t, -1]); }
+  for (const t of types) if (t !== C && !drvOf(t) && has(t)) mods.push([n++, t, -1]);
+  for (const t of types) if (t !== C && drvOf(t) && has(t)) { const d = mods.find(m => m[1] === drvOf(t)); mods.push([n++, t, d ? d[0] : -1], [n++, t, -1]); }
   const pool = [[], []], rr = [0, 0], cords = [], sink = [], J0 = jk[C];
   const take = s => (pool[s].length ? pool[s][rr[s]++ % pool[s].length] : null);
   const feed = (m, k, j) => { const x = take(j.s); if (x !== null) cords.push([x[0], x[1], m, k, 2.3]); };
@@ -1575,11 +1587,11 @@ function ptWarm(F, f) {
   }
   J0.forEach((j, k) => { if (j.d === 0 && k !== sk && !srcSec(j.sec)) feed(0, k, j); });
   J0.forEach((j, k) => { if (j.d === 1 && !srcSec(j.sec)) pool[j.s].push([0, k]); });
-  const grp = new Set();
-  J0.forEach((j, k) => {
+  const grp = new Set();                                                       // (every module's multiples: IMPL-9b's 994, CP panels)
+  for (const [m, t] of mods) jk[t].forEach((j, k) => {
     if (j.d !== 2) return;
-    if (!grp.has(j.sec)) { grp.add(j.sec); const x = take(0); if (x !== null) cords.push([x[0], x[1], 0, k, 1]); }
-    else sink.push([0, k, 0, sk, 0.031]);
+    if (!grp.has(m * 64 + j.sec)) { grp.add(m * 64 + j.sec); const x = take(0); if (x !== null) cords.push([x[0], x[1], m, k, 1]); }
+    else sink.push([m, k, 0, sk, 0.031]);
   });
   for (const x of pool[0]) sink.push([x[0], x[1], 0, sk, 0.031]);
   // an S output nothing reads: summed into the last S input fed (the controller's, after every module's: no loop)
@@ -1594,8 +1606,11 @@ function ptWarm(F, f) {
     const q = jk[mods[k - 1][1]].findIndex(j => j.d === 1 && j.s === 0);
     if (q >= 0) jk[mods[k][1]].forEach((j, i) => { if (j.d === 0 && j.s === 0) chain.push([mods[k - 1][0], q, mods[k][0], i, 2.3]); });
   }
-  const b = a.concat(chain, o >= 0 && i1 >= 0 ? [[K[0], o, mods[1][0], i1, 0.53]] : [], o >= 0 && iK >= 0 ? [[K[0], o, K[0], iK, 0.47]] : []);
-  const c = b.filter(e => e[0] !== K[0] && e[2] !== K[0]);
+  // (IMPL-9b: the self cord is that input's only source — a lone late read, the loop's pre feed; c leaves every normalled input
+  // unfed — its normal read in its place, under a ramp — and module 1's first 1/4" input empty: back to b, a ramp from nothing)
+  const self = o >= 0 && iK >= 0 ? [[K[0], o, K[0], iK, 0.47]] : [], tyOf = n => mods.find(m => m[0] === n)[1];
+  const b = a.concat(chain, o >= 0 && i1 >= 0 ? [[K[0], o, mods[1][0], i1, 0.53]] : []).filter(e => !self.length || e[2] !== K[0] || e[3] !== iK).concat(self);
+  const c = b.filter(e => e[0] !== K[0] && e[2] !== K[0] && !jk[tyOf(e[2])][e[3]].nm && (e[2] !== mods[1][0] || e[3] !== i1 || mods.length < 2));
   const pg = (M, E) => ({ v: 1, f, mods: M.map(x => x.slice()), cords: E.map(x => x.slice()) });
   const vals = off => {
     const v = {};
@@ -1611,6 +1626,33 @@ function ptWarm(F, f) {
     return v;
   };
   return { a: pg(mods, a), b: pg(mods, b), c: pg(mods.filter(x => x !== K), c), v0: vals(false), v1: vals(true) };
+}
+// IMPL-9b §3.1, §12 spike (a2) decision 1 (skeptic #7): the warm graphs within the evaluator's bound (maxc connections: past it
+// the evaluator drops a payload's tail — the loop cords and the sync chain, built last). The whole table while its a / b / c fit,
+// else the types in k parts (k = 2, 3 …): contiguous in ptWarm's order, balanced by jacks, a linked type in its driver's part —
+// each part its own a / b / c (its loop steps, its sync and clamp chain) and values. → { parts: [W, …], big: { a, a2, v } } or
+// null: big = the whole table in one graph (graph a, cut to maxc) and the same less its first connection — warmPatch's last
+// graph() calls (a whole-set payload and a flip: decision 1's GC pre-warm)
+function ptWarms(F, f, maxc) {
+  const X = ptTab(F);
+  if (X === null) return null;
+  const fit = W => W !== null && W.a.cords.length <= maxc && W.b.cords.length <= maxc && W.c.cords.length <= maxc;
+  const W1 = ptWarmOf(X, f, null);
+  if (W1 === null) return null;
+  const A = W1.a.cords.slice(0, maxc), big = { a: { v: 1, f, mods: W1.a.mods, cords: A }, a2: { v: 1, f, mods: W1.a.mods, cords: A.slice(1) }, v: W1.v1 };
+  if (fit(W1)) return { parts: [W1], big };
+  const { types, jk, C, drvOf } = X, base = types.filter(t => t !== C && !drvOf(t)), linked = types.filter(t => t !== C && drvOf(t) !== '');
+  const w = t => jk[t].length + linked.filter(u => drvOf(u) === t).reduce((s, u) => s + 2 * jk[u].length, 0), tot = base.reduce((s, t) => s + w(t), 0);
+  for (let k = 2; k <= base.length; k++) {
+    const parts = [];
+    let cur = [], acc = 0;
+    for (const t of base) { cur.push(t); acc += w(t); if (parts.length < k - 1 && acc >= tot * (parts.length + 1) / k) { parts.push(cur); cur = []; } }
+    if (cur.length) parts.push(cur);
+    for (const t of linked) (parts.find(p => p.includes(drvOf(t))) || parts[parts.length - 1]).push(t);
+    const Ws = parts.map(p => ptWarmOf(X, f, new Set(p)));
+    if (Ws.every(fit)) return { parts: Ws, big };
+  }
+  return { parts: [W1], big };
 }
 let warmed = false;
 
@@ -2525,8 +2567,12 @@ class Inst {
     this.port.postMessage(this.T.graphed === 1 ? { t: 'ptErr', why: w, i: this.id } : { t: 'ptErr', why: w });
   }
   // §3.2: a graph payload {t: 'seq', s: {pg, pk}} (seqMsg routes it by its shape) — to the machine while the kind is 'patch'
-  // and the family its own; else it waits in pmPend (a newer one replaces it) for ptOn
+  // and the family its own; else it waits in pmPend (a newer one replaces it) for ptOn. IMPL-9b §1.5: a momentary event {pe: [n,
+  // k]} — module n's event k — to the machine at once (the module holds it for its next chunk: the next quantum's first, messages
+  // land between quanta); with no patch machine, or the patch powered off (nothing renders: an unmute restarts at stage 1, P-1), it
+  // is dropped, never kept (live only: no song, bounce, History or vals; the machine drops one for a module not live, too)
   ptMsg(s) {
+    if (s.pe !== undefined) { const e = s.pe, pm = this.pm; if (this.kind === 'patch' && this.on === 1 && pm !== null && Array.isArray(e) && typeof pm.ev === 'function') pm.ev(e[0], e[1]); return; }
     if (this.kind === 'patch' && this.pm !== null && ptFam(s.pg, this.pmF)) this.pm.graph(s.pg);
     else if (this.kind === 'patch' && this.pm === null) this.ptFail('load');
     else this.pmPend = s;
@@ -3091,7 +3137,7 @@ class Inst {
   }
   /* ---- TB-303 style step sequencer, clocked in the audio thread ---- */
   seqMsg(s) {
-    if (s && s.pg !== undefined) { this.ptMsg(s); return; }      // a patch's graph (IMPL-9 §3.2): routed by its shape
+    if (s && (s.pg !== undefined || s.pe !== undefined)) { this.ptMsg(s); return; } // a patch's graph or event (IMPL-9 §3.2, 9b §1.5): by shape
     if (s && s.plan !== undefined) { this.drSeqMsg(s); return; } // a drum payload (IMPL-7a §3.5): routed by its shape
     if (this.kind === 'drums' || this.kind === 'patch') return;    // (a TB-303 payload never lands in a DrSeq, nor builds a 303 sq on a patch)
     const q = this.sq || (this.sq = { run: false, sync: false, pat: [], len: 16, bpm: 120, root: 36, step: -1, pos: 0, fired: true, offed: true, tie: false, cur: -1, swing: 0, syncStep: null });
@@ -3749,17 +3795,36 @@ class Track extends Facade {
   // graph changed mid-note (every input driven hard, loop steps with their ramps, then a module retired); Play from a stop's fresh
   // restart (ptFresh); a power-off with keys held and on again (the restrike); an OS change there and back. The machine's reports
   // go to a stand-in port; restore() clears its graph and state. Without the scripts (or a table it cannot read): nothing.
-  // Caller: warmUp
+  // IMPL-9b §3.1: the warm graphs within the evaluator's bound (ptWarms: the table in parts once it outgrows MAXC, each part the
+  // whole round), after (spike (a2) decision 1) 100 graph() calls of the whole table in one payload and its flip back to back —
+  // JSC's first eden GC lands in the warm-up, not on a player's first patch edit (no flip over 1 ms after it, measured); in each
+  // part, every event of every module whose type declares some (a ring overflowing: the 960's twelve) and a lamp read; graph b
+  // under a playing stand-in transport (as the drums' clock, I.tp swapped back after): a count-in's negative ticks, tick 0, the
+  // steps, a loop wrap folded (round 0) or the song's end (round 1) inside one quantum — the warm-up's currentFrame stands still,
+  // so every quantum replays those frames: a jump back each (a seek's RESTART); c back to b. Caller: warmUp
   warmPatch(run, io) {
-    const PD = globalThis.PatchDSP, I = this.i0, port = I.port;
+    const PD = globalThis.PatchDSP, I = this.i0, port = I.port, tp = I.tp;
     if (!PD || typeof PD.create !== 'function') return;
     I.port = WPORT;
     try {
       for (const f of PT_FAM) {
-        const W = ptWarm(globalThis['Patch' + f[0].toUpperCase() + f.slice(1)], f);
-        if (W === null) continue;
-        for (let round = 0; round < 2; round++) {
-          const P = v => ({ engine: 'patch', family: f, pv: v, level: 1, mode: 'mono' }), os = I.OS;
+        const FM = globalThis['Patch' + f[0].toUpperCase() + f.slice(1)], WS = ptWarms(FM, f, PD.MAXC > 0 ? PD.MAXC : 256);
+        if (WS === null) continue;
+        const EV = FM.EV && typeof FM.EV === 'object' ? FM.EV : {}, P = v => ({ engine: 'patch', family: f, pv: v, level: 1, mode: 'mono' });
+        I.seqMsg({ pg: WS.parts[0].a, pk: 'warm' }); I.setPatch(P(WS.parts[0].v0));  // (the machine; its graph waits in pmPend)
+        if (I.pm === null) continue;
+        // first the values in five more shapes — a host's pv holds one entry per module, its map varies with the patch: the
+        // machine's per-module read goes generic here, never deopting on a new patch's map — and the controller's list in five
+        // elements kinds (whole numbers, fractions, a hole, a non-number: ignored, its default); then the GC pre-warm: graph()
+        // optimised by it, the rounds' changes after it build their plans from its arrays (holey where the interpreter's were
+        // packed: a new Track's first change meets both)
+        const vk = Object.keys(WS.big.v), c0 = WS.big.v['0'], cs = [c0.map(Math.round), c0, c0.slice(0, -1), c0.map((x, k) => (k ? x : null))];
+        cs.push(cs[0].slice()); cs[4].length = c0.length + 1; cs[2][c0.length] = c0[c0.length - 1]; delete cs[2][0];
+        [2, 4, 7, 11, 16].forEach((k, i) => { const v = Object.fromEntries(vk.slice(0, k).map(x => [x, WS.big.v[x]])); v['0'] = cs[i]; I.setPatch(P(v)); });
+        I.setPatch(P(WS.big.v));
+        for (let k = 0; k < 100; k++) I.seqMsg({ pg: k & 1 ? WS.big.a2 : WS.big.a, pk: 'warm-g' });
+        for (let round = 0; round < 2; round++) for (const W of WS.parts) {
+          const os = I.OS;
           I.seqMsg({ pg: W.a, pk: 'warm' });                                       // (before its patch: pmPend)
           I.setPatch(P(W.v0));
           if (I.pm === null) break;
@@ -3767,10 +3832,15 @@ class Track extends Facade {
           this.msg({ t: 'bend', v: 0.37 }); this.msg({ t: 'wheel', v: 0.61 }); this.msg({ t: 'at', v: 0.29 }); this.msg({ t: 'sus', v: true });
           this.noteOff(55); run(6);
           I.setPatch(P(W.v1)); run(6);                                             // the values glide; the switches moved
+          for (const [m, t] of W.a.mods) { const E = EV[t]; if (Array.isArray(E)) for (let k = 0; k < E.length; k++) I.seqMsg({ pe: [m, k] }); }
           this.noteOn(43, 0.91); run(6); this.noteOff(43); run(4); this.noteOn(43, 0.91); run(6); // a fall-back, a retrigger (MULTIPLE)
+          if (I.pm.lampN > 0) I.pm.lamps(this.frames);                             // (the monitor's read)
+          I.tp = Object.assign({}, tp, { play: true, frame: this.nowF(), tick: -40, fpt: 0.25, loop: round === 0, ls: 0, le: 300, wrap: round === 0, end: round === 0 ? null : 400 });
           I.seqMsg({ pg: W.b, pk: 'warm-b' }); run(14);                            // every input driven, loop steps, ramps inside them
           this.noteOn(50, 0.7); run(4); this.noteOff(50); run(4);                  // (the 911s' edges: clamps)
+          I.tp = tp;
           I.seqMsg({ pg: W.c, pk: 'warm-c' }); run(14);                            // a module retired under its ramps
+          I.seqMsg({ pg: W.b, pk: 'warm-b' }); run(4);                             // (back: one built, normals and an empty input fed)
           this.msg({ t: 'sus', v: false }); this.msg({ t: 'bend', v: 0 }); this.msg({ t: 'wheel', v: 0 }); this.msg({ t: 'at', v: 0 });
           I.ptFresh(); run(4);                                                     // P-2: the tail, a fresh restart
           this.power(I, 0); run(2); this.power(I, 1); run(4);                      // (P-1's path: the tail and reset, the restrike)
@@ -3779,7 +3849,7 @@ class Track extends Facade {
           this.noteOff(48); this.noteOff(43); run(6);
         }
       }
-    } catch (err) { /* a failed round loses only its own warm-up: Serum's and the graph's still run */ } finally { I.port = port; }
+    } catch (err) { /* a failed round loses only its own warm-up: Serum's and the graph's still run */ } finally { I.port = port; I.tp = tp; }
   }
   // warmGraph's patch on the graph Inst x: the first family whose scripts are present, ptWarm's graph a at its v1 values (its
   // reports to a stand-in port) → x's own port to give back, or null (no family: x stays as it was)
@@ -3787,7 +3857,11 @@ class Track extends Facade {
     const PD = globalThis.PatchDSP;
     if (!PD || typeof PD.create !== 'function') return null;
     for (const f of PT_FAM) {
-      const W = ptWarm(globalThis['Patch' + f[0].toUpperCase() + f.slice(1)], f);
+      // (IMPL-9b: one part, not the whole table — its cost × 2 over the 480 quanta; the part holding the driven type, a driven
+      // oscillator being every patch's most-used class: on JSC a new Track's first payload quantum runs × 1.8 of steady, not × 5
+      // with another part, and Classic bass's steady state is stage 9's)
+      const WS = ptWarms(globalThis['Patch' + f[0].toUpperCase() + f.slice(1)], f, PD.MAXC > 0 ? PD.MAXC : 256);
+      const W = WS !== null ? WS.parts.find(Q => Q.a.mods.some(m => m[2] >= 0)) || WS.parts[0] : null;
       if (W === null) continue;
       const port = x.port;
       x.port = WPORT;
@@ -4380,10 +4454,25 @@ class Track extends Facade {
   tickAt(F) { const tp = this.tp; return tp.tick + (F - tp.frame) / tp.fpt; }
   // the song position in beats at the start of the current span, or null when stopped (Serum's host field, §8.4.1)
   songBeat() { const tp = this.tp; return tp && tp.play ? this.tickAt(this.spanF) / 960 : null; }
+  // IMPL-9b P-2 × P-3 (the user's decision, review 1 F1): Play from a stop reset each patch's controller (its held keys, nh, gate)
+  // — the keys the Track still holds carry through: restruck on the powered patch Insts at the pitch each press stored (zone and
+  // transposition as they were then; a key the Inst refused has no bit), straight into the controller (no note-on: no rack retrigger,
+  // lastNote and the count stand — the key never went up) before the first chunk. A powered-off patch gets its keys at its
+  // power-on (P-1), a bounce holds none (D7)
+  ptHeld(I) {
+    const V = this.holdV, R = this.holdR, P = this.holdP;
+    for (let j = 0; j < I.length; j++) {
+      const x = I[j];
+      if (x.kind !== 'patch' || x.pm === null || x.on !== 1) continue;
+      const b = 1 << x.slot, o = x.slot * NK;
+      for (let k = 0; k < NK; k++) if (V[k] > 0 && (R[k] & b) !== 0) x.pm.note(P[o + k], V[k], 1);
+    }
+  }
   // play / stop: every Inst's (its rack: one it holds); at play start the panels no Inst holds (drive) re-anchor too (review
   // E3; a legacy c0 is held by i0)
   transportHook(playing, cold) {
     const I = this.insts; for (let i = 0; i < I.length; i++) I[i].transportHook(playing, cold);
+    if (cold === true) this.ptHeld(I);
     if (this.mc !== null) this.mc.transport(playing);
     if (playing) { const C = this.chains; for (let k = 0; k < C.length; k++) { const c = C[k]; if (c.drive === 1 && c.rack !== null) c.rack.transport(); } }
   }
@@ -4718,6 +4807,8 @@ class Track extends Facade {
         const ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null;
         if (I.mon && I.kind === 'drums' && I.dm !== null) { // (a drum machine: its pads' lights and meters, IMPL-7a §3.5)
           this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap, dr: I.drMon(this.frames) });
+        } else if (I.mon && I.kind === 'patch' && I.pm !== null && I.pm.lampN > 0) { // (a patch's live lamps, IMPL-9b §1.6)
+          this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap, pt: I.pm.lamps(this.frames) });
         } else this.port.postMessage({ t: 'smon', s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
       }
       if (this.mcMon && this.mc !== null) this.port.postMessage({ t: 'smon', mc: this.mc.live, mcx: this.mc.mcx });
@@ -4735,6 +4826,8 @@ class Track extends Facade {
         }
         const ftap = r && typeof r.tapOut === 'function' ? r.tapOut() : null;
         if (I.kind === 'drums' && I.dm !== null) this.port.postMessage({ t: 'smon', i: I.id, s, gr: null, fxph: null, ftap, dr: I.drMon(this.frames) });
+        // (IMPL-9b §1.6: a patch whose machine holds live lamp modules — its lamps at frame F, queued by frame on the host)
+        else if (I.kind === 'patch' && I.pm !== null && I.pm.lampN > 0) this.port.postMessage({ t: 'smon', i: I.id, s, gr: null, fxph: null, ftap, pt: I.pm.lamps(this.frames) });
         else this.port.postMessage({ t: 'smon', i: I.id, s, gr: r ? r.gr() : null, fxph: r ? r.phases() : null, ftap });
       }
       if (sx && I.fxc.mon) {

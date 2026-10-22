@@ -95,7 +95,9 @@ test('the lead\'s fixture check (§7.2 phase 2): the Model 15 tile on track 1 �
   const tiles = sh.shell.tiles;
   tiles.setView('moog');
   assert.deepEqual(tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), ['m900'], 'the Moog modules view: the Model 15 tile');
-  assert.deepEqual(tiles.moogTiles().filter(b => !b.hidden).map(b => b.getAttribute('data-moog')), [...MG.ORDER], 'then the nine module tiles');
+  assert.deepEqual(tiles.setTiles().filter(b => !b.hidden).map(b => b.getAttribute('data-set')), ['s35', 's55'], '(9b) the set tiles System 35 / System 55 beside it');
+  assert.equal(MG.ORDER.length, 25, '(9b) stage 9\'s nine module types and the sixteen of the System 35 / 55');
+  assert.deepEqual(tiles.moogTiles().filter(b => !b.hidden).map(b => b.getAttribute('data-moog')), [...MG.ORDER], 'then the module tiles');
   sh.srcPick('m900', 'replace'); await settle();
   const t = T(), d = I(t, dev(t));
   assert.equal(d.model, 'm900');
@@ -622,11 +624,11 @@ test('review 2 F4: the Moog modules view\'s intro — on a 900 Series: a module 
   assert.match(intro(), /^900 Series“/, 'Hardware: the classic words (the model and the track in bold)');
   pick('moog');
   assert.equal(TL.view(), 'moog');
-  assert.equal(intro(), 'Tap a module to add it to “' + T().name + '”, or drag it where you want it. Model 15 loads Classic bass over the patch (tap to undo). Drag a tile onto the track list for a new track.', 'on a 900 Series');
+  assert.equal(intro(), 'Tap a module to add it to “' + T().name + '”, or drag it where you want it. Model 15 loads Classic bass over the patch; System 35 and System 55 bring their whole set, patched and laid out (tap to undo). Drag a tile onto the track list for a new track.', 'on a 900 Series ((9b) the set tiles named)');
   assert.doesNotMatch(intro(), /in place of/);
   api.selectTrack(ID.t4); await settle();
   assert.equal(I(T(), dev()).model, 'minimoog');
-  assert.equal(intro(), 'Tap a module to replace the Minimoog on “' + T().name + '” with a 900 Series holding it — Model 15 for the whole set, patched — or drag one onto the canvas. Drag it onto the track list for a new track.', 'on a Minimoog');
+  assert.equal(intro(), 'Tap a module to replace the Minimoog on “' + T().name + '” with a 900 Series holding it — Model 15, System 35 or System 55 for a whole set, patched — or drag one onto the canvas. Drag it onto the track list for a new track.', 'on a Minimoog ((9b) the set tiles named)');
   sh.cvOpenSources('track');
   assert.equal(intro(), 'a new track', '+ Track: the track words');
   sh.cvOpenSources('replace');

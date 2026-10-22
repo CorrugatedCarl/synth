@@ -245,6 +245,9 @@ function free(F, which) {
 }
 function unqueue(F, kind) { Q = Q.filter(j => j.F !== F || (kind && j.kind !== kind)); }
 function setMode(F, m) {
+  // (9b R2a) a gl face's SVG is hidden whatever got there first: a tier destroyed under a held quad (tierOff → drop) shows it, and the mode
+  // stays gl — so the rule runs before the no-change return
+  if (m === 'gl') { try { if (F.svg.style.visibility !== 'hidden') F.svg.style.visibility = 'hidden'; } catch (err) { /* inert */ } }
   if (F.mode === m && F.attrEl === F.el) return false;
   const was = F.mode;
   F.mode = m; ordDirty = true;

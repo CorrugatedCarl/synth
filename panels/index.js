@@ -21,6 +21,7 @@ import tr606 from './tr606.js?v=9';
 import tr909 from './tr909.js?v=9';
 import sdsv from './sdsv.js?v=9';
 import m900, { MODULES as M900 } from './m900.js?v=9';
+import { MODULES as M900B } from './m900b.js?v=9';
 
 /** model id → layout (null: not drawn yet), in models.js MODELS order. Every classic model has a physical counterpart;
  * Serum (custom) and the FX panels have none and are not listed. (7a) the TR-808 drum machine, (7b) the TR-606, (7c) the TR-909 and (8) the SDS-V come last, as in MODELS;
@@ -33,8 +34,9 @@ export function layoutOf(id) {
   return typeof id === 'string' && Object.prototype.hasOwnProperty.call(LAYOUTS, id) ? LAYOUTS[id] || null : null;
 }
 /** (9, IMPL-9 §2.6, §4.1) A patch family's module faces by module type (the type's `layout`: moog-core TYPES[t].layout), each
- * layout's id 'pm-<type>' (cv-panel moduleModel's); the controller's face is its model's console (LAYOUTS.m900). */
-export const MODULE_LAYOUTS = Object.freeze(Object.assign({}, M900));
+ * layout's id 'pm-<type>' (cv-panel moduleModel's); the controller's face is its model's console (LAYOUTS.m900). (9b) + the
+ * System 35 / 55 faces (panels/m900b.js: sixteen types, the console-height ones included). */
+export const MODULE_LAYOUTS = Object.freeze(Object.assign({}, M900, M900B));
 /** A module type's face, or null. @param {string} type @returns {object|null} */
 export function moduleLayoutOf(type) {
   return typeof type === 'string' && Object.prototype.hasOwnProperty.call(MODULE_LAYOUTS, type) ? MODULE_LAYOUTS[type] || null : null;

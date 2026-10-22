@@ -63,14 +63,14 @@ function rig(o = {}) {
   const doc = fresh(), W = fakeWorld(doc, o.k || 1), L = stubCords(), edits = [], notes = [], knobs = [];
   W.cam.ty = 1300; // (the rack lies above the console, y < 0: the camera puts it on screen)
   place(W.overlay, 0, 0, 3000, 2000);
-  const m = MG.model15({});
+  const m = o.set ? MG.makeSet(o.set, {}) : MG.model15({}); // ((9b) a System 35 / 55 as its tile makes it)
   const t = { id: 'trk_1', name: 'Bass', color: '#c9a45c', prim: 'i1', nid: 2, lay: {},
     dev: { i1: { kind: 'synth', model: 'm900', vals: m.vals, patch: m.rec }, fx1: { kind: 'panel' }, out: { kind: 'out' } },
     wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }] };
   let V = null;
   const ctlL = cvPanel.usable('m900', M900), ctlJacks = CP.faceJacks(ctlL, M900, 'Controller');
   const H = CP.patchHost(Object.assign({
-    doc, world: W, kit: KIT,
+    doc, world: W, kit: o.kit || KIT,
     cur: () => ({ t, dev: 'i1' }), rec: (tt, dev) => tt.dev[dev].patch, vals: (tt, dev) => tt.dev[dev].vals,
     edit: (tt, dev, label, r) => {
       edits.push({ label, r });
@@ -119,10 +119,10 @@ test('ends ↔ jack keys: the controller is its instrument\'s module (iN), a mod
   assert.deepEqual([CP.TAP_TOUCH, CP.TAP_MOUSE, CP.SNAP_PX], [8, 4, 32]);
 });
 
-test('faceJacks: every face (the nine modules and the console) — one spec per jack of its type, id j-<port>, module-local (geometry\'s body px + BAR_H), "<title> · <legend>", sig / dir from the table, its hit circle ≤ the pitch; [] without a layout', () => {
+test('faceJacks: every face (the 25 modules — 9b: their rear terminals never on a face — and the console) — one spec per face jack of its type, id j-<port>, module-local (geometry\'s body px + BAR_H), "<title> · <legend>", sig / dir from the table, its hit circle ≤ the pitch; [] without a layout', () => {
   for (const ty of MG.ORDER) {
     const L = cvPanel.moduleLayout(ty), model = cvPanel.moduleModel(ty), g = cvPanel.geometry(L, model), J = CP.faceJacks(L, model, ty.toUpperCase() + ' 1'), T = MG.TYPES[ty];
-    assert.deepEqual(J.map(j => j.id).sort(), T.jacks.map(j => CP.JACK_PRE + j.id).sort(), ty);
+    assert.deepEqual(J.map(j => j.id).sort(), T.jacks.filter(j => !j.rear).map(j => CP.JACK_PRE + j.id).sort(), ty);
     for (const j of J) {
       const gj = g.jacks.find(x => CP.JACK_PRE + x.port === j.id), tj = T.jacks.find(x => CP.JACK_PRE + x.id === j.id);
       assert.deepEqual([j.side, j.kind, j.x, j.y, j.sig, j.dir, j.label, j.hit], ['face', 'cord', gj.x, gj.y + M.BAR_H, tj.sig, tj.dir, ty.toUpperCase() + ' 1 · ' + tj.label, gj.hit], ty + ' ' + j.id);
@@ -484,7 +484,8 @@ test('add (a tap: its row\'s first free slot; a drop: where released, on the dot
 test('presets / Init / Tidy: Patches… (each a step "Load <name>" carrying the knobs\' back meta, missing modules added in free slots, "tap to undo"); Init patch (every cord out, every knob at its default); Tidy patch (every module to its rack place, one step; already tidy: none); the ⋯ items', () => {
   const R = rig();
   assert.deepEqual(R.H.items(R.t, 'i1', 'c').map(i => i.label), ['Patches', 'Tidy patch']);
-  assert.deepEqual(R.H.items(R.t, 'i1', 'c')[0].sub.map(i => i.label || '—'), ['Classic bass', 'Filter sweep', 'Drone', 'Sync lead', 'Wind', 'Bells', '—', 'Init patch']);
+  assert.deepEqual(R.H.items(R.t, 'i1', 'c')[0].sub.map(i => i.label || '—'), ['Classic bass', 'Filter sweep', 'Drone', 'Sync lead', 'Wind', 'Bells',
+    'Swept band', 'Sequence', 'Twenty-four steps', 'Echo strikes', 'Vowel', 'Step bass', 'Routed', '—', 'Init patch'], '(9b) the thirteen');
   assert.deepEqual(R.H.items(R.t, 'i1', 'c')[0].sub.filter(i => i.checked).map(i => i.label), ['Classic bass']);
   assert.deepEqual(R.H.items(R.t, 'i1', 'm3').map(i => i.label || '—'), ['Duplicate', 'Driver', '—', 'Delete']);
   assert.deepEqual(R.H.items(R.t, 'i1', 'm3')[1].sub.map(i => i.label + (i.checked ? '*' : '')), ['921A 1*', 'None']);
@@ -573,4 +574,290 @@ test('without a cord layer (lane C9 not there yet, or a world without one) the d
     } finally { console.error = err; }
     R.V.destroy(); R.H.destroy();
   }
+});
+
+/* ---------------------------------------------------------------- 9b (IMPL-9b §4.5, §8.5; lane U9b) */
+const midsOf = (rec, ty) => Object.keys(rec.mods).filter(k => rec.mods[k].t === ty).sort((a, b) => +a.slice(1) - +b.slice(1));
+const evBtns = B => all(B.el).filter(n => cls(n) === 'cv-pev');
+const lampEls = B => all(B.el).filter(n => cls(n) === 'cv-plamp');
+const lit = B => lampEls(B).filter(s => s.hasAttribute('data-on')).map(s => s.getAttribute('data-lamp')).sort();
+const geoOf = ty => cvPanel.geometry(cvPanel.moduleLayout(ty), cvPanel.moduleModel(ty));
+
+test('(9b) event buttons: a transparent button.cv-pev over each geometry().evs hit box in the face\'s own layer (body px), aria "<title> · <label>"; a tap fires on its RELEASE (deps.ev(t, dev, mid, id) once — no History step, no knob), not past the slop, not after a second finger\'s flagged cancel or a lost capture, not for a right button or another pointer; Enter / Space fire it (a held key once; the keyboard\'s own click ignored), an assistive click (detail 0) does, a pointer\'s click does not; asleep below READ_K unless the module is in edit state; the 962\'s three; host.ev refuses what the type lacks', () => {
+  const evs = [];
+  let R = null;
+  R = rig({ set: 's55', deps: { ev: (t, dev, mid, id) => { evs.push(dev + ' ' + mid + ' ' + id + (t === R.t ? '' : ' (another track)')); return true; } } });
+  const m960 = midsOf(R.rec(), '960')[0], m962 = midsOf(R.rec(), '962')[0], B = R.bodies.get('i1/' + m960), B2 = R.bodies.get('i1/' + m962), g = geoOf('960');
+  const btns = evBtns(B), ids = btns.map(b => b.getAttribute('data-ev'));
+  assert.deepEqual([ids, ids.slice().sort()], [g.evs.map(e => e.id), MG.TYPES['960'].ev.map(e => e.id).sort()], 'one per event, in the face\'s order');
+  const b3 = btns[ids.indexOf('e3')], e3 = g.evs.find(e => e.id === 'e3');
+  assert.deepEqual([b3.tagName, b3.type, b3.getAttribute('aria-label'), b3.style.left, b3.style.top, b3.style.width, b3.style.height, cls(b3.parentNode), b3.getAttribute('data-nomod')],
+    ['BUTTON', 'button', '960 1 · SET 3', e3.hit.x + 'px', e3.hit.y + 'px', e3.hit.w + 'px', e3.hit.h + 'px', 'hw-ctls', '1']);
+  assert.ok(e3.hit.w >= 28 && e3.hit.h >= 28, 'a 14 mm box');
+  const n0 = R.edits.length, k0 = R.knobs.length;
+  const pd = (b, x, y, o2 = {}) => fire(b, 'pointerdown', Object.assign({ clientX: x, clientY: y, pointerId: 31, pointerType: 'touch', button: 0 }, o2));
+  const pu = (b, x, y, o2 = {}) => fire(b, 'pointerup', Object.assign({ clientX: x, clientY: y, pointerId: 31, pointerType: 'touch' }, o2));
+  pd(b3, 100, 100);
+  assert.deepEqual([evs, b3.hasAttribute('data-down')], [[], true], 'nothing at the press');
+  pu(b3, 104, 103);
+  assert.deepEqual([evs, b3.hasAttribute('data-down'), R.edits.length - n0, R.knobs.length - k0], [['i1 ' + m960 + ' e3'], false, 0, 0], 'its release: one event, no step, no knob');
+  pd(b3, 100, 100); fire(b3, 'pointermove', { clientX: 112, clientY: 100, pointerId: 31, pointerType: 'touch' }); pu(b3, 112, 100);
+  assert.equal(b3.hasAttribute('data-down'), false, 'past the slop: not a tap');
+  pd(b3, 100, 100); fire(b3, 'pointercancel', { pointerId: 31, pointerType: 'touch', gesture: 'two-finger' }); pu(b3, 100, 100);
+  pd(b3, 100, 100); fire(b3, 'lostpointercapture', { pointerId: 31 }); pu(b3, 100, 100);
+  pd(b3, 100, 100, { pointerType: 'mouse', button: 2 }); pu(b3, 100, 100, { pointerType: 'mouse' });
+  pd(b3, 100, 100, { pointerType: 'mouse' }); pu(b3, 100, 100, { pointerId: 32, pointerType: 'mouse' });
+  assert.deepEqual([evs.length, b3.hasAttribute('data-down')], [1, true], 'a second finger, a lost capture, a right button, another pointer: none fired');
+  pu(b3, 103, 100, { pointerType: 'mouse' });
+  assert.equal(evs.length, 2, 'its own lift within a mouse\'s slop');
+  // the keyboard and assistive technology
+  key(b3, 'Enter'); key(b3, ' '); key(b3, 'Enter', { repeat: true });
+  b3.dispatchEvent(new Ev('click', { bubbles: true, detail: 0 }));
+  assert.deepEqual(evs.slice(2), ['i1 ' + m960 + ' e3', 'i1 ' + m960 + ' e3'], 'Enter, Space; a held key once; the keyboard\'s own click ignored');
+  const bs = btns[ids.indexOf('sh')];
+  bs.dispatchEvent(new Ev('click', { bubbles: true, detail: 1 }));
+  bs.dispatchEvent(new Ev('click', { bubbles: true, detail: 0 }));
+  assert.deepEqual([evs.length, evs.at(-1)], [5, 'i1 ' + m960 + ' sh'], 'an assistive click fires; a pointer\'s click does not (the tap fired at its release)');
+  // asleep below READ_K (the world takes such a press first; the button refuses it too) unless the module is in edit state
+  R.W.k = READ_K - 0.1;
+  pd(b3, 100, 100); pu(b3, 100, 100);
+  assert.deepEqual([evs.length, b3.hasAttribute('data-down')], [5, false], 'asleep');
+  R.V.modules.get('i1/' + m960).el.setAttribute('data-cv-edit', '');
+  pd(b3, 100, 100); pu(b3, 100, 100);
+  assert.equal(evs.length, 6, 'in edit state: awake');
+  R.W.k = 1;
+  // the 962's three; host.ev's refusals (an id the type lacks, a module without events, the controller); no deps.ev: nothing posted
+  assert.deepEqual(evBtns(B2).map(b => b.getAttribute('aria-label')).sort(), ['962 1 · SET 1', '962 1 · SET 2', '962 1 · SET 3']);
+  assert.deepEqual([R.H.ev(R.t, 'i1', m960, 'zz'), R.H.ev(R.t, 'i1', midsOf(R.rec(), '921')[0], 'e1'), R.H.ev(R.t, 'i1', 'c', 'e1'), R.H.ev(R.t, 'i1', m962, 'e2'), evs.at(-1)],
+    [false, false, false, true, 'i1 ' + m962 + ' e2']);
+  assert.deepEqual([R.edits.length - n0, R.knobs.length - k0], [0, 0], 'no step, no knob, ever');
+  R.V.destroy(); R.H.destroy();
+  const R2 = rig({ set: 's55' });
+  assert.equal(R2.H.ev(R2.t, 'i1', midsOf(R2.rec(), '960')[0], 'e1'), false, 'no host ev: not posted');
+  R2.V.destroy(); R2.H.destroy();
+});
+
+test('(9b) lamps: a span.cv-plamp per geometry().lamps (the lens: d × 0.72 at its centre, in the face\'s layer, aria-hidden); host.lamps queues the monitor\'s { F, l } and ONE frame paints what is heard by then (deps.heard + a frame\'s lead at deps.rate) — posts within a frame: one pump, the latest bits, only lamps that changed written (never a write per post); a post not yet heard waits for its frame; another track\'s, a malformed one: nothing; off screen nothing is written and shown(key) catches up; a face mounted later shows the bits heard; lamps(…, null) darkens; the queue is bounded', () => {
+  const rq = [], frame = () => { for (const f of rq.splice(0)) f(0); };
+  let heard = NaN;
+  const R = rig({ set: 's55', deps: { raf: fn => rq.push(fn), heard: () => heard, rate: () => 48000 } });
+  const m960 = midsOf(R.rec(), '960')[0], m962 = midsOf(R.rec(), '962')[0], n960 = +m960.slice(1), n962 = +m962.slice(1);
+  const B = R.bodies.get('i1/' + m960), B2 = R.bodies.get('i1/' + m962), g = geoOf('960'), S = () => R.H.stats().lamps;
+  const L = lampEls(B), l3 = g.lamps.find(l => l.id === 'l3'), s3 = L.find(s => s.getAttribute('data-lamp') === 'l3'), d = Math.round(l3.d * 0.72 * 100) / 100, r2 = v => Math.round(v * 100) / 100;
+  assert.deepEqual([L.map(s => s.getAttribute('data-lamp')), lampEls(B2).length], [g.lamps.map(l => l.id), 3]);
+  assert.deepEqual(L.map(s => s.getAttribute('data-lamp')).sort(), MG.TYPES['960'].lamps.map(l => l.id).sort());
+  assert.deepEqual([s3.tagName, s3.getAttribute('aria-hidden'), s3.style.width, s3.style.height, s3.style.left, s3.style.top, cls(s3.parentNode)],
+    ['SPAN', 'true', d + 'px', d + 'px', r2(l3.x - d / 2) + 'px', r2(l3.y - d / 2) + 'px', 'hw-ctls']);
+  assert.deepEqual([lit(B), lit(B2), rq.length], [[], [], 0], 'dark at mount; no frame asked');
+  const bit = id => 1 << MG.TYPES['960'].lamps.findIndex(l => l.id === id);
+  R.H.lamps(R.t, 'i1', { F: 1000, l: [n960, bit('l1') | bit('lo'), n962, 1] });
+  R.H.lamps(R.t, 'i1', { F: 1100, l: [n960, bit('l2') | bit('lo'), n962, 2] });
+  assert.deepEqual([lit(B), rq.length, S().queued, S().posts], [[], 1, 2, 2], 'queued: one frame asked, nothing written');
+  frame();
+  assert.deepEqual([lit(B), lit(B2), S().pumps, S().paints, S().queued, rq.length], [['l2', 'lo'], ['l2'], 1, 3, 0, 0], 'one pump: the latest bits, three lamps written');
+  R.H.lamps(R.t, 'i1', { F: 1200, l: [n960, bit('l2') | bit('lo'), n962, 2] }); frame();
+  assert.equal(S().paints, 3, 'nothing changed: nothing written');
+  // its heard time: a post 1 s ahead waits; shown once the clock is within a frame's lead (800 frames at 48 kHz)
+  heard = 0;
+  R.H.lamps(R.t, 'i1', { F: 48000, l: [n960, bit('l5')] }); frame();
+  assert.deepEqual([lit(B), rq.length, S().queued], [['l2', 'lo'], 1, 1], 'not heard yet: held, a frame asked again');
+  heard = 47000; frame();
+  assert.deepEqual([lit(B), rq.length], [['l2', 'lo'], 1], '1 000 frames early: still held');
+  heard = 47300; frame();
+  assert.deepEqual([lit(B), rq.length], [['l5'], 0], 'heard: shown; no more frames');
+  heard = NaN;
+  // another track's post (the same keys), a malformed one: nothing here
+  assert.deepEqual([R.H.lamps({ id: 'trk_9' }, 'i1', { F: 0, l: [n960, bit('l7')] }), R.H.lamps(R.t, 'i1', { F: 0 }), R.H.lamps(R.t, 'i1', 7)], [true, false, false]);
+  frame();
+  assert.deepEqual(lit(B), ['l5']);
+  // off screen ([data-cv-off] on its module): not written, the bits kept; back on screen (the host's shown) caught up
+  const mod = R.V.modules.get('i1/' + m960).el, p0 = S().paints;
+  mod.setAttribute('data-cv-off', '');
+  R.H.lamps(R.t, 'i1', { F: 0, l: [n960, bit('l6')] }); frame();
+  assert.deepEqual([lit(B), S().paints, R.H.lampBits(R.t, 'i1', m960)], [['l5'], p0, bit('l6')], 'off screen: nothing written');
+  mod.removeAttribute('data-cv-off');
+  R.H.shown('i1/' + m960);
+  assert.deepEqual(lit(B), ['l6'], 'back on screen');
+  // a face mounted later shows what was heard; null: the node went silent — dark
+  const B3 = CP.moduleBody({ host: R.H, t: R.t, dev: 'i1', mid: m960, type: '960', doc: R.doc });
+  assert.deepEqual(lit(B3), ['l6']);
+  R.H.lamps(R.t, 'i1', null);
+  assert.deepEqual([lit(B), lit(B3), lit(B2), R.H.lampBits(R.t, 'i1', m960)], [[], [], [], 0]);
+  B3.destroy();
+  // bounded: a stalled page keeps the newest LAMP_QMAX posts
+  heard = 0;
+  for (let i = 0; i < 70; i++) R.H.lamps(R.t, 'i1', { F: 1e9 + i, l: [n960, 1] });
+  frame();
+  assert.deepEqual([CP.LAMP_QMAX, S().queued, lit(B)], [64, 64, []]);
+  R.V.destroy(); R.H.destroy();
+  assert.equal(R.H.stats().lamps.queued, 0, 'destroyed: the queues gone');
+});
+
+test('(9b) routing switches (the bus rows, IMPL-9b §1.4): each switch\'s tip and aria-description say its rows (the route; "No … in this patch"; a lit one waiting on another "(needs …)"), shown on a flip (the knob policy: no step) and a mouse\'s hover; selecting a routing panel outlines what its lit, resolved rows reach — the controller too, never itself — and again after a flip, without a re-render', () => {
+  const tips = [];
+  const R = rig({ set: 's55', kit: Object.assign({}, KIT, { tip: (el, s) => tips.push(s), untip() {} }) });
+  const [m992] = midsOf(R.rec(), '992'), [m993] = midsOf(R.rec(), '993'), cp3 = midsOf(R.rec(), 'cp3a'), B = R.bodies.get('i1/' + m992), B3 = R.bodies.get('i1/' + m993);
+  const sw = (Bx, id) => all(Bx.el).find(n => n.getAttribute && n.getAttribute('data-ctl') === id).children[0];
+  const K1 = 'Controller · PITCH 1 → 904B 1 · CONTROL INPUT 3';
+  assert.deepEqual([R.H.busTip(R.t, 'i1', m992, 's1'), sw(B, 's1').getAttribute('aria-description'), R.H.busTip(R.t, 'i1', m992, 's4'), R.H.busTip(R.t, 'i1', m992, 'at'), R.H.busTip(R.t, 'i1', 'c', 's1')],
+    ['Keyboard: Off — ' + K1, 'Keyboard: Off — ' + K1, 'Ext: Off — 992 1 · EXT (REAR) → 904B 1 · CONTROL INPUT 3', '', ''], 'off: where it would go (its rear terminal named); not a switch: none');
+  const n0 = R.edits.length;
+  B.panel.set('s1', 1);
+  assert.deepEqual([R.knobs.at(-1), R.edits.length - n0, tips.at(-1), sw(B, 's1').getAttribute('aria-description')], [m992 + '.s1=1', 0, 'Keyboard: On — ' + K1, 'Keyboard: On — ' + K1], 'a flip: a knob, its tip');
+  fire(sw(B, 's2'), 'pointerenter', { pointerType: 'mouse' });
+  assert.equal(tips.at(-1), 'Wheel: Off — Controller · WHEEL → 904B 1 · CONTROL INPUT 3', 'a mouse\'s hover');
+  // the CP3As: the k-th driver (921As by number, then the 921)
+  assert.deepEqual(cp3.map(m => R.H.busTip(R.t, 'i1', m, 'r1')), ['921A 1', '921A 2', '921 1'].map(d => 'Keyboard: Off — Controller · PITCH 1 → ' + d + ' · FREQUENCY CONTROL INPUT 3'));
+  // the 993 selected: nothing lit, nothing outlined; FROM 1 lit → the controller and the 911A (its TRIGGER 1 row waits); TRIGGER 1 → 911 1 too
+  const k993 = 'i1/' + m993, mem = () => [...R.V.modules].filter(([, m]) => m.el.hasAttribute('data-cv-member')).map(([k]) => k).sort();
+  const title = k => R.H.title(R.t, 'i1', CP.midOf('i1', k)).title;
+  R.W.select(k993);
+  assert.deepEqual(mem(), []);
+  const s0 = R.L.log.length;
+  B3.panel.set('f1', 1);
+  assert.deepEqual([tips.at(-1), mem().map(k => (k === 'i1' ? 'Controller' : title(k))).sort()],
+    ['From 1: On — Controller · S-TRIG 1 → 911A 1 · INPUT 1; Controller · S-TRIG 1 → 911 1 · TRIGGER (needs Trigger 1)', ['911A 1', 'Controller']], 'the routed modules outlined at the flip');
+  B3.panel.set('t1', 1); B3.panel.set('e2', 1);
+  assert.deepEqual(mem().map(k => (k === 'i1' ? 'Controller' : title(k))).sort(), ['902 2', '911 1', '911 2', '911A 1', 'Controller'], 'TRIGGER 1: 911 1; ENVELOPE 2: 911 2 into 902 2');
+  assert.deepEqual([R.H.members(R.t, 'i1', k993).length, R.edits.length - n0, R.L.log.length - s0], [5, 0, 0], 'no step; no re-render (the cords untouched)');
+  B3.panel.set('f1', 0);
+  assert.deepEqual(mem().map(k => (k === 'i1' ? 'Controller' : title(k))).sort(), ['902 2', '911 2'], 'FROM 1 off: its rows gone');
+  R.W.select(null);
+  assert.deepEqual(mem(), [], 'deselected: none');
+  // a panel that is not selected: a flip leaves the outline alone; a driver keeps its 921Bs
+  const k921a = 'i1/' + midsOf(R.rec(), '921a')[0];
+  R.W.select(k921a);
+  const drv = mem();
+  B3.panel.set('e3', 1);
+  assert.deepEqual([mem(), drv.length > 0], [drv, true]);
+  R.V.destroy(); R.H.destroy();
+  // unresolved ordinals: a Model 15 and a 993 — no 911A, no 911 3
+  const M = rig();
+  const m3 = M.H.add('993');
+  assert.deepEqual([M.H.busTip(M.t, 'i1', m3, 'e3'), M.H.busTip(M.t, 'i1', m3, 't2'), M.H.busTip(M.t, 'i1', m3, 'e1')],
+    ['Envelope 3: Off — No 911 3 in this patch', 'Trigger 2: Off — No 911A 1 in this patch', 'Envelope 1: Off — 911 1 · OUTPUT → 902 1 · CONTROL INPUT 3']);
+  M.V.destroy(); M.H.destroy();
+});
+
+test('(9b) a set on a 900 Series (IMPL-9b §1.2): setLoad(\'s55\') loads Sequence over the full set in ONE step "Load System 55" (the missing modules added, the knobs\' back meta) with every module laid out by rackLayout in that step (the console row flush above the controller, the cabinet rows above it, the wide rack), its notice once a session; setLoad(\'m15\') stays the Model 15 tile\'s (free slots, no Tidy); an unknown set: a notice, no step; setNote', () => {
+  const R = rig(), ctl = R.V.modules.get('i1');
+  assert.deepEqual([ctl.x, ctl.y], [0, 0]);
+  assert.equal(R.H.setLoad('s55'), true);
+  const e = R.edits.at(-1), rec = R.rec(), RL = PT.rackLayout(rec, 'moog');
+  assert.deepEqual([e.label, rec.name, Object.keys(rec.mods).length, e.r.back.f.length > 0, Object.keys(e.r.lay).length, R.notes.at(-1)],
+    ['Load System 55', 'Sequence', 39, true, 39, 'Loaded System 55 — The sequence starts when you press ▶ · tap to undo [tap]']);
+  for (const mid of Object.keys(rec.mods)) assert.deepEqual([e.r.lay['i1/' + mid], R.V.modules.get('i1/' + mid).x, R.V.modules.get('i1/' + mid).y], [RL[mid], RL[mid].x, RL[mid].y], mid);
+  const con = Object.keys(rec.mods).filter(k => MG.CONSOLE.includes(rec.mods[k].t)), cab = Object.keys(rec.mods).filter(k => !MG.CONSOLE.includes(rec.mods[k].t));
+  assert.deepEqual([[...new Set(con.map(k => RL[k].y))], Math.max(...cab.map(k => RL[k].y)) <= -352 - 512, Math.max(...Object.keys(rec.mods).map(k => RL[k].x + MG.TYPES[rec.mods[k].t].w)) <= MG.FAMILY.rackWide],
+    [[-352], true, true], 'the console row flush above the controller, the cabinets above, the 22 MU width');
+  assert.equal(R.H.tidy(), false, 'already tidy');
+  R.H.setLoad('s35');
+  assert.deepEqual([R.edits.at(-1).label, R.rec().name, R.notes.at(-1)], ['Load System 35', 'Swept band', 'Loaded System 35 · tap to undo [tap]']);
+  R.H.setLoad('s55');
+  assert.deepEqual([R.notes.at(-1), R.H.setNote('s55')], ['Loaded System 55 · tap to undo [tap]', ''], 'once a session');
+  R.V.destroy(); R.H.destroy();
+  // the Model 15 tile's own set: as stage 9 (free slots for what it adds, no Tidy); an unknown set
+  const Q = rig();
+  Q.H.remove('m8');
+  const lay0 = Object.assign({}, Q.t.lay);
+  Q.H.setLoad('m15');
+  const q = Q.edits.at(-1);
+  assert.deepEqual([q.label, Object.keys(q.r.lay), Q.notes.at(-1)], ['Load Classic bass', ['i1/m13'], 'Loaded Classic bass · tap to undo [tap]']);
+  assert.deepEqual(Object.keys(lay0).map(k => Q.t.lay[k]), Object.values(lay0), 'nothing else moved');
+  const n = Q.edits.length;
+  assert.deepEqual([Q.H.setLoad('nope'), Q.edits.length - n, Q.notes.at(-1)], [false, 0, 'No such set']);
+  assert.deepEqual([Q.H.setNote('s55'), Q.H.setNote('s55'), Q.H.setNote('s35'), CP.SET_NOTES.s55], ['The sequence starts when you press ▶', '', '', 'The sequence starts when you press ▶'], 'a host\'s session: once (the Replace path asks too)');
+  Q.V.destroy(); Q.H.destroy();
+});
+
+test('(9b, review 2 F4) the routing panels reach modules by ordinal, so a delete / add / duplicate that renumbers one moves their lit rows — the step\'s notice says so (the 993\'s routing now reaches 911 2, 911 3: the modules by their titles before the step); a delete no lit row reaches says nothing more; a row that loses its module says "no longer reaches"', () => {
+  const R = rig({ set: 's55' }), mid = (ty, n = 1) => Object.keys(R.rec().mods).filter(k => R.rec().mods[k].t === ty).sort((a, b) => +a.slice(1) - +b.slice(1))[n - 1];
+  R.H.preset('Routed');
+  R.notes.length = 0;
+  // Routed lights the 993's FROM 1 / TRIGGER 1 / TRIGGER 2 / ENVELOPE 1 (911 1 and 911 2 by ordinal): 911 1 deleted → the old 911 2, 911 3
+  assert.equal(R.H.remove(mid('911', 1)), true);
+  assert.equal(R.notes.at(-1), 'Deleted 911 1 · the 993\'s routing now reaches 911 2, 911 3 · tap to undo [tap]');
+  // a delete no lit row reaches (911 5; the 993 has no switch for it): today's text
+  R.notes.length = 0;
+  assert.equal(R.H.remove(mid('911', 4)), true);
+  assert.equal(R.notes.at(-1), 'Deleted 911 4 · tap to undo [tap]');
+  R.V.destroy(); R.H.destroy();
+  // a row that loses its module: ENVELOPE 3 (911 3 → 902 3) with only two 911s left
+  const Q = rig({ set: 's55' }), q = (ty, n = 1) => Object.keys(Q.rec().mods).filter(k => Q.rec().mods[k].t === ty).sort((a, b) => +a.slice(1) - +b.slice(1))[n - 1];
+  Q.t.dev.i1.vals = PT.setKnob(Q.t.dev.i1.vals, Q.rec(), q('993'), 'e3', 1);
+  Q.H.remove(q('911', 5)); Q.H.remove(q('911', 4));
+  Q.notes.length = 0;
+  Q.H.remove(q('911', 3));
+  assert.equal(Q.notes.at(-1), 'Deleted 911 3 · the 993\'s routing no longer reaches 911 3 · tap to undo [tap]');
+  Q.V.destroy(); Q.H.destroy();
+  // an add: a 921A before the 921s moves CP3A 3's KEYBOARD row (the k-th driver, 921As first) onto it; the new module by its own title
+  const A = rig({ set: 's55' }), cp3 = Object.keys(A.rec().mods).filter(k => A.rec().mods[k].t === 'cp3a').sort((a, b) => +a.slice(1) - +b.slice(1))[2];
+  A.t.dev.i1.vals = PT.setKnob(A.t.dev.i1.vals, A.rec(), cp3, 'r1', 1);
+  A.notes.length = 0;
+  A.H.add('921b');
+  assert.deepEqual(A.notes, [], 'a 921B moves no driver row: no notice');
+  A.H.add('921a');
+  assert.equal(A.notes.at(-1), 'Added 921A 3 · CP3A 3\'s routing now reaches 921A 3 · tap to undo [tap]');
+  // a duplicate of a driver does the same (a 921A 3 → 4: the CP3A's rows keep their ordinals, so nothing moves) — and a duplicate of a 911 reaches no row
+  A.notes.length = 0;
+  A.H.duplicate(Object.keys(A.rec().mods).find(k => A.rec().mods[k].t === '911'));
+  assert.deepEqual(A.notes, [], 'a 911 duplicated: no routing moved');
+  A.V.destroy(); A.H.destroy();
+});
+
+test('(9b, review 2 F1) a preset (and a set) binds the 960s whose clock it starts: the step carries them (r.seq, the sequencers its bound roles name), the host\'s starts() gives each its OSC ON / OSC OFF per its CLOCK AT START knob now (Step bass os 1 → on, Sequence os 0 → off), [] for a module that is none or gone; seqStart is pure; a preset with no 960 carries none', () => {
+  const R = rig({ set: 's55' }), m960 = Object.keys(R.rec().mods).find(k => R.rec().mods[k].t === '960');
+  assert.deepEqual([CP.SEQ_START['960'].p, CP.seqStart(MG.FAMILY, R.rec(), R.t.dev.i1.vals, m960), CP.seqStart(MG.FAMILY, R.rec(), R.t.dev.i1.vals, 'm1'), CP.seqStart(MG.FAMILY, R.rec(), R.t.dev.i1.vals, 'nope'), CP.seqStart(MG.FAMILY, R.rec(), R.t.dev.i1.vals, 'c')], ['os', 'off', null, null, null], 'Sequence: stopped at start');
+  R.H.preset('Step bass');
+  let e = R.edits.at(-1);
+  assert.deepEqual([e.label, e.r.seq, R.H.starts(R.t, 'i1', e.r.seq), R.H.starts(R.t, 'i1', ['m1', 'zz', m960]).length], ['Load Step bass', [m960], [[m960, 'on']], 1], 'OSC ON for Step bass');
+  R.H.preset('Sequence');
+  e = R.edits.at(-1);
+  assert.deepEqual([e.r.seq, R.H.starts(R.t, 'i1', e.r.seq)], [[m960], [[m960, 'off']]], 'OSC OFF for Sequence');
+  R.H.preset('Classic bass');
+  assert.equal('seq' in R.edits.at(-1).r, false, 'Classic bass binds no 960');
+  R.H.remove(m960);
+  assert.deepEqual(R.H.starts(R.t, 'i1', [m960]), [], 'gone: none');
+  R.V.destroy(); R.H.destroy();
+});
+
+test('(9b, review 2 N2) setNote is not said — and not spent — while the song plays (deps.playing): the load notices carry no ▶ tail then; stopped, the next one says it once', () => {
+  let pl = true;
+  const R = rig({ deps: { playing: () => pl } });
+  R.H.setLoad('s55');
+  assert.equal(R.notes.at(-1), 'Loaded System 55 · tap to undo [tap]', 'playing: no tail');
+  assert.equal(R.H.setNote('s55'), '', 'still skipped');
+  pl = false;
+  R.H.setLoad('s35'); R.H.setLoad('s55');
+  assert.equal(R.notes.at(-1), 'Loaded System 55 — The sequence starts when you press ▶ · tap to undo [tap]', 'stopped: said (it was not spent)');
+  assert.equal(R.H.setNote('s55'), '', 'and once');
+  R.V.destroy(); R.H.destroy();
+});
+
+test('(9b) DOM per module (IMPL-9b §4.2, §8.5): on a System 55 rack the 960 ≤ 240 elements outside its face\'s art (its buttons and lamps with it), the 961 ≤ 120, the 914 ≤ 100, a console panel ≤ 90, every other module ≤ 90; the whole rack ≤ 1 700 (the counts as diagnostics)', t => {
+  const R = rig({ set: 's55' });
+  const count = k => { const m = R.V.modules.get(k), deco = new Set(); for (const d of all(m.el).filter(n => cls(n).split(' ').includes('hw-decor'))) for (const n of all(d)) deco.add(n); return all(m.el).filter(n => !deco.has(n)).length; };
+  const LIM = { 960: 240, 961: 120, 914: 100 }, got = {};
+  let sum = 0;
+  for (const mid of Object.keys(R.rec().mods)) {
+    const ty = R.rec().mods[mid].t, n = count('i1/' + mid);
+    sum += n; got[ty] = Math.max(got[ty] || 0, n);
+    assert.ok(n <= (LIM[ty] || 90), ty + ' ' + mid + ': ' + n);
+  }
+  sum += count('i1');
+  assert.ok(sum <= 1700, 'the rack: ' + sum);
+  t.diagnostic('DOM by type ' + JSON.stringify(got) + ' · the rack ' + sum);
+  assert.ok(got[960] > 150 && got[960] <= 240, 'the 960 has its 40 controls, 29 jacks, 12 buttons and 10 lamps: ' + got[960]);
+  R.V.destroy(); R.H.destroy();
+});
+
+test('style.css (9b): the event buttons (transparent, the press area, pressed and focus), the lamps (the lens, lit #f0642c with a glow — none with reduced motion), the glyphs\' fine rings, caps, discs and dim parts — in the last section', () => {
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  for (const sel of ['.inst.hw .cv-pev {', '.inst.hw .cv-pev[data-down] {', '.inst.hw .cv-pev:focus-visible {', '.inst.hw .cv-plamp {', '.inst.hw .cv-plamp[data-on] {',
+    '.cv-gglyph svg[data-fine] .j {', '.cv-gglyph svg .e {', '.cv-gglyph svg .l {', '.cv-gglyph svg .i {']) assert.ok(css.includes('\n' + sel), sel);
+  assert.match(css, /\n\.inst\.hw \.cv-pev \{[^}]*background: transparent;[^}]*pointer-events: auto;[^}]*touch-action: none;/);
+  assert.match(css, /\n\.inst\.hw \.cv-plamp \{[^}]*pointer-events: none;/);
+  assert.match(css, /\n\.inst\.hw \.cv-plamp\[data-on\] \{ background: #f0642c;[^}]*0 0 6px/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{ \.inst\.hw \.cv-plamp\[data-on\] \{ box-shadow: inset 0 0 2px rgba\([^)]*\); \} \}/, 'reduced motion: no glow');
+  assert.ok(css.lastIndexOf('(9b, IMPL-9b §4.3, §4.5; lane U9b') > css.lastIndexOf('(9, IMPL-9 §4.1–§4.6; lane U9'), 'after stage 9\'s');
 });

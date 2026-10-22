@@ -1255,6 +1255,25 @@ test('9 (IMPL-9 §6, §1.4): #m900 boots a 900 Series — the Model 15 set as Cl
   assert.equal(api.store.get('synth.v.m900', null), null, 'no last-used values');
 });
 
+test('9b (IMPL-9b §6, §1.4): every graph payload the host builds carries the device\'s routing rows — a System 55 loaded over #m900\'s Model 15, a 993 switch lit: its post at the flip, a node\'s options (graphParts), the bounce\'s (offParts) — and the Moog view lists the set tiles beside the Model 15', async () => {
+  const s = await bootMain({ hash: '#m900' });
+  await s.power(); await s.settle(5); s.raf();
+  const api = s.api, cv = globalThis.__synthTest.cv, t = api.project().tracks[0], dv = CMOD.primId(t), N = s.nodeOf(t.id);
+  const tiles = globalThis.__synthTest.shell.shell.tiles;
+  tiles.setView('moog');
+  assert.deepEqual(tiles.setTiles().filter(b => !b.hidden).map(b => b.getAttribute('data-set')), ['s35', 's55'], 'the set tiles');
+  cv.setPick('s55', 'replace'); s.raf(); await s.settle(3);
+  const rec = () => I(api.project().tracks[0]).patch, vals = () => I(api.project().tracks[0]).vals, m993 = Object.keys(rec().mods).find(k => rec().mods[k].t === '993');
+  assert.deepEqual([Object.keys(rec().mods).length, rec().name], [39, 'Sequence'], 'loaded over the Model 15: 12 + 27 modules');
+  N.posted.length = 0;
+  cv.patch.knobSet(api.project().tracks[0], dv, m993, 'e1', 1);
+  const pk = PT.payload(rec(), 'moog', vals()).pk;
+  assert.notEqual(pk, PT.payload(rec(), 'moog').pk, 'a lit row: another graph than the cords alone');
+  assert.deepEqual(N.posted.map(x => x.m).filter(m => m.t === 'seq').map(m => m.s.pk), [pk], 'the flip: its payload at once');
+  s.raf(); await s.settle(2);
+  assert.deepEqual([api.graphParts(api.project().tracks[0], 48000).seqs[dv].pk, api.offParts(api.project().tracks[0], 48000).seqs[dv].pk], [pk, pk], 'a node\'s options and the bounce\'s: the same rows');
+});
+
 test('MIDI import into a project with no notes: the empty project\'s tracks go and the file\'s come in as the current instrument\'s model (curModel read before the tracks are cleared — no throw)', async () => {
   const s = await bootMain({ hash: '#juno60' });
   await s.power(); await s.settle(5); s.raf();

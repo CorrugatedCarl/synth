@@ -1,0 +1,22 @@
+{
+  "note": "Stage 9's patch core (IMPL-9b §1.1, §8.2; skeptic #1, #11): verbatim copies of patch-core.js and moog-core.js at the 9b base (= the stage 9 acceptance commit's), taken by lane K9b before its first edit. Never edit: tests/patch-core.test.mjs runs a 9b record through them (an older build keeps every module and plays the Model 15 part), and `records` are the frozen Model 15 records computed from them — payload(rec).pk and sha256 of JSON.stringify of pvOf(vals), rec and vals — for model15({}), makeSet('m15', {}) (stage 9: model15) and each of the six stage-9 presets loaded on a fresh record with { ensure: M15 }.",
+  "commit": "b06f1aa5c8ecfb030b36a92257edb37a1b27987d",
+  "files": {
+    "patch-core.js": {
+      "sha256": "10057dfdb7bba1f3cf4df7ba77cd81659020008ab4353ef2b6eb175f3d61dd05"
+    },
+    "moog-core.js": {
+      "sha256": "65ceea80ea377c93618d214cd8d1e7296bd3dec5ffa89be11b8c1bcd67c30143"
+    }
+  },
+  "records": {
+    "model15": { "pk": "088e7464", "pv": "98efe346c0a951e47f6a557c57be1b1b5472238d79bc6882a46306feaf66a818", "rec": "27b60bb419f6043c5e1249ac753460ebdf4cbd26d4cf549f025f75fe3b43e4fa", "vals": "61b9d79f19c66ab0da0ddd72745ecfdd14e91a671bbaf9a4bd1499f3d2cfb396" },
+    "makeSet m15": { "pk": "088e7464", "pv": "98efe346c0a951e47f6a557c57be1b1b5472238d79bc6882a46306feaf66a818", "rec": "27b60bb419f6043c5e1249ac753460ebdf4cbd26d4cf549f025f75fe3b43e4fa", "vals": "61b9d79f19c66ab0da0ddd72745ecfdd14e91a671bbaf9a4bd1499f3d2cfb396" },
+    "Classic bass": { "pk": "088e7464", "pv": "98efe346c0a951e47f6a557c57be1b1b5472238d79bc6882a46306feaf66a818", "rec": "27b60bb419f6043c5e1249ac753460ebdf4cbd26d4cf549f025f75fe3b43e4fa", "vals": "61b9d79f19c66ab0da0ddd72745ecfdd14e91a671bbaf9a4bd1499f3d2cfb396" },
+    "Filter sweep": { "pk": "34cd5c57", "pv": "63284579610f38bf454dbc262540b84e0e31d76415df377068b8e0f116c1c12f", "rec": "8fa390fc7f0e84333552e0f4c68bd57fd004c335b268b73a059503499e9df1fb", "vals": "9bfb6220909657e0ab5f8c34cf02be1566df6063cb38b21908a5ed19d8550f8a" },
+    "Drone": { "pk": "1afa66ec", "pv": "78bf8341dc8acd610fbd57e71e7c03997516b801f2538071d06b1b263ddbfa18", "rec": "3f12cb66840114f8a0af55020365fba532aff2b626c251abbef38e9b92567d9c", "vals": "7f2c9bd4137967998990af9dbde28eae41fc897748f122749906251d883305b5" },
+    "Sync lead": { "pk": "48642403", "pv": "c0ead1dd56f73cf4929a7196e59101b96947e29227265c34d5b124d8ca6c9253", "rec": "4136d6c64ef1dad6b49e8574b3fb5dd6e798b8ed1fad858f45ef253a3146b6a1", "vals": "f4ac1ed1321c6a0f7dad555b412a49ff4a978790a85b1bb99c2433a6305bc509" },
+    "Wind": { "pk": "b36efbc5", "pv": "381c51c269a7a97b4bad61354febae330977453f5a125caf0705840382c9102c", "rec": "e3b7d336b2ea500fab1c763bfc621908ed26b4b1eb31eec0673bc51821020768", "vals": "abd0d97442a15a0a13a18d2d48ec05d7f1596d2a97b49943cf1b0d59680d2920" },
+    "Bells": { "pk": "61ec3625", "pv": "e6689a4b1e9fa93679b2603bc563f1de7d0724c2abdf82d41995fcb63ff93d3b", "rec": "85fff2b8d1ec3d88ee0048a11b09f0517aed9ae807a8dc2b11972a9489da4d6e", "vals": "7e5ae34d33d85b27d601616d615444a454b15f363c5130a5398d4bd7cba969e7" }
+  }
+}

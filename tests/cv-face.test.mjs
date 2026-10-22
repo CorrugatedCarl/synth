@@ -5,6 +5,7 @@ import './v8-guard.mjs';
 // the overlap rule, the stats. Fake DOM (wk-dom), fake gl (the §2 surface), fake world (rectOf / on / onScreen / cam).
 // (1i, IMPL-1i §3.3) the keyboard faces: 1:1 at dpr 2, ≤ 58 MB each, the recorded exemption at dpr 2.5 / 3 pinned.
 // (9, IMPL-9 §2.2) the 900 Series faces: the module and console sizes (= moog-core's), 1:1 at dpr 2, the Model 15 set's bytes.
+// (9b, IMPL-9b §4.2) the System 35 / 55 faces: 4 / 8 MU and the console-height sizes, the 960 ≤ 9 MB, the sets' bytes (S55 ≈ 72.6 MB).
 // Only strings / numbers / booleans go into assert (never a fake-DOM node).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -130,9 +131,12 @@ test('1i faces: every keyboard face ≤ 10.8 M px at dpr 2 (< BASE_MAX_PX) — b
   }
 });
 
-/* ---- (9, IMPL-9 §2.2, §8.4) the 900 Series faces: the console and the nine module faces (outer px, the 40 px bar included) */
-const FACES_9 = { ctl: [864, 352], 921: [224, 512], '921a': [128, 512], '921b': [128, 512], 923: [128, 512], '904a': [128, 512], '907a': [352, 512], 911: [128, 512], 902: [128, 512], 995: [128, 512] };
-test('9 faces: §2.2\'s sizes (1 MU 128 × 512, 2 MU 224 × 512, 3 MU 352 × 512, the console 864 × 352) = moog-core\'s w / h; each 1:1 at rest at dpr 2 (baseLevel 2) in ≤ 6 MB of base + mips; the Model 15 set\'s thirteen faces ≈ 24.4 MB, under a fifteenth of FACE_BUDGET_BYTES', async () => {
+/* ---- (9, IMPL-9 §2.2, §8.4) the 900 Series faces: the console and the nine module faces (outer px, the 40 px bar included);
+   (9b, IMPL-9b §2.1, §4.2, §8.4) + the sixteen System 35 / 55 faces: 4 MU 448 × 512, 8 MU 864 × 512, console height × 352 */
+const FACES_9 = { ctl: [864, 352], 921: [224, 512], '921a': [128, 512], '921b': [128, 512], 923: [128, 512], '904a': [128, 512], '907a': [352, 512], 911: [128, 512], 902: [128, 512], 995: [128, 512],
+  '904b': [128, 512], 914: [448, 512], '911a': [128, 512], '903a': [128, 512], 960: [864, 512], 962: [128, 512], 992: [128, 512], 993: [128, 512], 994: [128, 512],
+  cp2: [352, 352], cp3a: [448, 352], cp4a: [352, 352], cp35: [448, 352], cp8a: [224, 352], 961: [352, 352], clk: [224, 352] };
+test('9 / 9b faces: §2.2\'s sizes (1 MU 128 × 512 … 8 MU 864 × 512; console height 224 / 352 / 448 × 352; the console 864 × 352) = moog-core\'s w / h; each 1:1 at rest at dpr 2 (baseLevel 2) in ≤ 6 MB of base + mips (the 960 ≤ 9 MB); the Model 15 set ≈ 24.4 MB, under a fifteenth of FACE_BUDGET_BYTES; the System 35 ≈ 43.7 MB, the System 55 ≈ 72.6 MB (IMPL-9b §4.2: ≈ 74), under a fifth', async () => {
   const P = await import('../cv-panel.js?v=9'), MG = await import('../moog-core.js?v=9'), { MODELS } = await import('../models.js?v=9');
   const bytes = (w, H) => w * (H - BAR_H) * 4 * 4 * 4 / 3; // dpr 2: 4 device px a world px, RGBA, + mips
   eq1(MG.ORDER_ALL.slice().sort(), Object.keys(FACES_9).sort(), 'every type');
@@ -141,10 +145,13 @@ test('9 faces: §2.2\'s sizes (1 MU 128 × 512, 2 MU 224 × 512, 3 MU 352 × 512
     eq1([s.w, s.h], FACES_9[t], t + ': §2.2');
     eq1([s.w, s.h], [MG.TYPES[t].w, MG.TYPES[t].h], t + ': moog-core\'s w / h');
     eq1(baseLevel(2, s.w, s.h - BAR_H), 2, t + ': L0 = 2 at dpr 2');
-    assert.ok(bytes(s.w, s.h) <= 6e6, t + ': ' + (bytes(s.w, s.h) / 1e6).toFixed(2) + ' MB');
+    assert.ok(bytes(s.w, s.h) <= (t === '960' ? 9e6 : 6e6), t + ': ' + (bytes(s.w, s.h) / 1e6).toFixed(2) + ' MB');
   }
   const M15 = ['ctl', '902', '902', '904a', '907a', '911', '911', '921', '921a', '921b', '921b', '923', '995'], total = M15.reduce((a, t) => a + bytes(...FACES_9[t]), 0);
   assert.ok(total <= 25e6 && total <= FACE_BUDGET_BYTES / 15, 'the Model 15 set: ' + (total / 1e6).toFixed(1) + ' MB');
+  const set = ts => ['ctl', ...ts].reduce((a, t) => a + bytes(...FACES_9[t]), 0), s35 = set(MG.S35), s55 = set(MG.S55);
+  eq1([Math.round(s35 / 1e5) / 10, Math.round(s55 / 1e5) / 10], [43.7, 72.6], 'the sets\' faces (MB)');
+  assert.ok(s55 <= 74e6 && s55 <= FACE_BUDGET_BYTES / 5, 'the System 55: ' + (s55 / 1e6).toFixed(1) + ' MB');
 });
 
 /* ---- the maths */
@@ -640,6 +647,33 @@ test('1h fix 10 + 11: gl → dom below 100 % never shows the raw SVG — the bas
       const f = [A, B].find(M => M.face.tier && M.face.tier.failed);
       eq1([!!f, g.st(f).mode, g.st(f).attr, g.st(f).svg], [true, 'dom', 'dom', 'visible'], 'failed: dom, the SVG stays');
     } finally { console.warn = warn; }
+  } finally { g.done(); }
+});
+
+test('9b fix R2a (F2): a face in gl ends with its SVG hidden whatever order the tier and the overlap come in — held (gl, the tier pending below 100 %) then the overlap cleared before the bitmap decodes: the tier is destroyed (its drop shows the SVG), mode stays gl, the SVG hidden again; a late decode shows nothing', () => {
+  const g = rig();
+  try {
+    const A = g.panel('a'), B = g.panel('b', { x: 1000 });
+    g.attach(); settle(g);
+    g.R.k = 0.5; g.W.end({ k: 0.5 }); settle(g);
+    eq1([g.st(A).mode, g.st(A).svg, g.st(B).mode, g.st(B).svg], ['gl', 'hidden', 'gl', 'hidden']);
+    // B dropped onto A (a set load: the overlap holds the quads, the tiers wait on their decodes) …
+    g.W.set('b', { x: 200, y: 50, w: 400, h: 200 + BAR_H }); B.mod.style.left = '200px'; B.mod.style.top = '50px'; B.face.refresh();
+    eq1([g.st(A).mode, !!A.face.tier, A.face.tier && A.face.tier.shown, g.st(A).svg], ['gl', true, false, 'hidden'], 'held: the tier pending');
+    // … and cleared again before any decode lands (the step's next layout)
+    g.W.set('b', { x: 1000, y: 0, w: 400, h: 200 + BAR_H }); B.mod.style.left = '1000px'; B.mod.style.top = '0px'; g.W.emit('screen', { on: [], off: [] });
+    eq1([g.st(A).mode, g.st(A).attr, !!A.face.tier, g.st(A).svg, g.st(B).mode, !!B.face.tier, g.st(B).svg, quadsOf(g).length], ['gl', 'gl', false, 'hidden', 'gl', false, 'hidden', 2], 'cleared: gl, the tiers gone, the SVGs hidden under the quads');
+    g.frames(); g.landAll(); // (the stale loads land on dead tiers: nothing changes)
+    eq1([g.st(A).svg, g.st(B).svg, A.bm(), B.bm()], ['hidden', 'hidden', 0, 0], 'a late decode does not show anything');
+    // again, with the tier already shown below 100 % (dom), then apart: gl, hidden (the old path, kept)
+    g.W.set('b', { x: 200, y: 50, w: 400, h: 200 + BAR_H }); B.mod.style.left = '200px'; B.mod.style.top = '50px'; B.face.refresh();
+    g.frames(); g.landAll();
+    eq1([g.st(A).mode, g.st(A).svg, g.st(A).shown], ['dom', 'hidden', true]);
+    g.W.set('b', { x: 1000, y: 0, w: 400, h: 200 + BAR_H }); B.mod.style.left = '1000px'; B.mod.style.top = '0px'; g.W.emit('screen', { on: [], off: [] });
+    eq1([g.st(A).mode, g.st(A).svg, g.st(B).svg], ['gl', 'hidden', 'hidden']);
+    // never a gl face with its SVG showing: the invariant after every step
+    const bad = [A, B].filter(M => M.face.mode === 'gl' && M.svg.style.visibility !== 'hidden').length;
+    eq1(bad, 0);
   } finally { g.done(); }
 });
 

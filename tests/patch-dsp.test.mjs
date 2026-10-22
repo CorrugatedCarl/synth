@@ -236,11 +236,22 @@ const STUB = String.raw`(function () {
     reset() { this.resets++; }
     setSalt(s) { this.salt = s; }
   }
+  class Sq { // (9b) events and lamps: ev(k) waits in its own ring for the next ctl (k 0 counts up, 1 zeroes the count); y = count + x; lamp = count & 7
+    constructor(h) { init(this, h, 1); this.cnt = 0; this.lamp = 0; this.R = new Int32Array(8); this.en = 0; this.evs = 0; this.at = -1; }
+    ev(k) { this.evs++; if (this.en < 8) this.R[this.en++] = k; }
+    ctl(cc) { tick(this, cc); for (let j = 0; j < this.en; j++) { if (this.R[j] === 0) this.cnt++; else this.cnt = 0; this.at = cc; } this.en = 0; this.lamp = this.cnt & 7; }
+    flush() { this.nf++; }
+    run(sec, i0, n) { const x = this.ins[0], y = this.outs[0], c = this.cnt; this.comp |= this.om; for (let i = i0, e = i0 + n; i < e; i++) y[i] = c + x[i]; }
+    setOS(fs) { this.fs = fs; }
+    reset() { this.cnt = 0; this.en = 0; this.lamp = 0; this.resets++; }
+    setSalt(s) { this.salt = s; }
+  }
   const J = (id, dir, sig, sec, norm) => (norm ? { id, dir, sig, sec, norm } : { id, dir, sig, sec });
   const mult = (g, sec) => [1, 2, 3, 4].map(k => J(g + k, 'any', 'v', sec));
   globalThis.PatchStub = Object.freeze({
     id: 'stub',
-    T: { ctl: Ctl, osc: Osc, vcf: Vcf, vca: Vca, gn: Gn, nz: Nz, att: Att, drv: Drv, slv: Slv, env: Env, pr: Pr },
+    T: { ctl: Ctl, osc: Osc, vcf: Vcf, vca: Vca, gn: Gn, nz: Nz, att: Att, drv: Drv, slv: Slv, env: Env, pr: Pr, sq: Sq },
+    EV: { sq: ['inc', 'zero'] }, LAMPS: { sq: ['l1', 'l2', 'l3'] },
     JACKS: {
       ctl: [J('kp', 'out', 'v', 0), J('ks', 'out', 's', 0), J('kg', 'out', 'v', 0), J('m1', 'in', 'v', 1), J('m2', 'in', 'v', 1), J('mo', 'out', 'v', 1),
         ...mult('a', 2), ...mult('b', 3), J('si', 'in', 's', 4), J('so', 'out', 'v', 4), J('out', 'in', 'v', 5)],
@@ -254,10 +265,11 @@ const STUB = String.raw`(function () {
       slv: [J('dc', 'in', 'v', 0), J('saw', 'out', 'v', 0), J('pw', 'out', 'v', 0)],
       env: [J('trg', 'in', 's', 0), J('out', 'out', 'v', 0)],
       pr: [J('x', 'in', 'v', 0), J('s', 'in', 's', 0), J('y', 'out', 'v', 0), J('ys', 'out', 'v', 0)],
+      sq: [J('x', 'in', 'v', 0), J('y', 'out', 'v', 0)],
     },
     PARAMS: {
       ctl: [['ov', 7], ['x1', 10], ['x2', 10], ['pr', 0, 1]], osc: [['fq', 0], ['rg', 2, 1]], vcf: [['fc', 0]], vca: [['fc', 0]], gn: [['k', 0.9]],
-      nz: [['lp', 0.2], ['hp', 0.05]], att: [['a1', 10], ['a2', 10], ['a3', 10]], drv: [['fq', 0]], slv: [['fq', 0]], env: [['t', 1]], pr: [],
+      nz: [['lp', 0.2], ['hp', 0.05]], att: [['a1', 10], ['a2', 10], ['a3', 10]], drv: [['fq', 0]], slv: [['fq', 0]], env: [['t', 1]], pr: [], sq: [],
     },
     SINK: 'out',
     LINK: { slv: { from: 'drv', def: [0, 0.5] } },
@@ -971,6 +983,64 @@ test('setOS: the chunk follows (CH = 4 · OS), every module is told, the ramp st
   // a new module takes the machine's rate and salt
   M.graph(pgOf(S.F, [[0, 'ctl'], [1, 'osc'], [2, 'nz'], [3, 'vcf']], [[0, 'kp', 1, 'f1'], [1, 'saw', 3, 'in'], [3, 'lp', 0, 'out']]));
   assert.deepEqual([stubOf(S, 3).fs, stubOf(S, 3).salt], [96000, 1234]);
+});
+
+/* ------------------------------------------------------------------ events and lamps (stage 9b, IMPL-9b §1.5 / §1.6 / §3.2) */
+test('events: ev(n, k) hands k to module n\'s ev at once (→ 1) — dropped (→ 0) for no graph, an unknown module, one outside the live plan (review 1 F2), k outside its type\'s EV row, a class without ev; the class applies it at its next ctl: the next chunk whatever the span split (4, 128, random); reset() clears what waits', () => {
+  const S = scope(), os = 2;
+  const pg = pgOf(S.F, [[0, 'ctl'], [1, 'sq'], [2, 'osc'], [3, 'sq']], [[1, 'y', 0, 'out']]);
+  const { M } = machine(S, os);
+  assert.equal(M.ev(1, 0), 0, 'no graph yet');
+  M.graph(pg);
+  assert.deepEqual([M.ev(1, 0), M.ev(3, 1), M.ev(9, 0), M.ev(1, 2), M.ev(1, -1), M.ev(1, 0.5), M.ev(2, 0)], [1, 0, 0, 0, 0, 0, 0], 'module 3 (nothing reads it: outside the plan) hears nothing');
+  assert.deepEqual([stubOf(S, 1).evs, stubOf(S, 3).evs, stubOf(S, 1).en, stubOf(S, 3).en], [1, 0, 1, 0], 'held by the class until its ctl; never by a module that is not live');
+  // a cord makes module 3 live: nothing waits for it (a stale press would jump it); its own events work from then on
+  M.graph(pgOf(S.F, [[0, 'ctl'], [1, 'sq'], [2, 'osc'], [3, 'sq']], [[1, 'y', 0, 'out'], [3, 'y', 0, 'm1'], [0, 'mo', 0, 'out']]));
+  assert.deepEqual([stubOf(S, 3).en, M.ev(3, 1), stubOf(S, 3).en], [0, 1, 1], 'made live: no stale event; a new one is heard');
+  M.reset();
+  assert.deepEqual([stubOf(S, 1).en, stubOf(S, 3).en], [0, 0], 'reset() clears them');
+  // posted between spans at frames 0, 256, 512 (inc, inc, zero): the output steps at exactly those chunks, whatever the split
+  let seed = 3; const rnd = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296;
+  const outs = [() => 128, () => 4, () => 4 * (1 + Math.floor(rnd() * 32))].map(span => {
+    const T = scope(), { M: m } = machine(T, os);
+    m.graph(pgOf(T.F, [[0, 'ctl'], [1, 'sq']], [[1, 'y', 0, 'out']]));
+    return play(m, os, 0, 768, [[0, x => x.ev(1, 0)], [256, x => x.ev(1, 0)], [512, x => x.ev(1, 1)]], span);
+  });
+  sameBits(outs[1], outs[0], 'spans of 4 vs 128'); sameBits(outs[2], outs[0], 'random spans vs 128');
+  const g = 0.1 * 7 / 10, at = F => Math.round(outs[0][F * os] / g);
+  assert.deepEqual([at(0), at(252), at(256), at(508), at(512), at(767)], [1, 1, 2, 2, 0, 0], 'each event at its chunk');
+});
+
+test('lamps: lamps(F) → { F, l: [n, bits, …] } for the live modules whose type declares lamps (a frozen one left out: the host keeps its last), lampN their count (set by graph()), l a copy; the stage-9 shape unchanged for a family without EV / LAMPS', () => {
+  const S = scope(), os = 2, { M } = machine(S, os);
+  M.graph(pgOf(S.F, [[0, 'ctl'], [1, 'sq'], [2, 'sq'], [3, 'osc']], [[1, 'y', 0, 'out'], [3, 'saw', 2, 'x']]));
+  assert.equal(M.lampN, 1);
+  M.ev(1, 0); M.ev(1, 0); M.ev(1, 0); assert.equal(M.ev(2, 0), 0, 'module 2 is frozen: its event is dropped (review 1 F2)');
+  play(M, os, 0, 64);
+  const a = plain(M.lamps(64)), b = M.lamps(64);
+  assert.deepEqual(a, { F: 64, l: [1, 3] }, 'module 1 live (3 counts), module 2 frozen (no ctl yet: not listed)');
+  assert.ok(b.l !== M.lamps(64).l, 'a copy each call');
+  M.graph(pgOf(S.F, [[0, 'ctl'], [1, 'sq'], [2, 'sq'], [3, 'osc']], [[1, 'y', 0, 'out'], [3, 'saw', 2, 'x'], [2, 'y', 0, 'm1'], [0, 'mo', 0, 'out']]));
+  assert.equal(M.lampN, 2);
+  play(M, os, 64, 64);
+  assert.deepEqual(plain(M.lamps(128)), { F: 128, l: [1, 3, 2, 0] }, 'both live: module 2 heard nothing of the event sent while it was frozen');
+  assert.equal(M.ev(2, 0), 1); play(M, os, 128, 64);
+  assert.deepEqual(plain(M.lamps(192)), { F: 192, l: [1, 3, 2, 1] }, 'its own event, sent live, applied at its next ctl');
+  // a family without the 9b tables: no ev, no lamps
+  const c = scope(); c.ctx.PatchOld = Object.freeze({ T: c.F.T, JACKS: c.F.JACKS, PARAMS: c.F.PARAMS, SINK: 'out' });
+  const m = c.PD.create({ OS: 1, fs: 48000 }, 'old');
+  m.graph(pgOf(c.F, [[0, 'ctl'], [1, 'sq']], [[1, 'y', 0, 'out']]));
+  assert.deepEqual([m.lampN, m.ev(1, 0), plain(m.lamps(0)).l], [0, 0, []]);
+});
+
+test('no allocation in render with events posted between the spans (200 spans, a lamp module live, a loop): ev() and the class\'s ring allocate nothing either', () => {
+  const S = scope(), os = 4, { M } = machine(S, os), buf = new Float64Array(128 * os), rnd = mulberry(9);
+  M.graph(pgOf(S.F, [[0, 'ctl'], [1, 'sq'], [2, 'gn'], [3, 'osc']], [[3, 'saw', 1, 'x'], [1, 'y', 2, 'x1', 0.2], [2, 'y', 2, 'x2', 0.5], [2, 'yn', 0, 'out']]));
+  let F = 0;
+  const span = () => { const n = 4 * (1 + Math.floor(rnd() * 32)); buf.fill(0); M.render(buf, n * os, F); F += n; };
+  for (let k = 0; k < 20; k++) { M.ev(1, k & 1); span(); }
+  noAlloc(S.ctx, () => { for (let k = 0; k < 200; k++) { M.ev(1, k % 3 === 2 ? 1 : 0); span(); } });
+  assert.ok(finite(buf) && stubOf(S, 1).evs === 220);
 });
 
 // The Moog family's presets (§2.5: none patches a feedback loop) schedule with no loop step — once K9's tables

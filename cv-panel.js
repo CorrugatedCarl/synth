@@ -35,6 +35,14 @@
 // and listed by geometry().jacks (body px, pure maths; no widget here: cv-module places a span over each); the module faces
 // of a patch family (moduleModel: a synthetic model per module type over the family's table, moduleLayout: its validated
 // face from panels/index.js MODULE_LAYOUTS), the controller's face its model's console (layoutOf('m900')).
+// Stage 9b: the System 35 / 55 faces (IMPL-9b §4.1–§4.2; panels/m900b.js): every type but the family's controller has a
+// module face (the console-height ones too); event buttons `{ kind: 'button', ev, x, y, w, h }` (no id, no value: the type's
+// `ev`, each once, a ≥ 14 mm hit box) and live lamps `{ kind: 'lamp', lamp, x, y, d }` (the type's `lamps`, each once) drawn in
+// the art — unlit — and listed by geometry().evs / .lamps (no widget here: the host mounts a button / a span over each); a
+// rear terminal (`rear: 1`) is never placed and needs no place; a face with no params or no jacks is valid; a patch face's
+// dimmed (inert) parts say "not emulated" in their own tips, no extras strip. `lite: true` (a patch face only): its knobs' and
+// rotaries' skirts and caps are art, the DOM keeps the widget and its pointer; its bat / slide switches drop the slot line —
+// 3 painted elements a control, not 7 / 4 (§4.2's DOM budget: the 960's 40 controls).
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
 import { BAR_H } from './cv-module.js?v=9';
@@ -299,15 +307,17 @@ function portMap(model) {
 /** (9, IMPL-9 §4.1) A module type's synthetic model (memoised; null: no such module type, or the controller — its face is
  * its instrument model's console, layoutOf(FAMILY.model)): { id 'pm-<type>', name, type, layout (its MODULE_LAYOUTS key),
  * patch (the family id), theme,
- * sections [{ title, c: TYPE.params }], controls (the params: the stored value is the dial position, IMPL-9 §2.3), jacks }. */
-const modC = new Map();
+ * sections [{ title, c: TYPE.params }], controls (the params: the stored value is the dial position, IMPL-9 §2.3), jacks,
+ * (9b) ev, lamps (the type's event buttons and lamps, [] when none) }. (9b) Only the family's controller (`fam.ctl`) has no
+ * module model: the console-height types (the CP panels, the 961, the Song clock) are modules too. */
+const modC = new Map(), NONE = Object.freeze([]);
 export function moduleModel(type) {
   if (modC.has(type)) return modC.get(type);
   for (const F of PATCH_FAMS) {
     const T = typeof type === 'string' && Object.prototype.hasOwnProperty.call(F.fam.types, type) ? F.fam.types[type] : null;
-    if (!T || T.face !== 'module') continue;
+    if (!T || type === F.fam.ctl) continue;
     const m = Object.freeze({ id: 'pm-' + type, name: T.name, type, layout: T.layout, patch: F.fam.id, theme: F.theme,
-      sections: Object.freeze([Object.freeze({ title: T.name, c: T.params })]), controls: T.params, jacks: T.jacks });
+      sections: Object.freeze([Object.freeze({ title: T.name, c: T.params })]), controls: T.params, jacks: T.jacks, ev: T.ev || NONE, lamps: T.lamps || NONE });
     modC.set(type, m);
     return m;
   }
@@ -370,6 +380,13 @@ const liveOf = (c, model) => !c.inert && typeof c.id === 'string' && c.kind in K
 const showOf = c => !c.inert && (c.kind === 'led' || c.kind === 'display');
 /** (9) A live patch jack (validate holds the full rules): never live / show — no widget, cv-module places its span. */
 const isPatchJack = c => isObj(c) && !c.inert && c.id == null && (c.kind === 'jack' || c.kind === 'strig') && typeof c.port === 'string' && PORT_RE.test(c.port);
+/** (9b) An event button / a live lamp (validate holds the rules): never live / show — the art draws it, the host mounts a
+ * button / a span over it from geometry().evs / .lamps. A lite face (L.lite on a patch module's face): see render. */
+const isEvBtn = c => isObj(c) && !c.inert && c.id == null && c.kind === 'button' && typeof c.ev === 'string';
+const isLamp = c => isObj(c) && !c.inert && c.id == null && c.kind === 'lamp' && typeof c.lamp === 'string';
+const liteOf = (L, model) => isObj(L) && L.lite === true && isObj(model) && typeof model.patch === 'string';
+/** (9b) A model's event buttons / lamps by id (a module model's `ev` / `lamps`; none elsewhere). */
+const listOf = (model, k) => new Map((isObj(model) && Array.isArray(model[k]) ? model[k] : []).filter(isObj).map(e => [e.id, e]));
 
 /* ---------------------------------------------------------------- validation */
 /**
@@ -392,6 +409,10 @@ export function validate(L, model) {
   if (isObj(S.knob) && S.knob.ptrStyle != null && !PTRS.includes(S.knob.ptrStyle)) bad('scheme.knob.ptrStyle: one of ' + PTRS.join(', '));
   for (const f of PERF_K) if (S[f] != null) { if (!isObj(S[f])) bad(`scheme.${f}: not an object`); else for (const [k, v] of Object.entries(S[f])) if (!colorOk(v)) bad(`scheme.${f}.${k}: not a colour`); }
   if (S.trim != null) { if (!isObj(S.trim)) bad('scheme.trim: not an object'); else for (const [k, v] of Object.entries(S.trim)) if (!colorOk(v)) bad(`scheme.trim.${k}: not a colour`); } // ((8) the trimmers' art)
+  // (9b) lite: a patch module face's light live layer — its knobs' and rotaries' skirts and caps are art, their pointer a line
+  const LITE = liteOf(L, model);
+  if (L.lite != null && !LITE) bad('lite: true, on a patch module face only (its knobs\' skirts and caps drawn in the art)');
+  if (LITE && isObj(S.knob) && S.knob.ptrStyle != null && S.knob.ptrStyle !== 'line') bad('scheme.knob.ptrStyle: a lite face\'s pointer is a line');
   // areas
   const A = new Map();
   if (!Array.isArray(L.areas) || !L.areas.length) bad('areas: at least one');
@@ -465,10 +486,39 @@ export function validate(L, model) {
     ports.add(c.port);
     const J = PJ && PJ.get(c.port);
     if (!J) bad(w + `: port "${c.port}" is not a jack of the model`);
+    else if (J.rear) bad(w + `: ${c.port} is a rear terminal (never on a face: bus rows reach it)`); // ((9b) IMPL-9b §1.3)
     else if ((J.sig === 's') !== (c.kind === 'strig')) bad(w + `: ${c.port} is ${J.sig === 's' ? 'an S-trigger socket (strig)' : 'a 1/4" jack (jack)'}`);
     if (secIndex(L, c) < 0) bad(w + ': not inside a section' + (c.sec ? ` ("${c.sec}" unknown)` : ''));
     const ar = A.get(c.a || 'main');
     if (ar) jacks.push({ w, x: c.x + ar.at[0] - ar.src[0], y: c.y + ar.at[1] - ar.src[1] });
+  };
+  // (9b, IMPL-9b §1.5–§1.6, §4.1) an event button (`ev`: kind button, no id, no value, never inert — one of the model's events,
+  // each once; its hit box ≥ 14 mm, disjoint, kept clear of the jacks as a control's) and a live lamp (`lamp`: kind lamp, no
+  // id, never inert — one of the model's lamps, each once; display only, no hit box)
+  const EVS = listOf(model, 'ev'), LPS = listOf(model, 'lamps'), evSeen = new Set(), lpSeen = new Set();
+  const evButton = (c, w, part) => {
+    if (c.kind !== 'button') { bad(w + ': ev is an event button\'s (kind button)'); return; }
+    if (c.inert != null) bad(w + ': an event button is live (no inert)');
+    if (c.id != null) bad(w + ': an event button has no id (its ev names it: no value is stored)');
+    if (c.cycle != null) bad(w + ': an event button has no cycle (it stores nothing)');
+    if (typeof c.ev !== 'string' || !EVS.has(c.ev)) bad(w + `: ev "${c.ev}" is not an event of the model`);
+    else if (evSeen.has(c.ev)) bad(w + `: ev "${c.ev}" twice`);
+    evSeen.add(c.ev);
+    if (secIndex(L, c) < 0) bad(w + ': not inside a section' + (c.sec ? ` ("${c.sec}" unknown)` : ''));
+    const ar = A.get(c.a || 'main');
+    if (!ar) return;
+    const hb = hitOf(c, part.o);
+    if (hb[0] < HIT_MIN_MM - 1e-9 || hb[1] < HIT_MIN_MM - 1e-9) bad(`${w}: hit box ${n3(hb[0])} × ${n3(hb[1])} mm < ${HIT_MIN_MM} mm`);
+    hits.push({ w, x: c.x + ar.at[0] - ar.src[0] - hb[0] / 2, y: c.y + ar.at[1] - ar.src[1] - hb[1] / 2, ww: hb[0], hh: hb[1] });
+  };
+  const liveLamp = (c, w) => {
+    if (c.kind !== 'lamp') { bad(w + ': lamp is a live lamp\'s (kind lamp)'); return; }
+    if (c.inert != null) bad(w + ': a live lamp is not inert');
+    if (c.id != null) bad(w + ': a live lamp has no id (its lamp names it)');
+    if (typeof c.lamp !== 'string' || !LPS.has(c.lamp)) bad(w + `: lamp "${c.lamp}" is not a lamp of the model`);
+    else if (lpSeen.has(c.lamp)) bad(w + `: lamp "${c.lamp}" twice`);
+    lpSeen.add(c.lamp);
+    if (secIndex(L, c) < 0) bad(w + ': not inside a section' + (c.sec ? ` ("${c.sec}" unknown)` : ''));
   };
   if (!Array.isArray(L.controls)) bad('controls: an array');
   else L.controls.forEach((c, i) => {
@@ -527,6 +577,9 @@ export function validate(L, model) {
     const parts = k === 'buttons' || k === 'jacks' ? entriesOf(c).map(e => ({ x: e.x, y: e.y, o: entryOwn(c, e) })) : [{ x: c.x, y: c.y, o: ownOf(c) }];
     for (const p of parts) inArea(c.a, p.x - p.o[0] / 2, p.y - p.o[1] / 2, p.o[0], p.o[1], w);
     if (c.port != null) { patchJack(c, w); return; } // ((9) a live patch jack)
+    if (c.ev != null) { evButton(c, w, parts[0]); return; } // ((9b) an event button)
+    if (c.lamp != null) { liveLamp(c, w); return; } // ((9b) a live lamp)
+    if (LITE && (k === 'knob' || k === 'rotary') && isObj(c.skin) && c.skin.ptrStyle != null && c.skin.ptrStyle !== 'line') bad(w + ': a lite face\'s pointer is a line (skin.ptrStyle)');
     // (8) hitOff [dx, dy]: a live trimmer row's hit box off its art (the SDS-V's two close rows), no other control's
     if (c.hitOff != null && !(c.id === 'dr:trim' && !c.inert && hitOffOf(c))) bad(w + ': hitOff [dx, dy] (mm) is a trimmer row\'s (dr:trim) only');
     if (c.inert) { if (c.id != null && !(typeof c.id === 'string' && c.id.startsWith('#'))) bad(w + ': an inert control has no id'); return; }
@@ -626,7 +679,9 @@ export function validate(L, model) {
     const d = Math.hypot(Math.max(r.x - j.x, 0, j.x - r.x - r.ww), Math.max(r.y - j.y, 0, j.y - r.y - r.hh));
     if (d < JACK_CLEAR_MM - 1e-9) bad(`${j.w}: its centre ${n3(d)} mm from ${r.w}'s hit box < ${JACK_CLEAR_MM} mm`);
   }
-  if (PJ) for (const id of PJ.keys()) if (!ports.has(id)) bad(`${id}: not placed (a patch jack of the model)`);
+  if (PJ) for (const [id, J] of PJ) if (!ports.has(id) && !J.rear) bad(`${id}: not placed (a patch jack of the model)`); // ((9b) a rear terminal: never)
+  for (const id of EVS.keys()) if (!evSeen.has(id)) bad(`${id}: not placed (an event button of the model)`);
+  for (const id of LPS.keys()) if (!lpSeen.has(id)) bad(`${id}: not placed (a lamp of the model)`);
   // extras
   const ex = L.extras;
   if (!isObj(ex) || !Array.isArray(ex.ids)) bad('extras: { ids: [] }');
@@ -765,6 +820,8 @@ const geoC = new WeakMap();
  * The panel in module-body px (origin: the body's top-left, under the 40 px bar), pure maths (cached per layout).
  * (1i) A keys control's o.bed: { lo, hi, n, whites, at, x, y, w, h (the keys' rectangle), front, band, box (keys + band),
  * keys: [{ note, black, x, y, w, h }], mm (the cv-keys layout with the clamped front) } — body px, unrounded (three decimals).
+ * (9) jacks / jackPitch / jackHit; (9b) evs: [{ id, label, x, y (centre), w, h, hit: {x, y, w, h} }], lamps: [{ id, label, x,
+ * y (centre), d, w, h }] — body px (the host adds BAR_H).
  * @returns {{W: number, H: number, body: {w: number, h: number}, content: {x: number, y: number, w: number, h: number},
  *   mm: {x0: number, y0: number, offX: number}, areas: object[], sections: object[], controls: object[], order: number[],
  *   extras: {x: number, y: number, w: number, h: number, cells: object[], over: boolean, note: boolean} | null}}
@@ -800,6 +857,8 @@ export function geometry(L, model) {
     }
     if (live && M.has(c.id)) o.mc = M.get(c.id);
     if (isPatchJack(c)) o.port = c.port; // ((9) a live patch jack: no widget here, listed in jacks)
+    if (isEvBtn(c)) o.ev = c.ev; // ((9b) an event button / a live lamp: no widget here, listed in evs / lamps)
+    if (isLamp(c)) o.lamp = c.lamp;
     return o;
   });
   // the DOM / Tab order: sections in layout order, then rows (top to bottom, 8 mm apart), left to right in each
@@ -814,7 +873,8 @@ export function geometry(L, model) {
   }
   // extras
   // (the "Dimmed controls are not emulated" note: the dimmed inert items; a 7a `inert: 'later'` jack is drawn at full contrast)
-  const ids = Array.isArray(ex.ids) ? ex.ids.filter(id => typeof id === 'string') : [], inert = (L.controls || []).some(c => c && c.inert && c.inert !== 'later');
+  // ((9b) a patch module face says it in its dimmed parts' own tips: no strip — its size is the type's)
+  const ids = Array.isArray(ex.ids) ? ex.ids.filter(id => typeof id === 'string') : [], inert = (L.controls || []).some(c => c && c.inert && c.inert !== 'later') && !(isObj(model) && typeof model.patch === 'string');
   let extras = null, exH = 0;
   const XB = xbreakOf(model);
   const cellW = id => { const mc = M.get(id), tc = tokCell(model, id); if (tc) return tc[0]; return mc ? (mc.t === 's' ? selCellW(mc.opts) : XCELL[mc.t] || 72) : 72; };
@@ -860,7 +920,7 @@ export function geometry(L, model) {
   // (its nearest centre − 2) and covers no other live control's hit box (twice its clearance), ≤ JACK_HIT_MAX; jackPitch:
   // the face's least centre distance (null under two jacks), jackHit: the least `hit` (null: no jack)
   const PJ = portMap(model), jacks = [], liveHits = [];
-  for (const o of controls) if (o.live) for (const r of o.entries ? o.entries.map(e => e.hit) : [o.hit]) liveHits.push(r);
+  for (const o of controls) if (o.live || o.ev) for (const r of o.entries ? o.entries.map(e => e.hit) : [o.hit]) liveHits.push(r); // ((9b) an event button's too)
   for (const o of controls) {
     if (!o.port) continue;
     const c = L.controls[o.i], J = PJ && PJ.get(o.port), ow = ownOf(c);
@@ -873,12 +933,23 @@ export function geometry(L, model) {
     for (const r of liveHits) j.hit = Math.min(j.hit, 2 * Math.hypot(Math.max(r.x - j.x, 0, j.x - r.x - r.w), Math.max(r.y - j.y, 0, j.y - r.y - r.h)));
     j.hit = q3(j.hit);
   }
+  // (9b, IMPL-9b §4.1, §7.4) the event buttons and the live lamps in body px (the host adds BAR_H), as the jacks: the centre
+  // (three decimals), the cap / the lamp (w × h; a lamp's d), the type's label; an event button's `hit` — its press box
+  // { x, y, w, h } (≥ 28 px, disjoint from every control's) — a lamp has none (display only)
+  const EVS = listOf(model, 'ev'), LPS = listOf(model, 'lamps'), evs = [], lamps = [];
+  for (const o of controls) {
+    if (!o.ev && !o.lamp) continue;
+    const c = L.controls[o.i], ow = ownOf(c), x = q3(offX + (o.cx - x0) * X), y = q3((o.cy - y0) * X), w = q3(ow[0] * X), h = q3(ow[1] * X);
+    if (o.ev) evs.push({ id: o.ev, label: (EVS.get(o.ev) || {}).label || String(c.label || o.ev), x, y, w, h, hit: Object.assign({}, o.hit) });
+    else lamps.push({ id: o.lamp, label: (LPS.get(o.lamp) || {}).label || String(c.label || o.lamp), x, y, d: w, w, h });
+  }
   const geo = {
     W, H, body: { w: W, h: H - BAR_H }, content: { x: offX, y: 0, w: r05(cw * X), h: r05(ch * X) }, mm: { x0, y0, offX },
     areas: [...A.values()].map(a => { const [cx, cy] = [a.at[0], a.at[1]]; return { id: a.id, x: px(cx), y: py(cy), w: r05(a.src[2] * X), h: r05(a.src[3] * X) }; }),
     sections: (L.sections || []).map(s => { const [sx, sy] = toC(s.a, s.x, s.y); return { id: s.id, label: s.label, x: px(sx), y: py(sy), w: r05(s.w * X), h: r05(s.h * X) }; }),
     controls, order, extras,
     jacks, jackPitch: jackPitch == null ? null : q3(jackPitch), jackHit: jacks.length ? Math.min(...jacks.map(j => j.hit)) : null,
+    evs, lamps,
   };
   geoC.set(L, { model, geo });
   return geo;
@@ -971,8 +1042,9 @@ function buildSvg(L, model) {
   }
   // decor items
   for (const d of L.decor || []) { const q = decorItem(d, { LEG, RULE, PANEL, col, wid }); if (q) o.push(inA(d.a, q)); }
-  // printed parts of the controls (labels, dials, legends) and the inert controls; (9) the live patch jacks
-  const M = ctlsOf(model), PJ = portMap(model);
+  // printed parts of the controls (labels, dials, legends) and the inert controls; (9) the live patch jacks; (9b) the event
+  // buttons and the live lamps (unlit), a lite face's knob skirts and caps
+  const M = ctlsOf(model), PJ = portMap(model), LITE = liteOf(L, model), EVS = listOf(model, 'ev'), LPS = listOf(model, 'lamps');
   for (const c of L.controls || []) {
     if (!isObj(c) || !(c.kind in KINDS)) continue;
     let q = '';
@@ -999,6 +1071,9 @@ function buildSvg(L, model) {
     if (PERF_K.includes(c.kind) && !c.inert) q += perfSvg(c, S); // (1i) the keys / a controller at rest
     if (c.inert) q += inertSvg(c, { K, SL, BT, JK, LEG, named, M, S });
     else if (isPatchJack(c)) q += patchJackSvg(c, JK, (PJ && PJ.get(c.port) || {}).label || c.label || c.port); // ((9) a live patch jack)
+    else if (isEvBtn(c) && fin(c.w) && fin(c.h)) q += evSvg(c, BT, named, (EVS.get(c.ev) || {}).label || c.label || c.ev); // ((9b) an event button)
+    else if (isLamp(c) && fin(c.d)) q += lampSvg(c, named, (LPS.get(c.lamp) || {}).label || c.label || c.lamp); // ((9b) a live lamp, unlit)
+    else if (LITE && (c.kind === 'knob' || c.kind === 'rotary') && typeof c.id === 'string' && M.has(c.id) && fin(c.d)) q += liteKnobSvg(c, Object.assign({}, K, isObj(c.skin) ? c.skin : {})); // ((9b) a lite face's knob)
     else if (c.id === 'dr:trim' && c.kind === 'button' && fin(c.w) && fin(c.h)) q += trimSvg(c, TR); // ((8) the SDS-V's trimmer rows)
     if (q) o.push(inA(c.a, q));
   }
@@ -1104,6 +1179,28 @@ function patchJackSvg(c, JK, name) {
       + `<path d="M${n3(x - w * 0.2 - sw / 2)} ${n3(y - sh / 2)}h${n3(sw)}v${n3(sh)}h${n3(-sw)}zM${n3(x + w * 0.2 - sw / 2)} ${n3(y - sh / 2)}h${n3(sw)}v${n3(sh)}h${n3(-sw)}z" fill="${esc(JK.hole)}"/>`;
   } else q = jackSvg(x, y, c.d, JK);
   return `<g class="hw-jack" data-port="${esc(c.port)}"><title>${esc(String(name).replace(/\n/g, ' '))}</title>${q}</g>`;
+}
+/** (9b) An event button's art: its cap (the layout's colour, else the scheme's button cap) with a dark rim and its
+ * `onCap` word; titled with the event's label, data-ev its id (the host's transparent button above it takes the tap). */
+function evSvg(c, BT, named, name) {
+  const { x, y, w, h } = c, sz = Math.min(2.2, h * 0.3);
+  let q = `<rect x="${n3(x - w / 2)}" y="${n3(y - h / 2)}" width="${n3(w)}" height="${n3(h)}" rx="0.8" fill="${esc(named(c.color) || BT.cap)}" stroke="#000" stroke-opacity="0.45" stroke-width="0.3"/>`;
+  if (c.onCap) q += text(x, y + sz * 0.36, String(c.onCap), { size: sz, weight: 700, anchor: 'middle', fill: BT.text, ls: 0.08 });
+  return `<g class="hw-ev" data-ev="${esc(c.ev)}"><title>${esc(String(name).replace(/\n/g, ' '))}</title>${q}</g>`;
+}
+/** (9b) A live lamp's art, unlit (the host's span lights it): a dark bezel and the lens at the lamp's colour, dimmed. */
+function lampSvg(c, named, name) {
+  const { x, y, d } = c;
+  return `<g class="hw-lamp" data-lamp="${esc(c.lamp)}"><title>${esc(String(name).replace(/\n/g, ' '))}</title><circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(d / 2)}" fill="#2a2a2a" stroke="#777" stroke-width="0.3"/>`
+    + `<circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(d * 0.36)}" fill="${esc(named(c.color) || c.color || '#c8321e')}" opacity="0.45"/></g>`;
+}
+/** (9b) A lite face's knob or rotary at rest — the skirt (knurled when the skin says so) and the cap that today's knob draws
+ * in the DOM (classic-panel's 64-unit box: the skirt r 25 = d / 2, the cap 25 · capR, style.css's knurl and cap stroke),
+ * here in the art; the DOM keeps the pointer (render's litePtr). sk: the scheme's knob skin + the control's. */
+function liteKnobSvg(c, sk) {
+  const u = c.d / 50, cr = 25 * (fin(sk.capR) ? Math.max(0.2, Math.min(1, sk.capR)) : 0.7) * u, cx = n3(c.x), cy = n3(c.y);
+  const kn = sk.knurl ? ` stroke="${esc(shade(sk.skirt, 0.3))}" stroke-width="${n3(1.3 * u)}" stroke-dasharray="${n3(1.15 * u)} ${n3(1.15 * u)}"` : '';
+  return `<circle cx="${cx}" cy="${cy}" r="${n3(c.d / 2)}" fill="${esc(sk.skirt)}"${kn}/><circle cx="${cx}" cy="${cy}" r="${n3(cr)}" fill="${esc(sk.cap)}" stroke="#000" stroke-opacity="0.45" stroke-width="${n3(0.6 * u)}"/>`;
 }
 /** (8) The SDS-V's trimmer row (dr:trim; our art): TRIM_N metal discs evenly across its box, each with its screwdriver slot
  * at an angle of its own (static: TRIM… shows the values) — one path for the discs, one for the slots (the DOM budget).
@@ -1467,17 +1564,45 @@ export function render(root, L, model, api) {
     if (ind && typeof ind.remove === 'function') ind.remove();
     if (rot && typeof rot.append === 'function') pointer(rot, sk);
   }
+  // (9b) a lite face (IMPL-9b §4.2): a knob's / rotary's skirt and cap are the art's (liteKnobSvg); the DOM is the widget and its
+  // pointer — an <i> as today's line pointer (the 64-unit box: x 32, y1 … y2 by the cap, 2.4 wide, round ends), turned about
+  // the knob's centre, styled inline (no stylesheet rule): 3 painted elements with its .hw-c, not 7
+  const LITE = liteOf(L, model);
+  const litePtr = (el, sk) => {
+    const cr = 25 * (fin(sk.capR) ? Math.max(0.2, Math.min(1, sk.capR)) : 0.7), y1 = cr < 19 ? 8 : 32 - cr + 1.8, y2 = cr < 19 ? 32 - cr - 1 : 32 - cr + 11;
+    const p = mk('i', 'hw-lp'), s = p.style, pc = v => n3(v / 64 * 100) + '%', t = y1 - 1.2, hh = y2 - y1 + 2.4;
+    s.position = 'absolute'; s.left = pc(30.8); s.top = pc(t); s.width = pc(2.4); s.height = pc(hh); s.borderRadius = '999px';
+    s.background = 'var(--hw-knob-ptr, #fff)'; s.transformOrigin = '50% ' + n3((32 - t) / hh * 100) + '%'; s.pointerEvents = 'none';
+    el.append(p);
+    return a => { s.transform = 'rotate(' + n3(a) + 'deg)'; };
+  };
+  function liteKnob(c, mc) {
+    const el = mk('div', 'knob hw-lk'), sw = c.sweep || 270, span = (mc.max - mc.min) || 1;
+    el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', mc.label);
+    el.setAttribute('aria-valuemin', String(mc.min)); el.setAttribute('aria-valuemax', String(mc.max));
+    skinVars(el, c);
+    const turn = litePtr(el, skinOf(c));
+    const upd = () => {
+      const v = api.get(mc.id);
+      turn(-sw / 2 + sw * Math.max(0, Math.min(1, (v - mc.min) / span)));
+      el.setAttribute('aria-valuenow', String(v)); el.setAttribute('aria-valuetext', api.fmt(mc, v));
+    };
+    api.watch(mc.id, upd); upd();
+    api.dragB(el, api.bind(mc));
+    return el;
+  }
   function hwRotary(c, mc) {
     const P = positionsOf(c, mc), stp = stepper(P), sweep = c.sweep || 270, N = P.length, r0 = fin(c.rot) ? c.rot : 0;
-    const el = mk('div', 'knob hw-rot');
+    const el = mk('div', LITE ? 'knob hw-rot hw-lk' : 'knob hw-rot');
     el.tabIndex = 0; el.setAttribute('role', 'slider'); el.setAttribute('aria-label', mc.label);
     el.setAttribute('aria-valuemin', '0'); el.setAttribute('aria-valuemax', String(N - 1));
     skinVars(el, c);
-    const { svg, rot } = knobSvg(skinOf(c));
-    el.append(svg);
+    let turn;
+    if (LITE) turn = litePtr(el, skinOf(c)); // ((9b) the pointer alone)
+    else { const { svg, rot } = knobSvg(skinOf(c)); el.append(svg); turn = a => rot.setAttribute('transform', `rotate(${n3(a)} 32 32)`); }
     const upd = () => {
       const i = stp.posOf(api.get(mc.id));
-      rot.setAttribute('transform', `rotate(${n3(r0 + (N > 1 ? -sweep / 2 + sweep * i / (N - 1) : 0))} 32 32)`);
+      turn(r0 + (N > 1 ? -sweep / 2 + sweep * i / (N - 1) : 0));
       el.setAttribute('aria-valuenow', String(i)); el.setAttribute('aria-valuetext', txtOf(c, mc, P, i));
     };
     api.watch(mc.id, upd); upd();
@@ -1532,7 +1657,7 @@ export function render(root, L, model, api) {
     el.setAttribute('data-n', String(N));
     let knob = null;
     if (style === 'rocker' || style === 'paddle') el.append(mk('i', 'hw-sw-a'), mk('i', 'hw-sw-b'));
-    else { knob = mk('b', 'hw-sw-k'); el.append(mk('i', 'hw-sw-t'), knob); }
+    else { knob = mk('b', 'hw-sw-k'); if (LITE) el.append(knob); else el.append(mk('i', 'hw-sw-t'), knob); } // ((9b) a lite face: no slot line)
     if (N > 2) { el.setAttribute('role', 'slider'); el.setAttribute('aria-valuemin', '0'); el.setAttribute('aria-valuemax', String(N - 1)); }
     const upd = () => {
       const i = stp.posOf(api.get(mc.id));
@@ -1938,7 +2063,8 @@ export function render(root, L, model, api) {
     w.setAttribute('data-ctl', c.id); w.setAttribute('data-dest', c.id); w.setAttribute('data-kind', k); // (data-dest: 1c, the canvas's modulation drops)
     place(w, o.box);
     let el = null;
-    if (k === 'knob') { el = api.knob(Object.assign({}, mc, { sweep: c.sweep || 270, hw: true })); skinKnob(el, c); }
+    if (k === 'knob' && LITE) el = liteKnob(c, mc); // ((9b) the pointer alone: the art has the skirt and the cap)
+    else if (k === 'knob') { el = api.knob(Object.assign({}, mc, { sweep: c.sweep || 270, hw: true })); skinKnob(el, c); }
     else if (k === 'slider' && mc.t === 'k' && !Array.isArray(c.map)) {
       const cap = capOf(c);
       prop(w, '--cap-w', cap[0] * PX_PER_MM + 'px'); prop(w, '--cap-h', cap[1] * PX_PER_MM + 'px');

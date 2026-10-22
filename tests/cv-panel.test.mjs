@@ -25,6 +25,12 @@ import './v8-guard.mjs';
 // < 9 mm from a hit box, a port on a knob), geometry().jacks (body px = the layout's mm × 2 + the centring, the table's
 // labels, each one's widest hit circle), the nine module faces (moduleModel / moduleLayout: valid, §2.2's sizes = moog-core's
 // w / h, ports = the type's jack ids, original art) and a module face rendered over a fake per-instance api (vals.p[mid]).
+// Stage 9b (IMPL-9b §4.1–§4.2, §8.4): the module faces 10 → 26 (panels/m900b.js: the 4 / 8 MU and the console-height sizes;
+// moduleModel for every type but the controller, with its ev / lamps); one mutation per new rule (an event button: kind,
+// id, inert, cycle, not the type's, twice, missing, its hit box, its overlap and jack clearance; a live lamp: kind, id, not
+// the type's, twice, missing; a rear terminal placed; lite off a patch face, a lite fin pointer; a face with no params and
+// no jacks valid), geometry().evs / .lamps, the art (event caps, unlit lamps, a lite face's skirts and caps, a patch face's
+// inert parts without an extras strip), the lite live layer (3 elements a control: the 960's 121, the 914's 43).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-panel.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -1211,8 +1217,10 @@ const PJ_LAYOUT = {
   ],
   extras: { ids: [] },
 };
-const TYPES9 = MG.ORDER; // the nine module types (the controller's face is m900's console)
-const SIZE9 = { 1: [128, 512], 2: [224, 512], 3: [352, 512] };
+const TYPES9 = MG.ORDER; // every module type (9: nine, 9b: 25 — the controller's face is m900's console)
+// (9b) the 5U and the console-height sizes by MU (IMPL-9b §2.1: 4 MU 448, 8 MU 864; a console panel × 352)
+const SIZE9 = { module: { 1: [128, 512], 2: [224, 512], 3: [352, 512], 4: [448, 512], 8: [864, 512] }, console: { 2: [224, 352], 3: [352, 352], 4: [448, 352] } };
+const S9 = ['921', '921a', '921b', '923', '904a', '907a', '911', '902', '995']; // stage 9's module types (panels/m900.js)
 
 test('9 validate: a live patch jack — each broken rule reported (one mutation per rule), naming the field; the fixture with its three jacks validates', () => {
   assert.deepEqual(P.validate(PJ_LAYOUT, PJ_MODEL), []);
@@ -1279,11 +1287,13 @@ test('9 the art: a patch jack drawn at full contrast (no opacity), titled with i
 });
 
 test('9 moduleModel / moduleLayout: a synthetic model per module type (memoised; the controller and unknown types: null), its face validated (a broken fixture: null, said once), the console is m900\'s hardware layout', () => {
+  eq1(TYPES9.filter(t => MG.TYPES[t].face === 'console'), ['961', 'clk', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a'], '(9b) the console-height types are modules too');
   for (const t of TYPES9) {
     const m = P.moduleModel(t), T = MG.TYPES[t];
     assert.equal(P.moduleModel(t), m, t + ': memoised');
     eq1([m.id, m.name, m.type, m.layout, m.patch, m.theme.knob, m.controls.map(c => c.id), m.sections[0].c === T.params, m.jacks === T.jacks],
       ['pm-' + t, T.name, t, T.layout, 'moog', 'moog', T.params.map(c => c.id), true, true], t);
+    eq1([m.ev.map(e => e.id), m.lamps.map(e => e.id)], [(T.ev || []).map(e => e.id), (T.lamps || []).map(e => e.id)], t + ': (9b) its events and lamps');
     assert.equal(P.moduleLayout(t), P.moduleLayoutOf(t), t + ': valid, so used');
     assert.equal(P.moduleLayoutOf(t).id, 'pm-' + t);
   }
@@ -1301,19 +1311,23 @@ test('9 moduleModel / moduleLayout: a synthetic model per module type (memoised;
   assert.equal(P.moduleLayout('911'), P.moduleLayoutOf('911'), 'the real face again');
 });
 
-test('9 the faces: the console and the nine modules valid; §2.2\'s sizes (1 / 2 / 3 MU, the console) = moog-core\'s w / h; every param once, live; the ports = the type\'s jack ids (a socket where sig s); hit boxes ≥ 28 px and disjoint, the 14 mm jack circles inside the body; original art', () => {
+test('9 / 9b the faces: the console and the 25 module faces valid; §2.2\'s sizes (1 / 2 / 3 / 4 / 8 MU, the console-height 2 / 3 / 4 MU, the console) = moog-core\'s w / h; every param once, live; the ports = the type\'s jack ids but the rear terminals (a socket where sig s); the event buttons and lamps = the type\'s; hit boxes ≥ 28 px and disjoint (the event buttons\' too), the 14 mm jack circles inside the body; only trunks and the CP8A dimmed; original art', () => {
   const faces = [['m900', P.layoutOf('m900'), modelOf('m900'), MG.TYPES.ctl], ...TYPES9.map(t => [t, P.moduleLayoutOf(t), P.moduleModel(t), MG.TYPES[t]])];
+  const INERT = { cp3a: ['jack', 'jack', 'jack', 'jack'], cp4a: ['jack', 'jack', 'jack', 'jack'], cp35: ['jack', 'jack', 'jack', 'jack'], cp8a: ['switch', 'lamp', 'fuse', 'fuse'] };
   for (const [t, L, m, T] of faces) {
     assert.deepEqual(P.validate(L, m), [], t);
     const s = P.sizeOf(L, m), g = P.geometry(L, m);
     eq1([s.w, s.h], [T.w, T.h], t + ': moog-core\'s size');
-    eq1([s.w, s.h], t === 'm900' ? [864, 352] : SIZE9[T.mu], t + ': §2.2');
-    assert.equal(g.extras, null, t + ': no extras strip (every control on the face, nothing dimmed)');
+    eq1([s.w, s.h], t === 'm900' ? [864, 352] : SIZE9[T.face][T.mu], t + ': §2.2');
+    assert.equal(g.extras, null, t + ': no extras strip (every control on the face; (9b) a patch face\'s dimmed parts say it in their tips)');
     const live = L.controls.filter(c => typeof c.id === 'string').map(c => c.id).sort();
     eq1(live, T.params.map(c => c.id).sort(), t + ': every param once');
-    assert.ok(L.controls.every(c => !c.inert), t + ': nothing inert');
-    eq1(L.controls.filter(c => c.port != null).map(c => c.port).sort(), T.jacks.map(j => j.id).sort(), t + ': the ports = the jack ids');
-    eq1(g.jacks.map(j => j.port).sort(), T.jacks.map(j => j.id).sort());
+    eq1(L.controls.filter(c => c.inert).map(c => c.kind), INERT[t] || [], t + ': dimmed only the trunks and the CP8A\'s parts');
+    for (const c of L.controls.filter(x => x.inert)) assert.ok(c.label && (c.kind !== 'jack' || /^TRUNK [1-4]$/.test(c.label)), t + ': ' + c.label);
+    const front = T.jacks.filter(j => !j.rear).map(j => j.id).sort();
+    eq1(L.controls.filter(c => c.port != null).map(c => c.port).sort(), front, t + ': the ports = the jack ids, never a rear terminal');
+    eq1(g.jacks.map(j => j.port).sort(), front);
+    eq1([g.evs.map(e => e.id).sort(), g.lamps.map(e => e.id).sort()], [(T.ev || []).map(e => e.id).sort(), (T.lamps || []).map(e => e.id).sort()], t + ': (9b) the event buttons and lamps');
     for (const j of g.jacks) {
       const J = T.jacks.find(x => x.id === j.port);
       eq1([j.kind, j.label, j.dir], [J.sig === 's' ? 'strig' : 'jack', J.label, J.dir], t + ' ' + j.port);
@@ -1325,7 +1339,7 @@ test('9 the faces: the console and the nine modules valid; §2.2\'s sizes (1 / 2
       assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= 30 - 1e-6, `${t}: ${a.port} ↔ ${b.port}`);
       assert.ok(a.hit / 2 + b.hit / 2 <= Math.hypot(a.x - b.x, a.y - b.y), `${t}: ${a.port} / ${b.port}: their widest circles never touch`);
     }
-    const hb = P.hitBoxes(L, m);
+    const hb = P.hitBoxes(L, m).concat(g.evs.map(e => Object.assign({ id: 'ev:' + e.id }, e.hit))); // ((9b) an event button's press box with the controls')
     for (const h of hb) {
       assert.ok(h.w >= 28 && h.h >= 28, `${t} ${h.id}: ${h.w} × ${h.h} px`);
       assert.ok(h.x >= 0 && h.y >= 0 && h.x + h.w <= g.body.w && h.y + h.h <= g.body.h, `${t} ${h.id} inside the body`);
@@ -1335,16 +1349,22 @@ test('9 the faces: the console and the nine modules valid; §2.2\'s sizes (1 / 2
       const a = hb[i], b = hb[k];
       assert.ok(!(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h), `${t}: ${a.id} × ${b.id} overlap`);
     }
+    for (const l of g.lamps) assert.ok(l.x - l.d / 2 >= 0 && l.y - l.d / 2 >= 0 && l.x + l.d / 2 <= g.body.w && l.y + l.d / 2 <= g.body.h, `${t} ${l.id} inside the body`);
     const svg = P.decorSvg(L, m);
     for (const bad of ['<image', 'href', 'xlink', '<foreignObject', '<script', 'javascript:']) assert.equal(svg.includes(bad), false, t + ' ' + bad);
     for (const tx of [...svg.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)].map(x => x[1])) assert.doesNotMatch(tx, new RegExp('\\b(' + P.MAKERS.join('|') + ')\\b'), t + ': ' + tx);
     assert.doesNotMatch(L.hw + JSON.stringify(L.notes || []), /\bMoog\b/, t + ': no maker word in the notes either');
-    assert.equal((svg.match(/<g class="hw-jack"/g) || []).length, T.jacks.length, t + ': one jack drawing per jack');
+    assert.equal((svg.match(/<g class="hw-jack"/g) || []).length, front.length, t + ': one jack drawing per front jack');
+    eq1([(svg.match(/<g class="hw-ev"/g) || []).length, (svg.match(/<g class="hw-lamp"/g) || []).length], [g.evs.length, g.lamps.length], t + ': (9b) one drawing per event button and lamp');
   }
-  // the console's caption says it is ours; the four faces without a photograph say so in their notes
+  // the console's caption says it is ours; the four faces without a photograph say so in their notes; (9b) every m900b face
+  // says it is ours, the stand-ins and our Song clock on their plates too
   const cs = P.decorSvg(P.layoutOf('m900'), modelOf('m900'));
   assert.ok(cs.includes('>CONTROLLER<') && cs.includes('OURS — STANDS IN FOR THE'));
   for (const t of ['921a', '921b', '907a', '923']) assert.match(P.moduleLayoutOf(t).notes.join(' '), /no photograph viewed/, t);
+  for (const t of TYPES9.filter(x => !S9.includes(x))) assert.match(P.moduleLayoutOf(t).notes.join(' '), /^Ours \(no photograph viewed\)/, t);
+  for (const [t, re] of [['cp4a', /OURS — ITS ROUTING STANDS IN FOR THE ORIGINAL’S/], ['cp35', /OURS — A STAND-IN/], ['cp2', /OURS — FROM A SHORT LIST/], ['clk', /OURS — THE SONG’S TEMPO AS PULSES/]])
+    assert.match(P.decorSvg(P.moduleLayoutOf(t), P.moduleModel(t)), re, t + ': its plate says it is ours');
 });
 
 test('9 a module face rendered over a fake per-instance api (vals.p[mid]): one .hw-c per param in the Tab order, writes into that module\'s record only, no History; no widget over a jack; deterministic; every module face renders', () => {
@@ -1377,4 +1397,156 @@ test('9 a module face rendered over a fake per-instance api (vals.p[mid]): one .
     eq1(ids.slice().sort(), m.controls.map(c => c.id).sort(), ty);
     for (const c of m.controls) assert.ok(a.ui.has(c.id), ty + ': ui ' + c.id);
   }
+});
+
+/* ---------------------------------------------------------------- (9b, IMPL-9b §4.1–§4.2, §8.4) the System 35 / 55 faces */
+// a patch module with a knob, a three-detent rotary, a bat switch, two event buttons, a lamp, two jacks and a rear terminal;
+// its face lite (the knobs' skirts and caps in the art)
+const EV_MODEL = { id: 'evfx', name: 'Event fixture', theme: { knob: 'std' }, patch: 'fx',
+  controls: [{ t: 'k', id: 'lv', label: 'Level', min: 0, max: 10, def: 5 }, { t: 's', id: 'md', label: 'Mode', opts: ['A', 'B', 'C'], def: 1 }, { t: 's', id: 'sw', label: 'Route', opts: ['Off', 'On'], def: 0 }],
+  jacks: [{ id: 'in', dir: 'in', sig: 'v', label: 'SIGNAL INPUT' }, { id: 'out', dir: 'out', sig: 'v', label: 'SIGNAL OUTPUT' }, { id: 'xr', dir: 'out', sig: 'v', label: 'EXT (REAR)', rear: 1 }],
+  ev: [{ id: 'go', label: 'GO' }, { id: 'st', label: 'STOP' }], lamps: [{ id: 'l1', label: 'LAMP 1' }] };
+const EV_LAYOUT = {
+  v: 1, id: 'evfx', hw: 'fixture', case: '#121212', lite: true,
+  scheme: { panel: '#121212', legend: '#eeeeee', knob: { skirt: '#101010', cap: '#c9c9c4', ptr: '#f4f2ea', ptrStyle: 'line', knurl: true, capR: 0.56 },
+    jack: { nut: '#d4d4cf', hole: '#080808' }, button: { cap: '#e4dfd2', text: '#1a1a1a' } },
+  areas: [{ id: 'main', src: [0, 0, 53.975, 222.25], at: [0, 0] }],
+  sections: [{ id: 's', label: 'ALL', x: 0, y: 0, w: 53.975, h: 222.25 }],
+  controls: [
+    { id: 'lv', kind: 'knob', x: 27, y: 36, d: 24, sweep: 300, label: 'LEVEL', lab: 'none' },
+    { id: 'md', kind: 'rotary', x: 15, y: 72, d: 16, sweep: 90, legends: ['A', 'B', 'C'], label: 'MODE', lab: 'none' },
+    { id: 'sw', kind: 'switch', style: 'bat', orient: 'h', x: 40, y: 72, w: 10, h: 6, label: 'ROUTE', lab: 'none' },
+    { kind: 'button', ev: 'go', x: 15, y: 100, w: 10, h: 7, label: 'GO', onCap: 'GO', lab: 'none' },
+    { kind: 'button', ev: 'st', x: 40, y: 100, w: 10, h: 7, label: 'STOP', lab: 'none' },
+    { kind: 'lamp', lamp: 'l1', x: 27, y: 120, d: 6, color: '#f0642c', label: 'LAMP 1', lab: 'none' },
+    { kind: 'jack', port: 'in', x: 14, y: 140, d: 14, label: 'SIGNAL INPUT', lab: 'none' },
+    { kind: 'jack', port: 'out', x: 40, y: 140, d: 14, label: 'SIGNAL OUTPUT', lab: 'none' },
+  ],
+  extras: { ids: [] },
+};
+
+test('9b validate: an event button, a live lamp, a rear terminal, lite — each broken rule reported (one mutation per rule); the fixture (a rear terminal not placed) and a face with no params and no jacks validate; panels/m900b.js has no default export', async () => {
+  assert.deepEqual(P.validate(EV_LAYOUT, EV_MODEL), []);
+  const bad = (f, re, m, model = EV_MODEL) => {
+    const L = clone(EV_LAYOUT);
+    f(L);
+    const p = P.validate(L, model);
+    assert.ok(p.some(x => re.test(x)), (m || re) + ' → ' + JSON.stringify(p));
+  };
+  // the event buttons
+  bad(L => { L.controls[3].ev = 'zz'; }, /controls\[3\]: ev "zz" is not an event of the model/, 'an event the type lacks');
+  bad(L => { L.controls[3].ev = 'zz'; }, /go: not placed \(an event button of the model\)/, 'every event on the face');
+  bad(L => { L.controls[4].ev = 'go'; }, /controls\[4\]: ev "go" twice/, 'an event twice');
+  bad(L => { L.controls[3].kind = 'switch'; }, /controls\[3\]: ev is an event button's \(kind button\)/, 'ev on another kind');
+  bad(L => { L.controls[3].id = 'lv'; }, /an event button has no id/, 'an id (it stores nothing)');
+  bad(L => { L.controls[3].inert = true; }, /controls\[3\]: an event button is live/, 'inert');
+  bad(L => { L.controls[3].cycle = [0, 1]; }, /controls\[3\]: an event button has no cycle/, 'a cycle');
+  bad(L => { L.controls[3].hit = [10, 10]; }, /controls\[3\]: hit box 10 × 10 mm < 14 mm/, 'its hit box ≥ 14 mm');
+  bad(L => { L.controls[3].x = 27; L.controls[3].y = 52; }, /controls\[0\] \(lv\) and controls\[3\]: hit boxes overlap/, 'disjoint from a control\'s');
+  bad(L => { L.controls[6].y = 114; }, /controls\[6\]: its centre 6\.5 mm from controls\[3\]'s hit box < 9 mm/, 'a jack ≥ 9 mm from its hit box');
+  bad(L => { L.controls[3].sec = 'nope'; }, /controls\[3\]: not inside a section \("nope" unknown\)/, 'inside a section');
+  // the lamps
+  bad(L => { L.controls[5].lamp = 'zz'; }, /controls\[5\]: lamp "zz" is not a lamp of the model/, 'a lamp the type lacks');
+  bad(L => { L.controls[5].lamp = 'zz'; }, /l1: not placed \(a lamp of the model\)/, 'every lamp on the face');
+  bad(L => { L.controls.push({ kind: 'lamp', lamp: 'l1', x: 27, y: 128, d: 6 }); }, /controls\[8\]: lamp "l1" twice/, 'a lamp twice');
+  bad(L => { L.controls[5].kind = 'led'; }, /controls\[5\]: lamp is a live lamp's \(kind lamp\)/, 'lamp on another kind');
+  bad(L => { L.controls[5].id = 'lv'; }, /a live lamp has no id/, 'an id');
+  bad(L => { L.controls[5].inert = true; }, /controls\[5\]: a live lamp is not inert/, 'inert');
+  // a rear terminal: never on a face
+  bad(L => { L.controls.push({ kind: 'jack', port: 'xr', x: 27, y: 175, d: 14, label: 'EXT' }); }, /controls\[8\]: xr is a rear terminal \(never on a face/, 'a rear terminal placed');
+  // lite: a patch face's only, its pointers lines
+  bad(() => {}, /^lite: true, on a patch module face only/, 'lite off a patch face', Object.assign({}, EV_MODEL, { patch: undefined }));
+  bad(L => { L.lite = 'yes'; }, /^lite: true, on a patch module face only/, 'lite is true');
+  bad(L => { L.controls[1].skin = { ptrStyle: 'fin' }; }, /controls\[1\] \(md\): a lite face's pointer is a line/, 'a lite fin');
+  bad(L => { L.scheme.knob.ptrStyle = 'dot'; }, /scheme\.knob\.ptrStyle: a lite face's pointer is a line/, 'a lite scheme dot');
+  // a face with no params and no jacks (the CP8A's shape): valid; its dimmed part makes no extras strip on a patch face
+  const NM = { id: 'nofx', name: 'Empty', theme: { knob: 'std' }, patch: 'fx', controls: [], jacks: [], ev: [], lamps: [] };
+  const NL = { v: 1, id: 'nofx', hw: 'fixture', case: '#121212', lite: true, areas: [{ id: 'main', src: [0, 0, 53.975, 142.875], at: [0, 0] }],
+    sections: [{ id: 's', label: 'ALL', x: 0, y: 0, w: 53.975, h: 142.875 }],
+    controls: [{ kind: 'fuse', x: 27, y: 60, w: 9, h: 18, inert: true, label: 'FUSE' }], decor: [{ t: 'text', x: 27, y: 20, s: 'POWER' }], extras: { ids: [] } };
+  assert.deepEqual(P.validate(NL, NM), []);
+  eq1([P.geometry(NL, NM).extras, P.sizeOf(NL, NM)], [null, { w: 128, h: 352 }], 'no strip: the size is the type\'s');
+  const NX = Object.assign({}, NM, { patch: undefined }), NXL = Object.assign(clone(NL), { lite: undefined });
+  assert.equal(P.geometry(NXL, NX).extras.note, true, 'a hardware model keeps its "not emulated" strip');
+  // the faces' file: { <type>: layout } only (tests/moog-core.test.mjs reads every exported object)
+  const B = await import('../panels/m900b.js?v=9');
+  eq1([Object.keys(B), B.default], [['MODULES'], undefined]);
+  eq1(Object.keys(B.MODULES).sort(), TYPES9.filter(t => !S9.includes(t)).sort(), 'the sixteen 9b types');
+  for (const t of TYPES9) assert.equal(P.MODULE_LAYOUTS[t], S9.includes(t) ? P.moduleLayoutOf(t) : B.MODULES[t], t + ': merged by panels/index.js');
+});
+
+test('9b geometry().evs / .lamps: body px = the layout\'s mm × 2 + the centring (three decimals), the type\'s labels, an event button\'s press box (≥ 28 px), a lamp\'s d; no widget, no Tab stop, not in hitBoxes(); a jack\'s widest circle kept off an event button; every existing panel: none', () => {
+  const g = P.geometry(EV_LAYOUT, EV_MODEL), X = P.PX_PER_MM;
+  assert.equal(g.mm.offX, 10);
+  eq1(g.evs, [{ id: 'go', label: 'GO', x: 10 + 15 * X, y: 100 * X, w: 20, h: 14, hit: { x: 10 + 7.5 * X, y: 92.5 * X, w: 30, h: 30 } },
+    { id: 'st', label: 'STOP', x: 10 + 40 * X, y: 100 * X, w: 20, h: 14, hit: { x: 10 + 32.5 * X, y: 92.5 * X, w: 30, h: 30 } }]);
+  eq1(g.lamps, [{ id: 'l1', label: 'LAMP 1', x: 10 + 27 * X, y: 120 * X, d: 12, w: 12, h: 12 }]);
+  eq1(g.controls.filter(o => o.ev || o.lamp).map(o => [o.ev || o.lamp, o.live, o.show, o.sec]), [['go', false, false, -1], ['st', false, false, -1], ['l1', false, false, -1]]);
+  eq1([P.hitBoxes(EV_LAYOUT, EV_MODEL).map(h => h.id), g.order.map(i => g.controls[i].id)], [['lv', 'md', 'sw'], ['lv', 'md', 'sw']], 'the controls only: the host mounts the buttons and lamps');
+  eq1(g.jacks.map(j => j.port), ['in', 'out'], 'the rear terminal is no face jack');
+  // a jack 10.5 mm under GO's press box: its widest circle twice that clearance (the button counts as a control's box)
+  const L2 = clone(EV_LAYOUT); L2.controls[6].y = 118;
+  eq1(P.geometry(L2, EV_MODEL).jacks[0].hit, 2 * (118 - 107.5) * X);
+  for (const id of authored) eq1([P.geometry(P.layoutOf(id), modelOf(id)).evs, P.geometry(P.layoutOf(id), modelOf(id)).lamps], [[], []], id);
+  for (const t of S9) eq1([P.geometry(P.moduleLayoutOf(t), P.moduleModel(t)).evs, P.geometry(P.moduleLayoutOf(t), P.moduleModel(t)).lamps], [[], []], t);
+});
+
+test('9b the art: an event button\'s cap (its onCap word, titled with the event\'s label, data-ev, full contrast) and an unlit lamp (data-lamp, the lens at 0.45); a lite face\'s knob skirts (knurled) and caps — none without lite; a patch face\'s inert parts dimmed with their tips', () => {
+  const svg = P.decorSvg(EV_LAYOUT, EV_MODEL);
+  const evs = [...svg.matchAll(/<g class="hw-ev" data-ev="([^"]+)"><title>([^<]*)<\/title>(.*?)<\/g>/g)].map(m => [m[1], m[2], (m[3].match(/<rect/g) || []).length, (m[3].match(/<text[^>]*>([^<]*)<\/text>/) || [])[1] || '']);
+  eq1(evs, [['go', 'GO', 1, 'GO'], ['st', 'STOP', 1, '']]);
+  assert.ok(svg.includes('fill="#e4dfd2"'), 'the scheme\'s cap');
+  const lp = /<g class="hw-lamp" data-lamp="l1"><title>LAMP 1<\/title>(.*?)<\/g>/.exec(svg);
+  assert.ok(lp && /fill="#f0642c" opacity="0\.45"/.test(lp[1]), 'unlit: the lens dimmed');
+  assert.ok(!/hw-(ev|lamp)[^>]*(opacity|data-tip)/.test(svg), 'full contrast, no tip');
+  // the lite knob (d 24: u 0.48) and rotary (d 16: u 0.32): the skirt knurled (#101010 → #585858), the cap 25 · 0.56 · u
+  assert.ok(svg.includes('<circle cx="27" cy="36" r="12" fill="#101010" stroke="#585858" stroke-width="0.624" stroke-dasharray="0.552 0.552"/><circle cx="27" cy="36" r="6.72" fill="#c9c9c4" stroke="#000" stroke-opacity="0.45" stroke-width="0.288"/>'), 'the knob at rest');
+  assert.ok(svg.includes('<circle cx="15" cy="72" r="8" fill="#101010"') && svg.includes('r="4.48" fill="#c9c9c4"'), 'the rotary at rest');
+  const NL = clone(EV_LAYOUT); delete NL.lite;
+  assert.ok(!P.decorSvg(NL, EV_MODEL).includes('fill="#101010"'), 'not lite: the DOM draws the knobs');
+  // the CP8A: its parts dimmed, each saying "not emulated"
+  const c8 = P.decorSvg(P.moduleLayoutOf('cp8a'), P.moduleModel('cp8a'));
+  eq1([...c8.matchAll(/class="hw-inert" opacity="0\.55" data-tip="([^"]+)"/g)].map(m => m[1]), ['POWER — not emulated', 'PILOT — not emulated', 'FUSE 1 — not emulated', 'FUSE 2 — not emulated']);
+});
+
+test('9b render (lite): a knob or a rotary is its widget and a pointer (3 elements with its .hw-c) turned by the value, written through api.bind / its detents; a bat switch without its slot line; no widget for an event button or a lamp; every 9b face\'s live layer is 3 elements a control (the 960: 121, the 914: 43)', () => {
+  const doc = fresh(), root = doc.createElement('div'), api = fakeApi(EV_MODEL, doc);
+  doc.body.append(root);
+  P.render(root, EV_LAYOUT, EV_MODEL, api);
+  const ctls = root.childNodes[1];
+  eq1(ctls.childNodes.map(n => n.getAttribute('data-ctl')), ['lv', 'md', 'sw']);
+  const lv = widgetOf(root, 'lv'), ptrOf = el => el.childNodes.find(n => n.nodeType === 1 && cls(n) === 'hw-lp');
+  eq1([cls(lv), lv.childNodes.length, all(byCtl(root, 'lv')).length], ['knob hw-lk', 1, 3]);
+  eq1([lv.getAttribute('role'), lv.getAttribute('aria-valuemin'), lv.getAttribute('aria-valuemax'), lv.getAttribute('aria-valuenow'), lv.getAttribute('aria-valuetext')], ['slider', '0', '10', '5', '5']);
+  const p = ptrOf(lv).style;
+  eq1([p.position, p.left, p.top, p.width, p.height, p.borderRadius, p.background, p.transformOrigin, p.transform],
+    ['absolute', '48.125%', '10.625%', '3.75%', '17.813%', '999px', 'var(--hw-knob-ptr, #fff)', '50% 221.053%', 'rotate(0deg)'], 'today\'s line pointer (capR 0.56: y 8 … 17 of 64), at 5 of 0…10');
+  api.set('lv', 10);
+  eq1([p.transform, lv.getAttribute('aria-valuenow')], ['rotate(150deg)', '10']);
+  ptr(lv, 'pointerdown', 0, 100); ptr(lv, 'pointermove', 0, 140); ptr(lv, 'pointerup', 0, 140);
+  eq1([api.vals.lv, p.transform], [0, 'rotate(-150deg)'], 'a drag down through api.bind');
+  const md = widgetOf(root, 'md');
+  eq1([cls(md), md.childNodes.length, ptrOf(md).style.transform, md.getAttribute('aria-valuetext')], ['knob hw-rot hw-lk', 1, 'rotate(0deg)', 'B']);
+  ptr(md, 'pointerdown', 0, 0); ptr(md, 'pointerup', 0, 0);
+  eq1([api.vals.md, ptrOf(md).style.transform], [2, 'rotate(45deg)'], 'a tap: the next detent');
+  const sw = widgetOf(root, 'sw');
+  eq1([cls(sw), sw.childNodes.map(cls)], ['hw-sw', ['hw-sw-k']], 'no slot line');
+  assert.equal(all(root).filter(n => n.getAttribute && (n.getAttribute('data-ev') || n.getAttribute('data-lamp'))).length, 0, 'the host mounts the buttons and lamps');
+  // not lite: today's widgets (the api's knob, the slot line)
+  const NL = clone(EV_LAYOUT); delete NL.lite;
+  const d2 = fresh(), r2 = d2.createElement('div'); d2.body.append(r2);
+  P.render(r2, NL, EV_MODEL, fakeApi(EV_MODEL, d2));
+  eq1([cls(widgetOf(r2, 'lv')), widgetOf(r2, 'sw').childNodes.map(cls)], ['knob', ['hw-sw-t', 'hw-sw-k']]);
+  // every 9b face over the fake api: 3 elements a control in the live layer, no slot line, no widget over a jack, a button or a lamp
+  const counts = {};
+  for (const t of TYPES9.filter(x => !S9.includes(x))) {
+    const m = P.moduleModel(t), d = fresh(), rt = d.createElement('div'); d.body.append(rt);
+    P.render(rt, P.moduleLayout(t), m, fakeApi(m, d));
+    const live = all(rt.childNodes[1]);
+    counts[t] = live.length;
+    assert.equal(live.length, 1 + 3 * m.controls.length, t + ': ' + live.length);
+    assert.ok(!live.some(n => cls(n) === 'hw-sw-t'), t + ': no slot line');
+    assert.equal(all(rt).filter(n => n.getAttribute && (n.getAttribute('data-port') || n.getAttribute('data-ev') || n.getAttribute('data-lamp'))).length, 0, t);
+  }
+  eq1([counts['960'], counts['914']], [121, 43]);
 });

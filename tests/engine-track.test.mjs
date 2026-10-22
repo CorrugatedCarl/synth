@@ -2156,23 +2156,29 @@ test('9 drift (§3.4): the app\'s analog drift reaches the oscillators through m
 
 // §8.1's headroom through the whole Track (V9b: OUT_K 0.15 a volt): every starting patch with a note line at 48 kHz × 4 and
 // 44.1 kHz × 2 — the pre-limiter peak (the limiter's input) never reaches the limiter's threshold (−1 dBFS); Classic bass
-// peaks between −12 and −3 dBFS (the 808 groove's gate, 8 §12.4: measured as the app plays it)
-test('9 headroom (§3.2, §8.1): the six starting patches through the whole Track never reach the limiter (48 kHz × 4, 44.1 kHz × 2); Classic bass peaks −12 … −3 dBFS', (t) => {
-  const rep = [];
+// peaks between −12 and −3 dBFS (the 808 groove's gate, 8 §12.4: measured as the app plays it). IMPL-9b §8.8: all thirteen — the
+// six on the Model 15 set, the seven on their own modules, the payload with the vals (Routed's bus rows); the clocked pair
+// (Sequence, Twenty-four steps) built while stopped, then ▶ from a stop at 120 BPM (the song's transport into the Song clock) — each
+// sounds (above −30 dBFS)
+test('9 headroom (§3.2, §8.1; 9b §8.8): the thirteen starting patches through the whole Track never reach the limiter (48 kHz × 4, 44.1 kHz × 2) and sound — the clocked pair from ▶; Classic bass peaks −12 … −3 dBFS', (t) => {
+  const rep = [], CLK = new Set(['Sequence', 'Twenty-four steps']), S9 = new Set(['Classic bass', 'Filter sweep', 'Drone', 'Sync lead', 'Wind', 'Bells']);
+  assert.equal(MG.PRESETS.length, 13);
   for (const [sr, os] of [[48000, 4], [44100, 2]]) {
     const D = p9Scope({ sampleRate: sr });
     for (const P of MG.PRESETS) {
-      const r = PT.loadPreset(PT.fresh('moog'), {}, P.name, { ensure: MG.M15 });
+      const r = PT.loadPreset(PT.fresh('moog'), {}, P.name, S9.has(P.name) ? { ensure: MG.M15 } : undefined);
       const { p } = mk(D, { os, hostOS: os, offline: true }, patchFor('m900', r.vals, core.defaultFx2(), { sr, bpm: 120 }));
-      p.msg({ t: 'seq', s: PT.payload(r.rec) });
+      p.msg({ t: 'seq', s: PT.payload(r.rec, 'moog', r.vals) });
       let pk = 0;
       const lp = p.lim.process;
       p.lim.process = function (A, B, n) { for (let i = 0; i < n; i++) pk = Math.max(pk, Math.abs(A[i]), Math.abs(B[i])); return lp.call(this, A, B, n); };
       const q = Math.round(0.25 * sr / 128), ev = [];
       for (const [k, n] of [[0, 48], [1, 55], [2, 43], [3, 60], [4, 36]]) ev.push([2 + k * 2 * q, { t: 'on', n, v: 1 }], [2 + (k * 2 + 1) * q, { t: 'off', n }]);
+      if (CLK.has(P.name)) ev.push([1, { t: 'transport', play: true, frame: D.ctx.currentFrame + 128 + 40, tick: 0, fpt: sr * 60 / (120 * 960), seek: true, fresh: true }]);
       play(D, p, 12 * q, ev);
       rep.push(`${P.name} ${ptDB(pk)}`);
       assert.ok(pk < Math.pow(10, -1 / 20), `${P.name} at ${sr} × ${os}: ${ptDB(pk)} dBFS reaches the limiter`);
+      assert.ok(pk > Math.pow(10, -30 / 20), `${P.name} at ${sr} × ${os}: ${ptDB(pk)} dBFS — silent`);
       if (P.name === 'Classic bass') assert.ok(pk > Math.pow(10, -12 / 20) && pk < Math.pow(10, -3 / 20), `Classic bass at ${sr} × ${os}: ${ptDB(pk)} dBFS`);
     }
     rep.push('|');
@@ -2197,54 +2203,88 @@ test('9: a patch Inst renders without allocating — notes, bend, wheel, a held 
   assert.ok(pk > 0.05, 'it played');
 });
 
-test('9 warmPatch (§3.1, spike (a) decision 4): the first Track\'s warm-up ran every class of the family\'s table (a linked one driven and undriven), every jack patched, a loop step with its ramps, a module retired, both value sets (STRONG sync, LAST, MULTIPLE), notes, resets (Play from a stop, a power-off), setOS there and back — no offending item; restore() left the machine fresh', () => {
+// IMPL-9b §3.1 / §8.3 (skeptic #7, spike (a2) decision 1): the warm graphs are split into parts once the table outgrows the
+// evaluator's 256 connections — every payload analyses with no offending item and fits; across the parts every type, every jack,
+// the loop steps (a lone late source: the pre feed), the 921Bs' sync paths, normals read under a ramp; every event, a lamp read; a
+// playing transport with a loop wrap (and one with an end) during graph b; the whole table in one payload ≈ 100 times (the GC pre-warm)
+test('9 warmPatch (§3.1, spike (a) decision 4; 9b §3.1): the first Track\'s warm-up ran every class of the family\'s table (a linked one driven and undriven), every jack patched, loop steps with their ramps and a lone late source, the sync paths, normals, a module retired, both value sets (STRONG sync, LAST, MULTIPLE), notes, resets (Play from a stop, a power-off), setOS there and back, every event, a lamp read, a playing transport with a wrap and with an end, the whole table ≈ 100 times — every payload within 256 connections, no offending item; restore() left the machine fresh', () => {
   const wrap = src => src + `;(function () {
     const PD = globalThis.PatchDSP, cr = PD.create, L = globalThis.GLOG = [];
+    let id = 0;
     globalThis.PatchDSP = Object.freeze(Object.assign({}, PD, { create(inst, f) {
-      const m = cr(inst, f);
+      const m = cr(inst, f), me = ++id;
       if (m !== null) {
-        const g = m.graph, so = m.setOS, st = m.set, no = m.note, re = m.reset;
-        m.graph = function (pg) { const r = g.call(this, pg), M = this.mon(); L.push(JSON.stringify({ pg, r: r && { steps: r.steps, loops: r.loops, live: r.live, ramps: r.ramps, why: r.why }, mods: M.mods, run: M.run })); return r; };
+        const g = m.graph, so = m.setOS, st = m.set, no = m.note, re = m.reset, ev = m.ev, la = m.lamps, rd = m.render;
+        m.graph = function (pg) { const r = g.call(this, pg), M = this.mon(); L.push(JSON.stringify({ me, pg, r: r && { steps: r.steps, loops: r.loops, live: r.live, ramps: r.ramps, why: r.why }, mods: M.mods, run: M.run })); return r; };
         m.setOS = function (os, fs) { L.push(JSON.stringify({ os })); return so.call(this, os, fs); };
         m.set = function (pv) { L.push(JSON.stringify({ pv })); return st.call(this, pv); };
         m.note = function (n, v, on) { L.push(JSON.stringify({ note: on })); return no.call(this, n, v, on); };
         m.reset = function () { L.push(JSON.stringify({ reset: 1 })); return re.call(this); };
+        m.ev = function (n, k) { const r = ev.call(this, n, k); L.push(JSON.stringify({ ev: [n, k, r] })); return r; };
+        m.lamps = function (F) { const r = la.call(this, F); L.push(JSON.stringify({ lamps: r.l.length })); return r; };
+        m.render = function (b, N, F0) { const tp = inst.tp; if (tp && tp.play) L.push(JSON.stringify({ play: [tp.wrap ? 1 : 0, tp.end != null ? 1 : 0, tp.tick + (4 * Math.floor(F0 / 4) - tp.frame) / tp.fpt] })); return rd.call(this, b, N, F0); };
       }
       return m;
     } }));
   })();`;
   const D = p9Scope({ overrides: { 'patch-dsp.js': wrap } });
   D.ctx.currentFrame = 0;
-  const { p } = mk(D, { os: 4, hostOS: 4 }), I = p.i0, E = [...D.global('GLOG')].map(s => JSON.parse(s));
-  const gs = E.filter(e => e.pg && e.pg.mods.length > 0), A = gs[0];
-  assert.ok(gs.length >= 3, 'the warm graphs');
+  const { p } = mk(D, { os: 4, hostOS: 4 }), I = p.i0, E = [...D.global('GLOG')].map(s => JSON.parse(s)), MAXC = D.global('PatchDSP').MAXC;
+  const gs = E.filter(e => e.pg && e.pg.mods.length > 0 && e.me === 1), big = gs.filter(e => e.pg.mods.length === MG.ORDER_ALL.length + 1);
+  const parts = gs.filter(e => e.pg.mods.length < MG.ORDER_ALL.length);
+  assert.ok(parts.length >= 6 && big.length >= 100, `the warm graphs (${parts.length} of the parts, ${big.length} of the whole table)`);
   assert.deepEqual(E.filter(e => e.r && e.r.why.length).map(e => e.r.why), [], 'no offending item');
-  assert.deepEqual([...new Set(A.pg.mods.map(m => m[1]))].sort(), [...MG.ORDER_ALL].sort(), 'every type');
-  assert.deepEqual([...new Set(A.mods.map(m => m[1]))].sort(), [...MG.ORDER_ALL].sort(), 'every class built');
-  assert.equal(A.run.length, A.mods.length, 'every module live: each one ran');
-  assert.deepEqual(A.pg.mods.filter(m => m[1] === '921b').map(m => m[2] >= 0), [true, false], 'the linked type driven and undriven');
-  for (const [n, ty] of A.pg.mods) MG.TYPES[ty].jacks.forEach((j, k) => {
-    if (j.dir === 'in') assert.ok(A.pg.cords.some(c => c[2] === n && c[3] === k), `${ty} ${j.id} fed`);
-    if (j.dir === 'out') assert.ok(A.pg.cords.some(c => c[0] === n && c[1] === k), `${ty} ${j.id} read`);
-    if (j.dir === 'any') assert.ok(A.pg.cords.some(c => (c[0] === n && c[1] === k) || (c[2] === n && c[3] === k)), `${ty} ${j.id} patched`);
+  assert.deepEqual(gs.filter(e => e.pg.cords.length > MAXC).length, 0, `every payload within ${MAXC} connections`);
+  assert.ok(new Set(parts.map(e => e.pg.mods.map(m => m[1]).join())).size >= 2, 'the table in parts');
+  // each part's graph a: the first payload of each module list that no other list contains (c is a's less a module)
+  const key = e => JSON.stringify(e.pg.mods), sub = (x, y) => x.pg.mods.length < y.pg.mods.length && x.pg.mods.every(m => y.pg.mods.some(q => q.join() === m.join()));
+  const A = parts.filter((e, k) => parts.findIndex(x => key(x) === key(e)) === k && !parts.some(y => sub(e, y)));
+  assert.ok(A.length >= 2, 'graph a of each part');
+  assert.deepEqual([...new Set(A.flatMap(e => e.pg.mods.map(m => m[1])))].sort(), [...MG.ORDER_ALL].sort(), 'every type across the parts');
+  assert.deepEqual([...new Set(A.flatMap(e => e.mods.map(m => m[1])))].sort(), [...MG.ORDER_ALL].sort(), 'every class built');
+  // (a type with no output — the 993, 994, CP8A: no slots, the evaluator's multiples — is built, never scheduled)
+  for (const e of A) assert.deepEqual(e.mods.filter(([n, ty]) => !e.run.includes(n) && MG.TYPES[ty].jacks.some(j => j.dir === 'out')), [], 'every module with an output live: each one runs');
+  assert.deepEqual(A.flatMap(e => e.pg.mods.filter(m => m[1] === '921b').map(m => m[2] >= 0)), [true, false], 'the linked type driven and undriven');
+  for (const e of A) for (const [n, ty] of e.pg.mods) MG.TYPES[ty].jacks.forEach((j, k) => {
+    if (j.dir === 'in') assert.ok(e.pg.cords.some(c => c[2] === n && c[3] === k), `${ty} ${j.id} fed`);
+    if (j.dir === 'out') assert.ok(e.pg.cords.some(c => c[0] === n && c[1] === k), `${ty} ${j.id} read`);
+    if (j.dir === 'any') assert.ok(e.pg.cords.some(c => (c[0] === n && c[1] === k) || (c[2] === n && c[3] === k)), `${ty} ${j.id} patched`);
   });
   assert.ok(gs.some(e => e.r.loops > 0) && gs.some(e => e.r.ramps > 0), 'a loop step, ramps');
-  assert.ok(gs.some(e => e.pg.mods.length === A.pg.mods.length - 1), 'a module retired');
+  // a lone late source (an input fed only by its own module: the loop's pre feed); the 921Bs' sync driven by a module (not the keys)
+  assert.ok(parts.some(e => e.pg.cords.some(c => c[0] === c[2] && e.pg.cords.filter(d => d[2] === c[2] && d[3] === c[3]).length === 1)), 'a lone self cord');
+  const syncOf = e => { const b = e.pg.mods.filter(m => m[1] === '921b').map(m => m[0]), sy = MG.TYPES['921b'].jacks.findIndex(j => j.id === 'sy'); return e.pg.cords.some(c => b.includes(c[2]) && c[3] === sy && c[0] !== 0); };
+  assert.ok(parts.some(e => e.r.loops > 0 && syncOf(e)), 'the 921Bs\' sync driven by a module, in a graph with a loop step');
+  const nm = e => e.pg.mods.some(([n, ty]) => MG.TYPES[ty].jacks.some((j, k) => j.norm && !e.pg.cords.some(c => c[2] === n && c[3] === k)));
+  assert.ok(parts.some(e => nm(e) && e.r.ramps > 0), 'normalled inputs left to their normals, under a ramp');
+  assert.ok(parts.some((e, k) => k > 0 && e.pg.mods.length === parts[k - 1].pg.mods.length - 1), 'a module retired');
   const pvs = E.filter(e => e.pv).map(e => e.pv), oss = E.filter(e => e.os).map(e => e.os);
-  const sw = id => new Set(pvs.map(v => { const [n] = A.pg.mods.find(m => m[1] === '921b'); return v['m' + n] ? v['m' + n][id] : undefined; }));
+  const sw = id => new Set(pvs.map(v => { const e = A.find(x => x.pg.mods.some(m => m[1] === '921b')), [n] = e.pg.mods.find(m => m[1] === '921b'); return v['m' + n] ? v['m' + n][id] : undefined; }));
   assert.ok(new Set(pvs.map(v => JSON.stringify(v))).size >= 2 && sw('ss').has(2), 'both value sets, STRONG sync among them');
   assert.ok(new Set(pvs.map(v => v['0'][1])).has(1) && new Set(pvs.map(v => v['0'][2])).has(1), 'LAST, MULTIPLE');
+  assert.ok(new Set(pvs.map(v => Object.keys(v).length)).size >= 5, 'the values in five or more shapes');
   assert.ok(oss.length >= 4 && oss.includes(2) && oss.includes(4) && oss[1] === oss[3], `setOS there and back each round (${oss})`);
   assert.ok(E.filter(e => e.note === 1).length >= 4 && E.filter(e => e.reset).length >= 4, 'notes, resets (P-2, power)');
-  assert.deepEqual([I.kind, I.pm.mon().mods.length, I.pmPend, I.pmErr, I.on], ['analog', 0, null, 0, 1], 'restore: fresh');
+  // every event of every evented type, delivered; a lamp read
+  for (const ty of MG.ORDER_ALL.filter(t => (MG.TYPES[t].ev || []).length)) {
+    const ns = A.flatMap(e => e.pg.mods.filter(m => m[1] === ty).map(m => m[0])), got = new Set(E.filter(e => e.ev && e.ev[2] === 1).map(e => e.ev[1]));
+    assert.ok(ns.length > 0 && MG.TYPES[ty].ev.every((x, k) => got.has(k)), ty + ': every event delivered');
+  }
+  assert.ok(E.some(e => e.lamps > 0), 'a lamp read');
+  // the playing stand-in transport: a count-in (t < 0) and past tick 0, a wrap folded, a song with an end
+  const pl = E.filter(e => e.play).map(e => e.play);
+  assert.ok(pl.some(x => x[0] === 1) && pl.some(x => x[1] === 1) && pl.some(x => x[2] < 0), 'a playing transport: a wrap, an end, a count-in');
+  assert.deepEqual([I.kind, I.pm.mon().mods.length, I.pmPend, I.pmErr, I.on, I.tp === p.tp], ['analog', 0, null, 0, 1, true], 'restore: fresh, the Track\'s transport back');
 });
 
-// IMPL-9 §3.8 / §12 spike (a): the 900 Series' rows through the CPU gate (calibrated, ≤ 1.5 × the node target)
-test('9 bench rows (node gate): m9p, m9x, m9d ≤ 1.5 × their targets', async (t) => {
+// IMPL-9 §3.8 / §12 spike (a): the 900 Series' rows through the CPU gate (calibrated, ≤ 1.5 × the node target); IMPL-9b §3.7: the
+// System 55 set's m9q (Sequence, the Song clock on ALWAYS) and m9s (the classic voice, three 911s by the 993's bus rows)
+test('9 bench rows (node gate): m9p, m9x, m9d, m9q, m9s ≤ 1.5 × their targets', async (t) => {
   const D = dspScope({ engine: true, fast: true, console: quiet });
   const { scenarios } = await import('./bench-scenarios.mjs');
   const rows = scenarios().filter(s => s.id.startsWith('m9'));
-  assert.deepEqual(rows.map(s => s.id), ['m9p', 'm9x', 'm9d']);
+  assert.deepEqual(rows.map(s => s.id), ['m9p', 'm9x', 'm9d', 'm9q', 'm9s']);
+  for (const S of rows) assert.equal(CPU.BENCH.targets[S.id].jsc, S.jsc, S.id + ': the jsc target (9b rows)');
   for (const S of rows) {
     const B = S.build(), p = new D.Proc({ processorOptions: { os: 4, hostOS: 4, offline: true } });
     p.msg(B.graph);
@@ -2401,4 +2441,332 @@ test('9 warm-up (the scripts\' own): a new patch Track\'s first quanta run no de
   t.diagnostic(`deopts after the warm-up: ${clean.mine.length} in patch-dsp.js / moog-dsp.js${clean.mine.length ? ' (' + clean.mine.join('; ') + ')' : ''}; elsewhere: ${[...clean.other].map(([k, n]) => k + (n > 1 ? ' ×' + n : '')).join('; ') || 'none'}`);
   assert.deepEqual(clean.mine, [], 'a deopt in patch-dsp.js / moog-dsp.js in the new Track\'s first quanta (file:line:column reason)');
   assert.ok(best[0] <= R[0] && best[1] <= R[1] && best[2] <= R[2], `first quantum × ${best.map(y => y.toFixed(2)).join(' / ')} of steady state, gates ${R.join(' / ')}`);
+});
+
+/* ------------------------------------------------------------------ stage 9b: events, lamps, the Song clock's transport (IMPL-9b §3.1, §8.3, lane E9b) */
+// A 960 alone: ROW A's first jack on MAIN OUT (the 960 live), its clock stopped at start (os 0) so a stage holds until an event
+// moves it; the dials 1 … 8 on row A. lamps(F).l = [n, bits]: bit k = stage k + 1, bit 9 the clock (the flip-flop).
+const SEQ960 = (() => {
+  const x = PT.addModule(PT.fresh('moog'), {}, '960'), rec = PT.plug(x.rec, x.mid + '.ra1', 'c.out').rec;
+  let vals = PT.setKnob({}, rec, x.mid, 'os', 0);
+  for (let k = 1; k <= 8; k++) vals = PT.setKnob(vals, rec, x.mid, 'a' + k, k);
+  return { rec, vals, n: +x.mid.slice(1), pay: PT.payload(rec) };
+})();
+const EV960 = id => MG.TYPES['960'].ev.findIndex(e => e.id === id);
+test('9b events (§1.5, §3.1): {t: seq, s: {pe: [n, k]}} reaches the machine — the module applies it at its next chunk (SET 3, SHIFT, OSC ON); one for a module gone, an index past its list or a malformed one is dropped; on a classic Inst it is dropped (never the TB-303\'s payload, never pmPend)', () => {
+  const D = p9Scope(), { p } = mk(D, { os: 4, hostOS: 4, offline: true }, ptPatch(SEQ960.vals)), I = p.i0, n = SEQ960.n;
+  p.msg({ t: 'seq', s: SEQ960.pay });
+  const lamp = () => { const L = I.pm.lamps(0).l; assert.equal(L.length, 2); assert.equal(L[0], n); return L[1]; }, ev = k => p.msg({ t: 'seq', s: { pe: [n, k] } });
+  play(D, p, 4);
+  assert.equal(lamp(), 1, 'fresh: stage 1, the clock stopped (CLOCK AT START: Stopped)');
+  ev(EV960('e3')); assert.equal(lamp(), 1, 'held until the next chunk');
+  play(D, p, 1); assert.equal(lamp(), 1 << 2, 'SET 3: stage 3');
+  ev(EV960('sh')); play(D, p, 1); assert.equal(lamp(), 1 << 3, 'SHIFT: stage 4');
+  assert.ok(peakOf(play(D, p, 2).L) > 0, 'row A sounds');
+  ev(99); p.msg({ t: 'seq', s: { pe: [n + 7, 0] } }); p.msg({ t: 'seq', s: { pe: 'x' } }); play(D, p, 1);
+  assert.equal(lamp(), 1 << 3, 'an index past its list, a module gone, a malformed event: dropped');
+  ev(EV960('on')); play(D, p, 1); assert.equal(lamp() >> 9, 1, 'OSC ON: the clock runs');
+  assert.deepEqual([I.pmPend, I.pmErr], [null, 0]);
+  // a classic Inst running the TB-303's sequencer: an event changes nothing there
+  const { p: q } = mk(D, { os: 2, hostOS: 4, offline: true }, classic('tb303')), J = q.i0;
+  q.msg({ t: 'seq', s: Object.assign({}, SEQ) });
+  run(D, q, 4);
+  const sq = J.sq, pos = sq && sq.pos;
+  q.msg({ t: 'seq', s: { pe: [1, 0] } });
+  assert.ok(sq !== null && J.sq === sq && sq.run === true && sq.pos === pos && J.pmPend === null && J.pm === null, 'the TB-303 sequencer untouched, nothing waits');
+});
+
+test('9b lamps (§1.6, §3.1): a graph node\'s patch Inst whose machine holds a lamp module posts pt: {F, l} beside its smon (F the frame of the post); a patch without lamps and a classic Inst post today\'s message', () => {
+  const D = p9Scope(), { p, sent } = gnode(D, graph(['i1', 'i2', 'i3'], ['fx1'], [['i1', 'fx1', 1], ['i2', 'fx1', 1], ['i3', 'fx1', 1], ['fx1', 'out', 1]]),
+    { i1: ptPatch(SEQ960.vals), i2: ptPatch(SINEP.vals), i3: classic('juno60') }, { fx1: fxOf() });
+  p.msg({ t: 'seq', i: 'i1', s: SEQ960.pay }); p.msg({ t: 'seq', i: 'i2', s: SINEPAY });
+  p.msg({ t: 'mon', ids: ['i1', 'i2', 'i3'] });
+  const at = new Map(), pm = p.port.postMessage;
+  p.port.postMessage = m => { at.set(m, p.frames); pm(m); };
+  sent.length = 0; run(D, p, 60);
+  p.msg({ t: 'seq', i: 'i1', s: { pe: [SEQ960.n, EV960('e5')] } });
+  run(D, p, 60);
+  const of = id => sent.filter(m => m.t === 'smon' && m.i === id);
+  assert.ok(of('i1').length >= 4 && of('i1').every(m => m.pt && Array.isArray(m.pt.l) && m.pt.l.length === 2 && m.pt.l[0] === SEQ960.n && Number.isFinite(m.pt.F)), 'the 960\'s lamps');
+  assert.ok(of('i1').every(m => m.pt.F === at.get(m)), 'F: the frame of each post');
+  assert.equal(of('i1').at(-1).pt.l[1], 1 << 4, 'SET 5 lit stage 5');
+  assert.equal(of('i1')[0].pt.l[1], 1, 'stage 1 before it');
+  for (const id of ['i2', 'i3']) assert.ok(of(id).length >= 4 && of(id).every(m => !('pt' in m)), id + ': no pt');
+});
+
+// IMPL-9b §3.4 (D7; skeptic #2–#4, P-2 (b)): the Song clock reads the Track's transport (inst.tp) per absolute chunk — through the
+// whole Track, Sequence's 960 (CLOCK → SHIFT, RESTART → IN 1, LENGTH 8) steps on the song's sixteenths from stage 1: nothing while
+// stopped or during a count-in (t < 0: RUN dark, stage 1), stage 1 at tick 0 with an anchor off the 4-frame grid, a tempo change's
+// late re-anchor no restart (the stage goes on), a seek a restart (stage 1 at the seek), a loop wrap a restart, every 8 steps a
+// restart from tick 0. The 960's stage and the RUN lamp read at each quantum's end, away from the edges (±12 ticks)
+test('9b the Song clock through the Track (§3.4): Sequence steps on the song\'s sixteenths — silent stopped and in a count-in, stage 1 at tick 0 off the grid, no restart at a tempo change, one at a seek and at a loop wrap, every 8 steps', () => {
+  const D = p9Scope(), r = PT.loadPreset(PT.fresh('moog'), {}, 'Sequence'), num = t => +Object.keys(r.rec.mods).find(k => r.rec.mods[k].t === t).slice(1);
+  const n960 = num('960'), nck = num('clk'), STEP = 240;
+  const go = (tps) => {
+    D.ctx.currentFrame = 0;
+    const { p } = mk(D, { os: 4, hostOS: 4, offline: true }, ptPatch(r.vals)), I = p.i0;
+    p.msg({ t: 'seq', s: PT.payload(r.rec, 'moog', r.vals) });
+    const lamp = n => { const L = I.pm.lamps(0).l; return L[L.indexOf(n) + 1]; }, stage = () => 32 - Math.clz32(lamp(n960) & 511);
+    const out = [];
+    for (let k = 0; k < tps.length; k++) {
+      const [q, m] = tps[k];
+      while (D.ctx.currentFrame < q * 128) { p.process([], out.o || (out.o = [[new Float32Array(128), new Float32Array(128)]])); D.ctx.currentFrame += 128; out.push([D.ctx.currentFrame, stage(), lamp(nck) & 1]); }
+      if (m) p.msg(m);
+    }
+    return out;
+  };
+  // the expected stage at tick t: 1 + the CLOCK rises since the last restart (the start / seek / wrap tick r, or a LENGTH step)
+  const want = (t, r0) => { const r = Math.max(r0, Math.floor(t / (8 * STEP)) * 8 * STEP); return 1 + Math.floor(t / STEP) - Math.floor(r / STEP); };
+  const near = t => { const x = ((t % STEP) + STEP) % STEP; return x < 12 || x > STEP - 12; };
+  // seg(F) → [the tick at frame F, the tick of the last start / seek / wrap] or null (not playing); quanta near a change skipped
+  const check = (rows, seg, what) => {
+    let n = 0;
+    for (const [F, st, run] of rows) {
+      const s = seg(F - 1);
+      if (s === null || near(s[0])) continue;
+      const w = s[0] < 0 ? 1 : want(s[0], s[1]);
+      assert.deepEqual([st, run], [w, s[0] < 0 ? 0 : 1], `${what}: frame ${F}, tick ${s[0].toFixed(1)}`);
+      n++;
+    }
+    assert.ok(n > 20, what + ': checked ' + n);
+    return n;
+  };
+  // stopped, then ▶ from a stop with a one-beat count-in, its anchor 3 frames off the grid; fpt 6.25 (480 BPM: a sixteenth 1 500 frames)
+  const A0 = 40 * 128 + 3, f0 = 6.25, T1 = 300 * 128 + 1, t1 = -960 + (T1 - A0) / f0, f1 = 5, S = 520 * 128 + 2;
+  const rows = go([[40, { t: 'transport', play: true, frame: A0, tick: -960, fpt: f0, seek: true, fresh: true }],
+    [300, { t: 'transport', play: true, frame: T1, tick: t1, fpt: f1, seek: false }],   // a tempo change (main.js reanchor: the tick at its frame)
+    [520, { t: 'transport', play: true, frame: S, tick: 1300, fpt: f1, seek: true, fresh: true }], [700, null]]);
+  assert.ok(rows.slice(0, 40).every(([, st, run]) => st === 1 && run === 0), 'stopped: stage 1, RUN dark');
+  // restarts: tick 0 (the count-in's end) and the seek at 1300 — the tempo change is none (its stage goes on)
+  const seg = F => (F < A0 + 4 ? null : F < T1 ? [-960 + (F - A0) / f0, 0] : F < S ? [t1 + (F - T1) / f1, 0] : [1300 + (F - S) / f1, 1300]);
+  check(rows, seg, 'a count-in, ▶ off the grid, a tempo change, a seek');
+  assert.ok(rows.some(([F]) => { const s = seg(F - 1); return s && s[0] < 0; }) && rows.some(([F]) => F > T1 && F < S) && rows.some(([F]) => F > S + 2000), 'every segment sampled');
+  // a loop of six sixteenths from tick 0: a restart at each wrap (without it the 960 would go on to stage 7)
+  const L0 = 20 * 128 + 1, le = 6 * STEP;
+  const rows2 = go([[20, { t: 'transport', play: true, frame: L0, tick: 0, fpt: f0, seek: true, fresh: true, loop: true, ls: 0, le }], [400, null]]);
+  check(rows2, F => (F < L0 + 4 ? null : [((F - L0) / f0) % le, 0]), 'a loop of six steps');
+  assert.ok(rows2.some(([F, st]) => (F - L0) / f0 > le + 300 && st === 2), 'after a wrap: stage 2 again, not 8');
+});
+
+// IMPL-9b P-2 × P-3 (the user's decision; review 1 F1): Play from a stop restarts the patch fresh (P-2) but the keys the Track still
+// holds carry through — hold a key, press ▶: Sequence plays transposed from its first step (the 902 that gates the keyboard pitch,
+// P-3 (b), needs the controller's gate). Restruck after the reset from the Track's own record (the receivers and the pitch stored at
+// the press), as P-1's power-on does; a bounce has no held keys (D7), a powered-off patch gets its keys at its power-on, once.
+const SQ = (() => {
+  const r = PT.loadPreset(PT.fresh('moog'), {}, 'Sequence'), n960 = +Object.keys(r.rec.mods).find(k => r.rec.mods[k].t === '960').slice(1);
+  return { rec: r.rec, vals: r.vals, pay: PT.payload(r.rec, 'moog', r.vals), n960 };
+})();
+const SQ_T0 = 40 * 128, SQ_PLAY = { t: 'transport', play: true, frame: SQ_T0, tick: 0, fpt: 25, seek: true, fresh: true }; // (a step: 240 ticks = 6 000 frames)
+const lampOf = (x, n) => { const L = x.pm.lamps(0).l; return L[L.indexOf(n) + 1]; };
+// the heard period (frames) of L over [a, b) by autocorrelation, lags 40 … 1 200
+function periodOf(L, a, b) {
+  let best = 0, bl = 0;
+  for (let lag = 40; lag < 1200; lag++) {
+    let s = 0, e0 = 0, e1 = 0;
+    for (let i = a; i < b - lag; i++) { s += L[i] * L[i + lag]; e0 += L[i] * L[i]; e1 += L[i + lag] * L[i + lag]; }
+    const c = s / Math.sqrt(e0 * e1 + 1e-30);
+    if (c > best) { best = c; bl = lag; }
+  }
+  return bl;
+}
+// quanta with events [[quantum, message | function → a value for the log]] → { L (the output), log }
+function held9(D, p, quanta, ev) {
+  const o = out(), L = new Float64Array(quanta * 128), log = [];
+  for (let k = 0; k < quanta; k++) {
+    for (const [q, m] of ev) if (q === k) { if (typeof m === 'function') log.push(m()); else p.msg(m); }
+    p.process([], o); D.ctx.currentFrame += 128; L.set(o[0][0], k * 128);
+  }
+  return { L, log };
+}
+// a spy on the controller: every note-on / -off it hears (the reset spy's sibling)
+const noteSpy = C => { const f = C.note, c = { on: 0, off: 0 }; C.note = function (n, v, on) { if (on) c.on++; else c.off++; return f.call(this, n, v, on); }; return c; };
+
+test('9b P-2 × P-3 (review 1 F1, the user\'s decision): a key held before ▶, or pressed in the anchor\'s quantum, carries through Play from a stop — the riff transposed from its first step; everything else still restarts (one machine reset, stage 1, the Song clock fresh); a release returns it to the written pitch', (t) => {
+  const D = p9Scope(), n960 = SQ.n960, on72 = { t: 'on', n: 72, v: 0.8 }, off72 = { t: 'off', n: 72 };
+  const go = (ev, quanta = 150) => {
+    D.ctx.currentFrame = 0;
+    const { p } = mk(D, NODE, ptPatch(SQ.vals, { drift: 0 })), I = p.i0;
+    p.msg({ t: 'seq', s: SQ.pay });
+    const R = resetSpy(ctlOf(I)), M = resetSpy(I.pm), N = noteSpy(ctlOf(I));
+    const snap = () => { const C = ctlOf(I); return [C.held[72], C.nh, +C.tgt.toFixed(3), C.gon, lampOf(I, n960)]; };
+    const r = held9(D, p, quanta, ev.map(([q, m]) => [q, m === 'snap' ? snap : m]));
+    return Object.assign(r, { R: R.n, M: M.n, N });
+  };
+  const SN = 'snap', W1 = [SQ_T0 + 1000, SQ_T0 + 5000], W2 = [SQ_T0 + 7000, SQ_T0 + 11000]; // (windows inside stage 1 and stage 2)
+  const none = go([[40, SQ_PLAY], [44, SN], [60, SN], [90, SN]]);
+  const early = go([[10, on72], [20, SN], [40, SQ_PLAY], [44, SN], [60, SN], [90, SN]]);
+  const inQ = go([[40, SQ_PLAY], [40, on72], [44, SN], [60, SN], [90, SN]]);
+  const ahead = go([[18, SQ_PLAY], [30, on72], [44, SN], [60, SN], [90, SN]]); // (Play posts its anchor ahead: the key lands between the message and the anchor)
+  const late = go([[40, SQ_PLAY], [41, on72], [44, SN], [60, SN], [90, SN]]);
+  const p0 = periodOf(none.L, W1[0], W1[1]);
+  assert.deepEqual(none.log[0].slice(0, 4), [0, 0, 0, 0], 'no key: the controller after ▶ holds nothing');
+  assert.ok(p0 > 300 && p0 < 440, 'as written: ' + p0 + ' frames');
+  assert.deepEqual([none.R, none.M, none.N.on], [1, 1, 0], 'no key: one reset of the machine and of its controller, no note struck (the bounce\'s case: D7)');
+  const rep = [`as written ${p0}`];
+  for (const [what, r] of [['held before ▶', early], ['pressed in the anchor\'s quantum', inQ], ['posted between ▶ and its anchor', ahead]]) {
+    const L = r.log;
+    assert.deepEqual(L[L.length - 3].slice(0, 4), [1, 1, 1, 1], what + ': the controller holds the key, its pitch 1 V, the gate open');
+    const p1 = periodOf(r.L, W1[0], W1[1]);
+    rep.push(`${what} ${p1}`);
+    assert.ok(Math.abs(2 * p1 - p0) <= 2, `${what}: stage 1 an octave up — ${p1} frames, as written ${p0}`);
+    assert.deepEqual([r.R, r.M], [1, 1], what + ': P-2 still resets once — the machine and its controller');
+    // everything else restarted exactly as with no key: the 960's lamps (stage 1 through the first step, its flip-flop, stage 2 after it)
+    assert.deepEqual(L.slice(-3).map(x => x[4]), none.log.slice(-3).map(x => x[4]), what + ': the 960\'s stage and clock as a restart with no key');
+    assert.equal(L[L.length - 3][4] & 511, 1, what + ': stage 1 a few chunks after tick 0 (the RESTART)');
+    assert.equal(L[L.length - 1][4] & 511, 2, what + ': stage 2 after the first step');
+  }
+  assert.equal(early.N.on, 2, 'the press and one restrike — struck once at Play');
+  // a key pressed after the anchor is an ordinary note-on (it worked before, too): nothing restruck
+  assert.ok(Math.abs(2 * periodOf(late.L, W1[0], W1[1]) - p0) <= 2 && late.R === 1 && late.N.on === 1, 'pressed after the anchor: transposed, nothing restruck');
+  // the release after ▶: the controller lets go, and the riff is back at its written pitch from the next step
+  const rel = go([[10, on72], [40, SQ_PLAY], [60, off72], [64, SN]]);
+  assert.deepEqual(rel.log[0].slice(0, 2), [0, 0], 'released: nothing held');
+  assert.ok(Math.abs(periodOf(rel.L, W2[0], W2[1]) - periodOf(none.L, W2[0], W2[1])) <= 1, 'stage 2 at its written pitch after the release');
+  t.diagnostic(rep.join(' · '));
+});
+
+test('9b P-2 × P-3 (review 1 F1): on a graph node the restrike takes the receivers and the pitch the press recorded — a zone\'s transposition, a key the zone refused never struck; a powered-off patch gets its keys at its power-on, once', () => {
+  const D = p9Scope(), Z1 = { lo: 40, hi: 80, xp: 12 }, ALL = { lo: 0, hi: 127, xp: 0 };
+  const G = zone => graph([gi('i1', { zone })], ['fx1'], [['i1', 'fx1', 1], ['fx1', 'out', 1]]);
+  const mkNode = zone => { D.ctx.currentFrame = 0; const { p } = gnode(D, G(zone), { i1: ptPatch(SQ.vals, { drift: 0 }) }, { fx1: fxOf() }); p.msg({ t: 'seq', i: 'i1', s: SQ.pay }); return p; };
+  const keys = C => [48, 60, 90, 102].map(n => C.held[n]).concat([C.nh]);
+  const q = (p, n) => held9(D, p, n, []), play4 = p => p.msg(Object.assign({}, SQ_PLAY, { frame: D.ctx.currentFrame + 4 * 128 }));
+  // the zone: 48 → 60 struck at the press, 90 outside it never; the zone changes (the key stays as struck); ▶ from a stop
+  let p = mkNode(Z1), x = p.insts[0], C = ctlOf(x), N = noteSpy(C), R = resetSpy(C);
+  p.msg({ t: 'on', n: 48, v: 0.8 }); p.msg({ t: 'on', n: 90, v: 0.8 }); q(p, 4);
+  assert.deepEqual(keys(C), [0, 1, 0, 0, 1], 'at the press: 48 → 60; 90 outside the zone: never');
+  p.msg(G(ALL)); q(p, 2);
+  assert.deepEqual(keys(C), [0, 1, 0, 0, 1], 'a zone change moves no held key');
+  play4(p); q(p, 8);
+  assert.equal(R.n, 1, 'P-2: one reset');
+  assert.deepEqual(keys(C), [0, 1, 0, 0, 1], 'Play from a stop: restruck at the pitch the press stored (60); nothing at 48, 90 or 102');
+  assert.equal(N.on, 2, 'the press and one restrike — the refused key never struck');
+  p.msg({ t: 'off', n: 48 }); q(p, 2);
+  assert.deepEqual(keys(C), [0, 0, 0, 0, 0], 'the note-off reaches the key it struck');
+  // powered off at the press: no note through Play; the power-on strikes it once
+  p = mkNode(ALL); x = p.insts[0]; C = ctlOf(x); N = noteSpy(C);
+  p.msg({ t: 'power', i: 'i1', on: false }); q(p, 4);
+  p.msg({ t: 'on', n: 48, v: 0.8 }); play4(p); q(p, 8);
+  assert.deepEqual([N.on, C.nh], [0, 0], 'powered off: no note reaches the controller, at the press or through Play');
+  p.msg({ t: 'power', i: 'i1', on: true }); q(p, 2);
+  assert.deepEqual([N.on, C.held[48], C.nh], [1, 1, 1], 'powered on: restruck once');
+  // held, then powered off (its keys forgotten), ▶ while off, on again
+  p = mkNode(ALL); x = p.insts[0]; C = ctlOf(x); N = noteSpy(C);
+  p.msg({ t: 'on', n: 48, v: 0.8 }); q(p, 4);
+  p.msg({ t: 'power', i: 'i1', on: false }); q(p, 4);
+  const n0 = N.on;
+  play4(p); q(p, 8);
+  assert.deepEqual([N.on - n0, C.nh], [0, 0], 'held, powered off, ▶: nothing struck while it is off');
+  p.msg({ t: 'power', i: 'i1', on: true }); q(p, 2);
+  assert.deepEqual([N.on - n0, C.held[48], C.nh], [1, 1, 1], 'powered on: restruck once, not twice');
+});
+
+// review 1 F2: a momentary event is live only — sent to a powered-off patch (a muted / soloed-out / ⏻ track, nothing renders) or
+// to a module outside the live plan (its outputs reach nothing: no ctl runs) it is dropped, never kept in the module's ring to
+// fire at the unmute or when a cord makes the module live. P-1: an unmuted sequence restarts at stage 1
+test('9b events (review 1 F2): an event sent while the patch is powered off, or to a module that is not live, is dropped — the unmute starts at stage 1, a cord making the 960 live moves nothing', () => {
+  const D = p9Scope(), n = SQ.n960;
+  D.ctx.currentFrame = 0;
+  const { p } = gnode(D, G1(), { i1: ptPatch(SQ.vals, { drift: 0 }) }, { fx1: fxOf() }), x = p.insts[0];
+  p.msg({ t: 'seq', i: 'i1', s: SQ.pay });
+  const stage = () => 32 - Math.clz32(lampOf(x, n) & 511), SET = k => p.msg({ t: 'seq', i: 'i1', s: { pe: [n, EV960('e' + k)] } });
+  const go = k => held9(D, p, k, []);
+  go(10); assert.equal(stage(), 1, 'fresh: stage 1');
+  SET(3); go(2); assert.equal(stage(), 3, 'SET 3 while on: stage 3');
+  p.msg({ t: 'power', i: 'i1', on: false }); go(4);
+  assert.equal(stage(), 1, 'powered off: the reset');
+  SET(6); go(10);
+  p.msg({ t: 'power', i: 'i1', on: true }); go(4);
+  assert.equal(stage(), 1, 'powered on: stage 1 — the SET 6 sent while it was off is gone');
+  SET(2); go(2); assert.equal(stage(), 2, 'and an event sent while it is on works');
+  // the 960 not live (its row and stage outputs unpatched: it reaches nothing, no ctl runs), two SETs sent, the cords back
+  const sq = 'm' + n, cut = SQ.rec.cords.filter(c => c.a.startsWith(sq + '.') && /\.(ra|rb|rc|o)\d/.test(c.a));
+  assert.equal(cut.length, 3, 'the 960\'s rows A and B are patched in Sequence');
+  let r2 = SQ.rec; for (const c of cut) r2 = PT.pull(r2, c.id).rec;
+  p.msg({ t: 'seq', i: 'i1', s: PT.payload(r2, 'moog', SQ.vals) }); go(4);
+  assert.ok(!x.pm.lamps(0).l.includes(n), 'its lamps are not posted while it is not live');
+  SET(4); SET(7); go(10);
+  p.msg({ t: 'seq', i: 'i1', s: SQ.pay }); go(4);
+  assert.equal(stage(), 2, 'a cord makes it live: still stage 2 — the stale SETs are not applied');
+  SET(5); go(2); assert.equal(stage(), 5, 'live again: an event works');
+});
+
+// IMPL-9b §8.3 (I9's gate extended; spike (a2) decision 1, §3.8): in a warmed scope (a fresh isolate: the first live Track warmed
+// it) a new Track takes the System 55 tile — Sequence on the 37-module set: its graph() (every module built: a Replace's one-off,
+// reported), its first quanta, then ▶ from a stop (the patch reset) — each quantum within a quarter of the deadline; then m9s's
+// patch and 40 flips of a 993 routing switch (a bus row in and out of the payload, 4 quanta apart): graph() median ≤ 0.5 ms, none
+// over 1 ms (the first eden-sized collection lands in the warm-up), the flip's quantum within a quarter of the deadline. Best of 3
+test('9b warm-up at System 55 scale: the System 55 tile on a new Track — its first quanta and ▶\'s ≤ a quarter of the deadline; 40 bus-switch flips: graph() median ≤ 0.5 ms, max ≤ 1 ms (warmed scope, fresh isolate)', async (t) => {
+  const { spawnSync } = await import('node:child_process');
+  const here = new URL('./', import.meta.url).href, V = '?v=9';
+  const code = `
+    import '${here}v8-guard.mjs';
+    import { dspScope } from '${here}dsp-scope.mjs';
+    import * as core from '${here}../serum-core.js${V}';
+    import { patchFor } from '${here}../models.js${V}';
+    import * as MG from '${here}../moog-core.js${V}';
+    import * as PT from '${here}../patch-core.js${V}';
+    import { m9sPatch } from '${here}bench-scenarios.mjs';
+    const quiet = { log() {}, warn() {}, error() {}, info() {}, debug() {} }, out = [], DL = 0.25 * 128 / 48;
+    const s = MG.makeSet('s55', {}), P3 = PT.payload(s.rec, 'moog', s.vals), x = m9sPatch(), [tg] = Object.keys(x.rec.mods).filter(k => x.rec.mods[k].t === '993');
+    const on = PT.payload(x.rec, 'moog', x.vals), off = PT.payload(x.rec, 'moog', PT.setKnob(x.vals, x.rec, tg, 'e3', 0));
+    const patch = v => patchFor('m900', v, core.defaultFx2(), { sr: 48000, bpm: 120 }), now = () => performance.now();
+    for (let k = 0; k < 3; k++) {
+      const D = dspScope({ engine: true, fast: true, console: quiet });
+      new D.Proc({ processorOptions: { os: 4, hostOS: 4 } }); // (the first live Track of the scope: the warm-up)
+      const p = new D.Proc({ processorOptions: { os: 4, hostOS: 4 } });
+      const o = [[new Float32Array(128), new Float32Array(128)]], q = () => { const t0 = now(); p.process([], o); D.ctx.currentFrame += 128; return now() - t0; };
+      const steady = n => { const a = []; for (let j = 0; j < n; j++) a.push(q()); return a.slice(n >> 2).sort((y, z) => y - z)[(n - (n >> 2)) >> 1]; };
+      p.msg({ t: 'patch', p: patch(s.vals) });
+      let t0 = now(); p.msg({ t: 'seq', s: P3 }); const g = now() - t0;
+      const f0 = Math.max(q(), q()), s0 = steady(200);
+      p.msg({ t: 'transport', play: true, frame: D.ctx.currentFrame + 64, tick: 0, fpt: 25, seek: true, fresh: true });
+      const f1 = Math.max(q(), q(), q()), s1 = steady(300);
+      p.msg({ t: 'patch', p: patch(x.vals) }); p.msg({ t: 'seq', s: on }); p.msg({ t: 'on', n: 36, v: 0.8 });
+      steady(100);
+      const G = [], F = [];
+      for (let j = 0; j < 40; j++) { for (let i = 0; i < 4; i++) q(); t0 = now(); p.msg({ t: 'seq', s: j & 1 ? on : off }); G.push(now() - t0); F.push(q()); }
+      const srt = G.slice().sort((y, z) => y - z);
+      out.push([g, f0, s0, f1, s1, srt[20], srt[39], Math.max(...F)]);
+      if (Math.max(f0, f1, Math.max(...F)) <= DL && srt[20] <= 0.5 && srt[39] <= 1) break;
+    }
+    console.log(JSON.stringify(out));`;
+  const r = spawnSync(process.execPath, ['--max-old-space-size=2048', '--input-type=module', '-e', code], { encoding: 'utf8', timeout: 180000 });
+  assert.equal(r.status, 0, r.stderr);
+  const got = JSON.parse(r.stdout.trim().split('\n').pop()), DL = 0.25 * 128 / 48;
+  for (const [g, f0, s0, f1, s1, gm, gx, ff] of got) t.diagnostic(`the System 55 tile: graph() ${g.toFixed(3)} ms (37 built), first quanta ${f0.toFixed(3)} / steady ${s0.toFixed(3)}, ▶ ${f1.toFixed(3)} / ${s1.toFixed(3)}; flips: graph() median ${gm.toFixed(3)} max ${gx.toFixed(3)} ms, the flip's quantum ≤ ${ff.toFixed(3)} ms`);
+  const ok = got.find(([, f0, , f1, , gm, gx, ff]) => Math.max(f0, f1, ff) <= DL && gm <= 0.5 && gx <= 1);
+  assert.ok(ok, 'no scope within the gates (first quanta ≤ ' + DL.toFixed(3) + ' ms, graph() median ≤ 0.5, max ≤ 1 ms)');
+});
+
+// IMPL-9b §8.3 / §12 spike (a2) decision 1: the scope's warm-up (the first live Track's) at most 1.25 × stage 9's — tests/ref-9's
+// engine.js, patch-dsp.js and moog-dsp.js (the Model 15 family) against the current files, every other script current; each in a
+// fresh process (the JIT's state is per isolate), alternating, the median ratio of 5 pairs (measured again once when above)
+test('9b warm-up time: the scope\'s warm-up ≤ 1.25 × stage 9\'s (ref-9, alternating fresh processes)', async (t) => {
+  const { spawnSync } = await import('node:child_process');
+  const root = new URL('../', import.meta.url), here = new URL('./', import.meta.url).href;
+  const child = side => `
+    import '${here}v8-guard.mjs';
+    import vm from 'node:vm';
+    import { readFileSync } from 'node:fs';
+    import { DSP_FILES } from '${here}dsp-scope.mjs';
+    const R9 = ['patch-dsp.js', 'moog-dsp.js', 'engine.js'], src = f => readFileSync(new URL(${JSON.stringify(side)} === 'ref9' && R9.includes(f) ? 'tests/ref-9/' + f : f, ${JSON.stringify(root.href)}), 'utf8');
+    const g = vm.createContext(vm.constants.DONT_CONTEXTIFY);
+    let Proc = null;
+    Object.assign(g, { console: { log() {}, info() {}, debug() {}, warn() {}, error() {} }, sampleRate: 48000, currentFrame: 0 });
+    g.AudioWorkletProcessor = class { constructor() { this.port = { postMessage() {}, onmessage: null }; } };
+    g.registerProcessor = (n, c) => { Proc = c; };
+    for (const f of DSP_FILES) vm.runInContext(src(f), g, { filename: f });
+    vm.runInContext(src('engine.js'), g, { filename: 'engine.js' });
+    const t0 = performance.now(); new Proc({ processorOptions: { os: 4, hostOS: 4 } }); console.log(performance.now() - t0);`;
+  const one = side => { const r = spawnSync(process.execPath, ['--max-old-space-size=2048', '--input-type=module', '-e', child(side)], { encoding: 'utf8', timeout: 60000 }); assert.equal(r.status, 0, r.stderr); return +r.stdout.trim(); };
+  let best = null;
+  for (let a = 0; a < 2 && !(best && best.ratio <= 1.25); a++) {
+    const A = [], B = [], Q = [];
+    for (let k = 0; k < 5; k++) { let x, y; if (k & 1) { y = one('cur'); x = one('ref9'); } else { x = one('ref9'); y = one('cur'); } A.push(x); B.push(y); Q.push(y / x); }
+    const med = v => v.slice().sort((p, q) => p - q)[2], r = { a: med(A), b: med(B), ratio: med(Q) };
+    t.diagnostic(`warm-up: stage 9 ${r.a.toFixed(0)} ms, now ${r.b.toFixed(0)} ms (× ${r.ratio.toFixed(3)})`);
+    if (!best || r.ratio < best.ratio) best = r;
+  }
+  assert.ok(best.ratio <= 1.25, `warm-up × ${best.ratio.toFixed(3)} of stage 9's (cap 1.25)`);
 });

@@ -13,6 +13,7 @@ import { fresh, raf, ptr, fire, key, place, advance } from './wk-dom.mjs';
 import * as T from '../cv-tray.js?v=9';
 import { MODELS, classicOf } from '../models.js?v=9';
 import * as MG from '../moog-core.js?v=9';
+import * as cvArt from '../cv-art.js?v=9';
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
 let TS = 5000; // event timestamps (dragSource / double-tap timing)
@@ -1128,14 +1129,19 @@ function moogRig(o = {}) {
   return { d, tray, list, scroll, layer, S, log, picks, sec: () => scroll.children.find(c => c.getAttribute('data-sec') === 'moog') || null };
 }
 
-test('sourcesTray (9): the Moog modules view — SRC_VIEWS\'s sixth (tip, note, layout hw); the Model 15 tile (the m900 model tile: no maker word, no SIMPLE badge) first; then a row of its own in secEl: three groups (Sources · Modifiers · Control), the nine module tiles in the family\'s order, each an original glyph (a panel outline, a dot per knob, a ring per jack; no text), its name, its load; shown only there; Hardware / Simple: the twelve classics (classicOf); a tap picks in the tray\'s mode (moogPick, else pick); the view remembered', () => {
+test('sourcesTray (9, 9b): the Moog modules view — SRC_VIEWS\'s sixth (tip, note, layout hw); the Model 15 tile (the m900 model tile: no maker word, no SIMPLE badge) first; then a row of its own in secEl: (9b) five groups (Sources · Modifiers · Control · Sequencing · Console & routing), the 25 module tiles in the family\'s order, each an original glyph (a panel outline, a dot per knob, a ring per jack — rear terminals never —, 9b: a cap per event button, a disc per lamp; no text), its name, its load; shown only there; Hardware / Simple: the twelve classics (classicOf); a tap picks in the tray\'s mode (moogPick, else pick); the view remembered', () => {
   const V = T.SRC_VIEWS.find(v => v.id === 'moog');
   assert.deepEqual([T.SRC_VIEWS.map(v => v.id).indexOf('moog'), V.label, V.tip, V.layout, V.sections.map(s => s.id), V.note],
     [5, 'Moog modules', 'The 900-series modules, patched with cords', 'hw', ['m15', 'moog'],
-      'Model 15 brings the whole set, patched. Drop a module onto a 900 Series track to add it. The Moog Modular (a fixed patch) stays in Hardware.']);
+      'Model 15, System 35 and System 55 bring a whole set, patched. Drop a module onto a 900 Series track to add it. The Moog Modular (a fixed patch) stays in Hardware.']);
   assert.deepEqual(MODELS.filter(m => V.sections[0].models(m)).map(m => m.id), ['m900'], 'the m15 section: the 900 Series model tile only');
   assert.deepEqual(T.MOOG_TILES.map(t => [t.id, t.name, t.group]), [['921', '921 Oscillator', 'src'], ['921a', '921A Driver', 'src'], ['921b', '921B Oscillator', 'src'],
-    ['923', '923 Noise', 'src'], ['904a', '904A Low-pass', 'mod'], ['907a', '907A Filter bank', 'mod'], ['902', '902 Amplifier', 'mod'], ['911', '911 Envelope', 'ctl'], ['995', '995 Attenuators', 'ctl']]);
+    ['923', '923 Noise', 'src'], ['903a', '903A Random signal', 'src'], ['904a', '904A Low-pass', 'mod'], ['904b', '904B High-pass', 'mod'], ['907a', '907A Filter bank', 'mod'],
+    ['914', '914 Filter bank', 'mod'], ['902', '902 Amplifier', 'mod'], ['911', '911 Envelope', 'ctl'], ['911a', '911A Trigger delay', 'ctl'], ['995', '995 Attenuators', 'ctl'],
+    ['994', '994 Multiples', 'ctl'], ['960', '960 Sequencer', 'seq'], ['961', '961 Interface', 'seq'], ['962', '962 Switch', 'seq'], ['clk', 'Song clock', 'seq'],
+    ['cp2', 'CP2 Filters', 'cp'], ['cp3a', 'CP3A Mixer', 'cp'], ['cp4a', 'CP4A Routing', 'cp'], ['cp35', 'CP35 Attenuators', 'cp'], ['cp8a', 'CP8A Power', 'cp'],
+    ['992', '992 Control voltages', 'cp'], ['993', '993 Trigger routing', 'cp']]);
+  assert.deepEqual([T.MOOG_TILES.length, Object.values(T.MOOG_GROUPS)], [25, ['Sources', 'Modifiers', 'Control', 'Sequencing', 'Console & routing']]);
   assert.ok(Object.isFrozen(T.MOOG_TILES) && T.MOOG_TILES.every(Object.isFrozen));
   const R = moogRig(), shown = () => R.S.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model')), sec = R.sec();
   assert.deepEqual([R.S.view(), R.S.layout(), shown(), sec.hidden, sec.className, sec.getAttribute('aria-label')], ['moog', 'hw', ['m900'], false, 'cv-tsec cv-gsec', 'Moog modules']);
@@ -1144,21 +1150,26 @@ test('sourcesTray (9): the Moog modules view — SRC_VIEWS\'s sixth (tip, note, 
   assert.deepEqual([m15.children.map(c => c.className), m15.children[1].textContent, m15.children[2].textContent, m15.getAttribute('aria-description')],
     [['cv-tart', 'cv-tname', 'cv-tmeta'], 'Model 15', '1973 · modular system', null]);
   assert.ok(!/moog|R\.A\./i.test(m15.title + m15.textContent) && /the whole set of modules, patched/.test(m15.title), m15.title);
-  // the row: a grid of three headed groups, the tiles in order
-  const box = sec.children[0];
-  assert.deepEqual([box.className, box.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-moog')))],
-    ['cv-tiles cv-gtiles', ['#Sources', '921', '921a', '921b', '923', '#Modifiers', '904a', '907a', '902', '#Control', '911', '995']]);
+  // the row: a grid of five headed groups, the tiles in order
+  const box = sec.children[0], ROW = ['#Sources', '921', '921a', '921b', '923', '903a', '#Modifiers', '904a', '904b', '907a', '914', '902', '#Control', '911', '911a', '995', '994',
+    '#Sequencing', '960', '961', '962', 'clk', '#Console & routing', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', '992', '993'];
+  assert.deepEqual([box.className, box.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-moog')))], ['cv-tiles cv-gtiles', ROW]);
   const t = R.S.moogTile('921b');
   assert.deepEqual([t.tagName, t.className, t.type, t.getAttribute('data-group'), t.children.map(c => c.className), t.children[1].textContent, t.children[2].textContent, t.children[2].hidden, t.children[3].hidden, R.S.moogTile('nope')],
     ['BUTTON', 'cv-tile cv-gtile', 'button', 'src', ['cv-gglyph', 'cv-tname', 'cv-tcost', 'cv-treason'], '921B Oscillator', '~1 %', false, true, null]);
   assert.equal(t.title, '921B Oscillator — tap to add it to this track\'s 900 Series (on another track: a 900 Series with it), or drag it onto the canvas');
   assert.equal(R.S.moogTile('907a').children[2].textContent, '~2 %');
-  // each glyph: our own drawing — a panel outline, one dot per knob / switch and one ring per jack of its type, no text or image
+  // each glyph: our own drawing — a panel outline, one dot per knob / switch and one ring per jack of its type, no text or image;
+  // (9b) the rear terminals never drawn (no face shows them), a cap per event button, a disc per lamp; the outline by the face: a
+  // 5U module 42 tall (the 960 at its face's aspect), a console-height panel 27; 1 / 2 / 3 / 4 / 8 MU 12 / 20 / 34 / 38 / 38 wide
+  const W_MU = { 1: 12, 2: 20, 3: 34, 4: 38, 8: 38 };
   for (const ty of MG.ORDER) {
-    const g = R.S.moogTile(ty).children[0].innerHTML, T2 = MG.TYPES[ty];
+    const g = R.S.moogTile(ty).children[0].innerHTML, T2 = MG.TYPES[ty], n = re => (g.match(re) || []).length;
+    const o = /<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)" rx="1.5"\/>/.exec(g), h = T2.face === 'console' ? 27 : ty === '960' ? 20.8 : 42;
     assert.equal(g, T.MOOG_GLYPH[ty], ty);
-    assert.deepEqual([(g.match(/class="k"/g) || []).length, (g.match(/class="j"/g) || []).length, (g.match(/<rect x="[\d.]+" y="1" width="[\d.]+" height="42"/g) || []).length, /<(text|image)|href|url\(/.test(g)],
-      [T2.params.length, T2.jacks.length, 1, false], ty + ': its knobs and jacks');
+    assert.deepEqual([n(/class="k"/g), n(/class="j"/g), n(/class="e"/g), n(/class="l"/g), n(/rx="1.5"/g), /<(text|image)|href|url\(/.test(g)],
+      [T2.params.length, T2.jacks.filter(j => !j.rear).length, (T2.ev || []).length, (T2.lamps || []).length, 1, false], ty + ': its knobs, jacks, buttons and lamps');
+    assert.deepEqual([+o[3], +o[4], +o[1] + +o[3] / 2, +o[2] + +o[4] / 2], [W_MU[T2.mu], h, 20, 22], ty + ': its outline, centred');
   }
   assert.ok(/width="34"/.test(T.MOOG_GLYPH['907a']) && /width="20"/.test(T.MOOG_GLYPH['921']) && /width="12"/.test(T.MOOG_GLYPH['911']), 'the 907A wide, the 921 2 MU, the rest 1 MU');
   // only in this view; Hardware / Simple: the twelve classics (classicOf: the 900 Series is not one); back
@@ -1180,11 +1191,10 @@ test('sourcesTray (9): the Moog modules view — SRC_VIEWS\'s sixth (tip, note, 
   R2.S.destroy();
   // o.moog: true is MOOG_TILES; without secEl a heading per group and the tiles follow the synths (hidden outside the view); without o.moog no row
   const d = fresh(), l = d.createElement('div'), S3 = T.sourcesTray(l, { models: MODELS.slice(0, 1), moog: true, pick() {}, drag: {} });
-  assert.deepEqual(l.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-model') || n.getAttribute('data-moog'))),
-    [MODELS[0].id, '#Sources', '921', '921a', '921b', '923', '#Modifiers', '904a', '907a', '902', '#Control', '911', '995']);
-  assert.deepEqual(l.children.map(n => n.hidden), [false, ...Array(12).fill(true)], 'Hardware: the row hidden');
+  assert.deepEqual(l.children.map(n => (n.tagName === 'H3' ? '#' + n.textContent : n.getAttribute('data-model') || n.getAttribute('data-moog'))), [MODELS[0].id, ...ROW]);
+  assert.deepEqual(l.children.map(n => n.hidden), [false, ...Array(30).fill(true)], 'Hardware: the row hidden');
   S3.setView('moog');
-  assert.deepEqual(l.children.map(n => n.hidden), [true, ...Array(12).fill(false)]);
+  assert.deepEqual(l.children.map(n => n.hidden), [true, ...Array(30).fill(false)]);
   S3.destroy();
   const l4 = d.createElement('div'), S4 = T.sourcesTray(l4, { models: MODELS, pick() {}, drag: {}, view: 'moog' });
   assert.deepEqual([S4.view(), S4.moogTiles().length, S4.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'))], ['moog', 0, ['m900']], 'a stored "moog" opens it; no row without o.moog');
@@ -1221,7 +1231,7 @@ test('sourcesTray (9): a Moog module tile drags out as a module — info.moog, o
   let cost = '~1 %';
   const R4 = moogRig({ moogCost: () => cost }), p = R4.S.moogTile('902'), why = 'A patch holds at most 48 modules';
   R4.S.setMoogPlaced(why);
-  assert.deepEqual(R4.S.moogTiles().map(b => b.classList.contains('cv-placed') && b.getAttribute('aria-disabled')), Array(9).fill('true'));
+  assert.deepEqual(R4.S.moogTiles().map(b => b.classList.contains('cv-placed') && b.getAttribute('aria-disabled')), Array(25).fill('true'));
   assert.deepEqual([p.children[3].hidden, p.children[3].textContent, p.title, R4.S.placed('902')], [false, why, '902 Amplifier — ' + why, why]);
   p.click();
   ptr(p, 'pointerdown', 100, 300, at(tp)); ptr(p, 'pointermove', 112, 302, at(tp)); ptr(p, 'pointermove', 400, 300, at(tp));
@@ -1236,6 +1246,81 @@ test('sourcesTray (9): a Moog module tile drags out as a module — info.moog, o
   cost = ''; R4.S.refreshMoog();
   assert.equal(p.children[2].hidden, true, 'no load: hidden');
   R4.S.destroy();
+});
+
+test('sourcesTray (9b, IMPL-9b §4.3): the set tiles System 35 / System 55 — SET_TILES (moog-core SETS: name, modules 22 / 37 = cv-art SET_ART\'s, the starter); right after the Model 15 tile (its own art, "System 35" over "22 modules", aria "System 35 · 22 modules", no maker word), not model tiles (tiles() the synths\'); shown only in the Moog view; a tap → setPick in the tray\'s mode (never o.pick); a drag → setDrag with info.set, over the canvas ("+ System 55") or the track list, info.at the world point, the ghost its art (hidden while setCanvasGhost); setSetPlaced greys one with setFull\'s reason (no pick, no drag), null makes it available; o.sets: true, o.setsEl; none without o.sets', () => {
+  assert.deepEqual(T.SET_TILES.map(x => [x.id, x.name, x.modules, x.starter]), [['s35', 'System 35', 22, 'Swept band'], ['s55', 'System 55', 37, 'Sequence']]);
+  assert.ok(Object.isFrozen(T.SET_TILES) && T.SET_TILES.every(Object.isFrozen));
+  assert.deepEqual(T.SET_TILES.map(x => cvArt.SET_ART[x.id].modules), [22, 37], 'the art\'s count is the set\'s');
+  assert.deepEqual([T.setFull(11, 27), T.setFull(21, 27), T.setFull(22, 27), T.setFull(40, 27), T.setFull(48, 0), T.setFull(30, -1)],
+    [null, null, 'This set needs 1 more module than the patch can hold', 'This set needs 19 more modules than the patch can hold', null, null]);
+  const sp = [], sd = [];
+  let cost = { s35: '~3 %', s55: '~6 %' };
+  const R = moogRig({ sets: T.SET_TILES, setPick: (id, m) => sp.push(id + ':' + m), setCanvasGhost: () => false, canvasGhost: () => false, setCost: id => cost[id] || '',
+    setDrag: { begin: (id, i) => sd.push('begin ' + id + (i.set ? ' set' : '')), move: (id, i) => sd.push('move ' + i.over), drop: (id, i) => { sd.push('drop ' + id + ' ' + i.over + (i.set ? ' set' : '') + ' @' + i.at.x + ',' + i.at.y); return true; }, cancel: id => sd.push('cancel ' + id) } });
+  const ids = R.list.children.map(n => n.getAttribute('data-model') || n.getAttribute('data-set'));
+  assert.deepEqual(ids.slice(-3), ['m900', 's35', 's55'], 'beside the Model 15 tile');
+  assert.deepEqual([R.S.tiles().length, R.S.tiles().some(b => b.getAttribute('data-set')), R.S.setTiles().length], [MODELS.length, false, 2], 'not model tiles');
+  const b = R.S.setTile('s35'), b5 = R.S.setTile('s55');
+  assert.deepEqual([b.tagName, b.className, b.type, b.children.map(c => c.className), b.children[1].textContent, b.children[2].textContent, b.children[4].hidden, b.getAttribute('aria-label'), b5.getAttribute('aria-label'), R.S.setTile('nope')],
+    ['BUTTON', 'cv-tile cv-stile', 'button', ['cv-tart', 'cv-tname', 'cv-tmeta', 'cv-tcost', 'cv-treason'], 'System 35', '22 modules', true, 'System 35 · 22 modules', 'System 55 · 37 modules', null]);
+  // (review 2 N3) the load estimate the Model 15 tile shows: o.setCost(id) in the tile's .cv-tcost (hidden while it says none), read again by refreshMoog (the device measured)
+  const cs = x => x.children[3];
+  assert.deepEqual([cs(b).textContent, cs(b).hidden, cs(b).title, cs(b5).textContent, cs(b5).hidden], ['~3 %', false, 'Estimated DSP load on this device: ~3 %', '~6 %', false], 'the set tiles\' load');
+  cost = { s35: '~9 %' }; R.S.refreshMoog();
+  assert.deepEqual([cs(b).textContent, cs(b5).textContent, cs(b5).hidden, cs(b5).title], ['~9 %', '', true, ''], 'refreshed; none: hidden');
+  cost = { s35: '~3 %', s55: '~6 %' }; R.S.refreshMoog();
+  assert.equal(b.children[0].innerHTML, cvArt.setArt('s35', cvArt.TILE));
+  assert.ok(/data-art="s55"/.test(b5.children[0].innerHTML));
+  assert.ok(/the whole set, patched as Sequence/.test(b5.title) && !/moog|R\.A\./i.test(b5.title + b5.textContent + b.title), b5.title);
+  // only in the Moog view
+  const vis = () => [b.hidden, b5.hidden].join();
+  assert.equal(vis(), 'false,false');
+  for (const v of ['hw', 'flow', 'serum', 'drums', 'ctl']) { R.S.setView(v); assert.equal(vis(), 'true,true', v); }
+  R.S.setView('moog');
+  // a tap: setPick in the tray's mode, never the model pick
+  b.click(); R.S.setMode('track'); b5.click(); R.S.setMode('replace');
+  assert.deepEqual([sp, R.picks], [['s35:replace', 's55:track'], []]);
+  // a drag: info.set, the canvas ("+ System 55", the ghost its art), the track list
+  const tp = { pointerType: 'touch' };
+  ptr(b5, 'pointerdown', 100, 300, at(tp)); ptr(b5, 'pointermove', 112, 302, at(tp));
+  const gh = R.layer.children[0];
+  assert.deepEqual([sd, gh.className, gh.children[0].className, /data-art="s55"/.test(gh.children[0].innerHTML)], [['begin s55 set', 'move null'], 'cv-tghost touch', 'cv-tart', true]);
+  ptr(b5, 'pointermove', 400, 300, at(tp));
+  assert.deepEqual([sd.at(-1), gh.children[1].textContent, gh.classList.contains('off')], ['move canvas', '+ System 55', false]);
+  TS += 150;
+  ptr(b5, 'pointermove', 402, 301, at(tp)); ptr(b5, 'pointerup', 402, 301, at(tp));
+  assert.deepEqual([sd.at(-1), R.layer.children.length, R.log], ['drop s55 canvas set @804,201', 0, []], 'its own drag, not the model drag');
+  ptr(b, 'pointerdown', 100, 300, at(tp)); ptr(b, 'pointermove', 120, 300, at(tp)); ptr(b, 'pointermove', 200, 50, at(tp));
+  assert.equal(R.layer.children[0].children[1].textContent, '+ New track');
+  TS += 150;
+  ptr(b, 'pointermove', 201, 50, at(tp)); ptr(b, 'pointerup', 201, 50, at(tp));
+  assert.equal(sd.at(-1), 'drop s35 tracks set @402,-50');
+  // greyed at the cap: its reason; no pick, no drag; null: available again
+  const why = T.setFull(40, MG.S55.length - 12);
+  R.S.setSetPlaced('s55', why);
+  assert.deepEqual([b5.classList.contains('cv-placed'), b5.getAttribute('aria-disabled'), b5.children[4].hidden, b5.children[4].textContent, b5.title, b5.getAttribute('aria-label'), R.S.setPlacedOf('s55'), R.S.setPlacedOf('s35')],
+    [true, 'true', false, why, 'System 55 · 37 modules — ' + why, 'System 55 · 37 modules — ' + why, why, null]);
+  const n0 = sd.length;
+  b5.click();
+  ptr(b5, 'pointerdown', 100, 300, at(tp)); ptr(b5, 'pointermove', 112, 302, at(tp)); ptr(b5, 'pointermove', 400, 300, at(tp));
+  TS += 150;
+  ptr(b5, 'pointermove', 402, 301, at(tp)); ptr(b5, 'pointerup', 402, 301, at(tp));
+  assert.deepEqual([sp.length, sd.length - n0, R.layer.children.length], [2, 0, 0], 'no pick, no drag');
+  R.S.setSetPlaced('s55', null);
+  b5.click();
+  assert.deepEqual([b5.classList.contains('cv-placed'), b5.hasAttribute('aria-disabled'), b5.children[4].hidden, b5.getAttribute('aria-label'), sp.at(-1)], [false, false, true, 'System 55 · 37 modules', 's55:replace']);
+  R.S.destroy();
+  assert.equal(R.list.children.some(n => n.getAttribute('data-set')), false, 'destroy takes them');
+  // o.sets: true, in their own box (o.setsEl); without o.sets none; no setPick: a tap does nothing
+  const d = fresh(), l = d.createElement('div'), box = d.createElement('div');
+  const S2 = T.sourcesTray(l, { models: MODELS, sets: true, setsEl: box, pick: id => { throw new Error('model pick ' + id); }, drag: {}, view: 'moog' });
+  assert.deepEqual([box.children.map(n => n.getAttribute('data-set')), l.children.some(n => n.getAttribute('data-set'))], [['s35', 's55'], false]);
+  S2.setTile('s35').click();
+  S2.destroy();
+  const S3 = T.sourcesTray(l, { models: MODELS, pick() {}, drag: {}, view: 'moog' });
+  assert.deepEqual([S3.setTiles().length, S3.setTile('s35')], [0, null]);
+  S3.destroy();
 });
 
 test('style.css (9): the Moog tiles\' glyph box, the target chip in #overlay, the cord menu\'s swatches (44 px); the face jacks — the hit clamp, asleep below READ_K, and their rings while patching / focused (restated after the face jack\'s own box-shadow: none, which would win)', () => {

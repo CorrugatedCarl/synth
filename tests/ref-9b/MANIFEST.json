@@ -1,0 +1,15 @@
+{
+  "note": "Frozen System 35 / 55 sound (IMPL-9b §8.3, D2): verbatim copies of patch-dsp.js (the evaluator with events and lamps), moog-dsp.js (the 9b circuits, the Song clock) and engine.js (events, lamps, the warm-up) at the stage 9b acceptance commit. Never edit: tests/golden-moog-b.test.mjs renders them (side A, every other module current) against the current files, bit for bit.",
+  "commit": "9c3d3237514fc4f19af59598e43d71a41baba263",
+  "files": {
+    "patch-dsp.js": {
+      "sha256": "9d88b661044ab32285af526e5bcf14c9b6f74e6989ad949deaffc7e9667a4f5a"
+    },
+    "moog-dsp.js": {
+      "sha256": "b21aa8d84aa751f628cd7f32320667954f5137b5f2acf4d0b11d32dbf93bf661"
+    },
+    "engine.js": {
+      "sha256": "f5cf7fecc0b9cbdc809e0746fab93451ef6cd5df8208df1ab93a8fa0017adecb"
+    }
+  }
+}

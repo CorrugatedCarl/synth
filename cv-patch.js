@@ -28,15 +28,35 @@
 //   title(t, dev, mid) → { title, sub }   items(t, dev, mid) → ⋯ menu items   devices(t, dev) → cvDevices entries ('pm')
 //   size(t, dev, key) → { fixed }   rack(t, dev) → { key: {x, y} } (Tidy, relative to the controller)   members(t, dev, key)
 //   knobGet / knobSet (the faces' api)   bodies (the mounted faces)   stats()   destroy()
+//   (9b) ev(t, dev, mid, id)   lamps(t, dev, msg | null)   lampBits(t, dev, mid)   shown(key)   busTip(t, dev, mid, id)
+//   setLoad(id)   setNote(id) → the set's one-time notice text | ''
 // deps: { doc, world (World | () => World), cur() → { t, dev } | null (the shown track's patch instrument), rec(t, dev) → the
 //   record (normalised), vals(t, dev) → the device's vals, edit(t, dev, label, r) → bool (ONE History step: r = { rec, vals?,
 //   back?, lay?: { key: {x, y} | null } } — write dev.patch, dev.vals, the lay entries, post the payload, re-render; back = the
 //   knobs a step wrote (patch-core ptBack meta)), knob(t, dev, mid, id, v, ph) (the knob policy: the value written synchronously,
 //   queuePatch throttled, no step), view() → the track view (ports, jacks, modules), cords() → the cord layer | null, notice(text,
-//   ms, onTap?), undo(), kit (classic-panel's kit for the faces), menu?(x, y, items, opts) (wk.contextMenu) }.
+//   ms, onTap?), undo(), kit (classic-panel's kit for the faces), menu?(x, y, items, opts) (wk.contextMenu); (9b) ev?(t, dev, mid,
+//   id) (a momentary event: the node's { t: 'seq', s: { pe: [n, k] } }), heard?(ts?) → the output frame heard now (lamps; NaN /
+//   absent: at once), rate?() → Hz, playing?() → the song plays (a set's ▶ note is skipped, review 2 N2), raf?(fn) (tests; else wk.frame) }.
 // The cord layer (cv-cords, lane C9; stubbed here per §7.4): set([{ id, a, b, c, s }]) (a / b jack keys, c the colour index, s 1
 //   for an S-trigger cord), anchors(Map jackKey → {x, y}), live({ a: {x, y}, b: {x, y}, c, s } | null), grab(id, end 'a' | 'b',
 //   p) / move(p) / drop(), sel(id | null).
+// Stage 9b (IMPL-9b §1.4–§1.6, §4.5, §7.4; lane U9b) — generic, every name the family's table's:
+//   event buttons: a face's geometry().evs → a transparent button.cv-pev over each hit box (in the face's own layer: body px),
+//     aria "<title> · <label>"; it fires on the RELEASE of a tap (≤ the tap slop, no second finger: gesture.js's flagged
+//     pointercancel ends it), Enter / Space (and a keyboard / assistive click) fire it; asleep below READ_K as the controls (the
+//     world takes the press; a module in edit state keeps it); no value, no History step: host.ev(t, dev, mid, id) → deps.ev.
+//   live lamps: geometry().lamps → a span.cv-plamp[data-on] (the lens, d × 0.72) per lamp; host.lamps(t, dev, { F, l: [n, bits,
+//     …] }) queues the monitor's post (≤ LAMP_QMAX an instrument) and asks ONE frame for every queue: there, what is heard by then
+//     (deps.heard() + one frame, cv-drum's rule; no clock: at once) sets each module's bits (the latest wins) and only a lamp
+//     whose state changed is written, only on a mounted face on screen ([data-cv-off]: kept for host.shown(key)); never a DOM
+//     write per audio event. lamps(t, dev, null): every lamp of that instrument dark (its node went silent).
+//   routing switches (a type's `bus`): each switch's tip and aria-description say its rows (patch-core busInfo: the route
+//     resolved, else "No 911 3 in this patch" / the bound; a row waiting on another switch "needs …"), shown on a mouse's hover
+//     and after a flip; selecting a routing panel outlines what its lit, resolved rows reach (members), again after a flip.
+//   sets: preset(name, { ensure, tidy: true }) lays every module out by rackLayout in the same step (a System 35 / 55 tile on a
+//     900 Series); setLoad(id) = its set's starter on the full set (tidy unless it is the family's own set); setNote(id) the
+//     set's one-time notice (once a session).
 import * as wk from './wk.js?v=9';
 import * as PT from './patch-core.js?v=9';
 import * as cvPanel from './cv-panel.js?v=9';
@@ -52,12 +72,29 @@ export const TAP_TOUCH = TAP_PX, TAP_MOUSE = 4;
 export { SNAP_PX };
 /** The chip's place beside the finger (client px: right of it and above, clear of the fingertip). */
 export const CHIP_DX = 26, CHIP_DY = -54;
+/** (9b) A lamp post is shown one frame ahead of its heard time (cv-drum's LEAD_S); posts held per instrument (≈ 2 s of the
+ * monitor's 33 ms: a stalled page drops the oldest). */
+export const LAMP_LEAD_S = 1 / 60, LAMP_QMAX = 64;
+/** (9b, IMPL-9b §4.6, Q2) A set's one-time notice (setNote: once a session). */
+export const SET_NOTES = Object.freeze({ s55: 'The sequence starts when you press ▶' });
+/** (9b, review 2 F1) A sequencer type's clock at start: its select `p` (CLOCK AT START: the machine reads it only when it is built
+ * or reset, never at a preset) and the ids of its `ev` row that start / stop the clock — a preset or a set (and its undo / redo)
+ * posts that event for each such module it binds, so a loaded patch is in the clock state it intends. */
+export const SEQ_START = Object.freeze({ 960: Object.freeze({ p: 'os', on: 'on', off: 'off' }) });
 
 const fin = x => typeof x === 'number' && isFinite(x);
 const isObj = x => !!x && typeof x === 'object' && !Array.isArray(x);
 const listen = (t, type, fn, opt) => { t.addEventListener(type, fn, opt); return () => t.removeEventListener(type, fn, opt); };
 const call = (f, ...a) => { if (typeof f !== 'function') return undefined; try { return f(...a); } catch (err) { console.error(err); return undefined; } };
 const at = (p, k) => (p && (typeof p.get === 'function' ? p.get(k) : p[k])) || null;
+/** (9b, review 2 F1) The event id that puts module `mid` in its clock-at-start state ('on' | 'off' per its SEQ_START knob), null
+ * for a module that has none. */
+export function seqStart(fam, rec, vals, mid) {
+  const m = fam && isObj(rec) && isObj(rec.mods) && Object.prototype.hasOwnProperty.call(rec.mods, mid) ? rec.mods[mid] : null;
+  const S = m && Object.prototype.hasOwnProperty.call(SEQ_START, m.t) ? SEQ_START[m.t] : null, T = S ? fam.types[m.t] : null;
+  if (!T || !Array.isArray(T.ev) || !T.ev.some(e => e.id === S.on) || !T.ev.some(e => e.id === S.off)) return null;
+  return PT.getKnob(vals, rec, mid, S.p) ? S.on : S.off;
+}
 
 /* ---------------------------------------------------------------- ends ↔ jacks (pure) */
 /** The canvas module key of patch module `mid` of instrument `dev`: the controller is the instrument's own module. */
@@ -105,8 +142,11 @@ export function patchHost(deps) {
   const layer = (name, ...a) => { const L = cordsL(); if (!L || typeof L[name] !== 'function') return undefined; try { return L[name](...a); } catch (err) { console.error(err); return undefined; } };
   const notice = (t, ms, tap) => call(P.notice, t, ms, tap);
   const undoTap = () => call(P.undo);
-  let dead = false, D = null, CM = null, XM = null, chipEl = null, offW = null;
+  let dead = false, D = null, CM = null, XM = null, chipEl = null, offW = null, selK = null;
   const bodies = new Set();
+  // (9b) the lamps: '<track id>|<dev>' → { tid, dev, q: [{ F, l }], bits: Map(module number → bits) }; one frame asked for all
+  const LQ = new Map(), LS = { posts: 0, pumps: 0, paints: 0, evs: 0 };
+  let lampDue = false, noted = null;
   /* ---- the context: the shown track's patch instrument */
   function ctxOf(t, dev) {
     if (!t || typeof dev !== 'string') return null;
@@ -317,6 +357,7 @@ export function patchHost(deps) {
     const o = { rec: r.rec };
     if (r.vals) o.vals = r.vals;
     if (r.back && Array.isArray(r.back.f) && r.back.f.length) o.back = r.back;
+    if (Array.isArray(r.seq) && r.seq.length) o.seq = r.seq.slice(); // ((9b, review 2 F1) the sequencers the step binds: the host starts their clocks, on undo / redo too)
     if (r.lay) { // (the module set changed: the modules Tidy still places are pinned where they stand, in this step — else the rack re-flows under them)
       const lay = o.lay = Object.assign({}, r.lay);
       for (const mid of Object.keys(C.rec.mods)) {
@@ -443,7 +484,7 @@ export function patchHost(deps) {
     const W = world();
     if (!W || !W.el) return;
     offW = [listen(W.el, 'keydown', onKeyW), listen(W.el, 'contextmenu', onCtxW)];
-    if (typeof W.on === 'function') offW.push(W.on('cameraend', sleepAttr));
+    if (typeof W.on === 'function') offW.push(W.on('cameraend', sleepAttr), W.on('select', d => { selK = (d && d.id) || null; })); // ((9b) the selection: a routing panel's outline after a flip)
     sleepAttr();
   }
   hookWorld();
@@ -467,6 +508,37 @@ export function patchHost(deps) {
   // the first free slot of mid's row (patch-core freeSlot) in world px, each placed one taken into account
   function slot(C, rec, mid, rel) { const c0 = ctlPos(C), s = PT.freeSlot(rec, C.f, mid, rel); rel[mid] = { x: s.x, y: s.y }; return { x: c0.x + s.x, y: c0.y + s.y }; }
   const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+  /** (9b, review 2 F4, IMPL-9b §1.4) The routing panels reach their modules by ordinal ("the 911 1"), so a step that renumbers a type
+   * (a delete, an add) moves their lit rows onto the next module of it — which the screen cannot show (the titles renumber with
+   * the ordinals). What the step did to them, in one line: per panel present before and after, a row (panel, i) of PT.busRows that
+   * resolves to other ends / newly resolves → "now reaches <the modules>", one that no longer resolves → "no longer reaches <its
+   * end that is gone>"; the modules by their titles before the step (a new one by its own); '' when no row moved. C: before; rec2,
+   * vals2: after. */
+  function routeMoves(C, rec2, vals2) {
+    const f = C.f, K = r => r.panel + ':' + r.i, num = k => +k.slice(1), md = e => e.slice(0, e.indexOf('.'));
+    const A = new Map(PT.busRows(rec2, f, vals2).map(r => [K(r), r])), B = new Map(PT.busRows(C.rec, f, C.vals).map(r => [K(r), r]));
+    const P = new Map(), get = p => { let o = P.get(p); if (!o) P.set(p, o = { to: new Set(), off: new Set() }); return o; };
+    const reach = (p, m) => m !== PT.CTL && m !== p;
+    for (const [k, r] of A) {
+      if (!C.rec.mods[r.panel]) continue; // (a panel the step made: its rows are its own)
+      const o = B.get(k);
+      for (const e of ['a', 'b']) if ((!o || o[e] !== r[e]) && reach(r.panel, md(r[e]))) get(r.panel).to.add(md(r[e]));
+    }
+    for (const [k, o] of B) {
+      if (A.has(k) || !rec2.mods[o.panel]) continue; // (a panel the step deleted: gone with its rows)
+      const w = PT.busInfo(rec2, f, vals2, o.panel).find(x => x.i === o.i);
+      if (w) for (const e of ['a', 'b']) if (w[e] == null && reach(o.panel, md(o[e]))) get(o.panel).off.add(md(o[e]));
+    }
+    const nm = m => PT.title(C.rec.mods[m] ? C.rec : rec2, m, f), list = S => { const L = [...S].sort((a, b) => num(a) - num(b)).map(nm); return L.slice(0, 3).join(', ') + (L.length > 3 ? ', …' : ''); };
+    const out = [];
+    for (const p of [...P.keys()].sort((a, b) => num(a) - num(b))) {
+      const g = P.get(p), off = [...g.off].filter(m => !g.to.has(m)), T = C.fam.types[C.rec.mods[p].t];
+      if (!g.to.size && !off.length) continue;
+      const who = Object.keys(C.rec.mods).filter(m => C.rec.mods[m].t === C.rec.mods[p].t).length === 1 && T ? 'the ' + T.short : modTitle(C, p);
+      out.push(`${who}'s routing` + (g.to.size ? ' now reaches ' + list(g.to) : '') + (off.length ? (g.to.size ? ' and' : '') + ' no longer reaches ' + list(off) : ''));
+    }
+    return out.slice(0, 2).join('; ') + (out.length > 2 ? '; …' : '');
+  }
   /** A module of `type` (a tap: the first free slot of its row; a drop: at = its top-left, world px, on the dots when Snap is on). */
   function add(type, atP) {
     const C = ctx();
@@ -475,8 +547,10 @@ export function patchHost(deps) {
     if (!r.mid) { notice(r.why || 'No such module', 3500); return null; }
     const W = world(), sn = !W || typeof W.snapOn !== 'function' || W.snapOn();
     const p = atP && fin(atP.x) && fin(atP.y) ? { x: sn ? snap(atP.x) : Math.round(atP.x), y: sn ? snap(atP.y) : Math.round(atP.y) } : slot(C, r.rec, r.mid, placedRel(C, C.rec));
-    const T = C.fam.types[type];
-    return commit(C, 'Add ' + (T ? T.short : type), { rec: r.rec, lay: { [keyOf(C.dev, r.mid)]: p } }) ? r.mid : null;
+    const T = C.fam.types[type], mv = routeMoves(C, r.rec, C.vals);
+    if (!commit(C, 'Add ' + (T ? T.short : type), { rec: r.rec, lay: { [keyOf(C.dev, r.mid)]: p } })) return null;
+    if (mv) notice('Added ' + PT.title(r.rec, r.mid, C.f) + ' · ' + mv + ' · tap to undo', 8000, undoTap); // ((9b, review 2 F4) said only when a lit row moved)
+    return r.mid;
   }
   /** Delete a module with its cords (one step, no prompt — Q4; a driver's driven modules undriven), "tap to undo". */
   function remove(mid) {
@@ -484,8 +558,8 @@ export function patchHost(deps) {
     if (!C || mid === PT.CTL) return false;
     const name = modTitle(C, mid), r = PT.removeModule(C.rec, mid);
     if (r.rec === C.rec) return false;
-    const ok = commit(C, 'Delete ' + name, { rec: r.rec, lay: { [keyOf(C.dev, mid)]: null } });
-    if (ok) notice('Deleted ' + name + (r.cords.length ? ' and ' + plural(r.cords.length, 'cord') : '') + ' · tap to undo', 6000, undoTap);
+    const mv = routeMoves(C, r.rec, C.vals), ok = commit(C, 'Delete ' + name, { rec: r.rec, lay: { [keyOf(C.dev, mid)]: null } });
+    if (ok) notice('Deleted ' + name + (r.cords.length ? ' and ' + plural(r.cords.length, 'cord') : '') + (mv ? ' · ' + mv : '') + ' · tap to undo', mv ? 8000 : 6000, undoTap); // ((9b, review 2 F4) the routing panels' moved rows, said)
     return ok;
   }
   /** Duplicate a module (its values, no cords), beside it when that room is free, else its row's first free slot. */
@@ -501,22 +575,56 @@ export function patchHost(deps) {
       if (free) { const c0 = ctlPos(C); p = { x: c0.x + q.x, y: c0.y + q.y }; }
     }
     if (!p) p = slot(C, r.rec, r.mid, rel);
-    return commit(C, 'Duplicate ' + modTitle(C, mid), { rec: r.rec, vals: r.vals, lay: { [keyOf(C.dev, r.mid)]: p } }) ? r.mid : null;
+    const mv = routeMoves(C, r.rec, r.vals || C.vals);
+    if (!commit(C, 'Duplicate ' + modTitle(C, mid), { rec: r.rec, vals: r.vals, lay: { [keyOf(C.dev, r.mid)]: p } })) return null;
+    if (mv) notice('Duplicated ' + modTitle(C, mid) + ' · ' + mv + ' · tap to undo', 8000, undoTap);
+    return r.mid;
   }
   /** A linked module's driver (null: none). */
   function driver(mid, drv) { const C = ctx(); return !!C && commit(C, 'Driver', PT.setDriver(C.rec, mid, drv == null ? null : drv)); }
   /** A starting patch (Patches…): the topology replaced, its knobs written (the step's meta puts them back), missing modules
-   * added in their rows' free slots; "tap to undo". */
+   * added in their rows' free slots; "tap to undo". opts: patch-core's ({ ensure }), (9b) tidy: every module laid out by
+   * rackLayout in the same step (a System 35 / 55 tile on a 900 Series, IMPL-9b §1.2: undo gives the places back), label /
+   * note: the step's label and the notice's head ('Load <name>' / 'Loaded <name>'), tail (a text, or a function asked once the
+   * step is made): after the notice's head. */
   function preset(name, opts) {
-    const C = ctx();
+    const C = ctx(), o = isObj(opts) ? opts : {};
     if (!C) return false;
-    const r = PT.loadPreset(C.rec, C.vals, name, opts);
+    const r = PT.loadPreset(C.rec, C.vals, name, o.ensure ? { ensure: o.ensure } : undefined);
     if (r.why) { notice(r.why, 3500); return false; }
-    const rel = placedRel(C, C.rec), lay = {};
-    for (const mid of r.added || []) lay[keyOf(C.dev, mid)] = slot(C, r.rec, mid, rel);
-    const ok = commit(C, 'Load ' + name, Object.assign({}, r, Object.keys(lay).length ? { lay } : {}));
-    if (ok) notice('Loaded ' + name + ' · tap to undo', 6000, undoTap);
+    const lay = {};
+    if (o.tidy) { const c0 = ctlPos(C), R = PT.rackLayout(r.rec, C.f); for (const mid of Object.keys(R)) lay[keyOf(C.dev, mid)] = { x: c0.x + R[mid].x, y: c0.y + R[mid].y }; }
+    else { const rel = placedRel(C, C.rec); for (const mid of r.added || []) lay[keyOf(C.dev, mid)] = slot(C, r.rec, mid, rel); }
+    const seq = Object.values(r.bound || {}).filter(mid => seqStart(C.fam, r.rec, r.vals, mid)).sort((a, b) => +a.slice(1) - +b.slice(1));
+    const ok = commit(C, typeof o.label === 'string' ? o.label : 'Load ' + name, Object.assign({}, r, Object.keys(lay).length ? { lay } : {}, seq.length ? { seq } : {}));
+    const tail = ok && typeof o.tail === 'function' ? o.tail() : ok ? o.tail : ''; // (asked only once the step is made: a one-time text is not spent on a refusal)
+    if (ok) notice((typeof o.note === 'string' ? o.note : 'Loaded ' + name) + (tail ? ' — ' + tail : '') + ' · tap to undo', tail ? 8000 : 6000, undoTap);
     return ok;
+  }
+  /** (9b, IMPL-9b §1.2) A set tile on a 900 Series: its starter on the full set (the missing modules added, the topology
+   * replaced; one step "Load <set name>"), the rack laid out unless it is the family's own set (the Model 15 tile: today's
+   * free slots); the set's one-time notice joins the first one. */
+  function setLoad(id) {
+    const C = ctx(), S = C && isObj(C.fam.sets) && Object.prototype.hasOwnProperty.call(C.fam.sets, id) ? C.fam.sets[id] : null;
+    if (!S) { if (C) notice('No such set', 3500); return false; }
+    const own = S.set === C.fam.set;
+    return preset(S.starter, own ? { ensure: S.set } : { ensure: S.set, tidy: true, label: 'Load ' + S.name, note: 'Loaded ' + S.name, tail: () => setNote(id) });
+  }
+  /** (9b, review 2 F1) The events that put each of `mids` (a step's sequencers) in the clock state its CLOCK AT START knob says now:
+   * [[mid, ev id]] — [] for modules without one or gone (the host posts them after a preset / set step's graph, and after its
+   * undo / redo's). */
+  function starts(t, dev, mids) {
+    const C = ctxOf(t, dev), out = [];
+    if (C && Array.isArray(mids)) for (const mid of mids) { const e = seqStart(C.fam, C.rec, C.vals, mid); if (e) out.push([mid, e]); }
+    return out;
+  }
+  /** (9b) The set's one-time notice ('' when none or already said this session — the host's Replace path asks too; (review 2 N2) ''
+   * and not spent while the song plays: the sequence is already running in step with it). */
+  function setNote(id) {
+    const t = Object.prototype.hasOwnProperty.call(SET_NOTES, id) ? SET_NOTES[id] : '';
+    if (!t || (noted && noted.has(id)) || call(P.playing) === true) return '';
+    (noted || (noted = new Set())).add(id);
+    return t;
   }
   /** Init patch: every cord out, every knob at its default; the modules stay. */
   function init() {
@@ -578,22 +686,131 @@ export function patchHost(deps) {
     });
   }
   function size(t, dev, key) { const C = ctxOf(t, dev), mid = C ? midOf(dev, key) : null; if (!mid || mid === PT.CTL || !C.rec.mods[mid]) return null; const [w, h] = sizeOfT(C, C.rec.mods[mid].t); return { fixed: { w, h } }; }
-  /** Selecting a driver outlines the modules it drives (cv-module host.members). */
+  /** Selecting a driver outlines the modules it drives (cv-module host.members); (9b, IMPL-9b §1.4, P-1 (a)) a routing panel the
+   * modules its lit, resolved rows reach (the controller's own module too: the keyboard's voltages leave it), never itself. */
   function members(t, dev, key) {
     const C = ctxOf(t, dev), mid = C ? midOf(dev, key) : null;
-    if (!mid || mid === PT.CTL) return [];
-    return Object.keys(C.rec.mods).filter(k => C.rec.mods[k].drv === mid).map(k => keyOf(dev, k));
+    if (!mid || mid === PT.CTL || !C.rec.mods[mid]) return [];
+    const out = Object.keys(C.rec.mods).filter(k => C.rec.mods[k].drv === mid).map(k => keyOf(dev, k)), T = C.fam.types[C.rec.mods[mid].t];
+    if (T && Array.isArray(T.bus) && T.bus.length) {
+      for (const r of PT.busRows(C.rec, C.f, C.vals)) {
+        if (r.panel !== mid) continue;
+        for (const e of [r.a, r.b]) { const m = e.slice(0, e.indexOf('.')), k = keyOf(dev, m); if (m !== mid && !out.includes(k)) out.push(k); }
+      }
+    }
+    return out;
   }
+  // (9b) after a routing switch's flip: the selected panel's outline again (cv-module draws it at a select / sync / refresh; a
+  // flip is a knob — no re-render), its rule: every other module of the view that is a member
+  function outline() {
+    const V = view(), C = ctx(), mid = C && selK ? midOf(C.dev, selK) : null;
+    if (!mid || mid === PT.CTL || !V || !V.modules || typeof V.modules.entries !== 'function') return;
+    const X = new Set(members(C.t, C.dev, selK));
+    for (const [k, m] of V.modules.entries()) {
+      if (!m || !m.el) continue;
+      const on = k !== selK && (k.startsWith(selK + '/') || X.has(k));
+      if (on !== m.el.hasAttribute('data-cv-member')) { if (on) m.el.setAttribute('data-cv-member', ''); else m.el.removeAttribute('data-cv-member'); }
+    }
+  }
+  // a patch end's name with its rear terminals ('CP3A 1 · EXT (REAR)'): the type's table, not jacksOf (which has no rear jack)
+  const busEnd = (C, end) => {
+    const i = end.indexOf('.'), m = end.slice(0, i), p = end.slice(i + 1), T = C.fam.types[typeOf(C, m)], j = T ? T.jacks.find(x => x.id === p) : null;
+    return modTitle(C, m) + ' · ' + (j ? j.label : p);
+  };
+  /** (9b, IMPL-9b §1.4) A routing panel's switches' tips { id: '<label>: On | Off — <its rows>' } — a row its route ('Controller
+   * · PITCH 1 → 904B 1 · CONTROL INPUT 3'), unresolved its reason (patch-core busInfo: 'No 911 3 in this patch', the bound), a lit
+   * switch whose row waits on another '(needs Trigger 1)'; {} for anything else. Two busInfo reads a panel, whatever its switches. */
+  function busTips(t, dev, mid) {
+    const C = ctxOf(t, dev), m = C && mid !== PT.CTL ? C.rec.mods[mid] : null, T = m ? C.fam.types[m.t] : null, out = {};
+    if (!T || !Array.isArray(T.bus) || !T.bus.length) return out;
+    const real = PT.busInfo(C.rec, C.f, C.vals, mid), ids = new Set();
+    for (const r of real) for (const s of r.sw) ids.add(s);
+    if (!ids.size) return out;
+    const val = s => PT.getKnob(C.vals, C.rec, mid, s), lab = s => { const q = T.params.find(c => c.id === s); return q ? q.label : s; };
+    let W = C.vals; // (every switch of the panel on: where its rows would go — a row that is off still names its route, or why it has none)
+    for (const s of ids) W = PT.setKnob(W, C.rec, mid, s, 1);
+    const what = PT.busInfo(C.rec, C.f, W, mid);
+    for (const id of ids) {
+      const par = T.params.find(c => c.id === id), on = val(id) !== 0;
+      if (!par) continue;
+      const parts = real.filter(r => r.sw.includes(id)).map(r => {
+        const w = what.find(x => x.i === r.i) || r;
+        if (!w.ok) return w.why;
+        const route = busEnd(C, w.a) + ' → ' + busEnd(C, w.b);
+        if (r.ok || !on) return route;
+        const off = r.sw.filter(s => s !== id && val(s) === 0);
+        return route + ' (' + (off.length ? 'needs ' + off.map(lab).join(' + ') : r.why) + ')';
+      });
+      out[id] = par.label + ': ' + (on ? 'On' : 'Off') + ' — ' + parts.join('; ');
+    }
+    return out;
+  }
+  /** One routing switch's tip ('' when it is none). */
+  const busTip = (t, dev, mid, id) => busTips(t, dev, mid)[id] || '';
+  /* ---- (9b) events and lamps */
+  /** A momentary event of module mid (its type's `ev` id): the host's ev (the node's { pe }); no value, no step → posted? */
+  function ev(t, dev, mid, id) {
+    if (dead) return false;
+    const C = ctxOf(t, dev), m = C && mid !== PT.CTL ? C.rec.mods[mid] : null, T = m ? C.fam.types[m.t] : null;
+    if (!T || !Array.isArray(T.ev) || !T.ev.some(e => e.id === id)) return false;
+    LS.evs++;
+    return call(P.ev, t, dev, mid, id) === true;
+  }
+  const lkey = (t, dev) => (t && typeof t === 'object' ? t.id : t) + '|' + dev;
+  /** The monitor's lamp post for a 900 Series ({ F, l: [n, bits, …] }: patch-dsp lamps), queued — shown at its heard time, one
+   * frame for all; null: every lamp of it dark now (its node went silent: ⏻ off, muted, gone). */
+  function lamps(t, dev, msg) {
+    if (dead || !t || typeof dev !== 'string') return false;
+    const k = lkey(t, dev);
+    let e = LQ.get(k);
+    if (msg === null) { if (e) { LQ.delete(k); for (const B of bodies) if (B.tid === e.tid && B.dev === dev) B.lamps(); } return true; }
+    if (!isObj(msg) || !Array.isArray(msg.l)) return false;
+    if (!e) LQ.set(k, e = { tid: t && typeof t === 'object' ? t.id : t, dev, q: [], bits: new Map() });
+    if (e.q.length >= LAMP_QMAX) e.q.shift();
+    e.q.push({ F: fin(msg.F) ? msg.F : NaN, l: msg.l });
+    LS.posts++;
+    lampLater();
+    return true;
+  }
+  const raf = fn => (typeof P.raf === 'function' ? P.raf(fn) : wk.frame(fn));
+  function lampLater() { if (lampDue || dead) return; lampDue = true; raf(lampPump); }
+  function lampPump() {
+    lampDue = false;
+    if (dead) return;
+    LS.pumps++;
+    const F = +call(P.heard), r = +call(P.rate), upto = fin(F) ? F + (r > 0 ? r : 48000) * LAMP_LEAD_S : Infinity;
+    let more = false;
+    for (const e of LQ.values()) {
+      let ch = null;
+      while (e.q.length && !(e.q[0].F > upto)) { // (NaN: at once)
+        const l = e.q.shift().l;
+        for (let i = 0; i + 1 < l.length; i += 2) { const n = l[i], b = l[i + 1] | 0; if (e.bits.get(n) !== b) { e.bits.set(n, b); (ch || (ch = new Set())).add(n); } }
+      }
+      if (ch) for (const B of bodies) if (B.tid === e.tid && B.dev === e.dev && ch.has(B.n)) B.lamps();
+      if (e.q.length) more = true;
+    }
+    if (more) lampLater();
+  }
+  /** The bits a module's lamps show now (bit i = its type's lamp i; 0: none heard). */
+  function lampBits(t, dev, mid) { const e = LQ.get(lkey(t, dev)), n = typeof mid === 'string' ? +mid.slice(1) : NaN; return e && e.bits.has(n) ? e.bits.get(n) | 0 : 0; }
+  /** A module back on screen (the host's cvHost().shown): its lamps from what was heard meanwhile. */
+  function shown(key) { for (const B of bodies) if (B.key === key) B.lamps(); }
   /* ---- the faces' api (moduleBody): a knob's value through patch-core (`_t` checked), its write the host's knob policy */
   function knobGet(t, dev, mid, id) { const C = ctxOf(t, dev); return C ? PT.getKnob(C.vals, C.rec, mid, id) : undefined; }
-  function knobSet(t, dev, mid, id, v, ph) { if (!dead) call(P.knob, t, dev, mid, id, v, ph); }
+  function knobSet(t, dev, mid, id, v, ph) {
+    if (dead) return;
+    call(P.knob, t, dev, mid, id, v, ph);
+    if (ph == null && selK) { const C = ctxOf(t, dev); if (C && PT.isBusKnob(C.rec, mid, id)) outline(); } // ((9b) a routing switch flipped: the selected panel's outline)
+  }
 
   const H = {
     press, cancel, active: () => !!(D && D.on), sync, menu, closeMenu,
-    add, remove, duplicate, driver, preset, init, tidy, rack,
+    add, remove, duplicate, driver, preset, init, tidy, rack, setLoad, setNote, starts,
     title, items, devices, size, members, chip: (t, dev) => { const C = ctxOf(t, dev); return C ? C.rec.name || '' : ''; },
     knobGet, knobSet, kit: () => P.kit || null, doc, bodies,
-    stats: () => ({ drag: D ? D.mode || 'press' : null, marks: D ? D.marks.size : 0, bodies: bodies.size, menu: !!CM, chip: !!chipEl && !chipEl.hidden }),
+    ev, lamps, lampBits, shown, busTip, busTips, awake, painted: n => { LS.paints += n; },
+    stats: () => ({ drag: D ? D.mode || 'press' : null, marks: D ? D.marks.size : 0, bodies: bodies.size, menu: !!CM, chip: !!chipEl && !chipEl.hidden,
+      lamps: Object.assign({ queued: [...LQ.values()].reduce((n, e) => n + e.q.length, 0), due: lampDue }, LS) }),
     /** (the world made later than the host, or again) its key / right-click listeners and the sleep attribute */
     attach: hookWorld,
     destroy() {
@@ -603,6 +820,7 @@ export function patchHost(deps) {
       if (offW) { for (const f of offW) f(); offW = null; }
       if (chipEl) { chipEl.remove(); chipEl = null; }
       for (const b of [...bodies]) b.destroy();
+      LQ.clear();
     },
   };
   return H;
@@ -613,7 +831,10 @@ export function patchHost(deps) {
  * A patch module's body (IMPL-9 §4.1): its face (cv-panel moduleLayout / moduleModel through a ClassicPanel: the classic knob kit,
  * the GL face path) over a per-instance view of vals.p[mid] — a read is patch-core's getKnob (`_t` checked), a write the host's
  * knob policy (no History step). Its controls carry data-nomod (no canvas modulation into a module's knob: §4.8).
- * o: { host (patchHost), t, dev, mid, type, doc? } → { el (append it to the module's body), panel, refresh(), destroy() }.
+ * (9b, IMPL-9b §4.5) In the face's own layer (body px, as its controls): a transparent button.cv-pev over each event button's hit
+ * box (geometry().evs: fires on a tap's release, Enter / Space; host.ev) and a span.cv-plamp per live lamp (geometry().lamps: the
+ * lens, lit [data-on] from host.lampBits; painted only on screen); a routing switch's tip and aria-description (host.busTip).
+ * o: { host (patchHost), t, dev, mid, type, doc? } → { el (append it to the module's body), panel, refresh(), lamps(), destroy() }.
  */
 export function moduleBody(o) {
   const H = o.host, doc = o.doc || (H && H.doc && H.doc()) || globalThis.document, mid = o.mid, key = keyOf(o.dev, mid);
@@ -621,22 +842,112 @@ export function moduleBody(o) {
   if (!H || !L || !model) { // (a type this build lacks, a face that does not validate: an honest blank)
     root.className = 'cv-pmissing';
     root.textContent = 'This module needs a newer version of the app';
-    return { el: root, panel: null, refresh() {}, destroy() { root.remove(); } };
+    return { el: root, panel: null, refresh() {}, lamps() {}, destroy() { root.remove(); } };
   }
+  const kit = (H.kit && H.kit()) || {}, K = kit.kit || kit;
+  const busEls = new Map(), tipBus = (id, flash) => { // ((9b) the routing switches: their rows, read now (one read for all); flash: id's tip shown)
+    const tips = busEls.size && typeof H.busTips === 'function' ? H.busTips(o.t, o.dev, mid) : {};
+    for (const [k, el] of busEls) { const s = tips[k] || ''; if (el.getAttribute('aria-description') !== s) { if (s) el.setAttribute('aria-description', s); else el.removeAttribute('aria-description'); } }
+    const el = busEls.get(id), s = tips[id] || '';
+    if (flash && el && s && typeof K.tip === 'function') { K.tip(el, s); if (typeof K.untip === 'function') K.untip(1800); }
+  };
   const vals = {};
-  for (const c of model.controls) Object.defineProperty(vals, c.id, { enumerable: true, get: () => H.knobGet(o.t, o.dev, mid, c.id), set: v => H.knobSet(o.t, o.dev, mid, c.id, v) });
+  for (const c of model.controls) Object.defineProperty(vals, c.id, { enumerable: true, get: () => H.knobGet(o.t, o.dev, mid, c.id), set: v => { H.knobSet(o.t, o.dev, mid, c.id, v); if (busEls.has(c.id)) tipBus(c.id, true); } });
   const tr = { id: o.t && o.t.id, prim: key, name: model.name, preset: '', vals };
-  const kit = (H.kit && H.kit()) || {};
-  const host = { doc, kit: kit.kit || kit, changed: (t, id, ph) => { if (ph === 'end') H.knobSet(o.t, o.dev, mid, id, H.knobGet(o.t, o.dev, mid, id), 'end'); }, modMenu: { canMod: () => false } };
+  const host = { doc, kit: K, changed: (t, id, ph) => { if (ph === 'end') H.knobSet(o.t, o.dev, mid, id, H.knobGet(o.t, o.dev, mid, id), 'end'); }, modMenu: { canMod: () => false } };
   const panel = new ClassicPanel(root, { track: tr, model, layout: L, host });
   const st = [root];
-  while (st.length) { const n = st.pop(); for (const c of n.children || []) { if (c.getAttribute && c.getAttribute('data-dest') != null) c.setAttribute('data-nomod', '1'); st.push(c); } }
+  let layer = null;
+  while (st.length) {
+    const n = st.pop();
+    for (const c of n.children || []) {
+      if (c.getAttribute && c.getAttribute('data-dest') != null) c.setAttribute('data-nomod', '1');
+      if (!layer && n === root && c.className === 'hw-ctls') layer = c;
+      st.push(c);
+    }
+  }
+  layer = layer || root;
   let dead = false;
+  /* (9b) the routing switches: the controls of the type's bus rows (each a lit push switch: .hw-c[data-ctl] > button) */
+  const FT = PT.FAMILIES[model.patch], TT = FT ? FT.types[o.type] : null;
+  if (TT && Array.isArray(TT.bus)) {
+    const ids = new Set();
+    for (const r of TT.bus) for (const s of r.sw) ids.add(s);
+    for (const w of layer.children || []) {
+      const id = w.getAttribute ? w.getAttribute('data-ctl') : null, el = id && ids.has(id) ? (w.children || [])[0] : null;
+      if (!el) continue;
+      busEls.set(id, el);
+      el.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') tipBus(id, true); });
+      el.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse' && typeof K.untip === 'function') K.untip(); });
+    }
+    tipBus(null, false);
+  }
+  /* (9b) the event buttons: fire on a tap's release (≤ the tap slop; a second finger's flagged pointercancel, a move past the
+     slop, a lost capture end it unfired), Enter / Space (the keyboard: at the key; its own click then ignored) or an assistive
+     click (detail 0); asleep below READ_K unless the module is in edit state (the world takes such a press first anyway) */
+  const geo = cvPanel.geometry(L, model), title = () => { const x = H.title(o.t, o.dev, mid); return x && x.title ? x.title : model.name; };
+  const evEls = [], lampEls = [];
+  const now = () => (globalThis.performance && typeof performance.now === 'function' ? performance.now() : Date.now());
+  for (const E of geo.evs || []) {
+    const b = doc.createElement('button'), h = E.hit;
+    b.type = 'button'; b.className = 'cv-pev';
+    b.setAttribute('data-ev', E.id); b.setAttribute('data-nomod', '1');
+    b.style.left = h.x + 'px'; b.style.top = h.y + 'px'; b.style.width = h.w + 'px'; b.style.height = h.h + 'px';
+    let P = null, kb = -1e9;
+    const fire = () => { if (!dead) H.ev(o.t, o.dev, mid, E.id); };
+    const end = () => { if (!P) return; P = null; b.removeAttribute('data-down'); };
+    b.addEventListener('pointerdown', e => {
+      if (P || dead || (e.button != null && e.button !== 0) || e.ctrlKey || (typeof H.awake === 'function' && !H.awake(b))) return;
+      if (e.preventDefault) e.preventDefault();
+      P = { id: e.pointerId, x: e.clientX, y: e.clientY, slop: e.pointerType === 'mouse' ? TAP_MOUSE : TAP_TOUCH };
+      try { b.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
+      b.setAttribute('data-down', '');
+    });
+    b.addEventListener('pointermove', e => { if (P && e.pointerId === P.id && Math.hypot(e.clientX - P.x, e.clientY - P.y) > P.slop) end(); });
+    b.addEventListener('pointerup', e => { if (!P || e.pointerId !== P.id) return; const ok = Math.hypot(e.clientX - P.x, e.clientY - P.y) <= P.slop; end(); if (ok) fire(); });
+    b.addEventListener('pointercancel', e => { if (P && e.pointerId === P.id) end(); });
+    b.addEventListener('lostpointercapture', e => { if (P && e.pointerId === P.id) end(); });
+    b.addEventListener('keydown', e => { if (e.key !== 'Enter' && e.key !== ' ') return; if (e.preventDefault) e.preventDefault(); if (e.stopPropagation) e.stopPropagation(); if (!e.repeat) { kb = now(); fire(); } });
+    b.addEventListener('click', e => { if (e.detail === 0 && now() - kb > 500) fire(); });
+    b.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse' && typeof K.tip === 'function') K.tip(b, E.label); });
+    b.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse' && typeof K.untip === 'function') K.untip(); });
+    if (typeof K.noMenu === 'function') K.noMenu(b);
+    layer.append(b);
+    evEls.push({ el: b, E });
+  }
+  /* (9b) the lamps: the lens over the art's unlit one, lit by [data-on] (style.css: the lamp's colour, its glow — none with
+     reduced motion); bit = the lamp's index in the type's row */
+  const bitOf = new Map((model.lamps || []).map((l, i) => [l.id, i]));
+  const r2 = v => Math.round(v * 100) / 100;
+  for (const Lp of geo.lamps || []) {
+    const s = doc.createElement('span'), d = r2(Lp.d * 0.72);
+    s.className = 'cv-plamp'; s.setAttribute('data-lamp', Lp.id); s.setAttribute('aria-hidden', 'true');
+    s.style.left = r2(Lp.x - d / 2) + 'px'; s.style.top = r2(Lp.y - d / 2) + 'px'; s.style.width = d + 'px'; s.style.height = d + 'px';
+    layer.append(s);
+    lampEls.push({ el: s, bit: bitOf.has(Lp.id) ? bitOf.get(Lp.id) : -1, on: false });
+  }
+  const label = () => { const t = title(); for (const x of evEls) { const s = t + ' · ' + x.E.label; if (x.el.getAttribute('aria-label') !== s) x.el.setAttribute('aria-label', s); } };
+  const offScreen = () => { for (let n = root; n && n.nodeType === 1; n = n.parentNode) if (n.hasAttribute && n.hasAttribute('data-cv-off')) return true; return false; };
+  label();
   const B = {
-    el: root, panel,
-    refresh() { if (!dead) panel.refresh(); },
+    el: root, panel, key, tid: o.t && o.t.id, dev: o.dev, mid, n: +String(mid).slice(1),
+    refresh() { if (dead) return; panel.refresh(); label(); if (busEls.size) tipBus(null, false); B.lamps(); },
+    /** (9b) the lamps from what the host heard (only a lamp whose state changed is written; off screen: nothing) */
+    lamps() {
+      if (dead || !lampEls.length || offScreen()) return;
+      const bits = H.lampBits(o.t, o.dev, mid);
+      let n = 0;
+      for (const x of lampEls) {
+        const on = x.bit >= 0 && ((bits >> x.bit) & 1) === 1;
+        if (on === x.on) continue;
+        x.on = on; n++;
+        if (on) x.el.setAttribute('data-on', ''); else x.el.removeAttribute('data-on');
+      }
+      if (n && typeof H.painted === 'function') H.painted(n);
+    },
     destroy() { if (dead) return; dead = true; H.bodies.delete(B); panel.destroy(); root.remove(); },
   };
   H.bodies.add(B);
+  B.lamps();
   return B;
 }

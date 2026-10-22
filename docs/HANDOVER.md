@@ -108,6 +108,10 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    obsolete but stays online untouched. Pending from the user: the `?m9=1` iPad session, `ui-m3b`, `ipad7a`, hands-on. Next: System 35 / 55
    modules, then the ARP 2600 / MS-20 patch panels on the same engine; later the Colossus (row 11), our own synth (row 10), a standalone
    offline app (row 12).
+10. **(2026-10-22.)** **Stage 9b (the System 35 / 55 sets: 16 Moog module types incl. the 960 sequencer, our Song clock, routing panels,
+   set tiles, seven presets) deployed** as one squashed commit on `canvas` (holding branch `wt-9b`; contract IMPL-9b; `tests/ref-9b` frozen).
+   The user: no per-stage iPad sessions (one real-device pass after the features); performance presets Low / Medium / High next (ROADMAP 14:
+   mid-range Android too — the iPad Pro is the ceiling), then the Master canvas (13); monetisation (15) after the features.
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

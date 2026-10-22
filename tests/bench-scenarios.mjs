@@ -366,14 +366,48 @@ export function m9xPatch() {
   vals.x4 = 5;
   return { rec, vals };
 }
-/** A 900 Series track (kind 'track'): { rec, vals } (a patch record and the device's vals); o.notes held from the start, o.song:
- *  the bass line as roll notes (one bar looping from tick 0) with the transport playing. */
+// IMPL-9b §3.7 (spike (a2) decision 3): m9q — Sequence on the System 55 set (the tile's: MG.makeSet('s55')), its Song clock on
+// ALWAYS at the project's 120 BPM (the same work as the song's steps, no transport in the harness; 15 modules live of 37); m9s —
+// the System 55 set re-patched as a classic voice: the six 921Bs (two drivers) and the 921 through two CP3As into the 914 (both
+// inputs), the 904B, the 904A at REGENERATION 6 and two 902s; five 911s — two by cords (the keys' S-TRIG 2 / 1 → 911 4 / 5 on
+// the 904A and the 904B), three by the 993's bus rows (FROM 1 + TRIGGERS 1…3, ENVELOPES 1…3: 911 1 at once, 911 2 / 3 through the
+// 911A in PARALLEL, each into its 902's third control input; 911 3 also into the 904A by a cord) — the bass line as roll notes
+const ofType = (rec, t) => Object.keys(rec.mods).filter(k => rec.mods[k].t === t).sort((a, b) => a.slice(1) - b.slice(1));
+/** The m9q patch: Sequence as the System 55 tile leaves it, the Song clock on ALWAYS → { rec, vals }. */
+export function m9qPatch() {
+  const m = MG.makeSet('s55', {}), [ck] = ofType(m.rec, 'clk');
+  return { rec: m.rec, vals: PT.setKnob(m.vals, m.rec, ck, 'md', 1) };
+}
+/** The m9s patch: the System 55 set patched as the classic voice above, the 993's seven switches on → { rec, vals }. */
+export function m9sPatch() {
+  const m = MG.makeSet('s55', {}), z = PT.initPatch(m.rec, m.vals);
+  let rec = z.rec, vals = z.vals;
+  const T = t => ofType(rec, t), [osc] = T('921'), [da1, da2] = T('921a'), ob = T('921b'), [fb] = T('914'), [hp] = T('904b'), [lp] = T('904a');
+  const en = T('911'), [dl] = T('911a'), am = T('902'), [mx1, mx2] = T('cp3a'), [tg] = T('993');
+  const plug = (a, b) => { const r = PT.plug(rec, a, b); if (!r.id) throw new Error('m9s: ' + a + ' → ' + b + ': ' + r.why); rec = r.rec; };
+  for (const [a, b] of [['c.kp1', 'c.a1'], ['c.a2', da1 + '.f1'], ['c.a3', da2 + '.f1'], ['c.a4', osc + '.f1'],
+    [ob[0] + '.saw', mx1 + '.m1'], [ob[1] + '.rec', mx1 + '.m2'], [ob[2] + '.saw', mx1 + '.m3'], [osc + '.saw', mx1 + '.m4'],
+    [ob[3] + '.saw', mx2 + '.m1'], [ob[4] + '.tri', mx2 + '.m2'], [ob[5] + '.rec', mx2 + '.m3'],
+    [mx1 + '.mo', fb + '.i1'], [mx2 + '.mo', fb + '.i2'], [fb + '.o1', hp + '.in'], [hp + '.out', lp + '.in'], [lp + '.out', am[0] + '.i1'],
+    [am[0] + '.o2', am[1] + '.i1'], [am[1] + '.o2', 'c.out'],
+    ['c.ks2', en[3] + '.trg'], ['c.ks1', en[4] + '.trg'], [en[3] + '.out', lp + '.c1'], [en[4] + '.out', hp + '.c1'], [en[2] + '.out', lp + '.c2']]) plug(a, b);
+  const set = (mid, o) => { for (const [k, v] of Object.entries(o)) vals = PT.setKnob(vals, rec, mid, k, v); };
+  set(hp, { fc: -2, rg: 0 }); set(lp, { fc: 1, rg: 1, re: 6 });
+  set(fb, { lo: 6, b1: 3, b2: 3, b3: 4, b4: 4, b5: 10, b6: 5, b7: 10, b8: 5, b9: 5, b10: 10, b11: 4, b12: 3, hi: 5 });
+  [[0.5, 4, 3, 7], [1, 5, 4, 6], [2, 4, 3, 5], [1, 4, 3, 7], [3, 5, 4, 6]].forEach(([t1, t2, t3, es], k) => set(en[k], { t1, t2, t3, es }));
+  set(dl, { d1: 2, d2: 3.5, md: 1 }); set(am[0], { md: 0, fc: 0 }); set(am[1], { md: 0, fc: 0 });
+  set(mx1, { x1: 6, x2: 5, x3: 6, x4: 5 }); set(mx2, { x1: 6, x2: 5, x3: 5 });
+  set(tg, { f1: 1, t1: 1, t2: 1, t3: 1, e1: 1, e2: 1, e3: 1 });
+  return { rec, vals };
+}
+/** A 900 Series track (kind 'track'): { rec, vals } (a patch record and the device's vals: the routing panels' bus rows in the
+ *  payload); o.notes held from the start, o.song: the bass line as roll notes (one bar looping from tick 0) with the transport playing. */
 export function patchTrack({ rec, vals }, o = {}) {
   const p = patchFor('m900', vals, core.defaultFx2(), { sr: SR, bpm: 120 }), fx = core.defaultFx2(), Z = { lo: 0, hi: 127, xp: 0 };
   delete p.fxr; delete p.fxrT; // (a classic Inst's patch on a graph node: its panel is a {t: 'chain'})
   return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: 'm9' },
     patches: { i1: p }, chains: { fx1: { fxr: core.compileFx(fx, { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx) } }, notes: o.notes || [],
-    seqs: { i1: PT.payload(rec) }, song: o.song ? bassSong() : null,
+    seqs: { i1: PT.payload(rec, MG.FAMILY.id, vals) }, song: o.song ? bassSong() : null,
     transport: o.song ? { play: true, frame: 0, tick: 0, fpt: SR * 60 / (120 * 960), seek: true, loop: true, ls: 0, le: 3840 } : null };
 }
 /** A starting patch (moog-core PRESETS) on the Model 15 set → { rec, vals }. */
@@ -490,6 +524,11 @@ export function scenarios() {
       kind: 'track', build: () => patchTrack(m9xPatch(), { notes: [[36, 0.8], [43, 0.7], [48, 0.6]] }) },
     { id: 'm9d', label: '900 Series: Drone (three oscillators in fifths, pink noise, the 907A; no notes — it never goes quiet)', node: 0.03, ipad: 0.025,
       kind: 'track', build: () => patchTrack(presetSet('Drone')) },
+    // IMPL-9b §3.7 (spike (a2) decision 3; jsc: the macOS shell's target, the lead's A/B): the System 55 set's rows
+    { id: 'm9q', label: '900 Series: Sequence on the System 55 set — the Song clock on ALWAYS at 120 BPM into the 960 (SHIFT, RESTART → stage 1), the 961 and the 911A striking two 911s, three oscillators', node: 0.03, ipad: 0.02, jsc: 0.022,
+      kind: 'track', build: () => patchTrack(m9qPatch()) },
+    { id: 'm9s', label: '900 Series: the System 55 set as a classic voice — seven oscillators, two CP3As, the 914, the 904B, the 904A (regeneration 6), two 902s; five 911s, three routed by the 993 (two through the 911A); a bass line', node: 0.055, ipad: 0.04, jsc: 0.042,
+      kind: 'track', build: () => patchTrack(m9sPatch(), { song: true }) },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',

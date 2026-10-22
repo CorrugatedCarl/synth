@@ -9,6 +9,10 @@
 // Stage 9 (IMPL-9 §4.6): the Sources view "Moog modules" — the Model 15 tile (the m900 model tile: the whole set, patched; no
 // maker word, D4) and a tile row of its own (sourcesTray o.moog: MOOG_TILES — the module types by group, each an original
 // monochrome glyph, MOOG_GLYPH); CLASSIC is models.js classicOf (a patch instrument is never in Hardware / Simple).
+// Stage 9b (IMPL-9b §4.3; lane U9b): the set tiles System 35 / System 55 beside the Model 15 tile (sourcesTray o.sets:
+// SET_TILES — not model tiles: tiles() stays the synths'; their art cv-art setArt; setPick / setDrag / setSetPlaced, setFull's
+// reason at the cap), the module row in five groups (Sources · Modifiers · Control · Sequencing · Console & routing: 25 tiles)
+// and the sixteen 9b glyphs, drawn from our faces (panels/m900b.js) as the nine were.
 // Rules: plain ES module, no DOM at module top level, survives tests/main-sim.mjs's DOM stub (it keeps references to the
 // nodes it makes or is given, never queries them back); imports carry ?v=9.
 import * as wk from './wk.js?v=9';
@@ -359,18 +363,31 @@ export const SRC_VIEWS = [
     note: 'More machines later.', sections: [{ id: 'drums', models: DRUMS }] },
   { id: 'ctl', label: 'Controllers', tip: 'Pad grids that play and modulate any track',
     note: 'A Pads module plays any track (drum hits, notes, chords) and its pads can modulate any knob. More controllers later.', sections: [{ id: 'ctls' }] },
-  // (9, IMPL-9 §4.6) the patch modules: the Model 15 tile (a model tile: the tray makes one per MODELS id), then their own row
+  // (9, IMPL-9 §4.6) the patch modules: the Model 15 tile (a model tile: the tray makes one per MODELS id), then their own row;
+  // (9b, IMPL-9b §4.3) the set tiles System 35 / 55 after the Model 15 tile (sets: o.sets)
   { id: 'moog', label: 'Moog modules', tip: 'The 900-series modules, patched with cords', layout: 'hw',
-    note: 'Model 15 brings the whole set, patched. Drop a module onto a 900 Series track to add it. The Moog Modular (a fixed patch) stays in Hardware.',
-    sections: [{ id: 'm15', models: PATCH }, { id: 'moog' }] },
+    note: 'Model 15, System 35 and System 55 bring a whole set, patched. Drop a module onto a 900 Series track to add it. The Moog Modular (a fixed patch) stays in Hardware.',
+    sections: [{ id: 'm15', models: PATCH, sets: true }, { id: 'moog' }] },
 ];
+/** (9b, IMPL-9b §1.2, §4.3) The set tiles (System 35, System 55; moog-core SETS — the Model 15's is the m900 model tile): id, name,
+ * modules (the tile's "N modules": its set, the controller not counted), starter (the patch it loads). The host passes them as
+ * o.sets (or o.sets: true). */
+export const SET_TILES = Object.freeze(['s35', 's55'].map(id => Object.freeze({ id, name: MG.SETS[id].name, modules: MG.SETS[id].set.length, starter: MG.SETS[id].starter })));
+/** (9b) A set tile's reason at the module cap (patch-core setNeeds: the modules loadSet would add): null while count + needs ≤ max. */
+export function setFull(count, needs, max = 48) {
+  const n = (count | 0) + (needs | 0) - max;
+  return needs >= 0 && n > 0 ? `This set needs ${n} more module${n === 1 ? '' : 's'} than the patch can hold` : null;
+}
 /** (9, IMPL-9 §4.6) The Moog modules view's tiles (id = the module type cv-patch adds; group: Sources · Modifiers · Control, in
  * the family's tray order). The host passes them as o.moog (or o.moog: true). */
 export const MOOG_TILES = Object.freeze(MG.ORDER.map(t => Object.freeze({ id: t, name: MG.TYPES[t].tile, group: MG.TYPES[t].group })));
 /** The groups' headings (moog-core GROUPS). */
 export const MOOG_GROUPS = MG.GROUPS;
 // original monochrome glyphs (ours, from our own faces: panels/m900.js): a tall panel outline (1, 2 or 3 MU wide), its knobs as
-// dots (a switch a small bar), its jacks as rings (an S-trigger socket a small square) in the module's own arrangement
+// dots (a switch a small bar), its jacks as rings (an S-trigger socket a small square) in the module's own arrangement; (9b) the
+// sixteen of panels/m900b.js the same way (laid out from cv-panel geometry, rear terminals never drawn): 4 and 8 MU 38 wide, a
+// console-height panel 27 tall, the 960 at its face's aspect; a routing switch a small square, an event button an outlined cap
+// (.e), a live lamp a small disc (.l), inert parts (trunks, the CP8A's) dim (.i)
 export const MOOG_GLYPH = Object.freeze({
   921: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="10" y="1" width="20" height="42" rx="1.5"/><rect class="k" x="11.6" y="7.5" width="3" height="1.8" rx="0.6"/><rect class="k" x="11.2" y="11.2" width="3" height="1.8" rx="0.6"/><circle class="k" cx="18.9" cy="9.9" r="2.1"/><circle class="k" cx="26.2" cy="9.7" r="2.1"/><circle class="j" cx="13" cy="17" r="1.3"/><circle class="j" cx="13" cy="20.7" r="1.3"/><circle class="k" cx="18.9" cy="18.2" r="2.1"/><circle class="k" cx="26.1" cy="18.1" r="2.1"/><circle class="j" cx="13" cy="24.6" r="1.3"/><rect class="j" x="11.7" y="26.9" width="2.6" height="2"/><circle class="k" cx="18.9" cy="26.2" r="2.1"/><circle class="k" cx="26.1" cy="26.3" r="2.1"/><circle class="j" cx="13" cy="32.8" r="1.3"/><circle class="j" cx="16.6" cy="32.8" r="1.3"/><circle class="j" cx="20.1" cy="32.8" r="1.3"/><circle class="j" cx="24.3" cy="32.8" r="1.3"/><circle class="j" cx="27.8" cy="32.8" r="1.3"/><circle class="j" cx="13" cy="36.8" r="1.3"/><circle class="j" cx="17.8" cy="36.8" r="1.3"/><circle class="j" cx="22.5" cy="36.8" r="1.3"/><circle class="j" cx="27.3" cy="36.8" r="1.3"/></svg>',
   '921a': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><rect class="k" x="18.5" y="6.7" width="3" height="1.8" rx="0.6"/><circle class="k" cx="20" cy="14.4" r="2.1"/><circle class="k" cx="20" cy="22.7" r="2.1"/><circle class="j" cx="17.1" cy="28.8" r="1.3"/><circle class="j" cx="22.9" cy="28.8" r="1.3"/><circle class="j" cx="17.1" cy="33.9" r="1.3"/><circle class="j" cx="22.9" cy="33.9" r="1.3"/><circle class="j" cx="20" cy="38" r="1.3"/></svg>',
@@ -381,6 +398,22 @@ export const MOOG_GLYPH = Object.freeze({
   902: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><rect class="k" x="18.6" y="8" width="3" height="1.8" rx="0.6"/><circle class="k" cx="19.9" cy="17.6" r="2.1"/><circle class="j" cx="16.8" cy="23.4" r="1.3"/><circle class="j" cx="16.8" cy="27.5" r="1.3"/><circle class="j" cx="22.4" cy="23.4" r="1.3"/><circle class="j" cx="22.4" cy="27.5" r="1.3"/><circle class="j" cx="16.8" cy="32.3" r="1.3"/><circle class="j" cx="22.4" cy="32.3" r="1.3"/><circle class="j" cx="19.8" cy="36.1" r="1.3"/></svg>',
   911: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><circle class="k" cx="20.1" cy="8.7" r="2.1"/><circle class="k" cx="20.1" cy="15.7" r="2.1"/><circle class="k" cx="20.1" cy="22.7" r="2.1"/><circle class="k" cx="20.1" cy="29.7" r="2.1"/><rect class="j" x="16.2" y="34.8" width="2.6" height="2"/><circle class="j" cx="22.7" cy="35.8" r="1.3"/></svg>',
   995: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><circle class="k" cx="19.8" cy="8.3" r="2.1"/><circle class="j" cx="16.8" cy="14" r="1.3"/><circle class="j" cx="22.9" cy="14" r="1.3"/><circle class="k" cx="19.8" cy="19.7" r="2.1"/><circle class="j" cx="16.8" cy="25.3" r="1.3"/><circle class="j" cx="22.9" cy="25.3" r="1.3"/><circle class="k" cx="19.8" cy="30.9" r="2.1"/><circle class="j" cx="16.8" cy="36.7" r="1.3"/><circle class="j" cx="22.9" cy="36.7" r="1.3"/></svg>',
+  '904b': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><circle class="k" cx="20" cy="9.9" r="2.1"/><rect class="k" x="18.5" y="16.5" width="3" height="1.8" rx="0.4"/><circle class="j" cx="17.6" cy="25.9" r="1.3"/><circle class="j" cx="22.4" cy="25.9" r="1.3"/><circle class="j" cx="17.6" cy="31.6" r="1.3"/><circle class="j" cx="22.4" cy="31.6" r="1.3"/><circle class="j" cx="20" cy="35.5" r="1.3"/></svg>',
+  914: '<svg viewBox="0 0 40 44" aria-hidden="true" data-fine=""><rect x="1" y="1" width="38" height="42" rx="1.5"/><circle class="k" cx="4.7" cy="10.6" r="1.8"/><circle class="k" cx="9.8" cy="10.6" r="1.8"/><circle class="k" cx="14.9" cy="10.6" r="1.8"/><circle class="k" cx="20" cy="10.6" r="1.8"/><circle class="k" cx="25.1" cy="10.6" r="1.8"/><circle class="k" cx="30.2" cy="10.6" r="1.8"/><circle class="k" cx="35.3" cy="10.6" r="1.8"/><circle class="k" cx="4.7" cy="20.2" r="1.8"/><circle class="k" cx="9.8" cy="20.2" r="1.8"/><circle class="k" cx="14.9" cy="20.2" r="1.8"/><circle class="k" cx="20" cy="20.2" r="1.8"/><circle class="k" cx="25.1" cy="20.2" r="1.8"/><circle class="k" cx="30.2" cy="20.2" r="1.8"/><circle class="k" cx="35.3" cy="20.2" r="1.8"/><circle class="j" cx="7.1" cy="31.3" r="0.7"/><circle class="j" cx="12.2" cy="31.3" r="0.7"/><circle class="j" cx="27.8" cy="31.3" r="0.7"/><circle class="j" cx="32.9" cy="31.3" r="0.7"/></svg>',
+  '911a': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><circle class="k" cx="20" cy="9.2" r="2.1"/><circle class="k" cx="20" cy="16.7" r="2.1"/><rect class="k" x="17.4" y="21.9" width="1.8" height="3" rx="0.4"/><rect class="j" x="16.3" y="28.5" width="2.6" height="2"/><rect class="j" x="21.1" y="28.5" width="2.6" height="2"/><rect class="j" x="16.3" y="33.5" width="2.6" height="2"/><rect class="j" x="21.1" y="33.5" width="2.6" height="2"/></svg>',
+  '903a': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><circle class="j" cx="17.6" cy="12" r="1.3"/><circle class="j" cx="22.4" cy="12" r="1.3"/><circle class="j" cx="17.6" cy="23.4" r="1.3"/><circle class="j" cx="22.4" cy="23.4" r="1.3"/></svg>',
+  960: '<svg viewBox="0 0 40 44" aria-hidden="true" data-fine=""><rect x="1" y="11.6" width="38" height="20.8" rx="1.5"/><rect class="k" x="3" y="16.7" width="1.2" height="0.8" rx="0.4"/><circle class="k" cx="3.6" cy="19.4" r="0.9"/><circle class="k" cx="3.6" cy="21.7" r="0.8"/><rect class="k" x="3" y="23.3" width="1.2" height="0.8" rx="0.4"/><circle class="k" cx="7.9" cy="16.2" r="0.9"/><circle class="k" cx="7.9" cy="18.5" r="0.9"/><circle class="k" cx="7.9" cy="20.8" r="0.9"/><rect class="k" x="7.5" y="22.5" width="0.8" height="1.2" rx="0.4"/><circle class="k" cx="11.3" cy="16.2" r="0.9"/><circle class="k" cx="11.3" cy="18.5" r="0.9"/><circle class="k" cx="11.3" cy="20.8" r="0.9"/><rect class="k" x="10.9" y="22.5" width="0.8" height="1.2" rx="0.4"/><circle class="k" cx="14.6" cy="16.2" r="0.9"/><circle class="k" cx="14.6" cy="18.5" r="0.9"/><circle class="k" cx="14.6" cy="20.8" r="0.9"/><rect class="k" x="14.2" y="22.5" width="0.8" height="1.2" rx="0.4"/><circle class="k" cx="18" cy="16.2" r="0.9"/><circle class="k" cx="18" cy="18.5" r="0.9"/><circle class="k" cx="18" cy="20.8" r="0.9"/><rect class="k" x="17.6" y="22.5" width="0.8" height="1.2" rx="0.4"/><circle class="k" cx="21.3" cy="16.2" r="0.9"/><circle class="k" cx="21.3" cy="18.5" r="0.9"/><circle class="k" cx="21.3" cy="20.8" r="0.9"/><rect class="k" x="20.9" y="22.5" width="0.8" height="1.2" rx="0.4"/><circle class="k" cx="24.7" cy="16.2" r="0.9"/><circle class="k" cx="24.7" cy="18.5" r="0.9"/><circle class="k" cx="24.7" cy="20.8" r="0.9"/><rect class="k" x="24.3" y="22.5" width="0.8" height="1.2" rx="0.4"/><circle class="k" cx="28" cy="16.2" r="0.9"/><circle class="k" cx="28" cy="18.5" r="0.9"/><circle class="k" cx="28" cy="20.8" r="0.9"/><rect class="k" x="27.6" y="22.5" width="0.8" height="1.2" rx="0.4"/><circle class="k" cx="31.3" cy="16.2" r="0.9"/><circle class="k" cx="31.3" cy="18.5" r="0.9"/><circle class="k" cx="31.3" cy="20.8" r="0.9"/><rect class="k" x="30.9" y="22.5" width="0.8" height="1.2" rx="0.4"/><rect class="k" x="33.9" y="22.5" width="0.8" height="1.2" rx="0.4"/><rect class="k" x="37" y="23.2" width="1.2" height="0.8" rx="0.4"/><rect class="k" x="37" y="25.1" width="1.2" height="0.8" rx="0.4"/><rect class="k" x="37" y="27.1" width="1.2" height="0.8" rx="0.4"/><circle class="j" cx="2.1" cy="27.1" r="0.7"/><circle class="j" cx="3.6" cy="27.1" r="0.7"/><circle class="j" cx="5.2" cy="27.1" r="0.7"/><circle class="j" cx="2.6" cy="29.2" r="0.7"/><circle class="j" cx="4.7" cy="29.2" r="0.7"/><circle class="j" cx="7.9" cy="27.1" r="0.7"/><circle class="j" cx="7.9" cy="29.2" r="0.7"/><circle class="j" cx="11.3" cy="27.1" r="0.7"/><circle class="j" cx="11.3" cy="29.2" r="0.7"/><circle class="j" cx="14.6" cy="27.1" r="0.7"/><circle class="j" cx="14.6" cy="29.2" r="0.7"/><circle class="j" cx="18" cy="27.1" r="0.7"/><circle class="j" cx="18" cy="29.2" r="0.7"/><circle class="j" cx="21.3" cy="27.1" r="0.7"/><circle class="j" cx="21.3" cy="29.2" r="0.7"/><circle class="j" cx="24.7" cy="27.1" r="0.7"/><circle class="j" cx="24.7" cy="29.2" r="0.7"/><circle class="j" cx="28" cy="27.1" r="0.7"/><circle class="j" cx="28" cy="29.2" r="0.7"/><circle class="j" cx="31.3" cy="27.1" r="0.7"/><circle class="j" cx="31.3" cy="29.2" r="0.7"/><circle class="j" cx="34.3" cy="27.1" r="0.7"/><circle class="j" cx="34.3" cy="29.2" r="0.7"/><circle class="j" cx="36.5" cy="16.2" r="0.7"/><circle class="j" cx="38.1" cy="16.2" r="0.7"/><circle class="j" cx="36.5" cy="18.5" r="0.7"/><circle class="j" cx="38.1" cy="18.5" r="0.7"/><circle class="j" cx="36.5" cy="20.8" r="0.7"/><circle class="j" cx="38.1" cy="20.8" r="0.7"/><rect class="e" x="1.9" y="15.1" width="1" height="0.8"/><rect class="e" x="4.4" y="15.1" width="1" height="0.8"/><rect class="e" x="3.1" y="24.7" width="1" height="0.8"/><rect class="e" x="7.4" y="24.6" width="1" height="0.8"/><rect class="e" x="10.8" y="24.6" width="1" height="0.8"/><rect class="e" x="14.1" y="24.6" width="1" height="0.8"/><rect class="e" x="17.5" y="24.6" width="1" height="0.8"/><rect class="e" x="20.8" y="24.6" width="1" height="0.8"/><rect class="e" x="24.2" y="24.6" width="1" height="0.8"/><rect class="e" x="27.5" y="24.6" width="1" height="0.8"/><rect class="e" x="30.8" y="24.6" width="1" height="0.8"/><rect class="e" x="33.8" y="24.6" width="1" height="0.8"/><circle class="l" cx="3.6" cy="14.2" r="0.5"/><circle class="l" cx="7.9" cy="14.2" r="0.5"/><circle class="l" cx="11.3" cy="14.2" r="0.5"/><circle class="l" cx="14.6" cy="14.2" r="0.5"/><circle class="l" cx="18" cy="14.2" r="0.5"/><circle class="l" cx="21.3" cy="14.2" r="0.5"/><circle class="l" cx="24.7" cy="14.2" r="0.5"/><circle class="l" cx="28" cy="14.2" r="0.5"/><circle class="l" cx="31.3" cy="14.2" r="0.5"/><circle class="l" cx="34.3" cy="14.2" r="0.5"/></svg>',
+  961: '<svg viewBox="0 0 40 44" aria-hidden="true" data-fine=""><rect x="3" y="8.5" width="34" height="27" rx="1.5"/><circle class="k" cx="11.1" cy="30.3" r="1.7"/><circle class="k" cx="19.2" cy="30.3" r="1.7"/><circle class="k" cx="28.3" cy="14" r="1.7"/><circle class="j" cx="7.4" cy="13.7" r="0.7"/><circle class="j" cx="10.3" cy="13.7" r="0.7"/><circle class="j" cx="7.4" cy="16.3" r="0.7"/><circle class="j" cx="10.3" cy="16.3" r="0.7"/><circle class="j" cx="7.4" cy="18.9" r="0.7"/><circle class="j" cx="10.3" cy="18.9" r="0.7"/><circle class="j" cx="7.4" cy="21.5" r="0.7"/><circle class="j" cx="10.3" cy="21.5" r="0.7"/><circle class="j" cx="7.4" cy="24.1" r="0.7"/><circle class="j" cx="10.3" cy="24.1" r="0.7"/><circle class="j" cx="7.4" cy="26.7" r="0.7"/><circle class="j" cx="10.3" cy="26.7" r="0.7"/><rect class="j" x="6.7" y="29.4" width="1.4" height="1.1"/><circle class="j" cx="15.6" cy="13.7" r="0.7"/><circle class="j" cx="18.5" cy="13.7" r="0.7"/><circle class="j" cx="15.6" cy="16.3" r="0.7"/><circle class="j" cx="18.5" cy="16.3" r="0.7"/><circle class="j" cx="15.6" cy="18.9" r="0.7"/><circle class="j" cx="18.5" cy="18.9" r="0.7"/><circle class="j" cx="15.6" cy="21.5" r="0.7"/><circle class="j" cx="18.5" cy="21.5" r="0.7"/><circle class="j" cx="15.6" cy="24.1" r="0.7"/><circle class="j" cx="18.5" cy="24.1" r="0.7"/><circle class="j" cx="15.6" cy="26.7" r="0.7"/><circle class="j" cx="18.5" cy="26.7" r="0.7"/><rect class="j" x="14.9" y="29.4" width="1.4" height="1.1"/><circle class="j" cx="23.7" cy="14" r="0.7"/><circle class="j" cx="32.9" cy="13.3" r="0.7"/><circle class="j" cx="32.9" cy="16.5" r="0.7"/><rect class="j" x="23" y="20.8" width="1.4" height="1.1"/><circle class="j" cx="28.3" cy="21.3" r="0.7"/><rect class="j" x="23" y="24.9" width="1.4" height="1.1"/><circle class="j" cx="28.3" cy="25.5" r="0.7"/></svg>',
+  962: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><circle class="j" cx="16.8" cy="7.6" r="1.3"/><circle class="j" cx="23.2" cy="7.6" r="1.3"/><circle class="j" cx="23.2" cy="10.8" r="1.3"/><circle class="j" cx="16.8" cy="15.1" r="1.3"/><circle class="j" cx="23.2" cy="15.1" r="1.3"/><circle class="j" cx="23.2" cy="18.3" r="1.3"/><circle class="j" cx="16.8" cy="22.5" r="1.3"/><circle class="j" cx="23.2" cy="22.5" r="1.3"/><circle class="j" cx="23.2" cy="25.7" r="1.3"/><circle class="j" cx="17.6" cy="31.6" r="1.3"/><circle class="j" cx="22.4" cy="31.6" r="1.3"/><circle class="j" cx="20" cy="35.9" r="1.3"/><rect class="e" x="19.1" y="10.2" width="1.9" height="1.2"/><rect class="e" x="19.1" y="17.6" width="1.9" height="1.2"/><rect class="e" x="19.1" y="25.1" width="1.9" height="1.2"/><circle class="l" cx="20" cy="7.6" r="0.8"/><circle class="l" cx="20" cy="15.1" r="0.8"/><circle class="l" cx="20" cy="22.5" r="0.8"/></svg>',
+  'clk': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="10" y="8.5" width="20" height="27" rx="1.5"/><circle class="k" cx="15.4" cy="17.2" r="1.7"/><circle class="k" cx="24.6" cy="17.2" r="1.7"/><rect class="k" x="13.9" y="22.8" width="3" height="1.8" rx="0.4"/><circle class="j" cx="14.3" cy="28.6" r="1.3"/><circle class="j" cx="20" cy="28.6" r="1.3"/><circle class="j" cx="25.7" cy="28.6" r="1.3"/><circle class="l" cx="24.6" cy="23.7" r="0.8"/></svg>',
+  'cp2': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="3" y="8.5" width="34" height="27" rx="1.5"/><circle class="k" cx="9.6" cy="15.8" r="1.9"/><circle class="k" cx="20" cy="15.8" r="1.9"/><circle class="j" cx="7.1" cy="23" r="1.3"/><circle class="j" cx="12.1" cy="23" r="1.3"/><circle class="j" cx="17.5" cy="23" r="1.3"/><circle class="j" cx="22.5" cy="23" r="1.3"/><circle class="j" cx="27.9" cy="14.4" r="1.3"/><circle class="j" cx="32.6" cy="14.4" r="1.3"/><circle class="j" cx="27.9" cy="18.5" r="1.3"/><circle class="j" cx="32.6" cy="18.5" r="1.3"/><circle class="j" cx="27.9" cy="25.1" r="1.3"/><rect class="j" x="31.3" y="24.1" width="2.6" height="2"/></svg>',
+  'cp3a': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="1" y="8.5" width="38" height="27" rx="1.5"/><circle class="k" cx="4.7" cy="19.6" r="1.5"/><circle class="k" cx="8.8" cy="19.6" r="1.5"/><circle class="k" cx="12.9" cy="19.6" r="1.5"/><circle class="k" cx="16.9" cy="19.6" r="1.5"/><circle class="k" cx="6.8" cy="26.5" r="1.7"/><rect class="k" x="21.3" y="14" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="25.7" y="14" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="21.3" y="18.5" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="25.7" y="18.5" width="2.2" height="2.2" rx="0.4"/><circle class="k" cx="22.4" cy="25.8" r="1.5"/><circle class="i" cx="31.5" cy="24.4" r="1.1"/><circle class="i" cx="35.9" cy="24.4" r="1.1"/><circle class="i" cx="31.5" cy="28.6" r="1.1"/><circle class="i" cx="35.9" cy="28.6" r="1.1"/><circle class="j" cx="4.7" cy="14.4" r="1.3"/><circle class="j" cx="8.8" cy="14.4" r="1.3"/><circle class="j" cx="12.9" cy="14.4" r="1.3"/><circle class="j" cx="16.9" cy="14.4" r="1.3"/><circle class="j" cx="12.9" cy="26.5" r="1.3"/><circle class="j" cx="16.9" cy="26.5" r="1.3"/><circle class="j" cx="26.8" cy="26.5" r="1.3"/><circle class="j" cx="31.5" cy="14.4" r="1.3"/><circle class="j" cx="35.9" cy="14.4" r="1.3"/><circle class="j" cx="31.5" cy="18.5" r="1.3"/><circle class="j" cx="35.9" cy="18.5" r="1.3"/></svg>',
+  'cp4a': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="3" y="8.5" width="34" height="27" rx="1.5"/><rect class="k" x="6" y="14.3" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="9.4" y="14.3" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="12.9" y="14.3" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="16.4" y="14.3" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="22.6" y="14.3" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="26.8" y="14.3" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="31.1" y="14.3" width="2.2" height="2.2" rx="0.4"/><circle class="i" cx="9" cy="26.5" r="1.1"/><circle class="i" cx="13.6" cy="26.5" r="1.1"/><circle class="i" cx="26.4" cy="26.5" r="1.1"/><circle class="i" cx="31" cy="26.5" r="1.1"/><circle class="j" cx="17.5" cy="21" r="1.3"/><rect class="j" x="22.4" y="20" width="2.6" height="2"/></svg>',
+  'cp35': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="1" y="8.5" width="38" height="27" rx="1.5"/><circle class="k" cx="11.5" cy="15.1" r="1.5"/><circle class="k" cx="15.9" cy="15.1" r="1.5"/><circle class="k" cx="20.3" cy="15.1" r="1.5"/><circle class="k" cx="24.8" cy="15.1" r="1.5"/><circle class="i" cx="30.5" cy="25.5" r="1.1"/><circle class="i" cx="34.9" cy="25.5" r="1.1"/><circle class="i" cx="30.5" cy="29.6" r="1.1"/><circle class="i" cx="34.9" cy="29.6" r="1.1"/><circle class="j" cx="5.1" cy="15.4" r="1.3"/><circle class="j" cx="5.1" cy="20.6" r="1.3"/><circle class="j" cx="11.5" cy="21" r="1.3"/><circle class="j" cx="11.5" cy="25.5" r="1.3"/><circle class="j" cx="15.9" cy="21" r="1.3"/><circle class="j" cx="15.9" cy="25.5" r="1.3"/><circle class="j" cx="20.3" cy="21" r="1.3"/><circle class="j" cx="20.3" cy="25.5" r="1.3"/><circle class="j" cx="24.8" cy="21" r="1.3"/><circle class="j" cx="24.8" cy="25.5" r="1.3"/><circle class="j" cx="30.5" cy="15.1" r="1.3"/><circle class="j" cx="34.9" cy="15.1" r="1.3"/><circle class="j" cx="30.5" cy="19.6" r="1.3"/><circle class="j" cx="34.9" cy="19.6" r="1.3"/></svg>',
+  'cp8a': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="10" y="8.5" width="20" height="27" rx="1.5"/><rect class="i" x="14.5" y="18.3" width="2.4" height="1.8" rx="0.4"/><rect class="i" x="23.1" y="18.3" width="2.4" height="1.8" rx="0.4"/></svg>',
+  992: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><rect class="k" x="21" y="7" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="21" y="10.6" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="21" y="14.1" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="21" y="17.7" width="2.2" height="2.2" rx="0.4"/><circle class="k" cx="20" cy="25.6" r="2.1"/><circle class="j" cx="20" cy="34.1" r="1.3"/></svg>',
+  993: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><rect class="k" x="16.5" y="7.4" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="21.3" y="7.4" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="16.5" y="15.2" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="21.3" y="15.2" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="16.5" y="20.5" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="21.3" y="20.5" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="16.5" y="25.9" width="2.2" height="2.2" rx="0.4"/><rect class="k" x="21.3" y="25.9" width="2.2" height="2.2" rx="0.4"/></svg>',
+  994: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><circle class="j" cx="17.6" cy="8.8" r="1.3"/><circle class="j" cx="22.4" cy="8.8" r="1.3"/><circle class="j" cx="17.6" cy="13.8" r="1.3"/><circle class="j" cx="22.4" cy="13.8" r="1.3"/><circle class="j" cx="17.6" cy="25.2" r="1.3"/><circle class="j" cx="22.4" cy="25.2" r="1.3"/><circle class="j" cx="17.6" cy="30.2" r="1.3"/><circle class="j" cx="22.4" cy="30.2" r="1.3"/></svg>',
 });
 // a type without a glyph (a later module): a bare 1 MU panel
 const moogGlyph = id => MOOG_GLYPH[id] || '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/></svg>';
@@ -439,6 +472,43 @@ export function sourcesTray(el, o) {
   let mode = 'replace', cur = null, lay = 'hw', view = viewOf(o.view || o.layout).id;
   const tiles = new Map(), offs = [];
   const labelOf = (id, over) => (o.label ? o.label(id, over) : over === 'tracks' ? '+ New track' : '');
+  // (9b, IMPL-9b §4.3) the set tiles: one button.cv-tile.cv-stile[data-set] per o.sets item (its art cv-art setArt, the name, "N
+  // modules", span.cv-treason) right after the patch model's tile (o.setsEl: in that box instead), shown where a view's section
+  // says `sets`. A tap: o.setPick(id, mode); a drag through o.setDrag with info.set = true, info.over 'canvas' | 'tracks' | null,
+  // info.at the world point (the ghost hidden over the canvas while o.setCanvasGhost() says the world draws the rack's outline);
+  // setSetPlaced(id, reason) greys one (setFull's reason: the patch cannot hold the set) — then it neither picks nor drags;
+  // (review 2 N3) o.setCost(id) → its load label in span.cv-tcost (the Model 15 tile's "~2 %"; refreshMoog() re-reads it)
+  const stiles = new Map(), splaced = new Map();
+  const ST = Array.isArray(o.sets) ? o.sets : o.sets === true ? SET_TILES : null;
+  const atW = i => { if (o.toWorld) { try { const p = o.toWorld(i.x, i.y); if (p && isFinite(p.x) && isFinite(p.y)) return { x: p.x, y: p.y }; } catch { /* no world */ } } return { x: i.x, y: i.y }; };
+  function setTiles(box) {
+    const pick = o.setPick || null, drag = o.setDrag || {};
+    for (const S of ST || []) {
+      const id = S && typeof S.id === 'string' ? S.id : null;
+      if (!id || stiles.has(id)) continue;
+      const name = String(S.name || id), n = S.modules | 0, meta = n > 0 ? n + ' modules' : '', b = mk(d, 'button', 'cv-tile cv-stile');
+      b.type = 'button';
+      b.setAttribute('data-set', id);
+      const aria = name + (meta ? ' · ' + meta : ''), tip = `${aria} — the whole set, patched${S.starter ? ' as ' + S.starter : ''} (our model of its circuits) — tap to use it, or drag it onto the canvas or the track list`;
+      b.title = tip; b.setAttribute('aria-label', aria);
+      const pic = mk(d, 'span', 'cv-tart');
+      pic.setAttribute('aria-hidden', 'true');
+      pic.innerHTML = cvArt.setArt(id, cvArt.TILE);
+      const cs = mk(d, 'span', 'cv-tcost'), rs = mk(d, 'span', 'cv-treason');
+      cs.hidden = true; rs.hidden = true;
+      b.append(pic, mk(d, 'span', 'cv-tname', name), mk(d, 'span', 'cv-tmeta', meta), cs, rs);
+      const off = () => splaced.has(id);
+      offs.push(listen(b, 'click', e => { if ((e && e.defaultPrevented) || off() || !pick) return; pick(id, mode); }));
+      const dd = { begin: (x, i) => { i.set = true; if (drag.begin) drag.begin(x, i); }, move: (x, i) => { i.set = true; if (drag.move) drag.move(x, i); },
+        drop: (x, i) => { i.set = true; return !!drag.drop && drag.drop(x, i); }, cancel: (x, i) => { i.set = true; if (drag.cancel) drag.cancel(x, i); } };
+      offs.push(tileDrag(d, Object.assign({}, o, { drag: dd, canvasGhost: o.setCanvasGhost }), b, id, { pic: () => cvArt.setArt(id, cvArt.TILE), off,
+        norm: r => { const v = r && typeof r === 'object' ? r.over : r; return { over: v === 'canvas' || v === 'tracks' ? v : null, key: null, near: null }; }, at: atW,
+        label: over => (over === 'canvas' ? '+ ' + name : over === 'tracks' ? '+ New track' : '') }));
+      box.appendChild(b);
+      stiles.set(id, { b, rs, cs, tip, aria, name });
+      offs.push(() => b.remove());
+    }
+  }
   for (const m of o.models) {
     const meta = cvArt.tileMeta(m.id);
     const b = mk(d, 'button', 'cv-tile');
@@ -458,7 +528,9 @@ export function sourcesTray(el, o) {
     offs.push(tileDrag(d, o, b, m.id, { pic: () => cvArt.art(m.id, cvArt.TILE), label: over => labelOf(m.id, over) }));
     el.appendChild(b);
     tiles.set(m.id, b);
+    if (pa && ST && !o.setsEl) setTiles(el); // ((9b) the set tiles: beside the Model 15 tile)
   }
+  if (ST) setTiles(o.setsEl || el); // ((9b) in their own box, or after the synths when no patch model is listed)
   // (2a) the Modulators section
   const mtiles = new Map(), placed = new Map();
   let mhead = null;
@@ -581,13 +653,15 @@ export function sourcesTray(el, o) {
     }
   }
   function refreshMoog() {
-    for (const [id, T] of gtiles) {
+    const fill = (T, f, id) => {
       let c = '';
-      try { c = o.moogCost ? String(o.moogCost(id) || '') : ''; } catch { c = ''; }
+      try { c = f ? String(f(id) || '') : ''; } catch { c = ''; }
       if (T.cs.textContent !== c) T.cs.textContent = c;
       T.cs.hidden = !c;
       T.cs.title = c ? 'Estimated DSP load on this device: ' + c : '';
-    }
+    };
+    for (const [id, T] of gtiles) fill(T, o.moogCost, id);
+    for (const [id, T] of stiles) fill(T, o.setCost, id); // ((9b, review 2 N3) the set tiles' load, as the Model 15 tile's)
   }
   refreshMoog();
   // (milestone 3) the Serum parts and note tools: a section per group (the host's elements, else made in o.secEl / el)
@@ -707,6 +781,9 @@ export function sourcesTray(el, o) {
     const ctls = has('ctls') && ctiles.size > 0; // ((8) the Controllers row)
     if (o.ctlsSec) o.ctlsSec.hidden = !ctls;
     if (chead) { chead.hidden = !ctls; for (const T of ctiles.values()) T.b.hidden = !ctls; }
+    const sets = S.some(x => x && x.sets) && stiles.size > 0; // ((9b) the set tiles: with the Model 15 tile)
+    for (const T of stiles.values()) T.b.hidden = !sets;
+    if (o.setsSec) o.setsSec.hidden = !sets;
     const moog = has('moog') && gtiles.size > 0; // ((9) the Moog modules row)
     if (gsec) gsec.hidden = !moog;
     if (ginEl) { for (const h of gheads) h.hidden = !moog; for (const T of gtiles.values()) T.b.hidden = !moog; }
@@ -740,8 +817,7 @@ export function sourcesTray(el, o) {
     T.b.title = r ? T.name + ' — ' + r : T.tip;
   }
   return {
-    /** the view (an o.views id: 'hw' | 'flow' | 'serum' | 'drums' | 'ctl' | 'moog'; setView is a restore: no callback); the dropdown's close (→ was it open) */
-    setView, view: () => view, views: () => VIEWS.map(V => V.id), closeView: () => !!vpop && vpop.close(), viewOpen: () => !!vpop && vpop.isOpen(),
+    /** the view (an o.views id: 'hw' | 'flow' | 'serum' | 'drums' | 'ctl' | 'moog'; setView is a restore: no callback); the dropdown's close (→ was it open) */    setView, view: () => view, views: () => VIEWS.map(V => V.id), closeView: () => !!vpop && vpop.close(), viewOpen: () => !!vpop && vpop.isOpen(),
     /** the classic synths' layout: setLayout('hw' | 'flow') = that view; layout() the last one (kept through Serum) */
     setLayout: l => setView(l === 'flow' ? 'flow' : 'hw'), layout: () => lay,
     /** (2a) the Modulators section's tiles; greying one out with its reason (null: available again) */
@@ -752,6 +828,20 @@ export function sourcesTray(el, o) {
     /** (9) the Moog modules row's tiles; every one greyed with a reason (null: available again); their load labels again */
     moogTiles: () => [...gtiles.values()].map(T => T.b), moogTile: id => (gtiles.get(id) || {}).b || null,
     setMoogPlaced(reason) { for (const id of gtiles.keys()) setPlaced(id, reason); }, refreshMoog,
+    /** (9b) the set tiles; greying one with its reason (setFull's; null: available again) */
+    setTiles: () => [...stiles.values()].map(T => T.b), setTile: id => (stiles.get(id) || {}).b || null,
+    setSetPlaced(id, reason) {
+      const T = stiles.get(id);
+      if (!T) return;
+      const r = reason == null || reason === '' ? null : String(reason);
+      if (r) splaced.set(id, r); else splaced.delete(id);
+      T.b.classList.toggle('cv-placed', !!r);
+      if (r) T.b.setAttribute('aria-disabled', 'true'); else T.b.removeAttribute('aria-disabled');
+      T.rs.textContent = r || ''; T.rs.hidden = !r;
+      T.b.title = r ? T.aria + ' — ' + r : T.tip;
+      T.b.setAttribute('aria-label', r ? T.aria + ' — ' + r : T.aria);
+    },
+    setPlacedOf: id => splaced.get(id) || null,
     /** (milestone 3) the Serum parts / note tools tiles; greying one out with its reason (null: available again) */
     partTiles: () => [...ptiles.values()].map(T => T.b), partTile: id => (ptiles.get(id) || {}).b || null,
     setPartPlaced(id, reason) {

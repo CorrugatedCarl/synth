@@ -101,7 +101,9 @@ test('IMPL-9 §3.8: the 900 Series is costed by its patch — base + each module
   const c = C.COST.synth.m900, e = C.estimate('m900'), K = C.COST.patch;
   assert.deepEqual([c.row, c.family, c.poly, c.voice], ['m9p', 'patch', 1, 0]);
   assert.deepEqual(Object.keys(K).sort(), [...MG.ORDER_ALL].sort(), 'a cost per type');
-  for (const t of MG.ORDER_ALL) assert.ok(Array.isArray(K[t]) ? K[t].length === MG.TYPES[t].secs.length : K[t] > 0 && K[t] < 0.01, t);
+  // (IMPL-9b §3.7: the 993, the 994 and the CP8A cost nothing — no slots, never scheduled; a sectioned type by its sections)
+  const Z = ['993', '994', 'cp8a'], sum = t => (Array.isArray(K[t]) ? K[t].reduce((a, x) => a + x, 0) : K[t]);
+  for (const t of MG.ORDER_ALL) assert.ok((Array.isArray(K[t]) ? K[t].length === MG.TYPES[t].secs.length && K[t].every(x => x >= 0 && x < 0.01) : K[t] >= 0 && K[t] < 0.01) && (Z.includes(t) ? sum(t) === 0 : sum(t) > 0), t);
   // Classic bass by hand: the controller's keyboard and mixer (the multiple and MAIN OUT: the evaluator's), the 921A, two 921Bs, the
   // 921, the 995's first attenuator, the 904A, two 911s, one 902 (the 923, the 907A and the other 902 unpatched)
   const hand = c.base + K.ctl[0] + K.ctl[1] + K['921a'] + 2 * K['921b'] + K[921] + K[995][0] + K['904a'] + 2 * K[911] + K[902];
@@ -152,6 +154,27 @@ test('IMPL-9 §3.8 (review 1 F5): the patch estimate charges the live nodes only
     near(e, meas, 0.2, row);
   }
   t.diagnostic(rep.join(' · '));
+});
+
+// IMPL-9b §3.7, §8.3: the routing switches' bus rows make nodes live — the estimate reads the device's vals (patchLoad over
+// liveNodes(rec, f, vals)): a 993-routed envelope into a 902's third control input costs its 911 (the 993 itself nothing); without
+// the vals, or with the switch off, it does not
+test('IMPL-9b §3.7: the patch estimate counts the bus rows (vals) — a 993-routed 911 is live and costed, the 993 free; switched off or without vals it is not', async () => {
+  const MG = await import('../moog-core.js?v=9'), PT = await import('../patch-core.js?v=9'), K = C.COST.patch;
+  let rec = PT.fresh('moog'), vals = {};
+  const add = t => { const x = PT.addModule(rec, vals, t); rec = x.rec; return x.mid; };
+  const o = add('921'), e = add('911'), a = add('902'), r = add('993');
+  for (const [x, y] of [[o + '.saw', a + '.i1'], [a + '.o2', 'c.out'], ['c.ks1', e + '.trg']]) rec = PT.plug(rec, x, y).rec;
+  const est = v => C.estimate(syn('m900', v, { patch: rec }));
+  const off = est(vals), lit = PT.setKnob(vals, rec, r, 'e1', 1);
+  assert.ok(PT.busRows(rec, 'moog', lit).length === 1, 'the row resolves');
+  near(est(lit) - off, K[911] + K.ctl[0], 1e-9, 'the routed 911 is live: its cost and the keyboard section triggering it');
+  near(C.estimate(syn('m900', undefined, { patch: rec })), off, 1e-9, 'no vals: no rows');
+  near(est(PT.setKnob(lit, rec, r, 'e1', 0)), off, 1e-9, 'switched off');
+  assert.equal(K[993], 0);
+  // the System 55 rows (engine-track's calibrated node gate, E9b: m9q 0.0232, m9s 0.0443): within 15 %
+  const { m9qPatch, m9sPatch } = await import('./bench-scenarios.mjs');
+  for (const [row, f, meas] of [['m9q', m9qPatch, 0.0232], ['m9s', m9sPatch, 0.0443]]) { const x = f(); near(C.estimate(syn('m900', x.vals, { patch: x.rec })), meas, 0.15, row); }
 });
 
 test('estimates are monotone in voices, unison, oscillators, filters and effect count, and linear in the factor', () => {

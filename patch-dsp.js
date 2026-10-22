@@ -27,6 +27,10 @@
  *   reset()            state only (panic, Play from a stop — P-2): every module's reset(), its outputs zeroed, values
  *                      snapped, back-edges and transitions cleared; the graph and the values stay. = a fresh machine
  *   setSalt(s)         every module's setSalt(s)
+ *   ev(n, k)           (stage 9b) a momentary event: module n's ev(k) at once (the class holds it for its next ctl); → 1, or 0
+ *                      dropped (no module n, k outside its type's EV row, a class without ev)
+ *   lamps(F)           (stage 9b) → { F, l: [n, bits, …] } for the live modules whose type declares lamps (their int `lamp`);
+ *                      lampN their count (set by graph(): the monitor posts when > 0)
  *   mon()              a debug snapshot (tests): modules, the running schedule, transition, errors
  * PatchDSP.schedule(pg, fam) (pure; fam = a family object or id) → { nodes: [[n, sec]], live, steps: [{ loop, sink?,
  * nodes }], edges, back, why }: the compile step graph() uses, for tests and tools.
@@ -34,7 +38,8 @@
  * A family (`Patch<Family>`, IMPL-9 §3.4): { id, T: { type: class }, JACKS: { type: [{ id, dir: 'in' | 'out' | 'any',
  * sig: 'v' | 's', sec?, norm? }] } (moog-core's TYPE.jacks order), PARAMS: { type: [[id, def, snap?]] } (slot order; module
  * 0's = the model's control order), SINK: '<module 0's MAIN OUT jack id>', LINK?: { '<driven type>': { from: '<driver
- * type>', def: [the link inputs' values when undriven] } }, SECS?: { type: count }, OUT_K?: og's fallback }. The jacks:
+ * type>', def: [the link inputs' values when undriven] } }, SECS?: { type: count }, OUT_K?: og's fallback, EV?: { type: [event
+ * ids] }, LAMPS?: { type: [lamp ids] } (9b: a type with events has ev(k), one with lamps an int `lamp`) }. The jacks:
  * 'in' jacks are a module's inputs (ins[k] = the k-th, in table order), 'out' jacks its outputs (outs[k]); 'any' jacks
  * belong to the evaluator — a section's 'any' jacks are one passive multiple (its driven jacks averaged — one driver: as is —,
  * every other jack reading that; one multiple may drive another, never in a loop), never seen by the module. `norm`: an unpatched input
@@ -99,9 +104,12 @@
       }
       const T = F.T && typeof F.T === 'object' ? F.T : {}, J = F.JACKS && typeof F.JACKS === 'object' ? F.JACKS : {};
       const P = F.PARAMS && typeof F.PARAMS === 'object' ? F.PARAMS : {}, S = F.SECS && typeof F.SECS === 'object' ? F.SECS : {};
+      const EV = F.EV && typeof F.EV === 'object' ? F.EV : {}, LP = F.LAMPS && typeof F.LAMPS === 'object' ? F.LAMPS : {};
       for (const type of Object.keys(T)) {
         const TI = typeInfo(type, T[type], J[type], P[type], L[type], nLO[type] || 0, S[type]);
-        if (TI !== null) types[type] = TI;
+        if (TI === null) continue;
+        TI.nEv = Array.isArray(EV[type]) ? EV[type].length : 0; TI.nLamp = Array.isArray(LP[type]) ? LP[type].length : 0;   // (9b: events, lamps)
+        types[type] = TI;
       }
       FT = { F, types, sink: typeof F.SINK === 'string' ? F.SINK : '', outK: typeof F.OUT_K === 'number' ? F.OUT_K : 0.1 };
       FTC.set(F, FT);
@@ -150,7 +158,7 @@
       }
       return { type, Cls, jk, ids, nIn, nOut, nLI, nLO, nInT, nOutT, nSec, inSec, inS, inJack, outSec, secSlots, secOut, secMask,
         linkFrom: lk ? lk.from : '', linkDef: Float64Array.from(lk ? lk.def.map(v => (typeof v === 'number' && Number.isFinite(v) ? v : 0)) : []),
-        par: { id: pid, def: Float64Array.from(pdef), snap: Uint8Array.from(psnap), idx: pidx } };
+        par: { id: pid, def: Float64Array.from(pdef), snap: Uint8Array.from(psnap), idx: pidx }, nEv: 0, nLamp: 0 };
     }
 
     /* ---------------------------------------------------------------- the payload → modules and each input's sources */
@@ -373,6 +381,7 @@
         this.recs = []; this.nR = 0; this.steps = []; this.nS = 0; this.sinkB = null; this.sinkF = null; this.sinkOn = 0; this.sinkK = -1; this.m0 = null;
         this.wR = []; this.wS = null; this.wB = []; this.nW = 0; this.mR = []; this.mM = null; this.nM = 0; this.dF = []; this.nDF = 0; this.nRamp = 0;
         this.ent = null; this.liveN = []; this.liveK = null; this.byN = null; this.all = []; this.nAll = 0; this.left = 0; this.total = 0; this.next = null;
+        this.lampR = EMPTY; this.nLampR = 0;           // (9b) the plan's modules whose type declares lamps (lamps())
       }
     }
 
@@ -387,6 +396,7 @@
         this.Z = new Float64Array(CHMAX); this.cb = new Map(); this.uid = 0;
         this.cur = null; this.pend = null; this.lat = null; this.m0 = null; this.pv = null;
         this.g0 = NaN; this.ps = 0; this.why = []; this.errSent = 0;
+        this.lampN = 0;                                // (9b) the live modules with lamps in the latest graph (the monitor posts when > 0)
         this.rate(os, inst && inst.fs > 0 ? inst.fs : 48000 * os);
       }
       rate(os, fs) { // the rate-dependent constants: chunk, glide, the ramp (whole chunks) and its raised-cosine table
@@ -445,6 +455,26 @@
         if (L !== null) for (let k = 0; k < L.nAll; k++) this.vals(L.all[k], pv);
       }
       note(n, v, on) { const m = this.m0; if (m !== null && typeof m.note === 'function') m.note(n, v, on); }
+      // (9b, IMPL-9b §3.2) a momentary event k of module n → its class's ev(k) at once: the class keeps it (its own ring) and
+      // applies it at its next ctl — messages land between quanta, so the next chunk is the next quantum's first: no queue
+      // here, nothing in the chunk loop. No module n (in the latest graph), one outside the latest plan (not live: no ctl runs,
+      // its ring would hold the event until a cord makes it live — review 1 F2: live only, so dropped), k outside its type's EV
+      // row, or no ev → dropped (0)
+      ev(n, k) {
+        const L = this.lat;
+        if (L === null) return 0;
+        const r = L.byN.get(n);
+        if (r === undefined || !(Number.isInteger(k) && k >= 0 && k < r.TI.nEv) || typeof r.m.ev !== 'function' || L.recs.indexOf(r) < 0) return 0;
+        r.m.ev(k);
+        return 1;
+      }
+      // (9b) the live lamp modules' lamps at frame F → { F, l: [n, bits, …] } (bit i = lamp i of its type's LAMPS row): the
+      // monitor's, a copy (never from render); a module out of the live set keeps its last lamps on the host
+      lamps(F) {
+        const P = this.lat, l = [];
+        if (P !== null) for (let k = 0; k < P.nLampR; k++) { const r = P.lampR[k]; l.push(r.n, r.m.lamp | 0); }
+        return { F, l };
+      }
       graph(pg) {
         const why = [], A = analyse(pg, this.FT, why);
         if (A === null) { this.err(why); return null; }                 // (not a payload: nothing changes)
@@ -477,7 +507,7 @@
         }
         if (T !== null) { this.pend = T; this.install(T); } else { this.cur = B; this.install(B); }
         const r0 = B.byN.get(0);
-        this.lat = B; this.m0 = r0 !== undefined ? r0.m : null;
+        this.lat = B; this.m0 = r0 !== undefined ? r0.m : null; this.lampN = B.nLampR;
         this.err(why);
         const P = T !== null ? T : B;
         return { steps: B.nS, loops: B.steps.filter(s => s.loop === 1).length, live: B.liveN.length, ramps: P.nRamp, why };
@@ -569,6 +599,7 @@
         }
         P.nS = P.steps.length;
         P.recs = [...inPlan].sort((a, b) => a.n - b.n || a.uid - b.uid); P.nR = P.recs.length;
+        P.lampR = P.recs.filter(r => r.TI.nLamp > 0); P.nLampR = P.lampR.length;
         P.wR = wR; P.wS = Int32Array.from(wS); P.wB = wB; P.nW = wR.length;
         P.mR = P.recs; P.mM = Int32Array.from(P.recs, r => mask.get(r) || 0); P.nM = P.recs.length; P.nDF = P.dF.length;
         const s0 = G.sink !== null ? R[G.sink.i] : null;

@@ -73,7 +73,9 @@ function rig({ base = 48000, os = 4, mods, cords = [], pv = {}, drive = [], taps
     if (!j.norm) return;
     const io = P.IO[type], key = n + ':' + io.ii[k], has = x => bind.has(n + ':' + io.ii[x]) || dmap.has(n + ':' + io.ii[x]);
     if (bind.has(key) || dmap.has(key)) return;
-    let x = J(n, j.norm); while (x >= 0 && !has(x)) { const nj = P.JACKS[type][x].norm; x = nj ? J(n, nj) : -1; }
+    const xo = J(n, j.norm), jo = P.JACKS[type][xo];                        // (9b: a normal to an output of the module — the CP35's ±6 V)
+    if (jo.dir === 'out') { bind.set(key, { n, oi: io.oi[xo], sec: jo.sec, dsec: j.sec }); return; }
+    let x = xo; while (x >= 0 && !has(x)) { const nj = P.JACKS[type][x].norm; x = nj ? J(n, nj) : -1; }
     if (x < 0) return;
     const kx = n + ':' + io.ii[x];
     if (dmap.has(kx)) dmap.set(key, dmap.get(kx)); else bind.set(key, Object.assign({}, bind.get(kx), { dsec: j.sec }));
@@ -188,9 +190,13 @@ function machine({ base = 48000, os = 4, pg, pv, salt = 0, F0 = 0 }) {
   };
 }
 // one of K9's starting patches on a fresh 900 Series (patch-core loadPreset → payload; moog-core pvOf)
+// (9b: the payload with the values — its bus rows; the Song clock's presets play with the transport running from frame 0 at 120 BPM)
+const CLOCKED = new Set(['Sequence', 'Twenty-four steps']);
 function presetM(name, o = {}) {
-  const r = PT.loadPreset(PT.fresh('moog'), {}, name), { pg } = PT.payload(r.rec, 'moog');
-  return Object.assign(machine(Object.assign({ pg, pv: MG.pvOf(r.vals) }, o)), { rec: r.rec, vals: r.vals });
+  const r = PT.loadPreset(PT.fresh('moog'), {}, name), { pg } = PT.payload(r.rec, 'moog', r.vals);
+  const m = Object.assign(machine(Object.assign({ pg, pv: MG.pvOf(r.vals) }, o)), { rec: r.rec, vals: r.vals });
+  if (CLOCKED.has(name)) m.inst.tp = { play: true, frame: 0, tick: 0, fpt: (o.base || 48000) / 1920, loop: false, ls: 0, le: 0, wrap: false, end: null };
+  return m;
 }
 // a payload by hand: mods [[n, type, drv?]], cords [[aN, 'jack', bN, 'jack']] → pg (ports by jack id), pv { '0': {…}, 'm<n>': {…} }
 function payloadOf(mods, cords, vals = {}) {
@@ -262,28 +268,63 @@ const T_JACKS = {
   921: 'f1 f2 f3 w1 w2 cv cs xm xp sin tri saw rec', '921a': 'f1 f2 f3 w1 w2', '921b': 'dc ac sy sin tri saw rec',
   923: 'wh1 wh2 pk li lo hi ho', '904a': 'in c1 c2 c3 out', '907a': 'in out', 911: 'trg out', 902: 'i1 i2 o1 o2 c1 c2 c3',
   995: 'i1 o1 i2 o2 i3 o3',
+  // stage 9b (IMPL-9b §2.2 / §2.3; lane V9c)
+  '904b': 'in c1 c2 c3 out', 914: 'i1 i2 o1 o2', '911a': 'i1 o1 i2 o2', '903a': 'wh1 wh2 pk1 pk2',
+  960: 'on off sh ci co i1 i2 i3 i4 i5 i6 i7 i8 i9 o1 o2 o3 o4 o5 o6 o7 o8 o9 ra1 ra2 rb1 rb2 rc1 rc2',
+  961: 'a11 a12 a13 a14 a15 a16 b11 b12 b13 b14 b15 b16 s1 a21 a22 a23 a24 a25 a26 b21 b22 b23 b24 b25 b26 s2 v1i v1o v2i v2o ai ao1 ao2',
+  962: 'i1 i2 i3 q1 q2 t1 t2 t3 o1 o2 o3 sh', 992: 'x4 xr', 993: '', 994: 'a1 a2 a3 a4 b1 b2 b3 b4',
+  cp2: 'li lo hi ho u1 u2 u3 u4 po so kpr ksr', cp3a: 'm1 m2 m3 m4 mo mn x4 xr a1 a2 a3 a4', cp4a: 'ti tr ci cr',
+  cp35: 'p6 m6 i1 o1 i2 o2 i3 o3 i4 o4 u1 u2 u3 u4', cp8a: '', clk: 'ck rn rs',
 };
 const T_PARAMS = {
   ctl: 'gl:0 pr:0:1 rt:0:1 tu:0 x1:7 x2:7 x3:7 x4:7 ov:7', 921: 'sp:0:1 cr:1:1 fq:0 rg:2:1 pw:50 ax:2:1 cl:0 al:5', '921a': 'sp:0:1 fq:0 pw:50',
   '921b': 'rg:3:1 fq:0 ss:1:1', 923: 'lp:5 hp:5', '904a': 'fc:0 rg:1:1 re:0', '907a': 'lo:10 b1:10 b2:10 b3:10 b4:10 b5:10 b6:10 b7:10 b8:10 hi:10',
   911: 't1:1 t2:5 t3:4 es:7', 902: 'md:0:1 fc:0', 995: 'a1:0 a2:0 a3:0',
+  '904b': 'fc:0 rg:0:1', 914: 'lo:10 b1:10 b2:10 b3:10 b4:10 b5:10 b6:10 b7:10 b8:10 b9:10 b10:10 b11:10 b12:10 hi:10', '911a': 'd1:3 d2:3 md:0:1', '903a': '',
+  960: 'a1:0 a2:0 a3:0 a4:0 a5:0 a6:0 a7:0 a8:0 b1:0 b2:0 b3:0 b4:0 b5:0 b6:0 b7:0 b8:0 c1:0 c2:0 c3:0 c4:0 c5:0 c6:0 c7:0 c8:0 ' +
+    's1:1:1 s2:1:1 s3:1:1 s4:1:1 s5:1:1 s6:1:1 s7:1:1 s8:1:1 s9:1:1 ga:0:1 gb:0:1 gc:0:1 rg:2:1 vn:2 cc:0:1 os:1:1',
+  961: 't1:5 t2:5 se:5', 962: '', 992: 's1:0:1 s2:0:1 s3:0:1 s4:0:1 at:0', 993: 'f1:0:1 f2:0:1 t1:0:1 t2:0:1 t3:0:1 e1:0:1 e2:0:1 e3:0:1', 994: '',
+  cp2: 'lp:5 hp:5', cp3a: 'x1:7 x2:7 x3:7 x4:7 ms:5 r1:0:1 r2:0:1 r3:0:1 r4:0:1 ra:10', cp4a: 'c1:0:1 c2:0:1 c3:0:1 c4:0:1 t1:0:1 t2:0:1 t3:0:1',
+  cp35: 'a1:0 a2:0 a3:0 a4:0', cp8a: '', clk: 'dv:2:1 md:0:1 ln:0:1',
 };
-test('PatchMoog: the frozen global in patch-dsp.js\'s family form — the ten types in moog-core\'s order, JACKS (jack objects), SECS (counts), PARAMS ([id, def, snap?]), SINK, LINK, the evaluator\'s slots (IO); moog-core\'s tables agree; every class has the base shape', () => {
+const words = s => (s === '' ? [] : s.split(' '));
+const S9 = ['ctl', '921', '921a', '921b', '923', '904a', '907a', '911', '902', '995'];
+const S9B = ['904b', '914', '911a', '903a', '960', '961', '962', '992', '993', '994', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', 'clk'];
+test('PatchMoog: the frozen global in patch-dsp.js\'s family form — the 26 types (stage 9\'s ten, then 9b\'s sixteen), JACKS (jack objects), SECS (counts), PARAMS ([id, def, snap?]), SINK, LINK, EV / LAMPS, the evaluator\'s slots (IO); moog-core\'s tables agree; every class has the base shape', () => {
   const P = PM();
   assert.ok(P && Object.isFrozen(P) && Object.isFrozen(P.T) && Object.isFrozen(P.JACKS) && Object.isFrozen(P.JACKS['921']) && Object.isFrozen(P.JACKS['921'][0]));
   assert.equal(P.id, 'moog'); assert.equal(P.CTL, 'ctl'); assert.equal(P.SINK, 'out'); assert.equal(P.OUT_K, 0.15); assert.equal(P.BL, 32);
-  eq(P.ORDER, ['ctl', '921', '921a', '921b', '923', '904a', '907a', '911', '902', '995']);
+  eq(P.ORDER, [...S9, ...S9B]);
   for (const t of P.ORDER) {
-    eq(P.JACKS[t].map(j => j.id), T_JACKS[t].split(' '), t);
-    eq(P.PARAMS[t].map(p => p.join(':')), T_PARAMS[t].split(' '), t);
+    eq(P.JACKS[t].map(j => j.id), words(T_JACKS[t]), t);
+    eq(P.PARAMS[t].map(p => p.join(':')), words(T_PARAMS[t]), t);
     eq(P.RANGE[t].length, P.PARAMS[t].length);
   }
   eq(P.JACKS.ctl.map(j => j.sec), [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 5, 5, 6]);
   eq(P.JACKS['923'].map(j => j.sec), [0, 0, 0, 1, 1, 2, 2]); eq(P.JACKS['995'].map(j => j.sec), [0, 0, 1, 1, 2, 2]);
-  eq(P.ORDER.map(t => P.SECS[t]), [7, 1, 1, 1, 3, 1, 1, 1, 1, 3]);
+  eq(P.ORDER.map(t => P.SECS[t]), [7, 1, 1, 1, 3, 1, 1, 1, 1, 3, 1, 1, 1, 1, 1, 5, 1, 1, 1, 2, 4, 3, 2, 6, 1, 1]);
   eq(P.JACKS['995'].map(j => j.norm || ''), ['', '', 'i1', '', 'i2', '']);
+  eq(P.JACKS.cp35.map(j => j.norm || ''), ['', '', 'p6', '', 'p6', '', 'm6', '', 'm6', '', '', '', '', '']);
+  eq(P.JACKS['961'].map(j => j.sec).join(''), '0'.repeat(13) + '1'.repeat(13) + '2233444');
+  eq(P.JACKS.cp2.map(j => j.sec), [0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]); eq(P.JACKS.cp3a.map(j => j.sec), [0, 0, 0, 0, 0, 0, 1, 1, 2, 2, 2, 2]);
+  eq(P.JACKS.cp35.map(j => j.sec), [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 5]); eq(P.JACKS['994'].map(j => j.sec), [0, 0, 0, 0, 1, 1, 1, 1]);
+  eq(P.JACKS.cp4a.map(j => j.sec), [0, 0, 1, 1]);
   eq(P.ORDER.flatMap(t => P.JACKS[t].filter(j => j.ac).map(j => t + '.' + j.id)), ['921b.ac']);
-  eq(P.ORDER.flatMap(t => P.JACKS[t].filter(j => j.sig === 's').map(j => t + '.' + j.id)), ['ctl.ks1', 'ctl.ks2', 'ctl.vo', 'ctl.si', '921.cs', '911.trg']);
+  eq(P.ORDER.flatMap(t => P.JACKS[t].filter(j => j.sig === 's').map(j => t + '.' + j.id)), ['ctl.ks1', 'ctl.ks2', 'ctl.vo', 'ctl.si', '921.cs', '911.trg',
+    '911a.i1', '911a.o1', '911a.i2', '911a.o2', '961.s1', '961.s2', '961.v1i', '961.v2i', 'cp2.so', 'cp2.ksr', 'cp4a.ti', 'cp4a.tr']);
+  eq(P.ORDER.flatMap(t => P.JACKS[t].filter(j => j.dir === 'any').map(j => t + '.' + j.id)).filter(x => !x.startsWith('ctl.')),
+    ['994.a1', '994.a2', '994.a3', '994.a4', '994.b1', '994.b2', '994.b3', '994.b4', 'cp2.u1', 'cp2.u2', 'cp2.u3', 'cp2.u4', 'cp3a.a1', 'cp3a.a2', 'cp3a.a3', 'cp3a.a4',
+      'cp35.u1', 'cp35.u2', 'cp35.u3', 'cp35.u4']);
+  // events and lamps (IMPL-9b §1.5 / §1.6): a row per type, ids in order
+  assert.ok(Object.isFrozen(P.EV) && Object.isFrozen(P.LAMPS) && P.ORDER.every(t => Array.isArray(P.EV[t]) && Array.isArray(P.LAMPS[t])));
+  eq(P.ORDER.filter(t => P.EV[t].length).map(t => t + ': ' + P.EV[t].join(' ')), ['960: on off sh e1 e2 e3 e4 e5 e6 e7 e8 e9', '962: e1 e2 e3']);
+  eq(P.ORDER.filter(t => P.LAMPS[t].length).map(t => t + ': ' + P.LAMPS[t].join(' ')), ['960: l1 l2 l3 l4 l5 l6 l7 l8 l9 lo', '962: l1 l2 l3', 'clk: lr']);
+  for (const t of P.ORDER) { const m = new P.T[t]({ fs: 192000, OS: 4, n: 3, salt: 0, inst: null, type: t }); assert.equal(typeof m.ev === 'function', P.EV[t].length > 0, t + ' ev'); assert.equal(typeof m.lamp === 'number', P.LAMPS[t].length > 0, t + ' lamp'); }
+  // one buffer, two jacks (§2.1): the 914's outputs, the 903A's pairs, the 960's rows, the 961's audio → V, the 962's output
+  for (const [t, a, b] of [['914', 'o1', 'o2'], ['903a', 'wh1', 'wh2'], ['903a', 'pk1', 'pk2'], ['960', 'ra1', 'ra2'], ['960', 'rb1', 'rb2'], ['960', 'rc1', 'rc2'], ['961', 'ao1', 'ao2'], ['962', 'q1', 'q2']]) {
+    const m = new P.T[t]({ fs: 192000, OS: 4, n: 1, type: t }), oi = id => P.IO[t].oi[P.JACKS[t].findIndex(j => j.id === id)];
+    assert.ok(oi(a) !== oi(b) && m.outs[oi(a)] === m.outs[oi(b)], `${t} ${a} / ${b}`);
+  }
   eq(P.LINK, { '921b': { from: '921a', def: [0, 0] } });
   // the evaluator's slots: 'in' jacks then the link's inputs, 'out' jacks then the link's outputs; the multiples none
   const C = P.IO.ctl;
@@ -820,6 +861,468 @@ test('the controller\'s mixer, converters and og: LEVEL / 5 (×2 at 10) → MIX 
   }
 });
 
+/* ================================================================ stage 9b (IMPL-9b §8.1, lane V9c): the System 35 / 55 circuits */
+// a type's impulse response (a units at sample 0 into `inp`, the rest of `drive` held; the output tap) / a, for H907's DTFT
+function ir9b(type, pv, { base = 48000, os = 4, sec = 0.5, inp = 'in', tap = 'out', a = 1, drive = [] } = {}) {
+  const r = solo(type, { pv, base, os, drive: [[inp, i => (i === 0 ? a : 0)], ...drive], taps: [tap] }), h = r.render(frames(sec, base)).t[0];
+  if (a !== 1) for (let i = 0; i < h.length; i++) h[i] /= a;
+  return { h, fs: r.fs };
+}
+// the frequency where a monotonic response crosses `db` (bisection in log f between lo and hi)
+function cross(Hf, db, lo, hi) { for (let k = 0; k < 60; k++) { const m = Math.sqrt(lo * hi); if (Hf(m) < db) lo = m; else hi = m; } return Math.sqrt(lo * hi); }
+const rises = (y, th = 0.5) => { const r = []; for (let i = 1; i < y.length; i++) if (y[i - 1] <= th && y[i] > th) r.push(i); return r; };
+const bitEq = (a, b) => a.length === b.length && a.every((x, i) => Object.is(x, b[i]));   // (moog-dsp.test's same, before its declaration)
+const falls = (y, th = 0.5) => { const r = []; for (let i = 1; i < y.length; i++) if (y[i - 1] > th && y[i] <= th) r.push(i); return r; };
+
+test('T-VCF2: the 904B — 24 dB/oct (± 1) between three and two octaves under f_c; −12 dB at f_c on both ranges\' ends (LOW 4 Hz … 16.4 kHz, HIGH 11.3 Hz … 46.3 kHz) and mid-range at 44.1 k × 2; HIGH = LOW + 1½ oct ± 1 %; 1 V/oct; unity passband ± 0.2 dB; no resonance peak (≤ +0.1 dB anywhere)', () => {
+  const bad = [], rep = [], L = MG.LAW;
+  const g = (pv, f, { base = 48000, os = 4 } = {}) => {   // a 0.1 V sine's gain (the second half)
+    const fs = base * os, r = solo('904b', { pv, base, os, drive: [['in', i => 0.1 * Math.sin(2 * Math.PI * f * i / fs)]], taps: ['out'] }), y = r.render(frames(Math.max(0.3, 8 / f), base)).t[0];
+    return amp(y, fs, f, Math.round(y.length / 2), y.length) / 0.1;
+  };
+  const I = (pv, o = {}) => ir9b('904b', pv, Object.assign({ a: 1e-3 }, o));   // (1 mV: the soft compression's share < 1e-7)
+  for (const [base, os] of [[48000, 4], [44100, 2]]) {
+    const fc = 2000, h = I({ fc: Math.log2(fc / L.f904b(0)) - 6 }, { base, os, sec: 0.25 }), s = H907(h, fc / 4) - H907(h, fc / 8);
+    rep.push(`slope ${base}×${os} ${s.toFixed(2)} dB/oct`);
+    if (Math.abs(s - 24) > 1) bad.push(`slope ${base}×${os}: ${s}`);
+  }
+  for (const [rg, fc, base, os] of [[0, -6, 48000, 1], [0, 6, 48000, 4], [1, -6, 48000, 1], [1, 6, 48000, 4], [0, 0, 44100, 2], [1, 0, 44100, 2]]) {
+    const f = L.f904b(rg) * 2 ** (fc + 6), d = dB(g({ rg, fc }, f, { base, os }));
+    if (Math.abs(d + 12.04) > 0.1) bad.push(`range ${rg} at ${fc} V (${f.toFixed(1)} Hz, ${base}×${os}): ${d.toFixed(3)} dB`);
+  }
+  const fcOf = (pv, drive = []) => { const h = I(pv, { sec: 0.25, drive }); return cross(f => H907(h, f), -12.0412, 20, 20000); };
+  const lo = fcOf({ rg: 0 }), hi = fcOf({ rg: 1 });
+  rep.push(`f_c ${lo.toFixed(2)} / ${hi.toFixed(2)} Hz (× 2^${Math.log2(hi / lo).toFixed(4)})`);
+  if (!near(hi / lo, 2 ** 1.5, 0.01) || !near(lo, 256, 0.001)) bad.push(`HIGH / LOW ${hi / lo}, LOW f_c ${lo}`);
+  for (const v of [-2, 1, 3]) { const f = fcOf({ rg: 0 }, [['c1', v]]); if (Math.abs(cents(f, lo * 2 ** v)) > 0.5) bad.push(`1 V/oct ${v} V: ${cents(f, lo * 2 ** v)} ct`); }
+  const p = I({ rg: 0, fc: -6 }, { sec: 1 });
+  for (const f of [200, 1000, 5000, 15000]) if (Math.abs(H907(p, f)) > 0.2) bad.push(`passband at ${f} Hz: ${H907(p, f)} dB`);
+  let mx = -1e9; const q = I({ rg: 1, fc: 0 }, { sec: 0.25 }); for (let f = 20; f <= 20000; f *= 2 ** (1 / 24)) mx = Math.max(mx, H907(q, f));
+  rep.push(`max ${mx.toFixed(3)} dB`);
+  if (mx > 0.1) bad.push(`a peak: +${mx} dB`);
+  console.log('# 904B: ' + rep.join(' · '));
+  assert.deepEqual(bad, []);
+});
+
+const ID914 = ['lo', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6', 'b7', 'b8', 'b9', 'b10', 'b11', 'b12', 'hi'];
+const ONE914 = (k, v = 10) => Object.fromEntries(ID914.map((id, j) => [id, j === k ? v : 0]));
+test('T-FFB2: the 914 — all at 10 flat ± 2 dB from 20 Hz to 20 kHz about unity (48 k × 4, 44.1 k × 2); the band centres 125 · √2^k Hz ± 2 %; 12 dB/oct ± 1.5 on both skirts 2 … 3 octaves out; the 88.4 Hz low-pass and 8 kHz high-pass sections; the taper (5 → −18 dB), 0 = off, all at 0 silent; one band alone an octave away (recorded); the input pair (one as is, both averaged)', () => {
+  const bad = [], rep = [], L = MG.LAW, I = (pv, o = {}) => ir9b('914', pv, Object.assign({ inp: 'i1', tap: 'o1' }, o));
+  for (const [base, os] of [[48000, 4], [44100, 2]]) {
+    const h = I({}, { base, os });
+    let mn = 1e9, mx = -1e9, sum = 0, n = 0;
+    for (let f = 20; f <= 20000; f *= 2 ** (1 / 24)) { const d = H907(h, f); mn = Math.min(mn, d); mx = Math.max(mx, d); sum += d; n++; }
+    rep.push(`${base}×${os}: ${mn.toFixed(2)} … +${mx.toFixed(2)} dB (mean ${(sum / n).toFixed(2)})`);
+    if (mn < -2 || mx > 2) bad.push(`flat at ${base}×${os}: ${mn} … ${mx}`);
+  }
+  for (let b = 1; b <= 12; b++) {
+    const h = I(ONE914(b), { sec: 0.15 }), c = L.f914(b - 1);
+    let lo = c / 1.3, hi = c * 1.3;
+    for (let it = 0; it < 28; it++) { const m1 = lo * (hi / lo) ** 0.382, m2 = lo * (hi / lo) ** 0.618; if (H907(h, m1) > H907(h, m2)) hi = m2; else lo = m1; }
+    const pk = Math.sqrt(lo * hi);
+    if (!near(pk, c, 0.02)) bad.push(`band ${b} peaks at ${pk.toFixed(1)} vs ${c.toFixed(1)}`);
+    if (c * 8 < 20000) { const up = H907(h, c * 8) - H907(h, c * 4); if (Math.abs(up + 12) > 1.5) bad.push(`band ${b} upper skirt ${up.toFixed(2)} dB/oct`); }
+    if (c / 8 > 10) { const dn = H907(h, c / 8) - H907(h, c / 4); if (Math.abs(dn + 12) > 1.5) bad.push(`band ${b} lower skirt ${dn.toFixed(2)} dB/oct`); }
+    if (b === 6) rep.push(`band 6 (${c.toFixed(0)} Hz) alone: ${H907(h, c).toFixed(2)} dB at its centre, ${H907(h, c / 2).toFixed(1)} / ${H907(h, c * 2).toFixed(1)} dB an octave under / over`);
+  }
+  const lp = I(ONE914(0)), hp = I(ONE914(13));
+  const sl = H907(lp, 88.388 * 8) - H907(lp, 88.388 * 4), sh = H907(hp, 8000 / 8) - H907(hp, 8000 / 4);
+  rep.push(`low ${H907(lp, 88.388).toFixed(2)} dB at 88.4 Hz, ${sl.toFixed(2)} dB/oct · high ${H907(hp, 8000).toFixed(2)} dB at 8 kHz, ${sh.toFixed(2)} dB/oct`);
+  if (Math.abs(H907(lp, 88.388) - dB(0.6)) > 0.1 || Math.abs(H907(hp, 8000) - dB(0.6)) > 0.1) bad.push('the sections\' corners (Q 0.6 at f₀)');
+  if (Math.abs(sl + 12) > 1.5 || Math.abs(sh + 12) > 1.5) bad.push(`the sections' slopes ${sl} / ${sh}`);
+  if (Math.abs(H907(lp, 20)) > 0.3) bad.push(`the low section passes at unity: ${H907(lp, 20)}`);
+  const d5 = H907(I(ONE914(5, 5)), L.f914(4)) - H907(I(ONE914(5)), L.f914(4));
+  if (Math.abs(d5 - dB(0.125)) > 0.01) bad.push(`taper at 5: ${d5}`);
+  if (absMax(I(ONE914(5, 0)).h) !== 0 || absMax(I(ONE914(-1)).h) !== 0) bad.push('0 is off; all at 0 silent');
+  // the passive pair: one input as is (either), both averaged — bit for bit
+  const sig = (f, a) => i => a * Math.sin(2 * Math.PI * f * i / 192000), run = drive => solo('914', { pv: { b4: 6 }, drive, taps: ['o1', 'o2'] }).render(800).t;
+  const A = run([['i1', sig(300, 1)]]), B = run([['i2', sig(300, 1)]]), C = run([['i1', sig(300, 1)], ['i2', sig(1100, 0.5)]]), D = run([['i1', i => 0.5 * (sig(300, 1)(i) + sig(1100, 0.5)(i))]]);
+  if (!bitEq(A[0], B[0]) || !bitEq(C[0], D[0]) || !bitEq(A[0], A[1])) bad.push('the input pair / the output pair');
+  console.log('# 914: ' + rep.join(' · '));
+  assert.deepEqual(bad, []);
+});
+
+test('the 911A: DELAY 1 / 2 = 2 ms · 1000^(v / 10) (2 ms … 2 s, LAW.d911a) ± 5 % at 48 k × 1 and × 4; OFF (1 → 1, 2 → 2), PARALLEL (input 1 starts both), SERIES (output 1 starts delay 2: the delays add; input 2 ignored); an output opens with its start; an opening before the delay ends cancels it', () => {
+  const bad = [], L = MG.LAW;
+  const run = (pv, g1, g2, sec, os = 1) => { const r = solo('911a', { pv, os, drive: [['i1', g1], ['i2', g2]], taps: ['o1', 'o2'] }), t = r.render(frames(sec)).t; return { o1: t[0], o2: t[1], fs: r.fs }; };
+  for (const [os, vs] of [[1, [0, 3, 5, 10]], [4, [0, 5]]]) for (const v of vs) {
+    const D = L.d911a(v), S = Math.round(0.01 * 48000 * os), G = i => (i >= S ? 1 : 0), H = i => (i >= 2 * S ? 1 : 0);
+    const off = run({ d1: v, d2: v, md: 0 }, G, H, 0.03 + 2.2 * D, os), at = (y, s0) => (rises(y)[0] - s0) / off.fs;
+    if (!near(at(off.o1, S), D, 0.05) || !near(at(off.o2, 2 * S), D, 0.05)) bad.push(`OFF ${v} at OS ${os}: ${at(off.o1, S)} / ${at(off.o2, 2 * S)} vs ${D}`);
+    const par = run({ d1: v, d2: 10 - v, md: 1 }, G, i => (i >= 3 * S && i < 4 * S ? 1 : 0), 0.05 + 2.2 * Math.max(D, L.d911a(10 - v)), os);
+    if (!near((rises(par.o1)[0] - S) / par.fs, D, 0.05) || !near((rises(par.o2)[0] - S) / par.fs, L.d911a(10 - v), 0.05)) bad.push(`PARALLEL ${v} at OS ${os}`);
+    const ser = run({ d1: v, d2: 3, md: 2 }, G, H, 0.05 + 2.2 * D, os);
+    if (!near((rises(ser.o2)[0] - S) / ser.fs, D + L.d911a(3), 0.05) || rises(ser.o2).length !== 1) bad.push(`SERIES ${v} at OS ${os}: ${(rises(ser.o2)[0] - S) / ser.fs}`);
+  }
+  // opens with its start; a short gate is cancelled; S lines 0 / 1
+  const a = run({ d1: 3, d2: 3 }, i => (i >= 100 && i < 3000 ? 1 : 0), i => (i >= 100 && i < 400 ? 1 : 0), 0.1);
+  if (falls(a.o1)[0] !== 3000 || rises(a.o1)[0] !== 100 + Math.round(L.d911a(3) * 48000) || a.o2.some(x => x !== 0) || a.o1.some(x => x !== 0 && x !== 1)) bad.push('open / cancel');
+  assert.deepEqual(bad, []);
+});
+
+test('the 903A: the 923\'s noise re-written — white 0.5 V RMS (flat ± 1.5 dB), pink −3 dB/oct ± 1 and 0.5 V RMS in band ± 3 %; WHITE 1 / 2 and PINK 1 / 2 one buffer each; seeded by salt and module number; an unread pink never computed', () => {
+  const bad = [], N = 1 << 15;
+  const noise = (id, sec = 4, salt = 0, n = 1) => { const r = rig({ salt, mods: [[n, '903a']], taps: [[n, id]] }); return { y: r.render(frames(sec)).t[0], fs: r.fs, m: r.M.get(n) }; };
+  const w = noise('wh1'), P4 = psd(w.y, w.fs, N);
+  if (!near(rms(w.y), 0.5, 0.02)) bad.push(`white RMS ${rms(w.y)}`);
+  const dens = []; for (let f = 125; f <= 16000; f *= 2) dens.push(10 * Math.log10(bandP(P4, w.fs, N, f / Math.SQRT2, f * Math.SQRT2) / (f / Math.SQRT2)));
+  const md = dens.reduce((a, b) => a + b) / dens.length;
+  if (dens.some(d => Math.abs(d - md) > 1.5)) bad.push('white not flat');
+  if (w.m.k0 !== 0 || w.m.k1 !== 0) bad.push('an unread pink computed');
+  const pk = noise('pk2'), Pp = psd(pk.y, pk.fs, N), oct = [], fx = [];
+  for (let f = 62.5; f <= 8000; f *= 2) { oct.push(10 * Math.log10(bandP(Pp, pk.fs, N, f / Math.SQRT2, f * Math.SQRT2) / f)); fx.push(Math.log2(f)); }
+  const mx = fx.reduce((a, b) => a + b) / fx.length, my = oct.reduce((a, b) => a + b) / oct.length;
+  const slope = fx.reduce((s, x, k) => s + (x - mx) * (oct[k] - my), 0) / fx.reduce((s, x) => s + (x - mx) ** 2, 0), pin = Math.sqrt(bandP(Pp, pk.fs, N, 20, 20000));
+  if (Math.abs(slope + 3) > 1 || !near(pin, 0.5, 0.03)) bad.push(`pink ${slope} dB/oct, ${pin} V`);
+  const r = rig({ mods: [[1, '903a']], taps: [[1, 'wh1'], [1, 'wh2'], [1, 'pk1'], [1, 'pk2']] }), t = r.render(400).t;
+  if (!bitEq(t[0], t[1]) || !bitEq(t[2], t[3]) || bitEq(t[0], t[2])) bad.push('the pairs');
+  const a = noise('wh1', 0.01, 7), b = noise('wh1', 0.01, 7), c = noise('wh1', 0.01, 8), d = noise('wh1', 0.01, 7, 2);
+  if (!bitEq(a.y, b.y) || bitEq(a.y, c.y) || bitEq(a.y, d.y)) bad.push('the seed');
+  console.log(`# 903A: white ${rms(w.y).toFixed(4)} V RMS, pink ${slope.toFixed(2)} dB/oct, ${pin.toFixed(4)} V in band`);
+  assert.deepEqual(bad, []);
+});
+
+/* ---------------------------------------------------------------- 960 / 961 / 962 */
+const O9 = ['o1', 'o2', 'o3', 'o4', 'o5', 'o6', 'o7', 'o8', 'o9'];
+const stageAt = (t, j) => { let s = 0; for (let k = 0; k < 9; k++) if (t[k][j] === 3.6) s = s === 0 ? k + 1 : -1; return s; };   // (−1: two OUTs high)
+const pulses = (every, from, w = 50, v = 4) => i => (i >= from && (i - from) % every < w ? v : 0);
+test('T-SEQ1: the 960\'s clock — 0.1 Hz … 1 kHz ± 1 % over RANGE × VERNIER (LAW.clk960, clamped), 1 V/oct on CONTROL INPUT and through ROW C → CLOCK, OUTPUT +3.6 V for 90 % of the period; each rise a shift', () => {
+  const bad = [], rep = [], L = MG.LAW;
+  const meas = (pv, want, drive = [], taps = ['co'], per = 6.5) => {
+    const lo = want < 20, base = lo ? 4800 : 48000, os = lo ? 1 : 4, n = want < 1 ? 2.2 : per;
+    const r = solo('960', { pv: Object.assign({ os: 1 }, pv), base, os, drive, taps }), t = r.render(frames(n / want, base)).t, R = rises(t[0], 1.8);
+    let hi = 0; for (let i = R[0]; i < R[R.length - 1]; i++) if (t[0][i] > 1.8) hi++;
+    return { f: (R.length - 1) * r.fs / (R[R.length - 1] - R[0]), duty: hi / (R[R.length - 1] - R[0]), R, t };
+  };
+  for (const [rg, vn] of [[0, 0], [0, 10], [2, 2], [3, 5], [4, 3], [5, 0], [6, 0], [6, 5], [6, 10]]) {
+    const want = Math.min(1000, Math.max(0.1, L.clk960(rg, vn))), m = meas({ rg, vn }, want);
+    rep.push(`${rg}/${vn} ${m.f.toPrecision(5)} Hz`);
+    if (!near(m.f, want, 0.01)) bad.push(`RANGE ${rg} VERNIER ${vn}: ${m.f} vs ${want}`);
+    if (Math.abs(m.duty - 0.9) > 0.01) bad.push(`duty ${m.duty} at ${want} Hz`);
+  }
+  const f0 = L.clk960(3, 0);
+  for (const v of [-1, 1, 2]) { const m = meas({ rg: 3, vn: 0 }, f0 * 2 ** v, [['ci', v]]); if (!near(m.f, f0 * 2 ** v, 0.01)) bad.push(`CONTROL INPUT ${v} V: ${m.f}`); }
+  const C = g => Object.fromEntries(['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7', 'c8'].map(id => [id, 2.5]).concat([['cc', 1], ['gc', g]]));
+  for (const g of [0, 1]) { const w = f0 * 2 ** L.row960(2.5, g), m = meas(Object.assign({ rg: 3, vn: 0 }, C(g)), w); if (!near(m.f, w, 0.01)) bad.push(`ROW C → CLOCK ×${2 ** g}: ${m.f} vs ${w}`); }
+  // each rise of OUTPUT is a shift (all NORMAL, stage 9 SKIP: the eight stages in turn)
+  const m = meas({ rg: 4, vn: 0 }, L.clk960(4, 0), [], ['co', ...O9], 14);
+  const seq = m.R.slice(0, 12).map(j => stageAt(m.t.slice(1), j));
+  if (seq.join() !== '2,3,4,5,6,7,8,1,2,3,4,5') bad.push(`the stages at the rises: ${seq}`);
+  console.log('# 960 clock: ' + rep.join(' · '));
+  assert.deepEqual(bad, []);
+});
+
+test('T-SEQ1: the 960\'s stages — the row maxima 2 / 4 / 8 V ± 0.1 % (×1 ×2 ×4; LAW.row960), a row\'s two jacks one signal; SKIP passes, STOP holds (IN leaves it), stage 9 on STOP clears the clock (OSC ON restarts it, a rise then goes to 1), on SKIP wraps; all of 1 … 8 SKIP stays; stage OUT k +3.6 V while k is active, the lamps; fresh = stage 1 with the flip-flop = CLOCK AT START', () => {
+  const bad = [], L = MG.LAW;
+  for (const g of [0, 1, 2]) {
+    const r = solo('960', { pv: { a1: 10, b1: 7.3, c1: 2, ga: g, gb: g, gc: g, os: 0 }, taps: ['ra1', 'ra2', 'rb1', 'rc2'] }), t = r.render(8).t;
+    if (Math.abs(t[0][5] - 2 * 2 ** g) > 2e-3 * 2 ** g || t[0][5] !== t[1][5] || Math.abs(t[2][5] - L.row960(7.3, g)) > 1e-12 || Math.abs(t[3][5] - L.row960(2, g)) > 1e-12) bad.push(`rows ×${2 ** g}: ${t.map(x => x[5])}`);
+  }
+  // external SHIFT pulses (every 400 samples from 200), the clock stopped: 3 SKIP, 6 STOP, IN 7 at 2700 leaves the STOP, 9 SKIP
+  const r = solo('960', { pv: { os: 0, s3: 2, s6: 0 }, os: 1, drive: [['sh', pulses(400, 200)], ['i7', i => (i >= 2700 && i < 2750 ? 4 : 0)]], taps: [...O9, 'co'] });
+  const t = r.render(4400).t, reads = [100, ...Array.from({ length: 10 }, (_, k) => 400 * k + 300)].map(j => stageAt(t, j));
+  if (reads.join() !== '1,2,4,5,6,6,6,7,8,1,2') bad.push(`SKIP / STOP / IN: ${reads}`);
+  if (t[9].some(x => x !== 0)) bad.push('the clock stopped (CLOCK AT START STOPPED)');
+  for (let j = 0; j < 4400; j++) if (stageAt(t, j) <= 0) { bad.push(`stage OUTs at ${j}`); break; }
+  // stage 9 on STOP: the clock stops there (OUTPUT low from that sample, the lamp off); OSC ON restarts it, its first rise → stage 1
+  const q = solo('960', { pv: { s9: 0, rg: 5, vn: 0 }, os: 1, drive: [['on', i => (i >= 6000 && i < 6100 ? 4 : 0)]], taps: [...O9, 'co'] });
+  const u = q.render(frames(0.25)).t, j9 = u[8].findIndex(x => x === 3.6), R = rises(u[9], 1.8);
+  if (!(j9 > 0 && j9 < 6000) || u[9].slice(j9, 6000).some(x => x !== 0)) bad.push(`stage 9 stops the clock (at ${j9})`);
+  const r1 = R.find(i => i > 6000);
+  if (!(u[9][6000] === 3.6 && stageAt(u, 6000) === 9 && stageAt(u, r1) === 1 && Math.abs((r1 - 6000) - 48000 / L.clk960(5, 0)) <= 2)) bad.push(`OSC ON restarts: ${u[9][6000]}, stage ${stageAt(u, 6000)} → ${stageAt(u, r1)} at ${r1}`);
+  // all of 1 … 8 SKIP: shifts leave it; the lamps; fresh with the clock running
+  const s = solo('960', { pv: Object.fromEntries(['s1', 's2', 's3', 's4', 's5', 's6', 's7', 's8'].map(id => [id, 2]).concat([['os', 0]])), os: 1, drive: [['sh', pulses(100, 10)]], taps: O9 });
+  const v = s.render(400).t;
+  if (v[0].some(x => x !== 3.6) || s.M.get(1).lamp !== 1) bad.push('all SKIP: stays on stage 1');
+  const f = solo('960', { pv: { rg: 6, vn: 0 }, taps: ['co'] }), w = f.render(400).t[0];
+  if (w[0] !== 3.6 || !(rises(w, 1.8).length >= 3) || f.M.get(1).lamp !== ((1 << ((rises(w, 1.8).length) % 8)) | 512)) bad.push(`fresh running: lamp ${f.M.get(1).lamp}`);
+  assert.deepEqual(bad, []);
+});
+
+test('the 960\'s events and the select rule (IMPL-9b §1.5, §3.4) — SET / SHIFT / OSC ON / OFF as events land at the next chunk: the flip-flop\'s, then the shifts, then the last SET; the 8-slot ring drops its oldest; reset() clears it; IN k wins over a SHIFT and over the clock\'s rise in the same sample; the 962\'s TRIGGER IN over its SHIFT likewise', () => {
+  const bad = [];
+  const ev = (posts, pv = {}, nF = 400, drive = []) => {   // posts [[F, k…]] before chunk F; 'R' = reset()
+    const r = solo('960', { pv: Object.assign({ os: 0 }, pv), drive, taps: [...O9, 'co'] });
+    const t = r.render(nF, { each: (F, M) => { for (const p of posts) if (p[0] === F) for (const k of p.slice(1)) { if (k === 'R') M.get(1).reset(); else M.get(1).ev(k); } } }).t;
+    return { t, m: r.M.get(1) };
+  };
+  const SET = k => 2 + k, SH = 2, ON = 0, OFF = 1;
+  let a = ev([[40, SET(4)]]);
+  if (stageAt(a.t, 40 * 4 - 1) !== 1 || stageAt(a.t, 40 * 4) !== 4) bad.push('SET 4 at the next chunk');
+  a = ev([[40, SH, SET(2)], [80, SET(6), SH]]);
+  if (stageAt(a.t, 200) !== 2 || stageAt(a.t, 400) !== 6) bad.push(`a SET wins over a SHIFT: ${stageAt(a.t, 200)} ${stageAt(a.t, 400)}`);
+  a = ev([[40, ON], [100, OFF]]);
+  if (a.t[9][159] !== 0 || a.t[9][160] !== 3.6 || a.t[9][400] !== 0) bad.push('OSC ON / OFF');
+  a = ev([[40, ON, OFF], [60, OFF, ON]]);
+  if (a.t[9][200] !== 0 || a.t[9][300] !== 3.6) bad.push('the flip-flop\'s events in order');
+  a = ev([[40, SH, SH, SH, SH, SH, SH, SH]]); const b = ev([[40, SH, SH, SH, SH, SH, SH, SH, SH, SH]]);
+  if (stageAt(a.t, 200) !== 8 || stageAt(b.t, 200) !== 1) bad.push(`the ring: 7 shifts → ${stageAt(a.t, 200)}, 9 → ${stageAt(b.t, 200)} (8 kept)`);
+  a = ev([[40, SET(5), 'R']]);
+  if (stageAt(a.t, 200) !== 1) bad.push('reset() clears the ring');
+  a.m.ev(12); a.m.ev(-1); a.m.ev(NaN); if (a.m.en !== 0) bad.push('an event outside the row is dropped');
+  // the select rule: SET 3 first; then SHIFT and IN 1 rise in one sample → stage 1 (not 4)
+  a = ev([[0, SET(3)]], {}, 400, [['sh', i => (i >= 1000 && i < 1100 ? 4 : 0)], ['i1', i => (i >= 1000 && i < 1050 ? 4 : 0)]]);
+  if (stageAt(a.t, 999) !== 3 || stageAt(a.t, 1000) !== 1) bad.push(`IN 1 + SHIFT: ${stageAt(a.t, 1000)}`);
+  // IN 1 in the sample of a clock rise (found by a first run) → stage 1
+  const c0 = solo('960', { pv: { rg: 6, vn: 0 }, taps: ['co'] }).render(400).t[0], w = rises(c0, 1.8)[1];
+  const c1 = solo('960', { pv: { rg: 6, vn: 0 }, drive: [['i1', i => (i >= w && i < w + 3 ? 4 : 0)]], taps: [...O9, 'co'] }).render(400).t;
+  if (rises(c1[9], 1.8)[1] !== w || stageAt(c1, w) !== 1 || stageAt(c1, w - 1) !== 2) bad.push(`IN 1 at the clock's rise ${w}: stage ${stageAt(c1, w)}`);
+  // the 962: TRIGGER IN 3 and SHIFT in one sample → input 3
+  const s = solo('962', { drive: [['i1', 1], ['i2', 2], ['i3', 3], ['sh', i => (i >= 500 && i < 600 ? 4 : 0)], ['t3', i => (i >= 500 && i < 520 ? 4 : 0)]], taps: ['q1'] }).render(200).t[0];
+  if (s[499] !== 1 || s[500] !== 3) bad.push(`962 TRIGGER IN 3 + SHIFT: ${s[500]}`);
+  assert.deepEqual(bad, []);
+});
+
+// (E9b's find on 252a750: the 960's flip-flop took CLOCK AT START from the constructor's defaults — patch-dsp's make() writes the
+// stored values after construction — so a new 960 with os 0 ran its clock until its first reset)
+test('a freshly made module honours its stored values from the first quantum (the fresh state read at the first ctl, not in the constructor): a new 960 with CLOCK AT START STOPPED holds stage 1 with its clock off; every 9b type with values off their defaults renders as the same machine reset at frame 0', () => {
+  const bad = [], P = PM();
+  let { pg, pv } = payloadOf([[1, '960']], [[1, 'ra1', 0, 'out']], { 1: { os: 0, a1: 1 } });
+  let m = machine({ pg, pv });
+  m.render(512);
+  if (m.mc.lamps(0).l[1] !== 1 || m.mc.lampN !== 1) bad.push(`a new 960 with os 0: lamps ${JSON.stringify(plain(m.mc.lamps(0)))}`);
+  for (const t of S9B) {
+    const outs = P.JACKS[t].filter(j => j.dir === 'out').slice(0, 4), v = {};
+    P.PARAMS[t].forEach(([id, def, sn], j) => { const [lo, hi] = P.RANGE[t][j]; v[id] = sn ? (def === lo ? hi : lo) : lo + (hi - lo) * (0.3 + 0.4 * (j % 2)); });
+    if (t === 'clk') v.md = 1;
+    ({ pg, pv } = payloadOf([[1, t]], [...outs.map((j, k) => [1, j.id, 0, 'm' + (k + 1)]), [0, 'mo', 0, 'out']], { 0: { ov: 10 }, 1: v }));
+    const a = machine({ pg, pv }), b = machine({ pg, pv });
+    b.mc.reset();
+    const ya = a.render(1024), yb = b.render(1024);
+    if (!bitEq(ya, yb) || JSON.stringify(plain(a.mc.lamps(0))) !== JSON.stringify(plain(b.mc.lamps(0)))) bad.push(`${t}: fresh ≠ reset`);
+  }
+  assert.deepEqual(bad, []);
+});
+
+test('a 960 patched into itself over the evaluator (a one-member loop step, IMPL-9b §3.4): OUT 5 → IN 1 cycles stages 1 … 4 (stage 5 one OS sample, its row a 5 µs blip); OUT 8 → OSC OFF stops the clock on stage 8', () => {
+  const bad = [], dials = Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8].map(k => ['a' + k, k]));
+  const run = cords => {
+    const { pg, pv } = payloadOf([[1, '960']], [...cords, [1, 'ra1', 0, 'm1'], [0, 'mo', 0, 'out']], { 0: { x1: 5, ov: 10 }, 1: Object.assign({ rg: 5, vn: 0 }, dials) });
+    const r = machine({ pg, pv });
+    return { r, y: r.render(frames(0.3)).map(x => Math.round(x / (0.15 * 0.2))) };
+  };
+  const a = run([[1, 'o5', 1, 'i1']]);
+  if (!a.r.mc.mon().steps.some(s => s.loop === 1) || a.r.errs.length) bad.push('a loop step');
+  const runs = []; let k = 0;
+  while (k < a.y.length) { let e = k; while (e < a.y.length && a.y[e] === a.y[k]) e++; runs.push([a.y[k], e - k]); k = e; }
+  const st = runs.map(x => x[0]), fives = runs.filter(x => x[0] === 5);
+  if (st.some(s => s < 1 || s > 5) || !fives.length || fives.some(x => x[1] !== 1) || st.slice(0, 11).join() !== '1,2,3,4,5,1,2,3,4,5,1') bad.push(`OUT 5 → IN 1: ${st.slice(0, 12)} (${fives.length} fives)`);
+  const b = run([[1, 'o8', 1, 'off']]), m = b.r.mc.lat.byN.get(1).m;
+  if (b.y[b.y.length - 1] !== 8 || m.lamp !== 1 << 7 || m.osc !== 0) bad.push(`OUT 8 → OSC OFF: stage ${b.y[b.y.length - 1]}, lamp ${m.lamp}`);
+  assert.deepEqual(bad, []);
+});
+
+test('T-TRG1: the 961 — V→S closed while any A input is high (each its own +1.5 V / +1.0 V Schmitt) or while the B one-shot runs: a rise on any B input (re)starts it for SWITCH ON TIME 40 ms … 4 s ± 5 % (LAW.on961); the two circuits apart; S→V 4 V while closed; AUDIO → V on above θ = LAW.th961, off below θ / 2, 4 V', () => {
+  const bad = [], L = MG.LAW, sq = (p, v = 3) => i => ((i / p | 0) & 1) * v;
+  let t = solo('961', { os: 1, drive: [['a12', sq(700)], ['a15', i => (i >= 3000 && i < 3200 ? 2 : 0)], ['a23', sq(300)]], taps: ['s1', 's2'] }).render(4800).t;
+  for (let i = 0; i < 4800; i++) {
+    const w1 = (sq(700)(i) > 0 || (i >= 3000 && i < 3200)) ? 1 : 0, w2 = sq(300)(i) > 0 ? 1 : 0;
+    if (t[0][i] !== w1 || t[1][i] !== w2) { bad.push(`A follows at ${i}: ${t[0][i]} / ${t[1][i]}`); break; }
+  }
+  for (const v of [0, 5, 10]) {
+    const T = L.on961(v), n = Math.round(T * 48000), S = 1000;
+    t = solo('961', { pv: { t1: v }, os: 1, drive: [['b14', i => (i >= S && i < S + 100 ? 4 : 0)], ['b11', i => (i >= S + (n >> 1) && i < S + (n >> 1) + 10 ? 4 : 0)]], taps: ['s1'] }).render(frames(1.6 * T + 0.05)).t;
+    const R = rises(t[0]), F = falls(t[0]);
+    if (R.length !== 1 || R[0] !== S || !near(F[0] - S, (n >> 1) + n, 0.05 * n / ((n >> 1) + n))) bad.push(`ON TIME ${v}: ${R} → ${F} vs ${S + (n >> 1) + n}`);
+    const u = solo('961', { pv: { t1: v }, os: 1, drive: [['b16', i => (i >= S && i < S + 10 ? 4 : 0)]], taps: ['s1'] }).render(frames(1.2 * T + 0.05)).t[0];
+    if (!near((falls(u)[0] - S) / 48000, T, 0.05)) bad.push(`ON TIME ${v}: ${(falls(u)[0] - S) / 48000} s vs ${T}`);
+  }
+  t = solo('961', { os: 1, drive: [['v1i', sq(200, 1)], ['v2i', sq(90, 1)]], taps: ['v1o', 'v2o'] }).render(400).t;
+  if (t[0].some((x, i) => x !== (sq(200, 1)(i) ? 4 : 0)) || t[1].some((x, i) => x !== (sq(90, 1)(i) ? 4 : 0))) bad.push('S→V 4 V');
+  for (const v of [0, 5, 10]) {   // a slow triangle 0 → 6 → 0 V over 1 s: on at the first sample above θ, off at the first under θ / 2
+    const th = L.th961(v), tri = i => 6 * (1 - Math.abs(i / 24000 - 1));
+    const y = solo('961', { pv: { se: v }, os: 1, drive: [['ai', tri]], taps: ['ao1', 'ao2'] }).render(frames(1)).t;
+    let on = -1, off = -1; for (let i = 0; i < 48000; i++) { if (on < 0 && tri(i) > th) on = i; if (on >= 0 && i > 24000 && off < 0 && tri(i) < th / 2) off = i; }
+    if (rises(y[0])[0] !== on || falls(y[0])[0] !== off || absMax(y[0]) !== 4 || !bitEq(y[0], y[1])) bad.push(`θ ${v}: on ${rises(y[0])[0]} vs ${on}, off ${falls(y[0])[0]} vs ${off}`);
+  }
+  assert.deepEqual(bad, []);
+});
+
+test('the 962 — one input at a time: SHIFT steps 1 → 2 → 1 (2:1), 1 → 2 → 3 with INPUT 3 patched (3:1); TRIGGER IN k selects k; TRIGGER OUT k +3.6 V while k is selected, the lamps; a negative excursion clipped at −1 V (−0.5 passes); fresh = input 1', () => {
+  const bad = [];
+  const run = (drive, n = 1600) => { const r = solo('962', { os: 1, drive, taps: ['q1', 'q2', 'o1', 'o2', 'o3'] }); return { t: r.render(n).t, m: r.M.get(1) }; };
+  const reads = t => [100, 300, 700, 1100, 1500].map(j => t[0][j]);
+  let a = run([['i1', 1], ['i2', 2], ['sh', pulses(400, 200)]]);
+  if (reads(a.t).join() !== '1,2,1,2,1' || !bitEq(a.t[0], a.t[1])) bad.push(`2:1 ${reads(a.t)}`);
+  a = run([['i1', 1], ['i2', 2], ['i3', 3], ['sh', pulses(400, 200)]]);
+  if (reads(a.t).join() !== '1,2,3,1,2') bad.push(`3:1 ${reads(a.t)}`);
+  for (const j of [100, 300, 700, 1100]) { const k = a.t[0][j] - 1; if (![0, 1, 2].every(o => a.t[2 + o][j] === (o === k ? 3.6 : 0))) bad.push(`TRIGGER OUTs at ${j}`); }
+  if (a.m.lamp !== 1 << (a.t[0][1599] - 1)) bad.push(`lamp ${a.m.lamp}`);
+  a = run([['i1', 1], ['i2', 2], ['t2', i => (i >= 100 && i < 120 ? 4 : 0)], ['t3', i => (i >= 300 && i < 320 ? 4 : 0)], ['sh', pulses(400, 500)]]);
+  if ([50, 150, 350, 550].map(j => a.t[0][j]).join() !== '1,2,0,1') bad.push(`TRIGGER IN: ${[50, 150, 350, 550].map(j => a.t[0][j])}`);
+  a = run([['i1', i => (i < 800 ? -3 : -0.5)]], 1000);
+  if (a.t[0][100] !== -1 || a.t[0][900] !== -0.5) bad.push('the clip');
+  // SET k: events at the next chunk (the last of a chunk wins); dropped outside the row
+  const r = solo('962', { drive: [['i1', 1], ['i2', 2], ['i3', 3]], taps: ['q1'] });
+  const y = r.render(200, { each: (F, M) => { if (F === 40) { M.get(1).ev(2); M.get(1).ev(1); } if (F === 100) { M.get(1).ev(3); M.get(1).ev(2); } } }).t[0];
+  if (y[159] !== 1 || y[160] !== 2 || y[400] !== 3) bad.push(`SET: ${y[159]} ${y[160]} ${y[400]}`);
+  assert.deepEqual(bad, []);
+});
+
+test('the routing and console panels — CP3A (Σ m · LEVEL / 10 × MASTER / 5: ×2 at the top; MIX ± railed; EXT × EXT LEVEL / 10, 10 = unity), CP35 (±6 V; unpatched i1 / i2 read +6 V and i3 / i4 −6 V through their attenuators, over the evaluator too), CP2 (one-pole LP / HP at 10 · 1000^(v / 10) Hz; PITCH / S-TRIG copy the rear inputs), 992 (the reversible attenuator), CP4A (copies); the slot-less 993 / 994 / CP8A in a payload (the 994\'s multiples the evaluator\'s)', () => {
+  const bad = [], at = (t, j = 20) => t.map(x => x[j]);
+  let t = solo('cp3a', { pv: { x1: 10, x2: 10, ms: 10, ra: 10 }, drive: [['m1', 1], ['m2', 0.5], ['x4', -1.5]], taps: ['mo', 'mn', 'xr'] }).render(8).t;
+  if (at(t).join() !== '3,-3,-1.5') bad.push(`CP3A ×2, EXT unity: ${at(t)}`);
+  t = solo('cp3a', { drive: [['m3', 2], ['m4', 9]], pv: { ms: 10, x4: 10 }, taps: ['mo', 'mn'] }).render(8).t;
+  if (Math.abs(t[0][20] - P_rail(2 * 0.7 * 2 + 18)) > 1e-12 || t[1][20] !== -6) bad.push(`CP3A defaults and the rails: ${at(t)}`);
+  t = solo('cp3a', { pv: { ra: 5 }, drive: [['x4', 2]], taps: ['xr'] }).render(8).t;
+  if (t[0][20] !== 1) bad.push('EXT LEVEL 5');
+  t = solo('cp35', { pv: { a1: 10, a2: 5, a3: 2.5, a4: 10 }, drive: [['i2', 3]], taps: ['p6', 'm6', 'o1', 'o2', 'o3', 'o4'] }).render(8).t;
+  if (at(t).join() !== '6,-6,6,1.5,-1.5,-6') bad.push(`CP35 in the rig: ${at(t)}`);
+  let { pg, pv } = payloadOf([[1, 'cp35'], [2, 'cp8a'], [3, '993'], [4, '994']], [[1, 'o3', 4, 'a1'], [4, 'a3', 0, 'm1'], [0, 'mo', 0, 'out']], { 0: { x1: 5, ov: 10 }, 1: { a3: 5 } });
+  let m = machine({ pg, pv }), y = m.render(40);
+  if (m.errs.length || m.g.why.length || Math.abs(y[100] / 0.15 + 3) > 1e-12) bad.push(`CP35 → 994 → MAIN OUT over the evaluator: ${y[100] / 0.15} (${m.errs} ${m.g.why})`);
+  for (const [sec, id, inn, v] of [['lp', 'lo', 'li', 3], ['hp', 'ho', 'hi', 7]]) {
+    const fc = 10 * 1000 ** (v / 10), q = solo('cp2', { pv: { [sec]: v }, drive: [[inn, i => Math.sin(2 * Math.PI * fc * i / 192000)]], taps: [id] }).render(frames(Math.max(0.3, 10 / fc))).t[0];
+    const g = dB(amp(q, 192000, fc, q.length >> 1, q.length));
+    if (Math.abs(g + 3.01) > 0.2) bad.push(`CP2 ${sec}: ${g} dB at ${fc}`);
+  }
+  t = solo('cp2', { drive: [['kpr', i => Math.sin(i * 0.1)], ['ksr', i => (i >> 4) & 1]], taps: ['po', 'so'] }).render(16).t;
+  if (t[0].some((x, i) => x !== Math.sin(i * 0.1)) || t[1].some((x, i) => x !== ((i >> 4) & 1))) bad.push('CP2 PITCH / S-TRIG');
+  for (const a of [-10, -4, 0, 7]) { t = solo('992', { pv: { at: a }, drive: [['x4', 2.5]], taps: ['xr'] }).render(8).t; if (t[0][20] !== 2.5 * a / 10) bad.push(`992 at ${a}: ${t[0][20]}`); }
+  t = solo('cp4a', { drive: [['ti', i => (i >> 3) & 1], ['ci', i => Math.cos(i)]], taps: ['tr', 'cr'] }).render(8).t;
+  if (t[0].some((x, i) => x !== ((i >> 3) & 1)) || t[1].some((x, i) => x !== Math.cos(i))) bad.push('CP4A');
+  assert.deepEqual(bad, []);
+});
+const P_rail = x => PM().rail(x);
+
+/* ---------------------------------------------------------------- the Song clock */
+// the Track's transport (engine.js songEvents, its transport part): a post waits as tp.pend and applies at the first span start F ≥
+// its frame − 0.5 (a start from a stop is cold: P-2's reset — `cold`); a loop wrap is handled at the first span start at or after
+// it (re-anchored at its exact frame); `end` and a stop post stop it → the frames to the next transport event (where the Track
+// cuts its span)
+function songStep(tp, F, cold) {
+  let dist = 1e9;
+  if (tp.pend) {
+    const P = tp.pend;
+    if (F >= P.frame - 0.5) {
+      tp.pend = null;
+      if (P.stop) { tp.play = false; return dist; }
+      const c = !tp.play;
+      Object.assign(tp, { play: true, frame: P.frame, tick: P.tick, fpt: P.fpt, loop: !!P.loop, ls: P.ls || 0, le: P.le || 0, end: P.end });
+      tp.wrap = !!P.loop && P.le > P.ls && P.tick < P.le;
+      if (c && cold) cold(F);
+    } else dist = P.frame - F;
+  }
+  if (!tp.play) return dist;
+  let t = tp.tick + (F - tp.frame) / tp.fpt;
+  if (tp.wrap && t >= tp.le) {
+    const L = tp.le - tp.ls;
+    let Fb = tp.frame + (tp.le - tp.tick) * tp.fpt;
+    while (F - Fb >= L * tp.fpt) Fb += L * tp.fpt;
+    tp.frame = Fb; tp.tick = tp.ls; t = tp.tick + (F - tp.frame) / tp.fpt;
+  }
+  if (tp.end != null && t >= tp.end) { tp.play = false; return dist; }
+  let nt = 1e18;
+  if (tp.wrap && tp.le < nt) nt = tp.le;
+  if (tp.end != null && tp.end < nt) nt = tp.end;
+  if (nt < 1e17) { const df = (nt - t) * tp.fpt; if (df < dist) dist = df; }
+  return dist < 1 ? 1 : dist;
+}
+const TP0 = () => ({ play: false, frame: 0, tick: 0, fpt: 1, loop: false, ls: 0, le: 0, wrap: false, pend: null });
+const FPT = (bpm, base = 48000) => base * 60 / (bpm * 960);
+// a Song clock alone in the rig, the transport stepped at every chunk (a span of 4): posts [{ at (the chunk it arrives before), frame,
+// tick, fpt, loop?, ls?, le?, end?, stop? } | { at, bpm }] → ck / rn / rs at 48 k × 4
+function clkRun(pv, nF, posts, { bpm = 120, os = 4 } = {}) {
+  const tp = TP0(), inst = Object.assign(INST(), { tp, bpm }), P = posts.slice().sort((a, b) => a.at - b.at);
+  const r = rig({ os, mods: [[1, 'clk']], pv: { 1: pv }, taps: [[1, 'ck'], [1, 'rn'], [1, 'rs']], inst });
+  const t = r.render(nF, { each: (F, M) => { while (P.length && P[0].at <= F) { const p = P.shift(); if (p.bpm !== undefined) inst.bpm = p.bpm; else tp.pend = p; } songStep(tp, F, () => M.get(1).reset()); } }).t;
+  return { ck: t[0], rn: t[1], rs: t[2], m: r.M.get(1) };
+}
+// a boundary at tick b of an anchor A lands on OS sample ⌈(A.frame + (b − A.tick) · A.fpt) · OS − 1e-9⌉ (the module's per-chunk form, globally)
+const onS = (A, b, os = 4) => Math.ceil((A.frame + (b - A.tick) * A.fpt) * os - 1e-9);
+const RS = 960;                                              // RESTART: 5 ms at 48 k × 4
+test('the Song clock (ours, IMPL-9b §3.4): CLOCK a level of the song position — its edges on the exact OS samples of the tick expression (1/16 on the span grid, a step on a chunk boundary, 1/8T at 133 BPM off the grid); the level rule (anchors 0 … 3 frames before the first chunk, a start in either half of a step); RUN; RESTART at a start, a loop wrap (on and off the grid), a seek, not at a tempo change\'s late anchor; a count-in silent (RESTART at tick 0); stopped silent; ALWAYS at the project tempo (a stopped tempo change jumps: RESTART); LENGTH N: RESTART every N steps from tick 0', () => {
+  const bad = [], list = (a, n) => a.slice(0, n).join();
+  // 1/16 at 120 BPM from frame 0: rises every 6 000 frames (on chunk boundaries), falls between; RESTART 5 ms; RUN
+  let A = { at: 0, frame: 0, tick: 0, fpt: FPT(120) }, c = clkRun({}, 30000, [A]);
+  if (c.ck[0] !== 5 || list(rises(c.ck), 4) !== '24000,48000,72000,96000' || list(falls(c.ck), 5) !== '12000,36000,60000,84000,108000') bad.push(`1/16: ${list(rises(c.ck), 4)} / ${list(falls(c.ck), 5)}`);
+  if (c.rn.some(x => x !== 5) || c.rs[0] !== 5 || c.rs[RS - 1] !== 5 || c.rs[RS] !== 0 || rises(c.rs).length !== 0 || c.m.lamp !== 1) bad.push('RUN / RESTART at the start');
+  // 1/8T at 133 BPM, the anchor at frame 1001 (applied at chunk 1004): the edges from the tick expression
+  A = { at: 1000, frame: 1001, tick: 0, fpt: FPT(133) }; c = clkRun({ dv: 4 }, 40000, [A]);
+  const R8 = [1, 2, 3, 4].map(k => onS(A, 320 * k)), F8 = [0, 1, 2, 3].map(k => onS(A, 160 + 320 * k));
+  if (list(rises(c.ck), 5) !== [4016, ...R8].join() || list(falls(c.ck), 4) !== F8.join() || c.ck[4015] !== 0 || rises(c.rs)[0] !== 4016 || falls(c.rs)[0] !== 4016 + RS) bad.push(`1/8T: ${list(rises(c.ck), 5)} vs 4016,${R8} · ${list(falls(c.ck), 4)} vs ${F8}`);
+  // the level rule: anchors 0 … 3 frames before the first chunk, the position in a step's first or second half
+  for (const off of [0, 1, 2, 3]) for (const [tick, hi] of [[0, 1], [100, 1], [130, 0], [230, 0], [250, 1]]) {
+    A = { at: 1000, frame: 1004 - off, tick, fpt: FPT(120) }; c = clkRun({}, 12000, [A]);
+    const s0 = 4016, r1 = onS(A, 240 * Math.ceil((tick + 1e-9) / 240));
+    if (c.ck[s0 - 1] !== 0 || c.ck[s0] !== (hi ? 5 : 0) || c.rs[s0] !== 5 || c.rn[s0] !== 5 || (rises(c.ck).find(i => i > s0) || -1) !== r1) bad.push(`level rule: anchor ${off} frames early at tick ${tick}: ${c.ck[s0]}, first rise ${rises(c.ck).find(i => i > s0)} vs ${r1}`);
+  }
+  // a loop wrap: off the grid (le 970 → frame 24 250, inside chunk 24 248), on it (le 960); RESTART at its sample, the clock from ls
+  for (const le of [970, 960]) {
+    A = { at: 0, frame: 0, tick: 0, fpt: FPT(120), loop: true, ls: 0, le }; c = clkRun({}, 40000, [A]);
+    const w = onS(A, le), B = { frame: le * 25, tick: 0, fpt: 25 };
+    if (list(rises(c.rs), 2) !== String(w) || c.rs[w + RS - 1] !== 5 || c.rs[w + RS] !== 0 || (rises(c.ck).find(i => i > w + 1) || -1) !== onS(B, 240)) bad.push(`wrap at ${le}: RESTART ${list(rises(c.rs), 2)} vs ${w}, next rise ${rises(c.ck).find(i => i > w + 1)} vs ${onS(B, 240)}`);
+  }
+  // a seek (a new anchor while playing, off the grid) → RESTART at its chunk; a tempo change's late anchor (1 … 3 frames) → none
+  c = clkRun({}, 50000, [{ at: 0, frame: 0, tick: 0, fpt: 25 }, { at: 40000, frame: 40002, tick: 1930, fpt: 25 }]);
+  if (list(rises(c.rs), 3) !== '160016' || c.ck[160015] !== 0 || c.ck[160016] !== 5) bad.push(`seek: ${list(rises(c.rs), 3)}`);
+  for (const late of [1, 2, 3]) {
+    const Fa = 30004 - late, fn = FPT(130);
+    c = clkRun({}, 60000, [{ at: 0, frame: 0, tick: 0, fpt: 25 }, { at: 30000, frame: Fa, tick: Fa / 25, fpt: fn }]);
+    const B = { frame: Fa, tick: Fa / 25, fpt: fn }, nx = 240 * Math.ceil(Fa / 25 / 240);
+    if (rises(c.rs).length !== 0 || (rises(c.ck).find(i => i > 120016) || -1) !== onS(B, nx)) bad.push(`tempo change ${late} late: RESTART ${list(rises(c.rs), 3)}, rise ${rises(c.ck).find(i => i > 120016)} vs ${onS(B, nx)}`);
+  }
+  // a count-in (two beats before tick 0): silent, RESTART and the clock at tick 0's sample
+  c = clkRun({}, 60000, [{ at: 0, frame: 0, tick: -1920, fpt: 25 }]);
+  if (c.ck.slice(0, 192000).some(x => x !== 0) || c.rn[191999] !== 0 || c.rn[192000] !== 5 || c.ck[192000] !== 5 || list(rises(c.rs), 2) !== '192000') bad.push(`count-in: ${list(rises(c.rs), 2)}`);
+  // stopped (SONG): silent; a stop while playing cuts every output (the pulse too) at its chunk
+  c = clkRun({}, 4000, []);
+  if (c.ck.some(x => x) || c.rn.some(x => x) || c.rs.some(x => x) || c.m.lamp !== 0) bad.push('stopped: silent');
+  c = clkRun({}, 20000, [{ at: 0, frame: 0, tick: 0, fpt: 25 }, { at: 100, frame: 101, stop: true }]);
+  if (c.rn[415] !== 5 || c.rn[416] !== 0 || c.rs[416] !== 0 || c.ck.slice(416).some(x => x)) bad.push('a stop');
+  // ALWAYS: stopped, the project tempo from frame 0; a stopped tempo change jumps (RESTART); playing, the song's
+  c = clkRun({ md: 1 }, 40000, [{ at: 20000, bpm: 140 }], { bpm: 100 });
+  const f100 = FPT(100), f140 = FPT(140);
+  if (c.ck[0] !== 5 || list(rises(c.ck), 2) !== [onS({ frame: 0, tick: 0, fpt: f100 }, 240), onS({ frame: 0, tick: 0, fpt: f100 }, 480)].join() || c.rn.some(x => x !== 5)) bad.push(`ALWAYS at 100 BPM: ${list(rises(c.ck), 2)}`);
+  if (list(rises(c.rs), 2) !== '80000' || (rises(c.ck).find(i => i > 80000) || -1) !== onS({ frame: 0, tick: 0, fpt: f140 }, 240 * Math.ceil(20000 / f140 / 240))) bad.push(`ALWAYS, a stopped tempo change: ${list(rises(c.rs), 2)}`);
+  // LENGTH 4 (ln 3): RESTART at steps 0, 4, 8 … from tick 0; a start mid-song (step 6): the start, then step 8
+  c = clkRun({ ln: 3 }, 60000, [{ at: 0, frame: 0, tick: 0, fpt: 25 }]);
+  if (list(rises(c.rs), 3) !== '96000,192000' || c.rs[0] !== 5) bad.push(`LENGTH 4: ${list(rises(c.rs), 3)}`);
+  c = clkRun({ ln: 3 }, 40000, [{ at: 0, frame: 0, tick: 1440, fpt: 25 }]);
+  if (list(rises(c.rs), 3) !== '48000,144000' || c.rs[0] !== 5) bad.push(`LENGTH 4 from step 6: ${list(rises(c.rs), 3)}`);
+  assert.deepEqual(bad, []);
+});
+
+// the Track's span loop over a machine (engine.js render: quanta from Q(F), spans cut at the transport's next event, rounded up to
+// 4 frames) with the Song clock reading m.inst.tp; posts arrive before the first quantum starting at or after `at`
+function songPlay(m, nF, Q, posts, F0 = 0) {
+  const tp = m.inst.tp, P = posts.slice().sort((a, b) => a.at - b.at), os = m.inst.OS, y = new Float64Array(nF * os), buf = new Float64Array(128 * os);
+  let F = F0;
+  while (F < F0 + nF) {
+    const q = Math.min(Q(F), F0 + nF - F);
+    while (P.length && P[0].at <= F) { const p = P.shift(); if (p.bpm !== undefined) m.inst.bpm = p.bpm; else tp.pend = p; }
+    for (let off = 0; off < q;) {
+      const Fs = F + off, d = songStep(tp, Fs, () => m.mc.reset());
+      let len = q - off;
+      if (d < len) { len = Math.max(4, Math.ceil(d / 4) * 4); if (len > q - off) len = q - off; }
+      buf.fill(0, 0, len * os); m.mc.render(buf, len * os, Fs); y.set(buf.subarray(0, len * os), (Fs - F0) * os); off += len;
+    }
+    F += q;
+  }
+  return y;
+}
+function clkMachine(mods, cords, vals) { const { pg, pv } = payloadOf(mods, cords, vals), m = machine({ pg, pv }); m.inst.tp = TP0(); m.inst.bpm = 120; return m; }
+test('the Song clock through the evaluator: span invariance with the transport running — quanta 4 / 128 / random, a loop wrap inside a 128-frame span, a tempo change, a seek: bit for bit; a clocked 960 (CLOCK → SHIFT and RESTART → IN 1 through a 994) starts on stage 1 with the live anchor 0 … 3 frames off the span grid, its second step stage 2', () => {
+  const bad = [];
+  let seed = 11; const rnd = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296;
+  const posts = [{ at: 0, frame: 130, tick: 0, fpt: 25, loop: true, ls: 0, le: 1930 }, { at: 70000, frame: 70411, tick: 70411 / 25 - 1930 * 1, fpt: FPT(137) },
+    { at: 100000, frame: 100301, tick: 2500, fpt: FPT(137), loop: true, ls: 960, le: 3840 }];
+  const mk = () => clkMachine([[1, 'clk']], [[1, 'ck', 0, 'm1'], [1, 'rn', 0, 'm2'], [1, 'rs', 0, 'm3'], [0, 'mo', 0, 'out']], { 0: { x1: 1, x2: 2, x3: 4, ov: 10 }, 1: { dv: 4, ln: 5 } });
+  const ys = [() => 128, () => 4, () => 4 * (1 + Math.floor(rnd() * 32))].map(Q => songPlay(mk(), 160000, Q, posts.map(p => Object.assign({}, p))));
+  if (!bitEq(ys[0], ys[1]) || !bitEq(ys[0], ys[2])) bad.push('quanta 128 / 4 / random differ');
+  const lv = Array.from(ys[0], x => Math.round(x / 0.15 / 0.2));   // 1 · ck/5 + 2 · rn/5 + 4 · rs/5 → 0 … 7 in units of 1 V
+  if (!lv.some(v => (v & 4) && (v & 1)) || !lv.some(v => v === 10)) bad.push(`the patch plays its levels (${[...new Set(lv)].slice(0, 9)})`);
+  // the clocked 960: stage 1 from the start whatever the anchor's offset to the span grid; stage 2 at the second step
+  for (const off of [0, 1, 2, 3]) for (const Q of [() => 128, () => 4]) {
+    const m = clkMachine([[1, 'clk'], [2, '994'], [3, '960']], [[1, 'ck', 2, 'a1'], [2, 'a2', 3, 'sh'], [1, 'rs', 2, 'b1'], [2, 'b2', 3, 'i1'], [3, 'ra1', 0, 'm1'], [0, 'mo', 0, 'out']],
+      { 0: { x1: 5, ov: 10 }, 3: Object.assign({ os: 0 }, Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8].map(k => ['a' + k, k]))) });
+    const F0 = 2048 + off, y = songPlay(m, 20000, Q, [{ at: 2000, frame: F0, tick: 0, fpt: 25 }]), st = j => Math.round(y[j] / (0.15 * 0.2)), s0 = Math.ceil(F0 / 4) * 16;
+    if (m.errs.length || st(s0) !== 1 || st(s0 + 12000) !== 1 || st(s0 + 24000 + 16) !== 2 || st(s0 + 48000 + 16) !== 3) bad.push(`anchor +${off} (Q ${Q()}): stages ${st(s0)} ${st(s0 + 24000 + 16)} ${st(s0 + 48000 + 16)}`);
+  }
+  assert.deepEqual(bad, []);
+});
+
 /* ---------------------------------------------------------------- rails, feedback */
 test('T-LVL1: active feedback stays inside the rails and finite — a 902 into itself at ×2 (10 s), a mixer → 904A (k 4.4) → 902 → mixer / 921B loop at full gain (10 s, OS 4 and OS 1)', () => {
   const bad = [];
@@ -851,6 +1354,24 @@ const BUSY = [
   ['921a', { fq: 2, pw: 30 }, [['f1', i => Math.sin(i * 0.01)], ['w2', i => Math.sin(i * 0.02)]], []],
   ['ctl', { gl: 4, rt: 1, x2: 9 }, [['m1', i => Math.sin(i * 0.02)], ['m2', i => Math.sin(i * 0.03)], ['vi', i => 3 * Math.sin(i * 0.004)], ['si', i => ((i >> 10) & 1)], ['out', i => Math.sin(i * 0.05)]],
     ['kp1', 'ks1', 'kg', 'kv', 'mo', 'mn', 'vo', 'so']],
+  // stage 9b (lane V9c): every input with edges, gates, CVs; the 960 at audio rate with SKIP, ROW C → CLOCK and its jacks; the
+  // Song clock in ALWAYS (no transport in the rig: the stopped clock at 120 BPM)
+  ['904b', { fc: 1, rg: 1 }, [['in', i => 2 * Math.sin(i * 0.01) + Math.sin(i * 0.2)], ['c1', i => Math.sin(i * 0.0003)], ['c3', i => 0.2 * Math.sin(i * 0.05)]], ['out']],
+  ['914', { lo: 2, b3: 4, b7: 10, b12: 6, hi: 7 }, [['i1', i => Math.sin(i * 0.02) + Math.sin(i * 0.31)], ['i2', i => Math.sin(i * 0.11)]], ['o1', 'o2']],
+  ['911a', { d1: 2, d2: 3, md: 2 }, [['i1', i => ((i >> 11) % 3 === 0 ? 0 : 1)], ['i2', i => ((i >> 9) & 1)]], ['o1', 'o2']],
+  ['903a', {}, [], ['wh1', 'pk1']],
+  ['960', { rg: 5, vn: 5, cc: 1, s3: 2, s6: 2, s9: 0, a2: 7, b5: 3, c1: 4, ga: 1 }, [['on', i => ((i >> 12) % 4 === 0 ? 3 : 0)], ['off', i => ((i >> 12) % 4 === 2 ? 3 : 0)],
+    ['sh', i => ((i >> 8) & 1) * 4], ['ci', i => Math.sin(i * 0.001)], ['i2', i => ((i >> 11) % 5 === 0 ? 3.6 : 0)]], ['co', 'o1', 'o2', 'o4', 'o9', 'ra1', 'rb1', 'rc2']],
+  ['961', { t1: 1, t2: 0, se: 7 }, [['a11', i => 2 * Math.sin(i * 0.003)], ['b13', i => ((i >> 10) & 1) * 4], ['a24', i => ((i >> 9) % 3) * 1.2], ['b26', i => 3 * Math.sin(i * 0.002)],
+    ['v1i', i => ((i >> 9) & 1)], ['v2i', i => ((i >> 8) & 1)], ['ai', i => 0.6 * Math.sin(i * 0.05)]], ['s1', 's2', 'v1o', 'v2o', 'ao1']],
+  ['962', {}, [['i1', i => Math.sin(i * 0.01)], ['i2', i => -3 + Math.sin(i * 0.02)], ['i3', i => 2], ['t2', i => ((i >> 11) % 3 === 1 ? 4 : 0)], ['sh', i => ((i >> 9) & 1) * 4]], ['q1', 'o1', 'o2', 'o3']],
+  ['992', { at: -6 }, [['x4', i => 3 * Math.sin(i * 0.01)]], ['xr']],
+  ['cp2', { lp: 3, hp: 7 }, [['li', i => Math.sin(i * 0.02) + Math.sin(i * 0.4)], ['hi', i => Math.sin(i * 0.002) + Math.sin(i * 0.3)], ['kpr', i => Math.sin(i * 0.001)], ['ksr', i => ((i >> 9) & 1)]],
+    ['lo', 'ho', 'po', 'so']],
+  ['cp3a', { x1: 10, x3: 4, ms: 9, ra: 6 }, [['m1', i => 4 * Math.sin(i * 0.02)], ['m3', i => 3 * Math.sin(i * 0.03)], ['x4', i => Math.sin(i * 0.01)]], ['mo', 'mn', 'xr']],
+  ['cp4a', {}, [['ti', i => ((i >> 9) & 1)], ['ci', i => Math.sin(i * 0.01)]], ['tr', 'cr']],
+  ['cp35', { a1: 3, a2: 10, a3: 5, a4: 8 }, [['i1', i => Math.sin(i * 0.02)], ['i3', i => 2 * Math.sin(i * 0.01)]], ['p6', 'm6', 'o1', 'o2', 'o3', 'o4']],
+  ['clk', { md: 1, dv: 3, ln: 3 }, [], ['ck', 'rn', 'rs']],
 ];
 const BUSY_NOTES = [[0, 60, 0.7, 1], [200, 64, 0.9, 1], [400, 55, 0.5, 1], [600, 64, 0, 0], [800, 55, 0, 0], [1000, 67, 1, 1], [1400, 60, 0, 0], [1600, 67, 0, 0]];
 function busy(k, o = {}) {
@@ -947,7 +1468,9 @@ function line(kind, base) {
   if (kind === 'lead') [60, 67, 72, 70].forEach((n, k) => { o.push([fr(4 * k * q), n, 0.8, 1], [fr((4 * k + 3.6) * q), n, 0, 0]); });
   return o.sort((a, b) => a[0] - b[0] || a[3] - b[3]);
 }
-const LINE = { 'Classic bass': 'bass', 'Filter sweep': 'lead', Drone: 'none', 'Sync lead': 'lead', Wind: 'none', Bells: 'lead' };
+const LINE = { 'Classic bass': 'bass', 'Filter sweep': 'lead', Drone: 'none', 'Sync lead': 'lead', Wind: 'none', Bells: 'lead',
+  // stage 9b's (K9b): the keyboard-played ones get a line, the clocked ones the transport (presetM)
+  'Swept band': 'lead', Sequence: 'none', 'Twenty-four steps': 'none', 'Echo strikes': 'lead', Vowel: 'lead', 'Step bass': 'bass', Routed: 'bass' };
 // the base-rate MAIN OUT (a windowed-sinc low-pass below 20 kHz, then every OS-th sample)
 function decim(y, os, base) {
   const H = 95, c = 20000 / (base * os), h = new Float64Array(H);
@@ -1002,6 +1525,43 @@ test('over the evaluator: the whole schedule per sample (its ps) = block steps, 
   assert.deepEqual(bad, []);
 });
 
+// IMPL-9b §2.6 (K9b writes the seven, V9c proves them): each sounds and peaks −12 … −3 dBFS at 48 k × 4 (the clocked ones with the
+// transport running from frame 0); the clocked ones start on stage 1 with the live anchor 0 … 3 frames off the span grid; Step bass's
+// fundamental = its clock / 8 at two keys, and the clamp (1 kHz / 8 = 125 Hz) above them. Until K9b's presets land: a diagnostic
+test('stage 9b\'s starting patches over the evaluator (K9b\'s, when present): headroom −12 … −3 dBFS at 48 k × 4; Sequence / Twenty-four steps on stage 1 at the first step and stage 2 at the second, the anchor 0 … 3 frames off the grid; Step bass: the fundamental at two keys and the clamp', t => {
+  const S9BP = ['Swept band', 'Sequence', 'Twenty-four steps', 'Echo strikes', 'Vowel', 'Step bass', 'Routed'], have = S9BP.filter(n => MG.PRESETS.some(P => P.name === n));
+  if (!have.length) { t.diagnostic('waiting for K9b\'s seven presets'); return; }
+  const bad = [], rep = [];
+  for (const name of have) {
+    const r = presetM(name), y = r.render(frames(3), { notes: line(LINE[name], 48000) }), d = decim(y, 4, 48000), pk = dB(absMax(d));
+    rep.push(`${name} ${pk.toFixed(1)} dBFS`);
+    if (r.errs.length || r.g.why.length) bad.push(`${name}: ${r.errs} ${r.g.why}`);
+    if (!(pk >= -12 && pk <= -3) || !y.every(Number.isFinite)) bad.push(`${name}: peak ${pk} dBFS`);
+  }
+  for (const name of have.filter(n => CLOCKED.has(n))) for (const off of [0, 1, 2, 3]) {
+    const r = presetM(name), n960 = r.mc.mon().mods.find(m => m[1] === '960'), nclk = r.mc.mon().mods.find(m => m[1] === 'clk');
+    if (!n960 || !nclk) { bad.push(`${name}: no 960 / Song clock`); break; }
+    const q = r.mc.lat.byN.get(n960[0]).m, ck = r.mc.lat.byN.get(nclk[0]).m, F0 = 2048 + off, step = MG.LAW.ticks(ck.p[0] | 0) * 25;
+    r.inst.tp = TP0();
+    songPlay(r, F0 + 64, () => 128, [{ at: 1900, frame: F0, tick: 0, fpt: 25 }]);
+    const s1 = q.st;
+    songPlay(r, step, () => 128, [], F0 + 64);
+    if (s1 !== 0 || q.st !== 1) bad.push(`${name}, anchor +${off}: stages ${s1 + 1} → ${q.st + 1}`);
+  }
+  if (have.includes('Step bass')) {
+    const r = presetM('Step bass'), n960 = r.mc.mon().mods.find(m => m[1] === '960'), q = r.mc.lat.byN.get(n960[0]).m, f0 = MG.LAW.clk960(q.p[36], q.p[37]);
+    for (const [key, want] of [[48, Math.min(1000, f0 * 2 ** -1) / 8], [55, Math.min(1000, f0 * 2 ** (-5 / 12)) / 8], [96, 125]]) {
+      r.mc.note(key, 1, 1); r.render(800);                   // (the key at the next chunk; the pitch settled after any glide)
+      const f = q.inc * r.inst.fs / 8;
+      rep.push(`Step bass key ${key}: ${f.toFixed(2)} Hz`);
+      if (!near(f, want, 0.002)) bad.push(`Step bass key ${key}: ${f} vs ${want}`);
+      r.mc.note(key, 0, 0); r.render(40);
+    }
+  }
+  console.log('# 9b presets: ' + rep.join(' · '));
+  assert.deepEqual(bad, []);
+});
+
 test('over the evaluator: the multiples (a driven jack heard on the group\'s others, two driven averaged — tied outputs, review 1 F2 —, passive), a passive loop through a multiple with three drivers bounded (the average cannot gain: it settles on its source), the normals of the 995 (an unpatched i2 reads i1\'s source)', () => {
   let { pg, pv } = payloadOf([[1, '995']], [[0, 'kp1', 0, 'a1'], [0, 'kw', 0, 'a3'], [0, 'a2', 1, 'i1'], [1, 'o2', 0, 'out']], { 1: { a1: 10, a2: 10 } });
   let r = machine({ pg, pv });
@@ -1038,9 +1598,98 @@ test('no allocation in the render path over the evaluator: Classic bass plus a l
   assert.ok(y.every(Number.isFinite) && absMax(y) > 0, 'it sounds, finite');
 });
 
+/* ---------------------------------------------------------------- stage 9b over the evaluator: events, lamps, allocation, feedback */
+// a System 55 slice: the Song clock (the transport looping) → 960 (SHIFT, RESTART → IN 1), its rows through the 962 and the 921A /
+// 921B into the 914, the 904B, the CP3A; the 961 from the controller's GATE and the 960's OUT 3; the 911A and the 911 on the 902;
+// the 903A, the CP35, the CP2, the 992, the CP4A, a 994 as the multiple
+function slice55(o = {}) {
+  const { pg, pv } = payloadOf([[1, 'clk'], [2, '994'], [3, '960'], [4, '962'], [5, '921a'], [6, '921b', 5], [7, '914'], [8, '904b'], [9, 'cp3a'], [10, '961'],
+    [11, '911a'], [12, '911'], [13, '902'], [14, '903a'], [15, 'cp35'], [16, 'cp2'], [17, '992'], [18, 'cp4a'], [19, '993'], [20, 'cp8a']],
+  [[1, 'ck', 2, 'a1'], [2, 'a2', 3, 'sh'], [1, 'rs', 2, 'b1'], [2, 'b2', 3, 'i1'], [2, 'b3', 4, 't1'], [3, 'ra1', 4, 'i1'], [3, 'rb1', 4, 'i2'], [3, 'o1', 4, 'sh'],
+    [4, 'q1', 5, 'f1'], [0, 'kp1', 5, 'f2'], [6, 'saw', 7, 'i1'], [14, 'pk1', 7, 'i2'], [7, 'o1', 8, 'in'], [3, 'rc1', 8, 'c1'], [8, 'out', 9, 'm1'], [6, 'rec', 16, 'li'],
+    [16, 'lo', 9, 'm2'], [15, 'o2', 9, 'x4'], [9, 'xr', 17, 'x4'], [17, 'xr', 8, 'c2'], [0, 'kg', 10, 'a11'], [3, 'o3', 10, 'b21'], [10, 's1', 11, 'i1'], [10, 's2', 18, 'ti'],
+    [18, 'tr', 11, 'i2'], [11, 'o2', 12, 'trg'], [12, 'out', 13, 'c1'], [9, 'mo', 13, 'i1'], [13, 'o2', 0, 'out'], [14, 'wh1', 16, 'hi'], [16, 'ho', 9, 'm3'], [10, 'v1o', 18, 'ci'], [18, 'cr', 9, 'm4']],
+  { 0: { ov: 6 }, 1: { dv: 2, ln: 7 }, 3: Object.assign({ os: 0, ga: 0, gb: 1 }, Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8].map(k => ['a' + k, (k * 37) % 11]))), 7: { b4: 3, b8: 2 },
+    8: { fc: -3 }, 9: { x2: 4, x3: 2, x4: 3 }, 11: { md: 1, d1: 4, d2: 6 }, 13: { md: 1, fc: 2 }, 15: { a2: 4 }, 17: { at: 3 } });
+  const m = machine(Object.assign({ pg, pv }, o));
+  m.inst.tp = TP0(); m.inst.bpm = 120;
+  return m;
+}
+test('over the evaluator, a System 55 slice: events (mc.ev → the 960 / 962 at the next chunk: SET, SHIFT, OSC ON / OFF) whatever the span split; lamps(F) of the live 960 / 962 / Song clock (lampN 3) as their state; no loop step, no error; finite', () => {
+  const bad = [];
+  let seed = 5; const rnd = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296;
+  const runs = [() => 128, () => 4, () => 4 * (1 + Math.floor(rnd() * 32))].map(Q => {
+    const m = slice55(), parts = [];
+    let F = 0, posts = [{ at: 0, frame: 300, tick: 0, fpt: 25, loop: true, ls: 0, le: 3840 }];
+    for (const [nF, ev] of [[4096, [[3, 3 + 4], [4, 2]]], [4096, [[3, 2], [3, 1]]], [4096, [[3, 0], [4, 1]]], [20480, []]]) {
+      for (const [n, k] of ev) if (m.mc.ev(n, k) !== 1) bad.push(`ev(${n}, ${k}) dropped`);
+      parts.push(songPlay(m, nF, Q, posts, F)); F += nF; posts = [];
+    }
+    return { m, y: parts, L: plain(m.mc.lamps(0)) };
+  });
+  for (const k of [1, 2]) runs[k].y.forEach((y, j) => { if (!bitEq(y, runs[0].y[j])) bad.push(`split ${k}, part ${j}: differs`); });
+  const m = runs[0].m, sch = m.mc.mon();
+  if (m.errs.length || m.g.why.length || sch.steps.some(s => s.loop === 1)) bad.push(`errors / loop: ${m.errs} ${m.g.why}`);
+  if (m.mc.lampN !== 3 || runs[0].L.l.length !== 6 || runs[0].L.l.filter((_, i) => i % 2 === 0).join() !== '1,3,4') bad.push(`lamps ${JSON.stringify(runs[0].L)}`);
+  const by = n => m.mc.lat.byN.get(n).m, L = runs[0].L.l;
+  if (L[1] !== by(1).lamp || L[3] !== ((1 << by(3).st) | (by(3).osc << 9)) || L[5] !== 1 << by(4).sel) bad.push('lamps = the state');
+  if (!runs[0].y.every(y => y.every(Number.isFinite)) || !(absMax(runs[0].y[3]) > 0)) bad.push('finite, sounding');
+  assert.deepEqual(bad, []);
+});
+
+test('no allocation in the render path over the evaluator with every 9b circuit live (the System 55 slice, the transport running and wrapping), events posted between 200 spans', () => {
+  const { sc } = libM(), m = slice55(), os = 4, buf = new Float64Array(128 * os);
+  let seed = 17; const rnd = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296;
+  songPlay(m, 8192, () => 128, [{ at: 0, frame: 2, tick: 0, fpt: 25, loop: true, ls: 0, le: 480 }], 0);   // (warm: every first-call path; loops twice)
+  let F = 8192, pk = 0;
+  noAlloc(sc, () => {
+    for (let k = 0; k < 200; k++) {
+      m.mc.ev(3, (k * 7) % 12); m.mc.ev(4, k % 3);
+      const d = songStep(m.inst.tp, F, null);           // (the host's: this realm)
+      let n = 4 * (1 + Math.floor(rnd() * 32));
+      if (d < n) n = Math.max(4, Math.ceil(d / 4) * 4);
+      buf.fill(0); m.mc.render(buf, n * os, F); F += n;
+      for (let i = 0; i < n * os; i++) { const v = Math.abs(buf[i]); if (v > pk) pk = v; }
+    }
+  });
+  assert.ok(Number.isFinite(pk) && pk > 0 && F > 8192 + 200 * 4, `rendered ${F - 8192} frames, peak ${pk}`);
+});
+
+test('finite under feedback: a 960 → 962 → 960 loop at audio rate (the clock at 1 kHz, CONTROL INPUT from the 962), a 961 audio trigger fed by an oscillator into the 960\'s SHIFT (10 s), and 40 random 9b graphs with gains to 4 (OS 1 and 4)', () => {
+  const bad = [], P = PM();
+  let { pg, pv } = payloadOf([[1, '960'], [2, '962'], [3, '904b']], [[1, 'o2', 2, 'sh'], [1, 'ra1', 2, 'i1'], [1, 'rb1', 2, 'i2'], [2, 'q1', 1, 'ci'], [2, 'o1', 1, 'sh'], [2, 'o2', 1, 'i3'],
+    [1, 'ra2', 3, 'in'], [2, 'q2', 3, 'c1'], [3, 'out', 1, 'off'], [3, 'out', 0, 'out']], { 1: { rg: 6, vn: 10, a1: 10, a5: 6, b2: 9, ga: 2, cc: 1, c3: 10 } });
+  let r = machine({ pg, pv }), y = r.render(frames(2));
+  if (!y.every(Number.isFinite) || absMax(y) / 0.105 > 12 || !r.mc.mon().steps.some(s => s.loop === 1)) bad.push('960 → 962 → 960');
+  ({ pg, pv } = payloadOf([[1, '921'], [2, '961'], [3, '960']], [[1, 'saw', 2, 'ai'], [2, 'ao1', 3, 'sh'], [3, 'ra1', 0, 'm1'], [0, 'mo', 0, 'out']], { 1: { rg: 4 }, 2: { se: 8 }, 3: { a3: 7, a6: 4, os: 0 } }));
+  r = machine({ pg, pv }); y = r.render(frames(10));
+  if (!y.every(Number.isFinite) || !(absMax(y) > 0)) bad.push('the 961 audio trigger');
+  const T9B = ['904b', '914', '911a', '903a', '960', '961', '962', '992', '994', 'cp2', 'cp3a', 'cp4a', 'cp35', '921b', '911', '902'];
+  let seed = 0x9b; const rnd = () => (seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296;
+  let loops = 0;
+  for (let g = 0; g < 40; g++) {
+    const os = g % 2 ? 4 : 1, mods = [], cords = [], vals = {};
+    for (let n = 1; n <= 6 + (g % 5); n++) mods.push([n, T9B[Math.floor(rnd() * T9B.length)]]);
+    const ty = new Map([[0, 'ctl'], ...mods]), jk = dir => mods.concat([[0, 'ctl']]).flatMap(([n, t]) => P.JACKS[t].filter(j => (j.dir === dir || j.dir === 'any') && j.id !== 'out').map(j => [n, j]));
+    const A = jk('out'), B = jk('in');
+    for (let c = 0; c < 14; c++) { const a = A[Math.floor(rnd() * A.length)], bs = B.filter(b => b[1].sig === a[1].sig), b = bs[Math.floor(rnd() * bs.length)]; if (b && !(a[1].dir === 'any' && b[1].dir === 'any')) cords.push([a[0], a[1].id, b[0], b[1].id]); }
+    const o = A.filter(a => a[1].sig === 'v' && a[1].dir === 'out' && a[0] !== 0); if (o.length) { const a = o[Math.floor(rnd() * o.length)]; cords.push([a[0], a[1].id, 0, 'out']); }
+    for (const [n, t] of mods) { vals[n] = {}; P.PARAMS[t].forEach(([id], j) => { const [lo, hi] = P.RANGE[t][j]; vals[n][id] = rnd() < 0.5 ? (rnd() < 0.5 ? lo : hi) : lo + rnd() * (hi - lo); }); }
+    const q = payloadOf(mods, cords, vals);
+    for (const c of q.pg.cords) if (rnd() < 0.3) c[4] = 4;
+    r = machine({ pg: q.pg, pv: q.pv, os }); r.inst.tp = { play: true, frame: 0, tick: 0, fpt: 25, loop: true, ls: 0, le: 960, wrap: true, end: null };
+    loops += r.g.loops;
+    y = r.render(frames(0.4), { notes: [[0, 48, 1, 1], [4000, 48, 0, 0], [8000, 55, 1, 1]] });
+    if (!y.every(Number.isFinite)) { bad.push(`graph ${g}: not finite`); continue; }
+    for (const [n] of mods) for (const b of r.mc.lat.byN.get(n).m.outs) if (!b.every(Number.isFinite)) { bad.push(`graph ${g}: module ${n} (${ty.get(n)})`); break; }
+  }
+  if (loops < 5) bad.push(`the fuzz made ${loops} loop steps`);
+  assert.deepEqual(bad, []);
+});
+
 /* ---------------------------------------------------------------- CPU */
 // a module's ctl + run alone (inputs pointed at pre-filled chunk buffers), OS 4, 48 kHz, s per s; the best of 3
-function costOf(type, cfg, secs) {
+function costOf(type, cfg, secs, copy = false) {
   const { PM: P } = libM(), os = 4, fs = 192000, CH = 16, NP = 251, sec = 0.5, nCh = Math.round(sec * fs / CH);
   const pool = f => { const a = []; for (let c = 0; c < NP; c++) { const b = new Float64Array(32); for (let i = 0; i < CH; i++) b[i] = f(c * CH + i); a.push(b); } return a; };
   const POOL = { saw: pool(n => 0.866 * (2 * ((n * 110.3 / fs) % 1) - 1)), mix: pool(n => 1.2 * (2 * ((n * 110.3 / fs) % 1) - 1) + 0.8 * (2 * ((n * 165.7 / fs) % 1) - 1)),
@@ -1050,7 +1699,9 @@ function costOf(type, cfg, secs) {
   const z = new Float64Array(32); m.ins = m.ins.map(() => z);
   const named = cfg(m) || [];
   const S = secs || Array.from({ length: P.SECS[type] }, (_, s) => s), ns = S.length;
-  const run = (n0, n1) => { for (let c = n0; c < n1; c++) { const j = c % NP; for (const [k, nm] of named) m.ins[k] = POOL[nm][j]; m.ctl(c); m.mv = 0; for (let s = 0; s < ns; s++) m.run(S[s], 0, CH); } };
+  // copy: fixed input buffers, the pool copied in per chunk (the 960 / 961 / 962 rebuild their patched lists after an ins access)
+  const fx = named.map(([k]) => { const b = new Float64Array(32); if (copy) m.ins[k] = b; return b; });
+  const run = (n0, n1) => { for (let c = n0; c < n1; c++) { const j = c % NP; for (let q = 0; q < named.length; q++) { const [k, nm] = named[q]; if (copy) fx[q].set(POOL[nm][j]); else m.ins[k] = POOL[nm][j]; } m.ctl(c); m.mv = 0; for (let s = 0; s < ns; s++) m.run(S[s], 0, CH); } };
   run(0, nCh);
   let best = 1e9;
   for (let r = 1; r <= 5; r++) { const t0 = performance.now(); run(nCh * r, nCh * (r + 1)); best = Math.min(best, (performance.now() - t0) / 1000 / sec); }
@@ -1083,5 +1734,49 @@ test('CPU per module type at OS 4 (node, reported; gated at three times spike (a
     const t0 = performance.now(); r.render(frames(1)); rep.push(`${P.name} machine ${((performance.now() - t0) / 1000).toFixed(4)}`);
   }
   console.log('# CPU (OS 4, node; s per s): ' + rep.join(' · '));
+  assert.deepEqual(bad, []);
+});
+
+// stage 9b's types (IMPL-9b §3.7 and §12 spike (a2) decision 4: the 960 ≤ 0.002, ≤ 0.003 with CONTROL INPUT patched; the 961's
+// V→S ≤ 0.0008 a section, its others ≤ 0.0004; the 914 ≤ 0.008; the 904B ≤ 0.003; the 911A / 962 / 903A ≤ 0.001; the CP3A's
+// mix ≤ 0.0015; 992 / CP2 / CP4A / CP35 / the Song clock ≤ 0.0005 a section) — reported, gated at three times as above; and the
+// 960 patched into itself (a loop step, ≤ 0.005) and the System 55 slice, as machines
+test('CPU per 9b type at OS 4 (node, reported; gated at three times the limits of IMPL-9b §12 spike (a2) decision 4): 904B, 914, 911A, 903A, 960 (and with CONTROL INPUT), 961 per section, 962, CP3A, 992, CP2, CP4A, CP35, the Song clock; the self-patched 960 and the System 55 slice as machines', () => {
+  const sw = (m, k, v) => { m.p[k] = m.t[k] = v; m.mv = 1; };
+  const C = [
+    ['904B (c1 patched)', 0.003, () => costOf('904b', () => [[0, 'mix'], [1, 'cv1']])],
+    ['904B (no CV)', 0.003, () => costOf('904b', () => [[0, 'mix']])],
+    ['914', 0.008, () => costOf('914', () => [[0, 'mix']])],
+    ['914 (both inputs)', 0.008, () => costOf('914', () => [[0, 'mix'], [1, 'saw']])],
+    ['911A (PARALLEL)', 0.001, () => costOf('911a', m => { sw(m, 2, 1); return [[0, 'gate']]; })],
+    ['903A (white + pink)', 0.001, () => costOf('903a', () => [])],
+    ['960 (6.4 Hz; SHIFT, IN 1 patched; ROW A / B, OUT 1 read)', 0.002, () => costOf('960', m => { m.om = (1 << 10) | (1 << 12) | 2; sw(m, 36, 3); return [[2, 'gate'], [4, 'gate']]; }, undefined, true)],
+    ['960 (CONTROL INPUT patched, 410 Hz; ROW A, OUTPUT read)', 0.003, () => costOf('960', m => { m.om = (1 << 10) | 1; sw(m, 36, 6); return [[3, 'cv1']]; }, undefined, true)],
+    ['961 V→S (one A, one B)', 0.0008, () => costOf('961', () => [[0, 'gate'], [6, 'clk']], [0], true)],
+    ['961 V→S (two A, two B: twice the inputs)', 0.0016, () => costOf('961', () => [[0, 'gate'], [1, 'clk'], [6, 'clk'], [7, 'gate']], [0], true)],
+    ['961 S→V', 0.0004, () => costOf('961', () => [[24, 'gate']], [2], true)],
+    ['961 AUDIO → V', 0.0004, () => costOf('961', () => [[26, 'saw']], [4], true)],
+    ['962 (two inputs, SHIFT)', 0.001, () => costOf('962', () => [[0, 'saw'], [1, 'mix'], [6, 'gate']], undefined, true)],
+    ['CP3A mix (3 inputs)', 0.0015, () => costOf('cp3a', m => { m.om = 3; return [[0, 'mix'], [1, 'mix'], [2, 'mix']]; }, [0])],
+    ['CP3A route', 0.0005, () => costOf('cp3a', m => { m.om = 4; return [[4, 'cv1']]; }, [1])],
+    ['992', 0.0005, () => costOf('992', () => [[0, 'cv1']])],
+    ['CP2 low-pass', 0.0005, () => costOf('cp2', m => { m.om = 1; return [[0, 'mix']]; }, [0])],
+    ['CP2 PITCH / S-TRIG', 0.0005, () => costOf('cp2', m => { m.om = 12; return [[2, 'cv1'], [3, 'gate']]; }, [3])],
+    ['CP4A (a section)', 0.0005, () => costOf('cp4a', () => [[0, 'gate']], [0])],
+    ['CP35 (±6 V)', 0.0005, () => costOf('cp35', () => [], [0])],
+    ['CP35 (an attenuator)', 0.0005, () => costOf('cp35', () => [[0, 'cv1']], [1])],
+    ['Song clock (ALWAYS, all read)', 0.0005, () => costOf('clk', m => { sw(m, 1, 1); return []; })],
+  ];
+  const rep = [], bad = [];
+  for (const [nm, lim, f] of C) { const t = f(); rep.push(`${nm} ${t.toFixed(5)}`); if (!(t <= 3 * lim)) bad.push(`${nm}: ${t} > 3 × ${lim}`); }
+  const time = (m, sec) => { const t0 = performance.now(); m.render(frames(sec)); return (performance.now() - t0) / 1000 / sec; };
+  const { pg, pv } = payloadOf([[1, '960']], [[1, 'o5', 1, 'i1'], [1, 'ra1', 0, 'm1'], [0, 'mo', 0, 'out']], { 1: { rg: 5, vn: 0, a2: 3, a4: 6 } });
+  let m = machine({ pg, pv }); m.render(frames(0.3));
+  const tl = time(m, 1);
+  rep.push(`the 960 in a loop step (machine, + the controller's mix and OUT) ${tl.toFixed(5)}`);
+  if (!(tl <= 3 * 0.005)) bad.push(`the 960's loop step ${tl}`);
+  m = slice55(); m.inst.tp = { play: true, frame: 0, tick: 0, fpt: 25, loop: true, ls: 0, le: 3840, wrap: true, end: null }; m.render(frames(0.3));
+  rep.push(`the System 55 slice (20 modules, machine) ${time(m, 1).toFixed(4)}`);
+  console.log('# CPU 9b (OS 4, node; s per s): ' + rep.join(' · '));
   assert.deepEqual(bad, []);
 });

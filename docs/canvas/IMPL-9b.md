@@ -353,7 +353,7 @@ class even with no slots (§3.3).
 | site | change |
 |---|---|
 | `seqMsg` (3093–3094) | the routing line learns events: `if (s && (s.pg !== undefined \|\| s.pe !== undefined)) { this.ptMsg(s); return; }` |
-| `ptMsg` (2529–2533) | `s.pe` → `this.pm.ev(s.pe[0], s.pe[1])` while the kind is `'patch'` and the machine exists; else dropped (an event never waits in `pmPend`) |
+| `ptMsg` (2529–2533) | `s.pe` → `this.pm.ev(s.pe[0], s.pe[1])` while the kind is `'patch'`, the patch is powered **on** and the machine exists; else dropped (an event never waits in `pmPend`, nor through a power-off: review 1 F2) |
 | `postMon` (4737, the graphed branch — a patch track is always graphed, I9 §12 lane H9 P-1) | a patch Inst posts `pt: I.pm.lamps(this.frames)` beside its `smon` when its machine has lamp modules (`pm.lampN > 0`) |
 | `warmPatch` / `warmPatchOn` (3753–3790) | generic already (the 16 classes join through `PatchMoog.T`) **but its graphs outgrow the payload** (skeptic #7): `ptWarm` (engine.js:1542–1614) feeds every input and sinks every 1/4" output — with the 9b table graph a holds 211 connections, **b 298 and c 286 > the evaluator's 256** (patch-dsp.js:82, 201; `scratchpad/9b/skeptic/warmcount.mjs` over the real `ptWarm` and §2's jack lists) → `'limit'`, swallowed by the warm port (engine.js:3756): b's tail is dropped — **its two loop cords (the per-sample loop path stage 9 warmed) and the 921Bs' sync chain** (integer-like keys enumerate first: `ctl 902 911 914 921 923 960 961 962 992 993 994 995 921a …`, the 921Bs last). E9b splits each warm graph into payloads ≤ 256 (the types in two halves, the loop and sync cords in both) and a test asserts every warm payload analyses with no `why`; **the leftovers** (§0.2): more rounds so `ptRamp`, `outStage` and `renderPatch` reach the optimising tier on V8 (`--trace-opt`, scratch) and JSC (the first quanta measured) **within §8.3's warm-up time cap — the cap wins** (rounds cost time; E9b reports what tiers); one module per type (a sparse graph was tried and dropped, I9 §12 lane E9 choice 5), one event and one lamp read, and **one round under a playing anchor with a loop wrap** (the drums' `ck` form, engine.js:3601: the Song clock's SONG branch and its fold never run with the stopped `tp`; skeptic #24); the gate of §8.3 |
 No other Track, Chain, graph, ModCore or protocol code changes; `Ladder`, `Env`, `HP4`, `AVoice` stay untouched.
@@ -361,7 +361,8 @@ No other Track, Chain, graph, ModCore or protocol code changes; `Ladder`, `Env`,
 ### 3.2 `patch-dsp.js` (lane V9c) — generic, additive
 
 - `ev(n, k)` (the message handler): the module numbered n → its class's `ev(k)` at once (the class's own fixed ring, §1.5; it applies
-  the event at its next `ctl`); no module n, or a class without `ev` → dropped. **No evaluator queue and nothing new in the chunk
+  the event at its next `ctl`); no module n, one **outside the latest plan** (not live: no `ctl` runs, the event would wait for a cord —
+  review 1 F2), or a class without `ev` → dropped. **No evaluator queue and nothing new in the chunk
   loop** (skeptic #17: messages arrive between quanta, so "the next chunk" is the next quantum's first either way; a per-module
   pending check in the loop would run for every stage-9 patch).
 - `lamps(F)` → `{ F, l }` from a preallocated array of the live modules whose type declares lamps (`lampN` their count, set in
@@ -875,16 +876,700 @@ ones.
 
 ## 12. Notes (the builders fill in)
 
+### Spike (a2): the evaluator at System 55 scale (lane A2, 2026-10-22, base 81da0d8; scripts and raw results in the lead's scratchpad `9b/a2/`)
+
+The real `patch-dsp.js` + the real Model 15 classes + 16 stub classes of the new types (§2.2 / §2.3's lists, §3.3 / §3.4's algorithms)
+through the real `engine.js` and its warm-up; V8 (node 24) and JSC (the macOS shell), c3 in the same harness; controls: m9p reproduced
+stage 9 (V8 0.0186 vs 0.0185, JSC 0.0142 vs 0.0143). Graphs of 38 modules (37 + the controller): *Sequence* (23 cords, 16 live
+nodes), a System 55 classic (30 cords incl. 7 bus rows, 24 live), a dense stress (98 cords, two loops).
+- **`graph()` at 38 modules**: warm median 0.05–0.15 ms, p95 ≤ 0.25, max 0.2–0.9 (V8 / JSC) — ≈ 2× stage 9's 13-module cost, not 3×;
+  ≈ 0.28 MB allocated per call. **One JSC eden GC lands on a `graph()` ~20 calls after the warm-up: 2.3–2.7 ms** (about a quantum) — the
+  rule of §5 (a2) **passes at High** with that clause. Transition quanta: one input +0.005–0.01 ms; a whole-topology swap +0.14–0.19.
+  A set tile on a new Track: first quanta ≤ 0.42 ms V8 / 0.15 JSC (steady 0.107 / 0.087).
+- **Skeptic #7 confirmed**: with the 9b jack lists `ptWarm`'s payloads are a 211 / **b 298** / **c 286** connections (> 256); halves of the
+  module list (the controller in both) analyse cleanly. Warm-up time with the 9b family ×1.17–1.22 (V8 / JSC).
+- **Rows (OS 4, 48 kHz)**: m9q (*Sequence*, ALWAYS) 0.0229 V8 / 0.0175 JSC (≈ 0.0154 iPad Pro); m9s (System 55 classic) 0.0414 / 0.0338
+  (≈ 0.0297); the dense stress 0.123 / 0.108. At OS 2 / 1: m9s 0.0234 / 0.0148 V8, 0.0187 / 0.0108 JSC (the evaluator's per-chunk cost
+  ≈ 0.004 V8 is OS-independent: 28–55 % of the load at OS 1).
+- **Per type (×10⁻³, V8 / JSC)**: 904B 2.1 / 2.4 (1.5 without CV) · 914 6.5 / 6.3 · 960 1.0 / 1.4 typical, 1.7–1.9 / 2.2–3.8 with
+  CONTROL INPUT patched · 961 V→S 0.7, audio→V 0.3 · 962 0.6 / 0.7 · 911A 0.4 / 0.5 · 903A 0.4 / 1.2 · CP3A 0.5 · 992 / CP4A 0.1 · CP2
+  0.7 (2 sections) · CP35 / clk 0.3. The 960 in a one-member loop ≈ 0.0046–0.0053 total (10–18 ns per member-sample, not 6–9).
+
+**The lead's decisions (2026-10-22), binding on K9b / V9c / E9b / P9b / H9b:**
+1. §5 (a2) passes at High. **E9b**: split every warm payload to ≤ 256 connections (skeptic #7) and end `warmPatch` with ~100 System
+   55-size `graph()` calls (≈ 22 ms) so the first eden GC happens in the warm-up, not on a user's first patch edit — re-measured: no flip
+   > 1 ms after the warm-up. The warm-up time cap is restated as **≤ 1.25 ×** stage 9's (measured 1.17–1.22 before the payload split).
+2. §3.8's `graph()` expectation → the measured 0.05–0.15 ms median / 0.2–0.9 ms max at 38 modules (JSC's single eden GC excepted).
+3. **Rows (node / jsc / ipad, High)**: **m9q 0.03 / 0.022 / 0.02 · m9s 0.055 / 0.042 / 0.04.**
+4. §3.3: the 960 / 961 / 962 compute their patched-input lists once per chunk in `ctl()` (never per `run` call). §3.4: the 960 in a loop
+   ≤ 0.005 (OS 4); loop members cost 10–18 ns per sample. §3.7 limits: **960 ≤ 0.002 (≤ 0.003 with CONTROL INPUT patched) · 961 V→S ≤
+   0.0008 per section, the others ≤ 0.0004 · 914 ≤ 0.008**; the m9q / m9s rows are the real gate. §2.2: the 962 has **12** jacks (3 + 2
+   + 3 + 3 + 1).
+5. **For the performance-presets stage (ROADMAP 14; the user: Low / Medium / High, mid-range Android too)** — recorded, not built in 9b:
+   Medium ≈ 3 × and Low ≈ 7 × (pessimistic 15 ×) the iPad Pro's loads; m9s on Low fits a ~0.10 track budget only at OS 1 (≈ 0.067), with
+   the module cuts (four oscillators idle, no 914) ≈ 0.048, with longer evaluator chunks (K × 4 frames, Low only) ≈ 0.036. **`graph()`
+   scaled to Low (×7) needs the fast path** (re-wire only a changed input when no component changes; cut the per-call allocation; build
+   and install a plan over two quanta). Other Low levers: skip the 904A's second pass, per-chunk CV exponentials, a cheaper 914 / BLEP.
+
 ### Spike (a2)
 ### Spike (b2) / the user's session
 ### Lane K9b
-### Lane V9c
-### Lane E9b
+
+**K9b-a (base b06f1aa)** — first, before any edit: `tests/ref-9-core/` = the base's `patch-core.js` / `moog-core.js` verbatim (= 53b7e88's
+= 8f6c716's) + `MANIFEST.json` (their sha256 and **`records`**: the frozen Model 15 records — `payload(rec).pk` and sha256 of
+`JSON.stringify` of `pvOf(vals)`, `rec`, `vals` — for `model15({})`, `makeSet('m15', {})` (stage 9: `model15`) and the six presets on
+a fresh record with `{ ensure: M15 }`; e.g. Classic bass pk `088e7464`, pv `98efe346…`); computed from the base tree and again from the
+copies (identical), and again after the tables commit (unchanged). Then **the tables** (one commit; `moog-core.js`, the two test files'
+pins). Refinements of [C]s, each within §2:
+- **Type ids** `904b 914 911a 903a 960 962 992 993 994` (5U) · `cp2 cp3a cp4a cp35 cp8a 961 clk` (console height). **`face: 'console'`
+  for the seven console-height types** (sizes by face, §8.8) — the controller is `type === fam.ctl`, no longer "the console face"
+  (cv-panel's `moduleModel` reads `T.face !== 'module'` → P9b). Layout ids = type ids.
+- **Jack counts include the rear terminals** (the table is the payload's port order): CP2 12 (10 + `kpr` `ksr`), CP3A 12 (11 + `xr`),
+  CP4A 4 (2 + `tr` `cr`), 992 2 (1 + `xr`) — rear jacks last in their section, labelled "… (REAR)". The 962 has 12 (§12 (a2)).
+- **A normal may name an output of another section** (the CP35's `i1 i2` ← `p6`, `i3 i4` ← `m6`): I9's "norm: <input id>" generalised;
+  patch-dsp already reads a normal from an output (its header: "an output, an input …, or a multiple") and patch-core's `wiring` too.
+- **Labels**: unique per type; the 960's `co` "OUTPUT", rows "ROW A 1 / 2"; the 961's "V→S 1 A INPUT 3", "S→V 2 OUT", "AUDIO→V OUT 1";
+  the Song clock's short "SONG CLOCK" (its bar: "SONG CLOCK 1"); tiles ≤ 24 chars ("903A Random signal", "993 Trigger routing" …).
+- **The Song clock's LENGTH** (P-2 (b)): `ln` an S of 32 positions `Off, 2 … 32` — index = N − 1 (*Sequence* 7 = 8 steps,
+  *Twenty-four steps* 23); default Off. P9b draws it as a detented rotary.
+- **§8.8's "types with no params" names the 993 by mistake** (it has eight switches and no jack): pinned as `903a 994 962 cp8a`; no
+  jack: `993 cp8a`; zero cost `994 cp8a 993`.
+- **Costs** = spike (a2)'s V8 figures (904B 0.0021, 914 0.0065, 960 0.001, 962 0.0006, 911A / 903A 0.0004, CP3A 0.0005, CP2 0.0007,
+  CP35 / clk 0.0003, 992 / CP4A 0.0001; the 961 0.0019 = 2 × 0.0007 + 0.0003 + 2 × 0.0001 [C for the S → V pair]); V9c re-measures.
+- **`LAW`** gains the 9b laws (moog-dsp holds the same): `f904b`, `f914`, `d911a`, `clk960(rg, vn)`, `row960(v, g)`, `on961`, `th961`,
+  `ticks(dv)`. Section names: 994 `multA multB`, CP3A `mix route mult`, CP4A `trig cv`, CP35 `src 1 2 3 4 mult`, CP2 `lp hp mult kbd`,
+  961 `v2s1 v2s2 s2v1 s2v2 a2v`, the rest `main`.
+- **FAMILY**: `rows` stays the two cabinet rows (`ROWS`); `console` (= `CONSOLE`), `sets` (= `SETS`: m15 / s35 / s55 — the s35 / s55
+  starters' presets land with K9b's second commit), `rackWide` 2 816, `rackN` 16; `set` / `starter` unchanged.
+- moog-core.test's new pins: the param / jack / event / lamp lists and orders, the bus rows (§2.4 verbatim; typed, one plug, out → in,
+  no normalled input, their switches the panel's Off / On switches; every rear jack reached by its panel's rows), the sets (counts,
+  Tidy order, row widths 1 120 / 1 376 / 1 920 and 2 624 / 2 368 / 2 496), the laws; the cross-checks now include PatchMoog's `EV` /
+  `LAMPS` and the faces of `panels/m900b.js` (ports without rear jacks, `button.ev`, `lamp.lamp`). patch-core.test's "newer type" is
+  `'999'` at its five sites. **Windows after this commit**: moog-core.test's two cross-checks (V9c, P9b), cv-tray (U9b), cv-panel
+  (P9b), cv-cost (E9b), moog-dsp / engine-track's type lists (V9c / E9b), canvas-9-sim's tile list (H9b).
+
+**K9b (phase 2, base 8a1fdbd = wt-9b after K9b-a)** — 6142aad patch-core · 6b2614d makeSet + the presets · c727e0b / 7a53e9f the tests.
+Choices within §1 / §2.6 / §4.4 [C]:
+- **Rear terminals**: `endOf` returns null for a `rear` jack unless asked (bus rows only), so `canPlug` / `plug` / `repatch` say "No such
+  jack", `normPatch` drops such a cord, `jacksOf` / `targets` leave them out; they stay ports of the payload (the jack order).
+- **Bus rows** (`busScan`, pure): a row is live when every switch of it reads ≠ 0 (`_t`-checked, else the default) and both ends
+  resolve to typed jacks; panels by number, rows in table order; **room = 256 − the payload's cords** (`MAX_CONN`), rows past it
+  skipped. Ordinals: `'<t>|<t>#k'` lists each type's modules by number, the types in list order; `'#='` = the panel's ordinal. A
+  reason per row for the tips (`busInfo`): `'Off'`, `'No 921A / 921 3 in this patch'` (the listed types' shorts and k), the bound's.
+  **`vals` absent → no row at all** (the CP2's always-on rows included: stage 9's callers see stage 9's payload). In `payload` the
+  live rows follow the sorted cords as 5-tuples, sorted alike; `wiring` (so `live` / `liveNodes`) takes them as cords into inputs.
+- **A preset writes every routing switch** (skeptic #6): bound panels as before (every param); an unbound panel's switches that read
+  on are written 0 (an entry created if needed) and join `back` — unlit panels get no write, so a Model 15's back meta and the
+  frozen records are unchanged.
+- **`loadSet(rec, vals, id)`**: `FAMILY.sets[id]`; no id = the family's `set` / `starter` (stage 9's call); an unknown id → `why: 'No
+  such set'`. **`setNeeds(rec, id)`** = Σ over the set's types of max(0, needed − present); −1 for no set. The host greys a tile
+  when `count + setNeeds > 48`.
+- **Tidy**: the rows are `[...rows, console]` (the console row lowest); a type no row names goes to the shorter *cabinet* row; the
+  width is `rackWide` when the patch holds more than `rackN` modules **or any console module**, else `rackW` (a Model 15: 1 024, its
+  tests unchanged). **freeSlot**: H = the tallest 5U type (512); hc = the tallest console module present (352, else 0): a console
+  type's line −hc, a cabinet row r's −hc − (rows − r) · H, above-the-rack lines −hc − (rows + k) · H; x within the same width rule.
+- **`makeSet(id, vals)`** (moog-core): `model15`'s builder over `SETS[id]` plus loadPreset's driver shedding (a no-op for the three
+  sets as shipped); an unbound routing panel is new, so nothing to switch off. `model15(v) = makeSet('m15', v)`; the tests compare
+  `makeSet` with `loadPreset(fresh, vals, starter, { ensure: set })` for m15 / s35 / s55 and four vals each (rec and vals).
+- **The presets as built** (§2.6, tuned on V9c's circuits at 252a750 read in scratch, never committed here): *Swept band* 20 cords as
+  written (CP35 attenuator 1 at 5 → 904A `c2`; GATE → GATE IN → S-TRIG OUT → 911 3 → 904B `c1`, T1 6 ≈ 0.33 s; CP3A master 6.5, 7.5 after review 1 F5).
+  *Sequence* **24 cords**: §2.6's 20 + P-3 (b)'s gate (KBD PITCH 1 → 902 2 `i1`, GATE → its `c1`, LIN at −2 V, `o2` → the
+  controller's multiple A → 921A 1 `f2` and the 921 `f2`) and ROW B → 904A `c2`; the Song clock 1/16, LENGTH 8 (`ln` 7); 960 `os` 0;
+  the riff on ROW A ×1 (0, 0, 15/12, 35/12, 5, 50/12, 35/12, 25/12); CP3A 9 / 6 / 8, master 8; OUTPUT 10. *Twenty-four steps* 28
+  cords: rows A / B / C (Cm · A♭ · G7 shapes, ≤ 20 semitones) → 962 `i1…i3`, `q1` → 921A 1 `f1`, `q2` → the 921 `f1`; 960 stage 1
+  OUT → 962 SHIFT; RESTART → 994 B → 960 IN 1 and 962 TRIGGER IN 1; LENGTH 24 (`ln` 23). *Echo strikes* MULTIPLE / LAST, the 911A
+  SERIES at 6.25 (≈ 150 ms each), CP3A master 8. *Vowel*: the two saws summed on the controller's mixer (×1.6 each) into the 914's
+  INPUT 1 — two inputs would average them (−6 dB) [C, headroom]. *Step bass*: **the 902 before the 904A** — ROW A ×4 (a falling
+  staircase 4 V … 0) on its upper input, ROW B ×4 at the stages' mean (2 V) on its lower: the differential takes the offset off
+  exactly (the 904A's soft input would not pass it at unity); RANGE 410 Hz, VERNIER 10 · log₄(523.25 / 409.6) ≈ 1.766 so C4 clocks
+  523.25 Hz (C2 = clock / 8): keys C3 … B4 → C1 … B2, the 1 kHz clamp above; KBD PITCH 2 → 904A `c2`. *Routed*: CP3A 1 `r1`, the
+  993's `f1 t1 t2 e1`, the 911A OFF at d1 4 (≈ 32 ms), six cords, CP3A 9 / 8 master 8, OUTPUT 10.
+- **Measured** (moog-core.test's method over V9c's 252a750, 48 kHz × 4, peak / RMS dBFS; the clocked pair from a stop at 120 BPM):
+  Swept band −9.1 / −26.0 · Sequence −8.9 / −22.2 (a key held −8.2) · Twenty-four steps −8.2 / −21.0 (held −7.6) · Echo strikes −9.9 /
+  −21.9 · Vowel −7.2 / −18.1 · Step bass −10.3 / −20.2 · Routed −9.2 / −21.2; stage 9's six as recorded. With those circuits swapped
+  in, moog-core.test passes 16 / 17 (the faces' cross-check: P9b's window) — incl. PatchMoog's EV / LAMPS = the tables and "the
+  clocked presets step from stage 1": Sequence 1…8 on every sixteenth (6 000 frames), Twenty-four steps' 962 A → B → C.
+- **For V9c (found while measuring)**: `M960`'s constructor calls `reset()` with the default params (`base()` copies the defaults;
+  the machine's `reset()` also runs `m.reset()` before `m.p.set(m.t)`), so a freshly built 960 takes CLOCK AT START's default
+  (Running): *Sequence* / *Twenty-four steps* (`os` 0) free-run at 2.1 Hz (RANGE 1.6 Hz × VERNIER 2) until the first Play-from-stop
+  reset — the lamps cycle on a System 55 just added, before ▶. The tests above emulate the engine (built stopped, `reset()`, then
+  Play); power-on should take the stored `os`.
+- **Gates**: patch-core.test 35 / 35 · moog-core.test 14 pass + 2 windows (V9c's PatchMoog, P9b's faces) + 1 skipped (the stepping
+  check, until V9c) on this branch · lint 159 / 159 · **golden-moog 6 / 6 bit-identical** (457 MB) · the frozen Model 15 records
+  identical at every commit (also pinned in patch-core.test against `tests/ref-9-core/MANIFEST.json`).
+
+### Lane V9c (circuits + evaluator; 2026-10-22, base b06f1aa, K9b's tables merged at 8a1fdbd; `moog-dsp.js`, `patch-dsp.js`, their tests, RM §9 / §10; scratch `9b/v9c/`)
+
+Built: `moog-dsp.js` — the sixteen `SPEC` rows, classes and `T` entries appended after stage 9's (nothing existing edited: the ten
+classes, the shared helpers and their rows untouched; `insAcc`'s loop and `T` / the export only gained lines), `EV` / `LAMPS` (a
+row for every type, ids in moog-core's order), the new constants in `K`. `patch-dsp.js` — a family's `EV` / `LAMPS` read into the
+type info (`nEv`, `nLamp`); the machine's **`ev(n, k)`** (→ 1, or 0 dropped: no graph, no module n in the latest graph, k outside the
+type's row, no `ev`), **`lamps(F)`** → `{ F, l: [n, bits, …] }` over the latest plan's live lamp modules (a new array: the monitor's),
+**`lampN`** (set by `graph()`); the chunk loop and every stage-9 path unchanged. moog-core ↔ PatchMoog agree on every type (jacks,
+params, ranges, sections, `ev`, `lamps`: moog-core.test's cross-check and `9b/v9c/xcheck.mjs`).
+
+**Gates** (one file at a time, 2048 MB; wt-9b at 6749734 merged — K9b's presets): moog-dsp 52 / 52 (≈ 10 s), patch-dsp 29 / 29,
+golden-moog 6 / 6 (ref-9 bit-identical at every commit), lint 159 / 159; moog-core 16 / 17 — its clocked-stepping check runs; the
+faces' test ("a face for every type") waits for P9b (§7.2's window).
+
+**Per type** (the spike (a2) method — the type minus its null twin through the evaluator, OS 4, 48 kHz, median of 9 alternating
+pairs, `9b/v9c/alone.js` over the real classes; V8 node 24 / the macOS `jsc`, ×10⁻³; every one inside decision 4's limits):
+
+| type | V8 | JSC | limit |
+|---|---|---|---|
+| 904B (c1 patched) · no CV | 1.58 · 1.30 | 1.59 · 1.11 | ≤ 3 |
+| 914 | 7.24 | 6.97 | ≤ 8 |
+| 911A (PARALLEL, both in) | 0.47 | 0.58 | ≤ 1 |
+| 903A (white + pink) | 0.34 | 1.46 (the xorshift, as the 923's 1.49) | ≤ 1 (§3.7: ≤ 2 JSC) |
+| 960 *Sequence*-like (SHIFT + IN 1, rows A / B) · its clock at 410 Hz, six outputs read · + CONTROL INPUT | 0.96–1.22 · 1.56 · 2.06 | 1.45 · 1.09 · 2.18 | ≤ 2 · ≤ 2 · ≤ 3 |
+| 960 in a one-member loop (OUT 5 → IN 1) | 3.47 | 3.50 | ≤ 5 |
+| 961 V→S (one A, one B) · AUDIO → V · all four circuits | 0.54 · 0.23 · 1.25 | 0.59 · 0.46 · 0.98 | ≤ 0.8 / section · ≤ 0.4 |
+| 962 (three inputs, SHIFT) | 0.61 | 0.58 | ≤ 1 |
+| CP3A mix, two / four inputs | 0.39 / 0.64 | 0.53 / 0.66 | ≤ 1.5 |
+| CP2 (two sections) · 992 · CP4A · CP35 (two sections) | 0.64 · 0.10 · 0.13 · 0.30 | 0.75 · 0.12 · 0.04 · 0.08 | ≤ 0.5 / section |
+| Song clock: SONG stopped · ALWAYS (three outputs read) | 0.10 · 0.27 | 0.11 · 0.39 | ≤ 0.5 |
+
+In moog-dsp.test's own harness (costOf: a module's ctl + run alone, its floor ≈ 0.1–0.3 included) the same types read 0.4–2.2;
+that test gates at three times the limits, as stage 9's. A System 55 slice (20 modules through the evaluator, the transport
+looping): 0.024 V8 (no decimators, no Track).
+
+**Choices [C]** (the contract refined, with the reason):
+1. **The 960's fresh flip-flop is taken at its first `ctl`** after construction / reset, not in `reset()` — the evaluator writes
+   the stored values after both, so a constructor's reset read the default (E9b's find on 252a750: a new 960 with CLOCK AT START
+   STOPPED ran its clock until Play-from-stop). A test renders every 9b type off its defaults against the same machine reset at
+   frame 0 (only the 960 differed); no other 9b class reads a value in `reset()`.
+2. **The 960's clock**: a start (OSC ON) raises OUTPUT without a shift — the phase continues from where it held (fresh 0), so the
+   first stage plays a whole period, as a free oscillator restarting; ON and OFF in one sample → off; several IN rises in one
+   sample → the highest stage; from stage 9 a shift walks to stage 1 like any other (passing SKIP stages; with 1 … 8 all SKIP and
+   stage 9 on STOP it stops on 9 again).
+3. **Events at `ctl`**: the flip-flop's in arrival order, then every SHIFT, then the last SET — a SET wins over a SHIFT in the
+   same chunk, as IN over SHIFT in the same sample; the 962: the last SET of the chunk.
+4. **The 960 / 961 / 962 rebuild their patched lists only after a re-wiring**: their own `ins` accessor (insAcc's, plus a stale
+   mark on any access — the evaluator re-wires a slot only through it: `make()`'s whole array, `install()`'s `m.ins[k] = …`) — the
+   lists rebuilt at the next `ctl`, never every chunk (decision 4's "once a chunk" was the ceiling; the 961's 24 slot checks a
+   chunk cost ≈ 0.3–0.5 ×10⁻³ alone). The 961's V→S runs input by input (B rises, the one-shot, A levels): n-independent.
+5. **The 961**: each A input its own +1.5 / +1.0 V Schmitt (a level with the house thresholds); the AUDIO → V comparator works on
+   the signal itself (one pulse a cycle above θ), not a rectified one; two S → V circuits (MS-961; VK says one).
+6. **The 962's clip** is hard at −1 V; a SET / TRIGGER IN to an unpatched INPUT 3 selects it (0 V) and the next shift goes to 1.
+7. **The 914's alignment**: δ 0.2 oct, Q 2 (the band), Q 0.6 (the sections), 0.925 at a band's centre, polarities alternating along
+   the bank with the sections continuing it — fitted on the analog prototype (± 1.35 dB; one polarity at best ± 5.6 dB: two
+   cascaded sections turn ≈ 140° at a crossover); digitally −1.42 … +1.34 dB.
+8. **The 904B flushes its four states every chunk in `ctl`** (with f_c near fs / 4 a stage falls × 0.03 a sample in silence and
+   went subnormal inside the 32-chunk flush; in `ctl`, so block and loop-member runs stay the same bits).
+9. **The Song clock** plans each chunk in `ctl` (constants, or per-sample levels in a chunk with a change; `run` copies the plan).
+   An event exactly on a chunk's sample 0 belongs to that chunk: a wrap the previous chunk placed on its sample CH fires RESTART at
+   this one's 0, and a half step less than a sample before a segment's start is an event there (LENGTH's RESTART on a chunk
+   boundary was lost without it). A RESTART during a pulse extends it (no low gap). LENGTH = moog-core's `ln` index + 1 (index 0
+   OFF), as K9b's table (Off, 2 … 32).
+10. **The 911A** counts OS samples (held at D + 1); the delay rounds to a sample (≤ 2.6 µs at 48 k × 4).
+
+**For the other lanes**:
+- **E9b**: the interface as §7.4 — `pm.ev(n, k)`, `pm.lamps(F)`, `pm.lampN`; the Song clock reads `h.inst.tp` (play, frame, tick, fpt,
+  wrap, ls, le, end) and `h.inst.bpm` in `ctl`, so the warm-up needs one round with a playing `tp` and a wrap (§3.1) to reach its
+  SONG branch and its slow path (a chunk with an edge); the 960's fresh state needs a first `ctl` after `reset()` (P-2's ptFresh is
+  followed by a render: nothing to do). `tests/moog-dsp.test.mjs` has a Track-like transport (`songStep`, `songPlay`) that
+  golden-moog-b may reuse.
+- **K9b**: your seven presets over these circuits (moog-dsp.test: `presetM` passes `vals` to `payload` for the bus rows and gives
+  the clocked two a transport from frame 0; 48 k × 4 peak dBFS): Swept band −9.1 · Sequence −7.8 · Twenty-four steps −8.2 · Echo
+  strikes −9.9 · Vowel −7.2 · Step bass −10.3 · Routed −9.2 — all inside −12 … −3; *Sequence* / *Twenty-four steps* on stage 1 at
+  the first step and stage 2 at the second with the live anchor 0 … 3 frames off the grid; *Step bass* C3 → 32.70 Hz, G3 → 49.00 Hz,
+  C7 → 125 Hz (the clamp). Your 960 power-on finding = E9b's = choice 1 (f6d11d5).
+- **P9b / U9b**: lamp bit i = `LAMPS[t][i]` (the 960: `l1` … `l9` bits 0 … 8, `lo` bit 9; the 962 `l1` … `l3`; the Song clock `lr`).
+### Lane E9b (engine + plumbing; 2026-10-22, base 8a1fdbd; V9c's 252a750 / f6d11d5 / a26e44a and K9b's 6749734 merged as they landed; `engine.js`, `cv-cost.js`, the bench files, `tests/engine-track.test.mjs`, `tests/cv-cost.test.mjs`, `tests/golden-moog-b.test.mjs` (new); scratch `9b/e9b/`)
+
+Built — **engine.js §3.1**, every new statement behind `s.pe !== undefined`, `kind === 'patch' && pm !== null` or the warm-up:
+- **Events**: `seqMsg` routes `{pe}` with `{pg}` to `ptMsg`, which hands `[n, k]` to `pm.ev` at once (the module holds it for its next
+  `ctl`); not a patch, no machine or a malformed event → dropped, never `pmPend` (a TB-303's payload path untouched).
+- **Lamps**: `postMon` (the graphed branch, and the legacy one alike) posts `pt: pm.lamps(this.frames)` in a patch Inst's `smon` when
+  its machine's latest graph holds a live lamp module (`lampN > 0`); F = the Track's frame at the post (the drums' `dr` form); a patch
+  without lamp modules and every other kind post today's message.
+- **The Song clock's feed**: nothing new in the engine — V9c's class reads `inst.tp` (the Track's, by reference) and `inst.bpm` in
+  `ctl`; the engine's part is the transport as it was (an anchor applied at the first 4-frame span start ≥ its frame, spans cut at a
+  wrap and at a pending anchor, P-2's `ptFresh` at Play from a stop). Proved through the whole Track: engine-track "the Song clock
+  through the Track" (count-in silent, ▶ 3 frames off the grid on stage 1, a tempo change's late re-anchor no restart, a seek and a
+  loop wrap a restart, LENGTH 8 — the test fails with the seek's restart taken out) and golden-moog-b's D7 / span invariance.
+- **The warm-up** (§3.1, skeptic #7, spike (a2) decision 1): `ptWarm` → `ptTab` + `ptWarmOf(pick)` + **`ptWarms(F, f, MAXC)`**: the
+  whole table while its a / b / c fit the evaluator's 256, else k parts (contiguous in ptWarm's order, balanced by jacks, a linked type
+  in its driver's part). The 9b table → **two parts** (9 and 19 modules; a / b / c 131 / 186 / 167 and 101 / 130 / 105 connections;
+  the whole table's a, 230, is the pre-warm's payload). **Every module's multiples** are patched now (stage 9's drove the controller's
+  only: the 994's and the CP panels' were never warmed); b's self cord is that input's **only** source (a lone late read: the loop's
+  pre feed — stage 9 met it by luck of the table); c leaves the normalled inputs unfed (their normals under a ramp) and module 1's first
+  input empty, then b again (a ramp from nothing). `warmPatch`: the machine; the values in five shapes and the controller's list in five
+  elements kinds; **100 graph() calls of the whole table and its flip** (less its first connection), back to back; then 2 rounds × 2
+  parts — in each, every event of every evented module (the 960's twelve overflow its 8-slot ring), a lamp read, graph b under a
+  stand-in playing `tp` (swapped back in the `finally`): count-in −40 ticks at fpt 0.25, so tick 0, the half steps, the loop wrap
+  (round 0) or the song's end (round 1) all fall in one quantum — the warm-up's currentFrame stands still, so each quantum replays
+  them: a jump back each (a seek's RESTART). `warmPatchOn` plays the part holding the driven type.
+
+**Choices [C]** (the contract refined, with the reason):
+1. **The GC pre-warm first, not last** ("end warmPatch with" — §12 decision 1): graph() then runs optimised through the rounds, whose
+   transitions meet the optimised graph()'s holey entry arrays (TurboFan's inlined `map` builds holey, the interpreter's builtin
+   packed): with the pre-warm last, `wire()` was optimised on packed arrays only and deopted ("wrong map", patch-dsp's `for … of A`)
+   at m9x's arrival on a new Track. JSC either way: no flip over 1 ms after the warm-up (600 m9s bus flips over three processes, max
+   0.28 ms; without the pre-warm the 26th flip took 2.8 ms — spike (a2)'s eden GC).
+2. **Values in five shapes, the controller's list in five elements kinds** (whole numbers, fractions, a hole, a non-number — ignored,
+   its default): the machine's `vals()` read `pv['m' + n]` and `e.length` monomorphically and deopted on a new Track's pv (another
+   map; another realm in the tests' harness); five or more maps make those reads generic.
+3. **warmPatchOn plays the part with the driven type** (the 921Bs'), not the whole table (its 28 live modules over the 480 interleaved
+   quanta: +190 ms on V8, the cap's whole margin) nor the first part: on JSC a new Track's first patch quantum then runs × 1.8 of steady
+   (0.07 ms; × 5, 0.24 ms, with the first part; stage 9's files × 3.3) and Classic bass's steady state is stage 9's again (0.039 ms a
+   quantum, was 0.047). A third warm round of that part did as much for the first quantum but cost +5 % on V8 and left the 921B's `ctl`
+   (`drift` inlined) TurboFan-compiled against an Inst map the later warm-up generalises — a deopt on a new Track: dropped.
+4. **The leftovers' tiers** (§0.2; V8 `--trace-opt` at the warm-up's end): `outStage` TurboFan; `ptRamp`, `renderPatch`, `fadePatch`
+   Maglev (the optimising mid tier; TurboFan would need rounds the cap does not hold); `renderSpan` interpreted after a late deopt —
+   as stage 9's (ref-9's trace the same). First quanta of a new Track (payload / first note / m9x arriving, × steady): V8 3.0 / 1.3 /
+   1.4 (gates 4 / 1.8 / 2.5), JSC 1.8 / 1.1 / 2.0–2.5; no deopt in patch-dsp.js / moog-dsp.js (7 before this lane, at the base with
+   V9c's classes: the truncated graphs).
+5. **cv-cost**: `COST.patch` from V9c's V8 column (§12 Lane V9c), sectioned types per section [C] (the 961's V→S 0.0005 each, S→V
+   0.0001, AUDIO→V 0.0002; the CP2's filters 0.0003, its keyboard copies 0.0001; the CP3A's mixer 0.0005, its EXT 0.0001; the CP35's
+   sources and attenuators 0.0001), the 993 / 994 / CP8A 0; `patchLoad(cs, rec, vals)` over `liveNodes(rec, f, vals)`: a routed 911
+   costs its own and its keyboard section; `estimate` takes the device's `vals` (destructured — the N5 ratchet counts `x.vals`).
+6. **Bench rows**: m9q = *Sequence* as the System 55 tile leaves it (`MG.makeSet('s55')`), the Song clock on ALWAYS (15 of 37 modules
+   live); m9s = the set re-patched (`initPatch`, then 23 cords + nine bus rows: the 993's seven, the CP2's two; 23 live), the bass line as
+   roll notes; `patchTrack` posts the payload with the vals. Targets in bench.json carry `jsc` (decision 3's) beside node / ipad.
+
+**Measured** (bench.json `"m9b"`): node gate (calibrated) **m9q 0.0232, m9s 0.0443** (targets 0.03 / 0.055; m9p 0.0189, m9x 0.0374,
+m9d 0.0194 in the same run); the jsc shell **m9q 0.0182–0.0193, m9s 0.0359–0.0371** (targets 0.022 / 0.042; iPad ≈ 0.017 / 0.032 under
+0.02 / 0.04); stage 9's three on JSC 5–8 % above their record (m9p 0.0153–0.0159 vs 0.0143) with the 26-type family — the engine.js
+A/B on m9p +1.7 %, so the family's, not this lane's; cv-cost 0.0224 / 0.0385. **Warm-up**: V8 × 1.11–1.15, JSC × 1.10 of stage 9's
+(ref-9's three files, alternating fresh processes; cap 1.25; the spike's 1.17–1.22 was with the truncated graphs). **The System 55 tile
+on a new Track** (V8): its graph() 0.38 ms (37 built), first quanta 0.18–0.21 / ▶ 0.29–0.34 ms (¼ deadline 0.67), 40 bus flips: graph()
+median 0.09, max 0.23–0.42 ms. **engine.js V8 A/B** (8a1fdbd vs E9b, every other script current, 3–11 pairs): c1 0.97–0.99, c3 1.00–1.04,
+d 0.97, e 1.00, r 1.01, mk 1.01, d6p 0.99, d9p 1.00, dvp 1.00, m9p 0.99, m9x 1.01, m9d 1.00, d8p 1.02–1.03 (the harness with one engine
+on both sides reads d8p 1.05: its B-side bias), mc0 / mt within 0.0001 absolute.
+
+**Tests**: engine-track **100 / 100** (+5: events, lamps, the Song clock through the Track, the System 55 tile and its flips, the
+warm-up time; rewritten: warmPatch over the parts — every payload within 256 and analysed with no `why`, every type and jack across the
+parts' graph a, a lone self cord, the 921Bs' sync driven by a module in a graph with a loop step, normals under a ramp, every event
+delivered, a lamp read, the playing stand-in with a wrap / an end / a count-in, ≥ 100 whole-table calls, the Track's `tp` back —; the
+headroom over the thirteen presets (the clocked pair from ▶, every one sounding, Classic bass −12 … −3); the bench gate over five rows);
+**golden-moog-b** (new, freeze mode, ref-9b **not committed**: 45 cases — the sixteen types at their settings, every row of the 992 /
+993 / CP2 and the lit CP3A / CP4A rows, the Song clock SONG (a wrap, LENGTH) and ALWAYS, the seven presets, a graph change and routing
+switches mid-sequence, OS 2, 44.1 kHz —, their validity and differences, D7 Sequence offline = live and off-grid anchors on stage 1,
+span invariance with a wrap inside a span and a tempo change's late re-anchor; the freeze path tried once in scratch: written, 6 / 6
+frozen, removed); cv-cost **18 / 18** (+1: the bus rows and the m9q / m9s estimates; the coverage pin with the zero-cost three).
+**golden-moog** unchanged (the lead's pin to stage 9's types and presets suffices: it renders through `PT.payload(rec)` without vals,
+stage 9's bytes).
+
+**Gates** (one file at a time, 2048 MB): engine-track 100 / 100 · golden-moog 6 / 6 · golden-moog-b 6 / 6 · cv-cost 18 / 18 · bench
+6 / 6 · bench-page 2 / 2 · lint 159 / 159 · golden-classic 8 / 8 · golden-fx 3 / 3 · golden-presets 8 / 8 · golden-random 1 / 1 ·
+golden-graph 6 / 6 · canonical-stream 1 / 1 · golden-drums 5 / 5 · golden-606 11 / 11 · golden-909 9 / 9 · golden-sdsv 5 / 5 — every
+frozen golden bit-identical.
+
+**For H9b**: lamps arrive as `smon.pt = { F, l: [n, bits, …] }` only while the device is monitored (`{t: 'mon', ids}`) and its live
+graph holds a lamp module — queue them by F as the drums' lights; an event is `{t: 'seq', i, s: { pe: [n, k] }}` with k the index in
+`TYPES[t].ev` (no reply; dropped unless the node's Inst is a patch with a machine); the payload is `PT.payload(rec, f, vals)` (the bus
+rows) everywhere, `cvCost.estimate(device)` reads the device's `vals`. **Found on the way** (V9c's, fixed in f6d11d5): a freshly built
+960 ran its own clock until a reset (CLOCK AT START read before the values). The m9s row is quiet (peak ≈ −36 dBFS: two 902s in series
+on routed envelopes) — audible, as the bench requires.
 ### Lane P9b
+
+**P9b (base 8a1fdbd; `panels/m900b.js` (new), `panels/index.js`, `cv-panel.js`, `tools/panel-check.mjs`, `tests/cv-panel.test.mjs`,
+`tests/cv-face.test.mjs`; scratch `9b/p9b/`)** — commits 65db941 (faces + cv-panel), ae3fd95 (panel-check, the Chrome look's
+tweaks), dc8c8a4 (cv-panel tests), 21d1448 (cv-face), 11962da (a rule), these notes. No photograph fetched or viewed.
+- **`panels/m900b.js`**: `MODULES` = the sixteen 9b faces by type (no default export: moog-core.test reads every exported object),
+  merged after m900.js's in `MODULE_LAYOUTS`. m900.js's house treatment (FRAME / PANEL / the knurled knob skin), small builders
+  (KN / ROT / BH / BV / LIT / EVB / LMP / JK / SK / TRUNK, `face()`: frame, inset panel, screws) — the data they return is plain.
+  Every face says "Ours (no photograph viewed)" in its notes; the CP2, CP4A, CP35 and our Song clock on their plates too ("OURS —
+  …"). Layouts [C], from §2's lists: **960** — a clock column (x 0…60: the OSC lamp, OSC ON / OFF, CLOCK AT START, RANGE (seven
+  detents in Hz), VERNIER, ROW C → CLOCK, SHIFT; jacks ON · OFF · SHIFT over CONTROL IN · OUTPUT), stages 1–8 in 38 mm columns (lamp,
+  A / B / C knobs d 18, STOP / NORMAL / SKIP vertical bat, SET, IN, OUT), stage 9 narrower (30 mm: STOP / SKIP, SET, IN, OUT), a row
+  column (two jacks a row level with its knobs, three ×1 / ×2 / ×4 bats); **914** two rows of seven pots (LOW 125 … 700; 1K … 5.6K
+  HIGH), the two inputs → the two outputs; **961** two V → S blocks of 6 × 2 jacks at the 15 mm pitch (their row numbers between
+  the blocks) over S-TRIG OUT and SWITCH ON TIME, AUDIO → V (IN, SENSITIVITY, OUT 1 / 2), two S → V; **962** three stages (IN,
+  lamp, TRIG IN; the stage number, SET, TRIG OUT), OUTPUT ×2, SHIFT; **992 / 993 / CP3A / CP4A** routing switches as **lit push
+  switches** (a `button` over the Off / On param, `cycle [0, 1]`, `led: 'cap'`: the amber lamp is the value; the 993's ENVELOPE
+  caps green); **CP3A** MIXER (2 MU) · ROUTING · MULTIPLES + TRUNKS; **CP35** SOURCES · four ATTENUATORS · MULTIPLES + TRUNKS;
+  **CP2** LOW PASS · HIGH PASS (the 923's Hz dials) · MULTIPLES + KEYBOARD (PITCH, S-TRIG); **CP8A** its switch, pilot lamp and
+  fuses dimmed (inert: "… — not emulated"); trunks: inert jacks "TRUNK n"; **Song clock** STEP (6 detents), LENGTH (32 detents,
+  OFF 4 8 16 24 32 printed), MODE, the RUN lamp, CLOCK / RUN / RESTART; 904B / 911A / 903A / 994 in the 1 MU style. Rear
+  terminals never placed. panel-check: all sixteen valid, no overlaps; least hit box 30 × 30 px (a 15 mm bat / push / event
+  box); least jack pitch 15 mm (the 961's blocks: jackHit 28 px), else ≥ 18 mm; least jack-to-hit clearance 11 mm (961 s1 ↔ t1).
+- **cv-panel (generic)**: `moduleModel` excludes only `fam.ctl` (the seven console-height types are modules) and carries `ev` /
+  `lamps` (`[]` when none). **Event buttons** `{ kind: 'button', ev, x, y, w, h, onCap? }`: no id / value / cycle / inert, one of
+  the type's `ev`, each once, every one placed, a ≥ 14 mm hit box pushed with the controls' (overlap and the 9 mm jack clearance
+  apply; a jack's widest circle keeps off it); drawn in the art (`g.hw-ev[data-ev]`, titled with the event's label, the scheme's
+  button cap, its `onCap` word). **Live lamps** `{ kind: 'lamp', lamp, x, y, d }`: one of the type's `lamps`, each once, all
+  placed; drawn unlit (`g.hw-lamp[data-lamp]`, the lens at 0.45). Neither is live / show: no widget, no Tab stop, not in
+  `hitBoxes()`. **`geometry().evs`** `[{ id, label, x, y (centre), w, h, hit: {x, y, w, h} }]` and **`.lamps`** `[{ id, label, x, y,
+  d, w, h }]`, body px (the host adds BAR_H), `[]` on every other panel. **Rear terminals**: placed → refused; never required.
+  **A patch face's inert parts make no extras strip** (each says "not emulated" in its own tip; the size stays the type's).
+- **The DOM budget — `lite: true`** (a patch module face only; validate refuses it elsewhere and any non-line pointer on it): a
+  knob's / rotary's skirt (knurled: style.css's 70 % mix, dash and width, in the art's units), cap and its stroke are drawn in the
+  face art (`liteKnobSvg`); the DOM keeps `.hw-c > div.knob.hw-lk > i.hw-lp` — the pointer, today's line (the 64-unit box: y 8 …
+  32 − cr − 1 for capR 0.56), styled inline (left / top / size in %, `var(--hw-knob-ptr)`, turned about the knob's centre by
+  `transform: rotate(…deg)`), driven through `api.watch` / `api.dragB(api.bind(mc))` (keys, wheel, Reset / Enter Value as
+  today); a lite rotary the same over its detents (tap = next); a lite bat / slide switch drops its `i.hw-sw-t` slot line (the pill
+  is the button's own background). **3 painted elements a control** (knob 7 → 3, switch 4 → 3, lit push 3). Every m900b face is
+  lite; **no existing panel is** (stage 9's faces keep today's knobs). Headless Chrome: the lite knob beside the 904A's / 911's DOM
+  knob — the same picture (`9b/p9b/cmp/faces-all.png`).
+- **Every existing panel unchanged**: scratch `9b/p9b/snap.mjs` hashes, for the 17 authored models and the nine Model 15 faces,
+  the face SVG, `validate()`, the geometry (less `evs` / `lamps`), `hitBoxes()`, the DOM through `render` over a fake api and
+  through a real ClassicPanel — before (8a1fdbd) = after (11962da), byte for byte (26 / 26).
+- **Painted elements (headless Chrome, `9b/p9b/`)**: each face's live layer through a ClassicPanel (`tests/p9b.html` in the scratch
+  copy, without its SVG): 960 **123** (3 + 40 × 3), 914 45, CP3A 33, 993 27, CP4A 24, 992 18, CP35 15, 961 / 911A / clk 12, 904B /
+  CP2 9, 962 / 994 / 903A / CP8A 3. **The System 55 rack** — S9b's `?m9=1&s55=1` page in the scratch copy with its `c55` taking
+  cv-panel's real faces (`geometry().evs / .lamps` for its button and lamp spans; patch not committed: S9b's file), scene `s55`
+  (38 faces, 40 cords, the lamps toggling): **1 521 painted without the face pictures** (gate ≤ 1 700; S9b's stand-ins 1 847);
+  per module **960 181** (≤ 240), **914 56** (≤ 100), 961 52 (≤ 120), CP3A 51 / CP2 26 / Song clock 23 / CP8A 10 (≤ 90), 993 34, 962
+  28, 992 26, 911A 23, 904B 21, 994 18, 903A 14 (the Model 15 types as S9b measured); GL faces 38, 69.3 MiB (≈ §4.2's 74 MB).
+  Screenshots: `9b/p9b/shots/` (`faces-all.png`, `face-<type>.png`, `rack-s55.png`, `rack-s55-960.png`, `rack-s55-console.png`).
+- **Textures** (cv-face test): 4 MU 448 × 472 4.5 MB, the 960 864 × 472 **8.7 MB** (its cap 9 MB; every other face ≤ 6), console
+  2 / 3 / 4 MU 1.5 / 2.3 / 3.0 MB; the System 35 set 43.7 MB, the System 55 72.6 MB (≤ 74, ≤ a fifth of FACE_BUDGET_BYTES).
+- **Tests**: cv-panel 104 → **108** (the faces test over all 26 + the console: sizes by `face` and MU, rear terminals never placed,
+  `evs` / `lamps` = the type's, only trunks and the CP8A dimmed, the plates; four new: one mutation per new rule (22), `evs` /
+  `lamps`, the art, the lite render — every 9b face's live layer = 1 + 3 × params: the 960 121, the 914 43). Eight cv-panel
+  mutations (the rear rule ×2, an event button's box in `hits` and in the jacks' circles, the patch-face strip gate, the lite slot
+  line, `moduleModel`'s ctl-only rule, a lamp twice) each fail a test. cv-face 27 / 27 (sizes, bytes). **Gates** (one file at a
+  time, 2048 MB): cv-panel 108 / 108 · cv-face 27 / 27 · classic-panel 14 / 14 · canvas-1i-sim 20 / 20 · lint 161 / 161 ·
+  moog-core 15 / 16 (the faces cross-check passes; **moog-core = PatchMoog** fails until V9c's `moog-dsp.js`) · canvas-9-sim
+  22 / 22 · cv-module 65 / 65 · main 45 / 45 · canvas-sim 23 / 23 · cv-drum 66 / 66. Windows: **cv-patch 18 / 19** (U9b: its
+  faceJacks test expects every jack of a type — `T.jacks.filter(j => !j.rear)`), **cv-tray 35 / 37** (U9b's Moog row), **pwa 21 /
+  22** (the lead's precache: new `panels/m900b.js`; no sw.js here).
+- **For U9b**: a module's face as stage 9's (`cvPanel.render` through a ClassicPanel; `faceJacks` already takes only placed
+  jacks). Event buttons: for each `geometry(L, model).evs[i]` a transparent `button.cv-pev` at its `hit` box (+ BAR_H), labelled
+  "<title> · <label>" (the cap and its word are in the art). Lamps: for each `.lamps[i]` a `span.cv-plamp` at its centre (+ BAR_H),
+  `d` its size (the lens is d × 0.72; LAMP `#f0642c`, the CP8A's pilot excepted — inert, art only). The routing switches need
+  nothing new (ordinary params; `.hw-btn[data-lit]` shows the lamp). `.hw-lk` / `.hw-lp` mark a lite knob and its pointer if
+  style.css wants them (nothing needs a rule). Patch faces keep no halos (`canMod: false`): a lite knob has no `.cap` / `.rot`
+  nodes for one.
+- **For H9b**: `PT_HEAVY` — the real System 55 rack measured 1 521 painted (Mac, headless Chrome) before the cords' and lamps'
+  own nodes (S9b's 1 847 was its stand-ins); the iPad session decides.
+
 ### Lane X9b
+
+Set tiles for the tray (cv-art.js, tests/cv-art.test.mjs; base b06f1aa). **API for U9b**: `SET_ART` (frozen descriptors by set id, keys `s35` / `s55` — the Model 15's tile stays `art('m900')`; `SIL` keys unchanged =
+MODELS ids) with `name`, `modules` (22 / 37 = the tile label's count: faces + console panels, the controller not counted), `rows` ([9, 8] / [16, 14]), `console` (5 / 7), `cords` (0 / 4), `outline` (the silhouette's
+polygon in the 96 × 56 box); **`setArt(setId, { w, h })`** → the SVG string (cached per id + size, `data-art` = the set id, TILE default, chip detail under 48 px wide) and **`setChip(setId)`** (CHIP size). An unknown set id gets
+`art('m900')` (the Model 15's tile), as `art()` falls back to a keyboard. `tileMeta` is untouched (labels "System 35 · 22 modules" are U9b's, from `SET_ART[id].modules` or moog-core).
+- **System 35**: one wood wedge (a trapezoid: sides lean in toward the top, the faces and knobs narrow with it): nine narrow faces over eight (the lower with a wide filter bank: two rows of seven small knobs), a console strip of five
+  panels (lit amber switches / two small knobs, three jacks each), grain on the cheeks, **no cords**. 17 + 5 = 22.
+- **System 55**: two wood-ended cabinets stacked, the upper a step narrower (an eight-corner silhouette): sixteen tall faces (one wide: the 960's lamp row over three rows of eight dots and a button row) over fourteen (a wide bank, wide pairs),
+  a console strip of seven panels in the lower, **four coloured cords** (red, yellow, blue, green — the Model 15's without its purple) from the upper's jacks to the lower's, plugs at both ends. 30 + 7 = 37.
+- At a glance: Model 15 = a dark box with a handle and big knobs; System 35 = one brown trapezoid; System 55 = a taller brown-ended step with cords. At chip size (28 × 18) the faces are blocks with a pale bar, the console panels
+  amber / grey blocks, the cords kept (2 wide). Same house style as `DRAW.m900` (FACE `#2b2926`, CAP, jacks, the WOOD helper); no text, no logo, nothing traced; no `<text>` / gradient / id (the existing rules, now looped over the sets too).
+- Tile weight: s35 356 shapes / 24.6 kB, s55 471 / 33.4 kB (m900: 271 / 17.2 kB); chips 50 / 100 (m900 71). Cached strings, three more per tray.
+- Tests (tests/cv-art.test.mjs, the last test): descriptors frozen and `modules` = faces + console = 22 / 37; tile + chip render (size, well formed, cached, simpler chip); the rules at four sizes (+ no "moog" / "system" / "model" / "900");
+  the face / console-panel / sequencer-dot / bank-knob / cord / plug counts (tile and chip); the outlines drawn (s35's polygon, s55's two cabinet rects); silhouettes distinct (4 corners vs 8; the wedge wider at every step down and its top
+  < 85 % of the foot; the stack constant within each cabinet and a step between, taller); the five wooden-or-dark tiles all differ; the unknown id.
+- Previews: the lead's scratchpad `9b/x9b/` — `compare.png` (tiles 1× / 3×, chips 1×, beside the Model 15 / Moog Modular / Minimoog), `big.png` (s35 | s55 at 960 × 560), `big-*.svg.png` (qlmanage), `tile-*.svg`, `chip-*.svg`, `render.mjs`.
+- Gates: cv-art 5 / 5, cv-tray 37 / 37, lint 159 / 159. `pwa.test` waits for the lead's `node tools/precache.mjs --write` (cv-art.js changed; no sw.js committed).
 ### Lane U9b
+**U9b (base 557d632 = wt-9b with K9b, V9c, P9b, X9b merged; `cv-patch.js`, `cv-tray.js`, `style.css`, `tests/cv-patch.test.mjs`,
+`tests/cv-tray.test.mjs`, `tests/canvas-sim.test.mjs`; scratch `9b/u9b/`)** — commits aab0602 (cv-tray), d91fe4f (cv-patch, style.css),
+12dc108 (canvas-sim), b3a8894 (a panel's tips in two reads), these notes. No main.js. Choices within §4 [C]:
+- **Event buttons** (cv-patch `moduleBody`): a `button.cv-pev[data-ev]` per `geometry().evs[i]` at its `hit` box, in the face's own
+  live layer (`.hw-ctls`: body px — no BAR_H, the layer's origin is the body, as its controls'), `data-nomod`, aria "960 1 · SET 3"
+  (relabelled at each refresh: ordinals move). It fires on the **release** of a tap within the slop (TAP_TOUCH 8 / TAP_MOUSE 4); never
+  past it, after a pointercancel (gesture.js's two-finger flag), a lost capture, a right button or another pointer; Enter / Space at
+  the key (a held key once; the key's own click ignored for 500 ms), an assistive click (detail 0) too, a pointer's click never;
+  asleep below READ_K unless the module is in edit state (the world takes such a press first; the button also asks `host.awake`, the
+  jacks' rule); `[data-down]` while pressed (a shade). No value, no History step, no knob: `host.ev(t, dev, mid, id)` checks the
+  type's `ev` and calls `deps.ev` (→ true when it posted). A mouse's hover shows the event's label (kit.tip).
+- **Lamps**: a `span.cv-plamp[data-lamp]` (aria-hidden) per `geometry().lamps[i]`, the lens d × 0.72 at its centre, lit `[data-on]`
+  (#f0642c, an inset highlight and a 6 px glow; reduced motion: no glow); bit i = the type's lamp i. `host.lamps(t, dev, { F, l })`
+  queues the post per instrument (`LAMP_QMAX` 64, the oldest dropped) and asks **one** frame for every queue (`deps.raf`, else
+  wk.frame); there everything heard by then (`F ≤ deps.heard() + deps.rate() · LAMP_LEAD_S`, 1/60 s: cv-drum's rule; no clock → at
+  once) sets a bits map per module number (the latest wins) and only the faces whose bits changed are painted, only the lamps that
+  changed written — never a DOM write per post; a face off screen (`[data-cv-off]` up its chain) writes nothing and keeps the bits
+  for `host.shown(key)`; a face mounted later shows the bits heard; `lamps(t, dev, null)` darkens that instrument's.
+  `stats().lamps` = { queued, due, posts, pumps, paints, evs }.
+- **Routing switches** (the switches named by a type's `bus` rows: lit push switches, `.hw-c[data-ctl] > button`): `aria-description`
+  = `host.busTips(t, dev, mid)[id]` — "<label>: On | Off — <its rows>": a route "Controller · PITCH 1 → 904B 1 · CONTROL INPUT 3" (a
+  rear terminal by its table label, "992 1 · EXT (REAR)"), unresolved busInfo's reason ("No 911 3 in this patch", the bound), lit
+  but waiting on another switch "(needs Trigger 1)"; shown (kit.tip, 1.8 s) after a flip and on a mouse's hover. Two busInfo reads a
+  panel (as it is, and with every switch of the panel on: where its rows would go) — a System 55 sync 2.0 → 0.9 ms (node) against
+  two a switch; at the 256 bound the "all on" read may name the bound where the real one would not (an edge, said here).
+- **members** (P-1 (a)): a routing panel's lit, resolved rows' modules — the controller's own module too (its keyboard voltages leave
+  it), never the panel — beside a driver's driven modules. A flip is a knob (no re-render), so cv-patch re-outlines the selected
+  panel itself (`outline()`, cv-module's rule over the view's modules; the selection from the world's 'select').
+- **Sets**: `preset(name, { ensure, tidy, label, note, tail })` — `tidy` lays every module of the new record by `rackLayout` from the
+  controller's place in the same step (cabinets and the console row; undo gives the places back); `setLoad(id)` = `FAMILY.sets[id]`'s
+  starter over its set: "Load System 55", "Loaded System 55 — The sequence starts when you press ▶ · tap to undo", Tidy unless it is
+  the family's own set (the Model 15 tile: stage 9's free slots, "Load Classic bass"); unknown: "No such set". `setNote(id)` →
+  `SET_NOTES[id]` once a host session ('' after; only s55 has one) — asked only once the step is made, shared with H9b's Replace path.
+- **Tray**: `SET_TILES` (moog-core SETS: id, name, modules 22 / 37 = SET_ART's, starter); `o.sets` (array | true) →
+  `button.cv-tile.cv-stile[data-set]` (setArt, the name, "22 modules", a reason) right after the patch model's tile (or in
+  `o.setsEl`), shown where a view's section says `sets` (the Moog view's m15); a tap → `o.setPick(id, mode)` (never `o.pick`); a drag →
+  `o.setDrag` with `info.set` (the canvas "+ System 55", the track list "+ New track"; the ghost hidden while `o.setCanvasGhost()`);
+  `setSetPlaced(id, why)`, `setPlacedOf(id)`, `setTiles()`, `setTile(id)`; `setFull(count, needs, max = 48)` → "This set needs N more
+  modules than the patch can hold" | null. The row: GROUPS' five headings, 25 tiles. The sixteen glyphs are laid out from cv-panel
+  geometry of `panels/m900b.js` (scratch `9b/u9b/glyphs.mjs`, pasted as strings like the nine): one outline (1 / 2 / 3 / 4 / 8 MU →
+  12 / 20 / 34 / 38 / 38 wide; 5U 42 tall, console 27, the 960 at its face's aspect, 20.8), a dot a param, a ring a face jack (rear
+  terminals never), `.e` an event cap, `.l` a lamp, `.i` an inert part (trunks, the CP8A's); `data-fine` on the 960 / 914 / 961
+  (thinner rings). The view's note names the three sets.
+- **style.css** (the last section, after stage 9's): `.cv-pev` (transparent, `pointer-events: auto`, `touch-action: none`),
+  `[data-down]`, `:focus-visible`, `.cv-plamp`, `[data-on]`, the reduced-motion rule, the glyphs' `.e` / `.l` / `.i` / `[data-fine]`.
+- Pins extended (§8.8, none weakened): cv-patch faceJacks (P9b's hand-off: `T.jacks.filter(j => !j.rear)`, the 25 faces), Patches…
+  (the thirteen); cv-tray's Moog view (25 tiles, five groups, the glyph rule with `e` / `l` and the outline by face, the note).
+
+**Host interface for H9b** (main.js; cv-patch's names unless said):
+- `cvPatch.patchHost` deps gain `ev: (t, dev, mid, id) => ptEv(ptT(t), dev, mid, id)` (→ true when posted: `{t: 'seq', i, s: { pe:
+  [n, k] }}`, n = +mid.slice(1), k = the index of id in `MG.TYPES[type].ev`), `heard: ts => outFrame(ts)` (the drums' heard clock),
+  `rate: () => ctx.sampleRate`.
+- The lamp monitor (beside `drumMonitor`): `monitors.sub` for the shown 900 Series while a face with lamps is mounted; `deliver: d =>
+  d.pt && PATCH.lamps(t, dev, d.pt)`; `PATCH.lamps(t, dev, null)` when its node goes silent (⏻ off, P-1's mute / solo-out, a
+  Replace, the track gone); `cvHost().shown(key)` also calls `PATCH.shown(key)`. No hold while the camera moves (measured below).
+- The tray (main.js 5069–5083): `sets: cvTray.SET_TILES`, `setPick: (id, mode) => (mode !== 'track' && ptShown() ? PATCH.setLoad(id) :
+  Replace / + Track through patchNew(…, id))` — on that path the notice adds `PATCH.setNote(id)` when non-empty —, `setDrag` (as
+  moogDrag, info.set), `setCanvasGhost`; `ptTray()`: `shell.tiles.setSetPlaced(id, ptShown() ? cvTray.setFull(count,
+  PT.setNeeds(rec, id)) : null)` per SET_TILES id. The Model 15 tile keeps `ptSet()` (`PATCH.setLoad('m15')` is the same step).
+- `ptKnob`: `PT.isBusKnob` → `patchSend` at once (K9b); the tips and the outline follow by themselves. `srcModeUI`'s moog branch still
+  reads "Tap one to use it in place of the 900 Series …" (seen in Chrome): name the set tiles (§6).
+- `__synthTest.cv.patch` already carries `setLoad`, `setNote`, `lamps`, `lampBits`, `shown`, `ev`, `busTips`, `stats().lamps`.
+- For E9b: the 9b tiles show no load label in the page (`moogCost`: `COST.patch` lacks the new types on this base).
+
+**Gates** (one file at a time, 2048 MB): cv-patch 19 → **25 / 25** · cv-tray 37 → **38 / 38** · canvas-sim 23 → **24 / 24** ·
+canvas-9-sim 22 / 22 · cv-module 65 / 65 · cv-panel 108 / 108 · lint 161 / 161. DOM per module (the fake DOM's S55 rig, outside the
+face art; its diagnostics): 960 **181**, 921 53, 914 56, 961 52, CP3A 51, 993 34, 921B 30, 962 28, CP2 / 992 / 904A 26, Song clock 23,
+CP8A 10 — the rack 1 246 (≤ 1 700).
+
+**Headless Chrome** (155, `--headless=new --use-angle=metal --force-device-scale-factor=2`, 1440 × 900; the real app — a copy of the
+tree with `window.__synthTest = {}`, served no-store from scratch; H9b's part stubbed: the set tiles by a second sourcesTray over
+#srcList with `o.sets`, the lamps by a page-side stub monitor at 8 Hz (Sequence's 1/16 at 120 BPM: the 960's stage + OSC, the 962's),
+ev counted by `stats().lamps.evs`; scripts `9b/u9b/run.mjs`, `pinch.mjs`, `evcheck.mjs`, `glyphsheet.mjs`): the 960 tile, then
+`PATCH.setLoad('s55')` → 37 modules, "Load System 55", the notice, Sequence's 24 cords, Fit k 0.5, 38 GL faces 72.6 MB; the Moog view:
+five groups, 25 tiles, System 35 / 55 after Model 15, greyed with setFull's reason; the 960's 12 buttons and 10 lamps; by touch a
+tap fires once, a moved touch none, a second finger none (the two pinch: k 1.1 → 2), Enter + Space two, below READ_K none; five
+posts in one task → one pump and 3 DOM writes after the frame, none before; the 993 selected, ENVELOPE 1 / FROM 1 / TRIGGER 1 flipped
+by touch → the tip ("Trigger 1: On — … (needs From 2)") and the outline (Controller, 911 1, 911A 1, 902 1), no History step; a plug
+drag 921B 6 SAWTOOTH OUT (the top row) → 914 SIGNAL INPUT 2 (the row below) at k 0.5: the chip, 147 compatible of 294 marked, one
+"Patch cord". No console error. **Frames** (the browser's own input path — a synthesized pinch in ×2.2, out, a pan — the lamps at
+8 Hz and without): 1× 60 fps, worst 16.8 ms both; **4× CPU 59.2–59.6 fps, median 16.7, p95 16.8, worst 33.4 ms (1–2 frames over
+20 ms), with the lamps and without alike** (20 posts → 21 pumps, 44 lamp writes). A scripted `setCamera` every frame (no burst: each
+a whole camera write) is the world's own cost at 4× — 21–24 fps with the lamps or without; the lamps alone at 4×: 60 fps. Screenshots
+`9b/u9b/`: `rack-s55.png`, `rack-s55-4x.png`, `tray-moog.png`, `tray-moog-groups.png`, `tray-sets-greyed.png`, `glyphs-25.png`,
+`960-lamps.png`, `960-lamps-zoom.png`, `routing-993.png`, `drag-s55.png`, `drag-s55-after.png`; results `run.json`, `pinch.json`,
+`evcheck.json`.
+
 ### Lane H9b
+
+**H9b (base 6a31967 = wt-9b with K9b, V9c, P9b, X9b, E9b, U9b merged; `main.js`, `tests/canvas-9b-sim.test.mjs` (new),
+`tests/canvas-9-sim.test.mjs`, `tests/main.test.mjs`; scratch `9b/h9b/`)** — commits 9897451 (the lead's fixture check, failing on the
+base: no set tiles), 86a5e08 (§6), 8291fd4 (the §8.6 sims, main.test), b171d91 (`PT_HEAVY`), these notes. §6 row by row:
+- **Sets**: `patchNew(t, dev, type, set)` → `MG.makeSet(set, vals)` (else `model15`, stage 9's bytes); `addTrack` / `setTrackModel`
+  pass `o.set`. `ptSet(id = 'm15')` = `PATCH.setLoad(id)` (the Model 15 tile: the same step as stage 9's, `FAMILY.sets.m15.set ===
+  FAMILY.set`). The tray: `sets: cvTray.SET_TILES`, `setPick(id, mode)` (a shown 900 Series → `ptSet(id)`; else a Replace through
+  `cvDropInstrument(m900, null, { set })`, or + Track → `setTrack(id)`), `setDrag`, `setCanvasGhost`; `ptTray` greys a set tile by
+  `cvTray.setFull(count, PT.setNeeds(rec, id))` on a shown 900 Series (never elsewhere: a Replace always fits).
+- **The payload with vals** everywhere: `patchPayload` = `PT.payload(rec, rec.f, vals)` (so `patchSend`, `graphParts` — a new node's
+  options —, `offParts` / `bounceSet`, applyRestore's loop: skeptic #21 holds, tested), `syncedOf`'s `PT.live(rec, null, vals)`.
+  `ptKnob`: `PT.isBusKnob` → `patchSend` at once, before the throttled `{t: 'patch'}` (the flip is the graph change; patchSend's key
+  keeps an equal graph from being posted again).
+- **Events**: `ptEv(t, dev, mid, id)` → the node's `{t: 'seq', i, s: { pe: [n, k] }}` (k = the index in the type's `ev`), false
+  without a node, for the controller, an id the type lacks; PATCH's deps `ev`, `heard` (outFrame, the drums'), `rate`.
+- **Lamps**: `ptLampMon` — one `monitors.sub` (role 'inst') per (track, 900 Series) while a mounted face of it declares lamps
+  (pmMount / pmUnmount keep its keys: the 960, 962, Song clock of a System 55), live while the track is selected and one of those
+  faces `cvLive`; `deliver` → `PATCH.lamps(t, dev, d.pt)` **only while the patch is heard** (`ptHeard` = audible and ⏻ on): the
+  engine keeps posting a powered-off machine's frozen lamps, so they are dropped, and `ptDim` (mix / cvPower / ptShow: mute,
+  solo-out, ⏻, a track switch, an undo) darkens them with `PATCH.lamps(t, dev, null)`; a Replace away and a deleted track clear
+  the queue. `cvHost().shown(key)` → `PATCH.shown(key)`. No hold while the camera moves (U9b's measure; Chrome below agrees).
+- **Notices**: the Replace names the set and adds `PATCH.setNote(id)` (asked once the step is made; once a session, shared with
+  `setLoad`): "Replaced Minimoog with 900 Series (System 55) — The sequence starts when you press ▶ · tap to undo"; + Track says
+  "New track with System 55 — …" only when there is a note to say. `srcModeUI`'s Moog branch names the sets: on a 900 Series
+  "… **Model 15** loads Classic bass over the patch; **System 35** and **System 55** bring their whole set, patched and laid out
+  (tap to undo) …", elsewhere "… with a 900 Series holding it — **Model 15**, **System 35** or **System 55** for a whole set,
+  patched — …" (canvas-9-sim's F4 pin extended to these words, its tile list to the set tiles and the 25 module tiles).
+- **setDrag** [C]: over the canvas the set's **whole rack outline** (`setBox(id)`: Tidy's rows of `makeSet(id)` and the console:
+  the System 55 2 624 × 1 728 from (0, −1 376)) pinned with its controller on the instrument's module — where a Replace puts it,
+  or the shown 900 Series' own controller, from which the set is laid out —, "+ System 55 · replaces Juno-60"; the drop = the tap;
+  the track list: a new track.
+- **`PT_HEAVY` = 4 802** (superseded: 2 048 in the painted unit, review 2 F6 below) [C, from the measures]: the app's S0 counter (`sxHeavyCount`) counts every element with a layout box,
+  the GL faces' `visibility: hidden` SVGs included, so the line is in that unit. The patch scenes measured P+: the user's iPad
+  ran stage 9's m30 at **4 423** ("ui-m9"); under the user's interim gate (the Mac at 4× CPU until the consolidated iPad pass,
+  §13) S9b's s55 rack ran P+ at **4 802** ("ui-m9b-mac" throttle4) with more live elements than the real rack carries (1 847
+  without the face pictures vs 932 here). The real System 55 counts **4 710** at rest in headless Chrome (3 778 hidden face-SVG
+  nodes, 932 painted live; 24 cords), so it gets no notice; the System 35 + a 914 2 939; a full 48-module rack (the System 55 +
+  the Sequencer Complement's kind: 2 × 960, 961, 2 × 962, 994, 2 × 911, 2 × 902, 995) **6 879** — the notice. 4 423 would have
+  put the notice on every System 55 the iPad opens on no device evidence either way; the consolidated iPad pass re-decides.
+- `__synthTest.cv`: `setPick`, `setDrag`, `setBox`, `ptEv`, `ptLamps()` ('trackId/dev' → the mounted lamp faces' keys).
+
+**Tests**: **canvas-9b-sim 9 / 9** (new, accessor-free): the fixture check (the tile on track 1 → 37 modules, Sequence's record and
+knobs = `makeSet('s55')`, the notice; `{t: seq}` = `payload(rec, f, vals)` with the routing rows of none — every switch off, the
+CP2's two always-on rows, `pg.cords` = cords + 2; stopped the 960 holds stage 1 (its lamps through the monitor); ▶: the transport
+after the graph, stages stepping at 1/16, the face lit from the queue; **a held C5 an octave up** (autocorrelation over the
+riff's first two C steps: 371 → 185 frames) and as written again; a 993 switch → one new pk at once, no step, off → the old pk) ·
+the System 35 tile on another track (Replace named, no note for it, the rack at Tidy's places: the console row flush above the
+controller, two cabinet rows, ≤ 2 816 wide; its tap undoes; + Track and a track-list drop: new tracks with the set, the System 55's
+note not said twice) · the drag outline (pinned, its label, the drop replaces / on a 900 Series loads the set) · the System 55
+over a Model 15 900 Series (one step "Load System 55", 12 + 27 modules, every module laid out — a hand-moved 921 too —, knobs then
+graph, undo gives topology, knobs and places back; greyed at the cap: a Model 15 + 10 more 995s → "This set needs 1 more module
+than the patch can hold", the System 35 still fits, a greyed tap does nothing) · routing switches (a flip posts, no step; a cord
+pulled and undone keeps the switch and re-posts with its row; Routed loaded and undone → the switches back off, the graph re-posted
+by applyRestore's loop; the 993 selected outlines 911 1 / 902 1, + the controller and the 911A with FROM 1 + TRIGGER 1) · SET 3 by
+Enter on the 960's button → `pe [13, 5]`, stage 3, lamp 3 lit on the face, ptEv's refusals, the monitor off on another track and
+back · ▶ steps / ■ holds; muted: dark, no post delivered, unmuted fresh at stage 1; ⏻ off dark, undo lit · save / reload identical
+(a lit switch kept), the bounce of Sequence with no notes (its rows in the payload; every step sounds) · `PT_HEAVY`, a Replace away
+and its undo (the monitor and the queue). **main.test +1**: a System 55 over `#m900`'s Model 15, a 993 switch lit → its payload at
+once, `graphParts` and `offParts` carry the same rows; the set tiles in the Moog view. **canvas-9-sim**: pins extended (above).
+
+**Headless Chrome** (155, `--headless=new --use-angle=metal --force-device-scale-factor=2`; the tree copied to `9b/h9b/site/`
+with `window.__synthTest = {}` before main.js (`h9b.html`), served no-store on 8871, CDP 9341; `9b/h9b/run.mjs`, `probe.mjs`,
+results `run.json`): the Moog view lists Model 15 · System 35 (22 modules) · System 55 (37 modules) and the 25 module tiles; the
+System 55 tile on the Minimoog track → 37 modules, 24 cords, "Replace Minimoog", the notice above, the node graphed (pk afd31db8),
+one lamps' monitor (3 faces); stopped: stage 1, level 0; **▶ → the transport, stages 2 … 8, 1 … 7 stepping with the lamps, the
+track's peak 0.16–0.20**; with ROW A at 0, **C5 held 259.5 Hz over 129.4 (× 2.005), released 129.4**; SET 5 by touch → `pe
+13,7`, no step; **■ holds** (one stage throughout); the 993's ENVELOPE 1 by touch → a new pk (1861665d), no step, its tip
+"Envelope 1: On — 911 1 · OUTPUT → 902 1 · CONTROL INPUT 3", 911 1 / 902 1 outlined; + Track with the System 35 tile (22 modules,
+Swept band), the 914 tile on it → "Add 914"; save and reload: every record, knob and place identical; no console error, no
+exception. **Frames** with the sequence running (the monitor's real lamps): the browser's input path (a synthesized pinch ×2.2 /
+×0.45 and a pan) **1×: 60 fps, worst 16.8 ms; 4× CPU: 59.2–60 fps, median 16.7, p95 16.8, worst 33.4 (1–2 frames over 20 ms)**;
+a scripted camera write every frame (no burst: the world's own cost, as U9b found) 60 fps at 1×, **22.9–27.5 fps at 4×** (median
+33.3, worst 183–217 ms). Screenshots `9b/h9b/`: `h9b-tray-moog-1440.png`, `h9b-rack-s55-1440.png`, `h9b-960-playing-1440.png`,
+`h9b-rack-s55-fit-playing-1440.png`, `h9b-rack-s55-4x-1440.png`, `h9b-993-routed-1440.png`, `h9b-rack-s55-1366.png`,
+`h9b-tray-s35-1440.png`, `h9b-rack-s35-1440.png`, `h9b-rack-s35-1366.png`, `h9b-reloaded-1440.png`, `h9b-rack-48-1440.png`.
+
+**Gates** (one file at a time, 2048 MB, at b171d91): canvas-9b-sim 9 / 9 · canvas-9-sim 22 / 22 · main 46 / 46 · integration 44 / 44 ·
+canvas-1i 20 · 2a 26 · 2b 23 · 3 27 · 7a 23 · 7b 15 · 7c 13 · 8 17 · cv-fixes-sim 5 · cv-shell-sim 16 · cv-patch 25 · cv-tray 38 ·
+golden-graph 6 / 6 · golden-moog 6 / 6 · golden-moog-b 6 / 6 · canonical-stream 1 / 1 · lint 161 / 161 · pwa 22 / 22 (after
+`node tools/precache.mjs --write`: 97 versioned files, `panels/m900b.js` among them; sw.js not committed) · **canvas-sim 23 / 24:
+U9b's window** — its Moog-view test pins `tiles.setTiles().length` 0 "until the host passes o.sets (lane H9b)"; with the host's
+`sets` it is the two set tiles. Not H9b's file: the one-line extension (`[…, ['s35', 's55']]` by `data-set`, the title naming H9b)
+is in `9b/h9b/canvas-sim-window.patch` — applied in the worktree it passes 24 / 24 (reverted, uncommitted).
+
+**For the reviewers / found on the way** (none in H9b's row):
+- **A key pressed before ▶'s anchor is forgotten** (sim and Chrome): Play posts its anchor ≈ 60 ms ahead and the Play-from-stop
+  reset (P-2, engine.js `ptFresh`) clears the controller's held key at that frame, so "hold a key, then ▶" plays the riff as
+  written until the key is struck again; pressed after ▶ it transposes (the tests press after the anchor). The engine's power-on
+  restrikes held keys (P-1); its Play-from-stop reset does not — for the lead (E9b's file). **Fixed** (review 1 F1, `Track.ptHeld`: the user's ruling).
+- Fit floors at READ_K (I9 review 2 F2): a 2 816-wide System 55 rack is never whole on a 1440 or 1366 window (k 0.5, the top
+  row's left part in view) — as designed; the minimap shows the rest.
+- The tray's intro is rewritten by the view dropdown (`onView`); `tiles.setView` (a restore) leaves the previous view's words —
+  stage 9's behaviour, unchanged.
 ### Reviews and fixes
+#### Fixes (review 1) — fixer R1 (2026-10-22, base 45fe83e on `wt-9b`; `engine.js`, `patch-dsp.js`, `moog-core.js`, `tests/bench.json`, `tests/engine-track.test.mjs`, `tests/patch-dsp.test.mjs`)
+- **F1 (major) — a held key carries through Play from a stop** (the user's ruling). `Track.transportHook` (engine.js) calls the new
+  `Track.ptHeld(I)` on a cold start, after the Insts' hooks (`ptFresh` has reset the machine and the controller by then): for each
+  powered patch Inst (`kind === 'patch'`, machine built, `on === 1`) every key with `holdV[k] > 0` and the Inst's receiver bit in
+  `holdR[k]` is struck again with `x.pm.note(holdP[slot · NK + k], holdV[k], 1)` — the pitch the press stored (a graph node's zone and
+  transposition as they were then; a key the zone refused has no bit and is never struck; the legacy Track's `i0` is slot 0, bit 1), in
+  the same span before the first chunk's `ctl`: GATE and the keyboard pitch from sample 0 of the step. **Decision**: straight into the
+  controller, not through `Inst.noteOn` (what `Track.power`'s P-1 restrike calls) — the key never went up, so no Hyper RETRIG of the
+  Inst's rack, no new `lastNote` / note count; only the state `Ctl.reset` wiped is put back. Nothing else changes: one machine reset
+  (the controller's with it), the 960 on stage 1 with its clock in its start state, RESTART at tick 0, the Song clock "not started";
+  a seek and a loop wrap neither reset nor restrike; a powered-off patch keeps P-1's rule (its keys were forgotten at the off; the
+  power-on restrikes once); a bounce holds no key (`holdV` all 0), so D7 and golden-moog / golden-moog-b are untouched.
+  Tests (engine-track): *9b P-2 × P-3: a key held before ▶ …* — Sequence on the legacy Track, the heard period over stage 1 (370 → 185
+  frames at 48 kHz × 4: an octave up) with the key held before ▶, pressed in the anchor's quantum, and posted between ▶ and its
+  anchor; the controller after ▶ (`held[72]`, `nh`, `tgt` 1 V, gate), one machine reset and one controller reset, the 960's lamps equal
+  to a restart with no key (stage 1 through the step, stage 2 after), one restrike (the press + 1 note-on), a key pressed after the
+  anchor unchanged, the release returning stage 2 to its written pitch; *… on a graph node …* — a zone `{lo 40, hi 80, xp 12}`: 48 → 60
+  struck, 90 refused and never struck, a later zone change moving no held key, the restrike at 60; a patch powered off at the press
+  gets no note through Play and exactly one at its power-on, and one held, powered off, ▶ while off, on again the same. Failed first
+  (the controller held nothing after ▶; period 370).
+- **F2 (minor) — a momentary event is live only.** `Inst.ptMsg` drops `{pe}` while `this.on !== 1` (engine.js), and `PatchDSP.ev`
+  accepts only a module in the latest plan's `recs` (patch-dsp.js; the modules whose `ctl` runs): an unmute starts the sequence at
+  stage 1 (the SET pressed while muted is gone), a cord that makes a 960 live no longer applies the SETs pressed while it was not.
+  Tests: engine-track *9b events (review 1 F2)* — `evmute.mjs`'s sequence as assertions (SET 6 while off → stage 1 at the power-on;
+  SET 4 / SET 7 to the 960 with its rows unpatched → still stage 2 when the cords return; its lamps are not posted while it is not
+  live, and an event sent live works); failed first (stage 6, stage 7). patch-dsp.test's two pins of the old behaviour changed with the
+  contract (*events*: ev to the module nothing reads → 0, none waiting, and a made-live module hears only its own later event;
+  *lamps*: the frozen module's event is dropped, its lamp 0 at its first `ctl`, its live event applied after it).
+- **F3 (nit)** — not in this lane (the lead's: §11's CP3A / 921A line, the moved-rows notice).
+- **F4 (nit)** — `tests/bench.json`'s `"m9b"` note no longer blames the 26-type family: the reviewer's JSC A/B against tests/ref-9's
+  DSP files reads m9p ×1.007, m9x ×1.000, m9d ×1.006, c3 ×1.000, so the +5–8 % over stage 9's record is ambient (another session); the
+  iPad pass re-baselines the JSC rows. No test.
+- **F5 (nit)** — *Swept band*'s CP3A master 6.5 → 7.5 (+1.24 dB: the CP3A's master is linear, `ms / 5`; moog-core.js). Through the whole
+  Track (the reviewer's `headroom.mjs`, 48 kHz × 4, C2 … C7 at velocities 0.8 / 1): −10.8 dBFS at the loudest key, −13.1 at the
+  lowest (G5), was −11.8 … −14.2; at the evaluator moog-core.test reads −8.3 (was −9.1); the stage-9 frozen records are untouched
+  (a 9b preset).
+#### Fixes (review 2) — fixer R2a (2026-10-22, base 7ac99ea on `wt-9b`; `cv-face.js`, `patch-core.js`, `tests/cv-face.test.mjs`, `tests/patch-core.test.mjs`)
+- **F2 (major) — a GL face always ends with its SVG hidden.** `sync`'s overlap path turns the 1g tier on and *holds* the quad (mode
+  stays `gl`); when the overlap clears before the tier's bitmap decodes, `tierOff` → `faceTier.destroy()` → `drop()` → `vis(false)`
+  shows the SVG, and `setMode(F, 'gl')` returned early (mode already `gl`) before its hide line. Fix: `setMode` applies the hide for
+  `m === 'gl'` *before* the no-change return (one guarded style write, only when the SVG is not already hidden) — whichever order tier
+  changes and rebuilds come in, a face in `gl` ends hidden; no other mode's rule moved (`svg` shows, `dom` leaves the tier the
+  visibility, gl → dom with the bitmap shown keeps it hidden), so the 1h / 1i faces of every instrument behave as before. `cv-panel.js`
+  untouched (the tier's `drop` showing the SVG is its own contract: it owns the visibility in `dom`). Test (cv-face): *9b fix R2a
+  (F2)* — two faces at k 0.5 settled in `gl`, B dropped on A (held: mode `gl`, tier pending), the overlap cleared before any decode:
+  both `gl`, tiers gone, both SVGs hidden (failed first: `visible`); a late decode of the dead tiers shows nothing; the same through a
+  shown bitmap; the invariant "no `gl` face with a visible SVG". Headless Chrome 155 (the reviewer's `s9b-m15` / `s9-overlap`
+  scripts on the fixed tree; scratch `9b/fr2a/`): System 55 over a Model 15 **0** faces with a visible SVG under `gl` (was 5), its
+  undo **0** (8), System 35 over the System 55 **0** (19), that undo **0** (31); no console output; S0 unchanged (4 954 / 5 184 /
+  4 710 — F6's unit).
+- **F5 (minor, the lead's decision) — two connections of one source to one input are one.** `busScan` (the one resolver behind
+  `payload`, `busRows`, `busInfo`, `live`, `liveNodes`) keeps a map (source module · jack → input module · jack) of every valid cord
+  (first) and of each row taken; a row whose pair is held is **skipped and not counted against the 256-bound**, the earlier holder
+  keeping its gain (a cord first — cords precede rows — then panels by number, then row). Cords are not merged with each other
+  (stage 9's payload is byte for byte; vals absent → no rows, unchanged). The skipped row's reason reads in the switch's tip:
+  *Already patched by a cord* / *Already routed by 993 1* (the first panel's type and ordinal) / *Already routed by another row of
+  this panel*. A copy's own rear terminal is its own wire (a duplicated 992's EXT row, a CP4A's TRIGGER (REAR)): still a connection.
+  Consequences (by the rule): the copy's selection outline (`members`) names only the modules its connecting rows reach (a fully
+  merged copy outlines none); deleting the first panel lets the copy's rows connect (it is the first holder then). Tests
+  (patch-core): *R2a F5* — a lit 993 (`f1 t1 e1`; all seven) and a lit 992 (`s1`; `s1`–`s3`) duplicated: `payload` cords equal the
+  original's (only the mods list gains the copy), the same rows, `live` equal, no repeated 5-tuple, the copy's tips *Already routed
+  by …* and the first's rows still connections (failed first: the cords doubled); a switch closing a cord's own pair (cord gain 2.5):
+  the payload and `pk` equal the cord-only record, the cord's gain kept, `busInfo` *Already patched by a cord*; another pair of the
+  panel still connects; the copy's rear wires its own. The bound's test (skeptic #33) is rewritten for the rule — its premise, 20
+  993s with identical rows each counting, is now one connection: 44 CP4As (the shared six rows once + 4 own-rear rows a panel = 182)
+  after 128 hand-built distinct cords → 128 rows, 256 connections, every pair distinct, the last row m35's sixth (its rows 3 and 5 connect), the
+  later panels' rows *Already routed by CP4A 1* or the bound's reason, none into a normalled input. **golden-moog-b**: no 9b preset
+  (13 presets × the three sets, 156 loads over a fresh patch and each set) carries a repeated pair — every payload byte-identical to the
+  pre-fix code — so its recorded refs are unchanged; golden-moog (ref-9) and the stage-9 frozen-record pin pass untouched. Real app
+  (Chrome, `s20-dup`): *Routed* + Duplicate 993 1 → 13 connections before and after (was 13 → 17), a lit 992 duplicated 14 → 14
+  (was 15), the held key's level inside the run-to-run spread (rms 0.067–0.077 both ways; the +6.9 dB is gone).
+
+#### Fixes (review 2) — fixer R2b (2026-10-22, base 7ac99ea on `wt-9b`; `main.js`, `cv-patch.js`, `cv-tray.js`, `tests/canvas-9b-sim.test.mjs`, `tests/cv-patch.test.mjs`, `tests/cv-tray.test.mjs`; scratch `9b/fr2b/`)
+- **F1 (major) — a preset / a set starts the 960's clock per its CLOCK AT START.** The machine reads `os` only when it is built or reset
+  (`moog-dsp.js:1141`), never at a preset, so *Step bass* over a System 55 was silent on a held key and *Sequence* over it free-ran before
+  ▶. Fix in the host, not the DSP: `cv-patch.js` `SEQ_START = { 960: { p: 'os', on: 'on', off: 'off' } }` (a sequencer type's fresh-state
+  select and the `ev` ids that start / stop its clock — a table entry beside `SET_NOTES`, in cv-patch because the lead scoped the fix to
+  the host / cv-patch; a family table key would be the generic home) and the pure `seqStart(fam, rec, vals, mid)` → `'on'` | `'off'` |
+  null. `preset()` passes the bound roles whose type has an entry as `r.seq` (the step's sequencers, mid order); `commit` → `ptEdit`
+  (`main.js`) writes them into the step's meta (`{ pt: 1, trackId, dev, f, seq }` — also when the step wrote no knob) and, after the
+  knobs and the graph are posted, `ptStart` posts `ptEv(mid, 'on' | 'off')` for each (`PATCH.starts(t, dev, mids)`: `[[mid, id]]` from the
+  record and knobs as they are now): `{t: 'seq', s: { pe: [n, 0 | 1] }}` — after the graph, so the module is in the plan (R1's F2 rule).
+  `applyRestore` does the same after an undo / redo's knobs (`ptBackApply`) and graph (the step's `seq` through `ptBack.mv`), so the clock
+  follows the restored `os`. A set tile over a Model 15 (it adds the 960) starts it too; a Replace / + Track builds a fresh machine
+  (`os` read at construction) and needs nothing; a preset that binds no 960 posts none; Init patch is not a preset (its cords are out, the
+  960 not live). **Said**: OSC OFF stops the clock, it does not rewind — a *Sequence* loaded over a running 960 holds the stage it was on
+  until ▶ (the Play-from-stop reset puts stage 1). A graph post held back for assets (`N.waitP`) leaves the event ahead of its graph (the
+  engine drops an event to a module not yet in its plan): only a track with an FX needing assets, not seen. Tests (failed first): canvas-9b-sim
+  *review 2 F1* — Step bass: `['pg', 'pe n,0']`, the OSC lamp lit with no transport (the peak alone cannot tell: the stopped 960's DC row
+  step through the 902 thumps at 0.14, the running clock sounds at 0.24), Sequence: `['pg', 'pe n,1']`, the lamp dark, one stage held;
+  undo → OSC ON again and sounding, redo → OFF; Classic bass: no `pe`; the System 55 tile over a Model 15 → `['pg', 'pe n,1']` for the new
+  960. cv-patch *(review 2 F1)*: `r.seq`, `starts()`, `seqStart` pure. Real Chrome (`m5-f1.mjs`, 1440 × 900): Step bass from Patches… on the
+  System 55 tile — OSC lamp `lo`, level 0.114 (was 0.0001, reviewer 2's s22); Sequence over it: `l1` held; undo: `lo,l4` running, 0.153;
+  redo: `l7` held.
+- **F4 (minor) — a step that moves a routing panel's rows says so.** `cv-patch.js` `routeMoves(C, rec2, vals2)`: `PT.busRows` before and
+  after per (panel, row) for the panels present in both (a panel the step makes or deletes carries its own rows): a row that resolves to
+  other ends or newly resolves → "now reaches <the modules the ends moved onto>"; a row that vanished → "no longer reaches <its end that
+  no longer resolves>" (`PT.busInfo`'s null end), minus what the panel reaches anyway; modules by their titles **before** the step (a new
+  module by its own) — so the 993 over the System 55's five 911s reads "the 993's routing now reaches 911 2, 911 3" (the screen shows "911
+  1, 911 2" again: the titles renumber, which is the point); the panel as "the 993's" when it is the only one of its type, else its title
+  ("CP3A 3's"); ≤ 3 modules a panel, ≤ 2 panels. Delete: "Deleted 911 1 · the 993's routing now reaches 911 2, 911 3 · tap to undo" (8 s);
+  **add** and **duplicate** (which had no notice) say it the same way only when a row moved ("Added 921A 3 · CP3A 3's routing now reaches
+  921A 3 · tap to undo": a 921A goes before the 921s in `921a|921#=`); nothing extra otherwise (a 911 no lit row reaches, a 921B). Tests
+  (cv-patch, failed first): the System 55 with *Routed* (delete 911 1 → the text; 911 4 → today's), ENVELOPE 3 with a third 911 deleted
+  ("no longer reaches 911 3"), the CP3A 3 and the 921A add (a 921B: none; a 911 duplicate: none). Real Chrome: the exact text above.
+- **F6 (minor) — the heavy-scene line counts what is painted.** `main.js`: `sxPainted(el, skipFaces)` / `sxHeavyCount(skipFaces)` — for the
+  900 Series (`k === 'pt'`) a module whose `data-cv-face` is `gl` does not count its `.hw-decor > svg` while that SVG is `visibility:
+  hidden` (the texture is free to paint); a face on `dom` (?nogl's 1g tier, an overlap), `svg` (the base pending), or a `gl` face whose
+  SVG shows (the F2 state) counts it; the Serum's S0 count (SX_HEAVY 1 866, measured on the iPad in the old unit) is untouched
+  (`painted()` with no argument). **`PT_HEAVY` = 2 048 = 1.3 × 1 575**, the real System 55's live layer (headless Chrome 155, 1366 × 1024
+  touch, 2×, `m1-count.mjs`; reviewer 2's 1 575 reproduced): + 921B 1 679, + 902 1 653, + a second 960 2 176, a full 48-module rack 2 236 with every face a
+  texture (3 746 while its 11 added modules are off screen on their SVGs), the System 55 on `?nogl` 4 748 (old unit 4 748: all of it live).
+  Notice runs (`m4-notice.mjs`, waiting out the "Replaced …" notice): GL — the System 55, + 921B, + 902 quiet, + a second 960 the notice;
+  `?nogl` — the System 55 alone the notice. `ptHeavy().done` and `heavyReset()` (the sim hook) reset `ptHeavyDone` too. Test (canvas-9b-sim,
+  failed first): stub module elements at the measured weights (43 live + 85 SVG boxed per module, 40 modules): GL 1 720 / no notice;
+  `dom`, `svg`, `gl`-with-the-SVG-visible 5 120 / the notice; + 2 modules 1 806 quiet; a 48-module rack 2 193 / the notice, once.
+- **N1 (nit) — the set ghost.** `setCanvasGhost: () => false`: the rack outline stays pinned to the instrument (a Replace in place, 9 % of it
+  in the viewport over the default Minimoog) and the tile's own ghost (its art, "+ System 55") now stays with the finger over the canvas as
+  well, instead of being hidden for an outline that is not there. The simplest of the two options (no scaling); both go with the drag's end.
+  Test (canvas-9b-sim): a real tile drag through `wk.dragSource` (mouse, `document.elementFromPoint` stubbed over `#viewport`): the ghost
+  in `#ov`, not `off`, "+ System 55", beside the outline "+ System 55 · replaces Juno-60". Screenshot `shots/n1-set-ghost-over-minimoog.png`.
+- **N2 (nit)** — `deps.playing` (`main.js`: `T.playing`): `setNote` returns '' **and does not spend** the once-a-session flag while the song
+  plays (the Replace, the + Track and the set-on-a-900-Series paths all ask it): playing → "Replaced Minimoog with 900 Series (System 55) ·
+  tap to undo"; the next load with the transport stopped says it. Tests: canvas-9b-sim *review 2 N2* (first in the file: the flag is
+  per session), cv-patch.
+- **N3 (nit)** — the set tiles' `span.cv-tcost` (`cv-tray.js`, `o.setCost(id)`, re-read by `refreshMoog`, i.e. by `costLabels` after a
+  measurement): `main.js` `setCost(id)` = `COSTM.label(COSTM.estimate({ kind: 'synth', model: 'm900', patch, vals }, devFactor()))` over
+  `MG.makeSet(id, {})`'s record and knobs — what a tap makes. Reads "~2 %" for the Model 15, System 35 and System 55 alike: `COST.patch` charges
+  the live nodes of each starter (Sequence's 15 live modules cost what Classic bass's do; reviewer 2's "≈ 3 ×" was the measured m9s / m9p
+  rows, the estimate table's own figures are what the tile shows). The tile's children are now `[art, name, meta, cost, reason]` (the pin
+  extended). Tests: cv-tray (the label, `title`, refresh, hidden when none), canvas-9b-sim *review 2 N3* (equal to cv-cost over `makeSet`,
+  the ×10 device factor re-read).
+- **Not touched** (as briefed): F2 / F5 (cv-face.js / patch-core.js — the other fixer), F3 (fixer R1), N4. No `sw.js`.
 ### Acceptance
 
 ## 13. Review log
@@ -962,3 +1647,24 @@ through a spare 902 (GATE → `c1`, fixed −2 V, LIN: gain 1 while a key is hel
 true. Skeptic #1's phase-0 step done by the lead on the base: golden-moog's cases and checks are pinned to stage 9's nine types and six
 presets by name (`S9_TYPES` / `S9_PRESETS`), golden-moog 6 / 6 at this commit. Phase 0 (A2 ∥ S9b) starts now on the holding branch
 `wt-9b`, base this commit.
+
+**The user, 2026-10-22 (process):** "i dont want to have to keep doing these ipad tests … we should test after were done adding
+feature" — the phase-0 iPad session (`?m9=1&s55=1` → `"ui-m9b"`) is **deferred** to one consolidated real-device pass after the feature
+work (with the performance presets). Gates meanwhile: the Mac's `"ui-m9b-mac"` (incl. 4× / 6× CPU throttling: every s55 scene P+ at 4×,
+P at 6×) and the real faces' counts (P9b: the System 55 rack 1 521 painted without the face pictures ≤ 1 700; the 960 181) — §5's
+decision table applies as "m13 / m13w-class P+ on the Mac at 4×". **U9b starts now** without waiting for a session.
+
+**The user, 2026-10-22:** "the held key should carry through Play" — Play from a stop resets the patch (P-2) **but keeps the keys held
+at that moment**: hold a key, press ▶ → *Sequence* plays transposed from its first step (a bounce has no held keys; D7 unaffected).
+
+### Acceptance (the lead, 2026-10-22)
+
+Phase 3 done on `wt-9b`: reviewer 1 (real engine: 0 blocker, 1 major (a held key across ▶ — the user's ruling), 1 minor, 3 nits) and
+reviewer 2 (headless Chrome: 0 blocker, 2 major, 4 minor, 4 nits) — every finding fixed failing-test first by fixers R1 / R2a / R2b
+(review 1's F3: routing moves named in the step's notice; N4 — the System 55 tile's one long frame at 4× / 6× CPU and a cord drop at 6× —
+handed to the performance-presets stage, ROADMAP 14). The listening renders went to the user ("those are sounding good to me but i
+have no point of reference"; drum-feedback rule: build on RM's targets). **One sweep**: 113 files, 3 397 tests, all pass. **`tests/ref-9b`
+frozen at 9c3d323** (golden-moog-b's PIN) beside ref-9 (golden-moog, pinned to stage 9's types and presets) and ref-p1 / 1c / 7a–7d. No
+iPad session (the user's process decision): gated on the Mac incl. 4× / 6× CPU throttling; the real-device pass comes after the features.
+Known gap (fixer R2b): a graph held back for assets could leave a preset's OSC event ahead of its graph (the engine drops it) — not seen
+on a 900 Series track.

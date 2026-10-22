@@ -20,6 +20,9 @@
 // MODULE_LAYOUTS over cv-panel's moduleModel); the live patch jacks — count, the least centre distance and clearance to a
 // hit box, each jack's widest hit circle (geometry's `hit`), a section's ports after its controls; in the SVG each jack's
 // 14 mm circle and its widest one (dashed).
+// (9b, IMPL-9b §4.1, §8.4) The System 35 / 55 faces (panels/m900b.js, the console-height types too): the event buttons
+// (count, each one's press box, the smallest, any overlap with a control's, the jacks' clearance to them), the live lamps, the
+// rear terminals (listed: never on a face), `lite`; in the SVG an event button's box and press box, a lamp's outline.
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -118,6 +121,21 @@ if (geo.jacks.length) {
   const r = 7 * X, off = J.filter(j => j.x - r < 0 || j.y - r < 0 || j.x + r > geo.body.w || j.y + r > geo.body.h).map(j => j.port);
   if (off.length) console.log('  a 14 mm hit circle outside the body: ' + off.join(', '));
 }
+// (9b, IMPL-9b §1.3, §1.5–§1.6, §4.1) the rear terminals (never placed), the event buttons (their press boxes against every
+// control's and the jacks), the live lamps, a lite face
+const rear = (model.jacks || []).filter(j => j && j.rear).map(j => j.id);
+if (rear.length) console.log(`\nrear terminals (bus rows only, never on a face): ${rear.join(' ')}${(L.controls || []).some(c => c && rear.includes(c.port)) ? ' — ONE IS PLACED' : ''}`);
+if (geo.evs.length || (model.ev || []).length) {
+  const E = geo.evs, sm = E.reduce((a, e) => (!a || Math.min(e.hit.w, e.hit.h) < Math.min(a.hit.w, a.hit.h) ? e : a), null), ovl = [];
+  for (const e of E) for (const h of [...hb, ...E.filter(x => x !== e).map(x => Object.assign({ id: 'ev:' + x.id }, x.hit))]) if (e.hit.x < h.x + h.w && h.x < e.hit.x + e.hit.w && e.hit.y < h.y + h.h && h.y < e.hit.y + e.hit.h) ovl.push('ev:' + e.id + ' × ' + h.id);
+  let clr = Infinity, who = '';
+  for (const j of geo.jacks) for (const e of E) { const d = Math.hypot(Math.max(e.hit.x - j.x, 0, j.x - e.hit.x - e.hit.w), Math.max(e.hit.y - j.y, 0, j.y - e.hit.y - e.hit.h)); if (d < clr) { clr = d; who = j.port + ' ↔ ev:' + e.id; } }
+  console.log(`\nevent buttons: ${E.length} of ${(model.ev || []).length} · smallest press box ${sm ? sm.id + ' ' + sm.hit.w + ' × ' + sm.hit.h + ' px' : '—'} · ${ovl.length ? 'OVERLAPS: ' + ovl.join(', ') : 'no overlaps'}` +
+    (clr < Infinity ? ` · least jack clearance ${(Math.round(clr / P.PX_PER_MM * 10) / 10).toFixed(1)} mm (${who})` : ''));
+  console.log('  ' + E.map(e => `${e.id} "${e.label}" @(${e.x}, ${e.y}) ${e.w} × ${e.h}, press ${e.hit.w} × ${e.hit.h}`).join(' · '));
+}
+if (geo.lamps.length || (model.lamps || []).length) console.log(`\nlamps: ${geo.lamps.length} of ${(model.lamps || []).length} · ` + geo.lamps.map(l => `${l.id} "${l.label}" @(${l.x}, ${l.y}) d ${l.d}`).join(' · '));
+if (L.lite) console.log(`\nlite: the knobs' and rotaries' skirts and caps in the art, a pointer in the DOM (3 painted elements a control)`);
 // (1i) the keyboard and the performance controls
 const f3 = v => (Math.round(v * 1000) / 1000).toFixed(3);
 for (const o of geo.controls) {
@@ -182,6 +200,12 @@ if (out) {
     ov.push(`<circle cx="${j.x}" cy="${j.y}" r="${7 * P.PX_PER_MM}" fill="none" stroke="#3fd0ff" stroke-width="1.2"/><circle cx="${j.x}" cy="${j.y}" r="${j.hit / 2}" fill="none" stroke="#ff4fa3" stroke-width="1" stroke-dasharray="4 3"/>`);
     ov.push(`<text x="${j.x}" y="${j.y + 7 * P.PX_PER_MM + 9}" font-size="9" text-anchor="middle" fill="#3fd0ff" font-family="monospace">${j.port}</text>`);
   }
+  // (9b) the event buttons: the cap (yellow) and its press box (dashed); the lamps (yellow circles)
+  for (const e of geo.evs) {
+    ov.push(`<rect x="${e.x - e.w / 2}" y="${e.y - e.h / 2}" width="${e.w}" height="${e.h}" fill="none" stroke="#ffd23f" stroke-width="1.5"/><rect x="${e.hit.x}" y="${e.hit.y}" width="${e.hit.w}" height="${e.hit.h}" fill="none" stroke="#ff4fa3" stroke-width="1" stroke-dasharray="4 3"/>`);
+    ov.push(`<text x="${e.x}" y="${e.hit.y + e.hit.h + 9}" font-size="9" text-anchor="middle" fill="#ffd23f" font-family="monospace">ev:${e.id}</text>`);
+  }
+  for (const l of geo.lamps) ov.push(`<circle cx="${l.x}" cy="${l.y}" r="${l.d / 2 + 2}" fill="none" stroke="#ffd23f" stroke-width="1.2"/>`);
   if (geo.extras) {
     const X = geo.extras;
     ov.push(`<rect x="${X.x}" y="${X.y}" width="${X.w}" height="${X.h}" fill="rgba(20,22,26,0.85)" stroke="#888" stroke-dasharray="2 2"/>`);

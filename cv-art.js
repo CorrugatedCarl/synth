@@ -4,7 +4,7 @@
 // as strings, reused by tray tiles, track-row chips and module cards. Owner: SHELL lane.
 // Every drawing is laid out in a 96 × 56 design box and scaled (uniformly, centred) into the requested viewBox; below
 // 48 px wide a simpler level of detail (no knobs or caps, fewer keys) keeps the chips crisp. Flat fills only (no gradient
-// or pattern ids: the same string appears many times in one document).
+// or pattern ids: the same string appears many times in one document). The Moog set tiles (System 35 / 55: SET_ART, setArt / setChip) are drawn the same way.
 // Rules: plain ES module, no DOM at module top level (pure strings: node-tested); imports carry ?v=9 (models.js, read only).
 import { MODELS } from './models.js?v=9';
 
@@ -483,6 +483,99 @@ const DRAW = {
   },
 };
 
+/* ---------------------------------------------------------------- the set tiles (IMPL-9b §4.3) */
+const fz = Object.freeze;
+/** The Sources tray's set tiles (System 35, System 55) by set id (moog-core FAMILY.sets). outline: the silhouette's polygon in the 96 × 56 design box; rows: module faces per
+ * tier; console: console panels in the strip; modules: the tile's "N modules" (rows + console, the controller not counted); cords: coloured cords hanging. The Model 15's tile is
+ * the 900 Series' own, art('m900'). @type {Object<string, {name: string, body: string, outline: ReadonlyArray<ReadonlyArray<number>>, rows: ReadonlyArray<number>, console: number, modules: number, cords: number}>} */
+export const SET_ART = fz({
+  // one wood wedge (the sides lean in toward the top): nine narrow faces over eight (a wide filter bank among them), a console strip of five panels, no cords
+  s35: fz({ name: 'System 35', body: 'wedge', outline: fz([[2, 52], [94, 52], [85, 4.5], [11, 4.5]].map(fz)), rows: fz([9, 8]), console: 5, modules: 22, cords: 0 }),
+  // two wood-ended cabinets, the upper narrower: sixteen tall narrow faces (the wide one a sequencer's 3 × 8 dots) over fourteen (a wide bank of small knobs), a console strip
+  // of seven panels, four coloured cords hanging between the cabinets
+  s55: fz({ name: 'System 55', body: 'stack', outline: fz([[3, 53], [93, 53], [93, 29.4], [89, 29.4], [89, 2], [7, 2], [7, 29.4], [3, 29.4]].map(fz)), rows: fz([16, 14]), console: 7, modules: 37, cords: 4 }),
+});
+const SF = { FACE: '#2b2926', CON: '#383430', CAP: '#d4cfc4', JK: '#8d887e', LAMP: '#f2a33a', DIM: '#5a4a30', CORDS: ['#d8452f', '#e6b422', '#3b82c4', '#3fae5a'] };
+// columns across a panel: units wide each, 0.4 apart → [p, q] as fractions of the panel's width; xl / xr give the panel's edges at a height y (a wedge's lean bends them), X(y, p) the x of fraction p
+function setCols(xl, xr, ym, units) {
+  const W = xr(ym) - xl(ym), gf = 0.4 / W, u = (1 - gf * (units.length - 1)) / units.reduce((a, b) => a + b, 0), cols = [];
+  let p = 0;
+  for (const n of units) { cols.push([p, p + n * u]); p += n * u + gf; }
+  return { cols, W, X: (y, p) => xl(y) + p * (xr(y) - xl(y)), sc: y => (xr(y) - xl(y)) / W };
+}
+// a tier of module faces over the band (y, h): units the faces' widths, kinds[i] 'seq' | 'bank' | none. Each face: a name rule, two to four rows of knobs with pointer lines (a column;
+// two on a wide face), jacks at the foot; 'seq': a lamp row over three rows of eight dots; 'bank': two rows of seven small knobs. lo: a block with a pale bar. → { g, J: the jack centres per face }
+function setTier(xl, xr, y, h, units, kinds, seed, lo, A) {
+  const { cols, W, X, sc } = setCols(xl, xr, y + h / 2, units), s0 = sc(y + h / 2), J = [];
+  let g = '', ind = '';
+  cols.forEach(([p, q], i) => {
+    const k = kinds[i], jk = [], wf = (q - p) * W, at = (yy, t) => [X(yy, p + (q - p) * t), yy], nj = Math.max(1, Math.min(1 + ((rnd(i, seed + 3) * 3) | 0), Math.floor(wf / 2.1)));
+    for (let m = 0; m < nj; m++) jk.push(at(y + h - 2.3, (m + 0.5) / nj));
+    J.push(jk);
+    g += POLY([at(y, 0), at(y, 1), at(y + h, 1), at(y + h, 0)], SF.FACE);
+    if (lo) { g += POLY([at(y + h * 0.18, 0.3), at(y + h * 0.18, 0.7), at(y + h * 0.72, 0.7), at(y + h * 0.72, 0.3)], SF.CAP, OP(k ? 0.85 : 0.5)); return; }
+    g += S(`M${f(at(y + 0.25, 0)[0])} ${f(y + 0.25)}H${f(at(y + 0.25, 1)[0])}`, '#fff', 0.45, OP(0.12)) + S(`M${f(at(y + 1.1, 0.14)[0])} ${f(y + 1.1)}H${f(at(y + 1.1, 0.86)[0])}`, A, 0.45, OP(0.55));
+    const dot = (cx, cy, r, a, big) => { g += C(cx, cy, r, SF.CAP) + (big ? C(cx, cy, r * 0.7, '#111') : ''); ind += `M${f(cx)} ${f(cy)}l${f(Math.sin(a) * r * 0.62)} ${f(-Math.cos(a) * r * 0.62)}`; };
+    if (k === 'seq') {
+      for (let m = 0; m < 8; m++) { const [cx, cy] = at(y + 3, (m + 0.5) / 8); g += C(cx, cy, 0.32, SF.LAMP, OP(m % 4 ? 0.35 : 0.9)); }
+      for (let r = 0; r < 3; r++) for (let m = 0; m < 8; m++) { const [cx, cy] = at(y + 6.4 + r * 3.1, (m + 0.5) / 8); dot(cx, cy, 0.62, -2.4 + 4.8 * rnd(r * 8 + m, seed)); }
+      g += buttonRow(at(y + h - 6.4, 0.06)[0], y + h - 6.4, wf * 0.88, 1.5, 8, [SF.CAP], { fill: 0.6 });
+    } else if (k === 'bank') {
+      for (let r = 0; r < 2; r++) for (let m = 0; m < 7; m++) { const [cx, cy] = at(y + 5 + r * 3.6, (m + 0.5) / 7); dot(cx, cy, 0.7, -2.4 + 4.8 * rnd(r * 7 + m, seed + 1)); }
+    } else {
+      const nk = Math.min(2 + ((rnd(i, seed) * 2.6) | 0), Math.max(1, Math.floor((h - 8) / 3.3) + 1)), cc = wf >= 7 ? 2 : 1;
+      for (let r = 0; r < nk; r++) for (let m = 0; m < cc; m++) { const yy = y + 4.2 + r * Math.min(4.4, (h - 9.6) / Math.max(1, nk - 1)), [cx, cy] = at(yy, (m + 0.5) / cc); dot(cx, cy, 1.1 * sc(yy) / s0, -2.4 + 4.8 * rnd(i * 7 + r * 3 + m, seed + 2), 1); }
+    }
+    for (const [cx, cy] of jk) g += C(cx, cy, 0.62, SF.JK) + C(cx, cy, 0.34, '#050505');
+  });
+  return { g: g + (ind ? S(ind, '#f2efe6', 0.3) : ''), J };
+}
+// the console strip: panels (units wide) of lit switches (the first lit, amber) or two small knobs, three jacks at the foot
+function setConsole(xl, xr, y, h, units, lo) {
+  const { cols, X, sc } = setCols(xl, xr, y + h / 2, units);
+  let g = '', ind = '';
+  cols.forEach(([p, q], i) => {
+    const at = (yy, t) => [X(yy, p + (q - p) * t), yy];
+    g += POLY([at(y, 0), at(y, 1), at(y + h, 1), at(y + h, 0)], SF.CON);
+    if (lo) { g += POLY([at(y + h * 0.3, 0.2), at(y + h * 0.3, 0.8), at(y + h * 0.7, 0.8), at(y + h * 0.7, 0.2)], i % 2 ? SF.CAP : SF.LAMP, OP(0.75)); return; }
+    const yy = y + h * 0.36, k0 = sc(yy);
+    if (i % 2 === 0) { const m = 2 + (i % 3); for (let k = 0; k < m; k++) { const [cx, cy] = at(yy, (k + 0.5) / m); g += RR(cx - 0.8 * k0, cy - 0.6, 1.6 * k0, 1.2, 0.3, k ? SF.DIM : SF.LAMP); } }
+    else for (let k = 0; k < 2; k++) { const [cx, cy] = at(yy, (k + 0.5) / 2), a = -2.2 + 4.4 * rnd(i * 2 + k, 12); g += C(cx, cy, 1.05 * k0, SF.CAP) + C(cx, cy, 0.74 * k0, '#111'); ind += `M${f(cx)} ${f(cy)}l${f(Math.sin(a) * 0.65)} ${f(-Math.cos(a) * 0.65)}`; }
+    for (let k = 0; k < 3; k++) { const [cx, cy] = at(y + h - 1.9, (k + 0.5) / 3); g += C(cx, cy, 0.55, SF.JK) + C(cx, cy, 0.3, '#050505'); }
+  });
+  return g + (ind ? S(ind, '#f2efe6', 0.28) : '');
+}
+// a cord from jack p to jack q hanging in a slack curve, a plug at both ends (none at chip size)
+const setCord = (p, q, sag, col, lo) => S(`M${f(p[0])} ${f(p[1])}C${f(p[0])} ${f(p[1] + sag)} ${f(q[0])} ${f(q[1] + sag)} ${f(q[0])} ${f(q[1])}`, col, lo ? 2 : 0.9) + (lo ? '' : [p, q].map(e => C(e[0], e[1], 1.15, '#0c0b0a') + C(e[0], e[1], 0.72, col)).join(''));
+// a wooden cabinet shell: cheeks c wide with grain, a lighter rail t above and a dark one b below, round a dark panel
+const setCab = (x, y, w, h, c, t, b, th) => R(x, y, w, h, WOOD) + wood(x, y, c, h, 2) + wood(x + w - c, y, c, h, 2) + R(x + c, y, w - 2 * c, t, WOODHI, OP(0.55)) + R(x + c, y + h - b, w - 2 * c, b, GRAIN, OP(0.8)) + R(x + c, y + t, w - 2 * c, h - t - b, th.panel);
+
+const SETDRAW = {
+  // a wood wedge seen from the front: the sides lean in toward the top and the faces narrow with them; two tiers of narrow faces (the lower with a wide filter bank), a console strip of five panels
+  s35(th, lo) {
+    const D = SET_ART.s35, [BL, BR, TR, TL] = D.outline, A = th.accent || '#d9d2bf';
+    const eL = y => BL[0] + (TL[0] - BL[0]) * (BL[1] - y) / (BL[1] - TL[1]), eR = y => BR[0] + (TR[0] - BR[0]) * (BR[1] - y) / (BR[1] - TR[1]), c = 4.4, xl = y => eL(y) + c, xr = y => eR(y) - c;
+    let s = shadow(2, 94, 53.4) + POLY(D.outline, WOOD) + POLY([[TL[0], 4.5], [TR[0], 4.5], [eR(8.2), 8.2], [eL(8.2), 8.2]], WOODHI, OP(0.55));
+    s += S(`M${f(eL(50) + 1.1)} 50L${f(eL(9) + 1.1)} 9`, WOODHI, 1.1, OP(0.5)) + S(`M${f(eR(50) - 1.1)} 50L${f(eR(9) - 1.1)} 9`, GRAIN, 0.9, OP(0.35));
+    if (!lo) for (const [k, y1, y2] of [[2.3, 12, 30], [3.5, 26, 47], [2.3, 36, 48], [3.3, 11, 20]]) s += S(`M${f(eL(y1) + k)} ${y1}L${f(eL(y2) + k)} ${y2}`, GRAIN, 0.4, OP(0.7)) + S(`M${f(eR(y1) - k)} ${y1}L${f(eR(y2) - k)} ${y2}`, GRAIN, 0.4, OP(0.7));
+    s += POLY([[xl(8.4), 8.4], [xr(8.4), 8.4], [xr(49.6), 49.6], [xl(49.6), 49.6]], th.panel);
+    s += setTier(xl, xr, 9.6, 14.8, [1, 1, 1, 1, 1, 1, 1, 1, 1], {}, 3, lo, A).g;
+    s += setTier(xl, xr, 25.8, 14.6, [1, 1, 1, 1, 1, 1, 2, 1], { 6: 'bank' }, 5, lo, A).g;
+    return s + setConsole(xl, xr, 41.8, 7.2, [2, 2, 1, 2, 2], lo);
+  },
+  // two wood-ended cabinets, the upper narrower: sixteen tall faces (the wide one a sequencer: a lamp row over three rows of eight dots) over fourteen (a wide bank of small knobs, wide
+  // pairs), a console strip of seven panels in the lower, four coloured cords hanging from the upper's jacks to the lower's
+  s55(th, lo) {
+    const A = th.accent || '#d9d2bf', up = [() => 10, () => 86], lw = [() => 6, () => 90];
+    let s = shadow(3, 93, 54.4) + setCab(3, 29.4, 90, 23.6, 3, 1.4, 2.6, th) + setCab(7, 2, 82, 27.4, 3, 1.4, 1, th) + R(7, 28.9, 82, 0.8, '#0c0b0a');
+    const a = setTier(...up, 3.8, 23.6, [1, 1, 1, 1, 1, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1], { 5: 'seq' }, 3, lo, A);
+    const b = setTier(...lw, 31.2, 13.6, [1, 1, 1, 1, 1, 1, 1, 1, 2, 3, 1, 2, 2, 2], { 9: 'bank' }, 5, lo, A);
+    s += a.g + b.g + setConsole(...lw, 45.6, 5, [2, 3, 2, 3, 2, 2, 3], lo);
+    const J = (t, i, k) => t.J[i][Math.min(k, t.J[i].length - 1)];
+    return s + [[J(a, 0, 0), J(b, 2, 0)], [J(a, 3, 1), J(b, 5, 0)], [J(a, 9, 0), J(b, 6, 0)], [J(a, 14, 0), J(b, 12, 0)]].map(([p, q], i) => setCord(p, q, [5, 8, 6, 9][i], SF.CORDS[i], lo)).join('');
+  },
+};
+
 /* ---------------------------------------------------------------- glyphs (32 × 32 design box, currentColor strokes) */
 const G = {
   osc: '<path d="M4 22l6-12 6 12 6-12 6 12" stroke-width="2.2"/><path d="M7 26l6-12 6 12 6-12" opacity="0.45"/>',
@@ -524,6 +617,19 @@ export function art(id, o) {
 }
 /** The track-row chip drawing (CHIP size). @param {string} id @returns {string} */
 export function chip(id) { return art(id, CHIP); }
+/** The drawing of a set tile ('s35' System 35, 's55' System 55; SET_ART) as an SVG string, like art(): cached per id + size, `data-art` the set id. An unknown set id gets the Model 15's
+ * tile (the 900 Series' art('m900')). @param {string} setId @param {{w?: number, h?: number}} [o] @returns {string} */
+export function setArt(setId, o) {
+  if (!SETDRAW[setId]) return art('m900', o);
+  const w = Math.max(8, Math.round(+(o && o.w) || TILE.w)), h = Math.max(6, Math.round(+(o && o.h) || TILE.h)), k = 'set:' + setId + ':' + w + 'x' + h;
+  let s = cache.get(k);
+  if (s) return s;
+  s = wrap(w, h, SETDRAW[setId](byId('m900').theme, w < 48), setId);
+  cache.set(k, s);
+  return s;
+}
+/** A set tile's chip drawing (CHIP size). @param {string} setId @returns {string} */
+export function setChip(setId) { return setArt(setId, CHIP); }
 /** Abstract glyphs for non-instrument modules and later trays: 'osc' | 'filter' | 'sub' | 'noise' | 'voice' | 'lfo' |
  * 'env' | 'wheel' | 'velo' | 'macro' | 'fx' | 'out' | 'pads' (strokes in currentColor). @param {string} kind @param {{w?: number, h?: number}} [o] @returns {string} */
 export function glyph(kind, o) {

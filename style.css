@@ -1389,3 +1389,21 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 .cv-gglyph svg .j { stroke-width: 0.9; }
 .cv-gghost .cv-gglyph { margin: 0; }
 .cv-tile.cv-placed .cv-gglyph { color: var(--mute); }
+/* (9b, IMPL-9b §4.3, §4.5; lane U9b — the last section) the System 35 / 55 glyphs' fine parts (the 960, 914 and 961: a thinner
+   ring), an event button's cap (.e) outlined, a lamp (.l) a dot, the inert parts (.i: trunks, the CP8A's) dim */
+.cv-gglyph svg[data-fine] .j { stroke-width: 0.5; }
+.cv-gglyph svg .e { stroke-width: 0.5; }
+.cv-gglyph svg .l { fill: currentColor; stroke: none; }
+.cv-gglyph svg .i { stroke-width: 0.6; opacity: 0.45; }
+/* a patch face's event buttons (cv-patch moduleBody, in the face's live layer): transparent over the cap the art draws, the
+   tap's own press area (≥ 14 mm: geometry's hit); pressed a shade, focus the ring; asleep below READ_K as the controls (the
+   world takes the press) */
+.inst.hw .cv-pev { position: absolute; margin: 0; padding: 0; border: 0; border-radius: 3px; background: transparent; pointer-events: auto; touch-action: none;
+  cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.inst.hw .cv-pev[data-down] { background: rgba(0, 0, 0, 0.3); box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.55); }
+.inst.hw .cv-pev:focus-visible { outline: 2px solid var(--hot); outline-offset: 1px; }
+/* a live lamp: the lens over the art's unlit one (d × 0.72), lit from the monitor's frame queue — the lamp's colour and a glow;
+   reduced motion: no glow */
+.inst.hw .cv-plamp { position: absolute; border-radius: 50%; pointer-events: none; }
+.inst.hw .cv-plamp[data-on] { background: #f0642c; box-shadow: inset 0 0 2px rgba(255, 226, 196, 0.9), 0 0 6px 1px rgba(240, 100, 44, 0.75); }
+@media (prefers-reduced-motion: reduce) { .inst.hw .cv-plamp[data-on] { box-shadow: inset 0 0 2px rgba(255, 226, 196, 0.9); } }

@@ -118,7 +118,15 @@ export const COST = Object.freeze({
   // attenuators; the controller's KBD, MIX, the multiples, V→S, S→V and OUT — the converters [C] ≤ the 911's) where one counts
   // only when one of its jacks has a cord
   patch: Object.freeze({ 921: 0.0016, '921a': 0.0005, '921b': 0.0016, 923: 0.0016, '904a': 0.0053, '907a': 0.0075, 911: 0.0006, 902: 0.0009,
-    995: Object.freeze([0.0004, 0.0004, 0.0004]), ctl: Object.freeze([0.0004, 0.0012, 0, 0, 0.0002, 0.0002, 0]) }),
+    995: Object.freeze([0.0004, 0.0004, 0.0004]), ctl: Object.freeze([0.0004, 0.0012, 0, 0, 0.0002, 0.0002, 0]),
+    // IMPL-9b §3.7: lane V9c's V8 column (§12 "Lane V9c": the type minus its null twin, OS 4) — the 904B with CV, the 960
+    // Sequence-like (CONTROL INPUT patched ≈ 0.0021; in a one-member loop ≈ 0.0035 with COST.loop), the Song clock in ALWAYS;
+    // sections split [C]: the 961's V→S 0.0005 each, S→V 0.0001 each, AUDIO→V 0.0002; the CP2's filters 0.0003 each, its
+    // keyboard copies 0.0001; the CP3A's mixer 0.0005, its EXT copy 0.0001; the CP35's sources and attenuators 0.0001 each; the
+    // 993, the 994 and the CP8A nothing (no slots: never scheduled; the 994's multiples are the evaluator's)
+    '904b': 0.0016, 914: 0.0072, '911a': 0.0005, '903a': 0.0003, 960: 0.0011, 962: 0.0006, 992: 0.0001, 993: 0, 994: Object.freeze([0, 0]),
+    cp3a: Object.freeze([0.0005, 0.0001, 0]), cp4a: Object.freeze([0.0001, 0.0001]), cp35: Object.freeze([0.0001, 0.0001, 0.0001, 0.0001, 0.0001, 0]),
+    cp2: Object.freeze([0.0003, 0.0003, 0, 0.0001]), cp8a: 0, 961: Object.freeze([0.0005, 0.0005, 0.0001, 0.0001, 0.0002]), clk: 0.0003 }),
   // a loop step's member: ≈ 6–9 ns a sample at OS 4 (spike (a), V9a: 7.5 ns × 192 000 samples a second) on top of its block cost
   loop: 0.00144,
 });
@@ -179,11 +187,12 @@ const panelLoad = d => COST.panel + (isObj(d.fx) ? fxStateLoad(d.fx) : isObj(d.r
 // a patch (IMPL-9 §3.8): base + every live node — the (module, section) pairs MAIN OUT is reachable from (patch-core liveNodes: the
 // engine runs nothing else; a per-section cost: each live section) — + COST.loop per member of a loop step (the per-sample step
 // beyond the table's block figures); MAIN OUT silent → idle (COST.off); no record → the Model 15 set as Classic bass (MG.model15:
-// the tile's, a new device's)
+// the tile's, a new device's). IMPL-9b §3.7: the device's vals switch the routing panels' bus rows in (liveNodes reads them: a
+// 993-routed envelope makes its 911 live); a record given without vals counts no rows
 let M15 = null;
-function patchLoad(cs, rec) {
-  const P = COST.patch, F = MG.FAMILY, r = isObj(rec) && isObj(rec.mods) && Array.isArray(rec.cords) ? rec : (M15 || (M15 = MG.model15().rec));
-  const L = PT.liveNodes(r, F.id);
+function patchLoad(cs, rec, vals) {
+  const P = COST.patch, F = MG.FAMILY, own = isObj(rec) && isObj(rec.mods) && Array.isArray(rec.cords), r = own ? rec : (M15 || (M15 = MG.model15().rec));
+  const L = PT.liveNodes(r, F.id, own && isObj(vals) ? vals : undefined);
   if (L === null) return COST.off;
   let x = cs.base + COST.loop * L.loop;
   for (const mid of Object.keys(L.sec)) {
@@ -207,7 +216,7 @@ export function estimate(x, factor = 1, o = {}) {
   else if (isObj(x) && x.kind === 'synth' && COST.synth[x.model]) { const cs = COST.synth[x.model];
     if (x.on === false) load = COST.off;
     else if (x.model === 'serum') load = serumLoad(isObj(x.vals) ? x.vals.s : null, n) + fxStateLoad(x.fx);
-    else if (cs.family === 'patch') load = patchLoad(cs, x.patch);
+    else if (cs.family === 'patch') { const { patch, vals } = x; load = patchLoad(cs, patch, vals); } // (the device's record and switches)
     else load = COST.synth[x.model].base + COST.synth[x.model].voice * classicVoices(x.model, x.vals, n);
   }
   return load * f;

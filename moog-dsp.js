@@ -96,6 +96,7 @@
     const J = (id, d, s, sec, norm, ac) => [id, d, s, sec || 0, norm || '', ac ? 1 : 0];
     const P = (id, def, lo, hi, sw) => [id, def, lo, hi, sw ? 1 : 0];
     const OUT4 = [J('sin', 'o', 'v'), J('tri', 'o', 'v'), J('saw', 'o', 'v'), J('rec', 'o', 'v')];
+    const ids = (p, n) => Array.from({ length: n }, (_, i) => p + (i + 1));   // ('b', 3) → b1 b2 b3 (stage 9b's rows)
     const SPEC = {
       ctl: {
         jacks: [J('kp1', 'o', 'v'), J('kp2', 'o', 'v'), J('ks1', 'o', 's'), J('ks2', 'o', 's'), J('kg', 'o', 'v'), J('kv', 'o', 'v'),
@@ -156,8 +157,102 @@
         params: [P('a1', 0, 0, 10), P('a2', 0, 0, 10), P('a3', 0, 0, 10)],
         nsec: 3,
       },
+      // stage 9b (IMPL-9b §2.2 / §2.3, lane V9c): the System 35 / 55 types, appended — the rows above untouched. A rear jack
+      // (moog-core's `rear: 1`) is an ordinary slot here (§2.7: checked moog-core ↔ faces only); EV / LAMPS below
+      '904b': {
+        jacks: [J('in', 'i', 'v'), J('c1', 'i', 'v'), J('c2', 'i', 'v'), J('c3', 'i', 'v'), J('out', 'o', 'v')],
+        params: [P('fc', 0, -6, 6), P('rg', 0, 0, 1, 1)],
+        nsec: 1,
+      },
+      914: {
+        jacks: [J('i1', 'i', 'v'), J('i2', 'i', 'v'), J('o1', 'o', 'v'), J('o2', 'o', 'v')],
+        params: [P('lo', 10, 0, 10), ...ids('b', 12).map(id => P(id, 10, 0, 10)), P('hi', 10, 0, 10)],
+        nsec: 1,
+      },
+      '911a': {
+        jacks: [J('i1', 'i', 's'), J('o1', 'o', 's'), J('i2', 'i', 's'), J('o2', 'o', 's')],
+        params: [P('d1', 3, 0, 10), P('d2', 3, 0, 10), P('md', 0, 0, 2, 1)],
+        nsec: 1,
+      },
+      '903a': {
+        jacks: [J('wh1', 'o', 'v'), J('wh2', 'o', 'v'), J('pk1', 'o', 'v'), J('pk2', 'o', 'v')],
+        params: [],
+        nsec: 1,
+      },
+      960: {
+        jacks: [J('on', 'i', 'v'), J('off', 'i', 'v'), J('sh', 'i', 'v'), J('ci', 'i', 'v'), J('co', 'o', 'v'), ...ids('i', 9).map(id => J(id, 'i', 'v')),
+          ...ids('o', 9).map(id => J(id, 'o', 'v')), J('ra1', 'o', 'v'), J('ra2', 'o', 'v'), J('rb1', 'o', 'v'), J('rb2', 'o', 'v'), J('rc1', 'o', 'v'), J('rc2', 'o', 'v')],
+        params: [...ids('a', 8).map(id => P(id, 0, 0, 10)), ...ids('b', 8).map(id => P(id, 0, 0, 10)), ...ids('c', 8).map(id => P(id, 0, 0, 10)),
+          ...ids('s', 8).map(id => P(id, 1, 0, 2, 1)), P('s9', 1, 0, 1, 1), P('ga', 0, 0, 2, 1), P('gb', 0, 0, 2, 1), P('gc', 0, 0, 2, 1),
+          P('rg', 2, 0, 6, 1), P('vn', 2, 0, 10), P('cc', 0, 0, 1, 1), P('os', 1, 0, 1, 1)],
+        nsec: 1,
+      },
+      961: {
+        jacks: [...ids('a1', 6).map(id => J(id, 'i', 'v', 0)), ...ids('b1', 6).map(id => J(id, 'i', 'v', 0)), J('s1', 'o', 's', 0),
+          ...ids('a2', 6).map(id => J(id, 'i', 'v', 1)), ...ids('b2', 6).map(id => J(id, 'i', 'v', 1)), J('s2', 'o', 's', 1),
+          J('v1i', 'i', 's', 2), J('v1o', 'o', 'v', 2), J('v2i', 'i', 's', 3), J('v2o', 'o', 'v', 3), J('ai', 'i', 'v', 4), J('ao1', 'o', 'v', 4), J('ao2', 'o', 'v', 4)],
+        params: [P('t1', 5, 0, 10), P('t2', 5, 0, 10), P('se', 5, 0, 10)],
+        nsec: 5,
+      },
+      962: {
+        jacks: [J('i1', 'i', 'v'), J('i2', 'i', 'v'), J('i3', 'i', 'v'), J('q1', 'o', 'v'), J('q2', 'o', 'v'), J('t1', 'i', 'v'), J('t2', 'i', 'v'), J('t3', 'i', 'v'),
+          J('o1', 'o', 'v'), J('o2', 'o', 'v'), J('o3', 'o', 'v'), J('sh', 'i', 'v')],
+        params: [],
+        nsec: 1,
+      },
+      992: {
+        jacks: [J('x4', 'i', 'v'), J('xr', 'o', 'v')],
+        params: [P('s1', 0, 0, 1, 1), P('s2', 0, 0, 1, 1), P('s3', 0, 0, 1, 1), P('s4', 0, 0, 1, 1), P('at', 0, -10, 10)],
+        nsec: 1,
+      },
+      993: {
+        jacks: [],
+        params: ['f1', 'f2', 't1', 't2', 't3', 'e1', 'e2', 'e3'].map(id => P(id, 0, 0, 1, 1)),
+        nsec: 1,
+      },
+      994: {
+        jacks: [...ids('a', 4).map(id => J(id, 'a', 'v', 0)), ...ids('b', 4).map(id => J(id, 'a', 'v', 1))],
+        params: [],
+        nsec: 2,
+      },
+      cp2: {
+        jacks: [J('li', 'i', 'v', 0), J('lo', 'o', 'v', 0), J('hi', 'i', 'v', 1), J('ho', 'o', 'v', 1), ...ids('u', 4).map(id => J(id, 'a', 'v', 2)),
+          J('po', 'o', 'v', 3), J('so', 'o', 's', 3), J('kpr', 'i', 'v', 3), J('ksr', 'i', 's', 3)],
+        params: [P('lp', 5, 0, 10), P('hp', 5, 0, 10)],
+        nsec: 4,
+      },
+      cp3a: {
+        jacks: [...ids('m', 4).map(id => J(id, 'i', 'v', 0)), J('mo', 'o', 'v', 0), J('mn', 'o', 'v', 0), J('x4', 'i', 'v', 1), J('xr', 'o', 'v', 1),
+          ...ids('a', 4).map(id => J(id, 'a', 'v', 2))],
+        params: [...ids('x', 4).map(id => P(id, 7, 0, 10)), P('ms', 5, 0, 10), ...ids('r', 4).map(id => P(id, 0, 0, 1, 1)), P('ra', 10, 0, 10)],
+        nsec: 3,
+      },
+      cp4a: {
+        jacks: [J('ti', 'i', 's', 0), J('tr', 'o', 's', 0), J('ci', 'i', 'v', 1), J('cr', 'o', 'v', 1)],
+        params: [...ids('c', 4).map(id => P(id, 0, 0, 1, 1)), ...ids('t', 3).map(id => P(id, 0, 0, 1, 1))],
+        nsec: 2,
+      },
+      cp35: {
+        jacks: [J('p6', 'o', 'v', 0), J('m6', 'o', 'v', 0), J('i1', 'i', 'v', 1, 'p6'), J('o1', 'o', 'v', 1), J('i2', 'i', 'v', 2, 'p6'), J('o2', 'o', 'v', 2),
+          J('i3', 'i', 'v', 3, 'm6'), J('o3', 'o', 'v', 3), J('i4', 'i', 'v', 4, 'm6'), J('o4', 'o', 'v', 4), ...ids('u', 4).map(id => J(id, 'a', 'v', 5))],
+        params: ids('a', 4).map(id => P(id, 0, 0, 10)),
+        nsec: 6,
+      },
+      cp8a: {
+        jacks: [],
+        params: [],
+        nsec: 1,
+      },
+      clk: {
+        jacks: [J('ck', 'o', 'v'), J('rn', 'o', 'v'), J('rs', 'o', 'v')],
+        params: [P('dv', 2, 0, 5, 1), P('md', 0, 0, 1, 1), P('ln', 0, 0, 31, 1)],    // LENGTH: OFF, 2 … 32 steps (index + 1; P-2 (b))
+        nsec: 1,
+      },
     };
-    const ORDER = ['ctl', '921', '921a', '921b', '923', '904a', '907a', '911', '902', '995'];
+    const ORDER = ['ctl', '921', '921a', '921b', '923', '904a', '907a', '911', '902', '995',
+      '904b', '914', '911a', '903a', '960', '961', '962', '992', '993', '994', 'cp2', 'cp3a', 'cp4a', 'cp35', 'cp8a', 'clk'];
+    // momentary events and live lamps (IMPL-9b §1.5 / §1.6): the ids in order (= moog-core's `ev` / `lamps`); every type a row
+    const EV0 = { 960: ['on', 'off', 'sh', ...ids('e', 9)], 962: ids('e', 3) }, LAMP0 = { 960: [...ids('l', 9), 'lo'], 962: ids('l', 3), clk: ['lr'] };
     const DIR = { i: 'in', o: 'out', a: 'any' };
     const JACKS = {}, SECS = {}, PARAMS = {}, IO = {}, PS = {};
     for (const t of ORDER) {
@@ -796,14 +891,689 @@
       setSalt(s) { this.salt = (s | 0) >>> 0; }
     }
 
+    /* ============================================================ stage 9b (IMPL-9b §3.3 / §3.4, lane V9c): the System 35 / 55
+     * types — every class written out (the megamorphic lesson), every numeric field a double from its constructor where it can
+     * ever hold one, no allocation outside the constructors. A class with events adds ev(k) (its own 8-slot ring, applied at its
+     * next ctl, cleared by reset), one with lamps an int `lamp` (bit i = lamp i lit, PatchMoog.LAMPS's order). The 960 / 961 /
+     * 962 build their patched-input lists once a chunk in ctl (spike (a2) decision 4); a "patched" test reads the evaluator's
+     * zero buffer (zb: learned from a whole `ins` of ≥ 2 slots — every class here that tests has ≥ 2). */
+
+    /* ------------------------------------------------------------ 904B: high-pass filter */
+    // the 904A's control law without its feedback: f_c (the per-stage corner, −12 dB) = 2^(FIXED + 8 + 1.5·RANGE + ΣV) Hz — 4 Hz
+    // (LOW) / 11.3 Hz (HIGH, 1½ oct up) at −6 V, 12 oct over the knob (16.4 / 46.3 kHz at +6 V); ≤ 0.46·fs. The complementary
+    // ladder's stages are buffered [R PAT]: four independent one-pole TPT high-passes, g per sample (no k, no secant step);
+    // the first stage's input through the ladder's soft compression (tr) [C]; input × KI, output × KO (unity passband), railed
+    class M904B {
+      constructor(h) {
+        base(this, h, '904b');
+        this.s0 = this.s1 = this.s2 = this.s3 = this.kx = this.pif = 0.25;
+        this.s0 = 0; this.s1 = 0; this.s2 = 0; this.s3 = 0; this.kx = 8; this.pif = 0; this.xm = 0.46 * Math.PI;
+        this.rate(); this.coef();
+      }
+      rate() { this.pif = Math.PI / this.fs; }
+      coef() { const p = this.p; this.kx = cl(p[0], -6, 6) + 8 + 1.5 * (cl(p[1], 0, 1) | 0); }
+      flush() {
+        if (this.s0 < TINY && this.s0 > -TINY) this.s0 = 0; if (this.s1 < TINY && this.s1 > -TINY) this.s1 = 0;
+        if (this.s2 < TINY && this.s2 > -TINY) this.s2 = 0; if (this.s3 < TINY && this.s3 > -TINY) this.s3 = 0;
+      }
+      // (and a flush every chunk: with f_c near fs / 4 a stage's state falls × (1 − 2G) ≈ 0.03 a sample in silence — subnormal well
+      // inside the evaluator's 32-chunk flush; in ctl, once a chunk, so a block step and a loop member's samples stay the same bits)
+      ctl(cc) {
+        if (this.mv !== 0) this.coef();
+        if (this.s0 < TINY && this.s0 > -TINY) this.s0 = 0; if (this.s1 < TINY && this.s1 > -TINY) this.s1 = 0;
+        if (this.s2 < TINY && this.s2 > -TINY) this.s2 = 0; if (this.s3 < TINY && this.s3 > -TINY) this.s3 = 0;
+      }
+      run(sec, i0, n) {
+        const I = this.i_, xi = I[0], c1 = I[1], c2 = I[2], c3 = I[3], out = this.outs[0], Zb = this.zb, kx = this.kx, pif = this.pif, xm = this.xm;
+        const q1 = c1 !== Zb, q2 = c2 !== Zb, q3 = c3 !== Zb, cv = q1 || q2 || q3;   // unpatched inputs add nothing (+ 0)
+        let x = pif * ex2(kx); if (x > xm) x = xm;
+        let g = tanp(x), G = g / (1 + g);
+        let s0 = this.s0, s1 = this.s1, s2 = this.s2, s3 = this.s3;
+        for (let i = i0, e = i0 + n; i < e; i++) {
+          if (cv) { let v = kx; if (q1) v += c1[i]; if (q2) v += c2[i]; if (q3) v += c3[i]; x = pif * ex2(v); if (x > xm) x = xm; g = tanp(x); G = g / (1 + g); }
+          const u = KI * xi[i], a = u * tr(u);
+          let v = (a - s0) * G, l = v + s0; s0 = l + v; const h0 = a - l;
+          v = (h0 - s1) * G; l = v + s1; s1 = l + v; const h1 = h0 - l;
+          v = (h1 - s2) * G; l = v + s2; s2 = l + v; const h2 = h1 - l;
+          v = (h2 - s3) * G; l = v + s3; s3 = l + v;
+          out[i] = rail(KO * (h2 - l));
+        }
+        this.s0 = s0; this.s1 = s1; this.s2 = s2; this.s3 = s3;
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.rate(); this.coef(); }
+      reset() { this.s0 = 0; this.s1 = 0; this.s2 = 0; this.s3 = 0; }
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 914: fixed filter bank */
+    // twelve bands at 125 · √2^k Hz (125 … 5 657), each two stagger-tuned 2nd-order band-passes in cascade at f · 2^(∓D914)
+    // (Q914 each: 12 dB/oct skirts), normalised to G914 at the centre; a 2nd-order low-pass at 88.4 Hz and a high-pass at 8 kHz
+    // (Q914S); polarities alternating along the bank, the shelves continuing it (LP −, band 1 +, band 2 −, …, band 12 −, HP +):
+    // all at 10 the sum is flat ± 1.4 dB from 20 Hz to 20 kHz about unity (the analog prototype; one polarity notches between
+    // the bands: two sections cascaded turn 140° at a crossover) — D914, Q914, Q914S, G914 fitted for it (IMPL-9b §3.3, the 907A's
+    // method). Pots (v / 10)³ (0 = off); no CV. Its two inputs a passive pair: one patched as is, both averaged [C on R? CH-914].
+    // TPT sections prewarped at their own centres, fused per band (state in registers) at the OS rate; OUTPUT 1 / 2 one buffer
+    const F914 = Array.from({ length: 12 }, (_, b) => 125 * Math.pow(Math.SQRT2, b)), D914 = 0.2, Q914 = 2, Q914S = 0.6, G914 = 0.925;
+    const FL914 = 125 / Math.SQRT2, FH914 = 8000;
+    const PK914 = 1 / (1 + Q914 * Q914 * Math.pow(Math.pow(2, D914) - Math.pow(2, -D914), 2));   // a staggered pair's gain at its centre
+    class M914 {
+      constructor(h) {
+        base(this, h, '914');
+        this.outs[1] = this.outs[0];
+        this.s1 = new Float64Array(26); this.s2 = new Float64Array(26); this.xs = new Float64Array(BL);
+        this.a1 = new Float64Array(26); this.a2 = new Float64Array(26); this.a3 = new Float64Array(26); this.kq = new Float64Array(26);
+        this.gb = new Float64Array(14);
+        this.rate(); this.coef();
+      }
+      rate() { // sections 0 … 23: band s >> 1 below / above its centre; 24 the low-pass, 25 the high-pass
+        for (let s = 0; s < 26; s++) {
+          const f = s < 24 ? F914[s >> 1] * Math.pow(2, (s & 1) !== 0 ? D914 : -D914) : s === 24 ? FL914 : FH914, k = s < 24 ? 1 / Q914 : 1 / Q914S;
+          const g = Math.tan(Math.PI * Math.min(f, 0.45 * this.fs) / this.fs), a1 = 1 / (1 + g * (g + k));
+          this.a1[s] = a1; this.a2[s] = g * a1; this.a3[s] = g * g * a1; this.kq[s] = k;
+        }
+      }
+      coef() { // gb: 0 the low-pass (−), 1 … 12 the bands (+ − + …: the band-pass v1 × k² / PK914 × G914), 13 the high-pass (+)
+        const p = this.p, k = 1 / Q914, kb = G914 * k * k / PK914;
+        for (let b = 0; b < 14; b++) { const v = cl(p[b], 0, 10) / 10, c = v * v * v; this.gb[b] = b === 0 ? -c : b === 13 ? c : (b & 1) !== 0 ? kb * c : -kb * c; }
+      }
+      flush() { const A = this.s1, B = this.s2; for (let s = 0; s < 26; s++) { if (A[s] < TINY && A[s] > -TINY) A[s] = 0; if (B[s] < TINY && B[s] > -TINY) B[s] = 0; } }
+      ctl(cc) { if (this.mv !== 0) this.coef(); }
+      run(sec, i0, n) {
+        const I = this.i_, ia = I[0], ib = I[1], Zb = this.zb, y = this.outs[0], S1 = this.s1, S2 = this.s2, A1 = this.a1, A2 = this.a2, A3 = this.a3, KQ = this.kq, gb = this.gb;
+        const e = i0 + n, pa = ia !== Zb, pb = ib !== Zb;
+        let x = pb && !pa ? ib : ia;
+        if (pa && pb) { const xs = this.xs; for (let i = i0; i < e; i++) xs[i] = 0.5 * (ia[i] + ib[i]); x = xs; }
+        { // the low-pass (24): writes y
+          const a1 = A1[24], a2 = A2[24], a3 = A3[24], g = gb[0];
+          let p1 = S1[24], p2 = S2[24];
+          for (let i = i0; i < e; i++) { const v3 = x[i] - p2, v1 = a1 * p1 + a2 * v3, v2 = p2 + a2 * p1 + a3 * v3; p1 = 2 * v1 - p1; p2 = 2 * v2 - p2; y[i] = g * v2; }
+          S1[24] = p1; S2[24] = p2;
+        }
+        for (let b = 0; b < 12; b++) { // the bands (two band-passes in cascade): add
+          const s = 2 * b, a1 = A1[s], a2 = A2[s], a3 = A3[s], c1 = A1[s + 1], c2 = A2[s + 1], c3 = A3[s + 1], g = gb[b + 1];
+          let p1 = S1[s], p2 = S2[s], q1 = S1[s + 1], q2 = S2[s + 1];
+          for (let i = i0; i < e; i++) {
+            let v3 = x[i] - p2, v1 = a1 * p1 + a2 * v3, v2 = p2 + a2 * p1 + a3 * v3; p1 = 2 * v1 - p1; p2 = 2 * v2 - p2;
+            v3 = v1 - q2; v1 = c1 * q1 + c2 * v3; v2 = q2 + c2 * q1 + c3 * v3; q1 = 2 * v1 - q1; q2 = 2 * v2 - q2;
+            y[i] += g * v1;
+          }
+          S1[s] = p1; S2[s] = p2; S1[s + 1] = q1; S2[s + 1] = q2;
+        }
+        { // the high-pass (25): add, then the rails
+          const a1 = A1[25], a2 = A2[25], a3 = A3[25], k = KQ[25], g = gb[13];
+          let p1 = S1[25], p2 = S2[25];
+          for (let i = i0; i < e; i++) {
+            const x0 = x[i], v3 = x0 - p2, v1 = a1 * p1 + a2 * v3, v2 = p2 + a2 * p1 + a3 * v3; p1 = 2 * v1 - p1; p2 = 2 * v2 - p2;
+            y[i] = rail(y[i] + g * (x0 - k * v1 - v2));
+          }
+          S1[25] = p1; S2[25] = p2;
+        }
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.rate(); this.coef(); }
+      reset() { this.s1.fill(0); this.s2.fill(0); }
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 911A: dual trigger delay */
+    // two delay timers on S lines (the 911's > 0.5 read), DELAY = 2 ms · 1000^(v / 10) (2 ms … 2 s; LAW t911a) in OS samples
+    // per chunk: an output closes DELAY after its start closes and opens when its start opens (an opening before the delay
+    // ends cancels it). MODE OFF: INPUT 1 → OUTPUT 1, INPUT 2 → OUTPUT 2; PARALLEL: INPUT 1 starts both; SERIES: OUTPUT 1's
+    // closure starts delay 2 (the delays add); INPUT 2 ignored in PARALLEL / SERIES [R VK-55, MS-911A]
+    class M911A {
+      constructor(h) {
+        base(this, h, '911a');
+        this.c1 = this.c2 = this.D1 = this.D2 = 0.25; this.c1 = 0; this.c2 = 0; this.D1 = 1; this.D2 = 1; this.md = 0;
+        this.coef();
+      }
+      coef() {
+        const p = this.p, fs = this.fs;
+        this.D1 = Math.max(1, Math.round(0.002 * Math.pow(1000, cl(p[0], 0, 10) / 10) * fs)); this.D2 = Math.max(1, Math.round(0.002 * Math.pow(1000, cl(p[1], 0, 10) / 10) * fs));
+        this.md = cl(p[2], 0, 2) | 0;
+      }
+      flush() {}
+      ctl(cc) { if (this.mv !== 0) this.coef(); }
+      run(sec, i0, n) {
+        const I = this.i_, a = I[0], b = I[1], U = this.outs, o1 = U[0], o2 = U[1], D1 = this.D1, D2 = this.D2, md = this.md, om = this.om, m1 = (om & 1) !== 0, m2 = (om & 2) !== 0;
+        let c1 = this.c1, c2 = this.c2;
+        for (let i = i0, e = i0 + n; i < e; i++) {   // c: samples since the start closed (0 open), held at D + 1
+          const s1 = a[i] > 0.5 ? 1 : 0;
+          c1 = s1 !== 0 ? (c1 > D1 ? c1 : c1 + 1) : 0;
+          const y1 = c1 > D1 ? 1 : 0, s2 = md === 0 ? (b[i] > 0.5 ? 1 : 0) : md === 1 ? s1 : y1;
+          c2 = s2 !== 0 ? (c2 > D2 ? c2 : c2 + 1) : 0;
+          if (m1) o1[i] = y1; if (m2) o2[i] = c2 > D2 ? 1 : 0;
+        }
+        this.c1 = c1; this.c2 = c2;
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.coef(); }
+      reset() { this.c1 = 0; this.c2 = 0; }
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 903A: random signal */
+    // the 923's NOISE section re-written: xorshift white at the engine's density (0.5 V RMS at 48 k × 4), Kellett's pink from
+    // it (0.5 V RMS in 20 Hz … 20 kHz), its own seed (salt, module number); WHITE 1 / 2 one buffer, PINK 1 / 2 one buffer; an
+    // unread pink never computed
+    class M903A {
+      constructor(h) {
+        base(this, h, '903a');
+        this.outs[1] = this.outs[0]; this.outs[3] = this.outs[2];
+        this.r = this.k0 = this.k1 = this.k2 = this.W = this.q0 = this.q1 = this.q2 = this.b0 = this.b1 = this.b2 = 0.25;
+        this.r = 1; this.k0 = 0; this.k1 = 0; this.k2 = 0; this.W = 0; this.q0 = 0; this.q1 = 0; this.q2 = 0; this.b0 = 0; this.b1 = 0; this.b2 = 0;
+        this.setSalt(this.salt); this.rate();
+      }
+      rate() {
+        const fs = this.fs;
+        this.W = 0.5 * Math.sqrt(3) * Math.sqrt(fs / 192000);
+        this.q0 = Math.exp(-TAU * PINK_F[0] / fs); this.q1 = Math.exp(-TAU * PINK_F[1] / fs); this.q2 = Math.exp(-TAU * PINK_F[2] / fs);
+        this.b0 = PINK_B[0] * (1 - this.q0) / (1 - PINK_P[0]); this.b1 = PINK_B[1] * (1 - this.q1) / (1 - PINK_P[1]); this.b2 = PINK_B[2] * (1 - this.q2) / (1 - PINK_P[2]);
+      }
+      flush() { if (this.k0 < TINY && this.k0 > -TINY) this.k0 = 0; if (this.k1 < TINY && this.k1 > -TINY) this.k1 = 0; if (this.k2 < TINY && this.k2 > -TINY) this.k2 = 0; }
+      ctl(cc) {}
+      run(sec, i0, n) {
+        const om = this.om, wo = this.outs[0], po = this.outs[2], mW = (om & 3) !== 0, mP = (om & 12) !== 0, W = this.W;
+        const q0 = this.q0, q1 = this.q1, q2 = this.q2, b0 = this.b0, b1 = this.b1, b2 = this.b2;
+        let r = this.r, k0 = this.k0, k1 = this.k1, k2 = this.k2;
+        for (let i = i0, e = i0 + n; i < e; i++) {
+          r ^= r << 13; r ^= r >>> 17; r ^= r << 5; r >>>= 0;
+          const x = W * (r / 2147483648 - 1);
+          if (mW) wo[i] = x;
+          if (mP) { k0 = q0 * k0 + b0 * x; k1 = q1 * k1 + b1 * x; k2 = q2 * k2 + b2 * x; po[i] = PINK_K * (k0 + k1 + k2 + PINK_D * x); }
+        }
+        this.r = r; this.k0 = k0; this.k1 = k1; this.k2 = k2;
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.rate(); }
+      reset() { this.k0 = 0; this.k1 = 0; this.k2 = 0; this.r = seedOf(this.salt, this.n); }
+      setSalt(s) { this.salt = (s | 0) >>> 0; this.r = seedOf(this.salt, this.n); }
+    }
+
+    /* ------------------------------------------------------------ 960: sequential controller (IMPL-9b §3.4) */
+    // ins 0 OSC ON · 1 OSC OFF · 2 SHIFT · 3 CONTROL INPUT · 4 … 12 stage IN 1 … 9; outs 0 OUTPUT · 1 … 9 stage OUT 1 … 9 · 10 / 12
+    // / 14 ROW A / B / C (11, 13, 15 their second jacks: one buffer each). Per sample, the patched inputs only: a rise through
+    // +1.5 V (re-armed below +1.0 V) on OSC ON / OFF sets / clears the clock's flip-flop (OFF after ON in one sample); on SHIFT
+    // or the clock's wrap → a shift; on IN k → stage k, applied after a shift of the same sample (a select wins). The clock: f =
+    // 0.1 · 4^RANGE · 4^(VERNIER / 10) · 2^(CONTROL INPUT + (ROW C → CLOCK ? row C : 0)) Hz in 0.1 … 1 000 Hz, a phase per sample
+    // while the flip-flop is set (held while it is clear); OUTPUT +3.6 V for 90 % of the period, the shift at its rise (a start
+    // from OSC ON raises it without one: the first stage plays a whole period) [R VK-55, MS-960; C]. A shift: a STOP stage holds;
+    // else the next stage passing SKIP ones; after stage 8 stage 9 when its switch is STOP (the flip-flop cleared: the clock
+    // stops), else stage 1; all of 1 … 8 SKIP → stays; from stage 9 → stage 1 (the same walk). SET k / IN k reach k whatever its
+    // mode. ROW X = dial / 10 · 2 · 2^range V of the active stage (stage 9: 0 V), a step at the sample; stage OUT k +3.6 V while
+    // k is active. Events (OSC ON, OSC OFF, SHIFT, SET 1 … 9) wait in an 8-slot ring for the next ctl, applied there: the
+    // flip-flop's in order, then the shifts, then the last SET. Fresh (reset): stage 1, the flip-flop = CLOCK AT START, the
+    // phase 0. lamp: bit k = stage k + 1, bit 9 the flip-flop
+    const V960 = 3.6;
+    class M960 {
+      constructor(h) {
+        base(this, h, '960');
+        const U = this.outs; U[11] = U[10]; U[13] = U[12]; U[15] = U[14];
+        this.ph = this.inc = this.f0 = this.ifs = this.ilo = this.ihi = 0.25;
+        this.ph = 0; this.inc = 0; this.f0 = 1; this.ifs = 1; this.ilo = 0; this.ihi = 1;
+        this.st = 0; this.osc = 0; this.rcc = 0; this.lamp = 1; this.fr = 1;
+        this.vA = new Float64Array(9); this.vB = new Float64Array(9); this.vC = new Float64Array(9);
+        this.sm = new Int32Array(9); this.nxt = new Int32Array(9); this.clr = new Uint8Array(9); this.hold = new Uint8Array(9);
+        this.arm = new Uint8Array(13); this.pl = new Int32Array(9); this.npl = 0; this.pOn = 0; this.pOff = 0; this.pSh = 0; this.pCi = 0;
+        this.oml = -1; this.mo = new Int32Array(9); this.nmo = 0; this.mCo = 0; this.mA = 0; this.mB = 0; this.mC = 0;
+        this.ring = new Int32Array(8); this.eh = 0; this.en = 0;
+        this.rate(); this.coef(); this.reset();
+      }
+      rate() { this.ifs = 1 / this.fs; this.ilo = 0.1 * this.ifs; this.ihi = 1000 * this.ifs; }
+      coef() {
+        const p = this.p, sm = this.sm, nxt = this.nxt, clr = this.clr, hold = this.hold;
+        const ka = 0.2 * (1 << (cl(p[33], 0, 2) | 0)), kb = 0.2 * (1 << (cl(p[34], 0, 2) | 0)), kc = 0.2 * (1 << (cl(p[35], 0, 2) | 0));
+        for (let k = 0; k < 8; k++) { this.vA[k] = cl(p[k], 0, 10) * ka; this.vB[k] = cl(p[8 + k], 0, 10) * kb; this.vC[k] = cl(p[16 + k], 0, 10) * kc; sm[k] = cl(p[24 + k], 0, 2) | 0; }
+        this.vA[8] = 0; this.vB[8] = 0; this.vC[8] = 0; sm[8] = (cl(p[32], 0, 1) | 0) === 0 ? 0 : 2;    // modes: 0 STOP · 1 NORMAL · 2 SKIP
+        for (let k = 0; k < 9; k++) { // the shift's table: the next stage after k, and whether it stops the clock
+          let t = k, c = 0, j = k;
+          for (let m = 0; m < 9; m++) {
+            j = j === 8 ? 0 : j + 1;
+            if (j === 8) { if (sm[8] === 0) { t = 8; c = 1; break; } continue; }
+            if (sm[j] !== 2) { t = j; break; }
+          }
+          nxt[k] = t; clr[k] = c; hold[k] = k < 8 && sm[k] === 0 ? 1 : 0;
+        }
+        this.f0 = 0.1 * Math.pow(4, cl(p[36], 0, 6) | 0) * Math.pow(4, cl(p[37], 0, 10) / 10); this.rcc = cl(p[38], 0, 1) | 0;
+      }
+      incAt(v) { const x = this.f0 * ex2(v) * this.ifs; return x < this.ilo ? this.ilo : x > this.ihi ? this.ihi : x; }
+      flush() {}
+      ctl(cc) {
+        if (this.mv !== 0) this.coef();
+        // the fresh flip-flop = CLOCK AT START, taken at the first ctl after construction / reset (the evaluator writes the stored
+        // values after both: a constructor's reset() would read the defaults — E9b's find)
+        if (this.fr !== 0) { this.fr = 0; this.osc = cl(this.p[39], 0, 1) | 0; }
+        if (this.ld !== 0) { // the patched inputs (after a re-wiring: insAccL)
+          const I = this.i_, Zb = this.zb, arm = this.arm, pl = this.pl;
+          let np = 0;
+          for (let k = 0; k < 13; k++) { if (I[k] !== Zb) { if (k >= 4) pl[np++] = k; } else arm[k] = 1; }   // (unpatched: re-armed)
+          this.npl = np; this.pOn = I[0] !== Zb ? 1 : 0; this.pOff = I[1] !== Zb ? 1 : 0; this.pSh = I[2] !== Zb ? 1 : 0; this.pCi = I[3] !== Zb ? 1 : 0; this.ld = 0;
+        }
+        if (this.om !== this.oml) {
+          const om = this.om, mo = this.mo;
+          let nm = 0; for (let k = 0; k < 9; k++) if ((om & (2 << k)) !== 0) mo[nm++] = k;
+          this.nmo = nm; this.mCo = om & 1; this.mA = om & 0xC00; this.mB = om & 0x3000; this.mC = om & 0xC000; this.oml = om;
+        }
+        if (this.en !== 0) this.evs();
+        this.inc = this.incAt(this.rcc !== 0 ? this.vC[this.st] : 0);
+        this.lamp = (1 << this.st) | (this.osc << 9);
+      }
+      ev(k) { // an event (the message handler): kept for the next ctl; a full ring drops its oldest
+        if (!(k >= 0 && k < 12)) return;
+        if (this.en === 8) { this.eh = (this.eh + 1) & 7; this.en = 7; }
+        this.ring[(this.eh + this.en) & 7] = k | 0; this.en++;
+      }
+      evs() { // the pending events: the flip-flop's (in order), then the shifts, then the last SET (a select wins over a shift)
+        const R = this.ring, h = this.eh, n = this.en;
+        for (let j = 0; j < n; j++) { const k = R[(h + j) & 7]; if (k === 0) this.osc = 1; else if (k === 1) this.osc = 0; }
+        for (let j = 0; j < n; j++) if (R[(h + j) & 7] === 2) { const t = this.st; if (this.hold[t] === 0) { if (this.clr[t] !== 0) this.osc = 0; this.st = this.nxt[t]; } }
+        let s = -1; for (let j = 0; j < n; j++) { const k = R[(h + j) & 7]; if (k >= 3) s = k - 3; }
+        if (s >= 0) this.st = s;
+        this.eh = 0; this.en = 0;
+      }
+      run(sec, i0, n) {
+        const I = this.i_, U = this.outs, arm = this.arm, pl = this.pl, np = this.npl, hold = this.hold, nxt = this.nxt, clr = this.clr, VA = this.vA, VB = this.vB, VC = this.vC;
+        const on = I[0], off = I[1], sh = I[2], ci = I[3], pOn = this.pOn, pOff = this.pOff, pSh = this.pSh, pCi = this.pCi;
+        const co = U[0], ra = U[10], rb = U[12], rc = U[14], mCo = this.mCo, mA = this.mA, mB = this.mB, mC = this.mC, mo = this.mo, nm = this.nmo;
+        const f0 = this.f0, rcc = this.rcc, ifs = this.ifs, ilo = this.ilo, ihi = this.ihi;
+        let ph = this.ph, st = this.st, osc = this.osc, inc = this.inc;
+        for (let i = i0, e = i0 + n; i < e; i++) {
+          let sft = 0, sel = -1;
+          if (pOn !== 0) { const v = on[i]; if (arm[0] !== 0) { if (v > 1.5) { arm[0] = 0; osc = 1; } } else if (v < 1) arm[0] = 1; }
+          if (pOff !== 0) { const v = off[i]; if (arm[1] !== 0) { if (v > 1.5) { arm[1] = 0; osc = 0; } } else if (v < 1) arm[1] = 1; }
+          if (pSh !== 0) { const v = sh[i]; if (arm[2] !== 0) { if (v > 1.5) { arm[2] = 0; sft = 1; } } else if (v < 1) arm[2] = 1; }
+          if (osc !== 0) {
+            if (pCi !== 0) { const x = f0 * ex2(ci[i] + (rcc !== 0 ? VC[st] : 0)) * ifs; inc = x < ilo ? ilo : x > ihi ? ihi : x; }
+            ph += inc; if (ph >= 1) { ph -= 1; sft = 1; }
+          }
+          for (let j = 0; j < np; j++) { const k = pl[j], v = I[k][i]; if (arm[k] !== 0) { if (v > 1.5) { arm[k] = 0; sel = k - 4; } } else if (v < 1) arm[k] = 1; }
+          if (sft !== 0 && hold[st] === 0) { if (clr[st] !== 0) osc = 0; st = nxt[st]; if (rcc !== 0 && pCi === 0) inc = this.incAt(VC[st]); }
+          if (sel >= 0) { st = sel; if (rcc !== 0 && pCi === 0) inc = this.incAt(VC[st]); }
+          if (mCo !== 0) co[i] = osc !== 0 && ph < 0.9 ? V960 : 0;
+          if (mA !== 0) ra[i] = VA[st]; if (mB !== 0) rb[i] = VB[st]; if (mC !== 0) rc[i] = VC[st];
+          for (let j = 0; j < nm; j++) { const k = mo[j]; U[1 + k][i] = st === k ? V960 : 0; }
+        }
+        this.ph = ph; this.st = st; this.osc = osc; this.inc = inc; this.lamp = (1 << st) | (osc << 9);
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.rate(); this.coef(); }
+      reset() { this.ph = 0; this.st = 0; this.osc = 0; this.fr = 1; this.arm.fill(1); this.eh = 0; this.en = 0; this.lamp = 1; }   // (the flip-flop: at the next ctl)
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 961: interface (the 961CP console format) */
+    // ins 0 … 5 / 6 … 11 V→S 1's A / B inputs, 12 … 23 V→S 2's, 24 / 25 S→V 1 / 2, 26 AUDIO; outs 0 / 1 S-TRIG OUT 1 / 2, 2 / 3
+    // S→V 1 / 2, 4 AUDIO → V (5 its second jack: one buffer). V→S (sections 0, 1): closed while any A input is high (each its
+    // own +1.5 V / +1.0 V Schmitt), or while the B one-shot runs — a rise on any B input (re)starts it for SWITCH ON TIME =
+    // 40 ms · 100^(v / 10) (40 ms … 4 s; 400 ms at 5) [R VK-55, MS-961]. S→V (2, 3): 4 V while closed. AUDIO → V (4): a
+    // comparator on the signal, on above θ = 5 · 0.01^(v / 10) V (5 V … 50 mV), off below θ / 2, out 4 V [C]
+    class M961 {
+      constructor(h) {
+        base(this, h, '961');
+        this.outs[5] = this.outs[4];
+        this.th = this.T1 = this.T2 = 0.25; this.th = 0.5; this.T1 = 1; this.T2 = 1; this.hi = 0;
+        this.ab = new Uint8Array(24); this.cnt = new Float64Array(2); this.rz = new Uint8Array(BL);
+        this.la = new Int32Array(12); this.lb = new Int32Array(12); this.na0 = 0; this.nb0 = 0; this.na1 = 0; this.nb1 = 0;
+        this.coef(); this.reset();
+      }
+      coef() {
+        const p = this.p, fs = this.fs;
+        this.T1 = Math.max(1, Math.round(0.04 * Math.pow(100, cl(p[0], 0, 10) / 10) * fs)); this.T2 = Math.max(1, Math.round(0.04 * Math.pow(100, cl(p[1], 0, 10) / 10) * fs));
+        this.th = 5 * Math.pow(0.01, cl(p[2], 0, 10) / 10);
+      }
+      flush() {}
+      ctl(cc) { // the patched A / B inputs of both V→S circuits (after a re-wiring: insAccL); an unpatched A reads low, an unpatched B re-arms
+        if (this.mv !== 0) this.coef();
+        if (this.ld === 0) return;
+        this.ld = 0;
+        const I = this.i_, Zb = this.zb, ab = this.ab, la = this.la, lb = this.lb;
+        let na = 0, nb = 0;
+        for (let k = 0; k < 6; k++) { if (I[k] !== Zb) la[na++] = k; else ab[k] = 0; if (I[6 + k] !== Zb) lb[nb++] = 6 + k; else ab[6 + k] = 1; }
+        this.na0 = na; this.nb0 = nb; na = 6; nb = 6;
+        for (let k = 12; k < 18; k++) { if (I[k] !== Zb) la[na++] = k; else ab[k] = 0; if (I[6 + k] !== Zb) lb[nb++] = 6 + k; else ab[6 + k] = 1; }
+        this.na1 = na; this.nb1 = nb;
+      }
+      run(sec, i0, n) {
+        const I = this.i_, e = i0 + n;
+        if (sec < 2) {
+          // input by input: the B inputs' rises (each its own Schmitt) mark rz, the one-shot runs over them, the A inputs' levels OR in
+          const o = this.outs[sec], ab = this.ab, la = this.la, lb = this.lb, rz = this.rz, j0 = 6 * sec, na = sec === 0 ? this.na0 : this.na1, nb = sec === 0 ? this.nb0 : this.nb1, T = sec === 0 ? this.T1 : this.T2;
+          let c = this.cnt[sec];
+          for (let j = j0; j < nb; j++) { const k = lb[j], x = I[k]; let a = ab[k]; for (let i = i0; i < e; i++) { const v = x[i]; if (a !== 0) { if (v > 1.5) { a = 0; rz[i] = 1; } } else if (v < 1) a = 1; } ab[k] = a; }
+          if (nb > j0 || c > 0) { for (let i = i0; i < e; i++) { if (rz[i] !== 0) { rz[i] = 0; c = T; } if (c > 0) { c -= 1; o[i] = 1; } else o[i] = 0; } }
+          else for (let i = i0; i < e; i++) o[i] = 0;
+          for (let j = j0; j < na; j++) { const k = la[j], x = I[k]; let a = ab[k]; for (let i = i0; i < e; i++) { const v = x[i]; if (a === 0) { if (v > 1.5) a = 1; } else if (v < 1) a = 0; if (a !== 0) o[i] = 1; } ab[k] = a; }
+          this.cnt[sec] = c;
+        } else if (sec < 4) {
+          const x = I[22 + sec], o = this.outs[sec];
+          for (let i = i0; i < e; i++) o[i] = x[i] > 0.5 ? 4 : 0;
+        } else {
+          const x = I[26], o = this.outs[4], th = this.th, tl = 0.5 * th;
+          let hi = this.hi;
+          for (let i = i0; i < e; i++) { const v = x[i]; if (hi === 0) { if (v > th) hi = 1; } else if (v < tl) hi = 0; o[i] = hi !== 0 ? 4 : 0; }
+          this.hi = hi;
+        }
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.coef(); }
+      reset() { const ab = this.ab; for (let k = 0; k < 24; k++) ab[k] = (k % 12) < 6 ? 0 : 1; this.cnt[0] = 0; this.cnt[1] = 0; this.hi = 0; }
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 962: sequential switch */
+    // ins 0 … 2 SIGNAL INPUT 1 … 3 · 3 … 5 TRIGGER IN 1 … 3 · 6 SHIFT; outs 0 OUTPUT (1 its second jack: one buffer) · 2 … 4
+    // TRIGGER OUT 1 … 3. One input at a time to the output, a negative excursion clipped at −1 V (built for positive control
+    // voltages: bipolar passes under 2 Vpp) [R MS-962; C the hard clip]; a rise on SHIFT steps 1 → 2 → 1 …, or 1 → 2 → 3 when
+    // INPUT 3 is patched; a rise on TRIGGER IN k (or SET k, an event at the next ctl) selects k — after a shift of the same
+    // sample (a select wins); TRIGGER OUT k +3.6 V while k is selected. Fresh: input 1. lamp: bit k = input k + 1
+    class M962 {
+      constructor(h) {
+        base(this, h, '962');
+        this.outs[1] = this.outs[0];
+        this.sel = 0; this.ways = 2; this.lamp = 1;
+        this.arm = new Uint8Array(7); this.pl = new Int32Array(3); this.npl = 0; this.pSh = 0;
+        this.ring = new Int32Array(8); this.eh = 0; this.en = 0;
+        this.reset();
+      }
+      flush() {}
+      ctl(cc) {
+        if (this.ld !== 0) { // the patched inputs (after a re-wiring: insAccL)
+          const I = this.i_, Zb = this.zb, arm = this.arm, pl = this.pl;
+          let np = 0;
+          for (let k = 3; k < 7; k++) { if (I[k] !== Zb) { if (k < 6) pl[np++] = k; } else arm[k] = 1; }
+          this.npl = np; this.pSh = I[6] !== Zb ? 1 : 0; this.ways = I[2] !== Zb ? 3 : 2; this.ld = 0;
+        }
+        if (this.en !== 0) { const R = this.ring; for (let j = 0; j < this.en; j++) this.sel = R[(this.eh + j) & 7]; this.eh = 0; this.en = 0; }
+        this.lamp = 1 << this.sel;
+      }
+      ev(k) {
+        if (!(k >= 0 && k < 3)) return;
+        if (this.en === 8) { this.eh = (this.eh + 1) & 7; this.en = 7; }
+        this.ring[(this.eh + this.en) & 7] = k | 0; this.en++;
+      }
+      run(sec, i0, n) {
+        const I = this.i_, U = this.outs, q = U[0], o1 = U[2], o2 = U[3], o3 = U[4], sh = I[6], pSh = this.pSh, pl = this.pl, np = this.npl, arm = this.arm, ways = this.ways;
+        const om = this.om, mq = (om & 3) !== 0, m1 = (om & 4) !== 0, m2 = (om & 8) !== 0, m3 = (om & 16) !== 0;
+        let sel = this.sel;
+        for (let i = i0, e = i0 + n; i < e; i++) {
+          let sft = 0, s = -1;
+          if (pSh !== 0) { const v = sh[i]; if (arm[6] !== 0) { if (v > 1.5) { arm[6] = 0; sft = 1; } } else if (v < 1) arm[6] = 1; }
+          for (let j = 0; j < np; j++) { const k = pl[j], v = I[k][i]; if (arm[k] !== 0) { if (v > 1.5) { arm[k] = 0; s = k - 3; } } else if (v < 1) arm[k] = 1; }
+          if (sft !== 0) sel = sel + 1 >= ways ? 0 : sel + 1;
+          if (s >= 0) sel = s;
+          if (mq) { const x = I[sel][i]; q[i] = x < -1 ? -1 : x; }
+          if (m1) o1[i] = sel === 0 ? V960 : 0; if (m2) o2[i] = sel === 1 ? V960 : 0; if (m3) o3[i] = sel === 2 ? V960 : 0;
+        }
+        this.sel = sel; this.lamp = 1 << sel;
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); }
+      reset() { this.sel = 0; this.arm.fill(1); this.eh = 0; this.en = 0; this.lamp = 1; }
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 992: control voltages */
+    // its four switches are bus rows (moog-core: KEYBOARD / WHEEL / PRESSURE / EXT → the 904B's CONTROL INPUT 3); EXT IN through
+    // the reversible attenuator (−10 … +10: × v / 10) to the rear output that the fourth row routes [R VK-55]
+    class M992 {
+      constructor(h) { base(this, h, '992'); this.g = 0.25; this.g = 0; this.coef(); }
+      coef() { this.g = cl(this.p[4], -10, 10) / 10; }
+      flush() {}
+      ctl(cc) { if (this.mv !== 0) this.coef(); }
+      run(sec, i0, n) { const x = this.i_[0], o = this.outs[0], g = this.g; for (let i = i0, e = i0 + n; i < e; i++) o[i] = g * x[i]; }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); }
+      reset() {}
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ 993 / 994 / CP8A: no slots */
+    // never scheduled, but a class each: without a T entry the evaluator drops the module and its cords as 'type' (the 994's
+    // multiples are the evaluator's 'any' jacks; the 993's switches are bus rows; the CP8A is drawn, not emulated)
+    class M993 {
+      constructor(h) { base(this, h, '993'); }
+      flush() {}
+      ctl(cc) {}
+      run(sec, i0, n) {}
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); }
+      reset() {}
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+    class M994 {
+      constructor(h) { base(this, h, '994'); }
+      flush() {}
+      ctl(cc) {}
+      run(sec, i0, n) {}
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); }
+      reset() {}
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+    class MCP8A {
+      constructor(h) { base(this, h, 'cp8a'); }
+      flush() {}
+      ctl(cc) {}
+      run(sec, i0, n) {}
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); }
+      reset() {}
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ CP2: filters, multiples, keyboard outputs (a stand-in) */
+    // sections 0 / 1: one-pole passive LP / HP (the 923's: 10 · 1000^(v / 10) Hz, trapezoidal, prewarped); 2 the multiples (the
+    // evaluator's); 3: PITCH / S-TRIG OUT copy the rear inputs that two always-on bus rows feed from the controller
+    class MCP2 {
+      constructor(h) { base(this, h, 'cp2'); this.l = this.h = this.gl = this.gh = 0.25; this.l = 0; this.h = 0; this.gl = 0; this.gh = 0; this.coef(); }
+      coef() {
+        const p = this.p, lim = 0.45 * this.fs;
+        const fl = Math.min(lim, 10 * Math.pow(1000, cl(p[0], 0, 10) / 10)), fh = Math.min(lim, 10 * Math.pow(1000, cl(p[1], 0, 10) / 10));
+        const gl = Math.tan(Math.PI * fl / this.fs), gh = Math.tan(Math.PI * fh / this.fs);
+        this.gl = gl / (1 + gl); this.gh = gh / (1 + gh);
+      }
+      flush() { if (this.l < TINY && this.l > -TINY) this.l = 0; if (this.h < TINY && this.h > -TINY) this.h = 0; }
+      ctl(cc) { if (this.mv !== 0) this.coef(); }
+      run(sec, i0, n) {
+        const I = this.i_, U = this.outs, e = i0 + n;
+        if (sec === 0) {
+          const x = I[0], o = U[0], G = this.gl;
+          let s = this.l;
+          for (let i = i0; i < e; i++) { const v = (x[i] - s) * G, y = v + s; s = y + v; o[i] = rail(y); }
+          this.l = s;
+        } else if (sec === 1) {
+          const x = I[1], o = U[1], G = this.gh;
+          let s = this.h;
+          for (let i = i0; i < e; i++) { const xi = x[i], v = (xi - s) * G, y = v + s; s = y + v; o[i] = rail(xi - y); }
+          this.h = s;
+        } else if (sec === 3) {
+          const kp = I[2], ks = I[3], po = U[2], so = U[3], om = this.om;
+          if ((om & 4) !== 0) for (let i = i0; i < e; i++) po[i] = kp[i];
+          if ((om & 8) !== 0) for (let i = i0; i < e; i++) so[i] = ks[i];
+        }
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.coef(); }
+      reset() { this.l = 0; this.h = 0; }
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ CP3A: mixer and routing */
+    // section 0: the controller's MIX re-written — Σ m_k · LEVEL_k / 10 × MASTER / 5 (×1 at 5, ×2 at 10) → MIX + (railed), MIX −
+    // its inverse [R VK-35 / VK-55, MS-CPANELS55]; 1: EXT IN × EXT LEVEL / 10 (10 = direct) to the rear output the fourth routing
+    // switch's bus row takes to its driver; 2 the multiple (the evaluator's). The routing switches are bus rows (moog-core)
+    class MCP3A {
+      constructor(h) { base(this, h, 'cp3a'); this.lv = new Float64Array(4); this.ra = 0.25; this.ra = 1; this.coef(); }
+      coef() { const p = this.p, ms = cl(p[4], 0, 10) / 5; for (let k = 0; k < 4; k++) this.lv[k] = cl(p[k], 0, 10) / 10 * ms; this.ra = cl(p[9], 0, 10) / 10; }
+      flush() {}
+      ctl(cc) { if (this.mv !== 0) this.coef(); }
+      run(sec, i0, n) {
+        const I = this.i_, U = this.outs, e = i0 + n;
+        if (sec === 0) {
+          const m1 = I[0], m2 = I[1], m3 = I[2], m4 = I[3], mo = U[0], mn = U[1], L = this.lv, l1 = L[0], l2 = L[1], l3 = L[2], l4 = L[3], Zb = this.zb;
+          const om = this.om, a = (om & 1) !== 0, b = (om & 2) !== 0, q2 = m2 !== Zb, q3 = m3 !== Zb, q4 = m4 !== Zb;
+          for (let i = i0; i < e; i++) {
+            let x = l1 * m1[i]; if (q2) x += l2 * m2[i]; if (q3) x += l3 * m3[i]; if (q4) x += l4 * m4[i];
+            if (a) mo[i] = rail(x); if (b) mn[i] = rail(-x);
+          }
+        } else if (sec === 1) {
+          const x = I[4], o = U[2], g = this.ra;
+          for (let i = i0; i < e; i++) o[i] = g * x[i];
+        }
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); }
+      reset() {}
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ CP4A: routing (a stand-in) */
+    // two pass-throughs to rear outputs for the bus rows (the trigger routing's, the CV routing's): TRIGGER IN → the rear S
+    // line, CV IN → the rear CV
+    class MCP4A {
+      constructor(h) { base(this, h, 'cp4a'); }
+      flush() {}
+      ctl(cc) {}
+      run(sec, i0, n) { const x = this.i_[sec], o = this.outs[sec]; for (let i = i0, e = i0 + n; i < e; i++) o[i] = x[i]; }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); }
+      reset() {}
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ CP35: attenuators and sources (a stand-in) */
+    // section 0: +6 V and −6 V; sections 1 … 4: passive attenuators o_k = i_k · a_k / 10 (10 = unity), i1 / i2 normalled to +6 V,
+    // i3 / i4 to −6 V (the evaluator's normals: unpatched, an adjustable ±6 V source); 5 the multiple (the evaluator's)
+    class MCP35 {
+      constructor(h) { base(this, h, 'cp35'); this.a = new Float64Array(4); this.coef(); }
+      coef() { const p = this.p; for (let k = 0; k < 4; k++) this.a[k] = cl(p[k], 0, 10) / 10; }
+      flush() {}
+      ctl(cc) { if (this.mv !== 0) this.coef(); }
+      run(sec, i0, n) {
+        const U = this.outs, e = i0 + n;
+        if (sec === 0) {
+          const om = this.om, a = U[0], b = U[1];
+          if ((om & 1) !== 0) for (let i = i0; i < e; i++) a[i] = 6;
+          if ((om & 2) !== 0) for (let i = i0; i < e; i++) b[i] = -6;
+        } else if (sec < 5) { const x = this.i_[sec - 1], o = U[sec + 1], g = this.a[sec - 1]; for (let i = i0; i < e; i++) o[i] = x[i] * g; }
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); }
+      reset() {}
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
+    /* ------------------------------------------------------------ the Song clock (ours, IMPL-9b §3.4) */
+    // The song's steps as pulses, read per absolute chunk from the Inst's transport h.inst.tp (the Track's { play, frame, tick,
+    // fpt, wrap, ls, le, end }, shared by reference): the continuous tick expression t(F) = tick + (F − frame) / fpt (drClock's)
+    // at the chunk's two ends, the loop folded here (wrap and t ≥ le → ls + (t − ls) mod (le − ls)), stopping at end — never the
+    // roll notes' rounded frames, so the output is the same whatever the span splits and however late the Track handles a wrap.
+    // CLOCK +5 V while t ≥ 0 and frac(t / STEP) < ½: a level of the position, its changes at the half steps b, each on the OS
+    // sample ⌈(b − t₀) · fpt · OS − 1e-9⌉ of its segment; RUN +5 V while running; RESTART a 5 ms pulse at a start (the first
+    // running chunk after a reset, a stop or a count-in — t < 0 is silent, tick 0 the start), a loop wrap (its sample), a jump
+    // (|Δt| > 0.5 tick between chunks: a seek; a tempo change's late anchor moves it ≤ 0.013 tick) and, LENGTH N on, every step
+    // index ≡ 0 (mod N) from tick 0 (P-2 (b)) — a pulse still high is extended. MODE SONG: all low while stopped; ALWAYS:
+    // stopped, the steps at the Inst's bpm from frame 0 (t = F / fpt, drClock's stopped clock: a stopped tempo change jumps,
+    // RESTART). ctl plans the chunk — constants, or per-sample levels in a chunk with a change —, run copies it. lamp: bit 0 RUN
+    const STEP_T = [960, 480, 240, 120, 320, 160];              // 1/4 1/8 1/16 1/32 1/8T 1/16T at 960 ticks a quarter
+    // the half step before a segment's first sample at position p (sc samples a tick): floor(p / half), less one when that
+    // boundary lies under a sample before p — it lands on the segment's first sample (an event there: a LENGTH RESTART)
+    const qOf = (p, half, sc) => { const q = Math.floor(p / half); return (p - q * half) * sc < 1 - 1e-9 ? q - 1 : q; };
+    class MClk {
+      constructor(h) {
+        base(this, h, 'clk');
+        this.stp = this.half = this.base = this.pe = this.rsn = this.ra = this.k0 = this.n0 = this.s0 = 0.25;
+        this.stp = 240; this.half = 120; this.base = this.fs / this.os; this.pe = 0; this.rsn = 0; this.ra = 0; this.k0 = 0; this.n0 = 0; this.s0 = 0;
+        this.md = 0; this.N = 0; this.RSN = 1; this.was = 0; this.r1 = 0; this.cst = 1; this.wn = 0; this.lamp = 0;
+        this.qk = new Float64Array(BL); this.qn = new Float64Array(BL); this.qs = new Float64Array(BL);
+        this.rate(); this.coef();
+      }
+      rate() { this.base = this.fs / this.os; this.RSN = Math.max(1, Math.round(0.005 * this.fs)); }
+      coef() { const p = this.p, l = cl(p[2], 0, 31) | 0; this.stp = STEP_T[cl(p[0], 0, 5) | 0]; this.half = 0.5 * this.stp; this.md = cl(p[1], 0, 1) | 0; this.N = l === 0 ? 0 : l + 1; }
+      flush() {}
+      ctl(cc) {
+        if (this.mv !== 0) this.coef();
+        const CH = 4 * this.os, F = 4 * cc, I = this.inst, tp = I !== null ? I.tp : undefined;
+        let fpt = 0, u = 0, ue = 0, wr = 0, ls = 0, le = 0, end = Infinity, on = 0;
+        if (tp !== undefined && tp !== null && tp.play && tp.fpt > 0) {
+          on = 1; fpt = +tp.fpt; u = tp.tick + (F - tp.frame) / fpt; ue = tp.tick + (F + 4 - tp.frame) / fpt;
+          if (tp.wrap && tp.le > tp.ls) { wr = 1; ls = +tp.ls; le = +tp.le; }
+          if (tp.end !== undefined && tp.end !== null) end = +tp.end;
+        } else if (this.md === 1) {
+          const b = I !== null ? +I.bpm : 120;
+          on = 1; fpt = this.base * 60 / ((b >= 20 ? b <= 400 ? b : 400 : b > 0 ? 20 : 120) * 960); u = F / fpt; ue = (F + 4) / fpt;
+        }
+        if (on === 0) { this.was = 0; this.rsn = 0; this.wn = 0; this.cst = 1; this.k0 = 0; this.n0 = 0; this.s0 = 0; this.lamp = 0; return; }   // stopped (SONG)
+        const sc = fpt * this.os, half = this.half, L = le - ls;
+        let p0 = u, pe = ue;
+        if (wr !== 0 && p0 >= le) p0 = ls + (p0 - ls) % L;
+        if (wr !== 0 && pe >= le) pe = ls + (pe - ls) % L;
+        // a start / a jump → RESTART at sample 0; so does a wrap the last chunk placed on its sample CH (this chunk's 0)
+        const r0 = p0 >= 0 && p0 < end ? 1 : 0, d = p0 - this.pe, fire0 = r0 !== 0 && (this.was === 0 || d > 0.5 || d < -0.5 || this.wn !== 0) ? 1 : 0;
+        // the chunk's first change: the wrap, tick 0 (a count-in's end), the next half step or the end, the pulse's end — a half
+        // step less than a sample before p0 lands on sample 0 here (⌈(b − p0) · sc − 1e-9⌉ = 0: the last chunk's was CH)
+        let jw = CH;
+        if (wr !== 0) { jw = Math.ceil((le - p0) * sc - 1e-9); if (jw < 0) jw = 0; }
+        this.wn = wr !== 0 && jw === CH ? 1 : 0;
+        let jn = CH;
+        if (p0 < end) { const b = r0 === 0 ? 0 : Math.min(end, (qOf(p0, half, sc) + 1) * half); jn = Math.ceil((b - p0) * sc - 1e-9); }
+        const rs = this.rsn;
+        if (fire0 === 0 && jw >= CH && jn >= CH && (rs === 0 || rs >= CH)) { // no change in the chunk: constants
+          const lv = r0 !== 0 && (Math.floor(p0 / half) & 1) === 0 ? 5 : 0;
+          this.cst = 1; this.k0 = lv; this.n0 = r0 !== 0 ? 5 : 0; this.s0 = rs > 0 ? 5 : 0; this.rsn = rs > CH ? rs - CH : 0;
+          this.was = r0; this.pe = pe; this.lamp = r0;
+          return;
+        }
+        const qs = this.qs;   // a change inside: the per-sample plan
+        for (let j = 0; j < CH; j++) qs[j] = j < rs ? 5 : 0;
+        this.ra = rs;
+        if (fire0 !== 0) this.fire(0, CH);
+        if (jw > CH) jw = CH;
+        this.walk(0, jw, p0, sc, end, CH);
+        if (jw < CH) { const uw = p0 + jw / sc; this.fire(jw, CH); this.walk(jw, CH, uw > le ? ls + (uw - ls) % L : ls, sc, end, CH); }   // (the wrap's sample: from ls)
+        this.cst = 0; this.rsn = this.ra > CH ? this.ra - CH : 0; this.was = this.r1; this.pe = pe; this.lamp = this.r1;
+      }
+      fire(j, CH) { const qs = this.qs, e = j + this.RSN; for (let k = j; k < CH && k < e; k++) qs[k] = 5; if (e > this.ra) this.ra = e; }
+      // samples [ja, jb) at positions pa + (j − ja) / sc (no wrap inside): CLOCK / RUN, RESTART at tick 0 and at LENGTH's steps
+      walk(ja, jb, pa, sc, end, CH) {
+        const qk = this.qk, qn = this.qn, half = this.half, N = this.N;
+        let j = ja, run = pa >= 0 && pa < end ? 1 : 0, done = pa >= end ? 1 : 0, q = run !== 0 ? qOf(pa, half, sc) : 0;
+        while (j < jb) {
+          let b = 0, kind = 0;                                 // the next change: 1 tick 0, 2 a half step, 3 the end, 0 none
+          if (done !== 0) kind = 0; else if (run === 0) { b = 0; kind = 1; } else { b = (q + 1) * half; kind = 2; if (end <= b) { b = end; kind = 3; } }
+          let jn = kind === 0 ? jb : ja + Math.ceil((b - pa) * sc - 1e-9);
+          if (jn < j) jn = j;
+          const lk = run !== 0 && (q & 1) === 0 ? 5 : 0, ln = run !== 0 ? 5 : 0, e = jn < jb ? jn : jb;
+          for (; j < e; j++) { qk[j] = lk; qn[j] = ln; }
+          if (jn >= jb) break;
+          if (kind === 1) { run = 1; q = 0; this.fire(jn, CH); }
+          else if (kind === 2) { q += 1; if ((q & 1) === 0 && N > 0 && (q / 2) % N === 0) this.fire(jn, CH); }
+          else { run = 0; done = 1; }
+        }
+        this.r1 = run;
+      }
+      run(sec, i0, n) {
+        const U = this.outs, om = this.om, e = i0 + n, ck = U[0], rn = U[1], rs = U[2];
+        if (this.cst !== 0) {
+          const a = this.k0, b = this.n0, c = this.s0;
+          if ((om & 1) !== 0) for (let i = i0; i < e; i++) ck[i] = a;
+          if ((om & 2) !== 0) for (let i = i0; i < e; i++) rn[i] = b;
+          if ((om & 4) !== 0) for (let i = i0; i < e; i++) rs[i] = c;
+        } else {
+          const A = this.qk, B = this.qn, C = this.qs;
+          if ((om & 1) !== 0) for (let i = i0; i < e; i++) ck[i] = A[i];
+          if ((om & 2) !== 0) for (let i = i0; i < e; i++) rn[i] = B[i];
+          if ((om & 4) !== 0) for (let i = i0; i < e; i++) rs[i] = C[i];
+        }
+      }
+      setOS(fs, os) { this.fs = fs; this.os = osOf(fs, os); this.rate(); }
+      reset() { this.was = 0; this.pe = 0; this.rsn = 0; this.ra = 0; this.wn = 0; this.cst = 1; this.k0 = 0; this.n0 = 0; this.s0 = 0; this.lamp = 0; }
+      setSalt(s) { this.salt = (s | 0) >>> 0; }
+    }
+
     for (const C of [M921, M921A, M921B, M923, M904A, M907A, M911, M902, M995, Ctl]) Object.defineProperty(C.prototype, 'ins', insAcc);
-    const T = Object.freeze({ ctl: Ctl, 921: M921, '921a': M921A, '921b': M921B, 923: M923, '904a': M904A, '907a': M907A, 911: M911, 902: M902, 995: M995 });
+    // the 960 / 961 / 962's ins: insAcc's, and any access marks their patched-input lists stale (the evaluator re-wires a slot only
+    // through it: make()'s whole array, install()'s m.ins[k] = …) — the lists rebuilt at the next ctl, not every chunk
+    const insAccL = { get() { this.ld = 1; return this.i_; }, set(a) { insAcc.set.call(this, a); this.ld = 1; } };
+    for (const C of [M904B, M914, M911A, M903A, M992, M993, M994, MCP2, MCP3A, MCP4A, MCP35, MCP8A, MClk]) Object.defineProperty(C.prototype, 'ins', insAcc);
+    for (const C of [M960, M961, M962]) Object.defineProperty(C.prototype, 'ins', insAccL);
+    const T = Object.freeze({ ctl: Ctl, 921: M921, '921a': M921A, '921b': M921B, 923: M923, '904a': M904A, '907a': M907A, 911: M911, 902: M902, 995: M995,
+      '904b': M904B, 914: M914, '911a': M911A, '903a': M903A, 960: M960, 961: M961, 962: M962, 992: M992, 993: M993, 994: M994,
+      cp2: MCP2, cp3a: MCP3A, cp4a: MCP4A, cp35: MCP35, cp8a: MCP8A, clk: MClk });
+    const EV = Object.freeze(Object.fromEntries(ORDER.map(t => [t, Object.freeze((EV0[t] || []).slice())])));
+    const LAMPS = Object.freeze(Object.fromEntries(ORDER.map(t => [t, Object.freeze((LAMP0[t] || []).slice())])));
     globalThis.PatchMoog = Object.freeze({
       id: 'moog', VER, T, ORDER: Object.freeze(ORDER), JACKS: Object.freeze(JACKS), SECS: Object.freeze(SECS), PARAMS: Object.freeze(PARAMS),
-      SINK: 'out', LINK, OUT_K, CTL: 'ctl', IO: Object.freeze(IO), BL, Z,
+      SINK: 'out', LINK, OUT_K, CTL: 'ctl', IO: Object.freeze(IO), BL, Z, EV, LAMPS,
       RANGE: Object.freeze(Object.fromEntries(ORDER.map(t => [t, Object.freeze(SPEC[t].params.map(p => Object.freeze([p[2], p[3]])))]))),
       // the constants (tests, docs/canvas/research-moog-modules.md §10)
-      K: Object.freeze({ C4, EMAX, AS, AN, AT, AR, KI, KO, FB: Object.freeze(FB.slice()), Q_BP, Q_SH, G_BP, G_SH, OV911, WP_S, WM_S, PINK_K }),
+      K: Object.freeze({ C4, EMAX, AS, AN, AT, AR, KI, KO, FB: Object.freeze(FB.slice()), Q_BP, Q_SH, G_BP, G_SH, OV911, WP_S, WM_S, PINK_K,
+        F914: Object.freeze(F914.slice()), D914, Q914, Q914S, G914, FL914, FH914, V960, STEP_T: Object.freeze(STEP_T.slice()) }),
       ex2, tanp, rail, psin, KW,
     });
   } catch (err) {
