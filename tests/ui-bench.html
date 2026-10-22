@@ -26,6 +26,10 @@
   Milestone 3 (IMPL-3 §1.5, the S0 spike): ?m3=1 loads tests/ui-bench-m3.mjs instead — real Serum panels as part modules and
   the Serum-faithful modulators, scenes hw5 / sx1 / p1 / p1x / hwm / t2 / t3 with audio running, runs M0–M5, the P1 / P2
   probes; &hand=1 the on-screen hand protocol, &hold=1 the rest test (screenshots), &diff=1 the screenshot diff (on the Mac).
+  Stage 9 (IMPL-9 §5 b, c: the phase-0 spikes): ?m9=1 loads tests/ui-bench-m9.mjs instead — stand-in module faces cut from
+  panels/modular.js (GL faces, live face-jack spans), scenes hw5 / m13 / m13w / m20 / m30 / m30h / m13s, a prototype cord
+  layer (a second WebGL2 canvas above #world, the Studio physics), the glue probe; &hand=1 the hand protocol, &cords=1 the
+  ten named plugs, the free play and the feel; one JSON for tests/bench.json "ui-m9".
 -->
 <style>
   :root { color-scheme: dark; }
@@ -58,6 +62,9 @@
   // fresh URL per load (no HTTP-cached copy of an earlier deploy)
   const M3 = /[?&]m3=1/.test(location.search);
   if (M3) import('./ui-bench-m3.mjs?t=' + Date.now()).then(m => m.main(), e => { document.body.textContent = 'ui-bench-m3.mjs did not load: ' + (e && e.message); });
+  // (stage 9, IMPL-9 §5 b / c) ?m9=1: the modules-and-cords spike's page (tests/ui-bench-m9.mjs), loaded the same way
+  const M9 = !M3 && /[?&]m9=1/.test(location.search);
+  if (M9) import('./ui-bench-m9.mjs?t=' + Date.now()).then(m => m.main(), e => { document.body.textContent = 'ui-bench-m9.mjs did not load: ' + (e && e.message); });
   const $ = s => document.querySelector(s);
   const SETS = { one: ['prophet5'], five: ['obxa', 'jupiter8', 'ms20', 'cs80', 'prophet5'] };
   // candidate fixes, tried as extra stylesheets on the five-synth track (SPEC §2.11: nothing visible changes)
@@ -238,7 +245,7 @@
   }
   $('#run').onclick = () => run().catch(e => { status('failed: ' + e.message); $('#run').disabled = false; });
   $('#copy').onclick = async () => { try { await navigator.clipboard.writeText($('#out').value); status('copied'); } catch (e) { $('#out').select(); status('select the text and copy it'); } };
-  if (/[?&]run=1/.test(location.search) && !M3) $('#run').click();
+  if (/[?&]run=1/.test(location.search) && !M3 && !M9) $('#run').click();
 </script>
 </body>
 </html>
