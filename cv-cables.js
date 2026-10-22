@@ -34,9 +34,16 @@
 // Serum's colour. A track.mods link row from 'iN/lfo3.out' / 'iN/env1.out' is drawn from the same jacks (no module in
 // bundled view: no cable, as before). A knob end the host marks hidden (cv-module ports(): {hid, tag}) is dashed and its
 // badge carries the tag ('OSC B · LEVEL · hidden'). [data-twin] controls are never a drag's target.
+// Stage 7d + 8 (IMPL-8 §5.4, §9; lane U): the Pads module ('pd1' … 'pd8', keyKind 'pads') — a mod pad's row src 'pd<n>.p<i>'
+// (modSrcPort: ports p0…p63) leaves from the pad's inline jack in the PAD's colour (opts.project.pads); note cables (kind
+// 'note', derived, a tap cable: no Disconnect) from the module's 'notes' jack to each instrument of this track a visible pad
+// plays, ending at a fixed point of the instrument's left edge (b '<dev>.' + NOTE_END: no jack there, review #13 —
+// cv-module's ports() computes it), dashed (cv-pads' CSS), in the module's first such pad's colour.
 import { DESTS, DEST_INDEX, moduleOf } from './serum-core.js?v=9';
 import * as wk from './wk.js?v=9';
 import { routeLabel, serumEdges, jackOf, partLabel, partOn } from './sx-edges.js?v=9';
+import { COLORS as PAD_COLORS, visibleSlots, targetNotes, drumNote } from './pads-core.js?v=9';
+import { PERS, normDrum } from './drum-core.js?v=9';
 /** (milestone 3) a stub's length (world px) */
 export const STUB_PX = 56;
 /** (review 2 P1-5) below k = 1 a stub keeps STUB_PX screen px (its out jack's touch circle is 22 screen px at any zoom), at
@@ -72,6 +79,7 @@ const PREFIX_KIND = Object.freeze(Object.keys(MOD_PREFIX).reduce((o, k) => { o[M
  * → 'cc', 'h1' → 'chaos', 'e1' → 'env'; anything else null). Pure. */
 export function keyKind(key) {
   if (typeof key !== 'string' || !key) return null;
+  if (/^pd[1-8]$/.test(key)) return 'pads'; // ((8) a project Pads module: no track device, no MOD_PREFIX entry)
   if (PREFIX_KIND[key] && MOD_PREFIX[PREFIX_KIND[key]] === key && !/^[lemch]$/.test(key)) return PREFIX_KIND[key];
   const m = /^([lemch])([1-9]\d*)$/.exec(key);
   return m ? PREFIX_KIND[m[1]] : null;
@@ -103,9 +111,11 @@ const text1 = (el, t) => { if (el.textContent !== t) el.textContent = t; };
 
 /** (2b) A track.mods row's src → its module key and jack port: 'wheel' → {key: 'wheel', port: 'out'}, '<dev>.out' →
  * {key: dev, port: 'out'}, a macro's '<dev>.k3' → {key: dev, port: 'k3'}; (milestone 3) a part key: 'i1/lfo3.out' →
- * {key: 'i1/lfo3', port: 'out'} (else null). Pure. */
+ * {key: 'i1/lfo3', port: 'out'}; (8) a mod pad 'pd1.p12' → {key: 'pd1', port: 'p12'} (p0…p63) (else null). Pure. */
 export function modSrcPort(src) {
   if (src === 'wheel') return { key: 'wheel', port: 'out' };
+  const q = typeof src === 'string' ? /^(pd[1-8])\.(p(?:[0-9]|[1-5][0-9]|6[0-3]))$/.exec(src) : null; // ((8) a mod pad: its slot's inline jack)
+  if (q) return { key: q[1], port: q[2] };
   const m = typeof src === 'string' ? /^([a-z][a-z0-9]*(?:\/[a-z][a-zA-Z0-9]*)?)\.(out|k[1-8])$/.exec(src) : null;
   return m ? { key: m[1], port: m[2] } : null;
 }
@@ -265,7 +275,7 @@ export function cablesOf(track, opts) {
     out.push(mk(o, srcs.get(devOf(w.a)) || []));
   }
   for (const id of Object.keys(D)) if (serumDev(D, id) && partsView(t, id, opts)) out.push(...internal(id, D[id], tc, on, isObj(t.lay) ? t.lay : {}));
-  return out.concat(modCables(t, D, opts));
+  return out.concat(modCables(t, D, opts), noteCables(t, D, opts));
 }
 /** (milestone 3) Is Serum `id` of this track shown as parts? opts.parts: false (never), a function (id) → bool, else the
  * view flag track.lay[id].ui === 'parts'. Pure. */
@@ -308,7 +318,7 @@ function internal(id, dev, tc, on, lay) {
  */
 function modCables(t, D, opts) {
   const o = isObj(opts) ? opts : {}, out = [], tc = typeof t.color === 'string' ? t.color : undefined;
-  const P = isObj(o.project) ? o.project : null, wheel = !!(P && isObj(P.perf) && P.perf.wheel);
+  const P = isObj(o.project) ? o.project : null, PJ = P, wheel = !!(P && isObj(P.perf) && P.perf.wheel);
   const mdev = k => (isObj(D[k]) && keyKind(k) === D[k].kind ? D[k] : null); // ((2b) any mod kind: key ↔ kind by prefix)
   const colorOf = k => { if (k === 'wheel') return MOD_COLOR.wheel; const d = mdev(k); return (d && typeof d.color === 'string' && d.color) || (d && MOD_COLOR[d.kind]) || tc; };
   const mk = (id, a, b, r, key, extra) => {
@@ -326,6 +336,7 @@ function modCables(t, D, opts) {
     if (!P) continue;
     const c = mk(r.id, modSrcJack(r.src), r.dst, r, P.key, { src: r.src });
     if (P.key.indexOf('/') > 0) { const k = sxColor(P.key); if (k) c.color = k; }
+    else if (keyKind(P.key) === 'pads') { const k = padColor(PJ, P.key, P.port); if (k) c.color = k; } // ((8) the pad's colour, §6.4)
     out.push(c);
   }
   // (milestone 3) a Serum in parts view: its own LFO / ENV / macro rows from their modules' jacks (the Serum's colour)
@@ -354,6 +365,52 @@ function modCables(t, D, opts) {
         if (!key || typeof r.dst !== 'string' || !r.dst || !(key === 'wheel' ? wheel : mdev(key))) continue;
         out.push(mk('p:' + id + ':' + r.slot, key + '.out', id + ':' + r.dst, r, key, { preset: true, dev: id, slot: r.slot, src: r.src }));
       }
+    }
+  }
+  return out;
+}
+// (8) the colour of slot `port` ('p12') of Pads module `key` (opts.project.pads): its pad's lit tone; null without the pad
+function padColor(P, key, port) {
+  const M = P && Array.isArray(P.pads) ? P.pads.find(m => isObj(m) && m.id === key) : null, p = M && Array.isArray(M.pads) ? M.pads[+String(port).slice(1)] : null;
+  const c = isObj(p) && Number.isInteger(p.c) ? PAD_COLORS[p.c] : null;
+  return c ? c.lit : null;
+}
+/** (8) A note cable's end on an instrument: '<dev>.' + NOTE_END — no jack there (review #13): cv-module's ports() places it on
+ * the instrument module's left edge at BAR_H + JACK_Y (folded: outside the bar, as a jack). */
+export const NOTE_END = '@notes';
+// (8, IMPL-8 §9) the note cables of a v2 track: per Pads module of opts.project (one on every track's canvas) and per instrument
+// of THIS track a visible pad plays — a note / chord / list target by the instrument's key zone (lo…hi), a drum target the
+// track's first machine with that sound (pads-core drumNote on the device's record) —: {id: 'n:<pd>><dev>', kind: 'note', a:
+// '<pd>.notes', b: '<dev>.' + NOTE_END, tap: 'pads' (a tap → onAction(id, 'tap'): the host lists its pads; never selected,
+// no Disconnect), pads: [slots], mod, dev, color: the first such pad's}. Derived, never stored. Pure.
+function noteCables(t, D, opts) {
+  const P = isObj(opts) && isObj(opts.project) ? opts.project : null, out = [], own = (o, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(o, k);
+  if (!P || !Array.isArray(P.pads) || !P.pads.length) return out;
+  const syn = Object.keys(D).filter(k => isObj(D[k]) && D[k].kind === 'synth');
+  const zone = k => { const z = isObj(D[k].zone) ? D[k].zone : {}, lo = fin(z.lo) ? z.lo : 0, hi = fin(z.hi) ? z.hi : 127; return [Math.min(lo, hi), Math.max(lo, hi)]; };
+  // a drum machine plays a note only through its map (the record's, normalised as drum-core does)
+  const dmap = new Map(), maps = k => { if (!dmap.has(k)) { const S = new Set(); if (own(PERS, D[k].model)) { const R = normDrum(D[k].drum, D[k].model); for (const v of Object.values(isObj(R.map) ? R.map : {})) if (Array.isArray(v)) for (const n of v) S.add(n); } dmap.set(k, own(PERS, D[k].model) ? S : null); } return dmap.get(k); };
+  const plays = (k, ns) => { const [lo, hi] = zone(k), S = maps(k); return ns.some(n => n >= lo && n <= hi && (!S || S.has(n))); };
+  for (const M of P.pads) {
+    if (!isObj(M) || typeof M.id !== 'string' || !Array.isArray(M.pads) || !fin(M.rows) || !fin(M.cols)) continue;
+    const by = new Map(); // instrument → the slots playing it
+    for (const i of visibleSlots(M)) {
+      const p = M.pads[i];
+      if (!isObj(p) || !Array.isArray(p.t)) continue;
+      const hit = new Set();
+      for (const x of p.t) {
+        if (!isObj(x) || x.tr !== t.id) continue;
+        if (x.k === 'drum') { const r = drumNote(t, x.s); if (r.n >= 0 && r.dev) hit.add(r.dev); continue; }
+        const ns = targetNotes(x);
+        for (const k of syn) if (plays(k, ns)) hit.add(k);
+      }
+      for (const k of hit) { let L = by.get(k); if (!L) by.set(k, (L = [])); L.push(i); }
+    }
+    for (const k of syn) {
+      const L = by.get(k);
+      if (!L) continue;
+      const c = PAD_COLORS[M.pads[L[0]].c];
+      out.push({ id: 'n:' + M.id + '>' + k, kind: 'note', a: M.id + '.notes', b: k + '.' + NOTE_END, tap: 'pads', pads: L.slice(), mod: M.id, dev: k, color: c ? c.lit : undefined });
     }
   }
   return out;

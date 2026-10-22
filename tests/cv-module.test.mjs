@@ -1441,3 +1441,84 @@ test('milestone 3 inline jacks: MACROS\' name tiles ([data-jack="k<n>"]) are its
   assert.equal(sj([V.modules.get('i1').jackIds(), [...V.modules.keys()].filter(k => /^i1\//.test(k)), V.cables.list().filter(c => c.int).length]), sj([['out'], ['i1/fx'], 0]), 'bundled: no internal cables');
   V.destroy();
 });
+
+/* ---------------------------------------------------------------- stage 7d + 8 (IMPL-8 §1.1, §5.4, §9; lane U) */
+test('(8) BG_SEL: a Pads module\'s body, pad well, footer and the grid\'s gaps pan (a gap is a canvas finger: 1i G1 / G2, R2-F11); a pad, a jack and a button never', () => {
+  const sel = M.BG_SEL.split(',').map(s => s.trim());
+  assert.deepEqual(['.pd-body', '.pd-well', '.pd-foot', '.pd-grid'].map(c => sel.includes(c)), [true, true, true, true]);
+  assert.deepEqual(['.pd-pad', '.pd-jk', '.pd-fb'].map(c => sel.includes(c)), [false, false, false]);
+});
+
+test('(8) a jack spec\'s hide flag: no dot (inline or not), an inline one without its anchor ends at the right edge at the bar\'s height; setJackHide flips it with no rebuild (re-measured: the anchor when there)', () => {
+  const doc = fresh();
+  let anchor = null;
+  const { m } = mod({ id: 'pd1', kind: 'mod', w: 352, fixed: { w: 352, h: 416 }, jacks: [{ id: 'p40', side: 'inline', kind: 'mod', hide: true, label: 'Pads 1 · Pad 40 out' }, { id: 'p1', side: 'inline', kind: 'mod' }, { id: 'x', side: 'right', kind: 'mod', hide: true }, { id: 'notes', side: 'right', kind: 'note' }],
+    body: { mount: b => { anchor = doc.createElement('span'); anchor.setAttribute('data-jack', 'p1'); b.append(anchor); }, unmount() {} } }, { doc });
+  doc.body.append(m.el);
+  place(m.el, 0, 0, 352, 416); place(anchor, 300, 100, 16, 16);
+  assert.deepEqual([m.jackDot('p40').hidden, m.jackHidden('p40'), m.jackDot('x').hidden, m.jackHidden('p1')], [true, true, true, false]);
+  assert.deepEqual([m.port('p40'), m.port('p1'), m.port('notes')], [{ x: 352, y: M.BAR_H / 2 }, { x: 308, y: 108 }, { x: 352, y: M.BAR_H + M.JACK_Y }]);
+  assert.equal(m.jack('p1') === anchor && m.jackDot('p1').hidden, true, 'the anchor is the jack');
+  m.setJackHide('p40', false);
+  assert.deepEqual([m.jackDot('p40').hidden, m.port('p40')], [false, { x: 352, y: M.BAR_H + M.JACK_Y }], 'shown without an anchor: the fallback dot at the spec y');
+  m.setJackHide('x', false);
+  assert.equal(m.jackDot('x').hidden, false);
+  m.setJackHide('p40', true);
+  m.setFold(true);
+  assert.deepEqual(m.port('p40'), { x: 352 + M.JACK_OUT, y: M.BAR_H / 2 }, 'folded: as every jack');
+  m.destroy();
+});
+
+test('(8) R1-E a jack\'s label follows its entry at the next sync — the dot\'s and an inline anchor\'s aria-label and title — with no rebuild (jsig: ids and sides only), and from refresh()', () => {
+  const doc = fresh();
+  const t = v2t();
+  let lab = 'Pads 1 · Kick out', mounts = 0, anchor = null;
+  const entry = () => ({ key: 'pd1', kind: 'mod', mod: 'pads', model: null, dev: null, color: '#22c7a9', jacks: [{ id: 'p1', side: 'inline', kind: 'mod', label: lab }, { id: 'notes', side: 'right', kind: 'note', label: 'Pads 1 notes' }] });
+  const R = dview(t, fakeWorld(1), doc, { project: () => ({ tracks: [t], pads: [] }), patch: false, devices: x => M.devicesOf(x).concat([entry()]),
+    size: k => (k === 'pd1' ? { fixed: { w: 352, h: 416 } } : k === 'i1' ? { fixed: { w: 1408, h: 512 } } : null),
+    bodies: { mount: (k, b) => { if (k === 'pd1') { mounts++; anchor = doc.createElement('span'); anchor.setAttribute('data-jack', 'p1'); b.append(anchor); } }, unmount() {} } });
+  const V = R.V, pm = V.modules.get('pd1');
+  place(pm.el, 0, 0, 352, 416); place(anchor, 300, 100, 16, 16);
+  V.ports();
+  assert.deepEqual([pm.jack('p1') === anchor, anchor.getAttribute('aria-label'), pm.jackDot('p1').getAttribute('aria-label')], [true, 'Pads 1 · Kick out', 'Pads 1 · Kick out']);
+  lab = 'Pads 1 · Boom out';
+  R.sync(t);
+  assert.deepEqual([V.modules.get('pd1') === pm, mounts, anchor.getAttribute('aria-label'), pm.jackDot('p1').getAttribute('aria-label'), pm.jackDot('p1').title, V.jacks().find(j => j.id === 'pd1.p1').label], [true, 1, lab, lab, lab, lab], 'sync: relabelled, not rebuilt');
+  lab = 'Pads 1 · Snare out';
+  V.refresh(t);
+  assert.deepEqual([anchor.getAttribute('aria-label'), pm.jackDot('p1').getAttribute('aria-label')], [lab, lab], 'refresh too');
+  lab = '';
+  R.sync(t);
+  assert.equal(anchor.getAttribute('aria-label'), 'Pads 1 · Snare out', 'an entry without a label leaves the last');
+  V.destroy();
+});
+
+test('(8) createTrackView with a Pads device entry: its jacks from the entry (a mod module\'s non-mod "notes" jack read-only), its colour, host-sized (Tidy places it by its own width before it exists), a hide change follows on sync with no rebuild, a jack-set change rebuilds; a note cable\'s end on the instrument\'s left edge, no jack there', () => {
+  const doc = fresh();
+  const t = v2t();
+  t.mods = [{ id: 'r1', src: 'pd1.p1', dst: 'i1:vcf.cut', amt: 0.5 }];
+  const pads = new Array(64).fill(null);
+  pads[1] = { c: 0, l: '', t: [{ k: 'note', tr: 'trk_1', n: 60 }], mod: { m: 'gate', lo: 0, hi: 1 }, v: null, latch: 0, hw: null };
+  const project = { tracks: [t], pads: [{ id: 'pd1', name: 'Pads 1', rows: 4, cols: 4, size: 1, vel: 'pos', fv: 100, light: 'both', shape: 'sq', out: { prof: 'off', port: '' }, pads }] };
+  let hide = false, extra = false, mounts = 0;
+  const entry = () => ({ key: 'pd1', kind: 'mod', mod: 'pads', model: null, dev: null, color: '#22c7a9',
+    jacks: [{ id: 'p1', side: 'inline', kind: 'mod', label: 'Pads 1 · Pad 2 out' }, { id: 'p40', side: 'inline', kind: 'mod', hide: !hide }].concat(extra ? [{ id: 'p2', side: 'inline', kind: 'mod' }] : [], [{ id: 'notes', side: 'right', kind: 'note', label: 'Pads 1 notes' }]) });
+  const R = dview(t, fakeWorld(1), doc, { project: () => project, patch: false, devices: x => M.devicesOf(x).concat([entry()]),
+    size: k => (k === 'pd1' ? { fixed: { w: 352, h: 416 } } : k === 'i1' ? { fixed: { w: 1408, h: 512 } } : null),
+    bodies: { mount: k => { if (k === 'pd1') mounts++; }, unmount() {} } });
+  const V = R.V, pm = V.modules.get('pd1');
+  assert.deepEqual([pm.jackIds(), pm.kind, pm.w, pm.fixed.h, pm.el.style.getPropertyValue('--mc')], [['p1', 'p40', 'notes'], 'mod', 352, 416, '#22c7a9']);
+  assert.deepEqual([pm.x, pm.y], [-M.roundW(352 + M.MOD_GAP), 0], 'Tidy: its own width, its right edge at −MOD_GAP');
+  assert.deepEqual([pm.jack('notes').hasAttribute('data-ro'), pm.jack('notes').getAttribute('role'), pm.jackDot('p1').getAttribute('role'), pm.jackDot('p40').hidden], [true, null, 'button', true]);
+  const L = V.cables.list(), nc = L.find(c => c.kind === 'note');
+  assert.deepEqual([nc.a, nc.b, nc.readonly, L.find(c => c.id === 'r1').a], ['pd1.notes', 'i1.' + CB.NOTE_END, undefined, 'pd1.p1'], 'a tap cable stays tappable under patch: false');
+  const I = V.modules.get('i1'), P = V.ports();
+  assert.deepEqual([P.get('i1.' + CB.NOTE_END), P.has('pd1.notes'), I.jackIds().includes(CB.NOTE_END)], [{ x: I.x, y: I.y + M.BAR_H + M.JACK_Y }, true, false]);
+  hide = true;
+  R.sync(t);
+  assert.deepEqual([V.modules.get('pd1') === pm, mounts, pm.jackHidden('p40'), pm.jackDot('p40').hidden], [true, 1, false, false], 'shown: no rebuild');
+  extra = true;
+  R.sync(t);
+  assert.deepEqual([V.modules.get('pd1') === pm, mounts, V.modules.get('pd1').jackIds()], [false, 2, ['p1', 'p40', 'p2', 'notes']], 'a jack-set change: made again');
+  V.destroy();
+});

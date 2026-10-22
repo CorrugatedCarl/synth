@@ -37,6 +37,7 @@ export const SIL = Object.freeze({
   tr808: Object.freeze({ body: 'box', steps: 16 }), // (7a) a drum machine: a wide low case, 12 knob columns, 16 step keys in four colours
   tr606: Object.freeze({ body: 'desktop', steps: 16 }), // (7b) the TB-303's body family: a silver case, six knobs, a dark programming panel over 16 grey keys
   tr909: Object.freeze({ body: 'box', steps: 16 }), // (7c) the 808's body family: a wide low light case, nine blocks of dark knobs, a red display, 16 cream step keys
+  sdsv: Object.freeze({ body: 'box' }), // (8) a dark rack box (no sequencer: no steps): five knob columns with cream memory keys, two blank plates, the mixer, hexagonal pads in front
 });
 
 const W0 = 96, H0 = 56; // the design box
@@ -366,6 +367,45 @@ const DRAW = {
     }
     return s;
   },
+  // a dark rack box (the 909's wide, low body, here in charcoal) over a row of hexagonal pads: five voice cards, each a name bar, two columns of
+  // three light-grey knobs, a 2 × 2 square of cream memory keys (key 2 lit) and two rows of small trimmers; two blank plates; the mixer's ten
+  // small knobs and a rule for the model name. No text, no logo (a model name is a plain rule).
+  sdsv(th, lo) {
+    const A = th.accent || '#e0281e', CAP = th.cap || '#c8cac6', PL = '#1c1e21', BL = '#141517', BAR = '#3a3d42', KEY = '#efe6cf', MET = '#b9bcbf', HEX = '#34373c', RIM = '#6b6f76';
+    const hex = (cx, cy, r, fill, ex = '') => POLY([0, 1, 2, 3, 4, 5].map(k => [cx + r * Math.cos(k * Math.PI / 3), cy + r * Math.sin(k * Math.PI / 3)]), fill, ex);
+    let s = shadow(4, 92, 55) + R(3, 4.6, 90, 33.6, th.face) + R(3, 4.6, 3.4, 33.6, '#2e3135') + R(89.6, 4.6, 3.4, 33.6, '#2e3135') + R(6.4, 4.6, 83.2, 33.6, th.panel) + R(6.4, 4.6, 83.2, 0.8, '#fff', OP(0.1));
+    if (!lo) {
+      let ind = '';
+      for (let i = 0; i < 8; i++) {
+        const x0 = 7.6 + 10 * i;
+        s += R(x0, 6.4, 9.2, 30.4, i === 5 || i === 6 ? BL : PL);
+        if (i === 5 || i === 6) { s += R(x0 + 0.5, 7, 8.2, 1.4, '#26282b') + R(x0 + 2.4, 13, 4.4, 17, '#0c0d0e'); continue; }
+        s += R(x0 + 0.5, 7, 8.2, 1.4, BAR);
+        if (i === 7) {
+          for (let r = 0; r < 2; r++) for (let k = 0; k < 5; k++) s += C(x0 + 1.4 + k * 1.6, 12.2 + r * 7.2, 0.7, CAP);
+          s += R(x0 + 1.6, 28.4, 6, 1.1, '#ecece6', OP(0.8)) + R(x0 + 1.6, 31, 6, 0.5, '#9a9c9a', OP(0.7));
+          continue;
+        }
+        for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++) {
+          const cx = x0 + 2.7 + 3.8 * c, cy = 11.4 + 4.2 * r, a = -2.2 + 4.4 * rnd(i * 6 + r * 2 + c, 17);
+          s += C(cx, cy, 1.35, CAP);
+          ind += `M${f(cx)} ${f(cy)}L${f(cx + Math.sin(a) * 1.15)} ${f(cy - Math.cos(a) * 1.15)}`;
+        }
+        for (let r = 0; r < 2; r++) for (let c = 0; c < 2; c++) s += RR(x0 + 1.7 + 3.4 * c, 24.2 + 3.3 * r, 2.4, 2.4, 0.4, KEY) + C(x0 + 2.9 + 3.4 * c, 24.9 + 3.3 * r, 0.4, c === 1 && r === 0 ? A : '#4a1612');
+        let tr = '';
+        for (let r = 0; r < 2; r++) for (let k = 0; k < 6; k++) tr += `M${f(x0 + 1.5 + k * 1.2)} ${f(31.6 + 1.9 * r)}h0.01`;
+        s += S(tr, MET, 0.75);
+      }
+      s += S(ind, '#15171a', 0.4);
+      s += hex(26, 47.4, 7, HEX) + hex(26, 47.4, 7, 'none', ` stroke="${RIM}" stroke-width="0.8"`) + hex(48, 46.4, 8.6, HEX) + hex(48, 46.4, 8.6, 'none', ` stroke="${RIM}" stroke-width="0.9"`) + hex(70, 47.4, 7, HEX) + hex(70, 47.4, 7, 'none', ` stroke="${RIM}" stroke-width="0.8"`);
+      s += hex(48, 46.4, 4.2, A, OP(0.85));
+    } else {
+      for (let i = 0; i < 5; i++) { const x0 = 7.6 + 10 * i; s += R(x0, 6.4, 9.2, 30.4, PL) + R(x0 + 0.5, 7, 8.2, 2, BAR) + C(x0 + 4.6, 14.5, 2, CAP) + RR(x0 + 2.2, 24, 4.8, 4.8, 0.6, KEY); }
+      s += R(57.6, 6.4, 20, 30.4, BL) + R(77.6, 6.4, 9.2, 30.4, PL) + R(79, 28.4, 6, 1.6, '#ecece6', OP(0.8));
+      s += hex(48, 46.4, 8.6, HEX) + hex(48, 46.4, 8.6, 'none', ` stroke="${RIM}" stroke-width="1.2"`);
+    }
+    return s;
+  },
   // an abstract software instrument: a stacked wavetable, knob rings and a filter curve on a dark panel
   serum(th, lo) {
     const A = th.accent || '#4fb3ff';
@@ -404,8 +444,9 @@ const G = {
   macro: '<circle cx="6" cy="10" r="3"/><circle cx="16" cy="10" r="3"/><circle cx="26" cy="10" r="3"/><circle cx="11" cy="22" r="3"/><circle cx="21" cy="22" r="3"/><path d="M6 10V7.5M16 10l2-1.5M26 10l-1.8-2M11 22l1.8 1.5M21 22V19.5"/>',
   fx: '<rect x="7" y="3" width="18" height="26" rx="3" stroke-width="2"/><circle cx="12" cy="10" r="2.2"/><circle cx="20" cy="10" r="2.2"/><rect x="11" y="18" width="10" height="6" rx="1.2" fill="currentColor" stroke="none" opacity="0.6"/>',
   out: '<path d="M5 12h5l7-6v20l-7-6H5z" stroke-width="2" stroke-linejoin="round"/><path d="M21 11c2 2.7 2 7.3 0 10M24.6 7.6c4 4.6 4 12.2 0 16.8"/>',
+  pads: '<rect x="4" y="4" width="7.4" height="7.4" rx="1.9"/><rect x="12.3" y="4" width="7.4" height="7.4" rx="1.9"/><rect x="20.6" y="4" width="7.4" height="7.4" rx="1.9"/><rect x="4" y="12.3" width="7.4" height="7.4" rx="1.9"/><rect x="12.3" y="12.3" width="7.4" height="7.4" rx="1.9" fill="currentColor" stroke="none"/><rect x="20.6" y="12.3" width="7.4" height="7.4" rx="1.9"/><rect x="4" y="20.6" width="7.4" height="7.4" rx="1.9"/><rect x="12.3" y="20.6" width="7.4" height="7.4" rx="1.9"/><rect x="20.6" y="20.6" width="7.4" height="7.4" rx="1.9"/>',
 };
-/** The glyph kinds (non-instrument modules and later tray sections). */
+/** The glyph kinds (non-instrument modules and later tray sections; 'pads': the Controllers view's Pads tile). */
 export const GLYPHS = Object.freeze(Object.keys(G));
 
 /* ---------------------------------------------------------------- public */
@@ -431,7 +472,7 @@ export function art(id, o) {
 /** The track-row chip drawing (CHIP size). @param {string} id @returns {string} */
 export function chip(id) { return art(id, CHIP); }
 /** Abstract glyphs for non-instrument modules and later trays: 'osc' | 'filter' | 'sub' | 'noise' | 'voice' | 'lfo' |
- * 'env' | 'wheel' | 'velo' | 'macro' | 'fx' | 'out' (strokes in currentColor). @param {string} kind @param {{w?: number, h?: number}} [o] @returns {string} */
+ * 'env' | 'wheel' | 'velo' | 'macro' | 'fx' | 'out' | 'pads' (strokes in currentColor). @param {string} kind @param {{w?: number, h?: number}} [o] @returns {string} */
 export function glyph(kind, o) {
   const w = Math.max(8, Math.round(+(o && o.w) || 32)), h = Math.max(8, Math.round(+(o && o.h) || 32)), k = 'g:' + kind + ':' + w + 'x' + h;
   let s = cache.get(k);

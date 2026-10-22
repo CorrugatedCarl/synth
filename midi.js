@@ -6,6 +6,9 @@
 //  - `createMidi(host)`: the router (the Phase-1 main.js onMIDI dispatch, the pending learn) and a thin adapter over
 //    navigator.requestMIDIAccess (the 'Enable MIDI' button). main.js implements the host and keeps the live input routing
 //    shared with the on-screen and computer keyboards (held notes, recording, power, the wheels).
+// Stage 8 (IMPL-8 §8): each input has its own handler (the port's name reaches the host), a host pre-hook `padIn` lets a learned
+// hardware pad play a canvas pad before the normal note path, `ports(names)` after every plug / unplug, pad learn (`learnPad`),
+// and MIDI out (`outputs` / `send`: lighting the pads back). No Web MIDI (every iPad browser) → all of it degrades silently.
 // Browser-module rule: nothing here touches the DOM, window or navigator at module top level.
 import { midiValue, isFxId, VIRTUAL, S1_PAIRS, syncS1 } from './serum-core.js?v=9';
 
@@ -184,6 +187,10 @@ export function writeCC(s, dest, val, fxSet, fx) {
 //   notice(text, ms)
 //   modCC(ch, cc, v01, ts)                    optional (canvas 2b): every control change (0–127 → 0…1) for the track's CC
 //                                               modules and their learn; the wheel / sustain / MPE roles still apply after it
+//   padIn(e, port, ts) → boolean              optional (canvas 8): runs first for note-on / note-off / poly pressure / CC (e = the
+//                                               decoded event, port = the input's name, '' unknown): true = a learned hardware pad's —
+//                                               the message goes nowhere else (no noteOn, no CC learn, no modCC); false = today's dispatch
+//   ports(names)                              optional (canvas 8): the connected inputs' names, after every hook (plug / unplug)
 //   button() → element                        the 'Enable MIDI' button (adapter)
 //   nav                                       optional: the navigator (default globalThis.navigator, read lazily)
 //   setTimeout, clearTimeout                  optional: timers (default the globals)
@@ -194,7 +201,14 @@ export function createMidi(host) {
   const later = (f, ms) => (H.setTimeout ? H.setTimeout(f, ms) : setTimeout(f, ms));
   const unlater = t => (H.clearTimeout ? H.clearTimeout(t) : clearTimeout(t));
   const navOf = () => ('nav' in H ? H.nav : globalThis.navigator);
-  const onmidimessage = e => message(e.data, e.timeStamp);
+  const onmidimessage = e => message(e.data, e.timeStamp); // (port-less: the old shared handler; each input now has its own, below)
+  let access = null;     // the MIDIAccess once granted (outputs / send)
+  let padPend = null;    // the pending pad learn { res, t: timeout } (never together with `pending`)
+  let ccHeld = '';       // 'port|ch|cc' of the CC pad just learned: the next learn ignores its value stream until its 0
+  const portName = p => (p && typeof p.name === 'string' ? p.name : '');
+  const raise = err => later(() => { throw err; }, 0); // a host hook's error must not break the adapter, nor vanish
+  // the connected ports of a MIDIInputMap / MIDIOutputMap (a fake or old access may lack one; a closed-off port may linger)
+  const live = m => (m && typeof m.values === 'function' ? [...m.values()].filter(p => p && p.state !== 'disconnected') : []);
   // a track's Serum instruments (stage 1e), and the one a learn / forget names (dev null: the primary)
   // (no host instsOf: a v1 track — the tests' — is its own one Serum)
   const instsOf = t => (typeof H.instsOf === 'function' ? H.instsOf(t) : t && !t.dev ? sxInsts(t).map(d => ({ id: null, s: d.vals.s, fx: d.fx, prim: true })) : []);
@@ -211,13 +225,28 @@ export function createMidi(host) {
     else H.notice('MIDI Learn: move a controller — Esc cancels', 6000);
     return new Promise(res => { pending = { id, dev, dest, res, t: later(() => cancelLearn(true), enabled ? LEARN_MS : LEARN_MS_OFF) }; });
   }
+  // (Esc, a timeout, another learn: a pending pad learn ends the same way; never two pending at once)
   function cancelLearn(say) {
-    const P = pending;
-    if (!P) return false;
-    pending = null; unlater(P.t);
-    P.res(null);
+    const P = pending, Q = padPend;
+    if (!P && !Q) return false;
+    pending = null; padPend = null;
+    if (P) { unlater(P.t); P.res(null); }
+    if (Q) { unlater(Q.t); Q.res(null); }
     if (say) H.notice('MIDI Learn cancelled', 3000);
     return true;
+  }
+  // Pad learn (IMPL-8 §8.3): the next hardware note-on — or controller 0–119 with a value > 0 (a pad in "button" mode) — from any
+  // input resolves { port, ch, n, cc } (the project.pads `hw` shape: cc 0 = note n, 1 = controller n) and goes nowhere else: nothing
+  // plays, no CC learn runs, `padIn` never sees it (a pad already bound elsewhere is learned all the same: the host moves it). Note-offs,
+  // pressure and a held CC pad's value stream do not end it, so 'learn all' (this again, from the resolution) walks the pads in order.
+  // Ends like the Serum learn: 15 s (30 s while MIDI still needs enabling), Esc / cancelLearn, another learn → null. No Web MIDI
+  // (every iPad browser): null at once, silently — nothing there depends on it.
+  function learnPad() {
+    cancelLearn(false);
+    const nav = navOf();
+    if (!nav || !nav.requestMIDIAccess) return Promise.resolve(null);
+    H.notice(enabled ? 'MIDI Learn: hit a pad on the controller — Esc cancels' : 'MIDI Learn: enable MIDI (the MIDI button by the keyboard), then hit a pad — Esc cancels', 6000);
+    return new Promise(res => { padPend = { res, t: later(() => cancelLearn(true), enabled ? LEARN_MS : LEARN_MS_OFF) }; });
   }
   function learnCC(cc) {
     const P = pending;
@@ -269,11 +298,25 @@ export function createMidi(host) {
     for (let c = zone ? 1 : ch; c <= (zone ? 16 : ch); c++) for (const n of H.heldNotes(c)) H.noteOff(n, c, ts);
   }
 
-  // One MIDI message from an input (the Phase-1 onMIDI dispatch, in its order)
-  function message(data, ts) {
+  // One MIDI message from an input (the Phase-1 onMIDI dispatch, in its order); port = the input's name ('' unknown), for the
+  // pad hooks only. Before the dispatch: a pending pad learn takes a note-on / CC press, then the host's `padIn` a learned pad's
+  // note-on / note-off / poly pressure / CC — either one ends the message there (bend, channel pressure, program change: never).
+  function message(data, ts, port) {
     const e = decode(data);
     if (!e) return;
-    const ch = e.ch;
+    const ch = e.ch, k = e.k;
+    if (k === 'on' || k === 'off' || k === 'pat' || k === 'cc') {
+      const pn = typeof port === 'string' ? port : '';
+      if (ccHeld && k === 'cc' && e.val === 0 && ccHeld === pn + '|' + ch + '|' + e.cc) ccHeld = ''; // the CC pad let go
+      if (padPend && (k === 'on' || (k === 'cc' && e.val > 0 && e.cc < LEARN_CCS)) && !(k === 'cc' && ccHeld === pn + '|' + ch + '|' + e.cc)) {
+        const P = padPend;
+        padPend = null; unlater(P.t);
+        ccHeld = k === 'cc' ? pn + '|' + ch + '|' + e.cc : '';
+        P.res({ port: pn, ch, n: k === 'on' ? e.n : e.cc, cc: k === 'cc' ? 1 : 0 });
+        return;
+      }
+      if (typeof H.padIn === 'function' && H.padIn(e, pn, ts)) return;
+    }
     switch (e.k) {
       case 'on': H.noteOn(e.n, e.v, ch, ts); break;
       case 'off': if ('rv' in e) H.noteOff(e.n, ch, ts, e.rv); else H.noteOff(e.n, ch, ts); break;
@@ -308,19 +351,45 @@ export function createMidi(host) {
     enabled = true;
     b.textContent = 'MIDI: connecting…';
     try {
-      const m = await nav.requestMIDIAccess();
+      const m = await nav.requestMIDIAccess(); // (no options: no SysEx; outputs come with it, under the same prompt)
+      access = m;
       const hook = () => {
         const names = [];
-        for (const inp of m.inputs.values()) { inp.onmidimessage = onmidimessage; names.push(inp.name); }
+        // each input its own handler, its name reaching the pad hooks; a hot-plug re-hooks them all (a port gone: its handler dies with it).
+        // The button names the connected ones: Chrome keeps an unplugged input in the map, state 'disconnected' (R2-F11)
+        for (const inp of m.inputs.values()) { inp.onmidimessage = e => message(e.data, e.timeStamp, portName(inp)); if (inp.state !== 'disconnected') names.push(inp.name); }
         b.textContent = names.length ? 'MIDI: ' + names.join(', ') : 'MIDI: no devices';
         b.title = names.length ? 'Connected MIDI inputs' : 'Plug in a MIDI controller — it is picked up automatically';
+        // the host learns who is still there after every plug / unplug (ends the notes of a hardware pad whose port left)
+        if (typeof H.ports === 'function') try { H.ports(live(m.inputs).map(portName)); } catch (err) { raise(err); }
       };
       hook(); m.onstatechange = hook;
     } catch {
-      enabled = false; // allow another try
+      enabled = false; access = null; // allow another try
       b.textContent = 'MIDI blocked — click to retry';
       b.title = 'If no prompt appears, allow MIDI for this site in the browser’s site settings';
     }
+  }
+  // MIDI out (IMPL-8 §8.4: lighting hardware pads back): the connected ports' names, and a short message to every output of
+  // that name (two identical controllers share one). A missing port, no access (not enabled, blocked, no Web MIDI), a malformed
+  // message or an output that throws: false, never an exception — a light is only a light. One channel message per call
+  // (status byte, then data bytes < 128); SysEx is refused (it is not requested either).
+  const inputs = () => live(access && access.inputs).map(portName);
+  const outputs = () => live(access && access.outputs).map(portName);
+  function send(port, bytes) {
+    if (!access || typeof port !== 'string' || !bytes || !(bytes.length >= 1)) return false;
+    const b = new Uint8Array(bytes.length);
+    for (let i = 0; i < b.length; i++) {
+      const x = bytes[i];
+      if (!Number.isInteger(x) || x < 0 || x > 255 || (i ? x > 127 : x < 0x80 || x === 0xf0)) return false;
+      b[i] = x;
+    }
+    let sent = false;
+    for (const o of live(access.outputs)) {
+      if (portName(o) !== port) continue;
+      try { o.send(b); sent = true; } catch { /* closed or gone between the check and the send */ }
+    }
+    return sent;
   }
   function wire() {
     const b = H.button(), nav = navOf();
@@ -338,8 +407,9 @@ export function createMidi(host) {
 
   return {
     message, onmidimessage, enable, wire,
-    learn, cancelLearn, forget, mapCC,
+    learn, cancelLearn, forget, mapCC, learnPad, inputs, outputs, send,
     get enabled() { return enabled; },
     get learning() { return pending ? { id: pending.id, dest: pending.dest } : null; },
+    get padLearning() { return !!padPend; },
   };
 }

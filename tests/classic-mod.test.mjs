@@ -317,6 +317,33 @@ test('TR-909: every knob targets its one-level drum.<id> field and the engine\'s
   assert.equal(I.p.drum.cru, 0.5, 'base restored when the rows go');
 });
 
+// IMPL-8 §11.2, §13.4, §15.10: the SDS-V's 40 knobs the same way (its 45 ids are DrumP fields, never an unknown key); models.js
+// = the machine's tables (KNOB_IDS in order, the knobs' defaults KNOB_DEF × 10 — the patch's v / 10 within one ulp —, the memory
+// keys SW_IDS / SW_DEF) and DrumP's defaults = KNOB_DEF / SW_DEF exactly; a tom 1 TONE cable written and restored
+test('SDS-V: models.js = Dr808.mach.sdsv; every knob targets its one-level drum.<id> field and the engine\'s moRec resolves each; a drum.x1t cable writes p.drum', () => {
+  const m = MODELS.find(x => x.id === 'sdsv'), knobs = m.controls.filter(c => c.t === 'k'), sw = m.controls.filter(c => c.t === 's');
+  assert.deepEqual([knobs.length, sw.length, m.controls.length], [40, 5, 45]);
+  for (const c of knobs) assert.deepEqual(V.targetsOf(m, c.id).map(t => t.kind + ':' + t.field), ['field:drum.' + c.id], c.id);
+  for (const c of sw) assert.equal(V.classOf('sdsv', c.id), 'struct', c.id);
+  const D = fresh('sdsv'), X = D.global('Dr808').mach.sdsv;
+  assert.deepEqual([knobs.map(c => c.id), sw.map(c => c.id), sw.map(c => c.def)], [[...X.KNOB_IDS], [...X.SW_IDS], [...X.SW_DEF]]);
+  knobs.forEach((c, i) => {
+    assert.equal(c.def, Math.round(1000 * X.KNOB_DEF[i]) / 100, c.id + ': KNOB_DEF × 10');
+    assert.ok(Math.abs(c.def / 10 - X.KNOB_DEF[i]) <= Number.EPSILON * X.KNOB_DEF[i], c.id + ': the patch value within one ulp');
+  });
+  const P = proc(D, patch('sdsv')), I = P.i0, Dp = I.p.drum.constructor, d0 = new Dp({});
+  assert.deepEqual([I.p.machine, Object.keys(I.p.drum).filter(k => !(k in d0))], ['sdsv', []], 'a fixed-shape DrumP');
+  assert.deepEqual([[...X.KNOB_IDS].map(k => d0[k]), [...X.SW_IDS].map(k => d0[k])], [[...X.KNOB_DEF], [...X.SW_DEF]], 'DrumP\'s defaults: the machine\'s');
+  assert.deepEqual(sw.map(c => I.p.drum[c.id]), [1, 1, 1, 1, 1], 'every channel on memory 2 (the knobs)');
+  I.modRows(knobs.map(c => ({ field: 'drum.' + c.id })));
+  assert.equal(I.moFN, knobs.length, 'every row resolved');
+  assert.deepEqual([...I.moF.map(r => r.sub + '|' + r.key + '|' + r.base)], knobs.map(c => 'drum|' + c.id + '|' + c.def / 10));
+  I.modSpan(null, null, [{ field: 'drum.x1t', v: 0.9 }]);
+  assert.equal(I.p.drum.x1t, 0.9, 'the effective value is in p.drum');
+  I.modRows(null);
+  assert.equal(I.p.drum.x1t, 4.2 / 10, 'base restored when the rows go (the patch\'s value)');
+});
+
 test('modSpan: the two-argument form, null offsets, NaN guarded; a Solina level cable and a DX7 level cable (level is their only slot)', () => {
   const D = fresh('forms'), P = proc(D, patch('juno60')), I = P.i0;
   I.modRows([{ slot: S.VO }, { slot: S.VO }, { slot: S.VR }, { slot: S.BEND }, null]);

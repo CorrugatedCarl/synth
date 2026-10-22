@@ -80,6 +80,20 @@ test('IMPL-7c §2.7: the TR-909 is costed by its bench row d9p the same way — 
   assert.equal(C.label(e), '~2 %');
 });
 
+// (dvp's target 0.03 is a ceiling — review #6 / P-1: the groove keeps all five cards awake —, the row measures 0.0131
+// calibrated: the estimate is the measurement, between 0.4 × and 1 × the target)
+test('IMPL-8 §12.7: the SDS-V is costed by its bench row dvp the same way — mono, its measured row under the node target, under the 808', () => {
+  const c = C.COST.synth.sdsv, e = C.estimate('sdsv');
+  assert.deepEqual([c.row, c.family, c.poly], ['dvp', 'drums', 1]);
+  assert.deepEqual([BENCH.targets.dvp, BENCH.targets.dvx, BENCH.targets.dvm, BENCH.targets.dvi], [{ node: 0.03, ipad: 0.035 }, { node: 0.05, ipad: 0.06 }, { node: 0.03, ipad: 0.035 }, { node: 0.0005, ipad: 0.001 }]);
+  assert.ok(e >= 0.4 * BENCH.targets.dvp.node && e <= BENCH.targets.dvp.node, 'sdsv ' + e + ' vs dvp ' + BENCH.targets.dvp.node);
+  near(e, 0.0131, 0.02, 'sdsv vs the measured dvp');
+  assert.ok(e < C.estimate('tr808'), 'five cards under the 808');
+  assert.equal(C.estimate('sdsv', 1, { notes: 8 }), e);
+  assert.equal(C.estimate(syn('sdsv', {}), 2), 2 * e);
+  assert.equal(C.label(e), '~1 %');
+});
+
 test('estimates are monotone in voices, unison, oscillators, filters and effect count, and linear in the factor', () => {
   for (const m of MODELS.filter(x => x.id !== 'serum')) {
     let last = 0;

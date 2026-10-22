@@ -1,0 +1,15 @@
+{
+  "note": "Frozen SDS-V sound (IMPL-8 §15.2, D2): verbatim copies of dr-808.js (its five voice cards, the factory sounds and default trims), dr-seq.js and engine.js at the 7d + 8 acceptance commit. Never edit: tests/golden-sdsv.test.mjs renders them (side A, every other module current) against the current files, bit for bit.",
+  "commit": "0443a98376de2127b9f84fae6f15ad3b43dcc91e",
+  "files": {
+    "dr-808.js": {
+      "sha256": "3e10935d67bb74ad7afe5220c8d8275b17b6194dba86e0542bea0878d154bd2e"
+    },
+    "dr-seq.js": {
+      "sha256": "ff9675265d371e216d34ca0589aaaa9baee70507e81d92ae40c7e6380af9878b"
+    },
+    "engine.js": {
+      "sha256": "ae5f57537dba4d1c123d31844ec76db011d83dfbd5b175634040a10ac1a1a312"
+    }
+  }
+}

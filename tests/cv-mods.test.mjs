@@ -23,13 +23,14 @@ test('every classic control is classed; the counts (§7.8)', () => {
   assert.deepEqual(Object.keys(V.CLASS_TABLE), CLASSIC.map(m => m.id));
   for (const m of CLASSIC) assert.deepEqual(Object.keys(V.CLASS_TABLE[m.id]), m.controls.map(c => c.id), m.id);
   const n = V.counts();
-  assert.equal(Object.values(n).reduce((a, b) => a + b, 0), 499);
-  assert.deepEqual(n, { none: 2, sm: 129, apply: 70, proc: 106, chunk: 180, struct: 12 });
+  assert.equal(Object.values(n).reduce((a, b) => a + b, 0), 544);
+  assert.deepEqual(n, { none: 2, sm: 129, apply: 70, proc: 146, chunk: 180, struct: 17 });
   const of = cls => Object.entries(V.CLASS_TABLE).flatMap(([m, t]) => Object.keys(t).filter(k => t[k] === cls).map(k => m + '.' + k));
   // voice structure / filter path: P-5 and OB-Xa Unison, JP-8 Assign, OB-Xa filter slope, DX7 algorithm, the two HPF
-  // cutoffs that switch the HP type; the TR-808's five sound switches (a circuit's components, IMPL-7a §2.3)
+  // cutoffs that switch the HP type; the TR-808's five sound switches (a circuit's components, IMPL-7a §2.3); the SDS-V's five
+  // memory keys (which six a card plays, IMPL-8 §11.5)
   assert.deepEqual(of('struct').sort(), ['dx7.alg', 'jupiter8.as', 'jupiter8.hp', 'modular.hp', 'obxa.pl', 'obxa.un', 'prophet5.un',
-    'tr808.cps', 'tr808.hts', 'tr808.lts', 'tr808.mts', 'tr808.rss']);
+    'sdsv.x1p', 'sdsv.x2p', 'sdsv.x3p', 'sdsv.xbp', 'sdsv.xsp', 'tr808.cps', 'tr808.hts', 'tr808.lts', 'tr808.mts', 'tr808.rss']);
   // the 808's 23 knobs are proc: one-level drum.<id> fields (IMPL-7a §2.3, §9)
   const k808 = MODELS.find(m => m.id === 'tr808').controls.filter(c => c.t === 'k');
   assert.equal(k808.length, 23);
@@ -48,6 +49,20 @@ test('every classic control is classed; the counts (§7.8)', () => {
   for (const c of m909.controls) { assert.equal(V.classOf('tr909', c.id), 'proc', c.id); assert.deepEqual(V.sweepControl('tr909', c).fields, ['drum.' + c.id], c.id); }
   assert.deepEqual(m909.controls.map(c => c.id).filter(id => !k808.some(c => c.id === id) && !m606.controls.some(c => c.id === id)), ['bda', 'mtu', 'mtd', 'crl', 'rdl', 'cru', 'rdu']);
   assert.deepEqual([V.patchOf('tr909', {}).machine, V.fieldClass('drum.cru', 'drums')], ['tr909', 'proc']);
+  // the SDS-V's 40 knobs + 5 memory switches (IMPL-8 §11.2, §13.4): 'x' + channel b s 1 2 3 + field, five sections (one per
+  // channel: the card's six, SENSITIVITY, LEVEL, the memory key); every knob proc, its one-level drum.<id> field; the switches
+  // struct (a memory index 0…3 — nothing else moves); no id shared with the other machines; its patch names its machine
+  const mV = MODELS.find(m => m.id === 'sdsv'), kV = mV.controls.filter(c => c.t === 'k'), sV = mV.controls.filter(c => c.t === 's');
+  assert.deepEqual([mV.controls.length, kV.length, sV.length, mV.sections.map(s => s.title)], [45, 40, 5, ['Bass Drum', 'Snare Drum', 'Tom 1', 'Tom 2', 'Tom 3']]);
+  assert.deepEqual(mV.controls.map(c => c.id), ['b', 's', '1', '2', '3'].flatMap(ch => [...'ntbdmcslp'].map(f => 'x' + ch + f)));
+  for (const c of kV) { assert.equal(V.classOf('sdsv', c.id), 'proc', c.id); assert.deepEqual(V.sweepControl('sdsv', c).fields, ['drum.' + c.id], c.id); }
+  for (const c of sV) {
+    assert.deepEqual([V.classOf('sdsv', c.id), c.opts, c.def], ['struct', ['1', '2', '3', '4'], 1], c.id);
+    assert.deepEqual(V.sweepControl('sdsv', c).fields, ['drum.' + c.id], c.id);
+    assert.deepEqual([0, 1, 2, 3].map(i => V.patchOf('sdsv', { [c.id]: i }).drum[c.id]), [0, 1, 2, 3], c.id + ': the memory\'s index');
+  }
+  assert.deepEqual(mV.controls.filter(c => CLASSIC.some(m => m.family === 'drums' && m.id !== 'sdsv' && m.controls.some(x => x.id === c.id))), []);
+  assert.deepEqual([V.patchOf('sdsv', {}).machine, V.patchOf('sdsv', {}).engine, V.fieldClass('drum.x1t', 'drums'), V.fieldClass('drum.x1p', 'drums')], ['sdsv', 'drums', 'proc', 'struct']);
   assert.deepEqual(of('none').sort(), ['jupiter8.pws', 'minimoog.mm']);
   const spot = { 'minimoog.fc': 'sm', 'minimoog.em': 'sm', 'minimoog.fa': 'apply', 'minimoog.gl': 'proc', 'minimoog.w1': 'chunk', 'minimoog.m1': 'sm',
     'tb303.dc': 'apply', 'tb303.ac': 'apply', 'dx7.vol': 'sm', 'dx7.dac': 'proc', 'dx7.R1_1': 'chunk', 'solina.cb': 'proc', 'solina.vol': 'sm',
@@ -130,6 +145,8 @@ test('descriptors: classic, Serum, FX racks, by device', () => {
   assert.equal(V.descs({ kind: 'synth', model: 'juno60' }).length, 25);
   assert.deepEqual(V.descs({ kind: 'synth', model: 'tr606' }).map(d => d.cls + (d.nomod ? '!' : '')), Array(18).fill('proc'), 'TR-606: 18 proc destinations');
   assert.deepEqual(V.descs({ kind: 'synth', model: 'tr909' }).map(d => d.cls + (d.nomod ? '!' : '')), Array(28).fill('proc'), 'TR-909: 28 proc destinations');
+  assert.deepEqual(V.descs({ kind: 'synth', model: 'sdsv' }).map(d => d.cls + (d.nomod ? '!' : '')),
+    Array(5).fill([...Array(8).fill('proc'), 'struct!']).flat(), 'SDS-V: 40 proc destinations, 5 memory keys never modulated');
   assert.equal(V.descs({ kind: 'synth', model: 'serum', fx }).length, S.length + R.length);
   assert.deepEqual([V.descs(null), V.descs({ kind: 'out' })], [[], []]);
 });
@@ -298,4 +315,58 @@ test('milestone 3 destOk: a modulator\'s own knobs (its body a Serum panel on a 
   // a part's controls share their Serum's [data-dev]: the Serum device answers (OSC B's level, its ⏻ — the bar's x.on end)
   const sx = { kind: 'synth', model: 'serum', vals: { s: C.normalizeSerum(C.defaultSerum()) }, fx: null };
   for (const id of ['b.level', 'b.on', 'f2.cutoff', 'l3.rate', 'e2.att', 'm3', 'arp.on']) assert.equal(V.destOk(sx, id).ok, true, id);
+});
+
+/* ------------------------------------------------------------------ IMPL-8 §5.1 (lane Q): a mod pad of a Pads module as a source */
+import * as PC from '../pads-core.js?v=9';
+// two Pads modules (pd2 first in the list): pd1 2 × 3 — slot 0 'Duck' (vel), 1 a note without mod (not a source), 2 mod only,
+// 9 a note C4 + mod (gate), 12 hidden at 3 columns (mod); pd2 'Kit' 4 × 4 — slot 0 'Kick' (mod), 63 hidden (mod)
+function padsProject() {
+  const note = n => ({ k: 'note', tr: 'trk_1', n }), pads1 = new Array(64).fill(null), pads2 = new Array(64).fill(null);
+  pads1[0] = { l: 'Duck', mod: { m: 'vel', lo: 0, hi: 1 } }; pads1[1] = { t: [note(48)] }; pads1[2] = { mod: { m: 'tog', lo: 0.2, hi: 0.8 } };
+  pads1[9] = { t: [note(60)], mod: { m: 'gate' } }; pads1[12] = { mod: {} };
+  pads2[0] = { l: 'Kick', t: [{ k: 'drum', tr: 'trk_1', s: 'bd' }], mod: { m: 'press' } }; pads2[63] = { mod: { lo: 1, hi: 0 } };
+  return { perf: { wheel: { v: 1 } }, pads: PC.normPads([{ id: 'pd2', name: 'Kit', pads: pads2 }, { id: 'pd1', rows: 2, cols: 3, pads: pads1 }]), tracks: [] };
+}
+test('IMPL-8 §5.1 pad sources: srcOf / srcDev / perNoteOf of pd<n>.p<i> (kind pad, GLOBAL, the track never read); malformed ids are no source', () => {
+  assert.deepEqual(V.srcOf('pd1.p12'), { dev: 'pd1', port: 'p12', link: '' });
+  for (const t of [{ dev: {} }, null, undefined, { dev: { pd1: { kind: 'lfo' } } }]) {
+    assert.deepEqual(V.srcDev(t, 'pd1.p12'), { q: { dev: 'pd1', port: 'p12', link: '' }, dev: null, kind: 'pad' }, 'the wheel\'s pattern: no track lookup');
+    assert.equal(V.perNoteOf(t, 'pd8.p63'), false, 'GLOBAL');
+  }
+  for (const s of ['pd0.p1', 'pd9.p1', 'pd1.p64', 'pd1.p07', 'pd1.out', 'pd1.k1', 'pd1/lfo1.p1', 'pd12.p1', 'pd.p1', 'Pd1.p1'])
+    assert.deepEqual([V.srcDev({ dev: {} }, s), V.perNoteOf({ dev: {} }, s), V.isPadSrc(s)], [null, null, false], s);
+  assert.deepEqual(['pd1.p0', 'pd8.p63', 'pd3.p9'].map(V.isPadSrc), [true, true, true]);
+  assert.deepEqual([V.kindOfId('pd1'), V.MOD_LABEL.pad, V.MOD_LABEL.pads, V.MOD_ORDER.includes('pads')], [null, undefined, undefined, false], 'the track-device tables stay (IMPL-8 §1.1)');
+  assert.deepEqual(V.destOk({ kind: 'pads' }, 'x'), { ok: false, why: 'This knob can’t be modulated', stage: null }, 'a Pads module has no [data-dest]');
+});
+test('IMPL-8 §5.1 sourcesOf lists the project\'s mod pads after the wheel (modules by id, slots in order; labels; scope project; hidden flagged); none without p.pads', () => {
+  const p = padsProject(), t = { dev: { l1: { kind: 'lfo', lfo: { mono: 1 } } } }, S = V.sourcesOf(t, p);
+  assert.deepEqual(S.map(x => x.id), ['wheel', 'pd1.p0', 'pd1.p2', 'pd1.p9', 'pd1.p12', 'pd2.p0', 'pd2.p63', 'l1.out']);
+  assert.deepEqual(S.filter(x => x.kind === 'pad').map(x => [x.label, x.hidden]), [['Pads 1 · Duck', false], ['Pads 1 · Pad 3', false], ['Pads 1 · C4', false], ['Pads 1 · Pad 13', true],
+    ['Kit · Kick', false], ['Kit · Pad 64', true]], 'own label, else its first target\'s, else "Pad k" (k: the shown number; hidden: its number on the full 8 × 8)');
+  assert.deepEqual(S[3], { id: 'pd1.p9', label: 'Pads 1 · C4', scope: 'project', kind: 'pad', dev: 'pd1', port: 'p9', perNote: false, hidden: false });
+  assert.deepEqual(V.sourcesOf(t, { perf: { wheel: null } }).map(x => x.id), ['l1.out'], 'no p.pads: today\'s list');
+  assert.deepEqual(V.sourcesOf(t, { pads: 'x' }).map(x => x.id), ['l1.out']);
+  assert.deepEqual(V.sourcesOf(t, { pads: [] }).map(x => x.id), ['l1.out']);
+  assert.deepEqual([V.padSrcLabel(p, 'pd1.p9'), V.padSrcLabel(p, 'pd1.p1'), V.padSrcLabel(p, 'pd3.p0'), V.padSrcLabel(p, 'x'), V.padSrcLabel(null, 'pd1.p0')], ['Pads 1 · C4', 'Pads 1 · C3', '', '', ''],
+    'the label of any slot of a module (a row\'s label after its pad\'s mod went: the host prunes it)');
+});
+test('R1-E cv-mods\' pad names are pads-core\' padSourceName (one wording everywhere): sourcesOf, padSrcLabel — the module\'s name, the pad\'s label / first target / "Pad k", a hidden slot its place on the 8 × 8', () => {
+  const p = padsProject();
+  for (const M of p.pads) for (let i = 0; i < 64; i++) {
+    const pad = M.pads[i];
+    if (!pad || !pad.mod) continue;
+    assert.equal(V.padSrcLabel(p, 'pd' + M.id.slice(2) + '.p' + i), PC.padSourceName(p, M, i), M.id + ' ' + i);
+    assert.equal(V.sourcesOf({ dev: {} }, p).find(x => x.id === M.id + '.p' + i).label, PC.padSourceName(p, M, i));
+  }
+});
+test('IMPL-8 §5.3 padTracks: the tracks holding rows of a mod pad (the wheelTracks pattern); none for a pad without mod, a missing module, a non-pad source', () => {
+  const p = padsProject(), r = (id, src) => ({ id, src, dst: 'i1:f.cutoff' });
+  const a = { id: 'trk_1', dev: {}, mods: [r('r1', 'pd1.p0'), r('r2', 'wheel')] }, b = { id: 'trk_2', dev: {}, mods: [r('r1', 'pd1.p9')] }, c = { id: 'trk_3', dev: {}, mods: [r('r1', 'pd1.p0'), r('r2', 'pd1.p1')] }, d = { id: 'trk_4', dev: {} };
+  p.tracks = [a, b, c, d, null];
+  assert.deepEqual([V.padTracks(p, 'pd1.p0'), V.padTracks(p, 'pd1.p9'), V.padTracks(p, 'pd2.p0')], [[a, c], [b], []]);
+  assert.deepEqual([V.padTracks(p, 'pd1.p1'), V.padTracks(p, 'pd3.p0'), V.padTracks(p, 'wheel'), V.padTracks(p, 'pd1'), V.padTracks({ tracks: p.tracks }, 'pd1.p0'), V.padTracks(null, 'pd1.p0')], [[], [], [], [], [], []],
+    'a slot without mod (its rows went with it), a missing module, the wheel, a module id, no p.pads');
+  assert.deepEqual(V.wheelTracks(p), [a], 'the wheel\'s own list unchanged');
 });

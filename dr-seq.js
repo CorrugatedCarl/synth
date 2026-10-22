@@ -85,6 +85,10 @@
  *                  songEvents' expression, so the pattern and the roll paths read one clock, D5); otherwise F at the tempo
  *                  the panel shows — free its TEMPO (bpm), synced the Inst's `bpm` getter (the project's; never tp.fpt, 1
  *                  until a transport arrives). No allocation.
+ * IMPL-8 (lane S5): the SDS-V has no sequencer, so its payload carries an empty plan (n 0: valid, no cursor path ever fires — free,
+ * synced, a start / seek / loop wrap — and events() returns 1e9 / the span's end: nothing is due) and `trim` (its memories 3 / 4,
+ * 5 × 2 × 6 numbers): set() keeps it as `smp` (null until a payload brings one, `s.trim || null`) for the Inst's adoption (engine.js
+ * drOn / drSeqMsg hand it to the machine); the other machines' payloads have none: inert, their every line as 7a / 7b / 7c.
  */
 (function () {
   'use strict';
@@ -154,7 +158,7 @@
         this.nx = null; this.nxAt = 0;                    // the pending plan: 1 at the next boundary, 2 at beat 2
         this.sw = 50;                                     // swing, %
         this.bpm = 120; this.fT = 0; this.fP = 0; this.ffpt = this.fptOf(120); // free clock: tick fT at pos fP
-        this.map = new Int8Array(DEF_MAP); this.prim = new Int8Array(DEF_PRIM); this.mute = 0; this.smp = null;
+        this.map = new Int8Array(DEF_MAP); this.prim = new Int8Array(DEF_PRIM); this.mute = 0; this.smp = null; this.trim = null;
         this.tapN = null; this.tapReq = 0;
         this.rstN = null; this.rstReq = 0;                // (7b) STEP RESET: the counter seen, a restart requested
         this.rstF = -1; this.c0F = -INF;                  // (7b review 2 #3) the request's heard frame (−1 none); the frame the last measure (or restart) began
@@ -178,6 +182,7 @@
         if (len(s.prim) === 16) for (let i = 0; i < 16; i++) { const v = s.prim[i]; this.prim[i] = v >= 0 && v <= 127 ? v : -1; }
         if (fin(s.mute)) this.mute = s.mute & 0xFFFF;
         if ('smp' in s) this.smp = s.smp || null;
+        if ('trim' in s) this.trim = s.trim || null;      // (IMPL-8) the SDS-V's memories 3 / 4, kept as smp is: the Inst adopts them at power on
         const wasRun = this.run, wasSync = this.sync;
         if ('sync' in s) this.sync = !!s.sync;
         if ('run' in s) this.run = !!s.run;

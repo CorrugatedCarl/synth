@@ -95,6 +95,12 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    (808). Waiting on the user: the S0 iPad session at `canvas.domlavin.com/tests/ui-bench.html?m3=1` (steps in IMPL-3 §1.5 / the
    page) → record `"ui-m3"`, ask Q2 (parts or whole panel by default), apply §1.5's table → deploy 1i at once → the user's 1i
    session → milestone 3 merged and deployed (e75eff2) → `?m3=1&real=1` (`"ui-m3b"`) pending. 808: all lanes + both fix rounds on `wt-7a` (b47543f); next: merge canvas, sweep, freeze `tests/ref-7a`, one squashed "7a" commit, deploy.
+8. **(2026-10-21.)** Drums 808 → 606 → 909 deployed; **stage 7d + 8 (pad controller + Simmons SDS-V) deployed** as one squashed
+   commit on `canvas` (holding branch `wt-8`; contract IMPL-8; `tests/ref-7d` frozen beside ref-7a / 7b / 7c — any change to
+   dr-808.js / dr-seq.js / engine.js keeps all four bit-identical). The user isn't a drum-machine expert yet: drum sound feedback comes
+   later from their own research — don't block on it. Pending from the user, whenever they like: `ui-m3b`, `ipad7a` bench, hands-on of
+   the keyboards / Serum parts / drums / Pads. Next on the roadmap: stage 9 (Moog Modular module by module), then stages 4–6; 3R
+   (the GPU module painter, "soft while pinching") parked.
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

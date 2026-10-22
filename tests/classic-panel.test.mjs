@@ -479,3 +479,33 @@ test('(2b fixer C) U2: host.changed(track, id, phase) — a drag\'s moves say \'
   assert.ok(/\.slider \.cap \{[^}]*z-index: 1/.test(css) || /\.slider > \.cap \{[^}]*z-index: 1/.test(css), 'the cap above the bars');
   P.destroy();
 });
+
+test('8 (IMPL-8 §11.5): an SDS-V card knob\'s tooltip says where it is heard when its channel plays another memory — "heard on memory 2; this channel plays memory N" (the knobs and their modulation are memory 2); SENSITIVITY / LEVEL (every memory) and a channel on memory 2 say nothing more; another model\'s knobs unchanged; both layouts', () => {
+  const m = modelOf('sdsv');
+  for (const L of [null, cvPanel.usable('sdsv', m)]) {
+    const doc = fresh(), tips = [], t = track('trk_v', 'sdsv'), H = host(doc, []);
+    H.kit.tip = (el, text) => tips.push(text);
+    const root = doc.createElement('div'); doc.body.append(root);
+    const P = new ClassicPanel(root, { track: t, model: m, layout: L, host: H });
+    const tipOf = id => { tips.length = 0; fire(widget(P.root, id), 'pointerenter'); return tips.at(-1) || ''; };
+    const lay = L ? 'Hardware' : 'Simple';
+    assert.equal(t.vals.xsp, 1, 'the channels start on memory 2 (the knobs)');
+    const plain = tipOf('xst');
+    assert.match(plain, /^Tone: /, lay + ': the knob\'s own line');
+    assert.equal(/memory/.test(plain), false, lay + ': on memory 2 nothing more');
+    P.set('xsp', 2); // (the snare's memory key 3)
+    assert.equal(tipOf('xst'), plain + ' · heard on memory 2; this channel plays memory 3', lay + ': on memory 3');
+    P.set('xsp', 0);
+    assert.match(tipOf('xsd'), / · heard on memory 2; this channel plays memory 1$/, lay + ': on memory 1 (the factory sound)');
+    assert.equal(/memory/.test(tipOf('xss')) || /memory/.test(tipOf('xsl')), false, lay + ': SENSITIVITY and LEVEL act on every memory');
+    assert.equal(/memory/.test(tipOf('xbt')), false, lay + ': another channel on memory 2');
+    P.destroy();
+  }
+  const doc = fresh(), tips = [], t = track('trk_m', 'minimoog'), H = host(doc, []);
+  H.kit.tip = (el, text) => tips.push(text);
+  const root = doc.createElement('div'); doc.body.append(root);
+  const P = new ClassicPanel(root, { track: t, model: modelOf('minimoog'), layout: null, host: H });
+  fire(widget(P.root, 'fc'), 'pointerenter');
+  assert.equal(/memory/.test(tips.at(-1) || ''), false, 'another model: its line as before');
+  P.destroy();
+});

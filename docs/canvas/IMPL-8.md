@@ -263,8 +263,8 @@ pad that also ducks a filter) [C].
 ### 3.5 Defaults and Fill from… (§16 Q3)
 
 A new Pads module **follows the track it is added on** (Q3, answered): a drum machine → its sounds in its own pad order (cv-drum `UI[m].pads`:
-the 808's `PAD_ORDER` 4 × 4 with the kick bottom-left, the 606's 8, the 909's 12; the SDS-V's five — bass drum, snare, toms 3 · 2 · 1 —
-on the bottom row) on a grid of that machine's pad shape; any other instrument → a chromatic run from C3 (48) on that track, 4 × 4.
+the 808's `PAD_ORDER` 4 × 4 with the kick bottom-left, the 606's 8, the 909's 12; the SDS-V's five — bass drum, snare, toms 1 · 2 · 3, the panel's channel order
+(lead, after review 1 F / 2 F7; short labels, each pad in its channel's kit colour) — on the bottom row) on a grid of that machine's pad shape; any other instrument → a chromatic run from C3 (48) on that track, 4 × 4.
 Review #23: the orders live in cv-drum (`PAD_ORDER` cv-drum.js:92, `PAD6`, `PAD9`), which pads-core (a leaf) does not import — the host
 passes them: `defaultsFor(track, D, order, cols)`; they list **the top row first** (left → right), the Pads numbering starts
 **bottom-left**, so row r of the order lands on grid row `rows − 1 − r`; the 606's and the 909's **`ac`** cell (the panels' accent
@@ -1066,6 +1066,938 @@ full patching (stage 4). Before we lock its sound in, you get five short audio f
 
 ## 17. Notes (the builders fill in)
 
+### Lane K (pads core; phase 0, base f425b4d)
+
+**Files**: `pads-core.js` (new), `cv-keys.js` (`bed` only), `tests/pads-core.test.mjs` (new, 20 tests), `tests/cv-keys.test.mjs`
+(20 → 25: five new, the 1i cases untouched). Commits 277525f (the bed options), 7a3640e (pads-core).
+
+**Gates** (node 24, one file at a time): pads-core 19 / 19 + 1 skipped (the SDS-V `resolve` case runs once `PERS.sdsv` lands with
+S5 — no edit), cv-keys 25 / 25 (1i's twenty as they were: `each` false = one `on` per key, the glissando, `at(v)`'s callers read v),
+gesture 53, cv-world 62 (G1 / G2: no gesture.js / cv-world.js edit), canvas-1i-sim 20, cv-panel 90, lint 145 — green.
+`pwa.test`'s BUILD hash is red until the lead's `node tools/precache.mjs --write` (cv-keys.js changed; pads-core.js is reachable
+from main.js only after H's import) — the known window of §14.3; no `sw.js` commit.
+
+**The bed (cv-keys, for U)**: `bed(el, { w: G.w }, { hit: PC.padHit(G, () => M), slide: false, each: true, on(i, v, ts), off(i,
+ts), at(v, i), shade?, raf? })` — the "note" is the slot i (0–63); `s` = screen px per world px from the element's rect (the grid
+element is exactly `gridOf`'s box: the pads and their gaps, no padding). `each`: `on` at every pointer down (a held pad re-struck),
+`off` once at its last pointer, `release()` one `off` per held pad. `slide: false`: a pointer keeps its pad on a move (onto a
+neighbour, a gap, off the grid); a mouse move without a button still lifts. `at(v, i)`: the pad the pen holds — at the frame, at
+the last pen lift (`at(0, i)`), at `release()`. Defaults are 1i's path (`keyAt`, slide, one `on` per key).
+
+**pads-core (for U / H / Q / X)** — a leaf (imports drum-core only):
+- Data: `normPads(x)`, `normPad(p)`, `newModule(id, o)` ("Pads n", 4 × 4 M; `o` = `defaultsFor`'s result), `freeId(pads)`,
+  `PAD_ID`, `validId`, `padSrc(id, i)` → `'pd1.p12'`, `padOfSrc(src)` → `{ id, i } | null`, `isOff(pad)`.
+- Grid: `gridOf(rows, cols, size)` → `{ rows, cols, size, P, gap, w, h }`; `footprint(rows, cols, size)` → `{ w, h, gx, gy, fy }`
+  (the host's `{ fixed: { w, h } }`; the grid's top-left from the module's, centred across, 16 under the bar; the footer's top);
+  `padAt(G, x, y)` → `{ i, r, c, f } | null`; `padRect(G, i)`; `padHit(G, mod | getter)` (the bed's `o.hit`); numbering `padNo(M,
+  i)`, `slotOfNo(M, k)`, `visible(M, i)`, `visibleSlots(M)`, `slotOf(r, c)`, `rcOf(i)`.
+- Velocity: `padVel(f)` (= cv-drum's), `hitVel(M, pad, { f } | { key: true } | { hw: 0–127 })`, `KEY_PAD_V`.
+- Targets: `chordNotes(target)`, `targetNotes(target)`, `resolve(pad, project, drumOf)` → `{ hits: [{ tr, ns, at }], warn: [{ i,
+  tr, why: 'track' | 'sound' | 'unmapped', text }] }` (per track, first-target order; notes sorted and unique across the pad's
+  targets — a note two targets share is sent once per hit; `at` true where a note / chord target lies: the Pencil's aftertouch goes
+  there), `drumNote(t, s, drumOf)` (the first drum machine of the track, primary first, with that sound → `D.map[s][0]`; main.js's
+  `drumOf(t, dev)` passes straight in), `padLabel(pad, project)` / `targetLabel` / `soundName(s, model)`, `noteName`.
+- Defaults: `defaultsFor(track, D, order, cols)` (the host passes `cvDrum.UI[m].pads` and the shape's columns: 4 for the 808 / 606 /
+  909, **5 for the SDS-V**), `fill(M, { k: 'drum', tr, order, cols } | { k: 'scale', tr, scale, root })` → a new 64-array.
+- Modulation: `modValue(mod, { e: 'press', v } | { e: 'at', at } | { e: 'release' }, st)` → the new state `{ v, on }` (the host keeps
+  one per source; null = at rest: lo), `modBright(mod, v)` (0.22 … 1).
+- Colours: `COLORS[16]` `{ id, name, lit, idle }`, `colorFor(target, mod)`, `C_*` indices, `WELL`, `IDLE_A`.
+- Hardware: `bindOf(pads, port, ch, n, cc)` → `{ id, i, hidden } | null` (ch 1–16 and n as midi.js `decode` gives them; this port's
+  binding first, then a port-`''` one), `rebind(pads, id, i, b | null)` → `{ pads, moved }` (immutable; a binding held elsewhere
+  moves), `echo(prof, pad, state)` → `[0x90 | ch − 1, n, 127 | 0] | null`.
+
+**[C] refinements** (each tested): a **keyboard** press on a fixed-velocity module plays its `fv` (a pad's own `v` still wins; by
+position: 100 / 127); a chord's **inversion** past its size is its last inversion, **open** raises the quality's second entry (the
+third, a sus chord's 2nd / 4th) before inverting; a custom list's label "C4 +2", a chord's "Cm7" (no octave, no inversion);
+`normPads` gives a module with a bad or duplicate id **the lowest free id** (its data kept; no rows can name an id that never
+validated) and **drops** a hardware binding whose ch / n are not integers in range (a clamped binding would be one the user never
+learned); `defaultsFor` without an order lays the machine's `sids` kick first (its top row padded); **Fill from…** reads a
+machine's order bottom row first (kick = pad 1), skips `ac`, empties the visible pads left over and keeps the hidden ones; the
+colours sit on a dark pad well (`WELL` #1d1d21, both themes — the hardware look; every lit tone ≥ 3:1 on it, idle = 22 % over it).
+
+**For H / U**: a hidden pad's binding comes back from `bindOf` with `hidden: true` — swallow it (`padIn` → true, nothing plays) so a
+smaller grid never hands those notes to the channel's tracks; `echo('off', …)` is null, so the "velocity 0 once" at a module
+delete, a hidden page or a switch to Off is `echo('gen', pad, 'off')`; `resolve` reads `project.tracks` each hit (cheap: no record
+is normalised when `drumOf` is main's) — cache per pad until the project changes if a profile ever shows it. **For X**: `song.js`
+imports `normPads` from `pads-core.js?v=9` (a leaf, as drum-core).
+
+### Lane M (MIDI) — `midi.js`, `tests/midi.test.mjs`
+
+**API for H / U** (every piece optional on the host; without them midi.js is byte-for-byte today's — seeded random streams through
+named ports are compared against the hook-less router; `midi.message(data, ts)` without a port still works: port `''`):
+
+| side | name | what |
+|---|---|---|
+| host hook | `padIn(e, port, ts) → bool` | first, for `on` / `off` / `pat` / `cc` only (never bend / channel pressure / program change); `e` = midi.js's **decoded** event (`{k:'on', ch, n, v}` v **0…1** = velocity / 127; `{k:'off', ch, n, rv?}` — note-on velocity 0 is an `off` without `rv`; `{k:'pat', ch, n, v}`; `{k:'cc', ch, cc, val}` val 0–127); `port` = `inp.name` (`''` for the port-less entry points); truthy = the message goes nowhere else (no `noteOn`, no CC learn, no `modCC`, no wheel / sustain / all-notes-off roles) |
+| host hook | `ports(names)` | after **every** hook (first connect, every statechange — also for an equal list: a device that re-enumerated); the names of the inputs still there (`state: 'disconnected'` ports dropped; the button text still lists the map, as before). A throwing hook is re-thrown on a 0 ms timer (the button / `enabled` are not affected) |
+| adapter | `learnPad() → Promise<{port, ch, n, cc} \| null>` | **the note-learn hook**: the next hardware **note-on** — or **CC 0–119 with value > 0** — from any port resolves the `project.pads[].hw` shape (`cc` 0 = note `n`, 1 = controller `n`; `port` `''` when unnamed) and is taken **before `padIn`** (a pad already bound elsewhere is learned all the same: H moves it) and goes nowhere else. Note-offs / pressure / CC 0 / CC ≥ 120 do not end it. A CC pad streams values while pressed: after a CC result the same (port, ch, cc) is ignored by the next `learnPad()` until its 0 arrives, so "Learn all" (call it again from the resolution) walks pads in order. Ends with `null`: 15 s (30 s while MIDI still needs enabling), **Esc: main.js's existing `cancelLearn(true)` now also cancels it** (returns true → "a pending learn, not a panic"), another learn of either kind. **No Web MIDI (iPad): `null` at once, no notice, no timer** |
+| adapter | `padLearning` | boolean (the Serum `learning` getter is unchanged) |
+| adapter | `outputs()` / `inputs()` | connected port names (`[]` without access: unsupported, not enabled, blocked, an access with no `outputs` map) |
+| adapter | `send(port, bytes) → bool` | one channel message (status byte, then data bytes < 128; a typed array or an array) to **every** output of that exact name (two identical controllers share one: both light); `false`, never an exception, for a missing / disconnected port, no access, a malformed message, **SysEx** (refused; `requestMIDIAccess()` is called with no options), an output that throws. `hwOut: (port, b) => midi.send(port, b)` is the dep as written. The bytes (127 lit / 0 idle) are pads-core's `echo`; coalescing per frame is the host's |
+
+**Choices / deviations (all additive):** pad learn is **adapter-owned** (§8.3 left "a learn took it" ambiguous): the host's `padIn` need
+not implement a learn, nor a timeout. `cancelLearn` is shared so Esc needs no new wiring. `send` returns a boolean (the contract said
+"no-op"). The pad learn's own note-off is **not** swallowed (it reaches `padIn`, which returns true once the binding is stored; before
+that it reaches `H.noteOff` for a note nobody holds: a no-op in main.js).
+
+**Gates (§15.7), `tests/midi.test.mjs` 34 / 34** (23 old, one — the adapter test's shared-handler pin at 737 — changed to "each input its
+own handler, both delivering"; 11 new): per-port handlers + hot-plug re-hook + `ports` after every hook; `padIn` true → nothing else
+(learn still waiting, no `modCC`), false / undefined / 0 / null → today's dispatch, never asked for bend / at / pc; the decoded events and
+ports it receives; hook-less ≡ always-false hook over seeded streams; pad learn (notes, CC, held CC stream, port-less, before `padIn`,
+15 / 30 s, Esc, replace by another learn either way, Serum learn untouched); `outputs` / `send` (two same-name outputs, disconnected,
+malformed / SysEx, throwing output, no outputs map); no Web MIDI (`{}` / `undefined` / `null` navigator, a denied permission, a retry);
+no options to `requestMIDIAccess`. A scripted mutation check (15 deliberate breakages of midi.js) killed every one. Also green:
+`lint`, `accessors`, `main` tests. **`pwa.test` fails only on sw.js's BUILD hash until the lead's `node tools/precache.mjs --write`**
+(midi.js changed; no `sw.js` commit from this lane).
+
+### Lane S5 (drum core; phase 0, base f425b4d)
+
+**Files**: `drum-core.js`, `dr-seq.js` (the `trim` line + its constructor `this.trim = null`), `tests/drum-core.test.mjs` (133 → 152 tests; the
+909 pin first), `tests/dr-seq.test.mjs` (41 → 47). Commits 73605c9 (the 909 pin, **before any code change**, taken on f425b4d's module) …
+the notes commit.
+
+**Gates** (node 24, one file at a time): drum-core 152/152, dr-seq 47/47, **golden-drums 5/5, golden-606 11/11, golden-909 9/9**
+(refs untouched), lint 143/143; unchanged and green on this branch: cv-drum 54, roll 52, canvas-7a-sim 23 / 7b-sim 15 / 7c-sim 13,
+cv-migrate 56, engine-track 68. **The three pins**: the 808's `04ba14f6…` and the 606's `76c68a68…` unchanged; **the 909's `ce9e221b…`**
+(`pin909`: records with and without `m`, read as the 808 / 606, hostile; sessions; payloads at every `at` × 3 sessions; plans with
+sessions; `planSess` / `rollPlan` / `rollOpts` / `toNotes`; the tables; the laws `tempo909` / `vel9` / `vTrig9`; 66 + 66 `press` calls on
+each of 6 random records with LEDs, grid and pk; DEMO909, PERS.tr909, MAP909, every constant) computed on f425b4d's module, unchanged
+after. **Mutations**, each caught (24 tried, `scratchpad/8/s5/mutate.py`): no sdsv in `mach`; trim unclamped; pk blind to trim; payload
+mute unmasked; memory rows swapped; a map that keeps duplicates; EMPTY_PLAN's `mT`; no `initState('sdsv')`; a press that always sends;
+SYNC not forced; the names; `withTempo` / `compilePlan` / `rollOpts` not dispatched; a foreign session under the 808; `HASV` letting a
+sound past the five in; `MAPV` off DrSeq's default map; the payload's key order; an unnormalised payload trim; DrSeq's trim line; `valid`
+rejecting n 0. (Survivors, all equivalent: `pkOf` hashing `rst` unconditionally — `fnvNum(h, undefined)` hashes 0 — and DrSeq's
+`locate` n 0 guard, which `boundary()` repeats — the cursor starts at INF.)
+
+**Interfaces as built** (for P1 / H / E5 / V5 / X):
+- `PERS.sdsv` = `{ id, sounds (the 808's 16 keys), names (16: 'Bass drum', 'Snare drum', 'Tom 3 (low)', 'Tom 2 (mid)', 'Tom 1 (high)',
+  then the 808's inert 5–15), sids [0–4], mask 0x3E, map (GM), ch ['b','s','1','2','3'], fields ['n','t','b','d','m','c'], trim
+  (TRIM_DEF) }`; exports `NAMESV SIDSV MASKV MAPV TRIM_CH TRIM_F TRIM_DEF EMPTY_PLAN`. `MAPS` / `mach` / `machineOf` four-way
+  (`'sdsv'` only for the exact string); `mapTable` / `primaries` / `drumRows(map, 'sdsv')` — five named rows, GM 36 / 38 / 41 / 45 / 48
+  (= `DrSeq.DEF_MAP` for ids 0–4, tested); the roll's `drumRowsOf({ model: 'sdsv' })` gives them with no roll.js edit.
+- **The record** `{ v: 1, m: 'sdsv', keys: [], ui: {}, x: { sync: false, swing 50–75, mute, solo, rec: false, part 0–1 }, map, smp, trim }`;
+  `normDrum(d, 'sdsv')` fresh `keys` / `ui` each call; `trim` 5 × 2 × 6 clamped to 0…1 **at exact bits** (no rounding: pk and the bounce
+  see the true values), a non-number its default, −0 → 0; `mute` / `solo` masked to the five lanes (the 808's lane bits, bd 1 … ht 5);
+  `sync` / `rec` forced false. Hostile input (cyclic / sparse / huge arrays, throwing getters and proxies at every level) never throws.
+- **The payload** `{ m, plan: EMPTY_PLAN (the frozen shared constant, plain arrays: valid for DrSeq, also after a JSON clone), sync false,
+  run false, bpm 120, swing 50, at, tap 0, map, prim, mute (soundMute & 0x1F: sound bits 0–4), smp (null or 16 by sound id, the five's
+  slots only), trim (a fresh copy of the normalised 5 × 2 × 6), pk }` in that key order; `pk` = `'v0'` + FNV over sync / run / bpm / swing /
+  tap / mute / map / prim / smp / **m** / **trim** (Float64 bits) — and nothing else (not `at`, the session, SWING, PART, a slot's name).
+  `pkOf`'s `rst` line is now `if (s.rst !== undefined)` (606 / 909 always carry it: their bytes unchanged — the pins).
+- **`press`** inputs: `map { sound, notes }` · `mapReset` · `smp { sound, slot }` · **`trim { ch 0–4, mem 3 | 4, f 0–5, v }`** (indices:
+  ch order b s 1 2 3, field order n t b d m c = `TRIM_CH` / `TRIM_F`; v 0…1 clamped; a bad index or a v that is no number is refused) ·
+  **`trimFromKnobs { ch, mem, vals }`** (`vals` an array of six in field order or an object by the field letters; an entry that is no
+  number keeps the trimmer's) · `mute` / `solo { lane 1–5 }` · notifications `transport { play }` / `bpm { v }` / `panic` (the session
+  only) — everything else (the sequencer's inputs, `heard`, `release`, junk) changes nothing and returns the same state / record /
+  `[]`. **cmds is `[{ c: 'send', at: 'now' }]` exactly when the record changed** (a same-value press: no send, the same record), never a
+  `notice` / undo — the memory keys are patch switches (no press) and TRIM edits record writes: **no History step** (review #1). A foreign
+  session under an SDS-V record becomes `{ m: 'sdsv', run: false, play, bpm }` (transport and tempo kept); an SDS-V session under the 808's
+  / 606's / 909's record becomes theirs (the 808's check gained `|| S.m === 'sdsv'`: no existing input changes).
+- `initState('sdsv')` = `{ m: 'sdsv', run: false, play: false, bpm: 120 }`; `compilePlan` / `rollPlan` → EMPTY_PLAN, `toNotes` none,
+  `rollOpts(D)` → `{ prim }`, `planSess` null, `gridPat` 0, `leds` → `{ step: 16 × 0, run: false }`, `stepLen` 240, `demoFree` true,
+  `freeBpm` 120, `withTempo` the same record.
+- **DrSeq**: `set()` keeps `s.trim` (`if ('trim' in s) this.trim = s.trim || null`), initialised `null` in the constructor beside `smp`
+  (one more line than the contract's "one inert line": a stable object shape on the audio thread, and `sq.trim` is `null`, not `undefined`,
+  for E5's `drOn` adoption); stored **as sent** (the machine's `trim(t)` validates). The empty plan needed no other change: `valid`
+  takes n 0, `events()` returns 1e9 on every path (free, synced, a start / seek / loop wrap / stop, a swap to or from a real plan —
+  the measure under the cursor plays out, then silence), no allocation.
+
+**Readings where §11 is silent, and [C] refinements** (each tested):
+1. **`trim`'s defaults** (§11.3 "our own two settings per channel"): `TRIM_DEF` — memory 3 the tight short one, memory 4 the long, low, bent
+   one, per channel (bass `[.30 .35 .45 .30 .15 .60]` / `[.20 .20 .70 .80 .10 .35]` …); all in 0…1 and distinct per channel. They were
+   chosen without V5's `FACTV` (not in this base): **V5 / the listening gate may retune them** (a constants change here, and the
+   record's `trim` defaults move with it: any frozen ref that renders default trims — `golden-sdsv` — must be taken after).
+2. **mute / solo are the 808's lane bits** (`{ k: 'mute', lane 1–5 }`: bd 1 … ht 5), as the 606's and 909's use the 808's lanes; the
+   payload's `mute` the five sounds' bits 0–4. No UI yet.
+3. **x.swing / x.part are kept** (clamped 50–75 / 0–1) because §11.3 lists the shared shape and forces only `sync` / `rec`; the payload's
+   swing is the constant 50, so neither moves `pk` (tested).
+4. **`press` ids are indices**, not the knob ids' letters (`ch: '2'` would be ambiguous with the number 2: a string is refused);
+   `TRIM_CH` / `TRIM_F` / `PERS.sdsv.ch` / `.fields` map between them for the panel.
+5. **A foreign map is read, not defaulted**: `normDrum(606 record, 'sdsv')` keeps the 606's note numbers for the sounds it shares (as every
+   machine keeps a shared field) and gives ids 5–15 `[]`; `drumOf` never feeds one a record of another machine (it re-normalises by model).
+6. The memory keys (`x?p`) and "Copy to knobs" are the host's patch writes, not presses — nothing in drum-core for them.
+
+### Lane V5 (voices) — `dr-808.js`, `tests/dr-sdsv.test.mjs`, RV §6 (2026-10-21, base f425b4d)
+
+**As built.** `Dr808.create(inst, 'sdsv', opt)` → 7a's machine interface (`set`, `setOS`, `hit`, `trig`, `render`, `post`,
+`poll` (nothing), `live`, `reset`, `mon`, `smp`, `setSalt`) + **`trim(t)`** (the SDS-V's only: the 808 / 606 / 909 machines have
+no `trim` key — the engine's guard) + `_mach`, `_v` `{ bd, sd, lt, mt, ht }` (the cards by sound id), `_cards` (by channel), `_trv`.
+`MACH.sdsv` the fourth descriptor; the fourth branch chosen at `create` (`isV`; `is8 = !is6 && !is9 && !isV`) at each machine
+selection (`create`'s voices and the bank's tables, `setRate`, `knobOut`, `readTargets`, `retune`, `apply`, `sources`, `smpHit`'s
+gain, `smpRender`'s rules, `post`, `hit`, `trig`, `mon`, `setSalt`, `_v`) and `gain('sdsv')` first in `gain` — no 808 / 606 / 909
+class, table or loop changed: golden-drums 5/5, golden-606 11/11, golden-909 9/9, dr-808 25/25, dr-606 25/25, dr-909 29/29,
+rom909 8/8 after every commit. Five `CardV` voices (channels b s 1 2 3) on `Ota4` (the SSM2044) and the shell's blocks
+(`bil1`, `kBil`, `tapA`, `rail`, `hash32`'s bits); per card its own noise stream; values and tags: RV §6.
+
+**Interfaces (for S5 / E5 / P1 / X)** — `Dr808.mach.sdsv` = `{ KNOB_IDS (40: 'x' + b s 1 2 3 + n t b d m c s l, channel by
+channel), KNOB_DEF, SOUNDS (the 808's 16 keys), sids [0, 1, 2, 3, 4], SW_IDS ['xbp', 'xsp', 'x1p', 'x2p', 'x3p'], SW_DEF [1, 1, 1, 1,
+1] }` (the 808's / 606's / 909's entries keep their four keys). **The drum object**: every knob 0…1 (a missing one its default),
+`x?p` the memory's **index 0…3** (= keys 1…4; a number or a numeric string; anything else → 1, the knobs). `Dr808.proto.sdsv`:
+- **`KV_DEF`** = per channel FACTV's six, SENSITIVITY 0.5, LEVEL 0.7 — models.js's knob defaults are these × 10 (E5: bass 3 / 4.2 /
+  4.5 / 4.2 / 2.2 / 2.5, snare 6.2 / 4.5 / 2.5 / 3.8 / 6.2 / 3, toms 3 / 4.2 / 6 / 6 · 6.2 · 6.5 (tom 1 · 2 · 3) / 1.5 / 2.5; a test
+  should keep models.js = `mach.sdsv`).
+- **`TRIMV`** (60 = 5 channels × [memory 3's six, memory 4's six], fields n t b d m c, 0…1): **S5's record default `trim`** is
+  this as `[5 × [2 × [6]]]` (`TRIMV[12 c + 6 j + f]`); `trim(t)` takes exactly that shape (clamped 0…1; a missing / foreign value
+  its default; `null` all defaults; no allocation). `FACTV` (30) memory 1 (TRIM…'s "Copy to knobs" from memory 1, P1).
+- **`minVel(s)`** — the lowest velocity that fires at SENSITIVITY s (0…1): 34 / 18 / 2 / 1 at SENS 0 / 1 / 2 / ≥ 2.1 (P-4's
+  threshold; P1's tooltip and the pad's aria text). `padVolts`, `sens`, `vD`, `VCMP` 0.2, `VL` 10, `t60` (DECAY → s), `CV` (the card
+  tables), `CH_OF_V` [0, 1, 4, 3, 2] (sound → channel), `KV_IDS`, `SWV_IDS`, `SWV_DEF`, `Ota4`, the constants.
+- **`Dr808.gain('sdsv', any)` = `OUT_KV` 0.732** (no master knob).
+- `hit(sound, v127)` ids 0–4 (5–15: nothing); `trig(mask)` lanes 1–5 at v 100's volts (no accent; DrSeq's empty plan never trigs);
+  `mon()` `lit` by sound id, `act` in slots 0–4 (bd sd lt mt ht = bass, snare, tom 3, tom 2, tom 1).
+- **E5's warm-up** should run: the five at several velocities (SENS 5 and 10; one under the threshold), a memory key mid-ring, a
+  knob glide (TONE, NOISE), `trim(…)`, an OS change (there and back) — the card's paths: the noise's wake, the one-pass / two-pass
+  SSM2044 (the snare above 5.5 kHz at OS 4), the VCO's corners. `COST.synth.sdsv`: the machine's share of dvp, node: **0.0065**
+  (this file's CPU test; the Track's ≈ 0.007 on top).
+
+**[C] refinements of §12.2 / RV §2.3 (with reasons):**
+- *The toms' dynamic bend is scaled by BEND*: `BEND_oct · (1 + 0.25 · V_D / 10)` — the contract's `+ 0.5 · V_D / 10` octaves at BEND
+  10 (2.5 octaves, tom 1 at TONE 10: 2.94 kHz, the alias gate's case), but **none at BEND 0** (§15.1 "none at 0"; the additive form
+  bent a tom at BEND 0).
+- *The noise*: each card its own stream (a salt per card; `hash32` of the absolute OS sample — one hash a sample, the Irwin–Hall of
+  two 16-bit uniforms: white, Gaussian behind the filters — not white8's four), 0.5 rms in 0–20 kHz in the SSM2044's 2 V_T, a
+  first-order 20 kHz pole (the noise amplifier's) above 60 kHz; the noise path runs **while it can be heard** (on at a hit with its
+  VCAs open, off below 1e-5 V; a wake settles it over the 12 ms before from rest, `noiseWake`'s rule — a function of time only).
+- *The SSM2044's cost*: the Ladder's method (secants at 2s − y, the second pass blended where it drifts) — with no feedback (bass,
+  toms) solved straight down; on the snare's one pass (its cutoff ≤ 5.5 kHz at OS 4) the loop's critical path is cut: the secants
+  at the sample before's prediction, the feedback's saturation secant and 1 / (1 + k Gt) (series below 0.02) a sample behind, the
+  loop closed after the open loop's pass. Its cost against the exact implicit solve at the snare's levels: −39 dB re the output
+  (the fresh prediction −50 dB) — a noise body, for 0.0043 → 0.0035. Small-signal: = the prototype within 0.01 dB (both paths).
+- *VCAs*: the OTA's `tanh(x · 0.03 / 2V_T)` — the tone's by its series (|z| ≤ 0.58), the noise's by its series below 0.8, the Padé
+  above; **the filtered noise × NP enters the VCAs' tanh** (a loud noise limits there, as an OTA's input does).
+- *Envelopes*: the attack's monostable 0.5 ms charging through 0.1 ms (99.3 % of V_D at its end); EG_P set to 1 at the hit; the
+  click's 4 ms gate and its release τ 1 ms, its peak V_D (the trigger's own); the gates counted in OS samples from the hit's chunk.
+- *The VCO* starts at its lower peak, rising; no BLEP on a retrigger's reset step (the RC² rounds it); the snare's 31 Hz triangle
+  free-running on the absolute time (each snare a little different, deterministic).
+- *The balance [fit]*: NP (bass 4.5, snare 3, toms 3 / 3.2 / 3.6: at mid NOISE the noise path peaks about the tone's) and G (bass 11,
+  snare 4.8, toms 7.6 / 7.7 / 9.0 V); the toms' factory DECAY 6–6.5 (their sweep: τ_P = 0.3 τ_T ≈ 30 ms); OUT_KV 0.732; the mix
+  output's coupling 3 Hz and the 808's rails knee; the samples' knee VK_V 4.40 V (v 100, SENS 5), SMP_LEVELV 2.4 V.
+
+**Measured** (48 kHz × 4, node 24, M4 Max; `tests/dr-sdsv.test.mjs`, **20 tests, ≈ 2.2 s**):
+- Target (a): the RC² (180 / 660 / 780 / 570 / 390 Hz), the 20 kHz pole and the 3 Hz coupling within 0.2 dB of their analog
+  prototypes to 5 kHz; the triangle's 3rd harmonic −29.9 dB at TONE 10, −20.8 (bass) / −19.9…−20.0 (toms) at TONE 0; Ota4's small
+  signal within 0.2 dB (0.01 measured), the 4-pole slope ± 1 dB / octave over [f_c, 4 f_c], the snare's peak (−1.0 dB re unity, 9 dB
+  over its passband) within 1 dB, no self-oscillation at k 2.2 (f_c 0.5 / 3 / 12 kHz), f_c = NOISE's law within 2 % (bisection of
+  the −12.04 dB corner), the cutoff's top: 24 kHz at OS 4, held at 0.46 fs at OS 1 (44.1 kHz), finite; **the card's noise path =
+  `Ota4.step` bit for bit** on the stream recomputed from `hash32` (the wake's pre-roll included); the VCO at TONE 0 / 5 / 10 within
+  1 % (TONE 5: bass 60.00, snare 219.94 (mean over its modulation), toms 216.33 / 157.16 / 108.17 Hz), 44.1 × 2 = 48 × 4 within 0.5 %,
+  the first period identical from any frame, a retrigger back at the lower peak; **the alias gate: −107.1 dB re the tone at OS 4**
+  (OS 2 −93.6; the uncorrected corners −67.7 — the mutation), the pitch at the hit 2940 Hz; the envelopes' τ within 2 % (EG_T,
+  EG_N 0.6, EG_P 0.3, the click's 1 ms; DECAY 0 / 5 / 10), the attack 99.3 % at 0.5 ms, **T60 at DECAY 10: 5.01 s** on the sound;
+  the trigger: no hit at SENS 0 v 33 / SENS 1 v 17 / SENS 2 v 1, a hit at v 34 / 18 / 2 (every card).
+- Target (b): the bend downward, monotone in BEND, none at 0; at BEND 10 the pitch at 2 ms v 40 → v 127: toms 713 → 854 / 522 → 626 /
+  364 → 437 Hz, bass and snare unchanged; the noise's centroid v 40 → 127 (NOISE 4): bass 128 → 213, toms 262 → 534 / 265 → 461 /
+  190 → 295 Hz, snare 887 → 887; V_D(127) / V_D(40) 6.30 / 2.80 at SENS 2 / 8 (RV §5), the sounding ratio's compression ≥ 1.8 ×;
+  the balances' ends exact (NOISE / TONE 0: the noise path never runs with CLICK 0; 10: aT 0; CLICK / DRUM 10: the click alone);
+  memories 1 = 2 at the default knobs (bit for bit), 1 / 3 / 4 distinct, the knobs on 2 only, the trims on 3 / 4 only, SENSITIVITY
+  and LEVEL on every memory; a memory key mid-ring: no step above −40 dB.
+- Contracts: retrigger ≠ fresh = reset-then-hit; order-free latching, `trig` = the hits at v 100, ids 5–15 nothing; no NaN / Inf /
+  subnormal (every knob 0 / 10, two ringing extremes, every memory, OS 4 and 1; everything asleep at the end); determinism, span
+  invariance (4 / 128 / random, a memory switch and a glide inside; OS 1 at 44.1); no allocation over 200 spans (`trim` included);
+  idle (no card code asleep), time to sleep after one hit (SENS 10): bass 459, snare 333, toms 1123 / 1245 / 1472 ms; the sample
+  slots (LEVEL, V_D's law, TONE ± 1 octave, DECAY's fade, nothing under the threshold).
+- **§12.4 level**: the bass (memory 1, v 100, SENS 5, LEVEL 7) **0.4285 FS vs the 808's BD 0.4286 (0.00 dB)**; each card alone at v
+  100: snare 0.477 (+0.9 dB), toms 0.396 / 0.398 / 0.401; **the dvp groove's RMS +0.48 dB re the 808's default groove, its peak 0.856
+  FS** (the 808's 0.651) — under the limiter's −1 dBFS by 0.35 dB (E5's Track gate).
+- **CPU** (the machine alone, node, OS 4, best of 3; a card retriggered every 100 ms at v 127): **bass 0.0028, snare 0.0035, toms
+  0.0029–0.0030** (each ≤ 0.004); **dvp 0.0065, dvx 0.0167**, idle 0.0003 — the rows add the decimators and the Track (E5's).
+- **808 / 606 / 909 A/B** (base f425b4d vs this, and this after an SDS-V has run in the scope; the machine alone, their tests'
+  patterns, medians of 7, interleaved, two runs): 808 −4.4 / −3.5 % (after an SDS-V +0.5 / +3.9 %), 606 −0.1 / −2.0 % (−0.7 / −2.3),
+  909 −2.6 / −1.6 % (+1.7 / −0.6) — within the run-to-run noise.
+- **Listening renders** (for the lead / the user, before `ref-7d`): `scratchpad/8/v5/wavs/` of the session scratchpad (48 kHz, 16-bit
+  mono, through the band-limited decimation and the output stage; a file passing 0.95 FS scaled to it, the gain in its log):
+  `1…5-<card>-memories-1to4-v60-v127` (each card's four memories, v 60 then v 127), `1…5-<card>-settings` (factory, BEND 0 / 10,
+  DECAY 2 / 9, NOISE / TONE 0 / 9, CLICK 8, NOISE 1 / 9, TONE 0 / 10, at v 110), `6-velocity-sensitivity-bass-tom2-sens2-5-8` (v 20 →
+  127 at SENS 2 / 5 / 8), `7-groove-dvp-defaults`, `8-groove-toms-memory3-sweeps`. Every factory constant (`FACTV`, `TRIMV`, `CV`'s
+  NP / G) is a retune candidate at the listening gate.
+
+### Lane U (Pads UI) — `cv-pads.js` (new), `cv-module.js`, `cv-cables.js`, `tests/cv-pads.test.mjs` (new), `tests/cv-module.test.mjs`, `tests/cv-cables.test.mjs`
+
+**Base** e04f5eb (wt-8: K + M). Commits 798b78d (host + body; cv-module / cv-cables), 537446e (cv-pads tests), b918324 (note cables
+through a drum machine's map; cv-module / cv-cables tests), 4895fda (lint), 518b3a9 (the grid in its well, the narrow footer / bar —
+headless findings).
+
+**Gates** (node 24, one file at a time): cv-pads 21 / 21 (§15.6's list: 4 × 4 / 8 × 8 / 1 × 1 vs `footprint`, two pointers two
+hits, one pad two pointers two hits one off, velocity by height and fixed, the music zones, Edit mode's `data-pads-edit`, the
+jack anchor a child of the pad, destroy → every off, the keyboard, the inspector → `normPads`-valid records one step per gesture,
+Grid… / Velocity… / Light / Fill from… / Clear / shape / Rename, ≤ 1 paint a frame for 50 lit changes, the DOM budget through the
+real cv-module (4 × 4 ≤ 60, 8 × 8 ≤ 160, + 2 a mod pad), reference counts over pads / pointers / keys / hardware, every D9 path,
+latch, toggle, mod posts at once and pressure ≤ once a frame, the Pencil, hardware echo bytes, learn (moved binding, hidden pad
+swallowed), the learn UI hidden without Web MIDI, the pinch-safe chrome, a rebuilt module keeping Edit mode); cv-module 57 → 60;
+cv-cables 41 → 44; lint 147; canvas-1i-sim 20, canvas-2b-sim 23, canvas-3-sim 26; canvas-sim 22, canvas-2a-sim 26, canvas-1e-sim
+24, cv-shell-sim 16, cv-fixes-sim 5, canvas-7a-sim 23; cv-keys 25, pads-core 19 (+1 skipped, K's) — green. `pwa.test` red on sw.js's
+ASSETS only (pads-core.js / drum-core.js now reachable through cv-cables; cv-pads.js once H imports it): the lead's
+`node tools/precache.mjs --write`, no `sw.js` commit.
+**Headless Chrome** (CDP, `--headless=new --use-angle=metal --force-device-scale-factor=2`, touch emulation, a stub host page —
+the real cv-world + gesture.js + a cv-module view of a Juno track + the Pads module; scratchpad `8/u/site/pads-stub.*`, driver
+`8/u/cdp.mjs`): **30 / 30** at 1440 × 900 and 1024 × 1366 — the 4 × 4 default (352 × 416, chip "4 × 4"), **ten fingers at once →
+ten hits on ten pads, ten offs**, one pad two fingers → two hits one off, **pinches over the grid: from the body's padding across
+the pads (k 1 → 0.43), below 50 % with both fingers on pads (0.4 → 1.2), a canvas finger joined by a pad finger within 250 ms (1 →
+1.79) — nothing played**, the mod pad's cable from its anchor in the pad's colour and the note cable to the Juno's edge, Edit mode
+(the jack visible, a tap opens the inspector, plays nothing), Grid… through ⚙ to **8 × 8** (64 pads, 672 × 736, 90 elements) and
+**1 × 1** (128 × 192, the hidden mod pad's cable at the bar's right end, its dot hidden), one step per change, **no console
+errors**. Screenshots `8/u/shots/{desktop,portrait}-{4x4,10-fingers,after-pinch,edit-inspector,8x8,1x1}.png`. Finding fixed on
+the way: the grid sat in the well but was positioned as if in the body (8 px off, its right column over the well's edge — the fake
+DOM cannot see it). Chrome's touch adjustment moves a fingertip in an 8 px gap onto the pad beside it (with or without
+`--disable-touch-adjustment`; WebKit has none), so the gaps-only pinch is the node test's (no zone on the grid container).
+
+**For H — the host** (`PADS = cvPads.padsHost(deps)`; every dep optional, a missing one a no-op):
+| dep | main.js |
+|---|---|
+| `project()` | `project` (the host reads `project.pads` / `project.tracks`, and writes `project.pads` inside `edit`, after `step`) |
+| `noteOn(tr, n, v, ts, src)` / `noteOff(tr, n, ts, src)` | `noteOn(n, v, src, ts, [track tr], { rec: 'target' })` / `noteOff(n, src, ts)` — src `'pd<k>'`, k the host's session number of tr; called at **every** hit, the off at the last holder (§4.1) |
+| `ctl(tr, kind, v, ts)` | `ctl(kind, v, 0, ts, [track tr])` (the Pencil's `'at'`, ≤ once a frame per track) |
+| `modVal(src, v)` | `src` 'pd1.p12' → every track of `CMOD.padTracks(project, src)` → `modVal(t, 'pd1', 'p12', v)`; a press / release at once, pressure coalesced |
+| `drumRec(tr, s, v, ts)`, `drumLit(tr, fn) → off`, `monSync()` | `DRUM.rec(instView(t, CMOD.primId(t)), …)`, `DRUM.api(instView(…)).lit(fn)`, `monitors.sync()` |
+| `inputSub(tr, fn(n, on)) → off`, `heardTick()`, `live(id)` | an `inputSubs` entry of track tr; `curTick()`; `cvLive(id)` (a hidden / folded module lights nothing) |
+| `drumOf(t, devId)` | main's `drumOf` |
+| `step(label)`, `changed({ id, drop })`, `undo()` | `hist.record(project, label)` (before the write); after it: drop every row whose src is in `drop` on every track (Modulation switched off, review #31 — same step), persist, `cvView.sync` (jacks, size, title, cables), the payloads of tracks with pad rows; `undo()` for the notices' "tap to undo" |
+| `rowsOf(src) → [{ track, label }]` | a mod pad's rows on every track (the inspector lists them) |
+| `learnPad()`, `cancelLearn()`, `midiOk()`, `inputs()`, `outputs()`, `hwOut(port, bytes)` | midi's `learnPad()`, `cancelLearn(true)`, Web MIDI present, `midi.inputs()` / `outputs()`, `midi.send(port, bytes)` |
+| `nextNote(fn) → cancel` | the inspector's "Play it": the next input note (an `inputSubs` one-shot); absent → no button |
+| `jump(tr, id)`, `modelName(m)`, `notice(text, ms, onTap)`, `confirm(text)`, `raf`, `now` | select tr + `cvReveal(tr, id)`; `modelById(m).name`; main's notice / confirm |
+
+Returns `{ value(src) (compileMods' padVal), wants(trackId) (drumMonitor's live), midiIn(e, port, ts) (M's padIn), ports(names), release({ hw }?),
+rebuild(), resync(), transport(playing), endModule(id), endTrack(tr), hwDark(id?), srcLabel via cvPads.srcLabel, … }`. Sites:
+`release({ hw: true })` at panic / power off before their `held` loops; `release()` at a blur / hidden page (hardware kept) —
+`hwDark()` too at a hidden page; `rebuild()` after Undo / Redo / load (`applyRestore`); `endTrack(id)` at `deleteTrack`; nothing
+at `selectTrack` (the old body's destroy ends its pointers and keys; a latch and a hardware hold stay); a module delete:
+`hwDark(id)`, `endModule(id)`, then `removePads`; `transport(true / false)` at play / stop (roll lights); `resync()` where
+cv-module's `host.shown` fires (on / off screen, fold), before `monitors.sync()`.
+**The canvas**: `cvDevices` adds per module `{ key: M.id, kind: 'mod', mod: 'pads', model: null, dev: null, jacks:
+cvPads.moduleJacks(M), color: cvPads.PADS_COLOR }`; `cvHost().size(key)` → `cvPads.moduleSize(M)`; `cvTitle` → `{ title: M.name,
+sub: 'every track', chip: cvPads.chipText(M) }`; `cvMenu` → `body.menuItems()` + Fold · Bring to front · Tidy · Delete; `modMount`
+kind `'pads'` → `cvPads.padsBody({ host: PADS, id: key, doc: document, track: () => trk().id, tap? })` (`tap`: the kit's
+pressOrTap rule — cv-pads' own `tapOn` is the same rule), `b.append(B.el)`, `B.destroy()` at unmount; `modLabel` of a pad source
+→ `cvPads.srcLabel(project.pads, src)`; a note cable's tap (`onAction('n:pd1>i1', 'tap')`, its `pads` slots on the cable) → the
+module's pads listed, a pick → `B.inspect(slot)`; the mod drag from a pad's jack is the 2b flow (`modSrcOf('pd1.p12')` = the
+row src). Body API: `{ el, grid, sync(), release(), menuItems(), edit(on?), inspect(slot), openGrid / openVel / openFill / openHw,
+popover(), closePop(), destroy() }`. Pure: `orderOf(model)` / `defaultsOf(track, drumOf)` (a new module following its track, §3.5,
+for `addPads`), `drumDev(t)`, `parseNotes`.
+
+**[C] refinements / deviations** (each tested): `data-gesture="music"` sits on **every pad**, not on the grid container — §2.3's
+"the gaps are not music: a pinch there zooms" (§15.6's "on the grid only" read as "the grid's pads only"); `BG_SEL` gains `.pd-body`,
+`.pd-well`, `.pd-foot` (one finger there pans), never a pad or the grid (a press in a gap neither plays nor pans). The jack anchor
+is `visibility: hidden` in play mode (also out of the tab order and the a11y tree; still measured). cv-module: an entry's `jacks`
+(validated copies), a spec's `hide` (no dot; an inline one without its anchor ends at `{ x: w, y: BAR_H / 2 }`; `setJackHide` on
+every sync / refresh — no rebuild), a `kind: 'mod'` module's non-mod jack (the `notes` one) read-only, an entry's `color`, Tidy
+sizing an unmade host-sized modulator by `host.size` (the other kinds' guesses unchanged), a note cable's end `<dev>.@notes`
+(`NOTE_END`) on the instrument's left edge (folded: −JACK_OUT, BAR_H / 2), note cables kept tappable under `patch: false`.
+cv-cables: `keyKind('pd1')` → `'pads'` (no MOD_PREFIX / MOD_COLOR entry: their pins stand), `modSrcPort` p0…p63, the pad's colour on
+its rows; note cables (`kind: 'note'`, `tap: 'pads'`, dashed by cv-pads' CSS) per (module, instrument of this track) — a note /
+chord / list target by the instrument's key zone **and, on a drum machine, its note map** (an 808 plays a Juno chord's E4: its low
+conga), a drum target the track's first machine with that sound; hidden pads and other tracks out; none without `project.pads`
+(a project without pads: today's cables, tested). The "+N on other tracks" is the footer's chip, counting **pads**: "+13 pads on
+Drums" / "+5 pads on 2 other tracks" (its tap: `jump`); the bar chip "4 × 4" uses no-break spaces; a module narrower than 256 px
+shortens the footer (✎ / ⚙ / "+13"; below 160 the "+N" goes) and its bar (`[data-pd-narrow]`: no chip, no sub). The D9
+mapping-edit rule compares a pad's `t`, `mod` and `latch` only (a colour, label, velocity or hardware edit keeps its held notes);
+a hidden-by-Grid… held pad ends. Latch: a drum-only pad ignores it; the next tap releases without a new hit. A toggle's release
+posts nothing (its value is unchanged); a press always posts. A learn that moves a binding says so in a notice ("That hardware
+pad moved here from Pads 1 · pad 7"). Swap / copy and Clear pads keep each slot's hardware binding on its slot. Edit mode, the
+selection, the inspector and the roving focus live in the host's `view(id)` (session): a module rebuilt by a jack-set change
+(a pad's Modulation switched on / off) comes back in Edit mode with its inspector. Hardware flashes (a hit, the monitor's bit)
+are 127 for 120 ms, then 0; idle / lit echoes go out on paint frames, once per change. cv-pads imports cv-drum's `UI` (the pad
+orders) — already in the app's graph; pads-core stays a leaf.
+
+### Lane E5 (engine + data; phase 1, base a859c6c = wt-8 after phase 0)
+
+**E5a** (one commit: the patch shape fixed for Q / P1 / X):
+- *models.js* `sdsv` after `tr909` (every earlier index unchanged): `name 'SDS-V'`, `model 'Drum synthesizer'`, `maker 'Simmons'` (a
+  label: the drums' tiles never show it, cv-tray.js:398), `year 1981`, `family 'drums'`, §11.2's tag, an about naming no maker
+  ("our circuit-level model … with our own factory sounds; no recordings of any instrument"). **Five sections, one per channel** —
+  `Bass Drum`, `Snare Drum`, `Tom 1`, `Tom 2`, `Tom 3` (tom 1 the highest) — each `x<ch>n t b d m c` (labels `Noise`, `Tone`, `Bend`,
+  `Decay`, `Noise / Tone`, `Click / Drum`), `x<ch>s` `Sensitivity`, `x<ch>l` `Level`, then the switch `x<ch>p` `Memory` (`opts ['1',
+  '2', '3', '4']`, def 1 = memory 2, the knobs): 45 controls, the knobs in `Dr808.mach.sdsv.KNOB_IDS`' order, the switches = `SW_IDS`
+  [C: per-channel sections, so the Mod menus group a channel's eight under its name (main.js `modDescs`); the face's MIXER is the
+  panel's (X / P1), not a section]. Knob defaults `KV_DEF × 10` (bass 3 / 4.2 / 4.5 / 4.2 / 2.2 / 2.5, snare 6.2 / 4.5 / 2.5 / 3.8 / 6.2
+  / 3, toms 3 / 4.2 / 6 / 6 · 6.2 · 6.5 / 1.5 / 2.5; SENSITIVITY 5, LEVEL 7). **The patch's `v / 10` is within one ulp of `KV_DEF`**
+  (4.2 / 10 = 0.42000000000000004: no double d gives 0.42 by d / 10) — memory 2 at the default knobs is memory 1 to an ulp of TONE, not
+  bit for bit; DrumP's own defaults are `KV_DEF` exactly. `map` → `{ engine: 'drums', machine: 'sdsv', drum: { knobs v / 10, switches
+  their index }, level: 1 }`. `theme` `{ ctl 'knob', knob 'sdsv' (no CSS rule, as `tr9`), panel '#25272a', face '#1b1c1e', ink
+  '#f3f3ef', label '#dcdcd6', accent '#e0281e' (the memory LEDs), cap '#c8cac6', capLine '#ffffff', font 'helvetica' }` [C: §13.1's
+  charcoal face, white legends, light-grey caps with a white line; X refines from the photos]. Presets §12.6's: Init, Big Toms,
+  Tight, Electro (knobs only: a preset puts every channel back on memory 2).
+- *cv-mods*: `FIELD_CLASS` `drum.x<ch><f>` proc (40), `drum.x?p` struct (5); `CLASS_TABLE` regenerated (`tools/cv-classes.mjs
+  --write`, no tool change): **544 controls — sm 129, apply 70, proc 146, chunk 180, struct 17, none 2**.
+- *engine.js* `DrumP` + the 45 fields (`dk(o.x…, KV_DEF[i])`, `x?p` `dk(…, 1)`): one fixed shape (no "unknown patch key").
+- *cv-cost* provisional `sdsv: C('dvp', 'drums', 1, 0.0105, 0.0030)` (V5's machine 0.0065 + the Track's ≈ 0.007); `bench.json`
+  targets dvp 0.03 / 0.035, dvx 0.05 / 0.06, dvi 0.0005 / 0.001.
+- Tests: cv-mods 16/16 (counts; the SDS-V's ids, sections, classes, sweep fields, switch indices, descriptors 40 proc + 5 `struct!`),
+  classic-mod 18/18 (+1: models.js = `mach.sdsv` — ids, defaults × 10, SW_IDS / SW_DEF —, DrumP's defaults = KNOB_DEF / SW_DEF
+  exactly, every knob through the real moRec, a `drum.x1t` cable), cv-cost 15/15 (+1). Unchanged and green: engine-track 68, lint
+  145, presets, integration 44, bench 6, bench-page 2, accessors 30, cv-graph 33, cv-shell-sim 16, smpgen 14, dr-sdsv 20, cv-panel
+  90, classic-panel 13, cv-drum 54; **D1**: golden-drums 5/5, golden-606 11/11, golden-909 9/9, golden-classic 8/8, -fx 3/3, -presets
+  8/8, -random 1/1, -graph 6/6, canonical-stream 1/1. Known windows (X's, §14.3): cv-art (3: `SIL` / `DRAW.sdsv`), cv-tray (1: the
+  Drums list), canvas-7a / 7b / 7c-sim's lists, canvas-sim's view menu.
+
+**E5b** — commits 3940f00 (engine, warm-up, bench rows, engine-track; the §12.4 headroom gate failing first), 7e04214 (OUT_KV),
+8812b29 (cv-cost, bench.html c10), 9d93094 (`golden-sdsv`), these notes. The lead's answers to E5a: **dvm** = the "memories" row;
+the About title keeps `${maker} ${name}`.
+- *engine.js* (no machine branch: the SDS-V rides the generic drum path by its string): `drOn` → `if (dm.trim)
+  dm.trim(this.sq !== null ? this.sq.trim : null)` beside `dm.smp` (a waiting payload's trims, else the defaults — a kept machine
+  coming back without a payload sheds its old trims); `drSeqMsg` → `if (on && dm !== null && 'trim' in s && dm.trim)
+  dm.trim(s.trim)` beside `smp`; `restore()` → `dm.trim(null)` (the warm-up leaves the default trims). The comments' machine lists
+  name the SDS-V. **`warmDrumsV`** after the 909's round (inside `warmDrums`' try), twice: the five through DEF_MAP at v 20 / 64 /
+  100 / 127 (retriggers; round 0 tom 3 at SENSITIVITY 0: v 20 under the comparator; round 1 SENSITIVITY 10, the toms bent hard,
+  the snare's NOISE 0.93: the SSM2044's second pass at OS 4), a patch moving TONE / NOISE and the memory keys to 1 / 3 / 4
+  mid-ring, the payload (an empty plan of EMPTY_PLAN's shape, our trims `WTRIMV`, DEF_MAP / DEF_PRIM: DrSeq.set's map branch and
+  the hand-over), round 0 a stand-in sample (`smp:~warmV`, 909's `warmSmp9`) in the bass's and tom 1's slots, stored and dropped,
+  an OS change each round (there and back), the empty plan synced on a stand-in clock. **Its cost: 27 ms node** (warmDrums 180 ms
+  in all; the scope's warm-up ≈ 605–655 ms, noise). What it buys (a later Track's first SDS-V, three runs each): the patch +
+  payload 0.48–0.77 → 0.31–0.34 ms, **the first hits' quantum 2.5–3.3 ms (past the 2.67 ms deadline) → 1.3–1.6 ms** (the 808's
+  1.4, the 909's 0.5–0.6 in the same harness; a warm five-card wake from rest 0.33–0.47 ms). iPad / JSC: the lead's.
+- *bench-scenarios*: `drumTrack(rows, vals, samples, model, o)` four-way — `'sdsv'`: no pattern, its rows a **one-bar song of roll
+  notes looping** (transport `loop`, `ls` 0, `le` 3840: every timed run has hits), its payload the record's (the empty plan, the
+  default trims), `o.cycle` panel values posted as `{t: patch}` once a bar in turn; `songV(rows)` (rows by sound key, a character
+  its velocity: `a` 70, `b` 90, `x` 100, `s` 110, `X` 127); `prepare()` posts `B.song` and runs `B.cycle` between quanta (one
+  comparison a quantum on every track row). **dvp** bass on the quarters v 100, snare on 2 / 4 v 110, the tom fill 3 → 2 → 1 → 1
+  on the last beat's sixteenths (v 70 / 90 / 110 / 127) [C: §12.7's "3 → 1 in sixteenths, v 70–127" over four sixteenths];
+  **dvx** all five every sixteenth (125 ms) at v 127, every DECAY and SENSITIVITY 10; **dvm** dvp's groove with the channels on
+  memories 3 / 4 / 3 / 4 / 3 (b s 1 2 3; the payload's default trims), every key flipped (3 ↔ 4) each bar — targets node 0.03 /
+  iPad 0.035 [C: dvp's]. `bench.json` targets dvp / dvx / dvm / dvi; `bench.html` **c10** (the SDS-V's default panel playing
+  dvp's groove, `ipad: null`) and the note (c1–c10, the dv rows).
+- *cv-cost* `sdsv: C('dvp', 'drums', 1, 0.0101, 0.0030)` = the gate's dvp 0.0131.
+- **Measured** (node 24, M4 Max; engine-track's gate, calibrated, two runs): **dvp 0.0131 / 0.0132** (0.03), **dvx 0.0194 /
+  0.0217** (0.05), **dvm 0.0092 / 0.0103** (0.03), **dvi 0.00018 / 0.00017** (0.0005); `measure()` (uncalibrated, 7 × 1 s) dvp
+  0.0136 (its halves 0.011 / 0.014: the tom fill), dvx 0.0183, dvm 0.0130. In the same runs d8p 0.0206, d6p 0.0187, d9p 0.0166.
+  V8 A/B (a859c6c's engine.js + dr-808.js vs this, own fast vm contexts, `measure()` alternating, 3 × median of 5 × 1 s): d8p
+  ×1.012, d6p ×1.024 / ×0.959 / ×0.996 (three runs), d9p ×1.017, d8x ×0.996, d6x ×0.974, d9x ×1.007 — run-to-run noise.
+- **The groove-headroom check — it did trip** (the lead asked; V5's 0.35 dB was the machine alone at OS 4): through the whole
+  Track (song notes, decimators, output stage; the pre-limiter peak at the limiter's input) V5's `OUT_KV` 0.732 put the dvp
+  groove's beat 4 (bass + tom 3 together) at **0.906 FS at 48 kHz × 2 (−0.15 dB of gain reduction), 0.905 at × 1, 0.895 at 44.1 ×
+  2** (0.871 at × 4), and the bass's memory 1 at v 100 **+1.23 dB** over the 808's BD (V5's own helper reads the SDS-V's bass 1.2 dB
+  lower than the Track does; the 808's BD agrees within 0.03 dB on both). Failing test first (3940f00), then **`OUT_KV` 0.67**
+  (7e04214, dr-808.js — the SDS-V's constant only: golden-drums / -606 / -909 untouched): the bass +0.46 dB re the BD, the groove's
+  RMS −0.36 dB re the 808's default groove (48 × 4; −0.31 … −0.37 elsewhere), **the pre-limiter peak 0.797 / 0.830 / 0.828 FS at
+  48 kHz × 4 / 2 / 1 and 0.776 / 0.819 / 0.815 at 44.1 kHz — ≥ 0.62 dB under −1 dBFS, the limiter never engaged**; each card
+  alone ≤ 0.46 FS at v 100, ≤ 0.72 at v 127; dr-sdsv 20/20 (its machine-alone level: the bass −0.77 dB, the groove −0.29 dB).
+  The groove on memories 3 / 4 (default trims) 0.860 / 0.856 FS at 48 × 4 (no gate: the listening gate's; at 0.732 it was 0.885).
+  RV §6's row updated. The gate: engine-track's §12.4 test (48 / 44.1 kHz × 4 / 2 (/ 1), 8 bars).
+- *Tests*: **engine-track 78/78** (+10: patch / processorOptions / the warm-up's restore with trims — bit for bit, four machines
+  on Inst 0, the stand-in gone, the payload's trims in the machine; **808 → SDS-V → 909 → SDS-V → 606** — drPend, the trims at
+  drOn, the defaults back without a payload, drSeqMsg's hand-over, no `trim` on the 606; the tails across 808 → SDS-V, SDS-V →
+  909, 909 → SDS-V, SDS-V → 606 — level ×0.92–1.19 at sample 8, second difference −72 … −96 dB past the post's first 8 samples,
+  drained; DEF_MAP notes (each its card alone, ids 5–15 nothing, a payload's remap rules); a `drum.x1t` cable through the real
+  moRec — memory 2 moves tom 1, memory 1 bit-identical; the OS fade (tom 3: −71.7 dB over the change); panic; no allocation (the
+  groove as roll notes with trims, memories 1–4, a `trim` inside, notes); the §12.4 level / headroom gate; the dv bench rows and
+  dvi) and 7c's warm-up list + `sdsv`. **golden-sdsv 5/5** (8 s, RSS 478 MB): D2's cases (18 card renders: every card × memories
+  1–4 (3 / 4 under the default and our trims) × v 20 / 64 / 100 / 127 × SENSITIVITY 0 / 5 / 10; every card knob at 0 / 10; LEVELs
+  and SENSITIVITYs at 10; retrigger trains; dvp as roll notes with its payload (our trims, memories 3 / 4) and without (DEF_MAP);
+  memory switches and a glide mid-ring; OS 2; 44.1 kHz × 1; two sample slots); the "differ" checks (the memories, the trims,
+  SENSITIVITY, **v 20 silent at SENSITIVITY 0, a hit at 5**, the slots); **D7** the groove with our trims offline
+  (processorOptions: patch, seq, song, transport) = live; **D5** 55 hits posted as notes = the same as roll notes on a 128-tick grid
+  (3200 frames: quantum-aligned at 120 BPM / 48 kHz), the same hits on the same frames, bit-identical. Freeze mode exercised (refs
+  written, 5/5 against them; `OUT_KV × (1 + 1e-6)` caught by every memory-1 case, the drSeqMsg hand-over removed caught by 8
+  cases), refs deleted — the lead freezes. cv-cost 15/15, cv-mods 16/16, classic-mod 18/18, bench 6/6, bench-page 2/2.
+- **D1** at the end of E5b (one file at a time): golden-drums 5/5, golden-606 11/11, golden-909 9/9 (after E5b-2's OUT_KV too),
+  golden-classic 8/8, -fx 3/3, -presets 8/8, -random 1/1, -graph 6/6, canonical-stream 1/1; dr-808 25/25, dr-sdsv 20/20, lint
+  145/145, integration 44/44, accessors 30/30. `pwa.test` fails only on sw.js's BUILD hash (engine.js / dr-808.js changed; no
+  `sw.js` commit from this lane: the lead's `node tools/precache.mjs --write`).
+
+**[C] readings and seen, not fixed** (for the lead):
+1. *D5's hit log* reads `p.nowF()` (the frame a note belongs to: a posted note's next quantum), not `spanF` (the last quantum's
+   start between quanta) — the renders are bit-identical either way; the log only.
+2. *The memories 3 / 4 groove at the default trims* (TRIMV) peaks 0.86 FS before the limiter at OS 4 — under it, by 0.3 dB; a
+   louder trim retune at the listening gate may cross it (the limiter's job then, but the dvp gate is the default panel's).
+3. *dvx / the D5 case at v 127 with our trims* reach the limiter (0.891): worst cases, as the 808's d8p accents do.
+4. *Contract wording*: §12.7 calls `COST.synth.sdsv`'s base "the measured machine share"; built as every drum machine's (base +
+   one voice = the row's whole-Track load, 0.0131).
+
+### Lane Q (mod sources; phase 1, base 20854b7 = wt-8 after E5a)
+
+**Files**: `cv-mods.js`, `cv-graph.js`, `cv-model.js`, `tests/cv-mods.test.mjs` (16 → 19), `tests/cv-graph.test.mjs` (33 → 37),
+`tests/cv-model.test.mjs` (8 → 13). No DSP, no main.js. cv-mods / cv-graph import pads-core (`padOfSrc`, `padSrc`, `padNo`,
+`padLabel`; cv-model also `freeId`, `newModule`, `PAD_ID`, `MAX_MODS`) — so pads-core is reachable from main.js through them.
+
+**D5, pinned first**: the 2a / 2b fixtures' `compileMods` (memo signature — `memoSig`, a test export of `sigOf` —, `key`, a hash
+of the payload sans cp / ct with `vals[].v`, the cp / ct keys) taken at 20854b7 (cv-graph = 8815b14's) before any pad change; the
+test compiles them again in a plain project and in one with Pads modules and pad rows on another track, with and without a
+`padVal`: identical. `project.pads` is never hashed: a track without pad rows signs and compiles as before.
+
+**The source** (§5.1): `srcDev(t, 'pd<n>.p<i>')` → `{ q, dev: null, kind: 'pad' }` without reading the track (pads-core
+`padOfSrc` decides: n 1–8, i 0–63, no leading zero; anything else falls through to the device lookup, i.e. null); `perNoteOf` false;
+a Serum row from a pad takes an ext slot through `planSerum` with no edit there. `kindOfId` / `MOD_LABEL` / `MOD_ORDER` unchanged;
+`destOk` unchanged. `sourcesOf(t, p)`: after the wheel, every mod pad (slot with `mod` on) of `p.pads`, **modules by id, slots in
+order** [C], `{ id: 'pd1.p12', label, scope: 'project', kind: 'pad', dev: 'pd1', port: 'p12', perNote: false, hidden }` —
+**`hidden`** (only on pad entries): the slot is outside its module's grid (its rows stay, §1.3; a new cable's menu may skip it).
+**Labels** [C]: "<module name> · " + the pad's own label, else its first target's ("Kick", "C4" — pads-core `padLabel`), else
+"Pad k" (k its shown number; a hidden slot: its number on the full 8 × 8, i + 1) — `padLabel`'s "Mod" fallback would name every
+mod-only pad alike. main.js `modLabel` already finds a `<dev>.<port>` source's label in `modSrcList` → `sourcesOf`: the Mod list,
+the knob menu and the inspector label pad rows with no main.js edit (`padSrcLabel(p, src)` gives the same text for any slot).
+
+**The compile** (§5.3): a pad source in `need` takes a value slot (`take(id, 'val')`) **after the track's modules and the wheel,
+pads sorted numerically by module, then slot** (pd1.p3 < pd1.p12 < pd2.p0); `vals` entry `{ k, src, v, id: 'pd1.p12' }`; past 16
+(shared with CC modules and further macro knobs) the row is `left` `'slots'` (a Serum row too: `'slots'`, not `'ext'`, as 2b). The
+initial `v` and `refreshVals` (memo hits) read `opts.padVal(id)` (a number → clamped 0…1), else the pad's `mod.lo` from
+`project.pads`, else 0 (no module: H prunes such rows at load). `sigOf` / `key` never see the value, the mode or the range: a
+press, a release or an inspector edit of lo / hi / mode is a memo hit (the same payload object, `vals[].v` refreshed) — never a
+repost. Consequence of "after the modules" (the order 2b already has between a second macro module and the CC modules): a row
+from a 9th CC module on a track whose 16 slots are full compiles and the last pad's rows become `left` `'slots'` (the Mod list /
+budget show it; `modConnect`'s `modLeftWhy` checks only the new row, so no notice at that drop — as today when a second macro
+module's knob evicts a CC row).
+
+**cv-model**: `srcOk(t, src, p)` (now exported): a pad needs `p` — its module there and the slot's `mod` on (a hidden slot too);
+**without a project a pad is refused** [C: unlike the wheel's `p === undefined` leniency, which 2a's project-less callers needed]
+(code `'src'`). `addMod` from a pad: classic 0.25 by law, a Serum by its drop rules (the wheel stand-in, as every non-native
+source), a panel's effect knob; **a pad new to the track whose 16 value slots are taken is refused** (code `'slots'`, why "This
+track’s value sources are full (16/16)", the 2a budget's way); a second row from a pad already holding a slot passes; CC / macro
+rows keep 2b's behaviour (no addMod budget; the compile's `left`). `addPads(p, o)` → `{ ok, id, why }` (pads-core `newModule(id,
+o)`: o's fields — `defaultsFor`'s rows / cols / pads, a name — never its id; the lowest free id; the 9th: "8 Pads modules in this
+project"; a missing / non-array `p.pads` becomes `[]`); `removePads(p, id)` → `{ ok, byTrack: [{ trackId, rows }] }` (the module,
+every `pd<n>.*` row, `t.lay.pd<n>` — `dropLay` — on every track); `padRows(p, x)` / `dropPadRows(p, x)` → `{ ok, byTrack }` (x a
+module id or one source: the confirm's counts / §7.2's "Modulation off removes its rows in the same step"); `prunePads(p)` →
+`{ ok, byTrack }` (rows whose pad fails `srcOk`, lay entries of missing modules; idempotent). All pure, in place; the History step
+is the caller's (one `hist.record` around the call: the snapshot holds `p.pads` — tested: one undo restores the module, its rows
+and lays on every track). Re-exported from cv-mods: `padTracks`, `isPadSrc`, `padSrcLabel`.
+
+**For H (main.js)** — `CMOD.*` unless noted:
+- `buildMods`: `CG.compileMods(tr, project, { smooth, qr, ultra, padVal: id => PADS.value(id) })` (a fresh closure per call is
+  fine: padVal is not in the signature).
+- The value path (U's `modVal(src, v)` dep): `for (const t of CMOD.padTracks(project, src)) modVal(t, q.id, 'p' + q.i, v)` with
+  `q = PC.padOfSrc(src)` — main.js `modVal` finds the entry by `'pd1' + '.' + 'p12'` (no edit).
+- `modAdd` kind `'pads'`: `hist.record(project, 'Add Pads')`, `const r = CMOD.addPads(project, PC.defaultsFor(…))` → `r.ok ?
+  t.lay[r.id] = spot : notice(r.why)`; `modDelete` / ⋯ → Delete: `CMOD.padRows(project, id).byTrack` for the confirm, then
+  `CMOD.removePads(project, id)` in one step (queue a patch for every `byTrack` track, as `removeWheel`'s caller does).
+- U's `rowsOf(src)` → `CMOD.padRows(project, src)`; U's `changed({ id, drop })` → `CMOD.dropPadRows(project, s)` for each `s` in
+  `drop`, in the edit's step, then queue the affected tracks.
+- `loadProject` / `freshProject` (review #28): after `p.pads = PC.normPads(p.pads)`, `CMOD.prunePads(p)`.
+- `modConnect`: unchanged — `addMod(…, { project })` refuses a pad that is off / gone (`'src'`) or a 17th value source
+  (`'slots'`, its why shown by `notice(r.why …)`); `modLeftWhy` still covers a Serum's ext budget. `modSrcPick` may filter
+  `s.hidden` out of the "Connect to…" menu.
+
+**Gates** (node 24, one file at a time): cv-mods 19/19, cv-graph 37/37, cv-model 13/13, cv-migrate 56/56 (the 2a wheel /
+singleton tests), canonical-stream 1/1, golden-graph 6/6, modcore 24/24, canvas-2a-sim 26/26, canvas-2b-sim 23/23, canvas-3-sim
+26/26, lint 145/145, accessors 30/30, cv-graph-engine 5/5, main 43/43 — green. `pwa.test`'s BUILD hash: the lead's
+`node tools/precache.mjs --write` (no `sw.js` commit).
+
+### Lane P1 (panel code: `cv-panel.js`, `cv-drum.js`, `tools/panel-check.mjs`, `tests/cv-drum.test.mjs`, `tests/cv-panel.test.mjs`, `tests/classic-panel.test.mjs`)
+
+**P1a (the validator, the geometry, panel-check, the memory keys' radio; lane X's base)**, on E5a 20854b7. Readings where §13 left a
+detail open [C]:
+- **`TOKENS.sdsv`**: face `dr:mem` (button) and `dr:trim` (button); extras `dr:pads dr:map dr:sounds dr:trimMenu` (no grid, SYNC, REC,
+  DEMO, → Piano roll: no sequencer). Two new generic table fields: **`grp`** — a repeated token's group `[field, values]`: `idx` and
+  `full` count *within* each group (`dr:mem` n 1–4 and `dr:trim` mem 3–4 per `ch` of `'b' 's' '1' '2' '3'` — strings, the ids'
+  letters; drum-core's `TRIM_CH` order) — and **`bind`** (`'dr:mem': 'x?p'`): a grouped token writes a models.js switch per group,
+  which its keys place (once per channel present) — the switch is never placed on its own (that is "placed 2 times"), a channel
+  without keys leaves it "not placed". `led: ['dr:mem']` (each key shows its LED); `cells { 'dr:pads': [328, 200] }` (`DRV_PADS`),
+  `dr:trimMenu` 88 × 64 in `TOK_CELL`; `caption` = `XCAPTION_DRUMS` + " · Factory sounds: ours, through our model of its circuits"
+  (§13.3; with the dimmed note 157 characters — **it fits the 976 px strip at 9 px**, estimate × `XCAP_K` 939 px: no step-down, so
+  585's "no other strip changed" list stays `['solina', 'tr909']`). "Simmons" joins `MAKERS`.
+- **The trimmer row** (`dr:trim`, a button token: `w × h` its art's box): `TRIM_N` 6 trimmers of `d` 2–8 mm (absent: what fits, ≤ 5)
+  evenly across the box — they must fit (`6 d ≤ w`, `d ≤ h`); its one hit box (≥ 14 mm, `hit` as any control's). **`hitOff [dx,
+  dy]`** (mm, the trimmer rows only): the hit box's centre off the art's, so two rows closer than 14 mm keep disjoint boxes (memory 3's
+  up, 4's down); it must still cover the row. The art (cv-panel `trimSvg`, our own): metal discs with a screwdriver slot each at an
+  angle of its own, **static** (TRIM… shows the values), one `<path>` for a row's discs and one for its slots (20 elements for the
+  ten rows: the DOM budget); colours `scheme.trim { body, rim, slot }` (validated; defaults `TRIM_SKIN`).
+- **The memory keys' radio** (render, cv-panel — a patch binding, not `api.drum`): the four `dr:mem` keys of a channel become one
+  radio built at its first key in the Tab order — `hwButtons` over the keys' own boxes and hit boxes (the LEDs, the arrows, one tab
+  stop) inside one `.hw-c` whose `data-ctl` = `data-dest` = `x<ch>p` (the mod drop, the halo, the ui entry, classic-panel's "one
+  data-dest per control"); a key writes index n − 1 through `api.set` (a switch's write: presets carry it, **no History step**,
+  review #1); labels "Bass Drum · Memory", "Memory 1 · our factory sound" … "Memory 4 · trimmers (TRIM…)". It works without
+  `api.drum` (the patch's own).
+- **Geometry**: 482.6 mm → **992** px (`ceil32(965.2)`, offX 13.5); the strip 16 + 200 (the kit) + 64 + 8 = 288 under a 304.8 px
+  face → **992 × 640** (`TARGET.sdsv`; any face 140.1–156 mm deep gives 640). The cells: `dr:pads` (8, 321) 328 × 200, then MAP… 88 ·
+  SOUNDS… 104 · TRIM… 88 at y 521. (§13.1's ≈ 608 was the estimate; the 200 px kit — the bass pad ≈ 116 px wide, the others ≈ 88 —
+  is what makes it 640.)
+- `panel-check`: grouped tokens per group (`dr:mem ch s: 4 placed`), the switches the keys write (and a warning if one is also
+  placed), each trimmer row's art and hit box, labels `dr:mem#b:1`.
+- Tests: `cv-drum.test` 54 → **59** (8 tokens, one mutation per rule — 40-odd —, geometry, art, the radio rendered with a fake
+  api); `cv-panel.test` (`HW_IDS` + `sdsv`, `EXTRAS.sdsv`, `TARGET.sdsv` 992 × 640, `NOKEYS` + `sdsv`, the per-model "every id once"
+  counting a bound switch through its keys, the xcapFit note): **89 / 90 — the `HW_IDS` pin is the known window** until X lists
+  `sdsv`; with the fixture as a scratch `panels/sdsv.js` listed: **94 / 94** (valid, 992 × 640, hit boxes, original art, every
+  authored model rendered, usable, determinism, the caption at 9 px), `classic-panel` 13 / 13 (one data-dest per control), `panel-check
+  sdsv` valid, no overlaps, smallest hit box 80 × 28 px (a trimmer row). `classic-panel` needs no SDS-V row (no face switch). lint
+  145 / 145.
+- **Lead-accepted deviation** (2026-10-21, at P1a 23b9418): the memory keys are the contract's `dr:mem` token, but drawn by
+  cv-panel as **one radio per channel** whose wrapper is the switch's (`data-ctl` = `data-dest` = `x<ch>p`, written through
+  `api.set`, no History step) — not four `dr:` widgets of cv-drum over `api.drum`: a patch switch's binding (presets, mod drops,
+  halos, the ui entry; classic-panel's "one data-dest per control"), and it works without a drum host.
+
+**P1 phase 2 (the SDS-V's widgets, `cv-drum.js`; on P1a)** — commits 3734a03 (the code), c5abb96 (the §15.9 tests), 5b2c47e, 6faf2dc,
+f3634bf (fixes from the Chrome check) and these notes. Every 808 / 606 / 909 widget and behaviour unchanged (their cv-drum tests as
+they were; the panel's 808 / 606 / 909 branches untouched — the SDS-V's is a branch of its own at `widget` / `show` / `extra`).
+Readings [C]:
+- **Four ways**: `machOf` (`'sdsv'` the exact string), the host's session (an SDS-V session names itself, `S.m`: `changed()` with
+  another machine's record starts that machine's, and back); `UI.sdsv` = `{ pads: PADV ['bd', 'sd', 'lt', 'mt', 'ht'] (the Pads
+  module's 1 × 5 order, §3.5: bass drum, snare, toms 3 · 2 · 1), padG: PADSV, grid: null, dial: {}, lanes: [], scode, name 'SDS-V' }`.
+- **The kit** (`PADSV` = cv-panel `DRV_PADS` 328 × 200; flat-topped hexagons `[cx, cy, r]`: bass (172, 144, 58) bottom centre,
+  snare (54, 146, 44) left of it, toms 1 · 2 · 3 at (70, 56) · (172, 46) · (274, 56), r 44 — ≥ 9 px apart): pure `inHex(cx, cy, r, x,
+  y)` and `hexAt(x, y)` → `{ s, v }` (the velocity from the touch's height in its hexagon: `padVel`, back 0.30 … front 1). One music
+  zone; the hit test at the cell's local point (`wk.localPoint`: any zoom), so a press between pads or in a hexagon's box corner
+  plays nothing; every press its own hit (`DR.pads.on`), the off at the pad's last lift; each pad its own flash parity; the
+  monitor's lights by sound id; Enter / Space at 100 / 127, the arrows walk tom 1 → 2 → 3 → snare → bass (wrapping); pads one
+  element each (the code by CSS, the hexagon a `clip-path`, the channel's colour `--pc`: bass red, snare amber, toms violet / green
+  / blue [C]). **P-4**: each pad's aria text and tip name its channel's soft-hit threshold at the SENSITIVITY knob ("SENSITIVITY 1.0:
+  hits below velocity 18 fire nothing (low settings ignore soft hits, as on the original)"; "every hit fires" from 2.1), following
+  the knob (`api.watch`) — `minVelV(s)` is a copy of dr-808.js `Dr808.proto.sdsv.minVel` (a classic worklet script, not importable
+  on the page), equal at 101 SENS values by a test in a dsp-scope; `CH_OF_V` likewise.
+- **The trimmer rows**: a transparent button over the face's art (`dr-trim`), its hit area the geometry's (`--hit-w/-h`), moved by
+  `hitOff` (`--hit-dx/-dy` on its `::before`, cv-drum's CSS); a tap (`A.tap`: a pinch starting there opens nothing) opens TRIM… at
+  that channel and memory; `aria-haspopup="dialog"`, `aria-expanded` while it is open.
+- **TRIM…** (a popover; `.dr-trimpop`): in the top layer when the panel is on the canvas (`wk.layer`, fixed at the anchor, a camera
+  move closes it: `wk.addTransient`), else the document's body; tabs per drum (one tab stop, the arrows); "Memory 1 · our factory
+  sound" → Copy to knobs (the knobs' models.js defaults = FACTV × 10, no FACTV copy needed); Memory 3 / 4 → six small `wk.knob`s
+  (drum-core `trim` presses: record writes and a send, no notice / History step — review #1), **Store knobs here**
+  (`trimFromKnobs`, the six knobs / 10), **Copy to knobs** (the six knob writes **and the channel on memory 2** [C]: the same sound,
+  now from the knobs, where modulation acts); the row the channel plays marked "· playing"; a note on what the memories are and
+  that edits stay out of Undo. Escape (focus back on the row), ✕, a press outside, the same row again, destroy close it; after a
+  finger's tap the browser's click focuses the row, so the focus is put back into the popover on the next task.
+- **`DRUM.rec(tr, sound, v, ts)`** (the host's `rec`): the pads' REC branch (`press({ k: 'pad', sound: i, f: frac(…), v })`)
+  without the note and without `sel()`; `sound` the key (`'sd'`), v 0…1; → true when it wrote (REC on), false otherwise (no record,
+  an unknown sound, REC off — the SDS-V's REC is forced off).
+- **The caption** (fixed here, cv-panel): Chrome measures the SDS-V's 157 characters at **976.5 px at 9 px in its 976 px room**
+  (its capitals wider than the plain caption's: 0.972 of the estimate, not `XCAP_K` 0.935) — `xcapFit(text, room, k)` takes the
+  calibration, and render reads **a model's own caption on the plain estimate (k 1)**: the SDS-V at **8 px (827 px)**, the 909 as
+  before (8 px), every other strip unchanged; 585's list is `['sdsv', 'solina', 'tr909']` once `sdsv` is authored (the test reads
+  `authored`).
+- **Not done (not P1's file)**: §11.5's "the knob's tooltip says so when the channel is on another memory" — the face knobs' tip is
+  classic-panel's (`label: value`); the memory radio's labels say which memory plays the knobs, and TRIM…'s note.
+- **DOM**: the fixture face in Chrome **523 elements** (369 live + 154 face SVG); X's face SVG must stay ≤ ≈ 330 for §13.2's 700.
+- **Tests**: `cv-drum.test` 59 → **64** (tables + the machine's minVel; the host four ways + `DRUM.rec`; the render with and
+  without `api.drum`, DOM, determinism; the kit by touch at three zooms; TRIM…) — 21 mutations tried, each caught. Gates (node 24,
+  one file at a time): cv-drum 64 / 64, cv-panel 89 / 90 (the `HW_IDS` window; **94 / 94** with the fixture as a scratch
+  `panels/sdsv.js` listed, the caption at 8 px), classic-panel 13 / 13 (and with the scratch layout), lint 145 / 145, drum-core
+  153 / 153, cv-face 26 / 26, canvas-1i-sim 20 / 20, cv-fixes-sim 5 / 5, main 43 / 43 (those four with the scratch layout listed);
+  canvas-7a / 7b / 7c-sim fail at their Drums-view pins (X's window, `['tr808', 'tr606', 'tr909']`; the 7c sim's later tests
+  cascade from its first) — **23 / 23, 15 / 15, 13 / 13** with those lines scratch-edited to list `sdsv`, then reverted.
+- **Headless Chrome** (`--headless=new --use-angle=metal --force-device-scale-factor=2`, CDP; the real ClassicPanel → cv-panel →
+  cv-drum over the real drumHost with stub deps — an SDS-V record, logs of notes / sends / monitor —, the fixture face; scratch
+  `8/p1/`: `serve.mjs` on 8931, `cdp.mjs`, `harness.*`, screenshots in `shots/`; server and Chrome stopped): 1440 × 900, 1366 ×
+  1024, 1024 × 1366 — the body 992 × 600; DOM 523; a mouse on the snare's memory 3 and a finger on tom 2's memory 4 (the LEDs, the
+  patch, `changed` the switch ids only); the kick's back edge v 0.315, its front 1, between pads and in its box corner nothing;
+  two fingers on tom 2: two hits, held, one off at the last lift; the monitor flashes tom 1; the bass pad's tip and aria at SENS
+  1 ("below velocity 18"); a trimmer row's hit area 80 × 28 px 6 px above its art, a cancelled touch opens nothing, a tap 10 px
+  above the art opens TRIM… at the snare, a knob's ArrowUp writes the record and one send (no notice), Copy to knobs (the knobs =
+  memory 3, memory 2), Escape, TRIM… at the last channel, a press outside; TRIM… on screen at each viewport with the focus in its
+  row; `?nohost` the kit / rows / TRIM… aria-disabled; **no console error, exception or CDP log error**.
+
+**For H**: `DRUM.rec(instView, sound key, v 0…1, ts)` → bool (no note; call it beside the note path when the target machine's REC
+is on — the SDS-V never writes); `cvDrum.UI[m].pads` for every machine (the SDS-V's `PADV`, 5 columns, one row); the SDS-V's
+session is `{ m: 'sdsv', run, play, bpm }`; the memory keys are the patch's switches `x<ch>p` (index 0–3) — a `valChanged`
+like any knob, no History; TRIM… edits go through `drumPut` (no step) and re-send the payload (its `pk` changes with `trim`).
+
+### Lane X (satellites: `panels/sdsv.js`, `panels/index.js`, `cv-art.js`, `cv-tray.js`, `cv-migrate.js`, `song.js`, their tests and the pins; 2026-10-21, base 23b9418 = P1a)
+
+Five commits: **X1** the panel (`44f2ad6`), **X2** cv-art (`0bb7f65`), **X3** cv-tray (`1bf3d53`), **X4** schema 11 + song (`71f2a6f`), **X5** the sims' pins (`13a570a`).
+
+**The panel** (`panels/sdsv.js`, listed last in `panels/index.js`): one area `main` `src [0, 0, 482.6, 152.4]` → **992 × 640** (`panel-check sdsv`: valid, no overlaps, smallest hit box 76 × 28 px
+(a trimmer row), the 40 knobs + 20 `dr:mem` + 10 `dr:trim` placed, the five `x?p` switches placed by their keys only, extras 4 · live 70 · inert 23 (the 5 OUT jacks `'later'`, the other
+18 dimmed) · decor 179). **No photograph was fetched or committed** (viewing needs a download, which the user has not approved in this session): the positions are the contract's
+§13.1 fallback layout drawn in mm — **estimates, not measurements** — and the file's `notes` say so; a later pass with a published photograph (viewing only) can retune x / y /
+sizes without touching an id (the hit-rule constraints below must stay). Readings [C]:
+- **Geometry**: rack ears 18 mm (two slotted holes each); the rear strip y 0–13.4 (▲ + legend over each socket); five cards at x 25 + 50 i (50 mm), the HI-HAT / CYMBAL blanking
+  plates at x 275 / 325 ("OPTIONAL MODULE", a dimmed inert slot each: a tap says "HI-HAT MODULE (optional on the original) — not emulated"), the MIXER x 375–457. A card: the name plate
+  y 15.6–21.8; the six knobs on x + 14 / x + 36 and y 36.5 / 56.5 / 76.5 (d 12.5, an 11-tick ring, legends NOISE · TONE / BEND · DECAY / NOISE / TONE · CLICK / DRUM decor, `lab: 'none'`);
+  MEMORY print, the four keys **11 × 11 mm** cream squares on a 15 mm pitch (key 1 top left; y 98 / 113; the digit is `onCap` under the cap's LED); TRIM print, the two trimmer rows
+  (`dr:trim` 36 × 5 mm, d 4.5, `hit [38, 14]`, `hitOff` ∓ 3: memory 3's box 121–135, memory 4's 135–149; the keys' lowest box ends at 120.5) at y 131 / 139 with their numerals 3 / 4;
+  the TRIGGER IN jack and legend at y 146.8. The mixer: SENSITIVITY (y 48) and LEVEL (y 90) on x 383 + 16 i (d 10.5), the channel names over each row, "SDS-V" in plain type (no
+  wordmark, logo or maker name: D4), "5 CHANNELS · 4 MEMORIES EACH".
+- **Sockets**: OUT jacks at the cards' centres (`BASS OUT` … `TOM 3 OUT`, `inert: 'later'`); STEREO L / R, MONO, HI-HAT PEDAL, PAD IN 1–7 (x 381 + 11 k) in the top strip and a TRIGGER IN
+  under each card as dimmed inert jacks (our placement: the real ones are rear XLRs).
+- **Skin**: face #25272a, card plates #1c1e21, name bars #34373c, knobs light grey `#d6d8d4` with a dark pointer, cream keys `#efe6cf`, red LEDs `#e0281e` (off `#4a1612`), metal trimmers
+  (`scheme.trim`). Previews (the session scratchpad, `8/x/`): `sdsv-real.png` (the real app, headless Chrome at 2×: the module as the page draws it), `sdsv-check.png` (panel-check's SVG),
+  `tray.png` (the Drums view's tiles), `art.png` (the tile at three sizes + the Pads glyph).
+- Until P1's phase 2 lands the extras strip of an SDS-V track shows the 808's pads (machOf three-way): expected.
+
+**`cv-art`**: `SIL.sdsv = { body: 'box' }` (no steps), `DRAW.sdsv` — a dark rack box (ears, charcoal face) with five voice cards (a name bar, 2 × 3 light-grey knobs with their pointers, a 2 × 2
+square of cream memory keys with key 2's LED lit, two rows of small trimmers), two blank plates, the mixer (ten small knobs, a rule for the name) and **three hexagonal pads in front**
+(the bass drum's centre one larger, with a lit red hexagon); no text; the chip keeps a key, a knob and the centre pad. **`glyph('pads')`**: a 3 × 3 of rounded squares, one lit
+(`GLYPHS` + 1; the tray's tile has its own 40 × 28 copy in `CTL_GLYPH`, as the Modulators' glyphs, so `.cv-mglyph` styles it). Tests: counts (30 + 10 knobs, 20 keys, 5 lit LEDs, 2 blank
+plates, 7 polygons), chip < tile, no maker / model name in the drawing, the glyph's 9 rects and one `currentColor` fill, `tileMeta('sdsv')`.
+
+**`cv-tray`**: `SRC_VIEWS` gains `{ id: 'ctl', label: 'Controllers', tip, note, sections: [{ id: 'ctls' }] }` after Drums (the menu: Hardware · Simple · Serum · Drums · Controllers); the Drums
+note is "More machines later."; the SDS-V's Drums tile: meta "1981 · drum synth" (`DR_META`), a tip saying its sounds are ours and it has no sequencer (`DR_TIP.sdsv`), no maker word, no
+SIMPLE badge. **The Controllers row** (§1.2, review #16): `o.ctls` (`CTL_TILES` = `[{ id: 'pads', name: 'Pads' }]`) in `o.ctlsEl` / `o.ctlsSec` (without the element: an `h3.cv-chead`
+"Controllers" and the tile after the synths in the list), one `button.cv-tile.cv-mtile[data-ctl]` (glyph, name, `span.cv-treason`); a tap → `(o.ctlPick || o.modPick || o.pick)(id, mode)`;
+a drag → `(o.ctlDrag || o.modDrag || o.drag)` with `info.ctl = true` (not `info.mod`), `info.over` `'canvas'` or null, `info.at` from `o.toWorld`, the ghost hidden while
+`(o.ctlCanvasGhost || o.modCanvasGhost)()`; **`setPlaced('pads', reason | null)` is honoured** (the same `setPlaced` as the modulators': the tile is not `multi`); `ctlTiles()` /
+`ctlTile(id)`; the row shows only in a view with a `ctls` section; a stored view `'ctl'` opens Controllers, an id an older build does not know opens Hardware (`viewOf`'s fallback).
+Tests: the five-view menu, the renamed fictional view (`'later'`, appended after five), the Drums view (four machines, the SDS-V's tile text and tip), and three new ones (the view and
+its row, the drag, `setPlaced`) — `cv-tray` 31 → **34**.
+
+**`cv-migrate` / `song`** (§10.2): `SCHEMA = 11`, `STEPS[10]` additive, its header line; `toV1` drops `pads` with the lost-line **"the Pads controllers (N)"** (after the Mod Wheel's, only
+when there is a module; the pad mod rows are each track's "N modulation cables"), an SDS-V track's line is the existing drum line ("SDS-V track “Drums”: the live site has no drum
+machine — its piano-roll notes are kept", by `isDrum` / `MODELS`: no code). `song.deserialize`: `if (Array.isArray(o.pads)) p.pads = normPads(o.pads)` — pads-core's bounds; absent or not an
+array: **no key** (a project without Pads reads exactly as before); `serialize` and History's project snapshot (the project without its tracks) carry it as they carry `perf`.
+Tests (`cv-migrate` 56 → **61**): the moved pins (`SCHEMA` 11, the 7a / 7b / 7c schema tests' `[11, 11]`, `up.p.schema` 11, the read-only rows shifted one, the 7c store seeded with
+`STEPS[9]`'s schema-10 project: "a schema-9 build opens it read-only" keeps its meaning) and five new ones: schema 11 (a 10 opens as before with its pads and sdsv record intact, an 11
+opens read-only in a schema-10 store, a 12 here), `deserialize` of pads (round trip = `normPads`'s records, idempotent, ≤ 8 modules / 64 pads, hostile input and a hostile getter, a
+hardware binding unique, a target on a missing track kept, History undo / redo, a main project: no key), the SDS-V's `normDev` (record bounded and idempotent, the other machines' records
+untouched both ways, hostile input), MIDI (an SDS-V exports on channel 10; a channel-10 import is an 808 track), the lost-lines (pads, SDS-V, the mirror, `splitTracks`).
+
+**Pins** (none weakened): `canvas-7a-sim:68` / `canvas-7b-sim:77` / `canvas-7c-sim:85` (the Drums view: + `'sdsv'`), `canvas-7c-sim:643` / `:655` (schema 11; a schema-9 store reads an 11), `canvas-sim:518`
+(the menu's labels + Controllers), cv-panel's `HW_IDS` (closed by listing `sdsv`: 94 / 94).
+
+**Gates** (one file at a time, `--max-old-space-size=2048`): `panel-check sdsv` valid, 992 × 640, no overlaps · `cv-panel` 94 / 94 · `cv-drum` 59 / 59 · `classic-panel` 13 / 13 · `cv-art` 4 / 4 ·
+`cv-tray` 34 / 34 · `cv-migrate` 61 / 61 · `canvas-7a-sim` 23 / 23 · `canvas-7b-sim` 15 / 15 · `canvas-7c-sim` 13 / 13 · `canvas-sim` 22 / 22 · `appstore` 25 / 25 · `cv-module` 57 / 57 · `lint` 147 / 147 ·
+`golden-presets` 8 / 8 (deserialize's reader; every golden is untouched: no DSP). **Known window**: `pwa.test`'s precache check until the lead's `node tools/precache.mjs --write` (new
+`panels/sdsv.js`; `pads-core.js` is reached through song.js; no `sw.js` in these commits).
+
+**For lane H**: (1) the tray wiring — `shell.tiles = cvTray.sourcesTray(…, { …, ctls: cvTray.CTL_TILES, ctlsEl: $('#srcCtls'), ctlsSec: $('#srcCtlSec'), ctlPick: id => modAdd(id, null),
+ctlDrag: modTileDrag, ctlCanvasGhost: … })` and `shell.tiles.setPlaced('pads', n >= 8 ? '8 Pads modules in this project' : null)` (the section element goes into `index.html` after
+`#srcModSec`, hidden like it — **not in X's row: H adds it**, with its CSS only if `.cv-mtiles` does not already serve); without the elements the tray makes a heading and puts the tile after the
+synths, so nothing breaks first. (2) `loadProject` / `freshProject`: `deserialize` already bounds `pads`, but a project built by other means still needs `p.pads = PC.normPads(p.pads)` and the
+missing-module row drop (review #28). (3) The SDS-V face and its extras are P1 phase 2's; the panel lists `dr:pads` (328 × 200), `dr:map`, `dr:sounds`, `dr:trimMenu` and the 20 keys / 10 trimmer
+rows are live without `api.drum` (the keys are the patch's switches). (4) The estimate caveat above: if the user wants the photographed layout, `panels/sdsv.js` is the one file to retune.
+
+### Lane H (host; phase 2, base 5be58fe = wt-8 after phase 1)
+
+**Files**: `main.js` (§14.1 row by row), `index.html` (the Controllers section only: `#srcCtlSec` / `#srcCtls` after `#srcModSec`, hidden;
+`.cv-mtiles` serves — no CSS), `classic-panel.js` (§11.5's tip), `tests/canvas-8-sim.test.mjs` (new, accessor-free, 12 tests),
+`tests/main.test.mjs` (+1), `tests/classic-panel.test.mjs` (+1). Commits 7a48318 (the lead's fixture check, failing first) → 6ff93bc
+(main.js + index.html) → 810e56d (classic-panel) → faeeb48 … 1c88832 (the sim) and 8b13596 (main.test). No `sw.js` commit.
+
+**As built** (main.js): `noteOn(n, v, src = 0, ts, trs = targets(src), o)` — the keyboard / MIDI / beds / drum-host callers unchanged
+(their messages and `held` entries byte-identical: main.test's new case and the 43 old); `o.rec === 'target'` records the target
+armed or not and adds it to `T.padRec` (cleared at a take's start), which `replaceSweep` and `recCC` take with the armed tracks.
+`numSrc` / `heldSel` / `heldLit`: the `held` loops of `panic` and `selectTrack` skip a `pd<k>` key explicitly; `noteOff`'s light test,
+`buildKeys`' lit set, PERF's `held` dep and `perfLetGo` count a key that reached the selected track (a numeric source, or a pad key
+whose entry names it). `PADS = cvPads.padsHost({…})` beside DRUM with U's deps table; `release({ hw: true })` at `panic` and
+`powerOff` before their loops and at `applyRestore`'s top, `rebuild()` after it; `release()` at a blur / hidden page (+ `hwDark()`
+hidden); `endTrack(id)` at `deleteTrack`; `transport(on)` at ▶ / ■; `resync()` in `host.shown` before `monitors.sync()`.
+`drumMonitor`'s live `… || PADS.wants(id)`. The canvas: `kindOfKey` / `modKindOfKey` ('pads'), `cvDevices` (U's entry: `jacks`,
+`color`), `host.size` (`moduleSize`), `cvTitle` ("Pads 1", "every track", chip "4 × 4"), `cvMenu` (the body's items, Fold · Bring to
+front · Delete · Tidy), `modMount` (`padsBody`, kept in `modBodies` with `kind 'pads'`: `modUnmount` destroys it, `cvModSync` syncs
+it), `padsAdd` / `padsDelete` (one step each, "tap to undo"), `modSpot` / `modClear` / `modTileDrag` at the footprint, `modLabel`
+(`CMOD.padSrcLabel`), `modSrcPick` (hidden sources left out), a note cable's tap (`padsNoteTap`: its pads listed, a pick →
+`B.inspect`), `cvModDecor`'s `setPlaced('pads', …)` at 8, the tray's `ctls` / `ctlsEl` / `ctlsSec` / `ctlPick` / `ctlDrag` /
+`ctlCanvasGhost`, the `sleeptap` hint "Zoom in, or double-tap the module, to play it" for a Pads module (§2.3). `loadProject` /
+`freshProject`: `normPads` then `CMOD.prunePads` (after `normDevs`); `buildMods` passes `padVal`; the midi host `padIn` / `ports`
+(the footers' hardware dots follow a plug); `__synthTest.cv.pads` / `padsBody(id)` / `padLit` / `loadProject` / `applyRestore`.
+classic-panel: `memNote(id)` — an SDS-V card knob (`x<ch>` + n t b d m c) whose channel's `x?p` ≠ 1 tips "Tone: 4.5 · heard on memory
+2; this channel plays memory 3" (both layouts: cv-panel binds its knobs through `dragB` → `tipB`; SENSITIVITY / LEVEL never).
+
+**[C] readings / deviations** (each tested):
+1. **`selectTrack` calls no `PADS.release()`**: U's host releases latches with it; the old view's body destroy (`attach`'s off) ends
+   that view's pointer and key holds — §14.1's "(canvas pointers only)" exactly; a latch and a hardware hold survive the switch.
+2. **`applyRestore` releases with `{ hw: true }` at its top** (not the plain `release()` of §4.2): the notes end while their tracks
+   are still the project's (a track the undo drops included — after `project = p` its `noteOff` would find no track); then
+   `rebuild()` (§10.3) and `padLitAll()`.
+3. **`deleteTrack` → `endTrack(id)`** (U's) rather than a full `release()`: other pads' holds on other tracks keep sounding.
+4. **The key light / PERF `held` rule is "reached the selected track"** for all four sites (§14.1 said "numeric source" for PERF's
+   dep and `perfLetGo`): `noteOn` lights the tray and the bed (`keyVis` → `PERF.lit`) for a pad playing the selected track, so a bed
+   mounted mid-hold and a blur's re-light agree with it; a pad on another track never lights either.
+5. **The drum lights go through main's `padLit`** (one `DRUM.api(view).lit` per track for every host subscriber): `drumForget` (a
+   Replace, a delete) forgets the drum host's entry and its `lits` with it while the host's `dsub` still holds the old off — so the
+   track's next machine is subscribed again by `padsRefresh()` (end of `setTrackModel`, `deleteTrack`) / `padLitAll()` (restore).
+   The view is the track's first drum machine (`cvPads.drumDev`), not `CMOD.primId` (equal with one instrument per track).
+6. **`inputSub` is main's `padIns`** fed by `inputNote` (not an `inputSubs` entry): `deleteTrack` drops `inputSubs.get(id)`, which
+   would silence the host's subscription on an undone delete.
+7. **`changed({ id, drop })`**: rows of `drop` go (`dropPadRows`) in the edit's step and those tracks get `queuePatch`; the tracks
+   holding rows of the edited module's pads get `modVal(…, PADS.value(src))` (a rest value / range edited: the table now — no
+   repost); then `cvRender` (size, jacks, title, cables, tray) and the save.
+8. **`modLabel` of a pad source is Q's `padSrcLabel`** ("Pads 1 · Kick": the Connect to… menu's text) — U's `srcLabel` / jack labels
+   say "Pads 1 · Pad 1" for an unlabelled pad; one wording should win (reviewers).
+9. A project without Pads modules now carries `pads: []` (as `perf` does since 2a) in autosave / History; compiles and posts are
+   unchanged (canonical-stream, the D5 case of the sim).
+
+**Gates** (node 24, one file at a time, `--max-old-space-size=2048`): **canvas-8-sim 12 / 12** (the fixture check; placement / drop /
+one undo / Grid… / the 8th; the 808 from track 2, two fingers two hits, lights at the heard time with `wants`; a chord; Q5 + replace
+mode + drum REC; mod pads on two tracks, no repost; the Pencil; a fake Web MIDI port — learn, play, no channel dispatch, light-back
+bytes, a track switch, unplugged; every D9 path + the tray light; schema 11 round trip, pruning, a schema-12 file, D5's compile; the
+SDS-V face, memory key, TRIM…, hex pads, MIDI 36, MAP…, a slot, a Pads module 1 × 5; 808 ↔ SDS-V ↔ 909 ↶ ↷ twice plain and graphed,
+the bounce's trims, a Replace under drum pads re-subscribing — 5 deliberate main.js mutations each caught: no `wants` in the monitor's live, `replaceSweep` without `padRec`, the old key-light test, `panic` without the host's release, no re-subscription after `drumForget`), **main 44 / 44**,
+canvas-sim 22, canvas-1i-sim 20, canvas-1e-sim 24, canvas-2a-sim 26, canvas-2b-sim 23, canvas-3-sim 26, canvas-7a-sim 23, canvas-7b-sim
+15, canvas-7c-sim 13, cv-fixes-sim 5, cv-shell-sim 16, cv-pads 21, cv-tray 34, midi 34, integration 44, canonical-stream 1, golden-graph
+6, lint 149, accessors 30, classic-panel 14, **pwa 22 / 22 with `node tools/precache.mjs --write`** (cv-pads.js and panels/sdsv.js now
+precached; BUILD fe5db3094520) — `sw.js` checked out again (the lead's write).
+
+**Headless Chrome** (CDP, `--headless=new --use-angle=metal --force-device-scale-factor=2`, touch emulation, the real app from a copy of
+the worktree on a no-store server, 8946 / 9246; scratch `8/h/`: `cdp.mjs`, `serve.mjs`, `site/`): the view menu Hardware · Simple ·
+Serum · Drums · Controllers; the Drums view's four machines; the SDS-V replaces the Minimoog; the Controllers row in its own section;
+a tap adds Pads 1 following the SDS-V (1 × 5, Bass drum … Tom 1 (high)) left of it with its note cable (a second run's Pads 2 stacked
+under Pads 1); two fingers on two pads both held, released; a mouse click; the SDS-V's snare hex pad by touch; ✎ Edit → a tap selects
+pad 3 and opens its inspector, ✓ Done leaves; 1366 × 1024 a pad tap; **no console error, exception or log error**. Screenshots
+`8/h/{boot-1440,h-1440x900-added,h-1440x900-held,h-1440x900-edit,h-1366x1024}.png`; Chrome and the server stopped.
+
+**For the reviewers**: (a) `panic` / `powerOff` / `applyRestore` order (host first, then the loops); (b) the `padLit` indirection
+and `padIns` (5, 6 above) against U's `dsub` / `nsub`; (c) the tray / bed light rule (4); (d) a Pads body as a `modBodies` entry
+(`kind 'pads'`: the loops over `modBodies` filter by `B.kind`; `cvModSync` calls its `sync` — a re-render, harmless); (e) `padsChanged`'s `mval` on edits (7).
+
+
+### Fixes (reviews 1 + 2, against 4816a1e; merged on wt-8 as 7a76b9b (C), 8fe022e (A), c30a34f (B))
+
+Reviews: `scratchpad/8/review-1.md` (real engine: 0 blocker, 1 major, 5 minor, 2 nits) and `review-2.md` (headless Chrome: 0 blocker, 3 major, 6 minor, nits). Every fix failing-test first. Open by decision: R1-C's light-back while ROLL hides the canvas follows the visible modules (§6.2; a 'gen' light-back on ROLL is a later item); R2-F9 re-places x only (a taller module may cover its column on other tracks until Tidy, the accepted overlap).
+
+#### Fixer C (stage "7d + 8"): notes
+
+Worktree `agent-a993a463b404224c9`, base 4816a1e, head **4bf970d**. Seven commits, each failing test first. No `sw.js`, no `docs/`.
+
+## R1-F = R2-F7 — the SDS-V Pads order (2815fc2)
+- **Which tom is which** (checked, not assumed): sound id 4 `ht` = tom 1 (the highest; `CH_OF_V[4] = 2` = channel `1`, the 3rd card), id 3 `mt` = tom 2, id 2 `lt` = tom 3
+  (`CH_OF_V[2] = 4`); `PADSV` puts `ht` left (x 70), `mt` centre (172), `lt` right (274).
+- **Test**: cv-drum.test "8 tables": `UI.sdsv.pads` = `['bd','sd','ht','mt','lt']`, their sids `[0,1,4,3,2]`, their channels `CH_OF_V` = `[0,1,2,3,4]` (the cards b s 1 2 3), the kit x ascending for tom 1·2·3;
+  "8 render" the kit's `data-code`s BASS · SNARE · TOM 1 · TOM 2 · TOM 3 with their colours.
+- **Fix**: cv-drum.js:172 `PADV = ['bd', 'sd', 'ht', 'mt', 'lt']` (+ the comment above it). `PADSV` untouched (the hexagons keep their places).
+  Readers of PADV: `hexAt` (the hexagons are disjoint: order irrelevant) and `kitCell` (DOM / reading order only — the roving tab stop is on `bd`, the arrows use `KEYV`).
+- **Pins that moved** (mine): cv-drum.test (2 tests), canvas-8-sim.test:430 (the kit's DOM order), :449 (Enter on the hexagons in DOM order now plays 36,38,48,45,41), :472 (the Pads module 1 × 5 `bd,sd,ht,mt,lt`),
+  :476 (the test pressed pad index 4 for "tom 1"; tom 1 is now index 2).
+- **Not mine, will fail until fixer A moves it**: `tests/pads-core.test.mjs:322–323` (`defaultsFor` with `CD.UI.sdsv.pads` expects `bd sd lt mt ht`; it now reads `bd sd ht mt lt`; line 324 is A's colours).
+  canvas-8-sim:472 may also be touched by A (labels "Tom 1" …): a one-line merge at most.
+
+## R2-F4 — TRIM… off the bottom (baa4e65)
+- **Test**: cv-drum.test "8 TRIM… stays on screen": the box's `offsetHeight` stubbed as in Chrome (90 px before its rows exist, 473 after), the anchor placed at `vh − 60` → the top must put the bottom at or above the row
+  and ≤ `vh − 8`; room below → opens 4 px under the row; no room either side → kept inside; the TRIM… button too. Failed before (bottom 1119 of 800).
+- **Fix**: cv-drum.js:1388–1393 (`openTrim`): `pop = P; build();` first, then measure `box.offsetHeight` and flip / clamp (same rule as before: `max(8, min(ar.top − 4 − bh, vh − 8 − bh))`).
+- **Chrome** (1440 × 900, k 0.8): Tom 2's memory-4 row at y 550–558 → the popover top 73, bottom 546 (it was top 562, bottom 1035); from the TRIM… button at y ≈ 570–620: top 104, bottom 577.
+
+## R2-F5 — 753 DOM elements (4bf970d)
+- **Test**: cv-drum.test "8 the real panels/sdsv.js …": renders the authored `P.layoutOf('sdsv')` (`mount(…, { real: true })`) and counts
+  `live (fake DOM) + 5 × 40 knobs (classic-panel's innerHTML svg: svg, skirt, g, cap, pointer — the fake DOM does not parse it) + face SVG elements + 26 (bar 22 + 4 wrappers)`.
+  The model reproduces Chrome's number exactly: 188 + 200 + 339 + 26 = **753** before; asserts ≤ 700. Also bounds the face's `<line>` (≤ 8) and `<path>` (≤ 40) counts so one element per rule/tick can't creep back.
+  (The fixture-face count in "8 render with api.drum" is kept; it is not the authored face.)
+- **Fix**: `panels/sdsv.js` only — **cv-panel's shared art code is untouched**, so every other model's face SVG is byte-identical
+  (`sha256` of `decorSvg` for all 16 `HW_IDS` before / after: only `sdsv` differs).
+  The thin art goes into grouped decor paths, one per colour and width: the 40 `<line>`s → 5 paths (ear lines ×2, strip shadow, EDGE rules, card/plate edges);
+  16 ▲ → 1; 6 screw slots → 1 (stadium path); the 2 plates' screw holes → 1; the 40 knob tick rings (`scale: { n: 11 }` on the 40 knobs, removed from the control data — geometry-neutral:
+  `scale` only drew the ring when `lab: 'none'`) → 1 decor path computed in the file (`ring()`, scaleSvg's math). Groups are drawn after the plates they sit on.
+- **Numbers**: face SVG 339 → **244** elements; decor items 179 → 124 (panel-check); the module in Chrome **753 → 658** (bar 22, `.hw-decor` 246 incl. its div, `.hw-ctls` 371, extras 15). `panel-check sdsv`: valid, 992 × 640, no overlaps, smallest hit box 76 × 28 px.
+- **Pixels (SDS-V only)**: old vs new face drawn at 2× in headless Chrome: 11 613 of 2.38 M pixels differ, max 10 / 255, all on 1-px edges (the card edge lines were drawn twice before, the stadium vs rounded rect, tick AA); nothing structural.
+  Scratch: `scratchpad/8/fc/compare.html`, `base/` and `new/`.
+
+## R2-F10 — the hex pads' tip (b50eb82)
+- **Test**: cv-drum.test "8 the kit by touch": the tip text is one short line `Tom 1 (high) · front edge loudest · SENS 0.0: below velocity 34 is silent` (≤ 80 chars; the aria text keeps the long form), and the rect the shared tip is given is pulled inside the window
+  (pad at the left edge / right edge: centre ± the text's half-width stays in [0, innerWidth]; in the middle: centred on the pad as before). `fakeApi` now also records the rect (`tipAt`).
+- **Fix**: cv-drum.js:1210–1225: `thrTxt(c, short)`; `tipIn(el, text)` hands `A.tip` a rect-like object (`getBoundingClientRect`) whose centre is clamped by the text's estimated half-width (3.6 px × chars + 10) — main.js's `tipText` is untouched (only reads the rect).
+  Touch: no tip (as before; the repo has no long-press tip idiom for this; aria carries it).
+- **Chrome**: bass hex pad at x ≈ 204 (tip would have started at ≈ −46): tip left 20, right 521 of 1440.
+
+## R2-F11 nits
+- **Caption** (a3e8e44): `TOKENS.sdsv.caption` = `XCAPTION + ' · Factory sounds: ours, through our model of its circuits'` (cv-panel.js:165; it was `XCAPTION_DRUMS + …`, which said "Sounds: our model of the circuits" too).
+  157 → 121 characters with the dimmed note, so it **fits at 9 px** on the plain estimate: the 8 px step-down for the SDS-V is gone (cv-panel.test: only `solina`, `tr909` step down; the cv-drum geometry / render / token / validate pins follow).
+- **MIDI button** (5a5047b): midi.js:360 lists only inputs whose `state !== 'disconnected'` (Chrome keeps an unplugged input in the map); test in midi.test "8 §8.2": disconnected → `MIDI: Pad A` / the plug-in hint with the title, reconnect → listed again.
+
+## R1-H — headroom gate (9e3a35e)
+- engine-track.test "8 §12.4": the list gains `[44100, 1]` (title and comment too). Passes as is: 44.1 kHz × 1 RMS −19.77 dBFS (−0.39 dB re the 808's), pre-limiter peak 0.815 (−0.78 dB re the threshold), limiter gain 0.00 dB.
+
+## Gates (one file at a time, `--max-old-space-size=2048`, at 4bf970d)
+cv-drum 66/66 · cv-panel 94/94 · classic-panel 14/14 · midi 34/34 · cv-face 26/26 · canvas-7a-sim 23/23 · canvas-7b-sim 15/15 · canvas-7c-sim 13/13 · canvas-8-sim 12/12 · engine-track 78/78 · golden-drums 5/5 · golden-606 11/11 · golden-909 9/9 · golden-sdsv 5/5 · golden-presets 8/8 · lint 149/149 · cv-pads 21/21 · `panel-check sdsv` valid, no overlaps.
+**pads-core 19/20**: the pin at :322–323 above (fixer A's file).
+
+## Left open / for the lead
+- pads-core.test:322–323 (A) — see above.
+- Process note: the scratch folder name `fc` trips the worktree sandbox's command checker when it is the last path component (`…/8/fc` or `…/8/fc/`); files inside it work.
+- I overwrote `scratchpad/chrome.sh` (a 2-line exec wrapper for Chrome; same purpose) with the Write tool — it existed already.
+- Not re-verified in Chrome: F4's tab-switch case (rows are the same height per tab; placement runs once at open, as before).
+
+#### Fixer A — stage "7d + 8" (pad controller), against 4816a1e
+
+Branch `worktree-agent-a97042933870025e2`. Commits: 5e658cf (failing tests first) → 3abf69e (pads-core / cv-mods / cv-module) →
+db2f09f (cv-pads) → 5ba65d4 (pin: the SDS-V default in its panel's order). No sw.js, no docs, no main.js / cv-drum.js / canvas-8-sim edit.
+Every test below was seen failing at 5e658cf (pads-core 3, cv-pads 12 incl. two updated old pins, cv-module 2, cv-mods 1), green after.
+
+## Per finding (test → fix, file:line at the head)
+
+- **R1-A** mod value ignores edits. Test: cv-pads.test "R1-A …" (gate pressed once then lo 0 → 0.4; toggle left on: hi edit follows,
+  then gate → rest; Modulation off / on; module deleted and an id reused; a restore via `rebuild()`), asserts `value()`, the last
+  `modVal`, the light. Fix: `modSync(keepOn)` cv-pads.js:223 — a source whose pad lost / changed its mod drops its state (rest = new lo),
+  except a toggle left on in a toggle (on at the new hi; edit only); posts the changed value. Called in `edit()` after `endStale`
+  (keepOn true) and in `rebuild()` after `release({hw})` (false: a restore's toggle starts at rest). `padsChanged` (main) still posts
+  the edited module's values too (same numbers, harmless).
+- **R1-B** stuck aftertouch. Test: "R1-B …" (pen pressure then `release()` / `release({hw})`; hardware pad's note-off; two hardware pads on
+  one track; lost port; no spurious 0 when nothing pressed). Fix: `atSet` / `atEnd` cv-pads.js:238–245 (`atCur`: the pressure last queued per
+  track; a hold that carried `at` ends → a 0 when no other live hold carries that track); `release()` cv-pads.js:534 sends the queued
+  closures instead of `atQ.clear()`; `endTrack` drops the deleted track's queue. The bed's own `at(0)` and `atEnd` share one queue slot → one 0.
+- **R1-E = R2-F8** one name. Test: pads-core "R1-E padSourceName", cv-pads "R1-E one name …" (srcLabel / jacks + " out" / cv-mods
+  `padSrcLabel` / `sourcesOf` agree; "Pads 1 · Kick", SDS-V "Tom 1", hidden "Pad 41"), cv-mods "R1-E …", cv-module "R1-E a jack's label follows
+  its entry". Fix: `padSourceName(project, M, i)` pads-core.js:294 (= Q's wording, incl. its hidden form "Pad 41"); cv-mods.js:502–510 call it
+  (its private `padName` gone); cv-pads `srcLabel(pads, src, project)` :87 and `moduleJacks(M, title, project)` :94 call it (no project passed:
+  the last host's, module-level `hostProj` — so main.js:6494's `moduleJacks(M)` needs NO edit; passing `project` there would be the explicit form);
+  cv-module `setJackLabel` cv-module.js:507, called with `setJackHide` in `decorate` (every sync / refresh; jsig unchanged → no rebuild).
+  The old pins "Pads 1 · Pad 1 out" / "Pad (hidden)" in cv-pads.test moved to the new wording.
+- **R1-F = R2-F7 (my part)**. Tests: pads-core "R1-F …" (short labels, `nearestColor`, `defaultsFor` / `fill` with a `look`), cv-pads "R1-F a Pads
+  module following an SDS-V …" (by sound id: names, kit colours via `nearestColor(CD.COLORV[sid])`, three distinct toms, 808 unchanged, Fill from…,
+  inspector Sound). Fix: pads-core `soundShort` :207 (trailing parenthetical dropped) used by `targetLabel` (labels everywhere; `soundName` keeps the
+  full names for warnings / roll / inspector's list); `nearestColor(hex)` :87; `defaultsFor(…, look)` :407 / `fill(M, { look })` :425 (`look = { c: { sound: colour } }`);
+  cv-pads `lookOf(model)` :116 (SDS-V only: cv-drum `COLORV` by sound id → nearest palette entry; imported, not copied) used by `defaultsOf`, Fill from… and
+  `colFor` :675 (inspector Sound / Type / Add target, drag-onto-instrument). Colours today: bass red, snare amber, tom 3 indigo, tom 2 green, tom 1 blue.
+  Order is cv-drum's (fixer C's PADV); my tests pass the panel order explicitly (`pads-core.test` 322–323 now `['bd','sd','ht','mt','lt']` → `'bd sd ht mt lt'`).
+  **canvas-8-sim: no pin of mine needs to move** (it pins no pad label / colour / jack wording; only the order, which is fixer C's).
+- **R2-F1** footer hit areas. Test: "R2-F1 …" evaluates the real `.pd-fb::before` rule (top / height / transform) at --ik 1…4 and asserts the upward reach < the 20 world px
+  between the pads' bottom and the button's top. Fix cv-pads.js:1234 — `top: calc(0px - min(16px, max(0px, (44px·ik − 24px)/2)))`, `height: max(100%, 44px·ik)`, `transform: translateX(-50%)`
+  (sideways to 44 screen px as before; down is clipped by `.cv-body { overflow: clip }`, up capped at 16). Chrome (1440×900, real app, base vs fixed): share of pad 1 / 2's front half
+  taken by the buttons at k 0.6 / 0.567 / 0.5 / 0.4: base 14·4 / 20·6 / 36·15 / 66·33 %, fixed 0 everywhere.
+- **R2-F2** inspector after a Modulation switch. Test: "R2-F2 …" (async; body made with edit / sel / insp set, no module; nothing open; appended to a module root in a world with a
+  top layer; after a microtask the popover is in the top layer, not inside the body). Fix cv-pads.js:1176 — `reopen` now (module root already there) or in a `queueMicrotask`
+  (main appends the body right after `padsBody()` returns; no main.js hook needed). The existing "Edit mode survives a module rebuild" test got an `await Promise.resolve()`.
+  Chrome: after Modulation → Velocity the popover is parent `ov` at the module's right (base: `pd-body`, inside the module, 240 px, clipped).
+- **R2-F3** popovers on screen. Test: "R2-F3 …" (right of the module; flipped left; clamped at the bottom after the content is measured and a window resize; neither side: clamped;
+  Grid… / Velocity… / Fill from… / Hardware… share it). Fix `popOpen` cv-pads.js:921 — `place()` measures after `POP.sync()` builds the content, again at every sync and on window `resize`;
+  8 px margin as cv-drum's TRIM / wk's menus (`innerWidth` / `innerHeight`). Chrome: module at the right edge → popover at left 840 (base 1442, off screen); module low → bottom 892 (base 1094); 900×700 resize → 692.
+- **R2-F11** nits.
+  - Octave stepper: text `oct 4` (aria "Octave: 4"), `stepper(…, shown)` cv-pads.js. Test "R2-F11 … Octave".
+  - Light Both double flash: own press records `own[pad]`; the monitor's echo within `ECHO_MS` (400 ms: covers a Bluetooth latency) adds no flash, another pad of the sound still flashes (cv-pads.js:331). Test with injected `now`.
+  - Held after the target track is deleted: `endTrack` ends a hold with no notes left and no mod source (cv-pads.js:515); a hold with notes on another track, or a mod source, stays held. Test "R2-F11 a pad whose target track …".
+  - Gap + pad finger: `.pd-grid` added to cv-module `BG_SEL` (cv-module.js:160) — a gap inside the grid is a canvas finger (one finger / mouse pans, a joining pad finger pinches by the time rule); pads still never. cv-pads.test "gestures" and cv-module.test BG_SEL pin moved. Chrome: a mouse drag starting in a gap pans the camera (72, 36 px) — base 0; pad presses unchanged.
+    **Caveat**: headless Chrome's touch adjustment snaps a fingertip in an 8 px gap (and the well's rim) onto the neighbouring pad (reviewer 2's "gap finger" was therefore a pad finger: two music touches never pair), so the touch pinch itself is only unit-tested (node) — not verifiable in Chrome; WebKit has no adjustment.
+
+## Gates (node 24, one file at a time, `--max-old-space-size=2048`; head 5ba65d4)
+cv-pads 31 · pads-core 23 · cv-mods 20 · cv-module 61 · cv-keys 25 (untouched; no cv-keys finding) · cv-cables 44 · cv-graph 37 · cv-model 13 · canvas-8-sim 12 ·
+canvas-1i-sim 20 · canvas-3-sim 26 · canonical-stream 1 · golden-graph 6 · lint 149 — all green.
+
+## Notes for the lead
+- Commit trailer: the harness's attribution for this session names Claude Sonnet 5.5, so the commits end `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>` (your brief said Opus 5.5).
+- Not done / left: R1-A's suggested canvas-8-sim assertion (the Juno's last `{t:'mval'}` after a `lo` edit) and R1-B's (Undo mid-press → last `{t:'at'}` 0) are in fixer B's file; the host-level tests cover them. main.js `cvDevices` may pass `project`
+  to `moduleJacks` (optional: the host's project is the fallback). IMPL-8 §17 text (docs) untouched as asked: §3.5's "toms 3 · 2 · 1", §6.4's family colours (an SDS-V's pads now take the kit's), pad labels short.
+- Scratch: `scratchpad/8/fa/` (edit scripts, Chrome step scripts `s/p1…p6.js`, shots `shots/`); Chrome, driver and both servers (8971, 8972; CDP 9461) stopped.
+
+#### Fixer B (stage "7d + 8"): host findings — main.js / index.html / canvas-8-sim
+
+Base `4816a1e`. Files touched: `main.js`, `tests/canvas-8-sim.test.mjs` (+ a `cv-module.js` import there). `index.html`, `tests/main.test.mjs`
+needed nothing. All five tests are accessor-free (no `t.model` / `t.vals` / `fxOf(t)`) and were run red first, at the intended assertion.
+Commits: 91daf03 (C) · 6cf5dda (D) · 00f6c26 (G) · 1d03ee2 (F6) · 590ae67 (F9).
+
+## R1-C — a hidden Pads module keeps drum monitors on at ROLL
+- Test: canvas-8-sim "R1-C …" (last block of the file). Juno selected, the Pads module follows the 808 on track 1: `wants(t1)` true and the 808's
+  last `{t:'mon'}` has ids; `cv.openTab('roll')` → `wants` false, last mon `ids.length` 0; `openTab('canvas')` → true / ids again. Red: `[true, 1]`
+  at ROLL.
+- Fix: `main.js` `openTab` (≈3845): `PADS.resync()` before `monitors.sync()` (after `world.setActive` and the default-camera restore, so
+  `cvLive` — which reads `#tab-inst.hidden` — is already right). `shownIds()` filters by `cvLive`, so the host drops its drum / note
+  subscriptions at ROLL and takes them again at CANVAS. (Hardware light-back while the canvas is hidden is not kept: the lights follow the
+  visible modules, as §6.2 says "while the module is shown". Say if you want it kept for `out.prof === 'gen'` modules.)
+
+## R1-D — power off with a held key leaves pads lit
+- Test: "R1-D …". Juno selected; pad 9 a note pad on the Juno's E4; `api.noteOn(64, 1, 0)` → pad `lit`; power off → `idle`, `held` empty;
+  power on, E4 on → `lit`, off → `idle` (the count did not stick). Red: `lit` after power off.
+- Fix: `main.js` `powerOff` (≈981): before the `held.delete` loop, `for (k of held) if (numSrc(src)) noteOff(+n, +src)` — panic's loop. The nodes
+  and ctx are already gone so the posts are no-ops; `inputNote(t, 0, …)` reaches `padIns` (the host's `liveN`), `recEnd` and `keyVis`. The
+  old delete loop stays after it for anything non-numeric left.
+
+## R1-G — tray key light after `selectTrack`
+- Test: "R1-G …". Pad 10 a latched note pad on the Juno's E4. Juno selected, tap → key 64 `down`; select the 808 → unlit (the hold survives, the
+  key is not this track's); back to the Juno → lit; tap releases → unlit. Then the other way: latch from the 808's canvas (unlit), arrive on the
+  Juno → lit; release → unlit. Red at the first switch (stale lit); a scratch probe showed the inverse (arrive → unlit) was stale too without
+  the fix.
+- Fix: `main.js` `selectTrack` (≈1865), after `project.selTrack = id; bind();`: `const L = heldLit(); for (const [n, el] of keyEls) if
+  (el.classList.contains('down') !== L.has(n)) keyVis(n, L.has(n));`. After `bind()` (which may rebuild the keys through `buildKeys`) and after
+  `selTrack` moved, so `heldLit`'s "reached the selected track" rule uses the new selection (the reviewer's "after the loop" would have read
+  the old one). Only keys that differ are touched. The numeric keys were just ended by the loop above, so what is left is the pad holds.
+
+## R2-F6 — the Controllers intro
+- Test: "R2-F6 …". Through the real dropdown (`#srcView` / `#srcViewMenu` item `data-view="ctl"`): in replace mode and after
+  `cvOpenSources('track')` the `#srcMode` text matches `/^Tap Pads to add a pad grid/` and none of `Juno|in place of|track list|new track`;
+  the Hardware view in + Track mode still says "a new track". Red: the instrument's "Juno-60 / “Juno-60 2”". (The fake DOM's `append`
+  drops bare strings, so the new branch builds its plain parts with `document.createTextNode`, as main.js:3906 already does — the test sees the
+  whole sentence.)
+- Fix: `main.js` `srcModeUI` (≈4815): `if (v === 'ctl')` → "Tap **Pads** to add a pad grid to the canvas — it shows on every track — or drag it
+  where you want it." One text for both modes (a Pads tap never replaces or adds a track; there is no drop on the track list).
+
+## R2-F9 — Grid… leaves the module pinned at the old size on other tracks
+- Test: "R2-F9 …". Two new Juno tracks `ta`, `tb`, each with a layout write (`cv.setLayout('flow')`, which pins the Tidy-placed modules: `ta.lay.pd1.x`
+  = the 4 × 4's column x, -448). `tb.lay.pd1` is set to a user place (-1200, 300). On track 1 (the 808) `edit('Pads 1: 8 × 8')` → one step;
+  `ta.lay.pd1.x` = the 8 × 8's column x (-768), y unchanged; `tb`'s and track 1's places untouched; on `ta` the module's rect ends left of
+  the instrument (`i1`); one undo restores size and every place; redo takes them again. Red: `-448` vs `-768`.
+- Fix: `main.js`. `step` dep (≈1995) records every Pads module's footprint width in `padFoot` before the History snapshot; `padsChanged`
+  (≈2025), after the value posts and before `cvRender()`: for each module whose width changed, every track other than the selected one whose
+  `lay[id].x` equals Tidy's column x for the old width (`-roundW(w + MOD_GAP)`, i.e. a pin or a still-tidy place) gets `x` = the column x for the
+  new width (a fresh `lay` object, y / fold / z kept). A place the user moved is left alone; so is the selected track's (§1.3: top-left fixed,
+  the user sees it happen — Tidy right-aligns). Undo / redo carry it because the new `lay` is part of the step's post-state. Shrinking is the
+  same rule backwards.
+
+## Open / not done
+- Nothing left open in my findings. The current track keeps §1.3's overlap (by design, as the reviewer accepted).
+- Hardware light-back is not kept while the canvas is hidden (C) — a decision for the lead if wanted.
+
 ## 18. Review log
 
 ### The skeptic review (2026-10-21, against 3b9aee0 = 8815b14 + this contract)
@@ -1133,3 +2065,15 @@ re-strikes its target (drums and notes alike, as the drum panels' "every finger 
 note-off. P-3 — keep the revised note cables (ending on the instrument's edge, no jack). P-4 — keep the SDS-V's authentic
 soft-hit threshold at low SENSITIVITY, documented in the panel's tip and the pad's aria text. Phase 0 starts now on the holding
 branch `wt-8`, base this commit.
+
+**The lead's decisions during phases 1–3 (2026-10-21):** E5a — `dvm` = the "memories" row (the dvp groove, channels on memories
+3 / 4, a memory key flipped every bar; 0.03 node / 0.035 iPad); the About title keeps `${m.maker} ${m.name}` as every model (factual,
+not on the panel). E5b — `OUT_KV` 0.732 → 0.67 (the dvp groove never reaches the track limiter at 48 / 44.1 kHz × OS 4 / 2 / 1; SDS-V
+only; ref-7a / 7b / 7c untouched). Q — no project, no pad source; a mod-only pad is "Pad k"; pads take value slots after the track's
+modules (a full track's new row can leave a pad's row with `'slots'`, as a second macro module can today). P1 — `dr:mem` renders each
+channel's four keys as one radio wrapper carrying `data-ctl` = `data-dest` = `x<ch>p` (accepted deviation); Copy to knobs also selects
+memory 2 (the sound is unchanged; the channel then plays from the knobs, where modulation works). X — `panels/sdsv.js` from §13.1's
+fallback mm (no photograph viewed; that file is the one to retune). H — its seven deviations in §17 "Lane H" accepted for review.
+Reviews → **one name for a mod pad everywhere: `padSrcLabel`** ("Pads 1 · Kick"; one function in pads-core) and **the SDS-V's pad
+order Bass · Snare · Tom 1 · Tom 2 · Tom 3** with short labels and each pad in its channel's kit colour (supersedes §3.5's 3 · 2 · 1);
+the §13.2 DOM limit 700 stands (the code is fixed, not the limit).

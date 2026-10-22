@@ -834,7 +834,40 @@ const tr909 = {
   },
 };
 
-export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum, tr808, tr606, tr909];
+/* ================================================================ 1981 (drum synthesizer) */
+// The fourth drum machine (IMPL-8 §11.2, §12): the same Inst kind, no sequencer — its own machine in dr-808.js
+// (Dr808.mach.sdsv: these knob ids in this order, their defaults / 10 = KNOB_DEF, the memory switches SW_IDS / SW_DEF). Five
+// channels b s 1 2 3 (bass, snare, toms 1–3 — tom 1 the highest) on the 808's sound ids 0, 1, 4, 3, 2; per channel the card's
+// six (n NOISE, t TONE, b BEND, d DECAY, m NOISE / TONE, c CLICK / DRUM), the mixer's two (s SENSITIVITY, l LEVEL) and the
+// memory key (p: index 0…3 = memories 1…4 — 1 the factory sound, 2 the knobs, 3 / 4 the trims of the drum payload). The
+// knobs' defaults = memory 1 (Dr808.proto.sdsv.FACTV × 10: the panel starts as the factory sound; the patch's value v / 10 is
+// within one ulp of it), SENSITIVITY 5, LEVEL 7; every channel on memory 2. No master knob (the track's volume).
+const SDV_CH = [['b', 'Bass Drum'], ['s', 'Snare Drum'], ['1', 'Tom 1'], ['2', 'Tom 2'], ['3', 'Tom 3']];
+const SDV_F = [['n', 'Noise'], ['t', 'Tone'], ['b', 'Bend'], ['d', 'Decay'], ['m', 'Noise / Tone'], ['c', 'Click / Drum']];
+const SDV_DEF = { b: [3, 4.2, 4.5, 4.2, 2.2, 2.5], s: [6.2, 4.5, 2.5, 3.8, 6.2, 3], 1: [3, 4.2, 6, 6, 1.5, 2.5],
+  2: [3, 4.2, 6, 6.2, 1.5, 2.5], 3: [3, 4.2, 6, 6.5, 1.5, 2.5] };
+const sdsv = {
+  id: 'sdsv', name: 'SDS-V', model: 'Drum synthesizer', maker: 'Simmons', year: 1981, family: 'drums',
+  tag: 'Analog drum synthesizer · bass drum, snare and three toms · four memories per drum · played from pads, no sequencer',
+  about: 'Our circuit-level model of the SDS-V’s drum voices — oscillator, noise through its 4-pole filter, bend, click — with our own factory sounds; no recordings of any instrument. Each of its five drums (bass drum, snare and three toms) is a voice card of its own: a triangle oscillator reset at every hit and bent downward by its pitch envelope, a noise source through a four-pole filter, the hit’s click, and three amplifiers mixed by the NOISE / TONE and CLICK / DRUM balances. How hard you hit sets the trigger voltage behind each drum’s SENSITIVITY: harder hits play louder and brighter, open the noise filter on the bass drum and the toms and bend the toms further; at low SENSITIVITY a soft hit fires nothing, as on the original. Four memories per drum: 1 our factory sound, 2 the knobs, 3 and 4 two settings of its trimmers (TRIM…). It has no sequencer: play it from its pads, a Pads module, the keyboard, MIDI or the piano roll, on the General MIDI drum keys.',
+  theme: { ctl: 'knob', knob: 'sdsv', panel: '#25272a', face: '#1b1c1e', ink: '#f3f3ef', label: '#dcdcd6', accent: '#e0281e', cap: '#c8cac6', capLine: '#ffffff', font: 'helvetica' },
+  sections: SDV_CH.map(([ch, title]) => ({ title, c: [
+    ...SDV_F.map(([f, label], i) => K('x' + ch + f, label, 0, 10, SDV_DEF[ch][i])),
+    K('x' + ch + 's', 'Sensitivity', 0, 10, 5), K('x' + ch + 'l', 'Level', 0, 10, 7), S('x' + ch + 'p', 'Memory', ['1', '2', '3', '4'], 1)] })),
+  presets: [
+    { name: 'Init', v: {} },
+    { name: 'Big Toms', v: { x1b: 8, x2b: 8, x3b: 8, x1d: 7, x2d: 7, x3d: 7, x1m: 2, x2m: 2, x3m: 2 } },
+    { name: 'Tight', v: { xbd: 3, xsd: 3, x1d: 3, x2d: 3, x3d: 3, xbc: 6, xsc: 6, x1c: 6, x2c: 6, x3c: 6 } },
+    { name: 'Electro', v: { xbb: 6, xbd: 6, xsn: 8, xsm: 7 } },
+  ],
+  map(P, v) {
+    const d = {};
+    for (const s of this.sections) for (const c of s.c) d[c.id] = c.t === 'k' ? v[c.id] / 10 : v[c.id];
+    return { engine: 'drums', machine: 'sdsv', drum: d, level: 1 };
+  },
+};
+
+export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum, tr808, tr606, tr909, sdsv];
 for (const m of MODELS) {
   m.controls = [];
   for (const s of m.sections) for (const c of s.c) m.controls.push(c);

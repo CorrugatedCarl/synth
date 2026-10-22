@@ -331,7 +331,17 @@ export function sideTray(el, o) {
 // null, info.at the world point; the ghost hides over the canvas while o.partCanvasGhost() says the world draws an outline.
 // setPartPlaced(id, reason | null) greys a tile with its reason (the host's: "This Serum already has 3 oscillators"); the
 // drop's own refusals are the host's (§2.6). Without o.parts the two sections stay placeholders.
-const DR_TIP = { tr909: 'our model of its analog circuits; its hi-hats and cymbals are our own sounds through its playback circuit, not recordings' }; // (7c, IMPL-7c §8.2)
+// (8, IMPL-8 §1.2) o.ctls: [{id: 'pads', name}] (CTL_TILES) — the Controllers view's tile row, a Modulators-style row of its own (not the
+// Serum parts): one button.cv-tile.cv-mtile[data-ctl] per item (an original glyph, the name, span.cv-treason) in o.ctlsEl (its section
+// o.ctlsSec shown in a view with 'ctls'; without the element: an h3.cv-tgrp "Controllers" and the tiles after the synths in el). A tap:
+// (o.ctlPick || o.modPick || o.pick)(id, mode); a drag as a modulator tile's through (o.ctlDrag || o.modDrag || o.drag) with info.ctl =
+// true, info.over 'canvas' or null, info.at the world point, the ghost hidden over the canvas while o.ctlCanvasGhost (else
+// o.modCanvasGhost)() says the world draws an outline. setPlaced(id, reason | null) greys a tile with its reason (not `multi`: a Pads
+// module's tile greys only at the project's 8th); ctlTiles() / ctlTile(id).
+// (8) The SDS-V (family 'drums', no sequencer) is a Drums tile like the others: DR_META names it "drum synth".
+const DR_TIP = { tr909: 'our model of its analog circuits; its hi-hats and cymbals are our own sounds through its playback circuit, not recordings', // (7c, IMPL-7c §8.2)
+  sdsv: 'our model of its analog circuits, with our own factory sounds, not recordings; no sequencer — play it from its pads, a Pads module, the keyboard or MIDI' }; // (8)
+const DR_META = { sdsv: 'drum synth' };
 const CLASSIC = m => !m.custom && m.family !== 'drums', DRUMS = m => m.family === 'drums', TO_SERUM = 'Serum and its modulators: the Serum view (the menu above).';
 export const SRC_VIEWS = [
   { id: 'hw', label: 'Hardware', tip: 'The classic synths with their real front panel', layout: 'hw', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
@@ -340,8 +350,17 @@ export const SRC_VIEWS = [
     sections: [{ id: 'serum', models: m => !!m.custom }, { id: 'mods' }, { id: 'parts', head: 'Serum parts', note: 'Arrive in milestone 3.' },
       { id: 'notes', head: 'Note tools', note: 'Note tools: later.' }] },
   { id: 'drums', label: 'Drums', tip: 'Drum machines with their real front panel', layout: 'hw',
-    note: 'More machines later: the Simmons SDS-V with the pad controller.', sections: [{ id: 'drums', models: DRUMS }] },
+    note: 'More machines later.', sections: [{ id: 'drums', models: DRUMS }] },
+  { id: 'ctl', label: 'Controllers', tip: 'Pad grids that play and modulate any track',
+    note: 'A Pads module plays any track (drum hits, notes, chords) and its pads can modulate any knob. More controllers later.', sections: [{ id: 'ctls' }] },
 ];
+/** (8, IMPL-8 §1.2) The Controllers view's tiles (id = the module kind the host adds). The host passes them as o.ctls. */
+export const CTL_TILES = Object.freeze([{ id: 'pads', name: 'Pads' }].map(Object.freeze));
+// an original monochrome glyph (stroked with currentColor): a 3 × 3 of rounded squares, one lit
+const CTL_GLYPH = {
+  pads: '<svg viewBox="0 0 40 28" aria-hidden="true"><rect x="4" y="2.5" width="9.5" height="6.5" rx="1.8"/><rect x="15.25" y="2.5" width="9.5" height="6.5" rx="1.8"/><rect x="26.5" y="2.5" width="9.5" height="6.5" rx="1.8"/><rect x="4" y="10.75" width="9.5" height="6.5" rx="1.8"/><rect x="15.25" y="10.75" width="9.5" height="6.5" rx="1.8" fill="currentColor"/><rect x="26.5" y="10.75" width="9.5" height="6.5" rx="1.8"/><rect x="4" y="19" width="9.5" height="6.5" rx="1.8"/><rect x="15.25" y="19" width="9.5" height="6.5" rx="1.8"/><rect x="26.5" y="19" width="9.5" height="6.5" rx="1.8"/></svg>',
+};
+const ctlGlyph = id => CTL_GLYPH[id] || CTL_GLYPH.pads;
 /** (milestone 3, §2.6) The Serum parts and note tools tiles (id = the part kind sx-edges firstFree takes). */
 export const PART_TILES = Object.freeze([
   { id: 'osc', name: 'OSC', group: 'parts' }, { id: 'sub', name: 'SUB', group: 'parts' }, { id: 'noise', name: 'NOISE', group: 'parts' },
@@ -401,7 +420,7 @@ export function sourcesTray(el, o) {
     const pic = mk(d, 'span', 'cv-tart');
     pic.setAttribute('aria-hidden', 'true');
     pic.innerHTML = cvArt.art(m.id, cvArt.TILE);
-    const nm = mk(d, 'span', 'cv-tname', meta.label), mt = mk(d, 'span', 'cv-tmeta', dr ? `${meta.year} · drum machine` : `${meta.year} · ${meta.maker}`);
+    const nm = mk(d, 'span', 'cv-tname', meta.label), mt = mk(d, 'span', 'cv-tmeta', dr ? `${meta.year} · ${DR_META[m.id] || 'drum machine'}` : `${meta.year} · ${meta.maker}`);
     b.append(pic, nm, mt);
     if (CLASSIC(m)) { const bd = mk(d, 'span', 'cv-tbadge', 'SIMPLE'); bd.setAttribute('aria-hidden', 'true'); b.append(bd); } // (shown in Simple: CSS)
     offs.push(listen(b, 'click', e => { if (e && e.defaultPrevented) return; o.pick(m.id, mode); }));
@@ -442,6 +461,40 @@ export function sourcesTray(el, o) {
         label: over => (over === 'canvas' ? '+ Add ' + name : '') }));
       box.appendChild(b);
       mtiles.set(id, { b, rs, tip, name, multi: !!m.multi });
+      offs.push(() => b.remove());
+    }
+  }
+  // (8) the Controllers section: a tile row of its own (a Modulators-style one: not the Serum parts' tiles), one tile per o.ctls item
+  const ctiles = new Map();
+  let chead = null;
+  if (Array.isArray(o.ctls) && o.ctls.length) {
+    const box = o.ctlsEl || el;
+    if (!o.ctlsEl) { const hd = mk(d, 'h3', 'cv-tgrp cv-chead', 'Controllers'); el.appendChild(hd); chead = hd; offs.push(() => hd.remove()); }
+    const pick = o.ctlPick || o.modPick || o.pick, drag = o.ctlDrag || o.modDrag || o.drag || {};
+    const at = i => { if (o.toWorld) { try { const p = o.toWorld(i.x, i.y); if (p && isFinite(p.x) && isFinite(p.y)) return { x: p.x, y: p.y }; } catch { /* no world */ } } return { x: i.x, y: i.y }; };
+    for (const m of o.ctls) {
+      const id = m && typeof m.id === 'string' ? m.id : null;
+      if (!id || ctiles.has(id)) continue;
+      const name = String(m.name || id), b = mk(d, 'button', 'cv-tile cv-mtile');
+      b.type = 'button';
+      b.setAttribute('data-ctl', id);
+      const tip = `${name} — tap to add a ${name} module (it plays any track), or drag it onto the canvas`;
+      b.title = tip;
+      const pic = mk(d, 'span', 'cv-mglyph');
+      pic.setAttribute('aria-hidden', 'true');
+      pic.innerHTML = ctlGlyph(id);
+      const nm = mk(d, 'span', 'cv-tname', name), rs = mk(d, 'span', 'cv-treason');
+      rs.hidden = true;
+      b.append(pic, nm, rs);
+      const off = () => placed.has(id);
+      offs.push(listen(b, 'click', e => { if ((e && e.defaultPrevented) || off()) return; pick(id, mode); }));
+      const dd = { begin: (x, i) => { i.ctl = true; if (drag.begin) drag.begin(x, i); }, move: (x, i) => { i.ctl = true; if (drag.move) drag.move(x, i); },
+        drop: (x, i) => { i.ctl = true; return !!drag.drop && drag.drop(x, i); }, cancel: (x, i) => { i.ctl = true; if (drag.cancel) drag.cancel(x, i); } };
+      offs.push(tileDrag(d, Object.assign({}, o, { drag: dd, canvasGhost: o.ctlCanvasGhost || o.modCanvasGhost }), b, id, { pic: () => ctlGlyph(id), picCls: 'cv-mglyph', cls: 'cv-mghost', off,
+        norm: r => ({ over: (r && typeof r === 'object' ? r.over : r) === 'canvas' ? 'canvas' : null, key: null, near: null }), at,
+        label: over => (over === 'canvas' ? '+ Add ' + name : '') }));
+      box.appendChild(b);
+      ctiles.set(id, { b, rs, tip, name, multi: false });
       offs.push(() => b.remove());
     }
   }
@@ -559,6 +612,9 @@ export function sourcesTray(el, o) {
     const mods = has('mods') && mtiles.size > 0;
     if (o.modsSec) o.modsSec.hidden = !mods;
     if (mhead) { mhead.hidden = !mods; for (const T of mtiles.values()) T.b.hidden = !mods; }
+    const ctls = has('ctls') && ctiles.size > 0; // ((8) the Controllers row)
+    if (o.ctlsSec) o.ctlsSec.hidden = !ctls;
+    if (chead) { chead.hidden = !ctls; for (const T of ctiles.values()) T.b.hidden = !ctls; }
     for (const [id, sec] of secs) sec.hidden = !has(id);
     for (const [g, B] of pbox) { // ((3) the parts / note tools sections)
       const on = has(g);
@@ -578,7 +634,7 @@ export function sourcesTray(el, o) {
   }
   setView(view);
   function setPlaced(id, reason) {
-    const T = mtiles.get(id);
+    const T = mtiles.get(id) || ctiles.get(id); // ((8) a Controllers tile too)
     if (!T || T.multi) return; // ((2b) a multi-instance tile never greys out)
     const r = reason == null || reason === '' ? null : String(reason);
     if (r) placed.set(id, r); else placed.delete(id);
@@ -589,13 +645,15 @@ export function sourcesTray(el, o) {
     T.b.title = r ? T.name + ' — ' + r : T.tip;
   }
   return {
-    /** the view (an o.views id: 'hw' | 'flow' | 'serum' | 'drums'; setView is a restore: no callback); the dropdown's close (→ was it open) */
+    /** the view (an o.views id: 'hw' | 'flow' | 'serum' | 'drums' | 'ctl'; setView is a restore: no callback); the dropdown's close (→ was it open) */
     setView, view: () => view, views: () => VIEWS.map(V => V.id), closeView: () => !!vpop && vpop.close(), viewOpen: () => !!vpop && vpop.isOpen(),
     /** the classic synths' layout: setLayout('hw' | 'flow') = that view; layout() the last one (kept through Serum) */
     setLayout: l => setView(l === 'flow' ? 'flow' : 'hw'), layout: () => lay,
     /** (2a) the Modulators section's tiles; greying one out with its reason (null: available again) */
     modTiles: () => [...mtiles.values()].map(T => T.b), modTile: id => (mtiles.get(id) || {}).b || null,
     setPlaced, placed: id => placed.get(id) || null,
+    /** (8) the Controllers row's tiles (greyed through setPlaced) */
+    ctlTiles: () => [...ctiles.values()].map(T => T.b), ctlTile: id => (ctiles.get(id) || {}).b || null,
     /** (milestone 3) the Serum parts / note tools tiles; greying one out with its reason (null: available again) */
     partTiles: () => [...ptiles.values()].map(T => T.b), partTile: id => (ptiles.get(id) || {}).b || null,
     setPartPlaced(id, reason) {

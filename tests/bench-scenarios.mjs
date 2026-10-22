@@ -235,6 +235,8 @@ function msPrep(p) {
 // (accented on step 1, it never sleeps inside the bar: both halves keep its circuit awake), accents every fourth step; d6x
 // every lane every 250 ms accented, every DECAY at 10; d6m CY + OH every 500 ms (the bank, three VCAs, the tempo cut).
 // IMPL-7c §2.7, the TR-909 (pattern I-1-1 in PATTERN PLAY, SYNC on): d9p, d9x, d9m below.
+// IMPL-8 §12.7, the SDS-V (no sequencer: roll notes, a one-bar song looping at 120 BPM from tick 0): dvp, dvx below; dvm
+// is dvp's groove on memories 3 / 4 (the payload's trims) with every memory key switched each bar (the row's cycle).
 export const DRUM_PATTERNS = Object.freeze({
   d8p: { ac: 'x...x...x...x...', bd: 'x...x...x...x...', sd: '....x.......x...', cp: '....x.......x...', ch: 'x...x...x...x...', oh: '..x...x...x...x.',
     mt: '......x.........', lt: '..............x.', cb: '...x.......x....' },
@@ -254,7 +256,17 @@ export const DRUM_PATTERNS = Object.freeze({
   d9x: Object.fromEntries(DC.CODES909.map(c => c.toLowerCase()).map(l => [l, (DC.FL909 >> DC.LANES909[DC.CODES909.indexOf(l.toUpperCase())]) & 1
     ? 'F.F.F.F.F.F.F.F.' : 'X.X.X.X.X.X.X.X.'])),
   d9m: { cr: 'x...x...x...x...', rd: 'x...x...x...x...', oh: 'x...x...x...x...' },
+  // (IMPL-8 §12.7) the SDS-V's notes by its sounds (bd bass, sd snare, lt / mt / ht toms 3 / 2 / 1), a character its velocity
+  // (VEL_V): dvp a typical groove — the bass on the quarters (v 100), the snare on 2 / 4 (v 110), a tom fill 3 → 1 in
+  // sixteenths on the last beat (v 70, 90, 110, 127); dvx all five every sixteenth (125 ms) at v 127 (the vals: every DECAY
+  // and SENSITIVITY at 10)
+  dvp: { bd: 'x...x...x...x...', sd: '....s.......s...', lt: '............a...', mt: '.............b..', ht: '..............sX' },
+  dvx: Object.fromEntries(['bd', 'sd', 'lt', 'mt', 'ht'].map(l => [l, 'XXXXXXXXXXXXXXXX'])),
 });
+const VEL_V = { a: 70, b: 90, x: 100, s: 110, X: 127 };
+// (IMPL-8 §12.7) dvx's panel; dvm's two memory settings (every channel on 3 or 4, the other each bar)
+const DVX_VALS = Object.fromEntries(['b', 's', '1', '2', '3'].flatMap(c => [['x' + c + 'd', 10], ['x' + c + 's', 10]]));
+export const DVM_MEM = Object.freeze([[2, 3, 2, 3, 2], [3, 2, 3, 2, 3]].map(m => Object.freeze(Object.fromEntries(['b', 's', '1', '2', '3'].map((c, i) => ['x' + c + 'p', m[i]])))));
 const drumSteps = o => { const st = new Array(32).fill(0); for (const [lane, r] of Object.entries(o)) { const l = DC.LANES.indexOf(lane); for (let k = 0; k < r.length; k++) if (r[k] === 'x') st[k] |= 1 << l; } return st; };
 // (7c) a 909 pattern's three rows of 16 masks: the voices, their per-voice accents (& 0x83E), their flams (& 0x03E)
 export const drumSteps9 = o => {
@@ -281,28 +293,42 @@ function drumSample() {
   DRUM_SMP = { id, entry: playbackEntry(id, rec(L, null, 60), null, 2) };
   return DRUM_SMP;
 }
+// (IMPL-8 §12.7) the SDS-V's rows as roll notes: a one-bar song [tick, length, note, v] (each sound's primary; a sixteenth
+// 240 ticks, the notes 120 long)
+export const songV = rows => {
+  const P = DC.primaries(DC.PERS.sdsv.map, 'sdsv'), S = DC.PERS.sdsv.sounds, notes = [];
+  for (let k = 0; k < 16; k++) for (const [l, r] of Object.entries(rows)) if (r[k] in VEL_V) notes.push(240 * k, 120, P[S.indexOf(l)], VEL_V[r[k]]);
+  return { t: 'song', notes, cc: [] };
+};
 /** A drum machine track (kind 'track'): pattern rows (DRUM_PATTERNS' form, or step masks), panel values over the
- *  defaults, samples on; model 'tr808' (key 1 A in MANUAL PLAY), 'tr606' (7b: pattern I-1 in PATTERN PLAY, 16 steps) or
- *  'tr909' (7c: pattern I-1-1 in PATTERN PLAY, 16 steps, SHUFFLE 3, FLAM 11); rows 'demo' = the 606's / 909's DEMO, as the
- *  DEMO button leaves it (606: I-1 → I-2 chained; 909: I-1-1 / I-1-2 block-played). */
-export function drumTrack(rows, vals, samples, model = 'tr808') {
-  const m8 = model === 'tr808', six = model === 'tr606', m = MODELS.find(x => x.id === model), v = Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), vals || {});
-  const p = patchFor(m, v, core.defaultFx2(), { sr: SR, bpm: 120 });
-  delete p.fxr; delete p.fxrT; // (a classic Inst's patch on a graph node: its panel is a {t: 'chain'})
+ *  defaults, samples on; model 'tr808' (key 1 A in MANUAL PLAY), 'tr606' (7b: pattern I-1 in PATTERN PLAY, 16 steps),
+ *  'tr909' (7c: pattern I-1-1 in PATTERN PLAY, 16 steps, SHUFFLE 3, FLAM 11) or 'sdsv' (IMPL-8: no pattern — its rows a
+ *  one-bar song of roll notes, looped; its payload the record's: the empty plan, the default trims; o.cycle panel values
+ *  over vals, one each bar in turn: {t: patch} messages the bench posts between quanta); rows 'demo' = the 606's / 909's
+ *  DEMO, as the DEMO button leaves it (606: I-1 → I-2 chained; 909: I-1-1 / I-1-2 block-played). */
+export function drumTrack(rows, vals, samples, model = 'tr808', o = {}) {
+  const m8 = model === 'tr808', six = model === 'tr606', sv = model === 'sdsv', m = MODELS.find(x => x.id === model);
+  const v = Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), vals || {});
+  const pOf = w => { const q = patchFor(m, w, core.defaultFx2(), { sr: SR, bpm: 120 }); delete q.fxr; delete q.fxrT; return q; };
+  const p = pOf(v); // (a classic Inst's patch on a graph node: its panel is a {t: 'chain'})
   let d = DC.normDrum(undefined, m8 ? undefined : model);
   const fx = core.defaultFx2(), Z = { lo: 0, hi: 127, xp: 0 }, S = samples ? drumSample() : null;
   if (m8) { d.st[0] = Array.isArray(rows) ? rows.slice() : drumSteps(rows); d.ui.mode = DC.M_MAN; }
   else if (rows === 'demo') d = DC.press(DC.initState(model), d, { k: 'demo' }).mem;
   else if (six) d.st[0] = (Array.isArray(rows) ? rows : drumSteps(rows)).slice(0, DC.N_STEP6);
+  else if (sv) { /* (no pattern: the song below) */ }
   else {
     const r = drumSteps9(rows), keys = d.keys.slice();
     keys[0] = Object.assign({}, keys[0], { sh: 3, fl: 11 });
     d = Object.assign({}, d, { keys, st: [r.st].concat(d.st.slice(1)), ac: [r.ac].concat(d.ac.slice(1)), fm: [r.fm].concat(d.fm.slice(1)) });
   }
   if (S) d.smp = Object.fromEntries((m8 ? DC.SOUNDS : DC.PERS[model].sids.map(k => DC.PERS[model].sounds[k])).map(k => [k, { id: S.id, name: 'bench', on: true }]));
-  return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: m8 ? 'd8' : six ? 'd6' : 'd9' },
+  return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: m8 ? 'd8' : six ? 'd6' : sv ? 'dv' : 'd9' },
     patches: { i1: p }, chains: { fx1: { fxr: core.compileFx(fx, { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx) } }, notes: [],
-    seqs: { i1: DC.payload(d, DC.initState(m8 ? undefined : model), 'now') }, transport: { play: true, frame: 0, tick: 0, fpt: SR * 60 / (120 * 960), seek: true },
+    seqs: { i1: DC.payload(d, DC.initState(m8 ? undefined : model), 'now') },
+    transport: Object.assign({ play: true, frame: 0, tick: 0, fpt: SR * 60 / (120 * 960), seek: true }, sv ? { loop: true, ls: 0, le: 3840 } : null),
+    song: sv ? songV(rows) : null,
+    cycle: sv && o.cycle ? { frames: 4 * SR / 2, msgs: o.cycle.map(w => ({ t: 'patch', i: 'i1', p: pOf(Object.assign({}, v, w)) })) } : null,
     assets: S ? { [S.id]: S.entry } : null };
 }
 
@@ -403,6 +429,13 @@ export function scenarios() {
       kind: 'track', build: () => drumTrack(DRUM_PATTERNS.d9x, { bdd: 10, sdt: 10, ltd: 10, mtd: 10, htd: 10, chd: 10, ohd: 10, cru: 0, rdu: 0 }, false, 'tr909') },
     { id: 'd9m', label: 'TR-909: crash + ride + OH every 500 ms (the ROM voices: three staircases, filters, envelopes)', node: 0.025, ipad: 0.025,
       kind: 'track', build: () => drumTrack(DRUM_PATTERNS.d9m, null, false, 'tr909') },
+    // IMPL-8 §12.7: the SDS-V (roll notes, no sequencer; dvi, the idle machine, is gated as row p is)
+    { id: 'dvp', label: 'SDS-V: a typical groove as roll notes (bass on the quarters, snare on 2 / 4, a tom fill 3 → 1 in sixteenths on the last beat, v 70–127), its defaults, 120 BPM',
+      node: 0.03, ipad: 0.035, kind: 'track', build: () => drumTrack(DRUM_PATTERNS.dvp, null, false, 'sdsv') },
+    { id: 'dvx', label: 'SDS-V: all five every 125 ms at v 127, every DECAY and SENSITIVITY at 10 (the worst case)', node: 0.05, ipad: 0.06,
+      kind: 'track', build: () => drumTrack(DRUM_PATTERNS.dvx, DVX_VALS, false, 'sdsv') },
+    { id: 'dvm', label: 'SDS-V: dvp\'s groove on memories 3 / 4 (the payload\'s trims), every memory key switched each bar', node: 0.03, ipad: 0.035,
+      kind: 'track', build: () => drumTrack(DRUM_PATTERNS.dvp, DVM_MEM[0], false, 'sdsv', { cycle: [DVM_MEM[1], DVM_MEM[0]] }) },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',
@@ -441,6 +474,7 @@ function prepare(B, kind, env, now) {
     for (const [id, patch] of Object.entries(B.patches)) { p.msg({ t: 'patch', i: id, p: patch }); sendTables(p, patch); }
     for (const [id, c] of Object.entries(B.chains)) p.msg(Object.assign({ t: 'chain', c: id }, c));
     if (B.seqs) for (const [id, s] of Object.entries(B.seqs)) p.msg({ t: 'seq', i: id, s }); // (a drum machine's payload)
+    if (B.song) p.msg(B.song); // ((IMPL-8) roll notes: the SDS-V's rows)
     // (the transport's tick 0 at the row's first frame — the scope's currentFrame has moved on after earlier rows: a sparse
     // drum row anchored at frame 0 could start between its hits and time silence, 7b's d6m in bench.test's 50 ms runs)
     if (B.transport) p.msg(Object.assign({ t: 'transport' }, B.transport, typeof p.nowF === 'function' ? { frame: p.nowF() } : null));
@@ -451,8 +485,12 @@ function prepare(B, kind, env, now) {
       if (!p.mc) throw new Error('bench ' + (B.graph.key || '') + ': the ModCore payload was refused');
     }
     for (const [n, v] of B.notes) p.msg({ t: 'on', n, v });
-    const L = new Float32Array(128), R = new Float32Array(128), out = [[L, R]];
-    return api(() => { p.process([], out); env.advance(128); track(L, 128); }, () => -1);
+    const L = new Float32Array(128), R = new Float32Array(128), out = [[L, R]], cyc = B.cycle || null;
+    let cf = 0, ck = 0; // ((IMPL-8) dvm: the next panel of the cycle at each bar, between quanta — the app's {t: patch} on a switch)
+    return api(() => {
+      if (cyc !== null && (cf += 128) > cyc.frames) { cf -= cyc.frames; p.msg(cyc.msgs[ck++ % cyc.msgs.length]); }
+      p.process([], out); env.advance(128); track(L, 128);
+    }, () => -1);
   }
   if (kind === 'voice') {
     const p = env.mk({ os: 2, hostOS: 4, offline: true });

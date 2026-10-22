@@ -672,3 +672,77 @@ test('slot injection with nothing in the way is as before: the first free LFO (L
   const a = injOf(slotTrack([['r1', 'l1.out', 'i1:f.cutoff'], ['r2', 'e1.out', 'i1:a.pan']]));
   assert.deepEqual(a.placed.map(x => x.src), ['lfo1', 'env2']);
 });
+
+/* ------------------------------------------------------------------ IMPL-8 §5.3 (lane Q): a mod pad compiled into a value slot */
+import * as PC from '../pads-core.js?v=9';
+const fnvH = s => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(16).padStart(8, '0'); };
+const payH = pay => { const p = Object.assign({}, pay); delete p.cp; delete p.ct; return [pay.key, fnvH(JSON.stringify(p)), fnvH(JSON.stringify([pay.cp.cpKey, pay.ct.key]))]; };
+// D5: the 2a / 2b fixtures' compile taken at 20854b7 (cv-graph = 8815b14's) BEFORE any pad change (memoSig, payH, as here):
+// [memo signature (real transfer: no stub function, whose memo id depends on test order), key, a hash of the payload sans
+// cp / ct (vals' v included), a hash of the cp / ct keys]
+const PIN_B_STUB = [['20a235e9', '1835650c', '30a2b80e'], ['1a587787', 'f8ae8970', '591e125a'], ['514539e3', 'a9aee286', 'f70abb4a'], ['fc329eee', '62156853', '33338b9e']];
+const PIN_B_REAL = [['b04833836c1dd58', '88f0b88b', 'ee5bc141', '30a2b80e'], ['a8892c22154454ff', '3c24fdf1', '1525b9b3', '591e125a'], ['46e2e33c56e5359f', 'fe4e19a9', 'fb354a3d', 'f70abb4a'], ['1a64146ebfba7321', 'fc329eee', '62156853', '33338b9e']];
+const PIN_A = [['878c61125508bcd', '18b441d4', '913007d3', 'd413b878'], ['700ca6ce11e6593e', '18b441d4', '448e9f88', 'd413b878'], ['7a83f0049b5f3425', '0ed3c71d', '6882a017', 'd413b878']];
+const REAL = { smooth: 1, qr: null, ultra: 0 };
+const padMod = (id, slots, o) => { const pads = new Array(64).fill(null); for (const [i, m] of Object.entries(slots)) pads[i] = { mod: m }; return Object.assign({ id, pads }, o); };
+// a project with Pads modules and another track holding pad rows (D5: a track without pad rows compiles as if none existed)
+const padPrj = () => ({ bpm: 120, perf: { wheel: { v: 1 } }, pads: PC.normPads([padMod('pd1', { 0: {}, 3: { lo: 0.1 }, 12: { lo: 0.25 } }), padMod('pd3', { 63: { m: 'gate' } })]),
+  tracks: [{ id: 'trk_x', dev: {}, mods: [{ id: 'r1', src: 'pd1.p0', dst: 'i1:f.cutoff' }] }] });
+test('IMPL-8 D5: a track without pad rows compiles byte-identically to 8815b14 — memo signature, content key, payload — with or without Pads modules (and pad rows elsewhere) in the project', () => {
+  for (const P of [PRJ, padPrj()]) {
+    const run = (t, o) => { const sig = G.memoSig(t, P, o), pay = G.compileMods(t, P, o); return [sig, ...payH(pay)]; };
+    F3.tracks().forEach((t, i) => assert.deepEqual(payH(G.compileMods(t, P, { xferOf: F3.XFER, targetsOf: F3.TARGETS })), PIN_B_STUB[i], 'b' + i + ' stub'));
+    F3.tracks().forEach((t, i) => assert.deepEqual(run(t, REAL), PIN_B_REAL[i], 'b' + i));
+    F2.tracks().forEach((t, i) => assert.deepEqual(run(t, REAL), PIN_A[i], 'a' + i));
+    F3.tracks().forEach((t, i) => assert.deepEqual(run(t, Object.assign({ padVal: () => 0.5 }, REAL)), PIN_B_REAL[i], 'b' + i + ': padVal changes nothing'));
+  }
+});
+// the three-row track (l1 → the Serum's cutoff, the Juno's cutoff, the reverb's mix) + a CC module and pad rows to every kind
+function padTrack() {
+  const t = F3.tracks()[0], row = (id, src, dst) => Object.assign({}, t.mods[0], { id, src, dst, amt: 0.25 });
+  t.dev.c1 = normModDev({ kind: 'cc', cc: 74, v: 0.5 });
+  t.mods.push(row('r4', 'pd1.p12', 'i2:cf'), row('r5', 'pd1.p3', 'i1:f.res'), row('r6', 'pd2.p0', 'fx1:fx.rev.mix'), row('r7', 'c1.out', 'i2:rs'), row('r8', 'pd1.p3', 'i2:rs'));
+  return t;
+}
+test('IMPL-8 §5.3 a mod pad takes a value slot after the track\'s modules (pads sorted: module, then slot — numerically); vals[].v from padVal, else the pad\'s lo (0 without its module); a Serum row from a pad an ext slot', () => {
+  const t = padTrack(), P = padPrj(), pv = id => ({ 'pd1.p3': 0.7 })[id];
+  const pay = G.compileMods(t, P, { xferOf: F3.XFER, targetsOf: F3.TARGETS, padVal: pv });
+  assert.deepEqual(pay.vals, [{ k: 8, src: G.S_EXT0, v: 0.5, id: 'c1.out' }, { k: 9, src: G.S_EXT0 + 1, v: 0.7, id: 'pd1.p3' }, { k: 10, src: G.S_EXT0 + 2, v: 0.25, id: 'pd1.p12' }, { k: 11, src: G.S_EXT0 + 3, v: 0, id: 'pd2.p0' }],
+    'c1 first (a module), then pd1.p3 < pd1.p12 < pd2.p0; pd1.p12 at its lo, pd2.p0 has no module (H prunes such rows at load: 0 here)');
+  assert.deepEqual(pay.ext.map(e => [e.k, e.id, e.src]), [[1, 'l1.out', C.SRC_INDEX.lfo1], [2, 'pd1.p3', G.S_EXT0 + 1]], 'the Serum\'s pad row: an ext slot fed by the value source');
+  assert.deepEqual([pay.n.vals, pay.n.ext, pay.left, pay.dashed], [4, 2, [], []]);
+  assert.deepEqual(pay.rows.filter(r => /^r[4-8]$/.test(r.id)).map(r => [r.id, r.src, r.dst.kind, r.perNote]), [['r4', G.S_EXT0 + 2, 'cls', false], ['r6', G.S_EXT0 + 3, 'fx', false], ['r7', G.S_EXT0, 'cls', false], ['r8', G.S_EXT0 + 1, 'cls', false]],
+    'one slot per source (r5 and r8 share pd1.p3\'s); GLOBAL, never dashed');
+  const inj = G.injectMods(t.dev.i1, G.modRowsFor(t, 'i1'), pay.ext, t);
+  assert.deepEqual(inj.placed, [{ id: 'r1', slot: 0, src: 'ext1' }, { id: 'r5', slot: 1, src: 'ext2' }]);
+  assert.deepEqual(G.compileMods(padTrack(), P, { xferOf: F3.XFER, targetsOf: F3.TARGETS }).vals.map(v => v.v), [0.5, 0.1, 0.25, 0], 'no padVal: each pad\'s lo');
+  assert.deepEqual(G.compileMods(padTrack(), { bpm: 120 }, { xferOf: F3.XFER, targetsOf: F3.TARGETS }).vals.map(v => v.v), [0.5, 0, 0, 0], 'no p.pads: 0');
+  assert.deepEqual(G.compileMods(padTrack(), P, { xferOf: F3.XFER, targetsOf: F3.TARGETS, padVal: () => 7 }).vals.map(v => v.v), [0.5, 1, 1, 1], 'a host value clamped to 0…1');
+  assert.deepEqual(G.modBudget(t, 'i2', P).slots.vals, [4, 16]);
+});
+test('IMPL-8 §5.3 the 17th value source is left, why \'slots\' (16 per track, shared with CC modules and further macro knobs) — a Serum row too (\'slots\', not \'ext\'); modBudget says 16/16', () => {
+  const t = F3.tracks()[0], row = (id, src, dst) => Object.assign({}, t.mods[0], { id, src, dst, amt: 0.25 });
+  t.mods = [];
+  for (let k = 1; k <= 8; k++) { t.dev['c' + k] = normModDev({ kind: 'cc', cc: k }); t.mods.push(row('r' + k, 'c' + k + '.out', 'i2:cf')); }
+  for (let i = 8; i >= 0; i--) t.mods.push(row('r' + (17 - i), 'pd1.p' + i, 'i2:rs')); // (rows in reverse: the slots follow the sorted ids)
+  t.mods.push(row('r18', 'pd2.p0', 'i1:f.cutoff'));
+  const pay = cm(t);
+  assert.deepEqual([pay.n.vals, pay.left], [16, [{ id: 'r9', why: 'slots' }, { id: 'r18', why: 'slots' }]], 'pd1.p8 (sorted 17th) and pd2.p0');
+  assert.deepEqual(pay.vals.map(v => v.id).slice(8), ['pd1.p0', 'pd1.p1', 'pd1.p2', 'pd1.p3', 'pd1.p4', 'pd1.p5', 'pd1.p6', 'pd1.p7']);
+  assert.deepEqual([pay.vals[8].k, pay.vals[15].k], [16, 23]);
+  assert.deepEqual([G.modBudget(t, 'i2', PRJ).slots.vals, G.modBudget(t, 'i2', PRJ).left, G.modBudget(t, 'i1', PRJ).left, G.modBudget(t, 'i1', PRJ).why], [[16, 16], ['r9'], ['r18'], { r18: 'slots' }]);
+  t.mods = t.mods.filter(r => r.id !== 'r1');
+  assert.deepEqual(cm(t).left, [{ id: 'r18', why: 'slots' }], 'a CC row gone: pd1.p8 takes the freed slot');
+});
+test('IMPL-8 §5.3 a press never reposts: the memo signature and the key ignore the pad\'s value (and its mode / range: the host\'s) — a memo hit refreshes vals[].v; removing the pad rows compiles the pad-free track again (its pins)', () => {
+  const t = padTrack(), P = padPrj(), o = v => ({ smooth: 1, qr: null, ultra: 0, padVal: id => (id === 'pd1.p3' ? v : undefined) });
+  const a = G.compileMods(t, P, o(0.3)), key = a.key, sig = G.memoSig(t, P, o(0.3));
+  assert.equal(a.vals.find(v => v.id === 'pd1.p3').v, 0.3);
+  const b = G.compileMods(t, P, o(0.9));
+  assert.deepEqual([b === a, b.key, G.memoSig(t, P, o(0.9)), b.vals.find(v => v.id === 'pd1.p3').v], [true, key, sig, 0.9], 'a hit: the same payload, the value refreshed');
+  P.pads[0].pads[12].mod = { m: 'tog', lo: 0.6, hi: 0.2 };
+  const c = G.compileMods(t, P, o(undefined));
+  assert.deepEqual([c === a, c.key, c.vals.map(v => v.v)], [true, key, [0.5, 0.1, 0.6, 0]], 'a mode / range edit: a hit, the rest values follow lo');
+  t.mods = t.mods.filter(r => !/^(pd|c1)/.test(r.src)); delete t.dev.c1;
+  assert.deepEqual([G.memoSig(t, P, REAL), ...payH(G.compileMods(t, P, REAL))], PIN_B_REAL[0], 'the pad rows (and the CC) gone: the fixture\'s pins again');
+});

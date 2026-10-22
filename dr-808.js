@@ -1,6 +1,8 @@
 /*
  * dr-808.js — the drum machines' voice circuits: the TR-808 (stage 7a lane V, IMPL-7a §2), the TR-606 (stage 7b lane V6,
- * IMPL-7b §2) and the TR-909 (stage 7c lane V9, IMPL-7c §2) — classic script, no imports/exports.
+ * IMPL-7b §2), the TR-909 (stage 7c lane V9, IMPL-7c §2) and the SDS-V's voice cards (stage 7d + 8 lane V5, IMPL-8 §12: no
+ * sequencer, four memories per card; our reading of its topology with our own values, research-sdsv-circuits.md §6) —
+ * classic script, no imports/exports.
  *
  * Evaluated in the AudioWorkletGlobalScope (addModule), on the main thread and in node vm contexts (tests/dsp-scope.mjs
  * `run`). One IIFE publishes the frozen `globalThis.Dr808`; a failure inside leaves Dr808 = null without throwing.
@@ -10,16 +12,22 @@
  * 909's hi-hat, crash and ride images are our own (tools/rom909.mjs, the generated ROM909 block). One shell, a descriptor
  * per machine (MACH): the 808's constants as 7a built them, the 606's and the 909's knob tables, sounds and lanes;
  * Dr808.gain(kind, drum) the output stage's static gain, Dr808.mach[kind] { KNOB_IDS, KNOB_DEF, SOUNDS (16, by sound id),
- * sids (the ones it has) }; Dr808.proto.tr909 the 909's laws, its ROM decoder (rom9) and the staircase (ENV9) lane R9 reads.
+ * sids (the ones it has) }; Dr808.proto.tr909 the 909's laws, its ROM decoder (rom9) and the staircase (ENV9) lane R9 reads;
+ * the SDS-V's mach entry adds SW_IDS / SW_DEF (its memory keys), Dr808.proto.sdsv its laws (padVolts, sens, vD, minVel, t60),
+ * the factory sounds (FACTV), the default trims (TRIMV), the card tables and the SSM2044 (Ota4).
  *
- * Interface (IMPL-7a §11, IMPL-7b §11, IMPL-7c §11): Dr808.create(inst, 'tr808' | 'tr606' | 'tr909'[, opt]) → machine
- * (another kind: null)
+ * Interface (IMPL-7a §11, IMPL-7b §11, IMPL-7c §11, IMPL-8 §12.1): Dr808.create(inst, 'tr808' | 'tr606' | 'tr909' |
+ * 'sdsv'[, opt]) → machine (another kind: null)
  *   set(drum)           the flat p.drum (knob positions 0…1, switch indices; models.js ids, §2.3), read once per span
  *   setOS(os, fs)       the Inst's oversampling (fs = base · os); rebuilds every rate-dependent coefficient
  *   hit(sound, v127)    latches a hit of sound 0…15 (SOUNDS) for the next render; v127 → trigger volts (§1.3) — the 909: →
- *                       the hit's accent-DAC code (vTrig9: the velocities 100 / 110 / 119 / 127 name its four states)
+ *                       the hit's accent-DAC code (vTrig9: the velocities 100 / 110 / 119 / 127 name its four states); the
+ *                       SDS-V: → the pad's volts (5…75 mV), its channel's SENSITIVITY makes V_D at the hit (a soft hit at a low
+ *                       SENSITIVITY fires nothing: the comparator, IMPL-8 §11.4)
+ *   trim(t)             (the SDS-V's only) the payload's trims: 5 channels × memories 3, 4 × the six (0…1), copied
  *   trig(mask[, acc])   latches a sequencer step: 12-bit lane mask, bit 0 = accent (§1.2) — the 909: bit 0 TOTAL ACCENT,
- *                       acc the step's per-voice accents (its lanes & 0x83E)
+ *                       acc the step's per-voice accents (its lanes & 0x83E); the SDS-V (no sequencer, no accent): lanes 1–5
+ *                       hit its five at v 100's volts
  *   render(buf, N, F0)  adds every live circuit into buf[0…N) (OS rate, N = n·OS); F0 = the span's absolute base frame
  *   post(L, R, mono, n) base rate: the sample lanes, MASTER VOLUME, the output stage → L / R (full scale)
  *   poll(F0)            the engine's idle skip (no render): the 909's pending chip swap converts (one image a quantum)
@@ -3133,6 +3141,356 @@
       }
     }
 
+    /* ------------------------------------------------------------------ the SDS-V (stage 7d + 8 lane V5, IMPL-8 §12) */
+    // Our own reading of its voice cards (research-sdsv-circuits.md §2.3, RV): no legible schematic was reachable, so every
+    // value below is ours [C], fitted to the behaviour the sources describe (RV §5) and listed in RV §6; the factory sounds
+    // (memory 1) are our own. Five channels b s 1 2 3 (bass, snare, toms 1–3 — tom 1 the highest) on the 808's sound ids 0, 1,
+    // 4, 3, 2; per channel the card's six (NOISE TONE BEND DECAY NOISE/TONE CLICK/DRUM) and the mixer's two (SENSITIVITY LEVEL).
+    const VL = 10, VCMP = 0.2;                               // the trigger stage's soft limit, its comparator (V) [C, IMPL-8 §11.4]
+    // pad volts from a velocity (v 1 → 5 mV, the input's floor; v 127 → 75 mV, a pad's peak) [C on R lon]; SENSITIVITY's gain
+    // (× 20 … × 632); the peak detector's V_D behind the soft limiter — more sensitivity, less dynamic response [R mus83]
+    const padV = v127 => 0.005 * Math.pow(15, (v127 - 1) / 126);
+    const sensG = s => 20 * Math.pow(10, 1.5 * s);
+    const vDyn = (vp, s) => VL * Math.tanh(sensG(s) * vp / VL);
+    // the lowest velocity that fires at SENSITIVITY s (P-4: the original's soft-hit threshold, kept; 128: none) — the panel's tip
+    function minVel(s) { for (let v = 1; v <= 127; v++) if (vDyn(padV(v), s) > VCMP) return v; return 128; }
+    const t60V = d => 0.03 * Math.pow(167, d);               // DECAY → the time to −60 dB: 30 ms … 5 s [R: up to 5 s]
+    // per card (RV §2.4): TONE (Hz at 0 / 10, exponential), NOISE's f_c (Hz at 0 / 10), BEND (octaves at 10), the noise's
+    // dynamic sweep SW (octaves at V_D = VL with EG_N at its peak: bass and toms [R lon], the snare 0), the SSM2044's feedback
+    // K (R27: the snare's resonance, below oscillation), the snare oscillator's modulation MOD (R26: a 31 Hz triangle, ± 2.5 %),
+    // the toms' dynamic bend DB (BEND × (1 + DB · V_D / VL) [R lon: "the bend on toms"]), the filtered noise's scaling into its
+    // VCAs NP, the card's output G (V at full bias, LEVEL 10) [fit: the cards' balance], its sound id; the RC² at 1.5 × F1
+    const CV = Object.freeze([
+      Object.freeze({ F0: 30, F1: 120, N0: 60, N1: 3000, BO: 1.5, SW: 1.5, K: 0, MOD: 0, DB: 0, NP: 4.5, G: 11, sid: 0 }),
+      Object.freeze({ F0: 110, F1: 440, N0: 300, N1: 12000, BO: 1, SW: 0, K: 2.2, MOD: 0.025, DB: 0, NP: 3, G: 4.8, sid: 1 }),
+      Object.freeze({ F0: 90, F1: 520, N0: 150, N1: 6000, BO: 2, SW: 2, K: 0, MOD: 0, DB: 0.25, NP: 3, G: 7.6, sid: 4 }),
+      Object.freeze({ F0: 65, F1: 380, N0: 120, N1: 5000, BO: 2, SW: 2, K: 0, MOD: 0, DB: 0.25, NP: 3.2, G: 7.7, sid: 3 }),
+      Object.freeze({ F0: 45, F1: 260, N0: 90, N1: 4000, BO: 2, SW: 2, K: 0, MOD: 0, DB: 0.25, NP: 3.6, G: 9.0, sid: 2 })]);
+    const CH_OF_V = Object.freeze([0, 1, 4, 3, 2]);          // sound id → channel (and the channel's sid: CV[c].sid)
+    // the trigger's monostables: the attack's gate TG (the envelopes charge toward V_D through TA), the click's TC, its release
+    // TR; the noise into the SSM2044 (rms in 0–20 kHz, in its 2 V_T) NG; the feedback's saturation FBS; the VCAs' input: ± 30 mV
+    // full scale over 2 V_T (an OTA's tanh) [C]
+    const TG_V = 0.5e-3, TA_V = 0.1e-3, TC_V = 4e-3, TR_V = 1e-3, NG_V = 0.5, FBS_V = 0.25, KVCA = 0.03 / (2 * VT);
+    // memory 1, the factory sounds (ours, never editable: the card's internal trimmers [R mus83, mx11]) — per channel n t b d m c:
+    // a round kick with a short noise thump, a snare with a bright resonant noise body, three toms with the deep downward sweep
+    const FACTV = Object.freeze([
+      0.30, 0.42, 0.45, 0.42, 0.22, 0.25,
+      0.62, 0.45, 0.25, 0.38, 0.62, 0.30,
+      0.30, 0.42, 0.60, 0.60, 0.15, 0.25,
+      0.30, 0.42, 0.60, 0.62, 0.15, 0.25,
+      0.30, 0.42, 0.60, 0.65, 0.15, 0.25]);
+    // memories 3 and 4 until a payload's trims arrive (the record's defaults, drum-core's: our own two settings per channel) —
+    // per channel memory 3's six, memory 4's six: a deep long sweep and a short punch; a fat snare and a crack; electro toms and tight ones
+    const TRIMV = Object.freeze([
+      0.20, 0.25, 0.70, 0.65, 0.10, 0.15, 0.50, 0.50, 0.30, 0.25, 0.35, 0.50,
+      0.45, 0.35, 0.40, 0.45, 0.40, 0.20, 0.80, 0.60, 0.15, 0.25, 0.75, 0.50,
+      0.20, 0.35, 0.85, 0.70, 0.05, 0.15, 0.45, 0.55, 0.30, 0.30, 0.30, 0.40,
+      0.20, 0.35, 0.85, 0.70, 0.05, 0.15, 0.45, 0.55, 0.30, 0.30, 0.30, 0.40,
+      0.20, 0.35, 0.85, 0.72, 0.05, 0.15, 0.45, 0.55, 0.30, 0.32, 0.30, 0.40]);
+    // the controls (models.js ids, IMPL-8 §11.2): 'x' + channel + field, channel by channel; the memory switches (index 0…3 =
+    // memories 1…4; default 1: the knobs); the knobs' defaults = memory 1, SENSITIVITY 5, LEVEL 7
+    const KV_IDS = Object.freeze(['b', 's', '1', '2', '3'].flatMap(c => ['n', 't', 'b', 'd', 'm', 'c', 's', 'l'].map(f => 'x' + c + f)));
+    const KV_DEF = Object.freeze(KV_IDS.map((k, i) => ((i & 7) < 6 ? FACTV[6 * (i >> 3) + (i & 7)] : (i & 7) === 6 ? 0.5 : 0.7)));
+    const KV_CIR = Object.freeze(KV_IDS.map((k, i) => 1 << (i >> 3)));   // knob → its card
+    const SWV_IDS = Object.freeze(['xbp', 'xsp', 'x1p', 'x2p', 'x3p']), SWV_DEF = Object.freeze([1, 1, 1, 1, 1]);
+    const SV = Object.freeze([0, 1, 2, 3, 4]), LANE_SV = Object.freeze([-1, 0, 1, 2, 3, 4, -1, -1, -1, -1, -1, -1]);
+    // the mix output's coupling (Hz); its full-scale constant: §12.4's anchor — the bass drum's memory 1 at v 100, SENSITIVITY 5,
+    // LEVEL 7 peaks at the 808's default BD (0.4286 FS, OS 4, 48 kHz) [fit], measured through the whole Track (lane E5,
+    // engine-track: V5's 0.732 put it 1.2 dB over there, and the dvp groove's beat 4 — bass + tom 3 — at 0.906 FS before the
+    // track limiter at 48 kHz × 2 / × 1): 0.67 → the bass +0.46 dB re the BD, the groove's RMS −0.36 dB re the 808's, ≥ 0.6 dB
+    // under the limiter at every rate and OS; your own sounds (§12.5): 7a's law over V_D (its knee VK_V: V_D at v 100,
+    // SENSITIVITY 5), a full-scale sample at LEVEL 10 ≈ the bass card's peak on the bus at LEVEL 10
+    const HC_V = 3, OUT_KV = 0.67, VK_V = vDyn(padV(100), 0.5), SMP_LEVELV = 2.4;
+    const triV = p => { const f = p - Math.floor(p); return f < 0.5 ? 4 * f - 1 : 3 - 4 * f; };   // a triangle of phase p (cycles)
+    // hash32's bits as a signed int (no uint32 → double on the per-sample path: the cards' noise)
+    const hashI = a => { a ^= a >>> 16; a = Math.imul(a, 0x7feb352d); a ^= a >>> 15; a = Math.imul(a, 0x846ca68b); return a ^ (a >>> 16); };
+
+    // THE SSM2044 (RV §2.2–§2.3): four OTA stages dy_i = g tanh(y_{i−1} − y_i) (TPT integrators, g = tan(π f_c / fs)), the
+    // input stage's x − k·y3 with the feedback through a saturating tanh (fbs); zero-delay, per sample — engine.js Ladder's OTA
+    // method re-written in the machine's scope: the secant gains tanh(v)/v (Padé) at the prediction 2s − y, a second pass
+    // blended in where the prediction alone drifts (resonant with g > 0.09, or g > 1); each stage's secant and its 1 / (1 + a)
+    // in one division; with no feedback (bass, toms) the stages solved straight down. With feedback (the snare) its one pass is
+    // kept off the loop's critical path (the cost, IMPL-8 §17): the secants at the sample before's prediction (−39 dB re the
+    // output against the exact solve at the snare's levels, the fresh prediction −50), 1 / (1 + k Gt) and the feedback's
+    // saturation secant from the sample before (both move slowly; k Gt ≤ 0.02 at OS ≥ 2), the loop closed after the open
+    // loop's pass (y_i = z_i − k y3 (G0 … G_i)). Units: the OTA input's 2 V_T. Small-signal: 1 / ((1 + s/ω)⁴ + k). The cards
+    // run this step written out in their loop (the same arithmetic, bit for bit — a test checks it)
+    class Ota4 {
+      constructor() { this.g = 0.05; this.k = 0; this.fbs = 0; this.zero(); }
+      zero() { this.s0 = 0; this.s1 = 0; this.s2 = 0; this.s3 = 0; this.y0 = 0; this.y1 = 0; this.y2 = 0; this.y3 = 0; this.kf = this.k; this.ri = 1; this.h0 = 0; this.h1 = 0; this.h2 = 0; this.h3 = 0; }
+      step(w) {
+        const g = this.g, K = this.k, fbs = this.fbs, s0 = this.s0, s1 = this.s1, s2 = this.s2, s3 = this.s3;
+        let y0 = this.y0, y1 = this.y1, y2 = this.y2, y3 = this.y3, kf = this.kf, ri = this.ri, h0 = this.h0, h1 = this.h1, h2 = this.h2, h3 = this.h3;
+        const wb = g > 1 ? 1 : g > 0.09 && K > 2 ? (K < 3 ? K - 2 : 1) : 0;
+        let e0 = 2 * s0 - y0, e1 = 2 * s1 - y1, e2 = 2 * s2 - y2, e3 = 2 * s3 - y3;
+        const o0 = h0, o1 = h1, o2 = h2, o3 = h3; h0 = e0; h1 = e1; h2 = e2; h3 = e3;   // (the feedback's secants: the sample before's prediction)
+        if (wb === 0) {
+          // stage i at its input difference v: a = g tanh(v)/v (Padé n/m; past |v| = 3, 1/|v|); y_i = (a u + s_i) / (1 + a)
+          let v, q, D, n, m;
+          if (K === 0) {                                     // no feedback: straight down
+            v = w - e0; q = v * v;
+            if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); y0 = (g * n * w + m * s0) * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); y0 = (g * w + m * s0) * D; }
+            v = e0 - e1; q = v * v;
+            if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); y1 = (g * n * y0 + m * s1) * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); y1 = (g * y0 + m * s1) * D; }
+            v = e1 - e2; q = v * v;
+            if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); y2 = (g * n * y1 + m * s2) * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); y2 = (g * y1 + m * s2) * D; }
+            v = e2 - e3; q = v * v;
+            if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); y3 = (g * n * y2 + m * s3) * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); y3 = (g * y2 + m * s3) * D; }
+          } else {
+            // each stage's G = a / (1 + a), T = s / (1 + a); the open loop straight down (z), then the loop closed — y3 = z3 /
+            // (1 + k Gt), y_i = z_i − k y3 (G0 … G_i) — with 1 / (1 + k Gt) and the feedback's secant from the sample before
+            const k = kf;
+            let G0, T0, G1, T1, G2, T2, G3, T3;
+            v = w - k * o3 - o0; q = v * v;
+            if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); G0 = g * n * D; T0 = m * s0 * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); G0 = g * D; T0 = m * s0 * D; }
+            v = o0 - o1; q = v * v;
+            if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); G1 = g * n * D; T1 = m * s1 * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); G1 = g * D; T1 = m * s1 * D; }
+            v = o1 - o2; q = v * v;
+            if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); G2 = g * n * D; T2 = m * s2 * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); G2 = g * D; T2 = m * s2 * D; }
+            v = o2 - o3; q = v * v;
+            if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); G3 = g * n * D; T3 = m * s3 * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); G3 = g * D; T3 = m * s3 * D; }
+            const z0 = G0 * w + T0, z1 = G1 * z0 + T1, z2 = G2 * z1 + T2;
+            y3 = (G3 * z2 + T3) * ri;
+            const ky = k * y3, P1 = G0 * G1, P2 = P1 * G2, kg = k * P2 * G3;
+            y0 = z0 - ky * G0; y1 = z1 - ky * P1; y2 = z2 - ky * P2;
+            ri = kg < 0.02 ? 1 - kg * (1 - kg * (1 - kg)) : 1 / (1 + kg);
+            if (fbs !== 0) { const z = K * e3 * fbs, qz = z * z; kf = qz < 9 ? K * (27 + qz) / (27 + 9 * qz) : K / (z < 0 ? -z : z); }
+          }
+        } else for (let it = 0; it < 2; it++) {
+          if (it === 1) { e0 = y0; e1 = y1; e2 = y2; e3 = y3; }
+          let k = K;
+          if (fbs !== 0) { const z = K * e3 * fbs, q = z * z; k = q < 9 ? K * (27 + q) / (27 + 9 * q) : K / (z < 0 ? -z : z); }
+          // stage i at its input difference v: a = g tanh(v)/v; G = a / (1 + a), d = 1 / (1 + a)
+          let v = w - k * e3 - e0, q = v * v, G0, d0, G1, d1, G2, d2, G3, d3, Dv;
+          if (q < 9) { const nu = 27 + q, de = 27 + 9 * q; Dv = 1 / (de + g * nu); G0 = g * nu * Dv; d0 = de * Dv; } else { const av = v < 0 ? -v : v; Dv = 1 / (av + g); G0 = g * Dv; d0 = av * Dv; }
+          v = e0 - e1; q = v * v;
+          if (q < 9) { const nu = 27 + q, de = 27 + 9 * q; Dv = 1 / (de + g * nu); G1 = g * nu * Dv; d1 = de * Dv; } else { const av = v < 0 ? -v : v; Dv = 1 / (av + g); G1 = g * Dv; d1 = av * Dv; }
+          v = e1 - e2; q = v * v;
+          if (q < 9) { const nu = 27 + q, de = 27 + 9 * q; Dv = 1 / (de + g * nu); G2 = g * nu * Dv; d2 = de * Dv; } else { const av = v < 0 ? -v : v; Dv = 1 / (av + g); G2 = g * Dv; d2 = av * Dv; }
+          v = e2 - e3; q = v * v;
+          if (q < 9) { const nu = 27 + q, de = 27 + 9 * q; Dv = 1 / (de + g * nu); G3 = g * nu * Dv; d3 = de * Dv; } else { const av = v < 0 ? -v : v; Dv = 1 / (av + g); G3 = g * Dv; d3 = av * Dv; }
+          const T0 = s0 * d0, T1 = s1 * d1, T2 = s2 * d2, T3 = s3 * d3, Gt = G0 * G1 * G2 * G3;
+          const St = ((T0 * G1 + T1) * G2 + T2) * G3 + T3;
+          let z3 = (Gt * w + St) / (1 + k * Gt);
+          const u = w - k * z3;
+          if (it === 1 && wb < 1) {                           // the blend zone: the two solutions mixed
+            const v0 = G0 * u + T0, v1 = G1 * v0 + T1, v2 = G2 * v1 + T2;
+            y0 = e0 + wb * (v0 - e0); y1 = e1 + wb * (v1 - e1); y2 = e2 + wb * (v2 - e2); z3 = e3 + wb * (z3 - e3);
+          } else { y0 = G0 * u + T0; y1 = G1 * y0 + T1; y2 = G2 * y1 + T2; }
+          y3 = z3;
+          kf = k; ri = 1 / (1 + k * Gt);
+        }
+        this.y0 = y0; this.y1 = y1; this.y2 = y2; this.y3 = y3; this.kf = kf; this.ri = ri; this.h0 = h0; this.h1 = h1; this.h2 = h2; this.h3 = h3;
+        this.s0 = 2 * y0 - s0; this.s1 = 2 * y1 - s1; this.s2 = 2 * y2 - s2; this.s3 = 2 * y3 - s3;
+        return y3;
+      }
+    }
+
+    /* ONE CARD (RV §2.2–§2.3, IMPL-8 §12.2): the trigger's gates (the attack's 0.5 ms, the click's 4 ms) charge the envelopes
+     * toward V_D from the levels they are at (a peak detector: a retrigger never shortens a ringing decay); the triangle VCO —
+     * reset to its lower peak at each hit, its corners reflected at their time and rounded by a 2-point polyBLAMP (one sample
+     * late) — swept down from BEND by EG_P and, on the snare, moved by its 31 Hz triangle; two RC sections at 1.5 × the card's
+     * top; the card's own hashed noise (a function of the absolute sample, salted) through a 20 kHz pole (the noise amplifier's,
+     * above 60 kHz) into the SSM2044 (Ota4: NOISE's f_c raised by EG_N on bass and toms, clamped at 0.46 of the OS rate); three
+     * OTA VCAs (EG_T on the tone, EG_N on the noise, EG_C on the click); NOISE / TONE and CLICK / DRUM equal-power, LEVEL an
+     * audio taper. Chunk-rate: the pitch (interpolated within the chunk), the cutoff (held), the noise path on / off (on while it
+     * can be heard; a wake settles the filter over the 12 ms before it from rest — a function of time only). */
+    class CardV extends Voice {
+      constructor(M, k) {
+        super(M, 1); this.k = k; this.P = CV[k]; this.b = 8 * k;
+        this.flt = new Ota4(); this.flt.k = this.P.K; this.flt.fbs = this.P.K > 0 ? FBS_V : 0;
+        this.rc = new Float64Array(3); this.sm = new Float64Array(3);
+        this.fT = 0; this.fN = 0; this.bo = 0; this.aT = 0; this.aN = 0; this.aC = 0; this.kT = 0; this.kN = 0; this.kPc = 0;
+        this.kA = 0; this.kR = 0; this.nG = 1; this.nC = 1; this.nPre = 0; this.sig = 0; this.smOn = false; this.lfo = 0; this.seed = 0;
+        this.tap = false; this.fTr = null;                   // (tests: the tone path alone on the bus, the VCO's frequency per sample)
+        this.zero();
+      }
+      zero() {
+        this.x = -1; this.d = 1; this.xp = 0; this.cp = 0; this.r1 = 0; this.r2 = 0; this.p1 = 0; this.eT = 0; this.eN = 0; this.eC = 0;
+        this.eP = 0; this.vd = 0; this.tG = 0; this.tC = 0; this.nzOn = false; this.fq = 0; this.fqOk = false; this.vo = 0; this.flt.zero();
+      }
+      os() {
+        const M = this.M, fs = M.fs, h = M.h, P = this.P;
+        bil1(this.rc, 0, 0, 1, 1 / (TAU * 1.5 * P.F1), 1, kBil(1.5 * P.F1, fs));
+        this.smOn = fs > 60000;
+        if (this.smOn) bil1(this.sm, 0, 0, 1, 1 / (TAU * 20000), 1, kBil(20000, fs));
+        // NG_V rms in 0–20 kHz (white8's density law; one hash a sample, Irwin–Hall of two 16-bit uniforms: σ 26 754.9 —
+        // Gaussian behind the filters)
+        this.sig = NG_V * Math.sqrt(fs / 40000) / 26754.9;
+        this.kA = 1 - Math.exp(-h / TA_V); this.kR = Math.exp(-h / TR_V);
+        this.nG = Math.max(1, Math.round(TG_V * fs)); this.nC = Math.max(1, Math.round(TC_V * fs));
+        this.nPre = Math.ceil(0.012 * fs / M.CH) * M.CH;
+        this.lfo = P.MOD > 0 ? 31 / fs : 0;
+        this.kn();
+      }
+      // the six (the memory's, glided), SENSITIVITY (read at the hit) and LEVEL → the card's coefficients
+      kn() {
+        const M = this.M, kv = M.kv, b = this.b, P = this.P, h = M.h;
+        const t = clamp01(kv[b + 1]), dd = clamp01(kv[b + 3]), m = clamp01(kv[b + 4]), c = clamp01(kv[b + 5]);
+        this.fT = P.F0 * Math.pow(P.F1 / P.F0, t); this.fN = P.N0 * Math.pow(P.N1 / P.N0, clamp01(kv[b])); this.bo = P.BO * clamp01(kv[b + 2]);
+        const tau = t60V(dd) / Math.log(1000);
+        this.kT = Math.exp(-h / tau); this.kN = Math.exp(-h / (0.6 * tau)); this.kPc = Math.exp(-M.CH * h / Math.min(0.3 * tau, 0.4));
+        const lv = tapA(clamp01(kv[b + 7])) * P.G / VL, gD = Math.sin((1 - c) * Math.PI / 2);
+        this.aT = lv * gD * Math.sin((1 - m) * Math.PI / 2); this.aN = lv * gD * Math.sin(m * Math.PI / 2); this.aC = lv * Math.sin(c * Math.PI / 2);
+        this.fqOk = false;
+      }
+      fire(vd) {
+        this.vd = vd; this.tG = this.nG; this.tC = this.nC; this.eP = 1; this.x = -1; this.d = 1; this.fqOk = false;
+        this.on = true; this.qn = 0;
+      }
+      // a waking noise path settles over the 12 ms before absolute OS sample a, from rest, at its cutoff now
+      nzWake(a) {
+        const M = this.M, CH = M.CH, F = this.flt, P = this.P, S0 = this.sm[0], S1 = this.sm[1], S2 = this.sm[2], smOn = this.smOn, sig = this.sig;
+        const fc = this.fN * (P.SW > 0 ? Math.pow(2, P.SW / VL * this.eN) : 1), gMx = 0.46 * M.fs;
+        F.zero(); F.g = Math.tan(Math.PI / M.fs * (fc < gMx ? fc : gMx));
+        let p1 = 0;
+        for (let s = a - this.nPre; s < a; s += CH) {
+          const lo0 = s % 4294967296, sd = hashI((s - lo0) / 4294967296 ^ this.seed), l0 = lo0 | 0;
+          for (let i = 0; i < CH; i++) {
+            const ah = hashI(((l0 + i) | 0) ^ sd);
+            let w = ((ah & 0xffff) + (ah >>> 16) - 65535) * sig;
+            if (smOn) { const ws = S0 * w + p1; p1 = S1 * w - S2 * ws; w = ws; }
+            F.step(w);
+          }
+        }
+        this.p1 = p1;
+      }
+      run(mb, o, n) {
+        const M = this.M, CH = M.CH, e = o + n, P = this.P, F = this.flt, thr = this.thr, tap = this.tap, fTr = this.fTr;
+        const R0 = this.rc[0], R1 = this.rc[1], R2 = this.rc[2], S0 = this.sm[0], S1 = this.sm[1], S2 = this.sm[2], smOn = this.smOn;
+        const kA = this.kA, kT = this.kT, kN = this.kN, kR = this.kR, kPc = this.kPc, aT = this.aT, aN = this.aN, aC = this.aC, sig = this.sig;
+        const f4 = 4 * M.h, fT = this.fT, fN = this.fN, sw = P.SW / VL, mod = P.MOD, lfo = this.lfo, gMx = 0.46 * M.fs, iF = Math.PI / M.fs;
+        const gN0 = Math.tan(iF * (fN < gMx ? fN : gMx)), K = F.k, fbs = F.fbs, np = P.NP;
+        // the SSM2044's states in locals (Ota4.step written out below: the same arithmetic, bit for bit — a test checks it)
+        let s0 = F.s0, s1 = F.s1, s2 = F.s2, s3 = F.s3, y0 = F.y0, y1 = F.y1, y2 = F.y2, y3 = F.y3, kf = F.kf, ri = F.ri, h0 = F.h0, h1 = F.h1, h2 = F.h2, h3 = F.h3, g = F.g, wb = 0;
+        let x = this.x, d = this.d, xp = this.xp, cp = this.cp, r1 = this.r1, r2 = this.r2, p1 = this.p1, eT = this.eT, eN = this.eN, eC = this.eC;
+        let eP = this.eP, tG = this.tG, tC = this.tC, nzOn = this.nzOn, vo = this.vo;
+        const vd = this.vd, bo = this.bo * (1 + P.DB * vd / VL);
+        for (let c = o; c < e; c += CH) {
+          const a = M.n0 + c;
+          // the noise path, on while it can be heard (a wake: its pre-roll)
+          const need = (aN > 0 || aC > 0) && (tG > 0 || tC > 0 || eN * aN + eC * aC >= thr);
+          if (need !== nzOn) {
+            if (need) { this.eN = eN; this.nzWake(a); p1 = this.p1; } else { F.zero(); p1 = 0; }
+            s0 = F.s0; s1 = F.s1; s2 = F.s2; s3 = F.s3; y0 = F.y0; y1 = F.y1; y2 = F.y2; y3 = F.y3; kf = F.kf; ri = F.ri; h0 = F.h0; h1 = F.h1; h2 = F.h2; h3 = F.h3; nzOn = need;
+          }
+          // the pitch over the chunk: EG_P (per chunk), the snare's 31 Hz triangle (of the absolute time); linear within it
+          const fA = this.fqOk ? this.fq : fT * (bo * eP > 1e-9 ? Math.pow(2, bo * eP) : 1) * (mod > 0 ? 1 + mod * triV(a * lfo) : 1);
+          eP *= kPc;
+          const fB = fT * (bo * eP > 1e-9 ? Math.pow(2, bo * eP) : 1) * (mod > 0 ? 1 + mod * triV((a + CH) * lfo) : 1);
+          this.fq = fB; this.fqOk = true;
+          let sp = fA * f4;
+          const ds = (fB - fA) * f4 / CH;
+          // the cutoff over the chunk (held): NOISE raised by EG_N (bass, toms), clamped at 0.46 of the OS rate
+          let l0 = 0, sd = 0;
+          if (nzOn) {
+            g = gN0;
+            if (sw * eN > 1e-9) { const fc = fN * Math.pow(2, sw * eN); g = Math.tan(iF * (fc < gMx ? fc : gMx)); }
+            F.g = g; wb = g > 1 ? 1 : g > 0.09 && K > 2 ? (K < 3 ? K - 2 : 1) : 0;
+            const lo0 = a % 4294967296; sd = hashI((a - lo0) / 4294967296 ^ this.seed); l0 = (lo0 | 0) - c;
+          }
+          let pk = 0;
+          for (let i = c, ie = c + CH; i < ie; i++) {
+            // the envelopes: the gates charge toward V_D, then the falls (EG_T, EG_N; the click's release)
+            if (tG > 0) { tG--; if (eT < vd) eT += (vd - eT) * kA; if (eN < vd) eN += (vd - eN) * kA; } else { eT *= kT; eN *= kN; }
+            if (tC > 0) { tC--; if (eC < vd) eC += (vd - eC) * kA; } else eC *= kR;
+            // the VCO: ± 1 at 4 f per period; a corner inside the sample reflected, its slope change −2s / +2s rounded over the
+            // two samples around it (the 2-point polyBLAMP: u³/6 before, (1 − u)³/6 after, u the time past the corner)
+            const s = sp; sp += ds;
+            if (fTr !== null) fTr[a + i - c] = s / f4;
+            x += d * s;
+            let cc = 0;
+            if (x > 1) { const u = (x - 1) / s, w = 1 - u; x = 2 - x; d = -1; cp -= s * u * u * u / 3; cc = -s * w * w * w / 3; }
+            else if (x < -1) { const u = (-1 - x) / s, w = 1 - u; x = -2 - x; d = 1; cp += s * u * u * u / 3; cc = s * w * w * w / 3; }
+            const tv = xp + cp; xp = x; cp = cc;
+            const r = R0 * tv + r1; r1 = R1 * tv - R2 * r;     // the RC²
+            const tn = R0 * r + r2; r2 = R1 * r - R2 * tn;
+            if (tap) { mb[i] += tn; continue; }
+            // VCA_T: tanh(K tn) / K by its series (|K tn| ≤ 0.58: within 3e-4; no division)
+            const qt = KVCA * KVCA * tn * tn;
+            let y = aT * eT * tn * (1 - qt * (0.3333333333333333 - qt * (0.13333333333333333 - qt * 0.05396825396825397)));
+            if (nzOn) {                                        // the noise → its pole → the SSM2044 → VCA_N, VCA_C
+              const ah = hashI(((l0 + i) | 0) ^ sd);
+              let w = ((ah & 0xffff) + (ah >>> 16) - 65535) * sig;
+              if (smOn) { const ws = S0 * w + p1; p1 = S1 * w - S2 * ws; w = ws; }
+              // Ota4.step(w), written out
+              let e0 = 2 * s0 - y0, e1 = 2 * s1 - y1, e2 = 2 * s2 - y2, e3 = 2 * s3 - y3;
+              const o0 = h0, o1 = h1, o2 = h2, o3 = h3; h0 = e0; h1 = e1; h2 = e2; h3 = e3;   // (the feedback's secants: the sample before's prediction)
+              if (wb === 0) {
+                // stage i at its input difference v: a = g tanh(v)/v (Padé n/m; past |v| = 3, 1/|v|); y_i = (a u + s_i) / (1 + a)
+                let v, q, D, n, m;
+                if (K === 0) {                                     // no feedback: straight down
+                  v = w - e0; q = v * v;
+                  if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); y0 = (g * n * w + m * s0) * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); y0 = (g * w + m * s0) * D; }
+                  v = e0 - e1; q = v * v;
+                  if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); y1 = (g * n * y0 + m * s1) * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); y1 = (g * y0 + m * s1) * D; }
+                  v = e1 - e2; q = v * v;
+                  if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); y2 = (g * n * y1 + m * s2) * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); y2 = (g * y1 + m * s2) * D; }
+                  v = e2 - e3; q = v * v;
+                  if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); y3 = (g * n * y2 + m * s3) * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); y3 = (g * y2 + m * s3) * D; }
+                } else {
+                  // each stage's G = a / (1 + a), T = s / (1 + a); the open loop straight down (z), then the loop closed — y3 = z3 /
+                  // (1 + k Gt), y_i = z_i − k y3 (G0 … G_i) — with 1 / (1 + k Gt) and the feedback's secant from the sample before
+                  const k = kf;
+                  let G0, T0, G1, T1, G2, T2, G3, T3;
+                  v = w - k * o3 - o0; q = v * v;
+                  if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); G0 = g * n * D; T0 = m * s0 * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); G0 = g * D; T0 = m * s0 * D; }
+                  v = o0 - o1; q = v * v;
+                  if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); G1 = g * n * D; T1 = m * s1 * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); G1 = g * D; T1 = m * s1 * D; }
+                  v = o1 - o2; q = v * v;
+                  if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); G2 = g * n * D; T2 = m * s2 * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); G2 = g * D; T2 = m * s2 * D; }
+                  v = o2 - o3; q = v * v;
+                  if (q < 9) { n = 27 + q; m = 27 + 9 * q; D = 1 / (m + g * n); G3 = g * n * D; T3 = m * s3 * D; } else { m = v < 0 ? -v : v; D = 1 / (m + g); G3 = g * D; T3 = m * s3 * D; }
+                  const z0 = G0 * w + T0, z1 = G1 * z0 + T1, z2 = G2 * z1 + T2;
+                  y3 = (G3 * z2 + T3) * ri;
+                  const ky = k * y3, P1 = G0 * G1, P2 = P1 * G2, kg = k * P2 * G3;
+                  y0 = z0 - ky * G0; y1 = z1 - ky * P1; y2 = z2 - ky * P2;
+                  ri = kg < 0.02 ? 1 - kg * (1 - kg * (1 - kg)) : 1 / (1 + kg);
+                  if (fbs !== 0) { const z = K * e3 * fbs, qz = z * z; kf = qz < 9 ? K * (27 + qz) / (27 + 9 * qz) : K / (z < 0 ? -z : z); }
+                }
+              } else for (let it = 0; it < 2; it++) {
+                if (it === 1) { e0 = y0; e1 = y1; e2 = y2; e3 = y3; }
+                let k = K;
+                if (fbs !== 0) { const z = K * e3 * fbs, q = z * z; k = q < 9 ? K * (27 + q) / (27 + 9 * q) : K / (z < 0 ? -z : z); }
+                // stage i at its input difference v: a = g tanh(v)/v; G = a / (1 + a), d = 1 / (1 + a)
+                let v = w - k * e3 - e0, q = v * v, G0, d0, G1, d1, G2, d2, G3, d3, Dv;
+                if (q < 9) { const nu = 27 + q, de = 27 + 9 * q; Dv = 1 / (de + g * nu); G0 = g * nu * Dv; d0 = de * Dv; } else { const av = v < 0 ? -v : v; Dv = 1 / (av + g); G0 = g * Dv; d0 = av * Dv; }
+                v = e0 - e1; q = v * v;
+                if (q < 9) { const nu = 27 + q, de = 27 + 9 * q; Dv = 1 / (de + g * nu); G1 = g * nu * Dv; d1 = de * Dv; } else { const av = v < 0 ? -v : v; Dv = 1 / (av + g); G1 = g * Dv; d1 = av * Dv; }
+                v = e1 - e2; q = v * v;
+                if (q < 9) { const nu = 27 + q, de = 27 + 9 * q; Dv = 1 / (de + g * nu); G2 = g * nu * Dv; d2 = de * Dv; } else { const av = v < 0 ? -v : v; Dv = 1 / (av + g); G2 = g * Dv; d2 = av * Dv; }
+                v = e2 - e3; q = v * v;
+                if (q < 9) { const nu = 27 + q, de = 27 + 9 * q; Dv = 1 / (de + g * nu); G3 = g * nu * Dv; d3 = de * Dv; } else { const av = v < 0 ? -v : v; Dv = 1 / (av + g); G3 = g * Dv; d3 = av * Dv; }
+                const T0 = s0 * d0, T1 = s1 * d1, T2 = s2 * d2, T3 = s3 * d3, Gt = G0 * G1 * G2 * G3;
+                const St = ((T0 * G1 + T1) * G2 + T2) * G3 + T3;
+                let z3 = (Gt * w + St) / (1 + k * Gt);
+                const u = w - k * z3;
+                if (it === 1 && wb < 1) {                           // the blend zone: the two solutions mixed
+                  const v0 = G0 * u + T0, v1 = G1 * v0 + T1, v2 = G2 * v1 + T2;
+                  y0 = e0 + wb * (v0 - e0); y1 = e1 + wb * (v1 - e1); y2 = e2 + wb * (v2 - e2); z3 = e3 + wb * (z3 - e3);
+                } else { y0 = G0 * u + T0; y1 = G1 * y0 + T1; y2 = G2 * y1 + T2; }
+                y3 = z3;
+                kf = k; ri = 1 / (1 + k * Gt);
+              }
+              s0 = 2 * y0 - s0; s1 = 2 * y1 - s1; s2 = 2 * y2 - s2; s3 = 2 * y3 - s3;
+              const yf = np * y3, qf = KVCA * KVCA * yf * yf;   // the filtered noise into VCA_N / VCA_C (× NP); tanh by its series while |K y| < 0.8
+              y += (aN * eN + aC * eC) * (qf < 0.64 ? yf * (1 - qf * (0.3333333333333333 - qf * (0.13333333333333333 - qf * 0.05396825396825397)))
+                : qf < 9 ? yf * (27 + qf) / (27 + 9 * qf) : (yf < 0 ? -1 : 1) / KVCA);
+            }
+            vo = y; mb[i] += y;
+            const ay = y < 0 ? -y : y;
+            if (ay > pk) pk = ay;
+          }
+          if (eC < 1e-30) eC = 0;                              // (the click's 1 ms release under a long ring: no subnormal)
+          const ev = aT * eT + (nzOn ? aN * eN + aC * eC : 0);
+          if (this.quiet(Math.max(pk, ev, tG > 0 || tC > 0 ? 1 : 0))) return;
+        }
+        this.x = x; this.d = d; this.xp = xp; this.cp = cp; this.r1 = r1; this.r2 = r2; this.p1 = p1; this.eT = eT; this.eN = eN; this.eC = eC;
+        this.eP = eP; this.tG = tG; this.tC = tC; this.nzOn = nzOn; this.vo = vo;
+        F.s0 = s0; F.s1 = s1; F.s2 = s2; F.s3 = s3; F.y0 = y0; F.y1 = y1; F.y2 = y2; F.y3 = y3; F.kf = kf; F.ri = ri; F.h0 = h0; F.h1 = h1; F.h2 = h2; F.h3 = h3;
+      }
+    }
+
     /* ------------------------------------------------------------------ the machines (IMPL-7b §2.1) */
     // One shell, a descriptor per machine: its knob table (ids, defaults, the circuits each retunes), the sounds it has (the
     // 808's sound ids, IMPL-7b §1.2) and its lane → sound map; create() builds the voices, the sources, the latches, the
@@ -3141,10 +3499,14 @@
       tr808: Object.freeze({ id: 'tr808', KNOB_IDS, KNOB_DEF, KNOB_CIR, NK, SOUNDS, sids: Object.freeze(SOUNDS.map((s, i) => i)), LANE_S }),
       tr606: Object.freeze({ id: 'tr606', KNOB_IDS: K6_IDS, KNOB_DEF: K6_DEF, KNOB_CIR: K6_CIR, NK: K6_IDS.length, SOUNDS, sids: S6, LANE_S: LANE_S6 }),
       tr909: Object.freeze({ id: 'tr909', KNOB_IDS: K9_IDS, KNOB_DEF: K9_DEF, KNOB_CIR: K9_CIR, NK: K9_IDS.length, SOUNDS: SOUNDS9, sids: S9, LANE_S }),
+      // (the SDS-V: its 40 knobs glide as the five cards' effective values — each card's six from its memory, IMPL-8 §11.5)
+      sdsv: Object.freeze({ id: 'sdsv', KNOB_IDS: KV_IDS, KNOB_DEF: KV_DEF, KNOB_CIR: KV_CIR, NK: KV_IDS.length, SOUNDS, sids: SV, LANE_S: LANE_SV,
+        SW_IDS: SWV_IDS, SW_DEF: SWV_DEF }),
     });
     // the output stage's static gain at a panel (bus volts → full scale; the engine's tail units across a kind or machine
     // change: IMPL-7b §1.5): MASTER VOLUME / VOLUME (50 k A) into its amplifier, the full-scale constant — post at rest
     function gain(kind, d) {
+      if (kind === 'sdsv') return OUT_KV;                    // (no master knob: the track's volume, IMPL-8 §12.1)
       const v = d && d.vol >= 0 ? (d.vol < 1 ? d.vol : 1) : 0.75, lv = tapA(v);
       if (kind === 'tr606') { const P = MIX6, rl = P.VR8 * lv, rw = rl * (P.VR8 - rl) / P.VR8; return lv * P.R190 / (P.R191 + rw) * OUT_K6; }
       if (kind === 'tr909') return MIX9.VR28 * v / MIX9.RM * OUT_K9;   // VR28 (50 k B) the summing amplifier's feedback
@@ -3176,9 +3538,11 @@
       }
     }
     function create(inst, kind, opt) {
-      const X = kind === undefined || kind === 'tr808' ? MACH.tr808 : kind === 'tr606' ? MACH.tr606 : kind === 'tr909' ? MACH.tr909 : null;
+      const X = kind === undefined || kind === 'tr808' ? MACH.tr808 : kind === 'tr606' ? MACH.tr606 : kind === 'tr909' ? MACH.tr909
+        : kind === 'sdsv' ? MACH.sdsv : null;
       if (X === null) return null;
-      const is6 = X === MACH.tr606, is9 = X === MACH.tr909, is8 = !is6 && !is9, NKX = X.NK, KDEF = X.KNOB_DEF, KCIR = X.KNOB_CIR, KIDS = X.KNOB_IDS, MTX = is6 ? MT6 : MT;
+      const is6 = X === MACH.tr606, is9 = X === MACH.tr909, isV = X === MACH.sdsv, is8 = !is6 && !is9 && !isV, NKX = X.NK, KDEF = X.KNOB_DEF;
+      const KCIR = X.KNOB_CIR, KIDS = X.KNOB_IDS, MTX = is6 ? MT6 : MT;
       const o = opt || {};
       const base = inst && inst.base > 0 ? inst.base : (typeof sampleRate === 'number' ? sampleRate : 48000);
       const M = {
@@ -3200,7 +3564,7 @@
       // the noise: white (the 808: a 20 kHz smoothing low-pass above 60 kHz; the 606: IC10B's pole) and pink (the PN
       // low-pass of the same density)
       const nz = { c: new Float64Array(5), p: new Float64Array(5), w: new Float64Array(3), s1: 0, s2: 0, q1: 0, q2: 0, qp: 0, sig: 0, sigB: 0, won: false, pon: false };
-      const TB = []; if (!is9) for (let k = 0; k < 6; k++) TB.push({ lo: new Float64Array(TN + 1), hi: new Float64Array(TN + 1), sq: new Float64Array(TN + 1), f: MTX.F[k], inc: 0 });
+      const TB = []; if (!is9 && !isV) for (let k = 0; k < 6; k++) TB.push({ lo: new Float64Array(TN + 1), hi: new Float64Array(TN + 1), sq: new Float64Array(TN + 1), f: MTX.F[k], inc: 0 });
       const bank = { lon: false, hon: false, pl: 0, ph: 0, p5: 0, p6: 0, lmax: 0, lmin: 0, hmax: 0, hmin: 0, dl: 0, dlH: 0, W: 0 };
       const bd = is8 ? new BassDrum(M) : null, sd = is8 ? new Snare(M) : null, tl = is8 ? new Tom(M, 0) : null, tmm = is8 ? new Tom(M, 1) : null;
       const th = is8 ? new Tom(M, 2) : null, rs = is8 ? new RimClaves(M) : null, cp = is8 ? new Clap(M) : null, cb = is8 ? new Cowbell(M) : null;
@@ -3218,8 +3582,11 @@
       const hh9 = is9 ? new Rom9(M, Q9, 0) : null, cr9 = is9 ? new Rom9(M, Q9, 1) : null, rd9 = is9 ? new Rom9(M, Q9, 2) : null;
       const SW9 = is9 ? { hh: new Uint8Array(W9), cr: new Uint8Array(W9), rd: new Uint8Array(W9), id: ['', '', '', ''], pend: false, q: -1 } : null;
       if (is9) { hh9.img = RI9.hh; cr9.img = RI9.cr; rd9.img = RI9.rd; hh9.tap = cr9.tap = rd9.tap = !!o.dacTap; }
+      // the SDS-V: five cards (channels b s 1 2 3), each its own noise; the trims (memories 3 and 4: the payload's, §11.5)
+      const CARDS = isV ? [new CardV(M, 0), new CardV(M, 1), new CardV(M, 2), new CardV(M, 3), new CardV(M, 4)] : null;
+      const TRV = isV ? Float64Array.from(TRIMV) : null;
       // render order: the closed hat before the open hat (its C63 trace drives the choke)
-      const V = is9 ? [b9, s9, l9, m9, t9, r9, p9, hh9, cr9, rd9] : is6 ? [b6, s6, t6, c6, h6] : [bd, sd, tl, tmm, th, rs, cp, cb, cy, chh, oh, ma];
+      const V = isV ? CARDS : is9 ? [b9, s9, l9, m9, t9, r9, p9, hh9, cr9, rd9] : is6 ? [b6, s6, t6, c6, h6] : [bd, sd, tl, tmm, th, rs, cp, cb, cy, chh, oh, ma];
       const CIRV = is8 ? [bd, sd, tl, tmm, th, rs, cp, cb, cy, oh, chh, ma] : null;   // circuit index → voice
       // the output stage (post): per channel the summing amplifier's and the output amplifier's 220 p low-passes, the
       // coupling into MASTER VOLUME / VOLUME, the coupling into the output amplifier
@@ -3232,6 +3599,12 @@
 
       function setRate(os) {
         M.OS = os; M.fs = base * os; M.h = 1 / M.fs; M.CH = 4 * os; M.nP = Math.max(1, Math.round(1e-3 * M.fs));
+        if (isV) {                                           // the cards; the mix output's coupling
+          for (const v of V) v.os();
+          bil1(ost.c1, 0, 1 / (TAU * HC_V), 0, 1 / (TAU * HC_V), 1, kBil(HC_V, base));
+          knobOut();
+          return;
+        }
         if (is9) {
           // the noise register's clock over the OS rate (reduced: exact integer positions), resynced at the next use; the voices;
           // the output stage (the DC coupling, the jack's 15.9 kHz pole at the base rate)
@@ -3275,6 +3648,7 @@
         knobOut();
       }
       function knobOut() {
+        if (isV) { ost.g = 1; return; }                      // (no master knob)
         if (is9) { ost.g = MIX9.VR28 * clamp01(M.kv[K9.vol]) / MIX9.RM; return; }   // VOLUME (VR28 50 k B) over the mix resistors: gain(), at rest
         if (is6) {                                           // VOLUME (VR8 50 k A) → R191 → IC14B (R190): gain(), at rest
           const P = MIX6, lv = tapA(clamp01(M.kv[K6.vol])), rl = P.VR8 * lv, rw = rl * (P.VR8 - rl) / P.VR8;
@@ -3521,12 +3895,14 @@
       }
       function sources9(n0, i0, n) { if (b9.nzOn || s9.nzOn || l9.nzOn || m9.nzOn || t9.nzOn || p9.on) noise9(n0, i0, n, Q9.nz); }
       function sourcesOff9() {}
-      const sources = is9 ? sources9 : is6 ? sources6 : sources8, sourcesOff = is9 ? sourcesOff9 : is6 ? sourcesOff6 : sourcesOff8;
+      function sourcesV() {}                                 // (the SDS-V: each card its own noise)
+      const sources = isV ? sourcesV : is9 ? sources9 : is6 ? sources6 : sources8, sourcesOff = isV ? sourcesV : is9 ? sourcesOff9 : is6 ? sourcesOff6 : sourcesOff8;
 
       // the knob targets, read once per span (set() and the modulation adapter write p.drum between spans)
       const kd = x => { const t = +x; return t === t ? (t < 0 ? 0 : t > 1 ? 1 : t) : -1; };
       function readTargets() {
         const d = M.drum, kt = M.kt;
+        if (isV) { readTargetsV(d, kt); return; }
         if (d && !is8) {
           for (let i = 0; i < NKX; i++) { const t = kd(d[KIDS[i]]); kt[i] = t < 0 ? KDEF[i] : t; }
         } else if (d) {
@@ -3539,6 +3915,36 @@
         let mv = 0;
         for (let i = 0; i < NKX; i++) if (kt[i] !== M.kv[i]) { mv = 1; break; }
         M.mv = mv;
+      }
+      // the SDS-V's targets (IMPL-8 §11.5): per card its memory's six — 1 the factory sound (FACTV), 2 the knobs, 3 and 4 the
+      // trims (the payload's) — and the mixer's SENSITIVITY and LEVEL (every memory); a memory switch glides like a knob
+      const memV = s => { const t = typeof s === 'number' ? s : typeof s === 'string' && s !== '' ? +s : NaN; return t === 0 || t === 1 || t === 2 || t === 3 ? t : 1; };
+      function readTargetsV(d, kt) {
+        for (let c = 0; c < 5; c++) {
+          const b = 8 * c, mem = d ? memV(d[SWV_IDS[c]]) : 1;
+          for (let f = 0; f < 8; f++) {
+            let t;
+            if (f < 6 && mem !== 1) t = mem === 0 ? FACTV[6 * c + f] : TRV[12 * c + 6 * (mem - 2) + f];
+            else { t = d ? kd(d[KIDS[b + f]]) : -1; if (t < 0) t = KDEF[b + f]; }
+            kt[b + f] = t;
+          }
+        }
+        let mv = 0;
+        for (let i = 0; i < NKX; i++) if (kt[i] !== M.kv[i]) { mv = 1; break; }
+        M.mv = mv;
+      }
+      // the payload's trims (5 channels × memories 3, 4 × the six, 0…1; a missing or foreign value: the default) — no allocation
+      function trimV(t) {
+        for (let c = 0; c < 5; c++) {
+          const tc = t && typeof t === 'object' ? t[c] : null;
+          for (let j = 0; j < 2; j++) {
+            const r = tc && typeof tc === 'object' ? tc[j] : null;
+            for (let f = 0; f < 6; f++) {
+              const x = r && typeof r === 'object' ? +r[f] : NaN, o = 12 * c + 6 * j + f;
+              TRV[o] = x === x ? (x < 0 ? 0 : x > 1 ? 1 : x) : TRIMV[o];
+            }
+          }
+        }
       }
       // one chunk's glide (≈ 5 ms to the target; the first set() snaps); returns the circuits to retune
       const kS = 1 - Math.exp(-4 / (base * 0.005));
@@ -3556,6 +3962,7 @@
         return mask;
       }
       function retune(mask) {
+        if (isV) { for (let c = 0; c < 5; c++) if (mask & (1 << c)) CARDS[c].kn(); return; }
         if (is9) {
           if (mask & 1) b9.kn(); if (mask & 2) s9.kn(); if (mask & 4) l9.kn(); if (mask & 8) m9.kn(); if (mask & 16) t9.kn();
           if (mask & 32) r9.kn(); if (mask & 64) p9.kn(); if (mask & 128) hh9.kn(); if (mask & 256) cr9.kn(); if (mask & 512) rd9.kn();
@@ -3639,7 +4046,22 @@
         }
         lat.fill(0); M.latN = 0;
       }
-      const apply = is9 ? apply9 : is6 ? apply6 : apply8;
+      // the SDS-V's latched hits (pad volts), in sound order: each channel's SENSITIVITY now → V_D; the comparator (a soft hit
+      // at a low SENSITIVITY fires nothing, P-4); a slot plays instead of its card (§12.5)
+      function applyV() {
+        const lat = M.lat, kv = M.kv;
+        for (let s = 0; s < 5; s++) {
+          const vp = lat[s];
+          if (!(vp > 0)) continue;
+          const c = CH_OF_V[s], vd = vDyn(vp, clamp01(kv[8 * c + 6]));
+          if (!(vd > VCMP)) continue;
+          if (smpHit(s, vd)) continue;
+          M.lit |= 1 << s;
+          CARDS[c].fire(vd);
+        }
+        lat.fill(0); M.latN = 0;
+      }
+      const apply = isV ? applyV : is9 ? apply9 : is6 ? apply6 : apply8;
       function anyOn() { for (let k = 0; k < V.length; k++) if (V[k].on) return true; return false; }
 
       // ---- the sample slots (§5): stored entries read lazily (SxBase.getAsset), played at the base rate in post()
@@ -3654,7 +4076,9 @@
         sl.pos = 0; sl.dg = 1;
         // the hit's volts as gain: 7a's law with the machine's V_N and accent ceiling (the 606: V_A at ACCENT 10)
         // (the 909: Vv is the hit's DAC code — below N0 proportional, N0 → 1, both at full TOTAL ACCENT → +4 dB, IMPL-7c §5)
-        const gv = is9 ? (Vv <= ACC9.N0 ? Vv / ACC9.N0 : 1 + (SMP_ACC9 - 1) * (Vv - ACC9.N0) / (CBOTH9 - ACC9.N0)) * SMP_LEVEL9
+        // (the SDS-V: Vv is the hit's V_D — below VK_V proportional, then up to + 0.6 at the limit, IMPL-8 §12.5)
+        const gv = isV ? (Vv <= VK_V ? Vv / VK_V : 1 + 0.6 * (Vv - VK_V) / (VL - VK_V)) * SMP_LEVELV
+          : is9 ? (Vv <= ACC9.N0 ? Vv / ACC9.N0 : 1 + (SMP_ACC9 - 1) * (Vv - ACC9.N0) / (CBOTH9 - ACC9.N0)) * SMP_LEVEL9
           : is6 ? (Vv <= V_N6 ? Vv / V_N6 : 1 + 0.6 * (Vv - V_N6) / (V_X6 - V_N6)) * SMP_LEVEL6 : (Vv <= V_N ? Vv / V_N : 1 + 0.6 * (Vv - V_N) / (V_X - V_N)) * SMP_LEVEL;
         sl.g = gv / (sl.e.peak > 1e-6 ? sl.e.peak : 1);
         smpAny = true;
@@ -3671,7 +4095,14 @@
           if (!e || (sl.pos < 0 && sl.fN === 0)) continue;
           any = true;
           let lvl, tune = 0, dk;
-          if (is9) {
+          if (isV) {
+            // the SDS-V (IMPL-8 §12.5): its channel's LEVEL (audio taper), TONE ± 1 octave at its centre, DECAY a fade only below 5
+            // — the values the channel's memory gives
+            const b = 8 * CH_OF_V[s], u = clamp01(kv[b + 3]);
+            lvl = tapA(clamp01(kv[b + 7]));
+            tune = (clamp01(kv[b + 1]) - 0.5) * 2;
+            dk = u >= 0.5 ? 0 : 1 / Math.max(1, (0.03 + u * 3) * base);
+          } else if (is9) {
             // the 909 (IMPL-7c §5): its LEVEL (the voice's 50 / 100 k B pot: linear, as the circuit's), TUNE ± 1 octave at 5 (BD, SD,
             // toms), DECAY a fade only below 5 (BD, toms: 0 = 30 ms; 5 and up the whole sound)
             const lk = S9_LEV[s], tk = S9_TUN[s], dk9 = S9_DEC[s];
@@ -3791,6 +4222,28 @@
         ost.live = pk > 1e-5 ? 4 : ost.live > 0 ? ost.live - 1 : 0;
       }
 
+      // the SDS-V's (IMPL-8 §12.4): the MONO mix — the cards' sum (each at its LEVEL; the stereo trimmer's pan not in it) —, the
+      // output's coupling, the mix amplifier's rails (±13.5 V, the 808's knee)
+      function postV(L, R, mono, n) {
+        const st = smpAny ? (smpAny = smpRender(n)) : false;
+        const c1 = ost.c1, s = ost.s;
+        let pk = 0;
+        for (let ch = 0; ch < (st ? 2 : 1); ch++) {
+          const out = ch === 0 ? L : R, sx = ch === 0 ? smpL : smpR, b = 4 * ch;
+          let s0 = s[b];
+          for (let i = 0; i < n; i++) {
+            const x0 = st ? mono[i] + sx[i] : mono[i];
+            const y1 = c1[0] * x0 + s0; s0 = c1[1] * x0 - c1[2] * y1;        // the coupling
+            const v = rail(y1), a = v < 0 ? -v : v;
+            out[i] = v * OUT_KV;
+            if (a > pk) pk = a;
+          }
+          s[b] = s0 > -1e-30 && s0 < 1e-30 ? 0 : s0;                         // (silent: no subnormal)
+        }
+        if (!st) { for (let i = 0; i < n; i++) R[i] = L[i]; s[4] = s[0]; }
+        ost.live = pk > 1e-5 ? 4 : ost.live > 0 ? ost.live - 1 : 0;
+      }
+
       // ---- the chip swap (§5): a ROM sound's slot (OH 9 and CH 10 the hat chip's two regions, CR 8, RD 7) becomes that voice's
       // image — the entry's level 0 (mono) through a one-pole guard at the image's Nyquist, resampled (linear) to 30 kHz, cut to
       // the region with a 2 ms fade, peak-normalised to ±28 codes (the tool's headroom; not pre-compensated: the staircase / RC
@@ -3858,14 +4311,18 @@
           if (!(s >= 0 && s < 16) || sound !== sound) return;
           if (is6 && !HAS6[s]) return;                      // a sound the 606 lacks (a hostile payload's): nothing
           if (is9 && s > 10) return;                         // (the 909's: ids 11–15)
+          if (isV && s > 4) return;                          // (the SDS-V's: ids 5–15)
           const v = +v127;
           if (!(v > 0)) return;
+          if (isV) { latch(s, padV(v < 1 ? 1 : v > 127 ? 127 : v)); return; }   // the SDS-V latches the pad volts (§11.4)
           if (is9) { latch(s, vTrig9(v, s, acNow()) + 1); return; }   // the 909 latches the DAC code (+ 1), §1.3
           latch(s, is6 ? vTrig6(v, acNow()) : vTrig(v, acNow()));
         },
         // (the 909: acc the step's per-voice accents, its lanes & 0x83E; bit 0 of mask TOTAL ACCENT — §1.3, §3.5)
         trig(mask, acc) {
           const m = mask | 0;
+          // (the SDS-V has no sequencer or accent: a step on lanes 1–5 — a sequencer into its TRIGGER INs — hits at v 100's volts)
+          if (isV) { if ((m & 0x3e) === 0) return; const vp = padV(100); for (let s = 0; s < 5; s++) if (m & (2 << s)) latch(s, vp); return; }
           if (is9) { trig9(m, acc | 0); return; }
           if (is6) {
             if ((m & 0xe2e) === 0) return;
@@ -3908,7 +4365,7 @@
         // (review 1 F3) the engine's idle skip renders nothing: a pending chip swap converts meanwhile (one a quantum); the
         // 808's / 606's nothing
         poll(F0) { if (is9 && SW9.pend) romPoll9(F0); },
-        post: is9 ? post9 : is6 ? post6 : post8,
+        post: isV ? postV : is9 ? post9 : is6 ? post6 : post8,
         live() {
           if (M.latN || smpAny || ost.live > 0) return true;
           return anyOn();
@@ -3924,6 +4381,11 @@
         },
         mon() {
           MON.lit = M.lit; M.lit = 0;
+          if (isV) {                                         // the SDS-V's cards on their sounds' slots (0–4)
+            const a = MON.act;
+            for (let c = 0; c < 5; c++) { const v = CARDS[c]; a[v.P.sid] = v.act; v.act = 0; }
+            return MON;
+          }
           if (is9) {
             // the 909's circuits in the 808's slots by sound id (IMPL-7c §2.1: BD 0 … HC 6, ride 7, crash 8, OH 9, CH 10): the hats'
             // one voice on the slot of the region it plays
@@ -3957,22 +4419,27 @@
         setSalt(s) {
           M.salt = (0x2545F491 ^ (s >>> 0)) >>> 0; nz.won = nz.pon = false;
           if (is9) { Q9.off = hash32((M.salt ^ 0x6A09E667) >>> 0) % 2147483647; nz9.pos = -1; }
+          if (isV) for (const v of CARDS) v.seed = hash32((M.salt ^ Math.imul(v.k + 1, 0x9E3779B9)) >>> 0);   // (each card its own stream)
         },
         // test access (lanes V / V6's checks): the shared state, the circuits, the bank
         _M: M, _bank: bank, _TB: TB, _mach: X.id,
-        _v: is9 ? { bd: b9, sd: s9, lt: l9, mt: m9, ht: t9, rs: r9, cp: p9, hh: hh9, cr: cr9, rd: rd9 }
+        _v: isV ? { bd: CARDS[0], sd: CARDS[1], lt: CARDS[4], mt: CARDS[3], ht: CARDS[2] }
+          : is9 ? { bd: b9, sd: s9, lt: l9, mt: m9, ht: t9, rs: r9, cp: p9, hh: hh9, cr: cr9, rd: rd9 }
           : is6 ? { bd: b6, sd: s6, tm: t6, cy: c6, hh: h6 } : { bd, sd, tl, tm: tmm, th, rs, cp, ma, cb, cy, oh, ch: chh },
         // (the 909's: its DACs, the noise stream for OS samples [n0, n0 + n) into out, the chip swap's buffers)
         _Q: Q9, _nz: is9 ? (n0, n, out) => noise9(n0, 0, n, out) : null, _sw: SW9, _ost: ost,
       };
+      // (the SDS-V's own: trim(t) — the payload's memories 3 and 4, IMPL-8 §12.1; the other machines have none: the engine's guard)
+      if (isV) { DM.trim = trimV; DM._trv = TRV; DM._cards = CARDS; }
       DM.setSalt(inst && inst.seedSalt ? inst.seedSalt : 0);
       setRate(inst && inst.OS > 0 ? inst.OS | 0 : 1);
       return DM;
     }
 
     // what the engine and the tests read of a machine (IMPL-7b §2.1): SOUNDS the 16 by sound id, sids the ones it has
-    const mach = Object.freeze(Object.fromEntries(Object.values(MACH).map(X => [X.id, Object.freeze({ KNOB_IDS: X.KNOB_IDS,
-      KNOB_DEF: X.KNOB_DEF, SOUNDS: X.SOUNDS, sids: X.sids })])));
+    // (the SDS-V's also its memory switches: SW_IDS, SW_DEF the indices 0…3 = memories 1…4)
+    const mach = Object.freeze(Object.fromEntries(Object.values(MACH).map(X => [X.id, Object.freeze(Object.assign({ KNOB_IDS: X.KNOB_IDS,
+      KNOB_DEF: X.KNOB_DEF, SOUNDS: X.SOUNDS, sids: X.sids }, X.SW_IDS ? { SW_IDS: X.SW_IDS, SW_DEF: X.SW_DEF } : {}))])));
 
     globalThis.Dr808 = Object.freeze({
       VER, SOUNDS, S_CIR, S_VAR, KNOB_IDS, KNOB_DEF, SW_IDS, V_N, V_X, OUT_K, vTrig, vMetal, create, gain, mach,
@@ -3987,7 +4454,12 @@
         // register's maths, the shaper
         tr909: Object.freeze({ ACC9, ENV9, KX9, DAC9V, CBOTH9, vAcc9, vTrig9, codes9, tapA9, rom9, dec9, ROM909_A, W9, OPEN9, RATE9, BD9,
           SD9, TOM9, TM9, RS9, HC9, ROMC9, HH9, CY9, MIX9, K9, PV9, DAC_OF9, SMP_LEVEL9, OUT_K9,
-          NZ9_F, pow9, win9, mul9, NZ9_E, dsh: v => dsh(DSH || (DSH = dshBuild()), v), btDesign, skLP9 }) }),
+          NZ9_F, pow9, win9, mul9, NZ9_E, dsh: v => dsh(DSH || (DSH = dshBuild()), v), btDesign, skLP9 }),
+        // the SDS-V's (IMPL-8 §12.1, for the tests, drum-core and the panel's tips): the trigger's laws (padVolts, sens, vD, the
+        // comparator VCMP, minVel(s) the lowest velocity that fires), the decay law, the factory sounds FACTV, the default trims
+        // TRIMV (5 × memories 3, 4 × n t b d m c), the card tables, the ids, the SSM2044 (Ota4), the constants
+        sdsv: Object.freeze({ VL, VCMP, padVolts: padV, sens: sensG, vD: vDyn, minVel, t60: t60V, CV, CH_OF_V, FACTV, TRIMV, KV_IDS, KV_DEF,
+          SWV_IDS, SWV_DEF, TG_V, TA_V, TC_V, TR_V, NG_V, FBS_V, KVCA, HC_V, OUT_KV, VK_V, SMP_LEVELV, Ota4, triV }) }),
     });
   } catch (err) {
     globalThis.Dr808 = null;                                   // a load failure never throws out of the script

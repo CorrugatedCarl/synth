@@ -129,17 +129,23 @@ export const AT_FROM = 0.15;
 /**
  * One bed's touch, mouse and Pencil play (wk.pianoKeys' pointer logic with the true geometry). el: the bed's element (its box
  * = the keys + the front band; its rect, read per event, scales mm on screen under the camera); B: bedLayout with the clamped
- * front. o = { on(n, v, ts), off(n, ts), at: fn(v) | null (the bed's `at: true`), shade(n, on) (a pressed key's dip), raf? }.
+ * front. o = { on(n, v, ts), off(n, ts), at: fn(v, n) | null (the bed's `at: true`), shade(n, on) (a pressed key's dip), raf? }.
  * Each pointer plays its own note; notes are reference-counted over the pointers (two fingers on one key: one note, off when
  * the last leaves); moving onto another key releases the note and plays the new one at the entry velocity (glissando), off
  * the bed it keeps its note; up / cancel / lost capture end it. Mouse: button 0 without Ctrl only; no context menu. A pen
  * with `at` sends its pressure ≤ once a frame, 0 at the last pen lift; fingers and the mouse never. A shade shows while a
  * pointer of this bed or the host (lit) holds its note. release(): every pointer ends (one off per note), captures dropped,
  * shades cleared; a stale event afterwards finds no record and posts nothing.
+ * (IMPL-8 §2.1, the pad grid) o.hit(x, y, s) → { note, v } | null: the hit test in B's units (x, y from the element's top-left,
+ * s = screen px per unit, B.w the element's width in units; default keyAt(B, …): 1i's path); o.slide (default true): false =
+ * a pointer keeps its note until it lifts (no glissando; off its note it stays held); o.each (default false): true = every
+ * pointer down calls o.on, held note or not (every finger its own hit) — the count decides only the off, at the last pointer;
+ * at(v, n): n the note the pen holds (the frame's, the lift's, release()'s; 1i's callers read v only).
  * @returns {{lit: (n: number, on: boolean) => void, release: () => void, destroy: () => void, held: () => number[]}}
  */
 export function bed(el, B, o) {
   const raf = rafOf(o), ptrs = new Map(), cnt = new Map(), host = new Set(), shown = new Set();
+  const hitAt = typeof o.hit === 'function' ? o.hit : (x, y, s) => keyAt(B, x, y, s), slide = o.slide !== false, each = !!o.each;
   let dead = false, atQ = null, atDue = false;
   const shade = n => {
     const on = cnt.has(n) || host.has(n);
@@ -147,27 +153,28 @@ export function bed(el, B, o) {
     if (on) shown.add(n); else shown.delete(n);
     if (o.shade) o.shade(n, on);
   };
-  const press = (n, v, ts) => { const c = cnt.get(n) || 0; cnt.set(n, c + 1); if (!c) o.on(n, v, ts); shade(n); };
+  const press = (n, v, ts) => { const c = cnt.get(n) || 0; cnt.set(n, c + 1); if (!c || each) o.on(n, v, ts); shade(n); };
   const unpress = (n, ts) => { const c = cnt.get(n) || 0; if (c > 1) { cnt.set(n, c - 1); return; } cnt.delete(n); if (c) o.off(n, ts); shade(n); };
   const hit = e => {
     const r = el.getBoundingClientRect(), s = r.width / B.w;
     if (!(s > 0)) return null;
-    return keyAt(B, (e.clientX - r.left) / s, (e.clientY - r.top) / s, s);
+    return hitAt((e.clientX - r.left) / s, (e.clientY - r.top) / s, s);
   };
-  const pens = () => { for (const p of ptrs.values()) if (p.pen) return true; return false; };
+  const penKey = () => { for (const p of ptrs.values()) if (p.pen) return p.n; return null; }; // (the note a pen holds; null: no pen)
+  const pens = () => penKey() !== null;
   const atOf = e => clamp(((+e.pressure || 0) - AT_FROM) / (1 - AT_FROM), 0, 1);
-  function sendAt(v) { // ≤ once per frame (the last value of the frame)
+  function sendAt(v) { // ≤ once per frame (the last value of the frame, with the pen's note then)
     atQ = v;
     if (atDue) return;
     atDue = true;
-    raf(() => { atDue = false; if (atQ == null || dead) return; const x = atQ; atQ = null; o.at(x); });
+    raf(() => { atDue = false; if (atQ == null || dead) return; const x = atQ; atQ = null; o.at(x, penKey()); });
   }
   function lift(id, ts) {
     const p = ptrs.get(id);
     if (!p) return;
     ptrs.delete(id);
     unpress(p.n, ts);
-    if (p.pen && o.at && !pens()) { atQ = null; o.at(0); }
+    if (p.pen && o.at && !pens()) { atQ = null; o.at(0, p.n); }
   }
   function down(e) {
     if (dead || ptrs.has(e.pointerId) || e.button !== 0 || e.ctrlKey) return;
@@ -185,6 +192,7 @@ export function bed(el, B, o) {
     if (!p || dead) return;
     if (e.pointerType !== 'touch' && !(e.buttons & 1)) { lift(e.pointerId, tsOf(e)); return; } // (a mouse / pen up we never saw)
     if (p.pen && o.at) sendAt(atOf(e));
+    if (!slide) return; // (the pads: a pointer keeps the pad it pressed until it lifts)
     const h = hit(e);
     if (!h || h.note === p.n) return; // (off the bed: the note stays; within a key: nothing)
     const n0 = p.n;
@@ -197,14 +205,14 @@ export function bed(el, B, o) {
   const L = [['pointerdown', down], ['pointermove', move], ['pointerup', up], ['pointercancel', up], ['lostpointercapture', up], ['contextmenu', menu]];
   for (const [t, f] of L) el.addEventListener(t, f);
   function release() {
-    const hadPen = pens();
+    const pen = penKey();
     for (const id of [...ptrs.keys()]) try { el.releasePointerCapture(id); } catch (err) { /* released */ }
     ptrs.clear();
     for (const n of [...cnt.keys()]) { cnt.delete(n); o.off(n); }
     host.clear();
     for (const n of [...shown]) shade(n);
     atQ = null;
-    if (hadPen && o.at) o.at(0);
+    if (pen !== null && o.at) o.at(0, pen);
   }
   return {
     lit(n, on) { if (dead) return; if (on) host.add(n); else host.delete(n); shade(n); },

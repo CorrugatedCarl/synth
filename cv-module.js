@@ -39,9 +39,17 @@
 // sources → filters → VOICE (its own ENV / LFO / MACROS stacked above it) → own FX → panels → OUT. Selecting a Serum
 // outlines its members ([data-cv-member]). A knob end no mounted view of a Serum in parts view shows ends at VOICE's bar,
 // {hid: true, tag} (cv-cables dashes it, tags its badge). [data-twin] controls are no ends.
+// Stage 7d + 8 (IMPL-8 §1.1, §5.4, §9; lane U): the project's Pads modules ({key: 'pd<n>', kind: 'mod', mod: 'pads', jacks,
+// color} in host.devices — not in MOD_ORDER: Tidy puts them after the modulators) are host-sized (host.size(key): pads-core's
+// footprint, known before the module exists, so Tidy places it by its own width) and carry their jacks in the device entry
+// (jacksOf reads entry.jacks: the mod pads' inline 'p<i>' and the 'notes' jack). A jack spec's `hide` (a pad outside the grid)
+// keeps the jack in the set — no rebuild at a Grid… change — with its fallback dot hidden too, its cable ending at the
+// module's right edge at the bar's height; it follows the entry on every sync / refresh, and so does its label (a renamed mod
+// pad: the dot's and the anchor's aria-label / title, no rebuild). The 'notes' jack (kind 'note') is
+// never patchable; a note cable's b '<dev>.' + NOTE_END ends on the instrument's left edge (ports(): no jack there, review #13).
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
-import { createCables, deriveCables, cablesOf, jackPort, createCableDrag, MOD_COLOR, MOD_PREFIX, keyKind, MACRO_PORTS, partsView, hiddenTag } from './cv-cables.js?v=9';
+import { createCables, deriveCables, cablesOf, jackPort, createCableDrag, MOD_COLOR, MOD_PREFIX, keyKind, MACRO_PORTS, partsView, hiddenTag, NOTE_END } from './cv-cables.js?v=9';
 import { PARTS, splitKey, kindOf as partKind, partLabel, partOn, endOf } from './sx-edges.js?v=9';
 export { MOD_COLOR, MOD_PREFIX, keyKind } from './cv-cables.js?v=9';
 
@@ -146,7 +154,10 @@ export const BG_SEL = '.cv-body, .inst, .plate, .nameplate, .nameplate > div, .p
   + '.cv-out, .scope, .scope > canvas, .cv-outlab, '
   // the Serum panel's containers (a third of its surface) and the TB-303 sequencer's chrome (not .snote, not its buttons)
   + '.sx-panel, .sx-pbody, .sx-krow, .sx-ptitle, .sx-tabs, .sx-colO, .sx-col, .sx-rowA, .sx-row, .sx-master, .sx-pages, .sx-page, '
-  + '.steps, .step, .seqbar, .snum, .seqhint';
+  + '.steps, .step, .seqbar, .snum, .seqhint, '
+  // (8) a Pads module's body, its pad well, its footer and the grid's gaps (a gap is no pad: it pans, and a pad finger joining it
+  // within the layer's time rule pinches — 1i G1 / G2; never a pad: a one-finger press on a pad plays, never pans)
+  + '.pd-body, .pd-well, .pd-foot, .pd-grid';
 /** Jack centre below the bar on the module's edge (world px); folded modules carry their jacks at the bar's middle height,
  * JACK_OUT world px outside the left / right edge (so the dot never covers the bar's ⋯ / ▾ / chip; the bar controls also
  * win the hit test over a jack's enlarged touch circle: style.css). */
@@ -447,8 +458,9 @@ export function createModule(o, env) {
     if (inline) je.setAttribute('data-inline', '');
     if (j.label) { je.setAttribute('aria-label', j.label); je.title = j.label; }
     if (o.patch) { je.setAttribute('role', 'button'); je.tabIndex = 0; } // (1e) patchable: Enter / Space → "Connect to…"
+    if (j.hide) je.hidden = true; // ((8) a hidden pad's jack: no dot, ever)
     el.append(je);
-    jacks.set(j.id, { el: je, dot: je, side, dir, kind: kd, label: j.label || '', y: fin(j.y) && j.y > BAR_H ? j.y : BAR_H + JACK_Y, inline, at: null, dirty: inline, anchor: null });
+    jacks.set(j.id, { el: je, dot: je, side, dir, kind: kd, label: j.label || '', y: fin(j.y) && j.y > BAR_H ? j.y : BAR_H + JACK_Y, inline, at: null, dirty: inline, anchor: null, hide: !!j.hide });
   }
   // ---- geometry (folded: every jack at the bar's middle height)
   const jackY = j => (fold ? BAR_H / 2 : j ? j.y : BAR_H + JACK_Y);
@@ -480,7 +492,23 @@ export function createModule(o, env) {
       for (const k of JA) { const v = j.dot.getAttribute(k); if (v != null) a.setAttribute(k, v); else a.removeAttribute(k); }
       a.classList.add('cv-jack-in');
       j.el = a; j.dot.hidden = true;
-    } else { j.el = j.dot; j.dot.hidden = false; }
+    } else { j.el = j.dot; j.dot.hidden = !!j.hide; } // ((8) a hidden pad's: its dot hidden too)
+  }
+  // (8) a jack's hide flag from its spec (a Pads module's pad shown / hidden by a Grid… change): no rebuild, re-measured
+  function setJackHide(jid, h) {
+    const j = jacks.get(jid);
+    if (!j || j.hide === !!h) return;
+    j.hide = !!h;
+    if (j.inline) j.dirty = true; // (measured again at its next port(): the anchor there or not)
+    j.dot.hidden = j.hide || (j.inline && !!j.anchor);
+  }
+  // (8) a jack's label from its entry, refreshed at every sync (a mod pad renamed or retargeted: its name changes, its id does not
+  // — no rebuild): the dot's and an inline anchor's aria-label / title; an empty label leaves the last
+  function setJackLabel(jid, label) {
+    const j = jacks.get(jid);
+    if (!j || typeof label !== 'string' || !label || j.label === label) return;
+    j.label = label;
+    for (const e of new Set([j.dot, j.el])) if (e) { e.setAttribute('aria-label', label); e.title = label; }
   }
   const inlineAt = (j, jid) => { if (j.dirty) measureInline(j, jid); return j.at; };
   function measure() { // the module's layout height (world px): a layout read, never per frame (a fixed height: none)
@@ -761,7 +789,7 @@ export function createModule(o, env) {
     port(jackId) {
       const j = jacks.get(jackId), o = fold ? JACK_OUT : 0;
       if (!j) return { x: w / 2, y: BAR_H / 2 };
-      if (j.inline && !fold) { const at = inlineAt(j, jackId); if (at) return { x: at.x, y: at.y }; }
+      if (j.inline && !fold) { const at = inlineAt(j, jackId); if (at) return { x: at.x, y: at.y }; if (j.hide) return { x: w, y: BAR_H / 2 }; } // ((8) a hidden pad's: the right edge at the bar)
       return { x: j.side === 'left' ? (o ? -o : 0) : w + o, y: jackY(j) };
     },
     /** (milestone 3) the inline jacks are measured again at their next port() (a body re-rendered, a size change) */
@@ -769,6 +797,8 @@ export function createModule(o, env) {
     /** (3) a jack's direction ('in' | 'out', from its spec) and its dot (an inline jack's fallback element) */
     jackDir: jackId => (jacks.get(jackId) || {}).dir || null,
     jackDot: jackId => (jacks.get(jackId) || {}).dot || null,
+    /** (8) a jack's hide flag (a Pads module's pad outside its grid): its dot hidden, its cable at the bar's right end */
+    setJackHide, jackHidden: jackId => !!(jacks.get(jackId) || {}).hide, setJackLabel,
     /** (3) the bar's power slot: a part's own ⏻ (lane B's View.power, a data-dest="x.on" control; null empties it) */
     setPowerEl,
     get titleEl() { return ttl; },
@@ -891,13 +921,21 @@ export function createTrackView(world, track, host) {
     if (kind === 'inst' && isParts(key)) return { fixed: { w: PART_W_DEF.voice } };
     return kind === 'inst' ? { fixed: { w: DEV ? kindW('inst', modelOf(key)) : defaultW(ID.inst, T.model) } } : null;
   };
+  // (8) a device entry's own jacks ({key, kind: 'mod', jacks: [{id, side, kind, label, y?, hide?}]}: a Pads module's mod pads
+  // and its notes jack, review #4) — valid specs only, copies; null when the entry has none
+  const entryJacks = key => {
+    const L = DEV ? (DM.get(key) || {}).jacks : null;
+    if (!Array.isArray(L)) return null;
+    return L.filter(j => isObj(j) && typeof j.id === 'string' && /^[\w-]{1,24}$/.test(j.id)).map(j => ({ id: j.id, side: j.side === 'left' || j.side === 'inline' ? j.side : 'right',
+      kind: typeof j.kind === 'string' ? j.kind : 'mod', label: typeof j.label === 'string' ? j.label : '', y: fin(j.y) ? j.y : undefined, hide: !!j.hide }));
+  };
   // (3) the jacks a module has: they change with a Serum's view (VOICE's in parts view) — a different set rebuilds it
   const jacksOf = (key, title) => {
     const kind = kindOf(key);
     if (kind === 'part') return partJacks(partOf(key).part, title);
     if (kind === 'inst') return isParts(key) ? voiceJacks(title) : [{ id: 'out', side: 'right', kind: 'audio', label: (title || 'Instrument') + ' out' }];
     if (kind === 'fx') return [{ id: 'in', side: 'left', kind: 'audio', label: (title || 'FX') + ' in' }, { id: 'out', side: 'right', kind: 'audio', label: (title || 'FX') + ' out' }];
-    if (kind === 'mod') return modJacks(mkOf(key), title); // ((2b) a macro: k1…k8 at its knob rows; (3) inline on its tiles)
+    if (kind === 'mod') { const J = entryJacks(key); return J || modJacks(mkOf(key), title); } // ((2b) a macro: k1…k8 at its knob rows; (3) inline on its tiles; (8) the entry's)
     return [{ id: 'in', side: 'left', kind: 'audio', label: 'OUT in' }];
   };
   const jsig = key => jacksOf(key, '').map(j => j.id + ':' + j.side).join();
@@ -910,6 +948,9 @@ export function createTrackView(world, track, host) {
       if (DEV && m.fixed && m.fixed.h) o[k].h = m.fixed.h;
       else if (DEV && (m.kind === 'part' || (m.kind === 'mod' && SX_MODS.has(mkOf(k))))) { const h = m.rect().h; if (h > BAR_H) o[k].h = h; } // ((3) measured: stacks never overlap)
     }
+    // ((8) a modulator not made yet with a size from the host — a Pads module's footprint —: Tidy places it by its own size,
+    // its right edge at −MOD_GAP; the other kinds' sizeOf is Tidy's own guess, so nothing else moves)
+    if (DEV) for (const dd of DL) if (dd.kind === 'mod' && !o[dd.key]) { const s = sizeOf(dd.key), f = s && s.fixed; if (f && fin(f.w) && fin(f.h) && f.h > BAR_H) o[dd.key] = { w: f.w, h: f.h }; }
     return DEV ? tidy(T, o, DL) : tidy1(T, o);
   };
   // the lay entry of a module as it stands: never a width (each module's is fixed: a stored w from before is dropped
@@ -928,6 +969,11 @@ export function createTrackView(world, track, host) {
     const p = new Map();
     for (const [k, m] of mods) for (const j of m.jackIds()) { const o = m.port(j); p.set(k + '.' + j, { x: m.x + o.x, y: m.y + o.y }); } // ((2b) every jack: a macro's k1…k8)
     for (const c of cables.list()) { // (2a) a mod cable's knob end (cached offsets: no layout read once measured)
+      if (c.kind === 'note' && typeof c.b === 'string' && !p.has(c.b)) { // ((8) a note cable: the instrument's left edge, no jack (review #13))
+        const i = c.b.lastIndexOf('.'), m = i > 0 && c.b.slice(i + 1) === NOTE_END ? mods.get(c.b.slice(0, i)) : null;
+        if (m) p.set(c.b, { x: m.x - (m.fold ? JACK_OUT : 0), y: m.y + (m.fold ? BAR_H / 2 : BAR_H + JACK_Y) });
+        continue;
+      }
       if (c.kind !== 'mod' || p.has(c.b)) continue;
       const i = c.b.indexOf(':'), q = i > 0 ? destPort(c.b.slice(0, i), c.b.slice(i + 1)) : null;
       if (q) p.set(c.b, q);
@@ -1005,7 +1051,7 @@ export function createTrackView(world, track, host) {
     return { key, x0: m.x, y0: m.y, list: ids.filter(k => k !== key && mods.has(k)).map(k => { const o = mods.get(k); return { k, m: o, x0: o.x, y0: o.y }; }) };
   };
   const costOf = key => { const kind = kindOf(key); return kind === 'inst' ? (isParts(key) ? 900 : ((DEV ? modelOf(key) : T.model) === 'serum' ? 3700 : 600)) : kind === 'fx' ? 900 : kind === 'part' ? 400 : kind === 'mod' && SX_MODS.has(mkOf(key)) ? 160 : 40; };
-  const colorOf = key => { const d = devOf(key); return (d && typeof d.color === 'string' && d.color) || (kindOf(key) === 'mod' && MOD_COLOR[mkOf(key)]) || T.color; };
+  const colorOf = key => { const d = devOf(key), e = DEV ? DM.get(key) : null; return (d && typeof d.color === 'string' && d.color) || (e && typeof e.color === 'string' && e.color) || (kindOf(key) === 'mod' && MOD_COLOR[mkOf(key)]) || T.color; }; // ((8) an entry's own colour: the Pads module's)
   // (3) a part's title and chip: the host's, else 'OSC B' and 'S<n>' (the Serum's number: its group)
   const partMeta = (key, M0) => { const P = partOf(key), n = /(\d+)$/.exec(P.dev || ''); return { title: M0.title || partLabel(P.part), sub: M0.sub, chip: M0.chip !== undefined ? M0.chip : 'S' + (n ? n[1] : '1') }; };
   // (3) an internal end (sx-edges) that a cable edit may start or end on: not the warp inputs, not VOICE → own FX
@@ -1025,8 +1071,10 @@ export function createTrackView(world, track, host) {
     m.setBadge(isObj(bd) ? bd.text : bd, isObj(bd) ? bd.tone : null);
     // a jack inside a Serum is its own route (data-ro): no press, no focus, no "Connect to…" (U12) — the patchable ones buttons;
     // (3) a Serum's internal ends in parts view are patchable (an edit through sx-edges: lane D's resolver), whatever host.patch
+    const EJ = kind === 'mod' ? entryJacks(key) : null; // ((8) the entry's hide flags: a Grid… change, no rebuild)
+    if (EJ) for (const j of EJ) { m.setJackHide(j.id, j.hide); m.setJackLabel(j.id, j.label); }
     for (const j of m.jackIds()) {
-      const pa = kind === 'mod' || m.jackDir(j) && (m.jack(j).getAttribute('data-kind') === 'mod' || intPatch(key, j) || (!RO && jackPort(T, key + '.' + j)));
+      const jk = m.jack(j).getAttribute('data-kind'), pa = (kind === 'mod' && jk !== 'note') || m.jackDir(j) && (jk === 'mod' || intPatch(key, j) || (!RO && jackPort(T, key + '.' + j))); // ((8) a Pads module's notes jack: never patchable)
       for (const e of new Set([m.jack(j), m.jackDot(j)])) {
         if (!e) continue;
         if (pa) { e.removeAttribute('data-ro'); e.setAttribute('role', 'button'); e.tabIndex = 0; } // ((2a) a mod-out: always)
@@ -1115,7 +1163,7 @@ export function createTrackView(world, track, host) {
     return { project: call(H.project), presetRows: H.presetRows, dashed };
   };
   // ((3) a Serum's internal cables stay editable under host.patch false: their edits are sx-edges', not wires)
-  const cablesNow = () => (!DEV ? deriveCables(T) : RO ? cablesOf(T, cOpts()).map(c => (c.kind === 'mod' || c.int ? c : Object.assign({}, c, { readonly: true }))) : cablesOf(T, cOpts()));
+  const cablesNow = () => (!DEV ? deriveCables(T) : RO ? cablesOf(T, cOpts()).map(c => (c.kind === 'mod' || c.int || c.kind === 'note' ? c : Object.assign({}, c, { readonly: true }))) : cablesOf(T, cOpts())); // ((8) a note cable: a tap cable, never patched)
   for (const k of keys()) make(k);
   cables.set(cablesNow());
   relay();

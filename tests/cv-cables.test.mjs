@@ -18,6 +18,8 @@ import * as core from '../serum-core.js?v=9';
 import * as wk from '../wk.js?v=9';
 import { fresh, all, ptr, fire, key, Ev, place } from './wk-dom.mjs';
 import { readFileSync } from 'node:fs';
+import * as PCX from '../pads-core.js?v=9';
+import * as DCX from '../drum-core.js?v=9';
 
 const nums = d => d.match(/-?[\d.]+/g).map(Number);
 
@@ -1102,5 +1104,69 @@ test('review 2 P1-5: a stub stays reachable at low zoom — STUB_PX screen px ou
   ptr(hit, 'pointerdown', 10, 10, { pointerId: 3, pointerType: 'touch' }); ptr(doc.body, 'pointerup', 10, 10, { pointerId: 3, pointerType: 'touch' });
   L.select(null); L.select(id);
   assert.deepEqual(sel, [id + ' touch', 'null undefined', id + ' undefined']);
+  L.destroy();
+});
+
+/* ---------------------------------------------------------------- stage 7d + 8 (IMPL-8 §5.4, §9; lane U): the Pads module */
+// a Juno (i1, keys C3–C5) and an 808 (i2) on one track; a second track; a Pads module with note / chord / drum / mod pads
+function padsFix() {
+  const t = { id: 'trk_1', name: 'Mix', color: '#3b82c4', prim: 'i1', dev: { i1: { kind: 'synth', model: 'juno60', zone: { lo: 48, hi: 72 } }, i2: { kind: 'synth', model: 'tr808', drum: DCX.normDrum(undefined) }, out: { kind: 'out' } },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'out.in' }, { id: 'w2', a: 'i2.out', b: 'out.in' }], mods: [] };
+  const p = new Array(64).fill(null);
+  p[0] = { t: [{ k: 'note', tr: 'trk_1', n: 40 }], c: 3 }; // (below the Juno's zone: plays nothing there)
+  p[1] = { t: [{ k: 'chord', tr: 'trk_1', root: 60, q: 'maj' }], c: PCX.C_MAGENTA };
+  p[2] = { t: [{ k: 'drum', tr: 'trk_1', s: 'bd' }], c: PCX.C_RED };
+  p[3] = { t: [{ k: 'note', tr: 'trk_2', n: 60 }] }; // (another track)
+  p[8] = { mod: { m: 'gate' }, c: 4 };
+  p[60] = { t: [{ k: 'note', tr: 'trk_1', n: 60 }], mod: { m: 'tog' }, c: 8 }; // (hidden at 4 × 4)
+  const project = { tracks: [t, { id: 'trk_2', name: 'B', dev: {} }], pads: PCX.normPads([{ id: 'pd1', rows: 4, cols: 4, pads: p }, { id: 'pd2', rows: 1, cols: 1 }]) };
+  return { t, project };
+}
+
+test('(8) keyKind / modSrcPort / srcKind of the Pads module: pd1…pd8 → \'pads\', a row src pd<n>.p0…p63 → its slot\'s jack; anything else unchanged', () => {
+  assert.deepEqual(['pd1', 'pd8', 'pd9', 'pd0', 'pd', 'pd1x', 'pd10'].map(C.keyKind), ['pads', 'pads', null, null, null, null, null]);
+  assert.deepEqual(['pd1.p0', 'pd8.p63', 'pd1.p64', 'pd1.p01', 'pd9.p1', 'pd1.out', 'pd1.k1', 'pd1'].map(C.modSrcPort),
+    [{ key: 'pd1', port: 'p0' }, { key: 'pd8', port: 'p63' }, null, null, null, { key: 'pd1', port: 'out' }, { key: 'pd1', port: 'k1' }, null]);
+  assert.deepEqual(['pd1.p12', 'pd3.p0'].map(C.srcKind), ['pads', 'pads']);
+  assert.deepEqual([C.modSrcJack('pd1.p12'), C.modSrcKey('pd2.p5'), C.modSrcOf('pd1.p12')], ['pd1.p12', 'pd2', 'pd1.p12']);
+});
+
+test('(8) cablesOf: a mod pad\'s row leaves from its inline jack in the pad\'s colour (a missing pad: the track\'s); note cables per (module, instrument of this track a visible pad plays) — key zones, a drum target\'s machine, other tracks and hidden pads left out; none without pads', () => {
+  const { t, project } = padsFix();
+  t.mods = [{ id: 'r1', src: 'pd1.p8', dst: 'i1:vcf.cut', amt: 0.5 }, { id: 'r2', src: 'pd1.p60', dst: 'i1:vcf.res', amt: 0.2 }, { id: 'r3', src: 'pd3.p1', dst: 'i1:vcf.res', amt: 0.2 }];
+  const L = C.cablesOf(t, { project }), byId = id => L.find(c => c.id === id);
+  assert.deepEqual(['r1', 'r2', 'r3'].map(id => [byId(id).a, byId(id).kind, byId(id).color]),
+    [['pd1.p8', 'mod', PCX.COLORS[4].lit], ['pd1.p60', 'mod', PCX.COLORS[8].lit], ['pd3.p1', 'mod', '#3b82c4']]);
+  const N = L.filter(c => c.kind === 'note');
+  assert.deepEqual(N.map(c => [c.id, c.a, c.b, c.tap, c.pads, c.color, c.readonly]), [
+    ['n:pd1>i1', 'pd1.notes', 'i1.' + C.NOTE_END, 'pads', [1], PCX.COLORS[PCX.C_MAGENTA].lit, undefined],
+    ['n:pd1>i2', 'pd1.notes', 'i2.' + C.NOTE_END, 'pads', [0, 1, 2], PCX.COLORS[3].lit, undefined]],
+  'the Juno: the chord (pad 1 below its zone); the 808: its kick, E2 (its map\'s second snare note) and the chord\'s E4 (its low conga) — notes by its map; pad 4 another track, slot 60 hidden: none');
+  t.dev.i2.drum = Object.assign({}, t.dev.i2.drum, { map: Object.assign({}, t.dev.i2.drum.map, { sd: [38], lc: [] }) });
+  assert.deepEqual(C.cablesOf(t, { project }).filter(c => c.kind === 'note').map(c => c.pads), [[1], [2]], 'a note the machine maps to nothing: no cable');
+  t.dev.i1.zone = { lo: 0, hi: 127 };
+  assert.deepEqual(C.cablesOf(t, { project }).filter(c => c.kind === 'note').map(c => c.pads), [[0, 1], [2]], 'all keys: the low note too');
+  assert.equal(C.cablesOf(t, { project }).find(c => c.id === 'n:pd1>i1').color, PCX.COLORS[3].lit, 'the first such pad\'s colour');
+  const t2 = JSON.parse(JSON.stringify(t)), plain = C.cablesOf(t2, { project: { tracks: [t2] } });
+  assert.deepEqual(plain.filter(c => c.kind === 'note'), []);
+  assert.deepEqual(C.cablesOf(t2, { project: { tracks: [t2], pads: [] } }), plain, 'a project without pads: today\'s cables');
+  assert.deepEqual(C.cablesOf(t2), C.cablesOf(t2, { project: { tracks: [t2], pads: 'x' } }));
+});
+
+test('(8) a note cable in the layers: a tap cable — a tap is onAction(id, \'tap\') (the host lists its pads), never selected, no Disconnect; data-kind="note"', () => {
+  const doc = fresh(), W = doc.createElement('div');
+  doc.body.append(W);
+  const sel = [], acts = [];
+  const L = C.createCables(W, { doc, onSelect: id => sel.push(id), onAction: (id, a) => acts.push(id + ' ' + a) });
+  const { t, project } = padsFix();
+  L.set(C.cablesOf(t, { project }));
+  L.layout(new Map([['pd1.notes', { x: -100, y: 68 }], ['i1.' + C.NOTE_END, { x: 0, y: 68 }], ['i2.' + C.NOTE_END, { x: 0, y: 668 }], ['i1.out', { x: 900, y: 68 }], ['i2.out', { x: 900, y: 668 }], ['out.in', { x: 1300, y: 68 }]]));
+  const g = all(L.under).find(n => n.getAttribute && n.getAttribute('data-cable') === 'n:pd1>i1'), hit = g.childNodes.find(n => n.getAttribute('class') === 'cv-cable-hit');
+  assert.equal(sj([g.getAttribute('data-kind'), g.getAttribute('data-tap'), g.hasAttribute('data-ro'), g.style.display, g.childNodes[1].getAttribute('d')]),
+    sj(['note', 'pads', false, '', C.cablePath(-100, 68, 0, 68)]));
+  ptr(hit, 'pointerdown', 50, 68, { pointerId: 3, pointerType: 'mouse' }); ptr(doc.body, 'pointerup', 50, 68, { pointerId: 3, pointerType: 'mouse' });
+  assert.deepEqual([acts, L.selected(), sel.length], [['n:pd1>i1 tap'], null, 0]);
+  L.select('n:pd1>i1');
+  assert.equal(L.selected(), null, 'never selected');
   L.destroy();
 });

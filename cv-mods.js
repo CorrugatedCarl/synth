@@ -32,8 +32,9 @@
 // every option; toggles: both) mapped through the model's map() on the default patch and on every factory preset, the
 // changed patch fields classed by FIELD_CLASS, the most demanding class kept. classTable() runs the sweep; CLASS_TABLE
 // is its checked-in result (regenerate: node tools/cv-classes.mjs --write; tests/cv-mods.test.mjs compares the two).
-// Counts (471 classic controls): sm 129, apply 70, proc 78, chunk 180, struct 12, none 2 — the TR-808's 23 knobs proc and
-// its 5 switches struct (IMPL-7a §2.3), the TR-606's 18 knobs proc (IMPL-7b §9: no switches). (The spec's estimate had
+// Counts (544 classic controls): sm 129, apply 70, proc 146, chunk 180, struct 17, none 2 — the TR-808's 23 knobs proc and
+// its 5 switches struct (IMPL-7a §2.3), the TR-606's 18 knobs proc (IMPL-7b §9: no switches), the TR-909's 28 knobs proc
+// (IMPL-7c §9), the SDS-V's 40 knobs proc and its 5 memory switches struct (IMPL-8 §13.4). (The spec's estimate had
 // proc 38 / chunk 179: the CS-80 ring-modulator speed reads per span in the voice, AVoice.render, so it is chunk here.)
 //
 //   classOf(modelId, ctlId) → class | null      counts(table) → { none, sm, apply, proc, chunk, struct }
@@ -41,6 +42,7 @@
 //   sweepControl(model, ctl) → { cls, fields }   the fields: normalised patch paths ('osc.lev', 'ops.R', 'mod3?' = presence)
 import { MODELS } from './models.js?v=9';
 import { DESTS, FXP_TAB } from './serum-core.js?v=9';
+import { padOfSrc, padSrc, padNo, padSourceName, N_SLOTS } from './pads-core.js?v=9'; // (IMPL-8 §5: the Pads modules' mod pads as sources; a leaf over drum-core)
 
 export const CLASSES = ['none', 'sm', 'apply', 'proc', 'chunk', 'struct'];
 export const RANK = { none: 0, sm: 1, apply: 2, proc: 2, chunk: 3, struct: 4 };
@@ -76,6 +78,11 @@ export const FIELD_CLASS = Object.freeze(Object.fromEntries([
   // the TR-909's own (IMPL-7c §1.1, §9): BD ATTACK, MT TUNE / DECAY, the cymbals' LEVELs and TUNEs (a crash / ride TUNE cable
   // moves its sample clock per chunk); its other ids are the 808's / 606's entries above
   ...F('proc', 'drum.bda drum.mtu drum.mtd drum.crl drum.rdl drum.cru drum.rdu'),
+  // the SDS-V's (IMPL-8 §11.2, §13.4): 'x' + channel b s 1 2 3 + field — its 40 knobs read per span (the card's six, the
+  // mixer's SENSITIVITY / LEVEL; a cable on a card's knob is heard while that channel is on memory 2), its 5 memory keys pick
+  // which six a card plays (never modulated)
+  ...F('proc', ['b', 's', '1', '2', '3'].flatMap(c => [...'ntbdmcsl'].map(f => 'drum.x' + c + f)).join(' ')),
+  ...F('struct', 'drum.xbp drum.xsp drum.x1p drum.x2p drum.x3p'),
 ]));
 // the slots smTargets fills on the analog engine only
 const SM_ANALOG = new Set(Object.keys(FIELD_CLASS).filter(k => FIELD_CLASS[k] === 'sm' && k !== 'level'));
@@ -175,6 +182,7 @@ export const CLASS_TABLE = Object.freeze({
   tr808: { ac: 'proc', bdl: 'proc', bdt: 'proc', bdd: 'proc', sdl: 'proc', sdt: 'proc', sds: 'proc', ltl: 'proc', ltt: 'proc', lts: 'struct', mtl: 'proc', mtt: 'proc', mts: 'struct', htl: 'proc', htt: 'proc', hts: 'struct', rsl: 'proc', rss: 'struct', cpl: 'proc', cps: 'struct', cbl: 'proc', cyl: 'proc', cyt: 'proc', cyd: 'proc', ohl: 'proc', ohd: 'proc', chl: 'proc', vol: 'proc' },
   tr606: { ac: 'proc', bdl: 'proc', sdl: 'proc', tml: 'proc', cyl: 'proc', hhl: 'proc', vol: 'proc', bdu: 'proc', bdd: 'proc', sdu: 'proc', sdd: 'proc', ltu: 'proc', ltd: 'proc', htu: 'proc', htd: 'proc', cyd: 'proc', ohd: 'proc', chd: 'proc' },
   tr909: { ac: 'proc', bdu: 'proc', bdl: 'proc', bda: 'proc', bdd: 'proc', sdu: 'proc', sdl: 'proc', sdt: 'proc', sds: 'proc', ltu: 'proc', ltl: 'proc', ltd: 'proc', mtu: 'proc', mtl: 'proc', mtd: 'proc', htu: 'proc', htl: 'proc', htd: 'proc', rsl: 'proc', cpl: 'proc', hhl: 'proc', chd: 'proc', ohd: 'proc', crl: 'proc', rdl: 'proc', cru: 'proc', rdu: 'proc', vol: 'proc' },
+  sdsv: { xbn: 'proc', xbt: 'proc', xbb: 'proc', xbd: 'proc', xbm: 'proc', xbc: 'proc', xbs: 'proc', xbl: 'proc', xbp: 'struct', xsn: 'proc', xst: 'proc', xsb: 'proc', xsd: 'proc', xsm: 'proc', xsc: 'proc', xss: 'proc', xsl: 'proc', xsp: 'struct', x1n: 'proc', x1t: 'proc', x1b: 'proc', x1d: 'proc', x1m: 'proc', x1c: 'proc', x1s: 'proc', x1l: 'proc', x1p: 'struct', x2n: 'proc', x2t: 'proc', x2b: 'proc', x2d: 'proc', x2m: 'proc', x2c: 'proc', x2s: 'proc', x2l: 'proc', x2p: 'struct', x3n: 'proc', x3t: 'proc', x3b: 'proc', x3d: 'proc', x3m: 'proc', x3c: 'proc', x3s: 'proc', x3l: 'proc', x3p: 'struct' },
 });
 // </cv-classes>
 
@@ -402,11 +410,21 @@ export function descs(dev) {
 //   srcOf(src)               'wheel' → { dev: 'wheel', port: '', link: '' }; '<dev>.<port>' → { dev, port, link: '' };
 //                            '<serum>/lfo3.out' → { dev: serum, port: 'out', link: 'lfo3' }; null for anything else
 //   srcDev(track, src)       { q: srcOf(src), dev, kind } the device the source names on this track (kind 'wheel' / 'link'
-//                            / the module's); null when nothing of that kind is there
+//                            / 'pad' / the module's); null when nothing of that kind is there. A pad (IMPL-8 §5.1,
+//                            'pd<n>.p<i>': slot i 0–63 of the project's Pads module pd<n>) answers { q, dev: null, kind:
+//                            'pad' } without reading the track or the project, as the wheel (srcOk / the host check those)
 //   perNoteOf(track, src)    true for a source that follows the note: velo, note, a PER NOTE lfo (mono 0), an env, a poly
-//                            chaos, a linked POLY Serum LFO / ENV; false for the globals; null for an unknown source
+//                            chaos, a linked POLY Serum LFO / ENV; false for the globals (the wheel, a pad); null for an
+//                            unknown source
 //   sourcesOf(track, p)      [{ id, label, scope: 'project' | 'track', kind, dev, port, perNote }] the sources a cable may
-//                            start from on this track: the wheel when placed, then every module (a macro: 8 entries k1…k8)
+//                            start from on this track: the wheel when placed, the project's mod pads (IMPL-8 §5.1: kind
+//                            'pad', modules by id, slots in order, + hidden: a slot outside its module's grid — its rows
+//                            stay, a new cable's menu may skip it), then every module (a macro: 8 entries k1…k8)
+//   isPadSrc(src)            'pd<n>.p<i>' well formed (n 1–8, i 0–63, no leading zero: pads-core padOfSrc)
+//   padSrcLabel(p, src)      '<module name> · <pad label>' (the pad's own label, else its first target's — "Kick", "C3" —,
+//                            else "Pad k", k its shown number, a hidden slot's on the full 8 × 8 [C]); '' without the module
+//   padTracks(p, src)        the tracks holding at least one row of mod pad src while its module holds it with mod on (§5.3:
+//                            the live value goes to each, modVal(t, 'pd1', 'p12', v) — the wheelTracks pattern)
 //   linkSources(track)       the linked sources: every Serum's LFO 1–10 and ENV 1–4 ({ id, label, scope: 'track', kind:
 //                            'link', dev, port: 'out', link, perNote, used }; used: the Serum's own rows read it)
 //   destOk(dev, paramId, keep) { ok, why, stage }: (3) a modulator device (any MOD_LABEL kind): never (NOMOD_MOD) — its
@@ -454,6 +472,7 @@ export function srcDev(t, src) {
   const q = srcOf(src), D = isObj(t) && isObj(t.dev) ? t.dev : {};
   if (!q) return null;
   if (q.dev === 'wheel') return { q, dev: null, kind: 'wheel' };
+  if (padOfSrc(src)) return { q, dev: null, kind: 'pad' }; // (IMPL-8 §5.1: project-level, as the wheel — no 'pd<n>' device on a track)
   const d = D[q.dev];
   if (!isObj(d)) return null;
   if (q.link) return d.kind === 'synth' && d.model === 'serum' && q.port === 'out' ? { q, dev: d, kind: 'link' } : null;
@@ -474,9 +493,22 @@ export function perNoteOf(t, src) {
   return x.kind === 'velo' || x.kind === 'note' || x.kind === 'env';
 }
 const wheelOn = p => isObj(p) && isObj(p.perf) && isObj(p.perf.wheel);
+// (IMPL-8 §5) the Pads modules of a project by id (pd1 … pd8; normPads'd by the host — read defensively), a module by id,
+// a slot's pad when its mod is on
+const padMods = p => (isObj(p) && Array.isArray(p.pads) ? p.pads.filter(M => isObj(M) && typeof M.id === 'string' && /^pd[1-8]$/.test(M.id) && Array.isArray(M.pads)).sort((a, b) => numOf(a.id) - numOf(b.id)) : []);
+const padMod = (p, id) => padMods(p).find(M => M.id === id) || null;
+const modPad = (M, i) => (M && isObj(M.pads[i]) && isObj(M.pads[i].mod) ? M.pads[i] : null);
+export const isPadSrc = src => padOfSrc(src) !== null;
+export function padSrcLabel(p, src) { // (pads-core's padSourceName: the one wording everywhere — cv-pads' jacks and srcLabel use it too)
+  const q = padOfSrc(src), M = q && padMod(p, q.id);
+  return M ? padSourceName(p, M, q.i) : '';
+}
 export function sourcesOf(t, p) {
   const out = [];
   if (wheelOn(p)) out.push({ id: 'wheel', label: MOD_LABEL.wheel, scope: 'project', kind: 'wheel', dev: 'wheel', port: '', perNote: false });
+  for (const M of padMods(p)) for (let i = 0; i < N_SLOTS; i++) {
+    if (modPad(M, i)) out.push({ id: padSrc(M.id, i), label: padSourceName(p, M, i), scope: 'project', kind: 'pad', dev: M.id, port: 'p' + i, perNote: false, hidden: !padNo(M, i) });
+  }
   for (const { id, dev, kind } of modDevs(t)) {
     const label = modLabelOf(id, dev);
     if (kind === 'macro') {
@@ -573,5 +605,10 @@ export function destOk(dev, id, keep) {
 export function wheelTracks(p) {
   if (!wheelOn(p) || !Array.isArray(p.tracks)) return [];
   return p.tracks.filter(t => isObj(t) && Array.isArray(t.mods) && t.mods.some(r => isObj(r) && r.src === 'wheel'));
+}
+export function padTracks(p, src) {
+  const q = padOfSrc(src);
+  if (!q || !modPad(padMod(p, q.id), q.i) || !Array.isArray(p.tracks)) return [];
+  return p.tracks.filter(t => isObj(t) && Array.isArray(t.mods) && t.mods.some(r => isObj(r) && r.src === src));
 }
 

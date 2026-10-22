@@ -9,11 +9,17 @@
 // the 606 pinned to a digest taken before the 909 went in; the TR-909's personality — its tables in PERS, its record, the
 // three-way dispatch, the velocity law (P-1), its tempo law, its plans (every mode, the arrays, the flam clamp), the payload and
 // the { k: 'bpm' } send, one test per row of 7c §3.3, the LEDs and the display, → Piano roll (rollPlan / rollOpts / toNotes).
+// 7d + 8 (IMPL-8 §15.3, lane S5; after the 133 tests of 7c, unchanged): the 909 pinned to a digest taken at f425b4d, before any
+// 7d + 8 change (committed first); the SDS-V's personality — PERS.sdsv, its record (bounds,
+// hostile input, trim at exact bits), the four-way machine of a record and of a foreign session, mapTable / primaries / drumRows and
+// the roll's rows on GM numbers, the payload (EMPTY_PLAN, trim, pk), one test per press row (map, smp, trim, trimFromKnobs, mute /
+// solo, the notifications, the inputs it ignores), initState, the rest of the surface, and a property run of 4 000 random presses.
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import * as C from '../drum-core.js?v=9';
+import { drumRowsOf } from '../roll.js?v=9';
 import { dspScope, source } from './dsp-scope.mjs';
 
 const arr = a => Array.from(a);
@@ -2809,4 +2815,539 @@ test('7c property: toNotes of a 909 plan round trip — exactly its hits at the 
     want.sort((a, b) => a[0] - b[0] || prim[a[1]] - prim[b[1]]);
     assert.deepEqual(got, want, 'round ' + round);
   }
+});
+
+/* ================================================================== 7d + 8: the 909 pinned; the SDS-V (IMPL-8 §11.2–§11.3, §15.3; lane S5) */
+
+// the 909's outputs as one digest, taken at f425b4d (= 8815b14's drum-core.js) before any 7d + 8 change (D1, §15.3): records (with
+// and without `m`, read as the other machines, a hostile one), sessions, payloads at every `at` with three sessions, plans (with
+// sessions), notes (rollPlan / rollOpts / toNotes), the tables, the laws, and 2 × 66 `press` calls on each of 6 random records
+// (a walk over every input kind, then random picks) with their LEDs and grid. Hashed as it goes (the strings are large).
+function pin909(M) {
+  const ser = v => JSON.stringify(v, (k, x) => (ArrayBuffer.isView(x) ? [x.constructor.name, Array.from(x)] : x));
+  const H = createHash('sha256');
+  let first = true;
+  const add = (name, v) => { H.update((first ? '' : '\n') + name + ' ' + ser(v)); first = false; };
+  let a = 0x909909 >>> 0;
+  const r = () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const DF = M.normDrum(undefined, 'tr909'), I = M.initState('tr909');
+  add('def', DF); add('defM', M.normDrum({ m: 'tr909' })); add('init', I); add('initFresh', [M.initState('tr909') !== I, M.initState('tr909')]);
+  const junk = { v: 7, m: 'tr909', junk: 1, keys: [{ sc: 9, l1: 0, sh: 0, fl: 99, ch: 1 }, 'bad', { sc: 2.5, l1: 40, ch: 'x' }], st: [[0x1FFF, -1, 3.5, 0xFFF]], ac: [[0xFFF, 0x83F]],
+    fm: [[0xFFF, 0x1F]], tk: [[1, 99, -3, 2.5, 47], 'bad', new Array(1000).fill(5), [7, 7]], tt: [0, 5, 400, 120.7, 'x'], ui: { mode: 9, wm: 3, bank: 5, grp: 7, sel: 14, bl: 9, inst: 9, fw: true, trk: 9, cyc: 'no', tempo: 999 },
+    x: { sync: 'yes', mute: 0x1001, solo: 0xFFF, rec: 1 }, map: { bd: [36, 36, 200], cb: [56], rd: [51], zz: [1] },
+    smp: { bd: { id: 'smp:0123456789abcdef', name: 'n', on: true }, cb: { id: 'smp:0123456789abcdef', name: 'c', on: true }, rd: { id: 'smp:0123456789abcdef', name: 'r', on: 1 } } };
+  add('junk', M.normDrum(junk)); add('junk909', M.normDrum(junk, 'tr909')); add('junkNoM', M.normDrum({ ...junk, m: undefined }, 'tr909'));
+  add('junk808', M.normDrum(junk, 'tr808')); add('junk606', M.normDrum(junk, 'tr606')); add('junkEvil', M.normDrum({ ...junk, m: 'evil' }));
+  const recs = [];
+  for (let i = 0; i < 6; i++) {
+    const d = clone(DF);
+    for (let p = 0; p < 96; p++) {
+      d.keys[p] = { sc: 1 + Math.floor(r() * 4), l1: 1 + Math.floor(r() * 16), sh: 1 + Math.floor(r() * 7), fl: 9 + Math.floor(r() * 8), ch: r() < 0.25 ? 1 : 0 };
+      for (let s = 0; s < 16; s++) { d.st[p][s] = r() < 0.4 ? Math.floor(r() * 4096) : 0; d.ac[p][s] = Math.floor(r() * 4096); d.fm[p][s] = r() < 0.4 ? Math.floor(r() * 4096) : 0; }
+    }
+    for (let t = 0; t < 8; t++) { d.tk[t] = Array.from({ length: Math.floor(r() * (i % 5 ? 30 : 400)) }, () => Math.floor(r() * 48)); d.tt[t] = r() < 0.4 ? 37 + Math.floor(r() * 254) : 0; }
+    const sel = Math.floor(r() * 16);
+    d.ui = { mode: i % 4, wm: Math.floor(r() * 2), bank: Math.floor(r() * 2), grp: Math.floor(r() * 3), sel, bl: Math.floor(r() * (16 - sel)), inst: Math.floor(r() * 12), fw: r() < 0.3,
+      trk: Math.floor(r() * 4), cyc: r() < 0.6, guide: r() < 0.5, tempo: 37 + Math.floor(r() * 254) };
+    d.x = { sync: r() < 0.5, mute: r() < 0.3 ? Math.floor(r() * 4096) : 0, solo: r() < 0.2 ? Math.floor(r() * 4096) : 0, rec: r() < 0.5 };
+    d.map = { ...d.map, sd: [40, 38], lt: [41, 45], rd: [59, 51], oh: [46, 42] };
+    if (i & 1) d.smp = { sd: { id: 'smp:00000000000000aa', name: 's', on: true }, cr: { id: 'smp:00000000000000bb', name: 'c', on: false }, ch: { id: 'smp:00000000000000cc', name: 'h', on: true } };
+    const D = M.normDrum(d, 'tr909'); recs.push(D);
+    add('rec' + i, D); add('recNoModel' + i, M.normDrum(d)); add('rec808' + i, M.normDrum(d, 'tr808')); add('rec606' + i, M.normDrum(d, 'tr606'));
+    const t = D.ui.bank * 4 + D.ui.trk, I9 = M.initState('tr909');
+    const sess = [I9, { ...I9, run: true, ptr: 1 + Math.floor(r() * 5), loc: Math.floor(r() * 4), pend: { g: Math.floor(r() * 3), sel: 2, bl: Math.floor(r() * 3) }, from: 4800, bpm: 133 }, { ...I9, play: true, bpm: 97.5, ptr: 2, cont: { b: 1, sh: 'x' } }];
+    sess.forEach((S, j) => {
+      add('plan' + i + '.' + j, M.compilePlan(D, D.ui, D.x, S)); add('planPS' + i + '.' + j, M.planSess(D, S));
+      for (const w of ['now', 'bar', 'beat2']) add('pl' + i + '.' + j + w, M.payload(D, S, w));
+      add('roll' + i + '.' + j, M.rollPlan(D, 60 + 30 * j, S));
+    });
+    const plan = M.compilePlan(D, D.ui, D.x);
+    add('plan' + i, plan);
+    const t0 = Math.floor(r() * 9000);
+    add('notes' + i, M.toNotes(plan, { t0, t1: 30000, prim: M.primaries(D.map, 'tr909') }));
+    add('notesRoll' + i, M.toNotes(M.rollPlan(D, 133), { t0, t1: 40000, ...M.rollOpts(D, { model: 'tr909', vals: {} }) }));
+    add('notesRoll2' + i, M.toNotes(M.rollPlan(D, 97, sess[1]), { t0: 0, t1: 20000, ...M.rollOpts(D) }));
+    add('opts' + i, [M.rollOpts(D), M.rollOpts(D, { model: 'tr909' }), M.rollOpts(D, null)]);
+    add('tabs' + i, [M.mapTable(D.map, 'tr909'), M.primaries(D.map, 'tr909'), M.drumRows(D.map, 'tr909'), M.mapTable(D.map), M.primaries(D.map), M.drumRows(D.map), M.audible(D.x), M.soundMute(D.x),
+      M.planTicks(plan), M.demoFree(D), M.gridPat(I, D), M.gridPat(sess[1], D), M.leds(I, D), M.leds(sess[1], D), M.leds(sess[2], D), M.stepLen(D, { k: 1, s: 3 }), M.stepLen(D, { k: 30, s: 15 }),
+      M.stepLen(D, null), M.freeBpm(D), M.withTempo(D, 97), M.withTempo(D, D.ui.tempo) === D, M.withTempo(D, NaN) === D, M.withTempo(D, 5000).ui.tempo, t]);
+  }
+  add('laws', [[0, 0.25, 0.5, 1, NaN, -1, 2].map(M.tempo909), [37, 120, 290, 'x', 5, 900].map(M.tempo909Pos), [0, 1, 2, 3, 4, 7].map(q => [0, 1, 4, 8, 10, 15, 99].map(s => M.vel9(s, q))),
+    [1, 50, 99, 100, 105, 110, 115, 119, 123, 127, 200, NaN].map(v => [0, 1, 7, 10].map(s => [0, 0.5, 1].map(u => M.vTrig9(v, s, u))))]);
+  const kd = (n, o) => ({ k: 'key', n, down: true, ...o }), ku = n => ({ k: 'key', n, down: false });
+  const inputs = [{ k: 'start' }, { k: 'hold', b: 'shift', down: true }, kd(3), ku(3), { k: 'hold', b: 'shift', down: false }, { k: 'tap', b: 'start' }, { k: 'tap', b: 'stop' }, { k: 'tap', b: 'pat', n: 2 },
+    { k: 'hold', b: 'shift', down: true }, { k: 'tap', b: 'pat', n: 3 }, { k: 'hold', b: 'shift', down: false }, { k: 'tap', b: 'trk', n: 2 }, { k: 'hold', b: 'shift', down: true }, { k: 'tap', b: 'trk', n: 3 },
+    { k: 'hold', b: 'shift', down: false }, { k: 'tap', b: 'back' }, { k: 'tap', b: 'fwd' }, { k: 'tap', b: 'cyc' }, { k: 'tap', b: 'scale' }, { k: 'tap', b: 'enter' }, kd(5), kd(9), ku(9), ku(5),
+    { k: 'hold', b: 'isel', down: true }, kd(7), kd(8), ku(7), ku(8), { k: 'hold', b: 'isel', down: false }, { k: 'hold', b: 'clear', down: true }, kd(2), { k: 'hold', b: 'clear', down: false },
+    { k: 'hold', b: 'last', down: true }, kd(11), ku(11), { k: 'hold', b: 'last', down: false }, { k: 'hold', b: 'shuf', down: true }, kd(4), kd(13), { k: 'hold', b: 'shuf', down: false },
+    { k: 'hold', b: 'tkey', down: true }, { k: 'tap', b: 'enter' }, { k: 'hold', b: 'tkey', down: false }, { k: 'hold', b: 'avail', down: true }, { k: 'hold', b: 'avail', down: false },
+    kd(13), kd(14), ku(13), ku(14), kd(1, { f: 0.7 }), kd(15, { shift: true }), { k: 'tempo', v: 133 }, { k: 'tempo', v: 37 }, { k: 'transport', play: true }, { k: 'transport', play: false },
+    { k: 'bpm', v: 150 }, { k: 'heard', post: { s: 4, m: 0, k: 1, v: 0, p: 0, o: 960, M: 2, f: 0 } }, { k: 'heard', post: { s: 15, m: 2, k: 3, v: 0, p: 0, o: 0, M: 3, f: 0 } },
+    { k: 'sync', v: false }, { k: 'sync', v: true }, { k: 'mute', lane: 9 }, { k: 'solo', lane: 2 }, { k: 'rec', v: true }, { k: 'grid', lane: 3, s: 5 }, { k: 'grid', lane: 2, s: 7, flam: true },
+    { k: 'pad', sound: 9, f: 0.6, v: 0.97 }, { k: 'pad', sound: 1, f: 0.2, v: 1 }, { k: 'map', sound: 'rd', notes: [59, 51] }, { k: 'mapReset' },
+    { k: 'smp', sound: 'cr', slot: { id: 'smp:0000000000000001', name: 'R', on: true } }, { k: 'demo' }, { k: 'undo' }, { k: 'release' }, { k: 'panic' }, { k: 'nope' }];
+  for (let i = 0; i < recs.length; i++) {
+    let S = i & 1 ? { ...M.initState('tr909'), play: true } : M.initState('tr909'), D = recs[i];
+    for (let j = 0; j < 66; j++) {
+      const q = M.press(S, D, inputs[(j * 7 + i) % inputs.length]);
+      add('press' + i + '.' + j, [q.state, q.mem === D ? 'same' : q.mem, q.cmds, M.leds(q.state, q.mem), M.gridPat(q.state, q.mem), M.payload(q.mem, q.state, 'now').pk]);
+      S = q.state; D = q.mem;
+    }
+    for (let j = 0; j < 66; j++) {
+      const q = M.press(S, D, inputs[Math.floor(r() * inputs.length)]);
+      add('prand' + i + '.' + j, [q.state, q.mem === D ? 'same' : q.mem, q.cmds, M.leds(q.state, q.mem), M.gridPat(q.state, q.mem)]);
+      S = q.state; D = q.mem;
+    }
+  }
+  add('demo', M.DEMO909); add('pers', M.PERS.tr909); add('map', M.MAP909);
+  add('consts', [M.LANES909, M.CODES909, M.ROWS909, M.SOUNDS909, M.NAMES909, M.SIDS909, M.MASK909, M.AC909, M.FL909, M.M9_PP, M.M9_PW, M.M9_TP, M.M9_TW, M.MODES909, M.N_PAT9, M.N_STEP9, M.N_TRACKS9,
+    M.BANK_MEAS, M.CLEARED9, M.TEMPO9_LO, M.TEMPO9_HI, M.VEL9, M.ACC9, M.MAX_MEAS, M.MAX_STEPS]);
+  return H.digest('hex');
+}
+
+test('7d + 8 pins (§15.3, D1): the 909\'s records, sessions, payloads (plan, pk), plans, notes, tables, laws and press byte-identical to f425b4d\'s (= 8815b14\'s)', () => {
+  assert.equal(pin909(C), 'ce9e221b2b95806f10e96dbf44e1b945f45b21f9b6798fe77d1bd5bb4a9a9a60', 'the digest taken before the change');
+});
+
+/* ------------------------------------------------------------------ the SDS-V (IMPL-8 §11.2–§11.5, §15.3) */
+
+// its helpers: the defaults; a record with fields replaced; a fresh session; a run of presses from a fresh session (each result's
+// state and record fed to the next, `all` every command); the payload's content (everything its pk covers — `at` and pk apart);
+// a deep freeze (a press never writes into a record); every object key of a value, at every depth
+const DV = C.normDrum(undefined, 'sdsv');
+const SV = () => C.initState('sdsv');
+const mkV = (o = {}) => C.normDrum({ ...clone(DV), ...o }, 'sdsv');
+function runV(D, ...inputs) { let r = { state: SV(), mem: D, cmds: [] }; const all = []; for (const i of inputs) { r = C.press(r.state, r.mem, i); all.push(...r.cmds); } return { ...r, all }; }
+const bodyV = s => JSON.stringify({ ...s, plan: s.plan.key, at: undefined, pk: undefined, map: arr(s.map), prim: arr(s.prim) });
+const freezeV = o => { if (o && typeof o === 'object') { Object.freeze(o); for (const v of Object.values(o)) freezeV(v); } return o; };
+const keysOfV = (v, out = []) => { if (v && typeof v === 'object' && !ArrayBuffer.isView(v)) for (const k of Object.keys(v)) { out.push(k); keysOfV(v[k], out); } return out; };
+const sendV = [{ c: 'send', at: 'now' }];
+const TD = C.TRIM_DEF;
+
+test('7d + 8 PERS.sdsv (§11.2): five channels on the 808\'s sound ids 0–4 — bass drum, snare, tom 3 / 2 / 1 low to high —, every list 16 long by sound id, ids 5–15 the 808\'s keys and names kept inert; the GM map, the lane bits, the memories\' ids and our two settings per channel; the table four-way', () => {
+  const T = C.PERS.sdsv;
+  assert.deepEqual(Object.keys(C.PERS), ['tr808', 'tr606', 'tr909', 'sdsv']);
+  for (const o of [T, T.sounds, T.names, T.sids, T.map, T.map.bd, T.ch, T.fields, T.trim, T.trim[0], T.trim[4][1]]) assert.ok(Object.isFrozen(o));
+  assert.equal(T.id, 'sdsv'); assert.deepEqual(arr(T.sounds), arr(C.SOUNDS)); assert.equal(T.sounds.length, 16); assert.equal(T.names.length, 16);
+  assert.deepEqual(arr(T.names).slice(0, 5), ['Bass drum', 'Snare drum', 'Tom 3 (low)', 'Tom 2 (mid)', 'Tom 1 (high)']);
+  assert.deepEqual(arr(T.names).slice(5), arr(C.SOUND_NAMES).slice(5), 'ids 5–15 the 808\'s: inert');
+  assert.deepEqual(arr(T.sids), [0, 1, 2, 3, 4]);
+  assert.deepEqual(T.map, { bd: [36, 35], sd: [38, 40], lt: [41, 43], mt: [45, 47], ht: [48, 50] });
+  assert.equal(T.map, C.MAPV);
+  assert.equal(T.mask, 0x3E); assert.equal(C.MASKV, 0x3E); assert.equal(C.SOUND_LANE.slice(0, 5).reduce((m, l) => m | 1 << l, 0), 0x3E, 'the 808\'s lane bits of its five sounds');
+  assert.deepEqual([arr(T.ch), arr(T.fields)], [['b', 's', '1', '2', '3'], ['n', 't', 'b', 'd', 'm', 'c']]);
+  assert.equal(T.ch, C.TRIM_CH); assert.equal(T.fields, C.TRIM_F);
+  assert.deepEqual([TD.length, TD.map(c => c.length), TD.flat().map(m => m.length)], [5, [2, 2, 2, 2, 2], new Array(10).fill(6)]);
+  assert.ok(TD.flat(2).every(v => v >= 0 && v <= 1), 'the knob\'s 0…1');
+  TD.forEach((c, i) => assert.notDeepEqual(arr(c[0]), arr(c[1]), 'channel ' + i + ': memories 3 and 4 differ'));
+  assert.equal(T.trim, TD);
+  // the other machines' tables are as they were
+  assert.equal(C.PERS.tr808.sounds, C.SOUNDS); assert.equal(C.PERS.tr808.names, C.SOUND_NAMES); assert.equal(C.PERS.tr606.sounds, C.SOUNDS); assert.equal(C.PERS.tr909.sounds, C.SOUNDS909);
+  assert.ok(C.EMPTY_PLAN && Object.isFrozen(C.EMPTY_PLAN) && Object.isFrozen(C.EMPTY_PLAN.mOff));
+});
+
+test('7d + 8 normDrum(·, \'sdsv\') (§11.3): the defaults — v 1, m, keys [] (an array), ui {}, x with SYNC and REC false, SWING 50 and nothing muted, the GM map for five sounds and [] for ids 5–15, no slot, trim our two settings per channel; fresh each call; idempotent; JSON-stable; the 808\'s / 606\'s / 909\'s records gain nothing', () => {
+  assert.deepEqual(Object.keys(DV), ['v', 'm', 'keys', 'ui', 'x', 'map', 'smp', 'trim']);
+  assert.deepEqual([DV.v, DV.m], [1, 'sdsv']);
+  assert.ok(Array.isArray(DV.keys) && DV.keys.length === 0, 'keys: an empty array (cv-drum\'s mem() and main.js\'s drumOf read it as a record)');
+  assert.deepEqual(DV.ui, {});
+  assert.deepEqual(DV.x, { sync: false, swing: 50, mute: 0, solo: 0, rec: false, part: 0 });
+  assert.deepEqual(Object.keys(DV.map), arr(C.SOUNDS), 'every key present, so a reader without the model never fills the 808\'s in');
+  assert.deepEqual(DV.map, { bd: [36, 35], sd: [38, 40], lt: [41, 43], mt: [45, 47], ht: [48, 50], rs: [], cp: [], cb: [], cy: [], oh: [], ch: [], lc: [], mc: [], hc: [], cl: [], ma: [] });
+  assert.deepEqual(DV.smp, {});
+  assert.deepEqual(DV.trim, TD.map(c => c.map(m => arr(m))));
+  assert.notEqual(DV.trim, TD); assert.notEqual(DV.trim[0], TD[0]); assert.ok(!Object.isFrozen(DV.trim));
+  const E = C.normDrum(undefined, 'sdsv');
+  assert.deepEqual(E, DV); assert.notEqual(E.keys, DV.keys); assert.notEqual(E.ui, DV.ui); assert.notEqual(E.trim, DV.trim);
+  assert.deepEqual(C.normDrum(DV), DV); assert.deepEqual(C.normDrum(DV, 'sdsv'), DV); assert.deepEqual(C.normDrum(clone(DV), 'sdsv'), DV); assert.deepEqual(C.normDrum({ m: 'sdsv' }), DV);
+  assert.deepEqual(C.normDrum(JSON.parse(JSON.stringify(mkV({ trim: TD.map(c => c.map(m => m.map(v => v * 0.37))) })))), mkV({ trim: TD.map(c => c.map(m => m.map(v => v * 0.37))) }));
+  assert.ok(!keysOfV(DV).some(k => k === '' || k === 'undefined'), 'no empty or undefined key');
+  assert.ok(!JSON.stringify(DV).includes('undefined') && !JSON.stringify(DV).includes('null'));
+  // the others' records: no `m` (808), their own m, none of the SDS-V's fields
+  for (const [m, D] of [[undefined, DEF], ['tr606', D6], ['tr909', D9]]) assert.ok(!('trim' in D) && !('trim' in C.normDrum(undefined, m)) && Array.isArray(D.keys) && D.keys.length > 0);
+});
+
+test('7d + 8 normDrum(·, \'sdsv\') bounds (§15.3): trim clamped to 0…1 at exact bits (no rounding), a non-number (NaN, ±Infinity, a numeric string, null, undefined) its default, −0 → 0, short / long / non-array rows and channels defaults; SYNC and REC forced false, SWING 50–75, mute / solo to the five lanes, PART 0–1; keys [] and ui {} whatever came; the map and slots only for the five sounds; unknown fields dropped', () => {
+  const t = [[[2, -1, NaN, Infinity, '0.5', null], [0.25]], 'bad', [[]], null, [[undefined, -0, 1e-9, 0.1 + 0.2, 1, 1.0000001, 0.9, 5], [-Infinity, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]], 'extra'];
+  const D = C.normDrum({ v: 7, m: 'sdsv', junk: 1, keys: [1, 2, 3], ui: { mode: 3, inst: 2 }, st: [[1]], rt: [1], x: { sync: true, rec: true, swing: 99.6, mute: 0xFFF, solo: 0x1001, part: 5, extra: 1 },
+    map: { bd: [36, 36, 200, 'x', 3.5, -1, 35, 35], sd: [36, 38], rs: [37, 39], cb: [56], zz: [1] }, smp: { bd: { id: 'smp:0123456789abcdef', name: 'n'.repeat(99), on: 1 }, sd: { id: 'smp:xyz', on: true },
+      cb: { id: 'smp:0123456789abcdef', on: true }, ht: { id: 'smp:00000000000000aa', on: true, extra: 1 } }, trim: t }, 'sdsv');
+  assert.deepEqual(Object.keys(D), ['v', 'm', 'keys', 'ui', 'x', 'map', 'smp', 'trim']);
+  assert.deepEqual([D.keys, D.ui], [[], {}]);
+  assert.deepEqual(D.x, { sync: false, swing: 75, mute: 0x3E, solo: 0, rec: false, part: 1 });
+  assert.deepEqual(D.map.bd, [36, 35]); assert.deepEqual(D.map.sd, [38]); assert.deepEqual([D.map.rs, D.map.cb, D.map.cp], [[], [], []]); assert.ok(!('zz' in D.map));
+  assert.deepEqual(D.smp, { bd: { id: 'smp:0123456789abcdef', name: 'n'.repeat(64), on: false }, ht: { id: 'smp:00000000000000aa', name: '', on: true } }, 'the five sounds\' valid slots only');
+  const d = (c, k, f) => TD[c][k][f];
+  assert.deepEqual(D.trim[0][0], [1, 0, d(0, 0, 2), d(0, 0, 3), d(0, 0, 4), d(0, 0, 5)]);
+  assert.deepEqual(D.trim[0][1], [0.25, ...TD[0][1].slice(1)]);
+  assert.deepEqual(D.trim[1], TD[1]); assert.deepEqual(D.trim[2], TD[2]); assert.deepEqual(D.trim[3], TD[3]);
+  assert.deepEqual(D.trim[4][0], [d(4, 0, 0), 0, 1e-9, 0.1 + 0.2, 1, 1]); assert.ok(Object.is(D.trim[4][0][1], 0), '−0 → +0');
+  assert.deepEqual(D.trim[4][1], [d(4, 1, 0), 0.5, 0.5, 0.5, 0.5, 0.5]);
+  assert.equal(D.trim.length, 5); assert.ok(D.trim.every(c => c.length === 2 && c.every(m => m.length === 6)));
+  assert.equal(D.trim[4][0][3], 0.1 + 0.2, 'exact bits, no rounding');
+  assert.deepEqual(C.normDrum(D), D); assert.deepEqual(C.normDrum(JSON.parse(JSON.stringify(D))), D);
+  // sync / rec / swing / part one by one; mute and solo mask bits; the whole of an x that is no object
+  for (const x of [undefined, null, 5, 'x', [], [1]]) assert.deepEqual(mkV({ x }).x, DV.x, JSON.stringify(x));
+  assert.deepEqual([49, 50, 62.4, 62.5, 75, 76, NaN, '60', Infinity].map(swing => mkV({ x: { swing } }).x.swing), [50, 50, 62, 63, 75, 75, 50, 50, 50]);
+  assert.deepEqual([0, 1, 2, 0x3E, 0x3F, 0x41, 0x1000, 0xFFF, 0x7FFFFFFF, -1, 1.5, NaN, '2'].map(mute => mkV({ x: { mute } }).x.mute), [0, 0, 2, 0x3E, 0x3E, 0, 0, 0x3E, 0x3E, 0x3E, 0, 0, 0]);
+  assert.deepEqual([0, 1, 2, 3, 0.4].map(part => mkV({ x: { part } }).x.part), [0, 1, 1, 1, 0]);
+  assert.deepEqual(mkV({ x: { sync: true, rec: true } }).x, DV.x, 'SYNC and REC are forced off (no pattern to follow or write)');
+  // keys and ui come back whatever they were; a record\'s own map / smp / trim only
+  for (const keys of [undefined, null, 5, 'x', {}, [1, 2], new Array(1000).fill({ pre: 3 })]) assert.deepEqual(mkV({ keys }).keys, [], String(JSON.stringify(keys)).slice(0, 20));
+  for (const ui of [undefined, null, 5, 'x', [], { mode: 1, inst: 9 }]) assert.deepEqual(mkV({ ui }).ui, {});
+  for (const trim of [undefined, null, 5, 'x', {}, [], [[]], [[[]]], { 0: [[1, 1, 1, 1, 1, 1]] }]) assert.deepEqual(mkV({ trim }).trim, DV.trim, JSON.stringify(trim));
+  assert.deepEqual(mkV({ trim: [[[1, 1, 1, 1, 1, 1]]] }).trim[0], [[1, 1, 1, 1, 1, 1], arr(TD[0][1])]);
+});
+
+test('7d + 8 normDrum(·, \'sdsv\') hostile input never throws (§15.3): non-objects, cyclic / sparse / huge arrays, throwing getters and proxies at every level, a prototype-polluted object — the defaults or a clamped record, bounded in size', () => {
+  const cyc = []; cyc[0] = cyc; cyc[1] = [cyc]; const cycO = {}; cycO.x = cycO; cycO.trim = cyc; cycO.map = cycO; cycO.smp = cycO;
+  const boom = () => { throw new Error('boom'); };
+  const bad = [undefined, null, 0, 5, NaN, 'x', true, [], [1, 2], () => 1, Symbol('s'), cycO, { trim: cyc }, { trim: [cyc, [cyc, cyc]] }, { trim: new Array(1e6) }, { trim: [new Array(1e6)] },
+    { map: new Array(1e6), smp: new Array(1e6), x: new Array(1e6) }, Object.defineProperty({}, 'trim', { get: boom }), Object.defineProperty({}, 'map', { get: boom }), Object.defineProperty({}, 'x', { get: boom }),
+    Object.defineProperty({}, 'smp', { get: boom }), Object.defineProperty({ trim: [] }, 'trim', { get: boom }), { trim: [Object.defineProperty([], 0, { get: boom })] },
+    { trim: [[Object.defineProperty([], 3, { get: boom })]] }, { x: { get mute() { throw new Error('boom'); } } }, { map: { get bd() { throw new Error('boom'); } } },
+    new Proxy({}, { get: boom, has: boom, ownKeys: boom, getOwnPropertyDescriptor: boom }), new Proxy([], { get: boom }), { trim: new Proxy([], { get: boom }) }, { __proto__: { trim: 5 } },
+    JSON.parse('{"__proto__":{"trim":[[[1,1,1,1,1,1]]]},"trim":3}'), { trim: [[[1, 1, 1, 1, 1, 1]]], toString: boom, valueOf: boom }];
+  for (const d of bad) {
+    let r;
+    assert.doesNotThrow(() => { r = C.normDrum(d, 'sdsv'); }, String(typeof d));
+    assert.equal(r.m, 'sdsv'); assert.ok(JSON.stringify(r).length < 5000);
+    assert.deepEqual(C.normDrum(r, 'sdsv'), r, 'idempotent');
+  }
+  assert.deepEqual(C.normDrum(Object.defineProperty({}, 'trim', { get: boom }), 'sdsv'), DV, 'a throwing getter: the defaults');
+  // (without a model, a record that throws on `m` is the 808\'s defaults, as ever)
+  assert.deepEqual(C.normDrum(Object.defineProperty({}, 'm', { get: boom })), DEF);
+  assert.doesNotThrow(() => C.payload(DV, null)); assert.doesNotThrow(() => C.payload({ m: 'sdsv', trim: cyc, map: cycO, smp: cycO, x: cycO }));
+});
+
+test('7d + 8 the machine of a record (§11.3): four-way — \'sdsv\' only for the exact string, the model wins over m (808 ↔ 606 ↔ 909 ↔ SDS-V), normDrum(d) keeps an SDS-V\'s record; \'tr999\', \'SDSV\', \'sdsv \', a number, an array: the 808\'s; the three others\' defaults, tables and maps unchanged', () => {
+  const odd = ['SDSV', 'Sdsv', 'sdsv ', ' sdsv', 'sdsv\0', 'sds-v', 'tr999', 'tr808', '', 0, 1, true, ['sdsv'], { toString() { return 'sdsv'; } }, Symbol.iterator];
+  for (const m of odd) {
+    for (const r of [C.normDrum({ m }), C.normDrum({}, m), C.normDrum(DV, m), C.normDrum({ m: 'sdsv' }, m)]) {
+      assert.ok(!('m' in r) && r.keys.length === 16 && 'st' in r, 'the 808\'s record for ' + String(m).slice(0, 12));
+    }
+    // the tables too: mapTable / primaries / drumRows with such a model are the 808's sixteen
+    assert.deepEqual(arr(C.mapTable(undefined, m)), arr(C.mapTable(undefined))); assert.equal(C.drumRows(undefined, m).length, 16);
+  }
+  assert.deepEqual(C.normDrum({ m: 'sdsv' }, undefined), DV, 'no model: the record\'s own m');
+  assert.deepEqual(C.normDrum(DV), DV); assert.deepEqual(C.normDrum(DV, 'sdsv'), DV);
+  // the model wins, both ways, among the four
+  const recs = { tr808: DEF, tr606: D6, tr909: D9, sdsv: DV };
+  for (const [a, A] of Object.entries(recs)) for (const b of Object.keys(recs)) {
+    const r = C.normDrum(clone(A), b);
+    assert.equal(r.m, b === 'tr808' ? undefined : b, a + ' as ' + b);
+    assert.deepEqual(C.normDrum(r), r, 'and it keeps its own m');
+  }
+  assert.deepEqual(C.normDrum(D9, 'sdsv'), DV); assert.deepEqual(C.normDrum(DEF, 'sdsv'), DV);
+  const q6 = C.normDrum(D6, 'sdsv');                                    // (the 606's map: its notes kept, as every machine keeps a shared field — the shape is the SDS-V's)
+  assert.deepEqual([q6.m, q6.keys, q6.ui, q6.x, q6.smp, q6.trim], [DV.m, [], {}, DV.x, {}, DV.trim]); assert.deepEqual(Object.keys(q6.map), arr(C.SOUNDS)); assert.deepEqual(C.normDrum(q6), q6);
+  // a foreign session: an SDS-V's under the others' records becomes theirs (transport and tempo kept), theirs under an SDS-V's the SDS-V\'s
+  const sv = { ...SV(), play: true, bpm: 97 };
+  const r8 = C.press(sv, DEF, { k: 'start' }), r6 = C.press(sv, D6, { k: 'start' }), r9 = C.press(sv, D9, { k: 'start' });
+  assert.ok(!('m' in r8.state) && r8.state.tap === 0 && r8.state.bpm === 97 && r8.state.play === true, '808');
+  assert.ok(Array.isArray(r6.state.held) && r6.state.bpm === 97 && r6.state.play === true, '606');
+  assert.ok(r9.state.m === 'tr909' && r9.state.bpm === 97 && r9.state.play === true, '909');
+  for (const [S, label] of [[C.initState(), '808'], [{ ...C.initState('tr606'), play: true, bpm: 88 }, '606'], [{ ...C.initState('tr909'), play: true, bpm: 88 }, '909']]) {
+    const r = C.press(S, DV, { k: 'bpm', v: 91 });
+    assert.deepEqual(r.state, { m: 'sdsv', run: false, play: !!S.play, bpm: 91 }, label); assert.equal(r.mem, DV); assert.deepEqual(r.cmds, []);
+  }
+  assert.deepEqual(C.press(null, DV, { k: 'transport', play: true }).state, { m: 'sdsv', run: false, play: true, bpm: 120 });
+});
+
+test('7d + 8 mapTable / primaries / drumRows (§11.2, §15.3): the five sounds on GM — bass drum 36 / 35, snare 38 / 40, tom 3 41 / 43, tom 2 45 / 47, tom 1 48 / 50 — as DrSeq\'s default map plays them before a payload; five named rows, kick first; ids 5–15 inert even when a map names them; the roll\'s rows on GM numbers', () => {
+  const t = C.mapTable(DV.map, 'sdsv'), p = C.primaries(DV.map, 'sdsv');
+  assert.ok(t instanceof Int8Array && t.length === 128 && p instanceof Int8Array && p.length === 16);
+  assert.deepEqual([35, 36, 38, 40, 41, 43, 45, 47, 48, 50].map(n => t[n]), [0, 0, 1, 1, 2, 2, 3, 3, 4, 4]);
+  assert.equal(arr(t).filter(s => s >= 0).length, 10, 'nothing else mapped (not the 808\'s rim, clap, hats …)');
+  assert.deepEqual(arr(p), [36, 38, 41, 45, 48, ...new Array(11).fill(-1)]);
+  assert.deepEqual(arr(C.mapTable(undefined, 'sdsv')), arr(t)); assert.deepEqual(arr(C.mapTable(C.MAPV, 'sdsv')), arr(t)); assert.deepEqual(arr(C.primaries(undefined, 'sdsv')), arr(p));
+  const D = DRSEQ.DEF_MAP;
+  assert.deepEqual(arr(t), Array.from({ length: 128 }, (_, n) => (D[n] >= 0 && D[n] <= 4 ? D[n] : -1)), 'DrSeq\'s default map (the Inst plays it before a payload) for ids 0–4');
+  assert.deepEqual(C.drumRows(DV.map, 'sdsv'), [{ n: 36, s: 0, name: 'Bass drum' }, { n: 38, s: 1, name: 'Snare drum' }, { n: 41, s: 2, name: 'Tom 3 (low)' }, { n: 45, s: 3, name: 'Tom 2 (mid)' }, { n: 48, s: 4, name: 'Tom 1 (high)' }]);
+  assert.deepEqual(C.drumRows(undefined, 'sdsv'), C.drumRows(DV.map, 'sdsv'));
+  // the 808's map (sixteen sounds) on an SDS-V: the other eleven get no note and no row; a re-mapped sound moves its row; an unmapped one has none
+  assert.deepEqual(C.drumRows(C.DEFAULT_MAP, 'sdsv'), C.drumRows(DV.map, 'sdsv'));
+  assert.equal(C.mapTable({ ...C.DEFAULT_MAP, rs: [37], cp: [39], cy: [49] }, 'sdsv')[37], -1);
+  assert.deepEqual(C.drumRows({ bd: [60, 36], sd: [], lt: [41], mt: [45], ht: [72], rs: [38], oh: [46] }, 'sdsv').map(r => [r.n, r.name]), [[60, 'Bass drum'], [41, 'Tom 3 (low)'], [45, 'Tom 2 (mid)'], [72, 'Tom 1 (high)']]);
+  assert.equal(C.mapTable({ bd: [60] }, 'sdsv')[36], -1); assert.equal(C.mapTable({ bd: [60] }, 'sdsv')[60], 0);
+  // the roll (drumRowsOf: the device's map, kick first)
+  assert.deepEqual(drumRowsOf({ model: 'sdsv' }), [{ n: 36, name: 'Bass drum' }, { n: 38, name: 'Snare drum' }, { n: 41, name: 'Tom 3 (low)' }, { n: 45, name: 'Tom 2 (mid)' }, { n: 48, name: 'Tom 1 (high)' }]);
+  assert.deepEqual(drumRowsOf({ model: 'sdsv', drum: DV }), drumRowsOf({ model: 'sdsv' }));
+  assert.deepEqual(drumRowsOf({ model: 'sdsv', drum: { map: C.DEFAULT_MAP } }).length, 5, 'an 808 map on an SDS-V: five rows');
+  assert.deepEqual(drumRowsOf({ model: 'sdsv', drum: runV(DV, { k: 'map', sound: 'ht', notes: [72] }).mem }).map(r => r.n), [36, 38, 41, 45, 72]);
+  assert.equal(drumRowsOf({ model: 'tr808' }).length, 16); assert.equal(drumRowsOf({ model: 'tr606' }).length, 7); assert.equal(drumRowsOf({ model: 'tr909' }).length, 11);
+  // no `undefined` / empty key or name anywhere in a record or a payload (7c review #12's rule)
+  assert.ok(C.drumRows(DV.map, 'sdsv').every(r => typeof r.name === 'string' && r.name.length && r.s < 5));
+  assert.ok(!keysOfV(C.payload(DV, SV())).some(k => k === '' || k === 'undefined'));
+  assert.ok(!keysOfV(C.payload(runV(DV, { k: 'smp', sound: 'sd', slot: { id: 'smp:00000000000000aa', name: 'S', on: true } }).mem, SV())).some(k => k === '' || k === 'undefined'));
+});
+
+test('7d + 8 payload (§11.3): { m, plan: EMPTY_PLAN, sync, run, bpm, swing, at, tap, map, prim, mute, smp, trim, pk } in that order — idle clock fields, the five sounds\' tables, a copy of trim; the 808\'s, 606\'s and 909\'s payloads gain nothing; at \'now\' by default, any session or none; a bare or hostile record', () => {
+  const s = C.payload(DV, SV(), 'bar');
+  assert.deepEqual(Object.keys(s), ['m', 'plan', 'sync', 'run', 'bpm', 'swing', 'at', 'tap', 'map', 'prim', 'mute', 'smp', 'trim', 'pk']);
+  assert.deepEqual([s.m, s.sync, s.run, s.bpm, s.swing, s.at, s.tap, s.mute, s.smp], ['sdsv', false, false, 120, 50, 'bar', 0, 0, null]);
+  assert.equal(s.plan, C.EMPTY_PLAN); assert.ok(DRSEQ.valid(s.plan) && s.plan.n === 0);
+  assert.ok(s.map instanceof Int8Array && s.prim instanceof Int8Array); assert.deepEqual(arr(s.map), arr(C.mapTable(DV.map, 'sdsv'))); assert.deepEqual(arr(s.prim), arr(C.primaries(DV.map, 'sdsv')));
+  assert.deepEqual(s.trim, DV.trim); assert.notEqual(s.trim, DV.trim); assert.notEqual(s.trim[0][0], DV.trim[0][0]);
+  assert.match(s.pk, /^v0[0-9a-f]{8}$/);
+  assert.equal(C.payload(DV, SV()).at, 'now'); assert.equal(C.payload(DV).at, 'now'); assert.equal(C.payload(DV, null, 'beat2').at, 'beat2');
+  for (const S of [undefined, null, {}, C.initState(), C.initState('tr606'), C.initState('tr909'), { ...SV(), play: true, bpm: 200 }]) {
+    const q = C.payload(DV, S, 'now');
+    assert.equal(q.pk, s.pk, 'the session is no input'); assert.equal(bodyV(q), bodyV(s));
+  }
+  assert.equal(C.payload(DV, SV(), 'now').pk, s.pk, 'at is no input');
+  // the other machines' payloads: their own shapes, no m on the 808's, no trim on any
+  assert.deepEqual(Object.keys(C.payload(DEF, C.initState())), ['plan', 'sync', 'run', 'bpm', 'swing', 'at', 'tap', 'map', 'prim', 'mute', 'smp', 'pk']);
+  assert.deepEqual(Object.keys(C.payload(D6, C.initState('tr606'))), ['plan', 'sync', 'run', 'bpm', 'swing', 'at', 'tap', 'map', 'prim', 'mute', 'smp', 'm', 'rst', 'rstF', 'pk']);
+  assert.deepEqual(Object.keys(C.payload(D9, C.initState('tr909'))), ['plan', 'sync', 'run', 'bpm', 'swing', 'at', 'tap', 'map', 'prim', 'mute', 'smp', 'm', 'rst', 'rstF', 'pk']);
+  // mute / solo are the 808's lane bits (bd 1 … ht 5) turned into sound bits 0–4; nothing past the five
+  assert.deepEqual([[1], [2], [3], [4], [5], [1, 5], [1, 2, 3, 4, 5]].map(l => C.payload(mkV({ x: { mute: l.reduce((m, q) => m | 1 << q, 0) } }), SV()).mute), [1, 2, 4, 8, 16, 17, 31]);
+  assert.deepEqual([[2], [1, 3], [5]].map(l => C.payload(mkV({ x: { solo: l.reduce((m, q) => m | 1 << q, 0) } }), SV()).mute), [29, 26, 15]);
+  assert.equal(C.payload(mkV({ x: { mute: 0xFFF, solo: 0xFFF } }), SV()).mute, 0, 'every lane soloed: nothing muted');
+  // slots: only the five sounds', by sound id (16 long), null without any
+  const w = runV(DV, { k: 'smp', sound: 'ht', slot: { id: 'smp:00000000000000aa', name: 'H', on: true } }, { k: 'smp', sound: 'bd', slot: { id: 'smp:00000000000000bb', name: 'B', on: false } }).mem;
+  const sp = C.payload(w, SV()).smp;
+  assert.equal(sp.length, 16); assert.deepEqual(sp.map(e => e && [e.id, e.on]), [['smp:00000000000000bb', false], null, null, null, ['smp:00000000000000aa', true], ...new Array(11).fill(null)]);
+  // a bare or hostile record (never normalised): the payload normalises what it reads
+  const b = C.payload({ m: 'sdsv' });
+  assert.deepEqual([b.trim, arr(b.map), b.mute, b.smp], [DV.trim, arr(C.mapTable(DV.map, 'sdsv')), 0, null]);
+  const h = C.payload({ m: 'sdsv', trim: [[[9, -9, 'x', NaN, 0.5]]], x: { mute: 0xFFF, solo: 'x' }, map: { rs: [37], bd: [60] }, smp: { rs: { id: 'smp:00000000000000cc', on: true }, sd: { id: 'smp:00000000000000dd', on: true } } }, null);
+  assert.deepEqual(h.trim[0][0], [1, 0, TD[0][0][2], TD[0][0][3], 0.5, TD[0][0][5]]); assert.deepEqual([h.mute, h.map[37], h.map[60], h.smp[1] && h.smp[1].id, h.smp[5]], [0x1F, -1, 0, 'smp:00000000000000dd', null]);
+  // it reads, never writes
+  const f = freezeV(clone(DV)); assert.doesNotThrow(() => C.payload(f, freezeV(SV())));
+});
+
+test('7d + 8 pk (§11.3, 7b review #3\'s rule): v0 + a hash of m and everything the machine reads — every trim value at exact bits, every map note, slot, mute and solo bit — and nothing it does not (at, the session, SWING, PART, SYNC, REC, keys, ui); equal content, equal pk', () => {
+  const base = C.payload(DV, SV(), 'now').pk;
+  assert.equal(C.payload(clone(DV), SV(), 'beat2').pk, base);
+  // all 60 trim values, a one-ulp-class change (below any rounding) in each moves it; every pair of the 60 distinct
+  const seen = new Set([base]);
+  for (let c = 0; c < 5; c++) for (let k = 0; k < 2; k++) for (let f = 0; f < 6; f++) {
+    const t = DV.trim.map(a => a.map(m => m.slice())), v = t[c][k][f];
+    t[c][k][f] = v > 0.5 ? v - 1e-12 : v + 1e-12;
+    const pk = C.payload(mkV({ trim: t }), SV()).pk;
+    assert.ok(!seen.has(pk), 'trim ' + [c, k, f]); seen.add(pk);
+  }
+  assert.equal(seen.size, 61);
+  const moved = [
+    mkV({ map: { ...DV.map, ht: [49, 50] } }), mkV({ map: { ...DV.map, bd: [36] } }), runV(DV, { k: 'smp', sound: 'sd', slot: { id: 'smp:00000000000000aa', name: 'S', on: true } }).mem,
+    runV(DV, { k: 'smp', sound: 'sd', slot: { id: 'smp:00000000000000aa', name: 'S', on: false } }).mem, runV(DV, { k: 'smp', sound: 'sd', slot: { id: 'smp:00000000000000ab', name: 'S', on: false } }).mem,
+    mkV({ x: { mute: 2 } }), mkV({ x: { mute: 4 } }), mkV({ x: { solo: 2 } }), mkV({ x: { solo: 4 } })];
+  const pks = moved.map(D => C.payload(D, SV()).pk);
+  for (const pk of pks) assert.ok(!seen.has(pk), pk); assert.equal(new Set(pks).size, pks.length, 'each its own');
+  // the name of a slot is not an input; SWING and PART, forced SYNC / REC, keys, ui: not read by the machine
+  assert.equal(C.payload(runV(DV, { k: 'smp', sound: 'sd', slot: { id: 'smp:00000000000000aa', name: 'Other', on: true } }).mem, SV()).pk, C.payload(runV(DV, { k: 'smp', sound: 'sd', slot: { id: 'smp:00000000000000aa', name: 'S', on: true } }).mem, SV()).pk);
+  for (const x of [{ swing: 70 }, { part: 1 }, { sync: true }, { rec: true }]) assert.equal(C.payload(mkV({ x }), SV()).pk, base, JSON.stringify(x));
+  // against the other machines: their keys carry their own plans, so none ever collides with the SDS-V's v0…
+  for (const [D, S] of [[DEF, C.initState()], [D6, C.initState('tr606')], [D9, C.initState('tr909')]]) assert.ok(!C.payload(D, S).pk.startsWith('v0'));
+});
+
+// the press rows
+const PRESS_NONE = [{ k: 'start' }, { k: 'step', n: 3 }, { k: 'clear' }, { k: 'clear+step', n: 2 }, { k: 'tap', f: 0.7 }, { k: 'tap', b: 'start' }, { k: 'mode', v: 1 }, { k: 'inst', v: 3 }, { k: 'fill', v: 2 }, { k: 'bvar', v: 1 },
+  { k: 'ifv', v: 1 }, { k: 'pre', v: 2 }, { k: 'tempo', v: 133 }, { k: 'fine', v: 0.2 }, { k: 'sync', v: true }, { k: 'swing', v: 61 }, { k: 'rec', v: true }, { k: 'part', v: 1 }, { k: 'grid', lane: 3, s: 5 },
+  { k: 'pad', sound: 3, f: 0.6, v: 1 }, { k: 'demo' }, { k: 'undo' }, { k: 'heard', post: { s: 4, m: 0, k: 1, v: 0, p: 0, o: 960, M: 2, f: 0 } }, { k: 'release' }, { k: 'key', n: 3, down: true }, { k: 'hold', b: 'shift', down: true },
+  { k: 'fn', down: true }, { k: 'clr', down: true }, { k: 'grp' }, { k: 'sc', v: 2 }, { k: 'link303' }, { k: 'nope' }, { k: undefined }, {}, null, undefined, 5, 'x', [], { k: 'trim' }, { k: 'trim', ch: 5, mem: 3, f: 0, v: 0.5 },
+  { k: 'trim', ch: -1, mem: 3, f: 0, v: 0.5 }, { k: 'trim', ch: 1.5, mem: 3, f: 0, v: 0.5 }, { k: 'trim', ch: '1', mem: 3, f: 0, v: 0.5 }, { k: 'trim', ch: 0, mem: 2, f: 0, v: 0.5 }, { k: 'trim', ch: 0, mem: 5, f: 0, v: 0.5 },
+  { k: 'trim', ch: 0, mem: '3', f: 0, v: 0.5 }, { k: 'trim', ch: 0, mem: 3, f: 6, v: 0.5 }, { k: 'trim', ch: 0, mem: 3, f: -1, v: 0.5 }, { k: 'trim', ch: 0, mem: 3, f: 'n', v: 0.5 }, { k: 'trim', ch: 0, mem: 3, f: 0 },
+  { k: 'trim', ch: 0, mem: 3, f: 0, v: NaN }, { k: 'trim', ch: 0, mem: 3, f: 0, v: '0.5' }, { k: 'trim', ch: 0, mem: 3, f: 0, v: null }, { k: 'trim', ch: 0, mem: 3, f: 0, v: Infinity },
+  { k: 'trimFromKnobs', ch: 9, mem: 3, vals: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6] }, { k: 'trimFromKnobs', ch: 0, mem: 1, vals: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6] }, { k: 'trimFromKnobs', ch: 0, mem: 3 },
+  { k: 'trimFromKnobs', ch: 0, mem: 3, vals: null }, { k: 'trimFromKnobs', ch: 0, mem: 3, vals: 'abcdef' }, { k: 'trimFromKnobs', ch: 0, mem: 3, vals: 5 }, { k: 'trimFromKnobs', ch: 0, mem: 3, vals: [] },
+  { k: 'trimFromKnobs', ch: 0, mem: 3, vals: ['x', null, NaN, undefined, '0.5', Infinity] }, { k: 'trimFromKnobs', ch: 0, mem: 3, vals: {} },
+  { k: 'mute', lane: 0 }, { k: 'mute', lane: 6 }, { k: 'mute', lane: 11 }, { k: 'mute', lane: -1 }, { k: 'mute', lane: 1.5 }, { k: 'mute', lane: '1' }, { k: 'mute' }, { k: 'solo', lane: 0 }, { k: 'solo', lane: 9 },
+  { k: 'map', sound: 'rs', notes: [37] }, { k: 'map', sound: 'cb', notes: [56] }, { k: 'map', sound: 'zz', notes: [60] }, { k: 'map', sound: '__proto__', notes: [60] }, { k: 'map', sound: 'sd' }, { k: 'map', sound: 'sd', notes: 'x' },
+  { k: 'map', sound: 'sd', notes: { 0: 60 } }, { k: 'map', sound: 'sd', notes: [38, 40] }, { k: 'map', sound: 5, notes: [60] }, { k: 'smp', sound: 'rs', slot: { id: 'smp:00000000000000aa', on: true } }, { k: 'smp', sound: 'zz', slot: null },
+  { k: 'smp', sound: 'sd', slot: { id: 'smp:xyz', on: true } }, { k: 'smp', sound: 'sd', slot: 5 }, { k: 'smp', sound: 'sd', slot: { id: 5 } }, { k: 'smp', sound: 'sd', slot: null }, { k: 'smp', sound: 'bd' },
+  { k: 'mapReset' }];
+
+test('7d + 8 press (§11.3): the sequencer\'s inputs and junk do nothing — the same state, the same record, no command: START, steps, CLEAR, TAP, MODE …, SYNC / REC / PART, the grid, pads, DEMO / UNDO, heard, release, the 808\'s / 606\'s / 909\'s keys; the memory and map inputs that name nothing, hold nothing or change nothing likewise', () => {
+  for (const D of [DV, mkV({ x: { mute: 6 } })]) for (const i of PRESS_NONE) {
+    const S = SV(), r = C.press(S, D, i);
+    assert.equal(r.mem, D, JSON.stringify(i)); assert.deepEqual(r.cmds, [], JSON.stringify(i));
+    assert.equal(r.state, S, 'the session object kept: ' + JSON.stringify(i));
+  }
+  // …and a session that is not the SDS-V's (or none) comes back as one, still no command
+  for (const S of [undefined, null, {}, C.initState(), C.initState('tr606')]) { const r = C.press(S, DV, { k: 'start' }); assert.deepEqual(r.state, SV()); assert.equal(r.mem, DV); assert.deepEqual(r.cmds, []); }
+  // the first time a MAP / SMP / trim input names a real change it sends once; the same input again nothing
+  const pure = freezeV(clone(DV));
+  assert.doesNotThrow(() => { for (const i of PRESS_NONE) C.press(freezeV(SV()), pure, i); }, 'a press never writes into the record or the session');
+});
+
+test('7d + 8 press: map — one of the five sounds\' notes, primary first, the notes leaving any other sound; unmapping; a note on a sound past the five refused; mapReset; each one \'send\' when the record changed, none when it did not', () => {
+  let r = runV(DV, { k: 'map', sound: 'sd', notes: [60, 62] });
+  assert.deepEqual(r.mem.map.sd, [60, 62]); assert.deepEqual(r.all, sendV); assert.equal(r.mem.trim, DV.trim, 'structural sharing');
+  assert.deepEqual(arr(C.primaries(r.mem.map, 'sdsv')).slice(0, 5), [36, 60, 41, 45, 48]);
+  r = runV(DV, { k: 'map', sound: 'bd', notes: [38, 36] });                                   // (38 leaves the snare)
+  assert.deepEqual([r.mem.map.bd, r.mem.map.sd, r.mem.map.lt], [[38, 36], [40], [41, 43]]); assert.deepEqual(r.all, sendV);
+  r = runV(DV, { k: 'map', sound: 'ht', notes: [] });
+  assert.deepEqual(r.mem.map.ht, []); assert.equal(C.drumRows(r.mem.map, 'sdsv').length, 4, 'unmapped: no row'); assert.equal(C.mapTable(r.mem.map, 'sdsv')[48], -1);
+  r = runV(DV, { k: 'map', sound: 'mt', notes: [200, -1, 1.5, 'x', null, 60, 60, 61, 62, 63, 64, 65, 66, 67, 68] });
+  assert.deepEqual(r.mem.map.mt, [60, 61, 62, 63, 64, 65, 66, 67], 'valid notes, duplicates dropped, 8 at most');
+  for (const sound of ['rs', 'cp', 'cb', 'cy', 'oh', 'ch', 'lc', 'mc', 'hc', 'cl', 'ma', 'zz', 'rd', 'cr', '__proto__', 'constructor', '', 5, null, undefined]) {
+    r = runV(DV, { k: 'map', sound, notes: [60] }); assert.equal(r.mem, DV, String(sound)); assert.deepEqual(r.all, []);
+  }
+  assert.equal(runV(DV, { k: 'map', sound: 'sd', notes: [38, 40] }).mem, DV, 'the same notes: unchanged, no send'); assert.deepEqual(runV(DV, { k: 'map', sound: 'sd', notes: [38, 40] }).all, []);
+  // a note taken from a sound then taken back: the record returns to its default value
+  r = runV(DV, { k: 'map', sound: 'bd', notes: [38] }, { k: 'map', sound: 'sd', notes: [38] }, { k: 'map', sound: 'bd', notes: [36, 35] });
+  assert.deepEqual(r.mem.map, { ...DV.map, sd: [38] }); assert.deepEqual(r.all.length, 3);
+  // mapReset
+  const m = runV(DV, { k: 'map', sound: 'sd', notes: [60] }, { k: 'map', sound: 'ht', notes: [] });
+  r = C.press(m.state, m.mem, { k: 'mapReset' });
+  assert.deepEqual(r.mem.map, DV.map); assert.deepEqual(r.cmds, sendV); assert.equal(r.mem.trim, DV.trim);
+  r = C.press(SV(), DV, { k: 'mapReset' }); assert.equal(r.mem, DV); assert.deepEqual(r.cmds, [], 'already the default: unchanged');
+  // every result a valid record, the payload's map by it
+  for (const i of [{ k: 'map', sound: 'lt', notes: [10, 11] }, { k: 'mapReset' }]) { const q = C.press(SV(), DV, i).mem; assert.deepEqual(C.normDrum(q, 'sdsv'), q); }
+});
+
+test('7d + 8 press: smp — SOUNDS… slots of the five sounds { id, name, on } or null; a sound past the five, a bad id or slot refused; clearing none changes nothing; each change one \'send\'', () => {
+  const slot = (id, on = true, name = 'S') => ({ id: 'smp:' + id, name, on });
+  let r = runV(DV, { k: 'smp', sound: 'sd', slot: slot('00000000000000aa') });
+  assert.deepEqual(r.mem.smp, { sd: { id: 'smp:00000000000000aa', name: 'S', on: true } }); assert.deepEqual(r.all, sendV);
+  r = runV(r.mem, { k: 'smp', sound: 'sd', slot: slot('00000000000000aa') }); assert.deepEqual(r.all, [], 'the same slot: no send');
+  r = runV(DV, { k: 'smp', sound: 'sd', slot: slot('00000000000000aa') }, { k: 'smp', sound: 'sd', slot: slot('00000000000000aa', false) }); assert.deepEqual(r.mem.smp.sd.on, false); assert.equal(r.all.length, 2);
+  r = runV(DV, { k: 'smp', sound: 'bd', slot: slot('00000000000000aa', true, 'x'.repeat(99)) }, { k: 'smp', sound: 'ht', slot: slot('00000000000000bb') });
+  assert.deepEqual(Object.keys(r.mem.smp), ['bd', 'ht']); assert.equal(r.mem.smp.bd.name.length, 64);
+  const full = r.mem;
+  r = runV(full, { k: 'smp', sound: 'bd', slot: null }); assert.deepEqual(Object.keys(r.mem.smp), ['ht']); assert.deepEqual(r.all, sendV);
+  r = runV(full, { k: 'smp', sound: 'sd' }); assert.equal(r.mem, full, 'a sound with no slot cleared: unchanged'); assert.deepEqual(r.all, []);
+  r = runV(full, { k: 'smp', sound: 'bd', slot: undefined }); assert.deepEqual(Object.keys(r.mem.smp), ['ht'], 'undefined clears (== null), as the others');
+  for (const sound of ['rs', 'cp', 'cb', 'cy', 'oh', 'ch', 'lc', 'ma', 'rd', 'cr', 'zz', '__proto__', 5, undefined]) for (const sl of [slot('00000000000000aa'), null]) { r = runV(full, { k: 'smp', sound, slot: sl }); assert.equal(r.mem, full, String(sound)); assert.deepEqual(r.all, []); }
+  for (const bad of [{ id: 'smp:xyz', on: true }, { id: 5 }, { id: 'smp:00000000000000AA', on: true }, 5, 'x', []]) {
+    r = runV(DV, { k: 'smp', sound: 'sd', slot: bad });
+    assert.equal(r.mem, DV, JSON.stringify(bad)); assert.deepEqual(r.all, []);
+  }
+  assert.equal(runV(DV, { k: 'smp', sound: 'sd', slot: { id: 'smp:00000000000000aa', on: 1 } }).mem.smp.sd.on, false, 'on: only true is on');
+  assert.deepEqual(C.payload(full, SV()).smp.map(e => e && e.id), ['smp:00000000000000aa', null, null, null, 'smp:00000000000000bb', ...new Array(11).fill(null)]);
+});
+
+test('7d + 8 press: trim — one trimmer of memory 3 / 4 { ch 0–4, mem 3 | 4, f 0–5, v 0…1 } (TRIM…: a record write); v clamped; an index out of range, a non-integer or a string index, a v that is no number refused; the same value no change; only that value moves, the rest shared; one \'send\' each', () => {
+  let r = runV(DV, { k: 'trim', ch: 2, mem: 4, f: 3, v: 0.8 });
+  assert.equal(r.mem.trim[2][1][3], 0.8); assert.deepEqual(r.all, sendV);
+  const was = DV.trim.flat(2), now = r.mem.trim.flat(2);
+  assert.deepEqual(now.map((v, i) => (v !== was[i] ? i : -1)).filter(i => i >= 0), [2 * 12 + 1 * 6 + 3], 'only that value moved');
+  assert.equal(r.mem.trim[0], DV.trim[0]); assert.equal(r.mem.trim[4], DV.trim[4]); assert.equal(r.mem.trim[2][0], DV.trim[2][0], 'untouched rows shared');
+  assert.notEqual(r.mem.trim[2][1], DV.trim[2][1]); assert.equal(r.mem.map, DV.map); assert.deepEqual(DV.trim, TD.map(c => c.map(m => arr(m))), 'the old record untouched');
+  // every (ch, mem, f) reaches its own slot; ch order b s 1 2 3, field order n t b d m c, memory 3 → row 0, 4 → row 1
+  for (let c = 0; c < 5; c++) for (const [mem, k] of [[3, 0], [4, 1]]) for (let f = 0; f < 6; f++) {
+    const q = runV(DV, { k: 'trim', ch: c, mem, f, v: 0.123 }).mem.trim;
+    q.forEach((a, c2) => a.forEach((m, k2) => m.forEach((v, f2) => assert.equal(v, c2 === c && k2 === k && f2 === f ? 0.123 : DV.trim[c2][k2][f2], [c, mem, f, c2, k2, f2].join()))));
+  }
+  assert.deepEqual([-3, -0, 0, 0.5, 1, 1.0000001, 7, 1e9, -1e9, 1e-300].map(v => runV(DV, { k: 'trim', ch: 0, mem: 3, f: 0, v }).mem.trim[0][0][0]), [0, 0, 0, 0.5, 1, 1, 1, 1, 0, 1e-300]);
+  assert.ok(Object.is(runV(DV, { k: 'trim', ch: 0, mem: 3, f: 0, v: -0 }).mem.trim[0][0][0], 0));
+  assert.equal(runV(DV, { k: 'trim', ch: 0, mem: 3, f: 0, v: 0.1 + 0.2 }).mem.trim[0][0][0], 0.1 + 0.2, 'exact bits');
+  // the same value: unchanged, no send; then a different one, then back
+  r = runV(DV, { k: 'trim', ch: 1, mem: 3, f: 1, v: TD[1][0][1] }); assert.equal(r.mem, DV); assert.deepEqual(r.all, []);
+  r = runV(DV, { k: 'trim', ch: 1, mem: 3, f: 1, v: 0.9 }, { k: 'trim', ch: 1, mem: 3, f: 1, v: 0.9 }); assert.equal(r.all.length, 1, 'the second the same: no send');
+  r = runV(DV, { k: 'trim', ch: 1, mem: 3, f: 1, v: 0.9 }, { k: 'trim', ch: 1, mem: 3, f: 1, v: TD[1][0][1] }); assert.deepEqual(r.mem, DV); assert.equal(r.all.length, 2);
+  // the payload follows (a changed pk), the engine\'s copy: exact
+  const a = C.payload(DV, SV()), b = C.payload(runV(DV, { k: 'trim', ch: 4, mem: 4, f: 5, v: 0.01 }).mem, SV());
+  assert.notEqual(a.pk, b.pk); assert.equal(b.trim[4][1][5], 0.01); assert.equal(b.plan, a.plan);
+  // a record\'s other fields survive: x, map, smp, keys, ui
+  const R = runV(mkV({ x: { mute: 6, swing: 62 }, map: { ...DV.map, sd: [60] } }), { k: 'smp', sound: 'sd', slot: { id: 'smp:00000000000000aa', name: 'S', on: true } }, { k: 'trim', ch: 0, mem: 3, f: 0, v: 0.5 });
+  assert.deepEqual([R.mem.x.mute, R.mem.x.swing, R.mem.map.sd, Object.keys(R.mem.smp), R.mem.keys, R.mem.ui], [6, 62, [60], ['sd'], [], {}]);
+});
+
+test('7d + 8 press: trimFromKnobs — "Store knobs here": the channel\'s six knob positions into memory 3 / 4 (an array in field order, or an object by the field letters); a value that is no number keeps the trimmer\'s; clamped; a bad channel, memory or vals refused; the same values no send; the other memory and channels untouched', () => {
+  const six = [0.11, 0.22, 0.33, 0.44, 0.55, 0.66];
+  let r = runV(DV, { k: 'trimFromKnobs', ch: 3, mem: 3, vals: six });
+  assert.deepEqual(r.mem.trim[3][0], six); assert.deepEqual(r.mem.trim[3][1], arr(TD[3][1])); assert.deepEqual(r.all, sendV);
+  assert.equal(r.mem.trim[0], DV.trim[0]); assert.equal(r.mem.trim[3][1], DV.trim[3][1]);
+  r = runV(DV, { k: 'trimFromKnobs', ch: 0, mem: 4, vals: { n: 0.9, t: 0.8, b: 0.7, d: 0.6, m: 0.5, c: 0.4 } }); assert.deepEqual(r.mem.trim[0][1], [0.9, 0.8, 0.7, 0.6, 0.5, 0.4]);
+  r = runV(DV, { k: 'trimFromKnobs', ch: 4, mem: 3, vals: { d: 0.2, extra: 1, x: 5 } }); assert.deepEqual(r.mem.trim[4][0], [TD[4][0][0], TD[4][0][1], TD[4][0][2], 0.2, TD[4][0][4], TD[4][0][5]]);
+  r = runV(DV, { k: 'trimFromKnobs', ch: 1, mem: 3, vals: [2, -2, 'x', NaN, null, 0.5, 0.7, 0.8] }); assert.deepEqual(r.mem.trim[1][0], [1, 0, TD[1][0][2], TD[1][0][3], TD[1][0][4], 0.5], 'clamped; a non-number keeps its own; extras ignored');
+  r = runV(DV, { k: 'trimFromKnobs', ch: 1, mem: 3, vals: [0.3] }); assert.deepEqual(r.mem.trim[1][0], [0.3, ...TD[1][0].slice(1)]);
+  r = runV(DV, { k: 'trimFromKnobs', ch: 2, mem: 3, vals: arr(TD[2][0]) }); assert.equal(r.mem, DV); assert.deepEqual(r.all, [], 'the values it already had');
+  r = runV(DV, { k: 'trimFromKnobs', ch: 2, mem: 3, vals: six }, { k: 'trimFromKnobs', ch: 2, mem: 3, vals: six }); assert.equal(r.all.length, 1);
+  // a store then a single trimmer then a store of other values (the memories are independent rows)
+  r = runV(DV, { k: 'trimFromKnobs', ch: 2, mem: 3, vals: six }, { k: 'trim', ch: 2, mem: 3, f: 0, v: 0.01 }, { k: 'trimFromKnobs', ch: 2, mem: 4, vals: six });
+  assert.deepEqual([r.mem.trim[2][0], r.mem.trim[2][1]], [[0.01, ...six.slice(1)], six]);
+  for (const bad of [{ ch: 5 }, { ch: -1 }, { ch: '0' }, { ch: 0.5 }, { mem: 1 }, { mem: 2 }, { mem: 5 }, { mem: '3' }, { vals: null }, { vals: 'abcdef' }, { vals: 5 }, { vals: undefined }]) {
+    r = runV(DV, { k: 'trimFromKnobs', ch: 0, mem: 3, vals: six, ...bad }); assert.equal(r.mem, DV, JSON.stringify(bad)); assert.deepEqual(r.all, []);
+  }
+});
+
+test('7d + 8 press: mute / solo (no UI yet) — the 808\'s lane bits 1–5 (bd … ht) toggled in x.mute / x.solo, the payload\'s mute by them; any other lane refused; each change one \'send\'', () => {
+  for (let l = 1; l <= 5; l++) {
+    let r = runV(DV, { k: 'mute', lane: l }); assert.deepEqual([r.mem.x.mute, r.mem.x.solo, r.all], [1 << l, 0, sendV]); assert.equal(C.payload(r.mem, r.state).mute, 1 << (l - 1));
+    r = runV(DV, { k: 'solo', lane: l }); assert.deepEqual([r.mem.x.mute, r.mem.x.solo], [0, 1 << l]); assert.equal(C.payload(r.mem, r.state).mute, 31 & ~(1 << (l - 1)));
+    r = runV(DV, { k: 'mute', lane: l }, { k: 'mute', lane: l }); assert.deepEqual([r.mem.x, r.all.length], [DV.x, 2]);
+  }
+  const r = runV(DV, { k: 'mute', lane: 1 }, { k: 'mute', lane: 3 }, { k: 'solo', lane: 5 }, { k: 'mute', lane: 1 });
+  assert.deepEqual([r.mem.x.mute, r.mem.x.solo, C.payload(r.mem, r.state).mute], [8, 32, 15]);
+  assert.deepEqual(C.normDrum(r.mem, 'sdsv'), r.mem); assert.equal(r.mem.trim, DV.trim);
+});
+
+test('7d + 8 press: the host\'s notifications — transport { play }, bpm { v }, panic: the session\'s own { m, run, play, bpm } only (the same object when nothing changed), the record untouched, no command; heard and release nothing', () => {
+  const S = SV();
+  let r = C.press(S, DV, { k: 'transport', play: true }); assert.deepEqual(r.state, { m: 'sdsv', run: false, play: true, bpm: 120 }); assert.equal(r.mem, DV); assert.deepEqual(r.cmds, []);
+  assert.equal(C.press(r.state, DV, { k: 'transport', play: true }).state, r.state, 'unchanged: the same session');
+  r = C.press(r.state, DV, { k: 'transport', play: false }); assert.equal(r.state.play, false);
+  r = C.press(S, DV, { k: 'bpm', v: 97.5 }); assert.deepEqual(r.state, { m: 'sdsv', run: false, play: false, bpm: 97.5 }); assert.deepEqual(r.cmds, []);
+  for (const v of [NaN, 'x', 0, -5, null, Infinity, undefined]) assert.equal(C.press(S, DV, { k: 'bpm', v }).state, S, String(v));
+  assert.equal(C.press(r.state, DV, { k: 'bpm', v: 97.5 }).state, r.state);
+  r = C.press({ ...S, run: true }, DV, { k: 'panic' }); assert.deepEqual(r.state, S); assert.equal(C.press(S, DV, { k: 'panic' }).state, S); assert.deepEqual(r.cmds, []);
+  // no notification moves the payload (the clock is idle: bpm / play are the host's, not the machine's)
+  assert.equal(C.payload(DV, C.press(S, DV, { k: 'bpm', v: 200 }).state).pk, C.payload(DV, S).pk);
+});
+
+test('7d + 8 initState(\'sdsv\') (§11.3): { m, run: false, play: false, bpm: 120 } — fresh each call, never saved; the others\' sessions as they were; sessOf-style: the exact string only', () => {
+  assert.deepEqual(C.initState('sdsv'), { m: 'sdsv', run: false, play: false, bpm: 120 }); assert.notEqual(C.initState('sdsv'), C.initState('sdsv'));
+  assert.deepEqual(C.initState(), { run: false, play: false, tap: 0, undo: null, pos: null, cmp: null, bpm: 120 }); assert.deepEqual(C.initState('tr808'), C.initState());
+  assert.ok(C.initState('tr606').held && C.initState('tr909').m === 'tr909');
+  for (const m of ['SDSV', 'sdsv ', 'tr999', '', null, 0, ['sdsv']]) assert.deepEqual(C.initState(m), C.initState(), String(m));
+});
+
+test('7d + 8 the rest of the surface on an SDS-V record (no pattern, no plan, no tempo): compilePlan / rollPlan → EMPTY_PLAN, toNotes none, planTicks zero, rollOpts the primaries, planSess null, gridPat 0, leds no step lit, stepLen a 16th, demoFree, freeBpm 120, withTempo the same record, soundMute / audible by the lane bits', () => {
+  const S = SV();
+  assert.equal(C.compilePlan(DV, DV.ui, DV.x), C.EMPTY_PLAN); assert.equal(C.compilePlan(DV), C.EMPTY_PLAN); assert.equal(C.compilePlan(DV, undefined, undefined, S), C.EMPTY_PLAN);
+  assert.equal(C.rollPlan(DV, 120, S), C.EMPTY_PLAN); assert.equal(C.rollPlan(DV, 97), C.EMPTY_PLAN); assert.equal(C.rollPlan(DV), C.EMPTY_PLAN);
+  assert.deepEqual(C.toNotes(C.EMPTY_PLAN, { t0: 0, t1: 99999 }), []); assert.deepEqual(C.toNotes(C.rollPlan(DV, 120), { t0: 0, t1: 99999, ...C.rollOpts(DV, { model: 'sdsv', vals: {} }) }), []);
+  assert.deepEqual(C.planTicks(C.EMPTY_PLAN), { intro: 0, cycle: 0, total: 0 });
+  assert.deepEqual(C.rollOpts(DV), { prim: C.primaries(DV.map, 'sdsv') }); assert.deepEqual(arr(C.rollOpts(DV, { model: 'sdsv', vals: { lts: 1 } }).prim).slice(0, 6), [36, 38, 41, 45, 48, -1]);
+  assert.deepEqual(Object.keys(C.rollOpts(DV, null)), ['prim']);
+  assert.equal(C.planSess(DV, S), null); assert.equal(C.gridPat(S, DV), 0); assert.equal(C.stepLen(DV, { k: 1, s: 3 }), 240); assert.equal(C.stepLen(DV, null), 240);
+  assert.deepEqual(C.leds(S, DV), { step: new Array(16).fill(0), run: false }); assert.equal(C.demoFree(DV), true);
+  assert.equal(C.freeBpm(DV), 120); assert.equal(C.withTempo(DV, 97), DV); assert.equal(C.withTempo(DV, NaN), DV); assert.equal(C.withTempo(DV, 5000), DV);
+  assert.equal(C.soundMute(DV.x), 0); assert.equal(C.audible(DV.x) & 0xFFE, 0xFFE);
+  // the 808's functions on the SDS-V's session / the others: untouched (their pins hold) — the 808's gridPat on an 808 record and an SDS-V session
+  assert.equal(C.gridPat(S, DEF), C.gridPat(C.initState(), DEF)); assert.deepEqual(C.leds(S, DEF), C.leds(C.initState(), DEF));
+});
+
+test('7d + 8 property: random SDS-V records through random presses — every record stays valid (normDrum a no-op), the payload valid for DrSeq with the empty plan, trim in 0…1 and exactly 5 × 2 × 6, `send` exactly when the record changed, pk equal exactly when the payload\'s content is', () => {
+  const r = rng(808), pick = a => a[Math.floor(r() * a.length)];
+  const mkInput = () => {
+    switch (Math.floor(r() * 12)) {
+      case 0: return { k: 'map', sound: pick(C.SOUNDS), notes: Array.from({ length: Math.floor(r() * 4) }, () => (r() < 0.8 ? 30 + Math.floor(r() * 60) : Math.floor(r() * 200 - 20))) };
+      case 1: return { k: 'mapReset' };
+      case 2: return { k: 'smp', sound: pick(C.SOUNDS), slot: r() < 0.3 ? null : { id: 'smp:' + Math.floor(r() * 4).toString(16).padStart(16, '0'), name: 'n' + Math.floor(r() * 3), on: r() < 0.5 } };
+      case 3: case 4: case 5: return { k: 'trim', ch: Math.floor(r() * 6) - (r() < 0.1 ? 1 : 0), mem: pick([3, 4, 4, 3, 2, 5]), f: Math.floor(r() * 7), v: r() < 0.1 ? NaN : Math.round(r() * 12 - 1) / 10 };
+      case 6: return { k: 'trimFromKnobs', ch: Math.floor(r() * 5), mem: pick([3, 4]), vals: Array.from({ length: 6 }, () => (r() < 0.15 ? 'x' : Math.round(r() * 100) / 100)) };
+      case 7: return { k: 'mute', lane: Math.floor(r() * 8) };
+      case 8: return { k: 'solo', lane: Math.floor(r() * 8) };
+      case 9: return { k: 'transport', play: r() < 0.5 };
+      case 10: return { k: 'bpm', v: 40 + Math.floor(r() * 200) };
+      default: return pick(PRESS_NONE);
+    }
+  };
+  let D = DV, S = SV(), prev = C.payload(D, S);
+  let sends = 0, changed = 0;
+  for (let j = 0; j < 4000; j++) {
+    const i = mkInput(), q = C.press(S, D, i);
+    assert.deepEqual(q.cmds, q.mem !== D ? sendV : [], JSON.stringify(i));
+    assert.deepEqual(C.normDrum(q.mem, 'sdsv'), q.mem, 'a valid record after ' + JSON.stringify(i));
+    const p = C.payload(q.mem, q.state, 'now');
+    assert.ok(DRSEQ.valid(p.plan) && p.plan === C.EMPTY_PLAN);
+    assert.ok(p.trim.length === 5 && p.trim.every(c => c.length === 2 && c.every(m => m.length === 6 && m.every(v => v >= 0 && v <= 1))));
+    assert.equal(p.pk === prev.pk, bodyV(p) === bodyV(prev), 'pk ⇔ content after ' + JSON.stringify(i));
+    if (q.mem !== D) { sends++; if (bodyV(p) !== bodyV(prev)) changed++; }
+    S = q.state; D = q.mem; prev = p;
+  }
+  assert.ok(sends > 1000 && changed > 900, `${sends} / ${changed}`);
+});
+
+test('7d (the phase-0 merge): drum-core\'s TRIM_DEF equals the machine\'s default trims (dr-808.js Dr808.proto.sdsv.TRIMV, [ch][mem − 3][f] = TRIMV[ch · 12 + (mem − 3) · 6 + f])', async () => {
+  const { dspScope, source } = await import('./dsp-scope.mjs');
+  const S = dspScope({ files: [] }); S.run(source('dr-808.js'), 'dr-808.js');
+  const P = S.global('Dr808').proto.sdsv, T = Array.from(P.TRIMV);
+  assert.equal(T.length, 60);
+  for (let ch = 0; ch < 5; ch++) for (let m = 0; m < 2; m++) for (let f = 0; f < 6; f++) assert.equal(C.TRIM_DEF[ch][m][f], T[ch * 12 + m * 6 + f], `ch ${ch} mem ${m + 3} f ${f}`);
 });

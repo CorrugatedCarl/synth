@@ -24,6 +24,11 @@
 // `idx` / `full` as the step keys, an LED's index checked too), keys that must show their LED (`led`), the model's own
 // extras caption (`caption`: our own cymbal sounds named, D4 — the layout omits it or carries it exactly; too long for its
 // strip, its type steps down: xcapFit, estimated, never measured); its 4 × 3 pads.
+// Stage 8: the SDS-V (IMPL-8 §13): TOKENS.sdsv — a token repeated per group (`grp`: the channel b s 1 2 3; `idx` within it):
+// the memory keys (dr:mem n 1–4, each with its LED, a radio bound to the channel's models.js switch x<ch>p: `bind`, the
+// switch placed by its keys) and the trimmer rows (dr:trim mem 3 / 4: our art of six trimmers, one hit box; `hitOff`, the
+// hit box's centre off the art's, so two close rows keep disjoint 14 mm boxes); the five hexagonal pads' cell (DRV_PADS),
+// MAP… · SOUNDS… · TRIM…; its caption names our factory sounds (D4); "Simmons" among the maker words.
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
 import { BAR_H } from './cv-module.js?v=9';
@@ -50,7 +55,7 @@ export const SEQ_GRID = Object.freeze({ w: 16 * 36, h: 192 });
 /** Limits: decor items per layout, content size (mm). */
 export const MAX_DECOR = 3000, MAX_W_MM = 2000, MAX_H_MM = 1000;
 /** Maker names never printed on a panel (whole words, case-sensitive: "ARPEGGIO" and "Minimoog" pass). */
-export const MAKERS = Object.freeze(['Moog', 'ARP', 'Eminent', 'Yamaha', 'Sequential', 'Korg', 'Roland', 'Oberheim']);
+export const MAKERS = Object.freeze(['Moog', 'ARP', 'Eminent', 'Yamaha', 'Sequential', 'Korg', 'Roland', 'Oberheim', 'Simmons']);
 /** Control kinds → the models.js types a live one may carry ([]: display or decoration only; §3.4.1). */
 export const KINDS = Object.freeze({
   knob: ['k'], slider: ['k', 's'], rotary: ['s', 'k'], switch: ['b', 's', 'k'], button: ['b', 's', 'k'], buttons: ['s', 'k'], jacks: ['s'],
@@ -86,7 +91,9 @@ export const dspMin = n => [Math.round((n * DSP_FONT.em * DSP_FONT.px / PX_PER_M
  * (v | h: its `orient`, else taller than wide = v); `cells`: the model's own extras cell sizes (over TOK_CELL); `xbreak`:
  * its own extras row breaks (over XBREAK). (7c) `led`: keys that show their LED (led cap | above | below, never none);
  * `digits`: a display token's characters (its box ≥ dspMin); `caption`: the model's extras caption (the layout's own, if
- * any, must equal it). */
+ * any, must equal it). (8) `grp`: a repeated token's group [field, values] — `idx` and `full` count within each group
+ * (the SDS-V's keys by channel); `bind`: a grouped token that writes a models.js switch per group ('x?p': ? the group's
+ * value), which its controls place (once per group present). */
 export const TOKENS = Object.freeze({
   tb303: {
     kind: { 'seq:tempo': 'knob', 'seq:runLed': 'led', 'seq:run': 'button', 'seq:clear': 'button', 'seq:key': 'button', 'seq:pitch': 'button', 'seq:time': 'button',
@@ -144,27 +151,43 @@ export const TOKENS = Object.freeze({
     cells: { 'dr:pads': [232, 184] }, xbreak: ['dr:pads'],
     caption: XCAPTION_DRUMS + ' · Hi-hats and cymbals: our own sounds through the 909’s chip circuit',
   },
+  // (8, IMPL-8 §13.2) the SDS-V (no sequencer): per channel (`grp` ch b s 1 2 3 — bass, snare, toms 1–3) its four memory keys
+  // (dr:mem n 1–4, each with its LED: one radio per channel bound to the models.js switch x<ch>p, index n − 1 — `bind`: the
+  // switch is placed by its keys, never on its own) and its two trimmer rows (dr:trim mem 3 / 4: our art of six trimmers ≤ 8
+  // mm, one hit box opening TRIM… at that row); the extras: the five hexagonal pads (DRV_PADS), MAP… · SOUNDS… · TRIM… (no
+  // sequencer: no grid, SYNC, REC, DEMO, → Piano roll); its caption names our factory sounds (D4)
+  sdsv: {
+    kind: { 'dr:mem': 'button', 'dr:trim': 'button' },
+    extras: ['dr:pads', 'dr:map', 'dr:sounds', 'dr:trimMenu'],
+    multi: ['dr:mem', 'dr:trim'], idx: { 'dr:mem': ['n', 1, 4], 'dr:trim': ['mem', 3, 4] }, full: ['dr:mem', 'dr:trim'],
+    grp: { 'dr:mem': ['ch', ['b', 's', '1', '2', '3']], 'dr:trim': ['ch', ['b', 's', '1', '2', '3']] }, bind: { 'dr:mem': 'x?p' },
+    led: ['dr:mem'], cells: { 'dr:pads': [328, 200] }, xbreak: ['dr:pads'],
+    caption: XCAPTION + ' · Factory sounds: ours, through our model of its circuits', // (not XCAPTION_DRUMS + …: its "Sounds: our model of the circuits" says the same)
+  },
 });
 /** (1i, IMPL-1i §2) The performance tokens of every model: the bed and its controllers (the id names the target, the kind
  * the widget: one of its list). Each at most once per layout; never in the extras. */
 export const PERF_TOKENS = Object.freeze({ kind: Object.freeze({ 'perf:keys': ['keys'], 'perf:bend': ['wheel', 'lever', 'ribbon'], 'perf:mod': ['wheel', 'lever', 'pad'] }) });
 /** Tokens this build renders (a layout using another one falls back to the Simple panel, §4.5). */
 export const RENDERED_TOKENS = new Set([...Object.keys(TOKENS.tb303.kind), ...TOKENS.tb303.extras, ...Object.keys(TOKENS.dx7.kind), ...Object.keys(PERF_TOKENS.kind),
-  ...Object.keys(TOKENS.tr808.kind), ...TOKENS.tr808.extras, ...Object.keys(TOKENS.tr606.kind), ...TOKENS.tr606.extras, ...Object.keys(TOKENS.tr909.kind), ...TOKENS.tr909.extras]);
+  ...Object.keys(TOKENS.tr808.kind), ...TOKENS.tr808.extras, ...Object.keys(TOKENS.tr606.kind), ...TOKENS.tr606.extras, ...Object.keys(TOKENS.tr909.kind), ...TOKENS.tr909.extras,
+  ...Object.keys(TOKENS.sdsv.kind), ...TOKENS.sdsv.extras]);
 /** (7a) An inert control's title / tip: not emulated (dimmed), or `inert: 'later'` (a jack drawn at full contrast that
  * becomes cable-able with full patching, IMPL-7a §7.3). */
 export const INERT_TIP = ' — not emulated', LATER_TIP = ' — cable-able with full patching (stage 4)';
 /** The extras cells of the tokens (world px, w × h): the TB-303's parts and grid, the TR-808's (IMPL-7a §7.2: the step
  * grid, the 4 × 4 pads, the small controls); every other cell is a models.js control's (XCELL, selCellW) at XROW. (7b) A
  * model's own sizes (TOKENS.<model>.cells: the TR-606's grid and pads, DR6_GRID / DR6_PADS) win; SYNC 303s (dr:link).
- * (7c) The TR-909's 4 × 3 pads: DR9_PADS (its grid the 808's). */
+ * (7c) The TR-909's 4 × 3 pads: DR9_PADS (its grid the 808's). (8) The SDS-V's kit of five hexagonal pads: DRV_PADS (= cv-drum
+ * PADSV's box); TRIM… (dr:trimMenu). */
 export const DR_GRID = Object.freeze({ w: 640, h: 272 }), DR_PADS = Object.freeze({ w: 232, h: 232 });
 export const DR6_GRID = Object.freeze({ w: 592, h: 192 }), DR6_PADS = Object.freeze({ w: 232, h: 116 });
 export const DR9_PADS = Object.freeze({ w: 232, h: 184 });
+export const DRV_PADS = Object.freeze({ w: 328, h: 200 });
 export const TOK_CELL = Object.freeze({
   'seq:grid': [SEQ_GRID.w, SEQ_GRID.h], 'seq:sync': [128, XROW], 'seq:toRoll': [128, XROW], 'seq:random': [104, XROW],
   'dr:grid': [DR_GRID.w, DR_GRID.h], 'dr:pads': [DR_PADS.w, DR_PADS.h], 'dr:sync': [96, XROW], 'dr:swing': [104, XROW], 'dr:toRoll': [128, XROW],
-  'dr:rec': [72, XROW], 'dr:map': [88, XROW], 'dr:sounds': [104, XROW], 'dr:demo': [72, XROW], 'dr:link': [128, XROW],
+  'dr:rec': [72, XROW], 'dr:map': [88, XROW], 'dr:sounds': [104, XROW], 'dr:demo': [72, XROW], 'dr:link': [128, XROW], 'dr:trimMenu': [88, XROW],
 });
 /** Extras cells after which the full-width strip starts a new row (the 808: the grid and the pads, then the small controls, §7.5;
  * (7b) a model's TOKENS.<model>.xbreak replaces it). */
@@ -177,9 +200,12 @@ export const XBREAK = Object.freeze(['dr:pads']);
  * OB-Xa's 384 px room fits, the Solina's 366 does not); the smaller size is chosen on the plain (higher) estimate. render()
  * applies it to every strip: one that fits keeps its type as before. */
 export const XCAP_K = 0.935;
-export function xcapFit(text, room) {
+/* (8) k: the calibration — XCAP_K was fitted to the plain caption's letters only; a model's own caption (the 909's, the SDS-V's)
+ * reads the plain estimate (k 1, conservative): the SDS-V's old caption (157 characters, its facts said twice) measured 976.5 px at
+ * 9 px in Chrome (its letters wider: 0.972 of the estimate) in a 976 px room; said once (121) it fits at 9 px */
+export function xcapFit(text, room, k = XCAP_K) {
   const est = (fs, ls) => [...String(text)].reduce((a, ch) => a + ((/[A-Za-z0-9]/.test(ch) ? 0.72 : 0.32) + ls) * fs, 0);
-  if (!(room > 0) || XCAP_K * est(9, 0.08) <= room) return null;
+  if (!(room > 0) || k * est(9, 0.08) <= room) return null;
   return { fs: est(8, 0.04) <= room ? 8 : 7, ls: 0.04 };
 }
 /** (7b) A model's extras cell (w × h, or null: a models.js control's own) and row breaks. */
@@ -264,6 +290,11 @@ function ownOf(c) {
 /** The element box (mm): a knob's / rotary's SVG box draws its skirt at d. */
 const boxOf = c => (c.kind === 'knob' || c.kind === 'rotary' ? [c.d * KNOB_BOX, c.d * KNOB_BOX] : ownOf(c));
 const hitOf = (c, own) => (Array.isArray(c.hit) && fin(c.hit[0]) && fin(c.hit[1]) ? [c.hit[0], c.hit[1]] : [Math.max(own[0], HIT_DEF_MM), Math.max(own[1], HIT_DEF_MM)]);
+/** (8) The SDS-V's trimmer row (dr:trim): TRIM_N trimmers across its box (art), their diameter (mm: d, else what fits, ≤ 5);
+ * its hit box's centre off the art's (hitOff [dx, dy] mm: two close rows keep disjoint 14 mm boxes), else null. */
+export const TRIM_N = 6;
+const trimD = c => (fin(c.d) ? c.d : Math.max(0, Math.min(5, +c.h || 0, (+c.w || 0) / TRIM_N)));
+const hitOffOf = c => (c.id === 'dr:trim' && Array.isArray(c.hitOff) && c.hitOff.length === 2 && c.hitOff.every(fin) ? c.hitOff : null);
 /** The entries of a buttons / jacks control (each its own press target). */
 const entriesOf = c => (Array.isArray(c.at) ? c.at.filter(isObj) : []);
 const entryOwn = (c, e) => (c.kind === 'jacks' ? [+(e.d || c.d) || 0, +(e.d || c.d) || 0] : [+(e.w || c.w) || 0, +(e.h || c.h) || 0]);
@@ -312,6 +343,7 @@ export function validate(L, model) {
   if (S.font != null && !(S.font in FONTS)) bad('scheme.font: one of ' + Object.keys(FONTS).join(', '));
   if (isObj(S.knob) && S.knob.ptrStyle != null && !PTRS.includes(S.knob.ptrStyle)) bad('scheme.knob.ptrStyle: one of ' + PTRS.join(', '));
   for (const f of PERF_K) if (S[f] != null) { if (!isObj(S[f])) bad(`scheme.${f}: not an object`); else for (const [k, v] of Object.entries(S[f])) if (!colorOk(v)) bad(`scheme.${f}.${k}: not a colour`); }
+  if (S.trim != null) { if (!isObj(S.trim)) bad('scheme.trim: not an object'); else for (const [k, v] of Object.entries(S.trim)) if (!colorOk(v)) bad(`scheme.trim.${k}: not a colour`); } // ((8) the trimmers' art)
   // areas
   const A = new Map();
   if (!Array.isArray(L.areas) || !L.areas.length) bad('areas: at least one');
@@ -361,12 +393,15 @@ export function validate(L, model) {
   const M = ctlsOf(model), seen = new Map(), T = TOKENS[model.id] || null, hits = [];
   const count = id => seen.set(id, (seen.get(id) || 0) + 1);
   // a repeated token's index (seq:key note 0–12, dx:btn n 1–32, dr:step n 1–16; 7c: an LED's too, the 909's scale rows): in range, each value once
+  // ((8) within its group: the SDS-V's memory keys n 1–4 and trimmer rows mem 3 / 4 per channel — the group's field one of its values)
   const idxOk = (c, w) => {
     const ix = T && T.idx && T.idx[c.id];
     if (!ix) return;
-    const [f, lo, hi] = ix, key = c.id + '#' + c[f];
+    const [f, lo, hi] = ix, g = T.grp && T.grp[c.id];
+    if (g && !g[1].includes(c[g[0]])) { bad(w + `: ${g[0]} one of ${g[1].join(', ')}`); return; }
+    const key = c.id + '#' + (g ? c[g[0]] + ':' : '') + c[f];
     if (!(Number.isInteger(c[f]) && c[f] >= lo && c[f] <= hi)) bad(w + `: ${f} ${lo}–${hi}`);
-    if (seen.has(key)) bad(w + `: ${f} ${c[f]} twice`);
+    if (seen.has(key)) bad(w + `: ${f} ${c[f]} twice` + (g ? ` (${g[0]} ${c[g[0]]})` : ''));
     seen.set(key, 1);
   };
   if (!Array.isArray(L.controls)) bad('controls: an array');
@@ -425,6 +460,8 @@ export function validate(L, model) {
     // inside the area
     const parts = k === 'buttons' || k === 'jacks' ? entriesOf(c).map(e => ({ x: e.x, y: e.y, o: entryOwn(c, e) })) : [{ x: c.x, y: c.y, o: ownOf(c) }];
     for (const p of parts) inArea(c.a, p.x - p.o[0] / 2, p.y - p.o[1] / 2, p.o[0], p.o[1], w);
+    // (8) hitOff [dx, dy]: a live trimmer row's hit box off its art (the SDS-V's two close rows), no other control's
+    if (c.hitOff != null && !(c.id === 'dr:trim' && !c.inert && hitOffOf(c))) bad(w + ': hitOff [dx, dy] (mm) is a trimmer row\'s (dr:trim) only');
     if (c.inert) { if (c.id != null && !(typeof c.id === 'string' && c.id.startsWith('#'))) bad(w + ': an inert control has no id'); return; }
     // displays
     const tk = tokKinds(model, c.id); // (a token's kinds: the model's one, a perf token's list)
@@ -463,7 +500,14 @@ export function validate(L, model) {
       const want = T && T.orient && T.orient[c.id];
       if (want && k === 'switch' && (c.orient || (c.h > c.w ? 'v' : 'h')) !== want) bad(w + `: ${c.id} is a ${want === 'v' ? 'vertical' : 'horizontal'} switch (orient ${want})`);
       if (c.id === 'dr:step' && c.led === 'none') bad(w + ': a step key shows its LED (led cap | above | below)');
-      else if (T && T.led && T.led.includes(c.id) && c.led === 'none') bad(w + `: ${c.id} shows its LED (led cap | above | below)`); // (7c: the 909's LED keys)
+      else if (T && T.led && T.led.includes(c.id) && c.led === 'none') bad(w + `: ${c.id} shows its LED (led cap | above | below)`); // (7c: the 909's LED keys; 8: the SDS-V's memory keys)
+      // (8) a trimmer row: TRIM_N trimmers (art, 2–8 mm) across its box; its hit box (hitOff) still covers that art
+      if (c.id === 'dr:trim' && k === 'button') {
+        const td = trimD(c), ho = hitOffOf(c), hb = hitOf(c, ownOf(c));
+        if (c.d != null && !(fin(c.d) && c.d >= 2 && c.d <= 8)) bad(w + ': d (a trimmer\'s diameter) 2–8 mm');
+        else if (TRIM_N * td > c.w + 1e-9 || td > c.h + 1e-9) bad(w + `: ${TRIM_N} trimmers of ${n3(td)} mm do not fit its ${n3(c.w)} × ${n3(c.h)} mm box`);
+        if (ho && (Math.abs(ho[0]) > (hb[0] - c.w) / 2 + 1e-9 || Math.abs(ho[1]) > (hb[1] - c.h) / 2 + 1e-9)) bad(w + ': hitOff moves the hit box off its trimmers (it must cover the row)');
+      }
       count(c.id);
     } else {
       if (!KINDS[k].includes(mc.t)) bad(w + `: a ${k} cannot carry a "${mc.t}" control`);
@@ -492,10 +536,11 @@ export function validate(L, model) {
     // hit boxes (content mm)
     if (A.has(c.a || 'main')) {
       const ar = A.get(c.a || 'main'), dx = ar.at[0] - ar.src[0], dy = ar.at[1] - ar.src[1];
+      const ho = hitOffOf(c) || [0, 0]; // ((8) a trimmer row's hit box off its art)
       for (const p of parts) {
         const hb = k === 'keys' ? p.o : hitOf(c, p.o); // (1i) a bed: the keys' rectangle (its band, clamped by geometry to the room the others leave, never overlaps one)
         if (hb[0] < HIT_MIN_MM - 1e-9 || hb[1] < HIT_MIN_MM - 1e-9) bad(`${w}: hit box ${n3(hb[0])} × ${n3(hb[1])} mm < ${HIT_MIN_MM} mm`);
-        hits.push({ w, x: p.x + dx - hb[0] / 2, y: p.y + dy - hb[1] / 2, ww: hb[0], hh: hb[1] });
+        hits.push({ w, x: p.x + dx + ho[0] - hb[0] / 2, y: p.y + dy + ho[1] - hb[1] / 2, ww: hb[0], hh: hb[1] });
       }
     }
     if (secIndex(L, c) < 0) bad(w + ': not inside a section' + (c.sec ? ` ("${c.sec}" unknown)` : ''));
@@ -528,6 +573,11 @@ export function validate(L, model) {
       }
     }
   }
+  // (8) a grouped token bound to a models.js switch (the SDS-V's memory keys → x<ch>p) places it once for each group present
+  if (T && T.bind) for (const [id, pat] of Object.entries(T.bind)) {
+    const g = T.grp && T.grp[id], ks = [...seen.keys()];
+    for (const gv of g ? g[1] : []) if (ks.some(k => k.startsWith(id + '#' + gv + ':'))) count(pat.replace('?', gv));
+  }
   // every models.js id exactly once (live or extras); tokens at most once (seq:key / dx:btn may repeat); the DX7's
   // buttons address the operator ids (§6.3: they count as placed when dx:btn is)
   const dxAddr = model.id === 'dx7' && seen.has('dx:btn');
@@ -538,11 +588,15 @@ export function validate(L, model) {
   }
   // tokens: at most once (seq:key / dx:btn may repeat); the perf tokens on every model, whether it has a table or not
   for (const [id, n] of seen) if (!M.has(id) && !id.includes('#') && n > 1 && (isPerf(id) || (T && !T.multi.includes(id)))) bad(`${id}: placed ${n} times`);
-  // (7a) a repeated token that needs every index (the 808's 16 step keys)
+  // (7a) a repeated token that needs every index (the 808's 16 step keys; (8) in every group: the SDS-V's four memory keys and
+  // two trimmer rows of each channel)
   if (T && T.full) for (const id of T.full) {
-    const [f, lo, hi] = T.idx[id], miss = [];
-    for (let i = lo; i <= hi; i++) if (!seen.has(id + '#' + i)) miss.push(i);
-    if (miss.length) bad(`${id}: ${f} ${miss.join(', ')} missing (all ${hi - lo + 1} are on the panel)`);
+    const [f, lo, hi] = T.idx[id], g = T.grp && T.grp[id];
+    for (const gv of g ? g[1] : [null]) {
+      const miss = [], pre = id + '#' + (g ? gv + ':' : '');
+      for (let i = lo; i <= hi; i++) if (!seen.has(pre + i)) miss.push(i);
+      if (miss.length) bad(`${id}: ${g ? g[0] + ' ' + gv + ' ' : ''}${f} ${miss.join(', ')} missing (all ${hi - lo + 1}${g ? ' of every ' + g[0] : ''} are on the panel)`);
+    }
   }
   // decor
   if (L.decor != null && !Array.isArray(L.decor)) bad('decor: an array');
@@ -643,8 +697,8 @@ export function geometry(L, model) {
       const u = (k) => { let a = Infinity, b = Infinity, cc = -Infinity, d = -Infinity; for (const e of o.entries) { const r = e[k]; a = Math.min(a, r.x); b = Math.min(b, r.y); cc = Math.max(cc, r.x + r.w); d = Math.max(d, r.y + r.h); } return { x: a, y: b, w: cc - a, h: d - b }; };
       o.box = u('box'); o.hit = u('hit');
     } else {
-      const ow = ownOf(c), bx = boxOf(c), hb = hitOf(c, ow);
-      o.box = rectPx(cx, cy, bx[0], bx[1]); o.own = rectPx(cx, cy, ow[0], ow[1]); o.hit = rectPx(cx, cy, hb[0], hb[1]);
+      const ow = ownOf(c), bx = boxOf(c), hb = hitOf(c, ow), ho = hitOffOf(c); // ((8) a trimmer row's hit box off its art)
+      o.box = rectPx(cx, cy, bx[0], bx[1]); o.own = rectPx(cx, cy, ow[0], ow[1]); o.hit = ho ? rectPx(cx + ho[0], cy + ho[1], hb[0], hb[1]) : rectPx(cx, cy, hb[0], hb[1]);
       if (PERF_K.includes(c.kind) && c.kind !== 'keys') o.box = o.own = rectQ(cx, cy, ow[0], ow[1]); // (1i) a controller's DOM window exactly over its slot's art
     }
     if (live && M.has(c.id)) o.mc = M.get(c.id);
@@ -755,6 +809,7 @@ function buildSvg(L, model) {
   const SL = Object.assign({ cap: '#e8e8e4', line: '#111111', groove: '#050505' }, isObj(S.slider) ? S.slider : {});
   const BT = Object.assign({ cap: '#2b2b2b', led: '#ff3b2a', ledOff: '#3a1512', text: LEG }, isObj(S.button) ? S.button : {});
   const JK = Object.assign({ nut: '#c8c8c8', hole: '#050505' }, isObj(S.jack) ? S.jack : {});
+  const TR = Object.assign({}, TRIM_SKIN, isObj(S.trim) ? S.trim : {}); // ((8) the SDS-V's trimmers)
   const named = n => (n && isObj(S.rocker) && S.rocker[n]) || (n && isObj(S.switch) && S.switch[n]) || (colorOk(n) && n.startsWith('#') ? n : null);
   const wid = 'hw-wood-' + String(L.id).replace(/[^\w-]/g, '');
   const wood = S.wood || '#5a3218';
@@ -825,6 +880,7 @@ function buildSvg(L, model) {
     }
     if (PERF_K.includes(c.kind) && !c.inert) q += perfSvg(c, S); // (1i) the keys / a controller at rest
     if (c.inert) q += inertSvg(c, { K, SL, BT, JK, LEG, named, M, S });
+    else if (c.id === 'dr:trim' && c.kind === 'button' && fin(c.w) && fin(c.h)) q += trimSvg(c, TR); // ((8) the SDS-V's trimmer rows)
     if (q) o.push(inA(c.a, q));
   }
   o.push('</svg>');
@@ -916,6 +972,22 @@ function ladderSvg(d, LEG) {
 }
 function jackSvg(x, y, d, JK) {
   return `<circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(d / 2)}" fill="${esc(JK.nut)}"/><circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(d * 0.24)}" fill="${esc(JK.hole)}"/>`;
+}
+/** (8) The SDS-V's trimmer row (dr:trim; our art): TRIM_N metal discs evenly across its box, each with its screwdriver slot
+ * at an angle of its own (static: TRIM… shows the values) — one path for the discs, one for the slots (the DOM budget).
+ * TR: the colours (scheme.trim: body, rim, slot). */
+export const TRIM_SKIN = Object.freeze({ body: '#b9bcbf', rim: '#55595d', slot: '#26282b' });
+function trimSvg(c, TR) {
+  const d = trimD(c), r = d / 2, p = c.w / TRIM_N, x0 = c.x - c.w / 2 + p / 2;
+  if (!(r > 0)) return '';
+  let D = '', L = '';
+  for (let i = 0; i < TRIM_N; i++) {
+    const x = x0 + i * p, a = ((i * 47 + (c.mem === 4 ? 23 : 0)) % 150 - 75) * Math.PI / 180, s = r * 0.78, ux = Math.cos(a) * s, uy = Math.sin(a) * s;
+    D += `M${n3(x - r)} ${n3(c.y)}a${n3(r)} ${n3(r)} 0 1 0 ${n3(d)} 0a${n3(r)} ${n3(r)} 0 1 0 ${n3(-d)} 0Z`;
+    L += `M${n3(x - ux)} ${n3(c.y - uy)}L${n3(x + ux)} ${n3(c.y + uy)}`;
+  }
+  return `<path d="${D}" fill="${esc(TR.body)}" stroke="${esc(TR.rim)}" stroke-width="${n3(Math.max(0.2, d * 0.06))}"/>`
+    + `<path d="${L}" fill="none" stroke="${esc(TR.slot)}" stroke-width="${n3(d * 0.16)}" stroke-linecap="round"/>`;
 }
 function decorItem(d, C) {
   const st = (dflt) => ` stroke="${esc(C.col(d.stroke || dflt))}" stroke-width="${n3(d.sw > 0 ? d.sw : 0.3)}"`;
@@ -1688,8 +1760,33 @@ export function render(root, L, model, api) {
   // (7a, IMPL-7a §7.4) the TR-808's dr: widgets (cv-drum.js drumPanel) over api.drum (null: the same nodes, silent); (7b) the 606's
   let DRP = null;
   const drp = () => DRP || (DRP = CD.drumPanel(api.drum || null, { doc, api, root, model: model.id, mk, sv, place, prop, hitVars, named, knobSvg, skinVars, skinOf, n3, r05 })); // ((7b) model: the machine's widgets before a record exists)
+  // (8, IMPL-8 §13.2) a grouped token bound to a switch (the SDS-V's memory keys): one radio per group — built at the group's
+  // first key in the Tab order, the others skipped — over the keys' own boxes and hit boxes (hwButtons: the LEDs, the arrows,
+  // one tab stop), its wrapper the switch's (data-ctl = data-dest = x<ch>p: the mod drop, the halo, the ui entry). A key
+  // writes the switch (index n − 1) as any panel switch: presets carry it, no History step (undo never reverts a knob or switch)
+  const MEM_TXT = ['our factory sound', 'the knobs', 'trimmers (TRIM…)', 'trimmers (TRIM…)'], bound = new Set();
+  function boundWidget(c) {
+    const T = TOKENS[model.id], g = T && T.grp && T.grp[c.id], pat = T && T.bind && T.bind[c.id], ix = T && T.idx && T.idx[c.id];
+    if (!g || !pat || !ix || bound.has(c.id + '#' + c[g[0]])) return null;
+    bound.add(c.id + '#' + c[g[0]]);
+    const id = pat.replace('?', c[g[0]]), mc = M.get(id);
+    if (!mc) return null;
+    const ks = geo.controls.filter(q => q.live && q.id === c.id && L.controls[q.i][g[0]] === c[g[0]]).map(q => ({ o: q, c: L.controls[q.i] })).sort((a, b) => a.c[ix[0]] - b.c[ix[0]]);
+    const u = { x: Math.min(...ks.map(k => k.o.box.x)), y: Math.min(...ks.map(k => k.o.box.y)) };
+    u.w = Math.max(...ks.map(k => k.o.box.x + k.o.box.w)) - u.x; u.h = Math.max(...ks.map(k => k.o.box.y + k.o.box.h)) - u.y;
+    const sec = (model.sections || []).find(s => (s.c || []).some(x => x.id === id)), name = sec ? sec.title : '';
+    const cc = { kind: 'buttons', led: ks[0].c.led || 'cap', color: ks[0].c.color,
+      at: ks.map(k => ({ v: k.c[ix[0]] - ix[1], color: k.c.color, onCap: k.c.onCap, label: `Memory ${k.c[ix[0]]} · ${MEM_TXT[k.c[ix[0]] - 1] || ''}` })) };
+    const el = hwButtons(cc, Object.assign({}, mc, { label: (name ? name + ' · ' : '') + mc.label }), { box: u, entries: ks.map(k => ({ box: k.o.box, hit: k.o.hit })) });
+    const w = mk('div', 'hw-c');
+    w.setAttribute('data-ctl', id); w.setAttribute('data-dest', id); w.setAttribute('data-kind', 'buttons');
+    place(w, u);
+    w.append(el);
+    return w;
+  }
   function liveWidget(c, o) {
     const mc = M.get(c.id);
+    if (!mc && TOKENS[model.id] && TOKENS[model.id].bind && TOKENS[model.id].bind[c.id]) return boundWidget(c); // ((8) the SDS-V's memory keys)
     if (!mc) { // a token (TB-303 / DX7 special areas; 1i: the keys and the controllers; 7a: the 808's sequencer)
       const w = mk('div', 'hw-c'), el = c.id.startsWith('seq:') && SQ ? seqWidget(c, o) : c.id.startsWith('dx:') && DX ? dxWidget(c, o, w) : c.id.startsWith('perf:') ? perfWidget(c, o)
         : c.id.startsWith('dr:') ? drp().widget(c, o) : null;
@@ -1765,7 +1862,8 @@ export function render(root, L, model, api) {
     place(xs, X);
     const cap = mk('span', 'hw-xcap');
     cap.textContent = [X.caption, X.note ? 'Dimmed controls are not emulated' : ''].filter(Boolean).join(' · ');
-    const fit = xcapFit(cap.textContent, X.w - 2 * XPAD); // ((7c; review 2 F4: every strip) a caption that does not fit: smaller type, never measured; one that fits as before)
+    const own = TOKENS[model.id] && TOKENS[model.id].caption && X.caption === TOKENS[model.id].caption; // ((8) a model's own caption: the plain estimate)
+    const fit = xcapFit(cap.textContent, X.w - 2 * XPAD, own ? 1 : XCAP_K); // ((7c; review 2 F4: every strip) a caption that does not fit: smaller type, never measured; one that fits as before)
     if (fit) { cap.style.fontSize = fit.fs + 'px'; cap.style.letterSpacing = fit.ls + 'em'; }
     xs.append(cap);
     const SEQX = SQ ? { 'seq:sync': SQ.sync, 'seq:swing': SQ.swing, 'seq:random': SQ.rnd, 'seq:demo': SQ.demo, 'seq:toRoll': SQ.toRoll, 'seq:grid': SQ.steps } : {};

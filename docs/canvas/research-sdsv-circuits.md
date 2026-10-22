@@ -162,6 +162,42 @@ looped metal through this loop circuit — the TR-909's approach (IMPL-7c §2.4)
 Every [C] value of §2.3–§2.4 (the component analogues it chooses, the fitted constants), recorded in IMPL-8 §17 with the bench and
 the listening notes; any value read later from a legible schematic or the reconstruction, with its source.
 
+**The values as modelled** (lane V5, 2026-10-21; dr-808.js `CV`, `FACTV`, `TRIMV` and the SDS-V constants; `Dr808.proto.sdsv`).
+No schematic value was read: every row is [C] (fitted to §5's targets or chosen), none is [R] beyond what §2 tags. Tested in
+`tests/dr-sdsv.test.mjs`.
+
+| block | as modelled | tag / where it differs from §2.3 |
+|---|---|---|
+| trigger | `v_p = 0.005 · 15^((v − 1)/126)` V; `G = 20 · 10^(1.5 s)`; `V_D = 10 · tanh(G v_p / 10)` V; fires when V_D > 0.2 V — the lowest velocity that fires: SENS 0 → 34, 1 → 18, 2 → 2, from 2.1 → 1 (`minVel`); V_D at SENS 5: v 40 1.29 V, v 100 4.40 V, v 127 6.88 V | [C] as §2.3 |
+| gates | the attack's monostable 0.5 ms, the envelopes charging toward V_D through 0.1 ms from the level they are at (99.3 % at its end); the click's 4 ms; counted in OS samples from the hit's chunk | [C] (the gates' "per chunk": the hit's chunk; their lengths in samples) |
+| EG_T / EG_N / EG_P / EG_C | τ_T = T60 / ln 1000, `T60 = 0.03 · 167^DECAY` (30 ms … 5.01 s); τ_N = 0.6 τ_T; EG_P set to 1 at the hit, τ_P = 0.3 τ_T (≤ 0.22 s: the 0.4 s cap never binds); the click's release τ 1 ms | [C] as §2.3; EG_P's charge instant [C] |
+| VCO | a triangle ± 1 reset to its lower peak at the hit (rising), each corner reflected at its time and rounded by a 2-point polyBLAMP (u³/6 before, (1 − u)³/6 after; one sample late); the pitch per chunk, linear within it | [C]; aliases (the bent worst case, the first 20 ms, OS 4): −107 dB re the tone (uncorrected −68) |
+| bend | f = f_TONE · 2^(BEND_oct · EG_P), toms × (1 + 0.25 · V_D / 10) — at BEND 10 and V_D 10 the contract's 2.5 octaves (tom 1 at TONE 10: 2.94 kHz) | [C] refined: §2.3 added 0.5 · V_D / 10 octaves outside BEND; scaled by BEND so BEND 0 bends nothing (§5 "none at 0") |
+| snare mod | a 31 Hz triangle, ± 2.5 %, free-running on the absolute time | [C on R? R26] |
+| RC² | two first-order sections at 1.5 × the card's top (bass 180, snare 660, tom 1 780, tom 2 570, tom 3 390 Hz): the 3rd harmonic −29.9 dB at TONE 10, −20.8 (bass) / −20.0 (toms) dB at TONE 0 | [C] as §2.3 |
+| noise | each card its own stream (its salt; hash32 of the absolute OS sample, the Irwin–Hall of two 16-bit uniforms), 0.5 rms in 0–20 kHz in the SSM2044's 2 V_T; a 20 kHz first-order pole (the noise amplifier's) above 60 kHz; a wake settles the path over the 12 ms before from rest; the path runs while it can be heard | [C] (one stream a card; two uniforms, not four: Gaussian behind the filters) |
+| SSM2044 | 4 OTA stages, tanh secants (Padé), TPT, g = tan(π f_c / fs), f_c clamped at 0.46 · fs; f_c = NOISE · 2^(SW · EG_N / 10): SW 1.5 (bass), 0 (snare), 2 (toms); the snare's k 2.2 (its peak ≈ 9 dB over its passband), its feedback saturation 0.25; the secants at the prediction 2s − y (the Ladder's), on the snare's one pass at the sample before's (its cost: −39 dB re the output against the exact solve, the fresh −50), its feedback's saturation and 1 / (1 + k Gt) a sample behind | [C]; the small-signal response = 1 / ((1 + s/ω)⁴ + k) within 0.01 dB |
+| VCAs | `I · tanh(x · 0.03 / 2V_T)` (± 30 mV full scale): the tone's by its series, the noise's / click's (the same filtered noise) by its series below 0.8, the Padé above | [C] as §2.3 |
+| balances, LEVEL | equal-power (sin of the knob's quarter-turn: exact zeros at the ends); LEVEL the shell's audio taper (`tapA`: LEVEL 7 → 0.244) | [C] as §2.3 |
+| the cards' scaling | the filtered noise into its VCAs' input × NP (inside their tanh: a loud noise limits): bass 4.5, snare 3, toms 3 / 3.2 / 3.6 (at mid NOISE the noise peaks about the tone's); each card's output G (V at full bias, LEVEL 10): bass 11, snare 4.8, tom 1 7.6, tom 2 7.7, tom 3 9.0 — at the factory sounds, v 100: snare +0.9 dB, toms −0.6 dB re the bass | [fit] the cards' balance |
+| output | the mono sum; its coupling 3 Hz; the mix amplifier's rails (± 13.5 V, the 808's knee); OUT_KV 0.67 (the bass's memory 1 at v 100, SENS 5, LEVEL 7 → +0.46 dB re the 808's default BD through the whole Track, the dvp groove's RMS −0.36 dB re the 808's default groove, ≥ 0.6 dB under the track limiter at 48 / 44.1 kHz × 4 / 2 / 1 — lane E5, engine-track; V5's 0.732 matched the BD on the machine alone but was +1.2 dB through the Track and the groove reached the limiter at OS 2 / 1) | [fit] IMPL-8 §12.4 |
+| your own sounds | 7a's law over V_D: proportional below VK_V 4.40 V (v 100, SENS 5), + 0.6 at the limit; a full-scale sample at LEVEL 10 = 2.4 V on the bus (the bass's peak there) | [C] |
+
+**The memories** (knob units 0…10; ours, [C]): memory 1 (`FACTV`, the knobs' defaults) and the default trims (`TRIMV`, memories
+3 and 4 until a payload's arrive — the record's defaults, drum-core's):
+
+| card | memory 1 (factory) | memory 3 | memory 4 |
+|---|---|---|---|
+| bass | NOISE 3 (194 Hz) · TONE 4.2 (54 Hz) · BEND 4.5 (0.68 oct) · DECAY 4.2 (0.26 s) · N/T 2.2 · C/D 2.5 | 2 · 2.5 (42 Hz) · 7 (1.05 oct) · 6.5 (0.84 s) · 1 · 1.5 | 5 · 5 (60 Hz) · 3 · 2.5 (0.11 s) · 3.5 · 5 |
+| snare | 6.2 (2.95 kHz) · 4.5 (205 Hz) · 2.5 (0.25 oct) · 3.8 (0.21 s) · 6.2 · 3 | 4.5 · 3.5 (179 Hz) · 4 · 4.5 (0.30 s) · 4 · 2 | 8 (5.74 kHz) · 6 (253 Hz) · 1.5 · 2.5 (0.11 s) · 7.5 · 5 |
+| tom 1 | 3 (454 Hz) · 4.2 (188 Hz) · 6 (1.2 oct) · 6 (0.65 s) · 1.5 · 2.5 | 2 · 3.5 (166 Hz) · 8.5 (1.7 oct) · 7 (1.08 s) · 0.5 · 1.5 | 4.5 · 5.5 (236 Hz) · 3 · 3 (0.14 s) · 3 · 4 |
+| tom 2 | 3 (367 Hz) · 4.2 (136 Hz) · 6 · 6.2 (0.72 s) · 1.5 · 2.5 | 2 · 3.5 (121 Hz) · 8.5 · 7 (1.08 s) · 0.5 · 1.5 | 4.5 · 5.5 (172 Hz) · 3 · 3 (0.14 s) · 3 · 4 |
+| tom 3 | 3 (281 Hz) · 4.2 (94 Hz) · 6 · 6.5 (0.84 s) · 1.5 · 2.5 | 2 · 3.5 (83 Hz) · 8.5 · 7.2 (1.20 s) · 0.5 · 1.5 | 4.5 · 5.5 (118 Hz) · 3 · 3.2 (0.15 s) · 3 · 4 |
+
+Memory 1: a round kick with a short noise thump, a snare with a bright resonant noise body, three toms with the long downward
+sweep; memory 3: a deep long sweep (bass), a fat snare, electro toms; memory 4: a short punch, a crack, tight toms. Every one is a
+retune candidate at the listening gate (IMPL-8 §14.3).
+
 ## 7. CPU (estimate)
 
 Per card at OS 4, one sounding: the VCO, the OTA cascade (two iterations a sample, as `Ladder`), three VCAs, four envelopes ≈ the

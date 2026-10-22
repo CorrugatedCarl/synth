@@ -61,7 +61,7 @@ test('chip(): the CHIP size and a simpler level of detail than the tile; glyph()
     assert.ok(count(c, /<[a-z]+ /g) < count(t, /<[a-z]+ /g), m.id + ': fewer elements than the tile');
     assert.ok(balanced(c), m.id + ': well formed');
   }
-  assert.deepEqual([...A.GLYPHS].sort(), ['env', 'filter', 'fx', 'lfo', 'macro', 'noise', 'osc', 'out', 'sub', 'velo', 'voice', 'wheel']);
+  assert.deepEqual([...A.GLYPHS].sort(), ['env', 'filter', 'fx', 'lfo', 'macro', 'noise', 'osc', 'out', 'pads', 'sub', 'velo', 'voice', 'wheel']);
   for (const k of A.GLYPHS) {
     const g = A.glyph(k, { w: 40, h: 24 });
     assert.match(g, /^<svg [^>]*viewBox="0 0 40 24" width="40" height="24"/, k);
@@ -121,5 +121,25 @@ test('SIL describes every model; tileMeta() is models.js (Serum: "Serum (complet
   assert.ok(count(chip909, /fill="#f3ebcf"/g) >= 1 && count(chip909, /<[a-z]+ /g) < count(t909, /<[a-z]+ /g), 'the chip keeps the step keys, with fewer elements');
   assert.ok(!/roland/i.test(t909 + chip909), 'no maker name');
   assert.notEqual(t909, A.art('tr808'));
+  // (8, IMPL-8 §13.4) the SDS-V's tile: a dark rack box — five voice cards (a name bar, two columns of three light-grey knobs, a 2 × 2 square of cream
+  // memory keys with key 2 lit, two rows of small trimmers), two blank plates, the mixer's ten small knobs — and three hexagonal pads in front (no
+  // sequencer: no step keys); no text; its meta is "1981 · drum synth" (cv-tray)
+  assert.deepEqual([A.SIL.sdsv.body, A.SIL.sdsv.steps, A.SIL.sdsv.keys], ['box', undefined, undefined]);
+  const tsv = A.art('sdsv'), chipsv = A.chip('sdsv');
+  assert.match(tsv, /data-art="sdsv"/);
+  assert.equal(count(tsv, /r="1.35" fill="#c8cac6"/g), 30, 'the thirty voice knobs of the five cards');
+  assert.equal(count(tsv, /r="0.7" fill="#c8cac6"/g), 10, 'the mixer\'s ten knobs');
+  assert.equal(count(tsv, /fill="#efe6cf"/g), 20, 'the twenty cream memory keys (four a card)');
+  assert.equal(count(tsv, /r="0.4" fill="#e0281e"/g), 5, 'the lit LED of memory 2 on each card');
+  assert.equal(count(tsv, /fill="#141517"/g), 2, 'the two blank plates (HI-HAT, CYMBAL)');
+  assert.equal(count(tsv, /<polygon/g), 7, 'three hexagonal pads (fill + rim each) and the bass drum\'s lit centre');
+  assert.ok(count(chipsv, /fill="#efe6cf"/g) >= 1 && count(chipsv, /<polygon/g) >= 1 && count(chipsv, /<[a-z]+ /g) < count(tsv, /<[a-z]+ /g), 'the chip keeps a key and the pad, with fewer elements');
+  assert.ok(!/simmons|SDS-V/i.test(tsv + chipsv), 'no maker name, no model name in the drawing (the data-art id is plain)');
+  assert.notEqual(tsv, A.art('tr909'));
+  // (8, IMPL-8 §1.2) the Controllers view's Pads tile glyph: a 3 × 3 of rounded squares, one lit (filled), in currentColor
+  const gp = A.glyph('pads');
+  assert.equal(count(gp, /<rect /g), 9, 'nine pads');
+  assert.equal(count(gp, /fill="currentColor"/g), 1, 'one lit');
+  assert.deepEqual(A.tileMeta('sdsv'), { id: 'sdsv', name: 'SDS-V', year: 1981, maker: 'Simmons', label: 'SDS-V' });
   assert.deepEqual(A.tileMeta('nope'), { id: 'nope', name: 'nope', year: 0, maker: '', label: 'nope' });
 });

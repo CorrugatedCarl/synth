@@ -4,10 +4,11 @@
  * Note edit operations work in place on the array they are given and return it.
  * (SYNTH Canvas 2b: the modulator modules' LFO / ENV / chaos states are bounded by serum-core's own normalisers — the one
  * import of this module; song.js stays the base of everything else. 7a: a drum machine's memory by drum-core's normDrum, a
- * leaf module.)
+ * leaf module. Stage 8: project.pads by pads-core's normPads, also a leaf (it imports only drum-core).)
  */
 import { normLfoMod, normEnvMod, normChaosMod } from './serum-core.js?v=9';
 import { normDrum, mapTable, DEFAULT_MAP, PERS } from './drum-core.js?v=9'; // (7a: a drum machine's record, its channel 10)
+import { normPads } from './pads-core.js?v=9'; // (stage 8, schema 11: project.pads — a leaf, as drum-core: it imports only drum-core)
 
 export const PPQ = 960;
 export const TRACK_COLORS = ['#f2a33a', '#3b82c4', '#e2402f', '#3fae5a', '#b06ad9', '#2bb3a3', '#f5d22e', '#ff6a13', '#58b2ff', '#e86aa8', '#9bd16a', '#c9a227'];
@@ -542,7 +543,7 @@ export function normLay(lay) {
 // mirror, else the defaults). The in-memory accessors are cv-model.js adopt's (the page), never song.js's.
 // Stage 2a (schema 5, IMPL-2a §2.3): the track's mod cables `mods` (normMods) and the next row number `mid` (absent when
 // the track never had one: an old track's record and History snapshot stay byte-identical).
-// Stage 7a (IMPL-7a §6, schema 8): a drum machine (a model drum-core has a personality for: tr808; 7b, schema 9: tr606; 7c, schema 10: tr909) keeps
+// Stage 7a (IMPL-7a §6, schema 8): a drum machine (a model drum-core has a personality for: tr808; 7b, schema 9: tr606; 7c, schema 10: tr909; stage 8, schema 11: sdsv) keeps
 // its device's `drum` — the pattern memory, panel state, extras, note map and sample slots — as normDrum(d, model) bounds it
 // (exact lengths, every field in range, unknown ones dropped; idempotent); `drum` on any other model's device is dropped.
 export const isDrum = m => typeof m === 'string' && Object.prototype.hasOwnProperty.call(PERS, m);
@@ -716,6 +717,7 @@ export function deserialize(json) {
   if (!p.tracks.length) p.tracks.push(newTrack(p));
   p.selTrack = p.tracks.some(t => t.id === o.selTrack) ? o.selTrack : p.tracks[0].id;
   if (isObj(o.perf)) p.perf = normPerf(o.perf); // (stage 2a; absent: no key, an old project reads as before)
+  if (Array.isArray(o.pads)) p.pads = normPads(o.pads); // (stage 8, schema 11: the Pads modules, bounded by pads-core; absent: no key, a project without them reads as before)
   return p;
 }
 

@@ -50,6 +50,9 @@
 //   tr909     7 circuits + 3 ROM     d9p       1    0.0142  0.0030  0.0172   (IMPL-7c §2.7: as the 808, its row d9p — the
 //             gate's 0.0171–0.0173 calibrated (beside d8p 0.0199, d6p 0.0173 in the same runs); d9x 0.0209, d9m 0.0096,
 //             idle d9i 0.0002; its house pattern keeps nearly every circuit awake, yet ten voices cost the 606's five's)
+//   sdsv      5 voice cards          dvp       1    0.0101  0.0030  0.0131   (IMPL-8 §12.7: as the 808, its row dvp — roll
+//             notes, no sequencer; the gate's 0.0131 calibrated (V5's machine 0.0065 + the Track); dvx 0.0194, dvm 0.0092,
+//             idle dvi 0.0002)
 //
 // Serum (OS 2; ×0.68 at OS 1, ×1.59 at OS 4): base 0.0063 (default 1 / 4 / 8 voices = 0.0100 / 0.0209 / 0.0356) + per
 // voice 0.00245 + per oscillator on [first unison voice, each further one]: Wavetable [0.0012, 0.00042] · Multisample
@@ -88,7 +91,7 @@ export const COST = Object.freeze({
     modular: C('c3', 'transistor ladder', 1, 0.0055, 0.0063), arp2600: C('c3', '4072 ladder', 1, 0.0055, 0.0059),
     ms20: C('c3', 'Korg 35 Sallen-Key', 1, 0.0055, 0.0089), tb303: C('c3', 'diode ladder + sequencer', 1, 0.0055, 0.0137),
     tr808: C('d8p', 'drums', 1, 0.0175, 0.0030), tr606: C('d6p', 'drums', 1, 0.0143, 0.0030),
-    tr909: C('d9p', 'drums', 1, 0.0142, 0.0030),
+    tr909: C('d9p', 'drums', 1, 0.0142, 0.0030), sdsv: C('dvp', 'drums', 1, 0.0101, 0.0030),
     serum: Object.freeze({ row: 'e', family: 'Serum (terms in COST.serum)', poly: 32, base: 0.0063, voice: 0.00245 }),
   }),
   serum: Object.freeze({

@@ -183,3 +183,101 @@ test('(canvas 2b) the Serum filter\'s routing switches take no NEW cable (addMod
   assert.equal(t.mods.some(r => r.id === 'r9' && r.amt === -0.5), true);
   assert.equal(G.compileMods(t, p) !== undefined, true);
 });
+
+/* ------------------------------------------------------------------ IMPL-8 §1.4, §5, §10.3 (lane Q): the Pads modules' data and their rows */
+import * as PC from '../pads-core.js?v=9';
+const modOn = (p, id, slots, m = {}) => { const M = p.pads.find(x => x.id === id); for (const i of slots) M.pads[i] = PC.normPad(Object.assign({}, M.pads[i], { mod: m })); };
+const twoTracks = () => { const a = duo(), b = duo(); a.t.id = 'trk_1'; b.t.id = 'trk_2'; return { a, b, p: { tracks: [a.t, b.t], perf: { wheel: null } } }; };
+
+test('IMPL-8 addPads: the lowest free id pd1…pd8, the module normalised (pads-core newModule: "Pads n", 4 × 4 M; o\'s fields over it); the 9th refused with the tray\'s reason; one History step', () => {
+  const p = { tracks: [] }, H = new S.History();
+  H.record(p, 'Add Pads');
+  assert.deepEqual(MO.addPads(p), { ok: true, id: 'pd1', why: '' });
+  assert.deepEqual(p.pads, [PC.newModule('pd1')]);
+  assert.deepEqual(H.undo(p).pads, undefined, 'the step undoes it (the project snapshot holds p.pads)');
+  const o = { rows: 1, cols: 5, name: 'Kit', pads: [{ t: [{ k: 'drum', tr: 'trk_1', s: 'bd' }] }], junk: 1 };
+  assert.deepEqual(MO.addPads(p, o), { ok: true, id: 'pd2', why: '' });
+  assert.deepEqual([p.pads[1].name, p.pads[1].rows, p.pads[1].cols, p.pads[1].pads[0].t, 'junk' in p.pads[1], p.pads[1].id], ['Kit', 1, 5, [{ k: 'drum', tr: 'trk_1', s: 'bd' }], false, 'pd2'], 'o\'s id never wins');
+  assert.equal(MO.addPads(p, { id: 'pd7' }).id, 'pd3');
+  for (let k = 4; k <= 8; k++) assert.equal(MO.addPads(p).id, 'pd' + k);
+  assert.deepEqual([MO.addPads(p), p.pads.length], [{ ok: false, id: null, why: '8 Pads modules in this project' }, 8]);
+  assert.deepEqual(PC.normPads(jclone(p.pads)), p.pads, 'normalised');
+  MO.removePads(p, 'pd3');
+  assert.deepEqual([MO.addPads(p).id, p.pads.map(M => M.id)], ['pd3', ['pd1', 'pd2', 'pd4', 'pd5', 'pd6', 'pd7', 'pd8', 'pd3']], 'a deleted id comes round again (its rows went with it)');
+  assert.deepEqual([MO.addPads(null).ok, MO.addPads({ pads: 'x' }).id], [false, 'pd1'], '(a non-list: a fresh list)');
+});
+
+test('IMPL-8 srcOk / addMod from a mod pad to a classic, a Serum and an FX knob (the project required: the module there, the slot\'s mod on — a hidden slot too); refusals leave the track', () => {
+  const { t, i2, pid } = duo(), p = { tracks: [t], perf: { wheel: { v: 1 } } };
+  MO.addPads(p); modOn(p, 'pd1', [3, 63]);
+  p.pads[0].pads[5] = PC.normPad({ t: [{ k: 'note', tr: t.id, n: 60 }] });
+  t.dev.i1.vals.s.p['f.cutoff'] = 0.8;
+  const add = (src, dst, o) => MO.addMod(t, src, dst, Object.assign({ project: p }, o));
+  assert.deepEqual([MO.srcOk(t, 'pd1.p3', p), MO.srcOk(t, 'pd1.p63', p), MO.srcOk(t, 'pd1.p5', p), MO.srcOk(t, 'pd2.p3', p), MO.srcOk(t, 'pd1.p3'), MO.srcOk(t, 'pd1.p3', {})], [true, true, false, false, false, false]);
+  assert.deepEqual([MO.srcOk(t, 'wheel'), MO.srcOk(t, 'wheel', p), MO.srcOk(t, 'wheel', {}), MO.srcOk(t, 'l1.out', p)], [true, true, false, false], 'the others as before');
+  const was = JSON.stringify(t);
+  for (const [src, dst, code, o] of [['pd1.p5', i2 + ':cf', 'src'], ['pd2.p3', i2 + ':cf', 'src'], ['pd1.p64', i2 + ':cf', 'src'], ['pd1.p03', i2 + ':cf', 'src'], ['pd1.p3', i2 + ':pwm', 'stage'], ['pd1.p3', 'pd1:x', 'end'], ['pd1.p3', i2 + ':cf', 'src', { project: undefined }]]) {
+    const r = add(src, dst, o); assert.deepEqual([r.ok, r.code, r.row], [false, code, null], src + ' → ' + dst);
+  }
+  assert.equal(JSON.stringify(t), was, 'untouched');
+  const R = [add('pd1.p3', i2 + ':cf'), add('pd1.p3', 'i1:f.cutoff'), add('pd1.p63', pid + ':fx.rev.mix'), add('wheel', 'i1:f.res')];
+  assert.deepEqual(R.map(r => r.ok && [r.row.id, r.row.src, r.row.dst, r.row.amt, r.row.bi]), [['r1', 'pd1.p3', i2 + ':cf', 0.25, 0], ['r2', 'pd1.p3', 'i1:f.cutoff', R[1].row.amt, 0], ['r3', 'pd1.p63', pid + ':fx.rev.mix', 0.25, 0], ['r4', 'wheel', 'i1:f.res', R[3].row.amt, 0]]);
+  assert.equal(Math.round(R[1].row.amt * 1e6) / 1e6, 0.2, 'a Serum knob: the Serum\'s drop rules (the wheel\'s stand-in source; 1 − base)');
+  for (const r of t.mods) assert.deepEqual(Object.keys(r), ROW_KEYS, r.id);
+  const pay = G.compileMods(t, p);
+  assert.deepEqual([pay.vals.map(v => v.id), pay.ext.map(e => e.id), pay.left], [['pd1.p3', 'pd1.p63'], ['pd1.p3'], []], 'compiled: value slots, the Serum\'s ext');
+  assert.deepEqual(MO.padTracks(p, 'pd1.p3'), [t]);
+  assert.equal(MO.setMod(t, 'r1', { amt: -0.5, aux: 'lfo1' }).ok, true);
+  assert.deepEqual([t.mods[0].amt, t.mods[0].aux], [-0.5, ''], 'setMod by proxy; no aux on a classic row');
+});
+
+test('IMPL-8 addMod refuses a pad that would be the track\'s 17th value source (code slots, "This track’s value sources are full (16/16)"); another row from a pad already in a slot is fine; CC / macro rows as before', () => {
+  const { t, i2 } = duo(), p = { tracks: [t] };
+  MO.addPads(p); modOn(p, 'pd1', [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+  const add = (src, dst) => MO.addMod(t, src, dst, { project: p });
+  for (let k = 1; k <= 8; k++) { MO.addModDev(t, 'cc'); assert.ok(add('c' + k + '.out', i2 + ':cf').ok); }
+  for (let i = 0; i < 8; i++) assert.ok(add('pd1.p' + i, i2 + ':rs').ok, 'pd1.p' + i);
+  const was = JSON.stringify(t), r = add('pd1.p8', i2 + ':cf');
+  assert.deepEqual([r.ok, r.code, r.why, r.row, JSON.stringify(t) === was], [false, 'slots', 'This track’s value sources are full (16/16)', null, true]);
+  assert.equal(add('pd1.p0', 'i1:f.cutoff').ok, true, 'pd1.p0 holds a slot already (its Serum row: an ext slot)');
+  assert.deepEqual([G.compileMods(t, p).n.vals, G.compileMods(t, p).left], [16, []]);
+  MO.addModDev(t, 'cc');
+  assert.equal(add('c9.out', i2 + ':cf').ok, true, 'a CC row: no addMod budget (2b: the host\'s modLeftWhy tells), as before');
+});
+
+test('IMPL-8 removePads (§1.4 Delete): the module, every pd<n>.* row and lay entry on every track (byTrack: the confirm\'s counts), other rows kept — one History step; padRows lists, dropPadRows by module or source (§7.2: a pad\'s Modulation off)', () => {
+  const { a, b, p } = twoTracks(), H = new S.History();
+  MO.addPads(p); MO.addPads(p); modOn(p, 'pd1', [0, 1]); modOn(p, 'pd2', [0]);
+  MO.addModDev(a.t, 'lfo');
+  const add = (t, src, dst) => assert.ok(MO.addMod(t, src, dst, { project: p }).ok, src);
+  add(a.t, 'pd1.p0', a.i2 + ':cf'); add(a.t, 'pd2.p0', a.i2 + ':rs'); add(a.t, 'l1.out', a.i2 + ':cf'); add(b.t, 'pd1.p1', 'i1:f.cutoff'); add(b.t, 'pd1.p0', 'i1:f.res');
+  a.t.lay = { pd1: { x: 0, y: 0 }, pd2: { x: 0, y: 400 }, i1: { x: 400, y: 0 } }; b.t.lay = { pd1: { x: -400, y: 0 } };
+  assert.deepEqual(MO.padRows(p, 'pd1'), { ok: true, byTrack: [{ trackId: 'trk_1', rows: ['r1'] }, { trackId: 'trk_2', rows: ['r1', 'r2'] }] });
+  assert.deepEqual([MO.padRows(p, 'pd1.p1').byTrack, MO.padRows(p, 'pd3').byTrack, MO.padRows(p, 'x').ok], [[{ trackId: 'trk_2', rows: ['r1'] }], [], false]);
+  assert.deepEqual(MO.padTracks(p, 'pd1.p0'), [a.t, b.t]);
+  const snap = JSON.stringify(p);
+  H.record(p, 'Delete Pads 1');
+  assert.deepEqual(MO.removePads(p, 'pd1'), { ok: true, byTrack: [{ trackId: 'trk_1', rows: ['r1'] }, { trackId: 'trk_2', rows: ['r1', 'r2'] }] });
+  assert.deepEqual([p.pads.map(M => M.id), a.t.mods.map(r => r.id), b.t.mods, Object.keys(a.t.lay), Object.keys(b.t.lay)], [['pd2'], ['r2', 'r3'], [], ['pd2', 'i1'], []]);
+  assert.deepEqual([G.compileMods(a.t, p).vals.map(v => v.id), G.compileMods(b.t, p)], [['pd2.p0'], null], 'compiled without them (b: nothing left — the host posts {off})');
+  assert.deepEqual(jclone(H.undo(p)), JSON.parse(snap), 'one step restores the module, its rows and lays on every track');
+  assert.deepEqual([MO.removePads(p, 'pd1'), MO.removePads(p, 'x'), MO.removePads(null, 'pd1')], [{ ok: false, byTrack: [] }, { ok: false, byTrack: [] }, { ok: false, byTrack: [] }]);
+  assert.deepEqual(MO.dropPadRows(p, 'pd2.p0'), { ok: true, byTrack: [{ trackId: 'trk_1', rows: ['r2'] }] });
+  assert.deepEqual([a.t.mods.map(r => r.id), p.pads.map(M => M.id), MO.dropPadRows(p, 'pd2.p0').ok], [['r3'], ['pd2'], false], 'the module stays (a pad\'s Modulation switched off: its rows only)');
+});
+
+test('IMPL-8 prunePads (H at load after normPads, review #28; after any p.pads edit): rows whose module is missing or whose slot\'s mod is off go, lay entries of missing modules go; idempotent', () => {
+  const { a, b, p } = twoTracks();
+  MO.addPads(p); modOn(p, 'pd1', [0, 1]);
+  const R0 = MO.addMod(a.t, 'wheel', 'i1:f.cutoff').row, row = (id, src, dst) => Object.assign({}, R0, { id, src, dst }); // (rows as a file has them)
+  p.perf = { wheel: { v: 1 } };
+  a.t.mods = [row('r1', 'pd1.p0', a.i2 + ':cf'), row('r2', 'pd1.p2', a.i2 + ':cf'), row('r3', 'pd5.p0', 'i1:f.res'), row('r4', 'wheel', 'i1:f.res'), row('r5', 'pd1.p1', 'i1:f.cutoff')];
+  b.t.mods = [row('r1', 'pd2.p9', 'i1:f.cutoff')];
+  a.t.lay = { pd1: { x: 0, y: 0 }, pd5: { x: 0, y: 0 }, i1: { x: 1, y: 1 } }; b.t.lay = { pd2: { x: 0, y: 0 } };
+  assert.deepEqual(MO.prunePads(p), { ok: true, byTrack: [{ trackId: 'trk_1', rows: ['r2', 'r3'] }, { trackId: 'trk_2', rows: ['r1'] }] });
+  assert.deepEqual([a.t.mods.map(r => r.id), b.t.mods, Object.keys(a.t.lay), Object.keys(b.t.lay)], [['r1', 'r4', 'r5'], [], ['pd1', 'i1'], []]);
+  assert.deepEqual(MO.prunePads(p), { ok: false, byTrack: [] }, 'idempotent');
+  delete p.pads;
+  assert.deepEqual([MO.prunePads(p).byTrack, a.t.mods.map(r => r.id), Object.keys(a.t.lay)], [[{ trackId: 'trk_1', rows: ['r1', 'r5'] }], ['r4'], ['i1']], 'no p.pads: every pad row and lay entry');
+  assert.deepEqual([MO.prunePads(null), MO.prunePads({})], [{ ok: false, byTrack: [] }, { ok: false, byTrack: [] }]);
+});

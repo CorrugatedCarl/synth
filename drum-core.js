@@ -72,6 +72,15 @@
  *   path). leds → { step[16] 0–5 (5 dim), scl[4], trk[4], pat[3], tkey, back, fwd, avail, cyc, enter, disp (3 characters) }.
  *   Its plan adds ac / fl / mSh / mFl / once / guide (DrSeq's §3.5); rollPlan(D, bpm) / rollOpts(D, dev) feed toNotes for every
  *   machine ("→ Piano roll"); vel9 / vTrig9 the velocity law (the lead's P-1: 100 / 110 / 119 / 127 fixed per state).
+ *
+ * IMPL-8 §11 (lane S5): a fourth personality, the Simmons SDS-V ('sdsv' only for the exact string; the 808's, the 606's and the
+ * 909's records, sessions, payloads, plans, pk and notes byte-identical — their three pins). A drum synthesizer with no
+ * sequencer: five channels on the 808's sound ids 0–4 (ids 5–15 inert), no pattern, no plan. Its record (the end of this file):
+ *   { v: 1, m: 'sdsv', keys: [], ui: {}, x: { sync: false, swing, mute, solo, rec: false, part }, map, smp,
+ *     trim: [5 channels b s 1 2 3 × [memory 3, memory 4] × [6 fields n t b d m c] 0…1] }
+ * Its payload carries EMPTY_PLAN (n 0: valid, silent — engine.js routes a payload only when it has a plan), the idle clock fields
+ * and `trim` (m and trim in pk); its session is { m, run: false, play, bpm }; press: map · mapReset · smp · trim ·
+ * trimFromKnobs · mute / solo · the transport / bpm / panic notifications — a `send` when the record changed, nothing else.
  */
 
 /* ================================================================ constants (PERS.tr808; = dr-seq.js where marked) */
@@ -158,6 +167,33 @@ const HAS909 = new Set(Object.keys(MAP909));
 const KEY_LANE9 = Object.freeze([1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 7, 11, 11, 9, 8]);
 const keyAcc9 = n => (n <= 10 ? n & 1 : n === 13 ? 1 : 0), keyMate9 = n => (n <= 10 ? (n & 1 ? n + 1 : n - 1) : n === 13 ? 14 : n === 14 ? 13 : 0);
 
+/* ================================================================ constants (PERS.sdsv; IMPL-8 §11.2, §11.3, §11.5; lane S5) */
+
+// the SDS-V on the 808's sound ids (§11.2): bass drum 0, snare 1, tom 3 / 2 / 1 (low → high) on 2 / 3 / 4 — five channels, no
+// sequencer, no pattern. Every sound list stays 16 long by sound id: ids 5–15 keep the 808's keys and names, inert (the map holds
+// [] for them, never a slot, a row or a sid — 7c review #12). The lane bits (mute / solo) are the 808's: bd 1 … ht 5.
+export const NAMESV = Object.freeze(['Bass drum', 'Snare drum', 'Tom 3 (low)', 'Tom 2 (mid)', 'Tom 1 (high)', ...SOUND_NAMES.slice(5)]);
+export const SIDSV = Object.freeze([0, 1, 2, 3, 4]);
+export const MASKV = 0x3E;
+export const MAPV = deepFreeze({ bd: [36, 35], sd: [38, 40], lt: [41, 43], mt: [45, 47], ht: [48, 50] }); // GM = DrSeq's DEF_MAP for these ids
+const HASV = new Set(Object.keys(MAPV));
+// the memories 3 and 4 of each channel (§11.5, the front trimmers): channel order b s 1 2 3 (the knob ids' middle letter), field
+// order n t b d m c (NOISE, TONE, BEND, DECAY, NOISE / TONE, CLICK / DRUM: the card's six, 0…1 = the knob's 0…10), index [ch][mem − 3][f]
+export const TRIM_CH = Object.freeze(['b', 's', '1', '2', '3']);
+export const TRIM_F = Object.freeze(['n', 't', 'b', 'd', 'm', 'c']);
+// our own two settings per channel [C] — the machine's (dr-808.js Dr808.proto.sdsv.TRIMV, lane V5's fit), copied at the
+// phase-0 merge; a test keeps them equal: index [ch][mem − 3][f] = TRIMV[ch · 12 + (mem − 3) · 6 + f]
+export const TRIM_DEF = deepFreeze([
+  [[0.20, 0.25, 0.70, 0.65, 0.10, 0.15], [0.50, 0.50, 0.30, 0.25, 0.35, 0.50]],
+  [[0.45, 0.35, 0.40, 0.45, 0.40, 0.20], [0.80, 0.60, 0.15, 0.25, 0.75, 0.50]],
+  [[0.20, 0.35, 0.85, 0.70, 0.05, 0.15], [0.45, 0.55, 0.30, 0.30, 0.30, 0.40]],
+  [[0.20, 0.35, 0.85, 0.70, 0.05, 0.15], [0.45, 0.55, 0.30, 0.30, 0.30, 0.40]],
+  [[0.20, 0.35, 0.85, 0.72, 0.05, 0.15], [0.45, 0.55, 0.30, 0.32, 0.30, 0.40]],
+]);
+// the payload's plan: n = 0 — valid for DrSeq (dr-seq.js `valid`), silent, and what makes engine.js route the payload (a payload
+// is a drum one only when it carries a plan); plain arrays, nothing to compile or allocate
+export const EMPTY_PLAN = deepFreeze({ key: 'v0', n: 0, loopFrom: 0, mKey: [], mVar: [], mPre: [], mL1: [], mOff: [0], mT: [0], st: [] });
+
 // each machine's personality in one table (§1.1: a 606 / 909 is a second table, not a fork)
 export const PERS = deepFreeze({
   tr808: {
@@ -184,10 +220,15 @@ export const PERS = deepFreeze({
     scales: ['16ths', '32nds', '8th triplets', '16th triplets'], keyLane: KEY_LANE9, tempo: { lo: TEMPO9_LO, hi: TEMPO9_HI },
     cleared: CLEARED9, vel: VEL9, acc: ACC9,
   },
+  // (IMPL-8) no sequencer: its sounds / names by sound id (16 long), its five sids, the lane bits, the GM map; ch / fields / trim:
+  // the memories' channel and field ids and their default settings (the pads' order and shapes are cv-drum's UI.sdsv)
+  sdsv: {
+    id: 'sdsv', sounds: SOUNDS, names: NAMESV, sids: SIDSV, mask: MASKV, map: MAPV, ch: TRIM_CH, fields: TRIM_F, trim: TRIM_DEF,
+  },
 });
-const MAPS = { tr808: [SOUNDS, DEFAULT_MAP, null], tr606: [SOUNDS, MAP606, HAS606], tr909: [SOUNDS909, MAP909, HAS909] }; // sounds, default map, the sounds it has
-// a machine id (7c: three-way — 'tr606' / 'tr909' only for the exact string, anything else the 808)
-const mach = m => (m === 'tr606' ? 'tr606' : m === 'tr909' ? 'tr909' : 'tr808');
+const MAPS = { tr808: [SOUNDS, DEFAULT_MAP, null], tr606: [SOUNDS, MAP606, HAS606], tr909: [SOUNDS909, MAP909, HAS909], sdsv: [SOUNDS, MAPV, HASV] }; // sounds, default map, the sounds it has
+// a machine id (7c: three-way; IMPL-8: four-way — 'tr606' / 'tr909' / 'sdsv' only for the exact string, anything else the 808)
+const mach = m => (m === 'tr606' ? 'tr606' : m === 'tr909' ? 'tr909' : m === 'sdsv' ? 'sdsv' : 'tr808');
 
 /* ================================================================ small helpers */
 
@@ -290,13 +331,13 @@ export function vTrig9(v127, sound, u) {
   return Math.round(v <= 110 ? N0 + (c2 - N0) * (v - 100) / 10 : v <= 119 ? c2 + (c3 - c2) * (v - 110) / 9 : c3 + (c4 - c3) * (v - 119) / 8) + 0;
 }
 /** A machine's own (free) tempo in BPM: the 808's TEMPO + FINE, the 606's and the 909's TEMPO. */
-export function freeBpm(D) { return is606(D) || is909(D) ? D.ui.tempo : tempoBpm(D.ui.tempo, D.ui.fine); }
+export function freeBpm(D) { return isV(D) ? 120 : is606(D) || is909(D) ? D.ui.tempo : tempoBpm(D.ui.tempo, D.ui.fine); }
 /** (7b review 1 #4, the lead's decision) The record with its own TEMPO (the 808: TEMPO + FINE) showing `bpm` (40–300) — "→
  *  Piano roll" leaves the machine SYNC off at the project's tempo, so its stopped clock (the 606's open hat's cut after ■)
  *  reads what the synced pattern's read (D5 at a stop too); the same record when it already shows it (or bpm is no number).
  *  (7c: the 909's whole BPM, 37–290.) */
 export function withTempo(D, bpm) {
-  if (!fin(bpm)) return D;
+  if (!fin(bpm) || isV(D)) return D;                                    // (the SDS-V has no tempo)
   if (is606(D)) { const b = bpm606(bpm, D.ui.tempo); return b === D.ui.tempo ? D : { ...D, ui: { ...D.ui, tempo: b } }; }
   if (is909(D)) { const b = bpm909(bpm, D.ui.tempo); return b === D.ui.tempo ? D : { ...D, ui: { ...D.ui, tempo: b } }; }
   const k = bpmTempo(bpm);
@@ -355,6 +396,7 @@ export function normDrum(d, model) {
   const M = machineOf(d, model);
   if (M === 'tr606') return norm606(d);
   if (M === 'tr909') return norm909(d);
+  if (M === 'sdsv') return normV(d);
   try {
     d = isObj(d) ? d : {};
     const keys = [], st = [], rt = new Array(RT_LEN), rtEnd = [];
@@ -381,6 +423,7 @@ function machineOf(d, model) {
 }
 function is606(D) { try { return isObj(D) && D.m === 'tr606'; } catch (e) { return false; } }
 function is909(D) { try { return isObj(D) && D.m === 'tr909'; } catch (e) { return false; } }
+function isV(D) { try { return isObj(D) && D.m === 'sdsv'; } catch (e) { return false; } }
 
 // the 606's tracks (7b §3.1): track t's region starts at t6Start (tracks 1–7: 64 bars, 8: 256); its reach ≤ 256 bars, the
 // store's end (703) bounding it; t6Of: the region a bar lies in
@@ -480,6 +523,7 @@ let memo = null;
 export function compilePlan(mem, ui, x, S) {
   if (is606(mem)) return plan606(mem, ui, x, S);                       // (7b: before the 808's guards, review #20)
   if (is909(mem)) return plan909(mem, ui, x, S);                       // (7c: likewise)
+  if (isV(mem)) return EMPTY_PLAN;                                     // (IMPL-8: no sequencer — the payload's empty plan)
   if (!isObj(mem) || !Array.isArray(mem.keys) || mem.keys.length !== N_KEYS || !Array.isArray(mem.st) || !Array.isArray(mem.rt)) mem = normDrum(mem);
   ui = ui ? normUi(ui) : mem.ui ? normUi(mem.ui) : normUi(null);
   x = x ? normX(x) : mem.x ? normX(mem.x) : normX(null);
@@ -645,6 +689,7 @@ function slots(smp, sounds = SOUNDS) {
 export function payload(drum, state, at = 'now') {
   if (is606(drum)) return payload606(drum, state, at);
   if (is909(drum)) return payload909(drum, state, at);
+  if (isV(drum)) return payloadV(drum, at);
   const S = state || initState(), x = drum.x, ui = drum.ui;
   const plan = compilePlan(drum, ui, x), map = mapTable(drum.map), prim = primaries(drum.map), smp = slots(drum.smp);
   const s = { plan, sync: x.sync, run: !x.sync && !!S.run, bpm: tempoBpm(ui.tempo, ui.fine), swing: x.swing, at, tap: S.tap | 0,
@@ -660,12 +705,14 @@ function payload606(drum, state, at) {
   s.pk = pkOf(s);
   return s;
 }
-// the content key: the plan's + FNV over the rest (7b review #3: m and rst when present — STEP RESET changes rst alone)
+// the content key: the plan's + FNV over the rest (7b review #3: m and rst when present — STEP RESET changes rst alone; IMPL-8:
+// the SDS-V's has m and trim, no rst)
 function pkOf(s) {
   let h = fnvNum(0x811c9dc5 | 0, s.sync ? 1 : 0); h = fnvNum(h, s.run ? 1 : 0); h = fnvNum(h, Math.round(s.bpm * 100));
   h = fnvNum(h, s.swing); h = fnvNum(h, s.tap); h = fnvNum(h, s.mute); h = fnvArr(h, s.map); h = fnvArr(h, s.prim);
   if (s.smp) for (const e of s.smp) { if (!e) { h = fnvNum(h, 0); continue; } for (let i = 0; i < e.id.length; i++) h = fnvNum(h, e.id.charCodeAt(i)); h = fnvNum(h, e.on ? 2 : 1); }
-  if (s.m !== undefined) { for (let i = 0; i < s.m.length; i++) h = fnvNum(h, s.m.charCodeAt(i)); h = fnvNum(h, s.rst); }
+  if (s.m !== undefined) { for (let i = 0; i < s.m.length; i++) h = fnvNum(h, s.m.charCodeAt(i)); if (s.rst !== undefined) h = fnvNum(h, s.rst); }
+  if (s.trim) for (const c of s.trim) for (const m of c) h = fnvArr(h, Float64Array.from(m)); // (IMPL-8: the SDS-V's memories 3 / 4, exact bits)
   return s.plan.key + hex(h);
 }
 
@@ -681,6 +728,7 @@ export function initState(model) {
   if (model === 'tr606') return { run: false, play: false, pos: null, undo: null, bpm: 120, bar: -1, loc: null, fn: false, clr: false,
     held: [], wipe: false, twSel: null, dcArm: false, sgArm: false, rst: 0, rstF: -1, ds: 0, show: null, gfl: 0 };
   if (model === 'tr909') return init909();
+  if (model === 'sdsv') return initV();
   return { run: false, play: false, tap: 0, undo: null, pos: null, cmp: null, bpm: 120 };
 }
 export const running = (S, D) => (D.x.sync ? !!S.play : !!S.run);
@@ -696,6 +744,7 @@ function editVar(S, D) {
 export function gridPat(S, D) {
   if (is606(D)) return gridPat606(S, D);
   if (is909(D)) return gridPat909(S, D);
+  if (isV(D)) return 0;                                                // (no pattern)
   const ui = D.ui, P = S.pos;
   if (ui.mode <= M_W2) return editKey(ui) * 2 + editVar(S, D);
   if (running(S, D) && P && P.k >= 0) return P.k * 2 + (P.v & 1);
@@ -740,8 +789,9 @@ function nearest(S, D, f) {
 export function press(state, drum, input) {
   if (is606(drum)) return press606(state, drum, input);
   if (is909(drum)) return press909(state, drum, input);
+  if (isV(drum)) return pressV(state, drum, input);
   let S = state || initState(), D = drum;
-  if (Array.isArray(S.held) || S.m === 'tr909') S = { ...initState(), run: !!S.run, play: !!S.play, pos: isObj(S.pos) ? S.pos : null, bpm: fin(S.bpm) ? S.bpm : 120 }; // (7b / 7c: a 606 or 909 session under an 808 record — its transport, position and tempo kept)
+  if (Array.isArray(S.held) || S.m === 'tr909' || S.m === 'sdsv') S = { ...initState(), run: !!S.run, play: !!S.play, pos: isObj(S.pos) ? S.pos : null, bpm: fin(S.bpm) ? S.bpm : 120 }; // (7b / 7c: a 606 or 909 session under an 808 record — its transport, position and tempo kept)
   const cmds = [], i = isObj(input) ? input : {}, ui = D.ui, x = D.x, run = running(S, D), mode = ui.mode;
   const ek = editKey(ui), aOf = () => (run ? 'bar' : 'now');
   const done = () => ({ state: S, mem: D, cmds });
@@ -944,19 +994,21 @@ export function press(state, drum, input) {
 export function stepLen(D, P) {
   if (is606(D)) return stepLen606(D, P);
   if (is909(D)) return stepLen909(D, P);
+  if (isV(D)) return STEP_T[3];                                        // (no steps: a 16th, never read)
   const K = P && P.k >= 0 ? D.keys[P.k] : CLEARED, T = STEP_T[K.pre], w = SWUNG[K.pre] ? swingTicks(D.x.swing, T) : 0, s = P ? P.s | 0 : 0;
   if (s >= K.l1 + K.l2 - 1) return T - (s & 1 ? w : 0);                // (the measure's last step: the next is step 1 on the beat)
   return s & 1 ? T - w : T + w;
 }
 /** Whether DEMO's targets (basic key 1 A / B, fill 1 A; 7b: the 606's patterns I-1 and I-2) are empty (else the host
  *  confirms before loading). */
-export function demoFree(D) { return (is606(D) || is909(D) ? [0, 1] : [0, 1, N_BASIC * 2]).every(p => D.st[p].every(m => !m)); }
+export function demoFree(D) { return isV(D) || (is606(D) || is909(D) ? [0, 1] : [0, 1, N_BASIC * 2]).every(p => D.st[p].every(m => !m)); }
 
 /** The LEDs (§3.3): step[16] 0 off · 1 on · 2 flashing · 3 the playhead over an unset step (lit) · 4 over a set one (dark);
  *  part [1st, 2nd] and vari [A, B] 0 / 1. (7b: a 606's { step, run, grp: [I, II] }, the same codes.) */
 export function leds(S, D) {
   if (is606(D)) return leds606(S, D);
   if (is909(D)) return leds909(S, D);
+  if (isV(D)) return { step: new Array(16).fill(0), run: false };      // (no steps, nothing runs)
   const ui = D.ui, run = running(S, D), P = S.pos, step = new Array(16).fill(0), mode = ui.mode, ek = editKey(ui);
   let part = [0, 0], vari = ui.bvar === 2 ? [0, 1] : [1, 0];
   if (run && P) { part = [P.p ? 0 : 1, P.p ? 1 : 0]; vari = [P.v ? 0 : 1, P.v ? 1 : 0]; }
@@ -1587,6 +1639,7 @@ export function rollPlan(D, bpm, S) {
  *  model's primaries }; the 909's { prim } — its plan carries its shuffle, flams and accents, and P-1's fixed velocities read no
  *  TOTAL ACCENT. */
 export function rollOpts(D, dev) {
+  if (isV(D)) return { prim: primaries(D.map, 'sdsv') };               // (IMPL-8: no plan to turn into notes — the primaries only)
   if (!is909(D)) return { swing: D.x.swing, sw: isObj(dev) ? dev.vals : undefined, prim: primaries(D.map, isObj(dev) && dev.model != null ? dev.model : D.m) };
   return { prim: primaries(D.map, 'tr909') };
 }
@@ -2133,3 +2186,120 @@ export const DEMO909 = Object.freeze({
     rd: 'x.x.x.x.x.x.x.x.', ht: '.............X..', mt: '..............x.', lt: '...............x' }),
   key: Object.freeze({ sc: 1, l1: 16, sh: 3, fl: 11, ch: 0 }),
 });
+
+/* ================================================================ the SDS-V (IMPL-8 §11.2–§11.5; lane S5) */
+
+// a drum synthesizer with no sequencer, played from pads: its record has no patterns, so no plan, no session beyond the host's
+// transport and no `ui` — keys [] (an array: cv-drum's mem() and main.js's drumOf read it as a record), ui {}, x the shared shape
+// with sync / rec fixed false, map / smp the machine's five sounds, trim the memories 3 and 4 (TRIM_DEF's shape, 0…1)
+const unit = (x, d) => (fin(x) ? clamp(x, 0, 1) : d);
+function normTrim(t) {
+  const out = [];
+  for (let c = 0; c < 5; c++) {
+    const a = at(t, c), m = [];
+    for (let k = 0; k < 2; k++) {
+      const b = at(a, k), r = [];
+      for (let f = 0; f < 6; f++) r.push(unit(at(b, f), TRIM_DEF[c][k][f]));
+      m.push(r);
+    }
+    out.push(m);
+  }
+  return out;
+}
+function normXV(x) {
+  x = isObj(x) ? x : {};
+  return { sync: false, swing: intIn(x.swing, SWING_LO, SWING_LO, SWING_HI), mute: maskIn(x.mute) & MASKV, solo: maskIn(x.solo) & MASKV, rec: false,
+    part: intIn(x.part, 0, 0, 1) };
+}
+function normV(d) {
+  try {
+    d = isObj(d) ? d : {};
+    return { v: 1, m: 'sdsv', keys: [], ui: {}, x: normXV(d.x), map: normMap(d.map, 'sdsv'), smp: normSmp(d.smp, 'sdsv'), trim: normTrim(d.trim) };
+  } catch (e) {
+    return normV(undefined);                                           // (a hostile getter: the defaults)
+  }
+}
+// its session (never saved): the host's transport and tempo only — nothing runs, nothing is synced
+function initV() { return { m: 'sdsv', run: false, play: false, bpm: 120 }; }
+// an SDS-V session (another machine's keeps only its transport and tempo)
+function sessV(S) {
+  if (isObj(S) && S.m === 'sdsv') return S;
+  const o = isObj(S) ? S : {};
+  return { ...initV(), play: !!o.play, bpm: fin(o.bpm) ? o.bpm : 120 };
+}
+/** The SDS-V's payload (§11.3): the machine's tables and memories with an EMPTY_PLAN (what makes the engine route it); the clock
+ *  fields are the idle ones — it neither runs nor syncs. mute: the five channels' bits (the 808's lane bits, bd 1 … ht 5). */
+function payloadV(drum, at) {
+  const x = normXV(drum.x);
+  const s = { m: 'sdsv', plan: EMPTY_PLAN, sync: false, run: false, bpm: 120, swing: SWING_LO, at, tap: 0, map: mapTable(drum.map, 'sdsv'),
+    prim: primaries(drum.map, 'sdsv'), mute: soundMute(x) & 0x1F, smp: slots(normSmp(drum.smp, 'sdsv')), trim: normTrim(drum.trim) };
+  s.pk = pkOf(s);
+  return s;
+}
+const sameV = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const memV = m => (m === 3 ? 0 : m === 4 ? 1 : -1);                    // memory 3 / 4 → its row
+// a record with `trim` replaced by t (the same record when equal)
+const withTrim = (D, t) => (sameV(D.trim, t) ? D : { ...D, trim: t });
+function setField(D, c, k, f, v) { // one trimmer: channel c (b s 1 2 3), memory row k, field f (n t b d m c)
+  if (D.trim[c][k][f] === v) return D;
+  const t = D.trim.slice(); t[c] = t[c].slice(); t[c][k] = t[c][k].slice(); t[c][k][f] = v;
+  return { ...D, trim: t };
+}
+/**
+ * The SDS-V's press (§11.3): (session, dev.drum, input) → { state, mem, cmds }; cmds is [{ c: 'send', at: 'now' }] when the record
+ * changed (the host dedupes by `pk`), else []. Inputs (`k`): map sound notes · mapReset · smp sound slot (as the 808's, its five
+ * sounds) · trim { ch 0–4 (b s 1 2 3), mem 3 | 4, f 0–5 (n t b d m c), v 0…1 } (one trimmer — TRIM…, a record write, no History
+ * step) · trimFromKnobs { ch, mem, vals } ("Store knobs here": the channel's six knob positions, an array in field order or an
+ * object by the field letters; a value that is no number keeps the trimmer's) · mute / solo { lane 1–5 } (the 808's lane bits;
+ * no UI yet) · host notifications transport { play } / bpm { v } / panic (the session's transport only; heard, release and every
+ * sequencer input — START, SYNC, DEMO, the 808's keys — do nothing: no pattern exists). "Copy to knobs" is the host's knob write
+ * from `trim`, not a press.
+ */
+function pressV(state, drum, input) {
+  let S = sessV(state), D = drum;
+  const i = isObj(input) ? input : {};
+  switch (i.k) {
+    case 'map': { // MAP…: one of its five sounds' notes (primary first); the notes leave any other sound
+      const s = SOUNDS.indexOf(i.sound);
+      if (s < 0 || !HASV.has(SOUNDS[s]) || !Array.isArray(i.notes)) break;
+      const want = normMap({ ...Object.fromEntries(SOUNDS.map(q => [q, []])), [SOUNDS[s]]: i.notes }, 'sdsv')[SOUNDS[s]], m = {};
+      for (const q of SOUNDS) m[q] = q === SOUNDS[s] ? want : (D.map[q] || []).filter(k => !want.includes(k));
+      const map = normMap(m, 'sdsv');
+      if (!sameV(map, D.map)) D = { ...D, map };
+      break;
+    }
+    case 'mapReset': { const map = normMap(MAPV, 'sdsv'); if (!sameV(map, D.map)) D = { ...D, map }; break; }
+    case 'smp': { // SOUNDS…: one of its five slots { id, name, on } or null
+      const s = SOUNDS.indexOf(i.sound);
+      if (s < 0 || !HASV.has(SOUNDS[s])) break;
+      const smp = { ...D.smp };
+      if (i.slot == null) delete smp[SOUNDS[s]]; else { const e = normSmp({ [SOUNDS[s]]: i.slot }, 'sdsv')[SOUNDS[s]]; if (!e) break; smp[SOUNDS[s]] = e; }
+      const n = normSmp(smp, 'sdsv');
+      if (!sameV(n, D.smp)) D = { ...D, smp: n };
+      break;
+    }
+    case 'trim': {
+      const c = idx(i.ch, 0, 4), k = memV(i.mem), f = idx(i.f, 0, 5);
+      if (c >= 0 && k >= 0 && f >= 0 && fin(i.v)) D = setField(D, c, k, f, unit(i.v, 0));
+      break;
+    }
+    case 'trimFromKnobs': {
+      const c = idx(i.ch, 0, 4), k = memV(i.mem), V = i.vals;
+      if (c < 0 || k < 0 || !(Array.isArray(V) || isObj(V))) break;
+      const row = D.trim[c][k].map((old, f) => unit(Array.isArray(V) ? V[f] : V[TRIM_F[f]], old));
+      const t = D.trim.slice(); t[c] = t[c].slice(); t[c][k] = row;
+      D = withTrim(D, t);
+      break;
+    }
+    case 'mute': case 'solo': {
+      const l = idx(i.lane, 1, 5);
+      if (l >= 0) D = { ...D, x: { ...D.x, [i.k]: D.x[i.k] ^ (1 << l) } };
+      break;
+    }
+    case 'transport': { const p = !!i.play; if (p !== S.play) S = { ...S, play: p }; break; }
+    case 'bpm': { const b = fin(i.v) && i.v > 0 ? i.v : S.bpm; if (b !== S.bpm) S = { ...S, bpm: b }; break; }
+    case 'panic': if (S.run) S = { ...S, run: false }; break;
+    default: break;
+  }
+  return { state: S, mem: D, cmds: D !== drum ? [send('now')] : [] };
+}

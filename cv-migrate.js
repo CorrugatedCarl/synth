@@ -34,6 +34,11 @@
 //  10  stage 7c: the TR-909 (IMPL-7c §6) — a 'tr909' instrument device and its `drum` record (its own shape, `m: 'tr909'`: song.normDev
 //      → normDrum(d, model)): additive, nothing to convert (a 9 opens as before; a 10 in a schema-9 build opens read-only — that build
 //      would read 'tr909' as a Minimoog, modelById's fallback, drop `drum` and autosave the loss). toV1 names the TR-909 like the others
+//  11  stage 8: the pad controller and the SDS-V (IMPL-8 §10.2) — project.pads (the Pads modules: ≤ 8 × { id 'pd1'…'pd8', grid, 64 pads }, song.js
+//      deserialize → pads-core normPads), `t.lay.pd<n>` (an ordinary lay key), mod rows from a pad (src 'pd1.p12'), an 'sdsv' instrument device and
+//      its `drum` record (`m: 'sdsv'`, no sequencer): ONE bump for both parts, additive, nothing to convert (a 10 opens as before; an 11 in a
+//      schema-10 build opens read-only — that build would drop `project.pads` and read 'sdsv' as a Minimoog, modelById's fallback, and autosave
+//      the loss). toV1 drops `pads` with the lost-line "the Pads controllers (N)", and names an SDS-V track like the other drum machines
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
@@ -90,7 +95,7 @@ import { DOT } from './cv-world.js?v=9';
 import { isDrum } from './song.js?v=9';
 
 export { schemaOf };
-export const SCHEMA = 10;
+export const SCHEMA = 11;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -130,6 +135,8 @@ export const STEPS = Object.freeze([
   p => Object.assign({}, p, { schema: 9 }),
   // 9 → 10: the TR-909 (stage 7c, IMPL-7c §6: a 'tr909' device and its `drum` record) — additive
   p => Object.assign({}, p, { schema: 10 }),
+  // 10 → 11: the pad controller (project.pads) and the SDS-V (a 'sdsv' device and its `drum` record) — additive (stage 8, IMPL-8 §10.2)
+  p => Object.assign({}, p, { schema: 11 }),
 ]);
 
 export function upgrade(o) {
@@ -212,7 +219,8 @@ export function toV1(p0) {
   const p = plainCopy(p0), lost = [];
   if (!isObj(p) || !Array.isArray(p.tracks)) return { p, lost };
   if (isObj(p.perf) && p.perf.wheel) lost.push('the Mod Wheel');
-  delete p.schema; delete p.newerSchema; delete p.perf;
+  if (Array.isArray(p.pads) && p.pads.length) lost.push(`the Pads controllers (${p.pads.length})`); // (stage 8: main has no pad controller; their mod rows are in each track's cable count)
+  delete p.schema; delete p.newerSchema; delete p.perf; delete p.pads;
   const out = [], ids = new Set(p.tracks.map(t => isObj(t) && t.id));
   let n = 0;
   const freshId = () => { let id; do id = 'trk_' + (1000 + ++n); while (ids.has(id)); ids.add(id); return id; };

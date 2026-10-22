@@ -24,6 +24,7 @@ import * as W from '../wt.js?v=9';
 import { patchFor, MODELS } from '../models.js?v=9';
 import * as CPU from './cpu-gate.mjs';
 import * as DC from '../drum-core.js?v=9';
+import { songV, DRUM_PATTERNS } from './bench-scenarios.mjs';
 
 const SR = 48000;
 const quiet = { log() {}, warn() {}, error() {}, info() {}, debug() {} };
@@ -1391,7 +1392,7 @@ test('7c: a 909 Inst from {t: patch} + {t: seq} on the warmed first Track, on a 
   const z = play(D, c, 300, ev);
   assert.deepEqual([a.p.i0.kind, machOf(a.p.i0), isDrSeq(a.p.i0.sq), b.p.i0.drPend === null, machOf(c.i0), isDrSeq(c.i0.sq)], ['drums', 'tr909', true, true, 'tr909', true]);
   assert.deepEqual([P.machine, S.m], ['tr909', 'tr909']);
-  assert.equal(a.p.i0.dmL.map(r => r.id).join(), 'tr808,tr606,tr909', 'the warm-up built every machine on Inst 0 (kept, reset)');
+  assert.equal(a.p.i0.dmL.map(r => r.id).join(), 'tr808,tr606,tr909,sdsv', 'the warm-up built every machine on Inst 0 (kept, reset; 8: the SDS-V\'s round after the 909\'s)');
   assert.ok(peakOf(a.o.L) > 0.05, 'the pattern sounds');
   assert.ok(sameBits(a.o.L, b.o.L) && sameBits(a.o.R, b.o.R), 'the warmed-up first Track = a later one (restore leaves a fresh 909)');
   assert.ok(sameBits(a.o.L, z.L) && sameBits(a.o.R, z.R), 'live = offline (processorOptions)');
@@ -1645,4 +1646,264 @@ test('7c bench rows (node gate): d9p, d9x, d9m ≤ 1.5 × their targets; d9i (an
   const target = CPU.BENCH.targets.d9i.node, best = await CPU.gateLoad(sec, target);
   t.diagnostic(`row d9i: ${best.load.toFixed(5)} calibrated (raw ${best.raw.toFixed(5)}, attempt ${best.attempt})`);
   assert.ok(best.load <= 1.5 * target, `row d9i: ${best.load.toFixed(5)} > 1.5 × ${target}`);
+});
+
+/* ------------------------------------------------------------------ stage 7d + 8: the SDS-V (IMPL-8 §11, §15.5, lane E5) */
+const drvPatch = (o, fx, sr = SR) => { const m = MODELS.find(x => x.id === 'sdsv'); return patchFor(m, Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), o || {}), fx || core.defaultFx2(), { sr, bpm: 120 }); };
+// an SDS-V record (no sequencer: keys [], the empty plan) with trims `tr` (5 × 2 × 6, else the defaults) and its payload
+const drvMem = tr => DC.normDrum(tr ? { m: 'sdsv', trim: tr } : undefined, 'sdsv');
+const drvPay = d => DC.payload(d, DC.initState('sdsv'), 'now');
+// our own trims off the defaults (every value distinct), their flat form (the machine's _trv: 12 c + 6 j + f)
+const TRV1 = [0, 1, 2, 3, 4].map(c => [0, 1].map(j => [0, 1, 2, 3, 4, 5].map(f => 0.05 + 0.9 * (((5 * c + 3 * j + 7 * f) % 11) / 10))));
+const flatTr = tr => tr.flatMap(c => c.flatMap(j => j));
+const NV = [36, 38, 48, 45, 41]; // bass, snare, tom 1, tom 2, tom 3 (GM, = DrSeq.DEF_MAP)
+
+test('8: an SDS-V Inst from {t: patch} + {t: seq} (trims, cards on memories 3 / 4) on the warmed first Track, on a later Track and from processorOptions offline — bit for bit; the warm-up built four machines on Inst 0 and left no asset; the trims are heard', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), P = drvPatch({ xbp: 2, x1p: 3, x2p: 2, x3d: 8 }), S = drvPay(drvMem(TRV1));
+  const ev = NV.map((n, k) => [10 + 25 * k, { t: 'on', n, v: (60 + 15 * k) / 127 }]).concat([[160, { t: 'on', n: 41, v: 1 }], [170, { t: 'on', n: 36, v: 0.5 }]]);
+  const live = () => { D.ctx.currentFrame = 0; const { p } = mk(D, { os: 4, hostOS: 4 }, P); p.msg({ t: 'seq', s: S }); return { p, o: play(D, p, 300, ev) }; };
+  const a = live(), b = live();
+  D.ctx.currentFrame = 0;
+  const { p: c } = mk(D, { os: 4, hostOS: 4, offline: true, patch: P, seq: S });
+  const z = play(D, c, 300, ev);
+  assert.deepEqual([a.p.i0.kind, machOf(a.p.i0), isDrSeq(a.p.i0.sq), machOf(c.i0), isDrSeq(c.i0.sq), S.m, S.plan.n, P.machine], ['drums', 'sdsv', true, 'sdsv', true, 'sdsv', 0, 'sdsv']);
+  assert.equal(a.p.i0.dmL.map(r => r.id).join(), 'tr808,tr606,tr909,sdsv', 'the warm-up built every machine on Inst 0 (kept, reset)');
+  assert.equal(D.global('SxBase').assets.size, 0, 'the warm-up\'s stand-in sample dropped');
+  for (const I of [a.p.i0, b.p.i0, c.i0]) assert.deepEqual([...I.dm._trv], flatTr(TRV1), 'the payload\'s trims in the machine');
+  assert.ok(peakOf(a.o.L) > 0.05, 'it sounds');
+  assert.ok(sameBits(a.o.L, b.o.L) && sameBits(a.o.R, b.o.R), 'the warmed-up first Track = a later one (restore leaves a fresh SDS-V: its default trims)');
+  assert.ok(sameBits(a.o.L, z.L) && sameBits(a.o.R, z.R), 'live = offline (processorOptions: the trims reach the bounce, D7)');
+  D.ctx.currentFrame = 0;
+  const { p: d } = mk(D, { os: 4, hostOS: 4, offline: true, patch: P, seq: drvPay(drvMem()) }), y = play(D, d, 300, ev);
+  assert.deepEqual([...d.i0.dm._trv], [...D.global('Dr808').proto.sdsv.TRIMV], 'the record\'s default trims = the machine\'s');
+  assert.ok(!sameBits(y.L, z.L), 'other trims, another sound (memories 3 / 4)');
+});
+
+// §15.5: 808 → SDS-V → 909 → SDS-V → 606 on one Inst — each machine its own (built once, kept), a fresh DrSeq each time; the
+// SDS-V's payload overtaking its patch waits in drPend while the 808 plays on, and drOn adopts it — its trims reach the machine
+// there; back on the SDS-V without a payload: the default trims (drOn's dm.trim(null)), then a payload's after its patch
+test('8 machine change (§11.3, §15.5): 808 → SDS-V → 909 → SDS-V → 606 on one Inst — its own machine each (kept), a fresh DrSeq; an SDS-V payload before its patch waits in drPend and its trims reach the machine at drOn; one after it too', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), { p, sent } = mk(D, { os: 4, hostOS: 4, offline: true }, drPatch());
+  const I = p.i0, G = D.global('Dr808').proto.sdsv;
+  p.msg({ t: 'seq', s: drPay(drMem(DC.DEMO.a)) }); p.msg(tpPlay(D.ctx.currentFrame));
+  run(D, p, 40);
+  const m8 = I.dm, q8 = I.sq, SV = drvPay(drvMem(TRV1));
+  p.msg({ t: 'seq', s: SV }); // (the payload first: the 808 still plays)
+  const pend = I.drPend;
+  assert.ok(isDrSeq(pend) && I.drPendM === 'sdsv' && pend.trim === SV.trim && I.sq === q8 && I.dm === m8, 'kept apart: the 808 keeps its sequencer');
+  sent.length = 0; run(D, p, 40);
+  assert.ok(steps(sent).length > 0, 'the 808 plays on meanwhile');
+  p.msg({ t: 'patch', p: drvPatch({ x1p: 2 }) });
+  assert.deepEqual([I.kind, machOf(I), I.sq === pend, I.drPend === null, I.dm !== m8], ['drums', 'sdsv', true, true, true], 'the patch adopts the waiting payload');
+  assert.deepEqual([...I.dm._trv], flatTr(TRV1), 'its trims handed to the machine at drOn');
+  sent.length = 0;
+  const ov = play(D, p, 60, NV.map((n, k) => [5 * k, { t: 'on', n, v: 0.8 }]));
+  assert.ok(peakOf(ov.L) > 0.05 && steps(sent).length === 0, 'the notes play the five; the empty plan steps nothing');
+  const mv = I.dm, qv = I.sq;
+  p.msg({ t: 'patch', p: dr9Patch() }); p.msg({ t: 'seq', s: dr9Pay(dr9Demo()) });
+  sent.length = 0; run(D, p, 200);
+  assert.deepEqual([machOf(I), steps(sent).length >= 4, I.sq !== qv], ['tr909', true, true], 'the 909 plays its DEMO');
+  p.msg({ t: 'patch', p: drvPatch() });
+  assert.deepEqual([machOf(I), I.dm === mv, I.sq === null, I.drPend === null], ['sdsv', true, true, true], 'the SDS-V\'s own machine again (kept), no payload yet');
+  assert.deepEqual([...I.dm._trv], [...G.TRIMV], 'no payload: the default trims');
+  const o0 = play(D, p, 40, [[1, { t: 'on', n: 41, v: 0.9 }]]);
+  assert.ok(peakOf(o0.L) > 0.05, 'a note before any payload plays (DEF_MAP)');
+  const T2 = TRV1.map(c => c.map(j => j.map(x => 1 - x)));
+  p.msg({ t: 'seq', s: drvPay(drvMem(T2)) }); // (after its patch this time)
+  assert.ok(isDrSeq(I.sq) && I.sq !== qv, 'a fresh DrSeq');
+  assert.deepEqual([...I.dm._trv], flatTr(T2), 'drSeqMsg hands the trims over');
+  p.msg({ t: 'patch', p: dr6Patch() }); p.msg({ t: 'seq', s: dr6Pay(dr6Mem(DC.DEMO606.a)) });
+  sent.length = 0; run(D, p, 100);
+  assert.deepEqual([machOf(I), steps(sent).length > 0, 'trim' in I.dm], ['tr606', true, false], 'and on to the 606 (no trim on its machine)');
+  assert.equal(I.dmL.map(r => r.id).join(), 'tr808,sdsv,tr909,tr606', 'four machines on the Inst, each built once');
+});
+
+// 7b's level rule for every pair with the SDS-V: the old machine's de-click tail keeps its level through each machine's own
+// output stage (Dr808.gain: OUT_KV for the SDS-V) and drains on its own chain; the post's first 8 samples excluded (7b §14)
+test('8 machine change (§15.5): the de-click tail crossing 808 → SDS-V, SDS-V → 909, 909 → SDS-V and SDS-V → 606 keeps its level (each machine\'s gain), no click above −60 dB past the post\'s first samples, drained on its own chain', (t) => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), G = D.global('Dr808');
+  const d2 = (a, i0, i1) => { let m = 0; for (let i = Math.max(2, i0); i < i1; i++) m = Math.max(m, Math.abs(a[i] - 2 * a[i - 1] + a[i - 2])); return m; };
+  const dB = x => (20 * Math.log10(x)).toFixed(1);
+  for (const [A, B, n, ma, mb] of [[drPatch({ bdd: 10 }), drvPatch(), 36, 'tr808', 'sdsv'], [drvPatch({ x3d: 9 }), dr9Patch(), 41, 'sdsv', 'tr909'],
+    [dr9Patch({ ltd: 10 }), drvPatch(), 41, 'tr909', 'sdsv'], [drvPatch({ x3d: 9 }), dr6Patch(), 41, 'sdsv', 'tr606']]) {
+    const { p } = mk(D, { os: 4, hostOS: 4, offline: true }, A), I = p.i0, rs = I.renderSpan, L = new Float64Array(80 * 128);
+    let at = 0;
+    I.renderSpan = function (k) { const v = rs.call(this, k); L.set(this.Lb.subarray(0, k), at); at += k; return v; };
+    p.msg({ t: 'on', n, v: 0.8 });
+    play(D, p, 80, [[40, { t: 'patch', p: B }]]);
+    const S = 40 * 128, ga = G.gain(ma, A.drum), gb = G.gain(mb, B.drum);
+    const first = d2(L, S, S + 8), change = d2(L, S + 8, S + 256), pre = Math.abs(L[S - 1]), post = Math.abs(L[S + 8]);
+    t.diagnostic(`${ma} → ${mb}: gains ${ga.toFixed(4)} / ${gb.toFixed(4)}; second difference: the post's first 8 samples ${dB(first)} dB, then ${dB(change)} dB; |sample 8 after| / |last before| ${(post / pre).toFixed(3)}`);
+    assert.equal(machOf(I), mb);
+    assert.ok(pre > 0.02 && post / pre > 0.8 && post / pre < 1.25, `${ma} → ${mb}: the level kept (${pre} → ${post})`);
+    assert.ok(change < 1e-3, `${ma} → ${mb}: second difference over the change ${dB(change)} dB ≥ −60 dB`);
+    assert.deepEqual([I.tailON, I.decO.every(h => h.buf.every(x => x === 0))], [0, true], `${ma} → ${mb}: drained, its chain empty`);
+  }
+});
+
+// §11.2 / §15.5: before any payload a note plays through DrSeq.DEF_MAP (= PERS.sdsv.map for its five): each GM note its card,
+// the 808's other notes nothing (ids 5–15 inert); a payload's map then rules (a remap moves the bass to 60)
+test('8 notes (§11.2, §15.5): before any payload the five GM notes play their five cards (DEF_MAP), the other drum notes nothing; a payload\'s map rules after it', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), card = ['bd', 'sd', 'ht', 'mt', 'lt'];
+  NV.forEach((n, k) => {
+    const { p } = mk(D, { os: 4, hostOS: 4, offline: true }, drvPatch()), I = p.i0;
+    const o = play(D, p, 20, [[1, { t: 'on', n, v: 0.8 }]]);
+    assert.deepEqual([I.sq, card.filter(c => I.dm._v[c].on)], [null, [card[k]]], n + ': its card alone');
+    assert.ok(peakOf(o.L) > 0.02, n + ' sounds');
+  });
+  const { p } = mk(D, { os: 4, hostOS: 4, offline: true }, drvPatch());
+  const o = play(D, p, 20, [37, 39, 42, 46, 49, 51, 56, 64, 75].map(n => [1, { t: 'on', n, v: 1 }]));
+  assert.deepEqual([peakOf(o.L), p.i0.dm.live()], [0, false], 'ids 5–15: nothing');
+  const d = drvMem(), map = Object.assign({}, d.map, { bd: [60] });
+  p.msg({ t: 'seq', s: drvPay(Object.assign({}, d, { map })) });
+  play(D, p, 4, [[1, { t: 'on', n: 36, v: 1 }]]);
+  assert.equal(p.i0.dm._v.bd.on, false, 'the payload\'s map: 36 is no longer the bass');
+  play(D, p, 4, [[1, { t: 'on', n: 60, v: 1 }]]);
+  assert.equal(p.i0.dm._v.bd.on, true, '60 is');
+});
+
+// §11.5 / §15.5: a cable on a card's knob is heard while that channel is on memory 2 (the knobs) — not on memory 1 (the
+// factory sound): a modRows row on drum.x1t through the real moRec moves tom 1's sound on 2, changes nothing on 1
+test('8 modulation (§11.5, §15.5): a modRows row on drum.x1t through the real moRec moves tom 1 while it is on memory 2 (the knobs), not on memory 1 (the factory sound)', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const tom = (mem, v) => {
+    const { p } = mk(D, { os: 4, hostOS: 4, offline: true }, drvPatch({ x1p: mem })), I = p.i0, rs = I.renderSpan, sv = [{ field: 'drum.x1t', v }];
+    if (v !== null) { I.modRows([{ field: 'drum.x1t' }]); assert.deepEqual([I.moFN, I.moN], [1, 0]); I.renderSpan = function (n) { this.modSpan(null, null, sv); return rs.call(this, n); }; }
+    D.ctx.currentFrame = 0;
+    const o = play(D, p, 60, [[1, { t: 'on', n: 48, v: 0.8 }]]);
+    return { L: o.L, x1t: I.p.drum.x1t };
+  };
+  const k0 = tom(1, null), k1 = tom(1, 0.9), f0 = tom(0, null), f1 = tom(0, 0.9);
+  assert.deepEqual([k0.x1t, k1.x1t, f1.x1t], [4.2 / 10, 0.9, 0.9], 'the effective value is in p.drum');
+  assert.ok(peakOf(k0.L) > 0.02 && peakOf(f0.L) > 0.02, 'tom 1 sounds');
+  assert.ok(!sameBits(k0.L, k1.L), 'memory 2: the cable moves tom 1');
+  assert.ok(sameBits(f0.L, f1.L), 'memory 1: the factory sound, the cable changes nothing');
+});
+
+test('8 OS change (§12.7, §15.5): {t: os} while tom 3 rings goes through osFade — the SDS-V follows (setOS), no click above −60 dB, it rings on', (t) => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), { p } = mk(D, { os: 4, hostOS: 4, offline: true }, drvPatch({ x3d: 9 }));
+  const I = p.i0;
+  p.msg({ t: 'on', n: 41, v: 0.8 });
+  const o = play(D, p, 120, [[40, { t: 'os', v: 2 }]]);
+  assert.deepEqual([I.OS, I.dmOS, I.osPend, machOf(I)], [2, 2, 0, 'sdsv']);
+  const d2 = (a, q0, q1) => { let m = 0; for (let i = Math.max(2, q0 * 128); i < q1 * 128; i++) m = Math.max(m, Math.abs(a[i] - 2 * a[i - 1] + a[i - 2])); return m; };
+  const before = d2(o.L, 20, 40), change = d2(o.L, 40, 50);
+  t.diagnostic(`tom 3: second difference before ${(20 * Math.log10(before)).toFixed(1)} dB, over the change ${(20 * Math.log10(change)).toFixed(1)} dB`);
+  assert.ok(change < 1e-3, `second difference over the change ${(20 * Math.log10(change)).toFixed(1)} dB ≥ −60 dB`);
+  assert.ok(peakOf(o.L.subarray(60 * 128, 120 * 128)) > 0.01, 'it rings on');
+});
+
+test('8 panic (§15.5): a panic while a long tom rings is silent after the fade (the SDS-V reset, no tail resumes)', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), { p } = mk(D, { os: 4, hostOS: 4, offline: true }, drvPatch({ x3d: 10, x2d: 10 }));
+  p.msg({ t: 'on', n: 41, v: 1 }); p.msg({ t: 'on', n: 45, v: 1 });
+  const a = play(D, p, 20);
+  assert.ok(peakOf(a.L.subarray(10 * 128)) > 0.05, 'ringing');
+  p.msg({ t: 'panic' });
+  const os = p.outStage;
+  let after = 0, k = 0;
+  p.outStage = function (Lo, Ro, off, n) { if (k >= 3) for (let i = 0; i < n; i++) after = Math.max(after, Math.abs(this.Lb[i]), Math.abs(this.Rb[i])); return os.call(this, Lo, Ro, off, n); };
+  for (; k < 40; k++) run(D, p, 1);
+  assert.ok(!p.i0.dm.live() && p.pnN === 0 && p.i0.tailN === 0, 'cleared');
+  assert.ok(after < 1e-6, `silent after the fade (${after})`);
+});
+
+test('8: an SDS-V renders without allocating — its groove as roll notes with the payload\'s trims, memories 1–4, a trim hand-over and notes inside', () => {
+  const D = dspScope({ engine: true, fast: true, console: quiet }), { p } = mk(D, { os: 4, hostOS: 4, offline: true }, drvPatch({ xbp: 0, xsp: 2, x1p: 3, x3d: 9 }));
+  p.msg({ t: 'seq', s: drvPay(drvMem(TRV1)) });
+  p.msg(songV(DRUM_PATTERNS.dvp)); p.msg(Object.assign(tpPlay(D.ctx.currentFrame), { loop: true, ls: 0, le: 3840 }));
+  const o = out(), T2 = TRV1.map(c => c.map(j => j.map(x => 1 - x)));
+  run(D, p, 200, o);
+  let pk = 0;
+  noAlloc(D, () => { for (let k = 0; k < 1000; k++) { if (k === 300) p.i0.dm.trim(T2); if (k === 500) p.noteOn(41, 1); if (k === 501) p.noteOff(41); p.process([], o); D.ctx.currentFrame += 128; for (const v of o[0][0]) if (Math.abs(v) > pk) pk = Math.abs(v); } });
+  assert.ok(pk > 0.05, 'it played');
+});
+
+// IMPL-8 §12.4 (7c review 1 F1's gate), the lead's groove-headroom check (V5: dvp's peak sat 0.35 dB under the limiter):
+// measured as the app plays it — the song path (roll notes, the one-bar dvp groove looping), the Track's decimators, its
+// output stage and limiter (the pre-limiter peak read at the limiter's input). The dvp groove at the defaults: its RMS within
+// ± 1 dB of the 808's default groove (7c's: BD on the beats, SD + clap on 2 / 4, CH on the eighths, v 100) and the limiter
+// never engaged (no gain reduction) over 8 bars at 48 / 44.1 kHz × 4 / 2 / 1 (review R1-H: 44.1 × 1 was skipped); the bass drum's memory 1 at v 100 alone
+// within ± 1 dB of the 808's BD; each card alone ≤ 0.8 FS at v 100, ≤ 1.0 at v 127 (SENS 5); the same groove on memories 3 / 4
+// (the default trims) reported (no gate: the listening gate's)
+test('8 §12.4 level and headroom through the whole Track: the dvp groove\'s RMS within ± 1 dB of the 808\'s default groove and the limiter never engaged (48 / 44.1 kHz × 4 / 2 / 1); the bass at memory 1 = the 808\'s BD ± 1 dB; each card alone ≤ 0.8 / 1.0 FS', (t) => {
+  const thr = Math.pow(10, -1 / 20);
+  const go = (sr, os, patch, ev, quanta, seq, song) => {
+    const D = dspScope({ engine: true, fast: true, console: quiet, sampleRate: sr });
+    const { p } = mk(D, { os, hostOS: os, offline: true }, patch), lim = p.lim, lp = lim.process;
+    if (seq) p.msg({ t: 'seq', s: seq });
+    if (song) { p.msg(song); p.msg({ t: 'transport', play: true, frame: D.ctx.currentFrame, tick: 0, fpt: sr * 60 / (120 * 960), seek: true, loop: true, ls: 0, le: 3840 }); }
+    let pre = 0, gmin = 1;
+    lim.process = function (A, B, n) { for (let i = 0; i < n; i++) pre = Math.max(pre, Math.abs(A[i]), Math.abs(B[i])); lp.call(this, A, B, n); gmin = Math.min(gmin, this.env); };
+    return Object.assign(play(D, p, quanta, ev), { pre, gmin });
+  };
+  const rmsDb = (L, sr) => { let e = 0; const a = Math.round(0.1 * sr); for (let i = a; i < L.length; i++) e += L[i] * L[i]; return 10 * Math.log10(e / (L.length - a)); };
+  const g808 = [];
+  for (let k = 0; k < 64; k++) {
+    const q = Math.floor((8 + k * 6000) / 128), on = n => g808.push([q, { t: 'on', n, v: 100 / 127 }]);
+    if (k % 4 === 0) on(36);
+    if (k % 16 === 4 || k % 16 === 12) { on(38); on(39); }
+    if (k % 2 === 0) on(42);
+  }
+  const Q = Math.ceil(16.2 * SR / 128), r8 = rmsDb(go(SR, 4, drPatch(), g808, Math.ceil(8.2 * SR / 128)).L, SR), song = songV(DRUM_PATTERNS.dvp), S = drvPay(drvMem());
+  const rep = [];
+  for (const [sr, os] of [[SR, 4], [SR, 2], [SR, 1], [44100, 4], [44100, 2], [44100, 1]]) {
+    const g = go(sr, os, drvPatch(null, null, sr), [], Math.ceil(16.2 * sr / 128), S, song), r = rmsDb(g.L, sr);
+    rep.push(`${sr / 1000} kHz × ${os}: RMS ${r.toFixed(2)} dBFS (${(r - r8).toFixed(2)} dB re the 808's ${r8.toFixed(2)}), pre-limiter peak ${g.pre.toFixed(3)} (${(20 * Math.log10(g.pre / thr)).toFixed(2)} dB re the threshold ${thr.toFixed(3)}), the limiter's deepest gain ${(20 * Math.log10(g.gmin)).toFixed(2)} dB`);
+    assert.ok(Math.abs(r - r8) <= 1, `${sr} × ${os}: the groove's RMS ${(r - r8).toFixed(2)} dB re the 808's`);
+    assert.ok(g.pre < thr && g.gmin === 1, `${sr} × ${os}: the groove reaches the limiter (${g.pre.toFixed(4)}, ${g.gmin})`);
+  }
+  t.diagnostic('dvp groove, 8 bars: ' + rep.join(' · '));
+  const m34 = go(SR, 4, drvPatch({ xbp: 2, xsp: 3, x1p: 2, x2p: 3, x3p: 2 }), [], Q, S, song), m43 = go(SR, 4, drvPatch({ xbp: 3, xsp: 2, x1p: 3, x2p: 2, x3p: 3 }), [], Q, S, song);
+  t.diagnostic(`the groove on memories 3 / 4 (default trims; no gate): pre-limiter peaks ${m34.pre.toFixed(3)} / ${m43.pre.toFixed(3)}, the limiter's deepest gain ${(20 * Math.log10(m34.gmin)).toFixed(2)} / ${(20 * Math.log10(m43.gmin)).toFixed(2)} dB`);
+  // each card alone at the defaults (memory 2 = memory 1 there); the bass against the 808's BD (its default panel, v 100)
+  const one = (patch, n, v) => go(SR, 4, patch, [[2, { t: 'on', n, v: v / 127 }]], 450).pre;
+  const bd8 = one(drPatch(), 36, 100), bdv = one(drvPatch({ xbp: 0 }), 36, 100), bad = [], al = [];
+  for (const v of [100, 127]) for (const [c, n] of [['bass', 36], ['snare', 38], ['tom 1', 48], ['tom 2', 45], ['tom 3', 41]]) {
+    const x = one(drvPatch(), n, v);
+    al.push(`${c} v ${v} ${x.toFixed(3)}`);
+    if (!(x > 0.05 && x <= (v === 100 ? 0.8 : 1))) bad.push(`${c} at v ${v}: ${x.toFixed(3)}`);
+  }
+  t.diagnostic(`the bass (memory 1, v 100) ${bdv.toFixed(4)} vs the 808's BD ${bd8.toFixed(4)} (${(20 * Math.log10(bdv / bd8)).toFixed(2)} dB); alone: ${al.join(' · ')}`);
+  assert.ok(Math.abs(20 * Math.log10(bdv / bd8)) <= 1, 'the bass at memory 1 within ± 1 dB of the 808\'s BD');
+  assert.deepEqual(bad, []);
+});
+
+// IMPL-8 §12.7 / §15.5: the SDS-V's bench rows through the CPU gate (calibrated, ≤ 1.5 × the node target) and dvi — the machine
+// powered with its payload, nothing sounding, past the 2 s quiet window — gated as row p is (7a's method)
+test('8 bench rows (node gate): dvp, dvx, dvm ≤ 1.5 × their targets; dvi (an idle SDS-V with its payload) ≤ 1.5 × 0.0005', async (t) => {
+  const { scenarios, drumTrack } = await import('./bench-scenarios.mjs');
+  const D = dspScope({ engine: true, fast: true, console: quiet });
+  const node = B => {
+    const p = new D.Proc({ processorOptions: { os: 4, hostOS: 4, offline: true } });
+    p.msg(B.graph);
+    for (const [id, patch] of Object.entries(B.patches)) p.msg({ t: 'patch', i: id, p: patch });
+    for (const [id, c] of Object.entries(B.chains)) p.msg(Object.assign({ t: 'chain', c: id }, c));
+    for (const [id, s] of Object.entries(B.seqs)) p.msg({ t: 'seq', i: id, s });
+    if (B.song) p.msg(B.song);
+    return p;
+  };
+  const rows = scenarios().filter(s => s.id.startsWith('dv'));
+  assert.deepEqual(rows.map(s => s.id), ['dvp', 'dvx', 'dvm']);
+  for (const S of rows) {
+    const B = S.build(), p = node(B), cyc = B.cycle;
+    assert.deepEqual([B.seqs.i1.m, B.seqs.i1.plan.n, B.song.notes.length > 0, !!cyc === (S.id === 'dvm')], ['sdsv', 0, true, true], S.id + ': roll notes, the empty plan');
+    p.msg(Object.assign({ t: 'transport' }, B.transport, { frame: D.ctx.currentFrame }));
+    const o = out();
+    let cf = 0, ck = 0, pk = 0;
+    const sec = () => { for (let k = 0; k < SR / 128; k++) { if (cyc && (cf += 128) > cyc.frames) { cf -= cyc.frames; p.msg(cyc.msgs[ck++ % cyc.msgs.length]); } p.process([], o); D.ctx.currentFrame += 128; } };
+    for (let k = 0; k < SR / 128; k++) { p.process([], o); D.ctx.currentFrame += 128; pk = Math.max(pk, peakOf(o[0][0])); cf += 128; }
+    assert.ok(pk > 0.01 && machOf(p.insts[0]) === 'sdsv', S.id + ': audible, the SDS-V');
+    assert.equal(CPU.BENCH.targets[S.id].node, S.node);
+    const best = await CPU.gateLoad(sec, S.node);
+    t.diagnostic(`row ${S.id}: ${best.load.toFixed(4)} calibrated (raw ${best.raw.toFixed(4)}, t(calib) ${best.calib.toFixed(0)} ms, attempt ${best.attempt})`);
+    assert.ok(best.load <= 1.5 * S.node, `row ${S.id}: ${best.load.toFixed(4)} > 1.5 × ${S.node}`);
+  }
+  // dvi: dvp's machine and payload, the transport stopped (no notes)
+  const B = drumTrack(DRUM_PATTERNS.dvp, null, false, 'sdsv'), p = node(Object.assign(B, { song: null })), o = out(), sec = () => run(D, p, SR / 128, o);
+  sec(); sec(); sec();
+  const x = p.insts[0];
+  assert.ok(x.quietF > 2 * SR && x.act === 0 && isDrSeq(x.sq) && machOf(x) === 'sdsv' && o[0][0].every(v => v === 0), 'dvi: the skip path, silent');
+  const target = CPU.BENCH.targets.dvi.node, best = await CPU.gateLoad(sec, target);
+  t.diagnostic(`row dvi: ${best.load.toFixed(5)} calibrated (raw ${best.raw.toFixed(5)}, attempt ${best.attempt})`);
+  assert.ok(best.load <= 1.5 * target, `row dvi: ${best.load.toFixed(5)} > 1.5 × ${target}`);
 });

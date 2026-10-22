@@ -12,6 +12,9 @@
 // bounds, the TR-909's accents (trig(mask, acc); the 808's / 606's one argument), per-measure shuffle, flams (every spacing, the
 // clamp, re-anchors inside a spacing against the song path, a stop), valid(), once, the guide, simplePlan's x, no allocation,
 // and D5 — its sequencer against → Piano roll's notes through the song path, fixed and random patterns.
+// 7d + 8 (IMPL-8 §15.4, lane S5; after the 41 tests of 7c, unchanged): the SDS-V's EMPTY_PLAN — valid, silent through every clock
+// path (free, synced, a start / seek / loop wrap / stop, a swap to and from a real plan), events() past every span, no allocation —
+// and `trim` kept by set() as `smp` is (and absent from the other machines' payloads).
 import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -1158,4 +1161,109 @@ test('7c review 1 F5: synced, CYCLE on after a CYCLE-off track ended — the nex
   const q = T.stepPosts().slice(m);
   assert.deepEqual([q[0].m, q[0].s], [1, 0], 'in place: measure 2 next');
   assert.ok(q.length >= 48, 'looping');
+});
+
+/* ------------------------------------------------------------------ 7d + 8: the SDS-V's empty plan and `trim` (IMPL-8 §11.3, §15.4; lane S5) */
+
+// (header, 7d + 8, lane S5; after the 39 tests of 7c, unchanged:) EMPTY_PLAN — the SDS-V's payload plan — valid and silent through
+// every clock path (free, synced, a start / seek / loop wrap / stop, a swap to and from a real plan), events() returning 1e9, no
+// allocation; `trim` kept by set() as `smp` is, and the other machines' payloads without one.
+const DV = C.normDrum(undefined, 'sdsv'), SV = C.initState('sdsv');
+const payV = (o = {}) => ({ ...C.payload(DV, SV, 'now'), ...o });
+// events() wrapped to log what it returns
+function spy(T) { const got = [], ev = T.q.events.bind(T.q); T.q.events = F => { const d = ev(F); got.push(d); return d; }; return got; }
+const quiet = T => assert.deepEqual([T.trigs.length, T.targs.length, T.posts.length, T.steps.length], [0, 0, 0, 0], 'nothing fired');
+
+test('7d + 8 EMPTY_PLAN (§11.3): n 0 is valid for DrSeq — as built, through a JSON clone (the message), in the SDS-V\'s payload; a broken one is not; the shape equals itself', () => {
+  const E = C.EMPTY_PLAN;
+  assert.ok(DrSeq.valid(E) && DrSeq.valid(JSON.parse(JSON.stringify(E))) && DrSeq.valid(payV().plan) && DrSeq.valid(C.compilePlan(DV, DV.ui, DV.x)));
+  assert.deepEqual(JSON.parse(JSON.stringify(E)), { key: 'v0', n: 0, loopFrom: 0, mKey: [], mVar: [], mPre: [], mL1: [], mOff: [0], mT: [0], st: [] });
+  for (const bad of [{ ...E, key: 0 }, { ...E, mOff: [] }, { ...E, mT: [] }, { ...E, mOff: [1] }, { ...E, mT: [1] }, { ...E, n: -1 }, { ...E, n: 0.5 }, { ...E, st: null }, { ...E, fill: 7 }]) {
+    assert.ok(!DrSeq.valid(bad), JSON.stringify(bad));
+  }
+  assert.ok(DrSeq.sameShape(E, E) && DrSeq.sameShape(E, JSON.parse(JSON.stringify(E))));
+  assert.ok(!DrSeq.sameShape(E, plan({}, {}, PAT)));
+});
+
+test('7d + 8 EMPTY_PLAN, free (§15.4): the payload\'s tables are taken, its plan is the empty one; a START (forced: the payload never runs) plays no step — events() returns past every span, no trigger, no post, no #34 hook, whatever quantum', () => {
+  const T = rig(), pay = payV(), got = spy(T);
+  T.q.set(pay);
+  assert.deepEqual([T.q.pl.key, T.q.pl.n, T.q.run, T.q.sync], ['v0', 0, false, false], 'the payload never runs');
+  T.q.set({ run: true });                                   // (a hostile / future START: still nothing to play)
+  T.run(48000); T.q.set({ bpm: 77 }); T.run(2000); T.q.set({ run: false }); T.run(1000); T.q.set({ run: true }); T.run(1000);
+  assert.ok(got.length > 300, String(got.length)); assert.ok(got.every(d => d === 1e9), 'frames past the span');
+  assert.ok(T.spans.every(s => s[1] === 128), 'no span cut');
+  quiet(T);
+  assert.deepEqual(Array.from(T.q.map), Array.from(pay.map)); assert.deepEqual(Array.from(T.q.prim), Array.from(pay.prim)); assert.equal(T.q.mute, 0);
+  assert.deepEqual([36, 35, 38, 40, 41, 43, 45, 47, 48, 50, 37, 49, 42].map(n => T.q.map[n]), [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, -1, -1, -1], 'the SDS-V\'s GM map: five sounds, the rest none');
+  assert.deepEqual(Array.from(T.q.prim.slice(0, 6)), [36, 38, 41, 45, 48, -1]);
+});
+
+test('7d + 8 EMPTY_PLAN, synced (§15.4): a start at bar 1 / bar 9 / mid-measure, a seek, a loop wrap (no transportHook), a tempo change, a stop and a new play — nothing ever fires and events() always returns past the span (the Track\'s gate: sync is the machine\'s own, the payload\'s false)', () => {
+  const T = rig(), got = spy(T);
+  T.q.set(payV({ sync: true }));
+  assert.equal(T.q.sync, true);
+  T.play(0, 0, 120); T.run(48000);
+  T.play(T.frames + 64, 3840 * 8, 97); T.run(24000);
+  T.play(T.frames + 3, 3840 + 1200, 133); T.run(24000);                        // (a seek: a re-anchor mid-measure)
+  T.play(T.frames, 0, 120, { loop: true, ls: 0, le: 3840 * 2 }); T.run(48000);   // (a wrap every two measures, about eight of them)
+  T.transport({ play: false }); T.run(2000);
+  T.play(T.frames + 8, 0, 140, { fresh: true }); T.run(24000);
+  assert.ok(got.length > 400, String(got.length)); assert.ok(got.every(d => d === 1e9), 'frames past the span');
+  quiet(T);
+  assert.ok(T.spans.every(s => s[1] === 128 || (s[1] >= 4 && s[1] % 4 === 0)), 'spans of the Track\'s grid');
+});
+
+test('7d + 8 EMPTY_PLAN, swapped (§15.4): a plan playing then the empty one — at \'now\' it waits for the boundary (a different shape): the measure under the cursor plays out, then silence for good; the empty one then a real plan — taken at once, steps again from a fresh anchor; a seek with the empty one pending: silent', () => {
+  const T = rig(), real = plan({}, {}, PAT), M = 3840 * 25;                       // (a measure of 16 steps at 120 BPM, 48 kHz)
+  T.q.set({ plan: real, sync: true }); T.play(0, 0, 120); T.run(2 * M);
+  const n0 = T.stepPosts().length;
+  assert.equal(n0, 32);
+  T.q.set({ plan: C.EMPTY_PLAN, at: 'now' });                                     // (pending: the measure plays out)
+  T.run(3 * M);
+  const n1 = T.stepPosts().length, last = T.stepPosts().at(-1);
+  assert.equal(n1 - n0, 16, 'the measure under the cursor plays out');
+  assert.ok(last.F < T.frames - M, 'silent after');
+  T.q.set({ plan: C.EMPTY_PLAN, at: 'now' }); T.run(2 * M);
+  assert.equal(T.stepPosts().length, n1, 'still nothing');
+  T.q.set({ plan: real, at: 'now' });                                             // (idle: at once, a fresh anchor at the song position)
+  T.run(2 * M);
+  const n2 = T.stepPosts().length;
+  assert.ok(n2 - n1 >= 16, 'steps again (' + (n2 - n1) + ')');
+  T.q.set({ plan: C.EMPTY_PLAN, at: 'bar' }); T.play(T.frames + 4, 0, 120); T.run(256);   // (a seek: the pending plan taken at the re-anchor)
+  const n3 = T.stepPosts().length; T.run(3 * M);
+  assert.ok(n3 - n2 <= 1 && T.stepPosts().length === n3, 'at most the step due before the seek, then nothing');
+});
+
+test('7d + 8 EMPTY_PLAN: no allocation in events() or set() — the SDS-V\'s payload, free and synced, over many spans, seeks and wraps', () => {
+  const T = rig(), pay = payV(), pay2 = payV({ sync: true }), pay3 = payV({ trim: pay.trim.map(c => c.map(m => m.map(v => 1 - v))), bpm: 90 });
+  T.q.set(pay); T.run(256);
+  noAlloc(SCOPE, () => {
+    T.run(48000);
+    T.q.set(pay2); T.play(T.frames + 8, 0, 120); T.run(48000);
+    T.q.set(pay3); T.q.set({ run: true, at: 'now' }); T.run(24000);
+    T.play(T.frames + 64, 3840 * 3 + 11, 140, { loop: true, ls: 0, le: 3840 }); T.run(48000);
+    T.q.set({ plan: C.EMPTY_PLAN, at: 'bar' }); T.transport({ play: false }); T.q.release(); T.run(4000);
+  });
+  quiet(T);
+});
+
+test('7d + 8 trim (§11.3): set() keeps the payload\'s `trim` as it keeps `smp` — null until one arrives, as sent, a falsy one nulls it, a payload without the key leaves it; the 808\'s, 606\'s and 909\'s payloads have none (inert), so a DrSeq that only ever saw them has null', () => {
+  const q = DrSeq.create({ base: 48000, tp: { play: false } });
+  assert.equal(q.trim, null);
+  const pay = payV(), tm = pay.trim;
+  assert.deepEqual([tm.length, tm[0].length, tm[0][0].length], [5, 2, 6]);
+  q.set(pay); assert.equal(q.trim, tm, 'stored as sent (the Inst copies it into the machine)');
+  q.set({ bpm: 100 }); assert.equal(q.trim, tm, 'a payload without the key leaves it');
+  const tm2 = tm.map(c => c.map(m => m.map(v => 1 - v)));
+  q.set({ trim: tm2 }); assert.equal(q.trim, tm2);
+  for (const falsy of [null, undefined, 0, '', false]) { q.set({ trim: tm }); q.set({ trim: falsy }); assert.equal(q.trim, null, String(falsy)); }
+  q.set({ trim: tm }); q.set(null); q.set('x'); q.set({ plan: C.EMPTY_PLAN, at: 'bar' }); assert.equal(q.trim, tm, 'a junk payload leaves it');
+  // the other machines' payloads carry no `trim`: not on them, not in a DrSeq that took them
+  const q2 = DrSeq.create({ base: 48000, tp: { play: false } });
+  for (const m of [undefined, 'tr808', 'tr606', 'tr909']) {
+    const D = C.normDrum(undefined, m), s = C.payload(D, C.initState(m), 'now');
+    assert.ok(!('trim' in s), String(m)); q2.set(s);
+  }
+  assert.equal(q2.trim, null);
 });

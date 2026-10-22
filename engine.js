@@ -1350,8 +1350,8 @@ class OpP {
 }
 // the TR-808's panel (IMPL-7a §2.3): a flat p.drum keyed by the models.js ids — knob positions 0…1, switch indices — the
 // Inst's own fixed-shape copy (dr-808 reads it per span; the classic adapter's span setters write into it, drum.<id>); a
-// missing knob is its panel default. One shape for every machine (7b §1.5, 7c §1.5): the TR-606's and the TR-909's ids
-// join, each machine reads its own
+// missing knob is its panel default. One shape for every machine (7b §1.5, 7c §1.5, IMPL-8 §11.2): the TR-606's, the
+// TR-909's and the SDS-V's ids join, each machine reads its own
 const dk = (v, d) => (v === undefined || v === null ? d : +v);
 class DrumP {
   constructor(o) {
@@ -1360,6 +1360,11 @@ class DrumP {
     this.lts = this.mts = this.hts = this.rss = this.cps = 0.5;
     this.tml = this.hhl = this.bdu = this.sdu = this.sdd = this.ltu = this.ltd = this.htu = this.htd = this.chd = 0.5;
     this.bda = this.mtu = this.mtd = this.crl = this.rdl = this.cru = this.rdu = 0.5;
+    this.xbn = this.xbt = this.xbb = this.xbd = this.xbm = this.xbc = this.xbs = this.xbl = this.xbp = 0.5;
+    this.xsn = this.xst = this.xsb = this.xsd = this.xsm = this.xsc = this.xss = this.xsl = this.xsp = 0.5;
+    this.x1n = this.x1t = this.x1b = this.x1d = this.x1m = this.x1c = this.x1s = this.x1l = this.x1p = 0.5;
+    this.x2n = this.x2t = this.x2b = this.x2d = this.x2m = this.x2c = this.x2s = this.x2l = this.x2p = 0.5;
+    this.x3n = this.x3t = this.x3b = this.x3d = this.x3m = this.x3c = this.x3s = this.x3l = this.x3p = 0.5;
     this.ac = dk(o.ac, 0.5); this.bdl = dk(o.bdl, 0.7); this.bdt = dk(o.bdt, 0.5); this.bdd = dk(o.bdd, 0.5); this.sdl = dk(o.sdl, 0.7);
     this.sdt = dk(o.sdt, 0.5); this.sds = dk(o.sds, 0.5); this.ltl = dk(o.ltl, 0.7); this.ltt = dk(o.ltt, 0.5); this.mtl = dk(o.mtl, 0.7);
     this.mtt = dk(o.mtt, 0.5); this.htl = dk(o.htl, 0.7); this.htt = dk(o.htt, 0.5); this.rsl = dk(o.rsl, 0.7); this.cpl = dk(o.cpl, 0.7);
@@ -1372,6 +1377,19 @@ class DrumP {
     // (7c) the TR-909's own (IMPL-7c §1.5: its panel defaults; its other ids are the 808's / 606's fields above)
     this.bda = dk(o.bda, 0.5); this.mtu = dk(o.mtu, 0.5); this.mtd = dk(o.mtd, 0.5); this.crl = dk(o.crl, 0.3); this.rdl = dk(o.rdl, 0.35);
     this.cru = dk(o.cru, 0.5); this.rdu = dk(o.rdu, 0.5);
+    // (7d + 8) the SDS-V's (IMPL-8 §11.2: 'x' + channel b s 1 2 3 + the card's n t b d m c, the mixer's s l, the memory key p):
+    // the knobs' defaults Dr808.proto.sdsv.KV_DEF (memory 1's six, SENSITIVITY 0.5, LEVEL 0.7), x?p the key's index 0…3
+    // (default 1: the knobs); the other machines never read them
+    this.xbn = dk(o.xbn, 0.30); this.xbt = dk(o.xbt, 0.42); this.xbb = dk(o.xbb, 0.45); this.xbd = dk(o.xbd, 0.42); this.xbm = dk(o.xbm, 0.22);
+    this.xbc = dk(o.xbc, 0.25); this.xbs = dk(o.xbs, 0.5); this.xbl = dk(o.xbl, 0.7); this.xbp = dk(o.xbp, 1);
+    this.xsn = dk(o.xsn, 0.62); this.xst = dk(o.xst, 0.45); this.xsb = dk(o.xsb, 0.25); this.xsd = dk(o.xsd, 0.38); this.xsm = dk(o.xsm, 0.62);
+    this.xsc = dk(o.xsc, 0.30); this.xss = dk(o.xss, 0.5); this.xsl = dk(o.xsl, 0.7); this.xsp = dk(o.xsp, 1);
+    this.x1n = dk(o.x1n, 0.30); this.x1t = dk(o.x1t, 0.42); this.x1b = dk(o.x1b, 0.60); this.x1d = dk(o.x1d, 0.60); this.x1m = dk(o.x1m, 0.15);
+    this.x1c = dk(o.x1c, 0.25); this.x1s = dk(o.x1s, 0.5); this.x1l = dk(o.x1l, 0.7); this.x1p = dk(o.x1p, 1);
+    this.x2n = dk(o.x2n, 0.30); this.x2t = dk(o.x2t, 0.42); this.x2b = dk(o.x2b, 0.60); this.x2d = dk(o.x2d, 0.62); this.x2m = dk(o.x2m, 0.15);
+    this.x2c = dk(o.x2c, 0.25); this.x2s = dk(o.x2s, 0.5); this.x2l = dk(o.x2l, 0.7); this.x2p = dk(o.x2p, 1);
+    this.x3n = dk(o.x3n, 0.30); this.x3t = dk(o.x3t, 0.42); this.x3b = dk(o.x3b, 0.60); this.x3d = dk(o.x3d, 0.65); this.x3m = dk(o.x3m, 0.15);
+    this.x3c = dk(o.x3c, 0.25); this.x3s = dk(o.x3s, 0.5); this.x3l = dk(o.x3l, 0.7); this.x3p = dk(o.x3p, 1);
     extra(this, o, 'drum.');
   }
 }
@@ -1485,6 +1503,23 @@ function warmSmp9(id, st) {
   e.bytes = (st ? 8 : 4) * n;
   return e;
 }
+// (IMPL-8 §11.3, §17 lane V5) the SDS-V's round: per round a panel with every knob off its defaults — round 0 SENSITIVITY 5,
+// tom 3's at 0 (a soft hit under the comparator), round 1 SENSITIVITY 10, the toms bent hard, the snare's NOISE high (its
+// SSM2044's second pass at OS 4) —, every channel on memory 2; [2 + k] the same panel with TONE / NOISE moved and the memory
+// keys on 1 / 3 / 4 (a memory change and a knob glide while they ring); the payload's empty plan (drum-core EMPTY_PLAN's shape)
+// and our own trims off the defaults (TRIMV), per round
+const WDRUMV = [0, 1, 2, 3].map(j => {
+  const k = j & 1, e = j >> 1, d = {};
+  ['b', 's', '1', '2', '3'].forEach((c, i) => {
+    const n = k ? (i === 1 ? 0.93 : 0.63) : 0.31 + 0.03 * i, t = k ? 0.83 - 0.02 * i : 0.41 + 0.03 * i;
+    d['x' + c + 'n'] = e ? 1 - n : n; d['x' + c + 't'] = e ? 1 - t : t; d['x' + c + 'b'] = k ? 0.97 : 0.47; d['x' + c + 'd'] = k ? 0.71 : 0.53;
+    d['x' + c + 'm'] = 0.37 + 0.2 * k; d['x' + c + 'c'] = 0.29 + 0.4 * k; d['x' + c + 's'] = k ? 1 : i === 4 ? 0 : 0.51; d['x' + c + 'l'] = 0.69;
+    d['x' + c + 'p'] = e ? [0, 2, 3, 2, 3][i] : 1;
+  });
+  return { engine: 'drums', machine: 'sdsv', level: 1, drum: d };
+});
+const WPLANV = { key: 'v0', n: 0, loopFrom: 0, mKey: [], mVar: [], mPre: [], mL1: [], mOff: [0], mT: [0], st: [] };
+const WTRIMV = [0, 1].map(k => [0, 1, 2, 3, 4].map(c => [0, 1].map(j => [0, 1, 2, 3, 4, 5].map(f => 0.13 + 0.71 * (((c + 2 * j + 3 * f + k) % 7) / 6)))));
 const WPORT = { postMessage() {} };
 let warmed = false;
 
@@ -1556,8 +1591,8 @@ class Inst {
     this.setSalt(0); this.on = 1; this.zlo = 0; this.zhi = 127; this.zxp = 0; this.live = 0; this.t = 0; this.nOn = 0; this.overK = '';
     this.kind = ''; this.voices = null; this.div = null;
     // the drum machines and the sequencer back to fresh (IMPL-7a §1.1, 7b §1.5): every machine kept (its code stays warm),
-    // silent, no sample slots; no sequencer, no payload waiting
-    for (const r of this.dmL) { r.dm.reset(); r.dm.smp(null); }
+    // silent, no sample slots (the SDS-V: its default trims); no sequencer, no payload waiting
+    for (const r of this.dmL) { r.dm.reset(); r.dm.smp(null); if (r.dm.trim) r.dm.trim(null); }
     this.sq = null; this.drPend = null; this.drPendM = ''; this.drCur = -1;
     this.bend = this.bendRaw = this.wheel = this.at = 0; this.sustain = false; this.clrHeld(); this.stamp = 0;
     this.lfoPh = this.lfoSH = this.lfoLast = this.gdrift = 0; this.r = (987654321 ^ this.salt) >>> 0; this.ctl = 0; this.act = 0;
@@ -1682,7 +1717,7 @@ class Inst {
     // de-click fade (~3 ms) rendered ahead when voices are stopped hard
     this.fadeN = Math.max(1, Math.round(this.base * 0.003 / 4)) * 4 * os;
     this.tail = new Float64Array(this.fadeN); this.fadeTmp = new Float64Array(this.fadeN); this.tailN = 0; this.tailP = 0;
-    // (7b review 1 #3) a machine switch's tail (808 / 606 / 909) in output units, mixed after the new machine's output stage: its samples
+    // (7b review 1 #3) a machine switch's tail (808 / 606 / 909 / SDS-V) in output units, mixed after the new machine's output stage: its samples
     // (+ a quantum of zeros: the chain drains), its own decimator chain, an OS-rate and a base-rate scratch
     this.tailO = new Float64Array(this.fadeN + 128 * os); this.tailON = 0; this.tailOP = 0;
     this.decO = decChain(os); this.bufO = new Float64Array(128 * os); this.tailOb = new Float64Array(128);
@@ -1946,7 +1981,7 @@ class Inst {
     if (p.serumT) this.ct = p.serumT; // a live patch without serumT keeps the stored curve tables (§4.1)
     // IMPL-7a §1.1: a kind change to or from 'drums' releases and drops the sequencer (a DrSeq and the TB-303's object never
     // meet in sq); leaving, the machine's ≈ 3 ms tail is rendered and turned from bus volts into output units. 7b §1.5: a
-    // machine change (808 / 606 / 909, any two, the kind staying 'drums') is the same boundary — the old machine's tail through its own gain
+    // machine change (808 / 606 / 909 / SDS-V, any two, the kind staying 'drums') is the same boundary — the old machine's tail through its own gain
     const mch = kind === 'drums' && was === 'drums' && p.machine !== old.machine;
     if ((kind === 'drums') !== (was === 'drums') || mch) {
       this.seqRelease(); this.sq = null;
@@ -2158,8 +2193,9 @@ class Inst {
    * DrSeq, dr-seq.js); both scripts looked up at use (a missing one: the Inst is silent and posts drumsErr once) ---- */
   // entering kind 'drums' or another machine (setPatch, between quanta): the patch's machine (built once per Inst and kind,
   // 7b §1.5: kept warm, a cached one catching up with the Inst's OS), silent; the DrSeq a payload left waiting — only a
-  // payload for this machine, else dropped — and its sample slots; the old model's de-click tails and decimator history
-  // (output units) turned into bus volts, as everything this path renders ends in the machine's output stage
+  // payload for this machine, else dropped — and its sample slots (IMPL-8 §11.3: and the SDS-V's trims, the waiting
+  // DrSeq's or its defaults — no other machine has dm.trim); the old model's de-click tails and decimator history (output
+  // units) turned into bus volts, as everything this path renders ends in the machine's output stage
   drOn(p) {
     const D8 = globalThis.Dr808, id = p.machine, L = this.dmL;
     if (this.dmR !== null) this.dmR.os = this.dmOS;
@@ -2177,6 +2213,7 @@ class Inst {
     dm.reset();
     if (this.dmOS !== this.OS) { dm.setOS(this.OS, this.fs); this.dmOS = this.OS; }
     dm.smp(this.sq !== null ? this.sq.smp : null);
+    if (dm.trim) dm.trim(this.sq !== null ? this.sq.trim : null);
     const g = this.drGain(p);
     this.drUnits(g > 1e-3 ? 1 / g : 0);
   }
@@ -2260,7 +2297,8 @@ class Inst {
   // §3.5: a drum {t: 'seq'} payload — the DrSeq's (kept in drPend until the kind is 'drums'), its sample slots the machine's.
   // 7b §1.5 (review #2): a payload names its machine (m; absent = the 808's) and may overtake its patch on a machine
   // switch: one for another machine than the patch's waits in drPend too (a payload for another machine than the waiting
-  // one replaces it with a fresh DrSeq), for drOn to adopt
+  // one replaces it with a fresh DrSeq), for drOn to adopt. IMPL-8 §11.3: the SDS-V's payload (an empty plan: it routes,
+  // nothing steps) hands its trims to the machine as smp its slots (no other machine has dm.trim, no other payload trim)
   drSeqMsg(s) {
     const m = s.m === undefined ? 'tr808' : String(s.m), on = this.kind === 'drums' && m === this.p.machine;
     let q = on ? this.sq : this.drPend;
@@ -2273,6 +2311,7 @@ class Inst {
     }
     q.set(s);
     if (on && this.dm !== null && 'smp' in s) this.dm.smp(s.smp);
+    if (on && this.dm !== null && 'trim' in s && this.dm.trim) this.dm.trim(s.trim);
   }
   // 7b §1.5 (review #6): the tempo clock a machine reads (the 606's open hat, per absolute 4-frame chunk and ahead in a
   // de-click tail) → { t ticks at frame F, tpf ticks a frame } (one object: copy before the next call): the DrSeq's when
@@ -3374,6 +3413,7 @@ class Track extends Facade {
         I.tp = tp;
       }
       this.warmDrums9(run, io, P);
+      this.warmDrumsV(run, io);
     } catch (err) { /* a failed round loses only its own warm-up: Serum's and the graph's still run */ } finally { I.port = port; I.tp = tp; }
   }
   // 7c §1.5: the TR-909's round, twice (its own machine; the 808's and the 606's untouched) — its first create decodes the
@@ -3431,6 +3471,50 @@ class Track extends Facade {
       I.seqMsg({ plan, sync: true, run: false, tap: 1, m: 'tr909' });
       for (let b = 0; b < 32; b++) { this.process(null, io); this.statN = 0; ck.frame -= 128; }
       I.seqMsg({ plan, sync: false, run: false, m: 'tr909' });
+      I.tp = tp;
+    }
+  }
+  // IMPL-8 §11.3, §17 lane V5: the SDS-V's round, twice (its own machine; the others untouched) — its five through the note
+  // map before a payload (DrSeq.DEF_MAP) at v 20 / 64 / 100 / 127 (retriggers; round 0 tom 3 at SENSITIVITY 0: v 20 under the
+  // comparator), a memory change and a TONE / NOISE glide while they ring, the payload (the empty plan, our trims: the
+  // hand-over to dm.trim) with the cards on memories 3 / 4, round 0 a sample in the bass drum's slot (a stand-in entry, stored
+  // and dropped inside the round: 909's warmSmp9), the empty plan free and synced on a stand-in clock (no step ever fires), an
+  // OS change each round (there and back). Caller: warmDrums (its try)
+  warmDrumsV(run, io) {
+    const D8 = globalThis.Dr808, DS = globalThis.DrSeq, SB = globalThis.SxBase, I = this.i0, tp = I.tp;
+    if (!D8.mach || !D8.mach.sdsv) return;
+    const N = [36, 38, 48, 45, 41], AV = [20, 64, 100, 127];   // (DEF_MAP: bass, snare, tom 1, tom 2, tom 3)
+    const pay = (k, o) => Object.assign({ m: 'sdsv', plan: WPLANV, sync: false, run: false, bpm: 120, swing: 50, at: 'now', tap: 0, map: DS.DEF_MAP,
+      prim: DS.DEF_PRIM, mute: 0, smp: null, trim: WTRIMV[k] }, o);
+    for (let round = 0; round < 2; round++) {
+      I.setPatch(WDRUMV[round]);
+      if (I.dmR === null || I.dmR.id !== 'sdsv') return;
+      for (let a = 0; a < AV.length; a++) { for (const n of N) { if (a) this.noteOff(n); this.noteOn(n, AV[a] / 127); } run(a ? 2 : 6); }
+      I.setPatch(WDRUMV[round + 2]); run(6);                                                          // memory keys, TONE / NOISE glide
+      I.seqMsg(pay(round, { run: true }));                                                            // the trims: memories 3 / 4 hear them
+      for (const n of N) { this.noteOff(n); this.noteOn(n, 0.79); }
+      run(6);
+      I.setPatch(WDRUMV[round]);
+      if (round === 0 && SB && typeof SB.storeAsset === 'function') {
+        const e = warmSmp9('smp:~warmV', false), m1 = SB.getAsset(e.id) === null && SB.storeAsset(e.id, e);
+        if (m1) {
+          const sl = { id: e.id, on: true };
+          I.seqMsg(pay(round, { smp: [sl, null, null, null, sl, null, null, null, null, null, null, null, null, null, null, null] }));
+          this.noteOn(36, 0.99); this.noteOn(48, 0.61); run(4);
+          I.seqMsg(pay(round)); run(1);
+          SB.dropAsset(e.id);
+        }
+      }
+      I.reqOS(I.OS === 4 ? 2 : 4); // (each round: the Inst leaves at the OS it came with, 7c's rule)
+      run(8);
+      I.osPend = 0; I.osR = 1; I.osHold = 0;
+      const ck = Object.assign({}, tp, { play: true, frame: this.nowF(), tick: 0, fpt: 2.03 });
+      I.tp = ck;
+      I.seqMsg(pay(round, { sync: true, tap: 1 }));
+      for (const n of N) this.noteOn(n, 0.87);
+      for (let b = 0; b < 16; b++) { this.process(null, io); this.statN = 0; ck.frame -= 128; }
+      for (const n of N) this.noteOff(n);
+      I.seqMsg(pay(round));
       I.tp = tp;
     }
   }

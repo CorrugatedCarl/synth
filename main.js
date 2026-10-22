@@ -41,6 +41,12 @@ import * as SE from './sx-edges.js?v=9';
 // §10): the TR-606 beside the 808 — every record by its machine (normDrum(·, model)), SYNC 303s (link303 / n303)
 import * as DC from './drum-core.js?v=9';
 import * as cvDrum from './cv-drum.js?v=9';
+// stage 7d + 8 (IMPL-8 Part A, §14.1): the Pads module — pads-core's pure model (project.pads, schema 11: the grid, targets,
+// hardware bindings) and cv-pads' host (PADS below: the held state, the counts per (track, note) — every press a hit, the
+// last release ends —, the mod values, the lights, the hardware echo) and its body on the canvas; a project-level module
+// shown on every track (the Mod Wheel's placement), playing any track through noteOn's explicit targets
+import * as PC from './pads-core.js?v=9';
+import * as cvPads from './cv-pads.js?v=9';
 
 const VERSION = '9';
 const $ = (s, el = document) => el.querySelector(s);
@@ -238,6 +244,7 @@ function loadProject(json, lo = {}) {
   const p = S.deserialize(o);
   CM.stamp(p, o);
   p.perf = S.normPerf(p.perf); // (stage 2a: { wheel: { v: 1 } | null })
+  p.pads = PC.normPads(p.pads); // (8, §10.1: the Pads modules — deserialize bounds a file's; anything else [])
   for (const k of ['drawLen', 'follow', 'ghosts']) if (o && k in o) p[k] = o[k];
   const byId = new Map(((o && o.tracks) || []).map(t => [t && t.id, t]));
   for (const t of p.tracks) { // a record song.js read as v1 (no valid devices): its 303 pattern and rack from the record
@@ -248,6 +255,7 @@ function loadProject(json, lo = {}) {
   }
   adopt(p); // (SPEC-canvas §5.4: v2 tracks, a v1 record converted in place)
   for (const t of p.tracks) normDevs(t); // (SPEC-serum2 §12.6, §15.1 item 6: every device normalised; saved with v2 racks)
+  CMOD.prunePads(p); // ((8, review #28) a row whose Pads module or mod pad is gone — a partial or hostile file —, a lay entry of a missing module)
   if (up.readOnly) { if (lo.file) p.newerSchema = up.from; else goReadOnly(up.from); }
   return p;
 }
@@ -255,6 +263,7 @@ function freshProject(m) {
   const p = adopt(CM.stamp(S.newProject({ model: m.id, vals: loadVals(m), name: 'Untitled', trackName: m.name + ' 1' })));
   for (const t of p.tracks) { newRack(t, m); seedPend.add(t.id); }
   p.perf = S.normPerf(null); // (stage 2a: no Mod Wheel module yet)
+  p.pads = PC.normPads(p.pads); CMOD.prunePads(p); // ((8) no Pads module yet: [])
   return p;
 }
 // a new track's rack (R5: on its FX device once adopted — a Serum's own, a classic's panel): the default preset's (newFx)
@@ -373,8 +382,8 @@ function legacyOk(tr, c = CG.compileTrack(tr)) {
 // on an uncabled instrument rebuilds nothing; `key` is the content key the poster compares), or { off: true } when
 // nothing is left for ModCore to evaluate (no rows, ext slots or value sources: a track whose modules were deleted, or
 // a 2a-only track) — the posting from queuePatch's path and into processorOptions is the integrator's (lane D)
-function buildMods(tr) {
-  const pay = tr && tr.dev ? CG.compileMods(tr, project, { smooth: prefs.smooth, qr: null, ultra: 0 }) : null;
+function buildMods(tr) { // ((8, §5.3) padVal: a mod pad's live value — not in the memo signature: a press never reposts)
+  const pay = tr && tr.dev ? CG.compileMods(tr, project, { smooth: prefs.smooth, qr: null, ultra: 0, padVal: padValOf }) : null;
   const out = pay && (pay.rows.length || pay.ext.length || pay.vals.length) ? pay : { t: 'mods', i: tr && tr.id, off: true, key: 'off' };
   if (tr) modsLast.set(tr.id, out);
   modsBuilt++;
@@ -967,6 +976,8 @@ function powerOff() {
   seqRun.clear(); for (const P of classicPanels.values()) if (!P.dead && P.model.id === 'tb303') P.seqRunUI(false); // (every 303 shown: RUN off)
   PERF.release(); // (1i: every bed and controller lets go)
   DRUM.panic(); // ((7a) every drum machine's session stops, nothing queued or lit; their payload keys went with the nodes)
+  PADS.release({ hw: true }); // ((8, review #7) the Pads host ends its own pd<k> keys first — hardware pads too, the counts reset)
+  for (const k of [...held.keys()]) { const [src, n] = k.split(':'); if (numSrc(src)) noteOff(+n, +src); } // ((8, R1-D) the keyboard's / MIDI's notes end through noteOff, as panic's: the pads following a track count the off — the nodes are gone, so no posts)
   for (const k of [...held.keys()]) held.delete(k);
   hk.clear();
   for (const n of [...keyEls.keys()]) keyVis(n, false);
@@ -1391,7 +1402,9 @@ function keepDevs(t, cur) {
 function applyRestore(p, keepSound = false) {
   if (!p) return;
   PERF.release(); // (1i review F1: every bed and controller lets go while its track is still the selected one: the restored track is a new object, the old panels' offs would be dropped)
+  PADS.release({ hw: true }); // ((8, §10.3) every pad's notes end while their tracks are still the project's (a track the restore drops included)
   adopt(p); // (History snapshots and loads are plain objects: adopted first)
+  if (!Array.isArray(p.pads)) p.pads = PC.normPads(p.pads); // ((8) a snapshot taken before any Pads module: none)
   // undo / redo never revert knob tweaks (per device) — within one project: an undo of Open / New brings back another project
   // (1f review: track ids repeat across projects; its sound is its own)
   if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); if (modMove) modMoveBack(p, modMove); if (sxBack) sxBackApply(p, sxBack); if (drBack) drBackApply(p, drBack); } // ((3) a Serum's fields a canvas step wrote: back, §2.4 / §2.5; (7a) → Piano roll's SYNC)
@@ -1401,6 +1414,7 @@ function applyRestore(p, keepSound = false) {
   project = p;
   bind();
   syncNodes();
+  PADS.rebuild(); padLitAll(); // ((8, §10.3) the host from the restored project.pads — its views, its subscriptions (a track back from an undo)
   // ((7a) the sessions: the records the panels read (a machine changed: a fresh session), the tempo — (7c review #1) before the
   // payloads, which read them: a synced 909's flam ticks are its session's tempo's, so a stale one never goes first)
   drumChanged(); DRUM.bpm(project.bpm);
@@ -1423,7 +1437,7 @@ function updateUndoUI() { // canUndoFrom may serialise the project, so coalesce 
 // a: the anchor the nodes play from (render frames); as: the anchors still sounding, oldest first (the play() start,
 // then each seek / tempo / loop change while playing: an older one's audio is heard until the next one's frame comes out
 // of the speakers); seekA: the latest seek's anchor (recTick)
-const T = { playing: false, rec: false, a: null, as: [], seekA: null, pos: 0, startPos: 0, take: 0, lastClr: 0 };
+const T = { playing: false, rec: false, a: null, as: [], seekA: null, pos: 0, startPos: 0, take: 0, lastClr: 0, padRec: new Set() }; // ((8, §4.3) padRec: the take's pad-recorded track ids
 const fpt = () => ctx.sampleRate * 60 / (project.bpm * S.PPQ);
 function loopInfo() { const L = project.loop; return { loop: !!(L.on && L.end > L.start), ls: L.start, le: L.end }; }
 function anchor(F, tick) { const L = loopInfo(); return { frame: F, tick, fpt: fpt(), loop: L.loop, ls: L.ls, le: L.le, wrap: L.loop && tick < L.le }; }
@@ -1456,6 +1470,7 @@ async function play(from = T.pos, countBars = 0) {
   T.playing = true; T.startPos = from; T.lastClr = from;
   postTransport(true);
   DRUM.transport(true); // ((7a) the synced drum machines' START state and LEDs follow the song)
+  PADS.transport(true); // ((8, §6.2) the pads following roll notes check the heard tick each frame)
   metroStart();
   transportUI();
 }
@@ -1469,6 +1484,7 @@ function stop() {
   metroStop();
   for (const [k, P] of classicPanels) if (!seqRun.has(k) && !P.dead) P.seqStep(-1); // synced 303s stopped with the song
   DRUM.transport(false); // ((7a) and the synced drum machines: their LEDs back to the flashing key)
+  PADS.transport(false);
   transportUI(); posUI();
 }
 function reanchor(seekTick) { // tempo/loop change (or a seek) while playing, applied in sync on every node
@@ -1494,7 +1510,7 @@ function toggleRec() {
   if (T.rec) { finishRec(recTick()); T.rec = false; transportUI(); return; }
   if (!project.tracks.some(t => t.arm)) { trk().arm = true; renderHeads(); }
   hist.record(project); updateUndoUI();
-  T.take = S.newId();
+  T.take = S.newId(); T.padRec.clear(); // ((8) a new take: no pad-recorded track yet)
   if (T.playing) { T.rec = true; T.lastClr = curTick(); transportUI(); return; }
   T.rec = true;
   play(T.pos, project.metronome.countIn | 0);
@@ -1635,19 +1651,19 @@ function recCC(trs, k, v, ts) {
   const t = Math.round(recTick(ts));
   if (t < 0) return;
   for (const tr of trs) {
-    if (!tr.arm) continue;
+    if (!tr.arm && !T.padRec.has(tr.id)) continue; // ((8, §4.3 review #8) a pad's target records its Pencil aftertouch, armed or not)
     const last = tr.cc.length ? tr.cc[tr.cc.length - 1] : null;
     if (last && last.k === k && Math.abs(last.t - t) < 12) { last.v = v; continue; }
     tr.cc.push({ t, k, v, take: T.take });
     sendSong(tr);
   }
 }
-function replaceSweep(t) { // replace mode: wipe what the playhead passes on armed tracks (except this take)
+function replaceSweep(t) { // replace mode: wipe what the playhead passes on armed tracks — (8) and the take's pad-recorded ones — (except this take)
   if (!T.rec || project.rec.mode !== 'replace' || t < 0) { T.lastClr = Math.max(T.lastClr, t); return; }
   const a = T.a, ranges = t >= T.lastClr ? [[T.lastClr, t]] : [[T.lastClr, a.le], [a.ls, t]];
   T.lastClr = t;
   for (const tr of project.tracks) {
-    if (!tr.arm) continue;
+    if (!tr.arm && !T.padRec.has(tr.id)) continue; // ((8, §4.3 review #8) a pad's target, armed or not: Q5's rule in replace mode)
     const before = tr.notes.length + tr.cc.length;
     tr.notes = tr.notes.filter(n => n.take === T.take || !ranges.some(([s, e]) => n.t >= s && n.t < e));
     if (tr.notes.length + tr.cc.length !== before) { sendSong(tr); arr && arr.render(); roll && roll.render(); }
@@ -1659,20 +1675,30 @@ function replaceSweep(t) { // replace mode: wipe what the playhead passes on arm
 // MPE on receives every channel of its input); notes of MPE tracks carry their channel ({t: 'on', n, v, ch}).
 const held = new Map(); // `${src}:${n}` -> [[track id, ch]] (ch: midi.js noteCh of the note-on; its note-off carries it)
 function targets(src) { return midiTargets(project.tracks, project.selTrack, src); } // src 0 = on-screen/computer keyboard; 1..16 = MIDI channel
-function noteOn(n, v, src = 0, ts = performance.now()) {
+// (8, §4.1–§4.2) a source is the keyboard's 0, a MIDI channel 1–16 — or a Pads module's 'pd<k>' (k: the Pads host's session
+// number of its target track; no ':' in it): the host alone ends those keys (review #7) — the generic loops below skip them,
+// and a tray key's light counts only a held key that reached the selected track (a numeric source, or a pad's note on it)
+const numSrc = src => /^\d+$/.test(String(src));
+const heldSel = (k, ids) => numSrc(k.slice(0, k.indexOf(':'))) || (Array.isArray(ids) && ids.some(x => x[0] === project.selTrack));
+const heldLit = () => new Set([...held].filter(([k, ids]) => heldSel(k, ids)).map(([k]) => +k.slice(k.indexOf(':') + 1)));
+let padNext = null; // ((8, §7.2) the pad inspector's "Play it": the next input note, once)
+// trs: the tracks the note goes to (default: the input's targets); (8) a pad passes its target track and o.rec 'target' —
+// that track records it whenever recording runs, armed or not (Q5) and joins the take's T.padRec (§4.3)
+function noteOn(n, v, src = 0, ts = performance.now(), trs = targets(src), o) {
   if (!(n >= 0 && n <= 127)) return; // (1i: NaN too — it was held, lit, recorded and posted)
   const key = src + ':' + n;
   if (held.has(key)) noteOff(n, src, ts);
-  const trs = targets(src);
   const chs = trs.map(t => noteCh(t, src));
   held.set(key, trs.map((t, i) => [t.id, chs[i]]));
-  keyVis(n, true);
+  if (typeof src !== 'string' || trs.includes(trk())) keyVis(n, true); // ((8) a pad's note on another track never lights the tray)
   const send = () => { trs.forEach((t, i) => postTo(t, noteMsg(t, { t: 'on', n, v }, src, chs[i]))); };
   if (!ctx) { powerOn().then(() => { if (held.has(key)) send(); }).catch(() => {}); }
   else { wake(); send(); } // queued while suspended; plays once the context runs
-  if (T.rec) for (const t of trs) if (t.arm) recStart(t, key, n, v, ts);
+  const tgt = !!o && o.rec === 'target';
+  if (T.rec) for (const t of trs) if (t.arm || tgt) { recStart(t, key, n, v, ts); if (tgt) T.padRec.add(t.id); }
   for (const t of trs) inputNote(t, 1, n, v, ts, false);
   playingUI(trs);
+  if (padNext && typeof src !== 'string') { const f = padNext; padNext = null; f(n); }
 }
 // rv: release velocity of a MIDI note-off (0–1; Serum's Release Velocity source), absent for other note-offs
 function noteOff(n, src = 0, ts = performance.now(), rv) {
@@ -1686,7 +1712,7 @@ function noteOff(n, src = 0, ts = performance.now(), rv) {
     recEnd(t, key, ts);
     inputNote(t, 0, n, 0, ts, false);
   }
-  if (![...held.keys()].some(k => k.endsWith(':' + n))) keyVis(n, false);
+  if (![...held].some(([k, ids]) => k.endsWith(':' + n) && heldSel(k, ids))) keyVis(n, false); // ((8) a pad's note held on another track keeps no tray key lit)
 }
 function heldNotes(src) { const p = src + ':'; return [...held.keys()].filter(k => k.startsWith(p)).map(k => +k.slice(p.length)); }
 // trs: the tracks (default: the input's targets); midi.js passes the non-MPE targets of an MPE expression.
@@ -1736,6 +1762,7 @@ const lastNote = (t = trk()) => (t && lastN.has(t.id) ? lastN.get(t.id) : null);
 function inputNote(t, on, n, v, ts, audition) {
   if (on) { lastV.set(t.id, v); lastN.set(t.id, n); cvModLive('velo'); cvModLive('note'); } // (lane D: the Velocity / Note modules' readouts)
   if (!audition) { const S = inputSubs.get(t.id); if (S) for (const f of [...S.values()]) { try { f(on ? 1 : 0, n, on ? Math.max(1, Math.round(v * 127)) : 0, ts); } catch (err) { console.warn(err); } } }
+  if (!audition) { const L = padIns.get(t.id); if (L) for (const f of [...L]) { try { f(n, !!on); } catch (err) { console.warn(err); } } } // ((8, §6.2) a Pads module's pads following the track's live notes)
   if (!hasSx(t)) return; // (render-last: any Serum instrument of the track, stage 1e)
   let g = lastIn.get(t.id);
   if (on) {
@@ -1756,7 +1783,8 @@ function panic() {
   for (const t of project.tracks) seqToggle(t, false); // not quiet: the Run button and step lights must show it stopped
   PERF.release(); // (1i: the beds drop their pointers — a finger still down leaves no count — and the springs go home)
   DRUM.panic(); // ((7a) the drum machines' sessions stop — a free machine's START —, their queued posts and lights go, the pads let go)
-  for (const k of [...held.keys()]) { const [src, n] = k.split(':'); noteOff(+n, +src); }
+  PADS.release({ hw: true }); // ((8, review #7) the Pads host ends its pd<k> keys itself — hardware pads too, its counts reset — before the loop)
+  for (const k of [...held.keys()]) { const [src, n] = k.split(':'); if (numSrc(src)) noteOff(+n, +src); }
   hk.clear();
   setSustain(false);
   postAll({ t: 'panic' });
@@ -1820,6 +1848,7 @@ function setTrackModel(tr0, id, o = null) {
   if (id === 'tr606') offer303(iv); // ((7b §3.8) beside a free-running TB-303: the one-time offer, after the replace's notice)
   if (tr.id === project.selTrack && roll) { roll.refreshRows(); rollDrumUI(); } // ((7a) the roll's drum rows come and go with the model)
   if (ctx) rateText();
+  padsRefresh(); // ((8) a Pads module's drum pads on this track: lit by its new machine, or "No Kick on … any more")
   renderHeads(); persist(); updateUndoUI();
   return why;
 }
@@ -1828,10 +1857,14 @@ function selectTrack(id) {
   if (id === project.selTrack && bound === iv.id + ':' + iv.model) return;
   PERF.release(); // (1i review F2: the springs and the Pencil's aftertouch go home on the track they moved, before the selection moves)
   DRUM.release(); // ((7a) a drum machine's pads and held CLEAR too)
-  for (const k of [...held.keys()]) { const [src, n] = k.split(':'); noteOff(+n, +src); }
+  // ((8, review #7) a pad's pd<k> key is the Pads host's: skipped here — a hardware pad held across the switch keeps sounding,
+  // the canvas pointers end with the old view's body (its destroy); a latch stays)
+  for (const k of [...held.keys()]) { const [src, n] = k.split(':'); if (numSrc(src)) noteOff(+n, +src); }
   flush();
   project.selTrack = id;
   bind();
+  // ((8, R1-G) a pad's hold that outlives the switch (a latch, a hardware pad): its key is lit by the new selection's rule, either way)
+  { const L = heldLit(); for (const [n, el] of keyEls) if (el.classList.contains('down') !== L.has(n)) keyVis(n, L.has(n)); }
   renderNav(); renderViews(); renderHeads();
   roll && roll.setTrack(); arr && arr.render();
   rollDrumUI();
@@ -1889,7 +1922,7 @@ const classicHost = {
 // (1i, IMPL-1i §6.1) the hardware keys and controllers: the on-screen keyboard's note path and the tray wheels' ctl, for the
 // selected track's panels only (a stale panel plays nothing); held(): the notes lit now (a bed mounts lit)
 const PERF = cvKeys.perfHost({ noteOn: (n, v, ts) => noteOn(n, v, 0, ts), noteOff: (n, ts) => noteOff(n, 0, ts), ctl: (k, v) => ctl(k, v, 0),
-  live: k => (perfLive.get(trk().id) || {})[k] || 0, held: () => [...new Set([...held.keys()].map(k => +k.split(':')[1]))],
+  live: k => (perfLive.get(trk().id) || {})[k] || 0, held: () => [...heldLit()], // ((8) a pad's note on another track never lights the selected synth's bed)
   bendUI: v => setBendUI && setBendUI((v + 1) / 2, false), modUI: v => setModUI && setModUI(v, false), sel: v => trOf(v) === trk() });
 classicHost.perf = PERF;
 // (7a, IMPL-7a §10.1) the drum machines' host (cv-drum drumHost; its deps in cv-drum.js's header): START/STOP synced is the
@@ -1911,8 +1944,98 @@ const DRUM = cvDrum.drumHost({
   link303: (x, s) => link303(x, s), n303: () => n303(), // ((7b §3.8) SYNC 303s: the 606's button, its state)
 });
 classicHost.drum = DRUM;
+// (8, IMPL-8 §4, §5.3, §6, §8; §17 lane U's deps) the Pads host (cv-pads padsHost): every Pads module's held state, apart from
+// any DOM (a hardware pad plays with its module off screen). A pad names its tracks: noteOn's explicit targets with src
+// 'pd<k>' (k the host's session number of the track: its own held keys) and o.rec 'target' (the target records, armed or
+// not: Q5) — never the selected track by default; a mod pad's value to the value table of every track holding its rows
+// (modVal: no repost); a drum hit's REC and the lights through the drum host by the track's machine view; one History step
+// per mapping edit (step, the edit, changed)
+const trackById = id => project.tracks.find(t => t.id === id) || null;
+const padMods = () => (Array.isArray(project.pads) ? project.pads : []);
+const padMod = id => padMods().find(M => M && M.id === id) || null;
+function padValOf(id) { return PADS.value(id); } // (compileMods' padVal: the live value, the pad's lo at rest)
+const padDrumView = t => { const k = cvPads.drumDev(t); return k ? instView(t, k) : null; }; // (the drum host keys its entries by the panels' view)
+const midiOk = () => { const n = globalThis.navigator; return !!n && typeof n.requestMIDIAccess === 'function'; }; // (§8.1: no iPad browser has Web MIDI)
+// the host's drum lights: one drum-host lit subscription per track for all its subscribers — made again when the track's
+// machine is forgotten (a Replace, a delete: drumForget) once it holds its next one, or the track comes back (an undo)
+const padLit = new Map(); // track id → { fns: Set(fn(mask)), off: fn | null }
+function padLitSync(id) {
+  const e = padLit.get(id);
+  if (!e) return;
+  const t = e.fns.size ? trackById(id) : null, v = t ? padDrumView(t) : null;
+  if (!v) { if (e.off) { const f = e.off; e.off = null; f(); } if (!e.fns.size) padLit.delete(id); return; }
+  if (!e.off) e.off = DRUM.api(v).lit(mask => { for (const f of [...e.fns]) { try { f(mask); } catch (err) { console.warn(err); } } });
+}
+const padLitAll = () => { for (const id of [...padLit.keys()]) padLitSync(id); };
+function padLitDrop(id) { const e = padLit.get(id); if (e && e.off) { e.off = null; queueMicrotask(() => padLitSync(id)); } } // (the forgotten entry took its subscription with it)
+const padIns = new Map(); // track id → Set(fn(n, on)): the host's live input notes of a track (inputNote: the tray, MIDI, other pads)
+let padFoot = new Map(); // module id → its footprint's width when the edit in flight took its History step (padsChanged: a Grid… resize)
+const PADS = cvPads.padsHost({
+  project: () => project,
+  noteOn: (tr, n, v, ts, src) => { const t = trackById(tr); if (t) noteOn(n, v, src, ts, [t], { rec: 'target' }); },
+  noteOff: (tr, n, ts, src) => noteOff(n, src, ts),
+  ctl: (tr, kind, v, ts) => { const t = trackById(tr); if (t) ctl(kind, v, 0, ts, [t]); }, // (the Pencil's aftertouch: that track alone)
+  modVal: (src, v) => { const q = PC.padOfSrc(src); if (q) for (const t of CMOD.padTracks(project, src)) modVal(t, q.id, 'p' + q.i, v); },
+  drumRec: (tr, s, v, ts) => { const t = trackById(tr), x = t && padDrumView(t); return x ? DRUM.rec(x, s, v, ts) : false; },
+  drumLit: (tr, fn) => {
+    let e = padLit.get(tr);
+    if (!e) padLit.set(tr, (e = { fns: new Set(), off: null }));
+    e.fns.add(fn); padLitSync(tr);
+    return () => { e.fns.delete(fn); padLitSync(tr); };
+  },
+  monSync: () => monitors.sync(), // (review #29: drumMonitor's live reads PADS.wants — a change of it alone syncs)
+  inputSub: (tr, fn) => {
+    let S = padIns.get(tr);
+    if (!S) padIns.set(tr, (S = new Set()));
+    S.add(fn);
+    return () => { const L = padIns.get(tr); if (L && L.delete(fn) && !L.size) padIns.delete(tr); };
+  },
+  heardTick: () => curTick(), live: id => cvLive(id), drumOf: (t, dev) => drumOf(t, dev),
+  step: label => { padFoot = new Map(padMods().map(M => [M.id, cvPads.moduleSize(M).fixed.w])); hist.record(project, label); updateUndoUI(); }, changed: o => padsChanged(o), undo: () => undo(), rowsOf: src => padRowsOf(src),
+  learnPad: () => midi.learnPad(), cancelLearn: () => midi.cancelLearn(true), midiOk: () => midiOk(),
+  inputs: () => midi.inputs(), outputs: () => midi.outputs(), hwOut: (port, b) => midi.send(port, b),
+  nextNote: fn => { padNext = fn; return () => { if (padNext === fn) padNext = null; }; },
+  jump: (tr, id) => cvReveal(tr, id), modelName: m => { const x = MODELS.find(y => y.id === m); return x ? x.name : ''; },
+  notice: (text, ms, onTap) => { if (onTap) noticeActs.set(text, () => { noticeActs.delete(text); notice('', 0); onTap(); }); notice(text, ms); },
+  confirm: text => confirm(text), raf: f => requestAnimationFrame(f), now: () => performance.now(),
+});
+// a mod pad's rows on every track, for its inspector: [{ track, label }]
+function padRowsOf(src) {
+  const out = [];
+  for (const x of CMOD.padRows(project, src).byTrack) {
+    const t = trackById(x.trackId);
+    if (t) for (const id of x.rows) { const r = (t.mods || []).find(m => m && m.id === id); if (r) out.push({ track: t.name, label: modLabel(r.dst, t) }); }
+  }
+  return out;
+}
+// after a Pads edit (its History step taken before it): the rows of a pad whose Modulation went off, in the same step (review
+// #31: those tracks' payloads); a mod pad's rest value / range to the tables of the tracks holding it (no repost); the canvas
+// (the module's fixed size, its jacks, title and cables; the tray's "8 Pads modules"), the save
+function padsChanged(o) {
+  const hit = new Set();
+  for (const s of o && Array.isArray(o.drop) ? o.drop : []) for (const x of CMOD.dropPadRows(project, s).byTrack) hit.add(x.trackId);
+  for (const t of project.tracks) {
+    if (hit.has(t.id)) { queuePatch(t); continue; }
+    const pay = o && o.id && t.dev ? modsPay(t) : null;
+    if (pay && !pay.off) for (const e of pay.vals) { const q = e && PC.padOfSrc(e.id); if (q && q.id === o.id) modVal(t, q.id, 'p' + q.i, PADS.value(e.id)); }
+  }
+  // (R2-F9) a module that grew or shrank (Grid…): its place on the OTHER tracks, where it stands in Tidy's column (the first lay
+  // write there pinned it at the old width), keeps the column's right edge — else it covers their instrument. A place the user
+  // moved stays, as does this track's (§1.3: the top-left corner fixed, the user sees it happen); undo / redo carry it (the step)
+  for (const M of padMods()) {
+    const w0 = padFoot.get(M.id), w1 = cvPads.moduleSize(M).fixed.w, x0 = -cvModule.roundW(w0 + cvModule.MOD_GAP), x1 = -cvModule.roundW(w1 + cvModule.MOD_GAP);
+    if (w0 != null && w1 !== w0) for (const t of project.tracks) { const e = t !== trk() && t.lay && typeof t.lay === 'object' ? t.lay[M.id] : null; if (e && e.x === x0) t.lay = Object.assign({}, t.lay, { [M.id]: Object.assign({}, e, { x: x1 }) }); }
+  }
+  padFoot = new Map();
+  cvRender();
+  if (hit.size) cvModSync();
+  persist(); updateUndoUI();
+}
+// the Pads modules after the tracks changed under them (a Replace, a track deleted, an undo): the lights' subscriptions, the
+// pads' warnings ("No Kick on “Drums” any more"), the "+N on other tracks"
+function padsRefresh() { padLitAll(); PADS.resync(); for (const B of modBodies.values()) if (B.kind === 'pads') B.sync(); }
 // a window blur / a hidden page: the beds and controllers let go, but a MIDI or tray note still sounds — its bed light stays (1i review F4)
-function perfLetGo() { PERF.release(); for (const n of new Set([...held.keys()].map(k => +k.split(':')[1]))) PERF.lit(n, true); }
+function perfLetGo() { PERF.release(); for (const n of heldLit()) PERF.lit(n, true); } // ((8) the notes that reached the selected track)
 const panelKey = v => { const t = trOf(v); return t ? t.id + '/' + dvOf(v) : ''; };
 const classicOf = v => { const P = v && classicPanels.get(panelKey(v)); return P && !P.dead && P.track === v ? P : null; };
 function aboutUI(m) { $('#about-title').textContent = `${m.maker} ${m.name} (${m.year})`; $('#about').textContent = m.about; }
@@ -2563,6 +2686,9 @@ const midi = createMidi({
   notice: (txt, ms) => notice(txt, ms),
   button: () => $('#midi'),
   modCC: (ch, cc, v) => modCC(ch, cc, v), // (2b: the canvas CC modules, CC learn)
+  // (8, §8.2) a learned hardware pad plays its canvas pad and goes nowhere else (true); a port gone ends its pads' notes (review #9)
+  padIn: (e, port, ts) => PADS.midiIn(e, port, ts),
+  ports: names => { PADS.ports(names); for (const B of modBodies.values()) if (B.kind === 'pads') B.sync(); }, // (the footers' hardware dots)
 });
 const midiLearn = (id, dest, dev = null) => midi.learn(id, dev, dest); // (dev: the Serum instrument; null: the primary)
 const cancelLearn = say => midi.cancelLearn(say);
@@ -3253,6 +3379,7 @@ function drumChanged() { for (const t of project.tracks) for (const k of drumDev
 function drumForget(t, dev) {
   const iv = instView(t, dev);
   drumMonitor(iv, false); DRUM.forget(iv);
+  padLitDrop(t.id); // ((8) a Pads module lit from it: subscribed again to the track's next machine (padsRefresh)
   const N = nodes.get(t.id);
   if (N && N.drPk) N.drPk.delete(dev);
 }
@@ -3477,7 +3604,7 @@ function drumMonitor(x, on) {
   const id = t.id, key = id + '/' + dev, off = drMons.get(key);
   if (!on) { if (off) { drMons.delete(key); off(); } return; }
   if (off) return;
-  drMons.set(key, monitors.sub(id, dev, { role: 'inst', live: () => project.selTrack === id && cvLive(dev),
+  drMons.set(key, monitors.sub(id, dev, { role: 'inst', live: () => (project.selTrack === id && cvLive(dev)) || PADS.wants(id), // ((8, §6.2) or a shown Pads module lights from this machine)
     deliver: d => { const iv = d && d.dr ? viewOfKey(key) : null; if (iv && iv.track) DRUM.mon(iv, d.dr); } }));
 }
 let drErr = false;
@@ -3588,10 +3715,12 @@ function deleteTrack(t) {
   const i = project.tracks.indexOf(t);
   if (project.selTrack === t.id) PERF.release(); // (1i review F3: its beds' keys end while it is still the selected track)
   for (const k of drumDevs(t)) drumForget(t, k); // ((7a) its drum machines' sessions)
+  PADS.endTrack(t.id); // ((8, D9) every pad's notes on it end — the targets stay (an undo brings the track back)
   project.tracks.splice(i, 1);
   seqRun.delete(t.id); inputSubs.delete(t.id); lastIn.delete(t.id);
   if (project.selTrack === t.id) { project.selTrack = project.tracks[Math.max(0, i - 1)].id; bind(); renderNav(); renderViews(); roll && roll.setTrack(); rollDrumUI(); }
   syncNodes();
+  padsRefresh(); // ((8) its pads warn, their lights and "+N" follow)
   renderHeads(); persist(); updateUndoUI();
 }
 
@@ -3722,6 +3851,7 @@ function openTab(name) {
   if (world) world.setActive(name === 'canvas');
   // a default camera owed since a track switch under ROLL: now, on the real band (setActive measured it)
   if (name === 'canvas' && cvCamDef && cvView && cvCamDef === CM.camKey(project.uid, cvView.trackId)) cvCamRestore(trk());
+  PADS.resync(); // ((8, R1-C) a Pads module hidden with the canvas wants no lights: the drum monitors it held on go off with ROLL, back with CANVAS)
   monitors.sync();
   if (name === 'canvas') sxReshow();
   store.set('synth.tab', name);
@@ -4175,7 +4305,7 @@ function buildKeys() {
   const ww = 100 / R.nW, bw = ww * 0.62;
   let wi = 0;
   const comp = 60 + 12 * octave;
-  const lit = new Set([...held.keys()].map(k => +k.split(':')[1]));
+  const lit = heldLit(); // ((8, review #7) a pad's note held on another track: unlit)
   for (let n = R.lo; n <= R.hi; n++) {
     const k = h('div', 'key ' + (isBlack(n) ? 'b' : 'w'));
     k.dataset.n = n;
@@ -4427,7 +4557,7 @@ function initKeys() {
     if (hk.has(code)) { noteOff(hk.get(code), 0, e.timeStamp); hk.delete(code); }
     if (e.key === 'Meta' || e.key === 'OS') releaseKeys(); // macOS sends no keyup for keys released while Cmd is held
   });
-  window.addEventListener('blur', () => { releaseKeys(); perfLetGo(); DRUM.release(); }); // (1i: the hardware beds and controllers too; 7a: the pads, a held CLEAR)
+  window.addEventListener('blur', () => { releaseKeys(); PADS.release(); perfLetGo(); DRUM.release(); }); // (1i: the hardware beds and controllers too; 7a: the pads, a held CLEAR; (8) the Pads modules' canvas and key holds — a hardware pad's note stays until its note-off)
   // a select/slider/checkbox changed with the mouse gives focus back to the page, so the computer keyboard plays again
   let ptrT = -1, keyT = 0;
   window.addEventListener('pointerdown', () => { ptrT = performance.now(); }, true);
@@ -4696,7 +4826,9 @@ function srcModeUI(mode) {
   shell.tiles.setMode(mode);
   const p = $('#srcMode'), v = shell.tiles.view(), one = v === 'serum' ? 'Serum' : 'one'; // (the intro follows the view)
   p.innerHTML = '';
-  if (mode === 'track') p.append('Tap ' + one + ' for ', h('b', null, 'a new track'), ', or drag it onto the track list.');
+  // ((8, R2-F6) the Controllers view: a tap adds a Pads module to the project — no instrument is replaced, no track made — in either mode)
+  if (v === 'ctl') p.append(document.createTextNode('Tap '), h('b', null, 'Pads'), document.createTextNode(' to add a pad grid to the canvas — it shows on every track — or drag it where you want it.'));
+  else if (mode === 'track') p.append('Tap ' + one + ' for ', h('b', null, 'a new track'), ', or drag it onto the track list.');
   else p.append('Tap ' + one + ' to use it' + (v === 'flow' ? ' (simple panel)' : '') + ' in place of the ', h('b', null, curModel().name), ' on ',
     h('b', null, '“' + trk().name + '”'), ', or drag it onto the canvas. Drag it onto the track list for a new track.');
 }
@@ -4830,6 +4962,9 @@ function initShell() {
     // (stage 2a) the Modulators section: a tap adds one where Tidy would, a drop where it lands (modPick / modTileDrag)
     mods: MOD_TILES, modsEl: $('#srcMods'), modsSec: $('#srcModSec'), modPick: id => modAdd(id, null), modDrag: modTileDrag,
     modCanvasGhost: () => !!world && !$('#tab-inst').hidden, toWorld: (x, y) => { const W = cvW(); return W && typeof W.toWorld === 'function' ? W.toWorld(x, y) : null; },
+    // (8, §1.2) the Controllers view's tile row (Pads): a tap adds one where Tidy would, a drop where it lands (at its footprint)
+    ctls: cvTray.CTL_TILES, ctlsEl: $('#srcCtls'), ctlsSec: $('#srcCtlSec'), ctlPick: id => modAdd(id, null), ctlDrag: modTileDrag,
+    ctlCanvasGhost: () => !!world && !$('#tab-inst').hidden,
     // (milestone 3, §2.6) the Serum parts and note tools: a tap onto the track's Serum (or the Replace with Serum offer), a drop where it lands
     parts: true, partsEl: $('#srcParts'), partsSec: $('#srcPartSec'), notesEl: $('#srcNotes'), notesSec: $('#srcNoteSec'), partPick: id => sxPartPick(id), partDrag: sxPartDrag,
     partCanvasGhost: () => !!world && !$('#tab-inst').hidden });
@@ -4950,7 +5085,7 @@ function initModules() {
     W.on('resize', e => cvCamResized(e)); // (the keyboard tray sized after boot, a rotation: an untouched default follows)
     W.on('mods', m => { if (cvView) cvView.setModsVisible(m); }); // (stage 2a: the toolbar ∿ — Always / On select / Never)
     let slept = false; // (1i §4.3) a tap on sleeping keys / a controller: the hint, once per session
-    W.on('sleeptap', () => { if (!slept) { slept = true; notice('Zoom in, or double-tap the synth, to play it', 2500); } });
+    W.on('sleeptap', d => { const pd = !!d && PC.PAD_ID.test(d.id); if (slept !== true && slept !== (pd ? 'p' : 's')) { slept = slept ? true : pd ? 'p' : 's'; notice(pd ? 'Zoom in, or double-tap the module, to play it' : 'Zoom in, or double-tap the synth, to play it', 2500); } }); // ((8, §2.3) a Pads module's own words, once each)
   }
   window.addEventListener('pagehide', cvCamFlush);
   document.addEventListener('visibilitychange', () => { if (document.hidden) cvCamFlush(); });
@@ -4964,6 +5099,7 @@ function cvLive(key) {
   return !$('#tab-inst').hidden && cvView.live(key);
 }
 const kindOfKey = (t, key) => {
+  if (PC.PAD_ID.test(key)) return padMod(key) ? 'mod' : null; // ((8, §1.1) a Pads module: the project's, a modulator-kind module on every track)
   const q = CMOD.partOf(key);
   if (q) return isSerumDev(t, q.dev) ? 'part' : null; // ((3) a Serum part 'iN/oscB': a module of its Serum's host, no device)
   const d = t && t.dev ? t.dev[key] : null;
@@ -5154,14 +5290,14 @@ function cvHost() {
       dashedSet: () => dashedOf(trk()) }, // (2b: a per-note source following the last note — compileMods' derived list; (C4) one build per refresh, not per cable)
     title: cvTitle,
     menu: cvMenu,
-    size: key => { const t = trk(), q = CMOD.partOf(key); return q ? { fixed: { w: sxPartW(SE.kindOf(q.part)) } } : CMOD.instOf(t, key) ? cvInstSize(t, key) : null; }, // ((3) a part: its panel's width)
+    size: key => { if (PC.PAD_ID.test(key)) { const M = padMod(key); return M ? cvPads.moduleSize(M) : null; } const t = trk(), q = CMOD.partOf(key); return q ? { fixed: { w: sxPartW(SE.kindOf(q.part)) } } : CMOD.instOf(t, key) ? cvInstSize(t, key) : null; }, // ((3) a part: its panel's width; (8) a Pads module: its grid's footprint)
     powerEl: key => sxPowerEl(key), // ((3) a part's own ⏻ (its panel's power toggle) in its bar's power slot
     // (stage 1f: no ⏻, no key-zone pill — host.power / host.zone not given —, read-only cables)
     badge: key => cvBadge(key),
     patch: false,
     select: key => { const t = trk(); if (CMOD.instOf(t, key)) setCur(t, key); },
     lay: cvLay,
-    shown: () => { monitors.sync(); sxReshow(); },
+    shown: () => { PADS.resync(); monitors.sync(); sxReshow(); }, // ((8) a Pads module on / off screen: its lights' subscriptions first)
   };
 }
 // (review 2 P1-2) a part module on screen again (or unfolded, or the CANVAS tab back): a Serum view a paint skipped while it
@@ -5176,6 +5312,7 @@ function cvTitle(key) {
   if (kind === 'part') { const q = CMOD.partOf(key); return { title: SE.partLabel(q.part), sub: cvDevName(t, q.dev) }; } // ((3) 'OSC B' of Serum …; the chip S<n> cv-module's)
   if (kind === 'inst' && isSerumDev(t, key) && sxParts(t, key)) return { title: (d.name || modelById(d.model).name) + ' · VOICE', sub: t.name, chip: cvChip(t, key) }; // ((3) VOICE: the Serum's hub)
   if (kind === 'inst') { const m = modelById(d.model); return { title: d.name || m.name, sub: t.name, chip: cvChip(t, key) }; }
+  if (kind === 'mod' && PC.PAD_ID.test(key)) { const M = padMod(key); return { title: M ? M.name : key, sub: 'every track', chip: cvPads.chipText(M) }; } // ((8) "Pads 1", its grid "4 × 4")
   if (kind === 'mod') { const mk = modKindOfKey(t, key); return { title: mk ? CMOD.modLabelOf(key, d) : key, sub: key === 'wheel' ? 'every track' : t.name }; } // ((U7) numbered: "LFO 2", as History and the labels say)
   if (kind === 'fx') {
     const own = /\/fx$/.test(key) ? key.slice(0, -3) : null, fx = fxOfDev(t, own || key);
@@ -5255,6 +5392,10 @@ function cvMenu(a, b) {
     return [...head, { sep: true }, ...lays,
       { label: 'Save sound…', action: () => presetSave(iv) }, { label: 'Delete saved sound', action: () => presetDelete(iv), disabled: !presetSaved(iv) }, { label: 'Init sound', action: () => presetInit(iv) },
       { sep: true }, fold, front, { sep: true }, tidyI];
+  }
+  if (kind === 'mod' && PC.PAD_ID.test(key)) { // ((8, §7.3) the body's own items — Edit pads, Grid…, Velocity…, Light, Fill from…, Clear, shape, Hardware…, Rename — then Fold · Delete
+    const B = modBodies.get(key), own = B && B.kind === 'pads' ? B.menuItems() : [];
+    return [...own, { sep: true }, fold, front, { sep: true }, { label: 'Delete', action: () => modDelete(key) }, { sep: true }, tidyI];
   }
   if (kind === 'mod') return [{ label: 'Delete', action: () => modDelete(key) }, { label: 'Modulation list…', action: () => modList() }, { sep: true }, fold, front, { sep: true }, tidyI];
   if (kind === 'part') { // ((3, §2.7) the panel's own module items — Init, Copy, Paste, Swap with ▸, Lock — then Remove, Bundle
@@ -6350,7 +6491,7 @@ function sxPartsDecor() {
 // the editing bodies (one History step per gesture end: modEditState), macro knobs and CCs as {t: 'mval'} (modVal), the
 // classic panels' halos from the engine's eff snapshot (cpHalos / cpSnap), the press-and-hold mod menu (classicHost.modMenu)
 const MOD_TILES = cvTray.MOD_TILES; // (2b: every kind; multi-instance tiles never grey out)
-const modKindOfKey = (t, key) => (key === 'wheel' ? 'wheel' : t && t.dev && t.dev[key] && CMOD.kindOfId(key) === t.dev[key].kind ? t.dev[key].kind : null);
+const modKindOfKey = (t, key) => (key === 'wheel' ? 'wheel' : PC.PAD_ID.test(key) ? (padMod(key) ? 'pads' : null) : t && t.dev && t.dev[key] && CMOD.kindOfId(key) === t.dev[key].kind ? t.dev[key].kind : null); // ((8) 'pd<n>': a Pads module)
 const modKeyOf = kind => (kind === 'wheel' ? 'wheel' : CMOD.MOD_DEV[kind] || null); // (a singleton's id; a multi kind's comes from addModDev)
 const MOD_EDIT = new Set(['lfo', 'env', 'macro', 'cc', 'chaos', 'note']); // (2b: the bodies over a device's state)
 const modSrcList = t => CMOD.sourcesOf(t, project).concat(CMOD.linkSources(t)); // (every source a cable may start from: the wheel, the modules, the Serums' own LFOs / ENVs)
@@ -6363,6 +6504,9 @@ const modBodies = new Map(); // module key → its cv-mods-ui body (+ kind)
 function cvDevices(t) {
   const L = cvModule.devicesOf(t);
   if (CMOD.hasWheel(project)) L.push({ key: 'wheel', kind: 'mod', mod: 'wheel', model: null, dev: null });
+  // ((8, §1.1, §5.4, §9; review #4) the project's Pads modules, on every track: their jacks — each mod pad's inline 'p<i>', the
+  // 'notes' jack the note cables leave from — and their colour from the entry)
+  for (const M of padMods()) L.push({ key: M.id, kind: 'mod', mod: 'pads', model: null, dev: null, jacks: cvPads.moduleJacks(M), color: cvPads.PADS_COLOR });
   // (milestone 3, §2.1) each Serum in parts view: its part modules (sx-edges partKeys: I1 the parts that are on, I2 the own
   // ENV / LFO slots something reads, MACROS when a macro row exists, ARP / CLIP when on, any laid-out part)
   for (const dev of serumIds(t)) if (sxParts(t, dev)) for (const part of sxPartList(t, dev)) L.push({ key: dev + '/' + part, kind: 'part', dev, part, model: 'serum', title: SE.partLabel(part) });
@@ -6374,6 +6518,13 @@ const modCCLast = new Map(); // '<track id>/<cc module>' → the last controller
 function modMount(key, b) {
   const t = trk(), tid = t.id, kind = modKindOfKey(t, key), o = { doc: document, get: () => modValue(kind) };
   modUnmount(key);
+  if (kind === 'pads') { // ((8, §1.1, §7) a Pads module's body: a view of the host — its grid on the cv-keys bed, its footer, Edit mode, the inspector)
+    const B = cvPads.padsBody({ host: PADS, id: key, doc: document, track: () => trk().id }); // (its buttons: cv-pads tapOn — pressOrTap's rule, plus the keyboard's click)
+    B.kind = 'pads';
+    b.append(B.el);
+    modBodies.set(key, B);
+    return;
+  }
   if (kind === 'wheel') Object.assign(o, { label: 'Mod Wheel', set: v => { ctl('wheel', v, 0); if (setModUI) setModUI(v, false); }, onJump: modJump });
   else if (MOD_EDIT.has(kind)) { // (2b) the editing bodies: the device's state, one step per gesture end, the live hooks
     Object.assign(o, { get: () => { const x = project.tracks.find(y => y.id === tid); return x && x.dev && x.dev[key] ? x.dev[key] : {}; }, edit: f => { modLiveEnd(); modEditState(key, f); }, bpm: () => project.bpm });
@@ -6605,6 +6756,7 @@ function cvModDecor() {
   if (T && typeof T.setPlaced === 'function') {
     T.setPlaced('wheel', CMOD.hasWheel(project) ? 'already in this project' : null);
     for (const k of ['velo', 'at', 'bend', 'note']) T.setPlaced(k, t.dev && t.dev[CMOD.MOD_DEV[k]] ? 'already on this track' : null); // (multi kinds ignore it)
+    T.setPlaced('pads', padMods().length >= PC.MAX_MODS ? PADS_FULL : null); // ((8, §1.2) the Controllers tile greys at the project's 8th, never before)
   }
   const W = modBodies.get('wheel');
   if (W) W.setOthers(modOthers());
@@ -6627,14 +6779,15 @@ function modHt(kind) {
   if (h) modHSeen.set(kind, h);
   return h || modHSeen.get(kind) || MOD_H_SX[kind];
 }
-function modSpot(t, kind) {
-  const D = cvWorld.DOT, up = v => Math.ceil(v / D) * D, G = cvModule.VGAP, w = cvModule.modW(kind), here = cvView && cvView.trackId === t.id;
-  const x = cvModule.modX(kind), h = modHt(kind);
+function modSpot(t, kind, F) { // ((8) F: a Pads module's footprint { w, h } — its kind has no modW / modHt (review #18); after every modulator, then the other Pads modules)
+  const D = cvWorld.DOT, up = v => Math.ceil(v / D) * D, G = cvModule.VGAP, w = F ? F.w : cvModule.modW(kind), here = cvView && cvView.trackId === t.id;
+  const x = F ? -up(F.w + cvModule.MOD_GAP) : cvModule.modX(kind), h = F ? F.h : modHt(kind);
   const R = here ? Object.values(cvView.rects()).filter(r => r && r.x < x + w && r.x + r.w > x) : [];
   let y = 0;
-  const ORD = cvModule.MOD_ORDER;
+  const ORD = cvModule.MOD_ORDER, ko = ORD.includes(kind) ? ORD.indexOf(kind) : ORD.length;
   if (kind !== 'wheel' && CMOD.hasWheel(project)) y = up(y + modH('wheel', here ? 'wheel' : null) + G);
-  for (const m of CMOD.modDevs(t)) { if (ORD.indexOf(m.kind) > ORD.indexOf(kind)) break; y = up(y + modH(m.kind, here ? m.id : null) + G); } // (2b: a multi kind lands after its siblings)
+  for (const m of CMOD.modDevs(t)) { if (ORD.indexOf(m.kind) > ko) break; y = up(y + modH(m.kind, here ? m.id : null) + G); } // (2b: a multi kind lands after its siblings)
+  if (kind === 'pads') for (const M of padMods()) if (t.lay && t.lay[M.id]) y = up(y + PC.footprint(M.rows, M.cols, M.size).h + G); // ((8) the Pads modules placed here before it)
   if (!R.some(r => r.y < y + h && r.y + r.h > y)) return { x, y };
   y = 0;
   for (const r of R) y = Math.max(y, r.y + r.h + G);
@@ -6645,8 +6798,8 @@ function modSpot(t, kind) {
 // (review 2 P1-4) by the kind's measured height; then clear of every other module too: below what it would cover (the
 // column stays one column — a drop onto the instrument never lands on another modulator). sxSettle checks again once its
 // panel is up.
-function modClear(t, kind, p) {
-  const w = cvModule.modW(kind), h = modHt(kind), D = cvWorld.DOT, G = cvModule.VGAP;
+function modClear(t, kind, p, F) { // ((8) F: a Pads module's footprint)
+  const w = F ? F.w : cvModule.modW(kind), h = F ? F.h : modHt(kind), D = cvWorld.DOT, G = cvModule.VGAP;
   if (!cvView || cvView.trackId !== t.id) return p;
   const R = cvView.rects(), inst = new Set(CMOD.instIds(t)), I = [...inst].map(k => R[k]).filter(Boolean), A = Object.values(R).filter(Boolean);
   const r = { x: p.x, y: p.y, w, h };
@@ -6663,7 +6816,30 @@ function modShow(key) {
   W.focusItem(key, { k: W.k, edit: false });
   return true;
 }
+// (8, §1.2, §1.4) a Pads module from the Controllers view: one step "Add Pads 1" — the module (project.pads, following the track
+// it is added on, §3.5: a drum machine's pad order, else a chromatic run from C3) and its place on this track (a tap: the
+// modulator column's next free spot; a drop: where it lands — both at its footprint, review #18); on every other track
+// Tidy-placed until moved there
+const PADS_FULL = PC.MAX_MODS + ' Pads modules in this project';
+const padsNewF = () => { const o = cvPads.defaultsOf(trk(), drumOf); return PC.footprint(o.rows, o.cols, 1); }; // (a new module's fixed size: M pads)
+function padsAdd(at) {
+  const t = trk(), tap = !(at && Number.isFinite(at.x) && Number.isFinite(at.y));
+  if (padMods().length >= PC.MAX_MODS) { notice(PADS_FULL, 3500); return null; }
+  hist.record(project, 'Add Pads');
+  const lay = cvPinned(t), r = CMOD.addPads(project, cvPads.defaultsOf(t, drumOf)), M = r.ok ? padMod(r.id) : null;
+  if (!M) { hist.prune(project); notice(r.why || PADS_FULL, 3500); updateUndoUI(); return null; }
+  const step = hist.u[hist.u.length - 1], id = M.id, F = PC.footprint(M.rows, M.cols, M.size);
+  step.label = 'Add ' + M.name;
+  lay[id] = tap ? modSpot(t, 'pads', F) : modClear(t, 'pads', { x: cvDot(at.x), y: cvDot(at.y) }, F);
+  t.lay = lay;
+  cvAfter(t);
+  PADS.resync();
+  if (tap) modShow(id);
+  cvUndoNotice(`Added ${M.name} · tap to undo`, step, () => (padMod(id) ? () => modDelete(id, true) : null));
+  return id;
+}
 function modAdd(kind, at) {
+  if (kind === 'pads') return padsAdd(at);
   const t = trk(), multi = CMOD.MOD_MULTI.includes(kind), key0 = modKeyOf(kind), name = CMOD.MOD_LABEL[kind];
   if (!name || !t.dev || (!multi && !key0)) return null;
   if (!multi && (kind === 'wheel' ? CMOD.hasWheel(project) : key0 in t.dev)) { notice(name + (kind === 'wheel' ? ' is already in this project' : ' is already on this track'), 3500); return null; }
@@ -6687,26 +6863,46 @@ function modAdd(kind, at) {
   });
   return key;
 }
+// ((8) a Controllers tile — Pads — the same way at its footprint: the new module's grid on the track it would follow)
+const tileW = id => (id === 'pads' ? padsNewF().w : cvModule.modW(id)), tileH = id => (id === 'pads' ? padsNewF().h : modHt(id));
 const modTileDrag = { // a Modulators tile dragged out: its true-size outline under the pointer over the canvas
   move(id, i) {
     if (!world) return;
-    if (i.over === 'canvas') shell.drop = world.ghost({ x: i.x, y: i.y, w: cvModule.modW(id), h: modTileDrag.h || modHt(id), label: '+ ' + (CMOD.MOD_LABEL[id] || id) }); // ((3) its kind's width; its measured height, read once per drag, review 2 P1-4)
+    if (i.over === 'canvas') shell.drop = world.ghost({ x: i.x, y: i.y, w: modTileDrag.w || tileW(id), h: modTileDrag.h || tileH(id), label: '+ ' + (id === 'pads' ? 'Pads' : CMOD.MOD_LABEL[id] || id) }); // ((3) its kind's width; its measured height, read once per drag, review 2 P1-4)
     else { world.ghost(null); shell.drop = null; }
     world.dragPointer(!i.left ? null : { x: i.x, y: i.y, pointerType: i.pointerType });
   },
-  begin(id, i) { modTileDrag.h = modHt(id); if (world) world.setDragging(true); modTileDrag.move(id, i); },
+  begin(id, i) { modTileDrag.w = tileW(id); modTileDrag.h = tileH(id); if (world) world.setDragging(true); modTileDrag.move(id, i); },
   drop(id, i) {
-    const r = shell.drop, h = modTileDrag.h || modHt(id);
-    modTileDrag.h = 0;
+    const r = shell.drop, w = modTileDrag.w || tileW(id), h = modTileDrag.h || tileH(id);
+    modTileDrag.w = modTileDrag.h = 0;
     srcDragEnd();
     if (i.over !== 'canvas') return false;
-    modAdd(id, r || (i.at ? { x: i.at.x - cvModule.modW(id) / 2, y: i.at.y - h / 2 } : null));
+    modAdd(id, r || (i.at ? { x: i.at.x - w / 2, y: i.at.y - h / 2 } : null));
     return true;
   },
-  cancel() { modTileDrag.h = 0; srcDragEnd(); },
+  cancel() { modTileDrag.w = modTileDrag.h = 0; srcDragEnd(); },
 };
 // ⋯ → Delete: a modulator and its cables, one step (the wheel: from every track, asked first when it has cables)
+// (8, §1.4, D9) a Pads module: asked first when it has mod rows on any track; its hardware lights dark (§8.4), its held notes
+// ended, then one step "Delete Pads 1" — the module, every row of its pads and its place on every track (cv-model removePads)
+function padsDelete(id, quiet) {
+  const M = padMod(id);
+  if (!M) return false;
+  const B = CMOD.padRows(project, id).byTrack, n = B.reduce((a, x) => a + x.rows.length, 0);
+  if (n && !quiet && !confirm(`Remove ${M.name} and its ${n} modulation cable${n === 1 ? '' : 's'} on ${B.length} track${B.length === 1 ? '' : 's'}?`)) return false;
+  PADS.hwDark(id); PADS.endModule(id);
+  hist.record(project, 'Delete ' + M.name);
+  const t = trk(), step = hist.u[hist.u.length - 1];
+  for (const x of CMOD.removePads(project, id).byTrack) { const tr = trackById(x.trackId); if (tr && tr !== t) queuePatch(tr); }
+  cvModAfter(t);
+  cvModSync();
+  PADS.resync();
+  if (!quiet) cvUndoNotice(`Deleted ${M.name} · tap to undo`, step, () => null); // (§10.3: a destructive edit's "tap to undo")
+  return true;
+}
 function modDelete(key, quiet) {
+  if (PC.PAD_ID.test(key)) return padsDelete(key, quiet);
   const t = trk(), kind = modKindOfKey(t, key);
   if (key === 'wheel') {
     if (!CMOD.hasWheel(project)) return false;
@@ -6730,6 +6926,7 @@ function modLabel(id, t0) { // canvas-form ids: a source ('wheel', 've.out', 'l2
   const t = t0 || trk();
   if (typeof id !== 'string' || !id) return '';
   if (CMOD.MOD_SRC[id]) return CMOD.MOD_LABEL[CMOD.MOD_SRC[id]];
+  if (CMOD.isPadSrc(id)) return CMOD.padSrcLabel(project, id) || id; // ((8, §5.1) "Pads 1 · Kick": the Connect to… menu's label, any slot)
   const q = modSrcOf(id);
   if (q && (q.port || q.link)) { const S = modSrcList(t).find(x => x.id === id); return S ? S.label : q.link ? cvDevName(t, q.dev) + ' ' + q.link.toUpperCase() : CMOD.modLabelOf(q.dev, t.dev && t.dev[q.dev]); }
   const D = modSplit(id);
@@ -6793,7 +6990,7 @@ function modConnect(src, dst) {
 function modSrcPick(dst, el) {
   const t = trk(), L = modSrcList(t), p = modAt(el);
   if (!L.length) { notice('Add a modulator first (Sources ▸ Modulators)', 4000); return false; }
-  cvTray.popupMenu(p.x, p.y, L.map(s => ({ label: s.label + (s.kind === 'link' && s.used ? ' (in use)' : ''), action: () => modConnect(s.id, dst) })));
+  cvTray.popupMenu(p.x, p.y, L.filter(s => !s.hidden).map(s => ({ label: s.label + (s.kind === 'link' && s.used ? ' (in use)' : ''), action: () => modConnect(s.id, dst) }))); // ((8) a mod pad outside its grid: not offered)
   return true;
 }
 const modAt = el => { const r = el && typeof el.getBoundingClientRect === 'function' ? el.getBoundingClientRect() : null; return r ? { x: r.left, y: r.bottom + 6 } : { x: undefined, y: undefined }; };
@@ -6887,11 +7084,19 @@ const modAside = el => { const ov = $('#ov'); return !!ov && !!el && typeof ov.c
 function modCableAct(id, a) { // Disconnect (the menu, the Delete key): a canvas row one step; a preset row the Serum's edit
   const t = trk(), c = cvView && cvView.cables.list().find(x => x.id === id);
   if (c && c.int) { sxCableAct(c, a); return; } // ((3) a Serum's internal cable: sx-edges, one step; BALANCE, a warp source's tap)
+  if (a === 'tap' && c && c.kind === 'note') { padsNoteTap(c); return; } // ((8, §9) a Pads module's note cable: its pads listed)
   if (a !== 'disconnect' || !c || c.kind !== 'mod') return;
   if (c.preset || c.own) modRemove({ preset: c.dev, slot: c.slot }); // ((3) a Serum's own row too: its matrix
   else { hist.record(project, 'Disconnect'); CMOD.removeMod(t, id); }
   cvModAfter(t);
   cvModSync();
+}
+// (8, §9) a note cable's tap: the pads of the module that play this instrument, a pick opens that pad's inspector (Edit mode)
+function padsNoteTap(c) {
+  const M = padMod(c.mod), B = modBodies.get(c.mod), L = M && Array.isArray(c.pads) ? c.pads.filter(i => PC.visible(M, i)) : [];
+  if (!L.length || !B || B.kind !== 'pads') return;
+  const p = modAt(cvView && cvView.cables.badge(c.id));
+  cvTray.popupMenu(p.x, p.y, L.map(i => ({ label: 'Pad ' + PC.padNo(M, i) + ' · ' + (PC.padLabel(M.pads[i], project) || 'empty'), action: () => B.inspect(i) })));
 }
 /* ---- the mod layer's host */
 // (a no-op step on top, which record keeps, is this state too: it becomes the gesture's step.) A refusal (modUnpre) or a
@@ -7289,6 +7494,8 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     perf: PERF, // (1i: tests/canvas-1i-sim)
     // (7a: tests/canvas-7a-sim) the drum machines' host and the page's drum section
     drum: DRUM, drumSend, drumToRoll, drumLoad, drumOf, drumPayload, drumNeeds, drMons, srcUi, layFlow, setProjectBpm, panic, importMidiFile, projectFile,
+    // (8: tests/canvas-8-sim) the Pads host and a module's mounted body
+    pads: PADS, padsBody: id => { const B = modBodies.get(id); return B && B.kind === 'pads' ? B : null; }, padLit, loadProject: (j, o) => loadProject(j, o), applyRestore,
 
     // (stage 2a, tests/canvas-2a-sim)
     mod: { add: modAdd, drag: modTileDrag, del: modDelete, opts: modDragOpts, connect: modConnect, can: modCan, marks: modMarks, layer: () => modLayer, host: () => modHostO,
@@ -7349,7 +7556,7 @@ function boot() {
   // hidden: iOS may never send pagehide after this, so an IndexedDB save starts now (an unchanged project writes no
   // record); localStorage: a pending save is written (Phase 1)
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { releaseKeys(); perfLetGo(); DRUM.release(); if (store.mode !== 'ls' || saveT) saveNow(); } else wake(); // ((7a) the pads, a held CLEAR)
+    if (document.hidden) { releaseKeys(); PADS.release(); PADS.hwDark(); perfLetGo(); DRUM.release(); if (store.mode !== 'ls' || saveT) saveNow(); } else wake(); // ((7a) the pads, a held CLEAR; (8) the Pads modules' canvas holds, the hardware lights dark — §8.4)
     monitors.sync();
   });
   window.addEventListener('scroll', () => { pageScrollT = performance.now(); }, { capture: true, passive: true });

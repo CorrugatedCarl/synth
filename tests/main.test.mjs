@@ -1243,3 +1243,41 @@ test('MIDI import into a project with no notes: the empty project\'s tracks go a
   const ts = api.project().tracks;
   assert.deepEqual([ts.length, ts[0].notes.length, I(ts[0]).model, api.project().name], [1, 2, 'juno60', src.name], '(the name stored in the MIDI file wins over the file name)');
 });
+
+test('8 (IMPL-8 §4.1–§4.3, §14.1): noteOn\'s explicit targets — a \'pd<k>\' source plays the tracks it names (never the selected one by default), its held key its own, re-struck when held; the tray key lit only when it reached the selected track; panic and a track switch leave the Pads host\'s keys alone (review #7); a pad\'s target records armed or not and joins T.padRec (Q5); the keyboard\'s path unchanged', async () => {
+  const s = await bootMain({ hash: '#juno60' });
+  await s.power(); await s.settle(5); s.raf();
+  const api = s.api, cv = globalThis.__synthTest.cv, P = api.project(), a = P.tracks[0];
+  const b = api.addTrack(modelOf('prophet5')); s.raf(); api.selectTrack(a.id); s.raf(); await s.settle(2);
+  const na = s.nodeOf(a.id), nb = s.nodeOf(b.id), ms = (N, k) => N.posted.map(x => x.m).filter(m => m.t === k);
+  const lit = n => { const k = (function walk(e) { for (const c of e.children || []) { if (c.dataset && +c.dataset.n === n) return c; const r = walk(c); if (r) return r; } return null; })(s.$('#keys')); return !!k && k.classList.contains('down'); };
+  na.posted.length = 0; nb.posted.length = 0;
+  api.noteOn(60, 0.5, 0);
+  assert.deepEqual([ms(na, 'on'), ms(nb, 'on').length, JSON.stringify([...api.held]), lit(60)], [[{ t: 'on', n: 60, v: 0.5 }], 0, JSON.stringify([['0:60', [[a.id, 0]]]]), true], 'the keyboard: the selected track, as before');
+  api.noteOff(60, 0);
+  api.noteOn(62, 0.75, 'pd1', performance.now(), [b], { rec: 'target' });
+  assert.deepEqual([ms(nb, 'on'), ms(na, 'on').length, JSON.stringify(api.held.get('pd1:62')), lit(62)], [[{ t: 'on', n: 62, v: 0.75 }], 1, JSON.stringify([[b.id, 0]]), false], 'a pad source: its track only, its own key, no tray light');
+  api.noteOn(62, 0.5, 'pd1', performance.now(), [b]);
+  assert.deepEqual([ms(nb, 'off').map(m => m.n), ms(nb, 'on').map(m => m.v)], [[62], [0.75, 0.5]], 're-struck: the held retrigger');
+  cv.panic(); api.selectTrack(b.id); s.raf(); api.selectTrack(a.id); s.raf();
+  assert.deepEqual([[...api.held.keys()], ms(nb, 'off').length], [['pd1:62'], 1], 'panic and a track switch skip a pd key: the host ends its own');
+  api.noteOff(62, 'pd1');
+  assert.deepEqual([[...api.held.keys()], ms(nb, 'off').length], [[], 2]);
+  api.noteOn(64, 0.5, 'pd2', performance.now(), [a]);
+  assert.equal(lit(64), true, 'a pad note on the selected track lights the tray');
+  api.noteOff(64, 'pd2');
+  assert.equal(lit(64), false);
+  // Q5: recording runs — a pad's target records whether armed or not, and joins the take's padRec
+  for (const t of P.tracks) t.arm = false;
+  P.metronome.countIn = 0;
+  s.$('#tRec').onclick(); await s.settle(5);
+  assert.deepEqual([api.transport().rec, a.arm, b.arm], [true, true, false]);
+  s.run(Math.round(0.5 * s.ctx().sampleRate)); s.raf();
+  api.noteOn(67, 1, 'pd1', performance.now(), [b], { rec: 'target' });
+  s.run(Math.round(0.2 * s.ctx().sampleRate)); s.raf();
+  api.noteOff(67, 'pd1');
+  api.noteOn(69, 1, 'pd1', performance.now(), [b]); api.noteOff(69, 'pd1'); // (no o.rec: an unarmed track records nothing)
+  assert.deepEqual([...api.transport().padRec], [b.id], 'the take\'s pad-recorded tracks');
+  s.$('#tPlay').onclick(); await s.settle(3);
+  assert.deepEqual(api.project().tracks.find(t => t.id === b.id).notes.map(x => x.n), [67], 'the unarmed target recorded the pad\'s note');
+});

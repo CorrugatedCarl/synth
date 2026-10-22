@@ -16,6 +16,11 @@ import './v8-guard.mjs';
 // and the 606's tokens apart, every models.js id, no maker word), its geometry (608 × 864; the extras rows: the grid 592 ×
 // 192, the pads 232 × 116 + SYNC + SWING, TUNE / DECAY 8 + 3, the small controls + SYNC 303s) and MODE's off-centre dial —
 // on a fixture face (R6 §13's positions; the step keys at a 14 mm pitch) over the real models.js tr606.
+// Stage 8 (IMPL-8 §13, §15.9; lane P1a): the SDS-V's tokens in the validator (one mutation per rule: the memory keys n 1–4 and
+// the trimmer rows mem 3 / 4 per channel, all present, the keys' LEDs, the memory switch placed by its keys and never on its
+// own, the trimmers' size, hitOff, the 14 mm rule, the caption, the other machines' tokens apart, "Simmons"), its geometry (992
+// × 640; the hexagonal pads 328 × 200, MAP… · SOUNDS… · TRIM…), the trimmer art, and the memory keys' radio rendered — on a
+// fixture face (§13.1's fallback layout) over the real models.js sdsv.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as P from '../cv-panel.js?v=9';
@@ -549,6 +554,218 @@ test('7c art: the ten MULTI OUT jacks at full contrast "— cable-able with full
   assert.ok(!/currentColor|var\(--|<style|<image|<foreignObject|href/.test(svg), 'self-contained');
 });
 
+/* ================================================================ stage 8: the SDS-V (IMPL-8 §13; lane P1a) */
+const MSDV = MODELS.find(m => m.id === 'sdsv');
+const CHV = ['b', 's', '1', '2', '3'], FV = ['n', 't', 'b', 'd', 'm', 'c'];
+const DRV_EXTRAS = ['dr:pads', 'dr:map', 'dr:sounds', 'dr:trimMenu'];
+// a fixture SDS-V face (482.6 × 152.4 mm, §13.1's fallback layout — positions illustrative, X's panels/sdsv.js carries the
+// photographed ones): rack ears (18 mm), five 50 mm cards from x 25 (BASS DRUM, SNARE DRUM, TOM 1–3: channels b s 1 2 3), two
+// blank plates, the MIXER (82 mm); a card: its six knobs in two columns of three (22 mm columns, 20 mm rows: NOISE / TONE ·
+// BEND / DECAY · NOISE-TONE / CLICK-DRUM), the four memory keys 2 × 2 on a 15 mm pitch (1 top left), the two trimmer rows 8
+// mm apart (memories 3 and 4: their 14 mm hit boxes off the art by hitOff ∓ 3 — disjoint), TRIGGER IN print; the mixer's
+// SENSITIVITY / LEVEL rows on a 16 mm pitch; the per-channel OUT jacks inert 'later' along the top edge, the other sockets
+// dimmed; the extras in §13.3's order, no caption of its own (the geometry supplies the SDS-V's)
+const TRV_FX = (() => {
+  const sx = i => 25 + 50 * i, cards = CHV.map((ch, i) => ({ ch, x: sx(i) }));
+  const knobs = cards.flatMap(({ ch, x }) => FV.map((f, j) => ({ id: 'x' + ch + f, kind: 'knob', x: x + (j % 2 ? 36 : 14), y: 34 + 20 * (j >> 1), d: 12, sweep: 300, label: f.toUpperCase() })));
+  const mem = cards.flatMap(({ ch, x }) => [1, 2, 3, 4].map(n => ({ id: 'dr:mem', kind: 'button', ch, n, x: x + (n % 2 ? 17.5 : 32.5), y: n < 3 ? 94 : 109, w: 9, h: 9, led: 'cap', color: '#efe6cf', label: String(n), lab: 's' })));
+  const trim = cards.flatMap(({ ch, x }) => [3, 4].map(m => ({ id: 'dr:trim', kind: 'button', ch, mem: m, x: x + 25, y: m === 3 ? 127 : 135, w: 40, h: 5, d: 4.5, hit: [40, 14], hitOff: [0, m === 3 ? -3 : 3] })));
+  const mix = CHV.flatMap((ch, i) => [['s', 50], ['l', 100]].map(([f, y]) => ({ id: 'x' + ch + f, kind: 'knob', x: 383 + 16 * i, y, d: 10, sweep: 300, label: f === 's' ? 'SENS' : 'LEVEL' })));
+  const outs = cards.map(({ ch, x }, i) => ({ kind: 'jack', x: x + 25, y: 7, d: 5, inert: 'later', label: ['BASS', 'SNARE', 'TOM 1', 'TOM 2', 'TOM 3'][i] + ' OUT', lab: 'none' }));
+  const trig = cards.map(({ x }) => ({ kind: 'jack', x: x + 25, y: 147, d: 5, inert: true, label: 'TRIGGER IN', lab: 'none' }));
+  return {
+    v: 1, id: 'sdsv', hw: 'fixture', case: '#1b1c1e',
+    scheme: { panel: '#25272a', legend: '#f3f3ef', knob: { skirt: '#c8cac6', cap: '#c8cac6', ptr: '#ffffff' }, button: { led: '#e0281e' }, trim: { body: '#b9bcbf' } },
+    areas: [{ id: 'main', src: [0, 0, 482.6, 152.4], at: [0, 0] }],
+    sections: [...['BASS DRUM', 'SNARE DRUM', 'TOM 1', 'TOM 2', 'TOM 3'].map((label, i) => ({ id: 'c' + CHV[i], label, x: sx(i), y: 12, w: 50, h: 140.4, frame: 'rule', title: 'top' })),
+      { id: 'mix', label: 'MIXER', x: 375, y: 12, w: 82, h: 140.4, frame: 'rule', title: 'top' }],
+    controls: [...knobs, ...mem, ...trim, ...mix, ...outs, ...trig,
+      { kind: 'jack', x: 395, y: 7, d: 5, inert: true, label: 'MONO', lab: 'none' }, { kind: 'jack', x: 410, y: 7, d: 5, inert: true, label: 'HI-HAT PEDAL', lab: 'none' }],
+    decor: [{ t: 'rect', x: 275, y: 12, w: 50, h: 140.4, fill: '#202124' }, { t: 'text', x: 300, y: 80, s: 'HI-HAT', size: 3, anchor: 'middle' },
+      { t: 'rect', x: 325, y: 12, w: 50, h: 140.4, fill: '#202124' }, { t: 'text', x: 350, y: 80, s: 'CYMBAL', size: 3, anchor: 'middle' },
+      { t: 'text', x: 416, y: 142, s: 'SDS-V', size: 5, anchor: 'middle' }],
+    extras: { ids: DRV_EXTRAS.slice() },
+  };
+})();
+
+test('8 tokens: TOKENS.sdsv — the memory keys (dr:mem n 1–4 per channel b s 1 2 3, each with its LED, bound to x<ch>p) and the trimmer rows (dr:trim mem 3 / 4 per channel) on the face; the hexagonal pads, MAP…, SOUNDS…, TRIM… in the extras (no sequencer); the pads 328 × 200; the caption; "Simmons" a maker word; every one rendered; the fixture validates on the real sdsv model and is usable()', () => {
+  const T = P.TOKENS.sdsv;
+  assert.deepEqual([Object.keys(T.kind), T.kind['dr:mem'], T.kind['dr:trim'], T.extras], [['dr:mem', 'dr:trim'], 'button', 'button', DRV_EXTRAS]);
+  assert.deepEqual([T.multi, T.idx, T.full, T.grp, T.bind, T.led], [['dr:mem', 'dr:trim'], { 'dr:mem': ['n', 1, 4], 'dr:trim': ['mem', 3, 4] }, ['dr:mem', 'dr:trim'],
+    { 'dr:mem': ['ch', CHV], 'dr:trim': ['ch', CHV] }, { 'dr:mem': 'x?p' }, ['dr:mem']]);
+  assert.deepEqual([T.cells, T.xbreak, T.pos, T.orient, T.digits], [{ 'dr:pads': [328, 200] }, ['dr:pads'], undefined, undefined, undefined]);
+  assert.deepEqual([P.DRV_PADS.w, P.DRV_PADS.h, P.tokCell(MSDV, 'dr:pads'), P.tokCell(MSDV, 'dr:trimMenu'), P.tokCell(MSDV, 'dr:map'), P.tokCell(MSDV, 'dr:sounds'), P.TRIM_N], [328, 200, [328, 200], [88, 64], [88, 64], [104, 64], 6]);
+  assert.deepEqual(T.grp['dr:mem'][1], [...DC.PERS.sdsv.ch], 'the channels: drum-core\'s order (TRIM_CH)');
+  assert.equal(T.caption, P.XCAPTION + ' · Factory sounds: ours, through our model of its circuits', 'D4: our factory sounds named — once (R2-F11: not after the drum caption\'s "Sounds: our model of the circuits")');
+  assert.equal((T.caption.match(/our model/g) || []).length, 1);
+  assert.ok(P.MAKERS.includes('Simmons'));
+  for (const t of [...Object.keys(T.kind), ...DRV_EXTRAS]) assert.ok(P.RENDERED_TOKENS.has(t), t + ' rendered');
+  // E5a's model: 40 knobs + the 5 memory switches (index 0–3, default 1 = memory 2), the switches = T.bind's
+  assert.deepEqual([MSDV.family, MSDV.controls.length, MSDV.controls.filter(c => c.t === 'k').length, MSDV.controls.filter(c => c.t === 's').map(c => [c.id, c.opts.join(''), c.def])],
+    ['drums', 45, 40, CHV.map(ch => ['x' + ch + 'p', '1234', 1])]);
+  assert.deepEqual(P.validate(TRV_FX, MSDV), []);
+  globalThis.__synthTest = { panels: { sdsv: TRV_FX } };
+  try { assert.equal(P.usable('sdsv', MSDV) === TRV_FX, true); } finally { delete globalThis.__synthTest; }
+  assert.deepEqual(P.validate(Object.assign(clone(TRV_FX), { extras: { ids: DRV_EXTRAS.slice(), caption: T.caption } }), MSDV), [], 'the layout\'s own caption: exactly the model\'s');
+});
+
+test('8 validate: one mutation per rule, naming the field (§13.1–§13.3, §15.9)', () => {
+  const bad = (f, re, m) => {
+    const L = clone(TRV_FX);
+    f(L, (id, ch, n) => L.controls.find(c => c.id === id && (ch == null || c.ch === ch) && (n == null || c.n === n || c.mem === n)));
+    const p = P.validate(L, MSDV);
+    assert.ok(p.some(x => re.test(x)), (m || re) + ' → ' + JSON.stringify(p));
+  };
+  // the memory keys: n 1–4 within each channel, each once, all four of every channel, each with its LED; the channel one of b s 1 2 3
+  bad((L, by) => { by('dr:mem', 's', 2).n = 5; }, /\(dr:mem\): n 1–4/);
+  bad((L, by) => { by('dr:mem', 's', 2).n = 1; }, /\(dr:mem\): n 1 twice \(ch s\)/);
+  bad((L, by) => { by('dr:mem', 's', 2).n = 1; }, /dr:mem: ch s n 2 missing \(all 4 of every ch are on the panel\)/);
+  bad(L => { L.controls = L.controls.filter(c => !(c.id === 'dr:mem' && c.ch === '2' && c.n === 4)); }, /dr:mem: ch 2 n 4 missing/);
+  bad((L, by) => { by('dr:mem', '1', 3).ch = 1; }, /\(dr:mem\): ch one of b, s, 1, 2, 3/, 'a number is not the channel (the ids\' strings)');
+  bad((L, by) => { by('dr:mem', '1', 3).ch = 'x'; }, /\(dr:mem\): ch one of b, s, 1, 2, 3/);
+  bad((L, by) => { delete by('dr:mem', 'b', 1).ch; }, /\(dr:mem\): ch one of/, 'no channel');
+  bad((L, by) => { by('dr:mem', 'b', 4).led = 'none'; }, /\(dr:mem\): dr:mem shows its LED/);
+  bad((L, by) => { Object.assign(by('dr:mem', 'b', 1), { kind: 'knob', d: 9 }); }, /\(dr:mem\): dr:mem must be a button/);
+  // the memory switch is placed by its channel's keys, never on its own too; a channel without keys leaves it unplaced
+  bad(L => { L.controls.push({ id: 'x1p', kind: 'switch', x: 300, y: 40, w: 10, h: 6, label: 'MEM' }); }, /x1p: placed 2 times/);
+  bad(L => { L.extras.ids.push('xbp'); }, /xbp: placed 2 times/);
+  bad(L => { L.controls = L.controls.filter(c => !(c.id === 'dr:mem' && c.ch === '3')); }, /x3p: not placed/);
+  bad(L => { L.controls = L.controls.filter(c => !(c.id === 'dr:mem' && c.ch === '3')); }, /dr:mem: ch 3 n 1, 2, 3, 4 missing/);
+  // the trimmer rows: mem 3 / 4 within each channel, both; six trimmers of 2–8 mm fit the box; hitOff its own, covering the row
+  bad((L, by) => { by('dr:trim', 'b', 4).mem = 5; }, /\(dr:trim\): mem 3–4/);
+  bad((L, by) => { by('dr:trim', 'b', 4).mem = 3; }, /\(dr:trim\): mem 3 twice \(ch b\)/);
+  bad(L => { L.controls = L.controls.filter(c => !(c.id === 'dr:trim' && c.ch === 's' && c.mem === 4)); }, /dr:trim: ch s mem 4 missing \(all 2 of every ch are on the panel\)/);
+  bad((L, by) => { by('dr:trim', '2', 3).d = 9; }, /\(dr:trim\): d \(a trimmer's diameter\) 2–8 mm/);
+  bad((L, by) => { by('dr:trim', '2', 3).d = 1.5; }, /\(dr:trim\): d \(a trimmer's diameter\) 2–8 mm/);
+  bad((L, by) => { by('dr:trim', '2', 3).w = 20; }, /\(dr:trim\): 6 trimmers of 4\.5 mm do not fit its 20 × 5 mm box/);
+  bad((L, by) => { by('dr:trim', '2', 3).h = 4; }, /\(dr:trim\): 6 trimmers of 4\.5 mm do not fit its 40 × 4 mm box/);
+  bad((L, by) => { by('dr:trim', '2', 3).hitOff = [0, -6]; }, /\(dr:trim\): hitOff moves the hit box off its trimmers/);
+  bad((L, by) => { by('dr:trim', '2', 3).hitOff = [0, 'up']; }, /\(dr:trim\): hitOff \[dx, dy\] \(mm\) is a trimmer row's \(dr:trim\) only/);
+  bad((L, by) => { by('xbn').hitOff = [0, 1]; }, /\(xbn\): hitOff \[dx, dy\] \(mm\) is a trimmer row's \(dr:trim\) only/);
+  bad((L, by) => { Object.assign(by('dr:trim', '1', 4), { kind: 'knob', d: 5 }); }, /\(dr:trim\): dr:trim must be a button/);
+  // the 14 mm hit rule: the two rows 8 mm apart overlap without hitOff; the memory keys on a 13 mm pitch overlap
+  bad((L, by) => { delete by('dr:trim', 's', 3).hitOff; delete by('dr:trim', 's', 4).hitOff; }, /\(dr:trim\) and controls\[\d+\] \(dr:trim\): hit boxes overlap/);
+  bad((L, by) => { by('dr:mem', 'b', 2).x -= 2; }, /\(dr:mem\) and controls\[\d+\] \(dr:mem\): hit boxes overlap/);
+  bad((L, by) => { by('dr:trim', 'b', 3).hit = [40, 13]; }, /\(dr:trim\): hit box 40 × 13 mm < 14 mm/);
+  // the trimmers' colours; the caption the model's; extras tokens only in the extras; the other machines' tokens are not the SDS-V's
+  bad(L => { L.scheme.trim.slot = 'url(x)'; }, /scheme\.trim\.slot: not a colour/);
+  bad(L => { L.scheme.trim = 'metal'; }, /scheme\.trim: not an object/);
+  bad(L => { L.extras.caption = P.XCAPTION_DRUMS; }, /extras\.caption: the sdsv's is "EXTRAS · not on the original · Factory sounds: ours, through our model of its circuits"/, 'D4: the caption names our factory sounds');
+  bad(L => { L.extras.ids.push('dr:pads'); }, /dr:pads: placed 2 times/);
+  bad(L => { L.controls.push({ id: 'dr:pads', kind: 'button', x: 300, y: 40, w: 15, h: 15 }); }, /\(dr:pads\): "dr:pads" is not a control of the model/, 'an extras token on the face');
+  bad(L => { L.extras.ids.push('dr:mem'); }, /extras: "dr:mem" is not a control of the model/, 'a face token in the extras');
+  for (const t of ['dr:grid', 'dr:sync', 'dr:swing', 'dr:toRoll', 'dr:rec', 'dr:demo', 'dr:link']) bad(L => { L.extras.ids.push(t); }, new RegExp(`extras: "${t}" is not a control of the model`), t + ' on an SDS-V (no sequencer)');
+  for (const t of ['dr:step', 'dr:start', 'dr:clear', 'dr:tap']) bad(L => { L.controls.push({ id: t, kind: 'button', n: 1, x: 300, y: 40, w: 15, h: 15 }); }, new RegExp(`"${t}" is not a control of the model`), t + ' on an SDS-V');
+  for (const [L0, M0] of [[TR_FX, M808], [TR6_FX, M606], [TR9_FX, M909]]) {
+    assert.ok(P.validate(Object.assign(clone(L0), { controls: [...L0.controls, { id: 'dr:mem', kind: 'button', ch: 'b', n: 1, x: 400, y: 60, w: 15, h: 15 }] }), M0).some(x => x.includes('"dr:mem" is not a control of the model')), 'dr:mem on the ' + M0.id);
+    assert.ok(P.validate(Object.assign(clone(L0), { extras: { ids: [...L0.extras.ids, 'dr:trimMenu'] } }), M0).some(x => x.includes('extras: "dr:trimMenu" is not a control of the model')), 'TRIM… on the ' + M0.id);
+  }
+  // every models.js knob once; original art: no maker word
+  bad(L => { L.controls = L.controls.filter(c => c.id !== 'x2d'); }, /x2d: not placed/);
+  bad(L => { L.extras.ids.push('xsl'); }, /xsl: placed 2 times/);
+  bad(L => { L.decor[4].s = 'Simmons SDS-V'; }, /decor\[4\]: a maker name/);
+  bad(L => { L.sections[5].label = 'SIMMONS MIXER Simmons'; }, /sections\[5\]\.label: a maker name/);
+  // an LED off the cap is fine (above / below); a key with no LED is not
+  const N = clone(TRV_FX); N.controls.filter(c => c.id === 'dr:mem').forEach((c, i) => { c.led = ['cap', 'above', 'below'][i % 3]; });
+  assert.deepEqual(P.validate(N, MSDV), []);
+});
+
+test('8 geometry: 482.6 × 152.4 mm → a 992 px module (976 inside the strip); the extras rows (§13.3) — the five hexagonal pads 328 × 200 · MAP… · SOUNDS… · TRIM… (280 px); 992 × 640 on the dots; the SDS-V\'s caption (D4; its own: the plain estimate, 8 px) and the dimmed note; the trimmer rows\' hit boxes off their art (hitOff), disjoint; the Tab order', () => {
+  const g = P.geometry(TRV_FX, MSDV), s = P.sizeOf(TRV_FX, MSDV), X = g.extras;
+  assert.deepEqual([g.W, g.content.x, g.content.w, g.content.h, g.mm.offX], [992, 13.5, 965, 305, 13.5]);
+  assert.deepEqual(X.cells.map(c => [c.id, c.x, c.y, c.w, c.h]), [['dr:pads', 8, 321, 328, 200], ['dr:map', 8, 521, 88, 64], ['dr:sounds', 96, 521, 104, 64], ['dr:trimMenu', 200, 521, 88, 64]]);
+  assert.deepEqual([X.x, X.y, X.w, X.h, X.over], [0, 305, 992, 16 + 200 + 64 + 8, false]);
+  assert.deepEqual([s.w, s.h, s.w % DOT, s.h % DOT, s.h - BAR_H], [992, 640, 0, 0, g.body.h], 'TARGET.sdsv = 992 × 640 (§13.1: ≈ 992 × 608 estimated; the pads row 200)');
+  for (const [h, want] of [[140, 608], [152.4, 640], [156, 640], [157, 672]]) { const F = clone(TRV_FX); F.areas[0].src[3] = h; assert.equal(P.sizeOf(F, MSDV).h, want, 'a face ' + h + ' mm deep'); }
+  assert.deepEqual([X.caption, X.note], [P.TOKENS.sdsv.caption, true], 'the SDS-V\'s caption (D4); the dimmed sockets: "Dimmed controls are not emulated"');
+  // the caption (R2-F11: its old "Sounds: our model of the circuits" said what "Factory sounds: ours, through our model of its
+  // circuits" says, and with it Chrome measured 976.5 px at 9 px in 976): said once it fits at 9 px even on the plain estimate (k 1)
+  const full = X.caption + ' · Dimmed controls are not emulated';
+  assert.deepEqual([P.xcapFit(full, X.w - 2 * P.XPAD), P.xcapFit(full, X.w - 2 * P.XPAD, 1), P.xcapFit(X.caption, X.w - 2 * P.XPAD, 1), full.length], [null, null, null, 121]);
+  // the hit boxes: ≥ 28 px, disjoint, in the body; a trimmer row's 6 px (3 mm) off its art's centre, 80 × 28 px; the keys 30 × 30
+  const hb = P.hitBoxes(TRV_FX, MSDV);
+  for (const h of hb) assert.ok(h.w >= 28 && h.h >= 28 && h.x >= 0 && h.y >= 0 && h.x + h.w <= g.body.w && h.y + h.h <= g.body.h, h.id);
+  for (let i = 0; i < hb.length; i++) for (let j = i + 1; j < hb.length; j++) { const a = hb[i], b = hb[j]; assert.ok(!(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h), a.id + ' × ' + b.id); }
+  assert.deepEqual([hb.length, hb.filter(h => h.id === 'dr:mem').length, hb.filter(h => h.id === 'dr:trim').length], [40 + 20 + 10, 20, 10]);
+  const tr = g.controls.filter(o => o.id === 'dr:trim').map(o => [TRV_FX.controls[o.i].ch, TRV_FX.controls[o.i].mem, o.own.y + o.own.h / 2 - (o.hit.y + o.hit.h / 2), o.hit.w, o.hit.h, o.own.w, o.own.h]);
+  assert.deepEqual(tr.slice(0, 2), [['b', 3, 6, 80, 28, 80, 10], ['b', 4, -6, 80, 28, 80, 10]], 'mem 3\'s box 6 px above its art, mem 4\'s below');
+  const mk = g.controls.find(o => o.id === 'dr:mem');
+  assert.deepEqual([mk.hit.w, mk.hit.h, mk.own.w, mk.own.h, mk.live, mk.mc], [30, 30, 18, 18, true, undefined]);
+  // the Tab order: card by card, each card's knobs, its memory keys 1 2 / 3 4, its trimmer rows 3 / 4; then the mixer
+  const ord = g.order.map(i => TRV_FX.controls[i]).map(c => c.id === 'dr:mem' ? 'm' + c.ch + c.n : c.id === 'dr:trim' ? 't' + c.ch + c.mem : c.id);
+  assert.deepEqual(ord.slice(0, 12), ['xbn', 'xbt', 'xbb', 'xbd', 'xbm', 'xbc', 'mb1', 'mb2', 'mb3', 'mb4', 'tb3', 'tb4']);
+  assert.deepEqual(ord.slice(-10), ['xbs', 'xss', 'x1s', 'x2s', 'x3s', 'xbl', 'xsl', 'x1l', 'x2l', 'x3l']);
+  // the 808's / 606's / 909's cells and modules unchanged
+  assert.deepEqual([P.tokCell(M808, 'dr:pads'), P.tokCell(M606, 'dr:pads'), P.tokCell(M909, 'dr:pads'), P.sizeOf(TR_FX, M808), P.sizeOf(TR6_FX, M606), P.sizeOf(TR9_FX, M909)],
+    [[232, 232], [232, 116], [232, 184], { w: 1024, h: 1024 }, { w: 608, h: 864 }, { w: 992, h: 1024 }]);
+});
+
+test('8 art: the trimmer rows — six metal discs and their slots, one path each per row (scheme.trim\'s colours, the defaults otherwise), inside the row\'s box; the five OUT jacks at full contrast "— cable-able with full patching (stage 4)", the other sockets dimmed "— not emulated"; no maker word; the model name only as plain text; self-contained', () => {
+  const svg = P.decorSvg(TRV_FX, MSDV);
+  const discs = [...svg.matchAll(/<path d="([^"]*)" fill="([^"]*)" stroke="([^"]*)" stroke-width="[^"]*"\/><path d="([^"]*)" fill="none" stroke="([^"]*)" stroke-width="([^"]*)" stroke-linecap="round"\/>/g)];
+  assert.equal(discs.length, 10, 'ten rows, two paths each');
+  for (const m of discs) {
+    assert.equal((m[1].match(/M/g) || []).length, 6, 'six discs'); assert.equal((m[4].match(/M/g) || []).length, 6, 'six slots');
+    assert.deepEqual([m[2], m[3], m[5], m[6]], ['#b9bcbf', P.TRIM_SKIN.rim, P.TRIM_SKIN.slot, '0.72'], 'scheme.trim.body, the default rim and slot; the slot 0.16 d');
+  }
+  // the first row (bass, memory 3): the discs' leftmost edge and the row's box (x 50 − 20 … 50 + 20; 6 × 4.5 mm on a 6.667 mm pitch)
+  const xs = [...discs[0][1].matchAll(/M([\d.]+) ([\d.]+)a/g)].map(m => [+m[1], +m[2]]);
+  assert.deepEqual(xs.map(p => p[1]), Array(6).fill(127));
+  assert.ok(xs.every(([x], i) => Math.abs(x - (30 + 6.6667 * i + 3.3333 - 2.25)) < 0.01), JSON.stringify(xs));
+  const D = clone(TRV_FX); delete D.scheme.trim;
+  assert.ok(P.decorSvg(D, MSDV).includes(`fill="${P.TRIM_SKIN.body}" stroke="${P.TRIM_SKIN.rim}"`), 'the default skin');
+  const groups = [...svg.matchAll(/<g class="(hw-inert[^"]*)"( opacity="[^"]*")? data-tip="([^"]*)"><title>([^<]*)<\/title>/g)].map(m => [m[1], !!m[2], m[4]]);
+  assert.deepEqual(groups.filter(x => x[0] === 'hw-inert hw-later').map(x => [x[1], x[2]]), ['BASS', 'SNARE', 'TOM 1', 'TOM 2', 'TOM 3'].map(s => [false, s + ' OUT — cable-able with full patching (stage 4)']));
+  assert.deepEqual(groups.filter(x => x[0] === 'hw-inert').map(x => [x[1], x[2]]), [...Array(5).fill([true, 'TRIGGER IN — not emulated']), [true, 'MONO — not emulated'], [true, 'HI-HAT PEDAL — not emulated']]);
+  const texts = [...svg.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)].map(m => m[1].replace(/<[^>]+>/g, ' '));
+  for (const t of texts) assert.doesNotMatch(t, new RegExp('\\b(' + P.MAKERS.join('|') + ')\\b'), t);
+  assert.ok(texts.includes('SDS-V'));
+  assert.doesNotMatch(svg.replace(/<text[\s\S]*?<\/text>/g, '').replace(/<title>[\s\S]*?<\/title>/g, '').replace(/data-tip="[^"]*"/g, ''), /\bSDS-V\b/);
+  assert.ok(!/currentColor|var\(--|<style|<image|<foreignObject|href/.test(svg), 'self-contained');
+  // the 808's, 606's and 909's art: no trimmer drawn
+  for (const [L0, M0] of [[TR_FX, M808], [TR6_FX, M606], [TR9_FX, M909]]) assert.ok(!P.decorSvg(L0, M0).includes(`stroke="${P.TRIM_SKIN.rim}"`), M0.id);
+});
+
+test('8 render: the memory keys — one radio per channel, its wrapper the switch\'s (data-ctl = data-dest = x<ch>p, once: the mod drop, the halo, the ui entry), its four keys at their own boxes with their LEDs and hit boxes; a key writes the switch (index n − 1: a patch write, no History step) and the LEDs follow the patch (a preset, a load); the arrows; one tab stop; every models.js id once', () => {
+  const doc = fresh(), root = doc.createElement('div'), api = fakeApi(doc, MSDV);
+  doc.body.append(root);
+  const r = P.render(root, TRV_FX, MSDV, api), g = P.geometry(TRV_FX, MSDV), cl = n => n.getAttribute('class') || '';
+  const radio = ch => { const w = byCtl(root, 'x' + ch + 'p'); return w.length === 1 ? w[0] : null; };
+  const keys = ch => radio(ch).childNodes[0].childNodes;
+  for (const [i, ch] of CHV.entries()) {
+    const w = radio(ch), grp = w && w.childNodes[0];
+    assert.ok(grp, ch + ': one radio');
+    assert.deepEqual([w.getAttribute('data-dest'), w.getAttribute('data-kind'), cl(grp), grp.getAttribute('role'), grp.getAttribute('aria-label')],
+      ['x' + ch + 'p', 'buttons', 'hw-grp', 'radiogroup', ['Bass Drum', 'Snare Drum', 'Tom 1', 'Tom 2', 'Tom 3'][i] + ' · Memory']);
+    const ks = keys(ch), os = g.controls.filter(o => o.id === 'dr:mem' && TRV_FX.controls[o.i].ch === ch);
+    assert.deepEqual(ks.map(b => [b.getAttribute('role'), b.getAttribute('data-v'), b.getAttribute('data-led'), b.getAttribute('aria-checked'), b.getAttribute('data-lit'), b.tabIndex]),
+      [['radio', '0', 'cap', 'false', 'off', -1], ['radio', '1', 'cap', 'true', 'on', 0], ['radio', '2', 'cap', 'false', 'off', -1], ['radio', '3', 'cap', 'false', 'off', -1]], ch + ': memory 2 (the knobs) lit');
+    assert.deepEqual(ks.map(b => b.getAttribute('aria-label')), ['Memory 1 · our factory sound', 'Memory 2 · the knobs', 'Memory 3 · trimmers (TRIM…)', 'Memory 4 · trimmers (TRIM…)']);
+    // the radio over the four keys' boxes (15 mm apart: 30 + 18 px); each key at its own box, its hit box 30 × 30
+    const u = { x: Math.min(...os.map(o => o.box.x)), y: Math.min(...os.map(o => o.box.y)) };
+    assert.deepEqual([w.style.left, w.style.top, w.style.width, w.style.height], [u.x + 'px', u.y + 'px', '48px', '48px']);
+    assert.deepEqual(ks.map(b => [b.style.left, b.style.top, b.style.width, b.style.getPropertyValue('--hit-w'), b.style.getPropertyValue('--hit-h')]),
+      os.map(o => [(o.box.x - u.x) + 'px', (o.box.y - u.y) + 'px', '18px', '30px', '30px']));
+    assert.ok(ks.every(b => b.childNodes[0] && cl(b.childNodes[0]) === 'hw-led'), 'an LED in each key');
+  }
+  // a press: the switch written (index n − 1), the LEDs follow; a preset / load (api.set) the same; the arrows step the radio
+  fire(keys('s')[2], 'pointerup');
+  assert.deepEqual([api.vals.xsp, keys('s').map(b => b.getAttribute('data-lit')).join(' '), api.vals.xbp], [2, 'off off on off', 1]);
+  api.set('xsp', 0);
+  assert.deepEqual([keys('s').map(b => b.getAttribute('aria-checked')).join(' '), keys('s').map(b => b.tabIndex).join(' ')], ['true false false false', '0 -1 -1 -1']);
+  key(radio('2').childNodes[0], 'ArrowRight'); key(radio('2').childNodes[0], 'ArrowRight');
+  assert.equal(api.vals.x2p, 3);
+  key(radio('2').childNodes[0], 'ArrowRight');
+  assert.equal(api.vals.x2p, 0, 'wraps');
+  // every models.js id once (a knob, or its channel's radio) with its ui entry; the radio's keys no data-ctl of their own
+  const ctl = all(root).filter(n => n.getAttribute && n.getAttribute('data-ctl')).map(n => n.getAttribute('data-ctl'));
+  for (const c of MSDV.controls) { assert.equal(ctl.filter(x => x === c.id).length, 1, c.id); assert.ok(api.ui.has(c.id), 'ui ' + c.id); }
+  assert.equal(ctl.filter(x => x === 'dr:mem').length, 0);
+  const dests = all(root).filter(n => n.getAttribute && n.getAttribute('data-dest')).map(n => n.getAttribute('data-dest'));
+  assert.equal(new Set(dests).size, dests.length, 'one data-dest per control');
+  r.destroy();
+});
+
 /* ================================================================ phase 2: the host and the widgets (§7.4, §12.7) */
 const r3 = v => Math.round(v * 1000) / 1000;
 const cls = n => n.getAttribute('class') || '';
@@ -577,12 +794,12 @@ function rig(o = {}) {
 }
 // cv-panel's hw api in miniature (classic-panel's contract: dragB with o.tap and b.end, tap with the event)
 function fakeApi(doc, model = M808) {
-  const vals = {}, ui = new Map(), tips = [];
+  const vals = {}, ui = new Map(), tips = [], tipAt = [];
   for (const c of model.controls) vals[c.id] = c.def;
   const set = (id, v) => { vals[id] = v; const u = ui.get(id); if (u) u(); };
   const widget = cl => c => { const el = doc.createElement('div'); el.className = cl; el.setAttribute('aria-label', c.label); const upd = () => el.setAttribute('aria-valuenow', String(vals[c.id])); ui.set(c.id, upd); upd(); return el; };
   return {
-    doc, vals, ui, tips, get: id => vals[id], set,
+    doc, vals, ui, tips, tipAt, get: id => vals[id], set,
     watch: (id, fn) => { const p = ui.get(id); ui.set(id, p ? () => { p(); fn(); } : fn); },
     bind: c => ({ id: c.id, label: c.label, min: c.min, max: c.max, step: c.step, def: c.def, get: () => vals[c.id], set: v => set(c.id, v), fmt: String, snap: () => vals[c.id], restore: v => set(c.id, v) }),
     knob: widget('knob'), slider: widget('slider'), selector: widget('sel'), toggle: widget('tog'),
@@ -599,12 +816,13 @@ function fakeApi(doc, model = M808) {
       el.addEventListener('keydown', e => { const d = e.key === 'ArrowUp' ? 1 : e.key === 'ArrowDown' ? -1 : 0; if (d) b.set(Math.max(b.min, Math.min(b.max, b.get() + d * (b.step || 1)))); else if (o.tap && e.key === 'Enter') o.tap(); });
     },
     tap: (el, fn) => el.addEventListener('pointerup', e => fn(e)),
-    tip: (el, t) => tips.push(t), untip: () => {}, fmt: (c, v) => String(v), presetNo: () => null, tier: false,
+    tip: (el, t) => { tips.push(t); tipAt.push(el.getBoundingClientRect()); }, untip: () => {}, fmt: (c, v) => String(v), presetNo: () => null, tier: false,
   };
 }
-function mount(withHost, o = {}) { // (7b: o.six — the fixture 606 face on the real tr606 model, a 606 record; 7c: o.nine — the 909's)
-  const six = !!o.six, nine = !!o.nine, model = nine ? M909 : six ? M606 : M808, doc = fresh(), root = doc.createElement('div'), api = fakeApi(doc, model);
-  const g = withHost ? rig(nine ? Object.assign({ model: 'tr909' }, o) : six ? Object.assign({ model: 'tr606' }, o) : o) : null;
+function mount(withHost, o = {}) { // (7b: o.six — the fixture 606 face on the real tr606 model, a 606 record; 7c: o.nine — the 909's; 8: o.sdv — the SDS-V's)
+  const six = !!o.six, nine = !!o.nine, sdv = !!o.sdv, model = sdv ? MSDV : nine ? M909 : six ? M606 : M808, doc = fresh(), root = doc.createElement('div'), api = fakeApi(doc, model);
+  const g = withHost ? rig(sdv ? Object.assign({ model: 'sdsv' }, o) : nine ? Object.assign({ model: 'tr909' }, o) : six ? Object.assign({ model: 'tr606' }, o) : o) : null;
+  if (sdv) api.model = MSDV; // ((8) classic-panel's api carries its model: TRIM…'s memory 1 reads the knobs' defaults)
   if (g) { // (every press the widgets make, TAP's included, recorded as JSON)
     api.drum = g.H.api(g.tr); g.presses = [];
     const p = api.drum.press, t = api.drum.tap;
@@ -612,7 +830,7 @@ function mount(withHost, o = {}) { // (7b: o.six — the fixture 606 face on the
     api.drum.tap = ts => { g.presses.push('{"k":"tap"}'); return t(ts); };
   }
   doc.body.append(root);
-  const r = P.render(root, nine ? TR9_FX : six ? TR6_FX : TR_FX, model, api);
+  const r = P.render(root, sdv ? (o.real ? P.layoutOf('sdsv') : TRV_FX) : nine ? TR9_FX : six ? TR6_FX : TR_FX, model, api); // (o.real: the authored panels/sdsv.js)
   return Object.assign({ doc, root, api, r }, g || {});
 }
 const withRaf = f => { rafQ.install(); try { return f(); } finally { rafQ.uninstall(); } };
@@ -1951,4 +2169,288 @@ test('7c the popovers: MAP… and SOUNDS… list the 909\'s eleven sounds by its
     assert.deepEqual([cr.getAttribute('data-smp'), cr.getAttribute('title')], ['', 'Crash · your sound: my cr']);
     m.r.destroy();
   } finally { rafQ.uninstall(); }
+});
+
+/* ================================================================ stage 8, phase 2: the SDS-V's widgets and host (IMPL-8 §13, §15.9) */
+const kit = root => W(root, 'dr:pads');
+const hexOf = (root, s) => kit(root).childNodes.find(p => p.getAttribute('data-sound') === s);
+const trims = root => byCtl(root, 'dr:trim').map(w => w.childNodes[0]);
+const popOf = doc => all(doc.body).find(n => cls(n) === 'dr-trimpop') || null;
+
+test('8 tables: UI.sdsv (the Pads module\'s order = the panel\'s channels: bass drum, snare, toms 1 · 2 · 3; the kit of hexagons = cv-panel DRV_PADS, inside its cell, disjoint, ≥ 9 px apart; no grid, no dials); minVelV = the machine\'s minVel (dr-808.js Dr808.proto.sdsv: 34 / 18 / 2 / 1 at SENS 0 / 1 / 2 / ≥ 2.1); CH_OF_V the machine\'s; inHex at the edges; hexAt\'s velocity by height', async () => {
+  const U = CD.UI.sdsv;
+  assert.deepEqual([U.pads, U.grid, Object.keys(U.dial), U.name, U.padG === CD.PADSV, [CD.PADSV.w, CD.PADSV.h]], [['bd', 'sd', 'ht', 'mt', 'lt'], null, [], 'SDS-V', true, [P.DRV_PADS.w, P.DRV_PADS.h]]);
+  assert.deepEqual(U.pads.map(s => DC.PERS.sdsv.sounds.indexOf(s)), [0, 1, 4, 3, 2], 'the five sids: bass drum, snare, then tom 1 (the highest, sid 4) … tom 3');
+  assert.deepEqual(U.pads.map(s => CD.CH_OF_V[DC.PERS.sdsv.sounds.indexOf(s)]), [0, 1, 2, 3, 4], 'the panel\'s channels b s 1 2 3 in order (the cards left to right)');
+  assert.ok(CD.PADSV.hex.ht[0] < CD.PADSV.hex.mt[0] && CD.PADSV.hex.mt[0] < CD.PADSV.hex.lt[0], 'and the kit puts tom 1 · 2 · 3 left to right');
+  const { dspScope, source } = await import('./dsp-scope.mjs');
+  const S = dspScope({ files: [] }); S.run(source('dr-808.js'), 'dr-808.js');
+  const PV = S.global('Dr808').proto.sdsv;
+  for (let i = 0; i <= 100; i++) assert.equal(CD.minVelV(i / 100), PV.minVel(i / 100), 'SENS ' + i / 10);
+  assert.deepEqual([0, 0.1, 0.2, 0.21, 1].map(CD.minVelV), [34, 18, 2, 1, 1]);
+  assert.deepEqual([...CD.CH_OF_V], [...PV.CH_OF_V]);
+  // the hexagons: inside the cell, no point in two (a 2 px scan), at least 9 px between any two
+  const H = CD.PADSV.hex, S3 = Math.sqrt(3);
+  for (const s of U.pads) { const [cx, cy, r] = H[s]; assert.ok(cx - r >= 8 && cx + r <= CD.PADSV.w - 8 && cy - S3 / 2 * r >= 4 && cy + S3 / 2 * r <= CD.PADSV.h - 4, s + ' inside the cell'); }
+  let both = 0;
+  for (let y = 0; y < CD.PADSV.h; y += 2) for (let x = 0; x < CD.PADSV.w; x += 2) if (U.pads.filter(s => CD.inHex(...H[s], x, y)).length > 1) both++;
+  assert.equal(both, 0);
+  const pts = s => { const [cx, cy, r] = H[s], o = []; for (let i = 0; i < 360; i++) { const a = i * Math.PI / 180; let lo = 0, hi = 2 * r; for (let j = 0; j < 30; j++) { const md = (lo + hi) / 2; if (CD.inHex(cx, cy, r, cx + md * Math.cos(a), cy + md * Math.sin(a))) lo = md; else hi = md; } o.push([cx + lo * Math.cos(a), cy + lo * Math.sin(a)]); } return o; };
+  const gap = (a, b) => { const A0 = pts(a), B0 = pts(b); let d = Infinity; for (const p of A0) for (const q of B0) d = Math.min(d, Math.hypot(p[0] - q[0], p[1] - q[1])); return d; };
+  for (let i = 0; i < 5; i++) for (let j = i + 1; j < 5; j++) assert.ok(gap(U.pads[i], U.pads[j]) >= 9, `${U.pads[i]} ↔ ${U.pads[j]}: ${gap(U.pads[i], U.pads[j]).toFixed(1)} px`);
+  assert.deepEqual([CD.inHex(0, 0, 10, 10, 0), CD.inHex(0, 0, 10, -10, 0), CD.inHex(0, 0, 10, 5, S3 * 5), CD.inHex(0, 0, 10, 0, S3 * 5), CD.inHex(0, 0, 10, 10.01, 0),
+    CD.inHex(0, 0, 10, 0, S3 * 5 + 0.01), CD.inHex(0, 0, 10, 8, 4), CD.inHex(0, 0, 10, 8, 3), CD.inHex(0, 0, 0, 0, 0)], [true, true, true, true, false, false, false, true, false], 'the vertices, the flat edges, a slanted edge');
+  // velocity by height: the back edge 0.30, the middle 0.675, the front edge 1 (the 1i curve); between pads nothing
+  const [bx, by, br] = H.bd, hh = S3 / 2 * br;
+  assert.deepEqual([CD.hexAt(bx, by - hh), CD.hexAt(bx, by), CD.hexAt(bx, by + hh), CD.hexAt(bx + br - 1, by)].map(h => [h.s, r3(h.v)]), [['bd', 0.3], ['bd', 0.675], ['bd', 1], ['bd', 0.675]]);
+  assert.deepEqual([CD.hexAt(2, 2), CD.hexAt(H.sd[0] + H.sd[2] + 4, H.sd[1]), CD.hexAt(320, 190), CD.hexAt(bx - br + 2, by - hh + 2)], [null, null, null, null], 'outside every hexagon (the last: the bass pad\'s box corner)');
+  for (const s of U.pads) assert.equal(CD.hexAt(H[s][0], H[s][1]).s, s);
+});
+
+test('8 drumHost: four ways — machOf (\'sdsv\' the exact string); the session follows the record (an SDS-V\'s names itself; another machine\'s record under the entry starts that one\'s, and back); transport / bpm / panic; the pads play the primary notes (the sel() gate), no REC; DRUM.rec = the pads\' REC branch without the note and without sel() (an 808 in a write mode), nothing on an SDS-V', () => {
+  assert.deepEqual(['tr808', 'tr606', 'tr909', 'sdsv', 'SDSV', 'sdsv ', null, { m: 'sdsv' }, { m: 'tr909' }, 7].map(CD.machOf), ['tr808', 'tr606', 'tr909', 'sdsv', 'tr808', 'tr808', 'tr808', 'sdsv', 'tr909', 'tr808']);
+  const { tr, R, H } = rig({ model: 'sdsv' }), A = H.api(tr);
+  assert.deepEqual(A.state().S, { m: 'sdsv', run: false, play: false, bpm: 120 });
+  H.transport(true); H.bpm(133);
+  assert.deepEqual([A.state().S.play, A.state().S.bpm, A.state().run], [true, 133, false]);
+  H.panic();
+  assert.deepEqual([A.pads.on('bd', 0.5, 0), A.pads.on('ht', 1, 2)], [true, true]);
+  A.pads.off('bd', 1); A.pads.off('ht', 3);
+  R.sel = false; assert.equal(A.pads.on('sd', 1, 4), false, 'a stale panel plays nothing'); R.sel = true;
+  assert.equal(A.pads.on('cp', 1, 4), false, 'no clap on an SDS-V (an inert id: no note)');
+  assert.deepEqual([R.notes, R.sent, R.notices], [[['on', 36, 0.5], ['on', 48, 1], ['off', 36], ['off', 48]], [], []]);
+  assert.deepEqual([H.rec(tr, 'bd', 1, 0), A.press({ k: 'rec', v: true }).mem.x.rec, H.rec(tr, 'bd', 1, 0), R.notes.length, R.sent.length], [false, false, false, 4, 0], 'no REC on an SDS-V (forced off)');
+  // another machine's record under the entry: its session; back: the SDS-V's
+  R.D = DC.normDrum(undefined, 'tr808'); H.changed(tr);
+  assert.deepEqual(Object.keys(A.state().S).sort(), Object.keys(DC.initState('tr808')).sort());
+  R.D = DC.normDrum(undefined, 'sdsv'); H.changed(tr);
+  assert.deepEqual(A.state().S, { m: 'sdsv', run: false, play: false, bpm: 120 });
+  R.D = DC.normDrum(undefined, 'tr909'); H.changed(tr); assert.equal(A.state().S.m, 'tr909');
+  R.D = DC.normDrum(undefined, 'sdsv'); H.changed(tr); assert.equal(A.state().S.m, 'sdsv');
+  // DRUM.rec on an 808 in PATTERN WRITE (free, running): the snare at the nearest step, as the pads' REC branch — no note, sel() ignored
+  const T = rig(), B = T.H.api(T.tr), U2 = rig(), C2 = U2.H.api(U2.tr);
+  for (const [X, Y] of [[T, B], [U2, C2]]) {
+    Y.press({ k: 'sync', v: false }); Y.press({ k: 'mode', v: DC.M_W1 }); Y.press({ k: 'start' }); Y.press({ k: 'rec', v: true });
+    X.H.step(X.tr, 'i1', { s: 3, m: 0, k: 0, v: 0, p: 0, o: 720, M: 0, F: 48000 }); X.R.heard = 48000 + 1000;
+  }
+  T.R.sel = false;
+  assert.equal(T.H.rec(T.tr, 'sd', 1, 125), true);
+  C2.pads.on('sd', 1, 125);
+  assert.deepEqual([T.R.D.st[0][3] >> 2 & 1, T.R.notes, JSON.stringify(T.R.D) === JSON.stringify(U2.R.D), U2.R.notes], [1, [], true, [['on', 38, 1]]], 'the same write, no note, sel() ignored');
+  assert.deepEqual([T.H.rec(T.tr, 'nope', 1, 0), T.H.rec({ id: 'gone' }, 'sd', 1, 0)], [false, false]);
+  B.press({ k: 'rec', v: false }); assert.equal(T.H.rec(T.tr, 'sd', 1, 125), false, 'REC off: nothing');
+});
+
+test('8 render with api.drum (the fixture SDS-V face): the kit of five hexagons in a music zone, MAP… · SOUNDS… · TRIM…, no sequencer part; the trimmer rows (one hit box each, off the art by hitOff, a dialog button); the memory keys\' radios; the DOM ≤ 700; without api.drum the same nodes, aria-disabled; deterministic', () => {
+  withRaf(() => {
+    const m = mount(true, { sdv: true }), g = kit(m.root), X = all(m.root).find(n => cls(n) === 'hw-extras');
+    assert.deepEqual([g.getAttribute('data-gesture'), g.getAttribute('role'), g.style.width, g.style.height, g.childNodes.map(p => p.getAttribute('data-sound'))],
+      ['music', 'group', '328px', '200px', ['bd', 'sd', 'ht', 'mt', 'lt']]);
+    assert.deepEqual(g.childNodes.map(p => [p.getAttribute('data-code'), p.getAttribute('role'), p.tabIndex, p.style.getPropertyValue('--pc')]),
+      [['BASS', 'button', 0, CD.COLORV[0]], ['SNARE', 'button', -1, CD.COLORV[1]], ['TOM 1', 'button', -1, CD.COLORV[4]], ['TOM 2', 'button', -1, CD.COLORV[3]], ['TOM 3', 'button', -1, CD.COLORV[2]]]);
+    const bd = hexOf(m.root, 'bd');
+    assert.deepEqual([bd.style.left, bd.style.top, bd.style.width, bd.style.height], ['114px', r3(144 - Math.sqrt(3) / 2 * 58) + 'px', '116px', r3(Math.sqrt(3) * 58) + 'px']);
+    assert.deepEqual(X.childNodes.slice(1).map(c => c.getAttribute('data-ctl')), ['dr:pads', 'dr:map', 'dr:sounds', 'dr:trimMenu']);
+    assert.deepEqual(X.childNodes.slice(2).map(c => c.childNodes[0].textContent), ['Map…', 'Sounds…', 'Trim…']);
+    assert.deepEqual([X.childNodes[0].textContent, X.childNodes[0].style.fontSize || ''], [P.TOKENS.sdsv.caption + ' · Dimmed controls are not emulated', ''], 'its own caption, at the strip\'s 9 px');
+    assert.equal(all(m.root).some(n => /dr-grid|hw-dsp|dr-key/.test(cls(n))), false, 'no grid, display or step key');
+    // the trimmer rows: ten dialog buttons, their hit boxes 80 × 28 px, mem 3's 6 px above its art and mem 4's below
+    const T = trims(m.root);
+    assert.deepEqual(T.map(b => b.getAttribute('data-ch') + b.getAttribute('data-mem')), ['b3', 'b4', 's3', 's4', '13', '14', '23', '24', '33', '34']);
+    assert.deepEqual(T.slice(0, 2).map(b => [b.getAttribute('aria-label'), b.getAttribute('aria-haspopup'), b.style.getPropertyValue('--hit-w'), b.style.getPropertyValue('--hit-h'), b.style.getPropertyValue('--hit-dx'), b.style.getPropertyValue('--hit-dy')]),
+      [['Bass drum · memory 3: its six trimmers — TRIM…', 'dialog', '80px', '28px', '0px', '-6px'], ['Bass drum · memory 4: its six trimmers — TRIM…', 'dialog', '80px', '28px', '0px', '6px']]);
+    assert.ok(T.every(b => b.parentNode.getAttribute('data-nomod') === '1' && b.getAttribute('aria-disabled') == null));
+    assert.ok([...T, W(m.root, 'dr:trimMenu')].every(b => b.getAttribute('data-gesture') == null && b.parentNode.getAttribute('data-gesture') == null), 'taps, not music zones: a pinch starting there zooms');
+    // the memory keys: five radios (cv-panel's: the patch's switches)
+    assert.deepEqual(CHV.map(ch => byCtl(m.root, 'x' + ch + 'p').length), [1, 1, 1, 1, 1]);
+    // the DOM budget (§13.2: ≤ 700): the live layer + the face's SVG elements
+    const svgN = (P.decorSvg(TRV_FX, MSDV).match(/<[a-zA-Z]/g) || []).length, liveN = all(m.root).length;
+    assert.ok(liveN + svgN <= 700, `${liveN} live + ${svgN} face = ${liveN + svgN}`);
+    m.r.destroy();
+    // without api.drum: the same nodes, the kit / rows / TRIM… aria-disabled, no tab stop; the memory radios still the patch's
+    const n = mount(false, { sdv: true }), ser = r => all(r).map(x => x.localName + '.' + cls(x) + '|' + (x.getAttribute('data-ctl') || '') + '|' + (x.getAttribute('data-sound') || '')).join('\n');
+    const h1 = mount(true, { sdv: true });
+    assert.equal(ser(n.root), ser(h1.root), 'the same nodes with and without a host');
+    h1.r.destroy();
+    assert.ok(kit(n.root).childNodes.every(p => p.getAttribute('aria-disabled') === 'true' && p.tabIndex === -1));
+    assert.ok(trims(n.root).every(b => b.getAttribute('aria-disabled') === 'true'));
+    assert.equal(W(n.root, 'dr:trimMenu').getAttribute('aria-disabled'), 'true');
+    fire(byCtl(n.root, 'x1p')[0].childNodes[0].childNodes[2], 'pointerup');
+    assert.equal(n.api.vals.x1p, 2, 'a memory key works without a host (a patch switch)');
+    n.r.destroy();
+    const a1 = mount(true, { sdv: true }), a2 = mount(true, { sdv: true });
+    assert.equal(ser(a1.root), ser(a2.root), 'deterministic');
+    a1.r.destroy(); a2.r.destroy();
+  });
+});
+
+test('8 the kit by touch: the hexagon\'s own hit test at three zooms (a press between pads plays nothing); the velocity by where it lands (the back edge soft, the front edge loud); every press its own hit — two fingers on one pad two hits, the off at the last lift; flashes per pad (its own parity) and the monitor\'s at their heard time; the keyboard; the soft-hit threshold in the aria text and the tip (P-4) following SENSITIVITY; destroy → release', () => {
+  withRaf(() => {
+    const m = mount(true, { sdv: true }), g = kit(m.root), H = CD.PADSV.hex, S3 = Math.sqrt(3);
+    for (const k of [0.5, 1, 1.6]) {
+      placeEl(g, 100, 50, CD.PADSV.w * k, CD.PADSV.h * k); layoutEl(g, CD.PADSV.w, CD.PADSV.h);
+      const at = (x, y) => ({ clientX: 100 + x * k, clientY: 50 + y * k });
+      m.R.notes.length = 0;
+      const [cx, cy, r] = H.mt, hh = S3 / 2 * r;
+      fire(g, 'pointerdown', Object.assign({ pointerId: 1, pointerType: 'touch', button: 0 }, at(cx, cy - hh + 0.5)));
+      fire(g, 'pointerdown', Object.assign({ pointerId: 2, pointerType: 'touch', button: 0 }, at(cx, cy + hh - 0.5)));
+      fire(g, 'pointerdown', Object.assign({ pointerId: 3, pointerType: 'touch', button: 0 }, at(H.sd[0] + H.sd[2] + 6, H.sd[1])));
+      fire(g, 'pointerdown', Object.assign({ pointerId: 5, pointerType: 'touch', button: 0 }, at(H.bd[0] - H.bd[2] + 2, H.bd[1] - S3 / 2 * H.bd[2] + 2))); // (the kick's box corner: no pad)
+      fire(g, 'pointerdown', Object.assign({ pointerId: 4, pointerType: 'touch', button: 0 }, at(H.bd[0] + H.bd[2] - 2, H.bd[1])));
+      assert.deepEqual(m.R.notes.map(x => x.slice(0, 2)), [['on', 45], ['on', 45], ['on', 36]], k + ': tom 2 twice (two fingers, two hits), nothing between the snare and the kick, the kick at its right vertex');
+      assert.ok(m.R.notes[0][2] < 0.32 && m.R.notes[1][2] > 0.98 && Math.abs(m.R.notes[2][2] - 0.675) < 0.01, k + ': the back edge soft, the front loud — ' + JSON.stringify(m.R.notes));
+      assert.equal(hexOf(m.root, 'mt').getAttribute('data-held'), '');
+      fire(g, 'pointerup', { pointerId: 1 });
+      assert.equal(m.R.notes.length, 3, 'one finger still on tom 2');
+      fire(g, 'pointercancel', { pointerId: 2 }); fire(g, 'lostpointercapture', { pointerId: 4 }); fire(g, 'pointerup', { pointerId: 3 });
+      assert.deepEqual(m.R.notes.slice(3), [['off', 45], ['off', 36]]);
+      assert.equal(hexOf(m.root, 'mt').getAttribute('data-held'), null);
+    }
+    // flashes: each pad its own parity (two pads hit alternately: every hit a restart); the monitor's at the heard time
+    placeEl(g, 100, 50, CD.PADSV.w, CD.PADSV.h); layoutEl(g, CD.PADSV.w, CD.PADSV.h);
+    const hit = s => { fire(g, 'pointerdown', { pointerId: 9, pointerType: 'mouse', button: 0, clientX: 100 + H[s][0], clientY: 50 + H[s][1] }); fire(g, 'pointerup', { pointerId: 9 }); };
+    const hv = s => hexOf(m.root, s).getAttribute('data-hit'), seq = [];
+    for (const s of ['bd', 'sd', 'bd', 'sd', 'bd']) { const was = hv(s); hit(s); seq.push(hv(s) !== was); }
+    assert.deepEqual(seq, [true, true, true, true, true]);
+    assert.deepEqual(m.R.log, ['mon true'], 'the panel subscribed the monitor');
+    const was = hv('ht');
+    m.R.heard = 0; m.H.mon(m.tr, { lit: 1 << 4, F: 5000 }); m.frame();
+    assert.equal(hv('ht'), was, 'not heard yet');
+    m.R.heard = 4500; m.frame();
+    assert.notEqual(hv('ht'), was, 'heard: tom 1 (sound id 4) lights');
+    // the keyboard: Enter / Space hit at 100 / 127, the release ends it; the arrows walk the kit (top row left → right, then the bottom)
+    const n0 = m.R.notes.length, Pd = s => hexOf(m.root, s);
+    key(Pd('bd'), 'Enter'); fire(Pd('bd'), 'keyup', { key: 'Enter' });
+    assert.deepEqual(m.R.notes.slice(n0), [['on', 36, r3(100 / 127)], ['off', 36]]);
+    key(Pd('bd'), 'ArrowRight'); assert.deepEqual(['bd', 'ht'].map(s => Pd(s).tabIndex), [-1, 0], 'wraps to tom 1');
+    key(Pd('ht'), 'ArrowDown'); key(Pd('mt'), 'ArrowLeft'); assert.equal(Pd('ht').tabIndex, 0);
+    // P-4: the threshold of each channel's SENSITIVITY in the aria text and the tip, following the knob
+    assert.equal(Pd('bd').getAttribute('aria-label'), 'Bass drum pad · SENSITIVITY 5.0: every hit fires');
+    m.api.set('xbs', 1);
+    assert.equal(Pd('bd').getAttribute('aria-label'), 'Bass drum pad · SENSITIVITY 1.0: hits below velocity 18 fire nothing (low settings ignore soft hits, as on the original)');
+    m.api.set('x1s', 0);
+    assert.match(Pd('ht').getAttribute('aria-label'), /^Tom 1 \(high\) pad · SENSITIVITY 0\.0: hits below velocity 34 fire nothing/, 'tom 1: channel 1 → sound id 4');
+    assert.match(Pd('sd').getAttribute('aria-label'), /every hit fires$/);
+    fire(Pd('ht'), 'pointerenter', { pointerType: 'mouse' });
+    assert.equal(m.api.tips.at(-1), 'Tom 1 (high) · front edge loudest · SENS 0.0: below velocity 34 is silent', 'one short line (the aria text keeps the long form)');
+    assert.equal(m.api.tips.at(-1).length <= 80, true);
+    // R2-F10: the shared tip is centred on what it is given — a pad at the window's left or right edge hands it a centre pulled inside
+    const hwTip = m.api.tips.at(-1).length * 3.6 + 10, vw = m.doc.defaultView.innerWidth, cen = r => r.left + r.width / 2;
+    placeEl(Pd('ht'), 0, 100, 88, 76); fire(Pd('ht'), 'pointerenter', { pointerType: 'mouse' });
+    assert.equal(cen(m.api.tipAt.at(-1)) - hwTip >= 0, true, `left edge: the tip's left ${cen(m.api.tipAt.at(-1)) - hwTip}`);
+    placeEl(Pd('ht'), vw - 88, 100, 88, 76); fire(Pd('ht'), 'pointerenter', { pointerType: 'mouse' });
+    assert.equal(cen(m.api.tipAt.at(-1)) + hwTip <= vw, true, `right edge: the tip's right ${cen(m.api.tipAt.at(-1)) + hwTip} of ${vw}`);
+    placeEl(Pd('ht'), 600, 100, 88, 76); fire(Pd('ht'), 'pointerenter', { pointerType: 'mouse' });
+    assert.equal(cen(m.api.tipAt.at(-1)), 644, 'in the middle: centred on the pad as before');
+    assert.equal(m.api.tipAt.at(-1).top, 100);
+    // destroy → release: a held pad's off, once; the monitor off
+    fire(g, 'pointerdown', { pointerId: 7, pointerType: 'touch', button: 0, clientX: 100 + H.lt[0], clientY: 50 + H.lt[1] });
+    const n1 = m.R.notes.length;
+    m.r.destroy();
+    assert.deepEqual([m.R.notes.slice(n1), m.R.log.at(-1)], [[['off', 41]], 'mon false']);
+    fire(g, 'pointerup', { pointerId: 7 });
+    assert.equal(m.R.notes.length, n1 + 1, 'nothing after destroy');
+  });
+});
+
+// R2-F5: §13.2's 700-element budget is for the module as the page builds it. Counted here on panels/sdsv.js itself (the fixture
+// face above is not the authored one): the live layer in this fake DOM + the five elements a hardware knob adds in a browser
+// (classic-panel's `innerHTML`: svg, skirt, g, cap, pointer — the fake DOM does not parse it) + the face's SVG (its <title>s
+// included) + the bar (22) and the module's four wrappers. Before the fix this model read 188 + 200 + 339 + 26 = 753, the number
+// headless Chrome measured on the real SDS-V module (face 341, live layer 371, bar 22).
+test('8 the real panels/sdsv.js: the SDS-V module stays within §13.2\'s 700 DOM elements (live layer + the knobs\' SVG + the face SVG + the bar and wrappers) — its art in grouped paths, never one element per tick, rule or triangle', () => {
+  withRaf(() => {
+    const m = mount(true, { sdv: true, real: true }), L = P.layoutOf('sdsv'), svg = P.decorSvg(L, MSDV);
+    const svgN = (svg.match(/<[a-zA-Z]/g) || []).length, liveN = all(m.root).length, knobs = all(m.root).filter(n => cls(n) === 'knob').length;
+    const total = liveN + 5 * knobs + svgN + 22 + 4;
+    assert.ok(P.validate(L, MSDV).length === 0 && P.usable('sdsv', MSDV) === L, 'the authored layout, valid');
+    assert.equal(knobs, 40);
+    assert.ok(total <= 700, `${liveN} live + ${5 * knobs} knob svg + ${svgN} face + 26 bar and wrappers = ${total} > 700`);
+    // the face's art is grouped (rings, rules, triangles, screws in one path each); ten rows of trimmers stay two paths each
+    const n = tag => (svg.match(new RegExp('<' + tag + '[ >]', 'g')) || []).length;
+    assert.ok(n('line') <= 8 && n('path') <= 40, `${n('line')} lines, ${n('path')} paths`);
+    m.r.destroy();
+  });
+});
+
+test('8 TRIM… stays on screen (review R2-F4): the box is measured after its rows are built — near the window\'s bottom it flips above the row, never off the bottom edge', () => {
+  withRaf(() => {
+    const m = mount(true, { sdv: true }), T = trims(m.root), vh = m.doc.defaultView.innerHeight, Elem = Object.getPrototypeOf(m.doc.body), od = Object.getOwnPropertyDescriptor(Elem, 'offsetHeight');
+    // the box is short until its rows are built (header, tabs, note), 473 px tall after (as Chrome measured it)
+    Object.defineProperty(Elem, 'offsetHeight', { configurable: true, get() { return cls(this) === 'dr-trimpop' ? (all(this).some(n => cls(n) === 'dr-tp-row') ? 473 : 90) : od.get.call(this); } });
+    try {
+      const at = (btn, top, h) => { placeEl(btn, 300, top, 80, h); fire(btn, 'pointerup', { pointerId: 1 }); const pop = popOf(m.doc); return [pop, parseFloat(pop.style.top)]; };
+      // the row near the bottom: below it nothing fits (the old pre-build measure said it did) → above it
+      let [pop, top] = at(T[3], vh - 60, 40);
+      assert.ok(top + 473 <= vh - 8 && top + 473 <= vh - 60, `flipped above the row: top ${top}, bottom ${top + 473} of ${vh}`);
+      fire(T[3], 'pointerup', { pointerId: 1 });
+      // room below: it opens under the row
+      [pop, top] = at(T[1], 100, 40); assert.equal(top, 144, 'under the row, 4 px');
+      fire(T[1], 'pointerup', { pointerId: 1 });
+      // no room either side (a row in the middle of a short window): kept inside, at the bottom edge
+      [pop, top] = at(T[5], 380, 40); assert.deepEqual([top >= 8, top + 473 <= vh - 8], [true, true], `inside: ${top}`);
+      fire(T[5], 'pointerup', { pointerId: 1 });
+      // TRIM… itself (the extras strip's button, the same rule)
+      [pop, top] = at(W(m.root, 'dr:trimMenu'), vh - 30, 24); assert.ok(top + 473 <= vh - 8, `from the TRIM… button: ${top}`);
+    } finally { Object.defineProperty(Elem, 'offsetHeight', od); }
+    m.r.destroy();
+  });
+});
+
+test('8 TRIM…: a trimmer row\'s tap (or TRIM…) opens the popover at that channel — tabs, memory 1 (Copy to knobs: the factory sound), memories 3 and 4 as six knobs each (drum-core presses `trim`: record writes and a send, no notice / History step), Store knobs here (trimFromKnobs), Copy to knobs (the patch\'s knobs, then memory 2); the row the channel plays marked; Escape / ✕ / a press outside / the same row again / destroy close it; a cancelled press opens nothing', () => {
+  withRaf(() => {
+    const m = mount(true, { sdv: true }), T = trims(m.root), D0 = m.R.D;
+    fire(T[2], 'pointercancel', { pointerId: 1 });
+    assert.equal(popOf(m.doc), null);
+    fire(T[3], 'pointerup', { pointerId: 1 }); // the snare's memory 4
+    const pop = popOf(m.doc), tabs = all(pop).filter(n => cls(n) === 'dr-tp-tab'), rows = () => all(pop).filter(n => cls(n) === 'dr-tp-row');
+    assert.deepEqual([pop.getAttribute('role'), pop.getAttribute('aria-label'), pop.parentNode === m.doc.body], ['dialog', 'Trimmers · Snare drum', true]);
+    assert.deepEqual(tabs.map(t => [t.textContent, t.getAttribute('aria-selected')]), [['Bass drum', 'false'], ['Snare drum', 'true'], ['Tom 1', 'false'], ['Tom 2', 'false'], ['Tom 3', 'false']]);
+    assert.deepEqual(rows().map(r => [r.getAttribute('data-mem'), r.getAttribute('data-cur')]), [['1', null], ['3', null], ['4', null]], 'the snare plays memory 2 (the knobs): no row marked');
+    const knobs = all(pop).filter(n => /\bwk-knob\b/.test(cls(n)));
+    assert.equal(knobs.length, 12);
+    assert.deepEqual(knobs.slice(0, 6).map(k => k.getAttribute('aria-label')), ['Noise', 'Tone', 'Bend', 'Decay', 'Noise / tone', 'Click / drum']);
+    assert.equal(m.doc.activeElement, knobs[6], 'focus on memory 4\'s first knob');
+    rafQ.flush(); assert.equal(T[3].getAttribute('aria-expanded'), 'true');
+    // a knob: one trimmer, a record write and a send — no notice (no History step)
+    const v0 = D0.trim[1][1][1];
+    key(knobs[7], 'ArrowUp');
+    assert.deepEqual([r3(m.R.D.trim[1][1][1]), m.R.D.trim[1][0], m.R.sent.length, m.R.notices.length], [r3(v0 + 0.01), D0.trim[1][0], 1, 0]);
+    assert.equal(m.presses.at(-1), JSON.stringify({ k: 'trim', ch: 1, mem: 4, f: 1, v: v0 + 0.01 }));
+    assert.equal(knobs[7].getAttribute('aria-valuetext'), (Math.round((v0 + 0.01) * 100) / 10).toFixed(1));
+    // Store knobs here: the snare's six knobs into memory 3
+    const bs = all(pop).filter(n => cls(n) === 'dr-tp-b');
+    assert.deepEqual(bs.map(b => b.textContent), ['Copy to knobs', 'Store knobs here', 'Copy to knobs', 'Store knobs here', 'Copy to knobs']);
+    m.api.set('xsn', 9); m.api.set('xsc', 0.5);
+    fire(bs[1], 'pointerup');
+    assert.deepEqual(m.R.D.trim[1][0].map(r3), FV.map(f => r3(m.api.vals['xs' + f] / 10)));
+    // Copy to knobs (memory 4): the six knobs, then the snare on memory 2; memory 1: the factory sound (the knobs' defaults)
+    m.api.set('xsp', 3);
+    assert.deepEqual(rows().map(r => r.getAttribute('data-cur')), [null, null, ''], 'the snare on memory 4: its row marked');
+    fire(bs[4], 'pointerup');
+    assert.deepEqual([FV.map(f => m.api.vals['xs' + f]), m.api.vals.xsp], [m.R.D.trim[1][1].map(v => +(v * 10).toFixed(4)), 1]);
+    assert.deepEqual(rows().map(r => r.getAttribute('data-cur')), [null, null, null], 'on memory 2 now');
+    fire(bs[0], 'pointerup');
+    assert.deepEqual(FV.map(f => m.api.vals['xs' + f]), FV.map(f => MSDV.controls.find(c => c.id === 'xs' + f).def));
+    assert.equal(m.R.notices.length, 0, 'no notice, no undo: record writes and knob tweaks (review #1)');
+    // a tab: the channel's rows
+    fire(tabs[4], 'pointerup');
+    assert.deepEqual([pop.getAttribute('aria-label'), tabs.map(t => t.getAttribute('aria-selected')).join(' ')], ['Trimmers · Tom 3', 'false false false false true']);
+    key(tabs[4], 'ArrowRight'); assert.deepEqual([pop.getAttribute('aria-label'), tabs[0].tabIndex, m.doc.activeElement === tabs[0]], ['Trimmers · Bass drum', 0, true], 'the arrows choose the drum (wrapping)');
+    key(tabs[0], 'ArrowLeft'); assert.equal(pop.getAttribute('aria-label'), 'Trimmers · Tom 3');
+    const k3 = all(pop).filter(n => /\bwk-knob\b/.test(cls(n)));
+    key(k3[0], 'ArrowDown');
+    assert.equal(m.presses.at(-1), JSON.stringify({ k: 'trim', ch: 4, mem: 3, f: 0, v: D0.trim[4][0][0] - 0.01 }));
+    // Escape closes, the focus back on the row; the same row again toggles; a press outside closes; ✕; destroy
+    key(k3[0], 'Escape');
+    assert.deepEqual([popOf(m.doc), m.doc.activeElement === T[3]], [null, true]);
+    fire(T[0], 'pointerup'); assert.ok(popOf(m.doc)); fire(T[0], 'pointerup'); assert.equal(popOf(m.doc), null, 'the same row again: closed');
+    fire(W(m.root, 'dr:trimMenu'), 'pointerup');
+    assert.equal(popOf(m.doc).getAttribute('aria-label'), 'Trimmers · Bass drum', 'TRIM…: the channel last opened');
+    fire(m.doc.body, 'pointerdown', { pointerId: 3 }); assert.equal(popOf(m.doc), null, 'a press outside');
+    fire(T[9], 'pointerup'); const x = all(popOf(m.doc)).find(n => cls(n) === 'dr-tp-x');
+    fire(x, 'pointerup'); assert.equal(popOf(m.doc), null, '✕');
+    fire(T[9], 'pointerup'); assert.ok(popOf(m.doc));
+    m.r.destroy(); assert.equal(popOf(m.doc), null, 'destroy closes it');
+  });
 });

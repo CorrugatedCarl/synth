@@ -7,6 +7,8 @@
 //  - the Web MIDI adapter (button texts, permission auto-connect, retry, hot-plug) on a stub navigator;
 //  - stage 1e (IMPL-1e §3.3): several Serum instruments on a track — learn / forget per instrument (its own map),
 //    learned controllers over every Serum instrument of each target, program change to the track (the primary).
+//  - stage 8 (IMPL-8 §8, §15.7): per-port input handlers, the host's padIn pre-hook and ports(names), pad learn, MIDI out
+//    (outputs / send), all of it silent without Web MIDI (the iPad).
 // Run: node --test tests/midi.test.mjs
 import './v8-guard.mjs';
 import test from 'node:test';
@@ -734,7 +736,11 @@ test('adapter: Enable MIDI button, permission auto-connect, retry, hot-plug, uns
   assert.deepEqual(sink, [['on', 60, 1, 2, 12]]);
   // hot-plug: statechange re-hooks every input; no inputs → the plug-in hint
   inputs.set(2, { name: 'Seaboard' }); access.onstatechange();
-  assert.equal(b.textContent, 'MIDI: KeyStep, Seaboard'); assert.equal(inputs.get(2).onmidimessage, inputs.get(1).onmidimessage);
+  assert.equal(b.textContent, 'MIDI: KeyStep, Seaboard');
+  // IMPL-8 §8.2: each input has its own handler (the one shared handler is gone), its name reaching the router
+  assert.equal(typeof inputs.get(2).onmidimessage, 'function'); assert.notEqual(inputs.get(2).onmidimessage, inputs.get(1).onmidimessage);
+  inputs.get(2).onmidimessage({ data: Uint8Array.from([0x92, 61, 64]), timeStamp: 13 });
+  assert.deepEqual(sink.at(-1), ['on', 61, 64 / 127, 3, 13]);
   inputs.clear(); access.onstatechange();
   assert.equal(b.textContent, 'MIDI: no devices'); assert.equal(b.title, 'Plug in a MIDI controller — it is picked up automatically');
   // permission already granted: wire() connects by itself; a later grant (onchange) too
@@ -831,4 +837,288 @@ test('2b: every control change reaches host.modCC(ch, cc, v01, ts) first (the ca
   const log2 = [], r2 = v2(world(project0(), log2, timers()));
   r2.message([0xb0, 1, 127], 5);
   assert.deepEqual(log2.filter(x => x[0] === 'ctl').map(x => [x[1], x[2]]), [['wheel', 1]], 'no hook: today\'s dispatch');
+});
+
+/* ------------------------------------------------ stage 8 (IMPL-8 §8.2–§8.4): the pad controller's MIDI side */
+// A fake MIDIAccess behind createMidi: ports are plain objects { name, state?, send? } in Maps; plug / unplug edit the maps and fire
+// onstatechange as Chrome does. The host's padIn / ports are the test's.
+function rig(extra = {}, o = {}) {
+  const log = [], T = timers(), project = project0(), E = world(project, log, T);
+  const A = { inputs: new Map(), outputs: new Map(), onstatechange: null };
+  const btn = { textContent: '', title: '', classList: { add() {} } };
+  const st = { argc: -1 };
+  const nav = 'nav' in o ? o.nav : { requestMIDIAccess: async function () { st.argc = arguments.length; return A; } };
+  const R = v2(E, Object.assign({ nav, button: () => btn }, extra));
+  let id = 0;
+  const plug = (name, kind = 'in', p = {}) => {
+    const port = Object.assign({ name }, p);
+    if (kind === 'out') { port.sent = []; port.send = b => port.sent.push([...b]); }
+    A[kind === 'out' ? 'outputs' : 'inputs'].set('p' + ++id, port);
+    if (A.onstatechange) A.onstatechange();
+    return port;
+  };
+  const unplug = port => { for (const m of [A.inputs, A.outputs]) for (const [k, v] of m) if (v === port) m.delete(k); if (A.onstatechange) A.onstatechange(); };
+  const notices = () => log.filter(x => x[0] === 'notice').map(x => x[1]);
+  return { R, r: R.r, E, log, T, project, A, btn, st, plug, unplug, notices };
+}
+// a learn promise as it stands: a pending one reads 'pending' (a test fails instead of hanging)
+const now = p => Promise.race([p, new Promise(r => setImmediate(r, 'pending'))]);
+const msg = (X, data, ts = 0, port) => X.r.message(Uint8Array.from(data), ts, port);
+const pick3 = rnd => [1, 2, 4][Math.floor(rnd() * 3)];
+
+test('8 §8.2: per-port handlers — each input its own, its name reaching padIn; a hot-plug re-hooks every input and calls ports(names) with who is still there', async () => {
+  const seen = [], portsLog = [];
+  const X = rig({ padIn: (e, port, ts) => { seen.push([e.k, e.ch, e.n, port, ts]); return false; }, ports: names => portsLog.push(names) });
+  const a = X.plug('Pad A'), b = X.plug('Pad B');                  // (before MIDI is enabled: nothing is hooked yet)
+  assert.deepEqual(portsLog, []);
+  await X.r.enable();
+  assert.deepEqual(portsLog, [['Pad A', 'Pad B']], 'ports(names) after the first hook');
+  assert.equal(X.st.argc, 0, 'requestMIDIAccess() with no options: no SysEx');
+  assert.notEqual(a.onmidimessage, b.onmidimessage);
+  a.onmidimessage({ data: Uint8Array.from([0x99, 36, 100]), timeStamp: 5 });
+  b.onmidimessage({ data: Uint8Array.from([0x80, 40, 0]), timeStamp: 6 });
+  assert.deepEqual(seen, [['on', 10, 36, 'Pad A', 5], ['off', 1, 40, 'Pad B', 6]]);
+  assert.deepEqual(X.log.filter(x => x[0] === 'noteOn').map(x => [x[1], x[3], x[4]]), [[36, 10, 5]], 'a false padIn: the channel dispatch as today');
+  // a hot-plug: every input is re-hooked; the list follows the plug
+  const old = a.onmidimessage, c = X.plug('Pad C');
+  assert.notEqual(a.onmidimessage, old); assert.equal(typeof c.onmidimessage, 'function');
+  assert.deepEqual(portsLog.at(-1), ['Pad A', 'Pad B', 'Pad C']); assert.equal(X.btn.textContent, 'MIDI: Pad A, Pad B, Pad C');
+  X.unplug(b);                                                    // an unplug: the removed input is missing from the list
+  assert.deepEqual(portsLog.at(-1), ['Pad A', 'Pad C']); assert.equal(X.btn.textContent, 'MIDI: Pad A, Pad C');
+  assert.deepEqual(X.r.inputs(), ['Pad A', 'Pad C']);
+  // a port still listed but disconnected (Chrome keeps an unplugged input in the map, state 'disconnected') counts as gone — for the
+  // host and for the button's list (R2-F11: it kept naming the unplugged port); plugged back in, it is listed again
+  c.state = 'disconnected'; X.A.onstatechange();
+  assert.deepEqual(portsLog.at(-1), ['Pad A']); assert.deepEqual(X.r.inputs(), ['Pad A']);
+  assert.equal(X.btn.textContent, 'MIDI: Pad A'); assert.equal(X.btn.title, 'Connected MIDI inputs');
+  c.state = 'connected'; X.A.onstatechange();
+  assert.equal(X.btn.textContent, 'MIDI: Pad A, Pad C'); assert.equal(typeof c.onmidimessage, 'function');
+  c.state = 'disconnected'; X.A.onstatechange();
+  X.unplug(a);
+  assert.equal(X.btn.textContent, 'MIDI: no devices', 'the only input left is disconnected: the plug-in hint'); assert.equal(X.btn.title, 'Plug in a MIDI controller — it is picked up automatically');
+  X.unplug(a); X.unplug(c);
+  assert.deepEqual(portsLog.at(-1), []); assert.equal(X.btn.textContent, 'MIDI: no devices');
+  // every statechange calls it, even for an equal list (a device that re-enumerated between two events)
+  const n = portsLog.length; X.A.onstatechange(); assert.equal(portsLog.length, n + 1);
+  // the port-less entry points (message(data, ts), the old shared handler) report no port: ''
+  seen.length = 0;
+  X.r.message([0x90, 60, 90], 7); X.r.onmidimessage({ data: [0x80, 60, 0], timeStamp: 8 }); X.r.message([0x90, 61, 90], 9, 'Named'); X.r.message([0x90, 62, 90], 9, 42);
+  assert.deepEqual(seen.map(x => x[3]), ['', '', 'Named', '']);
+});
+
+test('8 §8.2: a host without padIn / ports is today\'s adapter; a throwing ports() neither breaks the hook nor vanishes (raised on a timer)', async () => {
+  const X = rig();
+  X.plug('KeyStep'); await X.r.enable();
+  assert.equal(X.btn.textContent, 'MIDI: KeyStep'); assert.equal(X.r.enabled, true);
+  const Y = rig({ ports: () => { throw new Error('boom'); } });
+  Y.plug('KeyStep'); await Y.r.enable();
+  assert.equal(Y.btn.textContent, 'MIDI: KeyStep', 'the button text was set before the host hook ran'); assert.equal(Y.r.enabled, true, 'not "MIDI blocked"');
+  assert.throws(() => Y.T.tick(1), /boom/);
+});
+
+test('8 §8.2: padIn true — the message goes nowhere else (no noteOn / noteOff / post / CC learn / modCC / roles); false, undefined — today\'s dispatch', () => {
+  const calls = [], modCCs = [];
+  let verdict = true;
+  const X = rig({ padIn: (e, port) => { calls.push([e.k, port]); return verdict; }, modCC: (...a) => modCCs.push(a) });
+  X.project.selTrack = 1;
+  X.R.learn(1, 'f.var');                                           // a pending Serum learn: a taken CC must not complete it
+  X.log.length = 0;
+  for (const d of [[0x90, 60, 100], [0x80, 60, 40], [0x90, 61, 0], [0xa0, 60, 50], [0xb0, 30, 127], [0xb0, 1, 90], [0xb0, 64, 127], [0xb0, 123, 0]]) msg(X, d, 1, 'Pad');
+  assert.deepEqual(X.log, [], 'nothing reached the host: no noteOn / noteOff / post / ctl / wheel / sustain / all-notes-off');
+  assert.deepEqual(modCCs, []); assert.deepEqual(X.R.learning, { id: 1, dest: 'f.var' }, 'the learn still waits');
+  assert.equal(calls.length, 8);
+  // only the four message kinds ask: bend, channel pressure, program change and system messages never reach padIn
+  calls.length = 0;
+  for (const d of [[0xe0, 0, 64], [0xd0, 50], [0xc0, 3], [0xf8]]) msg(X, d, 2, 'Pad');
+  assert.deepEqual(calls, []);
+  assert.deepEqual(X.log.filter(x => x[0] === 'ctl' || x[0] === 'pc').map(x => x[0]), ['ctl', 'ctl', 'pc']);
+  // false (or nothing / a falsy value): the dispatch is today's — including the Serum learn taking the CC
+  X.log.length = 0;
+  for (verdict of [false, undefined, 0, null]) {
+    msg(X, [0x90, 60, 100], 3, 'Pad'); msg(X, [0x80, 60, 40], 4, 'Pad'); msg(X, [0xa0, 60, 50], 5, 'Pad');
+  }
+  assert.equal(X.log.filter(x => x[0] === 'noteOn').length, 4); assert.equal(X.log.filter(x => x[0] === 'noteOff').length, 4);
+  assert.equal(X.log.filter(x => x[0] === 'post' && x[2].t === 'pat').length, 4 * X.E.targets(1).length);
+  assert.ok(X.R.learning, 'no controller yet: the learn still waits');
+  msg(X, [0xb0, 30, 127], 6, 'Pad');
+  assert.equal(X.R.learning, null); assert.deepEqual(modCCs.at(-1).slice(0, 3), [1, 30, 1]);
+});
+
+test('8 §8.2: what padIn receives — the decoded event, the port, the timestamp; note-on velocity 0 is a release; poly pressure and CC too', () => {
+  const got = [];
+  const X = rig({ padIn: (e, port, ts) => { got.push([{ ...e }, port, ts]); return true; } });
+  msg(X, [0x99, 36, 127], 10, 'MPD'); msg(X, [0x99, 36, 0], 11, 'MPD'); msg(X, [0x89, 36, 64], 12, 'MPD');
+  msg(X, [0xa9, 36, 127], 13, 'MPD'); msg(X, [0xb9, 20, 100], 14, 'MPD');
+  assert.deepEqual(got.map(g => g[0]), [
+    { k: 'on', ch: 10, n: 36, v: 1 }, { k: 'off', ch: 10, n: 36 }, { k: 'off', ch: 10, n: 36, rv: 64 / 127 },
+    { k: 'pat', ch: 10, n: 36, v: 1 }, { k: 'cc', ch: 10, cc: 20, val: 100 },
+  ]);
+  assert.deepEqual(got.map(g => [g[1], g[2]]), [['MPD', 10], ['MPD', 11], ['MPD', 12], ['MPD', 13], ['MPD', 14]]);
+});
+
+test('8 §8.2: a padIn that always says false is today\'s router — seeded random streams through named ports (calls, order, states)', () => {
+  const logs = [];
+  for (const hooked of [false, true]) {
+    const L = [];
+    for (let seed = 1; seed <= 6; seed++) {
+      const rnd = prng(seed), ri = (a, b) => a + Math.floor(rnd() * (b - a + 1));
+      const X = rig(hooked ? { padIn: () => false, ports: () => {} } : {});
+      for (let i = 0; i < 1200; i++) {
+        const ch = ri(0, 15), x = rnd();
+        let d = null;
+        if (x < 0.3) d = [0x90 | ch, ri(36, 84), rnd() < 0.15 ? 0 : ri(1, 127)];
+        else if (x < 0.5) d = [0x80 | ch, ri(36, 84), ri(0, 127)];
+        else if (x < 0.57) d = [0xa0 | ch, ri(36, 84), ri(0, 127)];
+        else if (x < 0.8) d = [0xb0 | ch, [1, 64, 120, 123, 21, 22, 74, 10][ri(0, 7)], ri(0, 127)];
+        else if (x < 0.88) d = [0xe0 | ch, ri(0, 127), ri(0, 127)];
+        else if (x < 0.92) d = [0xd0 | ch, ri(0, 127)];
+        else if (x < 0.94) d = [0xc0 | ch, ri(0, 127)];
+        else if (x < 0.97) X.R.learn(pick3(rnd), 'f.var');
+        else X.R.cancelLearn(false);
+        if (d) msg(X, d, i, ['A', 'B', ''][i % 3]);
+      }
+      L.push(X.log.slice(), [...X.E.held], JSON.parse(JSON.stringify(X.project.tracks)));
+    }
+    logs.push(L);
+  }
+  assert.equal(logs[1].length, logs[0].length);
+  for (let i = 0; i < logs[0].length; i++) assert.deepEqual(logs[1][i], logs[0][i], 'entry ' + i);
+});
+
+test('8 §8.3: pad learn — the next note-on (or a CC press) from any port resolves { port, ch, n, cc } and goes nowhere else; releases and pressure do not end it', async () => {
+  const padIns = [], modCCs = [];
+  const X = rig({ padIn: (e, port) => { padIns.push([e.k, port]); return false; }, modCC: (...a) => modCCs.push(a) });
+  X.plug('Pad A'); await X.r.enable();
+  X.log.length = 0;
+  let p = X.r.learnPad();
+  assert.equal(X.r.padLearning, true); assert.equal(X.R.learning, null, 'not the Serum learn');
+  assert.deepEqual(X.notices(), ['MIDI Learn: hit a pad on the controller — Esc cancels']);
+  // a release, pressure, a CC 0, a controller ≥ 120, bend: it keeps waiting (and they dispatch as today)
+  msg(X, [0x89, 30, 0], 1, 'Pad A'); msg(X, [0xa9, 30, 90], 2, 'Pad A'); msg(X, [0xb9, 20, 0], 3, 'Pad A'); msg(X, [0xb9, 123, 127], 4, 'Pad A'); msg(X, [0xe9, 0, 80], 5, 'Pad A');
+  assert.equal(X.r.padLearning, true);
+  assert.deepEqual(padIns.map(x => x[0]), ['off', 'pat', 'cc', 'cc'], 'not learned: padIn asked as ever');
+  padIns.length = 0; X.log.length = 0; modCCs.length = 0;
+  msg(X, [0x99, 38, 101], 6, 'Pad A');                              // a pad: note 38 on channel 10
+  assert.deepEqual(await now(p), { port: 'Pad A', ch: 10, n: 38, cc: 0 });
+  assert.equal(X.r.padLearning, false); assert.equal(X.T.size, 0, 'timeout cleared');
+  assert.deepEqual(X.log, [], 'nothing played, nothing else ran'); assert.deepEqual(padIns, []); assert.deepEqual(modCCs, []);
+  // a CC pad (value > 0): { cc: 1 }, the controller number in n; the CC does not reach the CC modules / roles
+  p = X.r.learnPad(); msg(X, [0xb2, 22, 64], 7, 'Pad A');
+  assert.deepEqual(await now(p), { port: 'Pad A', ch: 3, n: 22, cc: 1 });
+  assert.deepEqual(X.log.filter(x => x[0] !== 'notice'), []); assert.deepEqual(modCCs, []);
+  // the held CC pad keeps streaming values while pressed: the next learn (learn all) ignores them (they dispatch as today) until it lets go
+  p = X.r.learnPad();
+  msg(X, [0xb2, 22, 90], 8, 'Pad A'); msg(X, [0xb2, 22, 100], 9, 'Pad A');
+  assert.equal(X.r.padLearning, true); assert.equal(modCCs.length, 2);
+  msg(X, [0xb2, 22, 0], 10, 'Pad A');                               // let go
+  msg(X, [0xb2, 22, 70], 11, 'Pad A');                              // a new press of that CC pad is a learn again
+  assert.deepEqual(await now(p), { port: 'Pad A', ch: 3, n: 22, cc: 1 });
+  // a port-less message (the old entry point): port ''; a binding with port '' matches any port
+  p = X.r.learnPad(); X.r.message([0x90, 40, 10], 12);
+  assert.deepEqual(await now(p), { port: '', ch: 1, n: 40, cc: 0 });
+});
+
+test('8 §8.3: pad learn runs before padIn (a pad already bound is learned again, the host moves it); a learned pad\'s own note-off then reaches padIn', async () => {
+  const seen = [];
+  const X = rig({ padIn: (e, port) => { seen.push([e.k, e.n, port]); return true; } });
+  X.plug('Pad A'); await X.r.enable();
+  const p = X.r.learnPad();
+  msg(X, [0x99, 36, 100], 1, 'Pad A');
+  assert.deepEqual(await now(p), { port: 'Pad A', ch: 10, n: 36, cc: 0 }); assert.deepEqual(seen, []);
+  msg(X, [0x89, 36, 0], 2, 'Pad A'); msg(X, [0x99, 36, 100], 3, 'Pad A');
+  assert.deepEqual(seen, [['off', 36, 'Pad A'], ['on', 36, 'Pad A']], 'afterwards the bound pad plays through padIn');
+});
+
+test('8 §8.3: pad learn ends like the Serum learn — 15 s (30 s while MIDI still needs enabling), Esc, another learn → null; Esc through cancelLearn', async () => {
+  const X = rig();
+  X.plug('Pad A');
+  // supported but not enabled yet: the enable hint and 30 s
+  let p = X.r.learnPad();
+  assert.equal(X.notices().at(-1), 'MIDI Learn: enable MIDI (the MIDI button by the keyboard), then hit a pad — Esc cancels');
+  X.T.tick(29999); assert.equal(X.r.padLearning, true); X.T.tick(1);
+  assert.equal(await now(p), null); assert.equal(X.r.padLearning, false); assert.equal(X.notices().at(-1), 'MIDI Learn cancelled');
+  await X.r.enable();
+  // enabled: 15 s
+  p = X.r.learnPad(); X.T.tick(14999); assert.equal(X.r.padLearning, true); X.T.tick(1); assert.equal(await now(p), null);
+  // Esc (main.js's cancelLearn(true): "a pending MIDI Learn, not a panic") cancels it and says so
+  p = X.r.learnPad();
+  assert.equal(X.R.cancelLearn(true), true); assert.equal(await now(p), null); assert.equal(X.notices().at(-1), 'MIDI Learn cancelled'); assert.equal(X.T.size, 0);
+  assert.equal(X.R.cancelLearn(true), false, 'nothing pending: no panic swallowed');
+  p = X.r.learnPad(); assert.equal(X.R.cancelLearn(false), true); assert.equal(await now(p), null);
+  // another pad learn replaces it (the first resolves null); a Serum learn cancels a pad learn and the other way round — never two
+  p = X.r.learnPad(); const p2 = X.r.learnPad();
+  assert.equal(await now(p), null); assert.equal(X.r.padLearning, true);
+  const p3 = X.R.learn(1, 'f.var');
+  assert.equal(await now(p2), null); assert.equal(X.r.padLearning, false); assert.deepEqual(X.R.learning, { id: 1, dest: 'f.var' });
+  const p4 = X.r.learnPad();
+  assert.equal(await now(p3), null); assert.equal(X.R.learning, null); assert.equal(X.r.padLearning, true);
+  msg(X, [0x90, 50, 99], 1, 'Pad A'); assert.deepEqual(await now(p4), { port: 'Pad A', ch: 1, n: 50, cc: 0 });
+  assert.equal(X.T.size, 0);
+  // the Serum learn is untouched by all this: a CC completes it, a note-on never did
+  const p5 = X.R.learn(1, 'f.res'); msg(X, [0x90, 50, 99], 2, 'Pad A'); assert.ok(X.R.learning); msg(X, [0xb0, 31, 5], 3, 'Pad A');
+  assert.equal(await now(p5), 31);
+});
+
+test('8 §8.4: outputs() lists the connected output ports; send(port, bytes) writes to every output of that name and never throws', async () => {
+  const X = rig();
+  assert.deepEqual(X.r.outputs(), []); assert.deepEqual(X.r.inputs(), []); assert.equal(X.r.send('Pad A', [0x90, 36, 127]), false, 'not enabled: a no-op');
+  const o1 = X.plug('Pad A', 'out'), o2 = X.plug('Pad B', 'out'), dup = X.plug('Pad A', 'out'), gone = X.plug('Gone', 'out', { state: 'disconnected' });
+  X.plug('Pad A', 'in');
+  await X.r.enable();
+  assert.deepEqual(X.r.outputs(), ['Pad A', 'Pad B', 'Pad A'], 'disconnected ports are not listed');
+  assert.equal(X.btn.textContent, 'MIDI: Pad A', 'the button keeps listing the inputs');
+  assert.equal(X.r.send('Pad A', [0x99, 36, 127]), true);
+  assert.deepEqual([o1.sent, o2.sent, dup.sent], [[[0x99, 36, 127]], [], [[0x99, 36, 127]]], 'two identical controllers share a name: both are lit');
+  assert.equal(X.r.send('Pad B', Uint8Array.from([0x80, 36, 0])), true); assert.deepEqual(o2.sent, [[0x80, 36, 0]]);
+  // a missing / disconnected port, a non-string port: a no-op, no throw
+  for (const port of ['Nobody', '', 'Gone', undefined, null, 7]) assert.doesNotThrow(() => assert.equal(X.r.send(port, [0x90, 36, 1]), false));
+  assert.deepEqual(gone.sent, []);
+  // malformed messages and SysEx: refused (it is not requested either), no output sees them
+  const n = o1.sent.length;
+  for (const bad of [undefined, null, [], 'abc', 5, [36, 36, 36], [0xf0, 1, 2], [0xf0, 0x7e, 0x01, 0xf7], [0x90, 200, 1], [0x90, -1, 1], [0x90, 1.5, 1], [0x90, 'a', 1], [0x190, 1, 1], [0x90, 36, 0x80]]) assert.doesNotThrow(() => assert.equal(X.r.send('Pad A', bad), false));
+  assert.equal(o1.sent.length, n);
+  // an output that throws (closed between the check and the send) does not stop the others
+  o1.send = () => { throw new Error('InvalidStateError'); };
+  assert.doesNotThrow(() => assert.equal(X.r.send('Pad A', [0x99, 37, 127]), true)); assert.deepEqual(dup.sent.at(-1), [0x99, 37, 127]);
+  dup.send = () => { throw new Error('closed'); };
+  assert.equal(X.r.send('Pad A', [0x99, 38, 127]), false);
+  // plug / unplug: the list follows
+  X.unplug(o2); assert.deepEqual(X.r.outputs(), ['Pad A', 'Pad A']);
+  assert.equal(X.r.send('Pad B', [0x90, 1, 1]), false);
+  // an access without an outputs map (a minimal fake): none, no throw
+  const Y = rig({}, { nav: { requestMIDIAccess: async () => ({ inputs: new Map() }) } });
+  await Y.r.enable(); assert.deepEqual(Y.r.outputs(), []); assert.equal(Y.r.send('x', [0x90, 1, 1]), false);
+});
+
+test('8 §8.1: no Web MIDI (every iPad browser) — outputs() empty, send a no-op, pad learn null at once, ports / padIn never called, the keyboard path untouched', async () => {
+  for (const nav of [{}, undefined, null]) {
+    const hooks = [];
+    const X = rig({ padIn: () => { hooks.push('padIn'); return false; }, ports: () => hooks.push('ports') }, { nav });
+    X.r.wire(); await X.r.enable();
+    assert.equal(X.btn.textContent, 'MIDI: not supported in this browser');
+    assert.equal(X.r.enabled, false);
+    assert.deepEqual(X.r.outputs(), []); assert.deepEqual(X.r.inputs(), []);
+    assert.doesNotThrow(() => assert.equal(X.r.send('Pad A', [0x90, 36, 127]), false));
+    X.log.length = 0;
+    assert.equal(await now(X.r.learnPad()), null); assert.equal(X.r.padLearning, false); assert.equal(X.T.size, 0, 'no timer left');
+    assert.deepEqual(X.log, [], 'no notice either: the iPad\'s Hardware items are disabled, nothing waits');
+    assert.equal(X.R.cancelLearn(true), false);
+    assert.deepEqual(hooks, []);
+  }
+  // a denied permission: no access, the same silence; a retry works
+  let reject = true;
+  const A = { inputs: new Map(), outputs: new Map([['o', { name: 'Pad A', send() {} }]]) };
+  const X = rig({}, { nav: { requestMIDIAccess: () => (reject ? Promise.reject(new Error('NotAllowedError')) : Promise.resolve(A)) } });
+  await X.r.enable();
+  assert.equal(X.btn.textContent, 'MIDI blocked — click to retry'); assert.deepEqual(X.r.outputs(), []); assert.equal(X.r.send('Pad A', [0x90, 1, 1]), false);
+  reject = false; await X.r.enable(); assert.deepEqual(X.r.outputs(), ['Pad A']); assert.equal(X.r.send('Pad A', [0x90, 1, 1]), true);
+});
+
+test('8 §8.2: midi.js asks for no SysEx and keeps its module rules; the adapter exposes the stage-8 API', () => {
+  const code = SRC.replace(/\/\/.*$/gm, '');
+  assert.doesNotMatch(code, /sysex/i);
+  assert.doesNotMatch(code, /requestMIDIAccess\([^)]/);
+  const r = M.createMidi({ button: () => null, nav: null, notice() {} });
+  for (const k of ['learnPad', 'inputs', 'outputs', 'send', 'message', 'cancelLearn']) assert.equal(typeof r[k], 'function', k);
+  assert.equal(r.padLearning, false);
 });

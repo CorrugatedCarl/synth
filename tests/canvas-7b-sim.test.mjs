@@ -74,7 +74,7 @@ test('the lead\'s fixture check (§11 phase 2): a 606 from the Sources tray\'s D
   const tiles = sh.shell.tiles;
   tiles.setView('drums');
   const shown = tiles.tiles().filter(b => !b.hidden).map(b => b.getAttribute('data-model'));
-  assert.deepEqual(shown, ['tr808', 'tr606', 'tr909'], 'the Drums view lists the three machines (7c: the TR-909 too)');
+  assert.deepEqual(shown, ['tr808', 'tr606', 'tr909', 'sdsv'], 'the Drums view lists the four machines (7c: the TR-909 too; 8: the SDS-V)');
   sh.srcPick('tr606', 'replace'); sim.raf(); await settle();
   const t = T(), d = I(t);
   assert.equal(d.model, 'tr606');

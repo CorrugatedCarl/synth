@@ -33,7 +33,7 @@
 // The host: { api(tr) (a panel's api.drum), press(tr, input, ph), step(tr, dev, msg) (main's {t:'step'} handler for a drum
 // post), mon(tr, msg) (a drum monitor post { lit, act, F }), transport(play), bpm(v), panic(), release(), changed(tr) (main
 // wrote the record: undo, → Piano roll's SYNC; 7b: a record of the other machine starts a fresh session), loop() (the song
-// loop changed: the hint), link303() (7b: a TB-303's SYNC or the project's 303s changed), forget(tr) }. Posts and monitor
+// loop changed: the hint), link303() (7b: a TB-303's SYNC or the project's 303s changed), forget(tr), (8) rec(tr, sound, v, ts) }. Posts and monitor
 // lights reach the panels at their HEARD time (§3.5: F against heard(), a frame's lead so the LEDs paint on time): queued per
 // track, delivered by one frame loop.
 //
@@ -72,6 +72,18 @@
 // (the sel() gate, no REC write: the press wrote it; a note the session drops — release, panic, a fresh session — ends);
 // bpm(v) presses { k: 'bpm', v } for a 909 (review #1: its flams' ticks follow the project tempo — drum-core sends 'now' when
 // they move), and so does a synced 909's own TEMPO (its { c: 'bpm' } command).
+//
+// 8 (IMPL-8 §13; lane P1): the SDS-V — no sequencer. UI.sdsv (its five pads in one row for the Pads module, PADV; as a kit of
+// flat-topped hexagons, PADSV = cv-panel DRV_PADS; no grid, no dials); machOf / the host's session four-way ('sdsv' the exact
+// string; its session names itself). Its widgets: the kit (one music zone: inHex / hexAt at the cell's local point — any zoom;
+// every press its own hit, the velocity by the touch's height in its hexagon, front loud; each pad its own flash parity and the
+// monitor's lights; the soft-hit threshold of the channel's SENSITIVITY — minVelV, a copy of dr-808.js proto.sdsv.minVel kept
+// equal by a test — in each pad's aria text and tip, P-4), the trimmer rows (a tap: TRIM… at that channel and memory; the hit
+// box off the art by the layout's hitOff), TRIM… (a popover in the top layer: tabs per channel, memory 1's Copy to knobs, the
+// two rows of six trimmer knobs — drum-core `trim` presses, record writes, no History step —, Store knobs here
+// (trimFromKnobs), Copy to knobs (the patch's knob writes, then memory 2)). Its memory keys are cv-panel's (a patch switch's
+// radio). The host: rec(tr, sound, v, ts) — the pads' REC branch without their note and without sel() (a Pads module's drum
+// hit, IMPL-8 §4.4; the SDS-V has no REC).
 import * as DC from './drum-core.js?v=9';
 import * as wk from './wk.js?v=9';
 import { KEY_VEL, noteName } from './cv-keys.js?v=9';
@@ -152,15 +164,53 @@ export const PADS9 = Object.freeze({ w: 232, h: 184, pad: 52, ph: 52, gap: 8, to
 const SOUND_CODE9 = Object.freeze(['BD', 'SD', 'LT', 'MT', 'HT', 'RS', 'HC', 'RD', 'CR', 'OH', 'CH', '', '', '', '', '']);
 const KEY9 = ['Kick, accent', 'Kick', 'Snare, accent', 'Snare', 'Low tom, accent', 'Low tom', 'Mid tom, accent', 'Mid tom', 'Hi tom, accent', 'Hi tom',
   'Rim shot', 'Hand clap', 'Closed hat, accent', 'Closed hat', 'Crash', 'Ride'];
+/* ---- (8) the SDS-V's tables (IMPL-8 §13.2–§13.3): its five pads in one row for the Pads module (the panel's channel order, as its
+   cards and its kit: bass drum, snare, toms 1 · 2 · 3 — defaultsFor's order, 1 × 5; the stage-8 review's ruling over §3.5's "toms 3 · 2 · 1") and as a kit of hexagons (= cv-panel DRV_PADS, 328 × 200): flat-topped, [cx, cy, r] (r the
+   circumradius: 2r wide, r√3 tall) — the bass drum's large one bottom centre, the snare left of it, toms 1 · 2 · 3 in an arc
+   above (tom 1, the highest, left); the pads' legends and colours by sound id (ids 0–4: bd sd lt mt ht = bass, snare, tom 3, tom
+   2, tom 1); the channel of each (b s 1 2 3: the knob ids' letter, drum-core TRIM_CH / CH_OF_V) */
+export const PADV = Object.freeze(['bd', 'sd', 'ht', 'mt', 'lt']);
+export const PADSV = Object.freeze({ w: 328, h: 200, hex: Object.freeze({ bd: Object.freeze([172, 144, 58]), sd: Object.freeze([54, 146, 44]), ht: Object.freeze([70, 56, 44]),
+  mt: Object.freeze([172, 46, 44]), lt: Object.freeze([274, 56, 44]) }) });
+const SOUND_CODEV = Object.freeze(['BASS', 'SNARE', 'TOM 3', 'TOM 2', 'TOM 1', '', '', '', '', '', '', '', '', '', '', '']);
+export const COLORV = Object.freeze(['#d8462f', '#e3a72a', '#8c66cf', '#46ae6c', '#3e8fd6']);   // [C] ours: red, amber, violet, green, blue
+export const CH_OF_V = Object.freeze([0, 1, 4, 3, 2]);                                          // sound id → channel (dr-808 proto.sdsv.CH_OF_V)
+const KEYV = Object.freeze(['ht', 'mt', 'lt', 'sd', 'bd']);                                     // the arrows' order: left → right, top row first
+/** (8) Is (x, y) inside the flat-topped hexagon of centre (cx, cy) and circumradius r (its edges included)? */
+export function inHex(cx, cy, r, x, y) {
+  const dx = Math.abs(x - cx), dy = Math.abs(y - cy), S3 = Math.sqrt(3);
+  return r > 0 && dx <= r && dy <= S3 / 2 * r + 1e-9 && dy <= S3 * (r - dx) + 1e-9;
+}
+/** (8) The SDS-V pad under a point of its kit (cell px), and the hit's velocity from its height in the hexagon (the back 0.30 …
+ * the front 1: the 1i curve, padVel) — or null. */
+export function hexAt(x, y) {
+  for (const s of PADV) {
+    const [cx, cy, r] = PADSV.hex[s];
+    if (inHex(cx, cy, r, x, y)) { const hh = Math.sqrt(3) / 2 * r; return { s, v: padVel((y - (cy - hh)) / (2 * hh)) }; }
+  }
+  return null;
+}
+/** (8, IMPL-8 §11.4, P-4) The lowest velocity that fires an SDS-V channel at SENSITIVITY s (0…1): the pad's volts 0.005 · 15^((v −
+ * 1) / 126), the gain 20 · 10^(1.5 s), the soft limit 10 · tanh(G · v_p / 10) against the comparator's 0.2 V — 34 / 18 / 2 / 1 at
+ * SENS 0 / 1 / 2 / ≥ 2.1 (a copy of dr-808.js Dr808.proto.sdsv.minVel: the worklet's script, not importable here; a test keeps
+ * them equal). The pads' tip and aria text. */
+export function minVelV(s) {
+  const G = 20 * Math.pow(10, 1.5 * clamp(fin(s) ? s : 0.5, 0, 1));
+  for (let v = 1; v <= 127; v++) { const vp = 0.005 * Math.pow(15, (v - 1) / 126); if (10 * Math.tanh(G * vp / 10) > 0.2) return v; }
+  return 128;
+}
 /** Each machine's panel tables (§7.4): the grid's rows (codes, the switch's other sound, the lane bit of each row), the pads,
- * the grid / pads geometry, the detented controls, the name the texts use; (7c) the pads' codes by sound id. */
+ * the grid / pads geometry, the detented controls, the name the texts use; (7c) the pads' codes by sound id. (8) The SDS-V:
+ * no grid, no dials, its five pads (PADV) in a kit of hexagons (PADSV). */
 export const UI = Object.freeze({
   tr808: Object.freeze({ codes: LANE_CODE, alt: LANE_ALT, lanes: Object.freeze(LANE_CODE.map((x, l) => l)), pads: PAD_ORDER, grid: GRID, padG: PADS, dial: DIAL, name: '808' }),
   tr606: Object.freeze({ codes: DC.CODES606, alt: null, lanes: DC.LANES606, pads: PAD6, grid: GRID6, padG: PADS6, dial: DIAL6, name: '606' }),
   tr909: Object.freeze({ codes: DC.CODES909, alt: null, lanes: DC.LANES909, pads: PAD9, grid: GRID, padG: PADS9, dial: Object.freeze({}), scode: SOUND_CODE9, name: '909' }),
+  sdsv: Object.freeze({ codes: Object.freeze([]), alt: null, lanes: Object.freeze([]), pads: PADV, grid: null, padG: PADSV, dial: Object.freeze({}), scode: SOUND_CODEV, name: 'SDS-V' }),
 });
-/** A machine id from a model id or a record (absent / unknown: the 808; 7c: three-way, 'tr606' / 'tr909' the exact strings). */
-export const machOf = x => { const m = typeof x === 'string' ? x : !!x && typeof x === 'object' ? x.m : null; return m === 'tr606' || m === 'tr909' ? m : 'tr808'; };
+/** A machine id from a model id or a record (absent / unknown: the 808; 7c: three-way, 'tr606' / 'tr909' the exact strings; 8:
+ * four-way, 'sdsv' the exact string). */
+export const machOf = x => { const m = typeof x === 'string' ? x : !!x && typeof x === 'object' ? x.m : null; return m === 'tr606' || m === 'tr909' || m === 'sdsv' ? m : 'tr808'; };
 /** (7c) The 909's grid (the 808's geometry, its 12 rows AC … RD on their lane bits): a cell { lane, row, s }, a header { head,
  * lane, row }, the step row { top, s }, the corner { corner }; null outside. */
 export function gridAt909(x, y) {
@@ -215,7 +265,7 @@ export function drumHost(deps) {
   const each = (S, ...a) => { for (const f of [...S]) { try { f(...a); } catch (err) { console.error(err); } } };
   // a fresh session of the record's machine (7b: initState(D.m); the transport and the project tempo as now)
   const fresh = tr => { const b = +call(deps.bpm), D = mem(tr); return Object.assign(DC.initState(D ? machOf(D) : undefined), { play: !!call(deps.playing), bpm: b > 0 ? b : 120 }); };
-  const sessOf = S => (S && S.m === 'tr909' ? 'tr909' : Array.isArray(S.held) ? 'tr606' : 'tr808'); // (a 606 session holds its keys; 7c: a 909's names itself)
+  const sessOf = S => (S && (S.m === 'tr909' || S.m === 'sdsv') ? S.m : Array.isArray(S.held) ? 'tr606' : 'tr808'); // (a 606 session holds its keys; 7c: a 909's names itself; 8: an SDS-V's too)
   function entry(tr) {
     const k = idOf(tr);
     let e = E.get(k);
@@ -369,6 +419,15 @@ export function drumHost(deps) {
     loop() { for (const e of E.values()) notify(e); }, // (the song loop changed: the panels' hint)
     link303() { for (const e of E.values()) notify(e); }, // (7b: a TB-303's SYNC, the project's 303s: SYNC 303s repaints)
     forget(tr) { const e = E.get(idOf(tr)); if (e && e.kh.size) { e.S = null; khSync(e); } E.delete(idOf(tr)); }, // ((7c) a key's note ends)
+    // (8, IMPL-8 §4.4) a Pads module's drum hit on this track's machine: the pads' REC branch without its note and without the
+    // sel() gate (the machine's own rules decide: the 808's write modes, the 606's accent at v 1, the 909's four states; the
+    // SDS-V has no REC) — sound: its key ('bd' …), v 0…1, ts the press's time (the nearest step at its heard time) → written?
+    rec(tr, sound, v, ts) {
+      const e = entry(tr), D = mem(e.tr), i = D ? DC.PERS[machOf(D)].sounds.indexOf(sound) : -1;
+      if (!D || i < 0 || !D.x.rec) return false;
+      press(e.tr, { k: 'pad', sound: i, f: frac(e, D, ts), v: clamp(fin(v) ? v : 1, 0, 1) });
+      return true;
+    },
     api(tr) {
       const e = entry(tr), sel = () => !deps.sel || !!call(deps.sel, e.tr);
       const sub = (S, f) => { if (typeof f !== 'function') return () => {}; S.add(f); return () => S.delete(f); };
@@ -442,7 +501,7 @@ export function drumPanel(DR, ctx) {
   let dead = false, due = false, recheck = null, clearHeld = false, clearUsed = false, demoB = null;
   // (7b) the machine this panel draws (ctx.model: cv-panel's model id; absent: the 808) and its tables; (7c) the 909's, and the
   // machine's sound keys / names / pad codes by sound id (the 808's and the 606's: DC.SOUNDS / SOUND_NAMES, as before)
-  const M = machOf(ctx.model), U = UI[M], six = M === 'tr606', nine = M === 'tr909', SIDS = M === 'tr808' ? DC.SOUNDS.map((x, i) => i) : DC.PERS[M].sids;
+  const M = machOf(ctx.model), U = UI[M], six = M === 'tr606', nine = M === 'tr909', sdv = M === 'sdsv', SIDS = M === 'tr808' ? DC.SOUNDS.map((x, i) => i) : DC.PERS[M].sids;
   const SND = DC.PERS[M].sounds, NAMES = DC.PERS[M].names, SCODE = U.scode || SOUND_CODE, PN9 = p => (p < 48 ? 'I' : 'II') + '-' + (((p % 48) >> 4) + 1) + '-' + ((p & 15) + 1);
   const hint = mk('div', 'dr-hint'); // (7a review 2 #4) SYNC on and a loop shorter than the cycle: one line after DEMO
   hint.hidden = true; hint.setAttribute('role', 'note');
@@ -878,6 +937,7 @@ export function drumPanel(DR, ctx) {
   }
   function widget(c, o) {
     const id = c.id;
+    if (sdv) return id === 'dr:trim' ? trimRow(c, o) : null; // ((8) the SDS-V's: its memory keys are cv-panel's — a patch switch's radio)
     if (nine) { // (7c) the 909's
       if (id === 'dr:step') return stepKey909(c);
       if (HOLD9[id]) return holdBtn9(c);
@@ -930,6 +990,7 @@ export function drumPanel(DR, ctx) {
     return el;
   }
   function show(c, o) {
+    if (sdv) return null; // ((8) no LED of its own: the memory keys' are the radio's)
     if (nine) return show9(c, o);
     const k = SHOW[c.id];
     if (!k) return null;
@@ -1140,6 +1201,213 @@ export function drumPanel(DR, ctx) {
     });
     return g;
   }
+  /* ---- (8, IMPL-8 §13.2–§13.3) the SDS-V: the kit of hexagonal pads, the trimmer rows, TRIM… */
+  const CHL = ['b', 's', '1', '2', '3'], CHN = ['Bass drum', 'Snare drum', 'Tom 1', 'Tom 2', 'Tom 3'], FLD = ['n', 't', 'b', 'd', 'm', 'c'];
+  const FLN = ['Noise', 'Tone', 'Bend', 'Decay', 'Noise / tone', 'Click / drum'];
+  const getV = id => { const v = typeof A.get === 'function' ? +A.get(id) : NaN; return fin(v) ? v : NaN; };
+  const watch = (id, fn) => { if (typeof A.watch === 'function') A.watch(id, fn); };
+  // the soft-hit threshold of a channel at its SENSITIVITY knob (P-4): the pad's tip and aria text say it
+  const thrTxt = (c, short) => {
+    const s = getV('x' + CHL[c] + 's'), v = minVelV(fin(s) ? s / 10 : 0.5), S = fin(s) ? (Math.round(s * 10) / 10).toFixed(1) : '5.0';
+    if (short) return v <= 1 ? `SENS ${S}: every hit fires` : `SENS ${S}: below velocity ${v} is silent`; // (the tip: one short line)
+    return v <= 1 ? `SENSITIVITY ${S}: every hit fires` : `SENSITIVITY ${S}: hits below velocity ${v} fire nothing (low settings ignore soft hits, as on the original)`;
+  };
+  // the shared tip is one line centred on what it is given: a pad near the window's edge hands it a point pulled inside (the text's
+  // half width ≈ 3.6 px a character at 11.5 px mono + the padding), R2-F10
+  const tipIn = (el, text) => {
+    if (typeof A.tip !== 'function') return;
+    const win = doc.defaultView || globalThis, vw = +win.innerWidth || 1024, hw = Math.min(vw / 2 - 8, text.length * 3.6 + 10);
+    A.tip({ getBoundingClientRect() {
+      const r = el.getBoundingClientRect(), c = clamp(r.left + r.width / 2, hw + 8, vw - hw - 8);
+      return { left: c, right: c, top: r.top, bottom: r.bottom, width: 0, height: r.height, x: c, y: r.top };
+    } }, text);
+  };
+  function kitCell() { // five hexagonal pads (PADSV) in a music zone: every press its own hit (the 808's pads' rule), the velocity from
+    // where it lands in its hexagon (the front edge loudest: padVel), the hexagon's own hit test (hexAt at the cell's local point:
+    // any zoom; a press between pads plays nothing); lit on its hits and the monitor's at their heard time
+    const g = mk('div', 'dr-pads dr-kit'), pads = new Map(), cnt = new Map(), ptrs = new Map(), H3 = Math.sqrt(3) / 2;
+    g.setAttribute('role', 'group'); g.setAttribute('aria-label', 'Pads (velocity by where you hit: the front edge loudest)'); g.setAttribute('data-gesture', 'music');
+    g.setAttribute('data-m', M); g.style.width = PADSV.w + 'px'; g.style.height = PADSV.h + 'px';
+    for (const s of PADV) {
+      const [cx, cy, r] = PADSV.hex[s], si = SND.indexOf(s), c = CH_OF_V[si], p = mk('div', 'dr-hex');
+      p.setAttribute('data-sound', s); p.setAttribute('role', 'button'); p.setAttribute('data-code', SCODE[si]);
+      p.style.left = r3(cx - r) + 'px'; p.style.top = r3(cy - H3 * r) + 'px'; p.style.width = r3(2 * r) + 'px'; p.style.height = r3(2 * H3 * r) + 'px';
+      ctx.prop(p, '--pc', COLORV[si]);
+      const lab = () => setA(p, 'aria-label', `${NAMES[si]} pad · ${thrTxt(c)}`);
+      lab(); watch('x' + CHL[c] + 's', lab);
+      if (!live) disable(p); else p.tabIndex = s === 'bd' ? 0 : -1;
+      p.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') tipIn(p, `${NAMES[si]} · front edge loudest · ${thrTxt(c, true)}`); });
+      p.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse' && typeof A.untip === 'function') A.untip(); });
+      g.append(p); pads.set(s, p);
+    }
+    const flash = s => { const p = pads.get(s); if (p) p.setAttribute('data-hit', p.getAttribute('data-hit') === '1' ? '0' : '1'); }; // (each pad its own parity: 7c review 2 F3)
+    upds.push(st0 => { for (const [k, p] of pads) { const e = st0.D.smp[k]; setA(p, 'data-smp', e && e.on ? '' : null); setA(p, 'title', e && e.on ? NAMES[SND.indexOf(k)] + ' · your sound: ' + e.name : null); } });
+    if (!live) return g;
+    const hit = (s, v, ts) => { cnt.set(s, (cnt.get(s) || 0) + 1); setA(pads.get(s), 'data-held', ''); flash(s); DR.pads.on(s, v, ts); };
+    const lift = (s, ts) => {
+      const n = (cnt.get(s) || 0) - 1;
+      if (n > 0) { cnt.set(s, n); return; }
+      cnt.delete(s); setA(pads.get(s), 'data-held', null); DR.pads.off(s, ts);
+    };
+    g.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || e.ctrlKey || ptrs.has(e.pointerId)) return;
+      const q = wk.localPoint(g, e), h = hexAt(q.x, q.y);
+      if (!h) return;
+      e.preventDefault();
+      try { g.setPointerCapture(e.pointerId); } catch (err) { /* gone */ }
+      ptrs.set(e.pointerId, h.s);
+      hit(h.s, h.v, e.timeStamp);
+    });
+    const end = e => { const s = ptrs.get(e.pointerId); if (s == null) return; ptrs.delete(e.pointerId); lift(s, e.timeStamp); };
+    for (const t of ['pointerup', 'pointercancel', 'lostpointercapture']) g.addEventListener(t, end);
+    g.addEventListener('contextmenu', e => e.preventDefault());
+    const keyed = new Set();
+    const padOf = t => { for (let n = t; n && n !== g; n = n.parentNode) if (n.getAttribute && n.getAttribute('data-sound')) return n; return null; };
+    g.addEventListener('keydown', e => { // Space / Enter: a hit at an unaccented step's velocity; the arrows move along the kit (top row, then bottom)
+      const p = padOf(e.target);
+      if (!p) return;
+      const s = p.getAttribute('data-sound'), i = KEYV.indexOf(s), d = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
+      if (d) { const q = pads.get(KEYV[(i + d + KEYV.length) % KEYV.length]); p.tabIndex = -1; q.tabIndex = 0; try { q.focus({ preventScroll: true }); } catch (err) { /* inert */ } e.preventDefault(); return; }
+      if (!isKey(e)) return;
+      e.preventDefault();
+      if (e.repeat || keyed.has(s)) return;
+      keyed.add(s); hit(s, KEY_PAD_V, e.timeStamp);
+    });
+    g.addEventListener('keyup', e => { const p = padOf(e.target), s = p && p.getAttribute('data-sound'); if (s && keyed.delete(s)) { e.preventDefault(); lift(s, e.timeStamp); } });
+    offs.push(DR.lit(mask => { if (dead || off()) return; for (let i = 0; i < 5; i++) if ((mask >> i) & 1) flash(SND[i]); }));
+    rels.push(() => { // every pointer and key ends (one off per sounding pad), the captures dropped
+      for (const id of [...ptrs.keys()]) { ptrs.delete(id); try { g.releasePointerCapture(id); } catch (err) { /* released */ } }
+      keyed.clear();
+      for (const s of [...cnt.keys()]) { cnt.delete(s); setA(pads.get(s), 'data-held', null); DR.pads.off(s); }
+    });
+    return g;
+  }
+  // a trimmer row (dr:trim): one hit box over the face's art (its centre off the art by hitOff: the ::before moved by the
+  // difference), a tap (A.tap: a pinch starting there presses nothing) opens TRIM… at that channel and memory
+  const trimAt = { ci: 0, mem: 3 };
+  function trimRow(c, o) {
+    const ci = Math.max(0, CHL.indexOf(c.ch)), mem = c.mem === 4 ? 4 : 3, b = mk('button', 'dr-trim');
+    b.type = 'button'; b.setAttribute('aria-label', `${CHN[ci]} · memory ${mem}: its six trimmers — TRIM…`); b.setAttribute('aria-haspopup', 'dialog');
+    b.setAttribute('data-ch', CHL[ci]); b.setAttribute('data-mem', String(mem));
+    const h = o.hit || o.box, bx = o.box;
+    ctx.prop(b, '--hit-dx', ctx.n3(h.x + h.w / 2 - (bx.x + bx.w / 2)) + 'px'); ctx.prop(b, '--hit-dy', ctx.n3(h.y + h.h / 2 - (bx.y + bx.h / 2)) + 'px');
+    upds.push(() => setA(b, 'aria-expanded', pop && pop.ci === ci && pop.mem === mem ? 'true' : 'false'));
+    if (!live) { disable(b); return b; }
+    A.tap(b, () => openTrim(ci, mem, b));
+    return b;
+  }
+  /* TRIM… (§13.3): a popover — a channel's memory 1 (our factory sound: Copy to knobs) and memories 3 and 4 as two rows of six small
+     knobs (the trimmers: drum-core presses `trim` — record writes, no History step, the payload re-sent), Store knobs here / Copy to
+     knobs per row (the patch's knob writes, then the channel on memory 2: the same sound, now from its knobs, where modulation acts);
+     the channel's tabs; the row it plays marked. On the canvas it lives in the top layer at the anchor (screen px: no zoom scales it);
+     Escape, ✕, a press outside, a camera move or the panel's end close it; opened again at the same place, it closes */
+  let pop = null;
+  function closeTrim(refocus) {
+    const P = pop;
+    if (!P) return;
+    pop = null;
+    for (const f of P.offs) { try { f(); } catch (err) { console.error(err); } }
+    for (const W of P.knobs) { try { W.destroy(); } catch (err) { /* gone */ } }
+    if (P.box.parentNode) P.box.remove();
+    if (refocus && P.anchor && typeof P.anchor.focus === 'function') { try { P.anchor.focus({ preventScroll: true }); } catch (err) { /* inert */ } }
+    dirty();
+  }
+  offs.push(() => closeTrim(false));
+  const memWatched = new Set();
+  function openTrim(ci, mem, anchor) {
+    if (!live || dead) return null;
+    if (pop) { const same = pop.anchor === anchor && pop.ci === ci; closeTrim(false); if (same) return null; }
+    trimAt.ci = ci; trimAt.mem = mem;
+    const box = mk('div', 'dr-trimpop'), P = { ci, mem, anchor, box, offs: [], knobs: [], refresh: () => {} };
+    box.setAttribute('role', 'dialog'); box.setAttribute('aria-label', 'Trimmers · ' + CHN[ci]);
+    const hd = mk('div', 'dr-tp-hd'), ttl = mk('span', 'dr-tp-ttl'), x = mk('button', 'dr-tp-x');
+    ttl.textContent = 'TRIM · memories 3 and 4'; x.type = 'button'; x.textContent = '✕'; x.setAttribute('aria-label', 'Close');
+    A.tap(x, () => closeTrim(true));
+    hd.append(ttl, x);
+    const tabs = mk('div', 'dr-tp-tabs'), body = mk('div', 'dr-tp-body'), note = mk('p', 'dr-tp-note');
+    tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', 'Drum');
+    note.textContent = 'Memory 2 plays the knobs (and takes modulation); 1 is our factory sound; 3 and 4 are these trimmers. Edits stay with the track (not in Undo, as a knob).';
+    const tb = CHN.map((n, i) => {
+      const t = mk('button', 'dr-tp-tab'); t.type = 'button'; t.textContent = n; t.setAttribute('role', 'tab');
+      A.tap(t, () => { if (P.ci !== i) { P.ci = trimAt.ci = i; build(); } });
+      tabs.append(t); return t;
+    });
+    tabs.addEventListener('keydown', e => { // (one tab stop: the arrows choose the drum)
+      const d = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[e.key];
+      if (!d) return;
+      e.preventDefault(); e.stopPropagation();
+      P.ci = trimAt.ci = (P.ci + d + CHN.length) % CHN.length; build();
+      try { tb[P.ci].focus({ preventScroll: true }); } catch (err) { /* inert */ }
+    });
+    const pbtn = (label, title, fn) => { const b = mk('button', 'dr-tp-b'); b.type = 'button'; b.textContent = label; b.title = title; A.tap(b, fn); return b; };
+    const knobsTo = (c, vals) => { // the six knobs (0…10) to vals (0…1), then the channel on memory 2 (the knobs)
+      FLD.forEach((f, j) => { if (!fin(vals[j])) return; const v = +(clamp(vals[j], 0, 1) * 10).toFixed(4); if (getV('x' + CHL[c] + f) !== v) A.set('x' + CHL[c] + f, v); });
+      if (getV('x' + CHL[c] + 'p') !== 1) A.set('x' + CHL[c] + 'p', 1);
+    };
+    const defOf = id => { const m = A.model && Array.isArray(A.model.controls) ? A.model.controls.find(q => q.id === id) : null; return m ? m.def : NaN; };
+    let rows = [];
+    function build() { // the channel's rows (its tab selected): memory 1, then 3 and 4 with their knobs
+      for (const W of P.knobs.splice(0)) { try { W.destroy(); } catch (err) { /* gone */ } }
+      body.textContent = '';
+      const c = P.ci;
+      box.setAttribute('aria-label', 'Trimmers · ' + CHN[c]);
+      tb.forEach((t, i) => { t.setAttribute('aria-selected', i === c ? 'true' : 'false'); t.tabIndex = i === c ? 0 : -1; });
+      const r1 = mk('div', 'dr-tp-row'), l1 = mk('span', 'dr-tp-lab');
+      l1.textContent = 'Memory 1 · our factory sound';
+      r1.setAttribute('data-mem', '1');
+      r1.append(l1, pbtn('Copy to knobs', 'The factory sound onto the knobs, the drum on memory 2', () => knobsTo(c, FLD.map(f => defOf('x' + CHL[c] + f) / 10))));
+      body.append(r1);
+      rows = [r1];
+      for (const mm of [3, 4]) {
+        const k = mm - 3, r = mk('div', 'dr-tp-row'), l = mk('span', 'dr-tp-lab'), kn = mk('div', 'dr-tp-knobs'), bs = mk('div', 'dr-tp-bs');
+        l.textContent = 'Memory ' + mm; r.setAttribute('data-mem', String(mm)); r.setAttribute('role', 'group'); r.setAttribute('aria-label', 'Memory ' + mm);
+        FLD.forEach((f, j) => {
+          const W = wk.knob({ size: 'sm', label: FLN[j], get: () => { const D = st().D; return D.trim ? D.trim[c][k][j] : 0; },
+            set: (n, ph) => { if (ph !== 'start') DR.press({ k: 'trim', ch: c, mem: mm, f: j, v: clamp(n, 0, 1) }); },
+            fmt: n => (Math.round(n * 100) / 10).toFixed(1), def: () => DC.TRIM_DEF[c][k][j] });
+          kn.append(W.el); P.knobs.push(W);
+        });
+        bs.append(pbtn('Store knobs here', `The ${CHN[c].toLowerCase()}'s six knobs into memory ${mm}`, () => DR.press({ k: 'trimFromKnobs', ch: c, mem: mm, vals: FLD.map(f => getV('x' + CHL[c] + f) / 10) })),
+          pbtn('Copy to knobs', `Memory ${mm} onto the knobs, the drum on memory 2`, () => { const D = st().D; if (D.trim) knobsTo(c, D.trim[c][k]); }));
+        r.append(l, kn, bs);
+        body.append(r); rows.push(r);
+      }
+      P.refresh();
+    }
+    P.refresh = () => { // the knobs from the record, the row the channel plays
+      for (const W of P.knobs) W.update();
+      const m = getV('x' + CHL[P.ci] + 'p');
+      rows.forEach(r => setA(r, 'data-cur', +r.getAttribute('data-mem') === (fin(m) ? m + 1 : 2) ? '' : null));
+    };
+    box.append(hd, tabs, body, note);
+    // where: the top layer (on the canvas: unscaled, fixed at the anchor), else the document's body — fixed at the anchor's rect
+    const L = wk.layer(ctx.root), host = L && L !== ctx.root ? L : doc.body || ctx.root, win = doc.defaultView || globalThis;
+    const ar = anchor && typeof anchor.getBoundingClientRect === 'function' ? anchor.getBoundingClientRect() : { left: 8, top: 8, bottom: 8 };
+    const vw = +win.innerWidth || 1024, vh = +win.innerHeight || 768, BW = 392;
+    box.style.left = Math.max(8, Math.min(+ar.left || 0, vw - BW - 8)) + 'px';
+    box.style.top = Math.max(8, (+ar.bottom || 0) + 4) + 'px';
+    host.append(box);
+    pop = P;
+    build();
+    const bh = +box.offsetHeight || 0; // (measured once the rows are built: the header, tabs and note alone are a third of it — R2-F4)
+    if (bh && (+ar.bottom || 0) + 4 + bh > vh - 8) box.style.top = Math.max(8, Math.min((+ar.top || 0) - 4 - bh, vh - 8 - bh)) + 'px';
+    // closers: Escape (focus back to the anchor), a press outside (not on the anchor: it toggles; not a kit menu), a camera move
+    const esc = e => { if (e.key === 'Escape' && !e.defaultPrevented) { e.preventDefault(); e.stopPropagation(); closeTrim(true); } };
+    const outside = e => { const t = e.target; for (let n = t; n; n = n.parentNode) { if (n === box || n === anchor) return; if (n.classList && (n.classList.contains('wk-ctx') || n.classList.contains('wk-pop'))) return; } closeTrim(false); };
+    box.addEventListener('keydown', esc);
+    if (typeof doc.addEventListener === 'function') { doc.addEventListener('pointerdown', outside, true); P.offs.push(() => doc.removeEventListener('pointerdown', outside, true)); }
+    if (host !== doc.body && host !== ctx.root) P.offs.push(wk.addTransient(() => closeTrim(false)));
+    P.offs.push(DR.on(() => { if (pop === P) P.refresh(); }));
+    for (const ch of CHL) if (!memWatched.has(ch)) { memWatched.add(ch); watch('x' + ch + 'p', () => { if (pop) pop.refresh(); }); } // (a memory key, a preset: the row marked)
+    const first = P.knobs[(mem === 4 ? 6 : 0)], fo = () => { try { (first ? first.el : x).focus({ preventScroll: true }); } catch (err) { /* inert */ } };
+    fo();
+    // (a finger's tap: the browser's click after it focuses the row's button — the focus comes back into the popover, so
+    // its keys and Escape work there too)
+    const t = setTimeout(() => { if (pop === P && !(doc.activeElement && box.contains(doc.activeElement))) fo(); }, 0);
+    P.offs.push(() => clearTimeout(t));
+    dirty();
+    return P;
+  }
   function swingCell() { // SWING 50–75 % (50: off), a drag / the arrows / the wheel
     const el = mk('div', 'dr-xb dr-xnum'), lab = mk('span'), val = mk('b');
     el.setAttribute('role', 'slider'); el.setAttribute('aria-label', 'Swing'); el.setAttribute('aria-valuemin', String(DC.SWING_LO)); el.setAttribute('aria-valuemax', String(DC.SWING_HI));
@@ -1187,7 +1455,12 @@ export function drumPanel(DR, ctx) {
   function extra(cell) {
     const id = cell.id;
     if (id === 'dr:grid') return gridCell();
-    if (id === 'dr:pads') return padsCell();
+    if (id === 'dr:pads') return sdv ? kitCell() : padsCell();
+    if (id === 'dr:trimMenu') { // ((8) TRIM…: the popover at the channel last opened, else the bass drum)
+      const b = xbtn('Trim…', 'The trimmers: memories 3 and 4 of each drum — edit, store the knobs there, copy them to the knobs', () => openTrim(trimAt.ci, trimAt.mem, b));
+      b.setAttribute('aria-haspopup', 'dialog');
+      return b;
+    }
     if (id === 'dr:swing') return swingCell();
     let b = null;
     if (id === 'dr:sync') {
@@ -1280,6 +1553,40 @@ const CSS = `
 @media (prefers-reduced-motion: reduce) { .inst.hw .dr-lk[data-lit="flash"] > .hw-led { animation: none; background: color-mix(in srgb, var(--hw-led, #ff3b2a) 55%, #000); } }
 .inst.hw .dr-key[data-lit="dim"] > .hw-led { background: color-mix(in srgb, var(--hw-led, #ff3b2a) 55%, #2a0d0b); box-shadow: 0 0 3px color-mix(in srgb, var(--hw-led, #ff3b2a) 40%, transparent); }
 .inst.hw .dr-dsp { letter-spacing: 0.04em; text-shadow: 0 0 6px color-mix(in srgb, var(--dsp-c, #ff3b2a) 60%, transparent); }
+.inst.hw .dr-kit { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
+.inst.hw .dr-hex { position: absolute; cursor: pointer; touch-action: none; background: var(--pc, #888); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); }
+.inst.hw .dr-hex::before { content: attr(data-code); position: absolute; inset: 3px; display: flex; align-items: center; justify-content: center; pointer-events: none;
+  clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); color: var(--pc, #d8dce2); font: 700 11px/1 var(--ui, system-ui); letter-spacing: 0.08em;
+  background: linear-gradient(color-mix(in srgb, var(--pc, #888) 24%, #24272d), color-mix(in srgb, var(--pc, #888) 10%, #15171b)); }
+.inst.hw .dr-hex[data-held]::before { background: linear-gradient(color-mix(in srgb, var(--pc, #888) 80%, #fff), var(--pc, #888)); color: #14161a; }
+.inst.hw .dr-hex[data-smp]::after { content: ''; position: absolute; left: calc(50% - 3px); top: 16%; width: 6px; height: 6px; border-radius: 50%; background: #7fd0ff; pointer-events: none; }
+.inst.hw .dr-hex[data-hit="0"] { animation: dr-hex0 0.16s ease-out; }
+.inst.hw .dr-hex[data-hit="1"] { animation: dr-hex1 0.16s ease-out; }
+@keyframes dr-hex0 { from { filter: brightness(1.9); } }
+@keyframes dr-hex1 { from { filter: brightness(1.9); } }
+.inst.hw .dr-hex:focus-visible { outline: none; background: var(--hot, #ffb000); }
+.inst.hw .hw-c > .dr-trim { background: transparent; border: 0; padding: 0; margin: 0; border-radius: 3px; cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.inst.hw .hw-c > .dr-trim.dr-trim::before { left: calc(50% + var(--hit-dx, 0px)); top: calc(50% + var(--hit-dy, 0px)); }
+.inst.hw .hw-c > .dr-trim:hover, .inst.hw .hw-c > .dr-trim[aria-expanded="true"] { box-shadow: 0 0 0 1.5px var(--hot, #f2a33a); }
+.dr-trimpop { position: fixed; z-index: 60; width: 392px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; box-sizing: border-box; padding: 8px 12px 12px;
+  background: #17181c; color: var(--text, #dde1e6); border: 1px solid #3a3d44; border-radius: 10px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6); font: 500 12px/1.4 var(--ui, system-ui, sans-serif); }
+.dr-tp-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.dr-tp-ttl { font-weight: 700; font-size: 11px; letter-spacing: 0.08em; color: #9aa1ad; }
+.dr-tp-x { width: 36px; height: 36px; border: 0; border-radius: 6px; background: transparent; color: inherit; font-size: 15px; cursor: pointer; }
+.dr-tp-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.dr-tp-tab, .dr-tp-b { min-height: 36px; padding: 0 8px; border: 1px solid #343941; border-radius: 6px; background: #1d1f24; color: inherit; font: 600 11px var(--ui, system-ui); cursor: pointer; -webkit-tap-highlight-color: transparent; }
+.dr-tp-tab { flex: 1 1 auto; }
+.dr-tp-tab[aria-selected="true"] { border-color: var(--hot, #f2a33a); color: var(--hot, #f2a33a); background: #2a2016; }
+.dr-tp-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; padding: 4px 6px; border: 1px solid transparent; border-radius: 8px; }
+.dr-tp-row[data-cur] { border-color: rgba(224, 40, 30, 0.45); background: rgba(224, 40, 30, 0.08); }
+.dr-tp-lab { font-weight: 700; }
+.dr-tp-row[data-mem="3"] > .dr-tp-lab, .dr-tp-row[data-mem="4"] > .dr-tp-lab { flex: 0 0 100%; }
+.dr-tp-row[data-cur] > .dr-tp-lab::after { content: ' · playing'; font-weight: 600; color: #ff7a6a; }
+.dr-tp-knobs { display: flex; gap: 2px; }
+.dr-tp-bs { display: flex; gap: 4px; margin-left: auto; }
+.dr-tp-note { margin: 8px 2px 0; color: #8e95a1; font-size: 11px; }
+.dr-trimpop :focus-visible { outline: 2px solid var(--hot, #ffb000); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .inst.hw .dr-hex[data-hit] { animation: none; } }
 `;
 const styledDocs = new WeakSet();
 /** The drum widgets' CSS, injected once per document (style.css untouched this stage, §7.4). */

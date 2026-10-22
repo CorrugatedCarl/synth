@@ -82,8 +82,9 @@
 //   compileMods(track, project, opts) → payload | null   null with no modulator module and no row (N1: nothing posted;
 //                             a track whose modules were all deleted posts { t: 'mods', off: true } — the host's
 //                             buildMods makes that of null when a payload was posted before). opts { smooth, qr, ultra,
-//                             xferOf } (the compile context of the synthetic Serum; xferOf: cv-mods' transfer, lane A2 —
-//                             a test stub, or the identity { a: 0, b: 1 } while it is absent). The payload:
+//                             xferOf, padVal } (the compile context of the synthetic Serum; xferOf: cv-mods' transfer, lane
+//                             A2 — a test stub, or the identity { a: 0, b: 1 } while it is absent; padVal(id): the host's live
+//                             value of mod pad id, IMPL-8 §5.3 — absent / not a number: the pad's lo). The payload:
 //                             { t: 'mods', i: trackId, key, cp, ct, rows, xfer, ext, vals, keep, left, dashed, n }
 //     cp / ct               the SYNTHETIC Serum: normalizeSerum of a default (voice section off: a.on 0, poly 1) whose
 //                           slots hold the track's modules — LFO modules and linked Serum LFOs in lfo1…10 (a GLOBAL one
@@ -112,7 +113,9 @@
 //     ext                   [{ k: 1…16, src, id }] the ext slots: ModCore source → ext k, shared by every Serum of the
 //                           track (id: the canvas source id the injected rows name 'ext<k>' for)
 //     vals                  [{ k: 0…23, src, v, id }] the value table: macros 0–7 (the first macro module's knobs),
-//                           8–23 further macro knobs and CC modules (initial values; MC.ctl(k, v) later)
+//                           8–23 further macro knobs and CC modules, then the project's mod pads (IMPL-8 §5.3: a row from
+//                           'pd<n>.p<i>' — pads after the track's modules, by module then slot; v padVal / lo) (initial
+//                           values; MC.ctl(k, v) later: the host's modVal(t, 'pd1', 'p12', v) on every padTracks track)
 //     keep                  [src] the keep-alive sources;  left [{ id, why: 'slots' | 'ext' | 'full' }] the rows not
 //                           compiled;  dashed [ids] the rows drawn dashed (§1.3);  n { lfo, env, chaos, macro, vals,
 //                           ext, rows } the budgets used (rows: distinct cables — a knob that moves two things counts
@@ -126,11 +129,13 @@
 //                           linked, 4 ENV, 2 chaos, 8 macros, 16 value sources, 16 ext, SCRATCH synthetic rows) the row
 //                           is left with its reason. Memoised per track by a hash of what the compile reads (sigOf
 //                           below): an uncabled knob of a cabled instrument is a hit; a macro / CC value is a hit whose
-//                           vals are refreshed
+//                           vals are refreshed — a pad's value, mode or range too (project.pads is never hashed: a track
+//                           without pad rows signs and compiles byte-identically, IMPL-8 D5; memoSig: the signature, tests)
 //   SCRATCH / KEEP_ID       the scratch destinations: V-scope rows of silent modules (oscillator / sub / noise / filter
 //                           knobs), never a note-on, LFO, ENV, chaos, porta or voice-control destination
 import * as CM from './cv-mods.js?v=9';
-import { classOf, MOD_SRC, srcDev, perNoteOf, classicTarget, modDevs, rackDescs } from './cv-mods.js?v=9';
+import { classOf, MOD_SRC, srcDev, perNoteOf, classicTarget, modDevs, rackDescs, isPadSrc } from './cv-mods.js?v=9';
+import { padOfSrc } from './pads-core.js?v=9'; // (IMPL-8 §5.3: a mod pad's id → its module and slot)
 import { defaultFx2, compileFx, compileFxT, normRow, N_MATRIX, N_LFO, N_ENV, N_MACRO, normalizeSerum, defaultSerum, compileSerum, SRC_INDEX, vi, DESTS, DEST_INDEX,
   NOTE_ON_DESTS, normLfo, lfoUsed, extIndex } from './serum-core.js?v=9';
 import { fxLayout, fxDest } from './fx-core.js?v=9';
@@ -606,19 +611,30 @@ function sigOf(t, project, o) {
   }
   return (H1 >>> 0).toString(16) + (H2 >>> 0).toString(16);
 }
+export const memoSig = (t, project, opts) => sigOf(t, project, isObj(opts) ? opts : {}); // (tests: the memo signature, pinned for pad-free tracks — IMPL-8 D5)
+// (IMPL-8 §5.3) a mod pad's value: the host's live one (opts.padVal(id), clamped 0…1), else the pad's rest value (its mod's
+// lo; 0 without the module) — never in the signature or the key: a press is a {t: 'mval'}, never a repost
+function padVal(project, o, id) {
+  const v = typeof o.padVal === 'function' ? o.padVal(id) : undefined;
+  if (typeof v === 'number' && v === v) return v > 0 ? (v < 1 ? v : 1) : 0;
+  const q = padOfSrc(id), M = q && isObj(project) && Array.isArray(project.pads) ? project.pads.find(x => isObj(x) && x.id === q.id) : null;
+  const m = M && Array.isArray(M.pads) && isObj(M.pads[q.i]) ? M.pads[q.i].mod : null, lo = isObj(m) ? m.lo : 0;
+  return typeof lo === 'number' && lo > 0 ? (lo < 1 ? lo : 1) : 0;
+}
+const padOrd = (a, b) => { const x = padOfSrc(a), y = padOfSrc(b); return +x.id.slice(2) - +y.id.slice(2) || x.i - y.i; }; // (pd1.p3 < pd1.p12 < pd2.p0)
 // the value table's initial values follow the modules on a memo hit too (a repost then carries the latest, not the
-// values of the compile; k / src / id are the content — review C5)
-function refreshVals(t, pay) {
+// values of the compile; k / src / id are the content — review C5); a pad's from the host (opts.padVal) or its lo
+function refreshVals(t, pay, project, o) {
   if (!pay) return;
   for (const e of pay.vals) {
-    const S = srcDev(t, e.id), v = S && S.kind === 'macro' ? (Array.isArray(S.dev.v) ? S.dev.v[+/\.k(\d)$/.exec(e.id)[1] - 1] : 0) : S && S.kind === 'cc' ? S.dev.v : e.v;
+    const S = srcDev(t, e.id), v = S && S.kind === 'macro' ? (Array.isArray(S.dev.v) ? S.dev.v[+/\.k(\d)$/.exec(e.id)[1] - 1] : 0) : S && S.kind === 'cc' ? S.dev.v : S && S.kind === 'pad' ? padVal(project, o, e.id) : e.v;
     e.v = typeof v === 'number' ? v : 0;
   }
 }
 export function compileMods(t, project, opts) {
   if (!isObj(t) || !isObj(t.dev)) return null;
   const o = isObj(opts) ? opts : {}, sig = sigOf(t, project, o), memo = MEMO.get(t);
-  if (memo && memo.sig === sig) { refreshVals(t, memo.pay); return memo.pay; }
+  if (memo && memo.sig === sig) { refreshVals(t, memo.pay, project, o); return memo.pay; }
   const V = validRows(t), devs = modDevs(t);
   if (!devs.length && !V.length) { MEMO.set(t, { sig, pay: null }); return null; }
   const pay = buildMods(t, project, o, V, devs);
@@ -661,12 +677,13 @@ function buildMods(t, project, o, V, devs) {
     else take(src, MOD_SRC[src], kind === 'velo' || kind === 'note');
   }
   take('wheel', 'wheel');
+  for (const id of [...need].filter(isPadSrc).sort(padOrd)) take(id, 'val'); // (IMPL-8 §5.3: the project's mod pads, after the track's modules)
   for (const id of [...need].filter(x => /\//.test(x)).sort()) { const S = srcDev(t, id); if (S && S.kind === 'link') take(id, /^lfo/.test(S.q.link) ? 'lfo' : 'env', !!perNoteOf(t, id)); }
   for (const id of need) if (!alloc.has(id) || alloc.get(id) === null) { alloc.set(id, null); }
   // the value table: macros (the first macro module) and the value sources, initial values from the modules
   for (const [id, a] of alloc) {
     if (!a || a.k < 0) continue;
-    const S = srcDev(t, id), v = S.kind === 'macro' ? (Array.isArray(S.dev.v) ? S.dev.v[k0(id) - 1] : 0) : S.kind === 'cc' ? S.dev.v : 0;
+    const S = srcDev(t, id), v = S.kind === 'macro' ? (Array.isArray(S.dev.v) ? S.dev.v[k0(id) - 1] : 0) : S.kind === 'cc' ? S.dev.v : S.kind === 'pad' ? padVal(project, o, id) : 0;
     vals.push({ k: a.k, src: SRC_IDX(a.sid), v: typeof v === 'number' ? v : 0, id });
   }
   vals.sort((a, b) => a.k - b.k);

@@ -55,7 +55,21 @@
 //   removeWheel(p) / wheelRows(p) → { ok, byTrack: [{ trackId, rows }] }   every 'wheel' row of every track (removeWheel
 //        deletes them, the wheel's lay entries and the wheel; wheelRows only lists them: the confirm's counts)
 //   hasWheel(p)
-//   addMod(t, src, dst, o) → { ok, row, why, code }   src 'wheel' (o.project given: its wheel must be placed), any port of
+//   (IMPL-8 §1.4, §5, §10.3: the Pads modules, project.pads in pads-core normPads' shape — the wheel's pattern)
+//   addPads(p, o) → { ok, id, why }   a new module (pads-core newModule: "Pads n", 4 × 4 M; o's fields over it — the host's
+//        defaultsFor result, a name —, never its id) under the lowest free id pd1…pd8; the 9th: "8 Pads modules in this
+//        project". Its position is the host's (t.lay.pd<n> on the track it is placed on)
+//   removePads(p, id) → { ok, byTrack: [{ trackId, rows }] }   the module, every 'pd<n>.*' row and t.lay.pd<n> on every track
+//   padRows(p, x) / dropPadRows(p, x) → { ok, byTrack }   the rows of module x ('pd1') or of one mod pad ('pd1.p12') on every
+//        track — listed (the confirm's counts) / deleted (a pad's Modulation switched off, §7.2: its rows in the same step)
+//   prunePads(p) → { ok, byTrack }   the rows whose pad fails srcOk (module missing, the slot's mod off) and the lay entries
+//        of missing modules, on every track (H at load after normPads, review #28)
+//   srcOk(t, src, p)   a cable's source: 'wheel' (p given: placed), a mod pad (p required: srcOk is false without it), a
+//        modulator of t
+//   (re-exported from cv-mods: padTracks(p, src), isPadSrc(src), padSrcLabel(p, src))
+//   addMod(t, src, dst, o) → { ok, row, why, code }   src 'wheel' (o.project given: its wheel must be placed), a mod pad
+//        'pd<n>.p<i>' (o.project required, IMPL-8 §5.1; code 'slots' "This track’s value sources are full (16/16)" when it
+//        is new to the track and its 16 value slots are taken — shared with CC modules and further macro knobs), any port of
 //        a modulator of t ('l1.out', 'm1.k3') or a Serum's own LFO / ENV ('i1/lfo3.out'); dst '<dev>:<param>' — a Serum's
 //        DESTS id / own FX id, a classic sm / apply / proc knob or a panel's effect knob (cv-mods destOk; chunk knobs:
 //        code 'stage', stage '5'). A Serum: the matrix not full (budget incl. the Serum's own rows) and serum-core
@@ -81,10 +95,12 @@
 //        param id, modulatable there — else dropped): removeInst → rows, setModel → rows and notice
 //        (a line for the caller; '' when none)
 import { trackToV2, panelOf, V1_KEYS } from './cv-migrate.js?v=9';
-import { validate, compileTrack, kindOf, port, devNum, zoneOf, LIMITS, modRowsFor, nativeRow, injectMods, modBudget } from './cv-graph.js?v=9';
+import { validate, compileTrack, kindOf, port, devNum, zoneOf, LIMITS, modRowsFor, nativeRow, injectMods, modBudget, compileMods, VAL_N } from './cv-graph.js?v=9';
 import { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, MOD_PREFIX, MOD_MULTI, destOk, srcDev, descs, modLabelOf } from './cv-mods.js?v=9';
+import { padOfSrc, freeId, newModule, PAD_ID, MAX_MODS } from './pads-core.js?v=9'; // (IMPL-8 §1, §5, §10: the Pads modules)
 // (the host's one namespace for the rows: cv-mods' tables and checks, re-exported)
-export { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, MOD_PREFIX, MOD_MULTI, MOD_ORDER, destOk, plainSwitch, sourcesOf, linkSources, wheelTracks, kindOfId, modLabelOf, modDevs, srcOf, perNoteOf } from './cv-mods.js?v=9';
+export { MOD_SRC, SRC_MOD, MOD_DEV, MOD_LABEL, MOD_PREFIX, MOD_MULTI, MOD_ORDER, destOk, plainSwitch, sourcesOf, linkSources, wheelTracks, kindOfId, modLabelOf, modDevs, srcOf, perNoteOf,
+  padTracks, isPadSrc, padSrcLabel } from './cv-mods.js?v=9';
 import { normModDev } from './song.js?v=9';
 import { defaultFx2, addMod as sxAddMod, normRow, N_MATRIX } from './serum-core.js?v=9';
 import { fxDest } from './fx-core.js?v=9';
@@ -362,10 +378,15 @@ function rowId(t) { // track.mid: the next row number (saved), past every 'r<n>'
 const devKey = (t, dev) => (typeof dev === 'string' ? dev : Object.keys(t.dev).find(k => t.dev[k] === dev));
 const splitDst = dst => { const i = typeof dst === 'string' ? dst.indexOf(':') : -1; return i > 0 ? { dev: dst.slice(0, i), param: dst.slice(i + 1) } : null; };
 export const hasWheel = p => isObj(p) && isObj(p.perf) && isObj(p.perf.wheel);
-function srcOk(t, src, p) {
+// (IMPL-8 §5.1) a mod pad needs the project: its module there and the slot's mod on (a hidden slot too — its rows stay)
+const padOn = (p, q) => { const M = isObj(p) && Array.isArray(p.pads) ? p.pads.find(x => isObj(x) && x.id === q.id) : null; return !!M && Array.isArray(M.pads) && isObj(M.pads[q.i]) && isObj(M.pads[q.i].mod); };
+export function srcOk(t, src, p) {
   if (src === 'wheel') return p === undefined || hasWheel(p);
+  const q = padOfSrc(src);
+  if (q) return padOn(p, q);
   return srcDev(t, src) !== null;
 }
+const VALS_FULL = `This track’s value sources are full (${VAL_N}/${VAL_N})`;
 const fullWhy = (o, d) => `${(o && o.name) || d.name || 'Serum'}’s mod rows are full (64/64)`;
 export function addModDev(t, kind) {
   const pre = MOD_PREFIX[kind];
@@ -424,6 +445,47 @@ export function removeWheel(p) {
   p.perf = { wheel: null };
   return { ok: on || w.byTrack.length > 0, byTrack: w.byTrack };
 }
+/* (IMPL-8 §1.4, §5, §10.3) the project's Pads modules (project.pads: pads-core normPads' shape) and the rows they source on
+   every track — the Mod Wheel's pattern; pure, in place, one History step the caller's (the snapshot holds p.pads) */
+// x: a module id 'pd1' (every slot) or a source 'pd1.p12' (that slot) → a row-source test; null for anything else
+const padSel = x => (typeof x === 'string' && PAD_ID.test(x) ? s => typeof s === 'string' && s.startsWith(x + '.') && padOfSrc(s) !== null : padOfSrc(x) ? s => s === x : null);
+function padScan(p, hit, drop) {
+  const byTrack = [];
+  for (const t of isObj(p) && Array.isArray(p.tracks) ? p.tracks : []) {
+    if (!isObj(t) || !Array.isArray(t.mods)) continue;
+    const gone = t.mods.filter(r => isObj(r) && hit(r.src));
+    if (!gone.length) continue;
+    byTrack.push({ trackId: t.id, rows: gone.map(r => r.id) });
+    if (drop) t.mods = t.mods.filter(r => !gone.includes(r));
+  }
+  return { ok: byTrack.length > 0, byTrack };
+}
+export function padRows(p, x) { const hit = padSel(x); return hit ? padScan(p, hit, false) : { ok: false, byTrack: [] }; }
+export function dropPadRows(p, x) { const hit = padSel(x); return hit ? padScan(p, hit, true) : { ok: false, byTrack: [] }; }
+export function addPads(p, o) {
+  if (!isObj(p)) return { ok: false, id: null, why: 'No project' };
+  if (!Array.isArray(p.pads)) p.pads = [];
+  const id = p.pads.length < MAX_MODS ? freeId(p.pads) : null, M = id && newModule(id, o); // (newModule: o's fields, then the id)
+  if (!M) return { ok: false, id: null, why: MAX_MODS + ' Pads modules in this project' };
+  p.pads.push(M);
+  return { ok: true, id, why: '' };
+}
+export function removePads(p, id) {
+  if (!isObj(p) || typeof id !== 'string' || !PAD_ID.test(id)) return { ok: false, byTrack: [] };
+  const had = Array.isArray(p.pads) && p.pads.some(M => isObj(M) && M.id === id), r = dropPadRows(p, id);
+  for (const t of Array.isArray(p.tracks) ? p.tracks : []) dropLay(t, id);
+  if (had) p.pads = p.pads.filter(M => !(isObj(M) && M.id === id));
+  return { ok: had || r.ok, byTrack: r.byTrack };
+}
+// rows whose pad fails srcOk (its module missing — a partial or hostile file —, its slot's mod off) and the lay entries of
+// missing modules, on every track (H: at load after normPads, review #28)
+export function prunePads(p) {
+  if (!isObj(p)) return { ok: false, byTrack: [] };
+  const r = padScan(p, s => { const q = padOfSrc(s); return !!q && !padOn(p, q); }, true);
+  const have = new Set(Array.isArray(p.pads) ? p.pads.map(M => isObj(M) && M.id) : []);
+  for (const t of Array.isArray(p.tracks) ? p.tracks : []) if (isObj(t) && isObj(t.lay)) for (const k of Object.keys(t.lay)) if (PAD_ID.test(k) && !have.has(k)) delete t.lay[k];
+  return r;
+}
 export function addMod(t, src, dst, o = {}) {
   const no = (why, code) => ({ ok: false, row: null, why, code });
   if (!isObj(t) || !isObj(t.dev)) return no('No such track', 'end');
@@ -432,6 +494,10 @@ export function addMod(t, src, dst, o = {}) {
   if (!isObj(d)) return no('A modulation cable ends on nothing', 'end');
   const k = destOk(d, D.param);
   if (!k.ok) return no(k.why, k.stage ? 'stage' : 'nomod');
+  if (padOfSrc(src)) { // (IMPL-8 §5.3) a mod pad new to the track takes one of its 16 value slots: none left → refused (the 2a budget's way)
+    const pay = compileMods(t, o.project);
+    if (pay && pay.n.vals >= VAL_N && !pay.vals.some(v => v.id === src)) return no(VALS_FULL, 'slots');
+  }
   const sx = d.kind === 'synth' && d.model === 'serum', f = {};
   if (sx) {
     const b = modBudget(t, D.dev, o.project);

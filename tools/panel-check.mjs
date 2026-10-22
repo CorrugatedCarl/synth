@@ -13,6 +13,9 @@
 // model's own extras cells and row breaks (TOKENS.<model>.cells / xbreak).
 // (7c, IMPL-7c §7.3) The TR-909 the same way; a display token's box against its characters' minimum (dspMin), the keys that
 // show their LED (TOKENS.<model>.led) and the LED each one has, the model's own caption.
+// (8, IMPL-8 §13) The SDS-V the same way; a grouped token per group (the memory keys n 1–4 and the trimmer rows mem 3 / 4 of
+// each channel b s 1 2 3: dr:mem#b:1 …), the switches the memory keys write (x<ch>p — never placed on their own), each
+// trimmer row's art and hit box (hitOff).
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -50,9 +53,24 @@ if (T) {
   const miss = Object.keys(T.kind).filter(t => !on.has(t)), xmiss = T.extras.filter(t => !ex.includes(t));
   console.log(`\ntokens on the face: ${on.size} of ${Object.keys(T.kind).length}${miss.length ? ' · missing: ' + miss.join(' ') : ''}`);
   for (const [t, [f, lo, hi]] of Object.entries(T.idx || {})) {
-    const got = (on.get(t) || []).map(c => c[f]), gone = [];
-    for (let i = lo; i <= hi; i++) if (!got.includes(i)) gone.push(i);
-    console.log(`  ${t}: ${got.length} placed (${f} ${lo}–${hi})${gone.length ? ' · missing ' + f + ' ' + gone.join(', ') : ''}`);
+    const g = T.grp && T.grp[t]; // ((8) a grouped token: per group — the SDS-V's channels)
+    for (const gv of g ? g[1] : [null]) {
+      const got = (on.get(t) || []).filter(c => !g || c[g[0]] === gv).map(c => c[f]), gone = [];
+      for (let i = lo; i <= hi; i++) if (!got.includes(i)) gone.push(i);
+      console.log(`  ${t}${g ? ' ' + g[0] + ' ' + gv : ''}: ${got.length} placed (${f} ${lo}–${hi})${gone.length ? ' · missing ' + f + ' ' + gone.join(', ') : ''}`);
+    }
+    const stray = g ? (on.get(t) || []).filter(c => !g[1].includes(c[g[0]])).length : 0;
+    if (stray) console.log(`  ${t}: ${stray} with no valid ${g[0]} (one of ${g[1].join(', ')})`);
+  }
+  // (8) a grouped token bound to a models.js switch: the switch each group's keys write (never placed on its own)
+  for (const [t, pat] of Object.entries(T.bind || {})) {
+    const g = T.grp[t], ids = g[1].map(gv => pat.replace('?', gv));
+    console.log(`  ${t} → the switches ${ids.join(' ')} (index = ${T.idx[t][0]} − ${T.idx[t][1]}; placed by these keys${ids.some(id => (L.controls || []).some(c => c && c.id === id)) ? ' — ALSO PLACED ON THEIR OWN' : ''})`);
+  }
+  // (8) the trimmer rows: their trimmers' art and hit boxes (hitOff)
+  for (const c of on.get('dr:trim') || []) {
+    const o = geo.controls.find(q => L.controls[q.i] === c);
+    console.log(`  dr:trim ch ${c.ch} mem ${c.mem}: ${c.w} × ${c.h} mm, ${P.TRIM_N} trimmers of ${c.d != null ? c.d : 'auto'} mm${c.hitOff ? ', hitOff ' + JSON.stringify(c.hitOff) : ''} · hit ${o ? `${o.hit.w} × ${o.hit.h} px at (${o.hit.x}, ${o.hit.y})` : '?'}`);
   }
   const ori = c => c.orient || (c.h > c.w ? 'v' : 'h');
   for (const [t, n] of Object.entries(T.pos || {})) for (const c of on.get(t) || []) {
@@ -66,7 +84,7 @@ if (T) {
     console.log(`  ${t}: a ${c.kind} ${c.w} × ${c.h} mm (${n} characters need ≥ ${mw} × ${mh} mm${c.w >= mw && c.h >= mh ? '' : ' — TOO SMALL'})`);
   }
   if (T.led) {
-    const ls = T.led.flatMap(t => (on.get(t) || []).map(c => t + (T.idx && T.idx[t] ? '#' + c[T.idx[t][0]] : '') + ' ' + (c.led || 'cap')));
+    const ls = T.led.flatMap(t => (on.get(t) || []).map(c => t + (T.idx && T.idx[t] ? '#' + (T.grp && T.grp[t] ? c[T.grp[t][0]] + ':' : '') + c[T.idx[t][0]] : '') + ' ' + (c.led || 'cap')));
     console.log(`  LED keys (each shows its LED): ${ls.join(', ') || '—'}`);
   }
   if (T.extras.length) console.log(`tokens in the extras: ${T.extras.length - xmiss.length} of ${T.extras.length}${xmiss.length ? ' · missing: ' + xmiss.join(' ') : ''}`);
@@ -104,10 +122,12 @@ if (geo.extras) {
   for (const c of X.cells) console.log(`  ${c.id.padEnd(12)} ${c.w} × ${c.h} at (${c.x}, ${c.y})`);
   console.log(`  rows: ${[...new Set(X.cells.map(c => c.y))].length} · a new row after ${P.xbreakOf(model).join(' ')} (or when a cell does not fit)`);
 }
+// a repeated token's index for the listings ((8) a grouped one's group value first: dr:mem#b:1)
+const ixOf = o => { const c = L.controls[o.i], ix = o.id && T && T.idx && T.idx[o.id], g = ix && T.grp && T.grp[o.id]; return ix ? ' ' + (g ? c[g[0]] + ':' : '') + c[ix[0]] : ''; };
 console.log('\nsections (Tab order):');
 const bySec = new Map();
 for (const i of geo.order) {
-  const o = geo.controls[i], k = o.sec >= 0 ? (L.sections[o.sec] || {}).id : '(none)', ix = o.id && T && T.idx && T.idx[o.id] ? ' ' + L.controls[i][T.idx[o.id][0]] : '';
+  const o = geo.controls[i], k = o.sec >= 0 ? (L.sections[o.sec] || {}).id : '(none)', ix = ixOf(o);
   if (!bySec.has(k)) bySec.set(k, []);
   bySec.get(k).push(o.id ? o.id + ix.replace(' ', '#') : o.kind);
 }
@@ -133,7 +153,7 @@ if (out) {
     else if (o.entries) for (const e of o.entries) ov.push(`<rect x="${e.box.x}" y="${e.box.y}" width="${e.box.w}" height="${e.box.h}" fill="none" stroke="${col}" stroke-width="1.5"/>`);
     else ov.push(`<rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" fill="none" stroke="${col}" stroke-width="1.5"/>`);
     if (o.live) for (const h of o.entries ? o.entries.map(e => e.hit) : [o.hit]) ov.push(`<rect x="${h.x}" y="${h.y}" width="${h.w}" height="${h.h}" fill="none" stroke="#ff4fa3" stroke-width="1" stroke-dasharray="4 3"/>`);
-    const ix = o.id && T && T.idx && T.idx[o.id] ? ' ' + L.controls[o.i][T.idx[o.id][0]] : ''; // (a repeated token: its index)
+    const ix = ixOf(o); // (a repeated token: its index; (8) its group's value first)
     if (o.id) ov.push(`<text x="${(o.box.x + o.box.w / 2)}" y="${o.box.y + o.box.h + 9}" font-size="9" text-anchor="middle" fill="#3fd0ff" font-family="monospace">${o.id}${ix}</text>`);
   }
   if (geo.extras) {

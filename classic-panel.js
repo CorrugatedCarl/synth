@@ -302,7 +302,13 @@ export class ClassicPanel {
       },
     };
   }
-  tipB(el, b) { if (this.kit.tip) this.kit.tip(el, `${b.label}: ${b.fmt(b.get())}`); }
+  tipB(el, b) { if (this.kit.tip) this.kit.tip(el, `${b.label}: ${b.fmt(b.get())}` + this.memNote(b.id)); }
+  // (8, IMPL-8 §11.5) an SDS-V card knob (x<ch> + n t b d m c) whose channel plays memory 1, 3 or 4: the knobs — and the
+  // modulation on them — are memory 2's, so its tip says where it is heard (SENSITIVITY / LEVEL act on every memory)
+  memNote(id) {
+    const q = this.model && this.model.id === 'sdsv' && typeof id === 'string' ? /^x([bs123])[ntbdmc]$/.exec(id) : null, k = q ? this.vals['x' + q[1] + 'p'] : null;
+    return Number.isInteger(k) && k !== 1 ? ` · heard on memory 2; this channel plays memory ${k + 1}` : '';
+  }
   untip(ms) { if (this.kit.untip) this.kit.untip(ms); }
   drag(el, c) { this.dragB(el, this.binding(c)); }
   // relative travel along b.axis (y: up = more; x: right = more; b.invert flips it) accumulated per move, Shift = fine, the

@@ -115,11 +115,11 @@
     <tbody id="rows"></tbody>
   </table>
 </div>
-<p class="note">Load: the median over the passes run so far (during a pass: that pass). Spread: lowest – highest pass. Red: over 0.6; amber: over the iPad target. Classic rows c1–c9 (six classic synths, 8 voices or mono, the TR-808, the TR-606 and the TR-909 playing their demo patterns; oversampling 4) have no target: they are the baseline for later engine stages. Rows d8p–d8s are the TR-808's (IMPL-7a §2.6), d6p–d6m the TR-606's (IMPL-7b §2.6), d9p–d9m the TR-909's (IMPL-7c §2.7).</p>
+<p class="note">Load: the median over the passes run so far (during a pass: that pass). Spread: lowest – highest pass. Red: over 0.6; amber: over the iPad target. Classic rows c1–c10 (six classic synths, 8 voices or mono, the TR-808, the TR-606 and the TR-909 playing their demo patterns, the SDS-V its dvp groove as roll notes; oversampling 4) have no target: they are the baseline for later engine stages. Rows d8p–d8s are the TR-808's (IMPL-7a §2.6), d6p–d6m the TR-606's (IMPL-7b §2.6), d9p–d9m the TR-909's (IMPL-7c §2.7), dvp–dvm the SDS-V's (IMPL-8 §12.7: roll notes, no sequencer).</p>
 <pre id="json" hidden></pre>
 </main>
 <script type="module">
-  import { scenarios, measure, drumTrack } from './bench-scenarios.mjs';
+  import { scenarios, measure, drumTrack, DRUM_PATTERNS } from './bench-scenarios.mjs';
   import { MODELS, patchFor } from '../models.js?v=9';
   import { DEMO } from '../drum-core.js?v=9';
   import { defaultFx2 } from '../serum-core.js?v=9';
@@ -146,7 +146,8 @@
   }).concat([{ id: 'c7', label: 'Classic: TR-808 default panel, its demo pattern synced at 120 BPM (the whole track), OS 4', kind: 'track', ipad: null, env,
     build: () => drumTrack(DEMO.a) }, { id: 'c8', label: 'Classic: TR-606 default panel, its DEMO (I-1 → I-2 chained) synced at 120 BPM (the whole track), OS 4',
     kind: 'track', ipad: null, env, build: () => drumTrack('demo', null, false, 'tr606') }, { id: 'c9', label: 'Classic: TR-909 default panel, its DEMO (I-1-1 / I-1-2 block-played) synced at 120 BPM (the whole track), OS 4',
-    kind: 'track', ipad: null, env, build: () => drumTrack('demo', null, false, 'tr909') }]); // (IMPL-7a §2.6, IMPL-7b §2.6, IMPL-7c §2.7)
+    kind: 'track', ipad: null, env, build: () => drumTrack('demo', null, false, 'tr909') }, { id: 'c10', label: 'Classic: SDS-V default panel, the dvp groove as roll notes (a one-bar song looping) at 120 BPM (the whole track), OS 4',
+    kind: 'track', ipad: null, env, build: () => drumTrack(DRUM_PATTERNS.dvp, null, false, 'sdsv') }]); // (IMPL-7a §2.6, IMPL-7b §2.6, IMPL-7c §2.7, IMPL-8 §12.7)
   const list = scenarios().concat(CLASSIC), tb = $('rows'), cells = new Map();
   for (const s of list) {
     // (cells by reference: row ids such as g" cannot be element ids)

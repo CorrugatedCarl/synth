@@ -13,6 +13,7 @@ import './v8-guard.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as K from '../cv-keys.js?v=9';
+import * as PC from '../pads-core.js?v=9';
 import { fresh, place, fire } from './wk-dom.mjs';
 
 const near = (a, b, e, m) => assert.ok(Math.abs(a - b) <= e, `${m || ''} ${a} ≈ ${b} ± ${e}`);
@@ -247,6 +248,123 @@ test('bed engine: the Pencil — with `at` its pressure is aftertouch ≤ once a
   const N = rig({ at: false });
   N.ev('pointerdown', 1, N.X(60), 50, { pointerType: 'pen', pressure: 1 }); N.flush(); N.ev('pointerup', 1, N.X(60), 50, { pointerType: 'pen' });
   assert.equal(N.log.filter(x => x[0] === 'at').length, 0, 'a bed without at: none');
+});
+
+/* ---------------------------------------------------------------- 7d + 8 (IMPL-8 §2.1, lane K): the bed's pad options */
+// a 2 × 2 grid of 100-world-px pads, gap 20 (220 × 220 world px), its element at (40, 30) drawn at s screen px per world px;
+// o.hit: the pad under (x, y) (0 bottom-left … 3 top-right, null in the gaps), v by the height in the pad (top 0.3 … bottom 1)
+function padRig(o = {}) {
+  const doc = fresh(), el = doc.createElement('div'), s = o.s || 1, frames = [], hits = [];
+  doc.body.append(el);
+  const B = { w: 220 };
+  place(el, 40, 30, 220 * s, 220 * s);
+  const log = [];
+  const hit = (x, y, sc) => {
+    hits.push([+x.toFixed(3), +y.toFixed(3), +sc.toFixed(3)]);
+    const c = Math.floor(x / 120), rt = Math.floor(y / 120), fx = x - c * 120, fy = y - rt * 120;
+    if (!(x >= 0 && y >= 0 && x < 220 && y < 220) || fx >= 100 || fy >= 100) return null;
+    return { note: (1 - rt) * 2 + c, v: 0.3 + 0.7 * fy / 100 };
+  };
+  const E = K.bed(el, B, Object.assign({ hit, on: (n, v) => log.push(['on', n, Math.round(v * 1000) / 1000]), off: n => log.push(['off', n]),
+    at: o.at ? (v, n) => log.push(['at', Math.round(v * 1000) / 1000, n]) : null, shade: () => {}, raf: f => frames.push(f) }, o.opts || {}));
+  const flush = () => { for (const f of frames.splice(0)) f(); };
+  // a point of pad i at the fraction fy of its height (world px → screen px)
+  const P = (i, fy = 0.5) => { const c = i % 2, rt = 1 - (i >> 1); return [40 + (c * 120 + 50) * s, 30 + (rt * 120 + fy * 100) * s]; };
+  const ev = (type, id, xy, more) => fire(el, type, Object.assign({ pointerId: id, pointerType: 'touch', clientX: xy[0], clientY: xy[1], button: 0, buttons: type === 'pointerup' ? 0 : 1, timeStamp: 5 }, more || {}));
+  return { el, E, log, hits, flush, P, ev, s };
+}
+
+test('bed o.hit (IMPL-8 §2.1): the custom hit test gets world px and s = screen px per world px at three zooms; null (a gap) plays nothing; its note / v reach on', () => {
+  for (const s of [0.5, 1, 2.25]) {
+    const R = padRig({ s });
+    R.ev('pointerdown', 1, R.P(0, 0.9));
+    assert.deepEqual(R.hits.at(-1), [50, 210, s], 's ' + s + ': world px, s');
+    assert.deepEqual(R.log, [['on', 0, 0.93]], 's ' + s + ': pad 0 (bottom-left) near its bottom edge');
+    R.ev('pointerdown', 2, [40 + 110 * R.s, 30 + 50 * R.s]);
+    assert.equal(R.log.length, 1, 's ' + s + ': a gap: nothing');
+    R.ev('pointerdown', 3, R.P(3, 0));
+    assert.deepEqual(R.log.at(-1), ['on', 3, 0.3], 's ' + s + ': pad 3 (top-right) at its top: v 0.3');
+  }
+});
+
+test('bed o.slide false (IMPL-8 §2.1): a pointer keeps the pad it pressed across a move onto a neighbour, a gap and off the grid; up ends it; the default (1i) slides', () => {
+  const R = padRig({ opts: { slide: false } });
+  R.ev('pointerdown', 1, R.P(0));
+  R.ev('pointermove', 1, R.P(1)); R.ev('pointermove', 1, [40 + 110, 30 + 150]); R.ev('pointermove', 1, [0, 0]); R.ev('pointermove', 1, R.P(3));
+  assert.deepEqual(R.log, [['on', 0, 0.65]], 'no glissando: pad 0 held');
+  assert.deepEqual(R.E.held(), [0]);
+  R.ev('pointerup', 1, R.P(3));
+  assert.deepEqual(R.log.at(-1), ['off', 0], 'the lift ends pad 0');
+  // the mouse: a move without a button still lifts
+  R.ev('pointerdown', 2, R.P(2), { pointerType: 'mouse' }); R.ev('pointermove', 2, R.P(3), { pointerType: 'mouse', buttons: 0 });
+  assert.deepEqual(R.log.slice(-2), [['on', 2, 0.65], ['off', 2]]);
+  const D = padRig();
+  D.ev('pointerdown', 1, D.P(0)); D.ev('pointermove', 1, D.P(1));
+  assert.deepEqual(D.log, [['on', 0, 0.65], ['off', 0], ['on', 1, 0.65]], 'slide default: the 1i glissando');
+});
+
+test('bed o.each true (IMPL-8 §2.1, review #2 / P-2): every pointer down on a pad is a hit — two pointers on one pad two ons, one off at the last; release() one off per pad; the default (1i) one on', () => {
+  const R = padRig({ opts: { slide: false, each: true } });
+  R.ev('pointerdown', 1, R.P(0, 0.2)); R.ev('pointerdown', 2, R.P(0, 0.9)); R.ev('pointerdown', 3, R.P(1));
+  assert.deepEqual(R.log, [['on', 0, 0.44], ['on', 0, 0.93], ['on', 1, 0.65]], 'a second finger on pad 0 re-strikes it, at its own v');
+  R.ev('pointerup', 1, R.P(0));
+  assert.equal(R.log.length, 3, 'the first lifts: pad 0 still held by the second');
+  R.ev('pointerdown', 4, R.P(0, 0.5));
+  assert.deepEqual(R.log.at(-1), ['on', 0, 0.65], 'a third finger: a third hit');
+  R.ev('pointerup', 2, R.P(0)); R.ev('pointerup', 4, R.P(0));
+  assert.deepEqual(R.log.slice(-1), [['off', 0]], 'one off, at the last');
+  assert.equal(R.log.filter(x => x[0] === 'off' && x[1] === 0).length, 1);
+  R.ev('pointerdown', 5, R.P(1)); R.ev('pointerdown', 6, R.P(2));
+  assert.deepEqual(R.log.slice(-2).map(x => x.slice(0, 2)), [['on', 1], ['on', 2]]);
+  R.E.release();
+  assert.deepEqual(R.log.filter(x => x[0] === 'off').map(x => x[1]).sort(), [0, 1, 2], 'release(): one off per held pad (pad 1 held by two pointers: once)');
+  const n = R.log.length;
+  R.ev('pointerup', 3, R.P(1)); R.ev('pointerup', 5, R.P(1));
+  assert.equal(R.log.length, n, 'stale events: nothing');
+  const D = padRig({ opts: { slide: false } });
+  D.ev('pointerdown', 1, D.P(0)); D.ev('pointerdown', 2, D.P(0)); D.ev('pointerup', 1, D.P(0)); D.ev('pointerup', 2, D.P(0));
+  assert.deepEqual(D.log.map(x => x.slice(0, 2)), [['on', 0], ['off', 0]], 'each default false: one on, one off');
+});
+
+test('bed o.at(v, n) (IMPL-8 §2.4, review #10): the Pencil\'s aftertouch names the pad it holds, ≤ once a frame, 0 with that pad at the last pen lift and at release(); fingers on other pads none; the 1i key too', () => {
+  const R = padRig({ at: true, opts: { slide: false, each: true } });
+  R.ev('pointerdown', 1, R.P(1)); R.ev('pointerdown', 2, R.P(3), { pointerType: 'pen', pressure: 0.3 });
+  R.ev('pointermove', 2, R.P(2), { pointerType: 'pen', pressure: 0.575 }); R.ev('pointermove', 2, R.P(2), { pointerType: 'pen', pressure: 1 });
+  R.ev('pointermove', 1, R.P(1), { pressure: 1 });
+  R.flush();
+  assert.deepEqual(R.log.filter(x => x[0] === 'at'), [['at', 1, 3]], 'one a frame, the last value, the pen\'s pad (3, though it moved over pad 2)');
+  R.ev('pointerup', 2, R.P(2), { pointerType: 'pen' });
+  assert.deepEqual(R.log.slice(-2), [['off', 3], ['at', 0, 3]], 'the pen lifts: off, then 0 for its pad');
+  R.flush();
+  assert.equal(R.log.filter(x => x[0] === 'at').length, 2, 'no late frame value');
+  R.ev('pointerdown', 3, R.P(0), { pointerType: 'pen', pressure: 0.6 });
+  R.E.release();
+  assert.deepEqual(R.log.filter(x => x[0] === 'at').at(-1), ['at', 0, 0], 'release(): 0 for the pen\'s pad');
+  // the 1i bed: the key under the pen (a glissando moves it) — 1i's callers read only v
+  const doc = fresh(), el = doc.createElement('div'), B = K.bedLayout(BEDS.b61), frames = [], L = [];
+  doc.body.append(el); place(el, 0, 0, B.w * 2, (B.h + B.front) * 2);
+  K.bed(el, B, { on: () => {}, off: () => {}, at: (v, n) => L.push([Math.round(v * 1000) / 1000, n]), shade: () => {}, raf: f => frames.push(f) });
+  const X = n => { const k = B.keys[n - B.lo]; return (k.x + k.w / 2) * 2; };
+  fire(el, 'pointerdown', { pointerId: 1, pointerType: 'pen', pressure: 1, clientX: X(60), clientY: 100, button: 0, buttons: 1 });
+  fire(el, 'pointermove', { pointerId: 1, pointerType: 'pen', pressure: 1, clientX: X(62), clientY: 100, button: 0, buttons: 1 });
+  for (const f of frames.splice(0)) f();
+  fire(el, 'pointerup', { pointerId: 1, pointerType: 'pen', clientX: X(62), clientY: 100, button: 0, buttons: 0 });
+  assert.deepEqual(L, [[1, 62], [0, 62]], 'the key the pen holds at the frame; 0 with it at the lift');
+});
+
+test('bed + pads-core (IMPL-8 §2.1, §2.2): a 4 × 4 M grid through padHit at s 0.5 / 1 / 2 — pad slots from the bottom-left, v by the height, gaps silent; four fingers, a roll on one pad, no slide', () => {
+  for (const s of [0.5, 1, 2]) {
+    const doc = fresh(), el = doc.createElement('div'), G = PC.gridOf(4, 4, 1), M = PC.newModule('pd1'), log = [];
+    doc.body.append(el); place(el, 10, 20, G.w * s, G.h * s);
+    K.bed(el, { w: G.w }, { hit: PC.padHit(G, M), slide: false, each: true, on: (n, v) => log.push(['on', n, Math.round(v * 1000) / 1000]), off: n => log.push(['off', n]), at: null, shade: () => {} });
+    const at = (i, f) => { const R = PC.padRect(G, i); return [10 + (R.x + R.w / 2) * s, 20 + (R.y + f * R.h) * s]; };
+    const ev = (type, id, xy) => fire(el, type, { pointerId: id, pointerType: 'touch', clientX: xy[0], clientY: xy[1], button: 0, buttons: type === 'pointerup' ? 0 : 1 });
+    ev('pointerdown', 1, at(0, 0)); ev('pointerdown', 2, at(3, 0.5)); ev('pointerdown', 3, at(24, 0.8)); ev('pointerdown', 4, at(27, 0.5));
+    ev('pointerdown', 5, [10 + 76 * s, 20 + 100 * s]);
+    assert.deepEqual(log, [['on', 0, 0.3], ['on', 3, 0.675], ['on', 24, 0.9], ['on', 27, 0.675]], 's ' + s + ': pads 1, 4, 13, 16; a gap silent');
+    ev('pointerdown', 6, at(0, 0.5)); ev('pointermove', 6, at(1, 0.5)); ev('pointerup', 1, at(0, 0)); ev('pointerup', 6, at(1, 0.5));
+    assert.deepEqual(log.slice(4), [['on', 0, 0.675], ['off', 0]], 's ' + s + ': a roll on pad 1 — two hits, one off at the last; no slide onto pad 2');
+  }
 });
 
 /* ---------------------------------------------------------------- phase 2: the controllers */
