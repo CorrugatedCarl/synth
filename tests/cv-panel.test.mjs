@@ -19,6 +19,12 @@ import './v8-guard.mjs';
 // Stage 8 (IMPL-8 §13, §15.9): HW_IDS gains sdsv (lane X's panels/sdsv.js), its extras (the hexagonal pads, MAP…, SOUNDS…,
 // TRIM…: every models.js control on the face — the memory switches through their keys), TARGET 992 × 640, no keyboard; its
 // own caption read on the plain estimate: 8 px (585's list); its token rules: tests/cv-drum.test.mjs.
+// Stage 9 (IMPL-9 §4.1–§4.2, §8.4): HW_IDS gains m900 (the 900 Series' console, lane P9's panels/m900.js), no extras, PINNED
+// 864 × 352, no keyboard (the keys tray plays it); the live patch jacks (one mutation per rule: a jack without port, a bad /
+// duplicate port, a port the type lacks, a socket of the wrong kind, an id, inert, no label, one missing, centres < 15 mm,
+// < 9 mm from a hit box, a port on a knob), geometry().jacks (body px = the layout's mm × 2 + the centring, the table's
+// labels, each one's widest hit circle), the nine module faces (moduleModel / moduleLayout: valid, §2.2's sizes = moog-core's
+// w / h, ports = the type's jack ids, original art) and a module face rendered over a fake per-instance api (vals.p[mid]).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-panel.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -30,6 +36,7 @@ import { fresh, all, ptr, fire, key, place as placeEl, raf as rafQ } from './wk-
 import { TB_FX, DX_FX } from './fixtures/panels.mjs';
 import * as wk from '../wk.js?v=9';
 import { bedLayout, seqNote, seqVel, velOf } from '../cv-keys.js?v=9';
+import * as MG from '../moog-core.js?v=9';
 
 const modelOf = id => MODELS.find(m => m.id === id);
 const clone = x => JSON.parse(JSON.stringify(x));
@@ -44,6 +51,7 @@ const EXTRAS = {
     'dr:sounds', 'dr:demo', 'dr:link'], // (7b §3.7, §7.5: the face's seven knobs; our eleven TUNE / DECAY in the strip)
   tr909: ['dr:grid', 'dr:pads', 'dr:sync', 'dr:toRoll', 'dr:rec', 'dr:map', 'dr:sounds', 'dr:demo'], // (7c §3.7, §7.5: the 28 knobs on the face, §13 Q3)
   sdsv: ['dr:pads', 'dr:map', 'dr:sounds', 'dr:trimMenu'], // (8 §13.3: the 40 knobs on the face, the memory switches through dr:mem; no sequencer)
+  m900: [], // (9 §2.4: the controller's nine controls on its console)
 };
 // (7a, IMPL-7a §11) TARGET.tr808: the 1016 × ≈ 1020 px box on the 32 px dots (± a dot until lane P2's hand-back pins it);
 // (7b §7.1) TARGET.tr606: 300 mm → 608 px; the face ≈ 290 + the strip 16 + 192 + 116 + 3 × 64 + 8 = 524 + the bar → 864;
@@ -52,10 +60,11 @@ const EXTRAS = {
 // any face 140.1–156 mm deep)
 const TARGET = { modular: [1728, 960], minimoog: [1408, 512], arp2600: [1568, 928], solina: [1984, 256], cs80: [2432, 768], prophet5: [1920, 512],
   ms20: [1120, 416], tb303: [608, 608], obxa: [2048, 576], jupiter8: [2144, 608], juno60: [2144, 416], dx7: [2048, 480], tr808: [1024, 1024], tr606: [608, 864], tr909: [992, 1024],
-  sdsv: [992, 640] };
-// models without a keyboard (IMPL-1i §1.2: the TB-303's 13 key cells; 7a / 7b: the drum machines' step keys and pads)
-const NOKEYS = ['tb303', 'tr808', 'tr606', 'tr909', 'sdsv'];
-const PINNED = { minimoog: [1408, 512] };
+  sdsv: [992, 640], m900: [864, 352] };
+// models without a keyboard (IMPL-1i §1.2: the TB-303's 13 key cells; 7a / 7b: the drum machines' step keys and pads; 9: the
+// 900 Series' console — the bottom keys tray plays it)
+const NOKEYS = ['tb303', 'tr808', 'tr606', 'tr909', 'sdsv', 'm900'];
+const PINNED = { minimoog: [1408, 512], m900: [864, 352] }; // ((9 §2.2) the console: 8 MU × 142.875 mm → 864 × 352)
 // (1i, IMPL-1i §1.2) once a model has its bed: the sizes with the keyboards (± a dot until K2's hand-back pins them), the
 // ARP's PORTAMENTO on its 3620 slider (out of the extras), each bed's range [lo, n]; the TB-303 has none
 const TARGET_1I = { modular: [2176, 1280], minimoog: [1408, 736], arp2600: [1856, 1344], solina: [1984, 448], cs80: [2432, 1024], prophet5: [1920, 864],
@@ -127,7 +136,7 @@ test('format: PX_PER_MM = 2 and the contract constants; the fixture layout valid
   assert.deepEqual([P.selCellW(['Off', 'On']), P.selCellW(['Sine', 'Tri', 'Square', 'S&H'])], [120, 224]);
   assert.ok(P.selCellW(['Rev 2 · SSM', 'Rev 3 · CEM']) >= 16 + 2 * 87 + 3);
   assert.deepEqual(P.validate(FX_LAYOUT, FX_MODEL), []);
-  assert.deepEqual(P.HW_IDS, ['modular', 'minimoog', 'arp2600', 'solina', 'cs80', 'prophet5', 'ms20', 'tb303', 'obxa', 'jupiter8', 'juno60', 'dx7', 'tr808', 'tr606', 'tr909', 'sdsv']); // (7a / 7b / 7c / 8: the drum machines last, as in MODELS)
+  assert.deepEqual(P.HW_IDS, ['modular', 'minimoog', 'arp2600', 'solina', 'cs80', 'prophet5', 'ms20', 'tb303', 'obxa', 'jupiter8', 'juno60', 'dx7', 'tr808', 'tr606', 'tr909', 'sdsv', 'm900']); // (7a / 7b / 7c / 8: the drum machines last, as in MODELS; 9: then the 900 Series' console)
   if (missing.length) console.log('# cv-panel: not drawn yet (skipped, Resizable only): ' + missing.join(', '));
 });
 
@@ -389,7 +398,7 @@ for (const id of P.HW_IDS) {
     }
   });
   // (1i) the bed of §1.2 (todo until lane K2's layout lands: then a real test), unrounded and one hit box; the TB-303 none
-  test(`panels/${id}.js: (1i) ${NOKEYS.includes(id) ? 'no keyboard (' + (id === 'tb303' ? 'its 13 key cells' : 'its step keys and pads') + ')' : 'one perf:keys bed, MIDI ' + BED[id][0] + '–' + (BED[id][0] + BED[id][1] - 1) + ', its geometry unrounded'}`, { todo: !bed && !NOKEYS.includes(id) ? 'lane K2 (panels/' + id + '.js)' : false }, () => {
+  test(`panels/${id}.js: (1i) ${NOKEYS.includes(id) ? 'no keyboard (' + (id === 'tb303' ? 'its 13 key cells' : id === 'm900' ? 'the keys tray plays it' : 'its step keys and pads') + ')' : 'one perf:keys bed, MIDI ' + BED[id][0] + '–' + (BED[id][0] + BED[id][1] - 1) + ', its geometry unrounded'}`, { todo: !bed && !NOKEYS.includes(id) ? 'lane K2 (panels/' + id + '.js)' : false }, () => {
     if (NOKEYS.includes(id)) { assert.equal(L.controls.filter(c => typeof c.id === 'string' && c.id.startsWith('perf:')).length, 0); return; }
     assert.equal(L.controls.filter(c => c.id === 'perf:keys').length, 1, 'one bed');
     assert.deepEqual([bed.lo, bed.n], BED[id], 'the §1.2 range');
@@ -405,7 +414,10 @@ for (const id of P.HW_IDS) {
     for (const t of texts) assert.doesNotMatch(t, new RegExp('\\b(' + P.MAKERS.join('|') + ')\\b'), 'maker name in: ' + t);
     assert.doesNotMatch(svg.replace(/<text[\s\S]*?<\/text>/g, '').replace(/<title>[\s\S]*?<\/title>/g, '').replace(/data-tip="[^"]*"/g, ''), new RegExp('\\b' + model.name + '\\b'), 'the model name only in <text>');
     assert.ok(svg.startsWith('<svg') && svg.includes('aria-hidden="true"'));
-    for (const [, tip] of svg.matchAll(/<title>([^<]*)<\/title>/g)) assert.match(tip, / — (not emulated|cable-able with full patching \(stage 4\))$/, 'inert controls titled (7a: an inert \'later\' jack, cable-able later)');
+    // ((9) a live patch jack is titled with its jack's own label — the table's, IMPL-9 §4.2; every other title as before)
+    const PJ = new Map((model.jacks || (id === 'm900' ? MG.TYPES.ctl.jacks : [])).map(j => [j.id, j.label]));
+    for (const [, port, tip] of svg.matchAll(/<g class="hw-jack" data-port="([^"]*)"><title>([^<]*)<\/title>/g)) assert.equal(tip, PJ.get(port), 'patch jack ' + port + ' titled with its label');
+    for (const [, tip] of svg.replace(/<g class="hw-jack"[^>]*><title>[^<]*<\/title>/g, '').matchAll(/<title>([^<]*)<\/title>/g)) assert.match(tip, / — (not emulated|cable-able with full patching \(stage 4\))$/, 'inert controls titled (7a: an inert \'later\' jack, cable-able later)');
   });
 }
 
@@ -1181,4 +1193,188 @@ test('7a review 2 #5: a dial with multi-line legends (the 808\'s MODE) lays each
   const f = T8.controls.find(x => x.id === 'dr:fill'), rl = f.d / 2 + 3.9 + 0.4;
   const e16 = textEls(svg).find(e => e.size === 2.4 && e.lines[0] === '16'), a = (-f.sweep / 2 + f.sweep / 5) * Math.PI / 180;
   assert.deepEqual([+(+e16.x).toFixed(2), +(e16.y).toFixed(2)], [+(f.x + Math.sin(a) * rl).toFixed(2), +(f.y - Math.cos(a) * rl + 0.85).toFixed(2)]);
+});
+
+/* ---------------------------------------------------------------- (9, IMPL-9 §4.1–§4.2, §8.4) the 900 Series faces */
+// a small patch module over one knob: its jack table (ids, sig) and a layout with two jacks, a socket and the knob
+const PJ_MODEL = { id: 'pjfx', name: 'Jack fixture', theme: { knob: 'std' }, controls: [{ t: 'k', id: 'lv', label: 'Level', min: 0, max: 10, def: 5 }],
+  jacks: [{ id: 'in', dir: 'in', sig: 'v', label: 'SIGNAL INPUT' }, { id: 'out', dir: 'out', sig: 'v', label: 'SIGNAL OUTPUT' }, { id: 'trg', dir: 'in', sig: 's', label: 'TRIGGER' }] };
+const PJ_LAYOUT = {
+  v: 1, id: 'pjfx', hw: 'fixture', case: '#121212', scheme: { panel: '#121212', legend: '#eeeeee', jack: { nut: '#d4d4cf', hole: '#080808' } },
+  areas: [{ id: 'main', src: [0, 0, 53.975, 222.25], at: [0, 0] }],
+  sections: [{ id: 's', label: 'JACKS', x: 0, y: 0, w: 53.975, h: 222.25 }],
+  controls: [
+    { id: 'lv', kind: 'knob', x: 27, y: 40, d: 26, label: 'LEVEL', lab: 'none' },
+    { kind: 'jack', port: 'in', x: 14, y: 120, d: 14, label: 'SIGNAL INPUT', lab: 'none' },
+    { kind: 'jack', port: 'out', x: 40, y: 120, d: 14, label: 'SIGNAL OUTPUT', lab: 'none' },
+    { kind: 'strig', port: 'trg', x: 27, y: 150, w: 10, h: 8, label: 'TRIGGER', lab: 'none' },
+  ],
+  extras: { ids: [] },
+};
+const TYPES9 = MG.ORDER; // the nine module types (the controller's face is m900's console)
+const SIZE9 = { 1: [128, 512], 2: [224, 512], 3: [352, 512] };
+
+test('9 validate: a live patch jack — each broken rule reported (one mutation per rule), naming the field; the fixture with its three jacks validates', () => {
+  assert.deepEqual(P.validate(PJ_LAYOUT, PJ_MODEL), []);
+  const bad = (f, re, m) => {
+    const L = clone(PJ_LAYOUT);
+    f(L);
+    const p = P.validate(L, PJ_MODEL);
+    assert.ok(p.some(x => re.test(x)), (m || re) + ' → ' + JSON.stringify(p));
+  };
+  bad(L => { delete L.controls[1].port; }, /controls\[1\]: a jack is decoration only/, 'a live jack without port');
+  bad(L => { L.controls[1].port = 'In'; }, /controls\[1\]: port \/\^\[a-z\]/, 'a bad port id');
+  bad(L => { L.controls[1].port = 'abcdefghi'; }, /controls\[1\]: port \//, 'a port over 8 characters');
+  bad(L => { L.controls[2].port = 'in'; }, /controls\[2\]: port "in" twice/, 'a duplicate port');
+  bad(L => { L.controls[2].port = 'cv'; }, /controls\[2\]: port "cv" is not a jack of the model/, 'a port the type lacks');
+  bad(L => { L.controls[2].port = 'cv'; }, /out: not placed \(a patch jack of the model\)/, 'every jack of the type on the face');
+  bad(L => { L.controls[3] = { kind: 'jack', port: 'trg', x: 27, y: 150, d: 14, label: 'TRIGGER' }; }, /controls\[3\]: trg is an S-trigger socket \(strig\)/, 'an S-trigger socket drawn as a 1/4" jack');
+  bad(L => { L.controls[1] = { kind: 'strig', port: 'in', x: 14, y: 120, w: 10, h: 8, label: 'SIGNAL INPUT' }; }, /controls\[1\]: in is a 1\/4" jack \(jack\)/, 'a 1/4" jack drawn as a socket');
+  bad(L => { L.controls[1].id = 'lv'; }, /controls\[1\] \(lv\): a patch jack has no id/, 'an id');
+  bad(L => { L.controls[1].inert = 'later'; }, /controls\[1\]: a patch jack is live \(no inert\)/, 'inert');
+  bad(L => { L.controls[1].label = ' '; }, /controls\[1\]: a patch jack needs its label/, 'no label');
+  bad(L => { L.controls[2].x = 27.9; }, /controls\[1\] and controls\[2\]: jack centres 13\.9 mm apart < 15 mm/, 'two centres < 15 mm apart');
+  bad(L => { L.controls[1].y = 60; }, /controls\[1\]: its centre 7 mm from controls\[0\] \(lv\)'s hit box < 9 mm/, 'a centre < 9 mm from a knob\'s hit box');
+  bad(L => { L.controls[0].port = 'in'; }, /controls\[0\] \(lv\): port is a patch jack's \(kind jack \| strig\)/, 'a port on a knob');
+  bad(L => { L.controls[1].x = 80; }, /controls\[1\]: outside its area/, 'inside the area');
+  bad(L => { L.sections[0].h = 100; }, /controls\[1\]: not inside a section/, 'inside a section');
+  // a model with no jack table: every port unknown; an inert jack (decoration) is not a patch jack
+  const FXJ = clone(FX_LAYOUT);
+  FXJ.controls.push({ kind: 'jack', port: 'out', x: 250, y: 90, d: 7, label: 'OUT' });
+  assert.ok(P.validate(FXJ, FX_MODEL).some(x => /port "out" is not a jack of the model/.test(x)));
+  assert.deepEqual(P.geometry(FX_LAYOUT, FX_MODEL).jacks, [], 'the fixture\'s inert jack is art only');
+  assert.deepEqual([P.PORT_RE.test('kp1'), P.PORT_RE.test('1a'), P.JACK_PITCH_MM, P.JACK_CLEAR_MM], [true, false, 15, 9]);
+});
+
+test('9 geometry().jacks: body px = the layout\'s mm × 2 + the centring (three decimals), the table\'s labels and directions, a socket\'s w × h, each one\'s widest hit circle (its nearest centre − 2, twice its clearance), jackPitch / jackHit; no widget, no Tab stop, no hit box', () => {
+  const g = P.geometry(PJ_LAYOUT, PJ_MODEL), X = P.PX_PER_MM, off = g.mm.offX;
+  assert.deepEqual([g.W, g.H, off], [128, 512, 10], '1 MU: 107.95 px centred in 128');
+  eq1(g.jacks.map(j => [j.port, j.kind, j.sig, j.dir, j.label, j.x, j.y, j.d, j.w, j.h]), [
+    ['in', 'jack', 'v', 'in', 'SIGNAL INPUT', 10 + 14 * X, 120 * X, 28, 28, 28], ['out', 'jack', 'v', 'out', 'SIGNAL OUTPUT', 10 + 40 * X, 120 * X, 28, 28, 28],
+    ['trg', 'strig', 's', 'in', 'TRIGGER', 10 + 27 * X, 150 * X, 20, 20, 16]]);
+  // in ↔ out 52 px, in ↔ trg √(26² + 60²) = 65.39 px; the knob's hit box (26 mm) ends at y 106 px
+  const dIT = Math.hypot(26, 60);
+  assert.deepEqual(g.jacks.map(j => j.hit), [50, 50, Math.round((dIT - 2) * 1000) / 1000]);
+  assert.deepEqual([g.jackPitch, g.jackHit], [52, 50]);
+  assert.deepEqual(g.controls.filter(o => o.port).map(o => [o.port, o.live, o.show, o.sec]), [['in', false, false, -1], ['out', false, false, -1], ['trg', false, false, -1]]);
+  assert.deepEqual(P.hitBoxes(PJ_LAYOUT, PJ_MODEL).map(h => h.id), ['lv'], 'a jack is no rect hit box (cv-module\'s span, its circle)');
+  assert.equal(g.order.length, 1, 'no Tab stop here: the module\'s one roving stop is cv-module\'s');
+  // a jack near the knob: its circle is held to twice its clearance
+  const L2 = clone(PJ_LAYOUT); L2.controls[1].y = 75;
+  const j2 = P.geometry(L2, PJ_MODEL).jacks[0];
+  assert.equal(j2.hit, 2 * (75 - 53) * X, 'twice the 22 mm from the knob\'s 26 mm hit box');
+  // the widest circle with nothing near: JACK_HIT_MAX
+  const L3 = clone(PJ_LAYOUT); L3.controls = [L3.controls[0], L3.controls[1]]; L3.controls[1].y = 200;
+  eq1([P.geometry(L3, Object.assign({}, PJ_MODEL, { jacks: [PJ_MODEL.jacks[0]] })).jacks[0].hit, P.JACK_HIT_MAX], [88, 88]);
+  // every existing panel: no jacks
+  for (const id of authored) if (id !== 'm900') eq1([P.geometry(P.layoutOf(id), modelOf(id)).jacks, P.geometry(P.layoutOf(id), modelOf(id)).jackPitch], [[], null], id);
+});
+
+test('9 the art: a patch jack drawn at full contrast (no opacity), titled with its label, data-port its port; a socket our two-slot drawing; no data-tip', () => {
+  const svg = P.decorSvg(PJ_LAYOUT, PJ_MODEL);
+  const gs = [...svg.matchAll(/<g class="hw-jack" data-port="([^"]+)"><title>([^<]*)<\/title>(.*?)<\/g>/g)].map(m => [m[1], m[2], (m[3].match(/<circle/g) || []).length, (m[3].match(/<rect/g) || []).length, (m[3].match(/<path/g) || []).length]);
+  eq1(gs, [['in', 'SIGNAL INPUT', 2, 0, 0], ['out', 'SIGNAL OUTPUT', 2, 0, 0], ['trg', 'TRIGGER', 0, 1, 1]]);
+  assert.ok(!/hw-jack[^>]*opacity/.test(svg) && !/hw-jack[^>]*data-tip/.test(svg), 'full contrast, no tip');
+  assert.ok(svg.includes('fill="#d4d4cf"') && svg.includes('fill="#080808"'), 'the scheme\'s nut and hole');
+});
+
+test('9 moduleModel / moduleLayout: a synthetic model per module type (memoised; the controller and unknown types: null), its face validated (a broken fixture: null, said once), the console is m900\'s hardware layout', () => {
+  for (const t of TYPES9) {
+    const m = P.moduleModel(t), T = MG.TYPES[t];
+    assert.equal(P.moduleModel(t), m, t + ': memoised');
+    eq1([m.id, m.name, m.type, m.layout, m.patch, m.theme.knob, m.controls.map(c => c.id), m.sections[0].c === T.params, m.jacks === T.jacks],
+      ['pm-' + t, T.name, t, T.layout, 'moog', 'moog', T.params.map(c => c.id), true, true], t);
+    assert.equal(P.moduleLayout(t), P.moduleLayoutOf(t), t + ': valid, so used');
+    assert.equal(P.moduleLayoutOf(t).id, 'pm-' + t);
+  }
+  eq1([P.moduleModel('ctl'), P.moduleModel('nope'), P.moduleModel(null), P.moduleLayout('ctl'), P.moduleLayout('nope')], [null, null, null, null, null]);
+  assert.equal(P.usable('m900', modelOf('m900')), P.layoutOf('m900'), 'the controller\'s face: the model\'s console');
+  // a page simulation's fixture face ('pm-<type>'): used when valid, refused (null, one warning) when not, never cached
+  const warn = console.warn, said = [];
+  console.warn = s => said.push(String(s));
+  try {
+    globalThis.__synthTest = { panels: { 'pm-911': Object.assign(clone(P.moduleLayoutOf('911')), { id: 'other' }) } };
+    assert.equal(P.moduleLayout('911'), null);
+    assert.equal(said.length, 1);
+    assert.match(said[0], /the 911 module face is not used/);
+  } finally { delete globalThis.__synthTest; console.warn = warn; }
+  assert.equal(P.moduleLayout('911'), P.moduleLayoutOf('911'), 'the real face again');
+});
+
+test('9 the faces: the console and the nine modules valid; §2.2\'s sizes (1 / 2 / 3 MU, the console) = moog-core\'s w / h; every param once, live; the ports = the type\'s jack ids (a socket where sig s); hit boxes ≥ 28 px and disjoint, the 14 mm jack circles inside the body; original art', () => {
+  const faces = [['m900', P.layoutOf('m900'), modelOf('m900'), MG.TYPES.ctl], ...TYPES9.map(t => [t, P.moduleLayoutOf(t), P.moduleModel(t), MG.TYPES[t]])];
+  for (const [t, L, m, T] of faces) {
+    assert.deepEqual(P.validate(L, m), [], t);
+    const s = P.sizeOf(L, m), g = P.geometry(L, m);
+    eq1([s.w, s.h], [T.w, T.h], t + ': moog-core\'s size');
+    eq1([s.w, s.h], t === 'm900' ? [864, 352] : SIZE9[T.mu], t + ': §2.2');
+    assert.equal(g.extras, null, t + ': no extras strip (every control on the face, nothing dimmed)');
+    const live = L.controls.filter(c => typeof c.id === 'string').map(c => c.id).sort();
+    eq1(live, T.params.map(c => c.id).sort(), t + ': every param once');
+    assert.ok(L.controls.every(c => !c.inert), t + ': nothing inert');
+    eq1(L.controls.filter(c => c.port != null).map(c => c.port).sort(), T.jacks.map(j => j.id).sort(), t + ': the ports = the jack ids');
+    eq1(g.jacks.map(j => j.port).sort(), T.jacks.map(j => j.id).sort());
+    for (const j of g.jacks) {
+      const J = T.jacks.find(x => x.id === j.port);
+      eq1([j.kind, j.label, j.dir], [J.sig === 's' ? 'strig' : 'jack', J.label, J.dir], t + ' ' + j.port);
+      assert.ok(j.x - 14 >= 0 && j.y - 14 >= 0 && j.x + 14 <= g.body.w && j.y + 14 <= g.body.h, t + ' ' + j.port + ': its 14 mm circle inside the body');
+      assert.ok(j.hit >= 28 && j.hit <= P.JACK_HIT_MAX, t + ' ' + j.port + ': hit ' + j.hit);
+    }
+    for (let i = 0; i < g.jacks.length; i++) for (let k = i + 1; k < g.jacks.length; k++) {
+      const a = g.jacks[i], b = g.jacks[k];
+      assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= 30 - 1e-6, `${t}: ${a.port} ↔ ${b.port}`);
+      assert.ok(a.hit / 2 + b.hit / 2 <= Math.hypot(a.x - b.x, a.y - b.y), `${t}: ${a.port} / ${b.port}: their widest circles never touch`);
+    }
+    const hb = P.hitBoxes(L, m);
+    for (const h of hb) {
+      assert.ok(h.w >= 28 && h.h >= 28, `${t} ${h.id}: ${h.w} × ${h.h} px`);
+      assert.ok(h.x >= 0 && h.y >= 0 && h.x + h.w <= g.body.w && h.y + h.h <= g.body.h, `${t} ${h.id} inside the body`);
+      for (const j of g.jacks) assert.ok(Math.hypot(Math.max(h.x - j.x, 0, j.x - h.x - h.w), Math.max(h.y - j.y, 0, j.y - h.y - h.h)) >= j.hit / 2 - 1e-6, `${t}: ${j.port}'s widest circle clear of ${h.id}`);
+    }
+    for (let i = 0; i < hb.length; i++) for (let k = i + 1; k < hb.length; k++) {
+      const a = hb[i], b = hb[k];
+      assert.ok(!(a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h), `${t}: ${a.id} × ${b.id} overlap`);
+    }
+    const svg = P.decorSvg(L, m);
+    for (const bad of ['<image', 'href', 'xlink', '<foreignObject', '<script', 'javascript:']) assert.equal(svg.includes(bad), false, t + ' ' + bad);
+    for (const tx of [...svg.matchAll(/<text[^>]*>([\s\S]*?)<\/text>/g)].map(x => x[1])) assert.doesNotMatch(tx, new RegExp('\\b(' + P.MAKERS.join('|') + ')\\b'), t + ': ' + tx);
+    assert.doesNotMatch(L.hw + JSON.stringify(L.notes || []), /\bMoog\b/, t + ': no maker word in the notes either');
+    assert.equal((svg.match(/<g class="hw-jack"/g) || []).length, T.jacks.length, t + ': one jack drawing per jack');
+  }
+  // the console's caption says it is ours; the four faces without a photograph say so in their notes
+  const cs = P.decorSvg(P.layoutOf('m900'), modelOf('m900'));
+  assert.ok(cs.includes('>CONTROLLER<') && cs.includes('OURS — STANDS IN FOR THE'));
+  for (const t of ['921a', '921b', '907a', '923']) assert.match(P.moduleLayoutOf(t).notes.join(' '), /no photograph viewed/, t);
+});
+
+test('9 a module face rendered over a fake per-instance api (vals.p[mid]): one .hw-c per param in the Tab order, writes into that module\'s record only, no History; no widget over a jack; deterministic; every module face renders', () => {
+  const t = '904a', L = P.moduleLayout(t), model = P.moduleModel(t), doc = fresh(), root = doc.createElement('div');
+  doc.body.append(root);
+  const vals = { p: { m3: { _t: t }, m4: { _t: '911' } } }, mid = 'm3', log = [];
+  const api = Object.assign(fakeApi(model, doc), {
+    get: id => (id in vals.p[mid] ? vals.p[mid][id] : model.controls.find(c => c.id === id).def),
+    set: (id, v) => { vals.p[mid][id] = v; log.push(id + '=' + v); const u = api.ui.get(id); if (u) u(); },
+    hist: () => log.push('HISTORY'),
+  });
+  const r = P.render(root, L, model, api);
+  eq1([r.w, r.h], [128, 512]);
+  const ctl = all(root).filter(n => n.getAttribute && n.getAttribute('data-ctl')).map(n => n.getAttribute('data-ctl'));
+  eq1(ctl, ['fc', 'rg', 're'], 'the params, in the Tab order (rows, then x)');
+  assert.equal(all(root).filter(n => n.getAttribute && n.getAttribute('data-port')).length, 0, 'no DOM widget for a jack (the face draws them; cv-module\'s spans take them)');
+  // the 904A's FREQUENCY RANGE: a three-detent rotary; a tap steps 2 → 3 through the per-instance api
+  const rg = widgetOf(root, 'rg');
+  eq1([rg.getAttribute('aria-valuenow'), rg.getAttribute('aria-valuetext')], ['1', '2'], 'the default range 2 (index 1)');
+  fire(rg, 'pointerdown', { clientX: 0, clientY: 0 }); fire(rg, 'pointerup', { clientX: 0, clientY: 0 });
+  eq1([vals.p.m3.rg, vals.p.m4, log], [2, { _t: '911' }, ['rg=2']], 'one write into m3\'s record, m4 untouched, no History');
+  r.destroy();
+  const ser = n => n.localName + '.' + cls(n) + '[' + (n.getAttribute('data-ctl') || '') + ']' + JSON.stringify(n.style) + '(' + n.childNodes.filter(c => c.nodeType === 1).map(ser).join(',') + ')';
+  const once = () => { const d = fresh(), rt = d.createElement('div'); d.body.append(rt); P.render(rt, L, model, fakeApi(model, d)); return ser(rt); };
+  assert.equal(once(), once());
+  for (const ty of TYPES9) {
+    const m = P.moduleModel(ty), d = fresh(), rt = d.createElement('div'), a = fakeApi(m, d);
+    d.body.append(rt); P.render(rt, P.moduleLayout(ty), m, a);
+    const ids = all(rt).filter(n => n.getAttribute && n.getAttribute('data-ctl')).map(n => n.getAttribute('data-ctl'));
+    eq1(ids.slice().sort(), m.controls.map(c => c.id).sort(), ty);
+    for (const c of m.controls) assert.ok(a.ui.has(c.id), ty + ': ui ' + c.id);
+  }
 });

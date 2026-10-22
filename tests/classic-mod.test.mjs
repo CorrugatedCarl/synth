@@ -14,7 +14,7 @@ import { dspScope, noAlloc } from './dsp-scope.mjs';
 import { timeInterleaved } from './golden-harness.mjs';
 import * as CPU from './cpu-gate.mjs';
 
-const SR = 48000, CLASSIC = MODELS.filter(m => !m.custom), quiet = { log() {}, info() {}, debug() {}, warn() {}, error() {} };
+const SR = 48000, CLASSIC = MODELS.filter(m => !m.custom && m.family !== 'patch') /* (stage 9, IMPL-9 §8.9: the 900 Series has no classic modulation; the drums stay in) */, quiet = { log() {}, info() {}, debug() {}, warn() {}, error() {} };
 const S = V.SLOT;
 const vals = (id, o) => { const m = MODELS.find(x => x.id === id); return Object.assign(Object.fromEntries(m.controls.map(c => [c.id, c.def])), o || {}); };
 const patch = (id, o, drift = 0.5) => patchFor(id, vals(id, o), defaultFx2(), { sr: SR, bpm: 120, drift, hiss: 1 });

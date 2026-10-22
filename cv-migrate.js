@@ -39,6 +39,9 @@
 //      its `drum` record (`m: 'sdsv'`, no sequencer): ONE bump for both parts, additive, nothing to convert (a 10 opens as before; an 11 in a
 //      schema-10 build opens read-only — that build would drop `project.pads` and read 'sdsv' as a Minimoog, modelById's fallback, and autosave
 //      the loss). toV1 drops `pads` with the lost-line "the Pads controllers (N)", and names an SDS-V track like the other drum machines
+//  12  stage 9: patchable modules (IMPL-9 §1.6) — an 'm900' instrument device (the 900 Series) and its `patch` record (modules, cords: song.normDev → patch-core
+//      normPatch) with its knobs in `vals.p`: additive, nothing to convert (an 11 opens as before; a 12 in a schema-11 build opens read-only — that build would
+//      read 'm900' as a Minimoog, modelById's fallback, drop `patch` and autosave the loss). toV1 keeps the track's notes and names the patch in `lost`
 // A project whose schema is above SCHEMA comes from a newer build (an installed app lags a deploy until it updates): it is
 // opened read-only — autosave off for the session, Save disabled, READ_ONLY_NOTICE — and never overwritten (appstore.js
 // schema gate, given SCHEMA). This rule ships before any v2 field exists, so every later build is protected by the one
@@ -93,9 +96,10 @@ import { usable as hwUsable, sizeOf as hwSizeOf } from './cv-panel.js?v=9';
 import { MODELS } from './models.js?v=9';
 import { DOT } from './cv-world.js?v=9';
 import { isDrum } from './song.js?v=9';
+import { normPatch, familyOf, isPatchModel } from './patch-core.js?v=9'; // (stage 9: toV1 counts a 900 Series patch's modules and cords)
 
 export { schemaOf };
-export const SCHEMA = 11;
+export const SCHEMA = 12;
 /** The v1 instrument fields: on a v2 track they live on dev[prim] (cv-model accessors); a saved file mirrors them. */
 export const V1_KEYS = Object.freeze(['model', 'vals', 'preset', 'seq', 'fx']);
 /** The v2 fields of a track (song.js deserialize whitelists them). */
@@ -137,6 +141,8 @@ export const STEPS = Object.freeze([
   p => Object.assign({}, p, { schema: 10 }),
   // 10 → 11: the pad controller (project.pads) and the SDS-V (a 'sdsv' device and its `drum` record) — additive (stage 8, IMPL-8 §10.2)
   p => Object.assign({}, p, { schema: 11 }),
+  // 11 → 12: patchable modules (stage 9, IMPL-9 §1.6: an 'm900' device, its `patch` record and `vals.p`) — additive
+  p => Object.assign({}, p, { schema: 12 }),
 ]);
 
 export function upgrade(o) {
@@ -215,6 +221,12 @@ function instRoutes(t) {
 }
 const coreOf = t => { const o = {}; for (const k of Object.keys(t)) if (!V2_KEYS.includes(k) && k !== 'mods' && k !== 'mid' && !V1_KEYS.includes(k)) o[k] = t[k]; return o; };
 const plainCopy = x => (x === undefined ? undefined : JSON.parse(JSON.stringify(x)));
+// (9, IMPL-9 §1.6) a 900 Series: main has no patchable modular. The track keeps its notes (and its model id, which main reads as a Minimoog, as a drum machine's);
+// v1Of never carries the `patch` record, so only the line is written — the counts are the bounded record's (none stored: a fresh one)
+function patchLine(name, d) {
+  const r = normPatch(d.patch, familyOf(d.model)), n = Object.keys(r.mods).length, c = r.cords.length, m = MODELS.find(x => x.id === d.model);
+  return `“${name}”: the ${m ? m.name : d.model} patch (${n} module${n === 1 ? '' : 's'}, ${c} cord${c === 1 ? '' : 's'}) — the live site has no patchable modular; its piano-roll notes are kept`;
+}
 export function toV1(p0) {
   const p = plainCopy(p0), lost = [];
   if (!isObj(p) || !Array.isArray(p.tracks)) return { p, lost };
@@ -231,7 +243,10 @@ export function toV1(p0) {
     if (Array.isArray(t.mods) && t.mods.length) lost.push(`“${t.name}”: ${t.mods.length} modulation cable${t.mods.length > 1 ? 's' : ''}`);
     const mods = modDevs(t).map(x => modLabelOf(x.id, x.dev)); // (Tidy order)
     if (mods.length) lost.push(`“${t.name}”: its ${mods.join(', ')} module${mods.length > 1 ? 's' : ''}`);
-    if (c.canonical && ins.length === 1) { const v = Object.assign({}, c.v1); if (v.seq == null) delete v.seq; out.push(Object.assign(coreOf(t), v)); continue; }
+    if (c.canonical && ins.length === 1) {
+      if (isPatchModel(t.dev[ins[0]].model)) lost.push(patchLine(t.name, t.dev[ins[0]]));
+      const v = Object.assign({}, c.v1); if (v.seq == null) delete v.seq; out.push(Object.assign(coreOf(t), v)); continue;
+    }
     // not today's shape: each instrument its own track (the primary first, keeping the track's id), notes copied
     const W = t.wires.filter(isObj);
     const srcs = pid => W.filter(w => (port(w.b) || {}).dev === pid).map(w => (port(w.a) || {}).dev).filter(k => kindOf(t.dev[k]) === 'inst');
@@ -240,6 +255,7 @@ export function toV1(p0) {
       const tr = Object.assign(coreOf(t), v);
       if (i) { tr.id = freshId(); tr.name = (t.name || 'Track') + ' · ' + (d.name || d.model); delete tr.lay; }
       const nm = `“${tr.name}”: `;
+      if (isPatchModel(d.model)) lost.push(patchLine(tr.name, d));
       if (via && d.model === 'serum') lost.push(`“${t.name}”: the panel ${via} after the Serum (its effects are not in the Serum’s track)`);
       else if (via && srcs(via).filter(k => t.dev[k].model !== 'serum').length > 1) lost.push(`“${t.name}”: the shared panel ${via} (copied for each instrument)`);
       // (each becomes a track of its own that sounds: say so of one that did not)

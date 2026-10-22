@@ -75,6 +75,8 @@ export const FIELD_CLASS = Object.freeze(Object.fromEntries([
   // machine is a kind boundary (engine setPatch: a new machine, a fresh DrSeq — never modulated)
   ...F('proc', 'drum.tml drum.hhl drum.bdu drum.sdu drum.sdd drum.ltu drum.ltd drum.htu drum.htd drum.chd'),
   ...F('struct', 'machine'),
+  // (IMPL-9 §3.1) a patch's family is a kind boundary too (engine setPatch: another family's machine); its pv rides through
+  ...F('struct', 'family'),
   // the TR-909's own (IMPL-7c §1.1, §9): BD ATTACK, MT TUNE / DECAY, the cymbals' LEVELs and TUNEs (a crash / ride TUNE cable
   // moves its sample clock per chunk); its other ids are the 808's / 606's entries above
   ...F('proc', 'drum.bda drum.mtu drum.mtd drum.crl drum.rdl drum.cru drum.rdu'),
@@ -97,6 +99,9 @@ export function fieldClass(path, engine) {
 /* ------------------------------------------------------------------ the sweep */
 const G = { drift: 0.5, hiss: 0, sr: 48000, bpm: 120, smooth: 1, fx: null, qr: null, ultra: 0, mpeBendX: 0, mpeYBi: 0 };
 const modelOf = m => (typeof m === 'string' ? MODELS.find(x => x.id === m) : m);
+// no classic modulation: Serum (its own matrix) and, from stage 9, a patch model (the 900 Series: its controller's knobs are flat ids of another engine, its modules' are vals.p;
+// a cable on a patch is a later stage — IMPL-9 §4.8). The drums stay in: their knobs are classic ones (proc).
+const noClassic = m => !m || m.custom || m.family === 'patch';
 const isObj = x => x !== null && typeof x === 'object';
 // the model's map of panel values v (as patchFor: P = each control's converted value)
 export function patchOf(model, v) {
@@ -151,7 +156,7 @@ export function sweepControl(model, c, bases = basesOf(model)) {
 export function classTable() {
   const out = {};
   for (const m of MODELS) {
-    if (m.custom) continue;
+    if (noClassic(m)) continue;
     const bases = basesOf(m), t = out[m.id] = {};
     for (const c of m.controls) t[c.id] = sweepControl(m, c, bases).cls;
   }
@@ -270,7 +275,7 @@ const tKey = t => (t.kind === 'slot' ? 's' + t.slot : 'f' + t.field);
 const TARGETS = new Map(), DEPS = new Map(), XFER = new Map(); // (static: pure functions of the models; XFER per (model, ctl, target) on the dependency values)
 export function targetsOf(model, ctlId) {
   const m = modelOf(model), c = m && ctlOf(m, ctlId);
-  if (!c || m.custom) return [];
+  if (!c || noClassic(m)) return [];
   const key = m.id + '|' + ctlId, hit = TARGETS.get(key);
   if (hit) return hit;
   const out = [];
@@ -291,7 +296,7 @@ const valueAt = (p, t) => (t.kind === 'slot' ? slotValue(p, t.slot) : z(t.field.
 const probesOf = (c, v) => (c.t === 'b' ? [v ? 0 : 1] : c.t === 's' ? c.opts.map((_, i) => i).filter(i => i !== v) : [c.min, c.max].filter(x => x !== v));
 export function depsOf(model, ctlId, target) {
   const m = modelOf(model), c = m && ctlOf(m, ctlId);
-  if (!c || m.custom) return [];
+  if (!c || noClassic(m)) return [];
   const t = target || slotOf(m, ctlId);
   if (!t) return [ctlId];
   const key = m.id + '|' + ctlId + '|' + tKey(t), hit = DEPS.get(key);
@@ -313,7 +318,7 @@ export function depsOf(model, ctlId, target) {
 }
 export function xferOf(model, vals, ctlId, target) {
   const m = modelOf(model), c = m && ctlOf(m, ctlId);
-  if (!c || m.custom) return null;
+  if (!c || noClassic(m)) return null;
   const t = target || slotOf(m, ctlId);
   if (!t) return null;
   const V = isObj(vals) ? vals : {}, deps = depsOf(m, ctlId, t);
@@ -359,7 +364,7 @@ export function knobOf(model, vals, ctlId, s, target) {
 const LAW = { k: 'lin', s: 'enum', b: 'bool' };
 export function classicDescs(modelId) {
   const m = modelOf(modelId);
-  if (!m || m.custom) return [];
+  if (noClassic(m)) return [];
   return m.controls.map(c => {
     const cls = classOf(m.id, c.id);
     const lo = c.t === 'k' ? c.min : 0, hi = c.t === 'k' ? c.max : c.t === 's' ? c.opts.length - 1 : 1;
@@ -547,7 +552,7 @@ const fullVals = (m, vals) => { const v = {}; for (const c of m.controls) v[c.id
 const altOf = (c, v) => (c.t === 'b' ? (v ? 0 : 1) : c.t === 's' ? (v + 1) % c.opts.length : v !== c.max ? c.max : c.min);
 const normPath = f => f.replace(/\.\d+(?=\.|$)/g, '');
 export function classicTarget(model, vals, ctlId) {
-  const m = modelOf(model), c = m && !m.custom ? m.controls.find(x => x.id === ctlId) : null;
+  const m = modelOf(model), c = !noClassic(m) ? m.controls.find(x => x.id === ctlId) : null;
   if (!c) return null;
   const cls = classOf(m.id, c.id), v0 = fullVals(m, vals), p0 = patchOf(m, v0), p1 = patchOf(m, Object.assign({}, v0, { [c.id]: altOf(c, v0[c.id]) }));
   const fields = diffIdx(p0, p1), engine = p0.engine || 'analog', out = { cls, slot: -1, field: null, fields, on: true };

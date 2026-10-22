@@ -9,7 +9,8 @@ import * as V from '../cv-mods.js?v=9';
 import { MODELS } from '../models.js?v=9';
 import * as C from '../serum-core.js?v=9';
 
-const CLASSIC = MODELS.filter(m => !m.custom);
+// (stage 9, IMPL-9 §8.9) the classic-modulation models: not Serum, not the 900 Series (a patch has no classic modulation, §4.8); the drums stay in
+const CLASSIC = MODELS.filter(m => !m.custom && m.family !== 'patch');
 
 test('the checked-in CLASS_TABLE equals a fresh sweep (regenerate: node tools/cv-classes.mjs --write)', () => {
   const fresh = V.classTable(), diff = [];
@@ -72,12 +73,36 @@ test('every classic control is classed; the counts (§7.8)', () => {
   assert.equal(V.classOf('minimoog', 'nope'), null);
 });
 
+test('stage 9: the 900 Series (family \'patch\') has no classic modulation — no class table row, no targets, deps, transfer, descriptors or target; the drums stay in (IMPL-9 §4.8, §8.9)', () => {
+  const m = MODELS.find(x => x.id === 'm900');
+  assert.equal(m.family, 'patch');
+  assert.ok(m.controls.length > 0, 'it has controls (the controller\'s): they are not classic knobs');
+  assert.equal(V.CLASS_TABLE.m900, undefined);
+  assert.equal(V.classTable().m900, undefined);
+  for (const c of m.controls) {
+    assert.equal(V.classOf('m900', c.id), null, c.id);
+    assert.deepEqual(V.targetsOf('m900', c.id), [], c.id);
+    assert.deepEqual(V.targetsOf(m, c.id), [], c.id + ' (by model object)');
+    assert.deepEqual(V.depsOf('m900', c.id), [], c.id);
+    assert.equal(V.xferOf('m900', {}, c.id), null, c.id);
+    assert.equal(V.classicTarget('m900', {}, c.id), null, c.id);
+    assert.equal(V.slotOf('m900', c.id), null, c.id);
+  }
+  assert.deepEqual(V.classicDescs('m900'), []);
+  assert.deepEqual(V.descs({ kind: 'synth', model: 'm900', vals: {} }), []);
+  for (const c of m.controls) assert.equal(V.destOk({ kind: 'synth', model: 'm900', vals: {} }, c.id).ok, false, c.id + ': never a cable\'s end');
+  // the drums are classic here (their knobs are proc fields): still classed and described
+  assert.equal(V.classOf('tr808', 'bdl'), 'proc');
+  assert.ok(V.classicDescs('tr808').length > 0 && V.classicDescs('sdsv').length === 45);
+  assert.equal(V.classicTarget('tr808', {}, 'bdl').cls, 'proc');
+});
+
 test('FIELD_CLASS knows every patch field of the engine (engine.js patch tables)', () => {
   const src = readFileSync(new URL('../engine.js', import.meta.url), 'utf8');
   const PRE = { OscP: ['osc.'], HpfP: ['hpf.'], VcfP: ['vcf.'], EnvP: ['fenv.', 'aenv.'], LfoP: ['lfo.'], FxP: ['fx.'], DualP: ['dual.'], Mod3P: ['mod3.'],
     TbP: ['tb.'], RmP: ['rm.'], IlP: ['fenvIL.'], RegP: ['reg.'], OpP: ['ops.'], DrumP: ['drum.'], PatchP: [''] };
   // PatchP members that are not classic panel fields: sub-objects (classed through their own tables), the Serum / FX / sequencer passthroughs
-  const SKIP = new Set(['osc', 'hpf', 'vcf', 'fenv', 'aenv', 'lfo', 'fx', 'reg', 'dual', 'mod3', 'tb', 'rm', 'fenvIL', 'ops', 'drum', 'serum', 'serumT', 'fxr', 'fxrT', 'seq', 'seqT', 'needs']);
+  const SKIP = new Set(['osc', 'hpf', 'vcf', 'fenv', 'aenv', 'lfo', 'fx', 'reg', 'dual', 'mod3', 'tb', 'rm', 'fenvIL', 'ops', 'drum', 'serum', 'serumT', 'fxr', 'fxrT', 'seq', 'seqT', 'needs', 'pv']);
   const missing = [];
   let seen = 0;
   for (const [cls, pres] of Object.entries(PRE)) {

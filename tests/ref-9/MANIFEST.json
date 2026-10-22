@@ -1,0 +1,15 @@
+{
+  "note": "Frozen 900 Series sound (IMPL-9 §3.7, D2): verbatim copies of patch-dsp.js (the evaluator), moog-dsp.js (the Model 15 set's circuits and the controller) and engine.js (the Inst kind 'patch') at the stage 9 acceptance commit. Never edit: tests/golden-moog.test.mjs renders them (side A, every other module current) against the current files, bit for bit.",
+  "commit": "53b7e8899db549ba6594b03f97204ca1884b57d9",
+  "files": {
+    "patch-dsp.js": {
+      "sha256": "9755c60bcb24b27a3efd8c0ef313161c64230424a086fa81d8586244dbac7235"
+    },
+    "moog-dsp.js": {
+      "sha256": "9e6ae2f81cd040d17362ef1ca62c8b74514dd20fbaa3600edf71e90d5ebe4826"
+    },
+    "engine.js": {
+      "sha256": "2f2f3baa3427c903fe2f065a09c09aa0e72a091719fd3a14a151ed25d234081c"
+    }
+  }
+}

@@ -425,9 +425,9 @@ test('asset store: invalid entries are refused with one warning per id, nothing 
 
 test('dsp-scope: the §0.3 list in table order, null/false/string/function overrides, missing files, Math.random, engine', () => {
   assert.deepEqual(DSP_FILES, ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js',
-    'sx-seq.js', 'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js']);
+    'sx-seq.js', 'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js', 'patch-dsp.js', 'moog-dsp.js']);
   assert.deepEqual(DSP_TABLE.map(e => e[1]), ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP',
-    'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore']);
+    'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog']);
   // order: replacement scripts record their evaluation; `files` given in reverse is still loaded in table order
   const rec = f => `globalThis.__order = (globalThis.__order || []).concat(${JSON.stringify(f)}); globalThis.${DSP_GLOBALS[f]} = 1;`;
   const S = dspScope({ files: DSP_FILES.slice().reverse(), overrides: Object.fromEntries(DSP_FILES.map(f => [f, rec(f)])) });

@@ -1424,6 +1424,8 @@ class PatchP {
     this.dual = o.dual ? new DualP(o.dual) : null; this.mod3 = o.mod3 ? new Mod3P(o.mod3) : null; this.tb = o.tb ? new TbP(o.tb) : null;
     this.rm = o.rm ? new RmP(o.rm) : null; this.fenvIL = o.fenvIL ? new IlP(o.fenvIL) : null;
     this.ops = o.ops ? o.ops.map(x => new OpP(x || EMPTY)) : null;
+    // the patch family (IMPL-9 §3.1): its id (the module table, PatchDSP.create's) and pv, the modules' values (§3.2, passed through)
+    this.family = o.family === undefined ? '' : String(o.family); this.pv = o.pv || null;
     extra(this, o, '');
   }
 }
@@ -1521,6 +1523,95 @@ const WDRUMV = [0, 1, 2, 3].map(j => {
 const WPLANV = { key: 'v0', n: 0, loopFrom: 0, mKey: [], mVar: [], mPre: [], mL1: [], mOff: [0], mT: [0], st: [] };
 const WTRIMV = [0, 1].map(k => [0, 1, 2, 3, 4].map(c => [0, 1].map(j => [0, 1, 2, 3, 4, 5].map(f => 0.13 + 0.71 * (((c + 2 * j + 3 * f + k) % 7) / 6)))));
 const WPORT = { postMessage() {} };
+// IMPL-9 §3.2: family f's empty graph (a kept machine's graph cleared: nothing live) · a payload of family f (or naming none:
+// the machine judges it) — another family's waits for its own patch
+const ptEmpty = f => ({ v: 1, f, mods: [], cords: [] });
+const ptFam = (pg, f) => !pg || typeof pg !== 'object' || pg.f === undefined || pg.f === f;
+// the families Track.warmPatch rounds (IMPL-9 §12 spike (a) decision 4; a family = its DSP script's globalThis.Patch<Id>)
+const PT_FAM = ['moog'];
+const PT_DIR = { in: 0, out: 1, any: 2 };
+// a family's warm-up material, built from its own table (IMPL-9 §7.4: T, JACKS [{ id, dir, sig, sec }], PARAMS [[id, def,
+// snap]], SINK, LINK, CTL) — no type, jack or value of a family named here, so a type added to the table is warmed with the
+// rest. One module per type (a linked type twice: driven, undriven) after the controller (module 0); every input fed (× 2.3:
+// audio past the trigger threshold — clamps, sync, audio-rate FM) round-robin from the controller's source sections' and the
+// earlier modules' outputs of its plug kind (a DAG: block steps), the controller's other sections the same, each multiple
+// driven once; MAIN OUT summing every 1/4" output and the multiples' other jacks (× 0.031: every output computed), an S output
+// nothing reads summed into the last S input. → { a, b (a + each module's inputs fed by the one before it, a back cord to module
+// 1 and a self cord on the last module: loop steps, ramps inside them), c (b without its last module: a retiring one), v0 (the
+// defaults), v1 (every knob off its default, every switch moved up) } or null
+function ptWarm(F, f) {
+  const T = F && F.T, JA = F && F.JACKS, PA = (F && F.PARAMS) || {};
+  if (!T || typeof T !== 'object' || !JA || typeof JA !== 'object') return null;
+  const types = Object.keys(T), jk = Object.create(null);
+  for (const t of types) {
+    const J = JA[t];
+    if (!Array.isArray(J)) return null;
+    const L = [];
+    for (const j of J) {
+      const d = j ? PT_DIR[j.dir] : undefined;
+      if (d === undefined) return null;
+      L.push({ id: j.id, d, s: j.sig === 's' ? 1 : 0, sec: j.sec | 0 });
+    }
+    jk[t] = L;
+  }
+  // the controller (module 0): the table's CTL, else the type whose SINK is an input alone in its section (the evaluator's rule)
+  const sinkId = typeof F.SINK === 'string' ? F.SINK : '', lone = (L, j) => j.d === 0 && !L.some(q => q.sec === j.sec && q.d === 1);
+  const C = typeof F.CTL === 'string' ? F.CTL : types.find(t => jk[t].some(j => j.id === sinkId && lone(jk[t], j)));
+  if (C === undefined || !jk[C]) return null;
+  const sk = sinkId ? jk[C].findIndex(j => j.id === sinkId) : F.SINK && F.SINK.port >= 0 ? F.SINK.port | 0 : -1;
+  if (!(sk >= 0 && sk < jk[C].length)) return null;
+  const mods = [[0, C, -1]], drvOf = t => { const L = F.LINK && F.LINK[t]; return L ? L.from || L.to || '' : ''; };
+  let n = 1;
+  for (const t of types) if (t !== C && !drvOf(t)) mods.push([n++, t, -1]);
+  for (const t of types) if (t !== C && drvOf(t)) { const d = mods.find(m => m[1] === drvOf(t)); mods.push([n++, t, d ? d[0] : -1], [n++, t, -1]); }
+  const pool = [[], []], rr = [0, 0], cords = [], sink = [], J0 = jk[C];
+  const take = s => (pool[s].length ? pool[s][rr[s]++ % pool[s].length] : null);
+  const feed = (m, k, j) => { const x = take(j.s); if (x !== null) cords.push([x[0], x[1], m, k, 2.3]); };
+  const srcSec = sec => J0.every(j => j.sec !== sec || j.d === 1);
+  J0.forEach((j, k) => { if (j.d === 1 && srcSec(j.sec)) pool[j.s].push([0, k]); });
+  for (const [m, t] of mods.slice(1)) {
+    jk[t].forEach((j, k) => { if (j.d === 0) feed(m, k, j); });
+    jk[t].forEach((j, k) => { if (j.d === 1) pool[j.s].push([m, k]); });
+  }
+  J0.forEach((j, k) => { if (j.d === 0 && k !== sk && !srcSec(j.sec)) feed(0, k, j); });
+  J0.forEach((j, k) => { if (j.d === 1 && !srcSec(j.sec)) pool[j.s].push([0, k]); });
+  const grp = new Set();
+  J0.forEach((j, k) => {
+    if (j.d !== 2) return;
+    if (!grp.has(j.sec)) { grp.add(j.sec); const x = take(0); if (x !== null) cords.push([x[0], x[1], 0, k, 1]); }
+    else sink.push([0, k, 0, sk, 0.031]);
+  });
+  for (const x of pool[0]) sink.push([x[0], x[1], 0, sk, 0.031]);
+  // an S output nothing reads: summed into the last S input fed (the controller's, after every module's: no loop)
+  const sIn = cords.findLast(e => jk[mods.find(m => m[0] === e[2])[1]][e[3]].s === 1);
+  if (sIn) for (const x of pool[1]) if (!cords.some(e => e[0] === x[0] && e[1] === x[1])) cords.push([x[0], x[1], sIn[2], sIn[3], 1]);
+  const a = cords.concat(sink), K = mods[mods.length - 1], o = jk[K[1]].findIndex(j => j.d === 1 && j.s === 0);
+  const i1 = mods.length > 1 ? jk[mods[1][1]].findIndex(j => j.d === 0 && j.s === 0) : -1, iK = jk[K[1]].findIndex(j => j.d === 0 && j.s === 0);
+  // b: every 1/4" input of a module also fed (× 2.3) by the module before it — a large, moving source on every trigger, sync and
+  // control input whatever the round robin gave it (a 921's clamp, a 921B's sync window: the event paths) —, then the loops
+  const chain = [];
+  for (let k = 2; k < mods.length; k++) {
+    const q = jk[mods[k - 1][1]].findIndex(j => j.d === 1 && j.s === 0);
+    if (q >= 0) jk[mods[k][1]].forEach((j, i) => { if (j.d === 0 && j.s === 0) chain.push([mods[k - 1][0], q, mods[k][0], i, 2.3]); });
+  }
+  const b = a.concat(chain, o >= 0 && i1 >= 0 ? [[K[0], o, mods[1][0], i1, 0.53]] : [], o >= 0 && iK >= 0 ? [[K[0], o, K[0], iK, 0.47]] : []);
+  const c = b.filter(e => e[0] !== K[0] && e[2] !== K[0]);
+  const pg = (M, E) => ({ v: 1, f, mods: M.map(x => x.slice()), cords: E.map(x => x.slice()) });
+  const vals = off => {
+    const v = {};
+    for (const [m, t] of mods) {
+      const P = Array.isArray(PA[t]) ? PA[t] : [], e = m === 0 ? [] : { _t: t };
+      P.forEach((q, k) => {
+        const id = Array.isArray(q) ? q[0] : q && q.id, d0 = Array.isArray(q) ? q[1] : q && q.def, snap = Array.isArray(q) ? q[2] : q && q.snap;
+        const d = typeof d0 === 'number' ? d0 : 0, x = !off ? d : snap ? d + 1 : d + 0.43; // (a module clamps what passes its range)
+        if (m === 0) e[k] = x; else if (typeof id === 'string') e[id] = x;
+      });
+      v[m === 0 ? '0' : 'm' + m] = e;
+    }
+    return v;
+  };
+  return { a: pg(mods, a), b: pg(mods, b), c: pg(mods.filter(x => x !== K), c), v0: vals(false), v1: vals(true) };
+}
 let warmed = false;
 
 // Serum (serum-dsp.js and its helper scripts) and the FX rack (fx-dsp.js) are separate classic scripts loaded before
@@ -1584,6 +1675,7 @@ class Inst {
     this.chorus.seed = (22222 ^ s) >>> 0; this.chorus.r = ((this.chorus.r ^ d) >>> 0) || 1;
     if (this.voices && this.kind !== 'serum') for (const v of this.voices) if (typeof v.r === 'number') v.r = ((v.r ^ d) >>> 0) || 1;
     for (const r of this.dmL) r.dm.setSalt(s); // (a drum machine's noise: 0x2545F491 ^ salt, IMPL-7a §2.1; every one built, 7b)
+    if (this.pm !== null) this.pm.setSalt(s); // (a patch's noise and drift: 0x9E3779B9 ^ salt ^ hash(n), IMPL-9 §3.2)
   }
   // back to the freshly built state after the warm-up, resetting in place (fields that never change in normal use
   // are not reassigned, so the code compiled during the warm-up stays valid)
@@ -1594,6 +1686,9 @@ class Inst {
     // silent, no sample slots (the SDS-V: its default trims); no sequencer, no payload waiting
     for (const r of this.dmL) { r.dm.reset(); r.dm.smp(null); if (r.dm.trim) r.dm.trim(null); }
     this.sq = null; this.drPend = null; this.drPendM = ''; this.drCur = -1;
+    // the patch machine kept (its code warm): the warm-up's graph cleared, fresh state; no payload waiting (IMPL-9 §3.1)
+    if (this.pm !== null) { this.pm.graph(ptEmpty(this.pmF)); this.pm.reset(); }
+    this.pmPend = null; this.pmRun = 0; this.pmErr = 0; this.pmIn = 0; this.pmNew = 0;
     this.bend = this.bendRaw = this.wheel = this.at = 0; this.sustain = false; this.clrHeld(); this.stamp = 0;
     this.lfoPh = this.lfoSH = this.lfoLast = this.gdrift = 0; this.r = (987654321 ^ this.salt) >>> 0; this.ctl = 0; this.act = 0;
     this.chorus.reset(); this.ens.reset();
@@ -1681,6 +1776,12 @@ class Inst {
     this.kind = '';
     this.setPatch(DEFAULT_PATCH);
     this.quietF = 0; // frames since anything last sounded (the idle skip, §6.4: per Inst)
+    // the patch family (IMPL-9 §3.1; last: the render fields keep their slots): pm the machine (PatchDSP.create, built at the
+    // first patch kind and kept — reset, its graph cleared — across kind changes; another family builds its own), pmF its
+    // family; pmErr: ptErr posted; pmPend a graph payload ({pg, pk}) that arrived before its patch kind (ptOn adopts it);
+    // pmRun: the machine rendered since its last reset (a fresh one has no tail to fade: P-2's restart, ptFresh); pmIn: OS samples
+    // of its restart's fade-in left (ptReset); pmNew: built (ptOn) and never rendered or reset since — the bounce's first frame
+    this.pm = null; this.pmF = ''; this.pmErr = 0; this.pmPend = null; this.pmRun = 0; this.pmIn = 0; this.pmNew = 0;
   }
   rnd() { let x = this.r; x ^= x << 13; x ^= x >>> 17; x ^= x << 5; this.r = x >>> 0; return this.r / 2147483648 - 1; }
   setOS(os) {
@@ -1734,6 +1835,7 @@ class Inst {
     this.tailDN = 0; this.tailDP = 0; this.dacT = 0; this.dacHold = 0; this.dacPend = 0; this.dacLive = false;
     if (this.voices) { this.recalc(); for (const v of this.voices) v.apply(this.p); }
     if (this.dm !== null && this.kind === 'drums') { this.dm.setOS(os, this.fs); this.dmOS = os; } // (its circuits at fs = base · OS)
+    if (this.kind === 'patch' && this.pm !== null) this.pm.setOS(os, this.fs); // (IMPL-9 §3.6: the patch at fs = base · OS)
   }
   recalc() {
     const p = this.p;
@@ -1972,6 +2074,7 @@ class Inst {
   anyActive() {
     if (this.kind === 'divide') return !!(this.div && this.div.list.length);
     if (this.kind === 'drums') return this.dm !== null && this.dm.live(); // (a circuit awake, a hit latched, a sample, the output settling)
+    if (this.kind === 'patch') return this.on === 1 && this.pm !== null && this.pm.live(); // (IMPL-9 §3.6: MAIN OUT patched — never quiet; powered off: not)
     for (const v of this.voices) if (v.active) return true;
     return false;
   }
@@ -1988,8 +2091,10 @@ class Inst {
       if (was === 'drums') { this.allOff(true); this.drUnits(this.drGain(old)); if (mch || this.tailON) this.drPost(mch); }
     }
     if (kind === 'serum') { this.setSerum(p, old); return; }
-    const nv = kind === 'divide' || kind === 'drums' ? 0 : p.mode === 'poly' ? p.poly : Math.max(1, p.unison || 1);
-    const rebuild = kind !== this.kind || mch || !this.voices || this.voices.length !== nv || old.mode !== p.mode;
+    // IMPL-9 §3.1: a patch of another family (another module table) is the same boundary as a drum machine change
+    const fch = kind === 'patch' && was === 'patch' && p.family !== old.family;
+    const nv = kind === 'divide' || kind === 'drums' || kind === 'patch' ? 0 : p.mode === 'poly' ? p.poly : Math.max(1, p.unison || 1);
+    const rebuild = kind !== this.kind || mch || fch || !this.voices || this.voices.length !== nv || old.mode !== p.mode;
     let keep = null;
     if (rebuild) {
       // keys still physically held survive a voice-assignment change (poly <-> unison / mono)
@@ -2006,18 +2111,20 @@ class Inst {
       if (salt !== 0) for (const v of this.voices) if (typeof v.r === 'number') v.r = ((v.r ^ salt) >>> 0) || 1;
       if (kind === 'divide' && !this.div) this.div = new Divide(this);
       if (kind === 'drums' && (was !== 'drums' || mch)) this.drOn(p); // (review #1: both the rebuild and this guard)
+      if (kind === 'patch' && (was !== 'patch' || fch)) this.ptOn(p);
       this.clrHeld();
     } else this.p = p;
     if (kind === 'drums' && this.dm !== null) this.dm.set(p.drum); // (the panel: read by the machine once per span)
+    if (kind === 'patch' && this.pm !== null) this.pm.set(p.pv);   // (the modules' values, bound by id in the handler, §3.2)
     const n = this.voices.length;
     for (let i = 0; i < n; i++) this.voices[i].det = p.mode === 'unison' && n > 1 ? (i / (n - 1) - 0.5) * 2 * p.unisonDetune / 100 : 0;
     // a new unison spread reaches notes that are already sounding (pitch and target move together: no glide)
     for (const v of this.voices) if (v.note >= 0) { const nt = v.note + (v.det || 0); v.pitch += nt - v.target; v.target = nt; }
     this.recalc();
     for (const v of this.voices) v.apply(p);
-    // back from Serum (or a drum machine), which does not feed the chorus / ensemble lines: they hold the model played
+    // back from Serum (or a drum machine, a patch), which does not feed the chorus / ensemble lines: they hold the model played
     // before it, so they start empty instead of replaying that audio
-    if (was === 'serum' || was === 'drums') { this.chorus.reset(); this.ens.reset(); }
+    if (was === 'serum' || was === 'drums' || was === 'patch') { this.chorus.reset(); this.ens.reset(); }
     this.chorus.mode = p.fx.ensemble ? 0 : p.fx.chorus | 0; this.chorus.hiss = p.fx.hiss || 0;
     this.ens.on = p.fx.ensemble | 0;
     this.bend = this.bendRaw * (p.bendRange || 2);
@@ -2391,6 +2498,110 @@ class Inst {
   }
   // the monitor's drum part (§3.5): the sounds hit and the circuits' levels since the last post, at frame F
   drMon(F) { const m = this.dm.mon(); return { lit: m.lit, act: m.act.slice(), F }; }
+  /* ---- the patch family (IMPL-9 §3.1, §3.5, §3.6): Inst kind 'patch' — the machine pm (patch-dsp.js's PatchDSP over the
+   * family's module table, e.g. moog-dsp.js's PatchMoog), looked up at use (missing: the Inst is silent and posts ptErr once) ---- */
+  // entering kind 'patch' or another family (setPatch, between quanta): the family's machine (built once, then kept; another
+  // family's replaces it) at the Inst's OS, fresh, its graph the payload left waiting — else none (a kept machine's old graph,
+  // the warm-up's or an earlier device's, never sounds before its own payload arrives)
+  ptOn(p) {
+    const PD = globalThis.PatchDSP, f = p.family;
+    if (this.pm !== null && this.pmF === f) { const pm = this.pm; pm.graph(ptEmpty(f)); pm.setOS(this.OS, this.fs); pm.reset(); }
+    else {
+      let pm = null;
+      if (PD && typeof PD.create === 'function') { try { pm = PD.create(this, f); } catch (err) { pm = null; } }
+      this.pm = pm; this.pmF = pm !== null ? f : '';
+    }
+    this.pmRun = 0; this.pmIn = this.fadeN; this.pmNew = 1;
+    const q = this.pmPend;
+    this.pmPend = null;
+    if (this.pm === null) { this.ptFail('load'); return; }
+    if (q !== null && ptFam(q.pg, f)) this.pm.graph(q.pg);
+  }
+  // ptErr once (the machine reports a payload's first offending item here too, its why): the host's one notice
+  ptFail(why) {
+    if (this.pmErr !== 0) return;
+    this.pmErr = 1;
+    const w = typeof why === 'string' ? why : 'load';
+    this.port.postMessage(this.T.graphed === 1 ? { t: 'ptErr', why: w, i: this.id } : { t: 'ptErr', why: w });
+  }
+  // §3.2: a graph payload {t: 'seq', s: {pg, pk}} (seqMsg routes it by its shape) — to the machine while the kind is 'patch'
+  // and the family its own; else it waits in pmPend (a newer one replaces it) for ptOn
+  ptMsg(s) {
+    if (this.kind === 'patch' && this.pm !== null && ptFam(s.pg, this.pmF)) this.pm.graph(s.pg);
+    else if (this.kind === 'patch' && this.pm === null) this.ptFail('load');
+    else this.pmPend = s;
+  }
+  // the machine's de-click fade (allOff(true), Play from a stop): what it would still play ≈ 3 ms ahead under a raised cosine,
+  // mixed into the next spans (output units at the OS rate, as the voices' tails; a fade-in under way stays in it); then the
+  // caller resets it. Nothing when fresh (its first render is the restart's own) or when MAIN OUT is unpatched (silent) →
+  // whether a tail was rendered
+  fadePatch() {
+    const pm = this.pm;
+    if (pm === null || this.pmRun === 0 || !pm.live()) return false;
+    const M = this.fadeN, OS = this.OS, PC = 128 * OS, b = this.buf, tl = this.tail, F0 = this.T.nowF();
+    if (!this.tailN) tl.fill(0); // a spent tail leaves its samples behind
+    else if (this.tailP) { tl.copyWithin(0, this.tailP, this.tailP + this.tailN); tl.fill(0, this.tailN); this.tailP = 0; }
+    let k = this.pmIn;
+    for (let o = 0; o < M; o += PC) {
+      const n = Math.min(PC, M - o);
+      b.fill(0, 0, n);
+      pm.render(b, n, F0 + o / OS);
+      if (k > 0) k = this.ptRamp(b, n, k);
+      for (let i = 0; i < n; i++) tl[o + i] += b[i] * (0.5 + 0.5 * Math.cos(Math.PI * (o + i) / M));
+    }
+    if (this.tailN < M) this.tailN = M;
+    return true;
+  }
+  // the machine back to fresh (allOff(true), panicClear, ptFresh): its first fadeN samples of sound from then on fade in (a
+  // raised cosine, the tail's complement) — a restarting patch begins wherever its circuits start (a saw at its trough, a CV
+  // into MAIN OUT), a step without it: Play from a stop crossfades, a panic's end, a power-on, a kind change rise from silence
+  ptReset() { this.pm.reset(); this.pmRun = 0; this.pmIn = this.fadeN; this.pmNew = 0; }
+  // the fade-in on the machine's first n OS samples of b with k of it left → what is left
+  ptRamp(b, n, k) {
+    const M = this.fadeN, e = Math.min(n, k), p0 = M - Math.min(k, M);
+    for (let i = 0; i < e; i++) b[i] *= 0.5 - 0.5 * Math.cos(Math.PI * (p0 + i) / M);
+    return k - e;
+  }
+  // P-2 (IMPL-9 §13, the lead's decision): Play from a stop restarts the patch fresh — live from the start = the bounce — under
+  // the 3 ms tail of what it played (Track.songEvents → transportHook): a crossfade. Only a machine built and never rendered or
+  // reset since (pmNew, powered: the bounce's first frame) restarts with no tail and no fade-in; one a reset left fresh keeps its
+  // armed fade-in — a power-off's (P-1: the unmute is faded in whatever Play came between, or came in its quantum)
+  ptFresh() { const t = this.fadePatch(), nw = this.pmNew === 1 && this.on === 1; this.ptReset(); if (!t && nw) this.pmIn = 0; }
+  // §3.6: the span — any de-click tail into the mono OS-rate buf, the machine (MAIN OUT × OUT_K × OUTPUT, output units;
+  // per absolute 4-frame chunk at F = spanF), the decimators, the oversampling fade → Lb = Rb; no smoothing, no chorus /
+  // ensemble. Powered off it renders nothing (its fade already holds what it played; a drone must not restart under it)
+  renderPatch(n) {
+    const OS = this.OS, N = n * OS, buf = this.buf, pm = this.pm;
+    buf.fill(0, 0, N);
+    let act = 0;
+    if (pm !== null && this.on === 1) { // (first: a fade-in scales the machine's own part; it waits while MAIN OUT is unpatched)
+      pm.render(buf, N, this.T.spanF); this.pmRun = 1; this.pmNew = 0;
+      if (pm.live()) { act = 1; if (this.pmIn > 0) this.pmIn = this.ptRamp(buf, N, this.pmIn); }
+    }
+    if (this.tailN) {
+      const k = Math.min(N, this.tailN), tl = this.tail, P = this.tailP;
+      for (let i = 0; i < k; i++) buf[i] += tl[P + i];
+      this.tailP += k; this.tailN -= k; if (!this.tailN) this.tailP = 0;
+    }
+    if (this.tailSN) { // a Serum stopped by the switch to the patch: its stereo fade, folded to mono
+      const k = Math.min(N, this.tailSN), P = this.tailSP, tL = this.tailL, tR = this.tailR, tDL = this.tailDL, tDR = this.tailDR;
+      for (let i = 0; i < k; i++) buf[i] += 0.5 * (tL[P + i] + tR[P + i] + tDL[P + i] + tDR[P + i]);
+      if (this.tailBus) {
+        const t1L = this.tailB1L, t1R = this.tailB1R, t2L = this.tailB2L, t2R = this.tailB2R;
+        for (let i = 0; i < k; i++) buf[i] += 0.5 * (t1L[P + i] + t1R[P + i] + t2L[P + i] + t2R[P + i]);
+      }
+      this.tailSP += k; this.tailSN -= k; if (!this.tailSN) { this.tailSP = 0; this.tailBus = 0; }
+    }
+    if (this.tailDN) this.renderDac(buf, N, this.fs / 49096, false); // (a DX7 left mid-fade: its stream drains)
+    else this.dacHold = this.dacPend = 0;
+    if (!this.tailDN) this.dacLive = false;
+    const mono = this.monoBuf, Lb = this.Lb, Rb = this.Rb;
+    this.decim(this.dec, buf, mono, n);
+    if (this.osPend || this.osR < 1) this.osFade(n, mono);
+    for (let i = 0; i < n; i++) Lb[i] = Rb[i] = mono[i];
+    this.act = act;
+    if (this.rack) this.rack.setNote(this.lastNote);
+  }
   // the frame an event handled now belongs to: the current span inside process(), else the next render quantum
   nowF() { return this.T.nowF(); } // (§6.2: the Track's)
   reqOS(v) { // while anything sounds the change waits behind a short fade (see osFade)
@@ -2403,6 +2614,7 @@ class Inst {
     const list = vs || this.voices || [];
     if (this.kind === 'serum') { this.fadeSerum(list); return; }
     if (this.kind === 'drums') { if (!vs) this.fadeDrums(); return; }
+    if (this.kind === 'patch') { if (!vs) this.fadePatch(); return; }
     let any = false;
     for (const v of list) if (v.active) { any = true; break; }
     const dv = !vs && this.kind === 'divide' && this.div && this.div.list.length > 0;
@@ -2484,6 +2696,7 @@ class Inst {
     if (this.voices) for (const v of this.voices) { v.noteOff(); v.sus = false; if (hard) v.kill(); }
     if (this.div) this.div.allOff(hard);
     if (hard && this.kind === 'drums' && this.dm !== null) this.dm.reset(); // (its tail holds what it still played; IMPL-7a §1.1)
+    if (hard && this.kind === 'patch' && this.pm !== null) this.ptReset(); // (the same: its held keys go too)
     this.audK.fill(0);
     this.clrHeld();
   }
@@ -2573,6 +2786,9 @@ class Inst {
     this.tailN = this.tailP = this.tailSN = this.tailSP = this.tailDN = this.tailDP = 0; this.tailBus = 0;
     if (this.tailON) { this.tailON = this.tailOP = 0; for (const h of this.decO) h.buf.fill(0); } // ((7b review 1 #3) a machine switch's tail)
     if (this.kind === 'drums' && this.dm !== null) this.dm.reset(); // (else a ringing circuit resumes after the fade, IMPL-7a §1.1)
+    // (IMPL-9 §3.6: a free-running patch starts afresh after the fade — from silence: its decimators' history of what it played
+    // before is dropped too, or it would resume at its old level for their delay, a step out of the faded output)
+    if (this.kind === 'patch' && this.pm !== null) { this.ptReset(); for (const h of this.dec) h.buf.fill(0); }
     this.dacHold = this.dacPend = 0; this.dacLive = false;
     this.chorus.reset(); this.chorus.snap(); this.ens.reset(); this.ens.snap();
     if (this.rack) this.rack.reset(false);
@@ -2597,6 +2813,7 @@ class Inst {
     }
     if (this.rack) this.rack.trigger(); // Hyper RETRIG
     if (this.kind === 'drums') { this.drHit(n, v); return; } // (IMPL-7a §1.4: sus, bend, MPE stored and ignored)
+    if (this.kind === 'patch') { if (this.pm !== null) this.pm.note(n, v, 1); return; } // (IMPL-9 §3.5: the controller's keys; a preview too; sus, bend, wheel, at read per chunk)
     if (!this.anyActive()) { this.smTargets(); this.smSnap(); } // nothing sounding: start at the panel values
     if (this.kind === 'divide') { if (a) this.audK[n] = 1; this.div.noteOn(n); return; } // (a key: up when both let go)
     if (p.mode !== 'poly') {
@@ -2761,6 +2978,7 @@ class Inst {
   // by a patch change) any voice of n unless the song holds n — the song's and the keys' note-offs never release a preview
   noteOff(n, rv, ch, ext, aud) {
     if (this.kind === 'drums') return; // one-shots: a note-off does nothing to the sound (the Track's key record runs as ever)
+    if (this.kind === 'patch') { if (this.pm !== null) this.pm.note(n, 0, 0); return; } // (IMPL-9 §3.5)
     const p = this.p, a = aud ? (this.songHas(n) ? 1 : 2) : 0;
     if (this.kind === 'divide') { // the key stays down while the other owner (preview / song) still holds it
       if (a) { if (!this.audK[n]) return; this.audK[n] = 0; if (a === 1) return; } else if (this.audK[n]) return;
@@ -2861,18 +3079,21 @@ class Inst {
   get bpm() { const tp = this.tp; return tp && tp.play ? 60 * this.base / (tp.fpt * 960) : this.p && this.p.bpm > 0 ? this.p.bpm : 120; }
   songBeat() { return this.T.songBeat(); } // (§6.2: the Track's)
   // play with seek (playing) / stop: Serum's host-synced state and the rack's LFO phases restart, so a song rendered
-  // from a given tick is identical live and offline (§6.16, §8.5.2)
-  transportHook(playing) {
+  // from a given tick is identical live and offline (§6.16, §8.5.2); cold: the play started from a stop (a patch restarts
+  // fresh then, P-2 — never at a seek while playing or a loop wrap)
+  transportHook(playing, cold) {
     const SD = globalThis.SerumDSP;
     if (SD && this.kind === 'serum' && this.sx) SD.transport(this, playing);
     if (this.sxSeq !== null && this.kind === 'serum') this.sxSeq.transport(playing); // §7.8
     if (this.kind === 'drums' && this.sq !== null) this.sq.transport(playing); // (a synced drum machine re-anchors / stops)
+    if (cold === true && this.kind === 'patch' && this.pm !== null) this.ptFresh(); // (IMPL-9 P-2: live from the start = the bounce)
     if (playing && this.rack) this.rack.transport();
   }
   /* ---- TB-303 style step sequencer, clocked in the audio thread ---- */
   seqMsg(s) {
+    if (s && s.pg !== undefined) { this.ptMsg(s); return; }      // a patch's graph (IMPL-9 §3.2): routed by its shape
     if (s && s.plan !== undefined) { this.drSeqMsg(s); return; } // a drum payload (IMPL-7a §3.5): routed by its shape
-    if (this.kind === 'drums') return;                             // (a TB-303 payload never lands in a DrSeq)
+    if (this.kind === 'drums' || this.kind === 'patch') return;    // (a TB-303 payload never lands in a DrSeq, nor builds a 303 sq on a patch)
     const q = this.sq || (this.sq = { run: false, sync: false, pat: [], len: 16, bpm: 120, root: 36, step: -1, pos: 0, fired: true, offed: true, tie: false, cur: -1, swing: 0, syncStep: null });
     const wasRun = q.run, wasSync = q.sync;
     Object.assign(q, s);
@@ -2995,6 +3216,7 @@ class Inst {
     }
     if (this.kind === 'serum') { this.renderSerum(n); return 1; }
     if (this.kind === 'drums') { this.renderDrums(n); return 1; }
+    if (this.kind === 'patch') { this.renderPatch(n); return 1; }
     buf.fill(0, 0, N);
     if (this.tailN) { // de-click fade of voices that were stopped hard
       const k = Math.min(N, this.tailN), tl = this.tail, P = this.tailP;
@@ -3339,6 +3561,7 @@ class Track extends Facade {
     const SD = globalThis.SerumDSP;
     if (SD) SD.warmUp(I);
     if (I.rack) I.rack.warmUp();
+    this.warmPatch(run, io);
     this.warmGraph(run);
   }
   // IMPL-7a §1.1: the drum machine's round, after the WARM loop and before Serum's and the graph's (warmGraph's re-warm of
@@ -3518,6 +3741,63 @@ class Track extends Facade {
       I.tp = tp;
     }
   }
+  // IMPL-9 §3.1 (§12 spike (a) decision 4: mandatory): the patch family's round, after the drum machines' and before Serum's and
+  // the graph's (whose last re-warm interleaves a patch too: warmGraph, warmPatchOn) — on Inst 0, per family whose scripts are
+  // present, twice: ptWarm's
+  // patch (every type, every jack) at the defaults, a run of notes (legato, a fall-back, a retrigger) with bend, wheel, pressure
+  // and the pedal, then off them, gliding (every switch moved: the keyboard's other priority and trigger mode, STRONG sync); the
+  // graph changed mid-note (every input driven hard, loop steps with their ramps, then a module retired); Play from a stop's fresh
+  // restart (ptFresh); a power-off with keys held and on again (the restrike); an OS change there and back. The machine's reports
+  // go to a stand-in port; restore() clears its graph and state. Without the scripts (or a table it cannot read): nothing.
+  // Caller: warmUp
+  warmPatch(run, io) {
+    const PD = globalThis.PatchDSP, I = this.i0, port = I.port;
+    if (!PD || typeof PD.create !== 'function') return;
+    I.port = WPORT;
+    try {
+      for (const f of PT_FAM) {
+        const W = ptWarm(globalThis['Patch' + f[0].toUpperCase() + f.slice(1)], f);
+        if (W === null) continue;
+        for (let round = 0; round < 2; round++) {
+          const P = v => ({ engine: 'patch', family: f, pv: v, level: 1, mode: 'mono' }), os = I.OS;
+          I.seqMsg({ pg: W.a, pk: 'warm' });                                       // (before its patch: pmPend)
+          I.setPatch(P(W.v0));
+          if (I.pm === null) break;
+          this.noteOn(48, 0.87); run(10); this.noteOn(55, 0.63); run(6);           // legato
+          this.msg({ t: 'bend', v: 0.37 }); this.msg({ t: 'wheel', v: 0.61 }); this.msg({ t: 'at', v: 0.29 }); this.msg({ t: 'sus', v: true });
+          this.noteOff(55); run(6);
+          I.setPatch(P(W.v1)); run(6);                                             // the values glide; the switches moved
+          this.noteOn(43, 0.91); run(6); this.noteOff(43); run(4); this.noteOn(43, 0.91); run(6); // a fall-back, a retrigger (MULTIPLE)
+          I.seqMsg({ pg: W.b, pk: 'warm-b' }); run(14);                            // every input driven, loop steps, ramps inside them
+          this.noteOn(50, 0.7); run(4); this.noteOff(50); run(4);                  // (the 911s' edges: clamps)
+          I.seqMsg({ pg: W.c, pk: 'warm-c' }); run(14);                            // a module retired under its ramps
+          this.msg({ t: 'sus', v: false }); this.msg({ t: 'bend', v: 0 }); this.msg({ t: 'wheel', v: 0 }); this.msg({ t: 'at', v: 0 });
+          I.ptFresh(); run(4);                                                     // P-2: the tail, a fresh restart
+          this.power(I, 0); run(2); this.power(I, 1); run(4);                      // (P-1's path: the tail and reset, the restrike)
+          I.reqOS(os === 4 ? 2 : 4); run(8); I.osPend = 0; I.osR = 1; I.osHold = 0;
+          I.reqOS(os); run(8); I.osPend = 0; I.osR = 1; I.osHold = 0;              // (back: Serum's and the graph's run at 4)
+          this.noteOff(48); this.noteOff(43); run(6);
+        }
+      }
+    } catch (err) { /* a failed round loses only its own warm-up: Serum's and the graph's still run */ } finally { I.port = port; }
+  }
+  // warmGraph's patch on the graph Inst x: the first family whose scripts are present, ptWarm's graph a at its v1 values (its
+  // reports to a stand-in port) → x's own port to give back, or null (no family: x stays as it was)
+  warmPatchOn(x) {
+    const PD = globalThis.PatchDSP;
+    if (!PD || typeof PD.create !== 'function') return null;
+    for (const f of PT_FAM) {
+      const W = ptWarm(globalThis['Patch' + f[0].toUpperCase() + f.slice(1)], f);
+      if (W === null) continue;
+      const port = x.port;
+      x.port = WPORT;
+      x.seqMsg({ pg: W.a, pk: 'warm' });
+      this.patchI(x, { engine: 'patch', family: f, pv: W.v1, level: 1, mode: 'mono' });
+      if (x.pm !== null) return port;
+      x.port = port;
+    }
+    return null;
+  }
   // IMPL-1e §2.6: the graph paths once — two classic Insts (analog WARM patches only, never a Solina: Math.random is the
   // harness's) into one shared Chain at a gain, a Serum Inst through its own FX into a second one, zones and salts (the
   // Serum's above 2^30 in every seeded state: their fields hold doubles from here on, V8), a power-off with held keys and
@@ -3539,7 +3819,12 @@ class Track extends Facade {
     // last (cabled slots moving every span, or not) and runs the other one ≈ 3.5× slow for 3 s — the reviewer's P2 on a
     // first cabled track, a plain track's first seconds after the round without this (scratchpad warm2b.js: with it both
     // start within 2.5× for one second; + 0.2 s of warm-up)
+    // (IMPL-9 §12 lane E9) meanwhile w2 plays a patch (warmPatch's graph a, its notes through w2's zone): the patch paths and the
+    // classic ones interleaved span by span through this last re-warm — whichever kind the round ran alone last, the other's
+    // first quanta on a new Track ran cold (a classic chord × 9, or a patch 0.9 ms), interleaved neither does
+    const pw = this.warmPatchOn(x2);
     for (let round = 0; round < 2; round++) for (const w of WARM) { this.patchI(x1, w); this.noteOn(48, 0.9); this.noteOn(67, 0.6); run(30); this.noteOff(48); this.noteOff(67); run(10); }
+    if (pw !== null) x2.port = pw;
     this.graphMsg({ t: 'graph', insts: [{ id: 'w1', on: true, zone: z, salt: 0 }], chains: [{ id: 'wa' }], edges: e1, out: 'out' });
     run(6);
   }
@@ -4097,8 +4382,8 @@ class Track extends Facade {
   songBeat() { const tp = this.tp; return tp && tp.play ? this.tickAt(this.spanF) / 960 : null; }
   // play / stop: every Inst's (its rack: one it holds); at play start the panels no Inst holds (drive) re-anchor too (review
   // E3; a legacy c0 is held by i0)
-  transportHook(playing) {
-    const I = this.insts; for (let i = 0; i < I.length; i++) I[i].transportHook(playing);
+  transportHook(playing, cold) {
+    const I = this.insts; for (let i = 0; i < I.length; i++) I[i].transportHook(playing, cold);
     if (this.mc !== null) this.mc.transport(playing);
     if (playing) { const C = this.chains; for (let k = 0; k < C.length; k++) { const c = C[k]; if (c.drive === 1 && c.rack !== null) c.rack.transport(); } }
   }
@@ -4109,12 +4394,12 @@ class Track extends Facade {
       const P = tp.pend;
       if (F >= P.frame - 0.5) {
         tp.pend = null;
-        const start = P.seek || !tp.play;
+        const start = P.seek || !tp.play, cold = !tp.play; // (cold: from a stop, IMPL-9 P-2)
         if (start) this.releaseSong(false);
         tp.play = true; tp.frame = P.frame; tp.tick = P.tick; tp.fpt = P.fpt; tp.loop = P.loop; tp.ls = P.ls; tp.le = P.le; tp.end = P.end;
         tp.wrap = P.loop && P.le > P.ls && P.tick < P.le;
         this.reseek = true; this.anch = start; this.fresh = start && P.fresh;
-        if (start) { this.lastT = NaN; this.transportHook(true); }
+        if (start) { this.lastT = NaN; this.transportHook(true, cold); }
       } else dist = P.frame - F;
     }
     if (!tp.play) return dist;

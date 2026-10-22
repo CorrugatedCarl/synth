@@ -29,15 +29,22 @@
 // switch placed by its keys) and the trimmer rows (dr:trim mem 3 / 4: our art of six trimmers, one hit box; `hitOff`, the
 // hit box's centre off the art's, so two close rows keep disjoint 14 mm boxes); the five hexagonal pads' cell (DRV_PADS),
 // MAP… · SOUNDS… · TRIM…; its caption names our factory sounds (D4); "Simmons" among the maker words.
+// Stage 9: the 900 Series (IMPL-9 §2.2, §4.1–§4.2): live patch jacks — a layout's `{ kind: 'jack' | 'strig', port, label,
+// x, y, d | w, h }` (no id, never inert) drawn at full contrast in the face, validated (the port one of the model's jacks,
+// each once, an S-trigger socket a strig; centres ≥ JACK_PITCH_MM apart and ≥ JACK_CLEAR_MM from every other live hit box)
+// and listed by geometry().jacks (body px, pure maths; no widget here: cv-module places a span over each); the module faces
+// of a patch family (moduleModel: a synthetic model per module type over the family's table, moduleLayout: its validated
+// face from panels/index.js MODULE_LAYOUTS), the controller's face its model's console (layoutOf('m900')).
 import * as wk from './wk.js?v=9';
 import { DOT } from './cv-world.js?v=9';
 import { BAR_H } from './cv-module.js?v=9';
 import { FACES } from './cv-face.js?v=9';
 import * as KY from './cv-keys.js?v=9';
 import * as CD from './cv-drum.js?v=9';
-import { LAYOUTS, HW_IDS, layoutOf } from './panels/index.js?v=9';
+import * as MG from './moog-core.js?v=9';
+import { LAYOUTS, HW_IDS, layoutOf, MODULE_LAYOUTS, moduleLayoutOf } from './panels/index.js?v=9';
 
-export { LAYOUTS, HW_IDS, layoutOf };
+export { LAYOUTS, HW_IDS, layoutOf, MODULE_LAYOUTS, moduleLayoutOf };
 /** Layout format version; world px per mm of the real instrument (one scale for every model, IMPL-panels §3.1). */
 export const FORMAT = 1, PX_PER_MM = 2;
 /** Hit areas (mm): every live control's ≥ HIT_MIN_MM both ways; by default a control's own box grows to HIT_DEF_MM. */
@@ -78,6 +85,16 @@ export const GLYPHS = Object.freeze({
   'arrow:down': 'M0-0.8V0.8M-0.5 0.3L0 0.8L0.5 0.3',
   'arrow:right': 'M-0.8 0H0.8M0.3-0.5L0.8 0L0.3 0.5',
 });
+/** (9, IMPL-9 §4.2) A live patch jack's port id; the least distance (mm) between two patch jacks' centres (their 14 mm hit
+ * circles never touch) and from a jack's centre to any other live control's hit box (the widest hit circle never covers it). */
+export const PORT_RE = /^[a-z][a-z0-9]{0,7}$/, JACK_PITCH_MM = 15, JACK_CLEAR_MM = 9;
+/** (9) A patch jack's widest hit circle when nothing bounds it (px: 44 screen px at k 0.5). */
+export const JACK_HIT_MAX = 88;
+/** (9, IMPL-9 §2.6, §4.1) The patch families whose module faces this build draws: the family's table (moog-core FAMILY: its
+ * types, jacks, controller type and the instrument model whose hardware layout is the controller's console) and the module
+ * faces' theme (the 900 Series model's, models.js m900.theme, no wood). A later family (the ARP 2600, the MS-20) adds a row. */
+export const PATCH_FAMS = Object.freeze([Object.freeze({ fam: MG.FAMILY,
+  theme: Object.freeze({ ctl: 'knob', knob: 'moog', panel: '#121110', face: '#0b0b0b', ink: '#e9e4d8', label: '#bdb6a6', accent: '#d9d2bf', font: 'helvetica' }) })]);
 /** The default extras caption; a drum machine's says what its sounds are (IMPL-7a §2.5, §7.5: D4). */
 export const XCAPTION = 'EXTRAS · not on the original', XCAPTION_DRUMS = XCAPTION + ' · Sounds: our model of the circuits';
 /** (7c) A display token's characters at the .hw-dsp font (style.css: 700 20px mono): px, a character's advance (em), the
@@ -267,6 +284,35 @@ function ctlsOf(model) {
   if (!m) { m = new Map(); for (const c of (model && model.controls) || []) m.set(c.id, c); ctlMaps.set(model, m); }
   return m;
 }
+/** (9) The patch jacks a model's face carries by id, or null (none): a module model's own (moduleModel), else — the
+ * instrument model whose console is a patch family's controller (m900) — that controller type's (moog-core's table). */
+const jackMaps = new WeakMap();
+function portMap(model) {
+  if (!isObj(model)) return null;
+  if (jackMaps.has(model)) return jackMaps.get(model);
+  let js = Array.isArray(model.jacks) ? model.jacks : null;
+  if (!js) for (const F of PATCH_FAMS) if (F.fam.model === model.id && F.fam.types[F.fam.ctl]) js = F.fam.types[F.fam.ctl].jacks;
+  const m = js ? new Map(js.filter(isObj).map(j => [j.id, j])) : null;
+  jackMaps.set(model, m);
+  return m;
+}
+/** (9, IMPL-9 §4.1) A module type's synthetic model (memoised; null: no such module type, or the controller — its face is
+ * its instrument model's console, layoutOf(FAMILY.model)): { id 'pm-<type>', name, type, layout (its MODULE_LAYOUTS key),
+ * patch (the family id), theme,
+ * sections [{ title, c: TYPE.params }], controls (the params: the stored value is the dial position, IMPL-9 §2.3), jacks }. */
+const modC = new Map();
+export function moduleModel(type) {
+  if (modC.has(type)) return modC.get(type);
+  for (const F of PATCH_FAMS) {
+    const T = typeof type === 'string' && Object.prototype.hasOwnProperty.call(F.fam.types, type) ? F.fam.types[type] : null;
+    if (!T || T.face !== 'module') continue;
+    const m = Object.freeze({ id: 'pm-' + type, name: T.name, type, layout: T.layout, patch: F.fam.id, theme: F.theme,
+      sections: Object.freeze([Object.freeze({ title: T.name, c: T.params })]), controls: T.params, jacks: T.jacks });
+    modC.set(type, m);
+    return m;
+  }
+  return null;
+}
 const isPerf = id => typeof id === 'string' && Object.prototype.hasOwnProperty.call(PERF_TOKENS.kind, id);
 const tokOf = (model, id) => { const T = model && TOKENS[model.id]; return T && typeof id === 'string' && id.includes(':') ? T : null; };
 const isTok = (model, id) => { if (isPerf(id)) return true; const T = tokOf(model, id); return !!T && (id in T.kind || T.extras.includes(id)); };
@@ -322,6 +368,8 @@ function secIndex(L, c) {
 }
 const liveOf = (c, model) => !c.inert && typeof c.id === 'string' && c.kind in KINDS && (KINDS[c.kind].length > 0 || (isTok(model, c.id) && c.kind !== 'led' && c.kind !== 'display'));
 const showOf = c => !c.inert && (c.kind === 'led' || c.kind === 'display');
+/** (9) A live patch jack (validate holds the full rules): never live / show — no widget, cv-module places its span. */
+const isPatchJack = c => isObj(c) && !c.inert && c.id == null && (c.kind === 'jack' || c.kind === 'strig') && typeof c.port === 'string' && PORT_RE.test(c.port);
 
 /* ---------------------------------------------------------------- validation */
 /**
@@ -404,6 +452,24 @@ export function validate(L, model) {
     if (seen.has(key)) bad(w + `: ${f} ${c[f]} twice` + (g ? ` (${g[0]} ${c[g[0]]})` : ''));
     seen.set(key, 1);
   };
+  // (9) the live patch jacks: kind jack | strig, no id, never inert; the port one of the model's jacks (an S-trigger socket a
+  // strig, a 1/4" one a jack), each once, its label named; centres in content mm for the spacing rules below
+  const PJ = portMap(model), ports = new Set(), jacks = [];
+  const patchJack = (c, w) => {
+    if (c.kind !== 'jack' && c.kind !== 'strig') { bad(w + ': port is a patch jack\'s (kind jack | strig)'); return; }
+    if (c.inert != null) bad(w + ': a patch jack is live (no inert)');
+    if (c.id != null) bad(w + ': a patch jack has no id (its port names it)');
+    if (typeof c.port !== 'string' || !PORT_RE.test(c.port)) { bad(w + ': port ' + PORT_RE); return; }
+    if (!(typeof c.label === 'string' && c.label.trim())) bad(w + ': a patch jack needs its label');
+    if (ports.has(c.port)) bad(w + `: port "${c.port}" twice`);
+    ports.add(c.port);
+    const J = PJ && PJ.get(c.port);
+    if (!J) bad(w + `: port "${c.port}" is not a jack of the model`);
+    else if ((J.sig === 's') !== (c.kind === 'strig')) bad(w + `: ${c.port} is ${J.sig === 's' ? 'an S-trigger socket (strig)' : 'a 1/4" jack (jack)'}`);
+    if (secIndex(L, c) < 0) bad(w + ': not inside a section' + (c.sec ? ` ("${c.sec}" unknown)` : ''));
+    const ar = A.get(c.a || 'main');
+    if (ar) jacks.push({ w, x: c.x + ar.at[0] - ar.src[0], y: c.y + ar.at[1] - ar.src[1] });
+  };
   if (!Array.isArray(L.controls)) bad('controls: an array');
   else L.controls.forEach((c, i) => {
     const w = `controls[${i}]` + (c && c.id ? ` (${c.id})` : '');
@@ -460,6 +526,7 @@ export function validate(L, model) {
     // inside the area
     const parts = k === 'buttons' || k === 'jacks' ? entriesOf(c).map(e => ({ x: e.x, y: e.y, o: entryOwn(c, e) })) : [{ x: c.x, y: c.y, o: ownOf(c) }];
     for (const p of parts) inArea(c.a, p.x - p.o[0] / 2, p.y - p.o[1] / 2, p.o[0], p.o[1], w);
+    if (c.port != null) { patchJack(c, w); return; } // ((9) a live patch jack)
     // (8) hitOff [dx, dy]: a live trimmer row's hit box off its art (the SDS-V's two close rows), no other control's
     if (c.hitOff != null && !(c.id === 'dr:trim' && !c.inert && hitOffOf(c))) bad(w + ': hitOff [dx, dy] (mm) is a trimmer row\'s (dr:trim) only');
     if (c.inert) { if (c.id != null && !(typeof c.id === 'string' && c.id.startsWith('#'))) bad(w + ': an inert control has no id'); return; }
@@ -549,6 +616,17 @@ export function validate(L, model) {
     const a = hits[i], b = hits[j];
     if (a.x < b.x + b.ww - 1e-6 && b.x < a.x + a.ww - 1e-6 && a.y < b.y + b.hh - 1e-6 && b.y < a.y + a.hh - 1e-6) bad(`${a.w} and ${b.w}: hit boxes overlap`);
   }
+  // (9) patch jacks: centres ≥ JACK_PITCH_MM apart, each ≥ JACK_CLEAR_MM from every other live control's hit box; every jack
+  // of the model on the face
+  for (let i = 0; i < jacks.length; i++) for (let j = i + 1; j < jacks.length; j++) {
+    const a = jacks[i], b = jacks[j], d = Math.hypot(a.x - b.x, a.y - b.y);
+    if (d < JACK_PITCH_MM - 1e-9) bad(`${a.w} and ${b.w}: jack centres ${n3(d)} mm apart < ${JACK_PITCH_MM} mm`);
+  }
+  for (const j of jacks) for (const r of hits) {
+    const d = Math.hypot(Math.max(r.x - j.x, 0, j.x - r.x - r.ww), Math.max(r.y - j.y, 0, j.y - r.y - r.hh));
+    if (d < JACK_CLEAR_MM - 1e-9) bad(`${j.w}: its centre ${n3(d)} mm from ${r.w}'s hit box < ${JACK_CLEAR_MM} mm`);
+  }
+  if (PJ) for (const id of PJ.keys()) if (!ports.has(id)) bad(`${id}: not placed (a patch jack of the model)`);
   // extras
   const ex = L.extras;
   if (!isObj(ex) || !Array.isArray(ex.ids)) bad('extras: { ids: [] }');
@@ -661,6 +739,25 @@ export function usable(id, model) {
   if (TL === undefined) usableC.set(id, { model, L: ok });
   return ok;
 }
+/** (9, IMPL-9 §4.1) A module type's face when it validates against moduleModel(type) (problems: console.warn once, then null:
+ * the host draws no face); __synthTest.panels['pm-<type>'] a page simulation's fixture, never cached. Render it with
+ * render(root, moduleLayout(type), moduleModel(type), api). */
+const moduleC = new Map();
+export function moduleLayout(type) {
+  const model = moduleModel(type);
+  if (!model) return null;
+  const TL = testLayout(model.id);
+  if (TL === undefined && moduleC.has(type)) return moduleC.get(type);
+  const L = TL !== undefined ? TL : moduleLayoutOf(model.layout);
+  let ok = null;
+  if (L) {
+    const p = validate(L, model);
+    if (p.length) { try { console.warn(`cv-panel: the ${type} module face is not used:\n  ` + p.slice(0, 12).join('\n  ')); } catch (err) { /* no console */ } }
+    else ok = L;
+  }
+  if (TL === undefined) moduleC.set(type, ok);
+  return ok;
+}
 
 /* ---------------------------------------------------------------- geometry */
 const geoC = new WeakMap();
@@ -702,6 +799,7 @@ export function geometry(L, model) {
       if (PERF_K.includes(c.kind) && c.kind !== 'keys') o.box = o.own = rectQ(cx, cy, ow[0], ow[1]); // (1i) a controller's DOM window exactly over its slot's art
     }
     if (live && M.has(c.id)) o.mc = M.get(c.id);
+    if (isPatchJack(c)) o.port = c.port; // ((9) a live patch jack: no widget here, listed in jacks)
     return o;
   });
   // the DOM / Tab order: sections in layout order, then rows (top to bottom, 8 mm apart), left to right in each
@@ -756,11 +854,31 @@ export function geometry(L, model) {
       { keys: B.keys.map(k => Object.assign({ note: k.note, black: k.black }, R(bx + k.x * X, by + k.y * X, k.w * X, k.h * X))), mm: B });
     o.own = kr; o.box = box; o.hit = box;
   }
+  // (9, IMPL-9 §4.2) the live patch jacks in body px (the jack spec adds BAR_H — one owner, the host's), unrounded (three
+  // decimals: the face draws them at the layout's mm): centre, the nut (d; a strig's w × h, d its longer side), the jack's
+  // own label (the model's table, else the layout's), and `hit` — the widest hit circle (px) that touches no other jack's
+  // (its nearest centre − 2) and covers no other live control's hit box (twice its clearance), ≤ JACK_HIT_MAX; jackPitch:
+  // the face's least centre distance (null under two jacks), jackHit: the least `hit` (null: no jack)
+  const PJ = portMap(model), jacks = [], liveHits = [];
+  for (const o of controls) if (o.live) for (const r of o.entries ? o.entries.map(e => e.hit) : [o.hit]) liveHits.push(r);
+  for (const o of controls) {
+    if (!o.port) continue;
+    const c = L.controls[o.i], J = PJ && PJ.get(o.port), ow = ownOf(c);
+    jacks.push({ port: o.port, kind: c.kind, sig: J ? J.sig : c.kind === 'strig' ? 's' : 'v', dir: J ? J.dir : null, label: J ? J.label : String(c.label || o.port),
+      x: q3(offX + (o.cx - x0) * X), y: q3((o.cy - y0) * X), d: q3(Math.max(ow[0], ow[1]) * X), w: q3(ow[0] * X), h: q3(ow[1] * X), hit: JACK_HIT_MAX });
+  }
+  let jackPitch = null;
+  for (const j of jacks) {
+    for (const k of jacks) if (k !== j) { const d = Math.hypot(j.x - k.x, j.y - k.y); j.hit = Math.min(j.hit, d - 2); jackPitch = jackPitch == null ? d : Math.min(jackPitch, d); }
+    for (const r of liveHits) j.hit = Math.min(j.hit, 2 * Math.hypot(Math.max(r.x - j.x, 0, j.x - r.x - r.w), Math.max(r.y - j.y, 0, j.y - r.y - r.h)));
+    j.hit = q3(j.hit);
+  }
   const geo = {
     W, H, body: { w: W, h: H - BAR_H }, content: { x: offX, y: 0, w: r05(cw * X), h: r05(ch * X) }, mm: { x0, y0, offX },
     areas: [...A.values()].map(a => { const [cx, cy] = [a.at[0], a.at[1]]; return { id: a.id, x: px(cx), y: py(cy), w: r05(a.src[2] * X), h: r05(a.src[3] * X) }; }),
     sections: (L.sections || []).map(s => { const [sx, sy] = toC(s.a, s.x, s.y); return { id: s.id, label: s.label, x: px(sx), y: py(sy), w: r05(s.w * X), h: r05(s.h * X) }; }),
     controls, order, extras,
+    jacks, jackPitch: jackPitch == null ? null : q3(jackPitch), jackHit: jacks.length ? Math.min(...jacks.map(j => j.hit)) : null,
   };
   geoC.set(L, { model, geo });
   return geo;
@@ -853,8 +971,8 @@ function buildSvg(L, model) {
   }
   // decor items
   for (const d of L.decor || []) { const q = decorItem(d, { LEG, RULE, PANEL, col, wid }); if (q) o.push(inA(d.a, q)); }
-  // printed parts of the controls (labels, dials, legends) and the inert controls
-  const M = ctlsOf(model);
+  // printed parts of the controls (labels, dials, legends) and the inert controls; (9) the live patch jacks
+  const M = ctlsOf(model), PJ = portMap(model);
   for (const c of L.controls || []) {
     if (!isObj(c) || !(c.kind in KINDS)) continue;
     let q = '';
@@ -880,6 +998,7 @@ function buildSvg(L, model) {
     }
     if (PERF_K.includes(c.kind) && !c.inert) q += perfSvg(c, S); // (1i) the keys / a controller at rest
     if (c.inert) q += inertSvg(c, { K, SL, BT, JK, LEG, named, M, S });
+    else if (isPatchJack(c)) q += patchJackSvg(c, JK, (PJ && PJ.get(c.port) || {}).label || c.label || c.port); // ((9) a live patch jack)
     else if (c.id === 'dr:trim' && c.kind === 'button' && fin(c.w) && fin(c.h)) q += trimSvg(c, TR); // ((8) the SDS-V's trimmer rows)
     if (q) o.push(inA(c.a, q));
   }
@@ -972,6 +1091,19 @@ function ladderSvg(d, LEG) {
 }
 function jackSvg(x, y, d, JK) {
   return `<circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(d / 2)}" fill="${esc(JK.nut)}"/><circle cx="${n3(x)}" cy="${n3(y)}" r="${n3(d * 0.24)}" fill="${esc(JK.hole)}"/>`;
+}
+/** (9) A live patch jack's art: a 1/4" jack's nut at full contrast (the `inert: 'later'` look), or an S-trigger socket — our
+ * drawing of a two-pin Cinch-Jones socket: a dark insulator ringed in the nut's colour, two flat contact slots — titled with
+ * its jack's label (data-port: the port; no data-tip, the jack's span above it takes the press). */
+function patchJackSvg(c, JK, name) {
+  const { x, y } = c;
+  let q;
+  if (c.kind === 'strig') {
+    const w = c.w, h = c.h, sw = Math.max(0.5, w * 0.09), sh = h * 0.46;
+    q = `<rect x="${n3(x - w / 2)}" y="${n3(y - h / 2)}" width="${n3(w)}" height="${n3(h)}" rx="${n3(Math.min(w, h) * 0.32)}" fill="#1b1b1b" stroke="${esc(JK.nut)}" stroke-width="0.45"/>`
+      + `<path d="M${n3(x - w * 0.2 - sw / 2)} ${n3(y - sh / 2)}h${n3(sw)}v${n3(sh)}h${n3(-sw)}zM${n3(x + w * 0.2 - sw / 2)} ${n3(y - sh / 2)}h${n3(sw)}v${n3(sh)}h${n3(-sw)}z" fill="${esc(JK.hole)}"/>`;
+  } else q = jackSvg(x, y, c.d, JK);
+  return `<g class="hw-jack" data-port="${esc(c.port)}"><title>${esc(String(name).replace(/\n/g, ' '))}</title>${q}</g>`;
 }
 /** (8) The SDS-V's trimmer row (dr:trim; our art): TRIM_N metal discs evenly across its box, each with its screwdriver slot
  * at an angle of its own (static: TRIM… shows the values) — one path for the discs, one for the slots (the DOM budget).

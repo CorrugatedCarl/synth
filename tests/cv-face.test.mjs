@@ -4,6 +4,7 @@ import './v8-guard.mjs';
 // the budget level, keep / rebuild / free, one per frame nearest first, cancelled by a burst), the budget eviction order,
 // the overlap rule, the stats. Fake DOM (wk-dom), fake gl (the §2 surface), fake world (rectOf / on / onScreen / cam).
 // (1i, IMPL-1i §3.3) the keyboard faces: 1:1 at dpr 2, ≤ 58 MB each, the recorded exemption at dpr 2.5 / 3 pinned.
+// (9, IMPL-9 §2.2) the 900 Series faces: the module and console sizes (= moog-core's), 1:1 at dpr 2, the Model 15 set's bytes.
 // Only strings / numbers / booleans go into assert (never a fake-DOM node).
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -127,6 +128,23 @@ test('1i faces: every keyboard face ≤ 10.8 M px at dpr 2 (< BASE_MAX_PX) — b
     const s = P.sizeOf(L, m);
     eq1(baseLevel(2, s.w, s.h - BAR_H), 2, id + ' (authored): L0 = 2 at dpr 2');
   }
+});
+
+/* ---- (9, IMPL-9 §2.2, §8.4) the 900 Series faces: the console and the nine module faces (outer px, the 40 px bar included) */
+const FACES_9 = { ctl: [864, 352], 921: [224, 512], '921a': [128, 512], '921b': [128, 512], 923: [128, 512], '904a': [128, 512], '907a': [352, 512], 911: [128, 512], 902: [128, 512], 995: [128, 512] };
+test('9 faces: §2.2\'s sizes (1 MU 128 × 512, 2 MU 224 × 512, 3 MU 352 × 512, the console 864 × 352) = moog-core\'s w / h; each 1:1 at rest at dpr 2 (baseLevel 2) in ≤ 6 MB of base + mips; the Model 15 set\'s thirteen faces ≈ 24.4 MB, under a fifteenth of FACE_BUDGET_BYTES', async () => {
+  const P = await import('../cv-panel.js?v=9'), MG = await import('../moog-core.js?v=9'), { MODELS } = await import('../models.js?v=9');
+  const bytes = (w, H) => w * (H - BAR_H) * 4 * 4 * 4 / 3; // dpr 2: 4 device px a world px, RGBA, + mips
+  eq1(MG.ORDER_ALL.slice().sort(), Object.keys(FACES_9).sort(), 'every type');
+  for (const t of MG.ORDER_ALL) {
+    const L = t === 'ctl' ? P.layoutOf('m900') : P.moduleLayout(t), m = t === 'ctl' ? MODELS.find(x => x.id === 'm900') : P.moduleModel(t), s = P.sizeOf(L, m);
+    eq1([s.w, s.h], FACES_9[t], t + ': §2.2');
+    eq1([s.w, s.h], [MG.TYPES[t].w, MG.TYPES[t].h], t + ': moog-core\'s w / h');
+    eq1(baseLevel(2, s.w, s.h - BAR_H), 2, t + ': L0 = 2 at dpr 2');
+    assert.ok(bytes(s.w, s.h) <= 6e6, t + ': ' + (bytes(s.w, s.h) / 1e6).toFixed(2) + ' MB');
+  }
+  const M15 = ['ctl', '902', '902', '904a', '907a', '911', '911', '921', '921a', '921b', '921b', '923', '995'], total = M15.reduce((a, t) => a + bytes(...FACES_9[t]), 0);
+  assert.ok(total <= 25e6 && total <= FACE_BUDGET_BYTES / 15, 'the Model 15 set: ' + (total / 1e6).toFixed(1) + ' MB');
 });
 
 /* ---- the maths */

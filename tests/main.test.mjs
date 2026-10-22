@@ -16,6 +16,8 @@ import * as S from '../song.js?v=9';
 import * as CMOD from '../cv-model.js?v=9';
 import * as cvPanel from '../cv-panel.js?v=9';
 import * as KY from '../cv-keys.js?v=9';
+import * as PT from '../patch-core.js?v=9';
+import * as MG from '../moog-core.js?v=9';
 
 const peak = x => { let m = 0; for (let i = 0; i < x.length; i++) { const a = Math.abs(x[i]); if (a > m) m = a; } return m; };
 const maxDiff = (x, y, n = Math.min(x.length, y.length)) => { let m = 0; for (let i = 0; i < n; i++) m = Math.max(m, Math.abs(x[i] - y[i])); return m; };
@@ -46,8 +48,9 @@ test('§12.6: the page boots on the IndexedDB-less fallback, a Serum track plays
   assert.equal(FXR(t).v, 2, 'v2 FX state for a new track (§2.5)');
   assert.equal(s.api.store.mode, 'ls', 'no IndexedDB here: the Phase-1 localStorage store');
   const c = s.ctx();
-  assert.equal(c.modules.length, 15, '§0.3: 14 DSP scripts (mod-core.js last) + engine.js');
-  assert.ok(c.modules[14].startsWith('engine.js'));
+  assert.equal(c.modules.length, 17, '§0.3: 16 DSP scripts (the patch family\'s two last, IMPL-9 §3.7) + engine.js');
+  assert.deepEqual(c.modules.slice(13, 16).map(u => u.split('?')[0]), ['mod-core.js', 'patch-dsp.js', 'moog-dsp.js']);
+  assert.ok(c.modules[16].startsWith('engine.js'));
   const node = s.nodeOf(t.id);
   assert.equal(node.po.trackId, t.id, 'processorOptions.trackId (§7.9)');
   s.key('KeyA', true); await s.settle(2);
@@ -1230,6 +1233,26 @@ test('7c (IMPL-7c §10): a TR-909 track — its record made on first read is a 9
   assert.deepEqual([off.sync, off.run, [...off.plan.mFl].join(), off.plan.key === live.plan.key, off.pk === live.pk], [true, false, '0,28', true, true], 'the bounce\'s payload: the live one at 97 BPM');
   cv.setProjectBpm(120);
   assert.equal([...cv.drumPayload(t, dv, true).plan.mFl].join(), '0,35');
+});
+
+test('9 (IMPL-9 §6, §1.4): #m900 boots a 900 Series — the Model 15 set as Classic bass (freshProject); its node graphed from its options (graph, its patch kind, its graph payload: the content key kept, never reposted unchanged); a key plays it; the track tab reads "Mono"; a chord asks to open its instrument (no switch: mono by design); its knobs are no last-used values', async () => {
+  const s = await bootMain({ hash: '#m900' });
+  await s.power(); await s.settle(5); s.raf();
+  const api = s.api, t = api.project().tracks[0], d = I(t), dv = CMOD.primId(t), N = s.nodeOf(t.id), ref = MG.model15({ p: {} });
+  assert.deepEqual([d.model, JSON.stringify(d.patch), JSON.stringify(d.vals.p)], ['m900', JSON.stringify(ref.rec), JSON.stringify(ref.vals.p)], 'the Model 15 set as Classic bass');
+  assert.deepEqual([!!N.po.graph, N.po.patch, N.po.patches[dv].engine, N.po.seqs[dv].pk], [true, null, 'patch', PT.payload(d.patch, 'moog').pk], 'graphed from its options');
+  assert.equal(api.nodes.get(t.id).drPk.get(dv), N.po.seqs[dv].pk, 'its content key kept');
+  api.sendPatch(t); s.raf(); await s.settle(2);
+  assert.equal(N.posted.filter(x => x.m.t === 'seq').length, 0, 'an unchanged graph: never reposted');
+  assert.equal(s.$('#tabTrack').textContent, `Track: ${t.name} · Mono`);
+  s.key('KeyA', true); await s.settle(2);
+  const out = s.run(12000).get(N);
+  s.key('KeyA', false);
+  assert.ok(peak(out.L) > 1e-3, 'a key plays it: ' + peak(out.L));
+  api.roll().host.edit('Draw', () => t.notes.push(noteAt('m1', 0, 48, 240), noteAt('m2', 0, 52, 240)));
+  assert.match(s.$('#notice').textContent, /is monophonic — its chords play one note\. Tap to open its instrument$/, 'no switch offered');
+  api.save();
+  assert.equal(api.store.get('synth.v.m900', null), null, 'no last-used values');
 });
 
 test('MIDI import into a project with no notes: the empty project\'s tracks go and the file\'s come in as the current instrument\'s model (curModel read before the tracks are cleared — no throw)', async () => {

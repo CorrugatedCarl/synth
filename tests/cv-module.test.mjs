@@ -1522,3 +1522,127 @@ test('(8) createTrackView with a Pads device entry: its jacks from the entry (a 
   assert.deepEqual([V.modules.get('pd1') === pm, mounts, V.modules.get('pd1').jackIds()], [false, 2, ['p1', 'p40', 'p2', 'notes']], 'a jack-set change: made again');
   V.destroy();
 });
+
+/* ---------------------------------------------------------------- stage 9: face jacks, patch modules (IMPL-9 §4.1–§4.5, §8.6) */
+const FJ = [{ id: 'j-sin', side: 'face', x: 38, y: 380, kind: 'cord', sig: 'v', dir: 'out', label: '921B 1 · SINE OUT', hit: 48 },
+  { id: 'j-trg', side: 'face', x: 32, y: 408, kind: 'cord', sig: 's', dir: 'in', label: '911 1 · TRIGGER', hit: 44.8 },
+  { id: 'j-a1', side: 'face', x: 90, y: 420, kind: 'cord', sig: 'v', dir: 'any', label: 'Controller · MULTIPLE A 1' }];
+const attrs = (e, ks) => ks.map(k => e.getAttribute(k));
+
+test('createModule (9): a face jack — span.cv-jack.cv-fjack at its spec\'s module-local point (no measuring), data-kind "cord", data-sig / data-dir, --jp from `hit`, named, a button (whatever o.patch); port() is the point, folded or not; one tab stop per module, the arrows / Home / End move it and the focus, the canvas never sees them', () => {
+  const doc = fresh(), W = fakeWorld(0.6);
+  const { m } = mod({ id: 'i1/m3', kind: 'pm', jacks: FJ.concat([{ id: 'out', side: 'right', kind: 'audio', label: 'x out' }]), fixed: { w: 128, h: 512 } }, { world: W, doc });
+  doc.body.append(m.el);
+  const [s, t, a] = ['j-sin', 'j-trg', 'j-a1'].map(j => m.jack(j)), out = m.jack('out');
+  assert.deepEqual([s.className, ...attrs(s, ['data-cv-jack', 'data-side', 'data-kind', 'data-sig', 'data-dir', 'aria-label', 'role', 'tabindex']), s.style.left, s.style.top, s.style.getPropertyValue('--jp')],
+    ['cv-jack cv-fjack', 'i1/m3.j-sin', 'face', 'cord', 'v', 'out', '921B 1 · SINE OUT', 'button', '0', '38px', '380px', '48px']);
+  assert.deepEqual([...attrs(t, ['data-sig', 'data-dir', 'tabindex', 'role']), t.style.getPropertyValue('--jp'), ...attrs(a, ['data-dir', 'tabindex']), a.style.getPropertyValue('--jp')],
+    ['s', 'in', '-1', 'button', '44.8px', 'any', '-1', ''], 'one tab stop; a multiple\'s "any"; no hit: the CSS default');
+  assert.deepEqual([out.className, out.getAttribute('data-side'), out.getAttribute('role')], ['cv-jack', 'right', null], 'an edge jack as before (o.patch unset)');
+  assert.deepEqual([m.port('j-sin'), m.port('j-trg'), m.jackDir('j-a1')], [{ x: 38, y: 380 }, { x: 32, y: 408 }, 'any']);
+  m.setFold(true); // (a face module is never folded by its host; a fold leaves its face jacks where they are)
+  assert.deepEqual([m.port('j-sin'), s.style.top], [{ x: 38, y: 380 }, '380px']);
+  m.setFold(false);
+  // the roving tab stop: → / ↓ next, ← / ↑ back (wrapping), Home / End; the keys stop there (no module nudge)
+  let reached = 0;
+  doc.body.addEventListener('keydown', () => { reached++; });
+  s.focus();
+  let e = key(s, 'ArrowRight');
+  assert.deepEqual([doc.activeElement === t, attrs(s, ['tabindex'])[0], attrs(t, ['tabindex'])[0], e.defaultPrevented, reached], [true, '-1', '0', true, 0]);
+  key(t, 'ArrowDown'); assert.equal(doc.activeElement === a, true);
+  key(a, 'ArrowRight'); assert.equal(doc.activeElement === s, true, 'wraps');
+  key(s, 'ArrowLeft'); assert.equal(doc.activeElement === a, true);
+  key(a, 'Home'); assert.equal(doc.activeElement === s, true);
+  key(s, 'End'); assert.deepEqual([doc.activeElement === a, [s, t, a].map(x => x.getAttribute('tabindex')).join()], [true, '-1,-1,0']);
+  e = key(a, 'Enter');
+  assert.deepEqual([e.defaultPrevented, reached], [false, 1], 'other keys go on (the jack\'s menu is cv-patch\'s)');
+  key(out, 'ArrowRight');
+  assert.equal(reached, 2, 'an edge jack\'s arrows: not ours');
+  m.destroy();
+});
+
+test('createModule (9): compact — the narrow bar (stripe, the title over its sub, ⋯: no ⏻ / chip / CPU / fold in it; ≤ 6 elements) and never folded; nofold alone — the full bar without ▾; a compact one with o.power keeps its ⏻', () => {
+  const doc = fresh();
+  const { m } = mod({ id: 'i1/m2', kind: 'pm', title: '921B 2', sub: 'on 921A 1', compact: true, fold: true, jacks: FJ, fixed: { w: 128, h: 512 } }, { doc });
+  assert.deepEqual([m.bar.children.map(c => c.className), m.el.hasAttribute('data-cv-compact'), m.el.hasAttribute('data-cv-nofold'), m.fold, m.nofold, m.compact],
+    [['cv-stripe', 'cv-ttl', 'cv-btn cv-more'], true, true, false, true, true], 'a stored fold ignored');
+  assert.equal(all(m.bar).length, 6, 'bar · stripe · ttl · title · sub · ⋯');
+  m.setFold(true);
+  assert.deepEqual([m.fold, m.el.hasAttribute('data-cv-fold'), m.rect().h], [false, false, 512]);
+  m.setChip('x'); m.setCpu(0.2);
+  assert.equal(all(m.bar).length, 6, 'chip / CPU never enter the bar');
+  m.destroy();
+  const { m: n } = mod({ id: 'i1', nofold: true, power: { on: true, onToggle() {} }, fixed: { w: 864, h: 352 } }, { doc });
+  assert.deepEqual([n.bar.children.map(c => c.className.split(' ').at(-1)), n.el.hasAttribute('data-cv-compact'), n.nofold], [['cv-pow', 'cv-stripe', 'cv-ttl', 'cv-chip', 'cv-cpu', 'cv-more'], false, true]);
+  n.destroy();
+  const { m: p } = mod({ id: 'i1/m4', compact: true, power: { on: true, onToggle() {} } }, { doc });
+  assert.deepEqual(p.bar.children.map(c => c.className.split(' ').at(-1)), ['cv-pow', 'cv-stripe', 'cv-ttl', 'cv-more']);
+  p.destroy();
+});
+
+// a patch instrument's view: its controller (the instrument 'i1', its entry's face jacks, nofold) and two 'pm' modules
+function pmview(o = {}) {
+  const doc = fresh(), W = o.world || fakeWorld(1), relays = [];
+  const t = { id: 'trk_9', name: 'Bass', color: '#c0a060', prim: 'i1', nid: 2, dev: { i1: { kind: 'synth', model: 'm900', vals: {} }, fx1: { kind: 'panel' }, out: { kind: 'out' } },
+    wires: [{ id: 'w1', a: 'i1.out', b: 'fx1.in' }, { id: 'w2', a: 'fx1.out', b: 'out.in' }] };
+  const ctlJ = [{ id: 'j-out', side: 'face', x: 800, y: 300, kind: 'cord', sig: 'v', dir: 'in', label: 'Controller · MAIN OUT', hit: 40 },
+    { id: 'j-kp1', side: 'face', x: 40, y: 120, kind: 'cord', sig: 'v', dir: 'out', label: 'Controller · PITCH 1', hit: 38 }];
+  const pms = () => [{ key: 'i1/m1', kind: 'pm', dev: 'i1', mid: 'm1', type: '921a', title: '921A 1', sub: '', fixed: { w: 128, h: 512 }, jacks: [FJ[2]] },
+    { key: 'i1/m2', kind: 'pm', dev: 'i1', mid: 'm2', type: '921b', title: '921B 1', sub: 'on 921A 1', fixed: { w: 128, h: 512 }, jacks: FJ.slice(0, 2) }];
+  const R = dview(t, W, doc, Object.assign({
+    patch: false,
+    devices: x => M.devicesOf(x).map(d => (d.key === 'i1' ? Object.assign({}, d, { jacks: ctlJ, nofold: true }) : d)).concat(pms()),
+    size: k => (k === 'i1' ? { fixed: { w: 864, h: 352 } } : null),
+    title: k => (k === 'i1/m2' ? { title: '921B 1', sub: 'on 921A 1' } : { title: k.toUpperCase() }),
+    onRelay: P => relays.push(P),
+  }, o));
+  return Object.assign(R, { t, W, doc, relays });
+}
+
+test('createTrackView (9): patch modules (kind \'pm\': the entry\'s size, face jacks, compact bar, no fold, cost 90) and the controller\'s face jacks beside its audio out (j-out ≠ out); under host.patch false every cord jack stays a button with one tab stop per module (review #4) while the audio jacks are read-only; V.jacks / V.ports list them; host.onRelay gets the ports at every relayout', () => {
+  const R = pmview(), V = R.V, I = V.modules.get('i1'), A = V.modules.get('i1/m1'), B = V.modules.get('i1/m2');
+  assert.deepEqual([I.jackIds(), A.jackIds(), B.jackIds(), A.kind, A.w, A.fixed.h, A.compact, A.nofold, I.nofold, I.compact, A.cost, B.title],
+    [['out', 'j-out', 'j-kp1'], ['j-a1'], ['j-sin', 'j-trg'], 'pm', 128, 512, true, true, true, false, 90, '921B 1']);
+  assert.deepEqual([I.bar.children.some(c => /cv-fold/.test(c.className)), B.bar.children.map(c => c.className)], [false, ['cv-stripe', 'cv-ttl', 'cv-btn cv-more']]);
+  const ro = e => [e.hasAttribute('data-ro'), e.getAttribute('role'), e.getAttribute('tabindex')].join();
+  assert.deepEqual([ro(I.jack('out')), ro(I.jack('j-out')), ro(I.jack('j-kp1')), ro(B.jack('j-sin')), ro(B.jack('j-trg')), ro(A.jack('j-a1'))],
+    ['true,,-1', 'false,button,0', 'false,button,-1', 'false,button,0', 'false,button,-1', 'false,button,0'], 'cord jacks pressable, one tab stop each module; the audio out read-only');
+  // the roving stop survives a sync where it moved
+  B.jack('j-sin').tabIndex = -1; B.jack('j-trg').tabIndex = 0;
+  R.sync(R.t);
+  assert.deepEqual([V.modules.get('i1/m2') === B, ro(B.jack('j-sin')), ro(B.jack('j-trg'))], [true, 'false,button,-1', 'false,button,0']);
+  const J = V.jacks().filter(j => j.kind === 'cord').map(j => j.id + ':' + j.dir);
+  assert.deepEqual(J, ['i1.j-out:in', 'i1.j-kp1:out', 'i1/m1.j-a1:any', 'i1/m2.j-sin:out', 'i1/m2.j-trg:in']);
+  const P = V.ports();
+  assert.deepEqual([P.get('i1/m2.j-sin'), P.get('i1.j-out'), P.get('i1.out')], [{ x: B.x + 38, y: B.y + 380 }, { x: I.x + 800, y: I.y + 300 }, { x: I.x + 864, y: I.y + M.BAR_H + M.JACK_Y }]);
+  // onRelay: at creation, on a sync, live during a module move (the cords' anchors follow)
+  const n0 = R.relays.length;
+  assert.ok(n0 >= 1 && R.relays.at(-1).get('i1/m2.j-sin').x === B.x + 38);
+  ptr(B.bar, 'pointerdown', 10, 10, { pointerId: 3 }); ptr(B.bar, 'pointermove', 80, 10, { pointerId: 3 }); ptr(B.bar, 'pointermove', 140, 10, { pointerId: 3 });
+  assert.ok(R.relays.length > n0 && R.relays.at(-1).get('i1/m2.j-sin').x === B.x + 38, 'live');
+  ptr(B.bar, 'pointerup', 140, 10, { pointerId: 3 });
+  V.toggleFold('i1/m2'); V.toggleFold('i1');
+  assert.deepEqual([B.fold, I.fold, R.calls.filter(c => c[2] === 'fold').length], [false, false, 0], 'never folded, no step');
+  V.destroy();
+});
+
+test('createTrackView (9): Tidy places the patch modules by host.rackLayout(instKey) (relative to their instrument\'s top-left), else one flush row above it; tidy()\'s rack argument; a selected driver outlines its driven modules (host.members)', () => {
+  const R = pmview({ rackLayout: k => (k === 'i1' ? { 'i1/m1': { x: 0, y: -1024 }, 'i1/m2': { x: 128, y: -1024 } } : null), members: k => (k === 'i1/m1' ? ['i1/m2'] : []) });
+  const V = R.V, I = V.modules.get('i1'), A = V.modules.get('i1/m1'), B = V.modules.get('i1/m2');
+  assert.deepEqual([[I.x, I.y], [A.x, A.y], [B.x, B.y]], [[0, 0], [0, -1024], [128, -1024]]);
+  R.W.select('i1/m1');
+  assert.deepEqual([B.el.hasAttribute('data-cv-member'), I.el.hasAttribute('data-cv-member')], [true, false]);
+  R.W.select('i1/m2');
+  assert.equal(B.el.hasAttribute('data-cv-member'), false);
+  V.destroy();
+  const R2 = pmview(), A2 = R2.V.modules.get('i1/m1'), B2 = R2.V.modules.get('i1/m2');
+  assert.deepEqual([[A2.x, A2.y], [B2.x, B2.y]], [[0, -512], [128, -512]], 'no rack: one flush row above the instrument');
+  R2.V.destroy();
+  // the pure tidy: the rack's places from the instrument's (here the instrument column at (0, 0))
+  const t = { prim: 'i1', dev: { i1: { kind: 'synth', model: 'm900' }, out: { kind: 'out' } } };
+  const L = M.tidy(t, { i1: { w: 864, h: 352 } }, [{ key: 'i1', kind: 'inst', model: 'm900' }, { key: 'out', kind: 'out' }, { key: 'i1/m3', kind: 'pm', dev: 'i1' }, { key: 'i1/m4', kind: 'pm', dev: 'i1' }],
+    k => ({ 'i1/m3': { x: 224, y: -512 } }));
+  assert.deepEqual([L.i1, L['i1/m3'], L['i1/m4'], L.out], [{ x: 0, y: 0 }, { x: 224, y: -512 }, { x: 0, y: -512 }, { x: 1024, y: 0 }], 'a module the rack does not place: the fallback row');
+  assert.deepEqual(M.tidy(t, {}, [{ key: 'i1', kind: 'inst', model: 'm900' }, { key: 'i1/m3', kind: 'pm', dev: 'i1' }])['i1/m3'], { x: 0, y: -M.H_PM }, 'no rack');
+  assert.deepEqual([M.kindW('pm'), M.W_PM, M.H_PM, M.COST_PM], [128, 128, 512, 90]);
+});

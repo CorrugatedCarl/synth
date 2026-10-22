@@ -37,17 +37,18 @@
  */
 'use strict';
 const VERSION = '9';
-const BUILD = '27693585c044'; // (tools/precache.mjs --write: a hash of the precached files)
+const BUILD = 'cde5005ed639'; // (tools/precache.mjs --write: a hash of the precached files)
 // (tools/precache.mjs --write rewrites these two lists from the sources)
 const ASSETS = [
   'appstore.js', 'arrange.js', 'assets.js', 'audioclock.js', 'classic-panel.js', 'cv-art.js', 'cv-cables.js',
-  'cv-cost.js', 'cv-drum.js', 'cv-face.js', 'cv-gl.js', 'cv-graph.js', 'cv-keys.js', 'cv-migrate.js', 'cv-model.js',
-  'cv-modlayer.js', 'cv-mods-ui.js', 'cv-mods.js', 'cv-module.js', 'cv-pads.js', 'cv-panel.js', 'cv-tray.js',
-  'cv-world.js', 'dr-808.js', 'dr-seq.js', 'drum-core.js', 'engine.js', 'fx-core.js', 'fx-dsp.js', 'fx-mods2.js',
-  'fx-ui.js', 'gesture.js', 'graph.js', 'laws.js', 'main.js', 'midi.js', 'mod-core.js', 'models.js', 'pads-core.js',
-  'panels/arp2600.js', 'panels/cs80.js', 'panels/dx7.js', 'panels/index.js', 'panels/juno60.js', 'panels/jupiter8.js',
-  'panels/minimoog.js', 'panels/modular.js', 'panels/ms20.js', 'panels/obxa.js', 'panels/prophet5.js',
-  'panels/sdsv.js', 'panels/solina.js', 'panels/tb303.js', 'panels/tr606.js', 'panels/tr808.js', 'panels/tr909.js',
+  'cv-cords.js', 'cv-cost.js', 'cv-drum.js', 'cv-face.js', 'cv-gl.js', 'cv-graph.js', 'cv-keys.js', 'cv-migrate.js',
+  'cv-model.js', 'cv-modlayer.js', 'cv-mods-ui.js', 'cv-mods.js', 'cv-module.js', 'cv-pads.js', 'cv-panel.js',
+  'cv-patch.js', 'cv-tray.js', 'cv-world.js', 'dr-808.js', 'dr-seq.js', 'drum-core.js', 'engine.js', 'fx-core.js',
+  'fx-dsp.js', 'fx-mods2.js', 'fx-ui.js', 'gesture.js', 'graph.js', 'laws.js', 'main.js', 'midi.js', 'mod-core.js',
+  'models.js', 'moog-core.js', 'moog-dsp.js', 'pads-core.js', 'panels/arp2600.js', 'panels/cs80.js', 'panels/dx7.js',
+  'panels/index.js', 'panels/juno60.js', 'panels/jupiter8.js', 'panels/m900.js', 'panels/minimoog.js',
+  'panels/modular.js', 'panels/ms20.js', 'panels/obxa.js', 'panels/prophet5.js', 'panels/sdsv.js', 'panels/solina.js',
+  'panels/tb303.js', 'panels/tr606.js', 'panels/tr808.js', 'panels/tr909.js', 'patch-core.js', 'patch-dsp.js',
   'pwa.js', 'roll.js', 'seq-core.js', 'serum-core.js', 'serum-dsp.js', 'serum-ui.js', 'smp.js', 'smpgen.js',
   'smprender.js', 'smpstore.js', 'smpwork.js', 'song.js', 'style.css', 'sx-base.js', 'sx-edges.js', 'sx-filt2.js',
   'sx-gran.js', 'sx-host.js', 'sx-mod.js', 'sx-sample.js', 'sx-seq.js', 'sx-spec.js', 'sx-ui-mix.js', 'sx-ui-mod.js',

@@ -83,7 +83,8 @@ function junoTrack(S, mods, po = {}) {
 test('mod-core.js: globalThis.ModCore (frozen: VER 1, NEXT 16, NVAL 32, create); N1: without {t: mods} a Track has no ModCore and a render is bit-identical with the script absent', () => {
   const S = scope(), M = S.M;
   assert.ok(M && Object.isFrozen(M) && M.VER === 1 && M.NEXT === 16 && M.NVAL === 32 && typeof M.create === 'function');
-  assert.equal(S.D.loaded[S.D.loaded.length - 1], 'mod-core.js', 'loaded last, before engine.js');
+  assert.equal(S.D.loaded[S.D.loaded.indexOf('mod-core.js') - 1], 'dr-seq.js', 'loaded after the drum machine\'s scripts');
+  assert.deepEqual(S.D.loaded.slice(S.D.loaded.indexOf('mod-core.js') + 1), ['patch-dsp.js', 'moog-dsp.js'].filter(f => S.D.loaded.includes(f)), 'then only the patch family\'s (IMPL-9 §3.7), then engine.js');
   const renderOnce = (D) => {
     D.ctx.currentFrame = 0; D.seed('n1');
     const p = new D.Proc({ processorOptions: { os: 4, hostOS: 4 } });

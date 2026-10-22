@@ -14,6 +14,7 @@ import './v8-guard.mjs';
 // Run alone: node --max-old-space-size=2048 --test tests/canvas-3-sim.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { bootMain } from './main-sim.mjs';
 import { fakeStorage } from './fakes.mjs';
 import * as C from '../serum-core.js?v=9';
@@ -24,7 +25,7 @@ import { MODELS } from '../models.js?v=9';
 
 // every DSP global wk.loadDSP waits for, defined (null): a host's load resolves at once — a pending one would hold each
 // destroyed host for wk.js's give-up timer (the fixture check's lesson)
-for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore']) globalThis[g] = null;
+for (const g of ['SxBase', 'SxFilt2', 'SxWarp', 'SxMod', 'SxSample', 'SxGran', 'SxSpec', 'SxSeq', 'SerumDSP', 'FXMods2', 'FXDSP', 'Dr808', 'DrSeq', 'ModCore', 'PatchDSP', 'PatchMoog']) globalThis[g] = null;
 const VP = { left: 0, top: 48 }, BAND = { left: 44, top: 48, right: 1520, bottom: 700 };
 function scriptedWorld(root) {
   const L = {};
@@ -95,6 +96,16 @@ test('boot: the Serum is up as the whole panel (a real SerumUI host in its modul
   assert.deepEqual([!!host(), host().bundled, rec().mode, PT.isParts('i1'), PT.VIEW_DEFAULT, PT.newView()], [true, true, 'bundled', false, 'bundled', 'bundled']);
   assert.equal(keys(), 'i1,i1/fx,out');
   ID.a = T().id;
+});
+
+test('the sim\'s null DSP globals cover main.js\'s whole DSP list (IMPL-9 §3.7\'s two scripts too): the page\'s load of it resolves at once — no 20 s give-up wait, no "could not load"', async () => {
+  const wk = await import('../wk.js?v=9');
+  const list = /const DSP_FILES = \[([^\]]*)\]/.exec(readFileSync(new URL('../main.js', import.meta.url), 'utf8'))[1].match(/'[^']+'/g).map(x => x.slice(1, -1) + '?v=9');
+  let tm;
+  const r = await Promise.race([wk.loadDSP(list), new Promise(res => { tm = setTimeout(() => res('waited'), 1500); })]);
+  clearTimeout(tm);
+  assert.notEqual(r, 'waited', 'a script with no defined global is injected and never loads in this DOM: the load waits for its give-up timer');
+  assert.deepEqual([list.length, Object.keys(r).length, Object.values(r).every(v => v === null)], [16, 16, true]);
 });
 
 test('Show parts / Bundle: one History step each, lay only (vals.s and fx byte-identical, N2); the host — its panel undo — survives both, their undo and their redo', async () => {

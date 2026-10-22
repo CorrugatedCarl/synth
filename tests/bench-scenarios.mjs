@@ -25,6 +25,8 @@ import { convShapeOf } from '../assets.js?v=9';
 import { lawNorm as lawN } from '../laws.js?v=9';
 import { SLOT } from '../cv-mods.js?v=9';
 import * as DC from '../drum-core.js?v=9';
+import * as MG from '../moog-core.js?v=9';
+import * as PT from '../patch-core.js?v=9';
 
 export const SR = 48000;
 const W2 = id => core.WARPS2.findIndex(w => w.id === id) / (core.WARPS2.length - 1);
@@ -332,6 +334,51 @@ export function drumTrack(rows, vals, samples, model = 'tr808', o = {}) {
     assets: S ? { [S.id]: S.entry } : null };
 }
 
+/* ------------------------------------------------------------------ 900 Series rows (IMPL-9 §3.8, §12 spike (a); lane E9) */
+// A patch as a track (kind 'track', OS 4): the 900 Series' controller and modules (one Inst, its patch record → the graph
+// payload {t: 'seq', s: {pg, pk}}, its knobs → the patch's pv) into an empty panel → OUT. m9p: Classic bass (the Model 15 tile's)
+// playing an eighth-note bass line as roll notes (a one-bar song looping at 120 BPM); m9x: every Model 15 module live — Classic
+// bass re-patched: audio-rate FM (the 921's sine on the 904A's third control input) at REGENERATION 10 (k 4.4), a 904A → 921B →
+// 904A loop (the filter through multiple B into the second 921B's DC MODULATE: the mixer closes it), 921B #2 synced STRONG to
+// #1's rectangle, the 921 clamped at audio rate (#1's triangle − sine through the second 902 at ×2 on CLAMP TRIG. V), 923 white
+// → 907A → mixer 4, a three-note chord held on the controller (LOW: its lowest sounds); m9d: Drone (no notes: the never-quiet
+// cost, §3.6). Every timed run audible.
+export const BASS = Object.freeze([36, 36, 48, 36, 39, 36, 43, 41]);   // (eighths: 480 ticks, 360 long)
+const bassSong = () => ({ t: 'song', notes: BASS.flatMap((n, k) => [480 * k, 360, n, k & 1 ? 90 : 110]), cc: [] });
+/** The m9x patch: Classic bass on the Model 15 set, re-patched so every module runs (above) → { rec, vals }. */
+export function m9xPatch() {
+  const m = MG.model15();
+  let rec = m.rec;
+  const vals = structuredClone(m.vals), id = t => Object.keys(rec.mods).filter(k => rec.mods[k].t === t);
+  const [o3] = id('921'), [o1, o2] = id('921b'), [nz] = id('923'), [f] = id('904a'), [fb] = id('907a'), [, a2] = id('902');
+  const pull = (a, b) => { const c = rec.cords.find(x => x.a === a && x.b === b); if (!c) throw new Error('m9x: no cord ' + a + ' → ' + b); rec = PT.pull(rec, c.id).rec; };
+  const plug = (a, b) => { const r = PT.plug(rec, a, b); if (!r.id) throw new Error('m9x: ' + a + ' → ' + b + ': ' + r.why); rec = r.rec; };
+  const amp = rec.cords.find(x => x.a === f + '.out').b;            // (the first 902's upper input)
+  pull(f + '.out', amp);
+  plug(f + '.out', 'c.b1'); plug('c.b2', amp); plug('c.b3', o2 + '.dc');       // 904A → multiple B → the VCA and 921B #2 (the loop)
+  plug(o3 + '.sin', f + '.c3');                                                // audio-rate FM into the 904A
+  plug(o1 + '.rec', o2 + '.sy');                                               // sync
+  plug(o1 + '.tri', a2 + '.i1'); plug(o1 + '.sin', a2 + '.i2'); plug(a2 + '.o2', o3 + '.cv'); // the clamp at audio rate
+  plug(nz + '.wh1', fb + '.in'); plug(fb + '.out', 'c.m4');                    // 923 → 907A → mixer 4
+  Object.assign(vals.p[f], { re: 10, fc: 1 });
+  Object.assign(vals.p[o2], { ss: 2 });
+  vals.p[a2] = Object.assign({}, vals.p[a2] || {}, { _t: '902', md: 0, fc: 6 });
+  vals.x4 = 5;
+  return { rec, vals };
+}
+/** A 900 Series track (kind 'track'): { rec, vals } (a patch record and the device's vals); o.notes held from the start, o.song:
+ *  the bass line as roll notes (one bar looping from tick 0) with the transport playing. */
+export function patchTrack({ rec, vals }, o = {}) {
+  const p = patchFor('m900', vals, core.defaultFx2(), { sr: SR, bpm: 120 }), fx = core.defaultFx2(), Z = { lo: 0, hi: 127, xp: 0 };
+  delete p.fxr; delete p.fxrT; // (a classic Inst's patch on a graph node: its panel is a {t: 'chain'})
+  return { graph: { t: 'graph', insts: [{ id: 'i1', on: true, zone: Z, salt: 0 }], chains: [{ id: 'fx1' }], edges: [['i1', 'fx1', 1], ['fx1', 'out', 1]], out: 'out', key: 'm9' },
+    patches: { i1: p }, chains: { fx1: { fxr: core.compileFx(fx, { bpm: 120, rate: SR }), fxrT: core.compileFxT(fx) } }, notes: o.notes || [],
+    seqs: { i1: PT.payload(rec) }, song: o.song ? bassSong() : null,
+    transport: o.song ? { play: true, frame: 0, tick: 0, fpt: SR * 60 / (120 * 960), seek: true, loop: true, ls: 0, le: 3840 } : null };
+}
+/** A starting patch (moog-core PRESETS) on the Model 15 set → { rec, vals }. */
+export const presetSet = name => { const r = PT.loadPreset(PT.fresh(MG.FAMILY.id), {}, name, { ensure: MG.M15 }); if (r.why) throw new Error('preset ' + name + ': ' + r.why); return { rec: r.rec, vals: r.vals }; };
+
 export function scenarios() {
   const A = () => assets();
   const list = [
@@ -436,6 +483,13 @@ export function scenarios() {
       kind: 'track', build: () => drumTrack(DRUM_PATTERNS.dvx, DVX_VALS, false, 'sdsv') },
     { id: 'dvm', label: 'SDS-V: dvp\'s groove on memories 3 / 4 (the payload\'s trims), every memory key switched each bar', node: 0.03, ipad: 0.035,
       kind: 'track', build: () => drumTrack(DRUM_PATTERNS.dvp, DVM_MEM[0], false, 'sdsv', { cycle: [DVM_MEM[1], DVM_MEM[0]] }) },
+    // IMPL-9 §3.8 (spike (a)'s rows): the 900 Series (the patch evaluator over the Model 15 set)
+    { id: 'm9p', label: '900 Series: Classic bass (the Model 15 set) playing an eighth-note bass line as roll notes, its defaults, 120 BPM', node: 0.025, ipad: 0.02,
+      kind: 'track', build: () => patchTrack(MG.model15(), { song: true }) },
+    { id: 'm9x', label: '900 Series: every Model 15 module live — audio-rate FM into the 904A at k 4.4, a 904A → 921B → 904A loop, sync STRONG, an audio-rate clamp, 923 → 907A, a chord held', node: 0.05, ipad: 0.045,
+      kind: 'track', build: () => patchTrack(m9xPatch(), { notes: [[36, 0.8], [43, 0.7], [48, 0.6]] }) },
+    { id: 'm9d', label: '900 Series: Drone (three oscillators in fifths, pink noise, the 907A; no notes — it never goes quiet)', node: 0.03, ipad: 0.025,
+      kind: 'track', build: () => patchTrack(presetSet('Drone')) },
     { id: 'q1', label: "preset switch d → h' (Spectral), first chord: slowest quantum", node: 0.8, ipad: 0.6, kind: 'switch',
       build: () => ({ from: sx(rowD), to: sx(s => { spec(s); s.voicing.poly = 8; }), notes: chord(8), assets: A() }) },
     { id: 'q2', label: 'preset switch d → g" (3 × Granular), first chord: slowest quantum', node: 0.8, ipad: 0.6, kind: 'switch',

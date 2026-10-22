@@ -6,10 +6,15 @@
 // Stage 2a (IMPL-2a §3): the Sources tray's Modulators section (sourcesTray o.mods: Mod Wheel, Velocity, Aftertouch, Bend;
 // setPlaced greys a singleton that is already there). Milestone 3 (IMPL-3 §2.6): the Serum view's Serum parts (OSC, SUB,
 // NOISE, FILTER, MACROS) and Note tools (ARP, CLIP) tiles (sourcesTray o.parts: PART_TILES; the drops are the host's).
+// Stage 9 (IMPL-9 §4.6): the Sources view "Moog modules" — the Model 15 tile (the m900 model tile: the whole set, patched; no
+// maker word, D4) and a tile row of its own (sourcesTray o.moog: MOOG_TILES — the module types by group, each an original
+// monochrome glyph, MOOG_GLYPH); CLASSIC is models.js classicOf (a patch instrument is never in Hardware / Simple).
 // Rules: plain ES module, no DOM at module top level, survives tests/main-sim.mjs's DOM stub (it keeps references to the
 // nodes it makes or is given, never queries them back); imports carry ?v=9.
 import * as wk from './wk.js?v=9';
 import * as cvArt from './cv-art.js?v=9';
+import { classicOf } from './models.js?v=9';
+import * as MG from './moog-core.js?v=9';
 
 /** Top tray heights (px): the collapsed row, the arrangement toolbar, the ruler, one track row (= arrange.js rowHeight). */
 export const TOP_ROW = 48, ARR_BAR = 32, RULER = 24, ROW_H = 56;
@@ -342,7 +347,8 @@ export function sideTray(el, o) {
 const DR_TIP = { tr909: 'our model of its analog circuits; its hi-hats and cymbals are our own sounds through its playback circuit, not recordings', // (7c, IMPL-7c §8.2)
   sdsv: 'our model of its analog circuits, with our own factory sounds, not recordings; no sequencer — play it from its pads, a Pads module, the keyboard or MIDI' }; // (8)
 const DR_META = { sdsv: 'drum synth' };
-const CLASSIC = m => !m.custom && m.family !== 'drums', DRUMS = m => m.family === 'drums', TO_SERUM = 'Serum and its modulators: the Serum view (the menu above).';
+// ((9) CLASSIC: a classic keyboard synth — models.js classicOf, so a patch instrument (family 'patch') is never in Hardware / Simple)
+const CLASSIC = classicOf, DRUMS = m => m.family === 'drums', PATCH = m => m.family === 'patch', TO_SERUM = 'Serum and its modulators: the Serum view (the menu above).';
 export const SRC_VIEWS = [
   { id: 'hw', label: 'Hardware', tip: 'The classic synths with their real front panel', layout: 'hw', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
   { id: 'flow', label: 'Simple', tip: 'The classic synths with the simple panel', layout: 'flow', note: TO_SERUM, sections: [{ id: 'synths', models: CLASSIC }] },
@@ -353,7 +359,31 @@ export const SRC_VIEWS = [
     note: 'More machines later.', sections: [{ id: 'drums', models: DRUMS }] },
   { id: 'ctl', label: 'Controllers', tip: 'Pad grids that play and modulate any track',
     note: 'A Pads module plays any track (drum hits, notes, chords) and its pads can modulate any knob. More controllers later.', sections: [{ id: 'ctls' }] },
+  // (9, IMPL-9 §4.6) the patch modules: the Model 15 tile (a model tile: the tray makes one per MODELS id), then their own row
+  { id: 'moog', label: 'Moog modules', tip: 'The 900-series modules, patched with cords', layout: 'hw',
+    note: 'Model 15 brings the whole set, patched. Drop a module onto a 900 Series track to add it. The Moog Modular (a fixed patch) stays in Hardware.',
+    sections: [{ id: 'm15', models: PATCH }, { id: 'moog' }] },
 ];
+/** (9, IMPL-9 §4.6) The Moog modules view's tiles (id = the module type cv-patch adds; group: Sources · Modifiers · Control, in
+ * the family's tray order). The host passes them as o.moog (or o.moog: true). */
+export const MOOG_TILES = Object.freeze(MG.ORDER.map(t => Object.freeze({ id: t, name: MG.TYPES[t].tile, group: MG.TYPES[t].group })));
+/** The groups' headings (moog-core GROUPS). */
+export const MOOG_GROUPS = MG.GROUPS;
+// original monochrome glyphs (ours, from our own faces: panels/m900.js): a tall panel outline (1, 2 or 3 MU wide), its knobs as
+// dots (a switch a small bar), its jacks as rings (an S-trigger socket a small square) in the module's own arrangement
+export const MOOG_GLYPH = Object.freeze({
+  921: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="10" y="1" width="20" height="42" rx="1.5"/><rect class="k" x="11.6" y="7.5" width="3" height="1.8" rx="0.6"/><rect class="k" x="11.2" y="11.2" width="3" height="1.8" rx="0.6"/><circle class="k" cx="18.9" cy="9.9" r="2.1"/><circle class="k" cx="26.2" cy="9.7" r="2.1"/><circle class="j" cx="13" cy="17" r="1.3"/><circle class="j" cx="13" cy="20.7" r="1.3"/><circle class="k" cx="18.9" cy="18.2" r="2.1"/><circle class="k" cx="26.1" cy="18.1" r="2.1"/><circle class="j" cx="13" cy="24.6" r="1.3"/><rect class="j" x="11.7" y="26.9" width="2.6" height="2"/><circle class="k" cx="18.9" cy="26.2" r="2.1"/><circle class="k" cx="26.1" cy="26.3" r="2.1"/><circle class="j" cx="13" cy="32.8" r="1.3"/><circle class="j" cx="16.6" cy="32.8" r="1.3"/><circle class="j" cx="20.1" cy="32.8" r="1.3"/><circle class="j" cx="24.3" cy="32.8" r="1.3"/><circle class="j" cx="27.8" cy="32.8" r="1.3"/><circle class="j" cx="13" cy="36.8" r="1.3"/><circle class="j" cx="17.8" cy="36.8" r="1.3"/><circle class="j" cx="22.5" cy="36.8" r="1.3"/><circle class="j" cx="27.3" cy="36.8" r="1.3"/></svg>',
+  '921a': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><rect class="k" x="18.5" y="6.7" width="3" height="1.8" rx="0.6"/><circle class="k" cx="20" cy="14.4" r="2.1"/><circle class="k" cx="20" cy="22.7" r="2.1"/><circle class="j" cx="17.1" cy="28.8" r="1.3"/><circle class="j" cx="22.9" cy="28.8" r="1.3"/><circle class="j" cx="17.1" cy="33.9" r="1.3"/><circle class="j" cx="22.9" cy="33.9" r="1.3"/><circle class="j" cx="20" cy="38" r="1.3"/></svg>',
+  '921b': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><circle class="k" cx="20" cy="9.3" r="2.1"/><circle class="k" cx="20" cy="16.9" r="2.1"/><rect class="k" x="16.1" y="22.2" width="3" height="1.8" rx="0.6"/><circle class="j" cx="23.1" cy="23.1" r="1.3"/><circle class="j" cx="17.1" cy="28.4" r="1.3"/><circle class="j" cx="22.9" cy="28.4" r="1.3"/><circle class="j" cx="17.1" cy="33.1" r="1.3"/><circle class="j" cx="22.9" cy="33.1" r="1.3"/><circle class="j" cx="17.1" cy="37.9" r="1.3"/><circle class="j" cx="22.9" cy="37.9" r="1.3"/></svg>',
+  923: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><circle class="j" cx="17.1" cy="7.8" r="1.3"/><circle class="j" cx="22.9" cy="7.8" r="1.3"/><circle class="j" cx="20" cy="12.3" r="1.3"/><circle class="k" cx="20" cy="19.5" r="2.1"/><circle class="j" cx="17.1" cy="25.2" r="1.3"/><circle class="j" cx="22.9" cy="25.2" r="1.3"/><circle class="k" cx="20" cy="32.7" r="2.1"/><circle class="j" cx="17.1" cy="38.4" r="1.3"/><circle class="j" cx="22.9" cy="38.4" r="1.3"/></svg>',
+  '904a': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><circle class="k" cx="20" cy="10.4" r="2.1"/><circle class="k" cx="17.1" cy="19.5" r="2.1"/><circle class="k" cx="22.9" cy="19.5" r="2.1"/><circle class="j" cx="17.1" cy="27.5" r="1.3"/><circle class="j" cx="22.9" cy="27.5" r="1.3"/><circle class="j" cx="17.1" cy="33.5" r="1.3"/><circle class="j" cx="22.9" cy="33.5" r="1.3"/><circle class="j" cx="20" cy="37.7" r="1.3"/></svg>',
+  '907a': '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="3" y="1" width="34" height="42" rx="1.5"/><circle class="k" cx="7.4" cy="10.8" r="1.7"/><circle class="k" cx="13.7" cy="10.8" r="1.7"/><circle class="k" cx="20" cy="10.8" r="1.7"/><circle class="k" cx="26.3" cy="10.8" r="1.7"/><circle class="k" cx="32.6" cy="10.8" r="1.7"/><circle class="k" cx="7.4" cy="22.2" r="1.7"/><circle class="k" cx="13.7" cy="22.2" r="1.7"/><circle class="k" cx="20" cy="22.2" r="1.7"/><circle class="k" cx="26.3" cy="22.2" r="1.7"/><circle class="k" cx="32.6" cy="22.2" r="1.7"/><circle class="j" cx="11.5" cy="32.7" r="1.3"/><circle class="j" cx="28.5" cy="32.7" r="1.3"/></svg>',
+  902: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><rect class="k" x="18.6" y="8" width="3" height="1.8" rx="0.6"/><circle class="k" cx="19.9" cy="17.6" r="2.1"/><circle class="j" cx="16.8" cy="23.4" r="1.3"/><circle class="j" cx="16.8" cy="27.5" r="1.3"/><circle class="j" cx="22.4" cy="23.4" r="1.3"/><circle class="j" cx="22.4" cy="27.5" r="1.3"/><circle class="j" cx="16.8" cy="32.3" r="1.3"/><circle class="j" cx="22.4" cy="32.3" r="1.3"/><circle class="j" cx="19.8" cy="36.1" r="1.3"/></svg>',
+  911: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><circle class="k" cx="20.1" cy="8.7" r="2.1"/><circle class="k" cx="20.1" cy="15.7" r="2.1"/><circle class="k" cx="20.1" cy="22.7" r="2.1"/><circle class="k" cx="20.1" cy="29.7" r="2.1"/><rect class="j" x="16.2" y="34.8" width="2.6" height="2"/><circle class="j" cx="22.7" cy="35.8" r="1.3"/></svg>',
+  995: '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/><circle class="k" cx="19.8" cy="8.3" r="2.1"/><circle class="j" cx="16.8" cy="14" r="1.3"/><circle class="j" cx="22.9" cy="14" r="1.3"/><circle class="k" cx="19.8" cy="19.7" r="2.1"/><circle class="j" cx="16.8" cy="25.3" r="1.3"/><circle class="j" cx="22.9" cy="25.3" r="1.3"/><circle class="k" cx="19.8" cy="30.9" r="2.1"/><circle class="j" cx="16.8" cy="36.7" r="1.3"/><circle class="j" cx="22.9" cy="36.7" r="1.3"/></svg>',
+});
+// a type without a glyph (a later module): a bare 1 MU panel
+const moogGlyph = id => MOOG_GLYPH[id] || '<svg viewBox="0 0 40 44" aria-hidden="true"><rect x="14" y="1" width="12" height="42" rx="1.5"/></svg>';
 /** (8, IMPL-8 §1.2) The Controllers view's tiles (id = the module kind the host adds). The host passes them as o.ctls. */
 export const CTL_TILES = Object.freeze([{ id: 'pads', name: 'Pads' }].map(Object.freeze));
 // an original monochrome glyph (stroked with currentColor): a 3 × 3 of rounded squares, one lit
@@ -414,13 +444,14 @@ export function sourcesTray(el, o) {
     const b = mk(d, 'button', 'cv-tile');
     b.type = 'button';
     b.setAttribute('data-model', m.id);
-    const dr = DRUMS(m); // ((7a) a drum machine: no maker name on its tile, D4; (7c) the 909 says what is ours: its hi-hats and cymbals)
+    const dr = DRUMS(m), pa = PATCH(m); // ((7a) a drum machine: no maker name on its tile, D4; (7c) the 909 says what is ours: its hi-hats and cymbals; (9) nor a patch set's)
     b.title = dr ? `${meta.label} (${meta.year}) — ${DR_TIP[m.id] || 'our model of its circuits, not recordings'} — tap to use it, or drag it onto the canvas or the track list`
+      : pa ? `${meta.label} (${meta.year}) — the whole set of modules, patched with cords and ready to play (our model of its circuits) — tap to use it, or drag it onto the canvas or the track list`
       : `${meta.label} (${meta.year} · ${meta.maker}) — tap to use it, or drag it onto the canvas or the track list`;
     const pic = mk(d, 'span', 'cv-tart');
     pic.setAttribute('aria-hidden', 'true');
     pic.innerHTML = cvArt.art(m.id, cvArt.TILE);
-    const nm = mk(d, 'span', 'cv-tname', meta.label), mt = mk(d, 'span', 'cv-tmeta', dr ? `${meta.year} · ${DR_META[m.id] || 'drum machine'}` : `${meta.year} · ${meta.maker}`);
+    const nm = mk(d, 'span', 'cv-tname', meta.label), mt = mk(d, 'span', 'cv-tmeta', dr ? `${meta.year} · ${DR_META[m.id] || 'drum machine'}` : pa ? `${meta.year} · modular system` : `${meta.year} · ${meta.maker}`);
     b.append(pic, nm, mt);
     if (CLASSIC(m)) { const bd = mk(d, 'span', 'cv-tbadge', 'SIMPLE'); bd.setAttribute('aria-hidden', 'true'); b.append(bd); } // (shown in Simple: CSS)
     offs.push(listen(b, 'click', e => { if (e && e.defaultPrevented) return; o.pick(m.id, mode); }));
@@ -498,6 +529,67 @@ export function sourcesTray(el, o) {
       offs.push(() => b.remove());
     }
   }
+  // (9, IMPL-9 §4.6) the Moog modules row: one button.cv-tile.cv-gtile[data-moog][data-group] per o.moog item (an original glyph,
+  // the name, its load on this device, span.cv-treason) under its group's heading — in o.moogEl (its section o.moogSec), else a
+  // section of its own in o.secEl, else after the synths in el. A tap: (o.moogPick || o.pick)(id, mode); a drag through
+  // (o.moogDrag || o.drag) with info.moog = true, info.over 'canvas' | 'tracks' | null, info.at the world point; the ghost hides over
+  // the canvas while o.moogCanvasGhost() says the world draws the outline. o.moogCost(id) → its label (refreshMoog() re-reads);
+  // setPlaced(id, reason) / setMoogPlaced(reason) grey tiles (a full patch: "A patch holds at most 48 modules")
+  const gtiles = new Map(), gheads = [];
+  let gsec = null, ginEl = false;
+  const GT = Array.isArray(o.moog) ? o.moog : o.moog === true ? MOOG_TILES : null;
+  if (GT && GT.length) {
+    let box;
+    if (o.moogEl) { box = o.moogEl; gsec = o.moogSec || null; }
+    else if (o.secEl) {
+      const sec = gsec = mk(d, 'section', 'cv-tsec cv-gsec');
+      sec.setAttribute('data-sec', 'moog'); sec.setAttribute('aria-label', 'Moog modules');
+      box = mk(d, 'div', 'cv-tiles cv-gtiles');
+      sec.append(box);
+      o.secEl.appendChild(sec);
+      offs.push(() => sec.remove());
+    } else { box = el; ginEl = true; }
+    const pick = o.moogPick || o.pick, drag = o.moogDrag || o.drag || {};
+    const at = i => { if (o.toWorld) { try { const p = o.toWorld(i.x, i.y); if (p && isFinite(p.x) && isFinite(p.y)) return { x: p.x, y: p.y }; } catch { /* no world */ } } return { x: i.x, y: i.y }; };
+    let grp = null;
+    for (const m of GT) {
+      const id = m && typeof m.id === 'string' ? m.id : null;
+      if (!id || gtiles.has(id)) continue;
+      const g = typeof m.group === 'string' ? m.group : '';
+      if (g !== grp) { grp = g; const hd = mk(d, 'h3', 'cv-tgrp cv-ghead', MOOG_GROUPS[g] || g); box.appendChild(hd); gheads.push(hd); offs.push(() => hd.remove()); }
+      const name = String(m.name || id), b = mk(d, 'button', 'cv-tile cv-gtile');
+      b.type = 'button';
+      b.setAttribute('data-moog', id); b.setAttribute('data-group', g);
+      const tip = `${name} — tap to add it to this track's 900 Series (on another track: a 900 Series with it), or drag it onto the canvas`;
+      b.title = tip;
+      const pic = mk(d, 'span', 'cv-gglyph');
+      pic.setAttribute('aria-hidden', 'true');
+      pic.innerHTML = moogGlyph(id);
+      const nm = mk(d, 'span', 'cv-tname', name), cs = mk(d, 'span', 'cv-tcost'), rs = mk(d, 'span', 'cv-treason');
+      cs.hidden = true; rs.hidden = true;
+      b.append(pic, nm, cs, rs);
+      const off = () => placed.has(id);
+      offs.push(listen(b, 'click', e => { if ((e && e.defaultPrevented) || off()) return; pick(id, mode); }));
+      const dd = { begin: (x, i) => { i.moog = true; if (drag.begin) drag.begin(x, i); }, move: (x, i) => { i.moog = true; if (drag.move) drag.move(x, i); },
+        drop: (x, i) => { i.moog = true; return !!drag.drop && drag.drop(x, i); }, cancel: (x, i) => { i.moog = true; if (drag.cancel) drag.cancel(x, i); } };
+      offs.push(tileDrag(d, Object.assign({}, o, { drag: dd, canvasGhost: o.moogCanvasGhost }), b, id, { pic: () => moogGlyph(id), picCls: 'cv-gglyph', cls: 'cv-gghost', off,
+        norm: r => { const v = r && typeof r === 'object' ? r.over : r; return { over: v === 'canvas' || v === 'tracks' ? v : null, key: null, near: null }; }, at,
+        label: over => (over === 'canvas' ? '+ Add ' + name : over === 'tracks' ? '+ New track' : '') }));
+      box.appendChild(b);
+      gtiles.set(id, { b, rs, cs, tip, name, multi: false });
+      offs.push(() => b.remove());
+    }
+  }
+  function refreshMoog() {
+    for (const [id, T] of gtiles) {
+      let c = '';
+      try { c = o.moogCost ? String(o.moogCost(id) || '') : ''; } catch { c = ''; }
+      if (T.cs.textContent !== c) T.cs.textContent = c;
+      T.cs.hidden = !c;
+      T.cs.title = c ? 'Estimated DSP load on this device: ' + c : '';
+    }
+  }
+  refreshMoog();
   // (milestone 3) the Serum parts and note tools: a section per group (the host's elements, else made in o.secEl / el)
   const ptiles = new Map(), pplaced = new Map(), pbox = new Map(); // id → {b, rs, tip, name, group}; group → {sec, box, head}
   const PT = Array.isArray(o.parts) ? o.parts : o.parts === true ? PART_TILES : null;
@@ -615,6 +707,9 @@ export function sourcesTray(el, o) {
     const ctls = has('ctls') && ctiles.size > 0; // ((8) the Controllers row)
     if (o.ctlsSec) o.ctlsSec.hidden = !ctls;
     if (chead) { chead.hidden = !ctls; for (const T of ctiles.values()) T.b.hidden = !ctls; }
+    const moog = has('moog') && gtiles.size > 0; // ((9) the Moog modules row)
+    if (gsec) gsec.hidden = !moog;
+    if (ginEl) { for (const h of gheads) h.hidden = !moog; for (const T of gtiles.values()) T.b.hidden = !moog; }
     for (const [id, sec] of secs) sec.hidden = !has(id);
     for (const [g, B] of pbox) { // ((3) the parts / note tools sections)
       const on = has(g);
@@ -634,7 +729,7 @@ export function sourcesTray(el, o) {
   }
   setView(view);
   function setPlaced(id, reason) {
-    const T = mtiles.get(id) || ctiles.get(id); // ((8) a Controllers tile too)
+    const T = mtiles.get(id) || ctiles.get(id) || gtiles.get(id); // ((8) a Controllers tile too; (9) a Moog module's)
     if (!T || T.multi) return; // ((2b) a multi-instance tile never greys out)
     const r = reason == null || reason === '' ? null : String(reason);
     if (r) placed.set(id, r); else placed.delete(id);
@@ -645,7 +740,7 @@ export function sourcesTray(el, o) {
     T.b.title = r ? T.name + ' — ' + r : T.tip;
   }
   return {
-    /** the view (an o.views id: 'hw' | 'flow' | 'serum' | 'drums' | 'ctl'; setView is a restore: no callback); the dropdown's close (→ was it open) */
+    /** the view (an o.views id: 'hw' | 'flow' | 'serum' | 'drums' | 'ctl' | 'moog'; setView is a restore: no callback); the dropdown's close (→ was it open) */
     setView, view: () => view, views: () => VIEWS.map(V => V.id), closeView: () => !!vpop && vpop.close(), viewOpen: () => !!vpop && vpop.isOpen(),
     /** the classic synths' layout: setLayout('hw' | 'flow') = that view; layout() the last one (kept through Serum) */
     setLayout: l => setView(l === 'flow' ? 'flow' : 'hw'), layout: () => lay,
@@ -654,6 +749,9 @@ export function sourcesTray(el, o) {
     setPlaced, placed: id => placed.get(id) || null,
     /** (8) the Controllers row's tiles (greyed through setPlaced) */
     ctlTiles: () => [...ctiles.values()].map(T => T.b), ctlTile: id => (ctiles.get(id) || {}).b || null,
+    /** (9) the Moog modules row's tiles; every one greyed with a reason (null: available again); their load labels again */
+    moogTiles: () => [...gtiles.values()].map(T => T.b), moogTile: id => (gtiles.get(id) || {}).b || null,
+    setMoogPlaced(reason) { for (const id of gtiles.keys()) setPlaced(id, reason); }, refreshMoog,
     /** (milestone 3) the Serum parts / note tools tiles; greying one out with its reason (null: available again) */
     partTiles: () => [...ptiles.values()].map(T => T.b), partTile: id => (ptiles.get(id) || {}).b || null,
     setPartPlaced(id, reason) {

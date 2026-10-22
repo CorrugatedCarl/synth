@@ -872,6 +872,9 @@ export function createCables(worldEl, o) {
  *   o.onMod(src, dst) (default o.onConnect); on a refused one o.onRefuse(src, dst, why); on a module's top bar
  *   o.onBarDrop(src, key); a tap, Enter / Space or a right-click on the jack: o.onJackTap(src, jackEl). Two fingers,
  *   Escape, a pointercancel cancel as for audio cables; the live bézier has the mod look (live({mod: true})).
+ * (9, IMPL-9 §4.4, D9) A press on a patch cord's jack ([data-kind="cord"], whatever its data-ro) is the host's: o.cordPress(e,
+ *   jackEl) → false | {cancel} (cv-patch's plug drag); an audio / mod drag never marks a cord jack, its keys and right-click are
+ *   cv-patch's too.
  * @param {object} world  cv-world World (toClient, toWorld, dragPointer, on, setJackHook, el)
  * @param {{
  *   ports: () => Map<string, {x: number, y: number}>,
@@ -886,7 +889,7 @@ export function createCables(worldEl, o) {
  *   canMod?: (src: string, dst: string) => {ok: boolean, why?: string}, onMod?: (src: string, dst: string) => void,
  *   markDests?: (src: string) => Array<{dev: string, ids: string[]} | string> | ((dev: string, id: string) => boolean),
  *   onBarDrop?: (src: string, key: string) => void, onJackTap?: (src: string, jackEl: Element) => void,
- *   hit?: (x: number, y: number) => Element | null,
+ *   hit?: (x: number, y: number) => Element | null, cordPress?: (e: PointerEvent, jackEl: Element) => false | {cancel: () => void},
  * }} o
  * @returns {{press: (e: PointerEvent, jackEl: Element) => false | {cancel: () => void},
  *   menu: (jack: string, x?: number, y?: number) => object | null, cancel: () => void, active: () => boolean, destroy: () => void}}
@@ -917,7 +920,7 @@ export function createCableDrag(world, o) {
       if (W && W.el) walk(W.el);
     }
     return L.filter(j => j && typeof j.id === 'string').map(j => ({ id: j.id, el: j.el || null, dir: j.dir || dirEl(j.id, j.el), mod: j.mod || modOf(j.id), label: j.label,
-      kind: j.kind || (j.el && typeof j.el.getAttribute === 'function' && j.el.getAttribute('data-kind')) || 'audio' }));
+      kind: j.kind || (j.el && typeof j.el.getAttribute === 'function' && j.el.getAttribute('data-kind')) || 'audio' })).filter(j => j.kind !== 'cord'); // ((9) cord jacks: never marked here)
   }
   const labelOf = (j, d) => {
     const L = call(Op.label, j);
@@ -939,7 +942,9 @@ export function createCableDrag(world, o) {
   let D = null, dead = false, unhook = null;
   /* ---- the press (the world's jack hook) */
   function press(e, el) {
-    if (D || dead || !el || typeof el.getAttribute !== 'function' || ro(el) || (e.button != null && e.button !== 0)) return false;
+    if (D || dead || !el || typeof el.getAttribute !== 'function' || (e.button != null && e.button !== 0)) return false;
+    if (el.getAttribute('data-kind') === 'cord') return call(Op.cordPress, e, el) || false; // ((9) a patch cord's jack: cv-patch's drag)
+    if (ro(el)) return false;
     if (isModJack(el)) return pressMod(e, el);
     const j = el.getAttribute('data-cv-jack'), dir = j && dirEl(j, el);
     if (!dir || !portOf(j)) return false;
@@ -1195,7 +1200,8 @@ export function createCableDrag(world, o) {
     if (x == null || y == null) { const r = me.el && me.el.getBoundingClientRect ? me.el.getBoundingClientRect() : null; x = r ? r.left + r.width / 2 : 0; y = r ? r.bottom + 4 : 0; }
     return wk.contextMenu(x, y, items, me.el ? { anchor: me.el } : undefined);
   }
-  const jackEl = t => { for (let n = t; n && typeof n.getAttribute === 'function'; n = n.parentNode) { if (n.getAttribute('data-cv-jack') != null) return n; if (n.getAttribute('data-cv-mod') != null) return null; } return null; };
+  // ((9) a cord jack's keys / right-click are cv-patch's: none here)
+  const jackEl = t => { for (let n = t; n && typeof n.getAttribute === 'function'; n = n.parentNode) { if (n.getAttribute('data-cv-jack') != null) return n.getAttribute('data-kind') === 'cord' ? null : n; if (n.getAttribute('data-cv-mod') != null) return null; } return null; };
   const offs = [];
   if (W && W.el) {
     offs.push(listen(W.el, 'keydown', e => {

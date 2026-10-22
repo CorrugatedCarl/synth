@@ -38,6 +38,7 @@ export const SIL = Object.freeze({
   tr606: Object.freeze({ body: 'desktop', steps: 16 }), // (7b) the TB-303's body family: a silver case, six knobs, a dark programming panel over 16 grey keys
   tr909: Object.freeze({ body: 'box', steps: 16 }), // (7c) the 808's body family: a wide low light case, nine blocks of dark knobs, a red display, 16 cream step keys
   sdsv: Object.freeze({ body: 'box' }), // (8) a dark rack box (no sequencer: no steps): five knob columns with cream memory keys, two blank plates, the mixer, hexagonal pads in front
+  m900: Object.freeze({ body: 'cabinet' }), // (9) the 900 Series: a small dark case of narrow module faces in two tiers over a console strip, coloured cords hanging; no keys, no steps
 });
 
 const W0 = 96, H0 = 56; // the design box
@@ -406,6 +407,58 @@ const DRAW = {
     }
     return s;
   },
+  // a small dark case with a carrying handle and two latches: two tiers of narrow module faces (a name rule, knobs with pointer lines, jacks at the foot;
+  // the wide one is a filter bank's two rows of small knobs) over a console strip (four mixer knobs, two groups of four jacks, the main output's ring), and five
+  // coloured cords with plugs hanging between faces. No text, no logo (a model name is a plain rule).
+  m900(th, lo) {
+    const A = th.accent || '#d9d2bf', FACE = '#2b2926', CAP = '#d4cfc4', JK = '#8d887e', CORDS = ['#d8452f', '#e6b422', '#3b82c4', '#3fae5a', '#b06ad9'];
+    let s = shadow(4, 92, 54.4) + S('M37 5V3.4Q37 1.8 39 1.8H57Q59 1.8 59 3.4V5', '#2b2926', 1.1);
+    s += RR(4, 4.4, 88, 48.6, 2.4, '#1e1c19') + R(5.2, 5.6, 85.6, 46.2, th.panel) + R(5.2, 5.6, 85.6, 0.7, '#fff', OP(0.08)) + R(2.6, 36, 1.6, 4.6, '#6b665d') + R(91.8, 36, 1.6, 4.6, '#6b665d');
+    // a tier of faces at y, h: units wide each, cfg = { k: knobs per row, bank: two rows of five small knobs, j: jacks } → the jack centres of every face
+    const tier = (y, h, units, cfg, seed) => {
+      const u = (82.8 - 0.5 * (units.length - 1)) / units.reduce((a, b) => a + b, 0), J = [];
+      let x = 6.6, g = '', ind = '';
+      units.forEach((n, i) => {
+        const w = n * u, c = cfg[i], jk = [];
+        g += R(x, y, w, h, FACE) + R(x, y, w, 0.5, '#fff', OP(0.1)) + R(x + 0.9, y + 1.1, w - 1.8, 0.6, A, OP(0.5));
+        for (let k = 0; k < c.j; k++) jk.push([x + w * (k + 0.5) / c.j, y + h - 2.5]);
+        J.push(jk);
+        if (lo) g += C(x + w / 2, y + h * 0.45, Math.min(2.2, w * 0.24), CAP);
+        else {
+          const rows = c.bank ? [5, 5] : c.k, rr = c.bank ? 1.05 : 1.85, dy = c.bank ? 3.8 : 4.4;
+          rows.forEach((m, r) => {
+            for (let k = 0; k < m; k++) {
+              const cx = x + w * (k + 0.5) / m, cy = y + 4.6 + r * dy, a = -2.4 + 4.8 * rnd(i * 7 + r * 3 + k, seed);
+              g += C(cx, cy, rr, CAP) + C(cx, cy, rr * 0.7, '#111');
+              ind += `M${f(cx)} ${f(cy)}L${f(cx + Math.sin(a) * rr * 0.62)} ${f(cy - Math.cos(a) * rr * 0.62)}`;
+            }
+          });
+          for (const [jx, jy] of jk) g += C(jx, jy, 0.95, JK) + C(jx, jy, 0.5, '#050505');
+        }
+        x += w + 0.5;
+      });
+      return { g: g + (ind ? S(ind, '#f2efe6', 0.35) : ''), J };
+    };
+    const a = tier(7.6, 19.4, [1, 1, 1, 1, 1, 2, 1, 1], [{ k: [2, 1], j: 2 }, { k: [1, 1], j: 2 }, { k: [2, 2], j: 3 }, { k: [1, 1], j: 2 }, { k: [2, 1], j: 3 }, { k: [3, 2, 1], j: 4 }, { k: [1, 1], j: 2 }, { k: [2], j: 2 }], 3);
+    const b = tier(28.2, 15.4, [1, 3, 1, 1, 1, 1], [{ k: [2, 2], j: 3 }, { bank: 1, j: 4 }, { k: [1, 1], j: 2 }, { k: [1, 1], j: 2 }, { k: [2, 1], j: 3 }, { k: [1, 1], j: 2 }], 5);
+    s += a.g + b.g + R(6.6, 44.8, 82.8, 5.4, '#0f0e0d');
+    const mult = [];
+    for (let k = 0; k < 8; k++) mult.push([34 + (k >> 2) * 14 + (k & 3) * 2.9, 47.5]);
+    if (!lo) {
+      let ind = '';
+      for (let k = 0; k < 4; k++) { const cx = 10.5 + 4.6 * k, ang = -2.2 + 4.4 * rnd(k, 8); s += C(cx, 47.5, 1.5, CAP) + C(cx, 47.5, 1.05, '#111'); ind += `M${f(cx)} 47.5L${f(cx + Math.sin(ang) * 0.9)} ${f(47.5 - Math.cos(ang) * 0.9)}`; }
+      s += S(ind, '#f2efe6', 0.3);
+      for (const [jx, jy] of mult) s += C(jx, jy, 0.8, JK) + C(jx, jy, 0.42, '#050505');
+      s += C(84, 47.5, 1.6, 'none', ` stroke="${A}" stroke-width="0.5"`) + C(84, 47.5, 0.9, JK) + C(84, 47.5, 0.5, '#050505');
+    } else s += R(9, 46.2, 10, 2.6, CAP, OP(0.7)) + R(33, 46.4, 24, 2.2, JK, OP(0.7));
+    // the cords: a jack of the upper tier to one of the lower (and one on to the console), each hanging in a slack curve, a plug at both ends
+    const cords = [[a.J[0][0], b.J[0][1], 7], [a.J[2][2], b.J[1][0], 9], [a.J[3][1], b.J[2][0], 6], [a.J[5][3], b.J[4][1], 8], [b.J[1][3], mult[1], 4]];
+    cords.forEach(([p, q, sag], i) => {
+      s += S(`M${f(p[0])} ${f(p[1])}C${f(p[0])} ${f(p[1] + sag)} ${f(q[0])} ${f(q[1] + sag)} ${f(q[0])} ${f(q[1])}`, CORDS[i], lo ? 1.7 : 0.9);
+      if (!lo) for (const e of [p, q]) s += C(e[0], e[1], 1.25, '#0c0b0a') + C(e[0], e[1], 0.8, CORDS[i]);
+    });
+    return s;
+  },
   // an abstract software instrument: a stacked wavetable, knob rings and a filter curve on a dark panel
   serum(th, lo) {
     const A = th.accent || '#4fb3ff';
@@ -482,9 +535,10 @@ export function glyph(kind, o) {
   cache.set(k, s);
   return s;
 }
-/** Tile text from models.js: {id, name, year, maker, label} (label: the tray's name, 'Serum (complete)' for serum).
+/** Tile text from models.js: {id, name, year, maker, label} (label: the tray's name, 'Serum (complete)' for serum; the 900 Series tile
+ * is "Model 15": it brings the whole set, patched — IMPL-9 §4.6).
  * @param {string} id @returns {{id: string, name: string, year: number, maker: string, label: string}} */
 export function tileMeta(id) {
   const m = byId(id) || { id, name: String(id), year: 0, maker: '' };
-  return { id: m.id, name: m.name, year: m.year, maker: m.maker, label: m.id === 'serum' ? 'Serum (complete)' : m.name };
+  return { id: m.id, name: m.name, year: m.year, maker: m.maker, label: m.id === 'serum' ? 'Serum (complete)' : m.id === 'm900' ? 'Model 15' : m.name };
 }

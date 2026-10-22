@@ -1,4 +1,4 @@
-import { MODELS, DX_ALGS, patchFor, groupSong } from './models.js?v=9';
+import { MODELS, DX_ALGS, patchFor, groupSong, classicOf as isClassicModel } from './models.js?v=9'; // ((9) classicOf as isClassicModel: main's classicOf is the classic-panel lookup)
 import * as S from './song.js?v=9';
 import { PianoRoll, drumRowsOf } from './roll.js?v=9';
 import { Arrangement } from './arrange.js?v=9';
@@ -47,6 +47,11 @@ import * as cvDrum from './cv-drum.js?v=9';
 // shown on every track (the Mod Wheel's placement), playing any track through noteOn's explicit targets
 import * as PC from './pads-core.js?v=9';
 import * as cvPads from './cv-pads.js?v=9';
+// stage 9 (IMPL-9 §6): the 900 Series — patch-core's pure record (PT: modules, cords, the payload, the rack; PC is pads-core's),
+// the family's table (MG: model15, the presets), cv-patch's host (PATCH below: the plug drag, the menus, the modules' faces)
+import * as PT from './patch-core.js?v=9';
+import * as MG from './moog-core.js?v=9';
+import * as cvPatch from './cv-patch.js?v=9';
 
 const VERSION = '9';
 const $ = (s, el = document) => el.querySelector(s);
@@ -129,13 +134,16 @@ let prefs = readPrefs();
 /* ----------------------------------------------------------- project */
 function defaults(m) {
   if (m.defaults) return m.defaults(prefs); // custom panel (Serum): { s } with the preferences applied
-  const v = {}; for (const c of m.controls) v[c.id] = c.def; return v;
+  const v = {}; for (const c of m.controls) v[c.id] = c.def;
+  if (m.family === 'patch') v.p = {}; // ((9, §1.2) a 900 Series: the controller's flat ids, its modules' knobs in vals.p)
+  return v;
 }
 // new sounds: a model's last-used panel values; a Serum track starts from the user's default preset (Save as Default
 // Preset, synth.sx.default, §13.12) or Init with the preferences (§2.1)
 function sxDefault() { const d = store.get('synth.sx.default', null); return d && d.v && d.v.s && typeof d.v.s === 'object' ? d : null; }
 function loadVals(m) {
   if (m.custom) { const d = sxDefault(); return d ? { s: core.normalizeSerum(clone(d.v.s)) } : defaults(m); }
+  if (m.family === 'patch') return defaults(m); // ((9) no last-used values: a patch's knobs belong to its record — save() keeps none)
   return Object.assign(defaults(m), store.get('synth.v.' + m.id, {}));
 }
 // (milestone 3, R2) a track's instruments are read as devices — instOf(t, dev) (cv-model: the primary by default), a device
@@ -151,6 +159,25 @@ const serumIds = t => (t && t.dev ? CMOD.instIds(t).filter(k => isSerumDev(t, k)
 // record ((7c §6) the record's m — an 808's has none — against the model: three ways, never the binary 606 test)
 const isDrumDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && S.isDrum(d.model); };
 const drumDevs = t => (t && t.dev ? CMOD.instIds(t).filter(k => isDrumDev(t, k)) : []);
+// (9, IMPL-9 §1.2, §6) a 900 Series (models.js family 'patch', model m900) is a device too: its modules and cords in dev.patch
+// (patch-core's record — normPatch: a fresh one, the controller alone, when missing), its knobs in vals (the controller's flat
+// ids; vals.p the modules', `_t`-tagged); the track's notes play its controller (the engine's kind 'patch')
+const isPatchDev = (t, dev) => { const d = t && t.dev ? t.dev[dev] : null; return !!d && d.kind === 'synth' && PT.isPatchModel(d.model); };
+const patchDevs = t => (t && t.dev ? CMOD.instIds(t).filter(k => isPatchDev(t, k)) : []);
+function patchOf(t, dev) {
+  if (!isPatchDev(t, dev)) return null;
+  const d = t.dev[dev], f = PT.familyOf(d.model);
+  if (!d.patch || typeof d.patch !== 'object' || d.patch.f !== f || !d.patch.mods || !Array.isArray(d.patch.cords)) d.patch = PT.normPatch(d.patch, f);
+  return d.patch;
+}
+// a new 900 Series device's record and knobs (§1.4): the Model 15 set patched as Classic bass (model15: numbered past any
+// vals.p orphan), or — a module tile on another track (type) — the controller and that module, nothing patched (Q5)
+function patchNew(t, dev, type = null) {
+  const d = t.dev[dev], f = PT.familyOf(d.model);
+  if (type) { const r = PT.addModule(PT.fresh(f), d.vals, type); d.patch = r.mid ? r.rec : PT.fresh(f); return; }
+  const r = MG.model15(d.vals);
+  d.patch = r.rec; d.vals = r.vals;
+}
 function drumOf(t, dev) {
   if (!isDrumDev(t, dev)) return null;
   const d = t.dev[dev];
@@ -255,13 +282,14 @@ function loadProject(json, lo = {}) {
   }
   adopt(p); // (SPEC-canvas §5.4: v2 tracks, a v1 record converted in place)
   for (const t of p.tracks) normDevs(t); // (SPEC-serum2 §12.6, §15.1 item 6: every device normalised; saved with v2 racks)
+  for (const t of p.tracks) for (const k of patchDevs(t)) t.dev[k].vals = PT.pruneVals(t.dev[k].vals, patchOf(t, k)); // ((9, §1.2) a 900 Series' orphan knobs go at a load only — History's restores keep them, §1.5)
   CMOD.prunePads(p); // ((8, review #28) a row whose Pads module or mod pad is gone — a partial or hostile file —, a lay entry of a missing module)
   if (up.readOnly) { if (lo.file) p.newerSchema = up.from; else goReadOnly(up.from); }
   return p;
 }
 function freshProject(m) {
   const p = adopt(CM.stamp(S.newProject({ model: m.id, vals: loadVals(m), name: 'Untitled', trackName: m.name + ' 1' })));
-  for (const t of p.tracks) { newRack(t, m); seedPend.add(t.id); }
+  for (const t of p.tracks) { newRack(t, m); seedPend.add(t.id); for (const k of patchDevs(t)) { patchNew(t, k); t.dev[k].vals = PT.pruneVals(t.dev[k].vals, t.dev[k].patch); } } // ((9) #m900: the Model 15 set as Classic bass, §1.4)
   p.perf = S.normPerf(null); // (stage 2a: no Mod Wheel module yet)
   p.pads = PC.normPads(p.pads); CMOD.prunePads(p); // ((8) no Pads module yet: [])
   return p;
@@ -346,7 +374,7 @@ function save(now) {
   // the per-model value memory (R6: the current instrument's view, written per model as before — a new instrument of the
   // model starts there, loadVals)
   const iv = curView(), m = modelById(iv.model);
-  if (!m.custom && iv.track && iv.vals) store.set('synth.v.' + m.id, iv.vals);
+  if (!m.custom && m.family !== 'patch' && iv.track && iv.vals) store.set('synth.v.' + m.id, iv.vals); // ((9) a patch's knobs belong to its record: none kept)
   // = song.serialize; never carries embedded wavetables (only saved files do, §7.10). Read-only (schema gate: the store
   // locked, or a newer file's project current): no project autosave — saveNow still writes the pending keys
   const ro = roNow();
@@ -373,6 +401,8 @@ function legacyOk(tr, c = CG.compileTrack(tr)) {
   if (!c.canonical) return false;
   if (!tr.dev) return true;
   const ids = CMOD.instIds(tr), f = CMOD.fxDevOf(tr);
+  // (9, IMPL-9 §3.6 P-1) a 900 Series is graphed: a muted / soloed-out one is powered off by {t: 'power', i} (graph nodes only)
+  if (ids.some(k => isPatchDev(tr, k))) return false;
   // (2b) a track with a ModCore payload is graphed: its rows name device ids (dst.inst 'i2', chain 'fx1'), which the
   // legacy node's i0 / c0 are not — a 2a-only track (no payload) keeps today's stream
   if (!buildMods(tr).off) return false;
@@ -480,10 +510,20 @@ function graphParts(tr, sr, offline = false, c = CG.compileTrack(tr)) {
     for (const x of p.needs || []) needs.add(x);
     if (tr.dev[id].model === 'tb303' && (!offline || seqOf(tr, id).sync)) seqs[id] = seqPayload(tr, id, offline ? { run: false } : undefined);
     else if (isDrumDev(tr, id)) seqs[id] = drumPayload(tr, id, offline); // (7a: a drum machine's plan and tables — offline too, SYNC off included: its notes play through its map, mutes and slots; a fresh session, never running)
+    else if (isPatchDev(tr, id)) seqs[id] = patchPayload(tr, id); // ((9) a 900 Series' graph payload {pg, pk} — offline too: a bounce = live)
   }
   for (const x of drumNeeds(tr)) needs.add(x); // (7a §5: its sample slots that are on)
   for (const { id } of g.graph.chains) { const x = chains[id] = buildChain(tr, id, sr, offline); for (const n of x.fxr.needs || []) needs.add(n); }
-  return { graph: Object.assign({}, g.graph), patches, chains, seqs, needs: [...needs] };
+  return { graph: ptPower(tr, Object.assign({}, g.graph), offline), patches, chains, seqs, needs: [...needs] };
+}
+// (9, IMPL-9 §3.6 P-1, the lead's decision) a muted or soloed-out track's 900 Series is off on the live node — the graph's `on`
+// false (and its key marked: the change is posted with {t: 'power'}) —, so a silent patch costs nothing; heard again it starts
+// fresh, its held keys restruck (the engine's power). Offline (a bounce: audible tracks only) never
+function ptPower(tr, graph, offline) {
+  if (offline || audible(tr)) return graph;
+  const off = graph.insts.filter(x => x.on && isPatchDev(tr, x.id)).map(x => x.id);
+  if (!off.length) return graph;
+  return Object.assign(graph, { insts: graph.insts.map(x => (off.includes(x.id) ? Object.assign({}, x, { on: false }) : x)), key: graph.key + '|p1:' + off.join() });
 }
 // the states a track's devices hold (the asset manager reads `~opsKey` / Convolve shapes from them; tracks() is the primary)
 function learnStates(tr) {
@@ -645,7 +685,8 @@ function postPatch(N, p, C = N, i) {
   if (C.engine !== p.engine) { // the engine drops its tables when the model changes
     // ((7a) leaving 'drums' the Inst drops its DrSeq (engine setPatch): the payload key held for it goes, so the machine's
     // next drumSend — an undo / redo bringing it back — posts again, never deduped against a sequencer that is gone)
-    if (C.engine === 'drums' && N.drPk) { if (i === undefined) N.drPk.clear(); else N.drPk.delete(i); }
+    // ((9) leaving 'patch' likewise: a machine re-entered starts with an empty graph (engine ptEmpty) — its payload goes again)
+    if ((C.engine === 'drums' || C.engine === 'patch') && N.drPk) { if (i === undefined) N.drPk.clear(); else N.drPk.delete(i); }
     C.engine = p.engine; C.ctKey = ''; C.ctParts.clear(); C.sqParts.clear(); C.last = null;
   }
   let ct = null, sq = null;
@@ -715,7 +756,9 @@ function sendGraph(tr, N, c) {
     for (const id of Object.keys(G.patches)) postPatch(N, G.patches[id], instCache(N, id), id);
     for (const id of Object.keys(G.chains)) postChain(N, id, G.chains[id]);
     for (const id of fresh) { // (a new TB-303 Inst: its pattern, as a new node's options; (7a) a drum machine's payload, its content key kept)
-      if (isDrumDev(tr, id)) { const s = drumPayload(tr, id); drPkOf(N).set(id, s.pk); post({ t: 'seq', s, i: id }); } else post({ t: 'seq', s: seqPayload(tr, id), i: id });
+      if (isDrumDev(tr, id)) { const s = drumPayload(tr, id); drPkOf(N).set(id, s.pk); post({ t: 'seq', s, i: id }); }
+      else if (isPatchDev(tr, id)) { const s = G.seqs[id]; drPkOf(N).set(id, s.pk); post({ t: 'seq', s, i: id }); } // ((9) a new 900 Series Inst: its graph payload, its content key kept
+      else post({ t: 'seq', s: seqPayload(tr, id), i: id });
     }
     postMods(tr, N); // (2b: the ModCore payload after the parts it names; off once when the rows went)
   };
@@ -725,8 +768,10 @@ function sendGraph(tr, N, c) {
   if (drumLv(tr)) gat.levels = drumLv(tr); // (7a §5: a drum machine's slots: 2 levels)
   const done = tables.ensure(G.needs, gat);
   if (tables.ready(G.needs)) { N.waitP = null; go(); return; }
-  N.waitP = go; // (a newer post of the track replaces a waiting one)
-  done.then(() => { if (N.waitP === go && nodes.get(tr.id) === N) { N.waitP = null; go(); } });
+  // ((9, review 1 F3) a 900 Series' graph payloads that patchSend held while this post waited follow it: its knobs ({t: patch}, in go) first)
+  const late = () => { go(); const L = N.ptLate; N.ptLate = null; if (L) for (const [d, f] of L) patchSend(ptT(tr) || tr, d, f); };
+  N.waitP = late; // (a newer post of the track replaces a waiting one)
+  done.then(() => { if (N.waitP === late && nodes.get(tr.id) === N) { N.waitP = null; late(); } });
 }
 function queueAll() { for (const t of project.tracks) queuePatch(t); }
 // a classic panel wrote a value (ClassicPanel set): its preset becomes Custom, the patch, autosave
@@ -798,7 +843,7 @@ const trackOS = (tr, sr) => { const d = instOf(tr); return isSerum(d) ? sxOSFor(
 // broken one only degrades its feature (Serum tracks silent, FX racks bypassed, …). The same list, in this order, is
 // injected on the main thread (wk.loadDSP) for the panels' displays.
 const DSP_FILES = ['sx-base.js', 'sx-filt2.js', 'sx-warp.js', 'sx-mod.js', 'sx-sample.js', 'sx-gran.js', 'sx-spec.js', 'sx-seq.js',
-  'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js'];
+  'serum-dsp.js', 'fx-mods2.js', 'fx-dsp.js', 'dr-808.js', 'dr-seq.js', 'mod-core.js', 'patch-dsp.js', 'moog-dsp.js'];
 const DSP_URLS = DSP_FILES.map(f => f + '?v=' + VERSION);
 async function addModules(c) {
   const res = await Promise.allSettled(DSP_URLS.map(u => addModule(c, u)));
@@ -1027,6 +1072,7 @@ function makeNode(tr) {
       else if (t.id === project.selTrack && (seqRun.has(t.id + '/' + dev) || (T.playing && seqOf(t, dev).sync))) seqStepTo(t, dev, d.s);
     }
     else if (d.t === 'drumsErr') drumsErr(t); // ((7a) dr-808.js / dr-seq.js missing in the worklet: that machine is silent)
+    else if (d.t === 'ptErr') ptErr(t, d); // ((9) patch-dsp.js / moog-dsp.js missing (why 'load'), or a payload item the machine dropped
     else if (d.t === 'smon') { if (d.fxph) { const k = rackKey(t, N, d); if (k) N.fxph.set(k, d.fxph); } monitors.deliver(id, d); }
     else if (d.t === 'modsErr') { N.modsKey = undefined; console.warn('ModCore rejected the payload' + (d.key ? ' ' + d.key : '') + ' of track ' + t.name); } // ((E6) the node dropped it: the next build reposts
     else if (d.t === 'fxph') { // (a rack's answer: its phase memory, its waiters)
@@ -1103,11 +1149,13 @@ function audible(t) {
   return !t.mute && (!solo || t.solo);
 }
 function mix() {
+  ptDim(); // ((9, §4.3) the shown 900 Series' cords dim with its track's mute / solo — the engine or not)
   if (!ctx) return;
   for (const t of project.tracks) {
     const N = nodes.get(t.id); if (!N) continue;
     N.gain.gain.setTargetAtTime(audible(t) ? t.vol : 0, ctx.currentTime, 0.015);
     N.pan.pan.setTargetAtTime(t.pan, ctx.currentTime, 0.015);
+    if (patchDevs(t).length && N.ptHeard !== audible(t)) { N.ptHeard = audible(t); queuePatch(t); } // ((9) P-1: its 900 Series off / on with it (ptPower), next frame
   }
 }
 // dev (stage 1e): the device the message is for — on a graphed node it gains `i` (an instrument; a Serum's own FX 'iN/fx':
@@ -1241,6 +1289,8 @@ function capsOf(t, dev) {
   const v = N && N.osI ? N.osI.get(id) : undefined;
   return v !== undefined && v < osFor(sr) ? `OS ${osFor(sr)}→${v}` : null;
 }
+// ((9, IMPL-9 §4.7) a 900 Series lowered: FM into audio inputs aliases differently and a feedback cord's one-sample delay grows)
+const PT_OS_TXT = ' (cords into audio inputs may sound different at lower oversampling)';
 // one step down for the group carrying more of the load (the per-node loads the processors report): the app setting
 // for the other models (persisted, as the select shows it), or the Serum tracks' caps (session only): their
 // oversampling first (never above a track's own quality, §11.4 sign-off), at 1× their unison voices; the other group
@@ -1256,7 +1306,7 @@ function lowerOS() {
     const v = h.os / 2, d = h.t.dev[h.id];
     h.N.osI.set(h.id, v);
     postTo(h.t, { t: 'os', v }, h.id);
-    notice(`DSP load stayed above 85% — oversampling of ${d.name || modelById(d.model).name} (track “${h.t.name}”) lowered to ${v}× to avoid dropouts`, 9000);
+    notice(`DSP load stayed above 85% — oversampling of ${d.name || modelById(d.model).name} (track “${h.t.name}”) lowered to ${v}× to avoid dropouts${isPatchDev(h.t, h.id) ? PT_OS_TXT : ''}`, 9000);
   } else if (!sxFirst && po > 1) {
     const v = po / 2;
     settings.os = v; $('#os').value = String(v); persist();
@@ -1264,7 +1314,7 @@ function lowerOS() {
     for (const [id, N] of nodes) if (N.osI) for (const [i, o] of [...N.osI]) { // (the instruments lowered alone below it stay there)
       if (o < v) postTo({ id }, { t: 'os', v: o }, i); else N.osI.delete(i);
     }
-    notice(`DSP load stayed above 85% — oversampling lowered to ${v}× to avoid dropouts`, 9000);
+    notice(`DSP load stayed above 85% — oversampling lowered to ${v}× to avoid dropouts${project.tracks.some(t => patchDevs(t).length) ? PT_OS_TXT : ''}`, 9000);
   } else if (so > 1) {
     sxCap = so / 2;
     for (const t of project.tracks) if (hasSx(t)) queuePatch(t);
@@ -1338,7 +1388,7 @@ function chordCheck(t) {
   // the voices a switch would really give: setTrackModel loads the model's last-used values (loadVals) — a saved Unison /
   // Solo plays one note
   const voiceTo = x => trackVoice({ model: x.id, vals: loadVals(x) });
-  const m = modelById(instOf(t).model), to = m.custom ? null : POLY_TO.map(modelById).find(x => x !== m && voiceTo(x).n >= k);
+  const m = modelById(instOf(t).model), to = m.custom || m.family === 'patch' ? null : POLY_TO.map(modelById).find(x => x !== m && voiceTo(x).n >= k); // ((9) a 900 Series is mono by design: its instrument, never a switch)
   const what = vi.mode !== 'poly' ? `is ${vi.mode === 'unison' ? 'in unison mode' : 'monophonic'} — its chords play one note`
     : `has ${vi.n} voices${vi.cap ? ' (CPU cap)' : ''} — a chord of ${k} notes drops some`;
   const txt = `“${t.name}” ${what}. Tap to ${to ? `switch it to the ${to.name} (${voiceTo(to).n} voices; Undo restores it)` : 'open its instrument'}`;
@@ -1401,13 +1451,14 @@ function keepDevs(t, cur) {
 }
 function applyRestore(p, keepSound = false) {
   if (!p) return;
+  PATCH.cancel(); // ((9, §1.5) a cord drag ends first: a new cord vanishes, a pulled plug springs back)
   PERF.release(); // (1i review F1: every bed and controller lets go while its track is still the selected one: the restored track is a new object, the old panels' offs would be dropped)
   PADS.release({ hw: true }); // ((8, §10.3) every pad's notes end while their tracks are still the project's (a track the restore drops included)
   adopt(p); // (History snapshots and loads are plain objects: adopted first)
   if (!Array.isArray(p.pads)) p.pads = PC.normPads(p.pads); // ((8) a snapshot taken before any Pads module: none)
   // undo / redo never revert knob tweaks (per device) — within one project: an undo of Open / New brings back another project
   // (1f review: track ids repeat across projects; its sound is its own)
-  if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); if (modMove) modMoveBack(p, modMove); if (sxBack) sxBackApply(p, sxBack); if (drBack) drBackApply(p, drBack); } // ((3) a Serum's fields a canvas step wrote: back, §2.4 / §2.5; (7a) → Piano roll's SYNC)
+  if (keepSound && p.uid === project.uid) { for (const t of p.tracks) keepDevs(t, project.tracks.find(x => x.id === t.id)); if (modMove) modMoveBack(p, modMove); if (sxBack) sxBackApply(p, sxBack); if (drBack) drBackApply(p, drBack); if (ptBack) ptBackApply(p, ptBack); } // ((3) a Serum's fields a canvas step wrote: back, §2.4 / §2.5; (7a) → Piano roll's SYNC; (9) a patch step's knobs, §1.5)
   else for (const t of p.tracks) seedPend.add(t.id); // a loaded project re-seeds the racks' LFO phases
   for (const t of p.tracks) fxOfDev(t, null); // (the primary's rack: a v1 one migrated in place)
   const prevSel = project.selTrack;
@@ -1418,15 +1469,16 @@ function applyRestore(p, keepSound = false) {
   // ((7a) the sessions: the records the panels read (a machine changed: a fresh session), the tempo — (7c review #1) before the
   // payloads, which read them: a synced 909's flam ticks are its session's tempo's, so a stale one never goes first)
   drumChanged(); DRUM.bpm(project.bpm);
-  for (const t of project.tracks) { sendPatch(t); sendSong(t, true); for (const k of drumDevs(t)) drumSend(t, k); } // ((7a) its payload, when it changed)
+  for (const t of project.tracks) { sendPatch(t); sendSong(t, true); for (const k of drumDevs(t)) drumSend(t, k); for (const k of patchDevs(t)) patchSend(t, k); } // ((7a) its payload, when it changed; (9) a 900 Series' graph)
   renderAll(!keepSound || prevSel !== project.selTrack);
+  ptShow(); // ((9) the cords from the restored record, the faces' knobs)
   if (T.playing) reanchor(false);
   roUI(); // (a newer file's project read-only; Undo / New away from it: saved again)
   persist();
   cvModSync(); // (stage 2a: the open inspector / Mod list re-read the project)
 }
-function undo() { const p = hist.undo(project); modMove = p && modMoveOf(hist.r[hist.r.length - 1], /^Keep/); sxBack = p && sxBackOf(hist.r[hist.r.length - 1], false); drBack = p && drBackOf(hist.r[hist.r.length - 1], false); try { applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; } updateUndoUI(); }
-function redo() { const p = hist.redo(project); modMove = p && modMoveOf(hist.u[hist.u.length - 1], /^Save/); sxBack = p && sxBackOf(hist.u[hist.u.length - 1], true); drBack = p && drBackOf(hist.u[hist.u.length - 1], true); try { applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; } updateUndoUI(); }
+function undo() { PATCH.cancel(); const p = hist.undo(project); modMove = p && modMoveOf(hist.r[hist.r.length - 1], /^Keep/); sxBack = p && sxBackOf(hist.r[hist.r.length - 1], false); drBack = p && drBackOf(hist.r[hist.r.length - 1], false); ptBack = p && ptBackOf(hist.r[hist.r.length - 1], false); try { applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; ptBack = null; } updateUndoUI(); }
+function redo() { PATCH.cancel(); const p = hist.redo(project); modMove = p && modMoveOf(hist.u[hist.u.length - 1], /^Save/); sxBack = p && sxBackOf(hist.u[hist.u.length - 1], true); drBack = p && drBackOf(hist.u[hist.u.length - 1], true); ptBack = p && ptBackOf(hist.u[hist.u.length - 1], true); try { applyRestore(p, true); } finally { modMove = null; sxBack = null; drBack = null; ptBack = null; } updateUndoUI(); }
 let undoT = 0;
 function updateUndoUI() { // canUndoFrom may serialise the project, so coalesce bursts of calls into one per frame
   if (undoT) return;
@@ -1780,6 +1832,7 @@ function inputNote(t, on, n, v, ts, audition) {
   }
 }
 function panic() {
+  PATCH.cancel(); // ((9) a cord drag in flight ends)
   for (const t of project.tracks) seqToggle(t, false); // not quiet: the Run button and step lights must show it stopped
   PERF.release(); // (1i: the beds drop their pointers — a finger still down leaves no count — and the springs go home)
   DRUM.panic(); // ((7a) the drum machines' sessions stop — a free machine's START —, their queued posts and lights go, the pads let go)
@@ -1816,7 +1869,7 @@ function renderNav() {
 // is replaced (cv-model setModel: its kept-FX rules); the track's primary as before (tr.model: the 1c reshape)
 function setTrackModel(tr0, id, o = null) {
   const tr = trOf(tr0), dev = dvOf(tr0), iv = instView(tr, dev), prim = dev === CMOD.primId(tr);
-  const ui = S.isDrum(id) ? 'hw' : o && (o.ui === 'flow' || o.ui === 'hw') && !modelById(id).custom ? o.ui : null; // ((7a §8) a drum machine: Hardware only)
+  const ui = S.isDrum(id) || PT.isPatchModel(id) ? 'hw' : o && (o.ui === 'flow' || o.ui === 'hw') && !modelById(id).custom ? o.ui : null; // ((7a §8) a drum machine: Hardware only; (9) a 900 Series too)
   if (id === iv.model) { if (ui && tr === trk() && instUi(tr, dev) !== ui) cvSetLayout(ui, dev); return; }
   flush(); // a pending save of the outgoing model's values must not be dropped
   const old = modelById(iv.model), m = modelById(id);
@@ -1825,13 +1878,21 @@ function setTrackModel(tr0, id, o = null) {
   postTo(tr, { t: 'panic' });
   if (prim && new RegExp('^' + old.name.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') + '( \\d+)?$').test(tr.name)) tr.name = m.name + ' ' + (project.tracks.indexOf(tr) + 1);
   const n0 = CG.modRowsFor(tr, dev).length, nm = 'the ' + (tr.dev && tr.dev[dev] ? cvDevName(tr, dev) : 'Serum'); // ((U10) the device being replaced, by its name)
-  const wasDrum = isDrumDev(tr, dev);
+  const wasDrum = isDrumDev(tr, dev), wasPatch = isPatchDev(tr, dev);
+  if (wasPatch) PATCH.cancel();
   CMOD.setModel(tr, dev, id, { vals: loadVals(m) }); // (R5: the primary too — its rack kept by the kept-FX rules, the 1c reshape; (C11) the values with the model: the rows judged against the NEW model's values)
   // (7a §6, §10.1) setModel changes the device in place: a drum machine leaves with its record (the Replace undo brings it
   // back from History) and one arrives with an empty memory; the machine's session starts again either way — (7b) 808 ↔ 606
   // too: a switch away and to, the new machine's own record (normDrum(·, id)), its payload forced after the patch below (the
   // engine keeps one that overtakes the patch in drPend: its m names the machine)
   if (wasDrum || S.isDrum(id)) { const d = tr.dev[dev]; if (S.isDrum(id)) d.drum = DC.normDrum(undefined, id); else delete d.drum; drumForget(tr, dev); }
+  // (9, §1.4, §6) a 900 Series arrives with the Model 15 set as Classic bass — or (o.pm: a module tile) the controller and that
+  // module —, its payload forced after the patch below; one leaves with its record, its knobs (vals.p) and its modules' places
+  if (wasPatch || PT.isPatchModel(id)) {
+    const d = tr.dev[dev];
+    if (PT.isPatchModel(id)) patchNew(tr, dev, o && o.pm); else delete d.patch;
+    if (wasPatch && tr.lay && typeof tr.lay === 'object') { const lay = Object.assign({}, tr.lay); for (const k of Object.keys(lay)) if (k.startsWith(dev + '/')) delete lay[k]; tr.lay = lay; }
+  }
   // (stage 2a) a Serum's cables to a classic one are dropped (the model setter / setModel): said (cv-model setModel's text)
   const gone = n0 - CG.modRowsFor(tr, dev).length, why = gone > 0 ? `${gone} modulation cable${gone > 1 ? 's' : ''} to ${nm} removed: the new model has no such knobs` : ''; // (2b: rows whose param id survives stay)
   if (why) notice(why, 6000);
@@ -1841,10 +1902,13 @@ function setTrackModel(tr0, id, o = null) {
   if (tr.id === project.selTrack) {
     if (dev === curOf(tr)) { bind(); settings.model = id; renderNav(); history.replaceState(null, '', '#' + id); }
     renderPanel(tr, dev);
+    if (PT.isPatchModel(id) && cvView && cvView.trackId === tr.id) cvCamRestore(tr); // ((9, §4.5) its rack framed — unless the user's camera is stored for the track)
+    if (wasPatch || PT.isPatchModel(id)) ptShow(); // ((9) its cords, or none)
   }
   sendPatch(tr);
   if (id === 'tb303') { if (prim) seqSend(tr); else seqSend(tr, dev); }
   else if (S.isDrum(id)) drumSend(tr, dev, 'now', null, true); // ((7a) its plan and tables after the drums patch)
+  else if (PT.isPatchModel(id)) patchSend(tr, dev, true); // ((9, review #25) its graph after the patch kind, forced)
   if (id === 'tr606') offer303(iv); // ((7b §3.8) beside a free-running TB-303: the one-time offer, after the replace's notice)
   if (tr.id === project.selTrack && roll) { roll.refreshRows(); rollDrumUI(); } // ((7a) the roll's drum rows come and go with the model)
   if (ctx) rateText();
@@ -1855,6 +1919,7 @@ function setTrackModel(tr0, id, o = null) {
 function selectTrack(id) {
   const iv = curView(trk());
   if (id === project.selTrack && bound === iv.id + ':' + iv.model) return;
+  PATCH.cancel(); // ((9) a cord drag on the outgoing track ends)
   PERF.release(); // (1i review F2: the springs and the Pencil's aftertouch go home on the track they moved, before the selection moves)
   DRUM.release(); // ((7a) a drum machine's pads and held CLEAR too)
   // ((8, review #7) a pad's pd<k> key is the Pads host's: skipped here — a hardware pad held across the switch keeps sounding,
@@ -1869,6 +1934,7 @@ function selectTrack(id) {
   roll && roll.setTrack(); arr && arr.render();
   rollDrumUI();
   tabTrackUI();
+  ptShow(); // ((9) the shown track's cords (none: []), the cord buffer while a 900 Series is shown, §4.3)
   persist();
 }
 // the current instrument of track t (a tap on its module, a press in its panel, its module menu): the panel services follow
@@ -1889,7 +1955,7 @@ const hwLayoutOf = m => (m && !m.custom ? cvPanel.usable(m.id, m) : null);
 function instUi(t, dev) { // (stage 1e: instrument dev, default the current one; its lay key is its device id)
   const d = dev == null && t ? curOf(t) : dev;
   if (!t || isSerumDev(t, d)) return 'flow';
-  if (isDrumDev(t, d)) return 'hw'; // ((7a §8) a drum machine: its real front panel only — no Simple layout)
+  if (isDrumDev(t, d) || isPatchDev(t, d)) return 'hw'; // ((7a §8) a drum machine: its real front panel only — no Simple layout; (9) a 900 Series' console too)
   return layFlow(t, d || cvModule.ID.inst) ? 'flow' : 'hw';
 }
 // the track's layout entry of instrument dev asks for the Simple layout (lay.<dev>.ui; what instUi reads for a classic one)
@@ -3401,6 +3467,35 @@ function drumEdit(x, dev, fn) {
   t.dev[dev].drum = DC.normDrum(E, instOf(t, dev).model); // ((7b review #4) a 606's record stays a 606's: its patterns, chains and tracks)
   drumSend(t, dev); DRUM.changed(instView(t, dev));
 }
+/* ------------------------------------------------- the 900 Series (stage 9) */
+// IMPL-9 §3.1–§3.2, §6: a patch instrument's graph — patch-core payload(rec): {pg, pk}, pk its content key (colours, names and
+// cord ids never in it) — reaches its Inst as {t: 'seq', s} after its {t: 'patch'} (pv: the knobs, models.js map); the node's
+// key per device (drPkOf, the drum machines' map): an unchanged graph is never posted again (the engine's graph() allocates and
+// re-plans: a knob or a colour is no graph change); force: after a kind change (the key may hold an equal graph from before)
+function patchPayload(t, dev) { const rec = patchOf(t, dev); return PT.payload(rec, rec.f); }
+function patchSend(t, dev, force = false) {
+  const N = t ? nodes.get(t.id) : null;
+  if (!N || !isPatchDev(t, dev)) return false;
+  if (typeof N.waitP === 'function') { // a graph post waiting on assets (a Convolve IR rebuilding): its knobs go with it — the graph after them (sendGraph's late)
+    if (!N.ptLate) N.ptLate = new Map();
+    N.ptLate.set(dev, force || N.ptLate.get(dev) === true);
+    return false;
+  }
+  const s = patchPayload(t, dev), pk = drPkOf(N);
+  if (!force && pk.get(dev) === s.pk) return false;
+  pk.set(dev, s.pk);
+  postTo(t, { t: 'seq', s }, dev);
+  return true;
+}
+// {t: 'ptErr', why, i?} (E9): 'load' — the patch scripts missing in the worklet: that 900 Series is silent (one notice a
+// session); any other why — a payload item the machine dropped (a newer file's module, a cord it refused): a console line
+let ptErrSaid = false;
+function ptErr(t, d) {
+  console.warn('900 Series: the patch engine ' + (d.why === 'load' ? 'did not load' : 'dropped a payload item (' + d.why + ')') + ' — track “' + t.name + '”');
+  if (d.why !== 'load' || ptErrSaid) return;
+  ptErrSaid = true;
+  notice('The patch engine did not load: this 900 Series is silent', 10000);
+}
 // a synced machine with a step that sounds plays with no notes (the bounce's "audible", §4.4 — the 303's syncedOf)
 function drumAudible(t, dev) {
   const D = drumOf(t, dev);
@@ -3679,10 +3774,11 @@ function addTrack(m = curModel(), vals0 = null, o = null) {
   hist.record(project);
   const t = S.newTrack(project, { model: m.id, vals: vals0 ? JSON.parse(JSON.stringify(vals0)) : loadVals(m), name: `${m.name} ${project.tracks.length + 1}` });
   seedPend.add(t.id);
-  if (o && o.ui === 'flow' && !m.custom && m.family !== 'drums') t.lay = { [cvModule.ID.inst]: { x: 0, y: 0, ui: 'flow' } }; // (the Sources tray's Simple)
+  if (o && o.ui === 'flow' && isClassicModel(m)) t.lay = { [cvModule.ID.inst]: { x: 0, y: 0, ui: 'flow' } }; // (the Sources tray's Simple)
   project.tracks.push(t);
   adopt(project);
   if (m.family === 'drums') drumOf(t, CMOD.primId(t)); // ((7a) its record: an empty memory, the defaults; 7b: its machine's)
+  if (m.family === 'patch') patchNew(t, CMOD.primId(t), o && o.pm); // ((9, §1.4) the Model 15 set as Classic bass, or (a module tile) the controller and that module
   if (m.custom && (o && o.parts !== undefined ? o.parts : sxNewView() === 'parts')) { const id = CMOD.primId(t); if (id) t.lay = sxLayParts(t, id); } // ((3) D-R5: a new Serum in parts view)
   newRack(t, m);
   syncNodes();
@@ -3713,12 +3809,12 @@ function deleteTrack(t) {
   if (t.notes.length && !confirm(`Delete “${t.name}” and its ${t.notes.length} notes?`)) return;
   hist.record(project);
   const i = project.tracks.indexOf(t);
-  if (project.selTrack === t.id) PERF.release(); // (1i review F3: its beds' keys end while it is still the selected track)
+  if (project.selTrack === t.id) { PATCH.cancel(); PERF.release(); } // ((9) its cord drag) // (1i review F3: its beds' keys end while it is still the selected track)
   for (const k of drumDevs(t)) drumForget(t, k); // ((7a) its drum machines' sessions)
   PADS.endTrack(t.id); // ((8, D9) every pad's notes on it end — the targets stay (an undo brings the track back)
   project.tracks.splice(i, 1);
   seqRun.delete(t.id); inputSubs.delete(t.id); lastIn.delete(t.id);
-  if (project.selTrack === t.id) { project.selTrack = project.tracks[Math.max(0, i - 1)].id; bind(); renderNav(); renderViews(); roll && roll.setTrack(); rollDrumUI(); }
+  if (project.selTrack === t.id) { project.selTrack = project.tracks[Math.max(0, i - 1)].id; bind(); renderNav(); renderViews(); roll && roll.setTrack(); rollDrumUI(); ptShow(); }
   syncNodes();
   padsRefresh(); // ((8) its pads warn, their lights and "+N" follow)
   renderHeads(); persist(); updateUndoUI();
@@ -4169,7 +4265,8 @@ function midiOutIds(p) {
 // even with no notes of its own, and every source with notes whose target is audible, a muted or soloed-out one at gain
 // 0 (live, its node keeps running at gain 0 and drives the target)
 // (stage 1e: a graph-shaped track's item carries its graph form, offParts; a synced 303 is any powered one of the track)
-const syncedOf = tr => (tr.dev ? CG.powered(tr) : []).some(id => (tr.dev[id].model === 'tb303' && tr.dev[id].seq && tr.dev[id].seq.sync) || (isDrumDev(tr, id) && drumAudible(tr, id))); // ((7a) a synced drum machine with a step)
+// ((9, IMPL-9 §6, review #7) a powered 900 Series whose MAIN OUT is patched sounds with no notes — a Drone, an LFO: bounced too)
+const syncedOf = tr => (tr.dev ? CG.powered(tr) : []).some(id => (tr.dev[id].model === 'tb303' && tr.dev[id].seq && tr.dev[id].seq.sync) || (isDrumDev(tr, id) && drumAudible(tr, id)) || (isPatchDev(tr, id) && PT.live(patchOf(tr, id)))); // ((7a) a synced drum machine with a step)
 function bounceSet(sr) {
   const P = new Map(), partsOf = tr => { if (!P.has(tr)) P.set(tr, offParts(tr, sr)); return P.get(tr); };
   const want = new Map();
@@ -4829,7 +4926,11 @@ function srcModeUI(mode) {
   // ((8, R2-F6) the Controllers view: a tap adds a Pads module to the project — no instrument is replaced, no track made — in either mode)
   if (v === 'ctl') p.append(document.createTextNode('Tap '), h('b', null, 'Pads'), document.createTextNode(' to add a pad grid to the canvas — it shows on every track — or drag it where you want it.'));
   else if (mode === 'track') p.append('Tap ' + one + ' for ', h('b', null, 'a new track'), ', or drag it onto the track list.');
-  else p.append('Tap ' + one + ' to use it' + (v === 'flow' ? ' (simple panel)' : '') + ' in place of the ', h('b', null, curModel().name), ' on ',
+  else if (v === 'moog') { // ((9, review 2 F4) the Moog modules view: what a tap really does here — a module tile adds it to a 900 Series, the Model 15 tile loads Classic bass; on another instrument a tile makes it a 900 Series)
+    const tx = s => document.createTextNode(s), nm = h('b', null, '“' + trk().name + '”');
+    if (ptShown()) p.append(tx('Tap a module to add it to '), nm, tx(', or drag it where you want it. '), h('b', null, 'Model 15'), tx(' loads Classic bass over the patch (tap to undo). Drag a tile onto the track list for a new track.'));
+    else p.append(tx('Tap a module to replace the '), h('b', null, curModel().name), tx(' on '), nm, tx(' with a 900 Series holding it — '), h('b', null, 'Model 15'), tx(' for the whole set, patched — or drag one onto the canvas. Drag it onto the track list for a new track.'));
+  } else p.append('Tap ' + one + ' to use it' + (v === 'flow' ? ' (simple panel)' : '') + ' in place of the ', h('b', null, curModel().name), ' on ',
     h('b', null, '“' + trk().name + '”'), ', or drag it onto the canvas. Drag it onto the track list for a new track.');
 }
 function srcOver(t) {
@@ -4844,12 +4945,13 @@ function srcOver(t) {
 // / replace's own undo step; a tap on the current model's tile switches its layout to the tray's (both ways). The pref
 // holds the view ('hw' | 'flow' | 'serum')
 const TRAY_LAYOUT = 'synth.cv.trayLayout';
-const srcUi = id => (!shell.tiles || modelById(id).custom ? null : modelById(id).family === 'drums' || shell.tiles.layout() !== 'flow' ? 'hw' : 'flow'); // ((7a) a drum machine: Hardware always)
+const srcUi = id => (!shell.tiles || modelById(id).custom ? null : modelById(id).family === 'drums' || modelById(id).family === 'patch' || shell.tiles.layout() !== 'flow' ? 'hw' : 'flow'); // ((7a) a drum machine: Hardware always; (9) a 900 Series too)
 function srcPick(id, mode) {
   const ui = srcUi(id), v = curView();
   // the tray stays open (the user's rule: only its rail, its ✕ or Escape close it); after a new track it goes back to
   // replacing the (new) selected track's instrument
   if (mode === 'track') { addTrack(modelById(id), null, { ui }); srcModeUI('replace'); return; }
+  if (PT.isPatchModel(id) && ptSet()) return; // ((9, §1.4) the Model 15 tile on a 900 Series: Classic bass as a preset, never a same-model Replace)
   if (!cvDropInstrument(id, null, { ui }, v)) setTrackModel(v, id, { ui }); // (the same model: only the layout, if asked)
 }
 function srcDragEnd() {
@@ -4881,6 +4983,7 @@ const srcDrag = {
     const ui = srcUi(id);
     if (i.over === 'tracks') { addTrack(modelById(id), null, { ui }); return true; }
     if (i.over !== 'canvas') return false;
+    if (PT.isPatchModel(id) && ptSet()) return true; // ((9) the Model 15 tile dropped on a 900 Series: as its tap)
     if (!cvDropInstrument(id, rect, { ui })) setTrackModel(curView(), id, { ui }); // (the same model: only the layout, if asked)
     return true;
   },
@@ -4967,7 +5070,9 @@ function initShell() {
     ctlCanvasGhost: () => !!world && !$('#tab-inst').hidden,
     // (milestone 3, §2.6) the Serum parts and note tools: a tap onto the track's Serum (or the Replace with Serum offer), a drop where it lands
     parts: true, partsEl: $('#srcParts'), partsSec: $('#srcPartSec'), notesEl: $('#srcNotes'), notesSec: $('#srcNoteSec'), partPick: id => sxPartPick(id), partDrag: sxPartDrag,
-    partCanvasGhost: () => !!world && !$('#tab-inst').hidden });
+    partCanvasGhost: () => !!world && !$('#tab-inst').hidden,
+    // (9, IMPL-9 §4.6) the Moog modules view's tile row: a tap / a drop adds the module to the shown 900 Series, else makes one
+    moog: cvTray.MOOG_TILES, moogPick: (id, mode) => moogPick(id, mode), moogDrag, moogCanvasGhost: () => !!world && !$('#tab-inst').hidden, moogCost: id => moogCost(id) });
   srcModeUI('replace');
   // the Effects tray (stage 1e, IMPL-1e §4.3; 1f: no panel tile): the rack's effects — a tap or a drop anywhere on the
   // canvas puts one into the track's FX (its panel, a Serum's own); the tray never closes by itself
@@ -5068,6 +5173,14 @@ const cvBuilt = new Map(); // 'trackId/key' → the element its panel was last b
 const cvMounted = new Map(); // module key → {el, tid}: what the current view's module bodies hold
 const cvDue = new Set(); // module keys mounted without their panel (a new device, a kind change, the bodies re-homed): built after the sync
 const cvW = () => cvTestWorld || world;
+// (9, §4.5; review 2 F2, the lead's decision) the world's fit — the toolbar's, the 0 key, the empty-canvas double-tap — on a 900 Series frames its
+// controller and its rack (not the FX panel and OUT), never below READ_K: the rack's top (the oscillator row) stays in view, no foot — the user
+// scrolls down to the controller —, and the whole of it when it fits at READ_K (cvCamRestore's default camera is the same frame). Else null: every item
+function cvFitHook() {
+  const t = trk(), dev = t ? curOf(t) : null;
+  if (!cvView || !dev || cvView.trackId !== t.id || !isPatchDev(t, dev)) return null;
+  return { ids: [dev, ...[...cvView.modules.keys()].filter(k => pmOf(t, k))], kMin: cvWorld.READ_K };
+}
 const cvOn = () => !!cvParts.home;
 // a new module's place on the dots (always: the canvas has no Snap toggle)
 const cvDot = v => Math.round(v / cvWorld.DOT) * cvWorld.DOT;
@@ -5083,6 +5196,7 @@ function initModules() {
     W.on('cameraend', d => cvCamQueue((d && d.cam) || W.cam));
     W.on('screen', () => monitors.sync()); // (a module went on / off screen: its live displays follow, CULL_MARGIN early)
     W.on('resize', e => cvCamResized(e)); // (the keyboard tray sized after boot, a rotation: an untouched default follows)
+    if (typeof W.setFitHook === 'function') W.setFitHook(cvFitHook);
     W.on('mods', m => { if (cvView) cvView.setModsVisible(m); }); // (stage 2a: the toolbar ∿ — Always / On select / Never)
     let slept = false; // (1i §4.3) a tap on sleeping keys / a controller: the hint, once per session
     W.on('sleeptap', d => { const pd = !!d && PC.PAD_ID.test(d.id); if (slept !== true && slept !== (pd ? 'p' : 's')) { slept = slept ? true : pd ? 'p' : 's'; notice(pd ? 'Zoom in, or double-tap the module, to play it' : 'Zoom in, or double-tap the synth, to play it', 2500); } }); // ((8, §2.3) a Pads module's own words, once each)
@@ -5100,6 +5214,7 @@ function cvLive(key) {
 }
 const kindOfKey = (t, key) => {
   if (PC.PAD_ID.test(key)) return padMod(key) ? 'mod' : null; // ((8, §1.1) a Pads module: the project's, a modulator-kind module on every track)
+  if (pmOf(t, key)) return 'pm'; // ((9, §4.1) a 900 Series' module 'iN/m<k>': a part of its instrument, no device of its own)
   const q = CMOD.partOf(key);
   if (q) return isSerumDev(t, q.dev) ? 'part' : null; // ((3) a Serum part 'iN/oscB': a module of its Serum's host, no device)
   const d = t && t.dev ? t.dev[key] : null;
@@ -5126,6 +5241,7 @@ function cvBodyEl(t, key) {
 // A press in an instrument's body makes it the current one (setCur)
 function cvMountBody(key, b) {
   if (kindOfKey(trk(), key) === 'mod') { modMount(key, b); return; } // (stage 2a: a modulator's body, cv-mods-ui)
+  if (kindOfKey(trk(), key) === 'pm') { pmMount(key, b); return; } // ((9) a patch module's face: cv-patch moduleBody over vals.p)
   const t = trk(), kind = kindOfKey(t, key), el = cvBodyEl(t, key);
   if (kind === 'out') b.classList.add('cv-out');
   b.append(el);
@@ -5141,7 +5257,7 @@ function cvMountBody(key, b) {
 // host.bodies.unmount: the module went (removed, its kind changed, the view rebuilt for another track): the scope goes home;
 // a device's own element takes its panel with it (R6: the primary's too — a same-track change is a sync, never a rebuild)
 function cvUnmountBody(key) {
-  if (modUnmount(key)) return;
+  if (modUnmount(key) || pmUnmount(key)) return;
   const M = cvMounted.get(key);
   cvMounted.delete(key); cvDue.delete(key);
   if (!M) return;
@@ -5198,7 +5314,8 @@ function cvRender() {
   sxLabels(); // ((3) the part modules' titles carry their panels' label drags)
   cvPartsSig = sxPartsSig(trk()); // ((3) cvRelabel: a part set changed by an edit makes the modules again)
   sxSettleSoon(); // ((3) parts placed with Tidy's height guesses: moved clear once measured)
-  sxHeavySoon(); // ((3) touch: a Serum in parts past sx1's painted elements says so once, at rest)
+  sxHeavySoon(); // ((3) touch: a Serum in parts past sx1's painted elements says so once, at rest; (9) a 900 Series' modules too)
+  ptTray(); // ((9) the Moog tiles greyed at the patch's 48 modules)
 }
 // (1i) the keyboard bed of an instrument's Hardware layout: its box in the module's body px (null: none — the Simple layout,
 // Serum, a model without hardware keys). The default camera keeps it on screen
@@ -5260,7 +5377,7 @@ function layUi(t, ui, dev = curOf(t)) {
 }
 function cvSetLayout(want, dev) {
   const t = trk(), K = dev || curOf(t);
-  if (isSerumDev(t, K) || isDrumDev(t, K) || (want !== 'hw' && want !== 'flow') || instUi(t, K) === want) return; // ((7a) a drum machine: Hardware only)
+  if (isSerumDev(t, K) || isDrumDev(t, K) || isPatchDev(t, K) || (want !== 'hw' && want !== 'flow') || instUi(t, K) === want) return; // ((7a) a drum machine: Hardware only; (9) a 900 Series too)
   hist.record(project, want === 'flow' ? 'Simple layout' : 'Hardware layout');
   const lay = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {}), m = cvView && cvView.modules.get(K);
   const e = lay[K] ? Object.assign({}, lay[K]) : m ? { x: Math.round(m.x), y: Math.round(m.y) } : { x: 0, y: 0 };
@@ -5290,7 +5407,12 @@ function cvHost() {
       dashedSet: () => dashedOf(trk()) }, // (2b: a per-note source following the last note — compileMods' derived list; (C4) one build per refresh, not per cable)
     title: cvTitle,
     menu: cvMenu,
-    size: key => { if (PC.PAD_ID.test(key)) { const M = padMod(key); return M ? cvPads.moduleSize(M) : null; } const t = trk(), q = CMOD.partOf(key); return q ? { fixed: { w: sxPartW(SE.kindOf(q.part)) } } : CMOD.instOf(t, key) ? cvInstSize(t, key) : null; }, // ((3) a part: its panel's width; (8) a Pads module: its grid's footprint)
+    size: key => { if (PC.PAD_ID.test(key)) { const M = padMod(key); return M ? cvPads.moduleSize(M) : null; } const t = trk(), pm = pmOf(t, key); if (pm) return PATCH.size(t, pm.dev, key); const q = CMOD.partOf(key); return q ? { fixed: { w: sxPartW(SE.kindOf(q.part)) } } : CMOD.instOf(t, key) ? cvInstSize(t, key) : null; }, // ((3) a part: its panel's width; (8) a Pads module: its grid's footprint; (9) a patch module: its type's MU)
+    // (9, IMPL-9 §4.4–§4.5) a 900 Series' rack (Tidy: patch-core rackLayout above its controller), a driver's driven modules
+    // outlined with it, every relayout's ports to the cord layer (its plugs' anchors)
+    rackLayout: key => PATCH.rack(trk(), key),
+    members: key => { const t = trk(), q = pmOf(t, key); return q ? PATCH.members(t, q.dev, key) : []; },
+    onRelay: ports => { const C = cvCords(); if (C && typeof C.anchors === 'function') C.anchors(ports); },
     powerEl: key => sxPowerEl(key), // ((3) a part's own ⏻ (its panel's power toggle) in its bar's power slot
     // (stage 1f: no ⏻, no key-zone pill — host.power / host.zone not given —, read-only cables)
     badge: key => cvBadge(key),
@@ -5311,7 +5433,8 @@ function cvTitle(key) {
   const t = trk(), kind = kindOfKey(t, key), d = t.dev && t.dev[key];
   if (kind === 'part') { const q = CMOD.partOf(key); return { title: SE.partLabel(q.part), sub: cvDevName(t, q.dev) }; } // ((3) 'OSC B' of Serum …; the chip S<n> cv-module's)
   if (kind === 'inst' && isSerumDev(t, key) && sxParts(t, key)) return { title: (d.name || modelById(d.model).name) + ' · VOICE', sub: t.name, chip: cvChip(t, key) }; // ((3) VOICE: the Serum's hub)
-  if (kind === 'inst') { const m = modelById(d.model); return { title: d.name || m.name, sub: t.name, chip: cvChip(t, key) }; }
+  if (kind === 'inst') { const m = modelById(d.model); return { title: d.name || m.name, sub: t.name, chip: cvChip(t, key) }; } // ((9) a 900 Series' controller: its chip the patch's name)
+  if (kind === 'pm') { const q = pmOf(t, key); return PATCH.title(t, q.dev, q.mid); } // ((9) "921B 2", a driven one's "on 921A 1")
   if (kind === 'mod' && PC.PAD_ID.test(key)) { const M = padMod(key); return { title: M ? M.name : key, sub: 'every track', chip: cvPads.chipText(M) }; } // ((8) "Pads 1", its grid "4 × 4")
   if (kind === 'mod') { const mk = modKindOfKey(t, key); return { title: mk ? CMOD.modLabelOf(key, d) : key, sub: key === 'wheel' ? 'every track' : t.name }; } // ((U7) numbered: "LFO 2", as History and the labels say)
   if (kind === 'fx') {
@@ -5331,6 +5454,7 @@ function cvChip(t, dev = curOf(t)) {
     let el, sel;
     const here = () => { const iv = instView(trk(), dev); return iv.model === m.id ? iv : null; };
     if (m.custom) { el = sel = h('span', 'cv-pname'); el.title = 'Preset (change it in the panel’s browser)'; }
+    else if (m.family === 'patch') { el = sel = h('span', 'cv-pname'); el.title = 'Patch (⋯ → Patches)'; } // ((9) a preset is topology: no ◀ ▶
     else {
       sel = h('select', 'cv-psel');
       sel.title = 'Preset'; sel.setAttribute('aria-label', 'Preset');
@@ -5348,6 +5472,7 @@ function cvChipFill(t, dev = curOf(t)) {
   const iv = instView(t, dev), m = modelById(iv.model), C = cvChips.get(t.id + '/' + dev);
   if (!C || C.key !== t.id + '/' + dev + '/' + m.id) return;
   if (m.custom) { const s = iv.preset || 'Init'; if (C.el.textContent !== s) C.el.textContent = s; return; }
+  if (m.family === 'patch') { const s = PATCH.chip(t, dev) || 'Patch'; if (C.el.textContent !== s) C.el.textContent = s; return; } // ((9) the patch's name: the last preset loaded)
   const list = presetList(m), sig = list.length + ':' + iv.preset;
   if (sig === C.sig) return;
   C.sig = sig;
@@ -5378,6 +5503,9 @@ function cvMenu(a, b) {
   if (kind === 'inst') {
     const iv = instView(t, key), mdl = modelById(iv.model), here = fn => () => { setCur(trk(), key); fn(); };
     const head = [{ label: 'About the ' + mdl.name + '…', action: here(cvAbout) }, { label: 'Replace with…', action: here(() => cvOpenSources('replace')) }];
+    // ((9, §6) a 900 Series' controller: Patches ▸ (the starting patches, Init patch) and Tidy patch — no classic sound or layout
+    // items (they would save the controller's knobs alone), no fold)
+    if (isPatchDev(t, key)) return [...head, { sep: true }, ...PATCH.items(t, key, PT.CTL), { sep: true }, front, { sep: true }, tidyI];
     if (mdl.custom) { // (Serum: its own browser saves; 2a: its mod rows; (3) its view — the whole panel or its parts — and VOICE's own items)
       const P = sxParts(t, key), own = P ? sxViewItems(t, key) : [];
       const view = P ? [{ label: 'Bundle', action: () => sxSetView(key, false) }, { label: 'Add', sub: sxAddItems(t, key) }] : [{ label: 'Show parts', action: () => sxSetView(key, true) }];
@@ -5398,6 +5526,7 @@ function cvMenu(a, b) {
     return [...own, { sep: true }, fold, front, { sep: true }, { label: 'Delete', action: () => modDelete(key) }, { sep: true }, tidyI];
   }
   if (kind === 'mod') return [{ label: 'Delete', action: () => modDelete(key) }, { label: 'Modulation list…', action: () => modList() }, { sep: true }, fold, front, { sep: true }, tidyI];
+  if (kind === 'pm') { const q = pmOf(t, key); return [...PATCH.items(t, q.dev, q.mid), { sep: true }, front, { sep: true }, tidyI]; } // ((9, §4.5) Duplicate, Driver ▸, Delete; no fold
   if (kind === 'part') { // ((3, §2.7) the panel's own module items — Init, Copy, Paste, Swap with ▸, Lock — then Remove, Bundle
     const q = CMOD.partOf(key), own = sxViewItems(t, key);
     return [...own, ...(own.length ? [{ sep: true }] : []), { label: 'Remove', action: () => sxRemovePart(key) }, { label: 'Bundle', action: () => sxSetView(q.dev, false) }, { sep: true }, fold, front, { sep: true }, tidyI];
@@ -5515,6 +5644,17 @@ function cvCamRestore(t) {
   if ($('#tab-inst').hidden || !(b.right > b.left && b.bottom > b.top)) { cvCamDef = key; return; } // (ROLL: a 0 × 0 viewport)
   cvCamDef = null;
   const o = W.toClient(0, 0), cam = W.cam, r = m.rect(), P = 24, bw = b.right - b.left - 2 * P, bh = b.bottom - b.top - 2 * P;
+  if (isPatchDev(t, curOf(t))) { // ((9, §4.5) a 900 Series: its controller and its rack together, whole, never below READ_K; centred across the band —
+    // taller than the band at READ_K (the iPad's landscape band under the keyboard tray, a desktop window): its TOP stays in view (the oscillator row, what one
+    // patches first; review 2 F2, the lead's decision) and the controller is down the canvas — the same frame as the fit hook's (cvFitHook)
+    let x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
+    for (const [k, q] of cvView.modules) if (pmOf(t, k)) { const z = q.rect(); x0 = Math.min(x0, z.x); y0 = Math.min(y0, z.y); x1 = Math.max(x1, z.x + z.w); y1 = Math.max(y1, z.y + z.h); }
+    const k = Math.max(cvWorld.READ_K, Math.min(1, bw / Math.max(1, x1 - x0), bh / Math.max(1, y1 - y0))), ox = o.x - cam.tx, oy = o.y - cam.ty;
+    const d = { k, tx: Math.round(b.left - ox + P + Math.max(0, (bw - (x1 - x0) * k) / 2) - x0 * k), ty: Math.round(b.top - oy + P - y0 * k) };
+    cvCamLast = { key, cam: d };
+    W.setCamera(d, { animate: false });
+    return;
+  }
   // (U3) the left edge framed is the key-zone pill's (outside the instruments' left edge: Tidy stacks them at one x), so it
   // never sits under the rail; the instrument alone fits with it (its bar's ⋯ / ▾ stay inside the band)
   const x0 = r.x - Math.max(0, ...CMOD.instIds(t).map(id => { const q = cvView.modules.get(id); return q && Math.abs(q.x - r.x) < 1 ? q.zoneW || 0 : 0; }));
@@ -5622,7 +5762,7 @@ function cvModuleSize(modelId) {
 function cvTidy() {
   const t = trk();
   if (!cvView) return;
-  const td = cvModule.tidy(t, cvView.sizes(), cvView.devices()), old = t.lay && typeof t.lay === 'object' ? t.lay : {}, lay = Object.assign({}, old);
+  const td = cvModule.tidy(t, cvView.sizes(), cvView.devices(), k => PATCH.rack(t, k)), old = t.lay && typeof t.lay === 'object' ? t.lay : {}, lay = Object.assign({}, old); // ((9) a 900 Series' modules: its rack, §4.5)
   const other = cvOtherFx;
   for (const k in td) {
     const e = { x: td[k].x, y: td[k].y }, ox = other(k), o = old[k] || (ox && old[ox]); // (the FX fold through a model change)
@@ -5675,7 +5815,7 @@ function cvAddInstrument(modelId, at, o = null) {
   if (cap.confirm && !confirm(cap.confirm)) return null;
   flush();
   hist.record(project, 'Add ' + m.name);
-  const lay = cvPinned(t), ui = o && o.ui === 'flow' && !m.custom && m.family !== 'drums' ? 'flow' : null;
+  const lay = cvPinned(t), ui = o && o.ui === 'flow' && isClassicModel(m) ? 'flow' : null;
   const id = CMOD.addInst(t, m.id, { vals, fx: m.custom ? newFx(m) : undefined });
   if (at && Number.isFinite(at.x) && Number.isFinite(at.y)) lay[id] = Object.assign({ x: cvDot(at.x), y: cvDot(at.y) }, ui ? { ui } : null);
   else if (ui) lay[id] = { x: 0, y: 0, ui };
@@ -5706,6 +5846,7 @@ function cvPower(key, on) {
   hist.record(project, (on ? 'Power on ' : 'Power off ') + cvDevName(t, key));
   CMOD.setPower(t, key, !!on);
   cvAfter(t);
+  ptDim(); // ((9, §4.3) a 900 Series' cords dim with its ⏻)
 }
 // (hook __synthTest.cv.zone) a key zone: edits of one instrument's zone within 2 s are one History step
 let cvZoneLast = null;
@@ -5821,6 +5962,7 @@ function costLabels() {
     c.title = 'Estimated DSP load on this device: ' + txt;
   }
   if (shell.fxTiles) shell.fxTiles.refresh();
+  if (shell.tiles && typeof shell.tiles.refreshMoog === 'function') shell.tiles.refreshMoog(); // ((9) the Moog module tiles' labels)
 }
 // ⚙ → Measure this device (§9.1): a Worker renders three standard rows (cv-cost measureDevice), progress on the button's
 // line, a second press cancels; the factor goes to the device prefs and the tray labels redraw
@@ -6170,24 +6312,30 @@ function sxSettle() {
 // camera moves, a mounting runs, or over another timed notice ("Added … · tap to undo" keeps its tap); counted once per module set
 const SX_HEAVY = 1866, SX_HEAVY_MS = 600, SX_HEAVY_TXT = 'This many Serum parts may stutter when zooming on this device — Bundle (⋯) puts it back together.';
 let sxHeavyT = 0, sxHeavySig = '', sxHeavyDone = false;
+// (9, IMPL-9 §4.7) a 900 Series' modules the same way, its own words, once: the line is sx1's until the iPad session's "ui-m9"
+// row measures the patch scenes (§5 (b): the largest P+ scene's painted count)
+const PT_HEAVY = SX_HEAVY, PT_HEAVY_TXT = 'This many modules may stutter when zooming on this device.';
+let ptHeavyDone = false;
+const heavyOf = t => (serumIds(t).some(d => sxParts(t, d)) ? (sxHeavyDone ? null : 'sx') : patchDevs(t).length && !ptHeavyDone ? 'pt' : null);
 // ui-bench-m3's rule: an element with a layout box (a folded module's body, a hidden page have none: skipped whole)
 const sxPainted = el => { if (!el.getClientRects().length) return 0; let n = 1; for (const c of el.children) n += sxPainted(c); return n; };
 function sxHeavyCount() { let n = 0; if (cvView) for (const m of cvView.modules.values()) if (m.el) n += sxPainted(m.el); return n; }
 const sxHeavySigOf = t => t.id + ':' + (cvView ? [...cvView.modules.keys()].join() : '');
 function sxHeavySoon() {
   const t = trk();
-  if (sxHeavyDone || sxHeavyT || !touchDev || !cvView || cvView.trackId !== t.id || sxHeavySigOf(t) === sxHeavySig || !serumIds(t).some(d => sxParts(t, d))) return;
+  if (sxHeavyT || !touchDev || !cvView || cvView.trackId !== t.id || sxHeavySigOf(t) === sxHeavySig || !heavyOf(t)) return;
   sxHeavyT = setTimeout(sxHeavyRun, SX_HEAVY_MS);
 }
 function sxHeavyRun() {
   sxHeavyT = 0;
-  const t = trk(), W = cvW();
-  if (sxHeavyDone || !touchDev || !cvOn() || !cvView || cvView.trackId !== t.id || !serumIds(t).some(d => sxParts(t, d))) return;
+  const t = trk(), W = cvW(), k = heavyOf(t);
+  if (!k || !touchDev || !cvOn() || !cvView || cvView.trackId !== t.id) return;
   if ((W && W.busy) || cvMount || cvHold || noticeT) { sxHeavyT = setTimeout(sxHeavyRun, SX_HEAVY_MS); return; } // (not at rest: again)
   sxHeavySig = sxHeavySigOf(t);
   let n = 0;
   try { n = sxHeavyCount(); } catch (err) { console.warn(err); }
-  if (n <= SX_HEAVY) return;
+  if (n <= (k === 'pt' ? PT_HEAVY : SX_HEAVY)) return;
+  if (k === 'pt') { ptHeavyDone = true; notice(PT_HEAVY_TXT, 9000); return; }
   sxHeavyDone = true;
   notice(SX_HEAVY_TXT, 9000);
 }
@@ -6329,6 +6477,19 @@ function sxBackApply(p, { mv, redo, label, noop }) {
   if (!mv.f.every(x => sxSame(sxField(s, x[0]), x[from]))) { notice(`${cvDevName(t, mv.dev)} changed since: ${mv.part ? SE.partLabel(mv.part) + '’s power' : 'its routing'} left as it is`, 5000); return; }
   for (const x of mv.f) sxFieldSet(s, x[0], x[to]);
   sxDirty.add(t.id + '/' + mv.dev);
+}
+
+// (9, IMPL-9 §1.5) undo / redo of a patch step that wrote knobs (a preset, Init patch, the Model 15 tile on a 900 Series):
+// History restores the topology, keepDevs the current knobs — the step's meta {pt, trackId, dev, f} puts its before- (undo) or
+// after-values (redo) back while every field still holds the other side (patch-core ptBack: sxBack's rule), else a notice
+let ptBack = null; // { mv: the step's meta, redo } — read after hist.undo / hist.redo
+const ptBackOf = (e, redo) => (e && e.meta && e.meta.pt === 1 && Array.isArray(e.meta.f) ? { mv: e.meta, redo } : null);
+function ptBackApply(p, { mv, redo }) {
+  const t = p.tracks.find(x => x.id === mv.trackId);
+  if (!t || !isPatchDev(t, mv.dev)) return;
+  const d = t.dev[mv.dev], r = PT.ptBack(d.vals, { f: mv.f }, redo);
+  if (!r.ok) { notice(`${cvDevName(t, mv.dev)} changed since: its knobs left as they are`, 5000); return; }
+  if (!r.already) d.vals = r.vals;
 }
 
 /* ---- the cable drag resolver (§2.5) */
@@ -6510,8 +6671,161 @@ function cvDevices(t) {
   // (milestone 3, §2.1) each Serum in parts view: its part modules (sx-edges partKeys: I1 the parts that are on, I2 the own
   // ENV / LFO slots something reads, MACROS when a macro row exists, ARP / CLIP when on, any laid-out part)
   for (const dev of serumIds(t)) if (sxParts(t, dev)) for (const part of sxPartList(t, dev)) L.push({ key: dev + '/' + part, kind: 'part', dev, part, model: 'serum', title: SE.partLabel(part) });
+  // (9, IMPL-9 §4.1) a 900 Series: its controller — the instrument's own module — carries the console's face jacks and no fold;
+  // then its modules, one 'pm' module each (cv-patch devices: compact bar, no fold, the type's fixed size, its face's jacks)
+  for (const dev of patchDevs(t)) {
+    const e = L.find(x => x.key === dev);
+    if (e) Object.assign(e, { jacks: ptCtlJacks(t, dev), nofold: true });
+    L.push(...PATCH.devices(t, dev));
+  }
   return L;
 }
+/* ---- the 900 Series' modules (stage 9, IMPL-9 §4, §6; cv-patch's host) */
+// PATCH (cv-patch patchHost; its interface in IMPL-9 §12 "Lane U9"): the shown track's 900 Series — its modules' faces (the knob
+// policy: ptKnob, no step), the plug drag, Connect to… and the cord menu, add / delete / duplicate / driver / Patches… / Tidy
+// (ptEdit: one History step each — the record, the knobs and the places written, the graph posted). The cord layer is the
+// world's (cv-cords, lane C9: world.cords()); without it cv-patch draws nothing and every edit works the same
+const ptT = t => (t && project ? project.tracks.find(x => x.id === t.id) || null : null); // (a face mounted before an undo holds the old track object)
+const cvCords = () => { const W = cvW(); try { return W && typeof W.cords === 'function' ? W.cords() || null : null; } catch (err) { console.error(err); return null; } };
+// the shown track's cords (none: []) and the faces from its record, the cord layer's buffer while a 900 Series is shown (§4.3)
+function ptShow() {
+  PATCH.sync();
+  const C = cvCords(), t = trk();
+  if (C && typeof C.alloc === 'function') { try { C.alloc(isPatchDev(t, curOf(t))); } catch (err) { console.error(err); } }
+  ptDim();
+}
+// (§4.3) the cords of the shown 900 Series are drawn at 0.45 alpha while it is off: its track muted or soloed out, or its own ⏻ (cv-cords dim).
+// Called where the host learns it: mix() (mute / solo), cvPower (⏻), ptShow (a track switch, an undo, a Replace, boot)
+function ptDim() {
+  const C = cvCords(), t = trk(), dev = t ? curOf(t) : null;
+  if (!C || typeof C.dim !== 'function') return;
+  try { C.dim(!!dev && isPatchDev(t, dev) && !(audible(t) && CG.powered(t).includes(dev))); } catch (err) { console.error(err); }
+}
+// an 'iN/m<k>' module key of track t → { dev, mid } (a module of its 900 Series' record), else null
+function pmOf(t, key) {
+  const i = typeof key === 'string' ? key.indexOf('/') : -1, dev = i > 0 ? key.slice(0, i) : null;
+  const mid = dev && isPatchDev(t, dev) ? cvPatch.midOf(dev, key) : null;
+  return mid && mid !== PT.CTL && patchOf(t, dev).mods[mid] ? { dev, mid } : null;
+}
+// the controller's face jacks (the console's patch jacks, cv-panel geometry + the bar: cv-patch faceJacks) — per layout object
+const ptCtlJ = new WeakMap();
+function ptCtlJacks(t, dev) {
+  const m = modelById(t.dev[dev].model), L = hwLayoutOf(m);
+  if (!L) return [];
+  if (!ptCtlJ.has(L)) ptCtlJ.set(L, cvPatch.faceJacks(L, m, PT.title(patchOf(t, dev), PT.CTL)));
+  return ptCtlJ.get(L);
+}
+let ptUp = false; // (the world is built: PATCH.attach — cvW is read only from then on)
+const PATCH = cvPatch.patchHost({
+  doc: document, world: () => (ptUp ? cvW() : null), kit: classicHost.kit,
+  cur: () => { const t = trk(), dev = curOf(t); return isPatchDev(t, dev) ? { t, dev } : null; },
+  rec: (t, dev) => { const x = ptT(t); return x ? patchOf(x, dev) : null; },
+  vals: (t, dev) => { const x = ptT(t); return x && isPatchDev(x, dev) ? x.dev[dev].vals : null; },
+  edit: (t, dev, label, r) => ptEdit(ptT(t), dev, label, r),
+  knob: (t, dev, mid, id, v, ph) => ptKnob(ptT(t), dev, mid, id, v, ph),
+  view: () => cvView, cords: () => cvCords(),
+  // (a "tap to undo" undoes its own step only while it is still the newest: a later edit is never undone by an old notice)
+  notice: (text, ms, onTap) => {
+    if (onTap) { const step = hist.u[hist.u.length - 1]; noticeActs.set(text, () => { noticeActs.delete(text); notice('', 0); if (step && hist.u[hist.u.length - 1] === step) onTap(); }); }
+    notice(text, ms);
+  },
+  undo: () => undo(),
+});
+// cv-patch's edit (§1.5, U9's interface): ONE History step labelled `label` — r.back's knobs as the step's ptBack meta —, then
+// the record, the knobs (r.vals) and the places (r.lay: null deletes a key) written; the knobs it wrote posted first (the graph's
+// new modules snap to them, §3.3), the graph when its content changed; the canvas follows
+function ptEdit(t, dev, label, r) {
+  if (!t || !isPatchDev(t, dev) || !r || !r.rec || typeof r.rec !== 'object') return false;
+  flush();
+  hist.record(project, label);
+  const step = hist.u[hist.u.length - 1], d = t.dev[dev];
+  if (step && r.back && Array.isArray(r.back.f) && r.back.f.length) step.meta = { pt: 1, trackId: t.id, dev, f: clone(r.back.f) };
+  d.patch = r.rec;
+  if (r.vals) d.vals = r.vals;
+  if (r.lay && typeof r.lay === 'object') {
+    const lay = Object.assign({}, t.lay && typeof t.lay === 'object' ? t.lay : {});
+    for (const k of Object.keys(r.lay)) { if (r.lay[k] == null) delete lay[k]; else lay[k] = r.lay[k]; }
+    t.lay = lay;
+  }
+  if (r.vals) sendPatch(t);
+  patchSend(t, dev);
+  cvRender(); persist(); updateUndoUI();
+  return true;
+}
+// a module face's knob (the knob policy, §1.5: no step; keepDevs keeps it through undo / redo): the value written at once (the
+// face reads it back), the {t: 'patch'} (pv) at most every PT_KNOB_MS while dragging (postMods' MODS_MIN_MS), at once at its lift
+const PT_KNOB_MS = 66;
+function ptKnob(t, dev, mid, id, v, ph) {
+  if (!t || !isPatchDev(t, dev)) return;
+  const d = t.dev[dev], nv = PT.setKnob(d.vals, patchOf(t, dev), mid, id, v);
+  if (nv !== d.vals) d.vals = nv;
+  const N = nodes.get(t.id), now = performance.now();
+  persist();
+  if (!N) return;
+  if (N.ptKT) { clearTimeout(N.ptKT); N.ptKT = 0; }
+  if (ph === 'end' || !(now - (N.ptKAt || 0) < PT_KNOB_MS)) { N.ptKAt = now; queuePatch(t); return; }
+  N.ptKT = setTimeout(() => { N.ptKT = 0; N.ptKAt = performance.now(); const x = ptT(t); if (x && nodes.get(x.id) === N) queuePatch(x); }, Math.max(1, PT_KNOB_MS - (now - N.ptKAt)));
+}
+const pmBodies = new Map(); // 'iN/m<k>' → its mounted face (cv-patch moduleBody)
+function pmMount(key, b) {
+  pmUnmount(key);
+  const t = trk(), q = pmOf(t, key);
+  if (!q) return;
+  const B = cvPatch.moduleBody({ host: PATCH, t, dev: q.dev, mid: q.mid, type: patchOf(t, q.dev).mods[q.mid].t, doc: document });
+  b.append(B.el);
+  pmBodies.set(key, B);
+}
+function pmUnmount(key) { const B = pmBodies.get(key); if (!B) return false; pmBodies.delete(key); B.destroy(); return true; }
+// the Sources view "Moog modules" (§1.4, §4.6): a module tile tapped on a 900 Series track adds it (the next free slot of its
+// row), dropped on the canvas where it lands; on any other track (or + Track) a 900 Series with the controller and that module
+// (Q5: "Replaced … · tap to undo"). The Model 15 tile (the m900 model tile, srcPick / srcDrag) on a 900 Series: Classic bass
+// loaded as a preset — the missing Model 15 modules added, one step, its knobs back on undo (ptBack) — never a same-model Replace
+const ptModel = () => MODELS.find(m => PT.isPatchModel(m.id)) || null;
+function ptShown() { const t = trk(), dev = curOf(t); return isPatchDev(t, dev) ? { t, dev } : null; }
+function ptSet() { // (the full-set tile on its own instrument) → true when it was one
+  const P = ptShown(), fam = P ? PT.FAMILIES[patchOf(P.t, P.dev).f] : null;
+  if (!fam) return false;
+  PATCH.preset(fam.starter, { ensure: fam.set });
+  return true;
+}
+function moogPick(type, mode) {
+  if (mode !== 'track' && ptShown()) { PATCH.add(type); return; }
+  const m = ptModel();
+  if (!m) return;
+  if (mode === 'track') { addTrack(m, null, { pm: type }); srcModeUI('replace'); return; }
+  cvDropInstrument(m.id, null, { pm: type });
+}
+const ptTileSz = type => { const T = MG.TYPES[type]; return T ? { w: T.w, h: T.h } : { w: cvModule.W_PM, h: cvModule.H_PM }; };
+const moogDrag = { // a Moog module tile dragged out: its true-size outline under the pointer over the canvas (a module of the shown 900 Series), the track list (a new 900 Series)
+  move(id, i) {
+    const tracks = i.over === 'tracks', W = cvW();
+    $('#topTray').classList.toggle('cv-dropt', tracks);
+    if (!W) return;
+    const sz = ptTileSz(id);
+    if (i.over === 'canvas') shell.drop = W.ghost({ x: i.x, y: i.y, w: sz.w, h: sz.h, label: '+ ' + ((MG.TYPES[id] || {}).short || id) + (ptShown() ? '' : ' · a 900 Series') });
+    else { W.ghost(null); shell.drop = null; }
+    W.dragPointer(tracks || !i.left ? null : { x: i.x, y: i.y, pointerType: i.pointerType });
+  },
+  begin(id, i) { const W = cvW(); if (W) W.setDragging(true); moogDrag.move(id, i); },
+  drop(id, i) {
+    const r = shell.drop, sz = ptTileSz(id);
+    srcDragEnd();
+    if (i.over === 'tracks') { const m = ptModel(); if (m) addTrack(m, null, { pm: id }); return true; }
+    if (i.over !== 'canvas') return false;
+    if (ptShown()) PATCH.add(id, r || (i.at ? { x: i.at.x - sz.w / 2, y: i.at.y - sz.h / 2 } : null));
+    else { const m = ptModel(); if (m) cvDropInstrument(m.id, null, { pm: id }); }
+    return true;
+  },
+  cancel() { srcDragEnd(); },
+};
+// the tiles greyed at the patch's module limit (setMoogPlaced, at each render)
+function ptTray() {
+  if (!shell.tiles || typeof shell.tiles.setMoogPlaced !== 'function') return;
+  const P = ptShown(), n = P ? Object.keys(patchOf(P.t, P.dev).mods).length : 0;
+  shell.tiles.setMoogPlaced(n >= PT.MAX_MODS ? `A patch holds at most ${PT.MAX_MODS} modules` : null);
+}
+// a module tile's load label on this device (cv-cost's per-type figure; a sectioned module: every section)
+function moogCost(type) { const c = COSTM.COST.patch ? COSTM.COST.patch[type] : null, x = Array.isArray(c) ? c.reduce((a, b) => a + (+b || 0), 0) : +c || 0; return x > 0 ? COSTM.label(x * devFactor()) : ''; }
 /* ---- the bodies and their live values */
 const modValue = (kind, t = trk()) => (kind === 'velo' ? lastVel(t) : kind === 'note' ? lastNote(t) : perfValue(kind, t));
 const modCCLast = new Map(); // '<track id>/<cc module>' → the last controller value received (the meter after a remount)
@@ -7022,6 +7336,7 @@ const modDragOpts = {
   onConnect: (a, b) => { sxConnect(a, b); },
   onBarDrop: (src, key) => { const m = cvView && cvView.modules.get(key); modDests(src, String(key).split('/')[0], m ? m.bar : null); },
   onJackTap: (src, el) => { modJackTap(src, el); },
+  cordPress: (e, el) => PATCH.press(e, el), // ((9, §4.4) a patch cord's jack: cv-patch's plug drag (cv-cables hands it every cord jack's press)
 };
 function modSelect(id) { if (!cvView) return; modSelHost = true; try { cvView.cables.select(id); } finally { modSelHost = false; } }
 // (review 2 P1-5) fn once the tap that called it is over: after its click (a mouse's comes in the same task, a touch's
@@ -7496,6 +7811,9 @@ if (globalThis.__synthTest && typeof globalThis.__synthTest === 'object') { // (
     drum: DRUM, drumSend, drumToRoll, drumLoad, drumOf, drumPayload, drumNeeds, drMons, srcUi, layFlow, setProjectBpm, panic, importMidiFile, projectFile,
     // (8: tests/canvas-8-sim) the Pads host and a module's mounted body
     pads: PADS, padsBody: id => { const B = modBodies.get(id); return B && B.kind === 'pads' ? B : null; }, padLit, loadProject: (j, o) => loadProject(j, o), applyRestore,
+    // (9: tests/canvas-9-sim) the 900 Series' host, its cord layer (the world's), the page's patch section
+    patch: PATCH, cords: () => cvCords(), patchOf, patchPayload, patchSend, isPatchDev, pmBodies, moogPick, moogDrag, ptSet, ptKnob, srcPick, srcDrag, ptHeavy: () => ({ PT_HEAVY, done: ptHeavyDone }),
+    bounceSet: sr => bounceSet(sr), mix: () => mix(),
 
     // (stage 2a, tests/canvas-2a-sim)
     mod: { add: modAdd, drag: modTileDrag, del: modDelete, opts: modDragOpts, connect: modConnect, can: modCan, marks: modMarks, layer: () => modLayer, host: () => modHostO,
@@ -7538,7 +7856,9 @@ function boot() {
   initEditors();
   initTransport();
   initShell(); initWorld(); initModules(); // the stage-1b canvas shell (IMPL-1b §6: this order; renderAll then mounts the modules)
+  ptUp = true; PATCH.attach(); // ((9) the cord jacks' keys / right-click and their sleep below READ_K, on the world now it exists
   renderAll();
+  ptShow(); // ((9) a 900 Series shown at boot: its cords
   buildKeys(); initKeys();
   openTab(store.get('synth.tab', 'canvas'));
 

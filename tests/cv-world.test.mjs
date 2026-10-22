@@ -6,7 +6,12 @@ import './v8-guard.mjs';
 // (compare ids / strings / numbers). Stage 1e: the jack hook (a press on a jack is the cable drag's; a second finger
 // cancels it and pinches; a two-finger cancel, Escape, setActive(false) cancel it). Stage 2a: the ∿ cycle (Always / On
 // select / Never, synth.cv.mods, 'mods' events). Stage 1i (IMPL-1i §4.3), with the real gesture.js on the same window: two
-// fingers on a sleeping bed pinch, G2 (a resting finger never silences an awake bed), the 'sleeptap' event.
+// fingers on a sleeping bed pinch, G2 (a resting finger never silences an awake bed), the 'sleeptap' event. Stage 9 (IMPL-9
+// §4.2, §4.3, §4.5, §8.5; lane C9): the cord layer built lazily by cords() (its options: gl / svg / under), stepped and drawn
+// ONCE a frame by the world (a pinch frame's two writes — gesture.js's pan and zoom hooks — step and draw it once at their end,
+// the tick leaves it; the hold rule from the tick's frame length; the frame's camera), no frame while every
+// rope sleeps (the real cv-cords on a fake GL too), a cord jack below READ_K not offered to the jack hook (it pans: sleeper),
+// other jacks as before, the fit hook (ids, a READ_K floor, the foot kept).
 // Run alone: node --max-old-space-size=2048 --test tests/cv-world.test.mjs
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -18,6 +23,7 @@ import * as MOD from '../cv-module.js?v=9';
 import * as CAB from '../cv-cables.js?v=9';
 import * as FACES from '../cv-face.js?v=9';
 import * as G from '../gesture.js?v=9';
+import * as CORDS from '../cv-cords.js?v=9';
 
 const { Ev, ptr, fire, place, layout, all } = dom;
 // never hand a fake-DOM node to assert (its AssertionError walks the cyclic tree): primitives, or JSON
@@ -1923,4 +1929,300 @@ test('1i: a tap on a sleeping bed or controller emits the world event sleeptap (
   world.setCamera({ tx: 0, ty: 0, k: 0.4 }); world.select(null); frame(); adv(600);
   touch(wheel, 'pointerdown', 40, 360, 1); touch(wheel, 'pointerup', 40, 360, 1);
   eq(sleeptaps, ['m', 'm'], 'a sleeping controller (perf) too');
+});
+
+/* ------------------------------------------------------------------ (9) the cord layer, the cord jacks below READ_K, the fit hook */
+// a recording stand-in for cv-cords (the surface cv-world uses): step / draw calls with the time, the camera; swing(n): awake for n
+// steps (onWake asks the world for a frame, as the layer does)
+function fakeCords(log, made) {
+  return (vp, opts) => {
+    const L = { opts, running: false, left: 0, owedF: false,
+      step(T, busy) { log.push(['step', T, !!busy]); if (L.running) { L.owedF = true; if (--L.left <= 0) L.running = false; } return L.owedF; },
+      owed: () => L.owedF, wants: () => L.running || L.owedF,
+      draw(c, vw, vh, d) { log.push(['draw', c.tx, c.ty, c.k, vw, vh, d]); L.owedF = false; return true; },
+      resize(vw, vh, d) { log.push(['resize', vw, vh, d]); }, reset() { log.push(['reset']); }, svg() { log.push(['svg']); }, destroy() { log.push(['destroy']); },
+      swing(n) { L.running = true; L.left = n; opts.onWake(); } };
+    if (made) made.push(L);
+    return L;
+  };
+}
+const kinds = log => log.map(e => e[0]);
+
+test('(9) cords(): the layer built at the first call (never at boot), once; its options — the world\'s #world / doc / clock, mode gl (?nogl: svg; ?cords=under or the pref with the GL layer: under, drawn in GL.draw\'s frame), its viewport size; destroy takes it down', () => {
+  const log = [], made = [];
+  const S = setup({ opts: { createCords: fakeCords(log, made) } });
+  S.frame();
+  eq(made.length, 0, 'nothing at boot');
+  const L = S.world.cords();
+  eq([made.length, S.world.cords() === L, L.opts.world === S.w, L.opts.doc === S.d, L.opts.mode, L.opts.test, typeof L.opts.onWake, typeof L.opts.now, typeof L.opts.under], [1, true, true, true, 'gl', false, 'function', 'function', 'function']);
+  eq(log[0], ['resize', 1000, 600, 1], 'sized to the viewport');
+  S.world.destroy();
+  eq([log.at(-1)[0], S.world.cords()], ['destroy', null]);
+  const mode = (search, ls, gl) => {
+    const m = [], d = dom.fresh(), win = d.defaultView;
+    win.location = { search };
+    if (ls) win.localStorage = { getItem: k => (k === 'synth.cv.cords' ? ls : null) };
+    win.document = d; d.querySelectorAll = () => [];
+    const vp = d.createElement('div'), w = d.createElement('div');
+    vp.append(w); d.body.append(vp); place(vp, 0, 0, 800, 600);
+    const world = W.createWorld(vp, { world: w, env: { win, doc: d, now: () => T, raf: () => 1, caf: () => {}, setTimeout: setT, clearTimeout: clearT }, createGL: gl ? fakeGL([]) : () => null, createCords: fakeCords([], m) });
+    world.cords();
+    const out = m[0].opts.mode;
+    world.destroy();
+    return out;
+  };
+  eq([mode('', null, true), mode('?nogl', null, true), mode('?cords=under', null, true), mode('', 'under', true), mode('?cords=under', null, false), mode('?nogl&cords=under', null, true)], ['gl', 'svg', 'under', 'under', 'gl', 'svg']);
+});
+
+test('(9) one draw a frame: the tick steps the ropes, then draws once (the camera stood); a pinch frame — gesture.js\'s own rAF writes twice (its pan hook, then its zoom hook), before the world\'s tick or after it — steps and draws them ONCE at its last camera and the tick, which steps them too, leaves the draw to it; the hold rule from the tick\'s frame length; no frame once every rope sleeps; none while the canvas view is hidden', async () => {
+  const log = [], made = [];
+  const S = setup({ opts: { createCords: fakeCords(log, made) } });
+  S.frame();
+  const L = S.world.cords();
+  log.length = 0;
+  L.swing(80);
+  eq(S.rq.length, 1, 'a rope woke: a frame asked for');
+  S.frame();
+  eq(kinds(log), ['step', 'draw'], 'the frame: the step, then one draw');
+  const at = { cx: 500, cy: 400 };
+  for (let i = 0; i < 8; i++) {
+    log.length = 0;
+    const first = i % 2 === 0; // (gesture.js's rAF first, or the world's tick first)
+    if (!first) S.frame();
+    S.world.hooks.pan(-4, 2, at); S.world.hooks.zoom(1.05, 500, 400, at);
+    const c = S.world.cam;
+    eq(kinds(log).filter(k => k === 'draw').length, 0, 'nothing drawn mid-callback (two writes)');
+    await null; // (the end of gesture.js's callback: its microtask)
+    if (first) S.frame();
+    const draws = log.filter(e => e[0] === 'draw');
+    eq([draws.length, log.some(e => e[0] === 'step')], [1, true], 'pinch frame ' + i + ': stepped, one draw');
+    eq(draws[0].slice(1, 4), [c.tx, c.ty, c.k], 'at the callback\'s last camera');
+    ok(log.filter(e => e[0] === 'step').every(e => e[2] === false), 'no hold: 16 ms frames');
+  }
+  // the pinch stops: the tick steps every frame and takes the draw back once the last write is older than its lead (≤ 5 frames)
+  log.length = 0;
+  S.frame(6);
+  eq(log.filter(e => e[0] === 'step').length, 6, 'the tick steps every frame');
+  ok(log.filter(e => e[0] === 'draw').length >= 1 && log.filter(e => e[0] === 'draw').length <= 3, 'the tick draws again: ' + kinds(log).join(' '));
+  // a slower finger — the gesture's writes every other frame, after the world's tick: never two draws in a frame (the tick
+  // leaves the draw to the writes while they keep coming: the sway is drawn with the camera)
+  const per = [];
+  for (let i = 0; i < 10; i++) {
+    log.length = 0; S.frame(); S.world.hooks.pan(-3, 1, at); S.world.hooks.zoom(i < 5 ? 1.03 : 0.97, 500, 400, at); await null;
+    per.push(kinds(log).filter(k => k === 'draw').length);
+    log.length = 0; S.frame(); per.push(kinds(log).filter(k => k === 'draw').length);
+  }
+  ok(per.slice(4).every(n => n <= 1) && per.slice(4).filter(n => n === 1).length >= 7, 'draws per frame: ' + per.join(''));
+  // the hold rule: in a burst, a frame after one longer than 24 ms steps nothing (the tick's frame length, not the step's)
+  log.length = 0;
+  S.world.panBy(10, 0); adv(40); S.frame();
+  eq([log[0][0], log[0][2]], ['step', true], 'a 56 ms frame in a burst: held');
+  S.frame();
+  eq(log.filter(e => e[0] === 'step').pop()[2], false, 'the next 16 ms frame: stepped');
+  // a pan by the tick (the mouse's): the step first, the draw in write() at the new camera
+  log.length = 0;
+  S.world.panBy(30, 0); S.frame();
+  eq(kinds(log), ['step', 'draw']);
+  eq(log[1][1], S.world.cam.tx, 'the frame\'s camera');
+  // the rest: still swinging → a step and a draw a frame, until it sleeps; then no frames at all
+  let frames = 0;
+  while (S.rq.length && frames < 200) { log.length = 0; S.frame(); frames++; ok(kinds(log).filter(k => k === 'draw').length <= 1, 'one draw'); }
+  adv(400); S.frame(3);
+  eq([L.wants(), S.rq.length], [false, 0], 'asleep: no frame requested');
+  // the canvas view hidden (ROLL): never stepped; shown again: on where it was
+  L.swing(5); S.world.setActive(false); log.length = 0; S.frame(3);
+  eq(log.filter(e => e[0] === 'step').length, 0, 'hidden: never stepped');
+  S.world.setActive(true); S.frame();
+  ok(log.some(e => e[0] === 'step'), 'shown: stepped again');
+});
+
+// (R2b F5) a scripted gesture, a frame per entry of `pat` (1: gesture.js's rAF writes that frame — the pan hook, the zoom hook,
+// its microtask): the world's tick (registered a frame ago, so before gesture's rAF in the frame: o.first false) at T, then the
+// writes; o.first: gesture's rAF first. The clock +16 a frame (adv: the burst's timers run). → per frame { w, draws, steps, cam, t }
+async function gestureFrames(S, log, pat, o = {}) {
+  const at = { cx: 500, cy: 400 }, out = [];
+  let n = 0;
+  for (const w of pat) {
+    log.length = 0;
+    const t = T, tick = () => { for (const f of S.rq.splice(0)) f(T); };
+    const write = async () => { S.world.hooks.pan(-3, 1, at); S.world.hooks.zoom(Math.floor(n++ / 6) % 2 ? 0.97 : 1.03, 500, 400, at); await null; };
+    if (o.first) { if (w) await write(); tick(); } else { tick(); if (w) await write(); }
+    out.push({ w, t, draws: log.filter(e => e[0] === 'draw'), steps: log.filter(e => e[0] === 'step'), cam: Object.assign({}, S.world.cam) });
+    adv(16);
+  }
+  return out;
+}
+test('(R2b F5) one cord draw per displayed frame whatever the gesture\'s cadence — gesture.js\'s writes every frame (8 / 16 ms moves) or every 2nd–4th (33 ms, jittered), after the world\'s tick or before it: draws ≤ frames, each write frame\'s one draw at its final camera, the ropes stepped by the tick every frame, drawn again at once when the writes stop', async () => {
+  const P = {
+    every: Array(24).fill(1), // (8 and 16 ms moves: one flush a frame)
+    p33: [1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1], // (33 ms moves: 2–3 frames apart)
+    p33b: [1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1], // (a finger easing off: up to 4 frames)
+  };
+  for (const first of [false, true]) {
+    for (const name of Object.keys(P)) {
+      const log = [], made = [], S = setup({ opts: { createCords: fakeCords(log, made) } });
+      S.frame();
+      const L = S.world.cords();
+      L.swing(100000); // (every rope awake the whole run)
+      const out = await gestureFrames(S, log, P[name].concat(Array(8).fill(0)), { first }), tag = name + (first ? ' (gesture first)' : ' (tick first)') + ': ';
+      const n = out.length, total = out.reduce((a, f) => a + f.draws.length, 0);
+      // the one frame the tick cannot know about: the gesture's FIRST write comes after a tick that drew (a frame ahead of the burst)
+      ok(out[0].draws.length <= (first ? 1 : 2), tag + 'the first write frame');
+      out.forEach((f, i) => {
+        if (i > 0) ok(f.draws.length <= 1, tag + 'frame ' + i + ': ' + f.draws.length + ' draws');
+        if (f.w) {
+          eq(f.draws.length >= 1, true, tag + 'write frame ' + i + ': drawn');
+          eq(f.draws.at(-1).slice(1, 4), [f.cam.tx, f.cam.ty, f.cam.k], tag + 'write frame ' + i + ': at the final camera');
+        }
+      });
+      ok(total <= n, tag + 'draws ' + total + ' ≤ frames ' + n);
+      // the writes stopped: within the lead (≤ 6 frames) the tick takes the ropes back, then a draw every frame
+      const rest = out.slice(P[name].length), at = rest.findIndex(f => f.draws.length);
+      ok(at >= 0 && at <= 5, tag + 'the tick draws the swinging ropes again: ' + rest.map(f => f.draws.length).join(''));
+      ok(rest.slice(at).every(f => f.draws.length === 1), tag + 'then one draw a frame: ' + rest.map(f => f.draws.length).join(''));
+    }
+  }
+});
+
+test('(R2b F5) the tick draws the cords once, at its end: a camera write inside it (a pan, a glide, a burst\'s rounding) and the layout that write sets off (the host relays the anchors on the camera event: a draw owed after it) are ONE draw at the final camera', () => {
+  const log = [], S = setup({ opts: { createCords: fakeCords(log, []) } });
+  S.frame();
+  const L = S.world.cords();
+  S.world.on('camera', () => { L.owedF = true; }); // (main.js: the camera event → the anchors → a draw owed)
+  const draws = () => log.filter(e => e[0] === 'draw');
+  for (const dx of [30, -12, 7]) {
+    log.length = 0;
+    S.world.panBy(dx, 0); S.frame();
+    eq(draws().length, 1, 'a pan by the tick: one draw');
+    eq(draws()[0].slice(1, 4), [S.world.cam.tx, S.world.cam.ty, S.world.cam.k], 'at the final camera');
+    ok(kinds(log).indexOf('draw') > kinds(log).indexOf('step'), 'after the step');
+  }
+  // the wheel / trackpad's pan every frame (the tick's own writes frame after frame): a draw a frame, never two
+  const per = [];
+  for (let i = 0; i < 12; i++) { log.length = 0; S.world.panBy(5, 1); S.frame(); per.push(draws().length); }
+  ok(per.every(n => n === 1), 'draws per frame ' + per.join(''));
+});
+
+test('(R2b F5) the tick steps the ropes every frame of a gesture, the frames it leaves the draw to a camera write too (the layer\'s 1/120 s steps are time-driven: no frame\'s time is lost to the writes\' spacing); no hold at 16 ms frames', async () => {
+  for (const first of [false, true]) {
+    const log = [], S = setup({ opts: { createCords: fakeCords(log, []) } });
+    S.frame();
+    S.world.cords().swing(100000);
+    const out = await gestureFrames(S, log, [1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0], { first });
+    out.forEach((f, i) => {
+      ok(f.steps.length >= 1 && f.steps.every(s => s[2] === false), (first ? 'gesture first' : 'tick first') + ', frame ' + i + (f.w ? ' (a write)' : '') + ': stepped ' + f.steps.length + 'x');
+      ok(f.steps.some(s => s[1] === f.t), 'frame ' + i + ': a step at the frame\'s time ' + f.t);
+    });
+  }
+});
+
+test('(9) the real cv-cords on a fake WebGL2 context through the world: a pinch with every cord swinging — one cord draw (3 draw calls) a frame at that frame\'s camera; camera-only frames upload nothing; asleep: no frames', async () => {
+  const calls = [], gl = {};
+  for (const k of ['COMPILE_STATUS', 'LINK_STATUS', 'VERTEX_SHADER', 'FRAGMENT_SHADER', 'ARRAY_BUFFER', 'STATIC_DRAW', 'DYNAMIC_DRAW', 'FLOAT', 'TRIANGLE_STRIP', 'BLEND', 'ONE', 'ONE_MINUS_SRC_ALPHA', 'COLOR_BUFFER_BIT', 'DEPTH_TEST']) gl[k] = k;
+  for (const k of ['shaderSource', 'compileShader', 'attachShader', 'linkProgram', 'deleteShader', 'useProgram', 'bindVertexArray', 'bindBuffer', 'bufferData', 'bufferSubData', 'enableVertexAttribArray',
+    'vertexAttribPointer', 'vertexAttribDivisor', 'uniform3fv', 'disable', 'enable', 'blendFunc', 'clearColor', 'viewport', 'clear', 'drawArrays', 'drawArraysInstanced']) gl[k] = () => { calls.push(k); };
+  gl.uniform4fv = (u, a) => { calls.push(u === 'cam' ? ['cam', a[0], a[1], a[2]] : 'uniform4fv'); };
+  Object.assign(gl, { createShader: () => ({}), createProgram: () => ({}), createBuffer: () => ({}), createVertexArray: () => ({}), getUniformLocation: (p, n) => n, getShaderParameter: () => true, getProgramParameter: () => true, getExtension: () => null });
+  const glDoc = vp => ({ createElement: t => { const el = vp.ownerDocument.createElement(t); if (t === 'canvas') el.getContext = k => (k === 'webgl2' ? gl : null); return el; } });
+  const S = setup({ opts: { createCords: (vp, o) => CORDS.createCords(vp, Object.assign({}, o, { doc: glDoc(vp) })) } });
+  S.frame();
+  const L = S.world.cords();
+  L.alloc(false); L.set([]);
+  eq(dom.byCls(S.vp, 'cv-cords').length, 0, 'no patched instrument shown, no cords: no canvas');
+  L.alloc(true);
+  const cv = dom.one(S.vp, 'cv-cords');
+  eq([!!cv, S.vp.childNodes.indexOf(cv) === S.vp.childNodes.indexOf(S.w) + 1], [true, true], 'after #world');
+  const P = new Map(), list = [];
+  for (let i = 0; i < 20; i++) { P.set('a' + i, { x: 40 * i, y: 100 }); P.set('b' + i, { x: 40 * i + 200, y: 300 + 5 * i }); list.push({ id: 'c' + i, a: 'a' + i, b: 'b' + i, c: i % 8, s: i % 5 === 0 ? 1 : 0 }); }
+  L.anchors(P); L.set(list); S.frame(2);
+  eq([cv.width, cv.height], [1000, 600], 'the buffer: the viewport');
+  L.pluck();
+  const draws = () => calls.filter(k => k === 'drawArraysInstanced').length, ups = () => calls.filter(k => k === 'bufferSubData').length;
+  for (let i = 0; i < 10; i++) {
+    const d0 = draws(), n0 = calls.length, first = i % 2 === 0;
+    if (!first) S.frame();
+    S.world.hooks.pan(-3, 1, { cx: 500, cy: 400 }); S.world.hooks.zoom(i < 5 ? 1.08 : 0.93, 500, 400, { cx: 500, cy: 400 }); // (gesture.js's rAF: two writes)
+    await null;
+    if (first) S.frame();
+    eq(draws() - d0, 1, 'frame ' + i + ': one cord draw');
+    const cams = calls.slice(n0).filter(x => Array.isArray(x) && x[0] === 'cam');
+    eq(cams.length, 2, 'the camera set once a program (the strips, the plugs)');
+    near(cams[0][3], S.world.k, 1e-6, 'at the frame\'s camera'); near(cams[1][3], S.world.k, 1e-6);
+    eq(calls.slice(n0).filter(k => k === 'drawArrays').length, 2, 'shadows + cords');
+  }
+  // the ropes settle, then the camera moves alone: a draw a frame, nothing uploaded
+  let f = 0;
+  while (L.stats().running && f < 3000) { S.frame(); f++; }
+  adv(400); S.frame(3);
+  const u0 = ups(), d1 = draws();
+  for (let i = 0; i < 4; i++) { S.world.hooks.pan(6, 0, { cx: 500, cy: 400 }); await null; S.frame(); }
+  eq([draws() - d1, ups() - u0], [4, 0], 'camera-only frames: drawn, nothing uploaded');
+  adv(400); S.frame(3);
+  eq([L.wants(), S.rq.length], [false, 0], 'all asleep: no frames');
+  ok(L.stats().steps > 0 && L.stats().awakeMax === 20, JSON.stringify(L.stats()));
+});
+
+test('(9, IMPL-9 §4.2, review #5) below READ_K a cord jack is not offered to the jack hook unless its module is in edit state — the press is the module body\'s (it pans; a tap selects); every other jack keeps its press; above READ_K the hook has it', () => {
+  const R = jackRig();
+  const cj = R.d.createElement('span');
+  cj.setAttribute('data-cv-jack', 'm.j-saw'); cj.setAttribute('data-kind', 'cord'); R.m.body.append(cj);
+  R.world.setJackHook((e, el) => { R.log.push(el.getAttribute('data-cv-jack')); return { cancel: () => {} }; });
+  touch(cj, 'pointerdown', 300, 300, 1); touch(R.vp, 'pointerup', 300, 300, 1);
+  eq(R.log, ['m.j-saw'], 'k 1: the hook has it');
+  R.log.length = 0;
+  R.world.setCamera({ tx: 0, ty: 0, k: 0.4 }); R.frame(); adv(400);
+  touch(cj, 'pointerdown', 200, 300, 1); touch(R.vp, 'pointermove', 250, 300, 1); touch(R.vp, 'pointerup', 250, 300, 1);
+  eq([R.log, R.world.cam.tx, R.world.jacking], [[], 50, false], 'k 0.4: not offered; it panned (a sleeping module body)');
+  adv(500);
+  touch(cj, 'pointerdown', 200, 300, 1); touch(R.vp, 'pointerup', 200, 300, 1);
+  eq([R.log, R.world.selected], [[], 'm'], 'a tap selects the module');
+  touch(R.jack, 'pointerdown', 100, 168, 1); touch(R.vp, 'pointerup', 100, 168, 1);
+  eq(R.log, ['m.out'], 'another jack: offered below READ_K as before');
+  // in edit state (a double-tap's focus pinned below READ_K): the cord jack takes its press
+  R.log.length = 0;
+  R.world.focusItem('m', { k: 0.4, animate: false }); R.frame(); adv(400); R.frame();
+  eq([R.world.edit, R.world.k < W.READ_K], ['m', true]);
+  touch(cj, 'pointerdown', 200, 300, 1); touch(R.vp, 'pointerup', 200, 300, 1);
+  eq(R.log, ['m.j-saw'], 'edit state: awake');
+});
+
+test('(9, IMPL-9 §4.5) the fit hook: the toolbar\'s fit, the 0 key frame the ids the host names, never below its kMin (the foot kept in view; a side that fits centred); null → every item; fit({ ids }) / fit({ all }) skip it; the remover', () => {
+  const S = setup(), { world, frame, item, tb, vp } = S;
+  const far = item('far', 4000, 4000, 200, 200), ctl = item('ctl', 0, 0, 640, 400), r1 = item('r1', 0, -512, 640, 512), r2 = item('r2', 0, -1024, 640, 512);
+  for (const it of [far, ctl, r1, r2]) world.add(it);
+  frame();
+  // band 1000 × 600 at (0, 100): the rack 640 × 1424 at READ_K is 712 tall > 504 → floored, its foot kept
+  const off = world.setFitHook(() => ({ ids: ['ctl', 'r1', 'r2', 'nope'], kMin: W.READ_K, foot: true }));
+  world.fit({ animate: false });
+  eq(world.k, W.READ_K, 'never below READ_K (the true fit: ' + (504 / 1424).toFixed(3) + ')');
+  const foot = world.toClient(0, 400), mid = world.toClient(320, 0);
+  near(foot.y, 100 + 600 - 48, 1e-6, 'the controller\'s foot at the band\'s bottom less the pad');
+  near(mid.x, 500, 1e-6, 'centred across (it fits)');
+  world.setCamera({ tx: 0, ty: 0, k: 1 }); frame(); adv(400);
+  dom.byAttr(tb, 'data-cv-tb', 'fit')[0].click(); frame(30); adv(400); frame();
+  eq(world.k, W.READ_K, 'the toolbar\'s fit');
+  world.setCamera({ tx: 0, ty: 0, k: 1 }); frame(); adv(400);
+  vp.focus(); world.key(new Ev('keydown', { key: '0', cancelable: true, bubbles: true })); frame(30); adv(400); frame();
+  eq(world.k, W.READ_K, 'the 0 key');
+  // a frame that fits: its own fit (≤ 1), the floor unused
+  world.setFitHook(() => ({ ids: ['ctl'], kMin: W.READ_K }));
+  world.fit({ animate: false });
+  near(world.k, Math.min(1, 904 / 640, 504 / 400), 1e-9, 'the controller alone at 1');
+  // fit({ all: true }) and explicit ids skip the hook; the remover; a hook saying null: every item
+  world.fit({ all: true, animate: false });
+  ok(world.k < 0.25 + 1e-9, 'every item (the far one too): ' + world.k);
+  world.fit({ ids: ['far'], animate: false });
+  eq(world.k, 1, 'explicit ids');
+  off();
+  world.fit({ animate: false });
+  eq(world.k, 1, 'off() only removes its own hook: the second one stays');
+  world.setFitHook(() => null);
+  world.fit({ animate: false });
+  ok(world.k < 0.25 + 1e-9, 'null: every item');
+  // the pure floor: fitCam with kMin (the top kept without foot; centred where it fits)
+  const c = W.fitCam([{ x: 0, y: 0, w: 640, h: 1424 }], 1000, 600, { pad: 48, kMin: 0.5 });
+  eq([c.k, c.ty, c.tx], [0.5, 48, 500 - 160], 'no foot: the top kept');
+  const c2 = W.fitCam([{ x: 0, y: 0, w: 4000, h: 300 }], 1000, 600, { pad: 48, kMin: 0.5, foot: true });
+  eq([c2.k, c2.tx, c2.ty], [0.5, 48, 300 - 75], 'too wide: its left kept; the height fits: centred');
+  eq(W.fitCam([{ x: 0, y: 0, w: 640, h: 1424 }], 1000, 600, { pad: 48 }), W.fitCam([{ x: 0, y: 0, w: 640, h: 1424 }], 1000, 600, { pad: 48, kMin: 0 }), 'no kMin: as before');
 });

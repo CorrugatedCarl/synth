@@ -53,6 +53,12 @@
 //   sdsv      5 voice cards          dvp       1    0.0101  0.0030  0.0131   (IMPL-8 §12.7: as the 808, its row dvp — roll
 //             notes, no sequencer; the gate's 0.0131 calibrated (V5's machine 0.0065 + the Track); dvx 0.0194, dvm 0.0092,
 //             idle dvi 0.0002)
+//   m900      patched modules        m9p       1    0.0055  0         —        (IMPL-9 §3.8: no voices — base = the Inst's
+//             decimators + the Track (spike (a); V9b ≈ 0.0053), + COST.patch[type] per live node — a module (section) MAIN
+//             OUT is reachable from; the engine runs no other — + COST.loop (≈ 6–9 ns a sample) per member of a loop step,
+//             MAIN OUT silent = idle (COST.off); no record = the Model 15 set as Classic bass leaves it, the tile's and a new
+//             device's; the rows' gate measured m9p 0.0185 / m9x 0.0372 / m9d 0.0186 calibrated against these estimates'
+//             0.0202 / 0.0345 / 0.0215 — m9x's three loop members included, review 1 F5)
 //
 // Serum (OS 2; ×0.68 at OS 1, ×1.59 at OS 4): base 0.0063 (default 1 / 4 / 8 voices = 0.0100 / 0.0209 / 0.0356) + per
 // voice 0.00245 + per oscillator on [first unison voice, each further one]: Wavetable [0.0012, 0.00042] · Multisample
@@ -72,6 +78,8 @@ import * as W from './wt.js?v=9';
 import { lawNorm } from './laws.js?v=9';
 import { playbackEntry, irEntry } from './smpwork.js?v=9';
 import { convShapeOf } from './assets.js?v=9';
+import * as MG from './moog-core.js?v=9';
+import * as PT from './patch-core.js?v=9';
 
 /** prefs key of the measured device factor (the caller's prefs; absent = 1). */
 export const PREF = 'cv.devFactor';
@@ -92,6 +100,7 @@ export const COST = Object.freeze({
     ms20: C('c3', 'Korg 35 Sallen-Key', 1, 0.0055, 0.0089), tb303: C('c3', 'diode ladder + sequencer', 1, 0.0055, 0.0137),
     tr808: C('d8p', 'drums', 1, 0.0175, 0.0030), tr606: C('d6p', 'drums', 1, 0.0143, 0.0030),
     tr909: C('d9p', 'drums', 1, 0.0142, 0.0030), sdsv: C('dvp', 'drums', 1, 0.0101, 0.0030),
+    m900: C('m9p', 'patch', 1, 0.0055, 0),
     serum: Object.freeze({ row: 'e', family: 'Serum (terms in COST.serum)', poly: 32, base: 0.0063, voice: 0.00245 }),
   }),
   serum: Object.freeze({
@@ -104,6 +113,14 @@ export const COST = Object.freeze({
     hyper: 0.0015, bode: 0.003, conv: 0.026, util: 0.0003, split2: 0.0011, split3: 0.002, splitms: 0.0004,
   }),
   rev: Object.freeze([0.008, 0.005, 0.006, 0.009, 0.007]),   // bench.json node k0–k4 (REV_TYPES2 order)
+  // IMPL-9 §3.8: a patch family's modules by type — lane V9b's node column (§12: OS 4, a module's ctl + run alone; the 921
+  // masked, the 904A at k 0, the 902 in LIN): a number per module, or per section (an array by moog-core's sec: the 995's three
+  // attenuators; the controller's KBD, MIX, the multiples, V→S, S→V and OUT — the converters [C] ≤ the 911's) where one counts
+  // only when one of its jacks has a cord
+  patch: Object.freeze({ 921: 0.0016, '921a': 0.0005, '921b': 0.0016, 923: 0.0016, '904a': 0.0053, '907a': 0.0075, 911: 0.0006, 902: 0.0009,
+    995: Object.freeze([0.0004, 0.0004, 0.0004]), ctl: Object.freeze([0.0004, 0.0012, 0, 0, 0.0002, 0.0002, 0]) }),
+  // a loop step's member: ≈ 6–9 ns a sample at OS 4 (spike (a), V9a: 7.5 ns × 192 000 samples a second) on top of its block cost
+  loop: 0.00144,
 });
 
 const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
@@ -159,6 +176,22 @@ const rackLoad = mods => (Array.isArray(mods) ? mods.reduce((a, I) => a + fxLoad
 // an FX state's effects (v2: its racks; v1 / none: nothing — a v1 rack is the classic default, empty) or a single rack
 const fxStateLoad = fx => (isObj(fx) && Array.isArray(fx.racks) ? fx.racks.reduce((a, r) => a + (isObj(r) ? rackLoad(r.mods) : 0), 0) : 0);
 const panelLoad = d => COST.panel + (isObj(d.fx) ? fxStateLoad(d.fx) : isObj(d.rack) ? rackLoad(d.rack.mods) : 0);
+// a patch (IMPL-9 §3.8): base + every live node — the (module, section) pairs MAIN OUT is reachable from (patch-core liveNodes: the
+// engine runs nothing else; a per-section cost: each live section) — + COST.loop per member of a loop step (the per-sample step
+// beyond the table's block figures); MAIN OUT silent → idle (COST.off); no record → the Model 15 set as Classic bass (MG.model15:
+// the tile's, a new device's)
+let M15 = null;
+function patchLoad(cs, rec) {
+  const P = COST.patch, F = MG.FAMILY, r = isObj(rec) && isObj(rec.mods) && Array.isArray(rec.cords) ? rec : (M15 || (M15 = MG.model15().rec));
+  const L = PT.liveNodes(r, F.id);
+  if (L === null) return COST.off;
+  let x = cs.base + COST.loop * L.loop;
+  for (const mid of Object.keys(L.sec)) {
+    const m = mid === 'c' ? { t: F.ctl } : r.mods[mid], c = isObj(m) ? P[m.t] : undefined;
+    if (Array.isArray(c)) for (const s of L.sec[mid]) x += num(c[s], 0); else x += num(c, 0);
+  }
+  return x;
+}
 
 /** Estimated load of a device, a model id, an effect type id or 'panel', on a device of the given factor. */
 export function estimate(x, factor = 1, o = {}) {
@@ -167,12 +200,14 @@ export function estimate(x, factor = 1, o = {}) {
   if (typeof x === 'string') {
     if (x === 'panel') load = COST.panel;
     else if (x === 'serum') load = serumLoad(null, n);
+    else if (COST.synth[x] && COST.synth[x].family === 'patch') load = patchLoad(COST.synth[x], null);
     else if (COST.synth[x]) load = COST.synth[x].base + COST.synth[x].voice * classicVoices(x, null, n);
     else if (x in COST.fx) load = fxLoad({ type: x, p: {} });
   } else if (isObj(x) && x.kind === 'panel') load = panelLoad(x);
-  else if (isObj(x) && x.kind === 'synth' && COST.synth[x.model]) {
+  else if (isObj(x) && x.kind === 'synth' && COST.synth[x.model]) { const cs = COST.synth[x.model];
     if (x.on === false) load = COST.off;
     else if (x.model === 'serum') load = serumLoad(isObj(x.vals) ? x.vals.s : null, n) + fxStateLoad(x.fx);
+    else if (cs.family === 'patch') load = patchLoad(cs, x.patch);
     else load = COST.synth[x.model].base + COST.synth[x.model].voice * classicVoices(x.model, x.vals, n);
   }
   return load * f;

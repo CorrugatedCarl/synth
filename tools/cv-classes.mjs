@@ -1,6 +1,7 @@
 // The classic control class table of cv-mods.js (SPEC-canvas §7.2, §7.8): runs cv-mods classTable() (the sweep over the
 // default patch and every factory preset of each model) and prints it, or with --write rewrites CLASS_TABLE between the
-// <cv-classes> markers of cv-mods.js. tests/cv-mods.test.mjs checks that the checked-in table equals a fresh run.
+// <cv-classes> markers of cv-mods.js. tests/cv-mods.test.mjs checks that the checked-in table equals a fresh run. Serum (custom)
+// and the 900 Series (family 'patch', stage 9: no classic modulation, IMPL-9 §4.8) have no row: classTable() skips them.
 //   node tools/cv-classes.mjs            prints the counts and any difference from the checked-in table
 //   node tools/cv-classes.mjs --write    rewrites the table
 import { readFileSync, writeFileSync } from 'node:fs';

@@ -83,7 +83,7 @@ test('SIL describes every model; tileMeta() is models.js (Serum: "Serum (complet
     assert.ok(Object.isFrozen(s));
     const t = A.tileMeta(m.id);
     assert.deepEqual([t.id, t.name, t.year, t.maker], [m.id, m.name, m.year, m.maker]);
-    assert.equal(t.label, m.id === 'serum' ? 'Serum (complete)' : m.name);
+    assert.equal(t.label, m.id === 'serum' ? 'Serum (complete)' : m.id === 'm900' ? 'Model 15' : m.name);
   }
   assert.equal(A.SIL.tb303.body, 'desktop');
   assert.equal(A.SIL.tb303.steps, 16);
@@ -141,5 +141,23 @@ test('SIL describes every model; tileMeta() is models.js (Serum: "Serum (complet
   assert.equal(count(gp, /<rect /g), 9, 'nine pads');
   assert.equal(count(gp, /fill="currentColor"/g), 1, 'one lit');
   assert.deepEqual(A.tileMeta('sdsv'), { id: 'sdsv', name: 'SDS-V', year: 1981, maker: 'Simmons', label: 'SDS-V' });
+  // (9, IMPL-9 §4.6) the 900 Series' tile, "Model 15": a small dark case with a handle and two latches, two tiers of narrow module faces (eight over six; the
+  // wide lower one a filter bank of ten small knobs) over a console strip, five coloured cords hanging with a plug at both ends; no keys, no steps, no text
+  assert.deepEqual([A.SIL.m900.body, A.SIL.m900.keys, A.SIL.m900.steps], ['cabinet', undefined, undefined]);
+  const tm = A.art('m900'), chipm = A.chip('m900');
+  assert.match(tm, /data-art="m900"/);
+  assert.equal(count(tm, /fill="#2b2926"/g), 14, 'the fourteen module faces (eight over six)');
+  assert.equal(count(tm, /r="1.85" fill="#d4cfc4"/g), 24 + 13, 'the big knobs: 24 on the upper tier (3 2 4 2 3 6 2 2), 13 on the lower (4 · the bank · 2 2 3 2)');
+  assert.equal(count(tm, /r="1.05" fill="#d4cfc4"/g), 10, 'the filter bank\'s ten small knobs');
+  assert.equal(count(tm, /r="0.5" fill="#050505"/g), 20 + 16 + 1, 'a jack\'s hole: 20 on the upper tier, 16 on the lower, the main output\'s (the console\'s multiples are smaller)');
+  for (const col of ['d8452f', 'e6b422', '3b82c4', '3fae5a', 'b06ad9']) {
+    assert.equal(count(tm, new RegExp(`stroke="#${col}"`, 'g')), 1, col + ': one cord');
+    assert.equal(count(tm, new RegExp(`r="0.8" fill="#${col}"`, 'g')), 2, col + ': a plug at each end');
+    assert.equal(count(chipm, new RegExp(`stroke="#${col}"`, 'g')), 1, col + ': kept at chip size');
+  }
+  assert.ok(count(chipm, /fill="#2b2926"/g) === 14 && count(chipm, /<[a-z]+ /g) < count(tm, /<[a-z]+ /g) / 2, 'the chip keeps the faces and the cords, with far fewer elements');
+  assert.ok(!/moog|900 series|model 15/i.test((tm + chipm).replaceAll('data-art="m900"', '')), 'no maker name, no model name in the drawing (the data-art id is plain)');
+  assert.notEqual(tm, A.art('modular'));
+  assert.deepEqual(A.tileMeta('m900'), { id: 'm900', name: '900 Series', year: 1973, maker: 'R.A. Moog', label: 'Model 15' });
   assert.deepEqual(A.tileMeta('nope'), { id: 'nope', name: 'nope', year: 0, maker: '', label: 'nope' });
 });

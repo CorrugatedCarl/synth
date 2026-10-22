@@ -767,6 +767,34 @@ test('createCableDrag (2a): an audio drag never targets a mod jack (cv-no with t
   R.D.destroy();
 });
 
+// (9, IMPL-9 §4.4, D9) a patch cord's jack is the host's (cv-patch): its press to o.cordPress, never marked by an audio / mod drag,
+// its keys and right-click not this drag's
+test('createCableDrag (9): a cord jack ([data-kind="cord"], even [data-ro] — host.patch false) hands its press to o.cordPress and its answer is taken (without one: not taken; a right button: not taken); an audio drag never marks it; Enter / right-click on it open no "Connect to…"', () => {
+  const got = [];
+  const R = patchRig({ jacks: undefined, cordPress: (e, el) => { got.push(el.getAttribute('data-cv-jack') + ' #' + e.pointerId); return { cancel: () => got.push('cancel') }; } });
+  const cj = R.doc.createElement('span');
+  for (const [k, v] of [['data-cv-jack', 'i1/m3.j-out'], ['data-kind', 'cord'], ['data-dir', 'out'], ['data-ro', ''], ['aria-label', '904A 1 · SIGNAL OUTPUT']]) cj.setAttribute(k, v);
+  R.el.append(cj);
+  const ev = o => new Ev('pointerdown', Object.assign({ bubbles: true, cancelable: true, clientX: 5, clientY: 5, pointerId: 4, pointerType: 'touch', button: 0 }, o));
+  const h = R.world.jack(ev(), cj);
+  assert.deepEqual([typeof h.cancel, got], ['function', ['i1/m3.j-out #4']]);
+  h.cancel();
+  assert.deepEqual(got, ['i1/m3.j-out #4', 'cancel'], 'the two-finger cancel reaches the host\'s');
+  assert.equal(R.world.jack(ev({ button: 2 }), cj), false, 'a right button');
+  // an audio drag (the jacks walked from the world here): the cord jack untouched; the audio ones as ever
+  R.press('i1.out', 1000, 168); R.mv(1500, 300);
+  assert.deepEqual([cj.getAttribute('class'), cj.getAttribute('title'), R.cls('fx1.in'), R.cls('fx1.out')], [null, null, 'cv-ok', 'cv-no']);
+  R.upAt(1500, 300);
+  key(cj, 'Enter'); fire(cj, 'contextmenu', { clientX: 1, clientY: 1 });
+  assert.equal(all(R.doc.body).filter(n => n.getAttribute && /wk-ctx/.test(n.getAttribute('class') || '')).length, 0, 'no "Connect to…" for a cord jack');
+  assert.equal(got.length, 2, 'nor any press from a key');
+  R.D.destroy();
+  const R2 = patchRig(), c2 = R2.doc.createElement('span');
+  c2.setAttribute('data-cv-jack', 'i1/m3.j-out'); c2.setAttribute('data-kind', 'cord'); R2.el.append(c2);
+  assert.equal(R2.world.jack(ev(), c2), false, 'no cordPress: not taken');
+  R2.D.destroy();
+});
+
 // UI fixes
 const hasCls = (n, c) => !!n && typeof n.getAttribute === 'function' && (' ' + (n.getAttribute('class') || '') + ' ').includes(' ' + c + ' ');
 test('(U2) a mod drag looks through the amount badges: a badge over a knob is skipped (the knob under it lights and takes the release); style.css: no badge takes a press while patching, its hit area never wider than the badge', () => {

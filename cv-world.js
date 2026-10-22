@@ -48,10 +48,20 @@
 // Stage 1i (IMPL-1i §4.3): a finger resting on the art or the canvas (an unmoved pan older than gesture.js's PAIR_MS)
 // never takes a later press on an awake module's keys ([data-gesture=music]) or controllers ([data-gesture=perf]) as its
 // pinch (G2: the key plays, the wheel rolls, the pan stays); a tap on sleeping keys or a sleeping controller ([data-gesture=perf]) emits 'sleeptap' { id } (main.js: a hint).
+// Stage 9 (IMPL-9 §4.2, §4.3; lane C9): the patch cords — cords() builds the cord layer (cv-cords) lazily, a second WebGL2
+// canvas after #world (?nogl: its SVG in #world; ?cords=under / the pref synth.cv.cords = 'under': drawn into this GL layer
+// after the faces), stepped and drawn ONCE a frame by the world: the tick steps the ropes first, then draws in write() when
+// the camera moved, else after the step; writes outside the tick (gesture.js's own rAF writes a pinch twice — its pan hook,
+// then its zoom hook —; a jump, a burst's end) step and draw them once at the end of that task (a microtask: before the frame
+// renders, at the task's last camera) and the tick leaves them while such writes keep coming (S9's two draws a frame). The
+// hold rule's frame length is the tick's, frame to frame. No frame is asked for while every rope sleeps. Below READ_K a cord jack ([data-kind=cord]) sleeps like a control: it is not offered to the jack hook
+// unless its module is in edit state, and sleeper() takes it as the module's body (a press pans). The fit (toolbar, 0, the
+// empty-canvas double-tap) asks the host's setFitHook first: { ids, kMin, kMax, foot } frames those items, never below kMin.
 import * as wk from './wk.js?v=9';
 import { createGL } from './cv-gl.js?v=9';
 import * as FACES from './cv-face.js?v=9';
 import { PAIR_MS } from './gesture.js?v=9'; // (1i G2: a key pressed later than the two-finger layer's time rule)
+import { createCords, STUDIO } from './cv-cords.js?v=9';
 
 /** Smallest / largest camera zoom. */
 export const K_MIN = 0.25, K_MAX = 2;
@@ -102,6 +112,10 @@ export const MAP_W = 176, MAP_H = 112;
 // a wheel / hook burst ends this long after its last event; taps: slop per pointer type, double-tap window and distance
 const GLIDE_MIN = 0.12, GLIDE_MAX = 4, GLIDE_STOP = 0.02, GLIDE_TAU = 300, ANIM_MS = 220, IDLE_MS = 150, STALE_MS = 3000;
 const TAP_PX = { touch: 8, pen: 4, mouse: 4 }, DTAP_MS = 320, DTAP_PX = 24, REVEAL_PAD = 16, FIT_PAD = 48;
+// (9) camera writes outside the tick (a pinch's) draw the cords themselves: the tick leaves the draw to them while the last is
+// fresh — its spacing from the one before (a decaying max) + CD_PAD, kept between these (ms)
+const CD_FRESH_MIN = 64, CD_FRESH_MAX = 128, CD_PAD = 25;
+const micro = f => (typeof queueMicrotask === 'function' ? queueMicrotask(f) : Promise.resolve().then(f));
 
 /**
  * @typedef {{tx: number, ty: number, k: number}} Camera  local = world·k + t
@@ -130,7 +144,7 @@ const TAP_PX = { touch: 8, pen: 4, mouse: 4 }, DTAP_MS = 320, DTAP_PX = 24, REVE
  *   setCamera: (cam: Camera, o?: {animate?: boolean}) => void,
  *   panBy: (dx: number, dy: number) => void,
  *   zoomAt: (f: number, clientX: number, clientY: number, o?: {animate?: boolean}) => void,
- *   fit: (o?: {ids?: string[], animate?: boolean, kMax?: number}) => void,
+ *   fit: (o?: {ids?: string[], animate?: boolean, kMax?: number, kMin?: number, foot?: boolean, all?: boolean}) => void,
  *   focusItem: (id: string, o?: {k?: number, animate?: boolean, edit?: boolean}) => void,
  *   reveal: (target: Element | {left: number, top: number, right: number, bottom: number}) => void,
  *   toWorld: (clientX: number, clientY: number) => Pt,
@@ -151,6 +165,8 @@ const TAP_PX = { touch: 8, pen: 4, mouse: 4 }, DTAP_MS = 320, DTAP_PX = 24, REVE
  *   hooks: {pan: (sx: number, sy: number, at: At) => boolean, zoom: (f: number, cx: number, cy: number, at: At) => boolean,
  *     jack?: (e: PointerEvent, jackEl: Element) => (boolean | {cancel?: () => void}), jackCancel?: () => void},
  *   setJackHook: (fn: Function | null, cancel?: Function) => () => void,
+ *   cords: () => any,
+ *   setFitHook: (fn: (() => ({ids?: string[], kMin?: number, kMax?: number, foot?: boolean} | null)) | null) => () => void,
  *   wheelVeto: () => boolean,
  *   escape: () => boolean,
  *   key: (e: KeyboardEvent) => boolean,
@@ -202,8 +218,10 @@ export function zoomAbout(cam, f, lx, ly) {
 }
 /** Pan by a finger delta (content follows the finger: t += d). @param {Camera} cam @param {number} dx @param {number} dy @returns {Camera} */
 export function panCam(cam, dx, dy) { return { tx: cam.tx + (+dx || 0), ty: cam.ty + (+dy || 0), k: cam.k }; }
-/** The camera that shows every rect inside a vw × vh local box with `pad` px around, k ≤ kMax (default 1), centred.
- * @param {Rect[]} rects @param {number} vw @param {number} vh @param {{pad?: number, kMax?: number}} [o] @returns {Camera} */
+/** The camera that shows every rect inside a vw × vh local box with `pad` px around, k ≤ kMax (default 1), centred. (9) kMin:
+ * never below it (≤ kMax) — then a side that no longer fits keeps its start in view (left; the top, or with `foot` the bottom:
+ * a rack over its controller keeps the controller) and a side that fits stays centred.
+ * @param {Rect[]} rects @param {number} vw @param {number} vh @param {{pad?: number, kMax?: number, kMin?: number, foot?: boolean}} [o] @returns {Camera} */
 export function fitCam(rects, vw, vh, o) {
   const pad = o && o.pad != null ? Math.max(0, +o.pad || 0) : FIT_PAD, kMax = o && o.kMax > 0 ? +o.kMax : 1;
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -214,6 +232,11 @@ export function fitCam(rects, vw, vh, o) {
   }
   if (!(x1 >= x0)) return { tx: pad, ty: pad, k: clampK(Math.min(1, kMax)) };
   const k = clampK(Math.min(kMax, Math.max(1, vw - 2 * pad) / Math.max(1, x1 - x0), Math.max(1, vh - 2 * pad) / Math.max(1, y1 - y0)));
+  const kMin = o && o.kMin > 0 ? clampK(Math.min(+o.kMin, kMax)) : 0;
+  if (k < kMin) { // (9) the floor: what fits stays centred, what does not keeps its start (or foot) in view
+    const fx = (x1 - x0) * kMin <= vw - 2 * pad, fy = (y1 - y0) * kMin <= vh - 2 * pad;
+    return { tx: fx ? vw / 2 - (x0 + x1) / 2 * kMin : pad - x0 * kMin, ty: fy ? vh / 2 - (y0 + y1) / 2 * kMin : o.foot ? vh - pad - y1 * kMin : pad - y0 * kMin, k: kMin };
+  }
   return { tx: vw / 2 - (x0 + x1) / 2 * k, ty: vh / 2 - (y0 + y1) / 2 * k, k };
 }
 /** The world rect visible in a vw × vh viewport, grown by `margin` screen px. @returns {Rect} */
@@ -400,6 +423,10 @@ export function createWorld(viewport, o) {
   let GL = null, glOff = null, glDead = false, glWait = 0; // (1h) the GL layer (cv-gl; the 2D grid canvas is not made then), its FACES.onChange remover, given up (G4), the restore timer of a loss
   let B = null; // the live burst: { hook, until, band, timer, last, k (the zoom written before it), zoom (it changed) }
   let G = null; // the world's own pointer gesture (pan / pinch)
+  // (9) the cord layer (cords()); drawn into GL's frame ('under'); the last write outside the tick that drew it, the spacing
+  // of those writes, its pending microtask; inside the tick; the last tick's time, the last frame's length (0: not consecutive)
+  let CD = null, cdUnder = false, cdOut = -1e9, cdIv = 0, cdSoon = false, cdMoved = false, ticking = false, tickT = -1, lastFrame = 0;
+  let fitHook = null; // (9) the host's fit (setFitHook)
   let J = null; // a press hooks.jack took: { id, type, x, y, cancel } until its pointer lifts
   let glide = null, glideEnd = -1e9, anim = null, edge = null, gh = null, gs = null; // gs: Safari gesture scale
   let touches = 0, pressT = -1e9, lastTap = null, outside = null, bandC = null, pctShown = '', pctLab = '', clickUntil = -1e9;
@@ -429,7 +456,8 @@ export function createWorld(viewport, o) {
       if (anim) { for (const c of [anim.c0, anim.c1]) { c.tx -= dx; c.ty -= dy; } anim.x -= dx; anim.y -= dy; }
     }
     if (sizeGrid()) GC.c0 = null; // (cleared: drawn now, in a burst too)
-    if (!write()) gridAt();
+    if (CD) { try { CD.resize(vp.width, vp.height, dpr()); } catch (err) { console.error(err); } }
+    if (!write()) { gridAt(); if (CD && !cdUnder) cordsDraw(); } // ((9) the cords' buffer follows the viewport)
     recache();
     // (U14) the viewport changed (a tray's height, a rotation): main.js re-derives an untouched default camera — not for a
     // moved edge alone (dx / dy: the camera already kept the world in place)
@@ -516,16 +544,18 @@ export function createWorld(viewport, o) {
     glOff = FACES.onChange(() => { if (GL && !destroyed) glDraw(); });
     return true;
   }
-  function glDraw() { // one frame of the GL layer: the grid, then the faces' quads (FACES.quads: no DOM read)
+  function glDraw() { // one frame of the GL layer: the grid, then the faces' quads (FACES.quads: no DOM read); (9) 'under': the cords after them
     if (!GL) return;
     let q = null;
     try { q = FACES.quads(rectById, cam); } catch (err) { console.error(err); q = null; }
-    GL.draw(cam, vp.width, vp.height, dpr(), q);
+    const drew = GL.draw(cam, vp.width, vp.height, dpr(), q);
+    if (drew && CD && cdUnder) { try { CD.draw(cam, vp.width, vp.height, dpr()); } catch (err) { console.error(err); } }
   }
   function glLost(dead) { // a context loss: FACES detached (its textures are dead); the third in a minute, or one not restored within GL_LOST_MS: the 2D grid, live
     if (destroyed || !GL) return;
     if (glOff) { glOff(); glOff = null; } // (the registry's detach emits a change: no draw on a lost context)
     try { FACES.detach(); } catch (err) { console.error(err); }
+    if (CD && cdUnder) { try { if (dead) CD.svg(); else CD.reset(); } catch (err) { console.error(err); } } // ((9) the cords drawn here: their programs are gone; GL given up: their SVG)
     unlater(glWait); glWait = 0;
     if (!dead) { glWait = later(() => { glWait = 0; glLost(true); }, GL_LOST_MS); return; } // (no grid, no faces meanwhile: a short wait)
     glDead = true;
@@ -536,7 +566,7 @@ export function createWorld(viewport, o) {
     sizeGrid();
     gridAt();
   }
-  function glRestored() { unlater(glWait); glWait = 0; if (!destroyed && GL) { try { FACES.attach({ gl: GL, world: api }); } catch (err) { console.error(err); } if (!glOff) glOff = FACES.onChange(() => { if (GL && !destroyed) glDraw(); }); glDraw(); } }
+  function glRestored() { unlater(glWait); glWait = 0; if (!destroyed && GL) { try { FACES.attach({ gl: GL, world: api }); } catch (err) { console.error(err); } if (!glOff) glOff = FACES.onChange(() => { if (GL && !destroyed) glDraw(); }); if (CD && cdUnder) { try { CD.reset(); } catch (err) { console.error(err); } } glDraw(); } }
   const rectById = id => { const r = items.get(String(id)); return r && r.rect ? r.rect : null; }; // (1h) the cached rect (null unknown)
   // the store (gridStore: the viewport, its overscan for a pan and a zoom out to GRID_REACH, ≤ GRID_MAX_PX) → true when it
   // changed (and was cleared)
@@ -593,7 +623,13 @@ export function createWorld(viewport, o) {
     if (shown && shown.tx === cam.tx && shown.ty === cam.ty && shown.k === cam.k) return false;
     shown = copy(cam);
     W.style.transform = 'translate(' + cam.tx + 'px, ' + cam.ty + 'px) scale(' + cam.k + ')';
+    // (9) the cords at this camera, in the same task as the transform and the faces: in the tick at its end (stepped already:
+    // once, after whatever else it wrote or laid out — cdMoved); outside it (gesture.js's rAF: the pan hook, then the zoom hook;
+    // a jump, a burst's end) stepped and drawn once at the end of this task, at its last camera ('under': stepped now, drawn in
+    // the GL frame below)
+    if (CD && !ticking && active) { if (cdUnder) { const t = now(); cordsStep(t); cdStamp(t); } else cordsSoon(); }
     gridAt();
+    if (CD && !cdUnder && ticking) cdMoved = true;
     if (gh && gh.g) placeGhost();
     mapDirty = true;
     if (B && cam.k !== B.k) B.zoom = true;
@@ -612,15 +648,65 @@ export function createWorld(viewport, o) {
     fid = 0;
     if (destroyed) return;
     const T = now();
-    if (glide) stepGlide(T);
-    if (anim) stepAnim(T);
-    if (edge) stepEdge(T);
-    // (cached rects only: no layout read in a burst; hotfix 2: a zoom burst's plan waits for its end — modules coming into
-    // view by the dozen mid-pinch restyled their subtrees and woke their monitors: endBurst → recache → schedule)
-    if ((write() || scrDirty) && active && !(B && B.zoom)) screen();
+    // (9) the frame's length (the hold rule's: tick to tick, consecutive frames only)
+    const fdt = tickT >= 0 ? T - tickT : 0;
+    tickT = T; lastFrame = fdt > 0 && fdt < 100 ? fdt : 0;
+    ticking = true;
+    // (9) the ropes first, every frame (time and anchors only, not the camera: the 1/120 s steps take every frame's time). One
+    // cord draw a frame: while camera writes outside the tick keep coming (a pinch's: gesture.js's rAF runs AFTER this tick in
+    // a frame, so a draw here could not know a write follows — it would be drawn at the old camera, then again) the draw is
+    // theirs (the microtask, at the frame's last camera); the tick draws once the last is older than its lead (fresh)
+    const fresh = !!CD && T - cdOut < Math.min(CD_FRESH_MAX, Math.max(CD_FRESH_MIN, cdIv + CD_PAD));
+    if (CD && active) cordsStep(T);
+    try {
+      if (glide) stepGlide(T);
+      if (anim) stepAnim(T);
+      if (edge) stepEdge(T);
+      // (cached rects only: no layout read in a burst; hotfix 2: a zoom burst's plan waits for its end — modules coming into
+      // view by the dozen mid-pinch restyled their subtrees and woke their monitors: endBurst → recache → schedule)
+      if ((write() || scrDirty) && active && !(B && B.zoom)) screen();
+      if (CD && active && (cdMoved || (!fresh && CD.owed()))) { cdMoved = false; cordsDraw(); } // ((9) the frame's one draw: the camera moved here, or the step's)
+    } finally { ticking = false; }
     if (mapDirty && mapOn && active) drawMap();
-    if (glide || anim || (edge && edge.v)) request();
+    if (glide || anim || (edge && edge.v) || (CD && active && CD.wants())) request();
   }
+  /* ---- (9) the cord layer (cv-cords): built at the first cords(), stepped / drawn by the frame loop above */
+  function cordsPref() { // 'under' from the URL (?cords=under) or the pref synth.cv.cords (the under-canvas fallback, IMPL-9 §5)
+    let q = '';
+    try { q = String((win.location && win.location.search) || ''); } catch (err) { q = ''; }
+    if (/[?&]cords=under(?:&|$)/.test(q)) return 'under';
+    try { const ls = win.localStorage; return ls && typeof ls.getItem === 'function' && ls.getItem('synth.cv.cords') === 'under' ? 'under' : ''; } catch (err) { return ''; }
+  }
+  function cords() {
+    if (CD || destroyed) return CD;
+    const pref = glPref();
+    cdUnder = pref !== 'off' && !!GL && cordsPref() === 'under';
+    const mk = typeof o.createCords === 'function' ? o.createCords : createCords;
+    try {
+      CD = mk(viewport, { world: W, doc, win, now, mode: pref === 'off' ? 'svg' : cdUnder ? 'under' : 'gl', test: pref === 'test',
+        under: () => (GL && GL.ready !== false ? GL.gl || null : null), onWake: () => { if (active && !destroyed) request(); } }) || null;
+    } catch (err) { console.error(err); CD = null; }
+    if (CD) { try { CD.resize(vp.width, vp.height, dpr()); } catch (err) { console.error(err); } }
+    return CD;
+  }
+  // the hold rule (IMPL-9 §4.3): in a camera burst, after a frame longer than HOLD_MS, a frame steps nothing
+  function cordsStep(T) { try { CD.step(T, !!B && lastFrame > STUDIO.HOLD_MS); } catch (err) { console.error(err); } }
+  // a write outside the tick stepped (and drew) the cords at t: its spacing from the last (a decaying max: a pinch's input every
+  // frame, or every 2nd–4th) sizes the tick's lead; a pause (≥ CD_FRESH_MAX) starts over
+  function cdStamp(t) { const iv = t - cdOut; cdIv = iv >= CD_FRESH_MAX ? 0 : iv > 0 ? Math.max(iv, cdIv * 0.85) : cdIv; cdOut = t; }
+  // a write outside the tick: one step + draw at the end of this task (a microtask: before the frame renders, at its last
+  // camera: gesture.js's pan hook and zoom hook are one draw)
+  function cordsSoon() {
+    if (cdSoon) return;
+    cdSoon = true;
+    micro(() => {
+      cdSoon = false;
+      if (destroyed || !CD || !active) return;
+      const t = now();
+      cordsStep(t); cdStamp(t); cordsDraw();
+    });
+  }
+  function cordsDraw() { if (cdUnder) { glDraw(); return; } try { CD.draw(cam, vp.width, vp.height, dpr()); } catch (err) { console.error(err); } }
 
   /* ---- bursts: movestart … cameraend */
   function moved(timed, hook) {
@@ -723,16 +809,24 @@ export function createWorld(viewport, o) {
   // the band a fit or a focus frames into: less the floating toolbar and the minimap at its foot (a fit never lands under
   // them; the fit's own padding may reach FIT_PAD / 2 over the gap)
   function frameBand() { return cut(bandNow(), 8 - FIT_PAD / 2); }
-  function fitCamera(ids, kMax) {
+  function fitCamera(ids, kMax, kMin, foot) {
     const bx = bandBox(frameBand()), rs = rectsOf(ids);
-    const c = fitCam(rs, bx.w, bx.h, { pad: FIT_PAD, kMax: kMax > 0 ? kMax : 1 });
+    const c = fitCam(rs, bx.w, bx.h, { pad: FIT_PAD, kMax: kMax > 0 ? kMax : 1, kMin, foot });
     return { tx: c.tx + bx.x, ty: c.ty + bx.y, k: c.k };
   }
+  // the fit (the toolbar's, the 0 key, the empty-canvas double-tap): every item — or (9) what the host's hook names, never below
+  // its kMin (a patched instrument: its controller and rack at READ_K, the controller kept in view — IMPL-9 §4.5)
   function fit(opt) {
     opt = opt || {};
     if (!items.size) return;
+    if (!opt.ids && !opt.all && fitHook) {
+      let h = null;
+      try { h = fitHook(); } catch (err) { console.error(err); h = null; }
+      const ids = h && Array.isArray(h.ids) ? h.ids.map(String).filter(x => items.has(x)) : null;
+      if (h && typeof h === 'object') opt = Object.assign({}, opt, { ids: ids && ids.length ? ids : null, kMin: +h.kMin > 0 ? +h.kMin : 0, foot: !!h.foot }, +h.kMax > 0 ? { kMax: +h.kMax } : {});
+    }
     focusBack = null;
-    const c = fitCamera(opt.ids || null, opt.kMax);
+    const c = fitCamera(opt.ids || null, opt.kMax, opt.kMin, opt.foot);
     if (opt.animate === false) jump(c); else animateTo(c);
   }
   function focusItem(id, opt) {
@@ -1131,7 +1225,7 @@ export function createWorld(viewport, o) {
     if (!G && !J && (e.button === 0 || e.button == null) && typeof hooks.jack === 'function') { // (under native zoom too: a control)
       const je = jackOf(e.target);
       let r = false;
-      if (je) { try { r = hooks.jack(e, je); } catch (err) { console.error(err); r = false; } }
+      if (je && !cordAsleep(je)) { try { r = hooks.jack(e, je); } catch (err) { console.error(err); r = false; } } // ((9) a sleeping cord jack: the body's, below)
       if (r) {
         take(e);
         J = { id: e.pointerId, type: e.pointerType || 'mouse', x: e.clientX, y: e.clientY, cancel: r && typeof r.cancel === 'function' ? r.cancel : null };
@@ -1188,9 +1282,14 @@ export function createWorld(viewport, o) {
     }
     return false;
   }
-  function sleeper(t) { // the module whose body t lies in, unless t is in its bar or a jack, or the module is in edit state
+  // (9, IMPL-9 §4.2) a cord jack ([data-kind=cord]: a patch module's face jack) below READ_K sleeps like a control unless its
+  // module is in edit state: the jack hook is not offered it, sleeper() takes it as the module's body (a press pans; a tap
+  // selects, a double-tap wakes the module). Every other jack keeps its press at every zoom
+  const cordJack = n => typeof n.getAttribute === 'function' && n.getAttribute('data-kind') === 'cord';
+  function cordAsleep(je) { return cordJack(je) && cam.k < READ_K - 1e-9 && (editId == null || modOf(je) !== editId); }
+  function sleeper(t) { // the module whose body t lies in, unless t is in its bar or a jack (a cord jack: (9) its body), or the module is in edit state
     for (let n = t; n && n !== viewport && typeof n.getAttribute === 'function'; n = n.parentNode) {
-      if (n.getAttribute('data-cv-bar') != null || n.getAttribute('data-cv-jack') != null) return null;
+      if (n.getAttribute('data-cv-bar') != null || (n.getAttribute('data-cv-jack') != null && !cordJack(n))) return null;
       const id = n.getAttribute('data-cv-mod');
       if (id != null) return items.has(id) && id !== editId ? id : null;
     }
@@ -1679,7 +1778,7 @@ export function createWorld(viewport, o) {
     if (on === active) { if (on) resize(); return; }
     active = on;
     if (!on) { endGesture(true); stopMotion(); edge = null; if (B) endBurst(); outside = null; if (J) { const j = J; J = null; jackStop(j); } }
-    else resize();
+    else { resize(); if (CD && CD.wants()) request(); } // ((9) the cords swing on where they were)
   }
   function onFocusIn(e) { // keyboard focus (Tab) or a text field brings its control on screen; a press's target already is
     const t = e.target;
@@ -1786,6 +1885,17 @@ export function createWorld(viewport, o) {
       hooks.jack = f; hooks.jackCancel = c;
       return () => { if (hooks.jack === f) { hooks.jack = null; hooks.jackCancel = null; } };
     },
+    /** (9) the cord layer (cv-cords createCords: set / anchors / live / grab / move / drop / sel / alloc / dim / stats …), built at
+     * the first call (o.createCords for tests; ?nogl → its SVG), stepped and drawn by the world's frame; null once destroyed */
+    cords,
+    /** (9) the host's fit: fn() → null (every item, no floor) | { ids, kMin?, kMax?, foot? } — the toolbar's fit, the 0 key and
+     * the empty-canvas double-tap frame those items, never below kMin (a side that no longer fits keeps its start — or with foot
+     * its bottom — in view); fit({ ids }) / fit({ all: true }) skip it. Returns a remover (only removes its own hook) */
+    setFitHook(fn) {
+      const f = typeof fn === 'function' ? fn : null;
+      fitHook = f;
+      return () => { if (fitHook === f) fitHook = null; };
+    },
     on(type, fn) {
       let s = subs.get(type);
       if (!s) subs.set(type, s = new Set());
@@ -1805,6 +1915,7 @@ export function createWorld(viewport, o) {
       if (dprMq) { try { dprMq.m.removeEventListener('change', dprMq.f); } catch (err) { /* gone */ } dprMq = null; }
       if (GL) { if (glOff) { glOff(); glOff = null; } try { FACES.detach(); } catch (err) { /* gone */ } try { GL.destroy(); } catch (err) { /* gone */ } GL = null; }
       if (gh) { try { gh.el.remove(); } catch (err) { /* gone */ } gh = null; }
+      if (CD) { try { CD.destroy(); } catch (err) { /* gone */ } CD = null; }
       wk.setWheelVeto(null);
       if (typeof wk.setEdgeHook === 'function') wk.setEdgeHook(null);
       if (o.layer) wk.setLayer(null);

@@ -1,5 +1,5 @@
 // tools/panel-check.mjs — the AUTHORS' checker for a hardware panel layout (docs/canvas/IMPL-panels.md §4.6).
-//   node tools/panel-check.mjs <model> [out-dir]
+//   node tools/panel-check.mjs <model | module type> [out-dir]
 // Prints cv-panel.validate()'s problems, the module size (sizeOf: world px, the 40 px bar included), the live / inert /
 // extras counts, the smallest hit box and any overlap, and the per-section control list (in Tab order). With out-dir
 // (use the scratchpad) it writes <model>.svg: the decor SVG with every live control drawn as an outline of its kind and
@@ -16,6 +16,10 @@
 // (8, IMPL-8 §13) The SDS-V the same way; a grouped token per group (the memory keys n 1–4 and the trimmer rows mem 3 / 4 of
 // each channel b s 1 2 3: dr:mem#b:1 …), the switches the memory keys write (x<ch>p — never placed on their own), each
 // trimmer row's art and hit box (hitOff).
+// (9, IMPL-9 §4.1–§4.2) The 900 Series: the console (m900) and a patch family's module faces by type (`921b` or `pm-921b`:
+// MODULE_LAYOUTS over cv-panel's moduleModel); the live patch jacks — count, the least centre distance and clearance to a
+// hit box, each jack's widest hit circle (geometry's `hit`), a section's ports after its controls; in the SVG each jack's
+// 14 mm circle and its widest one (dashed).
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -24,10 +28,12 @@ import { noteName } from '../cv-keys.js?v=9';
 import { MODELS } from '../models.js?v=9';
 
 const [id, out] = process.argv.slice(2);
-if (!id) { console.log('usage: node tools/panel-check.mjs <model> [out-dir]\nmodels: ' + P.HW_IDS.join(', ')); process.exit(2); }
-const model = MODELS.find(m => m.id === id);
-if (!model) { console.error(`unknown model "${id}"`); process.exit(2); }
-let L = P.layoutOf(id);
+if (!id) { console.log('usage: node tools/panel-check.mjs <model | module type> [out-dir]\nmodels: ' + P.HW_IDS.join(', ') + '\nmodule types: ' + Object.keys(P.MODULE_LAYOUTS).sort().join(', ')); process.exit(2); }
+// (9, IMPL-9 §4.1) a patch family's module type ('921b' or 'pm-921b'): its face (MODULE_LAYOUTS) over cv-panel's moduleModel
+const mt = MODELS.some(m => m.id === id) ? null : P.moduleModel(id.replace(/^pm-/, ''));
+const model = mt || MODELS.find(m => m.id === id);
+if (!model) { console.error(`unknown model or module type "${id}"`); process.exit(2); }
+let L = mt ? P.moduleLayoutOf(mt.layout) : P.layoutOf(id);
 const file = join(dirname(fileURLToPath(import.meta.url)), '..', 'panels', id + '.js');
 if (!L && !P.HW_IDS.includes(id) && /^[a-z0-9]+$/.test(id) && existsSync(file)) {
   L = (await import(pathToFileURL(file).href + '?v=9')).default || null;
@@ -100,6 +106,18 @@ if (hb.length) {
   const outside = hb.filter(r => r.x < 0 || r.y < 0 || r.x + r.w > geo.body.w || r.y + r.h > geo.body.h).map(r => r.id);
   if (outside.length) console.log('outside the body: ' + outside.join(', '));
 }
+// (9, IMPL-9 §4.2) the live patch jacks: count, ports by kind, the least centre distance and clearance, each one's widest
+// hit circle (geometry's `hit`: the host's --jp), the 14 mm circle inside the body
+if (geo.jacks.length) {
+  const J = geo.jacks, X = P.PX_PER_MM, f1 = v => (Math.round(v * 10) / 10).toFixed(1);
+  let clr = Infinity, who = '';
+  for (const j of J) for (const r of hb) { const d = Math.hypot(Math.max(r.x - j.x, 0, j.x - r.x - r.w), Math.max(r.y - j.y, 0, j.y - r.y - r.h)); if (d < clr) { clr = d; who = j.port + ' ↔ ' + r.id; } }
+  console.log(`\npatch jacks: ${J.length} (${J.filter(j => j.kind === 'jack').length} 1/4", ${J.filter(j => j.kind === 'strig').length} S-trigger) · least pitch ${geo.jackPitch == null ? '—' : f1(geo.jackPitch / X) + ' mm (' + geo.jackPitch + ' px)'}` +
+    ` · least clearance to a hit box ${clr === Infinity ? '—' : f1(clr / X) + ' mm (' + who + ')'} · widest hit circle ${geo.jackHit} px (jackHit)`);
+  console.log('  ' + J.map(j => `${j.port}@(${j.x}, ${j.y}) hit ${j.hit}`).join(' · '));
+  const r = 7 * X, off = J.filter(j => j.x - r < 0 || j.y - r < 0 || j.x + r > geo.body.w || j.y + r > geo.body.h).map(j => j.port);
+  if (off.length) console.log('  a 14 mm hit circle outside the body: ' + off.join(', '));
+}
 // (1i) the keyboard and the performance controls
 const f3 = v => (Math.round(v * 1000) / 1000).toFixed(3);
 for (const o of geo.controls) {
@@ -131,7 +149,10 @@ for (const i of geo.order) {
   if (!bySec.has(k)) bySec.set(k, []);
   bySec.get(k).push(o.id ? o.id + ix.replace(' ', '#') : o.kind);
 }
-for (const sct of L.sections || []) console.log(`  ${sct.id.padEnd(14)} ${(bySec.get(sct.id) || []).join(' ')}`);
+// ((9) a section's patch jacks after its controls: `jacks …` — not in the Tab order, cv-module's spans take them)
+const jackSec = c => (typeof c.sec === 'string' ? c.sec : ((L.sections || []).find(s => (s.a || 'main') === (c.a || 'main') && c.x >= s.x && c.x <= s.x + s.w && c.y >= s.y && c.y <= s.y + s.h) || {}).id);
+const portsIn = sid => (L.controls || []).filter(c => c && c.port != null && !c.inert && jackSec(c) === sid).map(c => c.port);
+for (const sct of L.sections || []) { const pj = portsIn(sct.id); console.log(`  ${sct.id.padEnd(14)} ${(bySec.get(sct.id) || []).join(' ')}${pj.length ? (bySec.get(sct.id) ? ' · ' : '') + 'jacks ' + pj.join(' ') : ''}`); }
 if (bySec.has('(none)')) console.log('  (none)         ' + bySec.get('(none)').join(' '));
 if (out) {
   const dir = resolve(out);
@@ -155,6 +176,11 @@ if (out) {
     if (o.live) for (const h of o.entries ? o.entries.map(e => e.hit) : [o.hit]) ov.push(`<rect x="${h.x}" y="${h.y}" width="${h.w}" height="${h.h}" fill="none" stroke="#ff4fa3" stroke-width="1" stroke-dasharray="4 3"/>`);
     const ix = ixOf(o); // (a repeated token: its index; (8) its group's value first)
     if (o.id) ov.push(`<text x="${(o.box.x + o.box.w / 2)}" y="${o.box.y + o.box.h + 9}" font-size="9" text-anchor="middle" fill="#3fd0ff" font-family="monospace">${o.id}${ix}</text>`);
+  }
+  // (9) the patch jacks: the 14 mm hit circle (cyan), the widest one (geometry's hit: dashed), the port
+  for (const j of geo.jacks) {
+    ov.push(`<circle cx="${j.x}" cy="${j.y}" r="${7 * P.PX_PER_MM}" fill="none" stroke="#3fd0ff" stroke-width="1.2"/><circle cx="${j.x}" cy="${j.y}" r="${j.hit / 2}" fill="none" stroke="#ff4fa3" stroke-width="1" stroke-dasharray="4 3"/>`);
+    ov.push(`<text x="${j.x}" y="${j.y + 7 * P.PX_PER_MM + 9}" font-size="9" text-anchor="middle" fill="#3fd0ff" font-family="monospace">${j.port}</text>`);
   }
   if (geo.extras) {
     const X = geo.extras;

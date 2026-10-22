@@ -101,6 +101,13 @@ Full design: `docs/canvas/SPEC-canvas.md` (+ "User decisions" at its end). Livin
    later from their own research — don't block on it. Pending from the user, whenever they like: `ui-m3b`, `ipad7a` bench, hands-on of
    the keyboards / Serum parts / drums / Pads. Next on the roadmap: stage 9 (Moog Modular module by module), then stages 4–6; 3R
    (the GPU module painter, "soft while pinching") parked.
+9. **(2026-10-22.)** **Stage 9 (the Moog Modular, module by module — the Model 15 set as the "900 Series") deployed** as one squashed
+   commit on `canvas` (holding branch `wt-9`; contract IMPL-9; `tests/ref-9` frozen beside ref-p1 / 1c / 7a–7d). Physics patch cords
+   (only on instruments patched with cords in real life; only the plug ends take touches). Also this day: the canvas always snaps to the
+   grid (no magnet), the toolbar collapses to one button, no zoom −/+; the bundled Serum's touch line removed; synth.domlavin.com is
+   obsolete but stays online untouched. Pending from the user: the `?m9=1` iPad session, `ui-m3b`, `ipad7a`, hands-on. Next: System 35 / 55
+   modules, then the ARP 2600 / MS-20 patch panels on the same engine; later the Colossus (row 11), our own synth (row 10), a standalone
+   offline app (row 12).
 6. After every stage: update ROADMAP (status + feedback table), commit on `canvas`, `tools/deploy-canvas.sh`, tell the user what to try.
 
 ## 4. Architecture map (canvas branch)

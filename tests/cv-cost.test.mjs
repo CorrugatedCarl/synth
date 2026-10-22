@@ -94,6 +94,66 @@ test('IMPL-8 §12.7: the SDS-V is costed by its bench row dvp the same way — m
   assert.equal(C.label(e), '~1 %');
 });
 
+// IMPL-9 §3.8: no voices — the patch itself: base (the Inst's decimators + the Track, spike (a)) + every module with a cord at lane
+// V9b's measured cost (a section's where it splits: the 995, the controller); MAIN OUT unpatched → idle; no record → Classic bass
+test('IMPL-9 §3.8: the 900 Series is costed by its patch — base + each module (or section) with a cord at V9b\'s costs, MAIN OUT unpatched idle, no record = Classic bass under its row m9p; mono, linear in the factor', async () => {
+  const MG = await import('../moog-core.js?v=9'), PT = await import('../patch-core.js?v=9');
+  const c = C.COST.synth.m900, e = C.estimate('m900'), K = C.COST.patch;
+  assert.deepEqual([c.row, c.family, c.poly, c.voice], ['m9p', 'patch', 1, 0]);
+  assert.deepEqual(Object.keys(K).sort(), [...MG.ORDER_ALL].sort(), 'a cost per type');
+  for (const t of MG.ORDER_ALL) assert.ok(Array.isArray(K[t]) ? K[t].length === MG.TYPES[t].secs.length : K[t] > 0 && K[t] < 0.01, t);
+  // Classic bass by hand: the controller's keyboard and mixer (the multiple and MAIN OUT: the evaluator's), the 921A, two 921Bs, the
+  // 921, the 995's first attenuator, the 904A, two 911s, one 902 (the 923, the 907A and the other 902 unpatched)
+  const hand = c.base + K.ctl[0] + K.ctl[1] + K['921a'] + 2 * K['921b'] + K[921] + K[995][0] + K['904a'] + 2 * K[911] + K[902];
+  near(e, hand, 1e-9, 'Classic bass: base + its patched modules and sections');
+  const { rec, vals } = MG.model15();
+  near(C.estimate(syn('m900', vals, { patch: rec })), e, 1e-9, 'a device holding the record = the tile');
+  near(C.estimate(syn('m900', vals)), e, 1e-9, 'no record: the Model 15 set');
+  assert.ok(e > 0.4 * BENCH.targets.m9p.node && e < BENCH.targets.m9p.node, `m900 ${e} vs m9p ${BENCH.targets.m9p.node}`);
+  // MAIN OUT unpatched: idle (the 2 s skip); the 907A patched in: + its cost; the 995's second attenuator: + one section; off
+  const off = PT.pull(rec, rec.cords.find(x => x.b === 'c.out').id).rec;
+  assert.equal(C.estimate(syn('m900', vals, { patch: off })), C.COST.off);
+  assert.equal(C.estimate(syn('m900', vals, { patch: PT.fresh('moog') })), C.COST.off);
+  const id = t => Object.keys(rec.mods).find(m => rec.mods[m].t === t), more = PT.plug(rec, id('907a') + '.out', 'c.m4').rec;
+  near(C.estimate(syn('m900', vals, { patch: more })), e + K['907a'], 1e-9, 'the 907A patched');
+  near(C.estimate(syn('m900', vals, { patch: PT.plug(rec, id('995') + '.o2', 'c.m4').rec })), e + K[995][1], 1e-9, 'a second attenuator');
+  assert.equal(C.estimate(syn('m900', vals, { patch: rec, on: false })), C.COST.off);
+  assert.equal(C.estimate('m900', 1, { notes: 8 }), C.estimate('m900', 1, { notes: 1 }));
+  assert.equal(C.estimate(syn('m900', vals, { patch: rec }), 2), 2 * e);
+  assert.equal(C.label(e), '~2 %');
+});
+
+// review 1 F5 (r1/idle.mjs): the engine runs MAIN OUT's ancestors only, and a loop step's members cost per sample beyond the table's
+// block figures — an idle island must cost nothing, m9x's loop must show (the rows' measures: the calibrated node gate, E9 §12)
+test('IMPL-9 §3.8 (review 1 F5): the patch estimate charges the live nodes only and adds the loop steps — Classic bass + a 30-module idle island = Classic bass; m9x (measured 0.0372) within 15 %, the starting patches near their rows', async (t) => {
+  const MG = await import('../moog-core.js?v=9'), PT = await import('../patch-core.js?v=9'), { m9xPatch, presetSet } = await import('./bench-scenarios.mjs');
+  const e0 = C.estimate('m900'), base = MG.model15();
+  let rec = base.rec;
+  const isl = [];
+  for (let k = 0; k < 10; k++) for (const t of ['921', '904a', '907a']) { const x = PT.addModule(rec, base.vals, t); rec = x.rec; isl.push(x.mid); }
+  for (let k = 0; k < 10; k++) { // each 921's saw → its 904A → its 907A → the next 921's f1: patched among themselves, no path to MAIN OUT
+    const [o, f, b] = [isl[3 * k], isl[3 * k + 1], isl[3 * k + 2]], n = isl[(3 * k + 3) % 30];
+    for (const [a, z] of [[o + '.saw', f + '.in'], [f + '.out', b + '.in'], [b + '.out', n + '.f1']]) { const r = PT.plug(rec, a, z); assert.ok(r.id, a + ' → ' + z + ': ' + r.why); rec = r.rec; }
+  }
+  assert.ok(Object.keys(rec.mods).length >= 42 && rec.cords.length > 40);
+  near(C.estimate({ kind: 'synth', model: 'm900', vals: base.vals, patch: rec }), e0, 1e-9, 'Classic bass + an idle island');
+  // a loop: the same modules patched into a cycle cost the loop members' per-sample step on top (COST.loop per member)
+  const L = C.COST.loop, mk = pairs => { let r = PT.fresh('moog'), v = {}; for (const t of ['902', '902']) { const x = PT.addModule(r, v, t); r = x.rec; } for (const [a, z] of pairs) r = PT.plug(r, a, z).rec; return C.estimate({ kind: 'synth', model: 'm900', vals: v, patch: r }); };
+  assert.ok(L > 0.0008 && L < 0.002, 'about 6-9 ns a sample a member at OS 4, 48 kHz: ' + L);
+  near(mk([['m1.o1', 'm2.i1'], ['m2.o2', 'c.out'], ['m2.o1', 'm1.i1']]) - mk([['m1.o1', 'm2.i1'], ['m2.o2', 'c.out']]), 2 * L, 1e-9, 'two loop members');
+  // against the rows (the calibrated node gate: m9p 0.0185 / m9x 0.0372 / m9d 0.0186)
+  const rows = { m9p: ['Classic bass', 0.0185], m9d: ['Drone', 0.0186] }, rep = [];
+  const x9 = C.estimate({ kind: 'synth', model: 'm900', vals: m9xPatch().vals, patch: m9xPatch().rec });
+  rep.push('m9x ' + x9.toFixed(4) + ' vs 0.0372 (' + ((x9 / 0.0372 - 1) * 100).toFixed(1) + ' %)');
+  near(x9, 0.0372, 0.15, 'm9x');
+  for (const [row, [name, meas]] of Object.entries(rows)) {
+    const p = presetSet(name), e = C.estimate({ kind: 'synth', model: 'm900', vals: p.vals, patch: p.rec });
+    rep.push(row + ' ' + e.toFixed(4) + ' vs ' + meas + ' (' + ((e / meas - 1) * 100).toFixed(1) + ' %)');
+    near(e, meas, 0.2, row);
+  }
+  t.diagnostic(rep.join(' · '));
+});
+
 test('estimates are monotone in voices, unison, oscillators, filters and effect count, and linear in the factor', () => {
   for (const m of MODELS.filter(x => x.id !== 'serum')) {
     let last = 0;

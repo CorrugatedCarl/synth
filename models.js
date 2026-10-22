@@ -4,10 +4,12 @@
  * Dial values are stored in panel units (mostly 0–10, like the hardware);
  * `conv` turns a dial position into a physical quantity.
  * Models with `custom` (Serum) bring their own panel and state ({ s } from serum-core.js) instead of sections.
+ * Models with `family` ('drums', 'patch') ride their own Inst kinds; the 900 Series' sections are moog-core's controller table.
  * patchFor(model, vals, fx, opts) = the complete engine patch of a track (SPEC-serum2 §12.7): the model's map + the
  * track's FX rack (FXP v2) — shared by main.js (which adds only live-session fields), bounces and the tests.
  */
 import * as SC from './serum-core.js?v=9';
+import * as MG from './moog-core.js?v=9';
 
 const { defaultSerum, compileSerum, FACTORY_PRESETS } = SC;
 
@@ -867,7 +869,30 @@ const sdsv = {
   },
 };
 
-export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum, tr808, tr606, tr909, sdsv];
+/* ================================================================ 1973 (patchable modules) */
+// The 900 Series (IMPL-9 §1.2, §2.4): a patch is ONE synth device of this model, family 'patch' (Inst kind 'patch': patch-dsp.js's
+// machine over moog-dsp.js's circuits). The modules and cords are the device's `patch` record and the modules' knobs `vals.p`
+// (patch-core.js, moog-core.js); this model's own panel is the CONTROLLER's — moog-core's CTL_SECTIONS, the device's flat vals, the
+// classic knob machinery (no MIDI learn, no mod cables: family 'patch' skips cv-mods). map() never sees dev.patch, only vals:
+// pv = pvOf(v) = { 0: the controller's values in CTL_IDS order, m<k>: vals.p's entries } — the machine binds ids to slots. No
+// base(G) voice fields: the engine reads none of them for this kind. Presets are topology (moog-core PRESETS, §2.5), so none here.
+// Appended after SDS-V, so every index into the first 17 MODELS is unchanged; today's Moog Modular above is untouched. 'maker' is
+// a label only: no maker word on the panel or the tile (D4).
+const m900 = {
+  id: 'm900', name: '900 Series', model: 'Moog modules, patched', maker: 'R.A. Moog', year: 1973, family: 'patch',
+  tag: 'Mono · module by module · patch cords · 921 / 921A / 921B oscillators, 904A ladder, 907A filter bank, 911 envelopes, 902 amplifiers',
+  about: 'The modular, one module at a time, patched with cords. Each module is its own circuit on its own panel — the 921 family of oscillators, the 904A transistor-ladder low-pass, the 907A fixed filter bank, the 911 envelope generator, the 902 amplifier, the 923 noise source, the 995 attenuators — and nothing is connected until you plug a cord between two jacks: an oscillator into the filter, an envelope into an amplifier’s control input, a filter back into itself. Any output may go into any input, feedback included; a jack takes one cord, so the controller’s multiples fan a signal out. The controller panel is ours and stands in for the Model 15’s console: the track’s keys as pitch, S-trigger, gate and velocity voltages, a four-input mixer, two groups of four multiples, the gate and S-trigger converters, and the main output that leaves for the track. Mono, lowest key sounding, like the original. The Moog Modular in Hardware is a fixed patch of the same circuits; this one you wire yourself.',
+  theme: { ctl: 'knob', knob: 'moog', panel: '#121110', face: '#0b0b0b', ink: '#e9e4d8', label: '#bdb6a6', accent: '#d9d2bf', wood: 1, font: 'helvetica' },
+  sections: MG.CTL_SECTIONS,
+  presets: [],
+  map(P, v, G) {
+    return { engine: 'patch', family: 'moog', pv: MG.pvOf(v), level: 1, mode: 'mono', drift: G.drift }; // (drift: the app's analog drift, the oscillators' slow walk — 0 in the goldens)
+  },
+};
+
+export const MODELS = [modular, minimoog, arp2600, solina, cs80, prophet5, ms20, tb303, obxa, jupiter8, juno60, dx7, serum, tr808, tr606, tr909, sdsv, m900];
+// a classic keyboard synth: not Serum (custom), not a family (drums, patch) — the Hardware / Simple views and the classic modulation list (IMPL-9 §1.2)
+export const classicOf = m => !!m && !m.custom && !m.family;
 for (const m of MODELS) {
   m.controls = [];
   for (const s of m.sections) for (const c of s.c) m.controls.push(c);

@@ -16,6 +16,8 @@ import { memoryStore } from '../wtstore.js?v=9';
 import { MODELS, patchFor } from '../models.js?v=9';
 import { loadFixture } from './fixtures/load.mjs';
 import { dspScope, DSP_TABLE, DSP_FILES, noAlloc } from './dsp-scope.mjs';
+import * as MG from '../moog-core.js?v=9';
+import * as PT from '../patch-core.js?v=9';
 
 const ROOT = new URL('../', import.meta.url);
 const SRC = f => readFileSync(new URL(f, ROOT), 'utf8');
@@ -648,11 +650,14 @@ test('engine: smon / fxph messages, every model through the rack, direct out thr
   assert.equal(p.port.sent[0].t, 'fxph');
   assert.equal(p.port.sent[0].v.length, 48);
   assert.ok(finite(o.L) && peak(o.L) > 0.02);
-  // every plain model renders through a rack with modules on
+  // every plain model renders through a rack with modules on (IMPL-9 §8.9: a patch model as the Model 15 tile leaves it —
+  // Classic bass, its vals and its graph payload — playing a C)
   const fx = fxWith(f => { f.p['fx.cho.on'] = 1; f.p['fx.cmp.on'] = 1; f.p['fx.eq.on'] = 1; });
   for (const md of MODELS) {
     if (md.custom) continue;
-    const q = S.mk({ os: 2, patch: plainPatch(md.id, fx) });
+    const m15 = md.family === 'patch' ? MG.model15() : null;
+    const q = S.mk({ os: 2, patch: m15 ? patchFor(md, m15.vals, fx, { sr: 48000, bpm: 120 }) : plainPatch(md.id, fx) });
+    if (m15) q.msg({ t: 'seq', s: PT.payload(m15.rec) });
     q.msg({ t: 'on', n: md.family === 'drums' ? 36 : 60, v: 0.8 }); // (a drum machine: its kick, IMPL-7a §12.6)
     const [r] = run(S, [q], 4864);
     assert.ok(finite(r.L) && finite(r.R) && peak(r.L) > 1e-3, md.id);
@@ -672,7 +677,7 @@ test('engine: smon / fxph messages, every model through the rack, direct out thr
 });
 
 /* ------------------------------------------------------------------ SPEC-serum2 M1a step 4: engine, script list, PROCS */
-test('§0.3: main.js, the golden harness and dsp-scope load the same 14 scripts in table order (mod-core.js last, IMPL-2b; the drum machine’s two before it, IMPL-7a); every file exists', async () => {
+test('§0.3: main.js, the golden harness and dsp-scope load the same 16 scripts in table order (mod-core.js, IMPL-2b, after the drum machine’s two, IMPL-7a; the patch evaluator and the 900 Series’ circuits last, IMPL-9 §3.7); every file exists', async () => {
   const main = SRC('main.js'), m = /const DSP_FILES = \[([^\]]*)\]/.exec(main);
   assert.ok(m, 'main.js DSP_FILES');
   assert.deepEqual(m[1].split(',').map(x => x.trim().replace(/^'|'$/g, '')).filter(Boolean), [...DSP_FILES]);

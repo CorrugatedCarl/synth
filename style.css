@@ -1336,3 +1336,56 @@ html.wk-touch .cv-cable-hit { stroke-width: calc(24px * var(--ik, 1)); }
 #world[data-cv-h6="contain"] .cv-mod:not([data-cv-face]) > .cv-body { contain: content; }
 /* the Sources tray's Serum parts and note tools (cv-tray o.parts) */
 .cv-ptiles { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+/* (9, IMPL-9 §4.1–§4.6; lane U9 — part of this section, which stays the last) patch modules.
+   Face jacks (cv-module side 'face'): a transparent span over the jack the face draws (its nut; a Cinch-Jones socket 10 × 8 mm);
+   its hit circle 44 screen px where the face has room, never wider than the face allows (--jp: geometry's `hit`, the nearest
+   neighbour − 2 px and clear of every knob's hit box), never under 14 mm (28 px): neighbouring circles never overlap */
+.cv-jack.cv-fjack { width: 28px; height: 28px; margin: -14px 0 0 -14px; background: none; box-shadow: none; }
+.cv-jack.cv-fjack[data-sig="s"] { width: 22px; height: 18px; margin: -9px 0 0 -11px; border-radius: 4px; }
+.cv-jack.cv-fjack::before { width: clamp(28px, calc(44px * var(--ik, 1)), var(--jp, 36px)); height: clamp(28px, calc(44px * var(--ik, 1)), var(--jp, 36px)); }
+/* while a cord is in flight (#world[data-cv-patching="cord"]): rings round the face's nut — the target (.cv-hot) and the cord's
+   fixed end (.cv-from) orange, the compatible ones (.cv-ok) green (the jack rules above, restated: the face jack's own
+   box-shadow: none would win) —; a jack it cannot take is dimmed by a dark disc over the nut; focus: the same ring */
+.cv-jack.cv-fjack:focus-visible { box-shadow: 0 0 0 1.5px #0c0d0f, 0 0 0 calc(3px * var(--ik, 1)) var(--hot); }
+.cv-jack.cv-fjack.cv-ok { box-shadow: 0 0 0 1.5px #0c0d0f, 0 0 0 calc(3px * var(--ik, 1)) rgba(111, 227, 161, 0.85), 0 0 calc(14px * var(--ik, 1)) rgba(111, 227, 161, 0.6); }
+.cv-jack.cv-fjack.cv-from, .cv-jack.cv-fjack.cv-hot { box-shadow: 0 0 0 1.5px #0c0d0f, 0 0 0 calc(4px * var(--ik, 1)) var(--hot), 0 0 calc(16px * var(--ik, 1)) rgba(242, 163, 58, 0.7); }
+#world[data-cv-patching] .cv-jack.cv-fjack.cv-no { opacity: 1; filter: none; background: rgba(8, 9, 11, 0.62); box-shadow: 0 0 0 1px rgba(8, 9, 11, 0.62); }
+/* below READ_K the cord jacks sleep like the controls (cv-patch: [data-cv-cordsleep]): a press goes through to the face, which
+   pans; a module in edit state (a double-tap) keeps its jacks */
+#world[data-cv-cordsleep] .cv-mod:not([data-cv-edit]) > .cv-jack.cv-fjack { pointer-events: none; }
+/* the compact bar of a patch module (1 MU = 128 px): stripe · its title over its sub (its driver) · ⋯ */
+.cv-mod[data-cv-compact] > .cv-bar { gap: 6px; padding: 0 2px 0 8px; }
+.cv-mod[data-cv-compact] .cv-ttl { flex-direction: column; align-items: flex-start; justify-content: center; gap: 0; }
+.cv-mod[data-cv-compact] .cv-title { font-size: 11px; letter-spacing: 0.08em; line-height: 1.2; }
+.cv-mod[data-cv-compact] .cv-sub { max-width: 100%; font-size: 10px; line-height: 1.2; }
+.cv-mod[data-cv-compact] .cv-bar > .cv-more { width: 28px; }
+/* a module this build has no face for (a newer file): an honest blank */
+.cv-body > .cv-pmissing { box-sizing: border-box; height: 100%; padding: 16px 10px; color: var(--mute); font: 500 11px/1.4 var(--ui); text-align: center; }
+/* the target chip (cv-patch, #overlay): the snapped jack's name beside the finger; a refused jack's reason, muted */
+#overlay .cv-plugchip { position: absolute; left: 0; top: 0; z-index: 7; max-width: 320px; overflow: hidden; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--hot); background: rgba(20, 22, 27, 0.94); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); color: #fff; font: 600 14px/1.2 var(--ui);
+  white-space: nowrap; text-overflow: ellipsis; pointer-events: none; will-change: transform; }
+#overlay .cv-plugchip[data-no] { border-color: #5b5e66; color: #c9c6bf; font-weight: 500; }
+#overlay .cv-plugchip[hidden] { display: none; }
+/* the cord's menu (a tap on its plug): its two ends, eight colour swatches, Remove */
+.cv-cmenu { position: fixed; z-index: 1001; display: grid; gap: 8px; width: max-content; max-width: min(320px, calc(100vw - 8px)); padding: 10px;
+  border-radius: 12px; border: 1px solid var(--line2, #30353d); background: var(--pop, #17191d); box-shadow: 0 18px 50px rgba(0, 0, 0, 0.62);
+  color: var(--text); font: 500 12px/1.3 var(--ui); outline: none; }
+.cv-cm-t { max-width: 200px; color: #c9c6bf; font-size: 11px; overflow-wrap: anywhere; }
+.cv-cm-sw { display: grid; grid-template-columns: repeat(4, 44px); gap: 6px; }
+.cv-cm-c { width: 44px; height: 44px; padding: 0; border-radius: 50%; border: 2px solid #0c0d0f; background: var(--cc, #8d8b86);
+  box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.28), 0 0 0 1px #3a3f48; -webkit-tap-highlight-color: transparent; }
+.cv-cm-c[aria-checked="true"] { box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.28), 0 0 0 3px var(--hot); }
+.cv-cm-c:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.cv-cm-x { height: 36px; border-radius: 8px; border: 1px solid #5a4320; background: #1d1810; color: var(--hot); font: 600 12px var(--ui); -webkit-tap-highlight-color: transparent; }
+.cv-cm-x:hover, .cv-cm-x:focus-visible { background: #2a2418; outline: none; }
+@media (pointer: coarse) { .cv-cm-x { height: 44px; } }
+/* the Sources tray's Moog modules row (cv-tray o.moog): a tall panel glyph (knob dots, jack rings), the name, its load */
+.cv-gtiles { grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); }
+.cv-gglyph { display: grid; place-items: center; width: 56px; height: 48px; margin-bottom: 4px; border-radius: 8px; border: 1px solid #30353d;
+  background: linear-gradient(#1c1f25, #121418); color: #e9e5da; }
+.cv-gglyph svg { display: block; width: 40px; height: 44px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linejoin: round; }
+.cv-gglyph svg .k { fill: currentColor; stroke: none; }
+.cv-gglyph svg .j { stroke-width: 0.9; }
+.cv-gghost .cv-gglyph { margin: 0; }
+.cv-tile.cv-placed .cv-gglyph { color: var(--mute); }

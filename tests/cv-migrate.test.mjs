@@ -9,6 +9,7 @@
 // Stage 7c (IMPL-7c §6): schema 10 (additive; read-only in a schema-9 build), song.normDev's 909 record, MIDI channel 10, the lost-line.
 // Stage 8 (IMPL-8 §10, §15.10; lane X): schema 11 (ONE bump for the pad controller and the SDS-V; additive, read-only in a schema-10 build), song.deserialize's
 // project.pads (pads-core normPads) and History, song.normDev's SDS-V record, MIDI channel 10, the lost-lines (the Pads controllers, the SDS-V track).
+// Stage 9 (IMPL-9 §1.6, §8.9; lane X9): schema 12 (additive; read-only in a schema-11 build), song.normDev's `patch` record (patch-core normPatch), the lost-line (the 900 Series patch).
 // Run: node --max-old-space-size=2048 --test tests/cv-migrate.test.mjs
 import './v8-guard.mjs';
 import { test } from 'node:test';
@@ -27,7 +28,7 @@ const deepFreeze = o => { if (o && typeof o === 'object' && !Object.isFrozen(o))
 const G1 = { guard: true }; // (milestone 3 R7: node tests adopt with the guard — a stray track.model / vals / fx throws)
 
 test('constants: SCHEMA, one step per schema, the read-only notice (§2.13)', () => {
-  assert.equal(M.SCHEMA, 11, '1a: uid; 1b: track.lay; 1c: project v2 tracks; 1e: several instruments per track; 2a: performance modulators; 2b: modulation everywhere; 3: Serum parts (lay); 7a: drum machines; 7b: the TR-606; 7c: the TR-909; 8: the pad controller and the SDS-V (one bump)');
+  assert.equal(M.SCHEMA, 12, '1a: uid; 1b: track.lay; 1c: project v2 tracks; 1e: several instruments per track; 2a: performance modulators; 2b: modulation everywhere; 3: Serum parts (lay); 7a: drum machines; 7b: the TR-606; 7c: the TR-909; 8: the pad controller and the SDS-V (one bump); 9: patchable modules (the 900 Series)');
   assert.equal(M.STEPS.length, M.SCHEMA, 'STEPS[n] turns schema n into n + 1');
   assert.equal(M.READ_ONLY_NOTICE, 'Opened read-only: saved by a newer SYNTH Canvas · Reload');
   assert.equal(M.schemaOf, A.schemaOf, 'one definition of a project\'s schema (the store\'s gate uses it)');
@@ -1051,13 +1052,13 @@ const drumTrack = (o = {}) => Object.assign(M.trackToV2({ id: 'trk_8', name: 'Be
 const withDrum = (t, drum) => { t.dev.i1.drum = drum; return t; };
 
 test('7a schema 8: additive — a 7 opens as before (STEPS[7] changes nothing stored); an 8 is read-only in a schema-7 build (the store\'s gate) and in this one\'s +1', async () => {
-  assert.deepEqual([M.SCHEMA, M.STEPS.length], [11, 11], '(stage 8: the schema is 11 now; STEPS[7] is still 7a\'s)');
+  assert.deepEqual([M.SCHEMA, M.STEPS.length], [12, 12], '(stage 9: the schema is 12 now; STEPS[7] is still 7a\'s)');
   const t = withDrum(drumTrack(), DC.normDrum({ st: [[1, 2]] })), p7 = deepFreeze({ name: 'D', schema: 7, uid: 'p_abc123xyz0', perf: { wheel: null }, tracks: [jclone(t)] });
   assert.deepEqual(M.STEPS[7](p7), Object.assign(jclone(p7), { schema: 8 }), 'nothing converted');
   const up = M.upgrade(p7);
-  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [7, false, 11, 'p_abc123xyz0'], 'through 8, 9, 10 and 11 (7b, 7c, 8: additive)');
+  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [7, false, 12, 'p_abc123xyz0'], 'through 8, 9, 10, 11 and 12 (7b, 7c, 8, 9: additive)');
   assert.deepEqual(Object.assign({}, up.p, { schema: 7 }), jclone(p7), 'content and every field as they were');
-  assert.deepEqual([8, 9, 10, 11, 12].map(n => M.upgrade({ schema: n, tracks: [] }).readOnly), [false, false, false, false, true]);
+  assert.deepEqual([8, 9, 10, 11, 12, 13].map(n => M.upgrade({ schema: n, tracks: [] }).readOnly), [false, false, false, false, false, true]);
   // a schema-7 build (its store's gate given 7) opens a schema-8 project read-only: it would read the 808 as a Minimoog
   const idb = fakeIDB(), seed = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 8 });
   seed.saveProject(Object.assign(jclone(M.STEPS[7](p7)), { name: 'eight' })); await seed.flush(); await seed.close();
@@ -1142,13 +1143,13 @@ const drumTrack6 = (o = {}) => Object.assign(M.trackToV2({ id: 'trk_6', name: 'D
   notes: [{ id: 1, t: 0, d: 120, n: 36, v: 127 }, { id: 2, t: 480, d: 120, n: 42, v: 100 }], cc: [] }), o);
 
 test('7b schema 9: additive — an 8 opens as before (STEPS[8] changes nothing stored); a 9 is read-only in a schema-8 build (the store\'s gate: it would read the 606 as a Minimoog) and a 10 in a schema-9 one', async () => {
-  assert.deepEqual([M.SCHEMA, M.STEPS.length], [11, 11], '(stage 8: the schema is 11 now; STEPS[8] is still 7b\'s)');
+  assert.deepEqual([M.SCHEMA, M.STEPS.length], [12, 12], '(stage 9: the schema is 12 now; STEPS[8] is still 7b\'s)');
   const t = withDrum(drumTrack6(), DC.normDrum({ st: [[1, 2]] }, 'tr606')), p8 = deepFreeze({ name: 'D', schema: 8, uid: 'p_abc123xyz0', perf: { wheel: null }, tracks: [jclone(t)] });
   assert.deepEqual(M.STEPS[8](p8), Object.assign(jclone(p8), { schema: 9 }), 'nothing converted');
   const up = M.upgrade(p8);
-  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [8, false, 11, 'p_abc123xyz0'], 'through 9, 10 and 11 (7c, 8: additive)');
+  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [8, false, 12, 'p_abc123xyz0'], 'through 9, 10, 11 and 12 (7c, 8, 9: additive)');
   assert.deepEqual(Object.assign({}, up.p, { schema: 8 }), jclone(p8), 'content and every field as they were');
-  assert.deepEqual([9, 10, 11, 12].map(n => M.upgrade({ schema: n, tracks: [] }).readOnly), [false, false, false, true]);
+  assert.deepEqual([9, 10, 11, 12, 13].map(n => M.upgrade({ schema: n, tracks: [] }).readOnly), [false, false, false, false, true]);
   // a schema-8 build (its store's gate given 8: the 7a build) opens this build's projects read-only
   const idb = fakeIDB(), seed = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 9 });
   seed.saveProject(Object.assign(jclone(M.STEPS[8](p8)), { name: 'nine' })); await seed.flush(); await seed.close();
@@ -1228,14 +1229,14 @@ const drumTrack9 = (o = {}) => Object.assign(M.trackToV2({ id: 'trk_9', name: 'D
   notes: [{ id: 1, t: 0, d: 120, n: 36, v: 127 }, { id: 2, t: 480, d: 120, n: 42, v: 100 }], cc: [] }), o);
 
 test('7c schema 10: additive — a 9 opens as before (STEPS[9] changes nothing stored); a 10 is read-only in a schema-9 build (the store\'s gate: it would read the 909 as a Minimoog) and an 11 in this one', async () => {
-  assert.deepEqual([M.SCHEMA, M.STEPS.length], [11, 11], '(stage 8: the schema is 11 now; STEPS[9] is still 7c\'s)');
+  assert.deepEqual([M.SCHEMA, M.STEPS.length], [12, 12], '(stage 9: the schema is 12 now; STEPS[9] is still 7c\'s)');
   const t = withDrum(drumTrack9(), DC.normDrum({ st: [[1, 2]] }, 'tr909')), p9 = deepFreeze({ name: 'D', schema: 9, uid: 'p_abc123xyz0', perf: { wheel: null }, tracks: [jclone(t)] });
   assert.deepEqual(M.STEPS[9](p9), Object.assign(jclone(p9), { schema: 10 }), 'nothing converted');
   const up = M.upgrade(p9);
-  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [9, false, 11, 'p_abc123xyz0'], 'through 10 and 11 (8: additive)');
+  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [9, false, 12, 'p_abc123xyz0'], 'through 10, 11 and 12 (8, 9: additive)');
   assert.deepEqual(Object.assign({}, up.p, { schema: 9 }), jclone(p9), 'content and every field as they were');
-  assert.deepEqual([10, 11, 12].map(n => M.upgrade({ schema: n, tracks: [] }).readOnly), [false, false, true]);
-  assert.deepEqual([M.upgrade({ schema: 8, tracks: [] }).p.schema, M.upgrade({ schema: 0, tracks: [] }).p.schema], [11, 11], 'older ones go through every step');
+  assert.deepEqual([10, 11, 12, 13].map(n => M.upgrade({ schema: n, tracks: [] }).readOnly), [false, false, false, true]);
+  assert.deepEqual([M.upgrade({ schema: 8, tracks: [] }).p.schema, M.upgrade({ schema: 0, tracks: [] }).p.schema], [12, 12], 'older ones go through every step');
   // a schema-9 build (its store's gate given 9: the 7b build) opens this build's projects read-only
   const idb = fakeIDB(), seed = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 10 });
   seed.saveProject(Object.assign(jclone(M.STEPS[9](p9)), { name: 'ten' })); await seed.flush(); await seed.close();
@@ -1325,18 +1326,18 @@ const PADS = PC.normPads([{ id: 'pd1', name: 'Kit', rows: 2, cols: 3, pads: [{ t
   { id: 'pd3', name: 'Two', pads: [] }]);
 
 test('8 schema 11: ONE bump for the pad controller and the SDS-V — additive (a 10 opens as before: STEPS[10] changes nothing stored, project.pads and an sdsv device survive); an 11 is read-only in a schema-10 build (the store\'s gate: it would drop project.pads and read the SDS-V as a Minimoog) and a 12 in this one', async () => {
-  assert.deepEqual([M.SCHEMA, M.STEPS.length], [11, 11]);
+  assert.deepEqual([M.SCHEMA, M.STEPS.length], [12, 12], '(stage 9: the schema is 12 now; STEPS[10] is still stage 8\'s)');
   const t = withDrum(drumTrackV(), DC.normDrum({ trim: [[[0.1, 0.2, 0.3, 0.4, 0.5, 0.6], [0.6, 0.5, 0.4, 0.3, 0.2, 0.1]]] }, 'sdsv')), p10 = deepFreeze({ name: 'D', schema: 10, uid: 'p_abc123xyz0', perf: { wheel: null }, pads: jclone(PADS), tracks: [jclone(t)] });
   assert.deepEqual(M.STEPS[10](p10), Object.assign(jclone(p10), { schema: 11 }), 'nothing converted');
   const up = M.upgrade(p10);
-  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [10, false, 11, 'p_abc123xyz0']);
+  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [10, false, 12, 'p_abc123xyz0'], 'through 11 and 12 (9: additive)');
   assert.deepEqual(Object.assign({}, up.p, { schema: 10 }), jclone(p10), 'content and every field as they were: pads, the sdsv device and its record');
-  assert.deepEqual([11, 12, 13].map(n => M.upgrade({ schema: n, tracks: [] }).readOnly), [false, true, true]);
-  assert.deepEqual([M.upgrade({ schema: 9, tracks: [] }).p.schema, M.upgrade({ schema: 0, tracks: [] }).p.schema], [11, 11], 'older ones go through every step');
-  assert.deepEqual(M.upgrade({ name: 'newer', schema: 12, pads: [1], futureField: { x: 1 }, tracks: [] }).p, { name: 'newer', schema: 12, pads: [1], futureField: { x: 1 }, tracks: [] }, 'a newer file as it is');
+  assert.deepEqual([11, 12, 13].map(n => M.upgrade({ schema: n, tracks: [] }).readOnly), [false, false, true]);
+  assert.deepEqual([M.upgrade({ schema: 9, tracks: [] }).p.schema, M.upgrade({ schema: 0, tracks: [] }).p.schema], [12, 12], 'older ones go through every step');
+  assert.deepEqual(M.upgrade({ name: 'newer', schema: 13, pads: [1], futureField: { x: 1 }, tracks: [] }).p, { name: 'newer', schema: 13, pads: [1], futureField: { x: 1 }, tracks: [] }, 'a newer file as it is');
   // a schema-10 build (its store's gate given 10: the 7c build) opens this build's projects read-only: it would drop project.pads and read the SDS-V as a Minimoog
   const idb = fakeIDB(), seed = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 11 });
-  seed.saveProject(Object.assign(jclone(up.p), { name: 'eleven' })); await seed.flush(); await seed.close();
+  seed.saveProject(Object.assign(jclone(M.STEPS[10](p10)), { name: 'eleven' })); await seed.flush(); await seed.close();
   const old = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 10 });
   assert.deepEqual([old.info().readOnly, old.info().newer], [true, 11], 'a schema-10 build: read-only');
   await old.close();
@@ -1454,4 +1455,113 @@ test('8 Save as classic project: the Pads controllers are dropped with "the Pads
   const sp = split({ schema: 11, pads: jclone(PADS), tracks: [two] });
   assert.deepEqual(sp.p.tracks.map(x => [x.dev[x.prim].drum.m, x.dev[x.prim].drum.trim[0][0][0]]), [['sdsv', 0.2], ['sdsv', 0.5]], 'splitTracks keeps each record');
   assert.deepEqual(sp.p.pads.map(x => x.id), ['pd1', 'pd3'], 'and the project\'s pads');
+});
+
+/* ---------------------------------------------------------------- stage 9: the 900 Series (IMPL-9 §1.6, §8.9; lane X9) */
+import * as PT from '../patch-core.js?v=9';
+import * as MG from '../moog-core.js?v=9';
+// a 900 Series track as the page holds it: an m900 instrument (the controller's flat vals + vals.p) with its `patch` record into a panel, OUT
+const patchTrack = (rec, o = {}) => {
+  const m = MG.model15({}), t = Object.assign(M.trackToV2({ id: 'trk_p', name: 'Rack', color: '#d9d2bf', model: 'm900', vals: m.vals, preset: null, fx: C.defaultFx2(),
+    notes: [{ id: 1, t: 0, d: 480, n: 48, v: 100 }, { id: 2, t: 480, d: 480, n: 55, v: 90 }], cc: [] }), o);
+  t.dev.i1.patch = rec === undefined ? m.rec : rec;
+  return t;
+};
+const LOST9 = (nm, n, c) => `“${nm}”: the 900 Series patch (${n} module${n === 1 ? '' : 's'}, ${c} cord${c === 1 ? '' : 's'}) — the live site has no patchable modular; its piano-roll notes are kept`;
+
+test('9 schema 12: additive — an 11 opens as before (STEPS[11] changes nothing stored: the m900 device, its patch record and vals.p survive); a 12 is read-only in a schema-11 build (the store\'s gate: it would read the 900 Series as a Minimoog and drop `patch`) and a 13 in this one', async () => {
+  assert.deepEqual([M.SCHEMA, M.STEPS.length], [12, 12]);
+  const p11 = deepFreeze({ name: 'R', schema: 11, uid: 'p_abc123xyz0', perf: { wheel: null }, tracks: [jclone(patchTrack())] });
+  assert.deepEqual(M.STEPS[11](p11), Object.assign(jclone(p11), { schema: 12 }), 'nothing converted');
+  const up = M.upgrade(p11);
+  assert.deepEqual([up.from, up.readOnly, up.p.schema, up.p.uid], [11, false, 12, 'p_abc123xyz0']);
+  assert.deepEqual(Object.assign({}, up.p, { schema: 11 }), jclone(p11), 'content and every field as they were');
+  assert.deepEqual([11, 12, 13].map(n => M.upgrade({ schema: n, tracks: [] }).readOnly), [false, false, true]);
+  assert.deepEqual([M.upgrade({ schema: 9, tracks: [] }).p.schema, M.upgrade({ schema: 0, tracks: [] }).p.schema], [12, 12], 'older ones go through every step');
+  assert.deepEqual(M.upgrade({ name: 'newer', schema: 13, futureField: { x: 1 }, tracks: [] }).p, { name: 'newer', schema: 13, futureField: { x: 1 }, tracks: [] }, 'a newer file as it is');
+  // a schema-11 build (its store's gate given 11: the stage 8 build) opens this build's projects read-only: it would read the 900 Series as a Minimoog and drop `patch`
+  const idb = fakeIDB(), seed = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 12 });
+  seed.saveProject(Object.assign(jclone(up.p), { name: 'twelve' })); await seed.flush(); await seed.close();
+  const old = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: 11 });
+  assert.deepEqual([old.info().readOnly, old.info().newer], [true, 12], 'a schema-11 build: read-only');
+  await old.close();
+  const cur = await A.openAppStore({ idb, ls: fakeStorage({}), bc: null, schema: M.SCHEMA });
+  assert.equal(cur.info().readOnly, false, 'this build: read-write');
+  await cur.close();
+});
+
+test('9 song.normDev: an m900 device keeps `patch` through patch-core normPatch (bounded, idempotent, a hostile input never throws); vals.p is plain data; absent stays absent; any other model\'s `patch` is dropped; round trips', () => {
+  const t = patchTrack(), rec = PT.normPatch(t.dev.i1.patch, 'moog');
+  assert.deepEqual(rec, t.dev.i1.patch, 'the Model 15 record is already normal');
+  const d = S.normDev(t).dev.i1;
+  assert.deepEqual(d.patch, rec, 'normPatch\'s record');
+  assert.deepEqual(d.vals.p, t.dev.i1.vals.p, 'vals.p: plain data, as every vals');
+  assert.deepEqual(S.normDev(S.normDev(t)).dev.i1.patch, d.patch, 'idempotent');
+  const none = patchTrack(); delete none.dev.i1.patch;
+  assert.equal('patch' in S.normDev(none).dev.i1, false, 'absent stays absent (the host makes a fresh record)');
+  assert.equal('patch' in S.normDev(patchTrack(null)).dev.i1, false, 'null: none');
+  // hostile input: the bounds are normPatch's (a violating cord dropped, the numbers kept in range, a wrong shape a fresh record)
+  const big = { v: 1, f: 'moog', nid: 1, cid: 1, mods: {}, cords: [] };
+  for (let k = 1; k <= 60; k++) big.mods['m' + k] = { t: k % 2 ? '902' : '911' };
+  for (let k = 1; k <= 200; k++) big.cords.push({ id: 'c' + k, a: 'm' + ((k % 59) + 1) + '.o1', b: 'm' + ((k % 57) + 2) + '.c1', c: k % 9 });
+  for (const bad of [7, 'x', [], true, { v: 9, f: 'nope' }, { mods: 'no', cords: 5 }, { mods: { m1: { t: '902' }, x: 1, m2: { t: 7 } }, cords: [{ id: 'c1', a: 'm1.zz', b: 'c.zz' }, null, 3] }, big, { nid: 1e9, cid: -4, mods: {}, cords: [], name: 'n'.repeat(500) }]) {
+    const r = S.normDev(patchTrack(bad)).dev.i1.patch;
+    assert.deepEqual(r, PT.normPatch(bad, 'moog'), JSON.stringify(bad).slice(0, 60));
+    assert.deepEqual(PT.normPatch(r, 'moog'), r, 'idempotent');
+  }
+  const g = patchTrack({}); Object.defineProperty(g.dev.i1.patch, 'cords', { enumerable: true, get() { throw new Error('hostile'); } });
+  assert.deepEqual(S.normDev(g).dev.i1.patch, PT.fresh('moog'), 'a hostile getter: a fresh record');
+  const r2 = S.normDev(patchTrack(big)).dev.i1.patch;
+  assert.deepEqual([Object.keys(r2.mods).length, r2.cords.length <= 128], [48, true], '≤ 48 modules, ≤ 128 cords');
+  // `patch` on another model's device is dropped; the drums' `drum` on an m900 too
+  for (const model of ['juno60', 'serum', 'tr808', 'sdsv', 'minimoog']) {
+    const o = patchTrack(); o.dev.i1.model = model;
+    assert.equal('patch' in S.normDev(o).dev.i1, false, 'a ' + model + ' has no patch');
+  }
+  const dr = patchTrack(); dr.dev.i1.drum = DC.normDrum(undefined);
+  assert.equal('drum' in S.normDev(dr).dev.i1, false, 'an m900 has no drum record');
+  // a project round trip (serialize → deserialize) keeps it byte for byte, the other fields too
+  const p = { name: 'R', bpm: 120, sig: [4, 4], bars: 4, tracks: [patchTrack()] };
+  const back = S.deserialize(S.serialize(p));
+  assert.equal(JSON.stringify(back.tracks[0].dev.i1.patch), JSON.stringify(p.tracks[0].dev.i1.patch));
+  assert.equal(JSON.stringify(back.tracks[0].dev.i1.vals), JSON.stringify(p.tracks[0].dev.i1.vals));
+  assert.equal(back.tracks[0].dev.i1.model, 'm900');
+  assert.deepEqual([PT.isPatchModel('m900'), PT.isPatchModel('juno60'), PT.familyOf('m900')], [true, false, 'moog']);
+});
+
+test('9 Save as classic project: an m900 track keeps its notes (the model id, no `patch`, no `dev`) and names the loss — "the 900 Series patch (N modules, M cords) — the live site has no patchable modular; its piano-roll notes are kept"', () => {
+  const t = patchTrack();
+  const one = M.toV1({ schema: 12, tracks: [t] });
+  assert.deepEqual([one.p.tracks[0].model, one.p.tracks[0].notes.length, 'patch' in one.p.tracks[0], 'dev' in one.p.tracks[0], JSON.stringify(one.p).includes('"patch"')], ['m900', 2, false, false, false]);
+  assert.deepEqual(one.lost, [LOST9('Rack', 12, 15)]);
+  // counts read the bounded record: one module / one cord are singular; none (no record, a fresh one, a hostile one): 0 and 0
+  const rec1 = PT.addModule(PT.fresh('moog'), {}, '904a').rec, rec2 = PT.plug(rec1, 'c.kp1', 'm1.c1').rec;
+  assert.deepEqual(rec2.cords.length, 1, 'a real cord');
+  assert.deepEqual(M.toV1({ tracks: [patchTrack(PT.fresh('moog'))] }).lost, [LOST9('Rack', 0, 0)]);
+  assert.deepEqual(M.toV1({ tracks: [patchTrack(rec1)] }).lost, [LOST9('Rack', 1, 0)]);
+  assert.deepEqual(M.toV1({ tracks: [patchTrack(rec2)] }).lost, [LOST9('Rack', 1, 1)]);
+  const noRec = patchTrack(); delete noRec.dev.i1.patch;
+  assert.deepEqual(M.toV1({ tracks: [noRec] }).lost, [LOST9('Rack', 0, 0)], 'no record: a fresh one');
+  assert.deepEqual(M.toV1({ tracks: [patchTrack({ mods: 'no', cords: 3 })] }).lost, [LOST9('Rack', 0, 0)], 'hostile: normPatch\'s');
+  // several tracks: one line each in the tracks' order, after the wheel's line, before the drum lines
+  const name = (x, id, nm) => Object.assign(jclone(x), { id, name: nm });
+  const dr = withDrum(drumTrack(), DC.normDrum(undefined));
+  const two = M.toV1({ perf: { wheel: { v: 1 } }, tracks: [name(t, 'trk_a', 'Rack'), dr, name(t, 'trk_b', 'Rack 2')] });
+  assert.deepEqual(two.lost, ['the Mod Wheel', LOST9('Rack', 12, 15), LOST9('Rack 2', 12, 15), 'TR-808 track “Beat”: the live site has no drum machine — its piano-roll notes are kept']);
+  // a 900 Series beside another instrument in one track (not today's shape): each becomes a track, and the loss is named by the track the patch lands in
+  const multi = jclone(t);
+  multi.dev.i2 = { kind: 'synth', model: 'juno60', vals: {}, preset: null };
+  multi.wires.push({ id: 'w3', a: 'i2.out', b: 'fx1.in' });
+  const mv = M.toV1({ tracks: [multi] });
+  assert.deepEqual(mv.p.tracks.map(x => x.model), ['m900', 'juno60']);
+  assert.ok(mv.lost.includes(LOST9('Rack', 12, 15)), mv.lost.join(' | '));
+  assert.equal(mv.lost.filter(x => x.includes('900 Series')).length, 1, 'the Juno names none');
+  // the input is never touched
+  assert.doesNotThrow(() => M.toV1(deepFreeze({ schema: 12, tracks: [jclone(t)] })));
+  // the file mirror keeps the model and vals; the record stays on the device (the mirror is the v2 file, not main's)
+  const m = M.mirror({ tracks: [jclone(t)] });
+  assert.deepEqual([m.tracks[0].model, 'patch' in m.tracks[0], !!m.tracks[0].dev.i1.patch], ['m900', false, true]);
+  // splitTracks keeps each record
+  const sp = split({ schema: 12, tracks: [multi] });
+  assert.equal(sp.p.tracks.find(x => x.dev[x.prim].model === 'm900').dev.i1.patch.cords.length, 15);
 });

@@ -4,11 +4,13 @@
  * Note edit operations work in place on the array they are given and return it.
  * (SYNTH Canvas 2b: the modulator modules' LFO / ENV / chaos states are bounded by serum-core's own normalisers — the one
  * import of this module; song.js stays the base of everything else. 7a: a drum machine's memory by drum-core's normDrum, a
- * leaf module. Stage 8: project.pads by pads-core's normPads, also a leaf (it imports only drum-core).)
+ * leaf module. Stage 8: project.pads by pads-core's normPads, also a leaf (it imports only drum-core). Stage 9: a 900 Series
+ * device's `patch` by patch-core's normPatch, a leaf too (it imports only the family's table).)
  */
 import { normLfoMod, normEnvMod, normChaosMod } from './serum-core.js?v=9';
 import { normDrum, mapTable, DEFAULT_MAP, PERS } from './drum-core.js?v=9'; // (7a: a drum machine's record, its channel 10)
 import { normPads } from './pads-core.js?v=9'; // (stage 8, schema 11: project.pads — a leaf, as drum-core: it imports only drum-core)
+import { normPatch, familyOf, isPatchModel } from './patch-core.js?v=9'; // (stage 9, schema 12: a 900 Series device's `patch` — a leaf: it imports only the family's table, moog-core)
 
 export const PPQ = 960;
 export const TRACK_COLORS = ['#f2a33a', '#3b82c4', '#e2402f', '#3fae5a', '#b06ad9', '#2bb3a3', '#f5d22e', '#ff6a13', '#58b2ff', '#e86aa8', '#9bd16a', '#c9a227'];
@@ -569,6 +571,7 @@ export function normDev(r) {
       if (typeof d.name === 'string' && d.name) o.name = str(d.name, null, 100);
       if (typeof d.fxId === 'string' && /^fx\d{1,6}$/.test(d.fxId)) o.fxId = d.fxId; // (a Serum's folded-in panel id, cv-model reshape)
       if (isDrum(o.model) && d.drum != null) o.drum = normDrum(d.drum, o.model); // (7a: a drum machine's memory, map, slots — IMPL-7a §6; another model's is dropped; 7b: by the model's own record shape)
+      if (isPatchModel(o.model) && d.patch != null) o.patch = normPatch(d.patch, familyOf(o.model)); // (9, schema 12: a patchable instrument's modules and cords — IMPL-9 §1.2, §1.6; another model's is dropped. vals.p's orphans are pruned at load by the host, never here: an undo restores snapshots through this reader and must find them, §1.5)
     } else if (d.kind === 'panel') {
       o = { kind: 'panel' };
       if (isObj(d.fx)) o.fx = d.fx;
