@@ -33,6 +33,10 @@ import * as PT from '../patch-core.js?v=9';
 import { mulberry32, fnv1a32 } from '../wt.js?v=9';
 import { BASS } from './bench-scenarios.mjs';
 
+// ref-9 guards stage 9's sound: its nine module types and its six starting patches, by name (IMPL-9b skeptic #1 — a later stage's
+// types and presets are unknown to ref-9's moog-dsp and are guarded by their own golden file)
+const S9_TYPES = ['921', '921a', '921b', '923', '904a', '907a', '902', '911', '995'];
+const S9_PRESETS = ['Classic bass', 'Filter sweep', 'Drone', 'Sync lead', 'Wind', 'Bells'];
 const REF = new URL('./ref-9/', import.meta.url), FILES = ['patch-dsp.js', 'moog-dsp.js', 'engine.js'];
 // the frozen hashes, pinned by the lead at the freeze (null until then: the manifest alone is checked)
 const PIN = { 'patch-dsp.js': '9755c60bcb24b27a3efd8c0ef313161c64230424a086fa81d8586244dbac7235', 'moog-dsp.js': '9e6ae2f81cd040d17362ef1ca62c8b74514dd20fbaa3600edf71e90d5ebe4826', 'engine.js': '2f2f3baa3427c903fe2f065a09c09aa0e72a091719fd3a14a151ed25d234081c' }; // (frozen 2026-10-22 at 53b7e88, the stage 9 acceptance commit)
@@ -156,7 +160,7 @@ const CASES = [
   // LOW and LAST priority with glide
   ...[0, 1].map(pr => { const m = MG.model15(); m.vals = PT.setKnob(PT.setKnob(m.vals, m.rec, 'c', 'pr', pr), m.rec, 'c', 'gl', 6); return C(`priority ${pr ? 'LAST' : 'LOW'} with glide (Classic bass, overlapping keys)`, m, { events: line(LEGATO), seconds: 1.8 }); }),
   // each starting patch with a note line (Drone without: it plays alone)
-  ...MG.PRESETS.map(P => C(`preset: ${P.name}`, preset(P.name), { events: P.name === 'Drone' ? [] : line(LINE), seconds: 1.6 })),
+  ...S9_PRESETS.map(n => C(`preset: ${n}`, preset(n), { events: n === 'Drone' ? [] : line(LINE), seconds: 1.6 })),
   // OS 2; 44.1 kHz × 1
   C('Classic bass at OS 2', MG.model15(), { os: 2 }),
   C('Classic bass at 44.1 kHz × 1', MG.model15(), { os: 1, sr: 44100, events: line(LINE, 44100) }),
@@ -214,8 +218,9 @@ test('the cases are patches a player can make (patch-core: every cord plugged by
     assert.ok(PT.live(c.rec), c.name + ': MAIN OUT patched');
   }
   const types = new Set(CASES.flatMap(c => Object.values(c.rec.mods).map(m => m.t)));
-  assert.deepEqual([...types].sort(), [...MG.ORDER].sort());
-  assert.deepEqual(CASES.filter(c => c.name.startsWith('preset: ')).map(c => c.name.slice(8)), MG.PRESETS.map(P => P.name));
+  assert.deepEqual([...types].sort(), [...S9_TYPES].sort());
+  assert.deepEqual(CASES.filter(c => c.name.startsWith('preset: ')).map(c => c.name.slice(8)), S9_PRESETS);
+  for (const n of S9_PRESETS) assert.ok(MG.PRESETS.some(P => P.name === n), 'stage 9 preset still shipped: ' + n);
   for (const c of CASES) assert.equal(CASES.filter(x => x.name === c.name).length, 1, 'one case per name: ' + c.name);
 });
 
